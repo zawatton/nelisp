@@ -1,0 +1,804 @@
+#+TITLE: standalone-save-and-transform 次段開発指示書
+#+DATE: 2026-06-20
+
+* 目的
+
+=standalone-save-and-transform= の実行時間を大幅に短縮する。現在の主因は
+GUI file bridge の host/runner 往復だけではなく、=nemacs-gui-file-bridge-run=
+内部の read/writeback dispatch cost が 336 request に広く分散していることが
+実測で分かった。単純な wait 調整や小さい request batch では十分な効果が出ない。
+
+次段では、runtime state reset 境界を明確にしたうえで、意味単位ごとに
+case を分割・集約する。
+
+* 現状
+
+- persistent runner は導入済み。
+- host 側 poll interval は 1ms まで短縮済み。
+- publish settle は 1ms だと flaky になるため 5ms を維持する。
+- =standalone-save-and-transform= は安全設定で約 108 秒。
+- 13 request 程度の小 batch 化は試したが、5ms publish settle では短縮効果がなく不採用。
+- motion group 6 request の result file batch 化も試したが、108.432 秒で短縮しなかったため不採用。
+- =NEMACS_GUI_BRIDGE_PROFILE=1= での baseline は 336 request、profile 合計 107.901 秒。
+  - 1 秒以上の request は 14 件。
+  - 遅延は一部の host publish ではなく、多数の bridge run に分散している。
+- 2026-06-20 の再 profile は 107.934 秒。保存 log の parse 可能行は 335 request、
+  profile 合計 106.881 秒。
+  - direct-cmd: 257 request / 79.817 秒 / 74.7%。
+  - key-or-empty: 68 request / 19.452 秒 / 18.2%。
+  - compound-form: 10 request / 7.612 秒 / 7.1%。
+  - family 上位は other 17.941 秒、editing 16.453 秒、motion/mark 14.461 秒。
+  - 単一 command/family ではなく、direct-cmd 共通 path が支配的。
+- 2026-06-20 の再 profile は 107.731 秒。保存 log の parse 可能行は 335 request、
+  profile 合計 106.719 秒。
+  - direct-cmd: 257 request / 81.729 秒 / 76.6%。
+  - key-or-empty: 68 request / 16.906 秒 / 15.8%。
+  - compound-form: 10 request / 8.084 秒 / 7.6%。
+  - family 上位は editing 21.714 秒、motion/mark 14.973 秒、other 13.653 秒。
+  - helper 化後も direct-cmd が支配的。
+- runtime writeback fast path も試したが、=pop-global-mark= 系の state writeback を落として
+  =/tmp/nemacs-global-mark= missing になり、140 秒台へ悪化したため不採用。
+- writeback dispatch table 化も試したが、broad table は 124.498 秒へ悪化し、
+  motion command 限定 table でも 108.649 秒で 5 秒以上の短縮に届かなかったため不採用。
+- =nemacs-gui-file-bridge-run= wrapper 型の motion minimal read path も試したが、
+  117.294 秒へ悪化したため不採用。
+- =make nemacs-gui-bridge-run-shape= で本体構造の static summary を生成できる。
+  - =nemacs-gui-file-bridge-run= は runtime 内の fset が source of truth。
+  - command-run boundary 前: linear body 41 forms、direct transport read 20、
+    =files--read*= helper call 0。
+  - command-run boundary 後: linear body 2 forms、direct transport write 588、
+    =files--write*= helper call 642、=equal cmd= tests 378。
+  - 以降の helper 化では、この count を no-op refactor の guard にする。
+- =make nemacs-gui-bridge-run-shape= は pre-boundary phase table も出力する。
+  - setup: 2 forms。
+  - transport-input-bindings: 19 forms / direct read 19。
+  - broad-state-read: 1 helper call。
+  - request-ingest: 1 form / direct write 2。
+  - buffer-init: 2 forms / helper call 1。
+  - window-point-init: 1 form / helper call 1。
+  - command-run-prep: 4 forms。
+  - 次の no-op refactor では、この phase count を guard にする。
+- =make nemacs-gui-bridge-run-shape= は post-boundary phase table も出力する。
+  - writeback-setup: 1 form。
+  - command-writeback-chain: 1 form / direct write 588 / =files--write*= helper 642。
+- 2026-06-20 に =broad-state-read= phase を
+  =files--bridge-read-broad-state= へ切り出した。
+  - command-run boundary、direct transport read、post-boundary write count は維持。
+  - 本体 linear body は 73 forms から 48 forms へ減少。
+  - =standalone-save-and-transform= は 107.543 秒で pass。
+  - これは短縮採用ではなく、runtime state reset 境界を作るための no-op helper 化。
+- 2026-06-20 に =buffer-init= / =window-point-init= phase を
+  =files--bridge-initialize-buffer-state= /
+  =files--bridge-initialize-window-point-state= へ切り出した。
+  - command-run boundary と post-boundary write count は維持。
+  - 本体 linear body は 48 forms から 41 forms へ減少。
+  - pre-boundary direct transport read は 21 から 20、=files--read*= helper call は
+    2 から 0 に減少。これは helper 内へ隠れたためで挙動変更ではない。
+  - =standalone-save-and-transform= は 107.891 秒で pass。
+  - =standalone-session-bridge-roundtrip= と =make test-fast= も green。
+  - これは短縮採用ではなく、runtime state reset 境界を作るための no-op helper 化。
+- 2026-06-20 に post-boundary の =writeback-setup= / =lane-writeback= phase を
+  =files--bridge-prepare-writeback= へ切り出した。
+  - post-boundary linear body は 3 forms から 2 forms へ減少。
+  - command-writeback-chain の direct transport write 588 / =files--write*= helper 642 /
+    =equal cmd= tests 378 は維持。
+  - =standalone-save-and-transform= は 107.735 秒で pass。
+  - =standalone-session-bridge-roundtrip=、=standalone-command-loop-lane-writeback=、
+    =make test-fast= は green。
+  - これは短縮採用ではなく、次の command-writeback-chain 分割の guard。
+- 2026-06-20 に pre-boundary の明示 transport read 20 個を
+  0-arity helper =files--transport-read-current= へ置換した。
+  - shape summary の boundary count は維持。
+  - =standalone-save-and-transform= は 107.817 秒で pass。
+  - =standalone-session-bridge-roundtrip= と =make test-fast= も green。
+  - これは短縮採用ではなく、次の command group read-set 分割の足場。
+- 2026-06-20 に post-boundary の family writeback chunk を
+  =files--bridge-family-writeback-current-context= へ切り出した。
+  - 対象は fileio / dired / info / help の =*-writeback-current-context=。
+  - command-writeback-chain の direct transport write 588 / =files--write*= helper
+    642 / =equal cmd= tests 378 は維持。
+  - post-boundary top-level call に
+    =files--bridge-family-writeback-current-context= が 1 件追加され、
+    =setq= は 919 から 916、=if= は 450 から 446 へ減少。
+  - =standalone-save-and-transform= は 107.758 秒で pass。
+  - =standalone-bridge-family-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、command-writeback-chain を小さい family/chunk 単位で
+    測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の prefix writeback chunk を
+  =files--bridge-prefix-writeback-current-context= へ切り出した。
+  - 対象は =same-window-prefix= / =other-window-prefix= /
+    =other-tab-prefix= / =other-frame-prefix=。
+  - command-writeback-chain の direct transport write は 588 から 586、
+    =files--write*= helper は 642 から 641、=equal cmd= tests は 378 から 374。
+    これは prefix block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-prefix-writeback-current-context= が 1 件追加され、
+    =setq= は 916 から 914、=if= は 446 から 442 へ減少。
+  - =standalone-save-and-transform= は 108.566 秒で pass。
+  - =standalone-bridge-prefix-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、prefix/window 系 command の writeback 境界を
+    測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の project writeback chunk を
+  =files--bridge-project-writeback-current-context= へ切り出した。
+  - 対象は =project-find-file= / =project-or-external-find-file= /
+    =project-find-dir= / =project-dired= / =project-switch-project=。
+  - command-writeback-chain の direct transport write は 586 から 566、
+    =files--write*= helper は 641 から 631、=equal cmd= tests は 374 から 369。
+    これは project block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-project-writeback-current-context= が 1 件追加され、
+    =setq= は 914 から 891、=if= は 442 から 436 へ減少。
+  - =standalone-save-and-transform= は 108.592 秒で pass。
+  - =standalone-bridge-project-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、project 系 command の writeback 境界を
+    測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の find-file variants writeback chunk を
+  =files--bridge-find-file-writeback-current-context= へ切り出した。
+  - 対象は =find-file= / =find-file-other-window= / =find-file-other-frame= /
+    =find-file-other-tab= / =find-file-read-only= /
+    =find-file-read-only-other-window= / =find-file-read-only-other-frame= /
+    =find-file-read-only-other-tab= / =find-alternate-file=。
+  - command-writeback-chain の direct transport write は 566 から 521、
+    =files--write*= helper は 631 から 618、=equal cmd= tests は 369 から 360。
+    これは find-file block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-find-file-writeback-current-context= が 1 件追加され、
+    =setq= は 891 から 838、=if= は 436 から 418 へ減少。
+  - =standalone-save-and-transform= は 108.170 秒で pass。
+  - =standalone-bridge-find-file-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、find-file variants の writeback 境界を
+    測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の read-only writeback chunk を
+  =files--bridge-read-only-writeback-current-context= へ切り出した。
+  - 対象は =toggle-read-only= / =read-only-mode=。
+  - command-writeback-chain の direct transport write は 521 から 519、
+    =files--write*= helper は 618 のまま、=equal cmd= tests は 360 から 358。
+    これは read-only block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-read-only-writeback-current-context= が 1 件追加され、
+    =setq= は 838 から 835、=if= は 418 から 414 へ減少。
+  - =standalone-save-and-transform= は 108.267 秒で pass。
+  - =standalone-bridge-read-only-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、read-only command の writeback 境界を
+    測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の buffer switch writeback chunk を
+  =files--bridge-buffer-switch-writeback-current-context= へ切り出した。
+  - 対象は =switch-to-buffer= / =project-switch-to-buffer= /
+    =switch-to-buffer-other-window= / =switch-to-buffer-other-frame= /
+    =switch-to-buffer-other-tab=。
+  - command-writeback-chain の direct transport write は 519 から 494、
+    =files--write*= helper は 618 から 601、=equal cmd= tests は 358 から 353。
+    これは buffer switch block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-buffer-switch-writeback-current-context= が 1 件追加され、
+    =setq= は 835 から 806、=if= は 414 から 409 へ減少。
+  - =standalone-save-and-transform= は 108.219 秒で pass。
+  - =standalone-bridge-buffer-switch-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、buffer/window 系 command の writeback 境界を
+    測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の display-buffer writeback chunk を
+  =files--bridge-display-buffer-writeback-current-context= へ切り出した。
+  - 対象は =display-buffer= / =display-buffer-other-frame=。
+  - command-writeback-chain の direct transport write は 494 から 484、
+    =files--write*= helper は 601 から 594、=equal cmd= tests は 353 から 351。
+    これは display-buffer block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-display-buffer-writeback-current-context= が 1 件追加され、
+    =setq= は 806 から 795、=if= は 409 から 407 へ減少。
+  - =standalone-save-and-transform= は 109.400 秒で pass。
+  - =standalone-bridge-display-buffer-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、display-buffer command の writeback 境界を
+    測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の register writeback chunk を
+  =files--bridge-register-writeback-current-context= へ切り出した。
+  - 対象は =point-to-register= / =frameset-to-register= /
+    =window-configuration-to-register= / =jump-to-register= /
+    =copy-to-register= / =insert-register= / =number-to-register= /
+    =increment-register=。
+  - command-writeback-chain の direct transport write は 484 から 475、
+    =files--write*= helper は 594 から 569、=equal cmd= tests は 351 から 343。
+    これは register block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-register-writeback-current-context= が 1 件追加され、
+    =setq= は 795 から 779、=if= は 407 から 399 へ減少。
+  - =standalone-save-and-transform= は 108.279 秒で pass。
+  - =standalone-bridge-register-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、register command の writeback 境界を
+    測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の window layout writeback chunk を
+  =files--bridge-window-layout-writeback-current-context= へ切り出した。
+  - 対象は =delete-other-windows= / =delete-window= /
+    =split-window-right= / =split-window-below= / =balance-windows= /
+    =shrink-window-if-larger-than-buffer=。
+  - command-writeback-chain の direct transport write は 475 から 463、
+    =files--write*= helper は 569 のまま、=equal cmd= tests は 343 から 337。
+    これは window layout block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-window-layout-writeback-current-context= が 1 件追加され、
+    =setq= は 779 から 762、=if= は 399 から 393 へ減少。
+  - =standalone-save-and-transform= は 108.142 秒で pass。
+  - =standalone-bridge-window-layout-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、window layout command の writeback 境界を
+    測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の window split writeback chunk を
+  =files--bridge-window-split-writeback-current-context= へ切り出した。
+  - 対象は =fit-window-to-buffer= / =delete-windows-on= /
+    =split-root-window-below= / =split-root-window-right=。
+  - command-writeback-chain の direct transport write は 463 から 455、
+    =files--write*= helper は 569 から 565、=equal cmd= tests は 337 から 333。
+    これは window split block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-window-split-writeback-current-context= が 1 件追加され、
+    =setq= は 762 から 751、=if= は 393 から 389 へ減少。
+  - =standalone-save-and-transform= は 108.199 秒で pass。
+  - =standalone-bridge-window-split-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、window split command の writeback 境界を
+    測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の window state writeback chunk を
+  =files--bridge-window-state-writeback-current-context= へ切り出した。
+  - 対象は =tear-off-window= / =toggle-window-dedicated= /
+    =quit-window=。
+  - command-writeback-chain の direct transport write は 455 から 451、
+    =files--write*= helper は 565 から 560、=equal cmd= tests は 333 から 330。
+    これは window state block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-window-state-writeback-current-context= が 1 件追加され、
+    =setq= は 751 から 745、=if= は 389 から 386 へ減少。
+  - =standalone-save-and-transform= は 108.292 秒で pass。
+  - =standalone-bridge-window-state-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、window state/frame command の writeback 境界を
+    測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の dired writeback chunk を
+  =files--bridge-dired-writeback-current-context= へ切り出した。
+  - 対象は =dired-mark= / =dired-unmark= / =dired-flag-file-deletion= /
+    =dired-do-rename= / =dired-do-copy= / =dired-do-flagged-delete=。
+  - command-writeback-chain の direct transport write は 451 から 444、
+    =files--write*= helper は 560 から 551、=equal cmd= tests は 330 から 324。
+    これは dired block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-dired-writeback-current-context= が 1 件追加され、
+    =setq= は 745 から 736、=if= は 386 から 380 へ減少。
+  - =standalone-save-and-transform= は 108.369 秒で pass。
+  - =standalone-bridge-dired-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、dired command の writeback 境界を
+    測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の org writeback chunk を
+  =files--bridge-org-writeback-current-context= へ切り出した。
+  - 対象は =org-todo= / =org-capture= / =org-table-next-field= /
+    =org-cycle= / =org-table-align= / =org-narrow-to-subtree= /
+    =org-agenda= / =org-shifttab=。
+  - command-writeback-chain の direct transport write は 444 から 439、
+    =files--write*= helper は 551 から 545、=equal cmd= tests は 324 から 316。
+    これは org block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-org-writeback-current-context= が 1 件追加され、
+    =setq= は 736 から 730、=if= は 380 から 371 へ減少。
+  - =standalone-save-and-transform= は 108.138 秒で pass。
+  - =standalone-bridge-org-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、org command の writeback 境界を
+    測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の magit/vc writeback chunk を
+  =files--bridge-magit-vc-writeback-current-context= へ切り出した。
+  - 対象は =magit-status= / =magit-stage-file= /
+    =magit-unstage-file= / =magit-diff= / =magit-log= /
+    =vc-root-diff= / =magit-commit=。
+  - =magit-commit= は modeline writeback も含む。
+  - command-writeback-chain の direct transport write は 439 から 430、
+    =files--write*= helper は 545 から 539、=equal cmd= tests は 316 から 309。
+    これは magit/vc block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-magit-vc-writeback-current-context= が 1 件追加され、
+    =setq= は 730 から 720、=if= は 371 から 362 へ減少。
+  - =standalone-save-and-transform= は 108.272 秒で pass。
+  - =standalone-bridge-magit-vc-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、magit/vc command の writeback 境界を
+    測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の customize writeback chunk を
+  =files--bridge-customize-writeback-current-context= へ切り出した。
+  - 対象は =customize-variable= / =customize-save-variable=。
+  - modeline writeback も含む。
+  - command-writeback-chain の direct transport write は 430 から 425、
+    =files--write*= helper は 539 から 536、=equal cmd= tests は 309 から 307。
+    これは customize block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-customize-writeback-current-context= が 1 件追加され、
+    =setq= は 720 から 715、=if= は 362 から 359 へ減少。
+  - =standalone-save-and-transform= は 108.302 秒で pass。
+  - =standalone-bridge-customize-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、customize command の writeback 境界を
+    測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の side/window resize writeback chunk を
+  =files--bridge-side-window-resize-writeback-current-context= へ切り出した。
+  - 対象は =window-toggle-side-windows= / =enlarge-window= /
+    =shrink-window-horizontally= / =enlarge-window-horizontally= /
+    =other-window=。
+  - =window-toggle-side-windows= は side-window visibility、
+    resize 系は window layout / selected / split delta、
+    =other-window= は window layout / selected を writeback する。
+  - command-writeback-chain の direct transport write は 425 から 417、
+    =files--write*= helper は 536 から 532、=equal cmd= tests は 307 から 302。
+    これは side/window resize block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-side-window-resize-writeback-current-context= が 1 件追加され、
+    =setq= は 715 から 703、=if= は 359 から 354 へ減少。
+  - =standalone-save-and-transform= は 108.119 秒で pass。
+  - =standalone-bridge-side-window-resize-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、side/window resize command の writeback 境界を
+    測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の word/sexp/defun motion writeback chunk を
+  =files--bridge-word-sexp-defun-motion-writeback-current-context= へ切り出した。
+  - 対象は =forward-word= / =backward-word= /
+    =beginning-of-defun= / =forward-sexp= / =backward-sexp= /
+    =end-of-defun= / =down-list= / =forward-list= /
+    =backward-list= / =backward-up-list= / =forward-sentence= /
+    =backward-sentence= / =mark-defun= / =mark-sexp=。
+  - point-only command と point+mark command を helper 内で分けた。
+  - command-writeback-chain の direct transport write は 417 のまま、
+    =files--write*= helper は 532 から 516、=equal cmd= tests は 302 から 288。
+    これは word/sexp/defun motion block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-word-sexp-defun-motion-writeback-current-context= が 1 件追加され、
+    =setq= は 703 から 690、=if= は 354 から 340 へ減少。
+  - =standalone-save-and-transform= は 108.335 秒で pass。
+  - =standalone-bridge-word-sexp-defun-motion-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、word/sexp/defun motion command の writeback 境界を
+    測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の kill/abbrev writeback chunk を
+  =files--bridge-kill-abbrev-writeback-current-context= へ切り出した。
+  - 対象は =kill-word= / =kill-sexp= / =backward-kill-word= /
+    =zap-to-char= / =expand-abbrev= / =add-global-abbrev= /
+    =add-mode-abbrev= / =inverse-add-global-abbrev= /
+    =inverse-add-mode-abbrev= / =abbrev-prefix-mark= /
+    =expand-jump-to-next-slot= / =expand-jump-to-previous-slot= /
+    =dabbrev-expand= / =dabbrev-completion= / =complete-symbol= /
+    =transpose-words= / =transpose-sexps= / =insert-parentheses= /
+    =move-past-close-and-reindent= / =transpose-lines=。
+  - kill ring を伴う command、buf+point+mark command、point+mark command を
+    helper 内で分けた。
+  - command-writeback-chain の direct transport write は 417 から 400、
+    =files--write*= helper は 516 から 476、=equal cmd= tests は 288 から 268。
+    これは kill/abbrev block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-kill-abbrev-writeback-current-context= が 1 件追加され、
+    =setq= は 690 から 654、=if= は 340 から 320 へ減少。
+  - =standalone-save-and-transform= は 108.098 秒で pass。
+  - =standalone-bridge-kill-abbrev-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、kill/abbrev command の writeback 境界を
+    測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の mark/count/eval writeback chunk を
+  =files--bridge-mark-count-eval-writeback-current-context= へ切り出した。
+  - 対象は =mark-word= / =count-words-region= /
+    =count-lines-page= / =eval-last-sexp= / =eval-expression=。
+  - =mark-word= は point+mark、count/eval 系は modeline+point+mark を
+    helper 内で分けた。
+  - command-writeback-chain の direct transport write は 400 から 396、
+    =files--write*= helper は 476 から 466、=equal cmd= tests は 268 から 263。
+    これは mark/count/eval block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-mark-count-eval-writeback-current-context= が 1 件追加され、
+    =setq= は 654 から 646、=if= は 320 から 315 へ減少。
+  - =standalone-save-and-transform= は 108.376 秒で pass。
+  - =standalone-bridge-mark-count-eval-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、mark/count/eval command の writeback 境界を
+    測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の paragraph/region edit writeback chunk を
+  =files--bridge-paragraph-region-edit-writeback-current-context= へ切り出した。
+  - 対象は =forward-paragraph= / =backward-paragraph= / =set-fill-column= /
+    =set-fill-prefix= / =comment-set-column= / =not-modified= /
+    =mark-paragraph= / =kill-sentence= / =backward-kill-sentence= /
+    =fill-paragraph= / =transpose-chars= / =delete-horizontal-space= /
+    =cycle-spacing= / =just-one-space= / =delete-indentation= /
+    =comment-line= / =comment-dwim= / =upcase-word= / =downcase-word= /
+    =capitalize-word= / =upcase-region= / =downcase-region= /
+    =capitalize-region= / =sort-lines=。
+  - helper 内では point-only、status-only、point+mark、
+    buf+kill+point+mark、buf+point+mark の branch に分けた。
+  - command-writeback-chain の direct transport write は 396 から 377、
+    =files--write*= helper は 466 から 427、=equal cmd= tests は 263 から 239。
+    これは paragraph/region edit block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-paragraph-region-edit-writeback-current-context= が 1 件追加され、
+    =setq= は 646 から 604、=if= は 315 から 291 へ減少。
+  - =standalone-save-and-transform= は 108.224724 秒で pass。
+  - =standalone-bridge-paragraph-region-edit-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、paragraph/region edit command の writeback 境界を
+    測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の delete/insert writeback chunk を
+  =files--bridge-delete-insert-writeback-current-context= へ切り出した。
+  - 対象は =delete-char= / =backward-delete-char= /
+    =delete-backward-char= / =self-insert-command= / =insert-char=。
+  - helper 内では buf+point、buf+point+mark、buf+point+mark+modeline の
+    branch に分けた。
+  - command-writeback-chain の direct transport write は 377 から 371、
+    =files--write*= helper は 427 から 420、=equal cmd= tests は 239 から 234。
+    これは delete/insert block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-delete-insert-writeback-current-context= が 1 件追加され、
+    =setq= は 604 から 594、=if= は 291 から 286 へ減少。
+  - =standalone-save-and-transform= は 108.496177 秒で pass。
+  - =standalone-bridge-delete-insert-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、delete/insert command の writeback 境界を
+    測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の emoji writeback chunk を
+  =files--bridge-emoji-writeback-current-context= へ切り出した。
+  - 対象は =emoji-insert= / =emoji-list= / =emoji-recent= /
+    =emoji-search= / =emoji-describe= / =emoji-zoom-increase= /
+    =emoji-zoom-decrease= / =emoji-zoom-reset=。
+  - helper 内では buf+point+mark+modeline、buffer metadata+point+mark+window-start、
+    modeline-only の branch に分けた。
+  - command-writeback-chain の direct transport write は 371 から 350、
+    =files--write*= helper は 420 から 406、=equal cmd= tests は 234 から 226。
+    これは emoji block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-emoji-writeback-current-context= が 1 件追加され、
+    =setq= は 594 から 566、=if= は 286 から 274 へ減少。
+  - =standalone-save-and-transform= は 108.790056 秒で pass。
+  - =standalone-bridge-emoji-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、emoji command の writeback 境界を
+    測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の kmacro writeback chunk を
+  =files--bridge-kmacro-writeback-current-context= へ切り出した。
+  - 対象は =kmacro-start-macro= / =kmacro-end-macro= /
+    =kmacro-end-and-call-macro= / =kbd-macro-query= /
+    =kmacro-insert-counter= / =kmacro-set-counter= /
+    =kmacro-add-counter= / =kmacro-edit-macro-repeat= /
+    =kmacro-view-macro-repeat= / =kmacro-edit-macro= /
+    =kmacro-step-edit-macro= / =edit-kbd-macro= /
+    =kmacro-edit-lossage= / =kmacro-end-or-call-macro-repeat= /
+    =kmacro-call-ring-2nd-repeat= / =apply-macro-to-region-lines= /
+    =kmacro-keymap= / =kmacro-delete-ring-head= / =kmacro-set-format= /
+    =kmacro-cycle-ring-next= / =kmacro-cycle-ring-previous= /
+    =kmacro-swap-ring= / =kmacro-bind-to-key= / =kmacro-redisplay= /
+    =kmacro-name-last-macro= / =kmacro-to-register=。
+  - helper 内では buf+point+mark+window-start、buf+point、status-only、
+    buffer metadata+point+mark+window-start、
+    buf+point+mark+window-start+modeline、modeline-only の branch に分けた。
+  - command-writeback-chain の direct transport write は 350 から 341、
+    =files--write*= helper は 406 から 396、=equal cmd= tests は 226 から 200。
+    これは kmacro block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-kmacro-writeback-current-context= が 1 件追加され、
+    =setq= は 566 から 552、=if= は 274 から 247 へ減少。
+  - =standalone-save-and-transform= は 108.976717 秒で pass。
+  - =standalone-bridge-kmacro-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、kmacro command の writeback 境界を
+    測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の indent/newline writeback chunk を
+  =files--bridge-indent-newline-writeback-current-context= へ切り出した。
+  - 対象は =quoted-insert= / =indent-for-tab-command= /
+    =tab-to-tab-stop= / =indent-region= / =indent-rigidly= /
+    =newline= / =electric-newline-and-maybe-indent= /
+    =default-indent-new-line= / =open-line= / =split-line= /
+    =delete-blank-lines=。
+  - helper 内では buf+point+mark、buf+point の branch に分けた。
+  - command-writeback-chain の direct transport write は 341 から 330、
+    =files--write*= helper は 396 から 376、=equal cmd= tests は 200 から 189。
+    これは indent/newline block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-indent-newline-writeback-current-context= が 1 件追加され、
+    =setq= は 552 から 531、=if= は 247 から 236 へ減少。
+  - =standalone-save-and-transform= は 108.722140 秒で pass。
+  - =standalone-bridge-indent-newline-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、indent/newline command の writeback 境界を
+    測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の kill/yank writeback chunk を
+  =files--bridge-kill-yank-writeback-current-context= へ切り出した。
+  - 対象は =kill-line= / =kill-whole-line= / =yank= / =yank-pop=。
+  - helper 内では buf+kill+point、buf+kill+point+mark の branch に分けた。
+  - command-writeback-chain の direct transport write は 330 から 322、
+    =files--write*= helper は 376 から 371、=equal cmd= tests は 189 から 185。
+    これは kill/yank block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-kill-yank-writeback-current-context= が 1 件追加され、
+    =setq= は 531 から 520、=if= は 236 から 232 へ減少。
+  - =standalone-save-and-transform= は 108.823426 秒で pass。
+  - =standalone-bridge-kill-yank-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、kill/yank command の writeback 境界を
+    測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の mark/global/rectangle writeback chunk を
+  =files--bridge-mark-global-rectangle-writeback-current-context= へ切り出した。
+  - 対象は =set-mark-command= / =exchange-point-and-mark= /
+    =pop-global-mark= / =rectangle-mark-mode=。
+  - helper 内では point+mark+global-mark、point+mark、
+    point+mark+global-mark+rectangle-mark-mode の branch に分けた。
+  - command-writeback-chain の direct transport write は 322 のまま、
+    =files--write*= helper は 371 から 359、=equal cmd= tests は 185 から 181。
+    これは mark/global/rectangle block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-mark-global-rectangle-writeback-current-context= が 1 件追加され、
+    =setq= は 520 から 517、=if= は 232 から 228 へ減少。
+  - =standalone-save-and-transform= は 108.672773 秒で pass。
+  - =standalone-bridge-mark-global-rectangle-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、mark/global/rectangle command の writeback 境界を
+    測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の truncate/text-scale/frame writeback chunk を
+  =files--bridge-truncate-text-scale-frame-writeback-current-context= へ切り出した。
+  - 対象は =toggle-truncate-lines= / =font-lock-update= /
+    =text-scale-adjust= / =global-text-scale-adjust= / =suspend-frame=。
+  - helper 内では truncate state、status-only、text-scale+modeline、
+    frame-suspended+modeline の branch に分けた。
+  - command-writeback-chain の direct transport write は 322 から 319、
+    =files--write*= helper は 359 から 355、=equal cmd= tests は 181 から 176。
+    これは truncate/text-scale/frame block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-truncate-text-scale-frame-writeback-current-context= が 1 件追加され、
+    =setq= は 517 から 510、=if= は 228 から 223 へ減少。
+  - =standalone-save-and-transform= は 109.419179 秒で pass。
+  - =standalone-bridge-truncate-text-scale-frame-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、truncate/text-scale/frame command の writeback 境界を
+    測れるようにするための no-op helper 化。
+- 2026-06-20 に post-boundary の tmm-menubar writeback chunk を
+  =files--bridge-tmm-menubar-writeback-current-context= へ切り出した。
+  - 対象は =tmm-menubar=。
+  - helper 内では buf+file+buffer-name+read-only+point+mark+window-start を書く
+    branch として分離した。
+  - command-writeback-chain の direct transport write は 319 から 315、
+    =files--write*= helper は 355 から 352、=equal cmd= tests は 176 から 175。
+    これは tmm-menubar block が helper 内へ隠れたためで挙動変更ではない。
+  - post-boundary top-level call に
+    =files--bridge-tmm-menubar-writeback-current-context= が 1 件追加され、
+    =setq= は 510 から 506、=if= は 223 から 221 へ減少。
+  - =standalone-save-and-transform= は 108.676735 秒で pass。
+  - =standalone-bridge-tmm-menubar-writeback-helper=、
+    =standalone-session-bridge-roundtrip=、=make test-fast= は green。
+  - これは短縮採用ではなく、tmm-menubar command の writeback 境界を
+    測れるようにするための no-op helper 化。
+- =standalone-session-bridge-roundtrip= と =make test-fast= は green。
+
+* 守ること
+
+- publish settle を 1ms に戻して短縮したことにしない。
+  - =/tmp/nemacs-file= missing が発生し、fresh process/profile 前提で flaky になる。
+- host 側で session/progn を単純に一括化しない。
+  - buffer、tab、visited file、modified flag、temp file state が持ち越されて誤判定しやすい。
+- 小さい request を数個まとめるだけの batch 化を優先しない。
+  - transport complexity が増える割に、支配的な wait を削れない。
+- 失敗時にどの subcase が壊れたか分からない巨大 batch にしない。
+- command ごとの writeback state を理解せずに fast path を追加しない。
+  - =files--write-transport-point= / mark だけで足りる command と、
+    global mark、goal column、rectangle、kill ring、window/tab/frame state も必要な command が混在する。
+
+* 開発方針
+
+1. =standalone-save-and-transform= 内の subcase と profile 上位 command を一覧化する。
+2. 各 subcase を state/writeback 依存で分類する。
+   - 独立実行可能: reset 後に同じ初期条件から動くもの。
+   - buffer/file 依存: visited file、modified flag、save/write の順序に意味があるもの。
+   - transport 依存: request/response timing や publish order に敏感なもの。
+   - writeback 依存: point/mark だけでなく、global mark、goal column、kill ring、
+     window/tab/frame、modeline、status file などの副作用を持つもの。
+3. =nemacs-test-runner-reset-runtime-state= の reset 範囲を確認し、不足があれば明示的 helper を追加する。
+4. 小さい runner batch や runtime の writeback dispatch table ではなく、
+   transport input read の最小化、または writeback chain の生成元変更を検討する。
+5. command ごとの副作用 boundary を保ったまま、read/writeback のどちらが支配的かを
+   小さい group で計測する。
+6. 5 秒以上の短縮がない group は戻し、doc に不採用理由を残す。
+
+* 不採用 group
+
+以下は試行済みで、採用基準に届かなかった。
+
+** motion group
+
+- =forward-char=
+- =backward-char=
+- =next-line=
+- =previous-line=
+- =beginning-of-line=
+- =end-of-line=
+
+結果:
+
+- result file 方式で 6 request を 1 request にまとめても 108.432 秒。
+- writeback dispatch table 方式でも 108.649 秒。
+- =nemacs-gui-file-bridge-run= 本体内で direct motion 判定を先に行い、
+  kill ring / rectangle / global mark / tab / frame / custom などの read を
+  guarded block で飛ばす案も試したが、108.262 秒で短縮しなかった。
+- baseline 108 秒台から 5 秒以上短縮できなかった。
+- 採用しない。
+
+** writeback dispatch table
+
+- broad table: point-only / point+mark / buffer 系などをまとめて table hit させる案。
+- motion 限定 table: =forward-char= / =backward-char= / =next-line= /
+  =previous-line= / =beginning-of-line= / =end-of-line= だけを対象にする案。
+
+結果:
+
+- broad table は =standalone-save-and-transform= 124.498 秒で悪化。
+- motion 限定 table は 108.649 秒で baseline 108 秒台から有意に短縮しなかった。
+- table lookup helper と既存 chain fallback の併用では、dispatch cost を十分削れない。
+- 次は table 追加ではなく、transport input read の無駄削減か、
+  command-specific writeback chain の生成元を直接変える。
+
+** wrapper 型 minimal read path
+
+- 既存の巨大 =nemacs-gui-file-bridge-run= を =files--gui-file-bridge-run-full= として残し、
+  wrapper で direct motion command だけ minimal read path へ分岐する案。
+- 対象は =forward-char= / =backward-char= / =next-line= / =previous-line= /
+  =beginning-of-line= / =end-of-line=。
+- minimal read には cmd/keys、arg/minibuffer/prefix、buffer、buffer-name、read-only、
+  window layout/selected/start、point/mark、goal-column、narrow/minibuffer state を含めた。
+
+結果:
+
+- =standalone-save-and-transform= は pass したが 117.294 秒で悪化。
+- miss path でも wrapper の cmd read が追加され、hit path も command-loop/writeback policy の
+  再構成 cost が重く、十分な効果が出なかった。
+- runtime への後付け wrapper ではなく、生成元または full read body 自体を整理する必要がある。
+
+** in-body motion read-set guard
+
+- =cmd= / =keys= を先に読むため =nemacs-gui-file-bridge-run= の top-level =let= を
+  =let*= へ変え、=forward-char= / =backward-char= / =next-line= / =previous-line= /
+  =beginning-of-line= / =end-of-line= だけで重い state read block を skip する案。
+- skip 対象は kill ring、rectangle、global mark、tab/window/frame、coding/input、
+  custom state など。
+
+結果:
+
+- =standalone-session-bridge-roundtrip= は pass。
+- =make test-fast= は pass。
+- =standalone-save-and-transform= は 108.262 秒で、no-op helper 化後の 107.817 秒より悪化。
+- shape summary 上は pre-boundary linear body が 73 から 50 に縮むが、
+  runtime の conditional cost と対象 request 数では 5 秒以上の短縮に届かない。
+- 変更は戻した。次は大きい guarded block ではなく、実際に支配的な direct-cmd common path を
+  phase 単位で測れるようにしてから絞る。
+
+** local editing group
+
+- =self-insert-command=
+- =newline=
+- =delete-char=
+- =delete-backward-char=
+- =delete-trailing-whitespace=
+
+** transform group
+
+- buffer 内容を固定入力から作り直せる変換系
+
+save/write/visited-file lifecycle に触る case は後回しにする。
+
+上記 local editing / transform も、単純な runner batch や table fallback 追加では
+効果が薄い可能性が高い。次にやる場合は transport read/write の支配箇所を分けてから
+小さい group で検証する。
+
+* result file 形式
+
+runner 側で temp file に sexp list を書く。host 側はその list を読み、subcase ごとに
+=ok=、=value=、=error= を検証する。
+
+例:
+
+#+begin_src elisp
+((motion-forward-char . (:ok t :point 2 :buffer "abc"))
+ (motion-next-line . (:ok t :point 6 :buffer "a\nbc"))
+ (editing-delete-char . (:ok t :buffer "ac"))
+ (editing-newline . (:ok nil :error "expected point mismatch")))
+#+end_src
+
+最低限、各 subcase には次を含める。
+
+- stable name
+- ok flag
+- expected/actual の比較に必要な値
+- error message
+
+* 次の実装単位
+
+次の PR/commit は後付け wrapper/table 追加ではなく、=nemacs-gui-file-bridge-run= 本体または
+生成元の read/writeback chain を整理する。
+
+目標:
+
+- 既存の command-specific writeback chain は一気に置換しない。
+- command 実行前に全 transport file を読む現状から、command group ごとの read set を
+  本体構造として切り出す。
+- まず motion command だけを対象にし、buffer / point / mark / window-start など必要 state を明示する。
+- kill ring、rectangle、global mark、tab/window/frame、coding/input、custom state などを
+  必要とする command は初回対象にしない。
+- miss 時の fallback で余分な transport read を増やさない。
+
+後付け wrapper 型 minimal read path は 117.294 秒で悪化したため、同じ形では続けない。
+次は runtime 生成元で read/writeback chain 全体を整理する。
+
+* 検証コマンド
+
+最低限:
+
+#+begin_src sh
+NEMACS_RUN_GUI_BRIDGE=1 emacs -Q --batch -L src -L test \
+  -l test/nemacs-gui-file-bridge-runtime-test.el \
+  --eval "(ert-run-tests-batch-and-exit 'nemacs-gui-file-bridge-runtime-test/standalone-save-and-transform)"
+
+NEMACS_RUN_GUI_BRIDGE=1 emacs -Q --batch -L src -L test \
+  -l test/nemacs-gui-file-bridge-runtime-test.el \
+  --eval "(ert-run-tests-batch-and-exit 'nemacs-gui-file-bridge-runtime-test/standalone-session-bridge-roundtrip)"
+
+make test-fast
+#+end_src
+
+性能判断用:
+
+#+begin_src sh
+mkdir -p build
+NEMACS_RUN_GUI_BRIDGE=1 NEMACS_GUI_BRIDGE_PROFILE=1 emacs -Q --batch \
+  -L src -L test -l test/nemacs-gui-file-bridge-runtime-test.el \
+  --eval "(ert-run-tests-batch-and-exit 'nemacs-gui-file-bridge-runtime-test/standalone-save-and-transform)" \
+  > build/nemacs-gui-bridge-profile.log 2>&1
+make nemacs-gui-bridge-profile-summary
+make nemacs-gui-bridge-run-shape
+#+end_src
+
+* 採用基準
+
+- =standalone-save-and-transform= が安定して短縮する。
+- publish settle 5ms のまま通る。
+- fresh process 前提の検証で通る。
+- =standalone-session-bridge-roundtrip= が通る。
+- =make test-fast= が通る。
+- 失敗時の subcase 名と actual value が読める。
+- read/writeback chain 整理では、未登録 command の挙動が変わらない。
+
+* 次の作業開始点
+
+1. =make nemacs-gui-bridge-profile-summary= で command 分布を再生成する。
+2. direct-cmd 257 request / 79.817 秒を主対象にし、key dispatch や compound form を
+   初回対象から外す。
+3. =make nemacs-gui-bridge-run-shape= で本体構造を再生成する。
+4. coarse な motion read-set guard は 108.262 秒で不採用済み。
+   =broad-state-read= / =buffer-init= / =window-point-init= の no-op helper 化も
+   5 秒以上の短縮には届かず、state reset 境界作りとして採用済み。
+5. direct-cmd の common read/writeback setup、family writeback chunk、prefix writeback
+   chunk、project writeback chunk、find-file variants chunk、read-only chunk、
+   buffer switch chunk、display-buffer chunk、register chunk、window layout chunk、
+   window split chunk、window state chunk、dired chunk、org chunk、magit/vc chunk は
+   helper 化済み。customize chunk と side/window resize chunk も helper 化済み。
+   word/sexp/defun motion chunk も helper 化済み。
+   kill/abbrev chunk も helper 化済み。
+   mark/count/eval chunk も helper 化済み。
+   paragraph/region edit chunk も helper 化済み。
+   delete/insert chunk も helper 化済み。
+   emoji chunk も helper 化済み。
+   kmacro chunk も helper 化済み。
+   indent/newline chunk も helper 化済み。
+   kill/yank chunk も helper 化済み。
+   mark/global/rectangle chunk も helper 化済み。
+   truncate/text-scale/frame chunk も helper 化済み。
+   tmm-menubar chunk も helper 化済み。
+   次は command-writeback-chain 内の =set-selective-display= から始める。
+   =revert-buffer-with-coding-system= は直後の単独 branch と後続 coding/input-method
+   group の両方に含まれるため、混ぜずに
+   切り、巨大な =equal cmd= chain を測れる形にする。
+   individual command の後付け wrapper には戻らない。
+6. =standalone-save-and-transform= と =standalone-session-bridge-roundtrip= で計測する。
+
+小さい request batch、table fallback、後付け wrapper ではなく、command ごとの
+read/writeback 副作用を保持した本体構造の整理を先に作ること。

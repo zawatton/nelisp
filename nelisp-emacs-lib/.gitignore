@@ -1,0 +1,56 @@
+*.elc
+*.bak
+build/
+target/
+/tmp-diag/
+.worktrees/
+
+# Generated/local one-off artifacts.
+*.elc.disabled-*
+docs/worklog/*~
+
+# Local release signing configuration.  Public key material may be committed
+# separately, but machine-specific keyring paths and fingerprints stay local.
+docs/release/*.local.mk
+
+# Claude Code session ephemera — never commit
+.claude/
+
+# Accidental anvil-memory / anvil-worklog / anvil-org DB drop site.
+# These files appear when a tilde-prefix path expansion fails and the
+# DB sink is created literally inside the worktree as `~/.emacs.d/`.
+# Contains user personal memory entries — must not leak to public.
+~/
+*.db
+*.db-shm
+*.db-wal
+
+# AI assistant local ephemera.  Root AGENTS.md / CLAUDE.md are now
+# project-owned library-first rules; keep tool-specific state local.
+.cursorrules
+.cursor/
+.aider*
+.codex/
+.windsurfrules
+
+# Layer-2 self-containment (Doc 51, 2026-05-04): the nelisp runtime
+# is fetched into vendor/nelisp/ by `bin/build-nelisp'.  Source +
+# build artifacts both live there; we don't want to track either —
+# `make nelisp' is the source of truth.
+vendor/nelisp/
+
+# Upstream package clones for the Magit-ladder vendor gates (Doc 33).
+# These are plain `git clone` checkouts (own .git); re-clone from upstream
+# (magit/magit, magit/transient, magnars/dash.el, emacs-compat/compat,
+#  tarsius/llama, tarsius/cond-let, magit/with-editor) into vendor/.
+vendor/compat/
+vendor/cond-let/
+vendor/dash.el/
+vendor/llama/
+vendor/magit/
+vendor/transient/
+vendor/with-editor/
+.serena/
+
+# Python bytecode caches from scripts/*.py
+__pycache__/

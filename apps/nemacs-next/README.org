@@ -1,0 +1,118 @@
+#+TITLE: nemacs-next
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-06-25
+#+STATUS: DRAFT
+
+* Purpose
+
+=nemacs-next= is the new product editor path for using the current
+=nelisp-emacs= library work to build an Emacs-compatible text editor with a
+fresh GUI.
+
+This directory is an app consumer.  It must not become the owner of buffer
+mutation, command dispatch, minibuffer semantics, undo, file command
+behavior, or package compatibility shims.  Those belong in reusable
+=nelisp-emacs= library packages.
+
+* Shape
+
+#+begin_src text
+apps/nemacs-next/
+  lisp/nemacs-next.el
+  lisp/nemacs-next-protocol.el
+  lisp/nemacs-next-session.el
+  fixtures/m5-package/nemacs-next-m5-fixture.el
+  fixtures/m5-package/nemacs-next-m5-fixture-extra.el
+  frontends/gui/nemacs-next-gui
+  frontends/gui/smoke.sh
+  frontends/gui/README
+  frontends/tui/nemacs-next-tui
+  frontends/tui/smoke.sh
+  frontends/tui/README
+  protocol/protocol-v0.org
+  scripts/m4-gui-shell-smoke.sh
+  scripts/package-smoke.sh
+  scripts/process-smoke.sh
+  scripts/session-smoke.sh
+  scripts/smoke.sh
+#+end_src
+
+* Boundary
+
+The product boundary is:
+
+- persistent editor session owns Emacs-observable state;
+- =nelisp-emacs= libraries own editor semantics;
+- GUI owns rendering, raw input, IME, clipboard, menus, tabs, and native
+  OS integration;
+- protocol messages connect the GUI to the session.
+
+The legacy file bridge in =gui/= remains useful for regression evidence,
+but it is not the target product transport.
+
+* Smoke
+
+#+begin_src sh
+apps/nemacs-next/scripts/smoke.sh
+apps/nemacs-next/scripts/session-smoke.sh
+apps/nemacs-next/scripts/process-smoke.sh
+apps/nemacs-next/scripts/m4-gui-shell-smoke.sh
+apps/nemacs-next/scripts/package-smoke.sh
+apps/nemacs-next/scripts/theme-smoke.sh
+apps/nemacs-next/frontends/tui/smoke.sh
+apps/nemacs-next/frontends/gui/smoke.sh
+#+end_src
+
+The host smoke uses Emacs to prove that the app contract loads
+=nelisp-emacs= as a library consumer without requiring =nemacs-main= or
+legacy GUI features.
+
+The session smoke uses =target/nelisp --repl --no-prompt --no-print= to
+prove that the same app contract can load in a bootstrap-initialized
+persistent NeLisp evaluator and run more than one form without restarting
+the runtime.
+
+The process smoke sends several request forms through one persistent
+NeLisp REPL process and verifies newline-delimited JSON responses for
+=hello=, buffer creation, and insertion.  The insertion response is a
+buffer snapshot.
+
+The M4 GUI shell smoke runs under host Emacs and renders one protocol
+frame snapshot to plain text.  It is the current human-visible demo hook:
+buffer viewport and modeline are visible in a terminal, while the session
+also proves menu command targets, resize deltas, keyboard/IME input
+deltas, and clipboard OS-integration requests.
+
+The M5 package smoke loads two pure-Elisp package fixture features.  The
+host half verifies mode activation, local keymap lookup, hook execution,
+face registration/text properties, buffer edits, companion feature load,
+and explicit package-compat debt rows.  The standalone half is a lighter
+reader/load sanity check for the same fixture path.
+
+The TUI smoke is the terminal frontend proof.  It pipes deterministic input
+through =frontends/tui/nemacs-next-tui=, drives the =find-file= prompt,
+edits temporary files, invokes toolbar Save, invokes toolbar Open to prove
+the prompt path, quits, and asserts final file content, rendered frame
+output, the full default toolbar label set, UTF-8 multibyte insertion, ANSI
+face/color output, and differential redraw stats for a cursor-only move.
+
+The TUI v2 renderer consumes session viewport =:face-runs= and maps the
+initial face set (=org-level-1=..=org-level-4=, =bold=,
+=font-lock-comment-face=, =font-lock-string-face=, =default= plus a small
+resolved named-color override table) to ANSI SGR.  Interactive terminal
+draws compare rendered rows with the previous frame, so unchanged rows are
+not rewritten; cursor-only movement emits only cursor positioning.  Terminal
+IME composition is handled by the terminal itself, while the frontend reads
+complete UTF-8 byte sequences before sending text input to the session.
+
+The TUI renders the session toolbar on row 0.  The default toolbar is the
+vendor =tool-bar-setup= sequence: New File, Open, Dired, Close, Save,
+Undo, Cut, Copy, Paste, Search, with the vendor separators preserved.
+Use =F10= or =M-`= to focus it, Left/Right to move, RET to invoke, and
+ESC to leave toolbar focus.
+
+The GUI smoke starts a private Xvfb server and launches
+=frontends/gui/nemacs-next-gui=.  It verifies that an X11 window maps,
+captures the framebuffer and checks that rendered glyphs produce non-empty
+pixel contrast, then drives =C-x C-f= / text insertion / =C-x C-s= through
+=xdotool= and asserts the saved file content.

@@ -1,0 +1,56 @@
+;;; lisp-mode.el --- Lightweight lisp-mode shim for NeLisp  -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 zawatton + Claude
+
+;; This file is part of nelisp-emacs.
+
+;;; Commentary:
+
+;; Standalone NeLisp uses the local lightweight Elisp editing surface.
+;; Host Emacs delegates to its standard lisp-mode library so test tools
+;; that require `lisp-mode' continue to see the full host API.
+
+;;; Code:
+
+(defvar lisp-mode--standalone-p
+  (or (fboundp 'nl-write-file)
+      (not (boundp 'emacs-version))
+      (not (stringp emacs-version)))
+  "Non-nil under standalone NeLisp.
+Standalone NeLisp binds `emacs-version' to a real string too (for vendor
+compatibility), so neither disjunct after the first fires there; detect
+the standalone path by a NeLisp-only primitive instead, matching
+the standalone predicate in `emacs-char-table.el'.")
+
+(defun lisp-mode--host-load-standard ()
+  "Load host Emacs's standard lisp-mode library."
+  (let ((shim-dir (file-truename
+                   (file-name-as-directory
+                    (file-name-directory (or (and (boundp 'load-file-name) load-file-name)
+                         (and (boundp 'buffer-file-name) buffer-file-name)
+                         default-directory)))))
+        filtered)
+    (dolist (dir load-path)
+      (unless (equal (file-truename (file-name-as-directory dir))
+                     shim-dir)
+        (push dir filtered)))
+    (let ((load-path (nreverse filtered)))
+      (load "lisp-mode" nil t))))
+
+(if lisp-mode--standalone-p
+    (progn
+      (require 'emacs-mode-builtins)
+      (require 'emacs-elisp-mode)
+      (require 'emacs-elisp-eval)
+      (unless (fboundp 'lisp-mode)
+        (defalias 'lisp-mode #'emacs-lisp-mode))
+      (unless (fboundp 'indent-sexp)
+        (defun indent-sexp (&optional _endpos)
+          "Placeholder indentation command for the lightweight Elisp mode."
+          (interactive)
+          nil)))
+  (lisp-mode--host-load-standard))
+
+(provide 'lisp-mode)
+
+;;; lisp-mode.el ends here

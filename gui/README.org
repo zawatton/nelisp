@@ -1,0 +1,465 @@
+#+TITLE: nelisp-gui — NeLisp 純elisp/native GUI・ディスプレイ層 (nemacs editor)
+#+OPTIONS: toc:2
+
+NeLisp standalone 上で動く純elisp/native-compiled の **GUI / ディスプレイ層**。
+X11 wire protocol を *生で喋り*（GTK / Xlib / libX11 非依存、UNIX socket + バイト列）、
+Phase-47/aot compiler（=dev/nelisp/lisp/nelisp-aot-compiler.el=）で elisp(低層IR)→native
+static ELF にした **nemacs エディタ**を提供する。
+
+=dev/nelisp-ffi=（FFI = .so dlopen/dlsym、SDL バインド）とは別の関心事（描画・UI）。
+
+* 構成
+| ファイル | 役割 |
+|----------+------|
+| =nemacs-editor.el= | エディタ本体の IR（aot compile 対象、変数 =xfont-sexp=） |
+| =nemacs-build.sh= | compile → launch → 生存確認の自動ビルド (=$1=el =$2=var) |
+| =nemacs-mx.sh= | runtime bridge（native GUI snapshot → =nelisp-emacs= command → snapshot 再読込） |
+| =bin/emacs= | compatibility launcher（=PATH= 先頭に置くと =emacs FILE= で nemacs 起動） |
+| =bin/nemacs= | launcher（=~/.nemacs.d= 読込 → =/tmp/nemacs.cfg= → native binary exec） |
+| =scripts/sync-nelisp-snap.sh= | =dev/nelisp= の =make standalone-reader= → =/tmp/nelisp-snap= 同期 |
+| =scripts/doctor-workspace.sh= | sibling checkout / runtime snapshot / bridge runtime の確認 |
+| =scripts/install-user-bin.sh= | =~/.local/bin/emacs= / =nemacs= symlink install（既存 file は上書きしない） |
+| =docs/design/00-three-layer-architecture.org= | *[ENTRY] 3層 (nelisp / nelisp-emacs / nelisp-gui) 境界マスター — 責務・層間契約・hard rules・完成条件・critical path。矛盾時はこれを優先* |
+| =docs/design/01-nelisp-emacs-boundary.org= | =nelisp-gui= / =nelisp-emacs= の責務境界 |
+| =docs/design/02-workspace-layout.org= | 分離 repo を sibling checkout として開発する方針 |
+| =docs/design/04-completion-boundary-plan.org= | shell/process・major-mode/package・VC/project・frame/tab の完成条件と repo 境界 |
+| =docs/design/05-transport-state-contract.org= | =/tmp/nemacs-*= transport state の所有者・寿命・読み書き契約 |
+| =docs/design/06-session-bridge-stress.org= | session bridge 耐久 smoke の設計 |
+| =docs/design/07-launch-install-ux.org= | 起動 wrapper / install UX / doctor check の契約 |
+| =docs/design/08-command-coverage-plan.org= | Emacs keymap / command coverage を埋める計画 |
+| =docs/design/09-runtime-bridge-integration.org= | GUI bridge adapter を =nelisp-emacs= 本体 runtime へ統合する計画 |
+| =docs/design/10-transport-isolation-plan.org= | =/tmp/nemacs-*= 固定 transport と native artifact の分離計画 |
+| =docs/design/11-terminal-nw-plan.org= | =-nw= interactive TUI 実用化計画 |
+| =docs/design/12-elisp-compat-api-plan.org= | Emacs Lisp 互換 API の tier / 実装計画 |
+| =docs/design/13-real-machine-daily-driver.org= | 実機 GNOME/HiDPI daily-driver 検証計画 |
+| =docs/design/14-install-rollback-plan.org= | install / rollback / daemon / emacsclient 運用計画 |
+| =spikes/spike-x11*.el= | X11 描画 spike（rect / text / editor） |
+| =spikes/spike-tty*.el= | TTY 描画 spike（write syscall） |
+
+* 使い方
+#+begin_src sh
+  dev/nelisp-gui/bin/nemacs                              # 起動
+  dev/nelisp-gui/bin/nemacs path/to/file.el              # ファイルを開く
+  PATH=dev/nelisp-gui/bin:$PATH emacs path/to/file.el    # emacs 互換入口
+  PATH=dev/nelisp-gui/bin:$PATH emacs +42 path/to/file.el # 指定位置を初期 point に反映
+  dev/nelisp-gui/scripts/install-user-bin.sh install     # ~/.local/bin に symlink
+  dev/nelisp-gui/scripts/install-user-bin.sh uninstall
+  dev/nelisp-gui/scripts/install-user-bin.sh rollback
+  dev/nelisp-gui/nemacs-build.sh nemacs-editor.el xfont-sexp   # 再ビルド
+  NEMACS_SYNC_NELISP=1 dev/nelisp-gui/nemacs-build.sh nemacs-editor.el xfont-sexp
+  dev/nelisp-gui/scripts/doctor-workspace.sh             # sibling repo 状態確認
+  dev/nelisp-gui/scripts/verify-nemacs-gui.sh            # 連携 smoke
+  dev/nelisp-gui/scripts/stress-nemacs-session.sh 120    # session bridge 耐久 smoke
+  make -C dev/nelisp-emacs test-nemacs-gui-bridge NELISP_BIN=/tmp/nelisp-snap/nelisp
+#+end_src
+
+起動前の短い確認:
+#+begin_src sh
+  dev/nelisp-gui/bin/nemacs --doctor
+  dev/nelisp-gui/scripts/install-user-bin.sh status
+  dev/nelisp-gui/scripts/sync-nelisp-snap.sh --help
+#+end_src
+
+必須依存:
+| 依存 | 用途 |
+|------+------|
+| =nelisp= runtime | 初期設定の =nemacs-*= 評価、bridge runtime、通常起動 |
+| bootstrap Emacs | =nelisp= snapshot / native GUI binary の build host（runtime fallback ではない） |
+| =make= | =nelisp= standalone reader build |
+| =python3= | =--goto= / =+LINE[:COL]= の byte offset 解決、設定 binary 生成補助 |
+| =awk= / =sed= / =grep= / =tr= | wrapper 内の設定・transport text 処理 |
+| =cp= / =rm= / =mkdir= / =chmod= / =readlink= | snapshot 同期、transport 初期化、install 状態確認 |
+| X11 =DISPLAY= | native GUI 表示先（doctor では warn） |
+
+設定: =~/.nemacs.d/early-init.el=（frame geometry / display-mode）, =init.el=（theme / font /
+=nemacs-initial-buffer=）。launcher は起動時に初期バッファを =/tmp/nemacs-init-buf= へ、
+runtime bridge を =/tmp/nemacs-mx.sh= へ配置してから native binary を起動する。
+起動時には raw key / direct fallback / minibuffer display / modeline / cursor の
+=/tmp/nemacs-*= transport file と buffer list / current buffer name / visited filename
+を初期化し、前回 session の stale state を描かない。
+ファイル指定時は内容を初期バッファに読み込む。起動後は =C-x C-f= でファイルを開き、
+=C-x C-s= / M-x =save-buffer= が元ファイルへ書き戻す。=C-x C-w= は
+現在バッファを別名保存し、以後の save 先もそのファイルに切り替える。=C-x C-v= は
+現在バッファを別ファイルへ差し替える。=C-x C-r= は read-only buffer として開き、
+=C-x C-q= は read-only 状態を切り替える。=C-x i= は minibuffer で指定した
+ファイル内容を現在バッファへ挿入する。=C-x s= は既知の visited buffer を
+まとめて保存する。
+
+=NEMACS_*= / =NELISP_*= 環境変数:
+| 変数 | default | 用途 |
+|------+---------+------|
+| =NELISP_ROOT= | sibling =../nelisp= など | =nelisp= repo を明示 |
+| =NELISP_SNAP= | =/tmp/nelisp-snap= | launcher / build / bridge が使う runtime snapshot |
+| =NEMACS_EMACS_ROOT= | sibling =../nelisp-emacs= | =nelisp-emacs= repo を明示 |
+| =NEMACS_TRANSPORT_DIR= | =/tmp= | =nemacs-*= transport directory |
+| =NEMACS_BRIDGE_BACKEND= | =session= | =session= / =nelisp= / =auto= |
+| =NEMACS_BRIDGE_SOURCE= | =nelisp-emacs/src/nemacs-gui-file-bridge-runtime.el= | runtime image source |
+| =NEMACS_RUNTIME_IMAGE= | =nelisp-emacs/build/nemacs-gui-file-bridge.nlri= | generated runtime image |
+| =NEMACS_SYNC_NELISP= | =0= | =1= なら起動/build 前に snapshot 同期 |
+| =NEMACS_USER_BIN= | =~/.local/bin= | =install-user-bin.sh= の symlink install 先 |
+| =NEMACS_INSTALL_MANIFEST= | =~/.local/share/nemacs/install-manifest= | install / rollback の管理 manifest |
+
+=NEMACS_TRANSPORT_DIR= は =nemacs-mx.sh=、=nelisp-emacs= runtime/session bridge、
+および =nemacs-build.sh= で compile する native GUI binary の
+=nemacs-*= transport directory を変える。native binary は実行時に環境変数を読まないため、
+非 default transport は build-time rewrite と launcher の compile marker で一致させる。
+=/tmp/nemacs.cfg= と =/tmp/nemacs-win.bin= は現時点では固定 path のまま。
+
+bridge backend:
+| backend | 動作 |
+|---------+------|
+| =session= | =nelisp-emacs= runtime image を常駐させ、=/tmp/nemacs-session-request= / =response= で同期する |
+| =nelisp= | command ごとに runtime image を使う。runtime image 未準備なら失敗 |
+| =auto= | session backend を優先し、失敗時は runtime image に落とす。host fallback は使わない |
+
+=bin/emacs= は対話 GUI 起動を nemacs に向ける。=+LINE[:COL]= は launcher が byte offset に解決し、
+native 起動時の初期 point に反映する。=--eval= / =--load= / =-l= / =--script= /
+=--batch= / =-f= は =nelisp-emacs/bin/nemacs --driver=nelisp= で実行する。
+=-nw= は =nelisp-emacs= の terminal UI を起動し、=--daemon= / =--fg-daemon= は
+=nelisp-emacs/bin/nemacs-server= の emacsclient server を起動する。
+install は =~/.local/bin/emacs= / =nemacs= symlink と manifest だけを管理し、
+rollback は manifest と一致する symlink だけを削除する。問題発生時は
+=/usr/bin/emacs FILE=、=PATH=/usr/bin:/bin:$PATH emacs FILE=、または
+=dev/nelisp-gui/scripts/install-user-bin.sh rollback= で回避する。
+起動 / install UX の詳細は =docs/design/07-launch-install-ux.org= と
+=docs/design/14-install-rollback-plan.org= を参照する。
+
+* repo / workspace 方針
+repo は分けたまま、開発時は sibling checkout として並べる。
+
+#+begin_src text
+dev/
+  nelisp/        Layer 1 runtime / reader / AOT compiler
+  nelisp-emacs/  Layer 2 Emacs semantics / command substrate
+  nelisp-gui/    Layer 3 native GUI display/input adapter
+#+end_src
+
+=nelisp-emacs= には vendor がある。ただし意味は二つに分かれる。
+=nelisp-emacs/vendor/nelisp= は =nelisp-emacs= 本体ではなく、=make nelisp= /
+=bin/build-nelisp= が作る NeLisp core runtime の optional な依存 checkout。
+=nelisp-emacs/vendor/emacs-lisp= は upstream Emacs Lisp を取り込んで互換化する対象であり、
+active な =nelisp-emacs= repo そのものではない。共同開発 workspace は sibling の
+=dev/nelisp= / =dev/nelisp-emacs= / =dev/nelisp-gui= であり、vendor 配下ではない。
+=nelisp-emacs= と =nelisp-gui= はどちらも first-class repo として commit history を分ける。
+日常開発の導線は =NELISP_ROOT= / =NEMACS_EMACS_ROOT= を未指定にして sibling repo を自動検出する形を標準にする。
+
+workspace の状態確認:
+#+begin_src sh
+  dev/nelisp-gui/scripts/doctor-workspace.sh
+#+end_src
+
+cross-repo 検証は default =/tmp/nemacs-*= transport を共有する smoke が残るため、
+現時点では逐次実行する。
+
+#+begin_src sh
+  dev/nelisp-gui/scripts/sync-nelisp-snap.sh
+  make -C dev/nelisp-emacs test-nemacs-gui-bridge NELISP_BIN=/tmp/nelisp-snap/nelisp
+  dev/nelisp-gui/scripts/verify-nemacs-gui.sh
+  dev/nelisp-gui/scripts/stress-nemacs-session.sh 120
+#+end_src
+
+* 責務境界
+最終ルール: **nelisp-emacs は Emacs の意味論、nelisp-gui は表示/input adapter**。
+
+| 判断対象 | owner | 理由 |
+|----------+-------+------|
+| buffer 内容、point、mark、region、kill-ring、undo、modified flag、visited file、buffer list、window layout/selection/window-start/window-hscroll/window-split-delta/tab-state/frame-state の変化 | =nelisp-emacs= | Emacs command の結果そのもの |
+| keymap lookup、=command-execute=、=call-interactively=、=execute-extended-command=、minibuffer completion/history/require-match | =nelisp-emacs= | Emacs の command loop 意味論 |
+| =find-file=、=save-buffer=、=write-file=、=self-insert-command=、movement/editing/kill/yank/window/help/search/undo command | =nelisp-emacs= | 同じ key/command で何が起きるかを決める層 |
+| X11 socket/wire protocol、window id、pixmap、GC、font metrics、色、glyph/cursor/modeline/minibuffer の描画 | =nelisp-gui= | 表示 backend 固有の実装 |
+| X11 event decode、raw key sequence 生成、=/tmp/nemacs-*= transport 初期化、runtime image/session 起動 | =nelisp-gui= | GUI と Layer 2 をつなぐ adapter |
+| smoke test の焦点 | =nelisp-gui= は入力→transport→描画、=nelisp-emacs= は command 意味論 | 失敗時の修正先を分けるため |
+
+禁止事項:
+- =nelisp-gui= に Emacs command の簡易実装を追加しない。
+- GUI 側で返却 snapshot の point/window-start/modeline/minibuffer state を補正しない。
+- key binding を GUI 側の command branch として増やさない。raw key を渡し、lookup/dispatch は =nelisp-emacs= に置く。
+- host Emacs fallback は migration 用であり、所有権を変えない。fallback で必要性が見えた command は =nelisp-emacs= に移す。
+
+bridge 契約:
+- GUI → =nelisp-emacs=: =/tmp/nemacs-keys= の raw key sequence と、現在の snapshot
+  （buffer、point、mark、kill-ring mirror、buffer name、visited file、window layout、
+  selected window、window-start、window-hscroll、window-split-delta、tab-state、frame-state、read-only など）を渡す。
+- =nelisp-emacs= → GUI: 更新済み snapshot、point、mark、kill-ring mirror、buffer/window state、
+  tab-state、frame-state、modeline、cursor、minibuffer active/prompt/state/candidates/history/require-match、status/error を返す。
+- =/tmp/nemacs-cmd= / =/tmp/nemacs-arg= / =/tmp/nemacs-minibuffer-text= は direct fallback /
+  migration transport。新しい daily-driver 操作は raw key/session path を優先する。
+
+この repo は **GUI 表示・入力アダプタのみ**を担当する。Emacs の編集意味論と
+command 実装は =nelisp-emacs= を使う。
+
+短い結論:
+- 「同じ command を実行した時に buffer / point / mark / file / kill-ring / undo がどう変わるか」は
+  =nelisp-emacs= の責務。
+- 「X11 入力を raw key sequence として transport し、返ってきた minibuffer / buffer 状態を
+  どう描画するか」は =nelisp-gui= の責務。keymap lookup / command dispatch は
+  =nelisp-emacs= の責務。
+- =nelisp-gui= に Emacs command の簡易実装を増やさない。暫定 spike を入れた場合も、
+  置き換え対象として固める時点で =nelisp-emacs= へ移し、bridge 経由に戻す。
+
+この repo で実装してよいのは「見た目」「入力 decode」「bridge transport」だけ。
+=execute-extended-command=, =find-file=, =save-buffer=, =self-insert-command=, =backward-delete-char=,
+=newline=, =undo=, =other-window= などの command 結果はすべて
+=nelisp-emacs= が決める。GUI は raw key sequence と現在の snapshot を渡し、
+戻ってきた snapshot をそのまま描く。=/tmp/nemacs-cmd= の直接 command bridge は
+未移行経路の fallback / migration path として残し、=auto= ではまず常駐 session に渡す。
+
+| repo | 責務 | ここで扱う例 |
+|------+------|--------------|
+| =dev/nelisp= | Layer 1 runtime / reader / AOT compiler / standalone binary | =target/nelisp= の build、=/tmp/nelisp-snap= 同期 |
+| =dev/nelisp-emacs= | Layer 2 Emacs substrate / interactive command / buffer-file state | =find-file=, =save-buffer=, =write-file=, =command-execute=, keymap/minibuffer |
+| =dev/nelisp-gui= | Layer 3 GUI backend / X11 wire / frame paint / key/minibuffer transport | X11 描画、フォント、色、カーソル、minibuffer 表示、=/tmp/nemacs-*= snapshot transport |
+
+判断基準は以下。
+
+| 置き場所 | 入れるもの | 入れないもの |
+|----------+------------+--------------|
+| =nelisp-emacs= | buffer 内容、point、mark、visited file、modified 状態、kill-ring、undo、Emacs window state、command dispatch、Emacs Lisp API 互換 | X11 socket、描画ループ、フォント/色の実描画、window-system 固有 transport |
+| =nelisp-gui= | frame paint、glyph/cursor 表示、X11 event decode、minibuffer の表示と入力収集、snapshot/point/key/minibuffer/window display transport | =find-file= / =save-buffer= / =write-file= / movement / editing / window command の意味論、keymap lookup |
+
+=nelisp-gui= 側で =find-file= 等の動作を再実装しない。GUI は現在の buffer snapshot、
+point、raw key sequence を bridge に渡し、bridge は =nelisp-emacs/src/files.el=
+などの command 実装を呼んで結果 snapshot と point を GUI に戻す。未接続の command は暫定で
+host Emacs fallback に逃がす。現時点の nelisp backend は =nelisp-emacs= 側の
+GUI bridge runtime adapter にある =command-execute= / =call-interactively= を通して
+command を実行する。
+
+開発時のルール:
+- 新しい =M-x= / key binding / file command / editing command は、まず
+  =nelisp-emacs= に command と状態更新を置き、=nelisp-gui= から raw key bridge で呼ぶ。
+- =nelisp-gui= の直接 buffer 変更は spike / 低遅延表示の暫定処理に限る。置き換え対象の
+  Emacs command として固める時点で =nelisp-emacs= 側へ移す。
+- GUI に key binding を追加する時は、=nelisp-emacs= 側に command 実装と意味論テストがあることを
+  前提にし、この repo では key event decode、transport、再描画 smoke だけを見る。
+- key binding の移植順は、=nelisp-emacs= で
+  =make nemacs-gui-keymap-coverage= を実行して host Emacs の =global-map= と
+  GUI bridge runtime keymap の差分を見て決める。=missing= は次の command 実装候補、
+  =command-missing= は keymap だけ先に入って command が未実装の状態として扱う。
+  =different= は host Emacs と runtime の keymap 名がずれた状態として扱う。互換 alias がある場合も、
+  raw key lookup は host Emacs と同名に寄せ、command 意味論テストで alias の同等性を確認する。
+- =nelisp-gui= のテストは「入力 → transport → 再描画」を見る。command の意味論テストは
+  =nelisp-emacs/test/nemacs-gui-file-bridge-runtime-test.el= に置く。
+- host Emacs fallback は未移植 command の保険であり、所有権は fallback 先ではなく
+  =nelisp-emacs= 側にある。
+
+hard boundary:
+- =nelisp-gui= は「X11 入力を raw key sequence に decode して運び、返却された minibuffer state を描く」までを担当する。
+  keymap lookup、command dispatch、command の実行結果を決めるロジックは持たない。
+- =find-file=, =save-buffer=, =write-file=, =revert-buffer=, movement/editing/region/kill/undo
+  はすべて =nelisp-emacs= の command として扱う。GUI 側は raw key sequence、
+  snapshot、point/mark/kill-ring mirror を transport するだけにする。
+  =/tmp/nemacs-cmd= / =/tmp/nemacs-arg= は direct command fallback のためだけに使う。
+- GUI 都合の状態は =nelisp-gui= が持つ。例: X11 window id、pixmap、GC、font metrics、
+  dirty rectangle、cursor blink、minibuffer 表示文字列、key prefix 入力中フラグ。
+- Emacs buffer 都合の状態は =nelisp-emacs= が持つ。例: visited file、modified flag、
+  point、mark、region、kill-ring、undo、current buffer contents、current buffer name、
+  buffer ごとの point / mark / window-start、window layout / selected window /
+  window-start の command 意味論、command dispatch。
+- =nelisp-gui= に Emacs command の簡易版を増やさない。即時描画のための暫定処理を入れた場合も、
+  同じ振る舞いを =nelisp-emacs= に移して bridge 経由に戻す。
+
+bridge 契約:
+- GUI → =nelisp-emacs=: raw key sequence（=/tmp/nemacs-keys=）、buffer snapshot、point、mark、kill-ring mirror、
+  buffer name、window layout、selected window、window-start、window-hscroll、window-split-delta、tab-state、frame-state を渡す。
+  =/tmp/nemacs-cmd= / =/tmp/nemacs-arg= は direct command bridge の fallback / migration path。
+- =nelisp-emacs= → GUI: 更新済み buffer snapshot、point、mark、kill-ring mirror、
+  buffer name、window layout、selected window、window-start、window-hscroll、window-split-delta、tab-state、frame-state、modeline、cursor、
+  minibuffer active/prompt/state/candidates/history、
+  status/error を返す。
+- GUI は返された snapshot を描画する。返却前に command の意味論を補正しない。
+- 未対応 command は「GUI未実装」ではなく「=nelisp-emacs= command/bridge未実装」として扱う。
+
+実装判断チェック:
+- X11/描画/フォント/イベント decode の変更なら、この repo。
+- =find-file= や編集結果がどう変わるかの変更なら、=nelisp-emacs=。
+- key binding 追加なら、command 本体、keymap lookup、意味論テストは =nelisp-emacs=、
+  X11 key decode、transport、再描画 smoke はこの repo。
+- minibuffer の見た目や入力収集はこの repo。minibuffer で呼ばれる command の意味論、
+  completion 候補、buffer/file 状態更新は =nelisp-emacs=。
+- window 分割線・選択枠・scroll 後の描画開始位置をどう描くかはこの repo。
+  =split-window-right= / =split-window-below= / =other-window= / =delete-window=
+  / =scroll-up-command= / =recenter-top-bottom= が layout、selected window、window-start を
+  どう変えるかは =nelisp-emacs=。
+- native GUI の通常文字入力 / TAB / Backspace / Enter / 矢印移動 / C-a / C-e / Home / End
+  / C-g / M-ESC ESC / C-M-c / C-] / C-s / C-r / C-M-s / C-M-r / M-s . / M-s M-. / M-s _ / M-s w / M-s o / C-f / C-b / C-n / C-p / C-d / C-k / C-j / C-M-j / M-j / C-o / C-x C-o
+  / C-v / M-v / C-x < / C-x > / C-M-v / C-M-S-v / PageUp / PageDown / C-l / M-r / C-M-l / C-M-S-l
+  / C-q / C-M-\
+  / M-m / M-f / M-b / C-M-a / C-M-f / C-M-b / C-M-e / C-M-h / C-M-@ / C-M-SPC / C-M-k / C-M-d / C-M-n / C-M-p / C-M-t / C-M-u / M-d / M-Backspace / M-z / M-i / M-t / M-( / M-) / M-/ / M-= / M-@ / M-q / M-a / M-e / M-k / M-< / M->
+  / C-t / M-\ / M-^ / M-SPC / M-~ / M-; / C-M-o / M-u / M-l / M-c
+  / C-SPC / C-@ / C-x C-x / C-x C-SPC / C-x C-@ / C-w / M-w / C-M-w / C-y / M-y / C-x b / C-x x f / C-x x g / C-x x i / C-x x n / C-x x r / C-x x t / C-x x u / C-x k / C-x i / C-x C-p / C-x C-n / C-x l
+  / C-x C-t / C-x TAB / C-x . / C-x ; / C-x C-; / C-x [ / C-x ] / C-x ESC ESC / C-x M-: / C-x ( / C-x ) / C-x e / C-x q
+	  / C-x C-f / C-x 4 C-f / C-x 4 f / C-x 4 r / C-x C-d / C-x d / C-x C-j / C-x 4 C-j / C-x 4 d / C-x C-s / C-x C-w / C-x C-v / C-x C-r / C-x C-q / C-x C-b / C-x C-c
+	  / C-x 0 / C-x 1 / C-x 2 / C-x 3 / C-x + / C-x - / C-x 4 0 / C-x 4 b / C-x 4 C-o / C-x o / C-x f / C-x n d / C-x n n / C-x n p / C-x n w
+  / M-g g / M-g M-g / M-g TAB / M-g c / C-M-% / C-M-/ / C-M-i
+  / C-h f / C-h v / C-h k / C-h c / C-h b / C-h w / C-h x / C-h ? / C-h C-h
+  / C-h C / C-h C-\ / C-h I / C-h L / C-h a / C-h d / C-h e
+  / C-h C-a / C-h C-c / C-h C-d / C-h C-e / C-h C-f / C-h C-n / C-h n / C-h C-o / C-h C-p / C-h C-t / C-h C-w
+  / C-h g / C-h h / C-h l / C-h m / C-h o / C-h q / C-h s / C-h t / M-? / M-X
+  / C-x h / C-x C-u / C-x C-l / C-/ / C-_ / C-? / C-M-_ / C-x u は GUI 内で直接 buffer / point / mark / kill-ring
+  を書き換えず、raw key sequence として =nelisp-emacs= に渡す。direct command bridge の
+  移行 fallback では =self-insert-command= / =indent-for-tab-command= / =backward-delete-char= / =newline=
+  / =electric-newline-and-maybe-indent= / =default-indent-new-line=
+  / =keyboard-quit= / =keyboard-escape-quit= / =exit-recursive-edit= / =abort-recursive-edit= / =isearch-forward= / =isearch-backward=
+  / =isearch-forward-regexp= / =isearch-backward-regexp= / =isearch-forward-symbol-at-point= / =isearch-forward-thing-at-point= / =isearch-forward-symbol= / =isearch-forward-word=
+  / =execute-extended-command= / =execute-extended-command-for-buffer=
+  / =replace-string= / =replace-regexp= / =query-replace= / =query-replace-regexp=
+  / =backward-char= / =forward-char= / =previous-line= / =next-line=
+  / =goto-line= / =goto-line-relative= / =narrow-to-defun= / =narrow-to-region= / =narrow-to-page= / =widen= / =goto-char= / =move-to-column=
+  / =scroll-up-command= / =scroll-down-command= / =scroll-left= / =scroll-right= / =scroll-other-window= / =scroll-other-window-down= / =recenter-top-bottom= / =move-to-window-line-top-bottom=
+  / =reposition-window= / =recenter-other-window= / =repeat=
+  / =beginning-of-line= / =back-to-indentation= / =end-of-line= / =delete-char= / =kill-line= / =kill-whole-line= / =open-line= / =split-line=
+  / =delete-blank-lines= / =indent-region= / =indent-rigidly=
+  / =forward-word= / =backward-word= / =beginning-of-defun= / =forward-sexp= / =backward-sexp= / =end-of-defun= / =mark-defun= / =mark-sexp= / =kill-sexp=
+  / =down-list= / =forward-list= / =backward-list= / =transpose-sexps= / =backward-up-list=
+  / =kill-word= / =backward-kill-word= / =zap-to-char= / =dabbrev-expand= / =dabbrev-completion= / =complete-symbol= / =transpose-words= / =insert-parentheses= / =move-past-close-and-reindent= / =mark-word= / =count-words-region= / =count-lines-page=
+  / =forward-paragraph= / =backward-paragraph= / =mark-paragraph= / =fill-paragraph= / =set-fill-column= / =set-fill-prefix=
+  / =forward-sentence= / =backward-sentence= / =kill-sentence= / =backward-kill-sentence=
+  / =beginning-of-buffer= / =end-of-buffer= / =transpose-chars= / =transpose-lines=
+  / =delete-horizontal-space= / =cycle-spacing= / =not-modified= / =delete-indentation= / =just-one-space= / =comment-line= / =comment-set-column= / =comment-dwim= / =upcase-word=
+  / =downcase-word= / =capitalize-word= / =upcase-region=
+  / =downcase-region= / =capitalize-region= / =sort-lines= / =set-mark-command=
+  / =exchange-point-and-mark= / =pop-global-mark= / =rectangle-mark-mode= / =toggle-truncate-lines= / =mark-page= / =backward-page= / =forward-page= / =kill-region= / =kill-ring-save= / =copy-rectangle-to-register= / =copy-rectangle-as-kill= / =rectangle-number-lines= / =kill-rectangle= / =delete-rectangle= / =clear-rectangle= / =open-rectangle= / =string-rectangle= / =yank-rectangle= / =append-next-kill= / =yank= / =yank-pop=
+	  / =quoted-insert= / =tab-to-tab-stop= / =switch-to-buffer= / =switch-to-buffer-other-window= / =display-buffer= / =rename-buffer= / =rename-uniquely= / =clone-buffer= / =kill-buffer= / =kill-buffer-and-window= / =insert-file= / =insert-buffer= / =point-to-register= / =jump-to-register= / =copy-to-register= / =insert-register= / =number-to-register= / =increment-register= / =bookmark-set= / =bookmark-set-no-overwrite= / =bookmark-jump= / =bookmark-bmenu-list=
+  / =find-file-other-window= / =find-file-read-only= / =find-file-read-only-other-window= / =list-directory= / =dired= / =dired-jump= / =dired-jump-other-window= / =dired-other-window= / =toggle-read-only= / =read-only-mode= / =list-buffers= / =occur=
+  / =describe-function= / =describe-variable= / =describe-key= / =describe-key-briefly= / =describe-bindings= / =help-for-help=
+  / =about-emacs= / =describe-copying= / =view-emacs-debugging= / =view-external-packages= / =view-emacs-FAQ= / =view-emacs-news= / =describe-distribution= / =view-emacs-problems= / =view-emacs-todo= / =describe-no-warranty= / =describe-gnu-project= / =view-hello-file=
+  / =describe-coding-system= / =describe-input-method= / =describe-language-environment= / =apropos-command= / =apropos-documentation= / =view-echo-area-messages=
+  / =view-lossage= / =describe-mode= / =describe-symbol= / =help-quit= / =describe-syntax= / =help-with-tutorial= / =display-local-help= / =help-find-source= / =help-quick-toggle= / =search-forward-help-for-help= / =xref-go-back= / =xref-go-forward= / =xref-find-definitions= / =xref-find-references= / =xref-find-apropos= / =xref-find-definitions-other-window= / =xref-find-definitions-other-frame=
+  / =info= / =info-other-window= / =info-emacs-manual= / =info-display-manual= / =view-order-manuals= / =Info-goto-emacs-command-node= / =Info-goto-emacs-key-command-node= / =info-lookup-symbol= / =describe-package= / =finder-by-keyword=
+  / =where-is= / =describe-command= / =what-cursor-position= / =eval-last-sexp= / =eval-expression= / =repeat-complex-command= / =font-lock-update= / =insert-char= / =kmacro-start-macro= / =kmacro-end-macro= / =kmacro-end-and-call-macro= / =kbd-macro-query=
+  / =universal-argument= / =digit-argument= / =negative-argument=
+  / =save-some-buffers= / =save-buffers-kill-terminal=
+  / =delete-window= / =delete-other-windows= / =split-window-below=
+  / =split-window-right= / =balance-windows= / =shrink-window-if-larger-than-buffer= / =other-window= / =mark-whole-buffer= / =repeat= / =undo= / =undo-redo= として bridge に渡す。
+  残りの key binding も同じ方針で順次 bridge 化する。
+=C-q= は通常 buffer の raw key path では =nelisp-emacs= runtime が prefix state を持ち、
+次の通常文字 / =RET= / =TAB= / =SPC= を =quoted-insert= として処理する。
+
+現時点の =NEMACS_BRIDGE_BACKEND=nelisp= は =execute-extended-command= / =execute-extended-command-for-buffer=
+/ =save-buffer= / =find-file=
+/ =find-alternate-file= / =find-file-other-window= / =find-file-read-only= / =find-file-read-only-other-window= / =list-directory= / =dired= / =dired-jump= / =dired-jump-other-window= / =dired-other-window= / =toggle-read-only=
+/ =insert-file= / =insert-buffer= / =write-file= / =basic-save-buffer= / =save-some-buffers= / =revert-buffer= / =revert-buffer-quick= に加えて、
+M-x =describe-function= / =describe-variable= / =describe-key= / =describe-key-briefly= / =describe-bindings= / =help-for-help=
+  / =about-emacs= / =describe-copying= / =view-emacs-debugging= / =view-external-packages= / =view-emacs-FAQ= / =view-emacs-news= / =describe-distribution= / =view-emacs-problems= / =view-emacs-todo= / =describe-no-warranty= / =describe-gnu-project= / =view-hello-file=
+  / =describe-coding-system= / =describe-input-method= / =describe-language-environment= / =apropos-command= / =apropos-documentation= / =view-echo-area-messages=
+  / =view-lossage= / =describe-mode= / =describe-symbol= / =help-quit= / =describe-syntax= / =help-with-tutorial= / =display-local-help= / =help-find-source= / =help-quick-toggle= / =search-forward-help-for-help= / =xref-go-back= / =xref-go-forward= / =xref-find-definitions= / =xref-find-references= / =xref-find-apropos= / =xref-find-definitions-other-window= / =xref-find-definitions-other-frame=
+  / =info= / =info-other-window= / =info-emacs-manual= / =info-display-manual= / =view-order-manuals= / =Info-goto-emacs-command-node= / =Info-goto-emacs-key-command-node= / =info-lookup-symbol= / =describe-package= / =finder-by-keyword=
+/ =where-is= / =describe-command= / =what-cursor-position= / =eval-last-sexp= / =eval-expression= / =repeat-complex-command= / =font-lock-update= / =insert-char= / =kmacro-start-macro= / =kmacro-end-macro= / =kmacro-end-and-call-macro= / =kbd-macro-query=
+/ =universal-argument= / =digit-argument= / =negative-argument=
+/ =forward-char= / =backward-char= / =beginning-of-buffer= / =end-of-buffer=
+/ =beginning-of-line= / =back-to-indentation= / =end-of-line= / =move-beginning-of-line= / =move-end-of-line=
+/ =goto-line= / =goto-line-relative= / =narrow-to-defun= / =narrow-to-region= / =narrow-to-page= / =widen= / =goto-char= / =move-to-column= / =next-line= / =previous-line= / =set-goal-column=
+/ =scroll-up-command= / =scroll-down-command= / =scroll-left= / =scroll-right= / =scroll-other-window= / =scroll-other-window-down= / =recenter-top-bottom= / =move-to-window-line-top-bottom=
+/ =reposition-window= / =recenter-other-window= / =repeat=
+/ =isearch-forward= / =isearch-backward= / =isearch-forward-regexp= / =isearch-backward-regexp= / =isearch-forward-symbol-at-point= / =isearch-forward-thing-at-point= / =isearch-forward-symbol= / =isearch-forward-word=
+/ =replace-string= / =replace-regexp= / =query-replace= / =query-replace-regexp= / =switch-to-buffer= / =switch-to-buffer-other-window= / =display-buffer= / =rename-buffer= / =rename-uniquely= / =clone-buffer= / =kill-buffer= / =kill-buffer-and-window=
+/ =find-file-read-only= / =find-file-read-only-other-window= / =list-directory= / =dired= / =dired-jump= / =dired-jump-other-window= / =dired-other-window= / =toggle-read-only= / =read-only-mode=
+/ =insert-file= / =insert-buffer= / =point-to-register= / =jump-to-register= / =copy-to-register= / =insert-register= / =number-to-register= / =increment-register= / =bookmark-set= / =bookmark-set-no-overwrite= / =bookmark-jump= / =bookmark-bmenu-list= / =copy-rectangle-to-register= / =copy-rectangle-as-kill= / =rectangle-number-lines= / =kill-rectangle= / =delete-rectangle= / =clear-rectangle= / =open-rectangle= / =string-rectangle= / =yank-rectangle= / =rectangle-mark-mode= / =save-some-buffers= / =list-buffers= / =occur=
+/ =save-buffers-kill-terminal= / =save-buffers-kill-emacs= / =kill-emacs= / =keyboard-quit= / =keyboard-escape-quit= / =exit-recursive-edit= / =abort-recursive-edit=
+  / =delete-window= / =delete-other-windows= / =split-window-below=
+  / =split-window-right= / =balance-windows= / =shrink-window-if-larger-than-buffer= / =other-window=
+/ =forward-word= / =backward-word= / =beginning-of-defun= / =forward-sexp= / =backward-sexp= / =end-of-defun= / =mark-defun= / =mark-sexp= / =kill-sexp=
+/ =down-list= / =forward-list= / =backward-list= / =transpose-sexps= / =backward-up-list=
+/ =kill-word= / =backward-kill-word= / =zap-to-char= / =dabbrev-expand= / =dabbrev-completion= / =complete-symbol= / =transpose-words= / =insert-parentheses= / =move-past-close-and-reindent= / =mark-word= / =count-words-region= / =count-lines-page=
+/ =forward-paragraph= / =backward-paragraph= / =mark-paragraph= / =fill-paragraph= / =set-fill-column= / =set-fill-prefix=
+/ =forward-sentence= / =backward-sentence= / =kill-sentence= / =backward-kill-sentence=
+/ =transpose-chars= / =transpose-lines= / =delete-horizontal-space= / =cycle-spacing= / =not-modified= / =delete-indentation= / =just-one-space= / =comment-line= / =comment-set-column= / =comment-dwim=
+/ =upcase-word= / =downcase-word= / =capitalize-word=
+/ =upcase-region= / =downcase-region= / =capitalize-region= / =sort-lines=
+/ =delete-char= / =backward-delete-char= / =delete-backward-char=
+/ =self-insert-command= / =quoted-insert= / =indent-for-tab-command= / =tab-to-tab-stop=
+/ =newline= / =electric-newline-and-maybe-indent= / =default-indent-new-line= / =open-line= / =split-line= / =delete-blank-lines=
+/ =indent-region= / =indent-rigidly=
+/ =kill-line= / =kill-whole-line= / =yank= / =yank-pop= / =set-mark-command=
+/ =exchange-point-and-mark= / =pop-global-mark= / =rectangle-mark-mode= / =toggle-truncate-lines= / =mark-whole-buffer= / =mark-page= / =backward-page= / =forward-page= / =delete-region=
+/ =kill-region= / =copy-region-as-kill=
+/ =kill-ring-save= / =bookmark-set= / =bookmark-set-no-overwrite= / =bookmark-jump= / =bookmark-bmenu-list= / =copy-rectangle-to-register= / =copy-rectangle-as-kill= / =rectangle-number-lines= / =kill-rectangle= / =delete-rectangle= / =clear-rectangle= / =open-rectangle= / =string-rectangle= / =yank-rectangle= / =append-next-kill= / =repeat= / =undo= / =undo-redo= / =delete-trailing-whitespace=
+/ =untabify= の bridge smoke を通す。
+  =indent-rigidly= は現時点では Emacs の transient UI ではなく、region を 1 column 右へずらす基本 bridge command として扱う。
+  =insert-parentheses= は現時点では prefix 引数付きの複数 sexp wrap ではなく、通常の =()= 挿入を bridge smoke 対象にする。
+  =dabbrev-expand= / =dabbrev-completion= / =complete-symbol= は現時点では候補履歴/循環ではなく、point 前後の基本 word prefix 展開を bridge smoke 対象にする。
+  =count-words-region= / =count-lines-page= は echo area transport がまだないため、現時点では結果を =nemacs-modeline= に返す。
+  =list-directory= / =dired= / =dired-jump= / =dired-jump-other-window= / =dired-other-window= は =*Directory*= buffer と対象 directory header を bridge し、entry 列挙は standalone runtime の安全な opendir/readdir API が揃った時点で =nelisp-emacs= 側に追加する。
+raw key migration path として、=/tmp/nemacs-keys= で
+=C-x C-f=, =C-x C-d=, =C-x d=, =C-x C-j=, =C-x 4 C-j=, =C-x 4 d=, =C-x C-w=, =C-x C-v=, =C-x 4 C-f=, =C-x 4 f=, =C-x 4 r=, =C-x 4 0=, =C-x 4 b=, =C-x 4 C-o=, =M-x=, =C-h f=, =C-h v=, =C-h k=, ~C-x =~, =C-x b=, =C-x x g=, =C-x x i=, =C-x x n=, =C-x x r=, =C-x x u= を
+=nelisp-emacs= 側の =files--dispatch-key-sequence= / =command-execute= に通す smoke も通す。
+=C-h k= は =nelisp-emacs= 側の runtime keymap table を引いて説明と
+候補一覧を出し、GUI 側に個別 key の説明 branch / 候補 branch を増やさない。
+~C-x =~ も同じ raw key path で渡し、point / line / column の解釈と
+表示用 Help buffer の生成は =nelisp-emacs= 側に閉じる。
+=C-u= / =C--= / =C-0..C-9= / =M--= / =M-0..M-9= / =C-M--= / =C-M-0..C-M-9=
+は =nelisp-emacs= 側の prefix argument state として =/tmp/nemacs-prefix-arg= に保持し、
+次の command で消費する。=nelisp-gui= はこの値を command 意味論として解釈せず、
+必要なら表示状態として描くだけにする。
+=C-x (= / =C-x )= / =C-x e= の keyboard macro core は =nelisp-emacs= の
+session / single-runtime command loop 内で raw key replay state を保持し、
+状態の観測用に =/tmp/nemacs-kmacro-recording= と =/tmp/nemacs-kmacro-keys= へ書き戻す。
+direct multi-process 起動間の永続 replay はまだ次段階とする。
+native GUI IR は bridge 実行時に =/tmp/nemacs-keys= へ raw key sequence を書く。
+=nemacs-editor.el= には移行用の direct command IR が残っているが、
+=nemacs-build.sh= は AOT 直前に =nemacs-editor-transport.el= を読み込み、
+compiled GUI から =/tmp/nemacs-cmd= への書き込みと point / window-start の
+redisplay 補正を落とす。=/tmp/nemacs-cmd= は
+外部 bridge fallback としてのみ扱い、GUI 側で command 名を増やさない。
+=nemacs-mx.sh= は =/tmp/nemacs-keys= が
+非空なら入口で =/tmp/nemacs-cmd= を空にし、以後の dispatch を raw key として扱う。
+=nelisp-emacs= runtime も raw key を読み取った時点で =/tmp/nemacs-cmd= と
+=/tmp/nemacs-keys= を空にし、stale transport を次の操作へ持ち越さない。
+=scripts/verify-nemacs-gui.sh= の常時 static check は raw key transport と
+=nelisp-emacs= runtime dispatch、および compiled GUI が =/tmp/nemacs-cmd= を
+書かず point / window-start を補正しないことを契約として見る。既存 direct command literal の網羅確認は
+=NEMACS_VERIFY_LEGACY_DIRECT_COMMANDS=1= の任意 legacy check に降格している。
+direct command fallback の網羅 smoke も =NEMACS_VERIFY_DIRECT_FALLBACKS=1= の
+任意 migration check とし、default verifier はキー入力ベースのGUI契約を主に見る。
+さらに =NEMACS_BRIDGE_BACKEND=session= の daily-driver smoke では、同一
+=nelisp-emacs= runtime process 内で =C-x C-f= → 通常文字編集 → =C-x C-s=
+→ =C-k= / =C-y= / =C-/= / =C-_= → =C-x h= / =M-w= / =C-w= / =C-q=
+→ =C-x C-u= / =C-x C-l= / =C-x u= → =M-x kill-line= completion /
+=M-x goto-line= / =M-g M-g= → M-x =replace-string= / =replace-regexp= / =query-replace= / =query-replace-regexp= → =C-v= / =C-l= / =M-v=
+→ =C-h f= / =C-h v= / =C-h k= → =C-x b= で別 buffer へ移動 → =C-x b= で戻る
+→ =C-x 2= / =C-x o= → =C-x C-c= を key sequence として処理する。
+この daily-driver は各 key sequence の実行前に意図的に stale な =/tmp/nemacs-cmd=
+も書き、session runtime が direct command fallback ではなく raw key / keymap dispatch を
+使っていることを検証する。最初の key sequence で起動した =/tmp/nemacs-session-pid= を
+以後の全 key sequence で照合し、同一 =nelisp-emacs= runtime process を使い続けていることも見る。
+session path では =nelisp-emacs= が =/tmp/nemacs-minibuffer-active= /
+=/tmp/nemacs-minibuffer-prompt= / =/tmp/nemacs-minibuffer-state= /
+=/tmp/nemacs-minibuffer-candidates= / =/tmp/nemacs-minibuffer-history= /
+=/tmp/nemacs-minibuffer-require-match= を返す。
+=TAB= completion も session 内の =nelisp-emacs= runtime が candidates から決める。
+redisplay state として =/tmp/nemacs-modeline= と =/tmp/nemacs-cursor= も返し、
+GUI は point、window-start、mode-line の表示内容を補正せず描画する。
+=/tmp/nemacs-minibuffer-text= / =/tmp/nemacs-minibuffer-arg= は非 session / direct fallback の
+migration transport として残す。GUI 起動時はこれらの表示/入力 transport を空に戻し、
+minibuffer active / require-match / exit flag は =0= に戻す。
+command 実装 source は
+=nelisp-emacs/src/nemacs-gui-file-bridge-runtime.el= に置き、=nelisp-gui= は
+runtime image の生成・実行と =/tmp/nemacs-*= transport（buffer / buffer name /
+point / mark / kill / window layout / window selected / window start / window hscroll /
+tab-state / frame-state / undo snapshot / read-only / minibuffer display state / buffer snapshot store / per-buffer narrowing
+restriction store） のみ担当する。
+bridge runtime は現時点で bridge-local な =read-from-minibuffer= /
+=completing-read= entry を使い、file/goto-line 入力と completion 入力の区別を
+=nelisp-emacs= 側で決める。次の置換点は、
+この bridge 専用 adapter を =nelisp-emacs/src/emacs-command-loop.el= /
+=src/emacs-fileio.el= 本来の runtime image に統合すること。
+=window selected= は =nelisp-emacs= が決めた選択 window index を GUI が選択枠として描くための表示状態で、
+選択遷移の意味論は =other-window= / =delete-window= command として =nelisp-emacs= 側に置く。
+=nelisp-emacs= 側には =test/nemacs-gui-file-bridge-runtime-test.el= があり、
+=make test-nemacs-gui-bridge= で standalone reader 上の bridge dispatch を検証する。
+
+* 実装済み機能（全て native 機械語、自動検証済）
+設定駆動 geometry / 最大化 / フルスクリーン、フォント指定 + リアルタイム文字サイズ、
+複数行対話編集（挿入/BS/改行、カーソル ←→↑↓ 列保持）、構文 + org-mode ハイライト、
+実 Emacs テーマ（launcher が =theme-settings= から色抽出）、画面分割、ダブルバッファ
+（ちらつき無し）、ミニバッファ、SetInputFocus（起動時フォーカス）、M-x bridge、
+=nelisp-emacs= 経由のファイル I/O。
+
+* native IR の制約（aot compiler）
+3引数 =+= 不可（ネスト）/ =cond= は値として test を返す（ネスト =if=）/ =alloc-bytes= は
+deref 不可（=mmap= = syscall 9 を使う）/ =if= 条件の =ptr-read= は compiler が fold → ローカル束縛。
+
+* 関連 repo
+- =dev/nelisp= — NeLisp ランタイム / reader（この binary を =/tmp/nelisp-snap= に snapshot して使用）
+- =dev/nelisp-emacs= — Emacs substrate 層（=find-file= / =save-buffer= などの command 実装）
+- =dev/nelisp-ffi= — FFI（.so dlopen/dlsym、SDL bind）

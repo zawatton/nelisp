@@ -1,0 +1,804 @@
+#+TITLE: nelisp-emacs Doc 11 - Remaining Work Roadmap
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-06-09
+#+STATUS: DRAFT
+#+DEPENDS_ON: Doc 01 architecture, Doc 02 v0.1 daily-driver, Doc 03 vendor migration, Doc 05 legacy omission scope, Doc 09 layer boundary, Doc 10 runtime callable tiers
+
+* ⚠️ 2026-06-20 STATUS 訂正 (実地検証は Doc 15 §3.2-3.4)
+
+本書 (2026-06-09) の一部 lane は runtime 前進で前提が変わっている。検証手順・証拠は
+=docs/design/15-staged-execution-plan-small-medium-large.org= §3.2-3.4。要約:
+
+- ✅ *§3.8 Process*: make-process / start-process / call-process / comint-mode /
+  process-send-string / accept-process-output 既に full-stack に揃う。
+  「shell-command が最初の milestone」段階は越えている。残は
+  start-process-shell-command / PTY breadth 程度 (Doc 15 B3)。
+- ◑ *§3.6 Vendor callable promotion*: runtime macro 展開は解決済 (実 dash.el 動作)。
+  残実体は package が呼ぶ未実装 builtin の breadth。replace-match (string 形) を
+  reader で stub に勝たせて s.el を callable 化、save-match-data も補完済
+  (Doc 15 B4/B1)。実 package 駆動で逐次補完が筋。
+- ℹ️ 関連: 日本語入力 file-read blocker (Doc 14) も解消済 (skk E2E 5/5)。
+
+#+BEGIN_COMMENT
+以下は 2026-06-09 時点の本文。歴史記録として保持。訂正対象節には行頭 # の
+inline ノートを付した。
+#+END_COMMENT
+
+* 0. Purpose
+
+This document turns the remaining large work items into an implementation
+roadmap.  The current state is uneven:
+
+- Basic editing, file I/O, minibuffer, help, parts of window/tab, and shell
+  command have shipped enough behavior to serve as anchors.
+- The next large items are project/VC, frame/tab/window expansion,
+  coding/input-method, major-mode/package groups, and long-running stability.
+- Existing docs already define architecture, vendor migration, omission policy,
+  and callable tiers.  This document connects those into a product-oriented
+  order of work.
+
+The goal is not to chase every missing GNU Emacs feature.  The goal is a modern
+daily-driver editor on the NeLisp standalone path, with explicit compatibility
+lanes for the vendor and package surfaces that matter.
+
+* 1. Scope Model
+
+Work is divided into five lanes.
+
+| Lane | Purpose | Close signal |
+|------+---------+--------------|
+| A. Product-critical editor | Make the standalone/GUI editor usable for daily work | End-to-end command smokes pass through the UI bridge |
+| B. Daily-driver expansion | Add workflows users naturally expect after basic editing | Focused ERT + one interactive or bridge smoke per workflow |
+| C. Compatibility | Move vendor/package surfaces from load proof to callable behavior | Runtime callable tests, not only =featurep= / load count |
+| D. Display/runtime | Improve rendering, startup, and self-host path | Runtime image / redisplay / bridge smokes stay green |
+| E. Operations | Keep long sessions stable and regressions diagnosable | Soak, replay, leak, and differential gates |
+
+Doc 05 remains the omission policy.  Legacy-only subsystems should not be pulled
+into scope unless a concrete must-run workflow proves they are needed.
+
+* 2. Current Anchors
+
+These areas are already usable enough to build on:
+
+- Basic buffer/file commands: =find-file=, =find-file-noselect=, =save-buffer=,
+  =write-file=, =insert-file-contents=, =write-region=.
+- Basic editing: insertion, deletion, movement, newline, region, kill/yank,
+  undo/redo subset.
+- Command dispatch: =command-execute=, =call-interactively=,
+  =execute-extended-command=, minibuffer command arguments.
+- Minibuffer and completion subset: =read-from-minibuffer=,
+  =completing-read=, command/file/project prompts.
+- Help subset: describe function/variable/key and help buffers.
+- Window subset: split/delete/select/other-window, basic window state.
+- Frame/TUI substrate: stub mode plus TUI backend swap-in and event parsing.
+- Shell command subset: synchronous and asynchronous =shell-command=.
+- Project subset: VC-root detection and project file selection.
+- Vendor proof lanes: Class-A utility/i18n and daily-driver core feature
+  facades.
+- Runtime callable tiering: Doc 10 defines Tier 1/2/3 promotion rules.
+
+* 3. Remaining Work Inventory
+
+** 3.1 Product-critical editor surface
+
+These items should be treated as the next "usable editor" blockers.
+
+| Area | Remaining work | Notes |
+|------+----------------+-------|
+| Standalone daily-driver | Make =bin/nemacs --driver=nelisp= credible for daily editing, not only batch/proof smokes | Requires runtime image, bridge, startup, and error reporting to converge |
+| GUI bridge | Replace adapter-local reader paths with shared command/session behavior | GUI owns transport/paint; this repo owns command semantics per Doc 09 |
+| Raw key/session bridge | Prefer raw key sequence + snapshot over direct command fallback | Direct =/tmp/nemacs-cmd= style inputs remain migration-only |
+| File lifecycle | =revert-buffer=, auto-save, backup, lockfile, recent files, save-place | Keep Tramp separate until a concrete ssh-only scope is chosen |
+| Command errors/status | Return user-visible status/error data consistently through bridge and TUI | Must not hide command failure in transport code |
+
+Close gate:
+
+1. Standalone opens a file, edits, saves, writes another file, switches buffers,
+   runs =M-x=, and reports an invalid command error through one bridge smoke.
+2. The same command semantics are exercised through host ERT and standalone
+   reader smoke.
+3. GUI adapter no longer implements editor-state mutations that belong in
+   =nelisp-emacs=.
+
+** 3.2 Project and VC
+
+The shipped project subset is intentionally small.  The next useful step is a
+Git-first project/VC lane, not full historical VC compatibility.
+
+| Area | Remaining work |
+|------+----------------|
+| Project files | Ignore rules, large-tree performance, caching, refresh/invalidation |
+| Project commands | =project-switch-project= polish, project buffers, project shell, project grep |
+| Xref/imenu | Minimal jump-to-definition and symbol index path for Elisp/dev workflows |
+| VC Git facade | File state, branch, diff, log, annotate/blame, commit buffer handoff |
+| VC UI | Basic =vc-dir= or lightweight status buffer for Git only |
+
+Non-goals for this lane:
+
+- CVS/RCS/SCCS/Bzr/Mtn backends.
+- Magit compatibility as a first milestone.
+- Full EDE/Semantic project model.
+
+Close gate:
+
+1. In a Git repository, project root detection, file completion, project grep,
+   and project shell use the same root.
+2. A modified file reports Git state, shows a diff, and can open a log/status
+   buffer.
+3. Unsupported non-Git VC backends fail explicitly or remain omitted per Doc 05.
+
+** 3.3 Frame, tab, and window expansion
+
+The current window surface is enough for basic split editing.  Daily use needs
+state restoration, display-buffer policy, and tab/frame integration.
+
+| Area | Remaining work |
+|------+----------------|
+| Window layout | =display-buffer= rules, pop-to-buffer, side windows or explicit omission, winner-like restoration |
+| Window state | window-start/point persistence, selected window across buffers, scroll commands |
+| Frame integration | multi-frame semantics, selected-frame/window consistency, backend lifecycle |
+| Tab-bar/tab-line | Real tab selection/close/rename/move, buffer association, bridge rendering contract |
+| Minibuffer/help windows | Dedicated display policy for minibuffer, help, completion, info/status buffers |
+
+Close gate:
+
+1. Opening help/completion/project/status buffers uses predictable window rules.
+2. Tabs can be created, switched, renamed, and closed without losing buffer or
+   window state.
+3. Frame and window selection stay coherent under TUI and GUI bridge smokes.
+
+** 3.4 Coding and input method
+
+Doc 05 narrows coding scope aggressively.  The first implementation target is
+modern UTF-8 editor behavior, plus explicit omission for legacy systems.
+
+| Area | Remaining work |
+|------+----------------|
+| Coding systems | UTF-8, raw bytes, ASCII, binary read/write, coding metadata on buffers/files |
+| Newline handling | LF default, optional CRLF handling, no broad legacy platform heuristics |
+| File detection | BOM handling, invalid UTF-8 policy, binary file detection |
+| Input method | Direct UTF-8 input, composition boundary, optional small IM only on request |
+| International display | CJK width, combining characters, bidi/composition coordination with redisplay v2 |
+
+Non-goals for the first lane:
+
+- Full Quail/LEIM.
+- ISO-2022, EUC, Shift-JIS, Big5/GBK/GB18030, HZ, EBCDIC, and large codepage
+  families unless a must-run file requires one.
+
+Close gate:
+
+1. UTF-8 files round-trip through standalone and bridge paths.
+2. Binary/raw files can be opened and saved without corrupting bytes.
+3. Invalid encoding and unsupported input methods produce clear user-visible
+   errors.
+
+** 3.5 Major modes and package groups
+
+This lane should be curated.  Load compatibility is not enough; each promoted
+mode/package needs a small runtime workflow.
+
+| Group | First target |
+|-------+--------------|
+| Elisp/dev | =emacs-lisp-mode=, eval, imenu/xref, project grep, compile |
+| Text/org | Current org subset plus refile/archive/clock/agenda promotion only where daily workflows need it |
+| Dired | Mark/copy/rename/delete/sort/revert/recursive basics |
+| Programming modes | Fundamental/prog-mode/font-lock indentation facade, then selected language modes |
+| Package manager | Minimal =package.el= install/list/activate facade, archive and autoload policy |
+| Completion/LSP | CAPF and completion styles before company/eglot claims |
+| MELPA pilot | Real package onboarding for dash/s/ht/f/queue-class packages, then helm/ido/company/eglot candidates |
+
+Close gate:
+
+1. Each promoted mode has at least one load test, one runtime command test, and
+   one editor workflow smoke.
+2. Package activation does not mutate bootstrap order unpredictably.
+3. Unsupported package features signal documented unsupported conditions rather
+   than silently becoming no-ops.
+
+** 3.6 Vendor migration and autoload/dump
+
+Doc 03 and Doc 10 already define the broad vendor strategy.  The missing work is
+# 【2026-06-20 訂正 (Doc 15 §3.3/§3.4)】runtime macro 展開は解決済 (実 dash.el
+# 148KB が --load / bridge で動作、-map 等 callable)。callable promotion の残実体は
+# package が呼ぶ未実装 builtin の breadth (save-match-data / replace-match string 形
+# 等を逐次補完、long-tail 継続)。以下は当時の計画。
+to turn load/count proof into callable runtime behavior.
+
+| Area | Remaining work |
+|------+----------------|
+| Vendor inventory | Keep Class A/B/C/D/E classification fresh and generated |
+| Autoload | loaddefs/autoload injection and stable lazy loading |
+| Dump/runtime image | Move from source replay toward real startup acceleration when NeLisp supports it |
+| Tier 2 | Keep load-only/drop-only proof separate from runtime progress |
+| Tier 3 | Promote facades only when a Tier 1 path needs callable behavior |
+| GNU comparison | Property comparison and selected ERT mirror tests for promoted APIs |
+
+Close gate:
+
+1. =make verify-vendor= stays green.
+2. Promoted vendor APIs are measured by callable behavior, not just =fboundp=.
+3. Autoloaded functions needed by promoted workflows resolve without manual
+   eager loading.
+
+** 3.7 Display, redisplay, fonts, and images
+
+Phase 3 MVP shipped.  The remaining work is mostly correctness and richer
+display semantics.
+
+| Area | Remaining work |
+|------+----------------|
+| Redisplay v2 | bidi, composition, display property real specs, mouse-face, dedicated mode-line row |
+| Fonts/faces | Font metrics, fontset realization, glyphless display, face inheritance under GUI |
+| Images | Image loading/display property integration and bridge/backend render contract |
+| Mouse/selection | Mouse events, selection, scroll wheel, drag/drop where backend supports it |
+| Performance | Large buffer scrolling, incremental invalidation, per-frame p99 under real sessions |
+
+Close gate:
+
+1. 10MB scrolling and 1h soak are repeatable diagnostics.
+2. Non-LTR/composition cases have either correct rendering or explicit degraded
+   behavior.
+3. GUI/TUI rendering receives the same editor state and reports backend-specific
+   unsupported display features consistently.
+
+** 3.8 Process, terminal, and command-running workflows
+
+# 【2026-06-20 訂正 (Doc 15 §3.4)】process 層は大半既存: make-process /
+# start-process / call-process / comint-mode / process-send-string /
+# accept-process-output 全て full-stack に fboundp。残は
+# start-process-shell-command / PTY breadth 程度。以下は当時の計画。
+=shell-command= is only the first process milestone.
+
+| Area | Remaining work |
+|------+----------------|
+| Process core | =make-process= practical behavior, filters, sentinels, process buffers |
+| PTY | Modern terminal/PTY support, Windows Terminal coordination if needed |
+| Comint | Shell/repl buffers, input history, prompt handling |
+| Compilation | =compile=, =grep=, next-error, project integration |
+| Eshell/term | Separate decision: facade, minimal runtime, or explicit omission for early daily-driver |
+
+Close gate:
+
+1. Async process output accumulates in a buffer and sentinel state is observable.
+2. =compile= or project grep can run, parse one error, and jump to a file.
+3. Unsupported PTY/terminal features fail explicitly.
+
+** 3.9 Help, Info, customize, and documentation UI
+
+The shipped help subset is enough for command discovery but not full Emacs
+documentation workflows.
+
+| Area | Remaining work |
+|------+----------------|
+| Help | apropos, describe-keymap, contextual help, help-window display rules |
+| Info | Directory, node parsing, next/prev/up, search, manual lookup |
+| Customize | defcustom persistence, customize buffer UI, user option editing |
+| Docs/assets | Distribution file viewing and stable help buffers through bridge |
+
+Close gate:
+
+1. =C-h i= opens Info directory and navigates between at least two nodes.
+2. =apropos= and =describe-keymap= produce useful help buffers.
+3. Custom variables can be edited and persisted without requiring full legacy
+   customize behavior.
+
+** 3.10 Long-running stability and operations
+
+This lane should become a release gate once the standalone editor is usable.
+
+| Area | Remaining work |
+|------+----------------|
+| Soak | 1h edit/search/save/window/process scenario |
+| Memory | Leak/RSS checks for large buffers, redisplay, process output, project scans |
+| Replay | Persistent REPL vendor replay and runtime image replay diagnostics |
+| Differential | GNU Emacs property comparison for promoted APIs |
+| CI shape | Fast host ERT, standalone smoke, opt-in long diagnostics, clear failure buckets |
+| Session | Desktop/session restore, server/emacsclient decision, daemon path if needed |
+
+Close gate:
+
+1. Fast =make test= remains the default development gate.
+2. Standalone smoke catches product regressions before vendor breadth tests.
+3. Long diagnostics are opt-in but scripted, documented, and reproducible.
+
+* 4. Suggested Milestones
+
+Status (2026-06-10): every milestone below has reached its v1 close
+gate — M1 (binary smoke, 47/47 standalone scenarios), M2 (project/git
+daily workflow), M3 (window/tab/help display policy), M4
+(coding/input baseline), M5 (dired/process/search incl. bridge-side
+dired file-ops), M6 (package activation + CAPF), M7
+(loaddefs/autoload + runtime image), M8 (release preflight + soak
+diagnostics), M9 (org daily lane), M10 (vendor VC/Magit substrate), M11 (Tramp
+ssh-only, hermetic stub gate), M12 (display/font), M13
+(info/customize), and M14 (server/emacsclient: a real
+=emacsclient -e= round-trip against the standalone reader,
+2026-06-11).  Host gate: 1888 ERT, 0 unexpected.  The next wave
+should be drawn from §7 open questions (server/emacsclient, first
+real MELPA promotion gate) and from daily-driver soak findings —
+promote by workflow, not by file count (tracking rule 1).
+
+** M1. Standalone Product Smoke
+
+Focus:
+
+- Raw-key/session bridge.
+- File/edit/save/write-file/buffer switch/M-x/help/error status.
+- Remove or quarantine bridge-local editor semantics.
+
+Deliverable:
+
+- A single standalone smoke that proves the editor loop through the bridge.
+
+** M2. Project/Git Daily Workflow
+
+Focus:
+
+- Project cache/ignore/performance.
+- Project grep and project shell.
+- Git-only VC status/diff/log facade.
+
+Deliverable:
+
+- In a Git repo, edit a file, see modified state, show diff/log, run project
+  grep, and jump to a result.
+
+** M3. Window/Tab/Help Display Policy
+
+Focus:
+
+- =display-buffer= subset.
+- Help/completion/project/status window rules.
+- Real tab-bar/tab-line operations and bridge rendering.
+
+Deliverable:
+
+- Daily navigation across editing buffers, help buffers, project buffers, and
+  tabs without state loss.
+
+** M4. Coding/Input Modern Baseline
+
+Focus:
+
+- UTF-8/raw/ASCII round-trip.
+- Binary file handling.
+- Invalid encoding and unsupported input method status.
+
+Deliverable:
+
+- Modern coding behavior is explicit and tested; legacy omission remains
+  documented.
+
+** M5. Dired/Process/Search Expansion
+
+Focus:
+
+- Dired file operations.
+- Async process buffers and compilation/project grep.
+- Query replace/occur/xref/imenu basics.
+
+Deliverable:
+
+- Common editing and development workflows no longer require shell escape or
+  external Emacs for routine tasks.
+
+** M6. Package/Major-mode Promotion
+
+Focus:
+
+- Package activation policy.
+- Curated modes/packages with runtime workflows.
+- CAPF/completion style before company/eglot claims.
+
+Deliverable:
+
+- Each promoted package/mode has runtime tests and a documented unsupported
+  boundary.
+
+** M7. Runtime Image, Autoload, and Vendor Callable Promotion
+
+Focus:
+
+- Autoload/loaddefs integration.
+- Runtime image acceleration once NeLisp supports it.
+- Tier 3 facade promotion only when workflows require it.
+
+Deliverable:
+
+- Vendor progress is measured by callable workflows and startup stays bounded.
+
+** M8. Stability Release Gate
+
+Focus:
+
+- Soak, large-file, RSS, process, project-scan, and replay diagnostics.
+- Failure bucket reporting.
+
+Deliverable:
+
+- A reproducible release preflight for standalone daily-driver builds.
+
+** M9. Org Daily Lane
+
+Scope promotion (user 2026-06-10): org moves out of §5 non-goals.  The gate is
+the daily org workflow, not full org-mode parity (tracking rule 1).
+
+Focus:
+
+- Promote the existing host-proven subset (=emacs-org-outline=,
+  =emacs-org-todo=, =emacs-org-table=, =emacs-org-capture=,
+  =emacs-org-agenda=) to standalone/bridge runtime.
+- Gap-fill the daily GTD loop: open org file, cycle TODO state, fold/unfold
+  outline, edit a table, capture an entry, view an agenda.
+
+Deliverable:
+
+- The daily org loop runs through the bridge under the standalone reader with
+  runtime tests; omitted org features are documented once.
+
+** M10. Vendor VC / Magit Compatibility Lane
+
+Correction (2026-06-30): this lane must not create an independent
+Magit-style porcelain as the product target.  The gate is vendor-first:
+make Emacs' vendored VC sources and, when Magit source is vendored, Magit
+itself run on the reusable Emacs C-core-compatible substrate.
+
+Focus:
+
+- Load and exercise =vendor/emacs-lisp/vc/vc.el=, =vc-dir.el=, and
+  =vc-git.el= before any repository-owned compatibility wrapper.
+- Treat process, file, buffer, keymap, menu, text-property, and window
+  failures as substrate bugs to fix in the owning reusable package.
+- If external Magit is needed, vendor the real Magit source and bridge its
+  missing Emacs primitives instead of implementing a Magit clone.
+
+Deliverable:
+
+- In a Git repo: vendor VC, then vendored Magit when available, can open
+  status/diff/log workflows inside the standalone editor through substrate
+  bridges, with independent fallback code limited to explicit temporary
+  compatibility shims.
+
+** M11. Tramp ssh-only Lane
+
+Scope promotion (user 2026-06-10): answers the §7 open question — minimal
+ssh-only Tramp is in scope; full Tramp stays out.
+
+Focus:
+
+- =/ssh:HOST:/path= find-file → edit → save round-trip via ssh/scp
+  subprocesses.
+- Clear unsupported signaling for every other Tramp method.
+
+Deliverable:
+
+- A hermetic stub-ssh round-trip test (PATH-injected fake ssh, no sshd
+  dependency) passes under the standalone runtime; remote editing of one file
+  works end-to-end.  Real-host ssh verification stays a manual checklist item
+  because it depends on local sshd/key setup.
+
+Manual real-ssh checklist (2026-06-10 probe: sshd active on this host, but
+localhost key auth is not configured — publickey denied, password only — so
+the loopback run needs one-time user setup):
+
+1. =ssh-keygen -t ed25519= (if no key) and append the public key to
+   =~/.ssh/authorized_keys=.
+2. =ssh -o BatchMode=yes localhost true= must exit 0.
+3. In the editor: =find-file /ssh:localhost:/tmp/real-tramp-probe.txt=, edit,
+   =save-buffer=, then verify the file content from a shell.
+
+Close evidence (M1-M4, task #16, branch =tramp-ssh-lane=, Doc 37):
+implementation targeted the *host driver* (=emacs -Q -L src=) as the
+primary lane per the approved implementation plan, with the standalone
+NeLisp reader's full Tramp load chain deferred (substrate pieces
+=process-mark=/=start-file-process=/=process-file= shipped and covered
+by regression, but the full vendored Tramp dependency chain on the bare
+reader was not brought up -- see Doc 37 Sec 4).  The hermetic stub-ssh
+round-trip (=make tramp-stub-smoke=, =test/nemacs-tramp-stub-ssh-test.el=)
+runs under host Emacs instead and covers load-chain, non-remote
+passthrough, the unsupported-method guard, remote read, remote write
+round-trip, and =process-file= exit-status/stdout -- 5/5 passing.  Real
+localhost ssh verification remains a manual checklist item exactly as
+above; =make tramp-localhost-smoke= automates the same checks and skips
+cleanly when the checklist is not done (confirmed on this development
+host: publickey/password both denied for localhost).  See Doc 37 for
+the full substrate change list and the Magit (#17) coordination notes.
+
+** M12. Display/Font Vendor Lane (v1 CLOSED 2026-06-10)
+
+Focus (from §3.7): redisplay correctness beyond the current GUI bridge
+rendering — faces/fontsets on the native backend, image display policy,
+window-internal redisplay invariants under the vendor modules.
+
+Close gate:
+
+- A standalone scenario renders styled text (face + fontset selection)
+  through the native GUI adapter and a host ERT covers the redisplay
+  decision path; omissions (images, complex shaping) documented once.
+
+Close evidence (2026-06-10):
+
+- Bridge decision path: =files--write-face-spans-state= computes
+  resolved face spans (elisp keyword/string/comment with concrete
+  colors) plus the fontset pick (latin/cjk) for the visible region on
+  every redisplay and writes =nemacs-face-spans= / =nemacs-font=.
+  The face decision retired from the GUI: the GUI first-char line
+  heuristic survives only as a no-span-data migration fallback.
+- Host ERT: =host-face-span-decision-path= (face selection + color
+  resolution + fontset pick under host Emacs) and
+  =source-shape-face-spans-contract=; standalone reader runtime test:
+  =standalone-face-spans= (elisp + CJK scenarios over the real
+  transport).
+- Native GUI: =nemacs--patch-face-span-redisplay= /
+  =nemacs--patch-font-openfont= (nelisp-gui transport shaping) paint
+  per-line span colors and apply the substrate font pick at session
+  start.  Verified live on X11: keyword =#a020f0=, string =#8b2252=,
+  comment =#b22222= pixels rendered from a real GUI key → bridge →
+  reader round trip (xwd pixel check, 2026-06-10).
+
+Omissions (documented once, not in the critical path):
+
+- Images, bidi, composition/complex shaping, variable-width glyphs.
+- Intra-line span splitting in the native GUI (the GUI colors a line by
+  the first overlapping span; the bridge already transports exact span
+  boundaries for a later finer renderer).
+- Live font re-open mid-session (the fontset pick applies at GUI
+  session start; the decision channel updates every redisplay).
+- Span scan bound: =files--face-span-cap= (2048 chars from
+  window-start) keeps the interpreted per-char walk cheap on the
+  standalone reader.
+- Face spans are computed for elisp buffers; other major modes get
+  fontset selection only until their fontifiers are promoted.
+- The 0xE0–0xEF UTF-8 lead-byte CJK heuristic can match some Latin-1
+  accents under a host-Emacs load of the bridge (reader path is
+  byte-exact).
+
+** M13. Info/Customize Lane (v1 CLOSED 2026-06-10)
+
+Focus (from §3.9): =info= reader subset (node parse + navigation) and a
+customize-lite (read/set/save a defcustom) workflow.
+
+Close gate:
+
+- Open an .info file, navigate nodes, and round-trip one defcustom
+  set+save under the standalone runtime with runtime tests.
+
+Close evidence (2026-06-10):
+
+- Info reader subset: =info FILE= parses the \x1f-separated nodes of a
+  real .info file and renders one node into the existing =*info*=
+  buffer (the node header stays the first buffer line); =Info-next= /
+  =Info-prev= / =Info-up= re-parse the header pointers and jump.
+  Mode-local keys n/p/u in =*info*=.  State survives one-shot bridge
+  processes via the =nemacs-info-state= transport file.
+- Customize-lite: =customize-variable SYMBOL= renders a =*Customize*=
+  buffer with the live value; =customize-save-variable VALUE= (key =s=
+  with minibuffer prompt) persists NAME/VALUE rows in
+  =nemacs-custom-store=, regenerates a =custom-set-variables= artifact
+  in =nemacs-custom-file=, and re-applies known numeric symbols
+  (=fill-column=, =comment-column=) to the live globals on every
+  bridge run.
+- Runtime tests on the standalone reader:
+  =standalone-info-node-navigation= (open → n → n → p → u over a
+  3-node fixture) and =standalone-customize-set-save= (render 70 →
+  save 84 → fresh process renders 84 + custom file content).
+
+Omissions (documented once):
+
+- Compressed (.info.gz) manuals and =/usr/share/info= dir aggregation;
+  the argument-less =info= keeps the legacy directory facade.
+- Cross-file node references ("(libc)Node" style), menus as actionable
+  links, index search.
+- Custom types beyond string serialization; only the known numeric
+  symbols are re-applied live; =custom-file= loading into a host Emacs
+  is the user's call (the artifact is standard
+  =custom-set-variables= text).
+- Info node scan is bounded by =files--info-scan-cap= (64KB, the GUI
+  text transport limit).
+
+** M14. Server/emacsclient Lane (v1 CLOSED 2026-06-11)
+
+Scope promotion: resolves the §7 open question — server/emacsclient
+is in scope as a post-M13 lane.  The gate is the real-client eval
+round-trip, not full client surface parity.
+
+Close gate:
+
+- A REAL =emacsclient -s SOCK -e EXPR= round-trips (value printed,
+  exit 0, server survives repeat clients) against vendor server.el
+  running on the standalone reader, with runtime tests.
+
+Close evidence (2026-06-11):
+
+- =src/emacs-network-syscall-shim.el= re-creates the =nl-ffi-*=
+  surface the K1 network stack was written against on top of the
+  pure-elisp reader's =syscall-direct= / =alloc-bytes= /
+  =ptr-read-u64= / =ptr-write-u64= — the K1 modules and vendor
+  server.el run unmodified.  It also carries reader-gap polyfills the
+  lane uncovered: =/== (only = < > <= >= ship), =functionp= (the
+  builtin returns nil for closures, silently skipping every process
+  filter), =ignore-errors=, phantom =truncate= / =string-bytes=.
+- =src/emacs-server-client-polyfills.el=: the
+  filter-path stub surface + three overrides installed after vendor
+  load — =nemacs-server-start= (vendor =server-start= still trips
+  reader gaps in its prologue), a minimal =server-process-filter=
+  (local =-eval= subset; quote/unquote re-implemented without the
+  vendor's regexp-lambda), and a buffer-free =server-eval-and-print=.
+- =scripts/nemacs-server-loop.el= + =bin/nemacs-server=: preamble
+  launcher (reader =getenv= is stub-nil) → load stack → listen →
+  serve.  Verified live: =(+ 1 2)= → 3, =(concat ...)= → "hello",
+  =(mapcar (lambda (x) (* x x)) ...)= → (1 4 9), repeat clients OK.
+- Tests: =emacs-server-client-test/source-shape= (host) and
+  =standalone-emacsclient-roundtrip= (boots the real server loop on
+  the reader, drives it with the real emacsclient binary).
+- =emacs-process-events.el=: accepted children now inherit the
+  listener's plist (Emacs semantics; vendor server.el authenticates
+  local clients via the child's =:authenticated=).
+
+Reader semantics discovered (documented once — they shaped the lane):
+
+- A call to a MISSING function hard-aborts the whole enclosing
+  top-level form and is NOT catchable by =condition-case= /
+  =ignore-errors=; the same holds for unbound variable references.
+  Diagnosis is silent.  This is why the lane prefers many small
+  load-bearing stubs over relying on vendor error paths, and why the
+  serve loop is the last form of the driver.
+- =--load FILE= resolves nested relative =load= calls against FILE's
+  directory and isolates per-form errors; =--eval '(load ...)'= stops
+  at the first failing form.  The lane drives everything through
+  =--eval= + absolute paths.
+- =?\\700=-style octal char literals misread (55, not 448) — avoided.
+
+Omissions (one-time list):
+
+- Vendor =server-start= / full =server-process-filter= surface
+  (frames, tty, =-file= visiting, =-env=, TCP + auth-key) — the
+  minimal filter ignores those tokens; TCP stays unsupported.
+- emacsclient file-visiting and =-nowait= window semantics.
+- Linux x86_64 syscall numbers only (the only reader target today).
+- =nl-ffi-free= is a no-op (arena-owned buffers, small per-request).
+
+** M15. User Init Lane (v1 CLOSED 2026-06-11)
+
+Close gate: the user's ~/.nemacs.d/early-init.el + init.el load into
+the standalone runtime with per-form isolation and an
+applied/skipped report.
+
+Close evidence: scripts/nemacs-wrap-init.el lowers init forms to the
+runtime-image dialect (defun→fset+lambda, defvar/defcustom→
+boundp-guarded setq; the image evaluator silently drops defun) and
+brackets each with a begin marker + a same-form ok marker;
+files--load-user-init loads once per process+mtime (init first,
+persisted customize values after) and writes nemacs-init-report.
+Real ~/.nemacs.d: 14 forms, applied 14.  Test:
+standalone-user-init-lane.  Omissions: the full ~/.emacs.d init
+(10k+ lines of package/use-package machinery) is a progressive
+target driven by the report, not a v1 gate.
+
+** M16. CJK Glyph Lane (v1 CLOSED 2026-06-11)
+
+Close gate: Japanese text renders in the native GUI with correct
+2-cell advances and the cursor lands on display cells, verified
+live on X11.
+
+Close evidence:
+
+- Bridge: the fontset pick now names the misc-fixed "ja" iso10646
+  face (ASCII 6px / CJK 12px — exactly 2 cells) and transports the
+  cell width (=cw=) in nemacs-font; nemacs-cursor gains =cells=
+  (UTF-8 lead-byte walk from line start to point, CJK = 2 cells).
+  Test: standalone-cjk-cursor-cells + extended standalone-face-spans.
+- GUI (nemacs-editor-transport.el): =nemacs--patch-cjk-text-draw=
+  replaces both per-line ImageText8 emissions with a UTF-8→UCS-2
+  decoder + ImageText16; =nemacs--patch-cjk-cursor= swaps the cursor
+  byte scan for the cell scan and drives every cursor x off the
+  substrate's cw (cfgbuf byte 200); =nemacs--patch-cjk-font-cw=
+  parses the cw hint at session start.
+- Live verification (2026-06-11, X11 :0): a Japanese org buffer
+  renders 「* 日本語テスト / ああああ / abcd / 点検予定: …」with
+  correct glyphs, colors, and 2-cell layout (xwd screenshot).
+
+Omissions: hscroll + multibyte misreads continuation bytes (the
+hscroll shift rewrites only lead-byte reads); per-line glyph cap 120
+CHAR2B; modeline/minibuffer/tab strings still draw via ImageText8
+(ASCII-safe); C-f/C-b remain byte-wise in the bridge (mid-character
+points render at the spanning glyph's cells).
+
+** M17. Client/Org Polish (v1 CLOSED 2026-06-11; GUI intra-line split pending)
+
+Close evidence:
+
+- =emacsclient -n FILE= against the M14 server queues a find-file
+  into the editor transport (nemacs-cmd migration-fallback channel;
+  the GUI session poll loop consumes it) and replies =-print queued=.
+  Full client-buffer lifecycle (wait / C-x #) stays out of scope.
+  Test: extended standalone-emacsclient-roundtrip.
+- Org fontification spans: heading lines (=org-level= #1e90ff) and
+  their TODO (#ff6347) / DONE (#98fb98) keywords get resolved spans
+  from =files--face-spans-org=.  Test: standalone-org-face-spans.
+- Pending: GUI intra-line span splitting (the bridge already
+  transports exact span boundaries; the GUI still colors per line by
+  the first overlapping span).
+
+** M19. User Config / Japanese Input / Packages-in-Editor (v1 CLOSED 2026-06-11)
+
+User-directed lane bundle (order 1→3→2→4):
+
+- M19-1 custom-lisp: all 30 ~/.nemacs.d/custom-lisp files load on the
+  reader; the Japanese-input trio is wired into init.el and its
+  functions run on the server (=(google-ime--throttle-p "てすと")= →
+  t).
+- M19-3 Japanese input v1: =C-\= toggles a romaji→hiragana composer
+  on the bridge (119-entry table in src/nemacs-ime-romaji.tsv,
+  transported — multibyte bytes anywhere in a source-v1 image crash
+  the replay; compose state in the nemacs-ime-pending transport).
+  Verified: kannnitiha tesuto → かんにちはてすと.  Kanji conversion
+  (candidates via the user's google-ime-server.el on the M14 server)
+  is the recorded follow-up: its HTTP path needs url/json polyfills.
+- M19-2 packages in the editor: the generator transpiles resolved
+  packages to the image dialect (OUT-pkgs-lowered; defun→fset,
+  declare/interactive stripped, pure-ASCII); the bridge loads it and
+  gained gated mapcar/mapconcat/identity/upcase/downcase.  Verified
+  inside the editor image: dash -map → (1 4 9), s-join combo →
+  "1-2-3".
+- M19-4 partials: identity/int-to-string + floor/float/ceiling/round
+  rescued from the nil no-op bulk stub list (integer floor exact);
+  package-heap server SIGSEGV fixed earlier (socket-dir pre-create).
+
+Omissions / next wave (documented once):
+
+- Kanji conversion UI (pending→candidates→commit) and katakana mode.
+- Modeline/minibuffer ImageText16 (Japanese file names still draw
+  via the 8-bit path); GUI intra-line span splitting.
+- ht's constructor/runtime path on the reader; dash's defmacro
+  surface inside the image.
+- Server-path wrapper partial-apply (one init form aborts the
+  remaining wrapper forms there; the bridge path applies fully).
+- Reader findings to upstream: nested-load cap restore shipped; the
+  mkdir-branch heap poisoning, depth-3+ big-file nested loads, float
+  division /=integerp-on-floats, float-input round remain recorded.
+
+* 5. Explicit Non-goals For Initial Roadmap
+
+These should not block the milestones above:
+
+- Full Gnus/Rmail/MH-E.
+- Full EDE/Semantic.
+- Legacy VC backends other than Git.
+- Full Quail/LEIM and legacy coding-system families.
+- Exotic terminal compatibility.
+- Full Tramp beyond the M11 ssh-only lane (other methods signal unsupported).
+- Magit API compatibility before the real Magit source is vendored and its
+  dependency failures are tracked as substrate work.
+- Org-mode parity beyond the M9 daily lane (Babel, export, LaTeX preview,
+  advanced agenda views stay out until a workflow demands them).
+- Long-tail MELPA compatibility beyond curated pilots.
+
+* 6. Tracking Rules
+
+1. Promote behavior by workflow, not by file count.
+2. Keep load-only proof separate from runtime callable progress.
+3. Every promoted command needs a host ERT and, when user-visible, a standalone
+   or bridge smoke.
+4. Facades must either implement the narrow behavior required by a workflow or
+   signal a clear unsupported condition.
+5. Omitted legacy behavior should be documented once, then kept out of the
+   critical path.
+6. Do not move editor semantics into GUI/backend adapters.  Backends transport
+   input and render returned state; this repo decides command behavior.
+
+* 7. Open Questions
+
+- (RESOLVED 2026-06-10 → M11) Minimal ssh-only Tramp is in scope; other
+  methods stay unsupported.
+- Which first real MELPA package should be the package promotion gate after the
+  existing dash/s/ht/f/queue-style pilots?
+- Should Git VC status be a lightweight local implementation or a thin command
+  wrapper around =git= output first?
+- Which coding legacy exceptions, if any, are must-run enough to keep despite
+  Doc 05?
+- (RESOLVED 2026-06-11 → M14) server/emacsclient shipped as a
+  post-M13 lane: real =emacsclient -e= round-trips against the
+  standalone reader; full client surface (frames/tty/files/TCP) stays
+  out until a workflow demands it.

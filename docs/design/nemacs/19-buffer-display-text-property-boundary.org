@@ -1,0 +1,85 @@
+#+TITLE: Buffer/Display Text-Property Boundary
+
+* Purpose
+
+This note fixes the BUF/DSP ownership boundary for text properties.
+`emacs-buffer.el' owns buffer state and text-property interval storage.
+`emacs-redisplay.el' may consume a rendering-oriented view, but must not
+read `emacs-buffer--ext-*' records or `emacs-buffer--tp-*' cells.
+
+The goal is library reuse: consumers should be able to use the buffer
+library without redisplay, and redisplay should be replaceable by TUI,
+GTK, tests, or another renderer through public buffer APIs.
+
+* Public API
+
+`emacs-buffer-text-property-view' is the boundary API.
+
+#+begin_src elisp
+(emacs-buffer-text-property-view START END &optional PROPERTIES BUFFER)
+#+end_src
+
+It returns a snapshot list:
+
+#+begin_src elisp
+((SPAN-START SPAN-END PLIST) ...)
+#+end_src
+
+- `SPAN-START' and `SPAN-END' are absolute buffer positions clipped to
+  `[START, END)'.
+- When `PROPERTIES' is nil, `PLIST' is a copy of the raw interval plist.
+- When `PROPERTIES' is non-nil, `PLIST' contains only requested
+  properties with non-nil resolved values.
+- Requested values honor the same `category' inheritance policy as
+  `emacs-buffer-get-text-property'.
+- The returned plist is caller-owned and may be mutated.
+
+* Ownership Rules
+
+- BUF owns interval storage, mutation, merging, splitting, category
+  resolution, and text-property ticks.
+- DSP owns row fingerprints, glyph realization, overlay composition,
+  face realization, and cache invalidation policy.
+- DSP may call:
+  - `emacs-buffer-get-text-property'
+  - `emacs-buffer-text-property-at'
+  - `emacs-buffer-text-property-view'
+  - stable overlay APIs listed by
+    `nelisp-emacs-library-stable-api-symbols', including
+    `emacs-buffer-overlays-at', `emacs-buffer-overlays-in', overlay
+    accessors/mutators, and `emacs-buffer-get-char-property'
+- Overlay property lookup is a BUF-owned rule: numeric `priority' wins,
+  later insertion breaks ties, then `emacs-buffer-get-char-property'
+  falls back to text properties with category inheritance.
+- DSP must not call or mention:
+  - `emacs-buffer--ext-text-props'
+  - `emacs-buffer--ext-overlays'
+  - `emacs-buffer--tp-start'
+  - `emacs-buffer--tp-end'
+  - `emacs-buffer--tp-plist'
+  - `emacs-buffer--overlay-rec-*'
+
+* Current Use
+
+`emacs-redisplay--textprop-row-fingerprint' uses
+`emacs-buffer-text-property-view' with `(face display invisible)' and
+converts the absolute spans into row-relative fingerprint entries.
+
+This keeps cache invalidation sensitive to rendering-relevant
+text-properties without tying redisplay to the buffer interval
+representation.
+
+* Remaining Boundary Work
+
+Two boundary topics are intentionally outside this change:
+
+- The reverse BUF -> DSP mention around buffer textual snapshot caching
+  should become a public text snapshot API if more consumers need it.
+- `files.el' / `files-standalone-buffer.el' runtime ownership still needs
+  a small foundation-level runtime predicate or an ownership adjustment.
+
+* Decision
+
+Treat `emacs-buffer-text-property-view' as the stable adapter between
+buffer text-property storage and display consumers.  Future storage
+changes, including interval trees, must preserve this API.

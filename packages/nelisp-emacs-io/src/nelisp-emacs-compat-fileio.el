@@ -1,0 +1,1002 @@
+;;; nelisp-emacs-compat-fileio.el --- File I/O extension for nelisp-emacs-compat  -*- lexical-binding: t; -*-
+
+;; Phase 9d.A4 (T78) — extends `nelisp-emacs-compat' (Phase 9a SHIPPED,
+;; T39) with the minimal Emacs file I/O surface required by anvil.el +
+;; downstream extension packages.  Sister task = T76 (standalone syscall
+;; surface) that lands `nelisp_syscall_opendir / readdir / mkdir /
+;; unlink / rename / access' as the eventual hard backend.
+;;
+;; Layer policy: this file follows the same dual-runtime contract as
+;; `nelisp-coding' (see src/nelisp-coding.el §file-IO comment, Phase
+;; 7.5 plan):
+;;
+;;   * Today (T76 in flight)     — host Emacs primitives are used as a
+;;                                  *simulator* for standalone syscalls.
+;;                                  The wire shape (= argument layout
+;;                                  and return value contract) is
+;;                                  identical to what the FFI will
+;;                                  expose, so Phase 7.5 integration
+;;                                  is a one-line swap of each helper.
+;;   * Phase 7.5 (T76 SHIPPED)   — `nl-syscall-*' takes over and the
+;;                                  host fallback is reduced to a
+;;                                  smoke test for the simulator path.
+;;
+;; Naming: `nelisp-ec-' (NeLisp Emacs Compat) prefix is preserved so
+;; that loading this module inside a host Emacs does NOT shadow
+;; built-in `insert-file-contents', `write-region', etc.
+;;
+;; API surface (13 public APIs, +4 file-name string-surgery APIs):
+;;
+;;   File I/O (nelisp-coding integrated, UTF-8 default)
+;;     1.  insert-file-contents      FILE [VISIT BEG END REPLACE]
+;;     2.  write-region              START END FILE [APPEND VISIT]
+;;
+;;   Predicates (stat-backed)
+;;     3.  file-exists-p             FILE
+;;     4.  file-readable-p           FILE
+;;     5.  file-directory-p          FILE
+;;     6.  file-attributes           FILE [ID-FORMAT]
+;;
+;;   Directory operations (opendir / mkdir / rename / unlink)
+;;     7.  directory-files           DIR [FULL MATCH NOSORT COUNT]
+;;     8.  make-directory            DIR [PARENTS]
+;;     9.  delete-file               FILE
+;;     10. rename-file               OLD NEW [OK-IF-ALREADY-EXISTS]
+;;
+;;   Pure string surgery (no host syscall)
+;;     11. expand-file-name          NAME [DEFAULT-DIRECTORY]
+;;     12. file-name-directory       NAME
+;;     13. file-name-nondirectory    NAME
+;;     14. file-name-sans-extension  NAME
+;;     15. file-name-as-directory    NAME
+;;     16. file-name-absolute-p      NAME
+;;     17. substitute-in-file-name    NAME
+;;
+;;   PATH walk
+;;     18. executable-find           COMMAND [REMOTE]
+;;
+;; nelisp-coding integration:
+;;
+;;   `nelisp-ec-insert-file-contents' = read raw bytes via simulator →
+;;     `nelisp-coding-utf8-decode' (UTF-8 default, replace strategy) →
+;;     insert into current `nelisp-ec' buffer at point.
+;;   `nelisp-ec-write-region'         = grab `buffer-substring' from
+;;     current `nelisp-ec' buffer → `nelisp-coding-utf8-encode-string'
+;;     → write raw bytes via simulator (no-conversion).
+;;
+;; Non-goals (deferred to later phases, per task spec):
+;;   * Full platform-specific pathname edge-case parity beyond the
+;;     drive-root / UNC / HOME handling below.
+;;   * file-notify (= Phase 9d.A4 separate task = T82).
+;;   * symlink resolution corner cases (`file-truename', etc).
+;;   * VISIT side-effects on buffer-modified-p / buffer-name (Emacs's
+;;     visit semantics are tied to the file-visiting buffer machinery,
+;;     which is *not* part of `nelisp-ec' buffers in MVP).  We accept
+;;     a VISIT argument for shape-compat and silently ignore it.
+
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- nelisp-ec-* file layer targets ec-buffers.
+;;; Code:
+
+(require 'cl-lib)
+(require 'nelisp-coding)
+(require 'nelisp-emacs-compat)
+
+;;; ──────────────────────────────────────────────────────────────────────
+;;; Errors
+;;; ──────────────────────────────────────────────────────────────────────
+
+(define-error 'nelisp-ec-file-error
+  "NeLisp emacs-compat file I/O error" 'nelisp-ec-error)
+(define-error 'nelisp-ec-file-missing
+  "File does not exist" 'nelisp-ec-file-error)
+(define-error 'nelisp-ec-file-already-exists
+  "File already exists" 'nelisp-ec-file-error)
+(define-error 'nelisp-ec-syscall-unimplemented
+  "Underlying syscall not yet wired (T76 pending)" 'nelisp-ec-file-error)
+
+;;; ──────────────────────────────────────────────────────────────────────
+;;; Phase 7.5 FFI declarations (T76 wires these for real)
+;;; ──────────────────────────────────────────────────────────────────────
+;;
+;; Until T76 SHIPPED these names resolve via `fboundp'-guarded lookup
+;; and the simulator path runs.  When T76 lands, every helper below
+;; flips to call the FFI symbol with no argument-shape change.
+
+(declare-function nl-syscall-opendir   "nelisp-runtime")
+(declare-function nl-syscall-readdir   "nelisp-runtime")
+(declare-function nl-syscall-access    "nelisp-runtime")
+(declare-function nl-syscall-read-file "nelisp-runtime")
+(declare-function nelisp-sys-access    "nelisp-sys")
+(declare-function nelisp--syscall-stat "nelisp-runtime")
+(declare-function nelisp--syscall-readdir "nelisp-runtime")
+(declare-function nelisp--syscall-readdir-names "nelisp-runtime")
+(declare-function nelisp--readdir-scan-raw "nelisp-runtime" (raw skip-dotdot))
+(declare-function nelisp--syscall-read-file "nelisp-runtime")
+(declare-function nl-write-file "nelisp-runtime")
+(declare-function nl-append-file "nelisp-runtime")
+
+(defun nelisp-ec--syscall-available-p (sym)
+  "Return non-nil if standalone syscall SYM is wired (T76 SHIPPED)."
+  (fboundp sym))
+
+(defconst nelisp-ec--access-functions
+  '(nelisp-sys-access nl-syscall-access)
+  "Candidate access(2)-style functions, in preferred order.")
+
+(declare-function nelisp--syscall-path-int "nelisp-runtime")
+
+(defconst nelisp-ec--syscall-access-number 21
+  "Linux x86_64 access(2) syscall number, for `nelisp--syscall-path-int'.")
+
+(defun nelisp-ec--access (file mode)
+  "Call the first available access(2)-style backend for FILE and MODE.
+Returns the integer backend result, or nil when no backend is wired."
+  (cond
+   ;; Standalone reader (nemacs): access(2) addressed by raw syscall
+   ;; number.  This is the only working access backend there --
+   ;; `nelisp-sys-access' / `nl-syscall-access' are unbound and
+   ;; `nelisp--syscall-stat' misreports -- so it is preferred when
+   ;; present.  Absent under host Emacs, where the dolist backends and
+   ;; host predicates take over unchanged.
+   ((fboundp 'nelisp--syscall-path-int)
+    (condition-case nil
+        (nelisp--syscall-path-int nelisp-ec--syscall-access-number file mode)
+      (error nil)))
+   (t
+    (catch 'done
+      (dolist (fn nelisp-ec--access-functions)
+        (when (fboundp fn)
+          (let ((rc (condition-case nil
+                        (funcall fn file mode)
+                      (error nil))))
+            (when (integerp rc)
+              (throw 'done rc)))))
+      nil))))
+
+;;;###autoload
+(defun nelisp-ec-access (file mode)
+  "Call the access(2)-style backend for FILE and MODE.
+Returns the integer backend result, or nil when no backend is wired."
+  (nelisp-ec--access file mode))
+
+(defun nelisp-ec--stat-kind (file)
+  "Return a coarse standalone stat kind for FILE, or nil when unavailable."
+  (and (fboundp 'nelisp--syscall-stat)
+       (nelisp--syscall-stat file)))
+
+(defun nelisp-ec--safe-stat-kind (file)
+  "Return coarse standalone stat kind for FILE, or nil on stat failure."
+  (condition-case nil
+      (nelisp-ec--stat-kind file)
+    (error nil)))
+
+;;; ──────────────────────────────────────────────────────────────────────
+;;; §1. Pure string-surgery APIs (no host syscall, deterministic)
+;;; ──────────────────────────────────────────────────────────────────────
+
+(defvar nelisp-ec-file-name-drive-letters
+  (memq system-type '(windows-nt ms-dos cygwin))
+  "When non-nil, treat drive-root and UNC names as absolute.
+This affects `nelisp-ec-file-name-absolute-p' and the corresponding
+Windows-aware branch inside `nelisp-ec-expand-file-name'.  Relative
+drive names such as `c:foo' stay relative.")
+
+(defun nelisp-ec--ascii-alpha-p (char)
+  "Return non-nil if CHAR is an ASCII alphabetic character."
+  (or (and (>= char ?A) (<= char ?Z))
+      (and (>= char ?a) (<= char ?z))))
+
+(defun nelisp-ec--replace-char (string from to)
+  "Return STRING with each FROM character replaced by TO."
+  (let ((i 0)
+        (len (length string))
+        (out string))
+    (while (< i len)
+      (when (eq (aref out i) from)
+        (aset out i to))
+      (setq i (1+ i)))
+    out))
+
+(defun nelisp-ec--windows-drive-root-p (name)
+  "Return non-nil if NAME starts with a Windows drive root."
+  (and (>= (length name) 3)
+       (nelisp-ec--ascii-alpha-p (aref name 0))
+       (eq (aref name 1) ?:)
+       (or (eq (aref name 2) ?/)
+           (eq (aref name 2) ?\\))))
+
+(defun nelisp-ec--unc-root-p (name)
+  "Return non-nil if NAME starts with a UNC root marker."
+  (and (>= (length name) 2)
+       (or (string-prefix-p "//" name)
+           (string-prefix-p "\\\\" name))))
+
+(defun nelisp-ec--path-absolute-p (name &optional allow-windows)
+  "Return non-nil if NAME is absolute under the selected rules."
+  (and (> (length name) 0)
+       (or (eq (aref name 0) ?/)
+           (eq (aref name 0) ?~)
+           (and allow-windows
+                (or (nelisp-ec--windows-drive-root-p name)
+                    (nelisp-ec--unc-root-p name))))))
+
+(defun nelisp-ec--normalize-home-path (home)
+  "Normalize HOME for path surgery after tilde expansion."
+  (let ((home (nelisp-ec--replace-char (copy-sequence home) ?\\ ?/)))
+    (if (nelisp-ec--windows-drive-root-p home)
+        (concat (downcase (substring home 0 1))
+                (substring home 1))
+      home)))
+
+(defun nelisp-ec--expand-leading-tilde (name)
+  "Expand leading `~' in NAME and report whether HOME was used.
+Returns a cons cell (PATH . FROM-HOME-P).  `~user' is left unchanged."
+  (if (and (> (length name) 0) (eq (aref name 0) ?~))
+      (let ((home (nelisp-ec--normalize-home-path
+                   (or (getenv "HOME") "/"))))
+        (cond
+         ((or (= (length name) 1) (eq (aref name 1) ?/))
+          (cons (concat home (substring name 1)) t))
+         (t (cons name nil))))
+    (cons name nil)))
+
+(defun nelisp-ec--split-path-prefix (name &optional allow-windows)
+  "Split NAME into (PREFIX . REST) before segment collapsing."
+  (cond
+   ((and allow-windows (nelisp-ec--windows-drive-root-p name))
+    (cons (substring name 0 2)
+          (substring name 3)))
+   ((string-prefix-p "//" name)
+    (cons "//" (substring name 2)))
+   ((and allow-windows (string-prefix-p "\\\\" name))
+    (cons "//"
+          (substring (nelisp-ec--replace-char (copy-sequence name) ?\\ ?/) 2)))
+   ((and (> (length name) 0) (eq (aref name 0) ?/))
+    (cons "/" (substring name 1)))
+   (t
+    (cons "" name))))
+
+(defun nelisp-ec--join-path-prefix (prefix joined)
+  "Join PREFIX and JOINED after segment collapsing.
+A root prefix (`/' or `//') already carries its separator, so adding
+another turns an ordinary POSIX path into a UNC one.  A drive prefix
+(`c:') carries none and needs one inserted."
+  (let ((sep (if (and (> (length prefix) 0)
+                      (eq (aref prefix (1- (length prefix))) ?/))
+                 ""
+               "/")))
+    (cond
+     ((= (length prefix) 0) joined)
+     ((= (length joined) 0)
+      (if (string-equal sep "") prefix (concat prefix "/")))
+     (t (concat prefix sep joined)))))
+
+;;;###autoload
+(defun nelisp-ec-file-name-absolute-p (name)
+  "Return non-nil if NAME is absolute under the configured path rules.
+`/' and `~' are always treated as absolute starts.  When
+`nelisp-ec-file-name-drive-letters' is non-nil, drive roots such as
+`C:/' and UNC names such as `//server/share' are also absolute, while
+drive-relative names such as `c:foo' stay relative.  This helper does
+NOT touch the filesystem."
+  (unless (stringp name)
+    (signal 'wrong-type-argument (list 'stringp name)))
+  (nelisp-ec--path-absolute-p name nelisp-ec-file-name-drive-letters))
+
+(defun nelisp-ec--last-index-of-char (char string)
+  "Return the last index of CHAR in STRING, or nil."
+  (let ((i (1- (length string)))
+        found)
+    (while (and (not found) (>= i 0))
+      (when (eq (aref string i) char)
+        (setq found i))
+      (setq i (1- i)))
+    found))
+
+(defun nelisp-ec--string-has-char-p (string char)
+  "Return non-nil if STRING contains CHAR.
+A single `aref' scan with no `substring'/`concat' allocation, used to
+skip `nelisp-ec--substitute-env-vars' entirely when NAME has no `$' to
+substitute (the common case for already-expanded absolute paths)."
+  (let ((i 0) (len (length string)) (found nil))
+    (while (and (not found) (< i len))
+      (when (eq (aref string i) char)
+        (setq found t))
+      (setq i (1+ i)))
+    found))
+
+(defun nelisp-ec--split-string-char (string delimiter &optional omit-empty)
+  "Split STRING at character DELIMITER.
+When OMIT-EMPTY is non-nil, empty fields are skipped.  This deliberately
+avoids `split-string' so file-name primitives are available before the
+larger `subr.el' compatibility surface has loaded."
+  (let ((start 0)
+        (i 0)
+        (len (length string))
+        parts)
+    (while (< i len)
+      (when (eq (aref string i) delimiter)
+        (let ((part (substring string start i)))
+          (unless (and omit-empty (= (length part) 0))
+            (setq parts (cons part parts))))
+        (setq start (1+ i)))
+      (setq i (1+ i)))
+    (let ((part (substring string start len)))
+      (unless (and omit-empty (= (length part) 0))
+        (setq parts (cons part parts))))
+    (nreverse parts)))
+
+(defun nelisp-ec--env-name-char-p (char)
+  "Return non-nil if CHAR is valid in a shell-style environment name."
+  (or (and (>= char ?A) (<= char ?Z))
+      (and (>= char ?a) (<= char ?z))
+      (and (>= char ?0) (<= char ?9))
+      (eq char ?_)))
+
+(defun nelisp-ec--substring-index (needle haystack)
+  "Return the first index of NEEDLE in HAYSTACK, or nil."
+  (let ((nlen (length needle))
+        (hlen (length haystack))
+        (i 0)
+        found)
+    (while (and (not found)
+                (<= (+ i nlen) hlen))
+      (when (string-equal needle (substring haystack i (+ i nlen)))
+        (setq found i))
+      (setq i (1+ i)))
+    found))
+
+(defun nelisp-ec--substitute-env-vars (name)
+  "Expand `$VAR' and `${VAR}' in NAME using `getenv'.
+Missing variables are left verbatim, matching Emacs's conservative
+load-time behavior."
+  (let ((i 0)
+        (len (length name))
+        (out ""))
+    (while (< i len)
+      (cond
+       ((not (eq (aref name i) ?$))
+        (setq out (concat out (substring name i (1+ i))))
+        (setq i (1+ i)))
+       ((and (< (1+ i) len)
+             (eq (aref name (1+ i)) ?{))
+        (let ((j (+ i 2))
+              end)
+          (while (and (< j len) (not end))
+            (when (eq (aref name j) ?})
+              (setq end j))
+            (setq j (1+ j)))
+          (if (not end)
+              (progn
+                (setq out (concat out "$"))
+                (setq i (1+ i)))
+            (let* ((var (substring name (+ i 2) end))
+                   (value (getenv var)))
+              (setq out
+                    (concat out
+                            (if value value (substring name i (1+ end)))))
+              (setq i (1+ end))))))
+       ((and (< (1+ i) len)
+             (nelisp-ec--env-name-char-p (aref name (1+ i))))
+        (let ((j (1+ i)))
+          (while (and (< j len)
+                      (nelisp-ec--env-name-char-p (aref name j)))
+            (setq j (1+ j)))
+          (let* ((var (substring name (1+ i) j))
+                 (value (getenv var)))
+            (setq out (concat out (if value value (substring name i j))))
+            (setq i j))))
+       (t
+        (setq out (concat out "$"))
+        (setq i (1+ i)))))
+    out))
+
+(defun nelisp-ec--discard-before-double-slash (name)
+  "Apply `substitute-in-file-name' double-slash shadowing to NAME."
+  (let ((idx (nelisp-ec--substring-index "//" name)))
+    (if idx
+        (concat "/" (substring name (+ idx 2)))
+      name)))
+
+;;;###autoload
+(defun nelisp-ec-substitute-in-file-name (name)
+  "Substitute environment variables and `//' shadows in NAME.
+This is a POSIX-oriented MVP for standalone NeLisp.  It implements the
+parts used by Emacs's `rfn-eshadow.el': `$VAR', `${VAR}', and discarding
+the path prefix before `//'."
+  (unless (stringp name)
+    (signal 'wrong-type-argument (list 'stringp name)))
+  (nelisp-ec--discard-before-double-slash
+   (if (nelisp-ec--string-has-char-p name ?$)
+       (nelisp-ec--substitute-env-vars name)
+     name)))
+
+;;;###autoload
+(defun nelisp-ec-file-name-directory (name)
+  "Return the directory part of NAME, or nil if NAME has no slash.
+The trailing slash is preserved (= directory part is itself a
+directory name)."
+  (unless (stringp name)
+    (signal 'wrong-type-argument (list 'stringp name)))
+  (let ((idx (nelisp-ec--last-index-of-char ?/ name)))
+    (and idx (substring name 0 (1+ idx)))))
+
+;;;###autoload
+(defun nelisp-ec-file-name-nondirectory (name)
+  "Return the non-directory part of NAME (= last `/'-delimited component).
+Returns NAME itself if there is no slash."
+  (unless (stringp name)
+    (signal 'wrong-type-argument (list 'stringp name)))
+  (let ((idx (nelisp-ec--last-index-of-char ?/ name)))
+    (if idx (substring name (1+ idx)) name)))
+
+;;;###autoload
+(defun nelisp-ec-file-name-sans-extension (name)
+  "Return NAME with its final extension (last `.' onwards) stripped.
+The directory part of NAME is preserved.  A leading `.' on the basename
+is treated as a hidden-file marker and NOT stripped (= `.bashrc'
+returns `.bashrc').  No extension → NAME returned unchanged."
+  (unless (stringp name)
+    (signal 'wrong-type-argument (list 'stringp name)))
+  (let* ((dir (nelisp-ec-file-name-directory name))
+         (base (nelisp-ec-file-name-nondirectory name))
+         (idx (nelisp-ec--last-index-of-char ?. base)))
+    (cond
+     ;; No `.' in basename, or `.' is the very first character (= hidden file).
+     ((or (null idx) (zerop idx)) name)
+     (t (concat (or dir "") (substring base 0 idx))))))
+
+;;;###autoload
+(defun nelisp-ec-file-name-as-directory (name)
+  "Return NAME with a trailing `/' appended (idempotent)."
+  (unless (stringp name)
+    (signal 'wrong-type-argument (list 'stringp name)))
+  (if (and (> (length name) 0)
+           (eq (aref name (1- (length name))) ?/))
+      name
+    (concat name "/")))
+
+(defun nelisp-ec--collapse-segments (segments)
+  "Collapse `.' / `..' / empty SEGMENTS in a POSIX-style path list.
+Returns the simplified list (does NOT touch leading `/')."
+  (let ((acc nil))
+    (dolist (seg segments)
+      (cond
+       ((or (= (length seg) 0) (string-equal seg ".")) nil)
+       ((string-equal seg "..")
+        (when acc (pop acc)))
+       (t (push seg acc))))
+    (nreverse acc)))
+
+(defun nelisp-ec--normalize-posix-path (path)
+  "Lexically normalize absolute POSIX PATH without filesystem access."
+  (let ((parts nil)
+        (start 0)
+        (idx 0)
+        (len (length path))
+        (trailing (and (> (length path) 1)
+                       (eq (aref path (1- (length path))) ?/))))
+    (while (<= idx len)
+      (when (or (= idx len) (eq (aref path idx) ?/))
+        (let ((part (substring path start idx)))
+          (cond
+           ((or (= (length part) 0) (string-equal part ".")) nil)
+           ((string-equal part "..")
+            (when parts (setq parts (cdr parts))))
+           (t (setq parts (cons part parts)))))
+        (setq start (1+ idx)))
+      (setq idx (1+ idx)))
+    (let ((out "")
+          (tail (nreverse parts)))
+      (while tail
+        (setq out (concat out "/" (car tail)))
+        (setq tail (cdr tail)))
+      (when (= (length out) 0) (setq out "/"))
+      (if (and trailing (not (string-equal out "/")))
+          (concat out "/")
+        out))))
+
+(defun nelisp-ec--posix-path-clean-p (path)
+  "Return non-nil when PATH needs no work from `nelisp-ec--normalize-posix-path'.
+PATH must already be absolute (start with `/') and contain no `//', `/./',
+or `/../' component, and must not end in a bare `.' or `..' component --
+i.e. `(nelisp-ec--normalize-posix-path path)' is guaranteed to return PATH
+unchanged.  This is a single linear scan using only `aref'/`eq' (no
+`substring'/`concat' allocation), so it is cheap enough to run before every
+`nelisp-ec-expand-file-name' call and skip the split-and-rebuild pass for
+the overwhelmingly common already-normalized absolute path (T47: that
+split/rebuild pass, run unconditionally, was the dominant cost of every
+file predicate that touches `expand-file-name')."
+  (and (> (length path) 0)
+       (eq (aref path 0) ?/)
+       (let ((len (length path))
+             (i 0)
+             (ok t))
+         (while (and ok (< i len))
+           (when (eq (aref path i) ?/)
+             (let ((c1 (and (< (1+ i) len) (aref path (1+ i))))
+                   (c2 (and (< (+ i 2) len) (aref path (+ i 2)))))
+               (cond
+                ((eq c1 ?/) (setq ok nil))
+                ((and (eq c1 ?.) (or (null c2) (eq c2 ?/)))
+                 (setq ok nil))
+                ((and (eq c1 ?.) (eq c2 ?.)
+                      (let ((c3 (and (< (+ i 3) len) (aref path (+ i 3)))))
+                        (or (null c3) (eq c3 ?/))))
+                 (setq ok nil)))))
+           (setq i (1+ i)))
+         ok)))
+
+(defun nelisp-ec--normalize-posix-path-fast (path)
+  "Normalize PATH, skipping the split/rebuild pass when it is unnecessary.
+See `nelisp-ec--posix-path-clean-p'."
+  (if (nelisp-ec--posix-path-clean-p path)
+      path
+    (nelisp-ec--normalize-posix-path path)))
+
+(defun nelisp-ec--expand-home-prefix (path)
+  "Expand PATH's `~' or `~/' prefix and reject unsupported `~user'."
+  (if (or (= (length path) 0) (not (eq (aref path 0) ?~)))
+      path
+    (let ((home (getenv "HOME")))
+      (unless (and (stringp home) (> (length home) 0))
+        (signal 'error (list "HOME is not set")))
+      (cond
+       ((= (length path) 1) home)
+       ((eq (aref path 1) ?/) (concat home (substring path 1)))
+       (t (signal 'error (list "~user expansion is unsupported" path)))))))
+
+;;;###autoload
+(defun nelisp-ec-expand-file-name (name &optional default-dir)
+  "Convert NAME to an absolute path using host-like string surgery.
+If NAME is already absolute, only `.' / `..' / `//' collapsing is
+performed.  Otherwise NAME is appended to DEFAULT-DIR.  A `~' prefix
+in either NAME or DEFAULT-DIR expands through `HOME`; when that HOME
+path carries a drive root its backslashes are normalized to `/` and
+the drive letter is downcased.  When
+`nelisp-ec-file-name-drive-letters' is non-nil, Windows drive roots
+and UNC roots are preserved during collapsing.  When DEFAULT-DIR is
+omitted the value of the host `default-directory' is used.
+
+This helper is *pure NeLisp string surgery* — no host syscall is
+invoked beyond reading `default-directory' for the seed CWD."
+  (unless (stringp name)
+    (signal 'wrong-type-argument (list 'stringp name)))
+  ;; Fast path (T47, commit 290b37c2): the overwhelmingly common call is
+  ;; an already-absolute, already-clean POSIX path (e.g. `file-exists-p'
+  ;; probing `load-path' entries), where DEFAULT-DIR is irrelevant and no
+  ;; split/rebuild is needed.  `nelisp-ec--posix-path-clean-p' only
+  ;; accepts paths starting with a literal `/', so it never fires for a
+  ;; `~' name or a Windows drive/UNC root -- those always fall through to
+  ;; the general surgery below.
+  (if (nelisp-ec--posix-path-clean-p name)
+      name
+    (let* ((dd0 (or default-dir
+                    (and (boundp 'default-directory) default-directory)
+                    "/"))
+           (name* (nelisp-ec--expand-leading-tilde name))
+           (dd* (nelisp-ec--expand-leading-tilde dd0))
+           (name-path (car name*))
+           ;; `nelisp-ec--expand-leading-tilde' leaves an unrecognized
+           ;; `~user' form untouched (FROM-HOME-P nil) rather than looking
+           ;; up that user's home directory, which this pure string-surgery
+           ;; polyfill cannot do.  Fail loud instead of silently returning
+           ;; the literal `~user...' text as if it were a real path.
+           (name-home-p (let ((home-p (cdr name*)))
+                          (when (and (not home-p) (> (length name) 0)
+                                     (eq (aref name 0) ?~))
+                            (signal 'error
+                                    (list "~user expansion is unsupported" name)))
+                          home-p))
+           (dd-path (car dd*))
+           (dd-home-p (let ((home-p (cdr dd*)))
+                        (when (and (not home-p) (> (length dd0) 0)
+                                   (eq (aref dd0 0) ?~))
+                          (signal 'error
+                                  (list "~user expansion is unsupported" dd0)))
+                        home-p))
+           (dd-windows-p (or nelisp-ec-file-name-drive-letters dd-home-p))
+           (dd-path (if (nelisp-ec--path-absolute-p dd-path dd-windows-p)
+                        dd-path
+                      (concat "/" dd-path)))
+           (seed (if (nelisp-ec--path-absolute-p
+                      name-path
+                      (or nelisp-ec-file-name-drive-letters name-home-p))
+                     name-path
+                   (concat (nelisp-ec-file-name-as-directory dd-path) name-path)))
+           (seed-windows-p (or nelisp-ec-file-name-drive-letters
+                               name-home-p
+                               dd-home-p))
+           (seed (if seed-windows-p
+                     (nelisp-ec--replace-char (copy-sequence seed) ?\\ ?/)
+                   seed))
+           (prefix+rest (nelisp-ec--split-path-prefix seed seed-windows-p))
+           (segments (nelisp-ec--split-string-char (cdr prefix+rest) ?/ t))
+           (collapsed (nelisp-ec--collapse-segments segments))
+           (joined (mapconcat #'identity collapsed "/")))
+      (nelisp-ec--join-path-prefix (car prefix+rest) joined))))
+
+;;; ──────────────────────────────────────────────────────────────────────
+;;; §2. Stat-backed predicates
+;;; ──────────────────────────────────────────────────────────────────────
+;;;
+;;; T76 will provide `nl-syscall-stat-ex' / `nl-syscall-access' as the
+;;; hard backend.  For now we delegate to host Emacs primitives, which
+;;; are themselves thin libc wrappers — preserving the wire-shape and
+;;; return contract a future swap will require.
+
+;;;###autoload
+(defun nelisp-ec-file-exists-p (file)
+  "Return non-nil if FILE exists.  Wraps stat(2)."
+  (unless (stringp file)
+    (signal 'wrong-type-argument (list 'stringp file)))
+  (cond
+   ;; Standalone reader (nemacs): access(2) F_OK is the verified-working
+   ;; existence probe; `nelisp--syscall-stat' misreports here.  Host
+   ;; Emacs (no `nelisp--syscall-path-int') keeps the stat path below.
+   ((fboundp 'nelisp--syscall-path-int)
+    (let ((rc (nelisp-ec--access file 0))) ;; F_OK = 0
+      (cond
+       ((and (integerp rc) (zerop rc)) t)
+       ;; Linux ENOENT is a conclusive miss.  Other failures can come from
+       ;; incomplete standalone syscall shims, so allow the verified reader
+       ;; fallback below to prove existence.
+       ((and (integerp rc) (or (= rc 2) (= rc -2))) nil)
+       (t
+        (and (fboundp 'rdf)
+             (stringp (condition-case nil
+                          (rdf file)
+                        (error nil))))))))
+   ;; Standalone fallback: when the stat/access surface is not available
+   ;; yet, `rdf' is the verified file-open path.  Treat a successful read
+   ;; as existence for regular files; directories remain out of scope.
+   ((fboundp 'rdf)
+    (stringp (condition-case nil
+                 (rdf file)
+               (error nil))))
+   ((fboundp 'nelisp--syscall-stat)
+    (and (memq (nelisp-ec--safe-stat-kind file) '(file directory symlink)) t))
+   (t (file-exists-p file))))
+
+;;;###autoload
+(defun nelisp-ec-file-readable-p (file)
+  "Return non-nil if FILE exists and is readable.  Wraps access(F_OK | R_OK)."
+  (unless (stringp file)
+    (signal 'wrong-type-argument (list 'stringp file)))
+  (and (nelisp-ec-file-exists-p file)
+       (let ((rc (nelisp-ec--access file 4))) ;; R_OK = 4
+         (cond
+          ((integerp rc) (zerop rc))
+          ((fboundp 'nelisp--syscall-stat)
+           (and (memq (nelisp-ec--stat-kind file) '(file directory symlink)) t))
+          (t (file-readable-p file))))))
+
+;;;###autoload
+(defun nelisp-ec-file-directory-p (file)
+  "Return non-nil if FILE is a directory.  Wraps stat(2) + S_ISDIR."
+  (unless (stringp file)
+    (signal 'wrong-type-argument (list 'stringp file)))
+  (cond
+   ((fboundp 'nelisp--syscall-stat)
+    (eq (nelisp-ec--safe-stat-kind file) 'directory))
+   (t (file-directory-p file))))
+
+;;;###autoload
+(defun nelisp-ec-file-attributes (file &optional id-format)
+  "Return attributes of FILE as a `file-attributes'-shaped list.
+ID-FORMAT (`'integer'' / `'string'') controls UID/GID rendering and is
+forwarded to the underlying call.  Returns nil if FILE does not exist
+(matches Emacs `file-attributes' contract)."
+  (unless (stringp file)
+    (signal 'wrong-type-argument (list 'stringp file)))
+  (cond
+   ((fboundp 'nelisp--syscall-stat)
+    (let ((kind (nelisp-ec--safe-stat-kind file)))
+      (and (memq kind '(file directory symlink))
+           (list (eq kind 'directory)
+                 1 nil nil nil nil nil 0 nil nil nil nil))))
+   (t (file-attributes file id-format))))
+
+;;; ──────────────────────────────────────────────────────────────────────
+;;; §3. Directory operations
+;;; ──────────────────────────────────────────────────────────────────────
+
+;;;###autoload
+(defun nelisp-ec-directory-files (dir &optional full match nosort count)
+  "Return a list of files in DIR.
+FULL non-nil → return absolute paths.
+MATCH non-nil → keep only filenames matching this regexp.
+NOSORT non-nil → preserve readdir order; otherwise the result is
+  sorted lexicographically.
+COUNT non-nil → return at most COUNT entries (post-filter, post-sort)."
+  (unless (stringp dir)
+    (signal 'wrong-type-argument (list 'stringp dir)))
+  (let ((entries
+         (cond
+          ;; `nelisp--syscall-readdir' is fbound on the reader but hard-aborts
+          ;; unless the low-level `nl-syscall-opendir' it relies on is present;
+          ;; gate on that primitive so a reader without it falls through to the
+          ;; `nelisp--syscall-readdir-names' path below.  `nl-syscall-opendir'
+          ;; never shipped (T76 sister task), so this branch is currently
+          ;; always dead on the standalone reader; kept for forward
+          ;; compatibility if it lands.
+          ((and (fboundp 'nelisp--syscall-readdir)
+                (fboundp 'nl-syscall-opendir))
+           (cdr (nelisp--syscall-readdir dir)))
+          ;; T47: this is the real backend the standalone reader ships today
+          ;; (the same primitive vendor's own `directory-files' is built on --
+          ;; see vendor/nelisp/scripts/nelisp-stdlib-prelude.el).  Call it
+          ;; directly instead of recursing into the public `directory-files'
+          ;; alias: that hop is both wasted work and, should this module ever
+          ;; itself win the `directory-files' alias, a self-reference.
+          ((and (fboundp 'nelisp--syscall-readdir-names)
+                (fboundp 'nelisp--readdir-scan-raw))
+           (let ((raw (nelisp--syscall-readdir-names dir)))
+             (and raw (nelisp--readdir-scan-raw raw t))))
+          (t
+           ;; Simulator (host Emacs, or a reader with neither backend above):
+           ;; host directory-files but without sort here so the NOSORT
+           ;; semantics flow through one code path.
+           (directory-files dir nil nil t)))))
+    (when match
+      (setq entries (cl-remove-if-not (lambda (n) (string-match-p match n))
+                                      entries)))
+    (unless nosort
+      (setq entries (sort entries #'string-lessp)))
+    (when count
+      (setq entries (cl-subseq entries 0 (min (length entries) count))))
+    (when full
+      (setq entries
+            (mapcar (lambda (n)
+                      (concat (nelisp-ec-file-name-as-directory dir) n))
+                    entries)))
+    entries))
+
+;;;###autoload
+(defun nelisp-ec-make-directory (dir &optional parents)
+  "Create directory DIR.  When PARENTS non-nil create intermediate dirs.
+Returns DIR.  Signals `nelisp-ec-file-error' on failure."
+  (unless (stringp dir)
+    (signal 'wrong-type-argument (list 'stringp dir)))
+  (condition-case err
+      (progn (make-directory dir parents) dir)
+    (error (signal 'nelisp-ec-file-error
+                   (list "mkdir" dir (error-message-string err))))))
+
+;;;###autoload
+(defun nelisp-ec-delete-file (file)
+  "Delete FILE via unlink(2).  Returns t on success."
+  (unless (stringp file)
+    (signal 'wrong-type-argument (list 'stringp file)))
+  (condition-case err
+      (progn (delete-file file) t)
+    (error (signal 'nelisp-ec-file-error
+                   (list "unlink" file (error-message-string err))))))
+
+;;;###autoload
+(defun nelisp-ec-rename-file (oldname newname &optional ok-if-already-exists)
+  "Rename OLDNAME to NEWNAME.  Returns t on success.
+When OK-IF-ALREADY-EXISTS is nil and NEWNAME exists, signals
+`nelisp-ec-file-already-exists'."
+  (unless (and (stringp oldname) (stringp newname))
+    (signal 'wrong-type-argument (list 'stringp oldname newname)))
+  (when (and (not ok-if-already-exists)
+             (nelisp-ec-file-exists-p newname))
+    (signal 'nelisp-ec-file-already-exists (list newname)))
+  (condition-case err
+      (progn (rename-file oldname newname (if ok-if-already-exists t nil)) t)
+    (error (signal 'nelisp-ec-file-error
+                   (list "rename" oldname newname
+                         (error-message-string err))))))
+
+;;; ──────────────────────────────────────────────────────────────────────
+;;; §4. PATH walk
+;;; ──────────────────────────────────────────────────────────────────────
+
+(defun nelisp-ec--executable-p (file)
+  "Return non-nil if FILE exists and is executable."
+  (let ((rc (nelisp-ec--access file 1))) ;; X_OK = 1
+    (cond
+     ((integerp rc) (zerop rc))
+     ((fboundp 'nelisp--syscall-stat)
+      (eq (nelisp-ec--stat-kind file) 'file))
+     (t (and (file-exists-p file)
+             (file-executable-p file))))))
+
+;;;###autoload
+(defun nelisp-ec-file-executable-p (file)
+  "Return non-nil if FILE exists and is executable.  Wraps access(X_OK).
+On the standalone reader this resolves through `nelisp-ec--access'
+(access(2) X_OK); under host Emacs callers normally keep the C builtin
+because the `emacs-fileio-builtins' defalias is gated on `fboundp'."
+  (unless (stringp file)
+    (signal 'wrong-type-argument (list 'stringp file)))
+  (nelisp-ec--executable-p file))
+
+;;;###autoload
+(defun nelisp-ec-executable-find (command &optional remote)
+  "Return the absolute path of executable COMMAND, or nil if not found.
+Walks $PATH, testing each candidate with access(X_OK).  REMOTE is
+accepted for shape-compat with Emacs `executable-find' but is
+currently a no-op (Phase 9d MVP is local-only)."
+  (unless (stringp command)
+    (signal 'wrong-type-argument (list 'stringp command)))
+  (when remote
+    ;; Shape-compat only — TRAMP-style remote PATH probing is deferred.
+    (ignore remote))
+  ;; Absolute / explicit-relative names skip the PATH walk entirely.
+  (cond
+   ((or (eq (aref command 0) ?/)
+        (and (> (length command) 1)
+             (eq (aref command 0) ?.)
+             (or (eq (aref command 1) ?/)
+                 (eq (aref command 1) ?.))))
+    (and (nelisp-ec--executable-p command) command))
+   (t
+    (let* ((path (or (getenv "PATH") ""))
+           (dirs (nelisp-ec--split-string-char path ?: t))
+           (found nil))
+      (catch 'done
+        (dolist (d dirs)
+          (let ((cand (concat (nelisp-ec-file-name-as-directory d) command)))
+            (when (nelisp-ec--executable-p cand)
+              (setq found cand)
+              (throw 'done nil)))))
+      found))))
+
+;;; ──────────────────────────────────────────────────────────────────────
+;;; §5. File I/O — read / write through nelisp-coding (UTF-8 default)
+;;; ──────────────────────────────────────────────────────────────────────
+;;;
+;;; Both helpers operate on the *current* `nelisp-ec' buffer (= the
+;;; one returned by `nelisp-ec-current-buffer').  This matches Emacs
+;;; `insert-file-contents' / `write-region' semantics where the
+;;; current-buffer is the implicit subject.
+
+(defun nelisp-ec--read-raw-bytes (file &optional beg end)
+  "Read FILE between byte offsets BEG (inclusive) and END (exclusive).
+Returns a unibyte string of raw bytes.  Phase 7.5 will swap this to
+`nl-syscall-read-file' once T76 lands."
+  (cond
+   ((nelisp-ec--syscall-available-p 'nl-syscall-read-file)
+    (nl-syscall-read-file file (or beg 0) end))
+   ((fboundp 'nelisp--syscall-read-file)
+    (let* ((text (nelisp--syscall-read-file file))
+           (from (or beg 0))
+           (to (or end (and (stringp text) (length text)))))
+      (cond
+       ((not (stringp text)) "")
+       ((or beg end) (substring text from to))
+       (t text))))
+   (t
+    (with-temp-buffer
+      (set-buffer-multibyte nil)
+      (insert-file-contents-literally file nil beg end)
+      (buffer-substring-no-properties (point-min) (point-max))))))
+
+(defun nelisp-ec--write-raw-bytes (file unibyte append)
+  "Write UNIBYTE bytes to FILE.  When APPEND non-nil, append.
+Phase 7.5 will swap this to `nl-syscall-write-file' once T76 lands."
+  (cond
+   ((and append (fboundp 'nl-append-file))
+    (nl-append-file file unibyte)
+    (length unibyte))
+   ((and (fboundp 'nl-write-file) (not append))
+    (nl-write-file file unibyte)
+    (length unibyte))
+   (t
+    (let ((coding-system-for-write 'no-conversion)
+          (write-region-annotate-functions nil)
+          (write-region-post-annotation-function nil)
+          ;; The fileio bridge may have replaced `write-region' with its
+          ;; dispatch wrapper; calling the symbol here would re-enter the
+          ;; wrapper (measured: "write-region string input has no
+          ;; standalone writer" under the host test harness).  Use the
+          ;; pre-wrap capture when the bridge is loaded.
+          (writer (or (and (boundp 'emacs-fileio-builtins--host-write-region)
+                           emacs-fileio-builtins--host-write-region)
+                      #'write-region)))
+      (funcall writer unibyte nil file append 'silent)
+      (length unibyte)))))
+
+;; Public entry point for other ownership groups (IO uses it).
+(defalias 'nelisp-ec-write-raw-bytes #'nelisp-ec--write-raw-bytes
+  "Write UNIBYTE bytes to FILE.  When APPEND non-nil, append.
+Public name for `nelisp-ec--write-raw-bytes'.")
+
+;;;###autoload
+(defun nelisp-ec-insert-file-contents (file &optional visit beg end replace)
+  "Insert contents of FILE into the current `nelisp-ec' buffer at point.
+Decoded under `nelisp-coding-utf8-decode' (= UTF-8 with `replace'
+strategy).
+
+VISIT  — accepted for shape-compat with Emacs but ignored in MVP
+         (= no buffer-file-name machinery in `nelisp-ec' buffers).
+BEG/END — byte offsets into FILE (raw, pre-decode).
+REPLACE — when non-nil, erase the visible region before insertion.
+
+Returns the cons (FILE . CHARS-INSERTED), matching Emacs's
+`insert-file-contents' return contract (FILE-NAME, BYTES-INSERTED).
+We report CHARS rather than BYTES because the codec layer handles
+the byte→char conversion; downstream call sites that only care
+about the bytes inserted should use file-attributes for the source
+file size."
+  (unless (stringp file)
+    (signal 'wrong-type-argument (list 'stringp file)))
+  (ignore visit)
+  (nelisp-ec--ensure-current)
+  (unless (nelisp-ec-file-exists-p file)
+    (signal 'nelisp-ec-file-missing (list file)))
+  (let* ((raw (nelisp-ec--read-raw-bytes file beg end))
+         ;; The standalone NeLisp runtime's `nelisp--syscall-read-file'
+         ;; already returns a decoded Lisp string.  Re-decoding that text
+         ;; through the self-hosted byte codec is both redundant and, at
+         ;; current bootstrap speed, too slow for ordinary find-file.
+         ;; On the v1.2.0 reader `rdf' hands back the raw UTF-8 bytes as a
+         ;; unibyte string, and `string-as-multibyte' is the native decode;
+         ;; the self-hosted codec below took 17 s per 50 KB there.
+         (decoded (cond
+                   ((and (fboundp 'rdf) (fboundp 'string-as-multibyte))
+                    (funcall 'string-as-multibyte raw))
+                   ((fboundp 'nelisp--syscall-read-file)
+                    raw)
+                   (t
+                    (plist-get (nelisp-coding-utf8-decode raw) :string)))))
+    (when replace
+      (nelisp-ec-erase-buffer))
+    (nelisp-ec-insert decoded)
+    (cons file (length decoded))))
+
+;;;###autoload
+(defun nelisp-ec-write-region (start end file &optional append visit)
+  "Write text between START and END of the current buffer to FILE.
+The text is encoded under `nelisp-coding-utf8-encode-string' (UTF-8,
+`replace' strategy).
+
+START / END — 1-based positions (matches `nelisp-ec' convention),
+              matching Emacs's `write-region' START/END contract:
+              - START a string: that string is the text to write and
+                END is ignored.  anvil-server's schema cache and the
+                reader's own prelude `write-region' both rely on that
+                form; before this the `integerp' check rejected it
+                (measured 2026-09-04, windows-x86_64).
+              - START nil: the whole buffer is written and END is
+                ignored (the standard `save-buffer' path calls
+                `write-region' as `(write-region nil nil FILE)').
+              - START and END both integers and/or `nelisp-ec' markers
+                (either order): the buffer text between them (order-
+                independent) is written.  Marker arguments contribute
+                their numeric positions; text comes from the current
+                buffer.
+APPEND      — non-nil → open FILE in append mode.
+VISIT       — accepted for shape-compat; ignored in MVP.
+
+Returns the number of *bytes* written to disk."
+  (unless (stringp file)
+    (signal 'wrong-type-argument (list 'stringp file)))
+  (ignore visit)
+  (let* ((text (cond
+                ;; Emacs: a string START is the text itself; END is ignored.
+                ((stringp start) start)
+                ;; Emacs: nil START means the whole buffer.
+                ((null start)
+                 (nelisp-ec-buffer-substring 1 (1+ (nelisp-ec-buffer-size))))
+                (t
+                 (let ((s (nelisp-ec--position-arg start))
+                       (e (nelisp-ec--position-arg end)))
+                   (unless (and (integerp s) (integerp e))
+                     (signal 'wrong-type-argument
+                             (list 'integer-or-marker-p start end)))
+                   (nelisp-ec-buffer-substring (min s e) (max s e))))))
+         ;; Same reader shortcut for the encode direction: the string's
+         ;; internal bytes are already UTF-8 and `string-as-unibyte' is
+         ;; native there, where the self-hosted encoder needed 80 s per
+         ;; 50 KB -- most of anvil-server's schema-cache write time.
+         (unibyte (if (and (fboundp 'rdf) (fboundp 'string-as-unibyte))
+                      (funcall 'string-as-unibyte text)
+                    (nelisp-coding-utf8-encode-string text))))
+    (nelisp-ec--write-raw-bytes file unibyte append)
+    (length unibyte)))
+
+(provide 'nelisp-emacs-compat-fileio)
+;;; nelisp-emacs-compat-fileio.el ends here

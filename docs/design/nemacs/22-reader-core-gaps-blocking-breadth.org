@@ -1,0 +1,606 @@
+#+TITLE: nelisp-emacs Doc 22 — reader-core gaps blocking the breadth loop (vendor/nelisp issue)
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-06-21
+#+STATUS: FILED — github.com/zawatton/nelisp#7 (2026-06-21)
+#+PROGRESS: 2026-06-22 — A16/A17/A18/A19 (rx 系) + A1/A2/A3/A5/A6/A7/A9/A10/A12/A13 を全て
+#+PROGRESS:   *pure-elisp で FIXED*、A4/A8/A11/A20 を native build-script (含 prelude) で
+#+PROGRESS:   FIXED (prelude commits 81eaf9e3 /
+#+PROGRESS:   a61c8efe / 8ca03316 / f3767c71)。重要な発見: bare reader の native primitive は
+#+PROGRESS:   prelude (=scripts/nelisp-stdlib-prelude.el=) の override で訂正可能 (=fset= の
+#+PROGRESS:   function-cell 解決を実証)、かつ dynamic binding も機能する (A8 の crash 主張は誤り、
+#+PROGRESS:   実態は symbol-value 誤値のみ) — doc 当初の「core を直さねば消えない」前提は多くの gap に
+#+PROGRESS:   当てはまらなかった。A20 (eq string=length, 新規発見) は native build-script
+#+PROGRESS:   (=bf_eq2=, commit fc5963bf) で content 比較に修正済。A15 (=&optional (VAR DEFAULT)=)
+#+PROGRESS:   は crash でなく誤値と判明し cl-defun desugar (commit 50cf2b2e) で FIXED。残:
+#+PROGRESS:   A14 も native (record/recordp 配線 + bf_aref tag-12) で FIXED — *Doc 22 全 gap 解消*。
+
+* 0. Purpose
+
+Doc 16 の package-breadth loop (round 1-15) を回す過程で、nelisp-emacs 側の
+polyfill では塞げない / 塞いでも silent-broken になる *reader-core (vendor/nelisp)
+の不具合・欠落* を多数発見した。本書はそれらを *最小再現付きで一覧化* し、
+vendor/nelisp (= github.com/zawatton/nelisp、reader-core repo) 側で対処すべき
+issue としてまとめる handoff。
+
+検証環境: =vendor/nelisp/target/nelisp --load FILE= (bare reader、bundle 無し)。
+各 bug は bare reader で再現する = reader-core 案件 (stdlib-prelude でなく Rust/
+core 由来)。nelisp-emacs の bundle/prelude は一部の VOID を埋めるが、*誤値を返す
+bug* は core を直さない限り消えない。
+
+* 1. 分類
+
+- *A. 誤値 bug* — 呼べるが *間違った結果* を返す。elisp polyfill で上位 API を
+  組んでも下位がこれだと silent-broken。最優先。
+- *B. 欠落 (VOID)* — 関数が無い。bundle/prelude で polyfill 可能なものは nelisp-
+  emacs 側で対処済だが、core にあるべきもの。
+- *C. introspection 不能* — VOID かつ polyfill も不能 (core の内部状態を要する)。
+
+* 2. A. 誤値 bug (最優先)
+
+** A1. 2-arg =floor= / =ceiling= / =truncate= が除数を無視 — *FIXED 2026-06-22*
+
+*FIXED* in =scripts/nelisp-stdlib-prelude.el= (vendor/nelisp commit 81eaf9e3).
+誤った前提 ("core を直さないと消えない") は不要だった: bare reader は prelude を
+native builtins の *後に* load し、runtime は global function cell 経由で解決する
+(=(fset 'mod ...)= の user override が効くことを実証)。よって prelude で native 実装を
+=symbol-function= で捕捉し、訂正版 elisp wrapper を被せれば全て pure-elisp で直る (Rust 不変)。
+A1 は 2-arg 整数経路を toward-zero =/= quotient + floor/ceil 符号調整で実装 (reader に =%= 無し)。
+1-arg float 経路は native を温存。検証: =(floor 7 2)=→3、=(floor -7 2)=→-4、=(ceiling -7 2)=→-3、
+=(truncate -7 2)=→-3。
+
+#+begin_src elisp
+(floor 7 2)      ;=> 7   (期待 3)
+(ceiling 7 2)    ;=> 7   (期待 4)
+(truncate -7 2)  ;=> -7  (期待 -3)
+#+end_src
+
+2 引数形 =(floor X Y)= = floor(X/Y) が Y を無視して X をそのまま返す。1-arg 形
+(=(floor 3.7)= = 3) は正常。=/= は toward-zero truncate で正常 (=(/ -7 2)= = -3)。
+
+- *impact*: =cl-floor= / =cl-ceiling= / =cl-round= / =cl-truncate= / =cl-mod= /
+  =cl-rem= (Doc 16 round 6) を core の floor/mod に乗せられず、=/= + 1-arg
+  floor/ceiling/round + 符号調整で自前実装して回避した。
+
+** A2. 負の被除数で =mod= が truncate 意味論 — *FIXED 2026-06-22*
+
+*FIXED* (prelude, 81eaf9e3): host floor-mod を再実装 (結果は B の符号を持つ)。
+=(- a (* (/ a b) b))= で rem を作り、符号が divisor と異なれば B を加算。検証:
+=(mod -7 3)=→2、=(mod 7 -3)=→-2、=(mod 7 3)=→1。
+
+#+begin_src elisp
+(mod -7 3)  ;=> -1  (期待 2 = floor-mod)
+(mod 7 3)   ;=> 1   (正の場合は正常)
+#+end_src
+
+=mod= が floor-mod でなく truncate-rem (=%= と同じ、符号が被除数依存)。
+
+- *impact*: cl-mod / floor 系の自前実装で =mod= を使えず回避。
+
+** A3. =equal= が vector を要素比較しない (常に non-equal) — *FIXED 2026-06-22*
+
+*FIXED* (prelude, 81eaf9e3): cons / vector を elisp で再帰比較し、atom (number /
+string / symbol / nil) は native =equal= に委譲。*=(eq a b)= の fast-path は使わない* —
+bare reader の =eq= は *同一長の別文字列で t を返す* (新 gap A20、下記) ため、eq 短絡すると
+任意の 2 文字列が equal 判定されてしまう (assoc/member が壊れる回帰を実測 → 除去で解消)。
+検証: =(equal [1 2 3] [1 2 3])=→t、=(equal ["a" "b"] ["a" "c"])=→nil、nested list/vec→t。
+
+#+begin_src elisp
+(equal [1 2 3] [1 2 3])  ;=> nil  (期待 t)
+#+end_src
+
+list / string / number の =equal= は正常。vector だけ要素比較せず常に nil。
+
+- *impact*: vector を返す関数 (=string-to-vector= / =seq-into ... 'vector= 等) の
+  test で =(equal RESULT [..])= が常に FAIL に見える。検証は =(append vec nil)= で
+  list 化して比較する hack で回避中。実コードでも vector の =equal= 比較は壊れる。
+
+** A4. =aset= が string を破壊変更しない (no-op) — *FIXED 2026-06-22 (native + prelude)*
+
+*FIXED* (vendor/nelisp commit 436b6555): 2 つの欠陥の合わせ技だった。(1) native =bf_aset= は
+Vector(8) のみ mutate し、Str(5)/MutStr(6) を含む他 tag は no-op で値を返すだけ → string in-place
+byte write を追加 (Str データ ptr@16、MutStr は NlStr* @8 → buffer @+8、=bf_aref= と同じ
+char-idx==byte-idx の ASCII モデル)。(2) prelude =copy-sequence= が string/vector で =(t seq)= =
+*同一オブジェクトを返していた* → 独立 buffer が無く aset が source (literal 含む) を破壊。string は
+=(concat seq)= で fresh buffer、vector は要素コピーに修正。両者で標準 idiom が *正しく安全に*:
+=(copy-sequence "abc")= → 新 buffer、aset はその copy だけ変更、literal は呼出跨ぎでも無傷。literal
+直 aset は host Emacs 同様 undefined。検証: =(aset (copy-sequence "abc") 0 88)=→"Xbc"、across-calls
+で literal 無傷、独立 copy、subst-char idiom、vector copy 独立、list/concat/aref/format/string= 無改変、
+reader-test green。pure elisp (build-script codegen + prelude)、Rust 不変。
+
+#+begin_src elisp
+(let ((s (copy-sequence "abc"))) (aset s 0 ?X) s)  ;=> "abc"  (期待 "Xbc")
+(let ((v (vector 1 2 3))) (aset v 0 9) v)          ;=> [9 2 3] (vector は正常)
+#+end_src
+
+vector の =aset= は効くが、string の =aset= は無反応 (string が immutable か backing
+を書き換えない)。
+
+- *impact*: =subst-char-in-string= / =store-substring= 系 / fill 系を =aset= で書くと
+  silent no-op。=subst-char-in-string= は =string-replace= ベースで回避。
+
+** A5. =substring= が vector で壊れる — *FIXED 2026-06-22*
+
+*FIXED* (prelude, 81eaf9e3): vector は =make-vector= + =aref= / =aset= で elisp slice、
+string は (正常な) native 経路を温存。負 index も対応。検証:
+=(substring [10 20 30 40] 1 3)=→[20 30]、=(substring "abcde" 1 3)=→"bc"。
+
+#+begin_src elisp
+(substring [10 20 30 40] 1 3)  ;=> garbage (例 [105 115])  (期待 [20 30])
+(substring "abcde" 1 3)        ;=> "bc"  (string は正常)
+#+end_src
+
+string の =substring= は正常。vector の =substring= が garbage (char-code 風の値)
+を返す。
+
+- *impact*: =seq-subseq= / =seq-take= / =seq-drop= / =seq-rest= が vector で破損
+  (Doc 16 round 14 で発覚)。seq-subseq の vector path を =(append seq nil)= で list 化
+  → slice → =seq--same-type= で型復元、で回避。
+
+** A6. =mapc= / =mapcar= が vector / string を反復しない — *FIXED 2026-06-22*
+
+*FIXED* (prelude, 81eaf9e3): =mapcar= / =mapc= を =(or (vectorp seq) (stringp seq))=
+判定で array は =aref= / =length= の index 反復に分岐 (cons-cell walk は list のみ有効)。
+string は char codepoint を渡す (host 互換)。検証: =(mapcar #'1+ [1 2 3])=→(2 3 4)、list も維持。
+
+#+begin_src elisp
+(mapcar (lambda (x) (1+ x)) [1 2 3])  ;=> (1)        (期待 (2 3 4))
+(mapc #'identity [1 2 3])             ;=> 反復されない (期待 全要素)
+#+end_src
+
+list は正常。vector / string で 1 要素 (しかも誤値) しか処理しない。
+
+- *impact*: =seq-do= / =seq-map= (= 多数の seq fn が delegate) が vector/string で
+  破損 (Doc 16 round 13)。seq-do/seq-map を =(seq--list sequence)= 経由に修正して回避。
+
+** A7. =format= が幅 / フラグ指定子を解釈しない — *FIXED 2026-06-22*
+
+*FIXED* (prelude, commit a61c8efe): native =format= は変換子 (s/S/d/x/X/o/c/e/f/g/%)
+自体は正しいが field-width/flags/precision 層を欠く。=format= を override し
+=%[flags][width][.prec]conv= を parse、値は native へ委譲してから justify(-)/zero-pad(0)/
+sign(+/space)/string precision(.N)/field-width を elisp で適用。副産物として A5 =substring=
+override の latent bug (native substring に明示 nil =to= を渡すと "" になり 2-arg form が壊れる) も
+修正 (=(substring "-42" 1)=→"42")。検証: =(format "%-5s|" "ab")=→"ab   |"、=(format "%05d" -42)=→
+"-0042"、=(format "%08x" 255)=→"000000ff"、=(format "%.3s" "abcdef")=→"abc"。
+
+#+begin_src elisp
+(format "%-5s|" "ab")  ;=> "%-5s|"  (期待 "ab   |")
+(format "%05d" 42)     ;=> 期待 "00042" (未確認だが同根の疑い)
+#+end_src
+
+=%-5s= / =%05d= のような幅・左寄せ・ゼロ埋めフラグ付き指定子が *literal のまま*
+出力される (basic な =%s= / =%S= / =%d= は正常)。
+
+- *impact*: 整形出力全般。回避策は手動 pad。
+
+** A8. =let= が lexical のみ / 動的束縛が機能せず crash — *FIXED 2026-06-22 (dlet + native symbol-value)*
+
+*RE-CHARACTERIZED + PARTIALLY FIXED* (prelude, commit f3767c71): 当初の「動的束縛が機能せず crash」は
+*誤り*。実測: =(defvar X)= 済 special の =let= 束縛は *別関数から見え* (=42=)、=let= は正しく unwind し
+(=restore=)、=set= も動的束縛を mutate する (=8=)。残る唯一の不具合は =symbol-value= を let-bound special に
+適用すると *global 値を返す* (=(let ((svl 9)) (symbol-value 'svl))=→1、crash ではなく誤値) こと — これは
+native core の制約で prelude 不可。よって VOID だった =dlet= を =(progn (defvar V)... (let BINDERS BODY))=
+へ展開する macro として追加。直接参照ベースのコードは動く。検証: dlet 束縛の関数跨ぎ可視・restore・
+multi-binding・body 直接参照。
+
+*残課題も FIXED* (vendor/nelisp commit 79b15bfb): =symbol-value= が dynamic binding を見ない件を native で解消。
+=symbol-value= は reader builtin でなく prelude fallback (=nelisp--env-globals-get-value= = global mirror のみ)
+だったのが原因。direct 参照は =nelisp_env_lookup_value= (frame stack → mirror) で解決するので不一致だった。
+native =bf_symbol_value (args env out)= を =set= / =boundp= 同様 env 付き dispatch で追加し、eval 機構と同じ
+env layout (mirror @ env+0, frame stack @ env+32) で =nelisp_env_lookup_value= を呼ぶ → symbol-value が
+direct 参照と完全一致 (dynamic 優先 → global → void-variable)。builtin 登録で fbound 化し prelude fallback を
+skip。検証: =(let ((x 9)) (symbol-value 'x))=→9、nested inner 優先、let 後 restore、let 内 =set= が
+symbol-value に反映、dlet+symbol-value、global/set/boundp/direct/plain let 無改変、reader-test green。
+
+#+begin_src elisp
+(progn (defvar dv) (let ((dv 7)) (symbol-value 'dv)))  ;=> crash (catch 不能)
+#+end_src
+
+=(defvar X)= で special 宣言しても、=let= が動的束縛せず、=symbol-value= で参照すると
+catch 不能 crash (void-variable error でなくプロセス停止)。runtime の =let= は
+lexical only と思われる。
+
+- *impact*: =dlet= (動的 let macro、Doc 16 round 12) が機能せず延期。=let= 内で
+  =symbol-value= を使うコード全般が危険。
+
+** A9. =princ= / =print= が buffer / function の =standard-output= を無視 — *FIXED 2026-06-22 (function stream)*
+
+*FIXED* (prelude, commit 8ca03316): 重要な前提修正 — *dynamic binding は bare reader で機能する*。
+=(defvar X)= で special 宣言した変数の =let= 束縛は *別関数からも見える* (実証: =(let ((standard-output
+99)) (rdso))=→99)。A8 の crash は =symbol-value= を let-bound special に適用した時 *のみ*。よって
+=standard-output= を =(defvar standard-output nil)= で special 化し、=princ= / =prin1= / =terpri= を
+override して *function stream* (1 char / funcall、host 契約) と =standard-output= を honor、stream が
+nil/t の時は native へ fast-path (通常の stdout 出力・REPL echo は無改変)。=print= / =write-char= は
+VOID だったので新規定義。=with-output-to-string= を string-accumulator function を =standard-output= に
+束ねる形で実装 (Doc 16 round 12 解禁)。検証: function-stream princ、let-bound redirect、
+with-output-to-string (basic/terpri/nested/empty)。*注*: buffer は insert しても =buffer-string= が ""
+を返す (bare reader の buffer 非機能) ため buffer stream 経路は best-effort のみ。
+
+#+begin_src elisp
+(let ((standard-output (generate-new-buffer " *t*")))
+  (princ "x" standard-output)
+  (with-current-buffer standard-output (buffer-string)))  ;=> "" (x は stdout へ)
+#+end_src
+
+=standard-output= に buffer (や関数) を束ねても =princ= は stdout に直接書き、
+リダイレクトされない。
+
+- *impact*: =with-output-to-string= (Doc 16 round 12) が出力捕捉できず延期。
+  =prin1-to-string= 系の一部もこれに依存。
+
+** A10. =arrayp= が vector / string の両方で nil を返す — *FIXED 2026-06-22*
+
+*FIXED* (prelude, 81eaf9e3): 実は誤値でなく *VOID* (=(fboundp 'arrayp)= = nil、unbound
+は silent nil を返す) だった。prelude に =(defun arrayp (x) (or (vectorp x) (stringp x)))= を
+追加。検証: =(arrayp [1 2 3])=→t、=(arrayp "ab")=→t、=(arrayp 5)=→nil。
+
+#+begin_src elisp
+(arrayp [1 2 3])  ;=> nil  (期待 t)
+(arrayp "abc")    ;=> nil  (期待 t)
+(vectorp [1 2 3]) ;=> t    (vectorp / stringp は正常)
+(stringp "abc")   ;=> t
+#+end_src
+
+=arrayp= が array (vector + string + char-table + bool-vector) を一切認識せず
+常に nil。=vectorp= / =stringp= は正常。
+
+- *impact*: =cl-typep= の =array= / =sequence= 判定 (Doc 16 round 17) が =arrayp= に
+  乗らない。=(or (vectorp val) (stringp val))= / =(or (listp val) (vectorp val)
+  (stringp val))= で回避。=arrayp= を内部使用する builtin / facade は全て同様に破損
+  の疑い。round 17 で発見。
+
+** A11. =make-symbol= の uninterned symbol が名前で解決される (同名衝突) — *FIXED 2026-06-22 (native)*
+
+*FIXED* in =scripts/nelisp-standalone-build.el= (vendor/nelisp commit cf6af09d): reader は obarray を
+持たず、変数 lookup と =eq= は symbol を *名前で比較* (name == identity、=bf_eq2= の tag-4 arm =
+=symbol-eq= は name 比較)。reader applyfn が =make-symbol= を =bf_intern= に流していたため 2 つの
+=(make-symbol "g")= が同名 "g" になり =eq= 衝突 → hygiene 崩壊 (parallel-assignment temp が 1 cell に融合、
+two-temp let が (2 2) を返した)。out-of-band な =nl_jit_make_symbol= kernel を模した reader-local
+=bf_make_symbol= を追加: counter を Rust extern (=nl_make_symbol_counter_ptr=、reader 未配線) でなく
+*in-reader の mutation-epoch slot 268435544* (=atomic-fetch-add=、reset 無効＝安定 per-process counter)
+から取り、name を =NAME__nelisp-uninterned-XXXXXXXXXXXXXXXX= (16 hex) に一意化。name 基準の =eq=/binding が
+uninterned symbol を区別。=intern= は不変 (同名共有維持)。検証: =(eq (make-symbol "g") (make-symbol "g"))=
+→nil、=(eq a a)=→t、two-temp let → (1 2)、3 個 pairwise distinct、intern/symbol-name/let/set 無改変、
+repl smoke + standalone-reader-test green。pure elisp build-script、Rust 不変。
+
+#+begin_src elisp
+(let ((a (make-symbol "g")) (b (make-symbol "g")))
+  (eq a b))          ;=> 期待 nil (別オブジェクト)。runtime では同一視される
+
+;; 実害: 同名 uninterned を 1 つの let で 2 つ束縛すると衝突
+(let ((t1 (make-symbol "tmp")) (t2 (make-symbol "tmp")))
+  (eval (list 'let (list (list t1 1) (list t2 2))
+              (list 'list t1 t2))))
+;;=> (2 2)  (期待 (1 2))  ← 両 binding が名前 "tmp" で同一 cell に
+#+end_src
+
+=make-symbol= は本来 *uninterned (= obarray 非登録、identity でのみ等価)* な symbol を
+返すが、runtime の評価器は変数を *symbol 名 (string)* で解決するため、同名の
+uninterned symbol が区別されず衝突する。マクロ衛生 (hygiene) の前提が崩れる。
+
+- *impact*: parallel-assignment マクロ (=cl-psetq= / =cl-psetf= / =cl-rotatef=、Doc 16
+  round 19) が 1 つの =let= に複数 temp を作ると全 temp が最後の値になり、結果が
+  全要素同値に化ける。回避: temp 名に index を付して一意化 (=--cl-psq-0--= /
+  =--cl-psq-1--= …)。単一 temp の round 17/18 マクロは無影響だった。
+- core が =make-symbol= の identity を尊重すれば hygiene macro が一般に安全になる。
+
+** A12. =macroexpand-all= / =macroexpand-1= が ENVIRONMENT 引数を無視 — *FIXED 2026-06-22*
+
+*FIXED* (prelude, 81eaf9e3): =nelisp--macro-function= を =(head env)= に拡張し、ENV alist
+=((NAME . EXPANDER) ...)= を *先に* 引いて global function cell を shadow (host 契約: env 値は
+unevaluated args へ直接 apply する expander、=(macro . X)= wrap も両対応)。=macroexpand-1= /
+=macroexpand= は env を渡すよう修正、bare reader に欠けていた =macroexpand-all= を
+quote/function/lambda/let/let*/cond/condition-case を尊重する再帰展開で新規追加。これにより
+generator.el の CPS 変換 (iter-defun / iter-yield) が解禁される。検証:
+=(macroexpand-1 '(myx 5) ((myx . LAMBDA)))=→(+ 5 100)、=macroexpand-all= も同、env 無しは form 維持。
+
+#+begin_src elisp
+(macroexpand-all '(myx 5)
+                 (list (cons 'myx (lambda (&rest a) (list '+ (car a) 100)))))
+;;=> (myx 5)        (期待 (+ 5 100))  ← env の myx 展開が無視される
+(macroexpand-1 '(myx 5)
+               (list (cons 'myx (lambda (&rest a) (list '+ (car a) 100)))))
+;;=> (myx 5)        (期待 (+ 5 100))
+;; cl-macrolet は別経路で動く:
+(cl-macrolet ((myy (v) (list '* v 2))) (myy 9))  ;=> 18 (正常)
+#+end_src
+
+=macroexpand-all= / =macroexpand-1= が第 2 引数 (macro environment) を honor せず、
+env で定義したローカル macro を展開しない。グローバル macro 展開と =cl-macrolet= は
+正常なので、*env-driven な局所 macro 横取り*だけが壊れている。
+
+- *impact*: =generator.el= (=iter-defun= / =iter-yield=、Doc 16 round 23) の CPS 変換が
+  破綻。generator は =(macroexpand-all BODY SPECIAL-ENV)= で =iter-yield= を横取りして
+  CPS 化するが、env 無視で yield が未変換 → iterator の =(catch 'cps--yield ...)= が
+  張られず、最初の =iter-next= で yield の =throw= が escape (catch/throw 自体は funcall
+  跨ぎでも正常、A12 が真因)。vendored generator.el は host では正常、runtime のみ block。
+  nelisp-emacs の polyfill 不可 (=macroexpand-all= は core)。round 23 で発見。
+
+** A13. =type-of= が function / closure に対し nil を返す — *FIXED 2026-06-22*
+
+*FIXED* (prelude, a61c8efe): 実は =type-of= 自体が *VOID* (silent nil) で、加えて native
+=functionp= が =(lambda ...)= / =(closure ...)= cons を認識せず nil を返していた。prelude に
+predicate 合成の =type-of= (callable cons は =function= / =subr= を返す) と訂正版 =functionp= を追加。
+検証: =(type-of (lambda (x) x))=→function、=(type-of 5)=→integer、=(functionp (lambda (x) x))=→t。
+
+#+begin_src elisp
+(type-of (lambda (x) x))        ;=> nil  (期待 closure / function 等)
+(type-of (let ((n 1)) (lambda () n)))  ;=> nil  (期待 closure)
+(type-of 5)                     ;=> integer (非 function は正常)
+#+end_src
+
+=type-of= が関数オブジェクト (lambda / closure) を分類できず nil を返す。整数 / 文字列 /
+cons / symbol 等は正常。
+
+- *impact*: function の type-dispatch (=cl-typecase ... (function ..)= 等) や型内省が
+  壊れる。round 23 で generator 調査中に発見 (generator 自体は type-of 不使用なので
+  この gap は generator block の主因ではない)。
+
+** A14. =aref= を struct インスタンスに適用すると SEGFAULT — *FIXED 2026-06-22 (native)*
+
+*FIXED* (vendor/nelisp commit 4d0cb27b): reader applyfn の =aref= arm (=bf_aref=) は Vector(8) のみ扱い、
+Record(12) は else で =str-byte-at= に流れ、record Sexp の offset-16 word を string data ptr として
+deref → SEGFAULT (doc が cl-defstruct インスタンスで観測したもの)。host Emacs の record は index 0 に
+type tag、1..N に data slots を露出するが、本 reader は type tag を box+0 に slots-Vec と別保持するため、
+=aref 0= → =record-type-tag= grammar op、=aref k>0= → =record-slot-ref= (data slot k-1) に振り分け。
+*bare reader での再現・検証のため* (=record=/=make-record= が VOID で tag-12 を作れなかった) native
+=record= / =recordp= builtin も配線: =(record TYPE SLOTS...)= が =record-make=/=record-slot-set= grammar
+op で genuine な tag-12 record を構築 (bf_make_vector の mirror)、=recordp= は tag-12 直接判定。prelude の
+permissive な vectorp ベース =recordp= は =(unless (fboundp 'recordp) ...)= で gate し native を優先。
+検証: =(recordp (record 'foo 1 2))=→t、cons/vector/int→nil、=(record 'p 100 200 300)= の aref 0..3 →
+=(p 100 200 300)= (type then slots) crash 無し、vector/string aref・aset 無改変、reader-test green。
+pure elisp (build-script codegen + prelude)、Rust 不変。
+
+*注*: bare reader 単体では str-byte-at が offset-16 を 0/safe として読み nil を返し crash しなかった
+(data 依存)。bundle の cl-defstruct record は offset-16 が実 ptr で str-byte-at が wild-deref → segfault。
+本修正は tag-12 を str-byte-at 経路から外すため bare/bundle 双方で安全。
+
+#+begin_src elisp
+(cl-defstruct r24s a b)
+(let ((o (make-r24s :a 1 :b 2)))
+  (vectorp o)   ;=> nil   (struct は vector でない record 様 obj、length=3)
+  (aref o 0))   ;=> *** SEGMENTATION FAULT ***  (期待: tag 取得 or type-error)
+#+end_src
+
+=cl-defstruct= の生成する struct インスタンスは =vectorp= = nil の length-3 record 様
+オブジェクト。これに =aref= を適用すると runtime が *segfault* する (誤値でなく crash)。
+accessor (=r24s-a=) 経由のアクセスは正常 (= 別経路)。=record= primitive 自体も別途
+壊れている (=(record 'foo 1 2)= → nil、=make-record= VOID、=recordp= → nil)。
+
+- *impact*: struct introspection (=cl-struct-slot-value= / =cl-struct-slot-info=、Doc 16
+  round 24) を index 経由で実装できない。回避: =cl-struct-slot-value= を =(funcall (intern
+  "TYPE-SLOT") inst)= の accessor dispatch で実装 (default conc-name のみ)。crash bug の
+  ため最優先級。round 24 で発見。
+- 関連 VOID (B 群): =cl-call-next-method= / =cl-next-method-p= (cl-generic 内部機構依存で
+  polyfill 不可)、=cl-struct-slot-info= (aref 阻害)、=make-record= / =copy-r24s= copier。
+  一方 =cl-defstruct= の constructor/accessor/predicate と =cl-defgeneric=/=cl-defmethod=
+  の単一・特定 dispatch は *正常動作*。
+
+** A15. =&optional (VAR DEFAULT)= の lambda を呼ぶと SEGFAULT/crash — *FIXED 2026-06-22 (cl-defun desugar)*
+
+*RE-CHARACTERIZED + FIXED* (prelude, commit 50cf2b2e): 現行 reader では *crash しない* —
+=(funcall (lambda (x &optional (z 9)) (+ x z)) 5)= は *nil を返す* (誤値)。真因は prelude の
+=cl-defun= が formals を *desugar せず* plain lambda に raw passthrough していたこと
+(=macroexpand= が =(lambda (x &optional (z 9)) ...)= をそのまま生成)。core lambda binder は plain
+=&optional= symbol しか扱えず z が未束縛 → nil。idiomatic な層 (=cl-defun=) で修正: 各
+=(VAR DEFAULT)= を plain =&optional VAR= + body 先頭 =(unless VAR (setq VAR DEFAULT))= に desugar
+(doc が回避策として挙げていた手法を自動化)。no-&key / &key 両経路に適用、default 無しの arglist は
+raw passthrough 維持。=cl-defsubst= (VOID) は =cl-defun= を alias して継承。検証:
+=(cl-defun f (x &optional (z 9)) (+ x z))= で =(f 5)=→14、=(f 5 100)=→105、二重 default、default が前の
+引数を参照するケース、plain/&key/&rest cl-defun 無改変。pure elisp、Rust 不変。
+
+#+begin_src elisp
+(funcall (lambda (x &optional (z 9)) (+ x z)) 5)
+;;=> *** crash *** ("before-call" の後 無音で process 死、catch 不能)
+;; 定義・macroexpand は通る:
+(macroexpand '(cl-defun f (x &optional (z 9)) (+ x z)))
+;;=> (progn (fset 'f (lambda (x &optional (z 9)) ...)) 'f)  ← raw のまま
+#+end_src
+
+CL 形式の optional default =(VAR DEFAULT)= を arglist に持つ lambda を *呼び出す* と
+runtime が crash する (誤値でなく process 死、=condition-case= で捕捉不能)。定義と
+macroexpand は通る。core の =cl-defun= も raw arglist を lambda に渡すため同症状。
+
+- *impact*: =cl-defun= / =cl-defsubst= (Doc 16 round 24) で =&optional (VAR DEFAULT)= を
+  使う関数が呼出時 crash。basic な optional (default 無) は正常。
+- *src 修正不可*: =cl-defun= の active 実装は core (vendor/nelisp) 側で、=src/emacs-stub.el=
+  / =src/emacs-cl-macros.el= の shim は =unless (fboundp 'cl-defun)= / =--define-p= で
+  gate-out される (両 shim に desugar を入れても効かないことを round 25 で実証)。core が
+  lambda 呼出で optional-default を desugar するか error にすれば解決。round 25 で発見。
+- 回避: optional default を使わず =&optional z= + body 先頭 =(unless z (setq z DEFAULT))= を
+  手書きする (= desugar を caller 側で行う)。
+
+** A16. =concat= が nil 引数を "nil" 文字列化する (= rx を破壊) — *FIXED 2026-06-22*
+
+*FIXED* in vendor/nelisp (commit 4575471): standalone reader の =m5_concat_walk=
+(=scripts/nelisp-standalone-build.el=) が全引数を =m5_emit_value= に渡し、nil (tag 0) が
+=m5_prin1= → "nil" 出力していた。concat は nil を空 sequence 扱いすべきなので walker で
+nil 引数を skip。=m5_emit_value= は =format= (%s/%S で nil→"nil" は正) と共有のため emitter
+でなく walker 側で修正。検証: =(concat "a" nil "b")= → "ab"、=(format "%s" nil)= → "nil" 維持。
+rx の trailing-"nil" 汚染 (=(rx (+ digit))= / =(rx (? "z"))=) も解消。残課題は A17 と rx-or
+(下記)。
+
+#+begin_src elisp
+(concat "a" nil "b")              ;=> "anilb"  (期待 "ab")
+(concat "x" nil)                  ;=> "xnil"   (期待 "x")
+(apply #'concat (list "p" nil "q")) ;=> "pnilq" (期待 "pq")
+(mapconcat #'identity '("a" "b") "") ;=> "ab"   (mapconcat は正常)
+#+end_src
+
+=concat= が nil 引数を *空 sequence でなく symbol nil → "nil"* として結合する。real
+Emacs は nil = 空 list 扱いで無視。=mapconcat= は正常。
+
+- *impact*: =rx= (regex DSL) が壊れる。rx は regexp を =concat= で組み立てるため、translation
+  中の nil 部品が "nil" として混入する。実測 (vendored rx.el): =(rx (+ digit))= →
+  ="[[:digit:]]+nil"=、=(rx (? "z"))= → ="z?nil"=、*=(rx (or "a" "b"))= → ="nil"* (完全破壊)。
+  literal / group / seq は無害。round 26 で rx vendoring を試みたが A16 で *silently wrong
+  regexp* を生むため bundle 収録は見送り (stub のまま)。
+- polyfill 不可級: =concat= は core 関数で全所で使われ、elisp override は危険 (perf/再帰)。
+  core が nil を空扱いすれば rx を含む多数が直る。round 26 で発見。
+
+** A17. regex engine が POSIX 文字クラス =[[:digit:]]= を match しない — *FIXED 2026-06-22*
+
+*FIXED* in 両 engine: (1) bare reader の stdlib =nlre-*= (=vendor/nelisp/lisp/
+nelisp-stdlib-regexp.el= commit 913719ef)、(2) bundle が使う packages =nelisp-rx-*=
+(=vendor/nelisp/packages/.../nelisp-regex.el= commit b6b59ec2 + nelisp-emacs
+=src/nelisp-regex.el= commit 5a336b4)。両 bracket parser で =[:name:]= を検出し =(lo . hi)=
+range に展開 (=*--posix-ranges= table: digit/alpha/alnum/word/upper/lower/xdigit/space/
+blank/punct/cntrl/graph/print/ascii)、membership 判定は range 対応済で無改変。検証:
+full runtime で =(string-match "[[:digit:]]" "a1")= → 1、=(rx (+ digit))= が "123" に実 match、
+=(rx (+ word))= → "foo_9"。同 round で =regexp-opt= も修正 (=src/emacs-stub.el= 5a336b4):
+no-op bulk stub =(closure (&rest _) nil)= が先に claim し gated real が skip されていた →
+無条件定義に変更、shy/capture group を GNU 契約通り wrap。=(regexp-opt '("cat" "dog"))= →
+="\\(?:cat\\|dog\\)"=。
+
+#+begin_src elisp
+(string-match "[[:digit:]]" "a1")  ;=> nil  (期待 1)
+(string-match "[0-9]" "a1")        ;=> 1    (plain range は正常)
+#+end_src
+
+standalone reader の =string-match= / regex engine が POSIX 文字クラス
+(=[[:digit:]]= / =[[:alpha:]]= / =[[:space:]]= 等) を解釈しない。plain range
+(=[0-9]=) は正常。round 1 で =[[:blank:]]= 不対応として既出の現象を確認。
+
+- *impact*: =rx= が =digit= / =alpha= 等を POSIX class に翻訳するため、A16 修正後も
+  =(rx (+ digit))= = ="[[:digit:]]+"= が実際には match しない。rx を実用化するには A17 の
+  regex engine 拡張が必要。round 27 で確認。
+- 別途: =(rx (or "a" "b"))= が *nil を返す* (error でなく silent nil)。rx--translate-or /
+  =regexp-opt= (fbound) 経路の runtime 差。A16/A17 とは別の rx-internal 課題。
+
+** A18. =(rx (or STRINGS...))= が空の alternation =\(?:\)= を生成 — *FIXED 2026-06-22*
+
+*FIXED* (commit d35f1d1): 真因は =mapcan= の no-op stub。=emacs-stub-bulk.el= の
+=--stub-defuns--= リストが =mapcan= を =(closure (&rest _) nil)= で stub し、subr-x の real
+=mapcan= (gated) を shadow していた (=symbol-function= で確認、regexp-opt と同 systemic 問題)。
+rx の =rx--collect-or-strings= が =mapcan= を使うため =(rx (or ..))= が空リストを regexp-opt へ
+渡していた。=mapcan= を stub list から除去 → real mapcan が有効化。検証: =(mapcan #'list '(1 2 3))=
+→ (1 2 3)、=(rx (or "cat" "dog"))= → ="\\(?:cat\\|dog\\)"=。これにより rx は A16/A17/regexp-opt/A18
+全解決で *end-to-end 動作*し bundle 収録 (=src/rx.el= vendored)。
+*systemic note*: bulk stub list は real impl を持つ関数を誤って no-op stub する設計バグがあり、
+=mapcan= / =regexp-opt= で顕在化。他にも =record= / =recordp= 等 list 内に real-impl 候補が残る
+可能性 (要 audit)。
+
+A16(concat) / A17(POSIX) / regexp-opt を全て直した後も =(rx (or "cat" "dog"))= は
+="\\(?:\\)"= (中身空) を返す。=regexp-opt= 単体は正しく ="\\(?:cat\\|dog\\)"= を返すので、
+rx の =rx--translate-or= が文字列 alternative を *収集できていない* (= 空リストを regexp-opt
+へ渡している) rx-internal の問題。A16/A17/regexp-opt とは別軸。
+
+- *impact*: rx の =or= 形 (文字列複数) が matches-everything な空 group になり危険。rx は
+  digit/alpha/word/+/?/seq/group/any 等は実 match するが、=or= が未解決のため bundle 収録は
+  保留 (stub のまま)。round 28 で発見、未修正。
+
+** A19. bulk-stub no-op shadowing — real impl を持つ関数が no-op stub のまま (audit)
+
+=src/emacs-stub-bulk.el= の =--stub-defuns--= は load 時に VOID 関数を =(lambda (&rest _) nil)=
+で一括 stub し =emacs-stub-bulk= property を付す。だが real impl を別ファイルに持つ関数が、
+real impl の gate (=unless (fboundp)= や bulk 非対応 =--define-p=) で skip され *no-op stub の
+まま残る* (regexp-opt / mapcan で顕在化したのと同根)。
+
+*audit 結果* (closure arglist =(&rest _)= + =emacs-stub-bulk= property + src に real defun で判定):
+*84 関数* が該当。内訳:
+- *FIXED 10 (pure)*: =memql= / =proper-list-p= / =characterp= / =byte-code-function-p= / =subrp= /
+  =file-name-absolute-p= / =file-relative-name= / =file-truename= / =format-prompt= /
+  =substitute-command-keys=。stub list から除去 → real impl 有効化 (commit 296bb0c)。検証:
+  =(memql 2 '(1 2 3))= → (2 3)、=(characterp ?a)= → t、=(file-name-absolute-p "/x")= → t。
+- *残 ~74 (context-dependent、要個別判断)*: buffer/point/line (bobp/forward-line/newline 等)、
+  window/frame (selected-window/switch-to-buffer 等)、process (process-filter 等)、motion
+  (forward-word/forward-sexp/mark)、syntax/case-table、hooks/timer (run-hooks/sleep-for)、
+  misc (documentation/set-match-data/local-variable-p/markerp 等)。多くは standalone reader で
+  no-op が文脈的に妥当だが、一部 (documentation/set-match-data/local-variable-p 等) は要 review。
+
+*systemic 根治 — DONE (commit 221f1df)*: =emacs-stub-bulk= を bundle の *最後に load* するよう
+=nelisp-bootstrap--complete-file-list= で末尾移動 (旧位置 = 108 中 12 番目)。全 real impl 確定後に
+真に VOID な名前だけ stub され shadowing が原理的に消える。効果: wrongly-stubbed が *84 → 27* に減少
+(残 27 は real impl が standalone で *条件 gate off* される buffer/window/process/motion 系で、no-op
+stub が妥当)。boot 無退行 (BOOT-OK、rx/cl-do/cl-typecase/seq 動作、=set-match-data= が real 化し
+=(string-match "b\\(c\\)" "abcd")= の group capture = (1 3 "c") も動作)。pure 10 の手動 un-stub
+(commit 296bb0c) は冗長になったが無害。
+
+** A20. =eq= が *同一長の別文字列* で t を返す (length 比較) — 新規発見 + *FIXED 2026-06-22 (native)*
+
+*FIXED* in =scripts/nelisp-standalone-build.el= (vendor/nelisp commit fc5963bf): reader applyfn の
+=eq= arm (=bf_eq2=) が Str/MutStr を offset 8 で比較していたが、offset 8 は inline String の
+length/capacity フィールド (data ptr は offset 16) なので同一長ペアが全て eq になっていた。Sexp::Str
+(tag 5) は clone 時に deep copy される (=nl_sexp_clone_into= が bytes-ptr@16 + len@24 を読んで新バッファ
+=nl_alloc_str=) ため *安定した pointer identity が存在しない*。この value-semantics reader では文字列は
+*値* なので、=Symbol(4)= arm が name 比較で identity を決めるのと同じく、文字列も *content 比較* (length +
+bytes) が首尾一貫。tag 5/6 を =m5_streq= 経由に変更。検証: =(eq "abc" "xyz")=→nil、=(eq "abc" "abd")=→nil、
+=(eq "abc" "abc")=→t、=(eq s s)=→t、=(eq "" "")=→t。int/symbol/cons/vector/nil の eq 無改変、equal/assoc/
+member/memq 正常、neln selftest + repl smoke + standalone-reader-test green。pure elisp build-script
+変更で Rust 不変。なお A3 の prelude =equal= が eq fast-path を避けていた制約は本修正で解消した
+(equal は atom delegation 構造のまま据置で正しい)。
+
+#+begin_src elisp
+(eq "abc" "xyz")  ;=> t    (期待 nil、別オブジェクト・同 length 3)
+(eq "ab" "abcd")  ;=> nil  (length 異なれば nil)
+(eq "abc" "abc")  ;=> t
+#+end_src
+
+bare reader の =eq= は 2 つの string を *length で比較* しているらしく、内容が違っても
+同 length なら t を返す。=string== は多文字では正常 (=(string= "abc" "xyz")= = nil) だが、
+*1 文字どうし* (=(string= "b" "a")=) は t を返す (eq fast-path が 1-char で誤発火する疑い)。
+=string<= は正常、native =equal= (=nelisp--native-equal=) は正常 (内容比較)。
+
+- *発見経緯*: A3 修正で =equal= に =(eq a b)= fast-path を入れたら、任意の 2 文字列が equal 判定され
+  =assoc= / =member= が壊れた (実測 =(assoc "b" ...)= が先頭の "a" pair を返す)。eq fast-path 除去で解消。
+- *impact*: =(eq STR1 STR2)= に依存するコードは危険。実用上は =eq= を文字列比較に使うコードは稀
+  (=string== / =equal= を使うのが通例) なので breadth への波及は限定的。=memq= / =assq= が *文字列キー*
+  で使われると誤マッチの恐れ (ただし通例は symbol キー → =eq= 正常)。
+- *修正先*: native =eq= emitter (build script 側、文字列を pointer identity で比較すべき)。深い core 修正の
+  ため本バッチでは catalog のみ。回避: 文字列比較には =equal= / =string== (多文字) を使う。
+
+* 3. B. 欠落 (VOID、core にあるべき builtin)
+
+bare reader で void (bundle / stdlib-prelude が一部を埋める):
+
+| fn | 状態 | nelisp-emacs 側の対処 |
+|----+------+------|
+| =round= | bare void (full runtime には有) | prelude/bundle 由来で利用可 |
+| =%= | bare void | 同上 |
+| =/== | bare void | =(not (= ...))= で回避 |
+| =sqrt= / =expt= | bare void | cl-isqrt は Newton で sqrt 不使用 |
+| =copy-hash-table= | full void | =emacs-stub.el= に polyfill 追加 (Doc 16 round 15) |
+
+* 4. C. introspection 不能 (polyfill 不能)
+
+** C1. =hash-table-test= が void — *FIXED 2026-06-22 (prelude)*
+
+*FIXED* (vendor/nelisp commit 6e4e98ff): doc の「core が test を露出しないと polyfill 不能」は前提が
+ずれていた。調査結果: reader は hash table を cons =(Int(0) . alist)= で表し、native =make-hash-table= は
+=:test= 引数を *完全に無視* する (dispatch =(wf_ht_make out)= は args を受けない)。全 table が単一の
+=wf_key_eq= (int=値, symbol=名前, str=バイト = *equal 意味論*) で比較されるため、test は「保持されない」の
+でなく「honor されない」。よって実効 test は常に =equal= で、それを返すのが honest。marker (car) は
+=hash-table-p= が判別に使う整数 0 なので requested =:test= を埋め込めないが、挙動が一律 equal なので無意味。
+prelude に core-owned shape 上で =hash-table-test= (→equal) / =copy-hash-table= (fresh table + entry
+copy、独立) / =hash-table-keys= / =hash-table-values= を追加。検証: 任意の =:test= で hash-table-test→equal、
+copy-hash-table の count/独立性/string lookup 保持、keys/values、hash-table-p/maphash 無改変、
+reader-test green。pure elisp prelude、Rust 不変。
+
+#+begin_src elisp
+(fboundp 'hash-table-test)  ;=> nil
+#+end_src
+
+hash table の test 種別 (=eq= / =eql= / =equal=) を取得する accessor が無い。
+
+- *impact*: =copy-hash-table= polyfill が *元の test を保持できない* (default test で
+  複製するしかない)。=equal= keyed table (string キー等) の複製で lookup が壊れる
+  可能性。core が test を露出しないと polyfill 不能。
+
+* 5. 優先度の提案
+
+1. *A6 (mapc/mapcar vector)* / *A5 (substring vector)* / *A3 (equal vector)* /
+   *A4 (aset string)* / *A10 (arrayp 常に nil)* — sequence/string 操作・型判定の
+   基盤。多数の facade が乗る。最優先。
+2. *A1 (floor 2-arg)* / *A2 (mod 負)* — 数値計算の基盤。
+3. *A7 (format 幅)* — 整形出力。
+4. *A8 (let dynamic)* / *A9 (princ redirect)* — 動的束縛・出力捕捉。これらが直ると
+   dlet / with-output-to-string も解禁。
+5. *C1 (hash-table-test)* — copy-hash-table の完全化。
+
+* 6. 注記
+
+- 本書は nelisp-emacs 側の consumer 視点 catalog。vendor/nelisp の AGENTS.md は
+  repo 内 handoff doc を避ける方針のため、doc 本体は nelisp-emacs に置き、必要なら
+  github.com/zawatton/nelisp の issue へ転記する。
+  → *2026-06-21 起票済: github.com/zawatton/nelisp#7* (A/B/C 全群を 1 issue に集約、A 群を優先課題明記)。
+- 各 bug は Doc 15 §3.5 の round 6/11/12/13/14/15 log にも個別記録済。
+- nelisp-emacs 側は全 bug を *回避済 or 延期明記* で、breadth は前進を止めていない。

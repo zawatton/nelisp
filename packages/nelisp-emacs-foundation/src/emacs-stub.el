@@ -1,0 +1,4429 @@
+;;; emacs-stub.el --- no-op shims for Emacs C primitives (Phase 3-A''-3)  -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 zawatton + Claude
+
+;; This file is part of nelisp-emacs.
+
+;;; Commentary:
+
+;; Doc 51 Phase 3-A''-3 — temporary no-op shims for the long tail of
+;; Emacs C primitives that vendored `subr.el' / `cl-lib.el' / friends
+;; reference at load time.  Without these, NeLisp standalone fails
+;; to load any nontrivial Emacs library.
+;;
+;; This file is INTENTIONALLY DISPOSABLE — it should disappear as the
+;; real implementations land in nelisp-emacs's L2 ports
+;; (`emacs-keymap.el', `emacs-frame.el', etc.) or via `nelisp-ec-*'
+;; aliasing.  See `project_phase4_emacs_c_primitives_todo' memory entry
+;; for the full migration checklist.
+;;
+;; Functions here are no-ops (= return nil / fixed sentinel).  Calling
+;; them at runtime does NOTHING; library code that relies on actual
+;; behavior (e.g. real keybindings, real frame manipulation) will fail
+;; silently.  This is acceptable for the use cases nelisp-emacs targets
+;; (= anvil tool dispatch, MCP server) where keymap / frame / display
+;; primitives are never reached at the data path.
+;;
+;; Each shim is gated on `unless (fboundp ...)' so loading under host
+;; Emacs is a cheap no-op.
+
+;;; Code:
+
+(defconst emacs-stub--load-directory
+  (let ((source-file
+         (or (and (boundp 'load-file-name) load-file-name)
+             (and (boundp 'buffer-file-name) buffer-file-name))))
+    (cond
+     (source-file
+      (file-name-directory source-file))
+     ((and (boundp 'default-directory)
+           (stringp default-directory))
+      (let ((src (expand-file-name "src/" default-directory)))
+        (if (and (fboundp 'file-directory-p)
+                 (file-directory-p src))
+            src
+          default-directory)))
+     (t nil)))
+  "Directory that contains the stub facade and its sibling features.")
+
+(defun emacs-stub--load-feature (feature)
+  "Load FEATURE from the stub facade directory, unless already loaded.
+See the identical `featurep' rationale on the foundation feature loader."
+  (unless (featurep feature)
+    (load (expand-file-name (concat (symbol-name feature) ".el")
+                            emacs-stub--load-directory)
+          nil t)))
+
+;;;; --- keymap.c -----------------------------------------------------------
+
+(unless (fboundp 'make-keymap)
+  (defun make-keymap (&optional string)
+    "Stub: returns a synthetic keymap sentinel cons.
+NeLisp standalone has no keybinding subsystem; the returned object is
+only useful for `keymapp' / `eq' identity checks."
+    (ignore string)
+    (cons 'keymap nil)))
+
+(unless (fboundp 'make-sparse-keymap)
+  (defun make-sparse-keymap (&optional string)
+    "Stub: same shape as `make-keymap'."
+    (ignore string)
+    (cons 'keymap nil)))
+
+(unless (fboundp 'keymapp)
+  (defun keymapp (object)
+    "Stub: recognise the `make-keymap' sentinel."
+    (and (consp object) (eq (car object) 'keymap))))
+
+(unless (fboundp 'define-key)
+  (defun define-key (keymap key def &optional remove)
+    "Stub: no-op; returns DEF."
+    (ignore keymap key remove)
+    def))
+
+(unless (fboundp 'define-key-after)
+  (defun define-key-after (keymap key definition &optional after)
+    "Stub: no-op; returns DEFINITION."
+    (ignore keymap key after)
+    definition))
+
+(unless (fboundp 'lookup-key)
+  (defun lookup-key (keymap key &optional accept-default)
+    "Stub: always returns nil (= no binding)."
+    (ignore keymap key accept-default)
+    nil))
+
+(unless (fboundp 'key-binding)
+  (defun key-binding (key &optional accept-default no-remap position)
+    "Stub: always returns nil."
+    (ignore key accept-default no-remap position)
+    nil))
+
+(unless (fboundp 'set-keymap-parent)
+  (defun set-keymap-parent (keymap parent)
+    "Stub: no-op; returns PARENT."
+    (ignore keymap)
+    parent))
+
+(unless (fboundp 'keymap-parent)
+  (defun keymap-parent (keymap) (ignore keymap) nil))
+
+(unless (fboundp 'current-global-map)
+  (defun current-global-map () (cons 'keymap nil)))
+
+(unless (fboundp 'current-local-map)
+  (defun current-local-map () nil))
+
+(unless (fboundp 'use-global-map)
+  (defun use-global-map (keymap) (ignore keymap) nil))
+
+(unless (fboundp 'use-local-map)
+  (defun use-local-map (keymap) (ignore keymap) nil))
+
+(unless (fboundp 'where-is-internal)
+  (defun where-is-internal (definition &optional keymap firstonly noindirect no-remap)
+    "Stub: returns nil (= no key bound)."
+    (ignore definition keymap firstonly noindirect no-remap)
+    nil))
+
+
+;;;; --- frame.c ------------------------------------------------------------
+
+(unless (fboundp 'make-frame)
+  (defun make-frame (&optional parameters)
+    "Stub: returns a synthetic frame sentinel."
+    (ignore parameters)
+    (cons 'frame nil)))
+
+(unless (fboundp 'framep)
+  (defun framep (object)
+    (and (consp object) (eq (car object) 'frame))))
+
+(unless (fboundp 'frame-live-p)
+  (defun frame-live-p (frame) (framep frame)))
+
+(unless (fboundp 'frame-list)
+  (defun frame-list () nil))
+
+(unless (fboundp 'selected-frame)
+  (defun selected-frame () (cons 'frame nil)))
+
+(unless (fboundp 'frame-parameter)
+  (defun frame-parameter (frame parameter)
+    (ignore frame parameter)
+    nil))
+
+(unless (fboundp 'frame-parameters)
+  (defun frame-parameters (&optional frame) (ignore frame) nil))
+
+(unless (fboundp 'set-frame-parameter)
+  (defun set-frame-parameter (frame parameter value)
+    (ignore frame parameter)
+    value))
+
+(unless (fboundp 'modify-frame-parameters)
+  (defun modify-frame-parameters (frame alist)
+    (ignore frame alist) nil))
+
+(unless (fboundp 'delete-frame)
+  (defun delete-frame (&optional frame force) (ignore frame force) nil))
+
+(unless (fboundp 'display-graphic-p)
+  (defun display-graphic-p (&optional display) (ignore display) nil))
+
+(unless (fboundp 'display-color-p)
+  (defun display-color-p (&optional display) (ignore display) nil))
+
+(unless (fboundp 'display-multi-frame-p)
+  (defun display-multi-frame-p (&optional display) (ignore display) nil))
+
+
+;;;; --- frame.c / display capability map -----------------------------------
+;; Phase 1.E (2026-05-05) — display-* / `window-system' now consult a
+;; central `emacs-display-system' defvar instead of returning a hard-
+;; coded nil.  Display backends (= nelisp-emacs-gtk, the future curses
+;; TUI) `setq' that defvar at bootstrap so init.el / startup code that
+;; branches on `(display-graphic-p)' / `(window-system)' picks the
+;; right path.  Default `nil' = batch / headless / pre-bootstrap so
+;; existing stubbed-out call sites keep their previous behaviour.
+;;
+;; Earlier comment: "display-* probes have no prefixed substrate yet
+;; (= would need a display capability map), so their no-op stubs stay."
+;; The map landed here.
+
+(unless (boundp 'emacs-display-system)
+  (defvar emacs-display-system nil
+    "Symbol naming the active display backend, or nil for batch / no
+display.  Display backends (= nelisp-emacs-gtk, the future curses TUI,
+…) set this at bootstrap time before any code that branches on
+`(window-system)' / `(display-graphic-p)' runs.
+
+Recognised values (list grows as backends ship):
+  nil    — no display (= batch, headless, or pre-bootstrap)
+  'gtk   — nelisp-emacs-gtk (GTK4 GUI)
+  'tui   — emacs-tui-backend (curses-style TUI)"))
+
+(unless (boundp 'initial-window-system)
+  (defvar initial-window-system nil
+    "Mirror of `emacs-display-system' captured at frame-realise time.
+Provided for parity with the canonical Emacs name (= startup code
+reads it to detect GUI mode without round-tripping `(window-system)')."))
+
+(unless (boundp 'user-mail-address)
+  (defvar user-mail-address nil))
+
+(unless (boundp 'user-full-name)
+  (defvar user-full-name nil))
+
+(unless (boundp 'dired-buffers)
+  (defvar dired-buffers nil
+    "Dired buffer registry alist.
+
+Vendor code such as `org-capture' inspects this opportunistically even when
+Dired itself is not active, so the compatibility surface must at least expose
+the variable."))
+
+(unless (boundp 'internal--daemon-sockname)
+  (defvar internal--daemon-sockname nil
+    "Standalone compatibility scalar for daemon socket path probes."))
+
+(unless (boundp 'internal--daemon-mode)
+  (defvar internal--daemon-mode nil
+    "Standalone compatibility scalar for daemon mode probes."))
+
+(unless (boundp 'face-remapping-alist)
+  (defvar face-remapping-alist nil
+    "Buffer-local face remapping metadata.
+
+Vendor packages may bind or inspect this even on non-graphical runtime
+paths.  The compatibility surface only needs the variable to exist."))
+
+(unless (boundp 'font-lock-global-modes)
+  (defvar font-lock-global-modes t
+    "Compatibility binding for vendor font-lock consumers."))
+
+(unless (boundp 'line-move-visual)
+  (defvar line-move-visual t
+    "Compatibility binding for vendor line-motion consumers."))
+
+(unless (boundp 'exec-directory)
+  (defvar exec-directory
+    (let* ((nelisp-bin (and (fboundp 'getenv) (getenv "NELISP_BIN")))
+           (nelisp-bin-directory
+            (and (stringp nelisp-bin)
+                 (> (length nelisp-bin) 0)
+                 (if (= (aref nelisp-bin (1- (length nelisp-bin))) ?/)
+                     nelisp-bin
+                   (file-name-directory nelisp-bin))))
+           ;; Host Emacs 30.1 reports this exact directory on the current
+           ;; build machine.  Reuse it when present because it matches the
+           ;; canonical "directory of auxiliary Emacs executables" shape.
+           (host-emacs-exec-directory
+            "/usr/libexec/emacs/30.1/x86_64-linux-gnu/"))
+      (cond
+       ((stringp nelisp-bin-directory)
+        nelisp-bin-directory)
+       ((and (fboundp 'file-directory-p)
+             (file-directory-p host-emacs-exec-directory))
+        host-emacs-exec-directory)
+       ((and (stringp emacs-stub--load-directory)
+             (fboundp 'file-directory-p)
+             (file-directory-p emacs-stub--load-directory))
+        emacs-stub--load-directory)
+       (t "/tmp/")))
+    "Compatibility binding for the directory of Emacs helper executables.
+
+Standalone NeLisp does not ship the host Emacs auxiliary binaries, so this
+shim prefers the directory that contains `NELISP_BIN' when available.  When
+that is absent, it falls back to the current host Emacs 30.1 oracle path
+(`emacs -Q --batch --eval (prin1 exec-directory)` => the existing
+`/usr/libexec/emacs/30.1/x86_64-linux-gnu/` directory on this machine), then
+to `emacs-stub--load-directory', and finally `/tmp/' as an existing
+last-resort directory."))
+
+(defun emacs-display-window-system (&optional frame)
+  "Return the active window-system symbol (= `emacs-display-system'),
+ignoring FRAME (= future per-frame override slot)."
+  (ignore frame)
+  emacs-display-system)
+
+(defun emacs-display-graphic-p (&optional display)
+  "Return non-nil when `emacs-display-system' is a graphic backend.
+'tui is treated as non-graphic; nil means no display at all.  DISPLAY
+is accepted for API parity but ignored."
+  (ignore display)
+  (and emacs-display-system
+       (not (eq emacs-display-system 'tui))))
+
+(defun emacs-display-color-p (&optional display)
+  "MVP: any graphic backend implies colour.  Future capability bits
+(= mono / grayscale displays, terminal palette depth) will refine
+this; for now we follow `display-graphic-p'."
+  (emacs-display-graphic-p display))
+
+(defun emacs-display-multi-frame-p (&optional display)
+  "MVP: any non-nil backend can host multiple frames.  Refined when
+single-frame backends (= some bare-minimum TUIs) ship."
+  (ignore display)
+  (not (null emacs-display-system)))
+
+;; T62: `display-mouse-p' was void anywhere in src/ (real init load-matrix
+;; hit `(void-function display-mouse-p)' for dashboard, embark and
+;; embark-consult).  Real Emacs's own `display-mouse-p' (frame.el)
+;; unconditionally reports a mouse for graphic frame types (x/pgtk/w32/ns/
+;; haiku) and, for a text terminal, only when a live `xterm-mouse-mode' /
+;; `gpm-mouse-mode' tracking mode is active -- which this runtime does not
+;; yet model.  Following `emacs-display-graphic-p''s own precedent (a `tui'
+;; backend is not a graphic one), this MVP reports non-nil only for a real
+;; graphic backend and nil otherwise (batch/headless/pre-bootstrap and
+;; `tui'), matching stock Emacs's own default (no mouse) until a tracking
+;; mode is turned on -- verified against host Emacs 31.1's batch value
+;; (nil, since no window-system and no xterm-mouse-mode/gpm-mouse-mode).
+(defun emacs-display-mouse-p (&optional display)
+  "MVP: report a mouse only for a live graphic backend.
+See the comment above this function for why a `tui' backend
+conservatively reports nil, matching stock Emacs's own tty default."
+  (ignore display)
+  (and emacs-display-system
+       (not (eq emacs-display-system 'tui))))
+
+(defun emacs-stub--install-function-p (symbol)
+  "Return non-nil when SYMBOL should be installed by this shim layer."
+  (or (not (boundp 'emacs-version))
+      (not (fboundp symbol))))
+
+(when (emacs-stub--install-function-p 'window-system)
+  (defalias 'window-system #'emacs-display-window-system))
+
+(when (emacs-stub--install-function-p 'display-graphic-p)
+  (defalias 'display-graphic-p #'emacs-display-graphic-p))
+
+(when (emacs-stub--install-function-p 'display-color-p)
+  (defalias 'display-color-p #'emacs-display-color-p))
+
+(when (emacs-stub--install-function-p 'display-multi-frame-p)
+  (defalias 'display-multi-frame-p #'emacs-display-multi-frame-p))
+
+(when (emacs-stub--install-function-p 'display-mouse-p)
+  (defalias 'display-mouse-p #'emacs-display-mouse-p))
+
+;; Doc 33 item 244 (M2 completion blocker): `char-displayable-p' is void
+;; in the standalone runtime, so a `defcustom'/`defvar' default value
+;; template that calls it at load time (e.g. `magit-section-visibility-
+;; indicators''s ellipsis-character default in `magit-section.el')
+;; aborts the whole form, leaving the variable unbound.  Real Emacs
+;; consults per-frame/per-terminal font and charset capability, which
+;; this runtime has no database for yet, so this follows
+;; `emacs-display-multi-frame-p''s own precedent: treat any live
+;; display backend (including 'tui, unlike `display-graphic-p', since a
+;; modern terminal is assumed UTF-8/Unicode-capable) as able to render
+;; CHAR, and a nil backend (batch / headless / pre-bootstrap, e.g.
+;; while a runtime image is being baked before any frontend attaches)
+;; conservatively as not.
+(defun emacs-display-char-displayable-p (char)
+  "MVP: assume any live display backend (`emacs-display-system' non-nil)
+can render CHAR; a nil backend (batch/headless) cannot.  See the note
+above for why this is a faithful-enough stand-in rather than a real
+font/charset capability query."
+  (ignore char)
+  (not (null emacs-display-system)))
+
+(when (emacs-stub--install-function-p 'char-displayable-p)
+  (defalias 'char-displayable-p #'emacs-display-char-displayable-p))
+
+(unless (fboundp 'find-buffer-visiting)
+  (defun find-buffer-visiting (filename)
+    "Return a live buffer visiting FILENAME, or nil."
+    (catch 'found
+      (dolist (buffer (buffer-list))
+        (with-current-buffer buffer
+          (when (and (boundp 'buffer-file-name)
+                     (stringp buffer-file-name)
+                     (equal (expand-file-name buffer-file-name)
+                            (expand-file-name filename)))
+            (throw 'found buffer))))
+      nil)))
+
+(unless (fboundp 'save-window-excursion)
+  (defmacro save-window-excursion (&rest body)
+    "Evaluate BODY and restore the prior window configuration."
+    `(let ((emacs-stub--saved-window-config
+            (and (fboundp 'current-window-configuration)
+                 (current-window-configuration))))
+       (unwind-protect
+           (progn ,@body)
+         (when (and emacs-stub--saved-window-config
+                    (fboundp 'set-window-configuration))
+           (set-window-configuration emacs-stub--saved-window-config))))))
+
+(unless (fboundp 'untabify)
+  (defun untabify (start end &optional _arg)
+    "Replace tab characters with spaces between START and END."
+    (save-excursion
+      (goto-char start)
+      (while (search-forward "\t" end t)
+        (replace-match "        " t t)))))
+
+
+;;;; --- window.c -----------------------------------------------------------
+;;;; --- window.c -----------------------------------------------------------
+
+(unless (fboundp 'selected-window)
+  (defun selected-window () (cons 'window nil)))
+
+(unless (fboundp 'windowp)
+  (defun windowp (object) (and (consp object) (eq (car object) 'window))))
+
+(unless (fboundp 'window-live-p)
+  (defun window-live-p (window) (windowp window)))
+
+(unless (fboundp 'window-list)
+  (defun window-list (&optional frame minibuf window) (ignore frame minibuf window) nil))
+
+(unless (fboundp 'frame-selected-window)
+  (defun frame-selected-window (&optional frame) (ignore frame) (selected-window)))
+
+(unless (fboundp 'set-window-buffer)
+  (defun set-window-buffer (window buffer-or-name &optional keep-margins)
+    (ignore window buffer-or-name keep-margins) nil))
+
+(unless (fboundp 'window-buffer)
+  (defun window-buffer (&optional window) (ignore window) nil))
+
+
+;;;; --- font-lock ----------------------------------------------------------
+
+(unless (fboundp 'font-lock-mode)
+  (defun font-lock-mode (&optional arg) (ignore arg) nil))
+
+(unless (boundp 'font-lock-defaults)
+  (defvar font-lock-defaults nil))
+
+(unless (boundp 'font-lock-keywords)
+  (defvar font-lock-keywords nil))
+
+(unless (boundp 'cpp-font-lock-keywords)
+  (defvar cpp-font-lock-keywords nil))
+
+(unless (fboundp 'font-lock-fontify-buffer)
+  (defun font-lock-fontify-buffer () nil))
+
+
+;;;; --- bytecomp / runtime metadata ---------------------------------------
+
+(unless (fboundp 'set-advertised-calling-convention)
+  (defun set-advertised-calling-convention (function arglist when)
+    "Record advertised calling convention metadata for FUNCTION."
+    (put function 'advertised-calling-convention (list arglist when))
+    arglist))
+
+(unless (fboundp 'get-advertised-calling-convention)
+  (defun get-advertised-calling-convention (function)
+    "Return advertised calling convention metadata for FUNCTION."
+    (get function 'advertised-calling-convention)))
+
+(unless (fboundp 'byte-code-function-p)
+  (defun byte-code-function-p (object) (ignore object) nil))
+
+(unless (fboundp 'compiled-function-p)
+  (defun compiled-function-p (object) (ignore object) nil))
+
+(unless (fboundp 'subrp)
+  (defun subrp (object) (ignore object) nil))
+
+(unless (fboundp 'special-form-p)
+  (defun special-form-p (object) (ignore object) nil))
+
+(unless (fboundp 'macrop)
+  (defun macrop (object) (ignore object) nil))
+
+(unless (fboundp 'symbol-value)
+  (defun symbol-value (symbol)
+    (if (boundp symbol)
+        (eval symbol)
+      (signal 'void-variable (list symbol)))))
+
+(unless (fboundp 'default-value)
+  (defalias 'default-value 'symbol-value))
+
+(unless (fboundp 'default-boundp)
+  (defalias 'default-boundp 'boundp))
+
+(unless (fboundp 'set-default)
+  (defun set-default (symbol value)
+    (set symbol value)))
+
+(when (or (not (boundp 'emacs-version))
+          (not (fboundp 'set-default-toplevel-value)))
+  (defalias 'set-default-toplevel-value #'set-default))
+
+(when (or (not (boundp 'emacs-version))
+          (not (fboundp 'default-toplevel-value)))
+  (defalias 'default-toplevel-value #'default-value))
+
+(when (or (not (boundp 'emacs-version))
+          (not (fboundp 'internal--define-uninitialized-variable)))
+  (defun internal--define-uninitialized-variable (symbol &optional doc)
+    "Mark SYMBOL as declared without assigning it a value."
+    (when doc
+      (put symbol 'variable-documentation doc))
+    (put symbol 'custom--uninitialized t)
+    symbol))
+
+(when (or (not (boundp 'emacs-version))
+          (get 'make-variable-buffer-local 'emacs-stub-bulk)
+          (not (fboundp 'make-variable-buffer-local)))
+  (defun make-variable-buffer-local (variable)
+    "Stub: accept VARIABLE and return it.
+Even without a full buffer-local subsystem, callers such as
+`setq-local' depend on Emacs's contract that this returns the symbol
+that can then be passed to `set'."
+    variable))
+
+(when (or (not (boundp 'emacs-version))
+          (get 'make-local-variable 'emacs-stub-bulk)
+          (not (fboundp 'make-local-variable)))
+  (defun make-local-variable (variable)
+    "Stub: accept VARIABLE and return it.
+This keeps `(set (make-local-variable 'foo) value)' from attempting to
+set nil or another constant symbol in standalone NeLisp."
+    variable))
+
+(unless (fboundp 'local-variable-p)
+  (defun local-variable-p (variable &optional buffer) (ignore variable buffer) nil))
+
+(unless (fboundp 'kill-local-variable)
+  (defun kill-local-variable (variable) (ignore variable) nil))
+
+;; condition-case variants used by subr.el
+(unless (fboundp 'condition-case-unless-debug)
+  (defmacro condition-case-unless-debug (var bodyform &rest handlers)
+    "Stub: route through plain condition-case (= NeLisp has no debug-on-error toggle)."
+    (cons 'condition-case (cons var (cons bodyform handlers)))))
+
+(unless (fboundp 'with-silent-modifications)
+  (defmacro with-silent-modifications (&rest body)
+    "Stub: evaluate BODY without modified-flag bookkeeping."
+    (cons 'progn body)))
+
+;; Quoting helpers
+(unless (fboundp 'kbd)
+  (defun kbd (keys) (ignore) keys))
+
+(defun emacs-stub--human-readable-format (size prefix flavor space unit)
+  "Format SIZE with PREFIX according to FLAVOR, SPACE, and UNIT."
+  (let ((prefixed-unit (if (eq flavor 'iec)
+                           (concat
+                            (if (string= prefix "k") "K" prefix)
+                            (if (string= prefix "") "" "i")
+                            (or unit "B"))
+                         (concat prefix unit))))
+    (format (if (and (< size 10) (not (string= prefix ""))) "%.1f%s%s" "%.0f%s%s")
+            size
+            (or space "")
+            prefixed-unit)))
+
+(defun emacs-stub--file-size-human-readable (file-size &optional flavor space unit)
+  "Produce a human-readable size string for FILE-SIZE."
+  (let ((power (if (or (null flavor) (eq flavor 'iec)) 1024.0 1000.0))
+        (prefixes '("" "k" "M" "G" "T" "P" "E" "Z" "Y" "R" "Q")))
+    (while (and (>= file-size power) (cdr prefixes))
+      (setq file-size (/ file-size power)
+            prefixes (cdr prefixes)))
+    (emacs-stub--human-readable-format
+     file-size (car prefixes) flavor space unit)))
+
+(unless (fboundp 'file-size-human-readable)
+  (defalias 'file-size-human-readable #'emacs-stub--file-size-human-readable))
+
+(defun emacs-stub--substitute-env-vars (name)
+  "Substitute `$VAR' and `${VAR}' sequences in NAME."
+  (if (fboundp 'substitute-env-vars)
+      (substitute-env-vars name)
+    (let ((result name)
+          (start 0))
+      (while (string-match "\\$\\(?:{\\([[:alnum:]_]+\\)}\\|\\([[:alnum:]_]+\\)\\)" result start)
+        (let* ((match (match-string 0 result))
+               (var (or (match-string 1 result) (match-string 2 result)))
+               (value (getenv var))
+               (replacement (or value match))
+               (begin (match-beginning 0)))
+          (setq result (replace-match replacement t t result)
+                start (+ begin (length replacement)))))
+      result)))
+
+(defun emacs-stub--parse-colon-path-entry (entry double-slash-special-p)
+  "Normalize one parse-colon-path ENTRY.
+DOUBLE-SLASH-SPECIAL-P mirrors `files.el' host handling."
+  (if (equal "" entry) nil
+    (let ((dir (file-name-as-directory entry)))
+      (if (string-match "\\`//+" dir)
+          (substring dir (- (match-end 0)
+                            (if double-slash-special-p 2 1)))
+        dir))))
+
+(unless (fboundp 'parse-colon-path)
+  (defun parse-colon-path (search-path)
+    "Explode SEARCH-PATH into normalized directory names.
+Empty elements become nil, meaning `default-directory'."
+    (when (stringp search-path)
+      (let ((spath (emacs-stub--substitute-env-vars search-path))
+            (double-slash-special-p
+             (memq system-type '(windows-nt cygwin ms-dos))))
+        (mapcar (lambda (entry)
+                  (emacs-stub--parse-colon-path-entry
+                   entry double-slash-special-p))
+                (split-string spath path-separator))))))
+
+(unless (fboundp 'defvaralias)
+  ;; Known limits: a plain `defvar' that runs after `defvaralias' does not
+  ;; resync because `defvar' is a special form and cannot be hooked here;
+  ;; bake-time normalization is the future path.  Aliases are also not live:
+  ;; later `setq' on the target can diverge from the copied alias value.
+  (defvar nelisp--defvaralias-registry nil
+    "Alist of standalone `defvaralias' fallback registrations.")
+
+  (defun nelisp--defvaralias-resync (target)
+    "Copy TARGET's current value into standalone fallback aliases."
+    (let ((current nelisp--defvaralias-registry))
+      (while current
+        (let ((pair (car current)))
+          (when (and (eq (cdr pair) target)
+                     (boundp target))
+            (set (car pair) (symbol-value target))))
+        (setq current (cdr current)))))
+
+  (defun defvaralias (new-alias base-variable &optional docstring)
+    "Stub: register a copy-only alias for BASE-VARIABLE."
+    (ignore docstring)
+    (setq nelisp--defvaralias-registry
+          (cons (cons new-alias base-variable)
+                nelisp--defvaralias-registry))
+    (when (boundp base-variable)
+      (set new-alias (symbol-value base-variable)))
+    new-alias))
+
+(unless (fboundp 'make-symbol)
+  (defun make-symbol (name) (intern name)))
+
+(unless (fboundp 'gensym)
+  (let ((counter 0))
+    (defun gensym (&optional prefix)
+      (setq counter (+ counter 1))
+      (intern (format "%s%d" (or prefix "g") counter)))))
+
+(unless (fboundp 'cl-gensym)
+  (defalias 'cl-gensym 'gensym))
+
+(unless (fboundp 'consing-uses-no-pure-list)
+  (defvar consing-uses-no-pure-list nil))
+
+(unless (boundp 'inhibit-changing-match-data)
+  (defvar inhibit-changing-match-data nil))
+
+(unless (boundp 'noninteractive)
+  (defvar noninteractive t))
+
+(unless (boundp 'inhibit-debugger)
+  (defvar inhibit-debugger t))
+
+;; defvar-local = defvar + make-variable-buffer-local
+(unless (fboundp 'defvar-local)
+  (defmacro defvar-local (var val &optional docstring)
+    `(progn (defvar ,var ,val ,docstring)
+            (make-variable-buffer-local ',var))))
+
+;;;; --- version helpers -----------------------------------------------------
+
+(unless (boundp 'version-separator)
+  (defvar version-separator "."
+    "String separating numeric version components."))
+
+(unless (boundp 'version-regexp-alist)
+  (defvar version-regexp-alist
+    '(("^[-._+ ]?snapshot$"                                 . -4)
+      ("^[-._+]$"                                           . -4)
+      ("^[-._+ ]?\\(cvs\\|git\\|bzr\\|svn\\|hg\\|darcs\\)$" . -4)
+      ("^[-._+ ]?unknown$"                                  . -4)
+      ("^[-._+ ]?alpha$"                                    . -3)
+      ("^[-._+ ]?beta$"                                     . -2)
+      ("^[-._+ ]?\\(pre\\|rc\\)$"                           . -1))
+    "Association between non-numeric version fragments and priorities."))
+
+(unless (fboundp 'version-list-not-zero)
+  (defun version-list-not-zero (list)
+    "Return the first non-zero element of LIST, or 0 when none remains."
+    (while (and list (zerop (car list)))
+      (setq list (cdr list)))
+    (or (car list) 0)))
+
+(unless (fboundp 'version-to-list)
+  (defun version-to-list (ver)
+    "Convert version string VER into a list of integers."
+    (unless (stringp ver)
+      (error "Version must be a string"))
+    (if (and (>= (length ver) (length version-separator))
+             (string-equal (substring ver 0 (length version-separator))
+                           version-separator))
+        (setq ver (concat "0" ver)))
+    (unless (string-match-p "^[0-9]" ver)
+      (error "Invalid version syntax: `%s' (must start with a number)" ver))
+    (save-match-data
+      (let ((i 0)
+            (case-fold-search t)
+            lst s al)
+        (while (and (setq s (string-match "[0-9]+" ver i))
+                    (= s i))
+          (setq lst (cons (string-to-number
+                           (substring ver i (match-end 0)))
+                          lst)
+                i (match-end 0))
+          (when (and (setq s (string-match "[^0-9]+" ver i))
+                     (= s i))
+            (setq s (substring ver i (match-end 0))
+                  i (match-end 0))
+            (unless (string= s version-separator)
+              (setq al version-regexp-alist)
+              (while (and al (not (string-match (caar al) s)))
+                (setq al (cdr al)))
+              (cond
+               (al
+                (push (cdar al) lst))
+               ((and (string-match "^[-._+ ]?\\([a-zA-Z]\\)$" s)
+                     (= i (length ver)))
+                (push (- (aref (downcase (match-string 1 s)) 0)
+                         ?a -1)
+                      lst))
+               (t
+                (error "Invalid version syntax: `%s'" ver))))))
+        (nreverse lst)))))
+
+(unless (fboundp 'version-list-<)
+  (defun version-list-< (l1 l2)
+    "Return non-nil when version list L1 is lower than L2."
+    (while (and l1 l2 (= (car l1) (car l2)))
+      (setq l1 (cdr l1)
+            l2 (cdr l2)))
+    (cond
+     ((and l1 l2) (< (car l1) (car l2)))
+     ((and (null l1) (null l2)) nil)
+     (l1 (< (version-list-not-zero l1) 0))
+     (t (< 0 (version-list-not-zero l2))))))
+
+(unless (fboundp 'version-list-=)
+  (defun version-list-= (l1 l2)
+    "Return non-nil when version list L1 is equal to L2."
+    (while (and l1 l2 (= (car l1) (car l2)))
+      (setq l1 (cdr l1)
+            l2 (cdr l2)))
+    (cond
+     ((and l1 l2) nil)
+     ((and (null l1) (null l2)))
+     (l1 (zerop (version-list-not-zero l1)))
+     (t (zerop (version-list-not-zero l2))))))
+
+(unless (fboundp 'version-list-<=)
+  (defun version-list-<= (l1 l2)
+    "Return non-nil when version list L1 is lower than or equal to L2."
+    (while (and l1 l2 (= (car l1) (car l2)))
+      (setq l1 (cdr l1)
+            l2 (cdr l2)))
+    (cond
+     ((and l1 l2) (< (car l1) (car l2)))
+     ((and (null l1) (null l2)))
+     (l1 (<= (version-list-not-zero l1) 0))
+     (t (<= 0 (version-list-not-zero l2))))))
+
+(defun emacs-stub--version-compare (v1 v2)
+  "Compare V1 and V2 using Emacs version ordering.
+Return -1, 0, or 1 when V1 is less than, equal to, or greater than V2."
+  (let ((l1 (version-to-list (if (stringp v1) v1 (format "%s" v1))))
+        (l2 (version-to-list (if (stringp v2) v2 (format "%s" v2)))))
+    (cond
+     ((version-list-< l1 l2) -1)
+     ((version-list-= l1 l2) 0)
+     (t 1))))
+
+(unless (fboundp 'version<)
+  (defun version< (v1 v2)
+    "Return non-nil when version string V1 is older than V2."
+    (< (emacs-stub--version-compare v1 v2) 0)))
+
+(unless (fboundp 'version<=)
+  (defun version<= (v1 v2)
+    "Return non-nil when version string V1 is not newer than V2."
+    (not (version< v2 v1))))
+
+(unless (fboundp 'version=)
+  (defun version= (v1 v2)
+    "Return non-nil when version string V1 is equal to V2."
+    (version-list-= (version-to-list v1) (version-to-list v2))))
+
+(unless (fboundp 'set-keyboard-coding-system)
+  (defun set-keyboard-coding-system (_coding-system &optional _terminal)
+    "Headless standalone fallback: accept the request and do nothing."
+    nil))
+
+(unless (fboundp 'terminal-init-xterm)
+  (defun terminal-init-xterm ()
+    "Headless standalone fallback for xterm terminal initialization."
+    nil))
+
+(unless (fboundp 'combine-change-calls)
+  (defmacro combine-change-calls (_beg _end &rest body)
+    "Standalone fallback: evaluate BODY without buffer-change coalescing."
+    (cons 'progn body)))
+
+(defun emacs-stub--advice-records (symbol)
+  "Return SYMBOL's advice records."
+  (get symbol 'emacs-stub--advice-records))
+
+(defun emacs-stub--advice-original (symbol)
+  "Return SYMBOL's original function."
+  (get symbol 'emacs-stub--advice-original))
+
+(defun emacs-stub--advice-call (original records args)
+  "Call ORIGINAL through advice RECORDS with ARGS."
+  (let ((override nil)
+        (befores nil)
+        (afters nil)
+        (arounds nil)
+        (filter-args nil)
+        (filter-return nil))
+    (dolist (record records)
+      (cond
+       ((eq (car record) :override) (setq override (cdr record)))
+       ((memq (car record) '(:before :before-until :before-while))
+        (push (cdr record) befores))
+       ((memq (car record) '(:after :after-until :after-while))
+        (push (cdr record) afters))
+       ((eq (car record) :around) (push (cdr record) arounds))
+       ((eq (car record) :filter-args) (push (cdr record) filter-args))
+       ((eq (car record) :filter-return) (push (cdr record) filter-return))))
+    (dolist (filter (nreverse filter-args))
+      (setq args (funcall filter args)))
+    (let ((result
+           (if override
+               (apply override args)
+             (dolist (before (nreverse befores))
+               (apply before args))
+             (let ((call (or original (lambda (&rest _args) nil))))
+               (dolist (advice (nreverse arounds))
+                 (let ((next call))
+                   (setq call
+                         (lambda (&rest call-args)
+                           (apply advice next call-args)))))
+               (prog1 (apply call args)
+                 (dolist (after (nreverse afters))
+                   (apply after args)))))))
+      (dolist (filter (nreverse filter-return))
+        (setq result (funcall filter result)))
+      result)))
+
+(defun emacs-stub--advice-rebuild (symbol)
+  "Rebuild SYMBOL's function cell from stored advice records."
+  (let ((original (emacs-stub--advice-original symbol))
+        (records (emacs-stub--advice-records symbol)))
+    (if records
+        (fset symbol
+              (emacs-stub--advice-wrapper
+               original
+               (emacs-stub--advice-records symbol)))
+      (when original
+        (fset symbol original)))
+    symbol))
+
+(defun emacs-stub--advice-drop-function (function records)
+  "Return RECORDS without entries whose function is FUNCTION."
+  (let ((out nil))
+    (while records
+      (unless (equal function (cdr (car records)))
+        (setq out (cons (car records) out)))
+      (setq records (cdr records)))
+    (nreverse out)))
+
+(defun emacs-stub--advice-add (symbol where function &optional _props)
+  "Add FUNCTION as advice to SYMBOL at WHERE."
+  (unless (emacs-stub--advice-original symbol)
+    (put symbol 'emacs-stub--advice-original
+         (and (fboundp symbol) (symbol-function symbol))))
+  (let ((records (emacs-stub--advice-records symbol))
+        (record (cons where function)))
+    (setq records (emacs-stub--advice-drop-function function records))
+    (put symbol 'emacs-stub--advice-records (append records (list record))))
+  (emacs-stub--advice-rebuild symbol)
+  function)
+
+(defun emacs-stub--advice-remove (symbol function)
+  "Remove FUNCTION advice from SYMBOL."
+  (let ((records (emacs-stub--advice-drop-function
+                  function (emacs-stub--advice-records symbol))))
+    (put symbol 'emacs-stub--advice-records records)
+    (emacs-stub--advice-rebuild symbol))
+  nil)
+
+(defun emacs-stub--advice-member-p (function symbol)
+  "Return non-nil when FUNCTION advises SYMBOL."
+  (let ((records (emacs-stub--advice-records symbol))
+        (found nil))
+    (while (and records (not found))
+      (when (equal function (cdr (car records)))
+        (setq found t))
+      (setq records (cdr records)))
+    found))
+
+(unless (fboundp 'advice-add)
+  (defun advice-add (symbol where function &optional props)
+    "Add FUNCTION as advice to SYMBOL at WHERE."
+    (emacs-stub--advice-add symbol where function props)))
+
+(unless (fboundp 'advice-remove)
+  (defun advice-remove (symbol function)
+    "Remove FUNCTION advice from SYMBOL."
+    (emacs-stub--advice-remove symbol function)))
+
+(unless (fboundp 'advice-member-p)
+  (defun advice-member-p (function symbol)
+    "Return non-nil when FUNCTION advises SYMBOL."
+    (emacs-stub--advice-member-p function symbol)))
+
+(unless (fboundp 'advice--strip-macro)
+  (defun advice--strip-macro (x)
+    "Return X with a leading `macro' marker removed."
+    (if (eq 'macro (car-safe x)) (cdr x) x)))
+
+(unless (fboundp 'advice--cd*r)
+  (defun advice--cd*r (f)
+    "Return F unchanged in the standalone advice substrate."
+    f))
+
+(when (or (not (boundp 'emacs-version))
+          (emacs-stub--install-function-p 'help-function-arglist)
+          (get 'help-function-arglist 'emacs-stub-placeholder))
+  (defun help-function-arglist (def &optional _preserve-names)
+    "Return DEF's arglist for the standalone advice/help substrate."
+    (let ((f (cond ((symbolp def)
+                    (and (fboundp def) (symbol-function def)))
+                   (t def))))
+      (cond ((null f) nil)
+            ((and (consp f) (eq (car f) 'lambda)) (cadr f))
+            ((and (consp f) (eq (car f) 'closure)) (caddr f))
+            ((and (consp f) (eq (car f) 'macro))
+             (help-function-arglist (cdr f)))
+            (t nil)))))
+
+(when (or (not (boundp 'emacs-version))
+          (emacs-stub--install-function-p 'indirect-function))
+  (defun indirect-function (object)
+    "Return OBJECT's ultimate function definition."
+    (while (and (symbolp object) (fboundp object))
+      (let ((next (symbol-function object)))
+        (if (eq next object)
+            (setq object nil)
+          (setq object next))))
+    object))
+
+(unless (fboundp 'advice--p)
+  (defun advice--p (object)
+    "Return non-nil for standalone advice wrapper objects."
+    (and (symbolp object) (get object 'emacs-stub--advice-wrapper))))
+
+(unless (fboundp 'define-advice)
+  (defmacro define-advice (symbol args &rest body)
+    "Standalone fallback for `nadvice.el' `define-advice'.
+Define the generated advice function and call `advice-add'.  The current
+standalone `advice-add' is load-time-only, so this preserves definitions
+without attempting to weave advice into existing function cells."
+    (let* ((how (car args))
+           (arglist (cadr args))
+           (name (caddr args))
+           (props (cdddr args))
+           (advice (intern (concat (symbol-name symbol)
+                                   "@"
+                                   (symbol-name name)))))
+      `(prog1
+           (defun ,advice ,arglist ,@body)
+         (advice-add ',symbol ,how #',advice ,@(and props `(',props)))))))
+
+;; Buffer search primitives — all stubs (= no real buffer text in standalone)
+(unless (fboundp 're-search-forward)
+  (defun re-search-forward (regexp &optional bound noerror count)
+    (ignore regexp bound noerror count) nil))
+
+(unless (fboundp 're-search-backward)
+  (defun re-search-backward (regexp &optional bound noerror count)
+    (ignore regexp bound noerror count) nil))
+
+(unless (fboundp 'search-forward)
+  (defun search-forward (string &optional bound noerror count)
+    (ignore string bound noerror count) nil))
+
+(unless (fboundp 'search-backward)
+  (defun search-backward (string &optional bound noerror count)
+    (ignore string bound noerror count) nil))
+
+(unless (fboundp 'match-string)
+  (defun match-string (num &optional string) (ignore num string) nil))
+
+(unless (fboundp 'match-string-no-properties)
+  (defalias 'match-string-no-properties 'match-string))
+
+(unless (fboundp 'match-beginning)
+  (defun match-beginning (subexp) (ignore subexp) nil))
+
+(unless (fboundp 'match-end)
+  (defun match-end (subexp) (ignore subexp) nil))
+
+(unless (fboundp 'match-data)
+  (defun match-data (&optional integers reuse reseat) (ignore integers reuse reseat) nil))
+
+(unless (fboundp 'set-match-data)
+  (defun set-match-data (list &optional reseat) (ignore list reseat) nil))
+
+(unless (fboundp 'function-get)
+  (defun function-get (f prop &optional _autoload)
+    "Polyfill: value of F's function property PROP, following defalias chains.
+AUTOLOAD is accepted for API parity and ignored (no autoload layer here).
+Real `function-get' (subr.el) is relied on by `define-inline', cl-generic,
+nadvice, etc.; the runtime previously left it void."
+    (let ((val nil))
+      (while (and (symbolp f)
+                  (null (setq val (get f prop)))
+                  (fboundp f))
+        (let ((fundef (symbol-function f)))
+          (setq f (and (symbolp fundef) fundef))))
+      val)))
+
+(unless (fboundp 'string-match)
+  ;; Emacs 27+ added 4th arg INHIBIT-MODIFY (= don't update match data).
+  ;; Vendor subr.el's string-match-p calls (string-match RE STR START t) so
+  ;; our polyfill must accept all 4.
+  (defun string-match (regexp string &optional start inhibit-modify)
+    (ignore regexp string start inhibit-modify)
+    nil))
+
+(unless (fboundp 'replace-regexp-in-string)
+  (defun replace-regexp-in-string (regexp rep string &rest _)
+    (ignore regexp rep) string))
+
+(unless (fboundp 'replace-match)
+  (defun replace-match (newtext &optional fixedcase literal string subexp)
+    (ignore newtext fixedcase literal subexp) string))
+
+(unless (fboundp 'looking-at)
+  (defun looking-at (regexp) (ignore regexp) nil))
+
+(unless (fboundp 'looking-back)
+  (defun looking-back (regexp &optional limit greedy) (ignore regexp limit greedy) nil))
+
+;; Buffer cursor / point primitives — stubs returning sentinels
+(unless (fboundp 'point)
+  (defun point () 1))
+
+(unless (fboundp 'point-min)
+  (defun point-min () 1))
+
+(unless (fboundp 'point-max)
+  (defun point-max () 1))
+
+(unless (fboundp 'goto-char)
+  (defun goto-char (position) (ignore position) nil))
+
+(unless (fboundp 'forward-char)
+  (defun forward-char (&optional n) (ignore n) nil))
+
+(unless (fboundp 'backward-char)
+  (defun backward-char (&optional n) (ignore n) nil))
+
+;; These are degenerate placeholders (no-op / fixed position).  The REAL
+;; line-navigation primitives live in `emacs-line-builtins', which only
+;; overrides a binding it finds carrying the `emacs-stub-bulk' marker (see
+;; the line-builtins install predicate).  Mark each stub so the real
+;; implementation wins; without the marker the no-op stub shadowed it, e.g.
+;; `forward-line' never advanced and `line-end-position' returned point-min,
+;; corrupting `org-element-headline-parser' bounds into an infinite recursion.
+(unless (fboundp 'forward-line)
+  (defun forward-line (&optional n) (ignore n) 0)
+  (put 'forward-line 'emacs-stub-bulk t))
+
+(unless (fboundp 'beginning-of-line)
+  (defun beginning-of-line (&optional n) (ignore n) nil)
+  (put 'beginning-of-line 'emacs-stub-bulk t))
+
+(unless (fboundp 'end-of-line)
+  (defun end-of-line (&optional n) (ignore n) nil)
+  (put 'end-of-line 'emacs-stub-bulk t))
+
+(unless (fboundp 'line-beginning-position)
+  (defun line-beginning-position (&optional n) (ignore n) 1)
+  (put 'line-beginning-position 'emacs-stub-bulk t))
+
+(unless (fboundp 'line-end-position)
+  (defun line-end-position (&optional n) (ignore n) 1)
+  (put 'line-end-position 'emacs-stub-bulk t))
+
+(unless (fboundp 'line-number-at-pos)
+  (defun line-number-at-pos (&optional pos absolute) (ignore pos absolute) 1)
+  (put 'line-number-at-pos 'emacs-stub-bulk t))
+
+(unless (fboundp 'line-number-display-width)
+  (defun line-number-display-width (&optional pixelwise)
+    "Standalone fallback line-number display width.
+Return one canonical column by default; callers such as
+`display-line-numbers-update-width' only need a stable positive width
+when no real redisplay window is available."
+    (ignore pixelwise)
+    1))
+
+(unless (boundp 'display-line-numbers)
+  (defvar display-line-numbers nil))
+
+(unless (boundp 'display-line-numbers-width)
+  (defvar display-line-numbers-width nil))
+
+(unless (boundp 'display-line-numbers-widen)
+  (defvar display-line-numbers-widen nil))
+
+(unless (boundp 'display-line-numbers-current-absolute)
+  (defvar display-line-numbers-current-absolute t))
+
+;; Degenerate placeholders (always-at-boundary); real versions in
+;; `emacs-line-builtins' override these via the `emacs-stub-bulk' marker.
+(unless (fboundp 'eobp)
+  (defun eobp () t)
+  (put 'eobp 'emacs-stub-bulk t))
+
+(unless (fboundp 'bobp)
+  (defun bobp () t)
+  (put 'bobp 'emacs-stub-bulk t))
+
+(unless (fboundp 'eolp)
+  (defun eolp () t)
+  (put 'eolp 'emacs-stub-bulk t))
+
+(unless (fboundp 'bolp)
+  (defun bolp () t)
+  (put 'bolp 'emacs-stub-bulk t))
+
+;; Buffer text manipulation
+(unless (fboundp 'insert)
+  (defun insert (&rest args) (ignore args) nil))
+
+(unless (fboundp 'delete-region)
+  (defun delete-region (start end) (ignore start end) nil))
+
+(unless (fboundp 'delete-char)
+  (defun delete-char (n &optional killflag) (ignore n killflag) nil)
+  ;; Tagged so `emacs-buffer-builtins' replaces this no-op with the real one.
+  (put 'delete-char 'emacs-stub-bulk t))
+
+(unless (fboundp 'erase-buffer)
+  (defun erase-buffer () nil))
+
+(unless (fboundp 'buffer-substring)
+  (defun buffer-substring (start end) (ignore start end) ""))
+
+(unless (fboundp 'buffer-substring-no-properties)
+  (defalias 'buffer-substring-no-properties 'buffer-substring))
+
+(unless (fboundp 'buffer-string)
+  (defun buffer-string () ""))
+
+(unless (fboundp 'buffer-size)
+  (defun buffer-size (&optional buffer) (ignore buffer) 0))
+
+;; Save markers / regions
+(unless (fboundp 'save-excursion)
+  (defmacro save-excursion (&rest body) (cons 'progn body)))
+
+(unless (fboundp 'save-restriction)
+  (defmacro save-restriction (&rest body) (cons 'progn body)))
+
+(unless (fboundp 'save-match-data)
+  (defmacro save-match-data (&rest body) (cons 'progn body)))
+
+(unless (fboundp 'with-current-buffer)
+  (defmacro with-current-buffer (buffer &rest body)
+    `(let ((--saved-buf-- (current-buffer)))
+       (unwind-protect (progn ,@body) nil))))
+
+(unless (fboundp 'with-temp-buffer)
+  (defmacro with-temp-buffer (&rest body) (cons 'progn body)))
+
+(when (or (emacs-stub--install-function-p 'bound-and-true-p)
+          (get 'bound-and-true-p 'emacs-stub-bulk))
+  (defmacro bound-and-true-p (var)
+    "Return VAR's value if VAR is bound and non-nil."
+    `(and (boundp ',var) ,var)))
+
+(unless (fboundp 'narrow-to-region)
+  (defun narrow-to-region (start end) (ignore start end) nil))
+
+(unless (fboundp 'widen)
+  (defun widen () nil))
+
+;; Syntax tables
+(unless (fboundp 'standard-syntax-table)
+  (defun standard-syntax-table () '(syntax-table)))
+
+(unless (fboundp 'syntax-table)
+  (defun syntax-table () (standard-syntax-table)))
+
+(unless (fboundp 'set-syntax-table)
+  (defun set-syntax-table (table) (ignore table) nil))
+
+(when (or (not (fboundp 'make-syntax-table))
+          (get 'make-syntax-table 'emacs-stub-bulk))
+  (defun make-syntax-table (&optional table)
+    "Standalone load-time fallback for syntax table objects."
+    (list 'syntax-table table)))
+
+(unless (fboundp 'modify-syntax-entry)
+  (defun modify-syntax-entry (char newentry &optional table) (ignore char newentry table) nil))
+
+;; Batch/standalone has no color terminal (GNU answers nil on a non-color tty);
+;; magit-diff's face setup calls this at load time.
+(unless (fboundp 'tty-display-color-p)
+  (defun tty-display-color-p (&optional _terminal) nil))
+
+(unless (boundp 'outline-mode-syntax-table)
+  (defvar outline-mode-syntax-table (standard-syntax-table)))
+(unless (boundp 'text-mode-syntax-table)
+  (defvar text-mode-syntax-table (standard-syntax-table)))
+
+;; `set' is a special form in NeLisp bootstrap but appears as void-function
+;; in some funcall contexts.  Polyfill by routing through `eval' + `setq'.
+(unless (fboundp 'set)
+  (defun set (symbol newval)
+    "Polyfill: dynamic indirect setq via `eval'."
+    (eval (list 'setq symbol (list 'quote newval)))
+    newval))
+
+(unless (fboundp 'eq)
+  (defalias 'eq 'equal))  ;; conservative — bootstrap should have eq, but harmless
+
+(unless (fboundp 'memql)
+  (defun memql (element list)
+    "Stub: like memq but uses eql."
+    (let ((c list) (found nil))
+      (while (and c (not found))
+        (if (or (eq (car c) element) (equal (car c) element))
+            (setq found c)
+          (setq c (cdr c))))
+      found)))
+
+;;;; --- format / message helpers ----------------------------------------
+
+(unless (fboundp 'format-message)
+  (defun format-message (string &rest objects)
+    "Stub: route through plain `format' (= no curly-quote substitution)."
+    (apply #'format string objects)))
+
+(defun emacs-stub--standalone-batch-message-p ()
+  "Return non-nil when `message' should use standalone batch stdio."
+  (and (boundp 'noninteractive)
+       noninteractive
+       (fboundp 'nelisp--write-stdout-bytes)))
+
+(defun emacs-stub--message (format-string &rest args)
+  "Format and emit a compatibility message, returning the formatted text.
+In standalone batch mode write to stderr with
+`nelisp--write-stderr-line'.  The stdout fallback is for runtimes that expose
+only `nelisp--write-stdout-bytes'; its prefix keeps diagnostics distinct from
+machine-readable stdout."
+  (if (null format-string)
+      nil
+    (let ((text (apply #'format format-string args)))
+      (cond
+       ((and (emacs-stub--standalone-batch-message-p)
+             (fboundp 'nelisp--write-stderr-line))
+        (nelisp--write-stderr-line text))
+       ((emacs-stub--standalone-batch-message-p)
+        (nelisp--write-stdout-bytes (concat "nemacs: " text "\n")))
+       (t
+        (princ text)
+        (princ "\n")))
+      text)))
+
+;; The standalone runtime may already expose a silent `message' binding.
+;; Replace that binding in noninteractive standalone sessions; host Emacs keeps
+;; its native echo-area/batch-stderr implementation.
+(when (or (emacs-stub--standalone-batch-message-p)
+          (not (fboundp 'message)))
+  (defalias 'message #'emacs-stub--message))
+
+(unless (fboundp 'error)
+  (defun error (format-string &rest args)
+    "Stub: signal `error' with formatted message."
+    (signal 'error (list (apply #'format format-string args)))))
+
+;;;; --- numeric primitives -------------------------------------------------
+
+(unless (fboundp 'min)
+  (defun min (&rest numbers)
+    (let ((acc (car numbers)))
+      (setq numbers (cdr numbers))
+      (while numbers
+        (when (< (car numbers) acc) (setq acc (car numbers)))
+        (setq numbers (cdr numbers)))
+      acc)))
+
+(unless (fboundp 'max)
+  (defun max (&rest numbers)
+    (let ((acc (car numbers)))
+      (setq numbers (cdr numbers))
+      (while numbers
+        (when (> (car numbers) acc) (setq acc (car numbers)))
+        (setq numbers (cdr numbers)))
+      acc)))
+
+(unless (fboundp 'abs)
+  (defun abs (n) (if (< n 0) (- n) n)))
+
+(unless (fboundp 'zerop)
+  (defun zerop (n) (= n 0)))
+
+(unless (fboundp 'plusp)
+  (defun plusp (n) (> n 0)))
+
+(unless (fboundp 'minusp)
+  (defun minusp (n) (< n 0)))
+
+(unless (fboundp 'oddp)
+  (defun oddp (n) (= 1 (mod n 2))))
+
+(unless (fboundp 'evenp)
+  (defun evenp (n) (= 0 (mod n 2))))
+
+(unless (fboundp 'natnump)
+  (defun natnump (n) (and (integerp n) (>= n 0))))
+
+(unless (fboundp '1+)
+  (defun 1+ (n) (+ n 1)))
+
+(unless (fboundp '1-)
+  (defun 1- (n) (- n 1)))
+
+
+;;;; --- bitwise ops --------------------------------------------------------
+
+(unless (fboundp 'logior)
+  (defun logior (&rest ints)
+    "Stub: bitwise OR of all INTS."
+    (let ((acc 0))
+      (while ints
+        (setq acc (+ acc (- (car ints) (logand acc (car ints)))))
+        (setq ints (cdr ints)))
+      acc)))
+
+(unless (fboundp 'logand)
+  (defun logand (&rest ints)
+    "Stub: bitwise AND of all INTS.  Approximation via min for non-negative."
+    (if (null ints)
+        -1
+      (let ((acc (car ints)))
+        (setq ints (cdr ints))
+        (while ints
+          ;; Conservative: use min as a lower bound; not strictly correct
+          ;; but adequate for the bit-flag use cases in subr.el load path.
+          (setq acc (min acc (car ints)))
+          (setq ints (cdr ints)))
+        acc))))
+
+(unless (fboundp 'logxor)
+  (defun logxor (&rest ints)
+    "Stub: bitwise XOR (= using +/- proxy for non-overlapping flags)."
+    (let ((acc 0))
+      (while ints
+        (setq acc (+ acc (car ints)))
+        (setq ints (cdr ints)))
+      acc)))
+
+(unless (fboundp 'lognot)
+  (defun lognot (int)
+    "Stub: bitwise NOT."
+    (- (- int) 1)))
+
+(unless (fboundp 'ash)
+  (defun ash (value count)
+    "Stub: arithmetic shift (positive COUNT = left, negative = right)."
+    (cond
+     ((= count 0) value)
+     ((> count 0)
+      (let ((acc value))
+        (while (> count 0) (setq acc (* acc 2)) (setq count (- count 1)))
+        acc))
+     (t
+      (let ((acc value))
+        (while (< count 0) (setq acc (/ acc 2)) (setq count (+ count 1)))
+        acc)))))
+
+(unless (fboundp 'lsh) (defalias 'lsh 'ash))
+
+
+;;;; --- char.c / fns.c -----------------------------------------------------
+
+(unless (fboundp 'clear-string)
+  (defun clear-string (string) (ignore string) nil))
+
+(unless (fboundp 'store-substring)
+  (defun store-substring (string idx obj) (ignore idx obj) string))
+
+
+;;;; --- display.c ----------------------------------------------------------
+
+(unless (fboundp 'redraw-display)
+  (defun redraw-display (&rest _) nil)
+  (put 'redraw-display 'emacs-stub-bulk t))
+
+(unless (fboundp 'redisplay)
+  (defun redisplay (&optional force) (ignore force) nil)
+  (put 'redisplay 'emacs-stub-bulk t))
+
+(unless (fboundp 'force-mode-line-update)
+  (defun force-mode-line-update (&optional all) (ignore all) nil)
+  (put 'force-mode-line-update 'emacs-stub-bulk t))
+
+
+;;;; --- buffer.c (minimal subset; nelisp-ec-* covers the rest) ------------
+
+;; These synthetic placeholders return values in a throwaway `(buffer)'
+;; shape unrelated to either buffer representation this repo actually
+;; uses (the standalone prelude's native `nelisp-buffer-p' record or this
+;; repo's own `nelisp-ec-buffer' struct).  Tag each one `emacs-stub-bulk',
+;; matching the `display.c' block above, so
+;; the buffer-builtins install predicate (which treats an already
+;;-fboundp name as a trustworthy prior owner, like a host C subr, unless
+;; it is stub-bulk-tagged) lets `emacs-buffer-builtins.el''s real
+;; `nelisp-ec'-backed definitions override this placeholder instead of it
+;; permanently winning the load-order race merely for having defined the
+;; name first.  Without this tag, whichever of these names happens to be
+;; absent from a given NeLisp build's own native buffer family (currently
+;; `get-buffer-create') gets stuck on this placeholder forever, handing
+;; callers a buffer object neither `get-buffer' nor `with-current-buffer'
+;; recognizes -- see `test/nemacs-process-sync-smoke.el' and
+;; `emacs-buffer-builtins-test/get-buffer-create-buffer-is-recognized-by-get-buffer'.
+(unless (fboundp 'current-buffer)
+  (defun current-buffer ()
+    "Stub: synthetic placeholder.  Real impl needs nelisp-ec-current-buffer alias."
+    (cons 'buffer nil))
+  (put 'current-buffer 'emacs-stub-bulk t))
+
+(unless (fboundp 'bufferp)
+  (defun bufferp (object) (and (consp object) (eq (car object) 'buffer)))
+  (put 'bufferp 'emacs-stub-bulk t))
+
+(unless (fboundp 'buffer-live-p)
+  (defun buffer-live-p (buffer) (bufferp buffer))
+  (put 'buffer-live-p 'emacs-stub-bulk t))
+
+(unless (fboundp 'get-buffer)
+  (defun get-buffer (buffer-or-name) (ignore buffer-or-name) nil)
+  (put 'get-buffer 'emacs-stub-bulk t))
+
+(unless (fboundp 'get-buffer-create)
+  (defun get-buffer-create (buffer-or-name &optional inhibit-buffer-hooks)
+    (ignore buffer-or-name inhibit-buffer-hooks)
+    (cons 'buffer nil))
+  (put 'get-buffer-create 'emacs-stub-bulk t))
+
+(unless (fboundp 'buffer-name)
+  (defun buffer-name (&optional buffer) (ignore buffer) "")
+  (put 'buffer-name 'emacs-stub-bulk t))
+
+(unless (fboundp 'buffer-list)
+  (defun buffer-list (&optional frame) (ignore frame) nil)
+  (put 'buffer-list 'emacs-stub-bulk t))
+
+
+;;;; --- minor-mode helpers -------------------------------------------------
+
+(defun emacs-stub--hook-entry-function (entry)
+  "Return ENTRY's hook function."
+  (if (and (consp entry) (numberp (car entry)))
+      (cdr entry)
+    entry))
+
+(defun emacs-stub--hook-entry-depth (entry)
+  "Return ENTRY's ordering depth."
+  (if (and (consp entry) (numberp (car entry)))
+      (car entry)
+    0))
+
+(defun emacs-stub--hook-normalize (value)
+  "Normalize hook VALUE to a list of hook entries."
+  (cond
+   ((null value) nil)
+   ((listp value) value)
+   (t (list value))))
+
+(defun emacs-stub--hook-entry (function depth)
+  "Return hook entry for FUNCTION at DEPTH."
+  (if (and (numberp depth) (not (= depth 0)))
+      (cons depth function)
+    function))
+
+(defun emacs-stub--hook-canonical-var (sym)
+  "Return the canonical variable SYM aliases to.
+Follow `define-obsolete-variable-alias' metadata (the
+`byte-obsolete-variable' property, whose car is the current name) then the
+`defvaralias' registry, with cycle protection.  A `make-obsolete-variable'
+whose replacement is a string is not followed.  Real Emacs shares one value
+cell between an obsolete hook name and its canonical name; the standalone
+`defvaralias' is a one-shot value copy, so hook helpers resolve the chain
+explicitly and read/write the canonical cell."
+  (let ((cur sym) (seen nil) (done nil))
+    (while (not done)
+      (if (memq cur seen)
+          (setq done t)
+        (push cur seen)
+        (let ((next
+               (or (let ((info (and (symbolp cur)
+                                    (get cur 'byte-obsolete-variable))))
+                     (and (car-safe info) (symbolp (car info)) (car info)))
+                   (and (boundp 'nelisp--defvaralias-registry)
+                        (cdr (assq cur nelisp--defvaralias-registry))))))
+          (if (and next (symbolp next) (not (eq next cur)))
+              (setq cur next)
+            (setq done t)))))
+    cur))
+
+(defun emacs-stub--add-hook (hook function &optional depth _local)
+  "Add FUNCTION to HOOK and return HOOK's new value.
+This is a minimal standalone implementation of Emacs hook variables.  DEPTH
+nil prepends, t appends, and numeric depths sort low-to-high.  HOOK is
+resolved to its canonical (obsolete-alias aware) variable first."
+  (setq hook (emacs-stub--hook-canonical-var hook))
+  (let* ((current (emacs-stub--hook-normalize
+                   (and (boundp hook) (symbol-value hook))))
+         (entry (emacs-stub--hook-entry function depth))
+         (filtered nil)
+         (tail current))
+    (while tail
+      (unless (equal function (emacs-stub--hook-entry-function (car tail)))
+        (setq filtered (cons (car tail) filtered)))
+      (setq tail (cdr tail)))
+    (setq filtered (nreverse filtered))
+    (let ((new (cond
+                ((eq depth t) (append filtered (list entry)))
+                ((numberp depth)
+                 (let ((out nil)
+                       (rest filtered)
+                       (inserted nil)
+                       (entry-depth (emacs-stub--hook-entry-depth entry)))
+                   (while rest
+                     (when (and (not inserted)
+                                (< entry-depth
+                                   (emacs-stub--hook-entry-depth (car rest))))
+                       (setq out (cons entry out))
+                       (setq inserted t))
+                     (setq out (cons (car rest) out))
+                     (setq rest (cdr rest)))
+                   (unless inserted
+                     (setq out (cons entry out)))
+                   (nreverse out)))
+                (t (cons entry filtered)))))
+      (set hook new)
+      new)))
+
+(defun emacs-stub--remove-hook (hook function &optional _local)
+  "Remove FUNCTION from HOOK and return HOOK's new value."
+  (setq hook (emacs-stub--hook-canonical-var hook))
+  (let ((current (emacs-stub--hook-normalize
+                  (and (boundp hook) (symbol-value hook))))
+        (new nil))
+    (while current
+      (unless (equal function (emacs-stub--hook-entry-function (car current)))
+        (setq new (cons (car current) new)))
+      (setq current (cdr current)))
+    (setq new (nreverse new))
+    (set hook new)
+    new))
+
+(defun emacs-stub--run-hook (hook args)
+  "Run HOOK with ARGS and return nil (obsolete-alias aware)."
+  (setq hook (emacs-stub--hook-canonical-var hook))
+  (let ((entries (emacs-stub--hook-normalize
+                  (and (boundp hook) (symbol-value hook)))))
+    (while entries
+      (let ((fn (emacs-stub--hook-entry-function (car entries))))
+        (unless (eq fn t)
+          (apply fn args)))
+      (setq entries (cdr entries))))
+  nil)
+
+(unless (fboundp 'add-hook)
+  (defun add-hook (hook function &optional depth local)
+    "Add FUNCTION to HOOK."
+    (emacs-stub--add-hook hook function depth local)))
+
+(unless (fboundp 'remove-hook)
+  (defun remove-hook (hook function &optional local)
+    "Remove FUNCTION from HOOK."
+    (emacs-stub--remove-hook hook function local)))
+
+(unless (fboundp 'run-hooks)
+  (defun run-hooks (&rest hooks)
+    "Run each normal hook in HOOKS."
+    (while hooks
+      (emacs-stub--run-hook (car hooks) nil)
+      (setq hooks (cdr hooks)))
+    nil))
+
+(unless (fboundp 'run-hook-with-args)
+  (defun run-hook-with-args (hook &rest args)
+    "Run HOOK as an abnormal hook with ARGS."
+    (emacs-stub--run-hook hook args)))
+
+
+;;;; --- list helpers ------------------------------------------------------
+
+(unless (fboundp 'add-to-list)
+  (defun add-to-list (list-var element &optional append compare-fn)
+    "Stub: prepend (or append) ELEMENT to LIST-VAR if not already present."
+    (ignore compare-fn)
+    (let ((cur (and (boundp list-var) (symbol-value list-var))))
+      (unless (member element cur)
+        (set list-var (if append
+                          (append cur (list element))
+                        (cons element cur))))
+      (and (boundp list-var) (symbol-value list-var)))))
+
+(unless (fboundp 'add-to-ordered-list)
+  (defun add-to-ordered-list (list-var element &optional order)
+    (ignore order)
+    (add-to-list list-var element)))
+
+;;;; --- regex/menu load-time helpers --------------------------------------
+
+(unless (fboundp 'regexp-quote)
+  (defun regexp-quote (string)
+    "Minimal regexp quote for standalone load-time keyword tables."
+    (let ((i 0)
+          (out ""))
+      (while (< i (length string))
+        (let ((ch (aref string i)))
+          (when (memq ch '(?\\ ?. ?* ?+ ?? ?^ ?$ ?\[ ?\] ?\( ?\) ?{ ?} ?|))
+            (setq out (concat out "\\")))
+          (setq out (concat out (string ch))))
+        (setq i (1+ i)))
+      out)))
+
+;; Unconditional: an earlier no-op bulk stub may claim `regexp-opt' first
+;; (closure (&rest _) nil), so always install the real implementation.
+(defun regexp-opt (strings &optional paren)
+  "Minimal `regexp-opt': alternation of regexp-quoted STRINGS.
+PAREN nil -> shy group; t / string -> capture group; words / symbols add
+word / symbol boundaries (matches the GNU `regexp-opt' grouping contract)."
+  (let* ((body (mapconcat #'regexp-quote strings "\\|"))
+         (open (cond ((stringp paren) paren)
+                     ((eq paren 'words) "\\<\\(")
+                     ((eq paren 'symbols) "\\_<\\(")
+                     (paren "\\(")
+                     (t "\\(?:")))
+         (close (cond ((eq paren 'words) "\\)\\>")
+                      ((eq paren 'symbols) "\\)\\_>")
+                      (t "\\)"))))
+    (concat open body close)))
+
+(unless (fboundp 'easy-menu-define)
+  (defmacro easy-menu-define (&rest _args)
+    "Standalone load-time fallback: ignore menu declarations."
+    nil))
+
+(unless (fboundp 'easy-menu-add-item)
+  (defun easy-menu-add-item (&rest _args)
+    "Standalone load-time fallback: ignore menu mutations."
+    nil))
+
+(unless (fboundp 'current-idle-time)
+  (defun current-idle-time ()
+    "Standalone fallback: no UI event loop means no idle-time sample."
+    nil))
+
+(unless (fboundp 'shell-command-to-string)
+  (defun shell-command-to-string (command)
+    "Standalone fallback: do not run external shell commands."
+    (ignore command)
+    ""))
+
+(unless (fboundp 'call-process-shell-command)
+  (defun call-process-shell-command (&rest _args)
+    "Standalone fallback: report external shell command failure."
+    1))
+
+(unless (fboundp 'syntax-propertize-rules)
+  (defmacro syntax-propertize-rules (&rest _rules)
+    "Standalone fallback: return an inert syntax propertizer."
+    `(lambda (&rest _args) nil)))
+
+(unless (fboundp 'cc-require)
+  (defmacro cc-require (feature)
+    "Standalone fallback: preserve CC Mode's runtime REQUIRE dependency."
+    `(require ,feature)))
+
+(unless (fboundp 'cc-require-when-compile)
+  (defmacro cc-require-when-compile (feature)
+    "Standalone fallback: load FEATURE when no compiler is present."
+    `(require ,feature)))
+
+(unless (fboundp 'cc-external-require)
+  (defmacro cc-external-require (feature)
+    "Standalone fallback: preserve CC Mode's external REQUIRE dependency."
+    `(require ,feature)))
+
+(unless (fboundp 'cc-bytecomp-defvar)
+  (defmacro cc-bytecomp-defvar (&rest _args)
+    "Standalone fallback: ignore compiler-only variable declarations."
+    nil))
+
+(unless (fboundp 'cc-bytecomp-defun)
+  (defmacro cc-bytecomp-defun (&rest _args)
+    "Standalone fallback: ignore compiler-only function declarations."
+    nil))
+
+(unless (fboundp 'cc-provide)
+  (defmacro cc-provide (feature)
+    "Standalone load-time fallback: provide FEATURE for CC Mode fragments."
+    (list 'provide feature)))
+
+(unless (boundp 'c-style-alist)
+  (defvar c-style-alist nil))
+
+(unless (fboundp 'c-add-style)
+  (defun c-add-style (style description &optional set-p)
+    "Standalone load-time fallback: remember a CC Mode STYLE."
+    (ignore set-p)
+    (let ((existing (assoc style c-style-alist)))
+      (if existing
+          (setcdr existing description)
+        (setq c-style-alist (cons (cons style description) c-style-alist))))
+    style))
+
+;; Load the auto-generated bulk stubs last so emacs-stub.el's specific
+;; (= more accurate) implementations above take precedence — bulk fills
+;; only the remaining `(unless (fboundp X) ...)' gaps.  Without this
+;; require the bulk file is an orphan and `macroexp-warn-and-return' /
+;; other vendored-Emacs prerequisites stay void at standalone load
+;; time, breaking `(require 'json)' / cl-lib / friends.
+(emacs-stub--load-feature 'emacs-stub-bulk)
+
+;;;; --- load-time machinery + misc (vendor-coverage 2026-06-06 batch) -------
+;; Surfaced by bin/vendor-coverage as truly-missing top-level / load-time
+;; callers across vendor/emacs-lisp.  No-ops / minimal degraded impls.
+
+(defun emacs-stub--advice-wrapper (original records)
+  "Return a callable wrapper around ORIGINAL using advice RECORDS."
+  (let ((wrapper (make-symbol "emacs-stub-advice-wrapper")))
+    (fset wrapper
+          (list 'lambda '(&rest args)
+                (list 'emacs-stub--advice-call
+                      (list 'get (list 'quote wrapper)
+                            (list 'quote 'emacs-stub--advice-original))
+                      (list 'get (list 'quote wrapper)
+                            (list 'quote 'emacs-stub--advice-records))
+                      'args)))
+    (put wrapper 'emacs-stub--advice-wrapper t)
+    (put wrapper 'emacs-stub--advice-original original)
+    (put wrapper 'emacs-stub--advice-records records)
+    wrapper))
+
+(defun emacs-stub--advice-wrapper-original (function)
+  "Return FUNCTION's unwrapped original when FUNCTION is our wrapper."
+  (if (and (symbolp function)
+           (get function 'emacs-stub--advice-wrapper))
+      (get function 'emacs-stub--advice-original)
+    function))
+
+(defun emacs-stub--advice-wrapper-records (function)
+  "Return FUNCTION's wrapper advice records."
+  (and (symbolp function)
+       (get function 'emacs-stub--advice-wrapper)
+       (get function 'emacs-stub--advice-records)))
+
+(defun emacs-stub--add-function-value (how old function &optional _props)
+  "Return OLD with FUNCTION advice added at HOW."
+  (let* ((original (emacs-stub--advice-wrapper-original old))
+         (records (emacs-stub--advice-drop-function
+                   function (emacs-stub--advice-wrapper-records old))))
+    (emacs-stub--advice-wrapper original (append records (list (cons how function))))))
+
+(defun emacs-stub--remove-function-value (old function)
+  "Return OLD with FUNCTION advice removed."
+  (let* ((original (emacs-stub--advice-wrapper-original old))
+         (records (emacs-stub--advice-drop-function
+                   function (emacs-stub--advice-wrapper-records old))))
+    (if records
+        (emacs-stub--advice-wrapper original records)
+      original)))
+
+(defun emacs-stub--add-function-symbol (how symbol function &optional props local)
+  "Add FUNCTION advice to function variable SYMBOL."
+  (if local
+      ;; Avoid retaining activation-local vendor closures in the dumped cold
+      ;; image.  The current Org gate needs the form to execute, not the local
+      ;; filter behavior.
+      function
+    (let* ((old (and (boundp symbol) (symbol-value symbol)))
+           (new (emacs-stub--add-function-value how old function props)))
+      (set symbol new)
+      function)))
+
+(defun emacs-stub--remove-function-symbol (symbol function &optional local)
+  "Remove FUNCTION advice from function variable SYMBOL."
+  (unless local
+    (let* ((old (and (boundp symbol) (symbol-value symbol)))
+           (new (emacs-stub--remove-function-value old function)))
+      (set symbol new)))
+  nil)
+
+;; Public names for the advice substrate so other ownership groups (the IO
+;; magit bridge fallbacks) need not call the private `--' implementations.
+(dolist (pair '((emacs-stub-advice-add . emacs-stub--advice-add)
+                (emacs-stub-advice-remove . emacs-stub--advice-remove)
+                (emacs-stub-advice-member-p . emacs-stub--advice-member-p)
+                (emacs-stub-add-function-symbol
+                 . emacs-stub--add-function-symbol)
+                (emacs-stub-add-function-value
+                 . emacs-stub--add-function-value)
+                (emacs-stub-remove-function-symbol
+                 . emacs-stub--remove-function-symbol)
+                (emacs-stub-remove-function-value
+                 . emacs-stub--remove-function-value)))
+  (defalias (car pair) (cdr pair)))
+
+(when (or (not (boundp 'emacs-version))
+          (get 'add-function 'emacs-stub-bulk))
+  (defmacro add-function (how place function &optional props)
+    "Standalone subset of `nadvice.el' `add-function'.
+Supports symbol variables and `(local 'SYMBOL)' function variables."
+    (cond
+     ((and (consp place)
+           (eq (car place) 'local)
+           (eq (car-safe (cadr place)) 'quote))
+      (list 'emacs-stub--add-function-symbol how (cadr place) function props t))
+     ((and (consp place)
+           (eq (car place) 'var))
+      (list 'setq (cadr place)
+            (list 'emacs-stub--add-function-value
+                  how (cadr place) function props)))
+     ((symbolp place)
+      (list 'emacs-stub--add-function-symbol
+            how (list 'quote place) function props nil))
+     (t nil))))
+
+(when (or (not (boundp 'emacs-version))
+          (get 'remove-function 'emacs-stub-bulk))
+  (defmacro remove-function (place function)
+    "Standalone subset of `nadvice.el' `remove-function'."
+    (cond
+     ((and (consp place)
+           (eq (car place) 'local)
+           (eq (car-safe (cadr place)) 'quote))
+      (list 'emacs-stub--remove-function-symbol (cadr place) function t))
+     ((and (consp place)
+           (eq (car place) 'var))
+      (list 'setq (cadr place)
+            (list 'emacs-stub--remove-function-value (cadr place) function)))
+     ((symbolp place)
+      (list 'emacs-stub--remove-function-symbol (list 'quote place) function nil))
+     (t nil))))
+
+(unless (fboundp 'register-definition-prefixes)
+  (defun register-definition-prefixes (file prefixes)
+    "Stub: loaddefs prefix registration is unused in standalone."
+    (ignore file prefixes) nil))
+
+(unless (fboundp 'custom-add-load)
+  (defun custom-add-load (symbol load)
+    "Add LOAD to SYMBOL's `custom-loads' metadata."
+    (let ((loads (get symbol 'custom-loads)))
+      (unless (member load loads)
+        (put symbol 'custom-loads (cons load loads))))))
+
+(unless (boundp 'custom-current-group-alist)
+  (defvar custom-current-group-alist nil
+    "Alist mapping `load-file-name' values to custom groups.
+Each element is (FILE . GROUP)."))
+
+(unless (fboundp 'custom-current-group)
+  (defun custom-current-group ()
+    "Return the custom group of the file currently being loaded, or nil."
+    (and (boundp 'custom-current-group-alist)
+         (cdr (assoc load-file-name custom-current-group-alist)))))
+
+(unless (fboundp 'custom-add-to-group)
+  (defun custom-add-to-group (group option widget)
+    "Add OPTION/WIDGET to GROUP's `custom-group' metadata.
+Preserve existing entries, append new ones, and keep the full
+`(OPTION WIDGET)' pair unique so the same OPTION may appear with
+different widgets."
+    (let ((entry (list option widget))
+          ;; `t' is the normalizer's defgroup marker, not a member list.
+          (members (let ((m (get group 'custom-group))) (and (listp m) m))))
+      (unless (member entry members)
+        (put group 'custom-group (append members (list entry)))))))
+
+(unless (fboundp 'custom-add-version)
+  (defun custom-add-version (symbol version)
+    "Record VERSION as SYMBOL's `custom-version' metadata."
+    (put symbol 'custom-version version)))
+
+(unless (fboundp 'custom-add-package-version)
+  (defun custom-add-package-version (symbol version)
+    "Record VERSION as SYMBOL's `custom-package-version' metadata."
+    (put symbol 'custom-package-version version)))
+
+(unless (fboundp 'custom-add-link)
+  (defun custom-add-link (symbol widget)
+    "Add WIDGET to SYMBOL's `custom-links' metadata.
+Keep the widget list unique and prepend new entries."
+    (let ((links (get symbol 'custom-links)))
+      (unless (member widget links)
+        (put symbol 'custom-links (cons widget links))))))
+
+(unless (fboundp 'custom-add-dependencies)
+  (defun custom-add-dependencies (symbol dependencies)
+    "Add DEPENDENCIES to SYMBOL's `custom-dependencies' metadata.
+Preserve existing entries and prepend any unseen dependency."
+    (let ((deps (get symbol 'custom-dependencies)))
+      (while dependencies
+        (unless (member (car dependencies) deps)
+          (setq deps (cons (car dependencies) deps)))
+        (setq dependencies (cdr dependencies)))
+      (put symbol 'custom-dependencies deps))))
+
+(unless (fboundp 'custom-handle-keyword)
+  (defun custom-handle-keyword (symbol keyword value type)
+    "Handle one Custom KEYWORD/VALUE pair for SYMBOL of TYPE."
+    (cond ((eq keyword :group) (custom-add-to-group value symbol type))
+          ((eq keyword :version) (custom-add-version symbol value))
+          ((eq keyword :package-version)
+           (custom-add-package-version symbol value))
+          ((eq keyword :link) (custom-add-link symbol value))
+          ((eq keyword :load) (custom-add-load symbol value))
+          ((eq keyword :tag) (put symbol 'custom-tag value))
+          ((eq keyword :set-after) (custom-add-dependencies symbol value))
+          (t (error "Unknown keyword %S" keyword)))))
+
+(unless (fboundp 'custom-handle-all-keywords)
+  (defun custom-handle-all-keywords (symbol keywords type)
+    "Handle all Custom KEYWORDS for SYMBOL of TYPE."
+    (while keywords
+      (let ((keyword (car keywords)))
+        (setq keywords (cdr keywords))
+        (unless (symbolp keyword)
+          (error "Junk in args %S" keywords))
+        (unless keywords
+          (error "Keyword %s is missing an argument" keyword))
+        (let ((value (car keywords)))
+          (setq keywords (cdr keywords))
+          (custom-handle-keyword symbol keyword value type))))))
+
+(unless (fboundp 'custom--add-custom-loads)
+  (defun custom--add-custom-loads (symbol loads)
+    "Set SYMBOL's `custom-loads' metadata, preserving existing loads."
+    (dolist (load (get symbol 'custom-loads))
+      (unless (member load loads)
+        (setq loads (cons load loads))))
+    (put symbol 'custom-loads loads)))
+
+(unless (fboundp 'custom-autoload)
+  (defun custom-autoload (symbol load &optional noset)
+    "Mark SYMBOL as a custom autoload and record LOAD."
+    (put symbol 'custom-autoload (if noset 'noset t))
+    (custom-add-load symbol load)))
+
+(unless (fboundp 'setq-local)
+  (defmacro setq-local (&rest pairs)
+    "Stub: degrade to global `setq' (standalone has no buffer-local cells)."
+    (cons 'setq pairs)))
+
+(unless (fboundp 'default-value)
+  (defun default-value (symbol)
+    "Stub: standalone has no buffer-local cells; return the global value."
+    (symbol-value symbol)))
+
+(unless (fboundp 'set-default)
+  (defun set-default (symbol value)
+    "Stub: degrade to global `set'."
+    (set symbol value)))
+
+(unless (fboundp 'format-prompt)
+  (defun format-prompt (prompt default &rest format-args)
+    "Stub: minimal `format-prompt' — PROMPT plus an optional default hint."
+    (concat (if format-args (apply #'format prompt format-args) prompt)
+            (if (and default (not (equal default "")))
+                (format " (default %s)"
+                        (if (consp default) (car default) default))
+              "")
+            ": ")))
+
+(unless (fboundp 'derived-mode-p)
+  (defun derived-mode-p (&optional modes &rest old-modes)
+    "Return non-nil if the current `major-mode' is derived from one of MODES.
+MODES is a mode symbol or a list of mode symbols.  Walk the
+`derived-mode-parent' chain (as recorded by `define-derived-mode') starting
+from `major-mode'; return the first member of MODES that matches.
+
+Also supports the deprecated (derived-mode-p &rest MODES) calling
+convention.  This faithful (pre-Emacs-30) parent-chain walk replaces the
+old always-nil stub, which silently disabled every `(derived-mode-p
+\\='org-mode)' guard -- notably the one wrapping the whole body of
+`org-set-regexps-and-options', leaving `org-complex-heading-regexp' and
+friends nil so that `org-element-parse-buffer' returned nil."
+    (let ((modes (cond (old-modes (cons modes old-modes))
+                       ((listp modes) modes)
+                       (t (list modes))))
+          (mode (and (boundp 'major-mode) major-mode))
+          (found nil))
+      (while (and mode (not found))
+        (when (memq mode modes) (setq found mode))
+        (setq mode (get mode 'derived-mode-parent)))
+      (when (and (not found)
+                 (memq 'org-mode modes)
+                 (or (not (fboundp 'buffer-base-buffer))
+                     (not (ignore-errors (buffer-base-buffer))))
+                 (fboundp 'buffer-file-name)
+                 (let ((file (ignore-errors (buffer-file-name))))
+                   (and (stringp file)
+                        (string-match-p "\\.org\\'" file))))
+        (setq found 'org-mode))
+      found)))
+
+(unless (fboundp 'widget-get)
+  (defun widget-get (widget property)
+    "Stub: no widget subsystem; always nil."
+    (ignore widget property) nil))
+
+(unless (fboundp 'widget-put)
+  (defun widget-put (widget property value)
+    "Stub: no-op; return WIDGET."
+    (ignore property value) widget))
+
+(unless (fboundp 'debug)
+  (defun debug (&rest args)
+    "Stub: no debugger in standalone; no-op."
+    (ignore args) nil))
+
+;;;; --- markers (vendor-coverage 2026-06-06 batch) --------------------------
+;; A marker is the vector [marker POSITION BUFFER INSERTION-TYPE].  Standalone
+;; has no gap buffer, so markers do NOT auto-adjust when text is inserted or
+;; deleted; they hold a position+buffer that code can create / set / read /
+;; compare.  `current-buffer' returns a fresh sentinel each call, so
+;; `marker-buffer' is only meaningful as a non-nil "is this marker set" flag.
+
+(unless (fboundp 'make-marker)
+  (defun make-marker ()
+    "Return a new marker that points nowhere."
+    (vector 'marker nil nil nil)))
+
+(unless (fboundp 'markerp)
+  (defun markerp (object)
+    "Return non-nil if OBJECT is a marker created by this substrate."
+    (and (vectorp object) (= (length object) 4) (eq (aref object 0) 'marker))))
+
+(unless (fboundp 'marker-position)
+  (defun marker-position (marker)
+    "Return the position MARKER points to, or nil."
+    (and (markerp marker) (aref marker 1))))
+
+(unless (fboundp 'marker-buffer)
+  (defun marker-buffer (marker)
+    "Return the buffer MARKER points into, or nil."
+    (and (markerp marker) (aref marker 2))))
+
+(unless (fboundp 'marker-insertion-type)
+  (defun marker-insertion-type (marker)
+    "Return MARKER's insertion type."
+    (and (markerp marker) (aref marker 3))))
+
+(unless (fboundp 'set-marker-insertion-type)
+  (defun set-marker-insertion-type (marker type)
+    "Set MARKER's insertion type to TYPE."
+    (when (markerp marker) (aset marker 3 type))
+    type))
+
+(unless (fboundp 'set-marker)
+  (defun set-marker (marker position &optional buffer)
+    "Point MARKER at POSITION in BUFFER (default current).  nil POSITION detaches."
+    (when (markerp marker)
+      (if (null position)
+          (progn (aset marker 1 nil) (aset marker 2 nil))
+        (aset marker 1 (if (markerp position) (marker-position position) position))
+        (aset marker 2 (or buffer (and (fboundp 'current-buffer) (current-buffer))))))
+    marker))
+
+(unless (fboundp 'move-marker)
+  (defalias 'move-marker 'set-marker))
+
+(unless (fboundp 'copy-marker)
+  (defun copy-marker (&optional position type)
+    "Return a new marker at POSITION (integer or marker; default point)."
+    (let ((m (make-marker)))
+      (cond
+       ((markerp position)
+        (set-marker m (marker-position position) (marker-buffer position)))
+       ((null position)
+        (set-marker m (if (fboundp 'point) (point) 1)))
+       (t (set-marker m position)))
+      (when type (set-marker-insertion-type m type))
+      m)))
+
+(unless (fboundp 'point-marker)
+  (defun point-marker ()
+    "Return a new marker at point in the current buffer."
+    (copy-marker (if (fboundp 'point) (point) 1))))
+
+(unless (fboundp 'insert-before-markers)
+  (defun insert-before-markers (&rest args)
+    "Degraded alias for `insert' (markers do not auto-adjust in standalone)."
+    (apply #'insert args)))
+
+;;;; --- file-name + shell helpers (vendor-coverage 2026-06-06 batch) --------
+;; Pure, host-independent helpers that vendor code references at load / macro
+;; time.  All degrade gracefully in standalone (no real filesystem or shell).
+
+(unless (fboundp 'file-name-absolute-p)
+  (defun file-name-absolute-p (filename)
+    "Return non-nil if FILENAME is an absolute file name (starts with / or ~)."
+    (and (stringp filename)
+         (> (length filename) 0)
+         (let ((c (aref filename 0)))
+           (or (eq c ?/) (eq c ?~))))))
+
+(unless (fboundp 'file-relative-name)
+  (defun file-relative-name (filename &optional directory)
+    "Convert FILENAME to be relative to DIRECTORY.
+Standalone: returns FILENAME unchanged (no directory arithmetic)."
+    (ignore directory) filename))
+
+(unless (fboundp 'abbreviate-file-name)
+  (defun abbreviate-file-name (filename)
+    "Return a shortened version of FILENAME.
+Standalone: returns FILENAME unchanged (no home-dir abbreviation)."
+    filename))
+
+(unless (fboundp 'shell-quote-argument)
+  (defun shell-quote-argument (argument)
+    "Quote ARGUMENT for passing to an inferior POSIX shell."
+    (if (equal argument "")
+        "''"
+      (concat "'"
+              (if (fboundp 'string-replace)
+                  (string-replace "'" "'\\''" argument)
+                argument)
+              "'"))))
+
+(unless (fboundp 'executable-find)
+  (defun executable-find (command &optional remote)
+    "Stub: standalone cannot search PATH, so always returns nil."
+    (ignore command remote) nil))
+
+;;;; --- search / interaction helpers (vendor-coverage 2026-06-06 batch) -----
+
+(unless (fboundp 'match-string-no-properties)
+  (defun match-string-no-properties (num &optional string)
+    "Return text matched by the last search for subexpression NUM, no props."
+    (when (fboundp 'match-string)
+      (let ((s (match-string num string)))
+        (if (and s (fboundp 'substring-no-properties))
+            (substring-no-properties s)
+          s)))))
+
+(unless (fboundp 'y-or-n-p)
+  (defun y-or-n-p (prompt)
+    "Stub: non-interactive standalone answers no (nil)."
+    (ignore prompt) nil))
+
+(unless (fboundp 'yes-or-no-p)
+  (defun yes-or-no-p (prompt)
+    "Stub: non-interactive standalone answers no (nil)."
+    (ignore prompt) nil))
+
+;;;; --- file / property / terminal helpers (vendor-coverage 2026-06-06 batch2)
+
+(unless (fboundp 'file-remote-p)
+  (defun file-remote-p (file &optional identification connected)
+    "Stub: the standalone reader only sees local files, so always nil."
+    (ignore file identification connected) nil))
+
+(unless (fboundp 'file-attribute-modification-time)
+  (defun file-attribute-modification-time (attributes)
+    "Return the modification time from a `file-attributes' list (element 5)."
+    (nth 5 attributes)))
+
+(unless (fboundp 'get-char-property)
+  (defun get-char-property (position prop &optional object)
+    "Stub: standalone tracks no text properties / overlays, so always nil."
+    (ignore position prop object) nil))
+
+(unless (fboundp 'next-single-property-change)
+  (defun next-single-property-change (position prop &optional object limit)
+    "Stub: no text properties in standalone; report no change (LIMIT or nil)."
+    (ignore position prop object) limit))
+
+(unless (fboundp 'string-width)
+  (defun string-width (string &optional from to)
+    "Degraded width: count characters (wide chars not doubled) in STRING."
+    (length (if (or from to) (substring string (or from 0) to) string))))
+
+(unless (fboundp 'ding)
+  (defun ding (&optional arg)
+    "Stub: no terminal bell in the standalone reader."
+    (ignore arg) nil))
+
+(unless (fboundp 'beep)
+  (defun beep (&optional arg)
+    "Stub: no terminal bell in the standalone reader."
+    (ignore arg) nil))
+
+;;;; --- character / arithmetic helpers (vendor-coverage 2026-06-07 batch3) ---
+;; Re-provided in the substrate because the current standalone reader no longer
+;; bakes them in; `unless fboundp' keeps them inert when the reader does.
+
+(unless (fboundp 'characterp)
+  (defun characterp (object)
+    "Return non-nil if OBJECT is a valid character code point (0..#x3FFFFF)."
+    (and (integerp object) (>= object 0) (<= object #x3FFFFF))))
+
+(unless (fboundp 'expt)
+  (defun expt (base exponent)
+    "Return BASE raised to EXPONENT.
+Standalone supports an integer EXPONENT (the common case, e.g.
+\(expt 2 N)) by repeated multiplication; a negative integer EXPONENT
+yields a float reciprocal.  A non-integer EXPONENT is unsupported and
+degrades to 1 (no pow primitive in the standalone reader)."
+    (cond
+     ((and (integerp exponent) (>= exponent 0))
+      (let ((acc 1) (i 0))
+        (while (< i exponent) (setq acc (* acc base)) (setq i (1+ i)))
+        acc))
+     ((integerp exponent)
+      (let ((acc 1) (i 0) (n (- exponent)))
+        (while (< i n) (setq acc (* acc base)) (setq i (1+ i)))
+        (/ 1.0 acc)))
+     (t 1))))
+
+;;;; --- define-inline (Doc 15 B4): runtime-compatible function-only impl ---
+;;
+;; `emacs-stub-bulk' (required above) pre-stubs `define-inline' to a no-op,
+;; so packages that define functions with it (ht.el's ht-create / ht-get /
+;; ..., and many MELPA libs) get void functions.  The real `inline.el'
+;; machinery does not mesh with this runtime's backquote -- the reader reads
+;; ,X / ,@X as (comma X) / (comma-at X), not the standard \\,/\\,@, so
+;; inline.el's inline-quote walker leaves (comma X) in the generated code,
+;; yielding `void-function comma'.
+;;
+;; Provide a lean, function-version-only `define-inline' that lowers the
+;; inline DSL directly against the runtime backquote: an `inline-quote' FORM
+;; becomes FORM with (comma X) -> X (the bound argument value), and
+;; `inline-letevals' is a no-op wrapper (its vars are already evaluated
+;; args).  No compiler-macro / inlining optimisation (callability over
+;; speed).  Reader-gated (`rdf') so host Emacs keeps its real `define-inline'.
+;; Lowering helpers are pure and defined unconditionally (harmless on host,
+;; and unit-testable there); only the `define-inline' macro is reader-gated.
+(defun emacs-stub--inline-uncomma--unquote-p (form)
+  "Return non-nil if FORM is a reader-level unquote marker `(comma X)'."
+  (and (consp form)
+       (let ((head (car form)))
+         (or (eq head 'comma)
+             (and (symbolp head) (string= (symbol-name head) ","))))))
+
+(defun emacs-stub--inline-uncomma (form)
+  "Lower runtime backquote unquotes in FORM: (comma X) -> X, recursively."
+  (cond
+   ((not (consp form)) form)
+   ;; `#',EXPR' inside `inline-quote' reads as `(function (comma EXPR))'
+   ;; (this runtime's backquote marks `,' as `comma', not a `\,' read
+   ;; syntax character).  Mirror `inline.el's `inline--dont-quote' case for
+   ;; `` `#'(,'\, ,e) '' : for the function-body (non-inlining) path this
+   ;; must lower to the bare EXPR, not `(function EXPR)'.  EXPR (e.g. `(get
+   ;; type 'cl-deftype-satisfies)' in `cl-macs.el's `cl-typep') already
+   ;; evaluates to the function value at call time; `function' does not
+   ;; evaluate a non-lambda argument, so leaving the wrapper in place turns
+   ;; EXPR's own unevaluated *source* into the `funcall' target and signals
+   ;; `invalid-function' (observed via `defclass' -> `cl-check-type' ->
+   ;; `cl-typep' -> `(funcall #'(get type (quote cl-deftype-satisfies)) val)').
+   ((and (eq (car form) 'function)
+         (emacs-stub--inline-uncomma--unquote-p (cadr form))
+         (null (cddr form)))
+    (emacs-stub--inline-lower (cadr (cadr form))))
+   ;; `',EXPR' inside `inline-quote' reads as `(quote (comma EXPR))'.  In the
+   ;; function-body path the template IS the code, so `',EXPR' must lower to
+   ;; the bare EXPR (its value), not the literal quoted symbol EXPR (which
+   ;; made `cl-typep' on `(or A B)' / `(and A B)' recurse on the symbol
+   ;; `head': "Unknown type head").  Mirrors `inline--dont-quote'.
+   ((and (eq (car form) 'quote)
+         (emacs-stub--inline-uncomma--unquote-p (cadr form))
+         (null (cddr form)))
+    (emacs-stub--inline-lower (cadr (cadr form))))
+   ((let ((head (car form)))
+      (or (eq head 'comma)
+          (and (symbolp head)
+               (string= (symbol-name head) ","))))
+    (emacs-stub--inline-lower (cadr form)))
+   ((let ((head (car form)))
+      (or (eq head 'comma-at)
+          (and (symbolp head)
+               (string= (symbol-name head) ",@"))))
+    (emacs-stub--inline-lower (cadr form)))
+   (t (mapcar #'emacs-stub--inline-uncomma form))))
+
+(defun emacs-stub--inline-lower (form)
+  "Lower one inline DSL FORM to runtime code (function / funcall path).
+Handles `inline-quote', `inline-letevals', `inline-const-p',
+`inline-const-val' and `inline-error', and recurses through ordinary
+sub-forms so DSL operators nested inside `if' / `cond' / `let' (as used
+by org-element's accessors) are lowered too -- the previous default
+left them intact, yielding `void-function inline-const-val' at runtime."
+  (cond
+   ((not (consp form)) form)
+   ((eq (car form) 'inline-quote) (emacs-stub--inline-uncomma (cadr form)))
+   ((eq (car form) 'inline-letevals)
+    ;; vars are already-evaluated args -> drop the binding spec, keep body
+    ;; (cf. inline--dont-leteval for the symbol case = macroexp-progn body).
+    (let ((body (cddr form)))
+      (if (cdr body)
+          (cons 'progn (mapcar #'emacs-stub--inline-lower body))
+        (emacs-stub--inline-lower (car body)))))
+   ;; funcall path: `inline-const-p' is always true and `inline-const-val'
+   ;; is the value itself (cf. inline--alwaysconst-p / inline--alwaysconst-val
+   ;; in inline.el): in the function version the args already hold values.
+   ((eq (car form) 'inline-const-p) t)
+   ((eq (car form) 'inline-const-val) (emacs-stub--inline-lower (cadr form)))
+   ((eq (car form) 'inline-error)
+    (cons 'error (mapcar #'emacs-stub--inline-lower (cdr form))))
+   ;; never descend into quoted data
+   ((eq (car form) 'quote) form)
+   (t (mapcar #'emacs-stub--inline-lower form))))
+
+(defun emacs-stub--define-inline (name args body)
+  "Build the `defun' form for a runtime `define-inline' (function version)."
+  (when (stringp (car-safe body)) (setq body (cdr body)))
+  (when (eq (car-safe (car-safe body)) 'declare) (setq body (cdr body)))
+  (list 'defun name args
+        (if (cdr body)
+            (cons 'progn (mapcar #'emacs-stub--inline-lower body))
+          (emacs-stub--inline-lower (car body)))))
+
+(when (fboundp 'rdf)
+  (defmacro define-inline (name args &rest body)
+    "Runtime `define-inline': define NAME as a plain function (no inlining).
+The inline DSL in BODY is lowered against the runtime backquote."
+    (emacs-stub--define-inline name args body)))
+
+;; Pre-provide `inline' so a later `(require 'inline)' is inert.  On the
+;; standalone, `inline.el' is not on the load-path, so `require' silent-succeeds
+;; (sets featurep) AND leaves the runtime `define-inline' above a no-op -- every
+;; subsequent `define-inline' form then fails (observed: org-element-ast.el,
+;; which does `(require 'inline)' before defining many inline accessors, crashed
+;; the whole load).  Providing the feature here keeps the working macro.
+(when (fboundp 'rdf)
+  (provide 'inline))
+
+;; `buffer-base-buffer' (C primitive, buffer.c) returns the base buffer of an
+;; indirect buffer, or nil for a normal buffer.  It is only registered under
+;; the `emacs-buffer-buffer-base-buffer' name (nelisp-emacs.el) and never
+;; aliased to the standard name, so it is void at runtime -- org-element-at-point
+;; and other callers then fail with `void-function buffer-base-buffer'.  The
+;; standalone has no indirect buffers, so nil is always the correct answer.
+(unless (fboundp 'buffer-base-buffer)
+  (defun buffer-base-buffer (&optional buffer)
+    "Return the base buffer of BUFFER when available."
+    (if (fboundp 'emacs-buffer-buffer-base-buffer)
+        (emacs-buffer-buffer-base-buffer buffer)
+      nil)))
+
+(unless (fboundp 'make-indirect-buffer)
+  (defun make-indirect-buffer (base-buffer name &optional clone)
+    "Create an indirect buffer named NAME from BASE-BUFFER.
+CLONE is accepted for API compatibility."
+    (ignore clone)
+    (when (and (not (fboundp 'emacs-buffer-clone-indirect-buffer))
+               (fboundp 'emacs-stub--load-feature))
+      (ignore-errors (emacs-stub--load-feature 'emacs-buffer)))
+    (if (fboundp 'emacs-buffer-clone-indirect-buffer)
+        (emacs-buffer-clone-indirect-buffer name base-buffer)
+      (get-buffer-create name))))
+
+;;;; --- Doc 16 breadth: foundational subr builtins (were void) ---------
+;; `xor' (subr.el), `ntake' (Emacs 30 fns.c) and `char-uppercase-p'
+;; (simple.el) were void in the standalone runtime.  They are widely
+;; called by vendor packages -- bytecomp / comp / ert / pp / package-vc
+;; all use `xor'.  Plain defuns gated on `unless (fboundp ...)' so host
+;; Emacs stays a no-op.  Reader notes verified by direct --load: the bare
+;; reader has no `/=' (use `(not (= ...))') and treats POSIX `[[:blank:]]'
+;; classes literally, so explicit char sets are used where needed.
+
+(unless (fboundp 'xor)
+  (defun xor (cond1 cond2)
+    "Return the boolean exclusive-or of COND1 and COND2.
+If only one of the arguments is non-nil, return it; otherwise return nil."
+    (cond ((not cond1) cond2)
+          ((not cond2) cond1))))
+
+(unless (fboundp 'ntake)
+  (defun ntake (n list)
+    "Modify LIST to keep only the first N elements, and return it.
+If N is zero or negative, return nil.  If N is greater or equal to the
+length of LIST, return LIST unmodified.  Destructive counterpart of `take'."
+    (when (and (> n 0) list)
+      (let ((cell (nthcdr (1- n) list)))
+        (when (consp cell) (setcdr cell nil)))
+      list)))
+
+(unless (fboundp 'char-uppercase-p)
+  (defun char-uppercase-p (char)
+    "Return non-nil if CHAR is an upper-case character.
+A character is upper-case when it differs from its `downcase' form,
+which covers ASCII plus any cased letter in the runtime case table."
+    (and (natnump char) (not (= char (downcase char))))))
+
+;;;; --- Doc 16 breadth round 7: subr.el binding macros (were void) ------
+;; `ignore-error' (subr.el), `while-let' + `and-let*' (subr-x bindings)
+;; were void.  Standard backquote works in runtime macros, so these mirror
+;; the Emacs definitions.  `and-let*' needs `internal--build-bindings'
+;; (also void here -- the runtime's when-let*/if-let* are implemented
+;; without it), so the binding-builder is shimmed too.  All gated on
+;; `unless (fboundp ...)' so host Emacs keeps its own.
+;; `with-memoization' is added in round 8 below, once the extra `setf'
+;; places (notably `(gethash ...)') were registered in `cl-lib.el'.
+
+(unless (fboundp 'internal--build-bindings)
+  (defun internal--build-binding (binding prev-var)
+    "Normalize a `when-let*'/`and-let*' BINDING, chaining PREV-VAR with `and'."
+    (setq binding
+          (cond ((symbolp binding) (list binding binding))
+                ((null (cdr binding)) (list (gensym "s") (car binding)))
+                (t binding)))
+    (list (car binding) (list 'and prev-var (cadr binding))))
+
+  (defun internal--build-bindings (bindings)
+    "Normalize BINDINGS into short-circuiting `let*' bindings."
+    (let ((prev-var t))
+      (mapcar (lambda (binding)
+                (let ((b (internal--build-binding binding prev-var)))
+                  (setq prev-var (car b))
+                  b))
+              bindings))))
+
+(unless (fboundp 'ignore-error)
+  (defmacro ignore-error (condition &rest body)
+    "Execute BODY; if the error CONDITION occurs, return nil.
+CONDITION is a (list of) error symbol(s) and is not evaluated."
+    (declare (debug t) (indent 1))
+    `(condition-case nil (progn ,@body) (,condition nil))))
+
+(unless (fboundp 'while-let)
+  (defmacro while-let (spec &rest body)
+    "Bind variables per SPEC and evaluate BODY while all bindings are non-nil.
+SPEC has the same shape as in `if-let*'."
+    (declare (indent 1) (debug if-let))
+    (let ((done (gensym "done")))
+      `(catch ',done
+         (while t
+           (if-let* ,spec
+               (progn ,@body)
+             (throw ',done nil)))))))
+
+(unless (fboundp 'and-let*)
+  (defmacro and-let* (varlist &rest body)
+    "Bind variables per VARLIST and conditionally evaluate BODY.
+Like `when-let*', but when BODY is empty and all bindings are non-nil the
+result is the value of the last binding."
+    (declare (indent 1) (debug if-let*))
+    (let (res)
+      (if varlist
+          `(let* ,(setq varlist (internal--build-bindings varlist))
+             (when ,(setq res (caar (last varlist)))
+               ,@(or body `(,res))))
+        `(let* () ,@(or body '(t)))))))
+
+;;;; --- Doc 16 breadth round 8: with-memoization (setf-based) -----------
+;; The Emacs `with-memoization' uses `gv-letplace'; the standalone reader
+;; lacks full `gv', so this shim expands to `setf' instead (which round 8
+;; taught `gethash'/`get'/... places via `cl-simple-setter').  Trade-off:
+;; PLACE's subforms are evaluated more than once, so callers should use
+;; simple subforms (e.g. `(gethash KEY TABLE)' with variable KEY/TABLE).
+
+(unless (fboundp 'with-memoization)
+  (defmacro with-memoization (place &rest code)
+    "Return the value of CODE, caching it in PLACE.
+If PLACE is already non-nil, return it without evaluating CODE."
+    (declare (indent 1) (debug (gv-place body)))
+    (let ((val (make-symbol "val")))
+      `(or ,place
+           (let ((,val (progn ,@code)))
+             (setf ,place ,val)
+             ,val)))))
+
+;;;; --- Doc 16 breadth round 12: subr.el / macroexp list helpers --------
+;; delete-consecutive-dups / rassq-delete-all (subr.el) and macroexp-quote
+;; (macroexp.el) were void.  Mirror the Emacs definitions; gated on
+;; `unless (fboundp ...)'.  (`dlet' and `with-output-to-string' are not
+;; shimmed here: the runtime's `let' is lexical so `dlet's dynamic binding
+;; does not take effect, and `princ' ignores a buffer `standard-output' so
+;; output capture is unavailable.)
+
+(unless (fboundp 'delete-consecutive-dups)
+  (defun delete-consecutive-dups (list &optional circular)
+    "Destructively remove `equal' consecutive duplicates from LIST.
+With CIRCULAR, the first and last elements are treated as consecutive."
+    (let ((tail list) last)
+      (while (cdr tail)
+        (if (equal (car tail) (cadr tail))
+            (setcdr tail (cddr tail))
+          (setq last tail
+                tail (cdr tail))))
+      (when (and circular last (equal (car tail) (car list)))
+        (setcdr last nil))
+      list)))
+
+(unless (fboundp 'rassq-delete-all)
+  (defun rassq-delete-all (value alist)
+    "Delete from ALIST all elements whose cdr is `eq' to VALUE.
+Return the modified alist; non-cons elements are ignored."
+    (while (and (consp (car alist)) (eq (cdr (car alist)) value))
+      (setq alist (cdr alist)))
+    (let ((tail alist) tail-cdr)
+      (while (setq tail-cdr (cdr tail))
+        (if (and (consp (car tail-cdr)) (eq (cdr (car tail-cdr)) value))
+            (setcdr tail (cdr tail-cdr))
+          (setq tail tail-cdr))))
+    alist))
+
+(unless (fboundp 'macroexp-quote)
+  (defun macroexp-quote (v)
+    "Return an expression E such that `(eval E)' is V.
+E is V itself when V is self-quoting, otherwise (quote V)."
+    (if (and (not (consp v))
+             (or (keywordp v) (not (symbolp v)) (memq v '(nil t))))
+        v
+      (list 'quote v))))
+
+;; Doc 33 item 244: `macroexp-const-p' must be REAL, not the bulk no-op
+;; (`emacs-stub-bulk' installs an always-nil lambda for it).  EIEIO's
+;; `eieio-defclass-internal' asks it whether a slot's :initform is
+;; already a constant expression; with the always-nil stub every quoted
+;; initform (e.g. magit-file-section's `(quote magit-file-section-map)')
+;; got wrapped by `macroexp-quote' a SECOND time, so `eieio-oref-default''s
+;; single `eval' unwrapped only one layer and every constructed object
+;; carried `(quote SYM)' in the slot instead of SYM — downstream,
+;; magit-section's `(symbol-value keymap)' on that cons aborted the whole
+;; enclosing form flagless.  Semantics copied from macroexp.el.
+(when (or (not (fboundp 'macroexp-const-p))
+          (get 'macroexp-const-p 'emacs-stub-bulk))
+  (defun macroexp-const-p (exp)
+    "Return non-nil if EXP will always evaluate to the same value."
+    (cond ((consp exp) (or (eq (car exp) 'quote)
+                           (and (eq (car exp) 'function)
+                                (symbolp (cadr exp)))))
+          ((symbolp exp) (or (memq exp '(nil t))
+                             (keywordp exp)))
+          (t t)))
+  (put 'macroexp-const-p 'emacs-stub-bulk nil))
+
+;;;; --- Doc 16 breadth round 15: copy-hash-table (was void) -------------
+;; `copy-hash-table' was void, which broke `map-copy' on hash tables.  The
+;; runtime does not expose `hash-table-test', so the copy uses the default
+;; test -- correct for the common `eql'/`eq'-keyed tables.
+
+(unless (fboundp 'copy-hash-table)
+  (defun copy-hash-table (table)
+    "Return a shallow copy of hash TABLE.
+The copy uses the default hash test, since the runtime does not expose
+`hash-table-test'."
+    (let ((new (make-hash-table)))
+      (maphash (lambda (k v) (puthash k v new)) table)
+      new)))
+
+(provide 'emacs-stub)
+
+;;; emacs-stub.el ends here
+
+;;;; --- gv.el placeholder (avoid the NeLisp-eval scoping bug in real gv.el) ---
+
+(unless (fboundp 'gv-define-expander)
+  (defmacro gv-define-expander (name handler)
+    "Stub: no-op (NeLisp standalone has no setf customization)."
+    (ignore name handler) nil))
+
+(unless (fboundp 'gv-define-setter)
+  (defmacro gv-define-setter (name arglist &rest body)
+    "Define NAME's standalone generalized-variable setter.
+
+The full `gv' implementation records an expander closure.  The standalone
+`setf' shim instead expands through a named helper macro, NAME--setter.  Keep
+the original GV ARGLIST order (store value first, followed by place
+arguments), so fixed, optional, and rest argument setters all retain their
+normal macro-writing contract."
+    (let ((setter (intern (concat (symbol-name name) "--setter"))))
+      (list 'progn
+            (cons 'defmacro
+                  (cons setter
+                        (cons arglist body)))
+            (list 'put (list 'quote name)
+                  (list 'quote 'cl-gv-setter)
+                  (list 'quote setter))))))
+
+(unless (fboundp 'gv-define-simple-setter)
+  (defmacro gv-define-simple-setter (name setter &optional fix)
+    "Stub: register NAME as a simple generalized variable setter."
+    (ignore fix)
+    (list 'put (list 'quote name)
+          (list 'quote 'cl-simple-setter)
+          (list 'quote setter))))
+
+;; On the standalone runtime the binary preloads `gv-letplace' as a
+;; `(&rest _) nil' macro, so a plain `unless fboundp' guard never installed
+;; the working version below (`cl-callf' then expanded to nil and silently
+;; skipped the write, e.g. eieio's slots-list -> vector conversion).
+(unless (and (fboundp 'gv-letplace) (not (fboundp 'nelisp--record-set)))
+  (defmacro gv-letplace (vars place &rest body)
+    "Simplified `gv-letplace': bind VARS to PLACE's expression and a setter.
+
+Binds VARS' first symbol (GETTER) to the PLACE expression itself and
+its second symbol (SETTER) to a function that, given a value
+expression V, returns `(setf PLACE V)' -- the standard macro-writer
+contract real gv.el provides, minus the no-multiple-evaluation
+guarantee (PLACE's subforms may be evaluated more than once by the
+built form, same trade-off as this file's `with-memoization' shim).
+The previous stub here expanded to a bare `(progn BODY...)' with VARS
+completely unbound, so every real user of the contract (e.g. Compat
+31's `incf'/`decf', which Magit's `magit--with-refresh-cache' relies
+on) hit `void-variable' on the setter symbol at first invocation."
+    (let ((getter (nth 0 vars))
+          (setter (nth 1 vars)))
+      (cons 'let*
+            (cons
+             (list
+              (list getter place)
+              (list setter
+                    (list 'lambda '(v)
+                          (list 'list
+                                (list 'quote 'setf)
+                                ;; GETTER holds the place FORM at macro time;
+                                ;; splice its value (quoting the symbol built
+                                ;; `(setf getter V)', a write to a global).
+                                getter
+                                'v))))
+             body)))))
+
+(unless (fboundp 'gv-get)
+  (defun gv-get (place do)
+    "Stub: invoke DO with PLACE as both getter and trivial setter."
+    (funcall do place (lambda (v) (list 'setq place v)))))
+
+(unless (fboundp 'gv-setter)
+  (defun gv-setter (name)
+    "Stub: synthesize setf-name symbol."
+    (intern (format "(setf %s)" name))))
+
+(unless (fboundp 'gv-ref)
+  (defun gv-ref (place) place))
+
+(unless (boundp 'defun-declarations-alist)
+  (defvar defun-declarations-alist nil))
+(unless (boundp 'macro-declarations-alist)
+  (defvar macro-declarations-alist nil))
+
+;; The two cl-macs.el helpers that NeLisp's lazily loaded oclosure/nadvice
+;; substrate (`nelisp-nadvice-substrate') needs
+;; (lives here, not in cl-lib.el, because hand-picked load lists such as the
+;; proc-smoke one load emacs-stub.el without cl-lib.el).  The substrate stages them by
+;; READING all of the staged GNU cl-macs.el (~18s), and skips that whole step
+;; when `cl--arglist-args' is already bound.  These are the verbatim GNU
+;; definitions (cl-macs.el), so nothing changes semantically; without them the
+;; first `advice-add' during bootstrap pushes the cold load past its budget.
+(unless (boundp 'cl--lambda-list-keywords)
+  (defconst cl--lambda-list-keywords
+    '(&optional &rest &key &allow-other-keys &aux &whole &body &environment)))
+(unless (fboundp 'cl--arglist-args)
+  (defun cl--arglist-args (args)
+    (if (nlistp args) (list args)
+      (let ((res nil) (kind nil) arg)
+        (while (consp args)
+          (setq arg (pop args))
+          (if (memq arg cl--lambda-list-keywords) (setq kind arg)
+            (if (eq arg '&cl-defs) (pop args)
+              (and (consp arg) kind (setq arg (car arg)))
+              (and (consp arg) (cdr arg) (eq kind '&key) (setq arg (cadr arg)))
+              (setq res (nconc res (cl--arglist-args arg))))))
+        (nconc res (and args (list args)))))))
+
+
+;; Load NeLisp's oclosure/nadvice/gv substrate now, with this library's own
+;; vendored GNU copies hidden from `load-path'.  The substrate pairs NeLisp's
+;; staged cl-preloaded.el with its own vendored oclosure.el, gv.el and
+;; nadvice.el and locates every one of them through `load-path'.  Runtime
+;; images and nemacs put this library's `vendor/emacs-lisp{,/emacs-lisp}' on
+;; `load-path' ahead of NeLisp's directories; the first `advice-add' would
+;; then load a mismatched pair of definitions (oclosure defined twice,
+;; "Type oclosure already in another class").  Forcing the load here, where
+;; the first advice consumers are still ahead, keeps NeLisp's implementation
+;; authoritative without shadowing it.
+(defun emacs-stub--load-nadvice-substrate ()
+  "Force NeLisp's lazily loaded nadvice substrate under a clean `load-path'."
+  (let ((fn (and (fboundp 'advice-add) (symbol-function 'advice-add))))
+    (when (and (eq (car-safe fn) 'autoload)
+               (equal (format "%s" (car-safe (cdr-safe fn)))
+                      "nelisp-nadvice-substrate")
+               (fboundp 'autoload-do-load))
+      (let ((saved load-path)
+            (root (and (boundp 'nelisp-emacs-vendor-root)
+                       (stringp nelisp-emacs-vendor-root)
+                       (expand-file-name "emacs-lisp" nelisp-emacs-vendor-root)))
+            (filtered nil))
+        (dolist (dir load-path)
+          (unless (and root (stringp dir)
+                       (let ((d (directory-file-name (expand-file-name dir))))
+                         (or (string= d root)
+                             (string-prefix-p (concat root "/") d))))
+            (push dir filtered)))
+        (setq load-path (nreverse filtered))
+        (unwind-protect
+            (autoload-do-load fn 'advice-add)
+          (setq load-path saved))))))
+(emacs-stub--load-nadvice-substrate)
+
+;; Provide gv as a feature so cl-lib's `(require 'gv)' (if any) succeeds.
+;; Not when the runtime ships a loadable GNU gv.el (current NeLisp vendors
+;; it and `nelisp-nadvice-substrate' requires it on the first `advice-add'):
+;; a fake feature would keep the real gv.el (and thus `gv-deref', which
+;; nadvice.el needs) from ever loading.
+(unless (or (featurep 'gv)
+            (and (fboundp 'advice-add)
+                 (eq (car-safe (symbol-function 'advice-add)) 'autoload)
+                 (equal (format "%s" (car-safe (cdr-safe (symbol-function 'advice-add))))
+                        "nelisp-nadvice-substrate")))
+  ;; `(provide (identity 'gv))' rather than a literal `(provide 'gv)': the
+  ;; bootstrap bundler scans for literal provide forms and would emit an
+  ;; unconditional one after this file, defeating the guard above.
+  (provide (identity 'gv)))
+
+;;;; --- pcase placeholder (avoid loading vendor pcase.el which uses old `\,' symbol escape) ---
+
+(unless (fboundp 'pcase)
+  ;; Phase 4 batch 2 — pcase with backquote / pred / and / or patterns.
+  ;; Implements the pattern subset cl-macs / cl-loop / cl-some etc.
+  ;; expand into.  Pure elisp on top of bootstrap eval primitives.
+  ;;
+  ;; Pattern syntax supported:
+  ;;   `_'                — catch-all
+  ;;   INTEGER / STRING   — `equal' test
+  ;;   `(quote X)' / `'X' — `eq' test
+  ;;   SYMBOL (bare)      — bind to value, always match
+  ;;   `(pred FN)'        — call (FN value), match if non-nil
+  ;;   `(and P1 P2 ...)'  — match if every P matches (binds ALL)
+  ;;   `(or P1 P2 ...)'   — match if any P matches (no bindings)
+  ;;   `(guard EXPR)'     — match if EXPR true
+  ;;   `(let PAT EXPR)'   — bind PAT to result of EXPR (always match)
+  ;;   `(backquote PAT)'  — destructure PAT.  Inside PAT:
+  ;;     - `(comma SYM)'  → bind SYM to value-at-position
+  ;;     - literal cons   → recursive shape match
+  ;;     - literal atom   → equality test
+  ;;
+  ;; Backquote-pattern is the critical one — cl-macs uses it heavily
+  ;; for destructuring.  E.g. `\`(,a ,b)' matches a 2-elem cons; binds
+  ;; a=(car val), b=(cadr val).
+
+  (defun emacs-stub--pcase-test (pattern value-form)
+    "Build (TEST-FORM . BINDINGS) for matching PATTERN against VALUE-FORM.
+VALUE-FORM is an elisp expression that evaluates to the value being
+tested.  TEST-FORM is an elisp expression that evaluates to non-nil
+when the pattern matches.  BINDINGS is a list of (SYMBOL FORM) pairs
+to let-bind in the case body when matched."
+    (cond
+     ;; `_' wildcard.
+     ((eq pattern '_) (cons t nil))
+     ;; Bare symbol: bind to value, always match.
+     ((symbolp pattern)
+      (cons t (list (list pattern value-form))))
+     ;; Number / string literal.
+     ((or (integerp pattern) (stringp pattern))
+      (cons (list 'equal value-form pattern) nil))
+     ;; Cons cell — examine head for pattern type.
+     ((consp pattern)
+      (let ((head (car pattern))
+            (rest (cdr pattern)))
+        (cond
+         ;; (quote X)
+         ((eq head 'quote)
+          (cons (list 'eq value-form (list 'quote (car rest))) nil))
+         ;; (pred FN)
+         ((eq head 'pred)
+          (let ((fn (car rest)))
+            (cons (list 'funcall (list 'function fn) value-form) nil)))
+         ;; (guard EXPR)
+         ((eq head 'guard)
+          (cons (car rest) nil))
+         ;; (let PAT EXPR)
+         ((eq head 'let)
+          (let* ((sub-pat (car rest))
+                 (sub-expr (car (cdr rest)))
+                 (built (emacs-stub--pcase-test sub-pat sub-expr)))
+            (cons (car built) (cdr built))))
+         ;; (and P1 P2 ...)
+         ((eq head 'and)
+          (emacs-stub--pcase-and rest value-form))
+         ;; (or P1 P2 ...)
+         ((eq head 'or)
+          (emacs-stub--pcase-or rest value-form))
+         ;; (backquote ...) - destructure cons / atom shape.  Accept both
+         ;; the NeLisp reader's normalized `backquote' head and host
+         ;; Emacs's `\\=`' symbol (host-normalized bundles print patterns
+         ;; as `(\\=` ...)', Doc 33 item 243).
+         ((or (eq head 'backquote) (eq head '\`))
+          (emacs-stub--pcase-backquote (car rest) value-form))
+         ;; Unknown — treat as opaque catch-all (= permissive).
+         (t (cons t nil)))))
+     ;; Other atom (symbol via symbolp above; vector etc.)
+     (t (cons (list 'equal value-form (list 'quote pattern)) nil))))
+
+  (defun emacs-stub--pcase-and (patterns value-form)
+    "Build (TEST . BINDINGS) for an `and' pattern (= all PATTERNS match)."
+    (let ((tests nil)
+          (bindings nil)
+          (cur patterns))
+      (while cur
+        (let* ((built (emacs-stub--pcase-test (car cur) value-form))
+               (t1 (car built))
+               (b1 (cdr built)))
+          (setq tests (cons t1 tests))
+          (setq bindings (append bindings b1)))
+        (setq cur (cdr cur)))
+      (cons (cons 'and (let ((rev nil))
+                         (while tests (setq rev (cons (car tests) rev)) (setq tests (cdr tests)))
+                         rev))
+            bindings)))
+
+  (defun emacs-stub--pcase-or (patterns value-form)
+    "Build (TEST . BINDINGS) for an `or' pattern.  No bindings (= ambiguous)."
+    (let ((tests nil)
+          (cur patterns))
+      (while cur
+        (let* ((built (emacs-stub--pcase-test (car cur) value-form))
+               (t1 (car built)))
+          (setq tests (cons t1 tests)))
+        (setq cur (cdr cur)))
+      (cons (cons 'or (let ((rev nil))
+                        (while tests (setq rev (cons (car tests) rev)) (setq tests (cdr tests)))
+                        rev))
+            nil)))
+
+  (defun emacs-stub--pcase-backquote (pat value-form)
+    "Build (TEST . BINDINGS) for a backquote-pattern.
+Walks PAT recursively; `(comma SYM)' binds SYM to corresponding
+position; literal cons recurses with `car'/`cdr' index forms; atom
+does `equal' check."
+    (cond
+     ;; (comma SYM) — bind SYM to value-form, always match.  `\\=,' is
+     ;; host Emacs's comma symbol (host-normalized bundles, item 243).
+     ((and (consp pat) (or (eq (car pat) 'comma) (eq (car pat) '\,)))
+      (let ((sym (car (cdr pat))))
+        (cond
+         ((eq sym '_) (cons t nil))
+         ((symbolp sym) (cons t (list (list sym value-form))))
+         (t (emacs-stub--pcase-test sym value-form)))))
+     ;; (comma-at SYM) — bind SYM to remaining list (= value-form is tail).
+     ((and (consp pat) (or (eq (car pat) 'comma-at) (eq (car pat) '\,@)))
+      (let ((sym (car (cdr pat))))
+        (cons t (list (list sym value-form)))))
+     ;; Cons cell — recursively destructure car / cdr.
+     ((consp pat)
+      (let* ((head-build (emacs-stub--pcase-backquote
+                          (car pat) (list 'car value-form)))
+             (tail-build (emacs-stub--pcase-backquote
+                          (cdr pat) (list 'cdr value-form))))
+        (cons (list 'and
+                    (list 'consp value-form)
+                    (car head-build)
+                    (car tail-build))
+              (append (cdr head-build) (cdr tail-build)))))
+     ;; nil at end of list — match nil tail.
+     ((null pat)
+      (cons (list 'null value-form) nil))
+     ;; Other atom — equality test.
+     (t
+      (cons (list 'equal value-form (list 'quote pat)) nil))))
+
+  (defmacro pcase (expr &rest cases)
+    "Phase 4 batch 2 pcase: dispatch EXPR through CASES.
+See `emacs-stub--pcase-test' for supported pattern shapes."
+    (let ((value-sym (make-symbol "--pcase-value--"))
+          (cond-clauses nil))
+      (dolist (case cases)
+        (let* ((pat (car case))
+               (body (cdr case))
+               (built (emacs-stub--pcase-test pat value-sym))
+               (test (car built))
+               (bindings (cdr built)))
+          (push (list test
+                      (if bindings
+                          (cons 'let (cons bindings body))
+                        (cons 'progn body)))
+                cond-clauses)))
+      (let ((forward nil))
+        (while cond-clauses
+          (setq forward (cons (car cond-clauses) forward))
+          (setq cond-clauses (cdr cond-clauses)))
+        (list 'let (list (list value-sym expr))
+              (cons 'cond forward))))))
+
+(defun emacs-stub--pcase-let-binding (binding)
+  "Return (TEMP TEST BINDINGS) for a single pcase-let BINDING."
+  (let* ((pattern (car binding))
+         (expr (car (cdr binding)))
+         (value-sym (make-symbol "--pcase-let-value--"))
+         (built (emacs-stub--pcase-test pattern value-sym)))
+    (list (list value-sym expr) (car built) (cdr built))))
+
+(unless (fboundp 'pcase-let)
+  (defmacro pcase-let (bindings &rest body)
+    "Minimal `pcase-let' supporting the local pcase pattern subset.
+Faithful to Emacs semantics: the patterns are ASSUMED to match, so the
+bindings destructure unconditionally instead of gating BODY behind a
+match test (Emacs: \"BINDINGS are treated as if they always match\").
+A too-short list therefore binds the missing positions to nil -- e.g.
+`(pcase-let ((\\=`(,a ,b ,c) \\='(1))) ...)' binds a=1, b=nil, c=nil,
+because the binding value-forms are plain `car'/`cdr' chains and
+`(car nil)' is nil.  Doc 33 item 243: the previous strict `(when TEST
+...)' gating silently evaluated the whole form to nil whenever the
+value was shorter than the pattern -- vendor code like magit's
+`magit-insert-section' macro (pattern `((,class ,value ,hide . ,args)
+. ,body)' against the common short form `((status) BODY...)') relies
+on the real, lenient destructuring, and the strict variant made that
+macro expand to nil, so no status section was ever inserted."
+    (let ((forms body)
+          (rev-bindings nil))
+      (dolist (binding bindings)
+        (push binding rev-bindings))
+      (dolist (binding rev-bindings)
+        (let* ((built (emacs-stub--pcase-let-binding binding))
+               (temp-binding (car built))
+               (pattern-bindings (car (cdr (cdr built)))))
+          (setq forms
+                (list (list 'let (list temp-binding)
+                            (if pattern-bindings
+                                (cons 'let (cons pattern-bindings forms))
+                              (cons 'progn forms)))))))
+      (if bindings (car forms) (cons 'progn body)))))
+
+(unless (fboundp 'pcase-let*)
+  (defmacro pcase-let* (bindings &rest body)
+    "Minimal `pcase-let*' supporting sequential pcase bindings."
+    (if bindings
+        (list 'pcase-let (list (car bindings))
+              (cons 'pcase-let* (cons (cdr bindings) body)))
+      (cons 'progn body))))
+
+(unless (fboundp 'pcase-dolist)
+  (defmacro pcase-dolist (spec &rest body)
+    "Minimal `pcase-dolist' supporting the local pcase pattern subset.
+Like `pcase-let' (see there), Emacs treats PATTERN as if it always
+matches, so each element destructures unconditionally -- no per-element
+match filtering (Doc 33 item 243, same lenient-destructure fix)."
+    (let* ((pattern (car spec))
+           (list-form (car (cdr spec)))
+           (result-form (car (cdr (cdr spec))))
+           (value-sym (make-symbol "--pcase-dolist-value--"))
+           (built (emacs-stub--pcase-test pattern value-sym))
+           (pattern-bindings (cdr built)))
+      (list 'dolist (list value-sym list-form result-form)
+            (if pattern-bindings
+                (cons 'let (cons pattern-bindings body))
+              (cons 'progn body))))))
+
+(unless (featurep 'pcase) (provide 'pcase))
+
+;;;; --- cl-* macros / fns (Phase 4 batch 3 — minimal cl-lib subset) ---
+;;
+;; Bypass loading vendor cl-macs.el (= which fails on deep pcase patterns).
+;; Provide just the cl-* surface anvil-memory uses, mapped to plain elisp.
+
+(defun emacs-stub--split-cl-arglist (arglist)
+  "Split ARGLIST into (POSITIONAL OPTIONALS RESTSYM KEYS).
+KEYS = list of (KEYWORD-NAME PARAM-SYM DEFAULT-FORM) triples."
+  (let ((positional nil)
+        (optionals nil)
+        (restsym nil)
+        (keys nil)
+        (mode 'positional)
+        (cur arglist))
+    (while cur
+      (let ((tok (car cur)))
+        (cond
+         ((eq tok '&optional) (setq mode 'optional))
+         ((eq tok '&rest)     (setq mode 'rest))
+         ((eq tok '&key)      (setq mode 'key))
+         ((eq tok '&aux)      (setq mode 'aux))
+         (t
+          (cond
+           ((eq mode 'positional) (setq positional (cons tok positional)))
+           ((eq mode 'optional)
+            (setq optionals (cons tok optionals)))
+           ((eq mode 'rest)
+            (setq restsym tok))
+           ((eq mode 'key)
+            (let* ((sym (if (consp tok) (car tok) tok))
+                   (default (if (consp tok) (car (cdr tok)) nil))
+                   (kwname (intern
+                            (concat ":"
+                                    (symbol-name sym)))))
+              (setq keys (cons (list kwname sym default) keys))))
+           ;; &aux: drop (= local lets, rarely critical for stubs)
+           ((eq mode 'aux) nil)))))
+      (setq cur (cdr cur)))
+    (let ((rev-positional nil) (rev-optionals nil) (rev-keys nil)
+          (p positional) (o optionals) (k keys))
+      (while p (setq rev-positional (cons (car p) rev-positional)) (setq p (cdr p)))
+      (while o (setq rev-optionals (cons (car o) rev-optionals)) (setq o (cdr o)))
+      (while k (setq rev-keys (cons (car k) rev-keys)) (setq k (cdr k)))
+      (list rev-positional rev-optionals restsym rev-keys))))
+
+(defun emacs-stub--cl-key-bindings (keys restsym)
+  "Build let-bindings for KEYS by scanning RESTSYM (= the &rest var).
+Each binding is (PARAM (or (cadr (memq KW RESTSYM)) DEFAULT))."
+  (let ((out nil)
+        (cur keys))
+    (while cur
+      (let* ((entry (car cur))
+             (kw (car entry))
+             (sym (car (cdr entry)))
+             (def (car (cdr (cdr entry)))))
+        (setq out (cons (list sym
+                              (list 'or
+                                    (list 'car
+                                          (list 'cdr
+                                                (list 'memq (list 'quote kw) restsym)))
+                                    def))
+                        out)))
+      (setq cur (cdr cur)))
+    (let ((rev nil) (c out))
+      (while c (setq rev (cons (car c) rev)) (setq c (cdr c)))
+      rev)))
+
+(unless (fboundp 'cl-defun)
+  ;; cl-defun supporting &optional, &rest, &key (= adequate for
+  ;; anvil-memory / anvil-state arglists).
+  ;;
+  ;; Strategy: expand (cl-defun NAME (POS &optional O &key K1 K2) BODY) to
+  ;; (defun NAME (POS &optional O &rest --cl-keys)
+  ;;   (let ((K1 (or (cadr (memq :K1 --cl-keys)) DEFAULT))
+  ;;         (K2 (or (cadr (memq :K2 --cl-keys)) DEFAULT)))
+  ;;     BODY))
+  ;; If &rest is present in the original arglist, reuse that name instead
+  ;; of synthesizing --cl-keys.
+  (defvar emacs-stub--cl-defun-call-count 0
+    "Bumped each time the cl-defun macro stub expands a form.")
+  ;; Two registration paths needed:
+  ;;   1. build-tool/eval recognizes the (macro lambda ...) function cell
+  ;;      → use plain `defmacro' (writes to env.set_function)
+  ;;   2. nelisp-eval-form (the FULL self-host evaluator) consults
+  ;;      `nelisp--macros' hashtable, NOT the function cell → also
+  ;;      puthash into nelisp--macros so the takeover path expands too
+  ;;
+  ;; Path (2) registration happens at the bottom of this `unless'
+  ;; clause via `(when (boundp 'nelisp--macros) ...)' guard.
+  (defmacro cl-defun (name arglist &rest body)
+    "Stub: cl-defun with &optional / &rest / &key support."
+    (setq emacs-stub--cl-defun-call-count
+          (+ 1 emacs-stub--cl-defun-call-count))
+    (let* ((parts (emacs-stub--split-cl-arglist arglist))
+           (positional (car parts))
+           (optionals (car (cdr parts)))
+           (restsym (car (cdr (cdr parts))))
+           (keys (car (cdr (cdr (cdr parts))))))
+      (cond
+       ;; No &key — emit plain defun with original layout (preserve &rest).
+       ((null keys)
+        (let ((out positional))
+          (when optionals
+            (let ((tail (cons '&optional nil))
+                  (o optionals))
+              (while o (setq tail (append tail (list (car o)))) (setq o (cdr o)))
+              (let ((all out) (t2 tail))
+                (while t2 (setq all (append all (list (car t2)))) (setq t2 (cdr t2)))
+                (setq out all))))
+          (when restsym
+            (setq out (append out (list '&rest restsym))))
+          (cons 'defun (cons name (cons out body)))))
+       (t
+        ;; &key present — synthesize &rest --cl-keys, scan it for kw values.
+        (let* ((rest-name (or restsym '--cl-keys))
+               (real-arglist positional))
+          (when optionals
+            (let ((tail (cons '&optional nil))
+                  (o optionals))
+              (while o (setq tail (append tail (list (car o)))) (setq o (cdr o)))
+              (setq real-arglist (append real-arglist tail))))
+          (setq real-arglist (append real-arglist (list '&rest rest-name)))
+          (let* ((bindings (emacs-stub--cl-key-bindings keys rest-name))
+                 (real-body (list (cons 'let* (cons bindings body)))))
+            (cons 'defun (cons name (cons real-arglist real-body))))))))))
+
+(unless (fboundp 'cl-incf)
+  (defmacro cl-incf (place &optional delta)
+    "Stub: (setq PLACE (+ PLACE (or DELTA 1)))."
+    (list 'setq place (list '+ place (or delta 1)))))
+
+(unless (fboundp 'cl-decf)
+  (defmacro cl-decf (place &optional delta)
+    (list 'setq place (list '- place (or delta 1)))))
+
+(unless (fboundp 'cl-some)
+  (defun cl-some (predicate sequence &rest more)
+    "Stub: return first non-nil PREDICATE result over SEQUENCE.
+Ignores MORE (= multi-list version)."
+    (ignore more)
+    (let ((cur sequence)
+          (result nil))
+      (while (and cur (not result))
+        (setq result (funcall predicate (car cur)))
+        (setq cur (cdr cur)))
+      result)))
+
+(unless (fboundp 'cl-every)
+  (defun cl-every (predicate sequence &rest more)
+    (ignore more)
+    (let ((cur sequence)
+          (ok t))
+      (while (and cur ok)
+        (unless (funcall predicate (car cur)) (setq ok nil))
+        (setq cur (cdr cur)))
+      ok)))
+
+(unless (fboundp 'cl-position)
+  (defun cl-position (item sequence &rest _keys)
+    "Stub: return index of ITEM in SEQUENCE (= eql), or nil."
+    (let ((cur sequence) (idx 0) (found nil))
+      (while (and cur (not found))
+        (when (or (eq (car cur) item) (equal (car cur) item))
+          (setq found idx))
+        (setq cur (cdr cur)) (setq idx (+ idx 1)))
+      found)))
+
+(unless (fboundp 'cl-find)
+  (defun cl-find (item sequence &rest _keys)
+    (let ((cur sequence) (found nil))
+      (while (and cur (not found))
+        (when (or (eq (car cur) item) (equal (car cur) item))
+          (setq found (car cur)))
+        (setq cur (cdr cur)))
+      found)))
+
+(unless (fboundp 'cl-remove-if-not)
+  (defun cl-remove-if-not (predicate sequence &rest _keys)
+    (let ((acc nil) (cur sequence))
+      (while cur
+        (when (funcall predicate (car cur))
+          (setq acc (cons (car cur) acc)))
+        (setq cur (cdr cur)))
+      (nreverse acc))))
+
+(unless (fboundp 'cl-remove-if)
+  (defun cl-delete-if (predicate sequence &rest _keys)
+    "Stub: alias for cl-remove-if (in-place delete not supported)."
+    (let ((acc nil) (cur sequence))
+      (while cur
+        (unless (funcall predicate (car cur))
+          (setq acc (cons (car cur) acc)))
+        (setq cur (cdr cur)))
+      (let ((rev nil))
+        (while acc (setq rev (cons (car acc) rev)) (setq acc (cdr acc)))
+        rev)))
+  (defun cl-delete-if-not (predicate sequence &rest _keys)
+    (let ((acc nil) (cur sequence))
+      (while cur
+        (when (funcall predicate (car cur))
+          (setq acc (cons (car cur) acc)))
+        (setq cur (cdr cur)))
+      (let ((rev nil))
+        (while acc (setq rev (cons (car acc) rev)) (setq acc (cdr acc)))
+        rev)))
+  (defun cl-remove-if (predicate sequence &rest _keys)
+    (let ((acc nil) (cur sequence))
+      (while cur
+        (unless (funcall predicate (car cur))
+          (setq acc (cons (car cur) acc)))
+        (setq cur (cdr cur)))
+      (nreverse acc))))
+
+(unless (fboundp 'cl-delete-if)
+  (defalias 'cl-delete-if 'cl-remove-if))
+
+(unless (fboundp 'cl-delete-duplicates)
+  (defun cl-delete-duplicates (sequence &rest _keys)
+    (let ((acc nil) (cur sequence))
+      (while cur
+        (unless (member (car cur) acc)
+          (setq acc (cons (car cur) acc)))
+        (setq cur (cdr cur)))
+      (nreverse acc))))
+
+(unless (fboundp 'cl-union)
+  (defun cl-union (list1 list2 &rest _keys)
+    (let ((acc list1) (cur list2))
+      (while cur
+        (unless (member (car cur) acc)
+          (setq acc (cons (car cur) acc)))
+        (setq cur (cdr cur)))
+      acc)))
+
+(unless (fboundp 'cl-intersection)
+  (defun cl-intersection (list1 list2 &rest _keys)
+    (let ((acc nil) (cur list1))
+      (while cur
+        (when (member (car cur) list2)
+          (setq acc (cons (car cur) acc)))
+        (setq cur (cdr cur)))
+      (nreverse acc))))
+
+(unless (fboundp 'cl-sort)
+  (defun cl-sort (sequence predicate &rest _keys)
+    (sort sequence predicate)))
+
+(unless (fboundp 'cl-loop)
+  ;; cl-loop is incredibly complex; provide a minimal version that
+  ;; handles the patterns anvil-memory uses (= for X in LIST do/collect).
+  (defmacro cl-loop (&rest clauses)
+    "Stub: minimal cl-loop supporting `for VAR in LIST do/collect/sum/count/...'.
+For patterns this stub does not recognise, returns nil."
+    (emacs-stub--cl-loop-build clauses)))
+
+(unless (fboundp 'emacs-stub--cl-loop-build)
+  (defun emacs-stub--cl-loop-build (clauses)
+    "Build expansion for cl-loop CLAUSES.  Recognises `for VAR in LIST'
+    + `do FORM' / `collect FORM' / `sum FORM' / `count FORM' / `with VAR = VAL'.
+    Returns a `let'/`while' form, or nil for unrecognised shapes."
+    (let ((var nil) (list-form nil) (do-forms nil) (collect-form nil)
+          (sum-form nil) (count-form nil) (with-bindings nil)
+          (cur clauses) (recognised t))
+      (while (and cur recognised)
+        (let ((kw (car cur)))
+          (cond
+           ((eq kw 'for)
+            (setq var (car (cdr cur)))
+            (when (eq (car (cdr (cdr cur))) 'in)
+              (setq list-form (car (cdr (cdr (cdr cur)))))
+              (setq cur (cdr (cdr (cdr (cdr cur)))))))
+           ((eq kw 'do)
+            (setq do-forms (cons (car (cdr cur)) do-forms))
+            (setq cur (cdr (cdr cur))))
+           ((eq kw 'collect)
+            (setq collect-form (car (cdr cur)))
+            (setq cur (cdr (cdr cur))))
+           ((eq kw 'sum)
+            (setq sum-form (car (cdr cur)))
+            (setq cur (cdr (cdr cur))))
+           ((eq kw 'count)
+            (setq count-form (car (cdr cur)))
+            (setq cur (cdr (cdr cur))))
+           ((eq kw 'with)
+            (let ((wname (car (cdr cur))))
+              (when (eq (car (cdr (cdr cur))) '=)
+                (setq with-bindings
+                      (append with-bindings
+                              (list (list wname (car (cdr (cdr (cdr cur))))))))
+                (setq cur (cdr (cdr (cdr (cdr cur))))))))
+           (t (setq recognised nil)))))
+      (cond
+       ((not recognised) nil)
+       (collect-form
+        (let ((acc-sym (make-symbol "--loop-acc--")))
+          (list 'let (cons (list acc-sym nil) with-bindings)
+                (list 'dolist (list var list-form)
+                      (list 'setq acc-sym (list 'cons collect-form acc-sym)))
+                (list 'nreverse acc-sym))))
+       (sum-form
+        (let ((acc-sym (make-symbol "--loop-sum--")))
+          (list 'let (cons (list acc-sym 0) with-bindings)
+                (list 'dolist (list var list-form)
+                      (list 'setq acc-sym (list '+ acc-sym sum-form)))
+                acc-sym)))
+       (count-form
+        (let ((acc-sym (make-symbol "--loop-count--")))
+          (list 'let (cons (list acc-sym 0) with-bindings)
+                (list 'dolist (list var list-form)
+                      (list 'when count-form
+                            (list 'setq acc-sym (list '+ acc-sym 1))))
+                acc-sym)))
+       (do-forms
+        (let ((rev nil))
+          (while do-forms (setq rev (cons (car do-forms) rev)) (setq do-forms (cdr do-forms)))
+          (list 'let with-bindings
+                (cons 'dolist (cons (list var list-form) rev)))))
+       (t (list 'let with-bindings nil))))))
+
+;; Provide cl-macs / cl-seq as features so vendor (require ...) chains succeed
+;; without actually loading the heavyweight files.
+(unless (fboundp 'cl-defgeneric)
+  (defmacro cl-defgeneric (name arglist &rest body)
+    "Stub: defgeneric → defun (= no real generic dispatch)."
+    (cons 'defun (cons name (cons arglist body)))))
+
+(unless (fboundp 'cl-defmethod)
+  (defmacro cl-defmethod (name arglist &rest body)
+    "Stub: defmethod → defun (= last-defined wins, no specializer dispatch).
+When NAME is a setf-method list `(setf X)', intern the printed form
+`\"(setf X)\"' as a symbol so `defun' has a usable target.  Strips
+specializer cons-cells from arglist (e.g. `(SEQUENCE array)' → `SEQUENCE')."
+    (let ((real-name
+           (cond
+            ((symbolp name) name)
+            ((and (consp name) (eq (car name) 'setf))
+             (intern (format "(setf %s)" (car (cdr name)))))
+            (t (intern (format "%S" name))))))
+      (cons 'defun
+            (cons real-name
+                  (cons (mapcar (lambda (a) (if (consp a) (car a) a)) arglist)
+                        body))))))
+
+(unless (fboundp 'cl-defstruct)
+  (defmacro cl-defstruct (name &rest slots)
+    "Stub: defstruct → minimal alist-backed accessors."
+    (let ((sname (if (consp name) (car name) name))
+          (slot-names (mapcar (lambda (s) (if (consp s) (car s) s)) slots)))
+      (let ((forms nil))
+        ;; make-NAME constructor → returns alist of slots.
+        (push (list 'defun (intern (concat "make-" (symbol-name sname)))
+                    '(&rest args)
+                    '(let ((alist nil)
+                           (cur args))
+                       (while cur
+                         (setq alist (cons (cons (car cur) (car (cdr cur))) alist))
+                         (setq cur (cdr (cdr cur))))
+                       (cons (quote ,sname) alist)))
+              forms)
+        ;; NAME-p predicate.
+        (push (list 'defun (intern (concat (symbol-name sname) "-p"))
+                    '(obj)
+                    (list 'and '(consp obj) (list 'eq '(car obj) (list 'quote sname))))
+              forms)
+        ;; NAME-SLOT accessor for each slot.
+        (dolist (slot slot-names)
+          (let ((kw (intern (concat ":" (symbol-name slot)))))
+            (push (list 'defun (intern (concat (symbol-name sname) "-" (symbol-name slot)))
+                        '(obj)
+                        (list 'cdr (list 'assoc kw '(cdr obj))))
+                  forms)))
+        (cons 'progn (nreverse forms))))))
+
+(put 'cl-defstruct 'emacs-stub-placeholder t)
+
+(unless (fboundp 'cl-case)
+  (defmacro cl-case (expr &rest cases)
+    "Stub: cl-case → equivalent to cond with eql tests."
+    (let ((value-sym (make-symbol "--cl-case--"))
+          (clauses nil))
+      (dolist (c cases)
+        (let ((key (car c)) (body (cdr c)))
+          (cond
+           ((or (eq key 't) (eq key 'otherwise))
+            (push (cons t body) clauses))
+           ((listp key)
+            (push (cons (list 'memql value-sym (list 'quote key)) body) clauses))
+           (t (push (cons (list 'eql value-sym (list 'quote key)) body) clauses)))))
+      (let ((rev nil))
+        (while clauses (setq rev (cons (car clauses) rev)) (setq clauses (cdr clauses)))
+        (list 'let (list (list value-sym expr))
+              (cons 'cond rev))))))
+
+(unless (fboundp 'cl-pushnew)
+  (defmacro cl-pushnew (item place &rest _keys)
+    ;; Same generalized-place handling as `push' below: a non-symbol
+    ;; PLACE goes through the substrate's `setf' polyfill instead of an
+    ;; invalid `(setq (cdr ...) ...)' expansion.
+    (list 'unless (list 'member item place)
+          (if (symbolp place)
+              (list 'setq place (list 'cons item place))
+            (list 'setf place (list 'cons item place))))))
+
+(when (or (fboundp 'nl-write-file)
+          (fboundp 'nelisp--write-stdout-bytes)
+          (not (boundp 'emacs-version))
+          (get 'push 'emacs-stub-bulk))
+  (defmacro push (item place)
+    "Compatibility macro: cons ITEM onto PLACE.
+PLACE may be a symbol (expands to `setq', as before) or a generalized
+place handled by this substrate's `setf' polyfill, e.g. `(cdr CELL)' --
+real Emacs `push' accepts any gv place, and vendor code relies on that
+(Magit's `magit--with-refresh-cache' pushes onto
+`(cdr magit--refresh-cache)'; the old symbol-only expansion produced
+`(setq (cdr ...) ...)', which this evaluator aborts on flagless)."
+    (if (symbolp place)
+        (list 'setq place (list 'cons item place))
+      (list 'setf place (list 'cons item place)))))
+
+(unless (fboundp 'cl-letf)
+  (defmacro cl-letf (bindings &rest body)
+    "Stub: cl-letf → simple let* (= no place mutation tracking)."
+    (cons 'let* (cons bindings body))))
+
+(unless (fboundp 'cl-letf*)
+  (defalias 'cl-letf* 'cl-letf))
+
+(unless (fboundp 'cl-flet)
+  (defmacro cl-flet (bindings &rest body)
+    "Stub: cl-flet → cl-letf with function-cell binding (= simplified)."
+    (cons 'let (cons bindings body))))
+
+(unless (fboundp 'cl-labels)
+  (defalias 'cl-labels 'cl-flet))
+
+(unless (fboundp 'cl-block)
+  (defmacro cl-block (_name &rest body)
+    "Stub: cl-block → progn (= no return-from support)."
+    (cons 'progn body)))
+
+(unless (fboundp 'cl-return-from)
+  (defmacro cl-return-from (_name &optional _val)
+    "Stub: cl-return-from → no-op."
+    nil))
+
+(unless (fboundp 'cl-return)
+  (defalias 'cl-return 'cl-return-from))
+
+(unless (fboundp 'cl-getf)
+  (defalias 'cl-getf 'plist-get))
+
+(unless (fboundp 'cl-first)
+  (defalias 'cl-first 'car))
+(unless (fboundp 'cl-second)
+  (defun cl-second (l) (car (cdr l))))
+(unless (fboundp 'cl-third)
+  (defun cl-third (l) (car (cdr (cdr l)))))
+
+(unless (featurep 'cl-macs) (provide 'cl-macs))
+(unless (featurep 'cl-seq) (provide 'cl-seq))
+(unless (featurep 'cl-extra) (provide 'cl-extra))
+(unless (featurep 'cl-generic) (provide 'cl-generic))
+;; Phase B5 (= 2026-05-09): phantom-provide cl-lib so anvil-server's
+;; `(require 'cl-lib)' short-circuits without descending into vendor
+;; cl-lib.el (= ~80s load on standalone NeLisp).  The Cl primitives
+;; anvil-* uses are already covered by NeLisp natives (`cl-defstruct',
+;; `cl-incf', `cl-decf', `setf' from Phase B4) plus the `cl-loop' /
+;; `cl-some' / `cl-pushnew' / etc. stubs lower in this file.
+(unless (featurep 'cl-lib) (provide 'cl-lib))
+(unless (featurep 'cl-loaddefs) (provide 'cl-loaddefs))
+
+;;;; --- standard error symbols ---------------------------------------------
+;; Common Emacs error symbols that subr / cl-lib / vendor code signals;
+;; bootstrap eval may not have them pre-installed.
+
+(when (fboundp 'define-error)
+  (define-error 'end-of-file "End of file during parsing")
+  (define-error 'end-of-buffer "End of buffer")
+  (define-error 'beginning-of-buffer "Beginning of buffer")
+  (define-error 'wrong-number-of-arguments "Wrong number of arguments")
+  (define-error 'invalid-function "Invalid function")
+  (define-error 'no-catch "No catch for tag")
+  (define-error 'arith-error "Arithmetic error")
+  (define-error 'range-error "Arithmetic range error")
+  (define-error 'overflow-error "Arithmetic overflow error")
+  (define-error 'cyclic-list "List contains a loop")
+  (define-error 'circular-list "List contains a loop")
+  (define-error 'permission-denied "Permission denied")
+  (define-error 'file-error "File error")
+  (define-error 'file-missing "File missing")
+  (define-error 'file-already-exists "File already exists")
+  (define-error 'json-error "JSON error")
+  (define-error 'json-readtable-error "JSON readtable error")
+  (define-error 'json-parse-error "JSON parse error")
+  (define-error 'search-failed "Search failed")
+  (define-error 'invalid-read-syntax "Invalid read syntax")
+  (define-error 'user-error "User error")
+  (define-error 'quit "Quit"))
+
+;;;; --- rx.el placeholder (= regex DSL not used by anvil dispatch) ---
+
+(unless (fboundp 'rx-define)
+  (defmacro rx-define (name &rest body)
+    "Stub: no-op (= NeLisp standalone uses raw regex strings)."
+    (ignore name body) nil))
+
+(unless (fboundp 'rx-let)
+  (defmacro rx-let (bindings &rest body)
+    "Stub: drop BINDINGS, eval BODY."
+    (ignore bindings) (cons 'progn body)))
+
+(unless (fboundp 'rx-let-eval)
+  (defmacro rx-let-eval (bindings &rest body)
+    (ignore bindings) (cons 'progn body)))
+
+(unless (fboundp 'rx)
+  (defmacro rx (&rest forms)
+    "Stub: return empty regex string (= placeholder, never matches)."
+    (ignore forms) ""))
+
+(unless (fboundp 'rx-to-string)
+  (defun rx-to-string (form &optional no-group)
+    (ignore form no-group) ""))
+
+(unless (featurep 'rx) (provide 'rx))
+
+;;;; --- url stack pre-provide (= avoid url-vars `(append "STR" nil)` choke) ---
+;; nelisp-eval requires url-parse only for cl-defstruct accessor names
+;; (url-host/url-port/url-filename/url-type) when running URL retrievals.
+;; FFI standalone path doesn't issue URL retrievals, so we satisfy the
+;; (require 'url-parse) by pre-providing it + defining empty accessors.
+
+(unless (fboundp 'url-host)
+  (defun url-host (&rest _) nil)
+  (defun url-port (&rest _) nil)
+  (defun url-filename (&rest _) nil)
+  (defun url-type (&rest _) nil)
+  (defun url-user (&rest _) nil)
+  (defun url-password (&rest _) nil)
+  (defun url-target (&rest _) nil)
+  (defun url-attributes (&rest _) nil)
+  (defun url-fullness (&rest _) nil)
+  (defun url-generic-parse-url (&rest _) nil)
+  (defun url-encode-url (&rest _) nil)
+  (defun url-hexify-string (&rest _) nil)
+  (defun url-unhex-string (&rest _) nil)
+  (defun url-retrieve-synchronously (&rest _) nil))
+
+(unless (boundp 'url-request-method) (defvar url-request-method nil))
+(unless (boundp 'url-request-extra-headers) (defvar url-request-extra-headers nil))
+(unless (boundp 'url-request-data) (defvar url-request-data nil))
+(unless (boundp 'url-mime-separator-chars) (defvar url-mime-separator-chars nil))
+(unless (boundp 'url-bad-port-list) (defvar url-bad-port-list nil))
+
+(unless (featurep 'url-vars) (provide 'url-vars))
+(unless (featurep 'url-parse) (provide 'url-parse))
+(unless (featurep 'url) (provide 'url))
+
+;;;; --- char-or-string-p (= simple type predicate combo) ---
+
+(unless (fboundp 'char-or-string-p)
+  (defun char-or-string-p (obj)
+    "Return t if OBJ is a character (= integer) or string."
+    (or (integerp obj) (stringp obj))))
+
+;;;; --- file path utility polyfills --------------------------------------
+
+;; The bulk auto-stub returns nil for file-name-sans-extension, which
+;; breaks anvil-memory--fallback-display-name when handed a basename
+;; without an extension.  Real impl: strip last `.EXT' suffix, return
+;; original string when no `.' present in the basename.
+(unless (fboundp 'file-name-sans-extension)
+  (defun file-name-sans-extension (filename)
+    "Return FILENAME with its extension (the last `.EXT' suffix) removed.
+Returns FILENAME unchanged when no extension is present."
+    (cond
+     ((null filename) nil)
+     (t
+      ;; Use string-match to find the last `.' after the last `/'.  Walk
+      ;; backwards: scan from the end looking for `.', stop at `/' or
+      ;; start.
+      (let* ((n (length filename))
+             (i (- n 1))
+             (dot-pos nil))
+	(while (and (>= i 0) (null dot-pos))
+          (let ((c (aref filename i)))
+            (cond
+             ((eq c ?/) (setq i -1))            ; passed last directory sep
+             ((eq c ?.) (setq dot-pos i) (setq i -1))
+             (t (setq i (- i 1))))))
+	(if dot-pos
+            (substring filename 0 dot-pos)
+          filename))))))
+
+
+
+(unless (and (fboundp 'truncate)
+             ;; If truncate is the no-op bulk stub, override with real impl.
+             (not (get 'truncate 'emacs-stub-bulk)))
+  (defun truncate (number &optional divisor)
+    "Phase 6 polyfill: integer truncation toward zero.
+NUMBER may be int or float; DIVISOR optional (= NUMBER / DIVISOR)."
+    (cond
+     ((null number) 0)
+     (divisor
+      (truncate (/ number divisor)))
+     ((integerp number) number)
+     ((< number 0)
+      (- (truncate (- number))))
+     ((>= number 1)
+      ;; Avoid float literals and `while' in this early bootstrap body:
+      ;; standalone-reader currently segfaults while installing that shape.
+      (+ 1 (truncate (- number 1))))
+     (t 0)))
+  (put 'truncate 'emacs-stub-bulk nil))
+
+;;;; --- terminal/IO no-op stubs (= avoid void-function during process load) ---
+
+(unless (fboundp 'send-string-to-terminal)
+  (defun send-string-to-terminal (s &optional terminal)
+    (ignore terminal)
+    (when (stringp s) (princ s)) nil))
+(unless (fboundp 'discard-input) (defun discard-input () nil))
+(unless (fboundp 'open-termscript) (defun open-termscript (&rest _) nil))
+(unless (fboundp 'set-input-method) (defun set-input-method (&rest _) nil))
+
+;;;; --- timers ------------------------------------------------------------
+
+(unless (boundp 'timer-list)
+  (defvar timer-list nil))
+
+(unless (boundp 'timer-idle-list)
+  (defvar timer-idle-list nil))
+
+(defun emacs-stub--timer-now ()
+  "Return current time as a float, or 0 when unavailable."
+  (if (fboundp 'float-time) (float-time) 0))
+
+(defun emacs-stub--timer-make (trigger repeat function args idle-delay)
+  "Return a lightweight timer object."
+  (vector 'emacs-timer trigger repeat function args idle-delay nil))
+
+(defun emacs-stub--timer-p (object)
+  "Return non-nil when OBJECT is a lightweight timer."
+  (and (vectorp object)
+       (> (length object) 0)
+       (eq (aref object 0) 'emacs-timer)))
+
+(defun emacs-stub--run-with-timer (secs repeat function &rest args)
+  "Schedule FUNCTION after SECS seconds."
+  (let ((timer (emacs-stub--timer-make
+                (+ (emacs-stub--timer-now) (or secs 0))
+                repeat function args nil)))
+    (setq timer-list (cons timer timer-list))
+    timer))
+
+(defun emacs-stub--run-with-idle-timer (secs repeat function &rest args)
+  "Schedule FUNCTION after SECS seconds of idle time."
+  (let ((timer (emacs-stub--timer-make nil repeat function args (or secs 0))))
+    (setq timer-idle-list (cons timer timer-idle-list))
+    timer))
+
+(defun emacs-stub--cancel-timer (timer)
+  "Cancel TIMER."
+  (setq timer-list (delq timer timer-list)
+        timer-idle-list (delq timer timer-idle-list))
+  nil)
+
+(unless (fboundp 'run-at-time)
+  (defun run-at-time (time repeat function &rest args)
+    "Schedule FUNCTION at TIME with REPEAT."
+    (apply #'emacs-stub--run-with-timer
+           (if (numberp time) time 0) repeat function args))
+  (put 'run-at-time 'emacs-stub-bulk t))
+
+(unless (fboundp 'run-with-timer)
+  (defun run-with-timer (secs repeat function &rest args)
+    "Schedule FUNCTION after SECS seconds."
+    (apply #'emacs-stub--run-with-timer secs repeat function args))
+  (put 'run-with-timer 'emacs-stub-bulk t))
+
+(unless (fboundp 'run-with-idle-timer)
+  (defun run-with-idle-timer (secs repeat function &rest args)
+    "Schedule FUNCTION after SECS seconds of idle time."
+    (apply #'emacs-stub--run-with-idle-timer secs repeat function args))
+  (put 'run-with-idle-timer 'emacs-stub-bulk t))
+
+(unless (fboundp 'cancel-timer)
+  (defun cancel-timer (timer)
+    "Cancel TIMER."
+    (emacs-stub--cancel-timer timer))
+  (put 'cancel-timer 'emacs-stub-bulk t))
+
+(unless (fboundp 'cancel-function-timers)
+  (defun cancel-function-timers (function)
+    "Cancel timers whose callback is FUNCTION."
+    (let ((timers (append timer-list timer-idle-list)))
+      (while timers
+        (when (and (emacs-stub--timer-p (car timers))
+                   (equal (aref (car timers) 3) function))
+          (emacs-stub--cancel-timer (car timers)))
+        (setq timers (cdr timers))))
+    nil))
+
+(unless (fboundp 'timerp)
+  (defun timerp (object)
+    "Return non-nil when OBJECT is a timer."
+    (emacs-stub--timer-p object))
+  (put 'timerp 'emacs-stub-bulk t))
+
+(unless (fboundp 'timer-create)
+  (defun timer-create ()
+    "Create an inactive lightweight timer."
+    (emacs-stub--timer-make nil nil nil nil nil)))
+
+(unless (fboundp 'timer-set-time)
+  (defun timer-set-time (timer time &optional repeat)
+    "Set TIMER's TIME and REPEAT."
+    (when (emacs-stub--timer-p timer)
+      (aset timer 1 (if (numberp time) (+ (emacs-stub--timer-now) time) 0))
+      (aset timer 2 repeat))
+    timer))
+
+(unless (fboundp 'timer-set-function)
+  (defun timer-set-function (timer function &optional args)
+    "Set TIMER's FUNCTION and ARGS."
+    (when (emacs-stub--timer-p timer)
+      (aset timer 3 function)
+      (aset timer 4 args))
+    timer))
+
+(unless (fboundp 'timer-activate)
+  (defun timer-activate (timer &optional _triggered)
+    "Activate TIMER."
+    (when (emacs-stub--timer-p timer)
+      (setq timer-list (cons timer timer-list)))
+    timer))
+(unless (fboundp 'sit-for)
+  (defun sit-for (&rest _) nil))
+(unless (fboundp 'sleep-for)
+  (defun sleep-for (&rest _) nil))
+(unless (boundp 'timer-list) (defvar timer-list nil))
+(unless (boundp 'timer-idle-list) (defvar timer-idle-list nil))
+
+;;;; --- Custom metadata helpers (= preloaded in real Emacs) ---
+
+(unless (boundp 'customize-package-emacs-version-alist)
+  (defvar customize-package-emacs-version-alist nil
+    "Alist mapping package versions to Emacs versions.
+We use this for packages that keep :package-version metadata.
+
+Each entry looks like:
+
+  (PACKAGE (PVERSION . EVERSION)...)
+
+PACKAGE is a package symbol.  PVERSION and EVERSION are strings, where
+PVERSION identifies a package version and EVERSION is the first Emacs
+release that package version targets."))
+
+(unless (fboundp 'custom-add-option)
+  (defun custom-add-option (symbol option)
+    "Polyfill: add OPTION to SYMBOL's `custom-options' metadata."
+    (let ((options (get symbol 'custom-options)))
+      (unless (member option options)
+        (put symbol 'custom-options (cons option options))))))
+
+(unless (fboundp 'custom-add-frequent-value)
+  (defalias 'custom-add-frequent-value 'custom-add-option))
+
+(unless (fboundp 'custom-variable-p)
+  (defun custom-variable-p (variable)
+    "Polyfill: return non-nil when VARIABLE has Custom metadata."
+    (and (symbolp variable)
+         (or (get variable 'standard-value)
+             (get variable 'custom-autoload)))))
+
+(unless (fboundp 'defgroup)
+  (defmacro defgroup (name members doc &rest args)
+    "Standalone load-time fallback for Custom group declarations."
+    `(progn
+       (put ',name 'custom-group ',members)
+       (put ',name 'group-documentation ,doc)
+       (put ',name 'custom-args ',args)
+       ',name)))
+
+(when (or (not (boundp 'emacs-version))
+          (not (macrop 'defcustom))
+          ;; NeLisp's bootstrap macro only expands DEFCUSTOM to DEfVAR.
+          ;; Install the metadata-aware fallback whenever Custom's declaration
+          ;; function is absent, even though that macro is already present.
+          (not (fboundp 'custom-declare-variable)))
+  (defmacro defcustom (symbol standard doc &rest args)
+    "Standalone load-time fallback for Custom variable declarations."
+    `(prog1
+         (custom-declare-variable ',symbol ,standard ,doc ,@args)
+       (when (fboundp 'nelisp--defvaralias-resync)
+         (nelisp--defvaralias-resync ',symbol)))))
+
+(unless (fboundp 'custom-declare-variable)
+  (defun custom-declare-variable (symbol default doc &rest args)
+    "Standalone load-time fallback for evaluated Custom variables."
+    (unless (boundp symbol)
+      (set symbol default))
+    (put symbol 'standard-value (list default))
+    (put symbol 'variable-documentation doc)
+    (put symbol 'custom-args args)
+    ;; Custom consumers such as Tramp inspect this metadata directly when
+    ;; deriving the accepted values of a user option.  The standalone
+    ;; fallback used to retain the raw keyword arguments only, leaving
+    ;; `custom-type' unset even when `:type' was declared.
+    (when (plist-member args :type)
+      (put symbol 'custom-type (plist-get args :type)))
+    (when (fboundp 'nelisp--defvaralias-resync)
+      (nelisp--defvaralias-resync symbol))
+    symbol))
+
+(unless (fboundp 'custom-declare-face)
+  (defun custom-declare-face (face spec doc &rest args)
+    "Standalone load-time fallback for evaluated Custom faces."
+    ;; `emacs-faces-defface' is a macro whose NAME and SPEC parameters are
+    ;; compile-time forms.  Calling it here with the local variable names
+    ;; would register the literal symbol `face', not FACE's value.  Use the
+    ;; substrate functions for this dynamic Custom API instead.
+    (when (fboundp 'emacs-faces-make-face)
+      (emacs-faces-make-face face)
+      (let ((attrs (and (fboundp 'emacs-faces-default-attrs-from-spec)
+                        (emacs-faces-default-attrs-from-spec spec))))
+        (when (and attrs (fboundp 'emacs-faces-set-attribute))
+          (apply #'emacs-faces-set-attribute face nil attrs))))
+    (put face 'face-defface-spec spec)
+    (put face 'face-documentation doc)
+    (put face 'custom-args args)
+    face))
+
+(unless (boundp 'custom-face-attributes)
+  (defconst custom-face-attributes
+    `((:family
+       (string :tag "Font Family"
+	       :help-echo "Font family or fontset alias name."))
+
+      (:foundry
+       (string :tag "Font Foundry"
+	       :help-echo "Font foundry name."))
+
+      ;; The width, weight, and slant should be in sync with font.c.
+      (:width
+       (choice :tag "Width"
+	       :help-echo "Font width."
+	       :value normal
+	       (const :tag "compressed" condensed)
+	       (const :tag "condensed" condensed)
+	       (const :tag "demiexpanded" semi-expanded)
+	       (const :tag "expanded" expanded)
+	       (const :tag "extracondensed" extra-condensed)
+	       (const :tag "extra-condensed" extra-condensed)
+	       (const :tag "extraexpanded" extra-expanded)
+	       (const :tag "extra-expanded" extra-expanded)
+	       (const :tag "narrow" condensed)
+	       (const :tag "normal" normal)
+	       (const :tag "medium" normal)
+	       (const :tag "regular" normal)
+	       (const :tag "semicondensed" semi-condensed)
+	       (const :tag "demicondensed" semi-condensed)
+	       (const :tag "semi-condensed" semi-condensed)
+	       (const :tag "semiexpanded" semi-expanded)
+	       (const :tag "ultracondensed" ultra-condensed)
+	       (const :tag "ultra-condensed" ultra-condensed)
+	       (const :tag "ultraexpanded" ultra-expanded)
+	       (const :tag "ultra-expanded" ultra-expanded)
+	       (const :tag "wide" extra-expanded)))
+
+      (:height
+       (choice :tag "Height"
+               :help-echo "Face's font size."
+	       :value 1.0
+               (integer :tag "Font size in 1/10 pt")
+               (number :tag "Scale" 1.0)))
+
+      (:weight
+       (choice :tag "Weight"
+	       :help-echo "Font weight."
+	       :value normal
+	       (const :tag "thin" thin)
+	       (const :tag "ultralight" ultra-light)
+	       (const :tag "ultra-light" ultra-light)
+	       (const :tag "extralight" ultra-light)
+	       (const :tag "extra-light" ultra-light)
+	       (const :tag "light" light)
+	       (const :tag "semilight" semi-light)
+	       (const :tag "semi-light" semi-light)
+	       (const :tag "demilight" semi-light)
+	       (const :tag "normal" normal)
+	       (const :tag "regular" regular)
+	       (const :tag "book" normal)
+	       (const :tag "medium" medium)
+	       (const :tag "semibold" semi-bold)
+	       (const :tag "semi-bold" semi-bold)
+	       (const :tag "demibold" semi-bold)
+	       (const :tag "demi-bold" semi-bold)
+	       (const :tag "bold" bold)
+	       (const :tag "extrabold" extra-bold)
+	       (const :tag "extra-bold" extra-bold)
+	       (const :tag "ultrabold" extra-bold)
+	       (const :tag "ultra-bold" extra-bold)
+	       (const :tag "heavy" heavy)
+	       (const :tag "black" heavy)
+               (const :tag "ultra-heavy" ultra-heavy)
+               (const :tag "ultraheavy" ultra-heavy)))
+
+      (:slant
+       (choice :tag "Slant"
+	       :help-echo "Font slant."
+	       :value normal
+	       (const :tag "italic" italic)
+	       (const :tag "oblique" oblique)
+	       (const :tag "normal" normal)
+	       (const :tag "roman" roman)))
+
+      (:underline
+       (choice :tag "Underline"
+	       :help-echo "Control text underlining."
+	       (const :tag "Off" nil)
+	       (list :tag "On"
+		     :value (:color foreground-color :style line :position nil)
+		     (const :format "" :value :color)
+		     (choice :tag "Color"
+			     (const :tag "Foreground Color" foreground-color)
+			     color)
+		     (const :format "" :value :style)
+		     (choice :tag "Style"
+			     (const :tag "Line" line)
+			     (const :tag "Double line" double-line)
+			     (const :tag "Wave" wave)
+			     (const :tag "Dots" dots)
+			     (const :tag "Dashes" dashes))
+                     (const :format "" :value :position)
+                     (choice :tag "Position"
+                             (const :tag "At Default Position" nil)
+                             (const :tag "At Bottom Of Text" t)
+                             (integer :tag "Pixels Above Bottom Of Text"))))
+       ;; filter to make value suitable for customize
+       ,(lambda (real-value)
+	  (and real-value
+	       (let ((color
+		      (or (and (consp real-value) (plist-get real-value :color))
+		          (and (stringp real-value) real-value)
+		          'foreground-color))
+		     (style
+		      (or (and (consp real-value) (plist-get real-value :style))
+		          'line))
+                     (position (and (consp real-value)
+                                    (plist-get real-value :position))))
+		 (list :color color :style style :position position))))
+       ;; filter to make customized-value suitable for storing
+       ,(lambda (cus-value)
+	  (and cus-value
+	       (let ((color (plist-get cus-value :color))
+		     (style (plist-get cus-value :style))
+                     (position (plist-get cus-value :position)))
+		 (cond ((and (eq style 'line) (not position))
+			;; Use simple value for default style
+			(if (eq color 'foreground-color) t color))
+		       (t
+			`(:color ,color :style ,style :position ,position)))))))
+
+      (:overline
+       (choice :tag "Overline"
+	       :help-echo "Control text overlining."
+	       (const :tag "Off" nil)
+	       (const :tag "On" t)
+	       (color :tag "Colored")))
+
+      (:strike-through
+       (choice :tag "Strike-through"
+	       :help-echo "Control text strike-through."
+	       (const :tag "Off" nil)
+	       (const :tag "On" t)
+	       (color :tag "Colored")))
+
+      (:box
+       ;; Fixme: this can probably be done better.
+       (choice :tag "Box around text"
+	       :help-echo "Control box around text."
+	       (const :tag "Off" nil)
+	       (list :tag "Box"
+                     :value (:line-width (2 . 2) :color "grey75" :style released-button)
+                     (const :format "" :value :line-width)
+                     (cons :tag "Width" :extra-offset 2
+                           (integer :tag "Vertical")
+                           (integer :tag "Horizontal"))
+		   (const :format "" :value :color)
+		   (choice :tag "Color" (const :tag "*" nil) color)
+		   (const :format "" :value :style)
+		   (choice :tag "Style"
+			   (const :tag "Raised" released-button)
+			   (const :tag "Sunken" pressed-button)
+			   (const :tag "Flat"   flat-button)
+			   (const :tag "None" nil))))
+       ;; filter to make value suitable for customize
+       ,(lambda (real-value)
+	  (and real-value
+	       (let ((lwidth
+		      (or (and (consp real-value)
+                               (if (listp (cdr real-value))
+                                   (plist-get real-value :line-width)
+                                 real-value))
+		          (and (integerp real-value) real-value)
+		          '(1 . 1)))
+		     (color
+		      (or (and (consp real-value) (plist-get real-value :color))
+		          (and (stringp real-value) real-value)
+		          nil))
+		     (style
+		      (and (consp real-value) (plist-get real-value :style))))
+                 (if (integerp lwidth)
+                     (setq lwidth (cons (abs lwidth) lwidth)))
+		 (list :line-width lwidth :color color :style style))))
+       ;; filter to make customized-value suitable for storing
+       ,(lambda (cus-value)
+	  (and cus-value
+	       (let ((lwidth (plist-get cus-value :line-width))
+		     (color (plist-get cus-value :color))
+		     (style (plist-get cus-value :style)))
+		 (cond ((and (null color) (null style))
+			lwidth)
+		       ((and (null lwidth) (null style))
+			;; actually can't happen, because LWIDTH is always an int
+			color)
+		       (t
+			;; Keep as a plist, but remove null entries
+			(nconc (and lwidth `(:line-width ,lwidth))
+			       (and color  `(:color ,color))
+			       (and style  `(:style ,style)))))))))
+
+      (:inverse-video
+       (choice :tag "Inverse-video"
+	       :help-echo "Control whether text should be in inverse-video."
+	       (const :tag "Off" nil)
+	       (const :tag "On" t)))
+
+      (:foreground
+       (color :tag "Foreground"
+	      :help-echo "Set foreground color (name or #RRGGBB hex spec)."))
+
+      (:distant-foreground
+       (color :tag "Distant Foreground"
+	      :help-echo "Set distant foreground color (name or #RRGGBB hex spec)."))
+
+      (:background
+       (color :tag "Background"
+	      :help-echo "Set background color (name or #RRGGBB hex spec)."))
+
+      (:stipple
+       (choice :tag "Stipple"
+	       :help-echo "Background bit-mask"
+	       (const :tag "None" nil)
+	       (file :tag "File"
+		     :help-echo "Name of bitmap file."
+		     :must-match t)))
+      (:extend
+       (choice :tag "Extend"
+	       :help-echo "Control whether attributes should be extended after EOL."
+	       (const :tag "Off" nil)
+	       (const :tag "On" t)))
+      (:inherit
+       (repeat :tag "Inherit"
+	       :help-echo "List of faces to inherit attributes from."
+	       (face :Tag "Face" default))
+       ;; filter to make value suitable for customize
+       ,(lambda (real-value)
+	  (cond ((or (null real-value) (eq real-value 'unspecified))
+		 nil)
+	        ((symbolp real-value)
+		 (list real-value))
+	        (t
+		 real-value)))
+       ;; filter to make customized-value suitable for storing
+       ,(lambda (cus-value)
+	  (if (and (consp cus-value) (null (cdr cus-value)))
+	      (car cus-value)
+	    cus-value))))
+
+    "Alist of face attributes.
+
+The elements are of the form (KEY TYPE PRE-FILTER POST-FILTER),
+where KEY is the name of the attribute, TYPE is a widget type for
+editing the attribute, PRE-FILTER is a function to make the attribute's
+value suitable for the customization widget, and POST-FILTER is a
+function to make the customized value suitable for storing.  PRE-FILTER
+and POST-FILTER are optional.
+
+The PRE-FILTER should take a single argument, the attribute value as
+stored, and should return a value for customization (using the
+customization type TYPE).
+
+The POST-FILTER should also take a single argument, the value after
+being customized, and should return a value suitable for setting the
+given face attribute."))
+
+(unless (fboundp 'custom-face-attributes-get)
+  (defun custom-face-attributes-get (face frame)
+    "For FACE on FRAME, return an alternating list describing its attributes.
+The list has the form (KEYWORD VALUE KEYWORD VALUE...).
+Each keyword should be listed in `custom-face-attributes'.
+
+If FRAME is nil, use the global defaults for FACE."
+    (let ((attrs custom-face-attributes)
+	  plist)
+      (while attrs
+	(let* ((attribute (car (car attrs)))
+	       (value (face-attribute face attribute frame)))
+	  (setq attrs (cdr attrs))
+	  (unless (or (eq value 'unspecified)
+		      (and (null value) (memq attribute '(:inherit))))
+	    (setq plist (cons attribute (cons value plist))))))
+      plist)))
+
+(unless (fboundp 'custom-declare-group)
+  (defun custom-declare-group (symbol members doc &rest args)
+    "Standalone load-time fallback for evaluated Custom groups."
+    (put symbol 'custom-group members)
+    (put symbol 'group-documentation doc)
+    (put symbol 'custom-args args)
+    symbol))
+
+(unless (fboundp 'cl-declaim)
+  (defmacro cl-declaim (&rest _specs) nil))
+
+(unless (fboundp 'cl-proclaim)
+  (defun cl-proclaim (_spec) nil))
+
+(unless (fboundp 'convert-standard-filename)
+  (defun convert-standard-filename (filename)
+    "Standalone fallback for GNU-style standard filename conversion.
+NeLisp currently targets POSIX paths, so no platform-specific rewriting
+is required."
+    filename))
+
+(unless (fboundp 'string-to-list)
+  (defun string-to-list (string)
+    "Return a list of character codes in STRING."
+    (unless (stringp string)
+      (signal 'wrong-type-argument (list 'stringp string)))
+    (let ((i (1- (length string)))
+          chars)
+      (while (>= i 0)
+        (setq chars (cons (aref string i) chars))
+        (setq i (1- i)))
+      chars)))
+
+;; Phase B5 globals — anvil-server.el / vendor cl-* reach for these as
+;; `defcustom' defaults / load-path participants.  Empty defaults are
+;; safe because anvil callers fall back through (or VAR DEFAULT).
+(unless (boundp 'emacs-major-version)
+  (defvar emacs-major-version 29))
+(unless (boundp 'emacs-minor-version)
+  (defvar emacs-minor-version 1))
+(unless (boundp 'emacs-build-system)
+  (defvar emacs-build-system
+    (if (fboundp 'system-name) (system-name) "standalone")))
+(unless (boundp 'emacs-build-time)
+  (defvar emacs-build-time nil))
+(unless (boundp 'emacs-build-number)
+  (defvar emacs-build-number 1))
+(unless (boundp 'system-configuration)
+  (defvar system-configuration "nelisp-standalone"))
+(unless (boundp 'source-directory)
+  (defvar source-directory ""))
+(unless (boundp 'motif-version-string)
+  (defvar motif-version-string nil))
+(unless (boundp 'gtk-version-string)
+  (defvar gtk-version-string nil))
+(unless (boundp 'ns-version-string)
+  (defvar ns-version-string nil))
+(unless (boundp 'cairo-version-string)
+  (defvar cairo-version-string nil))
+(unless (boundp 'emacs-repository-version)
+  (defvar emacs-repository-version nil))
+(unless (boundp 'emacs-repository-branch)
+  (defvar emacs-repository-branch nil))
+(unless (boundp 'emacs-bzr-version)
+  (defvar emacs-bzr-version nil))
+(unless (boundp 'user-emacs-directory)
+  (defvar user-emacs-directory ""))
+(unless (boundp 'user-init-file)
+  (defvar user-init-file nil))
+(unless (boundp 'data-directory)
+  (defvar data-directory ""))
+(unless (boundp 'invocation-directory)
+  (defvar invocation-directory ""))
+(unless (boundp 'invocation-name)
+  (defvar invocation-name "nelisp"))
+
+(unless (fboundp 'android-read-build-system)
+  (defun android-read-build-system ()
+    "Standalone compatibility shim: Android build system is unknown."
+    nil))
+
+(unless (fboundp 'android-read-build-time)
+  (defun android-read-build-time ()
+    "Standalone compatibility shim: Android build time is unknown."
+    nil))
+
+(unless (fboundp 'emacs-version)
+  (defun emacs-version (&optional here)
+    "Return or insert a lightweight Emacs-compatible version string."
+    (let ((version-string
+           (format "GNU Emacs %s (build %s, %s)"
+                   (if (boundp 'emacs-version) emacs-version "29.1")
+                   (if (boundp 'emacs-build-number) emacs-build-number 1)
+                   (if (boundp 'system-configuration)
+                       system-configuration
+                     "nelisp-standalone"))))
+      (if here
+          (insert version-string)
+        version-string))))
+
+(unless (fboundp 'version)
+  (defalias 'version 'emacs-version))
+
+(unless (fboundp 'emacs-repository-version-git)
+  (defun emacs-repository-version-git (&optional _dir)
+    "Standalone compatibility shim: repository revision is unknown."
+    nil))
+
+(unless (fboundp 'emacs-repository-version-android)
+  (defun emacs-repository-version-android ()
+    "Standalone compatibility shim: Android repository revision is unknown."
+    nil))
+
+(unless (fboundp 'emacs-repository-get-version)
+  (defun emacs-repository-get-version (&optional _dir _external)
+    "Standalone compatibility shim: repository revision is unknown."
+    nil))
+
+(unless (fboundp 'emacs-bzr-get-version)
+  (defalias 'emacs-bzr-get-version 'emacs-repository-get-version))
+
+(unless (fboundp 'emacs-repository-branch-android)
+  (defun emacs-repository-branch-android ()
+    "Standalone compatibility shim: Android repository branch is unknown."
+    nil))
+
+(unless (fboundp 'emacs-repository-branch-git)
+  (defun emacs-repository-branch-git (&optional _dir)
+    "Standalone compatibility shim: repository branch is unknown."
+    nil))
+
+(unless (fboundp 'emacs-repository-get-branch)
+  (defun emacs-repository-get-branch (&optional _dir)
+    "Standalone compatibility shim: repository branch is unknown."
+    nil))
+
+(unless (boundp 'three-step-help)
+  (defvar three-step-help nil))
+(unless (boundp 'help-for-help-use-variable-pitch)
+  (defvar help-for-help-use-variable-pitch t))
+
+(unless (fboundp 'help--help-screen)
+  (defun help--help-screen (help-line _help-text _helped-map _buffer-name)
+    "Standalone compatibility shim for `make-help-screen' dispatchers."
+    (let ((line (if (and (fboundp 'substitute-command-keys)
+                         (stringp help-line))
+                    (substitute-command-keys help-line)
+                  help-line)))
+      (when (and line (fboundp 'message))
+        (message "%s" line)))
+    nil))
+
+(unless (fboundp 'make-help-screen)
+  (defmacro make-help-screen (fname help-line help-text helped-map
+                                    &optional buffer-name)
+    "Construct a lightweight standalone help command named FNAME."
+    (list 'defun fname nil
+          "Help command."
+          (list 'interactive)
+          (list 'help--help-screen
+                help-line
+                help-text
+                helped-map
+                buffer-name))))
+
+(defvar emacs-stub--selection-storage nil
+  "Alist mapping selection symbols to stored headless clipboard values.")
+
+(defun emacs-stub--selection-type (type)
+  "Return normalized selection TYPE."
+  (or type 'PRIMARY))
+
+(defun emacs-stub--set-selection (type value)
+  "Store VALUE for selection TYPE in the headless clipboard fallback."
+  (let* ((selection-type (emacs-stub--selection-type type))
+         (cell (assoc selection-type emacs-stub--selection-storage)))
+    (if cell
+        (setcdr cell value)
+      (setq emacs-stub--selection-storage
+            (cons (cons selection-type value)
+                  emacs-stub--selection-storage)))
+    value))
+
+(defun emacs-stub--get-selection (type)
+  "Return the stored headless clipboard value for selection TYPE."
+  (cdr (assoc (emacs-stub--selection-type type)
+              emacs-stub--selection-storage)))
+
+(unless (fboundp 'gui-set-selection)
+  (defun gui-set-selection (type data)
+    "Headless clipboard fallback for GUI selection writes."
+    (emacs-stub--set-selection type data)))
+
+(unless (fboundp 'x-set-selection)
+  (defun x-set-selection (type data)
+    "Headless clipboard fallback for X selection writes."
+    (emacs-stub--set-selection type data)))
+
+(unless (fboundp 'gui-get-selection)
+  (defun gui-get-selection (&optional type _data-type)
+    "Headless clipboard fallback for GUI selection reads."
+    (emacs-stub--get-selection type)))
+
+(unless (fboundp 'x-get-selection)
+  (defun x-get-selection (&optional type _data-type)
+    "Headless clipboard fallback for X selection reads."
+    (emacs-stub--get-selection type)))
+
+(unless (featurep 'help-macro)
+  (provide 'help-macro))
+
+;; Phase B5 — UTF-8 coding-string stubs.  Standalone NeLisp strings
+;; already hold UTF-8 bytes, so no byte conversion is needed, but the
+;; result KIND is observable: a decoded string must be multibyte (so
+;; `length' counts characters and JSON encodes characters, not bytes)
+;; and an encoded string must be unibyte (so `aref' yields bytes).  The
+;; former identity stubs left SQLite text unibyte, which reached MCP
+;; clients as double-encoded UTF-8 and was written back as invalid
+;; UTF-8.  This mirrors the reader's own definitions in
+;; nelisp-stdlib-misc.el, which this layer replaces on standalone.
+(when (emacs-stub--install-function-p 'decode-coding-string)
+  (defun decode-coding-string (string &optional _coding-system _nocopy &rest _)
+    "Return STRING's UTF-8 bytes as a multibyte string."
+    (if (and (stringp string)
+             (not (multibyte-string-p string))
+             (fboundp 'string-as-multibyte))
+        (string-as-multibyte string)
+      string)))
+(when (emacs-stub--install-function-p 'encode-coding-string)
+  (defun encode-coding-string (string &optional _coding-system _nocopy &rest _)
+    "Return multibyte STRING as its unibyte UTF-8 bytes."
+    (if (and (stringp string)
+             (multibyte-string-p string)
+             (fboundp 'string-as-unibyte))
+        (string-as-unibyte string)
+      string)))
+
+;; T75 (2026-09) — `fboundp' / `macrop' / `commandp' / `indirect-function'
+;; all incorrectly signal `(wrong-type-argument symbolp nil)' when called on
+;; the literal symbol `nil', even though `(symbolp nil)' is t (nil *is* a
+;; symbol) and host GNU Emacs simply answers "no" for all four — nil's
+;; function cell is void by default, so `(fboundp nil)' => nil,
+;; `(macrop nil)' => nil, `(commandp nil)' => nil and
+;; `(indirect-function nil)' => nil, with no error.  These four are native
+;; NeLisp primitives (subrp); the bug is in their argument validation, not
+;; reachable from Lisp, so it is worked around here rather than in
+;; vendor/nelisp.
+;;
+;; This exact input class is what broke `json-mode' and `omnisharp' in the
+;; T63 real-init sweep: both transitively `(require 'cc-mode)' (`json-mode'
+;; via `js.el' at cc-defs.el load time), and cc-defs.el/cc-engine.el each
+;; define an XEmacs-compat shim shaped
+;;   (defalias 'SYM (cc-eval-when-compile
+;;                     (unless (or c-use-extents (cc-bytecomp-boundp V))
+;;                       (byte-compile (lambda ...)))))
+;; the parity-cc byte-compile shim (see emacs-parity-cc.el) guards its
+;; native-symbol special case with `(and (symbolp form) (fboundp form))';
+;; when the `unless' body above is skipped (COND true) `form' is nil, and
+;; merely evaluating `(fboundp nil)' to decide the answer aborted the whole
+;; require chain before `cc-mode' finished loading — for any package that
+;; pulls in `cc-mode' at all, not just these two.  `emacs-process.el's
+;; `emacs-process--native-primitives' capture (`(subrp (indirect-function
+;; sym))' for several process primitives) hits the identical nil-mid-chain
+;; case whenever one of those symbols' alias chain bottoms out at nil, so
+;; any fix here must not merely relocate the crash there.
+;;
+;; Placement note: this must NOT live at `emacs-symbol.el's early
+;; bootstrap position.  Measured 2026-09: at that point `fboundp' is
+;; already the real native subr (capturable via `symbol-function'), but
+;; `macrop' / `commandp' / `indirect-function' are not yet installed as
+;; anything Lisp-visible -- `(symbol-function 'macrop)' there is nil, so a
+;; wrapper built on a capture taken that early silently degrades every
+;; *non*-nil call into `(funcall nil ...)' i.e. `void-function' -- a worse
+;; regression than the bug being fixed.  By this point in `emacs-stub.el'
+;; (after its own `(unless (fboundp 'macrop) ...)' / `(unless (fboundp
+;; 'subrp) ...)' guards above have already observed all four as genuinely
+;; native), the capture is safe.  Wrap each: special-case nil to match the
+;; host, delegate to the native primitive for every other input so real
+;; symbols keep native behaviour.
+;;
+;; Guarded to the standalone NeLisp runtime only (`(fboundp
+;; 'nelisp--eval-source-string)', the same marker `emacs-parity-cc.el' uses
+;; as `emacs-parity-cc--standalone-p' -- NOT `(not (boundp 'emacs-version))':
+;; standalone NeLisp binds `emacs-version' too, to "30.1", for host-version
+;; compatibility probes elsewhere in this file, so that check alone does not
+;; distinguish standalone from host here): host Emacs's own `fboundp' /
+;; `macrop' / `commandp' / `indirect-function' do not have this bug, so this
+;; must stay a no-op there rather than adding an elisp indirection to four
+;; extremely hot primitives (dev/nelisp-emacs-lib CLAUDE.md: "Host Emacs
+;; should remain safe to load. Avoid global overrides except in guarded
+;; compatibility layers.").
+(when (fboundp 'nelisp--eval-source-string)
+  (defvar emacs-stub--native-fboundp (symbol-function 'fboundp)
+    "The native `fboundp' primitive, before the nil-input parity wrap below.")
+  (defvar emacs-stub--native-macrop (symbol-function 'macrop)
+    "The native `macrop' primitive, before the nil-input parity wrap below.")
+  (defvar emacs-stub--native-commandp (symbol-function 'commandp)
+    "The native `commandp' primitive, before the nil-input parity wrap below.")
+  (defvar emacs-stub--native-indirect-function (symbol-function 'indirect-function)
+    "The native `indirect-function' primitive, before the nil-input parity
+wrap below.")
+
+  (when (and (functionp emacs-stub--native-fboundp)
+             (functionp emacs-stub--native-macrop)
+             (functionp emacs-stub--native-commandp)
+             (functionp emacs-stub--native-indirect-function))
+
+    (defun fboundp (symbol)
+      "Return non-nil if SYMBOL's function definition is not void.
+Matches host Emacs for SYMBOL = nil (nil's function cell is void, so this
+is nil, not an error); delegates to the native primitive otherwise."
+      (if (null symbol) nil (funcall emacs-stub--native-fboundp symbol)))
+
+    (defun macrop (object)
+      "Return non-nil if OBJECT is a macro.
+Matches host Emacs for OBJECT = nil (nil is not a macro); delegates to the
+native primitive otherwise."
+      (if (null object) nil (funcall emacs-stub--native-macrop object)))
+
+    (defun commandp (function &optional for-call-interactively)
+      "Return non-nil if FUNCTION is a command.
+Matches host Emacs for FUNCTION = nil (nil is not a command); delegates to
+the native primitive otherwise."
+      (if (null function)
+          nil
+        (funcall emacs-stub--native-commandp function for-call-interactively)))
+
+    (defun indirect-function (object)
+      "Return the function OBJECT ultimately refers to, following aliases.
+Matches host Emacs for OBJECT = nil (nil is unbound as a function, so the
+alias chain terminates immediately at nil); delegates to the native
+primitive otherwise."
+      (if (null object) nil (funcall emacs-stub--native-indirect-function object)))))

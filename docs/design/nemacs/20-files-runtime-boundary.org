@@ -1,0 +1,47 @@
+#+TITLE: Files Runtime Boundary
+
+* Purpose
+
+This note fixes the remaining BUF -> FEAT private boundary around the
+lightweight files shim.
+
+Before this split, `files-standalone-buffer.el' needed the same runtime
+detection policy as `files.el'.  Keeping that predicate in `files.el'
+made the fallback buffer substrate depend on the user-facing files
+facade, which inverted ownership.
+
+* Modules
+
+- `files-runtime.el'
+  - owns standalone/runtime detection for the lightweight files stack.
+  - exports `files-standalone-runtime-p'.
+- `files.el'
+  - owns the user-facing compatibility facade and lazy command wrappers.
+  - may depend on `files-runtime.el'.
+- `files-standalone-buffer.el'
+  - owns fallback buffer/file state used before the full buffer runtime is
+    available.
+  - may depend on `files-runtime.el'.
+  - must not depend on `files.el'.
+
+* Rule
+
+Runtime predicates shared by a facade and a substrate belong below both
+modules.  Do not place shared runtime detection in a facade if a lower
+substrate needs it.
+
+* Current API
+
+#+begin_src elisp
+(files-standalone-runtime-p)
+#+end_src
+
+Returns non-nil when the lightweight files stack should install
+standalone wrappers.  The predicate checks for absence of host
+`emacs-version' and for NeLisp runtime/file syscall primitives.
+
+* Decision
+
+`files-runtime.el' is the stable owner for lightweight files runtime
+detection.  `files.el' remains a FEAT/IO facade; `files-standalone-buffer.el'
+remains a BUF/IO fallback substrate.

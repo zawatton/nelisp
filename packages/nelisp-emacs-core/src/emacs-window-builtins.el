@@ -1,0 +1,432 @@
+;;; emacs-window-builtins.el --- Unprefixed window.c builtin bridges  -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 zawatton + Claude
+
+;; This file is part of nelisp-emacs.
+
+;;; Commentary:
+
+;; Doc 51 Phase 11.C'' — Layer 2.
+;;
+;; Bridges the Emacs C-core *unprefixed* window builtins (=
+;; `selected-window', `windowp', `window-list', `window-buffer',
+;; `set-window-buffer') to the existing `emacs-window-*' prefixed
+;; implementations in `emacs-window.el', mirroring the Phase 11.B'
+;; `emacs-search-builtins.el' pattern.
+;;
+;; Why this exists: until Phase 11.C'' the unprefixed names lived as
+;; nil-stubs inside `emacs-stub.el', so callers calling
+;; `(selected-window)' got a `(cons 'window nil)' sentinel even though
+;; `emacs-window.el' provides a real window-tree model rooted on a
+;; `nelisp-emacs-compat' buffer.  Bridging unifies the two.
+;;
+;; Loading inside a host Emacs is a cheap no-op (= host's C builtins
+;; win).  Standalone NeLisp deliberately overwrites the earlier
+;; `emacs-stub.el' no-op shims.
+;;
+;; Bridgeable today (= covered by `emacs-window.el'):
+;;
+;;   - `selected-window' / `windowp'
+;;   - `window-live-p' / `window-valid-p'
+;;   - `frame-selected-window'
+;;   - `window-list' / `window-list-1' / `next-window' / `previous-window'
+;;   - `window-buffer' / `set-window-buffer'
+;;   - `select-window'
+;;   - `split-window' / `split-window-below' / `split-window-right'
+;;     + legacy `split-window-vertically' / `split-window-horizontally'
+;;   - `delete-window' / `delete-other-windows' / `delete-windows-on'
+;;   - `one-window-p' / `balance-windows'
+;;   - `get-buffer-window' / `get-buffer-window-list'
+;;   - `other-window' (polyfilled — `emacs-window.el' has no direct equivalent)
+;;   - `window-start' / `window-end' / `window-point' / `set-window-point'
+;;     / `set-window-start' / `window-height' / `window-width'
+;;     / `window-body-height' / `window-body-width'
+;;     / `window-max-chars-per-line' (Doc 33 §4 item 9 — line-based, see below)
+;;   - `recenter' / `scroll-up' / `scroll-down' / `scroll-up-command'
+;;     / `scroll-down-command' / `pos-visible-in-window-p' (Doc 33 §4
+;;     item 9 — real buffer-line-based semantics via
+;;     `emacs-window-recenter' / `emacs-window-scroll-up' /
+;;     `emacs-window-scroll-down' / `emacs-window-pos-visible-in-window-p',
+;;     replacing the nil no-op stubs that `emacs-stub-bulk.el' would
+;;     otherwise install for these names)
+;;
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- windows are the nemacs window model.
+;;; Code:
+
+(require 'emacs-window)
+
+(defun emacs-window-builtins--function-cell-live-p (symbol)
+  "Return non-nil when SYMBOL has a usable function cell."
+  (and (fboundp symbol)
+       (condition-case nil
+           (symbol-function symbol)
+         (error nil))))
+
+(defun emacs-window-builtins--install-function-p (symbol)
+  "Return non-nil when SYMBOL should be installed by this bridge.
+
+`(not (boundp \\='emacs-version))' (with or without the `stringp'
+refinement) is not a reliable standalone signal: the NeLisp reader
+binds `emacs-version' too, to the real string \"30.1\", so both
+disjuncts evaluate to nil there and this gate silently fell through to
+`--function-cell-live-p' alone.  That check only asks whether the
+*current* binding looks callable, and several names this bridge owns
+(`selected-window', `windowp', `window-live-p', `window-list',
+`frame-selected-window', `set-window-buffer', `window-buffer' via
+`emacs-stub.el''s individually-defined, untagged window.c stubs; also
+`next-window', `window-height', `window-width', `window-start',
+`window-end', `window-point', `window-parameter', `set-window-point',
+`set-window-start', `set-window-parameter',
+`current-window-configuration', `set-window-configuration',
+`select-window', `display-buffer', `recenter', `scroll-up',
+`scroll-down', `scroll-up-command', `scroll-down-command' via
+`emacs-stub-bulk.el''s bulk dolist -- tagged with `emacs-stub-bulk' but
+this gate never checked the tag) already look \"live\" by the time this
+file loads, so the bridge silently declined to override them.  Net
+effect verified empirically: `(selected-window)' returned a fresh,
+non-`eq'-stable stub object on every call, `(window-live-p ...)' and
+`(window-list)' never delegated to the real window model, and
+`save-selected-window''s restore half was a no-op.  Force install
+unconditionally on standalone via a NeLisp-only primitive, matching
+the standalone predicate in `emacs-char-table.el' and the same
+fix already applied to `emacs-font-lock-builtins.el' /
+`emacs-redisplay-builtins.el' for the identical defect class."
+  (or (fboundp 'nl-write-file)
+      (fboundp 'nelisp--write-stdout-bytes)
+      (not (boundp 'emacs-version))
+      (not (stringp emacs-version))
+      (not (emacs-window-builtins--function-cell-live-p symbol))))
+
+;;;; --- predicates ------------------------------------------------------
+
+(when (emacs-window-builtins--install-function-p 'windowp)
+  (defalias 'windowp #'emacs-window-windowp))
+
+(when (emacs-window-builtins--install-function-p 'window-live-p)
+  (defalias 'window-live-p #'emacs-window-window-live-p))
+
+(when (emacs-window-builtins--install-function-p 'window-valid-p)
+  (defalias 'window-valid-p #'emacs-window-window-valid-p))
+
+;;;; --- accessors -------------------------------------------------------
+
+(when (emacs-window-builtins--install-function-p 'selected-window)
+  (defalias 'selected-window #'emacs-window-selected-window))
+
+(when (emacs-window-builtins--install-function-p 'frame-selected-window)
+  (defalias 'frame-selected-window #'emacs-window-frame-selected-window))
+
+(when (emacs-window-builtins--install-function-p 'window-list)
+  (defalias 'window-list #'emacs-window-window-list))
+
+(when (emacs-window-builtins--install-function-p 'window-list-1)
+  (defalias 'window-list-1 #'emacs-window-window-list-1))
+
+(when (emacs-window-builtins--install-function-p 'next-window)
+  (defalias 'next-window #'emacs-window-next-window))
+
+(when (emacs-window-builtins--install-function-p 'previous-window)
+  (defalias 'previous-window #'emacs-window-previous-window))
+
+(when (emacs-window-builtins--install-function-p 'window-buffer)
+  (defalias 'window-buffer #'emacs-window-window-buffer))
+
+(when (emacs-window-builtins--install-function-p 'one-window-p)
+  (defalias 'one-window-p #'emacs-window-one-window-p))
+
+(when (emacs-window-builtins--install-function-p 'get-buffer-window)
+  (defalias 'get-buffer-window #'emacs-window-get-buffer-window))
+
+(when (emacs-window-builtins--install-function-p 'get-buffer-window-list)
+  (defalias 'get-buffer-window-list #'emacs-window-get-buffer-window-list))
+
+(when (emacs-window-builtins--install-function-p 'window-height)
+  (defalias 'window-height #'emacs-window-window-height))
+
+(when (emacs-window-builtins--install-function-p 'window-width)
+  (defalias 'window-width #'emacs-window-window-width))
+
+(when (emacs-window-builtins--install-function-p 'window-body-height)
+  (defun window-body-height (&optional window _pixelwise)
+    "Phase 11 polyfill: body height, excluding the mode-line row."
+    (max 1 (1- (emacs-window-window-height window)))))
+
+(when (emacs-window-builtins--install-function-p 'window-body-width)
+  (defun window-body-width (&optional window pixelwise)
+    "Phase 11 polyfill: body width in columns or pseudo pixels."
+    (let ((cols (emacs-window-window-width window)))
+      (if pixelwise
+          (* cols emacs-window--pixel-col-px)
+        cols))))
+
+(when (emacs-window-builtins--install-function-p 'window-max-chars-per-line)
+  (defun window-max-chars-per-line (&optional window _face)
+    "Phase 11 polyfill: maximum display columns for WINDOW."
+    (max 1 (window-body-width window))))
+
+(when (emacs-window-builtins--install-function-p 'window-start)
+  (defalias 'window-start #'emacs-window-window-start))
+
+(when (emacs-window-builtins--install-function-p 'window-end)
+  (defalias 'window-end #'emacs-window-window-end))
+
+(when (emacs-window-builtins--install-function-p 'window-point)
+  (defalias 'window-point #'emacs-window-window-point))
+
+(when (emacs-window-builtins--install-function-p 'window-parameter)
+  (defalias 'window-parameter #'emacs-window-window-parameter))
+
+(when (emacs-window-builtins--install-function-p 'window-prev-buffers)
+  (defalias 'window-prev-buffers #'emacs-window-window-prev-buffers))
+
+(when (emacs-window-builtins--install-function-p 'window-next-buffers)
+  (defalias 'window-next-buffers #'emacs-window-window-next-buffers))
+
+;;;; --- mutation --------------------------------------------------------
+
+(when (emacs-window-builtins--install-function-p 'set-window-buffer)
+  (defalias 'set-window-buffer #'emacs-window-set-window-buffer))
+
+(when (emacs-window-builtins--install-function-p 'set-window-point)
+  (defalias 'set-window-point #'emacs-window-set-window-point))
+
+(when (emacs-window-builtins--install-function-p 'set-window-start)
+  (defalias 'set-window-start #'emacs-window-set-window-start))
+
+(when (emacs-window-builtins--install-function-p 'set-window-parameter)
+  (defalias 'set-window-parameter #'emacs-window-set-window-parameter))
+
+(when (emacs-window-builtins--install-function-p 'window-configuration-p)
+  (defalias 'window-configuration-p #'emacs-window-configuration-p))
+
+(when (emacs-window-builtins--install-function-p 'current-window-configuration)
+  (defalias 'current-window-configuration
+    #'emacs-window-current-window-configuration))
+
+(when (emacs-window-builtins--install-function-p 'set-window-configuration)
+  (defalias 'set-window-configuration
+    #'emacs-window-set-window-configuration))
+
+(when (emacs-window-builtins--install-function-p 'set-window-prev-buffers)
+  (defalias 'set-window-prev-buffers #'emacs-window-set-window-prev-buffers))
+
+(when (emacs-window-builtins--install-function-p 'set-window-next-buffers)
+  (defalias 'set-window-next-buffers #'emacs-window-set-window-next-buffers))
+
+(when (emacs-window-builtins--install-function-p 'select-window)
+  (defalias 'select-window #'emacs-window-select-window))
+
+;;;; --- split / delete (Track V, 2026-05-04) ----------------------------
+
+(when (emacs-window-builtins--install-function-p 'split-window)
+  (defalias 'split-window #'emacs-window-split-window))
+
+(when (emacs-window-builtins--install-function-p 'split-window-below)
+  (defun split-window-below (&optional size)
+    "Phase 11 polyfill: split selected window into two stacked windows.
+Bound to C-x 2 in `nemacs-main-keymap'."
+    (interactive "P")
+    (emacs-window-split-window-vertically size)))
+
+(when (emacs-window-builtins--install-function-p 'split-window-right)
+  (defun split-window-right (&optional size)
+    "Phase 11 polyfill: split selected window into two side-by-side windows.
+Bound to C-x 3 in `nemacs-main-keymap'."
+    (interactive "P")
+    (emacs-window-split-window-horizontally size)))
+
+(when (emacs-window-builtins--install-function-p 'split-window-vertically)
+  (defalias 'split-window-vertically #'emacs-window-split-window-vertically))
+
+(when (emacs-window-builtins--install-function-p 'split-window-horizontally)
+  (defalias 'split-window-horizontally #'emacs-window-split-window-horizontally))
+
+(when (emacs-window-builtins--install-function-p 'delete-window)
+  (defun delete-window (&optional window)
+    "Phase 11 polyfill: delete WINDOW (default = selected).
+Bound to C-x 0 in `nemacs-main-keymap'."
+    (interactive)
+    (emacs-window-delete-window window)))
+
+(when (emacs-window-builtins--install-function-p 'delete-other-windows)
+  (defun delete-other-windows (&optional window)
+    "Phase 11 polyfill: delete every window except WINDOW (default = selected).
+Bound to C-x 1 in `nemacs-main-keymap'."
+    (interactive)
+    (emacs-window-delete-other-windows window)))
+
+(when (emacs-window-builtins--install-function-p 'delete-windows-on)
+  (defalias 'delete-windows-on #'emacs-window-delete-windows-on))
+
+(when (emacs-window-builtins--install-function-p 'balance-windows)
+  (defalias 'balance-windows #'emacs-window-balance-windows))
+
+;;;; --- other-window (Track V) -----------------------------------------
+;;
+;; `emacs-window.el' has no direct `emacs-window-other-window'; we
+;; build it from `next-window' + `select-window'.  COUNT is the number
+;; of windows to skip (default 1, can be negative for backwards).
+;; Wraps around at the ends.  ALL-FRAMES is accepted for API parity.
+
+(defun emacs-window-other-window-impl (&optional count all-frames)
+  "Bridge implementation of `other-window'.
+COUNT defaults to 1; negative values walk backwards.  ALL-FRAMES is
+accepted for API parity and ignored (= single-frame Phase 1)."
+  (interactive "p")
+  (let* ((n   (or count 1))
+         (cur (emacs-window-selected-window))
+         (forward-fn (lambda (w) (emacs-window-next-window w nil all-frames)))
+         (back-fn    (lambda (w) (emacs-window-previous-window w nil all-frames)))
+         (step (if (>= n 0) forward-fn back-fn))
+         (steps (abs n))
+         (target cur))
+    (dotimes (_ steps)
+      (setq target (funcall step target)))
+    (when target
+      (emacs-window-select-window target))
+    target))
+
+(when (emacs-window-builtins--install-function-p 'other-window)
+  (defalias 'other-window #'emacs-window-other-window-impl))
+
+;;;; --- display-buffer / pop-to-buffer (M3 display policy) --------------
+
+(when (emacs-window-builtins--install-function-p 'display-buffer)
+  (defalias 'display-buffer #'emacs-window-display-buffer))
+
+(when (emacs-window-builtins--install-function-p 'pop-to-buffer)
+  (defalias 'pop-to-buffer #'emacs-window-pop-to-buffer))
+
+(when (emacs-window-builtins--install-function-p 'pop-to-buffer-same-window)
+  (defalias 'pop-to-buffer-same-window #'emacs-window-pop-to-buffer))
+
+(when (emacs-window-builtins--install-function-p 'switch-to-buffer-other-window)
+  (defalias 'switch-to-buffer-other-window #'emacs-window-pop-to-buffer))
+
+(when (emacs-window-builtins--install-function-p 'quit-window)
+  (defun quit-window (&optional kill window)
+    "Phase 11 polyfill: quit WINDOW, closing a popup or burying its buffer.
+Bound to `q' in help/special-buffer keymaps."
+    (interactive "P")
+    (emacs-window-quit-window kill window)))
+
+;;;; --- temp-buffer-window setup/show (T87) ------------------------------
+;;
+;; Supporting functions for `with-current-buffer-window' /
+;; `with-temp-buffer-window' (macro bodies live in
+;; `emacs-parity-shims.el', ported verbatim from host `window.el').
+;; Ported from host `window.el' (Emacs 31.1) with two documented
+;; single-frame-model simplifications:
+;;
+;;   1. `temp-buffer-window-setup' skips `(delete-all-overlays)' --
+;;      that primitive does not exist anywhere on this runtime yet
+;;      (neither `fboundp' nor `boundp'), and overlay lifecycle is
+;;      outside this file's ownership; buffers this helper targets are
+;;      freshly `get-buffer-create'd or reused temp buffers, so a
+;;      leftover overlay is a cosmetic edge case, not a correctness
+;;      blocker for the callers this closes the gap for.
+;;   2. `temp-buffer-window-show' skips the `window-combination-limit'
+;;      let-binding trick and the `temp-buffer-resize-mode' resize
+;;      step -- both read variables that `emacs-stub-bulk.el' installs
+;;      as nil-returning *functions*, not special variables (so
+;;      referencing them as variables would signal `void-variable');
+;;      the trick and the resize step are opt-in discretionary
+;;      behavior that defaults off in real Emacs too, so omitting them
+;;      changes nothing for the default configuration this runtime
+;;      targets.
+;;
+;; Both hooks below are real (`run-hooks' is called with them), just
+;; empty by default like host Emacs.
+
+(unless (boundp 'temp-buffer-window-setup-hook)
+  (defvar temp-buffer-window-setup-hook nil
+    "Normal hook run by `with-temp-buffer-window' before buffer display.
+This hook is run by `with-temp-buffer-window' with the buffer to be
+displayed current."))
+
+(unless (boundp 'temp-buffer-window-show-hook)
+  (defvar temp-buffer-window-show-hook nil
+    "Normal hook run by `with-temp-buffer-window' after buffer display.
+This hook is run by `with-temp-buffer-window' with the buffer
+displayed and current and its window selected."))
+
+(when (emacs-window-builtins--install-function-p 'temp-buffer-window-setup)
+  (defun temp-buffer-window-setup (buffer-or-name)
+    "Set up temporary buffer specified by BUFFER-OR-NAME.
+Return the buffer.  (Single-frame-model port -- see file commentary
+for the `delete-all-overlays' simplification.)"
+    (let ((old-dir default-directory)
+          (buffer (get-buffer-create buffer-or-name)))
+      (with-current-buffer buffer
+        (kill-all-local-variables)
+        (setq default-directory old-dir)
+        (setq buffer-read-only nil)
+        (setq buffer-file-name nil)
+        (setq buffer-undo-list t)
+        (let ((inhibit-read-only t)
+              (inhibit-modification-hooks t))
+          (erase-buffer)
+          (run-hooks 'temp-buffer-window-setup-hook))
+        buffer))))
+
+(when (emacs-window-builtins--install-function-p 'temp-buffer-window-show)
+  (defun temp-buffer-window-show (buffer &optional action)
+    "Show temporary buffer BUFFER in a window.
+Return the window showing BUFFER.  Pass ACTION as action argument to
+`display-buffer'.  (Single-frame-model port -- see file commentary
+for the `window-combination-limit' / `temp-buffer-resize-mode'
+simplification.)"
+    (let (window)
+      (with-current-buffer buffer
+        (set-buffer-modified-p nil)
+        (setq buffer-read-only t)
+        (goto-char (point-min))
+        (setq window (display-buffer buffer action))
+        (when window
+          (setq minibuffer-scroll-window window)
+          (set-window-hscroll window 0)
+          (with-selected-window window
+            (run-hooks 'temp-buffer-window-show-hook))))
+      window)))
+
+;;;; --- scroll / recenter / visibility (Doc 33 §4 item 9) ----------------
+;;
+;; Real buffer-line-based implementations (see `emacs-window.el').
+;; These names are in `emacs-stub-bulk.el's nil-no-op list (or, for
+;; `pos-visible-in-window-p', void entirely); this file loads first in
+;; the standalone bootstrap, so the `(unless (fboundp ...))' guards
+;; there defer to the real definitions installed here.
+
+(when (emacs-window-builtins--install-function-p 'recenter)
+  (defun recenter (&optional arg _redisplay)
+    "Phase 11 polyfill: real line-based recenter.
+See `emacs-window-recenter'."
+    (interactive "P")
+    (emacs-window-recenter nil arg)))
+
+(when (emacs-window-builtins--install-function-p 'scroll-up)
+  (defun scroll-up (&optional n)
+    "Phase 11 polyfill: real line-based scroll-up.
+See `emacs-window-scroll-up'."
+    (interactive "P")
+    (emacs-window-scroll-up nil n)))
+
+(when (emacs-window-builtins--install-function-p 'scroll-down)
+  (defun scroll-down (&optional n)
+    "Phase 11 polyfill: real line-based scroll-down.
+See `emacs-window-scroll-down'."
+    (interactive "P")
+    (emacs-window-scroll-down nil n)))
+
+(when (emacs-window-builtins--install-function-p 'scroll-up-command)
+  (defalias 'scroll-up-command #'scroll-up))
+
+(when (emacs-window-builtins--install-function-p 'scroll-down-command)
+  (defalias 'scroll-down-command #'scroll-down))
+
+(when (emacs-window-builtins--install-function-p 'pos-visible-in-window-p)
+  (defalias 'pos-visible-in-window-p #'emacs-window-pos-visible-in-window-p))
+
+(provide 'emacs-window-builtins)
+
+;;; emacs-window-builtins.el ends here

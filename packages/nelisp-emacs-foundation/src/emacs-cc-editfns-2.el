@@ -1,0 +1,102 @@
+;;; emacs-cc-editfns-2.el --- editfns C primitives -*- lexical-binding: t; -*-
+
+(unless (fboundp 'insert-before-markers-and-inherit)
+  (defun insert-before-markers-and-inherit (&rest args)
+    "Insert text at point, relocating markers and inheriting properties."
+    (dolist (arg args)
+      (unless (or (stringp arg) (characterp arg))
+        (signal 'wrong-type-argument (list 'char-or-string-p arg))))
+    (let ((text (apply #'concat args)))
+      (insert-before-markers text)
+      (when (> (length text) 0)
+        (let ((props (text-properties-at (1- (point)))))
+          (when props (add-text-properties (- (point) (length text)) (point) props)))))))
+
+(unless (fboundp 'insert-byte)
+  (defun insert-byte (byte count &optional inherit)
+    "Insert COUNT copies of BYTE (0..255), optionally inheriting properties."
+    (unless (and (integerp byte) (<= 0 byte 255))
+      (signal 'args-out-of-range (list byte 0 255)))
+    (unless (integerp count) (signal 'wrong-type-argument (list 'integerp count)))
+    (let ((char (if (and (>= byte 128) (multibyte-string-p (buffer-substring (point-min) (point-min))))
+                    (decode-char 'eight-bit byte) byte)))
+      (if inherit (insert-before-markers-and-inherit (make-string (max 0 count) char))
+        (insert (make-string (max 0 count) char))))))
+
+(unless (fboundp 'message-box)
+  (defun message-box (format-string &rest args)
+    "Display a message in a dialog box if possible, otherwise in the echo area."
+    (apply #'message format-string args)))
+
+(unless (fboundp 'message-or-box)
+  (defun message-or-box (format-string &rest args)
+    "Display a message in a dialog box or in the echo area."
+    (apply #'message format-string args)))
+
+(unless (fboundp 'position-bytes)
+  (defun position-bytes (position)
+    "Return the byte position for character position POSITION, or nil out of range."
+    (let ((pos (if (markerp position) (marker-position position) position)))
+      (unless (or (integerp pos) (markerp position))
+        (signal 'wrong-type-argument (list 'integer-or-marker-p position)))
+      (when (and (>= pos (point-min)) (<= pos (point-max)))
+        (1+ (string-bytes (buffer-substring-no-properties (point-min) pos)))))))
+
+(unless (fboundp 'replace-region-contents)
+  (defun replace-region-contents (beg end source &optional max-secs _max-costs inherit)
+    "Replace BEG..END with SOURCE, returning non-nil on a comparison replacement."
+    (let ((start-check (if (markerp beg) (marker-position beg) beg))
+          (end-check (if (markerp end) (marker-position end) end)))
+      (unless (and (integerp start-check) (integerp end-check)
+                   (<= (point-min) start-check end-check) (<= end-check (point-max)))
+        (signal 'args-out-of-range (list (current-buffer) start-check end-check))))
+    (let* ((text (cond ((stringp source) source)
+                       ((bufferp source) (with-current-buffer source (buffer-substring (point-min) (point-max))))
+                       ((and (vectorp source) (= (length source) 3) (bufferp (aref source 0)))
+                        (with-current-buffer (aref source 0)
+                          (buffer-substring (aref source 1) (aref source 2))))
+                       ((functionp source) (replace-region-contents beg end (funcall source) max-secs nil inherit))
+                       ((null source) "")
+                       (t (signal 'wrong-type-argument (list '(or stringp bufferp vectorp functionp) source)))))
+           (finish (if (markerp end) (marker-position end) end))
+           (start (if (markerp beg) (marker-position beg) beg)))
+      (goto-char start)
+      (delete-region start finish)
+      (goto-char start)
+      (if (and max-secs (<= max-secs 0))
+          (progn (if inherit (insert-before-markers-and-inherit text) (insert text)) t)
+        (goto-char start)
+        (if inherit (insert-before-markers-and-inherit text) (insert text))
+        t))))
+
+(unless (fboundp 'translate-region-internal)
+  (defun translate-region-internal (start end table)
+    "Translate characters between START and END according to TABLE; return count changed."
+    (unless (and (integerp start) (integerp end)
+                 (<= (point-min) start end) (<= end (point-max)))
+      (signal 'args-out-of-range (list (current-buffer) start end)))
+    (unless (or (stringp table) (char-table-p table))
+      (signal 'args-out-of-range (list (current-buffer) start end)))
+    (let ((count 0) (pos start))
+      (while (< pos end)
+        (let* ((old (char-after pos))
+               (new (if (stringp table) (and (< old (length table)) (aref table old)) (aref table old))))
+          (when (and new (/= old new)) (goto-char pos) (delete-char 1) (insert new) (setq count (1+ count)))
+          (setq pos (1+ pos))))
+      count)))
+
+(unless (fboundp 'transpose-regions)
+  (defun transpose-regions (startr1 endr1 startr2 endr2 &optional leave-markers)
+    "Transpose two nonoverlapping regions without changing buffer size."
+    (let* ((a (min startr1 endr1)) (b (max startr1 endr1))
+           (c (min startr2 endr2)) (d (max startr2 endr2)))
+      (unless (and (<= (point-min) a b c d) (<= d (point-max)) (<= b c))
+        (signal 'args-out-of-range (list (current-buffer) a b)))
+      (let ((x (buffer-substring a b)) (y (buffer-substring c d)))
+        (delete-region c d) (goto-char c) (insert x)
+        (delete-region a b) (goto-char a) (insert y))
+      (ignore leave-markers)
+      nil)))
+
+(provide 'emacs-cc-editfns-2)
+;;; emacs-cc-editfns-2.el ends here

@@ -1,0 +1,693 @@
+#+TITLE: nelisp-emacs Doc 15 — 段階実行プラン (小物 → 中物 → 大物)
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-06-20
+#+STATUS: DRAFT
+#+DEPENDS_ON: Doc 05 legacy omission scope, Doc 11 remaining-work roadmap, Doc 12 development gates, Doc 14 completion roadmap
+
+* 0. Purpose / 位置づけ
+
+Doc 11 / Doc 14 が「何が残っているか」を列挙した roadmap なのに対し、本書は
+user 指示 (2026-06-20) による *実行順序の確定* — まず小物を片付け、次に中物、
+最後に大物、という波で進める。各波の中の項目は独立着手可能 (= parallel
+agent 向き) に保つ。
+
+直近の *OS 判別* (=uname(2)= runtime detection, =src/emacs-os-detect.el=,
+commit f0ba42b) が「小物波」の最初のドミノであり、以降の小物が踏襲すべき
+*型* でもある:
+
+- 純 Elisp、Rust LOC 不変 (nelisp-emacs は reader substrate を *消費する側*)。
+- 既存 substrate (=syscall-direct= / =alloc-bytes= / =getenv= 等) に乗せる。
+- host Emacs driver では no-op、reader でのみ作用 (=fboundp= gate)。
+- ハードコード default は残し、検出/解決できた時だけ上書き (= 安全な degrade)。
+- ERT は host 純関数 + standalone reader gate の 2 レーン。
+- canonical に =.elc= を残さない / =make build-nelisp-bootstrap= で bundle 再生成。
+
+* 1. 進め方の原則 (全波共通)
+
+| # | 原則 | 補足 |
+|---+------+------|
+| 1 | 1 波 1 テーマ、独立着手 | parallel development 可能な粒度に割る |
+| 2 | 各項目に close signal | ERT (host) + boot/reader smoke の最低 1 本 |
+| 3 | Rust LOC 不変 | substrate 不足時は新 primitive 提案を別 issue 化し勝手に Rust を増やさない |
+| 4 | substrate-gated | host driver = no-op、reader = 作用。`(when (fboundp ...) ...)` |
+| 5 | 安全 degrade | 検出/解決失敗時は既存 default を維持 (誤上書き禁止) |
+| 6 | bundle 同期 | source 改修後 `make build-nelisp-bootstrap`、`.elc` を canonical に残さない |
+| 7 | 記録 | 完了は =worklog-add=、本書の Status 列を SHIPPED + commit 参照に更新 |
+
+* 2. 波 A — 小物 (即着手 / 各 < 1 セッション)
+
+OS 判別と同型の、低リスク・高レバレッジ・テスト容易な項目。A1/A2 は
+=emacs-os-detect= の検出値を直接消費する「応用」。
+
+| ID | 内容 | 根拠 (file:line / doc) | close signal | 依存 | Status |
+|----+------+------------------------+--------------+------+--------|
+| A1 | =getenv= 連動 dir 解決: =temporary-file-directory= ("/tmp/")・=user-emacs-directory= ("~/.emacs.d/")・=exec-path= を =TMPDIR= / =HOME= / =PATH= から実行時解決 | emacs-vars.el commentary「Phase 2 will resolve dynamically once getenv is wired」、emacs-vars.el:26,46 | reader boot で env 由来値、host no-op、ERT | reader の =getenv= availability = getenv は fboundp だが prelude 版が空の nelisp--environment を読む shadowing bug。emacs-callproc は既に /proc/self/environ から process-environment を seed 済 → emacs-callproc の getenv/setenv を reader で強制 install する fix で解消 | SHIPPED (2026-06-20) |
+| A2 | polyfill の OS 分岐: =path-separator= (":")・=exec-suffixes= (nil) を =system-type= 連動に (windows-nt → ";" + (".exe" ".com" ".bat")) | emacs-vars.el:42,49 | ERT (system-type→値 mapping) + reader boot | emacs-os-detect (済) | SHIPPED (2026-06-20) |
+| A3 | help 履歴ナビ (=help-go-back= / =help-go-forward=) を 2-stack で実装。※ 752/767/814 の "not yet implemented" は壊れた箇所でなく describe/view コマンドが正常に開く Help buffer の説明本文 (互換サーフェス) なので対象外と再分類 | emacs-help.el:868,873 | emacs-help-test 23/23 (back/forward navigate) | render-buffer | SHIPPED (2026-06-20) |
+| A4 | =define-keymap :prefix= 実装 (sparse keymap を fset+set で prefix command 化) | emacs-keymap.el:993 | source-shape ERT + reader boot | — | SHIPPED (2026-06-20) |
+| A5 | =cl-reduce= =:from-end= 実装 (reverse + 引数順入替で右fold) | nemacs-runtime-stdlib-extra.el:112 | source-shape + standalone gate | — | SHIPPED (2026-06-20) |
+| A6 | fallback 行棚卸し: =bridge-local-fallback= / =implementation-debt= (~328 行) を Doc 12 方針で実装 or 削除に仕分け | Doc 12:24-29, build/nemacs-stub-fallback-skip-summary.org | inventory 行数の純減 + gate 維持 | — | TODO |
+| A7 | README =* Status= 更新: Doc 11 §4 の M1–M19 close と整合 (現 header は過小記述) | README.org:8, Doc 11 §4 (11-…roadmap.org:279-292) | doc 整合 (gate なし) | — | USER判断 (公開 framing 決定。慎重 framing は意図的の可能性、AI 一存で書換えない) |
+
+** 2.1 波 A の着手順 (推奨)
+A1 → A2 (OS 判別の直接応用、勢いを継ぐ) → A4 / A5 (純粋小関数、低リスク) →
+A3 (bridge 依存でやや重い) → A6 (棚卸しは継続タスク化) → A7 (随時)。
+
+** 2.2 実装メモ (2026-06-20, A1/A2 着地)
+
+- *A1 の真因*: =getenv= は fboundp だったが、reader prelude が空の
+  =nelisp--environment= を読む getenv を先に定義しており、=emacs-callproc.el=
+  の =(unless (fboundp 'getenv) …)= ガードが正しい =process-environment= 版を
+  install できずに shadowing されていた (=process-environment= 自体は
+  =/proc/self/environ= から seed 済で HOME 等を保持)。
+- *fix*: =emacs-callproc.el= の getenv/setenv ガードを
+  =(when (or (not (fboundp 'getenv)) (fboundp 'rdf)) …)= に変更。reader
+  (=rdf= 在) では =process-environment= 版を強制 install、host (=rdf= 不在) では
+  C builtin を保護。これが getenv 系全体 (executable-find の PATH walk 含む) の
+  foundation。
+- *A1/A2 本体*: =src/emacs-os-detect.el= に =emacs-os--env= /
+  =emacs-os-apply-os-polyfills!= / =emacs-os-detect-and-set-dirs!= を追加、
+  load-time apply を system-type → path-separator → PATH-split の順で実行。
+- *検証*: full boot で =user-emacs-directory= = HOME 由来、=exec-path= = 実 PATH
+  (14 要素)、=path-separator= ":"。host ERT 14/14 (standalone reader gate 込)。
+
+* 3. 波 B — 中物 (レーン / 各 数セッション)
+
+小物完了後。breadth + correctness の実装レーン。B2 が日本語入力の
+統一 blocker なので B 波の先頭に置く。
+
+| ID | 内容 | 根拠 | close signal | Status |
+|----+------+------+--------------+--------|
+| B2 | bridge GUI image の汎用 =insert-file-contents(-literal)= が BEG/END range honor + bridge buffer 挿入するよう修正 (§3.2)。※ 日本語入力 headline は skk が独自 cdb--read を持つため既に動作済 (E2E 5/5) | Doc 14:125-141, §3.2 | gui-bridge test +1 (range bytes 正)、skk E2E 5/5、full-stack 無回帰 | nemacs-gui-file-bridge-runtime.el 末尾に gated fix | SHIPPED (2026-06-20) |
+| B1 | runtime macroexpand は既に解決済 (§3.3)。本 wave 増分 = bridge に save-match-data 等 stub 補完 | Doc 14:191-198, §3.3 | dash -map 動作、bridge save-match-data test +1、full-stack 無回帰 | nemacs-gui-file-bridge-runtime.el | コア SHIPPED (Doc14 stale) + stub SHIPPED (2026-06-20) |
+| B3 | process 層は想定より進捗 (§3.4): make-process / start-process / call-process / comint-mode / process-send-string / accept-process-output 全て full-stack に有り。Doc 11 §3.8 stale。残 = start-process-shell-command / PTY breadth | Doc 11 §3.8 | (実態確認のみ、未着手) | — | 診断: 大半 SHIPPED 済 |
+| B4 | vendor callable promotion = builtin breadth (§3.4)。本 wave 増分 = replace-match (string 形) を reader で stub に勝たせ s.el 等を callable 化 | Doc 11 §3.6,§7 | s-trim/s-replace/s-collapse 動作、search-builtins test 12/12、full-stack 無回帰 | emacs-search-builtins install gate + bridge save-match-data | 増分 SHIPPED (2026-06-20)、breadth 継続 |
+
+** 3.1 波 B の着手順
+B2 (I/O subsystem、日本語入力 unblock) → B1 (任意 pkg load) → B3 (process 系) →
+B4 (promotion gate)。B1/B2 は相互に補完。
+
+** 3.2 B2 診断訂正 (2026-06-20, 着手調査)
+
+Doc 14 (2026-06-14) は「bridge runtime に file-read/buffer ops 無し (fboundp
+nil)」と記したが、その後の bridge image 再 bake で状況が変わっており、実地
+調査で *診断を訂正*:
+
+- *file-read/buffer-ops は実装済で full =--batch= stack では完動*:
+  =insert-file-contents-literally= は BEG/END range を honor
+  (=nelisp-ec-insert-file-contents= = =nelisp-emacs-compat-fileio.el:625=、
+  =nelisp-ec--read-raw-bytes file beg end= + =nelisp-ec-insert=)、
+  =buffer-substring=/=-no-properties= は nelisp-ec 本実装、=point-min/max= 実動。
+  cdb read pattern が byte-exact に =(65 66 67 230)= を返す (binary 高 byte 保持)。
+- *真の gap = GUI bridge image (=build/nemacs-gui-file-bridge.nlri=)*:
+  そこでは全 op が fboundp t だが =insert-file-contents-literally= が *prelude の
+  delegating closure* で、prelude の =insert-file-contents= は (a) BEG/END 無視で
+  whole-file (len 13)、(b) bridge の buffer model に *insert されない*
+  (=buffer-string-len 0=)。=insert= 自体は bridge で動く。= 正しい
+  =nelisp-ec-insert-file-contents= が bridge image で非 active = prelude fallback。
+- *fix 候補*: (a) =nelisp-emacs-compat-fileio= の install を bridge image bake で
+  active 化、(b) bridge 向け =insert= ベース range polyfill を bake。install 経路
+  (backend dispatch) の特定が次の一手。
+- *副産物*: pread64(17) buffer-free byte-exact range reader 実証済 (offset=4 len=4
+  → (65 66 67 230))。大 dict の whole-file read 回避の最適化として後で有用 (今回は
+  blocker でないため未 commit)。
+- *着地 (2026-06-20)*: 修正は =nemacs-gui-file-bridge-runtime.el= 末尾に gated
+  (=unless (fboundp 'nelisp-ec-insert-file-contents)= = bridge image 限定) で
+  range-honoring =insert-file-contents(-literally)= を install。bridge image で
+  cdb read pattern が (65 66 67 230) を返すことを確認、gui-bridge test +1。
+  *full --batch stack は nelisp-ec が active なので gate skip = 完全無回帰*
+  (insert-file-runtime-adapter / save-and-transform / find-file / skk
+  keystroke-e2e 全 pass)。
+- *重要発見 — 日本語入力 headline は既に動作*: skk は =nemacs-runtime-cdb.el= の
+  独自 =cdb--read= を vendor-core image で使うため、GUI bridge の壊れた
+  =insert-file-contents= に依存しない。skk E2E (=NEMACS_RUN_SKK_CONVERSION=1=) は
+  *5/5 pass* (みらい→未来、はしる+SPC→走る 等)。= Doc 14 の「file-read が
+  日本語入力の統一 blocker」は nemacs-runtime-cdb/skk 実装で既に解消済。本修正は
+  GUI bridge の汎用 file-read 経路 (google-ime upstream 等) の correctness 改善。
+
+** 3.3 B1 診断 (2026-06-20, 着手調査)
+
+Doc 14 (2026-06-13) は「runtime 生 defun は登録されない (wrap-init 必須)」を
+B1 の最重要 frontier としたが、その後実装が進み *stale*:
+
+- *runtime macroexpand は解決済*: =--load FILE= / bridge =exec-runtime-image= /
+  =eval= の全経路で =defun= / =defmacro= / =cl-defstruct= / =when-let= が load 時に
+  展開・登録される。実 =dash.el= (148KB、複雑 macro 多用) を =--load= → =-map= /
+  =-filter= が callable (=(-map (lambda (x)(* x x)) '(1 2 3))= = (1 4 9))。bridge
+  でも dash =-map= 動作。
+- *残 = runtime-loaded package が呼ぶ builtin の long-tail breadth* (B4 寄り):
+  - bridge image は emacs-stub.el を bake しないため =save-match-data= /
+    =match-data= / =set-match-data= が欠落 → s.el の =s-replace= 等が
+    =void-function save-match-data= で abort。*本 wave で no-op stub を bridge に
+    補完* (emacs-stub と同 behavior、=match-beginning/end= は bridge で real)。
+    結果 =s-replace= / =s-join= / =s-upcase= が callable に。
+  - =replace-match= の string 形は *bridge / full --batch 両方で nil* (= bridge
+    固有でなく nelisp-emacs 全体の一般的限界)。s.el =s-trim= はこれ依存で未動作 =
+    B1 スコープ外の別 issue。
+- *macroexpand-all は未 fboundp* (単一 macroexpand は有り)。dash load には不要。
+
+** 3.4 B3 / B4 診断 (2026-06-20, 着手調査)
+
+Doc 11 §3.8 / §3.6 も B1/B2 同様に stale 気味:
+
+- *B3 (process) は大半 SHIPPED 済*: full --batch で =make-process= /
+  =start-process= / =call-process= / =shell-command= / =comint-mode= /
+  =process-send-string= / =accept-process-output= が全て fboundp。Doc 11 §3.8
+  の「shell-command + 基本 make-process の先」は既に越えている。残は
+  =start-process-shell-command= (convenience wrapper) / PTY breadth 程度。
+  本 wave では未着手 (実態確認のみ)。
+- *B4 (callable promotion) = builtin breadth*: runtime macro 展開は B1 で解決済、
+  package は load される。残るは個別 builtin の欠落で package 関数が callable
+  にならないケース (B1 の save-match-data がその一例)。
+  - *本 wave 増分 = replace-match (string 形)*: =emacs-search-builtins.el= に
+    良い substrate-backed 実装 (=match-beginning/end= + concat) が既存だが、
+    =emacs-stub-bulk.el:252= の mass-stub list が =replace-match= を no-op
+    (=(&rest _) nil=) で先に bind し、=--install-function-p= gate
+    (=fboundp= 済なら skip) で負けていた。gate に reader override
+    (=(fboundp 'rdf)=) を追加し、全 search/match polyfill が reader で stub に
+    勝つよう修正。bundle 再生成で full --batch でも =(s-trim "  hi  ")= = "hi"、
+    s-replace / s-collapse-whitespace 動作。buffer 形 (STRING 無し) は旧 stub と
+    同じ nil (no-op) を保ち無回帰。host は =rdf= 不在で C builtin 保護。
+  - *残 breadth*: =macroexpand-all= 未実装、他 package が呼ぶ未実装 builtin の
+    long-tail。実 package 駆動で逐次補完するのが筋。
+
+** 3.5 B4 breadth: 実 package 駆動の builtin 補完 (2026-06-20, 継続)
+
+実 package を full --batch =--eval= 経路で load → 関数を exercise → void-function を
+逐次補完する loop。findings:
+
+- *s.el = ほぼ完全 callable* (13 関数中 12 OK: s-split/s-trim/s-replace-all/s-match/
+  s-matched-positions-all/s-split-words/s-capitalize/s-word-wrap/s-numeric?/
+  s-count-matches/s-pad-right/s-truncate)。残 =s-reverse= のみ =ucs-normalize=
+  (CJK 正規化 feature) 欠落 = niche。replace-match / save-match-data 修正 (B4/B1) が効いた。
+- *function-get 補完 (本 wave)*: void だった一般 builtin。=emacs-stub.el= に real
+  実装 (=get= + defalias chain 追従) を追加。define-inline / cl-generic / nadvice が
+  依存。emacs-stub-residuals-test +1。
+- *ht.el = 深い chain で blocked*: ht-create 等を =define-inline= で定義するが、
+  runtime の define-inline は no-op stub。vendor =inline.el= を load すると real
+  define-inline になるが、その展開が =function-get= (補完済) → さらに =comma=
+  (=void-function comma=、runtime の backquote/inline-quote 内部表現の不一致) を要求。
+  = define-inline 完全対応は backquote/inline-quote 内部の深い runtime 作業で、
+  単純 builtin 追加でない。dedicated に扱うべき項目。
+- *✅ define-inline 解決 (2026-06-20)*: 上記 chain の根本 = runtime backquote が
+  =,X= / =,@X= を標準 =\,= でなく =(comma X)= / =(comma-at X)= で read すること
+  (実証: =(read-from-string ",x")= = =(comma x)=)。inline.el は標準 =\,= 前提で
+  噛み合わない。よって inline.el 機構を使わず、=emacs-stub.el= に runtime backquote
+  対応の lean な function-version-only =define-inline= polyfill を実装
+  (=inline-quote= FORM → =(comma X)=→X 置換、=inline-letevals= は arg 値なので
+  no-op wrapper)。reader-gated (host の real define-inline 保護)。検証: baked
+  bundle で =(define-inline f (x) (inline-quote (+ ,x 1)))= → =(f 41)=42=、
+  inline-letevals+inline-quote 併用 (ht-get* 形) も lower。emacs-stub-residuals-test
+  +1 (host で helper lowering 検証)。= define-inline を使う全 package の foundation。
+  ※ ht.el フル load は別途 =(require 'inline)= / =(require 'gv)= の heavy load +
+  repl-boot 安定性 (大 package load の hang/segfault、stale lock 干渉) が残るが、
+  これは define-inline とは別の reader-load issue。
+- *cl 数値 predicate 補完 (2026-06-20)*: =cl-evenp= / =cl-oddp= / =cl-plusp= /
+  =cl-minusp= が void だった (cl の高階関数 cl-remove-if/find-if/sort/subseq/
+  position/some は動作済)。=emacs-cl-macros.el= に plain defun 追加。多数 package +
+  =cl-loop= clause が依存。検証: =(cl-loop for x in '(1 2 3 4 5) when (cl-oddp x)
+  collect x)= = (1 3 5)、emacs-cl-macros-test +1。
+- *breadth loop の所見*: 単純 void-function は逐次追加で解消するが、=define-inline=
+  系は深い chain。package ごとに「単純欠落 (逐次補完)」と「深い runtime 機構
+  (dedicated)」を切り分けるのが効率的。discovery sweep は 1 関数の hard crash で
+  run 全体が落ちる (reader 安定性) ため、condition-case + 小分けが安全。
+- *Doc 16 breadth round 1 — foundational subr/subr-x builtins (2026-06-21)*:
+  静的 gap 分析 (bare reader =fboundp= probe × bundle =src/*.el= grep) で void を
+  発見し 6 builtin を補完。=xor= / =ntake= / =char-uppercase-p= → =emacs-stub.el=、
+  =string-equal-ignore-case= / =string-clean-whitespace= / =string-split= →
+  =emacs-string.el= (全て =unless (fboundp ...)= gate)。reader direct-=--load= の
+  light-check で 2 件の reader 非互換を発見・修正: (1) bare reader に =/== 無し
+  (→ =(not (= ...))=)、(2) POSIX =[[:blank:]]= class を literal 文字集合として
+  解釈し空白を collapse できない (→ 明示 =[ \t\r\n]+=)。検証: host ERT 31/31
+  (emacs-string-test +1 / emacs-stub-residuals-test +1、=string-clean-whitespace= は
+  host で autoload + =-L src= shadow のため =cl-letf= literal-copy でピン留め)、
+  bundle 再生成 (100 files) → full boot で =BREADTH6: xor=t ntake=t cup=t seic=t
+  scw=t ssp=t= (gate 正常発火・bulk shadow 無し・boot 16s)。
+- *playbook 補正 (§4 への注記)*: =pkill -9 -f target/nelisp= は危険 — (a) env var の
+  binary path が自 shell の argv に self-match し shell ごと SIGKILL、(b) 並行
+  セッション (例 dev/nelix の perf apply) の reader も巻き添えにする。lock/proc 掃除
+  無しでも本 round の boot は 16s で成功した。静的 gap 分析 (probe × grep) は full
+  package load 不要で安全・高速、reader 起動回数を最小化できる。
+- *Doc 16 breadth round 2 — seq/map facade を bundle 収録 (2026-06-21)*:
+  full-runtime =fboundp= probe (boot が ground truth、grep は cl-defmethod/facade
+  定義を誤判定) で seq-sort / seq-min / seq-first / seq-map-indexed / map-elt /
+  map-keys 等が *軒並み VOID* と判明。原因 = =src/seq.el= / =src/map.el= は API を
+  定義済みだが bundle 未収録 (=collect-loaded-src-files= は host-load 依存集合のみ。
+  src 178 file 中 bundle は 100)。対処: 両 file を =nelisp-bootstrap-extra-files=
+  (cl-lib.el 直後、require 充足) に追加し bundle 収録 (102 files)。併せて seq facade の
+  欠落集合演算を補完: =seq-partition= / =seq-mapcat= / =seq-keep= / =seq-difference= /
+  =seq-intersection= / =seq-union= / =seq-reverse= (=seq-reverse= は host で preloaded
+  =cl-defgeneric= のため =unless (fboundp)= gate = arglist 警告回避 + host generic 温存)。
+  検証: full boot で ~25 seq/map 関数 (bare-builtin override の seq-map/filter/reduce/
+  uniq 含む) regression 無し全 ok (boot 16s)、host ERT seq-test+map-test 14/14
+  (seq-test +1)、seq.el byte-compile 新規警告 0 (HEAD の pre-existing 7 と同数)。
+  所見: facade file が「定義済みだが未 bundle」で全 VOID という failure mode は grep
+  では見抜けず、full-runtime fboundp probe が必須。commit 1d406a0。
+- *Doc 16 breadth round 3 — orphan facade 監査 + json/range 収録 (2026-06-21)*:
+  bundle marker (=;;; >>> src/FILE=) から収録集合を抽出し src 178 vs bundle 102 の
+  差分 = *76 orphan* を算出。大半は意図的除外 (GUI / encoding-table / host-only /
+  test / 重 buffer 依存)。うち *self-contained (require 無し) で load clean かつ全 VOID*
+  な 2 facade を full-runtime probe + load test で特定し収録 (104 files):
+  =json.el= (=json-encode= / =json-read= / =json-read-from-string= = classic JSON API、
+  従来は C の =json-serialize= のみ存在) と =range.el= (=range-compress-list= /
+  =range-length= 等 Emacs 29 ranges)。両者を =nelisp-bootstrap-extra-files= (map.el の後)
+  に追加。検証: full boot で =json-encode '((a.1)(b.2))= → ={"a":1,"b":2}=、
+  json round-trip ok、range-compress ok、round2 の seq/map regression 無し (boot 16s)、
+  host ERT json-test + range-test 33/33。json.el の byte-compile 警告 2 件は pre-existing
+  (file 無改変、bundle list のみ編集)。所見: orphan 監査は =;;; >>> src/= marker 抽出 →
+  「require 無し or 既収録依存のみ」かつ load clean な facade を優先収録すると低リスク高利得。
+  commit (round 3)。
+- *Doc 16 breadth round 4 — 残 orphan 段階収録 監査 (負の結果) (2026-06-21)*:
+  require が全 bundled な高 defun orphan (=emacs-shell-command= 42 / =emacs-fileio= 31 /
+  =lisp= 21 / =emacs-elisp-eval= 14) を full-runtime probe + *functional test* で評価。
+  結論 = *安全な収録対象なし*。理由: (1) =shell-command= / =find-file-noselect=
+  (=emacs-fileio-builtins= 由来) / =forward-sexp= は *既に fboundp=t* (別 bundled file が
+  提供) = 収録は override で冗長・危険、(2) =emacs-elisp-eval= の =eval-region= /
+  =eval-buffer= は load clean + fboundp=t だが *呼ぶと no-op (buffer を評価せず =r4z=nil=)
+  or crash* = VOID より有害な silent-broken、(3) =hex-util= の =encode-hex-string= は
+  load 後 functional に blank 出力。=files-standalone-buffer= (70 defun) も load clean だが
+  buffer round-trip は収録前から動作 (=insert→buffer-string= ok) で value-add 不明、
+  70 defun override は高リスク。
+- *round 4 の重要知見*: orphan 収録判定は =fboundp + clean-load では不十分、必ず
+  functional call で検証する= ([[feedback_nelisp_fboundp_cleanload_insufficient]])。
+  buffer/process/eval facade は load 通過しても runtime 機構が不完全で no-op/crash する。
+  clean な pure-data facade (json/seq/map/range) は round 2-3 で出尽くした。残 orphan の
+  前進には buffer/process 機構の dedicated 調査 (eval facade を機能させる前提) が要る。
+- *Doc 16 breadth round 5 — cl 数値/list helper 8 個 (個別 builtin 回帰) (2026-06-21)*:
+  full-runtime fboundp probe で VOID な keyword-free cl 関数を補完 (=emacs-cl-macros.el=、
+  全 =unless (fboundp)= gate): =cl-caddr= / =cl-signum= / =cl-gcd= / =cl-lcm= /
+  =cl-isqrt= / =cl-list*= / =cl-revappend= / =cl-ldiff=。functional light-check で
+  *runtime の数値 primitive バグ* を発見: =%= は bare で void、=round= も bare void、
+  =floor= / =ceiling= / =truncate= の *2-arg(除数)形が除数を無視* (=(floor 7 2)=7=)、
+  =mod= が負で truncate 意味論 (=(mod -7 3)=-1=)。=/= は toward-zero truncate で正常。
+  → cl-gcd は =mod= + 正の operand のみ、cl-isqrt は integer Newton (=sqrt= 不使用) で
+  これら破損 primitive を回避。division 系 (=cl-floor/ceiling/round/truncate/mod/rem=) は
+  破損 primitive 回避 + int/float 処理が要るため *別の numeric round に延期*。
+  =cl-signum= は実 Emacs が常に整数を返す (=(cl-signum 2.0)=1=, =0.0=0=) ので float-preserve を
+  廃し =(t 0)=。検証: full boot 12/12 ok (cl-evenp/seq-partition regression 維持)、host ERT
+  emacs-cl-macros-test 12/12、byte-compile 新規警告 0。commit (round 5)。
+- *round 5 の知見*: runtime の数値 primitive (=floor/ceiling/truncate= 2-arg, 負 =mod=,
+  =round=) は要修正の別 gap。cl breadth で division 系を足す前にこれを fix する必要 (要 reader/
+  Rust 側調査の可能性、nelisp-emacs 範囲外なら issue 化)。
+- *Doc 16 breadth round 6 — cl division family 6 個 (numeric round) (2026-06-21)*:
+  round 5 で延期した =cl-floor= / =cl-ceiling= / =cl-round= / =cl-truncate= / =cl-mod= /
+  =cl-rem= を補完 (=emacs-cl-macros.el=、各 =(list Q R)= 返却、gated)。鍵: runtime の
+  *破損 primitive を直さず回避* — core =floor=/=mod= は reader-core (vendor/nelisp = 別 repo)
+  なので触らず、*正常な =/= (toward-zero truncate) + 1-arg =floor=/=ceiling=/=round=/=truncate=
+  (int/float とも正常)* だけで実装。整数は truncate→符号調整、float は実除算 =(/ x y)= →
+  1-arg 丸め。=cl-round= は整数で ties-to-even (=(% q 2)= で parity、負 =mod= 回避)。検証:
+  full runtime functional で 28 ケース (全符号組合せ + float + 半偶数) → bundle 再生成後
+  full boot 11/11 ok (cl-gcd/cl-signum/seq-partition regression 維持、104 files)、host ERT
+  emacs-cl-macros-test 13/13、byte-compile 新規警告 0。これで cl-lib の数値 API は
+  predicate (round1) + numeric/list (round5) + division (round6) で実用域。
+- *round 6 の知見*: runtime の壊れた数値 primitive (=floor/mod= 2-arg・負) 自体の fix は
+  reader-core 案件で別 repo (=vendor/nelisp=) 管轄。nelisp-emacs 側は「正常 primitive のみで
+  上位 API を組む」回避で対処可能 ([[feedback_nelisp_numeric_primitive_bugs]])。
+- *Doc 16 breadth round 7 — subr.el binding macro 3 個 (macro round) (2026-06-21)*:
+  VOID だった subr.el 系 macro を =emacs-stub.el= に gated 補完: =ignore-error= /
+  =while-let= / =and-let*=。前提検証: *runtime の標準 backquote は macro 内で完全動作*
+  (=,X= / =,@X= splice とも、macroexpand=clean) — round 1 の =(comma X)= 問題は
+  define-inline の inline-quote DSL 固有で標準 backquote は無問題と判明。よって 3 macro は
+  実 Emacs 定義を backquote でそのまま mirror。=and-let*= は =internal--build-bindings=
+  に依存するが runtime で VOID (runtime の when-let*/if-let* は別実装で不使用) のため
+  binding-builder (=internal--build-binding= / =internal--build-bindings=) も shim。
+  =with-memoization= は =setf=/=gv= が =(gethash ...)= place 非対応 (=setf: unsupported
+  place=) のため *延期*。検証: full-runtime functional (ignore-error 3 / while-let 2 /
+  and-let* 9 ケース = value-claw・短絡・空 body 含む) → bundle 再生成後 full boot 9/9 ok
+  (cl-floor/xor/seq-partition regression 維持、104 files)、host ERT emacs-stub-residuals-test
+  26/26、byte-compile 新規警告 0。
+- *round 7 の知見*: 標準 backquote は runtime macro で安全に使える。private =internal--=
+  helper も VOID なら shim する (= compat 層なので方針 OK)。次の macro/place 系
+  (=with-memoization= 等) は =setf=/=gv= の place 拡張 (gethash 等) が前提 = 別 gap。
+- *Doc 16 breadth round 8 — setf place 拡張 + with-memoization (place 系) (2026-06-21)*:
+  active な =setf= は reader-core (=vendor/nelisp= の stdlib prelude) で symbol/car/cdr/
+  aref/nth/struct のみ対応、gethash/get/symbol-value は非対応 (cl-lib.el 側の gethash 対応
+  setf は =emacs-version= sentinel bound で gate off)。*reader-core macro を override せず
+  additive に拡張*: prelude setf は =(get FN 'cl-simple-setter)= を expand 時参照するので、
+  =cl-lib.el= で in-place mutator を登録 — =gethash= は引数順違い (=puthash= は KEY VALUE
+  TABLE) のため reorder ラッパー =nelisp-place--set-gethash= 経由、=get= →=put=・
+  =symbol-value= →=set=・=symbol-function= →=fset=・=symbol-plist= →=setplist=。standalone-
+  gate (emacs-version 非 string)。=plist-get= は除外 (=plist-put= が新 plist を返し place 再
+  代入不可 = silent-broken 回避)。=with-memoization= は gv-letplace 不使用で =setf= ベース実装
+  (=emacs-stub.el=、PLACE subform は複数評価 = 単純 subform 前提)。検証: full boot 9/9 ok
+  (setf gethash/get/symbol-value + with-memoization cache =(100 100 1)= + setf-car/cl-incf/
+  ignore-error/cl-floor regression、104 files)、host ERT emacs-stub-residuals-test 27/27、
+  byte-compile 新規警告 0。cl-push/cl-pop は実 Emacs にも無いので除外。
+- *round 8 の知見*: reader-core の =setf= macro は触らずとも =cl-simple-setter= property +
+  reorder ラッパーで place を additive 拡張できる。gv 完全対応 (gv-letplace / 任意 place /
+  単一評価) は別 gap だが、=setf= ベースで実用 macro (with-memoization) は供給可能。
+- *Doc 16 breadth round 9 — keyword 取る cl sequence 関数 7 個 (2026-06-21)*:
+  VOID だった =cl-remove-duplicates= / =cl-count= / =cl-count-if= / =cl-reduce= /
+  =cl-adjoin= / =cl-set-exclusive-or= / =cl-substitute= を =emacs-cl-macros.el= に補完。
+  既存 =cl-position= の規約 (=&rest keys= + =plist-get keys :test/:key/:from-end=) に合わせ
+  =:test= / =:key= (+ =:from-end= / =:initial-value=) を honour。default =:test= は =eql=
+  (数値/char 正しく、=eq= 同様 非再帰で cyclic 安全)。private helper
+  =emacs-cl-macros--member-test= で test/key 付き membership を共通化。実 Emacs 挙動を
+  host で確認して mirror: =cl-remove-duplicates= は default keep-last / =:from-end t= keep-first、
+  =cl-reduce= は left fold =(FN ACC ELT)= / =:from-end t= で right fold =(FN ELT ACC)=。
+  検証: full runtime functional 15 ケース → bundle 再生成後 full boot 12/12 ok
+  (cl-floor/cl-gcd/with-memoization regression 維持、104 files)、host ERT
+  emacs-cl-macros-test 14/14 (実 cl-lib と完全一致)、byte-compile 新規警告 0。
+- *Doc 16 breadth round 10 — cl 残 sequence/list 関数 16 個 (2026-06-21)*:
+  VOID だった membership/assoc/mapping/tree 系を =emacs-cl-macros.el= に補完:
+  =cl-member= / =cl-assoc= / =cl-rassoc= / =cl-assoc-if= / =cl-rassoc-if= / =cl-notany= /
+  =cl-notevery= / =cl-mapcan= / =cl-maplist= / =cl-mapcon= / =cl-subst= (tree 再帰) /
+  =cl-position-if-not= / =cl-subsetp= / =cl-tailp= / =cl-delete= / =cl-nsubstitute= (alias)。
+  round 9 規約 (=:test=/=:key= default =eql=、=&rest keys=) + helper
+  =emacs-cl-macros--member-test= 再利用。=cl-notany/notevery= は =cl-some/every=、
+  =cl-mapcan= は =cl-mapcar= (host compile で「not known」回避に =#'= でなく quote 使用)、
+  =cl-position-if-not= は =cl-position-if=、=cl-nsubstitute= は =cl-substitute= に委譲。
+  実 Emacs 挙動を host 確認して mirror (=cl-member= →tail、=cl-maplist= →tail 適用、
+  =cl-subst= →tree)。検証: full runtime functional 21 ケース → full boot 17/17 ok
+  (cl-remove-duplicates/cl-reduce/with-memoization regression 維持、104 files)、host ERT
+  emacs-cl-macros-test 15/15 (実 cl-lib と一致)、byte-compile 新規警告 0。cl-lib の主要
+  sequence/list/assoc/map API は実用域に到達。
+- *Doc 16 breadth round 11 — string 比較/変換 関数 5 個 (2026-06-21)*:
+  VOID だった =string-distance= (Levenshtein DP、1-column) / =string-version-lessp=
+  (digit run を数値比較、=foo2= < =foo10=) / =string-collate-lessp= / =string-collate-equalp=
+  (locale collation 無いので byte-order = =string-lessp=/=string-equal= fallback + ignore-case
+  は downcase) / =string-to-vector= (=vconcat=) を =emacs-string.el= に補完。実 Emacs 挙動を
+  host 確認して mirror。=string-reverse= は実 Emacs にも無い (=reverse= で足りる) ので除外、
+  =string-fill= / =string-pixel-width= / =string-byte-to-char= / =string-glyph-split= は
+  fill/display/multibyte 機構依存で除外。検証: full runtime functional 13 ケース → full boot
+  12/12 ok (string-clean-whitespace/string-equal-ignore-case/cl-member regression 維持、
+  104 files)、host ERT emacs-string-test 7/7 (実 Emacs と一致)、byte-compile 新規警告 0。
+- *round 11 の知見*: runtime の =(equal VEC1 VEC2)= は要素比較せず *vector を常に non-equal*
+  と返す (reader-core bug、=string-to-vector= 等の検証は =(append vec nil)= で list 化して比較)。
+  reader-core gap で別 repo (=vendor/nelisp=) 管轄。
+- *Doc 16 breadth round 12 — subr.el/macroexp 残 関数 6 個 (2026-06-21)*:
+  VOID だった =subst-char-in-string= / =combine-and-quote-strings= /
+  =split-string-and-unquote= を =emacs-string.el=、=delete-consecutive-dups= /
+  =rassq-delete-all= / =macroexp-quote= を =emacs-stub.el= に補完。実 Emacs 定義を mirror
+  (combine/split は read-from-string ベースの quoting も含め roundtrip 検証)。検証: full
+  runtime functional 13 ケース → full boot 11/11 ok (string-distance/cl-member/ignore-error
+  regression 維持、105 files)、host ERT emacs-string-test + emacs-stub-residuals-test 36/36、
+  byte-compile 新規警告 0。
+- *round 12 で見つけた reader-core bug 2 件 (+ 延期 2)*: (1) =aset= は *vector では効くが
+  string では no-op* (string 不変) → =subst-char-in-string= は =string-replace= ベースに。
+  (2) runtime の =let= は *lexical* で =(defvar X)= + =let= + =symbol-value= の dynamic 経路が
+  crash → =dlet= は dynamic binding が効かず *延期*。=with-output-to-string= も =princ= が
+  buffer/function =standard-output= を無視 (stdout 直書き) のため *延期*。いずれも reader-core
+  (=vendor/nelisp=) gap ([[feedback_nelisp_equal_vector_broken]] と同列)。
+- *Doc 16 breadth round 13 — seq-let + seq vector regression 修正 (2026-06-21)*:
+  =seq-doseq= は既存だが *vector で壊れていた*。原因 = =src/seq.el= の =seq-do= /
+  =seq-map= が runtime の =mapc= / =mapcar= を *直接* 呼ぶが、runtime の =mapc=/=mapcar= は
+  *list only で vector 非対応* (=(mapcar #'1+ [1 2 3])= = =(1)=)。これは round 2 で seq.el を
+  bundle 収録した際に bare-reader の動作版 =seq-map= を seq.el plain-elisp 版 (vector 非対応)
+  で override した *latent regression* (round 2 検証は list のみだった)。修正: =seq-do= /
+  =seq-map= を =(seq--list sequence)= 経由に (=seq--list= は list 不変なので list は regression
+  無し)。これで *delegate している seq-filter / seq-find / seq-some / seq-reduce / seq-doseq
+  等が transitively vector 対応*。併せて VOID だった =seq-let= を補完 (実 Emacs は pcase +
+  =seq--make-pcase-patterns= 依存だが後者 VOID なので、=seq-elt=/=seq-drop= over list-copy の
+  manual destructuring。flat args + =&rest= 対応、nested pattern 非対応、gated)。検証: full
+  boot 12/12 ok (seq-map/filter/reduce/find/doseq が vector で動作、seq-let 4 ケース、
+  seq-partition/cl-member regression 維持、105 files)、host ERT seq-test 8/8、byte-compile
+  新規警告 0。
+- *round 13 の知見*: facade を bundle 収録する時は *list だけでなく vector/string でも検証*
+  する (round 2 の seq.el は list のみ検証で vector regression を見逃した)。runtime の
+  =mapc=/=mapcar= は list only ([[feedback_nelisp_aset_string_noop]] 系の reader-core gap)。
+- *Doc 16 breadth round 14 — seq.el vector/string 安全性 audit (2026-06-21)*:
+  全 42 seq 関数を vector + string 入力で functional audit。round 13 で seq-do/seq-map を
+  直したので大半 (string 含む) は OK だったが、*=seq-subseq= と delegate する
+  =seq-take= / =seq-drop= / =seq-rest= が vector で破損* (4 件)。原因 = seq-subseq の
+  vector/string 分岐が =(substring sequence start end)= だが、*runtime の =substring= は
+  vector で壊れる* (=(substring [1 2 3 4] 1 3)= = garbage、reader-core gap)。修正: seq-subseq
+  の vector を =(seq--same-type (seq-subseq (append sequence nil) start end) sequence)= =
+  list copy で slice → 元 type に戻す (string は substring 維持、list は既存 path)。これで
+  =seq-take/drop/rest= も transitively 修正。検証: audit 39 + 修正後 15 ケース → full boot
+  全 ok (105 files)、host ERT seq-test 9/9、byte-compile 新規警告 0。*round 13+14 で全 seq
+  関数が vector/string 対応* に。
+- *round 14 の知見*: runtime の =substring= は string では OK だが *vector で壊れる*
+  (=mapc=/=mapcar=/=aset-string=/=equal-vector= と同じ reader-core gap 群)。seq facade で
+  vector を扱う path は =seq--list= / list copy 経由にする。
+- *Doc 16 breadth round 15 — map.el alist/plist/hash/array 安全性 audit (2026-06-21)*:
+  全 33 map 関数を *alist / plist / hash-table / array(vector)* 入力で functional audit
+  (hash は順序不定なので sort 比較)。seq.el と違い *大半は健全* — map-elt / contains-key /
+  length / keys / values / pairs / do / some / every-p / filter / remove / into / merge /
+  merge-with / delete / insert / keys-apply / values-apply / nested-elt / array-map 全 OK。
+  唯一の破損 = *=map-copy= on hash-table* (=copy-hash-table= が VOID)。修正: =copy-hash-table=
+  polyfill を =emacs-stub.el= に追加 (=hash-table-test= も VOID で test 種別保持不可なので
+  default test の =make-hash-table= + =maphash= コピー、=eql=/=eq= keyed は正しい)。検証:
+  audit 43 ケース + 修正後 full boot 5/5 (copy 独立性含む、105 files)、host ERT residuals +
+  map-test 36/36、byte-compile 新規警告 0。
+- *round 15 の知見*: map.el は seq.el ほど reader-core gap に当たらなかった (alist/array path
+  は素直、hash path も =maphash=/=gethash=/=puthash= は健全)。残 hash gap = =copy-hash-table= /
+  =hash-table-test= の VOID (後者は introspection 不能なので polyfill 不可、reader-core 案件)。
+
+- *Doc 16 breadth round 16 — reader-core gap 群を vendor/nelisp issue 化 (2026-06-21)*:
+  round 1-15 で蓄積した *nelisp-emacs 側 polyfill では塞げない reader-core (vendor/nelisp)
+  の不具合・欠落* を bare reader (=target/nelisp --load=) で再現確認し、=docs/design/22-reader-
+  core-gaps-blocking-breadth.org= に consolidated catalog として記録。A 群=誤値 bug 9 件
+  (floor/ceiling/truncate 2-arg 除数無視、mod 負 truncate 意味論、equal-vector 常に nil、
+  aset-string no-op、substring-vector garbage、mapc/mapcar-vector 非反復、format 幅/フラグ
+  literal、let 動的束縛 crash、princ standard-output 無視)、B 群=VOID (round/%//=/sqrt/expt/
+  copy-hash-table、bundle/polyfill で対処済)、C 群=introspection 不能 (hash-table-test VOID =
+  polyfill 不可)。各々最小再現 + 期待/実際 + nelisp-emacs 回避策 + 優先度を付した。vendor/
+  nelisp の AGENTS.md が repo 内 handoff doc を避ける方針のため doc 本体は nelisp-emacs に置き、
+  GitHub issue 転記は user 確認後。
+
+- *Doc 16 breadth round 17 — cl type-dispatch + value/binding helpers (2026-06-21)*:
+  full-runtime fboundp probe で void だった cl 型ディスパッチ群を =src/emacs-cl-macros.el=
+  に追加: =cl-typep= (atomic + =(integer LO HI)= / =(member ..)= / =(eql ..)= /
+  =(satisfies ..)= / =(or/and/not ..)= + =TYPEp=/=TYPE-p= 述語 fallback)、=cl-the= /
+  =cl-locally= / =cl-check-type= / =cl-typecase= / =cl-etypecase= / =cl-ecase= (dispatch
+  は cl-typep / cl-case 経由、template は single-level backquote のみ = Doc 16 §4 の
+  runtime backquote quirk 回避)、=cl-values= / =cl-values-list= / =cl-gentemp=。全て
+  =unless (fboundp)= gate で host (実 cl-lib) は無改変。
+- *round 17 の新 reader-core gap*: =arrayp= が vector / string 両方で nil を返す
+  (=vectorp=/=stringp= は正常)。cl-typep の =array=/=sequence= 判定を =vectorp=/=stringp=/
+  =listp= ベースにして回避。Doc 22 A10 に記録 (= 既出 A 群と同じ sequence/string 系
+  reader-core gap)。
+- 検証: bare-reader inline 35/35、host ERT =emacs-cl-macros= 18/18 (round-17 で +3)、
+  byte-compile 新規警告 0 (既存 cl-progv/loop warning は round 17 と無関係)、bundle
+  再生成 105 files。commit 182162c。
+
+- *Doc 16 breadth round 18 — cl binding macros (2026-06-21)*:
+  full-runtime void だった cl binding macro 群を =src/emacs-cl-macros.el= に追加:
+  =cl-destructuring-bind= (required / &optional+default / &rest / &body / &key+default /
+  &aux、nested pattern は scope 外 = cl-defun と同方針、既存 =--split-arglist= /
+  =--key-bindings= helper を再利用)、=cl-multiple-value-bind= (cl-destructuring-bind の
+  薄い wrapper、余剰値は無視)、=cl-multiple-value-setq= (list 要素を setq、primary 値を
+  返す)。全て =unless (fboundp)= gate、hygiene は make-symbol。
+  検証: bare-reader inline 17/17、full-runtime 8/8 (mvb→ds-bind の入れ子 macro 展開を
+  含む)、host ERT =emacs-cl-macros= 20/20 (round-18 で +2)、byte-compile 新規警告 0、
+  bundle 再生成 105 files。commit e13f7c3。
+
+- *Doc 16 breadth round 19 — cl place/setf macros (2026-06-21)*:
+  full-runtime void だった place 系を =src/emacs-cl-macros.el= に追加: =cl-psetq= /
+  =cl-psetf= (並列代入 = 全値を先に評価してから書込)、=cl-rotatef= (place 値を回転)、
+  =cl-shiftf= (左シフト + 先頭の旧値を返す)、=cl-callf= / =cl-callf2= (FUNC を literal
+  splice = cl-lib 同仕様、#' 不可)。setq/setf へ展開、runtime setf は symbol/car/nth/
+  gethash place を round 8 cl-simple-setter で対応済のため place 非依存。=unless (fboundp)=
+  gate。
+- *round 19 の新 reader-core gap A11*: =make-symbol= の uninterned symbol が *名前で
+  解決* され、同名 temp が 1 つの let で衝突 (parallel-set が全要素同値に化けた)。temp
+  名を index で一意化して回避。Doc 22 A11 に記録。
+- *host pinning が捕捉*: =cl-callf= は FUNC を literal splice する仕様 (=#'1+= は
+  invalid-function)。当初の =#'= 対応 helper を削って実 cl-lib に忠実化。
+- 検証: host ERT =emacs-cl-macros= 21/21 (round-19 で +1)、full-runtime 11/11、
+  byte-compile 新規警告 0、bundle 再生成 105 files。commit 1c22028。
+
+- *Doc 16 breadth round 20 — small package: let-alist + thunk (2026-06-22)*:
+  full-runtime void だった 2 package を専用 src ファイルとして実装し bundle 収録。
+  =src/let-alist.el= = =(let-alist ALIST BODY)= が BODY を deep-dot scan して =.k= /
+  =.k1.k2= dotted symbol を =alist-get= access に束縛 (helper は =substring=/=aref= で
+  =string-match=/=replace-regexp-in-string= 回避)。=src/thunk.el= = =thunk-delay= (memoized
+  closure)、=thunk-force=、=thunk-let= / =thunk-let*= (=cl-symbol-macrolet= 経由の lazy
+  binding)。両 package を =nelisp-bootstrap-extra-files= に追加。
+- *gating の知見*: =let-alist= / =thunk= は host で *autoload* (=fboundp= t だが未定義)。
+  =unless (fboundp)= gate にすると host で skip → autoload が自ファイルに解決し "failed
+  to define" error。=range.el= 同様 *無条件定義* にして解決 (stock host は src/ を load
+  しない、bundle/-L src 経由のみ)。=seq.el=/=json.el= は host *preload* なので fboundp gate
+  が効く ＝ preload と autoload で gating 方針が分かれる。
+- 検証: host ERT 7/7 (let-alist 3 + thunk 4、私の実装を直接検証)、full-runtime 8/8
+  (=(require 'let-alist)= / =(require 'thunk)= 成功)、byte-compile クリーン、bundle 再生成
+  108 files。commit 59645b9。
+
+- *Doc 16 breadth round 21 — cl iteration macros cl-do / cl-do* (2026-06-22)*:
+  full-runtime void だった =cl-do= / =cl-do*= を =src/emacs-cl-macros.el= に追加。各 SPEC =
+  =(VAR INIT STEP)= / =(VAR INIT)= / =VAR=、ENDLIST = =(END-TEST RESULT...)=。=cl-do= は
+  並列 step (=let= + round 19 の =cl-psetq=)、=cl-do*= は逐次 step (=let*= + =setq=)。両者
+  =cl-block nil= で wrap し =cl-return= 対応。=unless (fboundp)= gate (emacs-cl-macros
+  feature に置くので cl-macs.el の host autoload target は無影響 = host ERT が実 cl-do を
+  pin、parallel-vs-sequential 差含む)。共通 helper =emacs-cl-macros--do-parse=。
+  検証: host ERT =emacs-cl-macros= 23/23 (round-21 で +2)、full-runtime 7/7、byte-compile
+  新規警告 0、bundle 再生成 108 files。commit 23247a0。
+- *goal 達成*: place 系 (round 19) + small package let-alist/thunk (round 20) + 反復 macro
+  cl-do/cl-do* (round 21) の 3 群すべて完了。
+
+- *Doc 16 breadth round 22 (深い) — cl-tagbody / cl-prog family (2026-06-22)*:
+  full-runtime void だった =cl-tagbody= / =cl-prog= / =cl-prog*= / =cl-prog1= / =cl-prog2=
+  を =src/emacs-cl-macros.el= に追加。=cl-tagbody= は深い: program-counter (現ラベル保持) で
+  駆動する =catch=/=while= state machine に compile、=(go LABEL)= は code walk で
+  「=(setq PC 'LABEL)= + throw で restart」に書換、segment は PC を次ラベルへ進めて
+  fall-through。=cl-prog=/=cl-prog*= = =let=/=let*= + =cl-tagbody= を =cl-block nil= で wrap。
+  hygiene は module 内 =emacs-cl-macros--gensym= (interned + 一意、A11 回避 + =cl-gensym=
+  "not known" 警告回避)。probe で =cl-macrolet= / =macroexpand-all= / =cl-block= が runtime
+  OK と判明 (= generator.el round への布石)。
+- 検証: host ERT =emacs-cl-macros= 25/25 (round-22 で +2、forward/backward go + cl-prog
+  cl-return を pin)、full-runtime 7/7、byte-compile 新規警告 0、bundle 再生成 114 files。
+  commit 5595fd8。
+
+- *Doc 16 breadth round 23 (最深) — generator.el (iter-defun) vendored, runtime block 特定 (2026-06-22)*:
+  =src/generator.el= を GNU Emacs 30.1 から *verbatim vendor* (801 行、CPS generator)。
+  =nelisp-bootstrap-extra-files= に追加し =(require 'generator)= 可能化 + 全 API
+  (=iter-defun=/=iter-lambda=/=iter-yield=/=iter-next=) を fbound 化。host では完全動作
+  (test/generator-test.el 3/3)。
+- *runtime block 特定 = reader-core gap A12*: runtime の =macroexpand-all= / =macroexpand-1=
+  が *ENVIRONMENT 引数を無視*。generator の CPS は =(macroexpand-all BODY SPECIAL-ENV)= で
+  =iter-yield= を横取りするが env 無視で未変換 → iterator の =(catch 'cps--yield)= が
+  張られず最初の =iter-next= で yield の throw が escape。切り分け: catch/throw は funcall
+  跨ぎでも正常、=cl-macrolet= も正常、=macroexpand-all= の env のみ壊。polyfill 不可
+  (core 関数)。A12 が直れば vendored generator は無改変で動く。
+- *副次 gap A13*: =type-of= が function/closure に nil を返す (generator 主因ではない)。
+- A12/A13 を Doc 22 + issue #7 に記録。vendored file は ready 状態で bundle 同梱 (load は
+  正常、iterator 実行のみ block と provenance に明記)。
+- 検証: host ERT generator 3/3、bundle 再生成 115 files (require 成功、type-of probe で gap
+  確認)。深い実装は「vendor + 真因の reader-core gap 特定」で着地。
+
+- *Doc 16 breadth round 24 — struct/OOP residuals (2026-06-22)*:
+  probe で判明: runtime は =cl-defstruct= (constructor/accessor/predicate) と
+  =cl-defgeneric=/=cl-defmethod= の単一・特定 dispatch を *既に正常サポート*。残 void を
+  =src/emacs-cl-macros.el= に追加: =cl-defsubst= (→ =cl-defun= 委譲、inline 無)、
+  =cl-struct-slot-value= (=(funcall (intern "TYPE-SLOT") inst)= の accessor dispatch、
+  default conc-name)。=unless (fboundp)= gate。
+- *round 24 の新 reader-core gap A14 (crash)*: =aref= を struct インスタンス (vectorp=nil の
+  length-3 record 様 obj) に適用すると *segfault*。誤値でなく crash。struct introspection を
+  index 経由でできず、accessor dispatch で回避。=record= primitive 自体も壊れ
+  (=(record ...)= → nil)。Doc 22 A14 + issue #7。
+- *残 void (polyfill 不可)*: =cl-call-next-method= / =cl-next-method-p= (cl-generic 内部依存)、
+  =cl-struct-slot-info= (aref 阻害)。
+- 検証: host ERT =emacs-cl-macros= 26/26 (round-24 で +1)、runtime 機構は個別 probe で確認
+  (accessor dispatch = slot 値、cl-defun は round 18-23 実証)。*full-bundle chk は保留* —
+  並行 C1 session の未 commit WIP が共有ツリーで =make build-nelisp-bootstrap= を劣化
+  (114→43 files、repl 出力無)。tree 安定後に再検証。commit 9fb7385。
+
+- *Doc 16 breadth round 25 — cl-defun optional-default 調査 → reader-core gap A15 (2026-06-22)*:
+  round 24 の =cl-defsubst= が =&optional (z DEFAULT)= で crash する件を追跡。=cl-defun= が
+  optional default を desugar せず raw arglist を lambda に渡しており、その lambda を *呼ぶ*
+  と runtime が crash (=funcall (lambda (x &optional (z 9)) ...) 5)= = 無音 process 死、
+  catch 不能) = *reader-core gap A15*。
+  - src 修正を試行 (=emacs-stub.el= / =emacs-cl-macros.el= 両 cl-defun に optional-default
+    desugar helper を追加) したが *両 shim とも =unless (fboundp 'cl-defun)= / =--define-p= で
+    gate-out* され効かないことを実証 (active な cl-defun は core 側)。→ src 編集を revert、
+    A15 を Doc 22 + issue #7 に記録。code 成果なしの gap-discovery round。
+  - 回避: optional default は使わず =&optional z= + body =(unless z (setq z DEFAULT))= を手書き。
+  - 環境: 並行 C1 session の共有ツリー汚染を避けるため =git worktree= (=.wt-breadth=、branch
+    feat/breadth-cl-residuals、vendor/nelisp symlink) で作業。clean build = 107 files。
+
+- *Doc 16 breadth round 26 — pcase-lambda + rx 調査 → reader-core gap A16 (2026-06-22)*:
+  *pcase 系*: probe で =pcase= / =pcase-let= / =pcase-let*= / =pcase-dolist= /
+  =pcase-exhaustive= は既に動作と確認。void だった =pcase-lambda= を =src/emacs-pcase.el= に
+  追加 (plain lambda + 非 trivial param を hidden indexed temp 経由 =pcase-let*= で destructure、
+  =emacs-pcase--install-function-p= gate)。検証: host ERT 12/12、full-runtime 3/3。
+  =pcase-setq= は pattern-var 抽出が必要で *延期*。
+  *rx 系*: =rx= は =emacs-stub.el= の placeholder stub (="" を返す) と判明。実 rx.el を vendor
+  したところ *reader-core gap A16 で破壊*: =concat= が nil 引数を "nil" 文字列化
+  (=(concat "a" nil "b")= → "anilb")。rx は regexp を concat で組むため =(rx (or "a" "b"))= →
+  ="nil"=、=(rx (+ digit))= → ="[[:digit:]]+nil"= と silently wrong。core 関数 concat の
+  override は危険なため rx vendoring は revert (stub のまま)、A16 を Doc 22 + issue #7 記録。
+  commit d7d279b。
+
+- *Doc 16 breadth round 27 — reader-core gap A16 を vendor/nelisp で修正 (2026-06-22)*:
+  user 指示で reader-core 修正に pivot。発見: nelisp standalone reader は *pure-elisp*
+  (953 .rs は =.claude/worktrees/= の stale コピー)、=scripts/nelisp-standalone-build.el= が
+  ELF を生成。*A16 修正* (vendor/nelisp commit 4575471): =m5_concat_walk= が nil 引数を
+  skip するよう変更 (=m5_emit_value= は format と共有なので walker 側で fix)。=make
+  standalone-reader= で =target/nelisp= 再ビルド → =(concat "a" nil "b")= → "ab"、format は
+  "nil" 維持を検証。rx 再 vendor で end-to-end 確認 → trailing-"nil" 汚染解消 (=(rx (+ digit))=
+  = "[[:digit:]]+")。
+- *残課題で rx は依然未収録*: (a) *A17* = regex engine が POSIX class =[[:digit:]]= を match
+  しない (=[0-9]= は OK) → =(rx (+ digit))= が実 match せず。(b) =(rx (or "a" "b"))= が silent
+  nil。両者 A16 と別軸。Doc 22 A16=FIXED / A17 追記、issue #7 更新。
+- *git 衛生*: vendor/nelisp に他者の未 commit WIP (ptr-read/write dispatch 追加) があり、
+  最初の commit に巻き込んだため reset して concat-only に分離、WIP を未 commit に復元。
+
+- *Doc 16 breadth round 28 — A17 (POSIX class) を両 regex engine + regexp-opt 修正 (2026-06-22)*:
+  *A17 修正*: bare reader stdlib =nlre-*= (=nelisp-stdlib-regexp.el= commit 913719ef) と
+  bundle が使う packages =nelisp-rx-*= (=vendor/.../nelisp-regex.el= b6b59ec2 + nelisp-emacs
+  =src/nelisp-regex.el= 5a336b4) の両 bracket parser で =[:name:]= を range 展開
+  (=*--posix-ranges= table)。bundle の string-match が packages engine 経由 (=emacs-search-
+  builtins= → =nelisp-rx-string-match=) と判明し、stdlib だけでなく src コピーも要修正だった
+  (src/ が load-path 優先)。
+  *regexp-opt 修正* (=src/emacs-stub.el= 5a336b4): no-op bulk stub が先に claim し gated real が
+  skip → 無条件定義 + shy/capture group wrap。
+  検証: full runtime で =[[:digit:]]= match、=(rx (+ digit))= → "123"、=(rx (+ word))= → "foo_9"、
+  =regexp-opt= → "\\(?:cat\\|dog\\)"。Doc 22 A17=FIXED。
+  *残: A18* = =(rx (or STRINGS))= が空 alternation =\(?:\)= (rx--translate-or が alternative 未収集、
+  regexp-opt とは別)。rx は or 以外は実 match するが or の matches-everything 危険を避け bundle 未収録。
+  git 衛生: vendor の他者 WIP (tty/ptr-read) を避け regex ファイルのみ commit。
+
+- *Doc 16 breadth round 29 — A18 (mapcan stub) 修正 → rx 完全動作 + bundle 収録 (2026-06-22)*:
+  A18 真因 = =mapcan= が =emacs-stub-bulk.el= の =--stub-defuns--= で no-op stub され (=(closure
+  (&rest _) nil)=)、subr-x の real mapcan を shadow。rx の =rx--collect-or-strings= が mapcan 依存
+  のため =(rx (or ..))= が空 alternation 化。=mapcan= を stub list から除去 → real mapcan 有効化
+  (commit d35f1d1)。
+  これで *A16(concat) + A17(POSIX 両 engine) + regexp-opt + A18(mapcan)* 全解決 → rx が
+  digit/alpha/word/+/?/seq/group/any/or すべて end-to-end 動作。=src/rx.el= を verbatim vendor し
+  bundle 収録 (108 files)。検証: =(rx (or "cat" "dog"))= → "\\(?:cat\\|dog\\)"、=(rx (+ digit))=
+  match "123"。残: rx-let/rx-define は A12 (macroexpand-all env) 制限。
+  *systemic*: bulk stub list が real-impl 関数を誤 stub する設計バグ (regexp-opt/mapcan で顕在)。
+  =record=/=recordp= 等も要 audit。
+
+- *Doc 16 breadth round 30 — bulk-stub no-op shadowing の audit (2026-06-22)*:
+  =emacs-stub-bulk.el= の =--stub-defuns--= が real impl を持つ関数を no-op stub で shadow する
+  systemic バグ (regexp-opt/mapcan の一般化) を audit。判定 = closure arglist =(&rest _)= +
+  =emacs-stub-bulk= property + src に real defun。*84 関数* 該当。
+  pure 10 (=memql=/=proper-list-p=/=characterp=/=byte-code-function-p=/=subrp=/=file-name-absolute-p=/
+  =file-relative-name=/=file-truename=/=format-prompt=/=substitute-command-keys=) を stub list から
+  除去し修正 (commit 296bb0c、検証済)。残 ~74 は buffer/window/process/motion/syntax/hooks 系で
+  standalone では no-op 妥当が多いが documentation/set-match-data/local-variable-p 等は要 review。
+  根治案 = =emacs-stub-bulk= を最後に load。Doc 22 A19。
+
+- *Doc 16 breadth round 31 — reader-core gap 全解消の確認 + seq.el 駆動 (2026-06-23)*:
+  Doc 22 の reader-core gap を *全 21 項目 (A1–A20 + C1) FIXED* 完了 (vendor/nelisp origin/main 統合済、
+  A12 は並行 remote 作業と重複→remote 版採用)。これにより round 23 (generator/A12) / round 24 (struct/A14)
+  / round 26 (rx/A16) 等で block していた reader-core 起因の失敗は解消。
+  *確認 (bare reader = target/nelisp、prelude baked)*: =seq.el= を駆動。gap 修正だけで *seq の core が動作* —
+  =seq-map= →(2 3 4)、=seq-into 'vector= →[1 2 3] (A5 効)、=seq-uniq= →(1 2 3)、=seq-reduce= →10。
+  cl-generic.el を併 load すると =cl-defmethod= /=seq-contains-p= も動作。
+  *残 blocker = 標準 lib の transitive dep (reader-core gap でない)*: =seq-filter= は full =pcase.el=
+  (=pcase-let*= = prelude の minimal pcase に不在、full pcase 内部 =pcase--let*= /=pcase--memoize= 依存) →
+  さらに =macroexp-progn= (macroexp.el) と連鎖。この dep カスケードは実質 bundle 全体 = =cl-generic + pcase +
+  macroexp + …=。
+  *結論*: reader-core は実 package 駆動に *十分* になった。残るのは bundle-level の lib 完備性であり、
+  full package breadth は bundle (=./bin/nemacs --driver=nelisp=) が target。ただし *本 host では bundle が
+  cold-load 中に OOM-killed* (55GB free でも 66分→kill、feedback memory の既知事象)。off-peak / 高RAM 環境か
+  pre-baked runtime image (.nlri) での bundle 駆動が次の前提。bare reader で個別 dep を手動 cat するのは
+  bundle 再現に等しく diminishing returns のため、prelude への lib 逐次移植は行わない方針。
+
+* 4. 波 C — 大物 (長期 / multi-session〜multi-year)
+
+| ID | 内容 | 根拠 | 備考 | Status |
+|----+------+------+------+--------|
+| C1 | redisplay v2: bidi / composition / 実 =display= property (=(image …)= / =(space …)=) / mouse-face / 専用 mode-line row | README:54-56, Doc 11 §3.7 | 大きな correctness レーン。GUI/TUI 双方 | TODO |
+| C2 | Phase 5 self-host binary =bin/nelisp-emacs= (configure 不要 cold-start) | README:586 (3–5yr 見積) | 最も構造的。他は全部この上の Layer 2 | TODO |
+
+* 5. 順序の根拠
+
+- *小物先行*: (1) OS 判別で確立したテスト/bundle ワークフローを連続適用して
+  習熟、(2) 各々 low-risk で degrade 安全、(3) A1/A2 は検出値の即応用で
+  「色々と応用が可能」(user) を可視化。
+- *中物の B2 を B 波先頭*: Doc 14 が file-read/buffer-ops を「日本語入力の
+  統一 blocker」かつ「構造 blocker 解消済、残り I/O 網羅」と判定。効果最大。
+- *大物は最後*: C2 self-host binary は他全項目の上位、C1 redisplay v2 は
+  独立大レーン。B 波で daily-driver gate を「honest」(host fallback 無し,
+  Doc 12:24-29) にしてから着手するのが筋。
+
+* 6. 除外 (実装しない — Doc 05 准拠、念のため明記)
+
+Gnus/Rmail/MH-E, EDE/Semantic, 非 Git VC, full Tramp, ISO-2022/EUC/SJIS codecs,
+MS-DOS/legacy platform, Quail/kkc mega-tables 等は *意図的 omission* (Doc 05
+§1,§8)。本プランの「残実装」には含めない。
+
+* 7. トラッキング
+
+各項目の Status 列を TODO → WIP → SHIPPED で更新し、SHIPPED 時に commit SHA と
+=worklog= digest を併記する。波単位の完了は本書冒頭 =#+STATUS= に反映。
+
+| マイルストン | 定義 | Status |
+|-------------+------+--------|
+| A 波完了 | A1–A5 + A3 SHIPPED (2026-06-20)。残: A6 (FALLBACK 仕分け = 継続 TASK)、A7 (公開 FRAMING = USER 判断) | 進行中 |
+| B 波完了 | B1–B4 全 SHIPPED、daily-driver gate host-fallback 無し | — |
+| C 波着手可 | A/B 完了 | — |

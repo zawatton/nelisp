@@ -1,0 +1,432 @@
+#+TITLE: nelisp-emacs-libs Doc 18 -- Library package ownership inventory
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-06-21
+#+STATUS: DRAFT
+#+DEPENDS_ON: Doc 17 library-first reuse strategy, Doc 12 development gates
+
+* 0. Purpose
+
+This is the package ownership inventory for the =nelisp-emacs-libs=
+library distribution phase.  It assigns every current =src/*.el= file to
+a logical package group without moving files.
+
+The current repository may still contain application and GUI files from
+the historical =nelisp-emacs= / =nemacs= work.  Those files are extraction
+inputs for =nemacs-next= unless they are explicitly classified as reusable
+library packages.
+
+The goal is coordination, not churn.  Multiple sessions may be editing
+the tree at the same time, so this inventory should guide new work while
+avoiding broad renames, mass moves, or formatting-only changes.
+
+* 1. Ownership groups
+
+| Group | Future package | Owns | Must not depend on |
+|-------+----------------+------+--------------------|
+| FND | =packages/foundation= | pure Elisp primitives, data helpers, host-safe compatibility basics | buffer/window/frame, GUI/TUI, app entrypoints |
+| TXT | =packages/text-intl= | coding systems, char tables, international/text data helpers | app entrypoints, GUI/TUI |
+| BUF | =packages/buffer= | buffer model, point, text properties, search/edit/undo primitives | concrete GUI/TUI transports |
+| CORE | =packages/editor-core= | command-loop, keymap, minibuffer, window/frame semantics, modes/faces/help/info | concrete GUI transport, =nemacs-main= |
+| IO | =packages/io= | file/process/network/sqlite/runtime adapters | app shortcuts, GUI-owned behavior |
+| DSP | =packages/display= | redisplay model, TUI backend, terminal event/terminfo | GUI app code, command semantics |
+| FEAT | =packages/features= | reusable user-facing Elisp feature subsets such as dired/org/project/shell/vc | private app glue |
+| PKG | =packages/package-compat= | package/vendor/MELPA compatibility and facade shims | app entrypoints |
+| APP | =nemacs-next/apps/nemacs= | runnable editor assembly and bootstrap extraction input | reusable semantics not already in packages |
+| GUI | =nemacs-next/frontends= | GUI/TUI consumer, transport, rendering, launch/install extraction input | shared command semantics |
+| LEGACY | =legacy-or-spike= | temporary compatibility, residual stubs, spike code | permanent public API |
+
+* 2. Rules for using this inventory
+
+- New reusable behavior goes into the owner group, even if the current
+  file path remains under =src/=.
+- Do not move files solely to satisfy this inventory while other sessions
+  are active.
+- If a GUI/TUI/app file needs new command behavior, add that behavior to
+  BUF/CORE/FEAT first and call it from the adapter.
+- APP/GUI owners are transitional.  New reusable behavior must not be added
+  there merely because the current caller is =bin/nemacs= or GUI bridge
+  code.  Treat those changes as =nemacs-next= extraction work.
+- Public reusable APIs should be prefixed.  Unprefixed Emacs-compatible
+  names belong in explicit builtins/shim files.
+- Cross-module calls to =--= helpers are not stable APIs.  Promote only
+  the helpers needed by real consumers.
+- Update this inventory whenever a file's ownership changes.
+
+* 3. src inventory
+
+** 3.1 Foundation (FND)
+
+| File | Future package | Ownership notes | Extraction action |
+|------+----------------+-----------------+-------------------|
+| =cl-lib.el= | FND | cl-lib compatibility entry | keep host-safe shim |
+| =cl-preloaded-shim.el= | FND/LEGACY | built-in-class type lattice bootstrap for cl-generic/oclosure on the bare reader | replace once the standalone reader gains real cl-preloaded support |
+| =emacs-backquote.el= | FND | backquote implementation | keep independent |
+| =emacs-button-builtins.el= | FND | minimal GNU button compatibility surface | keep host-safe shim |
+| =emacs-callproc.el= | FND/IO | process env and callproc basics; split later if needed | audit boundary with IO |
+| =emacs-char-table.el= | FND/TXT | char-table primitive model | keep reusable |
+| =emacs-cl-macros.el= | FND | cl macro/function compatibility | keep reusable; avoid app deps |
+| =emacs-easy-mmode.el= | FND/CORE | minor-mode macro substrate | keep shim-like |
+| =emacs-edebug-stubs.el= | FND/LEGACY | load-time edebug compatibility | keep minimal and documented |
+| =emacs-error.el= | FND | error/condition helpers | keep reusable |
+| =emacs-eval.el= | FND | eval/defalias/function basics | keep reusable |
+| =emacs-foundation.el= | FND | foundation package-group loader | reusable library entry |
+| =emacs-fns.el= | FND | general primitive helpers | keep lowest layer |
+| =emacs-hash.el= | FND | hash helpers | keep reusable |
+| =emacs-weak-table.el= | FND | explicit-prune weak-table approximation (Doc 06 B5) | replace with native weak GC when available |
+| =emacs-list.el= | FND | list primitives | keep reusable |
+| =emacs-numeric.el= | FND | numeric/bitwise primitives | keep reusable |
+| =emacs-os-detect.el= | FND/IO | runtime OS detection | keep adapter-gated |
+| =emacs-parity-addtolist.el= | FND | O(1) `add-to-list' membership-hash override (list primitive perf fix) | keep reusable |
+| =emacs-parity-clloop.el= | FND | `cl-loop' codegen override correcting the baked prelude expander (b1k21) | keep reusable; audit load-order vs =emacs-cl-macros.el=/=emacs-stub.el= |
+| =emacs-parity-clmacros.el= | FND | `cl-set-difference'/`cl-letf' install plus minor-mode load-order parity fixes | keep reusable |
+| =emacs-parity-core-vars.el= | FND | core global var fills (`emacs-version', `window-system', `invocation-directory', etc.) | keep reusable |
+| =emacs-parity-eieio.el= | FND | eieio class-system setf-place bootstrap fix | keep reusable |
+| =emacs-parity-evil.el= | FND | `cl-destructuring-bind' dotted-tail override plus evil/annalist placeholder vars | keep reusable; audit evil-specific vars for a FEAT/PKG split |
+| =emacs-parity-macroexpand.el= | FND | correct `macroexpand'/`macroexpand-all'/`macrop' for the =(macro CLOSURE)= representation | keep reusable |
+| =emacs-parity-macros2.el= | FND | macro-expansion registration overrides for the audit replay | keep reusable |
+| =emacs-parity-makunbound.el= | FND | real `makunbound' via the env-globals mirror | keep reusable |
+| =emacs-parity-setf-places.el= | FND | extra `setf' places beyond the baked prelude's fixed dispatch | keep reusable |
+| =emacs-parity-shims.el= | FND | `if-let'/`when-let'/`and-let'/`while-let'/`static-if', gensym, docstring/fill helpers | keep reusable |
+| =emacs-parity-subdirs.el= | FND/LEGACY | intentionally no-op load-path subdir walk (superseded fix, kept for history) | remove once the history note is no longer needed |
+| =src/emacs-cc-*= | FND | GNU Emacs 31.1 C primitives implemented in Lisp, one unit per GNU C file (tools/ai/c-core-progress.org) | keep guarded; merge into the owning package at the Doc 211 cutover |
+| =nelisp-emacs-vendor.el= | FND | Resolves vendored GNU Lisp files from the API-layer tree (vendor/emacs-lisp-api) before the core tree (Doc 211 S5) | keep; moves with the API packages at the nelisp cutover |
+| =emacs-pcase.el= | FND | pcase subset | keep reusable |
+| =emacs-string.el= | FND | string primitives | keep reusable |
+| =emacs-stub-bulk.el= | FND/LEGACY | generated/bulk stub surface | split over time |
+| =emacs-stub.el= | FND/LEGACY | generic compatibility polyfills | shrink by promotion |
+| =emacs-subr-extras.el= | FND | subr extras | keep reusable |
+| =emacs-symbol.el= | FND | symbol/property primitives | keep reusable |
+| =emacs-time.el= | FND | time/date primitives | keep reusable |
+| =emacs-translation-table.el= | FND/TXT | translation table substrate | keep reusable |
+| =emacs-vars.el= | FND | global variable defaults | audit host override rules |
+| =ert.el= | FND/PKG | ERT shim | keep test support package |
+| =generator.el= | FND | generator/iterator stdlib | keep vendored reusable stdlib; load proof instead of byte compile |
+| =hex-util.el= | FND | hex helpers | keep reusable |
+| =json.el= | FND | json compatibility | keep reusable |
+| =let-alist.el= | FND | let-alist compatibility macro | keep vendored reusable stdlib |
+| =map-ynp.el= | FND | map-y-or-n-p helper | keep reusable |
+| =map.el= | FND | map library shim | keep reusable |
+| =nelisp-emacs.el= | FND | reusable top-level library facade | public package entry |
+| =nelisp-emacs-libs.el= | FND | product-name facade alias over =nelisp-emacs= | public package entry during rename migration |
+| =oclosure-shim.el= | FND/LEGACY | reader-native OClosure shim (list-closure compatible) | replace once closures are aref-able |
+| =pp.el= | FND | lightweight pp shim (standalone/host dispatch) | keep host-safe shim |
+| =range.el= | FND | range helpers | keep reusable |
+| =regi.el= | FND | register-like helper lib | keep reusable |
+| =seq.el= | FND | seq library shim | keep reusable |
+| =subr-x.el= | FND | subr-x shim | keep reusable |
+| =thunk.el= | FND | thunk compatibility macros | keep vendored reusable stdlib |
+
+** 3.2 Text, coding, and international data (TXT)
+
+| File | Future package | Ownership notes | Extraction action |
+|------+----------------+-----------------+-------------------|
+| =case-table.el= | TXT | case table compatibility | keep reusable |
+| =cdl.el= | TXT | character description/language data | keep reusable |
+| =charprop.el= | TXT | char property data | keep reusable |
+| =charscript.el= | TXT | script data | keep reusable |
+| =cp51932.el= | TXT | coding system data | keep reusable |
+| =emoji-labels.el= | TXT | emoji metadata | keep reusable |
+| =eucjp-ms.el= | TXT | coding system data | keep reusable |
+| =emacs-parity-fns2.el= | TXT/FND | round-3 real-elisp parity functions incl. `coding-system-list'/`coding-system-get'/`file-name-coding-system'; also touches BUF (`replace-buffer-contents') and CORE (`window-margins') | broad grab-bag; audit and split by owner |
+| =emacs-text-core.el= | TXT | text/coding package-group loader | reusable library entry |
+| =fontset.el= | TXT/DSP | fontset data, display-adjacent | keep display-independent |
+| =idna-mapping.el= | TXT | IDNA mapping data | keep reusable |
+| =iso-transl.el= | TXT | input/translation table data | keep reusable |
+| =ja-dic-utl.el= | TXT | Japanese dictionary helpers | keep reusable |
+| =nelisp-coding-jis-tables.el= | TXT | JIS coding tables | keep reusable |
+| =nelisp-coding.el= | TXT | coding implementation | keep reusable |
+| =nelisp-regex.el= | TXT/BUF | regex substrate | keep reusable; avoid buffer hard-coupling where possible |
+| =emacs-parity-regex-charclass.el= | TXT/BUF | fixes =nelisp-regex.el= bracket-expression backslash-literal parsing | keep reusable; fold into =nelisp-regex.el= when convenient |
+| =rx.el= | TXT | Emacs rx regexp DSL compatibility | keep reusable text-core dependency |
+| =emacs-parity-rx.el= | TXT | fixes `rx--translate-not' load-time `pcase' mis-expansion | keep reusable; fold into =rx.el= when convenient |
+
+** 3.3 Buffer and editing substrate (BUF)
+
+| File | Future package | Ownership notes | Extraction action |
+|------+----------------+-----------------+-------------------|
+| =emacs-buffer-builtins.el= | BUF | unprefixed buffer shim | keep explicit shim |
+| =emacs-buffer-core.el= | BUF | buffer/search/line package-group loader | reusable library entry |
+| =emacs-buffer-ui.el= | CORE/FEAT | buffer UI/list helpers | keep in editor-core feature package |
+| =emacs-buffer.el= | BUF | buffer state/model | public prefixed API |
+| =emacs-bookmark-ui.el= | BUF/FEAT | bookmark completion/list presentation | keep shared |
+| =emacs-edit-builtins.el= | BUF | edit command shims | keep command semantics shared |
+| =emacs-editing.el= | BUF | undo/edit package-group loader | reusable library entry |
+| =emacs-isearch.el= | CORE/FEAT | isearch implementation | keep buffer-backed and core-adjacent |
+| =emacs-line-builtins.el= | BUF | line/point primitives | keep reusable |
+| =emacs-replace.el= | BUF/FEAT | replace/query-replace helpers | keep shared, not app-local |
+| =emacs-search-builtins.el= | BUF | search/match shims | keep explicit shim |
+| =emacs-special-buffers.el= | BUF/CORE | messages/warnings/scratch semantics | keep shared runtime |
+| =emacs-undo-builtins.el= | BUF | unprefixed undo shim | keep explicit shim |
+| =emacs-undo-ui.el= | BUF/FEAT | undo UI behavior | audit UI ownership |
+| =emacs-undo.el= | BUF | undo records/model | keep reusable |
+| =files-standalone-buffer.el= | BUF/IO | standalone file-buffer bridge | isolate adapter parts |
+| =nelisp-emacs-compat-face.el= | BUF/CORE | face compatibility over buffer/display | audit dependencies |
+| =nelisp-emacs-compat-fileio.el= | BUF/IO | fileio bridge over buffer model | isolate IO adapter |
+| =nelisp-emacs-compat.el= | BUF | core buffer/point compatibility | high-value public API |
+| =nelisp-emacs-magit-bridge.el= | IO | real vendor Magit/transient/with-editor chain loader into a live NeLisp session (Task #17) | keep adapter-gated; loads a host-Emacs-normalized bundle, never patches vendor source |
+| =nelisp-emacs-org-bridge.el= | IO | real vendor Org chain loader into a live session (built by =scripts/build-nelisp-emacs-org-bridge-bundle.el=), same bridge pattern as =nelisp-emacs-magit-bridge.el= | keep adapter-gated; loads a host-Emacs-normalized bundle, never patches vendor source |
+| =nelisp-text-buffer.el= | BUF | text buffer data structure | keep reusable |
+
+** 3.4 Editor core (CORE)
+
+| File | Future package | Ownership notes | Extraction action |
+|------+----------------+-----------------+-------------------|
+| =emacs-capf.el= | CORE/FEAT | completion-at-point substrate | keep shared |
+| =emacs-command-loop-builtins.el= | CORE | unprefixed command-loop shim | keep explicit shim |
+| =emacs-command-loop.el= | CORE | command dispatch and GUI bridge context | separate adapter hooks later |
+| =emacs-completion-ui.el= | CORE/FEAT | completion UI runtime | keep shared |
+| =emacs-core.el= | CORE | reusable editor-core package-group loader | public loader entry |
+| =emacs-elisp-eval.el= | CORE/FEAT | eval-defun/eval-last-sexp style behavior | keep shared |
+| =emacs-elisp-mode.el= | CORE/FEAT | elisp mode setup | keep feature package |
+| =emacs-faces-builtins.el= | CORE/DSP | face shims | keep explicit shim |
+| =emacs-faces.el= | CORE/DSP | face model | avoid concrete backend deps |
+| =emacs-frame-builtins.el= | CORE | unprefixed frame shim | keep explicit shim |
+| =emacs-frame.el= | CORE/DSP | frame model | split model/backend hooks later |
+| =emacs-help.el= | CORE/FEAT | help runtime semantics | keep shared |
+| =emacs-ielm.el= | CORE/FEAT | IELM behavior | keep feature package |
+| =emacs-imenu.el= | CORE/FEAT | imenu behavior | keep feature package |
+| =emacs-info.el= | CORE/FEAT | info runtime semantics | keep shared |
+| =emacs-keymap-builtins.el= | CORE | unprefixed keymap shim | keep explicit shim |
+| =emacs-keymap.el= | CORE | keymap model/lookup | high-value public API |
+| =emacs-minibuffer-builtins.el= | CORE | unprefixed minibuffer shim | keep explicit shim |
+| =emacs-minibuffer.el= | CORE | minibuffer/completion semantics | high-value public API |
+| =emacs-mode-builtins.el= | CORE | unprefixed mode shim | keep explicit shim |
+| =emacs-mode.el= | CORE | major/minor mode substrate | keep shared |
+| =emacs-parity-abbrev.el= | CORE/FEAT | real obarray-backed `define-abbrev'/`define-abbrev-table' | keep shared editing substrate |
+| =emacs-parity-skk.el= | CORE/DSP | face-attribute/internal-face helpers plus custom-system (`custom-add-*') helpers needed by ddskk's real load | keep shared; audit custom-system helpers for a dedicated FND home |
+| =emacs-startup-screen.el= | CORE/FEAT | startup splash screen semantics (buffer/text/gate) | keep shared, adapter-thin |
+| =emacs-syntax-table.el= | CORE/TXT | syntax table for modes/font-lock | keep reusable |
+| =emacs-toolbar.el= | CORE/GUI | toolbar behavior | keep adapter-thin |
+| =emacs-window-builtins.el= | CORE | unprefixed window shim | keep explicit shim |
+| =emacs-window.el= | CORE | window model/layout | high-value public API |
+| =lisp-mode.el= | CORE/FEAT | lisp mode shim | keep feature package |
+| =lisp.el= | CORE/FEAT | lisp navigation/checking | keep feature package |
+| =minibuffer.el= | CORE | upstream-compatible entry | keep as compatibility facade |
+
+** 3.5 IO and runtime adapters (IO)
+
+| File | Future package | Ownership notes | Extraction action |
+|------+----------------+-----------------+-------------------|
+| =emacs-eventloop.el= | IO/CORE | event-loop substrate | audit display/app coupling |
+| =emacs-file-name-handler.el= | IO | find-file-name-handler dispatch substrate (Doc 37 Tramp/Magit gateway) | keep host-inert, shared foundation |
+| =emacs-fileio-builtins.el= | IO | unprefixed fileio shim | keep explicit shim |
+| =emacs-fileio.el= | IO | file command semantics and adapters | split pure semantics vs host ops |
+| =emacs-ffi.el= | IO | generic NeLisp runtime FFI adapter | keep adapter-gated |
+| =emacs-io.el= | IO | reusable IO/runtime package-group loader | public loader entry |
+| =emacs-load.el= | IO | standalone `load'/`load-file' override and artifact-replay cache adapter | keep adapter-gated |
+| =files-runtime.el= | IO/FND | lightweight files runtime predicates | shared below facade and fallback substrate |
+| =emacs-network-ffi.el= | IO | network FFI adapter | keep adapter-gated |
+| =emacs-network-ffi-inet6.el= | IO | IPv6 + datagram FFI adapter (Doc 06 D2) | keep adapter-gated |
+| =emacs-tls-ffi.el= | IO | GnuTLS handshake FFI adapter (Doc 06 D1; needs libffi build) | keep adapter-gated |
+| =emacs-font-ffi.el= | IO | FreeType font-metrics FFI adapter (Doc 06 F1; needs libffi build) | keep adapter-gated |
+| =emacs-network-syscall-shim.el= | IO | syscall network shim | keep adapter-gated |
+| =emacs-process-builtins.el= | IO | unprefixed process shim | keep explicit shim |
+| =emacs-process-events.el= | IO | process event helpers | keep adapter-gated |
+| =emacs-pipe-process.el= | IO | pipe-subprocess async filter adapter (Doc 06 C1) | keep adapter-gated |
+| =emacs-pty-ffi.el= | IO | PTY FFI adapter (Doc 06 C3) | keep adapter-gated |
+| =emacs-process.el= | IO | process model/adapters | split model vs runtime backend |
+| =emacs-server-client-polyfills.el= | IO | server/client polyfills | keep IO package |
+| =emacs-server-polyfills.el= | IO | server polyfills | keep IO package |
+| =emacs-shell-command.el= | IO/FEAT | shell command runtime | keep shared, not app-local |
+| =emacs-sqlite-ffi.el= | IO | sqlite FFI adapter | keep adapter-gated |
+| =emacs-sqlite.el= | IO | sqlite facade | keep reusable facade |
+| =emacs-standalone.el= | IO/APP | standalone dispatch registry | avoid reusable package dependency |
+| =emacs-stdio.el= | IO | stdio helpers | keep adapter-gated |
+| =image-loader.el= | IO | lisp-image restore adapter | reusable IO lazy companion |
+| =nemacs-runtime-cdb.el= | IO/TXT | runtime CDB adapter | keep adapter-gated |
+| =nemacs-runtime-skk.el= | IO/TXT/FEAT | SKK runtime data adapter | keep feature/adapter boundary |
+| =nemacs-runtime-stdlib-extra.el= | IO/FND | runtime extra stdlib | fold reusable parts into FND |
+| =nemacs-tramp.el= | IO | ssh-only Tramp lane glue (task #16, Doc 37); never loaded from =nemacs-main= | keep glue thin, dynamic-require only |
+
+** 3.6 Display and terminal backend (DSP)
+
+| File | Future package | Ownership notes | Extraction action |
+|------+----------------+-----------------+-------------------|
+| =emacs-redisplay-builtins.el= | DSP | unprefixed redisplay shim | keep explicit shim |
+| =emacs-redisplay-core.el= | DSP | fast render core | high-value display API |
+| =emacs-redisplay.el= | DSP | full redisplay model | keep backend-independent core |
+| =emacs-tui-backend.el= | DSP | TUI backend | keep backend package |
+| =emacs-tui-event.el= | DSP/IO | terminal input parser | keep backend package |
+| =emacs-tui-stub.el= | DSP/LEGACY | TUI stub | keep until replaced |
+| =emacs-tui-terminfo.el= | DSP | terminal capability detection | keep backend package |
+| =term/xterm.el= | DSP | standalone xterm terminal compatibility surface (paste, focus, bracketed-paste events) | keep backend package |
+
+** 3.7 Reusable feature packages (FEAT)
+
+| File | Future package | Ownership notes | Extraction action |
+|------+----------------+-----------------+-------------------|
+| =calc.el= | FEAT | calc compatibility entry | keep feature package |
+| =calc-ext.el= | FEAT | calc extension compatibility entry | keep feature package |
+| =calendar.el= | FEAT | calendar loader for NeLisp (standalone/host vendor dispatch) | keep feature package |
+| =comint.el= | FEAT/IO | comint compatibility entry | keep shared |
+| =compile.el= | FEAT/IO | compile compatibility entry | keep shared |
+| =dired.el= | FEAT/IO | dired compatibility entry | keep shared |
+| =emacs-calc.el= | FEAT | calc subset | keep feature package |
+| =emacs-comint.el= | FEAT/IO | comint runtime | keep shared |
+| =emacs-compile.el= | FEAT/IO | compile runtime | keep shared |
+| =emacs-dired-min.el= | CORE/FEAT | dired semantics | shared owner for GUI/TUI, core-adjacent |
+| =emacs-eshell.el= | FEAT/IO | eshell facade/runtime | keep shared |
+| =emacs-font-lock-builtins.el= | FEAT/CORE | font-lock shim | keep explicit shim |
+| =emacs-font-lock.el= | FEAT/CORE | font-lock runtime | keep shared |
+| =emacs-man.el= | FEAT | man runtime | keep feature package |
+| =emacs-org-agenda.el= | FEAT | org agenda subset | keep feature package |
+| =emacs-org-capture.el= | FEAT | org capture subset | keep feature package |
+| =emacs-org-outline.el= | FEAT | org outline subset | keep feature package |
+| =emacs-org-table.el= | FEAT | org table subset | keep feature package |
+| =emacs-org-todo.el= | FEAT | org todo subset | keep feature package |
+| =emacs-parity-cc.el= | FEAT | cc-mode `c-lang-defconst'/`c-get-lang-constant' hard-abort parity fix | keep feature package |
+| =emacs-parity-misc.el= | FEAT/IO | round-2 real-elisp parity shims: url/vc/coding-system/smie/menu-bar helpers | broad grab-bag; audit and split by owner |
+| =emacs-parity-org.el= | FEAT | real-elisp org/outline parity shims (`org-element-*', `org-fold-*', `org-publish', ...) | keep feature package |
+| =emacs-parity-vars2.el= | FEAT/CORE | round-2 real-elisp parity variables: font-lock-keywords for several modes, custom-group alist, plus a vendor placeholder var (`treemacs-header-close-button') | broad grab-bag; audit vendor placeholders for a PKG split |
+| =emacs-parity-vars3.el= | FEAT/CORE | round-3 real-elisp parity variables: `vc-mode', `lisp-imenu-generic-expression', plus a vendor placeholder var (`treemacs-header-projects-button') | broad grab-bag; audit vendor placeholders for a PKG split |
+| =emacs-project.el= | CORE/FEAT | project subset | keep shared and core-adjacent |
+| =emacs-shell.el= | FEAT/IO | shell runtime | keep shared |
+| =emacs-textmodes-stub.el= | FEAT/LEGACY | textmodes polyfills | replace with focused features over time |
+| =emacs-vc.el= | FEAT/IO | VC subset | keep shared |
+| =emacs-xref.el= | FEAT | xref subset | keep feature package |
+| =eshell.el= | FEAT/IO | eshell compatibility entry | keep feature package |
+| =files.el= | FEAT/IO | files compatibility entry | keep facade |
+| =gnus.el= | FEAT/PKG | gnus facade/stub | keep optional |
+| =help-fns.el= | FEAT/CORE | help-fns compatibility entry | keep facade |
+| =help-mode.el= | FEAT/CORE | help-mode compatibility entry | keep facade |
+| =ielm.el= | FEAT/CORE | IELM compatibility entry | keep facade |
+| =imenu.el= | FEAT/CORE | imenu compatibility entry | keep facade |
+| =info.el= | FEAT/CORE | info compatibility entry | keep facade |
+| =isearch.el= | FEAT/BUF | isearch compatibility entry | keep facade |
+| =man.el= | FEAT | man compatibility entry | keep facade |
+| =nxml-mode.el= | FEAT | nxml mode entry | keep feature package |
+| =nxml.el= | FEAT | nxml subset | keep feature package |
+| =org.el= | FEAT | org compatibility entry | keep feature package |
+| =package.el= | PKG | package.el compatibility | keep package compat |
+| =project.el= | FEAT | project compatibility entry | keep facade |
+| =replace.el= | FEAT/BUF | replace compatibility entry | keep facade |
+| =shell.el= | FEAT/IO | shell compatibility entry | keep facade |
+| =simple.el= | FEAT/BUF | simple.el compatibility entry | keep facade |
+| =tab-bar.el= | FEAT/CORE | tab-bar subset | keep feature package |
+| =tab-line.el= | FEAT/CORE | tab-line subset | keep feature package |
+| =treesit.el= | FEAT/PKG | treesit compatibility | keep optional/adapted |
+| =url.el= | FEAT/IO | url facade | keep optional |
+| =vc.el= | FEAT/IO | vc compatibility entry | keep facade |
+| =widget.el= | FEAT/CORE | widget subset | keep feature package |
+| =woman.el= | FEAT | woman subset | keep feature package |
+| =xref.el= | FEAT | xref compatibility entry | keep facade |
+
+** 3.8 Package/vendor compatibility and facades (PKG)
+
+| File | Future package | Ownership notes | Extraction action |
+|------+----------------+-----------------+-------------------|
+| =emacs-melpa-shim.el= | PKG | MELPA compatibility install surface | keep package compat |
+| =emacs-tier3-facades.el= | PKG | broad facades | audit and split by owner |
+| =emacs-dump.el= | IO | lisp-image dump serializer | reusable IO lazy companion |
+| =emacs-elisp-mode.el= | FEAT/PKG | elisp mode for vendor compatibility | already listed under CORE/FEAT |
+| =emacs-parity-flycheck.el= | PKG | `flycheck-def-option-var' hard-abort parity fix plus `cl-pushnew' install | keep package compat |
+| =nemacs-loaddefs.el= | IO | autoload/loaddefs generator | reusable IO lazy companion |
+| =standalone-soak.el= | PKG/APP | soak helper | keep out of reusable packages |
+
+** 3.9 GUI, bridge, and frontend adapters (GUI)
+
+| File | Future package | Ownership notes | Extraction action |
+|------+----------------+-----------------+-------------------|
+| =emacs-dired-min-gui.el= | FEAT/GUI | reusable Dired command runtime with GUI backend callbacks | keep backend boundary explicit |
+| =emacs-fileio-gui.el= | IO/GUI | reusable file/buffer command runtime with GUI backend callbacks | keep backend boundary explicit |
+| =emacs-help-gui.el= | CORE/GUI | reusable Help command runtime with GUI backend callbacks | keep backend boundary explicit |
+| =nemacs-gtk-frontend.el= | GUI | legacy/reference GTK frontend | drain command semantics into shared modules |
+| =nemacs-gtk-view-menu.el= | GUI | GTK view/menu behavior | adapter only |
+| =nemacs-gui-file-bridge-runtime.el= | GUI/IO | GUI bridge runtime image support | inventory fallbacks for deletion |
+
+** 3.10 Application assembly (APP)
+
+| File | Future package | Ownership notes | Extraction action |
+|------+----------------+-----------------+-------------------|
+| =emacs-init.el= | APP | current load-order assembly | convert to package manifest over time |
+| =image-baker.el= | APP | batch image baking orchestration over =nemacs-loadup= | keep app utility; stage outside reusable packages |
+| =nemacs-loadup.el= | APP | bootstrap entry | keep app-only |
+| =nemacs-init-transport.el= | APP | shared wrapped-init transport consumer (loader reconcile Phase 2), reused by =nemacs-loadup= and the GUI bridge's =files--load-user-init= | keep app utility; stage outside reusable packages |
+| =nemacs-main.el= | APP | interactive runner | remove reusable semantics over time |
+
+* 4. gui/ inventory
+
+The imported =gui/= tree is a monorepo consumer.  It is not a dependency
+of FND/BUF/CORE/IO/DSP packages.
+
+| Path | Owner | Notes | Extraction action |
+|------+-------+-------+-------------------|
+| =gui/README.org= | GUI | GUI documentation | update to library-first framing |
+| =gui/README-pure-elisp-ui.org= | GUI | design/background doc | keep as GUI doc |
+| =gui/bin/*= | GUI | launchers | adapt paths to monorepo |
+| =gui/nemacs-editor.el= | GUI | editor frontend | drain semantics into shared modules |
+| =gui/nemacs-editor-transport.el= | GUI | transport | keep GUI-owned |
+| =gui/nemacs-mx.sh= | GUI | launcher/helper | adapt paths to monorepo |
+| =gui/nemacs-build.sh= | GUI | build helper | adapt to root Makefile or wrapper |
+| =gui/scripts/*= | GUI | verification/install/sync scripts | add monorepo-aware targets later |
+| =gui/spikes/*= | GUI/LEGACY | spike code | keep out of public API |
+| =gui/docs/*= | GUI | GUI design docs | cross-link Doc 17/18 |
+| =gui/tmp-diag/*= | GUI/LEGACY | diagnostics | keep ignored artifacts ignored |
+
+* 5. Immediate work queue
+
+** 5.1 Low-conflict tasks
+
+These are safe while multiple sessions are active:
+
+1. Add package group comments to docs only.
+2. Add focused tests around existing public APIs.
+3. Add anvil-based reports for cross-module private helper use.
+4. Update GUI docs to point at Doc 17/18.
+5. Add Makefile targets that run existing tests by group without moving
+   files.
+
+** 5.2 Tasks to avoid during parallel sessions
+
+Avoid these until active branches are coordinated:
+
+1. bulk moving =src/*.el= into =packages/=,
+2. renaming public features,
+3. changing =provide= names,
+4. reformatting large files,
+5. replacing app launch paths used by current gates,
+6. changing GUI transport file locations without wrapper compatibility.
+
+* 6. First enforcement targets
+
+The first enforcement should be advisory, not blocking:
+
+- report files that call private helpers across ownership groups,
+- report APP/GUI files that define command semantics,
+- report package groups pulled in by =emacs-init.el=,
+- report =nemacs-main.el= direct shortcuts that should move to FEAT/CORE,
+- report GUI fallbacks that duplicate shared runtime behavior.
+
+Once reports are stable, selected checks can move into
+=make gate-nemacs-complete=.
+
+** 6.2 Ownership coverage target
+
+=make nemacs-ownership-coverage= writes:
+
+- =build/nemacs-ownership-coverage.tsv=
+- =build/nemacs-ownership-coverage-summary.org=
+
+The coverage target verifies that every =src/= and =gui/= Elisp file is
+covered by this document.  It also reports exact Doc 18 file rows that no
+longer exist.  =make nemacs-library-gate= requires both =unowned= and
+=stale= rows to remain at zero.
+
+** 6.3 Advisory report target
+
+=make nemacs-library-boundary-report= writes:
+
+- =build/nemacs-library-boundary-report.tsv=
+- =build/nemacs-library-boundary-summary.org=
+
+The report currently covers:
+
+- =private-cross-owner=: a call to a defined =--= helper whose provider
+  group differs from the caller group;
+- =app-gui-semantic-definition=: an APP/GUI definition whose name looks
+  like reusable command/editor semantics;
+- =emacs-init-require=: current package groups pulled by
+  =src/emacs-init.el=.
+
+This target is intentionally advisory.  It should be used to choose small
+API-promotion and adapter-cleanup tasks, not to block parallel sessions.

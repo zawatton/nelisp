@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# bin/build-nelisp - fetch + build NeLisp in vendor/nelisp/
+#
+# Layer-2 self-containment: nemacs depends on a NeLisp executable when
+# the experimental `--driver=nelisp' path is used.  Current NeLisp
+# builds target/nelisp via a pure-Elisp AOT path.
+#
+# Default behaviour: clone the upstream nelisp repo into
+# vendor/nelisp/ (gitignored) and build the DYNAMIC reader plus its cold
+# image (NELISP_READER_DYNAMIC=1 make standalone-reader): a ~31MB
+# target/nelisp and target/nelisp.cold, which is what nelisp-emacs-lib
+# needs.  Pass --plain (or NELISP_BUILD_FLAVOR=plain) for the old ~9MB
+# non-dynamic build without a cold image.  A stamp file
+# (target/.build-nelisp-flavor) records the last flavor; when it differs
+# the stale target/standalone-units cache and the .nelc are cleared,
+# because that cache does not track the build flags.
+# The resulting binary is at vendor/nelisp/target/nelisp.  Older
+# checkouts may still produce target/nelisp-standalone-reader; this
+# script accepts that path as a compatibility fallback.
+#
+# An EXISTING vendor checkout is built as-is (its commit is printed):
+# it is never fetched, pulled or switched to another ref unless you pass
+# --update or set NELISP_REPO_REF explicitly, and a dirty tree is never
+# touched.  A fresh clone checks out NELISP_REPO_REF (default: main).
+# Pass `--rebuild` to force a fresh build.
+#
+# Environment overrides:
+#   NELISP_VENDOR_DIR vendored checkout path (default: vendor/nelisp)
+#   NELISP_REPO_URL   git remote (default: https://github.com/zawatton/nelisp.git)
+#   NELISP_REPO_REF   branch / tag / SHA (default: main)
+#   MAKE              make binary (default: make)
+#   EMACS             emacs binary passed to NeLisp make (default: emacs)
+#   NELISP_BUILD_FLAVOR dynamic (default) | plain
+
+set -euo pipefail
+
+SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)"
+NEMACS_HOME="$(cd "$SCRIPT_PATH/.." && pwd)"
+VENDOR_DIR="${NELISP_VENDOR_DIR:-$NEMACS_HOME/vendor/nelisp}"
+NELISP_REPO_URL="${NELISP_REPO_URL:-https://github.com/zawatton/nelisp.git}"
+# An explicit NELISP_REPO_REF from the caller counts as a request to
+# switch the existing checkout to that ref (same as --update).
+REF_EXPLICIT=0
+[[ -n "${NELISP_REPO_REF:-}" ]] && REF_EXPLICIT=1
+NELISP_REPO_REF="${NELISP_REPO_REF:-main}"
+MAKE="${MAKE:-make}"
+EMACS="${EMACS:-emacs}"
+
+FLAVOR="${NELISP_BUILD_FLAVOR:-dynamic}"
+REBUILD=0
+PULL=$REF_EXPLICIT
+for arg in "$@"; do
+  case "$arg" in
+    --rebuild) REBUILD=1 ;;
+    --no-pull) PULL=0 ;;
+    --update) PULL=1 ;;
+    --plain) FLAVOR=plain ;;
+    --dynamic) FLAVOR=dynamic ;;
+    --help|-h)
+      sed -n '2,35p' "$0"
+      exit 0
+      ;;
+    *) echo "build-nelisp: unknown arg: $arg" >&2; exit 2 ;;
+  esac
+done
+
+echo "build-nelisp: vendor dir = $VENDOR_DIR"
+echo "build-nelisp: ref        = $NELISP_REPO_REF"
+case "$FLAVOR" in
+  dynamic|plain) ;;
+  *) echo "build-nelisp: bad flavor '$FLAVOR' (dynamic|plain)" >&2; exit 2 ;;
+esac
+echo "build-nelisp: flavor     = $FLAVOR"
+
+if [[ ! -d "$VENDOR_DIR/.git" ]]; then
+  echo "build-nelisp: cloning $NELISP_REPO_URL → $VENDOR_DIR"
+  mkdir -p "$VENDOR_DIR"
+  git clone "$NELISP_REPO_URL" "$VENDOR_DIR"
+  ( cd "$VENDOR_DIR" && git checkout "$NELISP_REPO_REF" )
+elif (( PULL )); then
+  if [[ -n "$(git -C "$VENDOR_DIR" status --porcelain --untracked-files=no)" ]]; then
+    echo "build-nelisp: vendor checkout is dirty; NOT fetching/switching (building as-is)" >&2
+  else
+    echo "build-nelisp: updating to $NELISP_REPO_REF"
+    ( cd "$VENDOR_DIR" \
+        && git fetch origin "$NELISP_REPO_REF" \
+        && git checkout "$NELISP_REPO_REF" \
+        && git pull origin "$NELISP_REPO_REF" )
+  fi
+fi
+
+echo "build-nelisp: building checkout $(git -C "$VENDOR_DIR" rev-parse --short HEAD) ($(git -C "$VENDOR_DIR" symbolic-ref -q --short HEAD || echo detached))"
+STAMP="$VENDOR_DIR/target/.build-nelisp-flavor"
+LAST=""
+[[ -f "$STAMP" ]] && LAST="$(cat "$STAMP")"
+if (( REBUILD )); then
+  ( cd "$VENDOR_DIR" && rm -f target/nelisp target/nelisp-standalone-reader target/nelisp.cold target/nelisp-artifact-runtime.el.nelc && rm -rf target/standalone-units )
+elif [[ "$LAST" != "$FLAVOR" ]]; then
+  echo "build-nelisp: flavor changed (${LAST:-none} -> $FLAVOR); clearing standalone-units + .nelc"
+  ( cd "$VENDOR_DIR" && rm -f target/nelisp target/nelisp.cold target/nelisp-artifact-runtime.el.nelc && rm -rf target/standalone-units )
+fi
+
+BUILD_START="$(mktemp "${TMPDIR:-/tmp}/build-nelisp-start.XXXXXX")"
+trap 'rm -f "$BUILD_START"' EXIT
+mkdir -p "$VENDOR_DIR/target"
+if [[ "$FLAVOR" == dynamic ]]; then
+  echo "build-nelisp: make standalone-reader (dynamic reader + cold image)"
+  ( cd "$VENDOR_DIR" && rm -f target/nelisp-artifact-runtime.el.nelc \
+      && NELISP_READER_DYNAMIC=1 NELISP_STANDALONE_READER_OUTPUT=./target/nelisp \
+         EMACS="$EMACS" "$MAKE" standalone-reader )
+else
+  echo "build-nelisp: make standalone-reader (plain)"
+  ( cd "$VENDOR_DIR" && EMACS="$EMACS" "$MAKE" standalone-reader )
+fi
+printf '%s\n' "$FLAVOR" > "$STAMP"
+
+BIN="$VENDOR_DIR/target/nelisp"
+if [[ ! -x "$BIN" && -x "$VENDOR_DIR/target/nelisp-standalone-reader" ]]; then
+  BIN="$VENDOR_DIR/target/nelisp-standalone-reader"
+fi
+if [[ ! -x "$BIN" ]]; then
+  echo "build-nelisp: build succeeded but $BIN is missing — fatal" >&2
+  exit 1
+fi
+
+echo "build-nelisp: OK — binary at $BIN"
+tmp="$(mktemp "${TMPDIR:-/tmp}/nelisp-standalone-reader-smoke.XXXXXX.el")"
+printf '%s\n' '(+ 40 2)' > "$tmp"
+set +e
+out="$("$BIN" --load "$tmp")"
+rc=$?
+set -e
+rm -f "$tmp"
+if [[ "$out" != 42 && "$rc" != 42 ]]; then
+  echo "build-nelisp: standalone reader smoke failed: output=$out exit=$rc expected=42" >&2
+  exit 1
+fi
+echo "build-nelisp: standalone reader smoke OK (output=$out exit=$rc)"
+
+if [[ "$FLAVOR" == dynamic ]]; then
+  COLD="$BIN.cold"
+  if [[ ! -f "$COLD" ]]; then
+    echo "build-nelisp: dynamic build produced no cold image at $COLD" >&2
+    exit 1
+  fi
+  if [[ ! "$COLD" -nt "$BUILD_START" ]]; then
+    echo "build-nelisp: $COLD is older than this build's start (stale)" >&2
+    exit 1
+  fi
+  errf="$(mktemp "${TMPDIR:-/tmp}/nelisp-eval-smoke.XXXXXX")"
+  # Consumers opt in to the adjacent cold image explicitly via
+  # --cold-load-from (see vendor/nelisp/test/lib/nelisp-boot-args.sh).
+  out="$(cd "${TMPDIR:-/tmp}" && "$BIN" --cold-load-from "$COLD" --eval '(princ 1)' 2>"$errf")" \
+    || { echo "build-nelisp: cold-load eval failed" >&2; cat "$errf" >&2; rm -f "$errf"; exit 1; }
+  # --eval echoes the return value after the princ output, so "11" is
+  # the expected text for (princ 1) (a bare "1" is accepted too).
+  if [[ ( "$out" != 1 && "$out" != 11 ) || -s "$errf" ]]; then
+    echo "build-nelisp: cold-load smoke failed: output=$out stderr=$(head -c 300 "$errf")" >&2
+    rm -f "$errf"; exit 1
+  fi
+  rm -f "$errf"
+  echo "build-nelisp: cold-load smoke OK ($(du -h "$BIN" | cut -f1) binary, $(du -h "$COLD" | cut -f1) cold image)"
+fi

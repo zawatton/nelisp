@@ -1,0 +1,1223 @@
+;;; emacs-buffer-builtins.el --- Unprefixed Emacs C-core buffer builtins  -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 zawatton + Claude
+
+;; This file is part of nelisp-emacs.
+
+;;; Commentary:
+
+;; Doc 51 Phase 9 — Layer 2.
+;;
+;; Bridges the Emacs C-core *unprefixed* buffer builtins (= the names
+;; that vanilla Elisp code expects: `generate-new-buffer',
+;; `with-current-buffer', `point-min', `buffer-substring-no-properties',
+;; ...) to NeLisp's `nelisp-emacs-compat' (= `nelisp-ec-*') primitives.
+;;
+;; Phase 8 shipped a pragmatic accumulator-string approximation for
+;; `with-temp-buffer' / `insert' / `buffer-string' inside `emacs-stub.el'.
+;; That sufficed to unblock anvil-memory tokenizer + worklog write paths
+;; but failed once a caller wanted to manipulate two buffers at once
+;; (the accumulator was a single global string), or wanted the natural
+;; `(buffer-substring-no-properties (point-min) (point-max))' pattern.
+;;
+;; Phase 9 replaces the accumulator with the real `nelisp-ec-*' buffer
+;; substrate (T39, ~31 APIs), which already implements multi-buffer
+;; current-buffer dispatch, narrow/widen, markers, and search.  This
+;; file is primarily a *naming bridge* — every definition is gated so
+;; loading inside a host Emacs is a cheap no-op and the host's own C
+;; builtins win.
+;;
+;; What this module unblocks (= deferred from Phase 8 commit):
+;;
+;;   - `anvil-worklog-export-org' (= multi-buffer; uses
+;;     `generate-new-buffer' + `with-current-buffer' + `kill-buffer'
+;;     in `unwind-protect' shape).
+;;   - any future MCP tool that wants `buffer-substring-no-properties'
+;;     of a non-temp buffer.
+;;
+;; Non-goals (= still deferred):
+;;
+;;   - `make-network-process' / `memory-serve-start' (Phase 10
+;;     candidate, requires socket primitive separate from buffer).
+;;   - file-coding handling beyond UTF-8 default
+;;     (= `coding-system-for-write' is read but not enforced).
+;;   - hooks like `before-change-functions' / `after-change-functions'
+;;     (= callers in the 22/27 working set don't depend on them).
+
+;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- buffer/point/insert/print-stream primitives must operate on the ec-buffer layer.
+;;; Code:
+
+(require 'nelisp-emacs-compat)
+
+(unless (boundp 'text-property-default-nonsticky)
+  (defvar text-property-default-nonsticky nil
+    "Default non-sticky text properties for inserted text."))
+
+(defun emacs-buffer-builtins--standalone-p ()
+  "Non-nil on a standalone NeLisp reader (nemacs).
+nemacs binds the variable `emacs-version' for vendor compatibility, so a
+classic boundp-of-`emacs-version' standalone test fails there: the global
+buffer ops and the `with-temp-buffer' / `with-current-buffer' macros are
+left as the broken `emacs-stub' no-ops while the working `nelisp-ec-*'
+implementations sit unused, and a temp-buffer insert reads back as nil.
+Key off the reader-only primitive `nelisp--write-stdout-bytes' (absent
+under host Emacs) so this bridge's standalone install path -- which
+replaces the whole buffer-op chain with `nelisp-ec-*' -- fires on nemacs."
+  (or (not (boundp 'emacs-version))
+      (fboundp 'nelisp--write-stdout-bytes)))
+
+(defun emacs-buffer-builtins--install-function-p (symbol)
+  "Return non-nil when SYMBOL should be installed by this bridge."
+  ;; A standalone image can already provide a complete native implementation
+  ;; from its prelude.  Preserve it exactly as host Emacs preserves a C subr;
+  ;; only marked bulk stubs and genuinely absent names need this bridge.
+  (or (get symbol 'emacs-stub-bulk)
+      (not (fboundp symbol))))
+
+(defun emacs-buffer-builtins--replace-buffer-family-p ()
+  "Return non-nil when standalone needs the complete compatibility family.
+Keep an already installed `current-buffer' as the owner of a coherent native
+buffer API.  When it is absent, the compatibility aliases must still be
+installed as one family rather than mixed with unrelated partial fallbacks."
+  (and (emacs-buffer-builtins--standalone-p)
+       (not (fboundp 'current-buffer))))
+
+(defun emacs-buffer-builtins--call-emacs-buffer (function args)
+  "Lazy-load `emacs-buffer' and call FUNCTION with ARGS."
+  (unless (fboundp function)
+    (require 'emacs-buffer))
+  (apply function args))
+
+(defun emacs-buffer-builtins--sxhash-string (string)
+  "Return a deterministic integer hash for STRING."
+  (let ((hash 5381)
+        (i 0)
+        (len (length string)))
+    (while (< i len)
+      (setq hash (logand #x7FFFFFFF
+                         (+ (* hash 33) (aref string i))))
+      (setq i (1+ i)))
+    hash))
+
+(defun emacs-buffer-builtins--sxhash-object (object)
+  "Return a deterministic session-stable integer hash for OBJECT."
+  (emacs-buffer-builtins--sxhash-string (prin1-to-string object)))
+
+(when (emacs-buffer-builtins--install-function-p 'sxhash)
+  (defun sxhash (object)
+    "Return a deterministic integer hash for OBJECT."
+    (emacs-buffer-builtins--sxhash-object object)))
+
+(when (emacs-buffer-builtins--install-function-p 'sxhash-equal)
+  (defun sxhash-equal (object)
+    "Return a deterministic integer hash for OBJECT using equal semantics."
+    (emacs-buffer-builtins--sxhash-object object)))
+
+(when (emacs-buffer-builtins--install-function-p 'sxhash-eq)
+  (defun sxhash-eq (object)
+    "Return a deterministic integer hash for OBJECT using eq-style identity."
+    (emacs-buffer-builtins--sxhash-object object)))
+
+;;;; --- batched trivial defaliases (Doc 51 Phase 5 boot perf) -----------
+;;
+;; Pattern source: commit d3c17fa (emacs-stub-bulk Phase 11.D batch).  The
+;; nelisp standalone interpreter charges ~47ms per top-level form for the
+;; original `(unless (fboundp X) (defalias X #'nelisp-ec-Y))' idiom — 23
+;; clauses below + 14 in `emacs-fileio-builtins.el' add ~1.8s on every
+;; bootstrap.  Collapsing through one dolist body keeps the gate semantics
+;; identical (= each entry still does exactly one fboundp test) while
+;; paying the per-form interpreter overhead only once.  Under host Emacs
+;; the C subr wins fboundp so this is a no-op either way.
+
+(let ((--aliases--
+       '((generate-new-buffer        . nelisp-ec-generate-new-buffer)
+         (kill-buffer                . nelisp-ec-kill-buffer)
+         (bufferp                    . nelisp-ec-buffer-p)
+         (current-buffer             . nelisp-ec-current-buffer)
+         (set-buffer                 . nelisp-ec-set-buffer)
+         (point                      . nelisp-ec-point)
+         (point-min                  . nelisp-ec-point-min)
+         (point-max                  . nelisp-ec-point-max)
+         (goto-char                  . nelisp-ec-goto-char)
+         (buffer-size                . nelisp-ec-buffer-size)
+         (insert                     . nelisp-ec-insert)
+         (insert-and-inherit         . nelisp-ec-insert)
+         (erase-buffer               . nelisp-ec-erase-buffer)
+         (delete-region              . nelisp-ec-delete-region)
+         (buffer-string              . nelisp-ec-buffer-string)
+         (buffer-substring           . nelisp-ec-buffer-substring)
+         ;; Phase 9 MVP: text properties are not yet stored on
+         ;; `nelisp-ec-buffer'; the substring already carries no
+         ;; properties so `-no-properties' is a plain alias.
+         (buffer-substring-no-properties . nelisp-ec-buffer-substring)
+         (narrow-to-region           . nelisp-ec-narrow-to-region)
+         (widen                      . nelisp-ec-widen)
+         (make-marker                . nelisp-ec-make-marker)
+         (markerp                    . nelisp-ec-marker-p)
+         (set-marker                 . nelisp-ec-set-marker)
+         (move-marker                . nelisp-ec-set-marker)
+         (marker-position            . nelisp-ec-marker-position)
+         (marker-buffer              . nelisp-ec-marker-buffer)
+         (marker-insertion-type      . nelisp-ec-marker-insertion-type)
+         (set-marker-insertion-type  . nelisp-ec-set-marker-insertion-type)
+         (point-marker               . nelisp-ec-point-marker)
+         (insert-before-markers      . nelisp-ec-insert-before-markers))))
+  (if (emacs-buffer-builtins--replace-buffer-family-p)
+      (dolist (--cell-- --aliases--)
+        (fset (car --cell--) (cdr --cell--)))
+    (dolist (--cell-- --aliases--)
+      (let ((--name-- (car --cell--)) (--target-- (cdr --cell--)))
+        (unless (fboundp --name--)
+          (defalias --name-- --target--))))))
+
+(require 'emacs-buffer)
+
+(when (emacs-buffer-builtins--standalone-p)
+  (defun buffer-base-buffer (&optional buffer)
+    "Return the base buffer of BUFFER when it is an indirect clone."
+    (emacs-buffer-buffer-base-buffer buffer))
+
+  (defun make-indirect-buffer (base-buffer name &optional clone)
+    "Create an indirect buffer named NAME from BASE-BUFFER.
+CLONE is accepted for API compatibility."
+    (ignore clone)
+    (emacs-buffer-clone-indirect-buffer name base-buffer)))
+
+(let ((--local-aliases--
+       '((make-local-variable       . emacs-buffer-make-local-variable)
+         (make-variable-buffer-local . emacs-buffer-make-variable-buffer-local)
+         (buffer-local-variables    . emacs-buffer-buffer-local-variables)
+         (buffer-local-value        . emacs-buffer-buffer-local-value)
+         (local-variable-p          . emacs-buffer-local-variable-p)
+         (default-value             . emacs-buffer-default-value)
+         (default-boundp            . emacs-buffer-default-boundp)
+         (set-default               . emacs-buffer-set-default)
+         (kill-local-variable       . emacs-buffer-kill-local-variable)
+         (kill-all-local-variables  . emacs-buffer-kill-all-local-variables))))
+  (if (emacs-buffer-builtins--standalone-p)
+      (dolist (--cell-- --local-aliases--)
+        (fset (car --cell--) (cdr --cell--)))
+    (dolist (--cell-- --local-aliases--)
+      (let ((--name-- (car --cell--))
+            (--target-- (cdr --cell--)))
+        (when (emacs-buffer-builtins--install-function-p --name--)
+          (defalias --name-- --target--))))))
+
+(defun emacs-buffer-builtins-buffer-narrowed-p ()
+  "Return non-nil if the current `nelisp-ec' buffer is narrowed."
+  (let ((buf (nelisp-ec-current-buffer)))
+    (and buf
+         (or (nelisp-ec-buffer-narrow-start buf)
+             (nelisp-ec-buffer-narrow-end buf))
+         t)))
+
+(when (emacs-buffer-builtins--install-function-p 'buffer-narrowed-p)
+  (defalias 'buffer-narrowed-p
+    #'emacs-buffer-builtins-buffer-narrowed-p))
+
+(defun emacs-buffer-builtins-copy-marker (&optional marker-or-integer type)
+  "Return a fresh marker copied from MARKER-OR-INTEGER.
+nil MARKER-OR-INTEGER returns a detached marker, matching Emacs."
+  (let ((marker (nelisp-ec-make-marker)))
+    (cond
+     ((null marker-or-integer) nil)
+     ((nelisp-ec-marker-p marker-or-integer)
+      (nelisp-ec-set-marker marker
+                            (nelisp-ec-marker-position marker-or-integer)
+                            (nelisp-ec-marker-buffer marker-or-integer)))
+     ((integerp marker-or-integer)
+      (nelisp-ec-set-marker marker marker-or-integer))
+     (t
+      (signal 'wrong-type-argument
+              (list '(or marker integer null) marker-or-integer))))
+    (when type
+      (nelisp-ec-set-marker-insertion-type marker type))
+    marker))
+
+(when (emacs-buffer-builtins--install-function-p 'copy-marker)
+  (defalias 'copy-marker #'emacs-buffer-builtins-copy-marker))
+
+(when (emacs-buffer-builtins--install-function-p 'point-min-marker)
+  (defun point-min-marker ()
+    "Return a marker at `point-min' in the current buffer."
+    (copy-marker (point-min))))
+
+(when (emacs-buffer-builtins--install-function-p 'point-max-marker)
+  (defun point-max-marker ()
+    "Return a marker at `point-max' in the current buffer."
+    (copy-marker (point-max))))
+
+(defun emacs-buffer-builtins--text-property-object (object)
+  "Return a standalone buffer object, or :string-or-unsupported.
+
+When OBJECT is nil and the standalone runtime already has a current buffer,
+resolve that buffer eagerly instead of letting the lower `emacs-buffer' owner
+re-discover it indirectly.  The implicit current-buffer path has proven brittle
+under the live Magit bridge even when the actual current buffer is valid."
+  (cond
+   ((null object)
+    (let ((buf (and (fboundp 'current-buffer)
+                    (ignore-errors (current-buffer)))))
+      (if (and buf
+               (fboundp 'nelisp-ec-buffer-p)
+               (nelisp-ec-buffer-p buf))
+          buf
+        nil)))
+   ((and (fboundp 'nelisp-ec-buffer-p) (nelisp-ec-buffer-p object)) object)
+   (t :string-or-unsupported)))
+
+(defvar buffer-invisibility-spec nil
+  "Standalone bridge for Emacs's per-buffer invisibility spec.")
+
+(when (fboundp 'make-variable-buffer-local)
+  (make-variable-buffer-local 'buffer-invisibility-spec))
+
+;; Doc 33 §8 item 242 (buffer-local swap engine, M2 completion
+;; blocker): register Emacs's own `DEFVAR_PER_BUFFER' variables so
+;; every buffer switch swaps them regardless of whether a given buffer
+;; ever called `make-local-variable' on them.  `buffer-read-only' is
+;; the M2 minimal-repro symbol itself (Doc 33 §8: a brand-new buffer
+;; must never read back a DIFFERENT buffer's `buffer-read-only' value);
+;; `major-mode' and `default-directory' are the other two builtins the
+;; M2 magit-status smoke path depends on.  Gated to standalone only —
+;; under host Emacs these are genuine C-level per-buffer variables
+;; already, so declaring them here too would fight the host's own
+;; machinery instead of bridging a gap.
+;;
+;; `default-directory' is registered conditionally on `boundp': this
+;; file (`emacs-buffer-builtins.el') loads BEFORE `emacs-fileio.el''s
+;; own `(defvar default-directory "/" ...)' (`emacs-fileio.el' itself
+;; `require's this file), so at this point in the load order the name
+;; is not bound yet.  Passing an explicit `nil' default here regardless
+;; would freeze `nil' into the registered default forever
+;; (`emacs-buffer-declare-per-buffer' tracks "a default WAS given" via
+;; its own `&rest' arity, so even an explicit `nil' would count) and
+;; permanently shadow the real `"/"' default `emacs-fileio.el' goes on
+;; to establish moments later — so the unbound case omits the DEFAULT
+;; argument entirely, leaving `emacs-buffer-default-value''s ordinary
+;; `boundp' fallback to pick up whatever value eventually gets
+;; `defvar'd.
+(when (and (emacs-buffer-builtins--standalone-p)
+           (fboundp 'emacs-buffer-declare-per-buffer))
+  (emacs-buffer-declare-per-buffer 'buffer-read-only nil)
+  (emacs-buffer-declare-per-buffer 'major-mode 'fundamental-mode)
+  (if (boundp 'default-directory)
+      (emacs-buffer-declare-per-buffer 'default-directory default-directory)
+    (emacs-buffer-declare-per-buffer 'default-directory)))
+
+(defun emacs-buffer-builtins--buffer-invisibility-spec ()
+  "Return the current buffer's `buffer-invisibility-spec' value."
+  (if (and (emacs-buffer-builtins--standalone-p)
+           (fboundp 'nelisp-ec-current-buffer)
+           (nelisp-ec-current-buffer)
+           (fboundp 'emacs-buffer-local-variable-p)
+           (emacs-buffer-local-variable-p 'buffer-invisibility-spec
+                                          (nelisp-ec-current-buffer)))
+      (emacs-buffer-builtins--call-emacs-buffer
+       'emacs-buffer-buffer-local-value
+       (list 'buffer-invisibility-spec (nelisp-ec-current-buffer)))
+    buffer-invisibility-spec))
+
+(defun emacs-buffer-builtins--set-buffer-invisibility-spec (value)
+  "Set the current buffer's `buffer-invisibility-spec' to VALUE."
+  (if (and (emacs-buffer-builtins--standalone-p)
+           (fboundp 'nelisp-ec-current-buffer)
+           (nelisp-ec-current-buffer))
+      (emacs-buffer-builtins--call-emacs-buffer
+       'emacs-buffer-set-buffer-local-value
+       (list 'buffer-invisibility-spec (nelisp-ec-current-buffer) value))
+    (setq buffer-invisibility-spec value)))
+
+(defun emacs-buffer-builtins-add-to-invisibility-spec (element)
+  "Add ELEMENT to `buffer-invisibility-spec'."
+  (let ((spec (emacs-buffer-builtins--buffer-invisibility-spec)))
+    (when (eq spec t)
+      (setq spec (list t)))
+    (emacs-buffer-builtins--set-buffer-invisibility-spec
+     (cons element spec))))
+
+(defun emacs-buffer-builtins-remove-from-invisibility-spec (element)
+  "Remove ELEMENT from `buffer-invisibility-spec'."
+  (let ((spec (emacs-buffer-builtins--buffer-invisibility-spec)))
+    (emacs-buffer-builtins--set-buffer-invisibility-spec
+     (if (consp spec)
+         (delete element spec)
+       (list t)))))
+
+(defun emacs-buffer-builtins-invisible-p (prop)
+  "Return non-nil when PROP is hidden by `buffer-invisibility-spec'.
+The standalone bridge preserves the host-visible shape needed by
+redisplay callers: direct symbol matches return t, cons/list spec
+matches return 2, and absent matches return nil."
+  (let ((spec (and (boundp 'buffer-invisibility-spec)
+                   (emacs-buffer-builtins--buffer-invisibility-spec))))
+    (cond
+     ((null prop) nil)
+     ((eq spec t) t)
+     ((null spec) nil)
+     ((consp prop)
+      (catch 'found
+        (dolist (item prop)
+          (let ((match (emacs-buffer-builtins-invisible-p item)))
+            (when match
+              (throw 'found match))))
+        nil))
+     ((memq prop spec) t)
+     ((assq prop spec) 2)
+     (t nil))))
+
+(when (emacs-buffer-builtins--install-function-p 'put-text-property)
+  (defun put-text-property (start end prop value &optional object)
+    "Set text property PROP to VALUE on buffer OBJECT.
+String text properties are accepted as a no-op in the standalone MVP."
+    (let ((target (emacs-buffer-builtins--text-property-object object)))
+      (unless (or (eq target :string-or-unsupported)
+                  (>= start end))
+        (emacs-buffer-builtins--call-emacs-buffer
+         'emacs-buffer-put-text-property
+         (list start end prop value target))))))
+
+(when (emacs-buffer-builtins--install-function-p 'get-text-property)
+  (defun get-text-property (pos prop &optional object)
+    "Return text property PROP at POS on buffer OBJECT."
+    (let ((target (emacs-buffer-builtins--text-property-object object)))
+      (unless (eq target :string-or-unsupported)
+        (emacs-buffer-builtins--call-emacs-buffer
+         'emacs-buffer-get-text-property
+         (list pos prop target))))))
+
+(defun emacs-buffer-builtins-text-properties-at (pos &optional object)
+  "Return all text properties at POS in buffer OBJECT."
+  (let ((target (emacs-buffer-builtins--text-property-object object)))
+    (unless (eq target :string-or-unsupported)
+      (emacs-buffer-builtins--call-emacs-buffer
+       'emacs-buffer-text-property-at
+       (list pos target)))))
+
+(when (emacs-buffer-builtins--install-function-p 'text-properties-at)
+  (defalias 'text-properties-at
+    #'emacs-buffer-builtins-text-properties-at))
+
+(when (emacs-buffer-builtins--install-function-p 'get-char-property)
+  (defun get-char-property (pos prop &optional object)
+    "Return char property PROP at POS on buffer OBJECT."
+    (let ((target (emacs-buffer-builtins--text-property-object object)))
+      (unless (eq target :string-or-unsupported)
+        (emacs-buffer-builtins--call-emacs-buffer
+         'emacs-buffer-get-char-property
+         (list pos prop target))))))
+
+(when (emacs-buffer-builtins--install-function-p 'invisible-p)
+  (defalias 'invisible-p #'emacs-buffer-builtins-invisible-p))
+
+(when (emacs-buffer-builtins--install-function-p 'add-to-invisibility-spec)
+  (defalias 'add-to-invisibility-spec
+    #'emacs-buffer-builtins-add-to-invisibility-spec))
+
+(when (emacs-buffer-builtins--install-function-p 'remove-from-invisibility-spec)
+  (defalias 'remove-from-invisibility-spec
+    #'emacs-buffer-builtins-remove-from-invisibility-spec))
+
+(defun emacs-buffer-builtins-next-property-change (pos &optional object limit)
+  "Return next property change after POS in OBJECT.
+String property scans are not yet represented in the standalone
+substrate, so unsupported objects return LIMIT or nil."
+  (let ((target (emacs-buffer-builtins--text-property-object object)))
+    (if (eq target :string-or-unsupported)
+        limit
+      (emacs-buffer-builtins--call-emacs-buffer
+       'emacs-buffer-next-property-change
+       (list pos target limit)))))
+
+(defun emacs-buffer-builtins-previous-property-change (pos &optional object limit)
+  "Return previous property change before POS in OBJECT.
+String property scans are not yet represented in the standalone
+substrate, so unsupported objects return LIMIT or nil."
+  (let ((target (emacs-buffer-builtins--text-property-object object)))
+    (if (eq target :string-or-unsupported)
+        limit
+      (emacs-buffer-builtins--call-emacs-buffer
+       'emacs-buffer-previous-property-change
+       (list pos target limit)))))
+
+(defun emacs-buffer-builtins-next-single-property-change
+    (pos prop &optional object limit)
+  "Return next change after POS for text property PROP in OBJECT."
+  (let ((target (emacs-buffer-builtins--text-property-object object)))
+    (if (eq target :string-or-unsupported)
+        limit
+      (emacs-buffer-builtins--call-emacs-buffer
+       'emacs-buffer-next-single-property-change
+       (list pos prop target limit)))))
+
+(defun emacs-buffer-builtins-previous-single-property-change
+    (pos prop &optional object limit)
+  "Return previous change before POS for text property PROP in OBJECT."
+  (let ((target (emacs-buffer-builtins--text-property-object object)))
+    (if (eq target :string-or-unsupported)
+        limit
+      (emacs-buffer-builtins--call-emacs-buffer
+       'emacs-buffer-previous-single-property-change
+       (list pos prop target limit)))))
+
+(when (emacs-buffer-builtins--install-function-p 'next-property-change)
+  (defalias 'next-property-change
+    #'emacs-buffer-builtins-next-property-change))
+
+(when (emacs-buffer-builtins--install-function-p 'previous-property-change)
+  (defalias 'previous-property-change
+    #'emacs-buffer-builtins-previous-property-change))
+
+(when (emacs-buffer-builtins--install-function-p 'next-single-property-change)
+  (defalias 'next-single-property-change
+    #'emacs-buffer-builtins-next-single-property-change))
+
+(when (emacs-buffer-builtins--install-function-p 'previous-single-property-change)
+  (defalias 'previous-single-property-change
+    #'emacs-buffer-builtins-previous-single-property-change))
+
+(when (emacs-buffer-builtins--install-function-p 'next-single-char-property-change)
+  (defalias 'next-single-char-property-change
+    #'emacs-buffer-builtins-next-single-property-change))
+
+(when (emacs-buffer-builtins--install-function-p 'previous-single-char-property-change)
+  (defalias 'previous-single-char-property-change
+    #'emacs-buffer-builtins-previous-single-property-change))
+
+(when (emacs-buffer-builtins--install-function-p 'add-text-properties)
+  (defun add-text-properties (start end props &optional object)
+    "Add text PROPS on buffer OBJECT.
+String text properties are accepted as a no-op in the standalone MVP."
+    (let ((target (emacs-buffer-builtins--text-property-object object)))
+      (unless (or (eq target :string-or-unsupported)
+                  (>= start end))
+        (emacs-buffer-builtins--call-emacs-buffer
+         'emacs-buffer-add-text-properties
+         (list start end props target))))))
+
+(when (emacs-buffer-builtins--install-function-p 'remove-text-properties)
+  (defun remove-text-properties (start end props &optional object)
+    "Remove text PROPS on buffer OBJECT.
+String text properties are accepted as a no-op in the standalone MVP."
+    (let ((target (emacs-buffer-builtins--text-property-object object)))
+      (unless (or (eq target :string-or-unsupported)
+                  (>= start end))
+        (emacs-buffer-builtins--call-emacs-buffer
+         'emacs-buffer-remove-text-properties
+         (list start end props target))))))
+
+(when (emacs-buffer-builtins--install-function-p 'set-text-properties)
+  (defun set-text-properties (start end props &optional object)
+    "Set text PROPS on buffer OBJECT.
+String text properties are accepted as a no-op in the standalone MVP."
+    (let ((target (emacs-buffer-builtins--text-property-object object)))
+      (unless (or (eq target :string-or-unsupported)
+                  (>= start end))
+        (emacs-buffer-builtins--call-emacs-buffer
+         'emacs-buffer-set-text-properties
+         (list start end props target))))))
+
+;; Doc 33 item 244 (M2 completion blocker): unlike the mutating
+;; text-property builtins above, `text-property-not-all' is read-only,
+;; so a string OBJECT does not need the `:string-or-unsupported' no-op
+;; dispatch -- `emacs-buffer-text-property-not-all' (via the plain
+;; `emacs-buffer-get-text-property' it is built on) already treats any
+;; non-buffer OBJECT as carrying no properties, matching the standalone
+;; string text-property MVP.  Passing OBJECT straight through covers
+;; both a real buffer and a string with one call.
+(when (emacs-buffer-builtins--install-function-p 'text-property-not-all)
+  (defun text-property-not-all (start end prop value &optional object)
+    "Return the position in [START, END) of OBJECT where PROP first
+differs (via `eq') from VALUE, or nil if it never does.  OBJECT may be
+a buffer, nil for the current buffer, or a string."
+    (emacs-buffer-builtins--call-emacs-buffer
+     'emacs-buffer-text-property-not-all
+     (list start end prop value object))))
+
+(when (emacs-buffer-builtins--install-function-p 'text-property-any)
+  (defun text-property-any (start end prop value &optional object)
+    "Return the position in [START, END) of OBJECT where PROP first
+matches VALUE via `eq', or nil if it never does.  OBJECT may be a
+buffer, nil for the current buffer, or a string."
+    (emacs-buffer-builtins--call-emacs-buffer
+     'emacs-buffer-text-property-any
+     (list start end prop value object))))
+
+(defun emacs-buffer-builtins-ensure-initial-buffer (&optional name)
+  "Ensure standalone NeLisp has a selected initial buffer.
+NAME defaults to \"*scratch*\".  If a current buffer already exists,
+return it.  Otherwise reuse an existing buffer named NAME or create it,
+select it, and return it."
+  (let* ((buffer-name (or name "*scratch*"))
+         (buf (or (nelisp-ec-current-buffer)
+                  (cdr (assoc buffer-name nelisp-ec--buffers))
+                  (nelisp-ec-generate-new-buffer buffer-name))))
+    (unless (eq (nelisp-ec-current-buffer) buf)
+      (nelisp-ec-set-buffer buf))
+    buf))
+
+(when (and (emacs-buffer-builtins--standalone-p)
+           (not (nelisp-ec-current-buffer)))
+  (emacs-buffer-builtins-ensure-initial-buffer))
+
+;;;; --- overlays ---------------------------------------------------------
+
+;; Overlay support lives in `emacs-buffer.el', which is large because it
+;; also carries text-properties, buffer-local variables, modified ticks,
+;; and undo metadata.  Standalone bootstrap does not need that whole layer
+;; until an overlay API is actually called, so these unprefixed wrappers
+;; lazy-load it on demand.
+
+(when (emacs-buffer-builtins--install-function-p 'overlayp)
+  (defun overlayp (object)
+    "Return non-nil if OBJECT is an overlay."
+    (and (fboundp 'emacs-buffer-overlayp)
+         (emacs-buffer-overlayp object))))
+
+(dolist (--cell--
+         '((make-overlay       . emacs-buffer-make-overlay)
+           (overlay-start      . emacs-buffer-overlay-start)
+           (overlay-end        . emacs-buffer-overlay-end)
+           (overlay-buffer     . emacs-buffer-overlay-buffer)
+           (overlay-properties . emacs-buffer-overlay-properties)
+           (overlay-put        . emacs-buffer-overlay-put)
+           (overlay-get        . emacs-buffer-overlay-get)
+           (move-overlay       . emacs-buffer-move-overlay)
+           (delete-overlay     . emacs-buffer-delete-overlay)
+           (remove-overlays    . emacs-buffer-remove-overlays)
+           (overlays-at        . emacs-buffer-overlays-at)
+           (overlays-in        . emacs-buffer-overlays-in)
+           (next-overlay-change . emacs-buffer-next-overlay-change)
+           (previous-overlay-change . emacs-buffer-previous-overlay-change)
+           (overlay-lists      . emacs-buffer-overlay-lists)
+           (copy-overlay       . emacs-buffer-copy-overlay)))
+  (let ((--name-- (car --cell--))
+        (--target-- (cdr --cell--)))
+    (when (emacs-buffer-builtins--install-function-p --name--)
+      (fset --name--
+            (list 'lambda '(&rest args)
+                  (list 'emacs-buffer-builtins--call-emacs-buffer
+                        (list 'quote --target--)
+                        'args))))))
+
+(when (emacs-buffer-builtins--install-function-p 'overlay-recenter)
+  (defun overlay-recenter (&optional pos)
+    "No-op standalone overlay recenter bridge."
+    (ignore pos)
+    nil))
+
+;;;; --- creation / liveness -----------------------------------------------
+
+(when (emacs-buffer-builtins--install-function-p 'buffer-live-p)
+  (defun buffer-live-p (object)
+    "Return non-nil when OBJECT is a live (non-killed) buffer."
+    (and (nelisp-ec-buffer-p object)
+         (not (nelisp-ec-buffer-killed-p object)))))
+
+(when (emacs-buffer-builtins--install-function-p 'buffer-name)
+  (defun buffer-name (&optional buffer)
+    "Return the name of BUFFER (default = current buffer)."
+    (cond
+     ((null buffer)
+      (let ((b (nelisp-ec-current-buffer)))
+        (and b (nelisp-ec-buffer-name b))))
+     ((nelisp-ec-buffer-p buffer)
+      (nelisp-ec-buffer-name buffer))
+     (t nil))))
+
+;; Doc 200 adds a distinct unibyte representation for strings, but this
+;; compatibility bridge does not implement Emacs's in-place buffer storage
+;; conversion.  Measured on NeLisp v1.1.0+1 after loading this bridge, a fresh
+;; `nelisp-ec' buffer produced `(t nil t t t)' for (MODE-BEFORE RETURN-NIL
+;; MODE-AFTER-NIL RETURN-T MODE-AFTER-T).  Preserve that buffer-layer behavior:
+;; return FLAG without changing the underlying `nelisp-text-buffer' mode.
+(when (emacs-buffer-builtins--install-function-p 'set-buffer-multibyte)
+  (defun set-buffer-multibyte (flag)
+    flag))
+
+;; NeLisp v1.1.0 (Doc 200) gave unibyte strings their own representation,
+;; so the runtime's own `multibyte-string-p' answers as Emacs does: nil for
+;; a pure-ASCII string and nil for a unibyte one.  Installing the bridge
+;; stub over it would report every string as multibyte again.  Ask the
+;; runtime about a pure-ASCII string and keep the stub only for a reader
+;; that predates Doc 200 (or has no `multibyte-string-p' at all).
+(when (and (emacs-buffer-builtins--install-function-p 'multibyte-string-p)
+           (condition-case nil (multibyte-string-p "a") (error t)))
+  (defun multibyte-string-p (object)
+    (stringp object)))
+
+;;;; --- registry lookup (Phase L1, 2026-05-03) --------------------------
+
+;; S2 coverage batch 5 (2026-09-28): on the standalone, a NATIVE `get-buffer'
+;; primitive is already `fboundp' at this point (bound to the reader's own
+;; buffer family: `nelisp-buffer-p'/`nelisp-get-buffer', operating on the
+;; *scratch* buffer the runtime creates at startup), so
+;; the buffer-builtins install predicate used to skip installing this
+;; polyfill entirely.  That native `get-buffer' has no notion of this
+;; bridge's own `nelisp-ec-buffer' struct (the type `buffer-list' below
+;; returns), so `(get-buffer SOME-NELISP-EC-BUFFER)' fell through its `cond'
+;; to a `(signal (list \\='stringp buffer-or-name))' clause -- observed via
+;; `(with-current-buffer (car (buffer-list)) ...)', which expands (using the
+;; native `with-current-buffer') to exactly that call.  Real Emacs's own
+;; `get-buffer' accepts either a buffer or a name, so this is a genuine gap,
+;; not a deliberate native/bridge split.  Fixed by always installing this
+;; polyfill on the standalone (`emacs-buffer-builtins--standalone-p'), and
+;; keeping the pre-existing implementation (native primitive or an earlier
+;; stub) as an explicit fallback for anything this bridge's own registry
+;; does not know about -- e.g. `(get-buffer "*Messages*")' when the native
+;; `message' primitive created that buffer natively before this bridge's
+;; own `nelisp-ec-generate-new-buffer' ever ran (the same native-buffer case
+;; `emacs-special-buffers--ensure-core-buffer' already documents above).
+;; Host Emacs is unaffected: `emacs-buffer-builtins--standalone-p' is nil
+;; there, so the original `install-function-p' gate alone still applies and
+;; the genuine C `get-buffer' is left untouched.
+(defvar emacs-buffer-builtins--native-get-buffer
+  (and (fboundp 'get-buffer) (symbol-function 'get-buffer))
+  "The `get-buffer' implementation in place before this file's own
+polyfill replaces it (a native primitive on the standalone, or an earlier
+stub).  `get-buffer' below falls back to this for anything it does not
+recognize as one of its own `nelisp-ec-buffer' structs or registry
+entries, so buffers created outside this bridge keep resolving exactly
+as before.")
+
+(when (or (emacs-buffer-builtins--install-function-p 'get-buffer)
+          (emacs-buffer-builtins--standalone-p))
+  (defun get-buffer (buffer-or-name)
+    "Phase L1 polyfill: look BUFFER-OR-NAME up in the `nelisp-ec' registry.
+When BUFFER-OR-NAME is a buffer object, return it if live else nil.
+When it is a string, return the matching buffer record if this bridge
+has one; otherwise fall back to `emacs-buffer-builtins--native-get-buffer'
+(covers native-only buffers such as *Messages*, and host Emacs's own
+buffers when this polyfill is active there)."
+    (cond
+     ((null buffer-or-name) nil)
+     ((nelisp-ec-buffer-p buffer-or-name)
+      (if (nelisp-ec-buffer-killed-p buffer-or-name)
+          nil
+        buffer-or-name))
+     ((and (stringp buffer-or-name) (assoc buffer-or-name nelisp-ec--buffers))
+      (cdr (assoc buffer-or-name nelisp-ec--buffers)))
+     (emacs-buffer-builtins--native-get-buffer
+      (funcall emacs-buffer-builtins--native-get-buffer buffer-or-name))
+     (t nil))))
+
+(when (emacs-buffer-builtins--install-function-p 'get-buffer-create)
+  (defun get-buffer-create (buffer-or-name &optional inhibit-buffer-hooks)
+    "Phase L1 polyfill: get an existing buffer or create a fresh one.
+INHIBIT-BUFFER-HOOKS is accepted for API parity but no buffer-hook
+subsystem exists yet to honor it.
+
+Creates through the plain `generate-new-buffer' symbol, not the
+`nelisp-ec'-prefixed constructor, so the object returned is always the
+same buffer representation the currently active `get-buffer' recognizes
+-- mirroring GNU's own `Fget_buffer_create' (buffer.c), which builds
+through the same primitives `Fget_buffer' uses and never a foreign
+buffer representation.  On a standalone image whose prelude already
+ships a complete native buffer family (`get-buffer'/`bufferp'/
+`current-buffer'/`generate-new-buffer' already `fboundp', so
+the buffer-builtins install predicate leaves that family installed
+as-is per its C-subr-preservation policy), `generate-new-buffer'
+resolves to the SAME native constructor `get-buffer' already
+understands.  Calling `nelisp-ec-generate-new-buffer' unconditionally
+here used to hand back this repo's own `nelisp-ec-buffer' struct even on
+such an image, which the native `get-buffer'/`with-current-buffer' only
+recognize via their own `nelisp-buffer-p' record -- the very next lookup
+of that buffer then hit their `(t (signal \\='wrong-type-argument
+(list \\='stringp buffer-or-name)))' fallback (see
+`test/nemacs-process-sync-smoke.el' and
+`emacs-buffer-builtins-test/get-buffer-create-buffer-is-recognized-by-get-buffer')."
+    (ignore inhibit-buffer-hooks)
+    (or (get-buffer buffer-or-name)
+        (generate-new-buffer
+         (cond
+          ((stringp buffer-or-name) buffer-or-name)
+          ((nelisp-ec-buffer-p buffer-or-name)
+           (nelisp-ec-buffer-name buffer-or-name))
+          (t " *unnamed*"))))))
+
+(when (emacs-buffer-builtins--install-function-p 'buffer-list)
+  (defun buffer-list (&optional frame)
+    "Phase L1 polyfill: return a list of every live buffer in the registry.
+FRAME is accepted for API parity (host filters by frame) but the
+prefixed substrate has no per-frame buffer affinity, so all live
+buffers are returned regardless."
+    (ignore frame)
+    (let ((acc nil))
+      (dolist (cell nelisp-ec--buffers)
+        (let ((buf (cdr cell)))
+          (when (and buf (not (nelisp-ec-buffer-killed-p buf)))
+            (setq acc (cons buf acc)))))
+      ;; Reverse for registry-insertion order (= push above prepended).
+      (let ((rev nil))
+        (while acc
+          (setq rev (cons (car acc) rev))
+          (setq acc (cdr acc)))
+        ;; S2 coverage batch 6: a standalone whose core ships the native
+        ;; buffer family (`nelisp-buffer-list') owns the real buffers, and its
+        ;; `with-current-buffer' only accepts those (it calls `nelisp-point'
+        ;; on the object).  Return them, followed by any bridge-registry
+        ;; buffer the native list does not already cover by name, so that
+        ;; `(dolist (b (buffer-list)) (with-current-buffer b ...))' -- which
+        ;; dired.el's `dired-mouse-drag-files' :set callback runs at load
+        ;; time -- works on such a core.
+        (if (fboundp 'nelisp-buffer-list)
+            (let* ((native (nelisp-buffer-list))
+                   (names (mapcar #'buffer-name native))
+                   (extra nil))
+              (dolist (b rev)
+                (unless (member (nelisp-ec-buffer-name b) names)
+                  (setq extra (cons b extra))))
+              (append native (nreverse extra)))
+          rev)))))
+
+;;;; --- current buffer ---------------------------------------------------
+
+;; current-buffer / set-buffer batched into the dolist near the top.
+
+(when (emacs-buffer-builtins--install-function-p 'with-current-buffer)
+  (defmacro with-current-buffer (buf &rest body)
+    "Phase 9 polyfill: forward to `nelisp-ec-with-current-buffer'."
+    (declare (indent 1) (debug (form body)))
+    (cons 'nelisp-ec-with-current-buffer (cons buf body))))
+
+(when (emacs-buffer-builtins--install-function-p 'default-value)
+  (defalias 'default-value #'emacs-buffer-default-value))
+
+(when (emacs-buffer-builtins--install-function-p 'default-boundp)
+  (defalias 'default-boundp #'emacs-buffer-default-boundp))
+
+(when (emacs-buffer-builtins--install-function-p 'set-default)
+  (defalias 'set-default #'emacs-buffer-set-default))
+
+(defun emacs-buffer-builtins-buffer-modified-tick (&optional buffer)
+  "Return BUFFER's standalone modified tick."
+  (emacs-buffer-builtins--call-emacs-buffer
+   'emacs-buffer-buffer-chars-modified-tick
+   (list buffer)))
+
+(when (emacs-buffer-builtins--install-function-p 'buffer-modified-tick)
+  (defalias 'buffer-modified-tick
+    #'emacs-buffer-builtins-buffer-modified-tick))
+
+(when (emacs-buffer-builtins--install-function-p 'buffer-chars-modified-tick)
+  (defalias 'buffer-chars-modified-tick
+    #'emacs-buffer-builtins-buffer-modified-tick))
+
+;;;; --- positions ---------------------------------------------------------
+
+;; point / point-min / point-max / goto-char batched into the dolist near
+;; the top.
+
+(when (emacs-buffer-builtins--install-function-p 'forward-char)
+  (defun forward-char (&optional n)
+    "Phase 9 polyfill: move point N (default 1) characters forward.
+Bound to C-f / <right>.
+
+Matches the real Emacs C `forward-char' end-of-buffer semantics: when
+the target lies past the accessible end, point is clamped to point-max
+and `end-of-buffer' is signaled (not `nelisp-ec-args-out-of-range' from
+the underlying primitive).  The command loop catches the signal as a
+soft non-fatal end-of-buffer message; non-loop callers can wrap in
+`condition-case' against `end-of-buffer'."
+    (interactive "p")
+    (let* ((n (or n 1))
+           (p (nelisp-ec-point))
+           (lo (nelisp-ec-point-min))
+           (hi (nelisp-ec-point-max))
+           (target (+ p n)))
+      (cond
+       ((< target lo)
+        (nelisp-ec-goto-char lo)
+        (signal 'beginning-of-buffer nil))
+       ((> target hi)
+        (nelisp-ec-goto-char hi)
+        (signal 'end-of-buffer nil))
+       (t
+        (nelisp-ec-goto-char target)
+        t)))))
+
+(when (emacs-buffer-builtins--install-function-p 'backward-char)
+  (defun backward-char (&optional n)
+    "Phase 9 polyfill: move point N (default 1) characters backward.
+Bound to C-b / <left>.
+
+Symmetric to `forward-char' for `beginning-of-buffer' / `end-of-buffer'
+clamp + signal semantics."
+    (interactive "p")
+    (forward-char (- (or n 1)))))
+
+;; buffer-size batched into the dolist near the top.
+
+;;;; --- text mutation + accessors ----------------------------------------
+
+;; insert / erase-buffer / delete-region batched into the dolist near the
+;; top.
+
+(defun emacs-buffer-builtins-char-after (&optional pos)
+  "Return character at POS, or nil at end of accessible buffer."
+  (let ((p (or pos (nelisp-ec-point))))
+    (if (and (integerp p)
+             (>= p (nelisp-ec-point-min))
+             (< p (nelisp-ec-point-max)))
+        (aref (nelisp-ec-buffer-substring p (1+ p)) 0)
+      nil)))
+
+(defun emacs-buffer-builtins-char-before (&optional pos)
+  "Return character before POS, or nil at beginning of accessible buffer."
+  (let ((p (or pos (nelisp-ec-point))))
+    (if (and (integerp p)
+             (> p (nelisp-ec-point-min))
+             (<= p (nelisp-ec-point-max)))
+        (aref (nelisp-ec-buffer-substring (1- p) p) 0)
+      nil)))
+
+(defun emacs-buffer-builtins-following-char ()
+  "Return character at point, or 0 at end of accessible buffer."
+  (or (emacs-buffer-builtins-char-after) 0))
+
+(defun emacs-buffer-builtins-preceding-char ()
+  "Return character before point, or 0 at beginning of accessible buffer."
+  (or (emacs-buffer-builtins-char-before) 0))
+
+(dolist (--cell--
+         '((char-after     . emacs-buffer-builtins-char-after)
+           (char-before    . emacs-buffer-builtins-char-before)
+           (following-char . emacs-buffer-builtins-following-char)
+           (preceding-char . emacs-buffer-builtins-preceding-char)))
+  (let ((--name-- (car --cell--))
+        (--target-- (cdr --cell--)))
+    (when (emacs-buffer-builtins--install-function-p --name--)
+      (defalias --name-- --target--))))
+
+(defun emacs-buffer-builtins-subst-char-in-region
+    (start end fromchar tochar &optional noundo)
+  "Replace FROMCHAR with TOCHAR between START and END.
+NOUNDO is accepted for API parity; the standalone substrate currently
+has no undo integration at this layer."
+  (ignore noundo)
+  (let ((text (nelisp-ec-buffer-substring start end))
+        (i 0)
+        (changed nil)
+        (replacement ""))
+    (while (< i (length text))
+      (let ((ch (aref text i)))
+        (when (= ch fromchar)
+          (setq ch tochar)
+          (setq changed t))
+        (setq replacement (concat replacement (string ch))))
+      (setq i (1+ i)))
+    (when changed
+      (nelisp-ec-save-excursion
+        (nelisp-ec-goto-char start)
+        (nelisp-ec-delete-region start end)
+        (nelisp-ec-insert replacement)))
+    nil))
+
+(when (emacs-buffer-builtins--install-function-p 'subst-char-in-region)
+  (defalias 'subst-char-in-region
+    #'emacs-buffer-builtins-subst-char-in-region))
+
+(when (emacs-buffer-builtins--install-function-p 'delete-char)
+  (defun delete-char (n &optional killflag)
+    "Phase 9 polyfill: delete N characters forward (negative = backward).
+KILLFLAG accepted for host API parity but ignored in MVP.
+Forwards to `nelisp-ec-delete-char'.  Bound to C-d.
+
+The `(interactive \"p\")' form supplies N from the prefix-arg, so a
+keymap dispatch with no prefix passes N=1.  Without this form,
+`call-interactively' would build an empty arg list and crash on the
+required N parameter (= the same lambda-arity-mismatch that bit
+`delete-backward-char' before its 2026-05-04 fix)."
+    (interactive "p")
+    (ignore killflag)
+    (if (and (fboundp 'nelisp-buffer-p) (nelisp-buffer-p (current-buffer)))
+        ;; The standalone core's buffers (`with-temp-buffer',
+        ;; `find-file-noselect', ...) are native; the ec layer below never sees
+        ;; them.  Same contract as Fdelete_char.
+        (let ((pos (+ (point) n)))
+          (cond ((< pos (point-min)) (signal 'beginning-of-buffer nil))
+                ((> pos (point-max)) (signal 'end-of-buffer nil))
+                (t (delete-region (min pos (point)) (max pos (point)))))
+          nil)
+      (nelisp-ec-delete-char n))))
+
+;; buffer-string / buffer-substring / buffer-substring-no-properties
+;; batched into the dolist near the top.
+
+;;;; --- save-* family ----------------------------------------------------
+
+(when (emacs-buffer-builtins--install-function-p 'save-excursion)
+  (defmacro save-excursion (&rest body)
+    "Phase 9 polyfill: expand to `nelisp-ec-save-excursion' semantics."
+    (declare (indent 0) (debug (body)))
+    (nelisp-ec--save-excursion-form body)))
+
+(when (emacs-buffer-builtins--install-function-p 'save-restriction)
+  (defmacro save-restriction (&rest body)
+    "Phase 9 polyfill: expand to `nelisp-ec-save-restriction' semantics."
+    (declare (indent 0) (debug (body)))
+    (nelisp-ec--save-restriction-form body)))
+
+(when (emacs-buffer-builtins--install-function-p 'save-current-buffer)
+  (defmacro save-current-buffer (&rest body)
+    "Phase 9 polyfill: expand to `nelisp-ec-save-current-buffer' semantics."
+    (declare (indent 0) (debug (body)))
+    (nelisp-ec--save-current-buffer-form body)))
+
+;; Doc 33 §8 item 242: the vendor NeLisp stdlib's own `setq-default'
+;; (`vendor/nelisp/lisp/nelisp-stdlib-eval-special.el') is a plain
+;; `setq' alias ("NeLisp has no buffer-local"), so without this
+;; polyfill every buffer would share one poisoned default the moment
+;; ANY buffer ran `setq-default' on a per-buffer symbol — e.g.
+;; the magit bridge buffer-defaults helper's own
+;; `(setq-default buffer-read-only nil)' would otherwise never persist
+;; once `magit-section-mode' next sets the GLOBAL `buffer-read-only' to
+;; `t' via ordinary `setq'.  Each SYM/VALUE pair routes through
+;; `emacs-buffer-setq-default-1' (function, not macro, since macro
+;; expansion here just needs to call something once per pair).
+(when (emacs-buffer-builtins--install-function-p 'setq-default)
+  (defmacro setq-default (&rest pairs)
+    "Phase 9/Doc 33 item 242 polyfill: route through the swap engine.
+Supersedes the vendor NeLisp stdlib `setq-default' (plain `setq' alias)
+— see the commentary immediately above this form."
+    (let (forms (rest pairs))
+      (while rest
+        (push (list 'emacs-buffer-setq-default-1
+                     (list 'quote (car rest)) (cadr rest))
+              forms)
+        (setq rest (cddr rest)))
+      (cons 'progn (nreverse forms)))))
+
+;;;; --- narrow / widen ---------------------------------------------------
+
+;; narrow-to-region / widen batched into the dolist near the top.
+
+;;;; --- markers ----------------------------------------------------------
+
+;; make-marker / set-marker / marker-position / marker-buffer /
+;; point-marker batched into the dolist near the top.
+
+;;;; --- with-temp-buffer / with-temp-file (Phase 9 rewrite) -------------
+
+;; Phase 8 used a global string accumulator (`emacs-stub--current-temp-buffer')
+;; which collapsed under multi-buffer scenarios.  Phase 9 replaces the body
+;; with a real `nelisp-ec' buffer that participates in the current-buffer
+;; dispatch and respects narrow / point.
+
+(when (emacs-buffer-builtins--install-function-p 'with-temp-buffer)
+  (defmacro with-temp-buffer (&rest body)
+    "Phase 9 polyfill: real-buffer rewrite of `with-temp-buffer'.
+A fresh `nelisp-ec' buffer named ` *temp*' is created, made current
+for BODY, then killed unconditionally on exit (= via `unwind-protect')."
+    (declare (indent 0) (debug (body)))
+    (let ((buf (make-symbol "buf")))
+      (list 'let (list (list buf (list 'nelisp-ec-generate-new-buffer
+                                       " *temp*")))
+            (list 'unwind-protect
+                  (cons 'nelisp-ec-with-current-buffer (cons buf body))
+                  (list 'nelisp-ec-kill-buffer buf))))))
+
+(when (emacs-buffer-builtins--install-function-p 'with-temp-file)
+  (defmacro with-temp-file (path &rest body)
+    "Phase 9 polyfill: real-buffer rewrite of `with-temp-file'.
+BODY runs inside a fresh `nelisp-ec' buffer; on normal exit the buffer
+contents are written to PATH via `nl-write-file' (when available),
+falling back to `write-region' under host Emacs."
+    (declare (indent 1) (debug (form body)))
+    (let ((buf (make-symbol "buf"))
+          (p (make-symbol "p"))
+          (s (make-symbol "s")))
+      (list 'let (list (list p path)
+                       (list buf (list 'nelisp-ec-generate-new-buffer
+                                       " *temp-file*")))
+            (list 'unwind-protect
+                  (list 'progn
+                        (cons 'nelisp-ec-with-current-buffer (cons buf body))
+                        (list 'let (list (list s
+                                               (list
+                                                'nelisp-ec-with-current-buffer
+                                                buf
+                                                '(nelisp-ec-buffer-string))))
+                              (list 'cond
+                                    (list (list 'fboundp (list 'quote
+                                                               'nl-write-file))
+                                          (list 'nl-write-file p s))
+                                    (list (list 'fboundp (list 'quote
+                                                               'write-region))
+                                          (list 'write-region s nil p)))))
+                  (list 'nelisp-ec-kill-buffer buf))))))
+
+;; ---- buffer-hash (C builtin) ----
+;; A non-cryptographic content hash used to detect buffer changes.  Callers
+;; only compare two hashes for equality.  The runtime's sxhash / md5 /
+;; secure-hash are stubbed (return nil) here, so use a deterministic djb2
+;; digest over the buffer text -- content-sensitive and dependency-free.
+
+(unless (fboundp 'buffer-hash)
+  (defun buffer-hash (&optional buffer-or-name)
+    "Return a hash string of the entire contents of BUFFER-OR-NAME.
+Ignores narrowing (hashes the whole buffer)."
+    (let ((buf (if (stringp buffer-or-name)
+                   (get-buffer buffer-or-name)
+                 (or buffer-or-name (current-buffer))))
+          (s nil))
+      ;; Capture the text via `setq' rather than relying on the return value
+      ;; of `with-current-buffer'/`save-restriction', which this runtime does
+      ;; not propagate (they return the buffer, not the body value).
+      (save-current-buffer
+        (set-buffer buf)
+        (save-restriction
+          (widen)
+          (setq s (buffer-substring-no-properties (point-min) (point-max)))))
+      (let ((h 5381) (i 0) (n (length s)))
+        (while (< i n)
+          (setq h (logand (+ (* h 33) (aref s i)) 1099511627775)) ; mod 2^40
+          (setq i (1+ i)))
+        (number-to-string h)))))
+
+;; Consumer `nelisp-ec' buffers and markers are also valid print/read
+;; streams.  The standalone reader's native stream helpers only know its
+;; own buffer representation, so bridge these objects at the helper level.
+(defvar emacs-buffer-builtins--native-valid-print-stream-p nil)
+(defvar emacs-buffer-builtins--native-emit-to-stream nil)
+(defvar emacs-buffer-builtins--native-read-dispatch nil)
+(defvar emacs-buffer-builtins--native-prn-to-string nil)
+
+(defun emacs-buffer-builtins-valid-print-stream-p (stream)
+  "Return non-nil when STREAM is a supported print stream."
+  (or (nelisp-ec-buffer-p stream)
+      (nelisp-ec-marker-p stream)
+      (and emacs-buffer-builtins--native-valid-print-stream-p
+           (funcall emacs-buffer-builtins--native-valid-print-stream-p stream))))
+
+(defun emacs-buffer-builtins--emit-to-ec-marker (str marker)
+  "Emit STR at MARKER while preserving the marker's buffer and point."
+  (let ((mbuf (nelisp-ec-marker-buffer marker)))
+    (unless mbuf
+      (signal 'error (list "Marker does not point anywhere")))
+    (let ((saved-buffer nelisp-ec--current-buffer))
+      (unwind-protect
+          (let ((nelisp-ec--current-buffer mbuf))
+             (let* ((orig-point (nelisp-ec-point))
+                   (ins-pos (nelisp-ec-marker-position marker))
+                   (n (length str))
+                   (completed nil))
+              (when (or (< ins-pos (nelisp-ec-point-min))
+                        (> ins-pos (nelisp-ec-point-max)))
+                (signal 'error
+                        (list "Marker is outside the accessible part of the buffer"
+                              marker)))
+              (unwind-protect
+                  (progn
+                    (nelisp-ec-goto-char ins-pos)
+                    (nelisp-ec-insert str)
+                    (nelisp-ec-goto-char (if (>= orig-point ins-pos)
+                                              (+ orig-point n) orig-point))
+                    (nelisp-ec-set-marker marker (+ ins-pos n) mbuf)
+                    (setq completed t))
+                (when (and (not completed)
+                           (nelisp-ec-buffer-p mbuf)
+                           (not (nelisp-ec-buffer-killed-p mbuf)))
+                  (nelisp-ec-goto-char orig-point)))))
+        (setq nelisp-ec--current-buffer saved-buffer)))))
+
+(defun emacs-buffer-builtins-emit-to-stream (str stream)
+  "Emit STR to an EC buffer/marker or delegate to the native helper."
+  (cond
+   ((nelisp-ec-buffer-p stream)
+    (let ((saved nelisp-ec--current-buffer))
+      (unwind-protect
+          (let ((nelisp-ec--current-buffer stream)) (nelisp-ec-insert str))
+        (setq nelisp-ec--current-buffer saved))))
+   ((nelisp-ec-marker-p stream)
+    (emacs-buffer-builtins--emit-to-ec-marker str stream))
+   (emacs-buffer-builtins--native-emit-to-stream
+    (funcall emacs-buffer-builtins--native-emit-to-stream str stream))
+   (t (princ str))))
+
+(defun emacs-buffer-builtins-read-dispatch (stream)
+  "Read one form from an EC buffer/marker or delegate natively."
+  (cond
+   ((nelisp-ec-buffer-p stream)
+    (let ((saved nelisp-ec--current-buffer))
+      (unwind-protect
+          (let ((nelisp-ec--current-buffer stream))
+            (let* ((base (1- (nelisp-ec-point-min)))
+                   (start (- (1- (nelisp-ec-point)) base))
+                   (full (nelisp-ec-buffer-string))
+                   (r (condition-case nil
+                          (read-from-string full start)
+                        (end-of-file (signal 'end-of-file (list stream))))))
+              (nelisp-ec-goto-char (+ (nelisp-ec-point-min) (cdr r)))
+              (car r)))
+        (setq nelisp-ec--current-buffer saved))))
+   ((nelisp-ec-marker-p stream)
+    (let ((mbuf (nelisp-ec-marker-buffer stream)))
+      (unless mbuf (signal 'error (list "Marker does not point anywhere")))
+      (let ((saved nelisp-ec--current-buffer))
+        (unwind-protect
+            (let ((nelisp-ec--current-buffer mbuf))
+              ;; Marker streams ignore narrowing on GNU Emacs.  Read the
+              ;; complete buffer, then restore both restriction and point.
+              (let* ((orig-point (nelisp-ec-point))
+                     (saved-lo (nelisp-ec-buffer-narrow-start mbuf))
+                     (saved-hi (nelisp-ec-buffer-narrow-end mbuf)))
+                (unwind-protect
+                    (progn
+                      (nelisp-ec-widen)
+                      (let* ((full (nelisp-ec-buffer-string))
+                             (start (1- (nelisp-ec-marker-position stream)))
+                             (r (read-from-string full start)))
+                        (nelisp-ec-set-marker stream (1+ (cdr r)) mbuf)
+                        (car r)))
+                  (nelisp-ec--set-buffer-narrow-start mbuf saved-lo)
+                  (nelisp-ec--set-buffer-narrow-end mbuf saved-hi)
+                  (nelisp-ec-goto-char orig-point))))
+          (setq nelisp-ec--current-buffer saved)))))
+   (emacs-buffer-builtins--native-read-dispatch
+    (funcall emacs-buffer-builtins--native-read-dispatch stream))
+   (t (signal (if (symbolp stream) 'void-function 'invalid-function)
+              (list stream)))))
+
+
+(defun emacs-buffer-builtins-prn-to-string (obj escape &optional depth)
+  "Print EC buffers/markers in Emacs's opaque object notation."
+  (cond
+   ((nelisp-ec-buffer-p obj)
+    (if (nelisp-ec-buffer-killed-p obj) "#<killed buffer>"
+      (format "#<buffer %s>" (nelisp-ec-buffer-name obj))))
+   ((nelisp-ec-marker-p obj)
+    (let ((buf (nelisp-ec-marker-buffer obj)))
+      (if buf (format "#<marker at %d in %s>"
+                      (nelisp-ec-marker-position obj)
+                      (nelisp-ec-buffer-name buf))
+        "#<marker in no buffer>")))
+   (emacs-buffer-builtins--native-prn-to-string
+    (funcall emacs-buffer-builtins--native-prn-to-string obj escape depth))
+   (t (format "#<unprintable %S>" obj))))
+
+(when (emacs-buffer-builtins--standalone-p)
+  (when (and (fboundp 'nelisp--valid-print-stream-p)
+             (not emacs-buffer-builtins--native-valid-print-stream-p))
+    (setq emacs-buffer-builtins--native-valid-print-stream-p
+          (symbol-function 'nelisp--valid-print-stream-p))
+    (fset 'nelisp--valid-print-stream-p #'emacs-buffer-builtins-valid-print-stream-p))
+  (when (and (fboundp 'nelisp--emit-to-stream)
+             (not emacs-buffer-builtins--native-emit-to-stream))
+    (setq emacs-buffer-builtins--native-emit-to-stream
+          (symbol-function 'nelisp--emit-to-stream))
+    (fset 'nelisp--emit-to-stream #'emacs-buffer-builtins-emit-to-stream))
+  (when (and (fboundp 'nelisp--read-dispatch)
+             (not emacs-buffer-builtins--native-read-dispatch))
+    (setq emacs-buffer-builtins--native-read-dispatch
+          (symbol-function 'nelisp--read-dispatch))
+    (fset 'nelisp--read-dispatch #'emacs-buffer-builtins-read-dispatch))
+  (when (and (fboundp 'nelisp--prn-to-string)
+             (not emacs-buffer-builtins--native-prn-to-string))
+    (setq emacs-buffer-builtins--native-prn-to-string
+          (symbol-function 'nelisp--prn-to-string))
+    (fset 'nelisp--prn-to-string #'emacs-buffer-builtins-prn-to-string)))
+
+(provide 'emacs-buffer-builtins)
+
+;;; emacs-buffer-builtins.el ends here
