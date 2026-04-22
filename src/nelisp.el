@@ -40,10 +40,14 @@
 (require 'nelisp-macro)
 (require 'nelisp-load)
 
+;; Now that `defmacro' dispatch is wired (nelisp-macro.el) install the
+;; NeLisp-native macros that depend on it — `dolist' / `push' / etc.
+(nelisp--install-core-macros)
+
 (defconst nelisp-version "0.0.0"
   "Current version of NeLisp.
 Phase 1 complete (reader + eval + macro + dynamic + cond + stdlib);
-Phase 2 multi-form file loader is in.")
+Phase 2 multi-form file loader + reader extensions + core macros are in.")
 
 (defgroup nelisp nil
   "Self-hosted Emacs Lisp VM in pure Elisp."

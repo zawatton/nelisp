@@ -34,20 +34,28 @@
 ;;   setq, while, catch, throw, unwind-protect, condition-case
 ;;
 ;; Installed builtins (delegated to the host Elisp functions):
-;;   List:   car cdr cons list null not atom consp listp
-;;           length nth nthcdr last reverse append
-;;           member memq assq assoc
-;;   Eq:     eq eql equal
+;;   List:   car cdr caar cadr cdar cddr
+;;           cons list null not atom consp listp
+;;           length nth nthcdr last reverse nreverse append
+;;           member memq assq assoc setcar setcdr
+;;   Eq:     eq eql equal identity ignore
 ;;   Arith:  + - * / mod /= < <= > >= =
 ;;           1+ 1- abs max min zerop numberp integerp
 ;;   String: stringp concat substring string=
 ;;           string-to-number number-to-string upcase downcase
 ;;           format prin1-to-string
-;;   Symbol: symbolp intern symbol-name
-;;   Error:  error signal user-error
+;;   Symbol: symbolp keywordp intern make-symbol symbol-name gensym
+;;   Hash:   make-hash-table gethash puthash remhash clrhash
+;;           hash-table-p hash-table-count
+;;   Error:  error signal user-error define-error
 ;; Plus NeLisp-aware wrappers that must see our closure tag or our
 ;; hash tables: funcall apply mapcar mapc mapconcat boundp fboundp
 ;; symbol-value.
+;;
+;; Core macros (installed via `nelisp--install-core-macros', sources
+;; in `nelisp--core-macro-source' — written in NeLisp itself thanks
+;; to the Phase 2 backquote reader): defsubst declare-function push
+;; pop dolist dotimes.
 ;;
 ;; The macro system (defmacro / macroexpand / macroexpand-all) lives
 ;; in `nelisp-macro.el'; this file only hosts the two hooks that make
@@ -573,10 +581,12 @@ not registered in our table, which keeps host helper symbols like
   '(;; Pair / list constructors + shape predicates
     car cdr caar cadr cdar cddr
     cons list null not atom consp listp
-    length nth nthcdr last reverse append
+    length nth nthcdr last reverse nreverse append
     member memq assq assoc
-    ;; Equality
-    eq eql equal
+    ;; List mutation (cons cell slot writes)
+    setcar setcdr
+    ;; Equality / identity
+    eq eql equal identity ignore
     ;; Arithmetic
     + - * / mod /= < <= > >= =
     1+ 1- abs max min zerop numberp integerp
@@ -585,10 +595,14 @@ not registered in our table, which keeps host helper symbols like
     upcase downcase format prin1-to-string
     ;; Symbol surface (interning side; value / function cells handled
     ;; via NeLisp-aware wrappers below)
-    symbolp intern symbol-name
-    ;; Error plumbing — `error' / `signal' / `user-error' raise host
-    ;; conditions that `condition-case' already knows how to catch.
-    error signal user-error)
+    symbolp keywordp intern make-symbol symbol-name gensym
+    ;; Hash tables — raw data, safe to delegate wholesale
+    make-hash-table gethash puthash remhash clrhash
+    hash-table-p hash-table-count
+    ;; Error plumbing — `error' / `signal' / `user-error' / `define-error'
+    ;; all hook into the host condition system that `condition-case'
+    ;; already knows how to catch.
+    error signal user-error define-error)
   "Host Elisp primitives borrowed wholesale by Phase 1 NeLisp.
 Each entry is copied by `symbol-function' at install time so the
 host's bytecode / subr implementation runs unchanged.")
@@ -666,6 +680,58 @@ closures, NeLisp-only defuns, and our own hash tables stay visible."
   (puthash 'fboundp      #'nelisp--builtin-fboundp      nelisp--functions)
   (puthash 'symbol-value #'nelisp--builtin-symbol-value nelisp--functions))
 
+(defconst nelisp--core-macro-source
+  "\
+(defmacro defsubst (name params &rest body)
+  (cons (quote defun) (cons name (cons params body))))
+
+(defmacro declare-function (&rest _ignored)
+  nil)
+
+(defmacro push (elt place)
+  `(setq ,place (cons ,elt ,place)))
+
+(defmacro pop (place)
+  `(prog1 (car ,place) (setq ,place (cdr ,place))))
+
+(defmacro dolist (spec &rest body)
+  (let ((var (car spec))
+        (seq-form (cadr spec))
+        (result (nth 2 spec))
+        (seq-sym (gensym \"dolist-seq-\")))
+    `(let ((,seq-sym ,seq-form))
+       (while ,seq-sym
+         (let ((,var (car ,seq-sym)))
+           ,@body)
+         (setq ,seq-sym (cdr ,seq-sym)))
+       ,result)))
+
+(defmacro dotimes (spec &rest body)
+  (let ((var (car spec))
+        (count-form (cadr spec))
+        (result (nth 2 spec))
+        (limit-sym (gensym \"dotimes-n-\")))
+    `(let ((,limit-sym ,count-form)
+           (,var 0))
+       (while (< ,var ,limit-sym)
+         ,@body
+         (setq ,var (+ ,var 1)))
+       ,result)))
+"
+  "Core macros installed on top of the NeLisp primitive substrate.
+Written as a string so the NeLisp reader parses the embedded
+backquote / unquote / splice directly — we get to use the reader
+features landed in Phase 2 Week 3-6 to bootstrap the macros that
+Phase 1 deferred.  `nelisp--install-core-macros' evaluates every
+top-level form here in order against the NeLisp global tables.")
+
+(defun nelisp--install-core-macros ()
+  "Parse `nelisp--core-macro-source' and evaluate every top-level form.
+Must run after `nelisp--install-primitives' since some macro bodies
+call `gensym' to avoid lexical capture."
+  (dolist (form (nelisp-read-all nelisp--core-macro-source))
+    (nelisp-eval form)))
+
 ;;; Public API ---------------------------------------------------------
 
 ;;;###autoload
@@ -679,16 +745,24 @@ closures, NeLisp-only defuns, and our own hash tables stay visible."
   (nelisp-eval (nelisp-read str)))
 
 (defun nelisp--reset ()
-  "Clear all global NeLisp state and reinstall primitives.
+  "Clear all global NeLisp state and reinstall primitives + core macros.
 Intended for test hygiene; callers should expect to re-run every
 `defun' / `defvar' from scratch afterwards."
   (clrhash nelisp--functions)
   (clrhash nelisp--globals)
   (clrhash nelisp--specials)
   (clrhash nelisp--macros)
-  (nelisp--install-primitives))
+  (nelisp--install-primitives)
+  (nelisp--install-core-macros))
 
 (nelisp--install-primitives)
+;; Core macros (dolist / push / defsubst / …) reach into the evaluator
+;; via the macro system, which lives in `nelisp-macro.el'.  That file
+;; has not been loaded yet when this file is read, so
+;; `nelisp--install-core-macros' is called from `src/nelisp.el' once
+;; every module is in place — see the `(nelisp--install-core-macros)'
+;; call there.  `nelisp--reset' already covers test hygiene because
+;; tests only run after `nelisp.el' has completed loading.
 
 (provide 'nelisp-eval)
 
