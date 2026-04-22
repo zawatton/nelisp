@@ -34,9 +34,20 @@
 ;;   setq, while, catch, throw, unwind-protect, condition-case
 ;;
 ;; Installed builtins (delegated to the host Elisp functions):
-;;   car cdr cons list null not atom consp symbolp
-;;   eq equal + - * / < <= > >= =
-;; Plus NeLisp-aware wrappers: funcall, apply.
+;;   List:   car cdr cons list null not atom consp listp
+;;           length nth nthcdr last reverse append
+;;           member memq assq assoc
+;;   Eq:     eq eql equal
+;;   Arith:  + - * / mod /= < <= > >= =
+;;           1+ 1- abs max min zerop numberp integerp
+;;   String: stringp concat substring string=
+;;           string-to-number number-to-string upcase downcase
+;;           format prin1-to-string
+;;   Symbol: symbolp intern symbol-name
+;;   Error:  error signal user-error
+;; Plus NeLisp-aware wrappers that must see our closure tag or our
+;; hash tables: funcall apply mapcar mapc mapconcat boundp fboundp
+;; symbol-value.
 ;;
 ;; The macro system (defmacro / macroexpand / macroexpand-all) lives
 ;; in `nelisp-macro.el'; this file only hosts the two hooks that make
@@ -44,8 +55,9 @@
 ;; arm that routes macro calls through `nelisp-macroexpand'.
 ;;
 ;; Deferred (still out of scope for this file):
-;;   mapcar and the rest of the higher-order primitives
-;;   string / format / intern / boundp / fboundp / prin1 / princ
+;;   dolist / dotimes (trivial once macros land via nelisp-macro.el)
+;;   princ / prin1 / message side-effect output (tests prefer pure
+;;   `prin1-to-string' / `format' variants anyway)
 ;;   dynamic binding on function parameters (only `let' / `let*'
 ;;   bindings go dynamic for special names; lambda params stay
 ;;   lexical regardless, a deliberate Phase 1 simplification)
@@ -497,10 +509,22 @@ the first match wins.  Unmatched errors propagate to the caller."
 ;;; Apply --------------------------------------------------------------
 
 (defun nelisp--apply (fn args)
-  "Apply FN to the already-evaluated ARGS list."
+  "Apply FN to the already-evaluated ARGS list.
+A symbol FN looks in `nelisp--functions' first so NeLisp-only defuns
+passed to higher-order primitives (e.g. `mapcar') dispatch correctly;
+it falls through to the host Elisp binding only when the symbol is
+not registered in our table, which keeps host helper symbols like
+`nelisp--builtin-mapcar' callable when they appear inline."
   (cond
    ((nelisp--closure-p fn)
     (nelisp--apply-closure fn args))
+   ((symbolp fn)
+    (let ((nfn (gethash fn nelisp--functions nelisp--unbound)))
+      (if (eq nfn nelisp--unbound)
+          (if (functionp fn)
+              (apply fn args)
+            (signal 'nelisp-void-function (list fn)))
+        (nelisp--apply nfn args))))
    ((functionp fn)
     (apply fn args))
    (t
@@ -546,10 +570,28 @@ the first match wins.  Unmatched errors propagate to the caller."
 ;;; Primitive install --------------------------------------------------
 
 (defconst nelisp--primitive-symbols
-  '(car cdr cons list null not atom consp symbolp
-        eq equal
-        + - * / < <= > >= =)
-  "Host Elisp primitives borrowed wholesale by Phase 1 NeLisp.")
+  '(;; Pair / list constructors + shape predicates
+    car cdr caar cadr cdar cddr
+    cons list null not atom consp listp
+    length nth nthcdr last reverse append
+    member memq assq assoc
+    ;; Equality
+    eq eql equal
+    ;; Arithmetic
+    + - * / mod /= < <= > >= =
+    1+ 1- abs max min zerop numberp integerp
+    ;; String / format
+    stringp concat substring string= string-to-number number-to-string
+    upcase downcase format prin1-to-string
+    ;; Symbol surface (interning side; value / function cells handled
+    ;; via NeLisp-aware wrappers below)
+    symbolp intern symbol-name
+    ;; Error plumbing — `error' / `signal' / `user-error' raise host
+    ;; conditions that `condition-case' already knows how to catch.
+    error signal user-error)
+  "Host Elisp primitives borrowed wholesale by Phase 1 NeLisp.
+Each entry is copied by `symbol-function' at install time so the
+host's bytecode / subr implementation runs unchanged.")
 
 (defun nelisp--builtin-funcall (fn &rest args)
   "NeLisp-aware `funcall': accepts NeLisp closures and primitives."
@@ -562,14 +604,67 @@ the first match wins.  Unmatched errors propagate to the caller."
                (t (append (butlast args) (car (last args)))))))
     (nelisp--apply fn flat)))
 
+(defun nelisp--builtin-mapcar (fn seq)
+  "NeLisp-aware `mapcar': FN may be a NeLisp closure, a symbol
+resolved through `nelisp--functions', or a host Elisp primitive."
+  (let ((result nil))
+    (while seq
+      (push (nelisp--apply fn (list (car seq))) result)
+      (setq seq (cdr seq)))
+    (nreverse result)))
+
+(defun nelisp--builtin-mapc (fn seq)
+  "NeLisp-aware `mapc': side-effect only, returns SEQ."
+  (let ((orig seq))
+    (while seq
+      (nelisp--apply fn (list (car seq)))
+      (setq seq (cdr seq)))
+    orig))
+
+(defun nelisp--builtin-mapconcat (fn seq separator)
+  "NeLisp-aware `mapconcat'."
+  (let ((parts nil))
+    (while seq
+      (push (nelisp--apply fn (list (car seq))) parts)
+      (setq seq (cdr seq)))
+    (mapconcat #'identity (nreverse parts) separator)))
+
+(defun nelisp--builtin-boundp (sym)
+  "Non-nil if SYM has a value in the NeLisp global table.
+Self-evaluating atoms (nil, t, keywords) are always bound."
+  (cond
+   ((memq sym '(nil t)) t)
+   ((keywordp sym) t)
+   (t (not (eq (gethash sym nelisp--globals nelisp--unbound)
+               nelisp--unbound)))))
+
+(defun nelisp--builtin-fboundp (sym)
+  "Non-nil if SYM has a function (or macro) in the NeLisp tables."
+  (or (not (eq (gethash sym nelisp--functions nelisp--unbound)
+               nelisp--unbound))
+      (not (eq (gethash sym nelisp--macros nelisp--unbound)
+               nelisp--unbound))))
+
+(defun nelisp--builtin-symbol-value (sym)
+  "Return SYM's NeLisp value — dynamic / global only, not lexical.
+Matches Elisp `symbol-value' which never sees lexical bindings."
+  (nelisp--lookup sym nil))
+
 (defun nelisp--install-primitives ()
   "Bind every primitive symbol in `nelisp--functions'.
-Host Emacs functions cover pure data ops; `funcall' and `apply'
-must dispatch through the NeLisp-aware wrappers so closures work."
+Host Emacs functions cover pure data ops; higher-order primitives
+and tables-specific queries go through NeLisp-aware wrappers so
+closures, NeLisp-only defuns, and our own hash tables stay visible."
   (dolist (sym nelisp--primitive-symbols)
     (puthash sym (symbol-function sym) nelisp--functions))
-  (puthash 'funcall #'nelisp--builtin-funcall nelisp--functions)
-  (puthash 'apply   #'nelisp--builtin-apply   nelisp--functions))
+  (puthash 'funcall      #'nelisp--builtin-funcall      nelisp--functions)
+  (puthash 'apply        #'nelisp--builtin-apply        nelisp--functions)
+  (puthash 'mapcar       #'nelisp--builtin-mapcar       nelisp--functions)
+  (puthash 'mapc         #'nelisp--builtin-mapc         nelisp--functions)
+  (puthash 'mapconcat    #'nelisp--builtin-mapconcat    nelisp--functions)
+  (puthash 'boundp       #'nelisp--builtin-boundp       nelisp--functions)
+  (puthash 'fboundp      #'nelisp--builtin-fboundp      nelisp--functions)
+  (puthash 'symbol-value #'nelisp--builtin-symbol-value nelisp--functions))
 
 ;;; Public API ---------------------------------------------------------
 
