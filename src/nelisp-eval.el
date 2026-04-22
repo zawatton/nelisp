@@ -38,9 +38,12 @@
 ;;   eq equal + - * / < <= > >= =
 ;; Plus NeLisp-aware wrappers: funcall, apply.
 ;;
+;; The macro system (defmacro / macroexpand / macroexpand-all) lives
+;; in `nelisp-macro.el'; this file only hosts the two hooks that make
+;; it work: the `nelisp--macros' registry and the evaluator dispatch
+;; arm that routes macro calls through `nelisp-macroexpand'.
+;;
 ;; Deferred (still out of scope for this file):
-;;   defmacro / macroexpand / macroexpand-all (see
-;;     docs/phase1-macro-design.org)
 ;;   mapcar and the rest of the higher-order primitives
 ;;   string / format / intern / boundp / fboundp / prin1 / princ
 ;;   dynamic binding on function parameters (only `let' / `let*'
@@ -95,6 +98,15 @@ Populated by `defun' and by `nelisp--install-primitives'.")
   "Set of symbols declared special via `defvar'.
 Reserved for the Week 17+ lexical/dynamic binding split — currently
 populated but not yet consulted during binding.")
+
+(defvar nelisp--macros (make-hash-table :test 'eq)
+  "Symbol -> NeLisp closure used as a macro expander.
+Populated by `defmacro' (see `nelisp-macro.el').  Keys stay distinct
+from `nelisp--functions': a name is either a function or a macro,
+never both.")
+
+(declare-function nelisp--eval-defmacro "nelisp-macro" (args env))
+(declare-function nelisp-macroexpand "nelisp-macro" (form))
 
 (defconst nelisp--unbound (make-symbol "nelisp-unbound")
   "Sentinel returned from hash-table lookups when a key is missing.")
@@ -182,6 +194,11 @@ Signal `nelisp-void-function' if none is bound."
        ((eq head 'throw)           (nelisp--eval-throw args env))
        ((eq head 'unwind-protect)  (nelisp--eval-unwind-protect args env))
        ((eq head 'condition-case)  (nelisp--eval-condition-case args env))
+       ((eq head 'defmacro)        (nelisp--eval-defmacro args env))
+       ((and (symbolp head)
+             (not (eq (gethash head nelisp--macros nelisp--unbound)
+                      nelisp--unbound)))
+        (nelisp-eval-form (nelisp-macroexpand (cons head args)) env))
        (t (nelisp--eval-call head args env)))))
    (t
     (signal 'nelisp-eval-error (list "cannot evaluate" form)))))
@@ -573,6 +590,7 @@ Intended for test hygiene; callers should expect to re-run every
   (clrhash nelisp--functions)
   (clrhash nelisp--globals)
   (clrhash nelisp--specials)
+  (clrhash nelisp--macros)
   (nelisp--install-primitives))
 
 (nelisp--install-primitives)
