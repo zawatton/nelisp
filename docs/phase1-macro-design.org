@@ -1,0 +1,362 @@
+#+TITLE: NeLisp Phase 1 Week 11-12 — macro expander design
+#+AUTHOR: zawatton
+#+DATE: 2026-04-23
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: DRAFT-FOR-PARALLEL-SESSION
+:OWNER: (assigned at dispatch)
+:ESTIMATED_LINES: ~250 src + ~200 tests
+:END:
+
+Parallel-session spec for Week 11-12 of Phase 1: implement the Elisp
+macro system on top of the evaluator that landed at =main= commit
+=32c0a5b= (Merge feat/phase1-eval).  This is the only doc the parallel
+session needs to read before opening the feat branch — every
+load-bearing decision lives here.
+
+* 1. Context (what you inherit)
+
+Already on =main= as of 2026-04-23:
+
+- =src/nelisp-read.el= (229 行, 31 ERT)
+- =src/nelisp-eval.el= (362 行, 33 ERT)
+- =test/nelisp-*-test.el= with =nelisp--reset= for test isolation
+- =Makefile= globs =src/nelisp*.el= + =test/nelisp*-test.el=, no build
+  rule change needed when you add files
+
+Full suite currently 66/66 pass on Emacs 30.1.  Do not break it.
+
+Key integration points you will touch:
+
+- =nelisp--eval-form (form env)= in =src/nelisp-eval.el= — add *one*
+  cond arm that redirects macro calls before they hit =nelisp--eval-call=
+- =nelisp--reset= in =src/nelisp-eval.el= — add =(clrhash nelisp--macros)=
+  so test hygiene keeps working
+
+Everything else is a new file.
+
+* 2. Scope (what you implement)
+
+This doc covers =defmacro= + programmatic expansion.  Nothing else.
+
+In scope:
+
+- =defmacro NAME (PARAMS) BODY...= — install a macro, keyed by NAME
+- =(NAME ARGS...)= call site — when NAME is a macro, expand once at
+  call time then evaluate the result
+- =macroexpand FORM= — fully expand the outermost macro call until
+  the form no longer starts with a macro name; return the final form
+- =macroexpand-1 FORM= — expand exactly once at the outermost layer;
+  return the form unchanged if the head is not a macro
+- =macroexpand-all FORM= — recursively expand every macro call inside
+  FORM (including inside let/lambda/if/etc bodies), one pass
+
+Out of scope for this commit:
+
+- Hygiene (gensym, uninterned symbols).  Plain unhygienic macros only.
+  Hygiene is deferred to Phase 2+ per =03-architecture.org= §7.
+- =cl-defmacro= destructuring, =&key= parameters
+- =macroexpand-all-environment= (the environment arg is ignored)
+- Compiler macros (no =define-compiler-macro=)
+- Auto-expansion at read time — expansion happens at eval time, see §4
+
+* 3. Files to create
+
+1. =src/nelisp-macro.el= — macro system implementation
+2. =test/nelisp-macro-test.el= — ERT suite, target 20-30 tests
+
+No other new files.  =Makefile= picks them up automatically via the
+=nelisp*.el= / =nelisp*-test.el= glob.
+
+* 4. API specification
+
+** 4.1 Public entry points
+
+#+begin_src emacs-lisp
+;;;###autoload
+(defun nelisp-macroexpand-1 (form)
+  "Expand the outermost macro call in FORM once.
+Return FORM unchanged if its car is not a registered macro.")
+
+;;;###autoload
+(defun nelisp-macroexpand (form)
+  "Expand the outermost macro call in FORM as many times as needed.
+Return the form when its car is no longer a macro.")
+
+;;;###autoload
+(defun nelisp-macroexpand-all (form)
+  "Expand every macro call reachable from FORM recursively.
+Walks into bodies of let, let*, lambda, defun, defmacro, if, progn,
+while, setq, defvar, cond, and, or, when, unless, quote-protected
+positions etc.  Does not walk into the head of `quote' or the car of
+a pair that was just identified as a non-macro call form — ordinary
+function-call subforms are recurred into.")
+#+end_src
+
+`nelisp-macroexpand*' functions always return a fresh form — never
+mutate the input.
+
+** 4.2 Private state
+
+#+begin_src emacs-lisp
+(defvar nelisp--macros (make-hash-table :test 'eq)
+  "Symbol -> NeLisp closure or primitive used as a macro expander.
+A macro entry is called with the raw, *unevaluated* cdr of the call
+site and returns a replacement form.")
+#+end_src
+
+Same shape as =nelisp--functions=: either an =(nelisp-closure …)=
+tagged list (for user-defined macros) or a raw Elisp function.
+
+** 4.3 defmacro semantic
+
+=(defmacro NAME (PARAMS) BODY...)= installs a closure under NAME in
+=nelisp--macros=.  It is *not* also stored in =nelisp--functions= —
+names are exclusively macro or function, not both.  If NAME already has
+a function binding, signal =nelisp-eval-error= with message
+=name is already bound as a function=.  If NAME is already a macro,
+overwrite (that's how users iteratively redefine).
+
+Return value: NAME (matches Elisp).
+
+=defmacro= should be dispatched through the special-form path in
+=nelisp-eval-form=, alongside =defun= — see §5.
+
+** 4.4 Expansion protocol
+
+When =nelisp-eval-form= sees =(HEAD ARGS…)= with HEAD a symbol:
+
+1. If HEAD is a registered special form → handle as today (no change).
+2. If HEAD is in =nelisp--macros= → call the macro expander with ARGS
+   as the raw cdr.  Re-invoke =nelisp-eval-form= on the returned form
+   in the *same* ENV.  (Expansion does not create a new lexical scope.)
+3. Otherwise → existing =nelisp--eval-call= path.
+
+The macro expander is called via =nelisp--apply= so closures work
+uniformly with primitives.
+
+** 4.5 macroexpand-all walk
+
+Forms that are themselves macro calls expand first, then the expander
+recurs into the result.  Within non-macro compound forms, recur based
+on the special-form shape:
+
+| head                      | positions to recur into                   |
+|---------------------------+-------------------------------------------|
+| =quote=                   | none (treat arg as literal)                |
+| =function=                | if arg is a lambda, recur into body       |
+| =if= / =progn= / =while=  | all cdr positions                          |
+| =let= / =let*=            | init forms inside bindings + body          |
+| =lambda=                  | body only (params are literal)             |
+| =defun= / =defmacro=      | body only                                  |
+| =defvar=                  | init form (cadr) only if present           |
+| =setq=                    | every other cdr position (values, not syms)|
+| =cond=                    | every clause body                          |
+| =condition-case= (future) | first arg is the var (literal), rest body  |
+| everything else           | all args (ordinary function call)          |
+
+Atoms pass through unchanged.
+
+Implement this with a dispatch alist keyed by head so that Week 9-10
+(cond/and/or/when/unless) and Week 21-24 (catch/throw/condition-case)
+can extend it without rewriting =nelisp-macroexpand-all=.
+
+Suggested shape:
+
+#+begin_src emacs-lisp
+(defvar nelisp--macroexpand-walkers nil
+  "Alist (HEAD-SYMBOL . FN) where FN is (lambda (form) expanded-form).
+When `nelisp-macroexpand-all' sees a non-macro head with a walker,
+the walker does the recursion.  Default is recur-all-args.")
+#+end_src
+
+Register the table entries for every special form listed above.
+Future special forms register into this table when they land.
+
+* 5. Integration into =nelisp-eval.el= (exact diff shape)
+
+The only two edits:
+
+** 5.1 Add a macro check in =nelisp-eval-form=
+
+Find the cond arm immediately before the default =nelisp--eval-call=
+catch-all (currently the =(t (nelisp--eval-call head args env))= arm
+at the tail of the compound dispatch).  Insert one arm:
+
+#+begin_src emacs-lisp
+;; inside the (consp form) branch of nelisp-eval-form, inside the
+;; cond on `head':
+((and (symbolp head) (gethash head nelisp--macros))
+ (nelisp-eval-form (nelisp-macroexpand (cons head args)) env))
+#+end_src
+
+Dispatching to =nelisp-macroexpand= (fully) rather than =-1= keeps
+=nelisp-eval-form= a single re-entry point for macros-returning-macros
+without re-walking the dispatch each time.
+
+** 5.2 Register =defmacro= as a special form
+
+Add an arm before the macro-lookup arm:
+
+#+begin_src emacs-lisp
+((eq head 'defmacro) (nelisp--eval-defmacro args env))
+#+end_src
+
+=nelisp--eval-defmacro= lives in =nelisp-macro.el= and must be
+=(require 'nelisp-eval)= together with a forward =(declare-function
+nelisp--make-closure "nelisp-eval")= to avoid a circular-require.
+
+Alternatively (and simpler): expose the closure constructor from
+=nelisp-eval.el= as a non-private name, e.g. =nelisp-make-closure=,
+and have =nelisp-macro.el= call that.  Decide in the PR.
+
+** 5.3 Reset hook
+
+In =nelisp--reset= add:
+
+#+begin_src emacs-lisp
+(clrhash nelisp--macros)
+#+end_src
+
+after the existing =clrhash= calls.  Tests that reset state need
+macros gone too.
+
+* 6. Test cases required (target 20-30 ERT)
+
+All tests call =(nelisp--reset)= at the top.
+
+** Sanity
+- defmacro returns the name symbol
+- defmacro on a name that is already a function signals error
+- Registered macro appears in =nelisp--macros= but not in
+  =nelisp--functions=
+
+** macroexpand-1
+- Non-macro form returns unchanged (=eq= to input)
+- =(when T a b)= (when implemented as macro) returns
+  =(if T (progn a b))=
+- Expansion does *not* expand inner macro calls — only the outermost
+
+** macroexpand
+- Chain: macro that expands to another macro call, verify final form
+  has no macro head
+
+** macroexpand-all
+- Recurs inside =let= body and init forms
+- Preserves =quote= untouched
+- Recurs into =lambda= body, not params
+- Atoms unchanged
+- Dotted pair in argument position walked correctly (or explicitly
+  rejected — choose and document)
+
+** Integration with evaluator
+- User-defined =unless= from =03-architecture.org= §7.2:
+  =(defmacro unless (c &rest body) `(if ,c nil ,@body))=
+  Then =(unless nil 1 2 3)= → 3
+- Macros called inside a function body get expanded at call time,
+  not defun time — verify by defining a macro AFTER the defun that
+  references it, then calling the function
+- Recursive user macro: define one in terms of itself (expanding to
+  an if / progn) and drive it to termination
+
+** Phase 1 anchor: condition-free error path
+- Expansion into =(error "msg")= works once =error= is available —
+  this test can be SKIPPED with a note referencing Week 21-24; we
+  just want to prove macros produce forms that land in the evaluator
+  cleanly even when the evaluator already errors out on them
+
+* 7. Workflow
+
+1. Branch off =main=:
+   #+begin_src bash
+   git checkout -b feat/phase1-macro
+   #+end_src
+2. Implement per §4-§5, keep =make test= green at every step
+3. Commit on the branch with the message shape:
+   #+begin_src text
+   macro: Phase 1 Week 11-12 defmacro + macroexpand family
+
+   <2-4 paragraph rationale matching the tone of the existing
+    read: / eval: commits on main>
+
+   Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+   #+end_src
+4. Self-merge on the same machine (no GitHub PR yet — the repo is
+   local-only until user pushes =zawatton/nelisp=):
+   #+begin_src bash
+   git checkout main
+   git merge --no-ff feat/phase1-macro -m "Merge feat/phase1-macro: …"
+   #+end_src
+5. Record the session in =capture/ai-logs-linux-debian-2026.org= as
+   a =MEMO AI: NeLisp Phase 1 Week 11-12 macro ...= entry under the
+   existing =** NOTE 作業ログ <date>= heading
+
+* 8. Constraints
+
+- Do not add dependencies other than =nelisp-read= + =nelisp-eval=
+  (already on load-path via =-L src=).  =cl-lib= is fine if needed,
+  but prefer plain Elisp.
+- =lexical-binding: t= at file top — non-negotiable.
+- Byte-compile cleanly with =(setq byte-compile-error-on-warn t)=.
+  Warnings that come from upstream macros like =pcase= are fine as
+  long as the Makefile compile target succeeds.
+- No TODO comments.  If you chose to defer something, put it in the
+  Commentary block's "deferred" list and in this design doc's §9.
+- Respect the CLAUDE.md "don't over-abstract" guidance: if a helper
+  is used once, inline it.
+
+* 9. Edge cases and explicit decisions
+
+** Macro redefinition
+Allowed without warning.  Same behaviour as Elisp; supports REPL-style
+development.
+
+** Collision with special forms
+=defmacro defun= etc cannot be shadowed.  If a user tries
+=(defmacro if (t e) …)= the special-form dispatch in §5.1 is checked
+*before* macro lookup, so the user's =if= macro is never called — but
+=(gethash 'if nelisp--macros)= still returns it.  Document this in
+the =nelisp-macro.el= Commentary as "macros cannot shadow special
+forms; the evaluator sees the special form first".
+
+** Macros vs same-named variables
+Elisp lets you have both — no change here, macros live in their own
+hash just like =nelisp--functions=.
+
+** backquote / , / ,@
+=defmacro= body often uses =`= / =,= / =,@=.  Week 3-4 reader does
+NOT handle these yet.  For Week 11-12, macros must be written using
+explicit =list= / =cons= construction, not backquote syntax.  Add a
+test that demonstrates this longhand style so users can see the
+workaround; flag backquote as required input for Phase 2+ (update
+=docs/05-roadmap.org= §1.1 with a sentence if you touch it).
+
+** =&body= alias
+Elisp uses =&rest=.  No =&body= support; that is CL-only.
+
+* 10. Success criteria
+
+- =make compile= passes cleanly with =byte-compile-error-on-warn t=
+- =make test= green after your merge, all prior 66 tests still pass
+  plus your new 20-30
+- The Phase 1 anchor unless-as-macro test (§6) runs =(unless nil 1 2 3)=
+  and returns 3
+- No edits to =src/nelisp-read.el= or =test/nelisp-read-test.el=
+- No edits to =test/nelisp-eval-test.el= (your tests go in the new
+  file; modifying existing suites is merge-conflict bait)
+
+When these five hold, merge to main and stop.  Future Week 13+ work
+lives in later design docs.
+
+* 11. Open questions to ignore for now
+
+Only raise these if you hit a blocker.  Default decisions are in §9:
+
+- How to print macros back out (=prin1= will show the closure tag)
+- Whether to detect and error on macro recursion that doesn't terminate
+  (ignore for Week 11-12; infinite loop is a user bug, runs until
+  =max-lisp-eval-depth=)
+- Display of =nelisp-macroexpand-1= when input already is atomic
+  (return unchanged, don't raise)
