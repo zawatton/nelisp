@@ -21,24 +21,29 @@
 
 ;;; Commentary:
 
-;; Phase 1 Week 5-8 evaluator core.  Enough of Elisp to run `fib' and
-;; `factorial' with closures that capture their lexical environment.
+;; Phase 1 Week 5-10 evaluator core.  Enough of Elisp to run `fib',
+;; `factorial', `cond'-driven recursion, short-circuiting `and' / `or',
+;; and `when' / `unless' guards with closures that capture their
+;; lexical environment.
 ;;
 ;; Implemented special forms:
-;;   quote, function, if, progn, let, let*, lambda, defun, defvar,
+;;   quote, function, if, cond, and, or, when, unless,
+;;   progn, prog1, prog2, let, let*, lambda, defun, defvar, defconst,
 ;;   setq, while
 ;;
 ;; Installed builtins (delegated to the host Elisp functions):
 ;;   car cdr cons list null not atom consp symbolp
 ;;   eq equal + - * / < <= > >= =
+;; Plus NeLisp-aware wrappers: funcall, apply.
 ;;
-;; Deferred to Week 9+ (remains out of scope for this file):
-;;   cond / and / or / when / unless / defconst
+;; Deferred to Week 11+ (still out of scope for this file):
 ;;   catch / throw / unwind-protect / condition-case
-;;   defmacro / macroexpand / macroexpand-all
-;;   funcall / apply / mapcar (higher-order primitives)
+;;   defmacro / macroexpand / macroexpand-all (see
+;;     docs/phase1-macro-design.org)
+;;   mapcar and the rest of the higher-order primitives
 ;;   string / format / intern / boundp / fboundp / prin1 / princ
-;;   true dynamic binding (defvar currently only marks the symbol)
+;;   true dynamic binding (defvar / defconst currently only mark the
+;;   symbol via `nelisp--specials'; binding consults lexical only)
 ;;
 ;; NeLisp keeps its own function / global tables rather than writing to
 ;; the host Emacs symbol cells, so running `(nelisp-eval '(defun fib …))'
@@ -131,18 +136,26 @@ Signal `nelisp-void-function' if none is bound."
     (let ((head (car form))
           (args (cdr form)))
       (cond
-       ((eq head 'quote)    (car args))
-       ((eq head 'function) (nelisp--eval-function (car args) env))
-       ((eq head 'if)       (nelisp--eval-if args env))
-       ((eq head 'progn)    (nelisp--eval-body args env))
-       ((eq head 'let)      (nelisp--eval-let args env))
-       ((eq head 'let*)     (nelisp--eval-let* args env))
+       ((eq head 'quote)     (car args))
+       ((eq head 'function)  (nelisp--eval-function (car args) env))
+       ((eq head 'if)        (nelisp--eval-if args env))
+       ((eq head 'cond)      (nelisp--eval-cond args env))
+       ((eq head 'and)       (nelisp--eval-and args env))
+       ((eq head 'or)        (nelisp--eval-or args env))
+       ((eq head 'when)      (nelisp--eval-when args env))
+       ((eq head 'unless)    (nelisp--eval-unless args env))
+       ((eq head 'progn)     (nelisp--eval-body args env))
+       ((eq head 'prog1)     (nelisp--eval-prog1 args env))
+       ((eq head 'prog2)     (nelisp--eval-prog2 args env))
+       ((eq head 'let)       (nelisp--eval-let args env))
+       ((eq head 'let*)      (nelisp--eval-let* args env))
        ((eq head 'lambda)
         (nelisp--make-closure env (car args) (cdr args)))
-       ((eq head 'defun)    (nelisp--eval-defun args env))
-       ((eq head 'defvar)   (nelisp--eval-defvar args env))
-       ((eq head 'setq)     (nelisp--eval-setq args env))
-       ((eq head 'while)    (nelisp--eval-while args env))
+       ((eq head 'defun)     (nelisp--eval-defun args env))
+       ((eq head 'defvar)    (nelisp--eval-defvar args env))
+       ((eq head 'defconst)  (nelisp--eval-defconst args env))
+       ((eq head 'setq)      (nelisp--eval-setq args env))
+       ((eq head 'while)     (nelisp--eval-while args env))
        (t (nelisp--eval-call head args env)))))
    (t
     (signal 'nelisp-eval-error (list "cannot evaluate" form)))))
@@ -160,6 +173,67 @@ Signal `nelisp-void-function' if none is bound."
   (if (nelisp-eval-form (car args) env)
       (nelisp-eval-form (cadr args) env)
     (nelisp--eval-body (cddr args) env)))
+
+(defun nelisp--eval-cond (args env)
+  "(cond (TEST BODY...) ...) — first truthy test wins.
+If a clause has no body, the test value itself is returned."
+  (catch 'nelisp--cond-done
+    (dolist (clause args)
+      (unless (consp clause)
+        (signal 'nelisp-eval-error
+                (list "cond clause must be a list" clause)))
+      (let ((test-val (nelisp-eval-form (car clause) env)))
+        (when test-val
+          (throw 'nelisp--cond-done
+                 (if (cdr clause)
+                     (nelisp--eval-body (cdr clause) env)
+                   test-val)))))
+    nil))
+
+(defun nelisp--eval-and (args env)
+  "(and FORM...) — short-circuit; `(and)' returns t."
+  (if (null args)
+      t
+    (catch 'nelisp--and-done
+      (let ((last nil))
+        (while args
+          (setq last (nelisp-eval-form (car args) env))
+          (unless last
+            (throw 'nelisp--and-done nil))
+          (setq args (cdr args)))
+        last))))
+
+(defun nelisp--eval-or (args env)
+  "(or FORM...) — return first truthy value, else nil."
+  (catch 'nelisp--or-done
+    (dolist (form args)
+      (let ((v (nelisp-eval-form form env)))
+        (when v
+          (throw 'nelisp--or-done v))))
+    nil))
+
+(defun nelisp--eval-when (args env)
+  "(when TEST BODY...) — body as implicit progn, or nil if TEST false."
+  (when (nelisp-eval-form (car args) env)
+    (nelisp--eval-body (cdr args) env)))
+
+(defun nelisp--eval-unless (args env)
+  "(unless TEST BODY...) — inverse of `when'."
+  (unless (nelisp-eval-form (car args) env)
+    (nelisp--eval-body (cdr args) env)))
+
+(defun nelisp--eval-prog1 (args env)
+  "(prog1 FIRST BODY...) — return FIRST's value after evaluating BODY."
+  (let ((first (nelisp-eval-form (car args) env)))
+    (nelisp--eval-body (cdr args) env)
+    first))
+
+(defun nelisp--eval-prog2 (args env)
+  "(prog2 FIRST SECOND BODY...) — return SECOND's value."
+  (nelisp-eval-form (car args) env)
+  (let ((second (nelisp-eval-form (cadr args) env)))
+    (nelisp--eval-body (cddr args) env)
+    second))
 
 (defun nelisp--eval-function (form env)
   "(function FORM) — quote a lambda as a NeLisp closure over ENV."
@@ -219,6 +293,17 @@ B is either a bare symbol or a two-element list (SYM INIT)."
                (eq (gethash name nelisp--globals nelisp--unbound)
                    nelisp--unbound))
       (puthash name (nelisp-eval-form (cadr args) env) nelisp--globals))
+    name))
+
+(defun nelisp--eval-defconst (args env)
+  "(defconst NAME VALUE [DOCSTRING]) — always (re-)initializes unlike `defvar'."
+  (let ((name (car args)))
+    (unless (symbolp name)
+      (signal 'nelisp-eval-error (list "defconst needs a symbol" name)))
+    (unless (cdr args)
+      (signal 'nelisp-eval-error (list "defconst needs a value" name)))
+    (puthash name t nelisp--specials)
+    (puthash name (nelisp-eval-form (cadr args) env) nelisp--globals)
     name))
 
 (defun nelisp--eval-setq (args env)
