@@ -24,8 +24,9 @@
 ;; Phase 1 Week 5-24 evaluator core.  Enough of Elisp to run `fib',
 ;; `factorial', `cond'-driven recursion, short-circuiting `and' / `or',
 ;; `when' / `unless' guards, closures that capture + mutate their
-;; lexical environment, tagged non-local exits, and error handling
-;; via `condition-case'.
+;; lexical environment, tagged non-local exits, error handling via
+;; `condition-case', and true dynamic binding for symbols declared
+;; with `defvar' or `defconst'.
 ;;
 ;; Implemented special forms:
 ;;   quote, function, if, cond, and, or, when, unless,
@@ -42,13 +43,22 @@
 ;;     docs/phase1-macro-design.org)
 ;;   mapcar and the rest of the higher-order primitives
 ;;   string / format / intern / boundp / fboundp / prin1 / princ
-;;   true dynamic binding (defvar / defconst currently only mark the
-;;   symbol via `nelisp--specials'; binding consults lexical only)
+;;   dynamic binding on function parameters (only `let' / `let*'
+;;   bindings go dynamic for special names; lambda params stay
+;;   lexical regardless, a deliberate Phase 1 simplification)
 ;;
 ;; `catch' / `throw' / `unwind-protect' delegate to the host Elisp
 ;; equivalents.  The semantics are identical, and threading through
 ;; Elisp's implementation means NeLisp errors that bubble up through
 ;; any number of host-level cleanup layers unwind correctly.
+;;
+;; Dynamic binding follows Emacs's special-variable discipline: a
+;; symbol becomes dynamic by appearing in `nelisp--specials' (set by
+;; `defvar' / `defconst').  `let' / `let*' inspect that flag per
+;; binding and, for specials, save the previous global value, install
+;; the new one, and restore on every exit path via `unwind-protect'.
+;; Variable lookup checks `nelisp--specials' first so dynamic names
+;; never shadow-through a lexical environment frame.
 ;;
 ;; NeLisp keeps its own function / global tables rather than writing to
 ;; the host Emacs symbol cells, so running `(nelisp-eval '(defun fib …))'
@@ -105,11 +115,18 @@ populated but not yet consulted during binding.")
 
 (defun nelisp--lookup (sym env)
   "Return SYM's value in ENV (alist) then in globals.
-Signal `nelisp-unbound-variable' if neither binds it."
+Special (dynamic) variables bypass ENV and read directly from
+`nelisp--globals' — that is what makes them dynamic.  Signal
+`nelisp-unbound-variable' if nothing binds SYM."
   (cond
    ((eq sym nil) nil)
    ((eq sym t) t)
    ((keywordp sym) sym)
+   ((gethash sym nelisp--specials)
+    (let ((g (gethash sym nelisp--globals nelisp--unbound)))
+      (if (eq g nelisp--unbound)
+          (signal 'nelisp-unbound-variable (list sym))
+        g)))
    (t
     (let ((cell (assq sym env)))
       (if cell
@@ -263,23 +280,65 @@ B is either a bare symbol or a two-element list (SYM INIT)."
    (t (signal 'nelisp-eval-error
               (list "malformed let binding" b)))))
 
+(defun nelisp--restore-dynamic (saves)
+  "Restore dynamic bindings from SAVES, a list of (SYM NEW OLD).
+Entries recorded via `nelisp--unbound' become `remhash' restores."
+  (dolist (d saves)
+    (let ((sym (car d))
+          (old (nth 2 d)))
+      (if (eq old nelisp--unbound)
+          (remhash sym nelisp--globals)
+        (puthash sym old nelisp--globals)))))
+
 (defun nelisp--eval-let (args env)
-  "(let ((VAR VAL) ...) BODY...) — parallel binding."
+  "(let ((VAR VAL) ...) BODY...) — parallel binding.
+Lexical names extend ENV.  Names in `nelisp--specials' save their
+previous global value, set the new value globally, and are restored
+on every exit path from BODY (normal, throw, or error)."
   (let ((bindings (car args))
         (body (cdr args))
-        (pairs nil))
+        (lex-pairs nil)
+        (dyn-saves nil))
     (dolist (b bindings)
-      (push (nelisp--split-binding b env) pairs))
-    (nelisp--eval-body body (append (nreverse pairs) env))))
+      (let* ((p (nelisp--split-binding b env))
+             (sym (car p))
+             (val (cdr p)))
+        (if (gethash sym nelisp--specials)
+            (push (list sym val
+                        (gethash sym nelisp--globals nelisp--unbound))
+                  dyn-saves)
+          (push (cons sym val) lex-pairs))))
+    (dolist (d dyn-saves)
+      (puthash (car d) (nth 1 d) nelisp--globals))
+    (unwind-protect
+        (nelisp--eval-body body (append (nreverse lex-pairs) env))
+      (nelisp--restore-dynamic dyn-saves))))
 
 (defun nelisp--eval-let* (args env)
-  "(let* ((VAR VAL) ...) BODY...) — sequential binding."
+  "(let* ((VAR VAL) ...) BODY...) — sequential binding.
+Each successive init form sees the prior bindings — lexical ones
+via the extended ENV, dynamic ones via the global table that `let'
+has just mutated."
   (let ((bindings (car args))
         (body (cdr args))
-        (new-env env))
-    (dolist (b bindings)
-      (setq new-env (cons (nelisp--split-binding b new-env) new-env)))
-    (nelisp--eval-body body new-env)))
+        (new-env env)
+        (dyn-saves nil))
+    (unwind-protect
+        (progn
+          (dolist (b bindings)
+            (let* ((p (nelisp--split-binding b new-env))
+                   (sym (car p))
+                   (val (cdr p)))
+              (if (gethash sym nelisp--specials)
+                  (progn
+                    (push (list sym val
+                                (gethash sym nelisp--globals
+                                         nelisp--unbound))
+                          dyn-saves)
+                    (puthash sym val nelisp--globals))
+                (setq new-env (cons (cons sym val) new-env)))))
+          (nelisp--eval-body body new-env))
+      (nelisp--restore-dynamic dyn-saves))))
 
 (defun nelisp--eval-defun (args env)
   "(defun NAME (PARAMS) BODY...) — install a global closure."
