@@ -1,0 +1,340 @@
+#+TITLE: NeLisp — concurrency model (novel contribution 候補)
+#+AUTHOR: zawatton
+#+DATE: 2026-04-22
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: CONCURRENCY-LOCKED-2026-04-22
+:END:
+
+本研究の *最大の novel contribution 候補*。
+既存 Emacs の cooperative 1-thread 前提を引きずる必要はない。
+
+2026-04-22 user-Claude session で Phase 配置を lock (§7 参照):
+
+| Phase | 候補            | 位置付け                                   |
+|-------+-----------------+--------------------------------------------|
+| 1-2   | *何もしない*    | interpreter + self-host に集中             |
+| 3     | D fiber         | bytecode VM と同時、async I/O ツール      |
+| 4     | *C actor* (*primary*) | anvil 痛み解消の本丸、novelty 本丸  |
+| 4b    | B STM (optional) | experimental layer、transactional buffer |
+| 5     | A thread        | 真 OS thread、Phase 5 後半                |
+
+novelty 追求レベル: *moderate* (EmacsConf 発表 / Reddit HN 話題レベル、
+査読論文は余裕があれば)。
+
+核心方針: *anvil.el の痛み解消が自然に novelty を生む*。既存言語に無い
+editor-integrated concurrency (= editor semantics と integrated な actor
++ STM) が NeLisp の独自 niche。
+
+* 1. 現状 Emacs の痛み (一次情報)
+
+親プロジェクト anvil.el の memory に実測痛み:
+
+- =feedback_emacs_server_concurrency_model.md= — yield point が sit-for /
+  accept-process-output のみ、busy loop で queue 完全ブロック
+- =feedback_emacs_accept_process_output_no_server_yield.md= — handler 内
+  yield で cross-bridge concurrency 解決不可 (Architecture B 別 process 必須)
+- =feedback_emacs_mutex_no_cross_session.md= — =make-mutex= は cross-session
+  では機能しない
+- =feedback_subprocess_tangle_pattern.md= — 重い op は =--batch= subprocess
+  に追い出すと 15x 高速
+- =feedback_anvil_worker_phase1_startup_freeze.md= — file-notify で
+  25s freeze
+
+**ここから NeLisp の要請**:
+- 真の parallel execution path が欲しい (subprocess 迂回を構造として要らなくする)
+- yield point が implicit (GC safe point 相当) に発生してほしい
+- buffer-local state を持つ code を 2 thread で動かせる isolation 単位が必要
+
+* 2. 候補 A — First-class threads + per-thread buffer-locals [Phase 5 後半]
+
+** 概要
+
+- =make-thread= を真の OS thread にする (現状の coroutine ではない)
+- buffer-local / frame-local state を thread 識別子で key 付け
+- =with-current-buffer= は thread-local selection
+
+** 問題点
+
+- 既存 Elisp コードは global buffer list 前提、互換性壊滅リスク
+- GC が stop-the-world だと thread 間同期コスト高
+- Emacs core (display) は single-thread 前提
+
+** 難度
+
+激高。Phase 5 後半以降でないと着手不可。
+
+** なぜ Phase 5 後半に後回しか
+
+- Phase 4 actor で *process isolation を言語内で実現* すれば、真 thread が
+  なくても anvil の痛みは大半解消できる
+- Phase 5 で buffer / event loop を Elisp 化した後に、その Elisp 層を
+  thread-safe 化する方が段階的
+- 真 OS thread は C 層の GC / signal handler 改修も必要 → Phase 5 後半で
+  core 再設計と同時に手をつける
+
+* 3. 候補 B — STM (Software Transactional Memory) [Phase 4b optional]
+
+** 概要
+
+- buffer 変更を transaction 化
+- =(with-atomic-buffer-tx buf ...)= で commit or rollback
+- 楽観的並行制御、conflict 時 retry
+
+** Pros
+
+- buffer 編集という Emacs の core op を semantics 綺麗に並列化できる
+- 学術的 novelty が主張しやすい (Emacs + STM は前例なし)
+
+** Cons
+
+- 実装負荷が高い (version vector, log, rollback 全部書く)
+- 現実の Emacs workload (大 buffer 編集) で STM が勝つかは未検証
+
+** ⚠ PyPy STM 挫折の教訓 (2026-04-22 wave 2 audit 反映)
+
+=01-related-work.org= §6 PyPy の audit で判明した重要警告:
+
+*PyPy STM branch は 2011-2017 年頃に gcc-stm ベースで開発されたが、実用性
+欠落で main merge に至らず事実上挫折*。挫折理由:
+
+- *Transaction conflict 頻発*: Python の global state (dict, sys.modules,
+  class attribute) への頻繁 write で abort & retry が急増
+- *Overhead > 並列 benefit*: 4 core で 2x 程度しか出ず、single-thread
+  overhead で marginal case を下回る
+- *GIL の方が pragmatic*: 既存コードが GIL 前提で書かれ、STM 前提に書き直す
+  ecosystem cost が非現実的
+
+NeLisp への含意 — Emacs も同構造の risk を抱える:
+
+- buffer-local / frame-local state への write が想定以上に多い
+- hook / advice が transaction 境界を不明瞭にする
+- 既存 Elisp code は shared mutable state 前提
+
+対策案:
+1. *transaction granularity を region 単位* に細かく切る (buffer 全体は大粒)
+2. *read-only の場合 STM 迂回* (= =with-current-buffer= 読み取りは no-tx)
+3. *hook は transaction 外で evaluation* (advice は実行順序が命で、STM と
+   相性悪い)
+4. *ecosystem migration cost を認識* — NeLisp Phase 4 で STM 採用なら
+   「既存 Elisp code との backward compat layer」を同時に設計
+
+Phase 0 結論: *STM 単独採用は NeLisp でも risky*。C actor (§4) との
+併用か、あるいは C actor を primary として STM は experimental mode に
+留める方針が無難。
+
+** 難度
+
+高。methodology は Haskell STM / Clojure refs に先例あり、論文多数
+(Harris 2005 等)。ただし PyPy 挫折が示すように *既存生態系との整合が
+最大の難所*、技術実装より migration 戦略が load-bearing。
+
+* 4. 候補 C — Actor / channel (Erlang or Go model) [*PRIMARY* Phase 4]
+
+*NeLisp concurrency の本丸*。anvil.el の痛み解消と novelty 両立する選択。
+
+** 4.1 概要
+
+- 各 thread (light-weight) = actor、mailbox で message passing
+- buffer も actor 化、操作は message で request
+- あるいは Go-style =(chan)= + =(select)=
+- shared nothing を *原則* とし、読み取り共有は copy-on-read
+
+** 4.2 Pros (anvil 痛み解消と novelty 両立)
+
+- Shared state を持たない設計 → mutex 地獄を構造的回避 (=../anvil.el/=
+  memory =feedback_emacs_mutex_no_cross_session.md= の根本原因を消す)
+- *anvil の subprocess 分離パターンを言語内で実現* (Architecture B 不要化、
+  =feedback_emacs_accept_process_output_no_server_yield.md= で示された壁を
+  structural に解消)
+- user が Linux の process モデル / Emacs subprocess 経験で理解しやすい
+- editor-integrated actor は既存 Lisp 系に前例なし → moderate novelty 達成
+
+** 4.3 Cons
+
+- Elisp の既存コードが global state 前提 → compat 層が必要
+- Actor 境界の設計が API 互換性を破りがち
+- message passing overhead (shared memory より遅い局面あり)
+
+** 4.4 API 草案 (Phase 4 実装時に refine)
+
+#+begin_src emacs-lisp
+  ;; actor 生成
+  (defvar worker
+    (nelisp-spawn
+     (lambda ()
+       (let loop ()
+         (pcase (nelisp-receive)
+           (`(:task ,data) (process data) (loop))
+           (`(:shutdown) nil))))))
+
+  ;; message send (非同期)
+  (nelisp-send worker '(:task "compile-foo"))
+
+  ;; channel (Go-style)
+  (let ((ch (nelisp-make-chan :buffer 16)))
+    (nelisp-spawn (lambda () (nelisp-chan-send ch 42)))
+    (nelisp-chan-recv ch))
+
+  ;; buffer-as-actor
+  (with-buffer-actor *scratch*
+    (insert "hello"))  ; 内部で message として dispatch
+#+end_src
+
+** 4.5 anvil 痛み解消 test case (Phase 4 成功条件)
+
+以下 3 つのうち 1+ が PoC として動けば *anvil.el の Architecture B
+(=../mcp-worker daemon= 別 process 分離) が NeLisp 上では不要になる* ことを
+示せる:
+
+1. *並列 MCP tool handler*: 同 Emacs session で tool call を 4 並列実行、
+   各 actor が独立した buffer-local state を持ち、user session を blocking
+   しない
+2. *Parallel org 処理*: 20+ 事業場の点検トラッカー更新を 4 actor に分散、
+   全 actor が独自 buffer-local で作業、結果を parent に message で収集
+3. *Cross-session serialization 不要*: =make-mutex= が cross-session で
+   機能しない問題を、actor 間 message passing で置換 (mutex 廃止)
+
+これらが動けば =../02-scoping.org= §0 "完遂テスト" も一つ埋まる。
+
+** 4.6 難度
+
+中。Erlang BEAM / Go runtime の設計 (MPG scheduler、mailbox
+implementation) が豊富な先例、Rust async も参考。NeLisp で Elisp-native
+ergonomics に落とす部分が差別化要素。
+
+* 5. 候補 D — Fiber / stackful coroutine + 明示 yield [Phase 3]
+
+** 概要
+
+- =(yield ...)= で明示的に yield point を置く stackful coroutine
+- Ruby Fiber / Lua coroutine モデル
+- OS thread は 1 本、cooperative
+
+** Pros
+
+- 実装が軽い (stack save/restore のみ)
+- yield point が明示的なので debug しやすい
+- Phase 3 (bytecode VM) と同時期、byte-code dispatch loop に yield point を
+  埋め込むと Bolz 2009 meta-tracing JIT とも相性良い
+
+** Cons
+
+- 真の parallelism は得られない (CPU-bound でスケールしない)
+- anvil の痛み (subprocess 必須) を直接解消しない — それは Phase 4 actor 役割
+
+** なぜ Phase 3 に後回しか (Phase 1-2 でない理由)
+
+- Phase 1-2 は interpreter + self-host に負荷集中、fiber を並行すると
+  scope 爆発リスク (Remacs pattern 再発)
+- fiber は nice-to-have、must-have ではない
+- Phase 3 の bytecode VM 設計時に自然に乗る (yield point は byte-code
+  dispatch loop に埋める)
+
+** 難度
+
+低。Phase 3 で bytecode VM + fiber を同時実装。
+
+* 6. Trade-off 表
+
+| 候補       | Parallelism | 実装難度 | novelty | Phase配置 | anvil痛み解消 | 決定     |
+|------------+-------------+----------+---------+-----------+--------------+----------|
+| A: thread  | 真          | 激高     | 中      | *5 後半*  | 高 (残課題)   | 遅延実装 |
+| B: STM     | 真          | 高       | 高      | *4b opt*  | 中            | experimental |
+| C: actor   | 条件付き    | 中       | 中+     | *4 primary* | *高*        | *本丸*   |
+| D: fiber   | なし        | 低       | 低      | *3*       | 低            | ツール   |
+
+* 7. Phase 0 lock summary (2026-04-22)
+
+** 7.1 核心方針
+
+*C actor を primary、Phase 4 で実装する*。理由:
+
+1. anvil.el の痛み (subprocess 迂回 / mutex 地獄 / Architecture B 複雑性) を
+   structural に解消する唯一の候補
+2. 既存 Lisp 系に editor-integrated actor の前例なく、moderate novelty
+   (EmacsConf 発表レベル) を達成
+3. Erlang / Go の proven pattern を NeLisp ergonomics に落とすだけ、
+   純粋 research でなく engineering 主導
+4. user の Linux / subprocess mental model と整合
+
+** 7.2 Phase 配置
+
+- *Phase 1-2*: concurrency 作業 *0*。interpreter + self-host 完成のみ
+- *Phase 3*: D fiber 実装 (bytecode VM の yield point と同時)
+- *Phase 4*: C actor 実装 (primary)、anvil 痛み解消 test case 3 件で
+  成功判定
+- *Phase 4b (optional)*: B STM を experimental layer として (transactional
+  buffer)。PyPy STM 挫折教訓 (§3) を踏まえ、小さく始めて risk 見極め
+- *Phase 5 後半*: A thread 実装 (C 層 GC / signal handler 改修と同時)
+
+** 7.3 Novelty claim (EmacsConf / Reddit 向け)
+
+NeLisp concurrency を articulate するキャッチフレーズ候補 (Phase 4
+release 時に選定):
+
+- "editor-integrated actor model" — Erlang が distributed system を
+  primitive にしたように、NeLisp は editor semantics を actor primitive に
+  取り込む
+- "anvil.el を subprocess 分離なしで書き直せる substrate"
+- "Emacs の buffer-local state を shared-nothing actor で置き換えた Lisp"
+
+** 7.4 学術論文選択 (Phase 4 終了時に決定)
+
+novelty 追求 moderate level 前提で、Phase 4 成功後に以下を判断:
+
+- *書く*: ELS (European Lisp Symposium) short paper、査読軽め、Reddit/HN
+  の反応が良ければ
+- *書かない*: blog post / EmacsConf talk で articulate して終わり
+
+Q4 (本研究の最終 output 形) で "学術論文" は pick されていないが、
+Phase 4 の結果次第で opt-in 可能。
+
+* 8. 未決事項 (Phase 4 着手時に決定)
+
+7.1-7.4 で決まらなかった細部。Phase 3 末 / Phase 4 着手時に lock:
+
+- *Actor message passing* — shared nothing を徹底するか、immutable 共有
+  (copy-on-read) を許すか
+- *Actor 境界*: buffer 単位 / closure 単位 / 明示 =nelisp-spawn= 単位
+- *STM granularity*: buffer / region / char 単位 (PyPy 教訓上、細かいほど良い)
+- *Mailbox 実装*: unbounded / bounded / priority / FIFO-only
+- *Supervisor tree*: Erlang 式 OTP-like supervisor を取り入れるか
+- *Back-pressure*: Go select の timeout 相当を NeLisp で表現する API
+
+* 9. 読むべき先行研究
+
+** Priority (Phase 3 末までに audit 推奨)
+
+- *Clojure refs / agents / atoms* (Rich Hickey blog) — STM + actor hybrid
+  の実用例、editor でない汎用 Lisp precedent
+- *Erlang BEAM internals* — actor primary 実装の bible
+- *Harris et al. 2005 "Composable Memory Transactions"* (PLDI) — Haskell
+  STM paper、Phase 4b STM を書くなら必読
+
+** Phase 4 着手時に精読
+
+- Go runtime scheduler (MPG model) — goroutine 実装詳解
+- Loom (Java virtual thread) — 既存 thread-heavy 言語への retrofit 事例
+- Racket places / futures — Scheme 文脈の並行モデル (対抗案として)
+
+** Phase 5 (真 thread) で参照
+
+- V8 GC concurrency model — stop-the-world 最小化技法
+- SBCL =sb-thread= 実装 — CL context での thread 実装
+
+* 10. Decisions lock summary (2026-04-22)
+
+| # | 論点              | 決定                                 | 根拠                          |
+|---+-------------------+--------------------------------------+-------------------------------|
+| 1 | novelty level     | moderate (EmacsConf / Reddit)        | 週末研究 pace + Q4 output 形式 |
+| 2 | Priority          | anvil 痛み解消 > 純 novelty          | 自然に novelty 発生、scope安定 |
+| 3 | Primary 候補      | C actor (Phase 4)                    | anvil 構造改善 + novelty 両立 |
+| 4 | Secondary 候補    | B STM (Phase 4b optional)            | PyPy 挫折回避、小さく experimental |
+| 5 | Tertiary 候補     | D fiber (Phase 3、async tool)        | bytecode VM yield 作成時に自然 |
+| 6 | Deferred 候補     | A thread (Phase 5 後半)              | C 層改修要、Phase 5 で再設計   |
+| 7 | Phase 1-2 作業    | concurrency は *手をつけない*        | interpreter + self-host 最優先 |
+| 8 | 学術論文          | Phase 4 成功後 opt-in で決定         | Q4 未確定項目、柔軟対応        |
+| 9 | 成功 test case    | anvil 痛み解消 3 scenario から 1 PoC | =../02-scoping.org= §0 完遂 test 連動 |

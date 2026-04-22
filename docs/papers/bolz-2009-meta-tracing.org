@@ -1,0 +1,516 @@
+#+TITLE: Bolz et al. 2009 — Tracing the Meta-Level: PyPy's Tracing JIT Compiler
+#+AUTHOR: zawatton (精読済)
+#+DATE: 2026-04-22
+
+* Citation
+
+- Carl Friedrich Bolz, Antonio Cuni, Maciej Fijalkowski, Armin Rigo.
+  "Tracing the Meta-Level: PyPy's Tracing JIT Compiler."
+- /Proceedings of the 4th Workshop on Implementation, Compilation,
+  Optimization of Object-Oriented Languages and Programming Systems/
+  (ICOOOLPS '09), Genova, July 6, 2009.
+- PDF (talk slides): https://pdfs.semanticscholar.org/ac3a/0bcafc53fd317fdb9a9ff45a883ba364a076.pdf
+- ACM proceedings: https://dl.acm.org/doi/10.1145/1565824.1565827 (paywalled)
+- 同著者による詳細 blog post (2009-03-02, 同内容のオープンアクセス版):
+  https://morepypy.blogspot.com/2009/03/applying-tracing-jit-to-interpreter.html
+
+* Access status
+:PROPERTIES:
+:STATUS: SUMMARIZED (精読済) 2026-04-22
+:LAST_UPDATED: 2026-04-22
+:SOURCE: Semantic Scholar PDF (conference talk slides, ~20 slides) + 同著者 blog posts 3本 (Bolz 2009-03-02, Rigo 2009-09-27, Fijalkowski 2009-04-21) を一次資料として使用
+:END:
+
+** 注記: 入手した資料について
+
+Semantic Scholar の PDF は論文本体ではなく ICOOOLPS '09 の講演スライド (beamer)。
+ACM 本体論文は paywalled で取得不可。ただし:
+- スライドには技術メカニズム・実装課題・評価結果・関連研究が網羅されている
+- 第一著者 Bolz が 2009-03-02 に書いた blog post は論文提出直前の解説であり、
+  コード例・擬似コード・評価コメントを含む (paper の popular version と位置づけ可)
+- 第一評価者 Rigo が 2009-09-27 に書いた benchmark post に実測値を記載
+- 本 summary はこれら複数の一次資料から合成。それぞれの出典を §x 表記で明示する
+
+* Why this paper matters for NeLisp
+
+Phase 3 (bytecode VM) + Phase 4 (concurrency / JIT) の設計 input。
+
+- meta-tracing JIT の原理 = "bytecode interpreter に hint を埋めると
+  trace JIT が interpreter 内部を透視できる"
+- hand-written tracing JIT (HotSpot, V8) との差分を理解
+- Elisp bytecode dispatch に同 pattern が適用可能か検討
+- 同チームの STM 失敗 (NeLisp 04-concurrency.org §3 B で既に参照) との対比:
+  meta-tracing は成功した技術、STM は失敗した技術 — 同チームでも難易度が全く異なる
+
+* Core contribution (post-read)
+
+以下は slides §全体 + Bolz blog (2009-03-02) から確認した実際の内容:
+
+1. *問題定義* (slides §「Applying a Tracing JIT to an Interpreter」):
+   通常の tracing JIT を bytecode interpreter に適用すると、tracer は
+   "bytecode dispatch loop" を hot loop と認識し、個々の opcode 1命令分の
+   machine code しか生成しない。user program のループが見えない。
+
+2. *解法: 2種類の hint* (slides §「Applying Hints」; blog §「Improving the Generated Code」):
+   - =jit_merge_point()= — bytecode dispatch loop の先頭に置く。JIT に
+     "ここが merge 可能な位置" を伝える。green 変数 (pc, bytecode) を受け取り
+     position key に加える
+   - =can_enter_jit()= — interpreter の backward jump 命令で pc が後退する箇所に置く。
+     JIT に "user-level loop の閉じ目" を伝える
+
+3. *green / red 変数の区別* (slides §「Applying Hints」; blog §「JIT bit of look inside」2009-03-05):
+   - *green* = JIT にとって "constant" として扱われる変数 (pc, bytecode string)。
+     trace の位置特定に使い、値が変わると別の trace になる
+   - *red* = runtime の可変データ (accumulator, registers 等)。
+     trace の中では変数として引き回す
+
+4. *trace の動作* (blog §「Applying a Tracing JIT to an Interpreter」):
+   - jit_merge_point で pc が変わるたびに loop を "閉じない" と判定
+   - bytecode を unroll し続け、JUMP_BACKWARD で pc が元の値に戻った時点で
+     loop を閉じる → user-level loop 1回分に対応する trace が生成される
+   - 生成 trace には各 opcode に対応する guard (=guard_true(instruction == ADD)= 等)
+     が埋め込まれ、opcode シーケンスの形状を保証する
+
+5. *guard と fallback* (slides §「Tracing JIT Phases II」, §「Implementation Issues II」):
+   - guard が fail した場合 → fallback interpreter (tracer なし) で実行再開
+   - fallback は "safe point" (bytecode 境界) まで 1 opcode 以内で復帰
+   - これにより deep C stack 再構築問題を回避
+
+6. *optimizer による trace 浄化* (slides §「Improving the Result」):
+   - trace には interpreter の残骸 (pc 操作, bytecode 読み取り) が残る
+   - bytecode string が immutable → side-effect free な操作は constant fold 可
+   - 「paper page 22」 と slides が言及する最適化ステップで interpreter 操作を除去
+
+7. *実装方式* (slides §「Implementation Issues I」):
+   - JIT は interpreter に組み込まず、C 翻訳時 (RPython translation step) に追加
+   - double-interpretation overhead を避けるため、interpreter は C として動かし
+     hot loop 検出時だけ bytecode representation に戻って trace
+
+8. *将来の最適化として提示されたもの* (slides §「Conclusion and Next Steps」):
+   - Allocation Removal: loop 内で escape しない object は heap 非確保
+   - Frame Object の lazy update: reflection/introspection を許しつつ allocation removal を維持
+
+* Meta-tracing mechanism walkthrough
+
+** 前提: 通常の tracing JIT (§スライド「Tracing JIT Phases」)
+
+通常の tracing JIT は 4フェーズで動く:
+1. interpretation + profiling — backward jump を数え hot loop を特定
+2. tracing — hot loop の 1 iteration を "記録" (trace = 操作の線形リスト)
+3. code generation — trace から machine code を生成
+4. code execution — 次回以降の iteration に machine code を使用
+
+loop の "閉じ目" は *position key* (実行中の関数 + PC) の一致で判定する。
+
+** 問題: interpreter に適用すると何が起きるか
+
+interpreter の内側から見ると、hot loop は常に bytecode dispatch loop である。
+dispatch loop は 1 opcode ごとに閉じるため、JIT は "1 opcode 実行" という
+極小の trace しか生成せず、user program のループは見えない。
+
+** 解法: position key の拡張
+
+=add_to_position_key(pc)= / =add_to_position_key(bytecode)= を dispatch loop の先頭に追加する。
+PyPy の実際の API では =JitDriver= オブジェクトを作り:
+
+#+begin_src python
+jitdriver = JitDriver(greens=['pc', 'bytecode'], reds=['stack', 'regs'])
+
+def interpret(bytecode, ...):
+    pc = 0
+    while True:
+        jitdriver.jit_merge_point(pc=pc, bytecode=bytecode, stack=stack, regs=regs)
+        opcode = ord(bytecode[pc])
+        pc += 1
+        if opcode == JUMP_BACKWARD:
+            target = ...
+            pc = target
+            if target < pc:           # backward jump
+                jitdriver.can_enter_jit(pc=pc, bytecode=bytecode, ...)
+        elif opcode == ADD:
+            ...
+#+end_src
+
+=jit_merge_point= は pc と bytecode を position key に加える。
+これにより dispatch loop が 1回閉じても "pc が 1 増えた" ため loop は閉じない。
+tracer は dispatch loop を unroll し続け、JUMP_BACKWARD で pc が元に戻った時
+(=can_enter_jit= が呼ばれる) にようやく loop を閉じる。
+
+結果として生成される trace は user-level loop の 1 iteration に対応する。
+例えば bytecode が DUP, PRINT, LOAD 1, ADD, JUMP_BACKWARD の場合:
+
+#+begin_example
+guard_true(pc == 2)                    ; user loop の開始位置
+guard_true(bytecode == <固定バイト列>)  ; bytecode が変わっていないことを確認
+[loop begin]
+  ; --- DUP ---
+  opcode = strgetitem(bytecode, pc); guard_true(opcode == DUP)
+  stack.push(stack.top())
+  ; --- PRINT ---
+  opcode = strgetitem(bytecode, pc+1); guard_true(opcode == PRINT)
+  do_print(stack.pop())
+  ; --- LOAD_INTEGER 1 ---
+  ...
+  ; --- ADD ---
+  ...
+  ; --- JUMP_BACKWARD ---
+  ...
+[jump back to loop begin]
+#+end_example
+
+各 opcode に =guard_true(instruction == <opcode>)= が埋め込まれ、
+opcode シーケンスが変わると guard fail → fallback interpretation。
+
+** guard の役割と fail 時の動作
+
+guard = "この条件が成り立つはずだ" という検証命令。
+guard が fail すると machine code を抜け、fallback interpreter に復帰する。
+fallback は safe point (次の bytecode 境界) まで実行し、
+その時点で通常の interpreter に戻る。
+
+* When meta-tracing wins (and when it doesn't)
+
+** 効果が高い条件
+
+- *タイトな数値ループ* (slides §「Evaluation」):
+  評価 Benchmark 4 で "almost 3x faster than normal interpretation"。
+  数値演算が多く type がほぼ monomorphic な場合、guard が外れにくく効果大
+
+- *bytecode-dispatched interpreter* (blog §「Applying a Tracing JIT」):
+  interpreter が while+switch の bytecode dispatch 形式を取っていることが前提。
+  dispatch loop の unroll が meta-tracing の本質
+
+- *bytecode string が immutable* (slides §「Improving the Result II」):
+  bytecode を constant として扱えるため、opcode 読み出し操作を
+  constant fold で除去できる。bytecode が mutable だと fold 不可
+
+- *hot path が収束する user loop* (slides §「Tracing JIT Assumptions」):
+  user program の loop body が iteration ごとにほぼ同じ code path を辿る場合。
+  monomorphic call site (同じ型の引数が繰り返し) が理想的
+
+- *agressive inlining の恩恵*:
+  trace 生成時に関数呼び出しを inline するため、call overhead が消える。
+  Bolz blog §「strange_sum example」で f() が inline された trace を示す
+
+** 効果が低い・負になる条件
+
+- *Benchmark 2: overhead で遅くなる* (slides §「Evaluation, Small Interpreter」):
+  profiling overhead + trace compilation cost が短命プロセスでは negative。
+  "slower than normal interpretation due to overhead"
+
+- *Benchmark 5: profiling overhead ~20%* (slides §「Evaluation」):
+  profiling cost が baseline の 20% になるケースあり
+
+- *PyPy+JIT は CPython+Psyco より遅い* (slides §「Evaluation, PyPy」; Rigo 2009-09-27):
+  初期実装では PyPy+JIT が CPython より速いが、Psyco (hand-tuned method JIT) には届かない。
+  September 2009 benchmark: CPython 8.18s, PyPy+JIT 2.61s (3x), Psyco 1.59s (5x)
+
+- *warm-up コストが大きい* (Rigo 2009-09-27):
+  JIT support code に 1.57s (richards 全体の ~60%) を消費。
+  "too much -- even ridiculously so -- for anything but a long-running process"
+
+- *polymorphic dispatch* (Bolz blog §trace assumptions):
+  guard が頻繁に fail すると trace が短命になり、side-exit path が増殖する。
+  Python の duck typing は guard failure を誘発しやすい
+
+- *frame introspection が allocation removal を阻害* (slides §「Conclusion: Optimizing Frame Objects」):
+  動的言語は frame object への introspection を許すため、
+  intermediate result を frame に書き込まざるを得ない → allocation removal が効かない。
+  lazy update で回避する方針だが、時点では future work として残っていた
+
+- *非ループコード* (Bolz blog §「basic approach」):
+  tracing JIT はループのみ機械語化し、残りは interpret。
+  loop 外のコードは speedup されない
+
+- *generator* (Fijalkowski 2009-11):
+  generators は JIT speedup を受けられず "require some work" と明記
+
+* Implications for NeLisp Phase 3+
+
+以下の分析は、NeLisp が将来 meta-tracing JIT を検討する場合のための skeptical 評価。
+現 roadmap (Phase 3-5) に JIT はない — この節の目的は採否判断の材料提供であり採用推奨ではない。
+
+** buffer-local variables
+
+- Emacs Lisp の buffer-local 変数は "同じシンボルでも現在バッファによって値が異なる"。
+- meta-tracing では変数の identity が green/red に分類されるが、
+  buffer-local 変数は "バッファ" という hidden 状態を持つ。
+- trace 中に buffer が切り替わると (=with-current-buffer= 等)、
+  以前の buffer-local 値への仮定が全て invalid になる → guard failure の嵐。
+- PyPy の frame object 問題 (slides §Conclusion) の類縁: 外部から可視な状態が
+  trace の不変条件を壊す。
+- 結論: buffer-local variable は trace side-exit を大量発生させる可能性が高い。
+  "buffer-local は green 変数として扱う" ことも不可能 (buffer は実行中に変わる)。
+  この点が Elisp meta-tracing の最大の障壁になり得る。
+
+** advice system
+
+- =advice-add= は既存関数定義を動的に変更する。
+- meta-tracing では関数呼び出しを inline した trace を生成する。
+  advice が追加されると、inline 済みの trace が stale になる。
+- PyPy は class の変更 (monkey-patching) に対してもこの問題を抱えており、
+  guard で型チェックを行い、guard fail で trace 無効化 + 再 compile する仕組みを持つ。
+- Elisp では =advice-add= が任意のタイミングで任意の関数に適用可能 —
+  PyPy の monomorphic call site 仮定が崩れやすい。
+- 結論: advice system は trace を事実上 "短命化" させる。
+  頻繁に advised される関数 (=message=, =read=, =write-region= 等) を含む loop は
+  trace が無効化され続け、warm-up コストを繰り返し払うことになる。
+  paper は advice system に相当するものを明示的に論じていない。
+
+** dynamic scope fallback (=defvar= / =let= dynamic binding)
+
+- Emacs Lisp は lexical-binding が nil の場合、変数は dynamic scope で解決される。
+- dynamic scope = "call stack の最も近い binding を探す" → 実行時まで値が不明。
+- trace 特化は "変数の値が一定" という仮定に依存する。
+  dynamic binding では同じ loop でも異なる binding 環境が毎回 stack にある可能性がある。
+- PyPy では Python の dynamic dispatch を guard (=guard_class(obj, <expected_type>)=) で解決するが、
+  Elisp の dynamic scope は型ではなく "呼び出し環境" の問題 — guard で表現が難しい。
+- 結論: =defvar= ベースの dynamic binding が多いコードは meta-trace の特化恩恵を受けにくい。
+  lexical-binding=t の pure-lexical コードに限定すれば問題は小さいが、
+  Emacs の標準ライブラリは dynamic binding を広く使う。
+
+** lexical-binding コードパス
+
+- =lexical-binding: t= のコードは変数参照が静的に解決できる → meta-tracing に最も親和性が高い。
+- NeLisp が lexical binding を bytecode level で明示すれば、
+  green 変数 (pc, bytecode) と red 変数 (locals) の分類が明確になる。
+- ただし Emacs core では lexical-binding が not set の古いコードが大量に存在し、
+  NeLisp が Emacs 互換性を保ちながら JIT を適用する場合、
+  dynamic scope fallback パスを常に考慮しなければならない。
+
+** macro expansion timing
+
+- Elisp macro は read-time ではなく call-time に展開される可能性がある
+  (=macroexpand-all= を明示しない限り)。
+- bytecode コンパイル時に全 macro が展開されていれば問題ない。
+- しかし =eval= 内の macro や =load-file= 経由の動的コードは
+  trace 生成後に新しい bytecode が現れる可能性がある。
+- 結論: NeLisp が bytecode compile を強制する設計なら問題は限定的。
+  しかし Emacs 互換の =eval= を trace する場合、macro expansion が
+  "bytecode string が immutable" の前提 (slides §「Improving the Result II」) を崩す。
+
+** funcall/apply-heavy code
+
+- Elisp のコードは =funcall=, =apply=, =mapcar=, =cl-loop= 等の
+  higher-order function を多用する。これは call site が polymorphic になりやすい。
+- PyPy の slides でも "unrolling in such a way that the trace corresponds to a user loop"
+  と述べているが、higher-order 関数は "どの関数が呼ばれるか" が実行時まで不明。
+- =mapcar= 等は Elisp で最も多用されるパターンだが、
+  渡す関数が毎回異なる場合、guard failure が多発する。
+- 結論: funcall/apply-heavy な Elisp の典型的スタイルは
+  meta-tracing の "hot path が収束" という前提に反しやすい。
+  Elisp らしい書き方 (高階関数多用) と JIT の効果が逆相関する可能性がある。
+
+** 総合評価: NeLisp への meta-tracing 適合性
+
+meta-tracing が効果を発揮するには:
+1. タイトな数値ループ (monomorphic)
+2. bytecode が immutable
+3. 関数 identity が安定 (advice なし)
+4. dynamic scope が限定的
+5. warm-up を許容できる長時間プロセス
+
+Emacs Lisp は 1-5 の全てに対して障壁を持つ。
+特に 3 (advice system) と 4 (dynamic scope) は Emacs Lisp のアイデンティティに関わる機能であり、
+妥協すると Emacs 互換性を失う。
+
+*NeLisp Phase 3-5 では JIT を roadmap に入れないという現判断は妥当と考えられる。*
+仮に Phase 4b 以降で JIT を検討する場合、適用スコープを
+"lexical-binding=t かつ advice なし かつ buffer-local 変数なし" の
+pure-functional なコード片に限定するのが現実的な出発点になる。
+
+* Reading notes per section
+
+** §Introduction (slides §Introduction)
+
+- 動的言語の人気 vs. 遅さ: "most implementations without advanced techniques like JITs"
+- 目標: "improve performance of interpreters written with the PyPy toolchain"
+- 方針: "trace the interpreter execution instead of the user program"
+  (user program を直接 trace するのではない点が肝)
+
+** §The PyPy Project (slides §The PyPy Project)
+
+- PyPy = RPython (Python の型推論可能 subset) で動的言語の VM を記述する環境
+- translation process: control flow graph 構築 → 型推論 → Python object model の具体化
+  → GC や低レベル詳細の追加
+- この "translating" フレームワークがあるから、JIT を interpreter に組み込まず
+  translation 時に追加できる (Implementation Issues I に対応)
+
+** §Tracing JIT Compilers (slides §Tracing JIT compilers)
+
+- Dynamo project 起源、JVM に応用、TraceMonkey/Tamarin ActionScript VM で商用化
+- 3 assumption: programs spend most time in loops / similar code paths /
+  best way to learn is to observe
+- 4 phases: profiling → tracing → code generation → code execution
+- position key = 実行中の関数 + PC。同じ position key が再現したら loop を閉じる
+- 具体例: =strange_sum= + =f= のトレース。=f= が inline され、
+  common path (=else= branch) が machine code に、=if= branch は guard failure に
+
+** §Applying a Tracing JIT to an Interpreter (slides §同名)
+
+- 用語整理: tracing interpreter (JIT が使う) / language interpreter (user program を動かす) /
+  user program / interpreter loops / user loops の5層構造
+- 問題: "only hot loop: bytecode dispatching" — dispatch loop が hot になり
+  個々の opcode しか trace できない
+- 解法: green/red 変数の導入と jit_merge_point / can_enter_jit hint
+- =jit_merge_point= を dispatch loop 先頭に、=can_enter_jit= を backward jump 位置に
+- 具体例: language X interpreter (CO_INCREASE/CO_DECREASE/CO_JUMP_BACK_3) の
+  JitDriver 定義と jit_merge_point 呼び出し
+
+** §Improving the Result (slides §Improving the Result)
+
+- trace にはまだ interpreter の残骸 (pc 操作, bytecode 読み取り) が残る
+- bytecode string が immutable → side-effect free → constant fold で除去可能
+- "see paper page 22" — slides が言及する paper 本体の最適化節 (本 summary では未確認)
+
+** §Implementation Issues (slides §Implementation Issues)
+
+- JIT は C 翻訳時に追加。interpreter を直接解釈する double-interpretation は禁忌
+- guard failure 時の fallback: deep C stack 問題 → fallback interpreter で safe point まで実行
+
+** §Evaluation (slides §Evaluation)
+
+- *Small Interpreter* の 5 benchmark:
+  - Benchmark 2: overhead で通常より遅い
+  - Benchmark 3: Benchmark 2 より良いが通常より遅い
+  - Benchmark 4: "almost three times faster" (3x 高速化)
+  - Benchmark 5: profiling overhead が速度の ~20%
+- *PyPy benchmark*:
+  - PyPy+JIT > CPython (時期の benchmark では)
+  - ただし CPython+Psyco よりは遅い
+- slides には具体的な秒数は示されていない (グラフ参照の注記あり)
+
+** §Related Work (slides §Related Work)
+
+- DynamoRio: machine code レベルの trace-based optimizer。
+  unrolling は同じだが high-level 情報がなく、より多くの hint が必要。
+  高度な最適化 (constant folding 等) は不可
+- Piumarta/Riccardi: 頻出 bytecode sequence を物理的にコピー結合 → dispatch overhead 削減。
+  ただし fragment 間 dispatch は残り、bytecode 自体が重い場合は効果なし
+- Ertl/Gregg: machine code patching で全 dispatch overhead を除去。
+  bytecode 自体の処理が重い場合は dispatch overhead が支配的でないため効果なし
+- Partial Evaluation (Tempo, DyC): static/dynamic 変数の区別、runtime special化。
+  C レベルの実装では高レベル情報が使えず難しい
+- Dynamic Partial Evaluation: runtime 完全遅延 PE の試み ("WTF!?" コメントは slides のユーモア)
+
+** §Conclusion and Next Steps (slides §Conclusion)
+
+- *Allocation Removal* (future work): loop 内で escape しない object は heap 非確保
+- *Frame Object の lazy update* (future work):
+  動的言語の introspection のため frame への書き込みが allocation removal を妨げる →
+  lazy update で回避が必要
+
+* Performance numbers
+
+| Benchmark / Context | 結果 | 出典 |
+|---------------------+------+------|
+| Small Interp Bench2 | 通常より遅い (overhead) | slides §Evaluation |
+| Small Interp Bench3 | Bench2より良いが通常より遅い | slides §Evaluation |
+| Small Interp Bench4 | 通常の ~3x 高速 | slides §Evaluation |
+| Small Interp Bench5 | profiling overhead ~20% | slides §Evaluation |
+| PyPy+JIT vs CPython | PyPy+JIT > CPython | slides §Evaluation |
+| PyPy+JIT vs Psyco | PyPy+JIT < CPython+Psyco | slides §Evaluation |
+| richards (Sep 2009) | CPython 8.18s / PyPy+JIT 2.61s (3.1x) / Psyco 1.59s (5.1x) | Rigo blog 2009-09-27 |
+| richards assembler時間除外 | PyPy+JIT: 1.04s (7.9x faster than CPython) | Rigo blog 2009-09-27 |
+| JIT support code overhead | 1.57s (total の ~60%) — "ridiculously too much" | Rigo blog 2009-09-27 |
+| float benchmark n=1M avg | CPython 7.56s / PyPy 1.63s (4.6x) / Psyco 4.44s / Java 0.77s | Fijalkowski blog Oct 2009 |
+| prototype speedup (claim) | 20-30x over CPython (prototype, not production) | Fijalkowski 2009-04-21 |
+| algorithmic code range | "somewhere between same speed as CPython to 50x faster (f1int)" | blog Nov 2009 |
+
+** 注意事項
+
+- slides §Evaluation の Benchmark 2-5 は "Small Interpreter" に対するもので、
+  具体的な秒数は slides に数値として記載されていない (グラフのみ)
+- PyPy+JIT の 1x-50x という幅はベンチマークの特性に大きく依存する
+- warm-up コスト (1.57s) は "長時間動作プロセス以外では不合理に大きい" (Rigo 2009-09-27)
+- 2009年時点の数値であり、その後の PyPy 開発で大幅に改善されている
+
+* Open questions for NeLisp (answered)
+
+** Q1: Elisp の dynamic-binding は meta-trace で unroll できるか
+
+*A (paper + blog から):*
+meta-tracing の特化は "変数の値が安定している" ことを仮定する (green 変数 = constant)。
+Dynamic binding は call stack を探索して値を決定するため、
+同じ変数シンボルでも呼び出し環境が変わると値が変わる。
+
+paper は dynamic binding を直接論じていない。ただし slides §「Conclusion: Optimizing Frame Objects」で
+"frame への introspection が allocation removal を阻害する" と述べており、
+"実行時に可視な環境への書き込み" が JIT の最適化を妨げるという同種の問題を認識している。
+
+結論: dynamic binding は trace の不変条件を壊すため、そのままでは unroll 不可。
+trace を "特定の dynamic binding 環境のもとで" 特化させ、環境が変わると guard fail、
+という実装は理論上可能だが、Emacs Lisp の =let= が多用される実態を考えると
+guard failure 率が高くなり JIT 効果が薄れる可能性が高い。
+
+** Q2: buffer-local variable への access は trace side exit を頻発させるか
+
+*A:*
+paper は buffer-local 変数を論じていない。しかし機構から推論:
+
+buffer-local 変数は "current buffer" に隠れた状態依存性を持つ。
+trace は "buffer X のもとで trace した" という前提を持つが、
+=with-current-buffer= で buffer が変わると全 buffer-local 前提が invalid。
+
+PyPy では type guard (=guard_class=) でオブジェクト型の安定性を保証するが、
+buffer-local はそれよりも動的 — "何が current buffer か" という環境ごと変わる。
+guard で "current buffer == B" を保証することは可能だが、
+コードが複数 buffer を扱うたびに別々の trace が必要になる。
+
+結論: buffer-local 変数は "trace が buffer に tied" になり、
+buffer 切り替えのたびに side exit が発生する。
+Emacs の実用コード (=find-file=, =with-current-buffer=, =set-buffer= を使うもの)
+では JIT の恩恵を受けにくい。
+
+** Q3: advice system と meta-tracing の相性は? advice 追加で trace 無効化?
+
+*A:*
+paper は advice system を論じていない。
+ただし meta-tracing の仮組み: trace 生成時に関数を inline し、
+guard で "この関数定義が変わっていない" ことを保証する必要がある。
+
+Python の monkey-patching (PyPy が対処を要した) と同様に、
+=advice-add= は関数定義を差し替える。差し替え後に以前の trace が実行されると
+guard failure → trace の破棄 → 再 compile が必要。
+
+Emacs の advice は "グローバルかつ動的" であり、いつでも追加・除去できる。
+production Emacs で =advice-add= が多用される現実 (doom-emacs 等) を考えると、
+trace invalidation の頻度が高くなりすぎる可能性がある。
+
+結論: advice system は meta-tracing と深刻に相性が悪い。
+trace の安定性を保つには "advice がかかっていないことを trace entry で確認する guard"
+が必要になるが、それは Emacs の動的拡張性の否定に近い。
+
+** Q4: Truffle (AST specialization) との対比 — PyPy bytecode trace vs Truffle AST specialization、NeLisp にはどちらが向くか
+
+*A (paper の related work 範囲内で):*
+Truffle/Graal は本 paper の published 後 (2012 年頃〜) に登場したため、
+paper は Truffle を論じていない。
+
+paper の related work から読み取れる比較軸:
+- PyPy meta-tracing: bytecode dispatch 形式の interpreter に hint を2箇所追加するだけ。
+  interpreter を大幅に変更しなくていい。ただし trace はループのみ最適化
+- Truffle/Graal: AST interpreter の各ノードに "specialization" を埋め込む
+  (inline cache / polymorphic inline cache)。
+  コードパスのプロファイルに応じて AST ノードを rewire していく。
+  ループ以外も含め wider coverage だが interpreter 設計への侵食が大きい
+
+NeLisp の現状 (Phase 3 = bytecode VM 設計中) から見ると:
+- bytecode VM を持つなら meta-tracing の前提条件 (dispatch loop) は満たせる
+- Truffle style は AST interpreter から設計し直す必要がある
+- ただし上述の Elisp 固有問題 (buffer-local, advice, dynamic scope) は
+  Truffle でも同様に問題になる
+
+結論: "どちらが向くか" の問いに対して paper は answer を持たないが、
+NeLisp の設計 (bytecode VM) には meta-tracing が構造的に近い。
+しかし Elisp 固有の障壁を考えると、どちらの JIT 方式も
+"Emacs の動的拡張性を制限するコスト" を払わずに大きな speedup を得るのは難しい。
+
+* Cite-back
+
+- =../01-related-work.org= §6 PyPy / §8 Priority A
+- =../04-concurrency.org= §3 B STM 警告 (PyPy STM branch 挫折) — 本 paper と同チームの別の結末
+- この paper の技術 (meta-tracing) は後に Pycket (Racket on RPython) でも再現されており、
+  言語処理系独立な手法であることが確認されている
+- Sullivan et al. (2003) "Dynamic Native Optimization of Interpreters" —
+  assembler level で同様のアイデアを先行実装していた (blog comment で Bolz が言及)

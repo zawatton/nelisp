@@ -1,0 +1,63 @@
+#+TITLE: NeLisp — 精読対象論文の要約アーカイブ
+#+AUTHOR: zawatton
+#+DATE: 2026-04-22
+
+* 使い方
+
+Phase 0 Q3 (audit 深さ: 精読 + 論文読み込み) に基づき、NeLisp 設計に
+load-bearing な論文の要約を本ディレクトリに蓄積する。
+
+** ファイル命名規約
+
+=<author>-<year>-<slug>.org=
+
+例: =rhodes-2008-sbcl.org=, =bolz-2009-meta-tracing.org=
+
+** stub フォーマット
+
+各 paper stub は以下の structure:
+
+- citation (author, year, venue, DOI/URL)
+- access status (unread / reading / summarized)
+- core contribution (3-5 bullet)
+- NeLisp relevance (Phase 番号 + 設計質問)
+- reading notes (精読時に埋める)
+- open questions (自問)
+- cite-back (NeLisp docs の中でこの paper を引用した箇所リスト)
+
+** 読み方方針
+
+- 1 本あたり 4-8h、週末研究 *2-3 本/月*
+- 各 paper stub の "reading notes" に実読時に追記
+- NeLisp docs (=../00-05.org=) から引用した際は cite-back セクション更新
+
+* Priority A (Phase 0 中に精読)
+
+| paper                       | slug                      | status              | Phase relevance   |
+|-----------------------------+---------------------------+---------------------+-------------------|
+| Rhodes 2008 SBCL            | rhodes-2008-sbcl          | summarized (412 行) | Phase 2 bootstrap |
+| Corallo 2020 native-comp    | corallo-2020-native-comp  | summarized (484 行) | Phase 3-5 AOT     |
+| Bolz 2009 meta-tracing      | bolz-2009-meta-tracing    | summarized (516 行) | Phase 3-4 JIT     |
+| MacLachlan 1992 Python CL   | maclachlan-1992-python    | summarized (419 行) | Phase 2 bootstrap |
+
+Priority A *2026-04-22 完走* — 合計 1831 行、=01-related-work.org= / =03-architecture.org= への反映済。
+
+* Priority B (Phase 1-2 中に精読予定)
+
+(未着手、=../01-related-work.org= §8 を参照)
+
+- Chambers & Ungar 1989 "Customization: Optimizing Compiler Technology for SELF"
+- Würthinger et al. 2012 "Self-optimizing AST Interpreters" (Truffle)
+- Ghuloum 2006 "An Incremental Approach to Compiler Construction"
+
+* Priority C (Phase 3+ で検討)
+
+- Queinnec 1996 "Lisp in Small Pieces"
+- Rossberg et al. 2017 "Bringing the Web up to Speed with WebAssembly"
+
+* Concurrency テーマ (Phase 4 向け、=../04-concurrency.org= と併読)
+
+- Harris et al. 2005 "Composable Memory Transactions" (PLDI)
+- Clojure refs / agents design (Rich Hickey blog)
+- Erlang BEAM internals
+- Go runtime scheduler (MPG model)

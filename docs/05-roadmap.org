@@ -1,0 +1,167 @@
+#+TITLE: NeLisp — roadmap (Phase 1 以降の具体化)
+#+AUTHOR: zawatton
+#+DATE: 2026-04-22
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: ROADMAP-LOCKED-2026-04-22
+:END:
+
+Phase 0 で決定した方針を受けて、Phase 1-5 の具体タスクに落とす doc。
+Time budget: *週末研究 月 8-16h* (Q2 確定)。v1.0 完遂条件 + concurrency lock +
+Priority A 4/4 精読反映済。Phase 1 subset 詳細は =03-architecture.org= §7 を
+canonical source とし、本 doc は release / timeline / governance に集中する。
+
+* 1. Timeline 仮置き
+
+| Phase | 期間 (週末研究前提)  | ゴール                                          | 主要成果物                    |
+|-------+----------------------+-------------------------------------------------+-------------------------------|
+|     0 | 2026-04-22〜07 (1-2m) | docs 6 本完成                                   | =docs/00-05.org=              |
+|     1 | 2026-07〜2027-01 (6m) | Elisp interpreter in Elisp (PoC)                | =src/nelisp-eval.el=          |
+|     2 | 2027-01〜07 (6m)      | self-host 到達                                  | =src/nelisp-core.el= self-boot |
+|     3 | 2027-07〜2028-01 (6m) | bytecode VM + GC                                | =src/nelisp-bytecode.el=      |
+|     4 | 2028-01〜07 (6m)      | concurrency (STM / actor、AI-critical path 3)   | =src/nelisp-stm.el= 等        |
+|     5 | 2028-07〜2029-01 (6m) | buffer / event loop Elisp 化 + AI path 完遂     | =src/nelisp-buffer.el= 等     |
+|   v1.0| 2029-01 頃 (予定)    | *NeLisp v1.0 release* (Stage A 完遂)            | GitHub release, 告知          |
+
+*Phase 5 完了 = NeLisp v1.0 = Stage A 完遂* (=../02-scoping.org= §0 参照):
+1. self-host 到達 ✓
+2. 3 大 core module (buffer / redisplay / event loop) Elisp 化 ✓
+3. AI-critical path (1-5) が NeLisp 上で動作 ✓
+4. 残存 C は SBCL-style 最小境界に収束 ✓
+
+※週末研究前提で各 Phase = 6 ヶ月目安、全 Phase 合計 ~3 年。集中できれば半分に短縮可。
+
+** post-v1.0 (community scope)
+
+v1.0 release 後は *community 主導で C → Elisp の長い尾を埋める* (=../02-scoping.org=
+§0 AI-critical vs community 長尾 参照):
+
+- 領域 6 (display render の細部)
+- 領域 7 (primitive utility: arithmetic / regex / coding-system)
+- Phase 6+ の optional goal (native standalone binary 等)
+
+NeLisp core team は v1.0 以降 maintainer 的に移行、新機能は community PR 主体。
+
+* 2. Phase 1 — Elisp interpreter in Elisp
+
+** 1.1 subset 定義
+
+Phase 1 subset は =../03-architecture.org= §7 で LOCKED (2026-04-22):
+- 14 系の special form + =cond/and/or/when/unless/defconst/prog1/prog2/catch/
+  throw/macroexpand-all= 込み (計 22 form)
+- 40 builtin (cons / arithmetic / string / symbol / print)
+- macro expander with closure
+- 除外 (Phase 2 以降): buffer / marker / overlay / text property / advice /
+  process / regex / native-comp interop / thread / hash-table / float /
+  bignum / dynamic module
+
+本 doc は release / timeline / governance に集中。subset の source of truth
+は =03-architecture.org= §7.1 / §7.3、判断変更時はそちらを更新する。
+
+** 1.2 成功条件
+
+- =(nelisp-eval '(fib 30))= が正しい値を返す
+- =(nelisp-eval '(let ((x 10)) (defun f () x) (f)))= で lexical /
+  dynamic 両 semantics が正しい
+- macro = (defmacro unless (c &rest body) `(if ,c nil ,@body)) が動く
+- =(nelisp-read "(+ 1 2)")= → =(+ 1 2)= で reader が働く
+- ERT test suite 50+ 本、すべて pass
+
+** 1.3 実装 task breakdown (週単位)
+
+| 週      | task                                       |
+|---------+--------------------------------------------|
+| 1-2     | project setup, Cask/Makefile, CI, README   |
+| 3-4     | reader (=nelisp-read=)                     |
+| 5-8     | eval / apply core                          |
+| 9-10    | special forms                              |
+| 11-12   | macro expander                             |
+| 13-16   | ERT test suite + fib/fact/macro verify     |
+| 17-20   | lexical/dynamic binding 切替               |
+| 21-24   | condition-case / unwind-protect            |
+
+* 3. Phase 2 — self-host
+
+** 2.1 bootstrap loop
+
+#+begin_src text
+  cycle 0: host Emacs が nelisp.el を load
+  cycle 1: nelisp が nelisp.el を eval (nelisp が nelisp を動かす)
+  cycle 2: cycle 1 の nelisp が nelisp.el を eval (出力一致 = fixpoint)
+#+end_src
+
+** 2.2 成功条件
+
+- cycle 1 と cycle 2 の output が bit-identical
+- host Emacs と nelisp で 50+ ERT test が両方 pass
+- self-host した nelisp で Phase 1 test suite が pass
+
+** 2.3 リスク
+
+- Speed: self-host 直後は 100x-1000x 遅い前提で OK
+- Memory: cycle 2 で OOM しないか確認
+
+* 4. Phase 3 — bytecode VM + GC + fiber
+
+- =nelisp-bytecode.el= (= Emacs bytecode に近い設計、ただし再設計許容)
+- =nelisp-gc.el= (= mark-sweep、generational は Phase 3 後半で検討)
+- =nelisp-fiber.el= (stackful coroutine、bytecode dispatch に yield 埋込)
+- bench: 現行 Elisp bytecode の 1/5 以内 (= 5x 遅くても OK)
+- =04-concurrency.org= §5 に詳細、=03-architecture.org= §2.4 と整合
+
+* 5. Phase 4 — concurrency (actor primary)
+
+=04-concurrency.org= §7 の locked 方針に従う:
+
+- *Phase 4 primary*: C actor 実装 (=nelisp-actor.el=, =nelisp-chan.el=)
+  - shared-nothing actor + mailbox + channel
+  - =nelisp-spawn= / =nelisp-send= / =nelisp-receive= / =nelisp-chan-*=
+  - buffer-as-actor の実験
+- *Phase 4b (optional)*: STM を experimental layer として追加
+  (=nelisp-stm.el=、transactional buffer の PoC)
+- 成功条件: anvil 痛み解消 test case 3 件から 1+ が PoC 動作
+  (=02-scoping.org= §0 完遂テスト と整合)
+- 学術論文 (ELS short paper 等) は Phase 4 成功後に opt-in で検討
+
+* 6. Phase 5 — 3 core module Elisp 化 + AI path 完遂 = *NeLisp v1.0*
+
+=02-scoping.org= §0 の v1.0 完遂 3 条件を達成:
+
+- =nelisp-buffer.el= (gap buffer in Elisp、AI text manipulation の核)
+- =nelisp-event.el= (event loop dispatcher、AI interactive の基盤)
+- =nelisp-redisplay.el= framework (細部 renderer は community 長尾)
+- =nelisp-thread.el= (真 OS thread、Phase 5 後半、C 層 GC/signal 改修同時)
+- mini-Emacs として起動 (raw terminal、AI-critical path で完動)
+- *Stage A 完遂* — anvil.el 系 Stage B/C を乗せる substrate 準備完了
+
+* 7. Release schedule (OSS 公開前提, Q4)
+
+| phase | release tag | 内容                                             |
+|-------+-------------+--------------------------------------------------|
+| 1 末  | v0.1.0      | Elisp interpreter PoC (fib/macro 動作)           |
+| 2 末  | v0.2.0      | self-host (cycle 1 = cycle 2 fixpoint)           |
+| 3 末  | v0.3.0      | bytecode VM + GC + fiber                         |
+| 4 末  | v0.4.0      | concurrency actor primary (anvil 痛み解消 PoC)    |
+| 5 末  | *v1.0.0*    | *Stage A 完遂* (3 core + self-host + AI path)    |
+| 6+    | v1.x / post | community 長尾 (display render / primitive util)  |
+
+外部発信の順序:
+- v0.1.0: 個人 blog + Reddit =/r/emacs=
+- v0.2.0: Hacker News + Lobsters
+- v0.4.0: EmacsConf / Reddit announcement、moderate novelty claim
+- v1.0.0: ELS / EmacsConf main talk、anvil.el v2 release と同時検討
+
+* 8. ガバナンス (先々)
+
+- Phase 0-2 は single-maintainer (zawatton)
+- Phase 3 以降 contributor 受け入れ検討
+- License: README.org TBD → Phase 1 開始までに確定 (第一候補 GPLv3+)
+- Code of Conduct: Phase 1 release 時に採用 (Contributor Covenant 踏襲想定)
+
+* 9. Review cadence
+
+- 月次: docs の status update
+- Phase 境界: user signoff、BRIEFING.org の §11 に進捗追記
+- 半年: roadmap 見直し (実測 time budget との乖離を反映)

@@ -1,0 +1,17 @@
+#+TITLE: NeLisp — ideas backlog (scope creep 退避先)
+#+AUTHOR: zawatton
+#+DATE: 2026-04-22
+#+OPTIONS: toc:2 num:t
+
+* 使い方
+
+Phase 0-2 の作業中に出てきた「面白そうだが今やらない」アイデアを、
+ここに退避する。=docs/02-scoping.org= §5 参照。
+
+各エントリ format:
+- =** <title>=
+- =:CREATED:= (発想日)
+- =:PHASE:= (どの phase で検討するか、または =deferred=)
+- 本文 (1-5 行で idea の要旨)
+
+* Ideas

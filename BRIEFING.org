@@ -1,0 +1,307 @@
+#+TITLE: 研究プロジェクト指示書: NeLisp — 純 Elisp セルフホスティング VM
+#+AUTHOR: zawatton (kurozawawo@gmail.com)
+#+DATE: 2026-04-22
+#+OPTIONS: toc:2 num:t
+
+* このドキュメントについて
+
+本ファイルは、別 Claude Code session に投げる指示書である。
+前提知識ゼロでも着手できるよう自己完結的に書いてある。
+セッション開始時は最初にこれを通読し、不明点は「質問したい点」節にまとめて user に確認してから進めること。
+
+- user: zawatton (電気管理技術者・1人事業主、Emacs / Elisp 熟練)
+- 親プロジェクト: [[file:../anvil.el/][Notes/dev/anvil.el]] (参照可、直接触るのは本研究の範囲外)
+- 作業場所: =Notes/dev/nelisp/= (本ディレクトリ)
+- プロジェクト名: *NeLisp* (display) / =nelisp= (code/path/package prefix) — 2026-04-22 確定
+- 関連 memory: =~/.claude/projects/-home-madblack-21-Cowork-Notes/memory/= (auto memory、都度参照可)
+
+* 1. ミッション
+
+純 Elisp でセルフホスティングする独自 Elisp VM を設計・実装する研究プロジェクト。
+最終的には Emacs のコア部分を (C でなく) この Elisp VM で実装することを視野に入れる。
+
+** 明示的な非目標
+
+- Scheme 化 (Guile-Emacs 方向) — 拒否
+- Rust 再実装 (Remacs 方向) — 拒否
+- Emacs 代替 editor の開発 — out of scope (編集機能は後続 Phase)
+- anvil.el への機能還元 — 任意、必須ではない
+
+* 2. ユーザーの哲学
+
+以下は user 本人の発言ベース、研究の方向性を決める核心:
+
+#+begin_quote
+Common Lisp、または Scheme は哲学的に優れていますが Emacs Lisp は
+実用範囲、経験値で勝っていると思います。考えとしては Emacs のコア部分を
+その独自 Elisp VM で実装する事です。Scheme ではなく純 Elisp として。
+#+end_quote
+
+含意:
+- Elisp syntax / semantics を変えない (macro / dynamic binding / buffer-local 等の文化を保持)
+- CL 並みの "通用範囲" (standalone 実行、threading、proper package、stdlib) を獲得
+- Scheme 的 minimalism 志向ではなく、蓄積された Elisp 資産を尊重
+- SBCL (CL in CL) と同じ構図を Elisp で実現
+
+補足コンテキスト:
+- user は道具で能力を拡張する人類史の延長線上に AI を置く思想を持つ
+  (memory: =user_collaboration_philosophy.md=)
+- 小さくても "前例のない" 研究に価値を見出す
+- 完成より設計の筋の良さを優先する傾向
+
+* 3. 先行研究ランドスケープ
+
+| プロジェクト           | アプローチ                             | 本研究との差分                            |
+|------------------------+----------------------------------------+-------------------------------------------|
+| Remacs (2016-2020)     | C → Rust 書き直し、Elisp 保持          | 実装言語が Rust。Elisp self-host ではない |
+| emacs-ng (active)      | Rust + Deno を統合                     | JS runtime 追加路線                       |
+| Guile-Emacs (Wingo)    | Scheme で Elisp 再実装                 | Scheme 中心、Elisp は compat 層           |
+| native-comp (Emacs 28+)| Elisp → libgccjit 経由 native          | JIT のみ、VM 再設計なし                   |
+| SBCL                   | CL in CL self-host                     | CL 文脈。本研究の methodology 参考        |
+| PyPy                   | RPython で Python VM を self-host      | Python 文脈。bootstrap 論の参考           |
+| PicoLisp               | Tiny Lisp、VM を Lisp 自身で書く       | Lisp 方言、規模が違う                     |
+| 本研究                 | Elisp で Elisp VM を self-host         | *前例なし*                                |
+
+「前例なし」が研究価値の核。
+ただし Remacs が discontinued した教訓 = scope 管理が最大の敵。
+
+* 4. 核心課題 (Phase 0 で詰める設計論点)
+
+** 4.1 Bootstrap 戦略
+
+"Elisp で書いた VM をどう最初に動かすか" の鶏卵問題。
+
+- (a) *Host-Emacs bootstrap* [推奨]: 現行 Emacs で VM.el を eval、
+  その VM で自身を再 eval して self-host 到達。PyPy / SBCL 方式
+- (b) Minimal Elisp→C 一回だけ: 初期 VM を C で、ASAP で Elisp に
+  切替。保守負担が二重化しやすい
+- (c) native-comp bootstrap: VM を native-comp 経由で native binary 化。
+  Emacs 28+ 依存だが最短経路
+
+** 4.2 Primitive 境界
+
+VM 外 (C / asm / OS syscall) に残すライン:
+
+- 確実に外: syscall、memory alloc、GC core loop、文字コード変換
+- Elisp 化候補: gap buffer、redisplay scheduler、event loop dispatcher、regexp engine
+- 議論: GC policy (generational?)、JIT compiler を Elisp で書くか
+
+参考: SBCL の "tiny runtime + everything else in CL"。
+
+** 4.3 Concurrency (novel contribution 候補)
+
+本研究の最大の研究的価値領域。既存 Emacs cooperative 1-thread を引きずる必要なし:
+
+- Thread 第一級化 (現状の =make-thread= は buffer-local state に unsafe)
+- Actor / channel (Erlang mailbox or Go channel)
+- STM: buffer 変更を transaction 化
+- Structured concurrency (nursery / scope)
+- Fiber (stackful coroutine、yield point 明示化)
+
+設計 input: 親プロジェクト anvil.el の以下の memory が生きた痛みデータ:
+- =feedback_emacs_server_concurrency_model.md=
+- =feedback_anvil_accept_process_output_no_server_yield.md=
+- =feedback_emacs_mutex_no_cross_session.md=
+- =feedback_anvil_worker_phase1_startup_freeze.md=
+
+** 4.4 Package / namespace
+
+- 現行 =prefix-= convention と CL =defpackage= の共存
+- =(in-package :foo)= を opt-in、既存コードは素通り
+- ASDF / Quicklisp 相当を ELPA と統合 or fork
+
+** 4.5 FFI / C module 互換性
+
+- Emacs 25+ dynamic module ABI 保持 (生態系断絶回避)
+- 加えて cleaner FFI レイヤ設計
+- 既存 Emacs C 関数 ~3000 を段階的に Elisp 置換するロードマップ
+
+* 5. Phase 構造とタイムライン
+
+| Phase | 期間      | ゴール                                            | 成功条件                    |
+|-------+-----------+---------------------------------------------------+-----------------------------|
+|     0 | 1-2 週    | 動機・先行研究・POC 範囲の文書化                  | docs/ 6 本ドラフト          |
+|     1 | 3-6 ヶ月  | Host-Emacs 上で走る Elisp interpreter in Elisp    | fib/factorial/macro 動作    |
+|     2 | 6-12 ヶ月 | self-host 到達 (VM が自身の source を再実行)      | bootstrap loop 収束         |
+|     3 | 12-18 ヶ月| Bytecode + GC、性能現行 Elisp の 1/5 以内         | bench suite pass            |
+|     4 | 18-24 ヶ月| Thread + STM のうち 1 つを実装                    | 並行 test pass              |
+|     5 | 24 ヶ月~  | buffer / event-loop を VM 側で持つ PoC            | mini-Emacs 起動             |
+
+*"5 年計画の Phase 0-1 だけ本気でやる"* の割り切り推奨。
+anvil.el と同じ SHIPPED gate 文化を持ち込めば破綻しにくい。
+
+* 6. Phase 0 具体的成果物
+
+本セッション (first session) で以下 6 ファイルのドラフトを作成する:
+
+1. =docs/00-motivation.org= — 哲学、CL vs Scheme、Elisp 文化の位置付け
+   - ⚠ 思想の核なので最終文面は user 自筆推奨。AI は叩き台のみ
+2. =docs/01-related-work.org= — Remacs / emacs-ng / Guile-Emacs / SBCL / PyPy の詳細 audit
+3. =docs/02-scoping.org= — Phase 0-2 の in/out of scope
+4. =docs/03-architecture.org= — primitive 境界、bootstrap 方式の trade-off 比較
+5. =docs/04-concurrency.org= — thread model の選定 (STM / actor / fiber から 1-2 絞る)
+6. =docs/05-roadmap.org= — staged plan (Phase 1 以降の具体化)
+
+加えて:
+- =README.org= — プロジェクト overview、人に見せる用
+- =.gitignore= — Elisp 開発の定番 (*.elc, *~, etc.)
+
+* 7. First session タスク順序
+
+1. 本 BRIEFING.org を通読、「質問したい点」節を確認
+2. user に scoping 4 質問 (本文末尾 §10) を投げ、回答を待つ
+3. 回答を受けて =docs/00-motivation.org= を叩き台で書く
+   → user レビュー → 自筆部分を user に委ねる
+4. =docs/01-related-work.org= を先行研究 audit で書く
+   (深さは質問で user 指示済、web 調査 or blog レベル or code 精読か)
+5. 残り 4 docs を順次、user と対話しながらドラフト
+6. Phase 0 終了時に user に signoff 依頼、Phase 1 開始可否判断
+
+*Time budget 目安*: Phase 0 全体で実作業 20-40 時間。週末研究なら 1-2 ヶ月。
+
+* 8. 制約・方針
+
+** 8.1 作業ディレクトリとブランチ
+
+- 本ディレクトリ =Notes/dev/elisp-vm/= で作業
+- Git 管理は Phase 0 終了後に検討 (docs のみの間は不要)
+- Phase 1 開始時に git init → Phase 2 到達後に GitHub 公開検討
+
+** 8.2 anvil.el との関係
+
+- anvil.el は親プロジェクト、本研究と独立
+- 本研究が Phase 3+ に到達したら、anvil の pain (memory 参照) を解決する実装で
+  還元する可能性あり。ただし Phase 0-2 は独立
+- anvil.el のコードを参考にするのは可、直接改変は不可
+
+** 8.3 memory へのアクセス
+
+- auto memory は読み取り可、本研究に関する事実は書き込んで良い
+- 書き込み時は =project_elisp_vm_*.md= prefix で
+- anvil 系 memory (=project_anvil_*.md=, =feedback_emacs_*.md=) は
+  concurrency / yield 論の input として非常に有用
+
+** 8.4 CLAUDE.md 遵守
+
+親 =Notes/CLAUDE.md= のルール適用:
+- elisp は lexical-binding
+- 作業ログは =capture/ai-logs-<platform>-<hostname>-YYYY.org= に記録
+- Emacs MCP ツール (=mcp__emacs-eval__*=) を優先
+- トークン最適化: 重い調査は Agent (haiku) に委譲
+
+** 8.5 スコープクリープの警戒
+
+- Phase 0 で Phase 1+ の実装に手を出さない (Remacs 失敗の教訓)
+- 「面白そう」と思ったアイデアは =docs/90-ideas-backlog.org= に退避
+- 週次で Phase 0 成果物 vs 残タスクを self-review
+
+* 9. 成果物の最終形イメージ
+
+Phase 0 完了時、外部の Elisp / 言語処理系研究者が本 docs/ を読んで:
+- なぜこの研究が必要か理解できる (00-motivation)
+- 先行研究との差分が明確 (01-related-work)
+- 実現可能性の見積もりが妥当と判断できる (02-scoping, 03-architecture)
+- Novel contribution が特定できる (04-concurrency)
+- 次ステップが具体的 (05-roadmap)
+
+このレベルに達していれば Phase 1 開始して良い。
+
+* 10. User に確認すべき質問 (first session 冒頭で投げる)
+
+以下 4 点、本研究の方向性を決める必須質問:
+
+** Q1. Project 名の確定
+
+候補: =elisp-vm= / =nelisp= / =elisp-gp= / その他
+- =elisp-vm=: 直球、VM 研究であることが明示
+- =nelisp=: "New Elisp" or "Native Elisp"。短い
+- =elisp-gp=: "General Purpose Elisp"。意図が明示
+- ディレクトリ名を変える場合は first session で rename
+
+** Q2. Time budget
+
+- (a) 週末研究 (月 8-16 時間)
+- (b) anvil とバランス (月 40-60 時間)
+- (c) 集中 project 化 (月 80+ 時間)
+
+回答で Phase 長さの現実的見積もりを調整。
+
+** Q3. 先行研究 audit の深さ
+
+- (a) 論文・blog レベル (浅く広く、1 週程度)
+- (b) Remacs / emacs-ng / Guile-Emacs の code 精読まで (2-4 週)
+- (c) (b) + 論文読み込み (学術的に novelty を主張するなら必須)
+
+** Q4. 最終 output 形
+
+- (a) Internal design docs のみ (user 個人の知的探求)
+- (b) + Phase 1-2 prototype (動くもの)
+- (c) + 学術論文 / 技術記事 (外部発信)
+- (d) + GitHub 公開プロジェクト (コミュニティ巻き込み)
+
+回答で Phase 0 docs の書き方 (厳密さ・引用形式) が変わる。
+
+* 10.5 First session での回答 (2026-04-22)
+:PROPERTIES:
+:CREATED: 2026-04-22
+:END:
+
+| Q    | 回答                                                | 補足                                  |
+|------+-----------------------------------------------------+---------------------------------------|
+| Q1   | *NeLisp* (display) / =nelisp= (code/path)           | CamelCase compound brand、dual-use    |
+| Q2   | 週末研究 (月 8-16h)                                 | Phase 0 完了目処 1-2 ヶ月             |
+| Q3   | 精読 + 論文読み込み                                 | SBCL / PyPy / Truffle 論文含む深 audit |
+| Q4   | Phase 1-2 prototype + GitHub 公開                   | 学術論文は Phase 4 で再検討            |
+
+関連决定:
+- ディレクトリ =elisp-vm/= → =nelisp/= に rename 済 (2026-04-22)
+- License 第一候補 GPLv3+ (Emacs 整合、Phase 1 開始前に確定)
+- Scaffold 完了: docs/00-05 + 90-ideas-backlog + README + .gitignore
+
+* 11. この指示書の更新
+
+First session で以下を更新すること:
+- §10 の質問に user 回答を追記 → §11 以降に反映 (§10.5 完了済)
+- Phase 0 進捗に応じて §6 各 doc の status を更新
+- Phase 0 終了時、本 BRIEFING.org を凍結し =docs/99-first-session-log.org= に
+  first session での対話ハイライトを転記
+
+** First session 進捗 (2026-04-22)
+
+- [X] BRIEFING 通読 → Q&A → 回答反映
+- [X] ディレクトリ rename + scaffold (6 docs + README + .gitignore)
+- [X] =docs/00-motivation.org= 叩き台 (AI-DRAFT / USER 自筆領域を明示区分)
+- [X] =docs/01-related-work.org= skeleton + 読むべき論文リスト
+- [X] =docs/02-scoping.org= skeleton + scope creep 防波堤
+- [X] =docs/03-architecture.org= skeleton + bootstrap 推薦案 A
+- [X] =docs/04-concurrency.org= skeleton + novelty 推薦 (D → B/C)
+- [X] =docs/05-roadmap.org= skeleton + Phase 1-5 timeline
+- [ ] user レビュー待ち (motivation の USER 自筆領域)
+- [ ] 週末研究で順次本文詰め
+
+* 付録 A: 参考リンク (first session で精査)
+
+- Remacs: https://github.com/remacs/remacs (discontinued)
+- emacs-ng: https://github.com/emacs-ng/emacs-ng
+- Guile-Emacs: https://www.emacswiki.org/emacs/GuileEmacs
+- SBCL internals: http://www.sbcl.org/manual/
+- PyPy architecture: https://doc.pypy.org/en/latest/architecture.html
+- Andy Wingo blog "a new Elisp compiler":
+  https://wingolog.org/archives/2014/01/19/a-new-elisp-compiler (Guile 文脈)
+- Emacs native-comp: https://akrl.sdf.org/gccemacs.html
+
+* 付録 B: 親 anvil memory のうち本研究に input となるもの
+
+(auto memory から抜粋、first session で直接参照すること)
+
+- =feedback_emacs_server_concurrency_model.md= — yield point の実態
+- =feedback_emacs_accept_process_output_no_server_yield.md= — cross-bridge 不可能論
+- =feedback_emacs_mutex_no_cross_session.md= — mutex の限界
+- =feedback_anvil_worker_phase1_startup_freeze.md= — file-notify 罠
+- =feedback_subprocess_tangle_pattern.md= — subprocess 戦略が効く領域
+- =feedback_org_element_cache_during_init.md= — 最適化仮説の罠
+- =feedback_stale_elc_silent_wrong_result.md= — byte-compile の silent failure
+- =feedback_emacs30_help_arglist_strip.md= — Emacs 30 破壊的変更の例
+
+これらは anvil の実装で実際にハマった bug ベースの一次情報。
+本研究で "Emacs の悪いところを直す" 設計をする際の ground truth。

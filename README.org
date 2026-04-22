@@ -1,0 +1,121 @@
+#+TITLE: NeLisp — Self-Hosted Emacs Lisp VM in Pure Elisp
+#+AUTHOR: zawatton
+#+DATE: 2026-04-22
+
+* What is NeLisp?
+
+*NeLisp* is a research project to design and implement an Emacs Lisp
+virtual machine written in /pure Emacs Lisp/, with the eventual goal of
+re-implementing the Emacs core in NeLisp rather than C — /the substrate
+Emacs users can rewrite themselves, especially in collaboration with AI/.
+
+The same construction SBCL used for Common Lisp (CL implemented in CL),
+applied to Emacs Lisp — for the first time.
+
+Tagline candidate (JA): /Emacs を鍛えて AI のツールとする究極形。Elisp
+自身で Elisp VM を書き直す Emacs Lisp 研究プロジェクト。/
+
+* Status (Phase 0, 2026-04-22)
+
+Phase 0 (design documents) is effectively complete. Key decisions locked:
+
+- *Bootstrap strategy*: Host-Emacs bootstrap (Candidate A), transferring
+  SBCL's genesis methodology (Rhodes 2008) to Emacs as the host
+- *Scope*: Stage A only (= Elisp substrate). Stage B (AI-native Emacs) and
+  Stage C (AI/Emacs boundary fusion) belong to =anvil.el= successors
+- *Concurrency*: Actor model as primary (Phase 4), STM experimental
+  (Phase 4b), fiber (Phase 3), threads deferred (Phase 5)
+- *Division of labor*: NeLisp core team focuses on *AI-critical paths*
+  (buffer/event/concurrency/eval/FFI); community handles *long tail*
+  (display render, primitive utilities) post-v1.0 — Linux kernel / SBCL
+  governance model
+
+No code runs yet. Phase 1 (interpreter-in-Elisp PoC) targets mid-2026.
+See =docs/05-roadmap.org=.
+
+* Philosophy (short form)
+
+Emacs Lisp is not philosophically cleaner than Scheme or Common Lisp —
+but decades of accumulated, lived-in Elisp is a cultural asset worth
+self-hosting /on its own terms/, rather than porting it to someone
+else's substrate (Scheme, Rust, JavaScript).
+
+/Esperanto is a constructed language of philosophical elegance, but
+English is the international language./ Elisp is English here.
+
+The long form lives in =docs/00-motivation.org=.
+
+* Non-goals
+
+- Scheme rewrite (Guile-Emacs direction) — rejected
+- Rust rewrite (Remacs direction) — rejected
+- A replacement editor for Emacs — out of scope for NeLisp itself
+  (Stage B/C handled by =anvil.el= or successors)
+- Replacing /all/ 3000 C functions — non-goal (Remacs failure pattern).
+  NeLisp core team rewrites AI-critical paths, community fills the long
+  tail
+
+* The three-stage vision
+
+#+begin_src text
+  ┌─────────────────────────────────────────────────┐
+  │ Stage C: AI and Emacs as one                    │ ← anvil.el (and beyond)
+  │ ┌─────────────────────────────────────────────┐ │
+  │ │ Stage B: Emacs made AI-native               │ │ ← anvil.el (and beyond)
+  │ │ ┌─────────────────────────────────────────┐ │ │
+  │ │ │ Stage A: Emacs internals in pure Elisp  │ │ │ ← *NeLisp (this project)*
+  │ │ │ (no C to traverse — everything editable) │ │ │
+  │ │ └─────────────────────────────────────────┘ │ │
+  │ └─────────────────────────────────────────────┘ │
+  └─────────────────────────────────────────────────┘
+#+end_src
+
+NeLisp builds the substrate (Stage A). Stage B and C are built on top
+of NeLisp, as extension packages.
+
+* Repository layout
+
+#+begin_src text
+nelisp/
+├── BRIEFING.org             # First-session design instructions
+├── README.org               # This file
+├── .gitignore
+└── docs/
+    ├── 00-motivation.org    # Why this, why now, why not Scheme (USER voice)
+    ├── 01-related-work.org  # 7 projects audited + paper priorities
+    ├── 02-scoping.org       # Stage A/B/C + AI-critical vs long tail
+    ├── 03-architecture.org  # Bootstrap A, primitive boundary, Phase 1 subset
+    ├── 04-concurrency.org   # Actor primary Phase 4, novelty claim
+    ├── 05-roadmap.org       # Phase 1-5 timeline, release schedule
+    ├── 90-ideas-backlog.org # Deferred interesting ideas
+    └── papers/              # Academic paper reading stubs
+        ├── README.org
+        ├── rhodes-2008-sbcl.org           # Priority A: bootstrap methodology
+        ├── corallo-2020-native-comp.org   # Priority A: AOT hybrid
+        ├── bolz-2009-meta-tracing.org     # Priority A: JIT for Phase 3-4
+        └── maclachlan-1992-python.org     # Priority A: CL-in-CL precedent
+#+end_src
+
+* Related work (audited)
+
+| Project           | Approach                  | Status / diff with NeLisp                |
+|-------------------+---------------------------+------------------------------------------|
+| Remacs            | Emacs C → Rust            | Archived 2020, scope explosion           |
+| emacs-ng          | Rust + Deno (JS)          | Low activity 2024, JS disabled           |
+| Guile-Emacs       | Elisp on Guile (Scheme)   | 12-year stall, relaunched EmacsConf 2024 |
+| native-comp       | Elisp → libgccjit → .eln  | Shipped in Emacs 28+, does not rewrite VM |
+| SBCL              | CL in CL (CMU CL fork)    | /Methodology source/ (Rhodes 2008)       |
+| PyPy              | Python in RPython + JIT    | Successful self-host, STM branch failed  |
+| PicoLisp          | Tiny Lisp, pil21 LLVM      | pil21 self-hosts LLVM phase              |
+| *NeLisp*          | Elisp in Elisp, editor-native | First editor-integrated self-host    |
+
+See =docs/01-related-work.org= §10 for the synthesis.
+
+* License
+
+TBD. Leading candidate: GPLv3+ (to match Emacs) with per-module
+reconsideration if needed. Decided before Phase 1 push.
+
+* Contact
+
+zawatton — kurozawawo@gmail.com

@@ -1,0 +1,35 @@
+# Elisp byte-compiled / native
+*.elc
+*.eln
+
+# Backups / autosaves
+*~
+\#*\#
+.\#*
+*.bak
+
+# Emacs directory-local vars overrides
+.dir-locals-2.el
+
+# Build / test output
+/build/
+/dist/
+/.cask/
+/cask-*/
+
+# Coverage
+/coverage/
+*.lcov
+
+# macOS / editors
+.DS_Store
+.idea/
+.vscode/
+
+# Project-local scratch (opt-in commit)
+/scratch/
+/tmp/
+
+# Secrets / env
+.env
+.env.local

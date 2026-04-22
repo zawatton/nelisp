@@ -1,0 +1,419 @@
+#+TITLE: MacLachlan et al. 1992 — The Python Compiler for CMU Common Lisp
+#+AUTHOR: zawatton (精読済)
+#+DATE: 2026-04-22
+
+* Citation
+
+- Robert A. MacLachlan (ed.), William Newman, et al.
+  "The Python Compiler for CMU Common Lisp."
+- /ACM SIGPLAN Lisp Pointers/, Vol. V, No. 1, 1992, pp. 235–246.
+  Proceedings of the 1992 ACM conference on LISP and Functional Programming (LFP '92).
+- DOI: https://dl.acm.org/doi/10.1145/141471.141558
+- Also as CMU Technical Report CMU-CS-92-161 (July 1992).
+- CMU author page: https://www.cs.cmu.edu/~ram/
+- Scanned PDF (12pp, image-only): https://3e8.org/pub/scheme/doc/lisp-pointers/v5i1/p235-maclachlan.pdf
+- Original PostScript (full text): http://www.cs.cmu.edu/~ram/pub/lfp.ps
+
+* Access status
+:PROPERTIES:
+:STATUS: SUMMARIZED (精読済)
+:LAST_UPDATED: 2026-04-22
+:END:
+
+** ソース詳細
+
+| ソース | URL | 取得結果 |
+|--------|-----|---------|
+| ACM DL | dl.acm.org/doi/10.1145/141471.141558 | 403 Forbidden (paywall) |
+| CMU PS | cs.cmu.edu/~ram/pub/lfp.ps | **取得成功** (PostScript, 168KB) — 論文本文全体 |
+| 3e8.org PDF | 3e8.org/.../p235-maclachlan.pdf | 12pp image-only PDF、OCR 不可 |
+| Academia.edu | academia.edu/26986111/... | 主要セクション取得可 |
+| ResearchGate | researchgate.net/... | 403 Forbidden |
+| DTIC TR | apps.dtic.mil/.../ADA256431.pdf | 403 Forbidden |
+| Semantic Scholar | semanticscholar.org/... | abstract のみ |
+| CMUCL Internals Design Doc | cmucl.org/downloads/doc/CMUCL-design.pdf | **取得成功** (444KB) |
+| CMUCL Compiler Overview | cmucl.common-lisp.dev/docs/internals/html/Compiler-Overview.html | **取得成功** |
+| CMUCL User Manual (Advanced) | cmucl.common-lisp.dev/docs/cmu-user/html/ | **取得成功** (複数節) |
+| CMUCL Glossary | cmucl.org/docs/internals/html/Glossary.html | **取得成功** |
+| CMUCL Different Compilers | cmucl.org/doc/different-compilers.html | **取得成功** |
+| CMU Wikipedia | en.wikipedia.org/wiki/CMU_Common_Lisp | **取得成功** |
+
+**信頼度**: 論文 PS ファイル本文 + CMU 設計書 + ユーザーマニュアルの計 3 次ソースから統合。
+全セクション網羅。直接引用は PS ファイル由来 (academia.edu 経由抽出)。
+
+** アクセスできなかった箇所
+
+- 論文 PDF 内の表・図 (image-only スキャン)
+- Scherlis の ICR 元論文への直接アクセス
+
+* Why this paper matters for NeLisp
+
+- *SBCL の直接の先祖の compiler*: SBCL は 1999 年に CMU CL から fork。
+  SBCL が使う IR1/IR2 + 型推論の設計は Python compiler から直接継承されている。
+  Rhodes 2008 は Python compiler を自明の前提として書かれており、
+  MacLachlan 1992 はその前提の「生の姿」を見せる。
+
+- *IR1→IR2 二層構造の発明源*: フロー・グラフ型 ICR (= IR1) から
+  仮想機械 VMR (= IR2) への変換という二層パイプラインは Python compiler が確立した。
+  SBCL → NeLisp へと 30 年越しに受け継がれる設計原則の起点。
+
+- *「型推論を optimizer の一等市民に」の先駆け*: 1992 時点で
+  "precise, eager type checking" を compile-time と run-time の両方で実現した。
+  NeLisp Phase 2 の型システム設計がこの方向を踏まえているかを確認する必要がある。
+
+- *"ネイティブコードだけ" の理由が分かる*: Python compiler は bytecode を持たず、
+  直接 native code を吐く。この選択の背景 (1985-1992 当時の設計文脈) を理解することで、
+  NeLisp が *あえて* bytecode tier を選んだ意義が逆照射される。
+
+- *Block compilation の原型*: 関数境界を超えた最適化を "block" 単位で行う手法は
+  Python compiler が 1992 時点で既に実用化していた。
+  NeLisp Phase 3 の bytecode → native (将来) を考える際の参照点。
+
+* Core contribution (post-read)
+
+MacLachlan 1992 の中心的主張は「CL で書かれた CL compiler が
+production quality な native code を生成できる」という実証。
+1985 年に開始し 1992 年時点で 5 年以上の開発実績。
+
+** §1 Overview: Python compiler の位置づけ
+
+- 50,000 行超の machine-independent CL コード + backend 毎に約 8,000 行。
+- 対象 architecture: MIPS R3000, SPARC, IBM RT PC (1992 時点)。
+- 設計目標: "ease of attaining reasonable performance, of debugging, and of
+  developing programs at a high level of abstraction" — peak 性能より
+  使いやすさと信頼性を優先する明示的な立場表明。
+- 新 processor port に "2-4 wizard-months" という具体的な工数見積もりを提示。
+
+** §2 Type System: "Precise, Eager" type checking
+
+- Type declaration を *実行時に実際に検査する* assertion として扱う。
+  (当時の他処理系は declaration を "信用" して検査をスキップする傾向があった。)
+- 最初の assertion 点で即座に検査 (eager)。値の使用点まで defer しない。
+- Compile-time 型推論 + run-time 型検査が連携:
+  型が推論されれば run-time check を省略または特殊化できる。
+- 型情報は "per-operation type inference method" まで進む:
+  たとえば加算だけで「6 transforms, 8 code generators, 1 type inference method」。
+- この精密な型システムにより「safe code での特殊化変数表現」が可能になった。
+
+** §3 Compiler Architecture: ICR + VMR 二層
+
+設計書 (CMUCL-design.pdf §Part II) および Compiler Overview より:
+
+- *ICR (Implicit Continuation Representation)* = IR1
+  - フロー・グラフ型 (syntax tree ではない)。
+  - Node 種別: =if=, =set=, =ref=, =combination=, =mv-combination=, =bind=, =return=, =entry=, =exit=.
+  - Continuation = "ICR data structure representing both: the receiving of a value,
+    and a control location in the flow graph."
+  - Source 情報 (original form + location) を保持 → compile 後も source-level debugging 可。
+  - Front-end 全フェーズは ICR 上で動く。
+
+- *VMR (Virtual Machine Representation)* = IR2
+  - TN (Temporary Name) と VOP (Virtual OPeration) による低レベル表現。
+  - VOP = "potentially arbitrary list code fragment responsible for emitting assembly code."
+  - ICR → VMR 変換後は machine-specific。Back-end はここから始まる。
+
+** §4 Compilation Phase Sequence
+
+Front-end (ICR ベース):
+1. ICR Conversion — macro 展開・名前解決・正規化
+2. Local Call Analysis — local 呼び出し検出・keyword 解析・entry point 決定
+3. Find Components — flow graph のコンポーネント分割・DFS 順序付け
+4. ICR Optimize — 定数畳み込み・型伝播・dead code 削除・ブロックマージ
+5. Type Constraint Propagation — flow analysis による型情報伝播・不要検査削除
+6. Type Check Generation — 複合型検査コード生成
+7. ICR Finalize — 未定義参照・不整合再定義のスキャン
+8. Environment Analysis — 環境割り当て・non-local exit 検出・cleanup コード生成
+
+Back-end (VMR ベース):
+9. Global TN Allocation — 変数への TN 割当・calling convention 決定
+10. Local TN Allocation — VMR 翻訳選択・temporaries 用 TN 生成
+11. Control Analysis — flow graph 線形化・分岐最小化
+12. Stack Analysis — unknown-value continuation のスタック規律維持
+13. Entry Analysis — 外部呼び出し可能関数の back-end 情報収集
+14. VMR Conversion — ICR nodes を VOP に翻訳
+15. Copy Propagation — 不要 TN コピーの flow analysis による削除
+16. Representation Selection — 各 TN の最低コスト表現を選択・変換 VOP 挿入
+17. Lifetime Analysis — TN 寿命の重複判定・call 点への save 要件注釈
+18. Pack — レジスタ割り当て (move 最小化)
+19. Code Generation — assembly code 生成
+20. Pipeline Reorganization — memory reference/branch 再順序化
+21. Assembly — branch 解決・object code 生成
+22. Dumping — FASL ファイルまたはインコア関数生成
+
+** §5 Block Compilation
+
+- 通常の Common Lisp では関数 reference は run-time まで解決されない (late binding)。
+- Block compilation は複数の =defun= を "block" として一括 compile し、
+  内部 call を *compile-time 解決* = local call 扱いにする。
+- Entry point (外部から呼ばれる可能性のある関数) のみ full call convention を保持。
+- 内部のみ関数は let conversion (インライン展開に近い) を適用可能 →
+  "code bloat なしにモジュール分割のオーバーヘッドがゼロになる"。
+- 異なる top-level form や別ファイルをまたいだ block compilation も可能。
+
+** §6 Performance Data (1992 時点)
+
+- compile 速度: 商用 CL compiler の約 3 倍遅い (コード生成の精緻さのトレードオフ)。
+- 実行速度: 特定 application では商用実装の 5 倍速い。
+- Efficiency notes: "なぜ非効率な実装を選んだか" を compiler が説明する機能。
+  1992 当時には新しいアイデア — compiler の "説明責任" という設計思想。
+
+** §7 "640 operations, over 1,000 rules"
+
+- 640 種類の operation に対して 1,000 以上の special-case rules。
+- 加算 1 つに: 6 transforms + 8 code generators + 1 type inference method。
+- "14 flavors of function call" + "3 representations for multiple values"。
+- これが "過剰では?" という 1992 時点での批判に対する暗黙の反論として論文に載っている。
+
+* The Python compiler pipeline (walkthrough)
+
+Python compiler は "lambda-tree → flow graph → virtual machine → native code"
+という 4 段階を、bytecode 中間層を持たずに一気通貫で実現した。
+
+ソースが入力されると、まず macro 展開と名前解決を経て **ICR** (フロー・グラフ型 IR) に変換される。
+ICR は syntax tree ではなくコントロールフローを基底に置く: basic block の列であり、
+各 block 末尾の node が次の branch 先 (continuation) を保持する。
+この "implicit continuation" という名前は、CPS (continuation-passing style) の
+continuation を *明示的に* 渡さず block 境界の意味論に *暗黙に* 埋め込む設計から来る。
+
+ICR 上で front-end 最適化が繰り返し走る。型伝播・dead code 削除・let conversion・
+block compilation がこの段階。型推論は "converge するまで" iterative に実行されるため、
+単純な型注釈がなくても文脈から integer 算術を特殊化できる。
+
+ICR が安定したら **VMR** (TN/VOP ベース) に変換する。
+TN = "Temporary Name" で物理レジスタや stack slot の抽象。
+VOP = "Virtual OPeration" で machine 依存の命令テンプレート。
+VMR 変換では各 ICR node が対応する VOP に 1:1 or N:1 で翻訳される。
+
+VMR 上では representation selection (どの TN を unboxed integer にするかなど)、
+lifetime analysis、register packing、pipeline 再順序化が行われ、最終的に
+architecture 固有の assembly → machine code が生成される。
+
+**bytecode 層がない** ことのコスト: compile が 3x 遅い (1992 数値)。
+**bytecode 層がない** ことの利点: run-time に interpreter overhead がなく、
+型情報を compile 時に最大限利用できる。CMU CL が 1992 時点で商用 CL の
+5x 実行速度を達成できた主因の一つ。
+
+なお CMU CL には後に *別個の* byte-compiler が追加されている (Python compiler とは独立)。
+これは top-level form 等の速度非クリティカルな箇所向けで、Python 論文の設計外。
+
+* What NeLisp inherits indirectly (via SBCL)
+
+- *IR1/IR2 の設計思想*: NeLisp は SBCL の IR1/IR2 を直接使うわけではないが、
+  Rhodes 2008 の Host-Emacs bootstrap アプローチは SBCL の IR1 interpreter を
+  踏み台にする。IR1 interpreter が存在する理由は Python compiler 設計に遡る:
+  "compile-time の型情報活用" = "IR1 レベルで意味論を保持する" 必要性があった。
+
+- *Type-driven optimization の文化*: Python compiler が確立した
+  "型宣言 → compile-time 検査 + run-time 削減" のパターンは SBCL に継承され、
+  NeLisp が最終的に扱う Elisp コードのプロファイル (型宣言が少なく動的) を
+  正確に理解するための対比として機能する。
+
+- *Block compilation の概念*: NeLisp Phase 3 以降で複数の defun をまとめて
+  bytecode 生成する際、"どこが entry point でどこが internal か" という区別は
+  Python compiler の block compilation と同じ問いを立てることになる。
+
+- *Efficiency notes の設計思想*: "なぜ遅い実装を選んだか compiler が説明する" という
+  MacLachlan の UI 設計哲学は、NeLisp が将来 warning/hint システムを実装する際の
+  先例として有用。
+
+- *Component 分割*: ICR の "component" (call graph の連結部分) 概念は、
+  NeLisp が bytecode モジュール境界をどこに引くかの設計に参考になる。
+
+* What NeLisp deliberately does NOT inherit
+
+- *直接 native code 生成*: Python compiler は bytecode 層を持たず ICR → VMR → native。
+  NeLisp の Phase 3 は *bytecode VM* を中間層として持つ。
+  理由: Emacs エコシステムの要請 ── Emacs 上で動く Elisp コードのポータビリティ、
+  デバッガ統合、Emacs GC との協調のすべてが bytecode 表現の存在を自然にする。
+  SBCL/Python が "native を選ぶ" 合理性と NeLisp が "bytecode を選ぶ" 合理性は
+  *ターゲット環境が違う* という一点に集約される。
+
+- *物理レジスタ管理 (TN/Pack)*: Python compiler の VMR layer はレジスタ割り当て・
+  pipeline 再順序化・FASL 生成まで担う。NeLisp Phase 3 は Emacs VM (C 実装) の
+  bytecode interpreter に委譲するため、これらは NeLisp 設計の外側にある。
+
+- *Backend 可搬性 (8,000 行/CPU)*: Python compiler は MIPS/SPARC/RT PC の
+  3 アーキテクチャをサポートし新 port に 2-4 wizard-months を要した。
+  NeLisp は Emacs bytecode を target とするため CPU ポートの概念がない。
+  これは NeLisp の "シンプルさ" の主要な源泉の一つ。
+
+- *Global TN Allocation による calling convention 決定*: Python compiler では
+  block compilation + TN 割当で "non-descriptor argument/return value"
+  (unboxed 値を直接レジスタで返す) が可能。NeLisp は Emacs Lisp の
+  tagged value モデルを基底とするため、unboxed 表現は将来最適化であって
+  Phase 1-3 の設計対象ではない。
+
+- *ICR 上の iterated 型推論 (収束まで)*: Python compiler は型推論が
+  "収束するまで繰り返す" 設計。NeLisp Phase 1 は interpreter で型情報を保持せず、
+  Phase 2 でも Elisp の動的性質から全変数への型推論は現実的でない。
+  Partial type inference (宣言箇所のみ) が現実的なターゲット。
+
+* Reading notes per section
+
+** §1 Abstract / Introduction (論文 pp. 235-236)
+
+- 1985 年から開発開始 → 1992 時点で 5 年以上の実績 = "production quality" の根拠。
+- タイトルの "Python" は Rob MacLachlan が命名した compiler の code name。
+  Guido van Rossum の Python 言語とは無関係。両者はほぼ同時期 (1991-1992)。
+- 論文の立ち位置: "CL で CL compiler を書くことが今日では議論の余地がない"
+  という 1992 時点の認識を確立しようとする主張。
+- 設計優先順位を明示: peak 性能 < デバッグ容易性 + 生産性。
+
+** §2 Type System (論文 §2)
+
+- "Precise, eager" = (a) exact asserted type で検査 (b) 最初の assertion 点で即座に。
+  当時の他 CL 処理系との差別化点として強調されている。
+- Declaration が "信頼" ではなく "テスト可能な表明" として扱われることで、
+  safe-code でも型情報を最大活用できる。
+- 型推論は operation-specific: 各 known function が独自の type inference method を持つ。
+  =+= の例 (6 transforms / 8 code generators / 1 type inference method) は
+  この設計の具体例として論文中で詳述される。
+
+** §3 Intermediate Representations (論文 §3)
+
+- ICR (= IR1) の "implicit continuation" は CPS を明示せずに
+  フロー・グラフに埋め込む設計。Scherlis の 1984 Carnegie Mellon PhD thesis が原型。
+- Node-continuation-block の三層構造は SBCL の IR1 にほぼそのまま継承されている。
+- VMR (= IR2) の TN/VOP 抽象により backend は "VOP を定義する" だけで移植可能になる。
+  8,000 行/CPU は当時の処理系移植コストとしては驚異的に少ない。
+
+** §4 ICR Optimizations (論文 §4)
+
+- ICR optimize は convergence まで iterative: fold constants → propagate types →
+  eliminate dead code → merge blocks → eliminate IF-IFs (二重条件の簡約)。
+- Let conversion: let 束縛と等価になる local call を inline 展開。
+  これにより "small functions for modularity = zero overhead" が実現する。
+- 型制約伝播 (Type Constraint Propagation) は flow analysis を使った separate pass。
+  ICR optimize と別フェーズにすることで設計がシンプル。
+
+** §5 Backend: VMR → Native Code (論文 §5)
+
+- Representation selection が NeLisp 観点で最も興味深い。
+  "各 TN のすべての参照を見て最低コスト表現を選ぶ" = cost model を VOP 定義に持つ。
+- Register packing は standard graph-coloring 系。1992 時点では自明だが
+  RISC (MIPS/SPARC) を target にしているため特にレジスタ数に敏感。
+- Pipeline reorganization (branch delay slot 埋め等) は RISC 固有の課題。
+
+** §6 Compiler User Interface (論文 §6)
+
+- Efficiency notes: "この call が full call になった理由" "この変数が boxing された理由"
+  を compiler が自動的に出力する。
+- Source-level debugging: ICR が original source location を保持するため、
+  最適化後のコードでも Lisp レベルの source tracking が可能。
+- これら UI 設計は 1992 時点での frontier。現在では当たり前になったが当時は新しかった。
+
+** §7 Evaluation / Performance (論文 §7)
+
+- Compile 速度: 商用 CL より 3x 遅い。理由: 多フェーズ + 精緻な型推論。
+- 実行速度: 特定 benchmark で商用 CL の 5x。
+- "640 operations, 1,000 rules" のコメント: 複雑に見えるが
+  個々の rule は独立しており保守性は高いという主張。
+- 論文の最後は "今後の課題" として inlining の改善、integer arithmetic の強化を挙げる。
+
+* Historical context & trivia
+
+** CMU CL の起源と Python compiler の誕生
+
+- CMU CL は 1980 年代初頭に Spice Lisp として始まった。
+  Common Lisp 標準 (ANSI CL, 1994) に先行する実装。
+- Rob MacLachlan が 1985 年に compiler の再設計を開始 → "Python" が誕生。
+  この 1985→1992 の 7 年が論文の "5 年以上の開発実績" の根拠。
+- ICR の "implicit continuation" 設計は William Scherlis の研究に由来。
+  Scherlis は CMU で source transformation / program analysis を研究していた。
+  (1984 CMU PhD thesis が ICR の概念的祖先とされる。)
+
+** "Python" という名前
+
+- Monty Python の Flying Circus から。MacLachlan チームの humor。
+- Guido van Rossum の Python 言語 (1991 公開) とは独立して命名されており、
+  "Python compiler" は "Python 言語の compiler" ではない。
+- 1992 年の論文 title で既に "Python compiler for CMU Common Lisp" と明記することで
+  この混同を事前に避けている (ただし当時は Python 言語がほぼ無名だった)。
+
+** SBCL fork (1999) との関係
+
+- SBCL は 1999 年に William Newman が CMU CL から fork。
+- CMU が公式サポートを縮小した後、volunteer community が引き継いだのが SBCL。
+- Python compiler のコアは SBCL にほぼそのまま引き継がれた。
+  IR1 (= ICR) / IR2 (= VMR) / TN / VOP の概念は SBCL 現在でも同一。
+- Rhodes 2008 (NeLisp 既読論文) はこの SBCL における "CL で CL を書く" 実践を扱う。
+  MacLachlan 1992 → SBCL 1999 → Rhodes 2008 という 16 年のチェーンがある。
+
+** X86 サポートの遅れ
+
+- Python compiler の初期設計は RISC (MIPS/SPARC) を前提にレジスタが多いことを仮定した。
+- x86 はレジスタが少ないため長年サポートされなかった。
+  CMU CL の x86 問題は "conservative GC" の導入で解決 (volunteer 時代)。
+- この RISC 前提は 1992 論文の時代背景として理解すべき。
+
+** 1992 時点での "CL で compiler" という選択の意義
+
+- 1985 年当時、CL で production quality な native code compiler を書くことは
+  非自明な賭けだった。多くの Lisp 処理系は C や assembly で compiler を実装していた。
+- MacLachlan が CL を選んだ理由: macro・reflection・数値型を compiler 実装自体が活用できる。
+- この選択が 1992 年に "proven" となったことで、Rhodes 2008 の "SBCL で SBCL を書く"
+  という試みが自然な延長として行われた。NeLisp の "Elisp で Elisp VM" はその系譜上にある。
+
+* Open questions for NeLisp (stub から継承・回答)
+
+** Q1: Python compiler の bootstrap 経路
+
+スタブの問い: "Python compiler は既存 CL を踏み台に bootstrap したのか"
+
+回答: Python compiler は CMU CL の前身 (Spice Lisp ベースの実装) を踏み台に開発された。
+MacLachlan は既存の CMU CL compiler (Python 以前) を使って Python 自身を compile した。
+これは "self-bootstrap" ではなく "predecessor-bootstrap" ── 言語仕様は同じ Common Lisp を
+使いながら、compiler 実装を旧→新に置き換えていく方式。
+Rhodes 2008 が採用した SBCL-on-SBCL bootstrap と同じ構造。
+NeLisp が採用した Candidate A (Host-Emacs 上の bootstrap) も同じ系譜:
+Host = predecessor、NeLisp = new compiler。
+
+** Q2: 1992 時点で Elisp-in-Elisp が試みられなかった理由
+
+スタブの問い: "Emacs Lisp が 1992 に存在したのに Elisp-in-Elisp が試みられなかった理由"
+
+回答 (論文外推論、明示):
+(a) Emacs Lisp は 1992 時点でも "editor macro language" として設計されており、
+    general-purpose language としての位置づけが社会的に確立していなかった。
+(b) Emacs は当時まだ interpreter のみ (byte compiler は Emacs 19 で 1993 年頃)。
+    Elisp-in-Elisp の動機となる "現行実装が遅い" という問題が顕在化していなかった。
+(c) CMU CL コミュニティは Common Lisp (ANSI 標準化進行中) に集中しており、
+    方言 Elisp を研究対象とするインセンティブがなかった。
+(d) MacLachlan ら CMU の研究は "high performance native code generation" が目標。
+    Emacs は editor という専用ツールであり、その先にある "Emacs 自体の高速化"
+    という問いが当時は立てられていなかった。
+
+** Q3: NeLisp が踏襲すべき / 避けるべき MacLachlan の設計選択
+
+踏襲すべき:
+- ICR の "source location 保持" → NeLisp Phase 1 interpreter が
+  エラー時に正確なソース位置を報告できるよう、AST に location info を持つ設計。
+- Efficiency notes の思想 → NeLisp の将来 warning システムの設計指針。
+- Block compilation の "entry point vs internal" 区別 →
+  NeLisp bytecode モジュール設計で再現価値がある概念。
+- Let conversion (local call の inline 化) → Phase 2 以降の最適化候補。
+
+避けるべき / 不要:
+- Multi-CPU backend (TN/VOP 層) → NeLisp は Emacs bytecode に委譲。
+- Iterated global type inference → Elisp の動的性質と Phase 1 スコープ外。
+- Register allocator / pipeline reorganizer → 同上。
+
+* Cite-back
+
+- =../00-motivation.org= §6.1 学術基盤: Rhodes 2008 と並ぶ祖先論文
+- =../01-related-work.org= §5 SBCL 歴史 milestone: MacLachlan 1992 → SBCL 1999 のチェーン
+- =../papers/rhodes-2008-sbcl.org=: Rhodes の SBCL-on-SBCL 論文 (本論文の直接の後継)
+- =../03-architecture.org= (Phase 2 以降): IR1/IR2 二層設計の参照先
+
+** 一次ソース (今回アクセスしたもの)
+
+- CMU CL Python compiler PS: http://www.cs.cmu.edu/~ram/pub/lfp.ps
+- CMUCL Internals Design Doc: https://cmucl.org/downloads/doc/CMUCL-design.pdf
+- CMUCL Compiler Overview: https://cmucl.common-lisp.dev/docs/internals/html/Compiler-Overview.html
+- CMUCL ICR Representation: https://cmucl.common-lisp.dev/docs/internals/html/The-Implicit-Continuation-Representation.html
+- CMUCL Glossary: https://cmucl.org/docs/internals/html/Glossary.html
+- CMUCL User Manual Block Compilation: https://cmucl.common-lisp.dev/docs/cmu-user/html/Block-Compilation.html
+- CMUCL User Manual Local Call: https://cmucl.common-lisp.dev/docs/cmu-user/html/Local-Call.html
+- CMUCL Different Compilers: https://cmucl.org/doc/different-compilers.html
+- CMU Common Lisp Wikipedia: https://en.wikipedia.org/wiki/CMU_Common_Lisp
+- Academia.edu mirror: https://www.academia.edu/26986111/The_Python_compiler_for_CMU_Common_Lisp

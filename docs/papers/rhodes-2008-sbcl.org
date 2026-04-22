@@ -1,0 +1,417 @@
+#+TITLE: Rhodes 2008 — SBCL: A Sanely-Bootstrappable Common Lisp
+#+AUTHOR: zawatton (精読: Claude Sonnet 4.6, 2026-04-22)
+#+DATE: 2026-04-22
+
+* Citation
+
+- Christophe Rhodes. "SBCL: A Sanely-Bootstrappable Common Lisp."
+- In /Self-Sustaining Systems/ (LNCS 5146), Springer-Verlag, 2008.
+- Editors: Robert Hirschfeld, Kim Rose
+- URL: https://research.gold.ac.uk/2336/1/sbcl.pdf
+- Alternate: https://link.springer.com/chapter/10.1007/978-3-540-89275-5_5
+
+* Access status
+:PROPERTIES:
+:STATUS: SUMMARIZED (精読済) 2026-04-22
+:LAST_UPDATED: 2026-04-22
+:END:
+
+PDF は Goldsmiths 機関リポジトリから無料 access 可能。
+172KB PDF、本文 ~15pp + references 16件。sections 5本 (§1-§5)。
+精読完了: 2026-04-22 (Claude Sonnet 4.6、pdftotext でフルテキスト抽出・一次資料精読)。
+
+* Why this paper matters for NeLisp
+
+*最優先論文*。NeLisp の Host-Emacs bootstrap (=../BRIEFING.org= §4.1a,
+=../03-architecture.org= §1) の直接 methodology source。
+
+- SBCL の genesis process を articulation した唯一の学術資料
+- "任意 ANSI CL を host にできる" 設計原理が NeLisp (Emacs が host) と同型
+- 25 年間 production-grade で生き残った bootstrap pattern の学術的裏付け
+- §4.1 の "誰でも小さなパッチを出せるようになった" 社会的効果は
+  NeLisp コミュニティ設計 (post-v1.0 governance) への直接の示唆
+
+* Core contribution (精読後確定)
+
+- §3.2: Genesis process は 4 段階 (host-1 → target-1 → host-2 / genesis-2 → target-2)
+  に分離されており、各段階の入出力が図示されている。Build の再現性は
+  "host compiler の状態に依存しない cold core を作る" ことで達成される。
+- §3.2: "cold init" と "warm" の境界は sbcl binary + cold-sbcl.core を
+  起動したタイミング。cold init では top-level form の実行・CLOS の load が
+  できない；warm phase で PCL をコンパイル・ロードして初めて完全な Lisp 環境になる。
+- §3.3: Host / target 分離の主機構は *package name 変換* (sb- → sb!) と
+  *feature フラグ* (#!+ / #!-) の 2 つ。これにより同一 source ファイルが
+  host context でも cross-compiler context でも正しくコンパイルされる。
+- §3.3: sb!xc パッケージが =cl= パッケージの shadow として存在し、
+  host の =cl:defconstant= を汚染せずに target の定数定義を cross-compiler に
+  教えるための仕組みを提供する。genesis 時に sb!xc シンボルは cl パッケージとして
+  dump され、cold boot で最初から =cl:= として存在する。
+- §3.4: Host CL の制約に対する実用的な workaround として "big vectors"
+  (vector of vectors of bytes で 20MB の target image を表現) が genesis に
+  実装されている。ANSI CL の array-total-size-limit 最低保証は 1024 しかない。
+- §4.1: 社会的効果として、build の透明性が newcomer へのハードルを下げ、
+  SBCL の community growth に貢献した。CMUCL では bootfile を書ける専門家が
+  必要だったのに対し、SBCL では開発チーム外の人間が bug fix を実装できた実例を挙げる。
+- §4.2: 欠点として build が 2 倍掛かることと、cross-compiler に CLOS を含まない
+  (metacircularity 未解決) ことが挙げられる。eval-when による phase 制御は
+  "not the best solution" と評価されている [ref 11: Flatt 2002]。
+- §3.1: 他の CL 実装との比較: SBCL 以外の Lisp-primary 実装は全て
+  "自分自身でしか build できない" image-based。他言語系 (C/Java) は
+  別言語で evaluator を書くことで bootstrapping する。
+  SBCL だけが "複数の CL 処理系で build できる" カテゴリに属する。
+
+* Genesis process walkthrough
+
+SBCL の genesis は 5 つの process 段階で構成される (§3.2、図1-5):
+
+** Stage 1: host-1 (cross-compiler の構築)
+
+Host CL (任意の ANSI CL 処理系) が SBCL の source ファイル群
+(=src/code/=, =src/compiler/=, =src/assembly/=) を通常の =cl:compile-file= で
+コンパイル・ロードする。この結果、host の内部に *cross-compiler (xc)* が
+application として動くようになる。xc は target 向けの compile-file と、
+genesis application (=sb!fasl:genesis=) を含む。
+副産物として target の data structure レイアウトを記述した C ヘッダ群
+(=src/runtime/genesis/*.h=) が生成される。
+
+** Stage 2: target-1 (C runtime の build)
+
+C ヘッダ + C/assembly ソース (=src/runtime/*=) を cc / ld でコンパイルし、
+=src/runtime/sbcl= executable を生成する。この時点の sbcl binary は
+OS サービスと GC を提供するが、互換 Lisp image なしには動かない。
+また小さな C プログラム (=grovel-headers.c=) を実行して、
+system constants / types を記述した Lisp ソース (=output/stuff-groveled-from-headers.lisp=)
+を生成する。
+
+** Stage 3: host-2 (cross-compiler による SBCL source の再コンパイル)
+
+*Cross-compiler の* =sb!xc:compile-file= を使って SBCL source を再コンパイルする。
+これで SBCL 独自形式の FASL ファイル群 (=obj/from-xc/**/*.lisp-obj=) が生成される。
+注意: host / cross-compiler の関数・data structure 定義はこの段階では変化しない。
+cross-compiler は定数定義を追加で獲得するが、それだけ。
+
+** Stage 4: genesis-2 (cold core の構築)
+
+これが bootstrap の核心。FASL files を =cl:load= で単純にロードできない理由:
+(a) host compiler の FASL format と SBCL の format は異なる、
+(b) target image はまだ存在しない (chicken-and-egg)。
+
+そこで =sb!fasl:genesis= application が *target lisp の memory area を byte vector として表現し*、
+各 FASL file の "load 時に起きる処理" を host 上でシミュレートする。
+実行できない action (top-level form の evaluation 等) は *defer* して
+initial function の記録として残す。function definition はシミュレート可能なので、
+cold init が名前付き関数を呼べる状態になる。
+全 FASL の処理後、byte vector を sbcl binary が期待する形式でファイルに書き出す。
+これが *cold core* (=output/cold-sbcl.core=)。
+sb!xc パッケージのシンボルは cl パッケージとして dump されるという特殊処理あり。
+
+** Stage 5: target-2 (cold init → warm → 完成)
+
+sbcl binary を cold core で起動する。*cold init phase* が走る:
+deferred top-level form が実行され、各種 fixup が ordered に処理される。
+これが build 中 *最も脆弱で最もデバッグが困難な部分* (Rhodes §3.2)。
+Lisp debugger がまだ使えないため、壊れると手がかりが少ない。
+
+cold init 完了後、package rename (sb! → sb-) が行われる。
+次に *warm phase* で PCL (Portable Common Loops の SBCL 特化版) を
+コンパイル・ロードして CLOS が使えるようになる。
+最後に =output/sbcl.core= として完全な image を save する。Build 完了。
+
+** 再現性の鍵
+
+上記 pipeline の核心は "host compiler の *state* (動的に累積されてきた macro 展開、
+image に入り込んだ中間状態) に依存しない cold core を genesis で作る" こと。
+同じ source から同じ host (または異なる ANSI 準拠 host) で build すれば
+同一 cold core が得られる (§5 で "non-deterministic elements" 除去を future work として挙げる)。
+
+* What transfers cleanly to NeLisp (Host-Emacs bootstrap)
+
+- *Cross-compiler as Emacs application*: SBCL が host CL 内に xc を構築するのと
+  同様、NeLisp は running Emacs 内に "target-NeLisp の bytecode compiler" を
+  pure Elisp application として構築できる (Stage 1 の直接類比)。
+  Host Emacs の =byte-compile= とは分離した、NeLisp 独自の compile-file に相当する関数群。
+
+- *Package namespace 分離の類比*: sb!/sb- の区別に相当するものとして、
+  NeLisp は build 中のシンボルを =nl!= prefix で管理し、
+  完成 image では =nl-= prefix に rename するパターンを採用できる。
+  Elisp の obarray を操作すれば同等の分離が実現可能。
+
+- *feature flag の類比*: SBCL の =#!+= / =#!-= に相当する
+  reader conditional を NeLisp の reader に実装することで、
+  host-phase / target-phase を同一 source で切り替えられる。
+  (Emacs の =#+= feature expression はほぼ同型なので leveraging しやすい)
+
+- *genesis の "byte vector として target memory を表現" パターン*:
+  NeLisp の Stage 4 相当として、NeLisp 独自 bytecode 形式で
+  target image を Emacs buffer / vector に構築するアプローチが直接使える。
+  Emacs は大きな文字列/vector を扱えるので SBCL の "big vectors" 問題は小さい。
+
+- *defer と cold-init の設計*: top-level form を defer して initial function に
+  まとめる設計は、NeLisp の cold-init 段階でそのまま採用できる。
+  "cold init は最も脆弱" (§3.2) という警告は NeLisp 設計者が共有すべき知識。
+  NeLisp の場合 host Emacs の debugger が使えるため SBCL より有利な点。
+
+- *warm phase = CLOS/PCL 相当の遅延*: SBCL が cross-compiler に CLOS を含まず
+  warm phase で後付けするように、NeLisp も高水準の object system (あるいは
+  built-in 関数の Elisp 実装) を warm phase 以降に分離できる。
+  これにより cold-init の複雑度を抑えられる。
+
+- *社会的設計原理の直接適用*: §4.1 の "newcomer がエキスパートなしにパッチを出せる"
+  は NeLisp の post-v1.0 governance model (SBCL / Linux kernel 型、design doc
+  =../03-architecture.org= §4) の empirical 根拠として cite できる。
+
+- *C runtime の minimal化原則*: SBCL の C コードが pragmatic 理由 (GC debugging、
+  OS interface) に限られるという §2 の説明は、NeLisp の "残余 C = 4 cores"
+  方針 (syscall / allocator / GC inner / coding-system) の正当化に直結する。
+
+* What does NOT transfer / requires adaptation
+
+- *ANSI CL 準拠の前提*: SBCL は任意の ANSI CL 処理系を host にできる設計だが、
+  NeLisp の host は Emacs Lisp 一択。§3.4 で float subtype の非互換が問題になるように、
+  Elisp は動的スコープが歴史的デフォルトであり (lexical-binding opt-in)、
+  SBCL が依拠する CL のセマンティクスと細部で異なる。
+  Elisp の lexical / dynamic binding 混在を cross-compiler が正しく扱えるよう
+  =eval-when= 相当の phase 制御を Elisp semantics に合わせて再設計が必要。
+
+- *CLOS / MOP の欠如*: §4.2 で Rhodes が "cross-compiler に CLOS を含めることで
+  compiler / type inferencer を単純化できるが bootstrap が複雑になる" と書いている。
+  NeLisp は Elisp object system (EIEIO / cl-defstruct 等) を host として使えるが、
+  MOP は存在しない。metacircularity の扱いは NeLisp 独自に設計が必要。
+
+- *eval-when の非存在*: Elisp には =eval-when= がない (Emacs 29+ の =loaddefs= で
+  部分的に代替されるが意味論が異なる)。SBCL が compile-toplevel / load-toplevel
+  の分離に =eval-when= を多用する (§3.3) のに対し、NeLisp は明示的な phase flag
+  変数か、別 file への分離で代替が必要。これは実装上の追加工数を要する。
+
+- *make-load-form の非存在*: §3.3 で SBCL の genesis は =make-load-form= を多用して
+  compiler structures を FASL に dump する。Elisp にはこれに相当する標準機構がない。
+  NeLisp の genesis phase では、compiler data structure の serialize/deserialize を
+  独自に設計する必要がある (=print= / =read= の組み合わせ、あるいは dedicated encoder)。
+
+- *Build time の 2 倍問題は Emacs で軽減*: §4.2 で build が 2 倍掛かることが
+  downside として挙げられるが、NeLisp の initial scope は小さく、
+  Emacs 上での in-process compilation は SBCL の compile-file より速い可能性が高い。
+  ただし SBCL の "compiler が 2 回 build される" 構造は NeLisp でも同様に必要で、
+  long-term には同じ cost 構造になる。
+
+- *Buffer-centric primitive の扱い*: SBCL の build では "普通の CL" が使えるが、
+  NeLisp の host は Emacs であり、buffer / window / process 等の Emacs-specific
+  primitive が環境に常に存在する。cross-compiler の target image にこれらの
+  primitive をどう扱うか (exclude する / stub する / そのまま carry する) は
+  SBCL には存在しない設計問題。NeLisp Phase 1 scope (Elisp substrate のみ) では
+  buffer primitive は除外方針だが、genesis でそれを enforce する仕組みが必要。
+
+* Reading notes per section
+
+** §1 Introduction (pp.1-4)
+
+- Common Lisp の歴史的文脈から始まる。Scheme と CL の 2 大方言に触れた後、
+  "implementation strategies" が本論のテーマであることを明示。
+- *Image-oriented vs source-oriented* の対比を丁寧に説明。
+  application programmer は source-oriented が標準だが、
+  *implementation 開発者は image-based になりがち* という逆転を指摘。
+- 典型的な image-based build: "以前のバージョンの自分自身を host にして
+  incrementally mutate して dump する" — CMUCL 等がこれ。
+- SBCL の定義: "build outcome が host lisp compiler の state に依存しない"。
+  つまり host を汚染・変異させずに target を構築する。
+- §2 以降の構成を予告。
+
+** §2 Steel Bank Common Lisp (pp.4-6)
+
+- SBCL の歴史: 1999 年 12 月、Bill Newman が CMUCL から分岐。
+  "clean bootstrap process を持つ CMUCL variant" として announce。
+- 2008 年初頭の規模:
+  - standard library: ~90,000 行 Lisp
+  - compiler: ~60,000 行 Lisp
+  - backend per architecture: 10,000-20,000 行 Lisp
+  - CLOS: ~20,000 行 Lisp
+  - C + assembly (runtime): ~35,000 行
+  - test suite: ~30,000 行 shell + lisp
+- C/assembly は全体の約 10%。内訳: platform-specific ops、OS 別 ~2000 行、
+  architecture 別 ~2500 行、GC ~8000 行。
+  *GC を C で書く理由は "gdb で外部デバッグできるから"* — pragmatic 理由。
+- 高水準 overview: host に SBCL compiler を application として埋め込み、
+  その embedded compiler で fresh standalone image を生成する。
+  "ドメイン固有言語を CL 自身で書き、そのドメイン固有言語で問題を解く" 比喩。
+
+** §3.1 Build processes of other Lisps (pp.6-8)
+
+- 他の CL 実装の分類:
+  - *他言語系* (evaluator を他言語で実装): GCL/ECL (C + C compiler)、
+    GNU CLISP (C + bytecode)、ABCL (Java)、xcl (C++)
+  - *Lisp primary*:
+    - 自分自身でしか build できない (image-based): ACL, LispWorks, CMUCL, SCL, CCL
+    - 複数の CL で build できる: *SBCL のみ*
+- GNU CLISP は 180,000 行の "D" 言語 → C プリプロセス。
+  GCL は 75,000 行 C core + 1,000,000 行 C libraries (binutils, gmp)。
+- *Lisp500 の言及*: 500 行の obfuscated C で eval を実装した toy CL。
+  "それ以上でない" と明示。
+- Rhodes の motivation: "Lisp は interpreter / compiler / complex data structures の
+  実装に適した言語であり、Lisp 実装にも Lisp を最大限使うべき"、
+  かつ build の determinism も重要。
+
+** §3.2 Building SBCL itself (pp.8-13)
+
+本論の核心。図1-5 で 5 stage を図示。詳細は「Genesis process walkthrough」節参照。
+
+- gcc との比較: SBCL build は gcc の build に "not greatly dissimilar" だが、
+  *"コンパイルとロードの過程で状態が蓄積される" という CL 固有の次元が加わる*。
+  これが sb!/sb- namespace の必要性の根本理由。
+- Stage 3 の subtle な点: cross-compiler は定数定義を追加獲得するが、
+  関数・data structure 定義は変化しない ("fine differences" という表現)。
+- genesis の core mechanism: "target memory を byte vector として host 上に表現し、
+  FASL load の action を simulate する"。実行できない action は defer。
+- cold init の特徴付け: *"probably the most fragile portion"*、かつ
+  *"hardest to debug"* (Lisp debugger がまだ使えないため)。
+- warm phase: PCL compile + load → image save。
+
+** §3.3 Separation of host and target (pp.13-17)
+
+- *Package name 変換が主機構*: sb- → sb! の変換は "cold boot の非常に早い段階で"
+  行われる。これにより host が SBCL であっても host の sb-kernel を汚染しない。
+- =#!+= / =#!-= reader macro: target の =*features*= で条件付きコード読込。
+  host の =#+=/ =#-= と並存する。architecture-specific optimizations や
+  OS-specific system calls の分岐に使用。
+- *sb!xc パッケージ*: build 中のみ存在する shadow CL package。
+  host の =cl:defconstant= を汚染せずに target 定数を cross-compiler に教える。
+  genesis での dump 時に sb!xc → cl への特殊変換が行われる。
+- =eval-when= の扱い:
+  - =:compile-toplevel= case: host の =cl:defun= を使う (xc は code を run できない)
+  - =:load-toplevel= case: cross-compiler の macro expander を使う
+  - Rhodes は eval-when が "not the best solution" と評価 [ref 11: Flatt 2002]
+- =make-load-form=: compiler structures を FASL に dump する際に多用。
+  host の =make-load-form-saving-slots= と cross-compiler の実装の非互換を
+  =:sb-xc-host= feature flag で dispatch して解決。
+
+** §3.4 Lisp library differences (pp.17-18)
+
+- *Float subtype 問題*: host の single-float / double-float 解釈が target と異なると
+  constant-folding / type derivation が壊れる。SBCL は target = IEEE single/double と
+  明確に定義。short-float / long-float については非感受。
+- *big vectors 問題*: ANSI CL の =array-total-size-limit= 最低保証は *1024 要素*。
+  20MB の target image を単一 vector に入れられない処理系が存在したため、
+  "vector of vectors of bytes" ("big vectors") に genesis を書き直した。
+  理論上は 1MB の上限があるが (=1024 × 1024=)、実用上は問題ない。
+
+** §4.1 Advantages (pp.18-20)
+
+- *主要な利点: newcomer が参加しやすい*。
+  "small non-invasive patches に build プロセスの intricate な知識は不要"。
+  これが SBCL の相対的人気に最も貢献した single fact と Rhodes は主張。
+- *具体的な事例*: defstruct の accessor name clash bug。
+  - SBCL: source に slot を追加して通常の build procedure で fix。チーム外の人が実装。
+  - CMUCL: 2 つの bootfile が必要。エラーから interactive に restart を選択。
+    少なくとも 2 回 build。CMUCL build process の expert が必要。
+- *コミュニティの多様性*: language experimentation (modular arithmetic, generic specializers)
+  から industrial use (ITA Software の QPX/RES) まで幅広い。
+- 因果関係の正直な留保: "cause and effect は指摘できない" — test suite の発展や
+  他 Lisp vendor の成功事例など他の要因も認める。
+
+** §4.2 Downsides (pp.20-21)
+
+- *Build time が 2 倍*: compiler を実質 2 回 build するため。
+  1999 年開始時は SBCL ~1 時間、CMUCL ~10 分と差があった (3 倍以上)。
+  2008 年時点では差が縮小 (Intel Pentium-M 1.7GHz: SBCL 541s、CMUCL 485s)。
+  CMUCL の default は 3 phase compile であることに注意。
+- *CLOS が cross-compiler に含まれない*:
+  SBCL の CLOS は PCL 派生 (MOP [ref 16: Kiczales 1991] への準拠度改善済)。
+  metacircularity があるため host-independent な表現が未解決。
+  "CLOS を cross-compiler に含めると compiler / type inferencer が単純化されるが
+  bootstrapping が複雑になる" というトレードオフ。
+
+** §5 Conclusions and Further Work (p.21)
+
+- "CL は CL compiler の実装に適した言語であり、CL で CL を書くことは適切"。
+- "circular dependency を避けることが可能であると示した"。
+  SBCL は CL で書かれているが、自分の方言では書かれていない。
+- *cognitive overhead の除去が rapid development と newcomer 参入を可能にした*。
+- *Future work*: FASL ファイルから non-deterministic elements (source pathname、
+  build timestamp 等) を除去するコンパイルモード。
+  これにより現在 SBCL を build できない実装で問題が実装側か SBCL の非可搬性かを
+  切り分けられるようになる。
+
+* Open questions for NeLisp (answered)
+
+精読で確認したい:
+
+1. *SBCL の cold-init phase で avoid されている circular dependency の
+   具体例は? Emacs Lisp でも同じ pattern が発生するか?*
+
+   *Answer (§3.2、§4.1):*
+   最も明確な concrete example は §4.1 の defstruct accessor bug fix 事例:
+   構造体の記述を保持する data structure に新しい slot を追加する変更は、
+   その data structure 自体を記述するための record が古い形式のままでは
+   コンパイルできないという循環を生む。CMUCL では "bootfile" (2 段階の手動
+   mutation script) が必要だったが、SBCL では source を変更して標準 build を
+   走らせるだけで済む。これが機能するのは genesis が cold core を host state に
+   依存せず構築するため。
+   Emacs Lisp でも同じ pattern は発生する: NeLisp の bytecode format や
+   internal data structure (シンボルテーブル、environment record 等) に
+   field を追加する際、その構造を記述する Elisp struct 定義が
+   cross-compiler には古い形式のままになる危険がある。
+   解決策は SBCL と同様: "early-" prefix ファイルパターン (§1 footnote 1 参照)
+   でブート早期に必要な定義を配置し、genesis が cold core を fresh に構築することで
+   循環を断ち切る。
+
+2. *Genesis の "cross-compile" は target と host の binary 互換性を
+   どう保障しているか? Host Emacs の .elc と NeLisp の独自 bytecode で
+   同じ問題が発生する場合の解法は?*
+
+   *Answer (§3.2、§3.3):*
+   SBCL は binary 互換性を *保障しない* という設計を選んでいる。むしろ逆:
+   genesis application が target memory を byte vector として host 上に構築し、
+   sbcl binary (C runtime) が期待する形式でファイルに書き出すことで、
+   "host の FASL format" と "target の FASL/image format" を完全に分離する。
+   host の .fasl ファイルは genesis 段階では一切使われない。
+   NeLisp の場合: Host Emacs の .elc bytecode と NeLisp 独自 bytecode は
+   *別物として設計し互換性を要求しない* のが正解。
+   genesis 相当の段階で NeLisp bytecode stream を Emacs buffer/vector に
+   独立して構築し、NeLisp の C runtime (最小限) が読める形式で書き出す。
+   "Host Emacs の .elc を NeLisp がそのまま実行できるようにする" という
+   誘惑は SBCL の教訓から避けるべき設計。
+
+3. *Rhodes は SBCL の portability を重視しているが、NeLisp は Host-Emacs
+   一択で良い。この simplification で何が楽になり、何を失うか?*
+
+   *Answer (§3.3、§3.4、§5):*
+   *楽になること*:
+   - §3.3 の "host / target の差異に対する workaround" の大部分が不要になる。
+     特に float subtype の非互換 (§3.4) や array-total-size-limit の workaround
+     は Emacs 固定なら問題にならない。
+   - package name 変換 (sb!/sb-) の代わりに Emacs の obarray 操作で
+     シンプルに host/target 分離できる。
+   - eval-when の非互換問題 (§3.3) は Elisp 内部で phase flag 変数で代替できる。
+   *失うこと*:
+   - §5 の future work で挙げられた "非決定的要素を除去して build reproducibility を
+     高める" 方向性が、NeLisp は Host Emacs のバージョン依存を断ち切れない。
+     Emacs 29 と Emacs 30 で NeLisp の cold core が変わる可能性が残る。
+   - 複数 host で build できることの "sanity check" 機能が失われる。
+     SBCL では "別の CL で build したら同じ cold core になった" という検証が
+     self-consistency テストとして機能する。NeLisp は single host なので
+     このメカニズムが使えない。代替として =§5 future work= の
+     "non-deterministic elements を除去した決定論的 build" を早期に実装することが有効。
+
+4. *SBCL の C runtime が 25 年 fixed size なのは (=../01-related-work.org=
+   §5 で認識済)、Rhodes paper 執筆時点 (2008) の state と現在で変化は?*
+
+   *Answer (§2 の数字から推定):*
+   本 paper の 2008 年時点でのデータ: C + assembly = 35,000 行 (全体の ~10%)。
+   内訳: platform-specific ops ~200行 × architectures、OS 別 ~2000 行 × 5 OS、
+   architecture 別 ~2500 行 × 7 architectures、GC ~8000 行。
+   Rhodes は "pragmatic reasons" として GC を C で書く理由を明示 (gdb でデバッグできる)。
+   本 paper は 2008 執筆であり "現在 (2026 年)" の SBCL の C 行数については記述がない。
+   NeLisp 設計上の示唆: 2008 年時点でも C は "GC + OS interface" に限定されていた。
+   これは NeLisp の "残余 C = 4 cores (syscall / allocator / GC inner / coding-system)"
+   という決定の empirical 根拠として成立する。"C runtime が fixed" というのは
+   本 paper が直接述べているわけではなく =../01-related-work.org= §5 での認識であり、
+   その正確性は本 paper の scope 外 (2008→2026 の変化は追跡不要、方針は確定済み)。
+
+* Cite-back (NeLisp docs で本 paper を引用した箇所)
+
+- =../00-motivation.org= §6.1 学術基盤
+- =../01-related-work.org= §5 C runtime / CL 境界 (Rhodes §2 実測値)
+- =../01-related-work.org= §5 Genesis bootstrap process (Rhodes §3.2 の 5-stage)
+- =../01-related-work.org= §5 転用 5 点目 (Rhodes §4.1 defstruct bug 事例)
+- =../01-related-work.org= §8 Priority A (精読済 marker)
+- =../03-architecture.org= §1 Rhodes 5-stage → NeLisp 5-stage 対応表
+- =../03-architecture.org= §1 Adaptation gaps (eval-when / make-load-form / buffer primitive)

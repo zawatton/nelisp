@@ -1,0 +1,372 @@
+#+TITLE: NeLisp — architecture (primitive 境界 / bootstrap)
+#+AUTHOR: zawatton
+#+DATE: 2026-04-22
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: ARCHITECTURE-LOCKED-2026-04-22
+:END:
+
+=../BRIEFING.org= §4.1 / §4.2 で提起された論点を具体化する doc。
+2026-04-22 の user-Claude session で主要 decision を lock。
+Phase 0 終盤で残論点 (Phase 1 subset 細部、GC / JIT 方針) を確定予定。
+
+lock 済 decision (詳細は §8 summary 参照):
+- Bootstrap: *A (Host-Emacs)* 単一案 / B reject / C は Phase 3+ 再検討
+- Primitive 境界: SBCL-style 4 核 (syscall / allocator / GC inner / coding)
+- Elisp subset Phase-wise: §7 table 参照
+- Lexical-binding ファースト、FFI は Emacs ABI 継承、Package は prefix
+
+* 1. Bootstrap 戦略 [LOCKED 2026-04-22: A]
+
+** 決定: Candidate A (Host-Emacs bootstrap)
+
+#+begin_src text
+  [host Emacs (C + bytecode + native-comp)]
+       │ eval
+       ▼
+  [nelisp.el (interpreter in Elisp)]
+       │ eval self-source
+       ▼
+  [self-hosted NeLisp (running its own interpreter)]
+       │ 3 大 core module Elisp 化
+       ▼
+  [NeLisp v1.0 — Stage A 完遂]
+#+end_src
+
+*** 方法論的基盤 (wave 2 audit で確立)
+
+Christophe Rhodes "SBCL: A Sanely-Bootstrappable Common Lisp" (LNCS 5146,
+Springer 2008) が NeLisp bootstrap の直接 methodology source。SBCL の
+genesis process (任意 ANSI CL host → cross-compile FASL → cold-init →
+warm-init) を NeLisp に transfer:
+
+| SBCL                          | NeLisp                         | 差分 (simplification)       |
+|-------------------------------+--------------------------------+-----------------------------|
+| 任意 ANSI CL host             | Emacs (一択)                   | portability 不要             |
+| cross-compile FASL            | =nelisp.el= を host Emacs eval | FASL format 自作不要         |
+| GENESIS image .core 生成      | host Emacs image 再利用         | image 自作不要               |
+| cold-init (GC/symbol init)    | host Emacs の primitive 借用    | bootstrap 初期状態を継承     |
+| warm-init (stdlib load)       | =nelisp-load= で自前 modules   | 自作必要部分                 |
+
+SBCL が 25 年間 "任意 host OK" の抽象化を維持したコストを NeLisp は支払
+わない。=../docs/papers/rhodes-2008-sbcl.org= 参照。
+
+*** Rhodes 5-stage → NeLisp 5-stage 対応 (Phase 2 設計直結)
+
+Rhodes §3.2 の genesis 5-stage (host-1 / target-1 / host-2 / genesis-2 /
+target-2) を NeLisp (host = Emacs) に transfer:
+
+| Rhodes stage | SBCL 実装                                                | NeLisp 類比                                                       |
+|--------------+-----------------------------------------------------------+-------------------------------------------------------------------|
+| host-1       | Host CL が src/ を cl:compile-file、xc + C ヘッダ生成     | Host Emacs が NeLisp cross-compiler (=nelisp-xc=) を byte-compile |
+| target-1     | src/runtime/sbcl executable を cc/ld で生成               | 残余 C (syscall/allocator/GC inner/coding-system) を build、v1.0 以降固定 |
+| host-2       | sb!xc:compile-file で SBCL source 再コンパイル→独自 FASL   | NeLisp xc で NeLisp source 再コンパイル、NeLisp 独自 bytecode 生成 |
+| genesis-2    | target memory = byte vector、FASL load を simulate、不可 action を defer → cold.core | target image を Emacs buffer/vector で構築、実行不可を initial function に defer → cold image |
+| target-2     | cold-init (最難)、sb!→sb- rename、PCL load、sbcl.core 保存 | cold-init (host Emacs debugger 使用可で SBCL より有利)、nl!→nl- rename、warm phase で Elisp object system load |
+
+*最難ポイント*: Stage 5 cold-init は Rhodes §3.2 で "*probably the most
+fragile portion of the SBCL build, hardest to debug*" と明言 — Lisp
+debugger が立ち上がる前の phase で動く。NeLisp はここで *host Emacs
+debugger が使えるという構造的優位* を持つ (Elisp 自体で書かれているため)。
+
+=../docs/papers/rhodes-2008-sbcl.org= §3.2 + "Genesis process walkthrough"
+節参照。
+
+*** Adaptation gaps (Elisp 固有で SBCL から直接転用できない 3 点)
+
+Rhodes paper 精読 (2026-04-22) で判明した NeLisp 独自設計が必要な箇所:
+
+1. *=eval-when= 非存在* — SBCL は =:compile-toplevel= / =:load-toplevel=
+   の phase 制御に =eval-when= を多用 (§3.3) するが Elisp に相当機構なし。
+   NeLisp は明示 phase flag 変数 (=nl-phase= 等) か file 分離で代替。
+   Phase 2 実装時の追加工数として見積必要。Rhodes 自身も =eval-when= を
+   "not the best solution" と評価 [ref 11: Flatt 2002]
+2. *=make-load-form= 非存在* — SBCL genesis は compiler data structure の
+   FASL dump に =make-load-form-saving-slots= を多用 (§3.3)。Elisp 標準に
+   相当機構なし。NeLisp は =print= / =read= 組合せか dedicated encoder
+   の独自設計が必要。Phase 2 genesis phase の主要実装項目
+3. *Buffer-centric primitive の扱い* — SBCL build は "普通の CL" 上で走るが、
+   NeLisp host の Emacs は buffer/window/process 等 editor primitive が
+   常に環境に存在する。cross-compiler の target image にこれらを "exclude
+   する / stub する / carry する" という SBCL に存在しない設計問題。
+   Phase 1 scope (=../02-scoping.org= §0) では buffer primitive は除外
+   方針だが、genesis でそれを enforce する仕組みが必要
+
+*** Implementation 段階 (Phase 別)
+
+- Phase 1: =nelisp-eval=, =nelisp-read= を Elisp として実装、host Emacs
+  上で走る (≠ self-host、まだ host Elisp 依存)
+- Phase 2: =(nelisp-eval (nelisp-read-file "nelisp-core.el"))= が
+  fixpoint 収束 (self-host 到達)
+- Phase 3: bytecode VM + GC を NeLisp の上で実装、Phase 2 output を
+  bytecode compile
+- Phase 4-5: concurrency + core module Elisp 化
+
+*** Pros / Cons (decision 根拠)
+
+Pros:
+- 新しい C コード不要 (週末研究の realistic 負荷)
+- host Emacs の regression test を regression harness として再利用
+- Remacs 失敗 pattern (C 置換 scope 爆発) を構造的回避
+- Rhodes 2008 の proven methodology を踏襲、学術的 defensible
+
+Cons (許容):
+- Phase 2 直後は host の 100x-1000x 遅い (Phase 3 bytecode で 1/5 まで
+  詰める、詳細 =../05-roadmap.org=)
+- host Emacs 依存 (anvil.el と同じ依存構造、user はこれを受容)
+
+** Candidate B (Minimal Elisp→C): *REJECTED*
+
+- Maxwell's Equations of Software 的な tiny C runtime + Elisp
+- Reject 理由: C コード保守が二重化、事実上 Remacs pattern、user の時間
+  予算で不可能
+
+** Candidate C (native-comp bootstrap): *PARKED for Phase 3+*
+
+Corallo et al. "Bringing GNU Emacs to Native Code" (ELS 2020, arXiv
+2004.02504) で確立された native-comp pipeline (6 段階 Elisp→LAP→LIMPLE→
+SSA→libgccjit→.eln) に NeLisp VM を乗せる案。
+
+*現時点での viability 評価 (2026-04-22 精読後更新)*:
+
+- 技術的に可能だが *当初推定より高コスト* (LIMPLE adapter 数百-千行 →
+  数千行オーダー)
+- 3 要件 + ABI 壁:
+  1. pointer tagging / ABI 型情報 (=comp-mvar= の =type= slot に対応)
+  2. NeLisp 独自 bytecode operand の spill-lap + limplify 全面再実装
+     (Emacs LAP 流用不可、Corallo §2.1)
+  3. =dlopen= での .eln ロード機構
+  4. *ABI 壁*: .eln は 4 つの Emacs-core symbol (=freloc_link_table= /
+     =text_data_reloc= / =d_reloc= / =top_level_run=、Corallo §4.2) に
+     深く結合。NeLisp standalone では同等の runtime layer を独自設計
+     する必要がある
+- Windows は Bértolo MSYS2 port で動くが production 未検証 (Corallo の
+  評価は Linux Intel i5-4200M のみ)
+
+*§4.5/§4.7 の 3-step bootstrap sequence* (Candidate C 採用時の参考):
+1. host interpreter で native compiler 実行
+2. native compiler が自身を native-compile
+3. native-compiled compiler が再度自身を compile、bytewise 比較で検証
+
+この sequence は NeLisp Phase 1-2 self-host (Candidate A) を前提とする。
+つまり Candidate A 完了が Candidate C の prerequisite であり、Phase 3+
+に置く順序は妥当。Host-Emacs 非依存 standalone を目指す Phase 5 以降で
+step 1 の interpreter をどこから供給するかが追加の設計課題になる。
+
+Phase 3 以降で再検討、Phase 0-2 は Candidate A で進む。
+
+=../docs/papers/corallo-2020-native-comp.org= に一次資料精読 summary
+(484 行、§6 benchmark 表 10 本含む)。
+
+* 2. Primitive 境界 [LOCKED 2026-04-22]
+
+VM 外 (= C / syscall) に残すラインを SBCL precedent と AI-critical path
+(=../02-scoping.org= §0) を組み合わせて策定。
+
+** 2.1 C に残す 4 核 (SBCL-style residual、NeLisp v1.0 固定)
+
+| 領域                     | 理由                                   | SBCL 対応箇所              |
+|--------------------------+----------------------------------------+----------------------------|
+| POSIX syscall            | OS 依存、kernel-facing                 | =src/runtime/= OS layer    |
+| Memory allocator         | runtime 下層、recursive alloc 不可     | =src/runtime/alloc.c=      |
+| GC core loop             | mark/sweep/compact inner は perf critical、Elisp 化すると stack overflow | =src/runtime/gencgc.c= |
+| 文字コード変換            | 言語学的 constant、libiconv 等 delegation | coding-system core       |
+
+*この境界は NeLisp v1.0 release 後も変えない* (SBCL 25 年維持と同じ philosophy)。
+
+** 2.2 AI-critical path (NeLisp core team が鍛える、Phase 1-5 で順次 Elisp 化)
+
+=../02-scoping.org= §0 の #1-5 に対応。
+
+| 領域                  | 現状 C source     | NeLisp Phase | 難度 | 備考                 |
+|-----------------------+-------------------+--------------+------+----------------------|
+| reader (=read=)       | =lread.c=         | Phase 1      | 低   | NeLisp 1st citizen    |
+| eval / apply          | =eval.c=          | Phase 1      | 中   | NeLisp core           |
+| macro expander        | =macroexp.c=      | Phase 1      | 中   | closure 実装と同時    |
+| bytecode VM           | =bytecode.c=      | Phase 3      | 中   | JIT は §2.4 で除外判断 |
+| GC mark phase         | =alloc.c=         | Phase 3      | 中   | 4 核の外側を Elisp 化 |
+| concurrency primitives | =thread.c=       | Phase 4      | 高   | STM/actor、Phase 4 選定  |
+| process management    | =process.c=       | Phase 4      | 中   | anvil 痛み解消の最重要 |
+| gap buffer            | =buffer.c=        | Phase 5      | 高   | AI text manipulation 核 |
+| event loop dispatcher | =keyboard.c=      | Phase 5      | 高   | AI interactive の基盤 |
+
+** 2.3 Community 長尾 (post-v1.0、PR 主体)
+
+=../02-scoping.org= §0 の #6-7 に対応。
+
+| 領域                  | 現状 C source     | 想定 Phase | 備考                         |
+|-----------------------+-------------------+------------+------------------------------|
+| regexp engine         | =regex-emacs.c=   | post-v1.0  | 楽しみで書く人に任せる        |
+| arithmetic primitives | =data.c= 他       | post-v1.0  | int は Phase 3 で Elisp、float は後 |
+| string byte op        | =fns.c= 他        | post-v1.0  | bulk op は C 性能依存残留可    |
+| redisplay 細部        | =xdisp.c= 細部    | post-v1.0  | framework は Phase 5、細部 renderer は community |
+| coding-system 細部    | =coding.c=        | post-v1.0  | core は 2.1 に残る、細部は可 |
+| font metrics / frame layout | =xfont.c= 他 | post-v1.0  | platform code は delegation OK |
+
+** 2.4 議論保留事項 (Phase 3-4 で決定)
+
+- Generational GC にするか、mark-sweep で Phase 3 を切るか
+  → Phase 3 着手時に benchmark で決定、skeleton では mark-sweep + optional
+    generational
+- JIT compiler を Elisp で書くか (PyPy 的 meta-tracing)
+  → *Phase 3-5 roadmap からは明示的に除外* (2026-04-22 Bolz 2009 精読後判断)。
+    Bolz 2009 (ICOOOLPS) の =can_enter_jit= / =jit_merge_point= hint pattern は
+    NeLisp bytecode interpreter に埋め込み可能だが、精読で Elisp の 3 大
+    feature (*buffer-local variable* / *advice system* / *dynamic scope*) が
+    meta-tracing の前提 (変数安定・関数 identity 安定・call site 収束) を
+    構造的に崩すことが判明。Emacs 互換性を保ったまま JIT を載せると
+    guard failure 多発で speedup が得られない可能性が高い。
+    Phase 4b 以降で再検討する場合、適用 scope を "lexical-binding=t かつ
+    advice なし かつ buffer-local なし" の pure-functional 限定とするのが
+    現実的出発点。詳細 =../docs/papers/bolz-2009-meta-tracing.org= §Implications
+- Timer / signal handler の扱い
+  → kernel 依存なので Phase 5 でも C 残留、wrapper だけ Elisp 化想定
+
+* 3. Elisp 互換性戦略
+
+** 3.1 文化の保持 (非交渉)
+
+- dynamic binding (特に =defvar= / =let= の特殊変数)
+- buffer-local / frame-local / window-local state
+- advice / hook / hook-local-variable
+- text property (これは Phase 5 以降)
+- =unwind-protect= semantics
+
+** 3.2 lexical-binding ファースト
+
+- 新規 NeLisp コードは lexical-binding 必須
+- dynamic binding は opt-in (=(defvar ...)= declared variables only)
+- これは現代 Elisp コミュニティの方向性と整合
+
+** 3.3 FFI / dynamic module
+
+- Emacs 25+ dynamic module ABI (emacs-module.h) を保持
+- 既存 .so (vterm, tree-sitter, sqlite3 など) が動くこと
+- 加えて Elisp レベルの cleaner FFI API を提供
+
+** 3.4 C 関数置換ロードマップ (→ scoping / primitive 境界 参照)
+
+置換の scope と分担は =../02-scoping.org= §0 (A→B→C 層 + AI-critical
+vs community 長尾) と §2 の table で完結している。本節は cross-link
+のみ残す。
+
+要点:
+- NeLisp core team は AI-critical path (§2.2) を Phase 1-5 で鍛える
+- 残 C (§2.1 の 4 核 + §2.3 community 長尾) は post-v1.0 で community 主導
+- Remacs 式の "3000 関数全置換" は *non-goal* (=../02-scoping.org= §0 末尾)
+
+* 4. Package / namespace (BRIEFING §4.4)
+
+** 案 1: prefix convention 維持
+
+- =nelisp-*=, =nelisp--private=
+- 既存 Elisp パッケージと共存
+- シンプル、Phase 0-3 はこれで通す
+
+** 案 2: =defpackage= 相当の opt-in 導入
+
+- =(in-package :nelisp)= → symbol resolution が切り替わる
+- CL 的、ただし Elisp 既存 code との共存設計が重い
+- Phase 4+ で検討
+
+** 結論 (Phase 0 時点)
+
+*Phase 0-3 は prefix convention のみ*。defpackage は Phase 4 で再検討。
+
+* 5. Module system
+
+- =require= / =provide= を踏襲
+- 各モジュールが =nelisp-module= declare、依存は static に記述
+- ELPA / MELPA 互換を Phase 2 以降で維持 (OSS 公開前提)
+
+* 6. Build / distribution (Phase 1 末〜)
+
+- =Cask= or 純 Makefile (Cask は生ける化石、Makefile 推奨)
+- =ert= で unit test、golden test は =ert-deftest= + snapshot file
+- CI: GitHub Actions (ubuntu-latest + macos-latest + windows-latest)
+- Release: GitHub Releases + MELPA recipe (Phase 2 末)
+
+* 7. Phase 1 Elisp subset [LOCKED 2026-04-22]
+
+Phase 1 (2026-07〜2027-01、6 ヶ月) で実装する Elisp の範囲を固定。
+"動く最小、しかし非 trivial な Elisp code が走る" を目標。
+
+** 7.1 含める (=nelisp-core=)
+
+*Atoms*:
+- =nil=, =t=, integer (int64)、symbol、string、cons
+- Phase 1 ではまだ float / bignum / vector は除外
+
+*Special forms*:
+- =quote=, =function=
+- =if=, =cond=, =and=, =or=, =when=, =unless= (論理フロー)
+- =let=, =let*= (binding)
+- =lambda=, =defun= (abstraction)
+- =setq=, =defvar=, =defconst= (assignment / declaration)
+- =progn=, =prog1=, =prog2= (sequencing)
+- =while= (loop)
+- =catch=, =throw= (non-local exit、condition-case の primitive)
+- =unwind-protect= (cleanup)
+- =condition-case= (error handling)
+- =defmacro=, =macroexpand=, =macroexpand-all= (macro)
+
+*Builtin functions* (最小セット ~40):
+- cons: =car=, =cdr=, =cons=, =list=, =null=, =listp=, =length=
+- equality: =eq=, =eql=, =equal=
+- arithmetic: =+=, =-=, =*=, =/=, =mod=, =<=, =<==, =>=, =>==, =/==, ===
+- string: =concat=, =substring=, =length= (overload), =stringp=
+- symbol: =intern=, =symbolp=, =boundp=, =fboundp=
+- print: =prin1=, =princ=, =format= (最小)
+
+** 7.2 Phase 1 成功条件
+
+| 条件                                         | 検証                              |
+|----------------------------------------------+-----------------------------------|
+| =(nelisp-eval '(fib 30))=                    | 正しい Fibonacci 値               |
+| =(nelisp-eval '(factorial 10))=              | 正しい階乗値                      |
+| Y-combinator で recursion 実装               | Lambda closure が正しく動く        |
+| =(defmacro unless (c &rest body) ...)=       | Macro 展開が正しく働く             |
+| =(condition-case err (/ 1 0) (error :caught))= | Non-local exit が動く            |
+| lexical-binding / dynamic-binding 両方       | Elisp semantics 正しく再現         |
+| ERT test suite 50+ 本 pass                   | regression harness                |
+
+** 7.3 除外 (Phase 2 以降)
+
+Phase 1 に含めない (意図的 scope 絞り):
+- buffer / marker / overlay / text property (Phase 2-5)
+- advice system (Phase 2+)
+- process / pipe / socket (Phase 4)
+- regex (Phase 3+ or community)
+- native-comp interop (Phase 3+)
+- thread / concurrency (Phase 4)
+- hash-table, vector (Phase 2 前半で追加候補)
+- float / bignum (Phase 2 後半)
+- dynamic module / FFI (Phase 4+)
+
+* 8. Decisions lock summary (2026-04-22)
+
+Phase 0 session で確定した architectural decision の一覧。Phase 3 終盤で
+再 review 可能、Phase 0-2 期間中は凍結。
+
+| # | 論点                  | 決定                                        | 根拠                                   |
+|---+-----------------------+---------------------------------------------+----------------------------------------|
+| 1 | Bootstrap             | A (Host-Emacs)、B reject、C park            | Rhodes 2008 + 週末研究 pace            |
+| 2 | Primitive C 境界      | SBCL-style 4 核 (§2.1)                      | SBCL 25 年 precedent                   |
+| 3 | NeLisp scope          | Stage A のみ、3 core module + self-host + AI path | =../02-scoping.org= §0           |
+| 4 | AI-critical path      | #1-5 (buffer/event/concurrency/eval/FFI)    | anvil.el pain memory data              |
+| 5 | Community 長尾         | #6-7 (display render / primitive util)      | post-v1.0、PR 主体                     |
+| 6 | Phase 1 subset        | 14 special forms + 40 builtins + macro      | §7 完遂条件 fib/fact/macro/condition   |
+| 7 | Lexical-binding       | ファースト (新コード)、dynamic は opt-in     | Elisp 現代 convention                  |
+| 8 | FFI ABI               | Emacs 25+ dynamic module ABI 継承           | 既存 .so 生態系保持                    |
+| 9 | Package / namespace   | prefix (=nelisp-*=)、Phase 4+ で defpackage  | 既存 Elisp package 共存                |
+| 10 | Module system        | =require= / =provide= 踏襲、ELPA 互換       | OSS 公開前提 (Q4)                      |
+| 11 | Build                | Makefile + ERT + GitHub Actions             | 業界標準、Cask は避ける                 |
+
+** 残論点 (Phase 3-4 で決定)
+
+- GC 方式: mark-sweep vs generational
+- JIT: PyPy meta-tracing 適用 or 純 interpreter
+- Concurrency: STM / actor / fiber / thread (=../04-concurrency.org= §7 推薦)
+- Timer / signal: C wrapper のまま vs Elisp 再実装

@@ -1,0 +1,858 @@
+#+TITLE: NeLisp — 先行研究 audit
+#+AUTHOR: zawatton
+#+DATE: 2026-04-22
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: PARTIAL-AUDIT-2026-04-22
+:END:
+
+Phase 0 成果物。audit 方針は =../BRIEFING.org= Q3 回答に従い *精読 + 論文読み込み* レベル。
+
+audit 進捗 (2026-04-22):
+- [X] §1 Remacs — Agent haiku、Wilfred Hughes FAQ + HN 2017 まで精読
+- [X] §2 emacs-ng — Agent haiku、JS disabled / maintainer 枯渇を発見
+- [X] §3 Guile-Emacs — Agent haiku、2024 年 EmacsConf relaunch 発見
+- [X] §4 native-comp — Agent haiku、Corallo 2020 ELS paper 精読
+- [X] §5 SBCL — Agent haiku、Rhodes 2008 "Sanely-Bootstrappable" 発見
+- [X] §6 PyPy — Agent haiku、Bolz 2009 ICOOOLPS + STM 失敗教訓
+- [X] §7 PicoLisp — Agent haiku touch audit、pil21 で LLVM 部 self-host
+- [X] §10 差分まとめ — wave 完了、2026-04-22 記述
+- [X] §8 学術論文 Priority A — Rhodes 2008 / Corallo 2020 / Bolz 2009 / MacLachlan 1992 全 4 本精読済 (2026-04-22 完走、合計 1831 行)
+- [ ] §8 学術論文 Priority B — Phase 1-2 中に蓄積継続 (Chambers & Ungar 1989 / Würthinger 2012 / Ghuloum 2006)
+
+* 1. Remacs (2016-2020, discontinued)
+:PROPERTIES:
+:AUDIT_DATE: 2026-04-22
+:END:
+
+- リポジトリ: https://github.com/remacs/remacs
+- 発起人: Wilfred Hughes
+- アプローチ: GNU Emacs の C コード (823 C 関数目標、最終的に 642 関数を
+  Rust ポート) を段階的に Rust 置換、Elisp 互換性は完全保持 (bug-for-bug
+  compatibility drop-in replacement)
+- 結末: 2020 年頃 active → archived へ自然衰退 (explicit postmortem なし)
+
+** アプローチ詳細
+
+- 新機能追加でなく既存 Emacs への drop-in replacement を目標
+- 小関数から段階移植 (想定: cargo-cultish に 1 関数ずつ)
+- Rust 化による benefit: memory safety、modern tooling、cross-platform
+
+** 失敗の技術的要因
+
+- *上流同期負担*: GNU Emacs は月次マイナーリリース。Remacs は並行開発のため
+  upstream 変更の継続追従が必要、マージコストが指数増加
+- *Scope 爆発*: 「小関数から」が実際には相互依存 API の移植を要求。グラフィクス
+  / レンダリング層、スレッド安全性、FFI compatibility が予想以上に複雑
+- *法的不確実性*: Rust の LLVM ベース → GCC / GPL upstream との統合で copyright
+  assignment や法的 murky status。GNU Emacs 本家に上流 push できない壁
+
+** 失敗の社会的要因
+
+- *Contributor 疲弊*: 80+ 名が修正、多くは drive-by。Emacs 内部を深く理解する
+  開発者少、継続保守の動機が薄れた
+- *価値命題の曖昧性*: HN 議論 (2017) で「end-user benefit が実質ゼロ」と指摘。
+  project 側も "学習価値 + 未来投資" 前提で実用性で説得困難
+- *長期戦略の不在*: 「month N までに何%」の milestone 管理がなく、volunteer-
+  driven でガバナンス層が欠けた
+
+** Wilfred Hughes 本人の言葉
+
+explicit な discontinue 宣言は公開されていない。推定では技術的興味と現実的
+成果のギャップが認識され自然衰退。FAQ (推定 Hughes 執筆) より:
+
+#+begin_quote
+the goal of Remacs is to rewrite the C code in Rust while maintaining
+bug-for-bug compatibility with Emacs
+#+end_quote
+
+(Remacs の目標は、Emacs との bug-for-bug 互換性を保ちつつ C コードを Rust で
+書き直すこと。)
+
+** NeLisp への教訓
+
+1. *Scope 管理の解像度を上げる*: 単一言語 (Elisp) 移植でも、VM 内部の非決定
+   領域 (GC / bytecode format / evaluation order) を明確に spec 化してから
+   着手。=docs/02-scoping.org= の防波堤を恒常的に更新する前提にする
+2. *Upstream 関係の早期宣言*: Remacs は「フォーク」→「競合」扱いで upstream
+   への code push が困難化。NeLisp は「別処理系」立場を Phase 0 で明示、
+   GNU Emacs maintainers への敵対的解釈を構造的に避ける
+3. *Contributor retention の二軸*: 実用 milestone (Phase N で self-host 達成)
+   と学術価値 (論文実装など) の両方を提示。volunteer-driven なら "退路 + 成果"
+   両方が必要
+4. *適応的 scope reduction*: 達成困難と判明した領域 (フル thread 化、動的型
+   dispatch) は早期に Phase N+1 以降へ defer。Phase 1 は "core primitives +
+   minimal test suite" に絞込む
+
+** 本研究との差分
+
+| 軸                | Remacs                | NeLisp                      |
+|-------------------+-----------------------+-----------------------------|
+| 実装言語          | Rust                  | Elisp (self-host)            |
+| scope             | 全 C 関数を Rust 化   | VM 層のみ、段階置換         |
+| upstream relation | drop-in replacement   | 別処理系として共存          |
+| governance        | volunteer-driven      | single-maintainer + OSS公開 |
+| end-user benefit  | 説明困難              | 実験 cycle 100x 短縮で明確  |
+
+** 参照 URL (一次情報)
+
+- https://github.com/remacs/remacs
+- Wilfred Hughes blog:
+  - https://www.wilfred.me.uk/blog/2017/01/11/announcing-remacs-porting-emacs-to-rust/
+  - https://www.wilfred.me.uk/blog/2017/04/30/remacs-talk-transcript/
+  - https://www.wilfred.me.uk/blog/2017/07/15/these-weeks-in-remacs-ii/
+- Nick Drozd "Remacs FAQ" https://nickdrozd.github.io/2019/04/16/remacs-faq.html
+- HN discussion 2017 https://news.ycombinator.com/item?id=14782380
+
+* 2. emacs-ng (2020-, low activity 2024-)
+:PROPERTIES:
+:AUDIT_DATE: 2026-04-22
+:END:
+
+- リポジトリ: https://github.com/emacs-ng/emacs-ng (1,803 stars / 75 forks)
+- 主要 maintainer: Declan Tsien (declantsien@riseup.net)
+- 発足: 2020 年 8 月、Remacs の路線継承 + "21 世紀の editor" を目指す
+- アプローチ: Rust + Deno (JavaScript/TypeScript runtime) + WebRender GPU
+
+** 設計の thesis
+
+Elisp を「非推奨」にせず、Rust + Deno を *additive な native layer* として
+統合。ユーザーの言語選択肢を増やしつつ introspectability を保持。
+
+** JavaScript 統合のアーキテクチャ
+
+- =EmacsMainJsRuntime=: 各 Lisp thread が独立した =v8::Isolate= (thread-
+  local singleton)
+- イベントループ: Tokio async runtime + =js-tick-event-loop= polling
+- JS-Lisp Marshaling: =lisp= JavaScript Proxy 経由で Elisp 関数呼び出し、
+  JSON serialization fallback
+- GC 連携: 双方向参照追跡 (=js-retain-map=, WeakRef finalizer)
+- WebAssembly support (sqlite example), WebWorkers, Deno test framework
+
+** 現状 (2024-2026)
+
+- *JavaScript support は disabled* (2024-10 時点、issue #637)
+- WebRender: Linux Wayland で動作確認済、Winit window system 整備中
+- Commit frequency: weekly merge from =gnu/master= は automated、新機能開発は緩やか
+- maintainer 発言 (Declan, 2024-10-20):
+  #+begin_quote
+  Nobody is currently actively working on this project as far as I know.
+  ... But there is this WebRender features which can be upstreamed.
+  #+end_quote
+
+** 技術的 trade-off
+
+| 得                           | 失                              |
+|------------------------------+---------------------------------|
+| GPU rendering (WebRender)    | Upstream GNU Emacs sync burden  |
+| Native perf + memory safety  | Deno runtime size/complexity    |
+| Async I/O ergonomics (Tokio) | Elisp/JS interop (JSON bottleneck)|
+| Type-safe scripting (TS)     | maintainer capacity 不足        |
+| V8 JIT                       | JS support enable 困難          |
+
+** 本研究との差分
+
+| 軸           | emacs-ng                       | NeLisp                        |
+|--------------+--------------------------------+-------------------------------|
+| 対象 user    | JS/TS / GPU rendering 志向     | Elisp self-host / VM 研究志向 |
+| 言語統合     | V8 + Deno (外部 runtime 依存)  | Elisp のみ (self-contained)   |
+| 主眼         | 外向き拡張性・modern paradigm  | 内向き言語設計・introspection |
+| 実装状態     | WebRender 稼働 / JS disabled   | 設計段階 (Phase 0)            |
+
+*結論*: 完全に独立 niche、補完関係。emacs-ng 上で NeLisp が動く可能性も
+あり得る (Elisp source-to-source translation 経由)。
+
+** 参照 URL (一次情報)
+
+- https://github.com/emacs-ng/emacs-ng
+- https://github.com/emacs-ng/emacs-ng/issues/637 (2024-10 maintainer status)
+- https://github.com/emacs-ng/emacs-ng/blob/master/docs/js/architecture.md
+- https://github.com/emacs-ng/emacs-ng/blob/master/docs/js/main-features.md
+
+* 3. Guile-Emacs (BT Templeton 2009-, Andy Wingo 2014-, relaunch 2024)
+:PROPERTIES:
+:AUDIT_DATE: 2026-04-22
+:END:
+
+- 起源: 2009-2014 年 Google Summer of Code で BT (Robin) Templeton が関数型
+  compiler + VM によるフル実装を達成
+- 2024 update: EmacsConf 2024 で relaunch 発表 ("Beguiling Emacs: Guile-Emacs
+  relaunched!") — 本 doc skeleton 作成時の "stalled" 認識は要更新
+- リポジトリ (2024 時点): https://codeberg.org/guile-emacs/guile-emacs
+- アプローチ: Elisp をバイトコード経由でなく Guile VM へ直接 compile
+
+** 技術的困難 (具体 semantics gap)
+
+Elisp の "変態" 仕様が Scheme 上で再現困難:
+
+- *動的スコープ + buffer-local*: Elisp の =defvar= は動的束縛だが、各 buffer
+  ごとに別束縛を持つ。Scheme の =fluid= では多次元束縛が実装できず、
+  performance 急落
+- *Lisp-2 vs Lisp-1*: Elisp は関数と変数で別名前空間 (Lisp-2)、Scheme は単一
+  (Lisp-1)。対応 mapping の overhead とコード生成の複雑化
+- *Nil の三分化*: Elisp では =#f= (bool false), =()= (empty list),
+  =nil= (symbol) が区別される (Stefan Monnier が指摘)。Scheme では異なる表現
+- *文字列表現の mismatch*: Elisp は拡張 UTF-8 (不正 byte sequence を許容)、
+  Guile は libunistring (厳格)。SQL など下層での検証ニーズがぶつかる
+
+** 12 年停滞の背景
+
+*技術的 blocker*:
+- Guile 自体の進化が standalone 化路線、embedded 最適化の優先度低下
+- Windows / 32bit OS サポート枯渇
+- BDW-GC と Emacs C 層の相互作用崩壊
+
+*社会的 blocker*:
+- Templeton が 2015 年に Web 技術へ転職、個人スポンサーシップ消滅
+- Emacs コミュニティが冷淡 (LWN 2014 記事)。既存 Elisp packages の 100%
+  互換性を要求する高い bar
+- Stallman は Scheme 自体は支持、ただし Elisp 置換には反対 (複数言語分裂懸念)
+
+** Wingo blog の核心主張
+
+Wingo 2016 "guile compiler tasks" より:
+
+#+begin_quote
+Elisp hasn't been the focus of a lot of optimization.
+#+end_quote
+
+(Elisp は [Guile において] 最適化の主眼になってこなかった。)
+
+Elisp compiler は存在するが、最適化が後発。binary size、register allocation、
+命令爆発 (高水準 → 低水準 VM op) が未完で、技術的には可能だが優先度ナッシング
+状態だったと Wingo 自身が認めている。
+
+** Stallman の Scheme 拒否論拠
+
+- 古典的理由: Scheme の performance が 1980 年代 minicomputer 時代に劣った
+  (現在は無関)
+- 現在の立場: Scheme 拡張は許容、ただし Elisp の完全置換には反対
+- 理由: 既存 packages の資産保護 + コミュニティ分裂懸念
+
+** NeLisp の "Scheme ではない" 主張への支持材料
+
+1. *Elisp semantics の複雑さ*: buffer-local + 動的スコープの二層構造は
+   Scheme では不自然。Elisp 自体が VM 最適化を要求する対象
+2. *言語進化の独立性*: Guile との共進化は両者の目標衝突を招く
+   (Guile は言語完全性、Emacs は一貫性)
+3. *コミュニティ分裂リスク*: 12 年の停滞は技術問題だけでなく
+   「多言語化は Emacs を割く」という user コミュニティ側の確信反映
+4. *Self-host 正当性*: SBCL → CL の成功例、Corallo の native-comp (Emacs 28+)
+   の precedent。Elisp on Elisp VM は保守性・透明性で Scheme 経由より有利
+
+** 2024 年 relaunch の位置付け
+
+EmacsConf 2024 での relaunch 発表は NeLisp project にとって両義的:
+
+- *脅威ではない*: Guile-Emacs は依然 Scheme substrate 路線で技術的困難
+  (上記 semantics gap) は未解消。NeLisp の "Elisp で Elisp" 路線は別 niche
+- *引用源として有用*: 2024 年時点の最新情報としてトラッキング。relaunch で
+  何が解決され何が残ったかを追跡 (Phase 1 着手時に再 audit)
+
+** 参照 URL (一次情報)
+
+- Wingo blog:
+  - https://wingolog.org/archives/2014/01/19/a-new-elisp-compiler
+  - https://wingolog.org/archives/2016/02/04/guile-compiler-tasks
+- LWN 2014 "The future of Emacs, Guile, and Emacs Lisp"
+  https://lwn.net/Articles/615220/
+- Codeberg https://codeberg.org/guile-emacs/guile-emacs
+- EmacsConf 2024 "Beguiling Emacs: Guile-Emacs relaunched!"
+  https://emacsconf.org/2024/talks/guile/
+- Irreal "Guile Emacs: What's Old Is New Again"
+  https://irreal.org/blog/?p=12635
+- HN 2024-12 relaunch スレッド https://news.ycombinator.com/item?id=42303054
+- EmacsWiki https://www.emacswiki.org/emacs/GuileEmacs
+
+* 4. native-comp (Emacs 28+, Andrea Corallo 2020)
+:PROPERTIES:
+:AUDIT_DATE: 2026-04-22
+:END:
+
+- 論文: Corallo, Nassi, Manca "Bringing GNU Emacs to Native Code"
+  ELS 2020 (https://arxiv.org/abs/2004.02504)
+- doc: https://akrl.sdf.org/gccemacs.html
+- Emacs 28+ にマージ済、現在は ecosystem 内機能
+- Windows port: Nicolas Bértolo (MSYS2 MinGW-w64)
+
+** パイプライン (6 段階、Corallo 2020 §2-§3 で articulation)
+
+#+begin_src text
+  Elisp source (lexical binding 必須)
+     ↓ spill-lap pass (Elisp 実装)
+  LAP (既存 byte-compiler の出力を横取り、stack depth は static 既知)
+     ↓ limplify pass (Elisp)
+  LIMPLE IR (basic block CFG + m-var SSA 変数構造体)
+     ↓ SSA pass (Elisp、5-step: edge → dom tree → dom frontier → Φ 挿入 → rename)
+  minimal SSA-LIMPLE
+     ↓ propagate / call-optim / TRE / dead-code (Elisp、comp-speed で gate)
+  optimized LIMPLE
+     ↓ final pass (*唯一の C back-end*、m-var → libgccjit IR)
+  libgccjit IR → GCC 最適化 pipeline
+     ↓ gcc_jit_context_compile_to_file()
+  .eln (shared object、ABI 4 symbol: freloc_link_table / text_data_reloc /
+         d_reloc / top_level_run)
+#+end_src
+
+- *Elisp 実装が圧倒的多数*: spill-lap / limplify / SSA / propagate / call-optim /
+  TRE / dead-code はすべて Elisp、C back-end は final pass 1 本のみ (§3 冒頭)
+- LAP の鍵 property: "for any given program counter, the stack depth is fixed
+  and known at compile time" (§2.1) — これが m-var 静的割り当てと SSA 化を可能にする
+- m-var = cl-defstruct { id / const-vld / constant / type } の 4 slot (Appendix A)
+- comp-speed 0-3 で段階的 gate: speed=2 で type-safe opt、speed=3 で TRE + inline (§5.1)
+
+** 既存 VM 前提性
+
+*native-comp は既存 bytecode VM に依存*。bytecode compiler の出力を入力と
+し、LAP 表現を変換する。独立 pipeline ではなく *現行 bytecode VM 維持が
+前提*。独自 bytecode を独立 compile することは技術的に可能だが、現行
+implementation では bytecode LAP dependency が deep。
+
+** Performance (Corallo 2020 §6、Table 1)
+
+Benchmark suite = =elisp-benchmarks= (ELPA、Corallo & Nassi 作)、Intel
+i5-4200M Linux、speed=3 vs byte-comp (Emacs 28 master)、5 回平均:
+
+| benchmark         | byte-comp s | native-comp s | speed-up    |
+|-------------------+-------------+---------------+-------------|
+| listlen-tc        |       18.51 |          0.44 | *42.1x* TRE |
+| inclist-type-hints|       19.71 |          1.43 | *13.8x*     |
+| inclist           |       19.54 |          2.12 | *9.2x*      |
+| nbody             |       19.79 |          3.31 | *6.0x*      |
+| bubble            |       21.58 |          4.03 | *5.4x*      |
+| bubble-no-cons    |       20.01 |          5.02 | *4.0x*      |
+| fibn-tc           |       21.22 |          5.67 | *3.7x*      |
+| fibn-rec          |       20.34 |          7.13 | *2.9x*      |
+| dhrystone         |       18.45 |          7.22 | *2.6x*      |
+| fibn              |       20.04 |          8.79 | *2.3x*      |
+
+- 改善 2 主因 (§6): (1) byte-interpreter loop の除去 (memory fetch/decode
+  削減)、(2) call-optim (funcall trampoline 除去)
+- 最大 speedup (42.1x listlen-tc) は TRE が直接効く末尾再帰
+- 最小 speedup (2.3x fibn) は call overhead が少ない反復コード
+- type hint 効果: inclist → inclist-type-hints で +50% (9.2x → 13.8x)
+- *regression 報告なし* — "all benchmarks run at least two times faster"
+- *Linux Intel x86-64 のみ* 測定、Windows/MSYS2 は paper 対象外
+- =../docs/papers/corallo-2020-native-comp.org= "Performance numbers breakdown" 節参照
+
+** Corallo 2020 paper の core contribution
+
+1. *Lisp-aware type propagation* — GCC の generic CP は Lisp primitive の
+   tag bits を見ない。pointer tagging ベースの型推論が novel
+2. *Elisp 内実装* — 最適化 pass の大半を Elisp で記述 (bootstrap 自己充足)
+3. *libgccjit reuse* — 既存インフラ依存で開発コスト最小化
+
+一般 JIT (PyPy, V8) の template JIT とは異なり GCC SSA/optimizations を
+活用する *AOT hybrid*。
+
+** NeLisp bootstrap Candidate C の viability 評価 (精読後 2026-04-22 更新)
+
+*中〜高コスト*。精読で ABI 壁の存在が判明し、当初想定より高い再評価。
+NeLisp VM を libgccjit で compile するには 3 要件を満たす必要がある:
+
+- 型情報: NeLisp が pointer tagging / ABI-safe type descriptors を提供、
+  LIMPLE data-flow propagation を NeLisp type system に再実装
+- LAP 互換性: NeLisp 独自 bytecode operand 表現に対する spill-lap +
+  limplify pass を全面再実装 (Emacs LAP 流用不可、§2.1)
+- 遅延リンク: =dlopen= での .eln ロード機構
+
+*さらに ABI 壁 (精読で判明)*: .eln は 4 つの Emacs-core シンボル
+(=freloc_link_table= / =text_data_reloc= / =d_reloc= / =top_level_run=、§4.2)
+に深く結合しており、Emacs core を持たない NeLisp standalone では同等の
+runtime layer を独自設計する必要がある。subr calling convention の
+再定義、Lisp_Native_Comp_Unit 相当の GC 統合まで含む。
+
+実装コスト見積 (当初推定 → 精読後修正):
+- 当初: LIMPLE adapter 数百-千行 Elisp/C
+- 修正: LIMPLE adapter *+* NeLisp-own runtime layer *+* Windows/MSYS2
+  独立検証。数千行オーダー、Phase 5 以降の big-ticket 作業
+
+*3-step bootstrap sequence* (§4.5/§4.7、NeLisp Candidate C 評価時の参考):
+1. interpreter 上で native compiler を実行
+2. native compiler が自身を native-compile
+3. native-compiled compiler が再度自身を compile、bytewise 比較で検証
+この sequence は NeLisp Phase 1-2 self-host が前提として機能する。
+Host-Emacs 非依存 standalone を目指す場合、step 1 の interpreter
+提供元が別途問題になる (Phase 5 以降の設計課題)。
+
+*Phase 3 以降で再検討* 推奨は維持。Phase 0-2 は Candidate A (Host-Emacs
+bootstrap) を primary で進める方針は精読でも裏付け。
+
+** Platform 制約
+
+| OS       | libgccjit availability           | 備考                       |
+|----------+----------------------------------+----------------------------|
+| Linux    | standard                         | full support               |
+| macOS    | standard                         | full support               |
+| Windows  | MSYS2 MinGW-w64 (Bértolo port)   | 実運用で依存 build が困難  |
+| 32-bit   | X86_32 branch, 2GB 限界          | =NATIVE_FAST_BOOT= 時のみ  |
+| ARM64    | 推定 support                     | 具体記述なし               |
+
+** 本研究との差分
+
+- native-comp は *既存 VM の高速化*、NeLisp は *VM そのものの書き換え*
+- NeLisp bootstrap で native-comp を使う Candidate C は技術的 viable だが
+  bootstrap overhead と libgccjit 依存が trade-off
+- Phase 5 で NeLisp native-comp hybrid (NeLisp bytecode → .eln 出力) は
+  研究的に面白いが Phase 0 scope 外
+
+** 参照 URL (一次情報)
+
+- Corallo et al. ELS 2020 paper https://arxiv.org/abs/2004.02504
+- ELS'20 slides https://www.european-lisp-symposium.org/static/2020/corallo-nassi-manca-slides.pdf
+- EmacsConf 2021 talk https://emacsconf.org/2021/talks/native/
+- GNU Emacs manual (Native Compilation)
+  https://www.gnu.org/software/emacs/manual/html_node/elisp/Native-Compilation.html
+- libgccjit ABI docs
+  https://gcc.gnu.org/onlinedocs/gcc-15.2.0/jit/topics/compatibility.html
+
+* 5. SBCL — Steel Bank Common Lisp (CMU CL 1985-, SBCL 1999-)
+:PROPERTIES:
+:AUDIT_DATE: 2026-04-22
+:END:
+
+NeLisp の *methodology 本丸*。CL で CL を実装した先例として、SBCL の
+bootstrap pattern は NeLisp に直接転用可能。
+
+- 公式 manual: http://www.sbcl.org/manual/
+- Internals manual: https://sbcl.sourceforge.io/sbcl-internals/
+
+** C runtime / CL 境界
+
+2 層構成:
+- =src/runtime/= (C, ~数千行) — syscall / GC / memory / image-load
+- =src/code/= (CL, ~数万行) — compiler / library / ほぼ全言語機能
+
+*Rhodes 2008 §2 実測値 (2008 時点)*: C + assembly ~35,000 行 (全体の ~10%)
+vs Lisp ~200,000+ 行 (stdlib 90k / compiler 60k / backend 10-20k × 複数 arch
+/ CLOS 20k)。C 内訳: GC ~8,000 行、OS 別 ~2,000 行 × 5 OS、architecture
+別 ~2,500 行 × 7 architectures。Rhodes は GC を C で書く理由を "gdb で
+外部デバッグできるから" という *pragmatic 理由* と明言 (§2)。
+
+*過去 25 年で C 行数はほぼ固定* — syscall と GC core loop は削減せず、
+それ以外を CL 化し尽くしている。NeLisp の primitive 境界設計 (=03-architecture.org=
+§2) と整合する pattern。=../docs/papers/rhodes-2008-sbcl.org= §2 参照。
+
+** Genesis bootstrap process (NeLisp への最重要 pattern)
+
+SBCL の独創は *任意の ANSI CL を host にできる* こと。この "portable
+bootstrap" は Rhodes 2008 論文 "SBCL: A Sanely-Bootstrappable Common Lisp"
+(下記 §8) が articulation。Rhodes §3.2 の 5-stage (図 1-5) を正式用語で
+再記:
+
+#+begin_src text
+  Stage 1 (host-1): Host CL が SBCL source を cl:compile-file
+    → cross-compiler (xc) application + C ヘッダ群 (src/runtime/genesis/*.h)
+
+  Stage 2 (target-1): C runtime build
+    cc/ld で src/runtime/sbcl executable 生成 (image なしでは動かない)
+
+  Stage 3 (host-2): sb!xc:compile-file で SBCL source 再コンパイル
+    → target 独自 FASL obj/from-xc/**/*.lisp-obj
+    (cross-compiler の関数・data structure 定義は変化せず、定数定義のみ追加)
+
+  Stage 4 (genesis-2): cold core 構築 — *bootstrap の核心*
+    target memory を byte vector として host 上に表現し、FASL load 時の
+    action を simulate。実行不可 action (top-level form 評価等) は defer、
+    initial function に記録 → output/cold-sbcl.core
+    (sb!xc シンボルは cl パッケージとして dump される特殊処理あり)
+
+  Stage 5 (target-2): cold-init → warm → 完成
+    sbcl binary を cold core で起動、deferred form を ordered に実行
+    (*build 中最も脆弱・最もデバッグ困難* — Lisp debugger 不在のため)、
+    sb! → sb- package rename、warm phase で PCL (CLOS) compile+load、
+    output/sbcl.core 保存で完成
+#+end_src
+
+CMU CL との差分: SBCL は *任意の ANSI CL* 上で genesis を実行可能、
+circular dependency を回避。=再現性の鍵= は Stage 4 で "host compiler の
+累積 state に依存しない cold core" を作ること。=../docs/papers/rhodes-2008-sbcl.org=
+§3.2 参照。
+
+** 歴史 milestone
+
+- *1985* Rob MacLachlan、CMU CL "Python" compiler 開発開始
+- *1992* CMU Technical Report CMU-CS-92-161 "The Python Compiler for CMU
+  Common Lisp" (MacLachlan et al.)
+- *1999-12* William Newman が SBCL v0.0 fork 宣言。CMUCL の circular
+  bootstrap dependency を "任意 ANSI CL からの cross-compile" へ解決
+- *2000s* Christophe Rhodes ら、portable bootstrap を solidify
+- *2008* Rhodes "SBCL: A Sanely-Bootstrappable Common Lisp" (Springer
+  "Self-Sustaining Systems" LNCS 5146)
+
+** Tiered compiler 構成 — 意外な発見
+
+*SBCL は tiered compile を持たない*。Python compiler は *直接 native code*
+を出力 (bytecode tier なし)。内部 interpreter (=%simple-eval=, =sb!eval=)
+はあるが、default path は eval → =%simple-eval= → compile → native。
+
+MacLachlan 1992 精読 (2026-04-22) で確認: Python compiler の pipeline は
+ICR (IR1、lambda-tree) → VMR (IR2、linear) → native code で *意図的に
+bytecode tier を省略している*。bytecode compiler は後年別 system として
+追加されたが、既定 path ではない。
+
+NeLisp の Phase 1-3 roadmap (Phase 1 interpreter / Phase 3 bytecode) は
+SBCL と異なる *tiered 構成*。MacLachlan 精読により、これは NeLisp の
+reasoned divergence であり oversight ではないことが確認される — Elisp
+既存 bytecode VM との互換性維持 (=.elc= ecosystem、既存 =byte-compile=)
+が NeLisp の制約であり、CMU CL にはない Emacs-specific 要請。
+
+** NeLisp への methodology 転用 (5 点)
+
+1. *Host-based cross-compile* — NeLisp の Host-Emacs bootstrap は SBCL
+   genesis の直接類推。Emacs Lisp の reflection を活用、SBCL より軽量な
+   bootstrap toolchain が設計可能
+2. *Cold-init / warm-init 二段階* — phase separation で circular
+   dependency 排除。NeLisp Phase 3 (bytecode VM) も同構造を採用
+3. *C runtime の "最小化の天井"* — SBCL は 25 年 syscall/GC を C 固定。
+   NeLisp も memory/GC は VM 下層に残す設計 (=03-architecture.org= §2 で
+   整合)
+4. *Portable bootstrap tooling* — "genesis 一度実行で以後 self-host" が
+   SBCL の genius。NeLisp も "Host-Emacs で initial VM を compile → 以後
+   そのVM 上で self-host" と同構造
+5. *Community governance の empirical 根拠* — Rhodes §4.1 で "newcomer が
+   expert なしに small patch を出せる" 社会的効果が articulate される。
+   具体 case: defstruct slot 追加の bug fix を SBCL は *チーム外の人間が
+   通常 build で* 実装したのに対し、CMUCL では bootfile を書く専門家 + 2
+   回 build + interactive restart 操作が必要だった。NeLisp の post-v1.0
+   community governance (=../02-scoping.org= §0 AI-critical vs 長尾、
+   =../03-architecture.org= §4 Linux kernel / SBCL 型) の直接 empirical 根拠
+   として cite 可能
+
+** 参照 URL / 論文 citation
+
+- Christophe Rhodes "SBCL: A Sanely-Bootstrappable Common Lisp"
+  Self-Sustaining Systems, LNCS 5146, Springer 2008
+  https://research.gold.ac.uk/2336/1/sbcl.pdf
+- Rob MacLachlan et al. "The Python Compiler for CMU Common Lisp"
+  ACM LISP Pointers V(1), 1992
+  https://dl.acm.org/doi/10.1145/141471.141558
+- SBCL Manual https://www.sbcl.org/manual/
+- SBCL Internals — Cold Init
+  https://sbcl.sourceforge.io/sbcl-internals/Cold-init.html
+- SBCL History http://sbcl.org/history.html
+- SBCL Porting Guide https://www.sbcl.org/porting.html
+
+* 6. PyPy (Python in Python, Bolz et al. 2009)
+:PROPERTIES:
+:AUDIT_DATE: 2026-04-22
+:END:
+
+- 公式 doc: https://doc.pypy.org/en/latest/architecture.html
+- 原著論文: Bolz, Cuni, Fijalkowski, Rigo "Tracing the Meta-Level: PyPy's
+  Tracing JIT Compiler" ICOOOLPS 2009 (Genova)
+
+** PyPy architecture (2 階層設計)
+
+#+begin_src text
+  Step 1  RPython (制約付き Python) で Python interpreter を記述
+  Step 2  RPython translator が interpreter を C に自動翻訳
+  Step 3  C compile → PyPy binary
+  実行時  Python program を interpreter が実行、meta-tracing JIT が hot loop を trace
+#+end_src
+
+- 初期化段階 (module load 時) は Python 全機能を使える
+- 実行時は type-safe な RPython に限定
+- bootstrap は CPython 2.7 or PyPy 2.7 で interpreter を流し translator で C build
+
+** RPython の型制限論
+
+*制限理由*: type inference の可能性確保。RPython は monomorphic type
+assignment を強制、動的型変更・eval・monkey-patching を禁止。
+
+- Flow Graph Builder → Annotator → RPython Typer で C に近い type
+  representation へ自動変換
+- 代わりに initialization-time は metaclass / exec 完全対応
+- 生成オブジェクトは runtime-safe
+
+*制約*: C 拡張依存高 (I/O 多い処理は遅い)、短時間スクリプト不適
+(warmup overhead)。
+
+** meta-tracing JIT の novelty (Bolz 2009 core、精読 2026-04-22)
+
+*問題* (Bolz 2009 §Applying a Tracing JIT to an Interpreter): unmodified
+tracing JIT を bytecode interpreter に適用すると、tracer は *bytecode
+dispatch loop* を hot loop として認識し、個々の opcode 1 命令分しか
+trace しない。user program の loop は見えず speedup ゼロ。
+
+*解決*: *bytecode interpreter に 2 種類の hint を埋める* (Bolz 2009 §Applying Hints):
+- =jit_merge_point()= — bytecode dispatch loop の先頭に置く。green 変数
+  (pc, bytecode) を position key に加え、"pc が変わった = dispatch loop が
+  閉じていない" と判定させる。tracer は dispatch loop を unroll し続ける
+- =can_enter_jit()= — backward jump 命令で pc が後退する箇所に置く。
+  "user-level loop の閉じ目" を tracer に伝え、その時点で trace を closed に
+
+変数分類 (green/red):
+- *green* = JIT にとって constant 扱い (pc, bytecode string)。trace の
+  position key、値が変わると別の trace
+- *red* = runtime の可変データ (accumulator, stack 等)。trace 中では変数
+
+→ 結果: dispatch loop が unroll され、user loop 1 iteration 分に対応する
+trace が得られる。各 opcode に =guard_true(instruction == <opcode>)= が
+埋め込まれ、bytecode 形状が変わると guard fail → fallback interpreter。
+
+従来 tracing JIT (HotSpot, V8) は target code 直接 trace、PyPy は
+interpreter 内部を透視する *meta-level* アプローチ。これが 2009 論文の
+核心 novelty。
+
+後に Racket (pycket) / Ruby など複数言語に移植された汎用手法。
+
+*精読後の NeLisp 適合性評価 (詳細 =../docs/papers/bolz-2009-meta-tracing.org=)*:
+
+meta-tracing が効果を発揮する 5 前提のうち、Elisp は 3 つを構造的に崩す:
+- *buffer-local variable* — trace は buffer に tied、=with-current-buffer=
+  で切替えるたびに side exit (paper は論じていないが機構から推論)
+- *advice system* — =advice-add= が関数 identity の安定性を崩す、trace
+  invalidation 頻発。Emacs の動的拡張性の否定に近い (PyPy の monkey-patching
+  対応と同種問題、paper §Conclusion: Frame Objects 関連)
+- *dynamic scope* — =defvar= / =let= の動的 binding が trace 特化の前提
+  "変数値が安定" を崩す
+
+=funcall= / =apply= / =mapcar= の多用 (Elisp らしいスタイル) も call site
+polymorphism を生み guard failure を招く。現在 NeLisp Phase 3-5 roadmap
+に JIT を入れない判断は本精読で強化される。
+
+** Performance 数字
+
+speed.pypy.org 公式 benchmark:
+- Bubble sort: PyPy 18x > CPython
+- CPU-intensive numeric: ~16x
+- 幾何平均 (重みあり): 約 7x
+- PyPy 3.10+ aarch64: +7-8%
+
+*警告*: JIT warm-up なし or C extension frequent の場合 PyPy は *遅い*
+(cache miss 頻発)。
+
+** Truffle との対比
+
+Würthinger et al. 2012 "Self-optimizing AST Interpreters":
+- PyPy = bytecode 下の tracing
+- Truffle = AST 上の specialization
+
+PyPy の方が汎用、Truffle の方が interpreter 実装の省力化向き。
+
+** NeLisp への転用ポイント
+
+*Phase 3 (bytecode VM) で検討*:
+- Elisp bytecode dispatch に hint 埋め込み → dynamic-binding + funcall
+  overhead を meta-trace で消せる可能性
+- initialization-time eval 活用 → 初期化で lisp compiler を load、runtime
+  は bytecode interpreter
+
+*Phase 4 (concurrency) で警告*:
+- PyPy は *STM PyPy branch で GIL 外そうとしたが挫折* → transaction
+  conflict が多く実用性欠落
+- lightweight thread の方が tracing JIT と相性良い
+- OS thread だと GC/unroll barrier 複雑化
+
+*制約への対応*:
+- Elisp は dynamic-binding / funcall-heavy → RPython の "init で全
+  built-in 生成、runtime は monomorphic" は直接適用不可
+- Emacs 内 C FFI 多 → PyPy の "C 拡張遅い" の inverse (C 側を信頼して
+  JIT barrier 簡素化の余地)
+
+** 参照 URL / 論文
+
+- Bolz et al. "Tracing the Meta-Level" ICOOOLPS 2009
+  https://pdfs.semanticscholar.org/ac3a/0bcafc53fd317fdb9a9ff45a883ba364a076.pdf
+- PyPy architecture overview https://doc.pypy.org/en/latest/architecture.html
+- PyPy performance page https://pypy.org/performance.html
+- RPython translation toolchain
+  https://rpython.readthedocs.io/en/latest/translation.html
+- RPython FAQ https://rpython.readthedocs.io/en/latest/faq.html
+- Würthinger et al. "Self-optimizing AST Interpreters" DLS 2012
+
+* 7. PicoLisp (Alexander Burger, 1988-, pil21 in 2021)
+:PROPERTIES:
+:AUDIT_DATE: 2026-04-22
+:END:
+
+Tiny Lisp 系譜の self-host 先例。Touch-only audit (規模が違うため)。
+
+** 規模と self-host 程度
+
+- C runtime: 296 KB (OpenWRT)、全 tarball 数百 KB
+- 2009 年 64-bit rewrite: C → generic assembly、その assembly 実装自体を
+  *PicoLisp で記述*
+- 2021 年 pil21: *LLVM compiler 部を PicoLisp subset で実装*
+- "PicoLisp で PicoLisp を動かす" を長年実現、tiny Lisp 系譜で最深の
+  self-host 例
+
+** Design philosophy (3 点)
+
+- *"取り除くものがなくなるまで"*: 単一データ構造 (2 ポインタセル) で
+  全階層を構築、tag 排除
+- *実行時最優先*: メモリ管理・シンボル binding・メソッド解決を全 runtime 遅延
+- *底上げ設計 (transparency)*: VM が何をしているか言語 user が理解できる
+
+** 本研究との差分
+
+| 軸           | PicoLisp                        | NeLisp                          |
+|--------------+---------------------------------+---------------------------------|
+| 規模         | 独立 tiny Lisp (tarball 数百 KB) | Emacs 内部 (~3000 C 関数対応)   |
+| compat 制約  | なし (徹底的に削ぎ落とし)        | 既存 Elisp 生態系維持           |
+| position     | standalone language              | editor-native VM                |
+| self-host 深度 | pil21 で LLVM compiler も自己実装 | Phase 2-5 で段階的              |
+
+** 転用できる idea (2 件)
+
+1. *Cell encoding による tag 排除* — pointer 下位 bit で型情報を implicit
+   化、memory 効率良。NeLisp bytecode の型表現に参考
+2. *Bottom-up architecture の透明性* — 複雑な最適化より「何が起きているか
+   分かる VM」を目指す哲学。NeLisp の AI 協働文脈で特に load-bearing
+   (AI が internal semantics を読める = 鍛えやすい)
+
+** 参照 URL
+
+- https://software-lab.de/doc/ref.html (Reference Manual)
+- https://github.com/picolisp/pil21 (pil21 LLVM edition)
+- https://en.wikipedia.org/wiki/PicoLisp
+
+* 8. 学術論文 (精読対象)
+
+Q3 回答により論文読み込みレベル audit。Wave 1 で §1-6 から浮上した
+最重要論文を priority 付け。
+
+** Priority A (Phase 0 中に精読)
+
+- Rhodes "SBCL: A Sanely-Bootstrappable Common Lisp" (2008) *★最重要 ✓ 精読済 2026-04-22*
+  - LNCS 5146, Springer Self-Sustaining Systems
+  - NeLisp の Host-Emacs bootstrap の直接 methodology source
+  - 一次資料精読 summary: =../docs/papers/rhodes-2008-sbcl.org= (412 行)
+  - https://research.gold.ac.uk/2336/1/sbcl.pdf
+- Corallo et al. "Bringing GNU Emacs to Native Code" (ELS 2020) *✓ 精読済 2026-04-22*
+  - NeLisp bootstrap Candidate C の viability 判断に必要
+  - 一次資料精読 summary: =../docs/papers/corallo-2020-native-comp.org= (484 行)
+  - https://arxiv.org/abs/2004.02504
+- Bolz et al. "Tracing the Meta-Level: PyPy's Tracing JIT Compiler"
+  (ICOOOLPS 2009) *✓ 精読済 2026-04-22*
+  - Phase 3-4 の JIT 検討時に効く、meta-tracing 原理
+  - 精読結果: Elisp 3 features (buffer-local / advice / dynamic scope) が
+    meta-tracing 前提を崩すため JIT 不採用の現判断が強化される
+  - 一次資料精読 summary: =../docs/papers/bolz-2009-meta-tracing.org= (516 行)
+- MacLachlan et al. "The Python Compiler for CMU Common Lisp"
+  (ACM LISP Pointers V(1), 1992) *✓ 精読済 2026-04-22*
+  - SBCL 源流、compiler-in-CL pattern の古典
+  - 精読結果: Python compiler の "no bytecode tier" が意図的設計と確認、
+    NeLisp の bytecode tier 採用は reasoned divergence (Elisp ecosystem 制約)
+  - ICR (IR1) が source 位置情報を保持する設計は NeLisp Phase 1 AST への示唆
+  - 一次資料精読 summary: =../docs/papers/maclachlan-1992-python.org= (419 行)
+
+** Priority B (Phase 1-2 中に精読)
+
+- Chambers & Ungar "Customization: Optimizing Compiler Technology for
+  SELF" (1989) — dynamic language 高速化の古典、pointer tagging 論
+- Würthinger et al. "Self-optimizing AST Interpreters" (DLS 2012, Truffle)
+  — PyPy bytecode trace の対抗馬、AST specialization
+- Ghuloum "An Incremental Approach to Compiler Construction" (2006)
+  — bootstrap 論の教科書、Phase 1 interpreter 実装の指南
+
+** Priority C (Phase 3+ で検討)
+
+- Queinnec "Lisp in Small Pieces" (1996) — Lisp 実装の教科書
+- Rossberg et al. "Bringing the Web up to Speed with WebAssembly" (2017)
+  — portable bytecode 設計の参考 (Phase 5 wasm 経路検討用)
+
+** 並行読みテーマ — Concurrency (Phase 4 向け)
+
+=04-concurrency.org= で STM / actor / fiber を絞り込む際の input:
+
+- Harris et al. "Composable Memory Transactions" (PLDI 2005)
+  — Haskell STM の古典
+- Clojure refs / agents の設計議論 (Rich Hickey blog)
+- Erlang BEAM internals
+- Go runtime scheduler (MPG model)
+
+** 読み方方針
+
+- 1 本あたり 4-8h、週末研究 *2-3 本/月* (Q2 回答に拠る Phase 0 pace)
+- 要約を =docs/papers/<slug>.org= に蓄積
+- NeLisp 設計に効く箇所のみ深掘り、網羅しない
+
+* 9. 比較表 (wave 1 + wave 2 audit 反映)
+
+| 項目        | Remacs  | emacs-ng    | Guile-Emacs  | native-comp | SBCL     | PyPy         | NeLisp  |
+|-------------+---------+-------------+--------------+-------------+----------+--------------+---------|
+| substrate   | Rust    | Rust+Deno   | Scheme+C     | Emacs C+gcc | CL+C     | RPy(→C)      | Elisp   |
+| self-host?  | no      | no          | partial      | no          | *yes*    | *yes*        | goal    |
+| Elisp 文化  | keep    | keep        | recreate     | keep        | n/a      | n/a          | keep    |
+| GC          | -       | -           | Guile GC+BDW | BDW         | gen. +C  | incremental  | TBD     |
+| concurrency | -       | Tokio(JS)   | fibers       | -           | threads  | GIL (STM 挫折) | ★novel |
+| speed vs host | ?     | ?           | sub-Elisp    | 2.3-42x 高速 | prod     | 7-18x        | 1/5 (目標) |
+| bootstrap   | n/a     | n/a         | Guile 経由   | Emacs build | portable ANSI CL | CPython 2.7 | Host-Emacs |
+| status 2026 | dead    | low active  | relaunched 2024 | Emacs 内 | prod     | prod         | phase 0 |
+
+★ = novel contribution 候補 (=04-concurrency.org= で掘る)
+
+*核心観察*: self-host を達成しているのは SBCL と PyPy の 2 本のみ。両者とも
+10-30 年かけた蓄積で production 級。NeLisp は *editor-native* という新次元を
+加えた 3 本目を目指す。
+
+* 10. 差分まとめ — NeLisp の立ち位置 (2026-04-22)
+
+7 プロジェクト + 複数論文の audit を経て、NeLisp の位置を articulate する。
+
+** 10.1 3 行要約
+
+1. *self-host を達成した 2 つの先例* (SBCL, PyPy) は editor と無関係。
+2. *Emacs を language 側から改造する 3 先例* (Remacs = Rust、Guile-Emacs =
+   Scheme、emacs-ng = Rust+JS) は、いずれも substrate を「別言語で」
+   置換する路線で、scope 爆発 or community 分裂で失速。
+3. *NeLisp は 2 つを初めて接続する* — editor 側に self-host 方法論 (SBCL)
+   を transfer、しかも substrate 置換でなく Elisp 自己再実装。結果として
+   editor-integrated self-hosted Lisp という新 niche が生まれる。
+
+** 10.2 4 軸比較から浮かぶ unique position
+
+| 軸                      | Remacs / emacs-ng | Guile-Emacs | SBCL / PyPy | native-comp | PicoLisp | *NeLisp*         |
+|-------------------------+-------------------+-------------+-------------+-------------+----------+------------------|
+| editor との関係          | internal (Emacs fork) | internal (Emacs fork) | external (SLIME/etc) | internal (Emacs 本体) | standalone | *internal (self-host)* |
+| self-host?              | no                | partial     | yes         | no          | yes (pil21) | *goal (Stage A)* |
+| Elisp 文化保持           | yes               | recreate    | n/a         | yes         | n/a      | *keep (核心)*    |
+| substrate 言語           | Rust              | Scheme      | CL / RPython | C + gcc     | C + asm  | *Elisp (= target)* |
+
+交差する位置 (editor-internal × self-host × Elisp-keep × substrate=target) に
+NeLisp 以外 /誰もいない/。
+
+** 10.3 先行研究から継承する要素
+
+- *Rhodes 2008 (SBCL genesis)* — Host-Emacs bootstrap の学術基盤
+  (=../03-architecture.org= §1、=../docs/papers/rhodes-2008-sbcl.org=)
+- *SBCL C runtime 25 年固定境界* — NeLisp primitive 境界の precedent
+  (=../03-architecture.org= §2.1)
+- *Bolz 2009 (PyPy meta-tracing)* — Phase 3-4 JIT 検討時の指針
+  (=../docs/papers/bolz-2009-meta-tracing.org=)
+- *Corallo 2020 (native-comp)* — Phase 3+ bootstrap Candidate C の viability
+  根拠 (=../docs/papers/corallo-2020-native-comp.org=)
+- *PicoLisp cell encoding / transparency* — bytecode 型表現と "AI が読める VM"
+  の philosophy
+
+** 10.4 先行研究から *継承しない* 要素
+
+- *Remacs の substrate 置換路線* — Rust に移す = self-host でなくなる、
+  Elisp 文化保持と反する
+- *Guile-Emacs の Scheme 再現路線* — dynamic binding / buffer-local 等
+  Elisp semantics の再現コストが 12 年 merge を阻む
+- *emacs-ng の JS/Rust 多言語路線* — maintainer capacity が簡単に枯渇する
+  複雑性 (2024 状況)
+- *native-comp の既存 bytecode 前提* — NeLisp は VM そのものを書き換える
+  (ただし Phase 3+ で native-comp を load 経路に統合はあり得る)
+
+** 10.5 "前例なし" の中身 (BRIEFING §9 success metric)
+
+NeLisp が具体的に未踏である地点:
+
+1. *editor-integrated self-hosted Lisp* — Scheme (Racket / Chicken)、
+   CL (SBCL / ECL)、Python (PyPy)、Lua (LuaJIT) のいずれも editor は
+   外部ツール。editor と runtime が不可分な self-host は NeLisp が最初
+2. *AI 協働時代の editor substrate 再設計* — 2020 年代中盤特有の context、
+   Emacs 改造プロジェクト全期に先例なし
+3. *scope discipline による実現可能性* — Remacs / Guile-Emacs の失敗教訓
+   を吸収した "AI-critical path only + community 長尾" モデルは先例なし
+   (Linux kernel / SBCL の governance を Lisp 実装に適用した初例)
+
+これらが synthesized されると、NeLisp は「SBCL を Emacs に、AI-native に」
+という一文で articulate できる。=../00-motivation.org= §1 tagline 候補に
+これを反映済。

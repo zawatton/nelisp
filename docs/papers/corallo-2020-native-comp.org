@@ -1,0 +1,484 @@
+#+TITLE: Corallo et al. 2020 — Bringing GNU Emacs to Native Code
+#+AUTHOR: zawatton (精読済)
+#+DATE: 2026-04-22
+
+* Citation
+
+- Andrea Corallo, Luca Nassi, Nicola Manca.
+  "Bringing GNU Emacs to Native Code."
+- /European Lisp Symposium 2020/ (ELS '20), Zürich, April 2020.
+- arXiv: https://arxiv.org/abs/2004.02504
+- DOI: https://doi.org/10.5281/zenodo.3736363
+- Slides: https://www.european-lisp-symposium.org/static/2020/corallo-nassi-manca-slides.pdf
+
+* Access status
+:PROPERTIES:
+:STATUS: SUMMARIZED (精読済) 2026-04-22
+:LAST_UPDATED: 2026-04-22
+:SOURCE: arXiv PDF (arxiv.org/pdf/2004.02504) — pdftotext 変換、1019 行、8 pages
+:END:
+
+arXiv で無料 access 可能。2026-04-22 精読完了。
+
+* Why this paper matters for NeLisp
+
+Bootstrap Candidate C (NeLisp VM を native-comp で .eln 化 →
+standalone) の viability 判断に必要 (=../03-architecture.org= §1、
+=../01-related-work.org= §4)。
+
+- 6 段階 pipeline (Elisp → LAP → LIMPLE → SSA → libgccjit IR → .eln)
+  の設計論拠と実装詳細を確認
+- Lisp-aware type propagation が novel contribution。NeLisp の bytecode
+  設計で同パターンを採用可能か検討
+- Performance 2.3x〜42x 高速化の測定条件と内訳を理解
+- host Emacs (28+) が既に native-comp を持つという現実 — NeLisp が
+  走る環境の infrastructure として理解が必要
+- Candidate C を Phase 3+ で再評価する際の一次文献
+
+* Core contribution (post-read)
+
+論文が実際に述べている主要貢献:
+
+- [x] *§2 LIMPLE IR 設計*: LAP (stack-based) を SSA 形式の
+  sexp-based IR「LIMPLE」に変換する新 IR を定義。GCC GIMPLE に
+  倣い命名。m-var 構造体が各変数の型・値・const-vld を保持 (§2.2、
+  Appendix A)。
+
+- [x] *§3 Lisp-aware data-flow analysis*: GCC の最適化 pass は Lisp
+  pointer tagging (型情報がポインタ tag bits に埋め込まれる) を知らない
+  ため、専用の forward data-flow analysis を Elisp で実装 (§3.4)。
+  型・値・参照性 (referenced) を CFG 上で伝播する。
+
+- [x] *§3 call-optim pass*: funcall trampoline 経由の間接呼び出しを、
+  プリミティブ関数への直接呼び出しに置き換える。bytecode ではオペコード
+  空間の制限でできなかった最適化を native code 生成時に実現 (§3.5)。
+
+- [x] *§3 tail recursion elimination (TRE)*: 末尾再帰呼び出しを
+  peephole pass で検出しジャンプに変換。新フレームのスタック確保を回避
+  (§3.6)。TRE のみ実装済で、full tail call optimization は未実装 (§7)。
+
+- [x] *§4 System integration — .eln shared object*: コンパイル結果を
+  dlopen 可能な共有ライブラリ (.eln) として出力。freloc_link_table /
+  text_data_reloc / d_reloc / top_level_run の 4 シンボルで Emacs
+  core と統合する明確な ABI を定義 (§4.1、§4.2)。
+
+- [x] *§4.5 Bootstrap 成功*: Emacs build system を改修し、native
+  compiler 自身を含む 700+ Elisp ファイルを native-compile して Emacs を
+  bootstrap。"chicken-and-egg" 問題を、lexical-scoped → .eln、動的
+  スコープ → .elc fallback という混在戦略で解決 (§4.5)。
+
+- [x] *§5 comp-speed 最適化レベル (0〜3)*: 安全性・最適化強度を段階的
+  に制御する変数。speed=2 で型安全な最適化、speed=3 で intra-CU inlining
+  と type hint exploitation まで有効化 (§5.1)。
+
+- [x] *Elisp 実装優先*: 最適化 pass の大半 (spill-lap / limplify / SSA /
+  propagate / call-optim / TRE / dead-code) は Elisp で実装。C back-end
+  は libgccjit 呼び出しの final pass のみ (§3 冒頭)。
+
+* Native-comp pipeline walkthrough
+
+native-comp の 6 段階パイプラインを具体的に解説する。
+
+** Stage 1: Elisp source → LAP (spill-lap pass)
+
+入力: Elisp ソースファイル (lexical binding 必須)。
+出力: Lisp Assembly Program (LAP) — S 式リストとしての命令列・ラベル。
+
+既存の byte-compiler を走らせ、byte-code にアセンブルする直前の LAP IR
+を横取りする (spill-lap pass)。処理はすべて Elisp で実装。LAP は
+stack-based VM 命令列であり、stack depth はコンパイル時に静的に確定
+することが保証されている (§2.1)。
+
+例: =(if *bar* (+ *bar* 2) 'foo)= は 9 命令の LAP になる:
+=byte-varref=, =byte-goto-if-nil=, =byte-varref=, =byte-constant=,
+=byte-plus=, =byte-return=, (TAG 8), =byte-constant=, =byte-return=
+
+** Stage 2: LAP → LIMPLE IR (limplify pass)
+
+入力: LAP 命令列。
+出力: LIMPLE IR — basic block の CFG (Control Flow Graph)。
+
+limplify pass が LAP を LIMPLE に変換 (Elisp 実装)。主な処理:
+- stack 操作を m-var への代入 (set / setimm) に展開
+- 命令列を basic block に分割 (jump/label で境界決定)
+- 関数を CFG として表現
+
+m-var 構造体が各変数を表現: id (SSA unique id), const-vld + constant
+(コンパイル時定数), type (コンパイル時型) の 4 フィールド (Appendix A)。
+
+LIMPLE オペレータ: set / setimm / jump / cond-jump / call / comment /
+return / phi (§2.2)。
+
+** Stage 3: LIMPLE → SSA 形式 (SSA pass)
+
+入力: LIMPLE CFG。
+出力: Minimal SSA form の LIMPLE CFG。
+
+Elisp 実装の SSA pass が (a) エッジ生成 → (b) dominator tree 計算 →
+(c) dominator frontier 計算 → (d) Φ 関数挿入 → (e) m-var リネームの
+5 ステップで SSA 化 (§3.3)。
+
+** Stage 4: 最適化 pass 群 (Elisp 実装)
+
+SSA 形式上で以下の pass が順次実行される:
+
+1. *forward data-flow analysis (propagate)*: 型・値・参照性を CFG 上で
+   伝播。setimm から始まり Φ、set、call return type を iteratively 伝播。
+   pure function への known-value 呼び出しは呼び出し自体を消去し結果を
+   インライン化 (§3.4)。comp-speed≥2 で有効。
+
+2. *call-optim*: funcall trampoline → 直接呼び出しへの変換。comp-speed≥2
+   で CU 外プリミティブに適用、comp-speed=3 で CU 内関数にも適用して
+   inlining 効果を高める (§3.5)。
+
+3. *TRE (tail recursion elimination)*: 末尾再帰を goto に変換 (§3.6)。
+   comp-speed=3 で有効。
+
+4. *dead-code*: 未使用 m-var への代入を削除 (§3.7)。comp-speed≥2 で有効。
+
+** Stage 5: LIMPLE → libgccjit IR (final pass)
+
+入力: 最適化済み LIMPLE CFG。
+出力: libgccjit IR (C の意味論のサブセット)。
+
+*唯一の C back-end pass*。final pass が LIMPLE を libgccjit の
+gcc_jit_object API 呼び出しに変換し GCC コンパイルをトリガーする (§3.8)。
+
+主な処理:
+- m-var array → C の自動変数 or 専用スタック配列 ("advanced frame
+  layout") に配置
+- car / cdr / setcar / setcdr / 1+ / 1- 等の小型プリミティブを libgccjit
+  IR でインライン化 (cert_cons フラグ付き: data-flow 結果を GCC に伝達)
+- data-flow 結果に基づく型チェック省略
+
+libgccjit IR は GIMPLE にマップされ GCC の full optimization pipeline
+を通る。
+
+** Stage 6: GCC pipeline → .eln (shared object)
+
+入力: libgccjit IR。
+出力: .eln ファイル (共有ライブラリ)。
+
+GCC が機械語コードを生成し、.eln (Emacs Lisp Native) 拡張子の共有
+ライブラリとして出力。.eln には 4 つのシンボルが必須:
+- =freloc_link_table=: Emacs プリミティブへの関数ポインタ構造体
+- =text_data_reloc=: Lisp オブジェクト定数のシリアライズ文字列を返す関数
+- =d_reloc=: コンパイル単位が使う Lisp オブジェクト配列
+- =top_level_run=: ロード時に環境変更を実行する関数
+
+load は dlopen 相当、unload は GC による Lisp_Native_Comp_Unit 参照
+カウントで自動化 (§4.2, §4.3)。native-compiled 関数は C プリミティブと
+同一の ABI を持ち、subrp 述語を満たす (§4.2)。
+
+* What the paper means for Candidate C (NeLisp bootstrap)
+
+NeLisp Phase 3+ で Candidate C「NeLisp VM → libgccjit → standalone」を
+再評価する際の評価要素:
+
+- *ABI の壁 (高コスト)*: .eln の ABI は Emacs core に深く結合している
+  (freloc_link_table, d_reloc, pure_reloc, current_thread_reloc — §4.2)。
+  NeLisp standalone では Emacs core が存在しないため、これらのシンボルに
+  対応する NeLisp-own runtime を設計しなければならない。論文はこの層を
+  "C back-end" として minimal に保ちつつ実装しているが、NeLisp では
+  Emacs と異なる object model を持つため設計コストは非自明。
+
+- *LIMPLE の流用可能性 (中コスト)*: LIMPLE 自体は Elisp で書かれた
+  sexp-based IR であり、NeLisp bytecode の operand に合わせた limplify
+  pass を書き直せば流用できる可能性がある。ただし NeLisp bytecode は
+  Emacs LAP とは異なる設計になる見込みであり、全面再実装に近い。
+
+- *libgccjit 依存 (環境リスク)*: libgccjit は GCC infrastructure の一部。
+  Windows/MSYS2 では Bértolo による port が存在するが、論文は Linux
+  環境 (Intel i5-4200M) での評価のみ報告。production 品質の Windows
+  サポートは論文では言及なし。NeLisp の MSYS2 環境での利用は追加検証
+  が必要。
+
+- *Pointer tagging の互換性 (低コスト/高リスク)*: native-comp の型情報は
+  Emacs 固有の Lisp_Object pointer tagging に依存 (§3.4)。NeLisp が
+  同一の tagging scheme を採用すれば data-flow analysis を再利用できる
+  可能性があるが、異なる scheme を選択すれば全面再実装。Phase 0 設計書
+  でこの点を固定する必要がある。
+
+- *Elisp 実装の再利用*: 最適化 pass (SSA, propagate, call-optim, TRE,
+  dead-code) が Elisp で実装されているため、NeLisp が Host-Emacs 上で
+  動作する Phase 1-2 の段階でこれらのコードを読み・参照できる。直接
+  コピーは難しいが参照実装として価値が高い。
+
+- *Bootstrap sequence の具体例*: 論文の §4.5 が "interpreter → native
+  compiler → native-compiled compiler → native-compiled compiler の
+  bytewise 比較" という 3 ステップ bootstrap を実証。NeLisp Candidate C
+  での bootstrap 設計の直接参考になる。
+
+- *AOT vs JIT の優位性*: 論文は意図的に JIT を避け AOT (.eln ファイル
+  生成) を選択。理由は「毎実行でコンパイル不要」「時間のかかる最適化
+  pass が使える」(§1)。NeLisp Phase 4+ で JIT を検討する場合、この設計
+  判断の根拠を踏まえる必要がある。
+
+- *"work in progress" 注記*: 論文執筆時点 (2020) で実装は初期段階。
+  fixnum unboxing と full tail call optimization は未実装 (§7)。
+  NeLisp Phase 3+ 時点では Emacs 28+ として ship 済みの完成形を参照
+  できるため、論文よりも codebase 直接読解のほうが正確な現状把握になる。
+
+* What does NOT transfer to NeLisp (gaps)
+
+- *入力が Emacs LAP 固定*: native-comp の全 pipeline は Emacs 既存
+  byte-compiler が生成する LAP を起点とする (§2、§3.2)。NeLisp は独自の
+  bytecode を設計するため、spill-lap と limplify の全面再実装が必要で
+  native-comp の既存コードは流用不可。
+
+- *Emacs runtime ABI 前提*: freloc_link_table による Emacs C プリミティブ
+  呼び出しは Emacs 固有の subr calling convention に依存 (§4.2)。
+  NeLisp standalone では同等の call convention を定義し C back-end を
+  再実装しなければならない。
+
+- *動的スコープコードの非対応*: native-comp は lexically scoped Elisp
+  のみを対象とし、dynamic scope は .elc fallback (§2, §4.5)。NeLisp が
+  動的スコープを完全サポートする場合、この設計上の制限を考慮する必要
+  がある。
+
+- *GCC 依存の最適化コンテキスト*: §3 冒頭で "GCC has passes to propagate
+  constants and ranges, but has no visibility of Lisp type tag bits"
+  と述べており、専用 pass の必要性を GCC との差分で説明している。LLVM
+  や他のコードジェネレータを選択する場合、同様の gap 分析を再実施する
+  必要がある。
+
+- *Windows サポートの評価不足*: 論文評価は Linux のみ。NeLisp の主要
+  開発環境が Windows/MSYS2 である点について、libgccjit の利用可能性と
+  .eln 共有ライブラリの dlopen 動作 (Windows では .dll / LoadLibrary)
+  を別途検証する必要がある。
+
+- *Emacs image dump 前提*: §4.4 の portable dumper との統合は Emacs 27+
+  の dump 機構に依存。NeLisp standalone では image dump を独自設計する
+  か省略するかを判断する必要がある。
+
+* Reading notes per section
+
+** §Abstract
+
+- "employs the byte-compiler's internal representation as input" —
+  LAP を横取りするアーキテクチャ選択を明示。byte-compiler を再実装
+  しないことで開発コストを大幅削減。
+- "most of the functionality written in Elisp itself" — 自己ホスト性へ
+  の強いこだわりが論文全体を貫く設計判断。
+- "bootstrap a functional Emacs" — 実用性の証明として bootstrap 成功を
+  明示。
+
+** §1 Introduction
+
+- Emacs performance の 3 課題: multi-threading 欠如 / GC 速度 /
+  コード実行速度 — 本論文は 3 番目のみを対象とすると明確に絞り込む。
+- C コード比率: "As of Emacs 25, 22% of the codebase was written in C"
+  — performance のために C を増やしてきた歴史的経緯。
+- JIT 先行試行: Tom Tromey の JIT (2018) など 3 件を言及するも "none
+  proved to introduce sufficient speed-up"。
+- libgccjit 選択の novelty: libjit / LLVM を使う実装は存在するが
+  libgccjit を使う Lisp 実装は本論文が初と主張 (§1)。
+- KCL 派生 Common Lisp 実装 (ECL, GCL, CLASP) との比較: いずれも
+  C コード生成。本論文は C ではなく libgccjit IR を直接生成する点で差別化。
+
+** §2 Implementation (Pipeline overview)
+
+- 3 段階構造 (Front-end / Middle-end / Back-end) を明示 (§2)。
+- LAP の key property: "for any given program counter, the stack depth
+  is fixed and known at compile time" — これが LIMPLE 変換を可能にする。
+  スタックを m-var 配列に静的に割り当て可能。
+- libgccjit IR の特徴: C のサブセット (l/r value, arithmetic, assignment,
+  function call)。if/else 非サポートで basic block 記述が必須 (§2.1)。
+- LIMPLE の phi ノード: "when all m-vars src1...srcn have the same
+  immediate value this is assigned to dst. Similarly for type" — 型と
+  値が phi で合流する処理 (§2.2)。
+
+** §3 Compilation passes
+
+- pass の実行順序テーブルが comp-speed ごとに整理されており、
+  どの最適化がいつ有効になるかが明確 (§5.1 の表に統合されている)。
+- dead-code pass: 型 hint から生成された assertions の除去も担当 (§3.7)。
+  type hint を speed=2 では assertion として、speed=3 では信頼して最適化
+  に利用するという使い分け。
+- final pass (C back-end) の "advanced frame layout": =Lisp_Obj fun
+  (ptrdiff_t n, Lisp_Obj *args)= 形式の呼び出し後に GCC が args 配列
+  全体を clobber する問題を、呼び出しごとの専用配列を使うことで回避 (§3.8)。
+- car/cdr 等のインライン化に cert_cons フラグを使う設計: data-flow 解析
+  結果を GCC に伝達する clever な手法 (§3.8)。
+
+** §4 System integration
+
+- .eln の hash 署名と load 時チェック (§4.2): ABI 非互換な .eln の誤
+  ロードを防ぐ。NeLisp でも同様の mechanism が必要。
+- native-compiled 関数は subrp 述語を満たし、subr-native-elisp-p で
+  区別可能 (§4.2)。
+- unload は GC 自動化 (§4.3): Lisp_Native_Comp_Unit が GC に統合され
+  参照ゼロで自動 unload。dlclose 相当。
+- bootstrap strategy (§4.5): lexical scoped → .eln、dynamic → .elc
+  fallback。700+ ファイルを native-compile。
+- verification: bootstrap compiler test — "interpreted compiler → native
+  compile itself → result compiles itself → bytewise compare" (§4.7)。
+  NeLisp の自己ホスト検証に直接参考になる手法。
+
+** §5 Elisp interface
+
+- comp-speed 表: 0=最適化なし/1=GCC -O1 のみ/2=Lisp 最適化+GCC -O2/
+  3=全最適化+GCC -O3 (§5.1)。
+- compiler hints (comp-hint-fixnum, comp-hint-cons): Common Lisp の
+  the / declare に相当する低レベルプリミティブ (§5.2)。
+- gdb debugging サポート (§5.3): comp-debug>0 で debug symbols 付き
+  .eln を生成し gdb でのデバッグが可能。Appendix B に pseudo C dump の
+  具体例。
+
+** §6 Performance improvement
+
+- benchmark suite = elisp-benchmarks (ELPA で公開): list processing /
+  fibonacci / bubble sort / dhrystone / n-body (§6)。
+- 評価条件: Intel i5-4200M、byte-comp で各 ~20s になる反復数を設定、
+  5 回の平均。byte-comp は vanilla Emacs 28 master、native-comp は
+  comp_speed=3 (§6)。
+- "all benchmarks run at least two times faster" — 最低ラインが 2.3x
+  (fibn) で保証されている。
+- 改善の主要因 2 つを明示: (1) byte-interpreter loop の除去 (memory
+  fetch/decode サイクル削減) + (2) call-optim (funcall trampoline 除去)。
+
+** §7 Conclusions
+
+- 計画中の未実装機能: fixnum unboxing / full tail call optimization /
+  libgccjit IR での primitives 追加公開 / compile-time warning/error。
+- "most optimization possibilities are still unexplored" (2020 時点)。
+  Emacs 28+ に ship された時点では多数改善されている可能性がある。
+
+** Appendix A: m-var structure
+
+- comp-mvar の cl-defstruct 定義: id / const-vld / constant / type の
+  4 スロット。NeLisp の IR 設計で m-var 相当の構造体を設計する際の参照。
+
+** Appendix B: compilation unit example
+
+- foo 関数 (=(if *bar* (+ *bar* 2) 'foo)=) の pseudo C dump が掲載。
+  freloc_link_table 経由の symbol-value 呼び出し、d_reloc による Lisp
+  オブジェクト参照、basic block による CFG 構造が具体的に確認できる。
+
+* Performance numbers breakdown
+
+** Benchmark suite
+
+- 名称: =elisp-benchmarks= (ELPA で公開、Corallo & Nassi 作)
+- プログラム種別: リスト処理 / Fibonacci (3 variant) / バブルソート
+  (2 variant) / Dhrystone / N-body
+- 反復回数: byte-comp で ~20s かかる反復数をプログラムごとに設定
+- 試行回数: 5 回の平均
+- 評価機: Intel i5-4200M (x86-64 Linux)
+- 比較: byte-comp (vanilla Emacs 28 master) vs native-comp speed=3
+  (Emacs bootstrapped at speed=2 の同リビジョン)
+
+** 完全な数値テーブル (Table 1)
+
+| benchmark        | byte-comp (s) | native-comp (s) | speed-up |
+|------------------+---------------+-----------------+----------|
+| inclist          |         19.54 |            2.12 | *9.2x*   |
+| inclist-type-hints |       19.71 |            1.43 | *13.8x*  |
+| listlen-tc       |         18.51 |            0.44 | *42.1x*  |
+| bubble           |         21.58 |            4.03 | *5.4x*   |
+| bubble-no-cons   |         20.01 |            5.02 | *4.0x*   |
+| fibn             |         20.04 |            8.79 | *2.3x*   |
+| fibn-rec         |         20.34 |            7.13 | *2.9x*   |
+| fibn-tc          |         21.22 |            5.67 | *3.7x*   |
+| dhrystone        |         18.45 |            7.22 | *2.6x*   |
+| nbody            |         19.79 |            3.31 | *6.0x*   |
+
+** 大きな speedup を得るコード vs 小さな speedup を得るコード
+
+*大きな speedup (9x〜42x):*
+- listlen-tc (42.1x): 末尾再帰リスト長計算。TRE が直接的に効く。
+  call overhead と stack frame allocation が支配的なコードに最も有効。
+- inclist-type-hints (13.8x): type hint (comp-hint-cons) 付きリスト
+  インクリメント。型チェックが省略されることで大幅改善。
+- inclist (9.2x): 型 hint なし版。hint 追加だけで 9.2x → 13.8x (50%
+  追加改善) になることが示されている (§6 本文)。
+- nbody (6.0x): floating-point 集中計算。GCC の FP 最適化が貢献。
+
+*小さな speedup (2.3x〜4x):*
+- fibn (2.3x): 反復 Fibonacci。byte-interpreter loop 除去の基本効果
+  のみで call overhead が少ない。
+- fibn-rec (2.9x), dhrystone (2.6x): 同様に call 最適化の恩恵が限定的。
+- bubble-no-cons (4.0x): non-destructive バブルソート。cons allocation
+  が dominant でコンパイラ最適化の対象外。
+
+** regression / native-comp が遅くなるケース
+
+論文では regression は報告されていない。"all benchmarks run at least
+two times faster" と明示 (§6)。ただし:
+- 論文執筆時点 (2020) は early development stage であり、全般的な
+  最適化は未成熟 (§7 "still unexplored")。
+- compile 時間そのものは測定対象外 (AOT のため runtime と分離)。
+- Emacs full bootstrap (700+ ファイル) の compile 時間についての
+  数値は掲載なし。
+
+* Open questions for NeLisp (answered)
+
+** Q1: LIMPLE の型表現は NeLisp bytecode の型と直接 map できるか、それとも adapter が必要か
+
+*A (paper §2.2, §3.4 より)*: LIMPLE の型表現は m-var 構造体の =type=
+スロットに格納され、Emacs 固有の pointer tagging scheme (tagged pointer)
+に対応した Lisp type を表現する (§3.4: "Typing objects is done through
+tagging pointers")。m-var 自体は汎用的な SSA 変数構造体であり、type
+スロットに何を入れるかは実装依存。
+
+NeLisp が独自の bytecode と独自の pointer tagging (または box 型) を
+持つ場合、LIMPLE の IR 構造 (set / setimm / phi / call 等) は参照設計
+として流用できるが、limplify pass は NeLisp bytecode operand に合わせた
+完全再実装が必要。data-flow analysis の type propagation ロジックも
+NeLisp の type system に合わせた再設計が要る。
+
+結論: 直接 map は不可、adapter で済む範囲ではなく全面再実装。ただし
+LIMPLE の SSA 構造 (m-var, basic block CFG, phi node, forward data-flow)
+は設計参考として高い価値を持つ。
+
+** Q2: Windows での libgccjit dependency (Bértolo MSYS2 port) は production で使える水準か
+
+*A (paper より)*: 論文は Windows サポートについて一切言及しない。評価は
+Linux (Intel i5-4200M) のみで実施 (§6)。libgccjit の Windows/MSYS2 port
+については論文外の情報源 (Bértolo) に依存する。
+
+論文から判断できること:
+- .eln は shared library (dlopen 相当)。Windows では .dll + LoadLibrary
+  が必要であり、Unix の動作と完全同一ではない。
+- libgccjit は GCC の一部。MSYS2 (mingw-w64 toolchain) で GCC が動作
+  する環境では原理的に利用可能だが、論文はこの点を検証していない。
+
+NeLisp での判断: Phase 3+ で Candidate C を再評価する際は、実際の
+MSYS2 環境での libgccjit ビルドと .eln load を独立して検証する必要がある。
+論文はその根拠を提供しない。
+
+** Q3: NeLisp VM 自身を native-comp で compile する場合、bootstrap sequence はどうなるか (chicken-egg)
+
+*A (paper §4.5, §4.7 より)*: Corallo は同じ chicken-egg 問題を以下の
+戦略で解決している:
+
+1. 既存の Elisp interpreter を使って native compiler の Elisp 部分を
+   最初にインタプリタ実行する。
+2. インタプリタ動作の native compiler が自分自身を native-compile する。
+3. 生成された native-compiled compiler で再度自身を compile する。
+4. 2 回の compile 結果を bytewise 比較し一致を確認 (§4.7 verification test)。
+
+fallback 戦略: lexical scope → .eln、dynamic scope → .elc (§4.5)。
+700+ ファイルのうち dynamic scope なファイルは .elc として残す混在構成。
+
+NeLisp への適用: Phase 1-2 で Host-Emacs interpreter 上に動作する
+NeLisp interpreter が完成している前提で:
+1. NeLisp interpreter 上で NeLisp→LIMPLE→libgccjit compiler を実行
+2. その compiler で NeLisp VM 本体を native-compile
+3. 3 段 bootstrap の 2 回比較で correctness を検証
+
+この sequence は Corallo §4.5 の戦略を NeLisp に直接移植できる。
+ただし NeLisp が Host-Emacs から独立した standalone を目指す場合、
+step 1 の "interpreter" が Host-Emacs である点が Phase 5 以降で問題に
+なる (Host-Emacs なしで step 1 を実行できるか)。
+
+* Cite-back
+
+- =../01-related-work.org= §4 native-comp / §8 Priority A
+- =../03-architecture.org= §1 Bootstrap Candidate C
+- =../03-architecture.org= Phase 3 bytecode VM 設計 (LIMPLE SSA 参照)
+- =../03-architecture.org= Phase 4 JIT 検討 (AOT vs JIT の設計判断)
+- =../05-bootstrap-strategy.org= (作成予定) Candidate C の 3-step
+  bootstrap sequence の参考実装として §4.5/§4.7 を引用
+- =../07-performance.org= (作成予定) benchmark target として
+  2.3x〜42x の内訳と elisp-benchmarks suite を参照

@@ -1,0 +1,540 @@
+#+TITLE: NeLisp — motivation (なぜ今これをやるのか)
+#+AUTHOR: zawatton
+#+DATE: 2026-04-22
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: DRAFT-SKELETON
+:END:
+
+この doc は /Phase 0 最重要成果物/。NeLisp が何を目指し、なぜ Scheme でも
+Rust でもなく "純 Elisp" なのかを、外部読者 (Elisp / 言語処理系研究者) に
+説明する。
+
+*執筆ポリシー*:
+- =[AI-DRAFT]= 節: AI が叩き台を書く。論点整理・引用候補出し用。user レビュー後、
+  書き直しや刈り込みの対象。
+- =[USER 自筆]= 節: *思想の核*。AI は本文を書かない。論点と構造だけ置いて、
+  本文は user が自筆する。AI が書くと文体が浮き、読者に見抜かれる (memory:
+  =feedback_reddit_llm_reply_style.md= の教訓 — 哲学表明も同じ)。
+
+* 1. 一行サマリ (tagline) [USER 自筆 + AI 叩き台 2026-04-22]
+
+/AI 叩き台 7 案。user 選定 / 編集対象。Reddit / HN / GitHub README の/
+/最初に目に入る行、本命 1 + 控え 1 (EN/JA) を選ぶ想定。/
+
+** 1.1 user の言葉を直接使う案
+
+*** 案 A (推薦候補、日本語、quotable)
+:PROPERTIES:
+:ANGLE: user verbatim
+:END:
+
+#+begin_quote
+*NeLisp — Emacs を鍛えて AI のツールとする究極形。
+Elisp 自身で Elisp VM を書き直す Emacs Lisp 研究プロジェクト*
+#+end_quote
+
+Strength: user 自身の言葉、読んで一瞬で内容が分かる。"鍛えて" "究極形" が引っかかる。
+
+*** 案 B (英訳)
+
+#+begin_quote
+*NeLisp — forging Emacs into the ultimate AI-collaboration substrate,
+one Emacs Lisp VM written in Emacs Lisp at a time.*
+#+end_quote
+
+Strength: "forging" が technical + philosophical 両方。"one ... at a time" が Phase 分割を示唆。
+
+** 1.2 SBCL methodology の系譜強調
+
+*** 案 C
+
+#+begin_quote
+*NeLisp は SBCL が Common Lisp に与えたものを Emacs Lisp にもたらす研究
+プロジェクト —— Elisp 自身で Elisp VM を書き、Emacs の "40 年の C" を
+AI が編集可能な substrate に置き換える。*
+#+end_quote
+
+Strength: 言語処理系研究者向け、方法論的 basis を明示。Priority A
+論文 (Rhodes 2008) との line up も articulate。
+
+*** 案 D (英訳、短縮)
+
+#+begin_quote
+*NeLisp: the SBCL construction applied to Emacs Lisp, with AI
+collaboration as its reason to exist.*
+#+end_quote
+
+Strength: 超短い。SBCL を知ってる人には 1 行で通じる。
+
+** 1.3 anvil.el からの系譜
+
+*** 案 E
+
+#+begin_quote
+*NeLisp は anvil.el の substrate 版 —— Emacs 拡張として AI と協働する層
+から一歩降りて、Emacs 本体そのものを AI が rewrite できる言語に作り替える
+研究プロジェクト。*
+#+end_quote
+
+Strength: anvil.el user / Reddit emacs コミュニティに文脈 intact で届く。
+
+** 1.4 Esperanto / pragmatism
+
+*** 案 F
+
+#+begin_quote
+*NeLisp: self-hosted Emacs Lisp VM — because Elisp is English, not
+Esperanto. The lived-in editor language deserves a home-grown runtime
+of its own.*
+#+end_quote
+
+Strength: Esperanto/English 比喩 (user オリジナル) が英文で決まる。HN で
+引っかかる仕掛け。
+
+** 1.5 Editor-native / world-first 系
+
+*** 案 G
+
+#+begin_quote
+*NeLisp: the first editor-native self-hosted Lisp. Scheme, CL, Racket,
+Clojure are all external to their editors; NeLisp is the editor's own.*
+#+end_quote
+
+Strength: "first" claim で attention を引く。Lisp 三系棲み分け
+(=00-motivation.org= §6.4) との整合性。
+
+** 1.6 選定の目安
+
+| 案 | 向いた channel / audience            | 本命候補か |
+|----+--------------------------------------+-----------|
+| A  | Reddit /r/emacs、日本語 blog          | *◎*       |
+| B  | HN、GitHub README EN header           | *◎*       |
+| C  | 言語処理系研究者、ELS / EmacsConf     | ○          |
+| D  | HN、Lisp 系 aficionado                | ○          |
+| E  | anvil.el user、/r/emacs 常連          | △          |
+| F  | HN (英文 punch)                       | ○          |
+| G  | Lisp 実装史に詳しい layer             | △          |
+
+*推薦コンビ*: A (JA) + B (EN) を README / paper header に、C / G を
+§2 motivation 冒頭の epigraph に。
+
+** 1.7 参考: user 自筆の余地
+
+AI 案は全て "叩き台"。user が original の言い回しを追加 / 差し替え可能。
+特に §2 で articulated した下記 verbatim phrase は tagline に昇格可:
+
+- /Emacs を鍛えて AI のツールとする究極形/
+- /Emacs ですら作り替える事が可能/
+- /エスペラントは人工言語で優れているが、英語が国際語であるように/
+
+* 2. なぜ今これをやるのか [USER 自筆 + AI 叩き台 2026-04-22]
+
+/2026-04-22 の user-Claude Q&A session で extract した素材を散文化した/
+/*AI 叩き台*。user 推敲 / 全面書き直し対象。user の verbatim 発言 (太字/
+/箇所) は保持してほしい。/
+
+2026 年春、私が NeLisp を本気で作りたいと思ったきっかけは、*anvil.el
+開発中に感じた限界* でした。
+
+anvil.el は Emacs と AI を橋渡しする道具として 2026 年初頭から育ててきま
+したが、開発中、Emacs の C 層に起因する構造的な壁に何度も突き当たりました。
+subprocess を迂回しないと並行性が得られない、=make-mutex= が cross-session
+で機能しない、file-notify が Windows で 25 秒 freeze する —— いずれも
+Emacs Lisp 側をいくら磨いても、substrate である C を触らなければ根本
+解決できない類の問題でした。
+
+その過程で、一つの転換がありました。*anvil.el を通して、その母体である
+Emacs ですら作り替える事が可能だと感じた* のです。40 年の C コードは
+untouchable だと思い込んでいました。しかし AI 協働で anvil.el の 20+
+モジュールを短期間で書き上げた経験が、「この substrate も、それ自体が
+Elisp で書かれていれば、手を入れられる」という確信を与えてくれました。
+
+NeLisp はここから出発します。目指すのは *Emacs を鍛えて AI のツールと
+する究極形* です。C を経由せず全てが Elisp で編集可能な editor
+substrate。その上に「Emacs を AI ネイティブにする」「AI と Emacs の
+境界を溶かす」という層が anvil.el 系の拡張パッケージとして載る
+(=../02-scoping.org= §0 の A→B→C 構造)。/NeLisp は土台 (Stage A) だけに
+集中する/。
+
+scope にも規律が要ります。NeLisp core team (zawatton + Claude) は
+*AI に特化した path* だけ鍛える。buffer 操作、event dispatch、
+concurrency、eval/macro、FFI —— いずれも anvil.el 開発で実際に壁に
+当たった領域です (=~/.claude/.../memory/= の =feedback_emacs_*.md= 群が
+一次情報)。残る長い尾 (display render の細部、primitive utility) は
+community が徐々に Elisp 化していけば良い。Linux kernel や SBCL が採って
+きた governance モデルです。
+
+Remacs は 3000 の C 関数を小チームで置換しようとして scope 爆発で停止
+しました。NeLisp はその教訓を受けて、/AI 協働が意味を持つ場所に集中する/。
+*それだけで十分偉業だと思います*。
+
+** Core 引用 (BRIEFING §2)
+
+#+begin_quote
+Common Lisp、または Scheme は哲学的に優れていますが Emacs Lisp は
+実用範囲、経験値で勝っていると思います。考えとしては Emacs のコア部分を
+その独自 Elisp VM で実装する事です。Scheme ではなく純 Elisp として。
+#+end_quote
+
+** 参考: Q&A 前の論点 checklist (2026-04-22 draft に織り込み済、削除候補)
+
+- 既存 Emacs C コードの保守難度が上がっている (GNU Emacs の C 部分は 40 年もの)
+- native-comp は bytecode 高速化、しかし VM 設計は C のまま
+- Remacs / emacs-ng / Guile-Emacs いずれも "Elisp 自身で Elisp を書く" という
+  路線ではない → この niche が空いている
+- SBCL が CL に与えた影響 (研究 platform としての機能) を Elisp にもたらしたい
+- *前例がないこと自体が研究価値*
+
+** 2.1 補足論点 [AI-DRAFT] — user が §2 本文に織り込む材料
+
+以下は AI 側が整理した追加論点。user が §2 散文を書く際の checklist /
+引用素材として。原型は本文に含めず、user が取捨選択する。
+
+*** (a) contributor pool の数桁変化
+
+現状 Emacs core は C、改善提案を持っていても patch を書ける人が限られる。
+Elisp を書ける人は Emacs C internals を読める人の 100x 以上居る。VM が
+Elisp 化されれば "Emacs を改善する障壁" が一段下がる。
+
+*** (b) 実験 cycle の 100x 短縮
+
+GC / bytecode / concurrency を改変するのに今は =configure && make -j$(nproc) && make install=
+で 30 分コース。NeLisp 上なら =M-x eval-buffer= で数秒。"試す" の単価が
+100x 下がる → 研究 velocity が質的に変わる。
+
+*** (c) 学術的 re-design の解禁
+
+今の Emacs redisplay / buffer / jit-lock は "40 年 C で積んだから触れない"。
+NeLisp で書き直されれば、大 buffer 遅延・dynamic string size 問題を
+*構造から* attack できる (=org-element-use-cache= を触って 2x 遅くなった
+ような地雷が減る)。
+
+*** (d) distribution 選択肢の拡張
+
+=nelisp → native-comp= で standalone binary、=nelisp → wasm= で
+browser 上 Emacs、mobile など、C porting 負担で諦められていた経路が開く。
+
+*** (e) AI 協働の深化
+
+Emacs C は AI にとって "読めるが書きづらい" 領域 (build cycle が長い、
+test が遅い、semantics を掴むのに時間)。NeLisp 上なら AI の edit-eval-test
+cycle が anvil.el 開発と同じ密度で回る。*AI が Emacs 内部に直接手を入れ
+られる閾値が落ちる* — user の「道具で能力を拡張する」哲学の次のフェーズ。
+
+*** (f) 前例なし価値
+
+Self-hosted editor-language = 世界初。Scheme (Racket)、CL (SBCL)、Python
+(PyPy)、Lua (LuaJIT) いずれも editor-native ではない。NeLisp は editor と
+言語 runtime が不可分な史上初の self-host を目指す。
+
+* 3. Elisp の位置付け [USER 自筆 + AI-DRAFT 混合]
+
+** 3.1 Elisp の "通用範囲" とは何か [USER 自筆 + AI 叩き台 2026-04-22]
+
+/2026-04-22 Q&A session で extract。user 推敲対象、verbatim (太字) は/
+/保持推奨。/
+
+Elisp が CL や Scheme より /実用範囲、経験値で勝っている/ と感じる第一の
+理由は極めて pragmatic です。*普段使用しているエディタ Emacs である点が
+大きい*。
+
+org-mode で日々のノートテイキング、プロジェクト管理、事業運営を回して
+います。30 事業場の月次点検トラッカー、見積書・請求書の生成、仕訳の
+整理 —— business logic の多くが Emacs と org の上に載っています。
+*人間は嫌でも普段一番使用しているものに詳しくなります*。その延長で、
+*機能が欲しかったら Elisp を書いて拡張する。これがスムーズに出来る*。
+=defun= して即 =C-x C-e=、buffer-local に実験、気に入ったら =init.org= に
+定着。この feedback loop の短さが他言語では得難い。
+
+この「Emacs × 業務」の一体感の上に、近年 AI 協働が乗りました。*事業の
+運営を楽にするために AI の力を借りてこの Emacs をつついてきた*。Elisp
+の文法が AI (Claude) にとって読み書きしやすいこと、=eval= の軽さが AI
+の試行錯誤 cycle と合致することが、予想以上の加速をもたらしました。
+*より AI の力を引出すために anvil.el を作った*。
+
+そして今、anvil.el で見えた限界を超えるため、substrate 自体の作り替えが
+必要になりました。*もっと AI の力を取り込むために、NeLisp を必要として
+いる*。ここで論点が §2 とつながります。
+
+*言語としての philosophical 優位性と、普及・実用度は別物です*。
+*エスペラントは人工言語で優れているが、英語が国際語である* ように、
+Scheme や Common Lisp は設計として美しい一方、Elisp は 40 年の editor
+用途で /lived-in/ な資産を蓄積してきた。NeLisp はその資産を自己再実装する
+試みであって、美しい別言語に置き換えるプロジェクトではありません。
+
+*** 参考: Q&A 前の AI 推定 bullet (draft に織り込み済、削除候補)
+
+- どの場面で Elisp が (CL / Scheme より) 実用で勝つか
+- Emacs 生態系 (ELPA / MELPA ~5000 packages) の厚み
+- =defun= してすぐ =C-x C-e= で動く REPL 密度
+- buffer / text を中心にした editor semantics の一体感
+
+* 4. なぜ Scheme ではないのか [AI-DRAFT]
+
+Scheme 化路線 (Guile-Emacs / SRFI) との対比。
+
+** 4.1 Scheme の強み
+
+- hygienic macro
+- call/cc
+- 言語仕様の簡潔さ (R7RS で ~90 page)
+- minimalism による processing 研究の容易さ
+
+** 4.2 なぜそれでも Elisp を選ぶか
+
+- Elisp の dynamic binding / buffer-local は Scheme 化すると失われるか、
+  再現に巨大な compat 層が要る
+- Guile-Emacs が 12 年経っても main に merge されない事実 = 整合コストが高すぎる
+- user community の acquaintance は Elisp > Scheme (Emacs 使用者母集団基準)
+- Scheme は "より良い Elisp" になろうとしたが、lived-in な Elisp のほうが
+  実用者にとって価値が大きい (Richard Gabriel "Worse is Better" 構図)
+
+** 4.3 引用候補
+
+- Andy Wingo "a new Elisp compiler" (2014) — Guile 側から見た Elisp 実装の痛み
+- Stallman "Why you should use Elisp, not Scheme" (Emacs development list 過去投稿)
+  — Stallman が Scheme 化を却下した論拠
+
+** 4.4 merit 早見表
+
+| 論点        | Scheme 側                    | NeLisp 側                                       |
+|-------------+------------------------------+-------------------------------------------------|
+| Macro       | hygienic (学術的 clean)      | 非 hygienic でも既存 macro が /そのまま/ 動く   |
+| Binding     | lexical only                 | lexical + dynamic + buffer-local 維持           |
+| 生態系移行  | compat 層で再現              | *移行不要、現行 Elisp コードが動く*             |
+| 学習コスト  | Emacs 使用者に Scheme 要     | Emacs 使用者はゼロ                              |
+| 整合コスト  | Guile-Emacs 12 年 merge 不能 | 構造的に発生しない                              |
+
+核心: Guile-Emacs が merge できなかった最大理由は、Elisp semantics
+(dynamic binding / buffer-local / advice) を Scheme 上で厳密に再現する
+永続コスト。NeLisp はこれを *"再現" でなく "継承" にする* ことで解決する。
+
+* 5. なぜ Rust ではないのか [AI-DRAFT]
+
+Rust 化路線 (Remacs / emacs-ng) との対比。
+
+** 5.1 Rust の強み
+
+- memory safety without GC
+- modern tooling (cargo)
+- 性能
+
+** 5.2 なぜそれでも Rust を選ばないか
+
+- Rust で書くと "Elisp を Rust で実装" になり self-host にならない
+  (SBCL methodology と異なる)
+- Remacs が 2020 に discontinued した教訓: scope の膨張
+- Emacs C → Rust 置換という tasks は終わりが見えない
+- user の研究目的は "Elisp VM を Elisp 自身で書く" こと、substrate が Rust では
+  その目的を達成できない
+
+** 5.3 Remacs 失敗の分析
+
+=01-related-work.org= で掘る。要点:
+- Contributor の疲弊 (C → Rust の translation は creative でない)
+- Upstream (GNU Emacs) との同期コスト
+- "なぜ Rust にするのか" の motivation が薄い
+
+* 6. SBCL との methodology 対比 [AI-DRAFT]
+
+** 6.1 SBCL が CL に与えたもの
+
+- research platform としての CL
+- Python や PyPy 登場前の "self-hosted dynamic language runtime" の前例
+- 産業実用 CL 実装として 20+ 年の蓄積
+
+*** 学術基盤 (2026-04-22 wave 2 audit 反映)
+
+SBCL の bootstrap methodology は学術的に articulate されている:
+
+- *Rhodes 2008* "SBCL: A Sanely-Bootstrappable Common Lisp"
+  (Self-Sustaining Systems, LNCS 5146, Springer)
+  https://research.gold.ac.uk/2336/1/sbcl.pdf
+
+この paper が NeLisp の Host-Emacs bootstrap (BRIEFING §4.1a) の
+*直接 methodology source*。SBCL の genesis process (任意 ANSI CL を
+host にして cross-compile → cold-init → warm-init) は NeLisp の
+(Host-Emacs で initial VM を compile → self-host) と同型。
+
+NeLisp の novelty 主張として:
+
+- SBCL が示した "portable bootstrap" を editor-integrated Lisp で
+  初めて実装する
+- Host 処理系を Emacs に固定することで genesis toolchain を簡素化
+  (SBCL は任意 ANSI CL に portability を持たせる必要があったが、
+  NeLisp は Emacs のみで済む)
+- =docs/papers/rhodes-2008-sbcl.org= に一次資料精読 summary (412 行、2026-04-22 完読)
+
+先行 paper として MacLachlan 1992 "The Python Compiler for CMU Common
+Lisp" (ACM LISP Pointers) も同じ CL-in-CL 系譜の古典。
+
+
+** 6.2 NeLisp が Elisp に与えたいもの
+
+- VM 設計を Elisp コミュニティが experiment できる基盤
+- Emacs core 実装の Elisp 化ロードマップ
+- concurrency / GC / JIT を Elisp で実験する場
+
+** 6.3 NeLisp の CL に対する unique position
+
+Honest に認めるべき限界:
+
+- *速度* で SBCL に勝てない (Phase 3 目標は現行 Elisp の 1/5、SBCL は native compile)
+- *蓄積* で 40 年の CL エコシステムに敵わない
+- *言語機能* (CLOS / condition system / package system) は CL の勝ち
+
+ただし NeLisp にしかない absolute advantage が 2 つ:
+
+*** (1) Editor-native という unique position
+
+SBCL は SLIME 経由で Emacs に接続する *external* な言語。CL 実装者にとって
+editor は道具、道具にとっての言語ではない。NeLisp は editor が host なので、
+=M-x eval-buffer= / advice / hook が *言語 runtime に組み込まれている* —
+Emacs 以外のどの Lisp 実装にもない性質。これは "better CL" ではなく
+"different niche"。
+
+*** (2) Cherry-pick が一方通行
+
+CL の良い機能 (package / condition / CLOS) は NeLisp に取り込める。逆方向
+(NeLisp の editor semantics を SBCL に取り込む) は事実上不可能。NeLisp は
+CL の 40 年蓄積から /学び放題/、CL は NeLisp に来れない。長期的に
+「CL から美味しい所を吸収した editor-native Lisp」という位置が開く。
+
+** 6.4 Lisp 三系の棲み分け (NeLisp 成立後)
+
+#+begin_src text
+  Scheme      — 学術 / 教科書 / minimalism / 研究 platform
+  Common Lisp — production-grade / general-purpose / 40 年蓄積
+  NeLisp      — editor-native / AI-integrated / Elisp 文化延長
+#+end_src
+
+competitive でなく complementary。"既存 Lisp を倒す" プロジェクトではなく
+*埋まっていなかった niche を埋める* プロジェクトとして articulate する。
+
+* 7. Non-goals の再掲 [AI-DRAFT]
+
+=../BRIEFING.org= §1.1 より、motivation の裏返しとして:
+
+- Scheme 化拒否 — Elisp 文化の保持が最優先
+- Rust 再実装拒否 — self-host methodology と相反
+- Emacs 代替 editor 開発 out of scope — editor は Phase 5 PoC まで持ち越し
+- anvil.el への還元は optional — 独立した research project
+
+これらを明示することで、読者の誤解を防ぎ、scope 議論の防波堤にする。
+
+* 8. 想定読者 [AI-DRAFT]
+
+以下 4 類型を念頭に書く:
+
+1. *Emacs heavy user* (Elisp が書ける) — "自分の editor を自分の言語で実装する"
+   という夢に反応する層
+2. *Lisp 実装者 / 言語処理系研究者* — self-host methodology / concurrency model
+   の technical novelty を評価する層
+3. *現代の OSS contributor / Rust・JS 勢* — なぜ Rust や JS を拒否したかを
+   articulate する必要がある (5 章)
+4. *Emacs core maintainer* — 将来的に upstream に還元する可能性を読まれる。
+   敵対的に解釈されないよう scope を明示 (7 章)
+
+* 9. Success metric (motivation 側面) [AI-DRAFT]
+
+Phase 0 終了時に以下が true:
+
+- [ ] 上記 1-8 章が user 自筆 + AI 補助で「読者を説得する」文章になっている
+- [ ] 読者 type 1-4 それぞれに 1 行で「何を得られるか」が言える
+- [ ] Remacs / Guile-Emacs discontinued を受けても本研究が意味を持つ論理が
+  articulate されている
+- [ ] "前例がない" の中身が具体化されている (=01-related-work.org= と整合)
+
+* 10. 執筆順序の推奨 [AI-DRAFT]
+
+1. §2 core 引用 + 論点骨子 (user 自筆 30-60 分)
+2. §3.1 Elisp 通用範囲 (user 自筆 30 分)
+3. §4-7 AI 叩き台 → user 推敲 (往復 2-3 回)
+4. §1 tagline は §2-7 書いた後に決める (内容が固まらないと良い tagline は
+   書けない)
+5. §8-9 は Phase 0 末期、他 docs と整合とって最終確定
+
+* 11. 実現したあかつきに何が変わるか [AI-DRAFT]
+
+Phase 5 到達 (mini-Emacs が NeLisp で動く) 時点での /世界の変化/ を
+articulate する段。motivation 章の締め、読者に "未来を見せる" 役割。
+
+** 11.1 Emacs コミュニティの変化
+
+- *contributor pool の数桁拡大* — §2.1(a)
+- *実験 cycle の 100x 短縮* — §2.1(b)
+- *学術的 re-design の解禁* — redisplay / buffer / jit-lock を構造から
+  attack 可能に (§2.1(c))
+- *distribution 拡張* — native-comp / wasm / mobile 経路 (§2.1(d))
+- *AI contributor 参入障壁低下* — §2.1(e)
+
+** 11.2 ユーザー (zawatton) 側の変化
+
+- "自分の editor を自分の言語で実装する" という Lisp hacker 究極の夢の達成
+- anvil.el で溜めた痛み (subprocess 迂回 / Architecture B / mutex 限界 /
+  file-notify freeze) を *構造から* 解消する道具が自前で手に入る
+- =anvil.el= + =nelisp= のセットで個人ブランドが OSS 世界に定着
+
+** 11.3 言語処理系研究コミュニティへの貢献
+
+- "既存 dynamic language を self-host に retrofit する" ケーススタディ
+  (SBCL は scratch から CL 自作、NeLisp は巨大 C codebase からの段階移行)
+- concurrency model (STM + actor) の editor-semantics 下での実装経験値
+- editor-native self-host Lisp という新 niche の提示
+
+** 11.4 Scheme / CL 対比の merit 早見表
+
+| 項目                | Scheme (Guile-Emacs) | CL (SBCL)           | NeLisp                |
+|---------------------+----------------------+---------------------+-----------------------|
+| substrate           | Scheme runtime       | CL + C runtime      | Elisp                 |
+| self-host           | partial              | yes (CL で CL)      | goal (Elisp で Elisp) |
+| editor-native       | no (Guile 接続)      | no (SLIME external) | *yes (Emacs 内在)*    |
+| Elisp 文化継承      | 再現コスト大         | n/a                 | そのまま継承          |
+| 速度                | 高 (Guile native)    | 最高 (SBCL native)  | 中 (Phase 3 で 1/5)   |
+| 言語仕様の厚み      | R7RS 90p             | ANSI CL 1000p       | Elisp 20M LOC 実例    |
+| 成立期間            | 1970s-               | 1984-               | Phase 5 到達見込      |
+| 学習コスト(Emacs 民)| 高                   | 中                  | *ゼロ*                |
+
+NeLisp を Scheme / CL と competitive に置くのは誤読。3 系の棲み分け (§6.4)
+を強調する。
+
+** 11.5 "AI 協働で 1 人事業主が VM 研究をする" という時代的意義
+
+2020 年代中盤、AI と協働することで 1 人事業主 (user) が言語処理系研究を
+遂行できる、という事例自体が novel。Phase 1-2 release 時の HN / Reddit
+告知で、この angle を開示することの是非を user と議論する (Q4 OSS 公開方針
+と整合)。
+
+ただし「AI が書きました」ではなく「人と AI が一緒に設計した」立ち位置を
+明確にする (memory =feedback_reddit_llm_reply_style.md= 参照)。
+
+* 付録 A: 引用・参考文献 (精読対象、=01-related-work.org= と重複 OK)
+
+- Gabriel "Worse is Better" https://www.dreamsongs.com/RiseOfWorseIsBetter.html
+- Stallman の Scheme 拒否 email (EmacsWiki 経由で原文発掘)
+- Wingo "a new Elisp compiler" https://wingolog.org/archives/2014/01/19/a-new-elisp-compiler
+- Sussman & Steele "The Art of the Interpreter" (AI memo 453)
+- Steele "Growing a Language" (OOPSLA 1998 keynote)
+
+* 付録 B: AI が書かないこと (明示)
+
+以下は user 自筆領域、AI は本文を書かない:
+
+- §1 最終 tagline (user の声で決まる)
+- §2 全般 (研究動機の中核) — ただし §2.1 は AI-DRAFT として checklist 提供
+- §3.1 Elisp 通用範囲の具体例 (user の経験から)
+
+AI-DRAFT として叩き台がある節 (user 推敲対象):
+
+- §2.1 補足論点 (a)-(f) — user が §2 散文に織り込む材料
+- §4.4 merit 早見表 — 表として最終版確定する
+- §6.3 CL unique position — 文面調整
+- §6.4 三系棲み分け — 配置調整
+- §11 実現後の変化 — user の未来像で書き直す
+
+理由: AI が書くと "よくある Lisp advocacy" に落ちる。本研究の
+独自性は user の (1 人事業主 × 電気管理技術者 × Emacs 熟練者という)
+立ち位置から出る。そこを AI に代筆させると研究の軸がブレる。

@@ -1,0 +1,163 @@
+#+TITLE: NeLisp — scoping (Phase 0-2 in/out of scope)
+#+AUTHOR: zawatton
+#+DATE: 2026-04-22
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: SCOPE-LOCKED-2026-04-22
+:END:
+
+Remacs discontinued の最大教訓: *scope 管理が最大の敵*。
+この doc を Phase 0-2 の防波堤にする。
+
+* 0. NeLisp scope の基本構造 (2026-04-22 user + Claude session で lock)
+
+** A → B → C の 3 層構造
+
+#+begin_src text
+  ┌─────────────────────────────────────────────────┐
+  │ Stage C: AI と Emacs の境界が消える             │ ← anvil.el (系)
+  │ ┌─────────────────────────────────────────────┐ │
+  │ │ Stage B: Emacs が AI ネイティブ             │ │ ← anvil.el (系)
+  │ │ ┌─────────────────────────────────────────┐ │ │
+  │ │ │ Stage A: Emacs 内部を全 Elisp 化        │ │ │ ← *NeLisp*
+  │ │ │ (C を経由せず全て編集可能な substrate)  │ │ │
+  │ │ └─────────────────────────────────────────┘ │ │
+  │ └─────────────────────────────────────────────┘ │
+  └─────────────────────────────────────────────────┘
+#+end_src
+
+*NeLisp は Stage A を担う substrate*。Stage B / C は Emacs 拡張パッケージ
+(anvil.el 系) が NeLisp 上で実装する。
+
+** NeLisp v1.0 完遂条件 (3 点、all-of)
+
+1. *self-host 到達* — NeLisp VM の上で NeLisp VM 自身が走る
+2. *3 大 core module の Elisp 化* — buffer / redisplay / event loop が
+   NeLisp で expose されている
+3. *残存 C の SBCL-style 最小化* — syscall / GC core loop / memory
+   allocator / 文字コード変換のみ C に残る (SBCL が 25 年固定している境界と
+   同等)
+
+** AI-critical path vs community 長尾 (user 分担の原則)
+
+NeLisp core team (zawatton + Claude) は *AI に特化した path* のみ鍛える。
+残る C → Elisp 置換は community が徐々に担う。Linux kernel / SBCL 式の
+OSS governance モデル。
+
+| # | 領域              | 例                                      | 担当             |
+|---+-------------------+-----------------------------------------+------------------|
+| 1 | buffer 操作       | insert / delete / marker / text property | *AI-critical*    |
+| 2 | event dispatch    | keymap / hook / command loop             | *AI-critical*    |
+| 3 | concurrency       | thread / STM / actor / channel           | *AI-critical*    |
+| 4 | eval / macro      | eval / apply / macroexpand / defmacro    | *AI-critical*    |
+| 5 | FFI / process     | make-process / dynamic module / pty      | *AI-critical*    |
+| 6 | display render    | font metrics / frame / window layout     | community 長尾   |
+| 7 | primitive utility | arithmetic / string byte op / regex      | community 長尾   |
+
+分類根拠:
+- 1-5 は anvil.el 開発で実際に壁に当たった領域 (memory データと整合、
+  =feedback_emacs_*.md= で痛みが記録されている場所)
+- 6-7 は rendering や primitive なので AI 協働密度に直接効かない、
+  community が楽しんで埋める領域
+
+** 完遂テスト (concrete anchor)
+
+抽象的条件だけだと判定困難なため、具体 PoC を 1 つ置く:
+
+#+begin_quote
+ある AI 協働タスク X が anvil.el では subprocess / Architecture B 迂回が
+必要だが、NeLisp 上では同 process 内で完結する。それを PoC として
+示せる状態 = NeLisp 完遂。
+#+end_quote
+
+候補となる X (Phase 4-5 で 1 つ選ぶ):
+
+- 数万 buffer を parallel 編集 (STM / actor で可能に)
+- Redisplay を AI が frame-by-frame 生成 (Elisp で render 書き換え可能)
+- Event loop dispatcher を AI が書き換え (dispatch table が Elisp)
+
+** 明示的な非 goal
+
+- Emacs の全 C 関数 ~3000 を NeLisp core team が置換する (Remacs 失敗 pattern)
+- Stage B / C の実装 (これは anvil.el 系の仕事、NeLisp は substrate のみ)
+- native standalone binary の必須化 (Phase 6+ の optional goal)
+
+* 1. Phase 0 (本セッション〜1-2 ヶ月)
+
+** In scope
+- 6 docs (00-motivation 〜 05-roadmap) の完成
+- =BRIEFING.org= の更新・凍結
+- README.org / LICENSE 決定 / .gitignore
+- 先行研究 audit (Q3 の深さ)
+- user signoff のうえ Phase 1 開始判断
+
+** Out of scope
+- コードを 1 行も書かない (fib サンプルすら NG)
+- anvil.el への機能還元
+- GitHub repo 作成 (Phase 1 開始時に検討)
+- 外部への告知 (Reddit / HN)
+
+* 2. Phase 1 (3-6 ヶ月)
+
+** In scope
+- Host-Emacs 上で走る Elisp interpreter in Elisp の PoC
+- 支援: fib / factorial / macro 展開 / =let*= / =lambda=
+- subset を明記する (=nelisp-core= 関数一覧を固定)
+- bench harness (現行 Elisp と比較)
+
+** Out of scope
+- self-host (Phase 2)
+- bytecode / GC (Phase 3)
+- thread / STM (Phase 4)
+- buffer / event-loop (Phase 5)
+- Performance 最適化 (Phase 1 は "動くこと" が成功条件)
+
+* 3. Phase 2 (6-12 ヶ月)
+
+** In scope
+- self-host 到達 (NeLisp が NeLisp 自身の source を eval できる)
+- bootstrap loop (host Emacs → nelisp.el → self) の収束
+- golden test suite (host と self-host で結果一致)
+
+** Out of scope
+- bytecode (Phase 3)
+- 速度 (self-host 直後は 100x-1000x 遅くて OK)
+
+* 4. Phase 3 以降 (参考)
+
+=docs/05-roadmap.org= で詳述。本 doc では Phase 0-2 に集中。
+
+* 5. Scope creep 警告リスト
+
+Phase 0-2 の間、以下の誘惑は =docs/90-ideas-backlog.org= に退避:
+
+- "ついでに JIT も"
+- "ついでに Emacs buffer 実装も"
+- "ついでに anvil の concurrency 問題を解く"
+- "ついでに Scheme compat layer も"
+- "ついでに LSP server も" (これは特に危険)
+
+ルール: *Phase N+1 の作業は N+1 の doc を読んでから判断*。
+Phase N 中に N+2 のコードを書き始めたら黄信号。
+
+* 6. 成功条件 (Phase 0)
+
+以下 5 項目すべて true なら Phase 0 完了:
+
+- [ ] docs/00-05 が外部読者に読ませられる品質 (Q4 OSS 公開前提)
+- [ ] 先行研究との差分が明確 (01-related-work §10)
+- [ ] Phase 1 成功条件が測定可能に定義されている (02-scoping §2 + 05-roadmap)
+- [ ] Bootstrap 戦略が単一案に絞れている (03-architecture)
+- [ ] Concurrency model が 1-2 案に絞れている (04-concurrency)
+
+* 7. 失敗モード (早期検出)
+
+| 症状                              | 診断                         | 対処                        |
+|-----------------------------------+------------------------------+-----------------------------|
+| Phase 0 が 3 ヶ月超              | scope 膨張                   | 90-backlog へ退避、docs 圧縮 |
+| docs 間で矛盾が出始める          | 決定未確定                   | 1 箇所 (本 doc) で絞る      |
+| audit 論文が 10 本超に膨らむ     | 網羅主義                     | 3-5 本に絞り、他は cite のみ |
+| "面白そう" コードを書き始める    | 誘惑発動                     | 週次 self-review で検出     |
+| user 自筆部分が空のまま          | 哲学核が未言語化             | 対話で引き出す、急がない    |
