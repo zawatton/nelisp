@@ -581,21 +581,25 @@ not registered in our table, which keeps host helper symbols like
   '(;; Pair / list constructors + shape predicates
     car cdr caar cadr cdar cddr
     cons list null not atom consp listp
-    length nth nthcdr last reverse nreverse append
+    length nth nthcdr last butlast reverse nreverse append
     member memq assq assoc
     ;; List mutation (cons cell slot writes)
     setcar setcdr
-    ;; Equality / identity
-    eq eql equal identity ignore
+    ;; Equality / identity / type predicates
+    eq eql equal identity ignore functionp
     ;; Arithmetic
     + - * / mod /= < <= > >= =
     1+ 1- abs max min zerop numberp integerp
     ;; String / format
     stringp concat substring string= string-to-number number-to-string
-    upcase downcase format prin1-to-string
-    ;; Symbol surface (interning side; value / function cells handled
-    ;; via NeLisp-aware wrappers below)
+    upcase downcase format prin1-to-string string make-string
+    aref aset string-match-p string-match string-empty-p
+    char-or-string-p
+    ;; Symbol surface (interning side; variable / function cells handled
+    ;; via NeLisp-aware wrappers below for our own table — but the
+    ;; host `symbol-function' is a useful escape hatch for bootstrap)
     symbolp keywordp intern make-symbol symbol-name gensym
+    symbol-function
     ;; Hash tables — raw data, safe to delegate wholesale
     make-hash-table gethash puthash remhash clrhash
     hash-table-p hash-table-count
@@ -664,6 +668,20 @@ Self-evaluating atoms (nil, t, keywords) are always bound."
 Matches Elisp `symbol-value' which never sees lexical bindings."
   (nelisp--lookup sym nil))
 
+(defun nelisp--builtin-require (feature &optional _filename _noerror)
+  "Phase 2 NeLisp `require' stub.
+NeLisp does not yet maintain a module table; the dependents are
+expected to have been loaded by the host before NeLisp evaluates
+the source.  Return FEATURE unchanged so callers see the same
+shape as Elisp's own `require'."
+  feature)
+
+(defun nelisp--builtin-provide (feature &optional _subfeatures)
+  "Phase 2 NeLisp `provide' stub.
+No module registry yet; just acknowledge the symbol so source files
+that end with `(provide ...)' work as-is."
+  feature)
+
 (defun nelisp--install-primitives ()
   "Bind every primitive symbol in `nelisp--functions'.
 Host Emacs functions cover pure data ops; higher-order primitives
@@ -678,7 +696,9 @@ closures, NeLisp-only defuns, and our own hash tables stay visible."
   (puthash 'mapconcat    #'nelisp--builtin-mapconcat    nelisp--functions)
   (puthash 'boundp       #'nelisp--builtin-boundp       nelisp--functions)
   (puthash 'fboundp      #'nelisp--builtin-fboundp      nelisp--functions)
-  (puthash 'symbol-value #'nelisp--builtin-symbol-value nelisp--functions))
+  (puthash 'symbol-value #'nelisp--builtin-symbol-value nelisp--functions)
+  (puthash 'require      #'nelisp--builtin-require      nelisp--functions)
+  (puthash 'provide      #'nelisp--builtin-provide      nelisp--functions))
 
 (defconst nelisp--core-macro-source
   "\
@@ -686,6 +706,15 @@ closures, NeLisp-only defuns, and our own hash tables stay visible."
   (cons (quote defun) (cons name (cons params body))))
 
 (defmacro declare-function (&rest _ignored)
+  nil)
+
+(defmacro defgroup (&rest _ignored)
+  nil)
+
+(defmacro defcustom (name default &rest _ignored)
+  `(defvar ,name ,default))
+
+(defmacro defface (&rest _ignored)
   nil)
 
 (defmacro push (elt place)
@@ -728,9 +757,13 @@ top-level form here in order against the NeLisp global tables.")
 (defun nelisp--install-core-macros ()
   "Parse `nelisp--core-macro-source' and evaluate every top-level form.
 Must run after `nelisp--install-primitives' since some macro bodies
-call `gensym' to avoid lexical capture."
-  (dolist (form (nelisp-read-all nelisp--core-macro-source))
-    (nelisp-eval form)))
+call `gensym' to avoid lexical capture.  The body uses a plain
+`while' loop rather than `dolist' so the install bootstrap stays
+self-sufficient — `dolist' is one of the macros being installed."
+  (let ((forms (nelisp-read-all nelisp--core-macro-source)))
+    (while forms
+      (nelisp-eval (car forms))
+      (setq forms (cdr forms)))))
 
 ;;; Public API ---------------------------------------------------------
 

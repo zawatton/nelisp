@@ -217,9 +217,11 @@ NeLisp function table, not host `symbol-function'."
 ;;; funcall / apply interaction with new primitives -------------------
 
 (ert-deftest nelisp-stdlib-funcall-on-symbol ()
+  (nelisp--reset)
   (should (= (nelisp-eval '(funcall (quote +) 1 2 3)) 6)))
 
 (ert-deftest nelisp-stdlib-apply-on-symbol ()
+  (nelisp--reset)
   (should (= (nelisp-eval '(apply (quote +) 1 2 (list 3 4))) 10)))
 
 (provide 'nelisp-stdlib-test)

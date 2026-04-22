@@ -134,16 +134,21 @@ Return (VALUE . NEW-POS) where NEW-POS is past the closing quote."
            ((eq c ?\\)
             (when (>= (1+ pos) len)
               (signal 'nelisp-read-error (list "unterminated escape")))
-            (let ((e (aref str (1+ pos))))
-              (push (pcase e
+            (let* ((e (aref str (1+ pos)))
+                   (decoded
+                    (pcase e
                       (?\\ ?\\)
                       (?\" ?\")
                       (?n  ?\n)
                       (?t  ?\t)
                       (?r  ?\r)
+                      (?f  ?\f)
+                      (?a  ?\a)
+                      (?b  ?\b)
+                      (?\n nil)         ; line continuation: drop both bytes
                       (_ (signal 'nelisp-read-error
-                                 (list "unknown string escape" e))))
-                    chars)
+                                 (list "unknown string escape" e))))))
+              (when decoded (push decoded chars))
               (setq pos (+ pos 2))))
            (t
             (push c chars)
@@ -200,6 +205,23 @@ Return (VALUE . NEW-POS) where NEW-POS is past the closing `)'."
           (while (cdr head) (setq head (cdr head)))
           (setcdr head tail)))
       (cons lst (1+ pos)))))
+
+(defun nelisp-read--hash (str pos len)
+  "Dispatch sharp-prefixed reader syntax in STR (POS = one past `#').
+Phase 2 supports `#''FORM (function-quote, expanded to (function FORM)).
+Other `#'-prefixed syntax is rejected so it surfaces as a clean
+reader error rather than a silent miscompilation."
+  (when (>= pos len)
+    (signal 'nelisp-read-error (list "lone `#' at EOF" pos)))
+  (let ((c (aref str pos)))
+    (cond
+     ((eq c ?\')
+      (let* ((after (nelisp-read--skip-ws str (1+ pos)))
+             (res (nelisp-read--sexp str after)))
+        (cons (list 'function (car res)) (cdr res))))
+     (t
+      (signal 'nelisp-read-error
+              (list "unsupported `#' syntax" c pos))))))
 
 (defun nelisp-read--char-literal (str pos len)
   "Read the char literal payload in STR at POS (one past `?').
@@ -298,6 +320,8 @@ Return (VALUE . NEW-POS)."
         (let* ((after (nelisp-read--skip-ws str (1+ pos)))
                (res (nelisp-read--sexp str after)))
           (cons (list 'quote (car res)) (cdr res))))
+       ((eq c ?#)
+        (nelisp-read--hash str (1+ pos) len))
        ((eq c ?\`)
         (nelisp-read--backquote str (1+ pos)))
        ((eq c ?\,)
