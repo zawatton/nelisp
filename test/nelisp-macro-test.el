@@ -240,11 +240,11 @@ backquote, which the Week 3-4 reader does not yet handle."
   "A macro may expand into a form the evaluator rejects.
 The Week 11-12 point is that expansion itself succeeds and the
 resulting form lands in the evaluator cleanly — here the evaluator
-then signals `nelisp-void-function' because `error' is not installed
-as a primitive yet.  This is the Phase 1 anchor referenced in
-`docs/phase1-macro-design.org' §6."
+then signals `nelisp-void-function' because the expansion head
+(`no-such-unbound-fn') is deliberately not installed anywhere.
+Phase 1 anchor referenced in `docs/phase1-macro-design.org' §6."
   (nelisp--reset)
-  (nelisp-eval '(defmacro boom () (list 'error "msg")))
+  (nelisp-eval '(defmacro boom () (list 'no-such-unbound-fn "msg")))
   (should-error (nelisp-eval '(boom))
                 :type 'nelisp-void-function))
 
