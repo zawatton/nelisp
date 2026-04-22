@@ -37,6 +37,7 @@
 
 (require 'nelisp-read)
 (require 'nelisp-eval)
+(require 'nelisp-macro)
 
 (defconst nelisp-version "0.0.0"
   "Current version of NeLisp.
