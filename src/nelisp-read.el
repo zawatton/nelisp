@@ -224,6 +224,25 @@ rejects trailing input."
   (let* ((pos (nelisp-read--skip-ws str (or start 0))))
     (nelisp-read--sexp str pos)))
 
+;;;###autoload
+(defun nelisp-read-all (str)
+  "Parse STR and return a list of every top-level sexp it contains.
+Whitespace and line comments between sexps are skipped.  The list
+preserves source order.  Unlike `nelisp-read', trailing whitespace
+after the final sexp is not an error."
+  (unless (stringp str)
+    (signal 'wrong-type-argument (list 'stringp str)))
+  (let ((pos 0)
+        (len (length str))
+        (forms nil))
+    (while (progn
+             (setq pos (nelisp-read--skip-ws str pos))
+             (< pos len))
+      (let ((res (nelisp-read--sexp str pos)))
+        (push (car res) forms)
+        (setq pos (cdr res))))
+    (nreverse forms)))
+
 (provide 'nelisp-read)
 
 ;;; nelisp-read.el ends here

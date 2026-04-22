@@ -38,10 +38,12 @@
 (require 'nelisp-read)
 (require 'nelisp-eval)
 (require 'nelisp-macro)
+(require 'nelisp-load)
 
 (defconst nelisp-version "0.0.0"
   "Current version of NeLisp.
-Phase 1 Week 3-8: reader + evaluator core (fib / fact / closures).")
+Phase 1 complete (reader + eval + macro + dynamic + cond + stdlib);
+Phase 2 multi-form file loader is in.")
 
 (defgroup nelisp nil
   "Self-hosted Emacs Lisp VM in pure Elisp."
