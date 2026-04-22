@@ -36,10 +36,11 @@
 ;;; Code:
 
 (require 'nelisp-read)
+(require 'nelisp-eval)
 
 (defconst nelisp-version "0.0.0"
   "Current version of NeLisp.
-Phase 1 Week 3-4 reader in place.  Evaluator not yet wired.")
+Phase 1 Week 3-8: reader + evaluator core (fib / fact / closures).")
 
 (defgroup nelisp nil
   "Self-hosted Emacs Lisp VM in pure Elisp."
