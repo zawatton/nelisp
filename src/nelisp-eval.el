@@ -21,29 +21,34 @@
 
 ;;; Commentary:
 
-;; Phase 1 Week 5-10 evaluator core.  Enough of Elisp to run `fib',
+;; Phase 1 Week 5-24 evaluator core.  Enough of Elisp to run `fib',
 ;; `factorial', `cond'-driven recursion, short-circuiting `and' / `or',
-;; and `when' / `unless' guards with closures that capture their
-;; lexical environment.
+;; `when' / `unless' guards, closures that capture + mutate their
+;; lexical environment, tagged non-local exits, and error handling
+;; via `condition-case'.
 ;;
 ;; Implemented special forms:
 ;;   quote, function, if, cond, and, or, when, unless,
 ;;   progn, prog1, prog2, let, let*, lambda, defun, defvar, defconst,
-;;   setq, while
+;;   setq, while, catch, throw, unwind-protect, condition-case
 ;;
 ;; Installed builtins (delegated to the host Elisp functions):
 ;;   car cdr cons list null not atom consp symbolp
 ;;   eq equal + - * / < <= > >= =
 ;; Plus NeLisp-aware wrappers: funcall, apply.
 ;;
-;; Deferred to Week 11+ (still out of scope for this file):
-;;   catch / throw / unwind-protect / condition-case
+;; Deferred (still out of scope for this file):
 ;;   defmacro / macroexpand / macroexpand-all (see
 ;;     docs/phase1-macro-design.org)
 ;;   mapcar and the rest of the higher-order primitives
 ;;   string / format / intern / boundp / fboundp / prin1 / princ
 ;;   true dynamic binding (defvar / defconst currently only mark the
 ;;   symbol via `nelisp--specials'; binding consults lexical only)
+;;
+;; `catch' / `throw' / `unwind-protect' delegate to the host Elisp
+;; equivalents.  The semantics are identical, and threading through
+;; Elisp's implementation means NeLisp errors that bubble up through
+;; any number of host-level cleanup layers unwind correctly.
 ;;
 ;; NeLisp keeps its own function / global tables rather than writing to
 ;; the host Emacs symbol cells, so running `(nelisp-eval '(defun fib …))'
@@ -156,6 +161,10 @@ Signal `nelisp-void-function' if none is bound."
        ((eq head 'defconst)  (nelisp--eval-defconst args env))
        ((eq head 'setq)      (nelisp--eval-setq args env))
        ((eq head 'while)     (nelisp--eval-while args env))
+       ((eq head 'catch)           (nelisp--eval-catch args env))
+       ((eq head 'throw)           (nelisp--eval-throw args env))
+       ((eq head 'unwind-protect)  (nelisp--eval-unwind-protect args env))
+       ((eq head 'condition-case)  (nelisp--eval-condition-case args env))
        (t (nelisp--eval-call head args env)))))
    (t
     (signal 'nelisp-eval-error (list "cannot evaluate" form)))))
@@ -329,6 +338,73 @@ B is either a bare symbol or a two-element list (SYM INIT)."
   (while (nelisp-eval-form (car args) env)
     (nelisp--eval-body (cdr args) env))
   nil)
+
+(defun nelisp--eval-catch (args env)
+  "(catch TAG-FORM BODY...) — tagged non-local exit sink."
+  (let ((tag (nelisp-eval-form (car args) env)))
+    (catch tag
+      (nelisp--eval-body (cdr args) env))))
+
+(defun nelisp--eval-throw (args env)
+  "(throw TAG-FORM VALUE-FORM) — transfer control to matching catch."
+  (let ((tag (nelisp-eval-form (car args) env))
+        (val (nelisp-eval-form (cadr args) env)))
+    (throw tag val)))
+
+(defun nelisp--eval-unwind-protect (args env)
+  "(unwind-protect BODYFORM UNWINDFORMS...) — cleanup runs on every exit.
+Normal completion, NeLisp `throw', and any signaled error all unwind
+through the cleanup block."
+  (unwind-protect
+      (nelisp-eval-form (car args) env)
+    (nelisp--eval-body (cdr args) env)))
+
+(defun nelisp--handler-matches-p (spec conditions)
+  "Return non-nil if SPEC matches one of CONDITIONS.
+SPEC is the car of a `condition-case' handler — a condition symbol,
+a list of condition symbols, or `t' to catch anything.  CONDITIONS
+is the error's `error-conditions' chain (most specific first)."
+  (cond
+   ((eq spec t) t)
+   ((symbolp spec) (memq spec conditions))
+   ((listp spec)
+    (catch 'nelisp--handler-match
+      (dolist (s spec)
+        (when (memq s conditions)
+          (throw 'nelisp--handler-match t)))
+      nil))
+   (t nil)))
+
+(defun nelisp--eval-condition-case (args env)
+  "(condition-case VAR BODYFORM (CONDITION HANDLER-BODY...)...).
+VAR is bound to the signaled error data inside a matching handler
+(or left unbound when VAR is nil).  Handlers are tried in order;
+the first match wins.  Unmatched errors propagate to the caller."
+  (let ((var (car args))
+        (bodyform (cadr args))
+        (handlers (cddr args)))
+    (unless (or (null var) (symbolp var))
+      (signal 'nelisp-eval-error
+              (list "condition-case VAR must be symbol or nil" var)))
+    (condition-case err
+        (nelisp-eval-form bodyform env)
+      (error
+       (let* ((conditions (get (car err) 'error-conditions))
+              (matched nil))
+         (catch 'nelisp--cc-done
+           (dolist (h handlers)
+             (unless (consp h)
+               (signal 'nelisp-eval-error
+                       (list "condition-case handler must be a list" h)))
+             (when (nelisp--handler-matches-p (car h) conditions)
+               (setq matched h)
+               (throw 'nelisp--cc-done nil))))
+         (if matched
+             (let ((handler-env (if var
+                                    (cons (cons var err) env)
+                                  env)))
+               (nelisp--eval-body (cdr matched) handler-env))
+           (signal (car err) (cdr err))))))))
 
 (defun nelisp--eval-call (head args env)
   "Evaluate a function call (HEAD ARGS...) in ENV."
