@@ -1,0 +1,245 @@
+#+TITLE: Phase 3b — Bytecode VM + Lambda dynamic binding
+#+AUTHOR: zawatton
+#+DATE: 2026-04-23
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: DRAFT-2026-04-23 (awaiting user signoff on §2 decisions)
+:END:
+
+Phase 2.5 trampoline で self-host は成立したが、host recursive descent
++ work-stack では性能が interpreted Elisp の *100-1000x 遅い* 前提で v0.2.0
+を締めた (=05-roadmap.org= §3.3)。Phase 3b はこのギャップを閉じるための
+bytecode 仮想マシンを実装し、=05-roadmap.org= §4 の「bench: 現行 Elisp
+bytecode の 1/5 以内 (5x 遅くても OK)」を狙う。
+
+併せて Phase 1 で deliberate simplification した「lambda 引数は常に
+lexical」を解消し、=defvar= 済 symbol を引数に持つ lambda は dynamic
+binding される本来の Emacs Lisp 意味論に揃える (=nelisp-eval.el= の
+=nelisp--specials= は既に populate 済だが consult されていない)。
+
+* 1. 目標と非目標
+
+** 1.1 目標 (Phase 3b 完了条件)
+
+1. =src/nelisp-bytecode.el= 新規: compiler + VM + dispatch table
+2. 既存 =nelisp-eval= の evaluator path と *共存* (coexist) — 単独の
+   form は interpreter 経由、closure 呼び出しは VM fast-path
+3. Phase 1/2 の 50+ ERT + Phase 3a 20 ERT が *全て* VM 経由でも pass
+4. cycle-1 = cycle-2 fixpoint が VM ON で引き続き green
+5. =nelisp-bench-fib-30= の wall-time が host interpreter (non-byte-compiled
+   同等 NeLisp form を recursive eval した場合) の 1/10 以下 (性能 10x 改善
+   を最低、roadmap §4 の 5x 目標は stretch)
+6. Lambda の引数が =defvar= 済 symbol の場合、VM bind op が dynamic 側に
+   push する。Phase 2 test =nelisp-dynamic-test.el= の lambda param
+   ケースが pass
+
+** 1.2 非目標 (Phase 3b では入れない)
+
+- *Rhodes 5-stage genesis* (shared-tables 置換え) — Phase 3b 後に独立
+  phase (v0.4.x / v0.5.0 候補)。bytecode ABI が stable になってから着手
+- *=.elc= 互換 reader/writer* — Phase 5+ で community contrib として検討
+- *Native comp* — Phase 3 architecture doc §1 Candidate C が PARKED。
+  NeLisp 独自 bytecode が先
+- *Generational GC* — =05-roadmap.org= §4 "generational は Phase 3 後半で
+  検討"。Phase 3b の範囲は mark-sweep 見込み、実装自体は Phase 3c に回す
+- *Fiber yield point の実装* — =04-concurrency.org= §5 Phase 3 対応は
+  dispatch loop に yield 埋め込む「設計余地を残す」レベルまで。
+  実動 fiber primitive は Phase 3c 後半 / Phase 4
+- *Tail call optimization (TCO)* — Phase 1 interpreter も TCO 未実装。
+  Phase 3b は explicit =apply= 経由の tail call のみ非再帰化。Proper TCO は
+  Phase 3b.7 で余裕あれば
+
+* 2. Key decisions (user signoff 待ち)
+
+以下 5 点は Phase 3b 着手前に合意が必要。各項目に推奨と代替を併記。
+
+** 2.1 Bytecode format
+
+| 選択肢 | 内容 | 評価 |
+|---|---|---|
+| **推奨 B** | *独自 bytecode* (Emacs inspired だが非互換) | 設計自由度、fiber yield 埋込容易 |
+| A | Emacs bytecode 完全互換 | =.elc= loader future、validation via Emacs、op 呼び出しの quirks 継承 |
+| C | Hybrid (op 名称 Emacs 準拠、encoding 独自) | 移植性 vs 自由度の中庸、doc 量最多 |
+
+推奨 *B*。NeLisp は既に Phase 2.5 で host recursive から離脱した。
+Emacs =.elc= 互換は将来 loader 層で翻訳できる余地がある。
+
+** 2.2 Stack machine vs register machine
+
+- *推奨: Stack machine*
+  - Pro: Emacs 準拠、Phase 1-2 evaluator の mental model 継承
+  - Pro: Compiler が単純 (各式 → push 命令列)
+  - Con: Register 比 ~20% inst 増 (我々の 5-10x 目標には影響軽微)
+- 代替: Register machine (Lua / Dalvik 流)
+  - Pro: dispatch 回数少、inst あたり仕事大
+  - Con: Register allocation 複雑、Phase 3b の実装工数が 1.5-2 倍
+
+Phase 3b は *stack* 決定。Register は Phase 5+ で re-eval 余地。
+
+** 2.3 Interpreter との共存 (coexist) or 置き換え
+
+- *推奨: Coexist* (Phase 3b 完了時点)
+  - =nelisp-eval-form= + =nelisp-tramp-eval= は残置
+  - Closure に *compiled code* 属性が付いていれば VM dispatch、
+    無ければ interpreter
+  - Top-level form (defun / defvar / defmacro) は interpreter 処理、
+    closure 内の body は compile 済
+- 代替: 完全置き換え (全 form を compile、interpreter 除去)
+  - Con: Phase 3b scope が膨大、cycle-2 fixpoint の risk 高
+  - Pro: 将来 performant。Phase 4 で再評価
+
+** 2.4 Lambda dynamic binding 統合
+
+- *推奨: Phase 3b 内で対応* (§1.1 goal 6)
+  - VM compile 時、各 lambda param を =nelisp--specials= で check
+  - Special な param → `BIND-DYNAMIC` op、通常 → stack slot (`BIND-LEX`)
+  - 理由: VM の binding ops 設計と同時に決める方が frame layout が安定
+- 代替: Phase 3c / 独立 phase
+  - Pro: Phase 3b 完了を早められる
+  - Con: 後から VM binding semantics を変えるのは risk
+
+** 2.5 性能目標
+
+- *推奨: 最低 10x (host interp 比)、stretch 5x (Emacs bytecode 比)*
+  - Roadmap §4 の 5x は Emacs bytecode 比の stretch
+  - Phase 3b の merge gate は「Phase 3a 以前の test が全 pass」と
+    「benchmark が host interp の *少なくとも* 10x faster」
+- 代替: Roadmap 原文通り 5x (Emacs bytecode 比) を hard gate
+  - Con: Phase 3b.7 で gate 不達なら phase 長期化
+  - Pro: 告知時に defensible claim
+
+* 3. Sub-phase 分割
+
+Phase 3b は単発 session で完結しない規模。以下 7 sub-phase に分割し、
+各 sub-phase で make test green + ERT 追加を必須にする。
+
+** 3b.1 Skeleton (設計固め)
+
+- =src/nelisp-bytecode.el= 新規 (stub、~200 行)
+  - 主要 structure: =nelisp-bcl= (bytecode closure) の cons 形
+    =(nelisp-bcl ENV PARAMS CONSTS CODE STACK-DEPTH SPECIAL-MASK)=
+  - =nelisp-bc--opcodes= plist (op name → code int)
+  - 空 =nelisp-bc-compile= / =nelisp-bc-run= stub
+- test/nelisp-bytecode-test.el 新規 (skeleton ERT、現状 all skip)
+- make test: v0.2.0 + 3a の 299 維持
+
+** 3b.2 Minimal VM (const / return / call0)
+
+- Op 5 個: =CONST=, =RETURN=, =STACK-REF=, =DROP=, =DUP=
+- =(nelisp-bc-run BCL)= で定数返しだけ動く
+- ERT: const literal return / stack-ref 等、~10 test
+
+** 3b.3 Control flow + arithmetic
+
+- Op 追加: =GOTO=, =GOTO-IF-NIL=, =GOTO-IF-NOT-NIL=, =ADD1=, =SUB1=,
+  =PLUS=, =MINUS=, =LESS=, =GREATER=, =EQ=, =NOT=
+- =nelisp-bc-compile= が =if= / =cond= / =while= / 算術 form を bytecode
+  に落とす
+- ERT: fib(10) が VM で動く
+
+** 3b.4 Special form coverage
+
+- Op 追加: =VARREF=, =VARSET=, =VARBIND=, =UNBIND=, =CALL=, =LIST1..N=,
+  =CONS=, =CAR=, =CDR=
+- =let= / =let*= / =setq= / =progn= / =catch= / =throw= / =unwind-protect=
+  / =condition-case= をサポート
+- Phase 1/2 の ERT を VM 経由でも実行 (compile → run)
+
+** 3b.5 Closure + lambda dynamic binding
+
+- Op 追加: =MAKE-CLOSURE=, =APPLY=, =BIND-DYNAMIC= (special param 用)
+- =nelisp-bc-compile= が lambda param を =nelisp--specials= で分類し、
+  special → =BIND-DYNAMIC=、lexical → stack slot
+- ERT: =nelisp-dynamic-test.el= の lambda param ケース (現状 skip) を
+  有効化
+
+** 3b.6 Self-host (Rhodes stage 2 preview)
+
+- =src/nelisp-*.el= を cycle-2 install 時に VM 上で実行
+- cycle-1 = cycle-2 fixpoint が VM ON で green
+- =nelisp-bc-compile= 自身も compile 可 (meta-circular)
+
+** 3b.7 Performance bench + merge gate
+
+- =bench/nelisp-bench.el= (fib / fact / map / let-chain)
+- host interp 比 >= 10x、Emacs bytecode 比 stretch 5x
+- merge gate 判定 → main に --no-ff merge、v0.3.0 候補タグ
+
+* 4. Bytecode 構造 (草案)
+
+** 4.1 Bytecode closure object
+
+=(nelisp-bcl ENV PARAMS CONSTS CODE STACK-DEPTH SPECIAL-MASK)=
+
+- =ENV=: captured lexical env (alist、interpreter closure と同じ表現)
+- =PARAMS=: 引数 spec list (Phase 1 の lambda-list、&optional / &rest 含む)
+- =CONSTS=: constant vector (symbols / literals / nested closure)
+- =CODE=: 命令列 (Phase 3b.1 は Elisp vector of ints、後で unibyte
+  string に最適化余地)
+- =STACK-DEPTH=: 最大 stack 深さ (VM が alloc サイズ決定)
+- =SPECIAL-MASK=: PARAMS の i 番目が special なら bit_i = 1 の整数。
+  Phase 3b.5 で使用
+
+Phase 3b.1 では =SPECIAL-MASK= は常に 0、=CODE= は空 vector。
+
+** 4.2 Opcode encoding (草案)
+
+- 1-byte opcode (= 最大 256 op。Phase 3b では 50 以下で十分)
+- 引数付き op は後続 1-2 byte で index / offset を持つ
+- Phase 3b.1 は int vector で prototype、3b.7 で unibyte string 化検討
+
+** 4.3 Stack frame
+
+Phase 3b の stack は単一の大きい vector。frame 内訳:
+
+#+begin_src
+[ ... caller frame ...
+  ret-pc
+  saved-sp
+  local 0  (= param 0 if lexical)
+  local 1
+  ...
+  temp 0
+  temp 1
+  ... <- sp ]
+#+end_src
+
+=BIND-DYNAMIC= は locals に入れずに =nelisp--globals= を直接 push/pop。
+
+* 5. Interpreter ↔ VM interop
+
+- VM 内 =CALL= op:
+  - target が =nelisp-bcl= → VM 直接 dispatch (no host recursion)
+  - target が =nelisp-closure= → work-stack に marker push し
+    trampoline に handoff → 結果戻る
+  - target が primitive (elisp lambda / subr) → host funcall
+- Interpreter 内 =nelisp--apply-closure=:
+  - closure 形が =nelisp-bcl= → =nelisp-bc-run= に委譲
+  - それ以外 Phase 2.5 通り
+
+これにより、*どちらからでも* 他方を呼べる。cold init の top-level は
+interpreter、hot loop は VM。
+
+* 6. 成功条件 (merge gate 総括)
+
+- make test: Phase 1 / 2 / 3a の test (299) + Phase 3b 新規 all pass
+- cycle-1 / cycle-2 fixpoint 継続 green
+- =nelisp-bench-fib-30= host interp 比 >= 10x speedup
+- =nelisp-dynamic-test.el= の lambda param ケース green
+- Sub-phase 毎に commit + make test green が必須
+
+* 7. 将来への伏線
+
+- Phase 3b.7 完了時点の bytecode ABI を Rhodes genesis (Phase 3.5 or
+  Phase 4 前半) が受ける
+- dispatch loop 内の "yield point check" を Phase 3c / Phase 4 fiber
+  で活用 (=04-concurrency.org= §5.2 と整合)
+- SPECIAL-MASK 方式は将来 =declare (special . ...)= (Emacs 31+ 相当)
+  拡張の受け皿にもなる
+
+* 8. Reviewer 向け決定依頼
+
+§2 の 5 key decision を user が signoff した段階で Phase 3b.1 実装に
+着手する。Signoff 後は本 doc の =STATE= を =LOCKED-<date>= に更新。
