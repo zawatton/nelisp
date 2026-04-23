@@ -732,12 +732,207 @@ a label.  Returns the resolved int vector."
 
 (ert-deftest nelisp-bc-3b4b-unsupported-special-forms ()
   ;; Special forms scheduled for later sub-phases surface cleanly.
+  ;; `catch' / `throw' / `unwind-protect' / `condition-case' moved
+  ;; to the supported set in 3b.4c.
   (should-error (nelisp-bc-compile '(lambda (x) x))
-                :type 'nelisp-bc-unimplemented)
-  (should-error (nelisp-bc-compile '(catch 'tag 1))
                 :type 'nelisp-bc-unimplemented)
   (should-error (nelisp-bc-compile '(and 1 2))
                 :type 'nelisp-bc-unimplemented))
+
+;;; Phase 3b.4c — catch / throw / unwind-protect / condition-case ---
+
+(ert-deftest nelisp-bc-3b4c-opcode-table ()
+  (should (= (nelisp-bc-opcode 'PUSH-CATCH)  31))
+  (should (= (nelisp-bc-opcode 'POP-HANDLER) 32))
+  (should (= (nelisp-bc-opcode 'THROW)       33))
+  (should (= (nelisp-bc-opcode 'PUSH-UNWIND) 34))
+  (should (= (nelisp-bc-opcode 'PUSH-CC)     35)))
+
+(ert-deftest nelisp-bc-3b4c-catch-no-throw ()
+  (should (= (nelisp-bc-test--eval '(catch 'tag 42)) 42))
+  (should (= (nelisp-bc-test--eval '(catch 'tag 1 2 3)) 3)))
+
+(ert-deftest nelisp-bc-3b4c-catch-throw-basic ()
+  (should (= (nelisp-bc-test--eval
+              '(catch 'tag (throw 'tag 7) 99))
+             7)))
+
+(ert-deftest nelisp-bc-3b4c-catch-unmatched-propagates ()
+  (should-error
+   (nelisp-bc-test--eval
+    '(catch 'inner (throw 'outer 1)))))
+
+(ert-deftest nelisp-bc-3b4c-nested-catch ()
+  (should (= (nelisp-bc-test--eval
+              '(catch 'outer
+                 (catch 'inner
+                   (throw 'outer 10))
+                 99))
+             10))
+  (should (= (nelisp-bc-test--eval
+              '(catch 'outer
+                 (+ 100 (catch 'inner (throw 'inner 5)))))
+             105)))
+
+(ert-deftest nelisp-bc-3b4c-catch-with-let ()
+  (should (= (nelisp-bc-test--eval
+              '(let ((x 5))
+                 (catch 'tag
+                   (+ x (throw 'tag 7)))))
+             7))
+  (should (= (nelisp-bc-test--eval
+              '(catch 'tag
+                 (let ((x 10))
+                   (throw 'tag (+ x 5)))))
+             15)))
+
+(ert-deftest nelisp-bc-3b4c-catch-dyn-let-restored ()
+  (unwind-protect
+      (progn
+        (puthash 'nelisp-bc-test--dyn3 t nelisp--specials)
+        (puthash 'nelisp-bc-test--dyn3 'outer nelisp--globals)
+        (should (= (nelisp-bc-test--eval
+                    '(catch 'tag
+                       (let ((nelisp-bc-test--dyn3 'inner))
+                         (throw 'tag 7))))
+                   7))
+        (should (eq (gethash 'nelisp-bc-test--dyn3 nelisp--globals)
+                    'outer)))
+    (remhash 'nelisp-bc-test--dyn3 nelisp--globals)
+    (remhash 'nelisp-bc-test--dyn3 nelisp--specials)))
+
+(ert-deftest nelisp-bc-3b4c-unwind-protect-normal ()
+  (unwind-protect
+      (progn
+        (remhash 'nelisp-bc-test--counter nelisp--globals)
+        (should (= (nelisp-bc-test--eval
+                    '(unwind-protect 42
+                       (setq nelisp-bc-test--counter 1)))
+                   42))
+        (should (= (gethash 'nelisp-bc-test--counter nelisp--globals) 1)))
+    (remhash 'nelisp-bc-test--counter nelisp--globals)))
+
+(ert-deftest nelisp-bc-3b4c-unwind-protect-runs-on-throw ()
+  (unwind-protect
+      (progn
+        (remhash 'nelisp-bc-test--counter2 nelisp--globals)
+        (should (= (nelisp-bc-test--eval
+                    '(catch 'tag
+                       (unwind-protect
+                           (throw 'tag 7)
+                         (setq nelisp-bc-test--counter2 1))))
+                   7))
+        (should (= (gethash 'nelisp-bc-test--counter2 nelisp--globals) 1)))
+    (remhash 'nelisp-bc-test--counter2 nelisp--globals)))
+
+(ert-deftest nelisp-bc-3b4c-unwind-protect-empty-cleanup ()
+  (should (= (nelisp-bc-test--eval '(unwind-protect 99)) 99)))
+
+(ert-deftest nelisp-bc-3b4c-unwind-protect-multi-cleanup ()
+  (unwind-protect
+      (progn
+        (remhash 'nelisp-bc-test--c3a nelisp--globals)
+        (remhash 'nelisp-bc-test--c3b nelisp--globals)
+        (should (= (nelisp-bc-test--eval
+                    '(unwind-protect 33
+                       (setq nelisp-bc-test--c3a 1)
+                       (setq nelisp-bc-test--c3b 2)))
+                   33))
+        (should (= (gethash 'nelisp-bc-test--c3a nelisp--globals) 1))
+        (should (= (gethash 'nelisp-bc-test--c3b nelisp--globals) 2)))
+    (remhash 'nelisp-bc-test--c3a nelisp--globals)
+    (remhash 'nelisp-bc-test--c3b nelisp--globals)))
+
+(ert-deftest nelisp-bc-3b4c-condition-case-caught ()
+  (should (eq (nelisp-bc-test--eval
+               '(condition-case nil
+                    (signal 'error '("x"))
+                  (error 'ok)))
+              'ok))
+  (should (= (nelisp-bc-test--eval
+              '(condition-case nil
+                   (throw 'no-such-catch 1)
+                 (no-catch 42)))
+             42)))
+
+(ert-deftest nelisp-bc-3b4c-condition-case-returns-body ()
+  (should (= (nelisp-bc-test--eval
+              '(condition-case nil
+                   7
+                 (error 99)))
+             7)))
+
+(ert-deftest nelisp-bc-3b4c-condition-case-binds-var ()
+  (let ((r (nelisp-bc-test--eval
+            '(condition-case err
+                 (signal 'error '("bad-thing" 1 2))
+               (error err)))))
+    (should (equal r '(error "bad-thing" 1 2)))))
+
+(ert-deftest nelisp-bc-3b4c-condition-case-unmatched-propagates ()
+  (should-error
+   (nelisp-bc-test--eval
+    '(condition-case nil
+         (signal 'error nil)
+       (arith-error 'wrong)))))
+
+(ert-deftest nelisp-bc-3b4c-condition-case-multi-handler ()
+  (should (eq (nelisp-bc-test--eval
+               '(condition-case nil
+                    (signal 'arith-error nil)
+                  (void-function 'a)
+                  (arith-error 'b)
+                  (error 'c)))
+              'b))
+  (should (eq (nelisp-bc-test--eval
+               '(condition-case nil
+                    (signal 'error nil)
+                  (void-function 'a)
+                  (arith-error 'b)
+                  (error 'c)))
+              'c)))
+
+(ert-deftest nelisp-bc-3b4c-condition-case-var-lexical ()
+  (should (= (nelisp-bc-test--eval
+              '(condition-case err
+                   (signal 'arith-error '(123))
+                 (arith-error (car (cdr err)))))
+             123)))
+
+(ert-deftest nelisp-bc-3b4c-condition-case-restores-dyn-let ()
+  (unwind-protect
+      (progn
+        (puthash 'nelisp-bc-test--dyn4 t nelisp--specials)
+        (puthash 'nelisp-bc-test--dyn4 'outer nelisp--globals)
+        (should (eq (nelisp-bc-test--eval
+                     '(condition-case nil
+                          (let ((nelisp-bc-test--dyn4 'inner))
+                            (signal 'error nil))
+                        (error 'caught)))
+                    'caught))
+        (should (eq (gethash 'nelisp-bc-test--dyn4 nelisp--globals)
+                    'outer)))
+    (remhash 'nelisp-bc-test--dyn4 nelisp--globals)
+    (remhash 'nelisp-bc-test--dyn4 nelisp--specials)))
+
+(ert-deftest nelisp-bc-3b4c-unwind-protect-restores-dyn-let ()
+  (unwind-protect
+      (progn
+        (puthash 'nelisp-bc-test--dyn5 t nelisp--specials)
+        (puthash 'nelisp-bc-test--dyn5 'outer nelisp--globals)
+        (remhash 'nelisp-bc-test--cleanup-ran nelisp--globals)
+        (condition-case nil
+            (nelisp-bc-test--eval
+             '(let ((nelisp-bc-test--dyn5 'inner))
+                (unwind-protect
+                    (signal 'error '("bad"))
+                  (setq nelisp-bc-test--cleanup-ran t))))
+          (error nil))
+        (should (eq (gethash 'nelisp-bc-test--cleanup-ran nelisp--globals) t))
+        (should (eq (gethash 'nelisp-bc-test--dyn5 nelisp--globals) 'outer)))
+    (remhash 'nelisp-bc-test--dyn5 nelisp--globals)
+    (remhash 'nelisp-bc-test--dyn5 nelisp--specials)
+    (remhash 'nelisp-bc-test--cleanup-ran nelisp--globals)))
 
 (provide 'nelisp-bytecode-test)
 ;;; nelisp-bytecode-test.el ends here
