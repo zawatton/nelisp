@@ -5,8 +5,12 @@
 
 * Status
 :PROPERTIES:
-:STATE: DRAFT-2026-04-23 (awaiting user signoff on §2 decisions)
+:STATE: LOCKED-2026-04-23 (user signoff on §2 all 5 items)
 :END:
+
+User signoff (2026-04-23): §2.1 = B (own design), §2.2 = Stack,
+§2.3 = Coexist, §2.4 = include in 3b, §2.5 = >= 10x host-interp
+minimum (5x Emacs bc stretch).
 
 Phase 2.5 trampoline で self-host は成立したが、host recursive descent
 + work-stack では性能が interpreted Elisp の *100-1000x 遅い* 前提で v0.2.0
