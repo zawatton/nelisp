@@ -1,0 +1,150 @@
+#+TITLE: Phase 3a — Reader completion (numeric prefixes / vector literal / nested backquote)
+#+AUTHOR: zawatton
+#+DATE: 2026-04-23
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: DRAFT-2026-04-23
+:END:
+
+v0.2.0 (Phase 2.5 trampoline, cycle-1=cycle-2 fixpoint) で self-host は green に
+なったが、=src/nelisp-read.el= の head comment が明言する通り reader には 3 つの
+残作業がある:
+
+- =#x= / =#o= / =#b= 数値プレフィックス (hex / octal / binary)
+- Vector literal =[...]=
+- Nested backquote (depth > 1)
+
+Phase 3 本番 (=3b= bytecode VM + lambda dynamic binding) の前に reader を完全化し、
+Phase 3b で bytecode loader が扱う input surface を stable にする warmup phase
+として位置づける。
+
+* 1. スコープ
+
+** 1.1 In-scope (Phase 3a で必ず入れる)
+
+1. *=#x/#o/#b= 数値プレフィックス*
+   - =#x1F=, =#X1f=, =#o777=, =#O10=, =#b1010=, =#B0= を整数として読む
+   - 負符号対応: =#x-1F= (Emacs host reader の挙動に揃える)
+   - 不正 token (=#xG=, =#b2=, 空 payload) は =nelisp-read-error= を signal
+2. *Vector literal*
+   - =[]= / =[1 2 3]= / =[(a b) "s" ?x]= / ネスト =[[1] [2]]=
+   - host の =(vector ...)= と =equal= な value
+   - dotted-pair 構文は vector 内で無効 (Emacs host reader と同じ)
+3. *Nested backquote (depth > 1)*
+   - =` `(a ,b)= で inner backquote を outer から見て *opaque な list constructor*
+     として扱う (Emacs Lisp の古典的な quasi-quote expansion ルール)
+   - =,,x= / =,@,y= の comma 伝播は Phase 3a では *扱わない* (Phase 3b
+     以降再評価、Common Lisp 相当の qbq-comma dance は interpreter/VM 両方に
+     影響するため)
+
+** 1.2 Out-of-scope (明示的に却下、次 phase 以降で判断)
+
+- 循環・共有構造構文 =#N== / =#N#= — Phase 5 以降 (printer side と同時設計)
+- 文字リテラル拡張 =?\C-a= / =?\M-b= / =?\xNN= — Phase 3b 以降、bytecode op
+  literal の型判定が安定してから
+- =#s(...)= record 構文 — record 実装自体が未着手 (Phase 4 以降)
+- =#N= radix 構文 (=#24rG=, =#16rff= 等) — 実コード頻度が低い、Phase 4 以降
+
+* 2. 実装方針
+
+** 2.1 =#x/#o/#b= 数値プレフィックス
+
+=nelisp-read--hash= に以下 3 ケースを追加する。
+
+#+begin_src elisp
+  (?x (nelisp-read--radix-number str (1+ pos) len 16 "0-9a-fA-F"))
+  (?X (nelisp-read--radix-number str (1+ pos) len 16 "0-9a-fA-F"))
+  (?o (nelisp-read--radix-number str (1+ pos) len  8 "0-7"))
+  (?O (nelisp-read--radix-number str (1+ pos) len  8 "0-7"))
+  (?b (nelisp-read--radix-number str (1+ pos) len  2 "0-1"))
+  (?B (nelisp-read--radix-number str (1+ pos) len  2 "0-1"))
+#+end_src
+
+=nelisp-read--radix-number= は共通ヘルパ:
+
+- optional sign (=+= / =-=) を 1 文字吸収
+- atom-end まで token を切り出す
+- =CHARS= 範囲の regexp で全 char validate
+- =string-to-number TOKEN RADIX= で整数化、sign 適用
+
+** 2.2 Vector literal
+
+=nelisp-read--atom-terminators= に既に =[= =]= が含まれている (line 54) ので
+tokenizer 側の変更は不要。=nelisp-read--sexp= に dispatch を追加:
+
+#+begin_src elisp
+  ((eq c ?\[) (nelisp-read--vector str (1+ pos)))
+#+end_src
+
+=nelisp-read--vector= の責務は =nelisp-read--list= と似るが:
+
+- terminator は =]=
+- dotted-pair marker は rejected (=nelisp-read-error=)
+- 要素列収集後 =(apply #'vector ELEMENTS)= で host vector を返す
+
+** 2.3 Nested backquote
+
+現行 =nelisp-read--bq-depth= は 1 固定で nested 時 error を出していた
+(=nelisp-read--backquote= の while loop で 2 回目のバッククォートが
+=nelisp-read--bq-expand= 側を直撃して =bq-unquote= 不整合を招く)。
+
+方針: =nelisp-read--bq-expand= を =(depth)= 引数付きに refactor し、以下の
+ルールで展開:
+
+- depth=1 (今の実装): =,x= → x, =,@x= → splice, atom → (quote atom),
+  list → cons/append chain
+- depth>=2: =`FORM= は inner backquote marker =(bq-quasi FORM)= として保存、
+  marker は outer 展開時に再帰的に inner depth-1 で expand
+- =,x= / =,@x= は depth 分だけ marker を積む (=(bq-unquote FORM)= を
+  =(list 'bq-unquote FORM)= として quote 側に押し下げ、最外 depth=1 に
+  到達したら実評価)
+
+実装としては =nelisp-read--bq-expand= の第 2 引数 =depth= を既定 1 にし、
+inner backquote を読む時に =depth+1= を渡す。既存 test (depth=1 ケース) は
+デフォルト引数経由で不変。
+
+** 2.4 非破壊性 (self-host regression 防止)
+
+- v0.2.0 の 279 ERT pass を *保ったまま* 追加する
+- =src/*.el= のうち reader を使う場所で残作業 syntax を *一切呼ばない*
+  (現状 =src/= に =#x= / vector literal / nested backquote の使用なし、grep
+  で確認してから着手)
+- cycle-2 fixpoint test (=test/nelisp-tramp-test.el= の
+  =cycle2-fixpoint-*=) が pass し続けることを merge gate にする
+
+* 3. 実装順序
+
+1. Design doc (= 本文書) DRAFT 化 — **この commit**
+2. feat/phase3a-reader-completion ブランチ作成
+3. =#x/#o/#b= 実装 + 単体テスト
+4. Vector literal 実装 + 単体テスト
+5. Nested backquote 実装 + 単体テスト (最も複雑、最後に回す)
+6. =test/nelisp-phase3a-reader-test.el= で統合 (host vs nelisp-read equal)
+7. =make test= 全体 pass 確認、main に =--no-ff= merge
+
+* 4. 成功条件 (merge gate)
+
+- =make test= 279 既存 + Phase 3a 新規 all pass, 0 failed
+- =test/nelisp-tramp-test.el= の cycle-2 fixpoint 系全 pass
+- 新規 ERT でカバーする最低ケース:
+  - =#x= 6 件 (正例 3、sign 1、大文字 1、error 1)
+  - =#o= 3 件 / =#b= 3 件
+  - Vector 6 件 (空、nested、mixed types、in list、error unterm、host equal)
+  - Nested backquote 5 件 (depth=2 basic、depth=2 with =,= at both、
+    depth=3 smoke、splice 混在、Emacs host との output equal)
+
+* 5. 非目的
+
+- 性能最適化 (Phase 3b bytecode VM 側)
+- Printer 対応 (=print= / =prin1= で radix / vector / nested backquote を
+  特殊 form として出すか否か) — Phase 3a は reader 専業
+- =nelisp-tramp= の変更 (reader 層のみの修正)
+
+* 6. 将来への伏線
+
+Phase 3b bytecode VM は内部 representation として =vector= を heavily 使う。
+Phase 3a で vector literal reader が入ると、Phase 3b の bytecode constant
+vector を =.elc-like= cold image から読み直せる余地が生まれる (今は手書き
+=(vector ...)= form 経由のみ)。

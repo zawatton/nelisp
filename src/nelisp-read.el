@@ -34,11 +34,17 @@
 ;;     expanded at read time into cons / append calls so no macro
 ;;     installation is required before the reader works
 ;;
+;; Phase 3a (2026-04-23) adds:
+;;
+;;   - hex / oct / bin integer prefixes: #xFF / #o17 / #b1010
+;;     (upper-case variants and optional sign supported)
+;;   - vector literal syntax: [] / [1 2 3] / nested
+;;   - nested backquote: ` `(a ,b) works for depth >= 2
+;;
 ;; Still deferred:
 ;;
-;;   - bignums, hex / oct / bin integer prefixes (#x10 etc.)
-;;   - vectors, hash tables, records, bool-vector syntax
-;;   - nested backquote (depth > 1)
+;;   - bignums, #NrXX radix syntax
+;;   - hash tables, records, bool-vector syntax
 ;;   - circular / shared structure syntax (#N=, #N#)
 ;;   - character escapes like ?\\C-a / ?\\M-b / hex char escapes
 ;;
@@ -62,10 +68,23 @@ handed to `string-to-number', which returns the correct type.")
 
 (defvar nelisp-read--bq-depth 0
   "Tracks how deep we are inside nested backquotes.
-`,' and `,@' are only legal when this is non-zero.  Phase 2 supports
-exactly one level; deeper nesting is out of scope (keeps reader /
-macro expansion semantics honest without introducing the full
-qbq-comma dance).")
+`,' and `,@' are only legal when this is non-zero.  Phase 3a lifts
+the depth=1 restriction so `` `(a `(b ,x)) '' parses; comma
+propagation (`,,x', `,@,y') is still out of scope and would require
+the full qbq-comma dance.")
+
+;; Symbols used to mark nested backquote / comma / splice as literal
+;; data when expanding depth >= 2 forms.  Interned via `intern' so
+;; the source stays parseable by NeLisp's reader, which does not
+;; support backslash-escaped symbol literals such as `\\=`' / `\\,'.
+(defconst nelisp-read--bq-quasi-symbol (intern "`")
+  "Symbol placed at the head of a nested-backquote cons at runtime.
+Emacs' printer renders this symbol as `\\=`', giving the familiar
+`\\=`(...)' output for data containing preserved nested backquotes.")
+(defconst nelisp-read--bq-comma-symbol (intern ",")
+  "Symbol used to preserve a depth>=2 `,X' marker as literal data.")
+(defconst nelisp-read--bq-splice-symbol (intern ",@")
+  "Symbol used to preserve a depth>=2 `,@X' marker as literal data.")
 
 (defsubst nelisp-read--atom-char-p (c)
   "Non-nil if C can appear inside an atom token."
@@ -206,9 +225,60 @@ Return (VALUE . NEW-POS) where NEW-POS is past the closing `)'."
           (setcdr head tail)))
       (cons lst (1+ pos)))))
 
+(defun nelisp-read--vector (str pos)
+  "Read the tail of a vector in STR; POS is just past `['.
+Return (VECTOR . NEW-POS) where NEW-POS is past the closing `]'.
+Dotted-pair syntax is not allowed inside a vector."
+  (let ((len (length str))
+        (acc nil))
+    (catch 'done
+      (while t
+        (setq pos (nelisp-read--skip-ws str pos))
+        (when (>= pos len)
+          (signal 'nelisp-read-error (list "unterminated vector")))
+        (let ((c (aref str pos)))
+          (cond
+           ((eq c ?\])
+            (throw 'done nil))
+           ((nelisp-read--dotted-pair-marker-p str pos len)
+            (signal 'nelisp-read-error
+                    (list "dot not allowed in vector" pos)))
+           (t
+            (let ((res (nelisp-read--sexp str pos)))
+              (push (car res) acc)
+              (setq pos (cdr res))))))))
+    (cons (apply #'vector (nreverse acc)) (1+ pos))))
+
+(defun nelisp-read--radix-number (str pos len radix charset)
+  "Read a radix-prefixed integer in STR starting at POS.
+LEN is (length STR).  RADIX is 2 / 8 / 16.  CHARSET is a regexp
+character class fragment (e.g. \"0-9a-fA-F\") matching digits of the
+radix.  Accepts an optional sign prefix.  Returns (INTEGER . NEW-POS).
+Signals `nelisp-read-error' on empty payload or invalid digits."
+  (let ((sign 1)
+        (start pos))
+    (when (< pos len)
+      (let ((c (aref str pos)))
+        (cond
+         ((eq c ?-) (setq sign -1) (setq pos (1+ pos)))
+         ((eq c ?+)               (setq pos (1+ pos))))))
+    (let* ((digit-start pos)
+           (end (nelisp-read--atom-end str pos))
+           (digits (substring str digit-start end)))
+      (when (string-empty-p digits)
+        (signal 'nelisp-read-error
+                (list "empty radix literal" radix start)))
+      (unless (string-match-p (concat "\\`[" charset "]+\\'") digits)
+        (signal 'nelisp-read-error
+                (list "invalid digit in radix literal"
+                      radix digits start)))
+      (cons (* sign (string-to-number digits radix)) end))))
+
 (defun nelisp-read--hash (str pos len)
   "Dispatch sharp-prefixed reader syntax in STR (POS = one past `#').
 Phase 2 supports `#''FORM (function-quote, expanded to (function FORM)).
+Phase 3a adds `#x' / `#o' / `#b' (plus upper-case variants) for hex,
+octal and binary integer literals with optional sign prefix.
 Other `#'-prefixed syntax is rejected so it surfaces as a clean
 reader error rather than a silent miscompilation."
   (when (>= pos len)
@@ -219,6 +289,12 @@ reader error rather than a silent miscompilation."
       (let* ((after (nelisp-read--skip-ws str (1+ pos)))
              (res (nelisp-read--sexp str after)))
         (cons (list 'function (car res)) (cdr res))))
+     ((memq c '(?x ?X))
+      (nelisp-read--radix-number str (1+ pos) len 16 "0-9a-fA-F"))
+     ((memq c '(?o ?O))
+      (nelisp-read--radix-number str (1+ pos) len  8 "0-7"))
+     ((memq c '(?b ?B))
+      (nelisp-read--radix-number str (1+ pos) len  2 "01"))
      (t
       (signal 'nelisp-read-error
               (list "unsupported `#' syntax" c pos))))))
@@ -248,13 +324,20 @@ escapes plus any single literal character."
 
 (defun nelisp-read--backquote (str pos)
   "Read a backquote (STR at POS = one past the backtick).
-Returns (EXPANDED . NEW-POS) — the expansion is already cons / append
-code, ready to eval.  Increments `nelisp-read--bq-depth' during the
-recursive read so inner `,' / `,@' are accepted."
+The outermost backquote returns (EXPANDED . NEW-POS) where EXPANDED
+is cons / append construction code ready to eval.  Inner (nested)
+backquotes wrap their body in a `(bq-quasi FORM)' marker so the
+surrounding expansion can rebuild the literal nested-backquote data
+structure at runtime."
   (let* ((nelisp-read--bq-depth (1+ nelisp-read--bq-depth))
+         (outermost (= nelisp-read--bq-depth 1))
          (after (nelisp-read--skip-ws str pos))
-         (res (nelisp-read--sexp str after)))
-    (cons (nelisp-read--bq-expand (car res)) (cdr res))))
+         (res (nelisp-read--sexp str after))
+         (form (car res)))
+    (cons (if outermost
+              (nelisp-read--bq-expand form)
+            (list 'bq-quasi form))
+          (cdr res))))
 
 (defun nelisp-read--unquote (str pos len)
   "Read an unquote or splice (STR at POS = one past the comma).
@@ -272,36 +355,61 @@ expander in `nelisp-read--bq-expand' consumes."
     (cons (list (if is-splice 'bq-splice 'bq-unquote) (car res))
           (cdr res))))
 
-(defun nelisp-read--bq-expand (form)
+(defun nelisp-read--bq-expand (form &optional depth)
   "Expand FORM, the body of a backquote, into list-constructor code.
-Atoms become `quote' forms, `(bq-unquote X)' unwraps to X, and
-lists are built up via `cons' / `append'."
-  (cond
-   ((atom form) (list 'quote form))
-   ((eq (car form) 'bq-unquote) (cadr form))
-   ((eq (car form) 'bq-splice)
-    (signal 'nelisp-read-error
-            (list "splice outside list" form)))
-   (t (nelisp-read--bq-expand-list form))))
+DEPTH defaults to 1 (the outermost backquote).  Phase 3a adds a
+depth parameter so nested backquote forms (`bq-quasi' markers) and
+their inner commas are reconstructed as literal data at runtime via
+the quasi / comma / splice symbols in `nelisp-read--bq-*-symbol'.
 
-(defun nelisp-read--bq-expand-list (lst)
-  "Expand a list LST under backquote.
-Contiguous `(bq-splice X)' elements turn into `append' fragments,
-everything else becomes a `cons' chain."
-  (cond
-   ((null lst) nil)
-   ((atom lst) (list 'quote lst))
-   ((and (consp (car lst))
-         (eq (caar lst) 'bq-splice))
-    (let ((splice (cadr (car lst)))
-          (rest (nelisp-read--bq-expand-list (cdr lst))))
-      (if (null rest)
-          splice
-        (list 'append splice rest))))
-   (t
-    (let ((head (nelisp-read--bq-expand (car lst)))
-          (tail (nelisp-read--bq-expand-list (cdr lst))))
-      (list 'cons head tail)))))
+At depth 1: atoms quote, `(bq-unquote X)' unwraps to X, `(bq-splice X)'
+outside a list signals.  At depth >= 2: everything is preserved as
+literal data; commas/splices become cons cells headed by the preserved
+`,' / `,@' symbols and nested backquotes deepen further."
+  (let ((depth (or depth 1)))
+    (cond
+     ((atom form) (list 'quote form))
+     ((eq (car form) 'bq-quasi)
+      ;; Inner backquote: build (<bq-quasi-sym> INNER-BUILT) at runtime.
+      (list 'list
+            (list 'quote nelisp-read--bq-quasi-symbol)
+            (nelisp-read--bq-expand (cadr form) (1+ depth))))
+     ((eq (car form) 'bq-unquote)
+      (if (= depth 1)
+          (cadr form)
+        (list 'list
+              (list 'quote nelisp-read--bq-comma-symbol)
+              (nelisp-read--bq-expand (cadr form) depth))))
+     ((eq (car form) 'bq-splice)
+      (if (= depth 1)
+          (signal 'nelisp-read-error
+                  (list "splice outside list" form))
+        (list 'list
+              (list 'quote nelisp-read--bq-splice-symbol)
+              (nelisp-read--bq-expand (cadr form) depth))))
+     (t (nelisp-read--bq-expand-list form depth)))))
+
+(defun nelisp-read--bq-expand-list (lst &optional depth)
+  "Expand a list LST under backquote at DEPTH (default 1).
+At depth 1 contiguous `(bq-splice X)' elements turn into `append'
+fragments.  At depth >= 2 splice markers are preserved as literal
+`(\\,@ X)' cons cells built element-wise."
+  (let ((depth (or depth 1)))
+    (cond
+     ((null lst) nil)
+     ((atom lst) (list 'quote lst))
+     ((and (= depth 1)
+           (consp (car lst))
+           (eq (caar lst) 'bq-splice))
+      (let ((splice (cadr (car lst)))
+            (rest (nelisp-read--bq-expand-list (cdr lst) depth)))
+        (if (null rest)
+            splice
+          (list 'append splice rest))))
+     (t
+      (let ((head (nelisp-read--bq-expand (car lst) depth))
+            (tail (nelisp-read--bq-expand-list (cdr lst) depth)))
+        (list 'cons head tail))))))
 
 (defun nelisp-read--sexp (str pos)
   "Read one sexp in STR at POS.
@@ -328,8 +436,12 @@ Return (VALUE . NEW-POS)."
         (nelisp-read--unquote str (1+ pos) len))
        ((eq c ??)
         (nelisp-read--char-literal str (1+ pos) len))
+       ((eq c ?\[)
+        (nelisp-read--vector str (1+ pos)))
        ((eq c ?\))
         (signal 'nelisp-read-error (list "unexpected `)'" pos)))
+       ((eq c ?\])
+        (signal 'nelisp-read-error (list "unexpected `]'" pos)))
        (t
         (nelisp-read--atom str pos))))))
 
