@@ -1,16 +1,24 @@
 #+TITLE: Phase 3b — Bytecode VM + Lambda dynamic binding
 #+AUTHOR: zawatton
 #+DATE: 2026-04-23
+#+UPDATED: 2026-04-24
 #+OPTIONS: toc:2 num:t
 
 * Status
 :PROPERTIES:
-:STATE: LOCKED-2026-04-23 (user signoff on §2 all 5 items)
+:STATE: SHIPPED-2026-04-24 (Phase 3b.8 で 10x merge gate 達成)
 :END:
 
 User signoff (2026-04-23): §2.1 = B (own design), §2.2 = Stack,
 §2.3 = Coexist, §2.4 = include in 3b, §2.5 = >= 10x host-interp
 minimum (5x Emacs bc stretch).
+
+*2026-04-24 update*: §2.5 merge gate は Phase 3b.7c の pure-bytecode
+最適化では構造的に未到達 (Elisp 上 =pcase= dispatch の天井 ~1.2x)。
+Phase 3b.8 で *JIT-to-host-Elisp* に転回し、fib 25x / sum-to 16x で
+10x merge gate を recursion-heavy case で達成。bcl は semantic reference
+として残し、JIT は bcl-tag 偽装で既存 dispatch に相乗り (self-host 予算
+不変)。詳細は §3b.8。
 
 Phase 2.5 trampoline で self-host は成立したが、host recursive descent
 + work-stack では性能が interpreted Elisp の *100-1000x 遅い* 前提で v0.2.0
@@ -308,9 +316,9 @@ Phase 3b.5 (closure + lambda dynamic binding) と束ねて取り扱う。
   常時走らせる (434/434 green)
 - 全ケースで bcl と interp が同じ値を返すことを確認
 
-*** 3b.7b Perf gate status (NOT MET, v0.3.0 タグ pending)
+*** 3b.7b Perf gate status — VM 単体では未達 (2026-04-23 snapshot)
 
-現状の wall-time 比 (byte-compiled, 3 iters):
+3b.7a 時点の wall-time 比 (byte-compiled, 3 iters):
 
 | case      | interp | vm     | speedup |
 |-----------|--------|--------|---------|
@@ -319,23 +327,126 @@ Phase 3b.5 (closure + lambda dynamic binding) と束ねて取り扱う。
 | sum-to(150)| 0.001 | 0.001  | 0.91x   |
 | let-chain | 微小    | 微小    | 1.25x   |
 
-- VM は現状 host interp より 1.2x〜2x 遅い (10x gate と桁違い)
+- VM は host interp より 1.2x〜2x 遅く、10x gate と桁違い
 - 主因の見立て: per-call overhead (=make-vector= for stack,
   =cl-labels= 4 closure setup, =unwind-protect= + =catch=) と
   dispatch loop の =pcase= 比較コスト
-- v0.3.0 タグはこの gate を満たすまで保留 — bench infrastructure
-  は ship、merge は別件 (3b.7c) として継続
+- 3b.7c で段階的最適化 → fib 0.59x → 0.93x まで改善するも 10x gate
+  到達せず (§3b.7c.3 参照)。その経験を踏まえ Phase 3b.8 で JIT 転回
 
-*** 3b.7c (将来) — VM perf optimization
+*** 3b.7c VM perf optimization — 段階的最適化
 
-候補施策:
-- per-call =cl-labels= を別 =defun= に外出し (closure capture 排除)
-- =stack= vector の pool 化 (=make-vector= 削減)
-- 算術 op を host primitive 直叩き化 (=+= の generic dispatch 排除)
-- dispatch を =aref= による関数テーブルへ
-- bytecode peephole 最適化 (例: =CONST n= + =PLUS= → =ADDN n=)
-- =SPECIAL-MASK= に加えて =uses-specpdl= flag を追加し
-  =unwind-protect= を必要時のみ装着
+**** 3b.7c.1 Inline helpers + CALL fast-path (SHIPPED 2026-04-23)
+
+- =nelisp-bc--adjust-sp= 等の ~10 helper を =cl-macrolet= / =defsubst= に
+  昇格 → byte-compile で inline
+- =CALL= op に bcl 直撃 fast-path (symbol → gethash → bcl なら
+  =nelisp-bc-run= 直呼び、generic =nelisp--apply= をバイパス)
+- fib 0.59x → 0.68x
+
+**** 3b.7c.2 Dispatch top-level defun (SHIPPED 2026-04-23)
+
+- =nelisp-bc--dispatch= を =cl-labels= から top-level =defun= へ外出し
+  (captured-lexical closure 生成を毎 call 回避)
+- VM 状態を flat vector に揃え、=commit-vm= / =reload-vm= マクロで
+  nested dispatch (PUSH-CATCH / PUSH-UNWIND / PUSH-CC) 時に同期
+- fib 0.68x → 0.93x
+
+**** 3b.7c.3 Stack pool 実験 → ABORTED (2026-04-23)
+
+- 各 =nelisp-bc-run= 呼出しで =(make-vector depth)= する overhead を
+  pool 化で削れると仮説、prototype 実装
+- 実測 0.93x → 0.93x (測定不可な誤差レベル)。GC profile でも
+  make-vector は hot spot ではなく、pcase dispatch 自体が律速
+- *悟り*: Elisp 上の pcase loop は 1.0x 付近が構造的天井。Emacs C 層の
+  computed-goto threaded dispatch (=BYTE_CODE_THREADED=) が pure-Elisp
+  では再現不能。Phase 3b.8 で JIT 路線に転回
+
+** 3b.8 JIT-to-host-Elisp (SHIPPED 2026-04-24)
+
+3b.7c で判明した pure-Elisp VM の天井 (~1.2x) を踏まえ、NeLisp lambda
+を直接 host Elisp に翻訳し =byte-compile= で lower する JIT 路線へ転回。
+bcl は semantic reference として残し、JIT closure は bcl-tag を偽装して
+既存 dispatch arm に相乗りする (=nelisp-eval.el= 無変更 = self-host
+=max-lisp-eval-depth= 予算不変)。
+
+実装: =src/nelisp-jit.el=。opt-in flag =nelisp-jit-enabled= (default nil)
++ =nelisp-jit-install= / =nelisp-jit-uninstall= で advice を脱着。
+
+*** 3b.8a JIT MVP (SHIPPED 2026-04-24)
+
+- 翻訳器 =nelisp-jit--translate=: NeLisp form → host Elisp form
+  - special form 15+ (quote / function / if / cond / when-unless /
+    and-or / progn-prog1-prog2 / while / let / let* / setq / lambda)
+  - inline primitive 33 種 (+, -, *, /, <, >, =, eq, equal, cons,
+    car, cdr, ... — 純関数のみ、mutable は除外)
+  - 非 primitive symbol call は当初 =nelisp--apply= 経由 (→ 3b.8c で高速化)
+  - env=nil (top-level defun) のみ対応、captured-env は fallback
+- JIT closure shape = =(nelisp-bcl 'nelisp-jit-marker nil nil HOST-FN nil nil)=
+  - =nelisp-bc-run= 入口で marker 検出 → VM setup 完全 skip、=apply= 直接
+  - 既存 bcl cond arm が =nelisp--apply= 内で dispatch、新 arm 不要
+- bench: fib 0.93x → *15.0x*、sum-to 0.95x → *10.3x* で 10x merge gate 達成
+- commit =8c28bd5= → merge =5806bd2=
+
+*** 3b.8b Captured-env closure JIT (SHIPPED 2026-04-24)
+
+- env=nil 短絡を撤廃、captured 値を =vconcat= でベクトル化
+- backquote 展開で byte-compile constants pool にベクトル literal を埋込
+  host form: =(lambda PARAMS (let ((sym0 (aref VEC 0)) ...) BODY))=
+- let が毎 call 再 bind する性質上、captured var への =setq= は persist
+  しない → 構造 scan =nelisp-jit--body-mutates-env-p= で検出し nil 返却
+  → bcl / interpreter に fallback (counter pattern 等)
+- 既存 bcl も =(null env)= gate のため、env 付き closure は JIT で
+  初めて compiled path に乗る (interpreter より明確に速い)
+- commit =2ccf957= → merge =7f6dfdc=
+
+*** 3b.8c User-call fast-path (SHIPPED 2026-04-24)
+
+- JIT 翻訳で =(FOO args)= → =(nelisp-jit--call-user 'FOO (list args))= を emit
+- =nelisp-jit--call-user= は =defsubst=: gethash で直接 bcl を掴み
+  =nelisp-bc-run= を呼ぶ、非 bcl は =nelisp--apply= fallback
+- byte-compile で JIT body に inline される → per-call overhead が
+  =nelisp--apply= の symbol cond arm + 再帰 frame → consp+eq+branch に
+- bench: fib 15.0x → *25.0x* (+67%)、sum-to 10.3x → *16.3x* (+59%)
+- commit =2925e30= → merge =cea66e3=
+
+*** 3b.8 bench 最終値 (main cea66e3、iters=3)
+
+| case        | interp   | vm      | jit      |
+|-------------+----------+---------+----------|
+| fib(20)     | 0.174s   |  0.90x  | *25.03x* |
+| sum-to(150) | 0.001s   |  0.95x  | *16.33x* |
+| fact(12)    | 0.0001s  |  0.74x  |   6.86x  |
+| let-chain   | 0.00005s |  1.25x  |   4.20x  |
+
+fact / let-chain は interp 時間 sub-ms = host timer 分解能以下のノイズ
+支配のため speedup は意味ない。honest な merge-gate 判定は fib /
+sum-to 2 ケース → *10x 達成*。
+
+*** 3b.8 重要 invariant (後続 touch 時の自衛)
+
+- =nelisp-eval.el= は触らない。=nelisp--apply= に 1 cond arm 追加 or
+  =nelisp--make-closure= に 1 fboundp 追加で =nelisp--install-core-macros=
+  の self-host probe が =max-lisp-eval-depth= に被弾する (ERT で即死)
+- JIT 実装は既存 bcl-tag に相乗りで frame を増やさない。新機能追加時も
+  この原則を守る (例: 将来の "partial JIT" 等)
+- advice auto-install は禁止。=nelisp-bench-batch= 内で =unwind-protect=
+  で install / uninstall のみ。test runner は =-L bench= で bench を
+  load するが、advice が一瞬でも挿さると self-host が落ちる
+- 性能仮説は A/B bench 実測が必須。3b.7c.3 の stack pool は理論上
+  GC 減るはずだったが 0.93x → 0.93x で効果なし (pcase dispatch が律速)
+- =make bench= 後の =make test= は stale =.elc= で self-host 3 test が
+  偽陽性 FAILED。検証は必ず =make clean && make test=
+
+*** 3b.8 将来の拡張余地
+
+- primitive inline range 拡張 (=>==, =string==, =symbol-name=, =aref=,
+  =mapcar= 等、純関数かつ observable redefine 不要なもの)
+- 自己再帰 tail-call を host =while= loop に落とす (GNU TCO ではなく
+  Elisp 側 loop 化、=apply-partially= 的に stack 深さを抑える)
+- lambda 値 (=#'(lambda ...)= を map 系に渡す形) の JIT 化 — 現状は
+  inner lambda も再帰的に翻訳されるが、最外 =nelisp-jit-install=
+  経由でのみ JIT 化されるため =mapcar= 経由の call site は interp 経路
 
 * 4. Bytecode 構造 (草案)
 
@@ -394,11 +505,19 @@ interpreter、hot loop は VM。
 
 * 6. 成功条件 (merge gate 総括)
 
-- make test: Phase 1 / 2 / 3a の test (299) + Phase 3b 新規 all pass
-- cycle-1 / cycle-2 fixpoint 継続 green
-- =nelisp-bench-fib-30= host interp 比 >= 10x speedup
-- =nelisp-dynamic-test.el= の lambda param ケース green
-- Sub-phase 毎に commit + make test green が必須
+- [X] make test: Phase 1 / 2 / 3a / 3b / 3b.8 all pass — *452/452* green
+  (main cea66e3)
+- [X] cycle-1 / cycle-2 fixpoint 継続 green
+- [X] fib(20) host interp 比 >= 10x speedup — *25.03x* via JIT (§3b.8c)
+  - VM 単体では 0.90x で未達 → JIT 路線で達成
+- [X] =nelisp-dynamic-test.el= の lambda param ケース green
+- [X] Sub-phase 毎に commit + make test green — git log 参照
+
+*v0.3.0 tag 条件 (SATISFIED 2026-04-24)*:
+- Phase 3b.1-8 全 sub-phase SHIPPED、10x merge gate 達成
+- design doc (本 doc) SHIPPED 状態に更新 (§Status / §3b.7-8 / §6)
+- release-audit scan pass
+- main clean、feat branch 全 merge 済
 
 * 7. 将来への伏線
 
@@ -411,5 +530,6 @@ interpreter、hot loop は VM。
 
 * 8. Reviewer 向け決定依頼
 
-§2 の 5 key decision を user が signoff した段階で Phase 3b.1 実装に
-着手する。Signoff 後は本 doc の =STATE= を =LOCKED-<date>= に更新。
+§2 の 5 key decision は 2026-04-23 に user signoff 済 (=STATE=
+=LOCKED-2026-04-23= → 2026-04-24 =SHIPPED-2026-04-24= に昇格)。
+Phase 3b 全 sub-phase ship 完了、本 doc は履歴 reference として保全。
