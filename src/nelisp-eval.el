@@ -586,7 +586,7 @@ not registered in our table, which keeps host helper symbols like
     ;; List mutation (cons cell slot writes)
     setcar setcdr
     ;; Equality / identity / type predicates
-    eq eql equal identity ignore functionp
+    eq eql equal identity ignore functionp vectorp
     ;; Arithmetic
     + - * / mod /= < <= > >= =
     1+ 1- abs max min zerop numberp integerp
@@ -600,6 +600,8 @@ not registered in our table, which keeps host helper symbols like
     ;; host `symbol-function' is a useful escape hatch for bootstrap)
     symbolp keywordp intern make-symbol symbol-name gensym
     symbol-function
+    ;; Property lists (used by condition-case to read error-conditions)
+    get put
     ;; Hash tables — raw data, safe to delegate wholesale
     make-hash-table gethash puthash remhash clrhash
     hash-table-p hash-table-count
