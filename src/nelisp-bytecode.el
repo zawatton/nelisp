@@ -43,6 +43,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'nelisp-eval)
 
 (define-error 'nelisp-bc-error "NeLisp bytecode error")
 (define-error 'nelisp-bc-unimplemented
@@ -88,6 +89,14 @@
 ;; GREATER          13        0     pop b a, push (> a b)
 ;; EQ               14        0     pop b a, push (eq a b)
 ;; NOT              15        0     pop x, push (not x)
+;; VARREF           16        1     push CONSTS[uint8]'s global value
+;; VARSET           17        1     pop val; set global of CONSTS[uint8] to val
+;; VARBIND          18        1     pop val; save old global of CONSTS[uint8]
+;;                                   on specpdl, install new value (for `let'
+;;                                   bindings of defvar'd specials)
+;; UNBIND           19        1     pop uint8 specpdl entries, restoring each
+;; STACK-SET        20        1     pop val; write into stack[sp - uint8 - 1]
+;; DISCARDN         21        1     drop uint8 values below top, keep TOS
 
 (defconst nelisp-bc--opcode-table
   '((RETURN           0 0)
@@ -105,7 +114,13 @@
     (LESS            12 0)
     (GREATER         13 0)
     (EQ              14 0)
-    (NOT             15 0))
+    (NOT             15 0)
+    (VARREF          16 1)
+    (VARSET          17 1)
+    (VARBIND         18 1)
+    (UNBIND          19 1)
+    (STACK-SET       20 1)
+    (DISCARDN        21 1))
   "Ordered list of (NAME BYTE ARG-BYTES) triples.
 Source of truth; the plist, reverse-name, and arg-bytes caches are
 derived from this by `nelisp-bc--build-opcode-indexes'.")
@@ -166,10 +181,15 @@ Called at load time from this module's tail."
   consts   ;; list in order; index 0 is first element
   insns    ;; list in reverse emit order
   (sp 0)   ;; current tracked stack depth
-  (max-sp 0))
+  (max-sp 0)
+  ;; Phase 3b.4a: lexical env — alist of (symbol . absolute-stack-slot).
+  ;; A slot is an absolute index into the runtime stack; `sp' is the
+  ;; next free position (slot N = sp-value just after pushing it - 1).
+  ;; Symbols are looked up newest-first so inner bindings shadow outer.
+  (lex-env nil))
 
 (defun nelisp-bc--ctx-new ()
-  (nelisp-bc--ctx--make :consts nil :insns nil :sp 0 :max-sp 0))
+  (nelisp-bc--ctx--make :consts nil :insns nil :sp 0 :max-sp 0 :lex-env nil))
 
 (defun nelisp-bc--self-evaluating-p (form)
   "Non-nil if FORM evaluates to itself with no further work."
@@ -179,6 +199,16 @@ Called at load time from this module's tail."
       (numberp form)
       (stringp form)
       (vectorp form)))
+
+(defun nelisp-bc--lex-slot (ctx sym)
+  "Return SYM's absolute stack slot in CTX, or nil if not lexical."
+  (let ((cell (assq sym (nelisp-bc--ctx-lex-env ctx))))
+    (and cell (cdr cell))))
+
+(defun nelisp-bc--special-p (sym)
+  "Non-nil if SYM is a defvar-declared dynamic special."
+  (and (boundp 'nelisp--specials)
+       (gethash sym nelisp--specials)))
 
 (defun nelisp-bc--adjust-sp (ctx delta)
   "Track the operand stack depth inside CTX by DELTA."
@@ -264,6 +294,8 @@ Returns a cons (CODE-VECTOR . RESOLVED-LABELS-PLIST)."
     (let ((idx (nelisp-bc--add-const ctx form)))
       (nelisp-bc--emit ctx 'CONST idx)
       (nelisp-bc--adjust-sp ctx 1)))
+   ((symbolp form)
+    (nelisp-bc--compile-var-ref ctx form))
    ((and (consp form) (eq (car form) 'quote))
     (unless (and (consp (cdr form)) (null (cddr form)))
       (signal 'nelisp-bc-error (list "malformed quote" form)))
@@ -276,11 +308,222 @@ Returns a cons (CODE-VECTOR . RESOLVED-LABELS-PLIST)."
     (nelisp-bc--compile-if ctx (nth 1 form) (nth 2 form) (nthcdr 3 form)))
    ((and (consp form) (eq (car form) 'cond))
     (nelisp-bc--compile-cond ctx (cdr form)))
+   ((and (consp form) (eq (car form) 'setq))
+    (nelisp-bc--compile-setq ctx (cdr form)))
+   ((and (consp form) (eq (car form) 'let))
+    (nelisp-bc--compile-let ctx (cadr form) (cddr form)))
+   ((and (consp form) (eq (car form) 'let*))
+    (nelisp-bc--compile-let* ctx (cadr form) (cddr form)))
+   ((and (consp form) (eq (car form) 'while))
+    (nelisp-bc--compile-while ctx (cadr form) (cddr form)))
    ((and (consp form) (memq (car form) '(+ - < > eq not 1+ 1-)))
     (nelisp-bc--compile-primitive ctx (car form) (cdr form)))
    (t
     (signal 'nelisp-bc-unimplemented
             (list "compiler cannot handle form yet" form)))))
+
+(defun nelisp-bc--compile-var-ref (ctx sym)
+  "Compile a reference to symbol SYM.
+Keywords / nil / t are self-evaluating; lexicals emit STACK-REF from
+the recorded slot; everything else reads through the global/specials
+table via VARREF."
+  (cond
+   ((eq sym nil)
+    (let ((idx (nelisp-bc--add-const ctx nil)))
+      (nelisp-bc--emit ctx 'CONST idx)
+      (nelisp-bc--adjust-sp ctx 1)))
+   ((eq sym t)
+    (let ((idx (nelisp-bc--add-const ctx t)))
+      (nelisp-bc--emit ctx 'CONST idx)
+      (nelisp-bc--adjust-sp ctx 1)))
+   ((keywordp sym)
+    (let ((idx (nelisp-bc--add-const ctx sym)))
+      (nelisp-bc--emit ctx 'CONST idx)
+      (nelisp-bc--adjust-sp ctx 1)))
+   (t
+    (let ((slot (nelisp-bc--lex-slot ctx sym)))
+      (cond
+       ((and slot (not (nelisp-bc--special-p sym)))
+        ;; Lexical slot still live: push a copy via STACK-REF.
+        (let ((offset (- (nelisp-bc--ctx-sp ctx) 1 slot)))
+          (when (or (< offset 0) (> offset 255))
+            (signal 'nelisp-bc-unimplemented
+                    (list "lexical slot out of 1-byte range" sym offset)))
+          (nelisp-bc--emit ctx 'STACK-REF offset)
+          (nelisp-bc--adjust-sp ctx 1)))
+       (t
+        (let ((idx (nelisp-bc--add-const ctx sym)))
+          (nelisp-bc--emit ctx 'VARREF idx)
+          (nelisp-bc--adjust-sp ctx 1))))))))
+
+(defun nelisp-bc--compile-setq (ctx args)
+  "Compile (setq SYM VAL [SYM VAL ...]).
+Result is the last VAL's value."
+  (unless args
+    (signal 'nelisp-bc-error (list "setq with no args")))
+  (let ((remaining args))
+    (while remaining
+      (unless (cdr remaining)
+        (signal 'nelisp-bc-error (list "setq with odd args")))
+      (let ((sym (car remaining))
+            (val (cadr remaining)))
+        (unless (symbolp sym)
+          (signal 'nelisp-bc-error (list "setq non-symbol" sym)))
+        (when (or (eq sym nil) (eq sym t) (keywordp sym))
+          (signal 'nelisp-bc-error
+                  (list "cannot setq constant" sym)))
+        (nelisp-bc--compile-form ctx val)
+        (let ((slot (nelisp-bc--lex-slot ctx sym)))
+          (cond
+           ((and slot (not (nelisp-bc--special-p sym)))
+            ;; Lexical: write into slot, then DUP the slot back so the
+            ;; form leaves the value on the stack as setq's result.
+            ;; Easiest encoding: DUP, then STACK-SET to (slot+1 offset from
+            ;; new top after DUP).  After DUP sp' = sp+1, top is the
+            ;; duplicate; STACK-SET offset = new_sp - 1 - slot.
+            (nelisp-bc--emit ctx 'DUP)
+            (nelisp-bc--adjust-sp ctx 1)
+            (let ((offset (- (nelisp-bc--ctx-sp ctx) 1 slot)))
+              (when (or (< offset 0) (> offset 255))
+                (signal 'nelisp-bc-unimplemented
+                        (list "lexical slot out of 1-byte range"
+                              sym offset)))
+              (nelisp-bc--emit ctx 'STACK-SET offset)
+              (nelisp-bc--adjust-sp ctx -1)))
+           (t
+            ;; Global / special: VARSET pops the value, so DUP first.
+            (nelisp-bc--emit ctx 'DUP)
+            (nelisp-bc--adjust-sp ctx 1)
+            (let ((idx (nelisp-bc--add-const ctx sym)))
+              (nelisp-bc--emit ctx 'VARSET idx)
+              (nelisp-bc--adjust-sp ctx -1)))))
+        (setq remaining (cddr remaining))
+        (when remaining
+          ;; Discard the intermediate value; only the last setq's value
+          ;; is the overall result.
+          (nelisp-bc--emit ctx 'DROP)
+          (nelisp-bc--adjust-sp ctx -1))))))
+
+(defun nelisp-bc--parse-binding (b)
+  "Normalize a let binding spec B into (SYM . INIT-FORM)."
+  (cond
+   ((symbolp b)
+    (when (or (eq b nil) (eq b t) (keywordp b))
+      (signal 'nelisp-bc-error (list "cannot bind constant" b)))
+    (cons b nil))
+   ((and (consp b) (symbolp (car b)))
+    (when (or (eq (car b) nil) (eq (car b) t) (keywordp (car b)))
+      (signal 'nelisp-bc-error (list "cannot bind constant" (car b))))
+    (cons (car b) (cadr b)))
+   (t
+    (signal 'nelisp-bc-error (list "malformed let binding" b)))))
+
+(defun nelisp-bc--compile-let (ctx bindings body)
+  "Compile (let BINDINGS BODY...) — parallel binding semantics.
+Dynamic (defvar'd) names go via VARBIND/UNBIND; lexicals live in
+stack slots."
+  (let* ((parsed (mapcar #'nelisp-bc--parse-binding bindings))
+         (outer-lex (nelisp-bc--ctx-lex-env ctx))
+         (saved-sp (nelisp-bc--ctx-sp ctx))
+         (n (length parsed))
+         (dyn-count 0)
+         (new-lex outer-lex))
+    ;; 1. Evaluate every init in outer env, pushing each result.
+    (dolist (p parsed)
+      (nelisp-bc--compile-form ctx (cdr p)))
+    ;; 2. Install bindings.  Dynamic ones are copied to TOS (STACK-REF)
+    ;; then VARBIND'd, leaving the original slot as dead weight we'll
+    ;; collapse in step 5.  Lexicals record their slot in the compile-
+    ;; time env.
+    (let ((pos 0))
+      (dolist (p parsed)
+        (let* ((sym (car p))
+               (slot (+ saved-sp pos)))
+          (cond
+           ((nelisp-bc--special-p sym)
+            (let ((offset (- (nelisp-bc--ctx-sp ctx) 1 slot)))
+              (when (or (< offset 0) (> offset 255))
+                (signal 'nelisp-bc-unimplemented
+                        (list "let-binding slot out of range" sym offset)))
+              (nelisp-bc--emit ctx 'STACK-REF offset)
+              (nelisp-bc--adjust-sp ctx 1)
+              (let ((idx (nelisp-bc--add-const ctx sym)))
+                (nelisp-bc--emit ctx 'VARBIND idx)
+                (nelisp-bc--adjust-sp ctx -1)))
+            (cl-incf dyn-count))
+           (t
+            (setq new-lex (cons (cons sym slot) new-lex))))
+          (cl-incf pos))))
+    ;; 3. Compile body with extended lex-env.
+    (setf (nelisp-bc--ctx-lex-env ctx) new-lex)
+    (unwind-protect
+        (nelisp-bc--compile-progn ctx body)
+      (setf (nelisp-bc--ctx-lex-env ctx) outer-lex))
+    ;; 4. Unbind dynamics.
+    (when (> dyn-count 0)
+      (nelisp-bc--emit ctx 'UNBIND dyn-count))
+    ;; 5. Collapse the binding slots under the result.  After body, stack
+    ;; top is the result and there are N binding slots below it.
+    (when (> n 0)
+      (when (> n 255)
+        (signal 'nelisp-bc-unimplemented
+                (list "let with > 255 bindings" n)))
+      (nelisp-bc--emit ctx 'DISCARDN n)
+      (nelisp-bc--adjust-sp ctx (- n)))))
+
+(defun nelisp-bc--compile-let* (ctx bindings body)
+  "Compile (let* BINDINGS BODY...) — sequential binding.
+Each init sees all previously introduced lex/dyn bindings."
+  (let* ((outer-lex (nelisp-bc--ctx-lex-env ctx))
+         (lex-count 0)
+         (dyn-count 0))
+    (unwind-protect
+        (progn
+          (dolist (b bindings)
+            (let* ((p (nelisp-bc--parse-binding b))
+                   (sym (car p))
+                   (init (cdr p)))
+              (nelisp-bc--compile-form ctx init)
+              (cond
+               ((nelisp-bc--special-p sym)
+                (let ((idx (nelisp-bc--add-const ctx sym)))
+                  (nelisp-bc--emit ctx 'VARBIND idx)
+                  (nelisp-bc--adjust-sp ctx -1))
+                (cl-incf dyn-count))
+               (t
+                (let ((slot (- (nelisp-bc--ctx-sp ctx) 1)))
+                  (setf (nelisp-bc--ctx-lex-env ctx)
+                        (cons (cons sym slot)
+                              (nelisp-bc--ctx-lex-env ctx)))
+                  (cl-incf lex-count))))))
+          (nelisp-bc--compile-progn ctx body)
+          (when (> dyn-count 0)
+            (nelisp-bc--emit ctx 'UNBIND dyn-count))
+          (when (> lex-count 0)
+            (when (> lex-count 255)
+              (signal 'nelisp-bc-unimplemented
+                      (list "let* with > 255 lex bindings" lex-count)))
+            (nelisp-bc--emit ctx 'DISCARDN lex-count)
+            (nelisp-bc--adjust-sp ctx (- lex-count))))
+      (setf (nelisp-bc--ctx-lex-env ctx) outer-lex))))
+
+(defun nelisp-bc--compile-while (ctx test body)
+  "Compile (while TEST BODY...) — always returns nil."
+  (let ((top-label (cl-gensym "bc-while-top-"))
+        (end-label (cl-gensym "bc-while-end-")))
+    (nelisp-bc--emit-label ctx top-label)
+    (nelisp-bc--compile-form ctx test)
+    (nelisp-bc--emit-jump ctx 'GOTO-IF-NIL end-label)
+    (nelisp-bc--adjust-sp ctx -1)
+    (when body
+      (nelisp-bc--compile-progn ctx body)
+      (nelisp-bc--emit ctx 'DROP)
+      (nelisp-bc--adjust-sp ctx -1))
+    (nelisp-bc--emit-jump ctx 'GOTO top-label)
+    (nelisp-bc--emit-label ctx end-label)
+    (let ((idx (nelisp-bc--add-const ctx nil)))
+      (nelisp-bc--emit ctx 'CONST idx)
+      (nelisp-bc--adjust-sp ctx 1))))
 
 (defun nelisp-bc--compile-progn (ctx body)
   "Compile BODY (sequence of forms); result of last form on stack."
@@ -414,10 +657,10 @@ MCP Parameters:
 (defun nelisp-bc-run (bcl &optional args)
   "Execute the bytecode closure BCL.
 
-Phase 3b.2 VM: operand stack + PC loop, five opcodes.  ARGS is
-currently unused — parameter binding arrives in 3b.4 once VARBIND
-lands.  Passing a non-nil ARGS to a 3b.2 closure signals, so we
-don't silently drop arguments.
+Phase 3b.4a expands the VM with variable ops (VARREF / VARSET /
+VARBIND / UNBIND / STACK-SET / DISCARDN) so `let' / `let*' / `setq'
+/ `while' can be compiled.  Argument binding for `lambda' still
+arrives in 3b.5; passing a non-nil ARGS continues to signal.
 
 MCP Parameters:
   BCL   — `nelisp-bcl' object (see commentary §4.1)
@@ -426,7 +669,7 @@ MCP Parameters:
     (signal 'nelisp-bc-error (list "not a nelisp-bcl" bcl)))
   (when args
     (signal 'nelisp-bc-unimplemented
-            (list "argument binding pending Phase 3b.4")))
+            (list "argument binding pending Phase 3b.5")))
   (let* ((code (nelisp-bc-code bcl))
          (consts (nelisp-bc-consts bcl))
          (stack-depth (max 1 (or (nelisp-bc-stack-depth bcl) 1)))
@@ -434,6 +677,10 @@ MCP Parameters:
          (sp 0)
          (pc 0)
          (len (length code))
+         ;; specpdl: list of (SYM . OLD-VAL-OR-UNBOUND); grows on VARBIND,
+         ;; shrinks on UNBIND.  Always restored fully on non-local exit
+         ;; via `unwind-protect' so a stray throw never leaks a binding.
+         (specpdl nil)
          (op-RETURN          (nelisp-bc-opcode 'RETURN))
          (op-CONST           (nelisp-bc-opcode 'CONST))
          (op-STACK-REF       (nelisp-bc-opcode 'STACK-REF))
@@ -450,17 +697,36 @@ MCP Parameters:
          (op-GREATER         (nelisp-bc-opcode 'GREATER))
          (op-EQ              (nelisp-bc-opcode 'EQ))
          (op-NOT             (nelisp-bc-opcode 'NOT))
+         (op-VARREF          (nelisp-bc-opcode 'VARREF))
+         (op-VARSET          (nelisp-bc-opcode 'VARSET))
+         (op-VARBIND         (nelisp-bc-opcode 'VARBIND))
+         (op-UNBIND          (nelisp-bc-opcode 'UNBIND))
+         (op-STACK-SET       (nelisp-bc-opcode 'STACK-SET))
+         (op-DISCARDN        (nelisp-bc-opcode 'DISCARDN))
          result)
     (cl-flet ((read-u16 ()
                 (prog1 (+ (aref code pc)
                           (ash (aref code (1+ pc)) 8))
-                  (setq pc (+ pc 2)))))
-      (catch 'nelisp-bc--return
-        (while (< pc len)
-          (let ((op (aref code pc)))
-            (setq pc (1+ pc))
-            (cond
-             ((= op op-RETURN)
+                  (setq pc (+ pc 2))))
+              (restore-specpdl ()
+                ;; Restore every outstanding specpdl entry in reverse
+                ;; order so duplicate binds layer the same way `let'
+                ;; does.  Called both on normal fall-out (no-op when
+                ;; bytecode is well-formed) and on non-local exit.
+                (while specpdl
+                  (let* ((entry (pop specpdl))
+                         (sym (car entry))
+                         (old (cdr entry)))
+                    (if (eq old nelisp--unbound)
+                        (remhash sym nelisp--globals)
+                      (puthash sym old nelisp--globals))))))
+      (unwind-protect
+          (catch 'nelisp-bc--return
+            (while (< pc len)
+              (let ((op (aref code pc)))
+                (setq pc (1+ pc))
+                (cond
+                 ((= op op-RETURN)
               (when (<= sp 0)
                 (signal 'nelisp-bc-error (list "RETURN on empty stack" pc)))
               (setq result (aref stack (1- sp)))
@@ -558,12 +824,81 @@ MCP Parameters:
               (when (<= sp 0)
                 (signal 'nelisp-bc-error (list "NOT on empty stack" pc)))
               (aset stack (1- sp) (not (aref stack (1- sp)))))
-             (t
-              (signal 'nelisp-bc-error
-                      (list "unknown opcode"
-                            (aref nelisp-bc--opcode-names op)
-                            op (1- pc)))))))
-        (signal 'nelisp-bc-error (list "fell off code without RETURN" pc))))
+             ((= op op-VARREF)
+              (when (>= sp stack-depth)
+                (signal 'nelisp-bc-error (list "stack overflow at VARREF" pc)))
+              (let* ((idx (aref code pc))
+                     (sym (aref consts idx))
+                     (val (gethash sym nelisp--globals nelisp--unbound)))
+                (setq pc (1+ pc))
+                (when (eq val nelisp--unbound)
+                  (signal 'nelisp-unbound-variable (list sym)))
+                (aset stack sp val)
+                (setq sp (1+ sp))))
+             ((= op op-VARSET)
+              (when (<= sp 0)
+                (signal 'nelisp-bc-error (list "VARSET on empty stack" pc)))
+              (let* ((idx (aref code pc))
+                     (sym (aref consts idx))
+                     (val (aref stack (1- sp))))
+                (setq pc (1+ pc))
+                (puthash sym val nelisp--globals)
+                (setq sp (1- sp))))
+             ((= op op-VARBIND)
+              (when (<= sp 0)
+                (signal 'nelisp-bc-error (list "VARBIND on empty stack" pc)))
+              (let* ((idx (aref code pc))
+                     (sym (aref consts idx))
+                     (val (aref stack (1- sp)))
+                     (old (gethash sym nelisp--globals nelisp--unbound)))
+                (setq pc (1+ pc))
+                (push (cons sym old) specpdl)
+                (puthash sym val nelisp--globals)
+                (setq sp (1- sp))))
+             ((= op op-UNBIND)
+              (let ((n (aref code pc)))
+                (setq pc (1+ pc))
+                (dotimes (_ n)
+                  (unless specpdl
+                    (signal 'nelisp-bc-error
+                            (list "UNBIND with empty specpdl" pc)))
+                  (let* ((entry (pop specpdl))
+                         (sym (car entry))
+                         (old (cdr entry)))
+                    (if (eq old nelisp--unbound)
+                        (remhash sym nelisp--globals)
+                      (puthash sym old nelisp--globals))))))
+             ((= op op-STACK-SET)
+              (when (<= sp 0)
+                (signal 'nelisp-bc-error (list "STACK-SET on empty stack" pc)))
+              (let* ((offset (aref code pc))
+                     (dest (- sp offset 1)))
+                (setq pc (1+ pc))
+                (when (or (< dest 0) (>= dest sp))
+                  (signal 'nelisp-bc-error
+                          (list "STACK-SET out of bounds" offset sp)))
+                (aset stack dest (aref stack (1- sp)))
+                (setq sp (1- sp))))
+             ((= op op-DISCARDN)
+              (let ((n (aref code pc)))
+                (setq pc (1+ pc))
+                (when (<= sp 0)
+                  (signal 'nelisp-bc-error (list "DISCARDN on empty stack" pc)))
+                (when (> n (1- sp))
+                  (signal 'nelisp-bc-error
+                          (list "DISCARDN underflow" n sp)))
+                (unless (zerop n)
+                  ;; Move TOS down by N, then shrink sp by N.
+                  (aset stack (- sp 1 n) (aref stack (1- sp)))
+                  (setq sp (- sp n)))))
+                 (t
+                  (signal 'nelisp-bc-error
+                          (list "unknown opcode"
+                                (aref nelisp-bc--opcode-names op)
+                                op (1- pc)))))))
+            (signal 'nelisp-bc-error (list "fell off code without RETURN" pc)))
+        ;; cleanup (unwind-protect BODY CLEANUP)
+        (restore-specpdl)))
     result))
 
 (provide 'nelisp-bytecode)

@@ -103,10 +103,9 @@ Each symbolic op is replaced with its opcode byte via
   (should (equal (nelisp-bc-test--eval '(quote (a b c))) '(a b c))))
 
 (ert-deftest nelisp-bc-3b2-compile-unimplemented ()
-  ;; Calls, let-bindings, etc. are still 3b.4+ territory.
+  ;; Generic function calls are still 3b.4b+ territory.  `let' etc.
+  ;; shipped in 3b.4a (see `nelisp-bc-3b4a-*' tests below).
   (should-error (nelisp-bc-compile '(foo 1 2))
-                :type 'nelisp-bc-unimplemented)
-  (should-error (nelisp-bc-compile '(let ((x 1)) x))
                 :type 'nelisp-bc-unimplemented))
 
 (ert-deftest nelisp-bc-3b2-compile-captures-env ()
@@ -381,6 +380,241 @@ a label.  Returns the resolved int vector."
   (let ((bcl (nelisp-bc-compile '(+ 1 1 1 1))))
     (should (= (length (nelisp-bc-consts bcl)) 1))
     (should (= (aref (nelisp-bc-consts bcl) 0) 1))))
+
+;;; Phase 3b.4a — variable access + let / let* / setq / while -------
+
+(ert-deftest nelisp-bc-3b4a-opcode-table ()
+  (should (= (nelisp-bc-opcode 'VARREF)    16))
+  (should (= (nelisp-bc-opcode 'VARSET)    17))
+  (should (= (nelisp-bc-opcode 'VARBIND)   18))
+  (should (= (nelisp-bc-opcode 'UNBIND)    19))
+  (should (= (nelisp-bc-opcode 'STACK-SET) 20))
+  (should (= (nelisp-bc-opcode 'DISCARDN)  21)))
+
+(ert-deftest nelisp-bc-3b4a-opcode-arg-bytes ()
+  (should (= (aref nelisp-bc--opcode-arg-bytes 16) 1))
+  (should (= (aref nelisp-bc--opcode-arg-bytes 17) 1))
+  (should (= (aref nelisp-bc--opcode-arg-bytes 18) 1))
+  (should (= (aref nelisp-bc--opcode-arg-bytes 19) 1))
+  (should (= (aref nelisp-bc--opcode-arg-bytes 20) 1))
+  (should (= (aref nelisp-bc--opcode-arg-bytes 21) 1)))
+
+(ert-deftest nelisp-bc-3b4a-let-single ()
+  (should (= (nelisp-bc-test--eval '(let ((x 42)) x)) 42))
+  (should (= (nelisp-bc-test--eval '(let ((x 1)) (+ x 2))) 3)))
+
+(ert-deftest nelisp-bc-3b4a-let-multiple ()
+  (should (= (nelisp-bc-test--eval '(let ((a 1) (b 2) (c 3)) (+ a b c))) 6))
+  (should (= (nelisp-bc-test--eval '(let ((x 10) (y 20)) (- y x))) 10)))
+
+(ert-deftest nelisp-bc-3b4a-let-parallel-semantics ()
+  ;; Inner `x' in init sees the OUTER `x'.
+  (should (= (nelisp-bc-test--eval
+              '(let ((x 5))
+                 (let ((x 10) (y x))
+                   (+ x y))))
+             15)))
+
+(ert-deftest nelisp-bc-3b4a-let*-sequential ()
+  (should (= (nelisp-bc-test--eval
+              '(let* ((x 1) (y (+ x 1)) (z (+ y 1)))
+                 (+ x y z)))
+             6)))
+
+(ert-deftest nelisp-bc-3b4a-let*-empty-body-nil ()
+  (should (eq (nelisp-bc-test--eval '(let* ((x 1)))) nil))
+  (should (eq (nelisp-bc-test--eval '(let ())) nil)))
+
+(ert-deftest nelisp-bc-3b4a-let-bare-sym ()
+  (should (eq (nelisp-bc-test--eval '(let (x) x)) nil))
+  (should (eq (nelisp-bc-test--eval '(let* (x) x)) nil)))
+
+(ert-deftest nelisp-bc-3b4a-let-shadowing ()
+  (should (= (nelisp-bc-test--eval
+              '(let ((x 1))
+                 (let ((x 2))
+                   (let ((x 3)) x))))
+             3))
+  (should (= (nelisp-bc-test--eval
+              '(let ((x 1))
+                 (+ (let ((x 99)) x) x)))
+             100)))
+
+(ert-deftest nelisp-bc-3b4a-setq-lexical ()
+  (should (= (nelisp-bc-test--eval
+              '(let ((x 1)) (setq x 42) x))
+             42))
+  (should (= (nelisp-bc-test--eval
+              '(let ((x 1))
+                 (setq x (+ x 2))
+                 (setq x (+ x 10))
+                 x))
+             13)))
+
+(ert-deftest nelisp-bc-3b4a-setq-returns-value ()
+  ;; `setq' evaluates to the last assigned value.
+  (should (= (nelisp-bc-test--eval
+              '(let ((x 0)) (setq x 77)))
+             77))
+  (should (= (nelisp-bc-test--eval
+              '(let ((x 0) (y 0))
+                 (setq x 1 y 2)))
+             2)))
+
+(ert-deftest nelisp-bc-3b4a-setq-multi ()
+  (should (= (nelisp-bc-test--eval
+              '(let ((a 0) (b 0) (c 0))
+                 (setq a 1 b 2 c 3)
+                 (+ a b c)))
+             6)))
+
+(ert-deftest nelisp-bc-3b4a-while-countdown ()
+  (should (= (nelisp-bc-test--eval
+              '(let ((n 5) (acc 0))
+                 (while (> n 0)
+                   (setq acc (+ acc n))
+                   (setq n (- n 1)))
+                 acc))
+             15)))
+
+(ert-deftest nelisp-bc-3b4a-while-zero-iters ()
+  (should (eq (nelisp-bc-test--eval '(while nil 999)) nil))
+  (should (= (nelisp-bc-test--eval
+              '(let ((n 0))
+                 (while (> n 0) (setq n (- n 1)))
+                 n))
+             0)))
+
+(ert-deftest nelisp-bc-3b4a-varref-global ()
+  ;; VARREF against a symbol registered in `nelisp--globals'.
+  (unwind-protect
+      (progn
+        (puthash 'nelisp-bc-test--global 123 nelisp--globals)
+        (should (= (nelisp-bc-test--eval 'nelisp-bc-test--global) 123)))
+    (remhash 'nelisp-bc-test--global nelisp--globals)))
+
+(ert-deftest nelisp-bc-3b4a-varref-unbound-signals ()
+  (remhash 'nelisp-bc-test--nope nelisp--globals)
+  (should-error
+   (nelisp-bc-test--eval 'nelisp-bc-test--nope)
+   :type 'nelisp-unbound-variable))
+
+(ert-deftest nelisp-bc-3b4a-setq-global ()
+  (unwind-protect
+      (progn
+        (remhash 'nelisp-bc-test--gset nelisp--globals)
+        (nelisp-bc-test--eval '(setq nelisp-bc-test--gset 7))
+        (should (= (gethash 'nelisp-bc-test--gset nelisp--globals) 7)))
+    (remhash 'nelisp-bc-test--gset nelisp--globals)))
+
+(ert-deftest nelisp-bc-3b4a-let-special-dynamic-bind ()
+  ;; Binding a `defvar'd special with `let' must save/restore the
+  ;; global slot and make the new value visible inside the body.
+  (unwind-protect
+      (progn
+        (puthash 'nelisp-bc-test--dyn t nelisp--specials)
+        (puthash 'nelisp-bc-test--dyn 'outer nelisp--globals)
+        (should (eq (nelisp-bc-test--eval
+                     '(let ((nelisp-bc-test--dyn 'inner))
+                        nelisp-bc-test--dyn))
+                    'inner))
+        (should (eq (gethash 'nelisp-bc-test--dyn nelisp--globals)
+                    'outer)))
+    (remhash 'nelisp-bc-test--dyn nelisp--globals)
+    (remhash 'nelisp-bc-test--dyn nelisp--specials)))
+
+(ert-deftest nelisp-bc-3b4a-let-special-restored-on-error ()
+  ;; A non-local exit from VM body must still restore the dyn global.
+  (unwind-protect
+      (progn
+        (puthash 'nelisp-bc-test--dyn2 t nelisp--specials)
+        (puthash 'nelisp-bc-test--dyn2 'outer nelisp--globals)
+        (remhash 'nelisp-bc-test--no-such-var nelisp--globals)
+        (condition-case nil
+            (nelisp-bc-test--eval
+             '(let ((nelisp-bc-test--dyn2 'inner))
+                nelisp-bc-test--no-such-var))
+          (nelisp-unbound-variable nil))
+        (should (eq (gethash 'nelisp-bc-test--dyn2 nelisp--globals)
+                    'outer)))
+    (remhash 'nelisp-bc-test--dyn2 nelisp--globals)
+    (remhash 'nelisp-bc-test--dyn2 nelisp--specials)))
+
+(ert-deftest nelisp-bc-3b4a-let*-special-sequential ()
+  (unwind-protect
+      (progn
+        (puthash 'nelisp-bc-test--dseq t nelisp--specials)
+        (puthash 'nelisp-bc-test--dseq 'outer nelisp--globals)
+        (should
+         (= (nelisp-bc-test--eval
+             '(let* ((nelisp-bc-test--dseq 10)
+                     (y (+ nelisp-bc-test--dseq 5)))
+                (+ nelisp-bc-test--dseq y)))
+            25))
+        (should (eq (gethash 'nelisp-bc-test--dseq nelisp--globals)
+                    'outer)))
+    (remhash 'nelisp-bc-test--dseq nelisp--globals)
+    (remhash 'nelisp-bc-test--dseq nelisp--specials)))
+
+(ert-deftest nelisp-bc-3b4a-mixed-lex-and-dyn ()
+  ;; Parallel let with one lex + one dyn + one lex binding.
+  (unwind-protect
+      (progn
+        (puthash 'nelisp-bc-test--mix t nelisp--specials)
+        (puthash 'nelisp-bc-test--mix 'outer nelisp--globals)
+        (should
+         (= (nelisp-bc-test--eval
+             '(let ((a 1) (nelisp-bc-test--mix 20) (c 3))
+                (+ a nelisp-bc-test--mix c)))
+            24))
+        (should (eq (gethash 'nelisp-bc-test--mix nelisp--globals)
+                    'outer)))
+    (remhash 'nelisp-bc-test--mix nelisp--globals)
+    (remhash 'nelisp-bc-test--mix nelisp--specials)))
+
+(ert-deftest nelisp-bc-3b4a-setq-on-special-updates-global ()
+  ;; `setq' of a special outside any `let' writes to the global.
+  (unwind-protect
+      (progn
+        (puthash 'nelisp-bc-test--specset t nelisp--specials)
+        (puthash 'nelisp-bc-test--specset 'outer nelisp--globals)
+        (nelisp-bc-test--eval '(setq nelisp-bc-test--specset 'new))
+        (should (eq (gethash 'nelisp-bc-test--specset nelisp--globals)
+                    'new)))
+    (remhash 'nelisp-bc-test--specset nelisp--globals)
+    (remhash 'nelisp-bc-test--specset nelisp--specials)))
+
+(ert-deftest nelisp-bc-3b4a-handwritten-varbind-unbind ()
+  ;; Handwritten: (let ((s 42)) s) with `s' as a dyn special.  We push
+  ;; 42, VARBIND s, VARREF s, UNBIND 1, RETURN.
+  (unwind-protect
+      (let* ((code (nelisp-bc-test--code
+                    '((CONST 0) (VARBIND 1) (VARREF 1) (UNBIND 1) RETURN)))
+             (bcl (nelisp-bc-make nil nil [42 nelisp-bc-test--hw]
+                                  code 2 0)))
+        (puthash 'nelisp-bc-test--hw t nelisp--specials)
+        (puthash 'nelisp-bc-test--hw 'outer nelisp--globals)
+        (should (= (nelisp-bc-run bcl) 42))
+        (should (eq (gethash 'nelisp-bc-test--hw nelisp--globals)
+                    'outer)))
+    (remhash 'nelisp-bc-test--hw nelisp--globals)
+    (remhash 'nelisp-bc-test--hw nelisp--specials)))
+
+(ert-deftest nelisp-bc-3b4a-handwritten-discardn ()
+  ;; Handwritten: push [9 10 11 12], DISCARDN 3, RETURN -> 12.
+  (let* ((code (nelisp-bc-test--code
+                '((CONST 0) (CONST 1) (CONST 2) (CONST 3)
+                  (DISCARDN 3) RETURN)))
+         (bcl (nelisp-bc-make nil nil [9 10 11 12] code 4 0)))
+    (should (= (nelisp-bc-run bcl) 12))))
+
+(ert-deftest nelisp-bc-3b4a-handwritten-stack-set ()
+  ;; Push 1 and 99 -> [1 99]; STACK-SET 1 writes TOS into stack[0]
+  ;; and pops, leaving [99]; RETURN -> 99.
+  (let* ((code (nelisp-bc-test--code
+                '((CONST 0) (CONST 1) (STACK-SET 1) RETURN)))
+         (bcl (nelisp-bc-make nil nil [1 99] code 2 0)))
+    (should (= (nelisp-bc-run bcl) 99))))
 
 (provide 'nelisp-bytecode-test)
 ;;; nelisp-bytecode-test.el ends here
