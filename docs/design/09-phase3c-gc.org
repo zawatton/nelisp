@@ -230,12 +230,21 @@ Phase 3b の 8 sub-phase 式を踏襲、細かく区切って user が途中 abo
   auto-sweep flag を尊重
 - 474/474 tests pass (bump from 469、+5)
 
-** 3c.4 MCP introspection tools (DRAFT)
+** 3c.4 Heap introspection (SHIPPED 2026-04-24)
 
-- =nelisp-heap-count= — type 別 object 数 (root set から walk して集計)
-- =nelisp-heap-roots= — root set の =(:kind :count)= summary
-- anvil 互換 MCP tool として register (=nelisp-gc-mcp-register=)
-- 予算: 80 LOC 目安、ERT 3 本
+- =nelisp-heap-count= (public, interactive): type 別 object 数 plist
+  =(:cons :closure :bcl :vector :string :hash-table :symbol :number
+  :other)=。=nelisp-gc--classify= helper で pcase 分類
+- =nelisp-heap-roots= (public, interactive): root set の
+  =(:kind :count)= summary。hash-table は =hash-table-count=、list は
+  =length=、その他 1
+- MCP registry integration は scope 外 (NeLisp 単体には registry なし、
+  anvil 連携は v0.4+ で別 PR)
+- autoload cookie 付与で =M-x= から呼べる
+- ERT 3 本: heap-count 全 key 存在 / 合計が =nelisp-gc-reachable-count=
+  と一致 / heap-roots が 4 globals を列挙、vm-stack は走行中でないとき
+  不在
+- 477/477 tests pass (bump from 474、+3)
 
 ** 3c.5 Phase 4 actor boundary hook (DRAFT)
 

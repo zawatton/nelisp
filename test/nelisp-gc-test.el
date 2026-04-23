@@ -274,5 +274,37 @@ hash-tables themselves as first-class objects."
       (nelisp-gc--post-gc-handler)
       (should (= 1 ran)))))
 
+;;; Heap introspection (3c.4) -----------------------------------------
+
+(ert-deftest nelisp-heap-count-returns-plist-with-expected-keys ()
+  "Every type key is present in the result (may be zero)."
+  (let ((r (nelisp-heap-count)))
+    (dolist (k '(:cons :closure :bcl :vector :string :hash-table
+                 :symbol :number :other))
+      (should (plist-member r k))
+      (should (integerp (plist-get r k))))))
+
+(ert-deftest nelisp-heap-count-totals-match-reachable-size ()
+  "Sum of per-type counts equals `nelisp-gc-reachable-count'."
+  (let* ((r     (nelisp-heap-count))
+         (live  (nelisp-gc-reachable-count))
+         (total (cl-loop for (_k v) on r by #'cddr sum v)))
+    (should (= total live))))
+
+(ert-deftest nelisp-heap-roots-lists-five-root-kinds ()
+  "Default root set surfaces the four globals plus vm-stack is absent
+when no bytecode is running."
+  (let ((summary (nelisp-heap-roots)))
+    (should (cl-find 'nelisp--globals   summary
+                     :key (lambda (e) (plist-get e :kind))))
+    (should (cl-find 'nelisp--functions summary
+                     :key (lambda (e) (plist-get e :kind))))
+    (should (cl-find 'nelisp--macros    summary
+                     :key (lambda (e) (plist-get e :kind))))
+    (should (cl-find 'nelisp--specials  summary
+                     :key (lambda (e) (plist-get e :kind))))
+    (should-not
+     (cl-find 'vm-stack summary :key (lambda (e) (plist-get e :kind))))))
+
 (provide 'nelisp-gc-test)
 ;;; nelisp-gc-test.el ends here
