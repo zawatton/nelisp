@@ -50,9 +50,12 @@
                  '(< n 2))))
 
 (ert-deftest nelisp-jit-translate-user-call ()
-  ;; Non-primitive symbol calls route through `nelisp--apply'.
+  ;; Non-primitive symbol calls route through the 3b.8c fast-path
+  ;; helper `nelisp-jit--call-user' (which hits bcl / JIT directly
+  ;; via gethash + `nelisp-bc-run', skipping `nelisp--apply's symbol
+  ;; arm for the common case).
   (should (equal (nelisp-jit--translate '(fib n) '(n))
-                 '(nelisp--apply 'fib (list n)))))
+                 '(nelisp-jit--call-user 'fib (list n)))))
 
 (ert-deftest nelisp-jit-translate-if ()
   (should (equal (nelisp-jit--translate '(if (< n 2) n (+ n 1)) '(n))
@@ -152,6 +155,29 @@ interpreter can handle the counter pattern correctly."
             '((base . 10)) '(n) '((setq n (+ n 1)) (+ base n)))))
     (should (nelisp-jit-bcl-p c))
     (should (= 16 (funcall (nth 4 c) 5)))))
+
+(ert-deftest nelisp-jit-call-user-bcl-fast-path ()
+  "`nelisp-jit--call-user' hits `nelisp-bc-run' directly when the
+symbol resolves to a bcl closure.  Exercised end-to-end: JIT'd fib
+recursively calls fib through this path."
+  (let ((nelisp-bc-auto-compile nil)
+        (nelisp-jit-enabled t))
+    (nelisp--reset)
+    (nelisp-jit-install)
+    (unwind-protect
+        (progn
+          (nelisp-eval '(defun fib (n)
+                          (if (< n 2) n
+                            (+ (fib (- n 1)) (fib (- n 2))))))
+          (should (= 89 (nelisp-eval '(fib 11)))))
+      (nelisp-jit-uninstall))))
+
+(ert-deftest nelisp-jit-call-user-fallback-on-non-bcl ()
+  "Non-bcl function cells (interpreter closure, subr, etc.) still
+dispatch correctly through `nelisp--apply'."
+  ;; Host primitive invoked through a JIT'd body — the call routes to
+  ;; the `(functionp fn) → (apply fn args)' arm of `nelisp--apply'.
+  (should (= 3 (nelisp-jit--call-user '+ '(1 2)))))
 
 (ert-deftest nelisp-jit-fallback-on-unsupported-form ()
   "Forms the translator cannot handle make the whole compile return nil.
