@@ -286,6 +286,144 @@ in the host side is visible from inside the installed tramp-eval."
     (should (equal c1 42))
     (should (equal c1 c2))))
 
+;;; ----- Phase 3b.6a — Cycle fixpoint with VM auto-compile ----------
+;;
+;; The full-self-install path with `nelisp-bc-auto-compile' = t blows
+;; the host C stack — the trampoline install of every NeLisp source
+;; file already recurses deeply, and auto-compile per defun amplifies
+;; it.  These tests therefore install the source tree with auto-
+;; compile *off*, then bind it on around just the user-level defuns
+;; under test.  That setup proves cycle-1 = cycle-2 still holds when
+;; the user's function body runs on the VM, even though the cycle-2
+;; `nelisp-tramp-eval' that dispatches the call is itself an
+;; interpreter closure.  The deep-VM-install variant is tracked as
+;; future work (3b.6c — see docs/design/08).
+
+(defun nelisp-tramp-test--install-then-compile (defun-form)
+  "Install DEFUN-FORM via the trampoline with auto-compile *on*.
+Pre-installed source defuns stay as interpreter closures."
+  (require 'nelisp-bytecode)
+  (let ((nelisp-bc-auto-compile t))
+    (nelisp-tramp-eval defun-form)))
+
+(ert-deftest nelisp-tramp-cycle2-fixpoint-fib-vm ()
+  "`fib' compiled to bcl returns the same result via cycle-1
+(host trampoline) and cycle-2 (NeLisp-installed trampoline)."
+  (require 'nelisp-bytecode)
+  (nelisp-tramp-test--full-self-install)
+  (nelisp-tramp-test--install-then-compile
+   '(defun fib (n) (if (< n 2) n
+                     (+ (fib (- n 1)) (fib (- n 2))))))
+  (should (nelisp-bcl-p (gethash 'fib nelisp--functions)))
+  (dolist (n '(0 1 5 8 10))
+    (let ((cyc1 (nelisp-tramp-eval (list 'fib n)))
+          (cyc2 (nelisp-tramp-eval
+                 (list 'nelisp-tramp-eval
+                       (list 'quote (list 'fib n))))))
+      (should (equal cyc1 cyc2)))))
+
+(ert-deftest nelisp-tramp-cycle2-fixpoint-fact-vm ()
+  (require 'nelisp-bytecode)
+  (nelisp-tramp-test--full-self-install)
+  (nelisp-tramp-test--install-then-compile
+   '(defun fact (n) (if (< n 2) 1 (* n (fact (- n 1))))))
+  (should (nelisp-bcl-p (gethash 'fact nelisp--functions)))
+  (dolist (n '(1 3 5 7))
+    (should (equal (nelisp-tramp-eval (list 'fact n))
+                   (nelisp-tramp-eval
+                    (list 'nelisp-tramp-eval
+                          (list 'quote (list 'fact n))))))))
+
+(ert-deftest nelisp-tramp-cycle2-vm-mixed-bcl-and-closure ()
+  "After installing some defuns as bcls (compilable) and others as
+interpreter closures (uncompilable), a trampoline call that
+crosses both kinds returns the right answer."
+  (require 'nelisp-bytecode)
+  (nelisp-tramp-test--full-self-install)
+  (nelisp-tramp-test--install-then-compile
+   '(defun double (n) (+ n n)))
+  ;; Uncompilable body: `and' is in the unimplemented set.
+  (let ((nelisp-bc-auto-compile t))
+    (nelisp-tramp-eval '(defun nzp (n) (and (numberp n) (not (= n 0))))))
+  (nelisp-tramp-test--install-then-compile
+   '(defun maybe-double (n) (if (nzp n) (double n) 0)))
+  (should (nelisp-bcl-p     (gethash 'double nelisp--functions)))
+  (should (nelisp--closure-p (gethash 'nzp nelisp--functions)))
+  (should (nelisp-bcl-p     (gethash 'maybe-double nelisp--functions)))
+  (should (= (nelisp-tramp-eval '(maybe-double 5)) 10))
+  (should (= (nelisp-tramp-eval '(maybe-double 0)) 0)))
+
+(ert-deftest nelisp-tramp-cycle2-vm-equivalence-tail ()
+  "Tail-recursive bcl works through both cycle-1 and cycle-2."
+  (require 'nelisp-bytecode)
+  (nelisp-tramp-test--full-self-install)
+  (nelisp-tramp-test--install-then-compile
+   '(defun sum-to (n acc)
+      (if (< n 1) acc (sum-to (- n 1) (+ acc n)))))
+  (should (nelisp-bcl-p (gethash 'sum-to nelisp--functions)))
+  (let ((cyc1 (nelisp-tramp-eval '(sum-to 50 0)))
+        (cyc2 (nelisp-tramp-eval
+               '(nelisp-tramp-eval (quote (sum-to 50 0))))))
+    (should (= cyc1 (apply #'+ (number-sequence 1 50))))
+    (should (equal cyc1 cyc2))))
+
+;;; ----- Phase 3b.6b — Meta-circular compile ----------------------
+;;
+;; The body of `nelisp-bc-compile' is itself NeLisp Lisp.  Feeding it
+;; through `nelisp-bc-try-compile-lambda' produces a bcl of the
+;; compiler.  Calling that bcl on a source form must produce a bcl
+;; equivalent to what host `nelisp-bc-compile' produces — equivalent
+;; in the sense that running both bcls returns the same value.
+;;
+;; This is the "meta-circular smoke test" of design doc §3b.6 step 3.
+;; A full meta-circular bootstrap (re-installing every helper as a
+;; bcl) is deferred — see 3b.6c notes.
+
+(defconst nelisp-tramp-test--meta-compile-source
+  '(lambda (form)
+     (let ((ctx (nelisp-bc--ctx-new)))
+       (nelisp-bc--compile-form ctx form)
+       (nelisp-bc--emit ctx (quote RETURN))
+       (let* ((code (nelisp-bc--resolve (nelisp-bc--ctx-insns ctx)))
+              (consts (apply (function vector) (nelisp-bc--ctx-consts ctx)))
+              (max-sp (max 1 (nelisp-bc--ctx-max-sp ctx))))
+         (nelisp-bc-make nil nil consts code max-sp 0))))
+  "A reduced clone of `nelisp-bc-compile' (no optional ENV) suitable
+for compilation via `nelisp-bc-try-compile-lambda'.")
+
+(ert-deftest nelisp-tramp-meta-compile-returns-bcl ()
+  "The compiler-as-source compiles through the auto-compile hook."
+  (require 'nelisp-bytecode)
+  (let* ((nelisp-bc-auto-compile t)
+         (src nelisp-tramp-test--meta-compile-source)
+         (meta (nelisp-bc-try-compile-lambda nil (cadr src) (cddr src))))
+    (should (nelisp-bcl-p meta))))
+
+(ert-deftest nelisp-tramp-meta-compile-equivalence ()
+  "For each sample form, the bcl produced by host `nelisp-bc-compile'
+and the bcl produced by the *meta* compile run to the same value."
+  (require 'nelisp-bytecode)
+  (let* ((nelisp-bc-auto-compile t)
+         (src nelisp-tramp-test--meta-compile-source)
+         (meta (nelisp-bc-try-compile-lambda nil (cadr src) (cddr src))))
+    (should (nelisp-bcl-p meta))
+    (dolist (form '(42
+                    "hello"
+                    (quote symbol-literal)
+                    (+ 1 2 3)
+                    (if (< 1 2) 10 20)
+                    (let ((x 5)) (+ x 100))
+                    (let* ((a 1) (b (+ a 2))) (+ a b))
+                    (cons 1 (cons 2 nil))
+                    (car (list 9 8 7))))
+      (let ((host-bcl (nelisp-bc-compile form))
+            (meta-bcl (nelisp--apply meta (list form))))
+        (should (nelisp-bcl-p host-bcl))
+        (should (nelisp-bcl-p meta-bcl))
+        ;; Both bcls when run produce the same value.
+        (should (equal (nelisp-bc-run host-bcl)
+                       (nelisp-bc-run meta-bcl)))))))
+
 (provide 'nelisp-tramp-test)
 
 ;;; nelisp-tramp-test.el ends here

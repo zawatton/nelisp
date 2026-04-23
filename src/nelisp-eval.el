@@ -720,7 +720,14 @@ closures, NeLisp-only defuns, and our own hash tables stay visible."
   (puthash 'fboundp      #'nelisp--builtin-fboundp      nelisp--functions)
   (puthash 'symbol-value #'nelisp--builtin-symbol-value nelisp--functions)
   (puthash 'require      #'nelisp--builtin-require      nelisp--functions)
-  (puthash 'provide      #'nelisp--builtin-provide      nelisp--functions))
+  (puthash 'provide      #'nelisp--builtin-provide      nelisp--functions)
+  ;; Bytecode VM dispatch — registered conditionally so the
+  ;; NeLisp-installed `nelisp--apply' can route bcls to the host VM
+  ;; via NeLisp `fboundp' / `funcall' even after `nelisp--reset'.
+  ;; Only present once nelisp-bytecode.el has been loaded.
+  (when (fboundp 'nelisp-bc-run)
+    (puthash 'nelisp-bc-run (symbol-function 'nelisp-bc-run)
+             nelisp--functions)))
 
 (defconst nelisp--core-macro-source
   "\

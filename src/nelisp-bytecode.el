@@ -388,15 +388,21 @@ Returns a cons (CODE-VECTOR . RESOLVED-LABELS-PLIST)."
    ((and (consp form) (eq (car form) 'lambda))
     (nelisp-bc--compile-lambda ctx (cadr form) (cddr form)))
    ((and (consp form) (eq (car form) 'function))
-    ;; (function FOO) — quote a callable.  Symbol → look up function
-    ;; cell at call time; lambda → compile inline.
+    ;; (function FOO) — quote a callable.  Symbol → push the symbol;
+    ;; `nelisp--apply' resolves it to the host or NeLisp function at
+    ;; call time, matching the interpreter's `nelisp--eval-function'.
+    ;; Lambda → compile inline as a closure.
     (let ((arg (cadr form)))
       (cond
        ((and (consp arg) (eq (car arg) 'lambda))
         (nelisp-bc--compile-lambda ctx (cadr arg) (cddr arg)))
+       ((symbolp arg)
+        (let ((idx (nelisp-bc--add-const ctx arg)))
+          (nelisp-bc--emit ctx 'CONST idx)
+          (nelisp-bc--adjust-sp ctx 1)))
        (t
         (signal 'nelisp-bc-unimplemented
-                (list "(function NON-LAMBDA) pending" arg))))))
+                (list "(function ...) form not handled" arg))))))
    ((and (consp form)
          (memq (car form)
                '(defun defvar defconst defmacro

@@ -104,12 +104,12 @@ Each symbolic op is replaced with its opcode byte via
 
 (ert-deftest nelisp-bc-3b2-compile-unimplemented ()
   ;; `let', generic calls, error-handling forms shipped in 3b.4a/b/c;
-  ;; lambda landed in 3b.5a — see `nelisp-bc-3b4*-' / `nelisp-bc-3b5*-'.
-  ;; (function NON-LAMBDA) and `defun' / `defvar' / `defmacro' /
-  ;; short-circuit forms still belong to the interpreter.
-  (should-error (nelisp-bc-compile '(function foo))
-                :type 'nelisp-bc-unimplemented)
+  ;; lambda landed in 3b.5a; (function SYMBOL) landed in 3b.6.
+  ;; `defun' / `defvar' / `defmacro' / short-circuit forms still
+  ;; belong to the interpreter.
   (should-error (nelisp-bc-compile '(defun f () 1))
+                :type 'nelisp-bc-unimplemented)
+  (should-error (nelisp-bc-compile '(defvar v 1))
                 :type 'nelisp-bc-unimplemented))
 
 (ert-deftest nelisp-bc-3b2-compile-captures-env ()
