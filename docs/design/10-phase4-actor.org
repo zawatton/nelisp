@@ -1,0 +1,448 @@
+#+TITLE: Phase 4 — Actor / channel runtime (primary concurrency)
+#+AUTHOR: zawatton
+#+DATE: 2026-04-24
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: DRAFT-2026-04-24 (user signoff 待ち: §2 8 items)
+:END:
+
+=v0.3.1= (Phase 3c 完了) の次。NeLisp concurrency の本丸、=04-concurrency.org=
+§7.1 lock 済「C actor primary」の実装起案。Phase 4 成功で:
+
+1. anvil.el 痛み解消 test case (=04-concurrency.org= §4.5) 3 件のうち 1+
+   を PoC 動作させ、Architecture B (別 Emacs process) 不要化を証示
+2. =nelisp-gc-actor-boundary= (Phase 3c.5 API stub) の consumer を実装
+3. editor-integrated actor model の moderate novelty claim を実態で裏打ち
+   (EmacsConf talk / Reddit 告知水準)
+
+Phase 4 は large (=05-roadmap.org= 予算 6ヶ月)、設計 doc を LOCKED
+してから sub-phase 毎に feat branch 分割で ship する。Phase 4b (STM
+optional) は別 doc (=11-phase4b-stm.org=) として Phase 4 成功後に起案。
+
+* 1. 動機と非目標
+
+** 1.1 なぜ Phase 4 が actor か
+
+=04-concurrency.org= §7.1 核心方針より (2026-04-22 user signoff 済):
+
+1. anvil.el の痛み (subprocess 迂回 / mutex 地獄 / Architecture B 複雑性)
+   を structural に解消する唯一の候補
+2. 既存 Lisp 系に editor-integrated actor の前例なし、moderate novelty
+3. Erlang / Go の proven pattern を NeLisp ergonomics に落とす engineering
+4. user の Linux / subprocess mental model と整合
+
+=04-concurrency.org= §2 (first-class threads) は Phase 5 後半へ、§3 (STM)
+は Phase 4b optional へ、§5 (fiber) は Phase 4 の actor scheduler 内部
+実装として吸収 (= §7.2 fiber の Phase 3 配置は 3b.8 JIT 登場で役目変化、
+後述 §2.7 参照)。
+
+** 1.2 目標 (Phase 4 完了条件)
+
+1. =src/nelisp-actor.el= 新規: =nelisp-spawn= / =nelisp-receive= /
+   =nelisp-send= の 3 primitive
+2. =src/nelisp-chan.el= 新規: =nelisp-make-chan= / =nelisp-chan-send= /
+   =nelisp-chan-recv= (+ =nelisp-select= 可能なら)
+3. cooperative scheduler: 各 actor が yield で譲り合う、host Emacs
+   1 thread 上で多重化
+4. ownership boundary 実装: =nelisp-spawn= 時 snapshot、=nelisp-send=
+   時 cross-boundary check (§2.3 で policy 決定)
+5. 最低限の supervision: 子 actor crash が親に伝搬、再起動可能
+6. anvil 痛み解消 test case §4.5 から 1+ の PoC ERT green
+7. =bench/nelisp-actor-bench.el=: spawn 1000 actor / ping-pong 10000 msg
+   の throughput 測定 (advisory、perf gate なし)
+
+** 1.3 非目標 (Phase 4 では入れない)
+
+- *真 OS thread*: Phase 5 後半 (C 層 GC / signal 改修同時)
+- *STM*: Phase 4b optional (別 doc)
+- *distributed*: node 間 actor は scope 外、同 Emacs session 内のみ
+- *mailbox persistence*: 再起動越えの message 保存は v0.5+ で検討
+- *priority inheritance / deadline scheduling*: RTOS 相当は scope 外
+- *buffer-as-actor*: §2.1 で B を取らない限り Phase 4c へ deferred
+
+* 2. Key decisions (user signoff 待ち)
+
+Phase 3b / 3c と同じ方式。A/B/C 選択で 8 items。
+
+** 2.1 Actor 境界は何単位か
+
+- A: =(nelisp-spawn THUNK)= で明示生成する単位 (Erlang / Go model)
+- B: buffer 単位 (buffer-local state = actor state、NeLisp novelty
+  最大化)
+- C: 両方 — spawn は primary、buffer-as-actor は syntactic sugar
+  (=with-buffer-actor= 的 macro)
+
+*推奨*: A。理由:
+- B は魅力的だが既存 Emacs buffer semantics との整合で決めるべき設計論点多
+  (buffer-local の overlap / window-local と actor の関係等)、Phase 4 scope
+  に入れると MVP 延びる
+- B は Phase 4c (v0.4.x minor) として spawn 安定後に追加するのが筋
+- C は両方揃ってから判断可、A を先に
+
+** 2.2 Mailbox semantics
+
+- A: unbounded FIFO (Erlang BEAM default)
+- B: bounded with back-pressure — =(nelisp-send)= block when full
+  (Go channel-style、flow control)
+- C: priority queue — message に priority tag
+- D: A を default、B を opt-in flag で bounded 指定可
+
+*推奨*: D。MVP は A 単純、bounded は actor 生成時 =(nelisp-spawn thunk
+:mailbox-capacity 64)= で opt-in。C は YAGNI。
+
+** 2.3 Message passing semantics
+
+- A: *shared nothing* — =send= 時に deep copy、受信側は独自 heap
+- B: *shared immutable* — cons/vector/string の immutable 検出で copy
+  スキップ、mutable は copy
+- C: *ownership transfer* — sender が reference 失い receiver に移る
+  (Rust borrow-check 的)
+
+*推奨*: B。理由:
+- A は safety 最大だが fib(30) 結果 list を毎回 copy は辛い。anvil
+  痛み解消 test case (tool handler 並列) でも大きな result を copy は
+  overhead
+- C は novelty 高いが NeLisp 既存コードへの migration burden 高。
+  "send したら使えない" を user が納得する API は長期議論必要
+- B は Emacs 既存 Lisp の pragma (=pure= 宣言) と親和、Phase 3c.5
+  =nelisp-gc-actor-boundary= で mutable cell のみ ledger に入れる方針
+  と一貫
+- *Note*: "immutable" の決定は =(symbolp) or (numberp) or interned string=
+  等の conservative classifier で start、精度向上は v0.4.x 以降
+
+** 2.4 Scheduler model
+
+- A: *cooperative* — actor が =(nelisp-receive)= / =(nelisp-yield)= で
+  譲る、host Emacs 1 thread 内 coroutine
+- B: *preemptive* — timer-driven quantum でスケジューラが強制切替
+- C: *work-stealing* — M:N (goroutine 式)、true thread 前提
+
+*推奨*: A。理由:
+- B は host Emacs が single-threaded event loop であり timer 割込を
+  "preemption" として使えない (=post-command-hook= では粒度粗すぎ)
+- C は Phase 5 の真 thread 前提、Phase 4 scope 超過
+- cooperative なら fiber 実装相当を actor scheduler 内部で賄える (§2.7
+  fiber 吸収論点)
+- BEAM も cooperative で実用十分
+
+** 2.5 yield point の設計
+
+cooperative scheduler の前提として、actor が "自然に" yield する箇所:
+
+- A: =nelisp-receive= block 時のみ yield (message 待ち = 計算終了)
+- B: A + 明示 =(nelisp-yield)= call (長い計算中に手動挿入)
+- C: A + B + bytecode VM dispatch 内で N instruction おきに自動 yield
+
+*推奨*: B。A は CPU-bound actor が scheduler 独占する問題があり、
+明示 yield はあれば十分 (user が "ここ長い" を知っている)。C は
+Phase 3b.8 JIT で VM を迂回する経路があり、全 code path 網羅できない。
+B で start、C は v0.4.x 以降 opt-in flag として追加検討。
+
+** 2.6 Supervision
+
+- A: supervisor なし (crash したら actor 消える、user が sense)
+- B: flat — 1 root supervisor、child crash で自動再起動 (Erlang
+  =one_for_one= 相当のみ)
+- C: OTP full — hierarchical tree、=one_for_all= / =rest_for_one= /
+  =simple_one_for_one= 全部
+
+*推奨*: B。A は anvil 痛み解消に不十分 (tool handler actor が死んだら
+user 通知できない)、C は Phase 4 scope 超過。B で crash → log → restart
+が出来れば v0.4.0 novelty 条件を満たす。
+
+** 2.7 Fiber との関係
+
+=04-concurrency.org= §5 候補 D (fiber / stackful coroutine) は元々
+Phase 3 scope だったが、Phase 3b.8 JIT 実装で bytecode VM dispatch を
+skip する経路 (fib 25x) が main path になり、「bytecode VM 内 yield point」
+という integration layer の意味が弱くなった。
+
+- A: *fiber を skip、actor scheduler の内部実装として吸収*
+  (actor = fiber with mailbox)
+- B: *独立 =nelisp-yield= を fiber primitive として ship*、actor は
+  その上に build
+- C: *VM dispatch 内 auto-yield も別枠で ship* (§2.5 C と同等)
+
+*推奨*: A。=nelisp-yield= は §2.5 B で actor context 限定の yield
+として expose、fiber-as-separate-primitive は v0.5+ (真 thread 後) に
+再検討。roadmap §7 の "fiber" line item は Phase 4 に吸収宣言する。
+
+** 2.8 Phase 4 merge gate
+
+=04-concurrency.org= §4.5 で "anvil 痛み解消 test case 3 件のうち 1+
+が PoC 動作" と lock 済。強化する方向で:
+
+- A: 1 of 3 PoC green (既存 lock)
+- B: 2 of 3 green
+- C: 全 3 green
+
+*推奨*: A (既存 lock を触らない)。Phase 4 が large ゆえ MVP 最小条件で
+merge、v0.4.x minor で 2 / 3 に拡張していく方針。
+
+* 3. Sub-phase 分割 (§2 decision A/D/B/A/B/B/A/A 前提で起案)
+
+Phase 3c 同様、feat branch 毎に ship。予算は目安、ブレ可。
+
+** 4.1 Skeleton + spawn / receive / send (DRAFT)
+
+- =src/nelisp-actor.el= 新規、=nelisp-actor= struct (mailbox FIFO、
+  thunk、ownership set、status)
+- =nelisp-spawn=: thunk を new actor として登録、initial ownership
+  snapshot = =nelisp-gc-actor-boundary= of thunk 自身
+- =nelisp-receive=: mailbox 空なら yield、非空なら pop + return
+- =nelisp-send=: target actor の mailbox に message push (copy
+  policy は §4.3 まで simple copy、shared immutable は 4.3 で精緻化)
+- =nelisp-self=: current actor object
+- ERT: 2 actor ping-pong / spawn-heavy count / send-to-dead-actor 検出
+- 予算: 250 LOC、ERT 8 本
+
+** 4.2 Cooperative scheduler (DRAFT)
+
+- single-threaded run queue (=nelisp-actor--runnable=) on host Emacs
+- yield = actor coroutine suspend via =throw=/continuation-pass
+  (Elisp =catch= chain or =generator.el= 的 state machine)
+- =nelisp-yield= primitive: voluntary yield from actor thunk
+- =nelisp-actor-run-until-idle=: drive queue until all actors block
+  on mailbox (for ERT / PoC)
+- =nelisp-actor-start= / =nelisp-actor-stop=: event loop integration
+  (=run-with-idle-timer= で periodic drive)
+- ERT: fairness (2 CPU-bound actor が yield 必要、交互 run 確認) /
+  receive-blocking / scheduler-stops-when-empty
+- 予算: 300 LOC、ERT 10 本
+
+** 4.3 Shared-immutable message policy (DRAFT)
+
+- =nelisp-actor--classify=: message cell が immutable か判定
+  (symbol / fixnum / nil / t / interned string / 再帰検査で
+  cons/vector も cell 内全 immutable なら pass)
+- mutable cell は deep-copy して送信、immutable は reference 共有
+- cross-boundary violation 検出 (=nelisp-gc-actor-boundary= 交差):
+  send 時に target 側から reach 可能な同一 mutable cell が sender
+  側にもあれば warn (§4.6 で enforce に昇格)
+- ERT: shared symbol OK / mutable cons deep-copy / nested structure
+  / immutable inside mutable (mixed case) / circular 安全
+- 予算: 200 LOC、ERT 8 本
+
+** 4.4 Channel primitive (DRAFT)
+
+§2.6 A (mailbox primary) 方針ゆえ channel は syntactic sugar:
+- =nelisp-make-chan &key buffer= — 内部 actor (queue actor)
+- =nelisp-chan-send= / =nelisp-chan-recv= — queue actor への send/receive
+- Phase 4 では =nelisp-select= は非搭載、Phase 4 closure で検討
+- ERT: unbuffered chan (rendezvous) / buffered chan / close 動作
+- 予算: 150 LOC、ERT 6 本
+
+** 4.5 Flat supervisor (DRAFT)
+
+§2.6 B 方針:
+- =nelisp-supervise= (children-spec restart-policy)
+- restart-policy: =:permanent= (常に再起動) / =:temporary= (再起動なし)
+  / =:transient= (異常終了時のみ再起動)
+- crash 時: =condition-case= 包み込み、restart-policy に従い新 actor
+  spawn、old ownership 破棄
+- ERT: permanent child crash → 再起動 / temporary → 再起動なし /
+  supervisor 自体 crash で全 child 破棄
+- 予算: 150 LOC、ERT 6 本
+
+** 4.6 anvil 痛み解消 PoC (DRAFT)
+
+=04-concurrency.org= §4.5 の 3 test case から 1+ を PoC として実装:
+
+1. *並列 MCP tool handler*: 4 actor が同 Emacs session 内で独立 buffer
+   state、user session を blocking せず tool call 4 並列処理
+2. *shared-nothing mutation 隔離*: 1 actor の setq が別 actor に見えず
+3. *supervised long-running*: 1 actor crash → supervisor 再起動 →
+   tool handler 並列性が破綻しない
+
+MVP は #1 のみ green を merge gate とする (§2.8 A lock)。#2 #3 は
+v0.4.x で拡張。
+
+- 予算: 200 LOC (actor 実装 + PoC ERT 1)、ERT 3 本
+
+** 4.7 Bench + gate verification (DRAFT)
+
+- =bench/nelisp-actor-bench.el=:
+  - =spawn-heavy=: 1000 actor spawn + immediate die 時間
+  - =ping-pong=: 2 actor で 10000 message round-trip
+  - =mailbox-fill=: unbounded mailbox 10k entry push / drain
+- =make actor-bench= target 追加
+- PoC ERT green + bench 数字 advisory 記録 → design doc SHIPPED 移行
+- v0.4.0-pre tag (本 gate 達成時点で候補)
+- 予算: 100 LOC bench、design doc 更新
+
+* 4. API surface (草案)
+
+#+begin_src emacs-lisp
+  ;; Actor primitives
+  (nelisp-spawn (lambda () ...)
+                &key mailbox-capacity supervisor link)
+    ;; -> actor object
+  (nelisp-self)                    ; current actor
+  (nelisp-receive &optional timeout) ; -> message | 'timeout
+  (nelisp-send target msg)         ; -> t
+  (nelisp-yield)                   ; voluntary yield
+
+  ;; Channel (sugar over internal queue-actor)
+  (nelisp-make-chan &key buffer)   ; -> chan object
+  (nelisp-chan-send chan msg)      ; -> t or block
+  (nelisp-chan-recv chan &optional timeout)
+  (nelisp-chan-close chan)
+
+  ;; Supervisor
+  (nelisp-supervise
+   '((:id worker-1 :start (lambda () ...) :restart :permanent)
+     (:id worker-2 :start (lambda () ...) :restart :temporary))
+   :strategy :one-for-one)
+
+  ;; Diagnostic
+  (nelisp-actor-list)              ; -> list of live actor objects
+  (nelisp-actor-stats actor)       ; -> plist (mailbox-len, status, ...)
+#+end_src
+
+MCP tool として (anvil 連携時 future):
+- =nelisp-actor-list= / =nelisp-actor-stats= を MCP 経由で expose 可能
+
+* 5. Actor runtime 構造 (草案、§2 推奨 前提)
+
+** 5.1 Actor struct
+
+#+begin_src emacs-lisp
+  (cl-defstruct (nelisp-actor (:constructor nelisp-actor--make))
+    id             ; unique symbol (generated)
+    thunk          ; closure to run as actor body
+    mailbox        ; FIFO (list or queue struct)
+    mailbox-cap    ; nil = unbounded, integer = bounded
+    status         ; :runnable :blocked-receive :dead :crashed
+    owned-set      ; hash-table from `nelisp-gc-actor-boundary'
+    supervisor     ; parent actor-id or nil
+    restart-policy ; :permanent :temporary :transient
+    k              ; continuation (suspended state) or nil
+    last-error)    ; condition-case err from last crash
+#+end_src
+
+** 5.2 Run queue
+
+=nelisp-actor--queue= dynamic list。scheduler は:
+
+1. pop 先頭 actor
+2. actor.k を resume (=funcall cont=)
+3. thunk が =nelisp-yield= or =nelisp-receive= で block するまで run
+4. block 理由で status 更新、次 actor へ
+5. queue 空になるまで繰り返し、=run-until-idle= で停止
+
+** 5.3 yield / resume 実装
+
+host Emacs に真 coroutine (=call/cc= 相当) がないため、cooperative yield
+は以下のいずれか:
+
+- A: =generator.el= (Emacs 25.1+ の CPS-style generator) を活用
+- B: =catch= / =throw= で caller に制御返し、mailbox-待ちフラグ立て
+  て次 run 時 re-entry
+- C: state machine を手書き、actor thunk を segment に分割
+
+*決定*: A を試す。=generator.el= は =iter-defun= で CPS 変換するため
+yield point を透過的に扱える。Elisp 既存機能の活用 = maintenance 負担
+最小。driver integration だけ書けば足りる想定。
+
+** 5.4 Ownership boundary enforcement
+
+- spawn 時: =(nelisp-gc-actor-boundary thunk)= で owned-set 計算
+- send 時: message を walk して mutable cell を deep-copy (§4.3)、
+  receiver owned-set に追加
+- crash 時: owned-set は drop (host GC 回収)、finalizer が発火
+  (Phase 3c.3 の =nelisp-gc-collect=)
+
+** 5.5 host Emacs event loop との共存
+
+actor scheduler は host Emacs event loop を blocking しない:
+- =nelisp-actor-start=: =run-with-idle-timer 0.01 nil driver= で
+  queue drive を idle 時に発火
+- user command 中 (input pending) は driver 自粛、input idle 時再開
+- =nelisp-actor-run-until-idle=: ERT / PoC 用 synchronous runner
+
+* 6. anvil 痛み解消 PoC (§4.6 詳細)
+
+=04-concurrency.org= §4.5 test #1 の MVP 実装イメージ:
+
+#+begin_src emacs-lisp
+  ;; 4 worker actor が同 Emacs session で並列に "tool call" を処理
+  (defvar *workers*
+    (cl-loop for i below 4
+             collect
+             (nelisp-spawn
+              (lambda ()
+                (while t
+                  (pcase (nelisp-receive)
+                    (`(:task ,id ,fn ,args ,reply-to)
+                     (let ((result
+                            (condition-case e (apply fn args)
+                              (error (list :error e)))))
+                       (nelisp-send reply-to `(:result ,id ,result))))
+                    (`:shutdown (throw 'actor-done nil)))))
+              :restart :permanent)))
+
+  (defun dispatch-parallel (fn-args-alist)
+    "Send 4 tasks to workers, collect results."
+    (let ((me (nelisp-self))
+          (pending (length fn-args-alist)))
+      (cl-loop for (fn . args) in fn-args-alist
+               for w in *workers*
+               for i from 0
+               do (nelisp-send w `(:task ,i ,fn ,args ,me)))
+      (let (results)
+        (while (> pending 0)
+          (pcase (nelisp-receive)
+            (`(:result ,id ,r) (push (cons id r) results)
+                               (cl-decf pending))))
+        (nreverse results))))
+#+end_src
+
+ERT smoke:
+#+begin_src emacs-lisp
+  (ert-deftest nelisp-actor-pmap-smoke ()
+    "4 worker actor で 4 task を並列 dispatch、all complete 確認"
+    (let ((r (dispatch-parallel
+              '((identity . (1))
+                (identity . (2))
+                (+        . (3 4))
+                (list     . (5 6 7))))))
+      (should (= 4 (length r)))
+      (should (assoc 0 r))))
+#+end_src
+
+* 7. 成功条件 (Phase 4 merge gate)
+
+- [ ] make test: Phase 3c までの 479 + Phase 4 新規 40+ all pass
+- [ ] =nelisp-spawn= / =nelisp-receive= / =nelisp-send= 3 primitive
+- [ ] cooperative scheduler で 2+ actor が yield 交互実行 (ERT 証明)
+- [ ] shared-immutable message policy (mutable deep-copy、immutable share)
+- [ ] flat supervisor: permanent child crash → auto-restart (ERT)
+- [ ] anvil PoC test case #1 (並列 MCP tool handler) green
+- [ ] docs/design/10-phase4-actor.org SHIPPED 状態
+- [ ] sub-phase 毎 commit + make test green
+- [ ] =bench/nelisp-actor-bench.el= 実測数字 record (advisory)
+
+v0.4.0 本番 tag は本 gate 満たした時点。
+
+* 8. 将来への伏線 (Phase 4b 以降)
+
+- *Phase 4b STM*: =11-phase4b-stm.org= 別 doc、Phase 4 成功後に起案。
+  PyPy 教訓 (=04-concurrency.org= §3) を踏まえ small granularity 回避
+- *buffer-as-actor* (Phase 4c 候補): buffer-local state = actor state
+  の macro (=with-buffer-actor=)、§2.1 B を syntactic sugar で後付け
+- *nelisp-select* (Phase 4d 候補): Go-style select、channel 複数待ち
+- *OTP-style supervisor tree*: =:one-for-all= / =:rest-for-one= の
+  restart strategy 追加
+- *distributed actor*: 別 Emacs instance / 別 machine との actor
+  pairing、TCP / unix socket transport。v0.5+
+
+* 9. Reviewer 向け決定依頼
+
+§2 の 8 key decision (2.1 境界 / 2.2 mailbox / 2.3 message / 2.4
+scheduler / 2.5 yield / 2.6 supervision / 2.7 fiber / 2.8 gate) を user が
+signoff した段階で 4.1 実装着手。Signoff 後は本 doc =STATE= を
+=LOCKED-<date>= に更新、sub-phase ship 毎に =SHIPPED= に移行。
+
+Phase 4b STM は別 doc で Phase 4 完了後に起案する。
