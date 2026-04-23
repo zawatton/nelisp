@@ -1,0 +1,198 @@
+#+TITLE: Trampoline evaluator (Phase 2.5 — cycle-1 = cycle-2 unblocker)
+#+AUTHOR: zawatton
+#+DATE: 2026-04-23
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: DRAFT-2026-04-23
+:END:
+
+Phase 2 self-host probe (commit 774c3a0) を経て、NeLisp の installed
+=nelisp-eval= を host から呼び戻すと **host C stack を 1 NeLisp call ≈ 5-10
+host frame で消費** することが実測で確定。=max-lisp-eval-depth= を 100k に
+持ち上げても =src/nelisp.el= 末尾の =(nelisp--install-core-macros)= を install
+loop 内で実行した瞬間に cycle-1 が爆発する (有限時間で完走しない)。
+
+これは locked roadmap (=05-roadmap.org=) §3 の Phase 2 success criterion
+"cycle 1 = cycle 2 fixpoint" を達成するための **構造的な前提条件** である。
+Phase 3 bytecode VM を待たずに、interpreter 側で host stack を切り離す
+trampoline 実装を Phase 2.5 として挿入する。
+
+* 1. 問題定式化
+
+** 1.1 現行 (recursive) evaluator の host stack 消費
+
+=src/nelisp-eval.el= の =nelisp-eval= はクラシックな
+recursive descent interpreter:
+
+#+begin_src elisp
+  (defun nelisp-eval (form &optional env)
+    (cond
+     ((symbolp form) (nelisp--lookup form env))
+     ((not (consp form)) form)
+     ((eq (car form) 'if)
+      (if (nelisp-eval (cadr form) env)            ; ← host frame +1
+          (nelisp-eval (caddr form) env)            ; ← host frame +1
+        (nelisp-eval (cadddr form) env)))            ; ← host frame +1
+     …))
+#+end_src
+
+NeLisp 1 call が host frame を消費するので、NeLisp-on-NeLisp では
+host stack depth = O(N×M) (N = NeLisp call depth, M = nelisp-eval body
+平均 host frame ≈ 5-10) で破裂する。
+
+** 1.2 cycle-1 が install loop で爆発する瞬間
+
+=src/nelisp.el= の最後の form:
+
+#+begin_src elisp
+  (nelisp--install-core-macros)
+#+end_src
+
+これを host nelisp-eval が install 経由で実行 →
+installed =nelisp--install-core-macros= 閉包を呼ぶ → 閉包 body 内の
+=(while forms (nelisp-eval (car forms)) (setq forms (cdr forms)))= を
+実行 → 各 iteration で cycle-1 に突入 → 各 cycle-1 step で更に
+深い再帰 → 100k frame 限界でも完走しない。
+
+** 1.3 cycle-2 の前提
+
+cycle-1 が完走しなければ cycle-2 (= cycle-1 結果同士の再 install)
+は始められない。trampoline はこの両方を unblocker として要る。
+
+* 2. 設計方針
+
+** 2.1 explicit work-stack (CEK 風)
+
+interpreter を recursive descent から **explicit-stack 状態機械** に
+書き直す。各 work item は host の call frame ではなく、
+heap 上の data record (=plist= or =vector=)。
+
+#+begin_src elisp
+  (defun nelisp-tramp-eval (form &optional env)
+    (let ((work   (list (list :eval form env)))    ; work stack (reversed)
+          (result nil))
+      (while work
+        (let ((step (pop work)))
+          (pcase step
+            ;; --- evaluate FORM under ENV, then store value into RESULT ---
+            (`(:eval ,form ,env)
+             (cond
+              ((symbolp form) (setq result (nelisp--lookup form env)))
+              ((not (consp form)) (setq result form))
+              ((eq (car form) 'quote) (setq result (cadr form)))
+              ((eq (car form) 'if)
+               ;; push :if-branch first (executed AFTER test), then test.
+               (push `(:if-branch ,(cddr form) ,env) work)
+               (push `(:eval ,(cadr form) ,env)     work))
+              …))
+            (`(:if-branch (,then-form ,else-form) ,env)
+             ;; RESULT holds test value
+             (push `(:eval ,(if result then-form else-form) ,env) work))
+            …)))
+      result))
+#+end_src
+
+* 重要: =push= は work stack に積むだけ (host frame 0)。
+* =while= が唯一の制御構造で host stack は **定数** depth 1。
+
+** 2.2 関数 call の扱い
+
+NeLisp closure を call する時は、引数評価 → param bind → body 評価を
+全て work item に展開:
+
+#+begin_src elisp
+  (`(:apply-closure ,closure ,args ,saved-env)
+   ;; RESULT は最後の引数評価値; args-evaluated はワーカーが集める
+   …
+   (push `(:eval ,body-i ,call-env) work) …)
+#+end_src
+
+host primitive call (=apply= → host =+= 等) は **leaf** なので
+host frame 1 で済む — これは許容する (再帰的に NeLisp に降りないため)。
+
+** 2.3 unwind-protect / condition-case
+
+work stack に **handler frame** を sentinel として混ぜる:
+
+#+begin_src elisp
+  (`(:install-handler ,handler-spec)
+   (push `(:handler ,handler-spec) work))
+  ;; 例外は throw 'nelisp-tramp-error → catch 内で handler-frame まで pop
+#+end_src
+
+Phase 1 の condition-case / unwind-protect 全ケースを移植。
+
+** 2.4 macro expand
+
+evaluator 内で macroexpand を呼び出す箇所は、recursive call でなく
+work item に置き換え:
+
+#+begin_src elisp
+  (`(:macroexpand ,form ,env)
+   (let ((expanded (nelisp-macroexpand form env)))
+     (push `(:eval ,expanded ,env) work)))
+#+end_src
+
+* 3. 実装フェーズ
+
+** Phase 2.5a — minimal subset (atom + if + let + funcall + apply-closure)
+
+- 新 module =src/nelisp-tramp.el= (~300 行)
+- 関数 =nelisp-tramp-eval= は =nelisp-eval= と同じ signature
+- ERT parity test: Phase 1 special-form テスト全件を tramp-eval でも実行、
+  recursive eval と =equal= であること
+
+** Phase 2.5b — full Phase 1 + 2 subset
+
+- condition-case / unwind-protect / catch / throw / macro
+- defun/defvar/defmacro side-effect も tramp 経由で動く
+- =src/nelisp-self-host-test.el= の install-loop を tramp に切り替え、
+  =excessive-lisp-nesting= suppress を *外す*
+
+** Phase 2.5c — cycle-1 = cycle-2 fixpoint 確認
+
+- cycle-1: host tramp が installed nelisp-eval を呼ぶ
+- cycle-2: cycle-1 の result を再 install して同じ test suite を pass
+- 両 output が =equal= で一致 → Phase 2 完遂 = v0.2.0
+
+** Phase 2.5d (optional) — recursive evaluator deprecate
+
+trampoline で全テスト pass 後、recursive =nelisp-eval= は alias 化
+(=defalias=) するか実装を tramp 移行。Phase 3 bytecode は trampoline 上に
+構築。
+
+* 4. リスク / 回避
+
+| risk                                    | 回避策                                |
+|-----------------------------------------+----------------------------------------|
+| pcase の overhead                        | hot path は手書き =cond=                |
+| work stack growth (= NeLisp heap 圧迫)   | tail-call 検出で work item を捨てる    |
+| macro 内 macro が work stack を膨張      | expand-once を遅延、macroexpand-1 単位  |
+| condition-case の semantics 取りこぼし    | parity test を recursive と同 set 走らす |
+
+* 5. 成功条件
+
+1. =make test-all= で全 256+ ERT pass (新 parity test 5+ 含む)
+2. cycle-1 install loop が =max-lisp-eval-depth= 1500 (Emacs default) で完走
+3. cycle-1 result == cycle-2 result が =equal= で一致
+4. fib(20) を cycle-1 で実行: 結果一致 + 終了 (recursive 版より遅くて OK)
+
+* 6. 既存 doc との整合
+
+- =03-architecture.org= §2.4 (interpreter design) に trampoline 節を追加
+  予定 (実装完了時)
+- =05-roadmap.org= §3 (Phase 2 task) に "Phase 2.5 trampoline" を追記
+  予定 (実装完了時)
+- bytecode VM (=nelisp-bytecode.el=) は trampoline の dispatcher loop を
+  そのまま流用できるので Phase 3 に直結
+
+* 7. 開発手順
+
+1. 本 doc commit
+2. =feat/phase2.5-trampoline= branch 切り
+3. Phase 2.5a 実装 → ERT parity 5 件 pass
+4. Phase 2.5b 実装 → full subset parity 全 pass
+5. Phase 2.5c 実装 → fixpoint 達成
+6. =--no-ff= で main へ merge → tag =v0.2.0=
