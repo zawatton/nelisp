@@ -103,9 +103,12 @@ Each symbolic op is replaced with its opcode byte via
   (should (equal (nelisp-bc-test--eval '(quote (a b c))) '(a b c))))
 
 (ert-deftest nelisp-bc-3b2-compile-unimplemented ()
-  ;; Generic function calls are still 3b.4b+ territory.  `let' etc.
-  ;; shipped in 3b.4a (see `nelisp-bc-3b4a-*' tests below).
-  (should-error (nelisp-bc-compile '(foo 1 2))
+  ;; Truly unsupported special forms still surface as
+  ;; `nelisp-bc-unimplemented'.  `let', generic calls, etc. shipped
+  ;; in 3b.4a/b — see `nelisp-bc-3b4a-*' / `nelisp-bc-3b4b-*'.
+  (should-error (nelisp-bc-compile '(function foo))
+                :type 'nelisp-bc-unimplemented)
+  (should-error (nelisp-bc-compile '(lambda (x) x))
                 :type 'nelisp-bc-unimplemented))
 
 (ert-deftest nelisp-bc-3b2-compile-captures-env ()
@@ -615,6 +618,126 @@ a label.  Returns the resolved int vector."
                 '((CONST 0) (CONST 1) (STACK-SET 1) RETURN)))
          (bcl (nelisp-bc-make nil nil [1 99] code 2 0)))
     (should (= (nelisp-bc-run bcl) 99))))
+
+;;; Phase 3b.4b — CAR / CDR / CONS / LIST1..N / CALL ----------------
+
+(ert-deftest nelisp-bc-3b4b-opcode-table ()
+  (should (= (nelisp-bc-opcode 'CAR)   22))
+  (should (= (nelisp-bc-opcode 'CDR)   23))
+  (should (= (nelisp-bc-opcode 'CONS)  24))
+  (should (= (nelisp-bc-opcode 'LIST1) 25))
+  (should (= (nelisp-bc-opcode 'LIST2) 26))
+  (should (= (nelisp-bc-opcode 'LIST3) 27))
+  (should (= (nelisp-bc-opcode 'LIST4) 28))
+  (should (= (nelisp-bc-opcode 'LISTN) 29))
+  (should (= (nelisp-bc-opcode 'CALL)  30)))
+
+(ert-deftest nelisp-bc-3b4b-opcode-arg-bytes ()
+  (should (= (aref nelisp-bc--opcode-arg-bytes 22) 0))
+  (should (= (aref nelisp-bc--opcode-arg-bytes 23) 0))
+  (should (= (aref nelisp-bc--opcode-arg-bytes 24) 0))
+  (should (= (aref nelisp-bc--opcode-arg-bytes 25) 0))
+  (should (= (aref nelisp-bc--opcode-arg-bytes 26) 0))
+  (should (= (aref nelisp-bc--opcode-arg-bytes 27) 0))
+  (should (= (aref nelisp-bc--opcode-arg-bytes 28) 0))
+  (should (= (aref nelisp-bc--opcode-arg-bytes 29) 1))
+  (should (= (aref nelisp-bc--opcode-arg-bytes 30) 1)))
+
+(ert-deftest nelisp-bc-3b4b-car-cdr ()
+  (should (eq (nelisp-bc-test--eval '(car '(1 2 3))) 1))
+  (should (equal (nelisp-bc-test--eval '(cdr '(1 2 3))) '(2 3)))
+  (should (eq (nelisp-bc-test--eval '(car '())) nil))
+  (should (eq (nelisp-bc-test--eval '(cdr '())) nil)))
+
+(ert-deftest nelisp-bc-3b4b-cons ()
+  (should (equal (nelisp-bc-test--eval '(cons 1 2)) '(1 . 2)))
+  (should (equal (nelisp-bc-test--eval '(cons 1 '(2 3))) '(1 2 3)))
+  (should (equal (nelisp-bc-test--eval
+                  '(cons (cons 'a 'b) (cons 'c 'd)))
+                 '((a . b) . (c . d)))))
+
+(ert-deftest nelisp-bc-3b4b-list-small ()
+  (should (equal (nelisp-bc-test--eval '(list)) nil))
+  (should (equal (nelisp-bc-test--eval '(list 1)) '(1)))
+  (should (equal (nelisp-bc-test--eval '(list 1 2)) '(1 2)))
+  (should (equal (nelisp-bc-test--eval '(list 1 2 3)) '(1 2 3)))
+  (should (equal (nelisp-bc-test--eval '(list 1 2 3 4)) '(1 2 3 4))))
+
+(ert-deftest nelisp-bc-3b4b-list-n ()
+  ;; 5+ args takes the LISTN path.
+  (should (equal (nelisp-bc-test--eval '(list 1 2 3 4 5)) '(1 2 3 4 5)))
+  (should (equal (nelisp-bc-test--eval '(list 1 2 3 4 5 6 7 8 9 10))
+                 '(1 2 3 4 5 6 7 8 9 10)))
+  (should (equal (nelisp-bc-test--eval '(list 'a 'b 'c 'd 'e 'f))
+                 '(a b c d e f))))
+
+(ert-deftest nelisp-bc-3b4b-list-with-binding ()
+  (should (equal (nelisp-bc-test--eval
+                  '(let ((x 1) (y 2) (z 3)) (list x y z)))
+                 '(1 2 3))))
+
+(ert-deftest nelisp-bc-3b4b-car-of-cons ()
+  ;; Nested primitive compilation.
+  (should (= (nelisp-bc-test--eval '(car (cons 1 2))) 1))
+  (should (= (nelisp-bc-test--eval '(cdr (cons 1 2))) 2))
+  (should (= (nelisp-bc-test--eval '(car (cdr '(9 8 7)))) 8)))
+
+(ert-deftest nelisp-bc-3b4b-handwritten-listn ()
+  ;; CONST 0/1/2, LISTN 3 -> list (a b c)
+  (let* ((code (nelisp-bc-test--code
+                '((CONST 0) (CONST 1) (CONST 2) (LISTN 3) RETURN)))
+         (bcl (nelisp-bc-make nil nil [x y z] code 3 0)))
+    (should (equal (nelisp-bc-run bcl) '(x y z)))))
+
+(ert-deftest nelisp-bc-3b4b-call-host-primitive ()
+  ;; Call a host primitive not in the dedicated opcode table (`length'
+  ;; or `symbol-name').  Compiled via CALL.
+  (should (= (nelisp-bc-test--eval '(length '(1 2 3 4))) 4))
+  (should (equal (nelisp-bc-test--eval '(symbol-name 'foo)) "foo")))
+
+(ert-deftest nelisp-bc-3b4b-call-nelisp-defun ()
+  ;; Call a NeLisp-registered user function installed via nelisp--functions.
+  (unwind-protect
+      (progn
+        ;; Manually register a simple adder so we don't depend on
+        ;; eval-time compilation in the test.
+        (puthash 'nelisp-bc-test--adder
+                 (list 'nelisp-closure nil '(x y) '((+ x y)))
+                 nelisp--functions)
+        (should (= (nelisp-bc-test--eval
+                    '(nelisp-bc-test--adder 3 4))
+                   7)))
+    (remhash 'nelisp-bc-test--adder nelisp--functions)))
+
+(ert-deftest nelisp-bc-3b4b-call-with-nested-args ()
+  (unwind-protect
+      (progn
+        (puthash 'nelisp-bc-test--sum3
+                 (list 'nelisp-closure nil '(a b c) '((+ a b c)))
+                 nelisp--functions)
+        (should (= (nelisp-bc-test--eval
+                    '(nelisp-bc-test--sum3 (+ 1 1) (* 1 3) 4))
+                   9)))
+    (remhash 'nelisp-bc-test--sum3 nelisp--functions)))
+
+(ert-deftest nelisp-bc-3b4b-call-zero-args ()
+  ;; Verify CALL with nargs=0 works (fn is still on the stack).
+  (unwind-protect
+      (progn
+        (puthash 'nelisp-bc-test--fortytwo
+                 (list 'nelisp-closure nil '() '(42))
+                 nelisp--functions)
+        (should (= (nelisp-bc-test--eval '(nelisp-bc-test--fortytwo)) 42)))
+    (remhash 'nelisp-bc-test--fortytwo nelisp--functions)))
+
+(ert-deftest nelisp-bc-3b4b-unsupported-special-forms ()
+  ;; Special forms scheduled for later sub-phases surface cleanly.
+  (should-error (nelisp-bc-compile '(lambda (x) x))
+                :type 'nelisp-bc-unimplemented)
+  (should-error (nelisp-bc-compile '(catch 'tag 1))
+                :type 'nelisp-bc-unimplemented)
+  (should-error (nelisp-bc-compile '(and 1 2))
+                :type 'nelisp-bc-unimplemented))
 
 (provide 'nelisp-bytecode-test)
 ;;; nelisp-bytecode-test.el ends here

@@ -97,6 +97,15 @@
 ;; UNBIND           19        1     pop uint8 specpdl entries, restoring each
 ;; STACK-SET        20        1     pop val; write into stack[sp - uint8 - 1]
 ;; DISCARDN         21        1     drop uint8 values below top, keep TOS
+;; CAR              22        0     pop x, push (car x)
+;; CDR              23        0     pop x, push (cdr x)
+;; CONS             24        0     pop b a, push (cons a b)
+;; LIST1            25        0     pop x, push (list x)
+;; LIST2            26        0     pop b a, push (list a b)
+;; LIST3            27        0     pop c b a, push (list a b c)
+;; LIST4            28        0     pop d c b a, push (list a b c d)
+;; LISTN            29        1     pop uint8 values, push list (order preserved)
+;; CALL             30        1     pop nargs args + 1 fn, apply, push result
 
 (defconst nelisp-bc--opcode-table
   '((RETURN           0 0)
@@ -120,7 +129,16 @@
     (VARBIND         18 1)
     (UNBIND          19 1)
     (STACK-SET       20 1)
-    (DISCARDN        21 1))
+    (DISCARDN        21 1)
+    (CAR             22 0)
+    (CDR             23 0)
+    (CONS            24 0)
+    (LIST1           25 0)
+    (LIST2           26 0)
+    (LIST3           27 0)
+    (LIST4           28 0)
+    (LISTN           29 1)
+    (CALL            30 1))
   "Ordered list of (NAME BYTE ARG-BYTES) triples.
 Source of truth; the plist, reverse-name, and arg-bytes caches are
 derived from this by `nelisp-bc--build-opcode-indexes'.")
@@ -318,6 +336,21 @@ Returns a cons (CODE-VECTOR . RESOLVED-LABELS-PLIST)."
     (nelisp-bc--compile-while ctx (cadr form) (cddr form)))
    ((and (consp form) (memq (car form) '(+ - < > eq not 1+ 1-)))
     (nelisp-bc--compile-primitive ctx (car form) (cdr form)))
+   ((and (consp form) (memq (car form) '(car cdr cons list)))
+    (nelisp-bc--compile-list-primitive ctx (car form) (cdr form)))
+   ((and (consp form)
+         (memq (car form)
+               '(lambda function defun defvar defconst defmacro
+                 catch throw unwind-protect condition-case
+                 and or when unless prog1 prog2)))
+    ;; Known special forms slated for later sub-phases — surface a
+    ;; clean `nelisp-bc-unimplemented' so callers can skip or
+    ;; fall back to the interpreter instead of getting a cryptic
+    ;; "void function" at runtime.
+    (signal 'nelisp-bc-unimplemented
+            (list "special form pending later 3b.4 sub-phase" (car form))))
+   ((and (consp form) (symbolp (car form)))
+    (nelisp-bc--compile-call ctx (car form) (cdr form)))
    (t
     (signal 'nelisp-bc-unimplemented
             (list "compiler cannot handle form yet" form)))))
@@ -633,6 +666,59 @@ Each init sees all previously introduced lex/dyn bindings."
      (nelisp-bc--emit ctx (cl-case op (< 'LESS) (> 'GREATER) (eq 'EQ)))
      (nelisp-bc--adjust-sp ctx -1))))
 
+(defun nelisp-bc--compile-list-primitive (ctx op args)
+  "Compile CAR / CDR / CONS / LIST forms directly to dedicated opcodes."
+  (cl-case op
+    ((car cdr)
+     (unless (= (length args) 1)
+       (signal 'nelisp-bc-error (list op "takes one arg" args)))
+     (nelisp-bc--compile-form ctx (car args))
+     (nelisp-bc--emit ctx (if (eq op 'car) 'CAR 'CDR)))
+    (cons
+     (unless (= (length args) 2)
+       (signal 'nelisp-bc-error (list "cons takes two args" args)))
+     (nelisp-bc--compile-form ctx (car args))
+     (nelisp-bc--compile-form ctx (cadr args))
+     (nelisp-bc--emit ctx 'CONS)
+     (nelisp-bc--adjust-sp ctx -1))
+    (list
+     (let ((n (length args)))
+       (cond
+        ((zerop n)
+         (let ((idx (nelisp-bc--add-const ctx nil)))
+           (nelisp-bc--emit ctx 'CONST idx)
+           (nelisp-bc--adjust-sp ctx 1)))
+        (t
+         (dolist (a args) (nelisp-bc--compile-form ctx a))
+         (cond
+          ((= n 1) (nelisp-bc--emit ctx 'LIST1))
+          ((= n 2) (nelisp-bc--emit ctx 'LIST2))
+          ((= n 3) (nelisp-bc--emit ctx 'LIST3))
+          ((= n 4) (nelisp-bc--emit ctx 'LIST4))
+          (t
+           (when (> n 255)
+             (signal 'nelisp-bc-unimplemented
+                     (list "list call with > 255 args" n)))
+           (nelisp-bc--emit ctx 'LISTN n)))
+         (nelisp-bc--adjust-sp ctx (- 1 n))))))))
+
+(defun nelisp-bc--compile-call (ctx head args)
+  "Compile a generic call (HEAD ARG...) by pushing HEAD as a symbol
+const, then compiling each ARG, then emitting CALL nargs.  At run
+time the VM delegates to `nelisp--apply' which understands
+NeLisp-registered functions, host Elisp symbols, and both closure
+shapes."
+  (let ((nargs (length args)))
+    (when (> nargs 255)
+      (signal 'nelisp-bc-unimplemented
+              (list "call with > 255 args" head nargs)))
+    (let ((idx (nelisp-bc--add-const ctx head)))
+      (nelisp-bc--emit ctx 'CONST idx)
+      (nelisp-bc--adjust-sp ctx 1))
+    (dolist (a args) (nelisp-bc--compile-form ctx a))
+    (nelisp-bc--emit ctx 'CALL nargs)
+    (nelisp-bc--adjust-sp ctx (- nargs))))
+
 ;;; Compiler entry ---------------------------------------------------
 
 (defun nelisp-bc-compile (form &optional env)
@@ -657,10 +743,12 @@ MCP Parameters:
 (defun nelisp-bc-run (bcl &optional args)
   "Execute the bytecode closure BCL.
 
-Phase 3b.4a expands the VM with variable ops (VARREF / VARSET /
-VARBIND / UNBIND / STACK-SET / DISCARDN) so `let' / `let*' / `setq'
-/ `while' can be compiled.  Argument binding for `lambda' still
-arrives in 3b.5; passing a non-nil ARGS continues to signal.
+Phase 3b.4a/b expand the VM with variable ops (VARREF / VARSET /
+VARBIND / UNBIND / STACK-SET / DISCARDN) and list / function-call
+ops (CAR / CDR / CONS / LIST1..4 / LISTN / CALL) so `let' / `let*'
+/ `setq' / `while' plus arbitrary primitive and NeLisp-defined
+function calls can be compiled.  Argument binding for `lambda'
+still arrives in 3b.5; passing a non-nil ARGS continues to signal.
 
 MCP Parameters:
   BCL   — `nelisp-bcl' object (see commentary §4.1)
@@ -703,6 +791,15 @@ MCP Parameters:
          (op-UNBIND          (nelisp-bc-opcode 'UNBIND))
          (op-STACK-SET       (nelisp-bc-opcode 'STACK-SET))
          (op-DISCARDN        (nelisp-bc-opcode 'DISCARDN))
+         (op-CAR             (nelisp-bc-opcode 'CAR))
+         (op-CDR             (nelisp-bc-opcode 'CDR))
+         (op-CONS            (nelisp-bc-opcode 'CONS))
+         (op-LIST1           (nelisp-bc-opcode 'LIST1))
+         (op-LIST2           (nelisp-bc-opcode 'LIST2))
+         (op-LIST3           (nelisp-bc-opcode 'LIST3))
+         (op-LIST4           (nelisp-bc-opcode 'LIST4))
+         (op-LISTN           (nelisp-bc-opcode 'LISTN))
+         (op-CALL            (nelisp-bc-opcode 'CALL))
          result)
     (cl-flet ((read-u16 ()
                 (prog1 (+ (aref code pc)
@@ -891,6 +988,76 @@ MCP Parameters:
                   ;; Move TOS down by N, then shrink sp by N.
                   (aset stack (- sp 1 n) (aref stack (1- sp)))
                   (setq sp (- sp n)))))
+             ((= op op-CAR)
+              (when (<= sp 0)
+                (signal 'nelisp-bc-error (list "CAR on empty stack" pc)))
+              (aset stack (1- sp) (car (aref stack (1- sp)))))
+             ((= op op-CDR)
+              (when (<= sp 0)
+                (signal 'nelisp-bc-error (list "CDR on empty stack" pc)))
+              (aset stack (1- sp) (cdr (aref stack (1- sp)))))
+             ((= op op-CONS)
+              (when (< sp 2)
+                (signal 'nelisp-bc-error (list "CONS needs 2 values" pc)))
+              (let ((b (aref stack (1- sp)))
+                    (a (aref stack (- sp 2))))
+                (aset stack (- sp 2) (cons a b))
+                (setq sp (1- sp))))
+             ((= op op-LIST1)
+              (when (<= sp 0)
+                (signal 'nelisp-bc-error (list "LIST1 on empty stack" pc)))
+              (aset stack (1- sp) (list (aref stack (1- sp)))))
+             ((= op op-LIST2)
+              (when (< sp 2)
+                (signal 'nelisp-bc-error (list "LIST2 needs 2 values" pc)))
+              (let ((b (aref stack (1- sp)))
+                    (a (aref stack (- sp 2))))
+                (aset stack (- sp 2) (list a b))
+                (setq sp (1- sp))))
+             ((= op op-LIST3)
+              (when (< sp 3)
+                (signal 'nelisp-bc-error (list "LIST3 needs 3 values" pc)))
+              (let ((c (aref stack (1- sp)))
+                    (b (aref stack (- sp 2)))
+                    (a (aref stack (- sp 3))))
+                (aset stack (- sp 3) (list a b c))
+                (setq sp (- sp 2))))
+             ((= op op-LIST4)
+              (when (< sp 4)
+                (signal 'nelisp-bc-error (list "LIST4 needs 4 values" pc)))
+              (let ((d (aref stack (1- sp)))
+                    (c (aref stack (- sp 2)))
+                    (b (aref stack (- sp 3)))
+                    (a (aref stack (- sp 4))))
+                (aset stack (- sp 4) (list a b c d))
+                (setq sp (- sp 3))))
+             ((= op op-LISTN)
+              (let ((n (aref code pc)))
+                (setq pc (1+ pc))
+                (when (< sp n)
+                  (signal 'nelisp-bc-error
+                          (list "LISTN underflow" n sp)))
+                (let ((acc nil))
+                  (dotimes (_ n)
+                    (setq sp (1- sp))
+                    (push (aref stack sp) acc))
+                  (aset stack sp acc)
+                  (setq sp (1+ sp)))))
+             ((= op op-CALL)
+              (let ((nargs (aref code pc)))
+                (setq pc (1+ pc))
+                (when (< sp (1+ nargs))
+                  (signal 'nelisp-bc-error
+                          (list "CALL underflow" nargs sp)))
+                (let ((call-args nil))
+                  (dotimes (_ nargs)
+                    (setq sp (1- sp))
+                    (push (aref stack sp) call-args))
+                  (setq sp (1- sp))
+                  (let* ((fn (aref stack sp))
+                         (result (nelisp--apply fn call-args)))
+                    (aset stack sp result)
+                    (setq sp (1+ sp))))))
                  (t
                   (signal 'nelisp-bc-error
                           (list "unknown opcode"
