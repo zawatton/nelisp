@@ -215,12 +215,22 @@ Phase 3b.5 (closure + lambda dynamic binding) と束ねて取り扱う。
   =nelisp-bc-unimplemented= を signal (3b.5b 待ち)
 - ERT: 14 本追加 (3b.5a-*)、404/404 green
 
-*** 3b.5b Free-lex capture (planned)
+*** 3b.5b Free-lex capture (SHIPPED)
 
-- =MAKE-CLOSURE N= op: pop N captured + 1 template、env を packed
-  closure に注入
-- 自由 lex 参照を =CAPTURED-REF idx= 等で読む
-- nested lambda が outer lex を closure 化して動く
+- 新規 op: =MAKE-CLOSURE N= (36, 1 byte) / =CAPTURED-REF idx= (37, 1 byte)
+- ctx に =captures= alist (sym → capture-idx) を追加。compile-var-ref が
+  自由 lex を見つけたら自動 allocate
+- compile-lambda の sub-ctx は親の lex-env / captures / parent-lex-shadow
+  を全て継承して shadow-source とする → multi-level closure を自然対応
+- compile-lambda 完了後、sub.captures があれば parent code に
+  「captures push (各 sym を parent の compile-var-ref で resolve) →
+  CONST template → MAKE-CLOSURE N」を emit
+- runtime: =MAKE-CLOSURE n= は stack 上の N captures + 1 template を
+  pop、新規 bcl を env=(cap0..capN-1) で構築
+- runtime: =CAPTURED-REF idx= は現在 bcl の env から N 番目を読む
+- ERT: 12 本追加 (3b.5b-*)、416/416 green。multi-level / closure-from-
+  closure / 3 段 chain / capture snapshot 不変性 / let* / capture +
+  special 共存もカバー
 
 *** 3b.5c defun auto-compile hook (optional)
 

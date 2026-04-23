@@ -1060,11 +1060,121 @@ a label.  Returns the resolved int vector."
               '(funcall (function (lambda (x) (* x x))) 5))
              25)))
 
-(ert-deftest nelisp-bc-3b5a-lambda-rejects-free-lex ()
-  ;; Free outer-lex reference is 3b.5b territory; for now signal.
-  (should-error
-   (nelisp-bc-compile '(let ((y 10)) (lambda (x) (+ x y))))
-   :type 'nelisp-bc-unimplemented))
+;;; Phase 3b.5b — free-lex capture (nested lambdas) -----------------
+
+(ert-deftest nelisp-bc-3b5b-opcode-table ()
+  (should (= (nelisp-bc-opcode 'MAKE-CLOSURE) 36))
+  (should (= (nelisp-bc-opcode 'CAPTURED-REF) 37)))
+
+(ert-deftest nelisp-bc-3b5b-single-capture ()
+  (should (= (nelisp-bc-test--eval
+              '(let ((y 10))
+                 ((lambda (x) (+ x y)) 5)))
+             15)))
+
+(ert-deftest nelisp-bc-3b5b-multi-capture ()
+  (should (= (nelisp-bc-test--eval
+              '(let ((a 1) (b 2) (c 3))
+                 ((lambda (x) (+ x a b c)) 10)))
+             16)))
+
+(ert-deftest nelisp-bc-3b5b-capture-snapshot-not-ref ()
+  ;; Captured value is the value at MAKE-CLOSURE time (snapshot).
+  (let ((closure (nelisp-bc-test--eval
+                  '(let ((y 100))
+                     (lambda (x) (+ x y))))))
+    (should (= (nelisp--apply closure '(1)) 101))))
+
+(ert-deftest nelisp-bc-3b5b-multiple-closures-distinct-env ()
+  ;; Two closures over different `y' values keep separate envs.
+  (let ((c1 (nelisp-bc-test--eval
+             '(let ((y 10)) (lambda (x) (+ x y)))))
+        (c2 (nelisp-bc-test--eval
+             '(let ((y 20)) (lambda (x) (+ x y))))))
+    (should (= (nelisp--apply c1 '(1)) 11))
+    (should (= (nelisp--apply c2 '(1)) 21))))
+
+(ert-deftest nelisp-bc-3b5b-shadowing-by-param ()
+  ;; A lambda param shadows the outer lex of the same name.
+  (should (= (nelisp-bc-test--eval
+              '(let ((x 100))
+                 ((lambda (x) x) 7)))
+             7))
+  ;; And the outer lex is still readable when not shadowed.
+  (should (= (nelisp-bc-test--eval
+              '(let ((x 100))
+                 ((lambda (y) (+ x y)) 7)))
+             107)))
+
+(ert-deftest nelisp-bc-3b5b-multi-level-capture ()
+  ;; Inner lambda captures BOTH outer-let `a' and middle-let `b'.
+  (should (= (nelisp-bc-test--eval
+              '(let ((a 1))
+                 (let ((b 10))
+                   ((lambda (x) (+ x a b)) 100))))
+             111)))
+
+(ert-deftest nelisp-bc-3b5b-closure-from-closure ()
+  ;; Inner lambda created inside an already-running outer closure
+  ;; captures from the outer's call frame.
+  (let ((make-adder (nelisp-bc-test--eval
+                     '(lambda (n)
+                        (lambda (x) (+ x n))))))
+    (let ((add5 (nelisp--apply make-adder '(5)))
+          (add10 (nelisp--apply make-adder '(10))))
+      (should (= (nelisp--apply add5 '(1)) 6))
+      (should (= (nelisp--apply add10 '(1)) 11))
+      (should (= (nelisp--apply add5 '(100)) 105)))))
+
+(ert-deftest nelisp-bc-3b5b-three-level-chain ()
+  (let ((three (nelisp-bc-test--eval
+                '(lambda (a)
+                   (lambda (b)
+                     (lambda (c)
+                       (+ a b c)))))))
+    (let* ((f1 (nelisp--apply three '(1)))
+           (f2 (nelisp--apply f1 '(10)))
+           (r  (nelisp--apply f2 '(100))))
+      (should (= r 111)))))
+
+(ert-deftest nelisp-bc-3b5b-capture-via-let* ()
+  ;; let* sequential bindings — capture last bound value.
+  (let ((c (nelisp-bc-test--eval
+            '(let* ((a 1) (b (+ a 10)))
+               (lambda (x) (+ x a b))))))
+    (should (= (nelisp--apply c '(0)) 12))))
+
+(ert-deftest nelisp-bc-3b5b-capture-keeps-outer-stable ()
+  ;; Mutating the outer lex AFTER closure creation does not affect
+  ;; the captured snapshot.
+  (let ((outer-result
+         (nelisp-bc-test--eval
+          '(let ((y 1))
+             (let ((c (lambda () y)))
+               (setq y 999)
+               (list y (funcall c)))))))
+    ;; y was set to 999 after closure creation; closure still sees 1.
+    (should (equal outer-result '(999 1)))))
+
+(ert-deftest nelisp-bc-3b5b-no-capture-still-works ()
+  ;; Lambda with no free-lex still compiles via the simple CONST
+  ;; path; ensure we didn't break the no-capture happy path.
+  (let ((c (nelisp-bc-test--eval '(lambda (x) (* x x)))))
+    (should (= (nelisp--apply c '(7)) 49))))
+
+(ert-deftest nelisp-bc-3b5b-capture-with-special ()
+  ;; Captured lex + special VARREF coexist.
+  (unwind-protect
+      (progn
+        (puthash 'nelisp-bc-test--cap-spec t nelisp--specials)
+        (puthash 'nelisp-bc-test--cap-spec 1000 nelisp--globals)
+        (let ((c (nelisp-bc-test--eval
+                  '(let ((local 7))
+                     (lambda (x)
+                       (+ x local nelisp-bc-test--cap-spec))))))
+          (should (= (nelisp--apply c '(2)) 1009))))
+    (remhash 'nelisp-bc-test--cap-spec nelisp--globals)
+    (remhash 'nelisp-bc-test--cap-spec nelisp--specials)))
 
 (provide 'nelisp-bytecode-test)
 ;;; nelisp-bytecode-test.el ends here

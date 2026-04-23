@@ -120,6 +120,10 @@
 ;; PUSH-CC          35        2     nested dispatch wrapped in host
 ;;                                   `condition-case'; on error, push err
 ;;                                   and jump to uint16 target
+;; MAKE-CLOSURE     36        1     pop uint8 captured values + 1 bcl
+;;                                   template; push new closure with
+;;                                   ENV = (cap0 cap1 ... capN-1)
+;; CAPTURED-REF     37        1     push (nth uint8 closure-env)
 
 (defconst nelisp-bc--opcode-table
   '((RETURN           0 0)
@@ -157,7 +161,9 @@
     (POP-HANDLER     32 0)
     (THROW           33 0)
     (PUSH-UNWIND     34 2)
-    (PUSH-CC         35 2))
+    (PUSH-CC         35 2)
+    (MAKE-CLOSURE    36 1)
+    (CAPTURED-REF    37 1))
   "Ordered list of (NAME BYTE ARG-BYTES) triples.
 Source of truth; the plist, reverse-name, and arg-bytes caches are
 derived from this by `nelisp-bc--build-opcode-indexes'.")
@@ -225,15 +231,21 @@ Called at load time from this module's tail."
   ;; Symbols are looked up newest-first so inner bindings shadow outer.
   (lex-env nil)
   ;; Phase 3b.5a: when compiling a `lambda' body, list of symbols
-  ;; that are lexical in the *parent* compile context.  References to
-  ;; them inside the body need free-lex capture (3b.5b); for now the
-  ;; compiler signals `nelisp-bc-unimplemented' instead of silently
-  ;; lowering them to VARREF (which would read globals at runtime).
-  (parent-lex-shadow nil))
+  ;; that are lexical in some *enclosing* compile context.
+  ;; References to them inside the body trigger free-lex capture
+  ;; (3b.5b) — they're added to `captures' and emitted as
+  ;; CAPTURED-REF instead of being treated as globals.
+  (parent-lex-shadow nil)
+  ;; Phase 3b.5b: list of (SYM . INDEX) for symbols this ctx has
+  ;; captured from outer scopes.  `compile-var-ref' grows this
+  ;; on-demand; `compile-lambda' reads it after the body is done to
+  ;; emit MAKE-CLOSURE arguments at the parent level.
+  (captures nil))
 
 (defun nelisp-bc--ctx-new ()
   (nelisp-bc--ctx--make :consts nil :insns nil :sp 0 :max-sp 0
-                        :lex-env nil :parent-lex-shadow nil))
+                        :lex-env nil :parent-lex-shadow nil
+                        :captures nil))
 
 (defun nelisp-bc--self-evaluating-p (form)
   "Non-nil if FORM evaluates to itself with no further work."
@@ -436,12 +448,32 @@ table via VARREF."
           (nelisp-bc--emit ctx 'STACK-REF offset)
           (nelisp-bc--adjust-sp ctx 1)))
        (t
-        (when (memq sym (nelisp-bc--ctx-parent-lex-shadow ctx))
-          (signal 'nelisp-bc-unimplemented
-                  (list "free-lex capture pending Phase 3b.5b" sym)))
-        (let ((idx (nelisp-bc--add-const ctx sym)))
-          (nelisp-bc--emit ctx 'VARREF idx)
-          (nelisp-bc--adjust-sp ctx 1))))))))
+        (let ((cap-cell (assq sym (nelisp-bc--ctx-captures ctx))))
+          (cond
+           (cap-cell
+            ;; Already captured by this ctx — read from closure env.
+            (let ((idx (cdr cap-cell)))
+              (when (> idx 255)
+                (signal 'nelisp-bc-unimplemented
+                        (list "captures > 256 entries pending later phase")))
+              (nelisp-bc--emit ctx 'CAPTURED-REF idx)
+              (nelisp-bc--adjust-sp ctx 1)))
+           ((memq sym (nelisp-bc--ctx-parent-lex-shadow ctx))
+            ;; Free outer lex — allocate a new capture slot.
+            (let ((idx (length (nelisp-bc--ctx-captures ctx))))
+              (when (> idx 255)
+                (signal 'nelisp-bc-unimplemented
+                        (list "captures > 256 entries pending later phase")))
+              (setf (nelisp-bc--ctx-captures ctx)
+                    (append (nelisp-bc--ctx-captures ctx)
+                            (list (cons sym idx))))
+              (nelisp-bc--emit ctx 'CAPTURED-REF idx)
+              (nelisp-bc--adjust-sp ctx 1)))
+           (t
+            ;; Global / special — read from `nelisp--globals'.
+            (let ((idx (nelisp-bc--add-const ctx sym)))
+              (nelisp-bc--emit ctx 'VARREF idx)
+              (nelisp-bc--adjust-sp ctx 1)))))))))))
 
 (defun nelisp-bc--compile-setq (ctx args)
   "Compile (setq SYM VAL [SYM VAL ...]).
@@ -1032,15 +1064,16 @@ fall back to the interpreter."
          (lex-env nil)
          (special-mask 0)
          (special-slots nil)
-         ;; Carry every parent lexical name as a "shadow set" — any
-         ;; reference to one inside the body that isn't covered by a
-         ;; lambda param would require free-lex capture (3b.5b), so
-         ;; the inner compile signals `nelisp-bc-unimplemented'
-         ;; instead of silently emitting a VARREF that reads globals.
-         ;; Param names cancel their parent shadow (the local binding
-         ;; wins), matching let-shadowing semantics.
-         (parent-names (mapcar #'car (nelisp-bc--ctx-lex-env ctx)))
-         (shadow (cl-set-difference parent-names positionals)))
+         ;; Sub-ctx's "shadow set" of capturable outer-scope symbols.
+         ;; Includes everything the parent ctx can resolve at its
+         ;; level: its lexical bindings AND its own captures (which
+         ;; chain back to outer enclosing contexts).  Param names
+         ;; cancel their shadow, matching let-shadowing semantics.
+         (parent-lex-names (mapcar #'car (nelisp-bc--ctx-lex-env ctx)))
+         (parent-cap-names (mapcar #'car (nelisp-bc--ctx-captures ctx)))
+         (shadow-source (append parent-lex-names parent-cap-names
+                                (nelisp-bc--ctx-parent-lex-shadow ctx)))
+         (shadow (cl-set-difference shadow-source positionals)))
     (setf (nelisp-bc--ctx-parent-lex-shadow sub-ctx) shadow)
     ;; Sub-ctx starts with all positionals already pushed: sp = N.
     (setf (nelisp-bc--ctx-sp sub-ctx) n-positionals)
@@ -1084,15 +1117,43 @@ fall back to the interpreter."
       (nelisp-bc--emit sub-ctx 'DISCARDN n-positionals)
       (nelisp-bc--adjust-sp sub-ctx (- n-positionals)))
     (nelisp-bc--emit sub-ctx 'RETURN)
-    ;; Build sub-bcl and have the parent push it as a constant.
+    ;; Build sub-bcl and have the parent push it as a constant.  If
+    ;; the body captured any free-lex vars, emit pushes for each (in
+    ;; capture-index order) followed by CONST + MAKE-CLOSURE so the
+    ;; runtime instantiates a fresh closure with ENV filled in.
     (let* ((code (nelisp-bc--resolve (nelisp-bc--ctx-insns sub-ctx)))
            (consts (apply #'vector (nelisp-bc--ctx-consts sub-ctx)))
            (max-sp (max 1 (nelisp-bc--ctx-max-sp sub-ctx)))
+           (captures (nelisp-bc--ctx-captures sub-ctx))
            (template (nelisp-bc-make nil params consts code
-                                     max-sp special-mask))
-           (idx (nelisp-bc--add-const ctx template)))
-      (nelisp-bc--emit ctx 'CONST idx)
-      (nelisp-bc--adjust-sp ctx 1))))
+                                     max-sp special-mask)))
+      (cond
+       ((null captures)
+        (let ((idx (nelisp-bc--add-const ctx template)))
+          (nelisp-bc--emit ctx 'CONST idx)
+          (nelisp-bc--adjust-sp ctx 1)))
+       (t
+        ;; Sort captures by index just to be safe (we always append
+        ;; in order so this is a no-op, but stay defensive).
+        (let ((sorted (sort (copy-sequence captures)
+                            (lambda (a b) (< (cdr a) (cdr b))))))
+          (dolist (cap sorted)
+            ;; `compile-var-ref' on the parent ctx resolves the sym
+            ;; — STACK-REF for parent lex, CAPTURED-REF for parent
+            ;; capture, or auto-captures it from grandparent (which
+            ;; chains the capture out one more level).
+            (nelisp-bc--compile-var-ref ctx (car cap)))
+          (let ((idx (nelisp-bc--add-const ctx template)))
+            (nelisp-bc--emit ctx 'CONST idx)
+            (nelisp-bc--adjust-sp ctx 1))
+          (let ((n (length sorted)))
+            (when (> n 255)
+              (signal 'nelisp-bc-unimplemented
+                      (list "captures > 255 entries pending later phase")))
+            (nelisp-bc--emit ctx 'MAKE-CLOSURE n)
+            ;; MAKE-CLOSURE pops N captures + 1 template, pushes 1
+            ;; closure → net delta is -N.
+            (nelisp-bc--adjust-sp ctx (- n)))))))))
 
 (defun nelisp-bc--cc-match-p (handler-spec err)
   "Return non-nil if ERR matches HANDLER-SPEC per `condition-case' rules."
@@ -1148,6 +1209,7 @@ MCP Parameters:
     (signal 'nelisp-bc-error (list "not a nelisp-bcl" bcl)))
   (let* ((code (nelisp-bc-code bcl))
          (consts (nelisp-bc-consts bcl))
+         (closure-env (nelisp-bc-env bcl))
          (params (nelisp-bc-params bcl))
          ;; Materialise any args into per-slot values.  No params and
          ;; no args is the "expression" case; otherwise dispatch to
@@ -1212,6 +1274,8 @@ MCP Parameters:
          (op-THROW           (nelisp-bc-opcode 'THROW))
          (op-PUSH-UNWIND     (nelisp-bc-opcode 'PUSH-UNWIND))
          (op-PUSH-CC         (nelisp-bc-opcode 'PUSH-CC))
+         (op-MAKE-CLOSURE    (nelisp-bc-opcode 'MAKE-CLOSURE))
+         (op-CAPTURED-REF    (nelisp-bc-opcode 'CAPTURED-REF))
          result)
     (cl-labels ((read-u16 ()
                   (prog1 (+ (aref code pc)
@@ -1568,6 +1632,46 @@ MCP Parameters:
                   (aset stack sp err)
                   (setq sp (1+ sp))
                   (setq pc handler-target))))
+             ((= op op-MAKE-CLOSURE)
+              (let ((n (aref code pc)))
+                (setq pc (1+ pc))
+                (when (< sp (1+ n))
+                  (signal 'nelisp-bc-error
+                          (list "MAKE-CLOSURE underflow" n sp)))
+                (let* ((template (aref stack (1- sp)))
+                       (env nil))
+                  (unless (and (consp template)
+                               (eq (car template) 'nelisp-bcl))
+                    (signal 'nelisp-bc-error
+                            (list "MAKE-CLOSURE non-template" template)))
+                  ;; Captures lie at stack[sp-2-n+1 .. sp-2] in slot
+                  ;; order; build the env list by walking them in
+                  ;; reverse so env's car = capture index 0.
+                  (dotimes (i n)
+                    (push (aref stack (- sp 2 i)) env))
+                  (setq env (nreverse env))
+                  (setq sp (- sp (1+ n)))
+                  (let ((closure (nelisp-bc-make
+                                  env
+                                  (nelisp-bc-params template)
+                                  (nelisp-bc-consts template)
+                                  (nelisp-bc-code template)
+                                  (nelisp-bc-stack-depth template)
+                                  (nelisp-bc-special-mask template))))
+                    (aset stack sp closure)
+                    (setq sp (1+ sp))))))
+             ((= op op-CAPTURED-REF)
+              (when (>= sp stack-depth)
+                (signal 'nelisp-bc-error
+                        (list "stack overflow at CAPTURED-REF" pc)))
+              (let ((idx (aref code pc)))
+                (setq pc (1+ pc))
+                (when (or (< idx 0) (>= idx (length closure-env)))
+                  (signal 'nelisp-bc-error
+                          (list "CAPTURED-REF out of range"
+                                idx (length closure-env))))
+                (aset stack sp (nth idx closure-env))
+                (setq sp (1+ sp))))
                  (t
                   (signal 'nelisp-bc-error
                           (list "unknown opcode"
