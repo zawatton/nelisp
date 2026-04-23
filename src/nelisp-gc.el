@@ -79,5 +79,64 @@ via bytecode.el to keep that file's external surface unchanged."
   `(let ((nelisp-gc--active-vms (cons ,vm nelisp-gc--active-vms)))
      ,@body))
 
+;;; Mark pass (Phase 3c.2) --------------------------------------------
+
+(defun nelisp-gc--seed-work (root-override)
+  "Return the initial work list for a mark pass.
+Extract `:value' from each root plist (yielding the actual NeLisp
+object) so the walker can treat roots and transitive edges uniformly
+without carrying the plist shape through the loop."
+  (let ((seeds (or root-override (nelisp-gc-root-set)))
+        out)
+    (dolist (r seeds)
+      (push (plist-get r :value) out))
+    out))
+
+(defun nelisp-gc-reachable-set (&optional root-override)
+  "Return a hash-table of `eq'-unique objects reachable from roots.
+
+Walk is iterative (explicit work list) so deeply nested or cyclic
+structures cannot trip `max-lisp-eval-depth'.  ROOT-OVERRIDE, if
+given, replaces the default `nelisp-gc-root-set' as the seed; it
+must share the plist shape `(:kind K :value V)' per root entry.
+
+Edge definition (design doc §2.3 decision A, Elisp structural):
+  cons        → car, cdr
+  vector      → every element
+  hash-table  → every key and every value
+  closure /
+    bcl-tag   → reached via their list/vector structure (no special
+                case; nelisp-closure / nelisp-bcl are cons chains)
+  other       → leaf (numbers, strings, symbols, buffers, etc.)
+
+Keys of the returned hash-table map to t.  Callers wanting object
+counts or type histograms iterate via `maphash'."
+  (let ((visited (make-hash-table :test 'eq))
+        (work    (nelisp-gc--seed-work root-override)))
+    (while work
+      (let ((obj (pop work)))
+        (unless (or (null obj) (gethash obj visited))
+          (puthash obj t visited)
+          (cond
+           ((consp obj)
+            (push (car obj) work)
+            (push (cdr obj) work))
+           ((vectorp obj)
+            (let ((i (length obj)))
+              (while (> i 0)
+                (setq i (1- i))
+                (push (aref obj i) work))))
+           ((hash-table-p obj)
+            (maphash (lambda (k v) (push k work) (push v work)) obj))
+           ;; Leaf (numbers, strings, symbols, other primitives).
+           (t nil)))))
+    visited))
+
+(defun nelisp-gc-reachable-count (&optional root-override)
+  "Return the count of objects in `nelisp-gc-reachable-set'.
+Convenience for callers that only need the size (e.g. bench harness,
+=nelisp-heap-count=)."
+  (hash-table-count (nelisp-gc-reachable-set root-override)))
+
 (provide 'nelisp-gc)
 ;;; nelisp-gc.el ends here

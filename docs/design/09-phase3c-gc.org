@@ -198,15 +198,20 @@ Phase 3b の 8 sub-phase 式を踏襲、細かく区切って user が途中 abo
   exit 後 pop 確認 / throw 経由 non-local exit 後 pop 確認
 - 459/459 tests pass (bump from 452)
 
-** 3c.2 Mark pass (DRAFT)
+** 3c.2 Mark pass (SHIPPED 2026-04-24)
 
-- =nelisp-gc--mark= (obj visited-ht) — structural walk
-- =nelisp-gc--reachable-set= (root-set-override) — 任意 root から
-  =eq=-identity set (hash-table with test='eq) を返す
-- cycle detection (visited-ht)
-- ERT: 合成 graph (cons chain / circular list / hash-table value
-  に closure) で expected set 検証
-- 予算: 200 LOC 目安、ERT 10 本
+- =nelisp-gc-reachable-set= (public, &optional root-override): iterative
+  walk (explicit work list、host stack 使わず =max-lisp-eval-depth= 無関係)
+- =nelisp-gc-reachable-count=: =hash-table-count= convenience
+- =nelisp-gc--seed-work=: root plist → plain object list 抽出 helper
+- cycle detection: visited =eq= hash-table が前 visit を短絡
+- edge 定義 (design doc §2.3 A): cons (car/cdr) / vector (全 element) /
+  hash-table (key/value) / その他 leaf。closure / bcl は cons 構造で
+  自然に reach
+- ERT 10 本: single cons / flat list / *circular list halt* / nested
+  cons / vector / hash-table / cross-ref graph / closure shape /
+  reachable-count convenience / default roots が globals table 到達
+- 469/469 tests pass (bump from 459、+10)
 
 ** 3c.3 Finalizer registry (DRAFT)
 
