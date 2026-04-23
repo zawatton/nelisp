@@ -223,6 +223,69 @@ this is the load-bearing assertion of Phase 2.5a."
         (setq total (+ total n))))
     (should (> total 100))))
 
+;;; ----- Cycle-2 fixpoint (Phase 2.5c) ---------------------------------
+
+(defconst nelisp-tramp-test--cycle2-files
+  '("nelisp-read.el" "nelisp-eval.el" "nelisp-macro.el"
+    "nelisp-load.el" "nelisp-tramp.el" "nelisp.el")
+  "Full source set for cycle-2 tests (includes nelisp-tramp.el itself).")
+
+(defun nelisp-tramp-test--full-self-install ()
+  "Reset + bootstrap + install every source file through the trampoline.
+Used by cycle-2 tests as the shared setup."
+  (nelisp--reset)
+  (nelisp-bootstrap-shared-tables)
+  (dolist (rel nelisp-tramp-test--cycle2-files)
+    (nelisp-tramp-test--install-via-tramp
+     (expand-file-name rel nelisp-tramp-test--source-dir))))
+
+(ert-deftest nelisp-tramp-cycle2-installs-itself ()
+  "After bootstrap, nelisp-tramp.el itself installs through the
+trampoline — the installed `nelisp-tramp-eval' is present in
+`nelisp--functions' as a NeLisp closure."
+  (nelisp-tramp-test--full-self-install)
+  (let ((fn (gethash 'nelisp-tramp-eval nelisp--functions
+                     nelisp--unbound)))
+    (should-not (eq fn nelisp--unbound))
+    (should (nelisp--closure-p fn))))
+
+(ert-deftest nelisp-tramp-cycle2-fixpoint-fib ()
+  "cycle-1 result == cycle-2 result for `(fib N)'.  Cycle-1 runs the
+host trampoline on the form; cycle-2 runs the *installed* (NeLisp
+closure) `nelisp-tramp-eval' on the form.  Bit-identical output is
+Phase 2 success criterion (docs/05-roadmap.org §3.2)."
+  (nelisp-tramp-test--full-self-install)
+  (nelisp-tramp-eval
+   '(defun fib (n) (if (< n 2) n
+                     (+ (fib (- n 1)) (fib (- n 2))))))
+  (dolist (n '(0 1 5 8 10))
+    (let ((cyc1 (nelisp-tramp-eval (list 'fib n)))
+          (cyc2 (nelisp-tramp-eval
+                 (list 'nelisp-tramp-eval
+                       (list 'quote (list 'fib n))))))
+      (should (equal cyc1 cyc2)))))
+
+(ert-deftest nelisp-tramp-cycle2-fixpoint-fact ()
+  (nelisp-tramp-test--full-self-install)
+  (nelisp-tramp-eval
+   '(defun fact (n) (if (< n 2) 1 (* n (fact (- n 1))))))
+  (dolist (n '(1 3 5 7))
+    (should (equal (nelisp-tramp-eval (list 'fact n))
+                   (nelisp-tramp-eval
+                    (list 'nelisp-tramp-eval
+                          (list 'quote (list 'fact n))))))))
+
+(ert-deftest nelisp-tramp-cycle2-fixpoint-let-closure ()
+  "Closures captured in cycle-1 behave identically when exercised
+through cycle-2 — the shared-tables bootstrap means a function defined
+in the host side is visible from inside the installed tramp-eval."
+  (nelisp-tramp-test--full-self-install)
+  (nelisp-tramp-eval '(defun add1 (n) (+ n 1)))
+  (let ((c1 (nelisp-tramp-eval '(add1 41)))
+        (c2 (nelisp-tramp-eval '(nelisp-tramp-eval (quote (add1 41))))))
+    (should (equal c1 42))
+    (should (equal c1 c2))))
+
 (provide 'nelisp-tramp-test)
 
 ;;; nelisp-tramp-test.el ends here

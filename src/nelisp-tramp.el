@@ -69,10 +69,10 @@ NeLisp closures do not consume host C stack frames per call."
     (while work
       (let ((step (pop work)))
         (condition-case err
-            (pcase (car step)
+            (let ((nltv (car step))) (cond
 
               ;; ---- :eval FORM ENV ----
-              (:eval
+              ((eq nltv :eval)
                (let ((f (nth 1 step))
                      (e (nth 2 step)))
                  (cond
@@ -200,7 +200,7 @@ NeLisp closures do not consume host C stack frames per call."
                   (t (signal 'nelisp-eval-error (list "cannot evaluate" f))))))
 
               ;; ---- :begin FORMS ENV ----
-              (:begin
+              ((eq nltv :begin)
                (let ((forms (nth 1 step))
                      (e (nth 2 step)))
                  (cond
@@ -212,7 +212,7 @@ NeLisp closures do not consume host C stack frames per call."
                    (push (list :eval (car forms) e) work)))))
 
               ;; ---- :if-branch (THEN-FORM ELSE-FORMS...) ENV ----
-              (:if-branch
+              ((eq nltv :if-branch)
                (let ((arms (nth 1 step))
                      (e (nth 2 step)))
                  (if result
@@ -220,7 +220,7 @@ NeLisp closures do not consume host C stack frames per call."
                    (push (list :begin (cdr arms) e) work))))
 
               ;; ---- :cond-clauses CLAUSES ENV ----
-              (:cond-clauses
+              ((eq nltv :cond-clauses)
                (let ((clauses (nth 1 step))
                      (e (nth 2 step)))
                  (cond
@@ -232,7 +232,7 @@ NeLisp closures do not consume host C stack frames per call."
                                (list "cond clause must be a list" cl)))
                      (push (list :cond-after-test cl (cdr clauses) e) work)
                      (push (list :eval (car cl) e) work))))))
-              (:cond-after-test
+              ((eq nltv :cond-after-test)
                (let ((cl (nth 1 step))
                      (rest (nth 2 step))
                      (e (nth 3 step)))
@@ -245,7 +245,7 @@ NeLisp closures do not consume host C stack frames per call."
                    (push (list :cond-clauses rest e) work)))))
 
               ;; ---- :and-rest FORMS ENV ----
-              (:and-rest
+              ((eq nltv :and-rest)
                (let ((forms (nth 1 step))
                      (e (nth 2 step)))
                  (cond
@@ -256,7 +256,7 @@ NeLisp closures do not consume host C stack frames per call."
                    (push (list :eval (car forms) e) work)))))
 
               ;; ---- :or-rest FORMS ENV ----
-              (:or-rest
+              ((eq nltv :or-rest)
                (let ((forms (nth 1 step))
                      (e (nth 2 step)))
                  (cond
@@ -267,36 +267,36 @@ NeLisp closures do not consume host C stack frames per call."
                    (push (list :eval (car forms) e) work)))))
 
               ;; ---- :when-body BODY ENV ----
-              (:when-body
+              ((eq nltv :when-body)
                (let ((body (nth 1 step))
                      (e (nth 2 step)))
                  (if result (push (list :begin body e) work)
                    (setq result nil))))
 
               ;; ---- :unless-body BODY ENV ----
-              (:unless-body
+              ((eq nltv :unless-body)
                (let ((body (nth 1 step))
                      (e (nth 2 step)))
                  (if result (setq result nil)
                    (push (list :begin body e) work))))
 
               ;; ---- :prog1-rest FORMS ENV ----
-              (:prog1-rest
+              ((eq nltv :prog1-rest)
                (let ((forms (nth 1 step))
                      (e (nth 2 step))
                      (saved result))
                  (push (list :prog1-restore saved) work)
                  (push (list :begin forms e) work)))
-              (:prog1-restore
+              ((eq nltv :prog1-restore)
                (setq result (nth 1 step)))
 
               ;; ---- :prog2-second (SECOND BODY...) ENV ----
-              (:prog2-second
+              ((eq nltv :prog2-second)
                (let ((rest (nth 1 step))
                      (e (nth 2 step)))
                  (push (list :prog2-after (cdr rest) e) work)
                  (push (list :eval (car rest) e) work)))
-              (:prog2-after
+              ((eq nltv :prog2-after)
                (let ((forms (nth 1 step))
                      (e (nth 2 step))
                      (saved result))
@@ -304,7 +304,7 @@ NeLisp closures do not consume host C stack frames per call."
                  (push (list :begin forms e) work)))
 
               ;; ---- :let-init (BINDINGS . BODY) ACC ENV ----
-              (:let-init
+              ((eq nltv :let-init)
                (let ((args (nth 1 step))
                      (acc (nth 2 step))
                      (e (nth 3 step)))
@@ -330,7 +330,7 @@ NeLisp closures do not consume host C stack frames per call."
                         (t
                          (signal 'nelisp-eval-error
                                  (list "malformed let binding" b))))))))))
-              (:let-init-after-init
+              ((eq nltv :let-init-after-init)
                (let ((sym (nth 1 step))
                      (rest-bindings (nth 2 step))
                      (body (nth 3 step))
@@ -341,7 +341,7 @@ NeLisp closures do not consume host C stack frames per call."
                              (cons (cons sym result) acc)
                              e)
                        work)))
-              (:let-bind
+              ((eq nltv :let-bind)
                (let* ((acc  (nth 1 step))
                       (body (nth 2 step))
                       (e    (nth 3 step))
@@ -362,11 +362,11 @@ NeLisp closures do not consume host C stack frames per call."
                  (let ((env2 (append (nreverse lex-pairs) e)))
                    (push (list :restore-dyn dyn-saves) work)
                    (push (list :begin body env2) work))))
-              (:restore-dyn
+              ((eq nltv :restore-dyn)
                (nelisp--restore-dynamic (nth 1 step)))
 
               ;; ---- :let*-init BINDINGS BODY DYN-SAVES ENV ----
-              (:let*-init
+              ((eq nltv :let*-init)
                (let ((bindings (nth 1 step))
                      (body (nth 2 step))
                      (dyn-saves (nth 3 step))
@@ -390,7 +390,7 @@ NeLisp closures do not consume host C stack frames per call."
                       (t
                        (signal 'nelisp-eval-error
                                (list "malformed let* binding" b)))))))))
-              (:let*-after
+              ((eq nltv :let*-after)
                (let ((sym (nth 1 step))
                      (rest-bindings (nth 2 step))
                      (body (nth 3 step))
@@ -410,16 +410,16 @@ NeLisp closures do not consume host C stack frames per call."
                          work)))))
 
               ;; ---- :defvar-store SYM ----
-              (:defvar-store
+              ((eq nltv :defvar-store)
                (puthash (nth 1 step) result nelisp--globals)
                (setq result (nth 1 step)))
               ;; ---- :defconst-store SYM ----
-              (:defconst-store
+              ((eq nltv :defconst-store)
                (puthash (nth 1 step) result nelisp--globals)
                (setq result (nth 1 step)))
 
               ;; ---- :setq-pairs ARGS ENV LAST ----
-              (:setq-pairs
+              ((eq nltv :setq-pairs)
                (let ((args (nth 1 step))
                      (e (nth 2 step)))
                  (cond
@@ -433,7 +433,7 @@ NeLisp closures do not consume host C stack frames per call."
                        (signal 'nelisp-eval-error (list "setq non-symbol" sym)))
                      (push (list :setq-after sym (cddr args) e) work)
                      (push (list :eval (cadr args) e) work))))))
-              (:setq-after
+              ((eq nltv :setq-after)
                (let* ((sym (nth 1 step))
                       (rest (nth 2 step))
                       (e (nth 3 step))
@@ -444,7 +444,7 @@ NeLisp closures do not consume host C stack frames per call."
                  (push (list :setq-pairs rest e val) work)))
 
               ;; ---- :while-test TEST BODY ENV ----
-              (:while-test
+              ((eq nltv :while-test)
                (let ((test (nth 1 step))
                      (body (nth 2 step))
                      (e (nth 3 step)))
@@ -456,29 +456,29 @@ NeLisp closures do not consume host C stack frames per call."
                    (push (list :begin body e) work)))))
 
               ;; ---- catch (work-stack version) ----
-              (:catch-tag-eval
+              ((eq nltv :catch-tag-eval)
                (let ((tag result)
                      (body (nth 1 step))
                      (e (nth 2 step)))
                  (push (list :catch-mark tag) work)
                  (push (list :begin body e) work)))
-              (:catch-mark
+              ((eq nltv :catch-mark)
                ;; body completed without throw — drop the marker
                nil)
 
               ;; ---- throw (work-stack version) ----
-              (:throw-eval-val
+              ((eq nltv :throw-eval-val)
                (let ((tag result)
                      (val-form (nth 1 step))
                      (e (nth 2 step)))
                  (push (list :throw-final tag) work)
                  (push (list :eval val-form e) work)))
-              (:throw-final
+              ((eq nltv :throw-final)
                (signal 'nelisp-tramp--throw
                        (list (nth 1 step) result)))
 
               ;; ---- unwind-protect ----
-              (:unwind-mark
+              ((eq nltv :unwind-mark)
                (let ((cleanup (nth 1 step))
                      (e (nth 2 step))
                      (saved result))
@@ -487,15 +487,15 @@ NeLisp closures do not consume host C stack frames per call."
                   (t
                    (push (list :unwind-restore saved) work)
                    (push (list :begin cleanup e) work)))))
-              (:unwind-restore
+              ((eq nltv :unwind-restore)
                (setq result (nth 1 step)))
 
               ;; ---- condition-case (body completed without error) ----
-              (:cc-mark
+              ((eq nltv :cc-mark)
                nil)
 
               ;; ---- :call-collect HEAD ARGS-FORMS COLLECTED ENV ----
-              (:call-collect
+              ((eq nltv :call-collect)
                (let ((head (nth 1 step))
                      (rest (nth 2 step))
                      (acc (nth 3 step))
@@ -555,7 +555,7 @@ NeLisp closures do not consume host C stack frames per call."
                   (t
                    (push (list :call-after head (cdr rest) acc e) work)
                    (push (list :eval (car rest) e) work)))))
-              (:call-after
+              ((eq nltv :call-after)
                (let ((head (nth 1 step))
                      (rest (nth 2 step))
                      (acc (nth 3 step))
@@ -567,7 +567,7 @@ NeLisp closures do not consume host C stack frames per call."
               ;; through the work-stack.  Used by trampoline-aware funcall /
               ;; apply / mapcar et al so closure targets do not consume host
               ;; stack frames.
-              (:tramp-apply
+              ((eq nltv :tramp-apply)
                (let ((target (nth 1 step))
                      (args (nth 2 step)))
                  (cond
@@ -594,7 +594,7 @@ NeLisp closures do not consume host C stack frames per call."
                              (list "not a function" target))))))
 
               ;; ---- :mapcar-fold FN REMAINING-LIST ACC-RESULTS ----
-              (:mapcar-fold
+              ((eq nltv :mapcar-fold)
                (let ((fn (nth 1 step))
                      (lst (nth 2 step))
                      (acc (nth 3 step)))
@@ -604,14 +604,14 @@ NeLisp closures do not consume host C stack frames per call."
                   (t
                    (push (list :mapcar-collect fn (cdr lst) acc) work)
                    (push (list :tramp-apply fn (list (car lst))) work)))))
-              (:mapcar-collect
+              ((eq nltv :mapcar-collect)
                (let ((fn (nth 1 step))
                      (rest (nth 2 step))
                      (acc (nth 3 step)))
                  (push (list :mapcar-fold fn rest (cons result acc)) work)))
 
               ;; ---- :mapc-fold FN REMAINING-LIST ORIG-LIST ----
-              (:mapc-fold
+              ((eq nltv :mapc-fold)
                (let ((fn (nth 1 step))
                      (lst (nth 2 step))
                      (orig (nth 3 step)))
@@ -621,14 +621,14 @@ NeLisp closures do not consume host C stack frames per call."
                   (t
                    (push (list :mapc-step fn (cdr lst) orig) work)
                    (push (list :tramp-apply fn (list (car lst))) work)))))
-              (:mapc-step
+              ((eq nltv :mapc-step)
                (let ((fn (nth 1 step))
                      (rest (nth 2 step))
                      (orig (nth 3 step)))
                  (push (list :mapc-fold fn rest orig) work)))
 
               ;; ---- :mapconcat-fold FN REMAINING-LIST SEP ACC-STRINGS ----
-              (:mapconcat-fold
+              ((eq nltv :mapconcat-fold)
                (let ((fn (nth 1 step))
                      (lst (nth 2 step))
                      (sep (nth 3 step))
@@ -641,7 +641,7 @@ NeLisp closures do not consume host C stack frames per call."
                   (t
                    (push (list :mapconcat-collect fn (cdr lst) sep acc) work)
                    (push (list :tramp-apply fn (list (car lst))) work)))))
-              (:mapconcat-collect
+              ((eq nltv :mapconcat-collect)
                (let ((fn (nth 1 step))
                      (rest (nth 2 step))
                      (sep (nth 3 step))
@@ -649,8 +649,8 @@ NeLisp closures do not consume host C stack frames per call."
                  (push (list :mapconcat-fold fn rest sep (cons result acc))
                        work)))
 
-              (_ (signal 'nelisp-eval-error
-                         (list "trampoline: unknown step" step))))
+              (t (signal 'nelisp-eval-error
+                         (list "trampoline: unknown step" step)))))
 
           ;; ---- non-local exits dispatched via outer condition-case ----
           (nelisp-tramp--throw

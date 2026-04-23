@@ -44,6 +44,26 @@
 ;; NeLisp-native macros that depend on it — `dolist' / `push' / etc.
 (nelisp--install-core-macros)
 
+(defun nelisp-bootstrap-shared-tables ()
+  "Seed NeLisp globals with the host evaluator's own hash tables.
+This lets NeLisp code installed into the NeLisp environment read and
+write the same `nelisp--functions' / `nelisp--globals' /
+`nelisp--specials' / `nelisp--macros' tables that the host evaluator
+uses — a prerequisite for cycle-1 = cycle-2 fixpoint.  Without it,
+a NeLisp `defvar nelisp--functions (make-hash-table ...)' produces a
+fresh NeLisp-side table that shares no entries with the host, so code
+installed by cycle-1 (into the host) is invisible to cycle-2 (which
+consults the NeLisp-side fresh table).
+
+The shared-state approach is a Phase 2 expedient.  A proper Rhodes
+5-stage genesis (=docs/03-architecture.org= §1) will eventually replace
+this with a cold-image build that hands the genesis host's tables
+directly to the cross-compiled NeLisp runtime."
+  (dolist (sym '(nelisp--functions nelisp--globals nelisp--specials
+                                   nelisp--macros nelisp--unbound))
+    (puthash sym t nelisp--specials)
+    (puthash sym (symbol-value sym) nelisp--globals)))
+
 (defconst nelisp-version "0.0.0"
   "Current version of NeLisp.
 Phase 1 complete (reader + eval + macro + dynamic + cond + stdlib);
