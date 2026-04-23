@@ -306,5 +306,46 @@ when no bytecode is running."
     (should-not
      (cl-find 'vm-stack summary :key (lambda (e) (plist-get e :kind))))))
 
+;;; Phase 4 actor boundary hook (3c.5) --------------------------------
+
+(ert-deftest nelisp-gc-actor-boundary-disjoint ()
+  "Two actor roots whose graphs share no cons cells yield disjoint
+reachable sets.
+
+Use cons-only graphs — fixnums and interned symbols are `eq'-shared
+globally, so including them in the graph would always overlap.  The
+walker correctly records them as reachable; at the actor-boundary
+consumer level Phase 4 will filter immutable shared-class leaves
+(symbols, fixnums, etc.) because ownership is a concept only for
+mutable cells."
+  (let* ((leaf-a (cons nil nil))
+         (leaf-b (cons nil nil))
+         (a-root (cons leaf-a nil))
+         (b-root (cons leaf-b nil))
+         (a-live (nelisp-gc-actor-boundary a-root))
+         (b-live (nelisp-gc-actor-boundary b-root))
+         (overlap 0))
+    (maphash (lambda (obj _)
+               (when (gethash obj b-live) (cl-incf overlap)))
+             a-live)
+    (should (= 0 overlap))))
+
+(ert-deftest nelisp-gc-actor-boundary-shared-subgraph ()
+  "Two actor roots that share a subgraph each include the shared set.
+Phase 4 uses this exact overlap as the signal that a message has
+crossed a boundary — the Phase 3c API merely guarantees the overlap
+is observable via hash-table intersection."
+  (let* ((shared (cons nil nil))
+         (a-root (cons shared (cons (cons nil nil) nil)))
+         (b-root (cons shared (cons (cons nil nil) nil)))
+         (a-live (nelisp-gc-actor-boundary a-root))
+         (b-live (nelisp-gc-actor-boundary b-root)))
+    (should (gethash shared a-live))
+    (should (gethash shared b-live))
+    (should (gethash a-root a-live))
+    (should (gethash b-root b-live))
+    (should-not (gethash a-root b-live))
+    (should-not (gethash b-root a-live))))
+
 (provide 'nelisp-gc-test)
 ;;; nelisp-gc-test.el ends here

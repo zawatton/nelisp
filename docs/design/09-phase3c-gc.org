@@ -246,13 +246,19 @@ Phase 3b の 8 sub-phase 式を踏襲、細かく区切って user が途中 abo
   不在
 - 477/477 tests pass (bump from 474、+3)
 
-** 3c.5 Phase 4 actor boundary hook (DRAFT)
+** 3c.5 Phase 4 actor boundary hook (SHIPPED 2026-04-24)
 
-- =nelisp-gc-actor-boundary= (start-root) — start-root から reach
-  可能な object set を返す。Phase 4 =nelisp-spawn= が actor ごとに
-  この set を取得し ownership ledger に登録する想定
-- Phase 3c では *API のみ* ship、Phase 4 で実装 refine
-- 予算: 50 LOC 目安、ERT 2 本 (boundary 重なり検出 smoke)
+- =nelisp-gc-actor-boundary= (start-root): =nelisp-gc-reachable-set= に
+  =actor-root= kind の synthetic root を 1 個渡すラッパー。hash-table を
+  返すので Phase 4 =nelisp-spawn= / =nelisp-send= が intersection 計算に
+  そのまま使える
+- ERT 2 本: 両 root の graph が cons だけで交差しない場合 overlap=0 /
+  共有 subgraph が両 live-set 両方で gethash hit、root そのものは
+  互いの live-set に入らない
+- note: fixnum / interned symbol / t/nil の共有は Phase 4 consumer で
+  filter する想定 (actor 境界は mutable cell のみ意味を持つ)、walker
+  は全 reachable object を素直に記録
+- 479/479 tests pass (bump from 477、+2)
 
 ** 3c.6 Bench + merge gate verification (DRAFT)
 
