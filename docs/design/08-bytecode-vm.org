@@ -197,11 +197,66 @@ Phase 3b.5 (closure + lambda dynamic binding) と束ねて取り扱う。
 
 ** 3b.5 Closure + lambda dynamic binding
 
-- Op 追加: =MAKE-CLOSURE=, =APPLY=, =BIND-DYNAMIC= (special param 用)
-- =nelisp-bc-compile= が lambda param を =nelisp--specials= で分類し、
-  special → =BIND-DYNAMIC=、lexical → stack slot
-- ERT: =nelisp-dynamic-test.el= の lambda param ケース (現状 skip) を
-  有効化
+3b.4 と同様に a/b/c の三段構成で進める。
+
+*** 3b.5a Lambda + arg binding (no capture) (SHIPPED)
+
+- 新規 op 不要 (既存 VARBIND/UNBIND/DISCARDN/STACK-REF を再利用)
+- =(lambda PARAMS BODY)= → sub-bcl を template として CONSTS に
+  詰め、parent code は =CONST= で push
+- sub-bcl の preamble: special param 毎に =STACK-REF + VARBIND=
+  (param が dyn なら specpdl に save-and-install)
+- sub-bcl の postamble: =UNBIND num-dyn=, =DISCARDN N-positionals=,
+  =RETURN=
+- =nelisp-bc-run bcl args= が PARAMS spec をもとに &optional /
+  &rest を materialise、stack[0..N-1] に prefill して PC=0 開始
+- =nelisp--apply= に bcl dispatch を追加 (host eval / VM 共存)
+- 自由 lex 参照は parent-lex-shadow で検出して
+  =nelisp-bc-unimplemented= を signal (3b.5b 待ち)
+- ERT: 14 本追加 (3b.5a-*)、404/404 green
+
+*** 3b.5b Free-lex capture (SHIPPED)
+
+- 新規 op: =MAKE-CLOSURE N= (36, 1 byte) / =CAPTURED-REF idx= (37, 1 byte)
+- ctx に =captures= alist (sym → capture-idx) を追加。compile-var-ref が
+  自由 lex を見つけたら自動 allocate
+- compile-lambda の sub-ctx は親の lex-env / captures / parent-lex-shadow
+  を全て継承して shadow-source とする → multi-level closure を自然対応
+- compile-lambda 完了後、sub.captures があれば parent code に
+  「captures push (各 sym を parent の compile-var-ref で resolve) →
+  CONST template → MAKE-CLOSURE N」を emit
+- runtime: =MAKE-CLOSURE n= は stack 上の N captures + 1 template を
+  pop、新規 bcl を env=(cap0..capN-1) で構築
+- runtime: =CAPTURED-REF idx= は現在 bcl の env から N 番目を読む
+- ERT: 12 本追加 (3b.5b-*)、416/416 green。multi-level / closure-from-
+  closure / 3 段 chain / capture snapshot 不変性 / let* / capture +
+  special 共存もカバー
+
+*** 3b.5c defun auto-compile hook (SHIPPED, opt-in)
+
+- =nelisp-bc-try-compile-lambda= (env params body) — env が nil の
+  時のみ =(lambda PARAMS BODY)= を compile して bcl 返す。失敗
+  (nelisp-bc-error 系) は nil を返して interpreter fallback
+- =nelisp--make-closure= は =nelisp-bc-auto-compile= が non-nil で
+  かつ try-compile が bcl を返したら、それを installed function に
+  使う
+- =nelisp-bc-auto-compile= 既定は **nil**。理由 2 つ:
+  1. =setq= on captured lex を bcl で表現する CAPTURED-SET op が
+     未実装 — そういう closure が含まれると compile が bail し、
+     ネスト全体が fallback する (3b.5d 候補)
+  2. tramp / self-host テストが NeLisp-on-NeLisp で深く再帰し、
+     auto-compile の数 frame でも =max-lisp-eval-depth= を超える
+- tramp dispatch も bcl-aware に (=nelisp--apply= 経由で走らせる)
+- 既定 nil でも、benchmark / 個別テスト時に
+  =(let ((nelisp-bc-auto-compile t)) ...)= で opt-in 可
+- ERT: 9 本 + flag default の 1 本 = 10 本追加。426/426 green
+
+*** 3b.5d (将来) — CAPTURED-SET / 部分 fallback
+
+- =setq= on captured lex を bcl 化する CAPTURED-SET op を追加すれば
+  3b.5c の bail 範囲がさらに減る
+- 内側 lambda が unsupported でも外側を bcl 化する partial-fallback も
+  検討余地あり (現状は 1 個でも bail で全体 fallback)
 
 ** 3b.6 Self-host (Rhodes stage 2 preview)
 

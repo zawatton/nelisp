@@ -136,8 +136,15 @@ never both.")
 (defsubst nelisp--closure-p (x)
   (and (consp x) (eq (car x) 'nelisp-closure)))
 
-(defsubst nelisp--make-closure (env params body)
-  (list 'nelisp-closure env params body))
+(defun nelisp--make-closure (env params body)
+  "Build a callable from ENV / PARAMS / BODY.
+When `nelisp-bytecode' is loaded and the body compiles cleanly,
+the result is a `nelisp-bcl' that runs on the VM.  Otherwise the
+interpreter closure form `(nelisp-closure ENV PARAMS BODY)' is
+returned and `nelisp--apply-closure' handles it."
+  (or (and (fboundp 'nelisp-bc-try-compile-lambda)
+           (funcall 'nelisp-bc-try-compile-lambda env params body))
+      (list 'nelisp-closure env params body)))
 
 (defsubst nelisp--closure-env    (c) (nth 1 c))
 (defsubst nelisp--closure-params (c) (nth 2 c))
@@ -522,8 +529,21 @@ A symbol FN looks in `nelisp--functions' first so NeLisp-only defuns
 passed to higher-order primitives (e.g. `mapcar') dispatch correctly;
 it falls through to the host Elisp binding only when the symbol is
 not registered in our table, which keeps host helper symbols like
-`nelisp--builtin-mapcar' callable when they appear inline."
+`nelisp--builtin-mapcar' callable when they appear inline.
+
+A `nelisp-bcl' (bytecode closure built by `nelisp-bytecode.el')
+dispatches straight into the VM."
   (cond
+   ;; Inline the bcl check rather than introducing a defsubst — the
+   ;; self-host probe evaluates this very file at NeLisp level, and a
+   ;; named helper would add one host stack frame per NeLisp-on-NeLisp
+   ;; `nelisp--apply' call, which is enough to trip
+   ;; `max-lisp-eval-depth' inside `nelisp--install-core-macros'.
+   ((and (consp fn) (eq (car fn) 'nelisp-bcl))
+    (if (fboundp 'nelisp-bc-run)
+        (funcall 'nelisp-bc-run fn args)
+      (signal 'nelisp-eval-error
+              (list "bcl received without bytecode VM loaded" fn))))
    ((nelisp--closure-p fn)
     (nelisp--apply-closure fn args))
    ((symbolp fn)
