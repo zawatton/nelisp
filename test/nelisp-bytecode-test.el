@@ -1176,5 +1176,87 @@ a label.  Returns the resolved int vector."
     (remhash 'nelisp-bc-test--cap-spec nelisp--globals)
     (remhash 'nelisp-bc-test--cap-spec nelisp--specials)))
 
+;;; Phase 3b.5c — defun / closure auto-compile hook -----------------
+
+(ert-deftest nelisp-bc-3b5c-flag-defaults-off ()
+  ;; Conservative default — full justification in defvar docstring.
+  (should (eq nelisp-bc-auto-compile nil)))
+
+(ert-deftest nelisp-bc-3b5c-try-compile-returns-bcl ()
+  (let ((nelisp-bc-auto-compile t))
+    (let ((bcl (nelisp-bc-try-compile-lambda nil '(x) '((+ x 1)))))
+      (should (nelisp-bcl-p bcl))
+      (should (= (nelisp--apply bcl '(41)) 42)))))
+
+(ert-deftest nelisp-bc-3b5c-try-compile-respects-flag ()
+  (let ((nelisp-bc-auto-compile nil))
+    (should (eq (nelisp-bc-try-compile-lambda nil '(x) '(x)) nil))))
+
+(ert-deftest nelisp-bc-3b5c-try-compile-rejects-non-nil-env ()
+  ;; ENV is non-nil (closure with captures) — top-level only for now.
+  (let ((nelisp-bc-auto-compile t))
+    (should (eq (nelisp-bc-try-compile-lambda
+                 '((y . 10)) '(x) '((+ x y)))
+                nil))))
+
+(ert-deftest nelisp-bc-3b5c-try-compile-falls-back-on-unsupported ()
+  ;; Body uses `and' which is in the unimplemented set; expect nil.
+  (let ((nelisp-bc-auto-compile t))
+    (should (eq (nelisp-bc-try-compile-lambda nil '(x) '((and x 1)))
+                nil))))
+
+(ert-deftest nelisp-bc-3b5c-defun-installs-bcl-when-on ()
+  (let ((nelisp-bc-auto-compile t))
+    (nelisp--reset)
+    (nelisp-eval '(defun nelisp-bc-test--ac1 (x) (* x 3)))
+    (let ((fn (gethash 'nelisp-bc-test--ac1 nelisp--functions)))
+      (should (nelisp-bcl-p fn))
+      (should (= (nelisp-eval '(nelisp-bc-test--ac1 7)) 21)))))
+
+(ert-deftest nelisp-bc-3b5c-defun-installs-closure-when-off ()
+  (let ((nelisp-bc-auto-compile nil))
+    (nelisp--reset)
+    (nelisp-eval '(defun nelisp-bc-test--ac2 (x) (* x 3)))
+    (let ((fn (gethash 'nelisp-bc-test--ac2 nelisp--functions)))
+      (should (nelisp--closure-p fn))
+      (should (= (nelisp-eval '(nelisp-bc-test--ac2 7)) 21)))))
+
+(ert-deftest nelisp-bc-3b5c-recursive-defun-via-bcl ()
+  (let ((nelisp-bc-auto-compile t))
+    (nelisp--reset)
+    (nelisp-eval '(defun nelisp-bc-test--fact (n)
+                    (if (< n 2) 1 (* n (nelisp-bc-test--fact (- n 1))))))
+    (let ((fn (gethash 'nelisp-bc-test--fact nelisp--functions)))
+      (should (nelisp-bcl-p fn))
+      (should (= (nelisp-eval '(nelisp-bc-test--fact 5)) 120)))))
+
+(ert-deftest nelisp-bc-3b5c-mixed-defun-bcl-and-closure ()
+  ;; A defun with a body that doesn't compile (e.g. uses `and') falls
+  ;; back to the interpreter closure even with auto-compile on.
+  (let ((nelisp-bc-auto-compile t))
+    (nelisp--reset)
+    (nelisp-eval '(defun nelisp-bc-test--mix (x) (and x x)))
+    (let ((fn (gethash 'nelisp-bc-test--mix nelisp--functions)))
+      (should (nelisp--closure-p fn))
+      (should (eq (nelisp-eval '(nelisp-bc-test--mix t)) t)))))
+
+(ert-deftest nelisp-bc-3b5c-setq-on-captured-lex-falls-back ()
+  ;; Outer defun's body holds a closure that mutates a captured var.
+  ;; A `nelisp-bc-unimplemented' from the inner-lambda compile sinks
+  ;; the outer compile too (no partial-compile fallback yet), so the
+  ;; whole defun lands as an interpreter closure — and crucially the
+  ;; runtime semantics are still correct.
+  (let ((nelisp-bc-auto-compile t))
+    (nelisp--reset)
+    (nelisp-eval '(defun nelisp-bc-test--counter (start)
+                    (let ((n start))
+                      (lambda () (setq n (+ n 1)) n))))
+    (let* ((make (gethash 'nelisp-bc-test--counter nelisp--functions))
+           (counter (nelisp-eval '(nelisp-bc-test--counter 10))))
+      (should (nelisp--closure-p make))
+      (should (nelisp--closure-p counter))
+      (should (= (nelisp--apply counter nil) 11))
+      (should (= (nelisp--apply counter nil) 12)))))
+
 (provide 'nelisp-bytecode-test)
 ;;; nelisp-bytecode-test.el ends here

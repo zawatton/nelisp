@@ -232,11 +232,31 @@ Phase 3b.5 (closure + lambda dynamic binding) と束ねて取り扱う。
   closure / 3 段 chain / capture snapshot 不変性 / let* / capture +
   special 共存もカバー
 
-*** 3b.5c defun auto-compile hook (optional)
+*** 3b.5c defun auto-compile hook (SHIPPED, opt-in)
 
-- =nelisp--make-closure= が compilable な body の場合に bcl 化
-- compile 失敗時は interpreter にフォールバック
-- Phase 1/2 ERT が VM 経由でも transparent に走る
+- =nelisp-bc-try-compile-lambda= (env params body) — env が nil の
+  時のみ =(lambda PARAMS BODY)= を compile して bcl 返す。失敗
+  (nelisp-bc-error 系) は nil を返して interpreter fallback
+- =nelisp--make-closure= は =nelisp-bc-auto-compile= が non-nil で
+  かつ try-compile が bcl を返したら、それを installed function に
+  使う
+- =nelisp-bc-auto-compile= 既定は **nil**。理由 2 つ:
+  1. =setq= on captured lex を bcl で表現する CAPTURED-SET op が
+     未実装 — そういう closure が含まれると compile が bail し、
+     ネスト全体が fallback する (3b.5d 候補)
+  2. tramp / self-host テストが NeLisp-on-NeLisp で深く再帰し、
+     auto-compile の数 frame でも =max-lisp-eval-depth= を超える
+- tramp dispatch も bcl-aware に (=nelisp--apply= 経由で走らせる)
+- 既定 nil でも、benchmark / 個別テスト時に
+  =(let ((nelisp-bc-auto-compile t)) ...)= で opt-in 可
+- ERT: 9 本 + flag default の 1 本 = 10 本追加。426/426 green
+
+*** 3b.5d (将来) — CAPTURED-SET / 部分 fallback
+
+- =setq= on captured lex を bcl 化する CAPTURED-SET op を追加すれば
+  3b.5c の bail 範囲がさらに減る
+- 内側 lambda が unsupported でも外側を bcl 化する partial-fallback も
+  検討余地あり (現状は 1 個でも bail で全体 fallback)
 
 ** 3b.6 Self-host (Rhodes stage 2 preview)
 

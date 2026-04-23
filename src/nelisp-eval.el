@@ -136,8 +136,15 @@ never both.")
 (defsubst nelisp--closure-p (x)
   (and (consp x) (eq (car x) 'nelisp-closure)))
 
-(defsubst nelisp--make-closure (env params body)
-  (list 'nelisp-closure env params body))
+(defun nelisp--make-closure (env params body)
+  "Build a callable from ENV / PARAMS / BODY.
+When `nelisp-bytecode' is loaded and the body compiles cleanly,
+the result is a `nelisp-bcl' that runs on the VM.  Otherwise the
+interpreter closure form `(nelisp-closure ENV PARAMS BODY)' is
+returned and `nelisp--apply-closure' handles it."
+  (or (and (fboundp 'nelisp-bc-try-compile-lambda)
+           (funcall 'nelisp-bc-try-compile-lambda env params body))
+      (list 'nelisp-closure env params body)))
 
 (defsubst nelisp--closure-env    (c) (nth 1 c))
 (defsubst nelisp--closure-params (c) (nth 2 c))

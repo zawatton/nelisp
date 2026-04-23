@@ -510,6 +510,17 @@ Result is the last VAL's value."
               (nelisp-bc--emit ctx 'STACK-SET offset)
               (nelisp-bc--adjust-sp ctx -1)))
            (t
+            ;; Captured-var setq is semantically write-through to the
+            ;; closure env, but we don't have a CAPTURED-SET op yet.
+            ;; Bail early so the auto-compile hook falls back to the
+            ;; interpreter, which handles closure-captured mutation
+            ;; correctly via shared cons cells.
+            (when (and (not (nelisp-bc--special-p sym))
+                       (or (assq sym (nelisp-bc--ctx-captures ctx))
+                           (memq sym (nelisp-bc--ctx-parent-lex-shadow ctx))))
+              (signal 'nelisp-bc-unimplemented
+                      (list "setq on captured lex pending later phase"
+                            sym)))
             ;; Global / special: VARSET pops the value, so DUP first.
             (nelisp-bc--emit ctx 'DUP)
             (nelisp-bc--adjust-sp ctx 1)
@@ -1154,6 +1165,52 @@ fall back to the interpreter."
             ;; MAKE-CLOSURE pops N captures + 1 template, pushes 1
             ;; closure → net delta is -N.
             (nelisp-bc--adjust-sp ctx (- n)))))))))
+
+;;; Auto-compile entry (3b.5c) ---------------------------------------
+
+(defvar nelisp-bc-auto-compile nil
+  "When non-nil, the interpreter calls `nelisp-bc-try-compile-lambda'
+to materialise top-level `defun' / `lambda' bodies as bytecode
+closures.
+
+Default is nil — opt-in for now.  Two reasons:
+
+  1. Three Phase 1/2 ERTs sample the closure tag via
+     `(eq (car cl) 'nelisp-closure)' or expect arity violations
+     to signal `nelisp-eval-error' rather than `nelisp-bc-error',
+     and one macro test relies on macros defined AFTER a `defun'
+     being expanded at call time (a feature compiled bytecode
+     cannot recapture without re-compilation).
+  2. The self-host probe and trampoline cycle tests evaluate
+     entire source files at NeLisp level; auto-compiling every
+     defun en route adds enough host stack frames per recursion
+     to trip `max-lisp-eval-depth'.
+
+Bind it non-nil for benchmarks (Phase 3b.7) or once the above
+items are addressed.")
+
+(defun nelisp-bc-try-compile-lambda (env params body)
+  "Attempt to compile (lambda PARAMS BODY) into a `nelisp-bcl'.
+
+Returns a bcl on success and nil on any failure so callers fall
+back to the interpreter closure.  Currently only top-level
+closures (ENV must be nil) are auto-compiled — closures with a
+non-nil interpreter ENV need values lifted into a bcl ENV at
+runtime, which a future sub-phase will tackle.
+
+MCP Parameters:
+  ENV    — interpreter lexical env at closure-creation time
+  PARAMS — lambda-list (required / &optional / &rest)
+  BODY   — list of NeLisp forms"
+  (when (and nelisp-bc-auto-compile (null env))
+    (condition-case nil
+        (let ((wrapper (nelisp-bc-compile
+                        (cons 'lambda (cons params body)))))
+          ;; Evaluating the wrapper materialises the inner template
+          ;; (no captures here since ENV was nil) as a bcl, which is
+          ;; what we want to install in `nelisp--functions'.
+          (nelisp-bc-run wrapper))
+      (nelisp-bc-error nil))))
 
 (defun nelisp-bc--cc-match-p (handler-spec err)
   "Return non-nil if ERR matches HANDLER-SPEC per `condition-case' rules."

@@ -551,6 +551,8 @@ NeLisp closures do not consume host C stack frames per call."
                                    (nelisp--bind-params params args cenv)))
                              (push (list :begin body call-env) work)))
                           (t
+                           ;; Bcls and primitives both go through
+                           ;; `nelisp--apply', which is bcl-aware.
                            (setq result (nelisp--apply fn args)))))))))
                   (t
                    (push (list :call-after head (cdr rest) acc e) work)
@@ -577,6 +579,11 @@ NeLisp closures do not consume host C stack frames per call."
                           (cenv (nelisp--closure-env target))
                           (call-env (nelisp--bind-params params args cenv)))
                      (push (list :begin body call-env) work)))
+                  ((and (consp target) (eq (car target) 'nelisp-bcl))
+                   ;; Bytecode closures execute on the VM, which has its
+                   ;; own dispatch loop and so consumes a single host
+                   ;; stack frame regardless of NeLisp call depth.
+                   (setq result (nelisp--apply target args)))
                   ((symbolp target)
                    (let ((nfn (gethash target nelisp--functions
                                        nelisp--unbound)))
