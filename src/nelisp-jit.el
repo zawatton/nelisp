@@ -15,9 +15,15 @@
 ;; closure.  A JIT closure has shape `(nelisp-jit HOST-LAMBDA)' and is
 ;; dispatched by `nelisp--apply' like any other callable.
 ;;
-;; Scope of the MVP:
-;;   - top-level defuns only (empty captured env).  Closures with
-;;     non-nil env fall back to bcl / interpreter.
+;; Scope after Phase 3b.8b:
+;;   - top-level defuns AND captured-env closures (let-wrapped lambdas,
+;;     partial application).  The captured values are embedded as a
+;;     literal vector in the compiled constants pool and read via
+;;     `aref' — see `nelisp-jit-try-compile-lambda'.
+;;   - captured-env closures that MUTATE their captured variables via
+;;     `setq' are rejected (return nil) so bcl / interpreter handle
+;;     the counter-pattern.  The let-wrapped read form re-binds on
+;;     every call, so mutation wouldn't survive across invocations.
 ;;   - inline primitives are emitted as direct host calls (see
 ;;     `nelisp-jit--inline-primitives').  User-defined functions and
 ;;     unknown symbols are dispatched through `nelisp--apply' so
@@ -209,21 +215,63 @@ keeps the self-host `max-lisp-eval-depth' budget unchanged."
   ;; `nelisp-bc-env' returns MARKER; `nelisp-bc-code' returns HOST-FN.
   (list 'nelisp-bcl 'nelisp-jit-marker nil nil host-fn nil nil))
 
+(defun nelisp-jit--setq-on-env-p (form env-syms)
+  "Return non-nil if FORM contains (setq SYM ...) for any SYM in ENV-SYMS.
+Used as a pre-translation guard: captured-env closures that mutate
+their captures cannot use the read-only `aref'-in-let embedding
+because the binding is re-established on every call."
+  (cond
+   ((atom form) nil)
+   ((and (consp form) (eq (car form) 'setq))
+    (let ((pairs (cdr form)))
+      (catch 'found
+        (while pairs
+          (when (memq (car pairs) env-syms)
+            (throw 'found t))
+          (setq pairs (cddr pairs)))
+        nil)))
+   ((consp form)
+    (or (nelisp-jit--setq-on-env-p (car form) env-syms)
+        (nelisp-jit--setq-on-env-p (cdr form) env-syms)))
+   (t nil)))
+
+(defun nelisp-jit--body-mutates-env-p (body env-syms)
+  "Return non-nil if any form in BODY mutates an ENV-SYMS variable."
+  (catch 'found
+    (dolist (f body)
+      (when (nelisp-jit--setq-on-env-p f env-syms)
+        (throw 'found t)))
+    nil))
+
 (defun nelisp-jit-try-compile-lambda (env params body)
   "Attempt to JIT-compile a NeLisp lambda.
 Returns a bcl-shaped JIT closure on success (see
 `nelisp-jit--wrap-as-bcl'), or nil on unsupported forms /
-captured-env closures."
+captured-env closures that mutate their captures."
   (condition-case _err
-      (cond
-       ;; MVP: only translate closures that capture nothing.
-       (env nil)
-       (t
-        (let* ((lexical (nelisp-jit--param-symbols params))
-               (translated (nelisp-jit--translate-body body lexical))
-               (host-form `(lambda ,params ,@translated))
-               (host-fn (byte-compile host-form)))
-          (nelisp-jit--wrap-as-bcl host-fn))))
+      (let* ((lexical (nelisp-jit--param-symbols params))
+             (env-syms (mapcar #'car env))
+             (full-env (append env-syms lexical)))
+        (cond
+         ;; Captured-env closures that write to their captures cannot use
+         ;; the `aref'-in-let embedding (the let re-initialises on every
+         ;; call, so a `setq' would not persist).  Fall through to bcl /
+         ;; interpreter which handle the counter pattern correctly.
+         ((and env (nelisp-jit--body-mutates-env-p body env-syms)) nil)
+         (t
+          (let* ((translated (nelisp-jit--translate-body body full-env))
+                 (host-form
+                  (if env
+                      (let* ((env-vec (vconcat (mapcar #'cdr env)))
+                             (binds
+                              (cl-loop for sym in env-syms
+                                       for i from 0
+                                       collect `(,sym (aref ,env-vec ,i)))))
+                        `(lambda ,params
+                           (let ,binds ,@translated)))
+                    `(lambda ,params ,@translated)))
+                 (host-fn (byte-compile host-form)))
+            (nelisp-jit--wrap-as-bcl host-fn)))))
     (nelisp-jit-unsupported nil)))
 
 (defun nelisp-jit--bc-try-advice (orig-fn env params body)
