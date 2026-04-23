@@ -212,6 +212,30 @@ Return (VALUE . NEW-POS) where NEW-POS is past the closing `)'."
           (setcdr head tail)))
       (cons lst (1+ pos)))))
 
+(defun nelisp-read--vector (str pos)
+  "Read the tail of a vector in STR; POS is just past `['.
+Return (VECTOR . NEW-POS) where NEW-POS is past the closing `]'.
+Dotted-pair syntax is not allowed inside a vector."
+  (let ((len (length str))
+        (acc nil))
+    (catch 'done
+      (while t
+        (setq pos (nelisp-read--skip-ws str pos))
+        (when (>= pos len)
+          (signal 'nelisp-read-error (list "unterminated vector")))
+        (let ((c (aref str pos)))
+          (cond
+           ((eq c ?\])
+            (throw 'done nil))
+           ((nelisp-read--dotted-pair-marker-p str pos len)
+            (signal 'nelisp-read-error
+                    (list "dot not allowed in vector" pos)))
+           (t
+            (let ((res (nelisp-read--sexp str pos)))
+              (push (car res) acc)
+              (setq pos (cdr res))))))))
+    (cons (apply #'vector (nreverse acc)) (1+ pos))))
+
 (defun nelisp-read--radix-number (str pos len radix charset)
   "Read a radix-prefixed integer in STR starting at POS.
 LEN is (length STR).  RADIX is 2 / 8 / 16.  CHARSET is a regexp
@@ -367,8 +391,12 @@ Return (VALUE . NEW-POS)."
         (nelisp-read--unquote str (1+ pos) len))
        ((eq c ??)
         (nelisp-read--char-literal str (1+ pos) len))
+       ((eq c ?\[)
+        (nelisp-read--vector str (1+ pos)))
        ((eq c ?\))
         (signal 'nelisp-read-error (list "unexpected `)'" pos)))
+       ((eq c ?\])
+        (signal 'nelisp-read-error (list "unexpected `]'" pos)))
        (t
         (nelisp-read--atom str pos))))))
 

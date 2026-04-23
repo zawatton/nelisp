@@ -108,10 +108,8 @@
   (eval (read src) t))
 
 (ert-deftest nelisp-phase3a-bq-depth1-baseline ()
-  ;; Make sure depth=1 behaviour still matches host.
-  (let ((x 42))
-    (should (equal (nelisp-phase3a--bq-eval "`(a ,x b)")
-                   (nelisp-phase3a--host-eval "`(a ,x b)")))))
+  (should (equal (nelisp-phase3a--bq-eval "(let ((x 42)) `(a ,x b))")
+                 (nelisp-phase3a--host-eval "(let ((x 42)) `(a ,x b))"))))
 
 (ert-deftest nelisp-phase3a-bq-depth2-basic ()
   (should (equal (nelisp-phase3a--bq-eval "`(a `(b c) d)")
@@ -119,23 +117,20 @@
 
 (ert-deftest nelisp-phase3a-bq-depth2-inner-unquote ()
   ;; Inner `,x' is quoted one level from outer perspective.
-  (let ((x 7))
-    (should (equal (nelisp-phase3a--bq-eval "`(a `(b ,x) c)")
-                   (nelisp-phase3a--host-eval "`(a `(b ,x) c)")))))
+  (should (equal (nelisp-phase3a--bq-eval "(let ((x 7)) `(a `(b ,x) c))")
+                 (nelisp-phase3a--host-eval "(let ((x 7)) `(a `(b ,x) c))"))))
 
 (ert-deftest nelisp-phase3a-bq-depth2-outer-unquote ()
-  (let ((x 7))
-    (should (equal (nelisp-phase3a--bq-eval "`(a ,x `(b c))")
-                   (nelisp-phase3a--host-eval "`(a ,x `(b c))")))))
+  (should (equal (nelisp-phase3a--bq-eval "(let ((x 7)) `(a ,x `(b c)))")
+                 (nelisp-phase3a--host-eval "(let ((x 7)) `(a ,x `(b c)))"))))
 
 (ert-deftest nelisp-phase3a-bq-depth3-smoke ()
   (should (equal (nelisp-phase3a--bq-eval "`(a `(b `(c d)))")
                  (nelisp-phase3a--host-eval "`(a `(b `(c d)))"))))
 
 (ert-deftest nelisp-phase3a-bq-splice-with-nested ()
-  (let ((xs '(1 2)))
-    (should (equal (nelisp-phase3a--bq-eval "`(a ,@xs `(b c))")
-                   (nelisp-phase3a--host-eval "`(a ,@xs `(b c))")))))
+  (should (equal (nelisp-phase3a--bq-eval "(let ((xs '(1 2))) `(a ,@xs `(b c)))")
+                 (nelisp-phase3a--host-eval "(let ((xs '(1 2))) `(a ,@xs `(b c)))"))))
 
 (provide 'nelisp-phase3a-reader-test)
 ;;; nelisp-phase3a-reader-test.el ends here
