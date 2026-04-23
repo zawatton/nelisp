@@ -1298,71 +1298,48 @@ MCP Parameters:
 
 ;;; VM dispatch loop -------------------------------------------------
 
-(defun nelisp-bc-run (bcl &optional args)
-  "Execute the bytecode closure BCL.
+;; Indices into the `vm' state vector threaded through
+;; `nelisp-bc--dispatch'.  Hoisting the VM state into a flat vector
+;; (instead of capturing it as lexicals in a `cl-labels' closure)
+;; means the main dispatcher can be a top-level defun — so the
+;; hot-loop closure that used to be allocated per `nelisp-bc-run'
+;; entry is gone.  fib(20) saves ~21k closure allocations per run.
+(defconst nelisp-bc--vm-code        0)
+(defconst nelisp-bc--vm-consts      1)
+(defconst nelisp-bc--vm-stack       2)
+(defconst nelisp-bc--vm-stack-depth 3)
+(defconst nelisp-bc--vm-len         4)
+(defconst nelisp-bc--vm-closure-env 5)
+(defconst nelisp-bc--vm-pc          6)
+(defconst nelisp-bc--vm-sp          7)
+(defconst nelisp-bc--vm-specpdl     8)
 
-Phase 3b.4a/b expand the VM with variable ops (VARREF / VARSET /
-VARBIND / UNBIND / STACK-SET / DISCARDN) and list / function-call
-ops (CAR / CDR / CONS / LIST1..4 / LISTN / CALL) so `let' / `let*'
-/ `setq' / `while' plus arbitrary primitive and NeLisp-defined
-function calls can be compiled.  Argument binding for `lambda'
-still arrives in 3b.5; passing a non-nil ARGS continues to signal.
+(defun nelisp-bc--dispatch (vm nested)
+  "Opcode dispatch loop for the bytecode VM.
+VM is the state vector described by `nelisp-bc--vm-*' index
+constants.  When NESTED is non-nil, POP-HANDLER cleanly exits this
+invocation via `throw ''nelisp-bc--pop-handler'; when nil, POP-HANDLER
+is an error because no surrounding dispatcher exists on the host
+stack to catch it.
 
-MCP Parameters:
-  BCL   — `nelisp-bcl' object (see commentary §4.1)
-  ARGS  — optional list of positional arguments"
-  (unless (nelisp-bcl-p bcl)
-    (signal 'nelisp-bc-error (list "not a nelisp-bcl" bcl)))
-  (let* ((code (nelisp-bc-code bcl))
-         (consts (nelisp-bc-consts bcl))
-         (closure-env (nelisp-bc-env bcl))
-         (params (nelisp-bc-params bcl))
-         ;; Materialise any args into per-slot values.  No params and
-         ;; no args is the "expression" case; otherwise dispatch to
-         ;; the parser so &optional / &rest are honoured.
-         (slot-values (cond
-                       ((and (null params) (null args)) nil)
-                       (t (nelisp-bc--bind-args
-                           (nelisp-bc--parse-params params)
-                           args))))
-         (n-slots (length slot-values))
-         (body-stack-depth (max 1 (or (nelisp-bc-stack-depth bcl) 1)))
-         (stack-depth (max body-stack-depth n-slots))
-         (stack (make-vector stack-depth nil))
-         (sp (progn
-               ;; Pre-fill positional slots with the materialised args
-               ;; so the body's STACK-REF / VARBIND preamble finds them
-               ;; at slot 0 .. N-1.
-               (let ((i 0))
-                 (dolist (v slot-values)
-                   (aset stack i v)
-                   (cl-incf i)))
-               n-slots))
-         (pc 0)
-         (len (length code))
-         ;; specpdl: list of (SYM . OLD-VAL-OR-UNBOUND); grows on VARBIND,
-         ;; shrinks on UNBIND.  Always restored fully on non-local exit
-         ;; via `unwind-protect' so a stray throw never leaks a binding.
-         (specpdl nil)
-         result)
-    ;; `read-u16', `restore-specpdl' and `trim-specpdl' used to live in
-    ;; `cl-labels'; each bcl entry then allocated three heap closures
-    ;; that closed over `pc' / `code' / `specpdl' / `nelisp--globals'.
-    ;; Recursive bcls (fib's ~21k calls) paid 63k closure allocations
-    ;; per run.  `cl-macrolet' expands them inline so only `dispatch'
-    ;; remains as an allocated closure.
+`pc', `sp' and `specpdl' are unpacked into fast locals on entry
+and synced back to VM inside `unwind-protect' so every exit path
+(normal and non-local) leaves VM with the latest values.  Nested
+invocations from PUSH-CATCH / PUSH-UNWIND / PUSH-CC commit before
+recursing and reload from VM afterwards."
+  (let ((code        (aref vm 0))
+        (consts      (aref vm 1))
+        (stack       (aref vm 2))
+        (stack-depth (aref vm 3))
+        (len         (aref vm 4))
+        (closure-env (aref vm 5))
+        (pc          (aref vm 6))
+        (sp          (aref vm 7))
+        (specpdl     (aref vm 8)))
     (cl-macrolet ((read-u16 ()
                     `(prog1 (+ (aref code pc)
                                (ash (aref code (1+ pc)) 8))
                        (setq pc (+ pc 2))))
-                  (restore-specpdl ()
-                    `(while specpdl
-                       (let* ((entry (pop specpdl))
-                              (sym (car entry))
-                              (old (cdr entry)))
-                         (if (eq old nelisp--unbound)
-                             (remhash sym nelisp--globals)
-                           (puthash sym old nelisp--globals)))))
                   (trim-specpdl (target-tail)
                     `(while (not (eq specpdl ,target-tail))
                        (let* ((entry (pop specpdl))
@@ -1370,24 +1347,25 @@ MCP Parameters:
                               (old (cdr entry)))
                          (if (eq old nelisp--unbound)
                              (remhash sym nelisp--globals)
-                           (puthash sym old nelisp--globals))))))
-      (cl-labels ((dispatch (nested)
-                  ;; Core dispatcher.  When NESTED is non-nil, a
-                  ;; POP-HANDLER instruction cleanly exits this call
-                  ;; (via `throw ''nelisp-bc--pop-handler'); when nil,
-                  ;; POP-HANDLER is an error because no handler
-                  ;; dispatcher is above us on the Emacs stack.
-                  (catch 'nelisp-bc--pop-handler
-                    (while (< pc len)
-                      (let ((op (aref code pc)))
-                        (setq pc (1+ pc))
-                        (pcase op
-                         (0
+                           (puthash sym old nelisp--globals)))))
+                  (commit-vm ()
+                    '(progn (aset vm 6 pc)
+                            (aset vm 7 sp)
+                            (aset vm 8 specpdl)))
+                  (reload-vm ()
+                    '(progn (setq pc      (aref vm 6))
+                            (setq sp      (aref vm 7))
+                            (setq specpdl (aref vm 8)))))
+      (unwind-protect
+          (catch 'nelisp-bc--pop-handler
+            (while (< pc len)
+              (let ((op (aref code pc)))
+                (setq pc (1+ pc))
+                (pcase op
+                 (0
               (when (<= sp 0)
                 (signal 'nelisp-bc-error (list "RETURN on empty stack" pc)))
-              (setq result (aref stack (1- sp)))
-              (setq sp (1- sp))
-              (throw 'nelisp-bc--return result))
+              (throw 'nelisp-bc--return (aref stack (1- sp))))
              (1
               (when (>= sp stack-depth)
                 (signal 'nelisp-bc-error (list "stack overflow at CONST" pc)))
@@ -1656,9 +1634,15 @@ MCP Parameters:
                      ;; can never collide with our "body completed"
                      ;; marker, no matter what value they throw.
                      (normal-sentinel (list 'nelisp-bc--normal-catch))
+                     ;; Sync local pc/sp/specpdl into VM before
+                     ;; recursing — nested dispatch sees the latest
+                     ;; state, and its `unwind-protect' commits its
+                     ;; final state back so we can `reload-vm' below.
                      (outcome (catch tag
-                                (dispatch t)
+                                (commit-vm)
+                                (nelisp-bc--dispatch vm t)
                                 normal-sentinel)))
+                (reload-vm)
                 (cond
                  ((eq outcome normal-sentinel)
                   ;; Body completed normally: POP-HANDLER ran and the
@@ -1682,16 +1666,25 @@ MCP Parameters:
                      (saved-specpdl specpdl)
                      (body-done nil))
                 (unwind-protect
-                    (progn (dispatch t) (setq body-done t))
+                    (progn (commit-vm)
+                           (nelisp-bc--dispatch vm t)
+                           (reload-vm)
+                           (setq body-done t))
                   ;; Always-run cleanup.  On non-local exit, reset the
                   ;; operand stack and specpdl to the pre-body state so
                   ;; the cleanup bytecode starts from a clean slate.
                   (unless body-done
+                    ;; Body threw: nested dispatch's unwind-protect
+                    ;; already synced its final state to VM, so reload
+                    ;; into our locals before trimming.
+                    (reload-vm)
                     (trim-specpdl saved-specpdl)
                     (setq sp saved-sp))
                   (let ((saved-pc pc))
                     (setq pc cleanup-target)
-                    (dispatch t)
+                    (commit-vm)
+                    (nelisp-bc--dispatch vm t)
+                    (reload-vm)
                     (when (not body-done)
                       ;; Exception path: propagate by restoring pc
                       ;; (not strictly needed — host will re-raise —
@@ -1702,8 +1695,11 @@ MCP Parameters:
                      (saved-sp sp)
                      (saved-specpdl specpdl)
                      (err (condition-case e
-                              (progn (dispatch t) nil)
+                              (progn (commit-vm)
+                                     (nelisp-bc--dispatch vm t)
+                                     nil)
                             (error e))))
+                (reload-vm)
                 (when err
                   (trim-specpdl saved-specpdl)
                   (setq sp saved-sp)
@@ -1756,14 +1752,75 @@ MCP Parameters:
                  (_ (signal 'nelisp-bc-error (list "unknown opcode"
                                 (aref nelisp-bc--opcode-names op)
                                 op (1- pc)))))))
-                    (unless nested
-                      (signal 'nelisp-bc-error
-                              (list "fell off code without RETURN" pc))))))
-      (unwind-protect
-          (catch 'nelisp-bc--return
-            (dispatch nil))
-        (restore-specpdl))))
-    result))
+            (unless nested
+              (signal 'nelisp-bc-error
+                      (list "fell off code without RETURN" pc))))
+        ;; unwind-protect cleanup: sync mutable locals back to VM so
+        ;; callers (or `nelisp-bc-run's outer unwind-protect) observe
+        ;; the latest pc/sp/specpdl on every exit, normal or non-local.
+        (aset vm 6 pc)
+        (aset vm 7 sp)
+        (aset vm 8 specpdl)))))
+
+(defun nelisp-bc-run (bcl &optional args)
+  "Execute the bytecode closure BCL.
+
+Phase 3b.4a/b expand the VM with variable ops (VARREF / VARSET /
+VARBIND / UNBIND / STACK-SET / DISCARDN) and list / function-call
+ops (CAR / CDR / CONS / LIST1..4 / LISTN / CALL) so `let' / `let*'
+/ `setq' / `while' plus arbitrary primitive and NeLisp-defined
+function calls can be compiled.  Argument binding for `lambda'
+still arrives in 3b.5; passing a non-nil ARGS continues to signal.
+
+MCP Parameters:
+  BCL   — `nelisp-bcl' object (see commentary §4.1)
+  ARGS  — optional list of positional arguments"
+  (unless (nelisp-bcl-p bcl)
+    (signal 'nelisp-bc-error (list "not a nelisp-bcl" bcl)))
+  (let* ((code (nelisp-bc-code bcl))
+         (consts (nelisp-bc-consts bcl))
+         (closure-env (nelisp-bc-env bcl))
+         (params (nelisp-bc-params bcl))
+         ;; Materialise any args into per-slot values.  No params and
+         ;; no args is the "expression" case; otherwise dispatch to
+         ;; the parser so &optional / &rest are honoured.
+         (slot-values (cond
+                       ((and (null params) (null args)) nil)
+                       (t (nelisp-bc--bind-args
+                           (nelisp-bc--parse-params params)
+                           args))))
+         (n-slots (length slot-values))
+         (body-stack-depth (max 1 (or (nelisp-bc-stack-depth bcl) 1)))
+         (stack-depth (max body-stack-depth n-slots))
+         (stack (make-vector stack-depth nil))
+         ;; Flat state vector hands the bcl context into the top-level
+         ;; `nelisp-bc--dispatch' without forcing it to be a `cl-labels'
+         ;; closure.  Eliminating that closure removes one heap alloc
+         ;; per bcl call (fib(20) ≈ 21k saved per timing run).
+         (vm (vector code consts stack stack-depth (length code)
+                     closure-env 0 n-slots nil)))
+    ;; Pre-fill positional slots with the materialised args so the
+    ;; body's STACK-REF / VARBIND preamble finds them at slot 0..N-1.
+    (let ((i 0))
+      (dolist (v slot-values)
+        (aset stack i v)
+        (cl-incf i)))
+    (unwind-protect
+        (catch 'nelisp-bc--return
+          (nelisp-bc--dispatch vm nil))
+      ;; Restore any outstanding specpdl entries in reverse order so
+      ;; duplicate binds layer the same way `let' does.  Reads specpdl
+      ;; from VM because `nelisp-bc--dispatch' syncs on exit (normal
+      ;; fall-out is a no-op when bytecode is well-formed; non-local
+      ;; exit unwinds whatever bindings the body accumulated).
+      (let ((specpdl (aref vm 8)))
+        (while specpdl
+          (let* ((entry (pop specpdl))
+                 (sym (car entry))
+                 (old (cdr entry)))
+            (if (eq old nelisp--unbound)
+                (remhash sym nelisp--globals)
+              (puthash sym old nelisp--globals))))))))
 
 (provide 'nelisp-bytecode)
 ;;; nelisp-bytecode.el ends here
