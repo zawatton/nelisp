@@ -127,6 +127,7 @@ never both.")
 
 (declare-function nelisp--eval-defmacro "nelisp-macro" (args env))
 (declare-function nelisp-macroexpand "nelisp-macro" (form))
+(declare-function nelisp-bc-run "nelisp-bytecode" (bcl &optional args))
 
 (defconst nelisp--unbound (make-symbol "nelisp-unbound")
   "Sentinel returned from hash-table lookups when a key is missing.")
@@ -541,7 +542,10 @@ dispatches straight into the VM."
    ;; `max-lisp-eval-depth' inside `nelisp--install-core-macros'.
    ((and (consp fn) (eq (car fn) 'nelisp-bcl))
     (if (fboundp 'nelisp-bc-run)
-        (funcall 'nelisp-bc-run fn args)
+        ;; Direct call rather than `funcall 'nelisp-bc-run' — byte-compile
+        ;; can resolve this to a constant jump, saving a symbol-indirection
+        ;; per CALL on the hot recursive path (fib 21k invocations).
+        (nelisp-bc-run fn args)
       (signal 'nelisp-eval-error
               (list "bcl received without bytecode VM loaded" fn))))
    ((nelisp--closure-p fn)

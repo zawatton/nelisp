@@ -1345,35 +1345,33 @@ MCP Parameters:
          ;; via `unwind-protect' so a stray throw never leaks a binding.
          (specpdl nil)
          result)
-    (cl-labels ((read-u16 ()
-                  (prog1 (+ (aref code pc)
-                            (ash (aref code (1+ pc)) 8))
-                    (setq pc (+ pc 2))))
-                (restore-specpdl ()
-                  ;; Restore every outstanding specpdl entry in reverse
-                  ;; order so duplicate binds layer the same way `let'
-                  ;; does.  Called both on normal fall-out (no-op when
-                  ;; bytecode is well-formed) and on non-local exit.
-                  (while specpdl
-                    (let* ((entry (pop specpdl))
-                           (sym (car entry))
-                           (old (cdr entry)))
-                      (if (eq old nelisp--unbound)
-                          (remhash sym nelisp--globals)
-                        (puthash sym old nelisp--globals)))))
-                (trim-specpdl (target-tail)
-                  ;; Pop specpdl entries until it becomes `eq' to the
-                  ;; TARGET-TAIL cons cell.  Used by error-handling ops
-                  ;; to unwind bindings a body accumulated before a
-                  ;; non-local exit.
-                  (while (not (eq specpdl target-tail))
-                    (let* ((entry (pop specpdl))
-                           (sym (car entry))
-                           (old (cdr entry)))
-                      (if (eq old nelisp--unbound)
-                          (remhash sym nelisp--globals)
-                        (puthash sym old nelisp--globals)))))
-                (dispatch (nested)
+    ;; `read-u16', `restore-specpdl' and `trim-specpdl' used to live in
+    ;; `cl-labels'; each bcl entry then allocated three heap closures
+    ;; that closed over `pc' / `code' / `specpdl' / `nelisp--globals'.
+    ;; Recursive bcls (fib's ~21k calls) paid 63k closure allocations
+    ;; per run.  `cl-macrolet' expands them inline so only `dispatch'
+    ;; remains as an allocated closure.
+    (cl-macrolet ((read-u16 ()
+                    `(prog1 (+ (aref code pc)
+                               (ash (aref code (1+ pc)) 8))
+                       (setq pc (+ pc 2))))
+                  (restore-specpdl ()
+                    `(while specpdl
+                       (let* ((entry (pop specpdl))
+                              (sym (car entry))
+                              (old (cdr entry)))
+                         (if (eq old nelisp--unbound)
+                             (remhash sym nelisp--globals)
+                           (puthash sym old nelisp--globals)))))
+                  (trim-specpdl (target-tail)
+                    `(while (not (eq specpdl ,target-tail))
+                       (let* ((entry (pop specpdl))
+                              (sym (car entry))
+                              (old (cdr entry)))
+                         (if (eq old nelisp--unbound)
+                             (remhash sym nelisp--globals)
+                           (puthash sym old nelisp--globals))))))
+      (cl-labels ((dispatch (nested)
                   ;; Core dispatcher.  When NESTED is non-nil, a
                   ;; POP-HANDLER instruction cleanly exits this call
                   ;; (via `throw ''nelisp-bc--pop-handler'); when nil,
@@ -1616,7 +1614,22 @@ MCP Parameters:
                     (push (aref stack sp) call-args))
                   (setq sp (1- sp))
                   (let* ((fn (aref stack sp))
-                         (result (nelisp--apply fn call-args)))
+                         ;; Fast path: resolve symbol → bcl inline so the
+                         ;; recursive self-call pattern (fib → fib → …)
+                         ;; skips `nelisp--apply' entirely.  gethash here
+                         ;; matches `nelisp--apply's symbol arm exactly.
+                         (bcl (cond
+                               ((and (consp fn) (eq (car fn) 'nelisp-bcl))
+                                fn)
+                               ((symbolp fn)
+                                (let ((nfn (gethash fn nelisp--functions
+                                                    nelisp--unbound)))
+                                  (and (consp nfn)
+                                       (eq (car nfn) 'nelisp-bcl)
+                                       nfn)))))
+                         (result (if bcl
+                                     (nelisp-bc-run bcl call-args)
+                                   (nelisp--apply fn call-args))))
                     (aset stack sp result)
                     (setq sp (1+ sp))))))
              (32
@@ -1749,7 +1762,7 @@ MCP Parameters:
       (unwind-protect
           (catch 'nelisp-bc--return
             (dispatch nil))
-        (restore-specpdl)))
+        (restore-specpdl))))
     result))
 
 (provide 'nelisp-bytecode)
