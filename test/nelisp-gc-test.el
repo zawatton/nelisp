@@ -102,5 +102,101 @@ the cleanup regardless of how control leaves the body."
     (catch 'nelisp-gc-test--tag (nelisp-bc-run thrower))
     (should (equal before nelisp-gc--active-vms))))
 
+;;; Mark pass (3c.2) -------------------------------------------------
+
+(defun nelisp-gc-test--root-of (value)
+  "Wrap VALUE in the plist shape `nelisp-gc-reachable-set' expects."
+  (list (list :kind 'test :value value)))
+
+(ert-deftest nelisp-gc-mark-single-cons ()
+  (let* ((obj '(1 . 2))
+         (live (nelisp-gc-reachable-set (nelisp-gc-test--root-of obj))))
+    (should (gethash obj live))))
+
+(ert-deftest nelisp-gc-mark-flat-list ()
+  (let* ((obj (list 'a 'b 'c))
+         (live (nelisp-gc-reachable-set (nelisp-gc-test--root-of obj))))
+    ;; Each cons in the spine + the terminating nil are walked; symbols
+    ;; themselves are leaves and count only if they were ever `push'ed
+    ;; and then `puthash'ed.  We check spine identity to avoid tying
+    ;; the assertion to the leaf treatment of symbols.
+    (should (gethash obj live))
+    (should (gethash (cdr obj) live))
+    (should (gethash (cddr obj) live))))
+
+(ert-deftest nelisp-gc-mark-circular-list-halts ()
+  "A circular cons chain must not hang the walker — visited HT closes
+the cycle."
+  (let* ((a (list 'x))
+         (_ (setcdr a a))          ; a -> a
+         (live (nelisp-gc-reachable-set (nelisp-gc-test--root-of a))))
+    ;; Single cell is the entire live set (symbol 'x is a leaf).
+    (should (gethash a live))
+    (should (<= (hash-table-count live) 2))))
+
+(ert-deftest nelisp-gc-mark-nested-cons ()
+  "Nested cons walks into both `car' and `cdr'."
+  (let* ((inner (cons 'i 'j))
+         (outer (cons inner 'tail))
+         (live (nelisp-gc-reachable-set (nelisp-gc-test--root-of outer))))
+    (should (gethash outer live))
+    (should (gethash inner live))))
+
+(ert-deftest nelisp-gc-mark-vector ()
+  (let* ((v (vector (cons 1 2) (cons 3 4) 'leaf))
+         (live (nelisp-gc-reachable-set (nelisp-gc-test--root-of v))))
+    (should (gethash v live))
+    (should (gethash (aref v 0) live))
+    (should (gethash (aref v 1) live))))
+
+(ert-deftest nelisp-gc-mark-hash-table-keys-and-values ()
+  (let ((h (make-hash-table :test 'eq))
+        (k (cons 'k 1))
+        (v (cons 'v 2)))
+    (puthash k v h)
+    (let ((live (nelisp-gc-reachable-set (nelisp-gc-test--root-of h))))
+      (should (gethash h live))
+      (should (gethash k live))
+      (should (gethash v live)))))
+
+(ert-deftest nelisp-gc-mark-cross-referenced-graph ()
+  "A graph where two roots share a leaf shows the leaf once only."
+  (let* ((shared (cons 'shared nil))
+         (root-1 (list shared 'a))
+         (root-2 (list shared 'b))
+         (live   (nelisp-gc-reachable-set
+                  (list (list :kind 'r1 :value root-1)
+                        (list :kind 'r2 :value root-2)))))
+    (should (gethash shared live))
+    (should (gethash root-1 live))
+    (should (gethash root-2 live))))
+
+(ert-deftest nelisp-gc-mark-closure-shape ()
+  "A `nelisp-closure'-shaped cons is walked as an ordinary list —
+no special-case needed per design doc §5.2."
+  (let* ((env   '((x . 1) (y . 2)))
+         (body  '((+ x y)))
+         (cl    (list 'nelisp-closure env '(a) body))
+         (live  (nelisp-gc-reachable-set (nelisp-gc-test--root-of cl))))
+    (should (gethash cl live))
+    (should (gethash env live))
+    (should (gethash body live))))
+
+(ert-deftest nelisp-gc-reachable-count-matches-table-size ()
+  "`nelisp-gc-reachable-count' is a hash-table-count convenience."
+  (let* ((obj (cons 1 2))
+         (roots (nelisp-gc-test--root-of obj)))
+    (should (= (nelisp-gc-reachable-count roots)
+               (hash-table-count (nelisp-gc-reachable-set roots))))))
+
+(ert-deftest nelisp-gc-mark-default-roots-includes-globals-table ()
+  "The default root set (no override) always reaches the four global
+hash-tables themselves as first-class objects."
+  (let ((live (nelisp-gc-reachable-set)))
+    (should (gethash nelisp--globals   live))
+    (should (gethash nelisp--functions live))
+    (should (gethash nelisp--macros    live))
+    (should (gethash nelisp--specials  live))))
+
 (provide 'nelisp-gc-test)
 ;;; nelisp-gc-test.el ends here
