@@ -45,6 +45,14 @@
 (require 'cl-lib)
 (require 'nelisp-eval)
 
+;; Forward declaration — Phase 3c owns `nelisp-gc--active-vms' in
+;; src/nelisp-gc.el.  We re-declare nil-initialised here so `nelisp-bc-run'
+;; can push/pop the active VM state vector without a hard require on
+;; nelisp-gc (which would pull the tracker into every bytecode build).
+;; Emacs `defvar' with initial value is idempotent — whichever file
+;; loads first wins, the other is a no-op.
+(defvar nelisp-gc--active-vms nil)
+
 (define-error 'nelisp-bc-error "NeLisp bytecode error")
 (define-error 'nelisp-bc-unimplemented
   "NeLisp bytecode feature not implemented yet" 'nelisp-bc-error)
@@ -1811,22 +1819,27 @@ MCP Parameters:
       (dolist (v slot-values)
         (aset stack i v)
         (cl-incf i)))
-    (unwind-protect
-        (catch 'nelisp-bc--return
-          (nelisp-bc--dispatch vm nil))
-      ;; Restore any outstanding specpdl entries in reverse order so
-      ;; duplicate binds layer the same way `let' does.  Reads specpdl
-      ;; from VM because `nelisp-bc--dispatch' syncs on exit (normal
-      ;; fall-out is a no-op when bytecode is well-formed; non-local
-      ;; exit unwinds whatever bindings the body accumulated).
-      (let ((specpdl (aref vm 8)))
-        (while specpdl
-          (let* ((entry (pop specpdl))
-                 (sym (car entry))
-                 (old (cdr entry)))
-            (if (eq old nelisp--unbound)
-                (remhash sym nelisp--globals)
-              (puthash sym old nelisp--globals)))))))))
+    ;; Push VM onto the Phase 3c active-VM stack so `nelisp-gc-root-set'
+    ;; can reach in-flight stack / specpdl from a concurrent mark pass.
+    ;; Dynamic `let' + `unwind-protect' below guarantees pop on both
+    ;; normal and non-local exit.
+    (let ((nelisp-gc--active-vms (cons vm nelisp-gc--active-vms)))
+      (unwind-protect
+          (catch 'nelisp-bc--return
+            (nelisp-bc--dispatch vm nil))
+        ;; Restore any outstanding specpdl entries in reverse order so
+        ;; duplicate binds layer the same way `let' does.  Reads specpdl
+        ;; from VM because `nelisp-bc--dispatch' syncs on exit (normal
+        ;; fall-out is a no-op when bytecode is well-formed; non-local
+        ;; exit unwinds whatever bindings the body accumulated).
+        (let ((specpdl (aref vm 8)))
+          (while specpdl
+            (let* ((entry (pop specpdl))
+                   (sym (car entry))
+                   (old (cdr entry)))
+              (if (eq old nelisp--unbound)
+                  (remhash sym nelisp--globals)
+                (puthash sym old nelisp--globals))))))))))
 
 (provide 'nelisp-bytecode)
 ;;; nelisp-bytecode.el ends here
