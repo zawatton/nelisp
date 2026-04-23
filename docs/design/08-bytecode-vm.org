@@ -260,9 +260,42 @@ Phase 3b.5 (closure + lambda dynamic binding) と束ねて取り扱う。
 
 ** 3b.6 Self-host (Rhodes stage 2 preview)
 
-- =src/nelisp-*.el= を cycle-2 install 時に VM 上で実行
-- cycle-1 = cycle-2 fixpoint が VM ON で green
-- =nelisp-bc-compile= 自身も compile 可 (meta-circular)
+二段構成で進める。
+
+*** 3b.6a Cycle-1 = Cycle-2 with VM (SHIPPED)
+
+- 既存 cycle-2 fixpoint テストの VM 版を追加: ユーザ defun を
+  =nelisp-bc-auto-compile= = t で install して bcl 化、cycle-1
+  (host trampoline) と cycle-2 (NeLisp-installed trampoline) の
+  返り値が一致することを assert
+- 重要な infra fix: =nelisp--install-primitives= が
+  =nelisp-bc-run= を NeLisp 関数テーブルに登録 (bytecode 既 load
+  時のみ)。これで NeLisp-installed =nelisp--apply= が =fboundp= /
+  =funcall= 経由で bcl dispatch できるようになる
+- tramp の =:tramp-apply= に bcl arm 追加、generic call も bcl-aware
+- 4 ERTs: fib / fact / mixed bcl+closure / tail-recursive sum
+- 全 .el を auto-compile=t で install するパスは host C stack を
+  使い切るため future work (3b.6c — design doc 末尾参照)
+
+*** 3b.6b Meta-circular compile (SHIPPED, smoke)
+
+- =nelisp-bc-compile= の本体 lambda を =nelisp-bc-try-compile-lambda=
+  に通して meta-bcl を作る
+- meta-bcl(form) と host =nelisp-bc-compile=(form) の出力 bcl を
+  両方 run して値が一致することを assert
+- 9 input forms (literal / quote / arith / if / let / let* / cons /
+  car) で確認
+- =(function SYMBOL)= compile を新規対応 — meta-source の
+  =(apply (function vector) ...)= に必要
+- 完全 meta bootstrap (helper も全部 bcl 化) は 3b.6c 候補
+
+*** 3b.6c (将来) — Full self-install on VM
+
+- =nelisp-bc-auto-compile= = t で全 src/nelisp-*.el を install
+  完走 (現状 host C stack overflow)
+- 必要な対策候補: bc-run の trampoline 化、CALL の depth-bound
+  化、interpreter↔VM の handoff 設計
+- =nelisp-bc-compile= 自身を bcl で完全置換
 
 ** 3b.7 Performance bench + merge gate
 
