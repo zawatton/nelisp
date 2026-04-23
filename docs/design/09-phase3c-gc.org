@@ -5,11 +5,16 @@
 
 * Status
 :PROPERTIES:
-:STATE: DRAFT-2026-04-24 (user signoff 待ち: §2 all 6 items)
+:STATE: LOCKED-2026-04-24 (user signoff: §2 推奨 A/A/A/C/A/A、§3 分割案承認)
 :END:
 
 =v0.3.0= (Phase 3b 完了) の次。=05-roadmap.org= §4 "Phase 3 = bytecode
 VM + GC + fiber" のうち GC 部分を Phase 3c として切り出す。
+
+User signoff (2026-04-24): §2.1 = A (reframing 承認), §2.2 = A (root
+set 必須 4 種), §2.3 = A (Elisp structural walk), §2.4 = C (暗黙 +
+明示 両方), §2.5 = A (最小 MCP 2 本), §2.6 = A (ERT + 合成 graph、
+perf は Phase 4 に持ち越し)。§3 sub-phase 分割 (3c.1-6) も承認。
 
 Phase 3b で bytecode VM + JIT が ship 完了し merge gate 10x クリアしたが、
 GC / fiber は scope 外に push された。本 doc は GC 部分を起案する。
@@ -180,12 +185,18 @@ Phase 4 本番で含める、Phase 3c は "hook を用意した" レベルで十
 
 Phase 3b の 8 sub-phase 式を踏襲、細かく区切って user が途中 abort 可能に。
 
-** 3c.1 Skeleton + root set enumeration (DRAFT)
+** 3c.1 Skeleton + root set enumeration (SHIPPED 2026-04-24)
 
-- =src/nelisp-gc.el= 新規、provide / autoload cookie のみ
-- =nelisp-gc--root-set= 返す関数: 全 root を =(:kind :value)= list で
-- 全 root kind ごとに小さい ERT (hash-table / VM stack / specpdl)
-- 予算: 150 LOC 目安、ERT 6 本
+- =src/nelisp-gc.el= 新規 (~70 LOC、予算 150 内)
+- =nelisp-gc-root-set= (public): 全 root を =(:kind :value)= plist list で
+- =nelisp-gc--active-vms= dynamic 変数 + =nelisp-bc-run= 内 =unwind-protect=
+  で push/pop — normal/non-local exit 双方で確実に pop
+- =nelisp-bytecode.el= 側は forward =defvar= のみ、=(require 'nelisp-gc)=
+  しない (hard dep 回避)。Emacs defvar idempotency で共有安全
+- ERT 7 本: globals 4 table 列挙 / hash-table identity / VM stack 不在時 /
+  synthetic VM push / =nelisp-bc-run= 内 dispatch 時 capture / normal
+  exit 後 pop 確認 / throw 経由 non-local exit 後 pop 確認
+- 459/459 tests pass (bump from 452)
 
 ** 3c.2 Mark pass (DRAFT)
 
