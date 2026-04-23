@@ -1,0 +1,445 @@
+#+TITLE: Phase 3c — GC / NeLisp-level object tracking
+#+AUTHOR: zawatton
+#+DATE: 2026-04-24
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: DRAFT-2026-04-24 (user signoff 待ち: §2 all 6 items)
+:END:
+
+=v0.3.0= (Phase 3b 完了) の次。=05-roadmap.org= §4 "Phase 3 = bytecode
+VM + GC + fiber" のうち GC 部分を Phase 3c として切り出す。
+
+Phase 3b で bytecode VM + JIT が ship 完了し merge gate 10x クリアしたが、
+GC / fiber は scope 外に push された。本 doc は GC 部分を起案する。
+
+*核心論点*: NeLisp は host Emacs 上で動く以上、object 本体は Emacs heap
+に乗り Emacs GC で free される。「普通の mark-sweep で memory を free する」
+という伝統的 GC の主目的が本 project では *そのままでは成立しない*。
+
+本 doc は Phase 3c の GC を以下の 3 目的に reframe して起案する:
+
+1. *Phase 4 actor 境界の reachability tracking* (=04-concurrency.org= §4 と整合)
+2. *Finalizer / resource ownership*: file handle / process / mutex 等、
+   host GC だけでは漏れる non-heap resource の解放 hook
+3. *Heap introspection*: どの NeLisp object を誰が参照しているかの
+   walker (anvil-inspector 的 diagnostic 用途)
+
+伝統的 "free memory" 主目的の GC は Phase 5 (=nelisp-thread.el= + 真
+C heap) で初めて必要になる可能性が高い。user signoff でこの reframing
+を確認したい。
+
+* 1. 動機と非目標
+
+** 1.1 なぜ Phase 3c が要るのか
+
+Phase 4 (actor/channel primary) の merge gate は =04-concurrency.org=
+§4.5 が規定する anvil 痛み解消 test case 3 件のうち 1+ の PoC 動作。
+このうち特に:
+
+- =並列 MCP tool handler=: 同 Emacs session で 4 actor が独立した
+  buffer-local state を持つ
+- =shared nothing の徹底=: 一方 actor の mutation が他方に見えない保証
+
+を実現するには、NeLisp value が *どの actor のものか* を追跡する
+mechanism が要る (= "who owns this cons cell?")。Emacs GC は全オブジェクトを
+フラットに扱うためこの区別を提供できない。
+
+よって Phase 3c は実質 *actor-aware object ledger* の基盤作り。
+mark-sweep "相当" の reachability walk を NeLisp-level で走らせ、
+boundary 情報と finalizer hook を付ける。
+
+** 1.2 目標 (Phase 3c 完了条件)
+
+1. =src/nelisp-gc.el= 新規: NeLisp root set + mark pass + walker API
+2. Root set 定義: globals / functions / macros / specpdl / bytecode VM
+   stack / active JIT closures の enumeration
+3. Mark pass: 任意 root set から reachable な NeLisp object を
+   set として返す walker =nelisp-gc--reachable=
+4. Finalizer API: =nelisp-gc-register-finalizer= (object × thunk)
+5. Heap introspection MCP tool 2 本 (=nelisp-heap-count=, =nelisp-heap-roots=)
+6. Phase 4 前提: =nelisp-gc-actor-boundary= 的 API 雛形 (Phase 4 で本実装)
+
+** 1.3 非目標 (Phase 3c では入れない)
+
+- *Actual memory reclamation*: host Emacs GC に任せる。NeLisp GC は
+  object を free しない (Emacs GC からは unreachable にすれば free される)
+- *Generational / incremental*: Phase 3c は stop-the-world full walk のみ
+- *Moving / compaction*: host Emacs heap 上の object を動かさない
+- *Weak reference*: host Emacs =make-weak-ref= / =weak-hash-table= で賄う
+- *True parallel GC*: Phase 5 (真 thread) scope
+
+* 2. Key decisions (user signoff 待ち)
+
+Phase 3b 着手時の §2 6 decision 方式を踏襲。各 (A/B/C) の user 選択
+を受けてから 3c.1 実装着手。
+
+** 2.1 GC 主目的の reframing を承認するか
+
+- A: *承認* — Phase 3c GC = actor boundary tracker + finalizer +
+  introspection。伝統的 "free memory" 主目的は Phase 5 に deferred
+- B: *拒否* — 伝統的 mark-sweep-free を Phase 3c で実装。host Emacs
+  heap と独立した NeLisp heap を作り自前管理。Emacs と二重 GC コスト
+  を受容
+- C: *もっと radical* — GC を Phase 3c では実装せず、Phase 4 actor の
+  send-time copy で済ませる (Erlang BEAM 相当)。Phase 3c は削除、
+  fiber だけ Phase 3d に残す
+
+*推奨*: A。理由は =1. 動機と非目標= 節の通り、host Emacs heap と
+二重管理はコスト対効果が悪い。C も合理的だが Phase 4 着手時に "actor
+境界を越える reference を deny する verifier" が欲しくなる場面は
+recurring で、3c で reachability walker を ship しておくと Phase 4 の
+actor send-check を bolt-on しやすい。
+
+** 2.2 Root set の範囲
+
+NeLisp-level root set (mark pass の起点) に何を含めるか。
+
+- =nelisp--globals= / =nelisp--functions= / =nelisp--macros= / =nelisp--specials=
+  (hash-table 4 個) — *必須*
+- bytecode VM stack (active =nelisp-bc-run= 実行中の stack vector) — *必須*
+- JIT closure の captured env (vector literal、constants pool 経由) — *不要*
+  (byte-compile 済 .elc / compiled function の内部にあり、Emacs 側で
+  reachable、NeLisp-level mark は burden 高い割に redundant)
+- specpdl / catch-frame / unwind-protect chain — *必須* (condition-case
+  中の NeLisp value が reachable)
+- host ↔ NeLisp interop 経由で passed されている暫定 value (引数 list) —
+  *host Elisp の dynamic stack にあり Emacs 側 reachable*、NeLisp-level
+  では拾わない
+
+選択:
+- A: 上記 *必須* 4 種 (globals/functions/macros/specials + VM stack + specpdl)
+- B: A + JIT constants pool (全 JIT closure の constants vector を walk)
+- C: ユーザ 指定 root set を plug 可能 (Phase 3c は A のみ、extension point
+  用意)
+
+*推奨*: A。JIT constants pool は Emacs 側 GC が確実に reach するため
+mark 重複。extension point は YAGNI、Phase 4 着手時に必要なら追加。
+
+** 2.3 Mark pass の object graph 定義
+
+NeLisp object の edge をどう定義するか (= mark が何を transitive に辿るか)。
+
+- cons: =car= / =cdr=
+- vector: 全要素
+- hash-table: key / value 全て
+- nelisp-closure: =ENV= / =PARAMS= (symbol tree) / =BODY= (S-expr tree)
+- nelisp-bcl: =CONSTS= vector / =ENV= (captured lexical)
+- 他すべて (number / string / symbol): leaf
+
+選択:
+- A: 上記通り (Elisp standard structural walk)
+- B: A + JIT closure の =HOST-FN= (byte-code function object) 経由で
+  constants pool を walk
+- C: lazy — object type ごとに walker を user-pluggable に
+
+*推奨*: A。B は §2.2 の decision と首尾一貫 (JIT constants pool は
+skip)。C は YAGNI。
+
+** 2.4 Finalizer 実行タイミング
+
+Finalizer (=nelisp-gc-register-finalizer=) をどう trigger するか。
+
+- A: *Host Emacs GC hook* に =post-gc-hook= から NeLisp mark を起動し、
+  register 済 object で reachable でないものの finalizer を run
+- B: *明示 =(nelisp-gc-collect)=* 呼出しでのみ run (deterministic、
+  但し忘れると resource leak)
+- C: *両方* — A (暗黙) を default、B (明示) を override 可
+
+*推奨*: C。A の安全網 + B の deterministic control で anvil 類似の
+deterministic resource mgmt と整合。
+
+** 2.5 Heap introspection MCP tool の scope
+
+MCP tool として ship する範囲。
+
+- A: =nelisp-heap-count= (type 別 object 数) + =nelisp-heap-roots=
+  (root set 一覧)
+- B: A + =nelisp-heap-walk-from <root>= (任意 root から reachable な
+  object を返す walker)
+- C: A + B + =nelisp-heap-where-referenced <object>= (逆 walker、
+  誰が object を参照しているか)
+
+*推奨*: A。Phase 3c の最小 introspection。B / C は Phase 4 actor
+boundary debug で必要になった時点で追加。
+
+** 2.6 Phase 3c merge gate
+
+- A: =nelisp-gc-full-walk= が root set から 100% reachable object を
+  列挙 (ERT で合成 graph を仕込んで verify) + finalizer 2 系統 test
+  + =make test= green
+- B: A + bench: full walk が global table 1000 entry 級で < 100ms
+- C: A + actor boundary PoC (Phase 4 で refine する前段として最小例
+  =nelisp-actor--owns-p= が実装可能なことを示す smoke test)
+
+*推奨*: A。perf は Phase 4 で負荷が見えてから。actor boundary は
+Phase 4 本番で含める、Phase 3c は "hook を用意した" レベルで十分。
+
+* 3. Sub-phase 分割
+
+Phase 3b の 8 sub-phase 式を踏襲、細かく区切って user が途中 abort 可能に。
+
+** 3c.1 Skeleton + root set enumeration (DRAFT)
+
+- =src/nelisp-gc.el= 新規、provide / autoload cookie のみ
+- =nelisp-gc--root-set= 返す関数: 全 root を =(:kind :value)= list で
+- 全 root kind ごとに小さい ERT (hash-table / VM stack / specpdl)
+- 予算: 150 LOC 目安、ERT 6 本
+
+** 3c.2 Mark pass (DRAFT)
+
+- =nelisp-gc--mark= (obj visited-ht) — structural walk
+- =nelisp-gc--reachable-set= (root-set-override) — 任意 root から
+  =eq=-identity set (hash-table with test='eq) を返す
+- cycle detection (visited-ht)
+- ERT: 合成 graph (cons chain / circular list / hash-table value
+  に closure) で expected set 検証
+- 予算: 200 LOC 目安、ERT 10 本
+
+** 3c.3 Finalizer registry (DRAFT)
+
+- =nelisp-gc-register-finalizer= (obj thunk) — push to =nelisp-gc--finalizers=
+  (weak-ref list)
+- =nelisp-gc--sweep-finalizers= — reachable set と照合、unreachable な
+  registered object の thunk を =unwind-protect= 内で走らせる
+- =post-gc-hook= で =nelisp-gc-auto-sweep= を (opt-in flag で) 接続
+- 明示 =nelisp-gc-collect= 関数
+- ERT: file-handle mock で open/close → unreachable 化 → sweep で
+  close 確認
+- 予算: 150 LOC 目安、ERT 5 本
+
+** 3c.4 MCP introspection tools (DRAFT)
+
+- =nelisp-heap-count= — type 別 object 数 (root set から walk して集計)
+- =nelisp-heap-roots= — root set の =(:kind :count)= summary
+- anvil 互換 MCP tool として register (=nelisp-gc-mcp-register=)
+- 予算: 80 LOC 目安、ERT 3 本
+
+** 3c.5 Phase 4 actor boundary hook (DRAFT)
+
+- =nelisp-gc-actor-boundary= (start-root) — start-root から reach
+  可能な object set を返す。Phase 4 =nelisp-spawn= が actor ごとに
+  この set を取得し ownership ledger に登録する想定
+- Phase 3c では *API のみ* ship、Phase 4 で実装 refine
+- 予算: 50 LOC 目安、ERT 2 本 (boundary 重なり検出 smoke)
+
+** 3c.6 Bench + merge gate verification (DRAFT)
+
+- =bench/nelisp-gc-bench.el= — global table 100 / 1000 / 10000 entry
+  で full walk 時間測定
+- =make test= green (想定 476/476)
+- =docs/design/09-phase3c-gc.org= を SHIPPED 状態に移行
+
+* 4. Root set 定義 (草案 — §2.2 A 選択前提)
+
+#+begin_src emacs-lisp
+  (defun nelisp-gc--root-set ()
+    "Return a list of NeLisp roots.  Each is `(:kind K :value V)'."
+    (let ((roots '()))
+      ;; Global tables
+      (dolist (name '(nelisp--globals nelisp--functions
+                      nelisp--macros nelisp--specials))
+        (push (list :kind name :value (symbol-value name)) roots))
+      ;; Active bytecode VM stacks (if any)
+      (dolist (vm nelisp-bc--active-vms)
+        (push (list :kind 'vm-stack :value vm) roots))
+      ;; specpdl (currently bound dynamic variables)
+      (push (list :kind 'specpdl :value nelisp--specpdl) roots)
+      roots))
+#+end_src
+
+実装上の前提:
+- =nelisp-bc--active-vms= 的な "active VM stack tracking" が存在しない
+  → 3c.1 で bytecode VM に一行の push/pop 追加必要
+- =nelisp--specpdl= 相当も存在確認 (未実装なら Phase 3c scope 外に
+  push して Phase 4 で追加)
+
+** 4.1 Root 追加時の影響範囲確認
+
+Phase 3b 終了時点で NeLisp-level に存在する "生きた value holder" の
+inventory:
+
+- hash-table 4: =nelisp--globals= / =nelisp--functions= / =nelisp--macros=
+  / =nelisp--specials= → globals[SYM] = value 形、walk 問題なし
+- hash-table 1 (bool): =nelisp--unbound= → sentinel、walk しても良い
+  が意味ない
+- active VM stack: =nelisp-bc-run= 実行中のみ存在、exit で消える。
+  tracking 用に dynamic let が必要 → 3c.1 で =nelisp-bc--active-stacks=
+  list を導入、=unwind-protect= で push/pop
+- active JIT closure の captured env vector → 既に constants pool に
+  livre、Emacs GC が reach。NeLisp-level では再 walk 不要 (§2.2 推奨)
+
+* 5. Mark pass のアルゴリズム (草案 — §2.3 A 選択前提)
+
+非再帰 iterative walk。self-host =max-lisp-eval-depth= 予算を踏まえ、
+深い構造でも host stack を積まない実装を採用。
+
+#+begin_src emacs-lisp
+  (defun nelisp-gc--reachable-set (&optional root-override)
+    "Return hash-table of `eq'-unique NeLisp objects reachable from roots."
+    (let ((visited (make-hash-table :test 'eq))
+          (work   (copy-sequence (or root-override
+                                     (nelisp-gc--root-set)))))
+      (while work
+        (let ((obj (pop work)))
+          (unless (gethash obj visited)
+            (puthash obj t visited)
+            (cond
+             ((consp obj)
+              (push (car obj) work)
+              (push (cdr obj) work))
+             ((vectorp obj)
+              (dotimes (i (length obj)) (push (aref obj i) work)))
+             ((hash-table-p obj)
+              (maphash (lambda (k v) (push k work) (push v work)) obj))
+             (t nil)))))                ; leaf: number / string / symbol
+      visited))
+#+end_src
+
+** 5.1 Cycle detection
+
+visited hash-table が cycle を閉じる (=eq= identity で前 visit 検出)。
+test でわざと circular list を仕込み、halt することを ERT で担保。
+
+** 5.2 Closure / bcl の edge
+
+=(consp obj)= で =(car obj) = 'nelisp-closure= or ='nelisp-bcl= を
+特別扱い不要 — どちらも list structure で =car/cdr= walk が内部を
+完全に辿る。JIT marker bcl も同様。ENV (alist) も cons chain で自然に
+reach 可能。
+
+* 6. Finalizer (草案 — §2.4 C 選択前提)
+
+#+begin_src emacs-lisp
+  (defvar nelisp-gc--finalizers (make-hash-table :test 'eq :weakness 'key)
+    "Weak-key table: OBJ -> THUNK.  Entry vanishes when OBJ is collected
+  by host Emacs GC; we also run THUNK if our own sweep says OBJ is
+  unreachable from NeLisp roots (useful while `nelisp--globals' etc
+  still reference something the NeLisp layer considers dead).")
+
+  (defun nelisp-gc-register-finalizer (obj thunk)
+    "Schedule THUNK to run when OBJ becomes unreachable."
+    (puthash obj thunk nelisp-gc--finalizers)
+    obj)
+
+  (defun nelisp-gc-collect ()
+    "Run a full mark pass; fire finalizers for unreachable registered objects."
+    (let ((live (nelisp-gc--reachable-set))
+          (fired '()))
+      (maphash
+       (lambda (obj thunk)
+         (unless (gethash obj live)
+           (push obj fired)
+           (condition-case err
+               (funcall thunk obj)
+             (error
+              (message "nelisp-gc: finalizer error for %S: %S" obj err)))))
+       nelisp-gc--finalizers)
+      (dolist (o fired) (remhash o nelisp-gc--finalizers))
+      (length fired)))
+#+end_src
+
+** 6.1 post-gc-hook 連動 (opt-in)
+
+#+begin_src emacs-lisp
+  (defvar nelisp-gc-auto-sweep nil
+    "When non-nil, run `nelisp-gc-collect' from `post-gc-hook'.
+  Disabled by default because running a full mark pass on every
+  host GC cycle is expensive.  Opt-in for long-running daemons.")
+
+  (defun nelisp-gc--post-gc-handler ()
+    (when nelisp-gc-auto-sweep
+      (condition-case nil (nelisp-gc-collect) (error nil))))
+
+  (add-hook 'post-gc-hook #'nelisp-gc--post-gc-handler)
+#+end_src
+
+* 7. MCP introspection tools (草案 — §2.5 A 選択前提)
+
+#+begin_src emacs-lisp
+  (defun nelisp-heap-count ()
+    "Return summary plist `(:cons N :vector N :string N :closure N ...)'."
+    (let ((live (nelisp-gc--reachable-set))
+          (cnt (list :cons 0 :vector 0 :string 0 :hash-table 0 :closure 0
+                     :bcl 0 :symbol 0 :other 0)))
+      (maphash
+       (lambda (obj _)
+         (pcase obj
+           ((pred consp)
+            (pcase (car-safe obj)
+              ('nelisp-closure (cl-incf (plist-get cnt :closure)))
+              ('nelisp-bcl     (cl-incf (plist-get cnt :bcl)))
+              (_               (cl-incf (plist-get cnt :cons)))))
+           ((pred vectorp)     (cl-incf (plist-get cnt :vector)))
+           ((pred stringp)     (cl-incf (plist-get cnt :string)))
+           ((pred hash-table-p)(cl-incf (plist-get cnt :hash-table)))
+           ((pred symbolp)     (cl-incf (plist-get cnt :symbol)))
+           (_                  (cl-incf (plist-get cnt :other)))))
+       live)
+      cnt))
+
+  (defun nelisp-heap-roots ()
+    "Return root-set as `((:kind K :count N) ...)' summary."
+    (mapcar (lambda (r)
+              (let ((v (plist-get r :value)))
+                (list :kind (plist-get r :kind)
+                      :count (cond
+                              ((hash-table-p v) (hash-table-count v))
+                              ((listp v)        (length v))
+                              (t                1)))))
+            (nelisp-gc--root-set)))
+#+end_src
+
+* 8. Phase 4 actor boundary hook (Phase 3c では API stub)
+
+#+begin_src emacs-lisp
+  (defun nelisp-gc-actor-boundary (start-root)
+    "Return set of NeLisp objects reachable from START-ROOT only.
+  Phase 4 `nelisp-spawn' uses this to snapshot what the new actor
+  'owns'.  Phase 3c ships the mark infra only — Phase 4 layers on
+  ownership ledger + send-time boundary check."
+    (nelisp-gc--reachable-set (list (list :kind 'actor-root
+                                          :value start-root))))
+#+end_src
+
+Phase 4 との分担:
+- Phase 3c: =nelisp-gc-actor-boundary= API の存在 + reachability 結果
+  が正しいことを確認する smoke ERT (synthetic graph)
+- Phase 4: 実際の =nelisp-spawn= / =nelisp-send= に接続、cross-boundary
+  参照 detection (= actor A root から reach 可能 ∩ actor B root から
+  reach 可能 ≠ ∅) を deny or box 実装
+
+* 9. 成功条件 (Phase 3c merge gate)
+
+- [ ] make test: Phase 3b までの 452 + Phase 3c 新規 all pass
+- [ ] =nelisp-gc--reachable-set= が合成 graph (cycle 含) で expected
+  set を返す (ERT 10 本以上)
+- [ ] Finalizer 2 系統 ERT: 明示 =nelisp-gc-collect= / 暗黙 =post-gc-hook=
+- [ ] MCP tool 2 本 =nelisp-heap-count= / =nelisp-heap-roots= が anvil
+  registry 経由で呼び出し可能
+- [ ] =nelisp-gc-actor-boundary= smoke ERT 2 本 (boundary disjoint / overlap)
+- [ ] docs/design/09-phase3c-gc.org SHIPPED 状態
+- [ ] sub-phase 毎に commit + make test green (feat/xxx branch workflow)
+
+v0.3.1 or v0.4.0-pre tag は本 gate 達成時点で検討。v0.4.0 本番は
+Phase 4 actor 完遂条件を先に満たす必要あり。
+
+* 10. 将来への伏線 (Phase 4-5 以降)
+
+- *Generational GC*: NeLisp object を "generation" tag 付きで track。
+  Phase 4 actor の mailbox 通過頻度が高い short-lived message に
+  limited GC を掛ける PoC。Phase 5 真 thread 時は必須級
+- *Incremental mark*: user-facing UI freeze 回避。Phase 5 で display
+  path が NeLisp 化された後に意味を持つ
+- *Write barrier*: Phase 4 actor の send-time copy 最適化 (immutable なら
+  share OK) に必要
+- *Moving GC / compaction*: Rhodes genesis (v0.4.x or later) で cold
+  image を dump する際、heap fragmentation が問題になる局面で検討
+
+* 11. Reviewer 向け決定依頼
+
+§2 の 6 key decision (2.1 reframing / 2.2 root set / 2.3 mark graph /
+2.4 finalizer timing / 2.5 MCP scope / 2.6 merge gate) を user が
+signoff した段階で 3c.1 実装着手。Signoff 後は本 doc の =STATE= を
+=LOCKED-<date>= に更新、3c.1 ship 時点で各 sub-phase を =SHIPPED= に移行。
