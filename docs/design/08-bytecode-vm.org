@@ -299,9 +299,43 @@ Phase 3b.5 (closure + lambda dynamic binding) と束ねて取り扱う。
 
 ** 3b.7 Performance bench + merge gate
 
-- =bench/nelisp-bench.el= (fib / fact / map / let-chain)
-- host interp 比 >= 10x、Emacs bytecode 比 stretch 5x
-- merge gate 判定 → main に --no-ff merge、v0.3.0 候補タグ
+*** 3b.7a Bench harness (SHIPPED)
+
+- =bench/nelisp-bench.el= に 4 ケース実装: =fib= (recursion), =fact=
+  (single recursion), =sum-to= (tail-shape), =let-chain= (let bench)
+- =make bench= が =compile= → run → speedup 報告
+- =test/nelisp-bench-test.el= (small args 版) で equivalence ERT を
+  常時走らせる (434/434 green)
+- 全ケースで bcl と interp が同じ値を返すことを確認
+
+*** 3b.7b Perf gate status (NOT MET, v0.3.0 タグ pending)
+
+現状の wall-time 比 (byte-compiled, 3 iters):
+
+| case      | interp | vm     | speedup |
+|-----------|--------|--------|---------|
+| fib(20)   | 0.18s  | 0.31s  | 0.59x   |
+| fact(12)  | 0.0001 | 0.0001 | 0.71x   |
+| sum-to(150)| 0.001 | 0.001  | 0.91x   |
+| let-chain | 微小    | 微小    | 1.25x   |
+
+- VM は現状 host interp より 1.2x〜2x 遅い (10x gate と桁違い)
+- 主因の見立て: per-call overhead (=make-vector= for stack,
+  =cl-labels= 4 closure setup, =unwind-protect= + =catch=) と
+  dispatch loop の =pcase= 比較コスト
+- v0.3.0 タグはこの gate を満たすまで保留 — bench infrastructure
+  は ship、merge は別件 (3b.7c) として継続
+
+*** 3b.7c (将来) — VM perf optimization
+
+候補施策:
+- per-call =cl-labels= を別 =defun= に外出し (closure capture 排除)
+- =stack= vector の pool 化 (=make-vector= 削減)
+- 算術 op を host primitive 直叩き化 (=+= の generic dispatch 排除)
+- dispatch を =aref= による関数テーブルへ
+- bytecode peephole 最適化 (例: =CONST n= + =PLUS= → =ADDN n=)
+- =SPECIAL-MASK= に加えて =uses-specpdl= flag を追加し
+  =unwind-protect= を必要時のみ装着
 
 * 4. Bytecode 構造 (草案)
 

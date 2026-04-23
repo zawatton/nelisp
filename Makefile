@@ -1,4 +1,4 @@
-.PHONY: test compile clean all
+.PHONY: test compile clean all bench
 
 EMACS ?= emacs
 
@@ -19,7 +19,7 @@ TEST_LOADS := $(addprefix -l ,$(TESTS))
 all: compile test
 
 test:
-	$(EMACS) --batch -Q -L src -L test \
+	$(EMACS) --batch -Q -L src -L test -L bench \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l ert \
 	  $(TEST_LOADS) \
@@ -32,3 +32,12 @@ compile:
 
 clean:
 	find . -name '*.elc' -type f -delete
+
+# Phase 3b.7 perf bench.  Always runs against compiled .elc — the
+# uncompiled VM is ~17x slower than the byte-compiled one, so
+# anything else would lie about the steady-state numbers.
+bench: compile
+	$(EMACS) --batch -Q -L src -L bench \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-bench \
+	  -f nelisp-bench-batch

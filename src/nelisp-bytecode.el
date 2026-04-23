@@ -203,6 +203,49 @@ Called at load time from this module's tail."
       (signal 'nelisp-bc-error
               (list "unknown opcode" name))))
 
+;; Top-level opcode constants.  Hoisting these out of `nelisp-bc-run'
+;; saves ~37 plist-get + setq per VM invocation — measurable on hot
+;; recursive bcl loops (fib, fact, etc.) where `nelisp-bc-run' is
+;; re-entered for every NeLisp call.
+(defconst nelisp-bc--op-RETURN          0)
+(defconst nelisp-bc--op-CONST           1)
+(defconst nelisp-bc--op-STACK-REF       2)
+(defconst nelisp-bc--op-DROP            3)
+(defconst nelisp-bc--op-DUP             4)
+(defconst nelisp-bc--op-GOTO            5)
+(defconst nelisp-bc--op-GOTO-IF-NIL     6)
+(defconst nelisp-bc--op-GOTO-IF-NOT-NIL 7)
+(defconst nelisp-bc--op-ADD1            8)
+(defconst nelisp-bc--op-SUB1            9)
+(defconst nelisp-bc--op-PLUS           10)
+(defconst nelisp-bc--op-MINUS          11)
+(defconst nelisp-bc--op-LESS           12)
+(defconst nelisp-bc--op-GREATER        13)
+(defconst nelisp-bc--op-EQ             14)
+(defconst nelisp-bc--op-NOT            15)
+(defconst nelisp-bc--op-VARREF         16)
+(defconst nelisp-bc--op-VARSET         17)
+(defconst nelisp-bc--op-VARBIND        18)
+(defconst nelisp-bc--op-UNBIND         19)
+(defconst nelisp-bc--op-STACK-SET      20)
+(defconst nelisp-bc--op-DISCARDN       21)
+(defconst nelisp-bc--op-CAR            22)
+(defconst nelisp-bc--op-CDR            23)
+(defconst nelisp-bc--op-CONS           24)
+(defconst nelisp-bc--op-LIST1          25)
+(defconst nelisp-bc--op-LIST2          26)
+(defconst nelisp-bc--op-LIST3          27)
+(defconst nelisp-bc--op-LIST4          28)
+(defconst nelisp-bc--op-LISTN          29)
+(defconst nelisp-bc--op-CALL           30)
+(defconst nelisp-bc--op-PUSH-CATCH     31)
+(defconst nelisp-bc--op-POP-HANDLER    32)
+(defconst nelisp-bc--op-THROW          33)
+(defconst nelisp-bc--op-PUSH-UNWIND    34)
+(defconst nelisp-bc--op-PUSH-CC        35)
+(defconst nelisp-bc--op-MAKE-CLOSURE   36)
+(defconst nelisp-bc--op-CAPTURED-REF   37)
+
 ;;; Compiler ---------------------------------------------------------
 ;;
 ;; Phase 3b.3 rewrites the compiler as a two-pass label-aware emitter.
@@ -1182,7 +1225,7 @@ closures.
 Default is nil — opt-in for now.  Two reasons:
 
   1. Three Phase 1/2 ERTs sample the closure tag via
-     `(eq (car cl) 'nelisp-closure)' or expect arity violations
+     `(eq (car cl) \\='nelisp-closure)' or expect arity violations
      to signal `nelisp-eval-error' rather than `nelisp-bc-error',
      and one macro test relies on macros defined AFTER a `defun'
      being expanded at call time (a feature compiled bytecode
@@ -1301,44 +1344,6 @@ MCP Parameters:
          ;; shrinks on UNBIND.  Always restored fully on non-local exit
          ;; via `unwind-protect' so a stray throw never leaks a binding.
          (specpdl nil)
-         (op-RETURN          (nelisp-bc-opcode 'RETURN))
-         (op-CONST           (nelisp-bc-opcode 'CONST))
-         (op-STACK-REF       (nelisp-bc-opcode 'STACK-REF))
-         (op-DROP            (nelisp-bc-opcode 'DROP))
-         (op-DUP             (nelisp-bc-opcode 'DUP))
-         (op-GOTO            (nelisp-bc-opcode 'GOTO))
-         (op-GOTO-IF-NIL     (nelisp-bc-opcode 'GOTO-IF-NIL))
-         (op-GOTO-IF-NOT-NIL (nelisp-bc-opcode 'GOTO-IF-NOT-NIL))
-         (op-ADD1            (nelisp-bc-opcode 'ADD1))
-         (op-SUB1            (nelisp-bc-opcode 'SUB1))
-         (op-PLUS            (nelisp-bc-opcode 'PLUS))
-         (op-MINUS           (nelisp-bc-opcode 'MINUS))
-         (op-LESS            (nelisp-bc-opcode 'LESS))
-         (op-GREATER         (nelisp-bc-opcode 'GREATER))
-         (op-EQ              (nelisp-bc-opcode 'EQ))
-         (op-NOT             (nelisp-bc-opcode 'NOT))
-         (op-VARREF          (nelisp-bc-opcode 'VARREF))
-         (op-VARSET          (nelisp-bc-opcode 'VARSET))
-         (op-VARBIND         (nelisp-bc-opcode 'VARBIND))
-         (op-UNBIND          (nelisp-bc-opcode 'UNBIND))
-         (op-STACK-SET       (nelisp-bc-opcode 'STACK-SET))
-         (op-DISCARDN        (nelisp-bc-opcode 'DISCARDN))
-         (op-CAR             (nelisp-bc-opcode 'CAR))
-         (op-CDR             (nelisp-bc-opcode 'CDR))
-         (op-CONS            (nelisp-bc-opcode 'CONS))
-         (op-LIST1           (nelisp-bc-opcode 'LIST1))
-         (op-LIST2           (nelisp-bc-opcode 'LIST2))
-         (op-LIST3           (nelisp-bc-opcode 'LIST3))
-         (op-LIST4           (nelisp-bc-opcode 'LIST4))
-         (op-LISTN           (nelisp-bc-opcode 'LISTN))
-         (op-CALL            (nelisp-bc-opcode 'CALL))
-         (op-PUSH-CATCH      (nelisp-bc-opcode 'PUSH-CATCH))
-         (op-POP-HANDLER     (nelisp-bc-opcode 'POP-HANDLER))
-         (op-THROW           (nelisp-bc-opcode 'THROW))
-         (op-PUSH-UNWIND     (nelisp-bc-opcode 'PUSH-UNWIND))
-         (op-PUSH-CC         (nelisp-bc-opcode 'PUSH-CC))
-         (op-MAKE-CLOSURE    (nelisp-bc-opcode 'MAKE-CLOSURE))
-         (op-CAPTURED-REF    (nelisp-bc-opcode 'CAPTURED-REF))
          result)
     (cl-labels ((read-u16 ()
                   (prog1 (+ (aref code pc)
@@ -1378,21 +1383,21 @@ MCP Parameters:
                     (while (< pc len)
                       (let ((op (aref code pc)))
                         (setq pc (1+ pc))
-                        (cond
-                         ((= op op-RETURN)
+                        (pcase op
+                         (0
               (when (<= sp 0)
                 (signal 'nelisp-bc-error (list "RETURN on empty stack" pc)))
               (setq result (aref stack (1- sp)))
               (setq sp (1- sp))
               (throw 'nelisp-bc--return result))
-             ((= op op-CONST)
+             (1
               (when (>= sp stack-depth)
                 (signal 'nelisp-bc-error (list "stack overflow at CONST" pc)))
               (let ((idx (aref code pc)))
                 (setq pc (1+ pc))
                 (aset stack sp (aref consts idx)))
               (setq sp (1+ sp)))
-             ((= op op-STACK-REF)
+             (2
               (let* ((off (aref code pc))
                      (src (- sp off 1)))
                 (setq pc (1+ pc))
@@ -1401,20 +1406,20 @@ MCP Parameters:
                           (list "STACK-REF out of bounds" off sp)))
                 (aset stack sp (aref stack src))
                 (setq sp (1+ sp))))
-             ((= op op-DROP)
+             (3
               (when (<= sp 0)
                 (signal 'nelisp-bc-error (list "DROP on empty stack" pc)))
               (setq sp (1- sp)))
-             ((= op op-DUP)
+             (4
               (when (<= sp 0)
                 (signal 'nelisp-bc-error (list "DUP on empty stack" pc)))
               (when (>= sp stack-depth)
                 (signal 'nelisp-bc-error (list "stack overflow at DUP" pc)))
               (aset stack sp (aref stack (1- sp)))
               (setq sp (1+ sp)))
-             ((= op op-GOTO)
+             (5
               (setq pc (read-u16)))
-             ((= op op-GOTO-IF-NIL)
+             (6
               (when (<= sp 0)
                 (signal 'nelisp-bc-error
                         (list "GOTO-IF-NIL on empty stack" pc)))
@@ -1422,7 +1427,7 @@ MCP Parameters:
               (let ((tgt (read-u16))
                     (v (aref stack sp)))
                 (when (null v) (setq pc tgt))))
-             ((= op op-GOTO-IF-NOT-NIL)
+             (7
               (when (<= sp 0)
                 (signal 'nelisp-bc-error
                         (list "GOTO-IF-NOT-NIL on empty stack" pc)))
@@ -1430,54 +1435,54 @@ MCP Parameters:
               (let ((tgt (read-u16))
                     (v (aref stack sp)))
                 (when v (setq pc tgt))))
-             ((= op op-ADD1)
+             (8
               (when (<= sp 0)
                 (signal 'nelisp-bc-error (list "ADD1 on empty stack" pc)))
               (aset stack (1- sp) (1+ (aref stack (1- sp)))))
-             ((= op op-SUB1)
+             (9
               (when (<= sp 0)
                 (signal 'nelisp-bc-error (list "SUB1 on empty stack" pc)))
               (aset stack (1- sp) (1- (aref stack (1- sp)))))
-             ((= op op-PLUS)
+             (10
               (when (< sp 2)
                 (signal 'nelisp-bc-error (list "PLUS needs 2 values" pc)))
               (let ((b (aref stack (1- sp)))
                     (a (aref stack (- sp 2))))
                 (aset stack (- sp 2) (+ a b))
                 (setq sp (1- sp))))
-             ((= op op-MINUS)
+             (11
               (when (< sp 2)
                 (signal 'nelisp-bc-error (list "MINUS needs 2 values" pc)))
               (let ((b (aref stack (1- sp)))
                     (a (aref stack (- sp 2))))
                 (aset stack (- sp 2) (- a b))
                 (setq sp (1- sp))))
-             ((= op op-LESS)
+             (12
               (when (< sp 2)
                 (signal 'nelisp-bc-error (list "LESS needs 2 values" pc)))
               (let ((b (aref stack (1- sp)))
                     (a (aref stack (- sp 2))))
                 (aset stack (- sp 2) (< a b))
                 (setq sp (1- sp))))
-             ((= op op-GREATER)
+             (13
               (when (< sp 2)
                 (signal 'nelisp-bc-error (list "GREATER needs 2 values" pc)))
               (let ((b (aref stack (1- sp)))
                     (a (aref stack (- sp 2))))
                 (aset stack (- sp 2) (> a b))
                 (setq sp (1- sp))))
-             ((= op op-EQ)
+             (14
               (when (< sp 2)
                 (signal 'nelisp-bc-error (list "EQ needs 2 values" pc)))
               (let ((b (aref stack (1- sp)))
                     (a (aref stack (- sp 2))))
                 (aset stack (- sp 2) (eq a b))
                 (setq sp (1- sp))))
-             ((= op op-NOT)
+             (15
               (when (<= sp 0)
                 (signal 'nelisp-bc-error (list "NOT on empty stack" pc)))
               (aset stack (1- sp) (not (aref stack (1- sp)))))
-             ((= op op-VARREF)
+             (16
               (when (>= sp stack-depth)
                 (signal 'nelisp-bc-error (list "stack overflow at VARREF" pc)))
               (let* ((idx (aref code pc))
@@ -1488,7 +1493,7 @@ MCP Parameters:
                   (signal 'nelisp-unbound-variable (list sym)))
                 (aset stack sp val)
                 (setq sp (1+ sp))))
-             ((= op op-VARSET)
+             (17
               (when (<= sp 0)
                 (signal 'nelisp-bc-error (list "VARSET on empty stack" pc)))
               (let* ((idx (aref code pc))
@@ -1497,7 +1502,7 @@ MCP Parameters:
                 (setq pc (1+ pc))
                 (puthash sym val nelisp--globals)
                 (setq sp (1- sp))))
-             ((= op op-VARBIND)
+             (18
               (when (<= sp 0)
                 (signal 'nelisp-bc-error (list "VARBIND on empty stack" pc)))
               (let* ((idx (aref code pc))
@@ -1508,7 +1513,7 @@ MCP Parameters:
                 (push (cons sym old) specpdl)
                 (puthash sym val nelisp--globals)
                 (setq sp (1- sp))))
-             ((= op op-UNBIND)
+             (19
               (let ((n (aref code pc)))
                 (setq pc (1+ pc))
                 (dotimes (_ n)
@@ -1521,7 +1526,7 @@ MCP Parameters:
                     (if (eq old nelisp--unbound)
                         (remhash sym nelisp--globals)
                       (puthash sym old nelisp--globals))))))
-             ((= op op-STACK-SET)
+             (20
               (when (<= sp 0)
                 (signal 'nelisp-bc-error (list "STACK-SET on empty stack" pc)))
               (let* ((offset (aref code pc))
@@ -1532,7 +1537,7 @@ MCP Parameters:
                           (list "STACK-SET out of bounds" offset sp)))
                 (aset stack dest (aref stack (1- sp)))
                 (setq sp (1- sp))))
-             ((= op op-DISCARDN)
+             (21
               (let ((n (aref code pc)))
                 (setq pc (1+ pc))
                 (when (<= sp 0)
@@ -1544,33 +1549,33 @@ MCP Parameters:
                   ;; Move TOS down by N, then shrink sp by N.
                   (aset stack (- sp 1 n) (aref stack (1- sp)))
                   (setq sp (- sp n)))))
-             ((= op op-CAR)
+             (22
               (when (<= sp 0)
                 (signal 'nelisp-bc-error (list "CAR on empty stack" pc)))
               (aset stack (1- sp) (car (aref stack (1- sp)))))
-             ((= op op-CDR)
+             (23
               (when (<= sp 0)
                 (signal 'nelisp-bc-error (list "CDR on empty stack" pc)))
               (aset stack (1- sp) (cdr (aref stack (1- sp)))))
-             ((= op op-CONS)
+             (24
               (when (< sp 2)
                 (signal 'nelisp-bc-error (list "CONS needs 2 values" pc)))
               (let ((b (aref stack (1- sp)))
                     (a (aref stack (- sp 2))))
                 (aset stack (- sp 2) (cons a b))
                 (setq sp (1- sp))))
-             ((= op op-LIST1)
+             (25
               (when (<= sp 0)
                 (signal 'nelisp-bc-error (list "LIST1 on empty stack" pc)))
               (aset stack (1- sp) (list (aref stack (1- sp)))))
-             ((= op op-LIST2)
+             (26
               (when (< sp 2)
                 (signal 'nelisp-bc-error (list "LIST2 needs 2 values" pc)))
               (let ((b (aref stack (1- sp)))
                     (a (aref stack (- sp 2))))
                 (aset stack (- sp 2) (list a b))
                 (setq sp (1- sp))))
-             ((= op op-LIST3)
+             (27
               (when (< sp 3)
                 (signal 'nelisp-bc-error (list "LIST3 needs 3 values" pc)))
               (let ((c (aref stack (1- sp)))
@@ -1578,7 +1583,7 @@ MCP Parameters:
                     (a (aref stack (- sp 3))))
                 (aset stack (- sp 3) (list a b c))
                 (setq sp (- sp 2))))
-             ((= op op-LIST4)
+             (28
               (when (< sp 4)
                 (signal 'nelisp-bc-error (list "LIST4 needs 4 values" pc)))
               (let ((d (aref stack (1- sp)))
@@ -1587,7 +1592,7 @@ MCP Parameters:
                     (a (aref stack (- sp 4))))
                 (aset stack (- sp 4) (list a b c d))
                 (setq sp (- sp 3))))
-             ((= op op-LISTN)
+             (29
               (let ((n (aref code pc)))
                 (setq pc (1+ pc))
                 (when (< sp n)
@@ -1599,7 +1604,7 @@ MCP Parameters:
                     (push (aref stack sp) acc))
                   (aset stack sp acc)
                   (setq sp (1+ sp)))))
-             ((= op op-CALL)
+             (30
               (let ((nargs (aref code pc)))
                 (setq pc (1+ pc))
                 (when (< sp (1+ nargs))
@@ -1614,19 +1619,19 @@ MCP Parameters:
                          (result (nelisp--apply fn call-args)))
                     (aset stack sp result)
                     (setq sp (1+ sp))))))
-             ((= op op-POP-HANDLER)
+             (32
               (if nested
                   (throw 'nelisp-bc--pop-handler nil)
                 (signal 'nelisp-bc-error
                         (list "POP-HANDLER outside any handler" pc))))
-             ((= op op-THROW)
+             (33
               (when (< sp 2)
                 (signal 'nelisp-bc-error (list "THROW needs 2 values" pc)))
               (let ((val (aref stack (1- sp)))
                     (tag (aref stack (- sp 2))))
                 (setq sp (- sp 2))
                 (throw tag val)))
-             ((= op op-PUSH-CATCH)
+             (31
               (when (<= sp 0)
                 (signal 'nelisp-bc-error (list "PUSH-CATCH on empty stack" pc)))
               (let* ((target (read-u16))
@@ -1658,7 +1663,7 @@ MCP Parameters:
                   (aset stack sp outcome)
                   (setq sp (1+ sp))
                   (setq pc target)))))
-             ((= op op-PUSH-UNWIND)
+             (34
               (let* ((cleanup-target (read-u16))
                      (saved-sp sp)
                      (saved-specpdl specpdl)
@@ -1679,7 +1684,7 @@ MCP Parameters:
                       ;; (not strictly needed — host will re-raise —
                       ;; but keeps debugger-friendly state).
                       (setq pc saved-pc))))))
-             ((= op op-PUSH-CC)
+             (35
               (let* ((handler-target (read-u16))
                      (saved-sp sp)
                      (saved-specpdl specpdl)
@@ -1695,7 +1700,7 @@ MCP Parameters:
                   (aset stack sp err)
                   (setq sp (1+ sp))
                   (setq pc handler-target))))
-             ((= op op-MAKE-CLOSURE)
+             (36
               (let ((n (aref code pc)))
                 (setq pc (1+ pc))
                 (when (< sp (1+ n))
@@ -1723,7 +1728,7 @@ MCP Parameters:
                                   (nelisp-bc-special-mask template))))
                     (aset stack sp closure)
                     (setq sp (1+ sp))))))
-             ((= op op-CAPTURED-REF)
+             (37
               (when (>= sp stack-depth)
                 (signal 'nelisp-bc-error
                         (list "stack overflow at CAPTURED-REF" pc)))
@@ -1735,9 +1740,7 @@ MCP Parameters:
                                 idx (length closure-env))))
                 (aset stack sp (nth idx closure-env))
                 (setq sp (1+ sp))))
-                 (t
-                  (signal 'nelisp-bc-error
-                          (list "unknown opcode"
+                 (_ (signal 'nelisp-bc-error (list "unknown opcode"
                                 (aref nelisp-bc--opcode-names op)
                                 op (1- pc)))))))
                     (unless nested
