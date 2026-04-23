@@ -213,17 +213,22 @@ Phase 3b の 8 sub-phase 式を踏襲、細かく区切って user が途中 abo
   reachable-count convenience / default roots が globals table 到達
 - 469/469 tests pass (bump from 459、+10)
 
-** 3c.3 Finalizer registry (DRAFT)
+** 3c.3 Finalizer registry (SHIPPED 2026-04-24)
 
-- =nelisp-gc-register-finalizer= (obj thunk) — push to =nelisp-gc--finalizers=
-  (weak-ref list)
-- =nelisp-gc--sweep-finalizers= — reachable set と照合、unreachable な
-  registered object の thunk を =unwind-protect= 内で走らせる
-- =post-gc-hook= で =nelisp-gc-auto-sweep= を (opt-in flag で) 接続
-- 明示 =nelisp-gc-collect= 関数
-- ERT: file-handle mock で open/close → unreachable 化 → sweep で
-  close 確認
-- 予算: 150 LOC 目安、ERT 5 本
+- =nelisp-gc--finalizers=: weak-key =eq= hash-table、OBJ → THUNK
+- =nelisp-gc-register-finalizer= (obj thunk): type-check + puthash、
+  OBJ を返すので resource acquisition パターンに idiomatic
+- =nelisp-gc-unregister-finalizer=: entry 削除、存在した場合 t
+- =nelisp-gc-collect= (public): full mark → unreachable な OBJ の
+  THUNK を =condition-case= 保護で fire、error は =message= logging
+  のみで sweep 続行、fire count を返す
+- =nelisp-gc-auto-sweep= (defcustom nil): opt-in flag
+- =nelisp-gc--post-gc-handler=: =post-gc-hook= に常時接続、
+  auto-sweep が nil なら no-op
+- ERT 5 本: 明示 collect で fire / reachable は skip / THUNK error が
+  後続を止めない / unregister で fire 抑制 / post-gc-hook が
+  auto-sweep flag を尊重
+- 474/474 tests pass (bump from 469、+5)
 
 ** 3c.4 MCP introspection tools (DRAFT)
 

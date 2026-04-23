@@ -198,5 +198,81 @@ hash-tables themselves as first-class objects."
     (should (gethash nelisp--macros    live))
     (should (gethash nelisp--specials  live))))
 
+;;; Finalizers (3c.3) -------------------------------------------------
+
+(defun nelisp-gc-test--clear-finalizers ()
+  "Wipe all registered finalizers — isolate each ERT from leftovers."
+  (clrhash nelisp-gc--finalizers))
+
+(ert-deftest nelisp-gc-finalizer-fires-on-explicit-collect ()
+  "Object unreachable from NeLisp roots → its finalizer fires on
+`nelisp-gc-collect'."
+  (nelisp-gc-test--clear-finalizers)
+  (let* ((ran 0)
+         (orphan (cons 'o 1)))
+    (nelisp-gc-register-finalizer
+     orphan (lambda (_obj) (cl-incf ran)))
+    (should (= 1 (nelisp-gc-collect)))
+    (should (= 1 ran))
+    ;; Entry removed after firing so a second collect is a no-op.
+    (should (= 0 (nelisp-gc-collect)))))
+
+(ert-deftest nelisp-gc-finalizer-skipped-for-reachable-object ()
+  "Finalizer does not fire while OBJ is still reachable from a root."
+  (nelisp-gc-test--clear-finalizers)
+  (let* ((ran 0)
+         (held (cons 'held 'in-globals)))
+    (unwind-protect
+        (progn
+          (puthash 'nelisp-gc-test--sentinel held nelisp--globals)
+          (nelisp-gc-register-finalizer
+           held (lambda (_) (cl-incf ran)))
+          (nelisp-gc-collect)
+          (should (= 0 ran)))
+      (remhash 'nelisp-gc-test--sentinel nelisp--globals))
+    ;; Once the sentinel is removed from globals, OBJ is unreachable
+    ;; and a second collect fires the finalizer.
+    (should (= 1 (nelisp-gc-collect)))
+    (should (= 1 ran))))
+
+(ert-deftest nelisp-gc-finalizer-error-does-not-abort-sweep ()
+  "Exception in one THUNK must not skip subsequent finalizers."
+  (nelisp-gc-test--clear-finalizers)
+  (let* ((ran-2 0)
+         (bad-obj  (cons 'a 1))
+         (good-obj (cons 'b 2)))
+    (nelisp-gc-register-finalizer
+     bad-obj (lambda (_) (error "boom")))
+    (nelisp-gc-register-finalizer
+     good-obj (lambda (_) (cl-incf ran-2)))
+    ;; Both orphans → both attempted; good one runs even if bad errored.
+    (should (= 2 (nelisp-gc-collect)))
+    (should (= 1 ran-2))))
+
+(ert-deftest nelisp-gc-unregister-removes-entry ()
+  "`nelisp-gc-unregister-finalizer' prevents subsequent firing."
+  (nelisp-gc-test--clear-finalizers)
+  (let* ((ran 0)
+         (obj (cons 'x 1)))
+    (nelisp-gc-register-finalizer obj (lambda (_) (cl-incf ran)))
+    (should (nelisp-gc-unregister-finalizer obj))
+    (nelisp-gc-collect)
+    (should (= 0 ran))))
+
+(ert-deftest nelisp-gc-post-gc-handler-respects-auto-sweep-flag ()
+  "`post-gc-hook' handler is a no-op unless `nelisp-gc-auto-sweep' is t."
+  (nelisp-gc-test--clear-finalizers)
+  (let* ((ran 0)
+         (orphan (cons 'p 1)))
+    (nelisp-gc-register-finalizer orphan (lambda (_) (cl-incf ran)))
+    ;; auto-sweep disabled → handler does nothing.
+    (let ((nelisp-gc-auto-sweep nil))
+      (nelisp-gc--post-gc-handler)
+      (should (= 0 ran)))
+    ;; auto-sweep enabled → handler runs a collect sweep.
+    (let ((nelisp-gc-auto-sweep t))
+      (nelisp-gc--post-gc-handler)
+      (should (= 1 ran)))))
+
 (provide 'nelisp-gc-test)
 ;;; nelisp-gc-test.el ends here
