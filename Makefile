@@ -1,4 +1,4 @@
-.PHONY: test compile clean all bench
+.PHONY: test compile clean all bench gc-bench
 
 EMACS ?= emacs
 
@@ -41,3 +41,10 @@ bench: compile
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-bench \
 	  -f nelisp-bench-batch
+
+# Phase 3c.6 GC mark-pass bench.  Advisory only — not gated.
+gc-bench: compile
+	$(EMACS) --batch -Q -L src -L bench \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-gc-bench \
+	  -f nelisp-gc-bench-batch
