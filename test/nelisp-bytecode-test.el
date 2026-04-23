@@ -103,12 +103,13 @@ Each symbolic op is replaced with its opcode byte via
   (should (equal (nelisp-bc-test--eval '(quote (a b c))) '(a b c))))
 
 (ert-deftest nelisp-bc-3b2-compile-unimplemented ()
-  ;; Truly unsupported special forms still surface as
-  ;; `nelisp-bc-unimplemented'.  `let', generic calls, etc. shipped
-  ;; in 3b.4a/b — see `nelisp-bc-3b4a-*' / `nelisp-bc-3b4b-*'.
+  ;; `let', generic calls, error-handling forms shipped in 3b.4a/b/c;
+  ;; lambda landed in 3b.5a — see `nelisp-bc-3b4*-' / `nelisp-bc-3b5*-'.
+  ;; (function NON-LAMBDA) and `defun' / `defvar' / `defmacro' /
+  ;; short-circuit forms still belong to the interpreter.
   (should-error (nelisp-bc-compile '(function foo))
                 :type 'nelisp-bc-unimplemented)
-  (should-error (nelisp-bc-compile '(lambda (x) x))
+  (should-error (nelisp-bc-compile '(defun f () 1))
                 :type 'nelisp-bc-unimplemented))
 
 (ert-deftest nelisp-bc-3b2-compile-captures-env ()
@@ -151,11 +152,13 @@ Each symbolic op is replaced with its opcode byte via
 
 ;;; Error paths -------------------------------------------------------
 
-(ert-deftest nelisp-bc-3b2-run-rejects-args ()
-  ;; 3b.2 has no BIND op; passing ARGS must surface the limitation.
+(ert-deftest nelisp-bc-3b2-run-rejects-extra-args ()
+  ;; 3b.5a accepts ARGS for closures with PARAMS; for a no-PARAMS
+  ;; expression bcl, passing positional args is still rejected as
+  ;; an arity violation by the parser.
   (let ((bcl (nelisp-bc-compile 0)))
     (should-error (nelisp-bc-run bcl '(1))
-                  :type 'nelisp-bc-unimplemented)))
+                  :type 'nelisp-bc-error)))
 
 (ert-deftest nelisp-bc-3b2-run-rejects-non-bcl ()
   (should-error (nelisp-bc-run '(nelisp-closure nil () 0))
@@ -733,10 +736,10 @@ a label.  Returns the resolved int vector."
 (ert-deftest nelisp-bc-3b4b-unsupported-special-forms ()
   ;; Special forms scheduled for later sub-phases surface cleanly.
   ;; `catch' / `throw' / `unwind-protect' / `condition-case' moved
-  ;; to the supported set in 3b.4c.
-  (should-error (nelisp-bc-compile '(lambda (x) x))
-                :type 'nelisp-bc-unimplemented)
+  ;; to the supported set in 3b.4c; `lambda' moved in 3b.5a.
   (should-error (nelisp-bc-compile '(and 1 2))
+                :type 'nelisp-bc-unimplemented)
+  (should-error (nelisp-bc-compile '(or 1 2))
                 :type 'nelisp-bc-unimplemented))
 
 ;;; Phase 3b.4c — catch / throw / unwind-protect / condition-case ---
@@ -933,6 +936,135 @@ a label.  Returns the resolved int vector."
     (remhash 'nelisp-bc-test--dyn5 nelisp--globals)
     (remhash 'nelisp-bc-test--dyn5 nelisp--specials)
     (remhash 'nelisp-bc-test--cleanup-ran nelisp--globals)))
+
+;;; Phase 3b.5a — lambda + arg binding (no capture) -----------------
+
+(ert-deftest nelisp-bc-3b5a-lambda-as-value ()
+  ;; `(lambda ...)` compiles to a closure (bcl).
+  (let ((bcl (nelisp-bc-test--eval '(lambda (x) (+ x 1)))))
+    (should (nelisp-bcl-p bcl))
+    (should (equal (nelisp-bc-params bcl) '(x)))))
+
+(ert-deftest nelisp-bc-3b5a-lambda-call-inline ()
+  (should (= (nelisp-bc-test--eval '((lambda (x) (+ x 1)) 41)) 42))
+  (should (= (nelisp-bc-test--eval '((lambda (a b) (- a b)) 10 3)) 7))
+  (should (= (nelisp-bc-test--eval '((lambda () 99))) 99)))
+
+(ert-deftest nelisp-bc-3b5a-lambda-via-apply ()
+  ;; Manually drive nelisp-bc-run.
+  (let ((bcl (nelisp-bc-compile '(lambda (x y) (* x y)))))
+    (should (= (nelisp--apply (nelisp-bc-run bcl) '(6 7)) 42))))
+
+(ert-deftest nelisp-bc-3b5a-lambda-arity-errors ()
+  (let ((bcl (nelisp-bc-run (nelisp-bc-compile '(lambda (x) x)))))
+    (should-error (nelisp--apply bcl '()) :type 'nelisp-bc-error)
+    (should-error (nelisp--apply bcl '(1 2)) :type 'nelisp-bc-error)))
+
+(ert-deftest nelisp-bc-3b5a-lambda-optional ()
+  (let ((bcl (nelisp-bc-run
+              (nelisp-bc-compile '(lambda (a &optional b c)
+                                    (list a b c))))))
+    (should (equal (nelisp--apply bcl '(1)) '(1 nil nil)))
+    (should (equal (nelisp--apply bcl '(1 2)) '(1 2 nil)))
+    (should (equal (nelisp--apply bcl '(1 2 3)) '(1 2 3)))
+    (should-error (nelisp--apply bcl '(1 2 3 4)) :type 'nelisp-bc-error)))
+
+(ert-deftest nelisp-bc-3b5a-lambda-rest ()
+  (let ((bcl (nelisp-bc-run
+              (nelisp-bc-compile '(lambda (a &rest r)
+                                    (cons a r))))))
+    (should (equal (nelisp--apply bcl '(1)) '(1)))
+    (should (equal (nelisp--apply bcl '(1 2 3 4)) '(1 2 3 4)))))
+
+(ert-deftest nelisp-bc-3b5a-lambda-optional-and-rest ()
+  (let ((bcl (nelisp-bc-run
+              (nelisp-bc-compile '(lambda (a &optional b &rest r)
+                                    (list a b r))))))
+    (should (equal (nelisp--apply bcl '(1)) '(1 nil nil)))
+    (should (equal (nelisp--apply bcl '(1 2)) '(1 2 nil)))
+    (should (equal (nelisp--apply bcl '(1 2 3 4)) '(1 2 (3 4))))))
+
+(ert-deftest nelisp-bc-3b5a-lambda-no-params-zero-arg-call ()
+  (let ((bcl (nelisp-bc-run (nelisp-bc-compile '(lambda () 5)))))
+    (should (= (nelisp--apply bcl '()) 5))
+    (should-error (nelisp--apply bcl '(1)) :type 'nelisp-bc-error)))
+
+(ert-deftest nelisp-bc-3b5a-lambda-special-param ()
+  (unwind-protect
+      (progn
+        (puthash 'nelisp-bc-test--lp t nelisp--specials)
+        (puthash 'nelisp-bc-test--lp 'outer nelisp--globals)
+        (let ((bcl (nelisp-bc-run
+                    (nelisp-bc-compile
+                     '(lambda (nelisp-bc-test--lp)
+                        nelisp-bc-test--lp)))))
+          (should (eq (nelisp--apply bcl '(inner)) 'inner))
+          ;; Outer global must be restored after the call.
+          (should (eq (gethash 'nelisp-bc-test--lp nelisp--globals)
+                      'outer))))
+    (remhash 'nelisp-bc-test--lp nelisp--globals)
+    (remhash 'nelisp-bc-test--lp nelisp--specials)))
+
+(ert-deftest nelisp-bc-3b5a-lambda-special-param-mixed ()
+  (unwind-protect
+      (progn
+        (puthash 'nelisp-bc-test--lp2 t nelisp--specials)
+        (puthash 'nelisp-bc-test--lp2 0 nelisp--globals)
+        (let ((bcl (nelisp-bc-run
+                    (nelisp-bc-compile
+                     '(lambda (a nelisp-bc-test--lp2 b)
+                        (+ a nelisp-bc-test--lp2 b))))))
+          (should (= (nelisp--apply bcl '(1 10 100)) 111))
+          (should (= (gethash 'nelisp-bc-test--lp2 nelisp--globals) 0))))
+    (remhash 'nelisp-bc-test--lp2 nelisp--globals)
+    (remhash 'nelisp-bc-test--lp2 nelisp--specials)))
+
+(ert-deftest nelisp-bc-3b5a-lambda-restores-special-on-error ()
+  (unwind-protect
+      (progn
+        (puthash 'nelisp-bc-test--lp3 t nelisp--specials)
+        (puthash 'nelisp-bc-test--lp3 'outer nelisp--globals)
+        (remhash 'nelisp-bc-test--missing nelisp--globals)
+        (let ((bcl (nelisp-bc-run
+                    (nelisp-bc-compile
+                     '(lambda (nelisp-bc-test--lp3)
+                        nelisp-bc-test--missing)))))
+          (condition-case nil
+              (nelisp--apply bcl '(transient))
+            (nelisp-unbound-variable nil))
+          (should (eq (gethash 'nelisp-bc-test--lp3 nelisp--globals)
+                      'outer))))
+    (remhash 'nelisp-bc-test--lp3 nelisp--globals)
+    (remhash 'nelisp-bc-test--lp3 nelisp--specials)))
+
+(ert-deftest nelisp-bc-3b5a-lambda-recursion-via-symbol ()
+  ;; A bcl can call itself indirectly via a symbol installed in
+  ;; nelisp--functions.
+  (unwind-protect
+      (progn
+        (let ((bcl (nelisp-bc-run
+                    (nelisp-bc-compile
+                     '(lambda (n)
+                        (if (< n 2) n
+                          (+ (nelisp-bc-test--fib (- n 1))
+                             (nelisp-bc-test--fib (- n 2)))))))))
+          (puthash 'nelisp-bc-test--fib bcl nelisp--functions)
+          (should (= (nelisp--apply bcl '(0)) 0))
+          (should (= (nelisp--apply bcl '(1)) 1))
+          (should (= (nelisp--apply bcl '(7)) 13))))
+    (remhash 'nelisp-bc-test--fib nelisp--functions)))
+
+(ert-deftest nelisp-bc-3b5a-function-form ()
+  ;; (function (lambda ...)) compiles same as lambda.
+  (should (= (nelisp-bc-test--eval
+              '(funcall (function (lambda (x) (* x x))) 5))
+             25)))
+
+(ert-deftest nelisp-bc-3b5a-lambda-rejects-free-lex ()
+  ;; Free outer-lex reference is 3b.5b territory; for now signal.
+  (should-error
+   (nelisp-bc-compile '(let ((y 10)) (lambda (x) (+ x y))))
+   :type 'nelisp-bc-unimplemented))
 
 (provide 'nelisp-bytecode-test)
 ;;; nelisp-bytecode-test.el ends here

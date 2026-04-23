@@ -223,10 +223,17 @@ Called at load time from this module's tail."
   ;; A slot is an absolute index into the runtime stack; `sp' is the
   ;; next free position (slot N = sp-value just after pushing it - 1).
   ;; Symbols are looked up newest-first so inner bindings shadow outer.
-  (lex-env nil))
+  (lex-env nil)
+  ;; Phase 3b.5a: when compiling a `lambda' body, list of symbols
+  ;; that are lexical in the *parent* compile context.  References to
+  ;; them inside the body need free-lex capture (3b.5b); for now the
+  ;; compiler signals `nelisp-bc-unimplemented' instead of silently
+  ;; lowering them to VARREF (which would read globals at runtime).
+  (parent-lex-shadow nil))
 
 (defun nelisp-bc--ctx-new ()
-  (nelisp-bc--ctx--make :consts nil :insns nil :sp 0 :max-sp 0 :lex-env nil))
+  (nelisp-bc--ctx--make :consts nil :insns nil :sp 0 :max-sp 0
+                        :lex-env nil :parent-lex-shadow nil))
 
 (defun nelisp-bc--self-evaluating-p (form)
   "Non-nil if FORM evaluates to itself with no further work."
@@ -366,9 +373,21 @@ Returns a cons (CODE-VECTOR . RESOLVED-LABELS-PLIST)."
    ((and (consp form) (eq (car form) 'condition-case))
     (nelisp-bc--compile-condition-case
      ctx (cadr form) (nth 2 form) (nthcdr 3 form)))
+   ((and (consp form) (eq (car form) 'lambda))
+    (nelisp-bc--compile-lambda ctx (cadr form) (cddr form)))
+   ((and (consp form) (eq (car form) 'function))
+    ;; (function FOO) — quote a callable.  Symbol → look up function
+    ;; cell at call time; lambda → compile inline.
+    (let ((arg (cadr form)))
+      (cond
+       ((and (consp arg) (eq (car arg) 'lambda))
+        (nelisp-bc--compile-lambda ctx (cadr arg) (cddr arg)))
+       (t
+        (signal 'nelisp-bc-unimplemented
+                (list "(function NON-LAMBDA) pending" arg))))))
    ((and (consp form)
          (memq (car form)
-               '(lambda function defun defvar defconst defmacro
+               '(defun defvar defconst defmacro
                  and or when unless prog1 prog2)))
     ;; Known special forms slated for later sub-phases (or never:
     ;; top-level `defun'/`defvar' belong to the interpreter) — surface
@@ -376,7 +395,11 @@ Returns a cons (CODE-VECTOR . RESOLVED-LABELS-PLIST)."
     ;; back to the interpreter instead of getting a cryptic "void
     ;; function" at runtime.
     (signal 'nelisp-bc-unimplemented
-            (list "special form pending later 3b.4 sub-phase" (car form))))
+            (list "special form pending later sub-phase" (car form))))
+   ((and (consp form) (consp (car form)) (eq (car (car form)) 'lambda))
+    ;; ((lambda PARAMS BODY) ARGS...) — inline call to a literal
+    ;; lambda.  Compile the lambda then invoke via CALL.
+    (nelisp-bc--compile-call ctx (car form) (cdr form)))
    ((and (consp form) (symbolp (car form)))
     (nelisp-bc--compile-call ctx (car form) (cdr form)))
    (t
@@ -413,6 +436,9 @@ table via VARREF."
           (nelisp-bc--emit ctx 'STACK-REF offset)
           (nelisp-bc--adjust-sp ctx 1)))
        (t
+        (when (memq sym (nelisp-bc--ctx-parent-lex-shadow ctx))
+          (signal 'nelisp-bc-unimplemented
+                  (list "free-lex capture pending Phase 3b.5b" sym)))
         (let ((idx (nelisp-bc--add-const ctx sym)))
           (nelisp-bc--emit ctx 'VARREF idx)
           (nelisp-bc--adjust-sp ctx 1))))))))
@@ -731,18 +757,25 @@ Each init sees all previously introduced lex/dyn bindings."
          (nelisp-bc--adjust-sp ctx (- 1 n))))))))
 
 (defun nelisp-bc--compile-call (ctx head args)
-  "Compile a generic call (HEAD ARG...) by pushing HEAD as a symbol
-const, then compiling each ARG, then emitting CALL nargs.  At run
-time the VM delegates to `nelisp--apply' which understands
-NeLisp-registered functions, host Elisp symbols, and both closure
-shapes."
+  "Compile a generic call (HEAD ARG...).
+HEAD is either a symbol (push as constant for runtime lookup via
+`nelisp--apply') or a lambda form (compile to a closure first,
+push that).  Args are compiled in order, then CALL nargs is
+emitted."
   (let ((nargs (length args)))
     (when (> nargs 255)
       (signal 'nelisp-bc-unimplemented
               (list "call with > 255 args" head nargs)))
-    (let ((idx (nelisp-bc--add-const ctx head)))
-      (nelisp-bc--emit ctx 'CONST idx)
-      (nelisp-bc--adjust-sp ctx 1))
+    (cond
+     ((and (consp head) (eq (car head) 'lambda))
+      (nelisp-bc--compile-lambda ctx (cadr head) (cddr head)))
+     ((symbolp head)
+      (let ((idx (nelisp-bc--add-const ctx head)))
+        (nelisp-bc--emit ctx 'CONST idx)
+        (nelisp-bc--adjust-sp ctx 1)))
+     (t
+      (signal 'nelisp-bc-error
+              (list "unsupported call head" head))))
     (dolist (a args) (nelisp-bc--compile-form ctx a))
     (nelisp-bc--emit ctx 'CALL nargs)
     (nelisp-bc--adjust-sp ctx (- nargs))))
@@ -910,6 +943,157 @@ re-signal via a compiled `signal' call."
     (setf (nelisp-bc--ctx-sp ctx) (1+ saved-outer-sp))
     (nelisp-bc--emit-label ctx end-label)))
 
+;;; Lambda + closure (3b.5a) -----------------------------------------
+
+(defun nelisp-bc--parse-params (params)
+  "Parse lambda PARAMS list into a property list.
+Recognises &optional and &rest.  Returns plist with:
+  :positionals — list of param symbols in slot order
+  :n-required  — number of required params
+  :n-optional  — number of &optional params
+  :rest-sym    — &rest symbol or nil
+Stack slot N is the Nth :positionals entry; &rest takes one slot
+and at runtime holds the remaining-arg list."
+  (let ((positionals nil)
+        (n-required 0)
+        (n-optional 0)
+        (rest-sym nil)
+        (state 'required)
+        (saw-rest nil))
+    (while params
+      (let ((p (car params)))
+        (cond
+         ((eq p '&optional)
+          (when saw-rest
+            (signal 'nelisp-bc-error (list "&optional after &rest")))
+          (setq state 'optional)
+          (setq params (cdr params)))
+         ((eq p '&rest)
+          (setq params (cdr params))
+          (unless (and params (symbolp (car params)))
+            (signal 'nelisp-bc-error (list "&rest without symbol")))
+          (setq rest-sym (car params))
+          (push rest-sym positionals)
+          (setq saw-rest t)
+          (setq params nil))
+         ((not (symbolp p))
+          (signal 'nelisp-bc-error (list "non-symbol param" p)))
+         ((or (eq p nil) (eq p t) (keywordp p))
+          (signal 'nelisp-bc-error (list "constant cannot be param" p)))
+         (t
+          (push p positionals)
+          (cl-case state
+            (required (cl-incf n-required))
+            (optional (cl-incf n-optional)))
+          (setq params (cdr params))))))
+    (list :positionals (nreverse positionals)
+          :n-required n-required
+          :n-optional n-optional
+          :rest-sym rest-sym)))
+
+(defun nelisp-bc--bind-args (params-info args)
+  "Materialise ARGS into the per-slot value list dictated by PARAMS-INFO.
+Signals nelisp-bc-error for arg-count violations."
+  (let* ((n-req (plist-get params-info :n-required))
+         (n-opt (plist-get params-info :n-optional))
+         (rest-sym (plist-get params-info :rest-sym))
+         (n-args (length args))
+         (n-min n-req)
+         (n-max (if rest-sym most-positive-fixnum (+ n-req n-opt))))
+    (when (< n-args n-min)
+      (signal 'nelisp-bc-error
+              (list "too few args" n-args n-min)))
+    (when (> n-args n-max)
+      (signal 'nelisp-bc-error
+              (list "too many args" n-args n-max)))
+    (let ((result nil))
+      ;; Required + optional supplied
+      (let ((take (min n-args (+ n-req n-opt))))
+        (dotimes (i take)
+          (push (nth i args) result))
+        ;; Optional missing — push nil
+        (dotimes (_ (- (+ n-req n-opt) take))
+          (push nil result)))
+      ;; &rest collects the tail
+      (when rest-sym
+        (push (nthcdr (+ n-req n-opt) args) result))
+      (nreverse result))))
+
+(defun nelisp-bc--compile-lambda (ctx params body)
+  "Compile (lambda PARAMS BODY...) into a sub-bcl pushed onto the stack.
+
+3b.5a does not yet capture free lex vars; if BODY references an
+outer lex symbol, signal `nelisp-bc-unimplemented' so callers
+fall back to the interpreter."
+  (let* ((info (nelisp-bc--parse-params params))
+         (positionals (plist-get info :positionals))
+         (n-positionals (length positionals))
+         (sub-ctx (nelisp-bc--ctx-new))
+         (lex-env nil)
+         (special-mask 0)
+         (special-slots nil)
+         ;; Carry every parent lexical name as a "shadow set" — any
+         ;; reference to one inside the body that isn't covered by a
+         ;; lambda param would require free-lex capture (3b.5b), so
+         ;; the inner compile signals `nelisp-bc-unimplemented'
+         ;; instead of silently emitting a VARREF that reads globals.
+         ;; Param names cancel their parent shadow (the local binding
+         ;; wins), matching let-shadowing semantics.
+         (parent-names (mapcar #'car (nelisp-bc--ctx-lex-env ctx)))
+         (shadow (cl-set-difference parent-names positionals)))
+    (setf (nelisp-bc--ctx-parent-lex-shadow sub-ctx) shadow)
+    ;; Sub-ctx starts with all positionals already pushed: sp = N.
+    (setf (nelisp-bc--ctx-sp sub-ctx) n-positionals)
+    (setf (nelisp-bc--ctx-max-sp sub-ctx) n-positionals)
+    ;; Classify each positional.
+    (let ((slot 0))
+      (dolist (sym positionals)
+        (cond
+         ((nelisp-bc--special-p sym)
+          (setq special-mask (logior special-mask (ash 1 slot)))
+          (push (cons sym slot) special-slots))
+         (t
+          (push (cons sym slot) lex-env)))
+        (cl-incf slot)))
+    (setf (nelisp-bc--ctx-lex-env sub-ctx) (nreverse lex-env))
+    ;; Preamble: VARBIND each special.  STACK-REF the slot to TOS,
+    ;; then VARBIND pops it; the original slot stays on the stack as
+    ;; dead weight that the postamble's DISCARDN will collapse.
+    (dolist (entry (nreverse special-slots))
+      (let* ((sym (car entry))
+             (slot (cdr entry))
+             (offset (- (nelisp-bc--ctx-sp sub-ctx) 1 slot)))
+        (when (or (< offset 0) (> offset 255))
+          (signal 'nelisp-bc-unimplemented
+                  (list "lambda special slot out of range" sym offset)))
+        (nelisp-bc--emit sub-ctx 'STACK-REF offset)
+        (nelisp-bc--adjust-sp sub-ctx 1)
+        (let ((idx (nelisp-bc--add-const sub-ctx sym)))
+          (nelisp-bc--emit sub-ctx 'VARBIND idx)
+          (nelisp-bc--adjust-sp sub-ctx -1))))
+    ;; Body.
+    (nelisp-bc--compile-progn sub-ctx body)
+    ;; Postamble: UNBIND specials, DISCARDN positional slots.
+    (let ((n-dyn (length special-slots)))
+      (when (> n-dyn 0)
+        (nelisp-bc--emit sub-ctx 'UNBIND n-dyn)))
+    (when (> n-positionals 0)
+      (when (> n-positionals 255)
+        (signal 'nelisp-bc-unimplemented
+                (list "lambda with > 255 params" n-positionals)))
+      (nelisp-bc--emit sub-ctx 'DISCARDN n-positionals)
+      (nelisp-bc--adjust-sp sub-ctx (- n-positionals)))
+    (nelisp-bc--emit sub-ctx 'RETURN)
+    ;; Build sub-bcl and have the parent push it as a constant.
+    (let* ((code (nelisp-bc--resolve (nelisp-bc--ctx-insns sub-ctx)))
+           (consts (apply #'vector (nelisp-bc--ctx-consts sub-ctx)))
+           (max-sp (max 1 (nelisp-bc--ctx-max-sp sub-ctx)))
+           (template (nelisp-bc-make nil params consts code
+                                     max-sp special-mask))
+           (idx (nelisp-bc--add-const ctx template)))
+      (nelisp-bc--emit ctx 'CONST idx)
+      (nelisp-bc--adjust-sp ctx 1))))
+
 (defun nelisp-bc--cc-match-p (handler-spec err)
   "Return non-nil if ERR matches HANDLER-SPEC per `condition-case' rules."
   (let ((conditions (and (consp err)
@@ -962,14 +1146,30 @@ MCP Parameters:
   ARGS  — optional list of positional arguments"
   (unless (nelisp-bcl-p bcl)
     (signal 'nelisp-bc-error (list "not a nelisp-bcl" bcl)))
-  (when args
-    (signal 'nelisp-bc-unimplemented
-            (list "argument binding pending Phase 3b.5")))
   (let* ((code (nelisp-bc-code bcl))
          (consts (nelisp-bc-consts bcl))
-         (stack-depth (max 1 (or (nelisp-bc-stack-depth bcl) 1)))
+         (params (nelisp-bc-params bcl))
+         ;; Materialise any args into per-slot values.  No params and
+         ;; no args is the "expression" case; otherwise dispatch to
+         ;; the parser so &optional / &rest are honoured.
+         (slot-values (cond
+                       ((and (null params) (null args)) nil)
+                       (t (nelisp-bc--bind-args
+                           (nelisp-bc--parse-params params)
+                           args))))
+         (n-slots (length slot-values))
+         (body-stack-depth (max 1 (or (nelisp-bc-stack-depth bcl) 1)))
+         (stack-depth (max body-stack-depth n-slots))
          (stack (make-vector stack-depth nil))
-         (sp 0)
+         (sp (progn
+               ;; Pre-fill positional slots with the materialised args
+               ;; so the body's STACK-REF / VARBIND preamble finds them
+               ;; at slot 0 .. N-1.
+               (let ((i 0))
+                 (dolist (v slot-values)
+                   (aset stack i v)
+                   (cl-incf i)))
+               n-slots))
          (pc 0)
          (len (length code))
          ;; specpdl: list of (SYM . OLD-VAL-OR-UNBOUND); grows on VARBIND,

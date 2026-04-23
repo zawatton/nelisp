@@ -197,11 +197,36 @@ Phase 3b.5 (closure + lambda dynamic binding) と束ねて取り扱う。
 
 ** 3b.5 Closure + lambda dynamic binding
 
-- Op 追加: =MAKE-CLOSURE=, =APPLY=, =BIND-DYNAMIC= (special param 用)
-- =nelisp-bc-compile= が lambda param を =nelisp--specials= で分類し、
-  special → =BIND-DYNAMIC=、lexical → stack slot
-- ERT: =nelisp-dynamic-test.el= の lambda param ケース (現状 skip) を
-  有効化
+3b.4 と同様に a/b/c の三段構成で進める。
+
+*** 3b.5a Lambda + arg binding (no capture) (SHIPPED)
+
+- 新規 op 不要 (既存 VARBIND/UNBIND/DISCARDN/STACK-REF を再利用)
+- =(lambda PARAMS BODY)= → sub-bcl を template として CONSTS に
+  詰め、parent code は =CONST= で push
+- sub-bcl の preamble: special param 毎に =STACK-REF + VARBIND=
+  (param が dyn なら specpdl に save-and-install)
+- sub-bcl の postamble: =UNBIND num-dyn=, =DISCARDN N-positionals=,
+  =RETURN=
+- =nelisp-bc-run bcl args= が PARAMS spec をもとに &optional /
+  &rest を materialise、stack[0..N-1] に prefill して PC=0 開始
+- =nelisp--apply= に bcl dispatch を追加 (host eval / VM 共存)
+- 自由 lex 参照は parent-lex-shadow で検出して
+  =nelisp-bc-unimplemented= を signal (3b.5b 待ち)
+- ERT: 14 本追加 (3b.5a-*)、404/404 green
+
+*** 3b.5b Free-lex capture (planned)
+
+- =MAKE-CLOSURE N= op: pop N captured + 1 template、env を packed
+  closure に注入
+- 自由 lex 参照を =CAPTURED-REF idx= 等で読む
+- nested lambda が outer lex を closure 化して動く
+
+*** 3b.5c defun auto-compile hook (optional)
+
+- =nelisp--make-closure= が compilable な body の場合に bcl 化
+- compile 失敗時は interpreter にフォールバック
+- Phase 1/2 ERT が VM 経由でも transparent に走る
 
 ** 3b.6 Self-host (Rhodes stage 2 preview)
 
