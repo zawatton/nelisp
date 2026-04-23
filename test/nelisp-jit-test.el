@@ -112,11 +112,46 @@ bounce through `nelisp--apply' on the symbol `fib'."
           (should (= 55 (nelisp-eval '(fib 10)))))
       (nelisp-jit-uninstall))))
 
-(ert-deftest nelisp-jit-fallback-on-captured-env ()
-  "When the lambda captures non-nil env, JIT must return nil so bcl /
-interpreter can take over.  Env-carrying closures are out of scope
-for the Phase 3b.8a MVP."
-  (should (null (nelisp-jit-try-compile-lambda '((x . 1)) '(y) '(y)))))
+(ert-deftest nelisp-jit-captured-env-read ()
+  "Phase 3b.8b: captured-env closure with read-only env is JIT-compiled.
+Simulates `make-adder' — the returned closure adds captured `x' to
+its arg `y'."
+  (let ((c (nelisp-jit-try-compile-lambda '((x . 3)) '(y) '((+ x y)))))
+    (should (nelisp-jit-bcl-p c))
+    ;; Element 4 is the host fn (see `nelisp-jit--wrap-as-bcl' shape).
+    (should (= 8 (funcall (nth 4 c) 5)))))
+
+(ert-deftest nelisp-jit-captured-env-multiple-vars ()
+  "Captured env with multiple vars reads via `aref' indexes."
+  (let ((c (nelisp-jit-try-compile-lambda
+            '((a . 1) (b . 2) (c . 3)) '(n) '((+ a b c n)))))
+    (should (nelisp-jit-bcl-p c))
+    (should (= 10 (funcall (nth 4 c) 4)))))
+
+(ert-deftest nelisp-jit-captured-env-shadowing ()
+  "A `let' inside the body shadows captured env symbols — the inner
+binding wins as expected."
+  (let ((c (nelisp-jit-try-compile-lambda
+            '((x . 100)) '(y) '((let ((x 1)) (+ x y))))))
+    (should (nelisp-jit-bcl-p c))
+    (should (= 6 (funcall (nth 4 c) 5)))))
+
+(ert-deftest nelisp-jit-captured-env-setq-mutation-falls-back ()
+  "`setq' on a captured env variable makes the JIT return nil so bcl /
+interpreter can handle the counter pattern correctly."
+  (should (null (nelisp-jit-try-compile-lambda
+                 '((counter . 0)) '() '((setq counter (+ counter 1))))))
+  ;; Nested under `progn' / `if' — scan is structural.
+  (should (null (nelisp-jit-try-compile-lambda
+                 '((x . 0)) '(n)
+                 '((if (> n 0) (setq x n) x))))))
+
+(ert-deftest nelisp-jit-captured-env-setq-local-param-ok ()
+  "`setq' on a parameter (not a captured env sym) is fine."
+  (let ((c (nelisp-jit-try-compile-lambda
+            '((base . 10)) '(n) '((setq n (+ n 1)) (+ base n)))))
+    (should (nelisp-jit-bcl-p c))
+    (should (= 16 (funcall (nth 4 c) 5)))))
 
 (ert-deftest nelisp-jit-fallback-on-unsupported-form ()
   "Forms the translator cannot handle make the whole compile return nil.
