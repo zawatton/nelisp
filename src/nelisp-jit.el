@@ -39,6 +39,8 @@
 (require 'cl-lib)
 (require 'nelisp-eval)
 
+(declare-function nelisp-bc-run "nelisp-bytecode" (bcl &optional args))
+
 (defvar nelisp-jit-enabled nil
   "When non-nil, `nelisp--make-closure' tries JIT compilation first.
 Failure on unsupported forms falls through to bcl / interpreter.")
@@ -73,6 +75,22 @@ observable through `nelisp--apply'.")
 
 (defsubst nelisp-jit--primitive-p (sym)
   (gethash sym nelisp-jit--primitive-set))
+
+(defsubst nelisp-jit--call-user (sym args)
+  "Fast-path dispatch for user-defined calls from JIT-compiled bodies.
+Skip `nelisp--apply's symbolp arm (cond + gethash + recursive call)
+by looking up SYM directly and invoking `nelisp-bc-run' when the
+cell is a bcl (which covers bcl-compiled defuns AND JIT closures —
+`nelisp-bc-run' has its own JIT marker fast-path).  Anything else
+defers to `nelisp--apply' so dispatch semantics stay identical for
+interpreter closures / subrs / void bindings / etc.
+
+`defsubst' so byte-compile inlines this into every JIT body and the
+dispatch becomes one conditional + one tail-style call."
+  (let ((fn (gethash sym nelisp--functions nelisp--unbound)))
+    (if (and (consp fn) (eq (car fn) 'nelisp-bcl))
+        (nelisp-bc-run fn args)
+      (nelisp--apply sym args))))
 
 (defun nelisp-jit--param-symbols (params)
   "Return lexical symbol names declared by PARAMS.
@@ -198,10 +216,14 @@ for constructs the MVP does not handle."
     ;; Direct host call on an assumed-stable primitive.
     `(,head ,@(nelisp-jit--translate-body rest env)))
    ((symbolp head)
-    ;; Unknown symbol: route through `nelisp--apply' so redefinitions
-    ;; and NeLisp-level semantics (bcl / jit / interp) stay observable.
-    `(nelisp--apply ',head
-                    (list ,@(nelisp-jit--translate-body rest env))))
+    ;; User-defined call: dispatch through `nelisp-jit--call-user' which
+    ;; hits the bcl / JIT fast-path directly (gethash + `nelisp-bc-run')
+    ;; and only falls back to the full `nelisp--apply' cond when the
+    ;; symbol resolves to something other than a bcl (closure, subr,
+    ;; nil, …).  Redefinitions stay observable because we look up on
+    ;; every call — we never cache the function cell.  Phase 3b.8c.
+    `(nelisp-jit--call-user ',head
+                            (list ,@(nelisp-jit--translate-body rest env))))
    (t
     (signal 'nelisp-jit-unsupported (list (cons head rest))))))
 
