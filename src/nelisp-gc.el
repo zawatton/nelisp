@@ -209,5 +209,74 @@ time and potentially confuse the user about the origin)."
 
 (add-hook 'post-gc-hook #'nelisp-gc--post-gc-handler)
 
+;;; Heap introspection (Phase 3c.4) -----------------------------------
+
+(defun nelisp-gc--classify (obj)
+  "Return a symbol tag for OBJ used by `nelisp-heap-count'."
+  (cond
+   ((consp obj)
+    (pcase (car-safe obj)
+      ('nelisp-closure 'closure)
+      ('nelisp-bcl     'bcl)
+      (_               'cons)))
+   ((vectorp obj)      'vector)
+   ((stringp obj)      'string)
+   ((hash-table-p obj) 'hash-table)
+   ((symbolp obj)      'symbol)
+   ((numberp obj)      'number)
+   (t                  'other)))
+
+;;;###autoload
+(defun nelisp-heap-count ()
+  "Return a plist counting reachable NeLisp objects by type.
+Run a full mark pass from the default `nelisp-gc-root-set' and
+tabulate how many reachable cells fall into each category.  Result
+keys: `:cons :closure :bcl :vector :string :hash-table :symbol
+:number :other'."
+  (interactive)
+  (let ((live (nelisp-gc-reachable-set))
+        (counts (list :cons 0 :closure 0 :bcl 0
+                      :vector 0 :string 0 :hash-table 0
+                      :symbol 0 :number 0 :other 0)))
+    (maphash
+     (lambda (obj _)
+       (let ((key (pcase (nelisp-gc--classify obj)
+                    ('cons       :cons)
+                    ('closure    :closure)
+                    ('bcl        :bcl)
+                    ('vector     :vector)
+                    ('string     :string)
+                    ('hash-table :hash-table)
+                    ('symbol     :symbol)
+                    ('number     :number)
+                    (_           :other))))
+         (plist-put counts key (1+ (plist-get counts key)))))
+     live)
+    (when (called-interactively-p 'any)
+      (message "nelisp heap: %S" counts))
+    counts))
+
+;;;###autoload
+(defun nelisp-heap-roots ()
+  "Summarise the current root set as `((:kind K :count N) ...)'.
+Count semantics per root kind:
+  hash-table   → `hash-table-count'
+  list         → `length' (not the walker's reachable size)
+  anything else → 1"
+  (interactive)
+  (let ((summary
+         (mapcar
+          (lambda (r)
+            (let ((v (plist-get r :value)))
+              (list :kind  (plist-get r :kind)
+                    :count (cond
+                            ((hash-table-p v) (hash-table-count v))
+                            ((listp v)        (length v))
+                            (t                1)))))
+          (nelisp-gc-root-set))))
+    (when (called-interactively-p 'any)
+      (message "nelisp roots: %S" summary))
+    summary))
+
 (provide 'nelisp-gc)
 ;;; nelisp-gc.el ends here
