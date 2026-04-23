@@ -34,11 +34,17 @@
 ;;     expanded at read time into cons / append calls so no macro
 ;;     installation is required before the reader works
 ;;
+;; Phase 3a (2026-04-23) adds:
+;;
+;;   - hex / oct / bin integer prefixes: #xFF / #o17 / #b1010
+;;     (upper-case variants and optional sign supported)
+;;   - vector literal syntax: [] / [1 2 3] / nested
+;;   - nested backquote: ` `(a ,b) works for depth >= 2
+;;
 ;; Still deferred:
 ;;
-;;   - bignums, hex / oct / bin integer prefixes (#x10 etc.)
-;;   - vectors, hash tables, records, bool-vector syntax
-;;   - nested backquote (depth > 1)
+;;   - bignums, #NrXX radix syntax
+;;   - hash tables, records, bool-vector syntax
 ;;   - circular / shared structure syntax (#N=, #N#)
 ;;   - character escapes like ?\\C-a / ?\\M-b / hex char escapes
 ;;
@@ -206,9 +212,36 @@ Return (VALUE . NEW-POS) where NEW-POS is past the closing `)'."
           (setcdr head tail)))
       (cons lst (1+ pos)))))
 
+(defun nelisp-read--radix-number (str pos len radix charset)
+  "Read a radix-prefixed integer in STR starting at POS.
+LEN is (length STR).  RADIX is 2 / 8 / 16.  CHARSET is a regexp
+character class fragment (e.g. \"0-9a-fA-F\") matching digits of the
+radix.  Accepts an optional sign prefix.  Returns (INTEGER . NEW-POS).
+Signals `nelisp-read-error' on empty payload or invalid digits."
+  (let ((sign 1)
+        (start pos))
+    (when (< pos len)
+      (let ((c (aref str pos)))
+        (cond
+         ((eq c ?-) (setq sign -1) (setq pos (1+ pos)))
+         ((eq c ?+)               (setq pos (1+ pos))))))
+    (let* ((digit-start pos)
+           (end (nelisp-read--atom-end str pos))
+           (digits (substring str digit-start end)))
+      (when (string-empty-p digits)
+        (signal 'nelisp-read-error
+                (list "empty radix literal" radix start)))
+      (unless (string-match-p (concat "\\`[" charset "]+\\'") digits)
+        (signal 'nelisp-read-error
+                (list "invalid digit in radix literal"
+                      radix digits start)))
+      (cons (* sign (string-to-number digits radix)) end))))
+
 (defun nelisp-read--hash (str pos len)
   "Dispatch sharp-prefixed reader syntax in STR (POS = one past `#').
 Phase 2 supports `#''FORM (function-quote, expanded to (function FORM)).
+Phase 3a adds `#x' / `#o' / `#b' (plus upper-case variants) for hex,
+octal and binary integer literals with optional sign prefix.
 Other `#'-prefixed syntax is rejected so it surfaces as a clean
 reader error rather than a silent miscompilation."
   (when (>= pos len)
@@ -219,6 +252,12 @@ reader error rather than a silent miscompilation."
       (let* ((after (nelisp-read--skip-ws str (1+ pos)))
              (res (nelisp-read--sexp str after)))
         (cons (list 'function (car res)) (cdr res))))
+     ((memq c '(?x ?X))
+      (nelisp-read--radix-number str (1+ pos) len 16 "0-9a-fA-F"))
+     ((memq c '(?o ?O))
+      (nelisp-read--radix-number str (1+ pos) len  8 "0-7"))
+     ((memq c '(?b ?B))
+      (nelisp-read--radix-number str (1+ pos) len  2 "01"))
      (t
       (signal 'nelisp-read-error
               (list "unsupported `#' syntax" c pos))))))
