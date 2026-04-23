@@ -1777,7 +1777,13 @@ MCP Parameters:
   ARGS  — optional list of positional arguments"
   (unless (nelisp-bcl-p bcl)
     (signal 'nelisp-bc-error (list "not a nelisp-bcl" bcl)))
-  (let* ((code (nelisp-bc-code bcl))
+  (if (eq (nelisp-bc-env bcl) 'nelisp-jit-marker)
+      ;; Phase 3b.8 JIT fast-path: env slot carries the marker and the
+      ;; code slot is a host-compiled lambda.  Apply directly, skip
+      ;; VM setup entirely.  Outer `nelisp--apply' dispatch arm is the
+      ;; same (bcl-tagged callable) so self-host path stays unchanged.
+      (apply (nelisp-bc-code bcl) args)
+    (let* ((code (nelisp-bc-code bcl))
          (consts (nelisp-bc-consts bcl))
          (closure-env (nelisp-bc-env bcl))
          (params (nelisp-bc-params bcl))
@@ -1820,7 +1826,7 @@ MCP Parameters:
                  (old (cdr entry)))
             (if (eq old nelisp--unbound)
                 (remhash sym nelisp--globals)
-              (puthash sym old nelisp--globals))))))))
+              (puthash sym old nelisp--globals)))))))))
 
 (provide 'nelisp-bytecode)
 ;;; nelisp-bytecode.el ends here

@@ -44,15 +44,18 @@ via `make bench' where `max-lisp-eval-depth' is left to the user.")
       (should (plist-get r :equal)))))
 
 (ert-deftest nelisp-bench-numbers-recorded ()
-  "Run every small bench case and surface the speedups in the test
-log.  Does not assert the merge gate (see design doc §3b.7)."
+  "Run every small bench case and surface the VM / JIT speedups in
+the test log.  Does not assert the merge gate (see design doc §3b.7
+for VM, §3b.8 for JIT)."
   (dolist (case nelisp-bench-test--small-cases)
     (let ((r (nelisp-bench-run-case case 1)))
-      (message "BENCH %s interp=%.4fs vm=%.4fs speedup=%.2fx"
+      (message "BENCH %s interp=%.4fs vm=%.4fs (%.2fx) jit=%.4fs (%.2fx)"
                (plist-get r :name)
                (plist-get r :interp-time)
                (plist-get r :vm-time)
-               (plist-get r :speedup)))))
+               (plist-get r :vm-speedup)
+               (plist-get r :jit-time)
+               (plist-get r :jit-speedup)))))
 
 (provide 'nelisp-bench-test)
 

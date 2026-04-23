@@ -28,6 +28,7 @@
 
 (require 'nelisp)
 (require 'nelisp-bytecode)
+(require 'nelisp-jit)
 
 (defconst nelisp-bench--cases
   '((fib
@@ -63,10 +64,15 @@ ARG... once per timing.  All cases are pure (no I/O, no specials).")
     (let ((r (nelisp-eval form)))
       (cons r (float-time (time-since t0))))))
 
-(defun nelisp-bench--install (case &optional auto-compile)
+(defun nelisp-bench--install (case &optional mode)
   "Reset NeLisp state and install CASE's defun.
-With AUTO-COMPILE non-nil, the body is auto-compiled to a bcl."
-  (let ((nelisp-bc-auto-compile auto-compile))
+MODE selects the compilation target:
+  nil   — interpreter (both auto-compile flags off)
+  'bcl  — bytecode VM (only auto-compile on)
+  'jit  — JIT host lambda (both jit-enabled and auto-compile on;
+           JIT sits before bcl in the make-closure chain)."
+  (let ((nelisp-bc-auto-compile (if mode t nil))
+        (nelisp-jit-enabled (eq mode 'jit)))
     (nelisp--reset)
     (nelisp-eval (cons 'defun (cons (nth 0 case) (cdr (nth 1 case)))))))
 
@@ -75,12 +81,14 @@ With AUTO-COMPILE non-nil, the body is auto-compiled to a bcl."
   (cons (nth 0 case) (nthcdr 2 case)))
 
 (defun nelisp-bench-run-case (case &optional iters)
-  "Time CASE under interpreter and VM, return a plist of results.
-ITERS controls how many times each side is invoked (default 1)."
+  "Time CASE under interpreter / VM / JIT, return a plist of results.
+ITERS controls how many times each side is invoked (default 1).
+Requires `nelisp-jit-install' to have run beforehand so the JIT
+advice on `nelisp-bc-try-compile-lambda' is active."
   (let* ((iters (or iters 1))
          (form  (nelisp-bench--call-form case))
-         (interp-result nil) (vm-result nil)
-         (interp-time 0.0)   (vm-time 0.0))
+         (interp-result nil) (vm-result nil) (jit-result nil)
+         (interp-time 0.0)   (vm-time 0.0)   (jit-time 0.0))
     ;; Interpreter
     (nelisp-bench--install case nil)
     (dotimes (_ iters)
@@ -88,21 +96,33 @@ ITERS controls how many times each side is invoked (default 1)."
         (setq interp-result (car r-t))
         (cl-incf interp-time (cdr r-t))))
     ;; VM
-    (nelisp-bench--install case t)
+    (nelisp-bench--install case 'bcl)
     (let ((bcl-installed (nelisp-bcl-p
                           (gethash (nth 0 case) nelisp--functions))))
       (dotimes (_ iters)
         (let ((r-t (nelisp-bench--time-call form)))
           (setq vm-result (car r-t))
           (cl-incf vm-time (cdr r-t))))
-      (list :name (nth 0 case)
-            :iters iters
-            :form form
-            :bcl bcl-installed
-            :interp-time interp-time
-            :vm-time vm-time
-            :speedup (if (zerop vm-time) 0.0 (/ interp-time vm-time))
-            :equal (equal interp-result vm-result)))))
+      ;; JIT
+      (nelisp-bench--install case 'jit)
+      (let ((jit-installed (nelisp-jit-bcl-p
+                            (gethash (nth 0 case) nelisp--functions))))
+        (dotimes (_ iters)
+          (let ((r-t (nelisp-bench--time-call form)))
+            (setq jit-result (car r-t))
+            (cl-incf jit-time (cdr r-t))))
+        (list :name (nth 0 case)
+              :iters iters
+              :form form
+              :bcl bcl-installed
+              :jit jit-installed
+              :interp-time interp-time
+              :vm-time vm-time
+              :jit-time jit-time
+              :vm-speedup  (if (zerop vm-time)  0.0 (/ interp-time vm-time))
+              :jit-speedup (if (zerop jit-time) 0.0 (/ interp-time jit-time))
+              :equal (and (equal interp-result vm-result)
+                          (equal interp-result jit-result)))))))
 
 (defun nelisp-bench-run-all (&optional iters)
   "Run every case, print a one-line summary per case, return the
@@ -111,32 +131,45 @@ list of result plists."
     (dolist (case nelisp-bench--cases)
       (let ((r (nelisp-bench-run-case case iters)))
         (push r results)
-        (message "%-12s  iters=%d  bcl=%s  interp=%.4fs  vm=%.4fs  speedup=%.2fx  equal=%s"
+        (message "%-12s iters=%d interp=%.4fs vm=%.4fs (%.2fx) jit=%.4fs (%.2fx) equal=%s"
                  (plist-get r :name)
                  (plist-get r :iters)
-                 (if (plist-get r :bcl) "yes" "no")
                  (plist-get r :interp-time)
                  (plist-get r :vm-time)
-                 (plist-get r :speedup)
+                 (plist-get r :vm-speedup)
+                 (plist-get r :jit-time)
+                 (plist-get r :jit-speedup)
                  (if (plist-get r :equal) "yes" "NO!"))))
     (nreverse results)))
 
 ;;;###autoload
 (defun nelisp-bench-batch ()
   "`make bench' entry point.  Runs every case once with sensible
-iteration counts and prints a header / footer."
-  (message "==== nelisp-bench Phase 3b.7 ====")
+iteration counts and prints a header / footer.  Installs the JIT
+advice around the run so `make test' (which also -L's bench/)
+isn't affected by the advice wrapper overhead — the self-host
+probe is calibrated to the default `max-lisp-eval-depth' budget
+and an extra frame per `nelisp-bc-try-compile-lambda' call trips
+it (§3b.8a design note)."
+  (nelisp-jit-install)
+  (unwind-protect
+      (nelisp-bench--batch-body)
+    (nelisp-jit-uninstall)))
+
+(defun nelisp-bench--batch-body ()
+  (message "==== nelisp-bench Phase 3b.8 ====")
   (let* ((results (nelisp-bench-run-all 3))
-         (worst (apply #'min (mapcar (lambda (r) (plist-get r :speedup))
-                                     results)))
-         (best  (apply #'max (mapcar (lambda (r) (plist-get r :speedup))
-                                     results))))
-    (message "==== summary: best %.2fx, worst %.2fx ===="
-             best worst)
-    ;; Emit a non-zero exit when the gate fails so CI can notice.
-    (when (< worst 10.0)
-      (message "WARNING: 10x merge gate not met (worst case %.2fx)"
-               worst))))
+         (vm-speedups  (mapcar (lambda (r) (plist-get r :vm-speedup))  results))
+         (jit-speedups (mapcar (lambda (r) (plist-get r :jit-speedup)) results))
+         (vm-worst  (apply #'min vm-speedups))
+         (vm-best   (apply #'max vm-speedups))
+         (jit-worst (apply #'min jit-speedups))
+         (jit-best  (apply #'max jit-speedups)))
+    (message "==== vm:  best %.2fx, worst %.2fx ====" vm-best  vm-worst)
+    (message "==== jit: best %.2fx, worst %.2fx ====" jit-best jit-worst)
+    (when (< jit-worst 10.0)
+      (message "WARNING: 10x merge gate not met (JIT worst case %.2fx)"
+               jit-worst))))
 
 (provide 'nelisp-bench)
 
