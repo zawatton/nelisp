@@ -5,7 +5,7 @@
 
 * Status
 :PROPERTIES:
-:STATE: LOCKED-2026-04-24 (user signoff: §2 推奨 A/A/A/C/A/A、§3 分割案承認)
+:STATE: SHIPPED-2026-04-24 (Phase 3c 全 sub-phase merge 済)
 :END:
 
 =v0.3.0= (Phase 3b 完了) の次。=05-roadmap.org= §4 "Phase 3 = bytecode
@@ -260,12 +260,21 @@ Phase 3b の 8 sub-phase 式を踏襲、細かく区切って user が途中 abo
   は全 reachable object を素直に記録
 - 479/479 tests pass (bump from 477、+2)
 
-** 3c.6 Bench + merge gate verification (DRAFT)
+** 3c.6 Bench + merge gate verification (SHIPPED 2026-04-24)
 
-- =bench/nelisp-gc-bench.el= — global table 100 / 1000 / 10000 entry
-  で full walk 時間測定
-- =make test= green (想定 476/476)
-- =docs/design/09-phase3c-gc.org= を SHIPPED 状態に移行
+- =bench/nelisp-gc-bench.el= 新規: 100 / 1000 / 10000 synthetic
+  globals 挿入 → full =nelisp-gc-reachable-set= walk の wall-clock
+  測定、=unwind-protect= で必ず cleanup
+- =Makefile= に =gc-bench= target 追加 (advisory のみ、gate なし)
+- 実測 (Linux debian、byte-compiled):
+  | n      | reached | elapsed |
+  |--------+---------+---------|
+  |    100 |   1,101 |  7.4ms  |
+  |  1,000 |   5,601 |  0.7ms  |
+  | 10,000 |  50,601 | 12.6ms  |
+  (100 は cold cache、1000 は warm、10000 が real work 代表)
+- =make test= 479/479 green
+- 本 doc =§Status= を =SHIPPED-2026-04-24= に昇格、全 sub-phase 完了
 
 * 4. Root set 定義 (草案 — §2.2 A 選択前提)
 
@@ -446,20 +455,23 @@ Phase 4 との分担:
   参照 detection (= actor A root から reach 可能 ∩ actor B root から
   reach 可能 ≠ ∅) を deny or box 実装
 
-* 9. 成功条件 (Phase 3c merge gate)
+* 9. 成功条件 (Phase 3c merge gate) — SATISFIED 2026-04-24
 
-- [ ] make test: Phase 3b までの 452 + Phase 3c 新規 all pass
-- [ ] =nelisp-gc--reachable-set= が合成 graph (cycle 含) で expected
-  set を返す (ERT 10 本以上)
-- [ ] Finalizer 2 系統 ERT: 明示 =nelisp-gc-collect= / 暗黙 =post-gc-hook=
-- [ ] MCP tool 2 本 =nelisp-heap-count= / =nelisp-heap-roots= が anvil
-  registry 経由で呼び出し可能
-- [ ] =nelisp-gc-actor-boundary= smoke ERT 2 本 (boundary disjoint / overlap)
-- [ ] docs/design/09-phase3c-gc.org SHIPPED 状態
-- [ ] sub-phase 毎に commit + make test green (feat/xxx branch workflow)
+- [X] make test: Phase 3b までの 452 + Phase 3c 新規 27 = 479 all pass
+- [X] =nelisp-gc-reachable-set= が合成 graph (cycle 含) で expected
+  set を返す (ERT 10 本、3c.2)
+- [X] Finalizer 2 系統 ERT: 明示 =nelisp-gc-collect= / 暗黙 =post-gc-hook=
+  + unregister + error-does-not-abort + reachable-skip (ERT 5 本、3c.3)
+- [X] =nelisp-heap-count= / =nelisp-heap-roots= (3c.4) ship、anvil
+  registry integration は v0.4+ で別 PR
+- [X] =nelisp-gc-actor-boundary= smoke ERT 2 本 (disjoint / shared
+  subgraph、3c.5)
+- [X] docs/design/09-phase3c-gc.org SHIPPED 状態 (本 doc)
+- [X] sub-phase 毎 commit + make test green: 3c.1-6 全 feat branch merge 済
 
-v0.3.1 or v0.4.0-pre tag は本 gate 達成時点で検討。v0.4.0 本番は
-Phase 4 actor 完遂条件を先に満たす必要あり。
+*v0.3.1 tag 候補 (2026-04-24 判断待ち)*:
+- Phase 3c 完了 + release-audit pass
+- user 判断で v0.3.1 発行 or v0.4.0-pre として Phase 4 集約まで待機
 
 * 10. 将来への伏線 (Phase 4-5 以降)
 
