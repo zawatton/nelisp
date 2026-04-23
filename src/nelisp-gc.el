@@ -138,5 +138,76 @@ Convenience for callers that only need the size (e.g. bench harness,
 =nelisp-heap-count=)."
   (hash-table-count (nelisp-gc-reachable-set root-override)))
 
+;;; Finalizer registry (Phase 3c.3) -----------------------------------
+
+(defvar nelisp-gc--finalizers (make-hash-table :test 'eq :weakness 'key)
+  "Registered finalizers: OBJ -> THUNK.
+Weak-key so that when host Emacs GC reclaims OBJ before a NeLisp-level
+sweep, the entry vanishes automatically — we cannot reach the already-
+collected object anyway.  `nelisp-gc-collect' fires THUNK for any OBJ
+still in this table that is unreachable from NeLisp roots.")
+
+(defvar nelisp-gc-auto-sweep nil
+  "When non-nil, `post-gc-hook' runs `nelisp-gc-collect' automatically.
+Disabled by default — a full root-set mark on every host GC cycle
+is expensive and most sessions don't register enough finalizers to
+justify the cost.  Long-running NeLisp daemons that rely on
+finalisers for resource cleanup (file handles, actor mailboxes) can
+opt in.")
+
+(defun nelisp-gc-register-finalizer (obj thunk)
+  "Schedule THUNK to run when OBJ becomes unreachable from NeLisp roots.
+THUNK is called with OBJ as its only argument so the same closure
+can be reused for many registered objects.  Returns OBJ unchanged so
+callers can wrap resource acquisition idiomatically:
+
+  (nelisp-gc-register-finalizer (open-file path)
+                                (lambda (h) (close-handle h)))."
+  (unless (functionp thunk)
+    (signal 'wrong-type-argument (list 'functionp thunk)))
+  (puthash obj thunk nelisp-gc--finalizers)
+  obj)
+
+(defun nelisp-gc-unregister-finalizer (obj)
+  "Remove any finalizer registered for OBJ.  Return t if one existed."
+  (prog1 (gethash obj nelisp-gc--finalizers)
+    (remhash obj nelisp-gc--finalizers)))
+
+(defun nelisp-gc-collect ()
+  "Run a full NeLisp-level mark pass and fire finalizers.
+For each OBJ in `nelisp-gc--finalizers' that is unreachable from the
+current root set, call its THUNK once and remove the entry.  A THUNK
+error is caught and logged so one misbehaving finalizer cannot abort
+the sweep of the rest.  Return the number of finalizers fired."
+  (let ((live  (nelisp-gc-reachable-set))
+        (fired '())
+        (count 0))
+    (maphash
+     (lambda (obj thunk)
+       (unless (gethash obj live)
+         (push obj fired)
+         (cl-incf count)
+         (condition-case err
+             (funcall thunk obj)
+           (error
+            (message "nelisp-gc: finalizer error for %S: %S" obj err)))))
+     nelisp-gc--finalizers)
+    (dolist (o fired) (remhash o nelisp-gc--finalizers))
+    count))
+
+(defun nelisp-gc--post-gc-handler ()
+  "Internal: `post-gc-hook' callback.
+Runs `nelisp-gc-collect' only when `nelisp-gc-auto-sweep' is non-nil,
+and swallows any error so NeLisp bugs cannot escalate into post-GC
+signal noise (which Emacs would surface via `message' at display
+time and potentially confuse the user about the origin)."
+  (when nelisp-gc-auto-sweep
+    (condition-case err
+        (nelisp-gc-collect)
+      (error
+       (message "nelisp-gc: post-gc-hook error: %S" err)))))
+
+(add-hook 'post-gc-hook #'nelisp-gc--post-gc-handler)
+
 (provide 'nelisp-gc)
 ;;; nelisp-gc.el ends here
