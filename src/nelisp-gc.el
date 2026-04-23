@@ -256,6 +256,29 @@ keys: `:cons :closure :bcl :vector :string :hash-table :symbol
       (message "nelisp heap: %S" counts))
     counts))
 
+;;; Phase 4 actor boundary hook (Phase 3c.5, API only) ----------------
+
+(defun nelisp-gc-actor-boundary (start-root)
+  "Return the set of NeLisp objects reachable from START-ROOT only.
+
+Phase 4 `nelisp-spawn' snapshots this set when an actor is born and
+uses it as the actor's initial ownership ledger.  A later
+`nelisp-send' then intersects the sender's and receiver's boundaries
+to detect cross-actor references and either copy or deny them per
+`04-concurrency.org' §4 shared-nothing policy.
+
+Phase 3c.5 ships the API and reachability wiring only — the
+ownership ledger, send-time intersection, and deny/copy policy land
+in Phase 4 alongside `nelisp-spawn'.  ERTs here verify the
+reachability result is well-formed (disjoint start-roots yield
+disjoint sets; overlapping start-roots share their common subgraph).
+
+Return a hash-table keyed by `eq'-identity whose keys are all
+objects reachable from START-ROOT.  START-ROOT itself is always a
+member (unless it is nil)."
+  (nelisp-gc-reachable-set
+   (list (list :kind 'actor-root :value start-root))))
+
 ;;;###autoload
 (defun nelisp-heap-roots ()
   "Summarise the current root set as `((:kind K :count N) ...)'.
