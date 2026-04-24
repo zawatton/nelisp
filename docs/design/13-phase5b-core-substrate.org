@@ -336,7 +336,7 @@ Phase 5-B 着手に必要な gap を埋める。
     / shift-on-insert / shift-on-delete / remove)
   - 1 erase-buffer が text-properties を clear
 - [X] make test: 609 → *638/638 green* (+29, 0 unexpected)
-- commit: =PHASE5B2_COMMIT= on =feat/phase5b.2-marker=
+- commit: =eb8194c= on =feat/phase5b.2-marker=
 
 期待スコープ 1.5 週に対し当日完了 (§3.1 で struct 土台が既に
 整っており、shift helpers の拡張で済んだ)。
