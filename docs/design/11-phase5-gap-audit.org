@@ -223,3 +223,116 @@ Check 結果を踏まえて user が判断する分岐:
 
 本 audit は意思決定の一次資料であり、どの分岐も合理化できる状態を
 目指した。user の戦略判断を待つ。
+
+* §8 Check-1: T1 VM dispatch coverage (2026-04-24 追補)
+
+Plan の §6 #1 "T1 classification の VM dispatch table 照合" を実施。
+
+** 発見 (§3 の再解釈)
+
+§3 Tier summary で "T1 89 件 ― 既に NeLisp VM 実装済のはず (要 cross check)"
+と書いたが、cross check の結果この前提は *誤り*。NeLisp は T1 subr を VM 内
+で再実装していない。代わりに 2 経路で *host C に委譲* している:
+
+1. =nelisp--primitive-symbols= (=src/nelisp-eval.el:604=) に列挙された symbol は
+   load 時に =(puthash sym (symbol-function sym) nelisp--functions)= で
+   host C の =symbol-function= をそのまま NeLisp 関数表に登録。
+   runtime に user コードが当該 symbol を call すると =nelisp--apply=
+   経由で host C subr を実行。
+2. 列挙漏れの symbol は =nelisp--apply= の fallthrough 節
+   =((functionp fn) (apply fn args))= (=nelisp-eval.el:562=) で直接 host C dispatch。
+
+どちらの経路でも NeLisp VM は単なる *薄い router* として機能し、実行自体は
+host C subr で行う。SBCL 系の pragmatic delegation 設計。
+
+** bytecode VM の T1 inline 化
+
+=nelisp-bytecode.el= の opcode table に *inline 化された T1 subr* は以下のみ:
+=1+=, =1-=, =not=, =+=, =-= (2-arg), =<=, =>=, =eq= (2-arg), =car=, =cdr=,
+=cons=, =list= (1-4 + N)。これら以外は VM が =CALL= opcode を吐いて
+=nelisp--apply= に dispatch する。
+
+** NeLisp-aware wrapper を持つ T1 (高階関数 + require 系)
+
+以下は closure 可視性や NeLisp state 参照のため =nelisp--builtin-*= wrapper
+経由で intercept:
+- =funcall=, =apply= (NeLisp closure を受ける)
+- =mapcar=, =mapc=, =mapconcat= (NeLisp closure を受ける)
+- =boundp=, =fboundp=, =symbol-value=, =symbol-function= (NeLisp の
+  variable / function table を先に見る)
+- =require=, =provide= (NeLisp 側 feature registry)
+
+** =nelisp--primitive-symbols= に *未登録* の gap 13 件
+
+audit §2 Raw data で NeLisp src が参照している T1 subr のうち、=nelisp--
+primitive-symbols= に列挙されていないもの。これらは runtime 時に
+fallthrough で host C に落ちる:
+
+| symbol | refs | 性質 | 対応優先 |
+|--------+------+------+----------|
+| =maphash= | 6 | *HOF* — NeLisp closure を受け得るので wrapper 必須 | ★ 高 |
+| =plist-get= | 32 | pure data | 中 (intercept 不要だが primitive 登録が clean) |
+| =plist-put= | 3 | 同上 | 中 |
+| =make-vector= | 4 | pure data | 低 |
+| =vector= | 4 | pure data | 低 |
+| =caddr= | 3 | pure data | 低 |
+| =cdddr= | 2 | pure data | 低 |
+| =ash= | 2 | pure data | 低 |
+| =logand= | 2 | pure data | 低 |
+| =logior= | 1 | pure data | 低 |
+| =car-safe= | 1 | pure data | 低 |
+| =float= | 1 | pure data | 低 |
+| =message= | 18 | side-effect | 低 (fallthrough OK) |
+
+*semantic gap は =maphash= のみ*。NeLisp closure を user が maphash に渡した
+場合、host C の =maphash= が host flavor の =funcall= で呼び出そうとして
+失敗する経路がある。Phase 5-A 着手前に wrapper 追加が妥当。他は
+"primitive 表に並べて一貫性を取る" 整備案件。
+
+** §3 Tier summary の修正案 (実態反映)
+
+| tier | 件数 | 実態 |
+|------+------+------|
+| T0 特殊形式 | 18 | NeLisp eval.el で dispatch、bootstrap 時のみ host C |
+| T1 基礎データ op | 89 | *全て host C に委譲* (primitive table 経由 76 件 + fallthrough 13 件)。NeLisp VM 内に再実装された subr は *0* (bytecode opcode inline は 12 件だが user 向け call path にも fallback あり) |
+| T2 system 境界 | 11 | host C retain (SBCL-style) |
+| T3 Emacs 特有 | 0 | 参照なし |
+| T4 bytecode/eval | 0 | 参照なし |
+
+** Phase 5-A 先行案への影響
+
+- *変わらず先行妥当*: §4 で挙げた "NeLisp 単独 package 作成自立" の gap
+  (=nelisp-load-file= / =nelisp-load-path= / =nelisp-require= /
+  macroexpand 非依存化) は上記委譲モデルと両立する。user package が
+  =plist-get= 等を call しても host C で動く
+- *追加 pre-req*: =maphash= wrapper を =nelisp--install-primitives= に追加
+  (1-2h)。残り 12 件も primitive 表に列挙して "どの T1 が NeLisp 認識されて
+  いるか" の境界を明確化 (半日)
+- *不変な前提*: NeLisp は T1 を再実装しない方針と cross check により判明。
+  "Emacs core 置換" は T1 まで全て Lisp 化する意味ではなく、T3 substrate
+  を Lisp で *新設* する意味
+
+** Phase 5 scope の再定義
+
+本 Check の結果、Phase 5 scope は以下のように精緻化できる:
+
+- *Phase 5-A (package-authoring 自立、先行)*:
+  - gap: load-file / load-path / require / macroexpand
+  - pre-req: =maphash= wrapper + primitive 表整備 (計 1 日以内)
+  - 新規 C 依存 0、既存 T1 委譲モデル維持
+- *Phase 5-B (substrate 新設、後続)*:
+  - T3 (buffer / window / frame / redisplay) の substrate API を Lisp で設計
+  - T1 は host C に委譲し続ける (純 Lisp 化は別課題 Phase 6+)
+- *Phase 6+ (optional, 将来)*:
+  - T1 の純 Lisp 再実装 (SBCL 系と分岐する選択)
+  - この audit から見る限り、T1 再実装は release bar には含まれないと解釈
+
+** Check 次項目
+
+Plan §6 の他 3 項目:
+- [ ] #2 macroexpand 経路の動的 trace — user Act 判断後に実施
+- [ ] #3 他の dogfood workflow (ert on NeLisp, byte-compile on NeLisp) — 同上
+- [ ] #4 5-A vs 5-B 並行可能性の再評価 — 同上
+
+これらは Phase 5-A 着手判断の *後* に意味を持つ、本 Check-1 で Phase 5-A 先行
+妥当性は補強された。
