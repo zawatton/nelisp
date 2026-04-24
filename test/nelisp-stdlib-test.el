@@ -475,6 +475,39 @@ We do not create a live socket here; only verify the symbol resolves."
   (should (subrp (indirect-function 'make-network-process)))
   (should (nelisp-eval '(fboundp 'make-network-process))))
 
+;;; Phase 5-D.0 primitive smoke tests -------------------------------
+
+(ert-deftest nelisp-stdlib-phase5d-float-time-monotonic ()
+  "`float-time' returns a positive number and is non-decreasing."
+  (let ((t1 (nelisp-eval '(float-time)))
+        (t2 (nelisp-eval '(float-time))))
+    (should (numberp t1))
+    (should (> t1 0))
+    (should (<= t1 t2))))
+
+(ert-deftest nelisp-stdlib-phase5d-truncate-integer-floor ()
+  (should (= 3 (nelisp-eval '(truncate 3.7))))
+  (should (= -3 (nelisp-eval '(truncate -3.7))))
+  (should (= 0 (nelisp-eval '(truncate 0.9)))))
+
+(ert-deftest nelisp-stdlib-phase5d-truncate-divisor ()
+  (should (= 2 (nelisp-eval '(truncate 7 3))))
+  (should (= -2 (nelisp-eval '(truncate -7 3)))))
+
+(ert-deftest nelisp-stdlib-phase5d-random-in-range ()
+  "`random' with a positive N returns an integer in [0, N)."
+  (let ((r (nelisp-eval '(random 1000))))
+    (should (integerp r))
+    (should (<= 0 r))
+    (should (< r 1000))))
+
+(ert-deftest nelisp-stdlib-phase5d-format-time-string-shape ()
+  "`format-time-string' with a simple fmt returns a non-empty string."
+  (let ((s (nelisp-eval '(format-time-string "%H:%M:%S"))))
+    (should (stringp s))
+    (should (string-match-p "\\`[0-9]\\{2\\}:[0-9]\\{2\\}:[0-9]\\{2\\}\\'"
+                            s))))
+
 (provide 'nelisp-stdlib-test)
 
 ;;; nelisp-stdlib-test.el ends here
