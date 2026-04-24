@@ -252,6 +252,27 @@ forms.  Atoms and `quote' subforms pass through unchanged."
               (funcall walker expanded)
             (nelisp--macroexpand-all-args expanded)))))))))
 
+;;; Doc 12 §3.4 — expose the NeLisp macroexpand family in the primitive
+;;; dispatch so NeLisp source can call `(macroexpand-1 FORM)' / etc.
+;;; without the host implementation being involved.  The register call
+;;; runs when `nelisp-macro.el' is loaded; callers that `nelisp--reset'
+;;; must also call `nelisp-macro--install-primitives' again — which
+;;; happens automatically because `nelisp--install-primitives' is
+;;; invoked by reset, and the Phase 5-A.4 hook lives at the bottom of
+;;; `nelisp--install-primitives'.
+
+(defun nelisp-macro--install-primitives ()
+  "Register the NeLisp macroexpand family in `nelisp--functions'.
+Called from `nelisp--install-primitives' so the bindings survive a
+`nelisp--reset'."
+  (puthash 'macroexpand-1   #'nelisp-macroexpand-1   nelisp--functions)
+  (puthash 'macroexpand     #'nelisp-macroexpand     nelisp--functions)
+  (puthash 'macroexpand-all #'nelisp-macroexpand-all nelisp--functions))
+
+;; Install immediately at file-load time (before any test calls reset).
+(when (hash-table-p nelisp--functions)
+  (nelisp-macro--install-primitives))
+
 (provide 'nelisp-macro)
 
 ;;; nelisp-macro.el ends here

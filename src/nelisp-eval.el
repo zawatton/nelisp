@@ -744,6 +744,11 @@ closures, NeLisp-only defuns, and our own hash tables stay visible."
   (puthash 'symbol-value #'nelisp--builtin-symbol-value nelisp--functions)
   (puthash 'require      #'nelisp--builtin-require      nelisp--functions)
   (puthash 'provide      #'nelisp--builtin-provide      nelisp--functions)
+  ;; Doc 12 §3.4: re-register the NeLisp macroexpand family if
+  ;; `nelisp-macro.el' is loaded.  fboundp guard keeps this safe during
+  ;; the bootstrap of `nelisp-eval.el' itself.
+  (when (fboundp 'nelisp-macro--install-primitives)
+    (nelisp-macro--install-primitives))
   ;; Bytecode VM dispatch — registered conditionally so the
   ;; NeLisp-installed `nelisp--apply' can route bcls to the host VM
   ;; via NeLisp `fboundp' / `funcall' even after `nelisp--reset'.
