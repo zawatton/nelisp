@@ -256,14 +256,35 @@ host interpreter 自身が =macroexpand-1= を boilerplate 展開に呼ぶため
 — 「NeLisp 側ロジックが host macroexpand を呼ばないこと」— を静的
 検証で保証できる)。
 
-** §3.5 Toy package E2E (§2.6 C)
+** §3.5 Toy package E2E (§2.6 C) — SHIPPED 2026-04-24
 
-- =examples/hello/hello.el= — 1 defun + provide
-- =examples/hello/hello-utils.el= — helper defun + provide、
-  hello が require する
-- =examples/hello-test.el= — 両 file を =nelisp-require= → 動作確認
-- docs/design/12 の §7 に E2E 成功 log を転記
-- 期待スコープ: 1 週 (docs 含む)
+- [X] =examples/hello/hello-utils.el= — helper defun 3 本
+  (=format-greeting= / =excited= / =join-words= 再帰) + provide
+- [X] =examples/hello/hello.el= — =(require 'hello-utils)= + defun 4 本
+  (=hello-world= / =hello-greet= / =hello-excited-greet= /
+  =hello-sentence=) + provide
+- [X] =test/nelisp-examples-hello-test.el= — 9 本 ERT で E2E 検証
+  (テスト置き場は repo 慣習の =test/= 配下に集約、=make test= が
+  自動拾い)
+- [X] ERT 追加 9 本:
+  - =nelisp-examples-hello-require-registers-both= (2 階 feature 登録)
+  - =nelisp-examples-hello-world-returns-canonical=
+  - =nelisp-examples-hello-greet-uses-helper=
+  - =nelisp-examples-hello-excited-uses-two-helpers= (2-step chain)
+  - =nelisp-examples-hello-sentence-recursive= (user defun の再帰)
+  - =nelisp-examples-hello-require-idempotent= (二重 require で
+    =nelisp--features= に重複が出ないこと)
+  - =nelisp-examples-hello-direct-require-helper= (helper 単独 require
+    で top 未ロード)
+  - =nelisp-examples-hello-host-load-path-untouched= (host load-path が
+    examples ディレクトリを含まず、=nelisp-load-path-include-host= が
+    nil のまま解決できる — §2.2 C acceptance)
+  - =nelisp-examples-hello-missing-path-fails-cleanly= (nelisp-load-path
+    空で =file-error= が立つ — 前段の成功は本当に nelisp-load-path
+    に依っていたことの裏取り)
+- [X] make test: 560 → *569/569 green*
+- E2E 成功 log は本 doc §7 に転記 (下記)
+- commit: =09d52e9= on =feat/phase5a.5-toy-package=
 
 ** §3.6 Merge gate (§2.8 equivalent)
 
@@ -305,3 +326,32 @@ master merge 可。merge 前に以下確認:
 | 2.6 | Toy package acceptance | C | 2 階建て require |
 
 signoff 完了 → =feat/phase5a.0-pre-req-cleanup= branch で §3.0 着手。
+
+* §7 Toy package E2E 成功 log — 2026-04-24
+
+§3.5 の acceptance C (2 階建て require) を =feat/phase5a.5-toy-package=
+で実施、=make test 569/569 green= を確認。以下が E2E で検証された
+主要な事実:
+
+- =nelisp-require 'hello= で =hello= と =hello-utils= の両方が
+  =nelisp--features= に登録される (2 階 feature 登録)
+- =hello.el= の =(require 'hello-utils)= は NeLisp の
+  =nelisp--builtin-require= にディスパッチされ、=nelisp-load-path=
+  のみ参照して resolve される (host =load-path= 非関与)
+- =nelisp-load-path-include-host= が nil のまま、=examples/hello/=
+  が host =load-path= に入っていないにも関わらず resolve 成功
+- =nelisp-load-path= を空に戻すと同じ require が =file-error=
+  を signal — 直前の成功が本当に =nelisp-load-path= に依った証拠
+- user 側が書いた defun (=hello-greet=, =hello-excited-greet=,
+  =hello-sentence=) が、同じ NeLisp evaluator 上で helper と相互
+  呼び出し可能 (package 間の function-cell 共有が正しく働く)
+- 二重 =nelisp-require= は registry short-circuit で副作用を再実行
+  しない (=cl-count= で feature 重複 0 件確認)
+- =hello-utils= 単独 require でも helper 関数は完動、=hello= は
+  未ロードのまま — 依存ツリーの向きが片方向であることを裏取り
+
+Release bar 前半 ("Emacs core 置換は別途、NeLisp 単独でパッケージ
+作成が可能") のうち「NeLisp 単独パッケージ作成自立」を本 §7 で
+達成。
+
+commit: =09d52e9= (=feat/phase5a.5-toy-package=).
