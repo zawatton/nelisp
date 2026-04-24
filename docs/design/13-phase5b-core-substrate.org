@@ -424,7 +424,7 @@ dispatch core + queue + actor wrapper の thin 層で済んだ)。
 
 目的: 3 核連動で最小 editor 動作、§2.9 C 達成。
 
-実装 (commit __HASH_5B5__):
+実装 (commit 59811fe):
 - =examples/nelisp-editor/main.el= 新設 (~200 LOC):
   =(require 'nelisp-buffer)= + =(require 'nelisp-redisplay)= +
   =(require 'nelisp-eventloop)= で 3 核連動
