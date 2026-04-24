@@ -336,6 +336,20 @@ copy via an `eq'-keyed visited table."
 
 ;;; Scheduler (Phase 4.2 cooperative) ---------------------------------
 
+(defun nelisp-actor--notify-supervisor (actor status err)
+  "Send `(:child-terminated ACTOR STATUS ERR)' to ACTOR's supervisor.
+
+No-op when ACTOR has no supervisor or its supervisor is itself
+`:dead' / `:crashed' (avoids cascading send-to-dead signals when a
+supervisor tree dies bottom-up).  Phase 4.5 supervisor
+(`nelisp-supervise') pattern-matches this message to apply its
+restart policy."
+  (let ((sup (nelisp-actor-supervisor actor)))
+    (when (and sup
+               (nelisp-actor-p sup)
+               (not (memq (nelisp-actor-status sup) '(:dead :crashed))))
+      (nelisp-send sup (list :child-terminated actor status err)))))
+
 (defun nelisp-actor--step (actor)
   "Advance ACTOR's iterator one step and classify the outcome.
 
@@ -347,7 +361,11 @@ correct actor.  Returns one of:
               to `:blocked-receive' inside `nelisp-receive'
   `:done'    — body exhausted, status `:dead'
   `:crashed' — uncaught signal, `last-error' populated, status
-              `:crashed'"
+              `:crashed'
+
+Both terminal outcomes (`:done' / `:crashed') notify the actor's
+supervisor via `nelisp-actor--notify-supervisor', which is a no-op
+for unsupervised actors (Phase 4.5)."
   (let ((nelisp-actor--current actor))
     (condition-case err
         (let ((val (iter-next (nelisp-actor-iterator actor))))
@@ -356,10 +374,12 @@ correct actor.  Returns one of:
            (t :yielded)))
       (iter-end-of-sequence
        (setf (nelisp-actor-status actor) :dead)
+       (nelisp-actor--notify-supervisor actor :dead nil)
        :done)
       (error
        (setf (nelisp-actor-last-error actor) err)
        (setf (nelisp-actor-status actor) :crashed)
+       (nelisp-actor--notify-supervisor actor :crashed err)
        :crashed))))
 
 (defun nelisp-actor-run-until-idle ()
@@ -427,6 +447,91 @@ Keys: `:id' `:status' `:mailbox-length' `:mailbox-cap'
         :supervisor      (nelisp-actor-supervisor actor)
         :restart-policy  (nelisp-actor-restart-policy actor)
         :last-error      (nelisp-actor-last-error actor)))
+
+;;; Supervisor (Phase 4.5 — flat one-for-one) -------------------------
+
+(cl-defun nelisp-supervise (children-spec &key (strategy :one-for-one))
+  "Supervise CHILDREN-SPEC under a one-for-one restart strategy.
+
+CHILDREN-SPEC is a list of plists, each describing one child:
+  (:id TAG :start ACTOR-THUNK :restart POLICY)
+
+TAG         identifies the child in restart events (any symbol).
+ACTOR-THUNK is a closure produced by `nelisp-actor-lambda' — the
+            same contract as `nelisp-spawn'.
+POLICY      is one of:
+  `:permanent' — always restart on termination (crash or normal exit)
+  `:transient' — restart only on abnormal exit (`:crashed')
+  `:temporary' — never restart
+
+STRATEGY accepts `:one-for-one' only in Phase 4.5; other OTP
+strategies (`:one-for-all' / `:rest-for-one') are §2.6 C scope and
+land in later phases.
+
+Returns the supervisor actor.  It spawns each child with
+`:supervisor SELF' and `:restart-policy POLICY', then loops on its
+own mailbox, pattern-matching `(:child-terminated ACTOR STATUS
+ERR)' notifications from the scheduler crash hook and applying
+POLICY.  Supervisor-crash-kills-children is not in Phase 4.5 MVP
+scope per §2.6 B (orphaned children survive supervisor death);
+adding that cascade is a v0.4.x extension."
+  (unless (eq strategy :one-for-one)
+    (signal 'nelisp-actor-error
+            (list 'unsupported-supervise-strategy strategy)))
+  (let ((spec children-spec))
+    (nelisp-spawn
+     (let ((spec spec))
+       (nelisp-actor-lambda
+         (let ((sup (nelisp-self))
+               (children nil))
+           ;; Initial spawn pass: build (TAG SPEC ACTOR) entries.
+           (dolist (s spec)
+             (push (list (plist-get s :id)
+                         s
+                         (nelisp-spawn (plist-get s :start)
+                                       :supervisor sup
+                                       :restart-policy (plist-get s :restart)))
+                   children))
+           (setq children (nreverse children))
+           ;; Event loop: process child-terminated notifications.
+           (while t
+             (let ((msg (nelisp-receive)))
+               (pcase msg
+                 (`(:child-terminated ,actor ,status ,_err)
+                  (let ((entry
+                         (catch 'found
+                           (dolist (e children)
+                             (when (eq (nth 2 e) actor)
+                               (throw 'found e))))))
+                    (when entry
+                      (let* ((s (nth 1 entry))
+                             (policy (plist-get s :restart))
+                             (restart (or (eq policy :permanent)
+                                          (and (eq policy :transient)
+                                               (eq status :crashed)))))
+                        (when restart
+                          (setf (nth 2 entry)
+                                (nelisp-spawn (plist-get s :start)
+                                              :supervisor sup
+                                              :restart-policy policy))))))))))))))))
+
+(defun nelisp-supervise-children (supervisor)
+  "Return SUPERVISOR's currently-tracked child actors.
+
+SUPERVISOR is the actor returned by `nelisp-supervise'.  The answer
+races the mailbox: a child restart in flight may be visible here
+before the scheduler has advanced the supervisor's loop.  Phase 4.5
+exposes this for diagnostics/tests; production code should message
+the supervisor directly."
+  ;; NOTE: Phase 4.5 supervisor stores children in iterator-local
+  ;; state, unreachable from outside.  For diagnostics we filter the
+  ;; global registry for actors whose supervisor = SUPERVISOR.
+  (let (out)
+    (maphash (lambda (_id a)
+               (when (eq (nelisp-actor-supervisor a) supervisor)
+                 (push a out)))
+             nelisp-actor--registry)
+    out))
 
 ;;; Channel primitive (Phase 4.4) ------------------------------------
 
