@@ -140,6 +140,80 @@ shape does not distinguish `nil'-message from empty."
       (setf (nelisp-actor-mailbox-tail actor) nil))
     (car box)))
 
+;;; Shared-immutable message copy (Phase 4.3) ------------------------
+
+(defun nelisp-actor--shareable-p (obj)
+  "Return non-nil when OBJ may be shared by reference across the send
+boundary (Phase 4.3 conservative classifier).
+
+Shared (immutable or opaque host-owned):
+  - fixnums, floats
+  - symbols (nil / t / keywords / ordinary / uninterned)
+  - records (cl-defstruct instances, including actor handles)
+  - compiled-function / buffer / marker / window / process / etc.
+
+Deep-copied (structural mutable):
+  - conses
+  - vectors
+  - strings
+  - hash-tables
+
+Stricter classification (e.g., detecting immutable-throughout cons
+trees) is deferred to v0.4.x per §2.3's `conservative classifier
+で start' note."
+  (not (or (consp obj)
+           (vectorp obj)
+           (stringp obj)
+           (hash-table-p obj))))
+
+(defun nelisp-actor--copy-message-1 (obj visited)
+  "Recursive deep-copy helper used by `nelisp-actor--copy-message'.
+VISITED maps original → copy so cycles and shared substructure
+survive the copy (a tail shared in N places in the original remains
+shared in exactly the same way in the copy).
+
+Shareable leaves (per `nelisp-actor--shareable-p') pass through
+unchanged; everything else is duplicated with its contents walked."
+  (cond
+   ((nelisp-actor--shareable-p obj) obj)
+   ((gethash obj visited) (gethash obj visited))
+   ((consp obj)
+    (let ((new (cons nil nil)))
+      (puthash obj new visited)
+      (setcar new (nelisp-actor--copy-message-1 (car obj) visited))
+      (setcdr new (nelisp-actor--copy-message-1 (cdr obj) visited))
+      new))
+   ((stringp obj)
+    (let ((new (copy-sequence obj)))
+      (puthash obj new visited)
+      new))
+   ((vectorp obj)
+    (let* ((len (length obj))
+           (new (make-vector len nil)))
+      (puthash obj new visited)
+      (dotimes (i len)
+        (aset new i (nelisp-actor--copy-message-1 (aref obj i) visited)))
+      new))
+   ((hash-table-p obj)
+    (let ((new (make-hash-table
+                :test (hash-table-test obj)
+                :size (max 1 (hash-table-count obj))
+                :weakness (hash-table-weakness obj))))
+      (puthash obj new visited)
+      (maphash (lambda (k v)
+                 (puthash (nelisp-actor--copy-message-1 k visited)
+                          (nelisp-actor--copy-message-1 v visited)
+                          new))
+               obj)
+      new))
+   (t obj)))
+
+(defun nelisp-actor--copy-message (msg)
+  "Return a deep copy of MSG per the Phase 4.3 shared-immutable policy.
+Uses an `eq'-keyed visited table so cycles and shared substructure
+are preserved in the copy without infinite recursion."
+  (nelisp-actor--copy-message-1 msg (make-hash-table :test 'eq)))
+
 ;;; Actor body macros -------------------------------------------------
 
 (defmacro nelisp-actor-lambda (&rest body)
@@ -242,8 +316,12 @@ TARGET is `:dead' or `:crashed'.  When TARGET is
 `:blocked-receive', transitions it back to `:runnable' and
 re-enqueues it so the scheduler drives the resume on the next pass.
 
-Phase 4.2 does not copy MSG; the shared-immutable policy (§4.3)
-classifies cells and deep-copies mutable structure at send time."
+Phase 4.3 applies the shared-immutable message policy before
+delivery: `nelisp-actor--copy-message' deep-copies cons / vector /
+string / hash-table structure, while shareable leaves
+(symbols / numbers / records / opaque host objects) pass through
+by reference.  Cycles and shared substructure are preserved in the
+copy via an `eq'-keyed visited table."
   (unless (nelisp-actor-p target)
     (signal 'wrong-type-argument (list 'nelisp-actor-p target)))
   (when (memq (nelisp-actor-status target) '(:dead :crashed))
@@ -251,7 +329,7 @@ classifies cells and deep-copies mutable structure at send time."
             (list 'send-to-dead-actor
                   (nelisp-actor-id target)
                   (nelisp-actor-status target))))
-  (nelisp-actor--mailbox-push target msg)
+  (nelisp-actor--mailbox-push target (nelisp-actor--copy-message msg))
   (when (eq (nelisp-actor-status target) :blocked-receive)
     (setf (nelisp-actor-status target) :runnable)
     (nelisp-actor--enqueue target))

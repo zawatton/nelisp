@@ -271,5 +271,124 @@
     (should (eq (plist-get stats :status) :runnable))
     (should (= 0 (plist-get stats :mailbox-length)))))
 
+;;; Phase 4.3 — shared-immutable message policy --------------------
+
+(defun nelisp-actor-test--deliver-and-collect (msg)
+  "Helper: spawn an actor, send MSG to it, drive, return the received value."
+  (let (received actor)
+    (setq actor (nelisp-spawn
+                 (nelisp-actor-lambda
+                   (setq received (list :got (nelisp-receive))))))
+    (nelisp-send actor msg)
+    (nelisp-actor-run-until-idle)
+    (cadr received)))
+
+(ert-deftest nelisp-actor-copy-shares-symbols-and-numbers ()
+  "Symbols and numbers pass the send boundary by reference."
+  (nelisp-actor-test--fixture)
+  (should (eq 'foo (nelisp-actor-test--deliver-and-collect 'foo)))
+  (should (eq :key (nelisp-actor-test--deliver-and-collect :key)))
+  ;; Fixnums are eq-unique in Emacs; floats need eql.
+  (should (eq 42 (nelisp-actor-test--deliver-and-collect 42)))
+  (should (eql 3.14 (nelisp-actor-test--deliver-and-collect 3.14)))
+  (should (eq nil (nelisp-actor-test--deliver-and-collect nil)))
+  (should (eq t (nelisp-actor-test--deliver-and-collect t))))
+
+(ert-deftest nelisp-actor-copy-shares-actor-handles ()
+  "Cl-struct actor handles pass by reference (records are shareable)."
+  (nelisp-actor-test--fixture)
+  (let* ((handle (nelisp-spawn (nelisp-actor-lambda)))
+         (echoed (nelisp-actor-test--deliver-and-collect handle)))
+    (should (eq echoed handle))))
+
+(ert-deftest nelisp-actor-copy-deep-copies-cons ()
+  "Mutating the sender's cons after send must not affect the recipient."
+  (nelisp-actor-test--fixture)
+  (let* ((orig (cons 'a 'b))
+         (received nil)
+         (actor (nelisp-spawn
+                 (nelisp-actor-lambda
+                   (setq received (nelisp-receive))))))
+    (nelisp-send actor orig)
+    (setcar orig 'MUTATED)
+    (setcdr orig 'ALSO-MUTATED)
+    (nelisp-actor-run-until-idle)
+    (should (equal received '(a . b)))
+    (should-not (eq received orig))))
+
+(ert-deftest nelisp-actor-copy-deep-copies-vector ()
+  "Mutating the sender's vector via `aset' after send leaves the copy intact."
+  (nelisp-actor-test--fixture)
+  (let* ((orig (vector 1 2 3))
+         (received nil)
+         (actor (nelisp-spawn
+                 (nelisp-actor-lambda
+                   (setq received (nelisp-receive))))))
+    (nelisp-send actor orig)
+    (aset orig 0 99)
+    (nelisp-actor-run-until-idle)
+    (should (equal received (vector 1 2 3)))
+    (should-not (eq received orig))))
+
+(ert-deftest nelisp-actor-copy-deep-copies-string ()
+  "Mutating the sender's string via `aset' after send leaves the copy intact."
+  (nelisp-actor-test--fixture)
+  (let* ((orig (copy-sequence "hello"))
+         (received nil)
+         (actor (nelisp-spawn
+                 (nelisp-actor-lambda
+                   (setq received (nelisp-receive))))))
+    (nelisp-send actor orig)
+    (aset orig 0 ?H)
+    (nelisp-actor-run-until-idle)
+    (should (equal received "hello"))
+    (should-not (eq received orig))))
+
+(ert-deftest nelisp-actor-copy-nested-structure ()
+  "Nested cons/vector/string are all independently copied."
+  (nelisp-actor-test--fixture)
+  (let* ((inner-vec (vector 10 20))
+         (inner-str (copy-sequence "abc"))
+         (orig (list inner-vec inner-str 'tag))
+         (received (nelisp-actor-test--deliver-and-collect orig)))
+    (should (equal received (list (vector 10 20) "abc" 'tag)))
+    ;; Outer list copied.
+    (should-not (eq received orig))
+    ;; Inner vector copied.
+    (should-not (eq (nth 0 received) inner-vec))
+    ;; Inner string copied.
+    (should-not (eq (nth 1 received) inner-str))
+    ;; Shareable tag passes by reference.
+    (should (eq (nth 2 received) 'tag))))
+
+(ert-deftest nelisp-actor-copy-preserves-shared-substructure ()
+  "A tail referenced twice in the original stays shared in the copy."
+  (nelisp-actor-test--fixture)
+  (let* ((tail (cons 1 2))
+         (orig (list tail tail))
+         (received (nelisp-actor-test--deliver-and-collect orig)))
+    (should (equal received (list (cons 1 2) (cons 1 2))))
+    ;; Both positions point to the *same* copied cell, not two copies.
+    (should (eq (nth 0 received) (nth 1 received)))
+    ;; The copied tail is not the original tail.
+    (should-not (eq (nth 0 received) tail))))
+
+(ert-deftest nelisp-actor-copy-handles-circular-cons ()
+  "A self-referential cons is copied without infinite recursion."
+  (nelisp-actor-test--fixture)
+  (let* ((orig (cons 'head nil))
+         received actor)
+    (setcdr orig orig)
+    (setq actor (nelisp-spawn
+                 (nelisp-actor-lambda
+                   (setq received (nelisp-receive)))))
+    (nelisp-send actor orig)
+    (nelisp-actor-run-until-idle)
+    ;; Copy retains the cycle.
+    (should (eq (cdr received) received))
+    (should (eq (car received) 'head))
+    ;; And it is not the original.
+    (should-not (eq received orig))))
+
 (provide 'nelisp-actor-test)
 ;;; nelisp-actor-test.el ends here

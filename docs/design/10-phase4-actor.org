@@ -244,18 +244,33 @@ Phase 3c 同様、feat branch 毎に ship。予算は目安、ブレ可。
   / =start-stop-timer-installation= / =stats-shape=
 - =make clean && make test= 497/497 green (Phase 4.1 時点 487 + 10 新)
 
-** 4.3 Shared-immutable message policy (DRAFT)
+** 4.3 Shared-immutable message policy (SHIPPED 2026-04-24)
 
-- =nelisp-actor--classify=: message cell が immutable か判定
-  (symbol / fixnum / nil / t / interned string / 再帰検査で
-  cons/vector も cell 内全 immutable なら pass)
-- mutable cell は deep-copy して送信、immutable は reference 共有
-- cross-boundary violation 検出 (=nelisp-gc-actor-boundary= 交差):
-  send 時に target 側から reach 可能な同一 mutable cell が sender
-  側にもあれば warn (§4.6 で enforce に昇格)
-- ERT: shared symbol OK / mutable cons deep-copy / nested structure
-  / immutable inside mutable (mixed case) / circular 安全
-- 予算: 200 LOC、ERT 8 本
+- =nelisp-actor--shareable-p= (=--classify= draft name から rename、
+  "shareable" の方が policy 名と揃う): leaf 判定
+  - shared by reference: fixnum / float / symbol (nil / t / keyword
+    / uninterned 含む) / record (cl-defstruct — actor handle 等
+    opaque) / compiled-function / buffer / marker / その他 host object
+  - deep-copy 対象: cons / vector / string / hash-table
+- =nelisp-actor--copy-message= + =--copy-message-1= 再帰 helper:
+  - =eq=-keyed visited table で cycle + shared substructure 保持
+    (tail が N 箇所参照されていれば copy 側でも同じ tail 1 つに)
+  - =copy-sequence= で string / vector は make-vector で hole-fill
+  - hash-table は test / weakness / size を継承
+- =nelisp-send= を hook: =(nelisp-actor--mailbox-push target
+  (nelisp-actor--copy-message msg))= で delivery 時点で copy 発火
+- conservative classifier (§2.3 note 通り): immutable-throughout の
+  cons tree 判定等は v0.4.x 以降で精度向上
+- cross-boundary violation 警告 (=nelisp-gc-actor-boundary= 交差):
+  Phase 4.3 では implement せず、§4.6 anvil PoC 時に enforce と併せ
+  追加。deep-copy が vacuous に violation を防ぐため MVP は warn 無し
+- ERT 8 本 (=test/nelisp-actor-test.el= §Phase 4.3):
+  =copy-shares-symbols-and-numbers= / =copy-shares-actor-handles= /
+  =copy-deep-copies-cons= / =copy-deep-copies-vector= /
+  =copy-deep-copies-string= / =copy-nested-structure= /
+  =copy-preserves-shared-substructure= / =copy-handles-circular-cons=
+- =make clean && make test= 505/505 green (Phase 4.2 時点 497 + 本 8)
+- 実装 +78 LOC (367 → 445)、予算 200 LOC 内
 
 ** 4.4 Channel primitive (DRAFT)
 
