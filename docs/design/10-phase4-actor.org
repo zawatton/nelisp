@@ -5,7 +5,7 @@
 
 * Status
 :PROPERTIES:
-:STATE: DRAFT-2026-04-24 (user signoff 待ち: §2 8 items)
+:STATE: LOCKED-2026-04-24 (§2 8 items signoff: 2026-04-24 user approved defaults A/D/B/A/B/B/A/A)
 :END:
 
 =v0.3.1= (Phase 3c 完了) の次。NeLisp concurrency の本丸、=04-concurrency.org=
@@ -62,9 +62,14 @@ optional) は別 doc (=11-phase4b-stm.org=) として Phase 4 成功後に起案
 - *priority inheritance / deadline scheduling*: RTOS 相当は scope 外
 - *buffer-as-actor*: §2.1 で B を取らない限り Phase 4c へ deferred
 
-* 2. Key decisions (user signoff 待ち)
+* 2. Key decisions (LOCKED 2026-04-24)
 
 Phase 3b / 3c と同じ方式。A/B/C 選択で 8 items。
+
+#+begin_quote
+*Signoff 2026-04-24*: user (zawatton) approved all 8 推奨 defaults
+=A/D/B/A/B/B/A/A=. Sub-phase 設計 §3 は refactor 不要、§4.1 着手可。
+#+end_quote
 
 ** 2.1 Actor 境界は何単位か
 
@@ -185,18 +190,27 @@ merge、v0.4.x minor で 2 / 3 に拡張していく方針。
 
 Phase 3c 同様、feat branch 毎に ship。予算は目安、ブレ可。
 
-** 4.1 Skeleton + spawn / receive / send (DRAFT)
+** 4.1 Skeleton + spawn / receive / send (SHIPPED 2026-04-24)
 
-- =src/nelisp-actor.el= 新規、=nelisp-actor= struct (mailbox FIFO、
-  thunk、ownership set、status)
+- =src/nelisp-actor.el= 新規 (275 LOC)、=nelisp-actor= struct (mailbox
+  FIFO + O(1) tail pointer、thunk、ownership set、status、supervisor
+  / restart-policy / k / last-error は Phase 4.2 / 4.5 用に reserve)
 - =nelisp-spawn=: thunk を new actor として登録、initial ownership
   snapshot = =nelisp-gc-actor-boundary= of thunk 自身
-- =nelisp-receive=: mailbox 空なら yield、非空なら pop + return
-- =nelisp-send=: target actor の mailbox に message push (copy
-  policy は §4.3 まで simple copy、shared immutable は 4.3 で精緻化)
-- =nelisp-self=: current actor object
-- ERT: 2 actor ping-pong / spawn-heavy count / send-to-dead-actor 検出
-- 予算: 250 LOC、ERT 8 本
+- =nelisp-receive=: Phase 4.1 は mailbox 空なら symbol =timeout= を
+  即 return (yield は Phase 4.2 で generator.el 経由)、非空なら
+  FIFO pop + return
+- =nelisp-send=: target actor の mailbox に message push、blocked-
+  receive 状態なら re-enqueue。=:dead= / =:crashed= 宛 send は
+  =nelisp-actor-error= を signal
+- =nelisp-self=: =nelisp-actor--current= dynamic bind を read
+- Scheduler: =nelisp-actor-run-until-idle= が run queue を drain、
+  thunk は run-to-completion (real yield は 4.2)
+- Diagnostics: =nelisp-actor-list= / =nelisp-actor-stats=
+- ERT 8 本 (=test/nelisp-actor-test.el=): initial-state / non-
+  function 拒否 / self 内外 / FIFO receive / empty→timeout /
+  send-to-dead / spawn-heavy-100
+- =make clean && make test= 487/487 green (既存 479 + 本 sub-phase 8)
 
 ** 4.2 Cooperative scheduler (DRAFT)
 
