@@ -250,25 +250,53 @@ Phase 5-B 着手に必要な gap を埋める。
 - [X] make test: 569 → *580/580 green* (+11, 0 unexpected)
 - commit: =e966a91= on =feat/phase5b.0-pre-req=
 
-** §3.1 =nelisp-buffer= primitive (gap buffer + insert/delete)
+** §3.1 =nelisp-buffer= primitive (gap buffer + insert/delete) — SHIPPED 2026-04-24
 
 目的: buffer 本体 struct + 最小 text 操作 API。
 
-作業:
-- =src/nelisp-buffer.el= 新設、=(cl-defstruct nelisp-buffer
-    name text-before-gap text-after-gap point mark ...)= で gap
-  buffer。
-- =nelisp-insert= / =nelisp-delete-region= / =nelisp-goto-char=
-  / =nelisp-point= / =nelisp-buffer-string= / =nelisp-erase-
-  buffer=
-- =with-nelisp-buffer= macro
-- narrowing (=nelisp-narrow-to-region= / =nelisp-widen=) も
-  ここで (Emacs semantics 上 buffer core に直結)
-- primitive 表登録
-- ERT: gap 移動 / 境界 / narrowing / parity test (host との
-  text 一致)
+- [X] =src/nelisp-buffer.el= 新設 (~230 LOC):
+  - =cl-defstruct nelisp-buffer= (name / before-gap / after-gap /
+    modified / markers / overlays / narrow-start / narrow-end)
+  - registry: =nelisp-buffer--registry= (hash-table、name→buf)
+  - 現在 buffer: =nelisp-buffer--current= + =nelisp-with-buffer=
+    macro で動的束縛
+  - 作成: =nelisp-generate-new-buffer= (uniquify =<N>= 付与) /
+    =nelisp-get-buffer-create= / =nelisp-get-buffer= /
+    =nelisp-kill-buffer= / =nelisp-buffer-list=
+  - 位置: =nelisp-point= / =nelisp-point-min= /
+    =nelisp-point-max= / =nelisp-buffer-size=
+  - テキスト: =nelisp-buffer-string= / =nelisp-buffer-substring=
+    / =nelisp-char-after=
+  - 編集: =nelisp-insert= / =nelisp-delete-region= /
+    =nelisp-goto-char= / =nelisp-erase-buffer=
+  - 状態: =nelisp-buffer-modified-p= /
+    =nelisp-buffer-set-modified=
+  - narrowing: =nelisp-narrow-to-region= / =nelisp-widen= /
+    =nelisp-save-restriction= macro / =nelisp-save-excursion=
+    macro
+  - marker shift helpers (§3.2 で marker struct 化される時まで
+    素の =(POS . _)= cons cell を受け付ける前方互換)
+- [X] =test/nelisp-buffer-test.el= 新設 (29 ERT):
+  - 5 registry (uniquify / get-or-create idempotent / absent /
+    kill / list)
+  - 5 insert / size / point (empty / basic / multi / middle /
+    type-error)
+  - 2 goto-char (clamp / narrow 尊重)
+  - 4 delete-region (basic / across-gap / inverted /
+    out-of-range)
+  - 2 substring + char-after
+  - 2 erase / modified flag
+  - 3 narrow / save-restriction / save-excursion
+  - 1 =nelisp-with-buffer= 入れ子
+  - 5 host parity (insert-sequence / goto+delete / narrow-bounds
+    / buffer-substring / multibyte-Japanese)
+- [X] primitive 表は §2.6 A Parallel により追加なし (NeLisp
+  源 code は自前 =nelisp-buffer-*= API、host buffer は触らない)
+- [X] make test: 580 → *609/609 green* (+29, 0 unexpected)
+- commit: =3b59c30= on =feat/phase5b.1-buffer=
 
-期待スコープ: 1.5 週。
+期待スコープ 1.5 週に対し、当日完了 (primitive 追加 § 2.6 A で
+ゼロ、gap buffer string 表現の単純さで実装量が予想より少)。
 
 ** §3.2 Marker + overlay + text-property
 
