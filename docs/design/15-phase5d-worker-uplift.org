@@ -3,7 +3,7 @@
 #+date: 2026-04-24
 #+options: toc:2
 
-* STATE: DRAFT 2026-04-24 (§2 LOCKED 2026-04-24 全推奨 signoff、§3.0 着手中)
+* STATE: DRAFT 2026-04-24 (§2 LOCKED + §3.0 SHIPPED 2026-04-24、§3.1 next)
 
 ** 目的
 
@@ -208,12 +208,20 @@ scope を超えて 5-E に食い込む。B で "worker layer は独立して
 
 暫定 7 sub-phase + 1 merge gate。§2 LOCK 後に refine。
 
-** §3.0 Pre-req primitive audit (2 日)
+** §3.0 Pre-req primitive audit — SHIPPED 2026-04-24
 
-- Phase 5-B.0 / 5-C.0 の audit script pattern を踏襲、本 Phase で
-  必要な primitive を静的に scan
-- 期待 gap: 低 (=-pool= / =-process= + actor/channel で完結見込)
-- =docs/design/15-audit-script.el= + forecast sketch 整備
+- =docs/design/15-audit-script.el= (5-C port、path 差分のみ)
+- =docs/design/15-forecast/nelisp-worker-sketch.el= — anvil-worker
+  相当 API の forecast sketch (classifier / latency / warmup /
+  correlation-id / health-scan)
+- 実 audit 結果: missing=4 covered=18 (impl =bac63ce=)
+- =nelisp--primitive-symbols= に 4 primitive 追加:
+  =float-time= / =format-time-string= / =truncate= / =random=
+- ERT +5 (=test/nelisp-stdlib-test.el=): float-time monotonic /
+  truncate integer / truncate divisor / random range / format-time-
+  string shape
+- make test: 787 → *792/792 green*
+- 期待 2 日に対し当日完了 (5-C.0 infra port で audit cost 最小)
 
 ** §3.1 =nelisp-worker.el= base (1 週)
 
