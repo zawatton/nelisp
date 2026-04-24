@@ -118,6 +118,12 @@ assert_contains '"name":"file-read"'
 assert_contains '"name":"git-log"'
 assert_contains '"name":"data-set-path"'
 assert_contains '"name":"data-get-path"'
+# git-status has no params — inputSchema.properties must be `{}` not `null`
+# (Claude Code zod schema rejects `null`; surfaced as "Failed to fetch tools"
+# invalid_type at tools[*].inputSchema.properties.)
+assert_contains '"name":"git-status"'
+assert_contains '"inputSchema":{"type":"object","properties":{}}'
+assert_absent   '"properties":null'
 assert_contains '"id":3'
 assert_contains '"id":4'
 assert_contains '"id":5'

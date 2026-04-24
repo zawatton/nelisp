@@ -194,7 +194,8 @@ clear; will error if any tool is still registered."
 
   (nelisp-deftool git-status
     :description "Return `git status --short' under cwd."
-    :input-schema (list :type "object" :properties nil)
+    :input-schema (list :type "object"
+                        :properties (make-hash-table :test 'equal))
     :handler (lambda (_args)
                (let ((res (nelisp-tools--run-command
                            "git-status"

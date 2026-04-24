@@ -130,6 +130,37 @@ arguments.  Used by tools/list + tools/call tests."
                         #'string<)))
       (should (equal '("alpha" "bravo") names)))))
 
+(ert-deftest nelisp-server-test-tools-list-empty-properties-is-object ()
+  "No-arg tools' inputSchema.properties must JSON-encode as `{}' not
+`null'.  Claude Code's zod schema rejects the `null' form and
+surfaces it as \"Failed to fetch tools: invalid_type at
+tools[*].inputSchema.properties\"."
+  (nelisp-server-test--with-fresh
+    (puthash "noargs"
+             (list :description "dummy no-arg tool"
+                   :input-schema
+                   (list :type "object"
+                         :properties (make-hash-table :test 'equal))
+                   :handler (lambda (_args) (list :ok t)))
+             nelisp-server--tool-registry)
+    (let* ((req "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}")
+           (resp (nelisp-server-call-json req)))
+      (should (string-match-p "\"properties\":{}" resp))
+      (should-not (string-match-p "\"properties\":null" resp)))))
+
+(ert-deftest nelisp-server-test-tools-list-default-schema-is-object ()
+  "When a tool registers without an explicit :input-schema, the
+fallback schema's `properties' field must still serialize as `{}'."
+  (nelisp-server-test--with-fresh
+    (puthash "implicit"
+             (list :description "no schema declared"
+                   :handler (lambda (_args) (list :ok t)))
+             nelisp-server--tool-registry)
+    (let* ((req "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}")
+           (resp (nelisp-server-call-json req)))
+      (should (string-match-p "\"properties\":{}" resp))
+      (should-not (string-match-p "\"properties\":null" resp)))))
+
 (ert-deftest nelisp-server-test-tools-call-registry-hit ()
   (nelisp-server-test--with-fresh
     (nelisp-server-test--register-dummy-tool

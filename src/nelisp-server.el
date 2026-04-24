@@ -126,7 +126,8 @@ inputSchema}."
                                     "")
                    :inputSchema (or (plist-get spec :input-schema)
                                     (list :type "object"
-                                          :properties nil)))
+                                          :properties
+                                          (make-hash-table :test 'equal))))
              tools))
      nelisp-server--tool-registry)
     (list :tools (nreverse tools))))
