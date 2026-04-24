@@ -347,6 +347,134 @@ suite."
     (should (timerp timer))
     (cancel-timer timer)))
 
+;;; Phase 5-C.0 primitive smoke tests ------------------------------
+
+(ert-deftest nelisp-stdlib-phase5c-make-process-and-exit ()
+  "NeLisp can spawn a host subprocess and observe its exit code.
+The whole lifecycle runs inside a single `nelisp-eval' form so the
+process object stays within NeLisp and does not escape as a
+non-self-evaluating literal."
+  (let ((exit-code
+         (nelisp-eval
+          '(let ((p (make-process :name "t" :command '("true")
+                                  :connection-type 'pipe)))
+             (while (process-live-p p)
+               (accept-process-output p 0.05))
+             (let ((code (process-exit-status p)))
+               (delete-process p)
+               code)))))
+    (should (= 0 exit-code))))
+
+(ert-deftest nelisp-stdlib-phase5c-process-name-and-command ()
+  (let ((result
+         (nelisp-eval
+          '(let ((p (make-process :name "named"
+                                  :command '("true"))))
+             (let ((n (process-name p))
+                   (c (process-command p)))
+               (while (process-live-p p)
+                 (accept-process-output p 0.05))
+               (delete-process p)
+               (list n c))))))
+    (should (equal "named" (nth 0 result)))
+    (should (equal '("true") (nth 1 result)))))
+
+(ert-deftest nelisp-stdlib-phase5c-process-send-string-resolvable ()
+  "`process-send-string' / `process-send-eof' / `accept-process-output'
+are callable primitives.  A full integration round-trip (pipe +
+buffer capture) is deferred to §3.1 where the NeLisp process
+wrapper bridges host buffers properly."
+  (should (nelisp-eval '(fboundp 'process-send-string)))
+  (should (nelisp-eval '(fboundp 'process-send-eof)))
+  (should (nelisp-eval '(fboundp 'accept-process-output))))
+
+(ert-deftest nelisp-stdlib-phase5c-process-status-primitive ()
+  (let ((status
+         (nelisp-eval
+          '(let ((p (make-process :name "s" :command '("true"))))
+             (let ((st (process-status p)))
+               (while (process-live-p p)
+                 (accept-process-output p 0.05))
+               (delete-process p)
+               st)))))
+    (should (memq status '(run open stop exit closed)))))
+
+(ert-deftest nelisp-stdlib-phase5c-process-buffer ()
+  "`process-buffer' primitive is resolvable.
+Full host-buffer <-> process integration is covered by §3.1."
+  (should (nelisp-eval '(fboundp 'process-buffer))))
+
+(ert-deftest nelisp-stdlib-phase5c-set-process-sentinel-filter ()
+  "`set-process-sentinel' / `set-process-filter' accept host callbacks.
+NeLisp closures as sentinels would fail at host-side funcall (the
+process layer §3.1 supplies a thin wrapper for that); here we only
+verify primitive resolvability + that a host `#'ignore' callback
+installs cleanly."
+  (let ((ok
+         (nelisp-eval
+          '(let ((p (make-process :name "sf" :command '("true"))))
+             (set-process-sentinel p #'ignore)
+             (set-process-filter p #'ignore)
+             (while (process-live-p p)
+               (accept-process-output p 0.05))
+             (delete-process p)
+             t))))
+    (should ok)))
+
+(ert-deftest nelisp-stdlib-phase5c-file-ops ()
+  "file-exists-p / file-directory-p / file-attributes / delete-file /
+rename-file round-trip on a temp file."
+  (let* ((tmp (make-temp-file "nl5c-"))
+         (renamed (concat tmp ".r")))
+    (unwind-protect
+        (progn
+          (should (nelisp-eval `(file-exists-p ,tmp)))
+          (should-not (nelisp-eval `(file-directory-p ,tmp)))
+          (let ((attrs (nelisp-eval `(file-attributes ,tmp))))
+            (should (consp attrs)))
+          (nelisp-eval `(rename-file ,tmp ,renamed))
+          (should (nelisp-eval `(file-exists-p ,renamed)))
+          (should-not (nelisp-eval `(file-exists-p ,tmp))))
+      (ignore-errors (delete-file renamed))
+      (ignore-errors (delete-file tmp)))
+    (should-not (file-exists-p renamed))))
+
+(ert-deftest nelisp-stdlib-phase5c-point-primitives-on-host-buffer ()
+  "goto-char / point / point-min / point-max work on host buffer."
+  (with-temp-buffer
+    (insert "abc")
+    (should (= 4 (nelisp-eval '(point))))
+    (should (= 1 (nelisp-eval '(point-min))))
+    (should (= 4 (nelisp-eval '(point-max))))
+    (nelisp-eval '(goto-char 2))
+    (should (= 2 (nelisp-eval '(point))))))
+
+(ert-deftest nelisp-stdlib-phase5c-buffer-substring-no-properties ()
+  (with-temp-buffer
+    (insert (propertize "hello" 'face 'bold))
+    (should (equal "hell"
+                   (nelisp-eval '(buffer-substring-no-properties 1 5))))))
+
+(ert-deftest nelisp-stdlib-phase5c-re-search-forward ()
+  (with-temp-buffer
+    (insert "zzz target xxx")
+    (goto-char (point-min))
+    (should (nelisp-eval '(re-search-forward "target" nil t)))))
+
+(ert-deftest nelisp-stdlib-phase5c-assq-delete-all ()
+  (should (equal '((b . 2) (c . 3))
+                 (nelisp-eval '(assq-delete-all 'a
+                                                 '((a . 1) (b . 2)
+                                                   (c . 3) (a . 4))))))
+  (should (equal nil
+                 (nelisp-eval '(assq-delete-all 'x nil)))))
+
+(ert-deftest nelisp-stdlib-phase5c-make-network-process-registered ()
+  "`make-network-process' is a host subr in the primitive table.
+We do not create a live socket here; only verify the symbol resolves."
+  (should (subrp (indirect-function 'make-network-process)))
+  (should (nelisp-eval '(fboundp 'make-network-process))))
+
 (provide 'nelisp-stdlib-test)
 
 ;;; nelisp-stdlib-test.el ends here

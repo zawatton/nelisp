@@ -647,6 +647,22 @@ dispatches straight into the VM."
     send-string-to-terminal frame-width frame-height
     ;; Timer scheduling (Phase 5-B.0 — eventloop fallback と diagnostics)
     run-at-time
+    ;; Subprocess primitives (Phase 5-C.0)
+    make-process process-send-string process-send-eof
+    process-live-p process-status process-exit-status
+    kill-process delete-process accept-process-output
+    process-id process-name process-command process-buffer
+    set-process-sentinel set-process-filter
+    ;; Network primitives (Phase 5-C.0)
+    make-network-process
+    ;; File system primitives (Phase 5-C.0)
+    file-attributes file-exists-p file-directory-p
+    delete-file rename-file
+    ;; Host-buffer helpers used by HTTP parsing / file-notify (Phase 5-C.0)
+    goto-char point point-min point-max
+    buffer-substring-no-properties re-search-forward
+    ;; List util (Phase 5-C.0)
+    assq-delete-all
     ;; Error plumbing — `error' / `signal' / `user-error' / `define-error'
     ;; all hook into the host condition system that `condition-case'
     ;; already knows how to catch.
