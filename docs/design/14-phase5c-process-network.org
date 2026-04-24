@@ -3,7 +3,7 @@
 #+date: 2026-04-24
 #+options: toc:2
 
-* STATE: DRAFT 2026-04-24 (§2 LOCKED + §3.0-3.1 SHIPPED 2026-04-24、§3.1b next)
+* STATE: DRAFT 2026-04-24 (§2 LOCKED + §3.0-3.1b SHIPPED 2026-04-24、§3.2 next)
 
 ** 目的
 
@@ -383,32 +383,60 @@ nelisp--apply を使う新 module は必ず =nelisp-eval= を require。
 期待スコープ: 1.5 週。実績: 当日 (Phase 4 actor + §3.0 primitive
 表の基盤が整っていたため thin wrapper だけで済んだ)。
 
-** §3.1b =nelisp-process-pool= (pre-spawned worker) — 本 Phase scope 追加
+** §3.1b =nelisp-process-pool= (pre-spawned worker) — SHIPPED 2026-04-24
 
 目的: spawn overhead を削るため常駐 worker pool。anvil-worker
 相当、anvil.el の NeLisp 移植を直接加速する。
 
-作業:
-- =src/nelisp-process-pool.el= 新設
-- =(cl-defstruct nelisp-process-pool name workers max-size
-    idle-timeout ...)= + per-worker state (idle / busy /
-    spawning / dead)
-- 公開 API: =nelisp-process-pool-create NAME &key SIZE COMMAND=
-  / =nelisp-process-pool-get POOL &key TIMEOUT= /
-  =-process-pool-return POOL WORKER= / =-process-pool-kill POOL=
-  / =-process-pool-stats POOL=
-- worker crash 自動補充: sentinel でdead 検出 → 新規 spawn を
-  =run-at-time 0= で defer (anvil-worker startup-freeze 回避
-  pattern)
-- =quick-alive-p= による fast health-check (heavy probe 禁止、
-  inotify wait 回避)
-- periodic scan で zombie 掃除 (=run-at-time= + configurable
-  interval)
-- ERT: pool create / get / return / crash-refill / pool-kill /
-  stats / timeout behaviour
+実装 (commit af84958):
+- =src/nelisp-process-pool.el= 新設 (~165 LOC)
+- =(cl-defstruct nelisp-process-pool name command size
+    connection-type coding workers)=
+- =(cl-defstruct nelisp-process-pool-worker pool process state
+    last-used)= — state は =idle= / =busy= / =dead=
+- 公開 API (7 本):
+  - =nelisp-process-pool-create NAME &key COMMAND SIZE
+    CONNECTION-TYPE CODING PRESPAWN= (=:prespawn t= 既定で
+    SIZE workers 即 spawn、nil で lazy)
+  - =nelisp-process-pool-get POOL= (sweep-dead → find-idle →
+    spawn-if-under-size → replace-dead、roster 飽和で nil)
+  - =nelisp-process-pool-return POOL WORKER= (alive 確認して
+    idle 復帰、死んでいれば dead へ)
+  - =nelisp-process-pool-kill POOL= (全 worker kill + delete-
+    process + roster 空)
+  - =nelisp-process-pool-stats POOL= (=:total / :idle / :busy /
+    :dead / :size= plist)
+  - =nelisp-process-pool--quick-alive-p WORKER= (anvil-worker
+    pattern: host =process-live-p= + state≠dead、heavy probe
+    禁止、inotify wait 回避)
+  - =nelisp-process-pool-worker-list POOL=
+- worker crash 自動補充: =:sentinel= closure が worker の state
+  を =dead= に flip、次回 =pool-get= が sweep → 新規 spawn
+- MVP 簡略化 (Doc 14 本文で意識的に残した項目):
+  - deferred spawn (=run-at-time 0=) は =:prespawn nil= switch で
+    opt-out 可、default は anvil-worker の startup-freeze 回避
+    要件が無い platform 向け eager spawn
+  - periodic zombie scan は未実装 (sweep on-get で代替、reuse
+    idle が頻繁な想定では十分)
+  - actor-protocol request/response layer は out of scope、caller
+    側で =:actor= を per-worker に設定する流儀
 
-期待スコープ: 1 週。user 判断 *2026-04-24 本 Phase scope に追加*
-(pool 無しで anvil.el を NeLisp port するのは現実的でないため)。
+ERT (=test/nelisp-process-pool-test.el=, 14 本):
+- create 3 (returns struct / lazy no-workers / command 欠如
+  signal)
+- get / return 5 (marks busy / return → idle / reuses returned /
+  lazy spawn on get / size cap / full all-busy → nil)
+- kill 2 (empties roster / terminates each worker's host proc)
+- stats 1 (state plist reflects transitions idle→busy→idle)
+- crash refill 2 (dead replaced on next get / =quick-alive-p=
+  distinguishes live vs dead)
+
+make test: 722 → *736/736 green*
+
+期待スコープ: 1 週。実績: 当日 (§3.1 の =nelisp-make-process=
+sentinel trampoline 機構がそのまま worker dead 検出に流用でき、
+anvil-worker の複雑な startup-freeze 問題は =:prespawn nil=
+switch で opt-out 可能にして簡略化)。
 
 ** §3.2 =nelisp-network= (TCP / TLS / HTTP client)
 
