@@ -3,7 +3,7 @@
 #+date: 2026-04-24
 #+options: toc:2
 
-* STATE: DRAFT 2026-04-24 (§2 LOCKED + §3.0-3.6 SHIPPED 2026-04-24、§3.7 merge gate next)
+* STATE: SHIPPED 2026-04-24 (§3.0-3.7 all SHIPPED、Phase 5-D 全完了、§2.9 audit B pass)
 
 ** 目的
 
@@ -409,10 +409,31 @@ scope を超えて 5-E に食い込む。B で "worker layer は独立して
   させず test-local で済ませた — §3.1 commentary の
   "no actor-context call surface" 制約を尊重)
 
-** §3.7 Merge gate (1 日)
+** §3.7 Merge gate — SHIPPED 2026-04-24
 
-- audit [X] check + Doc 15 top SHIPPED stamp + main に 8 bubble
-  merge (doc-draft + §3.0-3.7)
+- *audit §2.9 criteria B (port + soak pass) — 達成*:
+  - [X] anvil-worker 相当 API 全 port 完了 (classifier / health /
+    warmup / latency metrics / 3-lane pool / correlation-id /
+    pipe stdio)
+  - [X] =make test= 846/846 green (Phase 5-D 中 +55 ERT:
+    worker 54 + primitive 表 5、net +58 からの他モジュール
+    adjustments)
+  - [X] =make soak= 2/2 pass (sequential-mix 46 ms /
+    no-starvation-under-batch 2.06 s、§3.6 で実証)
+  - [X] anvil-worker.el (1137 LOC / 49 関数) 相当の機能配置:
+    - defcustom 8 種 (emacs-bin / call-timeout /
+      health-check-interval / batch-warmup-expressions /
+      batch-warmup-delay / latency-sample-cap /
+      classify-{read,write,batch,unknown-fallback}-patterns)
+    - 公開 API 12: =pool-create= / =pool-kill= / =call= /
+      =classify= / =health-{scan,timer-start,timer-stop,
+      timer-active-p}= / =latency-{show,reset}= / =pool-stats=
+    - =nelisp-worker-{error,timeout,busy}= 3 signals
+- *Doc 15 top STATE: DRAFT → SHIPPED 2026-04-24*
+- *main に 9 bubble =--no-ff= merge* (doc-draft + §3.0-3.7):
+  - Makefile conflict は §3.6 の soak 追加 × main の
+    compile-cleanup decoupling を手動融合 (両方 keep)
+  - other 8 branches は Makefile 未触のため clean 3-way merge
 
 合計: 1 + 7 + 2 = 10 週の机上計算。実績ペース (Phase 5-A/B/C で
 1 sub-phase/日) が続くなら 2 週前後。
