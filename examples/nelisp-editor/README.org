@@ -1,0 +1,128 @@
+#+title: NeLisp editor — minimum 3-core demo
+#+author: zawatton
+#+date: 2026-04-24
+#+options: toc:1
+
+* 概要
+
+Phase 5-B.5 per Doc 13 §3.5. =nelisp-buffer= / =nelisp-redisplay=
+/ =nelisp-eventloop= の 3 核を連動させる最小 "editor" demo。
+release bar 後半 (Emacs core 置換) の動作証拠となる。
+
+実用 editor ではない。scripted key sequence を受けて:
+
+1. =nelisp-buffer= に insert / delete 操作を行う
+2. =nelisp-window= の cursor row/col + dirty-rows を更新
+3. =nelisp-redisplay-window= で terminal escape を emit
+
+を一気通貫に動作させる。
+
+* 起動方法
+
+** ERT 経由 (推奨、batch mode で OK)
+
+=test/nelisp-editor-test.el= が =load= で本 =main.el= を読み込み、
+scripted key sequence を =nelisp-editor-run-scripted= /
+=nelisp-editor-run-actor-scripted= で流して状態を検証する。
+
+: emacs --batch -Q -L src -L test \
+:   -l test/nelisp-editor-test.el \
+:   -f ert-run-tests-batch-and-exit
+
+=make test= でも実行される (=nelisp*-test.el= glob 準拠)。
+
+** 対話起動 (開発試行用)
+
+1. =emacs -Q=
+2. =M-: (let ((load-path (append load-path (list "src"))))
+         (require 'nelisp-buffer)
+         (require 'nelisp-redisplay)
+         (require 'nelisp-eventloop))=
+3. =M-: (load "examples/nelisp-editor/main.el")=
+4. =M-: (nelisp-editor-init)=
+5. =M-: (nelisp-editor-run-scripted '(?H ?i ?\s ?N ?L))=
+   → =("Hi NL")= が返り buffer にも同値
+6. =M-: (nelisp-editor-repaint)=
+   → terminal に escape + text が emit (stdout 利用時)
+
+本 MVP は tty raw-mode stdin 入力を *持たない*。実入力経路は
+Phase 5-B.6 以降 / 後続 Phase で =tty-raw-mode= + bytereader を
+追加する想定。
+
+* キーバインド (single-char MVP)
+
+| Key             | Command                         |
+|-----------------+---------------------------------|
+| printable 32..126 | =insert-char=                 |
+| =\n=            | =insert-char=                   |
+| =C-f= / =C-b=   | =forward-char= / =backward-char=|
+| =C-n= / =C-p=   | =next-line= / =previous-line=   |
+| =C-d=           | =delete-char=                   |
+| =DEL= (0x7f)    | =delete-backward-char=          |
+| =C-q=           | =quit= (event loop 停止)        |
+
+=C-x C-c= 相当の multi-char prefix は本 MVP scope 外。prefix map
+は Phase 6 以降で扱う。
+
+* Demo 手順 (hello package を NeLisp-buffer に流し込む)
+
+PoC として Phase 5-A.5 で仕上げた =examples/hello/= パッケージを
+NeLisp-buffer に load し、cursor 移動 + 削除を demo する。
+
+1. =nelisp-load-path= を =examples/hello/= に向ける
+2. =(nelisp-require 'hello)=
+3. =(nelisp-eval '(hello-world))= で ="Hello, World!"= を取得
+4. =nelisp-editor-init= + scripted key でその文字列を 1 char ずつ
+   insert、最後に =C-q= quit
+5. 結果: NeLisp-buffer に ="Hello, World!"= が入り、=cursor-row=
+   / =cursor-col= が末尾位置、window dirty-rows が [0]
+
+ERT では =nelisp-editor-hello-package-integration= で実装済。
+
+* Architecture 早見
+
+#+begin_src text
+scripted keys  ─┐
+                ├─>  nelisp-event (kind=key data=char)
+                │       ├──> enqueue (sync)
+                │       └──> nelisp-send (actor)
+                │
+                ▼
+    ┌─────────────────────────────┐
+    │  nelisp-eventloop--dispatch │
+    │   - binding table lookup    │
+    │   - funcall cmd with ev     │
+    └────────────┬────────────────┘
+                 │
+                 ▼
+    ┌─────────────────────────────┐
+    │  nelisp-editor-*            │
+    │   (insert/delete/move/quit) │
+    │   - nelisp-buffer ops       │
+    │   - nelisp-window mark-dirty│
+    │   - cursor-row/col 更新     │
+    └────────────┬────────────────┘
+                 │
+                 ▼ (on demand)
+    ┌─────────────────────────────┐
+    │  nelisp-redisplay-window    │
+    │   - dirty rows ASC paint    │
+    │   - CSI escape + text       │
+    │   - cursor restore          │
+    └─────────────────────────────┘
+#+end_src
+
+* 非 scope
+
+- tty raw-mode stdin 読み取り (Phase 5-B.6+)
+- multi-char prefix bindings (C-x C-c 等)
+- undo / kill-ring / mark
+- font-lock / 色
+- 複数 window / frame 管理
+- network / file I/O integration (Phase 5-C+)
+
+* 参照
+
+- Doc 13 §3.5: =docs/design/13-phase5b-core-substrate.org=
+- ERT: =test/nelisp-editor-test.el=
+- Backend modules: =src/nelisp-{buffer,redisplay,eventloop}.el=
