@@ -3,7 +3,7 @@
 #+date: 2026-04-24
 #+options: toc:2
 
-* STATE: DRAFT 2026-04-24 (§2 LOCKED + §3.0-3.1b SHIPPED 2026-04-24、§3.2 next)
+* STATE: DRAFT 2026-04-24 (§2 LOCKED + §3.0-3.2 SHIPPED 2026-04-24、§3.3 next)
 
 ** 目的
 
@@ -438,25 +438,57 @@ sentinel trampoline 機構がそのまま worker dead 検出に流用でき、
 anvil-worker の複雑な startup-freeze 問題は =:prespawn nil=
 switch で opt-out 可能にして簡略化)。
 
-** §3.2 =nelisp-network= (TCP / TLS / HTTP client)
+** §3.2 =nelisp-network= (TCP / TLS / HTTP client) — SHIPPED 2026-04-24
 
 目的: host =make-network-process= を wrap + HTTP GET/HEAD +
 ETag/TTL cache。
 
-作業:
-- =src/nelisp-network.el= 新設
-- =(cl-defstruct nelisp-network id host-conn actor status ...)=
-- 公開 API: =nelisp-open-network= (=:host=, =:service=, =:type=
-  =tcp | tls=, =:sentinel=, =:filter=) / =-network-send-string= /
-  =-network-close= / =-network-live-p=
-- HTTP 層: =nelisp-http-get URL &key HEADERS TIMEOUT= /
-  =nelisp-http-head URL &key HEADERS= / cache は
-  =anvil-state= parallel 実装 (or host =url-retrieve= wrap
-  with ETag headers)
-- ERT: loopback TCP echo + HTTP GET to in-process test server
-  (=tls echo skip=) / ETag cache hit / TTL expiry / timeout
+実装 (commit __HASH_5C2__):
+- =src/nelisp-network.el= 新設 (~260 LOC)
+- =(cl-defstruct nelisp-network id host-conn actor status
+  user-sentinel user-filter props)=
+- 公開 API 9 本:
+  - =nelisp-open-network (:name :host :service :type :coding
+    :sentinel :filter :actor :props :buffer)= — =:type 'tcp=
+    (default) = =make-network-process=、=:type 'tls= =
+    =open-network-stream= (host GnuTLS 委譲 per §2.4 A)
+  - =nelisp-network-send-string= / =-close= / =-live-p= /
+    =-list= / =-get= / =-put=
+  - registry + =nelisp-network--find-by-host= + =--reset-registry=
+- sentinel/filter trampoline は §3.1 と同 pattern: 自動 state
+  mirror + =:actor= への =nelisp-event= post (=network-state=
+  / =network-output=) + =nelisp--apply= で user callback dispatch
+- HTTP client (host =url-retrieve-synchronously= wrap):
+  - =nelisp-http-get URL &key HEADERS TIMEOUT CACHE-TTL= → plist
+    (=:status= =:body= =:headers= =:etag= =:cached=)
+  - =nelisp-http-head URL &key HEADERS TIMEOUT= → plist
+    (=:status= =:headers=)
+  - =nelisp-http--cache= (hash-table URL → cache entry)
+  - TTL 内 hit は =:cached t= で即 return
+  - 期限切れ + =:etag= ありなら =If-None-Match= で conditional
+    request、304 で body 再利用
+  - =nelisp-http-cache-clear= / =-cache-size= 管理関数
+  - =nelisp-http--parse-buffer= で url-retrieve response buffer
+    から status / headers / body 抽出
 
-期待スコープ: 1.5 週。
+ERT (=test/nelisp-network-test.el=, 17 本):
+- network layer 9: open struct / missing-host signal /
+  missing-service signal / TCP send+filter loopback /
+  sentinel trampoline / close registry / find-by-host /
+  get+put / TLS path fboundp-only
+- HTTP cache internals 3: clear+size / fresh-p boundary /
+  parse-buffer extracts 200 + ETag
+- HTTP integration 5: GET loopback 200+body / GET cache within
+  TTL (:cached t on 2nd call) / cache-clear evicts / HEAD
+  returns status+headers / connection failure → nil status
+- *in-process loopback HTTP/1.1 server* を =make-network-process
+  :server t= で起動、"HTTP/1.1 200 OK ... hello" を 1 回返す
+  minimal responder。ネットワーク依存なしで完結
+
+make test: 736 → *753/753 green*
+
+期待スコープ: 1.5 週。実績: 当日 (§3.1 trampoline pattern +
+host url-retrieve の既存安定性で、HTTP cache 層が薄くて済んだ)。
 
 ** §3.3 =nelisp-file-notify=
 
