@@ -3,7 +3,7 @@
 #+date: 2026-04-24
 #+options: toc:2
 
-* STATE: DRAFT 2026-04-24 (§2 LOCKED + §3.0-3.5 SHIPPED 2026-04-24、§3.6 next)
+* STATE: DRAFT 2026-04-24 (§2 LOCKED + §3.0-3.6 SHIPPED 2026-04-24、§3.7 merge gate next)
 
 ** 目的
 
@@ -381,12 +381,33 @@ scope を超えて 5-E に食い込む。B で "worker layer は独立して
 - 期待 3 日に対し当日完了 (anvil の plist storage + ring cap
   pattern を thin port で済んだ)
 
-** §3.6 Soak test (2 日)
+** §3.6 Soak test — SHIPPED 2026-04-24
 
-- =test/nelisp-worker-soak-test.el= — 並列 read (=20 call) /
-  batch (=1 long) / write (=5 seq) で starvation 無きを証明
-- 実 daemon-like scenario、=make soak= target (advisory only、
-  gc-bench と同じ policy)
+- =test/nelisp-worker-soak-test.el= (advisory-only、=make test=
+  の TESTS glob から明示除外) + =Makefile= =soak= target:
+  - scenario =sequential-mix=: 20 :read + 5 :write + 1 :batch を
+    =nelisp-worker-call= 直列で流し、3 lane 全てで latency
+    metrics が populate されること + read p99 conservative 上限
+    (<10 s) を assert
+  - scenario =no-starvation-under-batch=: =(sleep-for 2.0)= を
+    :batch に async 投入 → 即座に 20 :read + 5 :write を直列
+    実行 → 25 calls が 1.8 s 未満で完走 (batch 中に完了) ことを
+    flagship assert、その後 batch reply 受信を poll で確認
+  - test-local async primitives =nelisp-worker-soak--async-send=
+    / =-poll-all= — =nelisp-worker-call= と同じ内部 plumbing
+    (=nelisp-worker--lane-pool= / =--next-id= / =--ensure-filter=)
+    を再利用、新規 public surface なし
+- impl commit =e34c415=、Makefile 変更:
+  - =TESTS := $(sort $(filter-out test/nelisp-worker-soak-test.el,
+    $(wildcard test/nelisp*-test.el)))=
+  - 新 target =soak:= は =clean= 非依存 (warmup hit で hot path
+    を測るのが soak の目的、毎回 byte-compile 無しで良い)
+- 計測: =make soak= 2 tests passed、sequential-mix 46 ms、
+  no-starvation 2.06 s (batch の sleep-for 2.0 支配)
+- =make test= 回帰: 846/846 green 維持 (soak は除外されている)
+- 期待 2 日に対し当日完了 (async helper を module 内部に露出
+  させず test-local で済ませた — §3.1 commentary の
+  "no actor-context call surface" 制約を尊重)
 
 ** §3.7 Merge gate (1 日)
 
