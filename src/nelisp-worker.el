@@ -80,6 +80,14 @@ delivers warmup synchronously during `pool-create'."
   :type 'number
   :group 'nelisp-worker)
 
+(defcustom nelisp-worker-latency-sample-cap 1000
+  "Maximum per-lane total-ms samples retained for percentile stats.
+Mirrors `anvil-worker-latency-sample-cap'.  A non-positive value
+disables sample retention (sums + counts are still tracked so
+`nelisp-worker-latency-show' can report averages)."
+  :type 'integer
+  :group 'nelisp-worker)
+
 (defconst nelisp-worker--lanes '(:read :write :batch)
   "All lane keywords known to this module.  Order is stable.")
 
@@ -273,6 +281,121 @@ Idempotent: calling on a pool without a registered timer is a no-op."
   "Return the active timer for POOL, or nil if none."
   (gethash pool nelisp-worker--health-timers))
 
+;;; Latency metrics (Phase 5-D.5, anvil-worker Phase 4a port) ------
+;;
+;; Per-lane histogram + running sums + percentile readout.  Storage
+;; lives in `nelisp-worker--metrics-latency', keyed by POOL and
+;; LANE so multiple live pools don't collide.  Each BUCKET is a
+;; plist of:
+;;   :samples      (count N)
+;;   :spawn-ms-sum running sum of spawn-ms
+;;   :wait-ms-sum  running sum of wait-ms
+;;   :total-ms-sum running sum of (spawn-ms + wait-ms)
+;;   :totals       newest-first list of total-ms samples, capped at
+;;                 `nelisp-worker-latency-sample-cap'
+;;
+;; The recording hook lives in `nelisp-worker-call', which measures
+;; spawn-ms (wall clock around `nelisp-process-pool-get') and
+;; wait-ms (around the `accept-process-output' poll loop) and
+;; funnels them through `nelisp-worker--latency-record'.
+
+(defvar nelisp-worker--metrics-latency (make-hash-table :test 'eq)
+  "POOL -> per-lane latency plist (see `-latency-empty-bucket').")
+
+(defun nelisp-worker--latency-empty-bucket ()
+  "Fresh per-lane latency bucket."
+  (list :samples 0
+        :spawn-ms-sum 0.0
+        :wait-ms-sum  0.0
+        :total-ms-sum 0.0
+        :totals nil))
+
+(defun nelisp-worker--latency-init (pool)
+  "Initialise POOL's per-lane latency buckets and register them."
+  (let ((buckets (list :read  (nelisp-worker--latency-empty-bucket)
+                       :write (nelisp-worker--latency-empty-bucket)
+                       :batch (nelisp-worker--latency-empty-bucket))))
+    (puthash pool buckets nelisp-worker--metrics-latency)
+    buckets))
+
+(defun nelisp-worker--latency-buckets (pool)
+  "Return POOL's per-lane latency plist, initialising on first use."
+  (or (gethash pool nelisp-worker--metrics-latency)
+      (nelisp-worker--latency-init pool)))
+
+(defun nelisp-worker--latency-record (pool lane spawn-ms wait-ms)
+  "Record one (SPAWN-MS, WAIT-MS) sample on POOL's LANE bucket.
+Matches `anvil-worker--latency-record' semantics: the `:totals'
+ring is capped at `nelisp-worker-latency-sample-cap' (newest-
+first), and running sums are accumulated for cheap averages."
+  (let* ((buckets (nelisp-worker--latency-buckets pool))
+         (bucket (plist-get buckets lane)))
+    (when bucket
+      (let* ((total-ms (+ spawn-ms wait-ms))
+             (cap nelisp-worker-latency-sample-cap)
+             (totals (cons total-ms (plist-get bucket :totals)))
+             (trimmed
+              (cond
+               ((or (not (numberp cap)) (<= cap 0)) nil)
+               ((> (length totals) cap) (cl-subseq totals 0 cap))
+               (t totals))))
+        (setq bucket (plist-put bucket :samples
+                                (1+ (plist-get bucket :samples))))
+        (setq bucket (plist-put bucket :spawn-ms-sum
+                                (+ spawn-ms
+                                   (plist-get bucket :spawn-ms-sum))))
+        (setq bucket (plist-put bucket :wait-ms-sum
+                                (+ wait-ms
+                                   (plist-get bucket :wait-ms-sum))))
+        (setq bucket (plist-put bucket :total-ms-sum
+                                (+ total-ms
+                                   (plist-get bucket :total-ms-sum))))
+        (setq bucket (plist-put bucket :totals trimmed))
+        (setq buckets (plist-put buckets lane bucket))
+        (puthash pool buckets nelisp-worker--metrics-latency))
+      nil)))
+
+(defun nelisp-worker--percentile (samples pct)
+  "Return the PCT (0-100) percentile of SAMPLES, or nil if empty."
+  (when samples
+    (let* ((sorted (sort (copy-sequence samples) #'<))
+           (n (length sorted))
+           (idx (max 0 (min (1- n)
+                            (floor (* (/ pct 100.0) (1- n)))))))
+      (nth idx sorted))))
+
+(defun nelisp-worker-latency-reset (pool)
+  "Discard every recorded sample for POOL."
+  (remhash pool nelisp-worker--metrics-latency)
+  nil)
+
+(defun nelisp-worker-latency-show (pool)
+  "Return a plist summarising POOL's per-lane latency.
+Each lane carries `:samples' / `:avg-spawn-ms' / `:avg-wait-ms' /
+`:avg-total-ms' / `:p50-ms' / `:p90-ms' / `:p99-ms'."
+  (let ((buckets (nelisp-worker--latency-buckets pool)))
+    (cl-labels
+        ((lane-row (lane)
+           (let* ((b (plist-get buckets lane))
+                  (n (plist-get b :samples))
+                  (totals (plist-get b :totals))
+                  (safe-div
+                   (lambda (x y) (if (zerop y) 0.0 (/ x (float y))))))
+             (list :lane lane
+                   :samples n
+                   :avg-spawn-ms (funcall safe-div
+                                          (plist-get b :spawn-ms-sum) n)
+                   :avg-wait-ms  (funcall safe-div
+                                          (plist-get b :wait-ms-sum) n)
+                   :avg-total-ms (funcall safe-div
+                                          (plist-get b :total-ms-sum) n)
+                   :p50-ms (nelisp-worker--percentile totals 50)
+                   :p90-ms (nelisp-worker--percentile totals 90)
+                   :p99-ms (nelisp-worker--percentile totals 99)))))
+      (list :read  (lane-row :read)
+            :write (lane-row :write)
+            :batch (lane-row :batch)))))
+
 ;;; Batch warmup (Phase 5-D.4) --------------------------------------
 ;;
 ;; Every batch-lane worker can be pre-loaded with a list of host
@@ -440,6 +563,7 @@ Arguments:
     (ignore-errors (nelisp-process-pool-kill p)))
   (clrhash (nelisp-worker-pool-pending pool))
   (clrhash (nelisp-worker-pool-line-buffers pool))
+  (remhash pool nelisp-worker--metrics-latency)
   nil)
 
 ;;; Lane selection ---------------------------------------------------
@@ -487,10 +611,13 @@ on wedge or `nelisp-worker-error' on the child's `:error' reply."
     (let* ((wrap (nelisp-process-pool-worker-process worker))
            (id (nelisp-worker--next-id pool))
            (entry (list :done nil :tag nil :result nil))
-           (deadline (+ (float-time)
+           (t-start (float-time))
+           (spawn-ms 0.0)
+           (deadline (+ t-start
                         (or timeout nelisp-worker-call-timeout)))
            (request (cons id expression)))
       (puthash id entry (nelisp-worker-pool-pending pool))
+      (setq spawn-ms (* 1000.0 (- (float-time) t-start)))
       (unwind-protect
           (progn
             (nelisp-process-send-string
@@ -499,6 +626,10 @@ on wedge or `nelisp-worker-error' on the child's `:error' reply."
                         (< (float-time) deadline))
               (accept-process-output
                (nelisp-process-host-proc wrap) 0.05))
+            (let ((wait-ms (max 0.0
+                                (- (* 1000.0 (- (float-time) t-start))
+                                   spawn-ms))))
+              (nelisp-worker--latency-record pool lane spawn-ms wait-ms))
             (cond
              ((not (plist-get entry :done))
               (signal 'nelisp-worker-timeout

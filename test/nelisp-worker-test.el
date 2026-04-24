@@ -556,5 +556,116 @@ warmup expression's side effects (a defvar on the child)."
                       :lane :batch :timeout 5.0))))
       (ignore-errors (nelisp-worker-pool-kill p)))))
 
+;;; Latency metrics (Phase 5-D.5) -----------------------------------
+
+(ert-deftest nelisp-worker--percentile-basic ()
+  ;; anvil formula: idx = floor(pct/100 * (n-1)) — for n=5 p50 is
+  ;; index 2, i.e. the median.
+  (should (= 3 (nelisp-worker--percentile '(1 2 3 4 5) 50)))
+  (should (= 9 (nelisp-worker--percentile '(1 2 3 4 5 6 7 8 9 10) 90)))
+  (should (null (nelisp-worker--percentile nil 90))))
+
+(ert-deftest nelisp-worker--percentile-single-sample ()
+  (should (= 42 (nelisp-worker--percentile '(42) 50)))
+  (should (= 42 (nelisp-worker--percentile '(42) 99))))
+
+(ert-deftest nelisp-worker--latency-record-updates-bucket ()
+  "A single record bumps samples / sums / totals as expected."
+  (let ((p (nelisp-worker-pool-create
+            'm0 :prespawn nil
+            :read-size 1 :write-size 1 :batch-size 1)))
+    (unwind-protect
+        (progn
+          (nelisp-worker--latency-record p :read 2.0 10.0)
+          (let* ((buckets (nelisp-worker--latency-buckets p))
+                 (b (plist-get buckets :read)))
+            (should (= 1 (plist-get b :samples)))
+            (should (= 2.0 (plist-get b :spawn-ms-sum)))
+            (should (= 10.0 (plist-get b :wait-ms-sum)))
+            (should (= 12.0 (plist-get b :total-ms-sum)))
+            (should (equal '(12.0) (plist-get b :totals)))))
+      (ignore-errors (nelisp-worker-pool-kill p)))))
+
+(ert-deftest nelisp-worker--latency-record-sample-cap ()
+  "`:totals' ring never exceeds the cap."
+  (let ((nelisp-worker-latency-sample-cap 3)
+        (p (nelisp-worker-pool-create
+            'mc :prespawn nil
+            :read-size 1 :write-size 1 :batch-size 1)))
+    (unwind-protect
+        (progn
+          (dotimes (i 10)
+            (nelisp-worker--latency-record p :write 0.0 (* 1.0 i)))
+          (let ((totals (plist-get
+                         (plist-get (nelisp-worker--latency-buckets p)
+                                    :write)
+                         :totals)))
+            (should (= 3 (length totals)))
+            ;; Newest-first: last 3 recorded values (9, 8, 7).
+            (should (equal '(9.0 8.0 7.0) totals))))
+      (ignore-errors (nelisp-worker-pool-kill p)))))
+
+(ert-deftest nelisp-worker--latency-record-sample-cap-disabled ()
+  "A non-positive cap disables retention but still counts samples."
+  (let ((nelisp-worker-latency-sample-cap 0)
+        (p (nelisp-worker-pool-create
+            'md :prespawn nil
+            :read-size 1 :write-size 1 :batch-size 1)))
+    (unwind-protect
+        (progn
+          (dotimes (i 5)
+            (nelisp-worker--latency-record p :batch 0.1 (* 1.0 i)))
+          (let ((b (plist-get (nelisp-worker--latency-buckets p)
+                              :batch)))
+            (should (= 5 (plist-get b :samples)))
+            (should (null (plist-get b :totals)))
+            (should (= 10.0 (plist-get b :wait-ms-sum)))))
+      (ignore-errors (nelisp-worker-pool-kill p)))))
+
+(ert-deftest nelisp-worker-latency-show-per-lane-summary ()
+  (nelisp-worker-test--with-pool p
+    (nelisp-worker--latency-record p :read  1.0 2.0)
+    (nelisp-worker--latency-record p :read  1.0 4.0)
+    (nelisp-worker--latency-record p :write 2.0 8.0)
+    (let* ((summary (nelisp-worker-latency-show p))
+           (r (plist-get summary :read))
+           (w (plist-get summary :write))
+           (b (plist-get summary :batch)))
+      (should (= 2 (plist-get r :samples)))
+      (should (= 1 (plist-get w :samples)))
+      (should (= 0 (plist-get b :samples)))
+      ;; read: totals 3.0 + 5.0 = 8.0, avg 4.0.
+      (should (= 4.0 (plist-get r :avg-total-ms)))
+      (should (= 10.0 (plist-get w :avg-total-ms)))
+      (should (numberp (plist-get r :p50-ms))))))
+
+(ert-deftest nelisp-worker-latency-reset-clears-pool ()
+  (nelisp-worker-test--with-pool p
+    (nelisp-worker--latency-record p :read 1.0 1.0)
+    (should (= 1 (plist-get (plist-get
+                              (nelisp-worker--latency-buckets p)
+                              :read)
+                            :samples)))
+    (nelisp-worker-latency-reset p)
+    (should (null (gethash p nelisp-worker--metrics-latency)))))
+
+(ert-deftest nelisp-worker-call-records-latency-automatically ()
+  "After a live call, the lane bucket has samples>=1 and total-ms>0."
+  (nelisp-worker-test--with-pool p
+    (nelisp-worker-latency-reset p)
+    (nelisp-worker-call p '(+ 1 2) :lane :write :timeout 5.0)
+    (let ((b (plist-get (nelisp-worker--latency-buckets p) :write)))
+      (should (>= (plist-get b :samples) 1))
+      (should (> (plist-get b :total-ms-sum) 0)))))
+
+(ert-deftest nelisp-worker-pool-kill-drops-latency-store ()
+  (let ((p (nelisp-worker-pool-create
+            'mk :prespawn nil
+            :read-size 1 :write-size 1 :batch-size 1)))
+    (nelisp-worker--latency-record p :read 1.0 2.0)
+    (should (gethash p nelisp-worker--metrics-latency))
+    (nelisp-worker-pool-kill p)
+    (should (null (gethash p nelisp-worker--metrics-latency)))))
+
 (provide 'nelisp-worker-test)
 ;;; nelisp-worker-test.el ends here
