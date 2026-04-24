@@ -248,7 +248,7 @@ Phase 5-B 着手に必要な gap を埋める。
   方針通り不追加、nelisp-buffer は自前 =nelisp-buffer-point= /
   =nelisp-buffer-mark= を持つ
 - [X] make test: 569 → *580/580 green* (+11, 0 unexpected)
-- commit: =PHASE5B0_COMMIT= on =feat/phase5b.0-pre-req=
+- commit: =e966a91= on =feat/phase5b.0-pre-req=
 
 ** §3.1 =nelisp-buffer= primitive (gap buffer + insert/delete)
 
