@@ -109,6 +109,85 @@ same `nelisp-load-string' call."
   (should-error (nelisp-load-file "/nonexistent/nelisp/file.nl")
                 :type 'file-error))
 
+;;; Doc 12 §3.1 — error propagation + `nelisp-load' alias ------------
+
+(ert-deftest nelisp-load-is-load-string-equivalent ()
+  "`nelisp-load' is the Doc 12 §2.1 B surface — behaviour equals
+`nelisp-load-string', defined as a thin `defun' so NeLisp self-host
+can install it without a `defalias' primitive."
+  (nelisp--reset)
+  (should (= (nelisp-load "1 2 3") 3))
+  (nelisp--reset)
+  (nelisp-load "(defun nelisp-load-alias-fn (x) (* x 7))")
+  (should (= (nelisp-eval '(nelisp-load-alias-fn 6)) 42)))
+
+(ert-deftest nelisp-load-string-reader-error-carries-position ()
+  "A reader error mid-string re-signals as `nelisp-load-error' with
+:phase = read and accurate :line / :column / :form-index.  Forms
+evaluated before the failure keep their side-effects."
+  (nelisp--reset)
+  (nelisp-eval '(defvar *x* 0))
+  (let* ((src "(setq *x* 1)\n(setq *x* 2)\n)unbalanced")
+         (data (condition-case e (nelisp-load-string src) (nelisp-load-error (cdr e)))))
+    (should (listp data))
+    (should (eq (plist-get data :phase) 'read))
+    (should (= (plist-get data :form-index) 2))
+    (should (= (plist-get data :line) 3))
+    (should (= (plist-get data :column) 1))
+    (should (null (plist-get data :source))))
+  ;; First two forms ran; state was not rolled back.
+  (should (= (nelisp-eval '*x*) 2)))
+
+(ert-deftest nelisp-load-string-eval-error-carries-position ()
+  "An eval error mid-string re-signals as `nelisp-load-error' with
+:phase = eval and the original signal captured in :cause."
+  (nelisp--reset)
+  (nelisp-eval '(defvar *y* 0))
+  (let* ((src "(setq *y* 9)\n(error \"boom\")\n(setq *y* 99)")
+         (data (condition-case e (nelisp-load-string src) (nelisp-load-error (cdr e)))))
+    (should (eq (plist-get data :phase) 'eval))
+    (should (= (plist-get data :form-index) 1))
+    (should (= (plist-get data :line) 2))
+    (should (= (plist-get data :column) 1))
+    (let ((cause (plist-get data :cause)))
+      (should (consp cause))
+      (should (stringp (cadr cause)))
+      (should (string-match-p "boom" (cadr cause)))))
+  ;; First form ran; third form did not.
+  (should (= (nelisp-eval '*y*) 9)))
+
+(ert-deftest nelisp-load-file-error-records-path ()
+  "`nelisp-load-file' funnels :source = the file path so callers
+can distinguish failures across multiple loaded files."
+  (nelisp--reset)
+  (let* ((tmp (make-temp-file "nelisp-load-err" nil ".el"))
+         data)
+    (unwind-protect
+        (progn
+          (with-temp-file tmp
+            (insert "(+ 1 2)\n(unbound-symbol-xyz)\n"))
+          (setq data (condition-case e (nelisp-load-file tmp)
+                       (nelisp-load-error (cdr e))))
+          (should (eq (plist-get data :phase) 'eval))
+          (should (= (plist-get data :form-index) 1))
+          (should (string-equal (plist-get data :source) tmp)))
+      (delete-file tmp))))
+
+(ert-deftest nelisp-load-file-reentrant-idempotent-defun ()
+  "Loading the same file twice does not corrupt installed defuns.
+Matches host `load' idempotency when the source is side-effect-free."
+  (nelisp--reset)
+  (let ((tmp (make-temp-file "nelisp-load-reentry" nil ".el")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmp
+            (insert "(defun nelisp-load-reentry-double (x) (* 2 x))\n"))
+          (nelisp-load-file tmp)
+          (should (= (nelisp-eval '(nelisp-load-reentry-double 7)) 14))
+          (nelisp-load-file tmp)
+          (should (= (nelisp-eval '(nelisp-load-reentry-double 7)) 14)))
+      (delete-file tmp))))
+
 ;;; Interaction with the rest of the subsystem ------------------------
 
 (ert-deftest nelisp-load-then-macro ()
