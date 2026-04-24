@@ -3,7 +3,7 @@
 #+date: 2026-04-24
 #+options: toc:2
 
-* STATE: DRAFT 2026-04-24 (§2 LOCKED + §3.0-3.3 SHIPPED 2026-04-24、§3.4 next)
+* STATE: DRAFT 2026-04-24 (§2 LOCKED + §3.0-3.4 SHIPPED 2026-04-24、§3.5 next)
 
 ** 目的
 
@@ -318,11 +318,40 @@ scope を超えて 5-E に食い込む。B で "worker layer は独立して
 - 期待 3 日に対し当日完了 (§3.1b の既存 sweep インフラを
   timer で wrap するだけで済んだ)
 
-** §3.4 Batch warmup (2 日)
+** §3.4 Batch warmup — SHIPPED 2026-04-24
 
-- =nelisp-worker-batch-warmup-expressions= defcustom
-- spawn 後 =run-at-time WARMUP-DELAY= で send (non-blocking)
-- batch lane のみ
+- =src/nelisp-worker.el= 拡張 (impl =19bd577=):
+  - =nelisp-worker-batch-warmup-expressions= defcustom (list of
+    forms、default nil = 無効)
+  - =nelisp-worker-batch-warmup-delay= defcustom (default 2.0、
+    ≤0 で同期送信)
+  - =nelisp-worker--send-warmup POOL HOST-PROC= fire-and-forget:
+    =(nw-warmup-<pool>-N . EXPR)\n= を pipe 書き、synthetic id
+    なので pending 未登録 → child 返信は =--deliver= が silent
+    drop (anvil の =emacsclient -n= semantics 相当を pipe stdio
+    で実現)
+  - =nelisp-worker--schedule-warmup POOL= — batch lane の live
+    worker 毎に =run-at-time DELAY= 予約 (DELAY>0) / 同期送信
+    (DELAY≤0)。lazy pool 後の再 warmup 用に public helper
+  - =nelisp-worker-pool-create= は prespawn 直後に自動 schedule
+- *副次 structural fix*: =nelisp-worker--ensure-filter POOL
+  HOST-PROC= helper を新設、filter 設定経路を 3 箇所に centralize
+  (=pool-create= prespawn / =call= 直後 / =schedule-warmup= per
+  worker)。lazy-spawn の worker も routing 経路が確保される
+  (§3.1 時代の pool-create inline install が lazy spawn 未対応だ
+  った bug も同時修正)。filter closure は pool の
+  =line-buffers= hash に =:filter= key で cache し単一 instance
+  共有
+- ERT +8 (=test/nelisp-worker-test.el=): fire-and-forget (pending
+  無変化) / empty list no-op / dead host no-op / state 継続 /
+  batch lane 限定 / deferred timer 実発火 / lazy skip / 明示
+  schedule
+- non-scope (deferred to 残 sub-phase):
+  - per-lane warmup (§2.5 C、batch-only で anvil 運用上十分)
+  - latency metrics (§3.5)
+- make test: 829 → *837/837 green*
+- 期待 2 日に対し当日完了 (pipe stdio + correlation id インフラ
+  が整っていたため fire-and-forget が薄く済んだ)
 
 ** §3.5 Latency metrics + percentile (3 日)
 

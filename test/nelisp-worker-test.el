@@ -401,5 +401,160 @@ by an on-get sweep, which we never trigger)."
                       (nelisp-process-pool-worker-state worker))))
       (ignore-errors (nelisp-worker-pool-kill p)))))
 
+;;; Batch warmup (Phase 5-D.4) -------------------------------------
+
+(ert-deftest nelisp-worker--send-warmup-is-fire-and-forget ()
+  "`--send-warmup' writes each expr to the pipe without touching
+`nelisp-worker-pool-pending' — the ids are synthetic and unknown,
+so child replies land in `--deliver' and get dropped silently."
+  (let ((nelisp-worker-batch-warmup-expressions
+         '((setq nw-warmup-sentinel-a 1)
+           (setq nw-warmup-sentinel-b 2))))
+    (nelisp-worker-test--with-pool p
+      (let* ((lane-pool (nelisp-worker-pool-batch-pool p))
+             (worker (car (nelisp-process-pool-workers lane-pool)))
+             (host (nelisp-process-pool-worker-process worker))
+             (pending-before (hash-table-count
+                              (nelisp-worker-pool-pending p)))
+             (sent (nelisp-worker--send-warmup p host)))
+        (should (= 2 sent))
+        ;; Drain the child so its reply arrives before we assert.
+        (accept-process-output nil 0.2)
+        (should (= pending-before
+                   (hash-table-count
+                    (nelisp-worker-pool-pending p))))))))
+
+(ert-deftest nelisp-worker--send-warmup-noop-on-empty-list ()
+  (let ((nelisp-worker-batch-warmup-expressions nil))
+    (nelisp-worker-test--with-pool p
+      (let* ((lane-pool (nelisp-worker-pool-batch-pool p))
+             (worker (car (nelisp-process-pool-workers lane-pool)))
+             (host (nelisp-process-pool-worker-process worker)))
+        (should (null (nelisp-worker--send-warmup p host)))))))
+
+(ert-deftest nelisp-worker--send-warmup-skips-dead-host ()
+  "No crash when the host proc has already exited."
+  (let ((nelisp-worker-batch-warmup-expressions
+         '((setq irrelevant t))))
+    (nelisp-worker-test--with-pool p
+      (let* ((lane-pool (nelisp-worker-pool-batch-pool p))
+             (worker (car (nelisp-process-pool-workers lane-pool)))
+             (host (nelisp-process-pool-worker-process worker)))
+        (nelisp-kill-process host)
+        (nelisp-process-wait-for-exit host 2.0)
+        (should (null (nelisp-worker--send-warmup p host)))))))
+
+(ert-deftest nelisp-worker-warmup-state-persists-into-subsequent-call ()
+  "Synchronous warmup (delay=0) then a batch-lane call observes the
+warmup expression's side effects (a defvar on the child)."
+  (let* ((nelisp-worker-batch-warmup-expressions
+          '((defvar nelisp-worker-test-warmup-val 4242)))
+         (nelisp-worker-batch-warmup-delay 0)
+         (p (nelisp-worker-pool-create
+             'w0 :read-size 1 :write-size 1 :batch-size 1)))
+    (unwind-protect
+        (progn
+          ;; Synchronous warmup has already fired inside `pool-create'.
+          ;; Let the child drain it before we stack a real call.
+          (accept-process-output nil 0.2)
+          (should (= 4242
+                     (nelisp-worker-call
+                      p '(bound-and-true-p nelisp-worker-test-warmup-val)
+                      :lane :batch :timeout 5.0))))
+      (ignore-errors (nelisp-worker-pool-kill p)))))
+
+(ert-deftest nelisp-worker-warmup-runs-only-on-batch-lane ()
+  "A defvar set via warmup is NOT visible on read / write workers."
+  (let* ((nelisp-worker-batch-warmup-expressions
+          '((defvar nelisp-worker-test-lane-marker 'batch-only)))
+         (nelisp-worker-batch-warmup-delay 0)
+         (p (nelisp-worker-pool-create
+             'w1 :read-size 1 :write-size 1 :batch-size 1)))
+    (unwind-protect
+        (progn
+          (accept-process-output nil 0.2)
+          (should (eq 'batch-only
+                      (nelisp-worker-call
+                       p '(bound-and-true-p
+                            nelisp-worker-test-lane-marker)
+                       :lane :batch :timeout 5.0)))
+          (should (null
+                   (nelisp-worker-call
+                    p '(bound-and-true-p
+                         nelisp-worker-test-lane-marker)
+                    :lane :read :timeout 5.0)))
+          (should (null
+                   (nelisp-worker-call
+                    p '(bound-and-true-p
+                         nelisp-worker-test-lane-marker)
+                    :lane :write :timeout 5.0))))
+      (ignore-errors (nelisp-worker-pool-kill p)))))
+
+(ert-deftest nelisp-worker-warmup-deferred-timer-fires ()
+  "With a positive delay, the warmup lands via `run-at-time'."
+  (let* ((nelisp-worker-batch-warmup-expressions
+          '((defvar nelisp-worker-test-deferred-val 777)))
+         (nelisp-worker-batch-warmup-delay 0.1)
+         (p (nelisp-worker-pool-create
+             'w2 :read-size 1 :write-size 1 :batch-size 1)))
+    (unwind-protect
+        (progn
+          ;; Wait until the deferred `run-at-time' fires + child processes it.
+          (let ((deadline (+ (float-time) 2.0)))
+            (while (< (float-time) deadline)
+              (accept-process-output nil 0.05)))
+          (should (= 777
+                     (nelisp-worker-call
+                      p '(bound-and-true-p
+                           nelisp-worker-test-deferred-val)
+                      :lane :batch :timeout 5.0))))
+      (ignore-errors (nelisp-worker-pool-kill p)))))
+
+(ert-deftest nelisp-worker-warmup-lazy-pool-skips-schedule ()
+  "A `:prespawn nil' pool spawns no batch worker, so no warmup fires."
+  (let* ((nelisp-worker-batch-warmup-expressions
+          '((defvar nelisp-worker-test-lazy-marker 'should-not-appear)))
+         (nelisp-worker-batch-warmup-delay 0)
+         (p (nelisp-worker-pool-create
+             'w3 :prespawn nil
+             :read-size 1 :write-size 1 :batch-size 1)))
+    (unwind-protect
+        (progn
+          ;; First call forces a lazy spawn; warmup was never scheduled
+          ;; in `pool-create', so the fresh worker has no marker.
+          (should (null
+                   (nelisp-worker-call
+                    p '(bound-and-true-p
+                         nelisp-worker-test-lazy-marker)
+                    :lane :batch :timeout 5.0))))
+      (ignore-errors (nelisp-worker-pool-kill p)))))
+
+(ert-deftest nelisp-worker--schedule-warmup-can-be-called-explicitly ()
+  "Caller can re-schedule warmup after a lazy batch spawn."
+  (let* ((nelisp-worker-batch-warmup-expressions
+          '((defvar nelisp-worker-test-explicit-val 999)))
+         (nelisp-worker-batch-warmup-delay 0)
+         (p (nelisp-worker-pool-create
+             'w4 :prespawn nil
+             :read-size 1 :write-size 1 :batch-size 1)))
+    (unwind-protect
+        (progn
+          ;; Force the batch worker to spawn; `--schedule-warmup'
+          ;; wires the pool-aware filter via `--ensure-filter' so no
+          ;; manual install is needed here.
+          (let ((worker (nelisp-process-pool-get
+                         (nelisp-worker-pool-batch-pool p))))
+            (should worker)
+            (nelisp-process-pool-return
+             (nelisp-worker-pool-batch-pool p) worker))
+          (nelisp-worker--schedule-warmup p)
+          (accept-process-output nil 0.2)
+          (should (= 999
+                     (nelisp-worker-call
+                      p '(bound-and-true-p
+                           nelisp-worker-test-explicit-val)
+                      :lane :batch :timeout 5.0))))
+      (ignore-errors (nelisp-worker-pool-kill p)))))
+
 (provide 'nelisp-worker-test)
 ;;; nelisp-worker-test.el ends here
