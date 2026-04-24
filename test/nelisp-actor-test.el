@@ -505,5 +505,111 @@
       (should (consp err))
       (should (eq (cadr err) 'chan-send-on-closed)))))
 
+;;; Phase 4.5 — flat one-for-one supervisor ------------------------
+
+(defun nelisp-actor-test--spec (id start-thunk policy)
+  "Build a supervisor child-spec plist for the given ID, START-THUNK, POLICY."
+  (list :id id :start start-thunk :restart policy))
+
+(defun nelisp-actor-test--child-actor (sup)
+  "Return the single live child actor of SUP, or nil when none."
+  (let ((kids (cl-remove-if
+               (lambda (a)
+                 (memq (nelisp-actor-status a) '(:dead :crashed)))
+               (nelisp-supervise-children sup))))
+    (when kids (car kids))))
+
+(ert-deftest nelisp-supervise-starts-all-children ()
+  "Initial spawn: every child in the spec becomes a live actor."
+  (nelisp-actor-test--fixture)
+  (let ((sup (nelisp-supervise
+              (list (nelisp-actor-test--spec
+                     'a (nelisp-actor-lambda (nelisp-receive)) :permanent)
+                    (nelisp-actor-test--spec
+                     'b (nelisp-actor-lambda (nelisp-receive)) :permanent)))))
+    (nelisp-actor-run-until-idle)
+    ;; Two children + the supervisor itself.
+    (should (eq (nelisp-actor-status sup) :blocked-receive))
+    (let ((live (nelisp-supervise-children sup)))
+      (should (= 2 (length live)))
+      (dolist (a live)
+        (should (eq (nelisp-actor-status a) :blocked-receive))))))
+
+(ert-deftest nelisp-supervise-permanent-restarts-on-crash ()
+  "`:permanent' policy respawns a crashed child (same thunk re-invoked)."
+  (nelisp-actor-test--fixture)
+  (let* ((lives 0)
+         ;; Thunk builder: every call bumps `lives'; first life crashes,
+         ;; second life blocks on receive so we can observe it.
+         (thunk (nelisp-actor-lambda
+                  (cl-incf lives)
+                  (when (= lives 1) (error "planned-crash"))
+                  (nelisp-receive)))
+         (sup (nelisp-supervise
+               (list (list :id 'worker
+                           :start thunk
+                           :restart :permanent)))))
+    (nelisp-actor-run-until-idle)
+    ;; Restart happened → lives incremented twice; surviving child is
+    ;; blocked-receive.
+    (should (= lives 2))
+    (let ((live (nelisp-actor-test--child-actor sup)))
+      (should live)
+      (should (eq (nelisp-actor-status live) :blocked-receive)))))
+
+(ert-deftest nelisp-supervise-permanent-restarts-on-normal-exit ()
+  "`:permanent' policy respawns on normal completion too."
+  (nelisp-actor-test--fixture)
+  (let* ((lives 0)
+         (thunk (nelisp-actor-lambda
+                  (cl-incf lives)
+                  (when (> lives 2) (nelisp-receive))))
+         (sup (nelisp-supervise
+               (list (list :id 'worker
+                           :start thunk
+                           :restart :permanent)))))
+    (ignore sup)
+    (nelisp-actor-run-until-idle)
+    (should (>= lives 3))))
+
+(ert-deftest nelisp-supervise-transient-restarts-on-crash-only ()
+  "`:transient' policy respawns on crash but not on normal exit."
+  (nelisp-actor-test--fixture)
+  (let* ((lives 0)
+         ;; First life errors (triggers restart), second life completes
+         ;; normally (should NOT trigger restart).
+         (thunk (nelisp-actor-lambda
+                  (cl-incf lives)
+                  (when (= lives 1) (error "planned-crash"))))
+         (sup (nelisp-supervise
+               (list (list :id 'worker
+                           :start thunk
+                           :restart :transient)))))
+    (ignore sup)
+    (nelisp-actor-run-until-idle)
+    (should (= lives 2))))
+
+(ert-deftest nelisp-supervise-temporary-never-restarts ()
+  "`:temporary' policy never respawns the child."
+  (nelisp-actor-test--fixture)
+  (let* ((lives 0)
+         (thunk (nelisp-actor-lambda
+                  (cl-incf lives)
+                  (error "planned-crash")))
+         (sup (nelisp-supervise
+               (list (list :id 'worker
+                           :start thunk
+                           :restart :temporary)))))
+    (ignore sup)
+    (nelisp-actor-run-until-idle)
+    (should (= lives 1))))
+
+(ert-deftest nelisp-supervise-rejects-unknown-strategy ()
+  "`nelisp-supervise' rejects strategies outside Phase 4.5 scope."
+  (nelisp-actor-test--fixture)
+  (should-error
+   (nelisp-supervise '() :strategy :one-for-all)
+   :type 'nelisp-actor-error))
+
 (provide 'nelisp-actor-test)
 ;;; nelisp-actor-test.el ends here

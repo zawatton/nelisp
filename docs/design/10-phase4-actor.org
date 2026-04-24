@@ -311,17 +311,46 @@ Phase 3c 同様、feat branch 毎に ship。予算は目安、ブレ可。
   pcase =(or :done :crashed)= を =_= catch-all に簡略化 (memq 警告
   回避)
 
-** 4.5 Flat supervisor (DRAFT)
+** 4.5 Flat supervisor (SHIPPED 2026-04-24)
 
-§2.6 B 方針:
-- =nelisp-supervise= (children-spec restart-policy)
-- restart-policy: =:permanent= (常に再起動) / =:temporary= (再起動なし)
-  / =:transient= (異常終了時のみ再起動)
-- crash 時: =condition-case= 包み込み、restart-policy に従い新 actor
-  spawn、old ownership 破棄
-- ERT: permanent child crash → 再起動 / temporary → 再起動なし /
-  supervisor 自体 crash で全 child 破棄
-- 予算: 150 LOC、ERT 6 本
+§2.6 B 方針通り、one-for-one flat supervisor を ship:
+
+- =nelisp-actor--notify-supervisor= helper (scheduler crash path
+  hook): terminal transition (=:dead= / =:crashed=) で actor の
+  =:supervisor= field に =(:child-terminated ACTOR STATUS ERR)= を
+  send。supervisor が既に =:dead= / =:crashed= なら no-op (cascading
+  send-to-dead signal 回避)。
+- =nelisp-actor--step= の =iter-end-of-sequence= branch と =error=
+  branch 両方に notify 呼びを挿入。
+- =nelisp-supervise (children-spec &key (strategy :one-for-one))=:
+  - =children-spec= は plist list =(:id TAG :start THUNK :restart
+    POLICY)= の形
+  - supervisor 本体を 1 actor として spawn、=children= alist 内部
+    state で =(tag spec actor)= を maintain
+  - initial pass で全 child spawn (=:supervisor self= /
+    =:restart-policy POLICY=)
+  - event loop: =(while t ... (pcase (nelisp-receive)))=、
+    =(:child-terminated ACTOR STATUS _ERR)= case で該当 entry を
+    探し、POLICY と STATUS に応じて再 spawn:
+    - =:permanent= → 常に restart
+    - =:transient= → STATUS が =:crashed= の時のみ restart
+    - =:temporary= → restart なし
+  - =strategy= は =:one-for-one= のみ受付、他は
+    =nelisp-actor-error= signal (§2.6 C =:one-for-all= /
+    =:rest-for-one= は later phase)
+- =nelisp-supervise-children= 診断 helper: supervisor の
+  =supervisor= field が一致する actor を registry から抽出、test
+  からの観察用 (supervisor 内部 iterator-local state は到達不可)
+- supervisor-crash-kills-children cascade は Phase 4.5 MVP 非 scope
+  (§2.6 B minimal 条件の "crash → log → restart" に集中、orphan
+  children は v0.4.x extension)
+- ERT 6 本 (=test/nelisp-actor-test.el= §Phase 4.5):
+  =starts-all-children= / =permanent-restarts-on-crash= /
+  =permanent-restarts-on-normal-exit= /
+  =transient-restarts-on-crash-only= / =temporary-never-restarts= /
+  =rejects-unknown-strategy=
+- =make clean && make test= 517/517 green (Phase 4.4 時点 511 + 本 6)
+- 実装 +103 LOC (578 → 681)、予算 150 LOC 内
 
 ** 4.6 anvil 痛み解消 PoC (DRAFT)
 
