@@ -213,7 +213,7 @@ customize 統合が必要になったら T3 integration layer で後付け。
   did-not-provide / circular / explicit-filename / host-featurep /
   provide-bad-type / require-bad-type
 - [X] make test: 543 → *553/553 green*
-- commit: =<pending>= on =feat/phase5a.3-require=
+- commit: =1fab9aa= on =feat/phase5a.3-require=
 
 実装 tweak (Doc 12 §3.3 本文から変更):
 - Phase 2 =nelisp--builtin-provide= 再利用 → 実装差し替え (hash 未採用、
