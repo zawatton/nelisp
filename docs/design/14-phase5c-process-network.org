@@ -3,7 +3,7 @@
 #+date: 2026-04-24
 #+options: toc:2
 
-* STATE: DRAFT 2026-04-24 (§2 LOCKED + §3.0 SHIPPED 2026-04-24、§3.1 next)
+* STATE: DRAFT 2026-04-24 (§2 LOCKED + §3.0-3.1 SHIPPED 2026-04-24、§3.1b next)
 
 ** 目的
 
@@ -319,27 +319,69 @@ infra を 14-audit-script.el に複製するだけで済んだ)。
 false positive なし。audit 出力 25 missing を全て追加 + bonus
 3 (sentinel/filter/buffer setter for §3.1 wrapper 用途)。
 
-** §3.1 =nelisp-process= (subprocess substrate)
+** §3.1 =nelisp-process= (subprocess substrate) — SHIPPED 2026-04-24
 
 目的: host =make-process= を wrap、per-process actor で I/O を
 event 化。pipe / PTY 両対応。
 
-作業:
-- =src/nelisp-process.el= 新設
-- =(cl-defstruct nelisp-process id host-proc actor status ...)=
-- 公開 API: =nelisp-make-process= (=:name=, =:command=,
-  =:connection-type=, =:coding=, =:sentinel=, =:filter=,
-  =:buffer=) / =nelisp-process-send-string= /
-  =-process-send-eof= / =-kill-process= / =-delete-process= /
-  =-process-live-p= / =-process-status= / =-process-list=
-- PTY 対応: =:connection-type 'pty= で host =make-process= に
-  =:connection-type 'pty= forward + =process-tty-name=
-- sentinel/filter は thin wrapper が自 actor へ =nelisp-event=
-  post (=kind= = =process-output= / =process-state=)
-- ERT: echo server (cat / printf) で send/receive / exit
-  code / kill / zombie 防止 + PTY flag が有効な経路確認
+実装 (commit __HASH_5C1__):
+- =src/nelisp-process.el= 新設 (~260 LOC)
+- =(cl-defstruct nelisp-process id host-proc actor status
+  exit-code buffer user-sentinel user-filter props)=
+- 公開 API (18 本):
+  - spawn: =nelisp-make-process= (=:name=, =:command=,
+    =:connection-type=, =:coding=, =:sentinel=, =:filter=,
+    =:buffer=, =:actor=, =:props=, =:stderr=)
+  - I/O: =nelisp-process-send-string= / =-send-eof= /
+    =-accept-output= / =-wait-for-exit=
+  - lifecycle: =nelisp-kill-process= / =-delete-process= /
+    =-process-live-p= / =-process-status-of= / =-process-exit-
+    status-of=
+  - metadata: =nelisp-process-id-of= / =-name-of= /
+    =-command-of= / =-buffer-of=
+  - registry: =nelisp-process-list= / =nelisp-process--find-by-
+    host= / =nelisp-process--reset-registry=
+  - plist: =nelisp-process-get= / =-put=
+- sentinel / filter trampoline: host callback が自動で
+  =nelisp--apply= dispatch → NeLisp closure / host lambda 両対応
+  (condition-case で user error を isolate)
+- sentinel trampoline: exit 時に =status= / =exit-code= slot を
+  host 値から mirror、=:actor= が指定されていれば =process-state=
+  =nelisp-event= を post
+- filter trampoline: =:actor= あれば =process-output= event、
+  default の "buffer へ append" 挙動は保持 (user-filter 有無に
+  関わらず)
+- PTY 対応: =:connection-type 'pty= を host =make-process= に
+  forward、echo test が bidirectional で動作
+- autoload =nelisp-make-event= で =nelisp-eventloop= との
+  soft dependency (event post は =fboundp= check 経由)
 
-期待スコープ: 1.5 週。
+ERT (=test/nelisp-process-test.el=, 21 本):
+- lifecycle 5 (true-zero / false-nonzero / name+command /
+  PID integer / command 欠如 signal)
+- I/O 2 (cat roundtrip via buffer / buffer-of 返却)
+- sentinel / filter 4 (trampoline dispatches host lambda /
+  exit-code mirror / filter dispatch / default append 保持)
+- actor integration 2 (process-state event / process-output
+  event receive)
+- kill / delete / registry 4 (kill→live-p nil / delete→registry
+  削除 / list 複数追跡 / find-by-host)
+- plist 2 (get/put roundtrip / initial :props seed)
+- PTY 1 (=:connection-type 'pty= で cat echo、Linux/macOS
+  limited)
+- status-of mirror host 1
+
+make test: 701 → *722/722 green*
+
+key learning: =nelisp-process.el= は =nelisp--apply= を trampoline
+で呼ぶため =(require 'nelisp-eval)= 必須。当初 =nelisp-actor= のみ
+require した MVP 実装では trampoline 内の apply が void-variable
+=nelisp--functions= で失敗し、condition-case で silently 握り
+潰される (→ sentinel/filter 発火しない症状)。Phase 5-C 以降で
+nelisp--apply を使う新 module は必ず =nelisp-eval= を require。
+
+期待スコープ: 1.5 週。実績: 当日 (Phase 4 actor + §3.0 primitive
+表の基盤が整っていたため thin wrapper だけで済んだ)。
 
 ** §3.1b =nelisp-process-pool= (pre-spawned worker) — 本 Phase scope 追加
 
