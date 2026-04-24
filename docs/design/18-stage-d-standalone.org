@@ -1,8 +1,8 @@
 #+TITLE: Doc 18 — Stage D: Host-Independent NeLisp Runtime (standalone binary distribution)
 #+AUTHOR: zawatton + Claude
 #+DATE: 2026-04-25
-#+STATE: DRAFT
-#+STATUS: §1 / §3 / §4 / §5 drafted、§2 decisions 未 LOCK (user signoff 待ち)
+#+STATE: LOCKED-2026-04-25
+#+STATUS: §2 全 10 項目全 RECOMMENDED default 採用 LOCKED (user 2026-04-25)、Phase 6.0 着手待ち
 
 * §0 要旨
 
@@ -84,10 +84,23 @@ standalone 化に伴い、anvil.el 側で影響を受ける API を先行特定:
 代替必要。anvil-manifest に 5 つ目 profile "headless" として
 新設する (Doc 26 の延長)。
 
-* §2 decisions (STATE = OPEN, user signoff 待ち)
+* §2 decisions (STATE = LOCKED 2026-04-25、全 default 採用)
 
-全項目 *推奨 default を Claude 側から提示、user LOCK 時点で固定*。
-LOCK 後は §3 phase 分割を着手順に並べる。
+user 2026-04-25 signoff: "全 default 採用 LOCKED"。以下 10 項目を以て
+Stage D の方針固定。変更は本 doc 改訂 + user 再 signoff 必須。
+
+#+begin_example
+§2.1  D  — Hybrid CLI launcher MVP 先行 (6-12 ヶ月)
+§2.2  B  — D → A → B 段階計画
+§2.3  B  — Linux + macOS first
+§2.4  B  — <10MB launcher + minimal bundle
+§2.5  B  — Emacs user install 経由 launcher 検出 (GPL 伝播回避)
+§2.6  B  — GPLv3+ (strict)
+§2.7  A  — GitHub Release first
+§2.8  A  — =anvil mcp serve= stdio
+§2.9  A  — XDG =~/.config/anvil/=
+§2.10 B  — Phase 5-E 7 tool + anvil-http full port
+#+end_example
 
 ** §2.1 Primary approach 選択
 - A. Emacs 埋め込み (bundle 型、1-1.5 年)

@@ -5,13 +5,18 @@
 
 * Status
 :PROPERTIES:
-:STATE: ROADMAP-LOCKED-2026-04-22
+:STATE: ROADMAP-LOCKED-2026-04-22 (+ Stage D added 2026-04-25)
 :END:
 
 Phase 0 で決定した方針を受けて、Phase 1-5 の具体タスクに落とす doc。
 Time budget: *週末研究 月 8-16h* (Q2 確定)。v1.0 完遂条件 + concurrency lock +
 Priority A 4/4 精読反映済。Phase 1 subset 詳細は =03-architecture.org= §7 を
 canonical source とし、本 doc は release / timeline / governance に集中する。
+
+*2026-04-25 追加:* Stage D (standalone binary distribution、
+=design/18-stage-d-standalone.org= LOCKED) を Stage A 本線と *並行 track*
+として追加。Stage A (Phase 1-5 = v1.0) は本線継続、Stage D は Option D
+(Hybrid CLI launcher) MVP 6-12 ヶ月を先行。工数比 60 (A) : 40 (D)。詳細 §10。
 
 * 1. Timeline 仮置き
 
@@ -40,7 +45,7 @@ v1.0 release 後は *community 主導で C → Elisp の長い尾を埋める* (
 
 - 領域 6 (display render の細部)
 - 領域 7 (primitive utility: arithmetic / regex / coding-system)
-- Phase 6+ の optional goal (native standalone binary 等)
+- Stage D Option A/B への段階昇格 (§10 参照、v1.0 到達後 3-5 年)
 
 NeLisp core team は v1.0 以降 maintainer 的に移行、新機能は community PR 主体。
 
@@ -165,3 +170,65 @@ Phase 1 subset は =../03-architecture.org= §7 で LOCKED (2026-04-22):
 - 月次: docs の status update
 - Phase 境界: user signoff、BRIEFING.org の §11 に進捗追記
 - 半年: roadmap 見直し (実測 time budget との乖離を反映)
+
+* 10. Stage D — standalone binary distribution (parallel track)
+
+LOCKED 2026-04-25 (=design/18-stage-d-standalone.org= §2 全 default 採用)。
+
+** 10.1 motivation
+anvil.el の普及壁 = Emacs 必須。非 Emacs user (VSCode / JetBrains /
+CLI 中心) 層に Claude Code MCP tool として届けるには Emacs 非前提の
+配布 surface が必要。v1.0 条件 #4 (残 C = 4 核) は standalone 化の
+*前提条件* になっており、scope creep でなく自然な延長。
+
+** 10.2 段階 (Option D → A → B)
+
+| Option | 内容 | 期間 | gate |
+|--------+------+------+------|
+| D | Hybrid CLI launcher (Emacs は user install 検出、launcher が subprocess spawn) | 6-12 ヶ月 | MVP 先行 |
+| A | Emacs 埋め込み (bundle 型、portable 1 binary) | 1-1.5 年 | D 成功後 |
+| B | Native-comp + 4 核 C runtime 自前 (真 standalone) | 3-5 年 | v1.0 到達後 |
+
+** 10.3 Phase 6 sub-phases (Option D MVP)
+
+| sub-phase | 内容 | 工数 |
+|-----------+------+------|
+| 6.0 | audit + scaffold (依存 API audit / launcher skeleton) | 1-2 週 |
+| 6.1 | CLI launcher + MCP stdio (=anvil mcp serve= 稼働) | 2-4 週 |
+| 6.2 | anvil-http port (Doc 09 移植、url-retrieve 脱依存) | 2-3 週 |
+| 6.3 | distribution polish (GitHub Release v0.1 / install.sh) | 1-2 週 |
+| 6.4 | Windows 対応 (anvil-pty-broker 経路、winget / scoop) | 2-3 週 |
+
+合計 8-14 週、並行比率 40% 前提で cal 月 6-12 ヶ月。
+
+** 10.4 Stage A 本線との並行方針
+
+- 工数比 *Stage A 60% : Stage D 40%* (§6.1 推奨採用)
+- Stage A 本線 (Phase 5-F ~ v1.0) は *停止しない*
+- Stage D MVP 成果は Stage A に逆輸入 (headless profile / anvil-http 独立 port 等)
+
+** 10.5 release tag 体系
+
+Stage A 本線の v0.x / v1.0 とは *別系統* で Stage D 独自 tag:
+
+| Stage D tag | 意味 |
+|-------------+------|
+| stage-d-v0.1 | Phase 6.3 完了 (Option D MVP、Linux + macOS) |
+| stage-d-v0.2 | Phase 6.4 完了 (Windows 追加) |
+| stage-d-v1.0 | Option A 成熟 (bundle 型 portable) |
+| stage-d-v2.0 | Option B 成熟 (真 standalone、4 核 runtime 自前) |
+
+Stage A 側 tag (v0.4.x / v0.5.x / v1.0.0) とは独立に bump。
+
+** 10.6 anvil.el 側の作業
+
+Doc 26 anvil-manifest の 5 つ目 profile =headless= を新設。UI 依存
+module (transient / tabulated-list / dashboard) を除外、=anvil mcp
+serve= default profile とする。詳細 =design/18-stage-d-standalone.org=
+§4。
+
+** 10.7 告知戦略
+
+Phase 6.3 distribution polish で Option D MVP を GitHub Release 後、
+非 Emacs user 向けに HN / Reddit (r/ClaudeAI / r/LocalLLaMA) で告知。
+早期 RFC は noise 多いため MVP 後。
