@@ -3,7 +3,7 @@
 #+date: 2026-04-24
 #+options: toc:2
 
-* STATE: DRAFT 2026-04-24 (§2 LOCKED + §3.0-3.3 SHIPPED 2026-04-24、§3.4 next)
+* STATE: DRAFT 2026-04-24 (§2 LOCKED + §3.0-3.4 SHIPPED 2026-04-24、§3.5 merge gate next)
 
 ** 目的
 
@@ -530,23 +530,44 @@ key learning:
 そのまま踏襲 + host file-notify が thin なので wrapper 層
 最小で済んだ)。
 
-** §3.4 E2E demo — NeLisp-daemon minimum
+** §3.4 E2E demo — NeLisp-daemon minimum — SHIPPED 2026-04-24
 
 目的: 3 層連動 (process / network / file-notify) で AI-critical
 path の最小 scenario を demo、§2.7 C + §2.9 D 達成。
 
-作業:
-- =examples/nelisp-daemon/main.el= 新設:
-  - MCP server stub: stdio pipe で =initialize= / =tools/list=
-    / =tools/call= を JSON-RPC で 1 round trip
-  - HTTP client: 同 process 内 loopback server 起動 → GET で
-    status 200 + body 検証
-  - file-notify: temp dir watch で create event を 1 本受領
-- =examples/nelisp-daemon/README.org= — 起動方法 + demo 手順
-- ERT: scripted pipe input / HTTP request / file touch で
-  buffer/state 変化を検証
+作業 (済):
+- =examples/nelisp-daemon/main.el= 新設 (bf6bbeb):
+  - =nelisp-daemon-start= / =-stop= で Phase 4 collector actor
+    を spawn し、=file-change= =nelisp-event= を summary plist に
+    畳み込む。=:state= は =:collector= / =:watches= / =:running=
+    plist で保持
+  - =nelisp-daemon-dispatch METHOD PARAMS= — pure関数、
+    =initialize= / =tools/list= / =tools/call= を pcase dispatch
+    (JSON 依存ゼロで ERT が直接叩ける)
+  - 4 tool: =http-get= / =watch= / =watch-events= / =shutdown=
+  - =nelisp-daemon-call-json= — JSON-RPC 2.0 wire wrapper、
+    plist→alist recursive converter で =json-encode= 経由の
+    round trip を成立させる
+  - =nelisp-daemon-run-stdio= — line-delimited JSON-RPC runner
+    (=emacs --batch= 向け、=read-from-minibuffer= で stdin poll)。
+    real MCP ではなく最小 shape
+- =examples/nelisp-daemon/README.org= 新設 — 起動方法 + tool 表
+  + ASCII architecture 図 + caveat (batch inotify + framing 簡略)
+- =test/nelisp-daemon-test.el= +17 ERT:
+  - lifecycle 3 / 純 dispatcher 4 / JSON round trip 2 / HTTP tool
+    2 / watch + events 3 / shutdown+stop 2 / *3-layer integration
+    flagship 1*
+  - flagship: =initialize= → =tools/list= → =tools/call http-get=
+    (in-process HTTP/1.1 responder) → =tools/call watch= →
+    synthetic =file-change= 投入 → =tools/call watch-events= を
+    1 テストで通し
+  - §3.3 同様、batch inotify 経路は
+    =nelisp-file-notify--trampoline= 直投入で代替 (READMEに明記)
+- make test: 770 → *787/787 green* (+17、0 unexpected)
 
-期待スコープ: 1 週。
+期待スコープ: 1 週。実績: 当日 (§3.1-§3.3 の substrate + actor
+パターンが既に揃っていたため thin dispatcher + 4 tool で demo
+成立)。
 
 ** §3.5 Merge gate
 
