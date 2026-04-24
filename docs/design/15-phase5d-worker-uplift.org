@@ -1,0 +1,304 @@
+#+title: NeLisp Phase 5-D — worker pool uplift (anvil-worker 相当 API)
+#+author: zawatton
+#+date: 2026-04-24
+#+options: toc:2
+
+* STATE: DRAFT 2026-04-24 (§2 signoff 待ち)
+
+** 目的
+
+Phase 5-C.1b =nelisp-process-pool= (MVP) を、anvil.el =anvil-worker.el=
+(1137 LOC / 49 関数) と同等の *lane-aware worker pool* に格上げする。
+これは Phase 5-E (Doc 16、anvil.el の NeLisp port) の前提条件であり、
+Phase 0 v1.0 完遂条件 3 "AI-critical path が NeLisp 上で動作" の
+*実運用検証路線* (= memory の user 方針「最低限動く = anvil.el で
+実用運用」) の第一歩。
+
+Phase 5-C.1b は小 4 slot のジェネリック pool としての MVP で、
+anvil-worker が提供する lane 分離 / classifier / latency metrics /
+request-response protocol / batch warmup / health check は未実装。
+本 Phase 5-D でこれを揃え、Phase 5-E で実 anvil module を差し替える
+とき "pool 層は NeLisp で既に揃っている" 状態を作る。
+
+** 背景
+
+- anvil.el =anvil-worker.el= (project_anvil_worker_phase1.md、
+  SHIPPED Phase 1-5 + freeze fix) は daemon 運用で:
+  - 3 lane (read=2 / write=1 / batch=1) + classifier で long-running
+    batch task が read task を starvation させない分離
+  - =emacsclient -e= 経由 eval + fallback sexp pipe
+  - latency metrics histogram (spawn-ms / wait-ms、percentile、cap)
+  - batch warmup pre-send (heavy init-file を先回し)
+  - quick-alive-p + 周期 health check
+  - tabulated-list UI (M-x anvil-worker-list)
+- Phase 5-C.1b =nelisp-process-pool= (§3.1b) は MVP — lane 無し /
+  classifier 無し / latency 無し / request-response 無し / warmup 無し
+  — "=:prespawn nil=" で anvil-worker の startup freeze 回避 opt-in
+  だけは入れた
+- memory =project_mcp_layer2_design.md= = 4 層 architecture B の
+  mcp-worker / eat-dev / subprocess の分離方針、本 Phase は
+  main daemon と mcp-worker の間の in-process pool 層 (anvil と同位)
+
+** Non-goals
+
+- *Architecture B の daemon 分離* は範囲外。本 Phase は 1 daemon 内
+  の pool layer 改良、mcp-worker spawn は別 Phase で判断
+- *UI (tabulated-list)* は範囲外。Phase 5-E で anvil-worker-list
+  port の際に扱う
+- *Windows ConPTY* 関連 fix は範囲外 (anvil-pty-broker Doc 25 の
+  領域)
+- *真の actor-protocol request/response layer (§2.3 A 以外)* は
+  実装判断次第で scope 外にも
+
+* §1 Phase 5-C 成果前提
+
+本 Phase は Phase 5-C の成果物に依存する:
+- =src/nelisp-process.el= (§3.1) — subprocess substrate、sentinel
+  trampoline + actor event post
+- =src/nelisp-process-pool.el= (§3.1b) — MVP pool、本 Phase で
+  拡張 or 並置
+- =src/nelisp-actor.el= (Phase 4) — scheduler + channel + mailbox
+- =src/nelisp-eventloop.el= (§5-B.4) — =nelisp-event= + timer
+
+Phase 5-D は以下のいずれかの姿で格上げする (§2.8 で decision):
+- *(A) extend in place*: =nelisp-process-pool= を anvil-worker 相当
+  API に肥大化 — §3.1b の既存 API は後方互換
+- *(B) new module*: =src/nelisp-worker.el= 新設、=-pool= は薄い
+  base data structure のまま残し、worker 層は上に積む
+
+* §2 Locked decisions (signoff 必須)
+
+以下 9 項目を user signoff 後に LOCK。Doc 12 / 13 / 14 と同じ
+pattern。default 推奨を示すが、どの項目も差し戻し可能。
+
+** §2.1 Lane model
+
+*Q*: pool の lane 分離を本 Phase でどこまで一般化するか。
+
+選択肢:
+A. Single-pool (§3.1b のまま) — lane 概念なし、全 worker fungible
+B. *3-lane* (anvil-worker 相当) — =read= / =write= / =batch= 固定
+C. N-lane general — caller 指定のタグで任意数の lane
+
+*推奨: B (3-lane 固定)*。anvil-worker の運用経験で 3 lane は適切
+粒度 (read 並列度上げ / write シリアライズ / batch は慢性 long-
+running) と実証済。N-lane は要件駆動で後で格上げ可。
+
+** §2.2 Classifier
+
+*Q*: 引数 expression から lane を判定する方式。
+
+選択肢:
+A. Regex pattern set (anvil-worker =anvil-worker-classify-*-patterns=
+   相当) を defcustom で expose
+B. Explicit =:lane= kwarg on =nelisp-worker-call=
+C. A + B (explicit 指定があれば classifier skip)
+
+*推奨: C (regex + explicit override)*。anvil の pattern は運用蓄積
+済、NeLisp でも即流用可能。caller 知識がある場合に explicit を
+許すのが実用的。
+
+** §2.3 Request/response protocol
+
+*Q*: worker に 1 request 送って result を受ける layer をどう組むか。
+Phase 5-C.1b には「caller が手で =nelisp-process-send-string= +
+=accept-process-output=」しかない。
+
+選択肢:
+A. Correlation-id 付き message + per-request =nelisp-chan= 1 本
+   (Phase 4.4 channel 活用、receiver は chan-recv で block)
+B. Per-worker :actor + =(:request ID FORM)= / =(:response ID RESULT)=
+   mailbox 送受 (Phase 4.1 actor mailbox)
+C. Synchronous =accept-process-output= ベース (anvil-worker 現状
+   と同じ、Phase 4 actor layer をバイパス)
+
+*推奨: A (channel + correlation-id)*。Phase 4.4 channel の
+rendezvous/buffered semantics で綺麗にまとまる。B も動くが per-
+worker actor spawn が重い。C は Phase 5-C/Phase 4 成果を使わない
+retrograde。
+
+** §2.4 Health check
+
+*Q*: dead worker 検出経路。
+
+選択肢:
+A. On-get sweep のみ (§3.1b MVP)
+B. Periodic timer + on-get
+C. Sentinel-driven mark + periodic zombie scanner + on-get
+
+*推奨: C (sentinel + periodic + sweep)*。anvil-worker では periodic
+が freeze 原因になった歴史があるが (=:prespawn nil= で解決済)、
+dead 検出 3 層で false-negative を最小化。periodic は opt-out 可能。
+
+** §2.5 Batch warmup
+
+*Q*: batch lane の worker に heavy init-expression を pre-send する
+機構。anvil-worker は init.org load + 重 require を 2s 遅延後に投入。
+
+選択肢:
+A. Skip (MVP) — caller 側で first =:request= として送る
+B. Pre-configured =anvil-worker-batch-warmup-expressions= 相当
+   defcustom、spawn 後に =run-at-time WARMUP-DELAY= で送る
+C. B + per-lane warmup (read/write にも allow)
+
+*推奨: B (batch lane のみ warmup、anvil 相当)*。read/write は短
+command 前提なので warmup 不要、batch の heavy load を先回すだけ
+で anvil 運用の主な利得。
+
+** §2.6 Latency metrics
+
+*Q*: spawn-ms / wait-ms の計測と aggregation。
+
+選択肢:
+A. Skip (Phase 5-E で必要になってから)
+B. Per-lane histogram + percentile + sample cap (anvil-worker
+   Phase 4a 相当、~50 LOC)
+C. B + export to =data-set-path= for cross-session aggregation
+
+*推奨: B (per-lane histogram)*。運用中に worker が詰まった時の
+first-response diagnostic として不可欠、cost は軽い。C は Phase 5-E
+で anvil-state 相当が NeLisp 側に整ってから。
+
+** §2.7 Connection method
+
+*Q*: worker との eval 経路。
+
+選択肢:
+A. =emacsclient -e= 経由 (anvil-worker 現行) — daemon-as-worker 必須
+B. Pipe stdio JSON / sexp — worker を =emacs --batch= で起動、
+   読み書きは process filter
+C. A + B (=:method= で切替)
+
+*推奨: B (pipe stdio)*。Phase 5-C §3.1 =nelisp-process= は pipe
+filter/sentinel が成熟、emacsclient 依存は host 固有 (Windows 経路
+issues)。anvil-worker の emacsclient 依存は legacy、NeLisp port の
+機会に pipe-first で単純化する。
+
+** §2.8 Module organization
+
+*Q*: §3.1b =nelisp-process-pool= との関係。
+
+選択肢:
+A. Extend in place — =nelisp-process-pool= を膨らませる、§3.1b API
+   は後方互換
+B. New module =src/nelisp-worker.el= 新設、=-pool= は base 残し
+C. =-pool= deprecate + =-worker= 新設、旧 API alias
+
+*推奨: B (new module)*。§3.1b =-pool= は汎用 data structure として
+綺麗、worker は業務 layer として別 file が読みやすい。=nelisp-
+worker= が =-pool= を内部で使う構造。
+
+** §2.9 Merge gate criteria
+
+*Q*: Phase 5-D 完了を何で判定するか。
+
+選択肢:
+A. anvil-worker の §2 表 defcustom 10 項相当が port 完了 +
+   ERT ~40 本
+B. A + anvil-worker の soak test (長時間 parallel call) の NeLisp
+   version が pass
+C. B + Phase 5-E 最初の sub-phase (anvil-server stub port) が
+   本 Phase worker 上で立ち上がる E2E
+
+*推奨: B (port + soak test pass)*。A は unit-level、C は Phase 5-D
+scope を超えて 5-E に食い込む。B で "worker layer は独立して
+健全" を証明。
+
+* §3 Sub-phase decomposition (§2 LOCK 前の暫定案)
+
+暫定 7 sub-phase + 1 merge gate。§2 LOCK 後に refine。
+
+** §3.0 Pre-req primitive audit (2 日)
+
+- Phase 5-B.0 / 5-C.0 の audit script pattern を踏襲、本 Phase で
+  必要な primitive を静的に scan
+- 期待 gap: 低 (=-pool= / =-process= + actor/channel で完結見込)
+- =docs/design/15-audit-script.el= + forecast sketch 整備
+
+** §3.1 =nelisp-worker.el= base (1 週)
+
+- =cl-defstruct nelisp-worker-pool= (lane 毎の =-process-pool= 内包)
+- =nelisp-worker-spawn LANE= / =nelisp-worker-classify EXPR= /
+  =nelisp-worker-call EXPR &key lane timeout=
+- request/response layer (§2.3 A: channel + correlation-id) で
+  block-until-response
+- base 層は health check / warmup / metrics 無し
+
+** §3.2 Classifier + lane dispatch (3 日)
+
+- =anvil-worker-classify-*-patterns= 相当 defcustom 3 本
+- =nelisp-worker-classify= = pattern match (=:lane= override 許容)
+- ERT: pattern / fallback / :lane override
+
+** §3.3 Health check + sentinel-driven dead mark (3 日)
+
+- =nelisp-worker--sentinel= が worker struct を =dead= に flip
+- periodic zombie scan (=run-at-time WAIT SEC= で opt-in)
+- quick-alive-p 踏襲
+
+** §3.4 Batch warmup (2 日)
+
+- =nelisp-worker-batch-warmup-expressions= defcustom
+- spawn 後 =run-at-time WARMUP-DELAY= で send (non-blocking)
+- batch lane のみ
+
+** §3.5 Latency metrics + percentile (3 日)
+
+- per-lane histogram (spawn-ms / wait-ms)
+- =nelisp-worker-latency-metrics-show= plist dump
+- sample cap defcustom
+
+** §3.6 Soak test (2 日)
+
+- =test/nelisp-worker-soak-test.el= — 並列 read (=20 call) /
+  batch (=1 long) / write (=5 seq) で starvation 無きを証明
+- 実 daemon-like scenario、=make soak= target (advisory only、
+  gc-bench と同じ policy)
+
+** §3.7 Merge gate (1 日)
+
+- audit [X] check + Doc 15 top SHIPPED stamp + main に 8 bubble
+  merge (doc-draft + §3.0-3.7)
+
+合計: 1 + 7 + 2 = 10 週の机上計算。実績ペース (Phase 5-A/B/C で
+1 sub-phase/日) が続くなら 2 週前後。
+
+* §4 期待成果と next
+
+*** Phase 5-D 完了後の状態
+
+- NeLisp 上で anvil-worker 相当 lane-aware pool が動く
+- soak test (並列 read × 20 + batch × 1 + write × 5) で
+  starvation 無しを実証
+- latency metrics で diagnostic 可能
+- Phase 5-E (Doc 16、anvil.el port) の worker 前提条件 satisfied
+
+*** Phase 5-E 以降への橋渡し
+
+- Phase 5-E: anvil.el 戦略 subset port (anvil.el / anvil-server /
+  anvil-worker の host-dep を NeLisp subst に差し替え)
+- Phase 5-E.1: =examples/nelisp-daemon= を full MCP stdio
+  (Content-Length framing + notifications) に格上げ
+- Phase 5-E.2 以降: anvil module を priority 順に port
+- v0.4.0 tag = Phase 5-E で「anvil.el NeLisp port が実用運用水準」
+  到達時に発行 (user 判断)
+
+*** Out of scope (Phase 5-D)
+
+- WebSocket / gRPC / HTTP/2 worker = Phase 7+
+- GUI tabulated-list = Phase 6 / 5-E.X
+- Cross-daemon (remote worker) = Phase 6+
+
+*** §2 decisions 推奨 summary
+
+| § | topic | 推奨 |
+|---+-------------------------+-----|
+| 2.1 | Lane model | B (3-lane 固定) |
+| 2.2 | Classifier | C (regex + explicit override) |
+| 2.3 | Request/response | A (channel + correlation-id) |
+| 2.4 | Health check | C (sentinel + periodic + sweep) |
+| 2.5 | Batch warmup | B (batch lane のみ) |
+| 2.6 | Latency metrics | B (per-lane histogram) |
+| 2.7 | Connection method | B (pipe stdio) |
+| 2.8 | Module organization | B (new =nelisp-worker.el=) |
+| 2.9 | Merge gate criteria | B (port + soak pass) |
