@@ -108,7 +108,7 @@ protocolVersion.  Advertises tools with listChanged = false."
   (setq nelisp-server--state
         (plist-put nelisp-server--state :init-sent t))
   (list :serverInfo nelisp-server-info
-        :capabilities (list :tools (list :listChanged :false))
+        :capabilities (list :tools (list :listChanged :json-false))
         :protocolVersion nelisp-server-protocol-version))
 
 (defun nelisp-server--handle-initialized (_params)

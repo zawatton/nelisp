@@ -99,6 +99,12 @@ assert_line_count() {
     FAIL=1
   fi
 }
+assert_absent() {
+  if grep -q "$1" "$OUT"; then
+    echo "FAIL: expected stdout NOT to contain: $1" >&2
+    FAIL=1
+  fi
+}
 
 # notifications/initialized has no reply -> 5 JSON lines for 6 reqs
 assert_line_count 5
@@ -106,6 +112,8 @@ assert_line_count 5
 # Response shape assertions
 assert_contains '"protocolVersion":"2024-11-05"'
 assert_contains '"serverInfo":{"name":"nelisp-anvil"'
+assert_contains '"listChanged":false'
+assert_absent   '"listChanged":"false"'
 assert_contains '"name":"file-read"'
 assert_contains '"name":"git-log"'
 assert_contains '"name":"data-set-path"'
