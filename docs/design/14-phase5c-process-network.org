@@ -276,7 +276,7 @@ merge で main に積む。各 branch で make test green が必須。
 目的: Phase 5-B までの primitive 表で Phase 5-C 着手に必要な
 gap を埋める。
 
-実装 (commit __HASH_5C0__):
+実装 (commit b56e534):
 - =docs/design/14-audit-script.el= + 3 forecast sketch
   (=14-forecast/nelisp-{process,network,file-notify}-sketch.el=)
   で gap scan、=14-phase5c-primitive-gap.data.el= に出力
