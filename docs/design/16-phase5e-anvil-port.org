@@ -1,0 +1,457 @@
+#+title: NeLisp Phase 5-E — anvil.el NeLisp port spine (MCP server + initial tools)
+#+author: zawatton
+#+date: 2026-04-24
+#+options: toc:2
+
+* STATE: DRAFT 2026-04-24 (§2 LOCKED 2026-04-24、§3 着手可)
+
+** 目的
+
+anvil.el (56 モジュール / 約 42,000 LOC) の *spine 部分を NeLisp 上に
+port* し、Claude Code から実際に MCP 接続して tool call できる
+"anvil-on-nelisp" の最小構成を立ち上げる。これは Phase 0 v1.0 完遂
+条件 3 "AI-critical path が NeLisp 上で動作" の *実運用検証路線*
+(memory user 方針「最低限動く = anvil.el で実用運用」) の到達点
+であり、v0.4.0 tag 発行 + GitHub push + 告知の前提条件 (memory
+=project_nelisp.md= 参照)。
+
+anvil 全 port は本 Phase scope 外 (Phase 5-F+ で逐次継続)。本 Phase
+の完走条件は *spine 3-5 module が src/ に定着し、read-only 系 MCP
+tool 5-10 本が Claude Code 実接続で動く* こと。
+
+** 背景
+
+- Phase 5-A (Doc 12): NeLisp 単独でパッケージ作成自立 (=nelisp-load=
+  / =nelisp-require= / toy-pkg E2E)
+- Phase 5-B (Doc 13): 3 核 (buffer / redisplay / event-loop) Elisp 化、
+  =examples/nelisp-editor/= で visible editor demo 動作
+- Phase 5-C (Doc 14): AI-critical path I/O 基盤 (process / network /
+  file-notify) + =examples/nelisp-daemon/= で JSON-RPC 2.0 stdio
+  daemon demo が 4 tool (=http-get= / =watch= / =watch-events= /
+  =shutdown=) で動作
+- Phase 5-D (Doc 15): lane-aware worker pool (=nelisp-worker.el= +
+  classifier + health + warmup + latency metrics) 完成、anvil-worker
+  parity + soak test pass
+- Phase 4 (Doc 10): actor + channel + supervisor + bench advisory
+
+本 Phase 5-E はこれら substrate の総合運用段階。anvil.el の top-level
+entry (=anvil-server.el= 1894 LOC + =anvil.el= 341 LOC + =anvil-host.el=
+614 LOC) を NeLisp で代替し、代表 tool を port する。
+
+anvil 側の機能マップ (参考):
+- 56 =anvil-*.el= modules、~42 kLOC
+- MCP server 層: =anvil-server= / =anvil-server-commands= /
+  =anvil-server-ert= / =anvil-server-metrics= / =anvil-host=
+- Tool 群: =anvil-file= / =anvil-org= / =anvil-git= / =anvil-http=
+  / =anvil-data= / =anvil-memory= / =anvil-disk= / =anvil-buffer=
+  / =anvil-elisp= / =anvil-defs= / =anvil-discovery= 等
+- Runtime: =anvil-worker= / =anvil-offload= / =anvil-state= /
+  =anvil-sqlite= / =anvil-http= / =anvil-orchestrator= 等
+- UI / Dev: =anvil-worker-ui= / =anvil-dev= / =anvil-bench= 等
+
+本 Phase で port するのは MCP server 層 (spine) + 最小 tool 群 (§3.3
+の 5-10 本)。残 tool 群は Phase 5-F+ で anvil-on-nelisp roster を
+増やす後続作業。
+
+** Non-goals
+
+- *anvil 全モジュール port* は scope 外。本 Phase は spine + 初期
+  tool 5-10 本、残り 40+ module は Phase 5-F 以降
+- *write-operation tool (file-replace / file-batch / Edit 相当)* は
+  scope 外。read-only 系で MCP protocol 動作を実証、destructive
+  operation の port は Phase 5-F 以降で risk 管理しつつ
+- *Claude Desktop / VS Code MCP 接続* は scope 外。Claude Code
+  (terminal CLI) 1 経路で動作実証、他 client は後続
+- *anvil-orchestrator / -memory / -worker-ui 等 heavy module の
+  port* は scope 外
+- *Windows 環境での動作検証* は scope 外。Linux (Debian) 1 環境で
+  完走、Windows は Phase 5-F+ で anvil-pty-broker / conpty 罠を
+  踏みながら対応
+- *真 cold-boot (host Emacs なしで NeLisp 起動)* は Phase 6+ Rhodes
+  genesis 本番、本 Phase は host Emacs 上で =nelisp-eval= で走らせる
+  bootstrap 方式を維持
+
+* §1 Phase 5-D 成果前提
+
+本 Phase は Phase 5-A/B/C/D 全成果物に依存する:
+
+- =src/nelisp-load.el= (Phase 5-A) — =nelisp-load= / =nelisp-require=
+- =src/nelisp-buffer.el= (Phase 5-B.1-2) — gap-buffer + marker +
+  overlay + text-property
+- =src/nelisp-redisplay.el= (Phase 5-B.3) — terminal dirty-region
+- =src/nelisp-eventloop.el= (Phase 5-B.4) — =nelisp-event= + binding
+  + dispatch + main actor + timer
+- =src/nelisp-process.el= (Phase 5-C.1) — subprocess substrate
+- =src/nelisp-network.el= (Phase 5-C.2) — TCP/TLS + HTTP client
+- =src/nelisp-file-notify.el= (Phase 5-C.3) — file-notify wrap
+- =src/nelisp-actor.el= (Phase 4) — scheduler + channel + supervisor
+- =src/nelisp-worker.el= (Phase 5-D) — lane-aware worker pool
+
+かつ、参考実装として:
+- =examples/nelisp-daemon/main.el= (Phase 5-C.4) — stdio JSON-RPC
+  2.0 + 4 tool + in-process HTTP responder。*本 Phase §3.1 で
+  src/nelisp-server.el へ格上げ* (scratch demo の固定化)
+- =examples/nelisp-editor/main.el= (Phase 5-B.5) — 3-core integration
+
+make test post-Phase 5-D: *846/846 green* (main HEAD c9bcd24)。
+
+* §2 Locked decisions (§2 LOCKED 2026-04-24 — 全 default 推奨で user signoff)
+
+以下 8 項目を 2026-04-24 session で user signoff 済、全 default 推奨
+(B / B / B / A / A / A / B / B) で LOCK。Doc 12 / 13 / 14 / 15 と同じ
+pattern。
+
+** §2.1 Port scope
+
+*Q*: 本 Phase で NeLisp 上に port する範囲をどこまで広げるか。
+
+選択肢:
+A. anvil 全 56 module / ~42 kLOC を port (multi-phase 化前提)
+B. *spine 3-5 module + 初期 tool 5-10 本* (本 Phase 完走可能な
+   最小 "anvil-on-nelisp" 動作セット)
+C. spine のみ (tool port は 0、merge gate は server 起動のみ)
+
+*推奨: B (spine + tool 5-10 本)*。A は scope 爆発で Phase 境界
+無意味、C は "実運用検証の起点" として実感薄く user 方針
+「最低限動く = 実用運用」を満たせない。B で Claude Code 実接続
+demo が成立し、残モジュールは Phase 5-F+ で順次積む。
+
+** §2.2 MCP framing
+
+*Q*: MCP protocol の wire 層をどう実装するか。
+
+選択肢:
+A. anvil-server.el (1894 LOC) を NeLisp 互換で port、既存 register-
+   tools / JSON 層を全て引き込む
+B. *NeLisp 側で JSON-RPC 2.0 最小実装 re-impl* (Phase 5-C.4
+   =examples/nelisp-daemon/main.el= の実装を母体に拡張)
+C. stdio bridge — host anvil が MCP 受信 → tool exec のみ NeLisp
+   に転送、JSON framing は host 担当
+
+*推奨: B (NeLisp 側で最小 re-impl、Phase 5-C.4 demo 拡張)*。A は
+anvil-server の Elisp イディオム (json.el / process filter の細かい
+書き方) を NeLisp に引き込むと scope 爆発 + NeLisp primitive 穴
+発見の rabbit hole。B なら Phase 5-C.4 で既に JSON-RPC 2.0 +
+=tools/list= / =tools/call= が動作しており、framing (line-delimited)
++ error code 拡充 + notification 無視の 3 点で実用線。C は "NeLisp
+上で動く" という Phase 目的を満たさない (host anvil 依存)。
+
+** §2.3 Host / NeLisp 分担
+
+*Q*: host Emacs と NeLisp の責務境界。
+
+選択肢:
+A. 全て NeLisp (cold-boot 前提、Rhodes genesis 完了後)
+B. *起動・daemon は host、tool exec は NeLisp* (host Emacs 上で
+   =nelisp-eval= で走らせる bootstrap 方式を維持)
+C. 2 process (host-bridge daemon + nelisp-server 子 process、stdio
+   forwarding)
+
+*推奨: B (host 起動、NeLisp exec)*。NeLisp は Rhodes 5-stage genesis
+が Phase 6+ のため真 cold-boot 未到達、A は原理的に不可。C は
+process 分離の複雑度 + serialization cost が Phase 5-E 見た目と
+釣り合わず、host 単 process 内で =nelisp-eval= で充分。B で "NeLisp
+の tool dispatcher / handler / registry" が実体としてのメイン、
+host は起動 shim に留まる。
+
+** §2.4 初期 port target tool
+
+*Q*: §3.3 で port する tool の性格。
+
+選択肢:
+A. *read-only 系 5-10 本* (=file-read= / =file-outline= / =git-log=
+   / =git-status= / =http-get= / =data-get-path= / =data-set-path=
+   等)
+B. worker 経由 heavy tool (=ert-run= / =offload-eval= 等、Phase 5-D
+   worker 層の integration 実証)
+C. MCP protocol stress bench (N concurrent =tools/call= 等)
+
+*推奨: A (read-only 5-10 本)*。Phase 5-C で nelisp-file / nelisp-
+process / nelisp-network が揃っているため薄い wrap で port 可能、
+destructive operation 無しで MCP dialog を安全に実測できる。B は
+Phase 5-D の worker + Phase 4 actor 統合 PoC として魅力だが Phase
+5-E scope を逸する、worker-backed tool は Phase 5-F+。C は demo
+として地味、merge gate の "実運用検証" 性が低い。
+
+** §2.5 anvil-server 相当モジュール
+
+*Q*: MCP server 層の src/ 配置方針。
+
+選択肢:
+A. *=src/nelisp-server.el= 新設* (Phase 5-C.4 =examples/nelisp-daemon/
+   main.el= の実装を import して拡張、scratch demo を src/ に固定化)
+B. anvil-server.el (1894 LOC) を全面 port、=src/nelisp-server.el=
+   は 1:1 互換
+C. =examples/nelisp-daemon/= のまま、src/ に上げない
+
+*推奨: A (新設 + Phase 5-C.4 demo を母体)*。Phase 5-C.4 で既に
+stdio JSON-RPC 2.0 + =initialize= / =tools/list= / =tools/call= /
+純 dispatcher が動作、本 Phase で src/ に格上げすることで永続
+モジュール化 + 他 example (=nelisp-editor= 等) から再利用可能。
+B は 2.2 と同じ理由で scope 爆発、C は src/ 未昇格で Phase 5-F+
+からの参照・import が examples パスで散らかる。
+
+** §2.6 Tool registry
+
+*Q*: tool 宣言・登録の機構。
+
+選択肢:
+A. *=nelisp-deftool= defmacro* (spec plist + handler body + 内部
+   hash-table、=tools/list= 自動生成)
+B. anvil の =anvil-register-tools-with-prefix= / =register-tools=
+   macro を port (prefix + bulk 登録 + schema 自動生成を継承)
+C. JSON manifest 外部 file + reader (宣言とコードを分離)
+
+*推奨: A (=nelisp-deftool= 単純 macro)*。NeLisp 自然体で Elisp の
+イディオム通り、tool 1 件 = defmacro 1 呼び出しで定義 + 登録が
+完結する。B は anvil の register-tools macro が backend-swap /
+disclosure-layer 等の heavy 機能を抱えており Phase 5-E 範囲では
+over-engineering、C は Elisp の良さ (spec と code を 1 file に
+集約) を殺す。
+
+** §2.7 Test 方針
+
+*Q*: Phase 5-E 完走を何で確認するか。
+
+選択肢:
+A. 純 ERT (=test/nelisp-server-test.el= + 各 tool test、host 側で
+   stdio pipe を mock)
+B. *ERT + Claude Code 実接続 smoke* (A に加えて =.claude.json=
+   に =nelisp-anvil= MCP server を登録、Claude Code 経由で
+   =tools/list= + 代表 tool を call、dialog を docs/ へ保存)
+C. ERT + MCP client mock library (純 Elisp MCP client で loopback)
+
+*推奨: B (ERT + Claude Code smoke)*。Phase 5-E の意義は "実運用
+検証の起点" (memory user 方針) なので、ERT で OK + Claude Code
+経由で真 MCP protocol dialog が flow することが merge gate の
+中核。A だけでは「production で動かない」で refuse。C は ERT の
+延長線上で labor に合わない。
+
+** §2.8 Merge gate criteria
+
+*Q*: Phase 5-E 完了判定。
+
+選択肢:
+A. spine up + tool 1 本 (=file-read= のみ) が Claude Code で呼べる
+B. *spine up + tool 5-10 本 + Claude Code stdio MCP dialog ログ保存*
+C. B + soak test (=nelisp-worker= 経由の long-running tool 実行、
+   100+ call over 5 min) pass
+
+*推奨: B (5-10 tool + dialog ログ)*。A は demo 弱く "anvil-on-nelisp"
+という表現に値しない、C は Phase 5-D で soak 済なので本 Phase
+scope 逸脱 + feature-heavy 時間で soak 時間が食われる。B で
+feature 側に時間投資しつつ "実接続で複数 tool が生きている"
+実感を提供。soak は Phase 5-F+ で worker-backed tool が揃って
+から改めて。
+
+* §3 Sub-phase decomposition (§2 LOCK 前の暫定案)
+
+Phase 5-A/B/C/D と同じく、各 sub-phase = 1 feat branch + ERT +
+make test green の不変条件で進める。
+
+** §3.0 Pre-req primitive audit (2-3 日)
+
+- =docs/design/16-audit-script.el= + forecast sketch
+  (=16-forecast/nelisp-server-sketch.el=) で gap scan、
+  =16-phase5e-primitive-gap.data.el= に出力
+- 期待 gap 候補: JSON encoding / decoding 関連 (=json-encode= /
+  =json-read-from-string= / =json-parse-string=) が host =json.el=
+  依存、NeLisp primitive 表での露出状況要確認。=princ= /
+  =terpri= / =read-from-string= 等 stdio 周辺も audit
+- Phase 5-C.4 =examples/nelisp-daemon/main.el= が動作している
+  ため、gap は 0-3 程度の見込み (実測)
+- 手順: Phase 5-C.0 / Phase 5-D.0 audit infra port
+- 完了条件: =nelisp--primitive-symbols= 更新 + =test/nelisp-
+  stdlib-test.el= に該当 ERT 追加 + make test green
+
+** §3.1 =src/nelisp-server.el= 新設 (1 週)
+
+- =examples/nelisp-daemon/main.el= (§3.0 で Phase 5-C.4 成果物) の
+  実装を =src/nelisp-server.el= に移植 + 拡張
+- 公開 API 候補:
+  - =nelisp-server-start= / =nelisp-server-stop=
+  - =nelisp-server-dispatch= (pure dispatcher、JSON-RPC 非依存)
+  - =nelisp-server-call-json= (line-delimited JSON round trip)
+  - =nelisp-server-run-stdio= (filter + stdin 読み loop)
+  - =nelisp-server-register-handler= (=tools/call= 以外の method、
+    例 =initialize= / =shutdown=)
+  - =nelisp-server-tool-registry= (=nelisp-deftool= が append する
+    internal alist、§3.2 で詳細)
+- 拡充要素 (Phase 5-C.4 から追加):
+  - =initialize= response に =serverInfo= + =capabilities= +
+    =protocolVersion "2024-11-05"= (MCP spec 準拠)
+  - =notifications/initialized= client→server を accept (reply 無し)
+  - JSON-RPC error code: =-32700= parse / =-32601= method-not-found
+    / =-32602= invalid-params / =-32603= internal の 4 code
+  - =tools/list= return スキーマを =name= / =description= /
+    =inputSchema= 3 field に整合 (registry から plist→alist 自動
+    変換)
+- =test/nelisp-server-test.el= +15 ERT 想定:
+  - initialize / initialized lifecycle 3
+  - dispatcher 純 function 5 (method 正常 / method-not-found /
+    invalid-params / internal-error / notification drop)
+  - JSON round-trip 3 (encode / decode / error envelope)
+  - registry 2 (register / lookup)
+  - stdio runner 2 (scripted feed / stop)
+- 完了条件: =initialize= → =tools/list= → =tools/call echo-test=
+  (dummy tool 1 本 register) の ERT 1 本が green
+
+** §3.2 =nelisp-deftool= macro + dispatcher (3-4 日)
+
+- =src/nelisp-server.el= に =nelisp-deftool= macro を配置:
+  #+begin_src elisp
+  (nelisp-deftool file-read
+    :description "Read a file; return its content as a string."
+    :input-schema ((path :type "string" :description "Absolute path"))
+    :handler (lambda (params)
+               (let ((path (alist-get 'path params)))
+                 ;; ... 実装 ...
+                 result)))
+  #+end_src
+- macro expansion: =nelisp-server-tool-registry= への =push= + 既存
+  name の duplicate-register 検出 + schema normalize
+- =tools/list= response: registry から =(name description
+  inputSchema)= を列挙して alist → JSON
+- =tools/call= dispatcher: name → registry lookup → handler 呼び出し、
+  =params= は nested plist → alist converter 経由、error は =:error=
+  envelope で wrap
+- =test/nelisp-deftool-test.el= +8 ERT:
+  - macro expansion 2 (正常 / duplicate name error)
+  - registry round trip 2 (deftool → list → lookup)
+  - schema normalize 2 (plist → JSON-safe alist)
+  - handler dispatch 2 (正常 / handler error → :error envelope)
+- 完了条件: 空 handler の dummy tool 2 本が macro 経由で
+  =tools/list= + =tools/call= 両方動作
+
+** §3.3 初期 tool 5-10 本 port (1-1.5 週)
+
+- 個別 sub-sub-phase ではなく §3.3 1 branch 内で sequential port
+- 各 tool = =nelisp-deftool= 1 form + ERT 3-5 本 + handler LOC 30-60
+- 候補 list (推奨順、LOC 見積 / 依存):
+
+  | # | tool | 基盤 | LOC 見積 | ERT 見積 |
+  |---+------+------+----------+----------|
+  | 1 | =file-read= | host =insert-file-contents= | ~30 | 4 |
+  | 2 | =file-outline= (el/org/md) | regex scan | ~60 | 5 |
+  | 3 | =git-log= | =nelisp-process= spawn | ~40 | 3 |
+  | 4 | =git-status= | =nelisp-process= spawn | ~30 | 3 |
+  | 5 | =http-get= | Phase 5-C.4 既存実装を deftool 化 | ~20 | 2 |
+  | 6 | =data-get-path= | plist nested access | ~40 | 4 |
+  | 7 | =data-set-path= | plist nested update | ~40 | 4 |
+
+  最低線 5 本 (=file-read= / =file-outline= / =git-log= / =http-get=
+  / =data-get-path=)、余裕があれば 7 本全て。=file-replace-string=
+  等 destructive tool は Phase 5-F+ (§2.4 non-goal)。
+- 各 tool は =test/nelisp-tool-<name>-test.el= 別 file (cleanup 容易)
+- 完了条件: 最低 5 tool が =tools/list= で列挙 + =tools/call=
+  で実行 + ERT all green
+
+** §3.4 Claude Code 接続 smoke (3 日)
+
+- =.claude/settings.local.json= or =.claude.json= の =mcpServers=
+  セクションに =nelisp-anvil= 登録
+- 登録形式 (例):
+  #+begin_src json
+  {
+    "mcpServers": {
+      "nelisp-anvil": {
+        "command": "emacs",
+        "args": ["--batch", "-Q", "-L", "/path/to/nelisp/src",
+                 "-l", "nelisp-server", "-f",
+                 "nelisp-server-run-stdio"]
+      }
+    }
+  }
+  #+end_src
+- 検証手順:
+  1. =emacs --batch= 起動時の =initialize= handshake を手動 script
+     (=echo '{...}' | emacs --batch ...=) で 1 回確認
+  2. Claude Code 起動、=/mcp= で接続一覧に =nelisp-anvil= が
+     表示されること確認
+  3. Claude Code で =nelisp-anvil__file-read=、=nelisp-anvil__git-log=
+     等を実 call、response 取得
+  4. dialog ログ (入出力 JSON 全件) を
+     =docs/design/16-claude-code-dialog.org= に保存
+- Windows 版対応は scope 外 (Non-goals 参照)
+- 完了条件: §3.3 port 済 tool の 50% 以上が Claude Code 実接続で
+  呼び出し成功 + dialog ログ保存
+
+** §3.5 Merge gate (1 日)
+
+- audit 項目 (§2.8 B 準拠):
+  - [ ] =nelisp-server-start= / =-stop= 正常 lifecycle (§3.1 ERT)
+  - [ ] JSON-RPC 2.0 4 error code 発行 (§3.1 ERT)
+  - [ ] =nelisp-deftool= macro duplicate 検出 + normalize (§3.2 ERT)
+  - [ ] tool 5 本以上が =tools/call= で動作 (§3.3 ERT)
+  - [ ] Claude Code 実接続で tool が呼び出し可能 (§3.4 dialog log)
+  - [ ] ERT 追加 +50 以上 (目標)
+  - [ ] Phase 5-D 846 + 新規全 pass
+- Doc 16 top STATE: DRAFT → SHIPPED-<YYYY-MM-DD>
+- main に feat branch を =--no-ff= 順次 merge (Phase 5-A~D 流
+  bubble 保持):
+  - feat/phase5e-doc-draft (本 doc)
+  - feat/phase5e.0-pre-req
+  - feat/phase5e.1-server
+  - feat/phase5e.2-deftool
+  - feat/phase5e.3-initial-tools
+  - feat/phase5e.4-claude-smoke
+  - feat/phase5e.5-merge-gate
+- post-merge =make clean && make test= all green
+
+* §4 期待成果と next
+
+*** Phase 5-E 完了後の状態
+
+- =src/nelisp-server.el= (~500 LOC): MCP server 層、JSON-RPC 2.0
+  stdio、=nelisp-deftool= macro、tool registry、dispatcher
+- 初期 tool 5-10 本が =src/nelisp-tools-*.el= (or 集約 1 file) で
+  port 済、各 ERT pass
+- =.claude/settings.local.json= (or anvil manifest 相当) に
+  =nelisp-anvil= 登録 + Claude Code 実接続 dialog ログ保存
+- =examples/nelisp-daemon/= は Phase 5-C.4 スナップショットとして
+  残し、本番 code は =src/nelisp-server.el= に移行
+- =make test= 846 → ~896+ green (§3.0 +3 / §3.1 +15 / §3.2 +8 /
+  §3.3 +25 / §3.4 +0 / §3.5 +0 = +51 目安)
+- Phase 0 v1.0 完遂条件 3 "AI-critical path が NeLisp 上で動作"
+  が "実運用検証" 実績 (Claude Code から tool call 可能) として
+  付帯
+
+*** Phase 5-F 以降への橋渡し
+
+- *Phase 5-F candidate 1*: 追加 tool port (残 40+ module から
+  優先順位付けして 10-20 本増やす、=file-replace-string= 等
+  destructive tool 層を含む)
+- *Phase 5-F candidate 2*: =anvil-worker= の MCP tool expose
+  (worker-backed tool layer、Phase 5-D worker + Phase 5-E server
+  の結合)
+- *Phase 5-F candidate 3*: =anvil-state= (SQLite KV) port、
+  =anvil-memory= 等の永続化 layer を NeLisp 上に
+- *Phase 5-F candidate 4*: Windows 版 (anvil-pty-broker 経由
+  conpty 回避、anvil memory の feedback 群に沿って)
+- *v0.4.0 tag / GitHub push / 告知*: Phase 5-E 完了で "anvil.el
+  実用運用検証" の起点達成、継続運用で bug 出し + fix を数週
+  回してから user 判断で tag 発行 (memory =project_nelisp.md=
+  方針継続)
+
+*** Out of scope (Phase 5-E)
+
+- anvil 56 モジュールの残 40+ の port
+- destructive operation tool (file-replace / file-batch / Edit 相当)
+- Claude Desktop / VS Code 接続
+- Windows 環境対応
+- Cold-boot (Rhodes genesis 本番)
+- =anvil-orchestrator= / =anvil-memory= / =anvil-browser= 等 heavy
+  module の port
+- MCP protocol 拡張 (=prompts/= / =resources/= / =sampling/=)
+- 真の soak test (Phase 5-D で済、Phase 5-F+ で worker-backed tool
+  揃ってから改めて)
+
+*** §2 decisions 推奨 summary
+
+2.1 B (spine + tool 5-10) / 2.2 B (最小 JSON-RPC re-impl) /
+2.3 B (host 起動 + NeLisp exec) / 2.4 A (read-only 中心) /
+2.5 A (nelisp-server.el 新設) / 2.6 A (=nelisp-deftool= 単純 macro) /
+2.7 B (ERT + Claude Code smoke) / 2.8 B (5-10 tool + dialog log)
+
+全 default 推奨で筋が通っている (前 Phase の pattern と一致)。
+user signoff 次第で §2 LOCKED 状態へ。
