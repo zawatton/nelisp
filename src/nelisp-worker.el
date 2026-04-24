@@ -63,6 +63,23 @@ marking and on-`-get' sweep continue unchanged."
   :type 'number
   :group 'nelisp-worker)
 
+(defcustom nelisp-worker-batch-warmup-expressions nil
+  "Forms fire-and-forget-delivered to every batch-lane worker on spawn.
+Mirrors `anvil-worker-batch-warmup-expressions'.  Each form is sent
+over the pipe as `(ID . FORM)' with a synthetic correlation id that
+we never register, so the child's `(ID :ok RESULT)' reply is
+silently dropped by the parent filter.  Nil (the default) disables
+warmup entirely."
+  :type '(repeat sexp)
+  :group 'nelisp-worker)
+
+(defcustom nelisp-worker-batch-warmup-delay 2.0
+  "Seconds to wait after spawn before sending warmup expressions.
+Matches `anvil-worker-batch-warmup-delay'.  A non-positive value
+delivers warmup synchronously during `pool-create'."
+  :type 'number
+  :group 'nelisp-worker)
+
 (defconst nelisp-worker--lanes '(:read :write :batch)
   "All lane keywords known to this module.  Order is stable.")
 
@@ -256,7 +273,79 @@ Idempotent: calling on a pool without a registered timer is a no-op."
   "Return the active timer for POOL, or nil if none."
   (gethash pool nelisp-worker--health-timers))
 
+;;; Batch warmup (Phase 5-D.4) --------------------------------------
+;;
+;; Every batch-lane worker can be pre-loaded with a list of host
+;; expressions so that the first real `nelisp-worker-call' on that
+;; lane lands on an already-hot emacs (init.org, heavy requires,
+;; cache warm-up, etc.).  Delivery is fire-and-forget: each expr
+;; is written as `(ID . FORM)' with a correlation id that is never
+;; registered in the pending table, so the child's reply is dropped
+;; silently by `nelisp-worker--deliver' which only updates known ids.
+;;
+;; Matches anvil-worker.el's warmup pattern (§2.5 B) but uses the
+;; pipe-stdio protocol (§2.7 B) instead of emacsclient -e.
+
+(defun nelisp-worker--send-warmup (pool host-proc)
+  "Send every `nelisp-worker-batch-warmup-expressions' to HOST-PROC.
+POOL is used only to mint a correlation-id prefix so warmup traffic
+is identifiable in host traces; it is never registered as pending."
+  (when (and host-proc (nelisp-process-p host-proc)
+             (nelisp-process-live-p host-proc)
+             nelisp-worker-batch-warmup-expressions)
+    (let ((sent 0))
+      (dolist (expr nelisp-worker-batch-warmup-expressions)
+        (cl-incf sent)
+        (let* ((id (format "nw-warmup-%s-%d"
+                           (nelisp-worker-pool-name pool) sent))
+               (request (cons id expr)))
+          (ignore-errors
+            (nelisp-process-send-string
+             host-proc
+             (concat (prin1-to-string request) "\n")))))
+      sent)))
+
+(defun nelisp-worker--schedule-warmup (pool)
+  "Schedule a deferred warmup for every live batch-lane worker in POOL.
+A non-positive `nelisp-worker-batch-warmup-delay' delivers warmup
+synchronously; otherwise we `run-at-time' so the spawn has time to
+settle before the first payload hits the pipe."
+  (when (and nelisp-worker-batch-warmup-expressions
+             (nelisp-worker-pool-p pool))
+    (let ((batch-pool (nelisp-worker-pool-batch-pool pool)))
+      (when (nelisp-process-pool-p batch-pool)
+        (dolist (w (nelisp-process-pool-workers batch-pool))
+          (let ((proc (nelisp-process-pool-worker-process w)))
+            (when (and proc (nelisp-process-live-p proc))
+              ;; Warmup replies are dropped by the filter anyway, but
+              ;; keeping filter install idempotent here means callers
+              ;; who explicitly invoke `--schedule-warmup' on a lazy
+              ;; pool don't need to wire the filter manually.
+              (nelisp-worker--ensure-filter pool proc)
+              (cond
+               ((and (numberp nelisp-worker-batch-warmup-delay)
+                     (> nelisp-worker-batch-warmup-delay 0))
+                (run-at-time nelisp-worker-batch-warmup-delay nil
+                             #'nelisp-worker--send-warmup pool proc))
+               (t
+                (nelisp-worker--send-warmup pool proc))))))))))
+
 ;;; Spawn / tear-down ------------------------------------------------
+
+(defun nelisp-worker--ensure-filter (pool host-proc)
+  "Install the pool-aware reply filter on HOST-PROC if not already tagged.
+The cached filter closure is stored in POOL's line-buffers table
+under the key `:filter' so every lane worker — prespawned or
+lazily spawned — routes replies back to this pool without a
+re-allocation per `-call'."
+  (when (and host-proc (nelisp-process-p host-proc))
+    (let ((filter (gethash :filter
+                           (nelisp-worker-pool-line-buffers pool))))
+      (unless filter
+        (setq filter (nelisp-worker--make-filter pool))
+        (puthash :filter filter
+                 (nelisp-worker-pool-line-buffers pool)))
+      (setf (nelisp-process-user-filter host-proc) filter))))
 
 (defun nelisp-worker--make-filter (wrap-pool)
   "Return a filter closure that routes reply lines to the POOL's
@@ -319,22 +408,27 @@ Arguments:
     (setf (nelisp-worker-pool-read-pool pool) (funcall mk :read read-size))
     (setf (nelisp-worker-pool-write-pool pool) (funcall mk :write write-size))
     (setf (nelisp-worker-pool-batch-pool pool) (funcall mk :batch batch-size))
-    ;; Reinstall a pool-aware filter on every spawned worker so replies
-    ;; land in this pool's correlation table.
-    (let ((filter (nelisp-worker--make-filter pool)))
-      (dolist (p (list (nelisp-worker-pool-read-pool pool)
-                       (nelisp-worker-pool-write-pool pool)
-                       (nelisp-worker-pool-batch-pool pool)))
-        (dolist (w (nelisp-process-pool-workers p))
-          (setf (nelisp-process-user-filter
-                 (nelisp-process-pool-worker-process w))
-                filter))))
+    ;; Install a pool-aware filter on every spawned worker so replies
+    ;; land in this pool's correlation table.  `--ensure-filter'
+    ;; caches a single closure on POOL so prespawn + lazy-spawn +
+    ;; warmup all route through the same instance.
+    (dolist (p (list (nelisp-worker-pool-read-pool pool)
+                     (nelisp-worker-pool-write-pool pool)
+                     (nelisp-worker-pool-batch-pool pool)))
+      (dolist (w (nelisp-process-pool-workers p))
+        (nelisp-worker--ensure-filter
+         pool (nelisp-process-pool-worker-process w))))
     ;; Auto-start the periodic health timer when eagerly spawned —
     ;; a lazy pool has nothing to scan yet and would wake needlessly.
     (when (and prespawn
                (numberp nelisp-worker-health-check-interval)
                (> nelisp-worker-health-check-interval 0))
       (nelisp-worker-health-timer-start pool))
+    ;; Schedule batch-lane warmup.  A lazy pool has no batch workers
+    ;; to warm; warmup on lazy-spawned batch workers is the caller's
+    ;; responsibility (call `nelisp-worker--schedule-warmup' after
+    ;; `pool-get' forces a spawn).
+    (when prespawn (nelisp-worker--schedule-warmup pool))
     pool))
 
 (defun nelisp-worker-pool-kill (pool)
@@ -385,6 +479,11 @@ on wedge or `nelisp-worker-error' on the child's `:error' reply."
          (worker (nelisp-process-pool-get lane-pool)))
     (unless worker
       (signal 'nelisp-worker-busy (list lane)))
+    (let* ((wrap (nelisp-process-pool-worker-process worker)))
+      ;; Lazy-spawned workers (pool-get with `:prespawn nil') are not
+      ;; covered by the pool-create install loop — make sure the
+      ;; filter is wired before we send the request.
+      (nelisp-worker--ensure-filter pool wrap))
     (let* ((wrap (nelisp-process-pool-worker-process worker))
            (id (nelisp-worker--next-id pool))
            (entry (list :done nil :tag nil :result nil))
