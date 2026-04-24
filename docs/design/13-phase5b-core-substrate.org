@@ -345,7 +345,7 @@ Phase 5-B 着手に必要な gap を埋める。
 
 目的: NeLisp-buffer の内容を terminal grid に描画。
 
-実装 (commit __HASH_5B3__):
+実装 (commit 9a2cd8a):
 - =src/nelisp-redisplay.el= 新設 (~135 LOC)
 - =(cl-defstruct nelisp-window buffer top-line height width
   cursor-row cursor-col dirty-rows)=
