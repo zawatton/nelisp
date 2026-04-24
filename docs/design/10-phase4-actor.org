@@ -212,19 +212,37 @@ Phase 3c 同様、feat branch 毎に ship。予算は目安、ブレ可。
   send-to-dead / spawn-heavy-100
 - =make clean && make test= 487/487 green (既存 479 + 本 sub-phase 8)
 
-** 4.2 Cooperative scheduler (DRAFT)
+** 4.2 Cooperative scheduler (SHIPPED 2026-04-24)
 
-- single-threaded run queue (=nelisp-actor--runnable=) on host Emacs
-- yield = actor coroutine suspend via =throw=/continuation-pass
-  (Elisp =catch= chain or =generator.el= 的 state machine)
-- =nelisp-yield= primitive: voluntary yield from actor thunk
-- =nelisp-actor-run-until-idle=: drive queue until all actors block
-  on mailbox (for ERT / PoC)
-- =nelisp-actor-start= / =nelisp-actor-stop=: event loop integration
-  (=run-with-idle-timer= で periodic drive)
-- ERT: fairness (2 CPU-bound actor が yield 必要、交互 run 確認) /
-  receive-blocking / scheduler-stops-when-empty
-- 予算: 300 LOC、ERT 10 本
+- =src/nelisp-actor.el= を generator-driven に evolve (+92 LOC、計 367)
+- =nelisp-actor-lambda= macro: =iter-lambda= wrapper、actor body を
+  CPS 変換 (§5.3 A 決定通り =generator.el= を採用)
+- =nelisp-receive= を defun → defmacro 化: 空 mailbox なら
+  =(while empty) (iter-yield 'nelisp-actor--receive)=、message 到着後
+  =mailbox-pop= で nil message も保持 (=:got nil= 保証)。以前の
+  "empty → symbol =timeout= を即 return" (Phase 4.1 mock) semantics は
+  Phase 4.2 で廃止 (真 blocking へ昇格)。optional TIMEOUT は API
+  stability のため保持、Phase 4.x で deadline 実装予定
+- =nelisp-yield= macro: =(iter-yield 'nelisp-actor--yield)= で voluntary
+  yield、scheduler が round-robin で再 enqueue
+- =nelisp-spawn=: thunk 即 funcall で iterator 取得、struct field
+  =iterator= に格納 (Phase 4.1 の =k= は rename して意図明確化)
+- Scheduler (=nelisp-actor--step= + =nelisp-actor-run-until-idle=):
+  =iter-next= を driver として、yield value で =:yielded= /
+  =:blocked= 分岐、=iter-end-of-sequence= 捕捉で =:dead= 遷移、
+  uncaught error で =:crashed= + =last-error= 記録
+- Event loop integration: =nelisp-actor-start= /
+  =nelisp-actor-stop=、=run-with-idle-timer= (default
+  =nelisp-actor-tick-interval= 0.05s)、idempotent
+- ERT 18 本 (=test/nelisp-actor-test.el=): Phase 4.1 の 8 本を
+  =nelisp-actor-lambda= 前提に migrate (1 本 =receive-empty-timeout=
+  は semantics 変更で =receive-blocks-until-sent= に置換)、Phase 4.2
+  新規 10 本: =yield-returns-control= / =scheduler-round-robin-after-
+  yield= / =ping-pong-via-receive-blocking= / =receive-preserves-nil-
+  message= / =crashed-on-uncaught-error= / =run-until-idle-empty-queue=
+  / =blocked-receive-resumes-fifo= / =cpu-bound-yields-keep-fairness=
+  / =start-stop-timer-installation= / =stats-shape=
+- =make clean && make test= 497/497 green (Phase 4.1 時点 487 + 10 新)
 
 ** 4.3 Shared-immutable message policy (DRAFT)
 
@@ -332,7 +350,8 @@ MCP tool として (anvil 連携時 future):
     owned-set      ; hash-table from `nelisp-gc-actor-boundary'
     supervisor     ; parent actor-id or nil
     restart-policy ; :permanent :temporary :transient
-    k              ; continuation (suspended state) or nil
+    iterator       ; live generator returned by (funcall thunk) (Phase 4.2+;
+                   ; originally drafted as `k' / continuation)
     last-error)    ; condition-case err from last crash
 #+end_src
 
