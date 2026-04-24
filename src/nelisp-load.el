@@ -39,6 +39,12 @@
 
 (require 'nelisp-read)
 (require 'nelisp-eval)
+;; Phase 5-A.3: `nelisp-require' goes through `nelisp-eval' which
+;; relies on core-macro install (defmacro / and / or / when / etc.).
+;; Pre Phase 5-A.3, `nelisp-load-string' could skip this because the
+;; Phase 2 `require' stub returned early.  Now that `require' actually
+;; loads files the macro layer must be present.
+(require 'nelisp-macro)
 
 (define-error 'nelisp-load-error "NeLisp load error")
 
@@ -184,6 +190,97 @@ PATH recorded in the :source plist slot."
     (let ((coding-system-for-read 'utf-8))
       (insert-file-contents path))
     (nelisp-load-string (buffer-string) path)))
+
+;;; Feature registry (Doc 12 §3.3) -----------------------------------
+
+(defvar nelisp--features nil
+  "List of symbols `nelisp-provide' has registered this session.")
+
+(defvar nelisp--loading nil
+  "Stack of feature symbols whose load is currently in progress.
+Used by `nelisp--builtin-require' for set-based circular detection
+per Doc 12 §2.3 A.")
+
+(defun nelisp-load--reset-registry ()
+  "Clear NeLisp feature / loading registers.
+Invoked from `nelisp--reset' via `fboundp' guard; callable directly
+in tests that want to isolate require state."
+  (setq nelisp--features nil
+        nelisp--loading nil))
+
+(defun nelisp--builtin-require (feature &optional filename noerror)
+  "Phase 5-A.3 NeLisp `require'.
+Load FEATURE (a symbol) unless already provided.  Circular loads,
+i.e. FEATURE re-entered while its own load is in progress, signal
+`nelisp-load-error' with :cause = `circular-require'.  When the
+file is missing and NOERROR is non-nil, return nil; otherwise
+`file-error' is signaled.  When the located file does not end with
+a matching `nelisp-provide', `nelisp-load-error' with :cause =
+`did-not-provide' is signaled — this catches typos in feature
+names."
+  (unless (symbolp feature)
+    (signal 'wrong-type-argument (list 'symbolp feature)))
+  (cond
+   ((memq feature nelisp--features) feature)
+   ((memq feature nelisp--loading)
+    (signal 'nelisp-load-error
+            (list :phase 'require
+                  :feature feature
+                  :loading (copy-sequence nelisp--loading)
+                  :cause 'circular-require)))
+   ;; Host parity with Phase 2 stub: when the host Emacs already has
+   ;; FEATURE (e.g. during self-host where `require' runs in a NeLisp
+   ;; file that the host itself loaded), acknowledge it and record the
+   ;; symbol in `nelisp--features' so subsequent NeLisp requires short
+   ;; circuit too.  This keeps NeLisp source files loadable through
+   ;; both host `load' and `nelisp-load-file' without divergence.
+   ((and (null filename) (featurep feature))
+    (push feature nelisp--features)
+    feature)
+   (t
+    (let ((path (or filename (nelisp-locate-file feature))))
+      (cond
+       ((null path)
+        (if noerror nil
+          (signal 'file-error
+                  (list "Cannot find NeLisp feature" feature))))
+       (t
+        (let ((nelisp--loading (cons feature nelisp--loading)))
+          (nelisp-load-file path))
+        (unless (memq feature nelisp--features)
+          (signal 'nelisp-load-error
+                  (list :phase 'require
+                        :feature feature
+                        :source path
+                        :cause 'did-not-provide)))
+        feature))))))
+
+(defun nelisp--builtin-provide (feature &optional _subfeatures)
+  "Phase 5-A.3 NeLisp `provide'.
+Register FEATURE as available for `nelisp-require'.  SUBFEATURES
+is accepted for host-parity but not yet honoured."
+  (unless (symbolp feature)
+    (signal 'wrong-type-argument (list 'symbolp feature)))
+  (unless (memq feature nelisp--features)
+    (setq nelisp--features (cons feature nelisp--features)))
+  feature)
+
+;;;###autoload
+(defun nelisp-require (feature &optional filename noerror)
+  "Host-facing alias of NeLisp `require' — Doc 12 §2.1 B surface."
+  (nelisp--builtin-require feature filename noerror))
+
+;;;###autoload
+(defun nelisp-provide (feature &optional subfeatures)
+  "Host-facing alias of NeLisp `provide'."
+  (nelisp--builtin-provide feature subfeatures))
+
+;;; Refresh the primitive dispatch table so the Phase 5-A.3 bodies
+;;; are live before any test calls `nelisp--reset' (which would
+;;; otherwise pick up the stubs defined in `nelisp-eval.el').
+(when (hash-table-p nelisp--functions)
+  (puthash 'require #'nelisp--builtin-require nelisp--functions)
+  (puthash 'provide #'nelisp--builtin-provide nelisp--functions))
 
 (provide 'nelisp-load)
 

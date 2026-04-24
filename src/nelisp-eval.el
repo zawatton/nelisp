@@ -633,6 +633,10 @@ dispatches straight into the VM."
     ;; Hash tables — raw data, safe to delegate wholesale
     make-hash-table gethash puthash remhash clrhash
     hash-table-p hash-table-count
+    ;; Feature registry — `featurep' lets NeLisp `require' trust the
+    ;; host when NeLisp source is evaluated inside an Emacs session
+    ;; that has already loaded the same feature (self-host + cycle)
+    featurep
     ;; I/O (side-effect, but used for NeLisp-internal diagnostics)
     message
     ;; Error plumbing — `error' / `signal' / `user-error' / `define-error'
@@ -834,7 +838,9 @@ Intended for test hygiene; callers should expect to re-run every
   (clrhash nelisp--specials)
   (clrhash nelisp--macros)
   (nelisp--install-primitives)
-  (nelisp--install-core-macros))
+  (nelisp--install-core-macros)
+  (when (fboundp 'nelisp-load--reset-registry)
+    (nelisp-load--reset-registry)))
 
 (nelisp--install-primitives)
 ;; Core macros (dolist / push / defsubst / …) reach into the evaluator
