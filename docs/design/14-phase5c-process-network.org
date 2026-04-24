@@ -443,7 +443,7 @@ switch で opt-out 可能にして簡略化)。
 目的: host =make-network-process= を wrap + HTTP GET/HEAD +
 ETag/TTL cache。
 
-実装 (commit __HASH_5C2__):
+実装 (commit 5036f89):
 - =src/nelisp-network.el= 新設 (~260 LOC)
 - =(cl-defstruct nelisp-network id host-conn actor status
   user-sentinel user-filter props)=
