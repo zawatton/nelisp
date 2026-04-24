@@ -3,7 +3,7 @@
 #+date: 2026-04-24
 #+options: toc:2
 
-* STATE: DRAFT 2026-04-24 (§2 decisions awaiting signoff)
+* STATE: DRAFT 2026-04-24 (§2 LOCKED 2026-04-24, proceeding to §3.0)
 
 ** 目的
 
@@ -368,10 +368,9 @@ merge 順は Phase 5-A と同じく各 feat branch を =--no-ff= で
 - Emacs C への既存 user-visible API (=switch-to-buffer= 等)
   の 1:1 port — NeLisp namespace (=nelisp-*=) 限定
 
-* §5 User 判断事項 (signoff) — *未 LOCK*
+* §5 User 判断事項 (signoff) — LOCKED 2026-04-24
 
-本 doc の §2 decisions 9 項目 user signoff 待ち。default
-推奨で LOCK で良ければ下記で確定:
+本 doc の §2 decisions 9 項目 user 承認済 (2026-04-24)、全推奨で LOCK:
 
 | § | 項目 | 推奨 | 備考 |
 |---+------+------+------|
@@ -385,11 +384,6 @@ merge 順は Phase 5-A と同じく各 feat branch を =--no-ff= で
 | 2.8 | Test strategy | B | ERT + host parity test |
 | 2.9 | Merge gate | C | 3 核連動 E2E demo 達成 |
 
-signoff 後 → =feat/phase5b.0-pre-req= branch で §3.0 着手。
-Phase 5-A 完了 (2026-04-24) と同日 signoff が走れば、Phase
-5-B.0 は早ければ 2026-04-25 開始。全 §3 完了期待 = 10〜12
-週 (§3.0 3d + §3.1 1.5w + §3.2 1.5w + §3.3 2w + §3.4 2w +
-§3.5 1w + §3.6 1d + buffer 週数 2w)。
-
-差し戻しがある項目のみ番号を指示してください (例: "2.4 は A
-でいきたい" 等)。
+signoff 完了 → =feat/phase5b.0-pre-req= branch で §3.0 着手。
+全 §3 完了期待 = 10〜12 週 (§3.0 3d + §3.1 1.5w + §3.2 1.5w
++ §3.3 2w + §3.4 2w + §3.5 1w + §3.6 1d + buffer 週数 2w)。
