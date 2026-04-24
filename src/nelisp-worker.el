@@ -53,6 +53,16 @@ A caller may override this per-call via `:timeout'."
   :type 'number
   :group 'nelisp-worker)
 
+(defcustom nelisp-worker-health-check-interval 30
+  "Seconds between periodic health scans (§2.4 C).
+The scan walks every lane of every registered pool and marks any
+worker whose host process has exited as `dead', so the next
+`nelisp-worker-call' sweeps and replaces it.  A value of 0 (or
+non-positive) disables the periodic scan; sentinel-driven dead
+marking and on-`-get' sweep continue unchanged."
+  :type 'number
+  :group 'nelisp-worker)
+
 (defconst nelisp-worker--lanes '(:read :write :batch)
   "All lane keywords known to this module.  Order is stable.")
 
@@ -186,6 +196,66 @@ SCRIPT-PATH defaults to the bundled child script."
         "-l" (or script-path nelisp-worker--child-script)
         "-f" "nelisp-worker-child-loop"))
 
+;;; Health check (Phase 5-D.3) -------------------------------------
+;;
+;; Three-layer dead worker detection per §2.4 C:
+;;   1. Sentinel-driven mark  (inherited from `nelisp-process-pool';
+;;      the sentinel installed at spawn flips state to `dead' when
+;;      the host process exits)
+;;   2. Periodic timer scan   (this module; walks every lane and
+;;      calls `nelisp-process-pool--sweep-dead' — cheap, no probe)
+;;   3. On-`-get' sweep       (inherited from `nelisp-process-pool';
+;;      `pool-get' calls sweep-then-spawn so the caller receives a
+;;      live worker even if neither of the above has fired)
+;;
+;; The timer is per-pool and registered in `nelisp-worker--health-
+;; timers'.  `nelisp-worker-pool-create' auto-starts when
+;; PRESPAWN is non-nil and `nelisp-worker-health-check-interval' is
+;; positive; `nelisp-worker-pool-kill' auto-stops.
+
+(defvar nelisp-worker--health-timers (make-hash-table :test 'eq)
+  "POOL -> host timer object for its periodic health scan.")
+
+(defun nelisp-worker-health-scan (pool)
+  "Mark any dead worker across every lane of POOL as such.
+Relies on `nelisp-process-pool--sweep-dead' which only inspects
+`nelisp-process-live-p' and the worker's state slot; no subprocess
+is spawned here, so the scan is safe to call from a timer context."
+  (when (nelisp-worker-pool-p pool)
+    (dolist (p (list (nelisp-worker-pool-read-pool pool)
+                     (nelisp-worker-pool-write-pool pool)
+                     (nelisp-worker-pool-batch-pool pool)))
+      (when (nelisp-process-pool-p p)
+        (nelisp-process-pool--sweep-dead p)))))
+
+(defun nelisp-worker-health-timer-start (pool &optional interval)
+  "Start a periodic health scan timer for POOL.
+INTERVAL defaults to `nelisp-worker-health-check-interval'.  A
+non-positive INTERVAL disables the timer and returns nil.  Any
+previous timer registered for POOL is cancelled first (so this
+is safe to call repeatedly)."
+  (nelisp-worker-health-timer-stop pool)
+  (let ((n (or interval nelisp-worker-health-check-interval)))
+    (when (and (numberp n) (> n 0))
+      (let ((timer (run-with-timer
+                    n n
+                    #'nelisp-worker-health-scan pool)))
+        (puthash pool timer nelisp-worker--health-timers)
+        timer))))
+
+(defun nelisp-worker-health-timer-stop (pool)
+  "Cancel POOL's periodic health scan timer, if any.
+Idempotent: calling on a pool without a registered timer is a no-op."
+  (let ((timer (gethash pool nelisp-worker--health-timers)))
+    (when (timerp timer)
+      (ignore-errors (cancel-timer timer)))
+    (remhash pool nelisp-worker--health-timers))
+  nil)
+
+(defun nelisp-worker-health-timer-active-p (pool)
+  "Return the active timer for POOL, or nil if none."
+  (gethash pool nelisp-worker--health-timers))
+
 ;;; Spawn / tear-down ------------------------------------------------
 
 (defun nelisp-worker--make-filter (wrap-pool)
@@ -259,10 +329,17 @@ Arguments:
           (setf (nelisp-process-user-filter
                  (nelisp-process-pool-worker-process w))
                 filter))))
+    ;; Auto-start the periodic health timer when eagerly spawned —
+    ;; a lazy pool has nothing to scan yet and would wake needlessly.
+    (when (and prespawn
+               (numberp nelisp-worker-health-check-interval)
+               (> nelisp-worker-health-check-interval 0))
+      (nelisp-worker-health-timer-start pool))
     pool))
 
 (defun nelisp-worker-pool-kill (pool)
   "Terminate every worker in POOL and clear pending state."
+  (nelisp-worker-health-timer-stop pool)
   (dolist (p (list (nelisp-worker-pool-read-pool pool)
                    (nelisp-worker-pool-write-pool pool)
                    (nelisp-worker-pool-batch-pool pool)))

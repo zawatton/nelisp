@@ -288,5 +288,118 @@
       (should (= 99 (nelisp-worker-call p expr :timeout 5.0)))
       (ignore before))))
 
+;;; Health check (Phase 5-D.3) -------------------------------------
+
+(ert-deftest nelisp-worker-health-scan-marks-killed-worker-dead ()
+  "Killing a worker's host process + scanning flips its state to dead."
+  (nelisp-worker-test--with-pool p
+    (let* ((lane-pool (nelisp-worker-pool-read-pool p))
+           (worker (car (nelisp-process-pool-workers lane-pool)))
+           (host (nelisp-process-pool-worker-process worker)))
+      (nelisp-kill-process host)
+      (nelisp-process-wait-for-exit host 2.0)
+      (accept-process-output nil 0.1)
+      (nelisp-worker-health-scan p)
+      (should (eq 'dead (nelisp-process-pool-worker-state worker))))))
+
+(ert-deftest nelisp-worker-health-scan-noop-on-healthy-pool ()
+  "Scanning a fully-alive pool leaves every worker's state intact."
+  (nelisp-worker-test--with-pool p
+    (nelisp-worker-health-scan p)
+    (dolist (lp (list (nelisp-worker-pool-read-pool p)
+                      (nelisp-worker-pool-write-pool p)
+                      (nelisp-worker-pool-batch-pool p)))
+      (dolist (w (nelisp-process-pool-workers lp))
+        (should (memq (nelisp-process-pool-worker-state w)
+                      '(idle busy)))))))
+
+(ert-deftest nelisp-worker-health-timer-start-returns-timer ()
+  "With a positive interval the start registers a live timer."
+  (nelisp-worker-test--with-pool p
+    (let ((t0 (nelisp-worker-health-timer-start p 0.5)))
+      (should (timerp t0))
+      (should (eq t0 (nelisp-worker-health-timer-active-p p))))))
+
+(ert-deftest nelisp-worker-health-timer-start-zero-returns-nil ()
+  "Interval 0 disables the timer (nil return, registry untouched)."
+  (nelisp-worker-test--with-pool p
+    (nelisp-worker-health-timer-stop p)
+    (should (null (nelisp-worker-health-timer-start p 0)))
+    (should (null (nelisp-worker-health-timer-active-p p)))))
+
+(ert-deftest nelisp-worker-health-timer-stop-is-idempotent ()
+  (nelisp-worker-test--with-pool p
+    (nelisp-worker-health-timer-stop p)
+    (should (progn (nelisp-worker-health-timer-stop p) t))))
+
+(ert-deftest nelisp-worker-health-timer-start-cancels-previous ()
+  "Second `-start' cancels the first timer before registering a new one."
+  (nelisp-worker-test--with-pool p
+    (let* ((t1 (nelisp-worker-health-timer-start p 0.5))
+           (t2 (nelisp-worker-health-timer-start p 0.5)))
+      (should (not (eq t1 t2)))
+      (should (eq t2 (nelisp-worker-health-timer-active-p p))))))
+
+(ert-deftest nelisp-worker-pool-create-auto-starts-timer ()
+  "Default interval > 0 auto-starts the periodic scan on create."
+  (let* ((nelisp-worker-health-check-interval 0.5)
+         (p (nelisp-worker-pool-create
+             'h :read-size 1 :write-size 1 :batch-size 1)))
+    (unwind-protect
+        (should (timerp (nelisp-worker-health-timer-active-p p)))
+      (ignore-errors (nelisp-worker-pool-kill p)))))
+
+(ert-deftest nelisp-worker-pool-create-lazy-skips-timer ()
+  "A lazy pool has no workers to scan yet and must not start a timer."
+  (let* ((nelisp-worker-health-check-interval 0.5)
+         (p (nelisp-worker-pool-create
+             'hl :prespawn nil
+             :read-size 1 :write-size 1 :batch-size 1)))
+    (unwind-protect
+        (should (null (nelisp-worker-health-timer-active-p p)))
+      (ignore-errors (nelisp-worker-pool-kill p)))))
+
+(ert-deftest nelisp-worker-pool-create-interval-zero-skips-timer ()
+  "Interval=0 defcustom opt-out disables auto-start."
+  (let* ((nelisp-worker-health-check-interval 0)
+         (p (nelisp-worker-pool-create
+             'hz :read-size 1 :write-size 1 :batch-size 1)))
+    (unwind-protect
+        (should (null (nelisp-worker-health-timer-active-p p)))
+      (ignore-errors (nelisp-worker-pool-kill p)))))
+
+(ert-deftest nelisp-worker-pool-kill-cancels-timer ()
+  "Tearing the pool down also unregisters the scan timer."
+  (let* ((nelisp-worker-health-check-interval 0.5)
+         (p (nelisp-worker-pool-create
+             'hk :read-size 1 :write-size 1 :batch-size 1)))
+    (should (timerp (nelisp-worker-health-timer-active-p p)))
+    (nelisp-worker-pool-kill p)
+    (should (null (nelisp-worker-health-timer-active-p p)))))
+
+(ert-deftest nelisp-worker-health-timer-actually-fires-sweep ()
+  "Set a short interval, kill a worker, wait for the timer to tick,
+assert the worker ended up marked dead by the periodic scan (not
+by an on-get sweep, which we never trigger)."
+  (let* ((nelisp-worker-health-check-interval 0.2)
+         (p (nelisp-worker-pool-create
+             'hf :read-size 1 :write-size 1 :batch-size 1)))
+    (unwind-protect
+        (let* ((lane-pool (nelisp-worker-pool-read-pool p))
+               (worker (car (nelisp-process-pool-workers lane-pool)))
+               (host (nelisp-process-pool-worker-process worker)))
+          (nelisp-kill-process host)
+          (nelisp-process-wait-for-exit host 2.0)
+          ;; Give the timer ~0.5s to fire at least once.
+          (let ((deadline (+ (float-time) 1.0)))
+            (while (and (not (eq 'dead
+                                 (nelisp-process-pool-worker-state
+                                  worker)))
+                        (< (float-time) deadline))
+              (accept-process-output nil 0.05)))
+          (should (eq 'dead
+                      (nelisp-process-pool-worker-state worker))))
+      (ignore-errors (nelisp-worker-pool-kill p)))))
+
 (provide 'nelisp-worker-test)
 ;;; nelisp-worker-test.el ends here
