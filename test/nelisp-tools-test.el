@@ -45,7 +45,13 @@ run BODY with server started, tear everything down afterwards."
                  "http-get" "data-get-path" "data-set-path"
                  ;; Phase 5-F.1.2
                  "state-set" "state-get" "state-delete"
-                 "state-list-ns" "state-list-keys" "state-count"))
+                 "state-list-ns" "state-list-keys" "state-count"
+                 ;; Phase 5-F.2 (Doc 19)
+                 "file-replace-string" "file-insert-at-line"
+                 "file-delete-lines" "file-append" "file-read-snippet"
+                 "git-diff-names" "git-head-sha"
+                 "git-branch-current" "git-repo-root"
+                 "data-list-keys" "data-delete-path"))
       (should (gethash n nelisp-server--tool-registry)))))
 
 (ert-deftest nelisp-tools-test-tools-list-surface ()
@@ -58,7 +64,12 @@ run BODY with server started, tear everything down afterwards."
                           "git-status" "http-get"
                           "data-get-path" "data-set-path"
                           "state-set" "state-get" "state-delete"
-                          "state-list-ns" "state-list-keys" "state-count"))
+                          "state-list-ns" "state-list-keys" "state-count"
+                          "file-replace-string" "file-insert-at-line"
+                          "file-delete-lines" "file-append" "file-read-snippet"
+                          "git-diff-names" "git-head-sha"
+                          "git-branch-current" "git-repo-root"
+                          "data-list-keys" "data-delete-path"))
         (should (member expected names))))))
 
 ;;; file-read -------------------------------------------------------
@@ -387,6 +398,156 @@ GET via the http-get tool, assert :status 200 + body."
            (content (plist-get result :content)))
       (should (string-match-p "\"ok\"\\|ok"
                               (or (plist-get (car content) :text) ""))))))
+
+;;; Phase 5-F.2.1 file ops (Doc 19) -------------------------------
+
+(ert-deftest nelisp-tools-test-file-replace-string-counts ()
+  (nelisp-tools-test--with-tools
+    (let ((tmp (make-temp-file "nelisp-replace-")))
+      (unwind-protect
+          (progn
+            (with-temp-file tmp (insert "foo bar foo baz foo"))
+            (let ((r (funcall (nelisp-tools-test--handler "file-replace-string")
+                              `((path . ,tmp) (old . "foo") (new . "FOO")))))
+              (should (= 3 (plist-get r :replaced))))
+            (with-temp-buffer
+              (insert-file-contents tmp)
+              (should (string= "FOO bar FOO baz FOO" (buffer-string)))))
+        (delete-file tmp)))))
+
+(ert-deftest nelisp-tools-test-file-replace-string-empty-old-errors ()
+  (nelisp-tools-test--with-tools
+    (let ((tmp (make-temp-file "nelisp-replace-")))
+      (unwind-protect
+          (should-error
+           (funcall (nelisp-tools-test--handler "file-replace-string")
+                    `((path . ,tmp) (old . "") (new . "x"))))
+        (delete-file tmp)))))
+
+(ert-deftest nelisp-tools-test-file-insert-at-line-prepends ()
+  (nelisp-tools-test--with-tools
+    (let ((tmp (make-temp-file "nelisp-insert-")))
+      (unwind-protect
+          (progn
+            (with-temp-file tmp (insert "line2\nline3\n"))
+            (funcall (nelisp-tools-test--handler "file-insert-at-line")
+                     `((path . ,tmp) (line . 1) (content . "line1")))
+            (with-temp-buffer
+              (insert-file-contents tmp)
+              (should (string= "line1\nline2\nline3\n" (buffer-string)))))
+        (delete-file tmp)))))
+
+(ert-deftest nelisp-tools-test-file-delete-lines-removes-range ()
+  (nelisp-tools-test--with-tools
+    (let ((tmp (make-temp-file "nelisp-delete-")))
+      (unwind-protect
+          (progn
+            (with-temp-file tmp (insert "a\nb\nc\nd\ne\n"))
+            (let ((r (funcall (nelisp-tools-test--handler "file-delete-lines")
+                              `((path . ,tmp) (line . 2) (count . 2)))))
+              (should (= 2 (plist-get r :deleted))))
+            (with-temp-buffer
+              (insert-file-contents tmp)
+              (should (string= "a\nd\ne\n" (buffer-string)))))
+        (delete-file tmp)))))
+
+(ert-deftest nelisp-tools-test-file-append-adds-content ()
+  (nelisp-tools-test--with-tools
+    (let ((tmp (make-temp-file "nelisp-append-")))
+      (unwind-protect
+          (progn
+            (with-temp-file tmp (insert "head\n"))
+            (let ((r (funcall (nelisp-tools-test--handler "file-append")
+                              `((path . ,tmp) (content . "tail\n")))))
+              (should (= 5 (plist-get r :appended))))
+            (with-temp-buffer
+              (insert-file-contents tmp)
+              (should (string= "head\ntail\n" (buffer-string)))))
+        (delete-file tmp)))))
+
+(ert-deftest nelisp-tools-test-file-read-snippet-window ()
+  (nelisp-tools-test--with-tools
+    (let ((tmp (make-temp-file "nelisp-snippet-")))
+      (unwind-protect
+          (progn
+            (with-temp-file tmp
+              (dotimes (i 10) (insert (format "line%d\n" (1+ i)))))
+            (let ((r (funcall (nelisp-tools-test--handler "file-read-snippet")
+                              `((path . ,tmp) (line . 5) (window . 4)))))
+              ;; window 4 → half=2、line=5 なので start=3 / end=7
+              (should (= 3 (plist-get r :start)))
+              (should (= 7 (plist-get r :end)))
+              (should (= 10 (plist-get r :total-lines)))
+              (should (string-match-p "line3\nline4\nline5\nline6\nline7"
+                                      (plist-get r :content)))))
+        (delete-file tmp)))))
+
+;;; Phase 5-F.2.2 git ops (Doc 19) ---------------------------------
+
+(ert-deftest nelisp-tools-test-git-head-sha-shape ()
+  "git-head-sha returns 40-char hex SHA when run inside this repo."
+  (nelisp-tools-test--with-tools
+    (let* ((r (funcall (nelisp-tools-test--handler "git-head-sha") nil))
+           (sha (plist-get r :sha)))
+      (should (= 0 (plist-get r :exit)))
+      (should (= 40 (length sha)))
+      (should (string-match-p "\\`[0-9a-f]+\\'" sha)))))
+
+(ert-deftest nelisp-tools-test-git-branch-current-non-empty ()
+  (nelisp-tools-test--with-tools
+    (let* ((r (funcall (nelisp-tools-test--handler "git-branch-current") nil))
+           (br (plist-get r :branch)))
+      (should (= 0 (plist-get r :exit)))
+      (should (stringp br))
+      (should (> (length br) 0)))))
+
+(ert-deftest nelisp-tools-test-git-repo-root-absolute ()
+  (nelisp-tools-test--with-tools
+    (let* ((r (funcall (nelisp-tools-test--handler "git-repo-root") nil))
+           (root (plist-get r :root)))
+      (should (= 0 (plist-get r :exit)))
+      (should (file-name-absolute-p root))
+      (should (file-directory-p root)))))
+
+(ert-deftest nelisp-tools-test-git-diff-names-list-shape ()
+  "git-diff-names returns :files as a list (possibly empty)."
+  (nelisp-tools-test--with-tools
+    (let* ((r (funcall (nelisp-tools-test--handler "git-diff-names") nil))
+           (files (plist-get r :files)))
+      (should (= 0 (plist-get r :exit)))
+      (should (listp files)))))
+
+;;; Phase 5-F.2.3 data ops (Doc 19) --------------------------------
+
+(ert-deftest nelisp-tools-test-data-list-keys-top-and-nested ()
+  (nelisp-tools-test--with-tools
+    (funcall (nelisp-tools-test--handler "data-set-path")
+             '((path . "a.b") (value . 1)))
+    (funcall (nelisp-tools-test--handler "data-set-path")
+             '((path . "a.c") (value . 2)))
+    (funcall (nelisp-tools-test--handler "data-set-path")
+             '((path . "x") (value . 9)))
+    (let ((r (funcall (nelisp-tools-test--handler "data-list-keys") nil)))
+      (should (member ":a" (plist-get r :keys)))
+      (should (member ":x" (plist-get r :keys))))
+    (let ((r (funcall (nelisp-tools-test--handler "data-list-keys")
+                      '((path . "a")))))
+      (should (equal '(":b" ":c")
+                     (sort (copy-sequence (plist-get r :keys))
+                           #'string<))))))
+
+(ert-deftest nelisp-tools-test-data-delete-path-unsets-value ()
+  (nelisp-tools-test--with-tools
+    (funcall (nelisp-tools-test--handler "data-set-path")
+             '((path . "k") (value . "v")))
+    (should (string= "v" (plist-get (funcall (nelisp-tools-test--handler "data-get-path")
+                                              '((path . "k")))
+                                     :value)))
+    (funcall (nelisp-tools-test--handler "data-delete-path")
+             '((path . "k")))
+    (should-not (plist-get (funcall (nelisp-tools-test--handler "data-get-path")
+                                     '((path . "k")))
+                           :value))))
 
 (provide 'nelisp-tools-test)
 

@@ -1,0 +1,108 @@
+#+TITLE: Doc 19 — Phase 5-F.2: anvil tool surface expansion (11 tool port)
+#+AUTHOR: zawatton + Claude
+#+DATE: 2026-04-25
+#+STATE: LOCKED-2026-04-25
+#+STATUS: §2 全 default 採用 LOCKED (user 「Phase 5-F.2 を完遂しましょう」signoff)
+
+* §0 要旨
+
+Phase 5-F.1 で anvil-state SQLite KV port + state-* MCP tool 6 本 expose
+(tools/list 7 → 13) が完了。本 sub-phase 5-F.2 では anvil-manifest
+*headless profile* (~30 tool) のうち、anvil.el 本体 dep 無しで pure
+Elisp 実装可能な 11 tool を NeLisp 側に port。tools/list は 13 → 24 に拡大。
+
+非 Emacs user (Stage D launcher 経由) からの daily file/git ops が
+NeLisp MCP 単体でカバーされる中核拡張。
+
+* §1 motivation
+
+** 1.1 現状 gap
+
+NeLisp MCP server は Phase 5-E (7 tool) + 5-F.1.2 (6 state tool) で
+13 tool。しかし anvil headless profile 想定 ~30 tool のうち、daily 必須:
+- file replace / insert / delete / append / snippet read
+- git diff / HEAD / branch / repo-root
+- data store list / delete
+
+の 11 tool が未 expose。Stage D Phase 6.1 launcher を非 Emacs user に
+release した時点で「ファイル書き換え」「git 状態」が tools/call で
+できないと dogfood 価値が低い。
+
+** 1.2 Phase 5-F.2.0 sub-phase 想定 (本 doc では skip)
+
+5-F.1.0 と異なり 5-F.2 には primitive 追加 pre-req 不要 — Phase 5-C で
+file / process / regex 系 primitive は揃い済。すぐ 5-F.2.1 から実装可能。
+
+* §2 decisions (STATE = LOCKED 2026-04-25、全 default)
+
+#+begin_example
+§2.1  port 戦略: pure Elisp re-impl (anvil.el dep なし)
+§2.2  tool 選定: headless profile から file/git/data の 11 本
+§2.3  実装場所: src/nelisp-tools.el に追加 (新 module 作らない)
+§2.4  schema: 既存 deftool pattern に合わせ inputSchema 明示
+§2.5  no-arg tool は (make-hash-table) で properties null 罠回避
+§2.6  ERT: 1 tool 1+ ERT、edge case 含む
+§2.7  smoke: tools/list assert 11 件追加 (13 → 24)
+§2.8  3 sub-phase 分割: file ops / git ops / data ops を別コミット可能に
+§2.9  destructive op は明示 (file-replace は match 数 return、安全網無し)
+§2.10 org-* / memory-* / defs-* は本 phase 外 (Doc 20+ 候補)
+#+end_example
+
+* §3 tool 表 (11 本)
+
+** 5-F.2.1 file ops (5 本)
+
+| tool | input | output | 備考 |
+|------+-------+--------+------|
+| file-replace-string | path, old, new | :replaced N | ファイル全文 substring 置換 |
+| file-insert-at-line | path, line, content | :inserted t | 1-indexed 行に挿入 |
+| file-delete-lines | path, start, count | :deleted N | start から count 行削除 |
+| file-append | path, content | :appended N | 末尾追加、改行 auto |
+| file-read-snippet | path, line, window | :start L :end L :content | 行 L 中心の window 行 |
+
+** 5-F.2.2 git ops (4 本)
+
+| tool | input | output | 備考 |
+|------+-------+--------+------|
+| git-diff-names | rev? | :files [...] | rev 省略で uncommitted、指定で since rev |
+| git-head-sha | (none) | :sha | 現 HEAD の full SHA |
+| git-branch-current | (none) | :branch | symbolic ref short |
+| git-repo-root | (none) | :root path | git rev-parse --show-toplevel |
+
+** 5-F.2.3 data ops (2 本)
+
+| tool | input | output | 備考 |
+|------+-------+--------+------|
+| data-list-keys | path? | :keys [...] | path 省略で top-level、指定で nested |
+| data-delete-path | path | :deleted t | 既存 keypath を nil 化 (実質 unset) |
+
+合計 *11 tool*、tools/list 13 → 24。
+
+* §4 phase 分割 + 工数見積
+
+| sub-phase | 内容 | 所要 |
+|-----------+------+------|
+| 5-F.2.1 file ops 5 本 | nelisp-tools.el +deftool ×5 + ERT +5 | 30-45 分 |
+| 5-F.2.2 git ops 4 本 | 〃 ×4 + ERT +4 | 20-30 分 |
+| 5-F.2.3 data ops 2 本 | 〃 ×2 + helper extension + ERT +2 | 20-30 分 |
+| smoke + commit + merge | assert +11 / make test/compile/smoke | 10-15 分 |
+| *合計* | | *80-120 分* |
+
+実工数 1.5-2 時間、本日中に完遂可能。
+
+* §5 §2.10 deferred (Doc 20+ 候補)
+
+5-F.2 で port しない:
+- =org-read-*= / =org-edit-*= 系 (org-mode parser 依存、~3-5 日 工数)
+- =memory-*= 系 (Doc 29 anvil-memory-engine の SQLite schema 移植要)
+- =defs-search= / =defs-signature= 等 (anvil-defs index 移植要)
+- =bench-*= / =orchestrator-*= / =browser-*= (内部 service 依存)
+
+これらは Phase 5-F.3 以降 + Stage D Phase 6.x で個別判断。
+
+* §6 関連 doc
+
+- =docs/design/16-phase5e-anvil-port.org= (Phase 5-E、deftool pattern source)
+- =docs/design/17-phase5f-state-port.org= (Phase 5-F.1、state-* expose 直前 sub-phase)
+- =docs/design/18-stage-d-standalone.org= (Stage D headless profile が本 11 tool を含む)
+- anvil.el =anvil-file.el= / =anvil-git.el= (port reference 元、ただし pure Elisp re-impl)

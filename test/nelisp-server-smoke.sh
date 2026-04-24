@@ -125,6 +125,18 @@ assert_contains '"name":"state-delete"'
 assert_contains '"name":"state-list-ns"'
 assert_contains '"name":"state-list-keys"'
 assert_contains '"name":"state-count"'
+# Phase 5-F.2 file/git/data tool surface (Doc 19)
+assert_contains '"name":"file-replace-string"'
+assert_contains '"name":"file-insert-at-line"'
+assert_contains '"name":"file-delete-lines"'
+assert_contains '"name":"file-append"'
+assert_contains '"name":"file-read-snippet"'
+assert_contains '"name":"git-diff-names"'
+assert_contains '"name":"git-head-sha"'
+assert_contains '"name":"git-branch-current"'
+assert_contains '"name":"git-repo-root"'
+assert_contains '"name":"data-list-keys"'
+assert_contains '"name":"data-delete-path"'
 # git-status has no params — inputSchema.properties must be `{}` not `null`
 # (Claude Code zod schema rejects `null`; surfaced as "Failed to fetch tools"
 # invalid_type at tools[*].inputSchema.properties.)

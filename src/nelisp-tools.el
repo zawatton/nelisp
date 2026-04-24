@@ -88,6 +88,16 @@ TREE (a plist)."
 affordance; not exposed as an MCP tool."
   (setq nelisp-tools--data-store value))
 
+(defun nelisp-tools--plist-tree-keys (tree)
+  "Return TREE's keyword symbols (or nil).
+Phase 5-F.2.3 helper for `data-list-keys'."
+  (when (and tree (listp tree))
+    (let (keys (cur tree))
+      (while cur
+        (push (car cur) keys)
+        (setq cur (cddr cur)))
+      (nreverse keys))))
+
 ;;; Subprocess helper (git tools) -----------------------------------
 
 (defun nelisp-tools--run-command (name command)
@@ -347,6 +357,226 @@ clear; will error if any tool is still registered."
                (let* ((ns (alist-get 'ns args))
                       (count (nelisp-state-count ns)))
                  (list :ns (or ns :all) :count count))))
+
+  ;; Phase 5-F.2.1 — file ops (Doc 19)
+
+  (nelisp-deftool file-replace-string
+    :description "Replace OLD substring with NEW in PATH; returns :replaced count."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :path (list :type "string")
+                              :old (list :type "string")
+                              :new (list :type "string"))
+                        :required ["path" "old" "new"])
+    :handler (lambda (args)
+               (let* ((path (alist-get 'path args))
+                      (old (alist-get 'old args))
+                      (new (alist-get 'new args)))
+                 (unless (and (stringp path) (stringp old) (stringp new))
+                   (error "file-replace-string: missing string args"))
+                 (when (string-empty-p old)
+                   (error "file-replace-string: `old' must be non-empty"))
+                 (with-temp-buffer
+                   (insert-file-contents path)
+                   (goto-char (point-min))
+                   (let ((count 0))
+                     (while (search-forward old nil t)
+                       (replace-match new t t)
+                       (setq count (1+ count)))
+                     (write-region (point-min) (point-max) path)
+                     (list :path path :replaced count))))))
+
+  (nelisp-deftool file-insert-at-line
+    :description "Insert CONTENT before LINE (1-indexed) in PATH."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :path (list :type "string")
+                              :line (list :type "integer"
+                                          :description "1-indexed line")
+                              :content (list :type "string"))
+                        :required ["path" "line" "content"])
+    :handler (lambda (args)
+               (let* ((path (alist-get 'path args))
+                      (line (alist-get 'line args))
+                      (content (alist-get 'content args)))
+                 (unless (and (stringp path) (integerp line) (stringp content))
+                   (error "file-insert-at-line: missing or wrong-type args"))
+                 (when (< line 1)
+                   (error "file-insert-at-line: `line' must be >= 1"))
+                 (with-temp-buffer
+                   (insert-file-contents path)
+                   (goto-char (point-min))
+                   (forward-line (1- line))
+                   (insert content)
+                   (unless (or (string-empty-p content)
+                               (string-suffix-p "\n" content))
+                     (insert "\n"))
+                   (write-region (point-min) (point-max) path)
+                   (list :path path :line line :inserted t)))))
+
+  (nelisp-deftool file-delete-lines
+    :description "Delete COUNT lines starting at LINE (1-indexed) in PATH."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :path (list :type "string")
+                              :line (list :type "integer")
+                              :count (list :type "integer"))
+                        :required ["path" "line" "count"])
+    :handler (lambda (args)
+               (let* ((path (alist-get 'path args))
+                      (line (alist-get 'line args))
+                      (count (alist-get 'count args)))
+                 (unless (and (stringp path) (integerp line) (integerp count))
+                   (error "file-delete-lines: wrong-type args"))
+                 (when (or (< line 1) (< count 1))
+                   (error "file-delete-lines: `line' and `count' must be >= 1"))
+                 (with-temp-buffer
+                   (insert-file-contents path)
+                   (goto-char (point-min))
+                   (forward-line (1- line))
+                   (let ((start (point))
+                         (end (progn (forward-line count) (point))))
+                     (delete-region start end)
+                     (write-region (point-min) (point-max) path)
+                     (list :path path :line line :deleted count))))))
+
+  (nelisp-deftool file-append
+    :description "Append CONTENT to end of PATH (no auto trailing newline)."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :path (list :type "string")
+                              :content (list :type "string"))
+                        :required ["path" "content"])
+    :handler (lambda (args)
+               (let* ((path (alist-get 'path args))
+                      (content (alist-get 'content args)))
+                 (unless (and (stringp path) (stringp content))
+                   (error "file-append: missing string args"))
+                 (write-region content nil path 'append 'silent)
+                 (list :path path :appended (length content)))))
+
+  (nelisp-deftool file-read-snippet
+    :description "Read WINDOW lines centred on LINE in PATH (default WINDOW=20, max 100)."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :path (list :type "string")
+                              :line (list :type "integer")
+                              :window (list :type "integer"))
+                        :required ["path" "line"])
+    :handler (lambda (args)
+               (let* ((path (alist-get 'path args))
+                      (line (alist-get 'line args))
+                      (raw-window (or (alist-get 'window args) 20))
+                      (window (min raw-window 100)))
+                 (unless (and (stringp path) (integerp line))
+                   (error "file-read-snippet: wrong-type args"))
+                 (when (< line 1)
+                   (error "file-read-snippet: `line' must be >= 1"))
+                 (with-temp-buffer
+                   (insert-file-contents path)
+                   (let* ((total (count-lines (point-min) (point-max)))
+                          (half (/ window 2))
+                          (start (max 1 (- line half)))
+                          (end (min total (+ line half)))
+                          (extracted
+                           (progn
+                             (goto-char (point-min))
+                             (forward-line (1- start))
+                             (let ((bol (point)))
+                               (forward-line (1+ (- end start)))
+                               (buffer-substring-no-properties bol (point))))))
+                     (list :path path
+                           :start start :end end
+                           :total-lines total
+                           :content extracted))))))
+
+  ;; Phase 5-F.2.2 — git ops (Doc 19)
+
+  (nelisp-deftool git-diff-names
+    :description "List changed file paths. With REV, since REV; without, working tree changes."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :rev (list :type "string"
+                                         :description "Optional revision (e.g. HEAD~1)")))
+    :handler (lambda (args)
+               (let* ((rev (alist-get 'rev args))
+                      (cmd (if rev
+                               (list "git" "-c" "color.ui=never"
+                                     "--no-pager" "diff" "--name-only" rev)
+                             (list "git" "-c" "color.ui=never"
+                                   "--no-pager" "diff" "--name-only")))
+                      (res (nelisp-tools--run-command "git-diff-names" cmd))
+                      (out (or (plist-get res :output) ""))
+                      (files (split-string out "\n" t "[ \t]+")))
+                 (list :rev (or rev :working-tree)
+                       :files files
+                       :exit (plist-get res :exit)))))
+
+  (nelisp-deftool git-head-sha
+    :description "Return the full SHA of the current HEAD commit."
+    :input-schema (list :type "object"
+                        :properties (make-hash-table :test 'equal))
+    :handler (lambda (_args)
+               (let* ((res (nelisp-tools--run-command
+                            "git-head-sha"
+                            (list "git" "rev-parse" "HEAD")))
+                      (sha (string-trim (or (plist-get res :output) ""))))
+                 (list :sha sha :exit (plist-get res :exit)))))
+
+  (nelisp-deftool git-branch-current
+    :description "Return the current branch (symbolic short name)."
+    :input-schema (list :type "object"
+                        :properties (make-hash-table :test 'equal))
+    :handler (lambda (_args)
+               (let* ((res (nelisp-tools--run-command
+                            "git-branch-current"
+                            (list "git" "rev-parse" "--abbrev-ref" "HEAD")))
+                      (branch (string-trim (or (plist-get res :output) ""))))
+                 (list :branch branch :exit (plist-get res :exit)))))
+
+  (nelisp-deftool git-repo-root
+    :description "Return the absolute path of the git repo root (toplevel)."
+    :input-schema (list :type "object"
+                        :properties (make-hash-table :test 'equal))
+    :handler (lambda (_args)
+               (let* ((res (nelisp-tools--run-command
+                            "git-repo-root"
+                            (list "git" "rev-parse" "--show-toplevel")))
+                      (root (string-trim (or (plist-get res :output) ""))))
+                 (list :root root :exit (plist-get res :exit)))))
+
+  ;; Phase 5-F.2.3 — data ops (Doc 19)
+
+  (nelisp-deftool data-list-keys
+    :description "Return keys at PATH in data-store (top-level if PATH absent)."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :path (list :type "string"
+                                          :description "Optional dotted path")))
+    :handler (lambda (args)
+               (let* ((raw (alist-get 'path args))
+                      (subtree (if raw
+                                   (nelisp-tools--plist-tree-get
+                                    nelisp-tools--data-store
+                                    (nelisp-tools--split-dotted-path raw))
+                                 nelisp-tools--data-store))
+                      (keys (nelisp-tools--plist-tree-keys subtree)))
+                 (list :path (or raw "")
+                       :keys (mapcar #'symbol-name keys)))))
+
+  (nelisp-deftool data-delete-path
+    :description "Set the value at PATH to nil (effectively unset)."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :path (list :type "string"))
+                        :required ["path"])
+    :handler (lambda (args)
+               (let* ((raw (alist-get 'path args))
+                      (keys (nelisp-tools--split-dotted-path raw)))
+                 (setq nelisp-tools--data-store
+                       (nelisp-tools--plist-tree-set
+                        nelisp-tools--data-store keys nil))
+                 (list :path raw :deleted t))))
 
   t)
 
