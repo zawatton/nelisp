@@ -3,7 +3,7 @@
 #+date: 2026-04-24
 #+options: toc:2
 
-* STATE: DRAFT 2026-04-24 (§2 LOCKED + §3.0-3.4 SHIPPED 2026-04-24, §3.5 next)
+* STATE: DRAFT 2026-04-24 (§2 LOCKED + §3.0-3.5 SHIPPED 2026-04-24, §3.6 next)
 
 ** 目的
 
@@ -420,24 +420,49 @@ ERT (=test/nelisp-eventloop-test.el=, 20 本):
 期待スコープ: 2 週。実績: 当日 (Phase 4 actor 基盤が既に完成、
 dispatch core + queue + actor wrapper の thin 層で済んだ)。
 
-** §3.5 E2E demo — NeLisp-editor minimum
+** §3.5 E2E demo — NeLisp-editor minimum — SHIPPED 2026-04-24
 
 目的: 3 核連動で最小 editor 動作、§2.9 C 達成。
 
-作業:
-- =examples/nelisp-editor/main.el= =(require 'nelisp-buffer)=
-  + =(require 'nelisp-redisplay)= + =(require 'nelisp-
-  eventloop)= で editor loop
-- key binding 最小 set: 印字文字 → =insert=、=C-f= / =C-b= /
-  =C-n= / =C-p= (矢印移動)、=C-d= / =DEL= (削除)、=C-x C-c=
-  (exit)
-- =examples/nelisp-editor/README.org= — 起動方法 + demo 手順
-- PoC: =hello= package (Phase 5-A.5 examples) を NeLisp-
-  buffer に insert してカーソル移動 + 削除デモ
-- ERT: demo 起動 → scripted key sequence → expected buffer
-  state verification
+実装 (commit 59811fe):
+- =examples/nelisp-editor/main.el= 新設 (~200 LOC):
+  =(require 'nelisp-buffer)= + =(require 'nelisp-redisplay)= +
+  =(require 'nelisp-eventloop)= で 3 核連動
+- 公開 API: =nelisp-editor-init= / =-install-bindings= /
+  =-run-scripted= / =-run-actor-scripted= / =-repaint= +
+  current-buffer / -window accessor
+- 8 command: =insert-char= (printable + =\n=) / =forward-char=
+  / =backward-char= / =next-line= / =previous-line= /
+  =delete-char= / =delete-backward-char= / =quit=
+- key binding 最小 set: 32..126 + =\n= = self-insert、=C-f= /
+  =C-b= / =C-n= / =C-p= / =C-d= / =DEL= (0x7f) /
+  *C-q* (quit、=C-x C-c= 相当の multi-char prefix は scope 外、
+  後続 Phase の prefix-handling で対応)
+- cursor 追跡: point → (row, col) を buffer text 走査で再計算
+  (top-line=1 fixed、scroll は現 MVP 範囲外)、command 後に
+  window mark-dirty、redisplay 経路で visible
+- line 編集: =nelisp-editor--line-edges= で (start . end) を
+  列挙、next/previous-line は column preserve で target 計算
+- =examples/nelisp-editor/README.org= 新設: 起動方法 (ERT /
+  対話) + bindings 表 + hello package demo 手順 + ASCII
+  architecture 図 + non-scope 列挙
 
-期待スコープ: 1 週。
+ERT (=test/nelisp-editor-test.el=, 13 本):
+- init buffer + window 生成 (1)
+- self-insert single / sequence / newline (3)
+- forward/backward bounded (1)
+- delete-char forward / backward (2)
+- next / previous line column preserve (1)
+- quit flag clears (1)
+- actor-scripted builds string / main terminates on quit (2)
+- *hello-package integration*: =nelisp-require 'hello= →
+  =nelisp-eval '(hello-world)= → "Hello, World!" を 1 char
+  ずつ insert → buffer 一致 + point 末尾 (1)
+- redisplay after insert emits CSI + text (1)
+
+期待スコープ: 1 週。実績: 当日 (§3.1-3.4 の 3 核実装が揃って
+いたため、薄い glue 層で demo が成立)。release bar 後半 §2.9
+C (= 3 核連動で visible editor 動作) ここで達成。
 
 ** §3.6 Merge gate
 
