@@ -609,6 +609,8 @@ dispatches straight into the VM."
     member memq assq assoc
     ;; List mutation (cons cell slot writes)
     setcar setcdr
+    ;; General sequence / list helpers (Phase 5-B.0)
+    copy-sequence elt nconc delq
     ;; Equality / identity / type predicates
     eq eql equal identity ignore functionp vectorp
     ;; Vector constructors
@@ -623,6 +625,8 @@ dispatches straight into the VM."
     upcase downcase format prin1-to-string string make-string
     aref aset string-match-p string-match string-empty-p
     char-or-string-p
+    ;; String search / split (Phase 5-B.0)
+    string-search split-string
     ;; Symbol surface (interning side; variable / function cells handled
     ;; via NeLisp-aware wrappers below for our own table — but the
     ;; host `symbol-function' is a useful escape hatch for bootstrap)
@@ -639,6 +643,10 @@ dispatches straight into the VM."
     featurep
     ;; I/O (side-effect, but used for NeLisp-internal diagnostics)
     message
+    ;; Terminal & frame metrics (Phase 5-B.0 — redisplay/eventloop 下地)
+    send-string-to-terminal frame-width frame-height
+    ;; Timer scheduling (Phase 5-B.0 — eventloop fallback と diagnostics)
+    run-at-time
     ;; Error plumbing — `error' / `signal' / `user-error' / `define-error'
     ;; all hook into the host condition system that `condition-case'
     ;; already knows how to catch.
