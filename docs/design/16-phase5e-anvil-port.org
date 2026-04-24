@@ -249,20 +249,33 @@ feature 側に時間投資しつつ "実接続で複数 tool が生きている"
 Phase 5-A/B/C/D と同じく、各 sub-phase = 1 feat branch + ERT +
 make test green の不変条件で進める。
 
-** §3.0 Pre-req primitive audit (2-3 日)
+** §3.0 Pre-req primitive audit — SHIPPED 2026-04-24
 
-- =docs/design/16-audit-script.el= + forecast sketch
-  (=16-forecast/nelisp-server-sketch.el=) で gap scan、
-  =16-phase5e-primitive-gap.data.el= に出力
-- 期待 gap 候補: JSON encoding / decoding 関連 (=json-encode= /
-  =json-read-from-string= / =json-parse-string=) が host =json.el=
-  依存、NeLisp primitive 表での露出状況要確認。=princ= /
-  =terpri= / =read-from-string= 等 stdio 周辺も audit
-- Phase 5-C.4 =examples/nelisp-daemon/main.el= が動作している
-  ため、gap は 0-3 程度の見込み (実測)
-- 手順: Phase 5-C.0 / Phase 5-D.0 audit infra port
-- 完了条件: =nelisp--primitive-symbols= 更新 + =test/nelisp-
-  stdlib-test.el= に該当 ERT 追加 + make test green
+- =docs/design/16-audit-script.el= + =docs/design/16-forecast/
+  nelisp-server-sketch.el= で gap scan、=docs/design/16-phase5e-
+  primitive-gap.data.el= に出力
+- audit 結果: *missing 11 primitive* (false positive 0)
+  - Stdio I/O 3: =princ= / =terpri= / =read-from-minibuffer=
+  - File I/O + path 3: =insert-file-contents= / =buffer-string=
+    / =file-name-extension=
+  - Buffer lifecycle 2: =generate-new-buffer= / =kill-buffer=
+  - Regex capture + line metadata 2: =line-number-at-pos= /
+    =match-string=
+  - Alist access 1: =alist-get= (JSON-RPC params / MCP tool args
+    の最頻出 subr)
+- =nelisp--primitive-symbols= に 11 件追加、Phase 5-E.0 section
+  として =src/nelisp-eval.el= にグループ化
+- =test/nelisp-stdlib-test.el= +9 ERT (princ+terpri combo 1 /
+  read-from-minibuffer resolvable 1 / insert-file-contents round
+  trip 1 / file-name-extension cases 1 / generate+kill lifecycle 1
+  / line-number-at-pos 1 / match-string capture 1 / alist-get
+  basic 1 / alist-get string-testfn 1)
+- audit walker bug fix: =phase5e-audit--walk= が vector / dotted-
+  pair tail で crash していた (=(required . ["path"])= 等)。
+  =(vectorp form)= short-circuit + =(listp tail)= guard 追加
+- make test: 846 → *855/855 green*
+- 期待 2-3 日に対し当日完了 (audit infra は Phase 5-D.0 を 1:1
+  port、gap 11 件も全て host subr wrap で即埋まった)
 
 ** §3.1 =src/nelisp-server.el= 新設 (1 週)
 
