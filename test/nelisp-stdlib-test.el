@@ -508,6 +508,86 @@ We do not create a live socket here; only verify the symbol resolves."
     (should (string-match-p "\\`[0-9]\\{2\\}:[0-9]\\{2\\}:[0-9]\\{2\\}\\'"
                             s))))
 
+;;; Phase 5-E.0 primitives (MCP server I/O + file tool dispatchers) ---
+
+(ert-deftest nelisp-stdlib-phase5e-princ-terpri-routable ()
+  "`princ' / `terpri' must resolve through the primitive table so
+the MCP server stdio runner can emit JSON lines.  Using the host
+standard-output to a temp buffer keeps the test side-effect-free."
+  (let ((buf (generate-new-buffer " *nelisp-princ-test*")))
+    (unwind-protect
+        (let ((standard-output buf))
+          (nelisp-eval '(princ "hello"))
+          (nelisp-eval '(terpri))
+          (with-current-buffer buf
+            (should (string= (buffer-string) "hello\n"))))
+      (kill-buffer buf))))
+
+(ert-deftest nelisp-stdlib-phase5e-read-from-minibuffer-resolvable ()
+  "`read-from-minibuffer' must be resolvable from NeLisp for the
+stdio runner (actual stdin read only exercised in integration)."
+  (should (not (eq (gethash 'read-from-minibuffer nelisp--functions
+                             nelisp--unbound)
+                   nelisp--unbound))))
+
+(ert-deftest nelisp-stdlib-phase5e-insert-file-contents-roundtrip ()
+  "`insert-file-contents' + `buffer-string' compose into file-read."
+  (let* ((tmp (make-temp-file "nelisp-e0-"))
+         (body "nelisp-phase5e\nline2\n"))
+    (unwind-protect
+        (progn
+          (with-temp-file tmp (insert body))
+          (with-temp-buffer
+            (nelisp-eval `(insert-file-contents ,tmp))
+            (should (string= (nelisp-eval '(buffer-string)) body))))
+      (delete-file tmp))))
+
+(ert-deftest nelisp-stdlib-phase5e-file-name-extension-cases ()
+  (should (string= "el" (nelisp-eval '(file-name-extension "foo.el"))))
+  (should (string= "org" (nelisp-eval '(file-name-extension "dir/a.org"))))
+  (should (null (nelisp-eval '(file-name-extension "README")))))
+
+(ert-deftest nelisp-stdlib-phase5e-generate-new-buffer-and-kill ()
+  "`generate-new-buffer' creates live buffer, `kill-buffer' (looked
+up by name since NeLisp cannot embed buffer objects in sexps)
+removes it."
+  (let* ((name " *nelisp-e0-gen*")
+         (b (nelisp-eval `(generate-new-buffer ,name))))
+    (should (bufferp b))
+    (should (buffer-live-p b))
+    (unwind-protect
+        (nelisp-eval `(kill-buffer ,(buffer-name b)))
+      (when (buffer-live-p b) (kill-buffer b)))
+    (should-not (buffer-live-p b))))
+
+(ert-deftest nelisp-stdlib-phase5e-line-number-at-pos ()
+  "`line-number-at-pos' reflects position inside a temp buffer."
+  (with-temp-buffer
+    (insert "a\nb\nc\n")
+    (goto-char (point-min))
+    (forward-line 2)
+    (should (= 3 (nelisp-eval '(line-number-at-pos))))))
+
+(ert-deftest nelisp-stdlib-phase5e-match-string-capture ()
+  "`match-string' after `re-search-forward' captures groups."
+  (with-temp-buffer
+    (insert "foo=bar\n")
+    (goto-char (point-min))
+    (nelisp-eval '(re-search-forward "foo=\\([a-z]+\\)"))
+    (should (string= "bar" (nelisp-eval '(match-string 1))))))
+
+(ert-deftest nelisp-stdlib-phase5e-alist-get-basic ()
+  (should (= 1 (nelisp-eval '(alist-get 'a '((a . 1) (b . 2))))))
+  (should (eq 'missing
+              (nelisp-eval
+               '(alist-get 'c '((a . 1)) 'missing)))))
+
+(ert-deftest nelisp-stdlib-phase5e-alist-get-string-testfn ()
+  "`alist-get' with #'equal supports string keys (MCP params shape)."
+  (should (= 42
+             (nelisp-eval
+              '(alist-get "k" '(("k" . 42) ("z" . 0)) nil nil #'equal)))))
+
 (provide 'nelisp-stdlib-test)
 
 ;;; nelisp-stdlib-test.el ends here

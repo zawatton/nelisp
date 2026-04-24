@@ -666,6 +666,19 @@ dispatches straight into the VM."
     ;; Time + numeric rounding + RNG (Phase 5-D.0 — worker metrics
     ;; and correlation id generation)
     float-time format-time-string truncate random
+    ;; Stdio I/O (Phase 5-E.0 — MCP server line-delimited JSON-RPC)
+    princ terpri read-from-minibuffer
+    ;; File I/O + path parsing (Phase 5-E.0 — file-read / file-outline
+    ;; tool handlers)
+    insert-file-contents buffer-string file-name-extension
+    ;; Host-buffer construction for process captures (Phase 5-E.0 —
+    ;; git-log / git-status tool handlers)
+    generate-new-buffer kill-buffer
+    ;; Regex capture + line metadata (Phase 5-E.0 — file-outline
+    ;; tool dispatcher)
+    line-number-at-pos match-string
+    ;; Alist access (Phase 5-E.0 — JSON-RPC params / MCP tool args)
+    alist-get
     ;; Error plumbing — `error' / `signal' / `user-error' / `define-error'
     ;; all hook into the host condition system that `condition-case'
     ;; already knows how to catch.
