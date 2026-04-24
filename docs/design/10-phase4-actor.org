@@ -5,7 +5,7 @@
 
 * Status
 :PROPERTIES:
-:STATE: MERGE-GATE-REACHED-2026-04-24 (§4.1-4.6 SHIPPED、§4.7 bench 残、§2.8 merge gate 到達。LOCKED from 2026-04-24 — §2 8 items signoff A/D/B/A/B/B/A/A)
+:STATE: SHIPPED-2026-04-24 (§4.1-4.7 全 SHIPPED、§2.8 merge gate 到達、bench 数字 advisory 記録済。LOCKED from 2026-04-24 — §2 8 items signoff A/D/B/A/B/B/A/A)
 :END:
 
 =v0.3.1= (Phase 3c 完了) の次。NeLisp concurrency の本丸、=04-concurrency.org=
@@ -380,16 +380,35 @@ cover 済、PoC としての full integration 実験は tag 後に。
 - **§2.8 merge gate 到達** → v0.4.0-pre tag の実装前提条件 satisfied
   (tag 発行は user 判断)
 
-** 4.7 Bench + gate verification (DRAFT)
+** 4.7 Bench + gate verification (SHIPPED 2026-04-24 — Phase 4 全完了)
 
-- =bench/nelisp-actor-bench.el=:
-  - =spawn-heavy=: 1000 actor spawn + immediate die 時間
-  - =ping-pong=: 2 actor で 10000 message round-trip
-  - =mailbox-fill=: unbounded mailbox 10k entry push / drain
-- =make actor-bench= target 追加
-- PoC ERT green + bench 数字 advisory 記録 → design doc SHIPPED 移行
-- v0.4.0-pre tag (本 gate 達成時点で候補)
-- 予算: 100 LOC bench、design doc 更新
+- =bench/nelisp-actor-bench.el= (新規、116 LOC、予算 100 LOC 内の
+  軽い超過):
+  - =nelisp-actor-bench--time-spawn-heavy n= — 1000 trivial actor
+    の spawn → run-until-idle、registry + owned-set snapshot + iterator
+    初期化 + 即 :dead drain を measure
+  - =nelisp-actor-bench--time-ping-pong n= — server/client 2 actor で
+    =(cons self 'ping)= を 10000 回 round-trip、message copy +
+    mailbox + generator yield + scheduler dispatch を計測
+  - =nelisp-actor-bench--time-mailbox-fill n= — 1 receiver に 10000
+    =nelisp-send= 投入後、drain に要する時間を 1 scheduler pass で measure
+  - 各 scenario 前に =nelisp-actor--reset= で clean state、互いに汚染なし
+- =Makefile= に =.PHONY actor-bench= と =actor-bench: compile= target
+  (=make gc-bench= と同等 shape、=load-prefer-newer= + =compile= 依存)
+- 初回 advisory 数字 (2026-04-24、Debian 13 / Emacs 30、main =c2f3ac5..ad24cf6= 相当):
+
+  #+begin_example
+  spawn-heavy  n= 1000 ran= 1000  elapsed=0.0620s   (~16k spawn+drain/sec)
+  ping-pong    n=10000          elapsed=0.0886s   (~113k roundtrip/sec)
+  mailbox-fill n=10000          elapsed=0.0260s   (~385k send/sec)
+  #+end_example
+
+  gc-bench と同じく advisory、merge gate 外。regression 検出用に
+  README / CI で纏める必要は今のところ無し。
+- =make clean && make test= 520/520 green 維持、bench run 後も再 test
+  (stale .elc 罠回避の handoff convention) で 520/520 保持確認済
+- *Phase 4 全 sub-phase 完了* — top-level =:STATE:= を =SHIPPED-2026-
+  04-24= に更新、v0.4.0 本 tag 候補到達 (tag 発行は user 判断)
 
 * 4. API surface (草案)
 

@@ -1,4 +1,4 @@
-.PHONY: test compile clean all bench gc-bench
+.PHONY: test compile clean all bench gc-bench actor-bench
 
 EMACS ?= emacs
 
@@ -48,3 +48,10 @@ gc-bench: compile
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-gc-bench \
 	  -f nelisp-gc-bench-batch
+
+# Phase 4.7 actor runtime bench.  Advisory only — not gated.
+actor-bench: compile
+	$(EMACS) --batch -Q -L src -L bench \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-actor-bench \
+	  -f nelisp-actor-bench-batch
