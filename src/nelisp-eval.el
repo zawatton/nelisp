@@ -663,6 +663,9 @@ dispatches straight into the VM."
     buffer-substring-no-properties re-search-forward
     ;; List util (Phase 5-C.0)
     assq-delete-all
+    ;; Time + numeric rounding + RNG (Phase 5-D.0 — worker metrics
+    ;; and correlation id generation)
+    float-time format-time-string truncate random
     ;; Error plumbing — `error' / `signal' / `user-error' / `define-error'
     ;; all hook into the host condition system that `condition-case'
     ;; already knows how to catch.
