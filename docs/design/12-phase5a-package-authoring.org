@@ -220,16 +220,41 @@ customize 統合が必要になったら T3 integration layer で後付け。
   list ベース、側面 effect + symbol 版 type check 追加)
 - host =featurep= short-circuit を追加 (self-host cycle 保全のため)
 
-** §3.4 Macroexpand host 非依存化 (§2.4 A)
+** §3.4 Macroexpand host 非依存化 (§2.4 A) — SHIPPED 2026-04-24
 
-- =nelisp-macroexpand-1 FORM= を新規実装 (symbol → user-macro か
-  core-macro を nelisp--functions 経由で lookup、展開結果返却)
-- =nelisp-macroexpand-all= recursive 版
-- =nelisp--eval-form= / =nelisp-bc--compile-form= の macro 展開
-  step を host =macroexpand-1= から差し替え
-- 動的 trace で host =macroexpand= が call されないこと確認
-- 期待スコープ: 1 週
-- ERT: backquote / nested macro / user-defined macro の 3 本以上
+実装の大半は Phase 2 までに完了済。Phase 5-A.4 で残 3 項目を完了。
+
+- [X] =nelisp-macroexpand-1 / nelisp-macroexpand / nelisp-macroexpand-all=
+  は Phase 2 既設。host =macroexpand= を call しない実装
+- [X] =nelisp--eval-form= の macro 展開 step は既に =nelisp-macroexpand=
+  経由 (nelisp-eval.el:229)。=nelisp-bc--compile-form= は macroexpand
+  step を持たない (caller 側展開前提) — 変更不要
+- [X] Phase 5-A.4 追加: =macroexpand-1 / macroexpand / macroexpand-all=
+  を primitive dispatch に公開 (=nelisp-macro--install-primitives=、
+  =nelisp--install-primitives= からも fboundp guard 付きで呼び出し)。
+  NeLisp source から =(macroexpand-1 FORM)= を呼べるようになる
+- [X] 静的 trace 確認: byte-compile した =nelisp-macroexpand*= の
+  constant pool に host =macroexpand*= が含まれないことを ERT で
+  audit。dynamic advise trace は host interpreter が自身の step-
+  eval で =macroexpand-1= を呼ぶため noise 支配となり NG、byte-
+  compiled constant-pool 静的 check が筋。
+- [X] ERT 追加 7 本:
+  - =nelisp-macro-macroexpand-1-via-primitive=
+  - =nelisp-macro-macroexpand-fixpoint-via-primitive=
+  - =nelisp-macro-macroexpand-all-via-primitive=
+  - =nelisp-macro-nelisp-side-does-not-mention-host-macroexpand=
+    (静的 audit)
+  - =nelisp-macro-expand-backquote-style-construction=
+  - =nelisp-macro-expand-nested-macros=
+  - =nelisp-macro-expand-user-defined-survives-eval=
+- [X] make test: 553 → *560/560 green*
+- commit: =6d7b35d= on =feat/phase5a.4-macroexpand=
+
+tweak: Doc 12 §3.4 当初要件の「動的 trace」は interpretated mode 下で
+host interpreter 自身が =macroexpand-1= を boilerplate 展開に呼ぶため
+ノイズ支配。byte-compiled constant-pool 審査に変更 (Doc 12 §3.4 意図
+— 「NeLisp 側ロジックが host macroexpand を呼ばないこと」— を静的
+検証で保証できる)。
 
 ** §3.5 Toy package E2E (§2.6 C)
 

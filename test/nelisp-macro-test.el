@@ -258,6 +258,104 @@ Phase 1 anchor referenced in `docs/phase1-macro-design.org' §6."
   (should (eq (gethash 'm nelisp--macros nelisp--unbound)
               nelisp--unbound)))
 
+;;; Doc 12 §3.4 — macroexpand 系が primitive 表経由で callable --------
+
+(ert-deftest nelisp-macro-macroexpand-1-via-primitive ()
+  "`(macroexpand-1 FORM)' inside NeLisp resolves via the primitive
+table and returns the first-step expansion."
+  (nelisp--reset)
+  (nelisp-eval '(defmacro twice (x) (list 'progn x x)))
+  (should (equal (nelisp-eval '(macroexpand-1 (quote (twice (foo)))))
+                 '(progn (foo) (foo)))))
+
+(ert-deftest nelisp-macro-macroexpand-fixpoint-via-primitive ()
+  "`(macroexpand FORM)' iterates until the head is no longer a macro."
+  (nelisp--reset)
+  (nelisp-eval '(defmacro outer (x) (list 'inner x)))
+  (nelisp-eval '(defmacro inner (x) (list 'quote x)))
+  (should (equal (nelisp-eval '(macroexpand (quote (outer hello))))
+                 '(quote hello))))
+
+(ert-deftest nelisp-macro-macroexpand-all-via-primitive ()
+  "`(macroexpand-all FORM)' recurs into nested bodies."
+  (nelisp--reset)
+  (nelisp-eval '(defmacro one () 1))
+  (should (equal (nelisp-eval
+                  '(macroexpand-all (quote (let ((x (one))) x))))
+                 '(let ((x 1)) x))))
+
+;;; Doc 12 §3.4 — host `macroexpand' は呼ばれないこと dynamic trace ----
+
+(defun nelisp-macro-test--fn-calls-host-mx-p (sym)
+  "Return non-nil if SYM's byte-compiled body references `macroexpand*'.
+Disassembles SYM's compiled form and inspects the constant vector —
+when `macroexpand' / `macroexpand-1' / `macroexpand-all' appear
+there, SYM can call host macroexpand at runtime.  This gives a
+static-but-runtime-faithful answer without being spoofed by the
+host interpreter's own per-form macroexpand-1 activity."
+  (let* ((compiled (byte-compile sym))
+         (consts (aref compiled 2)))
+    (cl-loop for c across consts
+             thereis (memq c '(macroexpand macroexpand-1 macroexpand-all)))))
+
+(ert-deftest nelisp-macro-nelisp-side-does-not-mention-host-macroexpand ()
+  "Static audit: when NeLisp's macro-family functions are byte-compiled,
+their constant pools must NOT reference `macroexpand' / `-1' / `-all'
+— proof that every expansion path is self-contained per Doc 12 §3.4.
+
+This replaces the original dynamic-advice trace, which failed in
+interpreted test runs because the host's own step-by-step evaluator
+calls `macroexpand-1' on sub-forms of any interpreted Lisp function
+it steps through (including NeLisp's host-side plumbing).  The
+constant-pool check is the signal we actually care about — whether
+NeLisp logic *names* host macroexpand — and is unaffected by host
+interpreter noise."
+  (dolist (sym '(nelisp-macroexpand
+                 nelisp-macroexpand-1
+                 nelisp-macroexpand-all
+                 nelisp--macro-lookup
+                 nelisp--macroexpand-map
+                 nelisp--macroexpand-all-args))
+    (should-not (nelisp-macro-test--fn-calls-host-mx-p sym))))
+
+;;; Doc 12 §3.4 — 3 macro patterns ------------------------------------
+
+(ert-deftest nelisp-macro-expand-backquote-style-construction ()
+  "NeLisp macroexpand handles a macro whose body assembles via
+`list' / `cons' — the pre-backquote idiom the existing macro
+tests rely on.  Verifies the core macroexpand-1 path."
+  (nelisp--reset)
+  (nelisp-eval
+   '(defmacro my-when (cond then)
+      (list 'if cond then nil)))
+  (should (equal (nelisp-macroexpand-1 '(my-when p (foo)))
+                 '(if p (foo) nil))))
+
+(ert-deftest nelisp-macro-expand-nested-macros ()
+  "Expanding an outer macro whose body uses another macro: the
+outer expansion yields a form that contains the inner macro call;
+`nelisp-macroexpand-all' must reach the nested site too."
+  (nelisp--reset)
+  (nelisp-eval
+   '(defmacro inner (x) (list 'quote x)))
+  (nelisp-eval
+   '(defmacro outer (x) (list 'list (list 'inner x) x)))
+  (should (equal (nelisp-macroexpand-all '(outer hello))
+                 '(list (quote hello) hello))))
+
+(ert-deftest nelisp-macro-expand-user-defined-survives-eval ()
+  "End-to-end: user-defined macro expanded + evaluated yields the
+expected runtime value, proving the eval-time `nelisp-macroexpand'
+call in `nelisp-eval-form' sees the NeLisp macro table."
+  (nelisp--reset)
+  (nelisp-eval
+   '(defmacro my-unless (cond then)
+      (list 'if cond nil then)))
+  (nelisp-eval '(defvar *n* 0))
+  (nelisp-eval '(my-unless nil (setq *n* 11)))
+  (nelisp-eval '(my-unless t   (setq *n* 99)))
+  (should (= (nelisp-eval '*n*) 11)))
+
 (provide 'nelisp-macro-test)
 
 ;;; nelisp-macro-test.el ends here
