@@ -1,4 +1,4 @@
-;;; nelisp-actor.el --- Phase 4.1 actor primitives  -*- lexical-binding: t; -*-
+;;; nelisp-actor.el --- Phase 4 actor runtime  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,36 +8,36 @@
 
 ;;; Commentary:
 
-;; Phase 4.1 skeleton of NeLisp's actor runtime.  Ships the data
-;; structures and public API (`nelisp-spawn' / `nelisp-receive' /
-;; `nelisp-send' / `nelisp-self') plus a mock-stub scheduler driven
-;; by `nelisp-actor-run-until-idle'.  Real cooperative scheduling
-;; with suspended-continuation support lands in Phase 4.2 via
-;; `generator.el' (docs/design/10-phase4-actor.org §5.3).
+;; Phase 4 actor runtime.  Ships the actor data structure and the
+;; public API:
 ;;
-;; Phase 4.1 semantics (mock stub):
-;;   - `nelisp-spawn' creates an actor, snapshots its ownership
-;;     boundary via `nelisp-gc-actor-boundary', and enqueues it as
-;;     `:runnable'.  The thunk does NOT run until the caller invokes
-;;     `nelisp-actor-run-until-idle'.
-;;   - `nelisp-send' pushes MSG onto the target's FIFO mailbox and
-;;     (re)enqueues the target when it was blocked on receive.
-;;     Sending to a `:dead' / `:crashed' actor signals
-;;     `nelisp-actor-error'.
-;;   - `nelisp-receive' returns the head message in FIFO order, or
-;;     the symbol `timeout' when the mailbox is empty.  Phase 4.2
-;;     extends this with true yield semantics so a receive on an
-;;     empty mailbox suspends.
-;;   - `nelisp-self' returns the currently executing actor, or nil
-;;     when called outside any actor thunk.
+;;   `nelisp-spawn'    spawn an actor from a thunk built with
+;;                     `nelisp-actor-lambda'
+;;   `nelisp-self'     currently executing actor
+;;   `nelisp-send'     FIFO deliver a message to an actor
+;;   `nelisp-receive'  macro — block until a message arrives
+;;   `nelisp-yield'    macro — voluntarily yield to the scheduler
+;;   `nelisp-actor-run-until-idle'   drain the run queue
+;;   `nelisp-actor-start' / `stop'   drive the scheduler from an
+;;                                   idle timer
+;;   `nelisp-actor-list' / `nelisp-actor-stats'  diagnostics
 ;;
-;; See docs/design/10-phase4-actor.org §4.1 for scope, §5 for runtime
-;; structure, §2 for locked decisions (A/D/B/A/B/B/A/A signoff
-;; 2026-04-24).
+;; Phase 4.1 (fa304ed) shipped the primitive skeleton with a
+;; run-to-completion mock-stub scheduler where empty receive returned
+;; the symbol `timeout'.  Phase 4.2 replaces the scheduler with a
+;; cooperative generator-driven loop: an actor thunk built via
+;; `nelisp-actor-lambda' is CPS-transformed by `generator.el' so that
+;; `nelisp-receive' and `nelisp-yield' truly suspend and later resume
+;; from the same source position.
+;;
+;; See docs/design/10-phase4-actor.org §5 for runtime structure
+;; (§5.3 locks the generator.el approach) and §2 for the locked
+;; high-level decisions (A/D/B/A/B/B/A/A signoff 2026-04-24).
 
 ;;; Code:
 
 (require 'cl-lib)
+(require 'generator)
 (require 'nelisp-gc)
 
 (define-error 'nelisp-actor-error "NeLisp actor error")
@@ -46,12 +46,13 @@
 
 (cl-defstruct (nelisp-actor (:constructor nelisp-actor--make)
                             (:copier nil))
-  "A NeLisp actor (Phase 4.1 skeleton).
-Field rationale in `docs/design/10-phase4-actor.org' §5.1.  Fields
-`k' and `restart-policy' are recorded verbatim here; Phase 4.2
-(scheduler) and Phase 4.5 (supervisor) give them runtime meaning."
+  "A NeLisp actor.
+Field rationale in `docs/design/10-phase4-actor.org' §5.1.
+`restart-policy' / `supervisor' / `last-error' are recorded here
+for Phase 4.5 (supervisor) consumption; Phase 4.2 only sets
+`last-error' on a crash."
   id                            ; unique generated symbol
-  thunk                         ; zero-arg closure run by scheduler
+  thunk                         ; iter-lambda returned at spawn
   (mailbox nil)                 ; FIFO list, head = next to receive
   (mailbox-tail nil)            ; last cons for O(1) append
   (mailbox-cap nil)             ; nil = unbounded (Phase 4.2+ backpressure)
@@ -59,7 +60,7 @@ Field rationale in `docs/design/10-phase4-actor.org' §5.1.  Fields
   (owned-set nil)               ; hash-table from `nelisp-gc-actor-boundary'
   (supervisor nil)              ; parent actor or nil
   (restart-policy :temporary)   ; :permanent :transient :temporary
-  (k nil)                       ; suspended continuation (Phase 4.2+)
+  (iterator nil)                ; live generator from (funcall thunk)
   (last-error nil))             ; condition-case err from last crash
 
 ;;; Runtime state -----------------------------------------------------
@@ -67,21 +68,33 @@ Field rationale in `docs/design/10-phase4-actor.org' §5.1.  Fields
 (defvar nelisp-actor--registry (make-hash-table :test 'eq)
   "All spawned actors keyed by `nelisp-actor-id'.
 Entries persist past `:dead' so diagnostics (`nelisp-actor-stats')
-remain inspectable; callers wanting live-only views use
-`nelisp-actor-list' plus a status filter.")
+remain inspectable; callers wanting live-only views filter on status.")
 
 (defvar nelisp-actor--run-queue nil
-  "FIFO of runnable actors.  Phase 4.1 mock-stub scheduler drives
-this via `nelisp-actor-run-until-idle'.")
+  "FIFO of runnable actors scheduled by `nelisp-actor-run-until-idle'.
+Blocked-on-receive actors sit outside the queue until `nelisp-send'
+re-enqueues them.")
 
 (defvar nelisp-actor--run-queue-tail nil
   "Tail cons of `nelisp-actor--run-queue' for O(1) append.")
 
 (defvar nelisp-actor--current nil
-  "Dynamically bound to the actor whose thunk is currently executing.")
+  "Dynamically bound to the actor whose iterator is being advanced.
+`nelisp-receive' / `nelisp-yield' / `nelisp-self' all read this.")
 
 (defvar nelisp-actor--id-counter 0
   "Monotonic counter for actor-id generation.")
+
+(defcustom nelisp-actor-tick-interval 0.05
+  "Idle seconds between scheduler ticks when the timer driver is active.
+Only consulted by `nelisp-actor-start'; `nelisp-actor-run-until-idle'
+does not idle.  Phase 4.2 default is conservative; tuning lands with
+the fairness bench in 4.7."
+  :group 'nelisp
+  :type 'number)
+
+(defvar nelisp-actor--timer nil
+  "Idle timer installed by `nelisp-actor-start', or nil when stopped.")
 
 ;;; Internal helpers --------------------------------------------------
 
@@ -92,9 +105,9 @@ this via `nelisp-actor-run-until-idle'.")
 
 (defun nelisp-actor--enqueue (actor)
   "Append ACTOR to `nelisp-actor--run-queue' unless already queued.
-Uses the tail pointer for O(1) append.  The duplicate check is
-O(n); acceptable at Phase 4.1 test volumes and revisited in 4.2
-when the scheduler maintains explicit queued-status flags."
+Uses the tail pointer for O(1) append.  Duplicate check is O(n);
+acceptable at Phase 4.2 volumes and revisited when the scheduler
+maintains an explicit queued-status flag."
   (unless (memq actor nelisp-actor--run-queue)
     (let ((cell (list actor)))
       (if nelisp-actor--run-queue-tail
@@ -103,8 +116,7 @@ when the scheduler maintains explicit queued-status flags."
       (setq nelisp-actor--run-queue-tail cell))))
 
 (defun nelisp-actor--dequeue ()
-  "Pop and return the head of the run queue, or nil when empty.
-Clears the tail pointer on drain so the next enqueue starts fresh."
+  "Pop and return the head of the run queue, or nil when empty."
   (let ((actor (pop nelisp-actor--run-queue)))
     (unless nelisp-actor--run-queue
       (setq nelisp-actor--run-queue-tail nil))
@@ -119,13 +131,67 @@ Clears the tail pointer on drain so the next enqueue starts fresh."
     (setf (nelisp-actor-mailbox-tail actor) cell)))
 
 (defun nelisp-actor--mailbox-pop (actor)
-  "Remove and return the head of ACTOR's mailbox.  Undefined on empty —
-callers must guard with a non-empty check first."
+  "Remove and return the head of ACTOR's mailbox.
+Callers must confirm the mailbox is non-empty first; the return
+shape does not distinguish `nil'-message from empty."
   (let ((box (nelisp-actor-mailbox actor)))
     (setf (nelisp-actor-mailbox actor) (cdr box))
     (unless (cdr box)
       (setf (nelisp-actor-mailbox-tail actor) nil))
     (car box)))
+
+;;; Actor body macros -------------------------------------------------
+
+(defmacro nelisp-actor-lambda (&rest body)
+  "Return a closure that, when invoked, yields an iterator over BODY.
+
+BODY is CPS-transformed by `iter-lambda' so `nelisp-receive' and
+`nelisp-yield' can suspend the actor and later resume at the same
+textual position.  The resulting thunk is what `nelisp-spawn'
+expects; passing a plain `(lambda () ...)' without this wrapper is
+not supported in Phase 4.2 because `nelisp-receive'/`nelisp-yield'
+must appear lexically inside an iter context.
+
+Example:
+  (nelisp-spawn
+   (nelisp-actor-lambda
+     (let ((msg (nelisp-receive)))
+       (do-work msg)
+       (nelisp-yield)
+       (finalise))))"
+  (declare (indent 0) (debug (&rest form)))
+  `(iter-lambda () ,@body))
+
+(defmacro nelisp-receive (&optional _timeout)
+  "Receive the next message from the current actor's mailbox.
+
+Expands to a loop around `iter-yield' that spins while the mailbox
+is empty, so the scheduler regains control and the actor stays in
+`:blocked-receive' until `nelisp-send' delivers a message and
+re-enqueues it.
+
+The _TIMEOUT argument is accepted for API stability with the design
+doc §4 surface but is not honoured in Phase 4.2 — the scheduler
+does not yet track deadlines.  Phase 4.x adds deadline enforcement
+so that on expiry the macro yields the symbol `timeout'.
+
+Only valid inside `nelisp-actor-lambda' body.  Outside it, the
+embedded `iter-yield' signals at macroexpansion time."
+  (declare (debug (&optional form)))
+  (ignore _timeout)
+  `(progn
+     (while (null (nelisp-actor-mailbox nelisp-actor--current))
+       (setf (nelisp-actor-status nelisp-actor--current) :blocked-receive)
+       (iter-yield 'nelisp-actor--receive))
+     (nelisp-actor--mailbox-pop nelisp-actor--current)))
+
+(defmacro nelisp-yield ()
+  "Voluntarily yield the current actor to the scheduler.
+The actor stays `:runnable' and is re-enqueued at the tail of the
+run queue, giving other runnable actors a turn before this one
+resumes.  Only valid inside `nelisp-actor-lambda' body."
+  (declare (debug nil))
+  '(iter-yield 'nelisp-actor--yield))
 
 ;;; Public primitives -------------------------------------------------
 
@@ -133,17 +199,17 @@ callers must guard with a non-empty check first."
                               (restart-policy :temporary))
   "Spawn a new actor executing THUNK and return the actor object.
 
-THUNK is a zero-argument closure the cooperative scheduler will run.
-Phase 4.1 enqueues the actor as `:runnable' but does not drive it;
-call `nelisp-actor-run-until-idle' to advance the queue.
+THUNK must be a closure produced by `nelisp-actor-lambda'.  Phase
+4.2 invokes THUNK immediately to obtain the generator/iterator
+driving the actor body; the actor is then enqueued as `:runnable'
+but not advanced until the caller drives the scheduler via
+`nelisp-actor-run-until-idle' or `nelisp-actor-start'.
 
 Keyword arguments:
   MAILBOX-CAPACITY  Integer bound for the mailbox (Phase 4.2+
                     enforces backpressure); nil = unbounded.
-  SUPERVISOR        Parent actor for crash restart (Phase 4.5); nil
-                    means the actor is unsupervised.
+  SUPERVISOR        Parent actor for crash restart (Phase 4.5).
   RESTART-POLICY    `:permanent' | `:transient' | `:temporary'.
-                    Phase 4.5 enforces; Phase 4.1 records only.
 
 Initial `owned-set' is snapshotted from `nelisp-gc-actor-boundary'
 of THUNK so the Phase 4.3 shared-immutable message policy has a
@@ -151,9 +217,11 @@ frozen reference for send-time copy decisions."
   (unless (functionp thunk)
     (signal 'wrong-type-argument (list 'functionp thunk)))
   (let* ((id (nelisp-actor--next-id))
+         (iter (funcall thunk))
          (actor (nelisp-actor--make
                  :id id
                  :thunk thunk
+                 :iterator iter
                  :mailbox-cap mailbox-capacity
                  :supervisor supervisor
                  :restart-policy restart-policy
@@ -170,11 +238,11 @@ frozen reference for send-time copy decisions."
   "Deliver MSG to TARGET actor's mailbox and return t.
 
 Signals `nelisp-actor-error' with reason `send-to-dead-actor' when
-TARGET is `:dead' or `:crashed'.  Re-enqueues TARGET when it was
-blocked on receive so the scheduler drives it on the next
-`nelisp-actor-run-until-idle' pass.
+TARGET is `:dead' or `:crashed'.  When TARGET is
+`:blocked-receive', transitions it back to `:runnable' and
+re-enqueues it so the scheduler drives the resume on the next pass.
 
-Phase 4.1 does not copy MSG; the shared-immutable policy (§4.3)
+Phase 4.2 does not copy MSG; the shared-immutable policy (§4.3)
 classifies cells and deep-copies mutable structure at send time."
   (unless (nelisp-actor-p target)
     (signal 'wrong-type-argument (list 'nelisp-actor-p target)))
@@ -189,60 +257,83 @@ classifies cells and deep-copies mutable structure at send time."
     (nelisp-actor--enqueue target))
   t)
 
-(defun nelisp-receive (&optional timeout)
-  "Return the next message in the current actor's mailbox.
+;;; Scheduler (Phase 4.2 cooperative) ---------------------------------
 
-With an empty mailbox:
-  TIMEOUT = nil / 0 (Phase 4.1 default) → return the symbol `timeout'.
-  TIMEOUT > 0 (Phase 4.2+)              → suspend until a message
-                                          arrives or the timeout elapses.
+(defun nelisp-actor--step (actor)
+  "Advance ACTOR's iterator one step and classify the outcome.
 
-Phase 4.1's mock scheduler cannot suspend, so positive timeouts
-degrade to the non-blocking path (returning `timeout').  Callers
-must be within an actor thunk; signals `nelisp-actor-error' with
-reason `receive-outside-actor' otherwise."
-  (ignore timeout)  ; Phase 4.2 honours it.
-  (unless nelisp-actor--current
-    (signal 'nelisp-actor-error (list 'receive-outside-actor)))
-  (if (nelisp-actor-mailbox nelisp-actor--current)
-      (nelisp-actor--mailbox-pop nelisp-actor--current)
-    'timeout))
-
-;;; Scheduler (Phase 4.1 mock stub) -----------------------------------
-
-(defun nelisp-actor--run-one (actor)
-  "Drive ACTOR's thunk once with `:current' dynamically bound to ACTOR.
-On normal completion the actor transitions to `:dead'.  Uncaught
-errors are captured in `last-error' and the actor becomes
-`:crashed'; Phase 4.5 wires the supervisor restart policy here."
+Binds `nelisp-actor--current' around the `iter-next' call so that
+`nelisp-self' / `nelisp-receive' / `nelisp-yield' operate on the
+correct actor.  Returns one of:
+  `:yielded' — actor voluntarily yielded, still `:runnable'
+  `:blocked' — actor yielded from a blocked receive; status set
+              to `:blocked-receive' inside `nelisp-receive'
+  `:done'    — body exhausted, status `:dead'
+  `:crashed' — uncaught signal, `last-error' populated, status
+              `:crashed'"
   (let ((nelisp-actor--current actor))
     (condition-case err
-        (progn
-          (funcall (nelisp-actor-thunk actor))
-          (setf (nelisp-actor-status actor) :dead))
+        (let ((val (iter-next (nelisp-actor-iterator actor))))
+          (cond
+           ((eq val 'nelisp-actor--receive) :blocked)
+           (t :yielded)))
+      (iter-end-of-sequence
+       (setf (nelisp-actor-status actor) :dead)
+       :done)
       (error
        (setf (nelisp-actor-last-error actor) err)
-       (setf (nelisp-actor-status actor) :crashed)))))
+       (setf (nelisp-actor-status actor) :crashed)
+       :crashed))))
 
 (defun nelisp-actor-run-until-idle ()
-  "Drive the run queue until empty and return the number of actors run.
-Phase 4.1 runs each actor's thunk to completion on its single pass
-through the queue; Phase 4.2 replaces this with a real cooperative
-scheduler that supports yield and resume."
-  (let ((count 0))
+  "Drive the run queue until no actor is runnable.
+Returns the number of steps taken (one per `iter-next' call).
+Blocked-on-receive actors remain parked outside the queue; they are
+re-enqueued by `nelisp-send' when a message arrives."
+  (let ((steps 0))
     (while nelisp-actor--run-queue
       (let ((actor (nelisp-actor--dequeue)))
         (when (eq (nelisp-actor-status actor) :runnable)
-          (nelisp-actor--run-one actor)
-          (cl-incf count))))
-    count))
+          (cl-incf steps)
+          (pcase (nelisp-actor--step actor)
+            (:yielded (nelisp-actor--enqueue actor))
+            (:blocked nil)
+            ((or :done :crashed) nil)))))
+    steps))
+
+;;; Event-loop integration --------------------------------------------
+
+(defun nelisp-actor--tick ()
+  "Scheduler tick invoked from the idle timer installed by
+`nelisp-actor-start'.  Errors are caught and logged so a broken
+actor cannot tear down the timer."
+  (condition-case err
+      (nelisp-actor-run-until-idle)
+    (error
+     (message "nelisp-actor: tick error %S" err))))
+
+(defun nelisp-actor-start ()
+  "Install an idle timer that drives the scheduler continuously.
+Calling while the timer is already installed is a no-op.  The timer
+fires every `nelisp-actor-tick-interval' seconds of host idle time."
+  (interactive)
+  (unless nelisp-actor--timer
+    (setq nelisp-actor--timer
+          (run-with-idle-timer nelisp-actor-tick-interval t
+                               #'nelisp-actor--tick))))
+
+(defun nelisp-actor-stop ()
+  "Cancel the scheduler idle timer if one is active."
+  (interactive)
+  (when nelisp-actor--timer
+    (cancel-timer nelisp-actor--timer)
+    (setq nelisp-actor--timer nil)))
 
 ;;; Diagnostics -------------------------------------------------------
 
 (defun nelisp-actor-list ()
   "Return every actor currently in `nelisp-actor--registry'.
-Order is unspecified (hash-table iteration); callers needing spawn
-order filter by `nelisp-actor-id'."
+Order is unspecified (hash-table iteration)."
   (let (out)
     (maphash (lambda (_id actor) (push actor out)) nelisp-actor--registry)
     out))
@@ -264,7 +355,8 @@ Keys: `:id' `:status' `:mailbox-length' `:mailbox-cap'
 ;;; Test helpers ------------------------------------------------------
 
 (defun nelisp-actor--reset ()
-  "Clear all actor state.  For ERT setup/teardown only."
+  "Clear all actor state including the idle timer.  For ERT only."
+  (nelisp-actor-stop)
   (clrhash nelisp-actor--registry)
   (setq nelisp-actor--run-queue nil
         nelisp-actor--run-queue-tail nil
