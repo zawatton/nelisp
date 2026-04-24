@@ -37,7 +37,31 @@
   (markers nil)
   (overlays nil)
   (narrow-start nil)
-  (narrow-end nil))
+  (narrow-end nil)
+  (text-properties nil))  ; list of (START END PROP-PLIST) intervals, §3.2
+
+(cl-defstruct (nelisp-marker
+               (:constructor nelisp-marker--make)
+               (:copier nil))
+  "Position reference that follows text mutation of a `nelisp-buffer'.
+INSERTION-TYPE t means the marker advances when text is inserted
+exactly at its position; nil means it stays put."
+  (buffer nil)
+  (position 1)
+  (insertion-type nil))
+
+(cl-defstruct (nelisp-overlay
+               (:constructor nelisp-overlay--make)
+               (:copier nil))
+  "Range [START, END) in a `nelisp-buffer' that carries a plist of props.
+FRONT-ADVANCE / REAR-ADVANCE mirror Emacs' overlay insertion-
+type semantics for the START and END endpoints respectively."
+  (buffer nil)
+  (start 1)
+  (end 1)
+  (front-advance nil)
+  (rear-advance nil)
+  (props nil))
 
 (defvar nelisp-buffer--registry
   (make-hash-table :test 'equal)
@@ -165,27 +189,104 @@ Signals `error' when neither argument nor current is set."
     (and (>= idx 0) (< idx (length total))
          (elt total idx))))
 
-;;; Marker update helpers ---------------------------------------------
+;;; Marker / overlay / text-property shift helpers -------------------
+;;
+;; Phase 5-B.2 replaces the Phase 5-B.1 cons-cell placeholder with
+;; full marker/overlay structs + a sparse text-property interval
+;; list.  Every mutation path (insert / delete / erase) walks all
+;; three registries so position-following invariants hold.
 
 (defun nelisp-buffer--shift-markers-on-insert (buf at inserted-len)
-  "Advance every marker at or past AT by INSERTED-LEN.
-Placeholder: Phase 5-B.2 adds the marker struct proper; here we
-walk the raw list of cons cells (POS . TAIL-IS-NIL)."
-  (dolist (cell (nelisp-buffer-markers buf))
-    (when (and (consp cell) (>= (car cell) at))
-      (setcar cell (+ (car cell) inserted-len)))))
+  "Advance markers at or past AT by INSERTED-LEN.
+Markers strictly before AT are untouched.  A marker exactly at AT
+advances only when its `insertion-type' is non-nil (Emacs
+semantics)."
+  (dolist (m (nelisp-buffer-markers buf))
+    (when (nelisp-marker-p m)
+      (let ((pos (nelisp-marker-position m)))
+        (cond
+         ((< pos at) nil)
+         ((and (= pos at) (null (nelisp-marker-insertion-type m))) nil)
+         (t (setf (nelisp-marker-position m) (+ pos inserted-len))))))))
 
 (defun nelisp-buffer--shift-markers-on-delete (buf start end)
-  "Collapse markers in (START, END] to START, shift markers past END."
+  "Collapse markers inside [START, END] to START, shift markers past END."
   (let ((delta (- end start)))
-    (dolist (cell (nelisp-buffer-markers buf))
-      (when (consp cell)
+    (dolist (m (nelisp-buffer-markers buf))
+      (when (nelisp-marker-p m)
+        (let ((pos (nelisp-marker-position m)))
+          (cond
+           ((<= pos start) nil)
+           ((>= pos end)
+            (setf (nelisp-marker-position m) (- pos delta)))
+           (t
+            (setf (nelisp-marker-position m) start))))))))
+
+(defun nelisp-buffer--shift-overlays-on-insert (buf at inserted-len)
+  "Update overlay endpoints when INSERTED-LEN chars land at AT."
+  (dolist (o (nelisp-buffer-overlays buf))
+    (when (nelisp-overlay-p o)
+      (let ((s (nelisp-overlay-start o))
+            (e (nelisp-overlay-end o)))
+        ;; START endpoint
         (cond
-         ((<= (car cell) start) nil)
-         ((>= (car cell) end)
-          (setcar cell (- (car cell) delta)))
-         (t
-          (setcar cell start)))))))
+         ((< s at) nil)
+         ((and (= s at) (null (nelisp-overlay-front-advance o))) nil)
+         (t (setf (nelisp-overlay-start o) (+ s inserted-len))))
+        ;; END endpoint
+        (cond
+         ((< e at) nil)
+         ((and (= e at) (null (nelisp-overlay-rear-advance o))) nil)
+         (t (setf (nelisp-overlay-end o) (+ e inserted-len))))))))
+
+(defun nelisp-buffer--shift-overlays-on-delete (buf start end)
+  "Collapse overlay endpoints falling in [START, END] to START;
+shift endpoints past END backwards by (END - START)."
+  (let ((delta (- end start)))
+    (dolist (o (nelisp-buffer-overlays buf))
+      (when (nelisp-overlay-p o)
+        (let ((s (nelisp-overlay-start o))
+              (e (nelisp-overlay-end o)))
+          (setf (nelisp-overlay-start o)
+                (cond
+                 ((<= s start) s)
+                 ((>= s end) (- s delta))
+                 (t start)))
+          (setf (nelisp-overlay-end o)
+                (cond
+                 ((<= e start) e)
+                 ((>= e end) (- e delta))
+                 (t start))))))))
+
+(defun nelisp-buffer--shift-text-properties-on-insert (buf at len)
+  "Expand text-property intervals straddling AT; shift those past AT."
+  (dolist (ival (nelisp-buffer-text-properties buf))
+    (let ((s (nth 0 ival))
+          (e (nth 1 ival)))
+      ;; START endpoint
+      (cond ((< s at) nil)
+            (t (setcar ival (+ s len))))
+      ;; END endpoint (in-place via (nth 1) update)
+      (cond ((< e at) nil)
+            ((= e at) nil)
+            (t (setcar (cdr ival) (+ e len)))))))
+
+(defun nelisp-buffer--shift-text-properties-on-delete (buf start end)
+  "Collapse text-property intervals within [START, END] and shift later ones."
+  (let ((delta (- end start)))
+    (dolist (ival (nelisp-buffer-text-properties buf))
+      (let ((s (nth 0 ival))
+            (e (nth 1 ival)))
+        (setcar ival
+                (cond
+                 ((<= s start) s)
+                 ((>= s end) (- s delta))
+                 (t start)))
+        (setcar (cdr ival)
+                (cond
+                 ((<= e start) e)
+                 ((>= e end) (- e delta))
+                 (t start)))))))
 
 ;;; Mutation ----------------------------------------------------------
 
@@ -204,8 +305,9 @@ POS is clamped into [point-min, point-max] per Emacs semantics."
 
 (defun nelisp-insert (text &optional buf)
   "Insert TEXT at point in BUF.  TEXT must be a string.
-Markers at or past point advance by the length of TEXT; markers
-strictly before point are not touched."
+Markers / overlays / text-property intervals at or past point
+advance by the length of TEXT; anything strictly before point is
+untouched."
   (unless (stringp text)
     (signal 'wrong-type-argument (list 'stringp text)))
   (let* ((b (nelisp-buffer--ambient buf))
@@ -214,7 +316,9 @@ strictly before point are not touched."
          (n (length text)))
     (setf (nelisp-buffer-before-gap b) (concat before text))
     (setf (nelisp-buffer-modified b) t)
-    (nelisp-buffer--shift-markers-on-insert b at n))
+    (nelisp-buffer--shift-markers-on-insert b at n)
+    (nelisp-buffer--shift-overlays-on-insert b at n)
+    (nelisp-buffer--shift-text-properties-on-insert b at n))
   nil)
 
 (defun nelisp-delete-region (start end &optional buf)
@@ -235,17 +339,25 @@ if the range is inverted or outside the buffer."
       (setf (nelisp-buffer-before-gap b) (substring total 0 si))
       (setf (nelisp-buffer-after-gap b) (substring total ei))
       (setf (nelisp-buffer-modified b) t)
-      (nelisp-buffer--shift-markers-on-delete b s e)))
+      (nelisp-buffer--shift-markers-on-delete b s e)
+      (nelisp-buffer--shift-overlays-on-delete b s e)
+      (nelisp-buffer--shift-text-properties-on-delete b s e)))
   nil)
 
 (defun nelisp-erase-buffer (&optional buf)
-  "Clear BUF entirely.  Markers collapse to `point-min'."
+  "Clear BUF entirely.  Markers / overlays collapse to `point-min'."
   (let ((b (nelisp-buffer--ambient buf)))
     (setf (nelisp-buffer-before-gap b) "")
     (setf (nelisp-buffer-after-gap b) "")
     (setf (nelisp-buffer-modified b) t)
-    (dolist (cell (nelisp-buffer-markers b))
-      (when (consp cell) (setcar cell 1))))
+    (dolist (m (nelisp-buffer-markers b))
+      (when (nelisp-marker-p m)
+        (setf (nelisp-marker-position m) 1)))
+    (dolist (o (nelisp-buffer-overlays b))
+      (when (nelisp-overlay-p o)
+        (setf (nelisp-overlay-start o) 1)
+        (setf (nelisp-overlay-end o) 1)))
+    (setf (nelisp-buffer-text-properties b) nil))
   nil)
 
 (defun nelisp-buffer-modified-p (&optional buf)
@@ -303,6 +415,178 @@ Inverted ranges are swapped; START is clamped to >= 1 and END to
             (,saved (nelisp-point ,buf)))
        (unwind-protect (progn ,@body)
          (nelisp-goto-char ,saved ,buf)))))
+
+;;; Marker API (Phase 5-B.2) ------------------------------------------
+
+(defun nelisp-markerp (obj)
+  "Return non-nil when OBJ is a `nelisp-marker'."
+  (nelisp-marker-p obj))
+
+(defun nelisp-make-marker ()
+  "Return a marker not yet attached to any buffer."
+  (nelisp-marker--make))
+
+(defun nelisp-copy-marker (buf pos &optional insertion-type)
+  "Return a fresh marker inside BUF at POS.
+INSERTION-TYPE t makes the marker advance on insertion at its
+position; nil keeps it put."
+  (let ((m (nelisp-marker--make :buffer buf
+                                :position pos
+                                :insertion-type insertion-type)))
+    (push m (nelisp-buffer-markers buf))
+    m))
+
+(defun nelisp-set-marker (marker pos &optional buf)
+  "Re-point MARKER at POS, optionally moving it to BUF.
+Migration unlinks from the old buffer's markers list and links
+into the new one.  POS nil detaches the marker from its buffer."
+  (cond
+   ((null pos)
+    (when-let* ((old (nelisp-marker-buffer marker)))
+      (setf (nelisp-buffer-markers old)
+            (delq marker (nelisp-buffer-markers old))))
+    (setf (nelisp-marker-buffer marker) nil)
+    (setf (nelisp-marker-position marker) 1))
+   (t
+    (let ((target (or buf (nelisp-marker-buffer marker))))
+      (unless target (error "nelisp-set-marker: no target buffer"))
+      (when (and (nelisp-marker-buffer marker)
+                 (not (eq target (nelisp-marker-buffer marker))))
+        (setf (nelisp-buffer-markers (nelisp-marker-buffer marker))
+              (delq marker (nelisp-buffer-markers
+                            (nelisp-marker-buffer marker))))
+        (push marker (nelisp-buffer-markers target)))
+      (unless (nelisp-marker-buffer marker)
+        (push marker (nelisp-buffer-markers target)))
+      (setf (nelisp-marker-buffer marker) target)
+      (setf (nelisp-marker-position marker) pos))))
+  marker)
+
+(defun nelisp-marker-delete (marker)
+  "Unlink MARKER from its buffer's marker list.  Returns nil."
+  (when-let* ((b (nelisp-marker-buffer marker)))
+    (setf (nelisp-buffer-markers b)
+          (delq marker (nelisp-buffer-markers b))))
+  (setf (nelisp-marker-buffer marker) nil)
+  nil)
+
+;;; Overlay API (Phase 5-B.2) -----------------------------------------
+
+(defun nelisp-overlayp (obj)
+  "Return non-nil when OBJ is a `nelisp-overlay'."
+  (nelisp-overlay-p obj))
+
+(defun nelisp-make-overlay (start end &optional buf
+                                  front-advance rear-advance)
+  "Create an overlay covering [START, END) in BUF.
+FRONT-ADVANCE / REAR-ADVANCE control the behaviour of the
+respective endpoints under insertion at that exact position,
+mirroring Emacs' `make-overlay' last two args."
+  (let* ((b (nelisp-buffer--ambient buf))
+         (o (nelisp-overlay--make :buffer b :start start :end end
+                                  :front-advance front-advance
+                                  :rear-advance rear-advance)))
+    (push o (nelisp-buffer-overlays b))
+    o))
+
+(defun nelisp-delete-overlay (o)
+  "Unlink O from its buffer's overlay list.  Returns nil."
+  (when-let* ((b (nelisp-overlay-buffer o)))
+    (setf (nelisp-buffer-overlays b)
+          (delq o (nelisp-buffer-overlays b))))
+  (setf (nelisp-overlay-buffer o) nil)
+  nil)
+
+(defun nelisp-overlay-put (o prop val)
+  "Store (PROP . VAL) on overlay O.  Returns VAL."
+  (let ((cell (assq prop (nelisp-overlay-props o))))
+    (if cell
+        (setcdr cell val)
+      (push (cons prop val) (nelisp-overlay-props o))))
+  val)
+
+(defun nelisp-overlay-get (o prop)
+  "Return the value of PROP stored on O, or nil."
+  (cdr (assq prop (nelisp-overlay-props o))))
+
+(defun nelisp-overlays-at (pos &optional buf)
+  "Return the list of overlays in BUF whose range covers POS."
+  (let ((b (nelisp-buffer--ambient buf))
+        result)
+    (dolist (o (nelisp-buffer-overlays b))
+      (when (nelisp-overlayp o)
+        (when (and (>= pos (nelisp-overlay-start o))
+                   (< pos (nelisp-overlay-end o)))
+          (push o result))))
+    (nreverse result)))
+
+(defun nelisp-overlays-in (start end &optional buf)
+  "Return the list of overlays in BUF overlapping [START, END)."
+  (let ((b (nelisp-buffer--ambient buf))
+        result)
+    (dolist (o (nelisp-buffer-overlays b))
+      (when (nelisp-overlayp o)
+        (let ((s (nelisp-overlay-start o))
+              (e (nelisp-overlay-end o)))
+          (when (and (< s end) (> e start))
+            (push o result)))))
+    (nreverse result)))
+
+;;; Text-property API (Phase 5-B.2 sparse list) ----------------------
+
+(defun nelisp-put-text-property (start end prop val &optional buf)
+  "Store PROP=VAL for text in [START, END) of BUF.
+The representation is a list of (S E PLIST) intervals; subsequent
+puts are prepended, so `nelisp-get-text-property' sees the most
+recent write first (shadowing model)."
+  (let ((b (nelisp-buffer--ambient buf)))
+    (push (list start end (list prop val))
+          (nelisp-buffer-text-properties b))
+    val))
+
+(defun nelisp-get-text-property (pos prop &optional buf)
+  "Return the value of PROP at POS in BUF, or nil.
+Walks intervals newest-first; the first covering POS with PROP
+set wins.  `plist-member' is used to distinguish \"prop missing\"
+from \"prop set to nil\" so the newest-interval-wins semantics
+don't get shadowed by an old nil write."
+  (let ((b (nelisp-buffer--ambient buf))
+        (hit nil))
+    (dolist (ival (nelisp-buffer-text-properties b))
+      (unless hit
+        (let ((s (nth 0 ival))
+              (e (nth 1 ival))
+              (pl (nth 2 ival)))
+          (when (and (>= pos s) (< pos e)
+                     (plist-member pl prop))
+            (setq hit (cons :v (plist-get pl prop)))))))
+    (and hit (cdr hit))))
+
+(defun nelisp-text-property-intervals (&optional buf)
+  "Return a shallow copy of BUF's text-property interval list."
+  (copy-sequence
+   (nelisp-buffer-text-properties (nelisp-buffer--ambient buf))))
+
+(defun nelisp-remove-text-properties (start end props &optional buf)
+  "Drop each key in PROPS (a plain list of symbols) from any
+interval overlapping [START, END) in BUF.  Intervals are not
+split; properties simply disappear from intervals that touch the
+removal window.  Returns nil."
+  (let ((b (nelisp-buffer--ambient buf)))
+    (dolist (ival (nelisp-buffer-text-properties b))
+      (let ((s (nth 0 ival))
+            (e (nth 1 ival)))
+        (when (and (< s end) (> e start))
+          (let* ((pl (nth 2 ival))
+                 (new (let (out)
+                        (while pl
+                          (unless (memq (car pl) props)
+                            (push (car pl) out)
+                            (push (cadr pl) out))
+                          (setq pl (cddr pl)))
+                        (nreverse out))))
+            (setcar (cddr ival) new))))))
+  nil)
 
 (provide 'nelisp-buffer)
 

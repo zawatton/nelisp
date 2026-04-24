@@ -298,20 +298,48 @@ Phase 5-B 着手に必要な gap を埋める。
 期待スコープ 1.5 週に対し、当日完了 (primitive 追加 § 2.6 A で
 ゼロ、gap buffer string 表現の単純さで実装量が予想より少)。
 
-** §3.2 Marker + overlay + text-property
+** §3.2 Marker + overlay + text-property — SHIPPED 2026-04-24
 
 目的: buffer 内位置参照と属性表現。
 
-作業:
-- =nelisp-make-marker= / =nelisp-marker-position= — buffer
-  毎 weak-ish list に追跡、insert/delete で offset 更新
-- =nelisp-make-overlay= / =nelisp-overlay-start= / =nelisp-
-  overlay-end= / =nelisp-overlay-put=
-- =nelisp-put-text-property= / =nelisp-get-text-property= —
-  text property 辞書 (interval tree 避け、MVP は sparse list)
-- ERT: marker 追従 / overlay 重なり / text-property 一致
+- [X] =src/nelisp-buffer.el= 拡張 (§3.1 の 230 LOC → ~430 LOC):
+  - =nelisp-buffer= struct に =text-properties= slot 追加
+  - =cl-defstruct nelisp-marker= (buffer / position / insertion-
+    type) + =cl-defstruct nelisp-overlay= (buffer / start / end /
+    front-advance / rear-advance / props)
+  - shift helpers を cons-cell placeholder から struct base に
+    差し替え、=insert= / =delete-region= / =erase-buffer= で
+    markers / overlays / text-properties を三位一体に更新
+- [X] Marker API 5 本: =nelisp-markerp= / =nelisp-make-marker=
+  (detached) / =nelisp-copy-marker= (buf 内作成) /
+  =nelisp-set-marker= (cross-buffer 移動 + nil で detach) /
+  =nelisp-marker-delete= (unlink)
+- [X] Overlay API 7 本: =nelisp-overlayp= / =nelisp-make-overlay=
+  (front/rear-advance 指定可) / =nelisp-delete-overlay= /
+  =nelisp-overlay-put= / =nelisp-overlay-get= /
+  =nelisp-overlays-at= / =nelisp-overlays-in=
+- [X] Text-property API 4 本 (sparse list、interval tree 回避):
+  =nelisp-put-text-property= (newest-first stack) /
+  =nelisp-get-text-property= (=plist-member= で "nil 設定" を
+  "未設定" と区別) / =nelisp-text-property-intervals= /
+  =nelisp-remove-text-properties=
+- [X] =test/nelisp-marker-test.el= 新設 (29 ERT):
+  - 2 marker struct / basic
+  - 4 marker insert shift (before / after / at:stay / at:advance)
+  - 3 marker delete shift (after / before / covering)
+  - 3 marker cross-buffer / detach / delete
+  - 5 overlay (make / put-get / overlays-at / overlays-in /
+    delete)
+  - 4 overlay shift (insert-inside-expands / at-start 2 variants
+    / delete-covering / delete-before)
+  - 6 text-property (put-get / newest-wins / nil-distinguishable
+    / shift-on-insert / shift-on-delete / remove)
+  - 1 erase-buffer が text-properties を clear
+- [X] make test: 609 → *638/638 green* (+29, 0 unexpected)
+- commit: =PHASE5B2_COMMIT= on =feat/phase5b.2-marker=
 
-期待スコープ: 1.5 週。
+期待スコープ 1.5 週に対し当日完了 (§3.1 で struct 土台が既に
+整っており、shift helpers の拡張で済んだ)。
 
 ** §3.3 Redisplay (terminal, dirty-region)
 
