@@ -1,0 +1,69 @@
+#+title: NeLisp Phase 5-E §3.4 — MCP dialog reference transcript
+#+author: zawatton
+#+date: 2026-04-24
+
+* 目的
+
+=test/nelisp-server-smoke.sh= が投入する 6 request + 受信する 5
+reply の JSON 転写。Phase 5-E §3.4 merge gate の証跡であり、
+今後 Claude Code 実接続時に observed dialog との差分確認に使う。
+
+* 生成手順
+
+#+begin_src shell
+./test/nelisp-server-smoke.sh --transcript
+#+end_src
+
+上記 output をそのままこの section に貼り付け。
+
+* Dialog transcript (2026-04-24 main HEAD 2a749b1)
+
+#+begin_example
+> {"jsonrpc":"2.0","id":1,"method":"initialize"}
+> {"jsonrpc":"2.0","method":"notifications/initialized"}
+> {"jsonrpc":"2.0","id":2,"method":"tools/list"}
+> {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"git-log","arguments":{"limit":2}}}
+> {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"data-set-path","arguments":{"path":"foo","value":42}}}
+> {"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"data-get-path","arguments":{"path":"foo"}}}
+
+< {"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"nelisp-anvil","version":"0.1"},"capabilities":{"tools":{"listChanged":"false"}},"protocolVersion":"2024-11-05"}}
+< {"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"file-read","description":"Read a file from disk and return its contents.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute file path"}},"required":["path"]}},{"name":"file-outline","description":"Extract a structural outline from an .el / .org / .md file.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute file path"}},"required":["path"]}},{"name":"git-log","description":"Return recent git commits (oneline) under cwd.","inputSchema":{"type":"object","properties":{"limit":{"type":"integer","description":"Max commits (default 10)"}}}},{"name":"git-status","description":"Return `git status --short' under cwd.","inputSchema":{"type":"object","properties":null}},{"name":"http-get","description":"HTTP GET — wraps `nelisp-http-get' with default cache TTL.","inputSchema":{"type":"object","properties":{"url":{"type":"string","description":"HTTP or HTTPS URL"}},"required":["url"]}},{"name":"data-get-path","description":"Return nested value at dotted key PATH in data-store.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Dotted key path e.g. foo.bar"}},"required":["path"]}},{"name":"data-set-path","description":"Store VALUE at nested dotted key PATH in data-store.","inputSchema":{"type":"object","properties":{"path":{"type":"string"},"value":{"description":"any JSON value"}},"required":["path","value"]}}]}}
+< {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"(:limit 2 :log \"2a749b1 ...\\ne66b52d ...\\n\" :exit 0)"}]}}
+< {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"(:path \"foo\" :stored t)"}]}}
+< {"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"(:path \"foo\" :value 42)"}]}}
+#+end_example
+
+* 観察ポイント
+
+- *id:1 initialize* — =serverInfo=, =capabilities.tools.listChanged
+  = false=, =protocolVersion = 2024-11-05= が MCP 2024-11-05 spec
+  準拠の shape
+- *notifications/initialized* に対して reply 無し (JSON-RPC 2.0
+  notification は明示的に reply を返さない規約)
+- *id:2 tools/list* — §3.3 で port した 7 tool 全てが =name= /
+  =description= / =inputSchema= 揃って返る。=inputSchema= の
+  =required= は JSON array として =["path"]= 形式で serialize
+- *id:3 tools/call git-log* — subprocess spawn 経由で実 git 出力、
+  =:exit 0= と =:log= string 両方が MCP =content.text= envelope
+  に prin1 form で wrap
+- *id:4 / id:5 data-set-path → data-get-path* — 同一 session 内
+  の state round trip。=42= (integer) が JSON 経由で element 往復
+  した後も型保持
+
+* 既知の限界 (Phase 5-E 範囲)
+
+- state は single process = 単一 emacs --batch 起動中のみ保持。
+  Claude Code が MCP server を再起動 (session restart / config
+  reload) すると data-store は消える
+- =http-get= は同期 =url-retrieve-synchronously= wrap、MCP call
+  中は全 request が直列化する (Phase 5-D worker 層を通す
+  async integration は Phase 5-F+)
+- destructive tool (=file-replace-string= / =file-batch= 等) は
+  §2.4 non-goal で port 済でない、Phase 5-F+ で risk 管理しながら
+
+* 関連
+
+- =docs/design/16-mcp-config-example.org= (Claude Code 設定 snippet
+  + user verification checklist)
+- =test/nelisp-server-smoke.sh= (生成元 smoke script)
+- =Makefile= =smoke= target

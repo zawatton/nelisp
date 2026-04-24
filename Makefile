@@ -1,4 +1,4 @@
-.PHONY: test compile clean all bench gc-bench actor-bench soak
+.PHONY: test compile clean all bench gc-bench actor-bench soak smoke
 
 EMACS ?= emacs
 
@@ -77,3 +77,11 @@ soak:
 	  -l ert \
 	  -l test/nelisp-worker-soak-test.el \
 	  -f ert-run-tests-batch-and-exit
+
+# Phase 5-E.4 MCP stdio smoke.  Runs the `nelisp-anvil' MCP server
+# in a subprocess and pipes a scripted dialog through it, asserting
+# on the JSON-RPC reply shape.  Proves the end-to-end stdio path
+# (emacs --batch + -l nelisp-server + -l nelisp-tools + -f
+# nelisp-server-run-stdio) is wired correctly for Claude Code.
+smoke:
+	./test/nelisp-server-smoke.sh
