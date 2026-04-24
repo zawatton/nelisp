@@ -3,7 +3,7 @@
 #+date: 2026-04-24
 #+options: toc:2
 
-* STATE: DRAFT 2026-04-24 (§2 LOCKED + §3.0-3.2 SHIPPED 2026-04-24、§3.3 next)
+* STATE: DRAFT 2026-04-24 (§2 LOCKED + §3.0-3.3 SHIPPED 2026-04-24、§3.4 next)
 
 ** 目的
 
@@ -490,21 +490,45 @@ make test: 736 → *753/753 green*
 期待スコープ: 1.5 週。実績: 当日 (§3.1 trampoline pattern +
 host url-retrieve の既存安定性で、HTTP cache 層が薄くて済んだ)。
 
-** §3.3 =nelisp-file-notify=
+** §3.3 =nelisp-file-notify= — SHIPPED 2026-04-24
 
 目的: host =file-notify-add-watch= を wrap、event 正規化。
 
-作業:
-- =src/nelisp-file-notify.el= 新設
-- 公開 API: =nelisp-file-notify-add-watch DIR FLAGS CALLBACK=
-  / =-file-notify-rm-watch DESC= / =-file-notify-valid-p=
-- event 正規化: host event =(DESC ACTION FILE [FILE1])= を
-  =nelisp-event= (=kind= = =file-change=, data = plist) で
-  event loop に post
-- ERT: =make-temp-file= 相当で watch DIR 作成 → touch / rename
-  / delete → event 1 本受信、invalid DESC で rm-watch no-op
+作業 (済):
+- =src/nelisp-file-notify.el= 新設 (6fc65bf)
+- 公開 API: =nelisp-file-notify-add-watch FILE FLAGS CALLBACK
+  &key name actor props= / =-file-notify-rm-watch WRAP-OR-DESC= /
+  =-file-notify-valid-p WRAP-OR-DESC= / =-list= / =-get= / =-put=
+- event 正規化: host =(DESC ACTION FILE [FILE1])= → data plist
+  =(:desc :action :file :file1)=; 共有 trampoline 内で
+  =nelisp-event= (=kind= = =file-change=, data = =:wrap= 付
+  plist) を owner actor に post、続けて user callback を
+  =nelisp--apply= で dispatch
+- 既に削除済 / 未知の DESC は sentinel / filter trampoline と
+  同様 silent drop (condition-case + `file-notify-rm-watch'
+  ignore-errors)
+- ERT: lifecycle 9 / event dispatch 5 / actor 1 / normalization 2
+  = 17 本追加 (=test/nelisp-file-notify-test.el=)
+- =make-temp-file= で watched DIR 作成 → 実 DESC 取得
+- event 受信 assertion は synthetic =(DESC action file [file1])=
+  を trampoline に直接投入 (=emacs --batch= は GUI 駆動 inotify
+  fd を pump しないため); registry lookup / dispatch path は
+  production code をそのまま通る
+- make clean && make test → 753 → 770/770 green
 
-期待スコープ: 1 週。
+key learning:
+- =emacs --batch -Q= mode 下では =accept-process-output= / =sit-for=
+  は file-notify fd (inotify) を drain しない。FS 実操作を回す
+  integration test は不可。解決策は (a) trampoline を単体関数
+  として exposed にして synthetic event を流す (本 MVP)、
+  (b) demo (§3.4) で daemonic context から確認
+- actor 受信テストは =nelisp-spawn= 直後 + synth 直後に
+  =nelisp-actor-run-until-idle= を明示呼出し、scheduler tick を
+  batch で回す必要がある (=nelisp-actor-start= は timer 依存)
+
+期待スコープ: 1 週。実績: 当日 (§3.1 trampoline pattern を
+そのまま踏襲 + host file-notify が thin なので wrapper 層
+最小で済んだ)。
 
 ** §3.4 E2E demo — NeLisp-daemon minimum
 
