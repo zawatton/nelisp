@@ -182,7 +182,7 @@ ship、Phase 4 と同じく =--no-ff= merge で phase branch に集約、全完�
   explicit .el / host-fallback-off / host-fallback-on / clash-priority /
   bad-type)
 - [X] make test: 534 → *543/543 green*
-- commit: =<pending>= on =feat/phase5a.2-load-path=
+- commit: =829cf20= on =feat/phase5a.2-load-path=
 
 設計 tweak: =defcustom= は NeLisp self-host の dispatch に customize
 primitive が無いため =defvar= に downgrade (Doc 12 本文表記の訂正)。
