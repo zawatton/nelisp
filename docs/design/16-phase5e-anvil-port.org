@@ -277,37 +277,49 @@ make test green の不変条件で進める。
 - 期待 2-3 日に対し当日完了 (audit infra は Phase 5-D.0 を 1:1
   port、gap 11 件も全て host subr wrap で即埋まった)
 
-** §3.1 =src/nelisp-server.el= 新設 (1 週)
+** §3.1 =src/nelisp-server.el= 新設 — SHIPPED 2026-04-24
 
-- =examples/nelisp-daemon/main.el= (§3.0 で Phase 5-C.4 成果物) の
-  実装を =src/nelisp-server.el= に移植 + 拡張
-- 公開 API 候補:
-  - =nelisp-server-start= / =nelisp-server-stop=
-  - =nelisp-server-dispatch= (pure dispatcher、JSON-RPC 非依存)
-  - =nelisp-server-call-json= (line-delimited JSON round trip)
-  - =nelisp-server-run-stdio= (filter + stdin 読み loop)
-  - =nelisp-server-register-handler= (=tools/call= 以外の method、
-    例 =initialize= / =shutdown=)
-  - =nelisp-server-tool-registry= (=nelisp-deftool= が append する
-    internal alist、§3.2 で詳細)
-- 拡充要素 (Phase 5-C.4 から追加):
-  - =initialize= response に =serverInfo= + =capabilities= +
-    =protocolVersion "2024-11-05"= (MCP spec 準拠)
-  - =notifications/initialized= client→server を accept (reply 無し)
-  - JSON-RPC error code: =-32700= parse / =-32601= method-not-found
-    / =-32602= invalid-params / =-32603= internal の 4 code
-  - =tools/list= return スキーマを =name= / =description= /
-    =inputSchema= 3 field に整合 (registry から plist→alist 自動
-    変換)
-- =test/nelisp-server-test.el= +15 ERT 想定:
-  - initialize / initialized lifecycle 3
-  - dispatcher 純 function 5 (method 正常 / method-not-found /
-    invalid-params / internal-error / notification drop)
-  - JSON round-trip 3 (encode / decode / error envelope)
-  - registry 2 (register / lookup)
-  - stdio runner 2 (scripted feed / stop)
-- 完了条件: =initialize= → =tools/list= → =tools/call echo-test=
-  (dummy tool 1 本 register) の ERT 1 本が green
+- =src/nelisp-server.el= (~280 LOC) を新設、Phase 5-C.4
+  =examples/nelisp-daemon/main.el= を母体に拡充
+- 公開 API 8 本:
+  - =nelisp-server-start= / =nelisp-server-stop= (lifecycle)
+  - =nelisp-server-dispatch= (pure dispatcher、method+params →
+    result plist / =:notification= / error envelope)
+  - =nelisp-server-call-json= (JSON-RPC 2.0 string round trip、
+    notification は nil 返し、error envelope は JSON encode)
+  - =nelisp-server--safe-call-json= (parse error を =-32700= に
+    変換する外側 catch wrapper、runner から使用)
+  - =nelisp-server-run-stdio= (read-from-minibuffer line loop +
+    princ/terpri output)
+  - =nelisp-server-register-handler= (method extension)
+- 拡充要素 (Phase 5-C.4 から):
+  - =initialize= response: =serverInfo (:name "nelisp-anvil" :version
+    "0.1")= + =capabilities (:tools (:listChanged :false))= +
+    =protocolVersion "2024-11-05"= (MCP spec)
+  - =notifications/initialized= handler → =:notification= 返却で
+    response suppress
+  - JSON-RPC error code 4 種: =-32700= parse / =-32601= method-
+    not-found / =-32602= invalid-params / =-32603= internal
+  - =tools/list= は =nelisp-server--tool-registry= を maphash
+    して =(:name :description :inputSchema)= 3 field plist を
+    =:tools= vector 相当に集約
+  - =tools/call= は registry lookup → handler funcall → MCP 標準
+    =(:content ((:type "text" :text "..."))) envelope 化、
+    handler error は =-32603= に wrap
+- =test/nelisp-server-test.el= +18 ERT:
+  - lifecycle 3 (start sets state / stop clears / builtin handlers)
+  - dispatcher 6 (initialize / unknown method -32601 / notification
+    drop / handler-error -32603 / tools/call -32602 missing name
+    / unknown tool -32602)
+  - tools/list + tools/call via registry 2
+  - JSON wire 4 (initialize round trip / notification nil /
+    -32601 JSON envelope / -32700 parse error envelope)
+  - registry extension 1
+  - stdio runner 2 (scripted initialize / shutdown handler stops
+    loop after first reply — 2nd request not processed)
+- make test: 855 → *873/873 green*
+- 期待 1 週に対し当日完了 (Phase 5-C.4 demo を直接 port する path
+  + JSON-RPC MCP 拡張は薄い差分)
 
 ** §3.2 =nelisp-deftool= macro + dispatcher (3-4 日)
 
