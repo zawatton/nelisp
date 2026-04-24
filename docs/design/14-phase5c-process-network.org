@@ -324,7 +324,7 @@ false positive なし。audit 出力 25 missing を全て追加 + bonus
 目的: host =make-process= を wrap、per-process actor で I/O を
 event 化。pipe / PTY 両対応。
 
-実装 (commit __HASH_5C1__):
+実装 (commit 2258241):
 - =src/nelisp-process.el= 新設 (~260 LOC)
 - =(cl-defstruct nelisp-process id host-proc actor status
   exit-code buffer user-sentinel user-filter props)=
