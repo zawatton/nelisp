@@ -3,7 +3,7 @@
 #+date: 2026-04-24
 #+options: toc:2
 
-* STATE: DRAFT 2026-04-24 (§2 signoff 待ち)
+* STATE: DRAFT 2026-04-24 (§2 LOCKED 2026-04-24 全推奨 signoff、§3.0 着手中)
 
 ** 目的
 
