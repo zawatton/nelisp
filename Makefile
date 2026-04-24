@@ -1,4 +1,4 @@
-.PHONY: test compile clean all bench gc-bench actor-bench
+.PHONY: test compile clean all bench gc-bench actor-bench soak
 
 EMACS ?= emacs
 
@@ -13,7 +13,11 @@ export TMP    ?= /tmp
 # requires the former at byte-compile time).  Glob pattern matches both
 # `nelisp.el' and `nelisp-FOO.el'.
 SRCS  := $(sort $(wildcard src/nelisp*.el))
-TESTS := $(sort $(wildcard test/nelisp*-test.el))
+# Soak test (Phase 5-D.6) is advisory only and deliberately excluded
+# from the gated TESTS glob — it runs long-lived `sleep-for' jobs and
+# is invoked explicitly via `make soak'.
+TESTS := $(sort $(filter-out test/nelisp-worker-soak-test.el, \
+                  $(wildcard test/nelisp*-test.el)))
 TEST_LOADS := $(addprefix -l ,$(TESTS))
 
 all: compile test
@@ -55,3 +59,13 @@ actor-bench: compile
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-actor-bench \
 	  -f nelisp-actor-bench-batch
+
+# Phase 5-D.6 worker soak.  Advisory only — not gated.  Exercises the
+# 3-lane worker pool under sustained mixed load (20 read + 5 write +
+# 1 long-running batch) and proves no cross-lane starvation.
+soak:
+	$(EMACS) --batch -Q -L src -L test \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l ert \
+	  -l test/nelisp-worker-soak-test.el \
+	  -f ert-run-tests-batch-and-exit
