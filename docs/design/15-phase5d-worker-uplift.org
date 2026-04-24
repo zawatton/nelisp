@@ -3,7 +3,7 @@
 #+date: 2026-04-24
 #+options: toc:2
 
-* STATE: DRAFT 2026-04-24 (§2 LOCKED + §3.0-3.2 SHIPPED 2026-04-24、§3.3 next)
+* STATE: DRAFT 2026-04-24 (§2 LOCKED + §3.0-3.3 SHIPPED 2026-04-24、§3.4 next)
 
 ** 目的
 
@@ -285,11 +285,38 @@ scope を超えて 5-E に食い込む。B で "worker layer は独立して
 / =nelisp-network.el=、main@cb6aa54 でも再現) があり本 commit 起因
 ではない。byte-compile-error-on-warn 準拠 cleanup は別 Phase で対応。
 
-** §3.3 Health check + sentinel-driven dead mark (3 日)
+** §3.3 Health check (sentinel + periodic + sweep) — SHIPPED 2026-04-24
 
-- =nelisp-worker--sentinel= が worker struct を =dead= に flip
-- periodic zombie scan (=run-at-time WAIT SEC= で opt-in)
-- quick-alive-p 踏襲
+- =src/nelisp-worker.el= 拡張 (impl =1f01eaf=):
+  - =nelisp-worker-health-check-interval= defcustom (default 30、
+    0 以下で periodic 無効)
+  - =nelisp-worker--health-timers= hash table (pool keyed)
+  - =nelisp-worker-health-scan POOL= — 3 lane を sweep
+  - =nelisp-worker-health-timer-start POOL &optional INTERVAL= —
+    per-pool periodic、previous timer 自動 cancel
+  - =nelisp-worker-health-timer-stop= / =-active-p= 公開
+  - =nelisp-worker-pool-create= は =:prespawn= かつ interval>0 で
+    auto-start (lazy pool は skip、scan 対象無し)
+  - =nelisp-worker-pool-kill= で auto-stop
+- §2.4 C 3-layer dead detection:
+  1. *sentinel-driven* — =nelisp-process-pool= (§3.1b) の spawn
+     が host-proc 終了時 state=dead を install
+  2. *periodic timer* — 本 commit 追加、=-sweep-dead= のみ呼ぶ
+     (subprocess spawn しない、timer context 安全)
+  3. *on-get sweep* — =nelisp-process-pool-get= 既存挙動
+- periodic 過去の freeze 経緯 (anvil-worker) は file-notify 由来
+  であり scan itself ではない (memory
+  =feedback_anvil_worker_phase1_startup_freeze.md=)。本 scan は
+  =-sweep-dead= のみで cheap、freeze 要素なし
+- ERT +11 (=test/nelisp-worker-test.el=): health-scan 2 / timer
+  start/stop 4 / auto-start 3 / auto-stop 1 / integration 1
+  (timer 0.2s で 実際 fire → dead mark)
+- *発見*: =let= で defcustom を bind して =pool-create= 呼ぶ 5 ERT
+  は =let*= 必須 (parallel bind だと create 実行時に binding 未
+  反映)。修正済
+- make test: 818 → *829/829 green*
+- 期待 3 日に対し当日完了 (§3.1b の既存 sweep インフラを
+  timer で wrap するだけで済んだ)
 
 ** §3.4 Batch warmup (2 日)
 
