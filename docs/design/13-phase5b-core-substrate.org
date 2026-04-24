@@ -1,0 +1,395 @@
+#+title: NeLisp Phase 5-B — Emacs core substrate (buffer / redisplay / event-loop)
+#+author: zawatton
+#+date: 2026-04-24
+#+options: toc:2
+
+* STATE: DRAFT 2026-04-24 (§2 decisions awaiting signoff)
+
+** 目的
+
+release bar 後半 ("Emacs core 置換") を達成するため、Emacs C で
+実装されている 3 核心 (buffer / redisplay / event-loop) の NeLisp
+実装を新構築する。*既存 C モジュールを置き換え*、NeLisp 上で
+最小限の "editor" が動作することで、NeLisp が Emacs の母体として
+働ける substrate であることを実証する。
+
+release bar 前半 (Phase 5-A Doc 12 SHIPPED-2026-04-24) で
+"NeLisp 単独でパッケージ作成自立" は達成済。Phase 5-B 完了で
+"NeLisp 単独で Emacs 代替 substrate 動作" を目指す。
+
+** 背景
+
+Phase 0 で lock された v1.0 完遂条件 4 項:
+1. self-host 到達 — Phase 2 達成 (2026-04-23)
+2. *3 大 core module (buffer / redisplay / event-loop) Elisp 化*
+3. AI-critical path 5 領域が NeLisp 上で動作
+4. 残存 C は SBCL-style 4 核 (syscall / allocator / GC inner / coding)
+
+本 Phase 5-B は項目 2 に対応。anvil.el 開発中に感じた host C
+由来の限界 (file-notify freeze / mutex cross-session 不能 /
+subprocess 迂回 / Emacs server filter starvation 等) を、buffer
+/ redisplay / event-loop の 3 核を Lisp で新設することで
+structural に解消する下地を作る。
+
+Rhodes 2008 "SBCL: A Sanely-Bootstrappable Common Lisp" 方針
+(Phase 0 decision Bootstrap A) と並走: host C を SBCL 4 核
+(syscall / allocator / GC inner / coding) のみに絞り、それ以外
+は NeLisp 上に置く。
+
+** Non-goals
+
+- GUI redisplay (X / Windows / Cocoa) は本 Phase 範囲外。
+  terminal-only から着手、GUI は Phase 6+ で検討。
+- Major / minor mode 実装互換は本 Phase 範囲外。substrate が
+  揃えば mode は Elisp で書ける (Phase 5-A の loader で load 可)。
+- Unicode normalization の完全対応は範囲外 (encode/decode は
+  host に委譲、bytes→chars 変換は Phase 7+)。
+- Network I/O substrate (process / network connection) は
+  Phase 5-C 以降。本 Phase は端末入出力と buffer I/O のみ。
+- =redisplay= の bidi / ligature / font shaping 等は範囲外。
+  ASCII + CJK full-width 2 分類の monospace grid のみ扱う。
+- =package.el= 互換 installer は Phase 5-A と同じく別課題。
+
+* §1 Phase 5-A 成果前提
+
+本 Phase は Phase 5-A の成果物に依存する:
+- =nelisp-load-file= / =nelisp-load= / =nelisp-require= 動作
+- =nelisp-load-path= による host 非依存 module 解決
+- =nelisp-macroexpand*= 系が primitive dispatch 経由で public
+- Phase 2 self-host fixpoint (cycle-1 = cycle-2)
+- Phase 3c mark-sweep GC (buffer / overlay の heap 管理)
+- Phase 4 actor + channel + supervisor (event loop の下地)
+
+Phase 5-B は新規 module 3 本を =src/nelisp-buffer.el= /
+=src/nelisp-redisplay.el= / =src/nelisp-eventloop.el= として
+追加、=test/nelisp-buffer-test.el= 他で ERT 整備。primitive 表
+には buffer-related 最小 set (=generate-new-buffer=, =point=,
+=goto-char= 等) を Phase 5-B.0 で追加する。
+
+* §2 Locked decisions (signoff 必須)
+
+以下 9 項目を user signoff 後に LOCK する。Doc 10 / Doc 12 と
+同じ pattern。default 推奨を示すが、どの項目も差し戻し可能。
+
+** §2.1 Buffer data structure
+
+*Q*: buffer のテキスト表現をどう持つか。Emacs C は gap buffer
+(2-part contiguous array + gap region) を使う。
+
+選択肢:
+A. Gap buffer (Emacs 同型) — 単純、挿入/削除 O(N/W)、Emacs
+   semantics 完全再現しやすい
+B. Rope (平衡二分木) — O(log N) 全操作、実装複雑、marker
+   整合も再設計要
+C. Piece table (VS Code 他) — undo-friendly、実装は比較的
+   簡潔、marker は位置リスト保持
+
+*推奨: A (Gap buffer)*。Emacs semantics 再現優先、perf は後続
+Phase で移行可。rope/piece-table 移行は data-abstraction を
+interface で切る前提で将来 swap 可能に書く。
+
+** §2.2 Text representation
+
+*Q*: バッファ内の文字単位。
+
+選択肢:
+A. Host Elisp =string= (multibyte 含む) — Emacs 同等、encode
+   / decode は host 委譲
+B. Byte vector + 明示 codec layer — 純粋だが encode/decode を
+   NeLisp 内実装必要
+C. Code-point vector (fix32 配列) — unicode 直球、memory 重い
+
+*推奨: A (string)*。Phase 5-B は correctness が先、codec は
+SBCL 4 核に残して host 委譲のままで良い。
+
+** §2.3 Marker / overlay 実装
+
+*Q*: =marker= / =overlay= をどう保持するか。
+
+選択肢:
+A. buffer-local doubly-linked list (weak-ref ではなく GC root) —
+   Phase 3c mark-sweep が reach 可能、insert/delete で毎 marker
+   offset 更新
+B. Interval tree — 多 overlay 時に O(log N) query、実装複雑
+C. B-tree (Emacs 流、itree) — Emacs 2024+ 方針に準拠
+
+*推奨: A (linked list)*。MVP は overlay 数 < 1000 想定、
+linked list で十分。interval tree は perf profile 後移行可。
+
+** §2.4 Redisplay 戦略
+
+*Q*: screen 描画をどう組むか。
+
+選択肢:
+A. Terminal-only + buffer 変更毎 full-repaint — 最単純、
+   flicker あり
+B. Terminal-only + dirty-region incremental (row 単位) —
+   flicker 無し、実装中規模
+C. Terminal + GUI 両対応 — scope 過大
+
+*推奨: B (terminal dirty-region)*。A は UX 悪すぎ、C は本
+Phase 範囲外。window を row x col grid に抽象、modified row
+だけ terminal escape で再描画。
+
+** §2.5 Event loop モデル
+
+*Q*: input event ループの基盤。
+
+選択肢:
+A. Standalone event loop (new recv loop) — 独立実装、Phase 4
+   actor は使わない
+B. Phase 4 actor を再利用 — input source を 1 actor として
+   spawn、buffer update / redisplay も actor message で trigger
+C. Hybrid — keyboard は actor、timer は host
+
+*推奨: B (Phase 4 actor)*。anvil.el pain の多くが event loop
+blocking に起因、actor の yield point を活用。Phase 4 の
+=nelisp-actor-tick-interval= をそのまま event drain 周期に使う。
+
+** §2.6 Host Emacs との共存戦略
+
+*Q*: NeLisp buffer が host Emacs buffer と同居するとき、どう
+名前空間分離するか。
+
+選択肢:
+A. Parallel — NeLisp buffer は =nelisp-buffer-*= API、host
+   buffer は触らない (Phase 5-B 内は完全隔離)
+B. Shim — NeLisp buffer ops は host buffer を wrap
+   (bootstrap、perf 同等)
+C. Replacement — host buffer 概念を NeLisp-buffer で完全置換
+   (Phase 5-B 終点の理想形)
+
+*推奨: A (Parallel)*。NeLisp-buffer の correctness を独立に
+検証可、host Emacs の安定性を損なわない。C は Phase 5-C 以降、
+Emacs substitute として起動する境地まで行ってから。
+
+** §2.7 Concurrency モデル
+
+*Q*: buffer に対する並行アクセスをどう制御するか。
+
+選択肢:
+A. Single-threaded (Emacs 流) — 1 event loop、buffer 操作
+   atomic
+B. Per-buffer actor (Phase 4) — buffer 毎 1 actor、message
+   駆動
+C. STM (Phase 4b optional) — log-replay 方式、複雑
+
+*推奨: A (single-threaded)*。Phase 5-B の目的は core semantics
+再現、concurrency の上積みは Phase 6+。ただし event loop は
+actor で組むので「buffer 操作 = actor message」の自然な延長で
+B にいつでも migrate 可能なように interface を切る。
+
+** §2.8 Test strategy
+
+*Q*: NeLisp-buffer の正しさをどう担保するか。
+
+選択肢:
+A. ERT unit (insert/delete/point/mark 単体) のみ
+B. A + host buffer parity test (同操作で NeLisp-buffer と
+   host-buffer の text/point/mark が一致)
+C. A + B + round-trip (serialize → restore 一致)
+
+*推奨: B (A + parity)*。Phase 5-A と同じく ~50 ERT 目標、
+parity test で semantics 漏れを早期検出。serialize は Phase
+5-C で。
+
+** §2.9 Merge gate 成功条件 (§3.6 equivalent)
+
+選択肢:
+A. 全 §3 sub-phase SHIPPED + make test green + NeLisp-buffer
+   上で =insert= / =delete-region= / =goto-char= 動作
+B. A + event loop から key input → buffer update が動く
+C. B + redisplay を terminal で visible 描画
+
+*推奨: C*。Phase 5-B の存在理由は "3 核連動で editor 最小
+動作"。C 未達では release bar 後半を証明したとは言い難い。
+ただし "editor" の scope は Phase 5-B.5 demo で =hello-world=
+package を load して visible 表示できるところまで、実用 editor
+ではない。
+
+* §3 Decomposition (signoff 後着手)
+
+Phase 4 / 5-A pattern 踏襲: 小さい SHIPPED 刻みで各 sub-phase
+を =feat/phase5b.N-NAME= branch に閉じ、=--no-ff= merge で main
+に積む。各 branch で make test green が必須。
+
+** §3.0 Pre-req cleanup
+
+目的: Phase 5-A の primitive 表 + macro facility で
+Phase 5-B 着手に必要な gap を埋める。
+
+作業:
+- Phase 5-A audit 同等の gap scan を =docs/design/13-audit.el=
+  で実行 (=src/nelisp-buffer.el= + =redisplay= / =eventloop=
+  予定 primitive 列挙、host subr 側不足を特定)
+- =generate-new-buffer= / =get-buffer-create= / =point= /
+  =goto-char= / =point-min= / =point-max= / =current-buffer= /
+  =set-buffer= / =with-current-buffer= 等、buffer-adjacent
+  最小 set を primitive 表 (or =nelisp--functions= dispatch) に
+  追加
+- ERT: primitive 単発 ~10 本
+
+期待スコープ: 3 日。
+
+** §3.1 =nelisp-buffer= primitive (gap buffer + insert/delete)
+
+目的: buffer 本体 struct + 最小 text 操作 API。
+
+作業:
+- =src/nelisp-buffer.el= 新設、=(cl-defstruct nelisp-buffer
+    name text-before-gap text-after-gap point mark ...)= で gap
+  buffer。
+- =nelisp-insert= / =nelisp-delete-region= / =nelisp-goto-char=
+  / =nelisp-point= / =nelisp-buffer-string= / =nelisp-erase-
+  buffer=
+- =with-nelisp-buffer= macro
+- narrowing (=nelisp-narrow-to-region= / =nelisp-widen=) も
+  ここで (Emacs semantics 上 buffer core に直結)
+- primitive 表登録
+- ERT: gap 移動 / 境界 / narrowing / parity test (host との
+  text 一致)
+
+期待スコープ: 1.5 週。
+
+** §3.2 Marker + overlay + text-property
+
+目的: buffer 内位置参照と属性表現。
+
+作業:
+- =nelisp-make-marker= / =nelisp-marker-position= — buffer
+  毎 weak-ish list に追跡、insert/delete で offset 更新
+- =nelisp-make-overlay= / =nelisp-overlay-start= / =nelisp-
+  overlay-end= / =nelisp-overlay-put=
+- =nelisp-put-text-property= / =nelisp-get-text-property= —
+  text property 辞書 (interval tree 避け、MVP は sparse list)
+- ERT: marker 追従 / overlay 重なり / text-property 一致
+
+期待スコープ: 1.5 週。
+
+** §3.3 Redisplay (terminal, dirty-region)
+
+目的: NeLisp-buffer の内容を terminal grid に描画。
+
+作業:
+- =src/nelisp-redisplay.el= 新設、=(cl-defstruct nelisp-window
+    buffer top-line height width cursor-row cursor-col ...)=
+- =nelisp-redisplay= は dirty row bitmap を read、modified
+  row のみ terminal escape (=\e[row;colH= + text) 出力
+- cursor 位置更新、=scroll-line= / =recenter= 相当
+- font-lock / 色は本 Phase 範囲外 (plain ASCII/CJK のみ)
+- ERT: redisplay のテストは *capture terminal output* pattern
+  (=make-pipe-process= or string port 経由で escape 列検査)
+
+期待スコープ: 2 週。
+
+** §3.4 Event loop (actor integration)
+
+目的: input event → buffer update → redisplay の flow。
+
+作業:
+- =src/nelisp-eventloop.el= 新設
+- keyboard-input actor: =tty-raw-mode= stdin fd から byte
+  読み取り、key event として dispatch message を送信
+- main event-loop actor: message 受信 → dispatch table (key
+  → command) → command 実行 → =nelisp-redisplay=
+- timer actor: =run-at-time= 相当、Phase 4 actor tick に
+  便乗
+- exit key (=C-x C-c= 相当) で event loop stop、actor 全停止
+- ERT: scripted input (pre-filled mailbox) で key → buffer
+  change + redisplay output 検証
+
+期待スコープ: 2 週。
+
+** §3.5 E2E demo — NeLisp-editor minimum
+
+目的: 3 核連動で最小 editor 動作、§2.9 C 達成。
+
+作業:
+- =examples/nelisp-editor/main.el= =(require 'nelisp-buffer)=
+  + =(require 'nelisp-redisplay)= + =(require 'nelisp-
+  eventloop)= で editor loop
+- key binding 最小 set: 印字文字 → =insert=、=C-f= / =C-b= /
+  =C-n= / =C-p= (矢印移動)、=C-d= / =DEL= (削除)、=C-x C-c=
+  (exit)
+- =examples/nelisp-editor/README.org= — 起動方法 + demo 手順
+- PoC: =hello= package (Phase 5-A.5 examples) を NeLisp-
+  buffer に insert してカーソル移動 + 削除デモ
+- ERT: demo 起動 → scripted key sequence → expected buffer
+  state verification
+
+期待スコープ: 1 週。
+
+** §3.6 Merge gate
+
+全 sub-phase SHIPPED + make test-all green + E2E demo 動作で
+main merge 可。merge 前に確認:
+- [ ] NeLisp-buffer が host buffer parity test で semantics
+  一致
+- [ ] redisplay が dirty-row incremental (全画面 redraw で
+  ない) 動作証拠
+- [ ] event-loop から key → insert → redisplay の chain が
+  actor tick 内で完結 (blocking call 無し)
+- [ ] ERT 追加 ~60 本 (Phase 5-A の +49 と同桁、Phase 5-B は
+  core 量が多いので +60 目標)
+- [ ] Phase 5-A のテスト 569 本 + 新規全 pass
+
+merge 順は Phase 5-A と同じく各 feat branch を =--no-ff= で
+個別 bubble 化。
+
+* §4 期待成果と next
+
+*** Phase 5-B 完了後の状態
+- NeLisp が自前の buffer / redisplay / event-loop を持ち、
+  host Emacs に依存せず最小 editor として動作
+- host C に残る依存は Phase 0 decision の SBCL 4 核 (syscall
+  / allocator / GC inner / coding) に限定、buffer/redisplay/
+  event-loop の C コードへの runtime 依存は 0
+- release bar 後半達成: "Emacs core 置換" 完了
+- v1.0 完遂条件 4 項のうち 1 + 2 が達成 (残: 3 AI-critical
+  path / 4 SBCL 4 核絞り込み audit)
+
+*** Phase 5-C 以降への橋渡し
+- Phase 5-C: process / network 置換 (=make-process= /
+  =open-network-stream= の NeLisp 版)。anvil.el の
+  =make-process= 罠 (pipe で session leader / fd 0 controlling
+  tty inherit) を structural に解決
+- Phase 5-D: file-notify / watcher の actor 化 (Windows
+  freeze 解消)
+- Phase 6: GUI redisplay、mode 基盤、履歴
+- v1.0 tag: Phase 5-B + 5-C + AI-critical 5 領域の dog-food
+  成功後
+
+*** Out of scope
+- GUI redisplay (X / Windows / Cocoa) — Phase 6+
+- Network / process / file-notify — Phase 5-C+
+- Unicode 完全対応 / bidi / ligature — Phase 7+
+- Major / minor mode 実装互換 — substrate 揃えば Elisp で
+  可能、本 Phase 範囲外
+- Emacs C への既存 user-visible API (=switch-to-buffer= 等)
+  の 1:1 port — NeLisp namespace (=nelisp-*=) 限定
+
+* §5 User 判断事項 (signoff) — *未 LOCK*
+
+本 doc の §2 decisions 9 項目 user signoff 待ち。default
+推奨で LOCK で良ければ下記で確定:
+
+| § | 項目 | 推奨 | 備考 |
+|---+------+------+------|
+| 2.1 | Buffer data structure | A | Gap buffer (Emacs 同型) |
+| 2.2 | Text representation | A | host =string= 流用 |
+| 2.3 | Marker / overlay | A | linked list MVP |
+| 2.4 | Redisplay 戦略 | B | terminal + dirty-region |
+| 2.5 | Event loop | B | Phase 4 actor 再利用 |
+| 2.6 | Host Emacs 共存 | A | Parallel (=nelisp-buffer-*=) |
+| 2.7 | Concurrency | A | single-threaded MVP |
+| 2.8 | Test strategy | B | ERT + host parity test |
+| 2.9 | Merge gate | C | 3 核連動 E2E demo 達成 |
+
+signoff 後 → =feat/phase5b.0-pre-req= branch で §3.0 着手。
+Phase 5-A 完了 (2026-04-24) と同日 signoff が走れば、Phase
+5-B.0 は早ければ 2026-04-25 開始。全 §3 完了期待 = 10〜12
+週 (§3.0 3d + §3.1 1.5w + §3.2 1.5w + §3.3 2w + §3.4 2w +
+§3.5 1w + §3.6 1d + buffer 週数 2w)。
+
+差し戻しがある項目のみ番号を指示してください (例: "2.4 は A
+でいきたい" 等)。
