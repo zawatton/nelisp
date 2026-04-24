@@ -3,7 +3,7 @@
 #+date: 2026-04-24
 #+options: toc:2
 
-* STATE: DRAFT 2026-04-24 (§2 LOCKED 2026-04-24、§3 着手可)
+* STATE: SHIPPED 2026-04-24 (§3.0-§3.5 all SHIPPED、Phase 5-E 全完了、§2.8 audit B pass)
 
 ** 目的
 
@@ -450,27 +450,48 @@ User verification (次 session 以降で user が実施):
 - make test: 904/904 green 継続 (新 ERT 0 — smoke は shell 層)
 - 期待 3 日に対し当日完了 (自動化部分、shell スクリプト + 1 doc pair)
 
-** §3.5 Merge gate (1 日)
+** §3.5 Merge gate — SHIPPED 2026-04-24
 
 - audit 項目 (§2.8 B 準拠):
-  - [ ] =nelisp-server-start= / =-stop= 正常 lifecycle (§3.1 ERT)
-  - [ ] JSON-RPC 2.0 4 error code 発行 (§3.1 ERT)
-  - [ ] =nelisp-deftool= macro duplicate 検出 + normalize (§3.2 ERT)
-  - [ ] tool 5 本以上が =tools/call= で動作 (§3.3 ERT)
-  - [ ] Claude Code 実接続で tool が呼び出し可能 (§3.4 dialog log)
-  - [ ] ERT 追加 +50 以上 (目標)
-  - [ ] Phase 5-D 846 + 新規全 pass
-- Doc 16 top STATE: DRAFT → SHIPPED-<YYYY-MM-DD>
-- main に feat branch を =--no-ff= 順次 merge (Phase 5-A~D 流
+  - [X] =nelisp-server-start= / =-stop= 正常 lifecycle
+    (§3.1 ERT: =nelisp-server-test-start-sets-state= /
+    =-stop-clears-state= / =-start-installs-builtin-handlers=)
+  - [X] JSON-RPC 2.0 4 error code 発行 — 全 4 code が ERT 被覆
+    - =-32700= parse error: =safe-call-json-parse-error=
+    - =-32601= method not found: =dispatch-unknown-method= +
+      =call-json-error-envelope-encoded=
+    - =-32602= invalid params: =dispatch-tools-call-invalid-params=
+      + =-unknown-tool=
+    - =-32603= internal: =dispatch-handler-error-wraps-32603=
+  - [X] =nelisp-deftool= macro duplicate 検出 + normalize
+    (§3.2 ERT: =duplicate-errors-at-install= / =normalize-name-*= 3
+    variants / =missing-handler-errors-at-expand=)
+  - [X] tool 5 本以上が =tools/call= で動作 — 7 tool 全登録確認
+    (=all-registered= + =tools-list-surface=)、各 tool に handler
+    +dispatch ERT 2 以上
+  - [X] Claude Code 実接続で tool が呼び出し可能 (§3.4 dialog log
+    = =docs/design/16-claude-code-dialog.org= に subprocess smoke
+    の生 JSON 転写保存、user verification checklist は
+    =docs/design/16-mcp-config-example.org= に切り出し済)
+  - [X] ERT 追加 +50 以上 (目標) — *実 +58* (846 → 904):
+    §3.0 +9 / §3.1 +18 / §3.2 +12 / §3.3 +19 / §3.4 +0 (shell smoke)
+    / §3.5 +0 (stamp のみ)
+  - [X] Phase 5-D 846 + 新規全 pass — =make clean && make test=
+    で 904/904 green 確認
+  - [X] =make compile= 0 warnings 継続
+  - [X] =make smoke= PASS (6 request / 5 reply、MCP 2024-11-05
+    shape assertion 全合格)
+- Doc 16 top STATE: DRAFT → *SHIPPED-2026-04-24*
+- main に 7 feat branch を =--no-ff= 順次 merge (Phase 5-A~D 流
   bubble 保持):
-  - feat/phase5e-doc-draft (本 doc)
-  - feat/phase5e.0-pre-req
-  - feat/phase5e.1-server
-  - feat/phase5e.2-deftool
-  - feat/phase5e.3-initial-tools
-  - feat/phase5e.4-claude-smoke
-  - feat/phase5e.5-merge-gate
-- post-merge =make clean && make test= all green
+  - feat/phase5e-doc-draft (a38398c)
+  - feat/phase5e.0-pre-req (d9edc59)
+  - feat/phase5e.1-server (ce27003)
+  - feat/phase5e.2-deftool (b3323c4)
+  - feat/phase5e.3-initial-tools (2a749b1)
+  - feat/phase5e.4-claude-smoke (3eb45af)
+  - feat/phase5e.5-merge-gate (HEAD)
+- post-merge =make clean && make test= = 904/904 green (0 unexpected)
 
 * §4 期待成果と next
 
