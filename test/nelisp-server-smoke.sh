@@ -137,6 +137,8 @@ assert_contains '"name":"git-branch-current"'
 assert_contains '"name":"git-repo-root"'
 assert_contains '"name":"data-list-keys"'
 assert_contains '"name":"data-delete-path"'
+# Phase 5-F.3.1 org tool (Doc 20)
+assert_contains '"name":"org-read-outline-tree"'
 # git-status has no params — inputSchema.properties must be `{}` not `null`
 # (Claude Code zod schema rejects `null`; surfaced as "Failed to fetch tools"
 # invalid_type at tools[*].inputSchema.properties.)

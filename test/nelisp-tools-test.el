@@ -51,7 +51,9 @@ run BODY with server started, tear everything down afterwards."
                  "file-delete-lines" "file-append" "file-read-snippet"
                  "git-diff-names" "git-head-sha"
                  "git-branch-current" "git-repo-root"
-                 "data-list-keys" "data-delete-path"))
+                 "data-list-keys" "data-delete-path"
+                 ;; Phase 5-F.3.1 (Doc 20)
+                 "org-read-outline-tree"))
       (should (gethash n nelisp-server--tool-registry)))))
 
 (ert-deftest nelisp-tools-test-tools-list-surface ()
@@ -69,7 +71,8 @@ run BODY with server started, tear everything down afterwards."
                           "file-delete-lines" "file-append" "file-read-snippet"
                           "git-diff-names" "git-head-sha"
                           "git-branch-current" "git-repo-root"
-                          "data-list-keys" "data-delete-path"))
+                          "data-list-keys" "data-delete-path"
+                          "org-read-outline-tree"))
         (should (member expected names))))))
 
 ;;; file-read -------------------------------------------------------
@@ -548,6 +551,62 @@ GET via the http-get tool, assert :status 200 + body."
     (should-not (plist-get (funcall (nelisp-tools-test--handler "data-get-path")
                                      '((path . "k")))
                            :value))))
+
+;;; Phase 5-F.3.1 org-read-outline-tree (Doc 20) ------------------
+
+(ert-deftest nelisp-tools-test-org-tree-flat-3-headlines ()
+  "Flat 3 level-1 headlines produce 3 root nodes with empty children."
+  (nelisp-tools-test--with-tools
+    (let ((tmp (make-temp-file "nelisp-org-tree-" nil ".org")))
+      (unwind-protect
+          (progn
+            (with-temp-file tmp
+              (insert "* Alpha\n")
+              (insert "* Beta\n")
+              (insert "* Gamma\n"))
+            (let* ((r (funcall (nelisp-tools-test--handler "org-read-outline-tree")
+                               `((path . ,tmp))))
+                   (tree (plist-get r :tree)))
+              (should (= 3 (plist-get r :total-headlines)))
+              (should (= 3 (length tree)))
+              (should (string= "Alpha" (plist-get (nth 0 tree) :title)))
+              (should-not (plist-get (nth 0 tree) :children))))
+        (delete-file tmp)))))
+
+(ert-deftest nelisp-tools-test-org-tree-nested-2-levels ()
+  "Level 2 headlines become children of preceding level 1."
+  (nelisp-tools-test--with-tools
+    (let ((tmp (make-temp-file "nelisp-org-tree-" nil ".org")))
+      (unwind-protect
+          (progn
+            (with-temp-file tmp
+              (insert "* Top\n")
+              (insert "** Sub-A\n")
+              (insert "** Sub-B\n")
+              (insert "* Top2\n"))
+            (let* ((r (funcall (nelisp-tools-test--handler "org-read-outline-tree")
+                               `((path . ,tmp))))
+                   (tree (plist-get r :tree)))
+              (should (= 4 (plist-get r :total-headlines)))
+              (should (= 2 (length tree)))
+              (let* ((top (nth 0 tree))
+                     (kids (plist-get top :children)))
+                (should (string= "Top" (plist-get top :title)))
+                (should (= 2 (length kids)))
+                (should (string= "Sub-A" (plist-get (nth 0 kids) :title)))
+                (should (string= "Sub-B" (plist-get (nth 1 kids) :title))))
+              (should-not (plist-get (nth 1 tree) :children))))
+        (delete-file tmp)))))
+
+(ert-deftest nelisp-tools-test-org-tree-rejects-non-org-extension ()
+  "Non-.org extension raises before file is read."
+  (nelisp-tools-test--with-tools
+    (let ((tmp (make-temp-file "nelisp-org-tree-" nil ".md")))
+      (unwind-protect
+          (should-error
+           (funcall (nelisp-tools-test--handler "org-read-outline-tree")
+                    `((path . ,tmp))))
+        (delete-file tmp)))))
 
 (provide 'nelisp-tools-test)
 
