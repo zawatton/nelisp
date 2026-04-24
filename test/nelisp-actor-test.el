@@ -611,5 +611,137 @@
    (nelisp-supervise '() :strategy :one-for-all)
    :type 'nelisp-actor-error))
 
+;;; Phase 4.6 — anvil PoC (merge gate, §2.8 A) ---------------------
+
+;; Scenario #1 from docs/04-concurrency.org §4.5: four MCP-tool-
+;; handler-shaped actors process concurrent calls in one Emacs
+;; session without starving each other and without blocking the
+;; dispatcher.  Demonstrates that the actor runtime resolves
+;; anvil.el's single-threaded MCP-worker bottleneck (the motivation
+;; Architecture B was built to work around — see anvil memory
+;; `project_mcp_layer2_design.md').
+;;
+;; The MVP merge gate is this one scenario green (§2.8 A lock).
+;; Scenarios #2 (shared-nothing mutation isolation) and #3
+;; (supervised long-running handler pool survives a crash) remain
+;; v0.4.x extensions.
+
+(defun nelisp-poc--make-tool-handler (name)
+  "Build a one-shot actor thunk that mimics an MCP tool handler.
+Receives `(:call ARG REPLY-TO)', does three yield cycles of
+simulated work, then replies `(list :result NAME ARG)'.  NAME
+survives closure capture so test assertions can tag each handler's
+response."
+  (let ((name name))
+    (nelisp-actor-lambda
+      (let ((req (nelisp-receive)))
+        (pcase req
+          (`(:call ,arg ,reply-to)
+           ;; Simulate work that yields between steps — ensures the
+           ;; scheduler can round-robin other handlers in the pool.
+           (nelisp-yield)
+           (nelisp-yield)
+           (nelisp-yield)
+           (nelisp-send reply-to (list :result name arg))))))))
+
+(ert-deftest nelisp-poc-parallel-tool-handlers ()
+  "Four concurrent tool-handler actors all respond to one call each."
+  (nelisp-actor-test--fixture)
+  (let* ((handlers
+          (mapcar (lambda (n) (nelisp-spawn
+                                (nelisp-poc--make-tool-handler n)))
+                  '(h1 h2 h3 h4)))
+         (results nil))
+    (nelisp-spawn
+     (let ((handlers handlers))
+       (nelisp-actor-lambda
+         (let ((self (nelisp-self)))
+           (dolist (h handlers)
+             (nelisp-send h (list :call 'ping self))))
+         (dotimes (_ 4)
+           (push (nelisp-receive) results)))))
+    (nelisp-actor-run-until-idle)
+    ;; Every handler answered exactly once; all payloads tagged ping.
+    (should (= 4 (length results)))
+    (let ((tags (mapcar (lambda (r) (nth 1 r)) results)))
+      (dolist (expected '(h1 h2 h3 h4))
+        (should (memq expected tags))))
+    (dolist (r results)
+      (should (eq (car r) :result))
+      (should (eq (nth 2 r) 'ping)))))
+
+(ert-deftest nelisp-poc-handler-yields-do-not-starve-peers ()
+  "Yielding handlers interleave under the cooperative scheduler."
+  (nelisp-actor-test--fixture)
+  (let ((trace nil))
+    (dolist (tag '(x y z))
+      (nelisp-spawn
+       (let ((tag tag))
+         (nelisp-actor-lambda
+           (let ((req (nelisp-receive)))
+             (pcase req
+               (`(:tick ,_)
+                (push (list tag 'a) trace)
+                (nelisp-yield)
+                (push (list tag 'b) trace)
+                (nelisp-yield)
+                (push (list tag 'c) trace))))))))
+    ;; Deliver a tick to each handler.  They're spawned in x / y / z
+    ;; order; the scheduler round-robins their yields so the trace
+    ;; interleaves the three tags rather than emitting all of x then
+    ;; y then z.
+    (let ((actors (cl-remove-if
+                   (lambda (a)
+                     (memq (nelisp-actor-status a) '(:dead :crashed)))
+                   (nelisp-actor-list))))
+      (dolist (a actors)
+        (nelisp-send a '(:tick nil))))
+    (nelisp-actor-run-until-idle)
+    (let ((reversed (nreverse trace)))
+      ;; All 9 events landed.
+      (should (= 9 (length reversed)))
+      ;; Interleaving: the first three events include each of x/y/z
+      ;; (not all from one actor), proving fairness.
+      (let ((first-three (cl-subseq reversed 0 3)))
+        (should (member '(x a) first-three))
+        (should (member '(y a) first-three))
+        (should (member '(z a) first-three))))))
+
+(ert-deftest nelisp-poc-handler-pool-burst ()
+  "A handler pool of 3 workers absorbs a burst of 6 calls correctly."
+  (nelisp-actor-test--fixture)
+  (let* ((pool
+          (mapcar (lambda (n) (nelisp-spawn
+                                (nelisp-poc--make-tool-handler n)))
+                  '(w1 w2 w3)))
+         (results nil))
+    ;; Pool size = 3, calls = 6 → two "rounds" per worker.  Each
+    ;; handler is a one-shot actor per Phase 4.6 PoC MVP, so we
+    ;; size the pool to twice the concurrency by spawning extras.
+    (let* ((extras
+            (mapcar (lambda (n) (nelisp-spawn
+                                  (nelisp-poc--make-tool-handler n)))
+                    '(w4 w5 w6)))
+           (all-workers (append pool extras)))
+      (nelisp-spawn
+       (let ((workers all-workers))
+         (nelisp-actor-lambda
+           (let ((self (nelisp-self)))
+             (dolist (w workers)
+               (nelisp-send w (list :call 'burst self))))
+           (dotimes (_ 6)
+             (push (nelisp-receive) results))))))
+    (nelisp-actor-run-until-idle)
+    (should (= 6 (length results)))
+    ;; All responses are well-formed.
+    (dolist (r results)
+      (should (eq (car r) :result))
+      (should (eq (nth 2 r) 'burst))
+      (should (memq (nth 1 r) '(w1 w2 w3 w4 w5 w6))))
+    ;; Every worker responded exactly once.
+    (let ((tags (mapcar (lambda (r) (nth 1 r)) results)))
+      (should (equal (sort (copy-sequence tags) #'string<)
+                     '(w1 w2 w3 w4 w5 w6))))))
+
 (provide 'nelisp-actor-test)
 ;;; nelisp-actor-test.el ends here

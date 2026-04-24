@@ -5,7 +5,7 @@
 
 * Status
 :PROPERTIES:
-:STATE: LOCKED-2026-04-24 (§2 8 items signoff: 2026-04-24 user approved defaults A/D/B/A/B/B/A/A)
+:STATE: MERGE-GATE-REACHED-2026-04-24 (§4.1-4.6 SHIPPED、§4.7 bench 残、§2.8 merge gate 到達。LOCKED from 2026-04-24 — §2 8 items signoff A/D/B/A/B/B/A/A)
 :END:
 
 =v0.3.1= (Phase 3c 完了) の次。NeLisp concurrency の本丸、=04-concurrency.org=
@@ -352,20 +352,33 @@ Phase 3c 同様、feat branch 毎に ship。予算は目安、ブレ可。
 - =make clean && make test= 517/517 green (Phase 4.4 時点 511 + 本 6)
 - 実装 +103 LOC (578 → 681)、予算 150 LOC 内
 
-** 4.6 anvil 痛み解消 PoC (DRAFT)
+** 4.6 anvil 痛み解消 PoC (SHIPPED 2026-04-24 — §2.8 merge gate 到達)
 
-=04-concurrency.org= §4.5 の 3 test case から 1+ を PoC として実装:
+=04-concurrency.org= §4.5 scenario #1 ("並列 MCP tool handler") を
+既存 primitives (Phase 4.1-4.5) 上で PoC、§2.8 A merge gate を
+満たす ERT 3 本で demonstrate。src/ への追加実装 0、pure test:
 
-1. *並列 MCP tool handler*: 4 actor が同 Emacs session 内で独立 buffer
-   state、user session を blocking せず tool call 4 並列処理
-2. *shared-nothing mutation 隔離*: 1 actor の setq が別 actor に見えず
-3. *supervised long-running*: 1 actor crash → supervisor 再起動 →
-   tool handler 並列性が破綻しない
+- =test/nelisp-actor-test.el= §Phase 4.6 に集約、helper
+  =nelisp-poc--make-tool-handler (name)= で one-shot handler actor
+  thunk を生成 (receive + 3 yield + reply の MCP-tool-handler shape)
+- =poc-parallel-tool-handlers= (MVP / merge gate core): 4 handler
+  + 1 coordinator、=(:call ping SELF)= × 4 を配信 → 全 4 response を
+  coordinator mailbox で収集、tag integrity / result shape 検証
+- =poc-handler-yields-do-not-starve-peers=: 3 handler が
+  yield を挟む workload、最初の 3 event が 3 tag 全部を含むことで
+  round-robin fairness を証示
+- =poc-handler-pool-burst=: 6 worker pool + 1 coordinator、6 並列
+  call を burst 配信、全 worker が 1 response、tag union 検証
 
-MVP は #1 のみ green を merge gate とする (§2.8 A lock)。#2 #3 は
-v0.4.x で拡張。
+scenario #2 (shared-nothing mutation 隔離) と scenario #3
+(supervised long-running pool crash-restart) は v0.4.x extension。
+既存 Phase 4.3 copy test + 4.5 supervisor test で semantic 部分は
+cover 済、PoC としての full integration 実験は tag 後に。
 
-- 予算: 200 LOC (actor 実装 + PoC ERT 1)、ERT 3 本
+- ERT 3 本全 green (520/520 total)、src 追加 0 LOC、test 追加
+  ~100 LOC (予算 200 LOC 内)
+- **§2.8 merge gate 到達** → v0.4.0-pre tag の実装前提条件 satisfied
+  (tag 発行は user 判断)
 
 ** 4.7 Bench + gate verification (DRAFT)
 
