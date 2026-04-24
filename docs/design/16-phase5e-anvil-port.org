@@ -321,32 +321,46 @@ make test green の不変条件で進める。
 - 期待 1 週に対し当日完了 (Phase 5-C.4 demo を直接 port する path
   + JSON-RPC MCP 拡張は薄い差分)
 
-** §3.2 =nelisp-deftool= macro + dispatcher (3-4 日)
+** §3.2 =nelisp-deftool= macro — SHIPPED 2026-04-24
 
-- =src/nelisp-server.el= に =nelisp-deftool= macro を配置:
+- =src/nelisp-server.el= に =nelisp-deftool= macro + installer
+  helper を追加 (~50 LOC 増分):
   #+begin_src elisp
   (nelisp-deftool file-read
     :description "Read a file; return its content as a string."
-    :input-schema ((path :type "string" :description "Absolute path"))
-    :handler (lambda (params)
-               (let ((path (alist-get 'path params)))
-                 ;; ... 実装 ...
-                 result)))
+    :input-schema (list :type "object"
+                        :properties (list :path (list :type "string"))
+                        :required ["path"])
+    :handler (lambda (args)
+               (let ((path (alist-get 'path args)))
+                 (with-temp-buffer
+                   (insert-file-contents path)
+                   (buffer-string)))))
   #+end_src
-- macro expansion: =nelisp-server-tool-registry= への =push= + 既存
-  name の duplicate-register 検出 + schema normalize
-- =tools/list= response: registry から =(name description
-  inputSchema)= を列挙して alist → JSON
-- =tools/call= dispatcher: name → registry lookup → handler 呼び出し、
-  =params= は nested plist → alist converter 経由、error は =:error=
-  envelope で wrap
-- =test/nelisp-deftool-test.el= +8 ERT:
-  - macro expansion 2 (正常 / duplicate name error)
-  - registry round trip 2 (deftool → list → lookup)
-  - schema normalize 2 (plist → JSON-safe alist)
-  - handler dispatch 2 (正常 / handler error → :error envelope)
-- 完了条件: 空 handler の dummy tool 2 本が macro 経由で
-  =tools/list= + =tools/call= 両方動作
+- Macro expansion は静的に =:handler= 無しを catch し macroexpand-
+  time error を出す。重複検出は install time (= =nelisp-server-
+  deftool--install= helper) で runtime error に、ERT から直接
+  exercise 可能
+- =nelisp-server--normalize-tool-name= 補助: symbol (=symbol-
+  name=) / string (as-is) の 2 経路、それ以外は即 error
+- Registry は hash-table のため tools/list / tools/call は §3.1 の
+  既存 handler がそのまま動作 (deftool 層は registry write-side
+  のみ)。plist→alist converter は §3.1 の共通 path を通過し、
+  =:input-schema= vector 部分 (=["path"]= 等) は passthrough
+- =test/nelisp-deftool-test.el= +12 ERT:
+  - Name normalize 3 (symbol / string / reject 非対応型)
+  - Macro registration 2 (symbol 名 / string 名)
+  - Macroexpand-time error 1 (:handler 欠落)
+  - Duplicate install 1 (register 済 name を再登録で error、
+    最初の spec は保持)
+  - Input-schema pass-through 1 (vector :required 保存)
+  - Dispatcher 統合 4 (tools/list 可視 / tools/call 呼出 / handler
+    error → -32603 / JSON 全経路 round trip)
+- make test: 873 → *885/885 green*
+- make compile: 0 warnings
+- 期待 3-4 日に対し当日完了 (§3.1 spine が既に registry lookup /
+  tools/list / tools/call を持っており、§3.2 で加えたのは registry
+  write-side と name normalize のみ)
 
 ** §3.3 初期 tool 5-10 本 port (1-1.5 週)
 

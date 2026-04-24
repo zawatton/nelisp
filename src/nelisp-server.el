@@ -273,6 +273,59 @@ errors as JSON error envelopes instead."
         (nelisp-server-call-json request-json))
       nil))
 
+;;; Tool registry macro (Phase 5-E §3.2) ----------------------------
+
+(defun nelisp-server--normalize-tool-name (name)
+  "Coerce NAME (symbol or string) to the string form stored in the
+tool registry.  Symbols use `symbol-name' verbatim (no
+case-fold), strings pass through."
+  (cond
+   ((stringp name) name)
+   ((symbolp name) (symbol-name name))
+   (t (error "nelisp-deftool: NAME must be symbol or string, got %S"
+            name))))
+
+(defun nelisp-server-deftool--install (name-str spec-plist)
+  "Install SPEC-PLIST under NAME-STR in the tool registry.
+Errors if NAME-STR is already registered.  Returns NAME-STR.
+Split out of the macro so the duplicate detection runs at call
+time (not expansion time) and tests can exercise the actual
+check."
+  (when (gethash name-str nelisp-server--tool-registry)
+    (error "nelisp-deftool: duplicate tool name %s" name-str))
+  (puthash name-str spec-plist nelisp-server--tool-registry)
+  name-str)
+
+(defmacro nelisp-deftool (name &rest body)
+  "Register an MCP tool named NAME.
+
+BODY is a plist with the following keys (all optional except
+`:handler'):
+  :description STR     Human-readable summary emitted by tools/list.
+  :input-schema PLIST  JSON Schema for the arguments object (passed
+                       through to tools/list verbatim, converted to
+                       JSON by the wire layer's plist→alist step).
+  :handler FN          Function of one argument (the `arguments'
+                       alist from tools/call); return value is
+                       wrapped in the MCP `:content' envelope by
+                       `nelisp-server--handle-tools-call'.
+
+NAME may be a symbol (converted with `symbol-name') or a string.
+Expansion produces a `nelisp-server-deftool--install' call so
+duplicate detection runs when the form is evaluated, not when it
+is macroexpanded."
+  (declare (indent 1))
+  (let ((description (plist-get body :description))
+        (input-schema (plist-get body :input-schema))
+        (handler (plist-get body :handler)))
+    (unless handler
+      (error "nelisp-deftool: %S missing :handler" name))
+    `(nelisp-server-deftool--install
+      (nelisp-server--normalize-tool-name ',name)
+      (list :description ,description
+            :input-schema ,input-schema
+            :handler ,handler))))
+
 ;;; stdio runner ------------------------------------------------------
 
 (defun nelisp-server-run-stdio ()
