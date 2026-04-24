@@ -293,7 +293,7 @@ Phase 5-B 着手に必要な gap を埋める。
 - [X] primitive 表は §2.6 A Parallel により追加なし (NeLisp
   源 code は自前 =nelisp-buffer-*= API、host buffer は触らない)
 - [X] make test: 580 → *609/609 green* (+29, 0 unexpected)
-- commit: =PHASE5B1_COMMIT= on =feat/phase5b.1-buffer=
+- commit: =3b59c30= on =feat/phase5b.1-buffer=
 
 期待スコープ 1.5 週に対し、当日完了 (primitive 追加 § 2.6 A で
 ゼロ、gap buffer string 表現の単純さで実装量が予想より少)。
