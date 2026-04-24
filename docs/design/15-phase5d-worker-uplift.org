@@ -3,7 +3,7 @@
 #+date: 2026-04-24
 #+options: toc:2
 
-* STATE: DRAFT 2026-04-24 (§2 LOCKED + §3.0-3.1 SHIPPED 2026-04-24、§3.2 next)
+* STATE: DRAFT 2026-04-24 (§2 LOCKED + §3.0-3.2 SHIPPED 2026-04-24、§3.3 next)
 
 ** 目的
 
@@ -251,11 +251,39 @@ scope を超えて 5-E に食い込む。B で "worker layer は独立して
 - 期待 1 週に対し当日完了 (§3.1b pool + §3.1 process + child loop
   の 3 層が揃って thin dispatcher で済んだ)
 
-** §3.2 Classifier + lane dispatch (3 日)
+** §3.2 Classifier + lane dispatch — SHIPPED 2026-04-24
 
-- =anvil-worker-classify-*-patterns= 相当 defcustom 3 本
-- =nelisp-worker-classify= = pattern match (=:lane= override 許容)
-- ERT: pattern / fallback / :lane override
+- =src/nelisp-worker.el= 拡張 (impl =8803d61=):
+  - 3 defcustom pattern list (=nelisp-worker-classify-{read,write,
+    batch}-patterns=) = anvil-worker 相当を verbatim port、=anvil-=
+    prefix は optional にして NeLisp native primitive にも同じ
+    rule が効く (1 regex で両対応)
+  - =nelisp-worker-classify-unknown-fallback= (default =:write=)
+  - =nelisp-worker--match-any EXPRESSION PATTERNS= — anvil とは違い
+    raw form を受けて =prin1-to-string= で stringify してから
+    regex match (anvil は string 前提、NeLisp は form 前提の差)
+  - =nelisp-worker-classify POOL EXPRESSION= — 解決順:
+    write > batch (batch-size=0 なら =:write= に downgrade) > read
+    > fallback。precedence も anvil と同じ、write 混ざりは read に
+    絶対落とさない (safety invariant)
+- =nelisp-worker-call= update:
+  - 明示 =:lane= は classifier を bypass (§2.2 C override)
+  - =:lane= 省略で classifier が決定 (§2.2 C classifier)
+- ERT +10 (=test/nelisp-worker-test.el=): classifier precedence 5
+  (write/batch/read/mix/batch-downgrade) + fallback 2 (default/
+  custom) + =--match-any= form stringification 1 + call 統合 2
+  (:lane override / classifier 経由 read routing)
+- make test: 808 → *818/818 green*
+- anvil.el MCP tool (=file-outline= / =elisp-get-function-
+  definition= / =elisp-describe-variable= / =file-read-snippet=
+  / =file-batch=) で調査→移植。=file-batch= で 2 op + 1 op の
+  計 3 round trip で完了、Edit tool だと ~10 round 以上必要
+- 期待 3 日に対し当日完了 (anvil-worker 実装を既に運用実証済 +
+  MCP tool で調査 cost 最小)
+
+*注*: =make compile= に pre-existing エラー (=nelisp-eventloop.el=
+/ =nelisp-network.el=、main@cb6aa54 でも再現) があり本 commit 起因
+ではない。byte-compile-error-on-warn 準拠 cleanup は別 Phase で対応。
 
 ** §3.3 Health check + sentinel-driven dead mark (3 日)
 
