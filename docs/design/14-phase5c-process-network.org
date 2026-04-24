@@ -3,7 +3,7 @@
 #+date: 2026-04-24
 #+options: toc:2
 
-* STATE: DRAFT 2026-04-24 (§2 LOCKED 2026-04-24 全推奨 signoff + §3.1b pool 昇格、§3.0 着手中)
+* STATE: DRAFT 2026-04-24 (§2 LOCKED + §3.0 SHIPPED 2026-04-24、§3.1 next)
 
 ** 目的
 
@@ -271,30 +271,53 @@ Phase 4 / 5-A / 5-B pattern 踏襲: 小さい SHIPPED 刻みで各
 sub-phase を =feat/phase5c.N-NAME= branch に閉じ、=--no-ff=
 merge で main に積む。各 branch で make test green が必須。
 
-** §3.0 Pre-req cleanup
+** §3.0 Pre-req cleanup — SHIPPED 2026-04-24
 
 目的: Phase 5-B までの primitive 表で Phase 5-C 着手に必要な
 gap を埋める。
 
-作業:
-- =docs/design/14-audit-script.el= で forecast 3 sketch
+実装 (commit b56e534):
+- =docs/design/14-audit-script.el= + 3 forecast sketch
   (=14-forecast/nelisp-{process,network,file-notify}-sketch.el=)
-  を scan、gap list を =14-phase5c-primitive-gap.data.el= へ
-- gap primitive 一括追加 (想定):
-  - process 系: =make-process=, =process-live-p=, =process-
-    status=, =process-send-string=, =process-send-eof=,
-    =process-buffer=, =set-process-sentinel=, =set-process-
-    filter=, =process-exit-status=, =kill-process=,
-    =delete-process=, =accept-process-output=, =processes=
-  - network 系: =make-network-process=, =open-network-stream=,
-    =network-interface-info=, =network-interface-list=
-  - file-notify 系: =file-notify-add-watch=, =file-notify-rm-
-    watch=, =file-notify-valid-p=
-  - 補助: =file-attributes=, =delete-file=, =rename-file=,
-    =copy-file=, =make-symbolic-link= (必要最小のみ)
-- =test/nelisp-stdlib-test.el= に primitive 単発 ERT
+  で gap scan、=14-phase5c-primitive-gap.data.el= に出力
+- audit 結果: missing 25 primitive (+ 3 bonus 追加 = 28 primitive)
+  が gap として特定
+- =src/nelisp--primitive-symbols= に追加:
+  - Process (15 本): =make-process=, =process-send-string=,
+    =process-send-eof=, =process-live-p=, =process-status=,
+    =process-exit-status=, =kill-process=, =delete-process=,
+    =accept-process-output=, =process-id=, =process-name=,
+    =process-command=, =process-buffer=, =set-process-sentinel=,
+    =set-process-filter=
+  - Network (1 本): =make-network-process=
+  - File system (5 本): =file-attributes=, =file-exists-p=,
+    =file-directory-p=, =delete-file=, =rename-file=
+  - Host-buffer helpers (6 本): =goto-char=, =point=, =point-min=,
+    =point-max=, =buffer-substring-no-properties=,
+    =re-search-forward=
+  - List util (1 本): =assq-delete-all=
+- =test/nelisp-stdlib-test.el= に ERT 12 本追加:
+  - subprocess lifecycle (spawn + exit + status、全 NeLisp 内
+    実行で process object escape 回避): 5 本
+  - sentinel / filter 登録 (host #'ignore callback で closure
+    escape 回避、full wrapper は §3.1): 1 本
+  - send-string / send-eof / accept-process-output 解決性: 1 本
+  - process-buffer / process-buffer 解決性: 1 本
+  - file ops (exists / directory / attributes / rename / delete
+    round-trip): 1 本
+  - point primitives on host buffer: 1 本
+  - buffer-substring-no-properties / re-search-forward: 2 本
+  - assq-delete-all: 1 本
+  - make-network-process 解決性 (socket 実際 open せず fboundp
+    確認): 1 本
 
-期待スコープ: 3 日。
+make test: 689 → *701/701 green*
+
+期待スコープ: 3 日。実績: 当日 (Phase 5-B.0 で確立した audit
+infra を 14-audit-script.el に複製するだけで済んだ)。
+
+false positive なし。audit 出力 25 missing を全て追加 + bonus
+3 (sentinel/filter/buffer setter for §3.1 wrapper 用途)。
 
 ** §3.1 =nelisp-process= (subprocess substrate)
 
