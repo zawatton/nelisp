@@ -42,6 +42,51 @@
 
 (define-error 'nelisp-load-error "NeLisp load error")
 
+(defvar nelisp-load-path nil
+  "List of directories searched by `nelisp-locate-file' / `nelisp-require'.
+Independent from the host Emacs `load-path' per Doc 12 §2.2 C.
+When `nelisp-load-path-include-host' is non-nil this list is still
+consulted first; the host path only fills in misses.
+
+NeLisp self-host reads this file through its own evaluator, which
+does not know `defcustom'.  Promoting to `defcustom' would require
+adding the customize primitive to the NeLisp dispatch table; for
+Phase 5-A a plain `defvar' is sufficient.")
+
+(defvar nelisp-load-path-include-host nil
+  "If non-nil, `nelisp-locate-file' falls back to host `load-path'.
+Doc 12 §2.2 C.  Defaults to nil so NeLisp package loading is
+deterministic — host library changes cannot silently shadow a
+NeLisp-authored feature.")
+
+(defun nelisp-locate-file (feature)
+  "Resolve FEATURE to an absolute file path or nil.
+FEATURE is a symbol or string.  The search walks `nelisp-load-path'
+first, then host `load-path' when `nelisp-load-path-include-host'
+is non-nil.  Within each directory, the `.el' suffix is tried
+first; if FEATURE already ends with `.el', that exact name is used."
+  (let* ((name (cond ((symbolp feature) (symbol-name feature))
+                     ((stringp feature) feature)
+                     (t (signal 'wrong-type-argument
+                                (list 'nelisp-feature-type feature)))))
+         (has-ext (let ((n (length name)))
+                    (and (> n 3)
+                         (equal (substring name (- n 3)) ".el"))))
+         (candidates (if has-ext (list name) (list (concat name ".el"))))
+         (dirs (append nelisp-load-path
+                       (when nelisp-load-path-include-host load-path)))
+         (found nil))
+    (while (and dirs (not found))
+      (let ((tail candidates)
+            (dir (car dirs)))
+        (while (and tail (not found))
+          (let ((full (expand-file-name (car tail) dir)))
+            (when (file-readable-p full)
+              (setq found full)))
+          (setq tail (cdr tail))))
+      (setq dirs (cdr dirs)))
+    found))
+
 (defun nelisp-load--pos-to-line-col (str pos)
   "Return (LINE . COLUMN) for POS in STR, 1-indexed.
 Used by `nelisp-load-string' / `nelisp-load-file' to annotate
