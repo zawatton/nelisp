@@ -188,6 +188,106 @@ Matches host `load' idempotency when the source is side-effect-free."
           (should (= (nelisp-eval '(nelisp-load-reentry-double 7)) 14)))
       (delete-file tmp))))
 
+;;; Doc 12 §3.2 — nelisp-load-path + nelisp-locate-file --------------
+
+(defmacro nelisp-load-test--with-locate-env (body)
+  "Evaluate BODY in a temp dir tree with isolated NeLisp load-path.
+Creates two sibling dirs (a/ and b/), shadows
+`nelisp-load-path' / `nelisp-load-path-include-host', cleans up
+with `unwind-protect' even on failure."
+  (declare (indent 0))
+  `(let* ((root (make-temp-file "nelisp-locate" t))
+          (dir-a (expand-file-name "a" root))
+          (dir-b (expand-file-name "b" root)))
+     (unwind-protect
+         (let ((nelisp-load-path (list dir-a dir-b))
+               (nelisp-load-path-include-host nil))
+           (make-directory dir-a)
+           (make-directory dir-b)
+           ,body)
+       (delete-directory root t))))
+
+(ert-deftest nelisp-locate-file-finds-in-first-dir ()
+  (nelisp-load-test--with-locate-env
+    (let ((target (expand-file-name "foo.el" dir-a)))
+      (with-temp-file target (insert ""))
+      (should (string-equal (nelisp-locate-file 'foo) target)))))
+
+(ert-deftest nelisp-locate-file-finds-in-second-dir ()
+  "When the first directory has no hit, the second is searched."
+  (nelisp-load-test--with-locate-env
+    (let ((target (expand-file-name "bar.el" dir-b)))
+      (with-temp-file target (insert ""))
+      (should (string-equal (nelisp-locate-file 'bar) target)))))
+
+(ert-deftest nelisp-locate-file-returns-nil-when-missing ()
+  (nelisp-load-test--with-locate-env
+    (should (null (nelisp-locate-file 'no-such-feature)))))
+
+(ert-deftest nelisp-locate-file-accepts-string-feature ()
+  (nelisp-load-test--with-locate-env
+    (let ((target (expand-file-name "baz.el" dir-a)))
+      (with-temp-file target (insert ""))
+      (should (string-equal (nelisp-locate-file "baz") target)))))
+
+(ert-deftest nelisp-locate-file-respects-explicit-el-suffix ()
+  "A FEATURE that already ends with `.el' must NOT be double-suffixed."
+  (nelisp-load-test--with-locate-env
+    (let ((target (expand-file-name "qux.el" dir-a)))
+      (with-temp-file target (insert ""))
+      (should (string-equal (nelisp-locate-file "qux.el") target))
+      (should (null (nelisp-locate-file "qux.el.el"))))))
+
+(ert-deftest nelisp-locate-file-host-fallback-off-by-default ()
+  "With include-host nil, a file present only on host `load-path'
+must NOT be resolved."
+  (let* ((host-dir (make-temp-file "nelisp-locate-host" t))
+         (target (expand-file-name "host-only.el" host-dir)))
+    (unwind-protect
+        (progn
+          (with-temp-file target (insert ""))
+          (let ((nelisp-load-path nil)
+                (nelisp-load-path-include-host nil)
+                (load-path (cons host-dir load-path)))
+            (should (null (nelisp-locate-file 'host-only)))))
+      (delete-directory host-dir t))))
+
+(ert-deftest nelisp-locate-file-host-fallback-on ()
+  "With include-host non-nil, host `load-path' fills in misses."
+  (let* ((host-dir (make-temp-file "nelisp-locate-host2" t))
+         (target (expand-file-name "crossover.el" host-dir)))
+    (unwind-protect
+        (progn
+          (with-temp-file target (insert ""))
+          (let ((nelisp-load-path nil)
+                (nelisp-load-path-include-host t)
+                (load-path (cons host-dir load-path)))
+            (should (string-equal (nelisp-locate-file 'crossover) target))))
+      (delete-directory host-dir t))))
+
+(ert-deftest nelisp-locate-file-nelisp-beats-host-on-name-clash ()
+  "NeLisp path is searched first; same filename in host is NOT used."
+  (let* ((root (make-temp-file "nelisp-locate-clash" t))
+         (ne-dir (expand-file-name "ne" root))
+         (host-dir (expand-file-name "host" root))
+         (ne-target (expand-file-name "clashy.el" ne-dir))
+         (host-target (expand-file-name "clashy.el" host-dir)))
+    (unwind-protect
+        (progn
+          (make-directory ne-dir)
+          (make-directory host-dir)
+          (with-temp-file ne-target (insert ";; ne"))
+          (with-temp-file host-target (insert ";; host"))
+          (let ((nelisp-load-path (list ne-dir))
+                (nelisp-load-path-include-host t)
+                (load-path (cons host-dir load-path)))
+            (should (string-equal (nelisp-locate-file 'clashy) ne-target))))
+      (delete-directory root t))))
+
+(ert-deftest nelisp-locate-file-rejects-bad-type ()
+  (should-error (nelisp-locate-file 42)
+                :type 'wrong-type-argument))
+
 ;;; Interaction with the rest of the subsystem ------------------------
 
 (ert-deftest nelisp-load-then-macro ()
