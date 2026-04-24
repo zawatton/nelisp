@@ -362,28 +362,48 @@ make test green の不変条件で進める。
   tools/list / tools/call を持っており、§3.2 で加えたのは registry
   write-side と name normalize のみ)
 
-** §3.3 初期 tool 5-10 本 port (1-1.5 週)
+** §3.3 初期 tool 7 本 port — SHIPPED 2026-04-24
 
-- 個別 sub-sub-phase ではなく §3.3 1 branch 内で sequential port
-- 各 tool = =nelisp-deftool= 1 form + ERT 3-5 本 + handler LOC 30-60
-- 候補 list (推奨順、LOC 見積 / 依存):
-
-  | # | tool | 基盤 | LOC 見積 | ERT 見積 |
-  |---+------+------+----------+----------|
-  | 1 | =file-read= | host =insert-file-contents= | ~30 | 4 |
-  | 2 | =file-outline= (el/org/md) | regex scan | ~60 | 5 |
-  | 3 | =git-log= | =nelisp-process= spawn | ~40 | 3 |
-  | 4 | =git-status= | =nelisp-process= spawn | ~30 | 3 |
-  | 5 | =http-get= | Phase 5-C.4 既存実装を deftool 化 | ~20 | 2 |
-  | 6 | =data-get-path= | plist nested access | ~40 | 4 |
-  | 7 | =data-set-path= | plist nested update | ~40 | 4 |
-
-  最低線 5 本 (=file-read= / =file-outline= / =git-log= / =http-get=
-  / =data-get-path=)、余裕があれば 7 本全て。=file-replace-string=
-  等 destructive tool は Phase 5-F+ (§2.4 non-goal)。
-- 各 tool は =test/nelisp-tool-<name>-test.el= 別 file (cleanup 容易)
-- 完了条件: 最低 5 tool が =tools/list= で列挙 + =tools/call=
-  で実行 + ERT all green
+- =src/nelisp-tools.el= (~220 LOC) 新設。Doc 16 §3.3 table の 7 本
+  全て (=file-read= / =file-outline= / =git-log= / =git-status= /
+  =http-get= / =data-get-path= / =data-set-path=) を
+  =nelisp-deftool= 経由で registry 登録。読み込み時に
+  =nelisp-tools-register-all= が auto-run、tests は clrhash 後
+  再登録する deterministic pattern
+- Tool 設計メモ:
+  - =file-read=: =insert-file-contents= + =buffer-string= round
+    trip、=:path= echo back
+  - =file-outline=: =.el= / =.org= / =.md= の 3 format を
+    =file-name-extension= で分岐、=re-search-forward= +
+    =match-string= + =line-number-at-pos= で structural entry 抽出
+    (unsupported ext は error)
+  - =git-log= / =git-status=: =make-process= 同期実行 helper
+    =nelisp-tools--run-command= 経由、process buffer は
+    =generate-new-buffer= + =kill-buffer= で明示管理、=-c
+    color.ui=never --no-pager= で ANSI escape 抑制、=:sentinel
+    #'ignore= で "Process ... finished" 混入を防止 (anvil memory
+    =feedback_make_process_stderr_sentinel.md= 教訓)
+  - =http-get=: =nelisp-http-get= (Phase 5-C.2) を薄 wrap、ETag /
+    TTL cache はそのまま利用
+  - =data-get-path= / =data-set-path=: dotted string path
+    ("a.b.c") を keyword symbol list に分解し
+    =nelisp-tools--plist-tree-{get,set}= で走査。sibling 保持で
+    N-level 深い path も書き分け可
+- =test/nelisp-tools-test.el= +19 ERT:
+  - Registration smoke 2 (all 7 tools registered / tools/list
+    surface)
+  - file-read 3 (round trip / missing path error / dispatch E2E)
+  - file-outline 4 (elisp 4 defun / org headline / markdown heading
+    / unsupported ext)
+  - git-log 2 (shape + limit echo / default limit = 10)
+  - git-status 1 (exit 0 + string)
+  - http-get 2 (loopback HTTP/1.1 responder / missing url error)
+  - data-get / set 5 (set then get / nested path / missing key nil
+    / sibling preserve / invalid path error)
+- make test: 885 → *904/904 green*
+- make compile: 0 warnings
+- 期待 1-1.5 週に対し当日完了 (§3.1 spine + §3.2 macro の上に薄い
+  handler を積むだけで成立、Phase 5-C primitives で全て覆われた)
 
 ** §3.4 Claude Code 接続 smoke (3 日)
 
