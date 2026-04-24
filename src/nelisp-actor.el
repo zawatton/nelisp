@@ -252,7 +252,6 @@ so that on expiry the macro yields the symbol `timeout'.
 Only valid inside `nelisp-actor-lambda' body.  Outside it, the
 embedded `iter-yield' signals at macroexpansion time."
   (declare (debug (&optional form)))
-  (ignore _timeout)
   `(progn
      (while (null (nelisp-actor-mailbox nelisp-actor--current))
        (setf (nelisp-actor-status nelisp-actor--current) :blocked-receive)
@@ -375,8 +374,7 @@ re-enqueued by `nelisp-send' when a message arrives."
           (cl-incf steps)
           (pcase (nelisp-actor--step actor)
             (:yielded (nelisp-actor--enqueue actor))
-            (:blocked nil)
-            ((or :done :crashed) nil)))))
+            (_ nil)))))
     steps))
 
 ;;; Event-loop integration --------------------------------------------
@@ -429,6 +427,139 @@ Keys: `:id' `:status' `:mailbox-length' `:mailbox-cap'
         :supervisor      (nelisp-actor-supervisor actor)
         :restart-policy  (nelisp-actor-restart-policy actor)
         :last-error      (nelisp-actor-last-error actor)))
+
+;;; Channel primitive (Phase 4.4) ------------------------------------
+
+(cl-defstruct (nelisp-chan (:constructor nelisp-chan--make)
+                           (:copier nil))
+  "A NeLisp channel.  Phase 4.4 ships channels as sugar over an
+internal queue-mediator actor (§2.6 A mailbox-primary decision);
+clients interact only via `nelisp-chan-send' / `nelisp-chan-recv' /
+`nelisp-chan-close' and never see the mediator's identity."
+  actor       ; queue-mediator actor
+  capacity)   ; 0 = unbuffered rendezvous, >0 = buffered FIFO
+
+(defun nelisp-make-chan (&optional buffer)
+  "Return a new channel with optional capacity BUFFER.
+
+BUFFER nil or 0 gives an unbuffered (rendezvous) channel where each
+send hands off directly to a receiver; BUFFER > 0 permits that many
+values to queue without blocking a sender.  The returned
+`nelisp-chan' wraps an internal mediator actor that loops on its
+own mailbox, pattern-matching `:send' / `:recv' / `:close' requests
+and orchestrating waiter queues on each side.
+
+Rendezvous / buffered / close semantics track Go's channel model:
+  - Unbuffered send blocks until a receive arrives, and vice versa.
+  - Buffered send blocks only when the buffer is full.
+  - Close wakes pending receivers with `(:closed)' and fails pending
+    senders with `nelisp-actor-error'; subsequent `nelisp-chan-send'
+    signals.  Buffered values still in the queue at close time are
+    drained in order before receivers start getting `(:closed)'."
+  (let* ((cap (or buffer 0))
+         (act (nelisp-spawn
+               (nelisp-actor-lambda
+                 (let (buf pending-senders pending-receivers closed)
+                   (while (not (and closed
+                                    (null buf)
+                                    (null pending-senders)))
+                     (let ((req (nelisp-receive)))
+                       (pcase req
+                         (`(:send ,payload ,reply-to)
+                          (cond
+                           (closed
+                            (nelisp-send reply-to :error-closed))
+                           (pending-receivers
+                            (let ((r (pop pending-receivers)))
+                              (nelisp-send r (list :value payload))
+                              (nelisp-send reply-to :ok)))
+                           ((< (length buf) cap)
+                            (setq buf (append buf (list payload)))
+                            (nelisp-send reply-to :ok))
+                           (t
+                            (setq pending-senders
+                                  (append pending-senders
+                                          (list (cons payload reply-to)))))))
+                         (`(:recv ,reply-to)
+                          (cond
+                           (buf
+                            (let ((v (pop buf)))
+                              (nelisp-send reply-to (list :value v)))
+                            (when pending-senders
+                              (let* ((s (pop pending-senders))
+                                     (p (car s))
+                                     (rt (cdr s)))
+                                (setq buf (append buf (list p)))
+                                (nelisp-send rt :ok))))
+                           (pending-senders
+                            (let* ((s (pop pending-senders))
+                                   (p (car s))
+                                   (rt (cdr s)))
+                              (nelisp-send reply-to (list :value p))
+                              (nelisp-send rt :ok)))
+                           (closed
+                            (nelisp-send reply-to (list :closed)))
+                           (t
+                            (setq pending-receivers
+                                  (append pending-receivers
+                                          (list reply-to))))))
+                         (`(:close)
+                          (setq closed t)
+                          (dolist (r pending-receivers)
+                            (nelisp-send r (list :closed)))
+                          (setq pending-receivers nil)
+                          (dolist (s pending-senders)
+                            (nelisp-send (cdr s) :error-closed))
+                          (setq pending-senders nil))))))))))
+    (nelisp-chan--make :actor act :capacity cap)))
+
+(defmacro nelisp-chan-send (chan msg)
+  "Send MSG on CHAN, blocking until accepted (rendezvous or buffered).
+Signals `nelisp-actor-error' with reason `chan-send-on-closed' when
+CHAN has been closed before or during the send.  Only valid inside
+`nelisp-actor-lambda' body (the embedded `nelisp-receive' waits on
+the mediator's ack and so requires actor context)."
+  (declare (debug (form form)))
+  `(progn
+     (nelisp-send (nelisp-chan-actor ,chan)
+                  (list :send ,msg (nelisp-self)))
+     (let ((--ack-- (nelisp-receive)))
+       (cond
+        ((eq --ack-- :ok) nil)
+        ((eq --ack-- :error-closed)
+         (signal 'nelisp-actor-error (list 'chan-send-on-closed)))
+        (t
+         (signal 'nelisp-actor-error
+                 (list 'chan-send-unexpected --ack--)))))))
+
+(defmacro nelisp-chan-recv (chan)
+  "Receive from CHAN, blocking until a value arrives.
+
+Returns `(:value V)' on a successful receive (V may be nil — the
+list wrapper preserves it distinctly from the closed sentinel) or
+`(:closed)' when the channel has been closed and any buffered
+values have already been drained.  Only valid inside
+`nelisp-actor-lambda' body."
+  (declare (debug (form)))
+  `(progn
+     (nelisp-send (nelisp-chan-actor ,chan)
+                  (list :recv (nelisp-self)))
+     (nelisp-receive)))
+
+(defun nelisp-chan-close (chan)
+  "Close CHAN (fire-and-forget).
+
+Queues a `:close' request on the mediator; when the mediator
+processes it, pending receivers wake with `(:closed)' and pending
+senders fail with `nelisp-actor-error'.  Subsequent
+`nelisp-chan-send' on the same channel raises
+`chan-send-on-closed'.  Callable from any context (actor body or
+top-level) because `nelisp-send' itself does not require the caller
+to be an actor."
+  (unless (nelisp-chan-p chan)
+    (signal 'wrong-type-argument (list 'nelisp-chan-p chan)))
+  (nelisp-send (nelisp-chan-actor chan) '(:close))
+  t)
 
 ;;; Test helpers ------------------------------------------------------
 

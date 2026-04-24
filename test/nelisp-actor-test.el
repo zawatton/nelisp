@@ -390,5 +390,120 @@
     ;; And it is not the original.
     (should-not (eq received orig))))
 
+;;; Phase 4.4 — channel primitive ----------------------------------
+
+(ert-deftest nelisp-chan-unbuffered-rendezvous ()
+  "Unbuffered channel: send and recv hand off directly."
+  (nelisp-actor-test--fixture)
+  (let* ((ch (nelisp-make-chan))
+         (received nil))
+    (nelisp-spawn
+     (nelisp-actor-lambda
+       (nelisp-chan-send ch 'hello)))
+    (nelisp-spawn
+     (let ((ch ch))
+       (nelisp-actor-lambda
+         (setq received (nelisp-chan-recv ch)))))
+    (nelisp-actor-run-until-idle)
+    (should (equal received '(:value hello)))))
+
+(ert-deftest nelisp-chan-buffered-send-without-block ()
+  "Buffered channel: sender completes without a receiver, up to capacity."
+  (nelisp-actor-test--fixture)
+  (let* ((ch (nelisp-make-chan 3))
+         (sender (nelisp-spawn
+                  (let ((ch ch))
+                    (nelisp-actor-lambda
+                      (nelisp-chan-send ch 'a)
+                      (nelisp-chan-send ch 'b)
+                      (nelisp-chan-send ch 'c))))))
+    (nelisp-actor-run-until-idle)
+    (should (eq (nelisp-actor-status sender) :dead))))
+
+(ert-deftest nelisp-chan-buffered-send-blocks-when-full ()
+  "Buffered channel: send blocks when the buffer is full until a recv drains it."
+  (nelisp-actor-test--fixture)
+  (let* ((ch (nelisp-make-chan 1))
+         (received nil)
+         (sender
+          (nelisp-spawn
+           (let ((ch ch))
+             (nelisp-actor-lambda
+               (nelisp-chan-send ch 'first)
+               (nelisp-chan-send ch 'second))))))
+    (nelisp-actor-run-until-idle)
+    ;; Sender is blocked on the second send.
+    (should (memq (nelisp-actor-status sender)
+                  '(:blocked-receive :runnable)))
+    (nelisp-spawn
+     (let ((ch ch))
+       (nelisp-actor-lambda
+         (push (nelisp-chan-recv ch) received)
+         (push (nelisp-chan-recv ch) received))))
+    (nelisp-actor-run-until-idle)
+    (should (equal (nreverse received)
+                   '((:value first) (:value second))))
+    (should (eq (nelisp-actor-status sender) :dead))))
+
+(ert-deftest nelisp-chan-recv-blocks-until-send ()
+  "Unbuffered channel: recv blocks until a send arrives."
+  (nelisp-actor-test--fixture)
+  (let* ((ch (nelisp-make-chan))
+         (received nil)
+         (receiver
+          (nelisp-spawn
+           (let ((ch ch))
+             (nelisp-actor-lambda
+               (setq received (nelisp-chan-recv ch)))))))
+    (nelisp-actor-run-until-idle)
+    (should (null received))
+    (should (memq (nelisp-actor-status receiver)
+                  '(:blocked-receive :runnable)))
+    (nelisp-spawn
+     (let ((ch ch))
+       (nelisp-actor-lambda
+         (nelisp-chan-send ch 'delayed))))
+    (nelisp-actor-run-until-idle)
+    (should (equal received '(:value delayed)))
+    (should (eq (nelisp-actor-status receiver) :dead))))
+
+(ert-deftest nelisp-chan-close-wakes-pending-recv ()
+  "Closing an empty channel wakes pending receivers with `(:closed)'."
+  (nelisp-actor-test--fixture)
+  (let* ((ch (nelisp-make-chan))
+         (received nil)
+         (receiver
+          (nelisp-spawn
+           (let ((ch ch))
+             (nelisp-actor-lambda
+               (setq received (nelisp-chan-recv ch)))))))
+    (nelisp-actor-run-until-idle)
+    (should (null received))
+    (nelisp-chan-close ch)
+    (nelisp-actor-run-until-idle)
+    (should (equal received '(:closed)))
+    (should (eq (nelisp-actor-status receiver) :dead))))
+
+(ert-deftest nelisp-chan-close-errors-pending-sender ()
+  "Closing a full buffered channel errors pending senders with `chan-send-on-closed'."
+  (nelisp-actor-test--fixture)
+  (let* ((ch (nelisp-make-chan 1))
+         (sender
+          (nelisp-spawn
+           (let ((ch ch))
+             (nelisp-actor-lambda
+               (nelisp-chan-send ch 'fits)
+               (nelisp-chan-send ch 'blocks))))))
+    (nelisp-actor-run-until-idle)
+    ;; Sender stuck on the second send.
+    (should (memq (nelisp-actor-status sender)
+                  '(:blocked-receive :runnable)))
+    (nelisp-chan-close ch)
+    (nelisp-actor-run-until-idle)
+    (should (eq (nelisp-actor-status sender) :crashed))
+    (let ((err (nelisp-actor-last-error sender)))
+      (should (consp err))
+      (should (eq (cadr err) 'chan-send-on-closed)))))
+
 (provide 'nelisp-actor-test)
 ;;; nelisp-actor-test.el ends here
