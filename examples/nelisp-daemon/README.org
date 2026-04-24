@@ -1,0 +1,130 @@
+#+title: NeLisp daemon minimum (Phase 5-C.4 demo)
+#+author: zawatton
+
+* What this demo proves
+
+Phase 5-C.4 per Doc 14 §3.4.  A minimal stdio JSON-RPC "daemon"
+that stitches together the three Phase 5-C substrate modules in
+one dispatcher path:
+
+  - =nelisp-process= — actor plumbing reused via
+    =nelisp-file-notify='s =:actor= kwarg.  The collector actor
+    is a Phase 4 =nelisp-actor-lambda= body that converts
+    =file-change= =nelisp-event=s into summary plists.
+  - =nelisp-network= — =nelisp-http-get= against an in-process
+    loopback HTTP/1.1 server exercises the full client stack
+    (host =url-retrieve= wrap + ETag/TTL cache).
+  - =nelisp-file-notify= — watchers are installed on request
+    and deliver normalised =(:desc :action :file :file1)= events
+    through the trampoline → actor mailbox path.
+
+It is *not* a real MCP server.  Framing is line-delimited JSON
+instead of =Content-Length=-headered LSP frames, and there are no
+server-initiated notifications — enough to show
+=initialize= → =tools/list= → =tools/call= round-trips compose.
+
+* Exposed tools
+
+| tool            | behaviour                                    |
+|-----------------+----------------------------------------------|
+| =http-get=      | GET a URL, return status + body              |
+| =watch=         | Register a =nelisp-file-notify= on a DIR     |
+| =watch-events=  | Drain + return accumulated =file-change=s    |
+| =shutdown=      | Stop the =run-stdio= loop                    |
+
+Every tool lives under the =tools/call= method with a JSON-RPC
+2.0 envelope.
+
+* Running it
+
+From a terminal (line-delimited JSON over stdio):
+
+#+begin_src shell
+emacs --batch -Q \
+  -L src \
+  -L examples/nelisp-daemon \
+  -l main.el \
+  -f nelisp-daemon-run-stdio
+#+end_src
+
+Then send requests one per line on stdin, e.g.
+
+#+begin_example
+{"jsonrpc":"2.0","id":1,"method":"initialize"}
+{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"http-get","arguments":{"url":"http://127.0.0.1:8080/"}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"shutdown","arguments":{}}}
+#+end_example
+
+Each response is written as one JSON object per line.
+
+* Programmatic embedding
+
+For tests or integration, skip the wire layer and drive the
+dispatcher directly:
+
+#+begin_src elisp
+(nelisp-daemon-start)
+(nelisp-daemon-dispatch
+ "tools/call"
+ '((name . "http-get")
+   (arguments . ((url . "http://127.0.0.1:8080/")))))
+(nelisp-daemon-stop)
+#+end_src
+
+=nelisp-daemon-dispatch= returns a plist you can destructure
+without JSON overhead.
+
+* Architecture
+
+#+begin_example
+        stdin (line-delimited JSON)
+              │
+              ▼
+    ┌─────────────────────────┐
+    │ nelisp-daemon-run-stdio │
+    └──────────┬──────────────┘
+               │ json-read-from-string
+               ▼
+    ┌─────────────────────────┐
+    │ nelisp-daemon-dispatch  │────────────┐
+    └──────────┬──────────────┘            │
+               │                           │
+  ┌────────────┼────────────┐              │
+  │            │            │              │
+  ▼            ▼            ▼              │
+http-get     watch      watch-events       │
+  │            │            │              │
+  ▼            ▼            ▼              │
+nelisp-       nelisp-    collector         │
+http-get      file-      actor mailbox     │
+              notify-                      │
+              add-watch                    │
+                 │                         │
+                 │ file-change nelisp-     │
+                 │ event                   │
+                 ▼                         │
+             collector ── events list ◄────┘
+                                (drained by watch-events)
+#+end_example
+
+* Caveats
+
+- The =run-stdio= loop uses =read-from-minibuffer= to poll stdin,
+  which is an =emacs --batch= idiom — not suitable outside batch.
+- File-notify events in =emacs --batch -Q= are GUI-loop driven
+  and *not* pumped by =accept-process-output=; the ERT suite
+  feeds synthetic host events directly into the trampoline
+  (same workaround as Phase 5-C.3).  Under a real session the
+  watcher fires on real FS changes.
+- JSON-RPC error envelope is simplified: failures are reported
+  as =result.error= strings rather than as the proper
+  =error= object with =code=/=message= fields.
+
+* See also
+
+- =docs/design/14-phase5c-process-network.org= §3.4
+- =src/nelisp-process.el= / =src/nelisp-network.el=
+  / =src/nelisp-file-notify.el= — the three substrate modules
+- =examples/nelisp-editor/= — Phase 5-B visible-editor demo (the
+  other release-bar deliverable)
