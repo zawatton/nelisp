@@ -42,7 +42,10 @@ run BODY with server started, tear everything down afterwards."
 (ert-deftest nelisp-tools-test-all-registered ()
   (nelisp-tools-test--with-tools
     (dolist (n '("file-read" "file-outline" "git-log" "git-status"
-                 "http-get" "data-get-path" "data-set-path"))
+                 "http-get" "data-get-path" "data-set-path"
+                 ;; Phase 5-F.1.2
+                 "state-set" "state-get" "state-delete"
+                 "state-list-ns" "state-list-keys" "state-count"))
       (should (gethash n nelisp-server--tool-registry)))))
 
 (ert-deftest nelisp-tools-test-tools-list-surface ()
@@ -53,7 +56,9 @@ run BODY with server started, tear everything down afterwards."
                           (plist-get result :tools))))
       (dolist (expected '("file-read" "file-outline" "git-log"
                           "git-status" "http-get"
-                          "data-get-path" "data-set-path"))
+                          "data-get-path" "data-set-path"
+                          "state-set" "state-get" "state-delete"
+                          "state-list-ns" "state-list-keys" "state-count"))
         (should (member expected names))))))
 
 ;;; file-read -------------------------------------------------------
@@ -275,6 +280,113 @@ GET via the http-get tool, assert :status 200 + body."
     (should-error
      (funcall (nelisp-tools-test--handler "data-get-path")
               '((path . "a..b"))))))
+
+;;; state-* (Phase 5-F.1.2) ----------------------------------------
+
+(defmacro nelisp-tools-test--with-state-tools (&rest body)
+  "Combine tool registration + fresh temp DB for state-* tests."
+  (declare (indent 0) (debug t))
+  `(let* ((tmpdir (make-temp-file "nelisp-tools-state-" t))
+          (nelisp-state-db-path
+           (expand-file-name "test-state.db" tmpdir)))
+     (unwind-protect
+         (progn
+           (nelisp-state--close)
+           (nelisp-tools-test--with-tools
+             ,@body))
+       (nelisp-state--close)
+       (when (file-directory-p tmpdir)
+         (delete-directory tmpdir t)))))
+
+(ert-deftest nelisp-tools-test-state-set-get-roundtrip ()
+  "state-set → state-get で value が round trip する (MCP 経由)。"
+  (skip-unless (and (fboundp 'sqlite-available-p) (sqlite-available-p)))
+  (nelisp-tools-test--with-state-tools
+    (let ((set-r (funcall (nelisp-tools-test--handler "state-set")
+                          '((key . "k") (value . 42)))))
+      (should (eq t (plist-get set-r :stored))))
+    (let ((get-r (funcall (nelisp-tools-test--handler "state-get")
+                          '((key . "k")))))
+      (should (= 42 (plist-get get-r :value))))))
+
+(ert-deftest nelisp-tools-test-state-ns-isolation ()
+  ":ns パラメータで namespace 境界が保たれる。"
+  (skip-unless (and (fboundp 'sqlite-available-p) (sqlite-available-p)))
+  (nelisp-tools-test--with-state-tools
+    (funcall (nelisp-tools-test--handler "state-set")
+             '((key . "k") (value . "a-val") (ns . "a")))
+    (funcall (nelisp-tools-test--handler "state-set")
+             '((key . "k") (value . "b-val") (ns . "b")))
+    (let ((ra (funcall (nelisp-tools-test--handler "state-get")
+                       '((key . "k") (ns . "a"))))
+          (rb (funcall (nelisp-tools-test--handler "state-get")
+                       '((key . "k") (ns . "b")))))
+      (should (string= "a-val" (plist-get ra :value)))
+      (should (string= "b-val" (plist-get rb :value))))))
+
+(ert-deftest nelisp-tools-test-state-delete-returns-flag ()
+  "state-delete: hit → :deleted t、miss → :deleted nil。"
+  (skip-unless (and (fboundp 'sqlite-available-p) (sqlite-available-p)))
+  (nelisp-tools-test--with-state-tools
+    (funcall (nelisp-tools-test--handler "state-set")
+             '((key . "k") (value . 1)))
+    (let ((r1 (funcall (nelisp-tools-test--handler "state-delete")
+                       '((key . "k")))))
+      (should (eq t (plist-get r1 :deleted))))
+    (let ((r2 (funcall (nelisp-tools-test--handler "state-delete")
+                       '((key . "k")))))
+      (should-not (plist-get r2 :deleted)))))
+
+(ert-deftest nelisp-tools-test-state-list-ns-and-keys ()
+  "state-list-ns は sorted namespaces、state-list-keys は :ns 必須 + :limit。"
+  (skip-unless (and (fboundp 'sqlite-available-p) (sqlite-available-p)))
+  (nelisp-tools-test--with-state-tools
+    (funcall (nelisp-tools-test--handler "state-set")
+             '((key . "k1") (value . 1) (ns . "zeta")))
+    (funcall (nelisp-tools-test--handler "state-set")
+             '((key . "k2") (value . 2) (ns . "alpha")))
+    (funcall (nelisp-tools-test--handler "state-set")
+             '((key . "k3") (value . 3) (ns . "alpha")))
+    (let ((lr (funcall (nelisp-tools-test--handler "state-list-ns") nil)))
+      (should (equal '("alpha" "zeta") (plist-get lr :namespaces))))
+    (let ((kr (funcall (nelisp-tools-test--handler "state-list-keys")
+                       '((ns . "alpha")))))
+      (should (equal '("k2" "k3") (plist-get kr :keys))))
+    (let ((kr (funcall (nelisp-tools-test--handler "state-list-keys")
+                       '((ns . "alpha") (limit . 1)))))
+      (should (equal '("k2") (plist-get kr :keys))))))
+
+(ert-deftest nelisp-tools-test-state-count-total-and-ns ()
+  "state-count は ns 省略で total、ns 指定で namespace 限定。"
+  (skip-unless (and (fboundp 'sqlite-available-p) (sqlite-available-p)))
+  (nelisp-tools-test--with-state-tools
+    (funcall (nelisp-tools-test--handler "state-set")
+             '((key . "k1") (value . 1) (ns . "a")))
+    (funcall (nelisp-tools-test--handler "state-set")
+             '((key . "k2") (value . 2) (ns . "a")))
+    (funcall (nelisp-tools-test--handler "state-set")
+             '((key . "k3") (value . 3) (ns . "b")))
+    (let ((rt (funcall (nelisp-tools-test--handler "state-count") nil)))
+      (should (= 3 (plist-get rt :count))))
+    (let ((ra (funcall (nelisp-tools-test--handler "state-count")
+                       '((ns . "a")))))
+      (should (= 2 (plist-get ra :count))))))
+
+(ert-deftest nelisp-tools-test-state-via-dispatch ()
+  "End-to-end: tools/call name=state-set → state-get で value が戻る。"
+  (skip-unless (and (fboundp 'sqlite-available-p) (sqlite-available-p)))
+  (nelisp-tools-test--with-state-tools
+    (nelisp-server-dispatch
+     "tools/call"
+     '((name . "state-set")
+       (arguments . ((key . "via-dispatch") (value . "ok")))))
+    (let* ((result (nelisp-server-dispatch
+                    "tools/call"
+                    '((name . "state-get")
+                      (arguments . ((key . "via-dispatch"))))))
+           (content (plist-get result :content)))
+      (should (string-match-p "\"ok\"\\|ok"
+                              (or (plist-get (car content) :text) ""))))))
 
 (provide 'nelisp-tools-test)
 
