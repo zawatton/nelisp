@@ -3,7 +3,7 @@
 #+date: 2026-04-24
 #+options: toc:2
 
-* STATE: DRAFT 2026-04-24 (§2 LOCKED 2026-04-24, proceeding to §3.0)
+* STATE: SHIPPED 2026-04-24 (§3.0-3.6 全完了、main merge 済)
 
 ** 目的
 
@@ -286,13 +286,34 @@ host interpreter 自身が =macroexpand-1= を boilerplate 展開に呼ぶため
 - E2E 成功 log は本 doc §7 に転記 (下記)
 - commit: =09d52e9= on =feat/phase5a.5-toy-package=
 
-** §3.6 Merge gate (§2.8 equivalent)
+** §3.6 Merge gate (§2.8 equivalent) — SHIPPED 2026-04-24
 
 全 sub-phase SHIPPED + make test-all green + toy package E2E 成功で
-master merge 可。merge 前に以下確認:
-- [ ] host =macroexpand= への runtime 依存が trace で確認されないこと
-- [ ] =nelisp-require= が host =load-path= 非依存で動作すること
-- [ ] ERT 追加 ~20 本、既存 520 / 520 + 新規全 pass
+master merge 可。audit 結果:
+- [X] host =macroexpand= への runtime 依存が trace で確認されないこと
+  → §3.4 の byte-compiled constant-pool 静的 audit で代替済
+  (=nelisp-macro-nelisp-side-does-not-mention-host-macroexpand=)。
+  Dynamic trace は interpreted mode で host interpreter 自身が
+  step-eval に =macroexpand-1= を呼ぶため現実的でなく、静的
+  constant-pool 検査が筋と判断。
+- [X] =nelisp-require= が host =load-path= 非依存で動作すること
+  → §3.5 の =nelisp-examples-hello-host-load-path-untouched= で
+  実証済 (=nelisp-load-path-include-host= nil + host =load-path=
+  非含有で resolve 成功 + 空 load-path で =file-error= の裏取り)。
+- [X] ERT 追加 ~20 本、既存 520 / 520 + 新規全 pass
+  → +49 ERT (§3.0 +9、§3.1 +5、§3.2 +9、§3.3 +10、§3.4 +7、
+  §3.5 +9)、520 → *569/569 green, 0 unexpected*。
+
+merge 順 (--no-ff、zawatton workflow):
+1. =feat/phase5-gap-audit= (Doc 11 DRAFT + Check-1)
+2. =feat/phase5a-doc-draft= (Doc 12 DRAFT + §2 LOCKED)
+3. =feat/phase5a.0-pre-req-cleanup= (primitive gap fill)
+4. =feat/phase5a.1-load-file= (loader エラー伝播 + B surface)
+5. =feat/phase5a.2-load-path= (load-path + locate-file)
+6. =feat/phase5a.3-require= (set-based circular detection)
+7. =feat/phase5a.4-macroexpand= (macroexpand primitive 公開)
+8. =feat/phase5a.5-toy-package= (toy package E2E)
+9. =feat/phase5a.6-merge-gate= (本 section stamp)
 
 * §4 期待成果と next
 
