@@ -131,13 +131,16 @@ Phase 5-B 以降の dog-food 前提が崩れない。
 ship、Phase 4 と同じく =--no-ff= merge で phase branch に集約、全完了
 後に master。
 
-** §3.0 Pre-req cleanup (audit Check-1 §8 fix)
+** §3.0 Pre-req cleanup (audit Check-1 §8 fix) — SHIPPED 2026-04-24
 
-- =maphash= wrapper を =nelisp--install-primitives= に追加
-- primitive 表未登録の 12 件を整備 (=plist-get/put/vector/make-vector/
-  caddr/cdddr/ash/logand/logior/car-safe/float/message=)
-- 既存 ERT を全 pass 維持
-- 期待スコープ: 4-6 時間
+- [X] =maphash= NeLisp-aware wrapper を =nelisp--install-primitives=
+  に登録 (FN を =nelisp--apply= 経由で dispatch、NeLisp closure /
+  NeLisp defun を =(KEY VALUE)= 2 引数呼出)
+- [X] primitive 表に 12 件追加: =car-safe caddr cdddr vector
+  make-vector float ash logand logior plist-get plist-put message=
+- [X] ERT 9 本追加 (maphash closure / maphash defun / 7 primitive 各 1)
+- [X] make test: 520 → 529 全 pass (0 unexpected)
+- commit: =aaf6d71= on =feat/phase5a.0-pre-req-cleanup=
 
 ** §3.1 =nelisp-load-file= (reader + eval glue)
 

@@ -603,7 +603,7 @@ dispatches straight into the VM."
 
 (defconst nelisp--primitive-symbols
   '(;; Pair / list constructors + shape predicates
-    car cdr caar cadr cdar cddr
+    car cdr car-safe caar cadr cdar cddr caddr cdddr
     cons list null not atom consp listp
     length nth nthcdr last butlast reverse nreverse append
     member memq assq assoc
@@ -611,9 +611,13 @@ dispatches straight into the VM."
     setcar setcdr
     ;; Equality / identity / type predicates
     eq eql equal identity ignore functionp vectorp
+    ;; Vector constructors
+    vector make-vector
     ;; Arithmetic
     + - * / mod /= < <= > >= =
-    1+ 1- abs max min zerop numberp integerp
+    1+ 1- abs max min zerop numberp integerp float
+    ;; Bit arithmetic
+    ash logand logior
     ;; String / format
     stringp concat substring string= string-to-number number-to-string
     upcase downcase format prin1-to-string string make-string
@@ -625,10 +629,12 @@ dispatches straight into the VM."
     symbolp keywordp intern make-symbol symbol-name gensym
     symbol-function
     ;; Property lists (used by condition-case to read error-conditions)
-    get put
+    get put plist-get plist-put
     ;; Hash tables — raw data, safe to delegate wholesale
     make-hash-table gethash puthash remhash clrhash
     hash-table-p hash-table-count
+    ;; I/O (side-effect, but used for NeLisp-internal diagnostics)
+    message
     ;; Error plumbing — `error' / `signal' / `user-error' / `define-error'
     ;; all hook into the host condition system that `condition-case'
     ;; already knows how to catch.
@@ -672,6 +678,14 @@ resolved through `nelisp--functions', or a host Elisp primitive."
       (push (nelisp--apply fn (list (car seq))) parts)
       (setq seq (cdr seq)))
     (mapconcat #'identity (nreverse parts) separator)))
+
+(defun nelisp--builtin-maphash (fn table)
+  "NeLisp-aware `maphash': FN receives (KEY VALUE) for each entry.
+FN may be a NeLisp closure, a symbol routed through
+`nelisp--functions', or a host Elisp primitive.  Returns nil like
+the host `maphash'."
+  (maphash (lambda (k v) (nelisp--apply fn (list k v))) table)
+  nil)
 
 (defun nelisp--builtin-boundp (sym)
   "Non-nil if SYM has a value in the NeLisp global table.
@@ -720,6 +734,7 @@ closures, NeLisp-only defuns, and our own hash tables stay visible."
   (puthash 'mapcar       #'nelisp--builtin-mapcar       nelisp--functions)
   (puthash 'mapc         #'nelisp--builtin-mapc         nelisp--functions)
   (puthash 'mapconcat    #'nelisp--builtin-mapconcat    nelisp--functions)
+  (puthash 'maphash      #'nelisp--builtin-maphash      nelisp--functions)
   (puthash 'boundp       #'nelisp--builtin-boundp       nelisp--functions)
   (puthash 'fboundp      #'nelisp--builtin-fboundp      nelisp--functions)
   (puthash 'symbol-value #'nelisp--builtin-symbol-value nelisp--functions)
