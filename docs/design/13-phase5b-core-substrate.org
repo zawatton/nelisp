@@ -380,7 +380,7 @@ ERT (=test/nelisp-redisplay-test.el=, 18 本):
 
 目的: input event → buffer update → redisplay の flow。
 
-実装 (commit __HASH_5B4__):
+実装 (commit 483e1ef):
 - =src/nelisp-eventloop.el= 新設 (~180 LOC)
 - =cl-defstruct nelisp-event= (kind / data / timestamp) +
   =nelisp-make-event= コンストラクタ
