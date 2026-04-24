@@ -213,23 +213,42 @@ Phase 4 / 5-A pattern 踏襲: 小さい SHIPPED 刻みで各 sub-phase
 を =feat/phase5b.N-NAME= branch に閉じ、=--no-ff= merge で main
 に積む。各 branch で make test green が必須。
 
-** §3.0 Pre-req cleanup
+** §3.0 Pre-req cleanup — SHIPPED 2026-04-24
 
 目的: Phase 5-A の primitive 表 + macro facility で
 Phase 5-B 着手に必要な gap を埋める。
 
-作業:
-- Phase 5-A audit 同等の gap scan を =docs/design/13-audit.el=
-  で実行 (=src/nelisp-buffer.el= + =redisplay= / =eventloop=
-  予定 primitive 列挙、host subr 側不足を特定)
-- =generate-new-buffer= / =get-buffer-create= / =point= /
-  =goto-char= / =point-min= / =point-max= / =current-buffer= /
-  =set-buffer= / =with-current-buffer= 等、buffer-adjacent
-  最小 set を primitive 表 (or =nelisp--functions= dispatch) に
-  追加
-- ERT: primitive 単発 ~10 本
-
-期待スコープ: 3 日。
+- [X] =docs/design/13-audit-script.el= で forecast 4 sketch
+  (=13-forecast/nelisp-{buffer,marker,redisplay,eventloop}-sketch.el=)
+  を scan、gap list を =13-phase5b-primitive-gap.data.el= へ
+- [X] audit 結果: 実 gap 10 primitive (他 2 は struct field 名
+  =point= / =mark= が function position と誤認された false
+  positive で無視)
+- [X] =src/nelisp-eval.el= =nelisp--primitive-symbols= に
+  10 primitive 追加:
+  - General sequence: =copy-sequence= / =elt= / =nconc= / =delq=
+  - String search / split: =string-search= / =split-string=
+  - Terminal & frame: =send-string-to-terminal= / =frame-width=
+    / =frame-height=
+  - Timer scheduling: =run-at-time=
+- [X] =test/nelisp-stdlib-test.el= に ERT 11 本追加:
+  - =copy-sequence-string= / =copy-sequence-list= (eq 分離確認)
+  - =elt-string-and-list= (polymorphic)
+  - =nconc-merges-lists= / =delq-removes-eq=
+  - =string-search-matches= / =split-string-default= /
+    =split-string-with-separator=
+  - =frame-width-height-return-positive=
+  - =send-string-to-terminal-returns-nil= (registration 確認、
+    batch tty 出力の assertion は platform 差で避ける)
+  - =run-at-time-registered= (timer 返却 + 即 cancel-timer で
+    leak 回避)
+- [X] 非追加の false positive 2 件 (=point= / =mark=): cl-defstruct
+  の field 名が audit script walker に function position として
+  拾われたもの。host buffer primitive は §2.6 A (Parallel) の
+  方針通り不追加、nelisp-buffer は自前 =nelisp-buffer-point= /
+  =nelisp-buffer-mark= を持つ
+- [X] make test: 569 → *580/580 green* (+11, 0 unexpected)
+- commit: =e966a91= on =feat/phase5b.0-pre-req=
 
 ** §3.1 =nelisp-buffer= primitive (gap buffer + insert/delete)
 

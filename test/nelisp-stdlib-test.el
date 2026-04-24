@@ -284,6 +284,69 @@ and NeLisp-only defuns see (KEY VALUE) — not the raw host callee."
   (nelisp--reset)
   (should (= (nelisp-eval '(apply (quote +) 1 2 (list 3 4))) 10)))
 
+;;; Phase 5-B.0 — sequence / string / terminal / timer primitives -----
+
+(ert-deftest nelisp-stdlib-copy-sequence-string ()
+  (let ((orig "abc"))
+    (should (equal (nelisp-eval (list 'copy-sequence orig)) "abc"))
+    (should-not (eq (nelisp-eval (list 'copy-sequence orig)) orig))))
+
+(ert-deftest nelisp-stdlib-copy-sequence-list ()
+  (let ((orig '(1 2 3)))
+    (should (equal (nelisp-eval (list 'copy-sequence (list 'quote orig)))
+                   '(1 2 3)))
+    (should-not (eq (nelisp-eval (list 'copy-sequence (list 'quote orig)))
+                    orig))))
+
+(ert-deftest nelisp-stdlib-elt-string-and-list ()
+  (should (= ?b (nelisp-eval '(elt "abc" 1))))
+  (should (= 20 (nelisp-eval '(elt (list 10 20 30) 1)))))
+
+(ert-deftest nelisp-stdlib-nconc-merges-lists ()
+  (should (equal '(1 2 3 4)
+                 (nelisp-eval '(nconc (list 1 2) (list 3 4))))))
+
+(ert-deftest nelisp-stdlib-delq-removes-eq ()
+  (should (equal '(1 3)
+                 (nelisp-eval '(delq 2 (list 1 2 3))))))
+
+(ert-deftest nelisp-stdlib-string-search-matches ()
+  (should (= 3 (nelisp-eval '(string-search "lo" "hello world"))))
+  (should (null (nelisp-eval '(string-search "xyz" "hello")))))
+
+(ert-deftest nelisp-stdlib-split-string-default ()
+  (should (equal '("foo" "bar" "baz")
+                 (nelisp-eval '(split-string "foo bar baz")))))
+
+(ert-deftest nelisp-stdlib-split-string-with-separator ()
+  (should (equal '("a" "b" "c")
+                 (nelisp-eval '(split-string "a,b,c" ",")))))
+
+(ert-deftest nelisp-stdlib-frame-width-height-return-positive ()
+  "Host `frame-width' / `frame-height' delegated unchanged."
+  (let ((w (nelisp-eval '(frame-width)))
+        (h (nelisp-eval '(frame-height))))
+    (should (integerp w))
+    (should (integerp h))
+    (should (>= w 1))
+    (should (>= h 1))))
+
+(ert-deftest nelisp-stdlib-send-string-to-terminal-returns-nil ()
+  "`send-string-to-terminal' is registered — we do not assert output
+here (batch tty differs by platform); only that the primitive is
+resolvable and completes without error returning nil."
+  (should (null (nelisp-eval '(send-string-to-terminal "")))))
+
+(ert-deftest nelisp-stdlib-run-at-time-registered ()
+  "`run-at-time' is in the primitive table.  We schedule a trivial
+timer and immediately cancel it via host `cancel-timer' (called
+from ERT, not NeLisp) to avoid leaking a real timer into the test
+suite."
+  (let ((timer (nelisp-eval
+                '(run-at-time 3600 nil (lambda () (ignore))))))
+    (should (timerp timer))
+    (cancel-timer timer)))
+
 (provide 'nelisp-stdlib-test)
 
 ;;; nelisp-stdlib-test.el ends here
