@@ -272,14 +272,44 @@ Phase 3c 同様、feat branch 毎に ship。予算は目安、ブレ可。
 - =make clean && make test= 505/505 green (Phase 4.2 時点 497 + 本 8)
 - 実装 +78 LOC (367 → 445)、予算 200 LOC 内
 
-** 4.4 Channel primitive (DRAFT)
+** 4.4 Channel primitive (SHIPPED 2026-04-24)
 
-§2.6 A (mailbox primary) 方針ゆえ channel は syntactic sugar:
-- =nelisp-make-chan &key buffer= — 内部 actor (queue actor)
-- =nelisp-chan-send= / =nelisp-chan-recv= — queue actor への send/receive
-- Phase 4 では =nelisp-select= は非搭載、Phase 4 closure で検討
-- ERT: unbuffered chan (rendezvous) / buffered chan / close 動作
-- 予算: 150 LOC、ERT 6 本
+§2.6 A (mailbox primary) 方針通り、channel は queue-mediator actor
+上の syntactic sugar として ship:
+
+- =nelisp-chan= cl-defstruct (=:actor= + =:capacity=、opaque handle)
+- =nelisp-make-chan &optional buffer=: buffer 省略 or 0 なら
+  unbuffered rendezvous、>0 で buffered FIFO。内部で
+  =(nelisp-spawn (nelisp-actor-lambda ...))= で queue-mediator を
+  起動、pcase loop で =:send= / =:recv= / =:close= を dispatch
+- =nelisp-chan-send (chan msg)=: macro。mediator に =:send= 要求
+  + self-id、=nelisp-receive= で ack 待ち。=:ok= → return、
+  =:error-closed= → =(signal 'nelisp-actor-error
+  (list 'chan-send-on-closed))=。blocking semantics:
+  - unbuffered: 受信者到着まで mediator 側 =pending-senders= で待機
+  - buffered cap 未満: 即 ack
+  - buffered cap 到達: =pending-senders= で待機、recv 到達で ack
+- =nelisp-chan-recv (chan)=: macro。=:recv= 要求 + self-id、
+  =nelisp-receive= で 2-tuple 受領。戻り値 =(:value V)= (nil も
+  保持可) or =(:closed)= (close 後かつ buf 枯渇時のみ)
+- =nelisp-chan-close (chan)=: function。fire-and-forget、どの context
+  からでも呼べる (top-level / 別 actor 内)。=:close= を mediator に
+  送り、pending receivers は =(:closed)= で wake、pending senders は
+  =:error-closed= で ack
+- Go channel semantics 準拠: rendezvous / buffered / close、ただし
+  =nelisp-select= は Phase 4 scope 外 (§4 API)。V 側 drain は
+  close 後も続行 (close 時 buf は維持、以後 recv が空になるまで値
+  返し、枯渇後から =(:closed)=)
+- ERT 6 本 (=test/nelisp-actor-test.el= §Phase 4.4):
+  =unbuffered-rendezvous= / =buffered-send-without-block= /
+  =buffered-send-blocks-when-full= / =recv-blocks-until-send= /
+  =close-wakes-pending-recv= / =close-errors-pending-sender=
+- =make clean && make test= 511/511 green (Phase 4.3 時点 505 + 本 6)
+- 実装 +133 LOC (445 → 578)、予算 150 LOC 内 (含 docstring)
+- 副次 fix: Phase 4.2 =nelisp-receive= の redundant =(ignore _timeout)=
+  削除 (byte-compile-error-on-warn で blocker)、run-until-idle の
+  pcase =(or :done :crashed)= を =_= catch-all に簡略化 (memq 警告
+  回避)
 
 ** 4.5 Flat supervisor (DRAFT)
 
