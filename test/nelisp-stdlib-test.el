@@ -214,6 +214,66 @@ NeLisp function table, not host `symbol-function'."
                               ","))
                  "1,2,3")))
 
+(ert-deftest nelisp-stdlib-maphash-with-nelisp-closure ()
+  "maphash must route FN through `nelisp--apply' so NeLisp closures
+and NeLisp-only defuns see (KEY VALUE) — not the raw host callee."
+  (nelisp--reset)
+  (nelisp-eval '(defvar *seen* nil))
+  (nelisp-eval
+   '(let ((h (make-hash-table :test (quote equal))))
+      (puthash "a" 1 h)
+      (puthash "b" 2 h)
+      (maphash (lambda (k v) (setq *seen* (cons (cons k v) *seen*))) h)))
+  (let ((seen (nelisp-eval '*seen*)))
+    (should (equal 2 (length seen)))
+    (should (equal 3 (+ (cdr (assoc "a" seen))
+                        (cdr (assoc "b" seen)))))))
+
+(ert-deftest nelisp-stdlib-maphash-with-nelisp-defun ()
+  "maphash via a quoted symbol must resolve through
+`nelisp--functions', reaching a NeLisp-only defun."
+  (nelisp--reset)
+  (nelisp-eval '(defvar *tot* 0))
+  (nelisp-eval '(defun my-sum-kv (_k v) (setq *tot* (+ *tot* v))))
+  (nelisp-eval
+   '(let ((h (make-hash-table)))
+      (puthash (quote x) 10 h)
+      (puthash (quote y) 20 h)
+      (maphash (quote my-sum-kv) h)))
+  (should (= 30 (nelisp-eval '*tot*))))
+
+;;; New primitives added in Phase 5-A.0 --------------------------------
+
+(ert-deftest nelisp-stdlib-car-safe ()
+  (should (eq (nelisp-eval '(car-safe (list))) nil))
+  (should (eq (nelisp-eval '(car-safe 7)) nil))
+  (should (= 1 (nelisp-eval '(car-safe (list 1 2))))))
+
+(ert-deftest nelisp-stdlib-caddr-cdddr ()
+  (should (= 3 (nelisp-eval '(caddr (list 1 2 3 4)))))
+  (should (equal '(4 5) (nelisp-eval '(cdddr (list 1 2 3 4 5))))))
+
+(ert-deftest nelisp-stdlib-plist-get-put ()
+  (should (= 2 (nelisp-eval '(plist-get (list :a 1 :b 2) :b))))
+  (should (equal '(:a 9)
+                 (nelisp-eval '(plist-put (list :a 1) :a 9)))))
+
+(ert-deftest nelisp-stdlib-vector-ops ()
+  (should (equal [1 2 3] (nelisp-eval '(vector 1 2 3))))
+  (should (equal [0 0 0] (nelisp-eval '(make-vector 3 0)))))
+
+(ert-deftest nelisp-stdlib-bit-arithmetic ()
+  (should (= 4 (nelisp-eval '(ash 1 2))))
+  (should (= 1 (nelisp-eval '(logand 3 5))))
+  (should (= 7 (nelisp-eval '(logior 3 5)))))
+
+(ert-deftest nelisp-stdlib-float-primitive ()
+  (should (equal 3.0 (nelisp-eval '(float 3)))))
+
+(ert-deftest nelisp-stdlib-message-returns-string ()
+  "`message' is delegated to host and must return the formatted string."
+  (should (equal "hi 1" (nelisp-eval '(message "hi %d" 1)))))
+
 ;;; funcall / apply interaction with new primitives -------------------
 
 (ert-deftest nelisp-stdlib-funcall-on-symbol ()
