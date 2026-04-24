@@ -1,0 +1,473 @@
+#+title: NeLisp Phase 5-C — process / network substrate (AI-critical path 対応)
+#+author: zawatton
+#+date: 2026-04-24
+#+options: toc:2
+
+* STATE: DRAFT 2026-04-24 (§2 LOCKED 2026-04-24 全推奨 signoff + §3.1b pool 昇格、§3.0 着手中)
+
+** 目的
+
+Phase 0 lock 済 v1.0 完遂条件 4 項のうち 3 番目 "AI-critical path
+5 領域が NeLisp 上で動作" を達成するための I/O 基盤層を
+NeLisp 上に構築する。具体的には host =make-process= /
+=open-network-stream= / =file-notify-add-watch= を NeLisp-native
+な =nelisp-process= / =nelisp-network= / =nelisp-file-notify=
+に置き換え (or 信頼できる wrap で閉じ)、anvil.el が daemon 運用
+で踏んできた C 由来の限界を structural に解消する substrate を
+作る。
+
+release bar 前半 (Phase 5-A Doc 12 SHIPPED) + 後半 (Phase 5-B
+Doc 13 SHIPPED) で「3 核連動 editor 動作」まで達成済。本 Phase
+5-C 完了で「NeLisp 上で AI-critical path (MCP server / HTTP
+client / subprocess pool / file-notify / TTY broker) が動く」
+ことを demo する。
+
+** 背景
+
+Phase 0 で lock された v1.0 完遂条件 4 項:
+1. self-host 到達 — Phase 2 達成 (2026-04-23)
+2. 3 大 core module (buffer / redisplay / event-loop) Elisp 化 —
+   Phase 5-B 達成 (2026-04-24)
+3. *AI-critical path 5 領域が NeLisp 上で動作* ← 本 Phase 5-C
+4. 残存 C は SBCL-style 4 核 (syscall / allocator / GC inner / coding)
+
+"AI-critical path 5 領域" の定義 (anvil.el の daemon 運用で踏み
+込んだ領域):
+- *MCP server* (JSON-RPC over stdio pipe) — anvil-server
+- *HTTP client* (GET/HEAD + ETag/TTL cache) — anvil-http
+- *subprocess pool* (emacs --batch / long-running worker) —
+  anvil-worker / anvil-offload / pty-broker
+- *file-notify* (ディスク変更 watch) — anvil-org-index
+- *TTY broker* (node-pty TCP broker + client) —
+  anvil-pty-broker
+
+anvil.el の memory 群で structural に識別済の C 由来限界:
+- =feedback_emacs_server_concurrency_model.md= = accept-process-
+  output yield は handler 内 yield では cross-bridge
+  concurrency を解決しない
+- =feedback_eat_daemon_filter_starvation.md= = process filter は
+  =inhibit-quit= で同期的に全 chunk 処理、server loop を
+  starvation させる
+- =feedback_anvil_worker_phase1_startup_freeze.md= = Windows
+  file-notify が ~1s/dir × N で init freeze
+- =feedback_make_process_stderr_sentinel.md= = :stderr は別
+  process、stderr buffer に sentinel 文字列が混入
+- =feedback_conpty_headless_stdin_unidirectional.md= = ConPTY
+  headless stdin pipe は片方向
+- =feedback_msys_python_japanese_path.md= = coding-system 経路の
+  文字化け
+
+本 Phase は上記を native Lisp 実装 or 信頼できる wrap で
+structural に解消する下地を作る。Rhodes 2008 SBCL 方針は継続:
+host C は syscall / allocator / GC inner / coding の 4 核のみに
+絞る。process spawn / wait / fd 操作 / socket connect / kqueue-
+inotify 等は Lisp 側に出す。
+
+** Non-goals
+
+- *Full HTTP server* (RFC 9110 準拠) は本 Phase 範囲外。
+  HTTP client (GET/HEAD + 最小 POST) のみ。server は Phase 5-D
+  以降で判断。
+- *WebSocket* は範囲外。Phase 6+。
+- *TTY emulation / terminal renderer* (eat / vterm 相当) は
+  範囲外。本 Phase は "PTY を spawn し byte 流を yield" まで。
+  escape 解釈は anvil 側 or Phase 6 で。
+- *Raw syscall FFI* (host C を貫通する素 syscall) は範囲外。
+  host =make-process= / =make-network-process= / =file-notify-
+  add-watch= を SBCL-4 核境界の内側として信頼し wrap する。
+  真の syscall 化は Phase 7+。
+- *TLS stack の自前実装* は範囲外。TLS は host GnuTLS / NSS を
+  委譲 (=:type 'tls= wrap)。
+- *package.el 互換 installer* / *HTTP proxy* は範囲外。
+- *file-notify 全 backend 均質化* (inotify / kqueue / Win32) は
+  範囲外。host backend を信頼し event 正規化層のみ提供。
+
+* §1 Phase 5-B 成果前提
+
+本 Phase は Phase 5-B の成果物に依存する:
+- =src/nelisp-buffer.el= gap buffer + marker / overlay (Phase
+  5-B.1/5-B.2) — process output buffer の受け皿
+- =src/nelisp-redisplay.el= terminal dirty-region (Phase 5-B.3)
+  — MCP server tail view / process status view
+- =src/nelisp-eventloop.el= key / timer event (Phase 5-B.4) +
+  actor integration — process I/O event を同 event-loop に
+  統合
+- Phase 4 actor (Doc 10) — process / connection を actor 化
+- Phase 2 self-host fixpoint (cycle-1 = cycle-2)
+- Phase 3c mark-sweep GC — process / connection / fd の
+  finalizer registry
+- Phase 5-B.0 primitive 表: =send-string-to-terminal= /
+  =frame-width= / =frame-height= / =run-at-time= は既に追加済
+
+Phase 5-C は新規 module 3 本を =src/nelisp-process.el= /
+=src/nelisp-network.el= / =src/nelisp-file-notify.el= として
+追加、対応 ERT を =test/= 配下に整備。primitive 表には process
+/ network 最小 set (=make-process=, =process-send-string=,
+=process-live-p=, =make-network-process=, =process-status=,
+=file-notify-add-watch= 等) を Phase 5-C.0 で追加する。
+
+* §2 Locked decisions (signoff 必須)
+
+以下 9 項目を user signoff 後に LOCK する。Doc 12 / 13 と同じ
+pattern。default 推奨を示すが、どの項目も差し戻し可能。
+
+** §2.1 Process spawn 実装
+
+*Q*: subprocess をどう起動するか。Emacs C は =make-process= +
+host OS の =fork+exec= / =CreateProcess= を使う。
+
+選択肢:
+A. Host =make-process= を wrap — =nelisp-make-process= は内部
+   で host =make-process= を呼び、返った host process を
+   NeLisp-side process struct で包む
+B. Native syscall 化 — SBCL-4 核境界を広げて fork+exec を
+   NeLisp から直接呼ぶ (Phase 7+ の FFI 前提)
+C. Pool pattern — spawn は常駐 worker へ request、spawn overhead
+   を削る
+
+*推奨: A (host wrap)*。SBCL 4 核方針 (syscall は core) と
+整合、anvil の実装経験で host =make-process= は信頼できる。
+B は Phase 7+、C は Phase 5-C で sub-feature として必要なら
+=nelisp-process-pool= を後続 §3.1b で追加可 (optional)。
+
+** §2.2 Pipe vs PTY
+
+*Q*: subprocess との I/O は pipe か PTY か。
+
+選択肢:
+A. Pipe-only — stdin/stdout/stderr pipe、ほぼ全 subprocess で
+   可。MCP / batch compilation / worker で十分
+B. A + PTY on demand — TTY app (REPL, less, vim) 向け
+   =:connection-type 'pty= 対応
+C. PTY-only — stream 抽象が 1 本化、pipe は廃止
+
+*推奨: B (pipe + PTY on demand)*。anvil の MCP / worker は
+pipe 前提で動く一方、eat / claude-code-ide は PTY 必須。両方
+対応しないと AI-critical path の TTY broker を NeLisp 化でき
+ない。anvil-pty-broker (Doc 25 Phase 1 SHIPPED) は node-pty に
+逃げたが、Phase 5-C では host =make-process= =:connection-type=
+経由で native 対応。
+
+** §2.3 Process I/O と event loop の統合
+
+*Q*: process の sentinel (state 変化) / filter (stdout data) を
+NeLisp event loop (Phase 5-B.4) とどう連動させるか。
+
+選択肢:
+A. Host sentinel/filter を thin wrapper で受け、NeLisp actor
+   mailbox に =nelisp-event= として post
+B. 別の I/O actor を spawn し、host からの callback を直接
+   受けず、NeLisp 内で select/poll 相当を回す
+C. Hybrid — sentinel は wrapper、filter は pool worker
+
+*推奨: A (thin wrapper + actor post)*。host filter は現状
+=inhibit-quit= で starvation 原因 (anvil-eat feedback 参照)
+だが、wrapper で *最小* に抑え、重い処理は NeLisp actor 側に
+queue すれば starvation は防げる。B は event loop 2 系統化で
+複雑。
+
+** §2.4 Network client (TCP / TLS / HTTP)
+
+*Q*: network 通信層をどう組むか。
+
+選択肢:
+A. Host =make-network-process= を wrap (TLS も host 委譲) —
+   GnuTLS / NSS を信頼
+B. Native TCP (NeLisp socket fd + select/poll) + TLS は host
+   委譲 — fd 管理は NeLisp
+C. Full native (TCP + TLS) — PKI / cert は範囲外
+
+*推奨: A (host wrap)*。TLS stack を自前実装する余力は本 Phase
+に無く、anvil-http で実証済の host =url-retrieve= /
+=make-network-process= pattern は安定。Phase 7+ で syscall 化
+検討。
+
+** §2.5 HTTP client 粒度
+
+*Q*: HTTP level の抽象化をどこまで本 Phase に含めるか。
+
+選択肢:
+A. =nelisp-http-get= / =-head= のみ (anvil-http Phase 1a 相当)
+   + ETag/TTL cache
+B. A + POST + multipart + streaming download
+C. A + B + cookie jar + proxy
+
+*推奨: A (最小 GET/HEAD + cache)*。anvil-http の実装
+(~500 LOC Phase 1a) を NeLisp port するだけで AI-critical path
+の大半はカバー。POST は MCP 用途で既に pipe 経由 (stdio JSON-
+RPC) で代替可能。B/C は後続 Phase。
+
+** §2.6 File notification
+
+*Q*: file change notification をどう提供するか。
+
+選択肢:
+A. Host =file-notify-add-watch= を wrap、event を NeLisp-event
+   で正規化
+B. Poll-based 置換 — =run-at-time= + =file-attributes= の diff
+   で NeLisp timer 上に自作
+C. Skip — 本 Phase 範囲外 (後続 Phase で判断)
+
+*推奨: A (host wrap + 正規化)*。anvil-org-index の inotify
+依存は高く B の poll は実用性低い (Windows 25 dir 1s/dir の
+startup freeze を解消しない)。host backend を信頼し event 形
+(change / delete / rename) の正規化だけ NeLisp 側で行う。
+
+** §2.7 AI-critical path coverage (merge gate scope)
+
+*Q*: 本 Phase 完了時点で demo する AI-critical path をどこまで
+含むか。
+
+選択肢:
+A. MCP server (JSON-RPC pipe) 単独 — 最小
+B. A + HTTP client (GET/HEAD)
+C. B + file-notify (watch + event 正規化)
+D. C + PTY broker (anvil-pty-broker 機能再現)
+E. D + subprocess pool (pre-spawned worker)
+
+*推奨: C (MCP + HTTP + file-notify)*。D/E は anvil-pty-broker
+/ anvil-worker が既に運用実績あり、NeLisp 化は Phase 6 以降で
+可。本 Phase は「AI-critical の最小 3 つ」を NeLisp 上で動か
+す demo で十分 release bar 後々段達成と言える。E2E demo は
+Phase 5-B の nelisp-editor と同 pattern で examples/nelisp-
+daemon/ に配置。
+
+** §2.8 Concurrency model
+
+*Q*: process / connection の並行アクセスをどう制御するか。
+
+選択肢:
+A. Per-process actor — 1 process = 1 actor、sentinel/filter
+   callback を自 actor mailbox へ
+B. Shared I/O actor — 1 actor が全 process poll、per-process
+   は受信 only
+C. No actor — 従来 Elisp 流 (sentinel/filter + dynamic state)
+
+*推奨: A (per-process actor)*。Phase 4 actor の isolation
+semantics で cross-process 干渉を structural に防げる。Phase
+5-B.4 event loop の延長で自然。B は poll loop 自作不要な場面
+では overkill、C は anvil-eat 相当の starvation 問題を再導入
+するため却下。
+
+** §2.9 Merge gate 成功条件 (§3 last)
+
+選択肢:
+A. 全 §3 sub-phase SHIPPED + make test green + subprocess
+   spawn / pipe read / pipe write 動作
+B. A + network client で HTTP GET が loopback server に接続
+C. B + MCP stdio JSON-RPC E2E (request → response) が loop
+   内で完結
+D. C + file-notify で ディレクトリ変更を NeLisp event に変換
+
+*推奨: D*。§2.7 C を選んだ以上、demo は MCP + HTTP + file-
+notify の 3 路線合流が必要。D 未達では "AI-critical path が
+NeLisp 上で動く" と言えない。demo scope は examples/nelisp-
+daemon/ で echo server + GET + dir watcher の 3 scenario で
+ERT gate。
+
+* §3 Decomposition (signoff 後着手)
+
+Phase 4 / 5-A / 5-B pattern 踏襲: 小さい SHIPPED 刻みで各
+sub-phase を =feat/phase5c.N-NAME= branch に閉じ、=--no-ff=
+merge で main に積む。各 branch で make test green が必須。
+
+** §3.0 Pre-req cleanup
+
+目的: Phase 5-B までの primitive 表で Phase 5-C 着手に必要な
+gap を埋める。
+
+作業:
+- =docs/design/14-audit-script.el= で forecast 3 sketch
+  (=14-forecast/nelisp-{process,network,file-notify}-sketch.el=)
+  を scan、gap list を =14-phase5c-primitive-gap.data.el= へ
+- gap primitive 一括追加 (想定):
+  - process 系: =make-process=, =process-live-p=, =process-
+    status=, =process-send-string=, =process-send-eof=,
+    =process-buffer=, =set-process-sentinel=, =set-process-
+    filter=, =process-exit-status=, =kill-process=,
+    =delete-process=, =accept-process-output=, =processes=
+  - network 系: =make-network-process=, =open-network-stream=,
+    =network-interface-info=, =network-interface-list=
+  - file-notify 系: =file-notify-add-watch=, =file-notify-rm-
+    watch=, =file-notify-valid-p=
+  - 補助: =file-attributes=, =delete-file=, =rename-file=,
+    =copy-file=, =make-symbolic-link= (必要最小のみ)
+- =test/nelisp-stdlib-test.el= に primitive 単発 ERT
+
+期待スコープ: 3 日。
+
+** §3.1 =nelisp-process= (subprocess substrate)
+
+目的: host =make-process= を wrap、per-process actor で I/O を
+event 化。pipe / PTY 両対応。
+
+作業:
+- =src/nelisp-process.el= 新設
+- =(cl-defstruct nelisp-process id host-proc actor status ...)=
+- 公開 API: =nelisp-make-process= (=:name=, =:command=,
+  =:connection-type=, =:coding=, =:sentinel=, =:filter=,
+  =:buffer=) / =nelisp-process-send-string= /
+  =-process-send-eof= / =-kill-process= / =-delete-process= /
+  =-process-live-p= / =-process-status= / =-process-list=
+- PTY 対応: =:connection-type 'pty= で host =make-process= に
+  =:connection-type 'pty= forward + =process-tty-name=
+- sentinel/filter は thin wrapper が自 actor へ =nelisp-event=
+  post (=kind= = =process-output= / =process-state=)
+- ERT: echo server (cat / printf) で send/receive / exit
+  code / kill / zombie 防止 + PTY flag が有効な経路確認
+
+期待スコープ: 1.5 週。
+
+** §3.1b =nelisp-process-pool= (pre-spawned worker) — 本 Phase scope 追加
+
+目的: spawn overhead を削るため常駐 worker pool。anvil-worker
+相当、anvil.el の NeLisp 移植を直接加速する。
+
+作業:
+- =src/nelisp-process-pool.el= 新設
+- =(cl-defstruct nelisp-process-pool name workers max-size
+    idle-timeout ...)= + per-worker state (idle / busy /
+    spawning / dead)
+- 公開 API: =nelisp-process-pool-create NAME &key SIZE COMMAND=
+  / =nelisp-process-pool-get POOL &key TIMEOUT= /
+  =-process-pool-return POOL WORKER= / =-process-pool-kill POOL=
+  / =-process-pool-stats POOL=
+- worker crash 自動補充: sentinel でdead 検出 → 新規 spawn を
+  =run-at-time 0= で defer (anvil-worker startup-freeze 回避
+  pattern)
+- =quick-alive-p= による fast health-check (heavy probe 禁止、
+  inotify wait 回避)
+- periodic scan で zombie 掃除 (=run-at-time= + configurable
+  interval)
+- ERT: pool create / get / return / crash-refill / pool-kill /
+  stats / timeout behaviour
+
+期待スコープ: 1 週。user 判断 *2026-04-24 本 Phase scope に追加*
+(pool 無しで anvil.el を NeLisp port するのは現実的でないため)。
+
+** §3.2 =nelisp-network= (TCP / TLS / HTTP client)
+
+目的: host =make-network-process= を wrap + HTTP GET/HEAD +
+ETag/TTL cache。
+
+作業:
+- =src/nelisp-network.el= 新設
+- =(cl-defstruct nelisp-network id host-conn actor status ...)=
+- 公開 API: =nelisp-open-network= (=:host=, =:service=, =:type=
+  =tcp | tls=, =:sentinel=, =:filter=) / =-network-send-string= /
+  =-network-close= / =-network-live-p=
+- HTTP 層: =nelisp-http-get URL &key HEADERS TIMEOUT= /
+  =nelisp-http-head URL &key HEADERS= / cache は
+  =anvil-state= parallel 実装 (or host =url-retrieve= wrap
+  with ETag headers)
+- ERT: loopback TCP echo + HTTP GET to in-process test server
+  (=tls echo skip=) / ETag cache hit / TTL expiry / timeout
+
+期待スコープ: 1.5 週。
+
+** §3.3 =nelisp-file-notify=
+
+目的: host =file-notify-add-watch= を wrap、event 正規化。
+
+作業:
+- =src/nelisp-file-notify.el= 新設
+- 公開 API: =nelisp-file-notify-add-watch DIR FLAGS CALLBACK=
+  / =-file-notify-rm-watch DESC= / =-file-notify-valid-p=
+- event 正規化: host event =(DESC ACTION FILE [FILE1])= を
+  =nelisp-event= (=kind= = =file-change=, data = plist) で
+  event loop に post
+- ERT: =make-temp-file= 相当で watch DIR 作成 → touch / rename
+  / delete → event 1 本受信、invalid DESC で rm-watch no-op
+
+期待スコープ: 1 週。
+
+** §3.4 E2E demo — NeLisp-daemon minimum
+
+目的: 3 層連動 (process / network / file-notify) で AI-critical
+path の最小 scenario を demo、§2.7 C + §2.9 D 達成。
+
+作業:
+- =examples/nelisp-daemon/main.el= 新設:
+  - MCP server stub: stdio pipe で =initialize= / =tools/list=
+    / =tools/call= を JSON-RPC で 1 round trip
+  - HTTP client: 同 process 内 loopback server 起動 → GET で
+    status 200 + body 検証
+  - file-notify: temp dir watch で create event を 1 本受領
+- =examples/nelisp-daemon/README.org= — 起動方法 + demo 手順
+- ERT: scripted pipe input / HTTP request / file touch で
+  buffer/state 変化を検証
+
+期待スコープ: 1 週。
+
+** §3.5 Merge gate
+
+全 sub-phase SHIPPED + make test green + E2E demo 動作で main
+merge 可。merge 前 audit:
+- [ ] subprocess spawn / pipe read / pipe write / kill / exit
+  code が host buffer parity で動作
+- [ ] PTY mode で minimal echo を双方向確認
+- [ ] process pool get / return / crash-refill / stats が
+  anvil-worker 相当 API で動作
+- [ ] network client TCP + TLS (loopback OK) で read / write
+- [ ] HTTP GET が ETag cache hit を return
+- [ ] file-notify event が create / modify / delete / rename
+  を正規化
+- [ ] ERT 追加 ~100 本目標 (process 30 + pool 15 + network 25
+  + file-notify 15 + demo 15)
+- [ ] Phase 5-A+5-B 689 本 + 新規全 pass
+
+merge 順は Phase 5-A / 5-B と同じく各 feat branch を =--no-ff=
+で個別 bubble 化 (7 bubble: doc-draft / 5C.0 / 5C.1 / 5C.1b /
+5C.2 / 5C.3 / 5C.4 / 5C.5)。
+
+* §4 期待成果と next
+
+*** Phase 5-C 完了後の状態
+
+- NeLisp 上で MCP server stub (stdio JSON-RPC) が動く
+- NeLisp 上で HTTP GET/HEAD + ETag/TTL cache が動く
+- NeLisp 上で file-notify dir watch が host と同等の event を
+  返す
+- subprocess spawn / pipe / PTY が native な nelisp-process
+  で動く
+- anvil.el を NeLisp 上に移植するための I/O 基盤 3 層揃う
+
+*** Phase 5-D 以降への橋渡し
+
+- Phase 5-D: process pool + long-running worker (§3.1b 格上げ)
+- Phase 5-E: MCP server 本実装 (anvil-server full port)
+- Phase 6: GUI / mode 実装 (frame / window 複数化 / bidi)
+- Phase 7: C 4 核を SBCL-genesis 方式で cold image 化、syscall
+  FFI で host =make-process= も NeLisp 化
+
+*** Out of scope
+
+- WebSocket / gRPC / HTTP/2 は別 Phase
+- TTY emulator (eat / vterm 相当) は別 Phase
+- package.el compat、MELPA 互換は別 Phase
+- network server (listen + accept) は最小 loopback のみ、full
+  server は別 Phase
+
+* §5 User 判断事項 (signoff) — LOCKED 2026-04-24
+
+2026-04-24 signoff 完了。9 項目は全推奨で LOCK:
+
+- §2.1 Process spawn: *A* (host wrap) ✓
+- §2.2 Pipe vs PTY: *B* (pipe + PTY on demand) ✓
+- §2.3 I/O 統合: *A* (thin wrapper + actor post) ✓
+- §2.4 Network client: *A* (host wrap + TLS 委譲) ✓
+- §2.5 HTTP client 粒度: *A* (GET/HEAD + cache 最小) ✓
+- §2.6 File notification: *A* (host wrap + 正規化) ✓
+- §2.7 AI-critical path coverage: *C* (MCP + HTTP + file-notify) ✓
+- §2.8 Concurrency: *A* (per-process actor) ✓
+- §2.9 Merge gate: *D* (MCP + HTTP + file-notify 3 路線合流) ✓
+
+*追加決定*: §3.1b =nelisp-process-pool= を本 Phase scope に追加
+(anvil.el NeLisp port 前提で必須判定)。
+
+本 Phase 総スコープ: §3.0 (3 日) + §3.1 (1.5 週) + §3.1b (1 週)
++ §3.2 (1.5 週) + §3.3 (1 週) + §3.4 (1 週) + §3.5 (1 日) =
+約 6 週。
+
+signoff 完了、=feat/phase5c.0-pre-req= で §3.0 着手。Phase
+5-A / 5-B と同じく per-sub-phase bubble + =--no-ff= merge。
