@@ -3,7 +3,7 @@
 #+date: 2026-04-24
 #+options: toc:2
 
-* STATE: DRAFT 2026-04-24 (§2 LOCKED + §3.0 SHIPPED 2026-04-24、§3.1 next)
+* STATE: DRAFT 2026-04-24 (§2 LOCKED + §3.0-3.1 SHIPPED 2026-04-24、§3.2 next)
 
 ** 目的
 
@@ -223,14 +223,33 @@ scope を超えて 5-E に食い込む。B で "worker layer は独立して
 - make test: 787 → *792/792 green*
 - 期待 2 日に対し当日完了 (5-C.0 infra port で audit cost 最小)
 
-** §3.1 =nelisp-worker.el= base (1 週)
+** §3.1 =nelisp-worker.el= base — SHIPPED 2026-04-24
 
-- =cl-defstruct nelisp-worker-pool= (lane 毎の =-process-pool= 内包)
-- =nelisp-worker-spawn LANE= / =nelisp-worker-classify EXPR= /
-  =nelisp-worker-call EXPR &key lane timeout=
-- request/response layer (§2.3 A: channel + correlation-id) で
-  block-until-response
-- base 層は health check / warmup / metrics 無し
+- =src/nelisp-worker-child.el= 新設: =emacs --batch= child loop、
+  line-delimited sexp protocol (=(ID . EXPR)= / =(ID :ok RESULT)=
+  / =(ID :error MESSAGE)=)
+- =src/nelisp-worker.el= 新設 (impl =0841fef=、~230 LOC):
+  =cl-defstruct nelisp-worker-pool= + =nelisp-worker-pool-create=
+  で 3 lane (=:read= / =:write= / =:batch=) 毎に =nelisp-process-pool=
+  を内包、pool-aware filter が stdout stream を line split + parse
+  して correlation table に reply を deliver
+- =nelisp-worker-call POOL EXPR &key lane timeout= が sync
+  request/response: correlation-id 採番 → pending hash に
+  =:done/:tag/:result= 登録 → =(ID . EXPR)= 送信 →
+  =accept-process-output= poll で deadline まで待機
+- §2.3 A channel + correlation-id は MVP として host-side flag +
+  poll で実装 (channel-wrap は actor-context caller が欲しい
+  場合の follow-up)
+- =nelisp-worker-error= / =-timeout= / =-busy= 3 signal、
+  =nelisp-worker-pool-stats= で 3 lane snapshot + pending count
+- base scope 守り: classifier (§3.2) / health check (§3.3) /
+  warmup (§3.4) / metrics (§3.5) は非実装
+- ERT +16 (=test/nelisp-worker-test.el=): lifecycle 3 / request-
+  response 5 / correlation 2 / error+timeout 2 / stats 1 /
+  deliver unit 2
+- make test: 792 → *808/808 green*
+- 期待 1 週に対し当日完了 (§3.1b pool + §3.1 process + child loop
+  の 3 層が揃って thin dispatcher で済んだ)
 
 ** §3.2 Classifier + lane dispatch (3 日)
 
