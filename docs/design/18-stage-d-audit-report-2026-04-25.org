@@ -1,0 +1,100 @@
+#+TITLE: Doc 18 — Stage D audit report 2026-04-25
+#+AUTHOR: Claude + zawatton
+#+DATE: 2026-04-25
+#+STATE: SNAPSHOT
+#+STATUS: Phase 6.0 初回 audit、anvil.el 依存 API 9,577 hit 検出
+
+* §1 scan 条件
+
+- script: =docs/design/18-stage-d-audit.el=
+- target root: =/home/madblack-21/Cowork/Notes/dev/anvil.el=
+- scanned files: *598* (*.el、tests/fixtures 除外)
+- 総 hit: *9,577* (7 bucket、37 API symbol)
+
+* §2 bucket summary
+
+| bucket | count | apis | 対応方針 (Phase 6.x) |
+|--------+-------+------+----------------------|
+| buffer-ops | 7903 | 20 | Phase 5-F.2+: NeLisp 側 gap-buffer 実装、文字列経由 API で代替 |
+| ui-tui | 590 | 3 | Phase 6.1 headless: CLI flag + stdin JSON で代替 |
+| file-save | 474 | 4 | Phase 5-F.1 state layer + direct write-region 委譲 |
+| timer-idle | 236 | 3 | Phase 4 actor scheduler or OS timer 直接委譲 |
+| process-io | 182 | 5 | Phase 5-C primitive で既に cover 済 (sentinel 抽象化のみ) |
+| org-mode | 176 | 3 | Phase 5-F.2 以降: org-parser NeLisp port |
+| file-notify | 16 | 2 | Phase 6.4 相当: inotify/kqueue 直接 (Windows 例外) |
+
+* §3 ホットスポット分析
+
+buffer-ops が 82% を占めるが、これは anvil.el が *Emacs を計算機として
+使う* 設計なので自然。Phase 6.1 headless 化の本質は:
+
+** 3.1 Phase 6.1 MVP scope 内の buffer-ops
+MCP tool handler のうち headless 化が現実的なもの:
+- =file-read= / =file-outline= (Phase 5-E 実装済、既に NeLisp 上で動作)
+- =http-get= (string ベース、buffer 依存弱い)
+- =git-log= / =git-status= (subprocess output 解析、buffer 不要)
+- =data-get-path= / =data-set-path= / =state-*= (Phase 5-F.1 で追加予定)
+
+これらは *既に buffer-ops 依存を回避した状態で NeLisp 上で動作している*。
+Phase 6.1 の launcher は既存 Phase 5-E resources をそのまま expose するだけ。
+
+** 3.2 Phase 6.2 anvil-http port scope
+anvil-http Doc 09 には =with-temp-buffer= + =url-retrieve= パターンが
+あり、NeLisp 側は Phase 5-E で =insert-file-contents= + =buffer-string=
+primitive は揃っている。url-retrieve の host 依存をどう handle するかが
+Phase 6.2 の中心課題。
+
+** 3.3 buffer-ops 7903 の伸縮性
+buffer-ops は anvil-browser / anvil-org-index / anvil-memory-engine が
+濃厚に使う。これらは Phase 6.1 headless MVP *scope 外*、Phase 6.2+ で
+個別に port 戦略判断。Phase 6.0 で全部を headless 化する必要なし。
+
+* §4 API 上位 10 (bucket 横断)
+
+audit raw output の =:apis= field から (全 buckets の上位 10 を概算で):
+- =message= (ui-tui) — 500+ 箇所、debug/diagnostic log、stderr redirect で対応
+- =with-current-buffer= (buffer-ops) — 2000+、Phase 6.2+ で置換
+- =with-temp-buffer= (buffer-ops) — 1500+、同上
+- =goto-char= (buffer-ops) — 1500+、同上
+- =insert= (buffer-ops) — 1000+、string concat 代替
+- =point= (buffer-ops) — 500+
+- =run-with-timer= (timer-idle) — 200+、Phase 4 actor scheduler で置換可
+- =save-excursion= (buffer-ops) — 400+、scoped state で代替
+- =save-buffer= (file-save) — 100+、Phase 5-F.1 state + write-region 委譲
+- =transient-define-prefix= (ui-tui) — 20+、CLI flag で完全置換
+
+* §5 Phase 6.x への impact
+
+** 5.1 Phase 6.1 (CLI launcher + MCP stdio、2-4 週)
+- 新規 headless 実装は *0* (Phase 5-E resources をそのまま expose)
+- launcher skeleton (=bin/anvil=) 完成済、あとは config/cache dir 実装
+- blocker なし
+
+** 5.2 Phase 6.2 (anvil-http port、2-3 週)
+- url-retrieve の host 委譲 or HTTP client 自前実装
+- with-temp-buffer → NeLisp string-buffer primitive 必要 (Phase 5-F.2 候補)
+
+** 5.3 Phase 6.3 (distribution polish、1-2 週)
+- launcher の binary 化 (bash → Go/Rust) か bash 継続か
+- GitHub Release workflow
+- install.sh curl|bash
+
+** 5.4 Phase 6.4 (Windows、2-3 週)
+- file-notify 16 hit のみ、Windows は ReadDirectoryChangesW 直接 or
+  Phase 6.x 全体で file-notify 依存を排除
+
+* §6 次 audit 予定
+
+- Phase 6.1 完了時点: MCP tool handler の buffer-ops 依存 re-audit
+- Phase 6.2 完了時点: anvil-http port 後の残 buffer-ops 計測
+- Phase 6.3 直前: release pre-flight として再計測、hotspot 減少を確認
+
+* §7 snapshot 保全
+
+本 snapshot は Phase 6.0 時点の absolute number。bucket 構成は将来
+=docs/design/18-stage-d-audit.el= に API 追加すれば変動するため、
+audit script の commit SHA と併せて解釈すること。
+
+- audit script: =docs/design/18-stage-d-audit.el=
+- 実行コマンド:
+  =emacs --batch -Q -l docs/design/18-stage-d-audit.el --eval '(stage-d-audit-run "/path")'=

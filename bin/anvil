@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# anvil — Stage D Phase 6.0 launcher skeleton (bash, pre-Go/Rust port)
+#
+# Doc 18 Stage D LOCKED 2026-04-25。Option D = Hybrid CLI launcher。
+# user config は $XDG_CONFIG_HOME/anvil/ (Doc 18 §2.9)、state DB は
+# $XDG_CACHE_HOME/nelisp/nelisp-state.db (Doc 17 §2.2) を想定。
+#
+# Phase 6.0 時点では Emacs を user install 前提で検出 (Doc 18 §2.5 B)。
+# Phase 6.2 で anvil-http 込みの完成形、Phase 6.3 で GitHub Release、
+# Phase 6.4 で Windows 対応予定。
+
+set -euo pipefail
+
+ANVIL_VERSION="0.0.1-stage-d-scaffold"
+ANVIL_HOME="${ANVIL_HOME:-$(cd "$(dirname "$0")/.." && pwd)}"
+XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
+ANVIL_CONFIG_DIR="${ANVIL_CONFIG_DIR:-$XDG_CONFIG_HOME/anvil}"
+ANVIL_CACHE_DIR="${ANVIL_CACHE_DIR:-$XDG_CACHE_HOME/nelisp}"
+
+usage() {
+  cat <<EOF
+anvil $ANVIL_VERSION — NeLisp-powered MCP tool launcher (Stage D scaffold)
+
+USAGE:
+  anvil --version              Show version.
+  anvil --help                 Show this help.
+  anvil doctor                 Diagnose environment (emacs / nelisp / dirs).
+  anvil mcp serve              Start MCP stdio server (Claude Code 接続用).
+
+ENV:
+  ANVIL_HOME       Install root (default: auto-detect, $ANVIL_HOME).
+  ANVIL_CONFIG_DIR User config dir (default: \$XDG_CONFIG_HOME/anvil).
+  ANVIL_CACHE_DIR  State cache dir (default: \$XDG_CACHE_HOME/nelisp).
+  EMACS            Emacs binary path (default: auto-detect via PATH).
+
+Stage D Phase 6.0 scaffold — Phase 6.1 で mcp serve 実装完成予定。
+詳細: docs/design/18-stage-d-standalone.org
+EOF
+}
+
+detect_emacs() {
+  if [[ -n "${EMACS:-}" ]] && [[ -x "$EMACS" ]]; then
+    echo "$EMACS"
+    return 0
+  fi
+  if command -v emacs >/dev/null 2>&1; then
+    command -v emacs
+    return 0
+  fi
+  echo "error: emacs binary not found. Install Emacs 29+ and retry." >&2
+  echo "  macOS:  brew install --cask emacs" >&2
+  echo "  Debian: sudo apt install emacs" >&2
+  echo "  Fedora: sudo dnf install emacs" >&2
+  return 1
+}
+
+cmd_doctor() {
+  echo "anvil doctor — environment diagnosis"
+  echo "  version         : $ANVIL_VERSION"
+  echo "  ANVIL_HOME      : $ANVIL_HOME"
+  echo "  config dir      : $ANVIL_CONFIG_DIR $( [[ -d "$ANVIL_CONFIG_DIR" ]] && echo "(exists)" || echo "(not yet)" )"
+  echo "  cache dir       : $ANVIL_CACHE_DIR $( [[ -d "$ANVIL_CACHE_DIR" ]] && echo "(exists)" || echo "(not yet)" )"
+  if emacs_bin="$(detect_emacs)"; then
+    echo "  emacs           : $emacs_bin"
+    "$emacs_bin" --version | head -1 | sed 's/^/                    /'
+  else
+    echo "  emacs           : NOT FOUND"
+    return 1
+  fi
+  local nelisp_src="$ANVIL_HOME/src"
+  if [[ -f "$nelisp_src/nelisp-server.el" ]]; then
+    echo "  nelisp src      : $nelisp_src (OK)"
+  else
+    echo "  nelisp src      : $nelisp_src (MISSING — reinstall required)"
+    return 1
+  fi
+  echo "  status          : ready for 'anvil mcp serve'"
+}
+
+cmd_mcp_serve() {
+  local emacs_bin
+  emacs_bin="$(detect_emacs)"
+  mkdir -p "$ANVIL_CACHE_DIR"
+  local src_dir="$ANVIL_HOME/src"
+  if [[ ! -f "$src_dir/nelisp-server.el" ]]; then
+    echo "error: nelisp-server.el not found under $src_dir" >&2
+    exit 1
+  fi
+  exec "$emacs_bin" \
+    --batch -Q \
+    -L "$src_dir" \
+    --eval "(setq load-prefer-newer t)" \
+    --eval "(setenv \"ANVIL_CONFIG_DIR\" \"$ANVIL_CONFIG_DIR\")" \
+    --eval "(setenv \"ANVIL_CACHE_DIR\" \"$ANVIL_CACHE_DIR\")" \
+    -l nelisp-server \
+    -l nelisp-tools \
+    -f nelisp-server-run-stdio
+}
+
+main() {
+  if [[ $# -eq 0 ]]; then
+    usage
+    exit 0
+  fi
+  case "$1" in
+    --version|-v) echo "anvil $ANVIL_VERSION" ;;
+    --help|-h) usage ;;
+    doctor) cmd_doctor ;;
+    mcp)
+      shift
+      case "${1:-}" in
+        serve) cmd_mcp_serve ;;
+        *)
+          echo "error: unknown mcp subcommand: ${1:-<missing>}" >&2
+          echo "  run 'anvil --help' for usage." >&2
+          exit 2
+          ;;
+      esac
+      ;;
+    *)
+      echo "error: unknown command: $1" >&2
+      echo "  run 'anvil --help' for usage." >&2
+      exit 2
+      ;;
+  esac
+}
+
+main "$@"
