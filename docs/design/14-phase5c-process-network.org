@@ -3,7 +3,7 @@
 #+date: 2026-04-24
 #+options: toc:2
 
-* STATE: DRAFT 2026-04-24 (§2 decisions 9 項目 awaiting user signoff)
+* STATE: DRAFT 2026-04-24 (§2 LOCKED 2026-04-24 全推奨 signoff + §3.1b pool 昇格、§3.0 着手中)
 
 ** 目的
 
@@ -318,20 +318,32 @@ event 化。pipe / PTY 両対応。
 
 期待スコープ: 1.5 週。
 
-** §3.1b (optional) =nelisp-process-pool= (pre-spawned worker)
+** §3.1b =nelisp-process-pool= (pre-spawned worker) — 本 Phase scope 追加
 
 目的: spawn overhead を削るため常駐 worker pool。anvil-worker
-相当。
+相当、anvil.el の NeLisp 移植を直接加速する。
 
 作業:
 - =src/nelisp-process-pool.el= 新設
-- =(nelisp-process-pool-get)= で idle worker を取得、返却で
-  =idle= 復帰。worker crash で自動補充
-- anvil-worker の quick-alive-p / deferred spawn / file-notify
-  freeze 回避知見を port
+- =(cl-defstruct nelisp-process-pool name workers max-size
+    idle-timeout ...)= + per-worker state (idle / busy /
+    spawning / dead)
+- 公開 API: =nelisp-process-pool-create NAME &key SIZE COMMAND=
+  / =nelisp-process-pool-get POOL &key TIMEOUT= /
+  =-process-pool-return POOL WORKER= / =-process-pool-kill POOL=
+  / =-process-pool-stats POOL=
+- worker crash 自動補充: sentinel でdead 検出 → 新規 spawn を
+  =run-at-time 0= で defer (anvil-worker startup-freeze 回避
+  pattern)
+- =quick-alive-p= による fast health-check (heavy probe 禁止、
+  inotify wait 回避)
+- periodic scan で zombie 掃除 (=run-at-time= + configurable
+  interval)
+- ERT: pool create / get / return / crash-refill / pool-kill /
+  stats / timeout behaviour
 
-期待スコープ: 1 週。user 判断で本 Phase に含めるか次 Phase に
-送るか決定 (推奨: 別 Phase、本 Phase は §3.1 core のみに集中)。
+期待スコープ: 1 週。user 判断 *2026-04-24 本 Phase scope に追加*
+(pool 無しで anvil.el を NeLisp port するのは現実的でないため)。
 
 ** §3.2 =nelisp-network= (TCP / TLS / HTTP client)
 
@@ -394,16 +406,19 @@ merge 可。merge 前 audit:
 - [ ] subprocess spawn / pipe read / pipe write / kill / exit
   code が host buffer parity で動作
 - [ ] PTY mode で minimal echo を双方向確認
+- [ ] process pool get / return / crash-refill / stats が
+  anvil-worker 相当 API で動作
 - [ ] network client TCP + TLS (loopback OK) で read / write
 - [ ] HTTP GET が ETag cache hit を return
 - [ ] file-notify event が create / modify / delete / rename
   を正規化
-- [ ] ERT 追加 ~80 本目標 (process 30 + network 25 + file-
-  notify 15 + demo 10)
+- [ ] ERT 追加 ~100 本目標 (process 30 + pool 15 + network 25
+  + file-notify 15 + demo 15)
 - [ ] Phase 5-A+5-B 689 本 + 新規全 pass
 
 merge 順は Phase 5-A / 5-B と同じく各 feat branch を =--no-ff=
-で個別 bubble 化。
+で個別 bubble 化 (7 bubble: doc-draft / 5C.0 / 5C.1 / 5C.1b /
+5C.2 / 5C.3 / 5C.4 / 5C.5)。
 
 * §4 期待成果と next
 
@@ -433,25 +448,26 @@ merge 順は Phase 5-A / 5-B と同じく各 feat branch を =--no-ff=
 - network server (listen + accept) は最小 loopback のみ、full
   server は別 Phase
 
-* §5 User 判断事項 (signoff)
+* §5 User 判断事項 (signoff) — LOCKED 2026-04-24
 
-以下 9 項目を決めて頂ければ Phase 5-C.0 着手。Phase 5-A / 5-B
-と同じく推奨値は提示済、変更したい項目だけ指摘して頂く方式。
+2026-04-24 signoff 完了。9 項目は全推奨で LOCK:
 
-- §2.1 Process spawn: *A* (host wrap)
-- §2.2 Pipe vs PTY: *B* (pipe + PTY on demand)
-- §2.3 I/O 統合: *A* (thin wrapper + actor post)
-- §2.4 Network client: *A* (host wrap + TLS 委譲)
-- §2.5 HTTP client 粒度: *A* (GET/HEAD + cache 最小)
-- §2.6 File notification: *A* (host wrap + 正規化)
-- §2.7 AI-critical path coverage: *C* (MCP + HTTP + file-notify)
-- §2.8 Concurrency: *A* (per-process actor)
-- §2.9 Merge gate: *D* (MCP + HTTP + file-notify 3 路線合流)
+- §2.1 Process spawn: *A* (host wrap) ✓
+- §2.2 Pipe vs PTY: *B* (pipe + PTY on demand) ✓
+- §2.3 I/O 統合: *A* (thin wrapper + actor post) ✓
+- §2.4 Network client: *A* (host wrap + TLS 委譲) ✓
+- §2.5 HTTP client 粒度: *A* (GET/HEAD + cache 最小) ✓
+- §2.6 File notification: *A* (host wrap + 正規化) ✓
+- §2.7 AI-critical path coverage: *C* (MCP + HTTP + file-notify) ✓
+- §2.8 Concurrency: *A* (per-process actor) ✓
+- §2.9 Merge gate: *D* (MCP + HTTP + file-notify 3 路線合流) ✓
 
-signoff 後 §3.0 着手、branch 名 =feat/phase5c.0-pre-req= から
-開始。Phase 5-A / 5-B と同じく per-sub-phase bubble + =--no-ff=
-merge で main に積む。
+*追加決定*: §3.1b =nelisp-process-pool= を本 Phase scope に追加
+(anvil.el NeLisp port 前提で必須判定)。
 
-期待総スコープ: §3.0 (3 日) + §3.1 (1.5 週) + §3.2 (1.5 週) +
-§3.3 (1 週) + §3.4 (1 週) + §3.5 (1 日) = 約 5 週。§3.1b は
-本 Phase scope 外 (別 Phase) を推奨。
+本 Phase 総スコープ: §3.0 (3 日) + §3.1 (1.5 週) + §3.1b (1 週)
++ §3.2 (1.5 週) + §3.3 (1 週) + §3.4 (1 週) + §3.5 (1 日) =
+約 6 週。
+
+signoff 完了、=feat/phase5c.0-pre-req= で §3.0 着手。Phase
+5-A / 5-B と同じく per-sub-phase bubble + =--no-ff= merge。
