@@ -1,0 +1,186 @@
+#+TITLE: Doc 20 — Phase 5-F.3: org/memory/defs port scope audit
+#+AUTHOR: zawatton + Claude
+#+DATE: 2026-04-25
+#+STATE: LOCKED-2026-04-25
+#+STATUS: §2 全 default 採用 LOCKED (user 2026-04-25「anvil-compactが有効であれば実行可能」signoff)、§3 実装は org-read-outline-tree のみ、残り 3 module は明示 DEFER
+
+* §0 要旨
+
+Phase 5-F.2 完遂 (file/git/data 11 tool port、tools/list 24) を受けて
+*org-* / memory-* / defs-* を Phase 5-F.3 で扱う検討*。pure Elisp re-impl
+方針 (Phase 5-F.2 と同じく anvil.el dep なし) を維持しつつ、各 module
+の port 工数を audit。
+
+結論: org/memory/defs 全モジュール port は本 phase scope から *DEFER*。
+理由は §1.3 工数試算。本 phase の actual 成果物は:
+1. 本 audit doc (Doc 20) で 4 module の defer 鉴定 + 再評価条件 LOCK
+2. =org-read-outline-tree= 1 tool (file-outline の org 専用、階層構造 reify)
+   を Phase 5-F.3.1 として ship
+
+Phase 5-F.3.* 残 sub-phase は Stage D Phase 6.1 dogfood 後の user
+判断待ち、Doc 21 以降で個別計画。
+
+* §1 audit (anvil 3 module + 1 補助)
+
+** 1.1 サイズ snapshot
+
+| module | LOC | 性格 |
+|--------+-----+------|
+| =anvil-org.el= | 1851 | tool 11 本 + URI scheme + allowed-files 検証 |
+| =anvil-org-index.el= | 1419 | SQLite + filenotify、anvil-org の高速化 layer |
+| =anvil-memory.el= | 2310 | FTS5 + 16 tool + LLM verdict + jaccard scoring |
+| =anvil-defs.el= | 964 | SQLite walker (elisp/python) + 5 tool |
+| *合計* | *6544* | |
+
+参考: Phase 5-F.1 で port した =anvil-state.el= = 377 LOC (tool 6 本)、
+Phase 5-F.2 で追加した tool 11 本 = +230 LOC。本 phase 候補は
+*1 桁多い*。
+
+** 1.2 各 module の host 依存度
+
+| module | 主 host 依存 | pure Elisp re-impl の難易度 |
+|--------+------------+---------------------------|
+| =anvil-org= | org-mode (org-element / org-current-level / org-get-heading) | 高 (org-mode は ~30k LOC) |
+| =anvil-org-index= | filenotify + sqlite + org-mode | 高 (filenotify は Phase 5-F.4 windows と相互依存) |
+| =anvil-memory= | sqlite + FTS5 + jaccard + (LLM optional) | 中 (sqlite primitive は Phase 5-F.1.0 で揃い済) |
+| =anvil-defs= | sqlite + paredit/scan-sexps + python-mode | 高 (Python AST 別 walker 要) |
+
+** 1.3 各 module の port 工数試算
+
+Phase 5-F.1 (=anvil-state= 377 LOC port、ERT 移植込み) が *1 セッション
+2-3 時間* で完遂したペースを参考に推定:
+
+| module | 工数 | 性質 |
+|--------+------+------|
+| anvil-org tool 4 本 (read のみ、edit 系は除外) | 5-7 日 | URI parser + org-mode bind |
+| anvil-memory tool 6 本 (search/list/scan/save-check/access/duplicates) | 7-10 日 | SQLite schema + FTS5 + jaccard 移植 |
+| anvil-defs tool 3 本 (search/signature/references) | 5-7 日 | SQLite walker + AST navigation |
+| *合計* | *17-24 日* | |
+
+これは *Phase 5-F.1 + 5-F.2 全体 (本日 1 日で完遂) の 17-24 倍工数*。
+本 sub-phase に詰め込むのは scope creep、Stage D Phase 6.1 本体
+(2-4 週) と並行は不可能。
+
+** 1.4 Stage D MVP 観点での価値判断
+
+Doc 18 §2.10 で LOCK した Stage D Option D MVP scope は
+"Phase 5-E 7 tool + anvil-http full port"。org/memory/defs は scope 外。
+Stage D 配布初期に org-mode user は限定的、memory engine も
+non-Emacs user には UX 不明、defs も Emacs Lisp / Python 開発者限定。
+
+→ *Stage D Phase 6.3 release より後* で十分、本 sub-phase で急ぐ動機薄い。
+
+* §2 decisions (STATE = LOCKED 2026-04-25、全 default)
+
+#+begin_example
+§2.1 anvil-org tool port            DEFER → Doc 21 (Phase 5-F.4 候補)
+§2.2 anvil-org-index port           DEFER (anvil-org 後)
+§2.3 anvil-memory tool port         DEFER → Doc 22 (Stage D Phase 6.3 後)
+§2.4 anvil-defs tool port           DEFER → Doc 23 (Phase 5-F.5 候補)
+§2.5 quick win 1 本: org-read-outline-tree (hierarchical) を本 phase で ship
+§2.6 再評価 trigger: Stage D Phase 6.1 dogfood + non-Emacs user feedback
+§2.7 host org-mode (require 'org) は本 phase では使わない (regex のみ)
+§2.8 deferred module の primitive 表追加も DEFER (org-element-* 等)
+§2.9 §2.5 quick win は ERT +3 / smoke +1 / tools/list 24 → 25
+§2.10 sub-phase 5-F.3.1 のみ、5-F.3.2+ は Doc 21+ で個別
+#+end_example
+
+* §3 §2.5 quick win = =org-read-outline-tree=
+
+** 3.1 spec
+
+入力: =path= (string、.org file 想定)
+出力: =:path :total-headlines :tree=
+=:tree= = nested list of plists、各 entry =(:level :title :line :children [...])=
+
+例:
+#+begin_src text
+input: /path/to/file.org
+output:
+  :tree
+    [(:level 1 :title "TL;DR" :line 5 :children [])
+     (:level 1 :title "現状"   :line 10
+      :children
+        [(:level 2 :title "main HEAD" :line 11 :children [])
+         (:level 2 :title "tests"     :line 16 :children [])])
+     ...]
+#+end_src
+
+** 3.2 既存 =file-outline= との差
+
+| | file-outline | org-read-outline-tree |
+|---+--------------+-----------------------|
+| input | 任意 (.el / .org / .md) | .org のみ (validation) |
+| output | flat list | hierarchical tree |
+| 用途 | quick scan | section navigation |
+
+file-outline は flat list (level + title + line) を返すが、entries 間の
+親子関係は推測必要。本 tool は parser side で stack を回して
+=:children= を埋め、call 側がツリー UI に直接食わせられる shape にする。
+
+** 3.3 実装 sketch (pure regex、~50 LOC)
+
+#+begin_src elisp
+(defun nelisp-tools--org-parse-tree (lines)
+  "Convert flat (level title line) entries into nested tree."
+  (let ((stack (list (list :level 0 :children nil))))
+    (dolist (entry lines)
+      (let ((lvl (plist-get entry :level)))
+        (while (>= (plist-get (car stack) :level) lvl)
+          (let ((done (pop stack)))
+            (setf (plist-get (car stack) :children)
+                  (append (plist-get (car stack) :children)
+                          (list (plist-put done :children
+                                          (or (plist-get done :children) nil)))))))
+        (push (append entry (list :children nil)) stack)))
+    ;; flush remaining
+    ...))
+#+end_src
+
+** 3.4 ERT カバー
+
+- =org-read-outline-tree-flat-3-headlines= (level 1 だけの平坦)
+- =org-read-outline-tree-nested-2-levels= (parent / child 関係)
+- =org-read-outline-tree-rejects-non-org-extension= (.md → user-error)
+
+* §4 残 module への path (Doc 21+ で扱う)
+
+** 4.1 anvil-org 部分 port (Doc 21 候補)
+
+read-only tool 4 本 (read-outline / read-headline / read-by-id /
+read-file) を host org-mode primitive 委譲で実装。
+
+- Phase 5-F.4.0 = primitive 表に =org-element-parse-buffer= /
+  =org-map-entries= / =org-current-level= 等追加
+- Phase 5-F.4.1 = =org-read-headline= (URI scheme + section 抽出)
+- Phase 5-F.4.2 = =org-read-by-id= (=:ID:= property lookup)
+- Phase 5-F.4.3 = =org-read-file= (validation 込み)
+
+工数 5-7 日見込み、Stage D Phase 6.2 anvil-http 後 or 並行候補。
+
+** 4.2 anvil-memory 部分 port (Doc 22 候補)
+
+NeLisp 専用 memory engine を新設するか、anvil DB と互換 schema で
+read-only にするかは re-eval 時に判断。
+
+- 候補 A: anvil-memory.el の subset port (search / list / save-check /
+  scan / access / duplicates の 6 tool、jaccard scoring 込み)
+- 候補 B: NeLisp 独自 memory layer (Phase 5-F.1 state を baseline)
+- 候補 C: 完全 deferral (Stage D launcher は memory tool 不要)
+
+工数 7-10 日見込み、Stage D Phase 6.3 release 後 dogfood 結果次第。
+
+** 4.3 anvil-defs 部分 port (Doc 23 候補)
+
+elisp 限定で defs-search / defs-signature の 2 tool だけ port (Python
+support は別 phase)。
+
+工数 4-5 日見込み (SQLite walker は paredit 不要、scan-sexps で十分)。
+
+* §5 関連 doc
+
+- =docs/design/17-phase5f-state-port.org= (Phase 5-F.1、SQLite primitive 基盤)
+- =docs/design/18-stage-d-standalone.org= (§2.10 で headless profile scope)
+- =docs/design/19-phase5f-tool-port.org= (Phase 5-F.2、本 audit の前 sub-phase)
+- =anvil-compact (Doc 36)= memory =project_anvil_compact_phase1_2.md=
+  (本 session 後半の context 圧縮 infra、user 言及)

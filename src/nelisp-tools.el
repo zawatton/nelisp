@@ -98,6 +98,42 @@ Phase 5-F.2.3 helper for `data-list-keys'."
         (setq cur (cddr cur)))
       (nreverse keys))))
 
+(defun nelisp-tools--org-flat-headlines (path)
+  "Scan PATH and return flat list of (:level :title :line) entries.
+Phase 5-F.3.1 helper for `org-read-outline-tree' — pure regex,
+no host org-mode dependency."
+  (with-temp-buffer
+    (insert-file-contents path)
+    (goto-char (point-min))
+    (let (entries)
+      (while (re-search-forward
+              "^\\(\\*+\\)[[:space:]]+\\(.+\\)$"
+              nil t)
+        (push (list :level (length (match-string 1))
+                    :title (match-string 2)
+                    :line (line-number-at-pos))
+              entries))
+      (nreverse entries))))
+
+(defun nelisp-tools--org-build-tree (entries)
+  "Convert flat ENTRIES into nested tree by stack-walking levels.
+Returns a list of root plists, each with a :children list (recursive)."
+  (let* ((root (list :level 0 :title nil :line 0 :children nil))
+         (stack (list root)))
+    (dolist (entry entries)
+      (let ((lvl (plist-get entry :level)))
+        (while (>= (plist-get (car stack) :level) lvl)
+          (pop stack))
+        (let* ((node (list :level lvl
+                           :title (plist-get entry :title)
+                           :line (plist-get entry :line)
+                           :children nil))
+               (parent (car stack)))
+          (setf (plist-get parent :children)
+                (append (plist-get parent :children) (list node)))
+          (push node stack))))
+    (plist-get root :children)))
+
 ;;; Subprocess helper (git tools) -----------------------------------
 
 (defun nelisp-tools--run-command (name command)
@@ -577,6 +613,30 @@ clear; will error if any tool is still registered."
                        (nelisp-tools--plist-tree-set
                         nelisp-tools--data-store keys nil))
                  (list :path raw :deleted t))))
+
+  ;; Phase 5-F.3.1 — org-read-outline-tree (Doc 20 §2.5)
+  ;; Hierarchical org outline (vs flat `file-outline').  Pure regex,
+  ;; no host `org-mode' dependency; stays valid under `emacs --batch -Q'.
+
+  (nelisp-deftool org-read-outline-tree
+    :description "Hierarchical headline tree of an .org file (parent/child structure)."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :path (list :type "string"
+                                          :description "Absolute .org file path"))
+                        :required ["path"])
+    :handler (lambda (args)
+               (let* ((path (alist-get 'path args))
+                      (ext (file-name-extension (or path ""))))
+                 (unless (stringp path)
+                   (error "org-read-outline-tree: missing string `path'"))
+                 (unless (member ext '("org"))
+                   (error "org-read-outline-tree: extension must be .org, got %S" ext))
+                 (let* ((flat (nelisp-tools--org-flat-headlines path))
+                        (tree (nelisp-tools--org-build-tree flat)))
+                   (list :path path
+                         :total-headlines (length flat)
+                         :tree tree)))))
 
   t)
 
