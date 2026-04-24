@@ -1,0 +1,98 @@
+#+title: NeLisp Phase 5-E §3.4 — Claude Code MCP 接続設定
+#+author: zawatton
+#+date: 2026-04-24
+
+* 目的
+
+Claude Code (terminal CLI) に =nelisp-anvil= MCP server を登録し、
+Phase 5-E §3.3 で port した 7 tool (=file-read= / =file-outline= /
+=git-log= / =git-status= / =http-get= / =data-get-path= /
+=data-set-path=) を実接続から呼び出せるようにする手順。
+
+実際の Claude Code 接続検証は user が別 session で実施する項目
+(本 session で完走する自動化範囲外)。本 doc は *設定 snippet
++ 検証 checklist* を記録する。
+
+* Claude Code MCP 設定
+
+=.claude/settings.local.json= (or =~/.claude.json= global) の
+=mcpServers= セクションに以下を追加。
+
+#+begin_src json
+{
+  "mcpServers": {
+    "nelisp-anvil": {
+      "command": "emacs",
+      "args": [
+        "--batch",
+        "-Q",
+        "-L", "/home/madblack-21/Cowork/Notes/dev/nelisp/src",
+        "--eval", "(setq load-prefer-newer t)",
+        "-l", "nelisp-server",
+        "-l", "nelisp-tools",
+        "-f", "nelisp-server-run-stdio"
+      ]
+    }
+  }
+}
+#+end_src
+
+*注意点*:
+- =-L= で渡す path は絶対 path 必須 (Claude Code が cwd を指定
+  しないため、=src/= 相対は解決失敗)。本 repo の具体 path は
+  =$(git rev-parse --show-toplevel)/src= で取得可
+- =command= は PATH から =emacs= を解決。複数 Emacs が入っている
+  環境では fullpath (e.g. =/usr/bin/emacs=) を書く方が確実
+- =--batch -Q= で personal init.el skip、=nelisp-server= は自前
+  primitive + actor 等の内部依存 (=nelisp-actor= / =nelisp-
+  eventloop= / =nelisp-network=) を =require= で自動 load する
+  ため =-l nelisp-server= だけで全て揃う
+- =-l nelisp-tools= を追加しないと tool registry が空で
+  =tools/list= が 0 件返す (§3.3 auto-register のため =require=
+  だけで十分)
+
+* User verification checklist
+
+Phase 5-E §3.4 merge gate を user 側で完走するため、以下の 5
+項目を Claude Code 起動後に検証:
+
+1. [ ] Claude Code で =/mcp= を実行、=nelisp-anvil= が
+   connected 状態で表示
+2. [ ] =/mcp tools nelisp-anvil= で 7 tool が列挙される
+   (=file-read= / =file-outline= / =git-log= / =git-status= /
+   =http-get= / =data-get-path= / =data-set-path=)
+3. [ ] =mcp__nelisp-anvil__git-log=  を limit=3 で call、直近
+   3 commit が返る
+4. [ ] =mcp__nelisp-anvil__file-read= をこの doc の path で
+   call、全文が返る
+5. [ ] =mcp__nelisp-anvil__data-set-path= → =data-get-path= で
+   round-trip (同一 session 内で state が保持)
+
+* 自動 smoke (shell / make)
+
+Claude Code 接続を待たずに MCP protocol 層を検証する smoke:
+
+#+begin_src shell
+# Repo root で:
+make smoke
+
+# Or 直接:
+./test/nelisp-server-smoke.sh
+./test/nelisp-server-smoke.sh --transcript  # 人間可読 transcript
+./test/nelisp-server-smoke.sh --raw         # 生 JSON stdout
+#+end_src
+
+smoke script は 6 request を投入 (initialize /
+notifications/initialized / tools/list / tools/call ×3) し、
+5 JSON reply (notification は reply 無し) + 含有する値の
+正規表現 assertion で動作検証する。Reference transcript は
+=docs/design/16-claude-code-dialog.org= 参照。
+
+* 参考
+
+- Phase 5-E Doc 16 §3.4
+- =src/nelisp-server.el= (公開 API)
+- =src/nelisp-tools.el= (tool 実装)
+- =test/nelisp-server-smoke.sh= (CI-ready smoke)
+- =test/nelisp-server-test.el= (in-process ERT)
+- =test/nelisp-tools-test.el= (tool handler ERT)

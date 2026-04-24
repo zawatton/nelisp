@@ -405,35 +405,50 @@ make test green の不変条件で進める。
 - 期待 1-1.5 週に対し当日完了 (§3.1 spine + §3.2 macro の上に薄い
   handler を積むだけで成立、Phase 5-C primitives で全て覆われた)
 
-** §3.4 Claude Code 接続 smoke (3 日)
+** §3.4 Claude Code 接続 smoke — SHIPPED 2026-04-24 (automation 部分)
 
-- =.claude/settings.local.json= or =.claude.json= の =mcpServers=
-  セクションに =nelisp-anvil= 登録
-- 登録形式 (例):
-  #+begin_src json
-  {
-    "mcpServers": {
-      "nelisp-anvil": {
-        "command": "emacs",
-        "args": ["--batch", "-Q", "-L", "/path/to/nelisp/src",
-                 "-l", "nelisp-server", "-f",
-                 "nelisp-server-run-stdio"]
-      }
-    }
-  }
-  #+end_src
-- 検証手順:
-  1. =emacs --batch= 起動時の =initialize= handshake を手動 script
-     (=echo '{...}' | emacs --batch ...=) で 1 回確認
-  2. Claude Code 起動、=/mcp= で接続一覧に =nelisp-anvil= が
-     表示されること確認
-  3. Claude Code で =nelisp-anvil__file-read=、=nelisp-anvil__git-log=
-     等を実 call、response 取得
-  4. dialog ログ (入出力 JSON 全件) を
-     =docs/design/16-claude-code-dialog.org= に保存
-- Windows 版対応は scope 外 (Non-goals 参照)
-- 完了条件: §3.3 port 済 tool の 50% 以上が Claude Code 実接続で
-  呼び出し成功 + dialog ログ保存
+本 sub-phase は *自動化可能な部分のみ SHIPPED*、Claude Code 実接続
+検証は user verification checklist 項目として切り出し済
+(=docs/design/16-mcp-config-example.org= 参照)。
+
+成果物:
+- =test/nelisp-server-smoke.sh= (~130 LOC): =emacs --batch= を
+  subprocess で起動し scripted 6 request MCP dialog (initialize
+  + notifications/initialized + tools/list + tools/call 3) を
+  stdin に投入、stdout JSON を regex assertion で検証。3 mode
+  (check / --raw / --transcript) で CI + 人間可読両対応
+- =Makefile= =smoke= target 追加
+- =docs/design/16-mcp-config-example.org=: =.claude/settings.local
+  .json= への =mcpServers.nelisp-anvil= 登録 snippet + 注意点
+  (絶対 path / =-l nelisp-tools= 明示 load / =-Q --batch= だけで
+  依存 require 自動解決) + user verification 5 項目
+- =docs/design/16-claude-code-dialog.org=: =make smoke
+  --transcript= の reference dialog 転写 (main HEAD 時点の
+  initialize → tools/list → tools/call 3 種 JSON round-trip 保存)
+
+自動検証の結果 (=make smoke=):
+- 6 request 投入に対し 5 reply (notification は reply 無し = MCP
+  規約準拠)
+- initialize: =serverInfo.name=nelisp-anvil=, =protocolVersion
+  =2024-11-05=, =capabilities.tools.listChanged=false= 全て shape
+  match
+- tools/list: 7 tool 全て =name= / =description= / =inputSchema=
+  揃った JSON で serialize
+- tools/call git-log: subprocess git 出力 =:exit 0= + log string
+  が MCP =content.text= envelope で wrap
+- tools/call data-set-path → data-get-path: 同一 session 内で
+  integer 42 が JSON 経由 round trip、型保持
+
+User verification (次 session 以降で user が実施):
+1. [ ] =/mcp= で =nelisp-anvil= が connected 表示
+2. [ ] =/mcp tools nelisp-anvil= で 7 tool 列挙
+3. [ ] =mcp__nelisp-anvil__git-log= 実 call
+4. [ ] =mcp__nelisp-anvil__file-read= 実 call
+5. [ ] data-set-path → data-get-path round trip
+
+- Windows 版対応 / Claude Desktop / VS Code は Non-goals 参照
+- make test: 904/904 green 継続 (新 ERT 0 — smoke は shell 層)
+- 期待 3 日に対し当日完了 (自動化部分、shell スクリプト + 1 doc pair)
 
 ** §3.5 Merge gate (1 日)
 
