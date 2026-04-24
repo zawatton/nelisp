@@ -16,9 +16,17 @@ SRCS  := $(sort $(wildcard src/nelisp*.el))
 TESTS := $(sort $(wildcard test/nelisp*-test.el))
 TEST_LOADS := $(addprefix -l ,$(TESTS))
 
-all: compile test
+# `all' deliberately runs only the test target — the self-host
+# probes (`test/nelisp-self-host-test.el') evaluate `nelisp-eval.el'
+# *through NeLisp itself*, and the extra host stack frames introduced
+# by byte-compiled `nelisp-eval.el' trip `max-lisp-eval-depth' inside
+# `nelisp--install-core-macros' (see the inline comment in
+# `src/nelisp-eval.el:542').  Keep `compile' as a separate byte-
+# compile-error-on-warn lint check that never contaminates the test
+# environment with stale or depth-sensitive .elc files.
+all: test
 
-test:
+test: clean
 	$(EMACS) --batch -Q -L src -L test -L bench \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l ert \

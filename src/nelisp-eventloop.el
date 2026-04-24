@@ -70,6 +70,15 @@ verbatim; any other value is `format'ed with %s."
    ((integerp data) (char-to-string data))
    (t (format "%s" data))))
 
+;;; State vars (hoisted above dispatch — used by the `quit' event
+;;; branch before the synchronous loop macros themselves bind them) -
+
+(defvar nelisp-eventloop--queue nil
+  "Pending events, FIFO.")
+
+(defvar nelisp-eventloop--running nil
+  "Non-nil while the synchronous loop is draining the queue.")
+
 ;;; Dispatch core -----------------------------------------------------
 
 (defun nelisp-eventloop--dispatch (ev)
@@ -90,12 +99,6 @@ synchronous loop (`nelisp-eventloop-run-scripted') exits cleanly."
     (_ nil)))
 
 ;;; Synchronous queue loop -------------------------------------------
-
-(defvar nelisp-eventloop--queue nil
-  "Pending events, FIFO.")
-
-(defvar nelisp-eventloop--running nil
-  "Non-nil while the synchronous loop is draining the queue.")
 
 (defun nelisp-eventloop-enqueue (ev)
   "Append EV to the synchronous queue."

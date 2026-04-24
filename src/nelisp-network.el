@@ -220,10 +220,11 @@ captured, the request issues `If-None-Match' for 304 short-circuit.
 HEADERS is an alist of (NAME . VALUE) appended verbatim.  TIMEOUT
 (seconds) defaults to 10.  The TLS path is host-handled; this
 wrapper is content-agnostic."
+  ;; url-retrieve-synchronously takes TIMEOUT as its 4th positional
+  ;; argument; the url library has no `url-request-timeout' var.
   (let* ((cache (gethash url nelisp-http--cache))
          (ttl (or cache-ttl 0))
-         (url-request-method "GET")
-         (url-request-timeout (or timeout 10)))
+         (url-request-method "GET"))
     (cond
      ;; 1. Fresh TTL hit.
      ((and cache (nelisp-http--cache-fresh-p cache))
@@ -271,7 +272,6 @@ wrapper is content-agnostic."
   "Fetch URL via HEAD; return a plist (:status :headers)."
   (let* ((url-request-method "HEAD")
          (url-request-extra-headers headers)
-         (url-request-timeout (or timeout 10))
          (buf (ignore-errors
                 (url-retrieve-synchronously url nil t
                                             (or timeout 10)))))
