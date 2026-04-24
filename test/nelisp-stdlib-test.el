@@ -588,6 +588,43 @@ removes it."
              (nelisp-eval
               '(alist-get "k" '(("k" . 42) ("z" . 0)) nil nil #'equal)))))
 
+;;;; Phase 5-F.1.0 — sqlite primitives (anvil-state port 前提)
+
+(ert-deftest nelisp-stdlib-phase5f10-sqlite-available-p ()
+  "`sqlite-available-p' exposed as NeLisp primitive (Emacs 29+ で t)。"
+  (skip-unless (fboundp 'sqlite-available-p))
+  (should (eq (nelisp-eval '(sqlite-available-p))
+              (sqlite-available-p))))
+
+(ert-deftest nelisp-stdlib-phase5f10-sqlite-open-close-roundtrip ()
+  "`sqlite-open' → `sqlitep' predicate → `sqlite-close' の round trip。"
+  (skip-unless (and (fboundp 'sqlite-available-p) (sqlite-available-p)))
+  (let ((tmp (make-temp-file "nelisp-sqlite-test-" nil ".db")))
+    (unwind-protect
+        (let ((db (nelisp-eval `(sqlite-open ,tmp))))
+          (should (nelisp-eval `(sqlitep ',db)))
+          (should (eq t (nelisp-eval `(sqlite-close ',db)))))
+      (ignore-errors (delete-file tmp)))))
+
+(ert-deftest nelisp-stdlib-phase5f10-sqlite-execute-select-basic ()
+  "`sqlite-execute' で CREATE + INSERT、`sqlite-select' で読み出し。"
+  (skip-unless (and (fboundp 'sqlite-available-p) (sqlite-available-p)))
+  (let ((tmp (make-temp-file "nelisp-sqlite-test-" nil ".db")))
+    (unwind-protect
+        (let ((db (nelisp-eval `(sqlite-open ,tmp))))
+          (nelisp-eval
+           `(sqlite-execute
+             ',db "CREATE TABLE t(k TEXT PRIMARY KEY, v TEXT)"))
+          (nelisp-eval
+           `(sqlite-execute
+             ',db "INSERT INTO t(k, v) VALUES ('a', '1')"))
+          (let ((rows (nelisp-eval
+                       `(sqlite-select
+                         ',db "SELECT k, v FROM t ORDER BY k"))))
+            (should (equal rows '(("a" "1")))))
+          (nelisp-eval `(sqlite-close ',db)))
+      (ignore-errors (delete-file tmp)))))
+
 (provide 'nelisp-stdlib-test)
 
 ;;; nelisp-stdlib-test.el ends here

@@ -1,0 +1,268 @@
+#+TITLE: Doc 17 — Phase 5-F.1: anvil-state (SQLite KV) port to NeLisp
+#+AUTHOR: zawatton + Claude
+#+DATE: 2026-04-25
+#+STATE: DRAFT
+#+STATUS: §1 / §3 / §4 drafted、§2 decisions 全 default 提示 (user LOCK 待ち)
+
+* §0 要旨
+
+Phase 5-F 4 候補 (2-A tool port / 2-B worker-backed / 2-C state port /
+2-D Windows) のうち、開発効率評価で最上位だった *2-C = anvil-state
+SQLite KV port* を Phase 5-F.1 として設計。
+
+目的: NeLisp に名前空間・TTL 付き永続 KV store を導入し、下流の
+memory / cache / session / anvil-http cache / Stage D launcher config
+等を unblock する。
+
+着手理由 (2026-04-25 effect analysis 結果):
+- 期間最短 (1 週)、リスク最低 (SBCL-style host 委譲パターン確立済)
+- compound 効果最大 (3-4 下流 module を 1 投資で unblock)
+- *Stage A (NeLisp v1.0) と Stage D (standalone binary) の両方に効く
+  唯一の候補* — Phase 6.x launcher の user config / MCP session cache
+  も同じ state layer を再利用
+
+* §1 motivation
+
+** 1.1 現状 gap
+
+NeLisp Phase 5-C で file-system / network / process primitives は揃った
+が、*永続 state 層が無い*。=anvil-state= は anvil.el で Doc 08 SHIPPED
+(~/.emacs.d/anvil-state.db)、namespace + TTL + prin1 serialize のクリーン
+な API (set/get/delete/list-keys/count/vacuum/...) が既に固まっている。
+
+これを NeLisp 側にそのまま port することで:
+- Phase 5-F.2 tool port で =anvil-memory= や =anvil-http= cache が
+  backing store 付きで port 可能に
+- Stage D Phase 6.1 CLI launcher の user config persistence が使える
+- Phase 5-E MCP server (nelisp-anvil) に SQLite-backed tool を追加可能
+
+** 1.2 前提 gap (Phase 5-F.1.0)
+
+NeLisp の primitive table (=src/nelisp-eval.el= =nelisp--primitive-symbols=)
+に *sqlite-* primitive が無い*。Phase 5-C.0 で process / network /
+filesystem は追加されたが sqlite は skip されていた。
+
+5-F.1.0 = sqlite primitive 追加 (host 委譲、SBCL-style):
+=sqlite-available-p= / =sqlite-open= / =sqlite-close= / =sqlite-execute=
+/ =sqlite-select= / =sqlitep=
+
+これは 5-F.1 本体 (core port) の blocking 前提。約 1-2 時間 work。
+
+** 1.3 Stage D との相乗
+
+Stage D Phase 6.1 launcher は以下の state を要する:
+- user config (=~/.config/anvil/config.el= 相当、XDG locked in Doc 18 §2.9)
+- MCP session cache (tools/list 結果、接続 metadata)
+- anvil-http cache (Phase 6.2 で port 対象)
+- 起動メトリクス / crash report
+
+これらを *全て Phase 5-F.1 の state layer で吸収可能*。Stage D 側で
+独自 KV 実装する必要がなくなる。
+
+* §2 decisions (STATE = OPEN, user signoff 待ち)
+
+全項目 Claude 推奨 default 提示。LOCK 時に =LOCKED-2026-XX-XX= に更新。
+
+** §2.1 Port 範囲
+- A. 最小 subset (set/get/delete のみ)
+- *B. 全 public API port (set/get/delete/delete-ns/list-ns/list-keys/count/vacuum/enable/disable、cl-defun 含む) ← RECOMMENDED*
+- C. B + 内部 helper も公開 (--serialize/--deserialize 等)
+
+推奨理由: anvil.el の public 10 関数は下流 tool で全部使われている。
+subset だと後で再 port の手間、full だと差分少ない。
+
+** §2.2 DB path default
+- A. =user-emacs-directory= 追従 (anvil.el と同じ =~/.emacs.d/nelisp-state.db=)
+- *B. =~/.cache/nelisp/nelisp-state.db= (XDG cache、Emacs 非依存) ← RECOMMENDED*
+- C. env var =NELISP_STATE_DB= 必須 (explicit)
+
+推奨理由: Stage D Phase 6.1 で Emacs 非前提 launcher から使う可能性があるため、
+=user-emacs-directory= 依存は外す方が無難。XDG cache は Linux/macOS 共通。
+
+** §2.3 schema 互換性
+- A. anvil-state schema v1 と完全同一 (table 名 / column 名 / DDL)
+- *B. 同一 + =source= 列追加 ("nelisp" / "anvil" タグ、将来 merge 用) ← RECOMMENDED*
+- C. 独自 schema
+
+推奨理由: A でも実用上問題ないが、将来 anvil と NeLisp の state DB を
+merge するケース (Stage D 配布時、既存 Emacs 設定と合流) を見越して
+=source= 追加は費用対効果良い。
+
+** §2.4 cl-defun サポート
+- A. cl-lib 相当を NeLisp 側に port (Phase 5-F.1.0 scope 外、別 Phase)
+- *B. plist 引数で代替 =(nelisp-state-set KEY VAL &optional OPTS)= で =OPTS= に =(:ns NS :ttl TTL)= ← RECOMMENDED*
+- C. host cl-lib 委譲 (primitive table に追加)
+
+推奨理由: B が最小変更。anvil-state の =cl-defun= は syntactic sugar、
+semantics は plist と同じ。A は cl-lib port 自体別 project、C は host
+依存増える。
+
+** §2.5 macro =with-transaction=
+- A. NeLisp defmacro でそのまま port
+- *B. defmacro port + テスト 1 本追加 ← RECOMMENDED*
+- C. 関数に展開 (callbackスタイル)
+
+推奨理由: NeLisp の defmacro は Phase 2 で安定、anvil.el の
+=with-transaction= は 14 行の単純展開。そのまま port が最小変更。
+
+** §2.6 prin1 / read 依存
+- A. NeLisp =prin1-to-string= + =read-from-string= primitive 使用 (既存)
+- *B. A + serialize 前 round-trip validation (anvil.el と同じ) ← RECOMMENDED*
+- C. JSON-based serialize (NeLisp-specific、host 非互換)
+
+推奨理由: B は安全、anvil.el と互換。C は performance 利益なし、
+anvil との DB file 相互運用性も失われる。
+
+** §2.7 MCP tool expose
+- *A. Phase 5-F.1.1 完了時点で =state-set= / =state-get= / =state-delete= /
+  =state-list-ns= / =state-list-keys= / =state-count= の 6 tool 追加 ← RECOMMENDED*
+- B. Phase 5-F.1.1 は core port のみ、MCP expose は別 sub-phase
+- C. tool expose しない (Elisp API のみ)
+
+推奨理由: A は marginal cost 低く、Phase 5-E の =data-get-path= /
+=data-set-path= と同じ pattern で =nelisp-deftool= 経由で expose できる
+(2-3 時間 work)。非 Emacs user 経由での dogfood 価値大。
+
+** §2.8 test 戦略
+- *A. anvil-state-test.el の ERT を移植 + NeLisp 固有 (cl-defun → plist 互換) 追加 ← RECOMMENDED*
+- B. NeLisp 用に書き直し (ゼロベース)
+- C. smoke のみ
+
+推奨理由: anvil-state-test.el には 15+ ERT あり network of invariants
+が確立。移植コストは小さい。
+
+** §2.9 DB file ライフサイクル
+- A. 初回 =nelisp-state-get= で open、process 終了で close (lazy)
+- *B. 明示 =nelisp-state-enable= / =-disable= ← RECOMMENDED*
+- C. process 終了 hook で自動 close
+
+推奨理由: B が anvil-state と semantics 一致、testability も高い
+(test 間で enable/disable 可能)。
+
+** §2.10 primitive 追加内容 (5-F.1.0 scope)
+
+追加する sqlite primitive (host 委譲):
+- =sqlite-available-p= (predicate、環境チェック)
+- =sqlite-open= (factory)
+- =sqlite-close= (finalizer)
+- =sqlitep= (type predicate)
+- =sqlite-execute= (write)
+- =sqlite-select= (read)
+
+追加しない (YAGNI):
+- =with-sqlite-transaction= (memory feedback 済、全環境で非互換、
+  手書き =BEGIN=/=COMMIT= で代替)
+- =sqlite-pragma= (現行 anvil-state は使用せず)
+- =sqlite-load-extension= (security surface 大)
+
+** §2 LOCK 後 action
+
+1. 本 doc top =#+STATE: LOCKED-2026-XX-XX= に更新
+2. §2 各 decision を =A/B/C= 付きで確定
+3. Phase 5-F.1.0 着手 (primitive 追加 + ERT)
+4. Phase 5-F.1.1 着手 (=src/nelisp-state.el= 新設)
+5. Phase 5-F.1.2 着手 (MCP tool 6 本 expose)
+
+* §3 phase 分割 (Phase 5-F.1.0 → .1 → .2)
+
+** Phase 5-F.1.0 — sqlite primitive 追加 (pre-req、1-2 時間)
+- =src/nelisp-eval.el= =nelisp--primitive-symbols= に 6 primitive 追加
+- =test/nelisp-stdlib-test.el= ERT +3 (sqlite-open/execute/select round-trip)
+- make test green
+
+** Phase 5-F.1.1 — core port (3-5 日)
+- =src/nelisp-state.el= 新設 (~300 LOC、anvil-state.el 1:1 port)
+- cl-defun → plist optional 方式 (§2.4 B)
+- schema に =source= column 追加 (§2.3 B)
+- DB path = XDG cache (§2.2 B)
+- =test/nelisp-state-test.el= (+15 ERT、anvil-state-test 移植)
+
+** Phase 5-F.1.2 — MCP tool expose (2-3 時間)
+- =src/nelisp-tools.el= に 6 tool 追加:
+  - =state-set= / =state-get= / =state-delete=
+  - =state-list-ns= / =state-list-keys= / =state-count=
+- =test/nelisp-tools-test.el= (+6 ERT)
+- make smoke PASS (既存 tool list が 7 → 13 に)
+
+** 合計工数
+Phase 5-F.1.0 ~ .1.2 = *実工数 1 週*、cal 月 1.5-2 週 (Stage A 60% 比率)。
+
+* §4 API surface 対応表
+
+anvil-state.el (377 LOC) → nelisp-state.el (予定 ~320 LOC):
+
+| anvil-state symbol | NeLisp 対応 | 備考 |
+|--------------------+-------------+------|
+| anvil-state-db-path | nelisp-state-db-path | defcustom → defvar (customize 未対応) |
+| anvil-state-schema-version | nelisp-state-schema-version | defconst、v1 → v1 |
+| anvil-state-default-namespace | nelisp-state-default-namespace | defconst |
+| anvil-state--db | nelisp-state--db | defvar |
+| anvil-state--require-sqlite | nelisp-state--require-sqlite | defun |
+| anvil-state--open | nelisp-state--open | defun |
+| anvil-state--close | nelisp-state--close | defun |
+| anvil-state--db | nelisp-state--db-handle | 衝突回避 rename |
+| anvil-state--with-transaction | nelisp-state--with-transaction | defmacro port |
+| anvil-state--ddl | nelisp-state--ddl | defconst + source 列追加 (§2.3 B) |
+| anvil-state--ensure-schema | nelisp-state--ensure-schema | defun |
+| anvil-state--migrate | nelisp-state--migrate | defun |
+| anvil-state--serialize | nelisp-state--serialize | defun |
+| anvil-state--deserialize | nelisp-state--deserialize | defun |
+| anvil-state--check-string | nelisp-state--check-string | defun |
+| anvil-state--ns | nelisp-state--ns | defun |
+| anvil-state--expires-at | nelisp-state--expires-at | defun |
+| anvil-state-set | nelisp-state-set | cl-defun → plist optional (§2.4 B) |
+| anvil-state-get | nelisp-state-get | 同上 |
+| anvil-state-delete | nelisp-state-delete | 同上 |
+| anvil-state-delete-ns | nelisp-state-delete-ns | defun |
+| anvil-state-list-ns | nelisp-state-list-ns | defun |
+| anvil-state-list-keys | nelisp-state-list-keys | cl-defun → plist optional |
+| anvil-state-count | nelisp-state-count | defun |
+| anvil-state-vacuum | nelisp-state-vacuum | defun |
+| anvil-state-enable | nelisp-state-enable | defun |
+| anvil-state-disable | nelisp-state-disable | defun |
+
+* §5 下流 unblock 予定
+
+Phase 5-F.1 完了で以下が port 可能になる (Phase 5-F.2 以降の候補):
+
+| module | 所要 (post-5-F.1) | 価値 |
+|--------+-------------------+------|
+| anvil-memory (Doc 29) | 2-3 週 | AI memory layer、MCP tool 16 本 |
+| anvil-http cache (Doc 09) | 1 週 | http-fetch result cache + Stage D Phase 6.2 で再利用 |
+| anvil-session (Doc 17 anvil) | 2 週 | Claude Code session snapshot/resume |
+| Stage D launcher config | 0 (そのまま使える) | Phase 6.1 で即利用 |
+
+Phase 5-F.1 の 1 週投資で 4+ 下流 unlock、compound 効果実測。
+
+* §6 Stage D との整合
+
+Doc 18 §2.9 (config location = XDG =~/.config/anvil/=) と本 doc §2.2
+(DB path = XDG =~/.cache/nelisp/=) で XDG 規約統一。
+
+Stage D Phase 6.1 launcher は:
+- config → =~/.config/anvil/config.el= (Doc 18)
+- state → =~/.cache/nelisp/nelisp-state.db= (本 doc、launcher から参照)
+
+の 2 path を XDG に従って配置、anvil.el (Emacs 依存) との DB file
+co-existence 可能 (binary 層互換、schema =source= 列で区別)。
+
+* §7 先例 / 参考
+
+- anvil.el =docs/design/08-anvil-state.org= (SHIPPED、仕様 source of truth)
+- NeLisp Phase 5-E Doc 16 =docs/design/16-phase5e-anvil-port.org=
+  (port pattern 参考、deftool macro の使い方)
+- memory =feedback_sqlite_with_transaction_not_portable.md=
+  (with-sqlite-transaction 非移植性、手書き BEGIN/COMMIT で回避)
+- memory =project_anvil_state_phase1_2.md= (anvil-state Phase 1/2 記録)
+
+* §8 関連 doc
+
+- =docs/05-roadmap.org= Phase 5 scope、Phase 5-F.1 完了で §6 "v1.0
+  完遂 3 条件" の #3 "AI-critical path 5 領域" のうち *永続 state* が
+  1 つ埋まる
+- =docs/design/14-phase5c-process-network.org= (Phase 5-C primitive
+  追加の precedent、5-F.1.0 も同じ pattern)
+- =docs/design/16-phase5e-anvil-port.org= (nelisp-deftool + MCP tool
+  expose の precedent、5-F.1.2 で再利用)
+- =docs/design/18-stage-d-standalone.org= (Stage D 並行 track、§2.9
+  XDG config と本 doc §2.2 XDG cache で整合)

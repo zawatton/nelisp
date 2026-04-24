@@ -679,6 +679,11 @@ dispatches straight into the VM."
     line-number-at-pos match-string
     ;; Alist access (Phase 5-E.0 — JSON-RPC params / MCP tool args)
     alist-get
+    ;; SQLite primitives (Phase 5-F.1.0 — anvil-state port 前提、
+    ;; host 委譲 SBCL-style。with-sqlite-transaction は移植性不安定
+    ;; のため primitive 化せず、手書き BEGIN/COMMIT で回避)
+    sqlite-available-p sqlitep sqlite-open sqlite-close
+    sqlite-execute sqlite-select
     ;; Error plumbing — `error' / `signal' / `user-error' / `define-error'
     ;; all hook into the host condition system that `condition-case'
     ;; already knows how to catch.
