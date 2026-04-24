@@ -56,6 +56,109 @@ A caller may override this per-call via `:timeout'."
 (defconst nelisp-worker--lanes '(:read :write :batch)
   "All lane keywords known to this module.  Order is stable.")
 
+;;; Classifier (Phase 5-D.2, ported from anvil-worker.el) ------------
+;;
+;; Patterns regex-match against the `prin1-to-string' of the request
+;; expression.  Precedence is write > batch > read > fallback per
+;; anvil-worker.el; an expression that mixes mutations with reads is
+;; routed to :write for safety.  The `anvil-' prefix is optional in
+;; every pattern so the same rules apply whether the call goes to an
+;; anvil-port handler or a native NeLisp primitive.
+
+(defcustom nelisp-worker-classify-read-patterns
+  '("(\\(?:anvil-\\)?org-read-\\(?:by-id\\|file\\|outline\\|headline\\)\\b"
+    "(\\(?:anvil-\\)?org-index-search\\b"
+    "(\\(?:anvil-\\)?file-read\\b"
+    "(\\(?:anvil-\\)?file-outline\\b"
+    "(\\(?:anvil-\\)?buffer-read\\b"
+    "(\\(?:anvil-\\)?buffer-list-modified\\b"
+    "(\\(?:anvil-\\)?elisp-describe-\\(?:function\\|variable\\)\\b"
+    "(\\(?:anvil-\\)?elisp-info-lookup-symbol\\b"
+    "(\\(?:anvil-\\)?elisp-read-source-file\\b"
+    "(\\(?:anvil-\\)?elisp-get-function-definition\\b"
+    "(\\(?:anvil-\\)?sqlite-query\\b"
+    "(\\(?:anvil-\\)?org-get-\\(?:allowed-files\\|tag-config\\|todo-config\\)\\b")
+  "Regexes that flag EXPRESSION as a read-only `:read'-lane call.
+Matched in document order; the first matching pattern wins.  When
+no pattern matches the classifier falls back to
+`nelisp-worker-classify-unknown-fallback'."
+  :type '(repeat regexp)
+  :group 'nelisp-worker)
+
+(defcustom nelisp-worker-classify-write-patterns
+  '("(\\(?:anvil-\\)?file-replace-\\(?:string\\|regexp\\)\\b"
+    "(\\(?:anvil-\\)?file-insert-at-line\\b"
+    "(\\(?:anvil-\\)?file-delete-lines\\b"
+    "(\\(?:anvil-\\)?file-append\\b"
+    "(\\(?:anvil-\\)?file-prepend\\b"
+    "(\\(?:anvil-\\)?file-batch\\(?:-across\\)?\\b"
+    "(\\(?:anvil-\\)?file-ensure-import\\b"
+    "(\\(?:anvil-\\)?json-object-add\\b"
+    "(\\(?:anvil-\\)?buffer-save\\b"
+    "(\\(?:anvil-\\)?org-edit-body\\b"
+    "(\\(?:anvil-\\)?org-add-todo\\b"
+    "(\\(?:anvil-\\)?org-rename-headline\\b"
+    "(\\(?:anvil-\\)?org-update-todo-state\\b"
+    "(save-buffer\\b"
+    "(write-region\\b"
+    "(write-file\\b"
+    "(delete-file\\b"
+    "(rename-file\\b"
+    "(make-directory\\b")
+  "Regexes that flag EXPRESSION as a mutating `:write'-lane call.
+Tested *before* the read patterns so an expression that mixes
+read+write operations is still routed to write."
+  :type '(repeat regexp)
+  :group 'nelisp-worker)
+
+(defcustom nelisp-worker-classify-batch-patterns
+  '("(byte-compile\\(?:-file\\)?\\b"
+    "(org-babel-tangle\\b"
+    "(\\(?:anvil-\\)?elisp-byte-compile-file\\b")
+  "Regexes that flag EXPRESSION as a batch-pool candidate.
+Routed to `:batch' only when the POOL's batch lane is non-empty;
+otherwise the classifier silently downgrades to `:write'."
+  :type '(repeat regexp)
+  :group 'nelisp-worker)
+
+(defcustom nelisp-worker-classify-unknown-fallback :write
+  "Lane chosen by `nelisp-worker-classify' when no pattern matches.
+Defaults to `:write' (the safe side) so an unrecognised expression
+that happens to mutate state never sneaks into a read replica."
+  :type '(choice (const :read) (const :write) (const :batch))
+  :group 'nelisp-worker)
+
+(defun nelisp-worker--match-any (expression patterns)
+  "Return non-nil if EXPRESSION (a Lisp form) matches any PATTERNS.
+Stringifies with `prin1-to-string' first so callers pass raw forms."
+  (let ((s (prin1-to-string expression)))
+    (cl-some (lambda (re) (string-match-p re s)) patterns)))
+
+(defun nelisp-worker-classify (pool expression)
+  "Return the lane symbol that should handle EXPRESSION under POOL.
+
+Resolution order (first match wins):
+  1. `nelisp-worker-classify-write-patterns' → `:write'
+  2. `nelisp-worker-classify-batch-patterns' → `:batch'
+     (downgraded to `:write' when POOL's batch lane is empty)
+  3. `nelisp-worker-classify-read-patterns'  → `:read'
+  4. otherwise → `nelisp-worker-classify-unknown-fallback'"
+  (cond
+   ((nelisp-worker--match-any
+     expression nelisp-worker-classify-write-patterns)
+    :write)
+   ((nelisp-worker--match-any
+     expression nelisp-worker-classify-batch-patterns)
+    (let ((batch-size
+           (and (nelisp-worker-pool-batch-pool pool)
+                (nelisp-process-pool-size
+                 (nelisp-worker-pool-batch-pool pool)))))
+      (if (and batch-size (> batch-size 0)) :batch :write)))
+   ((nelisp-worker--match-any
+     expression nelisp-worker-classify-read-patterns)
+    :read)
+   (t nelisp-worker-classify-unknown-fallback)))
+
 (defvar nelisp-worker--child-script
   (expand-file-name
    "nelisp-worker-child.el"
@@ -188,15 +291,20 @@ Arguments:
 
 ;;; Request / response ----------------------------------------------
 
-(cl-defun nelisp-worker-call (pool expression &key
-                                              (lane :write)
-                                              timeout)
-  "Evaluate EXPRESSION inside a POOL worker on LANE and return the
-result value.  Blocks the current host thread up to TIMEOUT
-seconds (default `nelisp-worker-call-timeout').  Signals
-`nelisp-worker-timeout' on wedge or `nelisp-worker-error' on the
-child's `:error' reply."
-  (let* ((lane-pool (nelisp-worker--lane-pool pool lane))
+(cl-defun nelisp-worker-call (pool expression &key lane timeout)
+  "Evaluate EXPRESSION inside a POOL worker and return the result.
+
+Lane selection:
+  - when LANE is supplied (`:read' / `:write' / `:batch') it is
+    used verbatim (§2.2 C explicit override)
+  - when LANE is nil the `nelisp-worker-classify' regex classifier
+    picks the lane (§2.2 C classifier path)
+
+Blocks the current host thread up to TIMEOUT seconds (default
+`nelisp-worker-call-timeout').  Signals `nelisp-worker-timeout'
+on wedge or `nelisp-worker-error' on the child's `:error' reply."
+  (let* ((lane (or lane (nelisp-worker-classify pool expression)))
+         (lane-pool (nelisp-worker--lane-pool pool lane))
          (worker (nelisp-process-pool-get lane-pool)))
     (unless worker
       (signal 'nelisp-worker-busy (list lane)))

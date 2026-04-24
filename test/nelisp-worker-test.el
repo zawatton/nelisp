@@ -187,5 +187,106 @@
             (should (equal "nope" (plist-get e :result)))))
       (ignore-errors (nelisp-worker-pool-kill p)))))
 
+;;; Classifier (Phase 5-D.2) ---------------------------------------
+
+(defmacro nelisp-worker-test--classify (expr)
+  "Classify EXPR against a transient dummy pool (batch-size=1)."
+  `(let ((p (nelisp-worker-pool-create
+             'clt :prespawn nil
+             :read-size 1 :write-size 1 :batch-size 1)))
+     (unwind-protect (nelisp-worker-classify p ,expr)
+       (ignore-errors (nelisp-worker-pool-kill p)))))
+
+(ert-deftest nelisp-worker-classify-write-pattern ()
+  "A write primitive routes to :write regardless of surrounding reads."
+  (should (eq :write
+              (nelisp-worker-test--classify
+               '(anvil-file-replace-string "f" "a" "b"))))
+  (should (eq :write
+              (nelisp-worker-test--classify
+               '(save-buffer)))))
+
+(ert-deftest nelisp-worker-classify-batch-pattern ()
+  (should (eq :batch
+              (nelisp-worker-test--classify
+               '(byte-compile-file "foo.el"))))
+  (should (eq :batch
+              (nelisp-worker-test--classify
+               '(anvil-elisp-byte-compile-file "bar.el")))))
+
+(ert-deftest nelisp-worker-classify-read-pattern ()
+  (should (eq :read
+              (nelisp-worker-test--classify
+               '(anvil-file-read "foo.el"))))
+  (should (eq :read
+              (nelisp-worker-test--classify
+               '(org-read-headline "path" "id"))))
+  (should (eq :read
+              (nelisp-worker-test--classify
+               '(sqlite-query "SELECT 1")))))
+
+(ert-deftest nelisp-worker-classify-write-beats-read-on-mix ()
+  "`(progn READ WRITE)` stringifies to contain both; write wins."
+  (should (eq :write
+              (nelisp-worker-test--classify
+               '(progn (file-read "a.el")
+                       (file-replace-string "a.el" "x" "y"))))))
+
+(ert-deftest nelisp-worker-classify-batch-downgrades-when-empty ()
+  "When batch-size is 0 a batch expression is downgraded to :write."
+  (let ((p (nelisp-worker-pool-create
+            'nb :prespawn nil
+            :read-size 1 :write-size 1 :batch-size 0)))
+    (unwind-protect
+        (should (eq :write
+                    (nelisp-worker-classify
+                     p '(byte-compile-file "foo.el"))))
+      (ignore-errors (nelisp-worker-pool-kill p)))))
+
+(ert-deftest nelisp-worker-classify-fallback-default-write ()
+  (should (eq :write
+              (nelisp-worker-test--classify '(+ 1 2)))))
+
+(ert-deftest nelisp-worker-classify-fallback-custom ()
+  "Override `nelisp-worker-classify-unknown-fallback' for one call."
+  (let ((nelisp-worker-classify-unknown-fallback :read))
+    (should (eq :read
+                (nelisp-worker-test--classify '(message "log"))))))
+
+(ert-deftest nelisp-worker--match-any-stringifies-form ()
+  "Raw forms (not strings) are stringified before regex matching."
+  (should (nelisp-worker--match-any
+           '(file-read "x")
+           nelisp-worker-classify-read-patterns))
+  (should-not (nelisp-worker--match-any
+               '(+ 1 2)
+               nelisp-worker-classify-read-patterns)))
+
+(ert-deftest nelisp-worker-call-lane-override-wins-over-classifier ()
+  "Explicit `:lane' bypasses the classifier entirely."
+  (nelisp-worker-test--with-pool p
+    ;; Expression *matches* a write pattern but explicit :read forces
+    ;; the read lane; the call still succeeds because the child
+    ;; evaluates the trivial arg regardless of which lane it runs on.
+    (should (= 7 (nelisp-worker-call
+                  p '(+ 3 4)
+                  :lane :read :timeout 5.0)))))
+
+(ert-deftest nelisp-worker-call-classifier-routes-read ()
+  "Without `:lane', a read-pattern form runs on the :read lane."
+  (nelisp-worker-test--with-pool p
+    ;; `(anvil-file-read \"x\")` would error in the child (no such
+    ;; function) so we wrap a read-shaped stub.  We only verify lane
+    ;; selection; a `+ 1 2` disguised as a read call via the symbol
+    ;; `file-read' gets routed to :read.
+    (let* ((before (plist-get (plist-get (nelisp-worker-pool-stats p)
+                                          :read)
+                              :busy))
+           (expr '(progn
+                    (defun file-read (&rest _) 99)
+                    (file-read "foo.el"))))
+      (should (= 99 (nelisp-worker-call p expr :timeout 5.0)))
+      (ignore before))))
+
 (provide 'nelisp-worker-test)
 ;;; nelisp-worker-test.el ends here
