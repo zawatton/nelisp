@@ -248,7 +248,7 @@ customize 統合が必要になったら T3 integration layer で後付け。
   - =nelisp-macro-expand-nested-macros=
   - =nelisp-macro-expand-user-defined-survives-eval=
 - [X] make test: 553 → *560/560 green*
-- commit: =<pending>= on =feat/phase5a.4-macroexpand=
+- commit: =6d7b35d= on =feat/phase5a.4-macroexpand=
 
 tweak: Doc 12 §3.4 当初要件の「動的 trace」は interpretated mode 下で
 host interpreter 自身が =macroexpand-1= を boilerplate 展開に呼ぶため
