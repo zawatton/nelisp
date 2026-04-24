@@ -388,7 +388,7 @@ nelisp--apply を使う新 module は必ず =nelisp-eval= を require。
 目的: spawn overhead を削るため常駐 worker pool。anvil-worker
 相当、anvil.el の NeLisp 移植を直接加速する。
 
-実装 (commit __HASH_5C1B__):
+実装 (commit af84958):
 - =src/nelisp-process-pool.el= 新設 (~165 LOC)
 - =(cl-defstruct nelisp-process-pool name command size
     connection-type coding workers)=
