@@ -1,8 +1,8 @@
 #+TITLE: Doc 17 — Phase 5-F.1: anvil-state (SQLite KV) port to NeLisp
 #+AUTHOR: zawatton + Claude
 #+DATE: 2026-04-25
-#+STATE: DRAFT
-#+STATUS: §1 / §3 / §4 drafted、§2 decisions 全 default 提示 (user LOCK 待ち)
+#+STATE: LOCKED-2026-04-25
+#+STATUS: §2 全 10 項目全 RECOMMENDED default 採用 LOCKED (user 2026-04-25「並行進行しましょう」で signoff)、Phase 5-F.1.1 core port 着手中
 
 * §0 要旨
 
@@ -59,9 +59,22 @@ Stage D Phase 6.1 launcher は以下の state を要する:
 これらを *全て Phase 5-F.1 の state layer で吸収可能*。Stage D 側で
 独自 KV 実装する必要がなくなる。
 
-* §2 decisions (STATE = OPEN, user signoff 待ち)
+* §2 decisions (STATE = LOCKED 2026-04-25、全 default 採用)
 
-全項目 Claude 推奨 default 提示。LOCK 時に =LOCKED-2026-XX-XX= に更新。
+user 2026-04-25 signoff: 「並行進行しましょう」 = pattern 通り全 default 採用 LOCK。
+
+#+begin_example
+§2.1  B  全 public API port (set/get/delete/delete-ns/list-ns/list-keys/count/vacuum/enable/disable)
+§2.2  B  DB path = XDG ~/.cache/nelisp/nelisp-state.db (Emacs 非依存)
+§2.3  B  schema = anvil-state v1 + source 列 (future merge 用)
+§2.4  B  cl-defun → plist optional 方式
+§2.5  B  with-transaction defmacro port (手書き BEGIN/COMMIT)
+§2.6  B  prin1/read + round-trip validation
+§2.7  A  MCP tool 6 本 expose (set/get/delete/list-ns/list-keys/count)
+§2.8  A  anvil-state-test 移植 + NeLisp 固有追加
+§2.9  B  enable/disable 明示 (lazy open)
+§2.10 —  sqlite primitive 6 本 (Phase 5-F.1.0 で SHIPPED 済み、main d875817)
+#+end_example
 
 ** §2.1 Port 範囲
 - A. 最小 subset (set/get/delete のみ)
