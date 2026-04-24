@@ -288,6 +288,124 @@ must NOT be resolved."
   (should-error (nelisp-locate-file 42)
                 :type 'wrong-type-argument))
 
+;;; Doc 12 §3.3 — nelisp-require + circular detection ---------------
+
+(defmacro nelisp-load-test--with-require-env (&rest body)
+  "Set up an isolated NeLisp load-path dir + reset registry.
+Binds `root' to the temp dir inside BODY."
+  (declare (indent 0))
+  `(let ((root (make-temp-file "nelisp-require" t)))
+     (unwind-protect
+         (let ((nelisp-load-path (list root))
+               (nelisp-load-path-include-host nil))
+           (nelisp--reset)
+           ,@body)
+       (delete-directory root t))))
+
+(ert-deftest nelisp-require-happy-path ()
+  "A fresh feature loads once, registers in `nelisp--features',
+and returns the feature symbol."
+  (nelisp-load-test--with-require-env
+    (with-temp-file (expand-file-name "hello-req-happy.el" root)
+      (insert "(defun nelisp-req-happy-greet (who) (concat \"hi \" who))\n")
+      (insert "(provide 'hello-req-happy)\n"))
+    (should (eq (nelisp-require 'hello-req-happy) 'hello-req-happy))
+    (should (memq 'hello-req-happy nelisp--features))
+    (should (equal (nelisp-eval '(nelisp-req-happy-greet "bob")) "hi bob"))))
+
+(ert-deftest nelisp-require-idempotent-short-circuit ()
+  "Second require of the same feature must NOT re-load the file.
+We detect this by having the file increment a side-effect counter
+via `nelisp-provide' — the counter should only budge once."
+  (nelisp-load-test--with-require-env
+    (with-temp-file (expand-file-name "hello-req-idem.el" root)
+      (insert "(defvar nelisp-req-idem-loads 0)\n")
+      (insert "(setq nelisp-req-idem-loads (+ nelisp-req-idem-loads 1))\n")
+      (insert "(provide 'hello-req-idem)\n"))
+    (nelisp-require 'hello-req-idem)
+    (nelisp-require 'hello-req-idem)
+    (should (= (nelisp-eval 'nelisp-req-idem-loads) 1))))
+
+(ert-deftest nelisp-require-missing-signals-file-error ()
+  (nelisp-load-test--with-require-env
+    (should-error (nelisp-require 'no-such-nelisp-feature)
+                  :type 'file-error)))
+
+(ert-deftest nelisp-require-missing-noerror-returns-nil ()
+  (nelisp-load-test--with-require-env
+    (should (null (nelisp-require 'no-such-nelisp-feature nil t)))))
+
+(ert-deftest nelisp-require-did-not-provide ()
+  "File that loads successfully but never calls `provide' must
+signal `nelisp-load-error' with :cause `did-not-provide'."
+  (nelisp-load-test--with-require-env
+    (with-temp-file (expand-file-name "hello-req-no-prov.el" root)
+      (insert "(defvar nelisp-req-no-prov-val 1)\n"))
+    (let ((data (condition-case e (nelisp-require 'hello-req-no-prov)
+                  (nelisp-load-error (cdr e)))))
+      (should (eq (plist-get data :cause) 'did-not-provide))
+      (should (eq (plist-get data :feature) 'hello-req-no-prov)))))
+
+(ert-deftest nelisp-require-circular-signals ()
+  "A → requires B → requires A must signal `nelisp-load-error'
+with :cause `circular-require', :loading stack pinpointing both."
+  (nelisp-load-test--with-require-env
+    (with-temp-file (expand-file-name "nelisp-circ-a.el" root)
+      (insert "(require 'nelisp-circ-b)\n")
+      (insert "(provide 'nelisp-circ-a)\n"))
+    (with-temp-file (expand-file-name "nelisp-circ-b.el" root)
+      (insert "(require 'nelisp-circ-a)\n")
+      (insert "(provide 'nelisp-circ-b)\n"))
+    (let* ((outer (condition-case e (nelisp-require 'nelisp-circ-a)
+                    (nelisp-load-error (cdr e))))
+           ;; The circular signal is wrapped twice — first by B's
+           ;; `nelisp-load-string' loop, then by A's.  Walk down the
+           ;; :cause chain looking for :phase = require.
+           (unwrap (lambda (plist)
+                     (let ((c (plist-get plist :cause)))
+                       (cond
+                        ((and (consp c) (eq (car c) 'nelisp-load-error))
+                         (cdr c))
+                        (t plist)))))
+           (mid (funcall unwrap outer))
+           (inner (funcall unwrap mid)))
+      (should (eq (plist-get inner :phase) 'require))
+      (should (eq (plist-get inner :cause) 'circular-require))
+      (should (eq (plist-get inner :feature) 'nelisp-circ-a))
+      ;; Loading stack order: most recent first = nelisp-circ-b, then
+      ;; nelisp-circ-a (outer).
+      (should (equal (plist-get inner :loading)
+                     '(nelisp-circ-b nelisp-circ-a))))))
+
+(ert-deftest nelisp-require-with-explicit-filename ()
+  "When FILENAME is given, `nelisp-load-path' is not consulted."
+  (nelisp-load-test--with-require-env
+    (let ((off-path-dir (make-temp-file "nelisp-require-ext" t)))
+      (unwind-protect
+          (let ((target (expand-file-name "ext-feat.el" off-path-dir)))
+            (with-temp-file target
+              (insert "(defvar nelisp-req-ext-val 77)\n")
+              (insert "(provide 'ext-feat)\n"))
+            (should (eq (nelisp-require 'ext-feat target) 'ext-feat))
+            (should (= (nelisp-eval 'nelisp-req-ext-val) 77)))
+        (delete-directory off-path-dir t)))))
+
+(ert-deftest nelisp-require-honours-host-featurep ()
+  "When host Emacs already `featurep's the symbol (and no explicit
+filename is given), NeLisp short-circuits and records it."
+  (nelisp--reset)
+  (should (featurep 'cl-lib))
+  (should (eq (nelisp-require 'cl-lib) 'cl-lib))
+  (should (memq 'cl-lib nelisp--features)))
+
+(ert-deftest nelisp-provide-rejects-non-symbol ()
+  (should-error (nelisp-provide "not-a-symbol")
+                :type 'wrong-type-argument))
+
+(ert-deftest nelisp-require-rejects-non-symbol ()
+  (should-error (nelisp-require 42)
+                :type 'wrong-type-argument))
+
 ;;; Interaction with the rest of the subsystem ------------------------
 
 (ert-deftest nelisp-load-then-macro ()
