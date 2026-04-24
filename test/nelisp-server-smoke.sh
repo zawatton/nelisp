@@ -118,6 +118,13 @@ assert_contains '"name":"file-read"'
 assert_contains '"name":"git-log"'
 assert_contains '"name":"data-set-path"'
 assert_contains '"name":"data-get-path"'
+# Phase 5-F.1.2 state-* (Doc 17 §2.7 A)
+assert_contains '"name":"state-set"'
+assert_contains '"name":"state-get"'
+assert_contains '"name":"state-delete"'
+assert_contains '"name":"state-list-ns"'
+assert_contains '"name":"state-list-keys"'
+assert_contains '"name":"state-count"'
 # git-status has no params — inputSchema.properties must be `{}` not `null`
 # (Claude Code zod schema rejects `null`; surfaced as "Failed to fetch tools"
 # invalid_type at tools[*].inputSchema.properties.)

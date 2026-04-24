@@ -20,6 +20,15 @@
 ;;   data-get-path    Nested lookup in `nelisp-tools--data-store'
 ;;   data-set-path    Nested write into `nelisp-tools--data-store'
 ;;
+;; Phase 5-F.1.2 per Doc 17 §2.7 A (state-* via anvil-state port):
+;;
+;;   state-set        Persist VAL under KEY (:ns / :ttl)
+;;   state-get        Fetch value (:ns / :default)
+;;   state-delete     Remove KEY (:ns); returns t/nil
+;;   state-list-ns    List namespaces currently holding rows
+;;   state-list-keys  Keys under a namespace (:limit)
+;;   state-count      Row count, optionally filtered by NS
+;;
 ;; Non-goals (Phase 5-E §2.4 A: read-only):
 ;;   - No destructive file operations (replace / write / Edit).
 ;;   - No worker-backed heavy tools (ert-run / offload-eval etc.).
@@ -35,6 +44,7 @@
 (require 'cl-lib)
 (require 'nelisp-server)
 (require 'nelisp-network)
+(require 'nelisp-state)
 
 ;;; Data-store (scratch KV used by data-get/set-path) ---------------
 
@@ -246,6 +256,97 @@ clear; will error if any tool is still registered."
                        (nelisp-tools--plist-tree-set
                         nelisp-tools--data-store keys value))
                  (list :path raw :stored t))))
+
+  ;; Phase 5-F.1.2 — state-* tools (SQLite-backed KV via nelisp-state)
+
+  (nelisp-deftool state-set
+    :description "Persist VAL under KEY in namespace NS (default \"default\"), optional TTL seconds."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :key (list :type "string"
+                                         :description "Row key, non-empty")
+                              :value (list :description "Any readable Lisp value")
+                              :ns (list :type "string"
+                                        :description "Namespace (default \"default\")")
+                              :ttl (list :type "integer"
+                                         :description "Seconds until expiry (nil = never)"))
+                        :required ["key" "value"])
+    :handler (lambda (args)
+               (let* ((key (alist-get 'key args))
+                      (value (alist-get 'value args))
+                      (ns (alist-get 'ns args))
+                      (ttl (alist-get 'ttl args))
+                      (opts (append (and ns (list :ns ns))
+                                    (and ttl (list :ttl ttl)))))
+                 (nelisp-state-set key value opts)
+                 (list :key key :ns (or ns "default") :stored t))))
+
+  (nelisp-deftool state-get
+    :description "Fetch value under KEY in namespace NS, or DEFAULT when absent/expired."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :key (list :type "string")
+                              :ns (list :type "string"
+                                        :description "Namespace (default \"default\")")
+                              :default (list :description "Returned when KEY missing"))
+                        :required ["key"])
+    :handler (lambda (args)
+               (let* ((key (alist-get 'key args))
+                      (ns (alist-get 'ns args))
+                      (has-default (assq 'default args))
+                      (default (alist-get 'default args))
+                      (opts (append (and ns (list :ns ns))
+                                    (and has-default (list :default default))))
+                      (value (nelisp-state-get key opts)))
+                 (list :key key :ns (or ns "default") :value value))))
+
+  (nelisp-deftool state-delete
+    :description "Remove KEY from namespace NS; returns :deleted t/nil."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :key (list :type "string")
+                              :ns (list :type "string"))
+                        :required ["key"])
+    :handler (lambda (args)
+               (let* ((key (alist-get 'key args))
+                      (ns (alist-get 'ns args))
+                      (opts (and ns (list :ns ns)))
+                      (ok (nelisp-state-delete key opts)))
+                 (list :key key :ns (or ns "default") :deleted (and ok t)))))
+
+  (nelisp-deftool state-list-ns
+    :description "List namespaces currently holding rows, sorted."
+    :input-schema (list :type "object"
+                        :properties (make-hash-table :test 'equal))
+    :handler (lambda (_args)
+               (list :namespaces (nelisp-state-list-ns))))
+
+  (nelisp-deftool state-list-keys
+    :description "Sorted keys under namespace NS. Optional LIMIT."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :ns (list :type "string"
+                                        :description "Namespace, required")
+                              :limit (list :type "integer"
+                                           :description "Max rows to return"))
+                        :required ["ns"])
+    :handler (lambda (args)
+               (let* ((ns (alist-get 'ns args))
+                      (limit (alist-get 'limit args))
+                      (opts (append (list :ns ns)
+                                    (and limit (list :limit limit)))))
+                 (list :ns ns :keys (nelisp-state-list-keys opts)))))
+
+  (nelisp-deftool state-count
+    :description "Row count (total, or within NS)."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :ns (list :type "string"
+                                        :description "Optional namespace filter")))
+    :handler (lambda (args)
+               (let* ((ns (alist-get 'ns args))
+                      (count (nelisp-state-count ns)))
+                 (list :ns (or ns :all) :count count))))
 
   t)
 
