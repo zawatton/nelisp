@@ -3,7 +3,7 @@
 #+date: 2026-04-24
 #+options: toc:2
 
-* STATE: DRAFT 2026-04-24 (§2 LOCKED + §3.0-3.4 SHIPPED 2026-04-24、§3.5 next)
+* STATE: DRAFT 2026-04-24 (§2 LOCKED + §3.0-3.5 SHIPPED 2026-04-24、§3.6 next)
 
 ** 目的
 
@@ -353,11 +353,33 @@ scope を超えて 5-E に食い込む。B で "worker layer は独立して
 - 期待 2 日に対し当日完了 (pipe stdio + correlation id インフラ
   が整っていたため fire-and-forget が薄く済んだ)
 
-** §3.5 Latency metrics + percentile (3 日)
+** §3.5 Latency metrics + percentile — SHIPPED 2026-04-24
 
-- per-lane histogram (spawn-ms / wait-ms)
-- =nelisp-worker-latency-metrics-show= plist dump
-- sample cap defcustom
+- =src/nelisp-worker.el= 拡張 (impl =cde9374=、anvil-worker
+  Phase 4a port):
+  - =nelisp-worker-latency-sample-cap= defcustom (default 1000、
+    ≤0 で retention 無効 + count/sum のみ)
+  - =nelisp-worker--metrics-latency= hash table (POOL keyed)
+  - per-lane bucket plist: =(:samples :spawn-ms-sum :wait-ms-sum
+    :total-ms-sum :totals)=、=:totals= は newest-first ring cap
+  - =nelisp-worker--latency-empty-bucket= / =-init POOL= /
+    =-buckets POOL= (lazy) / =-record POOL LANE SPAWN-MS WAIT-MS=
+  - =nelisp-worker--percentile SAMPLES PCT= anvil 公式
+    =idx = floor(pct/100 * (n-1))=
+  - =nelisp-worker-latency-show POOL= public 読み出し — 3 lane
+    毎に =(:lane :samples :avg-{spawn,wait,total}-ms :p50-ms
+    :p90-ms :p99-ms)= を返す
+  - =nelisp-worker-latency-reset POOL= / =-pool-kill= 時 auto-drop
+- =nelisp-worker-call= 計測 hook: =t-start= を pool-get 前に撮り、
+  spawn-ms = pool-get 直後までの経過、wait-ms = poll loop 終了
+  までの残余 (0 floor)。timeout でも計測は実行 (diagnostic として
+  有用)
+- ERT +9 (=test/nelisp-worker-test.el=): percentile 2 (basic /
+  single-sample) / record 3 (one-shot / cap / cap-disabled) /
+  show 1 / reset 1 / live-call 1 / pool-kill cleanup 1
+- make test: 837 → *846/846 green*
+- 期待 3 日に対し当日完了 (anvil の plist storage + ring cap
+  pattern を thin port で済んだ)
 
 ** §3.6 Soak test (2 日)
 
