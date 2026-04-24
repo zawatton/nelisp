@@ -1,0 +1,441 @@
+#+TITLE: Doc 18 — Stage D: Host-Independent NeLisp Runtime (standalone binary distribution)
+#+AUTHOR: zawatton + Claude
+#+DATE: 2026-04-25
+#+STATE: LOCKED-2026-04-25
+#+STATUS: §2 全 10 項目全 RECOMMENDED default 採用 LOCKED (user 2026-04-25)、Phase 6.0 着手待ち
+
+* §0 要旨
+
+Phase 0 で lock した v1.0 scope (残 C = SBCL-style 4 核) を延長し、
+*NeLisp + anvil.el を Emacs プロセス非前提で配布可能にする* 新 Stage
+を追加する提案。user 発言 (2026-04-25):
+
+#+begin_quote
+Emacs を起動せず ./myapp で動く standalone binary をロードマップに
+したいです。anvil.el を Emacs ユーザー以外も導入しやすいものにする
+にはその必要があります。
+#+end_quote
+
+現行 Stage A (NeLisp substrate) / B (AI-native Emacs) / C (AI/Emacs
+融合) に対し、*Stage D = Emacs-less distributable runtime* を追加
+する。Stage A 完成を前提とせず、段階的 (D → A → B) に着手可能。
+
+**非目標:**
+- Emacs editor の代替 (Remacs 型 scope-explosion 回避)
+- iOS/Android native app (別 project scope)
+- WebAssembly target (将来の option、本 doc では defer)
+
+* §1 motivation
+
+** 1.1 anvil.el の普及壁
+
+anvil.el は現状 *Emacs user 限定* tool。Claude Code 経由 MCP
+server は非 Emacs user にも価値があるが、導入には:
+1. Emacs 28+ install
+2. =~/.emacs.d/= 設定
+3. =(require 'anvil)= 等 Elisp 起動設定
+4. MCP server spawn config
+
+の 4 段が必要。非 Emacs user (VSCode 中心 / JetBrains 中心 / 純
+CLI 中心) にはこの barrier が事実上無理ゲー。Homebrew / apt 経由
+1 行インストールできれば対象ユーザーが数桁拡大する。
+
+** 1.2 現 Phase 0 v1.0 条件との関係
+
+v1.0 条件 #4 "残 C = 4 核 (syscall / allocator / GC inner /
+coding)" は *そのまま standalone 化の前提条件* になっている:
+- 4 核が特定できれば → 4 核を Emacs から剥がして別 host に載せ替え可能
+- = standalone runtime の最小 C base
+
+つまり Stage D は v1.0 の自然な延長であり、scope creep ではなく
+*配布 surface の追加*。
+
+** 1.3 先例 — Lisp 系 standalone 配布手法
+
+| project | 手法 | size | status |
+|---------+------+------+--------|
+| SBCL save-lisp-and-die | image dump + small runtime | ~30MB | 商用実績 |
+| Clozure CL save-application | 同上 | ~15MB | 成熟 |
+| Racket raco exe | image embed + runtime | ~20MB | 実用 |
+| LispWorks deliver | image + GC tuning | ~10MB | 商用 |
+| mruby | C lib として組込 | ~1MB | IoT/組込 定着 |
+| Emacs pdump (27+) | portable dumper | ~40MB (Emacs自身) | 現 Emacs 起動技法 |
+| PyInstaller | Python+lib bundle | ~30-100MB | Python 主流配布 |
+
+→ "save image + small runtime = standalone binary" は Lisp 系で
+確立した手法。NeLisp も同じ路線に乗せられる。
+
+** 1.4 anvil.el の依存分析 (Emacs-bound な機能)
+
+standalone 化に伴い、anvil.el 側で影響を受ける API を先行特定:
+
+| 依存 | anvil 内使用例 | standalone 代替 |
+|------+----------------+-----------------|
+| =with-current-buffer= | 全 file ops | NeLisp string buffer で代替 |
+| =find-file= / =save-buffer= | anvil-file-* | direct read/write |
+| =make-process= sentinel | anvil-browser / worker | POSIX process + select |
+| =run-with-idle-timer= | anvil-worker pool | event loop schedule |
+| =file-notify-add-watch= | anvil-org-index | inotify / kqueue direct |
+| =org-mode= primitives | anvil-org-index | org-parser NeLisp port (Doc 17 候補 2-A) |
+| =transient= / TUI | user cmd | CLI flag 化 (headless profile) |
+| =tabulated-list= | dashboard | CLI table printer |
+
+*結論:* 7-8 割は NeLisp 側 Elisp re-impl で吸収可、UI 層は CLI
+代替必要。anvil-manifest に 5 つ目 profile "headless" として
+新設する (Doc 26 の延長)。
+
+* §2 decisions (STATE = LOCKED 2026-04-25、全 default 採用)
+
+user 2026-04-25 signoff: "全 default 採用 LOCKED"。以下 10 項目を以て
+Stage D の方針固定。変更は本 doc 改訂 + user 再 signoff 必須。
+
+#+begin_example
+§2.1  D  — Hybrid CLI launcher MVP 先行 (6-12 ヶ月)
+§2.2  B  — D → A → B 段階計画
+§2.3  B  — Linux + macOS first
+§2.4  B  — <10MB launcher + minimal bundle
+§2.5  B  — Emacs user install 経由 launcher 検出 (GPL 伝播回避)
+§2.6  B  — GPLv3+ (strict)
+§2.7  A  — GitHub Release first
+§2.8  A  — =anvil mcp serve= stdio
+§2.9  A  — XDG =~/.config/anvil/=
+§2.10 B  — Phase 5-E 7 tool + anvil-http full port
+#+end_example
+
+** §2.1 Primary approach 選択
+- A. Emacs 埋め込み (bundle 型、1-1.5 年)
+- B. Native-comp + 4 核 C runtime 自前 (本丸、3-5 年)
+- C. 別 host 移植 (Rust/Zig runtime、community 必須)
+- *D. Hybrid CLI launcher (現実解、6-12 ヶ月) ← RECOMMENDED as first milestone*
+
+推奨理由: D は *今日の NeLisp + Emacs* で配布可能、sunk cost が
+小さく、出せば非 Emacs user 反応が取れる。D 成功後 A、v1.0 到達後 B。
+
+** §2.2 段階シーケンス
+- A. D のみ (打ち切り可能性あり)
+- *B. D (MVP) → A (成熟) → B (究極) 段階計画 ← RECOMMENDED*
+- C. B 直行 (D/A skip)
+
+推奨理由: 各段で user 反応を見て次段を判断できる。B 直行は
+community / 工数的に非現実。
+
+** §2.3 Distribution target platform (MVP)
+- A. Linux のみ
+- *B. Linux + macOS ← RECOMMENDED*
+- C. Linux + macOS + Windows (Windows は Doc 27 anvil-pty-broker 経由の既存資産あり)
+- D. Linux + Windows (macOS skip)
+
+推奨理由: non-Emacs user の多い VSCode / JetBrains 層は
+Linux/macOS 比率が高い。Windows は既存 anvil-pty-broker 資産で
+Stage D Phase 6.3 以降に追加可能。
+
+** §2.4 Binary size target (Option D MVP)
+- A. <5MB launcher のみ (Emacs は別途 user install)
+- *B. <10MB launcher + minimal Emacs assets bundle ← RECOMMENDED*
+- C. <50MB launcher + full Emacs bundle
+- D. <100MB 全部入り (full Emacs + 全 anvil module)
+
+推奨理由: B は初回起動で小さく、重い module は on-demand load。
+C/D は Electron 的肥大化で user 体験劣化。
+
+** §2.5 Emacs dependency in Option D
+- A. Emacs を binary に bundle (初回起動快適、size 大)
+- *B. Emacs は OS package manager 経由 user install、launcher が検出 ← RECOMMENDED*
+- C. Emacs 見つからなければ自動 download (一度だけ、cache)
+- D. C + B hybrid
+
+推奨理由: B は GPL 伝播問題を回避、user の既存 Emacs install も
+再利用できる (apt/brew 経由で Emacs install するのは非 Emacs user
+でも 1 行で済む)。B で体験が悪ければ C に昇格。
+
+** §2.6 License
+- A. GPLv3+ (Emacs 互換、埋め込む限り必須)
+- *B. GPLv3+ (strict、Emacs 依存を考慮) ← RECOMMENDED*
+- C. 二重 license (ambiguous、non-Emacs user 用の明示)
+- D. Apache 2.0 / MIT (non-Emacs user 親和性重視、Emacs 埋め込み不可)
+
+推奨理由: Option A (Emacs 埋め込み) を将来 option に残す以上、
+GPLv3+ 以外選べない。Option D 現行 (Hybrid CLI) 段階でも NeLisp 自体
+GPLv3+ で既に公開予定、license は変える理由なし。
+
+** §2.7 Distribution channel (MVP)
+- *A. GitHub Release (tar.gz + install.sh) ← RECOMMENDED first*
+- B. Homebrew tap
+- C. apt/dnf repo
+- D. curl|bash installer (anvil.sh)
+
+推奨理由: A が最低工数で全 platform 同時配布可能。D は A の
+wrapper として追加、B/C は user 反応後に community が作る
+/ 自分で作るを判断。
+
+** §2.8 MCP server spawn UX (Option D 先行)
+- *A. =anvil mcp serve= stdio (Claude Code 標準) ← RECOMMENDED*
+- B. =anvil mcp serve --port N= TCP
+- C. =anvil mcp serve --unix-socket PATH=
+- D. A + B + C 全部
+
+推奨理由: A で MVP、Claude Code の .mcp.json に 1 行書けば終わる。
+B/C は Stage D Phase 6.2 以降で追加。
+
+** §2.9 Config location
+- *A. XDG: =~/.config/anvil/= ← RECOMMENDED*
+- B. home dotfile: =~/.anvil/=
+- C. A or B どちらでも読む (compat)
+
+推奨理由: non-Emacs user 層は XDG 標準を期待。Emacs user も
+=~/.emacs.d/= と別 namespace の方が clean。
+
+** §2.10 MVP tool scope (どこまで port する?)
+- A. Phase 5-E の 7 tool のみ (file-read / file-outline / git-log /
+  git-status / http-get / data-get-path / data-set-path)
+- *B. 7 tool + anvil-http (Doc 09) 本体 full port ← RECOMMENDED*
+- C. B + anvil-memory (Doc 29)
+- D. anvil 全 56 module port (= Phase 5-F.1 完了待ち)
+
+推奨理由: B で「Claude Code から使える最低限の web fetch + data
+保存 + git 参照」が揃い、*非 Emacs user が初めて anvil を試す
+UX* として成立。C は memory 永続化を要するので SQLite 同梱が必要
+(Option D の初期 scope を超える)。D は Stage A 本線の Phase 5-F.1
+と統合。
+
+* §3 phase 分割 (Option D = MVP 段階)
+
+** Phase 6.0 — audit + scaffold (1-2 週)
+- anvil.el 依存 API の静的 audit script
+- =bin/anvil= launcher skeleton (bash → 後で Go/Rust に置換)
+- GitHub Release workflow draft
+- anvil-manifest 5 つ目 profile "headless" skeleton (Doc 26 修正)
+
+** Phase 6.1 — CLI launcher + MCP stdio (2-4 週)
+- =anvil mcp serve= が動作、=.mcp.json= 経由 Claude Code 接続成立
+- Phase 5-E の 7 tool が anvil 経由で expose される
+- 初回 =./anvil --version= / =./anvil --help= が Emacs 隠蔽下で動く
+- Linux x86_64 first、macOS arm64 並行
+
+** Phase 6.2 — anvil-http port (2-3 週)
+- =anvil-http= (Doc 09) を NeLisp 側に移植
+- =url-retrieve= host 依存を POSIX curl / libcurl FFI で代替可能に
+- cache / extract / overflow / robots / batch の 5 MCP tool expose
+
+** Phase 6.3 — distribution polish (1-2 週)
+- GitHub Release v0.1 (Stage D 独立 tag)
+- =install.sh= (curl|bash)
+- README + screencast (non-Emacs user 向け dogfood 用)
+- Homebrew tap (optional, community 募集)
+
+** Phase 6.4 — Windows 対応 (2-3 週)
+- anvil-pty-broker (Doc 27 派生) 経路で Windows 対応
+- winget / scoop 配布
+
+** MVP 成功基準 (Phase 6.3 merge gate)
+- 非 Emacs user が README 通り 5 分以内に Claude Code から =anvil=
+  tool を call できる
+- Linux + macOS で binary 1 個配布 (GitHub Release)
+- anvil 本家の 7 tool + anvil-http 5 tool が non-Emacs 環境で動作
+- 起動時間 <2s (=anvil mcp serve= stdio ready まで)
+
+* §4 anvil.el 側の変更 (headless profile 新設)
+
+Doc 26 anvil-manifest の現行 4 profile (=dev= / =minimal= /
+=ci= / =mcp=) に 5 つ目 =headless= を追加する。
+
+** 4.1 既存 4 profile の性格
+
+| profile | load 内容 | 用途 |
+|---------+-----------+------|
+| dev | 全 module | 開発 main daemon |
+| minimal | core のみ | 起動テスト |
+| ci | lint + test 依存 | GitHub Actions |
+| mcp | MCP server subset | Claude Code 接続用 |
+
+** 4.2 新 headless profile
+
+- load: mcp profile -α (UI 依存 module 除外)
+- =transient= / =tabulated-list= / =dashboard= 系を *require しない*
+- =find-file= に依存する anvil-file-* API は標準 I/O に置換
+- user cmd は CLI flag / stdin JSON に変換
+- anvil-browser は環境検出で disable (headless GUI 無し前提)
+
+** 4.3 Stage D launcher の profile 選択
+
+=anvil mcp serve= は default で =headless= profile を使う。
+=anvil mcp serve --profile dev= で従来 dev profile (Emacs 依存許容)
+にも上書き可能にする。
+
+** 4.4 anvil.el repo 側の追加作業
+
+Stage D 導入で anvil.el 本体にも:
+- =anvil-headless.el= 新設 (UI 非依存 API 代替層)
+- =anvil-cli.el= 新設 (argv parse + flag dispatch)
+- Doc 26 修正 (profile 表に headless 追加)
+- CI matrix に headless profile 追加
+
+これらは anvil.el repo の Stage D 対応 PR として本 doc と並行進行。
+
+* §5 先例 audit
+
+** 5.1 mruby — 最も近い模範
+
+mruby = Matz が C に組込みやすい形で Ruby VM を再実装した project。
+- VM size ~1MB、C static lib として linkable
+- Ruby との互換性は core subset (ISO Ruby 準拠)
+- 用途: IoT / ゲームエンジン / 組込アプリ
+
+NeLisp Stage D 類推:
+- anvil launcher が C/Go/Rust で書かれ、NeLisp VM を static lib
+  として link する (将来 Option B)
+- 現 Phase 6 MVP (Option D) は launcher から Emacs subprocess
+  spawn で始め、VM 同梱は Phase 7 相当に後倒し
+
+** 5.2 SBCL save-lisp-and-die
+
+SBCL core image は実行時 =*.core= として dump、=sbcl= runtime
+binary が load して起動する。
+- app 配布手法として商用実績 (ITA Software 等)
+- ~30MB binary + ~20MB core image
+- GC / thread / FFI 全部 lib 側に持つ
+
+NeLisp Stage D 類推:
+- Phase 8 相当で =nelisp save-image= / =nelisp-runtime= 分離
+- まず Option D は save-image 無しで MVP 出す
+
+** 5.3 Racket raco exe
+
+Racket = Scheme 系 IDE/言語 runtime、=raco exe= で standalone
+exe 化。
+- image embed + runtime、~20MB
+- user は =./myapp= 1 個で配布可能
+- 実用実績 (DrRacket 自身)
+
+NeLisp Stage D 類推:
+- Phase 9 相当で =anvil exe= / =nelisp build= cmd 追加
+- 現 Phase 6 では scope 外
+
+** 5.4 Emacs pdump (27+)
+
+Emacs 自身が pdumper で起動する (=/usr/bin/emacs= は実は
+pdump 復元)。
+- portable dumper、~40MB
+- 起動時間 <0.1s (cold)
+- Emacs 27 以降 default
+
+NeLisp Stage D 類推:
+- Option A (Emacs 埋め込み) が実際には「Emacs pdump + NeLisp
+  loader を同梱」することになる
+- 既に確立した手法なので技術的障壁は低い
+
+** 5.5 PyInstaller
+
+Python app 標準配布。Python interpreter + site-packages +
+user script を 1 binary に bundle。
+- ~30-100MB、起動 ~0.5-2s
+- venv 的 install 代替として普及
+- 非 Python user が Python app 触る時の entry point
+
+NeLisp Stage D 類推:
+- Option A (Emacs 埋め込み) の UX 参考
+- Option D MVP はここまで大がかりでない launcher で開始
+
+* §6 open questions (LOCK 前に決める)
+
+** 6.1 NeLisp main の v1.0 との優先順位
+Stage D 着手は Phase 5-F (tool port / worker-backed / state port /
+Windows) と *並行* する前提だが、工数割合をどうするか:
+- a. Stage D 60% / Phase 5-F 40% (Stage D 優先)
+- b. 50% / 50% (並行)
+- c. Stage D 40% / Phase 5-F 60% (本線優先)
+
+推奨: c。Stage D MVP は 6-12 ヶ月の中で段階的に、Phase 5-F 本線は
+止めない。
+
+** 6.2 anvil.el repo との commit/merge 分担
+- 本 doc は nelisp repo 側、anvil.el 側 headless profile は anvil 側
+- 両 repo 同時進行時のリリース tagging 方針 (例: nelisp v0.4.1 +
+  anvil v0.6.0 同時 tag)
+
+推奨: anvil.el と NeLisp は *同時 tag は不要*、各 repo 独立 tag +
+Stage D 独自 release tag (e.g. =stage-d-v0.1=) を別系統で切る。
+
+** 6.3 community 巻き込みのタイミング
+- a. Phase 6.3 distribution polish 時点で告知 (MVP 出してから)
+- b. 本 doc LOCK 時点で RFC (早期巻き込み)
+- c. v1.0 到達後 (保守派)
+
+推奨: a。early RFC は noise 多く、MVP dogfood 後の方が議論が
+具体的になる。memory =feedback_reddit_llm_reply_style.md= の
+教訓も参照 (告知本文練っても返信は短く粗く)。
+
+** 6.4 Option D 失敗時の撤退基準
+- Phase 6.1 で non-Emacs user の初回起動 UX が破綻 → Option A
+  早期昇格
+- Phase 6.3 で adoption 低迷 → Stage D 一時凍結 + Phase 5-F 集中
+
+* §7 work breakdown (概算、Option D MVP)
+
+| phase | 工数見積 | 主成果 |
+|-------+----------+--------|
+| 6.0 audit + scaffold | 1-2 週 | audit report + launcher skeleton |
+| 6.1 CLI launcher + MCP | 2-4 週 | =anvil mcp serve= Linux 動作 |
+| 6.2 anvil-http port | 2-3 週 | http 5 tool standalone |
+| 6.3 distribution polish | 1-2 週 | GitHub Release v0.1 |
+| 6.4 Windows 対応 | 2-3 週 | winget / scoop |
+| *合計* | 8-14 週 | Option D MVP |
+
+並行 Phase 5-F (40%) 継続想定なので cal 月換算 6-12 ヶ月。
+
+* §8 decision matrix (user 向け summary)
+
+LOCK 時に §2 全 10 項目について以下形式で decision を記録:
+
+#+begin_example
+§2.1: D (RECOMMENDED)      — 理由: MVP 最短、sunk cost 小
+§2.2: B (RECOMMENDED)      — 理由: 段階的判断可能
+...
+§2.10: B (RECOMMENDED)     — 理由: 最低限 UX 成立
+#+end_example
+
+user が全推奨受諾する場合 "全 default 採用 LOCKED 2026-XX-XX" と
+1 行で記録可能 (Doc 16 §2 decisions と同形式)。
+
+* §9 想定 FAQ (RFC / Reddit 告知準備)
+
+** Q1. なぜ Emacs を捨てない?
+A. Emacs の Elisp ecosystem (org-mode / magit / Lisp 開発環境) は
+捨てる気がない。Stage D は *Emacs を知らない人にも anvil の価値を
+届ける* ための追加配布 surface であって、Emacs-first 路線自体は
+Stage A 本線で継続。
+
+** Q2. SBCL みたいに NeLisp を実行可能 Lisp にする選択肢は?
+A. それが Option B (native + 4 核自前) の本丸。ただし 3-5 年かかる
+ので、Option D で MVP を先に出して adoption を測る。
+
+** Q3. Electron / Tauri みたいな frontend は?
+A. Stage D は *Claude Code 等の MCP client 経由* の CLI 層
+(headless) が MVP scope。GUI は Stage B/C の anvil.el successor で
+別途検討。
+
+** Q4. NeLisp が standalone 化されたら anvil 以外の Elisp app も?
+A. Yes。Phase 6.0 audit で確立する "Emacs 依存 API 代替層" は
+anvil.el 特化でなく汎用に使える。magit 等も将来 headless 化可能。
+ただし現 Stage D scope は anvil.el のみに絞る (dogfood 対象)。
+
+* §10 関連 doc
+
+- =docs/design/05-roadmap.org= — Phase 5 scope lock、Stage D 追加時に §5 更新
+- =docs/design/16-phase5e-anvil-port.org= — Phase 5-E (SHIPPED)、Stage D は 5-E の MCP 延長
+- =docs/design/10-phase4-actor.org= — Phase 4 (SHIPPED)、Stage D の並行モデル基盤
+- anvil.el =docs/design/26-anvil-manifest.org= — profile 体系、headless 追加対象
+- anvil.el =docs/design/09-anvil-http.org= — Phase 6.2 port 対象
+- memory =feedback_conpty_headless_stdin_unidirectional.md= — Phase 6.4 Windows 罠
+- memory =project_anvil_package.md= — anvil.el repo 構成
+- memory =project_nelisp.md= — NeLisp 本線、Stage D 追加時に update
+
+* §11 §2 LOCK 後の次 action
+
+1. 本 doc top =#+STATE: DRAFT= → =LOCKED-2026-XX-XX= に更新
+2. §2 全 decision を "A/B/C/D" 付きで確定
+3. =docs/design/05-roadmap.org= §5 に "Stage D" 追加
+4. Phase 6.0 着手 = audit script 作成 + =feat/phase6.0-audit=
+   branch 切り
+5. memory =project_nelisp.md= に Stage D 追加
+6. anvil.el repo 側に =feat/stage-d-headless-profile= branch 先行作成
