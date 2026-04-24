@@ -1,0 +1,338 @@
+#+title: NeLisp Phase 5 Gap Audit — host-C primitive dependencies
+#+author: zawatton
+#+date: 2026-04-24
+#+options: toc:2
+
+* STATE: DRAFT 2026-04-24 (PDCA: Plan+Do ✅ / Check pending)
+
+** Scope
+Static audit of which Emacs C primitives the current NeLisp source
+(=src/= + =bench/=, excluding =test/=) still references at main
+=HEAD= =3dd1902= (Phase 4 全 SHIPPED).  Goal: give Phase 5 core
+替 + NeLisp 単独 package 作成自立の scope を逆算するための一次資料。
+
+** Non-goals
+- Dynamic trace of NeLisp execution (補助、別 audit)
+- Emacs redisplay / buffer / window substrate の full spec
+- Phase 5 本体の実装計画 (Doc 12 以降)
+
+* §1 Methodology
+
+A (static intersection) 方式を採用。
+
+*** なぜ A 方式
+| 方式 | 精度 | コスト | 判定 |
+|------+------+--------+------|
+| A. 静的 intersection (host subrs ∩ NeLisp src 参照) | 中 | 1-2h | ◎ 採用 |
+| B. 動的 trace (hook で C subr 呼出を log) | 高 | 半日+ | △ 補助で後日 |
+| C. bytecode 走査 | 高 | 3h+ | ✗ 投資対効果低 |
+
+*** 手順
+1. 現 Emacs で =mapatoms + subrp= により host C 定義 symbol set S を enumerate
+2. =src/*.el= + =bench/*.el= 13 ファイルの sexp walk で function 位置 symbol 収集
+   + =funcall= / =apply= / =mapcar= 等の高階関数の第 1 引数 =(function SYM)= / =(quote SYM)= も抽出
+3. 交差 D = NeLisp が C に依存している symbol 集合
+4. 各 symbol に (arity, ref-count, first-3-sites) 付与、ref-count 降順で sort
+
+*** 再現 script
+=docs/design/11-audit-script.el= を pristine =emacs --batch -Q= で実行する。
+出力 =docs/design/11-phase5-gap-audit.data.el= は Lisp-readable alist。
+
+#+begin_src sh
+emacs --batch -Q \
+  --eval "(let ((default-directory (expand-file-name \".\"))) \
+            (load (expand-file-name \"docs/design/11-audit-script.el\")))"
+#+end_src
+
+*** audit の既知 limitation
+- 静的解析なので reflection (=eval= / =intern= 後の動的 call) は見逃す
+- tests/ 配下は audit 対象外 (test-only dep は NeLisp 本体の dep ではない)
+- Macro 展開前の形で走査している。=cl-loop= 等が展開で C subr を呼ぶケースはこの層では不可視
+- NeLisp 自身を load していない (pristine batch 保持のため)。NeLisp が動的に require で引き込む subr (現状なし) はここでは出ない
+
+* §2 Raw data
+
+- host C 定義 subr 総数: *5,646*
+- NeLisp 参照 subr 数: *118*
+- scope file 数: *13* (src: 10, bench: 3)
+
+完全な raw データは [[./11-phase5-gap-audit.data.el][11-phase5-gap-audit.data.el]] を参照。以下は上位・下位・特徴的
+symbol の抜粋。
+
+*** 上位 (ref-count ≥ 30)
+| 順 | symbol | arity | ref | tier | 備考 |
+|----+--------+-------+-----+------+------|
+| 1 | =quote=           | (1 . unevalled) | 489 | T0 | special form |
+| 2 | =list=            | (0 . many)      | 341 | T1 |    |
+| 3 | =let=             | (1 . unevalled) | 294 | T0 | special form |
+| 4 | =setq=            | (0 . unevalled) | 184 | T0 | special form |
+| 5 | =signal=          | (2 . 2)         | 167 | T1 |    |
+| 6 | =car=             | (1 . 1)         | 142 | T1 |    |
+| 7 | =cdr=             | (1 . 1)         | 138 | T1 |    |
+| 8 | =cond=            | (0 . unevalled) | 101 | T0 | special form |
+| 9 | =nth=             | (2 . 2)         | 100 | T1 |    |
+| 10 | =cons=           | (2 . 2)         | 95  | T1 |    |
+| 11 | =let*=           | (1 . unevalled) | 64  | T0 |    |
+| 12 | =if=             | (2 . unevalled) | 62  | T0 |    |
+| 13 | =defconst=       | (2 . unevalled) | 59  | T0 |    |
+| 14 | =1+=             | (1 . 1)         | 58  | T1 |    |
+| 15 | =aref=           | (2 . 2)         | 56  | T1 |    |
+| 16 | =cadr=           | (1 . 1)         | 55  | T1 |    |
+| 17 | =eq=             | (2 . 2)         | 52  | T1 |    |
+| 18 | =puthash=        | (3 . 3)         | 47  | T1 |    |
+| 19 | =-=              | (0 . many)      | 42  | T1 |    |
+| 20 | =1-=             | (1 . 1)         | 41  | T1 |    |
+| 21 | =aset=           | (3 . 3)         | 41  | T1 |    |
+| 22 | =function=       | (1 . unevalled) | 41  | T0 | =#'= |
+| 23 | =while=          | (1 . unevalled) | 36  | T0 |    |
+| 24 | =<=              | (1 . many)      | 34  | T1 |    |
+| 25 | =and=            | (0 . unevalled) | 33  | T0 |    |
+| 26 | =plist-get=      | (2 . 3)         | 32  | T1 |    |
+
+*** T2 (system 境界) 抜粋
+| symbol | arity | ref | 備考 |
+|--------+-------+-----+------|
+| =insert-file-contents= | (1 . 5) | 1 | =src/nelisp-load.el= が使用 |
+| =buffer-string=        | (0 . 0) | 1 | 同上 |
+| =file-readable-p=      | (1 . 1) | 1 | 同上 |
+| =current-time=         | (0 . 0) | 2 | bench 用 |
+| =float-time=           | (0 . 1) | 5 | bench + actor |
+| =garbage-collect=      | (0 . 0) | 1 | bench 用 |
+| =run-with-idle-timer=  | (3 . many) | 1 | actor timer hook |
+| =cancel-timer=         | (1 . 1) | 1 | 同上 |
+| =advice-add=           | (3 . 4) | 1 | JIT hook (=nelisp-jit.el=) |
+| =advice-remove=        | (2 . 2) | 1 | 同上 |
+| =add-hook=             | (2 . 4) | 1 | GC hook |
+
+*** T3 (Emacs 特有 buffer/window/frame/redisplay)
+*なし。*  NeLisp src は buffer / window / frame / overlay / redisplay の
+いずれの subr も呼んでいない。Phase 2 self-host が狙った "pure Lisp VM"
+の形が実現できていることの確認。
+
+*** T4 (bytecode / eval runtime)
+*なし。*  =eval= / =byte-code= / =byte-compile= / =funcall-interactively=
+などは参照ゼロ。NeLisp 自身の実行に host bytecode interpreter を呼んでいない
+(唯一の例外: =funcall= 6 refs, =apply= 13 refs は user 側 function dispatch
+であって bytecode dispatch ではない)。
+
+* §3 Tier summary
+
+| tier | 件数 | % | 説明 | Phase 5 disposition |
+|------+------+---+------+---------------------|
+| T0 特殊形式 | 18 | 15% | quote/let/cond/if/and/or/while/progn/catch/throw/etc | NeLisp eval.el で実装済 (bootstrap 時に host C で解釈) |
+| T1 基礎データ op | 89 | 75% | cons/car/cdr/+ /-/etc pure pred/arith/list/hash/string | 既に NeLisp VM 実装済のはず (要 cross check) |
+| T2 system 境界 | 11 | 9% | file IO / time / hook / timer / advice / GC | SBCL-style 残す方針、syscall 薄層 |
+| T3 Emacs 特有 | 0 | 0% | buffer/window/frame/redisplay | *NeLisp はまだ触っていない* |
+| T4 bytecode/eval | 0 | 0% | eval/byte-code/interpreter | *NeLisp は自前実装で回避* |
+| 合計 | 118 | 100% | | |
+
+*重要な観察 :* 参照の 90% 以上が *T0+T1 の pure core*。T3 / T4 依存がゼロ
+なのは Phase 2 self-host が意図した "Emacs C 評価器からの独立" が現時点で
+成立していることを意味する。逆に言うと、今の NeLisp は *load & eval の
+bootstrap 時に host Emacs C に依存しているだけ* で、runtime 実行経路は
+NeLisp 自身で完結している (self-host fixpoint の Phase 2 成果)。
+
+* §4 Package-authoring 自立の gap
+
+"NeLisp 単独で =(require 'my-pkg)= が成立する" ための最小要件:
+
+*** 必要な施設
+1. *Reader* — =src/nelisp-read.el= 既存、=read= / =read-from-string= 相当
+2. *Evaluator* — =src/nelisp-eval.el= 既存、T0 特殊形式 + T1 呼出を NeLisp
+   内で完結して dispatch できる (現状: bootstrap 後は成立、起動時のみ host eval)
+3. *Defining forms* — =defun= / =defmacro= / =defvar= / =defconst=: T0 subset
+4. *Loader* — =src/nelisp-load.el= 既存、file IO 3 subr 経由で .el を読む
+5. *Provide/require 機構* — T1 subset、=provide= / =require=
+
+*** bootstrap gap
+"純 NeLisp で loop を閉じる" ために不足している要素:
+
+- =load-file= 的 API で NeLisp .el を NeLisp reader にかけ、NeLisp evaluator で
+  forms を実行する経路が *未公開* (現状: =require= は host load-path 経由)
+- =load-path= 相当の search mechanism が NeLisp 側に無い (host 側のものを借用)
+- =defmacro= 展開時に host =macroexpand= を呼んでいないか未確認
+  (Check フェーズで要検証)
+
+*** Phase 5 pre-req として扱うべき subset
+Phase 5 本体 (core 置換) に入る前にまず閉じるべき gap:
+
+| gap | 現状 | 必要な作業 |
+|-----+------+------------|
+| =nelisp-load-file= (NeLisp reader + eval で .el を load) | partial | reader/eval の glue + cycle handling |
+| =nelisp-load-path= | 未実装 | defcustom + search order |
+| macroexpand が NeLisp-native か | 未検証 | =macroexpand-all-1= 相当を NeLisp 内に確認 |
+| =nelisp-require= (nelisp-provide-ed feature lookup) | 未実装 | feature registry + circular detection |
+
+これらが揃えば "NeLisp だけで package を読み込む" bar に到達する。核となる
+T1/T2 subr は既に揃っているので、新規 C 依存は追加発生しない見込み。
+
+* §5 Phase 5 scope 案
+
+audit の発見を踏まえ、Phase 5 は 2 軸に分ける:
+
+*** Phase 5-A: NeLisp 単独 package 作成自立 (先行)
+- §4 で列挙した bootstrap gap を埋める
+- 成功条件: 純 NeLisp で書かれた toy package (=hello-world.nel.el= 等) を
+  NeLisp 自身の loader で require → NeLisp eval で動作する
+- 期待スコープ: ~2-4 週。新規 C 依存の追加はなし、既存 T1/T2 の組み換えのみ
+
+*** Phase 5-B: Emacs core 置換 (後続)
+- T3 (buffer/window/frame/redisplay) の substrate API を NeLisp side に建設
+- *current NeLisp src は T3 subr を参照していない* ので、これは "既存コードの
+  置き換え" ではなく "substrate 新規提供"
+- 対象 module (memory =project_nelisp.md= の Phase 0 lock 済 decision より):
+  1. buffer (テキストバッファ層)
+  2. redisplay (描画層)
+  3. event-loop (入力処理層)
+- 各 module に対し "NeLisp-hosted package がそれを触れる最小 API" を定義する
+  設計 doc が必要 (Doc 12 / 13 / 14 相当)
+
+*** 優先順位の根拠
+- T3=0 は "NeLisp core is ready, substrate はまだ" を意味する
+- T3 substrate を作っても、それを使う package が NeLisp 単独で書けないと
+  dog-fooding できない → Phase 5-A を先に閉じるべき
+- Phase 5-A が閉じれば "NeLisp で書いた package が NeLisp で動く" loop が
+  成立、Phase 5-B の dog-food 環境が整う
+
+*** Phase 5-A の decomposition 草案
+| sub | 作業 | 見積 |
+|-----+------+------|
+| 5-A.1 | =nelisp-load-file= 実装 (reader + eval glue) | 1 週 |
+| 5-A.2 | =nelisp-load-path= + search mechanism | 3 日 |
+| 5-A.3 | =nelisp-require= + circular detection | 3 日 |
+| 5-A.4 | macroexpand 経路の host 非依存化検証 + fix | 1 週 |
+| 5-A.5 | toy package で E2E 通し + docs | 1 週 |
+
+* §6 Check フェーズで確認すべき事項
+
+本 audit (Plan+Do) 終了後の Check phase:
+1. [ ] T1 classification の cross check: 各 T1 subr が NeLisp VM で本当に
+   実装済か (=nelisp-bytecode.el= の dispatch table と照合)
+2. [ ] §4 "macroexpand が NeLisp-native か" を動的 trace で確認
+3. [ ] §4 の gap list が網羅的か — 他の dogfood workflow (ert runner on
+   NeLisp, byte-compile on NeLisp 等) を先に閉じる必要がないか検討
+4. [ ] Phase 5-A vs 5-B の並行可能性の再評価 (substrate の一部だけ先行で
+   作って Phase 5-A の dog-food target にするオプション)
+
+* §7 Act フェーズの判断材料
+
+Check 結果を踏まえて user が判断する分岐:
+- *Phase 5-A 着手* → Doc 12 "NeLisp 単独 package loader" として起こす
+- *Phase 5-A のさらに分解* が必要 → 5-A.1 を先に小さく試す
+- *別方向* (例: Phase 4b STM、memory 参照) へ pivot
+
+本 audit は意思決定の一次資料であり、どの分岐も合理化できる状態を
+目指した。user の戦略判断を待つ。
+
+* §8 Check-1: T1 VM dispatch coverage (2026-04-24 追補)
+
+Plan の §6 #1 "T1 classification の VM dispatch table 照合" を実施。
+
+** 発見 (§3 の再解釈)
+
+§3 Tier summary で "T1 89 件 ― 既に NeLisp VM 実装済のはず (要 cross check)"
+と書いたが、cross check の結果この前提は *誤り*。NeLisp は T1 subr を VM 内
+で再実装していない。代わりに 2 経路で *host C に委譲* している:
+
+1. =nelisp--primitive-symbols= (=src/nelisp-eval.el:604=) に列挙された symbol は
+   load 時に =(puthash sym (symbol-function sym) nelisp--functions)= で
+   host C の =symbol-function= をそのまま NeLisp 関数表に登録。
+   runtime に user コードが当該 symbol を call すると =nelisp--apply=
+   経由で host C subr を実行。
+2. 列挙漏れの symbol は =nelisp--apply= の fallthrough 節
+   =((functionp fn) (apply fn args))= (=nelisp-eval.el:562=) で直接 host C dispatch。
+
+どちらの経路でも NeLisp VM は単なる *薄い router* として機能し、実行自体は
+host C subr で行う。SBCL 系の pragmatic delegation 設計。
+
+** bytecode VM の T1 inline 化
+
+=nelisp-bytecode.el= の opcode table に *inline 化された T1 subr* は以下のみ:
+=1+=, =1-=, =not=, =+=, =-= (2-arg), =<=, =>=, =eq= (2-arg), =car=, =cdr=,
+=cons=, =list= (1-4 + N)。これら以外は VM が =CALL= opcode を吐いて
+=nelisp--apply= に dispatch する。
+
+** NeLisp-aware wrapper を持つ T1 (高階関数 + require 系)
+
+以下は closure 可視性や NeLisp state 参照のため =nelisp--builtin-*= wrapper
+経由で intercept:
+- =funcall=, =apply= (NeLisp closure を受ける)
+- =mapcar=, =mapc=, =mapconcat= (NeLisp closure を受ける)
+- =boundp=, =fboundp=, =symbol-value=, =symbol-function= (NeLisp の
+  variable / function table を先に見る)
+- =require=, =provide= (NeLisp 側 feature registry)
+
+** =nelisp--primitive-symbols= に *未登録* の gap 13 件
+
+audit §2 Raw data で NeLisp src が参照している T1 subr のうち、=nelisp--
+primitive-symbols= に列挙されていないもの。これらは runtime 時に
+fallthrough で host C に落ちる:
+
+| symbol | refs | 性質 | 対応優先 |
+|--------+------+------+----------|
+| =maphash= | 6 | *HOF* — NeLisp closure を受け得るので wrapper 必須 | ★ 高 |
+| =plist-get= | 32 | pure data | 中 (intercept 不要だが primitive 登録が clean) |
+| =plist-put= | 3 | 同上 | 中 |
+| =make-vector= | 4 | pure data | 低 |
+| =vector= | 4 | pure data | 低 |
+| =caddr= | 3 | pure data | 低 |
+| =cdddr= | 2 | pure data | 低 |
+| =ash= | 2 | pure data | 低 |
+| =logand= | 2 | pure data | 低 |
+| =logior= | 1 | pure data | 低 |
+| =car-safe= | 1 | pure data | 低 |
+| =float= | 1 | pure data | 低 |
+| =message= | 18 | side-effect | 低 (fallthrough OK) |
+
+*semantic gap は =maphash= のみ*。NeLisp closure を user が maphash に渡した
+場合、host C の =maphash= が host flavor の =funcall= で呼び出そうとして
+失敗する経路がある。Phase 5-A 着手前に wrapper 追加が妥当。他は
+"primitive 表に並べて一貫性を取る" 整備案件。
+
+** §3 Tier summary の修正案 (実態反映)
+
+| tier | 件数 | 実態 |
+|------+------+------|
+| T0 特殊形式 | 18 | NeLisp eval.el で dispatch、bootstrap 時のみ host C |
+| T1 基礎データ op | 89 | *全て host C に委譲* (primitive table 経由 76 件 + fallthrough 13 件)。NeLisp VM 内に再実装された subr は *0* (bytecode opcode inline は 12 件だが user 向け call path にも fallback あり) |
+| T2 system 境界 | 11 | host C retain (SBCL-style) |
+| T3 Emacs 特有 | 0 | 参照なし |
+| T4 bytecode/eval | 0 | 参照なし |
+
+** Phase 5-A 先行案への影響
+
+- *変わらず先行妥当*: §4 で挙げた "NeLisp 単独 package 作成自立" の gap
+  (=nelisp-load-file= / =nelisp-load-path= / =nelisp-require= /
+  macroexpand 非依存化) は上記委譲モデルと両立する。user package が
+  =plist-get= 等を call しても host C で動く
+- *追加 pre-req*: =maphash= wrapper を =nelisp--install-primitives= に追加
+  (1-2h)。残り 12 件も primitive 表に列挙して "どの T1 が NeLisp 認識されて
+  いるか" の境界を明確化 (半日)
+- *不変な前提*: NeLisp は T1 を再実装しない方針と cross check により判明。
+  "Emacs core 置換" は T1 まで全て Lisp 化する意味ではなく、T3 substrate
+  を Lisp で *新設* する意味
+
+** Phase 5 scope の再定義
+
+本 Check の結果、Phase 5 scope は以下のように精緻化できる:
+
+- *Phase 5-A (package-authoring 自立、先行)*:
+  - gap: load-file / load-path / require / macroexpand
+  - pre-req: =maphash= wrapper + primitive 表整備 (計 1 日以内)
+  - 新規 C 依存 0、既存 T1 委譲モデル維持
+- *Phase 5-B (substrate 新設、後続)*:
+  - T3 (buffer / window / frame / redisplay) の substrate API を Lisp で設計
+  - T1 は host C に委譲し続ける (純 Lisp 化は別課題 Phase 6+)
+- *Phase 6+ (optional, 将来)*:
+  - T1 の純 Lisp 再実装 (SBCL 系と分岐する選択)
+  - この audit から見る限り、T1 再実装は release bar には含まれないと解釈
+
+** Check 次項目
+
+Plan §6 の他 3 項目:
+- [ ] #2 macroexpand 経路の動的 trace — user Act 判断後に実施
+- [ ] #3 他の dogfood workflow (ert on NeLisp, byte-compile on NeLisp) — 同上
+- [ ] #4 5-A vs 5-B 並行可能性の再評価 — 同上
+
+これらは Phase 5-A 着手判断の *後* に意味を持つ、本 Check-1 で Phase 5-A 先行
+妥当性は補強された。
