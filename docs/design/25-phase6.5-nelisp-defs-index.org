@@ -2,7 +2,7 @@
 #+AUTHOR: zawatton + Claude (session-B)
 #+DATE: 2026-04-25
 #+STATE: LOCKED-2026-04-25
-#+STATUS: §2 全 8 項目 LOCKED 2026-04-25 全 default 採用 (handoff §1 必達条件、並行 session 着手)、Phase 6.5.1 MVP 着手中
+#+STATUS: §2 全 8 項目 LOCKED 2026-04-25、§3 Phase 6.5.1 MVP + 6.5.2 deep walker + 6.5.3 status 全 SHIPPED 2026-04-25 (1 日 2 セッション完遂、main 9746ed6 + 本 phase merge)。tools/list 35 → 39、refs テーブル 50020 row / features 307 row 実投入確認
 
 * §0 要旨
 
@@ -172,20 +172,36 @@ handoff §1.1 必達条件 = 本 phase。
   (=defs-search= / =defs-index-rebuild=)
 - =make test= / =make compile= / =make smoke= 全部緑
 
-** Phase 6.5.2 — references + signature + who-requires (DEFER)
+** Phase 6.5.2 — references + signature + who-requires *SHIPPED 2026-04-25*
 
-- scanner を deep-walk 化 (anvil-defs--walk-form-refs を移植)
-- =nelisp-defs-index-references SYMBOL &optional OPTS=
-- =nelisp-defs-index-signature SYMBOL=
-- =nelisp-defs-index-who-requires FEATURE=
-- deftool +3 (defs-references / defs-signature / defs-who-requires)
-- ERT +5
+handoff =handoff/nelisp_phase65_phase23_deep_walker_parallel_2026-04-25.org=
+の §1 必達条件を session-B 単独で完遂。
 
-** Phase 6.5.3 — index-status + 残 polish (DEFER)
+実装:
+- scanner を deep-walk 化 (=anvil-defs--walk-form-refs= 1:1 移植):
+  =--walker-ignored-p= / =--walk-each= (improper list 対応) /
+  =--walk-form-refs= (call / quote / require / provide / symbol 5 種 emit)
+- =--scan-file= 拡張: top-level form は defs に、walker からの emit を
+  refs / features に振り分け
+- =--ingest-file= refs / features INSERT 追加、戻り値に :refs / :features 件数
+- =rebuild= 戻り値に :refs / :features 追加
+- 公開 API +4:
+  - =nelisp-defs-index-references= SYMBOL &optional OPTS (=:kind= / =:limit=)
+  - =nelisp-defs-index-signature= SYMBOL → arglist + docstring head plist
+  - =nelisp-defs-index-who-requires= FEATURE → file path list
+  - =nelisp-defs-index-status= → counts + DB bytes + schema version
+- deftool +4: defs-references / defs-signature / defs-who-requires /
+  defs-index-status
+- ERT +11 (rebuild counts / refs call+quote / refs context / refs kind
+  filter / refs validates / signature shape + missing / who-requires
+  hit + validates / status counts + empty-db)
+- smoke +4 assert
 
-- =nelisp-defs-index-status= (counts + DB path + schema version)
-- =nelisp-defs-index-refresh-if-stale= (mtime check による incremental)
-- deftool +1 (defs-index-status)
+** Phase 6.5.3 — index-status *SHIPPED 2026-04-25 (Phase 6.5.2 と同 commit)*
+
+handoff §1 必達条件 4 で =defs-index-status= を Phase 2 と一括 ship。
+=refresh-if-stale= は実需要が出るまで DEFER (=rebuild= 全削除→再投入は
+50K refs でも 753ms = 実用充分)。
 
 * §4 リスク + 対策
 

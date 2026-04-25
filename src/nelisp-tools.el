@@ -846,6 +846,71 @@ clear; will error if any tool is still registered."
                    (error "defs-search: missing string `name'"))
                  (nelisp-defs-index-search name opts))))
 
+  ;; Phase 6.5.2 / 6.5.3 — defs-index deep walker MCP surface
+  ;; (Doc 25 §3).  Four tools expose references / signature /
+  ;; who-requires / index-status backed by the refs / features
+  ;; tables now populated by the deep walker.
+
+  (nelisp-deftool defs-references
+    :description "List indexed references of SYMBOL (call / quote / symbol sites)."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :symbol (list :type "string"
+                                            :description "Symbol name to look up.")
+                              :kind (list :type "string"
+                                          :description "Optional comma-separated ref.kind filter (e.g. \"call,quote\").")
+                              :limit (list :type "integer"
+                                           :description "Maximum rows (default 500)."))
+                        :required ["symbol"])
+    :handler (lambda (args)
+               (let* ((symbol (alist-get 'symbol args))
+                      (kind-raw (alist-get 'kind args))
+                      (limit (alist-get 'limit args))
+                      (kind-list (and (stringp kind-raw)
+                                      (not (string-empty-p kind-raw))
+                                      (split-string kind-raw "[ ,]+" t)))
+                      (opts (append (and kind-list (list :kind kind-list))
+                                    (and (integerp limit) (list :limit limit)))))
+                 (unless (stringp symbol)
+                   (error "defs-references: missing string `symbol'"))
+                 (nelisp-defs-index-references symbol opts))))
+
+  (nelisp-deftool defs-signature
+    :description "Return arity + first-line docstring + location for SYMBOL (or nil)."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :symbol (list :type "string"
+                                            :description "Symbol name to look up."))
+                        :required ["symbol"])
+    :handler (lambda (args)
+               (let ((symbol (alist-get 'symbol args)))
+                 (unless (stringp symbol)
+                   (error "defs-signature: missing string `symbol'"))
+                 (or (nelisp-defs-index-signature symbol)
+                     (list :symbol symbol :found nil)))))
+
+  (nelisp-deftool defs-who-requires
+    :description "Return file paths that contain `(require 'FEATURE)`."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :feature (list :type "string"
+                                             :description "Feature name."))
+                        :required ["feature"])
+    :handler (lambda (args)
+               (let ((feature (alist-get 'feature args)))
+                 (unless (stringp feature)
+                   (error "defs-who-requires: missing string `feature'"))
+                 (let ((paths (nelisp-defs-index-who-requires feature)))
+                   (list :feature feature
+                         :files (or paths []))))))
+
+  (nelisp-deftool defs-index-status
+    :description "Return defs index DB stats: db-path, schema-version, per-table counts, db-bytes."
+    :input-schema (list :type "object"
+                        :properties (make-hash-table :test 'equal))
+    :handler (lambda (_args)
+               (nelisp-defs-index-status)))
+
   t)
 
 ;; Auto-register at load time so `require 'nelisp-tools' is enough

@@ -34,10 +34,21 @@
 ;; Doc 25 §2.2 B).  Deleting it is safe — full rebuild is cheap
 ;; (sub-second on project scale).
 ;;
-;; Scanner is the inline simple variant (Doc 25 §2.6 B): no
-;; dependency on `anvil-sexp', just `insert-file-contents' + `read'
-;; loop with car-symbol pattern match for defun-likes.  Phase 6.5.2
-;; will swap in the deep walker for refs/features.
+;; Scanner: `insert-file-contents' + `read' loop, no dependency on
+;; `anvil-sexp'.  Top-level form heads in
+;; `nelisp-defs-index--defining-forms' produce a `defs' row; every
+;; form (defining or not) is then walked recursively to produce
+;; `refs' (call / quote / symbol references) and `features'
+;; (require / provide edges).  All references coming from one
+;; top-level form share that form's start line — anvil-defs makes
+;; the same simplification because `read' gives form positions, not
+;; sub-form positions, without re-tokenising.
+;;
+;; Phase history:
+;;   6.5.1 (Doc 25 §3) — top-level scanner only, refs/features empty
+;;   6.5.2/6.5.3 (Doc 25 §3) — deep walker + refs/features INSERT,
+;;     +4 public API (-references / -signature / -who-requires /
+;;     -index-status)
 
 ;;; Code:
 
@@ -283,6 +294,84 @@ are unset.  Tries `git ls-files' first, then `directory-files-recursively'."
                   (push (expand-file-name f) acc))))))))
     (nreverse (delete-dups acc))))
 
+;;;; --- walker (Phase 6.5.2) ---------------------------------------------
+
+(defconst nelisp-defs-index--walker-skip-symbols
+  '(nil t)
+  "Symbols too pervasive to record as references.
+No project ever asks \"who calls nil?\".")
+
+(defun nelisp-defs-index--walker-ignored-p (sym)
+  "Return non-nil when SYM should not be emitted by the walker."
+  (or (null sym)
+      (keywordp sym)
+      (memq sym nelisp-defs-index--walker-skip-symbols)))
+
+(defun nelisp-defs-index--walk-each (xs fn)
+  "Apply FN to each element of XS, tolerating improper / dotted lists.
+`dolist' signals on the dotted tail; reader output may include
+literal alists like `(:key . \"val\")', so the walker must not
+rely on the proper-list invariant."
+  (while (consp xs)
+    (funcall fn (car xs))
+    (setq xs (cdr xs)))
+  (when xs (funcall fn xs)))
+
+(defun nelisp-defs-index--walk-form-refs (sexp context line emit)
+  "Walk SEXP recursively, calling EMIT for each reference / feature edge.
+EMIT is (KIND NAME LINE CONTEXT).  CONTEXT is the enclosing def's
+name (string) or nil.  LINE is the top-level form's starting line.
+Recorded:
+  - call sites: (OP ARGS...) with OP a plain symbol
+  - quote sites: \\='X / #\\='X (via `quote' / `function' heads)
+  - require / provide edges (folded into the `features' table by
+    the caller)
+  - bare value-position symbols"
+  (cond
+   ((consp sexp)
+    (let ((op (car sexp)))
+      (cond
+       ;; (quote X) / (function X) on a bare symbol — no recursion.
+       ((and (memq op '(quote function))
+             (consp (cdr sexp))
+             (symbolp (cadr sexp))
+             (not (nelisp-defs-index--walker-ignored-p (cadr sexp))))
+        (funcall emit 'quote (symbol-name (cadr sexp)) line context))
+       ;; (require 'SYM ...)
+       ((and (eq op 'require)
+             (consp (cdr sexp))
+             (consp (cadr sexp))
+             (eq (car (cadr sexp)) 'quote)
+             (symbolp (cadr (cadr sexp))))
+        (funcall emit 'require (symbol-name (cadr (cadr sexp)))
+                 line context))
+       ;; (provide 'SYM ...)
+       ((and (eq op 'provide)
+             (consp (cdr sexp))
+             (consp (cadr sexp))
+             (eq (car (cadr sexp)) 'quote)
+             (symbolp (cadr (cadr sexp))))
+        (funcall emit 'provide (symbol-name (cadr (cadr sexp)))
+                 line context))
+       ;; (OP ARGS...) — record a call on OP, then recurse args.
+       ((and (symbolp op)
+             (not (nelisp-defs-index--walker-ignored-p op)))
+        (funcall emit 'call (symbol-name op) line context)
+        (nelisp-defs-index--walk-each
+         (cdr sexp)
+         (lambda (sub)
+           (nelisp-defs-index--walk-form-refs sub context line emit))))
+       ;; non-symbol head (e.g. ((lambda (x) x) 1)) / dotted alists.
+       (t
+        (nelisp-defs-index--walk-each
+         sexp
+         (lambda (sub)
+           (nelisp-defs-index--walk-form-refs sub context line emit)))))))
+   ;; Bare value-position symbol reference.
+   ((and (symbolp sexp)
+         (not (nelisp-defs-index--walker-ignored-p sexp)))
+    (funcall emit 'symbol (symbol-name sexp) line context))))
+
 ;;;; --- scanner -----------------------------------------------------------
 
 (defun nelisp-defs-index--first-line (s)
@@ -349,11 +438,14 @@ Skips shapes whose third slot is not statically an arglist
           third))))))
 
 (defun nelisp-defs-index--scan-file (path)
-  "Parse PATH and return (:defs LIST).
-Each entry is a plist (:kind STR :name STR :line INT :end-line INT
-:arity-min INT-or-nil :arity-max INT-or-nil :docstring-head STR-or-nil
-:obsolete-p 0).  MVP: top-level forms only via `read' loop."
-  (let ((defs nil))
+  "Parse PATH and return (:defs LIST :refs LIST :features LIST).
+Each :defs entry is a plist (:kind :name :line :end-line :arity-min
+:arity-max :docstring-head :obsolete-p).  Each :refs entry is
+(:name :line :context :kind), each :features entry is (:feature
+:kind in {\"requires\",\"provides\"}).  Phase 6.5.2: top-level
+defining forms feed `defs', the deep walker feeds `refs' /
+`features' for every form (defining or not)."
+  (let ((defs nil) (refs nil) (features nil))
     (with-temp-buffer
       (insert-file-contents path)
       ;; `read' on a buffer needs an elisp-friendly syntax table for
@@ -375,10 +467,12 @@ Each entry is a plist (:kind STR :name STR :line INT :end-line INT
                (setq sexp nil)))
             (when (and continue sexp (consp sexp))
               (let* ((op (car sexp))
-                     (name-sym (and (consp (cdr sexp)) (cadr sexp))))
-                (when (and (memq op nelisp-defs-index--defining-forms)
-                           (symbolp name-sym)
-                           name-sym)
+                     (name-sym (and (consp (cdr sexp)) (cadr sexp)))
+                     (defining (and (memq op nelisp-defs-index--defining-forms)
+                                    (symbolp name-sym)
+                                    name-sym))
+                     (context-str (and defining (symbol-name name-sym))))
+                (when defining
                   (let* ((end-line (line-number-at-pos))
                          (docstring (nelisp-defs-index--extract-docstring sexp))
                          (arglist (nelisp-defs-index--arglist sexp))
@@ -393,8 +487,27 @@ Each entry is a plist (:kind STR :name STR :line INT :end-line INT
                                 :docstring-head
                                 (nelisp-defs-index--first-line docstring)
                                 :obsolete-p 0)
-                          defs)))))))))
-    (list :defs (nreverse defs))))
+                          defs)))
+                (let ((emit
+                       (lambda (ekind ename eline ecntx)
+                         (cond
+                          ((memq ekind '(require provide))
+                           (push (list :feature ename
+                                       :kind (pcase ekind
+                                               ('require "requires")
+                                               ('provide "provides")))
+                                 features))
+                          (t
+                           (push (list :name ename
+                                       :line eline
+                                       :context ecntx
+                                       :kind (symbol-name ekind))
+                                 refs))))))
+                  (nelisp-defs-index--walk-form-refs
+                   sexp context-str start-line emit))))))))
+    (list :defs (nreverse defs)
+          :refs (nreverse refs)
+          :features (nreverse features))))
 
 ;;;; --- ingest ------------------------------------------------------------
 
@@ -421,7 +534,7 @@ Each entry is a plist (:kind STR :name STR :line INT :end-line INT
 
 (defun nelisp-defs-index--ingest-file (db path)
   "Scan PATH and write its rows into DB (replacing prior state).
-Returns plist (:defs N)."
+Returns plist (:defs N :refs N :features N)."
   (let* ((scan (nelisp-defs-index--scan-file path))
          (file-id (nelisp-defs-index--file-id db path)))
     (nelisp-defs-index--with-transaction db
@@ -440,8 +553,27 @@ Returns plist (:defs N)."
                (plist-get d :arity-min)
                (plist-get d :arity-max)
                (plist-get d :docstring-head)
-               (plist-get d :obsolete-p)))))
-    (list :defs (length (plist-get scan :defs)))))
+               (plist-get d :obsolete-p))))
+      (dolist (r (plist-get scan :refs))
+        (sqlite-execute
+         db
+         "INSERT INTO refs(file_id,name,line,context,kind)
+          VALUES (?1,?2,?3,?4,?5)"
+         (list file-id
+               (plist-get r :name)
+               (plist-get r :line)
+               (plist-get r :context)
+               (plist-get r :kind))))
+      (dolist (f (plist-get scan :features))
+        (sqlite-execute
+         db
+         "INSERT INTO features(file_id,feature,kind) VALUES (?1,?2,?3)"
+         (list file-id
+               (plist-get f :feature)
+               (plist-get f :kind)))))
+    (list :defs (length (plist-get scan :defs))
+          :refs (length (plist-get scan :refs))
+          :features (length (plist-get scan :features)))))
 
 ;;;; --- public API --------------------------------------------------------
 
@@ -462,12 +594,14 @@ Returns plist (:defs N)."
 ;;;###autoload
 (defun nelisp-defs-index-rebuild (&optional paths)
   "Re-index every .el file under PATHS (default `nelisp-defs-index-paths').
-Returns plist (:files N :defs N :duration-ms N)."
+Returns plist (:files N :defs N :refs N :features N :duration-ms N)."
   (let* ((db (nelisp-defs-index--db))
          (t0 (current-time))
          (files (nelisp-defs-index--collect-files paths))
          (file-count 0)
-         (def-count 0))
+         (def-count 0)
+         (ref-count 0)
+         (feat-count 0))
     (nelisp-defs-index--with-transaction db
       (sqlite-execute db "DELETE FROM file")
       (sqlite-execute db "DELETE FROM defs")
@@ -477,10 +611,14 @@ Returns plist (:files N :defs N :duration-ms N)."
       (condition-case _
           (let ((r (nelisp-defs-index--ingest-file db f)))
             (cl-incf file-count)
-            (cl-incf def-count (plist-get r :defs)))
+            (cl-incf def-count (plist-get r :defs))
+            (cl-incf ref-count (plist-get r :refs))
+            (cl-incf feat-count (plist-get r :features)))
         (error nil)))
     (list :files file-count
           :defs def-count
+          :refs ref-count
+          :features feat-count
           :duration-ms (truncate (* 1000 (float-time
                                           (time-subtract
                                            (current-time) t0)))))))
@@ -541,6 +679,115 @@ Each row is a plist with :kind :name :file :line :end-line :arity-min
                     :docstring-head (nth 7 row)
                     :obsolete-p (nth 8 row)))
             (sqlite-select db sql params))))
+
+;;;###autoload
+(defun nelisp-defs-index-references (symbol &optional opts)
+  "Return reference records for SYMBOL.
+SYMBOL may be a string or symbol.
+
+OPTS plist:
+  :kind STRING-OR-LIST  - filter ref.kind (call / quote / symbol)
+  :limit INTEGER        - default 500
+
+Each row is a plist with :name :file :line :context :kind."
+  (let ((name (cond
+               ((symbolp symbol)
+                (and symbol (symbol-name symbol)))
+               (t symbol))))
+    (unless (and (stringp name) (not (string-empty-p name)))
+      (user-error
+       "nelisp-defs-index-references: SYMBOL must be a non-empty string or symbol, got %S"
+       symbol))
+    (let* ((db (nelisp-defs-index--db))
+           (kind (plist-get opts :kind))
+           (limit (or (plist-get opts :limit) 500))
+           (kind-list (cond
+                       ((null kind) nil)
+                       ((listp kind)
+                        (mapcar (lambda (k)
+                                  (if (symbolp k) (symbol-name k) k))
+                                kind))
+                       ((symbolp kind) (list (symbol-name kind)))
+                       (t (list kind))))
+           (kind-sql (cond
+                      ((null kind-list) "")
+                      (t (format " AND r.kind IN (%s)"
+                                 (mapconcat (lambda (_) "?")
+                                            kind-list ",")))))
+           (sql (format
+                 "SELECT r.name, f.path, r.line, r.context, r.kind
+                  FROM refs r JOIN file f ON r.file_id = f.id
+                  WHERE r.name = ?%s
+                  ORDER BY f.path, r.line
+                  LIMIT ?"
+                 kind-sql))
+           (params (append (list name) kind-list (list limit))))
+      (mapcar (lambda (row)
+                (list :name (nth 0 row)
+                      :file (nth 1 row)
+                      :line (nth 2 row)
+                      :context (nth 3 row)
+                      :kind (nth 4 row)))
+              (sqlite-select db sql params)))))
+
+;;;###autoload
+(defun nelisp-defs-index-signature (symbol)
+  "Return a signature plist for SYMBOL, or nil if not indexed.
+When multiple definitions exist the first encountered is returned.
+Result plist: :name :kind :arity-min :arity-max :file :line
+:docstring-head."
+  (let* ((name (cond
+                ((symbolp symbol) (and symbol (symbol-name symbol)))
+                (t symbol)))
+         (hits (and (stringp name) (not (string-empty-p name))
+                    (nelisp-defs-index-search name '(:limit 1)))))
+    (when hits
+      (let ((h (car hits)))
+        (list :name (plist-get h :name)
+              :kind (plist-get h :kind)
+              :arity-min (plist-get h :arity-min)
+              :arity-max (plist-get h :arity-max)
+              :file (plist-get h :file)
+              :line (plist-get h :line)
+              :docstring-head (plist-get h :docstring-head))))))
+
+;;;###autoload
+(defun nelisp-defs-index-who-requires (feature)
+  "Return a list of file paths that contain `(require ''FEATURE)'.
+FEATURE may be a string or symbol."
+  (let ((feat (cond
+               ((symbolp feature) (and feature (symbol-name feature)))
+               (t feature))))
+    (unless (and (stringp feat) (not (string-empty-p feat)))
+      (user-error
+       "nelisp-defs-index-who-requires: FEATURE must be a non-empty string or symbol, got %S"
+       feature))
+    (let ((db (nelisp-defs-index--db)))
+      (mapcar #'car
+              (sqlite-select
+               db
+               "SELECT f.path FROM features ff JOIN file f ON ff.file_id = f.id
+                WHERE ff.feature = ?1 AND ff.kind = 'requires'
+                ORDER BY f.path"
+               (list feat))))))
+
+;;;###autoload
+(defun nelisp-defs-index-status ()
+  "Return DB statistics plist:
+(:db-path :schema-version :files :defs :refs :features :db-bytes)."
+  (let* ((db (nelisp-defs-index--db))
+         (count (lambda (sql)
+                  (or (car-safe (car-safe (sqlite-select db sql))) 0)))
+         (size (when (file-exists-p nelisp-defs-index-db-path)
+                 (file-attribute-size
+                  (file-attributes nelisp-defs-index-db-path)))))
+    (list :db-path nelisp-defs-index-db-path
+          :schema-version nelisp-defs-index-schema-version
+          :files (funcall count "SELECT COUNT(*) FROM file")
+          :defs (funcall count "SELECT COUNT(*) FROM defs")
+          :refs (funcall count "SELECT COUNT(*) FROM refs")
+          :features (funcall count "SELECT COUNT(*) FROM features")
+          :db-bytes (or size 0))))
 
 (provide 'nelisp-defs-index)
 ;;; nelisp-defs-index.el ends here
