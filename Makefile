@@ -1,4 +1,5 @@
-.PHONY: test compile clean all bench gc-bench actor-bench soak smoke stage-d-tarball
+.PHONY: test compile clean all bench gc-bench actor-bench soak smoke stage-d-tarball \
+        runtime runtime-test runtime-clean test-runtime
 
 EMACS ?= emacs
 
@@ -85,6 +86,39 @@ soak:
 # nelisp-server-run-stdio) is wired correctly for Claude Code.
 smoke:
 	./test/nelisp-server-smoke.sh
+
+# Phase 7.0 (Doc 27 §3 7.0) Rust syscall stub.  `nelisp-runtime/` is a
+# self-contained Cargo crate (cdylib + bin) that ships ~10 OS syscall
+# thin wrappers under the `nelisp_syscall_*` C ABI prefix.  Phase 7.5
+# wires NeLisp's FFI to those symbols; Phase 7.0 only proves the
+# binary builds, links, and runs `--syscall-smoke' green.
+NELISP_RUNTIME_DIR := nelisp-runtime
+NELISP_RUNTIME_BIN := $(NELISP_RUNTIME_DIR)/target/release/nelisp-runtime
+# Pick the first cargo on $PATH, fall back to a rustup default install
+# path so a non-login shell (e.g. `make' invoked from a daemon) still
+# finds the toolchain without forcing the user to source `~/.cargo/env'.
+CARGO ?= $(shell command -v cargo 2>/dev/null || echo $(HOME)/.cargo/bin/cargo)
+
+runtime:
+	cd $(NELISP_RUNTIME_DIR) && $(CARGO) build --release
+
+runtime-test:
+	cd $(NELISP_RUNTIME_DIR) && $(CARGO) test --release
+
+runtime-clean:
+	cd $(NELISP_RUNTIME_DIR) && $(CARGO) clean
+
+# `test-runtime' depends on `runtime' so a fresh checkout that runs
+# only this target still proves the ERT + cargo + binary chain.  The
+# ERT layer (`test/nelisp-runtime-test.el') skips cleanly when the
+# binary is missing, so plain `make test' stays green for hosts
+# without a Rust toolchain.
+test-runtime: runtime
+	$(EMACS) --batch -Q -L src -L test \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l ert \
+	  -l test/nelisp-runtime-test.el \
+	  -f ert-run-tests-batch-and-exit
 
 # Phase 6.3 (Stage D, Doc 18) distribution tarball.  Bundles only what
 # `bin/anvil mcp serve' needs at runtime — bin/, src/*.el, README,
