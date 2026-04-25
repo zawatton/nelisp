@@ -45,6 +45,7 @@
 (require 'nelisp-server)
 (require 'nelisp-network)
 (require 'nelisp-state)
+(require 'nelisp-http)
 
 ;;; Data-store (scratch KV used by data-get/set-path) ---------------
 
@@ -617,6 +618,83 @@ clear; will error if any tool is still registered."
   ;; Phase 5-F.3.1 — org-read-outline-tree (Doc 20 §2.5)
   ;; Hierarchical org outline (vs flat `file-outline').  Pure regex,
   ;; no host `org-mode' dependency; stays valid under `emacs --batch -Q'.
+
+  ;; Phase 6.2.3 — anvil-http MVP MCP surface (Doc 24).  Five tools
+  ;; expose `nelisp-http-fetch' / `-fetch-head' / cache I/O so non-Emacs
+  ;; users can drive the cache-aware HTTP path entirely over MCP.
+
+  (nelisp-deftool http-fetch
+    :description "GET URL with TTL cache via nelisp-state ns=\"http\"."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :url (list :type "string"
+                                         :description "HTTP/HTTPS URL")
+                              :timeout-sec (list :type "integer")
+                              :ttl (list :type "integer"
+                                         :description "Cache TTL seconds (default 86400)")
+                              :no-cache (list :type "boolean"
+                                              :description "Skip cache reads + writes"))
+                        :required ["url"])
+    :handler (lambda (args)
+               (let* ((url (alist-get 'url args))
+                      (timeout (alist-get 'timeout-sec args))
+                      (ttl (alist-get 'ttl args))
+                      (no-cache (alist-get 'no-cache args)))
+                 (unless (stringp url)
+                   (error "http-fetch: missing string `url'"))
+                 (apply #'nelisp-http-fetch url
+                        (append (and timeout (list :timeout-sec timeout))
+                                (and ttl (list :ttl ttl))
+                                (and no-cache (list :no-cache t)))))))
+
+  (nelisp-deftool http-head
+    :description "HEAD URL — returns :status :headers :final-url :elapsed-ms (no cache)."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :url (list :type "string")
+                              :timeout-sec (list :type "integer"))
+                        :required ["url"])
+    :handler (lambda (args)
+               (let ((url (alist-get 'url args))
+                     (timeout (alist-get 'timeout-sec args)))
+                 (unless (stringp url)
+                   (error "http-head: missing string `url'"))
+                 (apply #'nelisp-http-fetch-head url
+                        (and timeout (list :timeout-sec timeout))))))
+
+  (nelisp-deftool http-cache-get
+    :description "Return cached entry plist for URL or nil on miss."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :url (list :type "string"))
+                        :required ["url"])
+    :handler (lambda (args)
+               (let ((url (alist-get 'url args)))
+                 (unless (stringp url)
+                   (error "http-cache-get: missing string `url'"))
+                 (or (nelisp-http-fetch-cache-get url)
+                     (list :url url :cached nil)))))
+
+  (nelisp-deftool http-cache-clear
+    :description "Drop cached HTTP entries.  With URL, drop one; without, wipe all."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :url (list :type "string"
+                                         :description "Optional — single-entry clear")))
+    :handler (lambda (args)
+               (let* ((url (alist-get 'url args))
+                      (result (nelisp-http-fetch-cache-clear url)))
+                 (list :url url :cleared (or result t)))))
+
+  (nelisp-deftool http-cache-status
+    :description "Summarise the http cache namespace: count + URL list."
+    :input-schema (list :type "object"
+                        :properties (make-hash-table :test 'equal))
+    :handler (lambda (_args)
+               (let* ((urls (nelisp-http-fetch-cache-list))
+                      (count (length urls)))
+                 (list :count count
+                       :urls (or urls [])))))
 
   (nelisp-deftool org-read-outline-tree
     :description "Hierarchical headline tree of an .org file (parent/child structure)."

@@ -159,5 +159,43 @@ namespace starts empty for each test."
                      :cached-at :final-url :elapsed-ms))
           (should (plist-member r k)))))))
 
+;;;; HEAD (Phase 6.2.2)
+
+(ert-deftest nelisp-http-test-head-returns-headers-only ()
+  "HEAD returns :status :headers :final-url :elapsed-ms; no :body."
+  (cl-letf (((symbol-function 'nelisp-http--request)
+             (lambda (method url _e _t)
+               (should (equal method "HEAD"))
+               (list :status 200
+                     :headers '(:content-length "1024"
+                                :content-type "image/png")
+                     :body ""
+                     :final-url url))))
+    (let ((r (nelisp-http-fetch-head "https://example.com/a.png")))
+      (should (= (plist-get r :status) 200))
+      (should (equal (plist-get (plist-get r :headers) :content-length)
+                     "1024"))
+      (should (null (plist-get r :body)))
+      (should (equal (plist-get r :final-url)
+                     "https://example.com/a.png")))))
+
+(ert-deftest nelisp-http-test-head-skips-cache ()
+  "HEAD must not write to the cache namespace."
+  (skip-unless (and (fboundp 'sqlite-available-p) (sqlite-available-p)))
+  (nelisp-http-test--with-fresh-db
+    (nelisp-state-enable)
+    (cl-letf (((symbol-function 'nelisp-http--request)
+               (lambda (_m url _e _t)
+                 (list :status 200 :headers nil :body ""
+                       :final-url url))))
+      (nelisp-http-fetch-head "https://example.com/x")
+      (should (null (nelisp-http-fetch-cache-list))))))
+
+(ert-deftest nelisp-http-test-head-rejects-bad-url ()
+  "HEAD performs the same URL hygiene as fetch."
+  (should-error (nelisp-http-fetch-head "") :type 'user-error)
+  (should-error (nelisp-http-fetch-head "ftp://example.com/")
+                :type 'user-error))
+
 (provide 'nelisp-http-test)
 ;;; nelisp-http-test.el ends here

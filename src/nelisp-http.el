@@ -289,10 +289,26 @@ Keyword args:
       (setq tail (cddr tail)))
     out))
 
-;; The Phase 5-E `nelisp-http-get' (nelisp-network.el) ships its own
-;; in-memory hash cache + `nelisp-http-cache-clear' / `-cache-size'
-;; helpers; we intentionally pick `nelisp-http-fetch-cache-*' here so
-;; the two backends can coexist until Phase 6.2.5+ consolidates them.
+;;;###autoload
+(cl-defun nelisp-http-fetch-head (url &key headers timeout-sec)
+  "HEAD URL and return (:status :headers :final-url :elapsed-ms).
+HEAD responses never touch the cache (no body to memoize, and the
+upstream may freshen validators we'd otherwise miss)."
+  (nelisp-http--check-url url)
+  (let* ((extra (nelisp-http--build-request-headers headers nil nil))
+         (timeout (or timeout-sec nelisp-http-timeout-sec))
+         (start (float-time))
+         (resp (nelisp-http--request "HEAD" url extra timeout))
+         (elapsed-ms (round (* 1000 (- (float-time) start)))))
+    (list :status (plist-get resp :status)
+          :headers (plist-get resp :headers)
+          :final-url (plist-get resp :final-url)
+          :elapsed-ms elapsed-ms)))
+
+;; The Phase 5-E `nelisp-http-get' / `nelisp-http-head' (nelisp-network.el)
+;; ship their own in-memory hash cache + `nelisp-http-cache-clear' /
+;; `-cache-size' helpers; we pick `nelisp-http-fetch-*' here so the two
+;; backends can coexist until Phase 6.2.5+ consolidates them.
 
 ;;;###autoload
 (defun nelisp-http-fetch-cache-clear (&optional url)

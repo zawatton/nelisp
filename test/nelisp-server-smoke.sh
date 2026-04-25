@@ -139,6 +139,12 @@ assert_contains '"name":"data-list-keys"'
 assert_contains '"name":"data-delete-path"'
 # Phase 5-F.3.1 org tool (Doc 20)
 assert_contains '"name":"org-read-outline-tree"'
+# Phase 6.2.3 anvil-http MVP MCP surface (Doc 24)
+assert_contains '"name":"http-fetch"'
+assert_contains '"name":"http-head"'
+assert_contains '"name":"http-cache-get"'
+assert_contains '"name":"http-cache-clear"'
+assert_contains '"name":"http-cache-status"'
 # git-status has no params — inputSchema.properties must be `{}` not `null`
 # (Claude Code zod schema rejects `null`; surfaced as "Failed to fetch tools"
 # invalid_type at tools[*].inputSchema.properties.)
