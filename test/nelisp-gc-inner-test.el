@@ -113,7 +113,11 @@ unreachable must stay :white, and `:grey-count' must be 0."
 (ert-deftest nelisp-gc-inner-collect-roots-from-gc-metadata ()
   "Collect-roots resolves live-roots bitmap through frame layout.
 Two safe-points (one entry, one back-edge) on different frames each
-contribute one address; the heap-region :start gets contributed too."
+contribute one address.  T65 (T51 codex critical #5): region.start is
+NO LONGER a synthetic root (the prior implementation conflated
+\"region table held alive by host\" with \"first heap object always
+live\" — see `collect-roots' docstring for the GC-correctness
+rationale)."
   (nelisp-gc-inner-test--reset)
   (let* ((bv0 (let ((v (make-bool-vector 2 nil))) (aset v 0 t) v))
          (bv1 (let ((v (make-bool-vector 2 nil))) (aset v 1 t) v))
@@ -134,10 +138,11 @@ contribute one address; the heap-region :start gets contributed too."
          (region (nelisp-gc-inner-test--mk-region 0 500 600 #'ignore))
          (roots  (nelisp-gc-inner-collect-roots
                   (list meta-a meta-b) (list region))))
-    ;; vid 0 at base 1000 → 1000; vid 1 at base 2000 → 2008; region :start 500.
+    ;; vid 0 at base 1000 → 1000; vid 1 at base 2000 → 2008.
     (should (memq 1000 roots))
     (should (memq 2008 roots))
-    (should (memq 500  roots))
+    ;; T65: region :start (500) is NOT injected as a synthetic root.
+    (should (null (memq 500 roots)))
     ;; Dedup invariant: re-running must keep length identical.
     (should (= (length roots)
                (length (cl-remove-duplicates roots))))))
@@ -438,7 +443,7 @@ C (unreachable garbage).  After minor GC, A + B must be in to-space
 (forwarded) and C must remain only in from-space (not forwarded)."
   (nelisp-gc-inner-test--reset)
   (let* ((from   (nelisp-gc-inner-test--mk-nursery-region 0 100  500))
-         (to     (nelisp-gc-inner-test--mk-nursery-region 1 1000 1500))
+         (to     (nelisp-gc-inner-test--mk-nursery-region 1 1000 1400))
          (hdr    (nelisp-gc-inner--make-header 16 0 0))
          (a-addr 100) (b-addr 200) (c-addr 300)
          (objects
@@ -468,7 +473,7 @@ C (unreachable garbage).  After minor GC, A + B must be in to-space
   "After minor GC + flip, what was to-space becomes the new from-space."
   (nelisp-gc-inner-test--reset)
   (let* ((from   (nelisp-gc-inner-test--mk-nursery-region 0 100  500))
-         (to     (nelisp-gc-inner-test--mk-nursery-region 1 1000 1500))
+         (to     (nelisp-gc-inner-test--mk-nursery-region 1 1000 1400))
          (hdr    (nelisp-gc-inner--make-header 16 0 0))
          (a-addr 100)
          (objects
@@ -499,7 +504,7 @@ Set up two objects: one with age 0 (post-increment age 1, NOT a
 candidate), one with age 1 (post-increment 2, IS a candidate)."
   (nelisp-gc-inner-test--reset)
   (let* ((from   (nelisp-gc-inner-test--mk-nursery-region 0 100  500))
-         (to     (nelisp-gc-inner-test--mk-nursery-region 1 1000 1500))
+         (to     (nelisp-gc-inner-test--mk-nursery-region 1 1000 1400))
          (young  (nelisp-gc-inner--make-header 16 0 0))   ; age 0 → 1
          (mature (nelisp-gc-inner--make-header 16 0 1))   ; age 1 → 2 (>= 2)
          (young-addr  100)
@@ -697,7 +702,7 @@ the original from-space addr → tenured addr on the semispace."
   (nelisp-gc-inner-test--reset)
   (nelisp-allocator--reset-region-table)
   (let* ((from   (nelisp-gc-inner-test--mk-nursery-region 0 100  500))
-         (to     (nelisp-gc-inner-test--mk-nursery-region 1 1000 1500))
+         (to     (nelisp-gc-inner-test--mk-nursery-region 1 1000 1400))
          (mature (nelisp-gc-inner--make-header 16 0 1)) ; age 1 → 2 post-bump
          (mature-from-addr 200)
          (objects
@@ -832,7 +837,7 @@ to-space.  The candidate's :fields survive the round trip."
   (nelisp-gc-inner-test--reset)
   (nelisp-allocator--reset-region-table)
   (let* ((from   (nelisp-gc-inner-test--mk-nursery-region 0 100  500))
-         (to     (nelisp-gc-inner-test--mk-nursery-region 1 1000 1500))
+         (to     (nelisp-gc-inner-test--mk-nursery-region 1 1000 1400))
          (tenured-region (nelisp-gc-inner-test--mk-large-tenured
                           2 (* 64 1024) (* 128 1024)))
          (card-table (nelisp-gc-inner-init-card-table tenured-region))
@@ -986,7 +991,7 @@ Expect:
   (nelisp-allocator--reset-region-table)
   (nelisp-gc-inner-scheduler-reset)
   (let* ((from   (nelisp-gc-inner-test--mk-nursery-region 0 100  500))
-         (to     (nelisp-gc-inner-test--mk-nursery-region 1 1000 1500))
+         (to     (nelisp-gc-inner-test--mk-nursery-region 1 1000 1400))
          (tenured-region (nelisp-gc-inner-test--mk-large-tenured
                           2 (* 64 1024) (* 128 1024)))
          (card-table (nelisp-gc-inner-init-card-table tenured-region))

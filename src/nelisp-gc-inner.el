@@ -56,6 +56,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'nelisp-heap-types)
 (require 'nelisp-allocator)
 (require 'nelisp-integration)
 
@@ -405,18 +406,37 @@ resolvable address are dropped — see the docstring there for why."
             (when (integerp addr) (push addr out))))))
     (nreverse out)))
 
-(defun nelisp-gc-inner-collect-roots (gc-metadata-list heap-regions)
-  "Build the live root set from decoded GC metadata + heap-region registry.
+(defun nelisp-gc-inner-collect-roots (gc-metadata-list _heap-regions)
+  "Build the live root set from decoded GC metadata.
 
 GC-METADATA-LIST is a list of decoded Doc 30 §1.4 plists (one per
-function whose frame is currently on the stack).  HEAP-REGIONS is
-the Doc 29 §1.4 registry snapshot.
+function whose frame is currently on the stack).
 
 For each function metadata, every safe-point's live-root bitmap
-contributes addresses via `--roots-from-safe-point'.  For each
-region, the descriptor itself contributes `:start' as a synthetic
-root so the region table is held live across mark cycles (Doc 29
-§4.2 region-table-as-root invariant).
+contributes addresses via `--roots-from-safe-point'.
+
+T65 (T51 codex critical #5): the prior implementation added each
+region's `:start' to the root set as a *synthetic root* so the
+region table would be held live across mark cycles.  That conflated
+two different invariants:
+
+  1. The region *table* (the host-side hash that names every region)
+     must outlive the cycle — handled by the host stack frame that
+     holds the registry alive; nothing inside the simulated heap
+     needs to be marked for that.
+  2. The first object inside each region is itself a real heap
+     address that may or may not be live.  Forcing it black via
+     `:start' marked the *head* object as permanently reachable,
+     which broke GC correctness — a dead head object was never
+     reclaimed and its `:fields' kept its descendants alive
+     transitively.
+
+Post-T65 the region table is held by the `heap-regions' argument
+itself (passed by every call site directly from
+`nelisp-allocator-snapshot-regions'); the symbol live-set comes
+exclusively from the Doc 28 §2.9 GC metadata bitmaps.  HEAP-REGIONS
+is retained in the signature for backward compatibility but no
+longer feeds the root set.
 
 Returns a deduplicated list of integer addresses suitable as the
 ROOT-SET argument to `nelisp-gc-inner-run-mark-phase'."
@@ -429,10 +449,7 @@ ROOT-SET argument to `nelisp-gc-inner-run-mark-phase'."
       (dolist (meta gc-metadata-list)
         (dolist (sp (plist-get meta :safe-points))
           (dolist (a (nelisp-gc-inner--roots-from-safe-point sp))
-            (push-uniq a))))
-      (dolist (region heap-regions)
-        (when (nelisp-gc-inner--region-p region)
-          (push-uniq (plist-get region :start)))))
+            (push-uniq a)))))
     (nreverse out)))
 
 
@@ -1179,6 +1196,19 @@ Returns a freshly-constructed `nelisp-gc-inner--semispace' with
     (signal 'wrong-type-argument (list :nursery-region-p from-region)))
   (unless (eq (plist-get to-region   :generation) :nursery)
     (signal 'wrong-type-argument (list :nursery-region-p to-region)))
+  ;; T65 (T51 codex critical #4): Cheney requires symmetric semispaces
+  ;; — `from' and `to' must have *identical* capacities or the
+  ;; `--minor-copy-one' bump cursor can step past `to-end' silently.
+  ;; Pre-T65 `init-semispace' accepted any pair of nursery descriptors;
+  ;; the only invariant was generation, not size.
+  (let ((from-size (- (plist-get from-region :end)
+                      (plist-get from-region :start)))
+        (to-size   (- (plist-get to-region   :end)
+                      (plist-get to-region   :start))))
+    (unless (= from-size to-size)
+      (error
+       "nelisp-gc-inner: semispace size mismatch from=%d to=%d (Cheney requires symmetric halves)"
+       from-size to-size)))
   (let ((to-start (plist-get to-region :start)))
     (nelisp-gc-inner--semispace-make
      :from-space    from-region
@@ -1343,6 +1373,9 @@ FROM-SPACE-OBJECTS-FN returns nil (= dangling reference; caller's bug)."
            ;; SIZE so to-space addresses remain disjoint and
            ;; address-comparable.
            (to-addr (nelisp-gc-inner--semispace-free-pointer semi))
+           (advance (max size 1))
+           (to-region (nelisp-gc-inner--semispace-to-space semi))
+           (to-end (plist-get to-region :end))
            ;; Increment age first; promotion check uses post-increment
            ;; (the standard "this is the Nth survival" reading).
            (new-age (min nelisp-gc-inner--header-age-mask
@@ -1352,8 +1385,20 @@ FROM-SPACE-OBJECTS-FN returns nil (= dangling reference; caller's bug)."
                           :header new-header
                           :fields fields
                           :size   size)))
+      ;; T65 (T51 codex critical #4): hard fail if the bump would step
+      ;; past to-space.  Cheney guarantees the to-space is at least as
+      ;; large as the live set in from-space — overflow here means a
+      ;; symmetric-semispace invariant has been violated upstream
+      ;; (likely `init-semispace' was bypassed or `flip-semispace' was
+      ;; called mid-cycle).  Silent corruption was the pre-T65 mode:
+      ;; the bump cursor advanced past `to-end' without complaint and
+      ;; subsequent allocations stamped over neighbouring memory.
+      (unless (<= (+ to-addr advance) to-end)
+        (error
+         "nelisp-gc-inner: semispace to-space overflow at addr=%d advance=%d to-end=%d"
+         to-addr advance to-end))
       (setf (nelisp-gc-inner--semispace-free-pointer semi)
-            (+ to-addr (max size 1)))
+            (+ to-addr advance))
       (puthash to-addr to-cell to-space-objects-table)
       (nelisp-gc-inner--mark-forwarded semi from-addr to-addr)
       (when (nelisp-gc-inner--promotion-candidate-p new-header)
@@ -2071,27 +2116,37 @@ slot wins to keep the simulator independent of header packing tests."
     (sort acc (lambda (a b) (< (car a) (car b))))))
 
 (defconst nelisp-gc-inner--family-tag-keyword-alist
-  '((0 . :cons-pool)
-    (1 . :closure-pool)
-    (2 . :string-span)
-    (3 . :vector-span)
-    (4 . :large-object))
+  ;; T65 (T51 codex critical #2): rebuilt from the shared
+  ;; `nelisp-heap-types' alist so allocator + gc-inner sides share a
+  ;; single source of truth.  Pre-T65 this alist used a *different*
+  ;; ordering (1 = :closure-pool) than the allocator's (1 = cons-pool)
+  ;; — that mismatch silently mis-decoded every header.
+  (mapcar (lambda (cell) (cons (cdr cell) (car cell)))
+          nelisp-heap-family-tag-keyword-alist)
   "Bridge: 8-bit family-tag (Doc 29 §2.5 enum) → gc-inner keyword family.
 
 The allocator (`nelisp-allocator--family-tag-alist') stores the
-inverse mapping in *bare* symbols; this alist is the keyword-namespace
-mirror used by `--family-tag-to-keyword' so the gc-inner side can
-translate decoded headers without depending on the allocator at load
-time.  Phase 7.5 cold-init verifies the two sides agree.")
+forward mapping (bare symbol → tag) sourced from
+`nelisp-heap-family-tag-bare-alist'; this alist is the inverse
+keyword-namespace mirror used by `--family-tag-to-keyword' so the
+gc-inner side can translate decoded headers in O(1).  Both sides
+trace back to `nelisp-heap-types' so the bridge stays sound by
+construction.")
 
 (defun nelisp-gc-inner--family-tag-to-keyword (tag)
   "Translate 8-bit family TAG to a gc-inner keyword family.
-Falls back to `:cons-pool' for unknown tags so promotion never
-crashes on a malformed header (the resulting tenured allocation
-will be size-correct even if the family is mis-classified — the
-diagnostic is logged via the simulator's stats path)."
+
+T65 (T51 codex critical #2): hard-fails on unknown TAG instead of
+silently falling back to `:cons-pool'.  Pre-T65 the silent fallback
+masked the family-tag-mismatch bug — every Phase 7.2 large-object
+allocation produced tag = 5 which gc-inner read as `unknown' and
+mis-classified as cons-pool.  The hard fail surfaces such mismatches
+at the first scan rather than at promotion time."
   (or (cdr (assq tag nelisp-gc-inner--family-tag-keyword-alist))
-      :cons-pool))
+      (signal 'nelisp-heap-unknown-family
+              (list 'tag tag
+                    'range (cons 0
+                                 (1- nelisp-heap-family-tag-count))))))
 
 
 ;;;; §12.3 Promotion to tenured (Doc 30 v2 §2.5 + §3.5) -----------
@@ -2559,6 +2614,39 @@ separately when a full reset is desired."
         nelisp-gc-inner--major-trigger-count 0))
 
 ;;;; §13.2 Allocation-triggered scheduler (Doc 30 v2 §2.10) --------
+
+(defun nelisp-gc-inner-scheduler-record-alloc (size)
+  "Record SIZE bytes of just-completed allocation for the scheduler.
+
+T65 (T51 codex critical #6): allocator hot-path entry point.  Bumps
+`nelisp-gc-inner--bytes-since-minor' but does *not* dispatch a GC
+cycle — the allocator's mutator side picks up the trigger via
+`safe-point-poll' on the way out.  This split lets the allocator
+fast path stay branch-free (the byte counter is the only mutation;
+the trigger evaluation runs at a coarser cadence in
+`scheduler-tick' / `safe-point-poll').
+
+Pre-T65 the alloc helpers never called any scheduler API so
+`bytes-since-minor' stayed at 0 forever and the trigger never
+fired.  T65 wires every alloc path through this hook
+(`nelisp-allocator-nursery-alloc' / `cons-pool-alloc' /
+`tenured-alloc' / `alloc-large-object'), so the trigger now fires
+deterministically when the allocation rate actually crosses
+`nelisp-gc-inner-nursery-trigger-bytes'.
+
+Returns the recommendation (`'minor' / `'none' — `'major' is *not*
+returned here since this hook does not have access to the tenured
+region; that decision still flows through `safe-point-poll' which
+calls `scheduler-tick' with the tenured handle)."
+  (unless (and (integerp size) (>= size 0))
+    (signal 'wrong-type-argument (list 'natnump size)))
+  (cl-incf nelisp-gc-inner--bytes-since-minor size)
+  (cond
+   ((>= nelisp-gc-inner--bytes-since-minor
+        nelisp-gc-inner-nursery-trigger-bytes)
+    (cl-incf nelisp-gc-inner--minor-trigger-count)
+    'minor)
+   (t 'none)))
 
 (defun nelisp-gc-inner-scheduler-on-allocation (size tenured)
   "Update scheduler counters for an allocation of SIZE bytes.
