@@ -450,7 +450,7 @@ UTF-8 / Latin-1 / Shift-JIS / EUC-JP encode/decode を NeLisp で実装:
 
 | Phase | 言語       | 想定 LOC                | 想定期間   | 状態                       |
 |-------+------------+-------------------------+------------+----------------------------|
-| 7.0   | Rust       | ~300-500 (syscall stub) | 2-3 週間   | *✅ SHIPPED 2026-04-25 (335 LOC)* |
+| 7.0   | Rust       | ~300-500 (syscall stub) | 2-3 週間   | *✅ SHIPPED 2026-04-25 (335 LOC) + MAP_JIT update SHIPPED 2026-04-25 (Doc 28 v2 §6.9: mmap_jit / clear_icache / jit_write_protect, ~120 LOC)* |
 | 7.1   | NeLisp     | ~4500-8000 (native cc)  | 1-2 ヶ月   | DRAFT (Doc 28 起草中)      |
 | 7.2   | NeLisp     | ~800-1500 (allocator)   | 3-4 週間   | -                          |
 | 7.3   | NeLisp     | ~1200-2000 (GC)         | 1-2 ヶ月   | -                          |
