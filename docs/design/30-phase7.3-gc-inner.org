@@ -1,0 +1,1092 @@
+#+TITLE: Phase 7.3 — GC inner NeLisp 化 (Doc 27 §3 7.3 詳細設計、最難 phase)
+#+DATE: 2026-04-25
+#+AUTHOR: zawatton + Claude (session-T5 起草、autonomous parallel dev、session-A monitored)
+#+STATUS: DRAFT-2026-04-25 (session-A による orchestrator review + user signoff で LOCKED 化)
+
+* §0 要旨 (TL;DR)
+
+Doc 27 LOCKED 2026-04-25 (=2a52bda main=) で確定した *NeLisp purity max
+path* (=syscall= 最小 Rust + 残 3 核 NeLisp) の *第 3 番目かつ最難の核* =
+*Phase 7.3 GC inner NeLisp 化* の詳細設計。Doc 27 §3 sub-phase table で
+"1-2 ヶ月、最難" と位置付けられた phase。
+
+Doc 27 §3 7.3 で示された粗い構成 (~1200-2000 LOC NeLisp / 1-2 ヶ月) を、
+4 sub-phase (7.3.1〜7.3.4) + LOCKED 12 items + ERT smoke +38 + 3-軸
+完遂 gate (mark throughput / pause time / promotion correctness) に
+分解する。
+
+*位置づけ*:
+- Phase 7.0 (Rust syscall stub) は SHIPPED (commit =7df50f8= main merge、
+  Phase 7.0 MAP_JIT update も SHIPPED =e4c28cf=)
+- Phase 7.1 (NeLisp native compiler) は LOCKED-2026-04-25-v2 (Doc 28、
+  user signoff 待ち)。本 doc は Doc 28 §2.9 *GC metadata contract の
+  consumer 側*
+- Phase 7.2 (allocator NeLisp 化) は DRAFT-2026-04-25 (Doc 29、
+  =feat/doc-29-allocator-draft= branch)。本 doc は Doc 29 §2.6 / §4.2
+  region table = GC metadata contract provider の *consumer 側 (mark
+  phase + sweep phase)*
+- Phase 7.3 SHIPPED は Phase 7.5 (integration + standalone E2E) の
+  前提条件 = stop-the-world MVP collector で long-running anvil daemon
+  / =./nelisp-runtime mcp serve= を OOM 無く稼働させる
+- SBCL =gencgc.c= (~10000 LOC C + asm) + Emacs =alloc.c= GC 部分 (~6000
+  LOC C) の dual precedent reference の上に、*scope 縮小* (NeLisp subset
+  / 2-generation MVP / stop-the-world / mark-sweep + Cheney nursery /
+  Phase 7.1 native compile 前提) で *2000-4000 LOC NeLisp + ~50 LOC
+  Rust / 6-10 週間 (anvil leverage 前提)* を狙う
+
+*工数見積*: 6-10 週間 (anvil.el + 並列 session full leverage 前提、
+Doc 27 §3 7.3 「1-2 ヶ月」と整合)。Doc 28 §6.6 / Doc 29 §6.6 の
+replan gate pattern を踏襲し week 3 / 6 / 9 で 3 段階の進捗 review。
+
+*完遂 gate (3-軸、Doc 28 §5.2 / Doc 29 §5.1 の budget chain を引き継ぎ)*:
+- =mark throughput= = mark phase 全体で *50MB/sec 以上* (tenured 64MB
+  scan を ~1.3 sec、Doc 29 §2.2 default heap layout)
+- =pause time= = stop-the-world pause 1 cycle で *50ms 以下* (interactive
+  UX 許容 budget、SBCL minor GC 同等)
+- =promotion correctness= = nursery → tenured promotion 100K cycle で
+  live root mis-classification 0 件 (silent memory corruption 検出 gate)
+- ERT +38 (=test/nelisp-gc-test.el= + =test/nelisp-gc-stress-test.el=)
+- =cargo build --release= / =cargo test --all= / =cargo clippy= 0 warning
+- NeLisp 既存 ERT regression-free (Phase 7.2 完遂時点 1086+44〜49+20)
+
+*"最難 phase" 宣言の根拠* (§6.8 で詳述):
+1. write barrier overhead が allocator hot path に直接効く = Phase 7.2
+   への retrofit risk
+2. promotion bug = silent memory corruption = post-mortem debug 困難
+3. safe-point pause spike = interactive UX 悪化、Phase 7.1.4 で contract
+   固定済とは言え mark phase の実時間は本 phase 着手まで未測定
+4. Doc 28 §6.10 GC metadata version drift = Phase 7.1 backend retrofit risk
+5. tri-color invariant breach = stop-the-world でも write barrier bug で
+   発生可能
+
+* §1 背景
+
+** 1.1 Doc 27 LOCKED 後の position
+
+Doc 27 (2a52bda) §3 sub-phase table:
+
+| Phase | scope                                           | 期間          |
+|-------+-------------------------------------------------+---------------|
+| 7.0   | Rust syscall stub + scaffold                    | 2-3 週間      |
+| 7.1   | NeLisp native compiler 新設 (Doc 28)            | 12-20 週間    |
+| 7.2   | allocator NeLisp 化 (Doc 29)                    | 3-5 週間      |
+| *7.3* | *GC inner NeLisp 化 (本 doc、最難)*              | *1-2 ヶ月*    |
+| 7.4   | coding NeLisp 化                                 | 2-3 週間      |
+| 7.5   | integration + standalone E2E                    | 2 週間        |
+
+7.3 が SHIPPED していなければ Phase 7.5 (integration) で long-running
+anvil daemon / =./nelisp-runtime mcp serve= が OOM、本 phase 完遂で
+NeLisp v1.0 完遂条件 #4 達成への critical path 完了 (残 7.4 coding
++ 7.5 integration のみ)。
+
+** 1.2 既存 NeLisp memory layout (踏襲できる前提)
+
+NeLisp は Phase 3c (Doc 09) で *NeLisp-level object tracking + reachability
+walker* を SHIPPED 済 (=src/nelisp-gc.el=、actor-aware ledger / finalizer
+hook / heap introspection)。Phase 3c は host Emacs GC を借りる構造で、
+Phase 7.3 では Doc 29 allocator が確保する自前 heap を *本物の GC で
+管理する* phase に進化する。
+
+| 既存資産                            | LOC   | 7.3 での役割                                       |
+|-------------------------------------+-------+----------------------------------------------------|
+| =src/nelisp-gc.el= (Phase 3c)        | -     | reachability walker + finalizer hook を流用、本 phase で root set 拡張 |
+| =src/nelisp-runtime= (Phase 7.0)    | 689   | =mmap= / =mprotect= / =MAP_JIT= 経由で GC heap span 管理 |
+| =src/nelisp-cc= (Phase 7.1)         | -     | mark phase / sweep phase の hot loop を JIT、bytecode 比 ~30-50x |
+| =src/nelisp-allocator= (Phase 7.2)  | -     | region table = *本 phase mark の root スキャン入口* |
+| =src/nelisp-defs-index= (Phase 6.5) | 793   | per-type pool の type 解決 1 query                 |
+
+= Phase 7.3 GC inner は *Phase 7.0 mmap heap span / Phase 7.1 native
+JIT / Phase 7.2 region table / =nelisp-defs-index= type 解決* の
+interface が既に固定された位置で動く。自由度が制約され設計が安定する
+(Doc 28 / Doc 29 と同 pattern)。
+
+** 1.3 SBCL gencgc + Emacs alloc.c GC dual precedent reference
+
+NeLisp の GC inner は SBCL =gencgc.c= (~10000 LOC C + asm、25 年維持)
+と Emacs =alloc.c= GC 部分 (~6000 LOC C、Emacs 1985-) の dual
+precedent を踏まえ、*runtime purity 軸で両者を超え、GC capability
+軸では両者の MVP subset* を狙う (Doc 28 / Doc 29 と同 pattern)。
+
+| 軸           | SBCL gencgc              | Emacs alloc.c GC         | NeLisp Phase 7.3          |
+|--------------+--------------------------+--------------------------+---------------------------|
+| 実装 lang    | C + asm                  | C                        | NeLisp                    |
+| GC type      | generational mark-region | mark-sweep (single gen)  | generational mark-sweep   |
+| pause type   | stop-the-world (主)      | stop-the-world           | stop-the-world MVP        |
+| LOC          | ~10000                   | ~6000                    | 2000-4000                 |
+| concurrent   | partially (SBCL 2.x)     | no                       | no MVP (Phase 7.5+ 検討)  |
+| write barrier | card-marking            | none (single gen)        | card-marking 4KB page     |
+| nursery copy | semispace (Cheney)       | n/a                      | semispace (Cheney)        |
+| safe-point   | code-patching            | yield point              | Doc 28 §2.9 metadata 経由 |
+| 期間         | 25 年維持 (1999-)        | 40 年維持 (1985-)        | 6-10 週間 (anvil leverage 前提) |
+
+*SBCL gencgc precedent との差別化軸*:
+1. *Purity*: NeLisp は host C runtime を Phase 7.3 で永久放棄、pure
+   NeLisp + Phase 7.2 mmap heap span の pipeline を確立する
+2. *Bootstrap simplicity*: SBCL は Rhodes target-2 cold-init で初の
+   GC pause が発生 (Doc 28 §1.4 3 artifact 連携)、NeLisp は Phase 7.2
+   region table = GC metadata contract provider が確立済のため cold-init
+   時 GC は no-op で起動可能 (= Phase 7.3 GC は warm phase 以降のみ走行)
+3. *concurrent GC は Phase 7.5+ で検討*: 本 phase は stop-the-world MVP
+
+*Emacs alloc.c precedent との差別化軸*:
+1. mark-sweep の発想は踏襲、ただし 2-generation 化 (Doc 29 §2.2) で
+   nursery copy + tenured mark-sweep に分割
+2. host C dependency を完全除去、=malloc= / =free= は Phase 7.0 syscall
+   stub 経由 =mmap= に置換 (Phase 7.2 で実施済)
+
+** 1.4 Doc 28 §2.9 GC metadata contract / Doc 29 §2.6 region table との関係
+
+Phase 7.1 (Doc 28 §2.9) で *Phase 7.1 in-scope* に追加された GC metadata
+contract (safe-point ID / live root bitmap / frame layout descriptor)
+を、Phase 7.3 mark phase が consumer として参照する。Phase 7.2 (Doc 29
+§2.6 / §4.2) で region table を provider 側として実装済。
+
+Phase 7.3 in-scope (collector 本体):
+- mark phase (tri-color marking + work-list、root scan via metadata
+  contract、本 doc §3.1)
+- sweep phase (per-pool free-list rebuild、Phase 7.2 region table 連携、
+  本 doc §3.2)
+- generation 管理 + promotion (nursery → tenured Cheney copy、§3.3)
+- write barrier (card-marking 4KB page、§3.4)
+- scheduler (allocation-triggered minor / major GC、§3.4)
+
+Phase 7.3 out of scope (= consumer 側のみ、本 doc §8 で out of scope 詳述):
+- compiler ABI (Phase 7.1 §2.9 で freeze 済、=GC_METADATA_VERSION= 経由で
+  versioned)
+- allocator API / region table format (Phase 7.2 §2.6 で freeze 済)
+- concurrent GC / incremental GC (Phase 7.5+ で検討)
+- defragmentation / mark-compact (Phase 7.5+ で検討)
+
+= Phase 7.3 GC inner は *Phase 7.1 metadata contract + Phase 7.2 region
+table の正統な consumer*、ABI 改訂無く実装する構造。Doc 28 §6.10 /
+Doc 29 §6.6 で先取りした version drift risk を本 phase で再確認 (§6.4)。
+
+** 1.5 SBCL Rhodes 5-stage との対応
+
+Doc 27 §1.4 / Doc 28 §1.4 Rhodes 5-stage methodology に対し、Phase 7.3
+は *target-2 cold-init で初の GC pause が発生する位置* に対応。Doc 28
+§1.4 の 3 artifact (A1 = host bytecode compiler / A2 = seed native
+compiler / A3 = self-compiled native compiler) 連携で:
+
+| Rhodes stage | Phase 7.3 における GC 関与                                          |
+|--------------+---------------------------------------------------------------------|
+| host-1       | host Emacs 上では host GC 経由、Phase 7.3 GC は inactive            |
+| target-1     | Phase 7.0 syscall stub + Phase 7.1 backend は GC 走行不要             |
+| host-2       | A2 (seed native compiler) が =nelisp-cc.el= を再 compile、まだ host GC |
+| genesis-2    | A3 候補 image を mmap heap 上に構築、region table 登録 (Phase 7.2)    |
+| target-2     | *cold-init で初の GC pause = Phase 7.3 mark/sweep 初走行*             |
+
+target-2 cold-init で初の GC pause が発生する点は SBCL 25 年で
+"genesis-2 to target-2 transition" の hardest part として記録されてきた
+(Rhodes 2008 §3.2 "most fragile")。NeLisp は Phase 3c で reachability
+walker を確立済 + Phase 7.2 region table が provider 側を実装済の
+ため、SBCL より transition risk が低い (Doc 27 §1.4 既存資産)。
+
+** 1.6 Phase 3c (Doc 09) との関係 (reframing 解除点)
+
+Phase 3c (Doc 09 SHIPPED 2026-04-24) は host Emacs heap に乗る object を
+"actor-aware ledger" + "finalizer hook" + "heap introspection" の 3
+目的で reframe して走らせた。Phase 7.3 で初めて *伝統的 "free memory"
+主目的の GC が必要になる* (= Doc 09 §1.1 で予告された "Phase 5 で真 C
+heap が登場した時、初めて伝統的 GC が必要" の地点が Phase 7.2/7.3 で
+到来した形)。
+
+Phase 3c 既存資産の本 phase への流用:
+- =nelisp-gc--reachable= walker = mark phase の root scan ロジックの
+  base (本 phase で SSA + native JIT 化)
+- =nelisp-gc-register-finalizer= = sweep phase の finalize hook 流用
+- =nelisp-gc-actor-boundary= = Phase 4 actor 統合時の root set 区切り
+- root set 6 種 (globals / functions / macros / specpdl / bytecode VM
+  stack / active JIT closures) は Phase 7.3 で更に拡張 (allocator
+  region table / actor mailbox / Phase 7.1 backend safe-point 経由
+  live root bitmap)
+
+* §2 LOCKED decisions (default = 第一推奨、user signoff 待ち)
+
+Doc 28 / Doc 29 §2 schema (10-12 LOCKED items) に揃える。default 案を
+提示し session-T5 が DRAFT で fix、orchestrator review (claude+codex)
+で precedent miss を指摘してもらう構造。signoff は user。
+
+** 2.1 GC algorithm [推奨 = A mark-sweep + generational]
+
+| 候補 | 戦略                                                  | 利点                                       |
+|------+-------------------------------------------------------+--------------------------------------------|
+| A    | mark-sweep + generational (nursery copy / tenured mark-sweep) (default) | SBCL/Emacs dual precedent middle path、Phase 7.5+ 拡張余地 |
+| B    | 単純 mark-sweep (single generation)                    | 実装最簡だが Phase 5-B selfhost で性能不足 |
+| C    | mark-region (= G1GC 風)                                | scope 過大、Phase 8+ で検討                |
+
+*推奨 A 理由*:
+- Doc 29 §2.1 / §2.2 LOCKED で 2-generation heap layout が確定済、
+  Phase 7.3 は collector 本体を heap layout に合わせる
+- short-lived object 95%+ という generational hypothesis (Wilson 1992)
+  は Lisp で実証済、nursery copy で minor GC の pause time を圧縮可能
+- tenured mark-sweep は Emacs precedent + Phase 3c walker の延長で
+  実装容易
+- Phase 7.5+ で incremental / concurrent / mark-compact 拡張可
+
+** 2.2 generation 管理 [推奨 = A 2 世代 (nursery + tenured)]
+
+| 候補 | 戦略                                              | 利点                                       |
+|------+---------------------------------------------------+--------------------------------------------|
+| A    | 2 世代 (nursery + tenured) (default、Doc 29 §2.2 整合) | generational hypothesis 活用、SBCL/Emacs middle path |
+| B    | 単一世代                                           | Phase 7.3 内 scope 縮小だが Doc 29 §2.2 と整合せず |
+| C    | 3+ 世代                                            | scope 過大、Phase 8+ で検討                |
+
+*推奨 A 理由*:
+- Doc 29 §2.2 LOCKED 2 世代 (nursery 4MB / tenured 64MB) と完全整合
+- 単一世代に縮小すると Doc 29 retrofit 必須、ABI 破綻
+- 3+ 世代は SBCL でも 25 年導入されず、generational hypothesis の
+  marginal return が小さい
+
+** 2.3 mark phase [推奨 = A tri-color marking + work-list]
+
+| 候補 | 戦略                                              | 利点                                       |
+|------+---------------------------------------------------+--------------------------------------------|
+| A    | tri-color marking (white/grey/black) + work-list (default) | 標準的、incremental 拡張容易               |
+| B    | 単純 DFS (Phase 3c 既存)                          | Phase 3c walker 流用最簡、stack overflow risk |
+| C    | parallel mark (multi-thread)                      | scope 過大、Phase 7.5+ で検討              |
+
+*推奨 A 理由*:
+- tri-color invariant は Dijkstra 1978 / Steele 1975 で確立、
+  incremental / concurrent 拡張時の前提
+- work-list (queue) で stack overflow 回避、Phase 3c DFS 比 deep graph
+  に強い
+- Phase 7.1 backend safe-point + GC metadata contract で root を取得、
+  heap object grey 化 → black 化の sweep loop が Phase 7.1 native JIT で
+  C 同等速度
+
+mark phase pseudo code (例示、最小限):
+#+begin_src elisp
+(defun nelisp-gc--mark-roots ()
+  (dolist (root (nelisp-gc--collect-roots))
+    (nelisp-gc--mark-grey root)))
+
+(defun nelisp-gc--mark-loop ()
+  (while-let ((obj (nelisp-gc--worklist-pop)))
+    (dolist (child (nelisp-gc--children obj))
+      (when (nelisp-gc--white-p child)
+        (nelisp-gc--mark-grey child)))
+    (nelisp-gc--mark-black obj)))
+#+end_src
+
+** 2.4 sweep phase [推奨 = A per-pool free-list rebuild]
+
+| 候補 | 戦略                                                  | 利点                                       |
+|------+-------------------------------------------------------+--------------------------------------------|
+| A    | per-pool free-list rebuild (default、Doc 29 §2.5 整合) | Phase 7.2 per-type pool と整合、type-aware |
+| B    | 単一 free-list                                         | scope 縮小だが Phase 7.2 retrofit          |
+| C    | mark-compact (full compaction)                         | fragmentation 解消だが scope 過大          |
+
+*推奨 A 理由*:
+- Doc 29 §2.5 per-type pool (cons / string / vector / closure) と完全
+  整合、各 pool の free-list を rebuild する形
+- type-aware sweep で finalizer hook (Phase 3c) が type 別に呼び出せる
+- mark-compact は Phase 7.5+ で defragmentation 単独 phase として検討
+
+** 2.5 promotion [推奨 = A nursery 2 回 survive で tenured 昇格 (Cheney semispace)]
+
+| 候補 | 戦略                                                                    | 利点                                       |
+|------+-------------------------------------------------------------------------+--------------------------------------------|
+| A    | nursery 2 回 survive で tenured 昇格、Cheney semispace で copy (default) | SBCL gencgc precedent、generational 標準   |
+| B    | 1 回 survive で即昇格                                                   | tenured 急増、long-lived young object で 過剰 |
+| C    | adaptive (age threshold 動的調整)                                       | scope 過大、Phase 8+ で検討                |
+
+*推奨 A 理由*:
+- Cheney semispace (1970) は nursery copy GC の標準、minor GC の pause
+  time を圧縮 (live object 数 << total nursery)
+- 2 回 survive 閾値は SBCL gencgc default (=GENCGC_RAISE_AGE= = 2) を
+  直接 transfer
+- adaptive threshold は SBCL でも 25 年で marginal return が小さく
+  pinned (Phase 7.5 で実測 tuning task 化)
+
+Phase 7.3.3 (§3.3) で Cheney from-space / to-space の 2 領域を nursery
+4MB の半分ずつ (2MB + 2MB) に分割。
+
+** 2.6 write barrier [推奨 = A card-marking 4KB page granularity]
+
+| 候補 | 戦略                                                  | 利点                                       |
+|------+-------------------------------------------------------+--------------------------------------------|
+| A    | card-marking 4KB page granularity (default)            | SBCL precedent、低 overhead                |
+| B    | object-level write barrier                            | precision 高だが overhead 大 (~2-5x)        |
+| C    | snapshot-at-the-beginning (SATB)                      | concurrent GC 必須、Phase 7.5+ で検討      |
+
+*推奨 A 理由*:
+- Doc 29 §2.3 page granularity (4KB + 16-page chunk) と完全整合
+- card-marking は SBCL gencgc / V8 / OpenJDK で標準、cross-generation
+  reference 検出に十分な precision
+- write barrier overhead は Phase 7.1 native JIT で 1-2 命令 (card
+  table store)、allocator hot path への影響 < 5%
+- Phase 7.5+ で SATB / Brooks barrier 等 concurrent GC barrier に拡張可
+
+card table layout (例示、最小限):
+#+begin_src elisp
+;; tenured 64MB / 4KB page = 16384 cards
+;; 各 card 1 byte (dirty bit + age) で 16KB の card table
+(defvar nelisp-gc--card-table)  ; vector of 16384 bytes
+(defun nelisp-gc--card-mark (addr)
+  (aset nelisp-gc--card-table
+        (/ (- addr nelisp-gc--tenured-base) 4096)
+        1))
+#+end_src
+
+** 2.7 safe-point handling [推奨 = A Doc 28 §2.9 contract consumer + stop-the-world]
+
+| 候補 | 戦略                                                              | 利点                                       |
+|------+-------------------------------------------------------------------+--------------------------------------------|
+| A    | Doc 28 §2.9 contract consumer + stop-the-world で全 thread suspend (default) | Phase 7.1 backend と整合、ABI 改訂 0       |
+| B    | Phase 7.3 独自 safe-point                                         | Phase 7.1 backend retrofit 必須、ABI 破綻  |
+| C    | yield-only (cooperative)                                          | hot loop で yield 不足、pause 不確定        |
+
+*推奨 A 理由*:
+- Phase 7.1 (Doc 28 §2.9) で safe-point insertion point + live root
+  bitmap + frame layout descriptor が固定済、本 phase は consumer
+  として消費するのみ
+- stop-the-world は MVP 標準、Phase 7.5+ で incremental / concurrent
+  に拡張可
+- =GC_METADATA_VERSION= constant (Doc 28 §6.10) で versioned、breaking
+  change 時 Doc 28 と co-update
+
+** 2.8 metadata contract version [推奨 = A v1 を consume]
+
+| 候補 | 戦略                                              | 利点                                       |
+|------+---------------------------------------------------+--------------------------------------------|
+| A    | =GC_METADATA_VERSION= = 1 を consume (default、Doc 28 §6.10 整合) | ABI 改訂 0、Doc 28 / Doc 29 と co-locked   |
+| B    | Phase 7.3 で v2 に bump                            | Doc 28 backend / Doc 29 region table 全 retrofit |
+| C    | Phase 7.3 独自 contract                            | ABI 破綻、3 doc 整合崩壊                  |
+
+*推奨 A 理由*:
+- Doc 28 §6.10 LOCKED で v1 が初期値、breaking change 時のみ bump
+- 本 phase 実装中に v2 必要性が判明したら Doc 28 / Doc 29 と同時
+  co-update (orchestrator consensus review 1 回必須)
+- Phase 7.3 独自 contract は §1.4 と整合せず (= consumer 側のみ)
+
+** 2.9 heap split [推奨 = A nursery 4MB / tenured 64MB (Doc 29 §2.2 整合)]
+
+| 候補 | 戦略                                              | 利点                                       |
+|------+---------------------------------------------------+--------------------------------------------|
+| A    | nursery 4MB / tenured 64MB (default、Doc 29 §2.2 整合) | Phase 7.2 と完全整合、user tunable         |
+| B    | nursery 縮小 (1MB)                                 | minor GC 頻度増、pause time 短縮          |
+| C    | tenured 拡大 (256MB)                               | long-running daemon 対応、初期 commit 増大 |
+
+*推奨 A 理由*:
+- Doc 29 §2.2 default (nursery 4MB / tenured 64MB) と完全整合
+- Phase 7.5 integration で =alloc-profile= 経由実測 tuning task 化
+- =defcustom nelisp-gc-nursery-size= / =nelisp-gc-tenured-size= で
+  user tunable
+
+** 2.10 scheduling [推奨 = A allocation-triggered (minor / major)]
+
+| 候補 | 戦略                                                                    | 利点                                       |
+|------+-------------------------------------------------------------------------+--------------------------------------------|
+| A    | allocation-triggered (nursery full → minor、tenured threshold → major) (default) | SBCL/Emacs precedent、自然な triggering    |
+| B    | time-triggered (周期的)                                                 | predictable pause だが allocation rate と
+mismatch |
+| C    | manual trigger (=gc=)                                                   | dev tool として残すが運用 default ではない |
+
+*推奨 A 理由*:
+- nursery full → minor GC = generational GC の標準 trigger
+- tenured threshold (= 80% utilization) → major GC で OOM 回避
+- =gc= manual trigger API は Phase 3c 互換で残す (dev tool)、Phase
+  7.5 で =--gc-profile= flag 経由 stats 取得
+
+** 2.11 stats / instrumentation [推奨 = A nelisp-runtime --gc-profile + gc-stats API]
+
+| 候補 | 戦略                                                          | 利点                                       |
+|------+---------------------------------------------------------------+--------------------------------------------|
+| A    | =nelisp-runtime --gc-profile= flag + =gc-stats= API (default) | dev 用、Doc 29 §2.10 alloc-stats と統合    |
+| B    | 完全省略                                                      | debug / regression 検出困難                |
+| C    | 常時記録 + 詳細 trace                                         | runtime overhead 過大                       |
+
+*推奨 A 理由*:
+- =gc-stats= = Lisp API で plist 形式 (=:minor-gc-count= /
+  =:major-gc-count= / =:total-pause-ms= / =:promotions=) を返す
+- =--gc-profile= flag で startup から終了まで stats を記録、終了時
+  stderr に dump
+- Doc 29 §2.10 =alloc-stats= / Doc 28 §2.11 =--profile= と共存、
+  Phase 7.5 で =anvil-dashboard= に統合
+
+** 2.12 LOC budget [推奨 = A 2000-4000 LOC NeLisp + ~50 LOC Rust]
+
+Doc 27 §3 7.3 「~1200-2000 LOC NeLisp」を baseline、本 doc では
+sub-phase 7.3.1 mark phase の充実 (tri-color + work-list + GC metadata
+consumer) 追加で 2000-4000 LOC NeLisp に拡大。Rust 側は Phase 7.0 既存
+の =mmap= / =mprotect= / =MAP_JIT= 経由で GC helper を ~50 LOC 追加
+(=nelisp_runtime_gc_heap_span= / =nelisp_runtime_gc_signal_handler=
+helper 等) のみ。
+
+| 言語   | LOC          | 範囲                                |
+|--------+--------------+-------------------------------------|
+| NeLisp | 2000-4000    | 7.3.1 (~700-1000) + 7.3.2 (~400-700) + 7.3.3 (~500-1000) + 7.3.4 (~400-700) |
+| Rust   | ~50          | Phase 7.0 拡張 (heap span / signal handler helper) |
+
+* §3 Sub-phase 7.3.1〜7.3.4 詳細
+
+Doc 28 §3 / Doc 29 §3 schema 踏襲、4 sub-phase に分割。各 sub-phase は
+独立 SHIPPED 可能、main へ feat branch =--no-ff= merge。
+
+| sub-phase | scope                                                  | LOC          | 期間       | ERT delta |
+|-----------+--------------------------------------------------------+--------------+------------+-----------|
+| 7.3.1     | mark phase (tri-color + root scan + work-list)         | ~700-1000    | 2-3 週間   | +12       |
+| 7.3.2     | sweep phase (per-pool free-list rebuild)               | ~400-700     | 1-2 週間   | +8        |
+| 7.3.3     | generation + promotion (Cheney semispace nursery)      | ~500-1000    | 2-3 週間   | +10       |
+| 7.3.4     | write barrier + scheduler + safe-point integration     | ~400-700     | 1-2 週間   | +8        |
+|-----------+--------------------------------------------------------+--------------+------------+-----------|
+|           | 合計                                                   | ~2000-4000   | *6-10 週間* | +38      |
+
+期間は anvil leverage 込み 6-10 週間 (Doc 27 §3 7.3 「1-2 ヶ月」と整合、
+1.5-2.5 ヶ月)。Doc 28 §6.6 / Doc 29 §6.6 replan gate pattern を踏襲し
+week 3 / 6 / 9 で 3 段階 review。
+
+** 3.1 Phase 7.3.1 — mark phase (tri-color + root scan + work-list)
+
+新規 module: =src/nelisp-gc-inner.el= (~700-1000 LOC NeLisp)、本 phase
+最大の LOC 食い (sub-phase 4 つ中 1 番)。
+
+*** scope
+- tri-color marking 状態管理 (white / grey / black、object header の
+  2-bit field を Phase 7.2 region table に bookkeeping)
+- root scan 実装 (Doc 28 §2.9 GC metadata contract consumer):
+  - safe-point ID enumeration (active stack frame 全部)
+  - live root bitmap decode → register / stack slot から live Lisp
+    object 抽出
+  - frame layout descriptor decode → caller chain walk
+- work-list (queue) 実装、stack overflow 回避
+- mark loop の Phase 7.1 native JIT 統合 (=declare (inline t)= で hot
+  path inline)
+- Phase 3c =nelisp-gc--reachable= walker の流用 (root scan 後段の object
+  graph walk は既存 logic)
+- nelisp-gc-actor-boundary 拡張 (Phase 4 actor 統合時の root set 区切り)
+
+*** ERT smoke (+12)
+- tri-color invariant test (white → grey → black の遷移、no white-to-black
+  direct edge)
+- root scan test (single function frame で live root bitmap が正しく decode)
+- root scan multi-frame test (stack 10 段で全 frame の root が抽出)
+- work-list overflow test (1M object graph で stack overflow 無し)
+- mark loop で全 reachable object が black 化 confirm test
+- mark loop で unreachable object が white のまま test (= sweep 候補)
+- Phase 3c walker 互換 test (=nelisp-gc--reachable= の return set と
+  本 phase mark loop の black set が等価)
+- actor boundary mark test (Phase 4 actor 2 個で root set が分離)
+- Phase 7.1 native JIT integration test (mark loop bytecode 比 30x
+  speedup confirm)
+- root set 6+ 種類の enumeration test (Doc 09 §1.2 root set 6 種 +
+  allocator region table + actor mailbox + safe-point bitmap)
+- GC metadata contract version (=GC_METADATA_VERSION= = 1) consume test
+- mark phase throughput bench (50MB/sec 以上、§5.2 完遂 gate)
+
+*** risks
+- root scan で missing root による silent under-marking (= live object
+  を white で残す → sweep で誤回収 = silent memory corruption)
+  → mitigation: §6.2 で table-driven test + Phase 3c walker との
+  cross-check 必須化
+- work-list の memory consumption (1M object で 8MB+ の queue)
+  → mitigation: Phase 7.2 tenured pool から切り出し、bench で peak 計測
+
+** 3.2 Phase 7.3.2 — sweep phase (per-pool free-list rebuild)
+
+既存 module 拡張: =src/nelisp-gc-inner.el= (~400-700 LOC NeLisp)。
+
+*** scope
+- per-pool free-list rebuild (Doc 29 §2.5 cons / string / vector /
+  closure pool 各々)
+- white object の Phase 3c finalizer hook 起動 (=nelisp-gc-register-finalizer=
+  経由 finalize)
+- Phase 7.2 region table の dirty / live page 更新
+- sweep loop の Phase 7.1 native JIT 統合
+- =gc-stats= の :sweep-bytes / :freed-objects 集計
+
+*** ERT smoke (+8)
+- per-pool sweep test (cons pool で white object のみ free-list に戻る)
+- finalizer hook 起動 test (white object の finalizer が exactly 1 回
+  実行)
+- region table update test (sweep 後 free-list が pool に正しく登録)
+- sweep loop concurrent allocation 不発生 test (stop-the-world 内で
+  allocation 一切走らない)
+- multi-pool sweep order independence test (cons / string / vector /
+  closure 順序入替で同結果)
+- sweep throughput bench (mark と合わせて pause time 50ms 以下、§5.2)
+- regression: NeLisp 既存 ERT 1086+44〜49+20 全 PASS (Phase 7.2 完遂時点)
+- =gc-stats= API 戻り値 plist test
+
+*** risks
+- finalizer hook が user code で例外 throw → sweep 中断 risk
+  → mitigation: §6.X で finalizer 実行を =condition-case= で隔離、例外
+  時は log + sweep continue
+- sweep 中の unintended allocation (= recursive GC trigger) で deadlock
+  → mitigation: sweep phase に =inhibit-allocation= flag (Phase 7.2 と
+  協調)、違反は assertion で abort
+
+** 3.3 Phase 7.3.3 — generation + promotion (Cheney semispace nursery)
+
+新規 module: =src/nelisp-gc-nursery.el= (~500-1000 LOC NeLisp)。
+
+*** scope
+- Cheney semispace の 2 領域 (from-space 2MB / to-space 2MB) を Phase
+  7.2 nursery 4MB を半分割で実現
+- minor GC 実装 (from-space → to-space copy、live object のみ移送)
+- promotion path (nursery 2 回 survive で tenured 昇格、age tag を
+  object header に bookkeeping)
+- forwarding pointer 実装 (from-space object header に to-space
+  address を埋め込み、circular reference 対応)
+- =nelisp-alloc-promote= (Doc 29 §3.2 manual API) の自動化
+- minor GC pause time 計測 (5ms 以下 target、§5.2)
+
+*** ERT smoke (+10)
+- Cheney from/to-space alloc test
+- minor GC で live object copy test (data 不変、tag 不変、age + 1)
+- minor GC で dead object 非 copy test
+- forwarding pointer test (from-space object → to-space address resolve)
+- circular reference test (cycle 内 object が exactly 1 回 copy)
+- promotion test (age 2 で tenured 昇格)
+- promotion correctness test (live root mis-classification 0 件、§5.2
+  完遂 gate)
+- minor GC pause time bench (5ms 以下、§5.2)
+- nursery overflow trigger minor GC test (Doc 29 §3.1 stub の本実装
+  解除)
+- Phase 7.2 region table generation field 更新 test
+
+*** risks
+- forwarding pointer の object header 領域確保 (3-bit tag + age + forwarding
+  bit で header 不足 risk)
+  → mitigation: §6.7 で header layout を Phase 7.2 §2.4 freeze 内に収める、
+  age + forwarding は 1 bit 共用 (forwarding 中は age 不要)
+- promotion bug (live root を mis-classify、=root_set ⊃ live_set= の不変
+  条件破壊)
+  → mitigation: §6.2 (silent corruption gate) + ERT promotion correctness
+  100K cycle test
+
+** 3.4 Phase 7.3.4 — write barrier + scheduler + safe-point integration
+
+既存 module 拡張: =src/nelisp-gc-inner.el= + =src/nelisp-gc-nursery.el=
+(~400-700 LOC NeLisp)。
+
+*** scope
+- card-marking write barrier 実装 (4KB page granularity、Phase 7.1
+  backend と co-design で 1-2 命令 inline)
+- card table layout (tenured 64MB / 4KB = 16384 cards、各 1 byte)
+- scheduler 実装:
+  - allocation-triggered minor GC (nursery full)
+  - allocation-triggered major GC (tenured 80% utilization)
+  - manual =gc= API (dev tool、Phase 3c 互換)
+- safe-point integration (Phase 7.1 §2.9 contract consumer 完成):
+  - =call gc-poll= stub の本実装 (Phase 7.1.4 で no-op stub のみ実装済)
+  - mark phase 開始時 全 thread suspend (stop-the-world、MVP 単 thread)
+- Phase 7.5+ multi-thread 拡張余地 (per-thread arena + actor mailbox
+  分離) を §8 で out of scope 宣言
+
+*** ERT smoke (+8)
+- card-marking write barrier test (cross-generation reference で card
+  dirty)
+- card table consistency test (tenured 全 page で marker bit 正常)
+- write barrier overhead bench (alloc-heavy 5x、Phase 7.2 budget 維持、
+  §5.2)
+- scheduler trigger test (nursery full で minor GC 起動)
+- scheduler trigger test (tenured 80% で major GC 起動)
+- =gc= manual API test (Phase 3c 互換)
+- safe-point pause time bench (50ms 以下、§5.2)
+- Phase 7.1 backend retrofit 不要 confirm test (=GC_METADATA_VERSION=
+  = 1 維持)
+
+*** risks
+- write barrier overhead が allocator hot path で alloc-heavy bench を
+  破壊 (Phase 7.2 §5.1 5x budget 切り)
+  → mitigation: §6.1 で Phase 7.1 native JIT inline 必須化、bench
+  monitoring 継続
+- safe-point pause spike (mark phase が長い)
+  → mitigation: §6.3 で work-list 分割 + incremental mark への拡張余地を
+  Phase 7.5+ で確保
+
+* §4 Architecture (GC pause + safe-point + root scanning 経路)
+
+#+begin_src text
+[mutator: NeLisp source / native code]
+    │ allocation
+    ▼
+[Phase 7.2 allocator]  ←──── Phase 7.0 mmap heap span
+    │ nursery full / tenured threshold
+    ▼
+[Phase 7.3.4 scheduler]
+    │ trigger minor / major GC
+    ▼
+[Phase 7.3.4 safe-point integration]
+    │ Phase 7.1 §2.9 contract consume
+    │   ├ safe-point ID enumeration
+    │   ├ stop-the-world (全 thread suspend)
+    │   └ live root bitmap + frame layout decode
+    ▼
+[Phase 7.3.1 mark phase]
+    │ tri-color marking (white → grey → black)
+    │   ├ root scan (allocator region table + safe-point bitmap +
+    │   │   actor mailbox + Phase 3c 6 root set)
+    │   ├ work-list loop (BFS、stack overflow 回避)
+    │   └ Phase 7.1 native JIT で hot loop inline
+    ▼
+[Phase 7.3.3 nursery copy (minor GC のみ)]
+    │ Cheney semispace from→to copy
+    │   ├ live object copy (forwarding pointer)
+    │   ├ promotion (age 2 で tenured 昇格)
+    │   └ from-space 0 化 (next minor GC の to-space)
+    ▼
+[Phase 7.3.2 sweep phase (major GC のみ)]
+    │ per-pool free-list rebuild
+    │   ├ white object finalizer hook 起動 (Phase 3c 流用)
+    │   ├ region table dirty / live page 更新
+    │   └ free-list を pool に登録
+    ▼
+[Phase 7.3.4 write barrier (mutator 復帰後)]
+    │ card-marking 4KB page (cross-generation reference 検出)
+    ▼
+[mutator 復帰]
+#+end_src
+
+** 4.1 入力境界 (Phase 7.1 §2.9 GC metadata contract consumer)
+
+Phase 7.1 (Doc 28 §2.9) で固定された contract format (safe-point ID /
+live root bitmap / frame layout descriptor) を consume。
+=GC_METADATA_VERSION= = 1 のみ accept、v2 以降は version negotiation
+で reject (Phase 7.5 整合性 audit で発見)。
+
+** 4.2 出力境界 (region table = Phase 7.2 §2.6 provider との bidirectional)
+
+Phase 7.2 region table は Phase 7.3 mark phase の root scanning 入口、
+Phase 7.3 sweep phase の dirty / live page 更新先。bidirectional
+contract で *本 phase は consumer + write back* の 2 役割。
+
+** 4.3 syscall 経路
+
+Phase 7.0 syscall stub の =mmap= / =mprotect= / =MAP_JIT= に依存:
+- nursery copy: from-space / to-space 2MB ずつ、Doc 29 §2.2 nursery
+  4MB 半分割
+- tenured sweep: =mmap= 拡張は無し、free-list rebuild のみ (Doc 29
+  §4.3 と整合)
+- card table: tenured 64MB / 4KB = 16384 cards、=mmap= 16KB 別 region
+
+* §5 ERT smoke + bench plan
+
+各 sub-phase の ERT smoke を集約した最終 +38 ERT で
+=test/nelisp-gc-test.el= + =test/nelisp-gc-stress-test.el= を構築。
+
+| sub-phase | ERT module                                | count |
+|-----------+-------------------------------------------+-------|
+| 7.3.1     | nelisp-gc-mark-test                       | +12   |
+| 7.3.2     | nelisp-gc-sweep-test                      | +8    |
+| 7.3.3     | nelisp-gc-nursery-test                    | +10   |
+| 7.3.4     | nelisp-gc-barrier-scheduler-test          | +8    |
+|-----------+-------------------------------------------+-------|
+|           | 合計                                      | +38   |
+
+CI matrix (Doc 28 / Doc 29 と同):
+- Linux x86_64 (GitHub Actions ubuntu-latest)
+- macOS arm64 (GitHub Actions macos-14)
+- Linux arm64 (Phase 7.1.5 で整備済)
+
+** 5.1 GC-induced latency / throughput bench
+
+Doc 28 §5.2 / Doc 29 §5.1 budget chain を引き継ぎ、Phase 7.3 完遂で
+*long-running daemon stress* で OOM 無く稼働 (Phase 7.5 stress test
+budget):
+
+| benchmark         | 軸性質                  | Phase 7.2 完遂時 | Phase 7.3 完遂時 (target) | C reference |
+|-------------------+-------------------------+------------------+---------------------------+-------------|
+| =gc-stress=        | 1M minor + 100K major  | (未実施)         | OOM 無く 100K cycle 完走 | OOM 無く 1M cycle |
+| =mark-throughput=  | 64MB tenured scan      | (未実施)         | *50MB/sec 以上*           | ~100MB/sec  |
+| =minor-pause=      | nursery 4MB minor GC   | (未実施)         | *5ms 以下*                | ~2ms        |
+| =major-pause=      | tenured 64MB major GC  | (未実施)         | *50ms 以下*               | ~20ms       |
+| =write-barrier-overhead= | alloc-heavy + barrier | 5x (Phase 7.2) | *5x 維持* (regression-free) | -        |
+
+** 5.2 promotion correctness gate
+
+| benchmark           | 内容                                      | target |
+|---------------------+-------------------------------------------+--------|
+| =promotion-correctness= | nursery 2 回 survive で tenured 昇格 100K cycle | live root mis-classification *0 件* (silent corruption gate) |
+| =fragmentation-soak= | random alloc/free 10M で free-list coalescing | tenured 80%+ utilization (Doc 29 §6.5 と整合) |
+| =long-running-soak= | anvil daemon 24h 連続稼働                  | OOM 無し、heap size 増加 < 10% |
+
+bench gate (§7) は 3-軸 + promotion correctness 必達。
+
+* §6 Risks (8 項目)
+
+** 6.1 write barrier overhead が allocator hot path で alloc-heavy bench を破壊
+
+§2.6 推奨 A で card-marking 4KB page granularity、Phase 7.1 native JIT
+で 1-2 命令 inline と想定。実装後の overhead 実測で alloc-heavy 5x
+budget (Phase 7.2 §5.1) を切る risk。
+
+*影響*: Phase 7.2 §5.1 5x budget 違反 = Doc 29 完遂 gate 後退、
+allocator hot path 改修必須。
+
+*mitigation*:
+- Phase 7.3.4 着手時に Phase 7.2 担当 (session-X) と orchestrator
+  consensus review 1 回 (Doc 28 §6.2 / Doc 29 §6.1 と同 pattern)
+- write barrier inline は Phase 7.1 §2.7 =declare (inline t)= で
+  必須化、bench monitoring 継続
+- bench gate fail 時は scope 削減 (write barrier を =log-write= flag
+  で disable 可能化、major GC 時 full scan で代替、user signoff 要)
+
+** 6.2 promotion bug (live root mis-classification) で silent memory corruption
+
+§3.3 Phase 7.3.3 promotion path で live root を mis-classify、Cheney
+copy で live object を to-space に copy 漏れ → 後続 sweep で誤回収 =
+silent memory corruption。post-mortem debug 困難 (=heap snapshot=
+取らないと再現不可)。
+
+*影響*: Phase 7.5 long-running soak で intermittent crash、原因特定
+週単位。
+
+*mitigation*:
+- §5.2 promotion correctness gate を完遂 gate 必達条件 (live root
+  mis-classification 0 件)
+- ERT で 100K cycle table-driven test、cross-check は Phase 3c
+  =nelisp-gc--reachable= walker (= host Emacs heap 全 walk) と本 phase
+  mark phase の black set が等価条件
+- Phase 7.3.3 着手時 =heap snapshot= API (debug 用、=gc-stats= 拡張)
+  を実装、再現条件取得を可能化
+
+** 6.3 safe-point pause spike (mark phase が長い、interactive UX 悪化)
+
+§3.1 mark phase で work-list BFS が長い (例: 64MB tenured 全 walk)
+場合、stop-the-world pause が 50ms 超 = interactive UX 悪化 risk。
+
+*影響*: =./nelisp-runtime mcp serve= 経由 anvil tool 呼び出しで pause
+spike、user 視点で応答遅延。
+
+*mitigation*:
+- §5.1 mark throughput bench で 50MB/sec 必達 (= 64MB scan 1.3sec)、
+  major GC 頻度を tenured 80% utilization で限定すれば pause 1 cycle
+  50ms 以下に収まる
+- bench fail 時は incremental mark への拡張余地を Phase 7.5+ で
+  reserve (§8.X で out of scope 宣言、本 phase は stop-the-world MVP)
+- worst case 対応で =gc-budget-ms= defcustom 経由 user tunable
+
+** 6.4 Doc 28 §6.10 GC metadata version drift (Phase 7.1 と co-update 必要)
+
+§2.8 推奨 A で =GC_METADATA_VERSION= = 1 を consume、breaking change
+時 Doc 28 と co-update。本 phase 実装中に v2 必要性が判明した場合、
+Phase 7.1 backend (3 ISA) 全 retrofit 必須、Doc 29 region table format
+も再検討。
+
+*影響*: Phase 7.1 backend 全 retrofit + Doc 28 / Doc 29 / Doc 30 整合性
+audit、Phase 7.3 SHIPPED 遅延。
+
+*mitigation*:
+- Phase 7.3.1 完了時点で Doc 28 担当 (session-X) と =metadata contract
+  re-review= を 1 回必須 (orchestrator consensus、reviewer = claude +
+  codex、judge = claude)
+- v2 必要性が判明したら Doc 28 / Doc 29 / Doc 30 同時 update (=GC_METADATA_V2_MIGRATION_PATH=
+  別 design doc 起こし)
+- Phase 7.3.1 着手前に Doc 28 §2.9 contract format を再読込 + cross-check
+
+** 6.5 fragmentation 蓄積 (Phase 7.5 で defragmentation 検討)
+
+§3.2 sweep phase は per-pool free-list rebuild で coalescing するが、
+long-running anvil daemon (24h 以上) で fragmentation 蓄積 =
+allocator failure or OOM risk。Doc 29 §6.5 で同 risk が allocator
+側として既に挙げられている。
+
+*影響*: long-running anvil daemon で free-list utilization 低下、
+=mmap= chunk 拡張頻度増、最終 OOM。
+
+*mitigation*:
+- §5.2 fragmentation-soak gate (10M alloc/free で 80%+ utilization 維持)
+  を完遂 gate 必達条件
+- mark-compact (full compaction) は Phase 7.5+ で defragmentation
+  単独 phase として検討 (本 phase §8 で out of scope)
+- =--gc-profile= で fragmentation rate を継続 monitor、threshold 超過時
+  warning log
+
+** 6.6 generational hypothesis miss (long-lived young object で promotion 過剰)
+
+§2.5 推奨 A で nursery 2 回 survive で tenured 昇格、Cheney copy。
+Phase 5-B selfhost workload で long-lived young object (例: anvil-state
+session-scoped value) が多い場合、promotion 過剰 = tenured 急増 = major
+GC 頻度増 = 全体 throughput 低下 risk。
+
+*影響*: Phase 7.3 完遂 gate (50MB/sec mark / 50ms pause) は達成しても、
+long-running anvil daemon の throughput が C 比 50% 切る。
+
+*mitigation*:
+- Phase 7.5 integration で =--gc-profile= 経由 promotion rate 採取、
+  threshold tuning task 化
+- adaptive threshold (§2.5 候補 C) は Phase 8+ で検討、SBCL 25 年で
+  marginal return が小さく pinned した precedent あり
+- =defcustom nelisp-gc-promotion-age= で user tunable (default 2、
+  long-lived workload で 3-5 に上げる)
+
+** 6.7 anvil leverage 過大評価 (Doc 28 §6.6 / Doc 29 §6.6 同 pattern)
+
+Doc 27 で SBCL 25 年 → 1-2 ヶ月の見積。本 doc 7.3 で 6-10 週間に
+re-baseline したが、なお下振れ risk あり。Doc 28 §6.6 / Doc 29 §6.6
+の week 4/8/12 / week 2/3 replan gate 同 pattern で *3 replan gate* を
+導入。
+
+*影響*: Phase 7.4 (coding) / Phase 7.5 (integration) の着手遅延 =
+Doc 27 全体 STATE 遅延 = NeLisp v1.0 完遂条件 #4 達成遅延 = 公開告知
+保留延長。
+
+*mitigation (Doc 28 / Doc 29 同 pattern + 3 gate)*:
+
+| gate    | 時期    | 評価対象            | kill criteria (= 達成不能なら scope 切り) |
+|---------+---------+---------------------+-------------------------------------------|
+| gate-W3 | week 3  | 7.3.1 mark phase 完成度 | 7.3.1 未完了 → *write barrier 簡易化*: 7.3.4 を card-marking から full-scan major GC に縮小、Phase 7.5 で再導入 |
+| gate-W6 | week 6  | 7.3.2 sweep + 7.3.3 nursery 進捗 | 7.3.2 未完了 → *generational 縮小*: 単一世代 mark-sweep に MVP 縮小、Phase 7.5 で 2-generation 再導入 (Doc 29 retrofit 不要、heap layout 互換維持) |
+| gate-W9 | week 9  | 7.3.4 write barrier + scheduler 進捗 | 7.3.4 未完了 → *bench gate 下方修正*: =mark-throughput 50MB/sec → 30MB/sec= に下方修正、user signoff 要 |
+
+判断主体: gate ごとに =anvil-dev release-audit :scope phase-7.3=
+スクリプトが進捗を計測、=anvil-dashboard= で可視化、user signoff で
+発動。
+
+** 6.8 "最難 phase" 宣言の reasoning (本 doc §0 主張の根拠)
+
+Doc 27 §3 sub-phase table で "1-2 ヶ月、最難" と位置付けられた本
+phase の "最難" 宣言の根拠を §0 で明示済、ここで詳述。
+
+*難所 5 点*:
+1. *write barrier overhead が allocator hot path に直接効く* (§6.1):
+   Phase 7.2 への retrofit risk、bench gate fail で allocator design
+   再検討要
+2. *promotion bug = silent memory corruption* (§6.2): post-mortem
+   debug 困難、ERT で 100K cycle gate でも漏れる可能性
+3. *safe-point pause spike* (§6.3): Phase 7.1.4 で contract 固定済とは
+   言え mark phase の実時間は本 phase 着手まで未測定
+4. *Doc 28 §6.10 GC metadata version drift* (§6.4): Phase 7.1 backend
+   retrofit risk、Phase 7.3 中の v2 必要性で Phase 7.1 全 ISA 改修
+5. *tri-color invariant breach* (§3.1): stop-the-world でも write
+   barrier bug で発生可能、white-to-black direct edge は静的検出困難
+
+これらは Phase 7.0 (syscall stub) / Phase 7.1 (native compiler) /
+Phase 7.2 (allocator) では発生しない (= Phase 7.3 固有の難所)。
+Phase 7.4 (coding) は bit twisting で SBCL/Emacs precedent 直接 transfer
+可能 = Phase 7.3 より易しい。
+
+*mitigation 統合*:
+- 全 5 難所に対し ERT gate (§5.1 / §5.2) + Phase 7.X 担当 session との
+  orchestrator consensus review (§6.4) + replan gate 3 段階 (§6.7) で
+  対応
+- 本 phase の SHIPPED は Doc 27 全体 critical path の最難山場、SHIPPED
+  以後は Phase 7.4 (coding) / Phase 7.5 (integration) の easier downhill
+
+* §7 完遂 gate (LOCKED 化条件)
+
+Doc 28 §7 / Doc 29 §7 schema 踏襲。Phase 7.3 全体の LOCKED 化は以下
+全条件で成立:
+
+** 7.1 各 sub-phase 7.3.1〜7.3.4 SHIPPED 条件
+
+各 sub-phase で:
+1. =cargo build --release= 緑
+2. =cargo test --all= 緑
+3. NeLisp ERT regression-free (Phase 7.2 完遂時点 1086+44〜49+20 を維持)
+4. =cargo clippy= 0 warning
+5. =make test= (NeLisp 既存 Makefile) 緑
+6. design doc §3 の該当 sub-phase に SHIPPED stamp
+7. main へ feat branch =--no-ff= merge
+
+** 7.2 Phase 7.3 完全 close 条件
+
+Phase 7.3.1〜7.3.4 全 SHIPPED + 以下:
+
+- *3-軸 bench gate 全部達成* (§5.1):
+  * =mark-throughput= 50MB/sec 以上
+  * =minor-pause= 5ms 以下
+  * =major-pause= 50ms 以下
+- *promotion correctness gate* (§5.2): live root mis-classification 0 件
+- *fragmentation-soak gate* (§5.2): 10M alloc/free で tenured 80%+ utilization
+- *long-running-soak gate* (§5.2): anvil daemon 24h 連続稼働で OOM 無し、
+  heap size 増加 < 10%
+- ERT +38 全 PASS
+- write barrier overhead が Phase 7.2 §5.1 5x budget を維持 (regression-free)
+- =GC_METADATA_VERSION= = 1 consume confirm (§4.1)
+- =cargo build --release= / =cargo test --all= / =cargo clippy= 0 warning
+- NeLisp 既存 ERT regression-free
+- LOCKED → SHIPPED stamp + main merge (=--no-ff=)
+
+** 7.3 後続 Phase の解放
+
+Phase 7.3 SHIPPED で:
+- Phase 7.4 (coding NeLisp 化) 着手可能 (本 phase と independent、parallel walk 可)
+- Phase 7.5 (integration + standalone E2E) 着手可能 (allocator + GC + coding 合流)
+- NeLisp v1.0 完遂条件 #4 (= 4 核 SBCL-style C runtime) の残 = coding
+  + integration のみ、critical path 最難山場 (= 本 phase) を超える
+
+* §8 Out of scope
+
+本 Phase 7.3 では以下を扱わない:
+
+** 8.1 incremental GC / concurrent GC
+
+§2.7 で stop-the-world MVP、Phase 7.5+ で incremental (mutator と並列
+mark) / concurrent (GC thread 分離) を検討。本 phase は work-list 分割
++ tri-color invariant の構造を保ち、後付け増設の余地のみ確保。
+
+** 8.2 mark-compact / defragmentation
+
+§2.4 で per-pool free-list rebuild、mark-compact (full compaction) は
+Phase 7.5+ で defragmentation 単独 phase として検討。fragmentation
+蓄積は §6.5 で coalescing で対応、worst case で =--gc-compact= manual
+trigger flag のみ提供 (実装は Phase 7.5+)。
+
+** 8.3 multi-thread GC (per-thread arena + parallel mark)
+
+§2.7 で single-thread MVP、Phase 7.5+ で Phase 4 actor との co-design
+時に per-thread arena + parallel mark を検討。Doc 29 §8.2 と同様、
+SBCL も 1999-2003 で single-thread MVP 開始、multi 化は段階的 transition。
+
+** 8.4 weak reference / phantom reference
+
+Phase 3c (Doc 09 §1.3) で host Emacs =make-weak-ref= /
+=weak-hash-table= に委譲する方針、本 phase でも踏襲。NeLisp 自前 weak
+reference は Phase 8+ で検討。
+
+** 8.5 Compaction / re-organization (object layout 変更)
+
+object header / 3-bit tag layout は Phase 7.2 §2.4 / §6.3 freeze、本
+phase で変更しない (= ABI freeze 維持)。Cheney semispace の forwarding
+pointer は header 内 1 bit 共用 (§6.7)。
+
+** 8.6 Phase 7.4-7.5 の実装
+
+本 doc は Phase 7.3 の design 専念。Phase 7.4 (coding) / Phase 7.5
+(integration) は Doc 31-32 (DRAFT 予定) で詳述。
+
+* §9 Open questions
+
+** 9.1 mark phase の root set 拡張範囲
+
+Phase 3c (Doc 09 §1.2) で確立した root set 6 種 (globals / functions /
+macros / specpdl / bytecode VM stack / active JIT closures) に、本
+phase で以下を追加:
+- allocator region table (Doc 29 §2.6)
+- safe-point bitmap (Doc 28 §2.9)
+- actor mailbox (Phase 4)
+
+具体 enumeration 順序 / weight (= mark 効率に影響) は本 phase 着手時
+の orchestrator consensus review で確定。
+
+*default*: Phase 3c 既存 6 種 + allocator + safe-point + actor の 9 種
+を §3.1 ERT で table-driven 固定、Phase 7.5 integration で実測 tuning。
+
+** 9.2 forwarding pointer の object header bit 配置
+
+§6.7 で forwarding bit を age bit と共用 (forwarding 中は age 不要) と
+方針提示したが、具体 bit 位置 (3-bit tag の上位 / object header
+metadata word の特定 bit) は未確定。
+
+*default*: object header metadata word の bit 31 (最上位) を forwarding
+bit、bit 30 を 1 bit age (0/1) に縮小。Phase 7.3.3 着手時 user signoff
+で確定。
+
+** 9.3 card table の granularity 変更可能性
+
+§2.6 推奨 A で 4KB page granularity (16384 cards / tenured 64MB)、
+SBCL gencgc precedent。Phase 5-B selfhost workload で cross-generation
+reference rate が低い場合、64KB granularity (= 16-page chunk、Doc 29
+§2.3) で十分な可能性。
+
+*default*: 4KB page granularity で初版実装、Phase 7.5 で実測 tuning。
+=defcustom nelisp-gc-card-size= で user tunable 化検討。
+
+** 9.4 long-running soak gate の duration
+
+§5.2 で =long-running-soak= 24h 連続稼働を gate に設定したが、CI 環境
+での 24h 稼働は実用的でない (GitHub Actions runner 制限)。
+
+*default*: CI では 1h soak、weekly cron で 24h soak (self-hosted
+runner、Phase 7.1.5 で整備済)。CI 1h soak が完遂 gate、24h soak は
+post-SHIPPED audit task。
+
+** 9.5 GC pause time の 50ms 設定根拠
+
+§5.1 で =major-pause= 50ms 以下を target。SBCL gencgc は 20ms 程度、
+Emacs alloc.c GC は 100ms 超のことあり。NeLisp は MVP で SBCL の 2.5x
+許容。
+
+*default*: 50ms gate を初版、Phase 7.5 integration で =--gc-profile=
+経由実測。interactive UX 観点で 16ms (60fps frame) を将来 target、
+本 phase scope 外。
+
+* §10 関連 doc
+
+** internal NeLisp design docs
+
+- =docs/design/27-phase7-c-runtime-self-impl.org= (Doc 27 LOCKED
+  2026-04-25 = 2a52bda main、本 doc 親)
+- =docs/design/28-phase7.1-native-compiler.org= (Doc 28 LOCKED-2026-04-25-v2、
+  本 doc §1.4 / §2.7 / §2.8 GC metadata contract / §6.4 version drift
+  consumer)
+- =docs/design/29-phase7.2-allocator.org= (Doc 29 DRAFT-2026-04-25、
+  本 doc §1.4 / §2.4 / §2.5 / §2.6 / §2.9 / §3.2 / §6.5 region table
+  consumer + per-pool free-list 整合)
+- =docs/design/09-phase3c-gc.org= (Phase 3c SHIPPED 2026-04-24、本 doc
+  §1.6 reframing 解除点、=nelisp-gc--reachable= walker / finalizer /
+  root set 6 種 流用)
+- =docs/design/10-phase4-actor.org= (Phase 4 actor、本 doc §3.1 actor
+  mailbox root set 統合)
+- =docs/design/18-stage-d-standalone.org= (Stage D, Phase 6.1
+  architecture α SHIPPED)
+- =docs/03-architecture.org= (NeLisp 4 核 architecture、Doc 27 §1.4
+  Rhodes 5-stage map、本 doc §1.5 target-2 cold-init)
+
+** external precedent reference
+
+- *SBCL =gencgc.c=*: ~10000 LOC C + asm、25 年維持 (1999-)。generational
+  mark-region + Cheney semispace nursery + card-marking write barrier
+  の dual precedent
+- *Emacs =alloc.c= GC 部分*: ~6000 LOC C、Emacs 1985-。mark-sweep
+  single-generation + per-type block precedent
+- *Cheney (1970)* "A Nonrecursive List Compacting Algorithm":
+  CACM 13(11)、§2.5 / §3.3 Cheney semispace の典拠
+- *Wilson (1992)* "Uniprocessor Garbage Collection Techniques":
+  Lecture Notes in Computer Science 637、generational hypothesis +
+  tri-color marking の定本
+- *Dijkstra (1978)* "On-the-Fly Garbage Collection: An Exercise in
+  Cooperation": CACM 21(11)、§2.3 tri-color invariant の典拠
+- *Steele (1975)* "Multiprocessing compactifying garbage collection":
+  CACM 18(9)、tri-color marking の初出 references
+
+** 関連 memory
+
+- =project_nelisp.md= (Phase 4-6.5 SHIPPED summary、Stage D 配布レディ)
+- =project_nelisp_defs_index.md= (Phase 6.5 SHIPPED detail、本 doc
+  §1.2 type 解決 backing)
+- =feedback_anvil_master_integration_gate.md= (design doc は LOCKED
+  で main merge 可)
+- =feedback_canonical_byte_compile_stale_elc.md= (worktree 内
+  byte-compile、canonical では .elc 残さない)
+- =feedback_orchestrator_role_split.md= (orchestrator review
+  claude+codex+gemma、judge=claude)
+- =feedback_nelisp_announcement_standalone_gate.md= (Phase 7+ 完遂で
+  公開告知保留解除)
+- =feedback_git_worktree_parallel_sessions.md= (Phase 7.3 sub-phase
+  ごとに別 worktree 推奨)
+
+* §11 Sign-off
+
+** v0 DRAFT
+
+| version  | date       | author                       | 主要 |
+|----------+------------+------------------------------+------|
+| v0 DRAFT | 2026-04-25 | session-T5 起草 (autonomous parallel dev、session-A monitored) | 4 sub-phase / 12 LOCKED items / 8 risks / 3-軸 bench gate (mark-throughput 50MB/sec / minor-pause 5ms / major-pause 50ms) + promotion correctness 0 mis-classification gate / Doc 28 §2.9 + Doc 29 §2.6 consumer 位置確立 / "最難 phase" 宣言根拠 5 点 |
+
+** main merge gate
+
+- Doc 27 LOCKED 維持 (本 doc は Doc 27 §3 7.3 と完全整合)
+- Doc 28 §2.9 GC metadata contract / §6.10 version drift / Doc 29
+  §2.6 region table provider / §6.6 replan gate pattern と整合
+- Doc 09 (Phase 3c) =nelisp-gc--reachable= walker / finalizer / root
+  set 6 種 と整合 (流用関係明示)
+- ERT regression-free (本 doc は文書のみだが、§3 sub-phase の
+  scope/LOC/期間が Doc 27 §3 7.3 と矛盾しないこと)
+- =anvil-dev release-audit :scope doc 30= 緑 (LOCKED stamp 整合、
+  reference 整合)
+- 本 v0 = DRAFT-2026-04-25、user signoff + orchestrator review 後に
+  =LOCKED-2026-04-2X= 昇格、main =--no-ff= merge 解禁
+
+** 次の action (本 DRAFT push 後)
+
+1. session-A が =anvil-orchestrator-consensus-submit= で本 doc を
+   claude + codex review (judge=claude)
+2. revised proposal を user signoff 待ちで提示
+3. user signoff → STATE: =DRAFT-2026-04-25= → =LOCKED-2026-04-2X=
+4. main へ =--no-ff= merge (=feedback_anvil_master_integration_gate.md=
+   準拠、design doc は LOCKED で merge 可)
