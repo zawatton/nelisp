@@ -340,20 +340,46 @@ slower than C/Rust)。
 
 ** Phase 7.0 — Rust syscall stub + scaffold (~2-3 週間 / anvil leverage 前提)
 
-- =cargo new --lib nelisp-runtime=
-- =mod syscall= = ~300-500 LOC Rust (OS direct primitives only)
-  - Linux/macOS/Windows の =read / write / open / close / stat /
-    mmap / munmap / mprotect / exit / clock_gettime / getpid /
-    fork / exec / wait / signal handler attach / socket / bind /
-    connect / accept / recv / send / poll / epoll/kqueue=
-  - 上記の C ABI =extern "C"= wrapper のみ (logic 0)、NeLisp 側から
-    =call-syscall= で叩く form を提供
-- =build.rs= で NeLisp .el を pre-compile (host-1 stage)
-- C ABI =#[repr(C)]= struct で Lisp_Object 互換
-- =bin/anvil-runtime= 仮 main で initialize reply のみ
-- ERT: =test/nelisp-runtime-test.el= +5 (smoke 起動 / syscall round-trip)
-- 完遂 gate: =./anvil-runtime --syscall-smoke= が green、=read/write=
-  経由で stdin/stdout 双方向通信できる
+*✅ SHIPPED 2026-04-25* (=feat/phase7.0-syscall-stub= → main, session-C
+delivery、§3 7.0 完遂):
+
+- =cargo new --lib nelisp-runtime= 完了 (=nelisp-runtime/Cargo.toml=
+  cdylib + rlib + bin、=libc 0.2= dep)
+- =src/syscall/{mod,unix,error}.rs= 合計 *335 LOC* (Doc 27 §1.2
+  ~300-500 LOC budget 内)。10 syscall thin wrapper を C ABI
+  =nelisp_syscall_*= prefix で export:
+  =read / write / open / close / mmap / munmap / mprotect / exit /
+  getenv / stat= + bonus =setenv / fstat=
+- =NELISP_PROT_*= / =NELISP_MAP_*= / =NELISP_O_*= 定数を
+  =#[no_mangle] pub static= で公開 — NeLisp 側 dlsym で host-libc 非
+  依存
+- =NelispStat= =#[repr(C)]= struct (64 byte / 8-align) で stat snapshot
+  を Lisp_Object 互換レイアウトに pin
+- =src/main.rs --syscall-smoke= で write/mmap/munmap/getenv/stat の 5
+  probe を end-to-end 実行、exit code 0/1/2/3/4/5 で粒度別失敗報告
+- ERT: =test/nelisp-runtime-test.el= 5 個 (binary-exists /
+  syscall-smoke-exit-0 / syscall-smoke-stdout / help-exits-2 /
+  cdylib-exists)、binary 未ビルド時は =ert-skip= で plain
+  =make test= を緑保持
+- =cargo test --release= 15/15 PASS (10 syscall + 構造体 layout pin +
+  errno helper + constants vs libc cross-check + current_exe round
+  trip)
+- =Makefile= =runtime= / =runtime-test= / =runtime-clean= /
+  =test-runtime= target 追加。=CARGO ?= command -v cargo || ~/.cargo/bin/cargo=
+  fallback で daemon 起動 make も toolchain を解決
+- 完遂 gate (§7.X): =./nelisp-runtime/target/release/nelisp-runtime --syscall-smoke=
+  → exit 0 + stdout =syscall smoke OK= 確認、=libnelisp_runtime.so=
+  ~310 KB / =nelisp-runtime= ~315 KB 生成
+
+*Phase 7.5 で必要な後続作業* (= 本 phase 外、record only):
+- Elisp ↔ Rust dyn lib FFI 呼び出し path (=dlsym + ffi-call= NeLisp
+  primitive 新設)、本 Phase 7.0 では subprocess 経由 smoke のみ
+- Linux/macOS/Windows の =build.rs= による NeLisp .el pre-compile
+  (host-1 stage)、Phase 7.1 native compiler 完成後に着手
+- =clock_gettime / getpid / fork / exec / wait / signal handler /
+  socket / bind / accept / recv / send / poll / epoll / kqueue= 等
+  Phase 7.0 default scope 外の syscall は Phase 7.4 (coding) /
+  Phase 7.5 (integration) で必要時に追加
 
 ** Phase 7.1 — *NeLisp native compiler 新設* (~1-2 ヶ月、Phase 7+ 最大の山場)
 
@@ -422,15 +448,15 @@ UTF-8 / Latin-1 / Shift-JIS / EUC-JP encode/decode を NeLisp で実装:
 
 ** 工数見積 (合計、anvil.el + 並列 session full leverage 前提)
 
-| Phase | 言語       | 想定 LOC                | 想定期間   |
-|-------+------------+-------------------------+------------|
-| 7.0   | Rust       | ~300-500 (syscall stub) | 2-3 週間   |
-| 7.1   | NeLisp     | ~4500-8000 (native cc)  | 1-2 ヶ月   |
-| 7.2   | NeLisp     | ~800-1500 (allocator)   | 3-4 週間   |
-| 7.3   | NeLisp     | ~1200-2000 (GC)         | 1-2 ヶ月   |
-| 7.4   | NeLisp     | ~600-1000 (coding)      | 2-3 週間   |
-| 7.5   | (glue)     | ~200 + release          | 2 週間     |
-| 合計  | -          | *~7700-13200 LOC* (Rust ~400 + NeLisp ~7500-12500) | *4-8 ヶ月* |
+| Phase | 言語       | 想定 LOC                | 想定期間   | 状態                       |
+|-------+------------+-------------------------+------------+----------------------------|
+| 7.0   | Rust       | ~300-500 (syscall stub) | 2-3 週間   | *✅ SHIPPED 2026-04-25 (335 LOC)* |
+| 7.1   | NeLisp     | ~4500-8000 (native cc)  | 1-2 ヶ月   | DRAFT (Doc 28 起草中)      |
+| 7.2   | NeLisp     | ~800-1500 (allocator)   | 3-4 週間   | -                          |
+| 7.3   | NeLisp     | ~1200-2000 (GC)         | 1-2 ヶ月   | -                          |
+| 7.4   | NeLisp     | ~600-1000 (coding)      | 2-3 週間   | -                          |
+| 7.5   | (glue)     | ~200 + release          | 2 週間     | -                          |
+| 合計  | -          | *~7700-13200 LOC* (Rust ~400 + NeLisp ~7500-12500) | *4-8 ヶ月* | -                          |
 
 *Rust 量は当初 DRAFT の 3000-5000 LOC から 300-500 LOC へ激減* (~10x
 減)、代わりに NeLisp 実装が ~7500-12500 LOC 増 (= NeLisp purity max
