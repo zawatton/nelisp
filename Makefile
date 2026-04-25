@@ -1,6 +1,7 @@
 .PHONY: test compile clean all bench gc-bench actor-bench soak smoke stage-d-tarball \
         runtime runtime-test runtime-clean test-runtime \
-        runtime-staticlib stage-d-v2-bin
+        runtime-staticlib stage-d-v2-bin \
+        release-artifact release-checksum soak-blocker soak-post-ship
 
 EMACS ?= emacs
 
@@ -203,3 +204,32 @@ stage-d-tarball:
 	tar -czf "$(STAGE_D_TAR)" -C dist "$(STAGE_D_NAME)"
 	@rm -rf "$(STAGE_D_DIR)"
 	@printf "  \033[1;32m✓\033[0m built %s ($$(du -h "$(STAGE_D_TAR)" | cut -f1))\n" "$(STAGE_D_TAR)"
+
+# Phase 7.5.3 (Doc 32 v2 LOCKED §3.3) — stage-d-v2.0 release artifact.
+# Wraps `tools/build-release-artifact.sh` so callers can drive the
+# release pipeline through the same `make' surface as the rest of the
+# build.  PLATFORM defaults to linux-x86_64 (the §11 blocker tier);
+# RELEASE_VERSION defaults to stage-d-v2.0.
+PLATFORM        ?= linux-x86_64
+RELEASE_VERSION ?= stage-d-v2.0
+
+release-artifact:
+	@./tools/build-release-artifact.sh $(PLATFORM) $(RELEASE_VERSION)
+
+release-checksum:
+	@cd dist && \
+	  if command -v sha256sum >/dev/null 2>&1; then \
+	    sha256sum --check $(RELEASE_VERSION)-$(PLATFORM).tar.gz.sha256; \
+	  else \
+	    shasum -a 256 --check $(RELEASE_VERSION)-$(PLATFORM).tar.gz.sha256; \
+	  fi
+
+# Phase 7.5.3 soak gates (Doc 32 v2 §2.7 + §7).  blocker = CI 1h、
+# post-ship = release-audit 24h.  Both wrap `tools/soak-test.sh` with
+# the right SOAK_DURATION_HOURS env so the threshold logic stays
+# co-located with the harness.
+soak-blocker:
+	@SOAK_DURATION_HOURS=1 ./tools/soak-test.sh
+
+soak-post-ship:
+	@SOAK_DURATION_HOURS=24 ./tools/soak-test.sh
