@@ -1,7 +1,8 @@
 .PHONY: test compile clean all bench gc-bench actor-bench soak smoke stage-d-tarball \
         runtime runtime-test runtime-clean test-runtime \
         runtime-staticlib runtime-module runtime-module-clean stage-d-v2-bin \
-        release-artifact release-checksum soak-blocker soak-post-ship
+        release-artifact release-checksum soak-blocker soak-post-ship \
+        bench-actual bench-actual-cargo
 
 EMACS ?= emacs
 
@@ -261,3 +262,23 @@ soak-blocker:
 
 soak-post-ship:
 	@SOAK_DURATION_HOURS=24 ./tools/soak-test.sh
+
+# Phase 7.1 完遂 gate 3-axis bench actual measurement (Doc 28 v2 §5.2).
+# Runs `bench/nelisp-cc-bench-actual.el' end-to-end and exits with
+# code 0 when all three §5.2 gates PASS (fib(30) 30x / fact-iter 20x
+# / alloc-heavy 5x speedup vs bytecode VM), 1 otherwise.
+#
+# Depends on `runtime-module' so the in-process FFI bridge is built —
+# without it the Lisp-side bench skips the native axes and reports
+# `:native-skip-reason module-not-built'.
+bench-actual: runtime-module
+	$(EMACS) --batch -Q -L src -L bench \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-cc-bench-actual \
+	  -f nelisp-cc-bench-actual-run-3-axis
+
+# Phase 7.1 cargo-side FFI overhead bench (Doc 28 v2 §5.1 secondary
+# baseline).  Quantifies the mmap_jit + mprotect + call + munmap
+# round-trip cost in isolation so the §5.2 report can subtract it.
+bench-actual-cargo:
+	cd $(NELISP_RUNTIME_DIR) && $(CARGO) bench --bench nelisp_cc_bench
