@@ -46,6 +46,15 @@ compile:
 clean:
 	find . -name '*.elc' -type f -delete
 
+# Phase 7+ replan-gate audit scanner (T14 nelisp-dev-audit).
+# Optional NELISP_AUDIT_WEEK env to inject current development week (e.g., 4 / 8 / 12).
+# Exit code 0 = all pass / pending、1 = any gate fires.
+audit:
+	$(EMACS) --batch -Q -L src \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-dev-audit \
+	  -f nelisp-dev-audit-batch
+
 # Phase 3b.7 perf bench.  Always runs against compiled .elc — the
 # uncompiled VM is ~17x slower than the byte-compiled one, so
 # anything else would lie about the steady-state numbers.
