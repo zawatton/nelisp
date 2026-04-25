@@ -115,20 +115,52 @@ in the standard (OP NAME ARGLIST ...) shape, for arity extraction.")
 (defvar nelisp-defs-index--db nil
   "Open SQLite handle, or nil when `nelisp-defs-index-enable' has not run.")
 
+(defcustom nelisp-defs-index-busy-timeout-ms 10000
+  "Milliseconds the SQLite engine waits on `SQLITE_BUSY' before erroring.
+Tier 2 fix (T59 finding #2): WAL alone does not serialise concurrent
+writers; `PRAGMA busy_timeout' lets a competing writer wait for the
+lock instead of failing immediately."
+  :type 'integer
+  :group 'nelisp-defs-index)
+
+(defcustom nelisp-defs-index-busy-retry-count 1
+  "Extra `BEGIN IMMEDIATE' retries on `SQLITE_BUSY' (Tier 2 fix #2)."
+  :type 'integer
+  :group 'nelisp-defs-index)
+
 (defun nelisp-defs-index--require-sqlite ()
   "Signal `user-error' unless built-in sqlite (Emacs 29+) is available."
   (unless (and (fboundp 'sqlite-available-p) (sqlite-available-p))
     (user-error
      "nelisp-defs-index: built-in sqlite not available (Emacs 29+ required)")))
 
+(defun nelisp-defs-index--apply-pragmas (db)
+  "Apply the pragmas every freshly-opened DB needs.
+WAL + busy_timeout + foreign_keys are required for the Tier 2 fix
+(atomic shadow swap + concurrent writer + FK cascade)."
+  (sqlite-execute db "PRAGMA journal_mode = WAL")
+  (sqlite-execute db
+                  (format "PRAGMA busy_timeout = %d"
+                          (max 0 nelisp-defs-index-busy-timeout-ms)))
+  (sqlite-execute db "PRAGMA foreign_keys = ON"))
+
+(defun nelisp-defs-index--open-fresh (path)
+  "Open a fresh DB handle at PATH with pragmas + DDL applied.
+Used both by the cached `nelisp-defs-index--open' and by the
+shadow rebuild path (see `nelisp-defs-index-rebuild')."
+  (nelisp-defs-index--require-sqlite)
+  (let ((dir (file-name-directory path)))
+    (unless (file-directory-p dir) (make-directory dir t)))
+  (let ((db (sqlite-open path)))
+    (nelisp-defs-index--apply-pragmas db)
+    (nelisp-defs-index--apply-ddl db)
+    db))
+
 (defun nelisp-defs-index--open ()
   "Open DB at `nelisp-defs-index-db-path' and cache the handle."
-  (nelisp-defs-index--require-sqlite)
   (unless nelisp-defs-index--db
-    (let ((dir (file-name-directory nelisp-defs-index-db-path)))
-      (unless (file-directory-p dir) (make-directory dir t)))
-    (setq nelisp-defs-index--db (sqlite-open nelisp-defs-index-db-path))
-    (nelisp-defs-index--apply-ddl nelisp-defs-index--db))
+    (setq nelisp-defs-index--db
+          (nelisp-defs-index--open-fresh nelisp-defs-index-db-path)))
   nelisp-defs-index--db)
 
 (defun nelisp-defs-index--close ()
@@ -137,26 +169,74 @@ in the standard (OP NAME ARGLIST ...) shape, for arity extraction.")
     (ignore-errors (sqlite-close nelisp-defs-index--db)))
   (setq nelisp-defs-index--db nil))
 
+(defun nelisp-defs-index--invalidate-connection ()
+  "Drop the cached connection so the next `--db' call re-opens.
+Used after a shadow swap so readers pick up the new file."
+  (nelisp-defs-index--close))
+
 (defun nelisp-defs-index--db ()
   "Return the live DB handle, opening one on first call."
   (or nelisp-defs-index--db (nelisp-defs-index--open)))
+
+(defun nelisp-defs-index--busy-error-p (err)
+  "Return non-nil when ERR is an SQLITE_BUSY signal.
+Emacs surfaces SQLite errors as either `(sqlite-error ...)' or as
+`(error \"... busy ...\")' depending on build; check both forms."
+  (let ((msg (cond
+              ((and (consp err) (stringp (cadr err))) (cadr err))
+              ((and (consp err) (stringp (car err))) (car err))
+              (t (format "%S" err)))))
+    (and (stringp msg)
+         (or (string-match-p "busy" msg)
+             (string-match-p "BUSY" msg)
+             (string-match-p "locked" msg)))))
+
+(defmacro nelisp-defs-index--with-immediate-tx (db &rest body)
+  "Run BODY inside a `BEGIN IMMEDIATE' / COMMIT / ROLLBACK on DB.
+Retries up to `nelisp-defs-index-busy-retry-count' times when the
+initial BEGIN raises SQLITE_BUSY (the busy_timeout pragma already
+covers in-flight contention; this retry is for the wait-and-fail
+edge that occurs when another process holds the WAL writer lock
+across multiple timeout windows).  Tier 2 fix #2."
+  (declare (indent 1) (debug t))
+  (let ((db-sym (make-symbol "db"))
+        (attempts (make-symbol "attempts"))
+        (started (make-symbol "started"))
+        (err-sym (make-symbol "err")))
+    `(let ((,db-sym ,db)
+           (,attempts (1+ (max 0 nelisp-defs-index-busy-retry-count)))
+           (,started nil))
+       (catch 'nelisp-defs-index--tx-done
+         (while (> ,attempts 0)
+           (cl-decf ,attempts)
+           (condition-case ,err-sym
+               (progn
+                 (sqlite-execute ,db-sym "BEGIN IMMEDIATE")
+                 (setq ,started t)
+                 (throw 'nelisp-defs-index--tx-done nil))
+             (error
+              (if (and (> ,attempts 0)
+                       (nelisp-defs-index--busy-error-p ,err-sym))
+                  (sleep-for 0.05)
+                (signal (car ,err-sym) (cdr ,err-sym)))))))
+       (unless ,started
+         (error "nelisp-defs-index: BEGIN IMMEDIATE never succeeded"))
+       (condition-case ,err-sym
+           (prog1 (progn ,@body)
+             (sqlite-execute ,db-sym "COMMIT"))
+         (error
+          (ignore-errors (sqlite-execute ,db-sym "ROLLBACK"))
+          (signal (car ,err-sym) (cdr ,err-sym)))))))
 
 (defmacro nelisp-defs-index--with-transaction (db &rest body)
   "Run BODY inside a BEGIN / COMMIT / ROLLBACK on DB.
 Doc 25 §2.5 B: inline re-definition (not re-export of
 `nelisp-state--with-transaction') for module independence;
 `feedback_sqlite_with_transaction_not_portable.md' は手書き
-BEGIN/COMMIT を要求。"
+BEGIN/COMMIT を要求。Tier 2 fix #2 で BEGIN IMMEDIATE 経路を
+`nelisp-defs-index--with-immediate-tx' へ分離。"
   (declare (indent 1) (debug t))
-  (let ((db-sym (make-symbol "db")))
-    `(let ((,db-sym ,db))
-       (sqlite-execute ,db-sym "BEGIN")
-       (condition-case err
-           (prog1 (progn ,@body)
-             (sqlite-execute ,db-sym "COMMIT"))
-         (error
-          (ignore-errors (sqlite-execute ,db-sym "ROLLBACK"))
-          (signal (car err) (cdr err)))))))
+  `(nelisp-defs-index--with-immediate-tx ,db ,@body))
 
 ;;;; --- schema / ddl ------------------------------------------------------
 
@@ -222,10 +302,11 @@ per-version migration (cheap on project scale)."
     (sqlite-execute db (format "DROP TABLE IF EXISTS %s" tbl))))
 
 (defun nelisp-defs-index--apply-ddl (db)
-  "Apply DDL, pragmas, and schema version row to DB.
-On stored vs code schema mismatch, drop owned tables first."
-  (sqlite-execute db "PRAGMA journal_mode = WAL")
-  (sqlite-execute db "PRAGMA foreign_keys = ON")
+  "Apply DDL and schema version row to DB.
+Pragmas are applied separately by `nelisp-defs-index--apply-pragmas'
+so the open path can re-use the same incantation for the live DB
+and the shadow rebuild file.  On stored vs code schema mismatch,
+drop owned tables first."
   (let ((stored (nelisp-defs-index--stored-schema-version db)))
     (when (and stored (not (= stored nelisp-defs-index-schema-version)))
       (message "nelisp-defs-index: schema mismatch (db=%s code=%s); dropping"
@@ -301,11 +382,92 @@ are unset.  Tries `git ls-files' first, then `directory-files-recursively'."
   "Symbols too pervasive to record as references.
 No project ever asks \"who calls nil?\".")
 
+(defconst nelisp-defs-index--special-forms
+  '(;; lexical / control flow
+    let let* letrec lambda quote function progn prog1 prog2
+    if cond when unless while
+    save-excursion save-current-buffer save-restriction save-match-data
+    condition-case unwind-protect catch throw
+    and or not
+    ;; binding / mutation
+    setq setq-default setf setq-local
+    push pop cl-incf cl-decf cl-pushnew
+    add-to-list dolist dotimes
+    ;; defining forms (head appears as op of the top-level sexp; the
+    ;; deep walker should not record `(call defun)' once it recurses).
+    defun defmacro defsubst defvar defvar-local defcustom defconst
+    defgroup define-error define-minor-mode define-derived-mode
+    define-globalized-minor-mode
+    cl-defun cl-defmacro cl-defgeneric cl-defmethod cl-defstruct
+    cl-deftype defalias defclass
+    ;; module edges (already handled by dedicated branches but listed
+    ;; so they don't double-emit a stray `call' ref).
+    require provide)
+  "Special forms / definers whose head is not a real call site.
+Tier 2 fix #6: filtering these out cuts walker noise so refs only
+contain meaningful function-style call edges plus `quote' / bare
+`symbol' / module edges.")
+
+(defconst nelisp-defs-index--binder-shapes
+  '((let . bindings-and-body)
+    (let* . bindings-and-body)
+    (letrec . bindings-and-body)
+    (cl-let . bindings-and-body)
+    (cl-let* . bindings-and-body)
+    (lambda . arglist-and-body)
+    (defun . name-arglist-and-body)
+    (defmacro . name-arglist-and-body)
+    (defsubst . name-arglist-and-body)
+    (cl-defun . name-arglist-and-body)
+    (cl-defmacro . name-arglist-and-body)
+    (cl-defgeneric . name-arglist-and-body)
+    (cl-defmethod . name-arglist-and-body)
+    (defvar . name-and-body)
+    (defvar-local . name-and-body)
+    (defcustom . name-and-body)
+    (defconst . name-and-body)
+    (condition-case . cc-var-and-body)
+    (dolist . loop-and-body)
+    (dotimes . loop-and-body))
+  "Per-special-form arglist shape rules used by the deep walker.
+Maps OP → SHAPE.  SHAPE controls which positional sub-forms are
+treated as binding *names* (skipped from the ref output) versus
+arbitrary forms (recursed into).  Tier 2 fix #6.")
+
 (defun nelisp-defs-index--walker-ignored-p (sym)
   "Return non-nil when SYM should not be emitted by the walker."
   (or (null sym)
       (keywordp sym)
       (memq sym nelisp-defs-index--walker-skip-symbols)))
+
+(defun nelisp-defs-index--collect-binding-names (bindings)
+  "Return the binding-name symbols from a `let'-style BINDINGS list.
+Each binding is `(NAME)' or `(NAME INIT)' or a bare NAME symbol."
+  (let (names)
+    (while (consp bindings)
+      (let ((b (car bindings)))
+        (cond
+         ((symbolp b) (push b names))
+         ((and (consp b) (symbolp (car b))) (push (car b) names))))
+      (setq bindings (cdr bindings)))
+    (nreverse names)))
+
+(defun nelisp-defs-index--collect-arglist-names (arglist)
+  "Return the binding-name symbols from a `defun'-style ARGLIST.
+Skips lambda-list keywords (&optional / &rest / &key / ...) and
+keeps both bare-symbol params and `(NAME INIT)' / `(NAME INIT SVAR)'
+shapes (cl-arglist).  Tier 2 fix #6."
+  (let (names)
+    (while (consp arglist)
+      (let ((a (car arglist)))
+        (cond
+         ((and (symbolp a)
+               (string-prefix-p "&" (symbol-name a)))
+          nil)
+         ((symbolp a) (push a names))
+         ((and (consp a) (symbolp (car a))) (push (car a) names))))
+      (setq arglist (cdr arglist)))
+    (nreverse names)))
 
 (defun nelisp-defs-index--walk-each (xs fn)
   "Apply FN to each element of XS, tolerating improper / dotted lists.
@@ -317,60 +479,179 @@ rely on the proper-list invariant."
     (setq xs (cdr xs)))
   (when xs (funcall fn xs)))
 
-(defun nelisp-defs-index--walk-form-refs (sexp context line emit)
+(defun nelisp-defs-index--walk-binder (op tail context line emit)
+  "Walk a binder special form `(OP . TAIL)' according to its shape rule.
+OP must be a key in `nelisp-defs-index--binder-shapes'.  Binding
+names are skipped from the ref output; binding init forms and the
+body are recursed into normally.  Returns non-nil when handled."
+  (let ((shape (cdr (assq op nelisp-defs-index--binder-shapes)))
+        (binders (nelisp-defs-index--collect-binding-names tail))
+        (arglister (lambda (al)
+                     (nelisp-defs-index--collect-arglist-names al))))
+    (ignore binders arglister)
+    (pcase shape
+      ('bindings-and-body
+       ;; (let ((NAME INIT) ...) BODY...)
+       (let* ((bindings (car-safe tail))
+              (body (cdr-safe tail))
+              (skip (nelisp-defs-index--collect-binding-names bindings)))
+         ;; Walk inits (cdr of each binding) only.
+         (nelisp-defs-index--walk-each
+          bindings
+          (lambda (b)
+            (cond
+             ((symbolp b) nil)             ; bare NAME, no init
+             ((consp b)
+              (nelisp-defs-index--walk-each
+               (cdr b)
+               (lambda (init)
+                 (nelisp-defs-index--walk-form-refs
+                  init context line emit (cons 'skip-set skip))))))))
+         ;; Walk body forms.
+         (nelisp-defs-index--walk-each
+          body
+          (lambda (sub)
+            (nelisp-defs-index--walk-form-refs
+             sub context line emit (cons 'skip-set skip))))
+         t))
+      ('arglist-and-body
+       ;; (lambda ARGLIST BODY...)
+       (let* ((arglist (car-safe tail))
+              (body (cdr-safe tail))
+              (skip (nelisp-defs-index--collect-arglist-names arglist)))
+         (nelisp-defs-index--walk-each
+          body
+          (lambda (sub)
+            (nelisp-defs-index--walk-form-refs
+             sub context line emit (cons 'skip-set skip))))
+         t))
+      ('name-arglist-and-body
+       ;; (defun NAME ARGLIST [DOC] BODY...)
+       (let* ((arglist (car-safe (cdr-safe tail)))
+              (body (cdr-safe (cdr-safe tail)))
+              ;; Drop a leading docstring so it doesn't get walked as
+              ;; a `symbol' ref (strings aren't symbols, but still — be
+              ;; explicit so future changes don't regress).
+              (body (if (and (consp body) (stringp (car body)))
+                        (cdr body) body))
+              (skip (nelisp-defs-index--collect-arglist-names arglist)))
+         (nelisp-defs-index--walk-each
+          body
+          (lambda (sub)
+            (nelisp-defs-index--walk-form-refs
+             sub context line emit (cons 'skip-set skip))))
+         t))
+      ('name-and-body
+       ;; (defvar NAME [INIT [DOC]])
+       (let* ((init (car-safe (cdr-safe tail))))
+         (when init
+           (nelisp-defs-index--walk-form-refs init context line emit nil))
+         t))
+      ('cc-var-and-body
+       ;; (condition-case VAR BODY HANDLER...)
+       (let* ((var (car-safe tail))
+              (rest (cdr-safe tail))
+              (skip (when (symbolp var) (list var))))
+         (nelisp-defs-index--walk-each
+          rest
+          (lambda (sub)
+            (nelisp-defs-index--walk-form-refs
+             sub context line emit (cons 'skip-set skip))))
+         t))
+      ('loop-and-body
+       ;; (dolist (VAR LIST [RESULT]) BODY...) / (dotimes (VAR N) BODY)
+       (let* ((header (car-safe tail))
+              (body (cdr-safe tail))
+              (var (and (consp header) (car header)))
+              (header-rest (and (consp header) (cdr header)))
+              (skip (when (symbolp var) (list var))))
+         (nelisp-defs-index--walk-each
+          header-rest
+          (lambda (sub)
+            (nelisp-defs-index--walk-form-refs
+             sub context line emit nil)))
+         (nelisp-defs-index--walk-each
+          body
+          (lambda (sub)
+            (nelisp-defs-index--walk-form-refs
+             sub context line emit (cons 'skip-set skip))))
+         t))
+      (_ nil))))
+
+(defun nelisp-defs-index--walk-form-refs (sexp context line emit
+                                               &optional skip-cell)
   "Walk SEXP recursively, calling EMIT for each reference / feature edge.
 EMIT is (KIND NAME LINE CONTEXT).  CONTEXT is the enclosing def's
 name (string) or nil.  LINE is the top-level form's starting line.
-Recorded:
-  - call sites: (OP ARGS...) with OP a plain symbol
+SKIP-CELL is `(skip-set . SYMBOLS)' or nil; symbols in SYMBOLS are
+not emitted as bare-`symbol' refs (binder names propagated by
+`--walk-binder').  Recorded:
+  - call sites: (OP ARGS...) with OP a plain symbol that is not a
+    special form / definer (Tier 2 fix #6)
   - quote sites: \\='X / #\\='X (via `quote' / `function' heads)
   - require / provide edges (folded into the `features' table by
     the caller)
-  - bare value-position symbols"
-  (cond
-   ((consp sexp)
-    (let ((op (car sexp)))
-      (cond
-       ;; (quote X) / (function X) on a bare symbol — no recursion.
-       ((and (memq op '(quote function))
-             (consp (cdr sexp))
-             (symbolp (cadr sexp))
-             (not (nelisp-defs-index--walker-ignored-p (cadr sexp))))
-        (funcall emit 'quote (symbol-name (cadr sexp)) line context))
-       ;; (require 'SYM ...)
-       ((and (eq op 'require)
-             (consp (cdr sexp))
-             (consp (cadr sexp))
-             (eq (car (cadr sexp)) 'quote)
-             (symbolp (cadr (cadr sexp))))
-        (funcall emit 'require (symbol-name (cadr (cadr sexp)))
-                 line context))
-       ;; (provide 'SYM ...)
-       ((and (eq op 'provide)
-             (consp (cdr sexp))
-             (consp (cadr sexp))
-             (eq (car (cadr sexp)) 'quote)
-             (symbolp (cadr (cadr sexp))))
-        (funcall emit 'provide (symbol-name (cadr (cadr sexp)))
-                 line context))
-       ;; (OP ARGS...) — record a call on OP, then recurse args.
-       ((and (symbolp op)
-             (not (nelisp-defs-index--walker-ignored-p op)))
-        (funcall emit 'call (symbol-name op) line context)
-        (nelisp-defs-index--walk-each
-         (cdr sexp)
-         (lambda (sub)
-           (nelisp-defs-index--walk-form-refs sub context line emit))))
-       ;; non-symbol head (e.g. ((lambda (x) x) 1)) / dotted alists.
-       (t
-        (nelisp-defs-index--walk-each
-         sexp
-         (lambda (sub)
-           (nelisp-defs-index--walk-form-refs sub context line emit)))))))
-   ;; Bare value-position symbol reference.
-   ((and (symbolp sexp)
-         (not (nelisp-defs-index--walker-ignored-p sexp)))
-    (funcall emit 'symbol (symbol-name sexp) line context))))
+  - bare value-position symbols (excluding active binders)"
+  (let ((skip-set (and (consp skip-cell) (cdr skip-cell))))
+    (cond
+     ((consp sexp)
+      (let ((op (car sexp)))
+        (cond
+         ;; (quote X) / (function X) on a bare symbol — no recursion.
+         ((and (memq op '(quote function))
+               (consp (cdr sexp))
+               (symbolp (cadr sexp))
+               (not (nelisp-defs-index--walker-ignored-p (cadr sexp))))
+          (funcall emit 'quote (symbol-name (cadr sexp)) line context))
+         ;; (require 'SYM ...)
+         ((and (eq op 'require)
+               (consp (cdr sexp))
+               (consp (cadr sexp))
+               (eq (car (cadr sexp)) 'quote)
+               (symbolp (cadr (cadr sexp))))
+          (funcall emit 'require (symbol-name (cadr (cadr sexp)))
+                   line context))
+         ;; (provide 'SYM ...)
+         ((and (eq op 'provide)
+               (consp (cdr sexp))
+               (consp (cadr sexp))
+               (eq (car (cadr sexp)) 'quote)
+               (symbolp (cadr (cadr sexp))))
+          (funcall emit 'provide (symbol-name (cadr (cadr sexp)))
+                   line context))
+         ;; Binder special forms — custom shape walker (Tier 2 fix #6).
+         ((and (symbolp op)
+               (assq op nelisp-defs-index--binder-shapes))
+          (nelisp-defs-index--walk-binder op (cdr sexp) context line emit))
+         ;; Other special forms — skip head ref, recurse args (Tier 2 #6).
+         ((and (symbolp op)
+               (memq op nelisp-defs-index--special-forms))
+          (nelisp-defs-index--walk-each
+           (cdr sexp)
+           (lambda (sub)
+             (nelisp-defs-index--walk-form-refs
+              sub context line emit skip-cell))))
+         ;; (OP ARGS...) — record a call on OP, then recurse args.
+         ((and (symbolp op)
+               (not (nelisp-defs-index--walker-ignored-p op)))
+          (funcall emit 'call (symbol-name op) line context)
+          (nelisp-defs-index--walk-each
+           (cdr sexp)
+           (lambda (sub)
+             (nelisp-defs-index--walk-form-refs
+              sub context line emit skip-cell))))
+         ;; non-symbol head (e.g. ((lambda (x) x) 1)) / dotted alists.
+         (t
+          (nelisp-defs-index--walk-each
+           sexp
+           (lambda (sub)
+             (nelisp-defs-index--walk-form-refs
+              sub context line emit skip-cell)))))))
+     ;; Bare value-position symbol reference.
+     ((and (symbolp sexp)
+           (not (nelisp-defs-index--walker-ignored-p sexp))
+           (not (memq sexp skip-set)))
+      (funcall emit 'symbol (symbol-name sexp) line context)))))
 
 ;;;; --- scanner -----------------------------------------------------------
 
@@ -591,37 +872,73 @@ Returns plist (:defs N :refs N :features N)."
   (nelisp-defs-index--close)
   nil)
 
-;;;###autoload
-(defun nelisp-defs-index-rebuild (&optional paths)
-  "Re-index every .el file under PATHS (default `nelisp-defs-index-paths').
-Returns plist (:files N :defs N :refs N :features N :duration-ms N)."
-  (let* ((db (nelisp-defs-index--db))
-         (t0 (current-time))
+(defun nelisp-defs-index--build-into (shadow-path paths)
+  "Build a fresh index at SHADOW-PATH from PATHS.  Returns counts plist.
+Helper for `nelisp-defs-index-rebuild'.  Tier 2 fix #1 + #2: the
+shadow file is created from scratch (so it never observes a
+partial mid-build state from a previous failure) and uses
+BEGIN IMMEDIATE so concurrent readers/writers respect busy_timeout."
+  (when (file-exists-p shadow-path) (delete-file shadow-path))
+  (let* ((db (nelisp-defs-index--open-fresh shadow-path))
          (files (nelisp-defs-index--collect-files paths))
          (file-count 0)
          (def-count 0)
          (ref-count 0)
-         (feat-count 0))
-    (nelisp-defs-index--with-transaction db
-      (sqlite-execute db "DELETE FROM file")
-      (sqlite-execute db "DELETE FROM defs")
-      (sqlite-execute db "DELETE FROM refs")
-      (sqlite-execute db "DELETE FROM features"))
-    (dolist (f files)
-      (condition-case _
-          (let ((r (nelisp-defs-index--ingest-file db f)))
-            (cl-incf file-count)
-            (cl-incf def-count (plist-get r :defs))
-            (cl-incf ref-count (plist-get r :refs))
-            (cl-incf feat-count (plist-get r :features)))
-        (error nil)))
-    (list :files file-count
-          :defs def-count
-          :refs ref-count
-          :features feat-count
-          :duration-ms (truncate (* 1000 (float-time
-                                          (time-subtract
-                                           (current-time) t0)))))))
+         (feat-count 0)
+         (failures 0))
+    (unwind-protect
+        (progn
+          (dolist (f files)
+            (condition-case err
+                (let ((r (nelisp-defs-index--ingest-file db f)))
+                  (cl-incf file-count)
+                  (cl-incf def-count (plist-get r :defs))
+                  (cl-incf ref-count (plist-get r :refs))
+                  (cl-incf feat-count (plist-get r :features)))
+              (error
+               (cl-incf failures)
+               (message "nelisp-defs-index: skipping %s: %S" f err))))
+          (list :files file-count
+                :defs def-count
+                :refs ref-count
+                :features feat-count
+                :failures failures))
+      (ignore-errors (sqlite-close db)))))
+
+;;;###autoload
+(defun nelisp-defs-index-rebuild (&optional paths)
+  "Re-index every .el file under PATHS (default `nelisp-defs-index-paths').
+Returns plist (:files N :defs N :refs N :features N :failures N
+:duration-ms N).
+
+Tier 2 fix #1 (T59): build the index into a `<db>.rebuild' shadow
+file and rename it over the live DB on success.  Concurrent readers
+keep seeing the previous fully-populated DB until the swap commits;
+on build failure the shadow is unlinked and the live DB stays
+unchanged (no silent data loss)."
+  (let* ((t0 (current-time))
+         (db-path nelisp-defs-index-db-path)
+         (shadow-path (concat db-path ".rebuild"))
+         result)
+    (unwind-protect
+        (progn
+          (setq result
+                (nelisp-defs-index--build-into shadow-path paths))
+          ;; Drop our cached connection before swapping so the next
+          ;; --db call opens the freshly-renamed file.
+          (nelisp-defs-index--invalidate-connection)
+          (let ((dir (file-name-directory db-path)))
+            (unless (file-directory-p dir) (make-directory dir t)))
+          (rename-file shadow-path db-path t)
+          (setq shadow-path nil)
+          (append result
+                  (list :duration-ms
+                        (truncate (* 1000 (float-time
+                                           (time-subtract
+                                            (current-time) t0)))))))
+      ;; Failure path: unlink the shadow if it still exists.
+      (when (and shadow-path (file-exists-p shadow-path))
+        (ignore-errors (delete-file shadow-path))))))
 
 ;;;###autoload
 (defun nelisp-defs-index-search (name &optional opts)

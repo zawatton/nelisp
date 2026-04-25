@@ -94,14 +94,40 @@ ancestor of `default-directory'.  defvar per Doc 26 §2.6.")
 Anything matching `\\\\=`[A-Z]+\\\\=`' is candidate; only members
 of this list are stored as the `todo' column.")
 
-(defconst nelisp-org-index-schema-version 1
+(defconst nelisp-org-index-schema-version 2
   "Integer migration key written into `schema_meta.version'.
-Phase 6.6.x stays at v1; mismatch triggers drop-and-rebuild.")
+Tier 2 fix bumps to v2 (parent_id FK + FTS5 trigram).  Schema
+mismatch on open triggers drop-and-rebuild.")
 
 ;;;; --- backend / db helpers ----------------------------------------------
 
 (defvar nelisp-org-index--db nil
   "Open SQLite handle, or nil when `nelisp-org-index-enable' has not run.")
+
+(defcustom nelisp-org-index-busy-timeout-ms 10000
+  "Milliseconds the SQLite engine waits on `SQLITE_BUSY' before erroring.
+Tier 2 fix (T59 finding #2): WAL alone does not serialise concurrent
+writers."
+  :type 'integer
+  :group 'nelisp-org-index)
+
+(defcustom nelisp-org-index-busy-retry-count 1
+  "Extra `BEGIN IMMEDIATE' retries on `SQLITE_BUSY' (Tier 2 fix #2)."
+  :type 'integer
+  :group 'nelisp-org-index)
+
+(defcustom nelisp-org-index-fts-tokenizer 'auto
+  "Tokenizer used when (re-)creating the headlines FTS5 table.
+Tier 2 fix (T59 finding #4 + #5): adds CJK-friendly substring
+search.  Values:
+
+  `auto'      probe the SQLite build; trigram when available.
+  `trigram'   force the trigram tokenizer (CJK-friendly).
+  `unicode61' force the unicode61 tokenizer (host-Emacs default)."
+  :type '(choice (const :tag "Auto (trigram if available)" auto)
+                 (const :tag "Trigram (SQLite 3.34+)" trigram)
+                 (const :tag "unicode61" unicode61))
+  :group 'nelisp-org-index)
 
 (defun nelisp-org-index--require-sqlite ()
   "Signal `user-error' unless built-in sqlite (Emacs 29+) is available."
@@ -109,14 +135,30 @@ Phase 6.6.x stays at v1; mismatch triggers drop-and-rebuild.")
     (user-error
      "nelisp-org-index: built-in sqlite not available (Emacs 29+ required)")))
 
+(defun nelisp-org-index--apply-pragmas (db)
+  "Apply the pragmas every freshly-opened DB needs (WAL + busy + FK)."
+  (sqlite-execute db "PRAGMA journal_mode = WAL")
+  (sqlite-execute db
+                  (format "PRAGMA busy_timeout = %d"
+                          (max 0 nelisp-org-index-busy-timeout-ms)))
+  (sqlite-execute db "PRAGMA foreign_keys = ON"))
+
+(defun nelisp-org-index--open-fresh (path)
+  "Open a fresh DB handle at PATH with pragmas + DDL + FTS schema."
+  (nelisp-org-index--require-sqlite)
+  (let ((dir (file-name-directory path)))
+    (unless (file-directory-p dir) (make-directory dir t)))
+  (let ((db (sqlite-open path)))
+    (nelisp-org-index--apply-pragmas db)
+    (nelisp-org-index--apply-ddl db)
+    (nelisp-org-index--ensure-fts db)
+    db))
+
 (defun nelisp-org-index--open ()
   "Open DB at `nelisp-org-index-db-path' and cache the handle."
-  (nelisp-org-index--require-sqlite)
   (unless nelisp-org-index--db
-    (let ((dir (file-name-directory nelisp-org-index-db-path)))
-      (unless (file-directory-p dir) (make-directory dir t)))
-    (setq nelisp-org-index--db (sqlite-open nelisp-org-index-db-path))
-    (nelisp-org-index--apply-ddl nelisp-org-index--db))
+    (setq nelisp-org-index--db
+          (nelisp-org-index--open-fresh nelisp-org-index-db-path)))
   nelisp-org-index--db)
 
 (defun nelisp-org-index--close ()
@@ -125,25 +167,65 @@ Phase 6.6.x stays at v1; mismatch triggers drop-and-rebuild.")
     (ignore-errors (sqlite-close nelisp-org-index--db)))
   (setq nelisp-org-index--db nil))
 
+(defun nelisp-org-index--invalidate-connection ()
+  "Drop the cached connection so the next `--db' call re-opens.
+Used after a shadow swap so readers pick up the new file."
+  (nelisp-org-index--close))
+
 (defun nelisp-org-index--db ()
   "Return the live DB handle, opening one on first call."
   (or nelisp-org-index--db (nelisp-org-index--open)))
 
-(defmacro nelisp-org-index--with-transaction (db &rest body)
-  "Run BODY inside a BEGIN / COMMIT / ROLLBACK on DB.
-Inline BEGIN/COMMIT pattern (per
-`feedback_sqlite_with_transaction_not_portable.md') for module
-independence; mirrors `nelisp-defs-index--with-transaction'."
+(defun nelisp-org-index--busy-error-p (err)
+  "Return non-nil when ERR is an SQLITE_BUSY signal."
+  (let ((msg (cond
+              ((and (consp err) (stringp (cadr err))) (cadr err))
+              ((and (consp err) (stringp (car err))) (car err))
+              (t (format "%S" err)))))
+    (and (stringp msg)
+         (or (string-match-p "busy" msg)
+             (string-match-p "BUSY" msg)
+             (string-match-p "locked" msg)))))
+
+(defmacro nelisp-org-index--with-immediate-tx (db &rest body)
+  "Run BODY inside a `BEGIN IMMEDIATE' / COMMIT / ROLLBACK on DB.
+Retries up to `nelisp-org-index-busy-retry-count' times on
+SQLITE_BUSY.  Tier 2 fix #2."
   (declare (indent 1) (debug t))
-  (let ((db-sym (make-symbol "db")))
-    `(let ((,db-sym ,db))
-       (sqlite-execute ,db-sym "BEGIN")
-       (condition-case err
+  (let ((db-sym (make-symbol "db"))
+        (attempts (make-symbol "attempts"))
+        (started (make-symbol "started"))
+        (err-sym (make-symbol "err")))
+    `(let ((,db-sym ,db)
+           (,attempts (1+ (max 0 nelisp-org-index-busy-retry-count)))
+           (,started nil))
+       (catch 'nelisp-org-index--tx-done
+         (while (> ,attempts 0)
+           (cl-decf ,attempts)
+           (condition-case ,err-sym
+               (progn
+                 (sqlite-execute ,db-sym "BEGIN IMMEDIATE")
+                 (setq ,started t)
+                 (throw 'nelisp-org-index--tx-done nil))
+             (error
+              (if (and (> ,attempts 0)
+                       (nelisp-org-index--busy-error-p ,err-sym))
+                  (sleep-for 0.05)
+                (signal (car ,err-sym) (cdr ,err-sym)))))))
+       (unless ,started
+         (error "nelisp-org-index: BEGIN IMMEDIATE never succeeded"))
+       (condition-case ,err-sym
            (prog1 (progn ,@body)
              (sqlite-execute ,db-sym "COMMIT"))
          (error
           (ignore-errors (sqlite-execute ,db-sym "ROLLBACK"))
-          (signal (car err) (cdr err)))))))
+          (signal (car ,err-sym) (cdr ,err-sym)))))))
+
+(defmacro nelisp-org-index--with-transaction (db &rest body)
+  "Run BODY inside a BEGIN IMMEDIATE / COMMIT / ROLLBACK on DB.
+Tier 2 fix #2: thin wrapper over `--with-immediate-tx'."
+  (declare (indent 1) (debug t))
+  `(nelisp-org-index--with-immediate-tx ,db ,@body))
 
 ;;;; --- schema / ddl ------------------------------------------------------
 
@@ -158,10 +240,12 @@ independence; mirrors `nelisp-defs-index--with-transaction'."
        size        INTEGER NOT NULL,
        indexed_at  INTEGER NOT NULL)"
 
+    ;; Tier 2 fix #3: parent_id now carries a self-referencing FK so
+    ;; future incremental update / watcher paths can't leak orphans.
     "CREATE TABLE IF NOT EXISTS headline (
        id          INTEGER PRIMARY KEY,
        file_id     INTEGER NOT NULL REFERENCES file(id) ON DELETE CASCADE,
-       parent_id   INTEGER,
+       parent_id   INTEGER REFERENCES headline(id) ON DELETE CASCADE,
        level       INTEGER NOT NULL,
        title       TEXT NOT NULL,
        todo        TEXT,
@@ -172,9 +256,12 @@ independence; mirrors `nelisp-defs-index--with-transaction'."
        org_id      TEXT)"
 
     "CREATE INDEX IF NOT EXISTS idx_headline_file ON headline(file_id)"
+    "CREATE INDEX IF NOT EXISTS idx_headline_parent ON headline(parent_id)"
     "CREATE INDEX IF NOT EXISTS idx_headline_todo ON headline(todo)"
     "CREATE INDEX IF NOT EXISTS idx_headline_level ON headline(level)"
-    "CREATE INDEX IF NOT EXISTS idx_headline_title ON headline(title)"
+    ;; Tier 2 fix #4: title B-tree dropped — search uses LIKE %x% so
+    ;; the prefix index never gets used.  FTS5 (--ensure-fts) handles
+    ;; substring relevance.
 
     "CREATE TABLE IF NOT EXISTS tag (
        headline_id INTEGER NOT NULL REFERENCES headline(id) ON DELETE CASCADE,
@@ -201,15 +288,16 @@ independence; mirrors `nelisp-defs-index--with-transaction'."
 
 (defun nelisp-org-index--drop-all-tables (db)
   "Drop every nelisp-org-index-owned table from DB.
-Schema mismatch → drop-and-rebuild (cheap on project scale)."
-  (dolist (tbl '("property" "tag" "headline" "file" "schema_meta"))
+Schema mismatch → drop-and-rebuild (cheap on project scale).
+Drops the FTS5 virtual table first so its shadow tables go too."
+  (dolist (tbl '("headlines_fts" "property" "tag" "headline"
+                 "file" "schema_meta"))
     (sqlite-execute db (format "DROP TABLE IF EXISTS %s" tbl))))
 
 (defun nelisp-org-index--apply-ddl (db)
-  "Apply DDL, pragmas, and schema version row to DB.
-On stored vs code schema mismatch, drop owned tables first."
-  (sqlite-execute db "PRAGMA journal_mode = WAL")
-  (sqlite-execute db "PRAGMA foreign_keys = ON")
+  "Apply DDL and schema version row to DB.
+Pragmas live in `nelisp-org-index--apply-pragmas'.  On stored vs
+code schema mismatch, drop owned tables first."
   (let ((stored (nelisp-org-index--stored-schema-version db)))
     (when (and stored (not (= stored nelisp-org-index-schema-version)))
       (message "nelisp-org-index: schema mismatch (db=%s code=%s); dropping"
@@ -220,6 +308,90 @@ On stored vs code schema mismatch, drop owned tables first."
   (sqlite-execute
    db "INSERT OR IGNORE INTO schema_meta(version) VALUES (?1)"
    (list nelisp-org-index-schema-version)))
+
+;;;; --- FTS5 (Tier 2 fix #4 + #5) -----------------------------------------
+
+(defun nelisp-org-index--sqlite-supports-trigram-p (db)
+  "Return non-nil when DB's SQLite build ships the FTS5 trigram tokenizer."
+  (condition-case nil
+      (progn
+        (sqlite-execute
+         db
+         "CREATE VIRTUAL TABLE nelisp_org_trigram_probe
+            USING fts5(x, tokenize='trigram')")
+        (sqlite-execute db "DROP TABLE nelisp_org_trigram_probe")
+        t)
+    (error nil)))
+
+(defun nelisp-org-index--resolve-tokenizer (db)
+  "Return the tokenizer symbol DB should use, given the user setting."
+  (pcase nelisp-org-index-fts-tokenizer
+    ('trigram   'trigram)
+    ('unicode61 'unicode61)
+    ('auto (if (nelisp-org-index--sqlite-supports-trigram-p db)
+               'trigram
+             'unicode61))
+    (other (user-error
+            "nelisp-org-index: invalid `nelisp-org-index-fts-tokenizer': %S"
+            other))))
+
+(defvar nelisp-org-index--last-tokenizer nil
+  "Tokenizer used for the most recently opened FTS5 table.
+Set by `nelisp-org-index--ensure-fts' so callers / tests can verify
+which path the build took (trigram vs unicode61).")
+
+(defun nelisp-org-index--tokenizer-for (db)
+  "Return the tokenizer symbol active for DB (open or freshly resolved)."
+  (or nelisp-org-index--last-tokenizer
+      (nelisp-org-index--resolve-tokenizer db)))
+
+(defun nelisp-org-index--ensure-fts (db)
+  "Create the headlines FTS5 virtual table if it does not exist.
+Uses `external content' so the FTS rows are kept in sync with the
+backing `headline' table by triggers — `--ensure-fts-triggers'
+installs them."
+  (let* ((tok (nelisp-org-index--resolve-tokenizer db))
+         (tok-sql (pcase tok
+                    ('trigram   ", tokenize='trigram'")
+                    ('unicode61 "")))
+         (existing (sqlite-select
+                    db
+                    "SELECT name FROM sqlite_master
+                       WHERE type='table' AND name='headlines_fts'")))
+    (unless existing
+      (sqlite-execute
+       db
+       (concat
+        "CREATE VIRTUAL TABLE headlines_fts USING fts5("
+        " title,"
+        " content='headline',"
+        " content_rowid='id'"
+        tok-sql ")")))
+    (setq nelisp-org-index--last-tokenizer tok)
+    (nelisp-org-index--ensure-fts-triggers db)
+    tok))
+
+(defun nelisp-org-index--ensure-fts-triggers (db)
+  "Install FTS5 sync triggers on `headline' so inserts/updates/deletes
+keep `headlines_fts' in lock-step.  Idempotent."
+  (sqlite-execute
+   db
+   "CREATE TRIGGER IF NOT EXISTS headline_ai AFTER INSERT ON headline BEGIN
+      INSERT INTO headlines_fts(rowid, title) VALUES (new.id, new.title);
+    END")
+  (sqlite-execute
+   db
+   "CREATE TRIGGER IF NOT EXISTS headline_ad AFTER DELETE ON headline BEGIN
+      INSERT INTO headlines_fts(headlines_fts, rowid, title)
+        VALUES ('delete', old.id, old.title);
+    END")
+  (sqlite-execute
+   db
+   "CREATE TRIGGER IF NOT EXISTS headline_au AFTER UPDATE ON headline BEGIN
+      INSERT INTO headlines_fts(headlines_fts, rowid, title)
+        VALUES ('delete', old.id, old.title);
+      INSERT INTO headlines_fts(rowid, title) VALUES (new.id, new.title);
+    END"))
 
 ;;;; --- file discovery ---------------------------------------------------
 
@@ -459,39 +631,74 @@ the API directly via deftool handlers."
   (nelisp-org-index--close)
   nil)
 
+(defun nelisp-org-index--build-into (shadow-path paths)
+  "Build a fresh org index at SHADOW-PATH from PATHS.  Returns counts plist.
+Tier 2 fix #1 + #2: shadow file is created from scratch with full
+schema + FTS5 + busy_timeout so writers respect concurrency."
+  (when (file-exists-p shadow-path) (delete-file shadow-path))
+  (let* ((db (nelisp-org-index--open-fresh shadow-path))
+         (files (nelisp-org-index--collect-files paths))
+         (file-count 0)
+         (head-count 0)
+         (failures 0))
+    (unwind-protect
+        (progn
+          (dolist (f files)
+            (condition-case err
+                (nelisp-org-index--with-transaction db
+                  (let ((r (nelisp-org-index--ingest-file db f)))
+                    (cl-incf file-count)
+                    (cl-incf head-count (plist-get r :headlines))))
+              (error
+               (cl-incf failures)
+               (message "nelisp-org-index: skipping %s: %S" f err))))
+          (list :files file-count
+                :headlines head-count
+                :failures failures))
+      (ignore-errors (sqlite-close db)))))
+
 ;;;###autoload
 (defun nelisp-org-index-rebuild (&optional paths)
   "Re-index every *.org file under PATHS (default `nelisp-org-index-paths').
-Returns plist (:files N :headlines N :duration-ms N)."
-  (let* ((db (nelisp-org-index--db))
-         (t0 (current-time))
-         (files (nelisp-org-index--collect-files paths))
-         (file-count 0)
-         (head-count 0))
-    (nelisp-org-index--with-transaction db
-      (sqlite-execute db "DELETE FROM property")
-      (sqlite-execute db "DELETE FROM tag")
-      (sqlite-execute db "DELETE FROM headline")
-      (sqlite-execute db "DELETE FROM file"))
-    (dolist (f files)
-      (condition-case _
-          (nelisp-org-index--with-transaction db
-            (let ((r (nelisp-org-index--ingest-file db f)))
-              (cl-incf file-count)
-              (cl-incf head-count (plist-get r :headlines))))
-        (error nil)))
-    (list :files file-count
-          :headlines head-count
-          :duration-ms (truncate (* 1000 (float-time
-                                          (time-subtract
-                                           (current-time) t0)))))))
+Returns plist (:files N :headlines N :failures N :duration-ms N).
+
+Tier 2 fix #1 (T59): build the index into a `<db>.rebuild' shadow
+file and rename it over the live DB on success.  Concurrent readers
+keep seeing the previous fully-populated DB until the swap commits;
+on build failure the shadow is unlinked and the live DB stays
+unchanged (no silent data loss)."
+  (let* ((t0 (current-time))
+         (db-path nelisp-org-index-db-path)
+         (shadow-path (concat db-path ".rebuild"))
+         result)
+    (unwind-protect
+        (progn
+          (setq result
+                (nelisp-org-index--build-into shadow-path paths))
+          (nelisp-org-index--invalidate-connection)
+          (let ((dir (file-name-directory db-path)))
+            (unless (file-directory-p dir) (make-directory dir t)))
+          (rename-file shadow-path db-path t)
+          (setq shadow-path nil)
+          (append result
+                  (list :duration-ms
+                        (truncate (* 1000 (float-time
+                                           (time-subtract
+                                            (current-time) t0)))))))
+      (when (and shadow-path (file-exists-p shadow-path))
+        (ignore-errors (delete-file shadow-path))))))
+
+(defun nelisp-org-index--fts-quote (term)
+  "Wrap TERM in double quotes for FTS5 MATCH, escaping embedded quotes."
+  (concat "\"" (replace-regexp-in-string "\"" "\"\"" term) "\""))
 
 ;;;###autoload
 (cl-defun nelisp-org-index-search
-    (name &key file tag depth limit)
+    (name &key file tag depth limit fts)
   "Return headline records whose title matches NAME.
-NAME is matched as a SQL LIKE %NAME% substring (case sensitive
-per SQLite default).
+NAME is matched as either an FTS5 query (when the headlines FTS5
+table is available — Tier 2 fix #4 + #5) or as a SQL LIKE %NAME%
+substring fallback.
 
 Keyword arguments:
   :file STRING   - SQL LIKE pattern on `file.path' (auto-wrap with
@@ -500,6 +707,10 @@ Keyword arguments:
                    Phase 6.6.3).
   :depth INTEGER - exact outline level filter.
   :limit INTEGER - default 200.
+  :fts SYMBOL    - one of `auto' (default) / `on' / `off'.  `auto'
+                   uses FTS5 when the table exists *and* NAME has
+                   no SQL `%' wildcards; `off' forces the legacy
+                   LIKE path; `on' demands FTS5 (errors if missing).
 
 Each row is a plist with :file :line :level :title :tags :todo
 :priority :org-id."
@@ -508,16 +719,93 @@ Each row is a plist with :file :line :level :title :tags :todo
      "nelisp-org-index-search: NAME must be a string, got %S" name))
   (let* ((db (nelisp-org-index--db))
          (lim (or limit 200))
-         (title-pat (cond
-                     ((string-empty-p name) "%")
-                     ((string-match-p "%" name) name)
-                     (t (format "%%%s%%" name))))
+         (mode (or fts 'auto))
+         (has-fts (sqlite-select
+                   db
+                   "SELECT 1 FROM sqlite_master
+                      WHERE type='table' AND name='headlines_fts'"))
+         (use-fts (cond
+                   ((eq mode 'off) nil)
+                   ((eq mode 'on)
+                    (unless has-fts
+                      (user-error
+                       "nelisp-org-index-search: :fts on but headlines_fts missing"))
+                    (not (string-empty-p name)))
+                   (t                    ; 'auto
+                    (and has-fts
+                         (not (string-empty-p name))
+                         (not (string-match-p "%" name))))))
          (file-pat (and file
                         (stringp file)
                         (not (string-empty-p file))
                         (if (string-match-p "%" file)
                             file
-                          (format "%%%s%%" file))))
+                          (format "%%%s%%" file)))))
+    (cond
+     (use-fts
+      (let* ((where (list))
+             (args (list))
+             (match-arg (nelisp-org-index--fts-quote name)))
+        (when file-pat
+          (push "f.path LIKE ?" where)
+          (push file-pat args))
+        (when (and tag (stringp tag) (not (string-empty-p tag)))
+          (push "EXISTS (SELECT 1 FROM tag t WHERE t.headline_id = h.id AND t.tag = ?)" where)
+          (push tag args))
+        (when (and depth (integerp depth))
+          (push "h.level = ?" where)
+          (push depth args))
+        (let* ((extra-sql
+                (if where
+                    (concat " AND "
+                            (mapconcat #'identity (nreverse where) " AND "))
+                  ""))
+               (sql (format
+                     "SELECT f.path, h.line_start, h.level, h.title,
+                             h.todo, h.priority, h.org_id,
+                             (SELECT GROUP_CONCAT(t.tag, ',')
+                                FROM tag t WHERE t.headline_id = h.id)
+                      FROM headlines_fts fts
+                      JOIN headline h ON h.id = fts.rowid
+                      JOIN file f ON h.file_id = f.id
+                      WHERE headlines_fts MATCH ?%s
+                      ORDER BY rank, f.path, h.position
+                      LIMIT ?"
+                     extra-sql))
+               (params (append (list match-arg)
+                               (nreverse args)
+                               (list lim))))
+          (condition-case err
+              (mapcar
+               (lambda (row)
+                 (list :file (nth 0 row)
+                       :line (nth 1 row)
+                       :level (nth 2 row)
+                       :title (nth 3 row)
+                       :todo (nth 4 row)
+                       :priority (nth 5 row)
+                       :org-id (nth 6 row)
+                       :tags (let ((concat (nth 7 row)))
+                               (and concat (split-string concat "," t)))))
+               (sqlite-select db sql params))
+            (error
+             ;; FTS5 query syntax errors fall back to LIKE so callers
+             ;; never see "fts5: syntax error" for free-form input.
+             (message "nelisp-org-index-search: FTS5 fell back to LIKE: %S" err)
+             (nelisp-org-index--search-like
+              db name file-pat tag depth lim))))))
+     (t
+      (nelisp-org-index--search-like
+       db name file-pat tag depth lim)))))
+
+(defun nelisp-org-index--search-like (db name file-pat tag depth lim)
+  "Legacy LIKE-based search.  Backward-compat fallback path.
+DB is the live handle; the other args are normalised by
+`nelisp-org-index-search'."
+  (let* ((title-pat (cond
+                     ((string-empty-p name) "%")
+                     ((string-match-p "%" name) name)
+                     (t (format "%%%s%%" name))))
          (where (list "h.title LIKE ?"))
          (args (list title-pat)))
     (when file-pat
