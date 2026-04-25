@@ -153,6 +153,11 @@ assert_contains '"name":"http-fetch-batch"'
 # Phase 6.5.1 nelisp-defs-index MVP MCP surface (Doc 25 §3 SHIPPED)
 assert_contains '"name":"defs-index-rebuild"'
 assert_contains '"name":"defs-search"'
+# Phase 6.5.2 / 6.5.3 nelisp-defs-index deep walker (Doc 25 §3 SHIPPED)
+assert_contains '"name":"defs-references"'
+assert_contains '"name":"defs-signature"'
+assert_contains '"name":"defs-who-requires"'
+assert_contains '"name":"defs-index-status"'
 # git-status has no params — inputSchema.properties must be `{}` not `null`
 # (Claude Code zod schema rejects `null`; surfaced as "Failed to fetch tools"
 # invalid_type at tools[*].inputSchema.properties.)

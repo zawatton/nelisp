@@ -213,5 +213,159 @@ of whatever .el files happen to exist around the cwd."
       (should-not (nelisp-defs-index-search "bar-fn"))
       (should (nelisp-defs-index-search "foo-fn")))))
 
+;;;; --- Phase 6.5.2 deep walker (refs / features) -------------------------
+
+(defconst nelisp-defs-index-test--fixture-walker
+  "(require 'cl-lib)
+(require 'subr-x)
+(provide 'walker-test)
+
+(defun caller-fn (x)
+  \"Calls callee.\"
+  (callee-helper x)
+  (other-helper))
+
+(defun callee-helper (x) (1+ x))
+
+(defun other-helper () nil)
+
+(defun quote-using ()
+  \"Quotes a sym.\"
+  (mapcar #'callee-helper '(1 2 3)))
+")
+
+(ert-deftest nelisp-defs-index-test-rebuild-refs-features-counts ()
+  "Rebuild plist now reports :refs / :features counts."
+  (skip-unless (and (fboundp 'sqlite-available-p) (sqlite-available-p)))
+  (nelisp-defs-index-test--with-fresh-db
+    (nelisp-defs-index-test--write-fixture
+     "walker.el" nelisp-defs-index-test--fixture-walker)
+    (let ((r (nelisp-defs-index-rebuild)))
+      (should (= 1 (plist-get r :files)))
+      ;; 4 defun forms.
+      (should (= 4 (plist-get r :defs)))
+      ;; refs > defs (every defun walks its body — at minimum the
+      ;; defun head + the called helpers).
+      (should (> (plist-get r :refs) (plist-get r :defs)))
+      ;; features = 2 require + 1 provide.
+      (should (= 3 (plist-get r :features))))))
+
+(ert-deftest nelisp-defs-index-test-references-call-and-quote ()
+  "References include both call sites and quote sites."
+  (skip-unless (and (fboundp 'sqlite-available-p) (sqlite-available-p)))
+  (nelisp-defs-index-test--with-fresh-db
+    (nelisp-defs-index-test--write-fixture
+     "walker.el" nelisp-defs-index-test--fixture-walker)
+    (nelisp-defs-index-rebuild)
+    (let* ((all (nelisp-defs-index-references "callee-helper"))
+           (kinds (mapcar (lambda (r) (plist-get r :kind)) all)))
+      ;; callee-helper is called once and quoted once.
+      (should (>= (length all) 2))
+      (should (member "call" kinds))
+      (should (member "quote" kinds)))))
+
+(ert-deftest nelisp-defs-index-test-references-context-set ()
+  "Refs carry the enclosing def's name as :context."
+  (skip-unless (and (fboundp 'sqlite-available-p) (sqlite-available-p)))
+  (nelisp-defs-index-test--with-fresh-db
+    (nelisp-defs-index-test--write-fixture
+     "walker.el" nelisp-defs-index-test--fixture-walker)
+    (nelisp-defs-index-rebuild)
+    (let ((calls (nelisp-defs-index-references
+                  "other-helper" '(:kind "call"))))
+      (should calls)
+      (should (string= "caller-fn" (plist-get (car calls) :context))))))
+
+(ert-deftest nelisp-defs-index-test-references-kind-filter ()
+  ":kind restricts to the matching ref.kind."
+  (skip-unless (and (fboundp 'sqlite-available-p) (sqlite-available-p)))
+  (nelisp-defs-index-test--with-fresh-db
+    (nelisp-defs-index-test--write-fixture
+     "walker.el" nelisp-defs-index-test--fixture-walker)
+    (nelisp-defs-index-rebuild)
+    (let ((only-call (nelisp-defs-index-references
+                      "callee-helper" '(:kind "call")))
+          (only-quote (nelisp-defs-index-references
+                       "callee-helper" '(:kind "quote"))))
+      (dolist (r only-call) (should (string= "call" (plist-get r :kind))))
+      (dolist (r only-quote) (should (string= "quote" (plist-get r :kind)))))))
+
+(ert-deftest nelisp-defs-index-test-references-validates-symbol ()
+  "Empty / nil SYMBOL signals user-error before touching the DB."
+  (skip-unless (and (fboundp 'sqlite-available-p) (sqlite-available-p)))
+  (nelisp-defs-index-test--with-fresh-db
+    (should-error (nelisp-defs-index-references "") :type 'user-error)
+    (should-error (nelisp-defs-index-references nil) :type 'user-error)))
+
+(ert-deftest nelisp-defs-index-test-signature-shape ()
+  "Signature returns the documented plist for a known defun."
+  (skip-unless (and (fboundp 'sqlite-available-p) (sqlite-available-p)))
+  (nelisp-defs-index-test--with-fresh-db
+    (nelisp-defs-index-test--write-fixture
+     "walker.el" nelisp-defs-index-test--fixture-walker)
+    (nelisp-defs-index-rebuild)
+    (let ((sig (nelisp-defs-index-signature "caller-fn")))
+      (should sig)
+      (should (string= "caller-fn" (plist-get sig :name)))
+      (should (string= "defun" (plist-get sig :kind)))
+      (should (= 1 (plist-get sig :arity-min)))
+      (should (= 1 (plist-get sig :arity-max)))
+      (should (string-suffix-p "walker.el" (plist-get sig :file)))
+      (should (stringp (plist-get sig :docstring-head))))))
+
+(ert-deftest nelisp-defs-index-test-signature-missing-returns-nil ()
+  "Unknown SYMBOL returns nil (no error)."
+  (skip-unless (and (fboundp 'sqlite-available-p) (sqlite-available-p)))
+  (nelisp-defs-index-test--with-fresh-db
+    (nelisp-defs-index-test--write-fixture
+     "walker.el" nelisp-defs-index-test--fixture-walker)
+    (nelisp-defs-index-rebuild)
+    (should-not (nelisp-defs-index-signature "no-such-symbol"))))
+
+(ert-deftest nelisp-defs-index-test-who-requires-hit ()
+  "who-requires returns the file path that issued (require 'FEATURE)."
+  (skip-unless (and (fboundp 'sqlite-available-p) (sqlite-available-p)))
+  (nelisp-defs-index-test--with-fresh-db
+    (nelisp-defs-index-test--write-fixture
+     "walker.el" nelisp-defs-index-test--fixture-walker)
+    (nelisp-defs-index-rebuild)
+    (let ((paths (nelisp-defs-index-who-requires "cl-lib")))
+      (should (= 1 (length paths)))
+      (should (string-suffix-p "walker.el" (car paths))))))
+
+(ert-deftest nelisp-defs-index-test-who-requires-validates-feature ()
+  "Empty / nil FEATURE signals user-error."
+  (skip-unless (and (fboundp 'sqlite-available-p) (sqlite-available-p)))
+  (nelisp-defs-index-test--with-fresh-db
+    (should-error (nelisp-defs-index-who-requires "") :type 'user-error)
+    (should-error (nelisp-defs-index-who-requires nil) :type 'user-error)))
+
+(ert-deftest nelisp-defs-index-test-status-counts ()
+  "Status returns per-table counts + db-bytes for an indexed sandbox."
+  (skip-unless (and (fboundp 'sqlite-available-p) (sqlite-available-p)))
+  (nelisp-defs-index-test--with-fresh-db
+    (nelisp-defs-index-test--write-fixture
+     "walker.el" nelisp-defs-index-test--fixture-walker)
+    (nelisp-defs-index-rebuild)
+    (let ((s (nelisp-defs-index-status)))
+      (should (string= nelisp-defs-index-db-path (plist-get s :db-path)))
+      (should (= 1 (plist-get s :schema-version)))
+      (should (= 1 (plist-get s :files)))
+      (should (= 4 (plist-get s :defs)))
+      (should (>= (plist-get s :refs) 4))
+      (should (= 3 (plist-get s :features)))
+      (should (> (plist-get s :db-bytes) 0)))))
+
+(ert-deftest nelisp-defs-index-test-status-empty-db ()
+  "Status on a freshly-enabled but empty DB reports zeros."
+  (skip-unless (and (fboundp 'sqlite-available-p) (sqlite-available-p)))
+  (nelisp-defs-index-test--with-fresh-db
+    (nelisp-defs-index-enable)
+    (let ((s (nelisp-defs-index-status)))
+      (should (= 0 (plist-get s :files)))
+      (should (= 0 (plist-get s :defs)))
+      (should (= 0 (plist-get s :refs)))
+      (should (= 0 (plist-get s :features))))))
+
 (provide 'nelisp-defs-index-test)
 ;;; nelisp-defs-index-test.el ends here
