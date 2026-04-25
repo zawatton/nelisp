@@ -686,6 +686,33 @@ clear; will error if any tool is still registered."
                       (result (nelisp-http-fetch-cache-clear url)))
                  (list :url url :cleared (or result t)))))
 
+  (nelisp-deftool http-post
+    :description "POST URL with BODY (string / alist→form / plist→json) + optional auth."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :url (list :type "string")
+                              :body (list :description
+                                          "string / alist of pairs / plist (starts with keyword) / nil")
+                              :content-type (list :type "string")
+                              :timeout-sec (list :type "integer")
+                              :bearer (list :type "string"
+                                            :description "Convenience — sets Authorization: Bearer <value>"))
+                        :required ["url"])
+    :handler (lambda (args)
+               (let* ((url (alist-get 'url args))
+                      (body (alist-get 'body args))
+                      (ct (alist-get 'content-type args))
+                      (timeout (alist-get 'timeout-sec args))
+                      (bearer (alist-get 'bearer args))
+                      (auth (and bearer (list :bearer bearer))))
+                 (unless (stringp url)
+                   (error "http-post: missing string `url'"))
+                 (apply #'nelisp-http-fetch-post url
+                        (append (and body (list :body body))
+                                (and ct (list :content-type ct))
+                                (and timeout (list :timeout-sec timeout))
+                                (and auth (list :auth auth)))))))
+
   (nelisp-deftool http-cache-status
     :description "Summarise the http cache namespace: count + URL list."
     :input-schema (list :type "object"

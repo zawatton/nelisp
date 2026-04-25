@@ -145,6 +145,8 @@ assert_contains '"name":"http-head"'
 assert_contains '"name":"http-cache-get"'
 assert_contains '"name":"http-cache-clear"'
 assert_contains '"name":"http-cache-status"'
+# Phase 6.2.8 anvil-http POST + auth port (Doc 24 §3 6.2.8 SHIPPED)
+assert_contains '"name":"http-post"'
 # git-status has no params — inputSchema.properties must be `{}` not `null`
 # (Claude Code zod schema rejects `null`; surfaced as "Failed to fetch tools"
 # invalid_type at tools[*].inputSchema.properties.)
