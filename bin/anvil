@@ -33,9 +33,11 @@ usage() {
 anvil $ANVIL_VERSION — NeLisp-powered MCP tool launcher (Stage D scaffold)
 
 USAGE:
-  anvil --version              Show version.
+  anvil --version              Show launcher version.
   anvil --help                 Show this help.
+  anvil version                Detailed version (os / install root / tools count / emacs).
   anvil doctor                 Diagnose environment (emacs / nelisp / dirs).
+  anvil tools-list             List registered MCP tool names (offline, no emacs spawn).
   anvil mcp serve              Start MCP stdio server (Claude Code 接続用).
 
 ENV:
@@ -68,6 +70,23 @@ detect_emacs() {
       "/c/Program Files/Emacs/emacs-29.4/bin/emacs.exe" \
       "/c/Program Files/Emacs/bin/emacs.exe" \
       "/c/msys64/mingw64/bin/emacs.exe" \
+    ; do
+      if [[ -x "$candidate" ]]; then
+        echo "$candidate"
+        return 0
+      fi
+    done
+  fi
+  # macOS-specific fallback paths (Phase 6.1).  brew Cask installs to
+  # /Applications/Emacs.app, brew formula to /opt/homebrew/bin
+  # (Apple Silicon) or /usr/local/bin (Intel).  Most users hit `command
+  # -v emacs' first, but the Cask app is sometimes not symlinked.
+  if [[ "$ANVIL_OS" == "macos" ]]; then
+    for candidate in \
+      "/Applications/Emacs.app/Contents/MacOS/Emacs" \
+      "/opt/homebrew/bin/emacs" \
+      "/usr/local/bin/emacs" \
+      "/opt/local/bin/emacs" \
     ; do
       if [[ -x "$candidate" ]]; then
         echo "$candidate"
@@ -118,6 +137,41 @@ cmd_doctor() {
   echo "  status          : ready for 'anvil mcp serve'"
 }
 
+cmd_tools_list() {
+  # Phase 6.1 — offline tools list.  Greps deftool macro use without
+  # spawning an Emacs subprocess, so CI / smoke / docs can confirm the
+  # registered surface in <100ms.
+  local src_dir="$ANVIL_HOME/src"
+  local tools_file="$src_dir/nelisp-tools.el"
+  if [[ ! -f "$tools_file" ]]; then
+    echo "error: $tools_file not found" >&2
+    return 1
+  fi
+  grep -oE '^\s*\(nelisp-deftool [a-z][a-z0-9-]+' "$tools_file" \
+    | awk '{print $2}' | sort -u
+}
+
+cmd_version() {
+  # Phase 6.1 — rich version subcommand (vs `--version' bare line).
+  # Reports launcher version + tools count + install root + emacs ver.
+  local src_dir="$ANVIL_HOME/src"
+  local tools_count=0
+  if [[ -f "$src_dir/nelisp-tools.el" ]]; then
+    tools_count=$(cmd_tools_list 2>/dev/null | wc -l | tr -d ' ')
+  fi
+  echo "anvil $ANVIL_VERSION"
+  echo "  os               $ANVIL_OS"
+  echo "  install root     $ANVIL_HOME"
+  echo "  tools registered $tools_count"
+  if emacs_bin="$(detect_emacs 2>/dev/null)"; then
+    local emacs_ver
+    emacs_ver=$("$emacs_bin" --version 2>/dev/null | head -1)
+    echo "  emacs            $emacs_ver"
+  else
+    echo "  emacs            NOT FOUND (anvil mcp serve will fail)"
+  fi
+}
+
 cmd_mcp_serve() {
   local emacs_bin
   emacs_bin="$(detect_emacs)"
@@ -146,7 +200,9 @@ main() {
   case "$1" in
     --version|-v) echo "anvil $ANVIL_VERSION" ;;
     --help|-h) usage ;;
+    version) cmd_version ;;
     doctor) cmd_doctor ;;
+    tools-list) cmd_tools_list ;;
     mcp)
       shift
       case "${1:-}" in
