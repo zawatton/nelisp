@@ -25,6 +25,7 @@
 //! only proves the symbols link and the no-op paths return cleanly.
 
 pub mod error;
+pub mod filenotify;
 pub mod unix;
 
 #[cfg(feature = "fileio-syscalls")]
@@ -43,6 +44,16 @@ pub use fileio::{
     nl_syscall_access, nl_syscall_closedir, nl_syscall_mkdir, nl_syscall_opendir,
     nl_syscall_readdir, nl_syscall_rename, nl_syscall_stat_ex, nl_syscall_unlink,
     NELISP_FILEIO_PATH_MAX,
+};
+
+// Phase 9d.A4 (T82) file-notify FFI re-exports.  See `filenotify.rs`
+// for the per-OS backend choice (Linux inotify primary, macOS FSEvents
+// secondary, other OSes stubbed at -ENOSYS so NeLisp can branch to its
+// stat-poll fallback without a per-host #ifdef cascade).
+pub use filenotify::{
+    nl_filenotify_add_watch, nl_filenotify_close, nl_filenotify_init, nl_filenotify_read,
+    nl_filenotify_rm_watch, NL_IN_ATTRIB, NL_IN_CREATE, NL_IN_DELETE, NL_IN_MODIFY,
+    NL_IN_MOVED_FROM, NL_IN_MOVED_TO,
 };
 
 use libc::{c_char, c_int, mode_t, off_t, size_t, ssize_t};

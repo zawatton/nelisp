@@ -39,3 +39,12 @@ pub use syscall::{
     nl_syscall_readdir, nl_syscall_rename, nl_syscall_stat_ex, nl_syscall_unlink,
     NELISP_FILEIO_PATH_MAX,
 };
+
+// Phase 9d.A4 (T82) file-notify FFI surface.  Re-exported at crate
+// root so cargo-side tests in `tests/filenotify_test.rs` can call the
+// symbols without spelling `::syscall::filenotify::` each time.
+pub use syscall::{
+    nl_filenotify_add_watch, nl_filenotify_close, nl_filenotify_init, nl_filenotify_read,
+    nl_filenotify_rm_watch, NL_IN_ATTRIB, NL_IN_CREATE, NL_IN_DELETE, NL_IN_MODIFY,
+    NL_IN_MOVED_FROM, NL_IN_MOVED_TO,
+};
