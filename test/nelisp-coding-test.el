@@ -40,6 +40,16 @@
 ;;   26. euc-jp-decode-katakana-2byte              — 0x8EB1 → ｱ (U+FF71)
 ;;   27. euc-jp-encode-roundtrip-x0208
 ;;   28. jis-tables-verify-hash-passes             — golden hash 一致
+;;
+;; +8 ERT (Phase 7.4.4, per Doc 31 v2 §3.4 / §6.5):
+;;   29. stream-decode-utf8-single-chunk             — full input as 1 chunk
+;;   30. stream-decode-utf8-multi-chunk              — N chunks → identical result
+;;   31. stream-decode-utf8-multibyte-boundary       — 3-byte char split mid-seq
+;;   32. stream-decode-shift-jis-multibyte-boundary  — SJIS lead/trail split
+;;   33. stream-decode-truncated-finalize-replace    — pending tail at finalize
+;;   34. stream-encode-multi-chunk                   — encode N chunks identity
+;;   35. read-file-with-encoding-utf8-roundtrip      — write→read identity
+;;   36. stream-decode-1mb-stress                    — 1MB random valid UTF-8
 
 (require 'ert)
 (require 'cl-lib)
@@ -711,6 +721,268 @@ would silently rewrite entries (Doc 31 v2 §6.10 + §7.2)."
     (should-error
      (nelisp-coding-jis-tables-verify-hash)
      :type 'nelisp-coding-table-corruption)))
+
+;;;; ──────────────────────────────────────────────────────────────────
+;;;; Phase 7.4.4 — streaming API + file I/O ERT (+8, Doc 31 v2 §3.4 / §6.5)
+;;;; ──────────────────────────────────────────────────────────────────
+
+;;;; helpers — chunk-splitter
+
+(defun nelisp-coding-test--chunk-bytes (bytes chunk-size)
+  "Split BYTES (list/vector/string) into a list of unibyte chunks of CHUNK-SIZE."
+  (let* ((lst (cond ((listp bytes) bytes)
+                    ((vectorp bytes) (append bytes nil))
+                    ((stringp bytes)
+                     (mapcar (lambda (c) (logand c #xFF))
+                             (append bytes nil)))
+                    (t (error "Unsupported type"))))
+         (n (length lst))
+         (chunks '())
+         (i 0))
+    (while (< i n)
+      (let ((end (min n (+ i chunk-size))))
+        (push (cl-subseq lst i end) chunks)
+        (setq i end)))
+    (nreverse chunks)))
+
+(defun nelisp-coding-test--decode-stream (encoding chunks &optional strategy)
+  "Decode CHUNKS (list of byte lists / strings) under ENCODING and return result plist."
+  (let ((state (nelisp-coding-stream-state-create encoding 'decode strategy)))
+    (dolist (chunk chunks)
+      (nelisp-coding-stream-decode-chunk state chunk))
+    (nelisp-coding-stream-decode-finalize state)))
+
+;;;; 29. UTF-8 stream decode in a single chunk = identical to one-shot
+
+(ert-deftest nelisp-coding-stream-decode-utf8-single-chunk ()
+  "Streaming decode with one big chunk equals the one-shot decode result."
+  (let* ((s "Hello, 世界! 🦀")
+         (bytes (nelisp-coding-utf8-encode s))
+         (one-shot (nelisp-coding-utf8-decode bytes))
+         (stream-result (nelisp-coding-test--decode-stream
+                         'utf-8 (list bytes))))
+    (should (equal (plist-get one-shot :string)
+                   (plist-get stream-result :string)))
+    (should (= (plist-get stream-result :chunks-processed) 1))
+    (should (= (plist-get stream-result :chars-emitted) (length s)))
+    (should (equal (plist-get stream-result :invalid-positions) nil))
+    (should (= (plist-get stream-result :replacements) 0))))
+
+;;;; 30. UTF-8 stream decode with multiple chunks = identical result
+
+(ert-deftest nelisp-coding-stream-decode-utf8-multi-chunk ()
+  "Multi-chunk UTF-8 decode produces identical result to one-shot."
+  (let* ((s "あいうえお漢字テスト🎉🎊")
+         (bytes (nelisp-coding-utf8-encode s))
+         (one-shot (nelisp-coding-utf8-decode bytes)))
+    (dolist (chunk-size '(1 2 3 4 5 7 11 16 32 64))
+      (let* ((chunks (nelisp-coding-test--chunk-bytes bytes chunk-size))
+             (stream-result (nelisp-coding-test--decode-stream
+                             'utf-8 chunks)))
+        (should (equal (plist-get one-shot :string)
+                       (plist-get stream-result :string)))
+        (should (= (plist-get stream-result :chars-emitted) (length s)))
+        (should (= (plist-get stream-result :replacements) 0))))))
+
+;;;; 31. UTF-8 multi-byte char split exactly across chunk boundary
+
+(ert-deftest nelisp-coding-stream-decode-utf8-multibyte-boundary ()
+  "3-byte UTF-8 char split at every interior position decodes correctly."
+  ;; あ = E3 81 82 (3 bytes); split [1|2] and [2|1]
+  (let* ((bytes (nelisp-coding-utf8-encode "あ"))
+         (one-shot-string (plist-get (nelisp-coding-utf8-decode bytes) :string)))
+    ;; Split at position 1: [E3] [81 82]
+    (let* ((c1 (cl-subseq bytes 0 1))
+           (c2 (cl-subseq bytes 1))
+           (result (nelisp-coding-test--decode-stream
+                    'utf-8 (list c1 c2))))
+      (should (equal (plist-get result :string) one-shot-string))
+      (should (= (plist-get result :chars-emitted) 1)))
+    ;; Split at position 2: [E3 81] [82]
+    (let* ((c1 (cl-subseq bytes 0 2))
+           (c2 (cl-subseq bytes 2))
+           (result (nelisp-coding-test--decode-stream
+                    'utf-8 (list c1 c2))))
+      (should (equal (plist-get result :string) one-shot-string))))
+  ;; 4-byte char (emoji) split at every interior position.
+  (let* ((bytes (nelisp-coding-utf8-encode "🎉"))
+         (one-shot-string (plist-get (nelisp-coding-utf8-decode bytes) :string)))
+    (dolist (split '(1 2 3))
+      (let* ((c1 (cl-subseq bytes 0 split))
+             (c2 (cl-subseq bytes split))
+             (result (nelisp-coding-test--decode-stream
+                      'utf-8 (list c1 c2))))
+        (should (equal (plist-get result :string) one-shot-string))
+        (should (= (plist-get result :chars-emitted) 1))))))
+
+;;;; 32. Shift-JIS multi-byte split across chunk boundary
+
+(ert-deftest nelisp-coding-stream-decode-shift-jis-multibyte-boundary ()
+  "Shift-JIS 2-byte sequence split at the lead/trail boundary decodes correctly.
+
+Shift-JIS encoding of あ = 82 A0 (lead 0x82, trail 0xA0). Split between
+the two bytes must produce identical decoded char as one-shot."
+  (let* ((bytes (list #x82 #xA0))                ; あ in SJIS
+         (one-shot (nelisp-coding-shift-jis-decode bytes))
+         (one-shot-string (plist-get one-shot :string)))
+    ;; Single chunk control.
+    (should (equal one-shot-string "あ"))
+    ;; Split [82] [A0] = lead in chunk 1, trail in chunk 2.
+    (let ((result (nelisp-coding-test--decode-stream
+                   'shift-jis (list (list #x82) (list #xA0)))))
+      (should (equal (plist-get result :string) "あ"))
+      (should (= (plist-get result :chars-emitted) 1))
+      (should (equal (plist-get result :invalid-positions) nil))))
+  ;; Multi-char SJIS string split at varying chunk sizes.
+  (let* ((bytes (list #x82 #xA0 #x82 #xA2 #x82 #xA4))  ; あいう in SJIS
+         (one-shot (nelisp-coding-shift-jis-decode bytes))
+         (expected (plist-get one-shot :string)))
+    (should (equal expected "あいう"))
+    (dolist (chunk-size '(1 2 3 4 5))
+      (let* ((chunks (nelisp-coding-test--chunk-bytes bytes chunk-size))
+             (result (nelisp-coding-test--decode-stream
+                      'shift-jis chunks)))
+        (should (equal (plist-get result :string) expected))
+        (should (= (plist-get result :chars-emitted) 3))))))
+
+;;;; 33. Truncated multi-byte at end-of-stream — finalize :replace
+
+(ert-deftest nelisp-coding-stream-decode-truncated-finalize-replace ()
+  "Trailing incomplete UTF-8 sequence emits one U+FFFD on finalize (replace)."
+  ;; "あ" (E3 81 82) but truncated to (E3 81) then finalize.
+  (let* ((bytes (list #xE3 #x81))
+         (state (nelisp-coding-stream-state-create 'utf-8 'decode 'replace)))
+    (nelisp-coding-stream-decode-chunk state bytes)
+    (let ((result (nelisp-coding-stream-decode-finalize state)))
+      (should (= (length (plist-get result :string)) 1))
+      (should (= (aref (plist-get result :string) 0)
+                 nelisp-coding-utf8-replacement-char))
+      (should (= (plist-get result :replacements) 1))
+      (should (= (length (plist-get result :invalid-positions)) 2))))
+  ;; :error strategy must signal at finalize.
+  (let* ((bytes (list #xE3 #x81))
+         (state (nelisp-coding-stream-state-create 'utf-8 'decode 'error)))
+    (nelisp-coding-stream-decode-chunk state bytes)
+    (should-error
+     (nelisp-coding-stream-decode-finalize state)
+     :type 'nelisp-coding-invalid-byte))
+  ;; :strict strategy must signal at finalize.
+  (let* ((bytes (list #xE3 #x81))
+         (state (nelisp-coding-stream-state-create 'utf-8 'decode 'strict)))
+    (nelisp-coding-stream-decode-chunk state bytes)
+    (should-error
+     (nelisp-coding-stream-decode-finalize state)
+     :type 'nelisp-coding-strict-violation)))
+
+;;;; 34. Stream encode multi-chunk identity
+
+(ert-deftest nelisp-coding-stream-encode-multi-chunk ()
+  "Multi-chunk encode produces identical bytes to one-shot encode."
+  (let* ((s "Hello, 世界! 🦀 + あいうえお"))
+    ;; UTF-8
+    (let ((expected-bytes (nelisp-coding-utf8-encode s)))
+      (dolist (chunk-size '(1 3 5 7 11))
+        (let* ((state (nelisp-coding-stream-state-create
+                       'utf-8 'encode 'replace))
+               (i 0)
+               (n (length s)))
+          (while (< i n)
+            (let* ((end (min n (+ i chunk-size)))
+                   (chunk (substring s i end)))
+              (nelisp-coding-stream-encode-chunk state chunk)
+              (setq i end)))
+          (let ((result (nelisp-coding-stream-encode-finalize state)))
+            (should (equal (plist-get result :bytes) expected-bytes))
+            (should (= (plist-get result :chars-consumed) (length s)))))))
+    ;; Latin-1 — only ASCII portion to stay in range.
+    (let* ((s "Hello world")
+           (expected (plist-get (nelisp-coding-latin1-encode s) :bytes)))
+      (dolist (chunk-size '(1 3 7))
+        (let* ((state (nelisp-coding-stream-state-create
+                       'latin-1 'encode 'replace))
+               (i 0)
+               (n (length s)))
+          (while (< i n)
+            (let* ((end (min n (+ i chunk-size)))
+                   (chunk (substring s i end)))
+              (nelisp-coding-stream-encode-chunk state chunk)
+              (setq i end)))
+          (let ((result (nelisp-coding-stream-encode-finalize state)))
+            (should (equal (plist-get result :bytes) expected))))))))
+
+;;;; 35. read-file-with-encoding round-trip on UTF-8
+
+(ert-deftest nelisp-coding-read-file-with-encoding-utf8-roundtrip ()
+  "write → read with UTF-8 + chunked stream codec round-trips cleanly."
+  (let* ((s "round-trip テスト 🔁\n2行目\n")
+         (tmp (make-temp-file "nelisp-coding-stream-roundtrip-" nil ".bin")))
+    (unwind-protect
+        (progn
+          (let ((write-result
+                 (nelisp-coding-write-file-with-encoding tmp s 'utf-8 'replace 8)))
+            (should (= (plist-get write-result :replacements) 0))
+            (should (equal (plist-get write-result :path) tmp))
+            (should (= (plist-get write-result :chars-consumed) (length s))))
+          (let ((read-result
+                 (nelisp-coding-read-file-with-encoding tmp 'utf-8 'replace 8)))
+            (should (equal (plist-get read-result :string) s))
+            (should (= (plist-get read-result :replacements) 0))
+            (should (equal (plist-get read-result :invalid-positions) nil))
+            (should (equal (plist-get read-result :path) tmp))
+            (should (>= (plist-get read-result :chunks-processed) 1))))
+      (delete-file tmp)))
+  ;; Round-trip Shift-JIS too — covers table-based encoding via the same path.
+  (let* ((s "AあいB")
+         (tmp (make-temp-file "nelisp-coding-stream-sjis-rt-" nil ".bin")))
+    (unwind-protect
+        (progn
+          (nelisp-coding-write-file-with-encoding tmp s 'shift-jis 'replace 4)
+          (let ((read-result
+                 (nelisp-coding-read-file-with-encoding tmp 'shift-jis 'replace 4)))
+            (should (equal (plist-get read-result :string) s))
+            (should (= (plist-get read-result :replacements) 0))))
+      (delete-file tmp))))
+
+;;;; 36. 1MB UTF-8 stream stress test (Doc 31 v2 §6.5 silent-corruption guard)
+
+(ert-deftest nelisp-coding-stream-decode-1mb-stress ()
+  "Stream decode of ~1MB random-valid UTF-8 in 64KB chunks matches one-shot.
+
+Doc 31 v2 §6.5: silent corruption at chunk boundaries is the dominant
+risk for streaming codecs. Build a string with every BMP and astral
+sequence length (1/2/3/4 byte UTF-8) repeated until the byte count
+exceeds 1MB, decode in 64KB chunks, and assert byte-for-byte equality
+with the one-shot decode."
+  (let* ((seed-pool '(?A ?Z ?a ?z ?0 ?9
+                      ?¡ ?¶ ?þ              ; 2-byte (Latin)
+                      ?あ ?い ?う ?ア     ; 3-byte (Hiragana/Katakana)
+                      ?中 ?文 ?漢              ; 3-byte (CJK)
+                      ?\U0001F389 ?\U0001F4A1              ; 4-byte (emoji)
+                      ?\U0001F980))
+         (target-bytes (* 1 1024 1024))
+         (chunks (make-list 0 nil))
+         (acc-bytes 0)
+         ;; Build by concatenating string fragments until target reached.
+         (string-frags '()))
+    (while (< acc-bytes target-bytes)
+      (let* ((cp (nth (random (length seed-pool)) seed-pool))
+             (frag (string cp))
+             (frag-bytes (nelisp-coding-utf8-encode frag)))
+        (push frag string-frags)
+        (cl-incf acc-bytes (length frag-bytes))))
+    (let* ((s (apply #'concat (nreverse string-frags)))
+           (bytes (nelisp-coding-utf8-encode s))
+           (one-shot (nelisp-coding-utf8-decode bytes))
+           (chunks (nelisp-coding-test--chunk-bytes bytes (* 64 1024)))
+           (stream-result (nelisp-coding-test--decode-stream
+                           'utf-8 chunks)))
+      (should (equal (plist-get one-shot :string)
+                     (plist-get stream-result :string)))
+      (should (= (plist-get stream-result :replacements) 0))
+      (should (equal (plist-get stream-result :invalid-positions) nil))
+      ;; ≥16 chunks confirms streaming path actually exercised.
+      (should (>= (plist-get stream-result :chunks-processed) 16))
+      (should (= (plist-get stream-result :chars-emitted) (length s))))))
 
 (provide 'nelisp-coding-test)
 
