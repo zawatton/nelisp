@@ -50,6 +50,14 @@
 ;;   34. stream-encode-multi-chunk                   — encode N chunks identity
 ;;   35. read-file-with-encoding-utf8-roundtrip      — write→read identity
 ;;   36. stream-decode-1mb-stress                    — 1MB random valid UTF-8
+;;
+;; +6 ERT (Phase 7.4.5, per Doc 31 v2 §3.3 / §6.10 / §7.2 — full table):
+;;   37. jis-tables-full-x0208-entry-count           — X 0208 mapping count >= 6000
+;;   38. jis-tables-full-cp932-extension-count       — CP932 extension count ~845
+;;   39. jis-tables-full-jis0212-count               — X 0212 count >= 5000
+;;   40. jis-tables-full-roundtrip-100-random-x0208  — 100 random X 0208 cp round-trip
+;;   41. shift-jis-decode-real-windows-japanese-text — sample Windows CP932 bytes decode
+;;   42. jis-tables-verify-hash-with-full-table      — golden hash differs from MVP partial
 
 (require 'ert)
 (require 'cl-lib)
@@ -983,6 +991,162 @@ with the one-shot decode."
       ;; ≥16 chunks confirms streaming path actually exercised.
       (should (>= (plist-get stream-result :chunks-processed) 16))
       (should (= (plist-get stream-result :chars-emitted) (length s))))))
+
+;;;; ──────────────────────────────────────────────────────────────────
+;;;; Phase 7.4.5 — full 14000+ entry table validation ERT (+6)
+;;;; ──────────────────────────────────────────────────────────────────
+
+;;;; 37. Full X 0208 entry count >= 6000 (vs ~343 MVP partial)
+
+(ert-deftest nelisp-coding-jis-tables-full-x0208-entry-count ()
+  "Full SJIS X 0208 decode table has >= 6000 entries (real CP932-derived
+mapping, vs MVP partial which had only 343).  This is the smoke test for
+Phase 7.4.5 full generation: if the partial MVP table is still in place,
+this assertion fires."
+  (let ((n (length nelisp-coding-shift-jis-x0208-decode-table)))
+    (should (>= n 6000))
+    ;; Sanity upper bound: JIS X 0208 has at most 94*94 = 8836 cells.
+    (should (<= n 8836)))
+  ;; Spot-check a known X 0208 entry that was *not* in the MVP partial
+  ;; (i.e., proves the full table replaced the partial).
+  ;; SJIS 0x8C78 → 警 (U+8B66) — from CP932.TXT, not in T25 hand-curated MVP.
+  (let* ((bytes (nelisp-coding-test--bytes #x8C #x78))
+         (result (nelisp-coding-shift-jis-decode bytes)))
+    (should (equal (plist-get result :string) (string #x8B66)))))
+
+;;;; 38. Full CP932 extension entry count ~845
+
+(ert-deftest nelisp-coding-jis-tables-full-cp932-extension-count ()
+  "Full CP932 vendor extension decode table has 800-900 entries (= NEC
+special 0x8740-0x879C + NEC selected IBM 0xED40-0xEEFC + IBM extension
+0xFA40-0xFC4B per Microsoft CP932.TXT)."
+  (let ((n (length nelisp-coding-cp932-extension-decode-table)))
+    (should (>= n 800))
+    (should (<= n 900)))
+  ;; Spot-check a known NEC selected IBM entry that wasn't in MVP.
+  ;; SJIS 0xED40 → 纊 (U+7E8A) — first NEC selected IBM cell.
+  (let* ((bytes (nelisp-coding-test--bytes #xED #x40))
+         (result (nelisp-coding-shift-jis-decode bytes)))
+    (should (= (plist-get result :replacements) 0))
+    (should (= (length (plist-get result :string)) 1))))
+
+;;;; 39. Full X 0212 entry count >= 5000
+
+(ert-deftest nelisp-coding-jis-tables-full-jis0212-count ()
+  "Full EUC-JP X 0212 decode table has >= 5000 entries (real
+JIS0212.TXT-derived mapping, vs MVP partial which had only 64)."
+  (let ((n (length nelisp-coding-euc-jp-x0212-decode-table)))
+    (should (>= n 5000))
+    ;; Sanity upper bound: JIS X 0212 has at most 94*94 = 8836 cells.
+    (should (<= n 8836)))
+  ;; Spot-check a known X 0212 entry that wasn't in MVP partial:
+  ;; JIS 0x222F → BREVE (U+02D8). EUC = (0x22|0x80, 0x2F|0x80) = 0xA2AF.
+  (let* ((bytes (nelisp-coding-test--bytes #x8F #xA2 #xAF))
+         (result (nelisp-coding-euc-jp-decode bytes)))
+    (should (equal (plist-get result :string) (string #x02D8)))
+    (should (= (plist-get result :replacements) 0))))
+
+;;;; 40. 100 random X 0208 codepoint round-trip identity
+
+(ert-deftest nelisp-coding-jis-tables-full-roundtrip-100-random-x0208 ()
+  "Pick 100 random entries from the full SJIS X 0208 decode table and
+verify decode → encode → decode round-trip identity.  This catches table
+corruption that would let one direction succeed while the other fails."
+  (let* ((table nelisp-coding-shift-jis-x0208-decode-table)
+         (n (length table))
+         (samples '()))
+    (should (>= n 6000))
+    ;; Deterministic-ish sample: stride evenly across the table.
+    (let ((stride (max 1 (/ n 100))))
+      (cl-loop for i from 0 below n by stride
+               for entry = (nth i table)
+               when entry
+               do (push entry samples)
+               while (< (length samples) 100)))
+    (should (>= (length samples) 50))
+    (dolist (entry samples)
+      (let* ((sjis-int (car entry))
+             (cp       (cdr entry))
+             (lead     (logand (ash sjis-int -8) #xFF))
+             (trail    (logand sjis-int #xFF))
+             ;; decode SJIS bytes → string
+             (decoded (nelisp-coding-shift-jis-decode
+                       (nelisp-coding-test--bytes lead trail))))
+        (should (= (plist-get decoded :replacements) 0))
+        (should (equal (plist-get decoded :string) (string cp)))
+        ;; encode that string back
+        (let* ((encoded (nelisp-coding-shift-jis-encode (string cp)))
+               (bytes (plist-get encoded :bytes)))
+          (should (= (plist-get encoded :replacements) 0))
+          ;; The bytes might map to a *different* SJIS code (= Unicode
+          ;; collision: multiple JIS codes share the same CP), so re-decode
+          ;; to confirm round-trip identity at the codepoint level.
+          (let ((re-decoded (nelisp-coding-shift-jis-decode bytes)))
+            (should (equal (plist-get re-decoded :string) (string cp)))))))))
+
+;;;; 41. Real Windows Japanese sample bytes decode
+
+(ert-deftest nelisp-coding-shift-jis-decode-real-windows-japanese-text ()
+  "Decode a representative real-world Windows-31J (CP932) byte sequence
+and assert the expected Unicode string.  This validates that the full
+table covers the JIS X 0208 and CP932-extension entries that appear in
+real Windows / DOS Japanese text files (proper-noun kanji, common words,
+NEC special chars)."
+  ;; "東京都" (Tokyo metropolis) in Shift-JIS:
+  ;;   東 = 0x93 0x8C → U+6771
+  ;;   京 = 0x8B 0x9E → U+4EAC
+  ;;   都 = 0x93 0x73 → U+90FD
+  (let* ((bytes (nelisp-coding-test--bytes #x93 #x8C #x8B #x9E #x93 #x73))
+         (result (nelisp-coding-shift-jis-decode bytes)))
+    (should (equal (plist-get result :string) (string #x6771 #x4EAC #x90FD)))
+    (should (= (plist-get result :replacements) 0)))
+  ;; "電気管理技術者" (electrical management engineer) — proper-noun-y kanji
+  ;; needing the full table, none of which were in the MVP partial.
+  ;;   電 = 0x93 0x64 → U+96FB
+  ;;   気 = 0x8B 0x43 → U+6C17
+  ;;   管 = 0x8A C7   → U+7BA1
+  ;;   理 = 0x97 0x9D → U+7406
+  ;;   技 = 0x8B 0x5A → U+6280
+  ;;   術 = 0x8F 0x70 → U+8853
+  ;;   者 = 0x8E 0xD2 → U+8005
+  (let* ((bytes (nelisp-coding-test--bytes
+                 #x93 #x64 #x8B #x43 #x8A #xC7 #x97 #x9D
+                 #x8B #x5A #x8F #x70 #x8E #xD2))
+         (result (nelisp-coding-shift-jis-decode bytes)))
+    (should (equal (plist-get result :string)
+                   (string #x96FB #x6C17 #x7BA1 #x7406
+                           #x6280 #x8853 #x8005)))
+    (should (= (plist-get result :replacements) 0)))
+  ;; CP932 NEC special: ① (U+2460) = 0x87 0x40 — already validated by
+  ;; T25 ERT 19, but reaffirm it's still mapped post-regeneration.
+  (let* ((bytes (nelisp-coding-test--bytes #x87 #x40))
+         (result (nelisp-coding-shift-jis-decode bytes)))
+    (should (equal (plist-get result :string) (string #x2460)))))
+
+;;;; 42. Verify hash with full table — golden SHA-256 differs from MVP partial
+
+(ert-deftest nelisp-coding-jis-tables-verify-hash-with-full-table ()
+  "Verify the golden SHA-256 hash matches the full-table content (Phase
+7.4.5 generator output) AND is *different* from the Phase 7.4.3 MVP
+partial-table hash.  This is the binding contract that the file in the
+tree was regenerated, not silently reverted."
+  ;; Verify-hash passes (= file content matches embedded golden hash).
+  (should (eq (nelisp-coding-jis-tables-verify-hash) t))
+  ;; The full-table hash differs from the MVP partial hash.
+  (let ((mvp-partial-hash
+         "eb0e024fd054b293edc263868d3f0d3358af2892fdd6a84f882104f435b590cc"))
+    (should-not (equal nelisp-coding-jis-tables-sha256 mvp-partial-hash)))
+  ;; Hash format invariants (64-hex-char lowercase).
+  (should (= (length nelisp-coding-jis-tables-sha256) 64))
+  (should (string-match-p "\\`[0-9a-f]+\\'" nelisp-coding-jis-tables-sha256))
+  ;; Total full-table entry count is in the documented range:
+  ;; 6879 + 845 + 6879 + 6067 = 20670.
+  (let ((total (+ (length nelisp-coding-shift-jis-x0208-decode-table)
+                  (length nelisp-coding-cp932-extension-decode-table)
+                  (length nelisp-coding-euc-jp-x0208-decode-table)
+                  (length nelisp-coding-euc-jp-x0212-decode-table))))
+    (should (>= total 14000))   ; Doc 31 v2 §6.10 "~14000 entry" target
+    (should (<= total 25000)))) ; sanity upper bound
 
 (provide 'nelisp-coding-test)
 
