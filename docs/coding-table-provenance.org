@@ -1,0 +1,178 @@
+#+TITLE: NeLisp Japanese coding table data — provenance
+#+DATE: 2026-04-25
+#+STATUS: SHIPPED v1 (Phase 7.4.3 partial MVP); Phase 7.5 で real 14000 entry generation
+#+AUTHOR: NeLisp Phase 7.4.3 (Doc 31 v2 LOCKED 2026-04-25)
+
+* §0 概要
+
+本ドキュメントは =src/nelisp-coding-jis-tables.el= に hard-coded された
+Japanese encoding mapping table の出典・licensing・regeneration procedure
++ golden SHA-256 hash を記録する。
+
+Doc 31 v2 LOCKED §6.10 + §7.2 で「table provenance + golden hash 必須
+deliverable」と規定 (codex review 観点 3.8 反映)。本ファイルがその
+contract artifact。
+
+* §1 source-of-truth
+
+| encoding                 | source                                                                                                                                | license                          | last-fetched |
+|--------------------------+---------------------------------------------------------------------------------------------------------------------------------------+----------------------------------+--------------|
+| Shift-JIS (JIS X 0208)   | Microsoft CP932.TXT (https://unicode.org/Public/MAPPINGS/VENDORS/MICSFT/WINDOWS/CP932.TXT)                                            | Unicode Inc. / Microsoft         | 2015-12-02   |
+| CP932 vendor extension   | Microsoft CP932.TXT (上記同一ファイルの NEC + IBM 拡張部 0x8740-0x879F + 0xFA40-0xFC4B)                                                   | Unicode Inc. / Microsoft         | 2015-12-02   |
+| EUC-JP (JIS X 0208 / CS1) | derived from CP932.TXT (= JIS X 0208 portion ↔ EUC-JP 2-byte CS1 transform: source row/cell + 0x8080)                                 | derivative work, same upstream   | 2015-12-02   |
+| EUC-JP (JIS X 0212 / CS3) | JIS0212.TXT (https://unicode.org/Public/MAPPINGS/OBSOLETE/EASTASIA/JIS/JIS0212.TXT)                                                   | Unicode Inc. (Obsolete archive) | 1998-09-19   |
+
+** Phase 7.4.3 MVP frozen-via-host-Emacs 注意
+
+本 MVP partial table は *host Emacs ‘cp932 / ‘euc-jp coding system 上で
+=decode-coding-string= を回して取得*した値を hand-curate して固定した。
+host Emacs が内蔵する Japan coding tables は GNU Emacs 由来であり、
+*derivation chain は Microsoft / Unicode の上記 source-of-truth と一致*
+していることを Phase 7.5 generator が再生成時に同一性 check する想定。
+
+Phase 7.5 で =tools/coding-table-gen.el= を完成させた段階で、host Emacs
+依存は除去され、上記 Microsoft / Unicode の canonical source からの
+直接 download + parse に切り替わる。
+
+* §2 generation procedure (Phase 7.5)
+
+** 2.1 prerequisite
+
+- network 接続 (Unicode Consortium 公開アーカイブにアクセス)
+- Emacs 29+ (=url-retrieve-synchronously= + =sha256 secure-hash= 利用)
+- =tools/coding-table-gen.el= の =--parse-*-line= / =--write-tables=
+  実装が完成済 (Phase 7.4.3 ではまだ stub)
+
+** 2.2 batch run
+
+#+BEGIN_SRC sh
+emacs --batch \
+      -L tools \
+      -l coding-table-gen.el \
+      -f nelisp-coding-table-gen-batch
+#+END_SRC
+
+** 2.3 expected output
+
+- =src/nelisp-coding-jis-tables.el= が overwrite される
+- 4 つの defconst が full size に拡大:
+  - =nelisp-coding-shift-jis-x0208-decode-table= (~7000 entries)
+  - =nelisp-coding-cp932-extension-decode-table= (~845 entries)
+  - =nelisp-coding-euc-jp-x0208-decode-table= (~7000 entries)
+  - =nelisp-coding-euc-jp-x0212-decode-table= (~6000 entries)
+- =nelisp-coding-jis-tables-sha256= が再計算された 64 hex char hash
+  に置換
+
+** 2.4 verification
+
+#+BEGIN_SRC sh
+emacs --batch -L src \
+      --eval "(progn
+                (require 'nelisp-coding)
+                (princ (format \"%s\\n\"
+                               (nelisp-coding-jis-tables-verify-hash))))"
+# 期待出力: t
+#+END_SRC
+
+mismatch (=nelisp-coding-table-corruption= signal) 時は generator output
+と golden hash の synchronization が壊れている = 再 generation 必要。
+
+* §3 MVP partial table
+
+Phase 7.4.3 (本 sub-phase) では partial table を hard-coded:
+
+| table                                                | MVP entries | full target | coverage |
+|------------------------------------------------------+-------------+-------------+----------|
+| =nelisp-coding-shift-jis-x0208-decode-table=         |         343 |       ~7000 |    ~5 %  |
+| =nelisp-coding-cp932-extension-decode-table=         |         177 |        ~845 |   ~21 %  |
+| =nelisp-coding-euc-jp-x0208-decode-table=            |         301 |       ~7000 |    ~4 %  |
+| =nelisp-coding-euc-jp-x0212-decode-table=            |          64 |       ~6000 |    ~1 %  |
+|------------------------------------------------------+-------------+-------------+----------|
+| 合計                                                 |         885 |     ~20 845 |    ~4 %  |
+
+MVP coverage は intentionally narrow (代表的 entry で algorithm validate)。
+real 14000 entry generation は Phase 7.5 = =tools/coding-table-gen.el=
+完成後。
+
+** 3.1 MVP subset 選定基準
+
+- *JIS X 0208 punctuation* (row 1, 0x8140-0x819E): 句読点・括弧・記号
+- *Fullwidth digits / latin* (row 3, 0x824F-0x829A)
+- *Hiragana* (row 4 全, 0x829F-0x82F1)
+- *Katakana* (row 5 全, 0x8340-0x8396)
+- *代表的 kanji ~20 字* (亜・漢・字 etc, partial table validation 用)
+- *CP932 NEC special* (0x8740-0x879F): ①-⑳ + ㍉ etc
+- *CP932 IBM extension* (0xFA40-0xFA70 一部): ⅰ-ⅹ etc
+- *EUC-JP X 0208 punctuation + hiragana + katakana + 露西亜文字*
+  (= 同等カバレッジ確保)
+- *X 0212 supplementary kanji 64 字* (row 0x10 / 0x24 representative)
+
+* §4 golden SHA-256 hash
+
+** 4.1 計算方法
+
+#+BEGIN_SRC elisp
+(secure-hash 'sha256
+             (concat
+              (prin1-to-string nelisp-coding-shift-jis-x0208-decode-table)
+              (prin1-to-string nelisp-coding-cp932-extension-decode-table)
+              (prin1-to-string nelisp-coding-euc-jp-x0208-decode-table)
+              (prin1-to-string nelisp-coding-euc-jp-x0212-decode-table)))
+#+END_SRC
+
+実装は =nelisp-coding-jis-tables--canonical-bytes= +
+=nelisp-coding-jis-tables-verify-hash= を参照。
+
+** 4.2 現値 (Phase 7.4.3 MVP)
+
+#+BEGIN_EXAMPLE
+eb0e024fd054b293edc263868d3f0d3358af2892fdd6a84f882104f435b590cc
+#+END_EXAMPLE
+
+Phase 7.5 generator 実走後は再計算され置換される。
+
+** 4.3 mismatch 時の対応
+
+CI で =make test= が =nelisp-coding-jis-tables-verify-hash-passes= で
+落ちた場合の root cause:
+
+1. generator regenerated tables but forgot to update the golden hash
+   constant
+   → fix: copy computed hash from `(secure-hash …)' into the defconst
+2. accidental table edit (rebase / merge silent rewrite)
+   → fix: revert table content, hash auto-validates
+3. Emacs `prin1-to-string' output format change between versions
+   → unlikely but possible; investigate `print-length' / `print-level' /
+     `print-circle' / `print-quoted' bindings; pin them in
+     `nelisp-coding-jis-tables--canonical-bytes' if needed
+
+* §5 license summary
+
+| component                          | license                     | redistribution                     |
+|------------------------------------+-----------------------------+------------------------------------|
+| Microsoft CP932.TXT                | Unicode license             | OK (Unicode public archive)        |
+| JIS0212.TXT                        | Unicode license             | OK (Unicode obsolete archive)      |
+| MVP partial table (本 file)        | NeLisp project license      | OK (= Phase 7.4.3 hand-curated)    |
+| =tools/coding-table-gen.el=        | NeLisp project license      | OK (= public domain mappings only) |
+
+derivation work (= MVP table の 885 entries) は upstream の Microsoft +
+Unicode license 表記の sub-set に過ぎず、redistribution 制限なし。Phase
+7.5 generator が direct download に切り替わった段階で license 表記は
+generator output の header comment に追加する。
+
+* §6 next steps (Phase 7.5)
+
+- =tools/coding-table-gen.el= の =--parse-cp932-line= / =--parse-jis0212-line=
+  実装
+- =--write-tables= で defconst 4 連発 emit + golden SHA-256 計算 + embed
+- batch run + golden hash CI 自動更新フロー
+- regression 確認 (=make test= で =nelisp-coding-jis-tables-verify-hash-passes=
+  + 既存 12 ERT 全 PASS)
+- full-table coverage で =round-trip 100MB Shift-JIS= benchmark 実走 (Doc
+  31 v2 §3.3 / §7.2 完遂 gate)
+
+* §7 changelog
+
+| date       | who       | change                                                                          |
+|------------+-----------+---------------------------------------------------------------------------------|
+| 2026-04-25 | session-A | v1 SHIPPED (Phase 7.4.3 partial MVP), 885 entries, golden hash eb0e02...b590cc |

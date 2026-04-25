@@ -4,6 +4,8 @@
 ;; BOM handling + 3 invalid-sequence strategy contract LOCK.
 ;; Doc 31 v2 LOCKED 2026-04-25 §3.2 sub-phase 7.4.2 — Latin-1 (ISO-8859-1)
 ;; encode/decode + placeholder handling for U+0100+.
+;; Doc 31 v2 LOCKED 2026-04-25 §3.3 sub-phase 7.4.3 — Shift-JIS / CP932 /
+;; EUC-JP (X 0208 + X 0212) + table data + golden SHA-256 hash.
 ;;
 ;; +10 ERT (Phase 7.4.1, per Doc 31 v2 §3.1 / §5):
 ;;   1. encode-ascii-passthrough        — "hello" → 5 byte ASCII
@@ -24,6 +26,20 @@
 ;;   14. latin1-encode-replace-out-of-range        — "あいう" → 3× 0x3F + count 3
 ;;   15. latin1-encode-error-signals               — out-of-range signals invalid-codepoint
 ;;   16. latin1-encode-strict-signals              — out-of-range signals strict-violation
+;;
+;; +12 ERT (Phase 7.4.3, per Doc 31 v2 §3.3 / §6.10):
+;;   17. shift-jis-decode-ascii-passthrough        — 0x41 → "A"
+;;   18. shift-jis-decode-x0208-multibyte          — 0x82A0 → あ (U+3042) round-trip
+;;   19. shift-jis-decode-cp932-extension          — 0x8740 → ① (U+2460)
+;;   20. shift-jis-decode-invalid-trail-byte       — bad trail :replace strategy
+;;   21. shift-jis-encode-roundtrip-x0208          — encode→decode identity
+;;   22. shift-jis-encode-error-strategy-out-of-table — unmapped + :error signals
+;;   23. euc-jp-decode-ascii-passthrough
+;;   24. euc-jp-decode-x0208-2byte                 — 0xA4A2 → あ (U+3042)
+;;   25. euc-jp-decode-x0212-3byte                 — 0x8FB0A1 → 丂 (U+4E02)
+;;   26. euc-jp-decode-katakana-2byte              — 0x8EB1 → ｱ (U+FF71)
+;;   27. euc-jp-encode-roundtrip-x0208
+;;   28. jis-tables-verify-hash-passes             — golden hash 一致
 
 (require 'ert)
 (require 'cl-lib)
@@ -402,6 +418,299 @@ process abort integration は Phase 7.5。"
       (should (equal (plist-get caught :offset) 1))
       (should (equal (plist-get caught :codepoint) #x3042))
       (should (eq (plist-get caught :strategy) 'strict)))))
+
+;;;; ──────────────────────────────────────────────────────────────────
+;;;; Phase 7.4.3 — Shift-JIS / CP932 / EUC-JP ERT (+12, Doc 31 v2 §3.3)
+;;;; ──────────────────────────────────────────────────────────────────
+
+;;;; 17. Shift-JIS decode ASCII passthrough — 0x41 → "A"
+
+(ert-deftest nelisp-coding-shift-jis-decode-ascii-passthrough ()
+  "Shift-JIS ASCII range (0x00-0x7F) decodes as single-byte passthrough.
+0x41 (= ASCII 'A') → \"A\". Mirrors the UTF-8 / Latin-1 ASCII fast path."
+  (let* ((bytes (nelisp-coding-test--bytes ?H ?e ?l ?l ?o))
+         (result (nelisp-coding-shift-jis-decode bytes)))
+    (should (equal (plist-get result :string) "Hello"))
+    (should (= (plist-get result :replacements) 0))
+    (should (null (plist-get result :invalid-positions))))
+  ;; Empty input.
+  (let ((empty (nelisp-coding-shift-jis-decode '())))
+    (should (equal (plist-get empty :string) ""))
+    (should (= (plist-get empty :replacements) 0)))
+  ;; Boundary: 0x7F is still ASCII (highest single-byte ASCII).
+  (let ((r (nelisp-coding-shift-jis-decode (nelisp-coding-test--bytes #x7F))))
+    (should (equal (plist-get r :string) (string #x7F)))))
+
+;;;; 18. Shift-JIS decode X 0208 multi-byte — 0x82A0 → あ (U+3042)
+
+(ert-deftest nelisp-coding-shift-jis-decode-x0208-multibyte ()
+  "JIS X 0208 hiragana あ encoded as 0x82 0xA0 (2-byte SJIS) decodes to
+U+3042. Round-trip through `nelisp-coding-shift-jis-encode' yields the
+same byte sequence (MVP partial-table coverage validated)."
+  (let* ((bytes (nelisp-coding-test--bytes #x82 #xA0))
+         (result (nelisp-coding-shift-jis-decode bytes)))
+    (should (equal (plist-get result :string) (string #x3042)))
+    (should (= (plist-get result :replacements) 0))
+    (should (null (plist-get result :invalid-positions))))
+  ;; Multiple chars: あいう = 0x82A0 0x82A2 0x82A4 → 6 bytes total.
+  (let* ((bytes (nelisp-coding-test--bytes #x82 #xA0 #x82 #xA2 #x82 #xA4))
+         (result (nelisp-coding-shift-jis-decode bytes)))
+    (should (equal (plist-get result :string)
+                   (string #x3042 #x3044 #x3046)))
+    (should (= (plist-get result :replacements) 0)))
+  ;; Mixed ASCII + 2-byte: "Aあ" = 0x41 0x82 0xA0
+  (let* ((bytes (nelisp-coding-test--bytes ?A #x82 #xA0))
+         (result (nelisp-coding-shift-jis-decode bytes)))
+    (should (equal (plist-get result :string) (string ?A #x3042)))))
+
+;;;; 19. Shift-JIS decode CP932 extension — 0x8740 → ① (U+2460)
+
+(ert-deftest nelisp-coding-shift-jis-decode-cp932-extension ()
+  "CP932 NEC special character ① encoded as 0x87 0x40 decodes to U+2460.
+This validates the CP932 extension table merge into the SJIS decode hash;
+without the merge, this byte sequence would be a table miss."
+  (let* ((bytes (nelisp-coding-test--bytes #x87 #x40))
+         (result (nelisp-coding-shift-jis-decode bytes)))
+    (should (equal (plist-get result :string) (string #x2460)))
+    (should (= (plist-get result :replacements) 0)))
+  ;; CP932 IBM extension entry: 0xFA40 → U+2170 (small Roman numeral i).
+  (let* ((bytes (nelisp-coding-test--bytes #xFA #x40))
+         (result (nelisp-coding-shift-jis-decode bytes)))
+    (should (equal (plist-get result :string) (string #x2170)))))
+
+;;;; 20. Shift-JIS decode invalid trail — bad trail :replace strategy
+
+(ert-deftest nelisp-coding-shift-jis-decode-invalid-trail-byte ()
+  "An SJIS lead byte (0x82) followed by an invalid trail (0x20, ASCII space,
+not in 0x40-0xFC range) under :replace strategy emits U+FFFD and reports
+the lead byte offset in `:invalid-positions'. The decoder advances by 1
+to resync at the next byte."
+  (let* ((bytes (nelisp-coding-test--bytes ?A #x82 #x20 ?B))
+         (result (nelisp-coding-shift-jis-decode bytes 'replace)))
+    ;; A + U+FFFD + space + B  (0x20 is re-tried as ASCII)
+    (should (equal (plist-get result :string)
+                   (string ?A #xFFFD #x20 ?B)))
+    (should (= (plist-get result :replacements) 1))
+    (should (equal (plist-get result :invalid-positions) '(1)))
+    (should (eq (plist-get result :strategy) 'replace)))
+  ;; :error strategy signals on the same input.
+  (let ((bytes (nelisp-coding-test--bytes ?A #x82 #x20 ?B)))
+    (should-error
+     (nelisp-coding-shift-jis-decode bytes 'error)
+     :type 'nelisp-coding-invalid-byte))
+  ;; Truncated lead at end-of-input.
+  (let* ((bytes (nelisp-coding-test--bytes ?A #x82))
+         (result (nelisp-coding-shift-jis-decode bytes 'replace)))
+    (should (equal (plist-get result :string) (string ?A #xFFFD)))
+    (should (= (plist-get result :replacements) 1))))
+
+;;;; 21. Shift-JIS encode round-trip X 0208 — encode→decode identity
+
+(ert-deftest nelisp-coding-shift-jis-encode-roundtrip-x0208 ()
+  "Encoding hiragana \"あいうえお\" via `nelisp-coding-shift-jis-encode'
+then decoding the resulting bytes via `nelisp-coding-shift-jis-decode'
+reproduces the original codepoints (MVP partial-table coverage)."
+  (let* ((original (string #x3042 #x3044 #x3046 #x3048 #x304A))
+         (encoded (nelisp-coding-shift-jis-encode original))
+         (encoded-bytes (plist-get encoded :bytes)))
+    ;; 5 chars × 2 bytes = 10 bytes total.
+    (should (= (length encoded-bytes) 10))
+    (should (= (plist-get encoded :replacements) 0))
+    (should (null (plist-get encoded :invalid-positions)))
+    ;; Round-trip via decode.
+    (let* ((decoded (nelisp-coding-shift-jis-decode encoded-bytes))
+           (decoded-string (plist-get decoded :string)))
+      (should (equal decoded-string original))
+      (should (= (plist-get decoded :replacements) 0))))
+  ;; ASCII passthrough on encode.
+  (let* ((result (nelisp-coding-shift-jis-encode "Hello")))
+    (should (equal (plist-get result :bytes) (list ?H ?e ?l ?l ?o)))
+    (should (= (plist-get result :replacements) 0)))
+  ;; Halfwidth katakana ｱ (U+FF71) → single byte 0xB1.
+  (let* ((result (nelisp-coding-shift-jis-encode (string #xFF71))))
+    (should (equal (plist-get result :bytes) (list #xB1)))
+    (should (= (plist-get result :replacements) 0))))
+
+;;;; 22. Shift-JIS encode out-of-table — :error strategy signals
+
+(ert-deftest nelisp-coding-shift-jis-encode-error-strategy-out-of-table ()
+  "Encoding a Unicode codepoint not in the partial MVP SJIS table under
+:error strategy signals `nelisp-coding-unmappable-codepoint' with offset
++ codepoint + encoding tag in the data plist. :replace strategy emits
+ASCII '?' (0x3F) instead and reports the position in :invalid-positions.
+:strict signals `nelisp-coding-strict-violation'."
+  ;; U+1F980 (🦀 crab emoji) is well outside any JIS mapping.
+  (let ((input (string ?A #x1F980 ?B)))
+    (should-error
+     (nelisp-coding-shift-jis-encode input 'error)
+     :type 'nelisp-coding-unmappable-codepoint)
+    ;; Verify signal data carries offset + codepoint + encoding.
+    (let ((caught nil))
+      (condition-case err
+          (nelisp-coding-shift-jis-encode input 'error)
+        (nelisp-coding-unmappable-codepoint
+         (setq caught (cdr err))))
+      (should caught)
+      (should (equal (plist-get caught :offset) 1))
+      (should (equal (plist-get caught :codepoint) #x1F980))
+      (should (eq (plist-get caught :strategy) 'error))
+      (should (eq (plist-get caught :encoding) 'shift-jis))))
+  ;; :replace strategy: emits 0x3F at the unmappable position.
+  (let* ((input (string ?A #x1F980 ?B))
+         (result (nelisp-coding-shift-jis-encode input 'replace)))
+    (should (equal (plist-get result :bytes) (list ?A #x3F ?B)))
+    (should (= (plist-get result :replacements) 1))
+    (should (equal (plist-get result :invalid-positions) '(1))))
+  ;; :strict strategy signals the strict-violation symbol.
+  (let ((input (string #x1F980)))
+    (should-error
+     (nelisp-coding-shift-jis-encode input 'strict)
+     :type 'nelisp-coding-strict-violation)
+    ;; Both strict and unmappable are subtypes of nelisp-coding-error.
+    (let ((caught-parent nil))
+      (condition-case _err
+          (nelisp-coding-shift-jis-encode input 'error)
+        (nelisp-coding-error
+         (setq caught-parent t)))
+      (should caught-parent))))
+
+;;;; 23. EUC-JP decode ASCII passthrough — single-byte 0x00-0x7F
+
+(ert-deftest nelisp-coding-euc-jp-decode-ascii-passthrough ()
+  "EUC-JP ASCII range (0x00-0x7F) decodes as single-byte passthrough,
+identical to UTF-8 / Shift-JIS ASCII compatibility."
+  (let* ((bytes (nelisp-coding-test--bytes ?H ?e ?l ?l ?o))
+         (result (nelisp-coding-euc-jp-decode bytes)))
+    (should (equal (plist-get result :string) "Hello"))
+    (should (= (plist-get result :replacements) 0)))
+  ;; Empty input.
+  (let ((empty (nelisp-coding-euc-jp-decode '())))
+    (should (equal (plist-get empty :string) "")))
+  ;; Mixed ASCII + multibyte: "A" + あ (= 0xA4 0xA2)
+  (let* ((bytes (nelisp-coding-test--bytes ?A #xA4 #xA2))
+         (result (nelisp-coding-euc-jp-decode bytes)))
+    (should (equal (plist-get result :string) (string ?A #x3042)))
+    (should (= (plist-get result :replacements) 0))))
+
+;;;; 24. EUC-JP decode X 0208 2-byte — 0xA4A2 → あ (U+3042)
+
+(ert-deftest nelisp-coding-euc-jp-decode-x0208-2byte ()
+  "EUC-JP CS1 (JIS X 0208) 2-byte sequence 0xA4 0xA2 decodes to U+3042 (あ).
+Both bytes are in 0xA1-0xFE range = valid CS1."
+  (let* ((bytes (nelisp-coding-test--bytes #xA4 #xA2))
+         (result (nelisp-coding-euc-jp-decode bytes)))
+    (should (equal (plist-get result :string) (string #x3042)))
+    (should (= (plist-get result :replacements) 0)))
+  ;; Multi-char: あいう = 0xA4A2 0xA4A4 0xA4A6
+  (let* ((bytes (nelisp-coding-test--bytes #xA4 #xA2 #xA4 #xA4 #xA4 #xA6))
+         (result (nelisp-coding-euc-jp-decode bytes)))
+    (should (equal (plist-get result :string)
+                   (string #x3042 #x3044 #x3046))))
+  ;; Truncated CS1 lead at end-of-input emits U+FFFD under :replace.
+  (let* ((bytes (nelisp-coding-test--bytes ?A #xA4))
+         (result (nelisp-coding-euc-jp-decode bytes 'replace)))
+    (should (equal (plist-get result :string) (string ?A #xFFFD)))
+    (should (= (plist-get result :replacements) 1))))
+
+;;;; 25. EUC-JP decode X 0212 3-byte — 0x8FB0A1 → 丂 (U+4E02)
+
+(ert-deftest nelisp-coding-euc-jp-decode-x0212-3byte ()
+  "EUC-JP CS3 (JIS X 0212) 3-byte sequence 0x8F 0xB0 0xA1 decodes to
+U+4E02 (丂). 0x8F is the X 0212 single-shift prefix; the next two bytes
+are the X 0212 row/cell (both in 0xA1-0xFE range)."
+  (let* ((bytes (nelisp-coding-test--bytes #x8F #xB0 #xA1))
+         (result (nelisp-coding-euc-jp-decode bytes)))
+    (should (equal (plist-get result :string) (string #x4E02)))
+    (should (= (plist-get result :replacements) 0)))
+  ;; Truncated 0x8F (only 1 trailing byte after the prefix) → U+FFFD under
+  ;; :replace. After flagging 0x8F invalid (advance 1), pos 2 is 0xB0 which
+  ;; is itself a CS1 X 0208 lead at end-of-input (truncated) → second invalid.
+  (let* ((bytes (nelisp-coding-test--bytes ?A #x8F #xB0))
+         (result (nelisp-coding-euc-jp-decode bytes 'replace)))
+    (should (= (plist-get result :replacements) 2))
+    (should (equal (plist-get result :invalid-positions) '(1 2))))
+  ;; Bad CS3 byte structure (b1 outside 0xA1-0xFE) → invalid.
+  ;; After flagging 0x8F invalid (advance 1), pos 1 is 0x20 (ASCII OK),
+  ;; then pos 2 is 0xA1 = CS1 lead but truncated end-of-input (= second
+  ;; invalid). Both U+FFFD with offsets 0 and 2.
+  (let* ((bytes (nelisp-coding-test--bytes #x8F #x20 #xA1))
+         (result (nelisp-coding-euc-jp-decode bytes 'replace)))
+    (should (= (plist-get result :replacements) 2))
+    (should (equal (plist-get result :invalid-positions) '(0 2)))))
+
+;;;; 26. EUC-JP decode katakana 2-byte — 0x8E + 0xB1 → ｱ (U+FF71)
+
+(ert-deftest nelisp-coding-euc-jp-decode-katakana-2byte ()
+  "EUC-JP CS2 (JIS X 0201 halfwidth katakana) 2-byte sequence 0x8E 0xB1
+decodes to U+FF71 (ｱ). 0x8E is the katakana single-shift prefix; the next
+byte (0xA1-0xDF) maps to U+FF61-U+FF9F."
+  (let* ((bytes (nelisp-coding-test--bytes #x8E #xB1))
+         (result (nelisp-coding-euc-jp-decode bytes)))
+    (should (equal (plist-get result :string) (string #xFF71)))
+    (should (= (plist-get result :replacements) 0)))
+  ;; Multi katakana ｱｲｳ = 8EB1 8EB2 8EB3 → U+FF71 U+FF72 U+FF73
+  (let* ((bytes (nelisp-coding-test--bytes #x8E #xB1 #x8E #xB2 #x8E #xB3))
+         (result (nelisp-coding-euc-jp-decode bytes)))
+    (should (equal (plist-get result :string)
+                   (string #xFF71 #xFF72 #xFF73))))
+  ;; Bad CS2 trail (outside 0xA1-0xDF) → :replace emits U+FFFD.
+  (let* ((bytes (nelisp-coding-test--bytes #x8E #x20))
+         (result (nelisp-coding-euc-jp-decode bytes 'replace)))
+    (should (= (plist-get result :replacements) 1))))
+
+;;;; 27. EUC-JP encode round-trip X 0208 — encode→decode identity
+
+(ert-deftest nelisp-coding-euc-jp-encode-roundtrip-x0208 ()
+  "Encoding hiragana \"あいうえお\" via `nelisp-coding-euc-jp-encode'
+then decoding the resulting bytes via `nelisp-coding-euc-jp-decode'
+reproduces the original codepoints (MVP partial-table coverage)."
+  (let* ((original (string #x3042 #x3044 #x3046 #x3048 #x304A))
+         (encoded (nelisp-coding-euc-jp-encode original))
+         (encoded-bytes (plist-get encoded :bytes)))
+    ;; 5 chars × 2 bytes = 10 bytes (all CS1 X 0208).
+    (should (= (length encoded-bytes) 10))
+    (should (= (plist-get encoded :replacements) 0))
+    (should (null (plist-get encoded :invalid-positions)))
+    ;; Round-trip.
+    (let* ((decoded (nelisp-coding-euc-jp-decode encoded-bytes))
+           (decoded-string (plist-get decoded :string)))
+      (should (equal decoded-string original))
+      (should (= (plist-get decoded :replacements) 0))))
+  ;; Halfwidth katakana ｱ (U+FF71) → 0x8E 0xB1 (= CS2 2-byte sequence).
+  (let* ((result (nelisp-coding-euc-jp-encode (string #xFF71))))
+    (should (equal (plist-get result :bytes) (list #x8E #xB1)))
+    (should (= (plist-get result :replacements) 0)))
+  ;; X 0212 supplementary kanji 丂 (U+4E02) → 0x8F 0xB0 0xA1 (= CS3 3-byte).
+  (let* ((result (nelisp-coding-euc-jp-encode (string #x4E02))))
+    (should (equal (plist-get result :bytes) (list #x8F #xB0 #xA1)))
+    (should (= (plist-get result :replacements) 0)))
+  ;; ASCII passthrough.
+  (let* ((result (nelisp-coding-euc-jp-encode "Hi")))
+    (should (equal (plist-get result :bytes) (list ?H ?i)))
+    (should (= (plist-get result :replacements) 0))))
+
+;;;; 28. JIS tables verify-hash passes — golden SHA-256 一致
+
+(ert-deftest nelisp-coding-jis-tables-verify-hash-passes ()
+  "Golden SHA-256 hash (`nelisp-coding-jis-tables-sha256') matches the
+re-computed SHA-256 of the four concatenated partial-table prin1 strings.
+This guards against accidental table mutation from rebase / merge that
+would silently rewrite entries (Doc 31 v2 §6.10 + §7.2)."
+  ;; Verify returns t on match.
+  (should (eq (nelisp-coding-jis-tables-verify-hash) t))
+  ;; Re-computing manually matches the constant.
+  (let ((computed (secure-hash 'sha256
+                               (nelisp-coding-jis-tables--canonical-bytes))))
+    (should (equal computed nelisp-coding-jis-tables-sha256)))
+  ;; Hash is exactly 64 hex chars (lowercase).
+  (should (= (length nelisp-coding-jis-tables-sha256) 64))
+  (should (string-match-p "\\`[0-9a-f]+\\'"
+                          nelisp-coding-jis-tables-sha256))
+  ;; Mismatched hash signals nelisp-coding-table-corruption.
+  (let ((nelisp-coding-jis-tables-sha256 "0000000000000000000000000000000000000000000000000000000000000000"))
+    (should-error
+     (nelisp-coding-jis-tables-verify-hash)
+     :type 'nelisp-coding-table-corruption)))
 
 (provide 'nelisp-coding-test)
 

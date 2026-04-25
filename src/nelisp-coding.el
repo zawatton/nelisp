@@ -4,6 +4,10 @@
 ;; BOM handling + 3 invalid-sequence strategy contract LOCK.
 ;; Phase 7.4.2 (Doc 31 v2 LOCKED 2026-04-25) — Latin-1 (ISO-8859-1)
 ;; encode/decode + placeholder handling for U+0100+ codepoints.
+;; Phase 7.4.3 (Doc 31 v2 LOCKED 2026-04-25) — Shift-JIS (JIS X 0208 +
+;; CP932 拡張) + EUC-JP (JIS X 0208 + JIS X 0212) encode/decode + table
+;; data + golden SHA-256 hash check (MVP partial table, full ~14000 entry
+;; deferred to Phase 7.5 generator).
 ;;
 ;; Scope (Phase 7.4.1 — Doc 31 v2 §3.1):
 ;;   - UTF-8 byte sequence (1-4 byte) encode/decode loop
@@ -24,17 +28,34 @@
 ;;   - placeholder codepoint customizable via
 ;;     `nelisp-coding-latin1-replacement-codepoint' (default ?\?, U+003F)
 ;;
+;; Scope (Phase 7.4.3 — Doc 31 v2 §3.3):
+;;   - Shift-JIS / CP932 (Windows-31J) decode: ASCII passthrough +
+;;     JIS X 0201 katakana (0xA1-0xDF) + JIS X 0208 + CP932 拡張
+;;     (NEC 特殊文字 + IBM 拡張)
+;;   - Shift-JIS / CP932 encode: reverse-lookup Unicode → SJIS bytes,
+;;     unmappable codepoint で 3 strategy 分岐 (replace / error / strict)
+;;   - EUC-JP decode: ASCII passthrough + 0x8E (JIS X 0201 katakana) +
+;;     0x8F (JIS X 0212 3-byte CS3) + 2-byte JIS X 0208 (CS1)
+;;   - EUC-JP encode: reverse-lookup Unicode → EUC bytes, X 0212 → 3-byte,
+;;     X 0208 → 2-byte
+;;   - table data = =src/nelisp-coding-jis-tables.el= (separate file,
+;;     generated artifact) with golden SHA-256 hash for tampering detection
+;;   - MVP partial table (~885 entries) validates algorithm; full ~14000
+;;     entry generation deferred to Phase 7.5 via =tools/coding-table-gen.el=
+;;
 ;; Deferred to later sub-phases:
-;;   - Phase 7.4.3: Shift-JIS (CP932 拡張) + EUC-JP + ~14000 entry table
 ;;   - Phase 7.4.4: streaming chunk-based callback + file I/O integration
-;;   - Phase 7.5: process-coding-system 本体実装、resume-coding primitive
+;;   - Phase 7.5: process-coding-system 本体実装、resume-coding primitive、
+;;     real 14000 entry table generation via =tools/coding-table-gen.el=
 ;;
 ;; SBCL =sb-impl/external-formats.lisp= + Emacs =coding.c= dual precedent。
-;; Phase 7.4.1 + 7.4.2 はそれら subset で UTF-8 / Latin-1 + BOM + 3 strategy。
+;; Phase 7.4.1 + 7.4.2 + 7.4.3 はそれら subset で UTF-8 / Latin-1 / Japanese
+;; + BOM + 3 strategy。
 
 ;;; Code:
 
 (require 'subr-x)
+(require 'nelisp-coding-jis-tables)
 
 ;;; Customization
 
@@ -109,6 +130,14 @@ on invalid byte sequence. WHATWG Encoding Standard 準拠 = 連続 invalid byte
 
 (define-error 'nelisp-coding-invalid-codepoint
   "Codepoint cannot be encoded (surrogate or > U+10FFFF)"
+  'nelisp-coding-error)
+
+(define-error 'nelisp-coding-table-corruption
+  "JIS table content does not match golden SHA-256 hash (Phase 7.4.3)"
+  'nelisp-coding-error)
+
+(define-error 'nelisp-coding-unmappable-codepoint
+  "Codepoint not representable in target encoding (Phase 7.4.3)"
   'nelisp-coding-error)
 
 ;;; Internal: byte access helpers
@@ -569,6 +598,586 @@ the encoded byte sequence as a unibyte string. Use the plist API
 or invalid positions."
   (apply #'unibyte-string
          (plist-get (nelisp-coding-latin1-encode string strategy) :bytes)))
+
+;;;; ────────────────────────────────────────────────────────────────────
+;;;; Phase 7.4.3 — Shift-JIS + CP932 + EUC-JP codecs (Doc 31 v2 §3.3)
+;;;; ────────────────────────────────────────────────────────────────────
+;;
+;; Algorithm references:
+;; - Shift-JIS (CP932): Microsoft CP932 mapping = ASCII passthrough +
+;;   JIS X 0201 halfwidth katakana (0xA1-0xDF, single byte) + 2-byte
+;;   sequences with lead 0x81-0x9F or 0xE0-0xFC and trail 0x40-0x7E or
+;;   0x80-0xFC (excluding 0x7F)
+;; - EUC-JP: ASCII + 0x8E katakana shift (CS2) + 0x8F X 0212 shift (CS3) +
+;;   2-byte X 0208 (CS1, both bytes 0xA1-0xFE)
+;;
+;; Table data (=src/nelisp-coding-jis-tables.el=) holds 4 alists which we
+;; promote to hash-tables on first use for O(1) lookup. Reverse maps
+;; (Unicode → SJIS / EUC) are also memoized lazily.
+;;
+;; *** Lookup-table memoization ***
+;;
+;; Table promotion runs once per Emacs session via lazy-init helpers.
+;; The four host tables (one per source-of-truth alist) are stored in
+;; module-level mutable hash-tables, gated by the `nelisp-coding--jis-tables-built'
+;; flag. `nelisp-coding-jis-tables-rebuild' (interactive helper) forces a
+;; rebuild after a generator update.
+
+(defvar nelisp-coding--shift-jis-decode-hash nil
+  "Hash-table for SJIS-INT → Unicode codepoint lookup (X 0208 + CP932 ext).
+Lazily built from `nelisp-coding-shift-jis-x0208-decode-table' merged with
+`nelisp-coding-cp932-extension-decode-table' on first use. Phase 7.4.3 MVP.")
+
+(defvar nelisp-coding--shift-jis-encode-hash nil
+  "Hash-table for Unicode codepoint → SJIS-INT reverse lookup (X 0208 + CP932 ext).
+Built simultaneously with the decode table. When a codepoint maps to both
+JIS X 0208 and CP932 extension entries (= the rare collision case), the
+*first inserted* entry wins; in practice JIS X 0208 wins by virtue of being
+inserted first in `nelisp-coding--jis-tables-build'.")
+
+(defvar nelisp-coding--euc-jp-x0208-decode-hash nil
+  "Hash-table for EUC-INT → Unicode codepoint lookup, JIS X 0208 (CS1).
+Lazily built from `nelisp-coding-euc-jp-x0208-decode-table'.")
+
+(defvar nelisp-coding--euc-jp-x0208-encode-hash nil
+  "Hash-table for Unicode → EUC-INT reverse lookup, JIS X 0208 (CS1).")
+
+(defvar nelisp-coding--euc-jp-x0212-decode-hash nil
+  "Hash-table for EUC-INT → Unicode codepoint lookup, JIS X 0212 (CS3, 3-byte).
+The EUC-INT here is (lead << 8) | trail; the 0x8F prefix is implicit.")
+
+(defvar nelisp-coding--euc-jp-x0212-encode-hash nil
+  "Hash-table for Unicode → EUC-INT reverse lookup, JIS X 0212 (CS3).")
+
+(defvar nelisp-coding--jis-tables-built nil
+  "Non-nil once the JIS lookup hash-tables have been built this session.")
+
+(defun nelisp-coding--jis-tables-build ()
+  "Promote the 4 JIS alists to hash-tables for O(1) decode/encode lookup.
+
+Idempotent: returns immediately if `nelisp-coding--jis-tables-built' is set.
+Use `nelisp-coding-jis-tables-rebuild' to force a rebuild (e.g. after the
+generator script regenerates the table file)."
+  (unless nelisp-coding--jis-tables-built
+    ;; SJIS decode: X 0208 first, then CP932 ext (NEC + IBM) merged in.
+    (setq nelisp-coding--shift-jis-decode-hash
+          (make-hash-table :test 'eql :size 1024))
+    (setq nelisp-coding--shift-jis-encode-hash
+          (make-hash-table :test 'eql :size 1024))
+    (dolist (entry nelisp-coding-shift-jis-x0208-decode-table)
+      (let ((sjis (car entry))
+            (cp   (cdr entry)))
+        (puthash sjis cp nelisp-coding--shift-jis-decode-hash)
+        ;; Reverse: only insert if not already present, so X 0208 wins
+        ;; on Unicode collision.
+        (unless (gethash cp nelisp-coding--shift-jis-encode-hash)
+          (puthash cp sjis nelisp-coding--shift-jis-encode-hash))))
+    (dolist (entry nelisp-coding-cp932-extension-decode-table)
+      (let ((sjis (car entry))
+            (cp   (cdr entry)))
+        (puthash sjis cp nelisp-coding--shift-jis-decode-hash)
+        (unless (gethash cp nelisp-coding--shift-jis-encode-hash)
+          (puthash cp sjis nelisp-coding--shift-jis-encode-hash))))
+    ;; EUC-JP X 0208
+    (setq nelisp-coding--euc-jp-x0208-decode-hash
+          (make-hash-table :test 'eql :size 512))
+    (setq nelisp-coding--euc-jp-x0208-encode-hash
+          (make-hash-table :test 'eql :size 512))
+    (dolist (entry nelisp-coding-euc-jp-x0208-decode-table)
+      (let ((euc (car entry))
+            (cp  (cdr entry)))
+        (puthash euc cp nelisp-coding--euc-jp-x0208-decode-hash)
+        (unless (gethash cp nelisp-coding--euc-jp-x0208-encode-hash)
+          (puthash cp euc nelisp-coding--euc-jp-x0208-encode-hash))))
+    ;; EUC-JP X 0212
+    (setq nelisp-coding--euc-jp-x0212-decode-hash
+          (make-hash-table :test 'eql :size 256))
+    (setq nelisp-coding--euc-jp-x0212-encode-hash
+          (make-hash-table :test 'eql :size 256))
+    (dolist (entry nelisp-coding-euc-jp-x0212-decode-table)
+      (let ((euc (car entry))
+            (cp  (cdr entry)))
+        (puthash euc cp nelisp-coding--euc-jp-x0212-decode-hash)
+        (unless (gethash cp nelisp-coding--euc-jp-x0212-encode-hash)
+          (puthash cp euc nelisp-coding--euc-jp-x0212-encode-hash))))
+    (setq nelisp-coding--jis-tables-built t)))
+
+(defun nelisp-coding-jis-tables-rebuild ()
+  "Force rebuild of all JIS lookup hash-tables.
+Useful after the generator script regenerates `nelisp-coding-jis-tables.el'
+(=Phase 7.5 hot-reload entry point=)."
+  (interactive)
+  (setq nelisp-coding--jis-tables-built nil)
+  (nelisp-coding--jis-tables-build))
+
+;;; Internal: 3-strategy codec dispatch helper
+
+(defun nelisp-coding--japanese-invalid-byte-replacement (strategy orig-offset byte)
+  "Dispatch invalid input byte under STRATEGY at ORIG-OFFSET (BYTE int).
+
+Used by Shift-JIS / EUC-JP decoders to centralise the replace / error /
+strict signal logic. Returns the replacement codepoint to emit on
+:replace strategy (callers feed this into the codepoint accumulator).
+Signals `nelisp-coding-invalid-byte' on :error and
+`nelisp-coding-strict-violation' on :strict."
+  (pcase strategy
+    ('error
+     (signal 'nelisp-coding-invalid-byte
+             (list :offset orig-offset :byte byte :strategy 'error)))
+    ('strict
+     (signal 'nelisp-coding-strict-violation
+             (list :offset orig-offset :byte byte :strategy 'strict)))
+    (_
+     ;; replace (default)
+     nelisp-coding-utf8-replacement-char)))
+
+;;; ── Shift-JIS / CP932 decode ──
+
+(defun nelisp-coding--shift-jis-lead-byte-p (byte)
+  "Return non-nil if BYTE (integer) is a Shift-JIS lead-byte candidate.
+Lead range = 0x81-0x9F or 0xE0-0xFC per JIS X 0208 + CP932 (Microsoft
+CP932 mapping)."
+  (or (and (>= byte #x81) (<= byte #x9F))
+      (and (>= byte #xE0) (<= byte #xFC))))
+
+(defun nelisp-coding--shift-jis-trail-byte-p (byte)
+  "Return non-nil if BYTE is a valid Shift-JIS trail-byte (0x40-0xFC, except 0x7F)."
+  (and (>= byte #x40) (<= byte #xFC) (/= byte #x7F)))
+
+(defun nelisp-coding--shift-jis-katakana-p (byte)
+  "Return non-nil if BYTE is JIS X 0201 halfwidth katakana (0xA1-0xDF).
+Halfwidth katakana maps directly to U+FF61-U+FF9F (single-byte cast)."
+  (and (>= byte #xA1) (<= byte #xDF)))
+
+(defun nelisp-coding-shift-jis-decode (bytes &optional strategy)
+  "Decode Shift-JIS / CP932 BYTES (string / vector / list) to a NeLisp string.
+
+Algorithm (Doc 31 v2 §3.3 / Microsoft CP932 mapping):
+- byte 0x00-0x7F: ASCII passthrough (single byte)
+- byte 0xA1-0xDF: JIS X 0201 halfwidth katakana → U+FF61 + (byte - 0xA1)
+- byte 0x81-0x9F or 0xE0-0xFC: lead byte for 2-byte JIS X 0208 + CP932
+  extension (NEC special chars + IBM extensions); trail byte must be in
+  0x40-0x7E or 0x80-0xFC (= excluding 0x7F)
+- otherwise: invalid byte (strategy dispatch)
+
+STRATEGY (default = `nelisp-coding-error-strategy', i.e. `replace'):
+- `replace' / nil — invalid byte → U+FFFD; missing table entry also →
+  U+FFFD with the byte offset of the lead byte in `:invalid-positions'
+- `error'         — first invalid signals `nelisp-coding-invalid-byte'
+- `strict'        — first invalid signals `nelisp-coding-strict-violation'
+
+Returns plist (T19 / T22 形式踏襲):
+  (:string DECODED-STRING
+   :strategy STRATEGY
+   :invalid-positions (LIST OF BYTE-OFFSET)
+   :replacements N)
+
+Lookup is via the hash-tables built lazily by
+`nelisp-coding--jis-tables-build' from
+`nelisp-coding-shift-jis-x0208-decode-table' +
+`nelisp-coding-cp932-extension-decode-table'. Phase 7.4.3 MVP uses a
+partial ~520-entry table; codepoints outside the partial table are
+treated as table-miss (replace strategy → U+FFFD)."
+  (nelisp-coding--jis-tables-build)
+  (let* ((effective-strategy (or strategy nelisp-coding-error-strategy))
+         (raw (nelisp-coding--bytes-to-list bytes))
+         (vec (vconcat raw))
+         (n   (length vec))
+         (codepoints '())
+         (invalid-positions '())
+         (replacements 0)
+         (i 0))
+    (while (< i n)
+      (let ((b0 (aref vec i)))
+        (cond
+         ;; ASCII passthrough.
+         ((< b0 #x80)
+          (push b0 codepoints)
+          (setq i (1+ i)))
+         ;; JIS X 0201 halfwidth katakana (single byte).
+         ((nelisp-coding--shift-jis-katakana-p b0)
+          (push (+ #xFF61 (- b0 #xA1)) codepoints)
+          (setq i (1+ i)))
+         ;; 2-byte SJIS / CP932 lead.
+         ((nelisp-coding--shift-jis-lead-byte-p b0)
+          (cond
+           ((>= (1+ i) n)
+            ;; Truncated lead at end of input.
+            (let ((replacement (nelisp-coding--japanese-invalid-byte-replacement
+                                effective-strategy i b0)))
+              (push i invalid-positions)
+              (push replacement codepoints)
+              (setq replacements (1+ replacements)))
+            (setq i (1+ i)))
+           (t
+            (let ((b1 (aref vec (1+ i))))
+              (if (not (nelisp-coding--shift-jis-trail-byte-p b1))
+                  ;; Bad trail; advance by 1 (resync at next byte).
+                  (let ((replacement (nelisp-coding--japanese-invalid-byte-replacement
+                                      effective-strategy i b0)))
+                    (push i invalid-positions)
+                    (push replacement codepoints)
+                    (setq replacements (1+ replacements))
+                    (setq i (1+ i)))
+                ;; Valid 2-byte sequence, consult table.
+                (let* ((sjis-int (logior (ash b0 8) b1))
+                       (cp (gethash sjis-int nelisp-coding--shift-jis-decode-hash)))
+                  (if cp
+                      (progn
+                        (push cp codepoints)
+                        (setq i (+ i 2)))
+                    ;; Table miss: treat as invalid (MVP partial table).
+                    (let ((replacement (nelisp-coding--japanese-invalid-byte-replacement
+                                        effective-strategy i b0)))
+                      (push i invalid-positions)
+                      (push replacement codepoints)
+                      (setq replacements (1+ replacements))
+                      (setq i (+ i 2))))))))))
+         ;; Invalid leading byte.
+         (t
+          (let ((replacement (nelisp-coding--japanese-invalid-byte-replacement
+                              effective-strategy i b0)))
+            (push i invalid-positions)
+            (push replacement codepoints)
+            (setq replacements (1+ replacements))
+            (setq i (1+ i)))))))
+    (list :string (apply #'string (nreverse codepoints))
+          :strategy (if (memq effective-strategy '(replace error strict))
+                        effective-strategy
+                      'replace)
+          :invalid-positions (nreverse invalid-positions)
+          :replacements replacements)))
+
+;;; ── Shift-JIS / CP932 encode ──
+
+(defun nelisp-coding-shift-jis-encode (string &optional strategy)
+  "Encode NeLisp STRING to Shift-JIS / CP932 byte sequence (plist return).
+
+Reverse-direction lookup (Unicode → SJIS-INT). Codepoints unmappable in
+the partial MVP table dispatch on STRATEGY:
+- `replace' / nil — emit ASCII '?' (0x3F) byte; record CHAR-OFFSET in
+  `:invalid-positions'
+- `error'         — signal `nelisp-coding-unmappable-codepoint'
+- `strict'        — signal `nelisp-coding-strict-violation'
+
+Algorithm:
+- U+0000-U+007F: ASCII fast path (single byte)
+- U+FF61-U+FF9F: JIS X 0201 halfwidth katakana → byte 0xA1+(cp-U+FF61)
+- otherwise: hash-table reverse lookup (X 0208 + CP932 ext merged); on
+  hit emit `(lead trail)' two bytes from the SJIS-INT
+
+Returns plist (T19 / T22 形式踏襲):
+  (:bytes (LIST OF BYTES)
+   :strategy STRATEGY
+   :invalid-positions (LIST OF CHAR-OFFSET)
+   :replacements N)
+
+Note: `:invalid-positions' uses *char* offsets (not byte offsets) since
+the input is char-indexed. This mirrors `nelisp-coding-latin1-encode'."
+  (unless (stringp string)
+    (signal 'wrong-type-argument (list 'stringp string)))
+  (nelisp-coding--jis-tables-build)
+  (let ((effective-strategy (or strategy nelisp-coding-error-strategy))
+        (out '())
+        (invalid-positions '())
+        (replacements 0)
+        (i 0)
+        (n (length string)))
+    (while (< i n)
+      (let ((cp (aref string i)))
+        (cond
+         ;; ASCII fast path.
+         ((and (>= cp 0) (< cp #x80))
+          (push cp out))
+         ;; JIS X 0201 halfwidth katakana range.
+         ((and (>= cp #xFF61) (<= cp #xFF9F))
+          (push (+ #xA1 (- cp #xFF61)) out))
+         (t
+          (let ((sjis-int (gethash cp nelisp-coding--shift-jis-encode-hash)))
+            (if sjis-int
+                (progn
+                  (push (logand (ash sjis-int -8) #xFF) out)
+                  (push (logand sjis-int #xFF) out))
+              ;; Unmappable: dispatch on strategy.
+              (pcase effective-strategy
+                ('error
+                 (signal 'nelisp-coding-unmappable-codepoint
+                         (list :offset i :codepoint cp :strategy 'error
+                               :encoding 'shift-jis)))
+                ('strict
+                 (signal 'nelisp-coding-strict-violation
+                         (list :offset i :codepoint cp :strategy 'strict
+                               :encoding 'shift-jis)))
+                (_
+                 ;; replace (default): ASCII '?' = 0x3F
+                 (push #x3F out)
+                 (push i invalid-positions)
+                 (setq replacements (1+ replacements)))))))))
+      (setq i (1+ i)))
+    (list :bytes (nreverse out)
+          :strategy (if (memq effective-strategy '(replace error strict))
+                        effective-strategy
+                      'replace)
+          :invalid-positions (nreverse invalid-positions)
+          :replacements replacements)))
+
+(defun nelisp-coding-shift-jis-encode-string (string &optional strategy)
+  "Like `nelisp-coding-shift-jis-encode' but return an Emacs unibyte string.
+
+Drops the metadata plist and returns only the encoded byte sequence as a
+unibyte string. Use the plist API when caller needs replacement count or
+invalid positions."
+  (apply #'unibyte-string
+         (plist-get (nelisp-coding-shift-jis-encode string strategy) :bytes)))
+
+;;; ── EUC-JP decode ──
+
+(defun nelisp-coding--euc-jp-x0208-byte-p (byte)
+  "Return non-nil if BYTE is a valid EUC-JP CS1 (X 0208) byte (0xA1-0xFE)."
+  (and (>= byte #xA1) (<= byte #xFE)))
+
+(defun nelisp-coding--euc-jp-katakana-trail-p (byte)
+  "Return non-nil if BYTE is a valid trailer for the 0x8E katakana-shift sequence.
+Per EUC-JP CS2: trail must be 0xA1-0xDF (= JIS X 0201 halfwidth katakana
+range, mapped to U+FF61-U+FF9F)."
+  (and (>= byte #xA1) (<= byte #xDF)))
+
+(defun nelisp-coding-euc-jp-decode (bytes &optional strategy)
+  "Decode EUC-JP BYTES (string / vector / list) to a NeLisp string.
+
+Algorithm (Doc 31 v2 §3.3 / EUC-JP CS1+CS2+CS3):
+- byte 0x00-0x7F:           ASCII passthrough
+- 0x8E + 0xA1-0xDF (CS2):   JIS X 0201 halfwidth katakana → U+FF61+(b-0xA1)
+- 0x8F + 0xA1-0xFE + 0xA1-0xFE (CS3): JIS X 0212 supplementary kanji
+- 0xA1-0xFE + 0xA1-0xFE (CS1): JIS X 0208
+- otherwise: invalid byte (strategy dispatch)
+
+STRATEGY (default = `nelisp-coding-error-strategy', i.e. `replace'):
+- `replace' / nil — invalid → U+FFFD with byte offset in `:invalid-positions'
+- `error'         — signal `nelisp-coding-invalid-byte'
+- `strict'        — signal `nelisp-coding-strict-violation'
+
+Returns plist:
+  (:string DECODED-STRING
+   :strategy STRATEGY
+   :invalid-positions (LIST OF BYTE-OFFSET)
+   :replacements N)
+
+Lookup is via the X 0208 / X 0212 hash-tables built lazily by
+`nelisp-coding--jis-tables-build'. Phase 7.4.3 MVP uses partial tables;
+table-miss falls through to invalid-byte handling per STRATEGY."
+  (nelisp-coding--jis-tables-build)
+  (let* ((effective-strategy (or strategy nelisp-coding-error-strategy))
+         (raw (nelisp-coding--bytes-to-list bytes))
+         (vec (vconcat raw))
+         (n   (length vec))
+         (codepoints '())
+         (invalid-positions '())
+         (replacements 0)
+         (i 0))
+    (while (< i n)
+      (let ((b0 (aref vec i)))
+        (cond
+         ;; ASCII passthrough.
+         ((< b0 #x80)
+          (push b0 codepoints)
+          (setq i (1+ i)))
+         ;; CS2 katakana shift = 0x8E + 0xA1-0xDF (2-byte sequence).
+         ((= b0 #x8E)
+          (cond
+           ((>= (1+ i) n)
+            ;; Truncated 0x8E.
+            (let ((replacement (nelisp-coding--japanese-invalid-byte-replacement
+                                effective-strategy i b0)))
+              (push i invalid-positions)
+              (push replacement codepoints)
+              (setq replacements (1+ replacements)))
+            (setq i (1+ i)))
+           (t
+            (let ((b1 (aref vec (1+ i))))
+              (if (nelisp-coding--euc-jp-katakana-trail-p b1)
+                  (progn
+                    (push (+ #xFF61 (- b1 #xA1)) codepoints)
+                    (setq i (+ i 2)))
+                ;; Bad CS2 trail: advance by 1.
+                (let ((replacement (nelisp-coding--japanese-invalid-byte-replacement
+                                    effective-strategy i b0)))
+                  (push i invalid-positions)
+                  (push replacement codepoints)
+                  (setq replacements (1+ replacements))
+                  (setq i (1+ i))))))))
+         ;; CS3 X 0212 shift = 0x8F + 0xA1-0xFE + 0xA1-0xFE (3-byte).
+         ((= b0 #x8F)
+          (cond
+           ((>= (+ i 2) n)
+            ;; Truncated 0x8F.
+            (let ((replacement (nelisp-coding--japanese-invalid-byte-replacement
+                                effective-strategy i b0)))
+              (push i invalid-positions)
+              (push replacement codepoints)
+              (setq replacements (1+ replacements)))
+            (setq i (1+ i)))
+           (t
+            (let ((b1 (aref vec (1+ i)))
+                  (b2 (aref vec (+ i 2))))
+              (if (and (nelisp-coding--euc-jp-x0208-byte-p b1)
+                       (nelisp-coding--euc-jp-x0208-byte-p b2))
+                  (let* ((euc-int (logior (ash b1 8) b2))
+                         (cp (gethash euc-int
+                                      nelisp-coding--euc-jp-x0212-decode-hash)))
+                    (if cp
+                        (progn
+                          (push cp codepoints)
+                          (setq i (+ i 3)))
+                      ;; Table miss in X 0212.
+                      (let ((replacement (nelisp-coding--japanese-invalid-byte-replacement
+                                          effective-strategy i b0)))
+                        (push i invalid-positions)
+                        (push replacement codepoints)
+                        (setq replacements (1+ replacements))
+                        (setq i (+ i 3)))))
+                ;; Bad CS3 byte structure.
+                (let ((replacement (nelisp-coding--japanese-invalid-byte-replacement
+                                    effective-strategy i b0)))
+                  (push i invalid-positions)
+                  (push replacement codepoints)
+                  (setq replacements (1+ replacements))
+                  (setq i (1+ i))))))))
+         ;; CS1 X 0208 = 0xA1-0xFE + 0xA1-0xFE (2-byte).
+         ((nelisp-coding--euc-jp-x0208-byte-p b0)
+          (cond
+           ((>= (1+ i) n)
+            ;; Truncated CS1.
+            (let ((replacement (nelisp-coding--japanese-invalid-byte-replacement
+                                effective-strategy i b0)))
+              (push i invalid-positions)
+              (push replacement codepoints)
+              (setq replacements (1+ replacements)))
+            (setq i (1+ i)))
+           (t
+            (let ((b1 (aref vec (1+ i))))
+              (if (nelisp-coding--euc-jp-x0208-byte-p b1)
+                  (let* ((euc-int (logior (ash b0 8) b1))
+                         (cp (gethash euc-int
+                                      nelisp-coding--euc-jp-x0208-decode-hash)))
+                    (if cp
+                        (progn
+                          (push cp codepoints)
+                          (setq i (+ i 2)))
+                      ;; Table miss in X 0208.
+                      (let ((replacement (nelisp-coding--japanese-invalid-byte-replacement
+                                          effective-strategy i b0)))
+                        (push i invalid-positions)
+                        (push replacement codepoints)
+                        (setq replacements (1+ replacements))
+                        (setq i (+ i 2)))))
+                ;; Bad CS1 trail: advance by 1.
+                (let ((replacement (nelisp-coding--japanese-invalid-byte-replacement
+                                    effective-strategy i b0)))
+                  (push i invalid-positions)
+                  (push replacement codepoints)
+                  (setq replacements (1+ replacements))
+                  (setq i (1+ i))))))))
+         ;; Invalid leading byte.
+         (t
+          (let ((replacement (nelisp-coding--japanese-invalid-byte-replacement
+                              effective-strategy i b0)))
+            (push i invalid-positions)
+            (push replacement codepoints)
+            (setq replacements (1+ replacements))
+            (setq i (1+ i)))))))
+    (list :string (apply #'string (nreverse codepoints))
+          :strategy (if (memq effective-strategy '(replace error strict))
+                        effective-strategy
+                      'replace)
+          :invalid-positions (nreverse invalid-positions)
+          :replacements replacements)))
+
+;;; ── EUC-JP encode ──
+
+(defun nelisp-coding-euc-jp-encode (string &optional strategy)
+  "Encode NeLisp STRING to EUC-JP byte sequence (plist return).
+
+Algorithm:
+- U+0000-U+007F:          ASCII fast path (single byte)
+- U+FF61-U+FF9F:          0x8E + (cp - U+FF61 + 0xA1) = CS2 katakana
+- X 0212 hash hit (CS3):  0x8F + lead + trail (3-byte sequence, lead/trail
+                          extracted from EUC-INT in the table)
+- X 0208 hash hit (CS1):  lead + trail (2-byte)
+- otherwise (unmappable in MVP partial table): strategy dispatch
+
+STRATEGY same as `nelisp-coding-shift-jis-encode': `replace' emits ASCII
+'?', `error' signals `nelisp-coding-unmappable-codepoint', `strict'
+signals `nelisp-coding-strict-violation'.
+
+Note: Lookup order is X 0208 first, then X 0212 — = X 0208 wins on the
+unlikely Unicode codepoint that maps to both (= EUC-JP convention since
+X 0212 is supplementary)。
+
+Returns plist:
+  (:bytes (LIST OF BYTES)
+   :strategy STRATEGY
+   :invalid-positions (LIST OF CHAR-OFFSET)
+   :replacements N)"
+  (unless (stringp string)
+    (signal 'wrong-type-argument (list 'stringp string)))
+  (nelisp-coding--jis-tables-build)
+  (let ((effective-strategy (or strategy nelisp-coding-error-strategy))
+        (out '())
+        (invalid-positions '())
+        (replacements 0)
+        (i 0)
+        (n (length string)))
+    (while (< i n)
+      (let ((cp (aref string i)))
+        (cond
+         ;; ASCII fast path.
+         ((and (>= cp 0) (< cp #x80))
+          (push cp out))
+         ;; CS2 halfwidth katakana.
+         ((and (>= cp #xFF61) (<= cp #xFF9F))
+          (push #x8E out)
+          (push (+ #xA1 (- cp #xFF61)) out))
+         (t
+          (let ((euc-208 (gethash cp nelisp-coding--euc-jp-x0208-encode-hash))
+                (euc-212 (gethash cp nelisp-coding--euc-jp-x0212-encode-hash)))
+            (cond
+             (euc-208
+              ;; CS1 X 0208: 2-byte sequence.
+              (push (logand (ash euc-208 -8) #xFF) out)
+              (push (logand euc-208 #xFF) out))
+             (euc-212
+              ;; CS3 X 0212: 0x8F + 2 bytes.
+              (push #x8F out)
+              (push (logand (ash euc-212 -8) #xFF) out)
+              (push (logand euc-212 #xFF) out))
+             (t
+              ;; Unmappable: dispatch on strategy.
+              (pcase effective-strategy
+                ('error
+                 (signal 'nelisp-coding-unmappable-codepoint
+                         (list :offset i :codepoint cp :strategy 'error
+                               :encoding 'euc-jp)))
+                ('strict
+                 (signal 'nelisp-coding-strict-violation
+                         (list :offset i :codepoint cp :strategy 'strict
+                               :encoding 'euc-jp)))
+                (_
+                 (push #x3F out)
+                 (push i invalid-positions)
+                 (setq replacements (1+ replacements))))))))))
+      (setq i (1+ i)))
+    (list :bytes (nreverse out)
+          :strategy (if (memq effective-strategy '(replace error strict))
+                        effective-strategy
+                      'replace)
+          :invalid-positions (nreverse invalid-positions)
+          :replacements replacements)))
+
+(defun nelisp-coding-euc-jp-encode-string (string &optional strategy)
+  "Like `nelisp-coding-euc-jp-encode' but return an Emacs unibyte string."
+  (apply #'unibyte-string
+         (plist-get (nelisp-coding-euc-jp-encode string strategy) :bytes)))
 
 (provide 'nelisp-coding)
 
