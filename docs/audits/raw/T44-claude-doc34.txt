@@ -1,0 +1,512 @@
+# Doc 34 review (Phase 9b extension substrate, DRAFT v0)
+
+## verdict: MAJOR REVISIONS
+
+DRAFT v0 が sibling LOCKED v2 docs (28-32) の format / depth に揃える努力は
+みえるが、本 doc は Phase 9b の親仕様 Doc 33 §4.2b を *機能拡張* した提案
+(window/frame/keymap/event-loop を §4.2b の bullet にない 4 sub-system として
+追加) を行いながら、これを Doc 33 errata 不要と宣言している点が最大の構造
+問題。これは codex review が parent doc 整合性 (Doc 28 v2 観点 1 系列) で
+最も厳しく見る点。Phase 9a (Doc 33 §4.2a top 20-30 API) の boundary も未整理
+で、API double-counting と category 矛盾が複数。
+
+DRAFT v1 への revise を出した上で v2 LOCKED 化を推奨。
+
+---
+
+## 観点 1: sibling v2 整合
+
+### [MAJOR-1.1] Doc 33 §4.2b との対応表が parent 整合性を主張するに不足、scope 拡張の追加申請が欠落
+
+§1.1 の対応表 (line 65-75) で "(本 doc 追加) window / frame", "(本 doc 追加)
+keymap / event-loop", "(本 doc 追加) buffer-local", "(本 doc 追加) undo" の
+4 項目は Doc 33 §4.2b の bullet には *存在しない*。Doc 33 §4.2b 元 bullet は
+"advice / minor mode / hook / 完全 regex / text-property face / display /
+process UI / file UI" のみ。
+
+Doc 34 は § 4.2b の "package compat surface のうち interactive editor
+substrate に focus" と再定義し、§4.2b にない 4 sub-system を追加しているが、
+これは事実上の Doc 33 §4.2b *scope 拡張提案*。にもかかわらず §11 main merge
+gate (line 1141) で "Doc 33 errata 不要" と宣言されており、parent doc との
+contract 整合が不一致。
+
+reasoning: Doc 28-32 v2 LOCKED は parent (Doc 27) の sub-phase 構造を *踏襲*
+し、追加 sub-phase を提案する場合は Doc 27 §3 7.X table を errata で更新する
+hygiene を維持している (例: Doc 28 §3 sub-phase split は Doc 27 §3 の 1-2 ヶ月
+を 12-20 週間に re-baseline、user signoff で確定)。本 doc はこの hygiene なし
+で sibling format だけ模倣。
+
+proposal: §1.1 を二分し、(a) Doc 33 §4.2b 元 bullet → 本 doc sub-system map
+(b) Doc 33 §4.2b 未記載 sub-system → 追加申請 list で明示分離。後者は §11
+main merge gate に "Doc 33 §4.2b errata: window/frame/keymap/event-loop/
+buffer-local/undo を §4.2b bullet に追加" を必須条件化。または Doc 33 §4.2b
+の expand decomposition と読み替えるなら、本 doc を Doc 33 §4.2b の
+"interactive editor substrate" 解釈宣言として §1 で formal に declare し、
+codex review で意図と整合判定。
+
+### [MAJOR-1.2] LOCKED items 番号体系が sibling と統一されていない
+
+§2 (line 149) は "LOCKED decisions (DRAFT v0)" として 10 items 列挙、Doc 28
+v2 と同形式と主張。だが Doc 28 v2 §2 は "**2.1 target ISA [推奨 = A]** ...
+**推奨 A 理由**: ..." の構造 (各 item に推奨 A/B/C 候補 table + 推奨理由)
+で、Doc 34 §2 はその雛形で書かれている。
+
+しかし Doc 33 §2 は "L1〜L12" の identifier で番号付けしており (line 190
+の `** L1:` 等)、両 sibling で「LOCKED 列挙」の流儀が違う中で本 doc は Doc
+28 流儀 (§2.X) を採用。Doc 33 流儀 (Lx) と混同しないよう identifier
+convention を明示すべき。
+
+reasoning: §11 で "v0 → v2 LOCKED" path を Doc 28-32 v2 と同 pattern とする
+と書かれているため Doc 28 流儀の選択は妥当。だが parent doc (Doc 33) の
+LOCKED items を本 doc から reference する箇所が出る (e.g. Doc 33 L11 core
+runtime guarantees vs 本 doc §2.X) で、convention 衝突が読者に解釈負担。
+
+proposal: §2 冒頭に "本 doc の LOCKED items 識別子は Doc 28-32 v2 sibling
+と統一して §2.X 形式 (= 2.1〜2.10)。Doc 33 L1〜L12 とは別 namespace" と
+declaration 1 行追加。
+
+### [MINOR-1.3] STATUS 行の format が sibling と微差
+
+Doc 28 v2 line 4: `#+STATUS: LOCKED-2026-04-25-v2 (orchestrator codex review
+MAJOR REVISIONS 反映 + Emacs native-comp 参照追加 + user signoff 待ち)`
+Doc 34 v0 line 4: `#+STATUS: DRAFT v0 (codex review 待ち、MAJOR REVISIONS
+前提)`
+
+DRAFT v0 では問題ないが、v1 → v2 LOCKED 化時に sibling と同 verbosity
+(主要起草点 + signoff 待ち)を採用する必要がある。
+
+reasoning: sibling LOCKED v2 docs はすべて STATUS に「v2 改訂方針 / 反映
+内容 / signoff 状態」を 1 行で要約しており、grep で改訂 trace を取れる
+hygiene。
+
+proposal: §11 v0→v2 LOCKED path に "v2 LOCKED 化時の STATUS line format
+(= sibling 準拠で改訂方針 + signoff 状態を inline 要約)" を 1 句追加。
+
+### [MAJOR-1.4] §4 ABI/API list の depth が sibling 比で浅い
+
+§4 ABI list 76 件は signature + 1-line semantics のみ。
+
+Doc 28 v2 §4 (line 524-552 architecture pipeline + line 555-588 入出力境界
+記述) は "AST 入力 / mmap 出力 / symbol table 連携" を含めて 30+ 行 / API。
+Doc 30 (GC) §4 は data structure layout / state machine 図解 / contract
+表記を 80+ 行で示す。本 doc §4 は API 名と signature のみで Emacs 互換
+semantics の note (line 587) も実体は薄い (= "互換性 note" と書きながら
+note 列が table にない、line 593-)。
+
+reasoning: codex review で Doc 28 §4 観点 (architecture pipeline depth) が
+強く指摘された前例あり。API list だけでは "本 API 群が Emacs 互換 semantic
+を保証する範囲" が読み取れず、Phase 9b SHIPPED 判定が定性化。
+
+proposal: §4 各 sub-section に (a) 入出力境界 (= buffer / event source / mmap
+exec page 等の依存先) (b) Emacs 互換 semantics の deviation 表 (= 完全互換 /
+部分互換 / 不対応) を 5-10 行追加。最低限 line 587 の "Emacs 互換性 note"
+列を table 4 列に追加し各 API で `full / partial / N/A` を埋める。
+
+### [POSITIVE-1.5] LOC budget table と sub-phase 分割は sibling と整合
+
+§1.4 LOC budget table (line 134-147) と §3 sub-phase table (line 323-330)
+は Doc 28 §3 baseline table (line 363-372) と同 format (= sub-phase | LOC |
+期間 | ERT delta)。±50% range 提示も Doc 28 v2 の "13-16 週間 + escape
+hatch 11-13 週間" pattern と整合。
+
+reasoning: ここは v1 で keep。
+
+---
+
+## 観点 2: Phase 9b scope 妥当性
+
+### [MAJOR-2.1] Phase 9a (Doc 33 §4.2a top 20-30 API) との API boundary が未確定 = double-counting
+
+Doc 33 §4.2a (line 547-569) で top 20-30 APIs として列挙されている API:
+- buffer: =current-buffer= 等 11 件
+- search: =re-search-forward= simple subset 4 件
+- marker: =make-marker= 等 3 件
+- *text-property*: =put-text-property= / =get-text-property= (基本のみ)
+- *undo*: =buffer-undo-list= primitive のみ
+- file: =with-temp-buffer= 等 3 件
+
+= text-property と undo の primitive が *Phase 9a に既に含まれる*。
+
+ところが Doc 34 §4.6 (line 670 の text-properties 12 件) と §4.8 (line 695
+の undo 6 件) で同 API がそのまま再列挙され、§3.1.2 / §3.4 では Phase 9b で
+*新規実装* と書かれている (例: line 364 "新規 module:
+=src/nelisp-emacs-compat-textprops.el=", line 545 "新規 module:
+=src/nelisp-emacs-compat-undo.el=")。
+
+reasoning: Phase 9a で =put-text-property= / =get-text-property= /
+=buffer-undo-list= が SHIPPED 済の前提で Phase 9b 着手 (§3.1.x line 406 で
+"Phase 9a SHIPPED" を prerequisite と明記)、なのに同 API を Phase 9b で
+"新規実装" すると衝突。Phase 9a での *基本のみ* と Phase 9b の *拡張* の
+boundary が API list level で見えない。
+
+proposal:
+1. §4 各 API table の前に "Phase 9a 既に SHIPPED / Phase 9b 拡張 / Phase
+   9b 新規" の 3 状態 column を追加
+2. §11 v0→v2 想定 refine (line 1128 "Phase 9a (Doc 34a) との API 境界の
+   明示") で "76 API のうち N 件は Phase 9a SHIPPED、残 M 件が Phase 9b
+   新規 / 拡張" の overlap 表を必須化
+3. text-properties は "Phase 9a で primitive 2 件 (`put-/get-`)、Phase 9b で
+   拡張 10 件 (interval tree + change hook + propertize 等)" のような明示
+   分割
+
+### [MAJOR-2.2] §3.1.3 で advice / minor mode が "scope 外 (Doc 35 想定)" と書かれているが、Doc 33 §4.2b で "advice / minor mode / hook" は同列 bullet
+
+Doc 33 v2 §4.2b 元 bullet (line 581 "advice / minor mode / hook"):
+3 つは同 bullet で *Phase 9b の coverage 拡張対象* と明記。
+
+Doc 34 §1.1 対応表 (line 67) で "advice / minor mode は scope 外、Doc 35
+想定" と分離宣言、§8.1 (line 954) で再確認。だが Doc 33 §4.2b が "advice /
+minor mode / hook" を同 bullet で列挙している以上、Phase 9b から advice /
+minor mode を完全 defer するなら Doc 33 §4.2b の errata or 解釈宣言が必要。
+
+reasoning: Doc 33 §4.2b の bullet 単位 mapping を本 doc が一方的に変更
+(= "interactive editor substrate に focus" の絞り込み) しているが、parent
+doc にこの絞り込みが記述されていない。Doc 35 という未起草 doc に 2 bullet
+を投げる decision は Doc 33 errata 不要では成立しない。
+
+proposal:
+- Doc 33 §4.2b に errata で "advice / minor mode は Doc 35 (未起草) で扱う、
+  Phase 9b は他の 6 bullet + 4 追加 sub-system に focus" の 1 段落追加
+- または Doc 34 §8.1 を "Phase 9b に含めるが Doc 35 詳細" の wording に
+  変更 (= scope 内、別 doc で詳述)、Phase 9b 全体期間を 6-12 → 9-15 ヶ月に
+  upward revise
+
+### [MAJOR-2.3] sub-phase 9b.1〜9b.4 の境界 rationale が薄い + 9b.4 undo の依存方向が逆転気味
+
+§3 (line 323-330) で 4 sub-phase 分割の境界は "foundation / interactive /
+display-abstract / undo" と記述。だが:
+- 9b.4 undo は §3.4 line 581 で "Phase 9b.3 SHIPPED 推奨 (= window/frame
+  連動の undo redisplay 確認)" と書かれているが、line 549 の =buffer-undo-
+  list= は §3.1.1 buffer-local 経由 + §3.1.2 text-properties 連動。9b.4 が
+  9b.3 を *推奨* prerequisite と書く一方、実 dependency は 9b.1 (foundation)
+  への hard prerequisite。
+- 9b.4 を最後に置く rationale (= "undo は他 3 sub-phase 後で十分") が
+  technical justification として薄い。Emacs precedent では undo system は
+  buffer-local + text-property と同層で early に確立する設計が rational
+  (= line 549 と整合)。
+
+reasoning: §3 の sub-phase 順序は schedule lockstep ではなく optionality
+を残すべき。Doc 28 v2 §6.6 W4/W8/W12 replan gate と類似の "9b.4 を 9b.1 と
+同時並行 OK" の自由度が rational。
+
+proposal:
+- §3 line 323 table に "依存先 sub-phase" 列を追加し、9b.4 → 9b.1 hard、
+  9b.4 → 9b.3 soft (= UI 連動確認のみ optional) と表記
+- §6.7 anvil leverage 過大評価 risk (line 863) の M3/M6/M9 gate に "9b.4
+  を 9b.1 後に並行 (vs 9b.3 後 sequence) で切り替え可能" の escape hatch
+  を 1 項目追加
+
+### [MINOR-2.4] §1.4 SBCL/Emacs precedent 比較で SBCL 列が空欄、precedent 一辺倒の justification が弱い
+
+§1.4 (line 130-147) で "SBCL precedent が薄い (SBCL は editor ではないため)
+= Emacs precedent 一辺倒" としているが、Doc 28 v2 §1.3 のように "SBCL の
+precedent は何で、どの軸で本 phase は超えるか / 妥協するか" の 3 軸表が
+sibling 標準。
+
+reasoning: 本 doc は editor extension で SBCL precedent が薄いのは事実だが、
+"editor 機能を持たない pure Lisp runtime substrate に editor extension を
+build" の構造的差別化軸 (= Doc 33 §1.3 の Clojure model 援用 + extension
+package separate repo) が precedent 比較で書かれていない。
+
+proposal: §1.4 に "Clojure / Racket の editor-less Lisp runtime + 3rd-party
+editor binding" pattern を 5-10 行追記、本 doc が Emacs Lisp ecosystem を
+extension package として乗せる設計が "Lisp runtime + editor extension" の
+精緻 separation である主張を補強。
+
+### [POSITIVE-2.5] §0 完遂 gate と §7 release gate の階層分離は妥当
+
+§0 line 42-49 の概要 gate と §7.1/7.2/7.3 (line 902-948) の詳細 gate が
+sibling Doc 28 §0 / §7 と同 step pattern (各 sub-phase SHIPPED 条件 →
+全体 close 条件 → 後続 phase 解放) で整合。
+
+reasoning: keep as-is、v1 で details (§7.1 popular package list の minimum
+scenario ERT 化) を refine するだけ。
+
+---
+
+## 観点 3: display engine 依存境界
+
+### [MAJOR-3.1] §1.3 依存境界 table の "△" が semantic 不明 + window の display 依存度が過小評価
+
+§1.3 (line 107-116) の依存度 table:
+- window = △ (logical buffer 紐付けのみ、render は frame 経由)
+- event-loop = △ (event source が display backend で発生)
+- *frame* = ○ (display backend が frame handle 提供)
+
+window が "△" とされているが、§3.3.1 (line 481-509) で window split tree /
+window-point / window-start / 各種 resize op が記述されており、これらは
+display backend の *layout primitive* を呼び出さなければ実装不可能 (=
+Doc 33 §6 line 871-876 の =nelisp-display-layout-box= 等)。本 doc Phase 11
+依存度を "弱 (frame 経由 indirect)" と書くのは Phase 11 SHIPPED 前 stub
+backend で window resize / split が "意味のある動作" を ERT で確認できる
+保証がない。
+
+reasoning: Doc 33 §6.4 layout primitive (line 871) は Phase 10 spec で確立、
+Phase 11 backend が実装。window split は frame size を分割計算するため
+*frame size を知る = stub backend が固定値返却* と組み合わさってのみ意味
+あり。本 doc line 533 "stub backend で ERT 駆動" だけでは window resize の
+correctness verify が困難。
+
+proposal:
+- §1.3 table の "△ / ○ / ×" を 3 段階 (= no dep / indirect dep via frame /
+  direct dep on backend) で精緻化、各 sub-system に "stub backend 動作可否"
+  + "Phase 11 SHIPPED 後 integration test 必須かどうか" の 2 列を追加
+- window を "indirect via frame、ただし stub backend では size 固定 (= 80
+  x 24) を仮定して ERT 駆動可" と明示
+- §9.3 (line 1023 frame backend stub mode semantics) に window size
+  invariant を明記、stub mode で `(frame-width)` = 80 / `(frame-height)` =
+  24 fixed が window split-window 計算に伝播することを spec 化
+
+### [MAJOR-3.2] event-loop の event source contract が under-specified、§2.4 LOCK item が schema sketch only
+
+§2.4 (line 200-225) で event source contract を schema sketch のみ (= 3
+function = register / unregister / pull-next) で提示。
+
+Doc 28 v2 §2.9 (line 306-329) GC metadata contract のように "metadata 形式
+固定 + version constant + Phase 7.3 改訂時 migration path" と detail level
+で書かれた precedent あり。本 doc §2.4 は (a) event 構造体の field (= key
+code / mouse coord / window resize delta 等) が未定義、(b) timeout 単位
+(秒 / ms / μs)、(c) 並列 event source の優先順位、(d) backpressure model
+(= queue 溢れ時の drop policy) すべて未指定。
+
+reasoning: Phase 11 backend (TUI keyboard input + SIGWINCH) と mock backend
+(ERT 駆動) を差し替え可能と書きながら、両 backend が同一 event 構造を
+emit する保証が contract 明示なし。
+
+proposal: §2.4 schema を以下まで拡張:
+1. event 構造体 typed alist 例 (key event / mouse event / window event /
+   timer event の 4 variant)
+2. timeout 単位 = ms (= Emacs `read-event` precedent と integer 整合)
+3. 並列 source 優先順位 = register 順 (FIFO) で fixed
+4. queue capacity + overflow drop policy
+5. event source の lifecycle (= register 失敗 / unregister 中の pull) error
+   condition
+
+### [MAJOR-3.3] frame stub backend 動作 invariant が §9.3 open question 止まり、§3.3.2 SHIPPED 判定基準が回避不能
+
+§3.3.2 (line 511-541) で frame は "stub backend (= no-op or text-only) で
+Phase 11 SHIPPED 前は動作確認可" と書きながら、stub mode の invariant 仕様
+は §9.3 (line 1023-1031) で "default = frame-width 80, frame-height 24
+返却、delete-frame は no-op" と仮置き。
+
+これだと §6.1 risk (line 773 "Phase 11 SHIPPED 遅延で frame sub-system の
+SHIPPED 判定が incomplete") の mitigation が成立しない。stub mode は SHIPPED
+判定基準の中核なので、§9.3 で open question にしたまま v0 を main merge
+すると、stub mode 仕様が後付けで Phase 9b.3 SHIPPED 解釈を歪める risk。
+
+reasoning: Doc 28 v2 §6.1 (register allocation 性能 risk) は mitigation で
+"graph-coloring 後付け可能な構造を §3.1 で確保" + "scope 削減 emergency
+procedure invoke 可能化" の二段構え。本 doc §6.1 は stub mode 後付け仕様化
+だけで mitigation 完結せず。
+
+proposal:
+- §9.3 open question を §2.X (LOCKED items) に昇格、stub mode invariant を
+  v0 で LOCK (= frame-width 80 fixed, frame-height 24 fixed, make-frame =
+  unique frame-id 返却, delete-frame = id reuse 不可)
+- §6.1 mitigation に "stub mode invariant が §2.X で LOCK 済 = Phase 11
+  SHIPPED 前後で window 計算 invariant 維持" を 1 句追加
+- §3.3.2 SHIPPED 判定 (line 533) に "stub mode invariant 全 PASS で 9b.3
+  暫定 SHIPPED、Phase 11 SHIPPED 後 actual integration test 追加で full
+  SHIPPED" の 2 段階明示
+
+### [POSITIVE-3.4] §1.3 で "残 6 sub-system は display 非依存で完結 = Phase 11 と独立に進められる" の主張は健全
+
+§1.3 line 127-128 "window / keymap / buffer-local / text-properties /
+hooks / undo は display 非依存で完結" は Phase 11 と Phase 9b の parallel
+walk 設計を支える core invariant。Phase 9b.3 が Phase 11 と co-design に
+なるが、9b.1 / 9b.2 / 9b.4 が独立 progress 可の方針は keep。
+
+reasoning: Doc 33 §1.3 の 3-layer separation 思想と整合、各 backend
+community-driven 化への migration path 維持。
+
+---
+
+## 観点 4: risks / gates
+
+### [MAJOR-4.1] §6.6 buffer-local thread-safety risk が "scope 外 mitigation" だけで済まされている (Phase 7.5+ co-design)
+
+§6.6 (line 850-861) buffer-local thread-safety risk の mitigation:
+- Phase 9b 全体は single-thread MVP 前提
+- Phase 7.5+ multi-thread 化時に per-thread arena 化検討 (本 doc scope 外)
+
+これは risk の record だけで mitigation 実体なし。Doc 33 §3.1 line 393 で
+"Layer 0 = dialect-agnostic backend" と Layer 0/1 separation を design
+level で意識する方針を確立、Phase 8+ (本 doc 含む) で "新 code は Layer 0/1
+awareness で書く" は Doc 33 §4.6 line 723-726 で言及。
+
+本 doc §3.1.1 buffer-local 実装が "per-buffer hash + symbol property" だが、
+hash key の thread-locality を Phase 7.5+ で後付けすると, Phase 9b SHIPPED
+package が breakage 起こす可能性。Doc 28 v2 §6.10 GC metadata contract Phase
+7.3 連動 (line 743-758) の versioned contract pattern と同様の hygiene が
+buffer-local でも必要。
+
+reasoning: codex review で Doc 28 §6.10 (Phase 7.3 ABI 連動) は MAJOR
+revision で追加された前例あり。Doc 34 buffer-local も同 hygiene なしでは
+"single-thread MVP" を Phase 7.5+ で改訂不能の roadblock 化。
+
+proposal:
+- §6.6 mitigation に "(a) buffer-local hash の access API を thread-id
+  aware な abstraction (= `nelisp-buflocal-with-thread`) で wrap、Phase
+  9b 単体では single-thread default 実装、(b) Phase 7.5+ で abstraction
+  内側を per-thread arena に差し替えで API breakage なし" の 2 点を追加
+- §11 main merge gate (line 1141) に "Phase 7.5+ multi-thread 化と
+  buffer-local API contract 整合性 (= breaking change なしの retrofit
+  path)" を 1 行追加
+
+### [MAJOR-4.2] §6.7 anvil leverage 過大評価 risk の M3/M6/M9 replan gate が Doc 28 §6.6 と非対称 (kill criteria が milestone defer のみで scope 縮小を許さない)
+
+§6.7 (line 863-880) M3/M6/M9 gate の kill criteria:
+- gate-M3: 9b.1 未完了 → 9b.4 (undo) を v2.2+ へ defer
+- gate-M6: 9b.2 未完了 → frame sub-system を v2.2+ へ、window のみ
+- gate-M9: 9b.3 未完了 → undo を v2.2+ へ
+
+すべて "後送り" による scope 圧縮で、Doc 28 v2 §6.6 (line 706-716) の
+gate-W4/W8/W12 が "second ISA defer / self-host 一時停止 / bench gate 30x→
+20x 下方修正" と *性能 / quality 軸の妥協* を許す精緻 vs 本 doc は milestone
+defer 一辺倒。
+
+reasoning: Phase 9b は "popular package が動く" の定性 gate (§7.1 helm /
+ido / dired / magit 等) なので、quality 軸の縮小が rational (= "全 popular
+package 動作 → 主要 5 package 動作" の絞り込み)。本 doc § 6.7 にこの軸が
+ない。
+
+proposal: §6.7 table に kill criteria の 2 軸 (= milestone defer 軸 +
+quality 軸の scope 縮小) を併記:
+- gate-M6: 9b.2 進捗未達 → (a) frame defer、(b) popular package 動作 list
+  を 5 → 2 package に縮小、(c) integration ERT を +29 → +10 に縮小
+- gate-M9: 同様に quality 軸を併記
+
+### [MAJOR-4.3] undo memory growth (§6.3) と GC inner (Doc 30) との contract が specify されていない、Phase 7.3 ABI 連動 hygiene 欠落
+
+§6.3 (line 807-820) で undo-list は per-buffer linear 累積、long-running
+NeLisp process で memory pressure を懸念。mitigation で "undo-limit /
+undo-strong-limit 提供 + Phase 7.3 GC weak-reference との co-design は
+Phase 9b.4 着手時 orchestrator review" と書かれているが、これも Phase 7.3
+ABI 連動 hygiene なし。
+
+Doc 28 v2 §6.10 GC metadata contract / line 750 versioned contract を踏襲
+すると、本 doc §3.4 undo record format (line 554 `(BEG . END) /
+(TEXT . POSITION) / (t . TIME)`) を =UNDO_RECORD_VERSION= constant + Phase
+7.3 GC root scanner consume side で compatible 化必須。Phase 30 (= Doc 30
+GC inner) が undo-list を root として scan するか否か未確定 = Phase 9b.4
+着手前に Doc 30 errata or co-design review が必要。
+
+reasoning: undo record はクラスとして heap allocate される、long-running で
+GC pressure 増 + Phase 7.3 generational tenuring と相互作用。Doc 30 (GC
+inner) の root set spec を本 doc が touchdown しないと Phase 7.5 integration
+で "undo-list が old gen に滞留して major GC trigger 多発" の latent bug
+risk。
+
+proposal: §6.3 mitigation に以下追加:
+1. undo record format に `UNDO_RECORD_VERSION` constant 含める (Doc 28 v2
+   §6.10 pattern 踏襲)
+2. Phase 9b.4 着手前に Doc 30 (Phase 7.3 GC inner SHIPPED) と root scan
+   contract review (= orchestrator consensus、judge=claude)
+3. Doc 30 errata で "buffer-undo-list は per-buffer root として scan、weak-
+   reference promotion policy = Doc 30 §X 参照" の 1 段落追加 (Doc 30 errata
+   要否は co-design review で判定)
+
+### [MINOR-4.4] §6 risk 番号付けが 8 件と宣言されているが §6.7 (anvil leverage) の番号 skip
+
+§6 (line 771) "Risks (8 項目)" と宣言、実際 §6.1〜§6.8 の 8 項目あり。
+番号 skip / 重複なし。OK。
+
+reasoning: keep。
+
+### [MINOR-4.5] §5.2 bench plan が target 数値 placeholder のまま v0 で merge gate に進めない
+
+§5.2 (line 755-769) bench target が "< 100ns / event" 等具体的だが、line
+768 で "target 数値 placeholder、codex review + Phase 9b.1 SHIPPED 後実測
+baseline で iterate 必須" と placeholder 宣言。
+
+reasoning: Doc 28 v2 §5.2 (line 619-624) は "bytecode VM ~5000ms / native
+target ≤170ms / ratio 30x" と既知 baseline (Emacs native-comp 比較込み) を
+v2 LOCKED で確定済。本 doc が "Phase 9b.1 SHIPPED 後実測" を前提としている
+のは v0 default として妥当だが、v2 LOCKED 化 gate に "bench target 数値
+確定" を必須化する必要。
+
+proposal: §11 v0→v2 LOCKED path (line 1128) に "bench target 数値の v2
+LOCK 必須 (= Phase 9a SHIPPED 実測 baseline + Emacs precedent との比較
+ratio 確定)" を 1 句追加。
+
+### [MINOR-4.6] §5.1 integration test "mini-Emacs demo" が Phase 9b 単体で SHIPPED 判定不能
+
+§5.1 (line 749) "mini-Emacs demo (Phase 11 TUI integration)" の +3 ERT が
+"all sub-phase + Phase 11" と関連、Phase 11 SHIPPED 前に full PASS 不可能。
+
+§9.5 (line 1043-1051) で "Phase 9b.3 SHIPPED 時点で 2 buffer / 2 window /
+global keymap で C-x C-c / C-x C-s / C-g のみ動作する demo" を minimum
+scenario と仮置き。
+
+reasoning: §5.1 が Phase 11 依存で full PASS 不可能と §6.1 frame backend
+依存の mitigation (= stub backend で暫定 SHIPPED) が衝突。Phase 11 SHIPPED
+前後で integration ERT count が変動する設計が ambiguous。
+
+proposal: §5.1 に "Phase 11 SHIPPED 前 = stub backend で +3 → +1 (= simple
+keymap dispatch のみ ERT)、Phase 11 SHIPPED 後 = full +3 ERT (mini-Emacs
+demo 完成)" の 2 段階明示。整合性 wise §3.3.2 SHIPPED 判定の 2 段階と
+整合。
+
+### [POSITIVE-4.7] §6.4 text-properties interval tree の Phase 8 gap-buffer 整合 risk は具体的で mitigation 健全
+
+§6.4 (line 822-836) で gap-shift 後の interval boundary が追従するための
+adjust-intervals helper を Phase 9b.1 着手時必須化、ERT (§3.1.2 ERT smoke
+9 番) で固定する mitigation は精緻。Emacs precedent (`adjust_intervals_for_
+insertion` / `_for_deletion`) との対応も明示。
+
+reasoning: keep as-is。
+
+---
+
+## summary
+
+### top 3 MAJOR (= LOCKED 前必須修正)
+1. **[1.1] Doc 33 §4.2b との対応表 = scope 拡張提案の hygiene** —
+   §1.1 line 65-75 で 4 sub-system "(本 doc 追加)" と書きながら §11 で
+   Doc 33 errata 不要と宣言、parent doc 整合性 contract が破綻。Doc 33
+   §4.2b errata or 解釈宣言を v1 で必須。
+
+2. **[2.1] Phase 9a / Phase 9b API boundary 未確定 (text-property /
+   undo の double-counting)** — Doc 33 §4.2a の top 20-30 API に既に
+   `put-text-property` / `buffer-undo-list` 等が含まれているが、本 doc
+   §4 で同 API を Phase 9b 新規実装と宣言。API table に "9a SHIPPED /
+   9b 拡張 / 9b 新規" の状態列追加 + overlap 表必須。
+
+3. **[3.3] frame stub mode invariant が open question 止まり、Phase 9b.3
+   SHIPPED 判定基準が成立しない** — §9.3 を §2.X LOCKED items に昇格、
+   stub mode invariant (frame-width 80 / frame-height 24 / make-frame
+   id 返却 / delete-frame no-op) を v1 で固定。§3.3.2 SHIPPED 判定を
+   "stub mode 完遂で暫定 / Phase 11 後 full" の 2 段階明示。
+
+### next 3 MINOR (= 望ましい修正)
+1. **[1.4] §4 ABI list の depth が sibling 比で浅い** — 各 API table に
+   Emacs 互換 semantics deviation 列 (full / partial / N/A) + 入出力境界
+   note を 5-10 行追加。
+
+2. **[3.2] event-loop event source contract の under-spec** — §2.4 schema
+   sketch を event 構造体 typed alist + timeout 単位 (ms) + queue
+   overflow policy + lifecycle error condition まで拡張。
+
+3. **[4.2] §6.7 replan gate が milestone defer 一辺倒、quality 軸の scope
+   縮小が欠落** — gate-M6 / gate-M9 に popular package list 縮小 +
+   integration ERT 縮小の 2 軸を併記、Doc 28 v2 §6.6 の精緻 mitigation
+   pattern と非対称解消。
+
+### positives (= keep as-is)
+1. **[1.5] §1.4 LOC budget table と §3 sub-phase 分割 format が sibling
+   と整合** — Doc 28 v2 §3 baseline table と同 format、±50% range pattern
+   keep。
+2. **[3.4] §1.3 残 6 sub-system display 非依存完結の主張** — Phase 11
+   と parallel walk 設計を支える core invariant、3-layer separation
+   思想と整合。
+3. **[4.7] §6.4 interval tree gap-buffer 整合 risk の mitigation** —
+   adjust-intervals helper 必須化 + ERT で固定 + Emacs precedent 対応
+   明示の精緻 mitigation。
+
+---
+
+(reviewer note: 本 review は Doc 28 v2 review pattern (= sibling integrity
++ parent contract + Phase boundary + gate hygiene 4 axis、5 MAJOR + 5 MINOR
+range) に揃えた厳しさで、v0 → v1 revise を経て v2 LOCKED への path を
+support する目的。anvil-orchestrator-consensus-submit による claude+codex+
+gemma judge は本 review を baseline に independent comparison 推奨。)

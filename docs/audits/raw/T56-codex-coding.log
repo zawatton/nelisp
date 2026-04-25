@@ -1,0 +1,75 @@
+# NeLisp coding subsystem codex audit
+
+## verdict: CRITICAL
+
+## 観点 A: encoding correctness
+- [CRITICAL] `src/nelisp-coding.el:1369-1396`, `src/nelisp-coding.el:1519-1524`
+  reasoning: `nelisp-coding--stream-euc-jp-tail-pending` が末尾 `0xA1-0xFE` を常に pending 扱いするため、完全な EUC-JP CS1/CS2/CS3 シーケンス終端でも `decode-len` を 1 以上削ります。結果として `A4 A2` や `8E B1` や `8F A2 AF` のような valid 終端が、chunk decode 時に truncated prefix として誤処理されます。
+  impact: Doc 31 v2 の chunk-boundary correctness 契約に不一致です。EUC-JP streaming decode は one-shot と同値ではありません。
+  proposal: EUC-JP 用 tail 判定を「末尾からの最短妥当 prefix 判定」に置き換え、`CS1(A1-FE A1-FE)`、`CS2(8E A1-DF)`、`CS3(8F A1-FE A1-FE)` の complete/incomplete を明示判定してください。EUC-JP stream ERT を必須追加。
+
+- [MAJOR] `src/nelisp-coding.el:1743-1752`, `docs/design/31-phase7.4-coding.org:85-86`, `docs/design/31-phase7.4-coding.org:286-290`, `docs/design/31-phase7.4-coding.org:490-494`
+  reasoning: `nelisp-coding-read-file-with-encoding` は streaming wrapper を名乗りつつ、実際には `insert-file-contents-literally` でファイル全体を temp buffer に載せてから chunk 分割しています。
+  impact: Doc 31 v2 の `streaming 1GB file = OOM 無し` gate を file I/O path では満たしません。large file integration は spec 非整合です。
+  proposal: read loop を実ファイル descriptor ベースの incremental read に変更するか、この wrapper を gate 対象外の simulator と明記して shipped 判定から外すべきです。
+
+- [MINOR] `src/nelisp-coding.el:1507-1514`, `src/nelisp-coding.el:1558-1565`
+  reasoning: UTF-8 BOM 判定待ちで chunk 全体を pending に回したケースでも `:bytes-consumed` を増やしており、後段コメントは「decoded progress bytes」と説明しています。
+  impact: correctness 本体ではないですが、stats/instrumentation 値が contract とズレます。
+  proposal: `bytes-consumed` を「実際に decode された byte」に限定するか、フィールド意味を「ingested bytes」に改名してください。
+
+## 観点 B: table provenance
+- [MAJOR] `docs/design/31-phase7.4-coding.org:749-752`, `src/nelisp-coding-jis-tables.el:9-12`, `src/nelisp-coding-jis-tables.el:28-30`, `src/nelisp-coding-jis-tables.el:20779-20804`
+  reasoning: spec は generator script + provenance 文書 + golden hash を SHIPPED 必須にしていますが、生成物側は外部ファイル参照だけで、source dataset version/checksum/generator revision/spec version を自分で保持していません。
+  impact: hash は改竄検出には効きますが、regen reproducibility と provenance 監査はこの artifact 単体では成立しません。drift 検出力が弱いです。
+  proposal: table file か隣接 manifest に `generator commit`, `input source URLs`, `input hashes`, `spec version`, `generated-at` を埋め込んで self-describing にしてください。
+
+- [MINOR] `docs/design/31-phase7.4-coding.org:182-213`, `docs/design/31-phase7.4-coding.org:844-848`, `src/nelisp-coding.el:9-10`, `src/nelisp-coding.el:43-44`, `src/nelisp-coding.el:796-798`, `src/nelisp-coding.el:985-986`
+  reasoning: v2 前半は CP932 included を LOCK していますが、後半 `§9.5` は「CP932 は scope 外」と逆の記述です。実装コメントにも「partial table / full table deferred」が残っています。
+  impact: spec version と table/impl version の drift を人手で見誤りやすく、regen 運用で誤判定を招きます。
+  proposal: Doc 31 の stale section と `nelisp-coding.el` の旧 MVP コメントを一掃し、現在の full-table / CP932 shipped 状態に揃えるべきです。
+
+## 観点 C: multibyte interaction
+- [MAJOR] `src/nelisp-coding.el:1369-1396`, `test/nelisp-coding-test.el:635-706`, `test/nelisp-coding-test.el:756-858`
+  reasoning: one-shot では EUC-JP の `CS2 half-width katakana` と `CS3 JIS X 0212` をテストしていますが、stream test は UTF-8/SJIS のみで EUC-JP boundary split を一切通していません。この coverage gap が上の critical を取り逃しています。
+  impact: half-width katakana / JIS X 0212 plane の chunk-boundary 安全性は未保証です。
+  proposal: `8E|B1`, `8F|A2 AF`, `8F A2|AF`, `A4|A2` を含む all-boundary stream tests を追加し、one-shot equivalence を固定してください。
+
+- [MINOR] `test/nelisp-coding-test.el:756-858`
+  reasoning: 提供範囲内では `nelisp-text-buffer` / gap-buffer integration を直接触るテストや参照がありません。
+  impact: codec 単体は読めても、multibyte/char-width と text-buffer 境界の結合安全性は未証明です。
+  proposal: Phase 7.4 shipped 判定に buffer integration smoke を別途追加すべきです。
+
+## 観点 D: error / fallback
+- [MAJOR] `docs/design/31-phase7.4-coding.org:249-253`, `docs/design/31-phase7.4-coding.org:265-268`, `src/nelisp-coding.el:1457-1461`, `src/nelisp-coding.el:1605-1610`, `test/nelisp-coding-test.el:174-188`, `test/nelisp-coding-test.el:413-438`
+  reasoning: spec は `strict = uncatchable / process abort / state undefined` を LOCK していますが、実装は普通の `signal` で、tests も `condition-case` で catch できる前提を固定しています。stream path でも「state is left in a consistent form」と明記しており、spec と逆です。
+  impact: `error` と `strict` の差が実質「error symbol 名」しかなく、Doc 31 §2.4 4列 contract に不一致です。
+  proposal: どちらかに寄せる必要があります。現実的には spec を「strict = dedicated signal symbol, stronger policy but catchable」に下げるか、runtime 側に no-resume/abort semantics を実装してください。
+
+- [MINOR] `docs/design/31-phase7.4-coding.org:312-317`, `docs/design/31-phase7.4-coding.org:780-783`
+  reasoning: coding-system priority chain / auto-detect は未実装です。
+  impact: user 指定の観点には入りますが、これは v2 spec では scope 外で、現時点では仕様通りの未対応です。
+  proposal: bug 扱いではなく、Phase 7.5+ backlog として明示維持で十分です。
+
+## summary
+- top CRITICAL
+  - EUC-JP streaming tail 判定が壊れており、valid chunk end を truncated と誤判定する。stream decode correctness が崩れています。
+- top MAJOR
+  - file I/O wrapper が全読込方式で、1GB OOM-free streaming contract に未達。
+  - `strict` policy が Doc 31 の abort/noresume 契約と一致していない。
+  - provenance contract が self-contained でなく、regen reproducibility を artifact だけで監査できない。
+  - EUC-JP streaming coverage 欠落で half-width katakana / JIS X 0212 boundary safety が未保証。
+- MINOR
+  - spec/impl comments に CP932 scope と partial/full table の stale drift が残る。
+  - `:bytes-consumed` の意味が実装コメントと一致していない。
+  - priority chain は未実装だが、これは spec 上は scope 外。
+- positives
+  - UTF-8 one-shot path は overlong / surrogate / >U+10FFFF rejection が入っている。
+  - Shift-JIS/CP932 と EUC-JP one-shot table path は full generated table + SHA-256 verify を持つ。
+  - half-width katakana, CP932 extension, JIS X 0212 の one-shot smoke は最低限ある。
+
+## next-step suggestion
+1. まず `EUC-JP streaming tail-pending` を修正し、`CS1/CS2/CS3` の all-boundary ERT を追加する。
+2. `read-file-with-encoding` を true streaming read loop に置き換えるか、gate 対象から外す。
+3. `strict` contract を spec か実装のどちらかへ寄せて一本化する。
+4. table manifest に generator/input/spec の version-hash を埋め込み、Doc 31 の stale 記述を掃除する。

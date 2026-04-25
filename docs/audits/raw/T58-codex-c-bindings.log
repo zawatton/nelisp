@@ -1,0 +1,102 @@
+# NeLisp Emacs module FFI (C bindings) codex audit
+
+## verdict: CRITICAL
+
+## 観点 A: ABI compliance
+- [CRITICAL] `nelisp-runtime-module.c:116-123`, `nelisp-runtime-module.c:252-275`, `nelisp-runtime-module.c:307-312`, `nelisp-runtime-module.c:356-359`
+  reasoning: `non_local_exit_signal` を立てた後に `env->intern` / `env->make_integer` を継続して呼んでいます。Emacs module ABI では pending non-local exit 中は API 呼び出しを続けない前提です。
+  impact: error path 自体が ABI 違反になり、戻り値の生成や intern が未定義動作寄りになります。環境によっては本来の Lisp error ではなく壊れた状態を返します。
+  proposal: `signal_error` 後は即 return するだけにし、返り値は事前に用意した `nil` か未使用値に固定する。少なくとも signal 後に追加の env API を呼ばない。
+
+- [MAJOR] `nelisp-runtime-module.c:453-468`, `nelisp-runtime-module.c:484-515`
+  reasoning: `bind_function` / `provide_feature` が `funcall` の non-local exit を確認せず、`emacs_module_init` もそれを無視して常に 0 成功を返します。
+  impact: `fset` や `provide` が失敗しても module load が成功扱いになり、関数が一部だけ定義された壊れた初期化状態を残します。
+  proposal: 各 `funcall` 後に `non_local_exit_check` を確認し、pending exit があれば `emacs_module_init` を非 0 で失敗させる。
+
+- [MINOR] `nelisp-runtime-module.c:471-482`
+  reasoning: `emacs_module_init` の signature 自体と `runtime->size` / `env->size` の handshake は ABI 的に正しいです。
+  impact: init entry point の基本形は問題ありません。
+  proposal: この部分は維持でよいです。
+
+## 観点 B: Rust ↔ C boundary
+- [MAJOR] `nelisp-runtime-module.c:337-345`, `nelisp-runtime-module.c:361-385`
+  reasoning: コメントでは BYTES を unibyte string としていますが、実装は unibyte 性を検証していません。`copy_string_contents` 任せなので multibyte 文字列が渡ると意図した machine code bytes と実際に実行される bytes がずれ得ます。
+  impact: JIT 入力が静かに変質し、再現不能な mis-exec / crash を起こします。
+  proposal: `string-bytes == length` 相当を module 側で確認するか、bytes vector / unibyte-only 契約を強制する専用検証を入れる。
+
+- [MAJOR] `nelisp-runtime-module.c:436-444`, `nelisp-runtime/src/main.rs:14-15`, `nelisp-runtime/src/main.rs:107-108`, `nelisp-runtime/src/main.rs:182-185`
+  reasoning: 契約は `extern "C" fn() -> i64` なのに、C 側は `long (*)(void)` で受けています。Linux/macOS LP64 ではたまたま一致しますが、型としては ABI 契約を正しく表していません。
+  impact: 非 LP64 環境では戻り値 truncation の余地があります。少なくとも C/Rust 境界の「正確な i64 契約」が崩れています。
+  proposal: C 側を `int64_t (*entry)(void)` / `int64_t result` に統一する。
+
+- [MINOR] `nelisp-runtime-module.c:82-90`, `nelisp-runtime/src/syscall/mod.rs:78-187`
+  reasoning: `dlsym` している syscall wrapper の C signature は現状の Rust `extern "C"` 定義と概ね整合しています。
+  impact: syscall thin wrapper の宣言ミスマッチは大きくは見当たりません。
+  proposal: ただし `off_t` / `ssize_t` を C 側でも直接使うほうが将来の ABI drift には強いです。
+
+- [MINOR] `nelisp-runtime/src/syscall/error.rs:3-4`
+  reasoning: NaN-boxing / `Lisp_Object` marshalling はこの C module ではまだ実装していません。
+  impact: この観点の blind spot は「未着手」であり、現コードの直接欠陥というより今後の設計課題です。
+  proposal: 将来 `Lisp_Object` を Rust 側へ渡すなら boxed integer/string/error の ownership と tagging 契約を先に固定する。
+
+## 観点 C: memory safety
+- [CRITICAL] `nelisp-runtime-module.c:127-217`
+  reasoning: `dlopen` 成功直後に `runtime_handle` を global に確定し、その後の `dlsym` が途中で失敗しても `runtime_handle` を戻していません。次回呼び出しは `runtime_handle != NULL` で即成功扱いになり、未初期化の `sym_*` が残ります。
+  impact: 一度でも partial load に入ると module は poison state になり、次の `sym_mprotect` / `sym_clear_icache` / `sym_jit_wp` 呼び出しで NULL function pointer crash し得ます。さらに `dlclose` もなく handle leak です。
+  proposal: local handle に対して全 `dlsym` を成功させてから global へ commit する。失敗時は `dlclose(local)` と全 `sym_* = NULL` を徹底する。
+
+- [MAJOR] `nelisp-runtime-module.c:401-442`
+  reasoning: 任意 bytes を Emacs プロセス内でそのまま実行しています。これは設計上そうなのですが、subprocess bridge と違って fault containment がゼロです。
+  impact: malformed code / wrong arch bytes / stale icache で Emacs 本体ごと SIGILL/SIGSEGV になります。
+  proposal: 少なくとも “Lisp error に落ちるのは syscall/mmap 系失敗のみ、CPU fault はプロセス致命” を明文化する。安全性を上げるなら execute 部だけ subprocess 隔離する。
+
+- [MINOR] `nelisp-runtime-module.c:416`, `nelisp-runtime-module.c:423`, `nelisp-runtime-module.c:434`, `nelisp-runtime-module.c:442`
+  reasoning: `sym_jit_wp` / `sym_clear_icache` / `sym_munmap` の返り値を無視しています。
+  impact: 将来 Rust 側が実エラーを返す実装に変わると silent failure になります。`munmap` 失敗時はリークも見逃します。
+  proposal: 返り値を検査し、Emacs error へ変換する。
+
+## 観点 D: error / panic
+- [CRITICAL] `nelisp-runtime-module.c:343-345`, `nelisp-runtime-module.c:438-439`, `nelisp-runtime/Cargo.toml:46-49`
+  reasoning: コメントは「On any failure the function signals an Emacs error」と書いていますが、実際には `entry()` の CPU fault、abort、Rust 側 fatal failure を Emacs signal へ変換する経路がありません。`release` profile に panic policy も明示されていません。
+  impact: bad code path では Lisp error ではなく Emacs プロセス全体が落ちます。エラー契約の説明が実装より強すぎます。
+  proposal: コメントを現実に合わせて弱めるか、実行隔離を入れる。Rust 側は少なくとも panic policy を明示し、fatal path を設計文書に書く。
+
+- [MAJOR] `nelisp-runtime-module.c:118-123`
+  reasoning: すべての失敗を単一の `error` symbol に潰しており、`errno` / symbol 名 / phase 情報を構造化していません。
+  impact: Lisp 側で retryable error と ABI mismatch を区別できず、障害解析が難しいです。
+  proposal: `nelisp-runtime-error`, `nelisp-runtime-dlopen-error`, `nelisp-runtime-mprotect-error` などの symbol を分け、必要なら errno を data に含める。
+
+- [MAJOR] `nelisp-runtime-module.c:308-311`, `nelisp-runtime-module.c:355-358`
+  reasoning: loader failure 時に signal を立てつつ整数 sentinel も返そうとしており、error/success model が二重化しています。
+  impact: 呼び出し側契約が曖昧です。将来 non-local exit 処理を直す際にも呼び出し側の期待値がぶれます。
+  proposal: 失敗は signal のみ、成功時だけ integer/string を返す形に一本化する。
+
+## summary
+- top CRITICAL
+- `nelisp-runtime-module.c:127-217` の partial `dlsym` failure が global state を壊し、以後の呼び出しで NULL function pointer crash を招く。
+- `nelisp-runtime-module.c:116-123` と各 caller の error path が pending non-local exit 中に Emacs API を継続しており、module ABI 違反。
+- `nelisp-runtime-module.c:438-439` は in-process 実行をそのまま行うため、JIT bytes fault は Emacs signal 化されずプロセス致命。
+
+- top MAJOR
+- `nelisp-runtime-module.c:453-515` で module init 中の `fset` / `provide` failure を握り潰している。
+- `nelisp-runtime-module.c:361-385` で unibyte 契約を実装が強制していない。
+- `nelisp-runtime-module.c:436-444` が `i64` 契約を `long` で表現しており型境界が弱い。
+
+- MINOR
+- `jit_write_protect` / `clear_icache` / `munmap` の返り値未確認。
+- `error` symbol 一本化で Lisp 側の判別性が低い。
+- NaN-boxing / `Lisp_Object` marshalling は現フェーズでは未実装で、今後の設計固定が必要。
+
+- positives
+- `emacs_module_init` の entry signature と size handshake は基本形を守っている。
+- syscall wrapper の C/Rust signature 自体は大筋で揃っている。
+- heap buffer の `malloc` / `free` は通常 path では概ね対になっている。
+
+## next-step suggestion
+1. `load_runtime_symbols` を transaction 化して partial load poison を潰す。
+2. `signal_error` 系を全面的に見直し、pending non-local exit 後の Emacs API 呼び出しをゼロにする。
+3. `exec-bytes` の契約を明文化する。
+   CPU fault は fatal と書くか、隔離実行へ戻す。
+4. `unibyte` 検証と `int64_t` への型統一を入れる。
+5. init path と error mapping に ERT を追加する。
+   `dlsym` failure、`provide` failure、multibyte input 拒否、bad JIT bytes の契約テスト。

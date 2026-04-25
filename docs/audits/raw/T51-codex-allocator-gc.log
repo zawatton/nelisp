@@ -1,0 +1,85 @@
+`/tmp/nelisp-allocator-gc-codex-audit.md` への書き出しは、このセッションの read-only 制約で失敗しました。内容は以下です。
+
+```markdown
+# NeLisp allocator + GC inner codex audit
+
+## verdict: CRITICAL ISSUES
+
+## 観点 A: allocator correctness
+- [CRITICAL] src/nelisp-allocator.el:258-270, src/nelisp-gc-inner.el:236-249, 649
+  reasoning: allocator は `nelisp-heap-region` struct をそのまま返し、generation/family も bare symbol (`'nursery`, `'cons-pool`) です。一方 gc-inner は `:region-id/:generation/:family` の plist keyword schema しか受理しません。gc-inner 側コメントは `nelisp-allocator-snapshot-regions` bridge を前提にしていますが、その実装は存在しません。
+  impact: Doc 29 §6.10 / heap-region registry v1 の provider-consumer 接続が成立しておらず、allocator 実体を gc-inner が直接 consume できません。
+  proposal: region bridge を 1 箇所に実装し、version/schema/family keyword 化をそこで強制する。interop ERT を allocator 実体経由で追加する。
+
+- [CRITICAL] src/nelisp-allocator.el:97-105, src/nelisp-gc-inner.el:2073-2094
+  reasoning: allocator family-tag は `1..5`、gc-inner decode は `0..4` 前提です。tag=1 の cons は closure と誤読され、tag=5 の large-object は unknown 扱いで `:cons-pool` にフォールバックします。
+  impact: promotion / header decode / type-family dispatch が silent に壊れます。Doc 30 object header v2.13 の family-tag invariant を破っています。
+  proposal: family enum を単一定義へ統合し、両 module で共有する。unknown fallback は error に上げる。
+
+- [MAJOR] src/nelisp-allocator.el:542-654, 339-365
+  reasoning: nursery 側で header を実際に書いているのは tenured path だけです。`alloc-closure`/`alloc-string-span`/`alloc-vector-span`/`alloc-large-object` は bytes を予約するだけで header を保存せず、`alloc-cons` は明示的に headerless としています。
+  impact: Doc 29 §2.5 / Doc 30 §2.13 前提の family/size/forwarding 情報が nursery object に残らず、GC が allocator-produced object を正しく walk/forward/promo できません。
+  proposal: 全 heap object の header ABI を実装するか、side-metadata ABI を正式 contract 化して allocator/GC 両方で共有する。
+
+## 観点 B: GC algorithm
+- [CRITICAL] src/nelisp-gc-inner.el:1172-1188, 1337-1360
+  reasoning: `init-semispace` は from/to の同容量を検証せず、`--minor-copy-one` は `free-pointer` を `to-space :end` と比較しません。
+  impact: live set が to-space を超えると minor GC が黙って semispace 外へ進み、Cheney copy が silent corruption になります。
+  proposal: semispace init 時に equal-size を必須化し、copy 前に `free + size <= to-end` を検査して fail-fast する。
+
+- [MAJOR] src/nelisp-gc-inner.el:408-436, src/nelisp-allocator.el:474-519, 828-886
+  reasoning: `collect-roots` は各 region の `:start` を synthetic root にしますが、allocator では region.start がそのまま最初の object address です。
+  impact: 各 nursery/tenured/large-object region の先頭 object が常時 live 扱いになり、mark/sweep/promotion の正当性を歪めます。
+  proposal: region table 自体を host-side root として保持し、heap address を synthetic root にしない。
+
+- [MAJOR] src/nelisp-gc-inner.el:2211-2279, 2099-2195
+  reasoning: promotion 後に semispace side-table は rewired されますが、`run-minor-gc-with-promotion` が返す root-facing payload は `run-minor-gc` の `:forwarded-roots` をそのまま残します。
+  impact: caller が返却 stats を root rewrite source に使うと、promoted root が to-space address のまま残る危険があります。Doc 30 promotion correctness gate と噛み合っていません。
+  proposal: promoted root を tenured address へ再解決した `:forwarded-roots` を返すか、専用 root-rewrite API を追加する。
+
+## 観点 C: object header / forwarding
+- [CRITICAL] src/nelisp-allocator.el:542-549, docs/design/30-phase7.3-gc-inner.org:489-526
+  reasoning: spec v2.13 は object header を ABI freeze していますが、allocator は cons を headerless + side bitmap として実装しています。
+  impact: header bit layout invariant が object family によって崩れ、forwarding/age/mark の decode 一貫性が失われます。
+  proposal: cons を含めて header ABI に寄せるか、Doc 30 を side-bitmap 併用 ABI に改訂して GC 側 decode を揃える。
+
+- [MAJOR] src/nelisp-gc-inner.el:2060-2094, src/nelisp-allocator.el:97-105
+  reasoning: family-tag decode mismatchは header layerそのものの ABI break です。しかも gc-inner は unknown tag を `:cons-pool` に潰して異常を隠します。
+  impact: forwarding/promotion の後段で wrong family path に流れ、再現困難な corruption を作ります。
+  proposal: fallback を禁止し、version mismatch と同様に hard fail にする。
+
+## 観点 D: scheduler / safe-point
+- [MAJOR] src/nelisp-allocator.el:511-538, 863-895, src/nelisp-gc-inner.el:2563-2582
+  reasoning: scheduler は実装されていますが、allocator の nursery/tenured fast path から一度も呼ばれていません。
+  impact: “allocation-triggered” minor/major GC heuristic が実際の allocation rate に接続されておらず、safe-point density 評価が成立しません。
+  proposal: allocator hot path/bulk path で byte delta を scheduler に流す。
+
+- [MAJOR] src/nelisp-gc-inner.el:2687-2715, 945-965
+  reasoning: `safe-point-poll` は major 実行後も `bytes-since-minor` を 0 に戻しますが、major path は nursery semispace を回収しません。
+  impact: nursery がほぼ満杯でも major 後に minor trigger accounting が消え、次の overflow まで検知が遅れます。
+  proposal: minor counter reset は nursery-collecting cycle のみで行う。major-only path は nursery occupancy を別管理する。
+
+- [MAJOR] src/nelisp-allocator.el:770-895, docs/design/30-phase7.3-gc-inner.org:682-687
+  reasoning: tenured exhaustion は `nelisp-allocator-tenured-overflow` を投げるだけで、emergency GC / retry path がありません。
+  impact: scheduler 80% heuristic をすり抜けた burst allocation で即 hard failure になります。
+  proposal: tenured overflow 時の emergency major GC + 1 retry を allocator/GC の明示 contract にする。
+
+## summary
+- top CRITICAL (= bench gate / soak fail risk)
+  heap-region/provider-consumer ABI が未接続、family-tag enum が不一致、minor copy に to-space 境界検査がありません。
+- top MAJOR (= correctness / spec deviation)
+  nursery object header contract 未実装、region-start synthetic root で先頭 object がリーク、scheduler が allocator に未接続、major 後に nursery accounting を誤って reset しています。
+- MINOR (= polish)
+  Doc 30 §6.10 の debug oracle 群 (`verify-heap` / `verify-card-table` / `poison-from-space` / `double-scan`) が未実装です。
+- positives
+  finalizer queue 分離は sweep 実行系から切り離されており、write barrier / young-root-limited / tenured free-list-coalesce の骨格自体は入っています。
+
+## next-step suggestion
+- 1. region bridge + family enum を単一点に統合し、allocator 実体から gc-inner へ渡る interop test を追加する。
+- 2. nursery/to-space object metadata ABI を fix し、header か side-metadata のどちらかを allocator/GC で統一する。
+- 3. semispace size/end invariant を強制し、minor copy overflow を fail-fast にする。
+- 4. synthetic region-start root を廃止し、root scan を host-side registry root に戻す。
+- 5. allocator fast path に scheduler hook と tenured emergency GC retry を接続する。
+```
+
+必要なら次に、この監査結果を `MAJOR/CRITICAL` ごとに修正計画へ落とします。
