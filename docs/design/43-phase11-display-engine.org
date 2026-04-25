@@ -1,0 +1,1353 @@
+#+TITLE: Doc 43 — Phase 11 Display Engine Architecture (community-driven backend layer)
+#+DATE: 2026-04-25
+#+AUTHOR: zawatton + Claude (session-A 起草 v0 = T112、v1 revise = T124、v2 polish = T132、Opus 4.7 1M context)
+#+STATUS: LOCKED-2026-04-25-v2 (Phase 11 display engine、T112 v0 → T117 review (5 MAJOR + 7 MINOR + 3 NIT) → T124 v1 → T129 第二弾 review (READY-TO-LOCK + 4 MINOR + 3 NIT polish) → T132 v2、+980→1300 LOC、6 sub-phase + Phase 11.A v2.0 core / 11.B+ community-driven + degrade contract LOCK)
+#+DEPENDS_ON: Doc 33 v2 LOCKED-2026-04-25 §4.4 / §4.5 / §6 / §7 / §8 R1, Doc 34 v2 LOCKED-2026-04-25 §2.2 / §2.11 / §4.2 / §6.1 frame stub invariant + display-spec consumer contract, Doc 39 v2 LOCKED-2026-04-25 §11 thin wrapper 原則, /Notes/dev/nelisp-emacs/ Doc 01 DRAFT v1 §2.1 / §3.1 / §3.2 / §3.3 Phase 1/2/3 module structure (T123 SHIPPED 想定)
+#+PARENT: Doc 33 v2 §4.4 + §4.5
+
+*v2 polish summary (T132、2026-04-25)*: T129 第二弾 review (READY-TO-LOCK with
+polish、4 MINOR + 3 NIT、Claude Opus 4.7 1M context) の polish 候補 7 件を全件
+反映。主な変更:
+- *MINOR-B.2.1*: §9 OQ-2 末尾に Doc 01 §9.5 option A/B との対応 note 1 行追加
+  (= 案 X = Doc 01 option B 内 thin path、案 Y = Doc 01 option B 内 厚い path、
+  Doc 01 option A = 案 X/Y どちらも不採用) で 3-state vs 2-state 用語 mismatch 解消
+- *MINOR-B.2.2*: §11.3 v2 LOCK 条件 "T125 想定" → "T125 + T129 第二弾 review
+  完遂、観点 B.2 9/9 GREEN" に update
+- *MINOR-B.2.3*: §10 関連 doc Doc 01 row "DRAFT v0" → "DRAFT v1 (T123 SHIPPED
+  想定)" に同期
+- *MINOR-B.2.4*: §11.6 reviewer addendum "5 MAJOR" count → "8 MAJOR + 8 MINOR
+  + 3 NIT" 列挙数と整合する正規化
+- *NIT-B.2.5*: §3.0 表 Phase 15+ ERT delta セルに experimental note 追加
+- *NIT-B.2.6*: §1.1 Layer table の Phase 列略記 (詳細は重要 1/2/3 note へ集約)
+- *NIT-B.2.7*: §11.5 v1 row scope 短縮 (詳細 = §11.6 reviewer addendum へ集約)
+
+詳細 履歴 = §11.5、reviewer addendum (T117 v1 + T129 v2) = §11.6。
+
+*v1 revise summary (T124、2026-04-25)*: T117 review (MAJOR REVISIONS、5 MAJOR
++ 7 MINOR + 3 NIT + 4 POSITIVE) を反映。主な変更:
+- *parent 整合 (A.1)*: Phase 11.B (redisplay engine) の core commitment 判断を
+  逆向きに振り直し、Doc 33 §4.4 v2 narrow 趣旨と整合 = "v2.x community 主導
+  default、core commitment 化は §9 OQ-1 resolution 待ち"
+- *Doc 01 (nelisp-emacs) との canonical 化 (A.2 + B.1)*: =emacs-frame.el= は
+  nelisp-emacs Doc 01 Phase 1 が canonical (frame primitive)、本 Doc 43 Phase
+  11.A は *frame backend dispatch + TUI backend* のみ。両 doc cross-reference 化
+- *Phase 番号体系統一 (A.3)*: 本 doc 主体は Phase 11.A + 11.B のみ、Phase
+  11.C-F は Doc 33 §4.5 Phase 12-15+ への bridge として §3.3 統合節へ集約
+- *degrade contract (C.1)*: =display-spec-unsupported= condition signal を
+  invariant 化、§4.1 各 API table に "未対応時 behavior" 列追加
+- *capability matrix scope 明示 (C.2 + C.3)*: =font-make= mandatory=no /
+  capability=font-shaping に修正、12 件 missing capability を §2.5 後半
+  "v2.x additive future capability" として列挙
+- *rust delegate 案 X/Y 分割 (D.1)*: Doc 39 v2 thin wrapper 原則 (~300-500 LOC)
+  整合の案 X (thin, 推奨) と例外的厚い案 Y (~3000 LOC) の 2 案分割
+- *MINOR/NIT*: 期間列 anvil leverage 有無 / Pure NeLisp port 表現 / Win32
+  anvil-pty-broker 移動 / IME API 拡張 / OQ-2 bench protocol / "1/3" 表現 /
+  Phase 列 dot 統一 / Doc 番号 reservation note
+
+詳細 履歴 = §11.5、reviewer addendum = §11.6。
+
+* §0 motivation = Doc 33 §4.4 display engine 担当 community-driven backend layer
+
+T112 (NeLisp Phase 11 設計起草、=2026-04-25 dispatch=) で *Phase 11 display
+engine architecture* を独立 design doc に切り出す。Doc 33 v2 §4.4 で
+=Phase 11 = nelisp-display-tui reference impl + Phase 12+ community
+backends= が骨格として定義済だが、=display-spec consumer / producer の
+boundary= / =frame stub → real backend swap-in protocol= / =sub-phase
+decomposition= / =cross-platform porting cost 配分= が散在しており、
+Phase 11.A 着手前に *unified design doc* として LOCK しておく必要がある。
+
+Doc 33 v2 §4.4 の "TUI MVP scope (~2000-3500 LOC)" + Doc 34 v2 §2.11 の
+"frame stub mode invariant (80x24 fixed + unique frame-id)" + README Layer
+3 wave (=src/emacs-frame.el= + =src/emacs-tui-backend.el=) の 3 source を
+集約し、本 doc は以下 4 axis を define する:
+
+1. =display-spec contract= (Doc 33 §6.1-6.6 の v2 改訂版 = capability flag 追加)
+2. =Phase 11.A〜11.F sub-phase= (TUI MVP / redisplay engine / GTK / Cocoa /
+   Win32 / wgpu)
+3. =frame stub → real backend swap-in protocol= (Doc 34 §2.11 invariant
+   との互換維持)
+4. =community backend ecosystem governance= (compliance test / co-maintainer
+   review / dormancy archive)
+
+*位置づけ*:
+- v2.0 ship gate 構成要素 3 つ (= Phase 9a / Phase 10 / Phase 11、Doc 33 §7
+  table) のうち *Phase 11 部分* を本 doc が担当。Phase 11.A (TUI MVP) は
+  *core commitment*、Phase 11.B (redisplay engine) は *v2.x community 主導
+  default* (= Doc 33 §4.4 v2 narrow 整合、core commitment 化は §9 OQ-1
+  resolution 待ち)、Phase 12+ community backends (Doc 33 §4.5、本 doc §3.3
+  へ bridge として参照) は *community-dependent*
+- =nelisp-emacs= repo (=/Notes/dev/nelisp-emacs/=、Doc 01 = Layer 2 残 +
+  Layer 3 reference 担当) と本 =nelisp= repo (= Layer 1 core + Layer 2 spec)
+  の *boundary 明確化*。Doc 01 Phase 1 = =emacs-frame.el= 等の frame primitive
+  port、Doc 01 Phase 2 = 本 Doc 43 Phase 11.A reference impl
+- Doc 34 v2 §2.11 frame stub invariant の *consumer side* に該当、Phase 11.A
+  SHIPPED で Phase 9b.3 (window + frame full integration) が完成
+
+*本 doc の主体 scope (T117 A.3 反映)*:
+- *主体*: Phase 11.A (TUI MVP、core commitment) + Phase 11.B (redisplay engine、
+  v2.x community 主導 default、core commitment 化検討) のみを *core commitment
+  範囲* として detailed design
+- *bridge*: Phase 11.C / 11.D / 11.E / 11.F として v0 で書いた community backends
+  範囲は、本 doc では *Doc 33 §4.5 Phase 12 / 13 / 14 / 15+* への参照 bridge
+  に格下げ、§3.3 community backends 統合節で 1 ヶ所にまとめる (= Phase 番号
+  体系の parent doc 整合、別 doc Doc 44 community backend governance future
+  起草想定)
+
+*工数見積 (DRAFT v1)*:
+- Phase 11.A 単独 = *4-9 ヶ月* (anvil leverage、~2000-3500 LOC、Doc 33 §4.4 v2
+  LOCKED と整合)
+- Phase 11.B (redisplay engine MVP) = 追加 *6-12 ヶ月* (~1300-2500 LOC、xdisp.c
+  port が最大難所、community 主導 default だと anvil leverage 無し = +2x
+  realistic buffer 適用で *12-24 ヶ月* に伸びる可能性)
+- Phase 12-15+ (= 旧 Doc 43 v0 の 11.C-F) は Doc 33 §4.5 で各 *6-12 ヶ月 / 各
+  ~3000-5000 LOC、community 主導* (= NeLisp core team の commitment 外、anvil
+  leverage 不前提で *12-24 ヶ月 x 4* realistic)、本 doc §3.3 で参照
+
+* §1 scope (= Phase 11.A TUI primary + Phase 11.B redisplay engine、Phase 12+ Doc 33 §4.5 GTK / Cocoa / Win32 / wgpu = community bridge)
+
+** 1.1 layer boundary
+
+Doc 33 v2 §3.4 + nelisp-emacs Doc 01 §2.1 module structure + Doc 33 §4.4/§4.5
+Phase 番号体系を本 doc で再定義 (T117 A.2/A.3、Doc 01 と同期):
+
+| layer         | repo                                              | scope                                                                                                        | Phase                  | maintainer            |
+|---------------+---------------------------------------------------+--------------------------------------------------------------------------------------------------------------+------------------------+-----------------------|
+| Layer 1       | =/Notes/dev/nelisp/=                              | NeLisp core runtime (= Phase 7+ SHIPPED + Phase 8 mutable text + Phase 9a top API)                            | -                      | session-A core        |
+| Layer 2 spec  | =/Notes/dev/nelisp/=                              | =nelisp-display-spec= (Doc 33 §6 = display API contract)、別 repo 想定 =github.com/<org>/nelisp-display-spec= | Phase 10               | session-A core        |
+| Layer 2/3 ext | =/Notes/dev/nelisp-emacs/=                        | =emacs-buffer.el= + =emacs-window.el= + *=emacs-frame.el= (frame primitive、Doc 34 §2.11 stub mode 実装)* + =emacs-keymap.el= + =emacs-minibuffer.el= = Layer 2 残 (canonical = nelisp-emacs Doc 01 Phase 1) | Doc 01 §3.1 Phase 1    | session-A core        |
+| Layer 3 ref   | =/Notes/dev/nelisp-emacs/=                        | =emacs-frame.el= に *backend dispatch table 追加* + =emacs-tui-backend.el= + =emacs-tui-terminfo.el= + =emacs-tui-event.el= = TUI reference impl (= 本 Doc 43 Phase 11.A MVP、canonical = 本 doc) | §3.1 Phase 11.A        | session-A core        |
+| Layer 3 inner | =/Notes/dev/nelisp-emacs/= or 別 repo             | =emacs-xdisp.el= = redisplay engine (= 本 doc Phase 11.B、xdisp.c port = 最大難所、*v2.x community 主導 default*、core commitment 化は §9 OQ-1 + Doc 33 §4.4 v2 narrow と整合 = community 主導 推奨) | §3.2 Phase 11.B        | TBD (§9 OQ-1、暫定 community) |
+| Layer 3 ext   | =github.com/<community>/nelisp-display-<backend>= | =gtk= / =cocoa= / =win32= / =wgpu= = 各 backend community 主導 (Doc 33 §4.5 = Phase 12 / 13 / 14 / 15+)        | §3.3 bridge / Doc 33 §4.5 Phase 12-15+ | community             |
+
+*重要 1 (canonical 化、T117 B.1)*: =emacs-frame.el= の frame primitive 部分は
+*nelisp-emacs Doc 01 Phase 1 が canonical*、本 Doc 43 Phase 11.A は同 file に
+*backend dispatch table を追加* + =emacs-tui-backend.el= 等を新規追加するのみ。
+Doc 01 §2.1 module list で =emacs-frame.el= は Phase 1 SHIPPED 前提として扱い、
+本 doc は consumer 側 (= dispatch table を Phase 11.A で wire)。
+
+*重要 2 (Phase 番号体系、T117 A.3)*: Phase 11.A / 11.B = 本 doc 主体、Phase
+12 / 13 / 14 / 15+ = Doc 33 §4.5 主体 (本 doc §3.3 bridge node)。Doc 43 v0 で
+"Phase 11.C-F" と書いた範囲は v1 で全削除 (= parent Doc 33 §4.5 への renumber)、
+誤った "Phase 11.C-F" identifier の参照は v0 → v1 で全 catch up 済。
+
+*重要 3 (Doc 10 Layer 2 spec scope)*: 本 doc は Layer 2 spec (Phase 10) の
+*consumer side architecture* を扱う、Phase 10 の API skeleton 自体は Doc 33
+§6 で既定義 (本 doc §2.5 で v2 capability flag 追加を提案、§4 で degrade
+contract を invariant 化 = T117 C.1)。
+
+** 1.2 in-scope (= 本 doc で扱う、T117 A.3 反映で Phase 11.A/B 主体)
+
+- *Phase 11.A* sub-phase decomposition + ship gate (= TUI MVP reference impl)
+- *Phase 11.B* sub-phase decomposition + ship gate (= redisplay engine MVP、
+  v2.x community 主導 default、core commitment 化は §9 OQ-1)
+- =display-spec= consumer contract (= Phase 11.A の TUI backend が spec を
+  consume する具体的 protocol、Phase 12+ も同 contract を共有)
+- =frame stub mode invariant= (Doc 34 §2.11) と Phase 11.A real backend の
+  *swap-in protocol* (= API surface 不変、backend object の internal
+  representation のみ差し替え)
+- =glyph matrix / face / display attribute= 抽象化 (Phase 11.B redisplay
+  engine の前提)
+- =backend capability flag= protocol (Doc 33 §4.4 v2 で言及済の
+  =display-spec-capability-list=) + *degrade contract* (T117 C.1、§4 で
+  =display-spec-unsupported= condition signal を invariant 化)
+- Phase 11.B redisplay engine の architecture (xdisp.c port の MVP scope +
+  degrade fallback)
+- ABI / API list (display-spec consumer contract、frame backend interface)
+- Phase 12+ community backends への *bridge node* (§3.3 でまとめて参照、Doc 33
+  §4.5 が主体) — 詳細 governance は別 doc Doc 44 (future) で起草想定
+
+** 1.3 out-of-scope (= 本 doc では扱わない、§8 へ defer)
+
+- GUI frameworks 抽象化全自動化 (= GTK4 / AppKit / Win32 の差異を
+  完全 hide する universal binding generator)
+- accessibility (a11y) layer (= screen reader / high contrast / etc、Phase
+  16+ で別 doc 起草想定)
+- 多言語複合 IME (= CJK + Indic + bidirectional text + complex shaping
+  全部対応、Phase 11.A で keyboard event のみ、IME は §6.6 v2 で
+  capability flag 化、各 backend が opt-in)
+- =image= rendering の terminal protocol (= Sixel / Kitty graphics) 統合
+  (= Phase 11.A v2.x、backend capability flag で declare)
+- =wgpu= backend の web target (=wasm-bindgen= 経由、Phase 15+)
+
+* §2 architecture (= frame abstraction + redisplay engine + glyph matrix + face / display attribute system)
+
+** 2.1 frame abstraction (= Phase 11.A primary、Doc 34 §2.11 swap-in)
+
+Doc 34 v2 §2.2 で Phase 9b の =frame primitive= は "abstract handle + Doc
+33 §6.1 backend consumer" と LOCKED。本 doc §2.1 では *Phase 11.A 着手
+時の swap-in protocol* を以下 invariant で定義:
+
+| invariant                                                                                          | rationale                                                |
+|----------------------------------------------------------------------------------------------------+----------------------------------------------------------|
+| =make-frame= return value = unique frame-id (integer or symbol)                                    | Doc 34 §2.11 LOCKED invariant 維持                        |
+| =frame-width= / =frame-height= = stub mode で 80x24 固定、real backend で actual size               | Doc 34 §2.11 LOCKED invariant 維持                        |
+| frame backend object internal representation = Phase 11.A で =display-spec-frame-handle= に変更   | spec contract への準拠、placeholder shape は Phase 9b 互換 |
+| =frame-parameters= alist = stub では subset、real backend で full key set                          | Doc 34 §2.2 LOCKED 推奨 A "supported subset only" を拡張    |
+| =delete-frame= = stub では registry 更新のみ、real backend で =display-spec-frame-destroy= 呼び出し | Doc 34 §2.11 LOCKED invariant 維持                        |
+
+*swap-in protocol* (Phase 11.A SHIPPED 時 procedure):
+
+1. =nelisp-display-init= 呼び出し時に backend symbol 受領 (=tui= / =gtk= /
+   etc)
+2. backend symbol が =stub= 以外なら =display-spec-frame-handle= 構築 path
+   へ swap (= =emacs-frame.el= 内 dispatch table)
+3. 既存 stub mode で create された frame は *残置 + frame-id 再利用不可*
+   (= backend 切替は process restart 推奨、=user signoff 案件=)
+4. ERT regression: Doc 34 §2.11 の "stub backend で全 frame/window API
+   ERT 緑" を Phase 11.A real backend でも *同 ERT が緑* で確認 (=
+   double-check pattern)
+
+** 2.2 redisplay engine (= Phase 11.B、xdisp.c port 最大難所)
+
+Doc 33 v2 §8 R1 で "Phase 11 display engine TUI scope creep" risk が
+mitigation 含めて LOCKED、本 doc §2.2 で *redisplay engine architecture*
+を以下 4 component に分解:
+
+| component                  | scope                                                                                                                        | LOC 目安      | xdisp.c precedent line 数 |
+|----------------------------+------------------------------------------------------------------------------------------------------------------------------+---------------+----------------------------|
+| =redisplay-driver=         | window-tree → frame canvas への dirty region propagation、=force-mode-line-update= / =redraw-display= 等の trigger handler   | ~500-1000 LOC | ~5000 line                  |
+| =glyph-matrix=             | window 内 char/face grid、=glyph-row= struct + =glyph= struct (= text + face + face-id + lbearing/rbearing 等の cache)        | ~800-1500 LOC | ~3000 line                  |
+| =face-realize=             | =defface= → backend specific face object への lazy realize (= =face-attribute= cache + inheritance resolve)                   | ~400-800 LOC  | ~2000 line                  |
+| =display-property-handler= | =text-property= の =display= / =face= / =composition= / =invisible= / =overlay= property → glyph-matrix への変換              | ~600-1200 LOC | ~4000 line                  |
+| 合計                       |                                                                                                                              | ~2300-4500 LOC | ~14000 line                 |
+
+*Phase 11.B MVP scope* (= xdisp.c の "fully-fledged C" を *NeLisp で MVP*
+範囲に縮小):
+
+- bidi (双方向 text) は Phase 11.B v2.x、MVP は LTR only
+- =composition= (CJK glyph composite) は Phase 11.B v2.x
+- =display= property の =image= / =space= / =slice= は capability flag で
+  各 backend opt-in (TUI では =image= unsupported declare)
+- =invisible= property は MVP 含む (= overlay 性能依存、§5 risk R2)
+- =mouse-face= は Phase 11.B v2.1+ (mouse event 自体が Phase 11.A v2.1+)
+
+*xdisp.c port 戦略 (T117 B.4 反映、MVP scope 縮小と implementation 言語選択を
+別 axis に分離)*:
+- *MVP scope narrow*: 14000 line 全部を一気に port する pattern は不採用 (=
+  3-5 年 timeline で現実的不可能)。MVP scope = redisplay-driver + glyph-matrix
+  のみ (~1300-2500 LOC) に narrow して着手、=face-realize= /
+  =display-property-handler= は Phase 11.B v2.x で incremental
+- *implementation 言語選択*: pure NeLisp port 優先で MVP scope を試行 (= §9
+  OQ-2 tentative)、bench gate 未達 (= xterm-256color 80x24 で 60fps 達成不可)
+  なら *rust delegate* に swap escalate
+- *escape hatch (rust delegate)*: 2 案併記 (T117 D.1 反映、Doc 39 v2 §11
+  thin wrapper 原則整合):
+  - *案 X* (推奨、Doc 39 v2 整合): redisplay engine *中核は NeLisp*、Rust 側は
+    *terminal write hot path* / *glyph metric calculation* 等 bottleneck 1-2
+    関数のみ delegate (= ~500 LOC Rust + NeLisp 側 ~1300-2500 LOC、Doc 39 v2
+    thin wrapper 原則 ~300-500 LOC + α の範囲)
+  - *案 Y* (例外、Doc 39 v2 §11 amendment 必要): redisplay engine 中核を Rust
+    側に持つ (= =nelisp-runtime/src/redisplay/= ~3000 LOC Rust + NeLisp 側 ~500
+    LOC API)、Doc 39 thin wrapper 原則の例外として documentate
+  - 詳細 = §9 OQ-2 + decision dependency (bench protocol + threshold)
+
+** 2.3 glyph matrix (= Phase 11.B core data structure)
+
+=glyph-matrix= = 各 window の出力 buffer に相当する 2D char grid + face
+attribute mapping。Emacs の =struct glyph= / =struct glyph_row= /
+=struct glyph_matrix= に対応:
+
+#+begin_src elisp
+;; 基本 struct (cl-defstruct で実装想定)
+(cl-defstruct nelisp-display-glyph
+  char           ;; codepoint (integer)
+  face-id        ;; realized face index (integer)
+  width          ;; glyph width in columns (1 for ASCII, 2 for CJK)
+  composition-p  ;; nil or composition reference
+  display-spec)  ;; nil or display property override
+
+(cl-defstruct nelisp-display-glyph-row
+  glyphs         ;; vector of nelisp-display-glyph
+  used           ;; integer = active glyph count (≤ vector length)
+  hash           ;; row hash for diff propagation
+  start-pos      ;; buffer position at row start
+  end-pos)       ;; buffer position at row end
+
+(cl-defstruct nelisp-display-glyph-matrix
+  rows           ;; vector of nelisp-display-glyph-row
+  width          ;; column count
+  height         ;; row count
+  window         ;; owning window handle
+  dirty-set)     ;; bitset of dirty row indices
+#+end_src
+
+*invariant*:
+- =glyph-matrix= は *window-private*、frame レベルで集約は redisplay-driver
+  が担当
+- =hash= field で *差分 redraw* (= 前回 frame と同 hash の row は backend
+  draw call skip)
+- =dirty-set= は =text-property= 変更 / buffer modify / window resize で
+  set される
+
+** 2.4 face / display attribute system
+
+Phase 11.B =face-realize= の design:
+
+#+begin_src elisp
+;; defface (= source spec、user editable)
+(defface my-highlight
+  '((((class color) (background dark)) :foreground "yellow")
+    (((class color) (background light)) :foreground "blue")
+    (t :inverse-video t))
+  "Highlight face for my-mode.")
+
+;; realized face (= backend specific cache、face-id で参照)
+(cl-defstruct nelisp-display-realized-face
+  face-id              ;; backend internal index
+  foreground-color     ;; backend specific color object
+  background-color     ;; backend specific color object
+  font                 ;; backend specific font object
+  attribute-mask)      ;; bitmask of active attributes
+#+end_src
+
+*realize protocol*:
+1. backend init 時 =default-face= を realize (= face-id 0 reserved)
+2. =defface= は spec のみ register、realize は *first use* で lazy
+3. =face-attribute= を呼ぶと cache miss → realize → cache hit に遷移
+4. backend swap (= =gtk= → =tui=) で *全 realized face cache invalidate*
+5. =frame-parameter= の background-mode 変更で *該当 frame の realized face
+   再 evaluate*
+
+** 2.5 backend capability flag (Doc 33 §4.4 v2 で言及済 =display-spec-capability-list=)
+
+Doc 33 §4.4 v2 で言及済の capability flag を本 doc §2.5 で具体化:
+
+#+begin_src elisp
+;; 各 backend が init 時に capability list を declare
+(defvar nelisp-display-tui-capabilities
+  '(text basic-color keyboard resize
+    ;; v2.x で追加可能:
+    ;; mouse 256-color truecolor mouse-tracking
+    ;; image-sixel image-kitty-graphics
+    ;; ime-passive ime-active
+    ;; timer
+    )
+  "TUI backend declared capability list.")
+
+;; application が capability check してから degrade
+(when (display-spec-capability-p 'image-kitty-graphics)
+  (display-image (find-image "icon.png")))
+;; 未対応なら text fallback path
+(unless (display-spec-capability-p 'image-kitty-graphics)
+  (insert "[icon]"))
+#+end_src
+
+*standard capability list (Phase 11.A LOCKED 想定 = MVP minimum、T117 C.3
+反映で v2.x additive future capability も明示)*:
+
+*scope*: 本表は Phase 11.A LOCKED 時点の 20 capability を列挙、Phase 11.B 〜
+v2.x で +N 拡張想定 (= 後続表 "v2.x additive future capability" 群を additive
+で追加、minor version bump 経由 = §9 OQ-4)。Phase 11.A LOCKED 時点で MVP
+minimum と "完成形 sub-set" の区別を明示することで OQ-4 version bump policy
+の前提を確定する。
+
+| capability             | meaning                                    | TUI MVP | TUI v2.x | GTK | Cocoa | Win32 | wgpu |
+|------------------------+--------------------------------------------+---------+----------+-----+-------+-------+------|
+| =text=                 | text drawing                               | ✓       | ✓        | ✓   | ✓     | ✓     | ✓    |
+| =basic-color=          | 8/16 color                                 | ✓       | ✓        | ✓   | ✓     | ✓     | ✓    |
+| =256-color=            | 256 color                                  | -       | ✓        | ✓   | ✓     | ✓     | ✓    |
+| =truecolor=            | 24-bit RGB                                 | -       | ✓        | ✓   | ✓     | ✓     | ✓    |
+| =keyboard=             | keyboard input                             | ✓       | ✓        | ✓   | ✓     | ✓     | ✓    |
+| =mouse=                | mouse click + drag                         | -       | ✓        | ✓   | ✓     | ✓     | ✓    |
+| =mouse-tracking=       | mouse motion event                         | -       | ✓        | ✓   | ✓     | ✓     | ✓    |
+| =resize=               | window resize event                        | ✓       | ✓        | ✓   | ✓     | ✓     | ✓    |
+| =timer=                | timer event integration                    | -       | ✓        | ✓   | ✓     | ✓     | ✓    |
+| =ime-passive=          | passive IME (commit only)                  | -       | -        | ✓   | ✓     | ✓     | -    |
+| =ime-active=           | active IME (preedit + commit)              | -       | -        | ✓   | ✓     | ✓     | -    |
+| =image-sixel=          | Sixel image protocol                       | -       | ✓        | -   | -     | -     | -    |
+| =image-kitty-graphics= | Kitty graphics protocol                    | -       | ✓        | -   | -     | -     | -    |
+| =image-png=            | PNG image (native rendering)               | -       | -        | ✓   | ✓     | ✓     | ✓    |
+| =image-svg=            | SVG image (native rendering)               | -       | -        | ✓   | ✓     | ✓     | ✓    |
+| =layout-box=           | box layout (vertical/horizontal)           | ✓       | ✓        | ✓   | ✓     | ✓     | ✓    |
+| =layout-grid=          | grid layout                                | ✓       | ✓        | ✓   | ✓     | ✓     | ✓    |
+| =layout-constraint=    | constraint solver layout (anchor/align)    | -       | -        | ✓   | ✓     | ✓     | ✓    |
+| =font-shaping=         | OpenType shaping (HarfBuzz 等)             | -       | -        | ✓   | ✓     | ✓     | ✓    |
+| =bidi=                 | bidirectional text                         | -       | -        | ✓   | ✓     | ✓     | ✓    |
+| =composition=          | CJK glyph composition                      | -       | -        | ✓   | ✓     | ✓     | ✓    |
+
+*v2.x additive future capability* (T117 C.3 反映、Phase 11.A LOCKED *後*
+incremental に minor version bump で追加想定、§9 OQ-4 で version bump policy
+を確定):
+
+| capability             | meaning                                                             | TUI v2.x | GTK | Cocoa | Win32 | wgpu |
+|------------------------+---------------------------------------------------------------------+----------+-----+-------+-------+------|
+| =scroll=               | window scroll event (= keyboard / programmatic、mouse wheel と別) | ✓        | ✓   | ✓     | ✓     | ✓    |
+| =selection=            | clipboard / primary selection 連携 (X11/macOS pasteboard/Win32)   | ✓ (OSC52) | ✓   | ✓     | ✓     | ✓    |
+| =drag-drop=            | drag-and-drop file/text input                                       | -        | ✓   | ✓     | ✓     | ✓    |
+| =fullscreen=           | frame fullscreen toggle                                             | -        | ✓   | ✓     | ✓     | ✓    |
+| =transparency=         | window transparency (alpha channel)                                 | -        | ✓   | ✓     | ✓     | ✓    |
+| =cursor=               | mouse cursor shape change                                           | -        | ✓   | ✓     | ✓     | ✓    |
+| =tooltip=              | OS native tooltip                                                   | -        | ✓   | ✓     | ✓     | ✓    |
+| =menu-bar=             | OS native menu bar (macOS で必須)                                   | -        | ✓   | ✓ (必須) | ✓     | -    |
+| =tab-bar=              | tab bar primitive                                                   | -        | ✓   | ✓     | ✓     | ✓    |
+| =dpi-scaling=          | HiDPI / Retina display (= 2x-3x scaling factor)                     | -        | ✓   | ✓     | ✓     | ✓    |
+| =dark-mode=            | OS color scheme preference detection                                | -        | ✓   | ✓     | ✓     | ✓    |
+| =locale=               | system locale + timezone (TUI で意味薄、GUI で必須)                 | △        | ✓   | ✓     | ✓     | ✓    |
+
+*未掲載 capability*: 上記 12 件の他、Emacs C 側 frame-parameter ~50 種で
+未掲載分は Phase 11.A SHIPPED 後 community 側から提案受領 → §9 OQ-4 minor
+version bump で additive。
+
+*capability protocol invariant*:
+- =display-spec-capability-list= return = static list per backend
+- =display-spec-capability-p= = O(1) lookup, hot path で安全
+- backend swap (= runtime change) 時 application が再 query 必須
+- application は *graceful degrade* responsibility (= unsupported は
+  text fallback、crash 不可)、backend 側は *=display-spec-unsupported=*
+  condition signal で statement (= §2.5a degrade contract、T117 C.1)
+
+** 2.5a degrade contract (= capability 未対応時 fallback rule、T117 C.1 反映)
+
+§2.5 capability matrix は "各 backend がどの capability を declare するか" の
+statement、本節 §2.5a で *application 側 portable な degrade contract* を
+LOCK する:
+
+#+begin_src elisp
+;; 全 backend は未対応 capability への API 呼び出しに対して
+;; display-spec-unsupported condition を signal する
+(define-error 'display-spec-unsupported
+  "Display capability not supported by current backend")
+
+;; condition data plist:
+;;   :capability  symbol  — 未対応 capability symbol
+;;   :api         symbol  — 呼び出された API name
+;;   :backend     symbol  — current backend symbol
+
+;; application 側 portable fallback pattern:
+(condition-case err
+    (display-image (find-image "icon.png"))
+  (display-spec-unsupported
+   ;; backend が image-* capability 未対応、text fallback
+   (insert "[icon]")))
+
+;; 簡易 check (= API 呼び出し前 guard):
+(if (display-spec-capability-p 'image-kitty-graphics)
+    (display-image (find-image "icon.png"))
+  (insert "[icon]"))
+#+end_src
+
+*degrade contract invariant (LOCKED for Phase 11.A)*:
+1. 未対応 capability への API 呼び出しは *=display-spec-unsupported=*
+   condition を signal (= silent no-op / nil return / crash は禁止)
+2. condition data plist = =:capability= symbol + =:api= symbol + =:backend=
+   symbol の 3 件
+3. application は =condition-case= で capture し portable fallback path へ
+4. 簡易 check は =display-spec-capability-p= で API 呼び出し前 guard、ホット
+   path 性能優先で = pre-check が default、condition-case は exception
+5. =display-spec-unsupported= は backend 切替後の stale capability cache 検出
+   にも用いる (= cached capability list と actual backend declared list の
+   mismatch も同 condition で error 化)
+
+** 2.6 event source integration (Doc 34 §2.4 EVENT_SOURCE_CONTRACT_VERSION = 1)
+
+Doc 34 §2.4 で =EVENT_SOURCE_CONTRACT_VERSION = 1= が LOCKED、本 doc §2.6
+では Phase 11 backend が同 contract を *consume* する protocol 定義:
+
+#+begin_src elisp
+;; Phase 11.A TUI backend が event-source 登録
+(nelisp-eventloop-register-source
+ :source-id 'tui-keyboard
+ :pull-fn   #'nelisp-display-tui--read-key
+ :priority  10
+ :version   1)  ;; Doc 34 §2.4 contract version
+
+;; Phase 9b event-loop が pull-fn を call、
+;; 結果を keyboard event queue へ enqueue
+#+end_src
+
+*backend ごとの event source 構成*:
+
+| backend | source                                                                          |
+|---------+---------------------------------------------------------------------------------|
+| TUI     | tui-keyboard (stdin select) + tui-resize (SIGWINCH) + tui-mouse (xterm protocol) |
+| GTK     | gtk-event (g_main_loop integration via FFI)                                      |
+| Cocoa   | cocoa-event (NSRunLoop integration via FFI)                                      |
+| Win32   | win32-msg (GetMessage loop integration via FFI)                                  |
+| wgpu    | winit-event (winit event loop via Rust delegate)                                 |
+
+*invariant*:
+- 各 backend = *single* event source (= 内部で multiplex、event-loop 側
+  には 1 source として見える)
+- =EVENT_SOURCE_CONTRACT_VERSION= bump 時 = 全 backend 同時更新必要
+  (= breaking change、§5 risk R3)
+
+*T117 C.4 反映*: 本 doc は Doc 34 §2.4 contract のみ consume。Doc 41
+(text-property、別 worktree DRAFT 中、=/tmp/nelisp-doc41-textprop-wt/=) が
+将来 pull-on-demand protocol を再定義した場合、Phase 11.B display property
+handler の consumer として cross-reference 必要 (§10 関連 doc table 末尾)。
+
+* §3 sub-phase (Phase 11.A TUI MVP + Phase 11.B redisplay engine + Phase 12+ community backends bridge)
+
+** 3.0 sub-phase 一覧 (T117 A.3 / B.2 / B.3 反映)
+
+*本 doc 主体 = Phase 11.A + 11.B のみ*。Phase 12+ は Doc 33 §4.5 主体 (本 doc
+§3.3 bridge node)。LOC / 期間 / ERT delta は v2.0 / v2.1 ship gate 算入先を
+sub-column で明示。
+
+| sub-phase | scope                                                                | LOC 目安     | 期間 (anvil leverage 有無)                       | ERT delta (v2.X ship gate 算入先)                                 | hard prerequisite                       | maintainer                                |
+|-----------+----------------------------------------------------------------------+--------------+--------------------------------------------------+-------------------------------------------------------------------+------------------------------------------+-------------------------------------------|
+| 11.A      | TUI MVP (= reference impl、=text/basic-color/keyboard/resize=)       | ~2000-3500   | 4-9 ヶ月 (anvil leverage 込)                     | +60 (= *v2.0 ship gate 算入*、Doc 33 v2 §7)                        | Phase 9b.3 / Phase 10 / Doc 01 Phase 1   | session-A core (core commitment)          |
+| 11.B      | redisplay engine (= MVP redisplay-driver + glyph-matrix)             | ~1300-2500   | 6-12 ヶ月 (anvil leverage 込) / 12-24 ヶ月 (community 主導 = anvil leverage 不前提、+2x realistic buffer = Doc 28 v2 §11.5 pattern) | +45 (= *v2.1 ship gate 算入*、Phase 11.B が core commitment 化された場合のみ、それ以外 = community release 単独) | 11.A SHIPPED                              | TBD (§9 OQ-1、暫定 community 主導)        |
+|-----------+----------------------------------------------------------------------+--------------+--------------------------------------------------+-------------------------------------------------------------------+------------------------------------------+-------------------------------------------|
+| 本 doc 主体 合計 |                                                                | ~3300-6000   | 10-21 ヶ月 (= core commitment 範囲) / 16-33 ヶ月 (= 11.B community 主導時) | +60 (v2.0) + +45 (v2.1 conditional)                               |                                          |                                           |
+|-----------+----------------------------------------------------------------------+--------------+--------------------------------------------------+-------------------------------------------------------------------+------------------------------------------+-------------------------------------------|
+| Phase 12 (Doc 33 §4.5、bridge = §3.3) | GTK backend (Linux ecosystem 最 priority)         | ~3000-5000   | 12-24 ヶ月 (community 主導、anvil leverage 不前提、+2x realistic buffer 適用) | +30 (= Phase 12 community release 単独算入)                        | 11.A SHIPPED + 11.B 推奨                 | community                                 |
+| Phase 13 (Doc 33 §4.5、bridge = §3.3) | Cocoa backend (macOS)                             | ~3000-5000   | 12-24 ヶ月 (同上)                                | +30 (= Phase 13 community release 単独算入)                        | 11.A SHIPPED + 11.B 推奨                 | community                                 |
+| Phase 14 (Doc 33 §4.5、bridge = §3.3) | Win32 backend (Windows)                           | ~3000-5000   | 12-24 ヶ月 (同上)                                | +30 (= Phase 14 community release 単独算入)                        | 11.A SHIPPED + 11.B 推奨                 | community                                 |
+| Phase 15+ (Doc 33 §4.5、bridge = §3.3) | wgpu backend (cross-platform / web、experimental) | ~5000-8000   | 24-48 ヶ月 (同上 + experimental 性質追加 buffer) | +20 (= Phase 15+ community release 単独算入、experimental 性質で integration test 縮減 = §5.2 compliance suite から GPU 環境依存 test 一部除外、T132 NIT-B.2.5 反映) | 11.A SHIPPED + 11.B 推奨 + Rust toolchain | community                                 |
+|-----------+----------------------------------------------------------------------+--------------+--------------------------------------------------+-------------------------------------------------------------------+------------------------------------------+-------------------------------------------|
+| Phase 12+ bridge 合計 |                                                        | ~14000-23000 | 60-120 ヶ月 (community pace、parallel possible)  | +110 (community release 単独、v2.0/v2.1 ship gate 算入無し)        |                                          |                                           |
+
+** 3.1 Phase 11.A — TUI MVP reference implementation
+
+新規 module 想定 (=/Notes/dev/nelisp-emacs/src/=、T117 A.2 反映で
+=emacs-frame.el= は inline note):
+- *既存* =emacs-frame.el= (= nelisp-emacs Doc 01 Phase 1 SHIPPED 前提) に
+  *backend dispatch table 追加* (= Doc 34 §2.11 swap-in 実装、§4.3 frame
+  backend interface に対応)
+- =emacs-tui-backend.el= (新規、TUI backend implementation)
+- =emacs-tui-terminfo.el= (新規、terminfo capability detection)
+- =emacs-tui-event.el= (新規、stdin / SIGWINCH event source)
+
+*scope (Doc 33 §4.4 v2 LOCKED MVP)*:
+
+- terminal capability detection + raw mode
+- *target terminal* (= xterm-256color + kitty + Windows Terminal の 3 つに
+  集中、他は best-effort)。Windows Terminal は =anvil-pty-broker= 経路と
+  協調 (= Windows 特有 PTY 制約、T117 B.5 で §3.5 から本節に移動)
+- frame / window 単純 layout (= 1 frame、no overlapping、horizontal/vertical
+  split のみ)
+- text drawing only (rect / text / fg-color / bg-color)
+- event source = keyboard + SIGWINCH のみ
+- layout primitive = box (vertical / horizontal) + simple grid
+- mini-Emacs demo (= =nelisp-elisp-compat= + =nelisp-display-tui=
+  integration 証明)
+
+*LOC 見積 ~2000-3500 LOC の根拠 (T117 A.2 反映)*:
+- 本 LOC は *TUI backend 単独* の見積 (= =emacs-tui-backend.el= +
+  =emacs-tui-terminfo.el= + =emacs-tui-event.el= + =emacs-frame.el= の
+  dispatch table 追加分のみ)
+- =emacs-frame.el= の frame primitive 部分 (= make-frame / select-frame /
+  frame-list / modify-frame-parameters / frame-parameter 等 10 contract、
+  Doc 34 §4.2 + Doc 01 §3.1) は nelisp-emacs Doc 01 Phase 1 で SHIPPED 済み
+  前提、本 doc Phase 11.A LOC 見積に *含まない* (= 1500-2500 LOC 別途)
+- Doc 33 §4.4 v2 LOCKED の "~2000-3500 LOC" と整合、nelisp-emacs Doc 01
+  Phase 2 = 本 doc Phase 11.A reference impl と canonical 同期
+
+*ship gate*:
+- *blocker*:
+  - frame stub → real TUI backend swap で Doc 34 §2.11 ERT 全緑
+  - text drawing 8 color subset で =display-spec= compliance test 緑
+  - keyboard event = stdin 経由 ASCII / control / arrow key 全件 dispatch
+  - SIGWINCH 受信時 frame size update + redisplay trigger
+  - mini-Emacs demo (= =find-file= + =insert-string= + =save-buffer= の
+    minimum cycle) が xterm-256color / kitty / Windows Terminal 3 環境で動作
+- *non-blocker*: tmux / mosh / other terminals は best-effort
+- *post-ship audit*:
+  - 24h soak (release-audit) で stdin 連続 keyboard input 1M event leak 0
+  - terminfo capability detection ÷ 10+ terminal で false-positive 0
+
+*工数*: 4-9 ヶ月 (anvil leverage)、~2000-3500 LOC、ERT +60。
+
+** 3.2 Phase 11.B — Redisplay engine
+
+新規 module 想定:
+- =emacs-xdisp.el= (redisplay driver、§2.2 redisplay-driver)
+- =emacs-glyph-matrix.el= (glyph matrix data structure、§2.3)
+- =emacs-face-realize.el= (face realization cache、§2.4)
+- =emacs-display-property.el= (display property handler、§2.2)
+
+*scope (Phase 11.B MVP)*:
+- redisplay-driver + glyph-matrix のみ MVP (= ~1300-2500 LOC)
+- face-realize / display-property-handler は Phase 11.B v2.x で incremental
+- LTR only、bidi / composition は v2.x
+- =display= property = string / =image= は capability flag で degrade
+- =invisible= property MVP 含む
+
+*ship gate*:
+- *blocker*:
+  - text-property face change → glyph-matrix dirty propagation 緑
+  - window scroll → glyph-matrix re-fill 緑
+  - =force-mode-line-update= → mode-line redraw 緑
+  - 差分 redraw (= row hash equal で backend draw call skip) を bench で測定、
+    full-redraw 比 5x 以上 throughput
+- *non-blocker*: bidi / composition / mouse-face は v2.x defer
+- *post-ship audit*:
+  - 1h soak で large-buffer (10MB) scroll → leak 0 / RSS growth < 5MB
+  - =anvil-bench= で =redisplay= per-frame latency p99 < 100ms (xterm-256color)
+
+*工数*: 6-12 ヶ月、~1300-2500 LOC、ERT +45。
+
+*escape hatch (T117 D.1 反映で 案 X/Y 分割)*:
+- *案 X (推奨、Doc 39 v2 thin wrapper 整合)*: redisplay engine 中核は NeLisp、
+  Rust 側は terminal write hot path / glyph metric calculation 等 bottleneck
+  1-2 関数のみ delegate (~500 LOC Rust + NeLisp 側 ~1300-2500 LOC、Doc 39 v2
+  §11 thin wrapper 原則 ~300-500 LOC + α の範囲)
+- *案 Y (例外、Doc 39 §11 amendment 必要)*: redisplay engine 中核を Rust 側に
+  持つ (= =nelisp-runtime/src/redisplay/= ~3000 LOC Rust + NeLisp 側 ~500 LOC
+  API)、Doc 39 v2 thin wrapper 原則の例外として documentate
+採用判断 = Phase 11.A SHIPPED 後、xdisp.c port の bench 結果 (= xterm-256color
+80x24 で 60fps 達成可否) を見て §9 OQ-2 で final、bench protocol + threshold
+は §9 OQ-2 decision dependency 参照。
+
+** 3.3 Phase 12+ — community backends bridge node (T117 A.3、Doc 33 §4.5 主体)
+
+*本節の位置づけ*: Doc 43 v0 で "Phase 11.C / 11.D / 11.E / 11.F" と書いた
+範囲は v1 で Doc 33 §4.5 = "Phase 12 / 13 / 14 / 15+" に *renumber* (= Phase
+番号体系の parent 整合)。本節は各 community backend の *summary + cross-
+reference* のみ提供、詳細 governance design は別 doc Doc 44 (community backend
+governance、future) で起草想定。
+
+*共通* (Phase 12 / 13 / 14 / 15+):
+- 各 backend = 別 community 主導 repo (=github.com/<community>/nelisp-display-
+  <backend>=)
+- =display-spec= compliance test (本 doc §5.2) を ship gate に組み込み
+- mini-Emacs demo (= Phase 11.A と同 demo、本 doc §5.3) を各 platform で動作
+  確認
+- 工数 = 各 *12-24 ヶ月* (community 主導、anvil leverage 不前提、+2x realistic
+  buffer = Doc 28 v2 §11.5 pattern 適用)
+- ERT delta = 各 +30 (community release 単独算入、v2.0/v2.1 ship gate 算入なし)
+
+*** 3.3.1 Phase 12 — GTK backend (Linux ecosystem 最 priority)
+
+- repo: =github.com/<community>/nelisp-display-gtk=
+- scope: GTK4 + Cairo + Pango binding (Rust crate =gtk4= delegate)、text /
+  truecolor / mouse / IME passive+active / image PNG+SVG / font shaping
+  (HarfBuzz) / bidi / composition、=layout-constraint= 含む (GtkBox /
+  GtkGrid + GtkConstraintLayout)
+- ship gate platform: Linux x86_64 + Linux arm64
+- 工数 / LOC / ERT: ~3000-5000 LOC、12-24 ヶ月、+30
+
+*** 3.3.2 Phase 13 — Cocoa backend (macOS)
+
+- repo: =github.com/<community>/nelisp-display-cocoa=
+- scope: AppKit + Core Graphics + Core Text binding (Rust crate =cocoa=
+  delegate)、text / truecolor / mouse / IME (NSTextInputContext) / image /
+  font shaping (Core Text) / bidi / composition、=layout-constraint= 含む
+  (NSStackView / NSGridView + Auto Layout)、=menu-bar= mandatory (macOS HIG)
+- ship gate platform: macOS arm64 + macOS x86_64
+- 工数 / LOC / ERT: ~3000-5000 LOC、12-24 ヶ月、+30
+
+*** 3.3.3 Phase 14 — Win32 backend (Windows)
+
+- repo: =github.com/<community>/nelisp-display-win32=
+- scope: Win32 + GDI+ + DirectWrite binding (Rust crate =windows= delegate)、
+  text / truecolor / mouse / IME (TSF/IMM32) / image / font shaping
+  (DirectWrite) / bidi / composition、=layout-constraint= 含む (Win32 native
+  layout 不在 = 独自 implement)
+- ship gate platform: Windows 11 x86_64 + Windows 11 arm64
+- 工数 / LOC / ERT: ~3000-5000 LOC、12-24 ヶ月、+30
+- *T117 B.5 反映*: =anvil-pty-broker= 経路は GUI backend 責務外 (= Win32
+  message loop + DirectWrite が責務)、anvil-pty-broker は §3.1 Phase 11.A
+  TUI backend (= Windows Terminal capability) で言及済
+
+*** 3.3.4 Phase 15+ — wgpu backend (cross-platform / web、experimental)
+
+- repo: =github.com/<community>/nelisp-display-wgpu=
+- scope: wgpu-rs binding (Rust crate =wgpu= delegate)、text / truecolor /
+  mouse / IME (各 platform 経由) / font shaping (=swash= 等 Rust crate) /
+  bidi / composition、全 layout primitive
+- *experimental*: web target (=wasm-bindgen= + WebGPU、Doc 33 §4.5 Phase 15+
+  v2.x post-MVP)
+- ship gate platform: Linux / macOS / Windows desktop (web demo は post-MVP)
+- 工数 / LOC / ERT: ~5000-8000 LOC、24-48 ヶ月 (experimental 性質追加 buffer)、+20
+
+* §4 ABI / API list (= display-spec consumer contract、frame backend interface)
+
+** 4.1 display-spec consumer contract (= Doc 33 §6.1-6.6 の v2 改訂)
+
+Doc 33 §6 の API skeleton を本 doc §4.1 で *Phase 11 consumer side
+contract* として確定。各 backend は以下 API を *全件 実装必須* (=
+capability で declare した範囲内で)。
+
+*未対応時 behavior 列* (T117 C.1 反映): mandatory=no な API、または
+mandatory=yes だが capability dependency が backend 未対応の場合の return
+behavior を default 列として明示。default = =display-spec-unsupported= signal
+(= §2.5a degrade contract LOCKED)、例外があれば各 row で明記。
+
+*** 4.1.1 frame / window / canvas (Doc 33 §6.1)
+
+| API                                          | input                                | output         | mandatory | capability dependency | 未対応時 behavior              |
+|----------------------------------------------+--------------------------------------+----------------+-----------+-----------------------+--------------------------------|
+| =nelisp-display-init=                        | =:backend= symbol                    | t              | yes       | -                     | unknown backend = signal       |
+| =nelisp-display-frame-create=                | =:title= str =:width= int =:height= int =:on-close= fn | frame handle   | yes       | -                     | n/a (mandatory)                |
+| =nelisp-display-frame-destroy=               | frame handle                         | t              | yes       | -                     | n/a                            |
+| =nelisp-display-window-create=               | frame =:type= sym                    | window handle  | yes       | -                     | n/a                            |
+| =nelisp-display-window-destroy=              | window handle                        | t              | yes       | -                     | n/a                            |
+| =nelisp-display-canvas=                      | window                               | canvas handle  | yes       | -                     | n/a                            |
+| =nelisp-display-frame-size=                  | frame                                | (W . H)        | yes       | =resize=              | =resize= 未対応時 80x24 fixed return + warn (= TUI MVP fallback) |
+| =nelisp-display-frame-set-size=              | frame W H                            | t              | yes       | =resize=              | =resize= 未対応時 signal       |
+
+*** 4.1.2 drawing operations (Doc 33 §6.2)
+
+| API                                          | input                                                | output | mandatory | capability dependency | 未対応時 behavior              |
+|----------------------------------------------+------------------------------------------------------+--------+-----------+-----------------------+--------------------------------|
+| =nelisp-display-draw-text=                   | canvas X Y string =:font= F =:face= F                | t      | yes       | =text=                | n/a (text mandatory)           |
+| =nelisp-display-draw-rect=                   | canvas X Y W H =:color= C                            | t      | yes       | =basic-color=         | n/a (basic-color mandatory)    |
+| =nelisp-display-draw-image=                  | canvas X Y image-data                                | t      | no        | =image-png= 等        | signal =display-spec-unsupported= |
+| =nelisp-display-draw-path=                   | canvas points =:stroke= int =:color= C               | t      | no        | =font-shaping= (path 共有) | signal                    |
+| =nelisp-display-flush=                       | canvas                                               | t      | yes       | =text=                | n/a                            |
+| =nelisp-display-clear=                       | canvas                                               | t      | yes       | =text=                | n/a                            |
+
+*** 4.1.3 event sources (Doc 33 §6.3)
+
+| API                                          | input                                                | output | mandatory | capability dependency | 未対応時 behavior              |
+|----------------------------------------------+------------------------------------------------------+--------+-----------+-----------------------+--------------------------------|
+| =nelisp-display-event-loop=                  | frame                                                | t      | yes       | =keyboard=            | n/a                            |
+| =nelisp-display-on=                          | frame event-type handler-fn                          | t      | yes       | (event-type 依存)     | event-type unsupported = signal |
+| =nelisp-display-off=                         | frame event-type                                     | t      | yes       | -                     | n/a                            |
+
+*event types*:
+- =key-press= (mandatory、=keyboard=)
+- =key-release= (optional、=keyboard=、capability 経由)
+- =mouse-click= (=mouse=)
+- =mouse-motion= (=mouse-tracking=)
+- =mouse-wheel= (=mouse=)
+- =window-resize= (mandatory、=resize=)
+- =window-close= (mandatory、-)
+- =window-focus-in= / =window-focus-out= (optional、各 backend)
+- =timer= (=timer=)
+- =ime-preedit= / =ime-commit= (=ime-active= / =ime-passive=)
+
+*** 4.1.4 layout primitive (Doc 33 §6.4)
+
+| API                                          | input                                                | output | mandatory | capability dependency | 未対応時 behavior              |
+|----------------------------------------------+------------------------------------------------------+--------+-----------+-----------------------+--------------------------------|
+| =nelisp-display-layout-box=                  | =:direction= sym =:spacing= int =:children= list     | layout handle | yes | =layout-box=          | n/a (mandatory)                |
+| =nelisp-display-layout-grid=                 | =:rows= int =:columns= int =:children= list          | layout handle | yes | =layout-grid=         | n/a (mandatory)                |
+| =nelisp-display-layout-constraint=           | =:anchor= parent =:align= sym                        | layout handle | no  | =layout-constraint=   | signal (= application は =layout-grid= に degrade) |
+
+*** 4.1.5 font / face / image (Doc 33 §6.5、T117 C.2 反映)
+
+| API                                          | input                                                | output | mandatory | capability dependency | 未対応時 behavior              |
+|----------------------------------------------+------------------------------------------------------+--------+-----------+-----------------------+--------------------------------|
+| =nelisp-display-font-make=                   | =:family= str =:size= int =:weight= sym              | font handle | *no* (T117 C.2) | *=font-shaping=* (T117 C.2) | signal (= TUI MVP は font 概念無し、=face-make= で fallback) |
+| =nelisp-display-face-make=                   | =:foreground= C =:background= C =:font= F            | face handle | yes | =basic-color=         | TUI で =:font= は ignore、=:foreground=/=:background= のみ反映 (= §2.4 face-realize で TUI realize は basic-color subset) |
+| =nelisp-display-image-load=                  | path-or-data                                         | image handle | no  | =image-png= 等 (= 各 image-* capability に応じ、いずれか 1 つ declare で OK = OR semantic、T117 C.2 末尾) | signal                |
+
+*** 4.1.6 input method (Doc 33 §6.6、T117 C.5 反映で 4 → 6 API)
+
+| API                                          | input                                                | output | mandatory | capability dependency | 未対応時 behavior              |
+|----------------------------------------------+------------------------------------------------------+--------+-----------+-----------------------+--------------------------------|
+| =nelisp-display-im-enable=                   | frame                                                | t      | no        | =ime-passive=         | signal                         |
+| =nelisp-display-im-disable=                  | frame                                                | t      | no        | =ime-passive=         | signal                         |
+| =nelisp-display-im-on-commit=                | frame handler-fn                                     | t      | no        | =ime-passive=         | signal                         |
+| =nelisp-display-im-on-preedit=               | frame handler-fn (signature = =(text cursor-pos candidates)=、T117 C.5 拡張) | t  | no | =ime-active=          | signal                         |
+| =nelisp-display-im-cursor-position=          | frame X Y                                            | t      | no        | =ime-active=          | signal (= preedit cursor 位置を OS に通知、caret 表示用) |
+| =nelisp-display-im-candidate-window=         | frame =:position= (X . Y) =:candidates= list         | t      | no        | =ime-active=          | signal (= candidate window 位置/内容、backend が OS native を選ぶか自前描画かは backend の判断) |
+
+*Phase 11.A LOCKED で minimum 6 API* (= preedit cursor 無し / candidate
+list 無しでは multi-character composing 不可、basic IME すら表現不可と
+T117 C.5 で指摘)。Phase 11.A v2.x で =ime-active= 対応 backend が増えた段階で
+IME API spec を v2 改訂、初版 6 API は minimum subset。
+
+** 4.2 capability protocol API
+
+| API                                          | input        | output           | mandatory |
+|----------------------------------------------+--------------+------------------+-----------|
+| =display-spec-capability-list=               | -            | list of symbols  | yes       |
+| =display-spec-capability-p=                  | symbol       | t/nil            | yes       |
+| =display-spec-version=                       | -            | version string   | yes       |
+| =display-spec-backend-name=                  | -            | symbol           | yes       |
+
+** 4.3 frame backend interface (= Phase 9b consumer ↔ Phase 11 producer 境界)
+
+Doc 34 §2.11 で LOCKED された =make-frame= / =frame-width= / =frame-height=
+等 Phase 9b API は本 doc §2.1 swap-in protocol で *backend dispatch* 化:
+
+#+begin_src elisp
+(defvar nelisp-frame-backend-dispatch
+  '((stub  . nelisp-frame-stub-impl)
+    (tui   . nelisp-display-tui-frame-impl)
+    (gtk   . nelisp-display-gtk-frame-impl)
+    (cocoa . nelisp-display-cocoa-frame-impl)
+    (win32 . nelisp-display-win32-frame-impl)
+    (wgpu  . nelisp-display-wgpu-frame-impl))
+  "Backend symbol → impl dispatch alist.")
+
+(defun make-frame (&optional parameters)
+  "Create new frame via current backend."
+  (let* ((backend (nelisp-display-current-backend))
+         (impl (alist-get backend nelisp-frame-backend-dispatch)))
+    (funcall (intern (format "%s-make-frame" impl)) parameters)))
+#+end_src
+
+*invariant*: Phase 9b の API contract (Doc 34 §4.2 frame contract 10 件) は
+backend 切替で *unchanged*、internal dispatch のみ変化。
+
+* §5 testing scope
+
+** 5.1 ERT scope (= Phase 11.A〜11.B core commitment)
+
+| sub-phase | new test file                          | ERT target | scope                                                          |
+|-----------+----------------------------------------+------------+----------------------------------------------------------------|
+| 11.A      | =test/emacs-frame-test.el=             | +20        | frame stub → TUI swap、Doc 34 §2.11 invariant 維持             |
+| 11.A      | =test/emacs-tui-backend-test.el=       | +30        | TUI backend display-spec compliance subset                    |
+| 11.A      | =test/emacs-tui-event-test.el=         | +10        | stdin event + SIGWINCH event ↔ event-loop integration         |
+| 11.B      | =test/emacs-glyph-matrix-test.el=      | +20        | glyph row hash diff、dirty propagation                        |
+| 11.B      | =test/emacs-xdisp-test.el=             | +15        | redisplay-driver MVP                                           |
+| 11.B      | =test/emacs-face-realize-test.el=      | +10        | face realize cache + invalidation                              |
+
+*ERT delta v2.X ship gate 算入先 (T117 B.2 反映)*:
+- *Phase 11.A 単独 ERT delta = +60* (= Doc 33 v2 §7 *v2.0 ship gate に算入*、
+  Doc 34 v2 §3.1.2 Phase 9b.3 の cumulative chain に sibling として乗る)
+- *Phase 11.B 単独 ERT delta = +45* (= *v2.1 ship gate に算入*、ただし *Phase
+  11.B が core commitment になった場合のみ*。§9 OQ-1 で community 主導 default
+  決定の場合、+45 は v2.1 ship gate には算入されず、community release ごとに
+  独立計上)
+- 観点 A.1 + B.2 連動 = "v2.0 ship gate に算入" 文言は Phase 11.A 単独 +60 に
+  narrow、Phase 11.B +45 を v2.0 に二重計上しない
+
+** 5.2 compliance test suite (= Phase 12〜15+ community gate、Doc 33 §4.5)
+
+各 backend が *compliance test suite を pass* することを ship gate に組み
+込む:
+
+#+begin_src elisp
+;; nelisp-display-spec-compliance-test として別 module 提供
+(ert-deftest display-spec-frame-create-destroy ()
+  "All backends must support frame create + destroy roundtrip."
+  (let ((frame (nelisp-display-frame-create :title "test" :width 80 :height 24)))
+    (should frame)
+    (should (nelisp-display-frame-destroy frame))))
+
+(ert-deftest display-spec-text-draw ()
+  "All backends must support basic text drawing."
+  (let* ((frame (nelisp-display-frame-create :title "t" :width 80 :height 24))
+         (window (nelisp-display-window-create frame :type 'window))
+         (canvas (nelisp-display-canvas window)))
+    (should (nelisp-display-draw-text canvas 0 0 "Hello"))
+    (should (nelisp-display-flush canvas))))
+
+;; ... 全 mandatory API + capability に応じた optional API
+#+end_src
+
+*compliance gate*:
+- mandatory API 全件 緑
+- declared capability に応じた optional API 緑
+- =display-spec-capability-p= return が consistent (= declared list と
+  matching)
+- backend 自身の release ごとに run、CI で結果公開
+
+** 5.3 integration test (= mini-Emacs demo cross-backend)
+
+mini-Emacs demo を *全 backend で同 ERT* で run:
+
+#+begin_src elisp
+(ert-deftest mini-emacs-demo-tui ()
+  (mini-emacs-demo :backend 'tui))
+
+(ert-deftest mini-emacs-demo-gtk ()
+  :tags '(community gtk)
+  (mini-emacs-demo :backend 'gtk))
+
+;; ... cocoa / win32 / wgpu 同様
+#+end_src
+
+*demo scope*: =find-file= + =insert-string= + =save-buffer= の minimum
+edit cycle、各 backend で *visually identical* (= 同 buffer / 同 window
+layout / 同 face)。
+
+** 5.4 bench gate (= Phase 11.B redisplay performance)
+
+Doc 28 v2 §11.5 redefine bench gate と同形 (3 value + 2/3 timing):
+
+| metric                   | gate                                  | rationale                          |
+|--------------------------+---------------------------------------+------------------------------------|
+| redisplay throughput     | full-redraw 比 *5x 以上* (= dirty row diff 効果) | §3.2 ship gate                     |
+| face realize cache hit   | *95%+ hit rate* (= 1000 face attribute query で) | §2.4 lazy realize 性能基準         |
+| frame draw latency p99   | *< 100ms* (= xterm-256color、80x24)   | §3.2 ship gate                     |
+| memory growth (1h soak)  | *< 5MB* (= scroll 10MB buffer 連続)  | §3.2 post-ship audit               |
+| event-loop integration   | event → handler dispatch *< 10ms p99* | Doc 34 §2.4 EVENT_SOURCE_CONTRACT 整合 |
+
+* §6 risks (= xdisp.c port 難度、redisplay performance、cross-platform glyph metrics、ecosystem 巻き込み)
+
+** R1: xdisp.c port 難度 (Phase 11.B 最大難所)
+
+Doc 33 v2 §8 R1 でも言及済。xdisp.c は ~14000 line の "fully-fledged C"、
+pure NeLisp port は 3-5 年 timeline = 現実的不可能。
+
+*mitigation*:
+- §2.2 escape hatch (= =rust delegate= 化 path) を Phase 11.A SHIPPED 後
+  に bench で判断 (§9 OQ-2)
+- Phase 11.B MVP scope = redisplay-driver + glyph-matrix のみ (~1300-2500
+  LOC)、=face-realize= / =display-property-handler= は Phase 11.B v2.x で
+  incremental
+- bidi / composition は Phase 11.B v2.x、MVP は LTR only (= 英語ドキュメント
+  と CJK simple text のみ動作保証)
+- *escape hatch 2*: Phase 11.A SHIPPED で v2.0 ship gate 達成、Phase 11.B
+  は v2.1+ に defer (= Doc 33 v2 §7 v2.0 scope の "Phase 11" を Phase 11.A
+  のみに narrow)
+
+** R2: redisplay performance (= overlay / text-property hot path)
+
+Doc 33 v2 §8 R3 で言及済の =text-property の hot path 性能=、本 doc §3.2
+で =display= property handler が overlay 性能に依存。
+
+*mitigation*:
+- §2.3 glyph row hash diff で *差分 redraw* (= row hash equal で backend
+  draw call skip)、bench で full-redraw 比 5x 以上を gate
+- =face-realize= cache (§2.4) で =face-attribute= O(1) lookup
+- =text-property= hot path は Phase 9b.1 で別 risk として既 mitigation 済
+  (Doc 34 §3.1.2)
+
+** R3: cross-platform glyph metrics (= Phase 12〜15+ backend ばらつき、Doc 33 §4.5)
+
+GTK / Cocoa / Win32 / wgpu の各 platform で *glyph metric が異なる* (=
+font shaping / kerning / line height の差異)、application が backend 切替で
+*visually identical* に見えない問題。
+
+*mitigation*:
+- §5.3 mini-Emacs demo で *visually identical* を ERT integration test で確認
+- §2.5 capability flag で =font-shaping= 未対応 backend (= TUI) は character
+  cell layout に degrade、application は capability check してから advanced
+  layout を使う
+- 完全 visually identical は v3.0 target、v2.0 は "approximately identical"
+
+** R4: ecosystem 巻き込み (= community backend dropout)
+
+Doc 33 v2 §8 R2 で言及済。Phase 12〜15+ (Doc 33 §4.5) は community 主導、
+各 backend の維持品質 ばらつき / contract violation / dormancy リスク。
+
+*mitigation*:
+- §5.2 compliance test suite を提供、各 backend が CI で回す
+- 各 backend に *NeLisp core team が co-maintainer 1 人 review*
+- 6 ヶ月 dormancy で =community-archived= stamp、再活性化は新 maintainer
+  前提
+- Doc 33 v2 §9 community contribution model と同 governance を本 doc §6 で
+  inherit
+
+** R5: terminal capability variety (= Phase 11.A scope creep)
+
+Doc 33 v2 §8 R1 で言及済の "terminal capability variety" を本 doc §6 で
+詳細化。xterm-256color / kitty / iTerm2 / Windows Terminal / tmux / mosh
+等の差異が 6 ヶ月 → 12 ヶ月 → 18 ヶ月と scope creep。
+
+*mitigation*:
+- Phase 11.A で *target terminal を限定* (xterm-256color + kitty + Windows
+  Terminal の 3 つに集中、他は best-effort)
+- =vterm= / =eat= 等 precedent を analyze、必要 capability subset を抽出
+- escape hatch: Phase 11.A.6 mini-Emacs demo を deliverable から除外可、
+  =emacs-tui-backend.el= の minimal MVP のみで v2.0 ship
+
+** R6: backend swap-in regression (= Doc 34 §2.11 invariant 破綻)
+
+Phase 11.A 着手で =stub= → real TUI backend swap 時に Doc 34 §2.11 LOCKED
+invariant が破綻するリスク (= Phase 9b.3 で SHIPPED された ERT が Phase
+11.A swap-in で fail)。
+
+*mitigation*:
+- §2.1 swap-in protocol invariant table で 5 件明示
+- Phase 11.A ERT で *Doc 34 §2.11 invariant ERT を再 run* (= regression check)
+- §2.1 invariant 破綻時は Phase 11.A 側を amend (= Doc 34 §2.11 LOCKED は
+  不変)
+
+** R7: redisplay engine の rust delegate 化採否 (§9 OQ-2、T117 D.1 反映)
+
+§3.2 escape hatch の =rust delegate= 化 path を採用するか否かが Phase 11.B
+ship 後に明確化、現時点 (DRAFT v1) では §9 OQ-2 で 案 X (thin、Doc 39 v2
+整合) tentative + bench gate 未達時 案 Y (厚い、Doc 39 §11 amendment) escalate
+の 2 段階化。
+
+*mitigation*:
+- Phase 11.A SHIPPED 後 bench (= =anvil-bench=、xterm-256color 80x24、10MB
+  buffer scroll latency p99) で xdisp.c port の現実性を測定
+- *案 X 採用時* = Doc 39 v2 (Phase 9d Rust syscall) と同 thin wrapper pattern、
+  Rust 側は bottleneck 1-2 関数のみ (~500 LOC)、NeLisp 側に redisplay engine
+  中核 (~1300-2500 LOC)
+- *案 Y 採用時* = Rust 側に redisplay engine 中核 (~3000 LOC)、Doc 39 v2 §11
+  thin wrapper 原則の例外として amendment 必要、community 主導 backend
+  ecosystem への影響別途 review
+- いずれも採用しない場合 = Phase 11.B 自体を community 主導化、Doc 33 v2 §7
+  v3.0 ship gate に defer
+
+** R8: IME complexity (= CJK + Indic + bidirectional text)
+
+§1.3 で out-of-scope 宣言済の "多言語複合 IME" を将来 cover する際の
+complexity リスク。Cocoa / GTK / Win32 各 platform で IME API が大きく
+異なる。
+
+*mitigation*:
+- Phase 11.A〜11.B では IME scope 外、capability flag =ime-passive= /
+  =ime-active= で各 backend が opt-in
+- Phase 12〜14 (= GTK / Cocoa / Win32、Doc 33 §4.5) で各 backend が IME 実装、
+  display-spec API は §4.1.6 minimum 4 関数のみ提供
+- 完全 IME 対応 = v3.0+ target、v2.0 は basic IME only
+
+* §7 release roadmap (= Phase 11.A は nelisp-emacs repo で reference impl、Phase 11.B v2.x community 主導 default、Phase 12+ Doc 33 §4.5 community)
+
+** 7.1 v2.0 ship gate (= core commitment) — T117 A.1 + D.2 反映で v2.1 の判断主体明示
+
+Doc 33 v2 §7 v2.0 = "+ Phase 9a (top 20-30 APIs) + Phase 10 (display-spec)
++ Phase 11 (TUI MVP)" を本 doc で *Phase 11 = Phase 11.A* に narrow。Phase
+11.B (redisplay engine) は Doc 33 §4.4 v2 narrow 趣旨と整合 = *v2.x community
+主導 default*、*core commitment ではない*、core commitment 化は §9 OQ-1
+resolution 待ち (= Phase 11.A SHIPPED 後の bench + community engagement で
+判断、判断主体 = NeLisp core team)。
+
+| version | ship gate                                              | scope                                         | 期間             | core/community |
+|---------+--------------------------------------------------------+-----------------------------------------------+------------------+----------------|
+| v2.0    | + Phase 11.A SHIPPED (= TUI MVP reference impl)        | + TUI backend + display-spec consumer integration + mini-Emacs demo | 12-18 ヶ月 (Doc 33 §7 と同) | *core commitment* |
+| v2.1    | + Phase 11.B SHIPPED (= redisplay engine MVP)          | + redisplay-driver + glyph-matrix + face-realize MVP | post-v2.0、+6-12 ヶ月 (anvil leverage 込) / +12-24 ヶ月 (community 主導時、+2x realistic buffer) | *核 default = community-dependent* (= Doc 33 §4.4 v2 narrow 整合)、core commitment 化は §9 OQ-1 + OQ-2 resolution 待ち。*判断主体 = NeLisp core team* (Phase 11.A SHIPPED 後の bench + community engagement で OQ-1 + OQ-2 同時 resolve、rust delegate 採用時の community 化方向は OQ-2 案 X/Y 別途) |
+| v2.2+   | + Phase 11.A v2.x capability extension (= mouse / IME / image) | + advanced TUI feature                        | post-v2.1 incremental | *core + community* |
+| v3.0    | + Phase 12 / 13 / 14 SHIPPED (= 3+ desktop backend 揃い、Doc 33 §4.5) | + cross-platform desktop GUI runtime          | 24-48 ヶ月 *target* | *community-dependent* |
+| v3.x    | + Phase 15+ (= wgpu、experimental web target、Doc 33 §4.5) | + web GUI runtime                              | post-v3.0 community ペース | *community-dependent* |
+
+** 7.2 community-dependent vs core commitment 区分
+
+Doc 33 v2 §7 と同 区分を本 doc で再表明:
+
+- *core commitment* = NeLisp core team が ship date 責任を持つ、anvil
+  leverage + 並列 session で予測可能な工数。Phase 11.A 該当 (Phase 11.B は
+  T117 A.1 で v2.x community 主導 default、core commitment 化は §9 OQ-1 待ち)
+- *community target* = community contribution + maintainer 継続性に依存、
+  外部参加者 dropout で大幅延期可能性。Phase 12〜15+ (Doc 33 §4.5) が該当、
+  Phase 11.B も community 主導 default として該当 (§9 OQ-1)
+- *aspiration vs realistic*: v3.0 timeline は "目標" であって "約束" では
+  ない。community 主導 backend が 3+ 揃えば v3.0 ship、揃わなければ v2.x
+  で incremental release continued
+
+** 7.3 announcement 戦略
+
+各 release の announcement (Doc 33 v2 §7 と整合):
+
+- *v2.0 (Phase 11.A SHIPPED)* = TUI demo + Emacs Lisp 互換 surface、ELS /
+  EmacsConf main talk + anvil v3 release と同時検討、=/r/emacs= /
+  =/r/lisp= で TUI demo screencast 公開
+- *v2.1 (Phase 11.B SHIPPED)* = redisplay engine demo、=/r/emacs= で Emacs
+  precedent との bench 比較公開
+- *v3.0 (Phase 12〜14、Doc 33 §4.5)* = cross-platform desktop GUI runtime、Linux
+  desktop ecosystem (GNOME / KDE) + macOS dev community + Windows dev
+  community 各々で告知
+
+* §8 out of scope (= GUI frameworks 抽象化全自動化、accessibility、多言語複合 IME)
+
+** 8.1 GUI frameworks 抽象化全自動化
+
+GTK4 / AppKit / Win32 の差異を完全 hide する universal binding generator
+は本 doc では扱わない。各 backend repo が個別に Rust crate binding を
+提供、display-spec contract は high-level API のみ抽象化。
+
+*defer rationale*: universal binding generator は Phase 16+ topic、Layer
+0/1 separation (= multi-Lisp-dialect support、Doc 33 §4.6) と同期で検討。
+
+** 8.2 accessibility (a11y) layer
+
+screen reader (NVDA / VoiceOver / Orca) / high contrast / large font /
+keyboard navigation 強化 等の a11y feature は本 doc out of scope。
+
+*defer rationale*: a11y は各 backend native API (= AT-SPI / NSAccessibility
+/ UIAutomation) 経由で実装可能だが、display-spec への抽象化は Phase 16+
+別 doc で起草。v3.x 以降の community 主導で進行想定。
+
+** 8.3 多言語複合 IME
+
+CJK + Indic + bidirectional text + complex shaping 全部対応する universal
+IME layer は本 doc out of scope。Phase 11.A は keyboard event のみ、IME
+は capability flag (§2.5 =ime-passive= / =ime-active=) で各 backend が
+opt-in、共通抽象化は v3.x 以降。
+
+*defer rationale*: IME 抽象化は OS native API の複雑性 (= NSTextInputContext
+/ TSF / IBus 各々で異なる semantic) で universal layer 構築 cost が高い。
+backend 別 implement で十分、display-spec 側は §4.1.6 minimum 4 関数のみ。
+
+** 8.4 image rendering の terminal protocol
+
+Sixel / Kitty graphics / iTerm2 inline image protocol 等の terminal image
+は Phase 11.A v2.x、capability flag で各 backend opt-in。本 doc では
+Phase 11.A MVP scope 外。
+
+*defer rationale*: terminal image protocol は terminal emulator 側の対応
+ばらつきが激しく、v2.0 MVP では text only で十分。
+
+** 8.5 wgpu backend の web target
+
+=wasm-bindgen= + WebGPU 経由の web target (= browser 上で NeLisp Emacs
+動作) は Doc 33 §4.5 Phase 15+ の v2.x。
+
+*defer rationale*: web target は wgpu-rs の =wasm32-unknown-unknown= サポート
+状況 + browser 側 WebGPU implementation 成熟度に依存、v3.0 desktop GUI runtime
+完成後に community 主導で着手想定。
+
+* §9 open questions
+
+** OQ-1: Phase 11.B redisplay engine の maintainer (core or community) — T117 A.1 反映で逆向きに振り直し
+
+§1.1 で "Phase 11.B = TBD (暫定 community 主導)" と記述。redisplay engine =
+xdisp.c port = 最大難所、NeLisp core team が core commitment として持つか
+community 主導化するか、Phase 11.A SHIPPED 後の bench 結果 + community
+engagement 状況で判断。判断主体 = NeLisp core team (= §7.1 v2.1 row 同)。
+
+*decision dependency*:
+- Phase 11.A SHIPPED 時の community contributor 数
+- §3.2 ship gate の bench 達成見込み
+- §3.2 escape hatch (rust delegate) 採否 (= OQ-2 と同時 resolve)
+- Doc 33 §4.4 v2 narrow 趣旨との整合 (= "spec feasibility 証明 = 最小 TUI"
+  で v2.0 ship、redisplay engine は core commitment 外に降ろすという v2 narrow
+  方向と同期)
+
+*tentative (DRAFT v1、T117 A.1 で逆向き)*: *community 主導* (= Doc 33 §4.4
+v2 narrow 整合、Phase 11.B は v2.x community 主導が default、core commitment
+化は Phase 11.A SHIPPED 後の bench + community engagement 状況で再判断)。
+
+*parent doc errata gate (T117 A.1)*: もし Phase 11.B を core commitment に
+持ちたいなら Doc 33 §4.4 v2 + §7 v2.0/v2.1 row を v3 で同時改訂、本 doc v2
+LOCK の前提 = Doc 33 v3 ready。本 doc v1 では parent v2 narrow を respect、
+逆向き再 negotiation 不要。
+
+** OQ-2: redisplay engine の rust delegate 化採否 — T117 D.1 + D.3 反映で 案 X/Y 分割 + bench protocol
+
+§2.2 + §3.2 で言及済。xdisp.c port を pure NeLisp で実装するか rust delegate
+で実装するかを Phase 11.A SHIPPED 後に判断。本 OQ-2 は §2.2 escape hatch で
+案 X (thin、Doc 39 v2 整合) / 案 Y (厚い、Doc 39 §11 amendment 必要) の 2 案
+に分割 (T117 D.1)。
+
+*decision dependency (T117 D.3 で bench protocol + threshold 明示化)*:
+- *bench protocol*: =anvil-bench= で 10MB buffer scroll latency p99 measurement、
+  xterm-256color 80x24 環境
+- *threshold*: pure NeLisp で 60fps (= 16.7ms/frame) 達成可なら rust delegate
+  *不要* (= 案 X / 案 Y どちらも見送り)、達成不可なら案 X 検討、案 X bench で
+  さらに gate 未達なら案 Y へ escalate
+- *bench pilot*: =anvil-bench= で xdisp.c port pilot 実装 (= ~500 LOC NeLisp
+  redisplay-driver) の throughput 測定、Phase 11.A SHIPPED 直後 fast iteration
+- *Doc 39 v2 thin wrapper 原則 整合 verify*: 案 Y (厚い delegate、~3000 LOC
+  Rust) は Doc 39 §11 への amendment 必要、案 X は Doc 39 v2 thin wrapper 原則
+  (~300-500 LOC + α) 整合
+
+*tentative (DRAFT v1、T117 D.1)*: *案 X 優先* (= Doc 39 v2 整合、bottleneck
+1-2 関数のみ Rust delegate)、bench で案 X gate 未達なら案 Y へ escalate、
+case Y への escalate は community 主導 backend ecosystem への影響を別途 review。
+pure NeLisp port は MVP scope (~1300-2500 LOC) に narrow して試行 (= §2.2 で
+"14000 line 全部やる pattern は不採用" と整合)、escape hatch path 維持。
+
+*Doc 01 §9.5 option A/B との対応 note (T132 MINOR-B.2.1 反映、用語 mismatch 解消)*:
+nelisp-emacs Doc 01 v1 §9.5 は同 escape hatch を 2-state =option A (本 repo
+Phase 3 で完遂、escape hatch 不採用)= / =option B (~3000 LOC Rust 採用)= で
+記述、本 doc §9 OQ-2 は 3-state =案 X (thin、~500 LOC Rust)= / =案 Y (厚い、
+~3000 LOC Rust)= / =どちらも不採用 (pure NeLisp で完遂)= で記述。対応関係:
+- *案 X (thin、Doc 39 v2 整合)* = Doc 01 option B 内の thin path (= ~500 LOC
+  Rust delegate、bottleneck 1-2 関数のみ)、Doc 01 §9.5 では同 path 言及無く
+  本 doc 側で粒度細分化
+- *案 Y (厚い、Doc 39 §11 amendment)* = Doc 01 option B 内の厚い path (=
+  ~3000 LOC Rust delegate、redisplay engine 中核)、Doc 01 §9.5 option B と
+  ほぼ 1:1 対応
+- *どちらも不採用 (pure NeLisp で完遂)* = Doc 01 option A と 1:1 対応、両 doc
+  で "rust delegate 不採用" 判断は同一
+両 doc の用語整合は post-LOCK errata (= Doc 01 v2 polish or Doc 43 v2.x
+errata、どちらかで 3-state 化に揃える) で処理、本 v2 LOCK では本 note で
+cross-reference 明示。
+
+** OQ-3: community backend co-maintainer 制度の具体化
+
+§5.2 + §6 R4 で "co-maintainer 1 人 review" を mitigation に挙げたが、
+具体的 review 対象 / 頻度 / 報酬 / ガバナンス は未定。
+
+*decision dependency*:
+- Doc 33 v2 §9 community contribution model の具体化
+- 最初の community backend (= GTK 候補) maintainer 招聘時に protocol 確定
+
+*tentative* (DRAFT v0): release 単位 (= 各 minor version) で 1 回 review、
+NeLisp core team が compliance test 結果 + API surface 互換 確認、報酬は
+recognition only (= contributor list 公開)。
+
+** OQ-4: =display-spec= の version bump 戦略
+
+§2.5 + §2.6 で =EVENT_SOURCE_CONTRACT_VERSION= や capability list の
+breaking change 時の戦略 (= 全 backend 同時更新 vs deprecation 期間設置)。
+
+*decision dependency*:
+- community backend 数 (= 多いほど breaking change cost 高)
+- semver compat shim (Doc 33 v2 §8 R5) の display-spec 側適用可否
+
+*tentative* (DRAFT v0): minor version bump で additive only、major version
+bump で breaking change 許可、deprecation 期間 6 ヶ月 (= Doc 33 v2 R5 1 年
+より短縮、display-spec の churn 性質を考慮)。
+
+** OQ-5: TUI v2.x の image protocol 採否 (Sixel / Kitty graphics)
+
+§8.4 で defer 宣言済だが、v2.x で TUI に image rendering を追加する場合
+Sixel と Kitty graphics の どちらを優先するか未定。
+
+*decision dependency*:
+- terminal emulator ecosystem の adoption 度合
+- vterm / eat 等 precedent の実装パターン
+
+*tentative* (DRAFT v0): Kitty graphics 優先 (= modern terminal で adoption
+拡大中)、Sixel は legacy support 位置づけで v2.x post-Kitty で追加。
+
+* §10 関連 doc
+
+| doc                                                  | 関係                                                                                                                            |
+|------------------------------------------------------+---------------------------------------------------------------------------------------------------------------------------------|
+| Doc 33 v2 LOCKED-2026-04-25                          | parent doc、§4.4 Phase 11 + §4.5 Phase 12-15+ + §6 display-spec API skeleton + §7 release roadmap + §8 R1 risk mitigation         |
+| Doc 34 v2 LOCKED-2026-04-25                          | sibling doc、§2.11 frame stub invariant + §4.2 frame contract = 本 doc §2.1 swap-in source                                        |
+| Doc 39 v2 LOCKED-2026-04-25                          | sibling doc、Rust syscall precedent = §3.2 escape hatch (rust delegate) の参照 pattern、*§11 thin wrapper 原則 (~300-500 LOC)* = §2.2 案 X/§9 OQ-2 案 X 整合参照 (T117 D.1) |
+| Doc 28 v2 §11.5                                      | bench gate redefine pattern = §5.4 bench gate format reference + §3.0 sub-phase table の +2x realistic buffer pattern              |
+| Doc 41 (text-property、別 worktree DRAFT 中、=/tmp/nelisp-doc41-textprop-wt/=、T117 C.4) | 将来 pull-on-demand protocol を再定義する場合、Phase 11.B display property handler の consumer の可能性、LOCK 時に cross-reference 確認 |
+| nelisp-emacs Doc 01 DRAFT v1 (= T123 SHIPPED 想定、=/tmp/nelisp-emacs-doc01-v1-wt/docs/design/01-architecture.org=) | sibling repo doc、§2.1 module structure (= Phase 1 6 module + Phase 2 TUI reference impl + Phase 3 redisplay engine)、本 doc §1.1 layer boundary canonical 整合源、本 doc Phase 11.A = nelisp-emacs Doc 01 Phase 2 (T117 A.2 + B.1)、本 doc Phase 11.B = nelisp-emacs Doc 01 Phase 3、§9.5 escape hatch option A/B との対応は本 doc §9 OQ-2 末尾 note 参照 (T132 MINOR-B.2.1) |
+| /Notes/dev/nelisp-emacs/README.org                   | Layer 3 wave 担当 (=src/emacs-frame.el= + =src/emacs-tui-backend.el=)、Doc 01 で詳細 module structure 整理済                       |
+| Phase 9b.3 (Doc 34 §3.3)                             | window + frame primitive、本 doc §2.1 swap-in protocol consumer                                                                   |
+| Phase 9d.K (Doc 39 §3.K)                             | eventloop multiplexer、本 doc §2.6 event source integration consumer                                                              |
+| Phase 10 (Doc 33 §4.3 + §6)                          | =nelisp-display-spec= = 本 doc §4 ABI / API list の source contract                                                                |
+| Doc 44 (community backend governance、future) | 本 doc §3.3 で bridge node のみ、詳細 governance design (compliance test 詳細 / co-maintainer 招聘 protocol / dormancy archive 仕組み 等) は別 doc 起草想定 |
+
+* §11 v0→v1→v2 LOCKED path
+
+** 11.1 v0 → v1 plan
+
+DRAFT v0 完了後、以下 dispatch で v1 polish + LOCK 候補化:
+
+| step | action                                              | trigger                                | output                                                  |
+|------+-----------------------------------------------------+----------------------------------------+---------------------------------------------------------|
+| S1   | session-A self-review (= 本 doc 全 §)               | DRAFT v0 ship 後 24h 以内             | self-review notes (= 矛盾 / 抜け / over-spec 検出)       |
+| S2   | T112 review request → user signoff                  | S1 完了後                              | user feedback (= scope adjust / OQ resolution priority) |
+| S3   | session-B (codex) parallel review (= 観点 5 round) | S2 user signoff 後                    | review report (= MAJOR / MINOR / polish 区分)            |
+| S4   | session-A v1 merge (= S3 全反映 + S2 user feedback) | S3 完了後                              | DRAFT v1 (= LOCKED-候補)                                 |
+| S5   | T113+ で第二弾 review (= sibling Doc 33/34/39 整合) | DRAFT v1 ship 後                      | DRAFT v1 → v2 polish path                                |
+| S6   | LOCKED-2026-XX-XX-v2 stamp                          | S5 完了 + user signoff                | LOCKED v2 (= main merge gate)                           |
+
+** 11.2 v1 → v2 polish 候補項目 (DRAFT v1 で意図的に未確定 = T117 review で
+  v1 反映済 + 残未確定項目)
+
+*v1 で T117 review 反映済 (= §11.6 reviewer addendum 参照)*:
+- 5 MAJOR + 7 MINOR + 3 NIT 全件 v1 で反映済
+
+*v1 → v2 polish 候補 (= 残未確定 = user signoff or 別 doc 同期 待ち)*:
+- §9 OQ-1 (Phase 11.B maintainer = community 主導 default、core commitment 化判断) → user signoff
+- §9 OQ-2 (rust delegate 案 X 優先、bench gate で 案 Y escalate) → Phase 11.A SHIPPED bench で final
+- §11.4 Doc 番号 43 reservation → parent Doc 33 v2 errata 同期で final
+- §10 関連 doc Doc 41 (text-property、別 worktree DRAFT) cross-reference → Doc 41 LOCK 時に final
+- §10 関連 doc Doc 44 (community backend governance、future) → 別 doc 起草計画
+- §3.0 sub-phase 表の LOC / 期間見積を Phase 11.A 着手後 actual data で再確認
+- §5.4 bench gate の数値根拠を Phase 11.A pilot bench で裏付け
+- §8 out-of-scope 各項目に "future doc 番号" を記入 (= 別 doc 起草計画 明示)
+- session-B (codex) parallel review (= 観点 5 round、本 v1 と integration、
+  codex usage limit 解除後)
+
+** 11.3 v2 LOCK 条件 (= main merge gate)
+
+- 全 OQ resolved (= tentative → final、user signoff)
+- session-B (codex) review 全反映 (= MAJOR / MINOR / polish、codex usage limit
+  解除後の dispatch)
+- sibling Doc 33 / 34 / 39 / 28 v2 整合 verify (= cross-reference 緑)
+- nelisp-emacs Doc 01 v1 (T123 SHIPPED 想定) との canonical 整合 verify (=
+  T125 + T129 第二弾 review で完遂、観点 B.2 9/9 GREEN、α.9 のみ YELLOW = 用語
+  mismatch、§9 OQ-2 末尾 note で対応 = T132 MINOR-B.2.1 反映済)
+- Doc 41 (text-property、別 worktree) LOCK 時に cross-reference 確認
+- =release-audit= scanner 緑 (= MCP Parameters 完備、design doc SHIPPED
+  status 整合)
+
+** 11.4 main merge protocol (= Doc 33 / 34 / 39 v2 と同 pattern、T117 NIT-E.3 反映)
+
+LOCKED-2026-XX-XX-v2 stamp 後、以下 protocol で main merge:
+
+1. 本 worktree (=/tmp/nelisp-doc43-v1-wt=) → main へ =--no-ff= merge
+2. =release-audit= scanner で緑 verify
+3. main commit message: =Doc 43 LOCKED-2026-XX-XX-v2 main merge — Phase 11
+   display engine architecture (TUI MVP + redisplay engine + Phase 12+ bridge
+   + capability flag + degrade contract)=
+4. memory MEMORY.md / project_nelisp.md 更新 (= Doc 43 SHIPPED entry 追加)
+
+*Doc 番号 43 reservation (T117 NIT-E.3)*: 本 doc DRAFT v0 起草時 (T112、
+2026-04-25) では Doc 番号 43 が parent Doc 33 v2 §10 関連 doc table や memory
+project_nelisp.md で predeclaration 無く暫定使用。v1 LOCK 候補化前に parent
+Doc 33 v2 errata で *Doc 43 = Phase 11 display engine* を正式 reservation
+必要、conflict 検出された場合は新規 Doc 番号に renumber。
+
+** 11.5 version history
+
+| version  | date       | author                | scope                                                                                                                                                                                  |
+|----------+------------+-----------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| v0 DRAFT | 2026-04-25 | session-A (T112)      | 起草 = §0〜§11 全 section、Doc 33 §4.4 + Doc 34 §2.11 + README Layer 3 集約、Phase 11.A〜11.F sub-phase 化、capability flag protocol、5 OQ + 8 risk                                              |
+| v1 DRAFT | 2026-04-25 | session-A (T124)      | T117 review (MAJOR REVISIONS、Claude Opus 4.7 1M、5 MAJOR + 7 MINOR + 3 NIT + 4 POSITIVE) を全件反映。詳細 = §11.6 reviewer addendum (T117 v1 round)                                          |
+| v2 LOCKED | 2026-04-25 | session-A (T132)     | T129 第二弾 review (READY-TO-LOCK with polish、Claude Opus 4.7 1M、4 MINOR + 3 NIT + 5 POSITIVE) を全件反映。詳細 = §11.6 reviewer addendum (T129 v2 round)                                   |
+
+** 11.6 reviewer addendum (T117 v1 round + T129 v2 round)
+
+*** 11.6.1 v1 round = T117 review summary
+
+*reviewer*: Claude (Opus 4.7 1M context、single review fallback — codex usage
+limit、2026-04-25)。
+
+*verdict*: MAJOR REVISIONS。
+
+*reflected in v1 (本 revise、T132 で count 正規化 = MINOR-B.2.4 反映)*:
+- 8 MAJOR (A.1 / A.2 / A.3 / B.1 / C.1 / C.2 / C.3 / D.1) — 全件反映
+  (注: T117 review summary 末尾の "5 MAJOR" 表記は v0→v1 reclassify 後の名残で、
+  v1 反映時は 8 項目すべて MAJOR 扱い、count 正規化により 8 と表記)
+- 8 MINOR (B.2 / B.3 / B.4 / B.5 / C.4 / C.5 / D.2 / D.3) — 全件反映
+  (注: 同上、T117 元 "7 MINOR" 表記の reclassify 後は 8 項目)
+- 3 NIT (E.1 / E.2 / E.3) — 全件反映
+- 4 POSITIVE (frame swap-in protocol invariant table / sub-phase 6 row
+  decomposition / risk 8 件 mitigation pattern / community vs core commitment
+  区分明示) — design quality 高い部分は v1 で維持
+
+*v1 で意図的に未確定 (= v2 LOCK 候補化前に user signoff 必要)*:
+- §9 OQ-1 (Phase 11.B maintainer) tentative = community 主導、core commitment
+  化判断は user signoff 後 final
+- §9 OQ-2 (rust delegate 案 X/Y) tentative = 案 X 優先、Phase 11.A SHIPPED
+  bench で final
+- §11.4 Doc 番号 43 reservation = parent Doc 33 v2 errata 同期で final
+- §10 関連 doc Doc 41 cross-reference = Doc 41 LOCK 時に final
+- §10 関連 doc Doc 44 (community backend governance、future) = 別 doc 起草計画
+
+*第二弾 review schedule*:
+- Doc 01 v1 (T123 並行) と整合 verify (T125 想定)
+- session-B (codex) parallel review (= 観点 5 round、本 review と integration、
+  codex usage limit 解除後)
+- v1 → v2 LOCK 候補化、parent Doc 33 v2 errata (Doc 43 reservation +
+  §4.4/§4.5 整合 update) と同時 ship 推奨
+
+*** 11.6.2 v2 round = T129 第二弾 review summary
+
+*reviewer*: Claude (Opus 4.7 1M context、第二弾 = T129 review、2026-04-25)。
+
+*verdict*: READY-TO-LOCK (with minor polish 推奨、blocker なし)。
+
+*review 観点*:
+- 観点 A = T117 反映 verify (5 MAJOR + 7 MINOR + 3 NIT = 15/15 全件 verify)
+- 観点 B.1 = LOC budget verify (v0 980 → v1 1256 = +276、想定 1200-1500 内、
+  breakdown 妥当)
+- 観点 B.2 = nelisp-emacs Doc 01 v1 cross-check (9 項目、α.1〜α.8 GREEN +
+  α.9 YELLOW = 用語 mismatch、§9 OQ-2 末尾 note で対応)
+- 観点 B.3 = §3.3 Phase 12+ bridge node clean さ verify (LOCK level 達成)
+- 観点 B.4 = OQ-1 / OQ-2 decision dependency 明確さ verify (LOCK level 達成)
+- 観点 B.5 = 第二弾発見 (4 MINOR + 3 NIT = 全件 v2 で polish 反映)
+
+*reflected in v2 (T132 polish)*:
+- 4 MINOR (B.2.1 / B.2.2 / B.2.3 / B.2.4) — 全件反映
+  - B.2.1: §9 OQ-2 末尾に Doc 01 §9.5 option A/B との対応 note 追加 (= 案 X
+    = Doc 01 option B 内 thin path、案 Y = Doc 01 option B 内 厚い path、Doc 01
+    option A = 案 X/Y どちらも不採用)
+  - B.2.2: §11.3 v2 LOCK 条件 "T125 想定" → "T125 + T129 第二弾 review 完遂、
+    観点 B.2 9/9 GREEN" に update
+  - B.2.3: §10 関連 doc Doc 01 row "DRAFT v0" → "DRAFT v1 (T123 SHIPPED 想定)"
+    に同期
+  - B.2.4: §11.6 reviewer addendum count 正規化 (= "5 MAJOR" → "8 MAJOR + 8
+    MINOR + 3 NIT" に列挙数と整合)
+- 3 NIT (B.2.5 / B.2.6 / B.2.7) — 全件反映
+  - B.2.5: §3.0 表 Phase 15+ ERT delta セルに experimental note 追加 (= GPU
+    環境依存 test 一部除外)
+  - B.2.6: §1.1 Layer table の Phase 列略記 (= Doc 01 §3.1 Phase 1 等の短縮、
+    詳細は重要 1/2/3 note へ集約)
+  - B.2.7: §11.5 v1 row scope 短縮 (= 詳細 = §11.6 reviewer addendum へ集約、
+    新規 v2 row 追加で v1/v2 round 並列記載)
+- 5 POSITIVE (T117 全 15 件反映 trace 品質 / §2.5a degrade contract LOCK /
+  §2.5 capability matrix 2 group 化 / §3.0 sub-phase 表 horizontal rule 視覚
+  分離 / OQ-1+OQ-2 6 axis structure) — design quality 高い部分は v2 で維持
+
+*v2 LOCK 後の残未確定 (= post-LOCK errata or 別 doc 同期 待ち)*:
+- §9 OQ-1 (Phase 11.B maintainer) tentative = community 主導、core commitment
+  化判断は user signoff round で final
+- §9 OQ-2 (rust delegate 案 X/Y) tentative = 案 X 優先、Phase 11.A SHIPPED
+  bench で final、Doc 01 §9.5 用語整合は post-LOCK errata で 3-state 化に揃え
+- §11.4 Doc 番号 43 reservation = parent Doc 33 v2 errata 同期で final
+- §10 関連 doc Doc 41 cross-reference = Doc 41 LOCK 時に final
+- §10 関連 doc Doc 44 (community backend governance、future) = 別 doc 起草計画
+- session-B (codex) parallel review (= 観点 5 round、本 v2 と integration、
+  codex usage limit 解除後の dispatch)
+
+*main merge readiness*: v2 LOCKED stamp 完了、§11.4 main merge protocol
+(=--no-ff= merge + release-audit scanner + memory 更新) で main merge 可。
+parent Doc 33 v2 errata (Doc 43 reservation + §4.4/§4.5 整合 update) と同時
+ship 推奨。
