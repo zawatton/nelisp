@@ -344,16 +344,20 @@ endian) so the BL fixup resolves."
   "End-to-end byte-level smoke for the closure-funcall pattern that
 the bench-actual letrec forms exercise:
   (let ((f (lambda (x) (+ x 1)))) (funcall f 41))
-T84 Phase 7.5 wire — the new pipeline lowers `:closure' to a LEA
-against `inner:N' (= the inner body in the same buffer) and lowers
-`:call-indirect' to `CALL rax'.  We assert:
-  - produce bytes (no SSA / linear-scan / backend signal),
-  - contain a CALL rax (REX.W + FF /2, 0x48 0xFF 0xD0) for
-    `:call-indirect',
-  - contain a CALL rel32 (0xE8) for the `:call (+)' site (now part
-    of the link-step's callee-label resolution).
-The LEA self-pointer is no longer emitted (the alloc-closure
-trampoline is retired post-T84)."
+
+T96 Phase 7.1.5 — the inner body's `(+ x 1)' is now inline-lowered
+as a direct ADD (REX.W + 0x01) instead of a trampoline CALL rel32,
+so the produced bytes no longer contain a CALL rel32 for the `+'
+site.  The closure-funcall path still emits `CALL rax' (REX.W +
+FF /2 = 0x48 0xFF 0xD0) because `f' is `let'-bound (not letrec),
+so the T96 self-direct-call optimisation does not apply.
+
+Assertions:
+  - bytes vector is produced (no SSA / linear-scan / backend signal),
+  - contains a CALL rax for the indirect `(funcall f ...)' site,
+  - contains the inline ADD opcode for the inlined `+'.
+The pre-T96 CALL rel32 for `+' is no longer emitted; tests that
+required it have been retired alongside the trampoline-only path."
   (let* ((fn (nelisp-cc-build-ssa-from-ast
               '(lambda ()
                  (let ((f (lambda (x) (+ x 1))))
@@ -362,7 +366,7 @@ trampoline is retired post-T84)."
          (bytes (nelisp-cc-x86_64-compile-with-link fn alloc))
          (lst   (append bytes nil))
          (found-call-indirect nil)
-         (found-call-rel32   nil))
+         (found-add-inline    nil))
     (cl-loop for tail on lst
              when (and (eq (car tail) #x48)
                        (eq (cadr tail) #xFF)
@@ -370,10 +374,11 @@ trampoline is retired post-T84)."
                        (eq (cl-caddr tail) #xD0))
              do (setq found-call-indirect t))
     (cl-loop for tail on lst
-             when (eq (car tail) #xE8)
-             do (setq found-call-rel32 t))
+             when (and (eq (car tail) #x48)
+                       (eq (cadr tail) #x01))
+             do (setq found-add-inline t))
     (should found-call-indirect)
-    (should found-call-rel32)))
+    (should found-add-inline)))
 
 ;;; (12) A.2 rel32 underflow / overflow signals --------------------
 

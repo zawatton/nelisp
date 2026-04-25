@@ -246,38 +246,33 @@ return therefore moves rdi → rax and emits RET."
 ;;; (8) (+ x y) call site → unresolved fixup -------------------------
 
 (ert-deftest nelisp-cc-x86_64-compile-arithmetic-via-call-stub ()
-  "Compiling `(lambda (x y) (+ x y))' produces a CALL rel32 with a
-placeholder 0 displacement and records a CALL-FIXUPS entry against the
-symbol `+'.
+  "Compiling `(lambda (x y) (+ x y))' inline-lowers `+' as ADD r/m64
+(T96 Phase 7.1.5) — the trampoline CALL+RET pair is bypassed, no
+fixup is recorded against `+', and RET still terminates the
+function.
 
-Phase 7.5 will consume the fixup list to patch the rel32 against the
-actual primitive address (resolved via `nelisp-defs-index').  The
-skeleton stops at fixup recording and asserts the entry is shaped
-correctly."
+Pre-T96 this test asserted a placeholder CALL rel32 + a fixup entry
+against `+' so Phase 7.5 patching could land it.  T96 inlines the
+hot primitives (`+ - * 1+ 1- < > = eq null not'), so the produced
+bytes contain the inline ADD opcode (REX.W + 0x01) directly and the
+fixup list does *not* include `+'."
   (let* ((fn         (nelisp-cc-build-ssa-from-ast
                       '(lambda (x y) (+ x y))))
          (alloc      (nelisp-cc--linear-scan fn))
          (result     (nelisp-cc-x86_64-compile-with-meta fn alloc))
          (vec        (car result))
          (call-fixs  (cdr result)))
-    ;; CALL opcode 0xE8 must appear somewhere in vec.
-    (let ((seen-call nil))
-      (cl-loop for i from 0 below (length vec)
-               when (= (aref vec i) #xE8)
-               do (setq seen-call t) (cl-return))
-      (should seen-call))
-    ;; The fixup list must contain at least one entry against `+'.
-    (should (cl-some (lambda (cell) (eq (cdr cell) '+))
-                     call-fixs))
-    ;; Every fixup offset must be inside vec and the 4-byte rel32 there
-    ;; must currently be all zeros (the placeholder).
-    (dolist (cell call-fixs)
-      (let ((off (car cell)))
-        (should (and (<= 0 off) (<= (+ off 4) (length vec))))
-        (should (= 0 (aref vec off)))
-        (should (= 0 (aref vec (+ off 1))))
-        (should (= 0 (aref vec (+ off 2))))
-        (should (= 0 (aref vec (+ off 3))))))
+    ;; ADD r/m64 (REX.W + opcode 0x01) must appear (= the inline emit).
+    (let ((seen-add nil))
+      (cl-loop for i from 0 below (1- (length vec))
+               when (and (= (aref vec i) #x48)
+                         (= (aref vec (1+ i)) #x01))
+               do (setq seen-add t) (cl-return))
+      (should seen-add))
+    ;; The fixup list must NOT contain an entry against `+' — inline
+    ;; emit bypasses the fixup path.
+    (should-not (cl-some (lambda (cell) (eq (cdr cell) '+))
+                         call-fixs))
     ;; RET still terminates the function.
     (should (= #xC3 (aref vec (1- (length vec)))))))
 
