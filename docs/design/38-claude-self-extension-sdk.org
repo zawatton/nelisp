@@ -1,0 +1,1785 @@
+#+TITLE: Doc 38 — Claude Self-Extension SDK (anvil.el × NeLisp 統合 spec)
+#+AUTHOR: zawatton + Claude (session-T42 起草、T75 revise、T89 LOCKED v2)
+#+DATE: 2026-04-25
+#+STATUS: LOCKED-2026-04-25-v2
+#+DEPENDS_ON: anvil.el (memory: project_anvil_package / project_anvil_memory_engine_phase1a / project_anvil_session_phase134 / project_anvil_orchestrator_phase1a / project_anvil_efficiency_bundle / project_anvil_offload / project_anvil_state_phase1_2), Doc 33 v2 (architecture), Doc 32 v2 (Phase 7.5 integration), Doc 28 v2 (native compiler), Doc 34 想定 (Phase 9a/9b nelisp-emacs-compat)
+#+PARENT: Doc 33 v2
+#+RENUMBER_NOTE: 元 Doc 35 v0 (T42 起草、commit 0d90a57) を Doc 38 へ option B path で renumber。parent Doc 34 §8.1-8.4 で out-of-scope 5 用途 (advice / minor mode / 完全 regex / process UI / file UI 完全互換) を follow-up doc 化と明記、その follow-up は §8.1 に "Doc 35 想定" の言及が **1 件のみ**。Doc 35-37 という具体的な doc 番号 range の reservation は parent Doc 34 に **存在しない**。本 doc は §8.1-8.4 で挙げられた 5 用途の **いずれにも当たらない別 sub-system** (= claude self-extension SDK) なので、新規 doc 番号 38 を取得することで衝突を回避する。option B = parent Doc 34 不変、衝突無し。
+
+* §0 要旨 (TL;DR)
+
+Doc 38 = "*claude が anvil.el + NeLisp を使って自分の機能を Elisp で書い
+て自分自身を拡張していく workflow*" の central spec。user goal「claude
+が自由に自己拡張」を支える 6 sub-system / Phase A-F (= 8 sub-phase = A /
+B / C v0 / C v1 / D / E / F.1 / F.2、二箇所で v0/v1 二段階 sub-split) の
+SDK。
+
+(本 doc は元 Doc 35 v0 を **option B path** で Doc 38 へ renumber した
+もの。parent Doc 34 §8.1-8.4 で out-of-scope 5 用途 (advice / minor mode /
+完全 regex / process UI / file UI 完全互換) を follow-up doc 化と明記、
+follow-up は §8.1 に "Doc 35 想定" の **1 件のみ** 言及。Doc 35-37 という
+具体的な doc 番号 range の reservation は parent Doc 34 に **存在しない**。
+本 doc は 5 用途の **いずれにも当たらない別 sub-system** (= claude self-
+extension SDK) なので、新規 doc 番号 38 を取得することで衝突回避。)
+
+*motivation*: 現状 claude session 内で「こういう操作を MCP tool として
+欲しい」と思った時の muscle memory は次:
+
+1. session 内で Bash / Edit を多数発火、anvil-XXX.el を手で edit
+2. session 跨ぎで unload-feature / require / byte-compile を手で叩く
+3. =anvil-server-register-tool= 直書き、ERT も手書き
+4. 動かなければ stale .elc 罠 (=feedback_canonical_byte_compile_stale_elc.md=) を手で踏む
+5. session 終わると tool 仕様の rationale が memory に残らず消える
+6. 1 tool 追加に *~10-30 min*、session 内 self-modify cycle は実質 ~1-2 回
+
+= boilerplate / safety / persistence の三重コストで「自己拡張=高コスト
+イベント」になっており、claude が自分の弱点を即埋める *micro-extension
+loop* が回らない。
+
+*Doc 38 SDK の存在意義*: 既存 anvil.el 資産 (server / memory / session /
+orchestrator / efficiency-bundle / =anvil-server-register-tools= 関数) の
+上に *claude self-modify を first-class workflow にする 6 sub-system* を
+1 layer 重ねる:
+
+- §3.A *scaffold* — 1 call で elisp + register + ERT + MCP schema 雛型
+- §3.B *hot-reload* — byte-compile + load + register、失敗時 rollback、
+  stale .elc 自動掃除
+- §3.C *sandbox (二段階)* — *Phase v0* = =anvil-offload= isolated
+  subprocess + static AST policy scan (best-effort、現実装相当)、*Phase
+  v1* = real syscall sandbox (seccomp / sandbox-exec / Job Object) — 後者
+  は Phase E or 9c 後送り
+- §3.D *memory integration* — rationale / use-case / version を anvil-memory
+  に自動 record (secret pattern scan 経由 redact 込み)
+- §3.E *NeLisp execution path* — Phase 9a (=nelisp-emacs-compat= MVP) 着地
+  後 dispatch、Phase 9b は coverage expansion として別節。fallback は
+  **dev-mode only**、release/CI では =:nelisp t= failure は hard error
+- §3.F *review / promotion gate (二分割)* — *pre-execution safety gate*
+  (ephemeral 実行前 diff preview + explicit consent) と *post-execution
+  promotion gate* (ephemeral → permanent registry 昇格、ERT + signoff)
+
+*Doc 33 Layer model との関係*:
+
+| Doc 33 Layer | 内容                                            | Doc 38 との関係                          |
+|--------------+-------------------------------------------------+------------------------------------------|
+| Layer 1      | NeLisp core (Phase 7+ で freeze)                | Phase E で run-time host                 |
+| Layer 2      | extension packages (=nelisp-elisp-compat= ほか) | =nelisp-emacs-compat= (Phase 9a/9b) を介して Phase E から Emacs API 叩く |
+| Layer 3      | backend implementations                         | direct な依存なし                        |
+
+= Doc 38 は Doc 33 Layer model **の外** にある host-side workbench package
+(anvil.el) の sub-spec。Doc 33 v2 が規定する Layer 1-3 を *consumer として
+使う* 立場であり、Doc 33 v2 の Layer 番号空間に "Layer 4" を勝手に追加
+することはしない (Doc 33 v2 §0 の public Layer 1/2/3 + internal Layer
+0/1A という model を尊重)。anvil.el / Doc 38 SDK の定義は anvil.el package
+layer 側 doc (project_anvil_package memory + 各 anvil-XXX design doc) に
+属する。Doc 33 v2 側で正式に Layer 4 が定義された場合は本 doc を v2 で
+reflect する (但し当面は coordination cost を避けて Layer 番号は使わない)。
+
+*完遂後の効果見積 (本 doc §8 で定量化、二分割)*:
+
+- *ephemeral scaffold + load + smoke* (= happy path、LLM body 1 発生成 +
+  reload): 30-60s/tool 着地、=~5-10x 短縮= (v0 の 20-30x は LLM 生成 +
+  retry cycle + 設計コストを無視した楽観値、撤回)
+- *permanent promote* (signoff 待ち + git PR + cross-session 永続化):
+  数分 - 数時間/tool。試行 1 発成功時のみ短く、retry / failed signoff /
+  body rewrite 込みで現実値はもっと長い
+- 1 session 内 self-modify cycle 数: 現状 ~1-2 → SDK 後 ephemeral だけで
+  *5-10* (permanent promote は session 跨ぎ運用)
+- ephemeral registry で「捨てる前提の hack tool」を心理的安全に作れる
+- promotion gate (二分割: 実行前 safety + 実行後 quality) で claude
+  ephemeral hack tool の暴走を抑止 + permanent registry の品質確保
+- claude が anvil.el 自体の改善案を「PR 書く」のではなく「SDK で試して
+  ephemeral 動かす → 良ければ permanent promote → 別 session でも使える」
+  に短絡できる、anvil.el iteration 速度向上
+
+*v1 段階の前提と限界 (T75 revise 反映)*:
+
+- *v1 = DRAFT (post-MAJOR REVISIONS)*。元 v0 (T42 起草) が両 reviewer
+  (Claude T45 / codex T55) で MAJOR REVISIONS 判定、A1-A6 + D1-D15 反映済
+- *anvil.el 既存資産* (server / memory / session / orchestrator / efficiency
+  bundle / =anvil-server-register-tools= 関数 / =anvil-offload= subprocess
+  pool / =anvil-future= state machine / =anvil-state= SQLite KV) は新規
+  発明せず、*再利用* で組み立てる
+- *Phase A-D = host Emacs で動作可* (NeLisp 不要)、Phase 7.1.X / 7.5 完成
+  を待たず即 dispatch 可能
+- *Phase E = NeLisp 実行 path* hard dependency は **Phase 9a only**
+  (=nelisp-elisp-compat= MVP top 20-30 API)。Phase 9b は coverage
+  expansion として別節、Phase E 着手の blocker ではない
+- *fallback は dev-mode only* (D3): release/CI で =:nelisp t= failure は
+  hard error、=:nelisp 'required= scaffold flag (fallback 拒否) も追加可
+- *Phase F = promotion gate* は二分割 (D9): pre-execution safety
+  (ephemeral 実行前) と post-execution promotion (ephemeral → permanent)
+- *sandbox は二段階* (A2): Phase C v0 = process isolation only (anvil-
+  offload baseline + static AST scan)、Phase C v1 = real syscall sandbox
+  (Phase E or 9c 後送り)。"sandbox" 用語は doc 全体で "isolated subprocess"
+  + "policy enforcement" の二語に分離
+- *network default = deny + allowlist* (D8): 自己拡張文脈で network
+  default-allow は supply chain / exfiltration 主経路、現実装の network
+  deny enforce 機構未整備を踏まえ default-deny に反転
+- *registry rename* (D1): 旧 "tool pool" 用語は anvil-offload subprocess
+  pool と意味衝突、"ephemeral registry" / "permanent registry" に rename
+
+*v1 完遂 gate*:
+
+- Phase A-D 全 SHIPPED 後 anvil-extend.el ~1250-1870 LOC (T89 LOCKED v2
+  で +30-50 LOC secret scan wrapper + ~20 LOC future-status 集計 wrapper
+  追加分込み、=tools/list_changed= push は本 SDK scope 外なので control 可、
+  Phase C v0 + 二分割 gate + secret pattern scan + AST URL allowlist 増分
+  込み) + ERT ~40-60 件
+- claude self-modify e2e demo: 「PDF page count tool 欲しい」 → ephemeral
+  scaffold + load + smoke = 30-60s 着地 → smoke ERT pass → pre-execution
+  consent → ephemeral run → signoff → permanent promote (= 数分 - 数時間)
+- anvil-memory に extension rationale が auto-record され search 可能
+  (secret pattern scan 経由)
+- regression-free (anvil 既存 ~1086+ ERT)
+
+* §1 背景
+
+** 1.1 user 大目的「claude が自由に自己拡張」
+
+user 2026-04-25 中期目標 (memory =project_anvil_general_b2cd_pivot.md=
++ =user_collaboration_philosophy.md= + 本 task brief):
+
+#+begin_quote
+claude が anvil.el + NeLisp を使って自由に自分の機能を拡張していけるよう
+にしたい
+#+end_quote
+
+= human が tool で能力拡張してきた 30 万年の延長線上に claude を置き、
+*claude が自己改造する道具を claude 自身が使う* 構図を実現。anvil.el は
+すでに ~90 tool の workbench (memory =project_rhblind_audit_done.md=)、
+NeLisp は Phase 7+ で pure Lisp runtime 化、両者を *self-extension の
+operational substrate* として束ねる top-level spec が必要 = Doc 38 (= 本
+doc、元 Doc 35 v0 を option B path で renumber)。
+
+** 1.2 既存 anvil.el 資産 (Phase A-D 着手時の前提、SHIPPED)
+
+| 既存資産                          | 役割                                          | Doc 38 での参照                              |
+|-----------------------------------+-----------------------------------------------+----------------------------------------------|
+| =anvil-server.el=                 | MCP server core、=register-tool/tools= API     | §3.A scaffold が出力する register call 先   |
+| =anvil-server-register-tool=      | per-tool register (handler + props plist)     | §4.A scaffold 雛型の中身                    |
+| =anvil-server-register-tools=     | bulk register **defun** (spec-list 渡し)、anvil-server.el:1610 (= 単発 =anvil-server-register-tool= は anvil-server.el:1483) | §4.B hot-reload module 単位 reload 単位     |
+| =anvil-memory.el= (16 MCP tool)   | SQLite KV + FTS + scan + search + audit       | §3.D rationale store / §4.D 検索 API        |
+| =anvil-session.el=                | snapshot / resume / Stop event lifecycle       | §3.F ephemeral registry は session 寿命に紐付き、Stop event で extend cleanup を新規追加実装 |
+| =anvil-orchestrator.el=           | multi-agent dispatch + judge                  | §3.F review gate 補助 (codex review)         |
+| =anvil-efficiency-bundle=         | =anvil-server-register-tools= helper / dashboard / preamble | §3.A scaffold が出力する register call 先 |
+| =anvil-server-ert.el=             | tool ERT harness                              | §3.A ERT skeleton 生成 + §3.B 単発 run       |
+| =anvil-disk.el= (file-* warnings) | disk write divergence helper                  | §3.B byte-compile artifact write 経由        |
+| =anvil-offload.el=                | isolated subprocess pool (pipe REPL)、=anvil-offload= cl-defun が future を返す API、=anvil-future-{await,cancel,kill,checkpoint}= で制御 (anvil-offload.el:220, 443) | §3.C Phase C v0 isolated subprocess 実装基盤 |
+| =anvil-state.el= (SQLite KV)      | TTL 付き KV、ns 分離                           | §3.F ephemeral / permanent registry 物理 store の選択肢 |
+
+*要点*: Doc 38 は *新規発明をせず、既存 anvil.el 資産の合成で 6 sub-system
+を組み立てる*。新規実装は薄い orchestration layer + scaffold template +
+isolated-subprocess policy enforcement (Phase C v0) + 二分割 gate state
+machine + Stop event 経由 ephemeral cleanup のみ。
+
+*重要 fact correction (T75 revise A1+A4+A5、T89 LOCKED v2 で line:N 訂正)*:
+- =anvil-server-register-tools= は **macro ではなく defun** (anvil-
+  server.el:1610、単発 =anvil-server-register-tool= は anvil-server.el:1483)。
+  Doc 38 は最初から defun (spec-list 渡し) 前提で scaffold template を組む。
+  元 v0 の "register-tools macro" 表記は誤、全削除。
+- =anvil-offload-submit= / =anvil-offload-hard-kill= は **存在しない**。
+  実体は =anvil-offload= (cl-defun, anvil-offload.el:443) が future を
+  返し、=anvil-future-await= / =anvil-future-cancel= / =anvil-future-kill=
+  (anvil-offload.el:220) / =anvil-future-checkpoint= で制御する state
+  machine。Doc 38 は =anvil-offload= → =anvil-future= → {await/cancel/
+  kill/checkpoint} の formulation で書く。
+- =anvil-session= に generic =on-stop= callback registry は **存在しない**
+  (anvil-session.el:437-443)。実在は Claude hook event =stop= +
+  =anvil-compact-on-stop=、=anvil-session-hook-dispatch= 経由で =stop= /
+  =session-end= event に bind する形のみ。Doc 38 の ephemeral cleanup は
+  「Stop event に extend cleanup 新規追加実装」と書き直し、generic
+  callback 前提を撤回。
+
+** 1.3 既存 muscle memory の問題と SDK 解 (3 系統)
+
+*問題 1: 編集 boilerplate*。tool 追加には:
+- =anvil-XXX.el= に handler defun
+- docstring に MCP Parameters 節
+- =anvil-server-register-tool= 単発 or =anvil-server-register-tools=
+  defun (anvil-server.el:1610) に spec-list を渡す bulk register
+- module 単位 spec list (=anvil-XXX-server-tools=) 更新
+- ERT skeleton in =tests/anvil-XXX-test.el=
+- module init / unload-feature 経路の維持
+
+*SDK 解*: §3.A scaffold = 1 call で 6 file edit を atomic 出力。
+
+*問題 2: reload 罠*。stale .elc + unload-feature 漏れ + register/unregister
+mismatch (memory =feedback_anvil_macro_require.md= /
+=feedback_canonical_byte_compile_stale_elc.md= /
+=feedback_defcustom_resets_on_unload.md=)。
+
+*SDK 解*: §3.B hot-reload = byte-compile pre-clean + unload-feature 保証 +
+register/unregister 自動 sync + 失敗時 rollback。
+
+*問題 3: rationale 消失*。session 終わると「なぜこの tool を作ったか」「ど
+の use-case か」「v1 → v2 で何を直したか」が memory に残らず、後の session
+が同じ tool を 2 度作る。
+
+*SDK 解*: §3.D memory integration = scaffold 時に rationale を強制 capture
++ anvil-memory FTS5 index に auto-write、後 session が =memory-search= で
+即 reach。
+
+** 1.4 NeLisp Phase 7+ との関係 (= sandbox + 性能 + 永続性)
+
+Doc 33 v2 完成後 NeLisp は *pure Lisp runtime substrate*、Doc 32 v2 で
+=bin/anvil mcp serve --no-emacs= が standalone 動作。Doc 38 §3.E は本
+substrate を *self-extension の sandbox host* として活用:
+
+- *sandbox*: NeLisp runtime は host Emacs と process 分離可能、claude の
+  hack tool が暴走しても main daemon には波及しない
+- *性能*: Phase 7.1 native compiler で sandbox 内 elisp は AOT compile
+  され、host Emacs interpreter より速い (Doc 28 v2 perf claims)
+- *永続性*: =stage-d-v2.0= 単一 binary に同梱可能、claude 拡張 tool が
+  永続 substrate を持つ
+
+ただし Phase 7+ は 2026-04-25 段階で未完成 (Doc 27 §3 sub-phase 7.1-7.5
+SHIPPED-but-design-only state per Doc 33 v2 §0)。本 doc §3.E は *Phase 9a
+nelisp-emacs-compat 着地後* の dispatch、それまで Phase A-D は host Emacs
+で完結。
+
+** 1.5 既存 IDE-side との境界
+
+Claude Code 製品本体 (= IDE / agent loop / tool dispatcher) は本 doc の
+out-of-scope。本 doc が触るのは *MCP transport 経由で client (Claude
+Code) に露出する tool surface* と *anvil.el package internals* のみ。
+Anthropic 製品の延長 (= /skills や Claude Code Hooks の改修) は別 spec
+で扱う。
+
+* §2 LOCKED decisions (default = 第一推奨、v0 = user signoff 前)
+
+各項目に推奨 default を提示。user signoff で全 default 採用する場合は
+"§2 全 10 項目 default 採用" の一行 LOCK で完了 (=Doc 27/28/29/30/31/32=
+と同 pattern)。
+
+** 2.1 SDK module 配置 [推奨 = A]
+
+A. *推奨*: =Notes/dev/anvil.el/anvil-extend.el= 単一 module、~800-1200 LOC
+B. =anvil-extend-scaffold.el= / =anvil-extend-reload.el= /
+   =anvil-extend-sandbox.el= / =anvil-extend-promote.el= に 4 分割
+C. =anvil-server.el= に直接埋め込み
+
+A 推奨 = anvil の他 module と同 1-file pattern (=anvil-memory.el=
+=anvil-session.el= 同形)、~1200 LOC は anvil-orchestrator.el (~3000 LOC)
+の 1/3 で許容範囲、後で分割は容易だが先に分割すると開発初期 churn が
+増える。
+
+** 2.2 skill spec 形式 [推奨 = A]
+
+A. *推奨*: =.claude/skills/claude-extend.skill= (= skill markdown +
+   trigger keyword 一覧 + description)、Claude Code skills 標準形式
+B. =Notes/.claude/skills/claude-extend.org= の org 形式
+C. anvil-XXX 内 docstring 経由公開のみ、skill file 持たない
+
+A 推奨 = 既存 skill (=accounting-automation= / =hourei-db= ほか) と同
+形式、user CLAUDE.md context で discoverable。trigger keyword: =/claude-
+extend=, =extend-tool=, =new-tool=, =hot-reload= 等。
+
+** 2.3 scaffold template 配置 [推奨 = A]
+
+A. *推奨*: =Notes/dev/anvil.el/templates/extend/= 配下 4 file
+   (=handler.el.tmpl=, =register.el.tmpl=, =ert.el.tmpl=, =memory.md.tmpl=)
+B. =anvil-extend.el= 内 const string で同梱
+C. =Notes/.claude/skills/claude-extend/templates/= 配下
+
+A 推奨 = template が版管理しやすく、user / claude が手で編集可、
+=register-tools= macro 形式の更新で scaffold output も自動更新。
+
+** 2.4 ephemeral *registry* 物理 store [推奨 = B]
+
+(用語: 旧 "ephemeral pool" は anvil-offload subprocess pool との意味
+衝突を避けて "ephemeral registry" に rename。D1 反映。)
+
+A. =anvil-state= SQLite (=ns: extend-ephemeral=)、TTL = session 終了 +
+   1h
+B. *推奨*: in-memory hash-table (=anvil-extend--ephemeral-registry=)、
+   session-end まで in-memory、cross-session 持越したい時は明示的 stash
+   command =anvil-extend-stash NAME= で =anvil-state= SQLite に書き出す
+   二系統分離 (D13)
+C. =/tmp/anvil-extend-ephemeral-{pid}/= 配下 file system
+
+B 推奨 = ephemeral = 文字通り「揮発」 + 「捨てる前提」の意味付けが明確、
+claude が「動かない hack」を残してデバッグするのは promotion gate 経由で
+の話、ephemeral は session 内記憶の延長線。cross-session で持越したい
+具体ケースは =anvil-extend-stash= で明示的に行う、二重定義 (生存期間 vs
+持越し) を解消。
+
+*storage path 分岐 (T89 LOCKED v2 で B-6 fact correction)*:
+- *ephemeral*: in-memory のみ (B 推奨)。disk write は一切なし、または
+  必要時のみ user home の =~/.anvil-extend/= 配下 (= 既 SHIPPED の
+  =anvil-extend-storage-dir= defcustom default、anvil-extend.el:69-70)
+  に書き出す
+- *permanent*: =Notes/dev/anvil.el/extend/<NAME>.el= 配下に git 管理対象
+  として書き出し、PR review 経路に乗る
+- = 「ephemeral 時の disk 書き出し先」と「permanent 時の git 管理 source」
+  は **別 path**、これを §2.5 / §3.A artifact 1 / §3.B step 1 で明示的に
+  分岐
+
+** 2.5 permanent *registry* 物理 store [推奨 = A]
+
+(用語: 旧 "permanent pool" は "permanent registry" に rename。D1 反映。)
+
+A. *推奨*: =Notes/dev/anvil.el/extend/= 配下 elisp file + module 単位
+   =anvil-server-register-tools= spec list、git 管理
+B. =anvil-state= SQLite (=ns: extend-permanent=)、code 文字列 store
+C. =anvil-extend.el= 内 直接 register
+
+A 推奨 = git 管理されて diff 可能 + PR レビュー可能 + 既存 anvil.el
+extension pattern と同形 (=anvil-XXX.el=)、SQLite に code を埋めると
+review 困難。
+
+** 2.6 isolated subprocess + policy enforcement (= 旧 "sandbox eval") mechanism [推奨 = B]
+
+(用語: A2 反映。"sandbox" 単語は doc 全体で "isolated subprocess" +
+"policy enforcement" に二分。本節は Phase C v0 の選択であり、Phase C v1
+の real syscall sandbox は §3.C / §6.1 で別扱い。)
+
+A. =anvil-eval--safe-eval= (新規) host Emacs 内、=eval= + =with-timeout=
+   + =gc-cons-threshold= 制限
+B. *推奨 (Phase C v0)*: =anvil-offload= cl-defun で future を作り、
+   =anvil-future-await= 等で制御 (anvil-offload.el:443)。Phase 1 + Phase
+   2a + Phase 3a artifacts を流用、process isolation のみ提供 (= "real
+   sandbox" ではない、policy enforcement は static AST scan の best-effort)
+C. NeLisp runtime (Phase E)、Phase 9a SHIPPED 後 dispatch、それまで B
+   fallback (dev-mode only)
+D. *Phase C v1 (将来)*: real syscall sandbox = seccomp (Linux) /
+   sandbox-exec (macOS) / Job Object (Windows) 新規実装、Phase E or 9c
+   に後送り
+
+B 推奨 (Phase A-D Phase C v0) → C (Phase E 以降) → D (Phase C v1 着手後):
+- =anvil-offload= は process 分離 + =anvil-future-kill= による hard-kill
+  (memory =project_anvil_offload.md=) 既備、Phase v0 新規実装ゼロ
+- 暴走時 main daemon に波及しない (= process isolation の効果)、
+  =anvil-future-checkpoint= で部分結果保存も既備
+- ただし =anvil-offload= subprocess は **real sandbox ではない** = file
+  write / shell-out / network / RLIMIT* / syscall filter / 別 UID は
+  shipped code 上に **無い** (anvil-offload.el:14-18, 127-137, 443-471)。
+  claude が =shell-command-to-string "rm -rf $HOME"= を書けば host の
+  HOME が消える事は技術的に防げない。Phase v0 の policy enforcement は
+  scaffold-validate 時の static AST scan + 高権限 policy (=shell-allowed=
+  / =unrestricted=) の explicit opt-in 強制 + pre-execution safety gate
+  (§3.F) の三段防御で best-effort 抑止
+- Phase E 到達後は NeLisp runtime path に置換可能 (=:nelisp t= flag)、
+  GC heap 完全分離 + MAP_JIT 別 segment で host main daemon と memory
+  pressure 分離
+- Phase v1 は seccomp BPF profile / sandbox-exec sandbox profile / Job
+  Object security descriptor を新規実装、Phase E or 9c で別 doc 化検討
+
+** 2.7 hot-reload + rollback strategy [推奨 = A]
+
+A. *推奨*: 3-step transactional reload
+   - step 1: byte-compile to /tmp staging area (.elc)
+   - step 2: =unload-feature= old + =load= new + =register-tools=
+   - step 3: smoke ERT 1 件 pass で commit、fail で rollback (= staging
+     破棄 + old を再 register)
+B. naive load + ERT 後で確認、fail なら手で rollback
+C. always reload from disk、stage しない
+
+A 推奨 = transactional + rollback 自動化 = boilerplate/safety コスト
+両方を SDK で吸収。
+
+** 2.8 ERT 単発 runner [推奨 = A]
+
+A. *推奨*: =anvil-server-ert= 既 SHIPPED API を再利用、tag 指定で
+   single-tool 限定 run
+B. =ert-run-tests-batch-and-exit= subprocess で完全独立
+C. inline =ert= による in-process
+
+A 推奨 = 既存 anvil-server-ert harness と整合、subprocess 起動 overhead
+を回避し scaffold→ERT→reload loop が <5s に収まる。
+
+** 2.9 二分割 gate 構成 [推奨 = A]
+
+(D6+D9 反映。元 v0 の "3-stage gate" は permanent 化のみを覆っており、
+ephemeral 実行自体の safety = 0 だった。本 revise で pre-execution
+safety gate と post-execution promotion gate を別系統で構成する。)
+
+A. *推奨*: pre-execution safety gate + post-execution promotion gate
+   の二系統
+   - *pre-execution safety gate (ephemeral 実行直前)*:
+     - safety 1 (= 自動): scaffold-validate (=:body= の static AST scan、
+       高権限 policy 検出時 hard-fail unless explicit opt-in)
+     - safety 2 (= 高権限 policy 必須): =:policy 'shell-allowed=
+       =:policy 'network-allowed= =:policy 'unrestricted= 指定 tool は
+       first run 前に diff preview + explicit consent (CLI prompt or
+       Claude Code permission flow)
+   - *post-execution promotion gate (ephemeral → permanent registry 昇格)*:
+     - promotion 1 (= 自動): smoke ERT pass + change-log 必須
+     - promotion 2 (= optional): orchestrator codex review (high-risk
+       policy default-on)
+     - promotion 3 (= 必須): user signoff、=anvil-extend-promote-confirm-cli=
+       (CLI 限定) で確認、MCP 露出は default off (=anvil-extend-promote-
+       confirm-via-mcp= = nil defcustom)
+B. promotion gate のみ (元 v0 形式、ephemeral 実行自体は signoff 前)
+C. ERT pass のみ自動 promote、user signoff 不要
+
+A 推奨 = 「claude が暴走的に permanent registry を肥大化」 + 「unreviewed
+ephemeral code が即 file/network/shell へ触れる」両方を抑止。pre-execution
+は実行前 safety、post-execution は昇格前 quality、別 gate として完全分離
+記述。promotion 3 (user signoff) の MCP 露出 default off は claude session
+が自分で =extend-promote-confirm= を叩いて auto-promote する技術的可能性
+(D6) を **不可能** に限定保証する設計。
+
+** 2.10 NeLisp execution path API [推奨 = A]
+
+A. *推奨*: =anvil-extend-run NAME ARGS &key (:nelisp t) (:nelisp-required nil)=
+   で透過切替、=:nelisp nil= で host Emacs、=:nelisp t= で NeLisp、Phase E
+   未到達期は =:nelisp t= で **dev-mode fallback** (D3): warning + host
+   Emacs 実行 + =:fallback-used= flag 結果に付与。release/CI mode
+   (=anvil-extend-release-mode t= defcustom) で =:nelisp t= failure は
+   **hard error**、=:nelisp-required t= scaffold flag は production でも
+   fallback 拒否
+B. =anvil-extend-run-nelisp= / =anvil-extend-run-host= 別関数
+C. NeLisp が SHIPPED するまで API 露出しない、Phase E 同時に新設
+
+A 推奨 = API は Phase A から *先に固定* し、Phase E 到達で実装が裏で
+切り替わる、claude session が API 安定として extend tool を書ける。
+strict gate (=:nelisp-required t= or =release-mode=) は Doc 27 §27.x
+の "host Emacs auto-fallback は dev 補助線、release qualification 不採用"
+方針 (27-...sdk.org:739-750) と整合 — fallback の hidden dependency を
+release で見逃さないため。
+
+* §3 sub-phases (Phase A-F)
+
+** 3.A scaffold generator (= 1 call で新 tool 雛型生成)
+
+入口関数 =anvil-extend-scaffold=。claude が「PDF page count tool 欲しい」
+と判断した時、次の 1 call で 4-6 artifact を atomic 出力。出力形式は
+**=anvil-server-register-tools= defun** (anvil-server.el:1610) に渡す
+spec-list 形 (= macro 前提を撤回、A4 反映):
+
+#+begin_src elisp
+  (anvil-extend-scaffold
+   :name "pdf-page-count"
+   :params '((path :type string :description "absolute PDF path"))
+   :description "Count pages in a PDF file"
+   :rationale "claude needs this when summarising PDF inputs without anvil-pdf-text"
+   :body '(progn
+            (anvil-server-with-error-handling
+              ;; Phase v0: shell-out は :policy 'shell-allowed 必須、
+              ;; pre-execution safety gate (§3.F) で diff preview + consent
+              (let ((output (shell-command-to-string
+                              (format "pdfinfo %s | grep Pages"
+                                      (shell-quote-argument path)))))
+                (string-to-number (cadr (split-string output ":"))))))
+   :policy 'shell-allowed   ;; 高権限 policy = explicit opt-in
+   :registry 'ephemeral)    ;; pool → registry rename (D1)
+#+end_src
+
+artifact (出力、registry-kind ごとに path 分岐 = T89 LOCKED v2 で B-6 fact
+correction):
+1. handler file (= handler defun + module-level spec-list を =anvil-server-
+   register-tools= に渡す形)
+   - *ephemeral 時*: in-memory のみ (disk 書き出し skip)、または
+     =anvil-extend-storage-dir= = =~/.anvil-extend/= 配下 (既 SHIPPED の
+     defcustom default、anvil-extend.el:69-70) に temp 書き出し
+   - *permanent 時*: =Notes/dev/anvil.el/extend/<NAME>.el= 配下に書き出し、
+     git 管理対象 (= permanent registry の source-of-truth)
+2. =tests/extend-<NAME>-test.el= (ERT skeleton、smoke 1 件 + arity 1 件
+   + error path 1 件 = 計 3 件)
+3. =anvil-memory= rationale entry (use-case + body 抜粋、secret pattern
+   scan 経由 redact 込み = D11 反映)
+4. =anvil-extend--registry= 上の entry (registry-kind / version / created-at /
+   policy / =:expires-at= for ephemeral)
+5. (optional) =openspec/specs/extend-<NAME>.md= = permanent 時のみ
+
+claude が =:body= 部分を実装し、=anvil-extend-load= で hot-reload、
+=anvil-extend-test= で smoke、満足したら pre-execution safety gate (§3.F)
+を経て ephemeral 実行、最終的に CLI =anvil-extend-promote-confirm-cli= で
+permanent registry に promote。
+
+*Phase A 完遂 gate (T89 LOCKED v2 で D-8 反映、secret scan は §3.D Phase D
+gate に集約)*:
+- =anvil-extend-scaffold= + =anvil-extend--registry= 動作
+- ephemeral registry への artifact 配置 + =anvil-server-register-tools=
+  call 動作
+- ERT skeleton は smoke 1 件 + handler arity check 1 件 + error path 1 件
+- scaffold-validate の static AST scan 動作 (高権限 policy 未宣言の
+  =shell-command= / =require= / =package-install= は hard-fail) — AST
+  scan **baseline** (高権限 sexp 検出のみ) は Phase A gate
+- *secret pattern scan は §3.D Phase D 完遂 gate に集約* (= 二重表記解消)、
+  Phase A artifact 3 (rationale entry) の record 直前で secret scanner
+  invoke、scanner 自体の SHIPPED は Phase D で gate される。Phase A 単独
+  着地時は scaffold が secret scanner symbol を call する **stub** で
+  pass、scanner 実装は Phase D で wire
+
+** 3.B hot-reload (= byte-compile + load + register、失敗時 rollback)
+
+入口関数 =anvil-extend-load PATH=、=anvil-extend-reload NAME=。
+
+4-step transactional reload (§2.7 A 拡張、D12 反映):
+
+1. *staging*: =/tmp/anvil-extend-staging-{pid}/<NAME>.elc= に byte-compile
+2. *swap*: =unload-feature 'extend-<NAME>= → =load STAGING= → 新 spec-list
+   を =anvil-server-register-tools= に渡し再 register
+2.5. *MCP notification push (D12、T89 LOCKED v2 で realistic に scope 縮退)*:
+     =anvil-server= から MCP transport 経由で =tools/list_changed=
+     notification を Claude Code client に push する **future enhancement**。
+     新 tool が即 tool list に反映されるよう促す機構だが、現 anvil-server.el
+     / anvil-host.el には =tools/list_changed= transport が **未実装**
+     (=grep tools/list_changed anvil-server.el anvil-host.el= = 0 hit、
+     2026-04-25 verified)。
+     - **本 SDK 内 scope (= Phase B 完遂 gate)**: scaffold + load + register
+       までを保証、tool list reflection は client 側 session restart で得る
+       (= 既 SHIPPED 経路の延長線)
+     - **anvil-server 拡張 task (= 別途、~50-100 LOC)**: server-side
+       =tools/list_changed= push transport 新規実装は本 SDK の prereq では
+       なく **anvil-server enhancement task として別 doc / 別 PR で対応**。
+       Phase B 完遂後、必要 timing で着手可
+     - 本 SDK は scaffold + load + register まで保証、push 機構は server
+       拡張 SHIPPED 後に Doc 38 v3 (or 別 doc) で wire 詳細化
+     - §10 Q7 と整合 (server side + client side 両方の status を整理)
+3. *commit/rollback*: smoke ERT 1 件 (= scaffold 時に作った skeleton) を
+   走らせ、pass で commit (= staging を canonical 位置に rename)、fail で
+   rollback (= staging 破棄 + old を =anvil-extend--registry-backup= から
+   再 register)
+4. *cleanup audit*: ephemeral registry 上の =:expires-at= スキャン、5 min
+   以内に expire 予定の entry に warning event を anvil-session log に
+   記録 (D10 反映)
+
+stale .elc 罠 (=feedback_canonical_byte_compile_stale_elc.md=) 対策:
+
+- =load-prefer-newer t= module-local set
+- staging 経由で canonical area に .elc を残さない (= source-only
+  development、staging は clean rebuild)
+
+*Phase B 完遂 gate*:
+- =anvil-extend-load= + =anvil-extend-reload= 動作
+- 失敗時 rollback 動作 (handler error / ERT fail 両ケース)
+- 連続 reload 100 回で main daemon の memory 増加 < 5MB (= unload-feature
+  漏れがないこと)
+- (本 SDK scope 外 = anvil-server 拡張 task) MCP =tools/list_changed=
+  notification push 機構の anvil-server.el 新規実装 ~50-100 LOC は **本
+  SDK Phase B 完遂 gate ではない**、Phase B 内では server 既 SHIPPED 経路
+  の register まで保証、tool list reflection は client 側 session restart
+  で得る縮退 spec で着地。push 機構の SHIPPED は別 doc / 別 PR で扱い、
+  Doc 38 v3 (or 別 doc) で wire 詳細化
+
+** 3.C isolated subprocess + policy enforcement (= 旧 "sandbox eval"、二段階)
+
+(用語: A2 反映。"sandbox" 単語は doc 全体で "isolated subprocess" +
+"policy enforcement" に二分。本節は **二段階** = Phase v0 (= 現実装で
+組める best-effort) と Phase v1 (= 真の syscall sandbox、後送り)。)
+
+入口関数 =anvil-extend-isolated-eval CODE &key TIMEOUT MEMORY-MB POLICY=
+(API 名は元 v0 の =-sandbox-eval= を保留可、ただし内部 doc string で
+「isolated subprocess + policy scan であり syscall-level sandbox では
+ない」を明示)。
+
+*** 3.C.v0 Phase v0 — isolated subprocess + static AST policy scan (= Phase A-D)
+
+実装 = =anvil-offload= cl-defun (anvil-offload.el:443) で future を作り、
+=anvil-future-await= 等で制御 (anvil-offload.el:14-18, 127-137)。
+
+state machine 図:
+
+#+begin_example
+  anvil-extend-isolated-eval CODE
+       │
+       ▼
+  anvil-offload  (cl-defun, REPL subprocess に form ship)
+       │
+       ▼
+  future ──── anvil-future-await    ─→ value
+         ├── anvil-future-cancel    ─→ 任意 cancel
+         ├── anvil-future-kill      ─→ hard-kill (= 旧 hard-kill 名で言及してた API、実体は anvil-future-kill)
+         └── anvil-future-checkpoint─→ 部分結果保存
+#+end_example
+
+*Phase v0 で提供できるもの (= shipped code 上で組める)*:
+- *process isolation*: subprocess REPL に form を ship、暴走時 host
+  daemon に直接波及しない (= anvil-offload baseline)
+- *hard-kill*: =anvil-future-kill= で subprocess 全体を強制終了
+- *checkpoint*: =anvil-future-checkpoint= で部分結果取得
+- *static AST policy scan (best-effort)*: scaffold-validate 時に =:body=
+  を AST 走査、高権限 sexp (=shell-command= / =shell-command-to-string= /
+  =call-process= / =require= / =package-install= / network 系) 検出 →
+  :policy 宣言が無ければ hard-fail
+- *pre-execution safety gate (§3.F)*: 高権限 policy tool は first run 前
+  に diff preview + explicit consent を必須化、ephemeral 実行は signoff
+  前でも host file/shell に触れる (それを抑止する layer がここ)
+
+*Phase v0 で提供できないもの (= 現実装に未存在、誇大広告しない)*:
+- file write の OS-level deny (= filesystem layer の syscall filter は
+  shipped code 上に **無い**)
+- network deny の OS-level enforce (= subprocess 内 socket(2) を block
+  する機構は **無い**)
+- syscall filter (= seccomp BPF profile は **無い**)
+- RLIMIT_AS / RLIMIT_NPROC 自動設定 (= grep 0 hit、想定機能、未実装)
+- 自動 timeout (= =:timeout= は plist key で "Reserved for Phase 3
+  preemption"、実 enforce **未実装**。本 doc 内 =:timeout= 記述は spec
+  のみで shipped を意味しない)
+- 別 UID 起動 (= optional Phase E のみ)
+
+= "Phase v0 は process isolation only、real sandbox ではない" を §6.1
+risk mitigation でも risk 観点で同じ machinery を再 cross-ref (= §3.C で
+"提供できる/できない" 視点で詳述、§6.1 で "リスク/対策" 視点で要約、両
+section で同じ用語を使う)。claude が =shell-command-to-string "rm -rf
+$HOME"= を書けば host の HOME が消える事は Phase v0 では **防げない** (静的
+AST scan + pre-execution gate で best-effort 抑止のみ)。
+
+*用語整合 (T89 LOCKED v2 で D-2 boundary clarify)*: §3.C.v0 = "提供できる
+/ できないもの" 軸、§6.1.v0 = "リスク / 対策" 軸。両者は同じ Phase v0
+machinery の異なる視点であり、用語は揃える (= "process isolation",
+"static AST policy scan", "hard-kill", "OS-level enforce 未実装" 等
+共通)。
+
+*** 3.C.v1 Phase v1 — real syscall sandbox (= Phase E or 9c に後送り)
+
+新規実装 (= shipped code 上に **無い**、+400-600 LOC 見積):
+- *Linux*: seccomp BPF profile (file write deny + network deny + ptrace
+  deny + setuid 系 deny) を subprocess 起動時 install
+- *macOS*: =sandbox-exec -p PROFILE_FILE= で sandbox profile (= Apple
+  Sandbox SBPL) 適用、HOME 配下も白リスト方式
+- *Windows*: Job Object + restricted token (= AppContainer or
+  WriteFilteringProcess) で file/registry namespace 隔離
+- RLIMIT_AS / RLIMIT_NPROC 設定 (Linux limit、macOS は best-effort、
+  Windows は Job Object Memory limit)
+- timeout の OS-level enforce (=setrlimit(RLIMIT_CPU)= or watchdog process)
+
+着手は Phase E (NeLisp runtime path) と並列、または Phase 9c で別 doc
+化検討。Phase v1 は v0 の上に opt-in flag (=:syscall-sandbox t=) で
+追加、v0 fallback 可能とする。
+
+*** 3.C policy field
+
+*sandbox policy* (Phase v0 + v1 共通):
+- *file write*: scaffold artifact area + =/tmp/anvil-extend-*/= のみ許可、
+  それ以外は =anvil-disk-warn= 経由 hard-fail (= AST scan で best-effort、
+  Phase v1 で OS-level enforce)
+- *shell-command*: default-deny、=:policy 'shell-allowed= で explicit
+  opt-in 強制
+- *network access*: **default-deny + allowlist** (= D8 反映、元 v0 の
+  default-allow を反転)。=:policy 'network-allowed= で explicit opt-in、
+  allowlist 形式で URL prefix 指定 (例: =:network-allowlist '("https://
+  api.github.com/" "https://anthropic.com/")=)。
+  - *Phase v0 enforcement layer (= spec layer のみ)*: AST scan の
+    best-effort + warning。subprocess REPL 内で eval される動的 network
+    access (=url-retrieve= / =make-network-process= / =gnutls-process=
+    の dynamic dispatch、=(funcall (intern ...))= 経由 escape 等) を
+    AST scan で完全に止めるのは **静的解析の本質的限界** で不可能
+  - *Phase v1 enforcement layer (= 真の OS-level)*: iptables / pf /
+    Windows Filtering Platform 経由で subprocess の outgoing socket(2)
+    を OS-level enforce、これが **完全 enforcement の唯一 path**
+  - = 本 Doc 38 v2 SDK の network deny は **spec layer + AST scan の
+    best-effort layer**、real enforcement は OS sandbox v1 が必須
+    (T89 LOCKED v2 で D-6 反映)
+- *require / package-install*: default-deny + permanent promote 時
+  =:requires= dependency declaration **必須化** (= D7 supply chain risk
+  反映)、未宣言は scaffold-validate で hard-fail
+
+*Phase C 完遂 gate (Phase v0)*:
+- =anvil-extend-isolated-eval= 動作 (= future chain で control)
+- =anvil-future-kill= による hard-kill 動作 (test: 無限 loop)
+- static AST policy scan 動作 (test: 高権限 sexp 未宣言で hard-fail)
+- pre-execution safety gate 経由 high-risk tool は consent prompt 動作
+- network default-deny + allowlist 動作 (test: 未宣言 URL は AST scan で
+  reject)
+- =:requires= 未宣言 require / package-install は scaffold-validate で
+  hard-fail 動作
+
+*Phase C v1 完遂 gate (将来別 phase)*:
+- seccomp / sandbox-exec / Job Object 各 OS で file write / network /
+  syscall filter OS-level enforce 動作 (各 OS で 1 件以上)
+- =/etc/passwd= write が OS-level deny で hard-fail
+- =setrlimit RLIMIT_AS= による huge alloc abort 動作
+
+** 3.D memory integration (= rationale auto-record + secret pattern scan)
+
+入口関数 =anvil-extend--record-rationale=、scaffold / promote / change 時
+に自動呼出。**secret pattern scan を経由** (= D11 反映)、検出時 redact +
+warning。
+
+record 内容 (=anvil-memory= に書く Markdown):
+
+#+begin_example
+  # extend-<NAME> rationale (v<VERSION>)
+
+  - created-at: <ISO8601>
+  - created-by-session: <session-id>
+  - registry-kind: <ephemeral|permanent>
+  - description: <description>
+  - use-case: <rationale>
+  - related-tools: <list of MCP tool ids the claude considered before scaffold>
+  - policy: <safe|shell-allowed|network-allowed|unrestricted>
+  - requires: <package list (= permanent only)>
+  - body excerpt: <first 30 lines of :body, secret-redacted>
+
+  ## change-log
+  - vN: <YYYY-MM-DD> <change summary>
+#+end_example
+
+*secret pattern scan (D11、T89 LOCKED v2 で借用元修正)*:
+- =anvil-dev.el= の secret scanner =anvil-dev--audit-scan-secrets=
+  (anvil-dev.el:978、=gitleaks --redact= equivalent な regex pattern) を
+  借用、または **新規 helper =anvil-extend--scan-secrets= を anvil-extend.el
+  内に実装** (LOC ~30-50 追加見積、anvil-dev pattern 流用)。元 v1 で言及
+  していた =anvil-disclosure-scan-secrets= は **anvil-disclosure.el に
+  存在しない** (anvil-disclosure は 3-layer progressive disclosure
+  contract = org-index-index / file-read-snippet / defs-index、Doc 28
+  Phase 1-4 の用途であり secret 検出機能はゼロ)、本 LOCKED v2 で借用元を
+  訂正
+- =:body= / =:rationale= / =related-tools= の record 直前に上記 scanner を
+  呼び、API key / token / PEM / .env style assignment を pattern match
+- 検出時: redact (e.g., =sk-XXXXXXXX...= → =sk-[REDACTED]=) + warning
+  message を =anvil-session= log に記録、user に prompt
+- false positive 多発 (= 一般 hex 文字列等) 対策で =:secret-scan-allow-
+  patterns= defcustom で whitelist 可
+- LOC 見積 (= §1.2 / §12 changelog にも反映): anvil-dev pattern の薄
+  wrapper 化 ~30-50 LOC を Phase D 内訳に含める
+
+保存先 = =~/.claude/projects/<project>/memory/extend_<NAME>.md=、type =
+=memo= (anvil-memory--infer-type 経由)。後 session が =anvil-memory-search=
+で即 reach 可能。
+
+*Phase D 完遂 gate*:
+- scaffold / promote / change で auto-record 動作
+- =anvil-memory-search "extend-pdf-page-count"= で hit
+- rationale entry の change-log section 追記動作 (= 同 NAME 再 promote
+  時に上書きでなく追記)
+- secret pattern scan 動作 (test: =:body= に =sk-= prefix 含む string が
+  あれば redact)
+
+** 3.E NeLisp execution path (= Phase 9a only narrow + dev-mode fallback)
+
+入口関数 =anvil-extend-run NAME ARGS &key NELISP NELISP-REQUIRED=。
+
+*前提 (= Phase E dispatch gate)*:
+- Doc 32 v2 Phase 7.5 SHIPPED (= =bin/anvil mcp serve --strict-no-emacs=
+  動作)
+- *Phase 9a only* (= D2 反映): =nelisp-elisp-compat= MVP top 20-30 API
+  (=insert= / =buffer-string= / =shell-command-to-string= 等) が NeLisp
+  上で叩ける状態。Phase 9b は **coverage expansion** として別節 (§3.E.coverage)、
+  Phase E hard dependency には **入らない**
+
+*availability check (3 段階、D4 反映)*:
+
+入口関数 =anvil-extend-run-available-p &key NELISP NELISP-REQUIRED=:
+
+1. =featurep 'nelisp-runtime-module= (= Emacs module load 確認)
+2. =nelisp-runtime-module-call 'nelisp-version= cheap probe (= subprocess
+   alive 確認)
+3. returned version が =nelisp-emacs-compat-required-version= 以上
+
+3 段すべて pass で =t=、いずれか fail で nil + reason string。
+=fboundp 'nelisp-eval= は host Emacs 上 **常に nil** (NeLisp は別
+process)、これ単独での判定は不十分。
+
+*cross-ref TBD (T89 LOCKED v2 で D-1 fact correction)*: 上記
+=nelisp-runtime-module= / =nelisp-runtime-module-call= symbol は Doc 32 v2
+の Phase 7.5.4 module API として spec 化される想定だが、Doc 32 v2
+(=docs/design/32-phase7.5-integration.org=) は現時点で sub-phase 7.5.1〜
+7.5.3 までしか起草されておらず Phase 7.5.4 sub-section 自体が **未起草**
+(=grep "7.5.4\\|nelisp-runtime-module-call" docs/design/32-phase7.5-
+integration.org= = 0 hit、2026-04-25 verified)。Doc 32 v2 で Phase 7.5.4
+module API の sub-section が起草された後に正確な §番号で cross-ref を
+追加 (= §10 open question Q10 として整理)。本 Doc 38 v2 は availability
+check の "module API symbol を叩いて probe する" pattern を spec 上 lock
+し、symbol 名の最終確定は Phase 7.5.4 起草に揃える。
+
+*動作*:
+- =:nelisp nil= → host Emacs で =eval=、Phase A-D と同経路
+- =:nelisp t= → availability check pass 時 NeLisp runtime に code を ship、
+  =nelisp-elisp-compat= 経由で API を叩く、結果を MCP transport 越しに
+  host に戻す
+
+*fallback (= dev-mode only、D3 反映)*:
+
+- =:nelisp t= 指定で availability check fail 時:
+  - *dev-mode* (=anvil-extend-release-mode= = nil、default): warning +
+    host Emacs で実行、=:fallback-used= flag を結果に付与、anvil-session
+    log に "fallback used: <reason>" event 記録
+  - *release-mode* (=anvil-extend-release-mode= = t): **hard error**、
+    NeLisp path failure を CI で見逃さない
+  - =:nelisp-required t= scaffold flag は dev-mode でも fallback **拒否**、
+    NeLisp path 必須 tool 用
+- Doc 27 §27.x の "host Emacs auto-fallback は dev 補助線、release
+  qualification 不採用" (27-...sdk.org:739-750) と整合
+
+*sandbox 強化 (Phase E のみ、Phase C v0 baseline の上に追加)*:
+- NeLisp process は host と異なる UID で起動 (Linux only、optional)
+- mmap region は MAP_JIT で別 segment (Phase 7.0 SHIPPED 経路活用)
+- GC heap が host から完全分離 = host main daemon の memory pressure 与え
+  ない
+- (Phase C v1 syscall sandbox は NeLisp process 起動時に同時 install 可、
+  別 phase で詳細)
+
+*Phase E 完遂 gate (Phase 9a baseline)*:
+- =:nelisp t= で実 NeLisp runtime 上で 1 tool 動作 (e2e demo、Phase 9a
+  対応 API のみ使う tool)
+- =anvil-extend-run-available-p= 3 段チェック動作
+- fallback 動作 dev-mode (warning + host Emacs に流れる)
+- fallback 動作 release-mode (hard error)
+- =:nelisp-required t= で fallback 拒否動作
+- regression-free (Phase A-D の host 経路に影響なし)
+
+*** 3.E.coverage Phase 9b coverage expansion (= 別節、Phase E hard dependency 外)
+
+Phase 9b (=nelisp-emacs-compat= の API surface 拡大、Doc 34 §3 / §7.3
+"Phase 9b full close 条件" 想定) は
+本節の **coverage expansion** として段階 SHIPPED で扱う。tool 側は
+=:requires-emacs-api '(insert buffer-string shell-command-to-string ...)=
+等の granular dependency 宣言可、availability check 時に granular
+fallback 判定する形に拡張可能 (= open question §10、v1 段階で詳細未確定)。
+
+Phase 9b 進捗に従い =:nelisp t= 利用比率は徐々に上昇する想定 (§8.5)。
+
+** 3.F 二分割 gate (= pre-execution safety + post-execution promotion)
+
+(D6+D9 反映。元 v0 の "3-stage gate" は permanent 化 gate のみで ephemeral
+実行自体の safety = 0 だった。ephemeral hack tool が user signoff 前に host
+file/network/shell に触れる構造的問題を本節で解消。)
+
+*registry model*:
+- *ephemeral registry* (= 旧 ephemeral pool): in-memory hash-table、
+  session-end まで in-memory。cross-session 持越しは =anvil-extend-stash
+  NAME= で明示的、二系統分離 (D13)
+- *permanent registry* (= 旧 permanent pool): =extend/= 配下 file + git
+  管理 + module 単位 spec-list、cross-session 永続。promotion gate 通過
+  した tool のみ
+
+*** 3.F.1 pre-execution safety gate (= ephemeral 実行前)
+
+claude が ephemeral tool を first run する前に通過必須:
+
+1. *safety 1 (= 自動 scaffold-validate, §3.A 末尾)*: AST scan で =:body=
+   の高権限 sexp 検出、:policy 宣言が無ければ hard-fail
+2. *safety 2 (= 高権限 policy 必須 explicit consent)*: =:policy=
+   ∈ {=shell-allowed=, =network-allowed=, =unrestricted=} の tool は
+   first run 前に diff preview + explicit consent
+   - default UI: CLI prompt =anvil-extend-consent-prompt= (= y/n + diff
+     表示)
+   - Claude Code 内 dispatch 時は permission flow 経由、claude session
+     から直接 bypass 不可
+3. *safety 3 (= rate-limit)*: =:policy 'unrestricted= tool は session
+   あたり実行回数 hard-cap (= default 10 回 / session、defcustom 上書き可)
+
+入口関数:
+- =anvil-extend-pre-run-check NAME= = first run 前に safety 1-3 を順次
+  実行、pass で =t=、fail で reason cell return
+- =anvil-extend-run NAME ARGS= は内部で =pre-run-check= を呼び、未 pass
+  なら error (= consent 取らずに実行しない)
+- consent 与済 (= same session 内 consent 取得済 +ssame :body hash) は
+  =anvil-extend--consent-cache= で短期 cache、session-end で消える
+
+*** 3.F.2 post-execution promotion gate (= ephemeral → permanent registry)
+
+ephemeral run + 評価が満足した後、permanent registry に昇格:
+
+入口関数:
+- =anvil-extend-promote NAME &key REVIEWER CODEX-REVIEW=
+- =anvil-extend-promote-confirm NAME= (= 内部、CLI 限定で叩かれる)
+- =anvil-extend-promote-confirm-cli= (= M-x command、CLI shell からの
+  user signoff 専用入口)
+
+*3-stage gate*:
+1. *promotion 1 (= 自動)*: =anvil-extend-test NAME= で smoke ERT pass +
+   change-log 記述必須 (= scaffold 時 :rationale または promote 時
+   =:change-log STR= 必須)
+2. *promotion 2 (= optional, high-risk default-on)*: =:codex-review t=
+   で =anvil-orchestrator-submit= 経由 codex (or claude haiku) に review
+   依頼、duplicate / risk / quality 3 軸評価。:policy ∈ {=shell-allowed=,
+   =network-allowed=, =unrestricted=} の tool では default-on
+3. *promotion 3 (= 必須, CLI 限定)*: user signoff、=anvil-extend-promote-
+   confirm-cli= で確認
+
+*MCP 露出 default off (D6 反映)*:
+- =anvil-extend-promote-confirm-via-mcp= = nil defcustom
+- = MCP transport 経由で =extend-promote-confirm= を叩く path は default
+  で無効、claude session が自分で叩いて auto-promote する技術的可能性を
+  **不可能** に限定保証
+- user が opt-in で =via-mcp= = t に設定する場合は user 自身の判断、Claude
+  Code permission flow を経由するよう spec 強制
+
+gate 1 fail で再 scaffold 推奨、gate 2 で MAJOR REVISIONS 付き戻れば
+claude が修正 reload、gate 3 deny で ephemeral 残置 (削除しない、claude が
+後で再考可能)。
+
+*demote* = =anvil-extend-demote NAME= で permanent → ephemeral 戻し可能、
+delete = =anvil-extend-delete NAME &optional REGISTRY-KIND= で完全削除。
+
+*Phase F 完遂 gate*:
+- pre-execution safety gate 動作 (= safety 1-3 各 1 ケース)
+- post-execution promotion gate 動作 (= smoke / codex-review / user
+  signoff 各 1 ケース)
+- =anvil-extend-promote-confirm-via-mcp= = nil で MCP 経由 auto-promote
+  が hard-fail
+- =anvil-extend-promote-confirm-cli= 経由 CLI 限定 signoff 動作
+- ephemeral / permanent 状態遷移動作
+- demote / delete 動作
+
+* §4 API surface (各 sub-system の public function spec)
+
+各 sub-system の public function = 26 件 (Phase A-D で 21 件、E で 3 件、
+F で 5 件、重複あり)。命名規約: =anvil-extend-NAME=、internal =
+=anvil-extend--NAME=。
+
+** 4.A scaffold (= 5 件)
+
+| function                                    | semantics                                                                                       |
+|---------------------------------------------+-------------------------------------------------------------------------------------------------|
+| =anvil-extend-scaffold &key NAME PARAMS DESCRIPTION RATIONALE BODY POOL=  | 1 call で 4-6 artifact atomic 出力、registry に entry 追加         |
+| =anvil-extend-scaffold-from-template TPL &rest ARGS=  | template 名 (=mcp-tool=, =shell-wrap=, =org-query= 等) 指定で省略 form |
+| =anvil-extend-scaffold-template-list=       | 利用可能 template 一覧 + description                                                              |
+| =anvil-extend-scaffold-validate SPEC=       | scaffold 前 spec validate (= 名前衝突 / 必須 field 欠 / body sexp 健全性)                          |
+| =anvil-extend--registry= (defvar)           | hash-table、key = NAME、value = (:pool :version :path :created-at :rationale-file …)              |
+
+** 4.B hot-reload (= 4 件)
+
+| function                                    | semantics                                                                            |
+|---------------------------------------------+--------------------------------------------------------------------------------------|
+| =anvil-extend-load PATH &key DRY-RUN=       | PATH (= elisp file) を staging 経由で reload、smoke ERT pass で commit、fail で rollback |
+| =anvil-extend-reload NAME=                  | NAME を registry から逆引き → =anvil-extend-load=                                       |
+| =anvil-extend-unload NAME=                  | =unload-feature= + =anvil-server-unregister-tools= + registry から除去                  |
+| =anvil-extend-list &optional POOL=          | registry の tool 一覧、POOL=ephemeral/permanent/all                                  |
+
+** 4.C isolated subprocess + policy enforcement (= 4 件)
+
+(用語: A2 反映、"sandbox" → "isolated subprocess + policy enforcement"。)
+
+| function                                                        | semantics                                                                            |
+|-----------------------------------------------------------------+--------------------------------------------------------------------------------------|
+| =anvil-extend-isolated-eval CODE &key TIMEOUT MEMORY-MB POLICY= | code を isolated subprocess 内 eval、=anvil-offload= で future を作り =anvil-future-await= 等で制御 (Phase A-D = Phase v0) |
+| =anvil-extend-isolated-policy-set POLICY=                       | policy 切替 (=safe= / =shell-allowed= / =network-allowed= / =unrestricted=)                  |
+| =anvil-extend-isolated-status=                                  | 現在 active subprocess 一覧 + 各々の resource 使用量 (=anvil-offload-pool-status= anvil-offload.el:412 + 各 future の =anvil-future-status= anvil-offload.el:167 / =anvil-future-elapsed= anvil-offload.el:241 を集計する **新規 ~20 LOC wrapper**、=anvil-future-list= は **不在** = T89 LOCKED v2 fact correction) |
+| =anvil-extend-pre-run-check NAME=                               | pre-execution safety gate 通過判定 (§3.F.1)、AST scan + consent + rate-limit 順次          |
+
+** 4.D memory (= 2 件)
+
+| function                                       | semantics                                                                            |
+|------------------------------------------------+--------------------------------------------------------------------------------------|
+| =anvil-extend--record-rationale NAME PLIST=    | scaffold/promote/change 時に rationale を anvil-memory に書き込み (内部、自動呼出)          |
+| =anvil-extend-rationale-search QUERY=          | =anvil-memory-search= の薄 wrapper、type=memo + path prefix=extend_ で絞込                |
+
+** 4.E NeLisp exec (= 4 件)
+
+| function                                                            | semantics                                                                                                                                                |
+|---------------------------------------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------|
+| =anvil-extend-run NAME ARGS &key NELISP NELISP-REQUIRED=            | tool 実行、=:nelisp t= で NeLisp runtime、=:nelisp-required t= で fallback 拒否、release-mode で =:nelisp t= failure は hard error                         |
+| =anvil-extend-run-available-p &key NELISP NELISP-REQUIRED=          | 3 段 availability check: (1) =featurep 'nelisp-runtime-module= (2) =nelisp-runtime-module-call 'nelisp-version= cheap probe (3) version >= required-version |
+| =anvil-extend-run-stats=                                            | host vs nelisp 実行統計 (latency / fallback rate / error rate)                                                                                              |
+| =anvil-extend-stash NAME=                                           | ephemeral registry の entry を =anvil-state= SQLite に明示的 stash、cross-session 持越し (D13)                                                              |
+
+** 4.F promotion (= 6 件)
+
+| function                                                            | semantics                                                                                                                            |
+|---------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------|
+| =anvil-extend-promote NAME &key REVIEWER CODEX-REVIEW=              | ephemeral → permanent 昇格、post-execution promotion gate (3-stage) 通過時のみ                                                       |
+| =anvil-extend-promote-confirm NAME=                                 | promotion 3 user signoff、internal、=anvil-extend-promote-confirm-cli= からのみ叩かれる。MCP 露出は default off (D6)                  |
+| =anvil-extend-promote-confirm-cli=                                  | M-x command、CLI shell からの user signoff 専用入口、claude session が直接叩けない (= anvil-extend-promote-confirm-via-mcp = nil 強制) |
+| =anvil-extend-demote NAME=                                          | permanent → ephemeral 戻し                                                                                                            |
+| =anvil-extend-delete NAME &optional REGISTRY-KIND=                  | 完全削除、artifact + registry + memory rationale 全部                                                                                  |
+| =anvil-extend-test NAME &key TAGS=                                  | smoke ERT 単発 run、=anvil-server-ert= 流用 + tag selector の **新規 ~30 LOC wrapper** (= 既存 anvil-server-ert は single-tool runner ではない、D15 反映) |
+
+** 4.MCP MCP tool surface (= claude が直接叩く tool、最小 6 件)
+
+claude session 内から MCP 経由で叩く tool は最小 6 件、残 internal。
+*=extend-promote-confirm= は MCP 露出 default off* (= D6 反映、=anvil-
+extend-promote-confirm-via-mcp= = nil defcustom 強制):
+
+| MCP tool id                  | wraps                                                                                  |
+|------------------------------+----------------------------------------------------------------------------------------|
+| =extend-scaffold=            | =anvil-extend-scaffold=                                                                |
+| =extend-load=                | =anvil-extend-load= (4-step transactional reload + tools/list_changed push)            |
+| =extend-test=                | =anvil-extend-test=                                                                    |
+| =extend-list=                | =anvil-extend-list= (=:expires-at= 表示込み、D10)                                       |
+| =extend-promote=             | =anvil-extend-promote= (post-execution 開始のみ、最終 confirm は CLI 限定)              |
+| =extend-rationale-search=    | =anvil-extend-rationale-search=                                                        |
+
+= 6 件で claude self-modify e2e loop が回る。残 reload / isolated-eval /
+NeLisp exec / promote-confirm は internal 公開なし (= claude が直接叩かず、
+scaffold/load 経由で indirect に使う、または CLI 限定)。
+
+* §5 workflow examples
+
+3 件、claude actual self-modify scenario。
+**MCP tool id 基準で記述** (= A6 反映、internal function 名は appendix
+に退避)。time line は ephemeral phase (= 30-60s 想定 happy path) と
+permanent promote phase (= 数分 - 数時間) を分離記述。
+
+** Example 1: claude が「PDF page count tool 欲しい」と判断 (新規 ephemeral)
+
+trigger: claude が PDF input を summarise 中、既存の MCP tool =anvil-pdf-info=
+(memory =project_anvil_package.md= 内 anvil-pdf module、関数 =anvil-pdf-info=
+anvil-pdf.el:124) と =anvil-pdf-text= (anvil-pdf.el:131) はあるが、page
+count を 1 行で取る単独 tool が無いと気付く。
+
+*** 5.1.a ephemeral phase (= scaffold + load + smoke、happy path 30-60s)
+
+#+begin_example
+  T+0s    claude: /claude-extend する
+  T+1s    claude (MCP): extend-rationale-search "pdf page count"
+                  → 0 hits、既存 tool 無し確認
+  T+5s    claude (MCP): extend-scaffold
+                  :name "pdf-page-count"
+                  :params ((path :type string ...))
+                  :description "Count pages in a PDF"
+                  :rationale "claude needs this when summarising PDF inputs without anvil-pdf-info read overhead"
+                  :body (progn ...)         ;; LLM 生成 ~10s
+                  :policy 'shell-allowed
+                  :registry 'ephemeral
+          → artifact 4 件出力、ephemeral registry に entry
+          → secret pattern scan pass、pre-execution AST scan pass
+  T+30s   claude (MCP): extend-load (auto from scaffold)
+          → byte-compile + register + tools/list_changed push、smoke ERT pass
+  T+35s   claude (MCP): extend-test "pdf-page-count"
+          → 3 件 pass (smoke + arity + error path)
+  T+40s   claude (CLI side, 高権限 policy 必須): pre-execution consent
+          → diff preview + y/n prompt (= shell-allowed なので必須)
+          → user 'y' → consent cached for session
+  T+45s   claude (MCP): extend-run "pdf-page-count" :path "/tmp/foo.pdf"
+          → 142 (pages)
+  T+55s   claude: 元 task に復帰、tool を session task に使用
+  ====== ephemeral phase: ~55s 経過 ======
+#+end_example
+
+(注: T+30s に飛んでいるのは LLM body 生成 + retry 余白 = 25s を含む現実
+値。元 v0 の "T+8s で extend-load" は楽観値、撤回。)
+
+*** 5.1.b permanent promote phase (= post-execution gate、数分 - 数時間)
+
+#+begin_example
+  T+5min  claude: 評価満足、permanent promote 提案
+  T+5min  claude (MCP): extend-promote "pdf-page-count"
+          → promotion 1 (smoke ERT) pass
+          → promotion 2 (codex-review, shell-allowed default-on)
+                  → orchestrator dispatch claude-haiku reviewer
+                  → ~30s で MINOR REVISIONS: shell-quote-argument 推奨
+          → promotion 3 待ち (= user signoff、CLI 限定)
+  T+8min  claude: shell-quote-argument 修正 + reload
+          → claude (MCP): extend-load
+          → smoke ERT 再 pass
+  T+10min user (CLI shell): M-x anvil-extend-promote-confirm-cli pdf-page-count
+          → diff 確認 + y prompt
+          → permanent registry 移動、Notes/dev/anvil.el/extend/pdf-page-count.el 配置
+          → memory rationale promoted (registry-kind: permanent)
+  ====== permanent phase: ~10 min 経過 (review iteration 込み) ======
+#+end_example
+
+= ephemeral 55s で hack 動作 → ~10 min で permanent tool 化 (review +
+signoff 込み)。後の session が =memory-search= で即 reach。
+
+** Example 2: claude が既存 tool の bug fix (= reload + change-log)
+
+trigger: claude が =extend-pdf-page-count= (上で permanent 化した tool)
+で encrypted PDF が pdfinfo warning で fail することを発見、error handling
+追加。
+
+#+begin_example
+  T+0s    claude (MCP): extend-rationale-search "pdf"
+                  → pdf-page-count entry hit、現在 v1
+  T+10s   claude: 既存 .el を read、:body 部分を update + change-log 用文字列準備
+  T+25s   claude (MCP): extend-load PATH
+                  → byte-compile + reload + tools/list_changed push + smoke ERT pass
+                  → registry version v1 → v2
+                  → memory change-log に "v2: handle encrypted PDF" 追記
+                  → secret pattern scan pass
+  T+35s   claude (MCP): extend-test "pdf-page-count"
+          → 4 件 pass (smoke + arity + error path + encrypted PDF case)
+  T+40s   claude: 元 task に復帰
+#+end_example
+
+= 40s で bug fix in-session (= ephemeral phase は不要、permanent 直編集 +
+reload)。change-log は memory に永続、後 session で =memory-search= 経由
+v1 → v2 の経緯参照可能。permanent registry の git 管理で diff レビュー可
+(= user PR で reflect する場合)。
+
+** Example 3: claude が高頻度操作を batch tool に統合 (= efficiency-bundle 的)
+
+trigger: claude が 1 session 内で MCP tool =org-read-headline= (anvil-org
+module、関数 =anvil-org-read-headline= anvil-org.el:1611) + =memory-search=
+(anvil-memory module、関数 =anvil-memory-search= anvil-memory.el:2137) +
+=git-log= (anvil-git module、関数 =anvil-git-log= anvil-git.el:581) の 3
+MCP tool を「research 1 件 = 3 call」 で連続発火しすぎていることに気付く。
+
+#+begin_example
+  T+0s    claude: /claude-extend する
+  T+2s    claude (MCP): extend-rationale-search "research bundle"
+                  → 0 hits、既存無し
+  T+10s   claude (MCP): extend-scaffold
+                  :name "research-bundle"
+                  :params ((query :type string ...))
+                  :description "Org headline + memory + git log triple search"
+                  :rationale "claude is making 3 separate MCP tool calls per research op,
+                              this batches them via internal anvil-org / anvil-memory / anvil-git APIs"
+                  :body (progn
+                          (let ((org (anvil-org-read-headline ...))
+                                (mem (anvil-memory-search query))
+                                (git (anvil-git-log :grep query)))
+                            (list :org org :memory mem :git git)))
+                  :policy 'safe       ;; shell/network 不要
+                  :registry 'ephemeral
+  T+30s   claude (MCP): extend-load + extend-test
+                  → 3 件 pass
+  T+35s   claude (MCP): extend-run "research-bundle" :query "anvil-future"
+                  → :org / :memory / :git の triple result
+  T+5min  claude: 同 session 中 5 回 research-bundle を使う
+                  → 各回 3 → 1 MCP call 削減 (= 67% reduction)
+  T+30min claude: 評価満足、upstream PR 候補と判断
+                  (= D14 反映、=:upstream-pr-candidate t= scaffold flag)
+  T+45min claude (MCP): extend-promote "research-bundle"
+                  → promotion 1 (smoke) pass
+                  → promotion 2 (codex review): MAJOR — "anvil-efficiency-bundle と
+                    機能的衝突、anvil 本体に PR 推奨"
+                  → claude: ephemeral 継続使用 + anvil 本体への PR 候補リスト追加
+  T+next-day user: 別途 anvil 本体 PR レビュー、merge or reject
+  ====== ephemeral phase: ~5min、permanent promote 議論: ~1日 ======
+#+end_example
+
+= claude が自分の inefficiency を観察 → 1 session で計測 → permanent
+tool 化候補、anvil-efficiency-bundle (memory =project_anvil_efficiency_bundle.md=)
+の self-discovered 版。upstream PR self-check (= D14 反映) で「extend/
+配下に置くべきか、anvil 本体に PR すべきか」を gate 2 で判断。
+
+* §6 risks
+
+** 6.1 isolation escape (= Phase v0 isolated subprocess limit)
+
+(A2 反映で全面 revise。"sandbox" 用語は doc 全体で "isolated subprocess"
++ "policy enforcement" に二分、本節は Phase v0 の現実評価。)
+
+*** 6.1.v0 Phase v0 (= 現実装で組める best-effort)
+
+- *リスク (= Phase v0 で技術的に防げない事)*:
+  - claude が =shell-command-to-string "rm -rf $HOME"= を書くと host の
+    HOME が消える (= subprocess は host filesystem を share、syscall
+    filter なし)
+  - claude tool が =/etc/passwd= 等 sensitive file を read/write
+  - main daemon を fork bomb で落とす (= RLIMIT_NPROC 設定なし)
+  - 無限 loop / huge alloc は =anvil-future-kill= 経由 user 介入 or
+    手動 cancel が必要 (= 自動 timeout 未実装、=:timeout= は plist key
+    のみで Reserved for Phase 3 preemption)
+- *Phase v0 で提供できる対策 (= best-effort)*:
+  - *process isolation*: subprocess REPL で eval、暴走しても main daemon
+    に直接波及しない (= anvil-offload baseline、anvil-offload.el:443)
+  - *static AST policy scan (scaffold-validate)*: =:body= の高権限 sexp
+    検出、未宣言 hard-fail
+  - *high-risk policy explicit opt-in*: =:policy 'shell-allowed= /
+    =network-allowed= / =unrestricted= は scaffold 時 explicit 宣言必須
+  - *pre-execution safety gate (§3.F.1)*: high-risk policy tool は first
+    run 前に diff preview + explicit consent
+  - *=anvil-future-kill= による hard-kill*: 暴走中 subprocess を強制終了
+  - *監査*: anvil-memory に rationale + policy が record される、後 audit
+    可能
+- *Phase v0 で提供できない対策 (= 誇大広告しない)*:
+  - file write の OS-level deny (= filesystem syscall filter shipped 上に無し)
+  - network deny の OS-level enforce
+  - syscall filter (= seccomp BPF profile shipped 上に無し)
+  - RLIMIT_AS / RLIMIT_NPROC 自動設定 (= grep 0 hit、未実装)
+  - 自動 timeout enforce (= Reserved for Phase 3 preemption、shipped で
+    self-enforce はせず)
+  - 別 UID 起動 (= optional Phase E のみ)
+
+*** 6.1.v1 Phase v1 (= real syscall sandbox、新規実装、Phase E or 9c に後送り)
+
+- *対策 (新規 +400-600 LOC 見積)*:
+  - *Linux*: seccomp BPF profile (file write deny + network deny + ptrace
+    deny + setuid 系 deny) + RLIMIT_AS / RLIMIT_NPROC / RLIMIT_CPU
+  - *macOS*: =sandbox-exec -p PROFILE_FILE= (= Apple Sandbox SBPL)
+  - *Windows*: Job Object + restricted token + Memory limit
+  - timeout の OS-level enforce
+- *Phase v1 完遂後の保証 level*: claude が =rm -rf $HOME= を書いても OS
+  が deny する level までは sandbox profile で抑止可能 (= profile が穴だ
+  らけでなければ)。但し SBPL / seccomp profile design 自体に bug がある
+  場合は当然抜ける。
+- *Phase v1 着手 timing*: Phase E (NeLisp runtime path) と並列 or Phase
+  9c で別 doc 化検討。
+
+** 6.2 ephemeral registry memory leak + GC visibility
+
+(A5 反映: =on-stop= は anvil-session に存在しない、Stop event + extend
+cleanup 新規実装。D10 反映: 1h timeout 前に 5 min warning + =:expires-at=
+表示。)
+
+- *リスク*: ephemeral registry は in-memory hash-table、session 終了で
+  cleanup されないと長時間 daemon 内で蓄積。1h timeout gc も user 不可視
+  なら気付けない
+- *対策*:
+  - *Stop event 経由 cleanup (新規実装)*: =anvil-session= lifecycle event
+    =stop= に =anvil-extend--ephemeral-cleanup= を追加実装。anvil-session
+    に generic =on-stop= callback registry は **存在しない** (anvil-
+    session.el:437-443) ので、Doc 38 SDK 側で Claude hook =stop= event +
+    =anvil-compact-on-stop= の延長線で cleanup hook を新規実装 (= ~30 LOC
+    程度の追加)
+  - 念押し: 1h timeout で stale ephemeral を gc (= last-access >= 1h ago
+    で auto-unload)
+  - *5 min warning (D10)*: 1h timeout 前 5 min で warning event を anvil-
+    session log に記録、user が気付ける
+  - *=:expires-at= 表示*: =extend-list= MCP tool 出力に =:expires-at=
+    timestamp 表示
+- *監査*: =extend-list 'ephemeral= で常時 visible、過剰蓄積 + 直近 expire
+  予定を user が気付く
+
+** 6.3 promotion gate manipulation (= claude による auto-promote 抑止)
+
+(D6 反映: 元 v0 の "claude が auto-promote 不可" 主張は技術的に enforced
+されていなかった = MCP 経由 =extend-promote-confirm= を claude が叩ける
+構造的問題。本 revise で MCP 露出 default off + CLI 限定で技術的不可能化。)
+
+- *リスク*: claude session が gate 1 (smoke ERT) を 1 件 trivial test で
+  通して promote、または =extend-promote-confirm= MCP tool を自分で叩いて
+  user signoff を **bypass**、permanent registry に低品質 tool が蓄積
+- *対策 (= 技術的に不可能化)*:
+  - *smoke ERT 必須項目*: scaffold が出力する skeleton は =:body= に応じた
+    input/output 型 + 範囲 check + error path 1 件を **必須化**、trivial
+    test で通せない
+  - *codex review (promotion 2) は high-risk policy default-on*: =:policy
+    'shell-allowed= / =network-allowed= / =unrestricted= tool では default-on、
+    user opt-out
+  - *user signoff (promotion 3) は CLI 限定*: =anvil-extend-promote-
+    confirm-via-mcp= = nil defcustom で MCP 露出 default off、claude
+    session が =extend-promote-confirm= を MCP 経由で叩く path を技術的に
+    **不可能** にする
+  - =anvil-extend-promote-confirm-cli= は M-x command + interactive
+    confirm + diff preview、CLI shell 経由 user 自身でのみ叩ける
+  - user opt-in で =via-mcp= = t にする場合は Claude Code permission flow
+    を経由するよう spec 強制 (= permission prompt 経由ならば user 介入が
+    必要、claude 単独 promotion は不可)
+- *監査*: permanent registry は git 管理、PR review = user の追加 line of
+  defense
+
+** 6.4 NeLisp 実行 path の maturity 依存 + network default-deny enforce 不在 (Phase E gate)
+
+(D2/D3 反映: hard dependency narrow to 9a only。D8 反映: network default-
+allow → deny + allowlist。)
+
+- *リスク*:
+  - Phase E hard dependency は **Phase 9a only** (=nelisp-elisp-compat=
+    MVP top 20-30 API)、それまで =:nelisp t= は dev-mode host fallback、
+    性能 / sandbox 強化の便益享受不可
+  - 元 v0 の network default-allow は self-modify 文脈で **危険** = supply
+    chain / exfiltration の主経路。現実装に network deny enforce 機構
+    なし (anvil-offload subprocess は host network namespace 共有)
+- *対策*:
+  - *Phase 9a only narrow*: Doc 38 §3.E hard dependency = Phase 9a only、
+    Phase 9b は coverage expansion として別節 (§3.E.coverage)
+  - *fallback dev-mode only (D3)*: release/CI で =:nelisp t= failure は
+    hard error (=anvil-extend-release-mode= = t)、=:nelisp-required t=
+    flag で fallback 拒否
+  - *availability check 3 段階 (D4)*: =featurep= + cheap probe + version
+    check
+  - *network default-deny + allowlist (D8)*: §3.C policy field で
+    default-deny に反転、=:policy 'network-allowed= explicit opt-in、
+    =:network-allowlist= URL prefix 指定。Phase v0 は AST scan で
+    best-effort、Phase v1 で OS-level enforce (= iptables / pf / WFP)
+  - Phase A-D で fallback 動作を first-class 設計、Phase E は性能上乗せ
+    の位置付け
+  - =anvil-extend-run-available-p= で claude が事前判定可能、tool 実装側
+    が Phase E availability に依存しない fallback path を持つ
+  - Phase E 着地は 2026-Q4-2027-Q1 想定 (Doc 32 v2 / Doc 34 想定)、Doc 38
+    自体は Phase A-D で価値が出る
+
+** 6.5 claude の "自己拡張暴走" (= scope creep)
+
+- *リスク*: SDK が低 friction 化されると claude が「あれもこれも tool 化」
+  し permanent registry 肥大化、anvil.el 全体の noise が増す
+- *対策*:
+  - promotion 3 (user signoff、CLI 限定) で人間判断必須化
+  - =extend-list 'permanent= は dashboard 統合 (=anvil-efficiency-bundle=
+    dashboard) で常時 visible
+  - Doc 38 実運用 1-3 ヶ月で permanent registry size を観察、>50 tool
+    越えたら "scope review" を user-driven で発火
+
+** 6.6 anvil.el package boundary との競合
+
+- *リスク*: claude が SDK 経由で =anvil-XXX.el= 既存 module を「ephemeral
+  上で書き換える」と、既存 anvil 機能が session-local に divergence
+- *対策*:
+  - =anvil-extend--scaffold-validate= で =:name= が既存 anvil tool id と
+    衝突する場合は hard-fail
+  - permanent promote 時に =anvil-XXX.el= の direct 改変は禁止 (= extend/
+    配下のみ allow)、anvil 本体改変は通常 PR 経路を強制
+  - Example 3 のように "anvil 本体に PR すべき候補" の self-check question
+    (= scaffold 時 =:upstream-pr-candidate= flag、D14 反映) を促す
+
+** 6.7 supply chain risk (= 新設、claude が外部 code を fetch)
+
+(D7 + D8 統合反映、新設。元 v0 §6 に列挙されておらず、self-modify 文脈で
+網羅的に扱う必要あり。)
+
+- *リスク*:
+  - claude が =shell-command-to-string "curl X | sh"= で任意 binary を
+    実行
+  - claude が =package-install= / =package-vc-install= で任意 ELPA
+    package を導入
+  - claude が =require 'foo= で未宣言 dependency を pull (= host Emacs
+    の =load-path= 経由 stale module)
+  - permanent promote 時に dependency 宣言が無いと再現性破綻 + 後 session
+    で「何をどこから入れたか」不明
+- *対策*:
+  - *AST scan で =shell-command= URL allowlist 強制*: =:body= 内
+    =shell-command= 系 sexp を AST 走査、URL pattern (=https?://[^|]+= の
+    pipe-to-shell 形) を allowlist 照合、未許可 URL は hard-fail
+  - *=:requires PKGS= dependency declaration 必須化 (permanent promote 時)*:
+    permanent registry 移動時に =:requires= plist 必須、未宣言 =require=
+    / =package-install= は scaffold-validate で hard-fail
+  - *=:requires= 拡張 PR は user signoff 二段階*: 既存 permanent tool に
+    新規 =:requires= 追加 (= dependency surface 拡大) する場合は通常
+    promotion gate に加えて user 二段階 signoff (= "新規 dependency 受入"
+    confirm + "promotion confirm")
+  - *network default-deny + allowlist (D8)*: §3.C 参照、URL prefix
+    allowlist で exfiltration 主経路を抑止
+- *監査*: permanent registry の git diff で =:requires= 変更が tracking、
+  PR review 経路で user が新規 dependency を必ず認識
+
+*** 6.7.1 implementation sketch (= T89 LOCKED v2 で D-5 反映、二段階分離)
+
+AST URL allowlist + =:requires= dep declaration の **実装具体性** を二段階
+で分離 (= LOC 見積 swing を抑える):
+
+- *v0 = 簡易 grep base (Phase A-D 着手範囲、~50-80 LOC)*:
+  - =:body= sexp を =cl-prettyprint= で text 化、=regex
+    "\\bcurl[^\\n]*https?://[^|\\n]+"= で =curl https?://X= 形を grep
+  - 検出 URL を =anvil-extend-url-allowlist= defcustom に照合、未許可で
+    hard-fail
+  - =require= / =package-install= sexp は =funcall (intern ...)= 形で
+    obfuscation 可能だが、簡易 grep で literal sym arg のみ検出 (=
+    best-effort)
+  - 実装 effort: ~50-80 LOC、Phase A AST scan の延長で着地
+- *v1 = data-flow analysis base (将来別 phase、Phase E or 9c 後送り、
+  ~200-400 LOC)*:
+  - =semantic.el= 等 AST analyzer base、=shell-command= call の引数 sexp
+    を data-flow trace
+  - dynamic dispatch (=funcall (intern (concat "shell-" "command"))= 等)
+    の追跡を試みる、ただし完全捕捉は **静的解析の本質的限界** で不可能
+  - OS-level enforcement (= Phase v1 syscall sandbox + iptables / pf /
+    WFP) と組み合わせて **runtime layer での enforce が必須**
+  - 実装 effort: ~200-400 LOC、Phase C v1 と同 timing で並行検討
+- *境界*: 簡易 grep base で **大半の素直なケース** は捕捉可能、obfuscated
+  / dynamic dispatch ケースは v0 で漏れる前提で OS-level layer に依存。
+  v0 単独で「supply chain risk = 0」は主張しない、AST 静的解析 + runtime
+  OS sandbox + user signoff の **三段防御** で総合的に抑止
+
+* §7 release roadmap
+
+** 7.1 Phase dispatch order と prerequisite
+
+| Phase   | scope                                            | prereq host Emacs       | prereq Phase 9a (= MVP) | prereq Phase 9b (= coverage exp) | 工数 (初版見積)            | dispatch 状態                |
+|---------+--------------------------------------------------+--------------------------+--------------------------+-----------------------------------+----------------------------+------------------------------|
+| A       | scaffold generator + registry                    | anvil-server / anvil-memory SHIPPED (= 既) | n/a                    | n/a                              | 1-2 週間                  | 即 dispatch可                |
+| B       | hot-reload + rollback + tools/list_changed       | Phase A SHIPPED + anvil-server (MCP transport) | n/a                    | n/a                              | 1-2 週間                  | A SHIPPED 後                 |
+| C v0    | isolated subprocess + AST policy scan            | Phase A SHIPPED + =anvil-offload= / =anvil-future-*= SHIPPED (= 既) | n/a                    | n/a                              | 1-2 週間                  | A SHIPPED 後 (B と並列可)    |
+| C v1    | real syscall sandbox (seccomp / sbox-exec / Job) | Phase C v0 SHIPPED + OS profile design       | n/a                    | n/a                              | +400-600 LOC、1-2 ヶ月     | Phase E or 9c で別 doc 化検討 |
+| D       | memory integration + secret scan + skill spec    | Phase A SHIPPED + anvil-memory + anvil-dev (=anvil-dev--audit-scan-secrets= 借用 or 新規 ~30-50 LOC wrapper) | n/a                    | n/a                              | 1 週間 (+ secret scan wrapper ~30-50 LOC) | A SHIPPED 後 (B/C と並列可)   |
+| E       | NeLisp execution path                            | Phase 7.5 SHIPPED (Doc 32)                                | **必須** (D2 narrow)   | **不要** (= coverage 拡大は 9a 後でも段階で吸収可能、§3.E.coverage) | 1-2 週間 (E のみ)          | Phase 7.5 + 9a SHIPPED 後    |
+| F.1     | pre-execution safety gate                        | Phase A SHIPPED + AST scan (Phase C v0 内蔵)            | n/a                    | n/a                              | 1 週間 (gate 機構のみ)     | Phase A SHIPPED 後即可        |
+| F.2     | post-execution promotion gate fully wired        | Phase A-D SHIPPED + 1 ヶ月運用 feedback                | n/a                    | n/a                              | 1 週間 + iterate           | Phase D + 1 ヶ月後           |
+
+*Phase A-D + F.1 は NeLisp 不要*、host Emacs で即 dispatch 可能。**Phase
+E hard dependency = Phase 9a only** (= D2 反映)、Phase 9b coverage は
+段階 SHIPPED で吸収。Phase C v1 (real syscall sandbox) は別 doc 化検討で
+後送り。Phase F.2 は運用 feedback 駆動で iterate。
+
+** 7.2 success metric (Phase 別 gate)
+
+| Phase   | success metric                                                                                                                |
+|---------+-------------------------------------------------------------------------------------------------------------------------------|
+| A       | scaffold 1 call で 4-6 artifact 出力、registry に entry、static AST scan 動作 (secret scan は §3.D Phase D 完遂 gate へ集約 = T89 LOCKED v2 で D-8 反映、二重表記解消)                                    |
+| B       | reload 100 回で memory leak < 5MB、rollback 1 件動作 (tools/list_changed push は anvil-server enhancement task として別 doc / 別 PR、本 SDK Phase B gate 外 = T89 LOCKED v2 で B-4 反映)                                              |
+| C v0    | =anvil-future-kill= による hard-kill 動作、AST policy scan 動作、network deny default + allowlist 動作                          |
+| C v1    | seccomp / sandbox-exec / Job Object で OS-level file write / network / syscall filter 動作 (= 各 OS 1 件以上)                  |
+| D       | rationale auto-record + =memory-search= で hit、change-log 追記動作、secret pattern scan 動作                                  |
+| E       | =:nelisp t= で 1 tool 実 NeLisp runtime 上動作、availability check 3 段、fallback dev-mode + release-mode hard error 各動作    |
+| F.1     | pre-execution safety gate 動作 (AST + consent + rate-limit 各 1 件)                                                           |
+| F.2     | post-execution promotion gate 動作 (smoke / codex-review / CLI signoff 各 1 件)、demote / delete 動作、permanent registry 5+ entry で運用 |
+
+** 7.3 Doc 38 LOCKED gate (= v0 → v1 → LOCKED-2026-04-25-v2)
+
+- *v0* (元 Doc 35、commit 0d90a57、T42 起草): scope 確定 + API 命名 +
+  sub-phase 切り分け、codex review 待ち、両 reviewer (Claude T45 / codex
+  T55) で **MAJOR REVISIONS** 判定
+- *v1* (本 doc 前段、Doc 38 へ renumber + T75 revise): MAJOR REVISIONS
+  反映、A1-A6 + D1-D15 + 追加 (network default-deny / promotion gate
+  二分割 / supply chain risk §6.7 新設 / Layer 4 撤回) を反映、Phase A
+  即 dispatch 可。**option B path** で renumber、parent Doc 34 §8.1-8.4
+  follow-up scope (Doc 35 想定 1 件のみ §8.1 で明示) は不変、Doc 35-37
+  という具体 doc 番号 range は parent に reservation 無し (= T89 LOCKED
+  v2 で C-1 fact correction)、本 Doc 38 は §8.1-8.4 5 用途のいずれにも
+  当たらない別 sub-system なので衝突回避。T87 review (Claude T87) で
+  **MINOR REVISIONS** 判定 (= 24/24 T73 consensus 反映 OK + 11 件 spot-bug
+  = MAJOR 2 / MINOR 9)
+- *v2 = LOCKED-2026-04-25-v2* (= T89 で本 SHIPPED): T87 review の MAJOR 2
+  + MINOR 9 全反映:
+  - B-3 [MAJOR]: =anvil-disclosure-scan-secrets= は **不在** → =anvil-dev--
+    audit-scan-secrets= (anvil-dev.el:978) 借用 or 新規 ~30-50 LOC wrapper、
+    §3.D / §1.2 / §12 で fact correct
+  - B-4 [MAJOR]: =tools/list_changed= server side 未実装 → 本 SDK
+    Phase B 完遂 gate から **外す**、anvil-server enhancement task として
+    別 doc / 別 PR で対応、§3.B step 2.5 / §10 Q7 / §7.2 で realistic 化
+  - B-1: =anvil-pdf-text= / =anvil-pdf-info= line:N swap 訂正
+  - B-2: =anvil-server.el= line ref 1497 → 1610 (single = 1483) 一括 update
+  - B-5: =anvil-future-list= は **不在** → =anvil-offload-pool-status= +
+    各 future の =anvil-future-status= / =anvil-future-elapsed= 集計の
+    新規 ~20 LOC wrapper と書き換え
+  - B-6: ephemeral / permanent storage path 分岐明示 (~/.anvil-extend/
+    vs Notes/dev/anvil.el/extend/)
+  - C-1: parent Doc 34 "Doc 35-37 reservation" 過剰主張を撤回、§8.1-8.4
+    follow-up scope (Doc 35 想定 1 件のみ §8.1) と修正
+  - C-2: anvil-extend.el commentary 5 ヶ所 (lines 14, 22, 54, 65, 538)
+    の Doc 35 → Doc 38 追従更新は本 SDK と **別 commit pair** で ship
+    (= T89 完了報告で next action として明示)
+  - D-1: Doc 32 v2 §X (Phase 7.5.4 module API) は **未起草** → §10 Q10
+    として整理、symbol 名は Phase 7.5.4 起草に揃えて確定
+  - D-2: §3.C / §6.1 v0/v1 boundary cosmetic を用語整合 (= "提供できる/
+    できないもの" vs "リスク/対策" の 2 視点として明示 cross-ref)
+  - D-3: sub-phase 数 6 → 8 (= A / B / C v0 / C v1 / D / E / F.1 / F.2、
+    二箇所で v0/v1 二段階 sub-split) を §0 で明示
+  - D-4: §10 Q7 を server side + client side 両建てに整理
+  - D-5: §6.7 supply chain depth を 1 sub-section に拡張 (= §6.7.1
+    implementation sketch、簡易 grep base v0 ~50-80 LOC / data-flow
+    analysis base v1 ~200-400 LOC の二段階分離)
+  - D-6: §3.C network policy で "default-deny は spec layer + AST scan
+    best-effort、real enforcement は OS sandbox v1 必須" 明示
+  - D-7: §8.1.b permanent KPI を 3 段階に細分 (happy ~10min / long ~1h /
+    failed >1h)
+  - D-8: Phase A 完遂 gate の secret scan 二重表記を §3.D Phase D gate に
+    集約
+- *LOCKED-2026-04-25-v2 (本 SHIPPED status)*: main merge ready、Phase A
+  即 dispatch 可、anvil-extend.el commentary 更新 (C-2) は **別 commit
+  pair** で ship。Phase E (NeLisp path) / F.2 (post-execution full wire) /
+  C v1 (real sandbox) / tools/list_changed server push は別 doc (= Doc
+  38.E / Doc 38.F / Doc 38.C-v1 / anvil-server enhancement) で詳細詰める
+  可能性
+
+* §8 success metric (定量、二分割 KPI)
+
+(A3 反映: 元 v0 の "30-60s/tool 単一 KPI" は LLM token 生成 (5-15s) +
+設計コスト (30-120s) + retry cycle (15-60s) を無視した楽観値。本 revise
+で ephemeral と permanent を別 KPI に分離。speedup 20-30x → 5-10x に
+下方修正。)
+
+** 8.1 1 tool 追加コスト (二分割 KPI)
+
+*** 8.1.a ephemeral scaffold + load + smoke (= happy path、LLM body 1 発生成 + reload)
+
+- *current* (SDK 前): claude session 内 1 tool 追加 = ~10-30 min
+  - breakdown: handler defun ~3 min + register call ~1 min + ERT skeleton
+    ~3 min + module init/unload 経路 ~2 min + reload trial-and-error ~5
+    min (stale .elc 罠等) + memory rationale 手書き ~3 min + 余白 ~5 min
+- *target* (SDK 後 Phase A-D、= happy path): ~30-60s
+  - breakdown: =extend-rationale-search= ~3s + =extend-scaffold= 1 call
+    ~5s + LLM =:body= 生成 ~10-20s (= LLM token 生成 reality) +
+    =extend-load= ~5-10s (byte-compile + register + tools/list_changed
+    push 込み) + =extend-test= ~5s + 余白 ~5-10s
+- *speedup*: **5-10x** (= 元 v0 の 20-30x は LLM 生成 + retry cycle +
+  設計コストを無視した楽観値、現実の happy path は ~3-5 min/tool に
+  着地する可能性あるが、SDK で boilerplate 抑止により 5-10x が現実値)
+
+*** 8.1.b permanent promote (= signoff 待ち + git PR 込み、3 段階 KPI 細分)
+
+- *current* (SDK 前): permanent 化 = anvil 本体 PR 経路、~1日 - 数日
+  (= review iteration + merge wait)
+- *target* (SDK 後 Phase A-F.2、T89 LOCKED v2 で D-7 反映で 3 段階 KPI に
+  細分):
+  - *"happy"* = signoff + git commit が ~10 min 以内 (= same-day promotion、
+    smoke ERT 自動 ~30s + codex review skip or default-off + user CLI
+    signoff 即対応 + git commit ~30s)
+  - *"long"* = ~1 hour 以内 (= reviewer iteration 1 round 込み、
+    =anvil-orchestrator-submit-and-collect= の 30s-数分 想定 anvil-
+    orchestrator.el:3229 と整合 + user signoff iteration 1 回 + body
+    rewrite 1 回)
+  - *"failed"* = >1 hour で gate 残置 → ephemeral 継続 fall back (= user
+    signoff 待ち長期化 / codex review MAJOR REVISIONS 連続 / body rewrite
+    失敗等)
+- *speedup*: "happy" 体感 ~10-50x (= anvil 本体 PR review より軽量)、
+  "long" は ~5-10x、"failed" は SDK 後でも anvil 本体 PR と同等
+- *KPI 観測 method*: =anvil-extend-promote= 実行から =anvil-extend-promote-
+  confirm-cli= 通過 (or 1 hour timeout) までの elapsed を =anvil-state=
+  SQLite に記録、=extend-list 'permanent= に happy/long/failed ratio を
+  表示
+- 注: retry / failed signoff / body rewrite 込みで現実値は更に長く、楽観
+  値ではない。"failed" ratio が >30% で SDK の promotion gate 設計を見直し
+
+** 8.2 1 session 内 self-modify cycle
+
+- *current*: ~1-2 cycle/session (= boilerplate コストで claude が
+  「やめておこう」となる)
+- *target* (SDK 後 ephemeral): 5-10 cycle/session
+  - cycle = scaffold → body → load → test → (use | discard | stash)
+  - permanent promote は session 跨ぎ運用で別途、cycle 数の母数には含めない
+- *発生条件*: claude が「あれば便利」と気付くたびに即 scaffold、捨てる前提
+  で hack
+
+** 8.3 ephemeral / permanent ratio
+
+- *target*: ephemeral : permanent = 5:1 - 10:1
+  - 多くは「session 内一回使って捨てる」 = ephemeral
+  - 真に有用なものだけ promotion gate 通過 = permanent
+- ratio が低い (= permanent 過多) なら gate 緩め、高い (= permanent 少)
+  なら scaffold 過多/品質低、で運用 1-3 ヶ月 calibrate
+
+** 8.4 anvil-memory rationale coverage
+
+- *target*: permanent registry 100% rationale 記録 (secret pattern scan
+  redact 済)、ephemeral registry 80%+
+- 後 session が =memory-search= で =:rows >= 1= で reach 可能、
+  「同 tool 2 度作る」事故ゼロ
+
+** 8.5 Phase 7+ NeLisp 上での実行比率 (Phase E 以降)
+
+(D3 連動: fallback 多発を考慮した釘刺し。)
+
+- *target*: Phase E SHIPPED 後 6 ヶ月で =:nelisp t= 利用比率 >= 30%
+- 残 70% は host Emacs (sandbox 不要 / Phase 9a coverage 外 API)、徐々に
+  Phase 9b coverage expansion で API surface 拡大に従い増加
+- *釘刺し*: =:fallback-used= flag が >50% で立つ場合は Phase 9a coverage
+  不足 signal、tool 側の API 利用 patterns を Phase 9b coverage 優先順位
+  決定の input にする
+- release/CI mode の hard error 発生率は 0 を目標 (= release qualification
+  で =:nelisp t= failure を確実に検出)
+
+* §9 dependencies and out-of-scope
+
+** 9.1 in-scope
+
+- =anvil-extend.el= 単一 module + template 4 file
+- =.claude/skills/claude-extend.skill=
+- 既存 anvil.el module の薄 wrapper (= scaffold が出力する register call、
+  ERT skeleton)
+- ERT (~30-50 件)
+- Phase A-D は host Emacs で完結、Phase E は NeLisp runtime 経路追加
+
+** 9.2 out-of-scope
+
+- *Anthropic 製品本体 (= Claude Code IDE / agent loop / tool dispatcher)
+  の改修* — Doc 38 は MCP transport 越しの tool surface のみ触る
+- *NeLisp 言語仕様 / runtime 内部* — Doc 27-32 v2 で扱う、Doc 38 は consumer
+- *anvil.el core architecture* — 既 SHIPPED、Doc 38 は新規 module 追加で
+  既存 module は触らない
+- *公開告知 / マーケティング* — 別 doc / memory で扱う、Doc 38 は technical
+  spec
+
+* §10 open questions (v2 LOCKED 段階で残る論点)
+
+LOCKED-2026-04-25-v2 段階で残る論点、Phase A SHIPPED 後 / 後続 doc 化 /
+v3 (or 別 doc) で詰める想定:
+
+1. *scaffold template 言語* — elisp template literal vs mustache vs
+   yasnippet。default A (elisp template literal) は実装簡単だが claude
+   が読みにくい
+2. *ephemeral registry 物理 store §2.4* — A (anvil-state SQLite TTL) と
+   B (in-memory hash-table) どちらが claude の self-modify experience
+   に合うか、運用で iterate (D13 stash command で hybrid 化済)
+3. *codex review (promotion 2) の cost* — high-risk tool で default-on
+   は orchestrator dispatch コスト発生、user budget との trade-off
+4. *Phase 9b coverage expansion で granular dependency 宣言* — Phase 9a
+   only narrow (D2) は確定したが、Phase 9b 進捗で =:requires-emacs-api
+   '(buffer-string shell-command-to-string)= 等の granular 指定が必要か、
+   §3.E.coverage で v2 詳細化
+5. *permanent registry の git management* — Doc 38 が permanent tool を
+   =Notes/dev/anvil.el/extend/= に直 commit するか、user PR review 必須
+   化するか
+6. *claude session 跨ぎ ephemeral 共有* — ephemeral 持越しは
+   =anvil-extend-stash NAME= で明示的 (D13 で解消済)、ただし stash 後の
+   resume API (= =anvil-session-resume= 経由 ephemeral 復元) 詳細は v2
+   で詰める
+7. *MCP =tools/list_changed= notification の server/client 両 status*
+   (D12、T89 LOCKED v2 で D-4 + B-4 整合) —
+   - *server side*: =anvil-server.el= / =anvil-host.el= に
+     =tools/list_changed= transport は **未実装** (=grep tools/list_changed
+     anvil-server.el anvil-host.el= = 0 hit、2026-04-25 verified)。新規
+     実装 ~50-100 LOC は **本 SDK の prereq ではなく anvil-server
+     enhancement task として別 doc / 別 PR で対応**
+   - *client side*: Claude Code client の =tools/list_changed= 受信挙動は
+     未確認、server 側 SHIPPED 後に v3 (or 別 doc) で実機検証
+   - *本 SDK 内縮退 spec*: tool list reflection は client 側 session
+     restart で得る、本 Doc 38 v2 SDK 内 Phase B 完遂 gate に push 機構は
+     **入れない**
+8. *Phase C v1 (real syscall sandbox) の dispatch timing* — Phase E と
+   並列 or Phase 9c で別 doc 化、本 doc では後送り、別 doc 化 timing 判断
+9. *upstream PR vs extend/ permanent の判断基準* (D14) — Example 3 で
+   出てきた "anvil 本体に PR すべきか extend/ に置くべきか" を定量化する
+   metric (= cross-session 利用回数 / 一般性 / dependency 複雑度) の v2
+   詳細化
+10. *Phase 7.5.4 module API spec の Doc 32 v2 起草状況* (T89 LOCKED v2 で
+    D-1 反映) — Doc 32 v2 は現時点で sub-phase 7.5.1〜7.5.3 までしか
+    起草されておらず Phase 7.5.4 sub-section (=nelisp-runtime-module-call=
+    module API) は **未起草**。Doc 38 §3.E availability check 3 段階の
+    symbol 名 (=nelisp-runtime-module= / =nelisp-runtime-module-call=) は
+    Phase 7.5.4 起草に揃えて確定、本 Doc 38 v2 では pattern を spec lock
+
+* §11 references
+
+(option B path 注 = T89 LOCKED v2 で C-1 fact correction:
+parent Doc 34 §8.1-8.4 で out-of-scope 5 用途 (advice / minor mode / 完全
+regex / process UI / file UI 完全互換) が follow-up doc 化と明記、follow-up
+は §8.1 に "Doc 35 想定" の言及 **1 件のみ**。Doc 35-37 という具体的な
+doc 番号 range の reservation は parent Doc 34 に **存在しない** (= 元 v1
+の "Doc 35-37 reservation" 主張は 過剰主張、撤回)。本 doc は §8.1-8.4
+5 用途 の **いずれにも当たらない別 sub-system** なので、新規 doc 番号 38
+を取得することで衝突回避。option B の core argument (= parent doc 不変、
+衝突無し) は依然成立。)
+
+- Doc 33 v2 (=docs/design/33-nelisp-v1x-architecture.org=) — NeLisp v1.x
+  architecture (= Layer 1-3 model、本 doc は Layer model **の外** に
+  ある host-side workbench package、Layer 4 を勝手に追加しない)
+- Doc 34 (=docs/design/34-phase9b-extension-substrate.org=) — Phase 9b
+  extension substrate parent、§7.3 = "Phase 9b full close 条件" / §8.1-8.4
+  = out-of-scope 5 用途 (advice / minor mode / 完全 regex / process UI /
+  file UI 完全互換) の follow-up doc 化、§8.1 のみ "Doc 35 想定" 言及。
+  Doc 35-37 という具体 doc 番号 range の reservation は parent に **存在
+  しない** (= T89 LOCKED v2 で C-1 fact correction)、本 doc は 5 用途の
+  いずれにも当たらない別 sub-system として新規 doc 番号 38 を取得
+- Doc 32 v2 (=docs/design/32-phase7.5-integration.org=) — Phase 7.5
+  integration (= Phase E dispatch gate)
+- Doc 28 v2 (=docs/design/28-phase7.1-native-compiler.org=) — NeLisp
+  native compiler (= Phase E 性能上乗せの根拠)
+- Doc 27 v2 (=docs/design/27-phase7-c-runtime-self-impl.org=) — Phase 7+
+  parent (= host Emacs auto-fallback は dev 補助線、release qualification
+  不採用 §27.x:739-750 と整合)
+- memory =project_anvil_package.md= — anvil.el 全体
+- memory =project_anvil_memory_engine_phase1a.md= — anvil-memory 16 MCP tool
+- memory =project_anvil_session_phase134.md= — anvil-session lifecycle event
+  (=stop= / =session-end=、generic =on-stop= callback registry は **不在**)
+- memory =project_anvil_orchestrator_phase1a.md= — anvil-orchestrator multi-agent
+- memory =project_anvil_efficiency_bundle.md= — =anvil-server-register-tools=
+  helper / dashboard (= register-tools は **defun**、anvil-server.el:1610)
+- memory =project_anvil_offload.md= — =anvil-offload= cl-defun + future
+  state machine (=anvil-future-{await,cancel,kill,checkpoint}=)、=anvil-
+  offload-submit= / =anvil-offload-hard-kill= は **不在**
+- memory =project_anvil_state_phase1_2.md= — anvil-state SQLite KV
+- memory =feedback_canonical_byte_compile_stale_elc.md= — stale .elc 罠
+- memory =feedback_anvil_macro_require.md= — macro module require 罠
+- memory =feedback_defcustom_resets_on_unload.md= — defcustom unload 罠
+- memory =user_collaboration_philosophy.md= — user 自己拡張哲学
+- memory =project_anvil_general_b2cd_pivot.md= — anvil 一般向け方針
+- /tmp/doc35-review.txt — Claude T45 review (MAJOR REVISIONS、元 Doc 35 v0)
+- /tmp/codex-doc35-retry-stdout.log — codex T55 review (MAJOR REVISIONS、
+  元 Doc 35 v0)
+- /tmp/doc35-consensus-revise-spec.md — T73 consensus revise spec、v1 は
+  この spec を直接 follow (24/24 反映、T87 review で全 trace 確認済)
+- /tmp/doc38-claude-review.txt — Claude T87 review (MINOR REVISIONS、
+  Doc 38 v1)、本 v2 LOCKED の input。MAJOR 2 (B-3 anvil-disclosure-scan-
+  secrets 不在 / B-4 tools/list_changed 未実装) + MINOR 9 (B-1/B-2/B-5/
+  B-6/C-1/C-2/D-1/D-2/D-3/D-4/D-5/D-6/D-7/D-8) を全反映
+- *post-LOCKED v2 task (= 別 commit pair で ship、C-2 反映)*: =anvil-
+  extend.el= 既存ファイルの commentary 5 ヶ所 (lines 14, 22, 54, 65, 538)
+  で "Doc 35" 参照を "Doc 38" に追従更新する task が残る。本 Doc 38 v2 と
+  同 commit pair で ship するか、別 PR で対応するかは next session の
+  判断 (本 task 範囲外、anvil-side commit として記録)
+
+* §12 changelog
+
+- 2026-04-25 (session-T42): DRAFT v0 起草 (Doc 35 として)、commit
+  0d90a57。6 sub-system + 6 sub-phase + 26 API + 3 workflow example +
+  6 risk + 5 success metric + 6 open question。codex review 待ち。
+- 2026-04-25 (session-T75 revise): 元 Doc 35 v0 の両 reviewer (Claude
+  T45 / codex T55) MAJOR REVISIONS 判定を受け、**Doc 38 へ option B
+  path で renumber + DRAFT v1 へ revise**。反映:
+  - CRITICAL: Doc 35 → Doc 38 renumber (option B、parent Doc 34 §8.1-8.4
+    follow-up scope 不変、Doc 35-37 番号 range の reservation は parent
+    に **存在しない** = T89 LOCKED v2 で C-1 fact correction)
+  - A1: anvil API 全面修正 (=anvil-offload-submit= / =-hard-kill= →
+    =anvil-offload= + =anvil-future-{await,cancel,kill,checkpoint}=)
+  - A2: sandbox 二分割 (Phase v0 isolated subprocess + AST scan / Phase
+    v1 real syscall sandbox 後送り)、"sandbox" 用語を "isolated subprocess"
+    + "policy enforcement" に二分
+  - A3: KPI 二分割 (ephemeral 30-60s / permanent 数分-数時間)、speedup
+    20-30x → 5-10x 下方修正
+  - A4: =anvil-server-register-tools= は **defun** (macro 前提撤回)
+  - A5: =on-stop= → Stop event + =anvil-compact-on-stop= 延長線で extend
+    cleanup を新規追加実装
+  - A6: workflow example surface を MCP tool id 基準で書き直し
+    (=anvil-pdf-text= / =anvil-pdf-info=、=org-read-headline= / =memory-
+    search= / =git-log=)
+  - D1: ephemeral / permanent **registry** rename (pool 衝突回避)
+  - D2: Phase E hard dependency = Phase 9a only narrow (9b は coverage
+    expansion 別節)
+  - D3: fallback dev-mode only、release/CI で hard error、=:nelisp-
+    required t= flag 追加
+  - D4: availability check 3 段階 (=featurep= + cheap probe + version)
+  - D5: Layer 4 主張撤回 (Doc 33 Layer model **の外** にある package)
+  - D6: =extend-promote-confirm= MCP 露出 default off、CLI 限定で
+    auto-promote を技術的不可能化
+  - D7: §6.7 supply chain risk 新設 (=:requires= 必須 + AST URL
+    allowlist + 二段階 signoff)
+  - D8: network default = deny + allowlist (default-allow 反転)
+  - D9: pre-execution safety gate と post-execution promotion gate を
+    別系統に分離 (= 二分割 gate)
+  - D10: ephemeral GC 5 min warning + =:expires-at= 表示
+  - D11: rationale 記録前 secret pattern scan + redact
+  - D12: 4-step transactional reload に MCP =tools/list_changed=
+    notification push (step 2.5) 追加
+  - D13: ephemeral 二重定義解消 (in-memory + 明示 stash command)
+  - D14: workflow example 3 で upstream PR self-check 反映
+  - D15: =anvil-extend-test= は新規 ~30 LOC wrapper と再分類
+  - LOC 見積 ~800-1200 → ~1200-1800 (+400-600 追加分: 二分割 gate +
+    secret scan + tools/list_changed push + AST URL allowlist + Stop
+    event extend cleanup)
+- 2026-04-25 (session-T87 review): Claude が Doc 38 v1 を review、verdict
+  = **MINOR REVISIONS**。24/24 T73 consensus 反映を確認 (= structurally
+  complete) しつつ、第二弾で 2 MAJOR + 9 MINOR の fact accuracy spot-bug
+  を発見:
+  - B-3 [MAJOR]: =anvil-disclosure-scan-secrets= は anvil-disclosure.el に
+    **存在しない** (anvil-disclosure は 3-layer progressive disclosure
+    contract、secret 検出は別)
+  - B-4 [MAJOR]: =tools/list_changed= notification path は anvil-server.el
+    / anvil-host.el に **未実装** (grep 0 hit)、Phase B 完遂 gate に push
+    動作を含めるのは server 側未実装と整合不足
+  - B-1/B-2/B-5/B-6: line:N / 関数名 4 件の表記訂正
+  - C-1/C-2: option B integrity 関連 2 件
+  - D-1〜D-8: structural correctness 関連 8 件
+- 2026-04-25 (session-T89 revise + LOCKED): T87 review の MAJOR 2 + MINOR
+  9 を全反映、**LOCKED-2026-04-25-v2** 確定。反映内容:
+  - B-3 fix: =anvil-disclosure-scan-secrets= → =anvil-dev--audit-scan-
+    secrets= (anvil-dev.el:978) 借用 or 新規 ~30-50 LOC wrapper、§3.D
+    + §1.2 + §7.1 で fact correct + LOC 見積に追加分明記
+  - B-4 fix: =tools/list_changed= push 機構を本 SDK Phase B 完遂 gate から
+    **外す** (= future enhancement、anvil-server enhancement task として
+    別 doc / 別 PR で対応、~50-100 LOC)、§3.B step 2.5 / §10 Q7 / §7.2
+    で realistic 化
+  - B-1 fix: §5.1 で =anvil-pdf-info= (anvil-pdf.el:124) / =anvil-pdf-text=
+    (anvil-pdf.el:131) の line:N swap 訂正
+  - B-2 fix: =anvil-server-register-tools= line:N 1497 → 1610 (single =
+    1483) 一括 update
+  - B-5 fix: =anvil-future-list= は **不在** → =anvil-offload-pool-status=
+    + =anvil-future-status= / =anvil-future-elapsed= 集計の新規 ~20 LOC
+    wrapper と書き換え
+  - B-6 fix: ephemeral / permanent storage path 分岐明示
+    (=~/.anvil-extend/= = anvil-extend-storage-dir defcustom default vs
+    Notes/dev/anvil.el/extend/ = git 管理対象)
+  - C-1 fix: parent Doc 34 "Doc 35-37 reservation" の過剰主張を撤回、
+    §8.1-8.4 follow-up scope (Doc 35 想定 1 件のみ §8.1) に修正、§0 /
+    §1 / §11 / §RENUMBER_NOTE 全部更新
+  - C-2 note: anvil-extend.el commentary 5 ヶ所 (lines 14, 22, 54, 65,
+    538) の Doc 35 → Doc 38 追従更新は **別 commit pair** で ship、§11
+    references 末尾に明記 (本 SDK doc 範囲外)
+  - D-1 fix: Doc 32 v2 §X (Phase 7.5.4 module API) は **未起草** → §3.E
+    で TBD 化、§10 Q10 を新設
+  - D-2 fix: §3.C / §6.1 v0/v1 boundary cosmetic を 2 視点 (= "提供できる/
+    できないもの" vs "リスク/対策") として用語整合
+  - D-3 fix: sub-phase 数 6 → 8 を §0 で明示 (= A / B / C v0 / C v1 / D /
+    E / F.1 / F.2)
+  - D-4 fix: §10 Q7 を server side + client side 両建てに整理、B-4 と
+    整合
+  - D-5 fix: §6.7 supply chain depth を 1 sub-section に拡張 (= §6.7.1
+    implementation sketch、簡易 grep base v0 ~50-80 LOC / data-flow
+    analysis base v1 ~200-400 LOC の二段階分離)
+  - D-6 fix: §3.C network policy で "default-deny は spec layer + AST scan
+    best-effort、real enforcement は OS sandbox v1 必須" 明示
+  - D-7 fix: §8.1.b permanent KPI を 3 段階に細分 (happy ~10min / long
+    ~1h / failed >1h、anvil-orchestrator-submit-and-collect の 30s-数分
+    想定 anvil-orchestrator.el:3229 と整合)
+  - D-8 fix: Phase A 完遂 gate の secret scan 二重表記を §3.D Phase D
+    gate に集約 (= AST scan baseline は Phase A、secret scan は Phase D)
+  - LOC 見積 +30-50 (secret scan wrapper) + ~20 (future-status集計
+    wrapper) で v1 想定 ~1200-1800 → v2 想定 ~1250-1870
+
+* §13 sign-off
+
+- *v0 (Doc 35)*: T42 起草、Claude T45 + codex T55 で MAJOR REVISIONS
+- *v1 (Doc 38 へ renumber)*: T75 で MAJOR 全反映、Claude T87 で MINOR
+  REVISIONS (= 24/24 + 11 件 spot-bug)
+- *v2 LOCKED*: T89 で MAJOR 2 + MINOR 9 全反映、main merge ready
+- *signoff*:
+  - design author: Claude (session-T42 + T75 revise + T89 LOCKED v2)
+  - reviewer 1 (v0 round): Claude T45 review (MAJOR REVISIONS)
+  - reviewer 2 (v0 round): codex T55 review (MAJOR REVISIONS)
+  - reviewer 3 (v1 round): Claude T87 review (MINOR REVISIONS、本 v2
+    LOCKED の input)
+  - LOCKED-2026-04-25-v2 確定 (main merge は session-A が後で実施)
+- *next action (本 LOCKED v2 後)*:
+  1. main merge (session-A 担当)
+  2. anvil-extend.el commentary 5 ヶ所 (lines 14, 22, 54, 65, 538) を
+     Doc 35 → Doc 38 に追従更新 (= 別 commit pair、anvil-side task)
+  3. claude self-extension SDK Phase A 着手 (= scaffold + registry baseline
+     SHIPPED 確認、Phase B/C/D 並列 dispatch 検討)
