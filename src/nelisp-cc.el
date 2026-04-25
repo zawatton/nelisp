@@ -873,6 +873,176 @@ raw alist returned by `nelisp-cc--linear-scan'."
   (list :assignments (copy-sequence assignments)
         :spilled (nelisp-cc--alloc-spilled-values assignments)))
 
+;;; Phase 7.1 T15 — stack-slot allocation for spilled values ---------
+;;
+;; The linear-scan allocator (T4) marks values it cannot fit in the
+;; register pool with the `:spill' keyword.  T15 lays them out into
+;; an 8-byte-per-slot stack frame, one slot per spilled value, and
+;; returns an alist mapping value-ids to *byte offsets* (positive,
+;; measured from the frame base — backend translates to negative
+;; rbp-relative or positive sp-relative as ABI dictates).
+;;
+;; Slot ordering: ascending value-id.  This is deterministic across
+;; runs and keeps unit tests reproducible without dragging the
+;; allocator's internal interval ordering into the slot map.
+;;
+;; Frame size: total bytes occupied by spill slots, rounded up to a
+;; 16-byte multiple (System V AMD64 §3.2.2 / AAPCS64 §6.4 stack
+;; alignment requirement).  Backends prepend `[saved-fp + saved-lr]'
+;; or `[saved-rbp]' as the ABI dictates *outside* this number.
+;;
+;; Return shape:
+;;   (SLOT-ALIST . FRAME-SIZE)
+;;     SLOT-ALIST is ((VALUE-ID . BYTE-OFFSET) ...) in ascending
+;;     VALUE-ID order, where BYTE-OFFSET starts at 8 for the first
+;;     slot, 16 for the second, etc. (positive offsets from frame
+;;     base, suitable for both x86_64 `[rbp - off]' and arm64
+;;     `[sp + off]' addressing — backends apply the sign).
+;;     FRAME-SIZE is the total bytes (always a multiple of 16,
+;;     minimum 0 when no spill).
+
+(defun nelisp-cc--allocate-stack-slots (assignments)
+  "Assign 8-byte stack slots to every `:spill' value in ASSIGNMENTS.
+ASSIGNMENTS is the linear-scan output (alist (VID . REG-OR-:spill)).
+Returns a cons (SLOT-ALIST . FRAME-SIZE).
+
+SLOT-ALIST is ((VID . BYTE-OFFSET) ...) sorted by VID; BYTE-OFFSET
+counts from 1 (= 8) for the first slot.  FRAME-SIZE is the total
+bytes occupied (multiple of 16, possibly 0).
+
+Backends interpret BYTE-OFFSET as the *positive distance from the
+frame base*: x86_64 emits MOV [rbp - OFF], REG and MOV REG,
+[rbp - OFF]; arm64 emits STR/LDR [SP + OFF].  Either way the offset
+is the same magnitude — ABI sign convention is the backend's job."
+  (let* ((spilled-vids (nelisp-cc--alloc-spilled-values assignments))
+         (sorted (sort (copy-sequence spilled-vids) #'<))
+         (offset 8)
+         (slots nil))
+    (dolist (vid sorted)
+      (push (cons vid offset) slots)
+      (cl-incf offset 8))
+    (let* ((raw-size (* 8 (length sorted)))
+           (frame-size
+            ;; Round up to a multiple of 16 (ABI alignment).
+            (* 16 (/ (+ raw-size 15) 16))))
+      (cons (nreverse slots) frame-size))))
+
+(defun nelisp-cc--stack-slot-of (slot-alist value-id)
+  "Return the byte offset assigned to VALUE-ID in SLOT-ALIST, or nil.
+SLOT-ALIST is the car of `nelisp-cc--allocate-stack-slots'."
+  (cdr (assq value-id slot-alist)))
+
+;;; Phase 7.1 T15 — phi resolution -----------------------------------
+;;
+;; The AST→SSA frontend (T6) emits `:phi' instructions in merge
+;; blocks.  Backends do not lower `:phi' directly — instead T15
+;; lowers them out of the SSA *before* codegen by inserting a `:copy'
+;; instruction at the *end* of every predecessor block (just before
+;; its terminator) that copies the incoming arm value to the phi's
+;; destination value.  After resolution every `:phi' is replaced by
+;; a no-op marker, which the backend can detect and skip.
+;;
+;; The pass intentionally does NOT re-verify the resulting function:
+;; `:copy' multi-defines the phi's destination value, which violates
+;; SSA single-assignment.  Post-allocation we no longer need that
+;; invariant — the values are now register slots, and multiple
+;; assignments-to-the-same-register are the *whole point* of phi
+;; resolution.
+;;
+;; Parallel-copy hazard (the classical phi swap problem) is *out of
+;; scope* for the MVP — we trust the linear-scan allocator to issue
+;; non-conflicting allocations across phi arms.  Phase 7.1.5 graph
+;; coloring will revisit and add a swap-aware ordering pass.
+
+(defun nelisp-cc--resolve-phis (function)
+  "Lower `:phi' instructions out of FUNCTION in place.
+
+For each `:phi' instruction in block B with arms
+`((PRED-BID . VID) ...)':
+  1. For each (PRED-BID, VID) pair, append a `:copy' instruction at
+     the end of block PRED-BID (just *before* its terminator if any
+     — terminators are :branch / :jump / :return) whose operand is
+     the incoming SSA value VID and whose def is the phi's def.
+  2. Remove the `:phi' instruction itself from B.
+
+After this pass FUNCTION is no longer in strict SSA form (the
+phi-def value has multiple defs — one per predecessor edge).  The
+function is *not* re-verified — backends that consume the post-pass
+form must accept the relaxed invariant.
+
+Return value: FUNCTION (mutated in place)."
+  (let ((blocks (nelisp-cc--ssa-function-blocks function))
+        ;; Look up blocks by ID for fast pred resolution.
+        (block-by-id (make-hash-table :test 'eql)))
+    (dolist (b blocks)
+      (puthash (nelisp-cc--ssa-block-id b) b block-by-id))
+    (dolist (b blocks)
+      (let ((phis nil)
+            (rest nil))
+        ;; Partition block instructions: all :phi vs all non-:phi.
+        (dolist (instr (nelisp-cc--ssa-block-instrs b))
+          (if (eq (nelisp-cc--ssa-instr-opcode instr) 'phi)
+              (push instr phis)
+            (push instr rest)))
+        ;; Drop the phi nodes; preserve original instruction order.
+        (setf (nelisp-cc--ssa-block-instrs b) (nreverse rest))
+        ;; For each phi, append :copy in each predecessor.
+        (dolist (phi (nreverse phis))
+          (let* ((meta (nelisp-cc--ssa-instr-meta phi))
+                 (arms (plist-get meta :phi-arms))
+                 (def (nelisp-cc--ssa-instr-def phi)))
+            (dolist (arm arms)
+              (let* ((pred-bid (car arm))
+                     (src-vid  (cdr arm))
+                     (pred-blk (gethash pred-bid block-by-id))
+                     ;; Locate the source SSA value via the phi's
+                     ;; operands list (operands are positional with
+                     ;; :phi-arms — both share the predecessor order).
+                     (operands (nelisp-cc--ssa-instr-operands phi))
+                     (src-val
+                      (cl-find-if
+                       (lambda (v)
+                         (= (nelisp-cc--ssa-value-id v) src-vid))
+                       operands)))
+                (unless pred-blk
+                  (signal 'nelisp-cc-verify-error
+                          (list :phi-pred-not-found pred-bid)))
+                (unless src-val
+                  (signal 'nelisp-cc-verify-error
+                          (list :phi-arm-value-not-in-operands src-vid)))
+                ;; Build a `:copy' instruction.  We do NOT call the
+                ;; standard add-instr because that would mutate def's
+                ;; def-point and add extra uses; we want a transparent
+                ;; "register-level" mov that the backend lowers to a
+                ;; physical MOV without touching the value-table.
+                (let ((copy
+                       (nelisp-cc--ssa-instr-make
+                        :id (nelisp-cc--ssa-function-next-instr-id function)
+                        :opcode 'copy
+                        :operands (list src-val)
+                        :def def
+                        :block pred-blk
+                        :meta (list :phi-resolution t))))
+                  (cl-incf (nelisp-cc--ssa-function-next-instr-id function))
+                  ;; Insert before the terminator (last :branch / :jump
+                  ;; / :return).  When the block has no terminator
+                  ;; instr we just append.
+                  (let* ((instrs (nelisp-cc--ssa-block-instrs pred-blk))
+                         (last (car (last instrs)))
+                         (term-p
+                          (and last
+                               (memq (nelisp-cc--ssa-instr-opcode last)
+                                     '(branch jump return)))))
+                    (cond
+                     (term-p
+                      (let ((head (butlast instrs)))
+                        (setf (nelisp-cc--ssa-block-instrs pred-blk)
+                              (append head (list copy last)))))
+                     (t
+                      (setf (nelisp-cc--ssa-block-instrs pred-blk)
+                            (append instrs (list copy)))))))))))))
+    function))
+
 ;;; AST → SSA conversion (frontend) ---------------------------------
 ;;
 ;; This section layers a *NeLisp lambda → SSA function* lowering pass
