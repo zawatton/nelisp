@@ -1,0 +1,96 @@
+;;; nelisp-secure-hash-test.el --- ERT tests for nelisp-secure-hash  -*- lexical-binding: t; -*-
+
+(require 'ert)
+(require 'nelisp-secure-hash)
+
+(ert-deftest nelisp-hash-md5-rfc1321-vectors ()
+  (should (equal (nelisp-hash-md5 "")
+                 "d41d8cd98f00b204e9800998ecf8427e"))
+  (should (equal (nelisp-hash-md5 "a")
+                 "0cc175b9c0f1b6a831c399e269772661"))
+  (should (equal (nelisp-hash-md5 "abc")
+                 "900150983cd24fb0d6963f7d28e17f72"))
+  (should (equal (nelisp-hash-md5 "message digest")
+                 "f96b697d7cb7938d525a2f31aaf161d0"))
+  (should (equal (nelisp-hash-md5 "The quick brown fox jumps over the lazy dog")
+                 "9e107d9d372bb6826bd81d3542a419d6")))
+
+(ert-deftest nelisp-hash-sha1-rfc3174-vectors ()
+  (should (equal (nelisp-hash-sha1 "")
+                 "da39a3ee5e6b4b0d3255bfef95601890afd80709"))
+  (should (equal (nelisp-hash-sha1 "abc")
+                 "a9993e364706816aba3e25717850c26c9cd0d89d"))
+  (should (equal (nelisp-hash-sha1 "The quick brown fox jumps over the lazy dog")
+                 "2fd4e1c67a2d28fced849ee1bb76e7391b93eb12")))
+
+(ert-deftest nelisp-hash-sha256-rfc6234-vectors ()
+  (should (equal (nelisp-hash-sha256 "")
+                 "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"))
+  (should (equal (nelisp-hash-sha256 "abc")
+                 "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"))
+  (should (equal (nelisp-hash-sha256 "The quick brown fox jumps over the lazy dog")
+                 "d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592")))
+
+(ert-deftest nelisp-hash-secure-hash-dispatch ()
+  (should (equal (nelisp-hash-secure-hash 'md5 "abc")
+                 (nelisp-hash-md5 "abc")))
+  (should (equal (nelisp-hash-secure-hash 'sha1 "abc")
+                 (nelisp-hash-sha1 "abc")))
+  (should (equal (nelisp-hash-secure-hash 'sha256 "abc")
+                 (nelisp-hash-sha256 "abc"))))
+
+(ert-deftest nelisp-hash-secure-hash-rejects-unsupported ()
+  (should-error (nelisp-hash-secure-hash 'sha224 "abc") :type 'error)
+  (should-error (nelisp-hash-secure-hash 'sha512 "abc") :type 'error)
+  (should-error (nelisp-hash-secure-hash 'bogus "abc") :type 'error))
+
+(ert-deftest nelisp-hash-md5-million-a ()
+  (should (equal (nelisp-hash-md5 (make-string 1000000 ?a))
+                 "7707d6ae4e027c70eea2a935c2296f21")))
+
+(ert-deftest nelisp-hash-sha1-million-a ()
+  (should (equal (nelisp-hash-sha1 (make-string 1000000 ?a))
+                 "34aa973cd4c4daa4f61eeb2bdbad27316534016f")))
+
+(ert-deftest nelisp-hash-sha256-million-a ()
+  (should (equal (nelisp-hash-sha256 (make-string 1000000 ?a))
+                 "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0")))
+
+(ert-deftest nelisp-hash-md5-block-boundary-lengths ()
+  (should-not (equal (nelisp-hash-md5 (make-string 55 ?x))
+                     (nelisp-hash-md5 (make-string 56 ?x))))
+  (should-not (equal (nelisp-hash-md5 (make-string 56 ?x))
+                     (nelisp-hash-md5 (make-string 57 ?x)))))
+
+(ert-deftest nelisp-hash-sha1-block-boundary-lengths ()
+  (should-not (equal (nelisp-hash-sha1 (make-string 63 ?x))
+                     (nelisp-hash-sha1 (make-string 64 ?x))))
+  (should-not (equal (nelisp-hash-sha1 (make-string 64 ?x))
+                     (nelisp-hash-sha1 (make-string 65 ?x)))))
+
+(ert-deftest nelisp-hash-sha256-block-boundary-lengths ()
+  (should-not (equal (nelisp-hash-sha256 (make-string 63 ?x))
+                     (nelisp-hash-sha256 (make-string 64 ?x))))
+  (should-not (equal (nelisp-hash-sha256 (make-string 64 ?x))
+                     (nelisp-hash-sha256 (make-string 65 ?x)))))
+
+(ert-deftest nelisp-hash-multibyte-input-uses-utf8 ()
+  (should (equal (nelisp-hash-sha256 "日本語")
+                 "77710aedc74ecfa33685e33a6c7df5cc83004da1bdcef7fb280f5c2b2e97e0a5"))
+  (should (equal (nelisp-hash-sha1 "日本語")
+                 "c12140a0ffb4e56481b4fe0a7a25040c2eafa9ca"))
+  (should (equal (nelisp-hash-md5 "日本語")
+                 "00110af8b4393ef3f72c50be5b332bec")))
+
+(ert-deftest nelisp-hash-empty-and-nul-containing-input ()
+  (let ((s (unibyte-string 0 1 2 3 0 255)))
+    (should (equal (nelisp-hash-md5 s)
+                   "04f20f0b35f6681fe52dc2731b2dce57"))
+    (should (equal (nelisp-hash-sha1 s)
+                   "48be0334693c95e7d7e26521825765c991305a6e"))
+    (should (equal (nelisp-hash-sha256 s)
+                   "f186acff22c6264f63571367d5cfcc7d08612614f5c8f627a1999798592be133"))))
+
+(provide 'nelisp-secure-hash-test)
+
+;;; nelisp-secure-hash-test.el ends here
