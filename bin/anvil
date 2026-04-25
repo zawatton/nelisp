@@ -134,6 +134,14 @@ cmd_doctor() {
     echo "  nelisp src      : $nelisp_src (MISSING — reinstall required)"
     return 1
   fi
+  local anvil_dir
+  if anvil_dir="$(anvil_lisp_dir)"; then
+    echo "  anvil.el        : $anvil_dir (architecture α active)"
+    echo "  serve mode      : anvil headless profile (server-id emacs-eval-headless)"
+  else
+    echo "  anvil.el        : NOT FOUND (set ANVIL_LISP_DIR to enable architecture α)"
+    echo "  serve mode      : nelisp-server (fallback, Phase 6.0 baseline)"
+  fi
   echo "  status          : ready for 'anvil mcp serve'"
 }
 
@@ -172,11 +180,61 @@ cmd_version() {
   fi
 }
 
+## anvil_lisp_dir [internal]
+##   Resolve the path to a bundled anvil.el checkout, or empty when
+##   absent.  Honour ANVIL_LISP_DIR override; otherwise probe the
+##   conventional locations beside the launcher (anvil-lib/) and the
+##   user's dev tree (Notes/dev/anvil.el).
+anvil_lisp_dir() {
+  if [[ -n "${ANVIL_LISP_DIR:-}" && -f "$ANVIL_LISP_DIR/anvil.el" ]]; then
+    printf '%s' "$ANVIL_LISP_DIR"
+    return 0
+  fi
+  local candidates=(
+    "$ANVIL_HOME/anvil-lib"
+    "$ANVIL_HOME/../anvil.el"
+    "$HOME/Notes/dev/anvil.el"
+    "$HOME/.emacs.d/external-packages/anvil.el"
+  )
+  local d
+  for d in "${candidates[@]}"; do
+    if [[ -f "$d/anvil.el" && -f "$d/anvil-server-commands.el" ]]; then
+      printf '%s' "$(cd "$d" && pwd)"
+      return 0
+    fi
+  done
+  return 1
+}
+
 cmd_mcp_serve() {
   local emacs_bin
   emacs_bin="$(detect_emacs)"
   mkdir -p "$ANVIL_CACHE_DIR"
   local src_dir="$ANVIL_HOME/src"
+
+  # Stage D Phase 6.1 architecture α: prefer anvil.el headless profile
+  # when available (anvil-server delegates to nelisp-* internals via
+  # fboundp guard + fallback).  Falls back to nelisp-server only when
+  # anvil.el is not bundled / locatable.
+  local anvil_dir
+  if anvil_dir="$(anvil_lisp_dir)"; then
+    if [[ ! -f "$src_dir/nelisp-server.el" ]]; then
+      echo "error: nelisp-server.el not found under $src_dir" >&2
+      exit 1
+    fi
+    exec "$emacs_bin" \
+      --batch -Q \
+      -L "$anvil_dir" \
+      -L "$src_dir" \
+      --eval "(setq load-prefer-newer t)" \
+      --eval "(setenv \"ANVIL_CONFIG_DIR\" \"$ANVIL_CONFIG_DIR\")" \
+      --eval "(setenv \"ANVIL_CACHE_DIR\" \"$ANVIL_CACHE_DIR\")" \
+      -l anvil-server \
+      -l anvil-server-commands \
+      -f anvil-server-stage-d-headless-run
+  fi
+
+  # Fallback: nelisp-server only (Stage D Phase 6.0 baseline)
   if [[ ! -f "$src_dir/nelisp-server.el" ]]; then
     echo "error: nelisp-server.el not found under $src_dir" >&2
     exit 1
