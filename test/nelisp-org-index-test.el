@@ -267,7 +267,11 @@ Empty NAME is allowed and means \"match every title\" (LIKE %)."
     (nelisp-org-index-rebuild)
     (let ((s (nelisp-org-index-status)))
       (should (string= nelisp-org-index-db-path (plist-get s :db-path)))
-      (should (= 1 (plist-get s :schema-version)))
+      ;; Tier 2 fix bumped schema-version from 1 → 2 (parent_id FK +
+      ;; FTS5 trigram); just verify the field equals the constant the
+      ;; module advertises so future bumps don't ripple here.
+      (should (= nelisp-org-index-schema-version
+                 (plist-get s :schema-version)))
       (should (= 1 (plist-get s :files)))
       (should (= 5 (plist-get s :headlines)))
       (should (>= (plist-get s :tags) 2))
