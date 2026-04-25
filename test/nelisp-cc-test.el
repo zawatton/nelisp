@@ -450,5 +450,237 @@ produces maximum register pressure with minimal CFG complexity."
                      (plist-get pp :assignments)))
       (should (equal '(1 3) (plist-get pp :spilled))))))
 
+;;; (17) AST → SSA — empty lambda ------------------------------------
+
+(defun nelisp-cc-test--instr-ops (fn)
+  "Return the flat list of all opcodes in FN, block-by-block."
+  (let ((acc nil))
+    (dolist (b (nelisp-cc--ssa-function-blocks fn))
+      (dolist (instr (nelisp-cc--ssa-block-instrs b))
+        (push (nelisp-cc--ssa-instr-opcode instr) acc)))
+    (nreverse acc)))
+
+(ert-deftest nelisp-cc-build-ssa-empty-lambda ()
+  "`(lambda () nil)' lowers to one block with one :const + :return."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast '(lambda () nil)))
+         (blocks (nelisp-cc--ssa-function-blocks fn))
+         (entry (nelisp-cc--ssa-function-entry fn)))
+    (should (= 1 (length blocks)))
+    (should (eq entry (car blocks)))
+    (should (null (nelisp-cc--ssa-function-params fn)))
+    (let ((ops (nelisp-cc-test--instr-ops fn)))
+      (should (equal '(const return) ops)))
+    ;; The single :const carries nil as its literal in META.
+    (let ((const-instr (car (nelisp-cc--ssa-block-instrs entry))))
+      (should (eq 'const (nelisp-cc--ssa-instr-opcode const-instr)))
+      (should (null (plist-get (nelisp-cc--ssa-instr-meta const-instr)
+                               :literal))))
+    (should (eq t (nelisp-cc--ssa-verify-function fn)))))
+
+;;; (18) AST → SSA — identity ----------------------------------------
+
+(ert-deftest nelisp-cc-build-ssa-identity ()
+  "`(lambda (x) x)' returns the parameter SSA value with no extra ops."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast '(lambda (x) x)))
+         (params (nelisp-cc--ssa-function-params fn))
+         (entry (nelisp-cc--ssa-function-entry fn))
+         (instrs (nelisp-cc--ssa-block-instrs entry)))
+    (should (= 1 (length params)))
+    ;; The body is a bare symbol — scope lookup returns the param SSA
+    ;; value directly so no synthetic :load-var is emitted.  The only
+    ;; instruction is the closing :return.
+    (should (equal '(return) (mapcar #'nelisp-cc--ssa-instr-opcode instrs)))
+    (let ((ret (car instrs)))
+      (should (eq (car params)
+                  (car (nelisp-cc--ssa-instr-operands ret)))))
+    (should (eq t (nelisp-cc--ssa-verify-function fn)))))
+
+;;; (19) AST → SSA — arithmetic --------------------------------------
+
+(ert-deftest nelisp-cc-build-ssa-arithmetic ()
+  "`(lambda (x) (+ x 1))' lowers to const + call(+, x, c) + return."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast '(lambda (x) (+ x 1))))
+         (entry (nelisp-cc--ssa-function-entry fn))
+         (instrs (nelisp-cc--ssa-block-instrs entry))
+         (ops (mapcar #'nelisp-cc--ssa-instr-opcode instrs)))
+    (should (equal '(const call return) ops))
+    ;; The :call's META records the callee symbol.
+    (let ((call (nth 1 instrs)))
+      (should (eq '+ (plist-get (nelisp-cc--ssa-instr-meta call) :fn)))
+      (should (eq t (plist-get (nelisp-cc--ssa-instr-meta call) :unresolved))))
+    ;; :const's META records the literal `1'.
+    (let ((c (car instrs)))
+      (should (= 1 (plist-get (nelisp-cc--ssa-instr-meta c) :literal))))
+    (should (eq t (nelisp-cc--ssa-verify-function fn)))))
+
+;;; (20) AST → SSA — if form -----------------------------------------
+
+(ert-deftest nelisp-cc-build-ssa-if-form ()
+  "`(lambda (c) (if c 'a 'b))' splits into 4 blocks with a phi merge."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast '(lambda (c) (if c 'a 'b))))
+         (blocks (nelisp-cc--ssa-function-blocks fn)))
+    (should (= 4 (length blocks)))
+    (let ((labels (mapcar #'nelisp-cc--ssa-block-label blocks)))
+      (should (equal '("entry" "then" "else" "merge") labels)))
+    ;; Find the merge block — its first instruction is :phi with two
+    ;; operands and two predecessors.
+    (let* ((merge (nth 3 blocks))
+           (phi (car (nelisp-cc--ssa-block-instrs merge))))
+      (should (eq 'phi (nelisp-cc--ssa-instr-opcode phi)))
+      (should (= 2 (length (nelisp-cc--ssa-instr-operands phi))))
+      (should (= 2 (length (nelisp-cc--ssa-block-predecessors merge))))
+      ;; META records the (PRED-BID . VID) arms.
+      (let ((arms (plist-get (nelisp-cc--ssa-instr-meta phi) :phi-arms)))
+        (should (= 2 (length arms)))))
+    ;; Verifier must accept the resulting CFG.
+    (should (eq t (nelisp-cc--ssa-verify-function fn)))))
+
+;;; (21) AST → SSA — let binding -------------------------------------
+
+(ert-deftest nelisp-cc-build-ssa-let-binding ()
+  "`(lambda (x) (let ((y (+ x 1))) y))' threads INIT through scope."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast
+              '(lambda (x) (let ((y (+ x 1))) y))))
+         (entry (nelisp-cc--ssa-function-entry fn))
+         (ops (mapcar #'nelisp-cc--ssa-instr-opcode
+                      (nelisp-cc--ssa-block-instrs entry))))
+    ;; const(1) → call(+) → return — the let body is just `y' which
+    ;; reuses the call's def value, so no extra instruction.
+    (should (equal '(const call return) ops))
+    ;; Return operand must be the call's def value (because `y' is
+    ;; bound to it and the body returns `y').
+    (let* ((call (nth 1 (nelisp-cc--ssa-block-instrs entry)))
+           (ret (nth 2 (nelisp-cc--ssa-block-instrs entry))))
+      (should (eq (nelisp-cc--ssa-instr-def call)
+                  (car (nelisp-cc--ssa-instr-operands ret)))))
+    (should (eq t (nelisp-cc--ssa-verify-function fn)))))
+
+;;; (22) AST → SSA — progn -------------------------------------------
+
+(ert-deftest nelisp-cc-build-ssa-progn-sequence ()
+  "`(lambda () (progn 1 2 3))' emits 3 :const, return uses last."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast '(lambda () (progn 1 2 3))))
+         (entry (nelisp-cc--ssa-function-entry fn))
+         (instrs (nelisp-cc--ssa-block-instrs entry))
+         (ops (mapcar #'nelisp-cc--ssa-instr-opcode instrs)))
+    (should (equal '(const const const return) ops))
+    ;; The :return's operand must be the third :const's def.
+    (let ((c3 (nth 2 instrs))
+          (ret (nth 3 instrs)))
+      (should (eq (nelisp-cc--ssa-instr-def c3)
+                  (car (nelisp-cc--ssa-instr-operands ret))))
+      ;; And that third :const's literal is `3'.
+      (should (= 3 (plist-get (nelisp-cc--ssa-instr-meta c3) :literal))))
+    (should (eq t (nelisp-cc--ssa-verify-function fn)))))
+
+;;; (23) AST → SSA — nested lambda -----------------------------------
+
+(ert-deftest nelisp-cc-build-ssa-nested-lambda ()
+  "Nested `(lambda () (lambda (x) x))' produces an inner SSA function."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast
+              '(lambda () (lambda (x) x))))
+         (entry (nelisp-cc--ssa-function-entry fn))
+         (instrs (nelisp-cc--ssa-block-instrs entry))
+         (ops (mapcar #'nelisp-cc--ssa-instr-opcode instrs)))
+    (should (equal '(closure return) ops))
+    (let* ((cls (car instrs))
+           (inner (plist-get (nelisp-cc--ssa-instr-meta cls)
+                             :inner-function)))
+      (should inner)
+      (should (nelisp-cc--ssa-function-p inner))
+      ;; Inner has 1 param + a single-block body that returns it.
+      (should (= 1 (length (nelisp-cc--ssa-function-params inner))))
+      (should (eq t (nelisp-cc--ssa-verify-function inner))))
+    (should (eq t (nelisp-cc--ssa-verify-function fn)))))
+
+;;; (24) AST → SSA — unsupported form fails fast --------------------
+
+(ert-deftest nelisp-cc-build-ssa-unsupported-form-errors ()
+  "Forms outside the MVP kernel raise `nelisp-cc-unsupported-form'."
+  ;; `catch' is intentionally unsupported in Phase 7.1.1 frontend.
+  (let ((err (should-error
+              (nelisp-cc-build-ssa-from-ast
+               '(lambda () (catch 'tag (throw 'tag 1))))
+              :type 'nelisp-cc-unsupported-form)))
+    ;; ERR is (SYMBOL :head HEAD :form FORM ...) — the data plist
+    ;; starts at `cdr' because `signal' splices its DATA list onto the
+    ;; symbol.
+    (should (eq 'catch (plist-get (cdr err) :head))))
+  ;; `condition-case' too.
+  (should-error
+   (nelisp-cc-build-ssa-from-ast
+    '(lambda () (condition-case nil (foo) (error nil))))
+   :type 'nelisp-cc-unsupported-form)
+  ;; `while' is also out of MVP scope (loop linearisation deferred).
+  (should-error
+   (nelisp-cc-build-ssa-from-ast
+    '(lambda () (while t)))
+   :type 'nelisp-cc-unsupported-form)
+  ;; Non-lambda input is rejected before any lowering happens.
+  (should-error
+   (nelisp-cc-build-ssa-from-ast '(defun foo () nil))
+   :type 'nelisp-cc-unsupported-form))
+
+;;; (25) AST → SSA — round-trip via pp / from-sexp -------------------
+
+(ert-deftest nelisp-cc-build-ssa-roundtrip-pp ()
+  "Built SSA function survives `pp' / `from-sexp' round-trip."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast
+              '(lambda (a b) (if a (+ a b) b))))
+         (sexp (nelisp-cc--ssa-pp fn))
+         (fn2 (nelisp-cc--ssa-from-sexp sexp))
+         (sexp2 (nelisp-cc--ssa-pp fn2)))
+    (should (equal sexp sexp2))
+    (should (= (length (nelisp-cc--ssa-function-blocks fn))
+               (length (nelisp-cc--ssa-function-blocks fn2))))
+    (should (eq t (nelisp-cc--ssa-verify-function fn2)))))
+
+;;; (26) AST → SSA — verify passes -----------------------------------
+
+(ert-deftest nelisp-cc-build-ssa-verify-passes ()
+  "Every supported form produces a verifier-clean SSA function."
+  (dolist (lf '((lambda () nil)
+                (lambda (x) x)
+                (lambda (x) (+ x 1))
+                (lambda (c) (if c 'a 'b))
+                (lambda (x) (let ((y (+ x 1))) y))
+                (lambda (x) (let* ((a x) (b a)) b))
+                (lambda () (progn 1 2 3))
+                (lambda () (lambda (x) x))
+                (lambda (x) (and x 1 2))
+                (lambda (x) (or x 1))
+                (lambda (x) (when x 1))
+                (lambda (x) (unless x 1))
+                (lambda (x) (cond ((eq x 1) 'one)
+                                  ((eq x 2) 'two)
+                                  (t 'other)))
+                (lambda (x) (setq x 1))))
+    (let ((fn (nelisp-cc-build-ssa-from-ast lf)))
+      (should (eq t (nelisp-cc--ssa-verify-function fn))))))
+
+;;; (27) AST → SSA → linear-scan integration ------------------------
+
+(ert-deftest nelisp-cc-pipeline-build-then-allocate ()
+  "End-to-end: build-ssa-from-ast → compute-intervals → linear-scan."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast
+              '(lambda (x y z) (+ x (* y z)))))
+         (intervals (nelisp-cc--compute-intervals fn))
+         (assignments (nelisp-cc--linear-scan fn))
+         (spilled (nelisp-cc--alloc-spilled-values assignments)))
+    ;; Verify the SSA function itself.
+    (should (eq t (nelisp-cc--ssa-verify-function fn)))
+    ;; Every interval must correspond to a defined value.
+    (dolist (iv intervals)
+      (let ((v (nelisp-cc--ssa-interval-value iv)))
+        (should v)
+        (should (or (eq :param (nelisp-cc--ssa-value-def-point v))
+                    (nelisp-cc--ssa-value-def-point v)))))
+    ;; With three params + two `:call' results = 5 intervals; 8-reg
+    ;; pool fits all without spill.
+    (should (null spilled))
+    ;; Every assignment maps to a register from the default pool.
+    (dolist (cell assignments)
+      (should (memq (cdr cell) nelisp-cc--default-int-registers)))))
+
 (provide 'nelisp-cc-test)
 ;;; nelisp-cc-test.el ends here
