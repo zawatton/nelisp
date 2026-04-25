@@ -677,5 +677,205 @@ edges, dropping the (clean) third card entirely."
                    table nursery objs-fn)))))
 
 
+;;; 9. Phase 7.3.5 promotion + age + young-root-limited (T29) -----
+
+(require 'nelisp-allocator)
+
+(defun nelisp-gc-inner-test--mk-large-tenured (id start end)
+  "Build a `:tenured' region big enough for promotion sweep tests."
+  (list :region-id   id
+        :start       start
+        :end         end
+        :generation  :tenured
+        :family      :cons-pool
+        :children-of #'ignore))
+
+(ert-deftest nelisp-gc-inner-promote-to-tenured-allocates-and-forwards ()
+  "promote-to-tenured copies a candidate from to-space into TENURED,
+removes the to-space entry, installs a tenured cell, and forwards
+the original from-space addr → tenured addr on the semispace."
+  (nelisp-gc-inner-test--reset)
+  (nelisp-allocator--reset-region-table)
+  (let* ((from   (nelisp-gc-inner-test--mk-nursery-region 0 100  500))
+         (to     (nelisp-gc-inner-test--mk-nursery-region 1 1000 1500))
+         (mature (nelisp-gc-inner--make-header 16 0 1)) ; age 1 → 2 post-bump
+         (mature-from-addr 200)
+         (objects
+          (list
+           (cons mature-from-addr
+                 (list :header mature :fields nil :size 16))))
+         (objs-fn (nelisp-gc-inner-test--mk-from-space-fn objects))
+         (semi    (nelisp-gc-inner-init-semispace from to))
+         (tenured (nelisp-allocator-init-tenured (* 64 1024)))
+         (stats (nelisp-gc-inner-run-minor-gc
+                 semi (list mature-from-addr) objs-fn))
+         (to-objects (plist-get stats :to-space-objects))
+         (mature-to-addr (nelisp-gc-inner--lookup-forwarded
+                          semi mature-from-addr)))
+    (should (integerp mature-to-addr))
+    (should (gethash mature-to-addr to-objects))
+    ;; Promote.
+    (let ((tenured-addr
+           (nelisp-gc-inner-promote-to-tenured
+            semi tenured to-objects mature-to-addr :cons-pool 16)))
+      (should (integerp tenured-addr))
+      (should (>= tenured-addr 0))
+      ;; Tenured entry installed.
+      (should (gethash tenured-addr to-objects))
+      (let ((tcell (gethash tenured-addr to-objects)))
+        (should (eq t (plist-get tcell :tenured)))
+        (should (= 16 (plist-get tcell :size)))
+        ;; Fresh tenured header has age 0 (allocator semantics).
+        (should (= 0 (nelisp-gc-inner--header-age
+                      (plist-get tcell :header)))))
+      ;; To-space entry removed (would otherwise double-age).
+      (should-not (gethash mature-to-addr to-objects))
+      ;; Forwarding lookup now points to tenured.
+      (should (= tenured-addr
+                 (nelisp-gc-inner--lookup-forwarded
+                  semi mature-from-addr))))))
+
+(ert-deftest nelisp-gc-inner-age-tick-increments-survivor-age ()
+  "age-tick bumps the age field of every cell in the to-space hash."
+  (nelisp-gc-inner-test--reset)
+  (let ((tbl (make-hash-table :test 'eql)))
+    ;; Two cells with ages 0 and 5; expected post-tick ages 1 and 6.
+    (puthash 100 (list :addr 100
+                       :header (nelisp-gc-inner--make-header 16 0 0)
+                       :fields nil :size 16)
+             tbl)
+    (puthash 200 (list :addr 200
+                       :header (nelisp-gc-inner--make-header 16 0 5)
+                       :fields nil :size 16)
+             tbl)
+    (let ((stats (nelisp-gc-inner-age-tick tbl)))
+      (should (= 2 (plist-get stats :total-count)))
+      (should (= 2 (plist-get stats :bumped-count)))
+      (should (= 0 (plist-get stats :saturated-count)))
+      (should (= 1 (nelisp-gc-inner--header-age
+                    (plist-get (gethash 100 tbl) :header))))
+      (should (= 6 (nelisp-gc-inner--header-age
+                    (plist-get (gethash 200 tbl) :header)))))))
+
+(ert-deftest nelisp-gc-inner-age-tick-saturates-at-63 ()
+  "age-tick clamps at the 6-bit ceiling (63) — already-saturated cells
+report through `:saturated-count' and stay at 63."
+  (nelisp-gc-inner-test--reset)
+  (let ((tbl (make-hash-table :test 'eql)))
+    ;; Cell at age 63 (saturated) + cell at age 62 (will saturate).
+    (puthash 100 (list :addr 100
+                       :header (nelisp-gc-inner--make-header 16 0 63)
+                       :fields nil :size 16)
+             tbl)
+    (puthash 200 (list :addr 200
+                       :header (nelisp-gc-inner--make-header 16 0 62)
+                       :fields nil :size 16)
+             tbl)
+    (let ((stats (nelisp-gc-inner-age-tick tbl)))
+      (should (= 2 (plist-get stats :total-count)))
+      ;; The age-62 cell got bumped to 63 (still bumped, not saturated
+      ;; *before* the call); the age-63 cell was already saturated.
+      (should (= 1 (plist-get stats :bumped-count)))
+      (should (= 1 (plist-get stats :saturated-count)))
+      ;; Both end at 63 — the bump uses `--header-with-age' which
+      ;; clamps internally.
+      (should (= 63 (nelisp-gc-inner--header-age
+                     (plist-get (gethash 100 tbl) :header))))
+      (should (= 63 (nelisp-gc-inner--header-age
+                     (plist-get (gethash 200 tbl) :header)))))
+    ;; Second tick: both cells now saturated.
+    (let ((stats2 (nelisp-gc-inner-age-tick tbl)))
+      (should (= 0 (plist-get stats2 :bumped-count)))
+      (should (= 2 (plist-get stats2 :saturated-count))))))
+
+(ert-deftest nelisp-gc-inner-major-young-root-limited-respects-card-dirty ()
+  "`run-major-young-root-limited' filters HEAP-REGIONS to only those
+overlapping a dirty card — clean tenured pages skip the sweep."
+  (nelisp-gc-inner-test--reset)
+  (let* ((nursery (nelisp-gc-inner-test--mk-nursery-region 0 #x10000 #x20000))
+         ;; Two tenured regions, both 16KB (= 4 cards each), but the
+         ;; card-table only covers tenured-A (the simulator wires one
+         ;; card-table per tenured region).
+         (tenured-a (nelisp-gc-inner-test--mk-large-tenured 1 0 (* 16 1024)))
+         (tenured-b (nelisp-gc-inner-test--mk-large-tenured 2 (* 32 1024)
+                                                            (* 48 1024)))
+         (table   (nelisp-gc-inner-init-card-table tenured-a))
+         (semi (nelisp-gc-inner-init-semispace
+                nursery
+                (nelisp-gc-inner-test--mk-nursery-region 99 #x30000 #x40000))))
+    ;; Dirty exactly one card on tenured-A.
+    (nelisp-gc-inner-write-barrier table 5000 #x10100 nursery)
+    (let* ((tenured-objs-fn (lambda () nil))
+           (stats (nelisp-gc-inner-run-major-young-root-limited
+                   table semi nil
+                   (list tenured-a tenured-b)
+                   tenured-objs-fn)))
+      (should (eq :major-young-root-limited (plist-get stats :kind)))
+      (should (eq t (plist-get stats :card-table-cleared)))
+      ;; tenured-B has no dirty cards on this card-table → filtered out.
+      ;; tenured-A had a dirty card → retained.  So filter-region count
+      ;; must be 1 (just tenured-A).
+      (should (= 1 (plist-get stats :limited-region-count)))
+      ;; Pause-time field is integer ms (smoke check, no real budget).
+      (should (integerp (plist-get stats :pause-ms)))
+      ;; Card table cleared.
+      (let ((bv (nelisp-gc-inner--card-table-dirty-bits table)))
+        (dotimes (i (length bv))
+          (should-not (aref bv i)))))))
+
+(ert-deftest nelisp-gc-inner-promotion-policy-threshold-2-promotes-survivors ()
+  "End-to-end: minor GC + age policy + threshold check + promote.
+A nursery survivor with age 1 (post-copy bumps to 2) becomes a
+promotion candidate and is moved into TENURED via
+`run-minor-gc-with-promotion'.  A young (age 0) sibling stays in
+to-space.  The candidate's :fields survive the round trip."
+  (nelisp-gc-inner-test--reset)
+  (nelisp-allocator--reset-region-table)
+  (let* ((from   (nelisp-gc-inner-test--mk-nursery-region 0 100  500))
+         (to     (nelisp-gc-inner-test--mk-nursery-region 1 1000 1500))
+         (tenured-region (nelisp-gc-inner-test--mk-large-tenured
+                          2 (* 64 1024) (* 128 1024)))
+         (card-table (nelisp-gc-inner-init-card-table tenured-region))
+         (young-hdr  (nelisp-gc-inner--make-header 16 0 0))
+         (mature-hdr (nelisp-gc-inner--make-header 16 0 1)) ; → age 2
+         (young-from-addr  100)
+         (mature-from-addr 200)
+         (objects
+          (list
+           (cons young-from-addr  (list :header young-hdr  :fields nil :size 16))
+           (cons mature-from-addr (list :header mature-hdr :fields nil :size 16))))
+         (objs-fn (nelisp-gc-inner-test--mk-from-space-fn objects))
+         (semi (nelisp-gc-inner-init-semispace from to))
+         (tenured (nelisp-allocator-init-tenured (* 64 1024)))
+         (tenured-objects-fn (lambda () nil))
+         (stats (nelisp-gc-inner-run-minor-gc-with-promotion
+                 semi tenured card-table
+                 (list young-from-addr mature-from-addr)
+                 objs-fn tenured-objects-fn)))
+    (should (eq :minor (plist-get stats :kind)))
+    (should (= 2 (plist-get stats :copied-count)))
+    ;; Exactly 1 promotion candidate (mature) — young is age-1 post-copy
+    ;; (< threshold 2).
+    (should (= 1 (plist-get stats :promoted-count)))
+    (let ((cands (plist-get stats :promotion-candidates))
+          (tenured-addrs (plist-get stats :tenured-addresses)))
+      (should (= 1 (length cands)))
+      (should (= 1 (length tenured-addrs)))
+      ;; The candidate descriptor carries (FAMILY . SIZE).
+      (let ((cand (car cands)))
+        (should (eq :cons-pool (cadr cand)))
+        (should (= 16 (cddr cand))))
+      ;; Forwarding now points the original from-addr to tenured.
+      (let* ((tenured-addr (car tenured-addrs))
+             (forward-target (nelisp-gc-inner--lookup-forwarded
+                              semi mature-from-addr)))
+        (should (= tenured-addr forward-target))))
+    ;; The tenured allocator reports the new allocation.
+    (should (> (nelisp-allocator--tenured-allocated-bytes tenured) 0))
+    ;; Card table cleared (Phase 7.3.5 invariant from
+    ;; run-minor-gc-with-barrier wrapper).
+    (should (eq t (plist-get stats :card-table-cleared)))))
+
+
 (provide 'nelisp-gc-inner-test)
 ;;; nelisp-gc-inner-test.el ends here
