@@ -1,8 +1,8 @@
 #+TITLE: Doc 27 — Phase 7+ : Self-implemented C runtime (4 核 = syscall / allocator / GC inner / coding)
-#+AUTHOR: zawatton + Claude (session-A)
+#+AUTHOR: zawatton + Claude (session-A、v2 改訂)
 #+DATE: 2026-04-25
-#+STATE: LOCKED-2026-04-25 (user signoff 2026-04-25、§2 全 12 項目 revised default 採用 — *NeLisp purity max path*)
-#+STATUS: NeLisp v1.0 完遂条件 #4 達成 = 真 standalone binary 配布 = NeLisp 公開告知ゲート。*user 2026-04-25 判断: SBCL precedent を超えて syscall 最小限 (~300-500 LOC Rust) のみ Rust、他 3 核 (allocator / GC inner / coding) は全て NeLisp 化、native compiler を新設して支える*。理由: "user 体験 0 影響 = SBCL 25 年やらなかった = 永遠の deferral pattern。project 開始期に lock-in" (user)。実工数見積 *4-8 ヶ月* (anvil.el tooling + 並列 session full leverage 前提、当初 DRAFT の 14-24 ヶ月見積は 1 dev 想定で保守的すぎた)。Phase 7.0/.1/.../7.5 sub 分割
+#+STATE: LOCKED-2026-04-25-v2 (orchestrator codex review MAJOR REVISIONS 5 MAJOR + 2 MINOR 反映 + Doc 28-32 v2 sibling 整合 + user signoff 待ち)
+#+STATUS: NeLisp v1.0 完遂条件 #4 達成 = 真 standalone binary 配布 = NeLisp 公開告知ゲート。*user 2026-04-25 判断: SBCL precedent を超えて syscall 最小限 (~300-500 LOC Rust、Phase 7.0 SHIPPED で実 819 LOC) のみ Rust、他 3 核 (allocator / GC inner / coding) は全て NeLisp 化、native compiler を新設して支える*。実工数見積 *6-10 ヶ月* (Doc 28-32 v2 detailed decomposition の現実線、anvil.el tooling + 並列 session full leverage 前提)。Phase 7.0/.1/.../7.5 sub 分割、Doc 28-32 v2 LOCKED で各 phase 詳細確定済。
 
 * §0 要旨 (TL;DR)
 
@@ -10,37 +10,47 @@ NeLisp v1.0 完遂条件 4 項のうち、最後に残った *条件 #4 = 残存
 SBCL-style 4 核 (syscall / allocator / GC inner / coding) のみ* を
 達成するための design doc。
 
-*2026-04-25 user 判断による方針改訂*: SBCL が 25 年維持してきた
-"4 核 C 固定" precedent を NeLisp は超える。具体的には:
+*v2 改訂方針 (orchestrator codex review MAJOR REVISIONS 7 issues 反映、
+Doc 28-32 v2 sibling 整合)*:
+- *戦略的理由 = purity mission* (NeLisp が "100% Lisp" project として
+  SBCL precedent を超える研究価値、parent doc としての mission 宣言)
+- *実装可能性の根拠 = Doc 28-32 v2 detailed decomposition* (productivity
+  claim ではなく decomposition + replan gates に根拠)
+- *最新見積 = 6-10 ヶ月* (Doc 28-32 v2 baseline 反映、4-8 ヶ月は旧
+  rough estimate)
+- *dependency chain*: syscall 最小 Rust (Phase 7.0 SHIPPED 819 LOC)
+  → native compiler 新設 (Phase 7.1 = critical path、3 核 NeLisp 実装の
+  prerequisite) → allocator (Phase 7.2) / GC (Phase 7.3) / coding
+  (Phase 7.4) / integration (Phase 7.5)
 
-- =syscall= だけ Rust で最小限実装 (~300-500 LOC)
-- =allocator= / =GC inner= / =coding= の 3 核は NeLisp で実装
-- それを支える *NeLisp native compiler* を Phase 7.1 で新設
+*2026-04-25 user 判断による方針 (簡潔版)*: SBCL "4 核 C 固定" precedent
+を NeLisp は超える。syscall 最小限のみ Rust、他 3 核は NeLisp 化、
+native compiler 新設で支える。
+
+*user の判断 logic (背景)*: SBCL 25 年の永続 deferral pattern (常に
+より urgent な仕事がある) を回避するため project 開始期に lock-in。
+詳細根拠は §1 背景 + §2 LOCKED decisions を参照。
 
 本 phase 完遂で:
-- =bin/anvil mcp serve= が真の "no Emacs" で動く standalone binary に
+- =bin/anvil mcp serve --strict-no-emacs= が真の "no Emacs" で動く
+  standalone binary に (Doc 32 v2 §0 LOCKED gate)
 - Stage D Option B (=stage-d-v2.0= 想定) が現実化
 - =NeLisp 公開告知保留= (=feedback_nelisp_announcement_standalone_gate.md=)
   の解除条件達成
 - *NeLisp が "100% Lisp" project として SBCL precedent を超える研究
   価値を確立* (= NeLisp の歴史的 mission)
 
-*user の判断 logic (2026-04-25)*:
-1. "user 体験への影響ほぼゼロ" = SBCL が 25 年やらなかった理由 =
-   "常により urgent な仕事がある" の永続 deferral pattern
-2. project 開始期だからこそ lock-in できる、後送り = 永遠にやらない
-3. anvil.el tooling + 並列 session を full leverage すれば、本日
-   実証された "1 年見積が 1 日" の productivity multiplier (~300-365x
-   speedup of established patterns) で 14-24 ヶ月単独 dev 見積も
-   4-8 ヶ月で achieve 可能
+工数見積 *6-10 ヶ月* (anvil.el + 並列 session full leverage 前提、
+Doc 28-32 v2 LOCKED の各 phase 期間合計 = 13-16w + 3-5w + 6-10w +
+2-3w + 2w = ~6-10 ヶ月、replan gate で scope 縮小 escape hatch あり)。
+当初 DRAFT の 4-8 ヶ月見積は v2 detailed decomposition で 6-10 ヶ月に
+re-baseline (Doc 28 v2 §6.6 + Doc 30 v2 §6.7 + 各 sibling §6.6 replan
+gate pattern 反映)。
 
-工数見積 *4-8 ヶ月* (anvil.el + 並列 session + 確立済 LOCK→SHIPPED
-pattern full leverage 前提)。当初 DRAFT の 14-24 ヶ月は 1 dev
-想定で保守的、本 revised STATUS では realistic 見積に下方修正。
-本 doc は SBCL Rhodes 5-stage methodology
-(=docs/03-architecture.org §1=) を直接 transfer する形で設計、
-=Doc 13 (Phase 5-B)= / =Doc 14 (Phase 5-C)= の SHIPPED 結果を
-前提にする。
+本 doc は SBCL Rhodes 5-stage methodology を直接 transfer する形で
+parent abstraction、Doc 28-32 v2 LOCKED で各 phase 詳細決定。
+=Doc 13 (Phase 5-B)= / =Doc 14 (Phase 5-C)= の SHIPPED 結果を前提に
+する。
 
 * §1 背景
 
@@ -81,23 +91,62 @@ Stage D は "Emacs ありき" の配布形態 (Phase 6.1 で =bin/anvil mcp serv
 が headless profile で動作するが内部は =emacs --batch= subprocess)。
 本 Phase 7+ で =emacs --batch= ですら不要な真 standalone を実現する。
 
-** 1.4 SBCL Rhodes 5-stage methodology (NeLisp 適応版)
+** 1.4 Rhodes 5-stage + NeLisp artifacts (v2 改訂、Doc 28 v2 §1.4 整合)
+
+v2 改訂 (codex 観点 1.1 + 観点 3.6 反映): 当初の §1.4 は Rhodes
+stage 名のみで「target-1 = 残余 C build」と単純化していたが、Doc 28 v2
+§1.4 で NeLisp artifacts (A1/A2/A3) の 3 artifact 分離 + 4-stage
+bootstrap protocol が確立済み。本 v2 で *Rhodes stages* と *NeLisp
+artifacts* の 2 表分離、parent doc では artifact 遷移を明示し sub-phase
+詳細は Doc 28 §1.4 参照に落とす。
+
+*** 1.4.1 Rhodes 5-stage methodology
 
 Rhodes "SBCL: A Sanely-Bootstrappable Common Lisp" (LNCS 5146, 2008)
 の 5-stage genesis を NeLisp に transfer (=docs/03-architecture.org §1=):
 
-| Rhodes stage | NeLisp 類比                                                       |
-|--------------+-------------------------------------------------------------------|
-| host-1       | Host Emacs が NeLisp cross-compiler (=nelisp-xc=) を byte-compile   |
-| target-1     | *残余 C (syscall/allocator/GC inner/coding) を build* ← 本 Phase 7+ |
-| host-2       | NeLisp xc で NeLisp source 再コンパイル、独自 bytecode 生成          |
-| genesis-2    | target image を Emacs buffer/vector で構築、不可 action を defer    |
-| target-2     | cold-init (最難)、warm phase で system load                         |
+| Rhodes stage | NeLisp 関与                                                                |
+|--------------+----------------------------------------------------------------------------|
+| host-1       | Host Emacs が =nelisp-cc.el= を byte-compile (= A1 produces A2 input)      |
+| target-1     | *Phase 7.0 syscall stub + Phase 7.1 seed compiler bootstrap substrate*     |
+| host-2       | A2 (seed native compiler) が NeLisp source を再 compile → A3 candidate     |
+| genesis-2    | A3 candidate と A2 の semantic diff (golden hash 比較、Doc 28 §3.5 stage2) |
+| target-2     | A3 を authoritative に昇格、cold-init で warm phase 走行 (Doc 28 §3.5 stage3) |
 
-本 Phase 7+ は *target-1 stage に相当* = "残余 C 4 核 build" の実装。
+*** 1.4.2 NeLisp artifacts (A1/A2/A3) 遷移 — Doc 28 v2 §1.4 LOCKED
+
+Phase 7+ は *parent abstraction で 3 artifact* を扱う:
+
+| artifact | 役割                                       | 実装 phase                |
+|----------+--------------------------------------------+---------------------------|
+| A1       | host Emacs bytecode compiler               | Phase 5-X SHIPPED         |
+| A2       | seed native compiler (=nelisp-cc.el= byte-compile 後 result) | Phase 7.1.1〜7.1.4 で構築 |
+| A3       | self-compiled native compiler (A2 が =nelisp-cc.el= を native compile した result) | Phase 7.1.5 で確立 (4-stage bootstrap protocol) |
+
+*artifact 遷移*:
+1. A1 が =nelisp-cc.el= を byte-compile (host Emacs 経由)
+2. A2 = A1 の output、bytecode VM 上で動く seed compiler
+3. A2 が =nelisp-cc.el= source を native compile → A3 candidate
+4. A3 candidate と A2 の semantic diff PASS で A3 = authoritative 昇格
+5. A3 が =nelisp-cc.el= を再 native compile (self-recompile)、結果 A3 と
+   semantic equivalent なら self-host bootstrap 完成
+
+詳細 4-stage bootstrap protocol は *Doc 28 v2 §3.5 sub-phase 7.1.5* 参照。
+本 parent doc では artifact level の説明のみ、stage 詳細は子 doc に分離。
+
+*** 1.4.3 Phase 7+ の Rhodes stage における位置づけ
+
+Phase 7+ は *Rhodes target-1 / host-2 / genesis-2 / target-2 にまたがる*:
+- target-1 = Phase 7.0 syscall stub (Rust) + Phase 7.1.1〜7.1.4 native
+  compiler skeleton
+- host-2 = Phase 7.1.5 stage1 (A2 → A3 candidate)
+- genesis-2 = Phase 7.1.5 stage2 (semantic diff)
+- target-2 = Phase 7.1.5 stage3 (A3 authoritative + cold-init)
+
 target-2 cold-init の困難は *Phase 5-B/5-C で既に確立済の elisp 実装*
 を target binary 上で再現可能なため、SBCL が 25 年支払ったコストの
-大部分を NeLisp は支払わない。
+大部分を NeLisp は支払わない。Phase 7.5 integration で final standalone
+binary 化。
 
 ** 1.5 NeLisp 独自 adaptation gap (Phase 7+ で扱うべき 3 点)
 
@@ -271,7 +320,7 @@ Stage D と統合。
 | 候補 | timing                                          | 利点                                       |
 |------+-------------------------------------------------+--------------------------------------------|
 | A    | *Phase 7+ 4 核全 SHIPPED + standalone binary E2E 検証後即時* *推奨* | 元 strategy 通り、爆発的普及狙い           |
-| B    | Phase 7.1 (syscall) SHIPPED 時点で early access | 早期 feedback、ただし未完成感              |
+| B    | Phase 7.0 (syscall) SHIPPED 時点で early access | 早期 feedback、ただし未完成感              |
 | C    | Phase 7+ 完遂 + 1 ヶ月の dogfooding 後          | 安全運転、ただし機会損失                   |
 
 *推奨 A 理由*: Phase 7+ 完遂 = standalone binary 動作確認 = 公開告知
@@ -381,57 +430,84 @@ delivery、§3 7.0 完遂):
   Phase 7.0 default scope 外の syscall は Phase 7.4 (coding) /
   Phase 7.5 (integration) で必要時に追加
 
-** Phase 7.1 — *NeLisp native compiler 新設* (~1-2 ヶ月、Phase 7+ 最大の山場)
+** Phase 7.1 — *NeLisp native compiler 新設* (~13-16 週間 / 11-13 週間 escape hatch、Phase 7+ critical path)
 
-§2.12 LOCKED A、Phase 7+ 中最も困難。NeLisp source → x86_64 / ARM64
-machine code の compiler を新設、後続 Phase 7.2-7.4 の hot path 性能
-を担保。
+§2.12 LOCKED A、Doc 28 v2 LOCKED で詳細確定 (commit =c7dbf3b= main)。
+NeLisp source → x86_64 / ARM64 machine code の compiler を新設、後続
+Phase 7.2-7.4 の hot path 性能を担保。
 
-- =src/nelisp-cc.el= = NeLisp → SSA IR (~1500-3000 LOC NeLisp)
-  - 既存 =nelisp-compile.el= bytecode compiler の SSA 拡張
-  - constant folding / dead code elim / register allocation 簡易版
-- =src/nelisp-cc-x86_64.el= = SSA → x86_64 machine code (~1500-2500 LOC)
-  - System V AMD64 calling convention (Linux/macOS) + Win64 (Windows)
-- =src/nelisp-cc-arm64.el= = SSA → ARM64 machine code (~1500-2500 LOC)
-  - macOS Apple Silicon + Linux ARM
-- =mmap (syscall)= 経由 executable page に書込 + jump
-- ERT: =test/nelisp-cc-test.el= +30 (basic compile / arithmetic /
-  call / loop / GC interop)
-- 完遂 gate: =fib(30)= が bytecode 比 ~50x speedup (cargo bench で
-  実測)、cross-arch (x86_64 + ARM64) 両方緑
+*parent-level contracts* (詳細は Doc 28 v2 参照):
+- Doc 28 §2.9 *GC metadata contract v1* (wire) producer = Phase 7.1
+  backend、consumer = Phase 7.3 GC
+- Doc 28 §3.5 *4-stage bootstrap protocol* (stage0 host bytecode → stage1
+  native → stage2 semantic diff → stage3 self-recompile) = Phase 7.1.5
+- Doc 28 v2 §2.13 *artifact 遷移* (A1 → A2 → A3、本 doc §1.4.2 参照)
+- ISA: x86_64 first-class + arm64 provisional (Doc 28 v2 §6.6 escape hatch)
+- 3-軸 bench gate (=fib 30x= / =fact-iter 20x= / =alloc-heavy 5x=、
+  Doc 28 v2 §5.2)
+- 6 sub-phase split (7.1.1〜7.1.5、scaffold は SHIPPED 済 = main =e668ea2=)
 
-** Phase 7.2 — allocator NeLisp 化 (~3-4 週間)
+詳細実装は Doc 28 v2 LOCKED を参照。本 parent doc では contract level の
+要約のみ。
 
-§2.2 LOCKED E に基づき *NeLisp + native compiler* で実装:
+** Phase 7.2 — allocator NeLisp 化 (~3-5 週間、Doc 29 v2 LOCKED 詳細)
 
-- =src/nelisp-allocator.el= = page-grained allocator (~800-1500 LOC NeLisp)
-  - =mmap= (syscall) でページ確保、bookkeeping は Lisp で
-  - free list / size class / per-thread arena (Phase 4 actor 対応)
-- 既存 =alloc-cons / alloc-vector= 等 primitive を NeLisp 実装に切替
-- Phase 7.1 native compiler で hot path を JIT、bytecode より ~30-50x
-- regression: NeLisp ERT 1327/1333 緑 (allocator 切替後も不変)
-- 完遂 gate: =allocator-stress= bench で C-equivalent throughput
-  (~10M alloc/sec) 達成
+§2.2 LOCKED E に基づき *NeLisp + native compiler* で実装。Doc 29 v2
+LOCKED で詳細確定 (commit =9dd2fa2= main)。
 
-** Phase 7.3 — GC inner NeLisp 化 (~1-2 ヶ月、最難)
+*parent-level contracts* (詳細は Doc 29 v2 参照):
+- Doc 29 §1.4 *heap-region registry v1* contract producer = Phase 7.2
+  allocator、consumer = Phase 7.3 GC (Doc 28 §2.9 wire contract と
+  *別契約* = 2 contract 別々 consume)
+- Doc 29 §2.5 *object family 5 種* (cons-pool / closure-pool /
+  string-span / vector-span / large-object) で variable-size 設計 LOCK
+- Doc 30 v2 §2.13 *object header layout* (64-bit packed: mark / forwarding
+  / age / family-tag / size or new-addr) を Phase 7.2 で *write*
+- single-thread MVP (Doc 29 v2 §2.9)、multi-thread は Phase 7.5+ で
+- 2-tier ratio gate (CI ratio + release-audit pinned absolute、Doc 29 v2 §5.1)
+- invariant gate 7 class 必須 (Doc 29 v2 §5.2)
+- generational interim invariant (Doc 29 v2 §6.7、Phase 7.2 中 minor GC 不実行)
 
-mark-sweep hot loop (Phase 3c で algorithm 確立済) を NeLisp に port:
+詳細実装は Doc 29 v2 LOCKED を参照。
 
-- =src/nelisp-gc-inner.el= = mark-sweep + write barrier (~1200-2000 LOC NeLisp)
-- =mark phase= = object graph DFS、Phase 7.1 native compile で C 並み速度
-- =sweep phase= = free list 統合、Phase 7.2 allocator と協調
-- =root scanning= = stack / global / actor mailbox 全 walk
-- 並行性: Phase 4 actor との yield 整合 (=yield-during-mark=)
-- ERT: =test/nelisp-gc-stress-test.el= +20 (heavy allocation /
-  cycle / weak ref / actor concurrent)
-- 完遂 gate: =gc-stress 1M cycle= で C 比 ~80% throughput (許容)、
-  pause time ~5ms 以下
+** Phase 7.3 — GC inner NeLisp 化 (~6-10 週間、最難 phase、Doc 30 v2 LOCKED 詳細)
 
-** Phase 7.4 — coding NeLisp 化 (~2-3 週間)
+mark-sweep hot loop (Phase 3c で algorithm 確立済) を NeLisp に port。
+Doc 30 v2 LOCKED で詳細確定 (commit =57f6e9a= main)、最難 phase。
 
-UTF-8 / Latin-1 / Shift-JIS / EUC-JP encode/decode を NeLisp で実装:
+*parent-level contracts* (詳細は Doc 30 v2 参照):
+- Doc 28 §2.9 GC metadata contract consumer + Doc 29 §1.4 heap-region
+  registry consumer の *2 contract 別々 consume*
+- Doc 30 v2 §2.13 object header layout を *read* (Phase 7.2 が write、
+  Phase 7.3 が consume)
+- Doc 30 v2 §6.9 *finalizer queue separation* (BLOCKER 2 mitigation):
+  sweep 中 finalizer は queue に積み、post-GC mutator context で実行、
+  resurrection policy =:once= (default)
+- *6 sub-phase split* (4→6、7.3.1〜7.3.6、week milestone 細分化)
+- 二段 pause: minor 5ms + major default young-root-limited 50ms +
+  opt-out full mark-sweep 500ms-1s (=defcustom nelisp-gc-major-mode= で選択)
+- 2-tier soak gate (1h LOCKED blocker / 24h post-ship audit)
+- silent corruption oracle 4 種必須化 (verify-heap / verify-card-table /
+  poison-from-space / double-scan、debug build only)
 
-- =src/nelisp-coding.el= = encode/decode loop (~600-1000 LOC NeLisp)
+詳細実装は Doc 30 v2 LOCKED を参照。
+
+** Phase 7.4 — coding NeLisp 化 (~2-3 週間、Doc 31 v2 LOCKED 詳細)
+
+UTF-8 / Latin-1 / Shift-JIS (CP932 拡張部含む) / EUC-JP encode/decode を
+NeLisp で実装。Doc 31 v2 LOCKED で詳細確定 (commit =cafc43a= main)。
+
+*parent-level contracts* (詳細は Doc 31 v2 参照):
+- 4 encoding MVP: UTF-8 / Latin-1 / Shift-JIS (*CP932 拡張部含む* =
+  Windows 日本語 user 事実上 Shift-JIS) / EUC-JP
+- Doc 31 v2 §2.4 *invalid-sequence policy contract LOCK* (4 列 table:
+  =:replace= / =:error= / =:strict= で return value / signal type /
+  byte offset / streaming atomicity 完全定義)
+- Doc 31 v2 round-trip gate v2 (BLOCKER 解消): valid corpus byte-perfect
+  + invalid corpus policy conformance に分割
+- Japanese table = *generated artifact* (~14000 entry、generator script
+  + Unicode UCD/CP932 provenance + golden SHA-256 checksum 必須 deliverable)
+- 2-tier throughput gate (CI ratio + pinned reference host absolute)
 - bit twisting なので Phase 7.1 native compile で十分速い
 - char ↔ byte 変換 = NeLisp string primitive 互換
 - regression: 日本語含む ERT (=anvil-org-index= 等) 緑
@@ -488,7 +564,7 @@ Elisp 実装は不変 = 並行可能。
 
 ただし Phase 5-B/5-C で host primitive を借用している箇所
 (=insert-file-contents= 等 host Emacs C primitive) が Phase 7+ binary
-上で動作するためには nelisp-syscall (Phase 7.1) で再実装必要。
+上で動作するためには nelisp-syscall (Phase 7.0) で再実装必要。
 これは Phase 7.1 の scope 内。
 
 ** 4.2 Stage D Phase 6.1 (anvil-lib) との関係
@@ -511,7 +587,7 @@ anvil-XXX → nelisp-XXX → (Phase 7+ binary 上で動作) の順序。anvil-* 
 
 Phase 7+ は scope 大なので、並行 session 2-3 並列で sub-phase 担当:
 - session-A: Phase 7.0 + 7.5 (orchestrator)
-- session-B: Phase 7.1 (syscall) + 7.4 (coding)
+- session-B: Phase 7.0 (syscall、SHIPPED 済) + 7.4 (coding)
 - session-C (if available): Phase 7.2 (allocator) + 7.3 (GC)
 
 各 session は独立 worktree (=/tmp/nelisp-phase7-X-wt=) + 独立 feat
@@ -559,7 +635,7 @@ mitigation: Phase 7.0 scaffold で C ABI =#[repr(C)]= 厳守、Rust 部分
 
 mitigation:
 - sub-phase 単位 (7.0/7.1/.../7.5) で SHIPPED gate (=Doc 13 と同)
-- 4 ヶ月 milestone で再 estimate (= Phase 7.1 syscall SHIPPED 時点
+- 4 ヶ月 milestone で再 estimate (= Phase 7.0 syscall SHIPPED 時点 (本日 2026-04-25 達成済)
   での残工数見直し)
 - 6 ヶ月以内 overrun 許容 (= 12 → 18 ヶ月)、それ超で scope 削減判断
 
@@ -609,13 +685,73 @@ mitigation:
 
 ** 6.8 anvil leverage 想定の overrun
 
-期間 4-8 ヶ月見積は anvil.el + 並列 session full leverage 前提。実際に
-1 dev (anvil なし) で進めると 14-24 ヶ月になる (Doc 27 当初 DRAFT 値)。
+期間 6-10 ヶ月見積 (v2 errata 反映) は anvil.el + 並列 session full
+leverage 前提。実際に 1 dev (anvil なし) で進めると 14-24 ヶ月になる
+(Doc 27 当初 DRAFT 値)。
 
 mitigation:
-- Phase 7.0 完遂時点で leverage 効率測定 (commit/週、並列 session 数)
+- Phase 7.0 完遂時点で leverage 効率測定 (commit/週、並列 session 数) =
+  *2026-04-25 SHIPPED 時点で本日 28+ commit / 5 並列 agent 達成、想定通り*
 - 想定下回ったら scope 削減 / Phase 7.5 deadline 後送り判断
 - =project_nelisp.md= description に実工数を log し続ける
+- replan gate (Doc 28 v2 §6.6 / Doc 29 §6.6 / Doc 30 §6.7 / Doc 31 §6 /
+  Doc 32 §6.7) で week-N 単位で leverage 効率検証
+
+** 6.9 finalizer queue separation 失敗 (v2 新設、Doc 30 §6.9 parent reflection)
+
+Doc 30 v2 §6.9 BLOCKER 2 mitigation で sweep 中 finalizer 直接実行を回避
+し、queue 分離 + post-GC mutator context 実行に LOCK。本 parent
+risk として独立記載:
+
+*影響*: finalizer 内 allocation / mutation / resurrection が collector
+不変条件を破壊、silent corruption / undefined behavior / post-mortem
+debug 不可能。
+
+*mitigation (Doc 30 v2 §6.9 LOCK 反映)*:
+- finalizer queue (bounded buffer 1024 default) + post-GC mutator
+  context 実行 (=nelisp-gc-drain-finalizer-queue=)
+- resurrection policy LOCK = =:once= (default、1 回限り復活可)、
+  =:nopolicy= (in-loop resurrection、SBCL/Java 風) は v2.0 検討
+- Phase 7.3.6 sub-phase で finalizer queue executor 完成
+- ERT で finalizer queue overflow / resurrection cycle / error in
+  finalizer thunk を必ず cover
+
+** 6.10 coding table provenance / regeneration drift (v2 新設、Doc 31 §6 parent reflection)
+
+Doc 31 v2 で Japanese table data (~14000 entry generated artifact) の
+provenance / licensing / regeneration risk を明示化。本 parent risk
+として独立記載:
+
+*影響*: ~14000 entry の Shift-JIS (CP932 拡張部含む) / EUC-JP table が
+source-of-truth (Microsoft 公式 CP932 mapping / Unicode UCD) と divergence
+すると silent encoding bug、Windows 日本語 user の Excel / file name
+連携で文字化け。
+
+*mitigation (Doc 31 v2 §6 + §7.2 LOCK 反映)*:
+- generator script (=tools/coding-table-gen.el=) を SHIPPED 必須 deliverable
+- 元データ provenance 文書 (=docs/coding-table-provenance.org=、Microsoft
+  公式 CP932.TXT / Unicode UCD 出典明記)
+- golden SHA-256 checksum で table 改竄 / drift detect (CI で回帰検出)
+- Phase 7.4.3 sub-phase で table data + generator script を同時 SHIPPED
+
+** 6.11 --strict-no-emacs gate / hidden Emacs dependency regression (v2 新設、Doc 32 §6 parent reflection)
+
+Doc 32 v2 で =bin/anvil mcp serve --strict-no-emacs= mode を release
+qualification の必須 gate に LOCK。本 parent risk として独立記載:
+
+*影響*: dev 環境 (host Emacs 在) で smoke 通っても、release artifact
+配布先 (host Emacs 不在) で実は隠れた Emacs dependency があると release
+quality silent fail = NeLisp 公開告知後の致命的 regression。
+
+*mitigation (Doc 32 v2 §2.6 + §7 LOCK 反映)*:
+- release artifact gate = =--strict-no-emacs= mode で全 smoke + 4-stage
+  cold-init + 1h soak PASS 必須
+- host Emacs auto-fallback は dev 環境のみの補助線、release qualification
+  には *不採用*
+- CI matrix で =--strict-no-emacs= を Linux x86_64 で必ず走らせ、
+  hidden dependency 早期検出
+- Phase 7.5 SHIPPED gate に "release artifact = =--strict-no-emacs= で
+  full smoke PASS" を blocker 化
 
 * §7 完遂 gate
 
@@ -667,10 +803,58 @@ session-A 主導で進行、必要に応じ session-B/C 並行。
 
 * §9 next action (signoff 後)
 
-1. user signoff (本 doc §8 で LOCK or 変更)
-2. design doc top =STATE= を =DRAFT= → =LOCKED= に更新
-3. Phase 7.0 scaffold 着手 (新 worktree、=Cargo.toml= + 4 mod skeleton)
-4. =cargo new=, ERT smoke +5、design doc §3 7.0 を SHIPPED stamp
-5. session-B 並行 dispatch 検討 (Phase 7.1 syscall = 別 worktree)
+*v2 改訂時点 (2026-04-25)*: Phase 7.0 SHIPPED 済 + Phase 7.1.X 全
+sub-phase scaffold SHIPPED 済 + Phase 7.2.1 / 7.3.1 / 7.4.1 real impl
+SHIPPED 済。
+
+残 work (本 v2 LOCKED 後):
+1. Phase 7.1 real implementation 完成 (spill/reload + phi resolution +
+   prologue/epilogue、本日 T15 並列 dispatch 中)
+2. Phase 7.2.2 (tenured + free-list + promotion) / 7.2.3 (per-type pool +
+   bulk API + stats) sub-phase 着手
+3. Phase 7.3.2-7.3.6 sub-phase 着手 (sweep / nursery copy / barrier /
+   promotion / scheduler、Doc 30 v2 §3 6 sub-phase split)
+4. Phase 7.4.2 (Latin-1) / 7.4.3 (Shift-JIS+CP932 / EUC-JP table) /
+   7.4.4 (streaming + integration) sub-phase 着手
+5. Phase 7.5 real implementation (mmap PROT_EXEC FFI bridge は T13 で
+   subprocess MVP SHIPPED、in-process 化 + stage-d-v2.0 release artifact)
+
+* §10 関連 doc
+
+** Doc 28-32 v2 LOCKED (各 phase 詳細設計)
+
+| Doc | Phase | 主題                       | LOCKED commit | 状態                   |
+|-----+-------+----------------------------+---------------+------------------------|
+| 28  | 7.1   | NeLisp native compiler     | =c7dbf3b= main | LOCKED v2、scaffold SHIPPED |
+| 29  | 7.2   | allocator NeLisp 化         | =9dd2fa2= main | LOCKED v2、7.2.1 SHIPPED |
+| 30  | 7.3   | GC inner NeLisp 化 (最難)   | =57f6e9a= main | LOCKED v2、7.3.1 SHIPPED |
+| 31  | 7.4   | coding NeLisp 化            | =cafc43a= main | LOCKED v2、7.4.1 SHIPPED |
+| 32  | 7.5   | integration + standalone   | =3b2fd2c= main | LOCKED v2              |
+
+** v1 → v2 改訂履歴
+
+| version  | date       | author                       | 主要改訂点 |
+|----------+------------+------------------------------+------------|
+| v1 LOCKED | 2026-04-25 | session-A (early) + user signoff | §2 全 12 項目 LOCKED + Phase 7+ overview + Rhodes 5-stage transfer |
+| v1 errata | 2026-04-25 | session-A (commit =58c8764= main) | Doc 28-32 v2 LOCKED 後 §3 sub-phase table baseline 反映 (LOC/期間/状態 update) |
+| *v2 LOCKED* | 2026-04-25 | session-A 改訂 | codex review MAJOR REVISIONS 7 issues (5 MAJOR + 2 MINOR) + Doc 28-32 v2 sibling 整合: §0 工数 4-8→6-10 ヶ月 + dependency chain 前置き / §1.4 Rhodes stages + NeLisp artifacts (A1/A2/A3) 2 表分離 (Doc 28 v2 §1.4 整合) / §3 各 Phase summary に parent-level contracts 追加 (heap-region registry / object header v2.13 / GC 6 sub-phase / finalizer queue / invalid-sequence policy / CP932 / arm64 v1.0 timed non-blocker / staticlib 静的 link / --strict-no-emacs gate) / §6 risks 3 件追加 (6.9 finalizer / 6.10 coding table provenance / 6.11 strict-no-emacs gate) / §6.X stale 参照 fix (Phase 7.1 syscall → Phase 7.0 syscall SHIPPED) |
+
+** v2 LOCKED 根拠
+
+- orchestrator =anvil-orchestrator-submit= (provider=codex single-provider、
+  task-id =0fc65e9f-...=) で codex review 取得
+- codex verdict = *MAJOR REVISIONS*、7 issues (5 MAJOR + 2 MINOR、BLOCKER なし)
+- session-A が 7 issues 全反映、本 doc を =LOCKED-2026-04-25-v2= に昇格
+- Doc 28-32 v2 sibling 全整合 (parent doc としての contract chain 確立)
+
+** main merge gate
+
+- Doc 28-32 v2 LOCKED 整合 (本 v2 で contract chain 完全反映)
+- Doc 27 errata commit 58c8764 と本 v2 の差分は backward-compat (§3 phase
+  summary 拡充 + §6 risk 追加 + §1.4 dual table、stale 参照 fix)
+- ERT regression-free (本 doc は文書のみ)
+- =anvil-dev release-audit :scope doc 27= 緑 (LOCKED stamp 整合、reference
+  整合、7 codex issues 全反映の cross-check)
+- 本 v2 = LOCKED-2026-04-25-v2、user signoff で main =--no-ff= merge 解禁
 
 以上、user signoff を待つ。
