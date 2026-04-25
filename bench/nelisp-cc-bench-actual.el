@@ -79,6 +79,16 @@ warm-up cost does not contaminate the measurement."
   :type 'integer
   :group 'nelisp-cc-bench-actual)
 
+;; T38 Phase 7.5.5 — SSA frontend now lowers `letrec' / `funcall' /
+;; `while', so `nelisp-cc-build-ssa-from-ast' no longer signals on
+;; the bench-actual forms.  The produced bytes still reference
+;; unresolved Phase 7.5 callees, so executing them would SIGSEGV;
+;; `--measure-native' raises this error to surface the situation as
+;; a recoverable skip rather than crashing the host Emacs.
+(define-error 'nelisp-cc-bench-actual-unsafe-bytes
+  "bench-actual produced bytes that would SIGSEGV at execution"
+  'error)
+
 ;;; Skip predicates (binary availability) -------------------------
 
 (defun nelisp-cc-bench-actual--module-available-p ()
@@ -162,6 +172,36 @@ denominator for the §5.2 gate ratios."
     (ignore last)
     (float-time (time-since start))))
 
+(defun nelisp-cc-bench-actual--ssa-has-unresolved-call-p (function)
+  "Return non-nil when FUNCTION contains opcodes that produce unsafe-
+to-execute bytes today (Phase 7.5 callee resolution deferred).
+
+T38 Phase 7.5.5 added SSA frontend coverage for `letrec' / `funcall'
+/ `while' so build-ssa no longer raises on the bench-actual forms.
+The produced bytes still call into unresolved addresses (zero-filled
+:closure placeholders + zero-displacement :call rel32 fixups), and
+those would SIGSEGV the host Emacs at execution.  `condition-case'
+cannot trap SIGSEGV — we have to skip the actual `--exec-in-process'
+loop pre-emptively.
+
+Returns t when ANY of:
+  - a `:call' instruction with `:unresolved t' meta is present
+    (named function call without `nelisp-defs-index' patch),
+  - a `:call-indirect' instruction is present (the callee value is
+    a `:closure' placeholder MOV r,0 — would CALL [0] = SIGSEGV),
+  - a `:closure' instruction is present (any consumer that branches
+    on it eventually calls / dereferences address 0)."
+  (cl-loop for blk in (nelisp-cc--ssa-function-blocks function)
+           thereis
+           (cl-loop for instr in (nelisp-cc--ssa-block-instrs blk)
+                    for op = (nelisp-cc--ssa-instr-opcode instr)
+                    thereis
+                    (or (memq op '(call-indirect closure))
+                        (and (eq op 'call)
+                             (plist-get
+                              (nelisp-cc--ssa-instr-meta instr)
+                              :unresolved))))))
+
 (defun nelisp-cc-bench-actual--measure-native (form iterations)
   "Run FORM compiled via NeLisp native + Phase 7.5.4 in-process FFI.
 FORM is a `(lambda () ...)' source form.  Returns total elapsed
@@ -173,12 +213,24 @@ The pipeline (per iteration):
   3. call the bytes as `extern \"C\" fn() -> i64',
   4. munmap.
 
-Phase 7.1.5 caveat: external callees (`+', `<', `funcall', symbol
-recursion) are *not* yet resolved — the produced bytes execute through
-unresolved CALL fixups that may crash or return garbage.  The harness
-records the elapsed time anyway so the §5.2 gate infrastructure is
-provably wired; Phase 7.5 callee resolution flips the result from
+T38 Phase 7.5.5 caveat: the SSA frontend now lowers `letrec' /
+`funcall' / `while' (all 3 axes' compile-side blockers cleared), but
+external callees (`+', `<', `funcall' target closures, recursion)
+are still not resolved — the produced bytes contain zero-displacement
+CALL fixups + MOV r,0 placeholder closures that SIGSEGV at execution.
+`condition-case' cannot trap SIGSEGV; the helper signals
+`nelisp-cc-bench-actual-unsafe-bytes' so the harness records
+`:native-skip-reason native-execute-unsafe' rather than crashing the
+host Emacs.  Phase 7.5 callee resolution flips this from
 \"infra baseline\" to \"semantic gate verification\"."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast form)))
+    ;; Pre-flight safety check: if the SSA function still references
+    ;; unresolved external callees / placeholder closures, executing
+    ;; the produced bytes would SIGSEGV.  Signal a recoverable error
+    ;; so the harness records a skip-reason rather than crashing.
+    (when (nelisp-cc-bench-actual--ssa-has-unresolved-call-p fn)
+      (signal 'nelisp-cc-bench-actual-unsafe-bytes
+              (list :reason 'unresolved-callee-or-closure))))
   (let* ((nelisp-cc-runtime-exec-mode 'in-process)
          (start (current-time)))
     ;; Compile-once: the bytes are the same per iteration, only the
@@ -255,20 +307,30 @@ Plist keys:
             'non-x86_64-host)
            (t nil)))
          (native-error nil)
+         (native-unsafe-bytes-p nil)
          (native-elapsed
           (when (null native-skip-reason)
             (condition-case err
                 (nelisp-cc-bench-actual--measure-native form iterations)
+              (nelisp-cc-bench-actual-unsafe-bytes
+               (message "  native measurement skipped (unsafe bytes): %S" err)
+               (setq native-unsafe-bytes-p t)
+               nil)
               (error
                (message "  native measurement raised: %S" err)
                (setq native-error err)
                nil))))
-         ;; If native-elapsed came back nil because of a compile-side
-         ;; signal (e.g. `letrec' / `while' not yet in the SSA frontend
-         ;; — Phase 7.5 deferred), surface that as the skip-reason so
-         ;; the report explains why the gate FAIL'd.
+         ;; If native-elapsed came back nil, classify the reason:
+         ;;   - `native-execute-unsafe' → T38 ships SSA frontend for
+         ;;     letrec/funcall/while but Phase 7.5 callee resolution
+         ;;     not yet wired, so executing the bytes would SIGSEGV
+         ;;   - `native-compile-failed' → SSA build / linear-scan /
+         ;;     backend codegen raised (T38 is supposed to make this
+         ;;     not happen on the bench-actual forms; if it does the
+         ;;     skip-reason surfaces the regression).
          (native-skip-reason
           (cond (native-skip-reason native-skip-reason)
+                (native-unsafe-bytes-p 'native-execute-unsafe)
                 ((and (null native-elapsed) native-error) 'native-compile-failed)
                 (t nil)))
          (native-comp-elapsed
