@@ -50,6 +50,19 @@ pub use syscall::{
     NL_IN_MOVED_FROM, NL_IN_MOVED_TO,
 };
 
+// Phase 9d.J (T100 / Doc 39 LOCKED-2026-04-25-v2 §3.J) subprocess FFI
+// surface.  Twelve `nl_syscall_*` symbols wired at the crate root so
+// callers can write `nelisp_runtime::nl_syscall_fork` without spelling
+// `::syscall::process::` each time.  Gated behind the
+// `process-syscalls` feature (default ON) per Doc 39 §3.J — a future
+// "mini build" without subprocess support still compiles cleanly.
+#[cfg(feature = "process-syscalls")]
+pub use syscall::{
+    nl_syscall_dup2, nl_syscall_execve, nl_syscall_fork, nl_syscall_getrlimit,
+    nl_syscall_kill, nl_syscall_pipe2, nl_syscall_posix_spawn, nl_syscall_prlimit,
+    nl_syscall_select, nl_syscall_setrlimit, nl_syscall_setsid, nl_syscall_waitpid,
+};
+
 // T77 (Wave 1 agent C) — SQLite FFI surface.  Five public symbols for
 // the Emacs 30 `sqlite-*' compat layer in `src/nelisp-sqlite.el', plus
 // a `nl_sqlite_alive' liveness probe used by the `nelisp-sqlitep'
