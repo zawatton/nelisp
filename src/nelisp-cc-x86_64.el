@@ -334,6 +334,23 @@ Bytes: REX.W=1 [+R if DST=r8..r15] [+B if SRC=r8..r15] | 0x0F | 0xAF
   "Encode RET (near return).  Single byte 0xC3."
   (list #xC3))
 
+(defun nelisp-cc-x86_64--emit-sub-rsp-imm32 (imm)
+  "Encode SUB rsp, imm32 (8-byte form).
+Used by the prologue to allocate stack frame for spill slots.
+
+Bytes: 0x48 0x81 0xEC | imm32 (little-endian)."
+  (append (list #x48 #x81 #xEC)
+          (nelisp-cc-x86_64--imm32-bytes imm)))
+
+(defun nelisp-cc-x86_64--emit-add-rsp-imm32 (imm)
+  "Encode ADD rsp, imm32 (8-byte form).
+Used by the epilogue to release the spill frame allocated by the
+prologue's matching SUB rsp.
+
+Bytes: 0x48 0x81 0xC4 | imm32 (little-endian)."
+  (append (list #x48 #x81 #xC4)
+          (nelisp-cc-x86_64--imm32-bytes imm)))
+
 (defun nelisp-cc-x86_64--emit-call-rel32 (rel32)
   "Encode CALL rel32 with REL32 the displacement from the *next*
 instruction (i.e. from the byte after the 5-byte CALL itself).
@@ -548,6 +565,10 @@ linear-scan output (an alist `(VID . REGISTER-OR-:spill)').  BUFFER
 is a fresh `nelisp-cc-x86_64--buffer'.  The reverse-postorder block
 list RPO is cached so we don't re-derive it on every BLOCK lookup.
 
+SLOT-ALIST is the spill stack-slot map ((VID . OFFSET) ...) — see
+`nelisp-cc--allocate-stack-slots'.  FRAME-SIZE is the total bytes
+allocated for spill slots (already 16-aligned).
+
 CALL-FIXUPS is an alist `((BYTE-OFFSET . CALLEE-SYMBOL) ...)' that
 the skeleton accumulates for unresolved :call sites — Phase 7.5 will
 walk this list and patch each rel32 against the callee's actual
@@ -556,7 +577,145 @@ address (via `nelisp-defs-index')."
   (alloc-state nil :read-only t)
   (buffer nil :read-only t)
   (rpo nil)
+  (slot-alist nil)
+  (frame-size 0)
   (call-fixups nil))
+
+;;; Phase 7.1 T15 — spill/reload helpers ----------------------------
+;;
+;; Strategy: a single dedicated *scratch* register (`rax') buffers
+;; spilled operands and spilled defs.  rax is outside the linear-
+;; scan pool (the pool is r0..r7 mapped to rdi/rsi/rdx/rcx/r8-r11)
+;; and is also the System V return register, so a brief use of it
+;; for spill marshalling never collides with the allocator's
+;; assignments.
+;;
+;; Per-instruction protocol:
+;;   - operand spill : MOV rax, [rbp - off]; substitute rax for the
+;;                     operand's "physical" slot in the per-opcode
+;;                     emit.
+;;   - def spill     : the helper computes the result into rax (or
+;;                     into the def's "physical slot") and emits
+;;                     MOV [rbp - off], rax after the compute.
+;;
+;; The simple cases (`const' / `load-var' / `store-var' / `branch' /
+;; `return' / `call' / `copy') need at most ONE scratch register
+;; per instruction at any given moment, so the single-rax design
+;; suffices.  Multi-spilled binary ops are out of scope for the MVP
+;; — the lowering pass currently funnels arithmetic through `:call'
+;; primitives, which load each operand into its own argument
+;; register independently (see `--lower-call' below) so spill of
+;; multiple operands is handled via the per-arg load loop.
+
+(defconst nelisp-cc-x86_64--spill-scratch 'rax
+  "Register reserved as the spill-slot scratch.
+Outside the linear-scan pool (which uses r0..r7) so a temporary
+load/store never collides with an allocator assignment.")
+
+(defun nelisp-cc-x86_64--emit-load-spill (buf dst-reg offset)
+  "Emit MOV DST-REG, [rbp - OFFSET] (8-byte load from a spill slot).
+
+OFFSET is a positive byte distance from rbp (matches the `spill
+slot' offset returned by `nelisp-cc--allocate-stack-slots').  The
+encoding is `MOV r64, r/m64' opcode 0x8B with mod=10 (disp32),
+rm=5 (rbp-relative).
+
+Bytes: REX.W=1 [+R if DST=r8..r15] | 0x8B | ModR/M(mod=10, reg=DST.low3,
+rm=5 = rbp) | disp32 = -OFFSET (sign-extended)."
+  (let* ((dst-low3 (nelisp-cc-x86_64--reg-low3 dst-reg))
+         (rex.r    (nelisp-cc-x86_64--reg-rex-ext-p dst-reg))
+         (rex      (nelisp-cc-x86_64--rex-byte t rex.r nil nil))
+         (modrm    (nelisp-cc-x86_64--modrm-byte 2 dst-low3 5))
+         (disp32   (nelisp-cc-x86_64--imm32-bytes (- offset))))
+    (nelisp-cc-x86_64--buffer-emit-bytes
+     buf (append (list rex #x8B modrm) disp32))))
+
+(defun nelisp-cc-x86_64--emit-store-spill (buf src-reg offset)
+  "Emit MOV [rbp - OFFSET], SRC-REG (8-byte store to a spill slot).
+
+OFFSET is a positive byte distance from rbp.  Encoding: `MOV r/m64,
+r64' opcode 0x89 with mod=10 (disp32), rm=5 (rbp-relative).
+
+Bytes: REX.W=1 [+R if SRC=r8..r15] | 0x89 | ModR/M(mod=10,
+reg=SRC.low3, rm=5) | disp32 = -OFFSET."
+  (let* ((src-low3 (nelisp-cc-x86_64--reg-low3 src-reg))
+         (rex.r    (nelisp-cc-x86_64--reg-rex-ext-p src-reg))
+         (rex      (nelisp-cc-x86_64--rex-byte t rex.r nil nil))
+         (modrm    (nelisp-cc-x86_64--modrm-byte 2 src-low3 5))
+         (disp32   (nelisp-cc-x86_64--imm32-bytes (- offset))))
+    (nelisp-cc-x86_64--buffer-emit-bytes
+     buf (append (list rex #x89 modrm) disp32))))
+
+(defun nelisp-cc-x86_64--reg-or-spill (cg value)
+  "Resolve VALUE to either a physical register or a spill descriptor.
+
+Returns either:
+  - (:reg PHYS-REG)        — value lives in PHYS-REG
+  - (:spill OFFSET)        — value lives in [rbp - OFFSET]
+
+Allocator assignments funnel through here.  This is the spill-aware
+sibling of `--reg-of'; existing call sites that cannot tolerate a
+spilled operand keep using `--reg-of' (which still signals)."
+  (let* ((alloc (nelisp-cc-x86_64--codegen-alloc-state cg))
+         (vid (nelisp-cc--ssa-value-id value))
+         (cell (assq vid alloc)))
+    (unless cell
+      (signal 'nelisp-cc-x86_64-encoding-error
+              (list :unallocated-value vid)))
+    (let ((reg (cdr cell)))
+      (cond
+       ((eq reg :spill)
+        (let ((offset (nelisp-cc--stack-slot-of
+                       (nelisp-cc-x86_64--codegen-slot-alist cg) vid)))
+          (unless offset
+            (signal 'nelisp-cc-x86_64-encoding-error
+                    (list :spilled-without-slot vid)))
+          (list :spill offset)))
+       (t (list :reg (nelisp-cc-x86_64-resolve-virtual reg)))))))
+
+(defun nelisp-cc-x86_64--materialise-operand (cg value)
+  "Ensure VALUE's bits live in a register and return that register.
+
+If VALUE is in a register: return it (no instruction emitted).
+If VALUE is spilled:        emit MOV rax, [rbp - off] and return rax.
+
+This is the canonical pre-amble for any per-opcode lower helper that
+needs an operand in a register."
+  (let ((slot (nelisp-cc-x86_64--reg-or-spill cg value))
+        (buf  (nelisp-cc-x86_64--codegen-buffer cg)))
+    (pcase slot
+      (`(:reg ,r) r)
+      (`(:spill ,off)
+       (nelisp-cc-x86_64--emit-load-spill
+        buf nelisp-cc-x86_64--spill-scratch off)
+       nelisp-cc-x86_64--spill-scratch))))
+
+(defun nelisp-cc-x86_64--writeback-def (cg def src-reg)
+  "After computing DEF's value into SRC-REG, route it to its home.
+
+If DEF is in a register: emit MOV phys-reg, SRC-REG (elided when
+phys-reg already equals SRC-REG).
+If DEF is spilled:        emit MOV [rbp - off], SRC-REG."
+  (when def
+    (let ((slot (nelisp-cc-x86_64--reg-or-spill cg def))
+          (buf  (nelisp-cc-x86_64--codegen-buffer cg)))
+      (pcase slot
+        (`(:reg ,r)
+         (unless (eq r src-reg)
+           (nelisp-cc-x86_64--buffer-emit-bytes
+            buf (nelisp-cc-x86_64--emit-mov-reg-reg r src-reg))))
+        (`(:spill ,off)
+         (nelisp-cc-x86_64--emit-store-spill buf src-reg off))))))
+
+(defun nelisp-cc-x86_64--def-target (cg def)
+  "Pick a register to compute DEF's value into.
+For register-allocated defs return their physical register.
+For spilled defs return the scratch (rax) so callers compute into
+it and then `--writeback-def' to the slot."
+  (let ((slot (nelisp-cc-x86_64--reg-or-spill cg def)))
+    (pcase slot
+      (`(:reg ,r) r)
+      (`(:spill ,_) nelisp-cc-x86_64--spill-scratch))))
 
 (defun nelisp-cc-x86_64--reg-of (alloc-state value)
   "Return the *physical* x86_64 register assigned to VALUE.
@@ -567,9 +726,14 @@ transparently: VALUE's allocator entry holds a virtual register
 symbol like `r0', and this helper returns the physical mapping
 (`rdi' for `r0' in the default table).
 
-A `:spill' assignment is an unsupported case in the skeleton and
-signals `nelisp-cc-x86_64-unsupported-opcode' — the spill / reload
-helper landing in a follow-up will replace this branch.
+This *non-spill-aware* variant is preserved for legacy callers that
+encode an instruction whose operand happens to never be spilled
+(e.g. branch-condition values that the allocator pinned).  The
+spill-aware sibling is `--reg-or-spill', which returns a tagged
+descriptor so callers can emit a load before use; T15 added that
+helper plus `--materialise-operand' / `--writeback-def' which most
+new lowerers use.  A `:spill' assignment from this entry-point
+signals `nelisp-cc-x86_64-unsupported-opcode'.
 
 A missing assignment (VALUE absent from ALLOC-STATE) signals
 `nelisp-cc-x86_64-encoding-error' since that means the SSA was not
@@ -599,13 +763,16 @@ The skeleton handles three literal shapes:
 
 Anything else (string / vector / symbol literals) signals
 `nelisp-cc-x86_64-unsupported-opcode' — the constant-pool path lands
-in Phase 7.1.4."
-  (let* ((alloc (nelisp-cc-x86_64--codegen-alloc-state cg))
-         (buf   (nelisp-cc-x86_64--codegen-buffer cg))
+in Phase 7.1.4.
+
+Spill-aware: if DEF is a spilled value the literal is materialised
+into the scratch register and then stored to its slot via
+`--writeback-def'."
+  (let* ((buf   (nelisp-cc-x86_64--codegen-buffer cg))
          (def   (nelisp-cc--ssa-instr-def instr))
          (meta  (nelisp-cc--ssa-instr-meta instr))
          (lit   (plist-get meta :literal))
-         (dst   (nelisp-cc-x86_64--reg-of alloc def))
+         (dst   (nelisp-cc-x86_64--def-target cg def))
          (imm   (cond
                  ((null lit) 0)
                  ((eq lit t) 1)
@@ -613,7 +780,8 @@ in Phase 7.1.4."
                  (t (signal 'nelisp-cc-x86_64-unsupported-opcode
                             (list :unsupported-literal lit))))))
     (nelisp-cc-x86_64--buffer-emit-bytes
-     buf (nelisp-cc-x86_64--emit-mov-reg-imm32 dst imm))))
+     buf (nelisp-cc-x86_64--emit-mov-reg-imm32 dst imm))
+    (nelisp-cc-x86_64--writeback-def cg def dst)))
 
 (defun nelisp-cc-x86_64--lower-load-var (cg instr)
   "Lower an SSA :load-var INSTR — placeholder MOV r64, 0.
@@ -623,33 +791,34 @@ will patch this site against `nelisp-defs-index' so the eventual
 encoding becomes `MOV reg, [rip+disp32]' (RIP-relative load of the
 symbol-value cell).  Until then the skeleton emits MOV r64, 0 as a
 safe placeholder — running this code would simply read 0, but the
-skeleton never executes the bytes."
-  (let* ((alloc (nelisp-cc-x86_64--codegen-alloc-state cg))
-         (buf   (nelisp-cc-x86_64--codegen-buffer cg))
+skeleton never executes the bytes.
+
+Spill-aware: when DEF is spilled the placeholder zero lands in the
+scratch register first, then is stored to the spill slot."
+  (let* ((buf   (nelisp-cc-x86_64--codegen-buffer cg))
          (def   (nelisp-cc--ssa-instr-def instr))
-         (dst   (nelisp-cc-x86_64--reg-of alloc def)))
+         (dst   (nelisp-cc-x86_64--def-target cg def)))
     (nelisp-cc-x86_64--buffer-emit-bytes
-     buf (nelisp-cc-x86_64--emit-mov-reg-imm32 dst 0))))
+     buf (nelisp-cc-x86_64--emit-mov-reg-imm32 dst 0))
+    (nelisp-cc-x86_64--writeback-def cg def dst)))
 
 (defun nelisp-cc-x86_64--lower-store-var (cg instr)
-  "Lower an SSA :store-var INSTR — placeholder MOV reg-of-def, reg-of-src.
+  "Lower an SSA :store-var INSTR — MOV def-reg, src-reg with spill marshalling.
 
 The store has a single operand (the new value) and an SSA def value
-(the same value, in SSA form `(setq x EXPR)' returns EXPR).  The
-skeleton emits a MOV from the source register to the def register —
-which collapses to no-op if the allocator coalesced the two.  Phase
+(the same value, in SSA form `(setq x EXPR)' returns EXPR).  Phase
 7.5 patches this site to additionally store into the symbol-value
-cell."
-  (let* ((alloc    (nelisp-cc-x86_64--codegen-alloc-state cg))
-         (buf      (nelisp-cc-x86_64--codegen-buffer cg))
-         (def      (nelisp-cc--ssa-instr-def instr))
+cell.
+
+Spill-aware: source and / or destination may be spilled.  We
+materialise the operand into a register (loading from the slot via
+the scratch when spilled) and then route it to the def via
+`--writeback-def'."
+  (let* ((def      (nelisp-cc--ssa-instr-def instr))
          (operands (nelisp-cc--ssa-instr-operands instr))
          (src-val  (car operands))
-         (dst-reg  (nelisp-cc-x86_64--reg-of alloc def))
-         (src-reg  (nelisp-cc-x86_64--reg-of alloc src-val)))
-    (unless (eq dst-reg src-reg)
-      (nelisp-cc-x86_64--buffer-emit-bytes
-       buf (nelisp-cc-x86_64--emit-mov-reg-reg dst-reg src-reg)))))
+         (src-reg  (nelisp-cc-x86_64--materialise-operand cg src-val)))
+    (nelisp-cc-x86_64--writeback-def cg def src-reg)))
 
 (defun nelisp-cc-x86_64--lower-call (cg instr)
   "Lower an SSA :call INSTR — placeholder CALL rel32 with :unresolved fixup.
@@ -661,12 +830,15 @@ Operands already in their target register are skipped.  The
 return value is fetched from rax into the def's register after CALL
 (again, MOV is elided if rax already is the def's register).
 
+Spill-aware: a spilled operand is loaded directly into its argument
+register from the slot; a spilled def is captured from rax into the
+slot via `--writeback-def'.
+
 The CALL itself is emitted with a 0 displacement and a CALL-FIXUPS
 entry — the actual address is patched in Phase 7.5 once the callee
 has been resolved against `nelisp-defs-index'.  The fixup keys on
 the callee symbol (META :fn) so the patcher can look it up."
-  (let* ((alloc    (nelisp-cc-x86_64--codegen-alloc-state cg))
-         (buf      (nelisp-cc-x86_64--codegen-buffer cg))
+  (let* ((buf      (nelisp-cc-x86_64--codegen-buffer cg))
          (def      (nelisp-cc--ssa-instr-def instr))
          (operands (nelisp-cc--ssa-instr-operands instr))
          (meta     (nelisp-cc--ssa-instr-meta instr))
@@ -675,13 +847,21 @@ the callee symbol (META :fn) so the patcher can look it up."
     (when (> n (length nelisp-cc-x86_64--int-arg-regs))
       (signal 'nelisp-cc-x86_64-unsupported-opcode
               (list :stack-arg-spill-not-implemented n)))
-    ;; Move each operand into its argument register (skip if already there).
+    ;; Move each operand into its argument register (load from slot
+    ;; when spilled, MOV reg→arg-reg when register-allocated, skip
+    ;; when already in the right register).
     (cl-loop for op in operands
              for arg-reg in nelisp-cc-x86_64--int-arg-regs
-             for src-reg = (nelisp-cc-x86_64--reg-of alloc op)
-             unless (eq src-reg arg-reg)
-             do (nelisp-cc-x86_64--buffer-emit-bytes
-                 buf (nelisp-cc-x86_64--emit-mov-reg-reg arg-reg src-reg)))
+             for slot = (nelisp-cc-x86_64--reg-or-spill cg op)
+             do (pcase slot
+                  (`(:reg ,r)
+                   (unless (eq r arg-reg)
+                     (nelisp-cc-x86_64--buffer-emit-bytes
+                      buf (nelisp-cc-x86_64--emit-mov-reg-reg
+                           arg-reg r))))
+                  (`(:spill ,off)
+                   (nelisp-cc-x86_64--emit-load-spill
+                    buf arg-reg off))))
     ;; Emit CALL rel32 with placeholder 0 displacement — the fixup
     ;; carries the unresolved callee symbol so Phase 7.5 can patch
     ;; against `nelisp-defs-index'.
@@ -690,13 +870,10 @@ the callee symbol (META :fn) so the patcher can look it up."
        buf (nelisp-cc-x86_64--emit-call-rel32 0))
       (push (cons (+ before-call 1) callee)
             (nelisp-cc-x86_64--codegen-call-fixups cg)))
-    ;; If the def register is not rax, fetch the return value from rax.
+    ;; Route the return value (currently in rax) to the def.
     (when def
-      (let ((dst-reg (nelisp-cc-x86_64--reg-of alloc def)))
-        (unless (eq dst-reg nelisp-cc-x86_64--return-reg)
-          (nelisp-cc-x86_64--buffer-emit-bytes
-           buf (nelisp-cc-x86_64--emit-mov-reg-reg
-                dst-reg nelisp-cc-x86_64--return-reg)))))))
+      (nelisp-cc-x86_64--writeback-def
+       cg def nelisp-cc-x86_64--return-reg))))
 
 (defun nelisp-cc-x86_64--lower-branch (cg instr)
   "Lower an SSA :branch INSTR — CMP cond,0 + JE else / fallthrough then.
@@ -718,13 +895,12 @@ Note: x86_64 has no `CMP r64, imm0' shortcut shorter than `TEST
 r64,r64' (two bytes 0x48 0x85 + ModR/M).  The skeleton uses TEST as
 the canonical zero-test because it is one byte shorter than `CMP
 r64, imm32 0' and matches what gcc -O2 emits for `if (x)'."
-  (let* ((alloc    (nelisp-cc-x86_64--codegen-alloc-state cg))
-         (buf      (nelisp-cc-x86_64--codegen-buffer cg))
+  (let* ((buf      (nelisp-cc-x86_64--codegen-buffer cg))
          (operands (nelisp-cc--ssa-instr-operands instr))
          (meta     (nelisp-cc--ssa-instr-meta instr))
          (else-id  (plist-get meta :else))
          (cond-val (car operands))
-         (cond-reg (nelisp-cc-x86_64--reg-of alloc cond-val)))
+         (cond-reg (nelisp-cc-x86_64--materialise-operand cg cond-val)))
     ;; TEST cond, cond — sets ZF if cond is 0 (NeLisp nil).
     ;; Encoded as 0x85 /r in MR form (just like the binop family).
     (nelisp-cc-x86_64--buffer-emit-bytes
@@ -736,6 +912,20 @@ r64, imm32 0' and matches what gcc -O2 emits for `if (x)'."
        buf (nelisp-cc-x86_64--emit-jcc-rel32 'je 0)
        else-label
        2))))
+
+(defun nelisp-cc-x86_64--lower-copy (cg instr)
+  "Lower a `:copy' SSA instruction inserted by phi resolution.
+
+The instruction has one operand (the source value) and one def (the
+phi's destination value).  Emits a register-to-register move,
+honouring spill slots on either end.  After T15 phi resolution, the
+backend sees one or more `:copy' nodes per predecessor block (one
+per phi destination) just before the block's terminator."
+  (let* ((def      (nelisp-cc--ssa-instr-def instr))
+         (operands (nelisp-cc--ssa-instr-operands instr))
+         (src-val  (car operands))
+         (src-reg  (nelisp-cc-x86_64--materialise-operand cg src-val)))
+    (nelisp-cc-x86_64--writeback-def cg def src-reg)))
 
 (defun nelisp-cc-x86_64--lower-jump (cg instr)
   "Lower an SSA :jump INSTR — unconditional JMP rel32 to the successor block.
@@ -762,19 +952,42 @@ peephole pass will elide it later."
        1))))
 
 (defun nelisp-cc-x86_64--lower-return (cg instr)
-  "Lower an SSA :return INSTR — MOV rax, value-reg + RET.
+  "Lower an SSA :return INSTR — MOV rax, value-reg + epilogue + RET.
 
 If the value already lives in rax (the allocator may coalesce when
-the last use is the return), the MOV is elided."
-  (let* ((alloc    (nelisp-cc-x86_64--codegen-alloc-state cg))
-         (buf      (nelisp-cc-x86_64--codegen-buffer cg))
+the last use is the return), the MOV is elided.  The epilogue
+(`ADD rsp, frame_size; POP rbp') matches the prologue T15 emits at
+function entry; both are gated on FRAME-SIZE, so a spill-free
+function still produces a `MOV rax, X` + `RET` pair without extra
+bytes — preserving the existing T9 byte-level golden tests.
+
+Spill-aware: a spilled return-value operand is loaded directly into
+rax via the spill-load helper (no MOV needed afterwards because the
+load lands the value directly in the return register)."
+  (let* ((buf      (nelisp-cc-x86_64--codegen-buffer cg))
+         (frame    (nelisp-cc-x86_64--codegen-frame-size cg))
          (operands (nelisp-cc--ssa-instr-operands instr))
-         (rval     (car operands))
-         (src-reg  (nelisp-cc-x86_64--reg-of alloc rval)))
-    (unless (eq src-reg nelisp-cc-x86_64--return-reg)
+         (rval     (car operands)))
+    ;; Bring the return value into rax.
+    (let ((slot (nelisp-cc-x86_64--reg-or-spill cg rval)))
+      (pcase slot
+        (`(:reg ,src-reg)
+         (unless (eq src-reg nelisp-cc-x86_64--return-reg)
+           (nelisp-cc-x86_64--buffer-emit-bytes
+            buf (nelisp-cc-x86_64--emit-mov-reg-reg
+                 nelisp-cc-x86_64--return-reg src-reg))))
+        (`(:spill ,off)
+         (nelisp-cc-x86_64--emit-load-spill
+          buf nelisp-cc-x86_64--return-reg off))))
+    ;; Epilogue: tear down the spill frame (when non-empty) and
+    ;; restore rbp.  Order is the reverse of the prologue.  When
+    ;; FRAME-SIZE is 0 we still need to POP rbp to balance the
+    ;; entry PUSH rbp.
+    (when (and frame (> frame 0))
       (nelisp-cc-x86_64--buffer-emit-bytes
-       buf (nelisp-cc-x86_64--emit-mov-reg-reg
-            nelisp-cc-x86_64--return-reg src-reg)))
+       buf (nelisp-cc-x86_64--emit-add-rsp-imm32 frame)))
+    (when (and frame (>= frame 0))
+      (nelisp-cc-x86_64--buffer-emit-byte buf #x5D)) ; POP rbp
     (nelisp-cc-x86_64--buffer-emit-bytes buf (nelisp-cc-x86_64--emit-ret))))
 
 (defun nelisp-cc-x86_64--lower-instr (cg instr)
@@ -788,6 +1001,7 @@ be lowered out by a phi-out pass before this dispatch sees them."
     ('load-var  (nelisp-cc-x86_64--lower-load-var cg instr))
     ('store-var (nelisp-cc-x86_64--lower-store-var cg instr))
     ('call      (nelisp-cc-x86_64--lower-call cg instr))
+    ('copy      (nelisp-cc-x86_64--lower-copy cg instr))
     ('branch    (nelisp-cc-x86_64--lower-branch cg instr))
     ('jump      (nelisp-cc-x86_64--lower-jump cg instr))
     ('return    (nelisp-cc-x86_64--lower-return cg instr))
@@ -801,25 +1015,50 @@ be lowered out by a phi-out pass before this dispatch sees them."
                    (nelisp-cc--ssa-instr-opcode instr)
                    (nelisp-cc--ssa-instr-id instr))))))
 
-(defun nelisp-cc-x86_64-compile (function alloc-state)
-  "Compile FUNCTION (an `nelisp-cc--ssa-function') with ALLOC-STATE
-(the linear-scan output, an alist of (VALUE-ID . REGISTER-OR-:spill))
-to a unibyte vector of x86_64 machine code bytes.
+(defun nelisp-cc-x86_64--emit-prologue (buf frame-size)
+  "Emit the System V AMD64 prologue into BUF.
 
-The result is suitable to be written into an mmap'ed PROT_EXEC page
-(Phase 7.1.4) — the skeleton stops at byte generation, no execution.
+Sequence:
+  PUSH rbp                ; 0x55                       (1 byte)
+  MOV  rbp, rsp           ; 0x48 0x89 0xE5             (3 bytes)
+  [SUB rsp, FRAME-SIZE]   ; 0x48 0x81 0xEC <imm32>     (7 bytes, omitted
+                                                         when FRAME-SIZE = 0)
 
-Skeleton scope: see the file header.  Spill / reload, full call
-resolution against `nelisp-defs-index', prologue / epilogue, and the
-mmap exec path are deferred to subsequent agent layers.  Anything
-the skeleton cannot handle signals
-`nelisp-cc-x86_64-unsupported-opcode' immediately rather than
-miscompiling silently."
-  (let* ((buf (nelisp-cc-x86_64--buffer-make))
+Total prologue size: 4 bytes (no spill) or 11 bytes (with spill).
+The matching epilogue is emitted by `--lower-return'."
+  (nelisp-cc-x86_64--buffer-emit-byte buf #x55) ; PUSH rbp
+  (nelisp-cc-x86_64--buffer-emit-bytes
+   buf (nelisp-cc-x86_64--emit-mov-reg-reg 'rbp 'rsp))
+  (when (and frame-size (> frame-size 0))
+    (nelisp-cc-x86_64--buffer-emit-bytes
+     buf (nelisp-cc-x86_64--emit-sub-rsp-imm32 frame-size))))
+
+(defun nelisp-cc-x86_64--compile-internal (function alloc-state)
+  "Shared body of `--compile' and `--compile-with-meta'.
+
+Runs T15 phi resolution + stack-slot allocation, emits the
+prologue, walks RPO emitting per-instruction byte sequences, and
+returns the live `nelisp-cc-x86_64--codegen' struct so the public
+entries can finalise the buffer / extract fixups."
+  ;; T15 step (a): lower phi nodes out into per-predecessor :copy
+  ;; instructions before any byte emission.  This mutates FUNCTION
+  ;; in place; callers that re-use the SSA value should pass a
+  ;; freshly built function (the production pipeline does — the
+  ;; AST→SSA frontend builds a new IR per compile).
+  (nelisp-cc--resolve-phis function)
+  (let* ((slots-pair (nelisp-cc--allocate-stack-slots alloc-state))
+         (slot-alist (car slots-pair))
+         (frame-size (cdr slots-pair))
+         (buf (nelisp-cc-x86_64--buffer-make))
          (cg  (nelisp-cc-x86_64--codegen-make
                :function function
                :alloc-state alloc-state
-               :buffer buf)))
+               :buffer buf
+               :slot-alist slot-alist
+               :frame-size frame-size)))
+    ;; T15 step (b): function prologue.  PUSH rbp + MOV rbp, rsp
+    ;; always; SUB rsp, FRAME-SIZE only when there is a spill frame.
+    (nelisp-cc-x86_64--emit-prologue buf frame-size)
     ;; RPO matches the linear-scan linearisation, so block-relative
     ;; offsets are stable between allocator and backend.
     (let ((rpo (nelisp-cc--ssa--reverse-postorder function)))
@@ -832,29 +1071,42 @@ miscompiling silently."
           (nelisp-cc-x86_64--buffer-define-label buf lbl))
         (dolist (instr (nelisp-cc--ssa-block-instrs blk))
           (nelisp-cc-x86_64--lower-instr cg instr))))
-    (nelisp-cc-x86_64--buffer-finalize buf)))
+    cg))
+
+(defun nelisp-cc-x86_64-compile (function alloc-state)
+  "Compile FUNCTION (an `nelisp-cc--ssa-function') with ALLOC-STATE
+(the linear-scan output, an alist of (VALUE-ID . REGISTER-OR-:spill))
+to a unibyte vector of x86_64 machine code bytes.
+
+T15 SHIPPED — emits a System V AMD64 prologue (PUSH rbp + MOV rbp,
+rsp, plus SUB rsp when spill slots are present), lowers `:phi'
+nodes out into per-predecessor `:copy' instructions, and threads
+spilled values through stack slots on rbp-relative addresses.  The
+matching epilogue is woven into each `:return' instruction so
+multi-RET lambdas tear down the frame correctly even when the
+allocator assigns different slot counts to alternate paths.
+
+The result is suitable to be written into an mmap'ed PROT_EXEC page
+and executed via Phase 7.5.1 FFI bridge.  Anything the backend
+cannot handle (e.g. unsupported literals, >6 call args) signals
+`nelisp-cc-x86_64-unsupported-opcode' immediately rather than
+miscompiling silently."
+  (let ((cg (nelisp-cc-x86_64--compile-internal function alloc-state)))
+    (nelisp-cc-x86_64--buffer-finalize
+     (nelisp-cc-x86_64--codegen-buffer cg))))
 
 (defun nelisp-cc-x86_64-compile-with-meta (function alloc-state)
   "Like `nelisp-cc-x86_64-compile' but return (BYTES . CALL-FIXUPS).
 
 CALL-FIXUPS is the alist of (BYTE-OFFSET . CALLEE-SYMBOL) entries that
 Phase 7.5 will consume to patch each :call site against
-`nelisp-defs-index'.  The skeleton exposes this so the integration
-agent can write its smoke test without reaching into private state."
-  (let* ((buf (nelisp-cc-x86_64--buffer-make))
-         (cg  (nelisp-cc-x86_64--codegen-make
-               :function function
-               :alloc-state alloc-state
-               :buffer buf)))
-    (let ((rpo (nelisp-cc--ssa--reverse-postorder function)))
-      (setf (nelisp-cc-x86_64--codegen-rpo cg) rpo)
-      (dolist (blk rpo)
-        (let ((lbl (intern (format "L_block_%d"
-                                   (nelisp-cc--ssa-block-id blk)))))
-          (nelisp-cc-x86_64--buffer-define-label buf lbl))
-        (dolist (instr (nelisp-cc--ssa-block-instrs blk))
-          (nelisp-cc-x86_64--lower-instr cg instr))))
-    (cons (nelisp-cc-x86_64--buffer-finalize buf)
+`nelisp-defs-index'.  The byte offsets are *post-prologue*, i.e.
+shifted by the prologue size.  Phase 7.5 patcher does not need to
+account for the prologue specifically — the offsets index into the
+final byte vector directly."
+  (let ((cg (nelisp-cc-x86_64--compile-internal function alloc-state)))
+    (cons (nelisp-cc-x86_64--buffer-finalize
+           (nelisp-cc-x86_64--codegen-buffer cg))
           (nreverse (nelisp-cc-x86_64--codegen-call-fixups cg)))))
 
 (provide 'nelisp-cc-x86_64)

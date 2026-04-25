@@ -337,6 +337,122 @@ OFFSET is the byte displacement (4-byte aligned, ±1 MiB / 19-bit imm).
 CS and HS are aliases (\"carry set\" / \"unsigned higher or same\").
 NV is reserved (\"never\") — never lifted by the skeleton.")
 
+(defun nelisp-cc-arm64--encode-stp-fp-lr-pre-index (offset)
+  "Encode STP X29, X30, [SP, #OFFSET]! (pre-index, write-back).
+OFFSET is a signed 7-bit *imm7* field measured in 8-byte units (so
+imm7 = OFFSET / 8 must fit -64..63).  This is the canonical
+`save FP+LR' opcode used at the head of every prologue.
+
+  1 0 1 0 1 0 0 1 1 0 imm7 X30=11110 SP=11111 X29=11101
+  0xA9800000 base + (imm7 << 15) | (Xt2=30 << 10) | (Xn=31 << 5) | Xt=29
+
+For OFFSET = -16 (the standard 16-byte downward push) imm7 = -2,
+which the encoder converts to its 7-bit two's complement (#x7E)
+before splicing."
+  (unless (zerop (mod offset 8))
+    (signal 'nelisp-cc-arm64-encoding-error
+            (list :stp-misaligned offset)))
+  (let* ((imm7 (/ offset 8))
+         (imm7-u (logand imm7 #x7F)))
+    (unless (and (>= imm7 -64) (< imm7 64))
+      (signal 'nelisp-cc-arm64-encoding-error
+              (list :stp-imm7-out-of-range offset)))
+    (logior #xA9800000
+            (ash imm7-u 15)
+            (ash 30 10) ; Rt2 = X30
+            (ash 31 5)  ; Rn  = SP
+            29)))       ; Rt  = X29
+
+(defun nelisp-cc-arm64--encode-ldp-fp-lr-post-index (offset)
+  "Encode LDP X29, X30, [SP], #OFFSET (post-index, write-back).
+OFFSET is a signed 7-bit imm7 in 8-byte units.  Mirror of
+`-encode-stp-fp-lr-pre-index' for the epilogue.
+
+  1 0 1 0 1 0 0 0 1 1 imm7 X30=11110 SP=11111 X29=11101
+  0xA8C00000 base + (imm7 << 15) | (Rt2=30 << 10) | (Rn=31 << 5) | Rt=29"
+  (unless (zerop (mod offset 8))
+    (signal 'nelisp-cc-arm64-encoding-error
+            (list :ldp-misaligned offset)))
+  (let* ((imm7 (/ offset 8))
+         (imm7-u (logand imm7 #x7F)))
+    (unless (and (>= imm7 -64) (< imm7 64))
+      (signal 'nelisp-cc-arm64-encoding-error
+              (list :ldp-imm7-out-of-range offset)))
+    (logior #xA8C00000
+            (ash imm7-u 15)
+            (ash 30 10)
+            (ash 31 5)
+            29)))
+
+(defun nelisp-cc-arm64--encode-add-sp-imm (imm)
+  "Encode ADD SP, SP, #IMM (12-bit unsigned immediate, no shift).
+IMM must be in 0..#xFFF.  Larger frame sizes need MOVZ + ADD
+chains, which is out of scope for the MVP — signal then.
+
+  1 0 0 1 0 0 0 1 0 0 imm12 SP=11111 SP=11111
+  0x91000000 | (imm12 << 10) | (Rn=31 << 5) | Rd=31"
+  (unless (and (integerp imm) (>= imm 0) (< imm #x1000))
+    (signal 'nelisp-cc-arm64-encoding-error
+            (list :add-sp-imm-out-of-range imm)))
+  (logior #x91000000
+          (ash (logand imm #xFFF) 10)
+          (ash 31 5)
+          31))
+
+(defun nelisp-cc-arm64--encode-sub-sp-imm (imm)
+  "Encode SUB SP, SP, #IMM (12-bit unsigned immediate, no shift).
+IMM must be in 0..#xFFF.  Used by the prologue to allocate the
+spill frame.
+
+  1 1 0 1 0 0 0 1 0 0 imm12 SP=11111 SP=11111
+  0xD1000000 | (imm12 << 10) | (Rn=31 << 5) | Rd=31"
+  (unless (and (integerp imm) (>= imm 0) (< imm #x1000))
+    (signal 'nelisp-cc-arm64-encoding-error
+            (list :sub-sp-imm-out-of-range imm)))
+  (logior #xD1000000
+          (ash (logand imm #xFFF) 10)
+          (ash 31 5)
+          31))
+
+(defun nelisp-cc-arm64--encode-str-reg-sp-imm (reg offset)
+  "Encode STR Xn, [SP, #OFFSET] (unsigned-offset addressing).
+OFFSET is a positive byte offset, must be 8-byte aligned and fit
+the 12-bit imm12 field after dividing by 8 (so 0..32760 byte range).
+
+  1 1 1 1 1 0 0 1 0 0 imm12 SP=11111 Xt
+  0xF9000000 base | (imm12 << 10) | (Rn=31 << 5) | Rt"
+  (unless (zerop (mod offset 8))
+    (signal 'nelisp-cc-arm64-encoding-error
+            (list :str-misaligned offset)))
+  (let ((imm12 (/ offset 8))
+        (rt (nelisp-cc-arm64--reg-encoding reg)))
+    (unless (and (>= imm12 0) (< imm12 #x1000))
+      (signal 'nelisp-cc-arm64-encoding-error
+              (list :str-imm12-out-of-range offset)))
+    (logior #xF9000000
+            (ash imm12 10)
+            (ash 31 5)
+            (logand rt #x1F))))
+
+(defun nelisp-cc-arm64--encode-ldr-reg-sp-imm (reg offset)
+  "Encode LDR Xn, [SP, #OFFSET] (unsigned-offset addressing).
+Mirror of `-encode-str-reg-sp-imm'.
+
+  1 1 1 1 1 0 0 1 0 1 imm12 SP=11111 Xt
+  0xF9400000 base | (imm12 << 10) | (Rn=31 << 5) | Rt"
+  (unless (zerop (mod offset 8))
+    (signal 'nelisp-cc-arm64-encoding-error
+            (list :ldr-misaligned offset)))
+  (let ((imm12 (/ offset 8))
+        (rt (nelisp-cc-arm64--reg-encoding reg)))
+    (unless (and (>= imm12 0) (< imm12 #x1000))
+      (signal 'nelisp-cc-arm64-encoding-error
+              (list :ldr-imm12-out-of-range offset)))
+    (logior #xF9400000
+            (ash imm12 10)
+            (ash 31 5)
+            (logand rt #x1F))))
+
 (defun nelisp-cc-arm64--encode-bcc (cond offset)
   "Encode B.cond #imm (conditional branch).
 COND is a symbol from `nelisp-cc-arm64--cond-codes' (eq / ne / lt
@@ -532,9 +648,12 @@ mapping table."
   "Resolve the physical register for SSA VALUE under ALLOC-STATE.
 VALUE is a `nelisp-cc--ssa-value' (or its id integer); ALLOC-STATE
 is the assignments alist returned by `nelisp-cc--linear-scan'.
-Returns the physical register symbol.  Spilled values raise
-`nelisp-cc-arm64-todo' — the skeleton does *not* lower spill / reload
-(Phase 7.1.4)."
+Returns the physical register symbol.
+
+Legacy entry point for callers that statically know VALUE cannot be
+spilled (e.g. branch tests pinned by the allocator).  Spilled
+values raise `nelisp-cc-arm64-todo' — spill-aware callers should
+use `--reg-or-spill' / `--materialise-operand' below."
   (let* ((vid (if (integerp value)
                   value
                 (nelisp-cc--ssa-value-id value)))
@@ -548,6 +667,118 @@ Returns the physical register symbol.  Spilled values raise
               (list :spill-not-implemented vid
                     :phase '7.1.4)))
      (t (nelisp-cc-arm64--virtual-reg assigned)))))
+
+;;; Phase 7.1 T15 — spill-aware codegen state -----------------------
+;;
+;; The arm64 backend grew from a buf-only API in T10; T15 introduces
+;; a per-call codegen struct so spill-slot lookups, frame size, and
+;; the buffer can travel together to the lower helpers.  Existing
+;; `--lower-XXX' helpers receive an explicit ALLOC-STATE argument
+;; for backward compatibility (the T10 ERT keeps that contract);
+;; T15 adds spill-aware sibling helpers that take the codegen state
+;; instead so they can reach the slot-alist.
+
+(cl-defstruct (nelisp-cc-arm64--codegen
+               (:constructor nelisp-cc-arm64--codegen-make)
+               (:copier nil))
+  "Per-call arm64 codegen state."
+  (function nil :read-only t)
+  (alloc-state nil :read-only t)
+  (buffer nil :read-only t)
+  (slot-alist nil)
+  (frame-size 0))
+
+(defconst nelisp-cc-arm64--spill-scratch 'x9
+  "AArch64 scratch register reserved for spill-slot loads / stores.
+x9 is caller-saved scratch under AAPCS64 and is *not* in the
+default linear-scan pool (which uses r0..r7 → x0..x7), so a brief
+T15 use never collides with allocator assignments.")
+
+(defun nelisp-cc-arm64--reg-or-spill (cg value)
+  "Resolve VALUE under CG to either (:reg PHYS) or (:spill OFFSET)."
+  (let* ((alloc (nelisp-cc-arm64--codegen-alloc-state cg))
+         (vid (nelisp-cc--ssa-value-id value))
+         (cell (assq vid alloc)))
+    (unless cell
+      (signal 'nelisp-cc-arm64-error
+              (list :unallocated-value vid)))
+    (let ((reg (cdr cell)))
+      (cond
+       ((eq reg :spill)
+        (let ((off (nelisp-cc--stack-slot-of
+                    (nelisp-cc-arm64--codegen-slot-alist cg) vid)))
+          (unless off
+            (signal 'nelisp-cc-arm64-error
+                    (list :spilled-without-slot vid)))
+          (list :spill off)))
+       (t (list :reg (nelisp-cc-arm64--virtual-reg reg)))))))
+
+(defun nelisp-cc-arm64--materialise-operand (cg value)
+  "Ensure VALUE's bits are in a register; emit a load if spilled.
+Returns the physical register holding VALUE."
+  (let ((slot (nelisp-cc-arm64--reg-or-spill cg value))
+        (buf  (nelisp-cc-arm64--codegen-buffer cg)))
+    (pcase slot
+      (`(:reg ,r) r)
+      (`(:spill ,off)
+       (nelisp-cc-arm64--buffer-emit-instruction
+        buf (nelisp-cc-arm64--encode-ldr-reg-sp-imm
+             nelisp-cc-arm64--spill-scratch off))
+       nelisp-cc-arm64--spill-scratch))))
+
+(defun nelisp-cc-arm64--writeback-def (cg def src-reg)
+  "Route SRC-REG into DEF's home (register or spill slot)."
+  (when def
+    (let ((slot (nelisp-cc-arm64--reg-or-spill cg def))
+          (buf  (nelisp-cc-arm64--codegen-buffer cg)))
+      (pcase slot
+        (`(:reg ,r)
+         (unless (eq r src-reg)
+           (nelisp-cc-arm64--buffer-emit-instruction
+            buf (nelisp-cc-arm64--encode-mov-reg-reg r src-reg))))
+        (`(:spill ,off)
+         (nelisp-cc-arm64--buffer-emit-instruction
+          buf (nelisp-cc-arm64--encode-str-reg-sp-imm src-reg off)))))))
+
+(defun nelisp-cc-arm64--def-target (cg def)
+  "Pick the physical register a producer should compute DEF into."
+  (let ((slot (nelisp-cc-arm64--reg-or-spill cg def)))
+    (pcase slot
+      (`(:reg ,r) r)
+      (`(:spill ,_) nelisp-cc-arm64--spill-scratch))))
+
+(defun nelisp-cc-arm64--emit-prologue (buf frame-size)
+  "Emit the AAPCS64 prologue into BUF.
+
+Sequence:
+  STP X29, X30, [SP, #-16]!         ; save FP+LR, pre-decrement SP
+  MOV X29, SP                        ; new frame pointer
+  [SUB SP, SP, #FRAME-SIZE]          ; allocate spill frame (when > 0)
+
+Total prologue size: 8 bytes (no spill) or 12 bytes (with spill).
+The matching epilogue is inlined into each `:return' helper."
+  (nelisp-cc-arm64--buffer-emit-instruction
+   buf (nelisp-cc-arm64--encode-stp-fp-lr-pre-index -16))
+  ;; MOV X29, SP — encoded as ADD X29, SP, #0 (the canonical alias).
+  (nelisp-cc-arm64--buffer-emit-instruction
+   buf (logior #x910003FD)) ; ADD X29, SP, #0
+  (when (and frame-size (> frame-size 0))
+    (nelisp-cc-arm64--buffer-emit-instruction
+     buf (nelisp-cc-arm64--encode-sub-sp-imm frame-size))))
+
+(defun nelisp-cc-arm64--emit-epilogue (buf frame-size)
+  "Emit the AAPCS64 epilogue into BUF (without the trailing RET).
+
+Sequence:
+  [ADD SP, SP, #FRAME-SIZE]   ; release spill frame (when > 0)
+  LDP X29, X30, [SP], #16     ; restore FP+LR, post-increment SP
+
+Caller emits RET right after."
+  (when (and frame-size (> frame-size 0))
+    (nelisp-cc-arm64--buffer-emit-instruction
+     buf (nelisp-cc-arm64--encode-add-sp-imm frame-size)))
+  (nelisp-cc-arm64--buffer-emit-instruction
+   buf (nelisp-cc-arm64--encode-ldp-fp-lr-post-index 16)))
 
 ;;; SSA → arm64 codegen (skeleton subset) ---------------------------
 ;;
@@ -579,16 +810,21 @@ Returns the physical register symbol.  Spilled values raise
 ;; protection (`nelisp_syscall_jit_write_protect') — *all* deferred
 ;; to Phase 7.1.4 (Doc 28 §6.9 v2 risk).
 
-(defun nelisp-cc-arm64--lower-const (instr buf alloc-state)
+(defun nelisp-cc-arm64--lower-const (cg instr)
   "Lower a `:const' SSA instruction to MOVZ.
 INSTR.META is a plist with `:literal LIT'; this skeleton only
 supports nil / t / 16-bit non-negative integers (mapped to MOVZ #imm
 respectively to 0 / 1 / lit).  Larger literals raise
-`nelisp-cc-arm64-todo' — Phase 7.1.4 will emit a MOVZ + MOVK chain."
-  (let* ((meta (nelisp-cc--ssa-instr-meta instr))
+`nelisp-cc-arm64-todo' — Phase 7.1.4 will emit a MOVZ + MOVK chain.
+
+Spill-aware: when DEF is spilled the literal lands in the scratch
+register first and is then stored to its slot via
+`--writeback-def'."
+  (let* ((buf  (nelisp-cc-arm64--codegen-buffer cg))
+         (meta (nelisp-cc--ssa-instr-meta instr))
          (lit  (plist-get meta :literal))
          (def  (nelisp-cc--ssa-instr-def instr))
-         (dst  (nelisp-cc-arm64--lookup-reg alloc-state def))
+         (dst  (nelisp-cc-arm64--def-target cg def))
          (imm  (cond
                 ((null lit) 0)
                 ((eq lit t) 1)
@@ -598,65 +834,93 @@ respectively to 0 / 1 / lit).  Larger literals raise
                                  :phase '7.1.4))))))
     (nelisp-cc-arm64--buffer-emit-instruction
      buf
-     (nelisp-cc-arm64--encode-movz-imm dst imm))))
+     (nelisp-cc-arm64--encode-movz-imm dst imm))
+    (nelisp-cc-arm64--writeback-def cg def dst)))
 
-(defun nelisp-cc-arm64--lower-return (instr buf alloc-state)
+(defun nelisp-cc-arm64--lower-return (cg instr)
   "Lower a `:return' SSA instruction.
-Emits MOV X0, <retval-reg> when the operand is not already in X0,
-then RET.  AAPCS64 demands the integer return value in X0."
-  (let* ((operands (nelisp-cc--ssa-instr-operands instr))
-         (retval (car operands)))
+
+Sequence: MOV X0, retval-reg (or LDR X0, [SP, #off] for spilled
+return values); then the AAPCS64 epilogue; finally RET.  AAPCS64
+demands the integer return value in X0."
+  (let* ((buf      (nelisp-cc-arm64--codegen-buffer cg))
+         (frame    (nelisp-cc-arm64--codegen-frame-size cg))
+         (operands (nelisp-cc--ssa-instr-operands instr))
+         (retval   (car operands)))
     (when retval
-      (let ((src (nelisp-cc-arm64--lookup-reg alloc-state retval)))
-        (unless (eq src 'x0)
-          (nelisp-cc-arm64--buffer-emit-instruction
-           buf
-           (nelisp-cc-arm64--encode-mov-reg-reg 'x0 src)))))
+      (let ((slot (nelisp-cc-arm64--reg-or-spill cg retval)))
+        (pcase slot
+          (`(:reg ,src)
+           (unless (eq src 'x0)
+             (nelisp-cc-arm64--buffer-emit-instruction
+              buf (nelisp-cc-arm64--encode-mov-reg-reg 'x0 src))))
+          (`(:spill ,off)
+           (nelisp-cc-arm64--buffer-emit-instruction
+            buf (nelisp-cc-arm64--encode-ldr-reg-sp-imm 'x0 off))))))
+    (nelisp-cc-arm64--emit-epilogue buf frame)
     (nelisp-cc-arm64--buffer-emit-instruction
      buf
      (nelisp-cc-arm64--encode-ret))))
 
-(defun nelisp-cc-arm64--lower-call (instr buf _alloc-state)
-  "Lower a `:call' SSA instruction (skeleton stub).
-The skeleton emits a single BL with a label fixup keyed on the callee
-symbol.  Phase 7.5 wiring resolves the actual function address once
-`nelisp-defs-index' is consulted; the fixup encoder is
-`-encode-bl' so the resolver auto-checks alignment and range.
+(defun nelisp-cc-arm64--lower-call (cg instr)
+  "Lower a `:call' SSA instruction.
 
-INSTR.META carries `:fn SYM :unresolved t' — both are propagated
-verbatim onto the fixup tag so the linker pass can dispatch."
-  (let* ((meta (nelisp-cc--ssa-instr-meta instr))
-         (callee (plist-get meta :fn)))
+Marshalling: each operand is moved into its AAPCS64 argument
+register (X0..X7), with spilled operands loaded directly from
+their slots.  After the BL fixup the return value (in X0) is
+routed to the def via `--writeback-def'.
+
+INSTR.META carries `:fn SYM :unresolved t'."
+  (let* ((buf      (nelisp-cc-arm64--codegen-buffer cg))
+         (def      (nelisp-cc--ssa-instr-def instr))
+         (operands (nelisp-cc--ssa-instr-operands instr))
+         (meta     (nelisp-cc--ssa-instr-meta instr))
+         (callee   (plist-get meta :fn))
+         (n        (length operands)))
     (unless callee
       (signal 'nelisp-cc-arm64-error
               (list :call-without-fn instr)))
+    (when (> n (length nelisp-cc-arm64--int-arg-regs))
+      (signal 'nelisp-cc-arm64-todo
+              (list :stack-arg-spill-not-implemented n)))
+    ;; Argument marshalling.
+    (cl-loop for op in operands
+             for arg-reg in nelisp-cc-arm64--int-arg-regs
+             for slot = (nelisp-cc-arm64--reg-or-spill cg op)
+             do (pcase slot
+                  (`(:reg ,r)
+                   (unless (eq r arg-reg)
+                     (nelisp-cc-arm64--buffer-emit-instruction
+                      buf (nelisp-cc-arm64--encode-mov-reg-reg
+                           arg-reg r))))
+                  (`(:spill ,off)
+                   (nelisp-cc-arm64--buffer-emit-instruction
+                    buf (nelisp-cc-arm64--encode-ldr-reg-sp-imm
+                         arg-reg off)))))
+    ;; Emit BL with placeholder fixup against the callee symbol.
     (nelisp-cc-arm64--buffer-emit-fixup
      buf
      (lambda (off) (nelisp-cc-arm64--encode-bl off))
-     (intern (format "callee:%s" callee)))))
+     (intern (format "callee:%s" callee)))
+    ;; Return value harvest.
+    (when def
+      (nelisp-cc-arm64--writeback-def cg def 'x0))))
 
-(defun nelisp-cc-arm64--lower-branch (instr buf alloc-state)
-  "Lower a `:branch' SSA instruction (skeleton, CBZ-shape).
+(defun nelisp-cc-arm64--lower-branch (cg instr)
+  "Lower a `:branch' SSA instruction (CBZ-shape, spill-aware).
 The branch reads a single boolean operand: zero → fall through to the
 `else' label (recorded in INSTR.META as `:else BLOCK-ID'), non-zero →
-jump to the `then' label (`:then BLOCK-ID').  We emit:
-
-  CBZ Xn, <else-label>     — fall through if zero, else proceed
-  B   <then-label>          — fall-through path goes to the then arm
-
-Both fixups are unresolved at emit time; the function-level
-finalize step binds the `:then' / `:else' labels once block layout
-completes.  For the skeleton a single test value is sufficient —
-multi-condition guards (B.cond on flags) are Phase 7.1.4."
-  (let* ((meta (nelisp-cc--ssa-instr-meta instr))
-         (then-id (plist-get meta :then))
-         (else-id (plist-get meta :else))
+jump to the `then' label (`:then BLOCK-ID')."
+  (let* ((buf      (nelisp-cc-arm64--codegen-buffer cg))
+         (meta     (nelisp-cc--ssa-instr-meta instr))
+         (then-id  (plist-get meta :then))
+         (else-id  (plist-get meta :else))
          (operands (nelisp-cc--ssa-instr-operands instr))
          (test-val (car operands)))
     (unless (and then-id else-id test-val)
       (signal 'nelisp-cc-arm64-error
               (list :branch-malformed instr)))
-    (let ((src (nelisp-cc-arm64--lookup-reg alloc-state test-val))
+    (let ((src (nelisp-cc-arm64--materialise-operand cg test-val))
           (then-label (intern (format "blk:%d" then-id)))
           (else-label (intern (format "blk:%d" else-id))))
       (nelisp-cc-arm64--buffer-emit-fixup
@@ -668,43 +932,62 @@ multi-condition guards (B.cond on flags) are Phase 7.1.4."
        (lambda (off) (nelisp-cc-arm64--encode-b off))
        then-label))))
 
-(defun nelisp-cc-arm64--lower-load-var (_instr _buf _alloc-state)
-  "Lower a `:load-var' SSA instruction.  Skeleton stub — TODO Phase 7.1.4.
-Free-variable resolution requires consulting `nelisp-defs-index'
-(Phase 6.5) for the symbol value cell, which the skeleton declines
-to wire in until Phase 7.1.4 brings the full ABI lowering pass."
-  (signal 'nelisp-cc-arm64-todo
-          (list :load-var-not-implemented :phase '7.1.4)))
+(defun nelisp-cc-arm64--lower-load-var (cg instr)
+  "Lower a `:load-var' SSA instruction (placeholder MOVZ #0).
+Phase 7.5 will patch this site against `nelisp-defs-index'.  The
+T15 spill-aware sibling routes a spilled def into its slot."
+  (let* ((buf (nelisp-cc-arm64--codegen-buffer cg))
+         (def (nelisp-cc--ssa-instr-def instr))
+         (dst (nelisp-cc-arm64--def-target cg def)))
+    (nelisp-cc-arm64--buffer-emit-instruction
+     buf (nelisp-cc-arm64--encode-movz-imm dst 0))
+    (nelisp-cc-arm64--writeback-def cg def dst)))
 
-(defun nelisp-cc-arm64--lower-store-var (_instr _buf _alloc-state)
-  "Lower a `:store-var' SSA instruction.  Skeleton stub — TODO Phase 7.1.4."
-  (signal 'nelisp-cc-arm64-todo
-          (list :store-var-not-implemented :phase '7.1.4)))
+(defun nelisp-cc-arm64--lower-store-var (cg instr)
+  "Lower a `:store-var' SSA instruction.
+The store has a single operand (new value) and a def (the same
+value).  Spill-aware: we materialise the operand and route through
+`--writeback-def'."
+  (let* ((def      (nelisp-cc--ssa-instr-def instr))
+         (operands (nelisp-cc--ssa-instr-operands instr))
+         (src-val  (car operands))
+         (src-reg  (nelisp-cc-arm64--materialise-operand cg src-val)))
+    (nelisp-cc-arm64--writeback-def cg def src-reg)))
 
-(defun nelisp-cc-arm64--lower-instr (instr buf alloc-state)
-  "Lower one SSA INSTR into BUF using ALLOC-STATE register decisions.
-Dispatches on `nelisp-cc--ssa-instr-opcode' to the per-opcode helpers.
-Unknown / out-of-skeleton opcodes raise `nelisp-cc-arm64-todo'."
+(defun nelisp-cc-arm64--lower-copy (cg instr)
+  "Lower a `:copy' SSA instruction inserted by phi resolution.
+One operand → one def, register-to-register MOV (or LDR/STR pair
+when slots are involved)."
+  (let* ((def      (nelisp-cc--ssa-instr-def instr))
+         (operands (nelisp-cc--ssa-instr-operands instr))
+         (src-val  (car operands))
+         (src-reg  (nelisp-cc-arm64--materialise-operand cg src-val)))
+    (nelisp-cc-arm64--writeback-def cg def src-reg)))
+
+(defun nelisp-cc-arm64--lower-instr (cg instr)
+  "Lower one SSA INSTR using CG's allocation decisions and slot map.
+Dispatches on `nelisp-cc--ssa-instr-opcode'.  Unknown opcodes raise
+`nelisp-cc-arm64-todo'."
   (let ((op (nelisp-cc--ssa-instr-opcode instr)))
     (pcase op
-      ('const     (nelisp-cc-arm64--lower-const     instr buf alloc-state))
-      ('return    (nelisp-cc-arm64--lower-return    instr buf alloc-state))
-      ('call      (nelisp-cc-arm64--lower-call      instr buf alloc-state))
-      ('branch    (nelisp-cc-arm64--lower-branch    instr buf alloc-state))
-      ('load-var  (nelisp-cc-arm64--lower-load-var  instr buf alloc-state))
-      ('store-var (nelisp-cc-arm64--lower-store-var instr buf alloc-state))
-      ;; Skeleton-elided ops fall through to TODO so misuse is loud.
+      ('const     (nelisp-cc-arm64--lower-const     cg instr))
+      ('return    (nelisp-cc-arm64--lower-return    cg instr))
+      ('call      (nelisp-cc-arm64--lower-call      cg instr))
+      ('copy      (nelisp-cc-arm64--lower-copy      cg instr))
+      ('branch    (nelisp-cc-arm64--lower-branch    cg instr))
+      ('load-var  (nelisp-cc-arm64--lower-load-var  cg instr))
+      ('store-var (nelisp-cc-arm64--lower-store-var cg instr))
       ('jump
-       ;; Emit a placeholder `B' fixup with no label binding yet —
-       ;; the function-level layout pass plants the target.
-       ;; Skeleton: silently elide so trivial straight-line lambdas
-       ;; (no control flow beyond entry → return) compile cleanly.
-       buf)
+       ;; Trivial straight-line jump elision — Phase 7.1.5 generalises
+       ;; with explicit B fixups for cross-block control flow.
+       (nelisp-cc-arm64--codegen-buffer cg))
       ('phi
-       ;; Phi resolution is Phase 7.1.5 (graph-coloring with copy
-       ;; insertion).  Skeleton tolerates a phi by emitting nothing
-       ;; — the caller is expected to keep tests phi-free.
-       buf)
+       ;; Phi nodes should have been resolved out by `--resolve-phis'
+       ;; before the codegen walk reaches us; surviving phi means a
+       ;; bug in the caller, not a routine code path.
+       (signal 'nelisp-cc-arm64-error
+               (list :phi-must-be-lowered-out-before-codegen
+                     (nelisp-cc--ssa-instr-id instr))))
       (_ (signal 'nelisp-cc-arm64-todo
                  (list :opcode-not-implemented op
                        :phase '7.1.4))))))
@@ -717,28 +1000,43 @@ ALLOC-STATE is the alist returned by `nelisp-cc--linear-scan'
 (T4 register allocator).  The result is a vector of integers 0..255
 ready to mmap PROT_EXEC + MAP_JIT.
 
-Phase 7.1.3 *skeleton subset* — supports the six opcodes
-:const / :load-var / :store-var / :call / :branch / :return.  Larger
-opcode coverage, prologue / epilogue, spill / reload, MAP_JIT write
-protection, and I-cache flush all belong to Phase 7.1.4
-(Doc 28 §6.9 v2 risk).
+T15 SHIPPED — phi resolution + AAPCS64 prologue/epilogue + spill/reload:
 
-The output does *not* include a function prologue or epilogue —
-trivial lambdas with no callee-saved register usage and no stack
-slots run correctly without one (the test fixtures stay within that
-band).  Lambdas that exceed the band trip
-`nelisp-cc-arm64-todo' rather than miscompile silently."
-  (let ((buf (nelisp-cc-arm64--buffer-make)))
+  - :phi instructions are lowered out before codegen (each phi
+    arm becomes a :copy emitted at the end of its predecessor
+    block, just before the terminator).
+  - The prologue saves X29/X30 with STP, sets the new frame
+    pointer, and (when spill slots exist) reserves the frame via
+    SUB SP, SP, #FRAME-SIZE.
+  - Spilled values live in 8-byte SP-relative slots; the backend
+    loads them via LDR Xs, [SP, #off] (using x9 as the scratch
+    register, outside the linear-scan pool) and stores back via
+    STR Xs, [SP, #off].
+  - Each `:return' inlines the matching epilogue (ADD SP +
+    LDP X29/X30 + RET)."
+  ;; Run T15 phi resolution before any codegen.
+  (nelisp-cc--resolve-phis function)
+  (let* ((slots-pair (nelisp-cc--allocate-stack-slots alloc-state))
+         (slot-alist (car slots-pair))
+         (frame-size (cdr slots-pair))
+         (buf (nelisp-cc-arm64--buffer-make))
+         (cg  (nelisp-cc-arm64--codegen-make
+               :function function
+               :alloc-state alloc-state
+               :buffer buf
+               :slot-alist slot-alist
+               :frame-size frame-size)))
+    ;; Function prologue (always emitted — STP + MOV X29, SP).
+    (nelisp-cc-arm64--emit-prologue buf frame-size)
     ;; Walk blocks in reverse postorder so block layout is forward
     ;; dataflow friendly — same linearisation the allocator used.
     (let ((rpo (nelisp-cc--ssa--reverse-postorder function)))
       (dolist (blk rpo)
-        ;; Bind a label for the block so :branch fixups can resolve.
         (nelisp-cc-arm64--buffer-define-label
          buf (intern (format "blk:%d"
                              (nelisp-cc--ssa-block-id blk))))
         (dolist (instr (nelisp-cc--ssa-block-instrs blk))
-          (nelisp-cc-arm64--lower-instr instr buf alloc-state))))
+          (nelisp-cc-arm64--lower-instr cg instr))))
     (nelisp-cc-arm64--buffer-finalize buf)))
 
 (provide 'nelisp-cc-arm64)

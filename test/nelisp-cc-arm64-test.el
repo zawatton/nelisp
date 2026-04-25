@@ -143,26 +143,34 @@ the encoded word should be 0x14000002."
 ;;; (8) compile empty lambda -----------------------------------------
 
 (ert-deftest nelisp-cc-arm64-compile-empty-lambda ()
-  "`(lambda () nil)' lowers to MOVZ X0, #0 followed by RET.
-SSA shape: entry block has [const(nil) -> v0] then [return v0].
-The const is 16 bits (#0) so we hit the small-imm path.  v0 is
-allocated x0 via the first virtual register r0 → x0 default mapping,
-so the return sequence emits no extra MOV (already in X0)."
+  "`(lambda () nil)' lowers to prologue + MOVZ X0,#0 + epilogue + RET.
+
+T15 introduced the AAPCS64 prologue/epilogue, so the byte layout is
+now (LE 4-byte words):
+  STP  X29, X30, [SP, #-16]!     ; prologue, save FP+LR
+  MOV  X29, SP
+  MOVZ X0, #0                    ; body
+  LDP  X29, X30, [SP], #16       ; epilogue, restore FP+LR
+  RET
+
+That is 5 instructions = 20 bytes total.  Earlier T10 skeleton had
+no prologue and emitted just the 8-byte MOVZ+RET sequence; the
+golden bytes have shifted accordingly."
   (let* ((fn (nelisp-cc-build-ssa-from-ast '(lambda () nil)))
          (alloc (nelisp-cc--linear-scan fn))
-         (bytes (nelisp-cc-arm64-compile fn alloc)))
-    ;; 8 bytes: MOVZ X0,#0 (4) + RET (4)
-    (should (= 8 (length bytes)))
-    ;; MOVZ X0, #0 = 0xD2800000 little-endian = 00 00 80 d2
-    (should (= #x00 (aref bytes 0)))
-    (should (= #x00 (aref bytes 1)))
-    (should (= #x80 (aref bytes 2)))
-    (should (= #xD2 (aref bytes 3)))
-    ;; RET = c0 03 5f d6
-    (should (= #xC0 (aref bytes 4)))
-    (should (= #x03 (aref bytes 5)))
-    (should (= #x5F (aref bytes 6)))
-    (should (= #xD6 (aref bytes 7)))))
+         (bytes (nelisp-cc-arm64-compile fn alloc))
+         (n     (length bytes)))
+    (should (= 20 n))
+    ;; MOVZ X0, #0 sits in the middle (after the 8-byte prologue).
+    (should (= #x00 (aref bytes 8)))
+    (should (= #x00 (aref bytes 9)))
+    (should (= #x80 (aref bytes 10)))
+    (should (= #xD2 (aref bytes 11)))
+    ;; RET = c0 03 5f d6 — last 4 bytes.
+    (should (= #xC0 (aref bytes (- n 4))))
+    (should (= #x03 (aref bytes (- n 3))))
+    (should (= #x5F (aref bytes (- n 2))))
+    (should (= #xD6 (aref bytes (- n 1))))))
 
 ;;; (9) compile identity lambda ---------------------------------------
 
