@@ -265,5 +265,112 @@ silently corrupting the simulator state."
     (should-error (nelisp-cc-runtime--free-exec-page page)
                   :type 'nelisp-cc-runtime-error)))
 
+;;; Phase 7.5.1 FFI bridge MVP smoke ------------------------------
+;;
+;; These tests need the Rust binary on disk *and* the host CPU to
+;; match the byte stream's ISA (we hand-code x86_64 minimum ops, so
+;; an arm64 host would SIGILL immediately).  Skip cleanly otherwise
+;; — Phase 7.5 proper will add an arch-router that picks the right
+;; bytes for the host and removes the gate.
+
+(defun nelisp-cc-runtime-test--runtime-bin ()
+  "Return the resolved `nelisp-runtime' binary path, or nil on miss."
+  (ignore-errors (nelisp-cc-runtime--locate-runtime-bin)))
+
+(defun nelisp-cc-runtime-test--host-x86_64-p ()
+  "Return non-nil when the running Emacs is on an x86_64 host.
+Used to gate the FFI bridge ERT off on arm64 hosts where the
+hand-coded x86_64 byte streams would SIGILL.  Phase 7.5 proper
+adds per-arch byte selection and removes this gate."
+  (let ((cfg (downcase (or (and (boundp 'system-configuration)
+                                system-configuration)
+                           ""))))
+    (or (string-match-p "x86_64" cfg)
+        (string-match-p "amd64" cfg))))
+
+(defun nelisp-cc-runtime-test--skip-unless-real-exec-available ()
+  "Skip the current ERT unless `exec-bytes' can run on this host."
+  (unless (nelisp-cc-runtime-test--runtime-bin)
+    (ert-skip "nelisp-runtime binary not built — run `make runtime'"))
+  (unless (nelisp-cc-runtime-test--host-x86_64-p)
+    (ert-skip
+     "Phase 7.5.1 MVP byte streams are x86_64-only; host is non-x86_64")))
+
+;;; (10) Real-exec returns 0 from `xor rax, rax; ret' --------------
+
+(ert-deftest nelisp-cc-runtime-real-exec-empty-fn ()
+  "`exec-bytes' on the minimal `xor rax, rax; ret' x86_64 stream
+returns RESULT: 0."
+  (nelisp-cc-runtime-test--skip-unless-real-exec-available)
+  (let ((result (nelisp-cc-runtime--exec-real
+                 ;; 48 31 C0 = xor rax, rax ; C3 = ret
+                 (vector #x48 #x31 #xC0 #xC3))))
+    (should (eq (car result) :result))
+    (should (eq (nth 1 result) 0))
+    (should (eq (nth 2 result) 0))))
+
+;;; (11) Real-exec returns 42 from `mov eax, 42; ret' --------------
+
+(ert-deftest nelisp-cc-runtime-real-exec-return-42 ()
+  "`exec-bytes' on `mov eax, 42; ret' returns RESULT: 42.
+Verifies the parser handles non-zero positive integers.  Note we
+use the 32-bit form (`mov eax, imm32') because it zero-extends to
+rax and is one byte shorter than the 64-bit form."
+  (nelisp-cc-runtime-test--skip-unless-real-exec-available)
+  (let ((result (nelisp-cc-runtime--exec-real
+                 ;; B8 2A 00 00 00 = mov eax, 42 ; C3 = ret
+                 (vector #xB8 #x2A #x00 #x00 #x00 #xC3))))
+    (should (eq (car result) :result))
+    (should (eq (nth 2 result) 42))))
+
+;;; (12) Real-exec executes a tiny arithmetic sequence -------------
+
+(ert-deftest nelisp-cc-runtime-real-exec-arithmetic ()
+  "`exec-bytes' on `mov eax, 40; add eax, 2; ret' returns RESULT: 42.
+Smoke tests that multi-instruction byte streams execute in order
+on the JIT page (i.e. `__clear_cache' / `mprotect(RX)' fired in
+the right sequence — out-of-order would either crash or read
+stale instructions on arm64; on x86_64 it can mis-execute under
+adversarial caching)."
+  (nelisp-cc-runtime-test--skip-unless-real-exec-available)
+  (let ((result (nelisp-cc-runtime--exec-real
+                 ;; B8 28 00 00 00 = mov eax, 40
+                 ;; 83 C0 02       = add eax, 2
+                 ;; C3             = ret
+                 (vector #xB8 #x28 #x00 #x00 #x00
+                         #x83 #xC0 #x02
+                         #xC3))))
+    (should (eq (car result) :result))
+    (should (eq (nth 2 result) 42))))
+
+;;; (13) Locator signals when the binary is absent -----------------
+
+(ert-deftest nelisp-cc-runtime-binary-missing-signals ()
+  "`nelisp-cc-runtime--locate-runtime-bin' raises
+`nelisp-cc-runtime-binary-missing' when the override points at a
+non-existent file.  Bypasses auto-discovery so the test never
+flakes on a host that *does* have the binary built."
+  (let ((nelisp-cc-runtime-binary-override
+         (expand-file-name "nelisp-runtime-does-not-exist-xyz"
+                           temporary-file-directory)))
+    (should-error (nelisp-cc-runtime--locate-runtime-bin)
+                  :type 'nelisp-cc-runtime-binary-missing)))
+
+;;; (14) Simulator stays the default ------------------------------
+
+(ert-deftest nelisp-cc-runtime-simulator-still-default ()
+  "Out-of-the-box `nelisp-cc-runtime-exec-mode' is `simulator' so
+existing call sites keep their Phase 7.1.4 audit-trace semantics
+unchanged.  Also asserts the defcustom carries the standard-value
+sentinel so a future user `setq' / Customize edit cannot quietly
+shift the default away from `simulator'."
+  (should (eq (default-value 'nelisp-cc-runtime-exec-mode) 'simulator))
+  (should (eq nelisp-cc-runtime-exec-mode 'simulator))
+  (let ((std (get 'nelisp-cc-runtime-exec-mode 'standard-value)))
+    (should std)
+    ;; standard-value is stored as a list whose car is an unevaluated
+    ;; expression; eval it to confirm the canonical default.
+    (should (eq (eval (car std) t) 'simulator))))
+
 (provide 'nelisp-cc-runtime-test)
 ;;; nelisp-cc-runtime-test.el ends here
