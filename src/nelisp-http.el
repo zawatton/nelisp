@@ -161,12 +161,103 @@ Returns (:status :headers :body :final-url).  Caller must `kill-buffer'."
             :body body
             :final-url final))))
 
+;;; Body / auth helpers (Phase 6.2.8) --------------------------------
+
+(defun nelisp-http--alist-of-string-pairs-p (x)
+  "Non-nil when X looks like an alist of (KEY . VAL) pairs.
+Used to disambiguate alist-form bodies from plist-form bodies."
+  (and (consp x)
+       (not (keywordp (car x)))
+       (consp (car x))
+       (not (consp (cdr (car x))))))
+
+(defun nelisp-http--url-encode-form (alist)
+  "Return ALIST encoded as application/x-www-form-urlencoded."
+  (mapconcat
+   (lambda (pair)
+     (format "%s=%s"
+             (url-hexify-string (format "%s" (car pair)))
+             (url-hexify-string (format "%s" (cdr pair)))))
+   alist
+   "&"))
+
+(defun nelisp-http--plist-to-hash (plist)
+  "Return PLIST as a JSON-friendly hash table.
+Keyword keys lose their leading colon."
+  (let ((h (make-hash-table :test 'equal)))
+    (while plist
+      (let ((k (car plist))
+            (v (cadr plist)))
+        (puthash (cond ((keywordp k) (substring (symbol-name k) 1))
+                       ((symbolp k) (symbol-name k))
+                       (t (format "%s" k)))
+                 v h))
+      (setq plist (cddr plist)))
+    h))
+
+(defun nelisp-http--encode-body (body)
+  "Encode BODY into (DATA . CONTENT-TYPE).
+- nil → (nil . nil)
+- string → (BODY . nil)        — caller sets Content-Type via :headers
+- alist of (K . V) → (form-urlencoded . application/x-www-form-urlencoded)
+- plist (starts with keyword) → (json . application/json)"
+  (cond
+   ((null body) (cons nil nil))
+   ((stringp body) (cons body nil))
+   ((nelisp-http--alist-of-string-pairs-p body)
+    (cons (nelisp-http--url-encode-form body)
+          "application/x-www-form-urlencoded"))
+   ((and (listp body) (keywordp (car body)))
+    (cons (json-serialize (nelisp-http--plist-to-hash body)
+                          :null-object :null
+                          :false-object :false)
+          "application/json"))
+   (t (error "nelisp-http: cannot encode body of type %S"
+             (type-of body)))))
+
+(defun nelisp-http--apply-auth (headers auth)
+  "Augment HEADERS alist with credentials from AUTH plist.
+AUTH:
+  (:bearer TOKEN)             → Authorization: Bearer TOKEN
+  (:basic (USER . PASS))      → Authorization: Basic base64(USER:PASS)
+  (:basic USER PASS)          → same as above (positional)
+  (:header (NAME . VALUE))    → custom header
+A list of these forms is also accepted."
+  (cond
+   ((null auth) headers)
+   ((and (consp auth) (consp (car auth)) (keywordp (caar auth)))
+    (cl-reduce (lambda (h spec) (nelisp-http--apply-auth h spec))
+               auth :initial-value headers))
+   (t
+    (pcase (car-safe auth)
+      (:bearer
+       (cons (cons "Authorization"
+                   (format "Bearer %s" (cadr auth)))
+             (assq-delete-all "Authorization" (copy-sequence headers))))
+      (:basic
+       (let* ((tail (cdr auth))
+              (user (if (consp (car tail)) (caar tail) (car tail)))
+              (pass (if (consp (car tail)) (cdar tail) (cadr tail)))
+              (encoded (base64-encode-string
+                        (encode-coding-string
+                         (format "%s:%s" user pass) 'utf-8)
+                        t)))
+         (cons (cons "Authorization" (format "Basic %s" encoded))
+               (assq-delete-all "Authorization"
+                                (copy-sequence headers)))))
+      (:header
+       (let ((pair (cadr auth)))
+         (cons (cons (car pair) (cdr pair)) headers)))
+      (_ headers)))))
+
 ;;; Network primitive (one-shot, no retry — MVP) ----------------------
 
-(defun nelisp-http--request (method url extra-headers timeout)
+(defun nelisp-http--request (method url extra-headers timeout &optional body)
   "Issue one METHOD request to URL with EXTRA-HEADERS and TIMEOUT (seconds).
+BODY is an optional request body string for POST / PUT / PATCH.
 Returns (:status :headers :body :final-url) or signals an error."
   (let* ((url-request-method method)
+         (url-request-data body)
          (url-request-extra-headers
           (append
            (unless (assoc "User-Agent" extra-headers)
@@ -288,6 +379,54 @@ Keyword args:
       (setq out (plist-put out (car tail) (cadr tail)))
       (setq tail (cddr tail)))
     out))
+
+;;;###autoload
+(cl-defun nelisp-http-fetch-post (url &key body content-type headers
+                                      accept timeout-sec auth)
+  "POST URL with BODY and return a response plist.
+
+Keyword args:
+  :body          String → sent verbatim (caller sets :content-type or
+                 :headers).  Alist of (K . V) → form-urlencoded.  Plist
+                 starting with a keyword → JSON.  nil → empty body.
+  :content-type  Override Content-Type.
+  :headers       Alist of extra request headers.
+  :accept        MIME string added as Accept header (short-hand).
+  :timeout-sec   Override `nelisp-http-timeout-sec'.
+  :auth          (:bearer TOKEN) / (:basic (USER . PASS)) /
+                 (:header (NAME . VAL)), or a list of such specs.
+
+Returns (:status :headers :body :from-cache nil :cached-at nil
+:final-url :elapsed-ms).  POSTs are never cached."
+  (nelisp-http--check-url url)
+  (let* ((encoded (nelisp-http--encode-body body))
+         (data (car encoded))
+         (auto-ct (cdr encoded))
+         (with-auth (nelisp-http--apply-auth (or headers nil) auth))
+         (final-headers
+          (let ((h with-auth))
+            (when (and accept (not (assoc "Accept" h)))
+              (setq h (cons (cons "Accept" accept) h)))
+            (let ((ct (or content-type auto-ct)))
+              (when (and ct (not (assoc "Content-Type" h)))
+                (setq h (cons (cons "Content-Type" ct) h))))
+            h))
+         (timeout (or timeout-sec nelisp-http-timeout-sec))
+         (start (float-time))
+         (resp (nelisp-http--request "POST" url final-headers timeout data))
+         (elapsed-ms (round (* 1000 (- (float-time) start))))
+         (status (plist-get resp :status)))
+    (cond
+     ((and (integerp status) (>= status 200) (< status 300))
+      (list :status status
+            :headers (plist-get resp :headers)
+            :body (plist-get resp :body)
+            :from-cache nil
+            :cached-at nil
+            :final-url (plist-get resp :final-url)
+            :elapsed-ms elapsed-ms))
+     (t
+      (error "nelisp-http: HTTP %s for POST %s" status url)))))
 
 ;;;###autoload
 (cl-defun nelisp-http-fetch-head (url &key headers timeout-sec)

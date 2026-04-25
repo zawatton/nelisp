@@ -197,5 +197,71 @@ namespace starts empty for each test."
   (should-error (nelisp-http-fetch-head "ftp://example.com/")
                 :type 'user-error))
 
+;;;; POST (Phase 6.2.8)
+
+(ert-deftest nelisp-http-test-encode-body-string ()
+  (should (equal (nelisp-http--encode-body nil) '(nil . nil)))
+  (should (equal (nelisp-http--encode-body "raw") '("raw" . nil))))
+
+(ert-deftest nelisp-http-test-encode-body-form ()
+  "Alist of (KEY . VAL) → form-urlencoded."
+  (let ((enc (nelisp-http--encode-body '(("a" . "1") ("b" . "x y")))))
+    (should (equal (cdr enc) "application/x-www-form-urlencoded"))
+    (should (string-match-p "a=1" (car enc)))
+    (should (string-match-p "b=x%20y" (car enc)))))
+
+(ert-deftest nelisp-http-test-encode-body-json ()
+  "Plist (starts with keyword) → JSON."
+  (let ((enc (nelisp-http--encode-body '(:k 1 :s "v"))))
+    (should (equal (cdr enc) "application/json"))
+    ;; Hash-table iteration order is not guaranteed, so compare via re-decode.
+    (let ((decoded (json-parse-string (car enc))))
+      (should (= (gethash "k" decoded) 1))
+      (should (equal (gethash "s" decoded) "v")))))
+
+(ert-deftest nelisp-http-test-apply-auth-bearer ()
+  (let ((h (nelisp-http--apply-auth nil '(:bearer "abc"))))
+    (should (equal (cdr (assoc "Authorization" h)) "Bearer abc"))))
+
+(ert-deftest nelisp-http-test-apply-auth-basic ()
+  (let* ((h (nelisp-http--apply-auth nil '(:basic ("alice" . "pw"))))
+         (auth (cdr (assoc "Authorization" h))))
+    (should (string-match "\\`Basic " auth))
+    (should (equal (base64-decode-string (substring auth 6))
+                   "alice:pw"))))
+
+(ert-deftest nelisp-http-test-fetch-post-roundtrip ()
+  "POST sends method + body via stub, returns 2xx response."
+  (let (sent-method sent-body sent-headers)
+    (cl-letf (((symbol-function 'nelisp-http--request)
+               (lambda (method url headers _t &optional body)
+                 (setq sent-method method
+                       sent-body body
+                       sent-headers headers)
+                 (list :status 201
+                       :headers '(:content-type "application/json")
+                       :body "{\"id\":42}"
+                       :final-url url))))
+      (let ((r (nelisp-http-fetch-post
+                "https://example.com/api"
+                :body '(:name "x" :n 1)
+                :auth '(:bearer "tok"))))
+        (should (= (plist-get r :status) 201))
+        (should (eq (plist-get r :from-cache) nil))
+        (should (equal sent-method "POST"))
+        (should (string-match-p "\"name\"" sent-body))
+        (should (equal (cdr (assoc "Authorization" sent-headers))
+                       "Bearer tok"))
+        (should (equal (cdr (assoc "Content-Type" sent-headers))
+                       "application/json"))))))
+
+(ert-deftest nelisp-http-test-fetch-post-non-2xx-errors ()
+  (cl-letf (((symbol-function 'nelisp-http--request)
+             (lambda (_m url _h _t &optional _b)
+               (list :status 500 :headers nil :body "err"
+                     :final-url url))))
+    (should-error (nelisp-http-fetch-post
+                   "https://example.com/api" :body "{}"))))
+
 (provide 'nelisp-http-test)
 ;;; nelisp-http-test.el ends here
