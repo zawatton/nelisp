@@ -1,6 +1,7 @@
 .PHONY: test compile clean all bench gc-bench actor-bench soak smoke stage-d-tarball \
         runtime runtime-test runtime-clean test-runtime \
         runtime-staticlib runtime-module runtime-module-clean stage-d-v2-bin \
+        sqlite-module sqlite-module-clean \
         release-artifact release-checksum soak-blocker soak-post-ship \
         bench-actual bench-actual-cargo
 
@@ -175,6 +176,31 @@ runtime-module: runtime
 
 runtime-module-clean:
 	rm -f $(NELISP_RUNTIME_MODULE)
+
+# T77 (Wave 1 agent C) — SQLite Emacs module wrapper.  Same dlopen-at-init
+# pattern as runtime-module; built on top of the cdylib produced by
+# `make runtime'.  Loaded via `(module-load <path>)' and wired into
+# `nelisp-sqlite.el' so the Emacs 30 `sqlite-*' compat layer can
+# dlsym the `nl_sqlite_*' Rust symbols.
+NELISP_SQLITE_MODULE_SRC := $(NELISP_RUNTIME_DIR)/c-bindings/nelisp-sqlite-module.c
+NELISP_SQLITE_MODULE     := $(NELISP_RUNTIME_DIR)/target/release/nelisp-sqlite-module.so
+
+sqlite-module: runtime
+	cc -shared -fPIC -Wall -Wextra \
+	  $(EMACS_MODULE_INC) \
+	  -L $(NELISP_RUNTIME_DIR)/target/release \
+	  -o $(NELISP_SQLITE_MODULE) \
+	  $(NELISP_SQLITE_MODULE_SRC) \
+	  -ldl
+	@if [ -f "$(NELISP_SQLITE_MODULE)" ]; then \
+	    printf "  \033[1;32m✓\033[0m sqlite-module built: %s ($$(du -h "$(NELISP_SQLITE_MODULE)" | cut -f1))\n" "$(NELISP_SQLITE_MODULE)"; \
+	else \
+	    printf "  \033[1;33m!\033[0m sqlite-module NOT produced — check cc + emacs-module.h availability\n"; \
+	    exit 1; \
+	fi
+
+sqlite-module-clean:
+	rm -f $(NELISP_SQLITE_MODULE)
 
 # Phase 7.5.1 (Doc 32 v2 LOCKED §3.1) — stage-d-v2.0 candidate binary
 # scaffold.  This target reserves the build edge for Phase 7.5.2 where
