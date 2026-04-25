@@ -614,6 +614,88 @@ them by ID and binary-search the resulting array."
           :function-name (nelisp-cc--ssa-function-name function)
           :safe-points (nreverse safe-points))))
 
+(cl-defun nelisp-cc-runtime--insert-safe-points-with-meta
+    (function &key frame-size call-pc-offsets)
+  "Compute safe-point metadata, threading real frame layout info.
+T63 Phase 7.5.7 — Doc 28 §2.9 critical fix #4 minimum closure.
+
+The pre-T63 `--insert-safe-points' hard-coded `:frame-size 0' for
+every safe-point and emitted no `:kind call' entries, leaving a
+moving collector blind to the live-roots layout at every call site.
+This helper layers the real frame-size + per-call PC offsets on top
+of the existing analysis pass without touching its internal
+structure.
+
+Arguments (keyword-only):
+  :frame-size       integer — total spill-frame size in bytes
+                    (output of `nelisp-cc--allocate-stack-slots').
+                    Threaded into every safe-point's `:frame-size'.
+  :call-pc-offsets  alist of (CALL-INSTR-ID . PC-OFFSET) — populated
+                    by the backend post-codegen so a moving GC can
+                    locate the precise PC immediately after each
+                    CALL / CALL-indirect / BL / BLR.  Each entry
+                    becomes an extra safe-point of `:kind call' in
+                    the result.  When nil, the helper still scans
+                    the SSA function for call instructions and emits
+                    one `:kind call' per call with `:pc-offset -1'
+                    (sentinel: backend resolves later).
+
+Returns a plist matching `--insert-safe-points''s contract:
+  (:gc-metadata-version VERSION
+   :function-name NAME
+   :safe-points (PLIST ...))
+
+Each safe-point plist now also carries `:frame-size' (from the
+argument).  Call safe-points are appended to the existing entry /
+back-edge / exit set, sorted by `:id' in append order so consumers
+can binary-search by id without re-sorting."
+  (let* ((base (nelisp-cc-runtime--insert-safe-points function))
+         (sps (plist-get base :safe-points))
+         (next-id (length sps))
+         (call-sps nil))
+    ;; Patch every existing safe-point's :frame-size.
+    (when frame-size
+      (setq sps
+            (mapcar
+             (lambda (sp)
+               (let ((sp-copy (copy-sequence sp)))
+                 (plist-put sp-copy :frame-size frame-size)))
+             sps)))
+    ;; Synthesize one safe-point per `:call' / `:call-indirect'.
+    (let ((rpo (nelisp-cc--ssa--reverse-postorder function))
+          (params (nelisp-cc--ssa-function-params function))
+          (max-vid (nelisp-cc--ssa-function-next-value-id function)))
+      (cl-flet ((bitmap (vids)
+                  (let ((bv (make-bool-vector (max max-vid 1) nil)))
+                    (dolist (v vids)
+                      (when (and (integerp v) (< v (length bv)))
+                        (aset bv v t)))
+                    bv)))
+        (dolist (blk rpo)
+          (dolist (instr (nelisp-cc--ssa-block-instrs blk))
+            (when (memq (nelisp-cc--ssa-instr-opcode instr)
+                        '(call call-indirect))
+              (let* ((iid (nelisp-cc--ssa-instr-id instr))
+                     (pc (or (cdr (assq iid call-pc-offsets)) -1))
+                     (operand-vids
+                      (mapcar #'nelisp-cc--ssa-value-id
+                              (nelisp-cc--ssa-instr-operands instr)))
+                     (param-vids
+                      (mapcar #'nelisp-cc--ssa-value-id params))
+                     (live (append operand-vids param-vids)))
+                (push (list :id next-id
+                            :kind 'call
+                            :block-id (nelisp-cc--ssa-block-id blk)
+                            :instr-id iid
+                            :pc-offset pc
+                            :live-roots (bitmap live)
+                            :frame-size (or frame-size 0))
+                      call-sps)
+                (cl-incf next-id)))))))
+    (list :gc-metadata-version nelisp-cc-runtime-gc-metadata-version
+          :function-name (nelisp-cc--ssa-function-name function)
+          :safe-points (append sps (nreverse call-sps)))))
+
 ;;; Tail-call lowering (byte-level post-process pass) ---------------
 ;;
 ;; The proper-tail-call rewrite recognises the trailing tail position

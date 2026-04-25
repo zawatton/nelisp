@@ -987,6 +987,39 @@ when slots are involved)."
          (src-reg  (nelisp-cc-arm64--materialise-operand cg src-val)))
     (nelisp-cc-arm64--writeback-def cg def src-reg)))
 
+(defun nelisp-cc-arm64--lower-jump (cg instr)
+  "Lower an SSA `:jump' INSTR — emit B (unconditional branch).
+T63 Phase 7.5.7 — Doc 28 §3.3 `:jump' terminator lowering.
+
+INSTR's owning block has exactly one successor (the IR's `:jump'
+terminator semantic).  We emit a B-opcode fixup against the
+successor's synthetic `blk:N' label.  The arm64 fixup machinery
+patches in the resolved imm26 displacement at finalize time, which
+covers both forward edges (e.g. then-/else-arm to merge) and
+backward edges (e.g. while body back-edge to loop-header).
+
+Encoding (see `nelisp-cc-arm64--encode-b'):
+  0x14000000 | (imm26 & 0x03FFFFFF)
+
+A successor in the *next* RPO position resolves to a 0-displacement
+B (= 4-byte no-op-jump); a peephole pass (Phase 7.1.5) may elide
+it later — the skeleton keeps the explicit branch so layout is
+independent of the codegen walk."
+  (let* ((buf   (nelisp-cc-arm64--codegen-buffer cg))
+         (block (nelisp-cc--ssa-instr-block instr))
+         (succs (nelisp-cc--ssa-block-successors block))
+         (succ  (car succs)))
+    (unless succ
+      (signal 'nelisp-cc-arm64-error
+              (list :jump-with-no-successor
+                    (nelisp-cc--ssa-block-id block))))
+    (let ((target-label
+           (intern (format "blk:%d" (nelisp-cc--ssa-block-id succ)))))
+      (nelisp-cc-arm64--buffer-emit-fixup
+       buf
+       (lambda (off) (nelisp-cc-arm64--encode-b off))
+       target-label))))
+
 (defun nelisp-cc-arm64--lower-call-indirect (cg instr)
   "Lower an SSA `:call-indirect' INSTR — first-class function call.
 T38 Phase 7.5.5 — Doc 28 §3.1 first-class call lowering for AAPCS64.
@@ -1091,9 +1124,19 @@ Dispatches on `nelisp-cc--ssa-instr-opcode'.  Unknown opcodes raise
       ('load-var       (nelisp-cc-arm64--lower-load-var  cg instr))
       ('store-var      (nelisp-cc-arm64--lower-store-var cg instr))
       ('jump
-       ;; Trivial straight-line jump elision — Phase 7.1.5 generalises
-       ;; with explicit B fixups for cross-block control flow.
-       (nelisp-cc-arm64--codegen-buffer cg))
+       ;; T63 Phase 7.5.7 — :jump terminator.  The frontend emits a
+       ;; `:jump' at the tail of every then-/else-arm of an `if' (so
+       ;; both arms join the merge block) and at the back-edge of
+       ;; `while' (so the loop body returns to the loop-header).  The
+       ;; T15 skeleton silently dropped this terminator on arm64,
+       ;; which collapsed every `if' merge and turned every `while'
+       ;; into a single iteration.  We now lower it to an explicit
+       ;; B (unconditional branch) fixup against the synthetic
+       ;; `blk:N' label of the block's lone successor — exactly the
+       ;; mirror of the x86_64 `--lower-jump' helper.  The fixup
+       ;; resolves at finalize time so a forward / backward edge
+       ;; encodes identically.
+       (nelisp-cc-arm64--lower-jump cg instr))
       ('phi
        ;; Phi nodes should have been resolved out by `--resolve-phis'
        ;; before the codegen walk reaches us; surviving phi means a

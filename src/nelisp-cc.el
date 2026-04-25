@@ -591,11 +591,23 @@ uses (a defined-but-dead value still occupies its def-point slot).
 USES is the ordered list of linear positions at which the value is
 read (may be empty).  END is *not* :read-only — Phase 7.1.5 may
 extend it to cover loops; the scaffold leaves the field mutable so
-later passes do not have to allocate a fresh struct."
+later passes do not have to allocate a fresh struct.
+
+CROSSES-CALL is t when the interval is *live* across at least one
+`:call' or `:call-indirect' instruction (i.e. some call-position P
+satisfies START < P <= END *and* P is also < END or there is a
+later use).  T63 Phase 7.5.7 — the linear-scan allocator forces such
+intervals to a stack slot rather than a caller-saved register, so
+the value survives the System V / AAPCS64 caller-saved clobber that
+every CALL / BL inflicts.  The default register pool maps r0..r7 to
+caller-saved (rdi..r11 / x0..x7), so without this flag a value live
+across a call site would silently corrupt — this was the root cause
+of the T49 audit critical #3 / T50 letrec self-recursion SIGSEGV."
   (value nil :read-only t)
   (start 0 :read-only t)
   (end 0)
-  (uses nil))
+  (uses nil)
+  (crosses-call nil))
 
 (cl-defstruct (nelisp-cc--alloc-state
                (:constructor nelisp-cc--alloc-state-make)
@@ -682,7 +694,8 @@ section commentary above."
   (let ((rpo (nelisp-cc--ssa--reverse-postorder fn))
         (pos 1)
         (instr-pos (make-hash-table :test 'eq))
-        (intervals (make-hash-table :test 'eql))) ; vid -> interval
+        (intervals (make-hash-table :test 'eql)) ; vid -> interval
+        (call-positions nil))                    ; T63: list of call instr positions
     ;; Seed parameter intervals at position 0.
     (dolist (p (nelisp-cc--ssa-function-params fn))
       (puthash (nelisp-cc--ssa-value-id p)
@@ -690,10 +703,15 @@ section commentary above."
                intervals))
     ;; First pass: assign linear positions to every instruction in the
     ;; reverse-postorder block stream, and seed an interval for every
-    ;; def value at its def position.
+    ;; def value at its def position.  T63 Phase 7.5.7 also collects
+    ;; the linear position of each `:call' / `:call-indirect' so a
+    ;; second pass can flag intervals that span any of them.
     (dolist (blk rpo)
       (dolist (instr (nelisp-cc--ssa-block-instrs blk))
         (puthash instr pos instr-pos)
+        (when (memq (nelisp-cc--ssa-instr-opcode instr)
+                    '(call call-indirect))
+          (push pos call-positions))
         (let ((def (nelisp-cc--ssa-instr-def instr)))
           (when def
             (puthash (nelisp-cc--ssa-value-id def)
@@ -714,6 +732,24 @@ section commentary above."
                 (setf (nelisp-cc--ssa-interval-uses iv)
                       (append (nelisp-cc--ssa-interval-uses iv)
                               (list upos)))))))))
+    ;; T63 Phase 7.5.7 — third pass: mark every interval whose span
+    ;; spans a call position as call-crossing.  An interval is "live
+    ;; across" a call if some call-pos P satisfies START < P AND P <
+    ;; END (i.e. the value is defined before the call and read after
+    ;; — the call's caller-saved clobber would otherwise destroy it).
+    ;; Note: `START < P' (strict) — a value *defined by* a call (its
+    ;; own return-value harvest at P=START) does not cross itself.
+    ;; `P < END' (strict) — a value last *used* at the call site (e.g.
+    ;; an operand) does not need to survive past the call.
+    (when call-positions
+      (maphash
+       (lambda (_vid iv)
+         (let ((start (nelisp-cc--ssa-interval-start iv))
+               (end   (nelisp-cc--ssa-interval-end iv)))
+           (when (cl-some (lambda (p) (and (< start p) (< p end)))
+                          call-positions)
+             (setf (nelisp-cc--ssa-interval-crosses-call iv) t))))
+       intervals))
     ;; Collect, sort by (start, value-id) for determinism.
     (let ((all nil))
       (maphash (lambda (_vid iv) (push iv all)) intervals)
@@ -825,6 +861,9 @@ Algorithm (Poletto-Sarkar 1999, fig.\\ 1):
 
   for each interval i, in increasing START order:
     EXPIREOLDINTERVALS(i)
+    if i CROSSES-CALL:                  ; T63 Phase 7.5.7
+       assignments[i.vid] := :spill     ; survive caller-saved clobber
+       continue
     if length(ACTIVE) == length(REGISTERS):
        SPILLATINTERVAL(i)
     else:
@@ -832,8 +871,21 @@ Algorithm (Poletto-Sarkar 1999, fig.\\ 1):
        assignments[i.vid] := register
        ACTIVE.insert(i, sorted by END)
 
-The scaffold extends nothing beyond the paper; loop-induced live
-ranges are *not* widened.  Phase 7.1.5 graph-coloring will revisit."
+T63 Phase 7.5.7 call-aware spill — the default pool maps r0..r7 to
+caller-saved physical registers (rdi..r11 / x0..x7), so any value
+live across a `:call' / `:call-indirect' would be silently clobbered
+by the callee's prologue.  We force such intervals to a stack slot
+where the bits survive the call.  This was the direct root cause of
+the T49 audit critical #3 + T50 letrec self-recursion SIGSEGV — the
+bench-actual fib(30) recursion holds the partial sum and the loop
+counter live across the recursive `funcall fib` step, both of which
+landed in caller-saved regs and were destroyed when fib re-entered.
+A future Phase 7.1.5 graph-colouring pass may re-promote some of
+these to callee-saved slots once it pushes/pops the matching
+prologue/epilogue; until then, spill is correct.
+
+The scaffold extends nothing beyond the paper otherwise; loop-induced
+live ranges are *not* widened.  Phase 7.1.5 graph-coloring will revisit."
   (let* ((regs (or registers nelisp-cc--default-int-registers))
          (intervals (nelisp-cc--compute-intervals fn))
          (state (nelisp-cc--alloc-state-make
@@ -844,6 +896,16 @@ ranges are *not* widened.  Phase 7.1.5 graph-coloring will revisit."
       (nelisp-cc--alloc--expire-old
        state (nelisp-cc--ssa-interval-start iv))
       (cond
+       ;; T63 Phase 7.5.7 — call-crossing intervals always spill.
+       ;; Their bits must survive the callee's caller-saved register
+       ;; clobber, and the default register pool only contains
+       ;; caller-saved physical registers.  See docstring above for
+       ;; the SIGSEGV root cause this branch closes.
+       ((nelisp-cc--ssa-interval-crosses-call iv)
+        (push (cons (nelisp-cc--ssa-value-id
+                     (nelisp-cc--ssa-interval-value iv))
+                    :spill)
+              (nelisp-cc--alloc-state-assignments state)))
        ((null (nelisp-cc--alloc-state-free state))
         (nelisp-cc--alloc--spill-at state iv))
        (t
