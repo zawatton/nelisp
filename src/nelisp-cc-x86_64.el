@@ -902,28 +902,35 @@ the callee symbol (META :fn) so the patcher can look it up."
        cg def nelisp-cc-x86_64--return-reg))))
 
 (defun nelisp-cc-x86_64--lower-branch (cg instr)
-  "Lower an SSA :branch INSTR — CMP cond,0 + JE else / fallthrough then.
+  "Lower an SSA :branch INSTR — TEST cond + JE else + JMP then.
 
 The branch carries (META :then THEN-BLOCK-ID :else ELSE-BLOCK-ID) and
-a single operand (the condition value).  The skeleton emits
+a single operand (the condition value).  T63 Phase 7.5.7 makes the
+emit *layout-independent* — both arms get an explicit jump rather
+than relying on a fallthrough to THEN:
 
-    CMP cond, 0    ; flags = cond - 0
-    JE  L_else     ; jump if zero (i.e. nil)
-    ;; fallthrough = then-block
+    TEST cond, cond ; flags ZF=1 iff cond is 0 (== nil)
+    JE   L_else     ; if zero → jump to else
+    JMP  L_then     ; else (non-zero) → jump to then
 
-…assuming the codegen will lay the THEN block immediately after the
-branch.  When that ordering does not hold (e.g. THEN is later in
-RPO), Phase 7.1.4 will insert an unconditional JMP to THEN before
-the JE.  The skeleton emits the simpler form so the encoding test
-matrix is small.
+The pre-T63 skeleton emitted only the JE and assumed THEN sat next
+in the codegen walk; reverse-postorder linearisation actually places
+ELSE before THEN for an `(if c T E)' diamond (DFS tree explores the
+first-linked successor deepest, postorder finishes it last; both
+edges are added in (then else) order so DFS sinks into THEN→merge,
+finishes THEN, then ELSE→merge[visited]→finishes ELSE; reverse-pop
+yields entry, ELSE, THEN, merge — fall-through hit ELSE not THEN).
+With both branches explicit the encoded bytes execute correctly
+regardless of which block the codegen lays out next.
 
 Note: x86_64 has no `CMP r64, imm0' shortcut shorter than `TEST
-r64,r64' (two bytes 0x48 0x85 + ModR/M).  The skeleton uses TEST as
-the canonical zero-test because it is one byte shorter than `CMP
-r64, imm32 0' and matches what gcc -O2 emits for `if (x)'."
+r64,r64' (two bytes 0x48 0x85 + ModR/M).  We use TEST because it is
+one byte shorter than `CMP r64, imm32 0' and matches what gcc -O2
+emits for `if (x)'."
   (let* ((buf      (nelisp-cc-x86_64--codegen-buffer cg))
          (operands (nelisp-cc--ssa-instr-operands instr))
          (meta     (nelisp-cc--ssa-instr-meta instr))
+         (then-id  (plist-get meta :then))
          (else-id  (plist-get meta :else))
          (cond-val (car operands))
          (cond-reg (nelisp-cc-x86_64--materialise-operand cg cond-val)))
@@ -937,7 +944,16 @@ r64, imm32 0' and matches what gcc -O2 emits for `if (x)'."
       (nelisp-cc-x86_64--buffer-emit-fixup
        buf (nelisp-cc-x86_64--emit-jcc-rel32 'je 0)
        else-label
-       2))))
+       2))
+    ;; JMP label_then — explicit unconditional branch to the THEN
+    ;; block (T63 layout-independence).  Without this the codegen
+    ;; would fall through to whichever block RPO laid down next,
+    ;; which is *not* guaranteed to be THEN (see commentary above).
+    (let ((then-label (intern (format "L_block_%d" then-id))))
+      (nelisp-cc-x86_64--buffer-emit-fixup
+       buf (nelisp-cc-x86_64--emit-jmp-rel32 0)
+       then-label
+       1))))
 
 (defun nelisp-cc-x86_64--lower-copy (cg instr)
   "Lower a `:copy' SSA instruction inserted by phi resolution.

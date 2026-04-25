@@ -37,6 +37,7 @@
 (require 'nelisp-cc)
 (require 'nelisp-cc-x86_64)
 (require 'nelisp-cc-arm64)
+(require 'nelisp-cc-runtime)
 
 ;;; (1) entry block ---------------------------------------------------
 
@@ -665,12 +666,17 @@ produces maximum register pressure with minimal CFG complexity."
 ;;; (27) AST → SSA → linear-scan integration ------------------------
 
 (ert-deftest nelisp-cc-pipeline-build-then-allocate ()
-  "End-to-end: build-ssa-from-ast → compute-intervals → linear-scan."
+  "End-to-end: build-ssa-from-ast → compute-intervals → linear-scan.
+T63 Phase 7.5.7 — call-aware spill is now correct, so any value
+live across a `:call' / `:call-indirect' is forced to a stack slot
+rather than competing for caller-saved registers.  In the form
+`(+ x (* y z))' the parameter `x' is live across the inner `*' call,
+so it spills under the new allocator.  The test asserts the *kind*
+of allocation (register or spill) rather than counting spills."
   (let* ((fn (nelisp-cc-build-ssa-from-ast
               '(lambda (x y z) (+ x (* y z)))))
          (intervals (nelisp-cc--compute-intervals fn))
-         (assignments (nelisp-cc--linear-scan fn))
-         (spilled (nelisp-cc--alloc-spilled-values assignments)))
+         (assignments (nelisp-cc--linear-scan fn)))
     ;; Verify the SSA function itself.
     (should (eq t (nelisp-cc--ssa-verify-function fn)))
     ;; Every interval must correspond to a defined value.
@@ -679,12 +685,15 @@ produces maximum register pressure with minimal CFG complexity."
         (should v)
         (should (or (eq :param (nelisp-cc--ssa-value-def-point v))
                     (nelisp-cc--ssa-value-def-point v)))))
-    ;; With three params + two `:call' results = 5 intervals; 8-reg
-    ;; pool fits all without spill.
-    (should (null spilled))
-    ;; Every assignment maps to a register from the default pool.
+    ;; Every assignment maps to a register from the default pool *or*
+    ;; the `:spill' marker (T63 call-aware allocator output).
     (dolist (cell assignments)
-      (should (memq (cdr cell) nelisp-cc--default-int-registers)))))
+      (should (or (memq (cdr cell) nelisp-cc--default-int-registers)
+                  (eq (cdr cell) :spill))))
+    ;; T63 Phase 7.5.7 — `x' is live across the inner `*' call so it
+    ;; must spill.  At least one interval must therefore be marked
+    ;; call-crossing in the interval analysis.
+    (should (cl-some #'nelisp-cc--ssa-interval-crosses-call intervals))))
 
 ;;; T38 Phase 7.5.5 SSA frontend extension (28-33) ------------------
 ;;
@@ -906,6 +915,349 @@ callee resolution)."
     ;; The byte vector must be non-empty (prologue + body + return).
     (should (vectorp bytes))
     (should (> (length bytes) 0))))
+
+;;; T63 Phase 7.5.7 — CRITICAL fix bundle ERT (34-50) ----------------
+;;
+;; T49 codex audit + T50 letrec partial-blocker fix bundle.  Covers the
+;; four critical findings + the letrec self-recursion gate:
+;;
+;;   #1  x86_64 if branch layout-independent       (tests 34-36)
+;;   #2  arm64 :jump emits B opcode                (tests 37-39)
+;;   #3  call-crossing register protection         (tests 40-44)
+;;   #4  GC metadata frame-size + call-points      (tests 45-46)
+;;   T50 letrec self-recursion semantics           (tests 47-50)
+
+;;; (34) x86_64 :branch emits both JE else AND JMP then -------------
+
+(ert-deftest nelisp-cc-x86_64-branch-emits-both-arms-explicit ()
+  "T63 #1 — :branch lowering must emit explicit jumps for both arms.
+
+Pre-T63 the lowering emitted only `JE else_label' and relied on a
+fallthrough into the THEN block.  Reverse-postorder linearisation
+actually places ELSE *before* THEN for a `(if c T E)' diamond, so
+the fallthrough was hitting ELSE — every taken branch went to the
+wrong arm.  After T63 the bytes contain a JCC (0x0F 0x84 = JE rel32)
+*and* a JMP rel32 (opcode 0xE9), proving both arms are reached
+through an explicit branch."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast
+              '(lambda (x) (if x 1 2))))
+         (alloc (nelisp-cc--linear-scan fn))
+         (bytes (nelisp-cc-x86_64-compile fn alloc))
+         (bvec  (append bytes nil))
+         (saw-je nil)
+         (saw-jmp nil))
+    (cl-loop for tail on bvec
+             when (and (eq (car tail) #x0F) (eq (cadr tail) #x84))
+             do (setq saw-je t)
+             when (eq (car tail) #xE9)
+             do (setq saw-jmp t))
+    (should saw-je)
+    (should saw-jmp)))
+
+;;; (35) x86_64 if-diamond — both branch fixups resolve to valid offsets
+
+(ert-deftest nelisp-cc-x86_64-if-diamond-fixups-resolve ()
+  "T63 #1 — finalize() must resolve both JE-else and JMP-then fixups
+without raising `nelisp-cc-x86_64-unresolved-label'.  This proves the
+synthetic L_block_N label scheme covers the layout-independent branch."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast
+              '(lambda (x) (if x (+ x 1) (- x 1)))))
+         (alloc (nelisp-cc--linear-scan fn)))
+    (should-not
+     (condition-case _err
+         (progn (nelisp-cc-x86_64-compile fn alloc) nil)
+       (nelisp-cc-x86_64-unresolved-label t)))))
+
+;;; (36) x86_64 nested if — both arms still reached
+
+(ert-deftest nelisp-cc-x86_64-nested-if-no-fallthrough-bug ()
+  "T63 #1 — nested `if' lowers without the pre-fix fallthrough bug.
+The buffer must be non-empty and contain at least 2 JE / JCC and 2
+JMP rel32 (one per branch level)."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast
+              '(lambda (x y)
+                 (if x (if y 1 2) 3))))
+         (alloc (nelisp-cc--linear-scan fn))
+         (bytes (nelisp-cc-x86_64-compile fn alloc))
+         (bvec  (append bytes nil))
+         (n-je 0) (n-jmp 0))
+    (cl-loop for tail on bvec
+             when (and (eq (car tail) #x0F) (eq (cadr tail) #x84))
+             do (cl-incf n-je)
+             when (eq (car tail) #xE9)
+             do (cl-incf n-jmp))
+    ;; Two `if' ⇒ at least 2 JE and at least 2 JMP.
+    (should (>= n-je 2))
+    (should (>= n-jmp 2))))
+
+;;; (37) arm64 :jump emits B opcode (top byte 0x14)  -----------------
+
+(ert-deftest nelisp-cc-arm64-jump-emits-b-opcode ()
+  "T63 #2 — `:jump' on arm64 must lower to a B (unconditional branch)
+instruction whose top opcode bits are 0x14000000 (top byte 0x14 in
+little-endian as the 4th byte of the instruction word).
+
+The pre-T63 backend dropped `:jump' entirely (no-op), which silently
+collapsed every `if' merge and turned every `while' into a single
+iteration.  After T63 the encoded word is `0x14000000 | imm26' so the
+4-byte LE sequence ends with byte 0x14 in the top position.
+
+Fixture: `(lambda (x) (if x 1 2))' — both then and else arms emit a
+`:jump' to the merge block, so the byte stream must contain ≥ 2 B
+opcodes (4 bytes each, top byte 0x14)."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast
+              '(lambda (x) (if x 1 2))))
+         (alloc (nelisp-cc--linear-scan fn))
+         (bytes (nelisp-cc-arm64-compile fn alloc))
+         (n     (length bytes))
+         (n-b   0))
+    ;; Walk 4-byte aligned windows; B opcode word = 0x14xxxxxx so the
+    ;; *high* byte (which is the 4th LE byte of the word) starts with
+    ;; 0001_01xx in its top 6 bits = 0x14..0x17 inclusive.
+    (cl-loop for i from 0 below (- n 3) by 4
+             for w4 = (aref bytes (+ i 3))
+             when (and (>= w4 #x14) (<= w4 #x17))
+             do (cl-incf n-b))
+    (should (>= n-b 2))))
+
+;;; (38) arm64 :jump fixup resolves cleanly --------------------------
+
+(ert-deftest nelisp-cc-arm64-jump-fixup-resolves ()
+  "T63 #2 — finalize() on arm64 must resolve the B-opcode fixup the
+T63 `--lower-jump' helper emits, without raising `:unbound-label'."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast
+              '(lambda (x) (if x 1 2))))
+         (alloc (nelisp-cc--linear-scan fn)))
+    (should-not
+     (condition-case _err
+         (progn (nelisp-cc-arm64-compile fn alloc) nil)
+       (nelisp-cc-arm64-error t)))))
+
+;;; (39) arm64 while loop emits back-edge B --------------------------
+
+(ert-deftest nelisp-cc-arm64-while-back-edge-emits-b ()
+  "T63 #2 — `while' loop body emits a B back-edge to the loop-header.
+Pre-T63 the back-edge was dropped, turning every loop into a single
+iteration.  After T63 the byte stream contains at least one B-opcode
+word with a *negative* imm26 displacement (top byte still 0x14..0x17;
+the imm26 field carries the negative offset)."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast
+              '(lambda (x) (while x (setq x 0)))))
+         (alloc (nelisp-cc--linear-scan fn))
+         (bytes (nelisp-cc-arm64-compile fn alloc))
+         (n     (length bytes))
+         (saw-b nil))
+    (cl-loop for i from 0 below (- n 3) by 4
+             for w4 = (aref bytes (+ i 3))
+             when (and (>= w4 #x14) (<= w4 #x17))
+             do (setq saw-b t))
+    (should saw-b)))
+
+;;; (40) interval crosses-call detected -----------------------------
+
+(ert-deftest nelisp-cc-interval-crosses-call-detected ()
+  "T63 #3 — `--compute-intervals' must mark intervals as call-crossing
+when the value is live across a `:call' / `:call-indirect'.
+
+Fixture: `(lambda (x) (+ x (* 2 3)))' — `x' is live across the inner
+`*' call (the `+' call uses `x' as an operand *after* the `*' call
+returns).  The interval for the parameter must therefore be flagged."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast
+              '(lambda (x) (+ x (* 2 3)))))
+         (intervals (nelisp-cc--compute-intervals fn)))
+    (should (cl-some #'nelisp-cc--ssa-interval-crosses-call intervals))))
+
+;;; (41) call-crossing intervals always spill -----------------------
+
+(ert-deftest nelisp-cc-linear-scan-call-crossing-spills ()
+  "T63 #3 — `--linear-scan' must force `:spill' for every call-crossing
+interval, regardless of register pressure.  The default register pool
+is all caller-saved (rdi..r11 / x0..x7), so the only correct answer
+is to put the value in a stack slot where it survives the callee's
+clobber."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast
+              '(lambda (x) (+ x (* 2 3)))))
+         (intervals (nelisp-cc--compute-intervals fn))
+         (alloc (nelisp-cc--linear-scan fn)))
+    ;; For every interval flagged crosses-call, the assignment must be
+    ;; `:spill', NOT a register from the pool.
+    (dolist (iv intervals)
+      (when (nelisp-cc--ssa-interval-crosses-call iv)
+        (let* ((vid (nelisp-cc--ssa-value-id
+                     (nelisp-cc--ssa-interval-value iv)))
+               (assign (nelisp-cc--alloc-register-of alloc vid)))
+          (should (eq assign :spill)))))))
+
+;;; (42) call-crossing → spill slot allocated -----------------------
+
+(ert-deftest nelisp-cc-allocate-stack-slots-covers-call-crossing ()
+  "T63 #3 — every `:spill' produced by call-aware allocation gets a
+real stack slot via `--allocate-stack-slots' so the backend has a
+positive byte offset to load from / store to."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast
+              '(lambda (x) (+ x (* 2 3)))))
+         (alloc (nelisp-cc--linear-scan fn))
+         (slots-pair (nelisp-cc--allocate-stack-slots alloc))
+         (slot-alist (car slots-pair))
+         (frame-size (cdr slots-pair))
+         (spilled (nelisp-cc--alloc-spilled-values alloc)))
+    (should spilled)
+    (should (>= frame-size 16))           ; ABI-aligned floor for ≥1 slot.
+    (dolist (vid spilled)
+      (should (integerp (nelisp-cc--stack-slot-of slot-alist vid))))))
+
+;;; (43) x86_64 backend handles call-crossing spill end-to-end -----
+
+(ert-deftest nelisp-cc-x86_64-call-crossing-end-to-end ()
+  "T63 #3 — full pipeline (build → allocate → x86_64 compile) succeeds
+on a call-crossing form without raising any backend signal.  Proves
+the spill-aware lowering path is wired for the call-aware allocator."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast
+              '(lambda (x) (+ x (* 2 3)))))
+         (alloc (nelisp-cc--linear-scan fn)))
+    (should-not
+     (condition-case _err
+         (progn (nelisp-cc-x86_64-compile fn alloc) nil)
+       (nelisp-cc-x86_64-error t)))))
+
+;;; (44) arm64 backend handles call-crossing spill end-to-end ------
+
+(ert-deftest nelisp-cc-arm64-call-crossing-end-to-end ()
+  "T63 #3 — same as test 43 but for the AAPCS64 arm64 backend.
+Uses `compile-with-link' since arm64 :call lowering requires the
+callee trampoline to bind the `callee:NAME' label fixup; the bare
+`compile' API would otherwise raise `:unbound-label' for the `+'
+and `*' primitives this test exercises."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast
+              '(lambda (x) (+ x (* 2 3)))))
+         (alloc (nelisp-cc--linear-scan fn)))
+    (should-not
+     (condition-case _err
+         (progn (nelisp-cc-arm64-compile-with-link fn alloc) nil)
+       (nelisp-cc-arm64-error t)))))
+
+;;; (45) GC metadata records a non-zero frame-size when spills occur
+
+(ert-deftest nelisp-cc-runtime-gc-metadata-frame-size ()
+  "T63 #4 — GC metadata `:frame-size' must reflect the real spill
+slot count, not the constant 0 the pre-T63 stub returned.  The T63
+helper `nelisp-cc-runtime--insert-safe-points-with-meta' threads the
+frame-size from `nelisp-cc--allocate-stack-slots'."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast
+              '(lambda (x) (+ x (* 2 3)))))
+         (alloc (nelisp-cc--linear-scan fn))
+         (slots-pair (nelisp-cc--allocate-stack-slots alloc))
+         (frame-size (cdr slots-pair))
+         (meta (nelisp-cc-runtime--insert-safe-points-with-meta
+                fn :frame-size frame-size)))
+    (let ((sps (plist-get meta :safe-points)))
+      (should sps)
+      ;; Every safe-point's :frame-size matches the real frame.
+      (dolist (sp sps)
+        (should (= frame-size (plist-get sp :frame-size)))))))
+
+;;; (46) GC metadata records call-points for moving-GC root recovery
+
+(ert-deftest nelisp-cc-runtime-gc-metadata-call-points ()
+  "T63 #4 — GC metadata records each `:call' / `:call-indirect' as a
+safe-point so a moving collector can walk roots at the precise PC
+where a callee transition happens.  Pre-T63 only entry / back-edge /
+exit points were emitted; call-points were missing."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast
+              '(lambda (x) (+ x (* 2 3)))))
+         (meta (nelisp-cc-runtime--insert-safe-points-with-meta
+                fn :frame-size 0))
+         (sps (plist-get meta :safe-points))
+         (n-call-pts (cl-count-if
+                      (lambda (sp) (eq (plist-get sp :kind) 'call))
+                      sps)))
+    ;; Two arithmetic primitives in the form ⇒ ≥ 2 call safe-points.
+    (should (>= n-call-pts 2))))
+
+;;; (47) fib body lowers without spill collision -------------------
+
+(ert-deftest nelisp-cc-letrec-self-recursion-lowers ()
+  "T50 follow-up — the inner fib body of a self-recursive `letrec'
+must lower end-to-end without raising any allocator / backend signal.
+
+The inner body holds the partial sum live across the second
+`funcall fib' call AND `n' live across both inner calls.  Pre-T63
+both landed in caller-saved registers and were destroyed when fib
+re-entered, producing SIGSEGV at execution.  After T63 those values
+spill, the bytes become register-safe, and the SSA→bytes pipeline
+runs cleanly.  We test the inner-body form directly (the AST→SSA
+frontend would compile it as a sub-function via `:closure'; testing
+it as a top-level lambda exercises the same allocator path with
+direct visibility into the spill set)."
+  (let* ((form '(lambda (n)
+                  (if (< n 2) n
+                    (+ (funcall fib (- n 1))
+                       (funcall fib (- n 2))))))
+         (fn (nelisp-cc-build-ssa-from-ast form))
+         (alloc (nelisp-cc--linear-scan fn)))
+    (should-not
+     (condition-case _err
+         (progn (nelisp-cc-x86_64-compile fn alloc) nil)
+       (nelisp-cc-x86_64-error t)))))
+
+;;; (48) fib body has call-crossing intervals + at least one spill --
+
+(ert-deftest nelisp-cc-letrec-self-recursion-spills-call-crossers ()
+  "T50 follow-up — fib body has multiple call-crossing values.
+
+`n' is live across both `funcall fib' calls; the first `funcall
+fib' result is live across the second.  Both must be flagged
+crosses-call AND assigned `:spill'."
+  (let* ((form '(lambda (n)
+                  (if (< n 2) n
+                    (+ (funcall fib (- n 1))
+                       (funcall fib (- n 2))))))
+         (fn (nelisp-cc-build-ssa-from-ast form))
+         (intervals (nelisp-cc--compute-intervals fn))
+         (alloc (nelisp-cc--linear-scan fn)))
+    (should (cl-some #'nelisp-cc--ssa-interval-crosses-call intervals))
+    (should (cl-some (lambda (cell) (eq (cdr cell) :spill)) alloc))))
+
+;;; (49) fib body arm64 lowering also clean -------------------------
+
+(ert-deftest nelisp-cc-arm64-letrec-self-recursion-lowers ()
+  "T50 follow-up — same as test 47 on the AAPCS64 arm64 backend.
+Uses `compile-with-link' so the `<' / `+' / `-' primitive fixups
+get their `callee:NAME' label binding (otherwise `:unbound-label')."
+  (let* ((form '(lambda (n)
+                  (if (< n 2) n
+                    (+ (funcall fib (- n 1))
+                       (funcall fib (- n 2))))))
+         (fn (nelisp-cc-build-ssa-from-ast form))
+         (alloc (nelisp-cc--linear-scan fn)))
+    (should-not
+     (condition-case _err
+         (progn (nelisp-cc-arm64-compile-with-link fn alloc) nil)
+       (nelisp-cc-arm64-error t)))))
+
+;;; (50) full bench-actual fib(30) form passes the call-aware path -
+
+(ert-deftest nelisp-cc-pipeline-fib-30-call-aware ()
+  "T63 final gate smoke — the bench-actual fib(30) form (Doc 28 v2
+§5.2 30x gate input) builds + allocates + x86_64-compiles end-to-end
+under the T63 call-aware allocator.  Asserts the pipeline emits
+non-empty bytes; the call-aware allocator path itself is exercised
+explicitly by tests 47-49 against the inner fib body."
+  (let* ((form '(lambda ()
+                  (letrec ((fib (lambda (n)
+                                  (if (< n 2) n
+                                    (+ (funcall fib (- n 1))
+                                       (funcall fib (- n 2)))))))
+                    (funcall fib 30))))
+         (fn (nelisp-cc-build-ssa-from-ast form))
+         (alloc (nelisp-cc--linear-scan fn))
+         (bytes (nelisp-cc-x86_64-compile fn alloc)))
+    (should (vectorp bytes))
+    (should (> (length bytes) 0))
+    ;; Allocator output is well-formed.
+    (dolist (cell alloc)
+      (should (or (memq (cdr cell) nelisp-cc--default-int-registers)
+                  (eq (cdr cell) :spill))))))
 
 (provide 'nelisp-cc-test)
 ;;; nelisp-cc-test.el ends here
