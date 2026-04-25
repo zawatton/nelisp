@@ -525,5 +525,157 @@ candidate), one with age 1 (post-increment 2, IS a candidate)."
         (should (nelisp-gc-inner--promotion-candidate-p mature-hdr))))))
 
 
+;;; 8. Card-marking write barrier (Phase 7.3.4, T26) ---------------
+
+(defun nelisp-gc-inner-test--mk-tenured-region (id start end)
+  "Build a `:tenured' Doc 29 §1.4 region descriptor for card-table tests."
+  (list :region-id   id
+        :start       start
+        :end         end
+        :generation  :tenured
+        :family      :cons-pool
+        :children-of #'ignore))
+
+(ert-deftest nelisp-gc-inner-init-card-table-clean ()
+  "Fresh card table starts with every dirty bit clear (= nil) and
+exposes a sensible card-count derived from region size / card size."
+  (nelisp-gc-inner-test--reset)
+  (let* ((tenured (nelisp-gc-inner-test--mk-tenured-region
+                   ;; Small region: 16KB so we get exactly 4 cards
+                   ;; of 4KB each — a tractable test fixture.
+                   0 0 (* 16 1024)))
+         (table (nelisp-gc-inner-init-card-table tenured)))
+    (should (nelisp-gc-inner--card-table-p table))
+    (should (= 4 (nelisp-gc-inner--card-table-card-count table)))
+    (should (= nelisp-gc-inner-card-size
+               (nelisp-gc-inner--card-table-card-size table)))
+    (should (= 0  (nelisp-gc-inner--card-table-region-start table)))
+    (should (= (* 16 1024)
+               (nelisp-gc-inner--card-table-region-end table)))
+    ;; All dirty bits clear.
+    (let ((bv (nelisp-gc-inner--card-table-dirty-bits table)))
+      (should (bool-vector-p bv))
+      (should (= 4 (length bv)))
+      (dotimes (i 4)
+        (should-not (aref bv i))))
+    ;; Stats agree.
+    (let ((stats (nelisp-gc-inner-card-table-stats table)))
+      (should (= 4 (plist-get stats :total-cards)))
+      (should (= 0 (plist-get stats :dirty-cards)))
+      (should (= 0.0 (plist-get stats :dirty-percent))))))
+
+(ert-deftest nelisp-gc-inner-write-barrier-marks-dirty ()
+  "Cross-generation write (tenured slot ← nursery pointer) dirties the
+card whose page contains the tenured slot.  Other cards stay clean."
+  (nelisp-gc-inner-test--reset)
+  (let* ((nursery (nelisp-gc-inner-test--mk-nursery-region 0 #x10000 #x20000))
+         (tenured (nelisp-gc-inner-test--mk-tenured-region
+                   1 0 (* 16 1024)))                ; 4 cards
+         (table   (nelisp-gc-inner-init-card-table tenured))
+         ;; Write at byte 5000 (= card 1, since 5000 / 4096 = 1) of a
+         ;; nursery-pointer (#x10100 is inside [#x10000, #x20000)).
+         (slot-addr   5000)
+         (nursery-ptr #x10100)
+         (rc (nelisp-gc-inner-write-barrier
+              table slot-addr nursery-ptr nursery)))
+    ;; Barrier reports `dirtied'.
+    (should (eq t rc))
+    ;; Card 1 dirty; cards 0, 2, 3 clean.
+    (let ((bv (nelisp-gc-inner--card-table-dirty-bits table)))
+      (should-not (aref bv 0))
+      (should      (aref bv 1))
+      (should-not (aref bv 2))
+      (should-not (aref bv 3)))
+    ;; Stats: exactly one card dirty.
+    (let ((stats (nelisp-gc-inner-card-table-stats table)))
+      (should (= 1 (plist-get stats :dirty-cards)))
+      (should (= 25.0 (plist-get stats :dirty-percent))))
+    ;; clear-card-table puts every bit back to nil.
+    (nelisp-gc-inner-clear-card-table table)
+    (let ((bv2 (nelisp-gc-inner--card-table-dirty-bits table)))
+      (dotimes (i 4)
+        (should-not (aref bv2 i))))))
+
+(ert-deftest nelisp-gc-inner-write-barrier-skips-intra-tenured ()
+  "Intra-generation writes (tenured slot ← tenured pointer) must NOT
+dirty any card.  The barrier checks the WRITTEN-VALUE against the
+nursery boundary and only marks when the value points into nursery."
+  (nelisp-gc-inner-test--reset)
+  (let* ((nursery (nelisp-gc-inner-test--mk-nursery-region 0 #x10000 #x20000))
+         (tenured (nelisp-gc-inner-test--mk-tenured-region 1 0 (* 16 1024)))
+         (table   (nelisp-gc-inner-init-card-table tenured))
+         ;; Tenured-to-tenured write: slot at 1000 (card 0), value 5000
+         ;; (also tenured, NOT in nursery [#x10000, #x20000)).
+         (rc (nelisp-gc-inner-write-barrier
+              table 1000 5000 nursery)))
+    ;; Barrier reports `not dirtied'.
+    (should (null rc))
+    ;; Every card stays clean.
+    (let ((bv (nelisp-gc-inner--card-table-dirty-bits table)))
+      (dotimes (i 4)
+        (should-not (aref bv i))))
+    ;; Out-of-range write: addr beyond region-end is silently ignored
+    ;; (the barrier returns nil; no crash).  This keeps the mutator
+    ;; able to write to addresses *outside* the card-table's covered
+    ;; region without paying for a bounds check.
+    (let ((rc2 (nelisp-gc-inner-write-barrier
+                table (* 100 1024) #x10100 nursery)))
+      (should (null rc2)))
+    ;; Even a real cross-gen value dirties only the in-range write —
+    ;; flip the slot so we can prove the barrier still works after
+    ;; the no-op cases.
+    (let ((rc3 (nelisp-gc-inner-write-barrier
+                table 1000 #x10100 nursery)))
+      (should (eq t rc3)))
+    (let ((bv (nelisp-gc-inner--card-table-dirty-bits table)))
+      (should      (aref bv 0))
+      (should-not (aref bv 1))
+      (should-not (aref bv 2))
+      (should-not (aref bv 3)))))
+
+(ert-deftest
+    nelisp-gc-inner-scan-remembered-set-yields-cross-gen-pointers ()
+  "Walk dirty cards → return per-card list of cross-generation
+pointers.  Two dirty cards each carrying one tenured object whose
+`:fields' contain a nursery pointer; the scanner must emit both
+edges, dropping the (clean) third card entirely."
+  (nelisp-gc-inner-test--reset)
+  (let* ((nursery (nelisp-gc-inner-test--mk-nursery-region 0 #x10000 #x20000))
+         (tenured (nelisp-gc-inner-test--mk-tenured-region 1 0 (* 16 1024)))
+         (table   (nelisp-gc-inner-init-card-table tenured))
+         ;; Three tenured objects, one per card boundary.  Card 0 obj
+         ;; at addr 100, card 1 obj at addr 5000, card 2 obj at addr
+         ;; 9000.  Cards 0 and 1 will be dirtied; card 2 stays clean.
+         (objs (list
+                ;; Card 0: tenured object at 100 with a nursery field.
+                (cons 100  (list :fields (list #x10100)))
+                ;; Card 1: tenured object at 5000 with a nursery field.
+                (cons 5000 (list :fields (list #x10200)))
+                ;; Card 2: tenured object at 9000 with a tenured-only
+                ;; field (#x500 is *inside* tenured, not nursery — so
+                ;; this card stays clean and the scanner skips it).
+                (cons 9000 (list :fields (list #x500)))))
+         (objs-fn (lambda () objs)))
+    ;; Mutator records the cross-gen writes.
+    (nelisp-gc-inner-write-barrier table 100  #x10100 nursery)
+    (nelisp-gc-inner-write-barrier table 5000 #x10200 nursery)
+    ;; Card 2 (object at 9000) was *not* a cross-gen write so the
+    ;; barrier was never invoked there.
+    (let* ((rem-set (nelisp-gc-inner-scan-remembered-set
+                     table nursery objs-fn)))
+      ;; Two dirty cards yielded entries; card 2 (clean) is absent.
+      (should (= 2 (length rem-set)))
+      (should (assoc 0 rem-set))
+      (should (assoc 1 rem-set))
+      (should-not (assoc 2 rem-set))
+      ;; Each entry's pointer list contains its nursery edge.
+      (should (member #x10100 (cdr (assoc 0 rem-set))))
+      (should (member #x10200 (cdr (assoc 1 rem-set)))))
+    ;; Sanity: a clean table after `clear' yields nil.
+    (nelisp-gc-inner-clear-card-table table)
+    (should (null (nelisp-gc-inner-scan-remembered-set
+                   table nursery objs-fn)))))
+
+
 (provide 'nelisp-gc-inner-test)
 ;;; nelisp-gc-inner-test.el ends here
