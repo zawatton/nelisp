@@ -624,7 +624,7 @@ clear; will error if any tool is still registered."
   ;; users can drive the cache-aware HTTP path entirely over MCP.
 
   (nelisp-deftool http-fetch
-    :description "GET URL with TTL cache via nelisp-state ns=\"http\"."
+    :description "GET URL with TTL cache via nelisp-state ns=\"http\"; optional :selector / :json-path extract."
     :input-schema (list :type "object"
                         :properties
                         (list :url (list :type "string"
@@ -633,19 +633,27 @@ clear; will error if any tool is still registered."
                               :ttl (list :type "integer"
                                          :description "Cache TTL seconds (default 86400)")
                               :no-cache (list :type "boolean"
-                                              :description "Skip cache reads + writes"))
+                                              :description "Skip cache reads + writes")
+                              :selector (list :type "string"
+                                              :description "CSS-subset selector for text/html bodies (tag, .class, #id, tag.class, tag#id)")
+                              :json-path (list :type "string"
+                                               :description "Dotted-path for application/json bodies (e.g. data.results[0].id, items[*].name)"))
                         :required ["url"])
     :handler (lambda (args)
                (let* ((url (alist-get 'url args))
                       (timeout (alist-get 'timeout-sec args))
                       (ttl (alist-get 'ttl args))
-                      (no-cache (alist-get 'no-cache args)))
+                      (no-cache (alist-get 'no-cache args))
+                      (selector (alist-get 'selector args))
+                      (json-path (alist-get 'json-path args)))
                  (unless (stringp url)
                    (error "http-fetch: missing string `url'"))
                  (apply #'nelisp-http-fetch url
                         (append (and timeout (list :timeout-sec timeout))
                                 (and ttl (list :ttl ttl))
-                                (and no-cache (list :no-cache t)))))))
+                                (and no-cache (list :no-cache t))
+                                (and selector (list :selector selector))
+                                (and json-path (list :json-path json-path)))))))
 
   (nelisp-deftool http-head
     :description "HEAD URL — returns :status :headers :final-url :elapsed-ms (no cache)."
