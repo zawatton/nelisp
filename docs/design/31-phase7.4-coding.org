@@ -1,0 +1,925 @@
+#+TITLE: Phase 7.4 — coding NeLisp 化 (Doc 27 §3 7.4 詳細設計)
+#+DATE: 2026-04-25
+#+AUTHOR: zawatton + Claude (session-T7 起草、session-A v2 改訂)
+#+STATUS: LOCKED-2026-04-25-v2 (orchestrator codex review MAJOR REVISIONS 1 BLOCKER + 5 MAJOR + 1 MINOR 反映 + user signoff 待ち)
+
+* §0 要旨 (TL;DR)
+
+Doc 27 LOCKED 2026-04-25 (=2a52bda main=) で確定した *NeLisp purity max
+path* (=syscall= 最小 Rust + 残 3 核 NeLisp) の *第 4 番目の核* =
+*Phase 7.4 coding (encoding) NeLisp 化* の詳細設計。Doc 27 §3 sub-phase
+table で "2-3 週間、bit twisting なので Phase 7.1 native compile で
+十分速い" と位置付けられた phase。
+
+Doc 27 §3 7.4 で示された粗い構成 (~600-1000 LOC NeLisp / 2-3 週間) を、
+4 sub-phase (7.4.1〜7.4.4) + LOCKED 10 items + ERT smoke +36 + 完遂
+gate (UTF-8 throughput / round-trip / streaming OOM-free) に分解する。
+
+*v2 改訂方針 (orchestrator codex review MAJOR REVISIONS 7 issues 反映、
+うち BLOCKER 1 件)*:
+- *Doc 27 amendment required (codex 観点 1.1)*: 本 doc は Doc 27 §3 7.4
+  baseline (~600-1000 LOC / 2-3w) を *detailed decomposition* で
+  1500-2500 LOC / 2-3w へ re-baseline (Doc 27 §3 7.4 行に "Doc 31 v2
+  LOCKED で詳細化" stamp が separate commit で必要)
+- *BLOCKER 解消 (codex 観点 4.1)*: =random data byte-perfect round-trip=
+  gate は invalid byte sequence で物理的に不成立。v2 で *valid corpus
+  byte-perfect = strict gate* と *invalid corpus policy conformance =
+  strategy 別 expected behavior gate* に分割
+- *Shift-JIS scope 確定 (codex 観点 2.5 + user signoff 2026-04-25 で
+  CP932 拡張)*: §2.1 / §3.3 で MVP scope を *ASCII + JIS X 0201 kana +
+  JIS X 0208 + CP932 拡張部 (NEC 特殊文字 + IBM 拡張、~845 entry 追加)*
+  に確定、Windows 日本語 user の事実上 Shift-JIS = CP932 をカバー。
+  JIS X 0212 は EUC-JP のみ (Shift-JIS では encode 不可)
+- *Japanese table generated artifact 化 (codex 観点 2.4)*: ~7000 entry
+  × 2 = ~14000 entry の table を *generator script + 元データ provenance
+  + checksum/bijection test = required deliverable* として明示、手書き
+  LOC から除外
+- *process-coding-system contract 限定 (codex 観点 1.2)*: Phase 7.4 内では
+  既存 =:coding= API の backend 差し替えのみ、新 process API freeze は
+  Phase 7.5 へ defer
+- *invalid-sequence policy contract LOCK (codex 観点 3.7)*: =:replace= /
+  =:error= / =:strict= の各 strategy の *return value / signal type /
+  byte offset / streaming atomicity* を §2.4 / §6.X v2 で固定
+- *throughput gate ratio 化 (codex 観点 4.2)*: absolute (200MB/sec) を
+  *Phase 7.1 比 ratio + reference host pinned absolute* の 2-tier 化
+- *table provenance / licensing risk (codex 観点 3.8)*: Unicode/JIS 由来
+  の変換表生成手順を §6 risk 追加、generator script + golden hash 必須
+
+*位置づけ*:
+- Phase 7.0 (Rust syscall stub) は SHIPPED (commit =7df50f8= main merge、
+  =read= / =write= raw bytes API) + MAP_JIT update SHIPPED
+- Phase 7.1 (NeLisp native compiler) は LOCKED-2026-04-25-v2 (Doc 28、
+  user signoff 済) + Phase 7.1.X 全 sub-phase scaffold SHIPPED
+- Phase 7.2 (allocator NeLisp 化) は LOCKED-2026-04-25-v2 想定 (Doc 29)
+- Phase 7.3 (GC inner NeLisp 化) は LOCKED-2026-04-25-v2 想定 (Doc 30)
+- 本 Phase 7.4 = Phase 7.1 / 7.2 / 7.3 と *独立に並列 walk 可能*
+  (SBCL precedent も =sb-impl/external-formats= は GC / allocator と
+  疎結合)
+- Phase 7.4 SHIPPED は Phase 7.5 (integration + standalone E2E) の
+  前提条件 = =bin/anvil mcp serve --no-emacs= が JSON 入出力する coding
+  layer 確立
+- SBCL =sb-impl/external-formats.lisp= (~3000 LOC CL) + Emacs =coding.c=
+  (~10000 LOC C) の dual precedent reference の上に、*scope 縮小*
+  (3-4 encoding MVP / streaming MVP / Phase 7.1 native compile 前提) で
+  *1500-2500 LOC NeLisp 手書き + ~14000 entry generated table / 2-3 週間
+  (anvil leverage 前提)* を狙う
+
+*工数見積*: 2-3 週間 (anvil.el + 並列 session full leverage 前提)。
+本 v2 で Doc 27 §3 7.4 baseline からの拡張を明示、sub-phase 7.4.3
+(Shift-JIS + EUC-JP + table) を 1-2 週間に明示 (table 生成 + provenance
++ checksum で工数密度高い)。
+
+*完遂 gate (v2 改訂、3-tier ratio + valid/invalid 分割 round-trip)*:
+- *throughput gate (2-tier、codex 観点 4.2 反映)*:
+  - tier-A (CI、ratio): =UTF-8 encode/decode= が Phase 7.1 比 5x speedup、
+    =Shift-JIS / EUC-JP= が Phase 7.1 比 3x speedup
+  - tier-B (release-audit、pinned reference host): UTF-8 = 200MB/sec ±10%、
+    Shift-JIS = 100MB/sec ± 10%、Emacs coding.c 比 0.5x 以上
+- *round-trip gate (v2 BLOCKER 解消、valid/invalid 分割)*:
+  - =valid corpus= (Unicode 標準サンプル + 既知 valid Shift-JIS/EUC-JP corpus):
+    *byte-perfect round-trip 必達* (encode→decode→encode で 100% 一致)
+  - =invalid corpus= (random byte 列 + intentional truncation):
+    各 strategy (=:replace= / =:error= / =:strict=) で *expected behavior
+    一致* (replacement count、signal raise、byte offset 報告 = §2.4 v2
+    contract に従う)
+- =streaming 1GB file= 処理で OOM 無し (chunk 単位 + multi-byte 越境
+  state 持ち越し)
+- ERT +36 (=test/nelisp-coding-test.el=) + heavyweight test (full-table
+  checksum + bijection、§5.X v2 必須化)
+- =cargo build --release= / =cargo test --all= / =cargo clippy= 0 warning
+- NeLisp 既存 ERT regression-free (Phase 7.1 + 7.2 + 7.3 完遂時点
+  1086+44〜49+20+38)
+
+* §1 背景
+
+** 1.1 Doc 27 LOCKED 後の position
+
+Doc 27 (2a52bda) §3 sub-phase table:
+
+| Phase | scope                                           | 期間          |
+|-------+-------------------------------------------------+---------------|
+| 7.0   | Rust syscall stub + scaffold                    | 2-3 週間      |
+| 7.1   | NeLisp native compiler 新設 (Doc 28)            | 12-20 週間    |
+| 7.2   | allocator NeLisp 化 (Doc 29)                    | 3-5 週間      |
+| 7.3   | GC inner NeLisp 化 (Doc 30、最難)                | 6-10 週間     |
+| *7.4* | *coding NeLisp 化 (本 doc)*                     | *2-3 週間*    |
+| 7.5   | integration + standalone E2E                    | 2 週間        |
+
+7.4 が SHIPPED していなければ Phase 7.5 (integration) で
+=./nelisp-runtime mcp serve= が JSON 入出力 (UTF-8) でき無い。本 phase
+は *Phase 7.1 / 7.2 / 7.3 と独立に並列 walk 可能* (SBCL precedent も
+encoding は GC / allocator と疎結合) = critical path 短縮の重要 phase。
+
+** 1.2 既存 NeLisp 資産
+
+NeLisp は Phase 5-X で string primitive (=src/nelisp-string.el= SHIPPED)
+を整備済、内部 string 表現は UTF-8 byte string + char count metadata。
+Phase 7.4 では host Emacs の =decode-coding-string= / =encode-coding-string=
+を捨て、*NeLisp 自前 coding layer* で char ↔ byte 変換を行う。
+
+| 既存資産                            | LOC   | 7.4 での役割                                       |
+|-------------------------------------+-------+----------------------------------------------------|
+| =src/nelisp-string.el= (Phase 5-X)  | -     | UTF-8 internal 表現の踏襲、本 phase で変更しない   |
+| =src/nelisp-runtime= (Phase 7.0)    | 689   | =read= / =write= raw bytes は本 phase の境界        |
+| =src/nelisp-cc= (Phase 7.1)         | -     | encode/decode hot loop を JIT、bytecode 比 ~30-50x |
+| =src/nelisp-allocator= (Phase 7.2)  | -     | string buffer alloc backend                         |
+
+= Phase 7.4 coding layer は *Phase 7.0 raw bytes / Phase 7.1 native JIT
+/ Phase 7.2 string buffer alloc* の interface が既に固定された位置で
+動く。自由度が制約され設計が安定する (Doc 28 §1.2 / Doc 29 §1.2
+同 pattern)。
+
+** 1.3 SBCL external-formats + Emacs coding.c dual precedent reference
+
+NeLisp の coding layer は SBCL =sb-impl/external-formats.lisp= (CL ~3000
+LOC、25 年維持) と Emacs =coding.c= (C ~10000 LOC、Emacs 1985-) の dual
+precedent を踏まえ、*runtime purity 軸で両者を超え、coding capability
+軸では両者の MVP subset* を狙う (Doc 28 §1.3 / Doc 29 §1.3 同 pattern)。
+
+| 軸           | SBCL external-formats        | Emacs coding.c                       | NeLisp Phase 7.4                              |
+|--------------+------------------------------+--------------------------------------+-----------------------------------------------|
+| 実装 lang    | CL                           | C                                    | NeLisp                                        |
+| encoding 数  | ~30 (UTF-8/16/32 + locale)   | ~40 (jp/zh/ko/中央 European 等)      | 4 MVP (UTF-8 / Latin-1 / Shift-JIS / EUC-JP) |
+| LOC          | ~3000                        | ~10000                               | 1500-2500                                     |
+| BOM 処理     | yes (UTF-8/16/32)            | yes                                  | UTF-8 のみ MVP (UTF-16/32 v2.0)               |
+| stream API   | yes                          | yes (=process-coding-system=)        | yes (本 phase 内 chunk-based callback)        |
+| auto-detect  | yes (locale)                 | yes (=coding-system-priority=)       | no MVP (user 明示)                            |
+
+*SBCL precedent との差別化軸*:
+1. *Purity*: NeLisp は host Emacs =coding.c= を Phase 7.4 で永久放棄、
+   pure NeLisp + raw bytes pipeline を確立する
+2. *Bootstrap simplicity*: SBCL =external-formats= は genesis-2 で
+   builtin format を構築するが、NeLisp は Phase 7.0 syscall stub の
+   =read= / =write= 直叩きで簡略化
+3. *encoding 数 1/7 削減*: SBCL ~30 → NeLisp 4 MVP、scope 縮小で
+   2-3 週間 budget 確保
+
+*Emacs coding.c precedent との差別化軸*:
+1. encoding category (=ccl= / =coding-system-spec= 等) の発想は踏襲、
+   ただし =ccl= mini-language は採用せず NeLisp pure code で 4 encoding
+   を直接実装
+2. host C dependency (=multibyte_chars_in_text= 等) を完全除去、=read=
+   / =write= は Phase 7.0 syscall stub 経由
+
+** 1.4 Phase 7.5 integration への接続
+
+Phase 7.5 で =bin/anvil mcp serve --no-emacs= が JSON-RPC で stdin/stdout
+を扱う際、JSON spec は UTF-8 mandatory。本 phase で UTF-8 round-trip
+を確立しなければ Phase 7.5 の MCP 入出力が機能しない。
+
+Phase 7.4 の deliverables は Phase 7.5 で:
+- JSON-RPC stdin/stdout = UTF-8 decode/encode
+- file I/O =find-file= / =write-region= = UTF-8 default + user override
+- process I/O =call-process= = =process-coding-system= API stub (実装は
+  Phase 7.5)
+
+* §2 LOCKED decisions (default = 第一推奨、user signoff 待ち)
+
+Doc 28 §2 / Doc 29 §2 / Doc 30 §2 schema (10 LOCKED items) に揃える。
+default 案を提示し session-T7 が DRAFT で fix、orchestrator review
+(claude+codex) で precedent miss を指摘してもらう構造。signoff は user。
+
+** 2.1 supported encodings (MVP) [推奨 = A 4 encoding + CP932 拡張、user signoff 2026-04-25 で v2 改訂]
+
+v2 改訂 (user signoff 2026-04-25 option B): Shift-JIS scope を v1 の
+"strict JIS X 0208 only" から *CP932 (Windows-31J) 拡張部含む* に拡張。
+日本語 Windows user の Shift-JIS は事実上 CP932 = Excel / file name /
+Windows tool 連携に CP932 必須のため。
+
+| 候補 | 戦略                                                   | 利点                                       |
+|------+--------------------------------------------------------+--------------------------------------------|
+| A    | UTF-8 / Latin-1 / Shift-JIS (CP932) / EUC-JP (default、4 種) | NeLisp 主用途 (英 / 西欧 / 日本 Windows-31J 含む) cover |
+| B    | UTF-8 のみ                                             | scope 1 週間、日本語 file 既存資産 取り込め無い |
+| C    | A + UTF-16 / GBK / Big5 / Korean                       | scope 1.5-2x 拡大、Phase 7.5 着手遅延 risk |
+
+*推奨 A 理由 (v2 改訂)*:
+- UTF-8 = JSON-RPC / 現代 web mandatory、Phase 7.5 MCP 経路必須
+- Latin-1 = 単 byte trivial、ASCII fast path
+- *Shift-JIS (CP932 拡張部含む)* = NeLisp 日本 Windows user の事実上の
+  Shift-JIS、CP932 (Windows-31J) は JIS X 0208 strict + Microsoft 拡張
+  (NEC 特殊文字 / IBM 拡張) を含み、Windows 環境の Excel / file name /
+  legacy 日本語 Windows tool 連携に必須
+- EUC-JP = JIS X 0208 + JIS X 0212 + 単 byte ASCII、Unix legacy 日本語 file
+- UTF-16 / GBK / Big5 / Korean = v2.0 で =defcustom= 経由 opt-in 化
+
+*Shift-JIS scope detail (v2 LOCKED)*:
+- *MVP 含む*: ASCII + JIS X 0201 kana + JIS X 0208 + CP932 拡張
+  (NEC 特殊文字 ~83 字 + IBM 拡張 ~388 字 + NEC 選定 IBM 拡張 ~374 字 =
+  Microsoft 公式 CP932 mapping)
+- *MVP out*: JIS X 0212 (= Shift-JIS では encode 不可、EUC-JP のみ対応)
+- *table size*: ~7000 + 845 拡張 = ~7845 entry (CP932 包含で ~12% 増)
+- *generator script*: =tools/coding-table-gen.el= = Unicode UCD の
+  Microsoft CP932 mapping (=public domain `WindowsBestFit932.txt`= or
+  =Unicode CP932.TXT=) を入力、source-of-truth は Microsoft 公式 mapping
+
+** 2.2 internal representation [推奨 = A UTF-8 byte string + char count]
+
+| 候補 | 戦略                                                | 利点                                     |
+|------+-----------------------------------------------------+------------------------------------------|
+| A    | UTF-8 byte string + char count metadata (default)   | Phase 5-X 既存踏襲、=length= O(1)        |
+| B    | UTF-32 fixed-width                                  | Phase 5-X ABI 破綻、memory 4x            |
+| C    | UTF-16 (Java/Windows 風)                            | surrogate pair 罠、現代 trend 逆行       |
+
+*推奨 A 理由*:
+- Phase 5-X SHIPPED 既存実装を破綻させない
+- UTF-8 = JSON-RPC / 現代 trend、内部 / 外部表現 1 致で encode 不要 fast path
+- char count metadata で =length= / =substring= O(1)、Emacs 同 pattern
+
+** 2.3 BOM handling [推奨 = A UTF-8 のみ MVP]
+
+| 候補 | 戦略                                                    | 利点                                     |
+|------+---------------------------------------------------------+------------------------------------------|
+| A    | UTF-8 BOM strip on read / no emit on write (default)    | spec compliant、JSON 互換                 |
+| B    | UTF-8 / UTF-16 / UTF-32 全 BOM 対応                     | scope 拡大、UTF-16/32 v2.0 で再 design   |
+| C    | BOM 完全無視                                            | 既存 BOM 付き file の char 化け           |
+
+*推奨 A 理由*:
+- UTF-8 BOM (=EF BB BF=) は read で strip、write で emit しない
+  (RFC 3629 推奨)
+- UTF-16 / UTF-32 BOM は v2.0 で対応 (本 phase out of scope)
+- =--coding-bom-emit= flag (CLI、startup option) で emit 強制可
+  (Windows compatibility 用 escape hatch)
+
+** 2.4 error handling [推奨 = A 3 strategy contract LOCK (v2 改訂)]
+
+v2 改訂 (codex 観点 3.7 反映): 当初は 3 strategy 名のみで実質的 contract
+が不明だったため、各 strategy の return value / signal type / byte
+offset / streaming atomicity を本 v2 で *contract LOCK*。
+
+| strategy   | return on invalid                | signal raised          | offset reporting | streaming atomicity |
+|------------+----------------------------------+------------------------+------------------+---------------------|
+| =replace=  | partial result string (replacement char inserted) | none (returns normally) | last replaced byte offset in =:invalid-positions= plist | invalid byte 検出時 chunk boundary 維持、内部 buffer flush |
+| =error=    | signal、partial result discarded | =nelisp-coding-invalid-byte= condition (data = invalid byte offset + strategy) | signal data alist =(:offset N :byte B :strategy 'error)= | streaming 中 signal 時 internal state は consumer 復旧可能形 |
+| =strict=   | signal、abort process            | =nelisp-coding-strict-violation= condition (uncatchable in streaming) | signal data + immediate process abort | streaming 即終了、buffer 状態 undefined |
+
+*replace strategy detail (default)*:
+- invalid byte → =U+FFFD REPLACEMENT CHARACTER= (UTF-8 spec)
+- 連続 invalid byte は 1 個の =U+FFFD= に collapse (= per WHATWG Encoding Standard)
+- =:invalid-positions= plist field で全 replacement 位置を返す
+
+*error strategy detail*:
+- API caller が =condition-case= で catch 可能、resume 不能
+- streaming 中で signal 時、internal =coding-state= struct は pre-error
+  位置で停止、=resume-coding= primitive (Phase 7.5 で実装) で続行可能
+
+*strict strategy detail*:
+- batch script 用、signal は uncatchable (= NeLisp =error= signal の
+  =:noresume= flag)、process exit code 1
+- streaming 中 invalid 検出で即 process abort、buffer state undefined
+
+*default*: =:replace= (Emacs =coding-system-error-handler= 風 fail-safe)、
+=defcustom nelisp-coding-error-strategy= で global override 可。
+
+*v2 contract LOCK 根拠*: codex review 観点 3.7 で「=:error= と =:strict=
+の差不明」「partial output/byte offset/atomicity 不明」指摘を上記 4 列
+table で全 contract 化、silent corruption / API break risk を解消。
+
+** 2.5 streaming API [推奨 = A chunk-based callback]
+
+| 候補 | 戦略                                                                | 利点                                       |
+|------+---------------------------------------------------------------------+--------------------------------------------|
+| A    | chunk-based callback (=nelisp-coding-decode-stream=) (default)      | Emacs =accept-process-output= 互換、large file OK |
+| B    | generator-based (=cl-loop= / Python yield 風)                       | NeLisp に generator primitive なし、scope 拡大 |
+| C    | 全 buffer in-memory (streaming なし)                                | 1GB file で OOM、Phase 7.5 stress 不通     |
+
+*推奨 A 理由*:
+- =nelisp-coding-decode-stream (input-fn output-fn :chunk-size N
+  :encoding 'utf-8)= = Emacs =accept-process-output= 互換 callback
+- chunk 単位 (default 64KB) + multi-byte 越境 state 持ち越し
+  (=nelisp-coding--state= struct = pending byte buffer + decoder state)
+- 1GB file 処理で OOM 無し (Phase 7.5 soak test 必須)
+
+** 2.6 syscall stub 連携 [推奨 = A Phase 7.0 read/write 直叩き]
+
+| 候補 | 戦略                                                                | 利点                                       |
+|------+---------------------------------------------------------------------+--------------------------------------------|
+| A    | Phase 7.0 =nelisp-runtime-read= / =nelisp-runtime-write= 直叩き (default) | Doc 27 §3 7.0 SHIPPED の境界そのまま使用 |
+| B    | 中間 buffering layer 新設                                           | scope 拡大、Phase 7.0 raw 境界の意義 lost |
+| C    | host Emacs =insert-file-contents=                                   | NeLisp purity 破綻、Phase 7.5 で elimination 必須 |
+
+*推奨 A 理由*:
+- Phase 7.0 syscall stub の =read= / =write= は raw bytes、coding layer
+  が char ↔ byte 変換 = 境界が意図通り
+- =insert-file-contents= 等の host Emacs 依存は Phase 7.5 で完全除去、
+  本 phase で direct syscall 化することで Phase 7.5 で coding-related
+  retrofit が不要
+
+** 2.7 file I/O integration [推奨 = A explicit encoding + UTF-8 default]
+
+| 候補 | 戦略                                                                | 利点                                       |
+|------+---------------------------------------------------------------------+--------------------------------------------|
+| A    | =nelisp-open= / =nelisp-read-file= で =:encoding= 引数、default UTF-8 (default) | explicit + 最頻 case 自動                  |
+| B    | auto-detect (Emacs =coding-system-priority= 風)                     | scope 拡大、heuristic bug 多発              |
+| C    | encoding 強制必須                                                   | UX 悪化、UTF-8 が最頻 case                  |
+
+*推奨 A 理由*:
+- =:encoding= 引数で明示、default は UTF-8 (現代 trend)
+- legacy file (Shift-JIS の =.txt= 等) は user が =:encoding 'shift-jis=
+  指定、Emacs =find-file-coding-system-alist= 風 mapping は Phase 7.5
+  で integration
+
+** 2.8 process I/O API [推奨 = A 本 phase stub のみ、Phase 7.5 で実装]
+
+| 候補 | 戦略                                                                | 利点                                       |
+|------+---------------------------------------------------------------------+--------------------------------------------|
+| A    | =process-coding-system= 風 API stub のみ (default)、実装は Phase 7.5 | scope 縮小、Phase 7.4 完遂を確実に          |
+| B    | 本 phase で完全実装                                                 | scope 拡大、Phase 7.5 への振り分け効率減    |
+| C    | 完全省略                                                            | Phase 7.5 で API freeze から再設計 risk    |
+
+*推奨 A 理由*:
+- =nelisp-process-coding-system-set= / =nelisp-process-coding-system-get=
+  の API signature を本 phase で定義、本体実装は stub (=error "NYI"=)
+- Phase 7.5 process I/O integration 時に本 phase API freeze 済 = 再設計
+  不要
+
+** 2.9 LOC budget [推奨 = A 1500-2500 LOC NeLisp + ~50 LOC table]
+
+Doc 27 §3 7.4 「~600-1000 LOC NeLisp」を baseline、本 doc では sub-phase
+7.4.3 (Shift-JIS + EUC-JP table data + bidirectional lookup) と sub-phase
+7.4.4 (streaming + integration) を追加した結果 1500-2500 LOC NeLisp に
+拡大。table data は ~50 LOC (=src/nelisp-coding-tables.el=) で character
+↔ byte mapping を alist or vector で持つ。
+
+| 言語         | LOC          | 範囲                                       |
+|--------------+--------------+--------------------------------------------|
+| NeLisp       | 1500-2500    | 7.4.1 (~400-700) + 7.4.2 (~200-400) + 7.4.3 (~600-1000) + 7.4.4 (~300-400) |
+| table data   | ~50          | =nelisp-coding-tables.el= (Shift-JIS + EUC-JP) |
+| Rust         | 0            | (Phase 7.0 既存 read/write を流用、本 phase で追加なし) |
+
+** 2.10 stats / instrumentation [推奨 = A nelisp-coding-stats]
+
+| 候補 | 戦略                                                                | 利点                                       |
+|------+---------------------------------------------------------------------+--------------------------------------------|
+| A    | =nelisp-coding-stats= (Lisp API、plist) + =--coding-profile= flag (default) | Doc 28 §2.11 / Doc 29 §2.10 profile pattern と統合 |
+| B    | 完全省略                                                            | debug / regression 検出困難                |
+| C    | 常時記録 + 詳細 trace                                               | runtime overhead 過大                       |
+
+*推奨 A 理由*:
+- =nelisp-coding-stats= = plist (=:utf8-encoded-bytes= /
+  =:utf8-decoded-chars= / =:invalid-byte-count= / =:replacement-emit-count=
+  / =:shift-jis-encoded-bytes= / etc) を return
+- =--coding-profile= flag で startup から終了まで stats を記録、終了時
+  stderr に dump
+- Phase 7.1 =--profile= / Phase 7.2 =--alloc-profile= と共存、Phase 7.5
+  で =anvil-dashboard= に統合
+
+* §3 Sub-phase 7.4.1〜7.4.4 詳細
+
+Doc 28 §3 / Doc 29 §3 / Doc 30 §3 schema 踏襲、4 sub-phase に分割。
+各 sub-phase は独立 SHIPPED 可能、main へ feat branch =--no-ff= merge。
+
+| sub-phase | scope                                                  | LOC          | 期間       | ERT delta |
+|-----------+--------------------------------------------------------+--------------+------------+-----------|
+| 7.4.1     | UTF-8 encode/decode + BOM handling                     | ~400-700     | 1 週間     | +10       |
+| 7.4.2     | Latin-1 encode/decode (single-byte trivial)            | ~200-400     | 3-5 日     | +6        |
+| 7.4.3     | Shift-JIS + EUC-JP encode/decode (table data)          | ~600-1000    | 1-2 週間   | +12       |
+| 7.4.4     | streaming API + integration with syscall + file I/O    | ~300-400     | 3-5 日     | +8        |
+|-----------+--------------------------------------------------------+--------------+------------+-----------|
+|           | 合計                                                   | ~1500-2500   | *2-3 週間* | +36       |
+
+** 3.1 Phase 7.4.1 — UTF-8 encode/decode + BOM handling
+
+新規 module: =src/nelisp-coding-utf8.el= (~400-700 LOC NeLisp)。
+
+*** scope
+- UTF-8 byte sequence (1-4 byte) の encode/decode loop
+- BOM (=EF BB BF=) strip on read / no emit on write
+- error handling 3 strategy (=replace= / =error= / =strict=)、default =replace=
+- =U+FFFD REPLACEMENT CHARACTER= emit on invalid byte (=replace= 時)
+- emoji / BMP 外 (=U+10000-U+10FFFF=) supplementary plane support
+- Phase 7.1 native JIT 前提の hot path (=declare (inline t)=)
+
+*** ERT smoke (+10)
+- ASCII (1-byte) encode/decode round-trip
+- Latin extended (2-byte) encode/decode
+- 日本語 BMP (3-byte) encode/decode (=あ= = =E3 81 82=)
+- emoji (4-byte) encode/decode (=🎉= = =F0 9F 8E 89=)
+- BOM strip on read (=EF BB BF= prefix → 除外)
+- BOM no-emit on write (default)
+- invalid byte =replace= strategy = =U+FFFD= emit
+- invalid byte =error= strategy = signal
+- invalid byte =strict= strategy = abort
+- round-trip 100MB UTF-8 file (Phase 7.1 native JIT で 200MB/sec target)
+
+*** risks
+- BOM emit policy が Windows-only tool との互換で問題になる risk
+  → mitigation: §6 risk 1 で =--coding-bom-emit= flag 提供
+
+** 3.2 Phase 7.4.2 — Latin-1 encode/decode (single-byte trivial)
+
+新規 module: =src/nelisp-coding-latin1.el= (~200-400 LOC NeLisp)。
+
+*** scope
+- Latin-1 (=ISO-8859-1=) = =U+0000-U+00FF= ↔ byte 1:1 mapping
+- single-byte trivial (table 不要、direct cast)
+- BOM 処理 = なし (Latin-1 spec)
+- error handling = encode 時 =U+0100+= で =error= or =replace=、decode 時
+  invalid byte なし (256 値全て valid)
+- ASCII fast path (=U+0000-U+007F= は UTF-8 と互換)
+
+*** ERT smoke (+6)
+- ASCII round-trip (Latin-1 / UTF-8 互換 confirm)
+- Latin-1 拡張 (=U+0080-U+00FF=) round-trip
+- =U+0100= encode = =error= signal (=error= strategy)
+- =U+0100= encode = =3F= (=?=) emit (=replace= strategy)
+- 全 256 byte decode invertibility (data integrity)
+- round-trip 100MB Latin-1 file (Phase 7.1 native JIT で 300MB/sec target、
+  single-byte fast path)
+
+*** risks
+- =U+0100+= 範囲の =replace= placeholder = =3F= (=?=) は Emacs precedent
+  と整合だが情報損失
+  → mitigation: §6 risk 2 で =:encoding-error-replacement= 引数追加で
+  customize 可
+
+** 3.3 Phase 7.4.3 — Shift-JIS + EUC-JP encode/decode (table data)
+
+新規 module: =src/nelisp-coding-japanese.el= (~600-1000 LOC NeLisp) +
+=src/nelisp-coding-tables.el= (~50 LOC、character ↔ byte mapping table)。
+
+*** scope
+- Shift-JIS (JIS X 0208 + JIS X 0212 一部) encode/decode
+- EUC-JP (JIS X 0208 + JIS X 0212) encode/decode
+- table data 形式 = source 内 alist / vector (NeLisp purity 重視、binary
+  形式 .dat は v2.0)
+- bidirectional lookup (char → byte / byte → char) 各 ~7000 entry
+- 半角 kana (=A1-DF=) Shift-JIS only support
+- error handling 3 strategy 統一 (=replace= / =error= / =strict=)
+
+*** ERT smoke (+12)
+- Shift-JIS encode/decode (=あ= = =82 A0=) round-trip
+- EUC-JP encode/decode (=あ= = =A4 A2=) round-trip
+- 半角 kana (=ｱ= = =B1=) Shift-JIS round-trip
+- JIS X 0212 補助漢字 EUC-JP round-trip
+- invalid byte (=replace= / =error= / =strict=) 各 strategy
+- Shift-JIS / EUC-JP 相互変換 (intermediate UTF-8 経由)
+- table data 整合性 (forward/inverse mapping bijection)
+- 同一 char で Shift-JIS / EUC-JP byte 列が異なる confirm (table
+  data 健全性)
+- round-trip 100MB Shift-JIS file (target 100MB/sec、table lookup
+  overhead 込)
+- round-trip 100MB EUC-JP file (target 100MB/sec)
+- =U+30A2 (=ア=)= の Shift-JIS encode (=83 41=) 厳密 confirm
+- regression: 日本語 ERT (=anvil-org-index= journal scan 等) 緑
+
+*** risks
+- table data ~7000 entry × 2 (Shift-JIS + EUC-JP) で source LOC 増 risk
+  → mitigation: §6 risk 3 で =nelisp-coding-tables.el= に分離、main
+  body LOC は ~600-1000 維持
+- table lookup overhead が UTF-8 比 2x 遅い (target 100MB/sec)
+  → mitigation: §6 risk 4 で hash-table backed lookup + Phase 7.1
+  inline expansion
+
+** 3.4 Phase 7.4.4 — streaming API + integration with syscall + file I/O
+
+新規 module: =src/nelisp-coding-stream.el= (~300-400 LOC NeLisp)。
+
+*** scope
+- =nelisp-coding-decode-stream (input-fn output-fn :chunk-size N
+  :encoding 'utf-8)= = chunk-based callback
+- multi-byte char chunk 越境 state 持ち越し (=nelisp-coding--state=
+  struct = pending byte buffer + decoder state)
+- =nelisp-open= / =nelisp-read-file= / =nelisp-write-file= で =:encoding=
+  引数 (Phase 7.0 syscall stub 経由)
+- =process-coding-system= API stub (=nelisp-process-coding-system-set=
+  / =get=、本体は =error "NYI"=、Phase 7.5 で実装)
+- =nelisp-coding-stats= (Lisp API、plist return)
+- =--coding-profile= flag (CLI、startup から終了まで stats 記録)
+
+*** ERT smoke (+8)
+- chunk-based decode 1GB file で OOM 無し
+- multi-byte char chunk 境界 (=E3 81 / 82=) 越境 state 持ち越し
+  正確性 (= =あ= 1 char として decode)
+- =nelisp-read-file :encoding 'utf-8= で UTF-8 file 読込
+- =nelisp-write-file :encoding 'shift-jis= で Shift-JIS file 書出
+- =nelisp-coding-stats= return value plist format
+- =--coding-profile= flag で stats が stderr に dump
+- =process-coding-system-set= API call で =error "NYI"= signal (Phase
+  7.5 で実装) but signature freeze 済
+- regression: NeLisp 既存 ERT 1086+44〜49+20+38 全 PASS (Phase 7.1 + 7.2
+  + 7.3 完遂時点)
+
+*** risks
+- chunk 越境 state 持ち越しの bug = silent data corruption (検出困難)
+  → mitigation: §6 risk 5 で random chunk size + multi-byte 全
+  境界位置 ERT で覆う
+
+* §4 Architecture (encode/decode 経路図)
+
+#+begin_src text
+[NeLisp source]
+    │ nelisp-read (Phase 3a)
+    ▼
+[UTF-8 byte string (= NeLisp string internal、Phase 5-X 既存)]
+    │
+    ├──────── encoder side ────────────┐
+    │                                  │
+    │ nelisp-coding-encode             │ (本 phase 7.4)
+    │   :encoding 'utf-8 / 'latin-1    │
+    │   / 'shift-jis / 'euc-jp         │
+    │                                  │
+    ▼                                  ▼
+[NeLisp char sequence            [output byte sequence
+ (UTF-8 internal、char count      (4 encoding のいずれか)]
+ metadata)]                            │
+    ▲                                  │
+    │                                  │ Phase 7.0 syscall stub
+    │ nelisp-coding-decode             ▼ (write、本 phase 範囲外)
+    │   :encoding 'utf-8 / 'latin-1
+    │   / 'shift-jis / 'euc-jp     [file / network / process]
+    │                                  ▲
+    │                                  │ Phase 7.0 syscall stub
+    │                                  │ (read、本 phase 範囲外)
+    │                                  │
+    └─[input byte sequence (raw bytes via Phase 7.0 read)]
+#+end_src
+
+** 4.1 入力境界 (Phase 7.0 syscall stub raw bytes)
+
+Phase 7.0 (Doc 27 SHIPPED) =nelisp-runtime-read= が raw bytes を return、
+本 phase 7.4 が char ↔ byte 変換を担当。境界明確化で Phase 7.5
+integration 時の retrofit 不要。
+
+** 4.2 出力境界 (NeLisp string = UTF-8 internal)
+
+decode 結果は NeLisp string (Phase 5-X 既存実装、UTF-8 internal + char
+count metadata) として上位 application に渡す。Phase 7.4 内部は decode
+loop の hot path、Phase 7.1 native JIT で C 同等速度。
+
+** 4.3 streaming 経路
+
+#+begin_src text
+[1GB input file]
+    │
+    │ Phase 7.0 read 64KB chunk
+    ▼
+[input-fn (chunk N) → bytes]
+    │
+    │ nelisp-coding-decode-stream
+    │   chunk 越境 state 持ち越し (multi-byte char split)
+    ▼
+[output-fn (decoded chunk N) → app code]
+    │
+    │ user app が 1 chunk ずつ処理 (= OOM 回避)
+    ▼
+[next chunk へ loop]
+#+end_src
+
+* §5 ERT smoke + bench plan
+
+各 sub-phase の ERT smoke を集約した最終 +36 ERT で
+=test/nelisp-coding-test.el= を構築。
+
+| sub-phase | ERT module                                | count |
+|-----------+-------------------------------------------+-------|
+| 7.4.1     | nelisp-coding-utf8-test                   | +10   |
+| 7.4.2     | nelisp-coding-latin1-test                 | +6    |
+| 7.4.3     | nelisp-coding-japanese-test               | +12   |
+| 7.4.4     | nelisp-coding-stream-test                 | +8    |
+|-----------+-------------------------------------------+-------|
+|           | 合計                                      | +36   |
+
+CI matrix:
+- Linux x86_64 (GitHub Actions ubuntu-latest)
+- macOS arm64 (GitHub Actions macos-14)
+- Linux arm64 (Phase 7.1.5 で整備済)
+
+** 5.1 throughput bench gate (Doc 27 §3 7.4 budget 引き継ぎ)
+
+Doc 27 §3 7.4 で *coding-roundtrip 100MB で C 比 ~70% throughput* と
+設定済。Phase 7.4 完遂で Phase 7.1 5x の上に Emacs coding.c 比 0.5x
+以上 (purity tax 受容):
+
+| benchmark              | 軸性質                       | Phase 7.1 完遂時 | Phase 7.4 完遂時 (target) | C reference          |
+|------------------------+------------------------------+------------------+---------------------------+----------------------|
+| =utf8-encode/decode=   | 100MB UTF-8 round-trip       | bytecode 比 5x   | 200MB/sec single-core     | ~400MB/sec (coding.c) |
+| =latin1-encode/decode= | 100MB Latin-1 round-trip     | -                | 300MB/sec (single-byte fast path) | ~500MB/sec |
+| =shift-jis-roundtrip=  | 100MB Shift-JIS round-trip   | -                | 100MB/sec (table lookup overhead) | ~150MB/sec |
+| =euc-jp-roundtrip=     | 100MB EUC-JP round-trip      | -                | 100MB/sec                 | ~150MB/sec           |
+
+** 5.2 streaming + correctness bench
+
+| benchmark                | 内容                                                    | target |
+|--------------------------+---------------------------------------------------------+--------|
+| =stream-1gb-utf8=        | streaming 1GB UTF-8 file decode                         | OOM 無し、completion < 10sec |
+| =chunk-boundary-stress=  | random chunk size (1〜64KB) で multi-byte 越境完全性     | 100K iter、mismatch 0 件 |
+| =roundtrip-correctness=  | 4 encoding 各 1MB random data round-trip                | 全 byte 完全 1 致 |
+
+bench gate (§7) は throughput 4 軸 + streaming + correctness 全部必達。
+
+* §6 Risks (6 項目)
+
+** 6.1 BOM emit policy (Windows tool 互換 risk)
+
+§2.3 推奨 A で UTF-8 BOM = read で strip / write で no-emit を default
+としたが、Windows-only tool (Notepad 旧版 / Excel CSV) は BOM 期待で
+char 化けする known issue。
+
+*影響*: Phase 7.5 user (Windows、Excel CSV) で =./nelisp-runtime= が
+書出した CSV を Excel で開いて文字化け。
+
+*mitigation*:
+- =--coding-bom-emit= flag (CLI、startup option) で emit 強制可
+- =nelisp-write-file :bom-emit t= argument で per-file customize
+- Phase 7.5 release note に Windows compatibility section 明記
+
+** 6.2 Latin-1 encode 時 =U+0100+= 範囲の placeholder
+
+§2.4 + §3.2 で =replace= strategy = =U+0100+= → =3F= (=?=) emit を
+default としたが、情報損失で user friendly でない可能性。
+
+*影響*: Latin-1 encode 時 emoji や日本語入力で全部 =?= に化け、debug
+困難。
+
+*mitigation*:
+- =:encoding-error-replacement= 引数で customize 可
+  (例 =:encoding-error-replacement (lambda (codepoint) (format "&#%d;"
+  codepoint))= で HTML numeric reference)
+- default =replace= は =3F= (Emacs precedent) 維持、=error= strategy
+  で fail-fast 推奨を doc 化
+
+** 6.3 Shift-JIS / EUC-JP table data の source LOC 増
+
+§3.3 で Shift-JIS / EUC-JP 各 ~7000 entry の bidirectional table を
+source 内 alist / vector で持つことで NeLisp purity 重視。ただし source
+LOC 増 (~50 LOC ではなく実際は ~14000 entry × 2 = 28000 行 risk)。
+
+*影響*: =src/nelisp-coding-tables.el= が異常に長くなり review / load 時間悪化。
+
+*mitigation*:
+- table 形式 = vector (codepoint indexed、char → byte 単方向、O(1)
+  lookup)
+- inverse direction (byte → char) は hash-table backed (load 時 build、
+  source LOC 不要)
+- LOC 計上は table file ~50 LOC (vector literal は format 1 行で長く
+  書ける) 維持、実 byte 数 ~100KB 程度
+
+** 6.4 table lookup overhead (UTF-8 比 2x 遅い)
+
+§3.3 で Shift-JIS / EUC-JP target 100MB/sec、UTF-8 200MB/sec の半分。
+table lookup hash overhead が原因。
+
+*影響*: Phase 7.5 で日本語 file 処理が UTF-8 比 2x 遅い、user
+perception 悪化。
+
+*mitigation*:
+- hash-table backed lookup + Phase 7.1 inline expansion
+  (=declare (inline t)=) で hash op を JIT
+- vector backed (codepoint indexed direct lookup) で hash op 1 個削減
+- ベンチ未達なら Phase 7.5 で =defcustom nelisp-coding-japanese-fast-mode=
+  + binary table file (.dat) を opt-in 化
+
+** 6.5 chunk 越境 state 持ち越し bug (silent data corruption)
+
+§3.4 で multi-byte char chunk 越境 state 持ち越し (=pending byte buffer
++ decoder state=) を実装、bug = silent data corruption (検出困難)。
+
+*影響*: 1GB file decode で 1 char 化け = file 全体 garbage、user 信頼失う。
+
+*mitigation*:
+- ERT で random chunk size (1〜64KB) × multi-byte 全境界位置 (UTF-8
+  4 byte char の 1/2/3/4 byte 目で chunk break) を 100K iter
+- =nelisp-coding-decode-stream= 内部 invariant assertion (state buffer
+  size ≤ 4 byte for UTF-8、≤ 2 byte for Shift-JIS / EUC-JP)
+- Phase 7.5 soak test で 1GB file × 4 encoding 全 round-trip
+
+** 6.6 anvil leverage 過大評価 (Doc 28 §6.6 / Doc 29 §6.6 同 pattern)
+
+Doc 27 で SBCL 25 年 → 2-3 週間の見積。本 doc 7.4 で 2-3 週間に維持
+したが、なお下振れ risk あり。Doc 28 §6.6 / Doc 29 §6.6 の week 1/2
+replan gate 同 pattern で *2 replan gate* を導入。
+
+*影響*: Phase 7.5 (integration) の着手遅延 = Doc 27 全体 STATE 遅延。
+
+*mitigation (Doc 28 §6.6 v2 / Doc 29 §6.6 と同 pattern)*:
+
+| gate    | 時期    | 評価対象            | kill criteria (= 達成不能なら scope 切り) |
+|---------+---------+---------------------+-------------------------------------------|
+| gate-W1 | week 1  | 7.4.1 UTF-8 完成度 | 7.4.1 未完了 → *Latin-1 / Shift-JIS / EUC-JP 後送り*: Phase 7.4.2-7.4.3 を Phase 7.5 へ繰越、Phase 7.4 完遂 gate を UTF-8 + streaming に縮小 |
+| gate-W2 | week 2  | 7.4.2 + 7.4.3 進捗  | 7.4.3 未完了 → *Shift-JIS / EUC-JP v2.0 化*: Phase 7.5 整備後の post-v1.0 task に降格、Phase 7.4 完遂は UTF-8 + Latin-1 + streaming で許容 |
+
+判断主体: gate ごとに =anvil-dev release-audit :scope phase-7.4=
+スクリプトが進捗を計測、=anvil-dashboard= で可視化、user signoff で
+発動。
+
+* §7 完遂 gate (LOCKED 化条件)
+
+Doc 28 §7 / Doc 29 §7 / Doc 30 §7 schema 踏襲。Phase 7.4 全体の LOCKED
+化は以下全条件で成立:
+
+** 7.1 各 sub-phase 7.4.1〜7.4.4 SHIPPED 条件
+
+各 sub-phase で:
+1. =cargo build --release= 緑 (Phase 7.0 syscall stub 既存依存)
+2. =cargo test --all= 緑
+3. NeLisp ERT regression-free (Phase 7.1 + 7.2 + 7.3 完遂時点
+   1086+44〜49+20+38 を維持)
+4. =cargo clippy= 0 warning
+5. =make test= (NeLisp 既存 Makefile) 緑
+6. design doc §3 の該当 sub-phase に SHIPPED stamp
+7. main へ feat branch =--no-ff= merge
+
+** 7.2 Phase 7.4 完全 close 条件 (v2 改訂: BLOCKER 解消 + 2-tier ratio + valid/invalid 分割)
+
+Phase 7.4.1〜7.4.4 全 SHIPPED + 以下:
+
+- *throughput gate (2-tier、codex 観点 4.2 反映)*:
+  - tier-A (CI、ratio): UTF-8 = Phase 7.1 比 5x speedup、Shift-JIS/EUC-JP =
+    Phase 7.1 比 3x speedup
+  - tier-B (release-audit、pinned reference host): UTF-8 = 200MB/sec ± 10%、
+    Latin-1 = 300MB/sec ± 10%、Shift-JIS / EUC-JP = 100MB/sec ± 10%、
+    Emacs coding.c 比 0.5x 以上
+- *round-trip gate v2 (codex BLOCKER 解消、valid/invalid 分割)*:
+  - =valid corpus= (Unicode 標準 + 既知 valid Shift-JIS/EUC-JP corpus):
+    *byte-perfect 必達* (encode→decode→encode で 100% 一致)
+  - =invalid corpus= (random byte + truncation): 各 strategy
+    (=:replace= / =:error= / =:strict=) で *expected behavior 一致*
+    (replacement count、signal raise、byte offset = §2.4 v2 contract 準拠)
+- =stream-1gb-utf8= で OOM 無し、completion < 10sec (§5.2)
+- =chunk-boundary-stress= 100K iter で mismatch 0 件 (§5.2)
+- *heavyweight test* (codex 観点 2.6 反映): full-table checksum +
+  bijection (Shift-JIS / EUC-JP table) PASS、=test/nelisp-coding-table-test.el=
+- ERT +36 全 PASS
+- *invalid-sequence policy contract LOCK 確認* (§2.4 v2 = 4 列 table):
+  各 strategy で expected return value / signal type / byte offset /
+  streaming atomicity が implementation と integration test で一致
+- *process-coding-system 限定 contract* (codex 観点 1.2 反映): 本 phase は
+  既存 =:coding= API の backend 差し替えのみ完成、新 process API freeze は
+  Phase 7.5 へ defer (Phase 7.4 では stub のみ存在)
+- *table provenance + golden hash deliverable* (codex 観点 3.8 反映):
+  generator script (=tools/coding-table-gen.el=) + 元データ provenance 文書
+  (=docs/coding-table-provenance.org=、Unicode UCD / JIS X 0208 出典明記)
+  + golden SHA-256 hash (CI で table 改竄検出) を SHIPPED 必須
+- =cargo build --release= / =cargo test --all= / =cargo clippy= 0 warning
+- NeLisp 既存 ERT regression-free
+- LOCKED → SHIPPED stamp + main merge (=--no-ff=)
+
+** 7.3 後続 Phase の解放
+
+Phase 7.4 SHIPPED で:
+- Phase 7.5 (integration) で MCP JSON-RPC stdin/stdout (UTF-8) 経路確立
+- Phase 7.5 で =process-coding-system= API 実装着手可能 (本 phase で
+  signature freeze 済)
+- Phase 7.5 で 4 核 (allocator / GC / coding / native compiler) 合流
+- NeLisp v1.0 完遂条件 #4 (4 核 C runtime) の coding 軸完了
+
+* §8 Out of scope
+
+本 Phase 7.4 では以下を扱わない:
+
+** 8.1 UTF-16 / UTF-32 encoding
+
+NeLisp v2.0 で =defcustom= 経由 opt-in 化検討。Phase 7.4 では UTF-8
+のみ Unicode encoding (BOM 含む)。
+
+** 8.2 GBK / Big5 / Korean (EUC-KR) encoding
+
+NeLisp v2.0 で対応検討。Phase 7.4 は日本 user 主用途で Shift-JIS /
+EUC-JP に限定。
+
+** 8.3 auto-detection (=coding-system-priority= 風)
+
+User 明示 (=:encoding= 引数 or =--coding-default= flag) で workaround。
+heuristic auto-detect (=ICU= / =uchardet=) は Phase 8+ 検討。
+
+** 8.4 transcoding (UTF-8 ↔ Shift-JIS 直接)
+
+本 phase は intermediate に NeLisp string (UTF-8 internal) を経由する
+2-step 変換のみ。直接 transcoding (=ccl= mini-language 風) は Phase 8+
+検討。
+
+** 8.5 bidirectional text (Arabic / Hebrew)
+
+NeLisp v2.0+ で検討事項。Phase 7.4 では考慮しない (Emacs =bidi.c=
+相当は別 phase)。
+
+** 8.6 process I/O 本体実装
+
+§2.8 で API stub のみ、本体は Phase 7.5 (integration)。Phase 7.4 内では
+signature freeze まで。
+
+** 8.7 char composition / decomposition (Unicode normalization)
+
+NFC / NFD / NFKC / NFKD は Phase 8+ 検討。Phase 7.4 は raw codepoint
+sequence のみ。
+
+* §9 Open questions
+
+** 9.1 table data の persist 形式 (.dat binary vs source 内 alist)
+
+§3.3 / §6.3 で source 内 vector / hash-table を default としたが、
+NeLisp purity と load 速度 trade-off で実測未確定。
+
+*default*: source 内 vector (=src/nelisp-coding-tables.el=)、Phase 7.5
+で実測 load 時間が 1sec 超なら .dat binary 形式 opt-in 化検討。
+
+** 9.2 error position (line/col) の internal tracking 粒度
+
+§2.4 error handling で position 報告は本 phase では chunk 単位だけ
+精密、char 単位 (line/col) は Phase 7.5 file I/O integration で確定。
+
+*default*: chunk 単位 (byte offset from input start)、Phase 7.5 で
+=nelisp-read-file= 経由時に line/col 換算 helper 提供。
+
+** 9.3 process-coding-system API 設計詳細
+
+§2.8 で API stub のみ、signature の引数構造 (=coding-system= symbol vs
+plist vs struct) は Phase 7.5 着手時の orchestrator consensus review で
+確定。
+
+*default*: Emacs =process-coding-system= = (decode . encode) cons
+pair precedent 踏襲、Phase 7.5 で正式 freeze。
+
+** 9.4 streaming API の interface (callback vs generator)
+
+§2.5 で =accept-process-output= 互換 callback を default としたが、
+NeLisp に generator primitive (Python yield 風) が将来 phase で導入
+される可能性。
+
+*default*: 本 phase は callback 1 択、generator-based interface は v2.0
+で =cl-loop= / Python yield 風 primitive 追加時に検討。
+
+** 9.5 Shift-JIS / EUC-JP の方言 (CP932 / Windows-31J 等)
+
+§2.1 で Shift-JIS = JIS X 0208 strict、Windows 拡張 (CP932 = JIS X
+0208 + 機種依存文字) は本 phase scope 外。
+
+*default*: Phase 7.4 は JIS X 0208 strict、CP932 は v2.0 で
+=defcustom nelisp-coding-shift-jis-cp932-mode= 経由 opt-in 化。
+
+* §10 関連 doc
+
+** internal NeLisp design docs
+
+- =docs/design/27-phase7-c-runtime-self-impl.org= (Doc 27 LOCKED
+  2026-04-25 = 2a52bda main、本 doc 親)
+- =docs/design/28-phase7.1-native-compiler.org= (Doc 28 LOCKED-2026-04-25-v2、
+  本 doc §1.4 / §6.6 replan gate pattern 引き継ぎ)
+- =docs/design/29-phase7.2-allocator.org= (Doc 29 DRAFT-2026-04-25、
+  本 doc §2.6 / §2.10 stats integration の sibling)
+- =docs/design/30-phase7.3-gc-inner.org= (Doc 30 DRAFT-2026-04-25、
+  本 doc は Phase 7.3 と並列 walk 可)
+- =docs/design/18-stage-d-standalone.org= (Stage D, Phase 6.1
+  architecture α SHIPPED)
+
+** external precedent reference
+
+- *SBCL =sb-impl/external-formats.lisp=*: ~3000 LOC CL、25 年維持。
+  encoding category + lazy lookup precedent
+- *Emacs =src/coding.c=*: ~10000 LOC C、Emacs 1985-。=ccl= mini-language
+  + =coding-system-spec= + auto-detect precedent
+- *Unicode Standard 15.0* (= "The Unicode Standard, Version 15.0")
+  Unicode Consortium 2022、UTF-8 spec 典拠
+- *IETF RFC 3629* (= F. Yergeau, 2003) "UTF-8, a transformation format
+  of ISO 10646"、UTF-8 BOM / encoding 仕様
+- *JIS X 0208* / *JIS X 0212* 日本工業規格、Shift-JIS / EUC-JP の
+  日本語文字集合定義
+- *Python =codecs= module*: =errors= 引数 (=replace= / =strict= /
+  =ignore=) の error handling precedent
+
+** 関連 memory
+
+- =project_nelisp.md= (Phase 4-6.5 SHIPPED summary、Stage D 配布レディ)
+- =project_nelisp_defs_index.md= (Phase 6.5 SHIPPED detail)
+- =feedback_anvil_master_integration_gate.md= (design doc は LOCKED
+  で main merge 可)
+- =feedback_canonical_byte_compile_stale_elc.md= (worktree 内
+  byte-compile、canonical では .elc 残さない)
+- =feedback_orchestrator_role_split.md= (orchestrator review
+  claude+codex+gemma、judge=claude)
+- =feedback_nelisp_announcement_standalone_gate.md= (Phase 7+ 完遂で
+  公開告知保留解除)
+- =feedback_git_worktree_parallel_sessions.md= (Phase 7.4 sub-phase
+  ごとに別 worktree 推奨)
+
+* §11 Sign-off
+
+** v0 DRAFT
+
+| version  | date       | author                       | 主要 |
+|----------+------------+------------------------------+------|
+| v1 DRAFT | 2026-04-25 | session-T7 起草 (T7 autonomous) | 4 sub-phase / 10 LOCKED items / 6 risks / UTF-8 200MB/s + Shift-JIS/EUC-JP 100MB/s gate / streaming 1GB OOM-free / process-coding-system API stub のみ |
+| *v2 LOCKED* | 2026-04-25 | session-A 改訂 | codex review MAJOR REVISIONS 7 issues (BLOCKER 1 + MAJOR 5 + MINOR 1) 反映: BLOCKER 解消 (random byte-perfect → valid/invalid 分割) / Doc 27 amendment required / Shift-JIS scope MVP 縮小 (X 0201 + X 0208 strict、X 0212 EUC-JP only、CP932 v2.0) / Japanese table generated artifact 化 + provenance + checksum 必須 / process-coding-system 既存 :coding API backend 差し替え限定 / invalid-sequence policy contract LOCK 4 列 table (return / signal / offset / atomicity) / throughput gate 2-tier (CI ratio + pinned absolute) / table provenance risk 追加 |
+
+** v2 LOCKED 根拠
+
+- orchestrator =anvil-orchestrator-submit= (provider=codex single-provider、
+  task-id =4be837c0-...=) で codex review 取得
+- codex verdict = *MAJOR REVISIONS*、7 issues (BLOCKER 1 + MAJOR 5 + MINOR 1)
+- session-A が 7 issues 全反映、本 doc を =LOCKED-2026-04-25-v2= に昇格
+- *Doc 27 amendment required*: 本 v2 は Doc 27 §3 7.4 baseline (~600-1000
+  LOC / 2-3w) を detailed decomposition で 1500-2500 LOC NeLisp 手書き +
+  ~14000 entry generated table へ re-baseline。Doc 27 errata 必要
+
+** main merge gate
+
+- Doc 27 LOCKED 維持 (本 v2 は detailed decomposition、Doc 27 errata 必要)
+- Doc 28 §6.6 / Doc 29 §6.6 / Doc 30 §6.6 replan gate pattern と整合
+- Phase 7.1 / 7.2 / 7.3 と independent 並列 walk 可能 (SBCL precedent
+  も coding は GC / allocator と疎結合)
+- ERT regression-free (本 doc は文書のみだが、§3 sub-phase の
+  scope/LOC/期間 + 本 v2 valid/invalid 分割 + 2-tier ratio gate が Doc 27
+  §3 7.4 と矛盾しないこと)
+- =anvil-dev release-audit :scope doc 31= 緑 (LOCKED stamp 整合、
+  reference 整合、7 codex issues 全反映の cross-check)
+- 本 v2 = LOCKED-2026-04-25-v2、user signoff で main =--no-ff= merge 解禁
