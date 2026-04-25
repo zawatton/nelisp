@@ -1163,17 +1163,23 @@ and cached process-globally."
 
 (defun nelisp-cc-runtime--compile-bytes (function alloc-state backend)
   "Run the BACKEND on FUNCTION with ALLOC-STATE.  Returns the byte vector.
-Threads through the per-backend public entry — `compile-with-meta'
-for x86_64 (returns BYTES . CALL-FIXUPS), `compile' for arm64 (returns
-BYTES).  The fixup table is *not* consumed at this layer; Phase 7.5
-will integrate it with `nelisp-defs-index'."
+
+T43 Phase 7.5.6 — threads through the new `compile-with-link' entry
+on each backend so primitive `:call' / `:closure' sites get patched
+to embedded trampolines (= bytes execute end-to-end without SIGSEGV
+at the bench harness layer).
+
+The legacy `compile-with-meta' / `compile' entries are preserved for
+ERT golden tests that pin specific byte sequences."
   (pcase backend
     ('x86_64
-     (let ((pair (nelisp-cc-x86_64-compile-with-meta function alloc-state)))
+     (require 'nelisp-cc-callees)
+     (let ((bytes (nelisp-cc-x86_64-compile-with-link function alloc-state)))
        (nelisp-cc-runtime--list-to-vector
-        (nelisp-cc-runtime--bytes-as-list (car pair)))))
+        (nelisp-cc-runtime--bytes-as-list bytes))))
     ('arm64
-     (let ((bytes (nelisp-cc-arm64-compile function alloc-state)))
+     (require 'nelisp-cc-callees)
+     (let ((bytes (nelisp-cc-arm64-compile-with-link function alloc-state)))
        (nelisp-cc-runtime--list-to-vector
         (nelisp-cc-runtime--bytes-as-list bytes))))
     (_ (signal 'nelisp-cc-runtime-error

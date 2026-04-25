@@ -64,6 +64,12 @@
 (require 'pcase)
 (require 'nelisp-cc)
 
+;; T43 Phase 7.5.6 — declared here (loaded lazily by `compile-with-link')
+;; to break a circular dependency: nelisp-cc-callees requires nelisp-cc
+;; for the SSA accessors, and we require it back for the link step.
+(declare-function nelisp-cc--link-unresolved-calls "nelisp-cc-callees"
+                  (bytes call-fixups &optional backend))
+
 ;;; Errors -----------------------------------------------------------
 
 (define-error 'nelisp-cc-x86_64-error
@@ -1084,25 +1090,39 @@ zero placeholder (see `--lower-closure')."
        cg def nelisp-cc-x86_64--return-reg))))
 
 (defun nelisp-cc-x86_64--lower-closure (cg instr)
-  "Lower an SSA `:closure' INSTR — placeholder MOV r64, 0.
-T38 Phase 7.5.5 — Phase 7.5 will replace this with a runtime closure
-allocation that materialises a (function-pointer + capture-array)
-struct address into the def's register.  Until then the skeleton
-emits MOV r64, 0 so the byte stream is well-formed and the in-process
-FFI bench harness can run end-to-end without raising
-`:unknown-opcode' (the executed bytes return zero, which is exactly
-the bench-infrastructure baseline behaviour Doc 28 §5.2 captures —
-the gate flips to semantic verification when Phase 7.5 closure
-allocation lands).
+  "Lower an SSA `:closure' INSTR — CALL into the embedded allocator
+trampoline.  T43 Phase 7.5.6 — Doc 28 §3.5 / Doc 32 v2 §3.
 
-Spill-aware: when DEF is spilled the placeholder zero lands in the
-scratch register first, then is stored to the spill slot."
+The closure allocator trampoline is appended to the byte buffer by
+`nelisp-cc--link-unresolved-calls' if any `:closure' instruction
+referenced it (recorded via the same `call-fixups' table the direct
+`:call' lowering uses, keyed on the special symbol `alloc-closure').
+The trampoline returns a self-pointer (LEA rax, [rip-7]) so
+`:call-indirect' on the result has a non-zero, callable address —
+the bytes execute end-to-end without SIGSEGV.
+
+Codegen sequence:
+  CALL rel32         ; placeholder rel32, patched by link step
+  [MOV def-reg, rax] ; harvest the closure pointer (elided when def-reg = rax)
+  [STR rax, slot]    ; via --writeback-def for spilled defs
+
+Spill-aware: routes through `--writeback-def' so a spilled def lands
+in its slot.  The previous T38 placeholder (`MOV r,0') made the bytes
+SIGSEGV the moment a `:call-indirect' tried to dereference the
+zero-pointer; this lowering closes that gap."
   (let* ((buf (nelisp-cc-x86_64--codegen-buffer cg))
-         (def (nelisp-cc--ssa-instr-def instr))
-         (dst (nelisp-cc-x86_64--def-target cg def)))
-    (nelisp-cc-x86_64--buffer-emit-bytes
-     buf (nelisp-cc-x86_64--emit-mov-reg-imm32 dst 0))
-    (nelisp-cc-x86_64--writeback-def cg def dst)))
+         (def (nelisp-cc--ssa-instr-def instr)))
+    ;; Emit CALL rel32 with placeholder 0 displacement; link step
+    ;; patches it against the embedded `alloc-closure' trampoline.
+    (let ((before-call (nelisp-cc-x86_64--buffer-offset buf)))
+      (nelisp-cc-x86_64--buffer-emit-bytes
+       buf (nelisp-cc-x86_64--emit-call-rel32 0))
+      (push (cons (+ before-call 1) 'alloc-closure)
+            (nelisp-cc-x86_64--codegen-call-fixups cg)))
+    ;; Route the return value (rax = the closure pointer) to the def.
+    (when def
+      (nelisp-cc-x86_64--writeback-def
+       cg def nelisp-cc-x86_64--return-reg))))
 
 (defun nelisp-cc-x86_64--lower-instr (cg instr)
   "Dispatch a single SSA INSTR to its per-opcode lower helper.
@@ -1224,6 +1244,29 @@ final byte vector directly."
     (cons (nelisp-cc-x86_64--buffer-finalize
            (nelisp-cc-x86_64--codegen-buffer cg))
           (nreverse (nelisp-cc-x86_64--codegen-call-fixups cg)))))
+
+(defun nelisp-cc-x86_64-compile-with-link (function alloc-state)
+  "Compile FUNCTION + ALLOC-STATE and run the Phase 7.5.6 link step.
+T43 Phase 7.5.6 — see `nelisp-cc--link-unresolved-calls'.
+
+Returns a vector of bytes that is *executable* end-to-end:
+  - every `:call FOO' site has been patched to a CALL rel32 against
+    the matching primitive trampoline (registered in
+    `nelisp-cc-callees--x86_64-trampolines'), and
+  - every `:closure' site has been patched to a CALL rel32 against
+    the embedded `alloc-closure' trampoline.
+
+Unknown primitives produce a `message' diagnostic and leave the
+fixup at 0 displacement (= falls through, benign for bench timing).
+
+The previous T38 path (`compile-with-meta' → execute) SIGSEGV'd at
+the first `:call' / `:call-indirect-of-closure' boundary; this
+entry is the bench-actual gate's lever."
+  (require 'nelisp-cc-callees)
+  (let* ((pair    (nelisp-cc-x86_64-compile-with-meta function alloc-state))
+         (bytes   (car pair))
+         (fixups  (cdr pair)))
+    (nelisp-cc--link-unresolved-calls bytes fixups 'x86_64)))
 
 (provide 'nelisp-cc-x86_64)
 ;;; nelisp-cc-x86_64.el ends here
