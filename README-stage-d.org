@@ -75,9 +75,9 @@ Add to your project's =.mcp.json=:
 #+end_src
 
 In Claude Code, run =/mcp= to confirm =anvil= is connected, then call
-any of the 25 tools below directly.
+any of the 30 tools below directly.
 
-* Tools (25 total)
+* Tools (30 total)
 
 ** File operations (7)
 
@@ -102,11 +102,21 @@ any of the 25 tools below directly.
 | =git-branch-current= | Current branch (symbolic short name) |
 | =git-repo-root= | Toplevel path |
 
-** HTTP (1)
+** HTTP (6)
+
+Two backends coexist: =http-get= is the in-memory hash-cache GET from
+Phase 5-E; the =http-fetch= family (Phase 6.2, Doc 24) caches via the
+SQLite =nelisp-state= ns ="http"= so entries survive launcher restarts
+and can be inspected from any client speaking MCP.
 
 | tool | purpose |
 |------+---------|
-| =http-get= | Fetch URL with cache TTL |
+| =http-get= | GET (Phase 5-E, in-memory cache, kept for compat) |
+| =http-fetch= | GET with TTL cache via =nelisp-state= ns="http" |
+| =http-head= | HEAD only (status + headers, no cache) |
+| =http-cache-get= | Inspect cached entry plist for a URL |
+| =http-cache-clear= | Drop one entry (=:url=) or wipe the whole namespace |
+| =http-cache-status= | =:count= + URL list for the http namespace |
 
 ** Persistent KV state (6)
 
