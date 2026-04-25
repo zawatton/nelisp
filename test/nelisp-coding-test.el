@@ -173,19 +173,31 @@ with offset / byte / strategy data, catchable via condition-case."
 
 (ert-deftest nelisp-coding-utf8-decode-strict-strategy-signals ()
   "Invalid byte under :strict strategy signals nelisp-coding-strict-violation.
-Phase 7.4.1 では signal のみ; process abort integration は Phase 7.5。"
+
+T67 / Doc 31 v2 §2.4 LOCK update: `strict' violations are *not* a
+sub-type of `nelisp-coding-error' (= the recoverable-error parent
+class).  A `condition-case' on `nelisp-coding-error' MUST NOT catch
+a strict violation — that aligns the host-Emacs MVP with the spec's
+\"uncatchable / abort\" semantics.  Strict can still be caught by
+exact symbol or via toplevel `error' (which the host runtime cannot
+prevent in MVP); Phase 7.5+ replaces the `signal' with process
+abort."
   (let ((bytes (nelisp-coding-test--bytes ?A #xFF ?B)))
     (should-error
      (nelisp-coding-utf8-decode bytes 'strict)
      :type 'nelisp-coding-strict-violation)
-    ;; Verify both error symbols are subtypes of nelisp-coding-error
-    ;; (parent type, allows uniform catch).
-    (let ((caught-parent nil))
+    ;; New contract: `nelisp-coding-error' parent does NOT catch strict.
+    (let ((caught-parent nil)
+          (caught-toplevel nil))
       (condition-case _err
-          (nelisp-coding-utf8-decode bytes 'strict)
-        (nelisp-coding-error
-         (setq caught-parent t)))
-      (should caught-parent))))
+          (condition-case _err2
+              (nelisp-coding-utf8-decode bytes 'strict)
+            (nelisp-coding-error
+             (setq caught-parent t)))
+        (error
+         (setq caught-toplevel t)))
+      (should-not caught-parent)
+      (should caught-toplevel))))
 
 ;;;; 8. decode rejects overlong — 0xC0 0x80 (overlong U+0000)
 
@@ -412,20 +424,29 @@ CP :strategy 'error)=, catchable via condition-case."
 
 (ert-deftest nelisp-coding-latin1-encode-strict-strategy-signals-strict-violation ()
   "Encoding U+0100+ codepoint under :strict strategy signals
-`nelisp-coding-strict-violation'. Phase 7.4.2 では signal のみ;
-process abort integration は Phase 7.5。"
+`nelisp-coding-strict-violation'.
+
+T67 / Doc 31 v2 §2.4 LOCK update: strict violations escape the
+`nelisp-coding-error' parent class and propagate to toplevel `error'
+only, mirroring the spec's uncatchable / abort policy.  Phase 7.5+
+will replace the `signal' with process abort; do not rely on
+recovering from a strict violation in user code."
   (let ((input (string ?A #x3042)))
     (should-error
      (nelisp-coding-latin1-encode input 'strict)
      :type 'nelisp-coding-strict-violation)
-    ;; Verify both error symbols are subtypes of nelisp-coding-error
-    ;; (parent type, allows uniform catch with utf-8 strict path).
-    (let ((caught-parent nil))
+    ;; New contract: `nelisp-coding-error' parent does NOT catch strict.
+    (let ((caught-parent nil)
+          (caught-toplevel nil))
       (condition-case _err
-          (nelisp-coding-latin1-encode input 'strict)
-        (nelisp-coding-error
-         (setq caught-parent t)))
-      (should caught-parent))
+          (condition-case _err2
+              (nelisp-coding-latin1-encode input 'strict)
+            (nelisp-coding-error
+             (setq caught-parent t)))
+        (error
+         (setq caught-toplevel t)))
+      (should-not caught-parent)
+      (should caught-toplevel))
     ;; Verify signal data carries offset + codepoint + strategy.
     (let ((caught nil))
       (condition-case err
@@ -1147,6 +1168,245 @@ tree was regenerated, not silently reverted."
                   (length nelisp-coding-euc-jp-x0212-decode-table))))
     (should (>= total 14000))   ; Doc 31 v2 §6.10 "~14000 entry" target
     (should (<= total 25000)))) ; sanity upper bound
+
+;;;; ──────────────────────────────────────────────────────────────────
+;;;; T67 — EUC-JP streaming boundary safety ERT (+10, Doc 31 v2 §3.4 / T56 fix)
+;;;; ──────────────────────────────────────────────────────────────────
+;;
+;; T56 codex audit identified a CRITICAL bug in
+;; `nelisp-coding--stream-euc-jp-tail-pending': the original
+;; implementation deferred *any* trailing 0xA1-0xFE byte as if it were
+;; an incomplete CS1 lead, which mis-classified valid 2-byte CS1
+;; (0xA4 0xA2 = あ), 2-byte CS2 (0x8E 0xB1 = ｱ), and 3-byte CS3
+;; (0x8F 0xA2 0xAF = BREVE U+02D8) sequences whenever they happened to
+;; sit at the chunk tail.  These tests enumerate every interior split
+;; position for the three EUC-JP code-set forms and assert that
+;; streaming decode at any chunk size produces byte-for-byte the same
+;; result as a one-shot decode.
+
+;;;; T67-1.  CS1 (X 0208) split between lead and trail — A4 | A2 = あ
+
+(ert-deftest nelisp-coding-stream-decode-euc-jp-cs1-boundary ()
+  "EUC-JP CS1 (X 0208) 2-byte sequence A4 A2 = あ split at every
+interior chunk position decodes identically to one-shot.
+Boundary [A4][A2] must NOT mis-classify A2 as a stray pending lead."
+  (let* ((bytes (list #xA4 #xA2))
+         (one-shot (nelisp-coding-euc-jp-decode bytes))
+         (expected (plist-get one-shot :string)))
+    (should (equal expected "あ"))
+    ;; Single-chunk control.
+    (let ((result (nelisp-coding-test--decode-stream
+                   'euc-jp (list bytes))))
+      (should (equal (plist-get result :string) expected))
+      (should (= (plist-get result :replacements) 0)))
+    ;; Split [A4][A2] — lead in chunk 1, trail in chunk 2.
+    (let ((result (nelisp-coding-test--decode-stream
+                   'euc-jp (list (list #xA4) (list #xA2)))))
+      (should (equal (plist-get result :string) expected))
+      (should (= (plist-get result :replacements) 0))
+      (should (equal (plist-get result :invalid-positions) nil)))))
+
+;;;; T67-2.  CS2 (halfwidth katakana) split — 8E | B1 = ｱ
+
+(ert-deftest nelisp-coding-stream-decode-euc-jp-cs2-boundary ()
+  "EUC-JP CS2 sequence 8E B1 = ｱ (U+FF71) split between the SS2 lead
+(0x8E) and the katakana trail decodes correctly.  Pre-T67 the trail
+byte (B1, in 0xA1-0xFE range) was deferred as a phantom CS1 lead and
+silently reclassified."
+  (let* ((bytes (list #x8E #xB1))
+         (one-shot (nelisp-coding-euc-jp-decode bytes))
+         (expected (plist-get one-shot :string)))
+    (should (equal expected (string #xFF71)))
+    ;; Single-chunk control.
+    (let ((result (nelisp-coding-test--decode-stream
+                   'euc-jp (list bytes))))
+      (should (equal (plist-get result :string) expected)))
+    ;; Split [8E][B1].
+    (let ((result (nelisp-coding-test--decode-stream
+                   'euc-jp (list (list #x8E) (list #xB1)))))
+      (should (equal (plist-get result :string) expected))
+      (should (= (plist-get result :replacements) 0))
+      (should (equal (plist-get result :invalid-positions) nil)))))
+
+;;;; T67-3.  CS3 (X 0212) split at 1st byte — 8F | A2 AF
+
+(ert-deftest nelisp-coding-stream-decode-euc-jp-cs3-split-after-1st ()
+  "EUC-JP CS3 sequence 8F A2 AF = BREVE (U+02D8) split after the SS3
+lead (0x8F) decodes correctly via 2-byte pending carry-over."
+  (let* ((bytes (list #x8F #xA2 #xAF))
+         (one-shot (nelisp-coding-euc-jp-decode bytes))
+         (expected (plist-get one-shot :string)))
+    (should (equal expected (string #x02D8)))
+    ;; Split [8F][A2 AF].
+    (let ((result (nelisp-coding-test--decode-stream
+                   'euc-jp (list (list #x8F) (list #xA2 #xAF)))))
+      (should (equal (plist-get result :string) expected))
+      (should (= (plist-get result :replacements) 0))
+      (should (equal (plist-get result :invalid-positions) nil)))))
+
+;;;; T67-4.  CS3 split at 2nd byte — 8F A2 | AF
+
+(ert-deftest nelisp-coding-stream-decode-euc-jp-cs3-split-after-2nd ()
+  "EUC-JP CS3 sequence 8F A2 AF split after the second byte (= 8F A2
+buffered, AF arriving on next chunk) decodes correctly.  This was the
+original mis-classification: pre-T67 the implementation only deferred
+2 bytes when the *last* two bytes matched 8F + A1-FE, but if all
+three bytes arrive in one chunk it stripped only the trailing byte
+and decoded a phantom 2-byte CS1 pair."
+  (let* ((bytes (list #x8F #xA2 #xAF))
+         (one-shot (nelisp-coding-euc-jp-decode bytes))
+         (expected (plist-get one-shot :string)))
+    (should (equal expected (string #x02D8)))
+    ;; Split [8F A2][AF].
+    (let ((result (nelisp-coding-test--decode-stream
+                   'euc-jp (list (list #x8F #xA2) (list #xAF)))))
+      (should (equal (plist-get result :string) expected))
+      (should (= (plist-get result :replacements) 0))
+      (should (equal (plist-get result :invalid-positions) nil)))))
+
+;;;; T67-5.  Full CS3 in one chunk — pre-T67 corruption regression
+
+(ert-deftest nelisp-coding-stream-decode-euc-jp-cs3-single-chunk ()
+  "Whole CS3 sequence 8F A2 AF arriving in a single chunk decodes
+correctly.  The pre-T67 bug deferred 2 bytes (the [A2 AF] pair) and
+left only [8F] for decode → emit 0xFFFD * 3.  Asserting :replacements
+= 0 catches the silent corruption."
+  (let* ((bytes (list #x8F #xA2 #xAF))
+         (result (nelisp-coding-test--decode-stream
+                  'euc-jp (list bytes))))
+    (should (equal (plist-get result :string) (string #x02D8)))
+    (should (= (plist-get result :replacements) 0))
+    (should (equal (plist-get result :invalid-positions) nil))))
+
+;;;; T67-6.  Multi-char CS1 sequence chunked at every byte boundary
+
+(ert-deftest nelisp-coding-stream-decode-euc-jp-multichar-cs1 ()
+  "Multi-character CS1 string chunked at every byte size 1..6 decodes
+identically to one-shot.  Exercises the parity walk for runs of all
+A1-FE bytes."
+  ;; あいう = A4 A2 A4 A4 A4 A6 (6 bytes, all in 0xA1-0xFE range —
+  ;; the worst case for the parity walk).
+  (let* ((bytes (list #xA4 #xA2 #xA4 #xA4 #xA4 #xA6))
+         (one-shot (nelisp-coding-euc-jp-decode bytes))
+         (expected (plist-get one-shot :string)))
+    (should (equal expected "あいう"))
+    (dolist (chunk-size '(1 2 3 4 5 6))
+      (let* ((chunks (nelisp-coding-test--chunk-bytes bytes chunk-size))
+             (result (nelisp-coding-test--decode-stream
+                      'euc-jp chunks)))
+        (should (equal (plist-get result :string) expected))
+        (should (= (plist-get result :replacements) 0))
+        (should (= (plist-get result :chars-emitted) 3))))))
+
+;;;; T67-7.  Mixed ASCII + CS1 + CS2 + CS3 sequence stress
+
+(ert-deftest nelisp-coding-stream-decode-euc-jp-mixed-codesets ()
+  "Mixed ASCII + CS1 + CS2 + CS3 sequence chunked at byte sizes 1..7
+decodes identically to one-shot.  Exercises every anchor transition
+in the parity walker."
+  ;; A (41) | あ (A4 A2) | B (42) | ｱ (8E B1) | C (43) | BREVE (8F A2 AF)
+  (let* ((bytes (list ?A #xA4 #xA2 ?B #x8E #xB1 ?C #x8F #xA2 #xAF))
+         (one-shot (nelisp-coding-euc-jp-decode bytes))
+         (expected (plist-get one-shot :string)))
+    (should (equal expected
+                   (concat "A" "あ" "B" (string #xFF71) "C"
+                           (string #x02D8))))
+    (dolist (chunk-size '(1 2 3 4 5 6 7))
+      (let* ((chunks (nelisp-coding-test--chunk-bytes bytes chunk-size))
+             (result (nelisp-coding-test--decode-stream
+                      'euc-jp chunks)))
+        (should (equal (plist-get result :string) expected))
+        (should (= (plist-get result :replacements) 0))))))
+
+;;;; T67-8.  One-shot vs stream equivalence for every interior split
+
+(ert-deftest nelisp-coding-stream-decode-euc-jp-every-split-equivalence ()
+  "For every interior split position of a multi-codeset EUC-JP byte
+sequence, streaming decode produces byte-for-byte the same result as
+one-shot decode.  N-1 split positions × 1 sequence = covers every
+chunk-boundary case enumerable in this small input."
+  (let* ((bytes (list ?A #xA4 #xA2 #x8E #xB1 #x8F #xA2 #xAF ?Z))
+         (one-shot (nelisp-coding-euc-jp-decode bytes))
+         (expected-string (plist-get one-shot :string))
+         (n (length bytes)))
+    (cl-loop for split from 1 below n
+             do (let* ((c1 (cl-subseq bytes 0 split))
+                       (c2 (cl-subseq bytes split))
+                       (result (nelisp-coding-test--decode-stream
+                                'euc-jp (list c1 c2))))
+                  (should (equal (plist-get result :string)
+                                 expected-string))
+                  (should (= (plist-get result :replacements) 0))))))
+
+;;;; T67-9.  Large EUC-JP stream stress (1KB-ish boundary smoke)
+
+(ert-deftest nelisp-coding-stream-decode-euc-jp-1kb-stress ()
+  "~1KB EUC-JP byte stream chunked at small/medium/large sizes
+matches one-shot decode.  Confirms the parity walker scales without
+mis-classification on long all-A1-FE runs."
+  (let* ((unit (list #xA4 #xA2 #xA4 #xA4 #xA4 #xA6 ?  ; "あいう "
+                     #x8E #xB1 ?  ; "ｱ "
+                     #x8F #xA2 #xAF ?\n))
+         (rep 80)                       ; ~1KB total
+         (bytes (apply #'append (make-list rep unit)))
+         (one-shot (nelisp-coding-euc-jp-decode bytes))
+         (expected (plist-get one-shot :string)))
+    (should (= (plist-get one-shot :replacements) 0))
+    (dolist (chunk-size '(1 2 7 13 64 256 1024))
+      (let* ((chunks (nelisp-coding-test--chunk-bytes bytes chunk-size))
+             (result (nelisp-coding-test--decode-stream
+                      'euc-jp chunks)))
+        (should (equal (plist-get result :string) expected))
+        (should (= (plist-get result :replacements) 0))))))
+
+;;;; T67-10.  Truncated CS3 at end-of-stream — finalize :replace
+
+(ert-deftest nelisp-coding-stream-decode-euc-jp-truncated-cs3-finalize ()
+  "Trailing incomplete EUC-JP CS3 prefix (8F A2 with no third byte)
+emits a single U+FFFD on finalize under :replace strategy, with two
+recorded :invalid-positions (one per pending byte)."
+  (let* ((bytes (list ?A #x8F #xA2))
+         (state (nelisp-coding-stream-state-create
+                 'euc-jp 'decode 'replace)))
+    (nelisp-coding-stream-decode-chunk state bytes)
+    (let ((result (nelisp-coding-stream-decode-finalize state)))
+      ;; "A" + U+FFFD = 2 chars; replacement count = 1.
+      (should (= (length (plist-get result :string)) 2))
+      (should (= (aref (plist-get result :string) 0) ?A))
+      (should (= (aref (plist-get result :string) 1)
+                 nelisp-coding-utf8-replacement-char))
+      (should (= (plist-get result :replacements) 1))
+      ;; Both pending bytes recorded as invalid positions.
+      (should (= (length (plist-get result :invalid-positions)) 2))))
+  ;; :error finalize signals.
+  (let* ((bytes (list #x8F #xA2))
+         (state (nelisp-coding-stream-state-create
+                 'euc-jp 'decode 'error)))
+    (nelisp-coding-stream-decode-chunk state bytes)
+    (should-error
+     (nelisp-coding-stream-decode-finalize state)
+     :type 'nelisp-coding-invalid-byte)))
+
+;;;; T67-11.  read-file-with-encoding round-trip on EUC-JP
+
+(ert-deftest nelisp-coding-read-file-with-encoding-euc-jp-roundtrip ()
+  "write → read with EUC-JP + chunked stream codec round-trips
+cleanly across boundary-prone byte patterns.  Validates that the T67
+read-file streaming change (real incremental disk I/O via BEG/END)
+preserves multi-byte sequences across chunk windows."
+  (let* ((s "AあBｱC")  ; mixed CS0 + CS1 + CS2
+         (tmp (make-temp-file "nelisp-coding-euc-jp-rt-" nil ".bin")))
+    (unwind-protect
+        (progn
+          (nelisp-coding-write-file-with-encoding tmp s 'euc-jp 'replace 3)
+          (dolist (chunk-size '(1 2 3 4 8 64))
+            (let ((read-result
+                   (nelisp-coding-read-file-with-encoding
+                    tmp 'euc-jp 'replace chunk-size)))
+              (should (equal (plist-get read-result :string) s))
+              (should (= (plist-get read-result :replacements) 0))
+              (should (equal (plist-get read-result :invalid-positions) nil)))))
+      (delete-file tmp))))
 
 (provide 'nelisp-coding-test)
 
