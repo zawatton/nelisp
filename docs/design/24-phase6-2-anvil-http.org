@@ -2,7 +2,7 @@
 #+AUTHOR: zawatton + Claude
 #+DATE: 2026-04-25
 #+STATE: LOCKED-2026-04-25
-#+STATUS: §2 LOCKED 2026-04-25、§3 全 5 sub-phase SHIPPED 2026-04-25 — Phase 6.2.0 url-* primitive (5c03831) / 6.2.1 core fetch + cache (5f9fa84) / 6.2.2 HEAD + 6.2.3 MCP expose (0ae9163) / 6.2.4 distribution polish (fd623a3)。tools/list 25 → 30、ERT 906→966 (+60)、make smoke + extract-and-run 検証 PASS。stage-d-v0.2 tag は user 判断
+#+STATUS: §2 LOCKED 2026-04-25、§3 全 5 MVP sub-phase SHIPPED + DEFER 2 件解放 2026-04-25 — 6.2.0/1/2/3/4 MVP + 6.2.8 POST + auth (568e3fc) + 6.2.7 HTML/JSON extract (本日)。残 DEFER = 6.2.5 robots / 6.2.6 batch のみ。tools/list 25 → 31、ERT 906→983 (+77)、http-fetch に :selector / :json-path 拡張済
 
 * §0 要旨
 

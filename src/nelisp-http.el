@@ -25,6 +25,7 @@
 (require 'url)
 (require 'url-http)
 (require 'url-parse)
+(require 'dom)
 (require 'nelisp-state)
 
 (defgroup nelisp-http nil
@@ -300,6 +301,253 @@ Returns (:status :headers :body :final-url) or signals an error."
             extra))
     extra))
 
+;;; Extract pipeline (Phase 6.2.7) ------------------------------------
+
+(defun nelisp-http--libxml-p ()
+  "Return non-nil when this Emacs build bundles libxml2."
+  (fboundp 'libxml-parse-html-region))
+
+(defun nelisp-http--extract-target-from-content-type (ct)
+  "Classify Content-Type CT as `html', `json', `xml', or nil."
+  (cond
+   ((not (stringp ct)) nil)
+   ((string-match-p "\\`\\(?:[[:space:]]*\\)\\(?:text/html\\|application/xhtml\\+xml\\)\\b"
+                    (downcase ct))
+    'html)
+   ((string-match-p "\\`\\(?:[[:space:]]*\\)application/json\\b" (downcase ct))
+    'json)
+   ((string-match-p "\\`\\(?:[[:space:]]*\\)\\(?:application/xml\\|text/xml\\)\\b"
+                    (downcase ct))
+    'xml)
+   (t nil)))
+
+(defun nelisp-http--parse-selector (s)
+  "Parse CSS-subset selector S.
+Returns (:tag SYM) / (:class STR) / (:id STR) / (:tag-class SYM STR) /
+(:tag-id SYM STR), or nil for anything outside the subset."
+  (let ((s (and (stringp s) (string-trim s))))
+    (cond
+     ((or (null s) (string-empty-p s)) nil)
+     ((string-match "\\`#\\([A-Za-z][A-Za-z0-9_-]*\\)\\'" s)
+      (list :id (match-string 1 s)))
+     ((string-match "\\`\\.\\([A-Za-z][A-Za-z0-9_-]*\\)\\'" s)
+      (list :class (match-string 1 s)))
+     ((string-match "\\`\\([A-Za-z][A-Za-z0-9]*\\)#\\([A-Za-z][A-Za-z0-9_-]*\\)\\'" s)
+      (list :tag-id (intern (downcase (match-string 1 s)))
+            (match-string 2 s)))
+     ((string-match "\\`\\([A-Za-z][A-Za-z0-9]*\\)\\.\\([A-Za-z][A-Za-z0-9_-]*\\)\\'" s)
+      (list :tag-class (intern (downcase (match-string 1 s)))
+            (match-string 2 s)))
+     ((string-match "\\`[A-Za-z][A-Za-z0-9]*\\'" s)
+      (list :tag (intern (downcase s))))
+     (t nil))))
+
+(defun nelisp-http--dom-select (dom parts)
+  "Return DOM nodes matching PARTS produced by `--parse-selector'."
+  (pcase parts
+    (`(:tag ,tag) (dom-by-tag dom tag))
+    (`(:class ,cls) (dom-by-class dom (format "\\b%s\\b" (regexp-quote cls))))
+    (`(:id ,id) (dom-by-id dom (format "\\`%s\\'" (regexp-quote id))))
+    (`(:tag-class ,tag ,cls)
+     (seq-filter (lambda (el) (eq (dom-tag el) tag))
+                 (dom-by-class dom (format "\\b%s\\b" (regexp-quote cls)))))
+    (`(:tag-id ,tag ,id)
+     (seq-filter (lambda (el) (eq (dom-tag el) tag))
+                 (dom-by-id dom (format "\\`%s\\'" (regexp-quote id)))))
+    (_ nil)))
+
+(defun nelisp-http--select-html-libxml (html selector)
+  "Return text from HTML matching SELECTOR via libxml + dom.el."
+  (let ((parts (nelisp-http--parse-selector selector)))
+    (when (and parts (fboundp 'libxml-parse-html-region))
+      (let* ((dom (with-temp-buffer
+                    (insert html)
+                    (libxml-parse-html-region (point-min) (point-max))))
+             (nodes (and dom (nelisp-http--dom-select dom parts))))
+        (when nodes
+          (let ((texts (delq nil
+                             (mapcar (lambda (n)
+                                       (let ((s (string-trim
+                                                 (or (dom-text n) ""))))
+                                         (and (not (string-empty-p s)) s)))
+                                     nodes))))
+            (when texts (mapconcat #'identity texts "\n\n"))))))))
+
+(defun nelisp-http--strip-tags (html)
+  "Return HTML with tags removed and whitespace collapsed."
+  (let* ((s (replace-regexp-in-string "<[^>]+>" "" html))
+         (s (replace-regexp-in-string "&amp;" "&" s))
+         (s (replace-regexp-in-string "&lt;" "<" s))
+         (s (replace-regexp-in-string "&gt;" ">" s))
+         (s (replace-regexp-in-string "&quot;" "\"" s))
+         (s (replace-regexp-in-string "[ \t]+" " " s))
+         (s (replace-regexp-in-string "\n[ \t]*\n[ \t\n]*" "\n\n" s)))
+    (string-trim s)))
+
+(defun nelisp-http--select-html-fallback (html selector)
+  "Regex-subset selector for builds without libxml."
+  (let* ((parts (nelisp-http--parse-selector selector))
+         (case-fold-search t)
+         (rx nil)
+         (group 1))
+    (pcase parts
+      (`(:tag ,tag)
+       (setq rx (format "<%s\\b[^>]*>\\(\\(?:.\\|\n\\)*?\\)</%s>"
+                        (symbol-name tag) (symbol-name tag))))
+      (`(:id ,id)
+       (setq rx (format "<\\([A-Za-z][A-Za-z0-9]*\\)\\b[^>]*\\bid=[\"']%s[\"'][^>]*>\\(\\(?:.\\|\n\\)*?\\)</\\1>"
+                        (regexp-quote id)))
+       (setq group 2))
+      (`(:class ,cls)
+       (setq rx (format "<\\([A-Za-z][A-Za-z0-9]*\\)\\b[^>]*\\bclass=[\"'][^\"']*\\b%s\\b[^\"']*[\"'][^>]*>\\(\\(?:.\\|\n\\)*?\\)</\\1>"
+                        (regexp-quote cls)))
+       (setq group 2))
+      (`(:tag-class ,tag ,cls)
+       (setq rx (format "<%s\\b[^>]*\\bclass=[\"'][^\"']*\\b%s\\b[^\"']*[\"'][^>]*>\\(\\(?:.\\|\n\\)*?\\)</%s>"
+                        (symbol-name tag) (regexp-quote cls)
+                        (symbol-name tag))))
+      (`(:tag-id ,tag ,id)
+       (setq rx (format "<%s\\b[^>]*\\bid=[\"']%s[\"'][^>]*>\\(\\(?:.\\|\n\\)*?\\)</%s>"
+                        (symbol-name tag) (regexp-quote id)
+                        (symbol-name tag)))))
+    (when rx
+      (let ((pos 0) (acc nil))
+        (while (string-match rx html pos)
+          (let* ((content (match-string group html))
+                 (text (and content (nelisp-http--strip-tags content))))
+            (when (and text (not (string-empty-p text)))
+              (push text acc)))
+          (setq pos (match-end 0)))
+        (when acc (mapconcat #'identity (nreverse acc) "\n\n"))))))
+
+(defun nelisp-http--split-json-path (path)
+  "Tokenize dotted-path PATH into (:key STR) / (:index INT) / (:wildcard)."
+  (let ((i 0) (n (length path)) (tokens nil))
+    (while (< i n)
+      (let ((ch (aref path i)))
+        (cond
+         ((eq ch ?.) (cl-incf i))
+         ((eq ch ?\[)
+          (let* ((end (string-match "\\]" path i))
+                 (inner (and end (substring path (1+ i) end))))
+            (unless end
+              (error "nelisp-http: unterminated [] in json-path %S" path))
+            (push (cond
+                   ((equal inner "*") (list :wildcard))
+                   ((string-match-p "\\`-?[0-9]+\\'" inner)
+                    (list :index (string-to-number inner)))
+                   (t (list :key inner)))
+                  tokens)
+            (setq i (1+ end))))
+         (t
+          (let* ((end (or (string-match "[.[]" path i) n))
+                 (seg (substring path i end)))
+            (push (if (string-match-p "\\`-?[0-9]+\\'" seg)
+                      (list :index (string-to-number seg))
+                    (list :key seg))
+                  tokens)
+            (setq i end))))))
+    (nreverse tokens)))
+
+(defun nelisp-http--json-walk (node segments)
+  "Walk NODE by SEGMENTS produced by `--split-json-path'."
+  (cond
+   ((null segments) node)
+   ((null node) nil)
+   (t
+    (pcase (car segments)
+      (`(:key ,k)
+       (when (hash-table-p node)
+         (let ((val (gethash k node)))
+           (nelisp-http--json-walk val (cdr segments)))))
+      (`(:index ,idx)
+       (when (and (vectorp node)
+                  (>= idx 0) (< idx (length node)))
+         (nelisp-http--json-walk (aref node idx) (cdr segments))))
+      (`(:wildcard)
+       (when (vectorp node)
+         (let ((results
+                (delq nil
+                      (mapcar (lambda (el)
+                                (nelisp-http--json-walk el (cdr segments)))
+                              (append node nil)))))
+           (vconcat results))))
+      (_ nil)))))
+
+(defun nelisp-http--select-json-dotted (json-string path)
+  "Parse JSON-STRING and walk dotted PATH; return JSON of subtree or nil."
+  (condition-case _
+      (let* ((node (json-parse-string
+                    json-string
+                    :object-type 'hash-table
+                    :array-type 'array
+                    :null-object :null
+                    :false-object :false))
+             (segments (nelisp-http--split-json-path path))
+             (result (and segments
+                          (nelisp-http--json-walk node segments))))
+        (when result
+          (json-serialize result
+                          :null-object :null
+                          :false-object :false)))
+    (error nil)))
+
+(defun nelisp-http--plist-put! (plist &rest kvs)
+  "Return PLIST with KVS (flat key/value list) applied via `plist-put'."
+  (let ((p (copy-sequence plist)))
+    (while kvs
+      (setq p (plist-put p (car kvs) (cadr kvs)))
+      (setq kvs (cddr kvs)))
+    p))
+
+(defun nelisp-http--apply-extract (response selector json-path)
+  "Post-process RESPONSE with SELECTOR / JSON-PATH when supplied.
+Mirrors anvil-http extract semantics — never erases :body silently;
+mismatches set :extract-miss t and tag :extract-engine."
+  (if (and (null selector) (null json-path))
+      response
+    (let* ((headers (plist-get response :headers))
+           (ct (plist-get headers :content-type))
+           (target (nelisp-http--extract-target-from-content-type ct))
+           (body (plist-get response :body)))
+      (cond
+       ((and selector (memq target '(html xml)) (stringp body))
+        (let* ((engine (if (nelisp-http--libxml-p) 'libxml 'regex-subset))
+               (extracted
+                (if (eq engine 'libxml)
+                    (nelisp-http--select-html-libxml body selector)
+                  (nelisp-http--select-html-fallback body selector))))
+          (if (and extracted (not (string-empty-p extracted)))
+              (nelisp-http--plist-put!
+               response
+               :body extracted
+               :extract-mode 'selector
+               :extract-engine engine)
+            (nelisp-http--plist-put!
+             response
+             :extract-miss t
+             :extract-mode 'selector
+             :extract-engine engine))))
+       ((and json-path (eq target 'json) (stringp body))
+        (let ((extracted (nelisp-http--select-json-dotted body json-path)))
+          (if extracted
+              (nelisp-http--plist-put!
+               response
+               :body extracted
+               :extract-mode 'json-path
+               :extract-engine 'json)
+            (nelisp-http--plist-put!
+             response
+             :extract-miss t
+             :extract-mode 'json-path
+             :extract-engine 'json))))
+       (t
+        (nelisp-http--plist-put!
+         response
+         :extract-miss t
+         :extract-mode (cond (selector 'selector) (json-path 'json-path))
+         :extract-engine 'content-type-mismatch))))))
+
 ;;; Public API --------------------------------------------------------
 
 (defun nelisp-http--response-plist (entry from-cache elapsed-ms)
@@ -314,7 +562,8 @@ Returns (:status :headers :body :final-url) or signals an error."
 
 ;;;###autoload
 (cl-defun nelisp-http-fetch (url &key headers timeout-sec ttl
-                                 no-cache if-newer-than)
+                                 no-cache if-newer-than
+                                 selector json-path)
   "GET URL with TTL cache via `nelisp-state' ns=\"http\".
 
 Keyword args:
@@ -323,7 +572,15 @@ Keyword args:
   :ttl             override `nelisp-http-cache-ttl-sec'.  Negative or
                    zero disables freshness check (always re-validate).
   :no-cache        skip cache reads AND writes.
-  :if-newer-than   unix epoch int; sends If-Modified-Since."
+  :if-newer-than   unix epoch int; sends If-Modified-Since.
+  :selector        CSS-subset selector evaluated against text/html
+                   bodies (libxml when available, regex fallback
+                   otherwise).  Result body is the matched text;
+                   :extract-mode and :extract-engine annotate the run.
+  :json-path       Dotted-path string (e.g. `data.results[0].id',
+                   `items[*].name') applied to application/json
+                   bodies.  Body is replaced with the located
+                   sub-tree serialized back to JSON."
   (nelisp-http--check-url url)
   (nelisp-state-enable)
   (let* ((norm (nelisp-http--normalize-url url))
@@ -334,8 +591,10 @@ Keyword args:
              (numberp eff-ttl) (> eff-ttl 0)
              (numberp (plist-get cached :fetched-at))
              (< (- now (plist-get cached :fetched-at)) eff-ttl))
-        ;; Fresh — zero network.
-        (nelisp-http--response-plist cached t 0)
+        ;; Fresh — zero network; extract still applies.
+        (nelisp-http--apply-extract
+         (nelisp-http--response-plist cached t 0)
+         selector json-path)
       ;; Network round-trip with conditional validators.
       (let* ((extra (nelisp-http--build-request-headers
                      headers cached if-newer-than))
@@ -361,13 +620,17 @@ Keyword args:
                              (or resp-final (plist-get cached :final-url)))))
             (unless no-cache
               (nelisp-http--cache-put norm refreshed eff-ttl))
-            (nelisp-http--response-plist refreshed t elapsed-ms)))
+            (nelisp-http--apply-extract
+             (nelisp-http--response-plist refreshed t elapsed-ms)
+             selector json-path)))
          ((and (>= status 200) (< status 300))
           (let ((entry (nelisp-http--cache-entry
                         status resp-headers resp-body now resp-final)))
             (unless no-cache
               (nelisp-http--cache-put norm entry eff-ttl))
-            (nelisp-http--response-plist entry nil elapsed-ms)))
+            (nelisp-http--apply-extract
+             (nelisp-http--response-plist entry nil elapsed-ms)
+             selector json-path)))
          (t
           (error "nelisp-http: HTTP %d for %s" status url)))))))
 

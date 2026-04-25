@@ -263,5 +263,104 @@ namespace starts empty for each test."
     (should-error (nelisp-http-fetch-post
                    "https://example.com/api" :body "{}"))))
 
+;;;; Extract pipeline (Phase 6.2.7)
+
+(ert-deftest nelisp-http-test-parse-selector-cases ()
+  (should (equal (nelisp-http--parse-selector "div") '(:tag div)))
+  (should (equal (nelisp-http--parse-selector ".item") '(:class "item")))
+  (should (equal (nelisp-http--parse-selector "#main") '(:id "main")))
+  (should (equal (nelisp-http--parse-selector "p.warn")
+                 '(:tag-class p "warn")))
+  (should (equal (nelisp-http--parse-selector "section#hero")
+                 '(:tag-id section "hero")))
+  (should (null (nelisp-http--parse-selector "div > p")))
+  (should (null (nelisp-http--parse-selector ":hover")))
+  (should (null (nelisp-http--parse-selector ""))))
+
+(ert-deftest nelisp-http-test-split-json-path-tokens ()
+  (should (equal (nelisp-http--split-json-path "data.results")
+                 '((:key "data") (:key "results"))))
+  (should (equal (nelisp-http--split-json-path "items[0].title")
+                 '((:key "items") (:index 0) (:key "title"))))
+  (should (equal (nelisp-http--split-json-path "users.0.name")
+                 '((:key "users") (:index 0) (:key "name"))))
+  (should (equal (nelisp-http--split-json-path "list[*].id")
+                 '((:key "list") (:wildcard) (:key "id")))))
+
+(ert-deftest nelisp-http-test-select-json-dotted-key ()
+  (should (equal (nelisp-http--select-json-dotted
+                  "{\"a\":{\"b\":42}}" "a.b")
+                 "42")))
+
+(ert-deftest nelisp-http-test-select-json-dotted-index ()
+  (should (equal (nelisp-http--select-json-dotted
+                  "{\"items\":[{\"id\":1},{\"id\":2}]}" "items[1].id")
+                 "2")))
+
+(ert-deftest nelisp-http-test-select-json-dotted-wildcard ()
+  (let ((result (nelisp-http--select-json-dotted
+                 "{\"list\":[{\"n\":1},{\"n\":2},{\"n\":3}]}"
+                 "list[*].n")))
+    (should (equal result "[1,2,3]"))))
+
+(ert-deftest nelisp-http-test-select-html-libxml-class ()
+  (skip-unless (fboundp 'libxml-parse-html-region))
+  (let ((html "<html><body><p class=\"hit\">A</p><span class=\"hit\">B</span></body></html>"))
+    (should (equal (nelisp-http--select-html-libxml html ".hit")
+                   "A\n\nB"))))
+
+(ert-deftest nelisp-http-test-select-html-fallback-tag ()
+  (let ((html "<html><body><h1>One</h1><h1>Two</h1></body></html>"))
+    (should (equal (nelisp-http--select-html-fallback html "h1")
+                   "One\n\nTwo"))))
+
+(ert-deftest nelisp-http-test-fetch-extract-html-success ()
+  "Fetch with :selector replaces :body with extracted text and tags meta."
+  (skip-unless (and (fboundp 'sqlite-available-p) (sqlite-available-p)))
+  (nelisp-http-test--with-fresh-db
+    (nelisp-state-enable)
+    (cl-letf (((symbol-function 'nelisp-http--request)
+               (lambda (_m url _h _t &optional _b)
+                 (list :status 200
+                       :headers '(:content-type "text/html; charset=utf-8")
+                       :body "<html><body><h1>Title</h1><p>Body text</p></body></html>"
+                       :final-url url))))
+      (let ((r (nelisp-http-fetch "https://example.com/x" :selector "h1")))
+        (should (equal (plist-get r :body) "Title"))
+        (should (eq (plist-get r :extract-mode) 'selector))
+        (should (memq (plist-get r :extract-engine) '(libxml regex-subset)))))))
+
+(ert-deftest nelisp-http-test-fetch-extract-json-path ()
+  "Fetch with :json-path returns JSON-serialized sub-tree."
+  (skip-unless (and (fboundp 'sqlite-available-p) (sqlite-available-p)))
+  (nelisp-http-test--with-fresh-db
+    (nelisp-state-enable)
+    (cl-letf (((symbol-function 'nelisp-http--request)
+               (lambda (_m url _h _t &optional _b)
+                 (list :status 200
+                       :headers '(:content-type "application/json")
+                       :body "{\"data\":{\"results\":[{\"id\":7}]}}"
+                       :final-url url))))
+      (let ((r (nelisp-http-fetch "https://example.com/api"
+                                  :json-path "data.results[0].id")))
+        (should (equal (plist-get r :body) "7"))
+        (should (eq (plist-get r :extract-mode) 'json-path))))))
+
+(ert-deftest nelisp-http-test-fetch-extract-content-type-mismatch ()
+  "Selector against application/json content-type is flagged extract-miss."
+  (skip-unless (and (fboundp 'sqlite-available-p) (sqlite-available-p)))
+  (nelisp-http-test--with-fresh-db
+    (nelisp-state-enable)
+    (cl-letf (((symbol-function 'nelisp-http--request)
+               (lambda (_m url _h _t &optional _b)
+                 (list :status 200
+                       :headers '(:content-type "application/json")
+                       :body "{\"x\":1}"
+                       :final-url url))))
+      (let ((r (nelisp-http-fetch "https://example.com/api"
+                                  :selector "h1")))
+        (should (eq (plist-get r :extract-miss) t))
+        (should (eq (plist-get r :extract-engine) 'content-type-mismatch))))))
+
 (provide 'nelisp-http-test)
 ;;; nelisp-http-test.el ends here
