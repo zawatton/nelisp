@@ -15,13 +15,15 @@ pub mod syscall;
 // `main.rs` so callers can write `nelisp_runtime::nelisp_syscall_write`
 // without having to spell `::syscall::` each time.
 pub use syscall::{
-    nelisp_syscall_close, nelisp_syscall_exit, nelisp_syscall_fstat, nelisp_syscall_getenv,
-    nelisp_syscall_mmap, nelisp_syscall_mprotect, nelisp_syscall_munmap, nelisp_syscall_open,
-    nelisp_syscall_read, nelisp_syscall_setenv, nelisp_syscall_stat, nelisp_syscall_write,
-    NelispStat, SyscallError,
+    nelisp_syscall_clear_icache, nelisp_syscall_close, nelisp_syscall_exit,
+    nelisp_syscall_fstat, nelisp_syscall_getenv, nelisp_syscall_jit_write_protect,
+    nelisp_syscall_mmap, nelisp_syscall_mmap_jit, nelisp_syscall_mprotect,
+    nelisp_syscall_munmap, nelisp_syscall_open, nelisp_syscall_read,
+    nelisp_syscall_setenv, nelisp_syscall_stat, nelisp_syscall_write, NelispStat,
+    SyscallError,
 };
 pub use syscall::{
-    NELISP_MAP_ANONYMOUS, NELISP_MAP_PRIVATE, NELISP_O_APPEND, NELISP_O_CREAT, NELISP_O_RDONLY,
-    NELISP_O_RDWR, NELISP_O_TRUNC, NELISP_O_WRONLY, NELISP_PROT_EXEC, NELISP_PROT_NONE,
-    NELISP_PROT_READ, NELISP_PROT_WRITE,
+    NELISP_MAP_ANONYMOUS, NELISP_MAP_JIT, NELISP_MAP_PRIVATE, NELISP_O_APPEND, NELISP_O_CREAT,
+    NELISP_O_RDONLY, NELISP_O_RDWR, NELISP_O_TRUNC, NELISP_O_WRONLY, NELISP_PROT_EXEC,
+    NELISP_PROT_NONE, NELISP_PROT_READ, NELISP_PROT_WRITE,
 };

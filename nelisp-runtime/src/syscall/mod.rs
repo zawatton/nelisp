@@ -11,6 +11,18 @@
 //!   read / write / open / close / mmap / munmap / mprotect / exit /
 //!   getenv / stat (+ fstat & setenv as cheap bonus, NeLisp file APIs
 //!   need them and the cost is one libc passthrough each).
+//!
+//! 2026-04-25 MAP_JIT update (Doc 28 v2 §6.9): three additional
+//! arm64 JIT primitives —
+//!   * `nelisp_syscall_mmap_jit` (mmap variant whose `flags` may
+//!     include `NELISP_MAP_JIT` on Apple Silicon),
+//!   * `nelisp_syscall_clear_icache` (`__clear_cache` wrapper, no-op
+//!     on x86_64), and
+//!   * `nelisp_syscall_jit_write_protect`
+//!     (`pthread_jit_write_protect_np` on Darwin arm64, no-op
+//!     elsewhere).
+//! Phase 7.1.3 (arm64 native backend) is the consumer; Phase 7.0
+//! only proves the symbols link and the no-op paths return cleanly.
 
 pub mod error;
 pub mod unix;
@@ -38,6 +50,11 @@ pub static NELISP_PROT_EXEC: c_int = libc::PROT_EXEC;
 pub static NELISP_MAP_PRIVATE: c_int = libc::MAP_PRIVATE;
 #[no_mangle]
 pub static NELISP_MAP_ANONYMOUS: c_int = libc::MAP_ANON;
+
+// `NELISP_MAP_JIT` is defined in `unix.rs` so the per-OS `cfg` lives
+// next to the rest of the unix mod; we re-export it here so callers
+// reach it via the same `syscall::*` path as other constants.
+pub use unix::NELISP_MAP_JIT;
 
 #[no_mangle]
 pub static NELISP_O_RDONLY: c_int = libc::O_RDONLY;
@@ -105,6 +122,28 @@ pub unsafe extern "C" fn nelisp_syscall_mmap(
 #[no_mangle]
 pub unsafe extern "C" fn nelisp_syscall_munmap(addr: *mut u8, len: size_t) -> c_int {
     unix::munmap(addr, len)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn nelisp_syscall_mmap_jit(
+    addr: *mut u8,
+    len: size_t,
+    prot: c_int,
+    flags: c_int,
+    fd: c_int,
+    off: off_t,
+) -> *mut u8 {
+    unix::mmap_jit(addr, len, prot, flags, fd, off)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn nelisp_syscall_clear_icache(start: *mut u8, end: *mut u8) -> c_int {
+    unix::clear_icache(start, end)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn nelisp_syscall_jit_write_protect(enabled: c_int) -> c_int {
+    unix::jit_write_protect(enabled)
 }
 
 #[no_mangle]

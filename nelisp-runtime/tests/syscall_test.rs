@@ -191,6 +191,73 @@ fn exit_symbol_exists() {
     let _ = f as *const ();
 }
 
+// ---------------------------------------------------------------------------
+// MAP_JIT update (Doc 28 v2 §6.9) — three primitives feed the Phase
+// 7.1.3 arm64 backend.  Linux x86_64 (the host CI target) exercises
+// only the no-op paths; macOS arm64 hosts will additionally exercise
+// the live `pthread_jit_write_protect_np` + `__clear_cache` paths via
+// `make test-runtime` once available.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mmap_jit_anonymous_4k_then_munmap() {
+    unsafe {
+        // On Linux NELISP_MAP_JIT == 0 so the OR is a no-op; on macOS
+        // arm64 it sets the JIT flag.  Either way the page must
+        // allocate and round-trip cleanly.
+        let prot = NELISP_PROT_READ | NELISP_PROT_WRITE;
+        let flags = NELISP_MAP_PRIVATE | NELISP_MAP_ANONYMOUS | NELISP_MAP_JIT;
+        let p = nelisp_syscall_mmap_jit(std::ptr::null_mut(), 4096, prot, flags, -1, 0);
+        assert!(!p.is_null());
+        assert!(p as isize != -1, "mmap_jit returned MAP_FAILED");
+        // Touch one byte to prove RW worked even with the JIT flag
+        // set (on hosts where MAP_JIT is 0 this is just a normal page;
+        // on Apple Silicon the kernel still honours initial RW prot).
+        *p = 0xCD;
+        assert_eq!(*p, 0xCD);
+        assert_eq!(nelisp_syscall_munmap(p, 4096), 0);
+    }
+}
+
+#[test]
+fn clear_icache_zero_range_returns_zero() {
+    // Calling `__clear_cache(p, p)` is documented as a no-op; we use
+    // it here to prove the symbol resolves and the return-zero contract
+    // holds across cfg gates (x86_64 stub / aarch64 real path).
+    unsafe {
+        let r = nelisp_syscall_clear_icache(std::ptr::null_mut(), std::ptr::null_mut());
+        assert_eq!(r, 0);
+    }
+}
+
+#[test]
+fn jit_write_protect_toggle_no_panic() {
+    // Linux: pure no-op returning 0.  macOS arm64: real
+    // `pthread_jit_write_protect_np` call.  In neither case do we
+    // require a non-zero return — the underlying API has no error
+    // channel — but the call must not panic, deadlock, or signal.
+    unsafe {
+        let r1 = nelisp_syscall_jit_write_protect(0);
+        let r2 = nelisp_syscall_jit_write_protect(1);
+        // Stub path returns 0; macOS path also returns 0 (we always
+        // ignore the void underlying return).  A future host with a
+        // real error channel may relax this assertion.
+        assert_eq!(r1, 0);
+        assert_eq!(r2, 0);
+    }
+}
+
+#[test]
+fn map_jit_constant_matches_per_os_contract() {
+    // Linux / Windows: MAP_JIT must degrade to 0 so callers can OR it
+    // unconditionally without flipping unrelated bits.  macOS: 0x800.
+    if cfg!(target_os = "macos") {
+        assert_eq!(NELISP_MAP_JIT, 0x800);
+    } else {
+        assert_eq!(NELISP_MAP_JIT, 0);
+    }
+}
+
 #[test]
 fn ffi_path_resolves_for_current_exe() {
     // Phase 7.0 ERT smoke layer relies on the binary; mirror the same

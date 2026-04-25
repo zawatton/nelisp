@@ -95,5 +95,51 @@
   (nelisp-runtime-test--skip-unless-built)
   (should (cl-some #'file-exists-p nelisp-runtime-test--cdylib-candidates)))
 
+;; ---------------------------------------------------------------------------
+;; MAP_JIT update (Doc 28 v2 §6.9) — three additional FFI symbols feed
+;; the Phase 7.1.3 arm64 native backend.  The ERT layer only proves
+;; the cdylib exports them; cargo test exercises the live no-op paths.
+;; ---------------------------------------------------------------------------
+
+(defun nelisp-runtime-test--cdylib ()
+  "Return the first cdylib candidate that exists, or nil."
+  (cl-find-if #'file-exists-p nelisp-runtime-test--cdylib-candidates))
+
+(defun nelisp-runtime-test--cdylib-exports-symbol-p (sym)
+  "Return non-nil if SYM appears in the cdylib's dynamic symbol table.
+Uses `nm -D' on Linux / macOS.  Skips cleanly when `nm' is missing
+so the test stays portable on hosts without binutils."
+  (let ((cdylib (nelisp-runtime-test--cdylib))
+        (nm (executable-find "nm")))
+    (cond
+     ((null cdylib) (ert-skip "cdylib not built"))
+     ((null nm)     (ert-skip "nm not on PATH"))
+     (t
+      (with-temp-buffer
+        (let ((rc (call-process nm nil t nil "-D" cdylib)))
+          (and (eq rc 0)
+               (goto-char (point-min))
+               (re-search-forward
+                (concat "\\b" (regexp-quote sym) "\\b")
+                nil t))))))))
+
+(ert-deftest nelisp-runtime-mmap-jit-symbol-exists ()
+  "cdylib must export `nelisp_syscall_mmap_jit' for Phase 7.1.3 arm64 backend."
+  (nelisp-runtime-test--skip-unless-built)
+  (should (nelisp-runtime-test--cdylib-exports-symbol-p
+           "nelisp_syscall_mmap_jit")))
+
+(ert-deftest nelisp-runtime-clear-icache-symbol-exists ()
+  "cdylib must export `nelisp_syscall_clear_icache' for arm64 I-cache flush."
+  (nelisp-runtime-test--skip-unless-built)
+  (should (nelisp-runtime-test--cdylib-exports-symbol-p
+           "nelisp_syscall_clear_icache")))
+
+(ert-deftest nelisp-runtime-jit-write-protect-symbol-exists ()
+  "cdylib must export `nelisp_syscall_jit_write_protect' for Apple Silicon W^X."
+  (nelisp-runtime-test--skip-unless-built)
+  (should (nelisp-runtime-test--cdylib-exports-symbol-p
+           "nelisp_syscall_jit_write_protect")))
+
 (provide 'nelisp-runtime-test)
 ;;; nelisp-runtime-test.el ends here
