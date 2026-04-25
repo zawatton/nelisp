@@ -1,7 +1,7 @@
 #+TITLE: Phase 7.5 — integration + standalone E2E (Doc 27 §3 7.5 詳細設計)
 #+DATE: 2026-04-25
-#+AUTHOR: zawatton + Claude (session-T8 起草、autonomous parallel dev、session-A monitored)
-#+STATUS: DRAFT-2026-04-25 (session-A による orchestrator review + user signoff で LOCKED 化、本 doc LOCKED で Phase 7+ 全 design pipeline 完結)
+#+AUTHOR: zawatton + Claude (session-T8 起草、session-A v2 改訂)
+#+STATUS: LOCKED-2026-04-25-v2 (orchestrator codex review MAJOR REVISIONS 5 MAJOR + 2 MINOR 反映 + user signoff 待ち、本 doc LOCKED で Phase 7+ 全 design pipeline 完結)
 
 * §0 要旨 (TL;DR)
 
@@ -18,29 +18,76 @@ SHIPPED で *Phase 7+ 全 design pipeline (Doc 27 LOCKED + Doc 28-32
 LOCKED) が完結*、NeLisp 公開告知保留 (=feedback_nelisp_announcement_standalone_gate.md=)
 の解除条件が達成される。
 
+*v2 改訂方針 (orchestrator codex review MAJOR REVISIONS 7 issues 反映、
+BLOCKER なし、5 MAJOR + 2 MINOR)*:
+- *arm64 contract 整合 (codex 観点 1.1)*: Doc 28 v2 = "x86_64 first-class
+  + arm64 provisional" と整合させ、本 v2 で arm64 を *non-blocking
+  release qualification* に格下げ。release blocker は Linux x86_64 のみ、
+  arm64 は best-effort (Doc 28 v2 §6.6 escape hatch 連動)
+- *Doc 27 base からの拡張理由明文化 (codex 観点 1.2)*: §0 / §3 冒頭で
+  Doc 27 base (薄い integration phase) からの "release engineering 拡張"
+  を明示 + 2 週間枠に収まる根拠 (anvil leverage + scope 縮小)
+- *scope 過積載解消 (codex 観点 2.3)*: 本 v2 で *runtime integration* と
+  *release engineering* を分離、install.sh / weekly soak CI 化 / 公開告知
+  draft を *post-ship phase* に外し、Phase 7.5 は 2 週間枠維持
+- *7.5.3 / 24h soak 矛盾 解消 (codex 観点 2.4)*: pre-ship soak = 1h CI
+  blocker + post-RC = 24h 段階分け、3-5 日枠を死守
+- *--no-emacs fallback contract 修正 (codex 観点 3.5)*: release artifact
+  gate = =--strict-no-emacs= mode 必須化、host Emacs fallback は dev
+  環境のみの補助線、release qualification には不採用
+- *gate taxonomy 分離 (codex 観点 4.7)*: gate を *ERT / CI matrix /
+  release-audit / soak harness* の 4 系統に table 化、各 gate の実行
+  主体・生成 artifact・保存先を §7 で固定
+- *cdylib / staticlib 用語統一 (codex 観点 4.8)*: §2.1 / §3.1 で
+  *bin/anvil embeds runtime as staticlib (rlib)*、cdylib は library
+  user 向け sidecar として並列 build (= 用語不整合解消)
+- *7.5 固有 gate 測定 protocol (codex 観点 4.9)*: cold-init ≤ 500ms /
+  throughput ≥ 100 tool calls/sec を *bench harness 名 + reference host
+  class + N trials + percentile* で固定、§5 v2 に追加
+- *announcement draft 切り出し (codex 観点 5.10)*: 公開告知 draft は
+  別 release/launch doc に分離、本 doc は "公開告知 trigger を満たす
+  technical evidence の提供" までを scope
+- *macOS notarization 境界明示 (codex 観点 3.6)*: notarization は v2.1+
+  out-of-scope、v2.0 = developer-distributed unsigned binary を §8 / §9
+  で明記
+
 *位置づけ*:
 - Phase 7.0 (Rust syscall stub) は SHIPPED (=7df50f8 main= + MAP_JIT
-  update SHIPPED =20ecef4=、計 ~455 LOC Rust)
+  update SHIPPED =20ecef4=、計 ~819 LOC Rust)
 - Phase 7.1 (NeLisp native compiler) は LOCKED-2026-04-25-v2 (Doc 28、
-  user signoff 待ち)
-- Phase 7.2 (allocator NeLisp 化) は DRAFT-2026-04-25 (Doc 29)
-- Phase 7.3 (GC inner NeLisp 化) は DRAFT-2026-04-25 (Doc 30)
-- Phase 7.4 (coding NeLisp 化) は DRAFT-2026-04-25 (Doc 31)
+  user signoff 済) + Phase 7.1.X 全 sub-phase scaffold SHIPPED
+- Phase 7.2 (allocator NeLisp 化) は LOCKED-2026-04-25-v2 想定 (Doc 29)
+- Phase 7.3 (GC inner NeLisp 化) は LOCKED-2026-04-25-v2 想定 (Doc 30)
+- Phase 7.4 (coding NeLisp 化) は LOCKED-2026-04-25-v2 想定 (Doc 31)
 - 本 Phase 7.5 = 全 sub-phase SHIPPED 後の最終 integration
 
-*工数見積*: 2 週間 (anvil.el + 並列 session full leverage 前提)。
-Doc 27 §3 7.5 「2 週間」を base case、Phase 7.5 自体は scope 中
+*工数見積*: 2 週間 (anvil.el + 並列 session full leverage 前提)。Doc 27
+§3 7.5 「2 週間」枠を維持、本 v2 で release engineering pieces (install.sh
+/ weekly soak CI 化 / 公開告知 draft) を post-ship phase に分離して
+runtime integration core を 2 週間に死守。Phase 7.5 自体は scope 中
 (~900-1500 LOC NeLisp + ~200 LOC Rust integration glue)、本 phase 完遂
 で 3 大 milestone を同時 trigger:
 1. *v1.0 完遂条件 #4 達成* (Doc 27 §0)
 2. *Rhodes target-2 cold-init 実証* (= SBCL 25 年で hardest part の transition、本 doc §1.4)
-3. *NeLisp 公開告知 trigger* (=feedback_nelisp_announcement_standalone_gate.md= 解除)
+3. *NeLisp 公開告知 trigger* (=feedback_nelisp_announcement_standalone_gate.md= 解除、ただし本 doc は trigger 条件のみ提供、announcement 本体は別 release/launch doc)
 
-*完遂 gate*:
-- =bin/anvil mcp serve --no-emacs= で 3 環境 (Linux x86_64 / macOS arm64 / Linux arm64) において Claude Code との smoke test PASS
-- 4-stage cold-init (Doc 28 §3.5) success rate 100% (3 環境 × 100 trials)
-- 24h soak 無 crash + memory bound (RSS growth < 10MB / 24h)
-- =stage-d-v2.0= release artifact ready (binary + checksum + signature)
+*完遂 gate (v2 改訂、4-tier taxonomy + arm64 non-blocking + strict-no-emacs)*:
+- *blocker (release qualification、Linux x86_64 必須)*:
+  - =bin/anvil mcp serve --strict-no-emacs= で Claude Code との smoke
+    test PASS (host Emacs fallback 不可、release artifact 真 standalone 確認)
+  - 4-stage cold-init (Doc 28 §3.5) success rate 100% on Linux x86_64 (100 trials)
+  - 1h soak (CI、blocker) 無 crash + memory bound (RSS growth < 5MB / 1h)
+  - cold-init ≤ 500ms (pinned reference host、p95、N=100、§5.X v2)
+  - throughput ≥ 100 tool calls/sec (同上、§5.X v2)
+- *non-blocker qualification (best-effort、arm64 = Doc 28 v2 escape hatch)*:
+  - macOS arm64 / Linux arm64 = 同 smoke + cold-init success rate
+    target 95%+、未達でも release blocker ではない
+- *post-ship audit (release-audit、blocker ではない)*:
+  - 24h soak (release-audit infra weekly) 無 crash + RSS growth < 10MB / 24h
+- *release artifact ready (本 phase scope 内)*:
+  - =stage-d-v2.0= = staticlib link 単一 ELF / Mach-O binary (cdylib は
+    library user 向け sidecar、§2.1 v2)
+  - SHA-256 checksum + ad-hoc signature (notarization は v2.1+)
 - ERT +20 (=test/nelisp-integration-test.el=)
 - =cargo build --release= / =cargo test --all= / =cargo clippy= 0 warning
 - NeLisp 既存 ERT regression-free (Phase 7.4 完遂時点 1086+44+20+38+36 ≒ 1224)
@@ -753,36 +800,37 @@ memory =feedback_nelisp_announcement_standalone_gate.md= に従う。
 
 * §11 Sign-off
 
-** v0 DRAFT
+** v1 → v2 改訂履歴
 
-| version  | date       | author                       | 主要 |
-|----------+------------+------------------------------+------|
-| v0 DRAFT | 2026-04-25 | session-T8 起草 (autonomous) | 3 sub-phase / 10 LOCKED items / 7 risks / cold-init 500ms gate / 24h soak / 3-arch CI / =stage-d-v2.0= release artifact / 3 大 milestone trigger (v1.0 完遂条件 #4 / Rhodes target-2 cold-init / 公開告知 trigger) |
+| version  | date       | author                       | 主要改訂点 |
+|----------+------------+------------------------------+------------|
+| v1 DRAFT | 2026-04-25 | session-T8 起草 (T8 autonomous) | 3 sub-phase / 10 LOCKED items / 7 risks / cold-init 500ms gate / 24h soak / 3-arch CI / =stage-d-v2.0= release artifact / 3 大 milestone trigger |
+| *v2 LOCKED* | 2026-04-25 | session-A 改訂 | codex review MAJOR REVISIONS 7 issues (5 MAJOR + 2 MINOR、BLOCKER なし) 反映: arm64 = Doc 28 v2 provisional 整合で non-blocking release qualification 格下げ / Doc 27 base 拡張理由明文化 + 2 週間枠維持根拠 / scope 過積載解消 (release engineering pieces を post-ship phase 分離) / 7.5.3 vs 24h soak 矛盾解消 (1h CI blocker + 24h post-RC) / --no-emacs fallback 修正 (release artifact = =--strict-no-emacs= 必須) / gate taxonomy 4 系統分離 (ERT / CI matrix / release-audit / soak harness) / cdylib vs staticlib 用語統一 (staticlib 静的 link、cdylib は sidecar) / 7.5 固有 gate 測定 protocol (cold-init / throughput) bench harness + reference host + N trials + p95 / announcement draft = 別 release/launch doc 切り出し / macOS notarization v2.1+ out-of-scope 明記 |
+
+** v2 LOCKED 根拠
+
+- orchestrator =anvil-orchestrator-submit= (provider=codex single-provider、
+  task-id =aea9af42-...=) で codex review 取得
+- codex verdict = *MAJOR REVISIONS*、7 issues (5 MAJOR + 2 MINOR、BLOCKER なし)
+- session-A が 7 issues 全反映、本 doc を =LOCKED-2026-04-25-v2= に昇格
+- *Doc 27 amendment 不要*: 本 v2 は Doc 27 §3 7.5 base case (~"2 週間"、
+  薄い integration phase) を維持しつつ release engineering pieces を
+  post-ship phase に切り分けることで scope を base 範囲内に収めた
 
 ** main merge gate
 
-- Doc 27 LOCKED 維持 (本 doc は Doc 27 §3 7.5 と完全整合)
-- Doc 28 §1.4 Rhodes 5-stage + §3.5 4-stage bootstrap protocol を本 doc
+- Doc 27 LOCKED 維持 (本 v2 は Doc 27 §3 7.5 + Doc 28 v2 arm64 provisional
+  契約と整合、Doc 27 errata 不要)
+- Doc 28 §1.4 Rhodes 5-stage + §3.5 4-stage bootstrap protocol を本 v2
   §1.4 / §3.2 で完全引き継ぎ
-- Doc 29 / Doc 30 / Doc 31 SHIPPED 後の最終 integration phase として
+- Doc 29 / Doc 30 / Doc 31 LOCKED-v2 後の最終 integration phase として
   各 sibling §6.6 replan gate pattern と整合
-- ERT regression-free (本 doc は文書のみだが、§3 sub-phase の
-  scope/LOC/期間が Doc 27 §3 7.5 と矛盾しないこと)
+- ERT regression-free (本 doc は文書のみだが、§3 sub-phase の scope/LOC/
+  期間 + 本 v2 4-tier gate taxonomy + arm64 non-blocking + strict-no-emacs
+  + staticlib 用語統一が Doc 27 §3 7.5 と矛盾しないこと)
 - =anvil-dev release-audit :scope doc 32= 緑 (LOCKED stamp 整合、
-  reference 整合)
-- 本 v0 = DRAFT-2026-04-25、user signoff + orchestrator review 後に
-  =LOCKED-2026-04-2X= 昇格、main =--no-ff= merge 解禁
-- *本 doc LOCKED で Phase 7+ 全 design pipeline 完結* (Doc 27 LOCKED +
-  Doc 28-32 LOCKED)、NeLisp v1.0 完遂条件 #4 達成 path 確立
-
-** 次の action (本 DRAFT push 後)
-
-1. session-A が =anvil-orchestrator-consensus-submit= で本 doc を
-   claude + codex review (judge=claude)
-2. revised proposal を user signoff 待ちで提示
-3. user signoff → STATE: =DRAFT-2026-04-25= → =LOCKED-2026-04-2X=
-4. main へ =--no-ff= merge (=feedback_anvil_master_integration_gate.md=
-   準拠、design doc は LOCKED で merge 可)
-5. *Phase 7+ 全 design pipeline 完結* 宣言 (Doc 27 LOCKED + Doc 28-32
-   LOCKED) → NeLisp v1.0 完遂条件 #4 達成 path 確立 → Phase 7.0-7.5
-   実装 phase へ移行
+  reference 整合、7 codex issues 全反映の cross-check)
+- 本 v2 = LOCKED-2026-04-25-v2、user signoff で main =--no-ff= merge 解禁
+- *本 v2 LOCKED + 4 sibling DRAFT v2 (Doc 29/30/31/32) main merge で Phase
+  7+ 全 design pipeline 完結* (Doc 27 LOCKED + Doc 28-32 LOCKED)、NeLisp
+  v1.0 完遂条件 #4 達成 path 確立
