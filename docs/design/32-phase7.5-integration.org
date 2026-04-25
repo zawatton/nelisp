@@ -1,0 +1,788 @@
+#+TITLE: Phase 7.5 — integration + standalone E2E (Doc 27 §3 7.5 詳細設計)
+#+DATE: 2026-04-25
+#+AUTHOR: zawatton + Claude (session-T8 起草、autonomous parallel dev、session-A monitored)
+#+STATUS: DRAFT-2026-04-25 (session-A による orchestrator review + user signoff で LOCKED 化、本 doc LOCKED で Phase 7+ 全 design pipeline 完結)
+
+* §0 要旨 (TL;DR)
+
+Doc 27 LOCKED 2026-04-25 (=2a52bda main=) で確定した *NeLisp purity max
+path* (=syscall= 最小 Rust + 残 3 核 NeLisp + 新設 native compiler) の
+*最終 sub-phase* = *Phase 7.5 integration + standalone E2E* の詳細設計。
+Doc 27 §3 sub-phase table で "2 週間" と位置付けられた最終 phase。
+
+Phase 7.5 = Phase 7.0 / 7.1 / 7.2 / 7.3 / 7.4 全 SHIPPED 後の integration
+phase、=bin/anvil mcp serve --no-emacs= を真 standalone binary で動作
+させ、Stage D Option B (=stage-d-v2.0=) を実現する最終 phase。Doc 27
+§0 の "v1.0 完遂条件 #4 達成" gate であり、本 doc LOCKED + Phase 7.5
+SHIPPED で *Phase 7+ 全 design pipeline (Doc 27 LOCKED + Doc 28-32
+LOCKED) が完結*、NeLisp 公開告知保留 (=feedback_nelisp_announcement_standalone_gate.md=)
+の解除条件が達成される。
+
+*位置づけ*:
+- Phase 7.0 (Rust syscall stub) は SHIPPED (=7df50f8 main= + MAP_JIT
+  update SHIPPED =20ecef4=、計 ~455 LOC Rust)
+- Phase 7.1 (NeLisp native compiler) は LOCKED-2026-04-25-v2 (Doc 28、
+  user signoff 待ち)
+- Phase 7.2 (allocator NeLisp 化) は DRAFT-2026-04-25 (Doc 29)
+- Phase 7.3 (GC inner NeLisp 化) は DRAFT-2026-04-25 (Doc 30)
+- Phase 7.4 (coding NeLisp 化) は DRAFT-2026-04-25 (Doc 31)
+- 本 Phase 7.5 = 全 sub-phase SHIPPED 後の最終 integration
+
+*工数見積*: 2 週間 (anvil.el + 並列 session full leverage 前提)。
+Doc 27 §3 7.5 「2 週間」を base case、Phase 7.5 自体は scope 中
+(~900-1500 LOC NeLisp + ~200 LOC Rust integration glue)、本 phase 完遂
+で 3 大 milestone を同時 trigger:
+1. *v1.0 完遂条件 #4 達成* (Doc 27 §0)
+2. *Rhodes target-2 cold-init 実証* (= SBCL 25 年で hardest part の transition、本 doc §1.4)
+3. *NeLisp 公開告知 trigger* (=feedback_nelisp_announcement_standalone_gate.md= 解除)
+
+*完遂 gate*:
+- =bin/anvil mcp serve --no-emacs= で 3 環境 (Linux x86_64 / macOS arm64 / Linux arm64) において Claude Code との smoke test PASS
+- 4-stage cold-init (Doc 28 §3.5) success rate 100% (3 環境 × 100 trials)
+- 24h soak 無 crash + memory bound (RSS growth < 10MB / 24h)
+- =stage-d-v2.0= release artifact ready (binary + checksum + signature)
+- ERT +20 (=test/nelisp-integration-test.el=)
+- =cargo build --release= / =cargo test --all= / =cargo clippy= 0 warning
+- NeLisp 既存 ERT regression-free (Phase 7.4 完遂時点 1086+44+20+38+36 ≒ 1224)
+
+* §1 背景
+
+** 1.1 critical path 位置 (Phase 7.0-7.4 全 SHIPPED 前提の最後 sub-phase)
+
+Phase 7.5 は Phase 7.0-7.4 全 SHIPPED 前提の最後 sub-phase。残 4 核
+(syscall は 7.0 SHIPPED + MAP_JIT update SHIPPED、native compiler は
+7.1 で完遂、allocator は 7.2、GC は 7.3、coding は 7.4) を結合し、
+=bin/anvil= binary に embed して E2E 動作実証する。
+
+Doc 27 §3 sub-phase table:
+
+| Phase | scope                                           | 期間          | 状態 (2026-04-25)             |
+|-------+-------------------------------------------------+---------------+-------------------------------|
+| 7.0   | Rust syscall stub + scaffold                    | 2-3 週間      | ✅ SHIPPED                     |
+| 7.1   | NeLisp native compiler 新設 (Doc 28)            | 12-20 週間    | LOCKED v2 (Doc 28、signoff 待ち) |
+| 7.2   | allocator NeLisp 化 (Doc 29)                     | 3-4 週間      | DRAFT (Doc 29)                |
+| 7.3   | GC inner NeLisp 化 (Doc 30)                      | 1-2 ヶ月      | DRAFT (Doc 30)                |
+| 7.4   | coding NeLisp 化 (Doc 31)                        | 2-3 週間      | DRAFT (Doc 31)                |
+| *7.5* | *integration + standalone E2E (本 doc)*          | *2 週間*      | *DRAFT (本 doc)*               |
+
+7.5 は依存先の 7.0-7.4 が全 SHIPPED となった後にのみ着手可能 (= *strictly
+sequential*、並列化不可)。本 phase 内部では 3 sub-phase (7.5.1〜7.5.3)
+に分けて段階的に integrate する。
+
+** 1.2 既存 NeLisp 資産 (Phase 7.5 着手時の前提)
+
+| 既存資産                            | LOC      | 7.5 での役割                                   |
+|-------------------------------------+----------+------------------------------------------------|
+| =src/nelisp-runtime= (Phase 7.0)    | ~455     | =mmap= / =read= / =write= / MAP_JIT 経路 link |
+| =src/nelisp-cc= (Phase 7.1)         | ~6000    | A3 authoritative compiler、cold-init 後使用    |
+| =src/nelisp-allocator.el= (Phase 7.2) | ~1500-3000 | heap span 初期化、bump + free-list pool |
+| =src/nelisp-gc.el= (Phase 7.3)        | ~1200-2000 | mark-sweep collector、safe-point poll |
+| =src/nelisp-coding.el= (Phase 7.4)    | ~1500-2500 | UTF-8 / Latin-1 / Shift-JIS / EUC-JP IO   |
+| =bin/anvil= (Stage D Phase 6.1)     | -        | launcher、本 phase で =--no-emacs= mode 追加  |
+| =anvil-server batch-stdio= mode     | -        | headless profile MCP server (~28 tools)      |
+
+= Phase 7.5 は *既存 5 module を link し、bin/anvil に =--no-emacs= flag
+を追加、cold-init protocol を embed* する integration phase。新規 module
+は無く、glue + binary build system + release engineering が中心。
+
+** 1.3 Stage D Option B (= stage-d-v2.0) との関係
+
+Doc 18 (Stage D) の Option B は *Emacs install 不要* の真 standalone
+binary 配布。Doc 18 §5 Option B の記述:
+
+#+begin_quote
+A. それが Option B (native + 4 核自前) の本丸。ただし 3-5 年かかる
+#+end_quote
+
+本 phase 完遂で Doc 18 Option B が現実化 (anvil.el + 並列 session
+leverage で 3-5 年 → 4-8 ヶ月、Doc 27 §3 工数見積)、=stage-d-v2.0= tag
+候補。Stage D Phase 6.1 (=v0.x シリーズ=) と =stage-d-v2.0= は co-exist:
+
+| Stage    | binary 内容                                  | runtime 要件          |
+|----------+----------------------------------------------+-----------------------|
+| v0.x     | bin/anvil + emacs --batch subprocess          | Host Emacs 必要        |
+| *v2.0*   | *bin/anvil --no-emacs (cdylib link 静的)*    | *Host Emacs 不要*     |
+
+両 stage が *bin/anvil= launcher 1 個で起動分岐 (default は host Emacs
+経路、=--no-emacs= で v2.0 経路)、user opt-in で v2.0 を選択可能。
+
+** 1.4 SBCL "Sanely-Bootstrappable" target-2 達成 (Doc 28 §1.4 Rhodes 5-stage)
+
+Doc 28 §1.4 で示した A1 (host bytecode compiler) → A2 (seed native
+compiler) → A3 (self-compiled native compiler) の trust chain 確立
+(Doc 28 §3.5 4-stage bootstrap) が本 phase で初の cold-init 実証となる。
+
+Rhodes 5-stage の対応:
+
+| Rhodes stage | NeLisp Phase 対応                                 | 状態 (Phase 7.5 直前)         |
+|--------------+--------------------------------------------------+--------------------------------|
+| host-1       | Host Emacs が =nelisp-xc= byte-compile           | Phase 5-F SHIPPED              |
+| target-1     | 残余 C 4 核 build (syscall/allocator/GC/coding) | Phase 7.0-7.4 SHIPPED (前提)   |
+| host-2       | NeLisp xc で再 compile                            | Phase 7.1 SHIPPED              |
+| genesis-2    | target image を Lisp object で構築               | Phase 7.1.5 SHIPPED            |
+| *target-2*   | *cold-init (最難)、warm phase 走行*              | *本 Phase 7.5 で実証*          |
+
+Rhodes 5-stage の target-2 cold-init = 最難 transition、SBCL 25 年で
+hardest part として記録される ((Rhodes 2008 LNCS 5146 §5.3)。NeLisp は
+Phase 5-B/5-C で elisp 実装が既に確立済のため SBCL が 25 年支払った
+コストの大部分は支払わないが、4-stage cold-init 自体は本 phase で初
+実装、failback path (=stage2 hash mismatch= 等) を含む robustness
+testing が中心となる。
+
+** 1.5 SBCL release engineering + Emacs build system dual precedent
+
+Phase 7.5 release artifact + cross-arch CI の design は SBCL release +
+Emacs build system の dual precedent reference 上に置く:
+
+| 軸           | SBCL release            | Emacs build         | NeLisp Phase 7.5                           |
+|--------------+-------------------------+---------------------+--------------------------------------------|
+| 配布形式      | source + bootstrap host | source + emacs binary | binary only (truly standalone、stage-d-v2.0) |
+| build system | make + asdf              | configure + make    | cargo + makefile                            |
+| dual-arch    | mostly cross-compile    | per-platform        | x86_64 first-class + arm64 provisional     |
+| 互換性 layer | C runtime + foreign     | external library    | Phase 7.0 syscall stub のみ                |
+| binary size  | ~30MB + ~20MB core      | ~50MB (lib 込)      | ~10MB (cdylib + bin static link、target)   |
+| signing      | GPG (release 任意)       | GPG (release 任意)   | GPG (=stage-d-v2.0= 必須、§2.10)            |
+
+NeLisp Phase 7.5 は *truly standalone binary* (Emacs / SBCL host を
+runtime に必要としない) という点で両者を超える。
+
+* §2 LOCKED decisions (default = 第一推奨、user signoff 待ち)
+
+各項目に *推奨 default* を提示。user signoff で全 default を採用する
+場合は "§2 全 10 項目 default 採用" の一行 LOCK で完了 (=Doc 27/28/29/30/31=
+と同 pattern)。
+
+** 2.1 binary integration: nelisp-runtime cdylib + bin embed [推奨 = A]
+
+A. *推奨*: =nelisp-runtime= cdylib (Phase 7.0 SHIPPED) を =bin/anvil=
+   が静的 link、host Emacs 不要モード起動 (=--no-emacs= flag)
+B. dynamic link (=.so= / =.dylib=) で起動時 dlopen
+C. embed しない、別 binary (=nelisp-runtime= 単独 exe) で =bin/anvil=
+   から spawn
+
+採用理由 (A):
+- *single-file binary* = =stage-d-v2.0= の核要件、tarball 不要
+- LTO + strip で binary size 最適化可能 (target ~10MB)
+- runtime path resolution の OS 差異吸収不要 (Linux / macOS / Windows)
+- B は Linux glibc / macOS dyld / Windows DLL hell の互換性 layer 増、
+  C は IPC overhead が cold-init 経路で許容できない (~50ms+)
+
+** 2.2 cold-init protocol: Doc 28 §3.5 4-stage bootstrap embed [推奨 = A]
+
+A. *推奨*: Doc 28 §3.5 4-stage bootstrap を =bin/anvil --self-compile=
+   に embed、stage0 (host bytecode 不要、bytes 直接) → stage1 (seed) →
+   stage2 (diff) → stage3 (self-recompile) を bin 内で完結
+B. 4-stage を 2-stage に簡略化 (stage0 + stage3 のみ)
+C. cold-init を別 sub-binary (=nelisp-bootstrap=) に分離
+
+採用理由 (A):
+- Doc 28 §3.5 で確立した failback chain (=A2 fallback=) を runtime で
+  再現、authoritative compiler 昇格に対し safety net 維持
+- B は stage2 semantic diff 検証を skip、silent miscompile risk
+- C は binary 数を増やす、=stage-d-v2.0= single-file requirement 違反
+
+** 2.3 stage-d-v2.0 release artifact format [推奨 = A]
+
+A. *推奨*: tarball ではなく single-file binary (ELF / Mach-O)、cdylib
+   link 静的 (full LTO + strip)、~10MB target size (anvil-lib bundle なし)
+B. tarball (=stage-d-v2.0.tar.gz=) で binary + license + README 同梱
+C. AppImage (Linux) / .dmg (macOS) で installer 化
+
+採用理由 (A):
+- Doc 18 Option B の "single-file" 思想直接実現
+- =install.sh= は curl + chmod のみで済む (~5 line)、user 体験最簡
+- B は v0.x シリーズ (Phase 6.1 anvil-lib) で既に存在、v2.0 は別形式
+- C は OS 依存度高、Linux / macOS / Windows 全部別 packaging system 必要
+
+** 2.4 cross-arch CI: Linux x86_64 + macOS arm64 + Linux arm64 [推奨 = A]
+
+A. *推奨*: 上記 3 環境で smoke test、Phase 7.5 close gate
+B. Linux x86_64 only (MVP)、arm64 は v2.1 で
+C. + Windows MSVC を 3 環境目に追加
+
+採用理由 (A):
+- macOS arm64 = Apple Silicon (= 開発機 第一級)、Linux x86_64 = server
+  default、Linux arm64 = AWS Graviton / Raspberry Pi 等の現実 deploy
+- B は arm64 user (= Apple Silicon dev / Graviton server) 切捨て、v2.0
+  release announcement の impact 半減
+- C は Doc 27 §2 で *Windows native build は Stage A 経由 (Doc 18)*
+  と明記、本 phase 外 (=§8 out of scope=)
+
+** 2.5 backward compat: Stage D dual-mode 維持 [推奨 = A]
+
+A. *推奨*: =bin/anvil mcp serve= (Stage D Phase 6.1 既存) と
+   =--no-emacs= mode の dual path 維持、user は =--no-emacs= explicit
+   opt-in、default は host Emacs 経路 (Stage D)
+B. =--no-emacs= mode を default、=--use-emacs= で旧経路に明示 fallback
+C. v2.0 release で旧経路 deprecate、3 月以内に v0.x 廃止
+
+採用理由 (A):
+- =stage-d-v2.0= は新 mode、既存 user の Stage D 環境を一切壊さない
+- =feedback_anvil_master_integration_gate.md= 準拠、backward compat 維持
+- B は cold-init unstable (= 24h soak gate 未達 risk) の場合に user 体験
+  退化 risk
+- C は *NeLisp 公開告知 trigger* (本 phase) と同時 deprecate は user 急変
+  すぎる、6-12 ヶ月の grace period が安全
+
+** 2.6 fallback: =--no-emacs= 起動 fail 時 host Emacs 経路 auto-fallback [推奨 = A]
+
+A. *推奨*: =--no-emacs= mode で起動 fail 時 host Emacs path に
+   auto-fallback (warning 出力、=--strict-no-emacs= で抑止可能)
+B. fail で即 exit、retry は user 責任
+C. fail 時 =--use-emacs= を user に suggest しつつ exit
+
+採用理由 (A):
+- cold-init 失敗は本 phase 24h soak gate 達成しても 0 にはならない
+  (= memory pressure / disk full / mmap failure 等の OS 的失敗)
+- auto-fallback で *user 体験は Stage D Phase 6.1 と同等以上* を保証、
+  v2.0 を試す user の安心感確保
+- B は v2.0 試用ハードル上昇 (= adoption rate 低下 risk)
+- C は user の 1 step 増、auto-fallback の方が体験良い
+- =--strict-no-emacs= flag で fallback 抑止 (CI / debugging 用途)
+
+** 2.7 stress test: 24h soak + memory leak check + GC pause spike [推奨 = A]
+
+A. *推奨*: 24h soak + memory leak check + GC pause spike monitoring
+   (Doc 30 §5 24h soak と integration、合算 24h 1 回で済ませる)
+B. 1h soak + 8h soak の 2 段階 (= short / medium)
+C. 7-day soak (本格 release 前 long burn-in)
+
+採用理由 (A):
+- Doc 30 §5.2 で GC pause p99 ≤ 50ms gate 既定義、本 phase 24h soak と
+  共有 budget で一回で済ませる
+- B は SHIPPED gate 短縮 risk = silent leak / pause spike pre-detect 不能
+- C は SHIPPED gate 1 週間遅延、anvil.el leverage の意味薄れ (= scope
+  phase 7.5 itself 2 週間で 1 週間 soak は budget 半分占有)
+
+** 2.8 release announcement gate [推奨 = A]
+
+A. *推奨*: NeLisp 公開告知保留 (=feedback_nelisp_announcement_standalone_gate.md=)
+   の解除条件達成、本 phase SHIPPED で正式発表 trigger
+B. Phase 7.5 SHIPPED 後 1 ヶ月 grace で発表 (= soak 期間)
+C. v1.0 release tag 後 + 1 ヶ月 で発表
+
+採用理由 (A):
+- v1.0 完遂条件 #4 達成 = announcement 解除条件 (memory feedback 既定義)
+- B は 1 ヶ月 grace の dev resource 占有 + announcement 機を逃す
+  (= social media engagement window)
+- C は v1.0 tag と announcement の dual gate、redundancy
+
+** 2.9 LOC budget [推奨 = A]
+
+A. *推奨*: NeLisp ~500-1500 LOC + Rust ~200 LOC (binary integration glue)
+B. NeLisp ~1500-3000 LOC (more integration tests)
+C. NeLisp ~200-500 LOC (minimal, defer tests to Phase 7.6)
+
+採用理由 (A):
+- Doc 27 §3 7.5 「~200 LOC + release」を base case、3 sub-phase + 24h
+  soak harness で +300-1000 LOC 増を許容
+- B は scope creep (= Phase 7.5 期間 2 週間超過 risk)
+- C は SHIPPED gate 達成困難 (= ERT +20 で smoke / failback / cross-arch
+  test 実装に 500 LOC 必要)
+
+** 2.10 stats / instrumentation [推奨 = A]
+
+A. *推奨*: =--self-bench= flag (full E2E benchmark) + =--diagnose= flag
+   (cold-init diagnostics)、release artifact GPG signing
+B. instrumentation 無し (production binary は最小化)
+C. =--self-bench= のみ (=--diagnose= は v2.1 で)
+
+採用理由 (A):
+- =--self-bench= は Doc 28 §7.2 3-軸 bench (=fib(30)= / =fact-iter= /
+  =alloc-heavy=) の binary 上 reproducer、user が自己環境で速度確認
+- =--diagnose= は cold-init 失敗時 (=§2.6 fallback= 発動時) の root cause
+  特定支援、support cost 低減
+- GPG signing = =stage-d-v2.0= release artifact の改ざん検知
+- B は production binary 最小化思想だが debug 不能 risk が支援 cost 増
+- C は =--diagnose= 後送りで v2.0 release fail 時の支援困難
+
+* §3 Sub-phase 7.5.1〜7.5.3 詳細
+
+| sub-phase | scope                                                  | LOC          | 期間   | ERT delta |
+|-----------+--------------------------------------------------------+--------------+--------+-----------|
+| 7.5.1     | Phase 7.0-7.4 module link 統合 + cdylib static          | ~300-500     | 3-5 日 | +6        |
+| 7.5.2     | bin/anvil --no-emacs mode + 4-stage cold-init           | ~400-700     | 1 週間 | +8        |
+| 7.5.3     | stage-d-v2.0 release artifact + 24h soak + cross-arch CI | ~200-300    | 3-5 日 | +6        |
+| 合計       |                                                         | ~900-1500    | 2 週間 | +20       |
+
+** 3.1 Phase 7.5.1 — Phase 7.0-7.4 module link 統合 + cdylib static (~3-5 日)
+
+新規 file: =src/nelisp-integration.el= (~300-500 LOC) + Cargo.toml /
+Makefile 改訂。
+
+*** scope
+
+- Phase 7.0 / 7.2 / 7.3 / 7.4 module の symbol resolution 確認
+  (= 各 =nelisp-*= module の require + autoload chain integration)
+- =Cargo.toml= で =nelisp-runtime cdylib= を =bin/anvil= から static
+  link、LTO + strip 設定追加
+- module load order 検証 (=syscall= → =allocator= → =GC= → =coding=
+  → =native compiler= の dependency 順序)
+- =cargo build --release= で binary size 計測 (target ≤ 15MB、
+  best-case 10MB)
+- =Makefile= に =stage-d-v2.0= target 追加
+
+*** ERT smoke (+6)
+
+- module link 整合性 (=nelisp-runtime-load= で全 module symbol 解決)
+- cdylib static link 動作確認 (=binary が =./bin/anvil --version=
+  で自身の version 出力、external lib 依存なし =ldd / otool -L= で
+  確認)
+- LTO 設定下で =cargo test --all= regression-free
+- binary size budget (≤ 15MB)
+- module load order が =syscall= → =alloc= → =GC= → =coding= → =cc=
+  順 (= reverse-failure order test)
+- regression: 既存 1086+44+20+38+36 ≒ 1224 ERT 全 PASS
+
+*** risks
+
+- LTO で symbol stripping 過剰、runtime symbol resolution failure
+  → mitigation: =#[no_mangle]= + =cargo build --release --keep-symbols=
+  で safety net
+- cdylib static link で macOS arm64 codesigning 問題 (= ad-hoc
+  signature 必要) → mitigation: build script で =codesign -s -=
+  自動付与
+
+** 3.2 Phase 7.5.2 — bin/anvil --no-emacs mode + 4-stage cold-init (~1 週間)
+
+新規 file: =src/anvil-no-emacs-mode.el= (~400-700 LOC) +
+=bin/anvil-bootstrap-bin= (Rust thin wrapper)。
+
+*** scope
+
+- =bin/anvil --no-emacs= flag 認識 (既存 launcher 経路と分岐)
+- 4-stage cold-init protocol embed (Doc 28 §3.5 全 4 stage、=stage0=
+  → =stage1= → =stage2= → =stage3=、各 stage failback path 含む)
+- =--strict-no-emacs= flag (=§2.6= fallback 抑止、CI / debugging 用途)
+- =--self-bench= flag (Doc 28 3-軸 bench 再実行)
+- =--diagnose= flag (cold-init step-by-step 出力、failback 発動時の root
+  cause 表示)
+- MCP server start (=anvil-server-run-batch-stdio=、headless profile、
+  ~28 tools)
+- JSON-RPC over stdio で Claude Code MCP client から接続確認
+
+*** ERT smoke (+8)
+
+- 4-stage cold-init success path (stage0 → stage3 全 PASS)
+- 4-stage cold-init failback path (各 stage で意図的 fault inject、
+  =A2 fallback= 経路通過確認)
+- =--strict-no-emacs= 動作 (fallback 抑止 で =cold-init fail = exit 1=)
+- =--self-bench= bench gate (=fib(30)= 30x / =fact-iter= 20x /
+  =alloc-heavy= 5x、Doc 28 §7.2 = bytecode 比)
+- =--diagnose= 出力検証 (cold-init step ごとの timestamp / stage / status)
+- dual-mode (=Stage D= vs =--no-emacs=) で MCP =tools/list= の output
+  parity 確認
+- MCP =initialize= → =tools/list= → =tools/call (anvil-data-get-path)=
+  の minimal e2e
+- regression: 既存 1086+44+20+38+36 ERT 全 PASS
+
+*** risks
+
+- cold-init time 500ms 未達 (Doc 28 §6.6 replan gate 引き継ぎ)
+  → mitigation: stage1 / stage2 の compile を eager 化 (= seed
+  compilation を build-time に move)
+- dual-mode bug (Stage D vs =--no-emacs= で =tools/list= 不一致)
+  → mitigation: ERT で parity 固定 (= same fixture, same output)
+
+** 3.3 Phase 7.5.3 — stage-d-v2.0 release artifact + 24h soak + cross-arch CI (~3-5 日)
+
+新規 file: =release/stage-d-v2.0/= (binary + checksum + signature、
+git LFS 管理) + =Makefile= release target + GitHub Actions cross-arch CI。
+
+*** scope
+
+- =stage-d-v2.0= binary build (Linux x86_64 / macOS arm64 / Linux
+  arm64 の 3 環境)、cdylib link 静的 + LTO + strip
+- SHA256 checksum + GPG signature (=§2.10 採用 A=)、release manifest
+  (=stage-d-v2.0-manifest.json=) 生成
+- 24h soak harness (=test/nelisp-soak-test.sh=) で 3 環境並列実行、
+  GC pause p99 / RSS growth / crash count metric 収集 (Doc 30 §5.2 と integration)
+- GitHub Actions workflow (=.github/workflows/stage-d-v2.0-release.yml=)
+  で cross-arch CI 自動化
+- =install.sh= 簡易 installer (=curl https://.../stage-d-v2.0/install.sh
+  | sh= で binary download + checksum verify + chmod +x)
+- =README.org= 更新 (=stage-d-v2.0= section 追加、=--no-emacs= mode
+  documentation)
+- NeLisp 公開告知 draft (Reddit /r/lisp + HN + blog post、user signoff
+  後 dispatch)
+
+*** ERT smoke (+6)
+
+- 3 環境 binary build success (= GitHub Actions matrix 緑)
+- SHA256 checksum verification (build artifact 改ざん検知)
+- GPG signature verification (=gpg --verify=)
+- 24h soak success (3 環境 × 24h、no crash + RSS growth < 10MB / 24h)
+- =install.sh= e2e (curl + chmod + =./bin/anvil --version= 緑)
+- cross-arch parity (=--no-emacs= で =tools/list= output が 3 環境で identical)
+- regression: 既存 1086+44+20+38+36+6+8 ERT 全 PASS
+
+*** risks
+
+- 24h soak で memory leak detect (Doc 30 §6 risks の cumulative 影響)
+  → mitigation: Doc 30 §5.2 GC pause p99 50ms 未達なら Phase 7.5 close
+  保留、Doc 30 patch first
+- cross-arch divergence (= silent miscompile、Doc 28 §3.5 stage2 で
+  detect 可能だが pre-detect 仕組み欲しい) → mitigation: =stage-d-v2.0=
+  manifest に各 arch の =stage2= golden hash を含める、再 build 時の
+  reference として install.sh でも verify
+
+* §4 Architecture (=bin/anvil --no-emacs= 起動経路)
+
+#+begin_src text
+[ user ]
+   ↓ ./bin/anvil mcp serve --no-emacs
+[ bin/anvil launcher (Rust thin shell) ]
+   ↓ flag dispatch
+[ Phase 7.0 syscall stub init (Rust cdylib link 静的) ]
+   ↓ mmap arena (~64MB nursery + ~256MB tenured slot)
+[ Phase 7.2 allocator init (heap span = nursery 4MB + tenured 64MB) ]
+   ↓ bump pointer + free-list pool ready
+[ Phase 7.3 GC scheduler init (mark trigger + safe-point poll) ]
+   ↓ collector idle、safe-point poll registered
+[ Phase 7.4 coding init (UTF-8 default + IO codecs setup) ]
+   ↓ stdin/stdout に UTF-8 codec attach
+[ 4-stage cold-init (Doc 28 §3.5) ]
+   ↓ stage0: bin 内 embed bytecode → A2 seed
+   ↓ stage1: A2 が core lib を native compile → A3 candidate
+   ↓ stage2: A3 ↔ A2 semantic diff (golden hash)
+   ↓ stage3: A3 が core lib を self-recompile + diff → authoritative 昇格
+[ Phase 7.1 native compiler authoritative (A3) ]
+   ↓ JIT-ready
+[ MCP server start (anvil-server-run-batch-stdio、headless profile、~28 tools) ]
+   ↓ stdin / stdout で JSON-RPC ready
+[ mcp serve listening、JSON-RPC over stdio ]
+   ↓ Claude Code MCP client connects
+   ↓ initialize → tools/list → tools/call → ... → shutdown
+[ shutdown ]
+   ↓ GC sweep、resource release、exit 0
+#+end_src
+
+*失敗経路 (=--no-emacs= → fallback)*:
+
+#+begin_src text
+[ Phase 7.X init failure (例: stage1 native compile fail) ]
+   ↓ fallback decision
+[ if --strict-no-emacs ]
+   → exit 1 (即座中断)
+[ else ]
+   → warning 出力: "cold-init failed at stage1, falling back to host Emacs path"
+   → bin/anvil mcp serve (= Stage D Phase 6.1 経路) を internal fork
+   → Stage D 経路で MCP server 起動継続 (user 体験不変)
+#+end_src
+
+* §5 ERT smoke + bench plan
+
+** ERT delta +20 (本 phase 合計、=test/nelisp-integration-test.el= 新規)
+
+| sub-phase | ERT 内容                                                          | delta |
+|-----------+-------------------------------------------------------------------+-------|
+| 7.5.1     | cdylib link 統合、各 module symbol resolution、LTO regression      | +6    |
+| 7.5.2     | 4-stage cold-init success / failback path / dual-mode (host Emacs vs --no-emacs) | +8    |
+| 7.5.3     | 24h soak / cross-arch parity / stage-d-v2.0 artifact integrity     | +6    |
+
+** bench gate (Phase 7.5 close 条件)
+
+- *cold-init time*: ≤ 500ms (host Emacs Stage D 経路 ~2sec の 4x 改善、
+  Doc 28 §6.6 replan gate 引き継ぎ)
+- *mcp serve throughput*: ≥ 100 tool calls/sec (Stage D 経路と同等)
+- *24h soak*: GC pause p99 ≤ Doc 30 §5.2 50ms (= Doc 30 と integration
+  budget)
+- *binary size*: ≤ 15MB (cdylib + bin static link、target 10MB)
+- *RSS growth*: < 10MB / 24h (memory leak 検知)
+
+** anvil-leverage 前提下での bench 計測手順
+
+1. =bin/anvil --self-bench= で 3-軸 (=fib(30)= / =fact-iter= /
+   =alloc-heavy=) を Doc 28 §7.2 と同 fixture で実行
+2. =bin/anvil --diagnose= で cold-init step-by-step 出力、各 stage の
+   timestamp / status 記録
+3. =test/nelisp-soak-test.sh= で 24h 並列 (3 環境) 実行、metric を JSON
+   形式で =release/stage-d-v2.0/soak-results.json= に保存
+4. cross-arch parity ERT (=tools/list= output が 3 環境で identical) を
+   GitHub Actions matrix で自動化
+
+* §6 Risks (7 項目)
+
+** 6.1 cold-init time spike (4-stage bootstrap で stage1/2 の compile 時間)
+
+target 500ms 未達 risk。Doc 28 §6.6 replan gate と同類。
+
+mitigation:
+- stage1 / stage2 の compile を *build-time に eager 化* (= seed
+  compilation を build artifact に embed、runtime は load only)
+- stage3 self-recompile は *first-launch のみ実行*、=stage3-cache=
+  に永続化、2nd launch 以降 skip (= cold-init 真の "cold" は first
+  launch のみ)
+- 達成不能なら Phase 7.5 SHIPPED 保留、Doc 28 patch first
+
+** 6.2 binary size 超過 (link static で 15MB 超 = release 受容性低下)
+
+target 10MB、許容 15MB、超過 release 受容性低下 risk。
+
+mitigation:
+- LTO + strip + =cargo build --release --no-default-features= で
+  optional feature 除外
+- =rust-libstd= の重複 elimination (=panic = abort= で unwind code 除去、
+  ~2MB 削減見込)
+- 達成不能なら Phase 7.5 LOCKED items §2.3 推奨 A → B (tarball 同梱)
+  に格下げ
+
+** 6.3 24h soak の GC pause spike (Doc 30 §6 risks の cumulative 影響)
+
+Doc 30 §5.2 の GC pause p99 50ms gate が 24h soak で violation する risk。
+
+mitigation:
+- Doc 30 §5 24h soak と本 phase soak は *同一 budget*、Doc 30 SHIPPED 時点
+  で 50ms gate 達成済 = Phase 7.5 で再 violation = regression
+- regression 検知時 Phase 7.5 SHIPPED 保留、Doc 30 patch first
+- =--diagnose= で GC pause spike の root cause 出力 (= Doc 30 §5.2
+  pause histogram)
+
+** 6.4 cross-arch divergence (x86_64/arm64 で 4-stage cold-init 不一致)
+
+silent miscompile、Doc 28 §3.5 stage2 で detect 可能だが pre-detect
+仕組み欲しい。
+
+mitigation:
+- =stage-d-v2.0= manifest に各 arch の *stage2 golden hash* を含める、
+  =install.sh= でも verify
+- GitHub Actions matrix で 3 環境並列 build、stage2 hash diff があれば
+  CI 失敗 (= release block)
+- v2.1 で formal 証明 (= stage2 hash 一致は arch 非依存) 導入検討
+
+** 6.5 dual-mode 維持 cost (Stage D 経路 + --no-emacs 経路の dual path bug)
+
+Phase 7.5 後の長期保守で dual path bug ((= 一方経路で動くが他方で動かない
+feature) が発生する risk。
+
+mitigation:
+- ERT parity test (=§3.2 sub-phase 7.5.2= の dual-mode tools/list parity)
+  を CI 必須化、両経路 same fixture で same output 強制
+- v3.0 (= Stage D v0.x deprecate、=--no-emacs= 単独) を 1-2 年後の
+  roadmap で明示、long-term cost 上限を設定
+
+** 6.6 release announcement gate の品質基準厳格化
+
+memory =feedback_nelisp_announcement_standalone_gate.md= の品質基準。
+本 phase 完遂で公開告知 = back-out 不可、品質 gate 厳格化 risk。
+
+mitigation:
+- announcement draft は user signoff *必須*、Reddit /r/lisp + HN +
+  blog post の dispatch 順序を user 判断で決定
+- announcement 後 1 週間 emergency hotfix window を設定 (= 即時 patch
+  release 可能な状態維持)
+- public reaction monitoring (= memory =feedback_reddit_llm_reply_style.md=
+  準拠、返信は短く粗く)
+
+** 6.7 anvil leverage 過大評価 (W1 replan gate)
+
+Doc 27 §3 工数見積 *4-8 ヶ月* は anvil.el + 並列 session leverage 前提、
+Phase 7.5 が "2 週間" base case が想定下回ったら scope 削減 / Phase 7.5
+deadline 後送り判断 (Doc 27 §3 7.5 と同 W1 replan gate)。
+
+mitigation:
+- 3 sub-phase (7.5.1/7.5.2/7.5.3) 各 mid-point で leverage gain 計測、
+  想定 productivity multiplier の 50% 未達なら scope 削減 (=§2.4= 推奨 A
+  → B、cross-arch CI を Linux x86_64 のみに縮小)
+- 2 週間 deadline 超過なら Phase 7.5 LOCKED items §2.7 推奨 A → B
+  (24h soak → 8h soak 縮小)、=stage-d-v2.0= release tagging 後送り
+
+* §7 完遂 gate (LOCKED 化条件)
+
+** 必須条件
+
+- 4-stage cold-init success rate 100% (3 環境 × 100 trials each、
+  =§3.2 sub-phase 7.5.2= ERT で固定)
+- 24h soak no crash + memory bound (RSS growth < 10MB / 24h、
+  =§3.3 sub-phase 7.5.3= ERT で固定)
+- =bin/anvil mcp serve --no-emacs= で existing MCP client (= Claude Code)
+  が異常なく動作 (smoke test、=§3.2= ERT で固定)
+- =stage-d-v2.0= release artifact ready (binary + SHA256 checksum + GPG
+  signature、=§2.3 採用 A= + =§2.10 採用 A=)
+- ERT +20 全 PASS (本 phase 合計、Phase 7.4 完遂時点 1086+44+20+38+36 ≒
+  1224 → 本 phase 後 ≒ 1244)
+- =cargo build --release= / =cargo test --all= / =cargo clippy= 0 warning
+- NeLisp 既存 ERT regression-free
+- Doc 27 §3 7.5 sub-phase scope と本 doc §3 sub-phase が完全整合
+
+** Doc 32 LOCKED 化 + main merge gate
+
+- LOCKED → SHIPPED stamp + main =--no-ff= merge
+  (=feedback_anvil_master_integration_gate.md= 準拠)
+- Doc 27 LOCKED 維持 (本 doc は Doc 27 §3 7.5 と完全整合)
+- Doc 28 §3.5 4-stage bootstrap protocol 完全引き継ぎ
+- Doc 29 / Doc 30 / Doc 31 SHIPPED 後の最終 integration phase として
+  各 sibling と整合
+- =anvil-dev release-audit :scope doc 32= 緑 (LOCKED stamp 整合、
+  reference 整合)
+
+** *3 大 milestone trigger*
+
+本 phase SHIPPED = 以下 3 milestone を *同時 trigger*:
+
+1. *NeLisp v1.0 完遂条件 #4 達成* (Doc 27 §0、残存 C = SBCL-style 4 核
+   のみ → SBCL precedent を超えて syscall ~400 LOC Rust + 残 3 核
+   NeLisp 化を完遂)
+2. *Rhodes target-2 cold-init 実証* (Doc 28 §1.4、SBCL 25 年で hardest
+   part の transition を NeLisp で初実装、4-stage bootstrap protocol
+   による formal 証明 with stage2 semantic diff)
+3. *NeLisp 公開告知 trigger* (memory =feedback_nelisp_announcement_standalone_gate.md=
+   解除、Reddit /r/lisp + HN + blog post で正式発表)
+
+* §8 Out of scope
+
+本 Phase 7.5 では以下を扱わない (= v2.0 以降または別 phase):
+
+- *Windows native build* (Stage A 経由、Doc 18 別 path、Phase 7.5 では
+  扱わない)
+- *ARM 32-bit* (= Raspberry Pi 4 以前等、x86_64 + arm64 の 2 arch のみ
+  本 phase scope、ARM 32-bit は v2.0 以降)
+- *部分的 link* (=-no-cdylib= build = lib のみ binary なし) は Phase
+  7.5 後の variant
+- *多言語 binding* (Python / Ruby / Julia 等から NeLisp 呼び出し) は
+  v2.0 以降 (= NeLisp が C ABI を自前公開する別 phase 必要)
+- *self-update* (NeLisp 自身の binary 更新、= =bin/anvil --self-update=
+  で latest 取得) は v2.0 以降
+- *core image dump* (SBCL =save-lisp-and-die= 類比) は Phase 8 相当
+  (Doc 18 §5.2 SBCL 類推 でも Phase 8 と明記)
+- *AOT compile* (=bin/anvil compile-app foo.el= で application 単体
+  binary 生成) は v2.0 以降
+
+* §9 Open questions
+
+** 9.1 binary size budget 10MB は achievable か
+
+NeLisp libcore (= Phase 7.1-7.4 全 NeLisp source の bytecode + stage1
+seed compilation) の strip 後サイズ次第。Phase 7.1 SHIPPED 時点の
+=nelisp-cc= 単独 ~6000 LOC NeLisp で bytecode ~2MB と推定、+
+allocator + GC + coding で ~5MB、+ Rust runtime (=Phase 7.0 + glue=)
+~3-5MB = total ~8-10MB target。LTO で 5-10% 削減見込、達成蓋然性高。
+
+未確定: Phase 7.1 完遂時点の =nelisp-cc.elc= 実サイズ。Phase 7.1.5
+SHIPPED で確定。
+
+** 9.2 dual-mode の default (host Emacs vs --no-emacs)
+
+§2.5 採用 A = default host Emacs (backward compat)、user opt-in で
+=--no-emacs=。ただし:
+- announcement 時の "v2.0 試用" 体験は =--no-emacs= が default の方が
+  impact 大
+- =bin/anvil --no-emacs= を環境変数 (=ANVIL_NO_EMACS=1=) で persist
+  するか?
+
+未確定: env var persist mechanism。v2.1 で検討、本 phase は flag のみ。
+
+** 9.3 24h soak の test infra (CI vs local manual)
+
+§2.7 採用 A = 24h soak、ただし infra は:
+- GitHub Actions free tier は 6h job limit (= 24h job 不可)、self-hosted
+  runner 必要
+- local manual で SHIPPED gate (= 1 dev が 3 環境並列 24h burn-in)
+- CI 化は v2.1 で (= self-hosted runner 1 台用意 + 自動 weekly soak)
+
+未確定: self-hosted runner の物理確保 (AWS Graviton spot or 自前
+Raspberry Pi 4)。
+
+** 9.4 release artifact signing (cryptographic signature)
+
+§2.10 採用 A = GPG signature *必須*、ただし key management:
+- zawatton 個人 GPG key で sign (= identity = github user)
+- =stage-d-v2.0= tag に signed-by 含める
+- key rotation policy は v2.0 release 時に決定 (= 1 年? 2 年?)
+
+未確定: key rotation policy。本 phase は v2.0 個人 key で signing、
+rotation は v2.1 以降。
+
+** 9.5 NeLisp 公開告知の体裁
+
+memory =feedback_nelisp_announcement_standalone_gate.md= に従う。
+未確定:
+- Reddit /r/lisp / HN / blog post の dispatch *順序* (= HN first か
+  Reddit first か?)
+- announcement 本文の言語 (= 日本語 + 英語 dual? 英語のみ?)
+- announcement 後 1 週間の emergency hotfix window 運用 (= release 後
+  即 issue 対応可能な状態維持)
+
+未確定: user signoff 後 dispatch、本 doc DRAFT 段階では template のみ。
+
+* §10 関連 doc
+
+** internal NeLisp design docs
+
+- =docs/design/27-phase7-c-runtime-self-impl.org= (Doc 27 LOCKED
+  2026-04-25 = =2a52bda main=、本 doc 親、§3 7.5 を本 doc が完全展開)
+- =docs/design/28-phase7.1-native-compiler.org= (Doc 28 LOCKED-2026-04-25-v2、
+  §1.4 Rhodes 5-stage / §3.5 4-stage bootstrap を本 doc §1.4 / §3.2 で
+  完全引き継ぎ、§6.6 replan gate pattern 引き継ぎ)
+- =docs/design/29-phase7.2-allocator.org= (Doc 29 DRAFT-2026-04-25、
+  本 phase の前提 = allocator SHIPPED)
+- =docs/design/30-phase7.3-gc-inner.org= (Doc 30 DRAFT-2026-04-25、
+  本 doc §6.3 で GC pause p99 50ms gate を Doc 30 §5.2 と integration)
+- =docs/design/31-phase7.4-coding.org= (Doc 31 DRAFT-2026-04-25、
+  本 phase の前提 = coding SHIPPED)
+- =docs/design/18-stage-d-standalone.org= (Stage D, Phase 6.1
+  architecture α SHIPPED、§5 Option B = =stage-d-v2.0= の本丸記述、
+  本 phase 完遂で Option B 現実化)
+
+** external precedent reference
+
+- *SBCL release engineering*: =src/runtime/genesis/=、Sanely-Bootstrappable
+  Common Lisp paper (Rhodes 2008 LNCS 5146)、25 年運用される release
+  workflow precedent (target-2 cold-init = hardest part)
+- *Emacs build system*: =configure.ac=, =src/emacs.c=、cross-platform
+  build + per-arch native code precedent
+- *mruby* (=mruby/mruby=)、C 組込 lib 化 precedent (Doc 18 §5.1 類推)
+- *Racket =raco exe=* (Doc 18 §5.3 類推)、image embed + runtime 配布
+  precedent
+
+** 関連 memory
+
+- =project_nelisp.md= (Phase 4-6.5 SHIPPED summary、Stage D 配布レディ)
+- =feedback_anvil_master_integration_gate.md= (design doc は LOCKED で
+  main merge 可)
+- =feedback_canonical_byte_compile_stale_elc.md= (worktree 内
+  byte-compile、canonical では .elc 残さない)
+- =feedback_orchestrator_role_split.md= (orchestrator review
+  claude+codex+gemma、judge=claude)
+- *=feedback_nelisp_announcement_standalone_gate.md=* (本 phase SHIPPED で
+  公開告知保留解除、3 大 milestone の 1 つ)
+- =feedback_git_worktree_parallel_sessions.md= (sub-phase 7.5.1〜7.5.3
+  ごとに別 worktree 推奨、ただし本 phase は strictly sequential)
+- =project_stage_d_standalone.md= (Stage D Doc 18 LOCKED、Phase 6.1
+  architecture α SHIPPED、本 phase で Option B 現実化)
+
+* §11 Sign-off
+
+** v0 DRAFT
+
+| version  | date       | author                       | 主要 |
+|----------+------------+------------------------------+------|
+| v0 DRAFT | 2026-04-25 | session-T8 起草 (autonomous) | 3 sub-phase / 10 LOCKED items / 7 risks / cold-init 500ms gate / 24h soak / 3-arch CI / =stage-d-v2.0= release artifact / 3 大 milestone trigger (v1.0 完遂条件 #4 / Rhodes target-2 cold-init / 公開告知 trigger) |
+
+** main merge gate
+
+- Doc 27 LOCKED 維持 (本 doc は Doc 27 §3 7.5 と完全整合)
+- Doc 28 §1.4 Rhodes 5-stage + §3.5 4-stage bootstrap protocol を本 doc
+  §1.4 / §3.2 で完全引き継ぎ
+- Doc 29 / Doc 30 / Doc 31 SHIPPED 後の最終 integration phase として
+  各 sibling §6.6 replan gate pattern と整合
+- ERT regression-free (本 doc は文書のみだが、§3 sub-phase の
+  scope/LOC/期間が Doc 27 §3 7.5 と矛盾しないこと)
+- =anvil-dev release-audit :scope doc 32= 緑 (LOCKED stamp 整合、
+  reference 整合)
+- 本 v0 = DRAFT-2026-04-25、user signoff + orchestrator review 後に
+  =LOCKED-2026-04-2X= 昇格、main =--no-ff= merge 解禁
+- *本 doc LOCKED で Phase 7+ 全 design pipeline 完結* (Doc 27 LOCKED +
+  Doc 28-32 LOCKED)、NeLisp v1.0 完遂条件 #4 達成 path 確立
+
+** 次の action (本 DRAFT push 後)
+
+1. session-A が =anvil-orchestrator-consensus-submit= で本 doc を
+   claude + codex review (judge=claude)
+2. revised proposal を user signoff 待ちで提示
+3. user signoff → STATE: =DRAFT-2026-04-25= → =LOCKED-2026-04-2X=
+4. main へ =--no-ff= merge (=feedback_anvil_master_integration_gate.md=
+   準拠、design doc は LOCKED で merge 可)
+5. *Phase 7+ 全 design pipeline 完結* 宣言 (Doc 27 LOCKED + Doc 28-32
+   LOCKED) → NeLisp v1.0 完遂条件 #4 達成 path 確立 → Phase 7.0-7.5
+   実装 phase へ移行
