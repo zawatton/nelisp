@@ -14,6 +14,43 @@ set -euo pipefail
 
 ANVIL_VERSION="stage-d-v0.2-pre"
 
+# Phase 7.5.1 (Doc 32 v2 LOCKED §2.6 + §3.1) — --strict-no-emacs flag
+# scaffold.  v2.6 specifies that bin/anvil --no-emacs falls back to the
+# host Emacs path on cold-init failure; --strict-no-emacs suppresses
+# that fallback (CI / debugging use).  Phase 7.5.1 only parses the flag
+# and exports the resulting state; real --no-emacs cold-init lands in
+# Phase 7.5.2.  Today --strict-no-emacs prints a notice and proceeds
+# down the existing Stage D Phase 6.1 path (host Emacs).
+NELISP_STRICT_NO_EMACS=0
+NELISP_STRICT_FILTERED_ARGS=()
+for arg in "$@"; do
+  case "$arg" in
+    --strict-no-emacs)
+      NELISP_STRICT_NO_EMACS=1
+      ;;
+    *)
+      NELISP_STRICT_FILTERED_ARGS+=("$arg")
+      ;;
+  esac
+done
+if [[ $NELISP_STRICT_NO_EMACS -eq 1 ]]; then
+  cat >&2 <<'STRICT_EOF'
+anvil: --strict-no-emacs requested (Phase 7.5.1 scaffold).
+  Real --no-emacs cold-init + 4-stage bootstrap is reserved for
+  Phase 7.5.2 (Doc 32 v2 LOCKED §3.2).  This invocation continues
+  via the Stage D Phase 6.1 host Emacs path; the env var
+  NELISP_STRICT_NO_EMACS=1 is exported so downstream tools can
+  observe the user intent.
+STRICT_EOF
+  export NELISP_STRICT_NO_EMACS
+  # Replace positional args with the filtered list (drop --strict-no-emacs)
+  if [[ ${#NELISP_STRICT_FILTERED_ARGS[@]} -gt 0 ]]; then
+    set -- "${NELISP_STRICT_FILTERED_ARGS[@]}"
+  else
+    set --
+  fi
+fi
+
 # OS / shell detection (Phase 6.4 Windows support)
 ANVIL_OS="linux"
 case "$(uname -s 2>/dev/null || echo)" in

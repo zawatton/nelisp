@@ -1,5 +1,6 @@
 .PHONY: test compile clean all bench gc-bench actor-bench soak smoke stage-d-tarball \
-        runtime runtime-test runtime-clean test-runtime
+        runtime runtime-test runtime-clean test-runtime \
+        runtime-staticlib stage-d-v2-bin
 
 EMACS ?= emacs
 
@@ -128,6 +129,35 @@ test-runtime: runtime
 	  -l ert \
 	  -l test/nelisp-runtime-test.el \
 	  -f ert-run-tests-batch-and-exit
+
+# Phase 7.5.1 (Doc 32 v2 LOCKED §3.1) — staticlib build.  Cargo.toml
+# declares cdylib + rlib + staticlib in parallel, so a single
+# `cargo build --release' produces all three artifacts; this target
+# exists primarily so the Makefile names the staticlib path and the
+# Phase 7.5.2 `stage-d-v2-bin' rule has a clean dependency edge.
+NELISP_RUNTIME_STATICLIB := $(NELISP_RUNTIME_DIR)/target/release/libnelisp_runtime.a
+
+runtime-staticlib:
+	cd $(NELISP_RUNTIME_DIR) && $(CARGO) build --release
+	@if [ -f "$(NELISP_RUNTIME_STATICLIB)" ]; then \
+	    printf "  \033[1;32m✓\033[0m staticlib built: %s ($$(du -h "$(NELISP_RUNTIME_STATICLIB)" | cut -f1))\n" "$(NELISP_RUNTIME_STATICLIB)"; \
+	else \
+	    printf "  \033[1;33m!\033[0m staticlib NOT produced — check Cargo.toml crate-type contains \"staticlib\"\n"; \
+	    exit 1; \
+	fi
+
+# Phase 7.5.1 (Doc 32 v2 LOCKED §3.1) — stage-d-v2.0 candidate binary
+# scaffold.  This target reserves the build edge for Phase 7.5.2 where
+# the real cold-init embed lands; for now it just proves the staticlib
+# is reachable from the bin/anvil launcher path.  The real link step
+# (bin/anvil rewrite + libnelisp_runtime.a static link) is intentional
+# scope-out of Phase 7.5.1 partial — see Doc 32 v2 §3.2.
+stage-d-v2-bin: runtime-staticlib
+	@echo "stage-d-v2-bin (Phase 7.5.1 partial scaffold)"
+	@echo "  staticlib    : $(NELISP_RUNTIME_STATICLIB)"
+	@echo "  bin/anvil    : $$(pwd)/bin/anvil (--strict-no-emacs scaffold only)"
+	@echo "  next phase   : 7.5.2 — real cold-init + 4-stage bootstrap embed"
+	@echo "  Doc 32 v2 §3.2 で real bin/anvil + libnelisp_runtime.a static link 完成予定"
 
 # Phase 6.3 (Stage D, Doc 18) distribution tarball.  Bundles only what
 # `bin/anvil mcp serve' needs at runtime — bin/, src/*.el, README,
