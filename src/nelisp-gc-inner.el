@@ -56,6 +56,8 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'nelisp-allocator)
+(require 'nelisp-integration)
 
 
 ;;; Versioning -------------------------------------------------------
@@ -1918,6 +1920,559 @@ Side effects: CARD-TABLE is cleared in place after the GC cycle."
     (append stats
             (list :cross-gen-roots    (length cross-gen-ptrs)
                   :card-table-cleared t))))
+
+
+;;;; §12. Phase 7.3.5 — promotion + age policy + young-root-limited mode
+;;
+;; *Doc 30 v2 LOCKED §3.5 + §2.5 + §0 BLOCKER 1 解消.*
+;;
+;; T29 (Phase 7.3.5) wires the *promotion* half of the generational scheme
+;; that T24 (7.3.3) only *identified*: when a nursery survivor's age
+;; crosses `nelisp-gc-inner-promotion-age-threshold' (default 2), the
+;; nursery copy is followed by a *second* copy that moves the live cell
+;; from to-space into a tenured region via the allocator's
+;; `nelisp-allocator-tenured-alloc' API.  The forwarding side-table on
+;; `nelisp-gc-inner--semispace' is updated so subsequent root walks see
+;; the tenured address rather than the (now-dead) to-space address.
+;;
+;; Sub-phase 7.3.5 also flips the *default* major-GC mode from full
+;; mark-sweep (T21, ~500ms-1s pause for a 64MB tenured) to
+;; *young-root-limited* (Doc 30 v2 §0 BLOCKER 1 mitigation, user signoff
+;; 2026-04-25): only dirty cards from the write barrier (T26) seed the
+;; mark phase + only objects on dirty cards are swept.  Pause-time
+;; envelope is 50ms — the cost of skipping the tenured cold pages is
+;; that *non-cross-gen* dead tenured objects aren't reclaimed until
+;; the next *full* major (opt-in via `nelisp-gc-major-mode = 'full').
+;;
+;; Layering with previous sub-phases:
+;;   - T17 (7.3.1) provides the mark phase + tri-color state.
+;;   - T21 (7.3.2) provides per-pool free-list rebuild (full sweep).
+;;   - T24 (7.3.3) provides Cheney semispace + minor copy.
+;;   - T26 (7.3.4) provides write barrier + remembered-set scan +
+;;     `run-minor-gc-with-barrier' wrapper.
+;;   - T29 (7.3.5, this sub-phase) wires *promotion* + *age policy* +
+;;     *young-root-limited major mode* + a v2 cycle dispatcher.
+;;
+;; Out of scope for 7.3.5 (covered by 7.3.6):
+;;   - scheduler / allocation-triggered cycle entry
+;;   - safe-point handshake plumbing
+;;   - finalizer queue executor (the *queue* itself is in 7.3.1; the
+;;     mutator-context drain executor lands in 7.3.6)
+
+;;;; §12.1 Major mode defcustom (Doc 30 v2 §0 BLOCKER 1 解消) -------
+
+(defcustom nelisp-gc-major-mode 'young-root-limited
+  "Major GC mode (Doc 30 v2 §0, user signoff 2026-04-25 default switch).
+
+`young-root-limited' (DEFAULT, ~50ms pause) — card-table dirty page
+                only scan, interactive UX target.  Roots = mutator stack
+                roots ∪ remembered-set cross-gen pointers; sweep walks
+                only objects whose addresses fall on dirty cards.  Cold
+                tenured garbage accumulates until a full cycle runs.
+
+`full' (opt-out, ~500ms-1s pause) — stop-the-world full mark-sweep
+                across every heap region.  Used for `gc-stress' bench
+                and explicit `(let ((nelisp-gc-major-mode \\='full))
+                ...)' contexts.  Phase 7.5 daemon profile may schedule
+                this hourly during idle windows."
+  :type '(choice (const :tag "Young-root-limited (default, ~50ms)" young-root-limited)
+                 (const :tag "Full mark-sweep (~500ms-1s)"            full))
+  :group 'nelisp-gc-inner)
+
+
+;;;; §12.2 Age policy helpers (Doc 30 v2 §2.5) ---------------------
+
+(defun nelisp-gc-inner-age-tick (to-space-objects-table)
+  "Increment the age field of every object in TO-SPACE-OBJECTS-TABLE.
+
+TO-SPACE-OBJECTS-TABLE is the `:to-space-objects' hash returned by
+`run-minor-gc' — `(addr → cell-plist)' with each plist carrying a
+`:header' uint64.  Each header's 6-bit age field (Doc 30 v2 §2.13
+bits 61:56) is bumped by 1, saturating at 63.
+
+This helper is *idempotent-aware*: `run-minor-gc' already increments
+age once during `--minor-copy-one' (the in-line bump that decides
+promotion candidacy).  Callers that want a *separate* age-tick step —
+e.g. for per-cycle survivor aging policies that don't piggyback on
+the copy itself, or to re-age objects that were copied with their
+existing age preserved — invoke this explicitly.  In the current
+Phase 7.3.5 pipeline this is not part of the default cycle (the
+implicit copy bump is enough); the function is exposed so future
+modes (incremental / concurrent collectors) can stage age policy
+separately from the copy.
+
+Returns the count of cells whose age was bumped (those at age < 63
+before the call).  Cells already at age 63 are saturated and the
+saturation is recorded in the count separately as the *return cell*
+of every call (no-ops still report `:saturated-count').
+
+Result plist:
+  (:bumped-count N
+   :saturated-count N
+   :total-count N)"
+  (unless (hash-table-p to-space-objects-table)
+    (signal 'wrong-type-argument
+            (list 'hash-table-p to-space-objects-table)))
+  (let ((bumped 0)
+        (saturated 0)
+        (total 0))
+    (maphash
+     (lambda (addr cell)
+       (cl-incf total)
+       (let* ((header (or (plist-get cell :header) 0))
+              (age (nelisp-gc-inner--header-age header)))
+         (cond
+          ((>= age nelisp-gc-inner--header-age-mask)
+           (cl-incf saturated))
+          (t
+           (let ((new-cell (copy-sequence cell)))
+             (plist-put new-cell :header
+                        (nelisp-gc-inner--header-with-age header (1+ age)))
+             (puthash addr new-cell to-space-objects-table)
+             (cl-incf bumped))))))
+     to-space-objects-table)
+    (list :bumped-count    bumped
+          :saturated-count saturated
+          :total-count     total)))
+
+(defun nelisp-gc-inner-collect-promotion-candidates (to-space-objects-table)
+  "Walk TO-SPACE-OBJECTS-TABLE, return promotion candidate descriptors.
+
+Each candidate is an entry whose header age is at or above
+`nelisp-gc-inner-promotion-age-threshold'.  Returns a list of
+`(ADDR . (FAMILY . SIZE))' triples in ascending ADDR order so the
+caller can replay them deterministically (test diffs stable).
+
+FAMILY is decoded via the family-tag enum (Doc 29 §2.5):
+  0 → :cons-pool, 1 → :closure-pool, 2 → :string-span,
+  3 → :vector-span, 4 → :large-object.  Unknown tags fall back to
+`:cons-pool' (the dominant family) with a backtrace-safe path so
+callers don't need to handle nil.
+
+SIZE is read from the cell's `:size' slot if present, else from the
+header's 48-bit size field — both must agree in practice; the cell
+slot wins to keep the simulator independent of header packing tests."
+  (unless (hash-table-p to-space-objects-table)
+    (signal 'wrong-type-argument
+            (list 'hash-table-p to-space-objects-table)))
+  (let ((acc nil))
+    (maphash
+     (lambda (addr cell)
+       (let* ((header (or (plist-get cell :header) 0))
+              (age (nelisp-gc-inner--header-age header)))
+         (when (>= age nelisp-gc-inner-promotion-age-threshold)
+           (let* ((family-tag (nelisp-gc-inner--header-family header))
+                  (family (nelisp-gc-inner--family-tag-to-keyword family-tag))
+                  (size (or (plist-get cell :size)
+                            (nelisp-gc-inner--header-size header))))
+             (push (cons addr (cons family size)) acc)))))
+     to-space-objects-table)
+    ;; Sort ascending by addr for deterministic test ordering.
+    (sort acc (lambda (a b) (< (car a) (car b))))))
+
+(defconst nelisp-gc-inner--family-tag-keyword-alist
+  '((0 . :cons-pool)
+    (1 . :closure-pool)
+    (2 . :string-span)
+    (3 . :vector-span)
+    (4 . :large-object))
+  "Bridge: 8-bit family-tag (Doc 29 §2.5 enum) → gc-inner keyword family.
+
+The allocator (`nelisp-allocator--family-tag-alist') stores the
+inverse mapping in *bare* symbols; this alist is the keyword-namespace
+mirror used by `--family-tag-to-keyword' so the gc-inner side can
+translate decoded headers without depending on the allocator at load
+time.  Phase 7.5 cold-init verifies the two sides agree.")
+
+(defun nelisp-gc-inner--family-tag-to-keyword (tag)
+  "Translate 8-bit family TAG to a gc-inner keyword family.
+Falls back to `:cons-pool' for unknown tags so promotion never
+crashes on a malformed header (the resulting tenured allocation
+will be size-correct even if the family is mis-classified — the
+diagnostic is logged via the simulator's stats path)."
+  (or (cdr (assq tag nelisp-gc-inner--family-tag-keyword-alist))
+      :cons-pool))
+
+
+;;;; §12.3 Promotion to tenured (Doc 30 v2 §2.5 + §3.5) -----------
+
+(defun nelisp-gc-inner-promote-to-tenured
+    (semi tenured to-space-objects-table candidate-addr family size)
+  "Copy CANDIDATE-ADDR from to-space into TENURED, reset age, forward.
+
+Pipeline:
+  1. Translate FAMILY (gc-inner keyword) → bare symbol via
+     `nelisp-integration-family-from-keyword' (T28 bridge).
+  2. Allocate a tenured slot via `nelisp-allocator-tenured-alloc'.
+  3. Copy the to-space cell's `:fields' (a fresh plist; the simulator
+     keeps cells immutable so we never mutate the original).
+  4. Reset the header's age to 0 — tenured objects start their age
+     count fresh.  The mark and forwarding bits are cleared too
+     (the cell is freshly allocated in tenured).
+  5. Forward CANDIDATE-ADDR → tenured-addr on SEMI's `copied-objects'
+     hash.  Subsequent calls to `--lookup-forwarded' resolve to the
+     tenured address.
+
+Arguments:
+  SEMI                    — `nelisp-gc-inner--semispace'
+  TENURED                 — `nelisp-allocator--tenured' from
+                            `nelisp-allocator-init-tenured'
+  TO-SPACE-OBJECTS-TABLE  — `:to-space-objects' hash from `run-minor-gc'
+  CANDIDATE-ADDR          — to-space integer address of the cell to promote
+  FAMILY                  — gc-inner keyword (`:cons-pool' etc.)
+  SIZE                    — payload byte size (used for tenured-alloc bin)
+
+Returns the new tenured address.
+
+Side effects:
+  - TENURED bump cursor or free-list mutated by tenured-alloc.
+  - SEMI's `copied-objects' hash gains a CANDIDATE-ADDR → tenured
+    mapping (so callers re-walking from-space → to-space → tenured
+    stay consistent).
+  - TO-SPACE-OBJECTS-TABLE entry at CANDIDATE-ADDR is *removed* (the
+    cell now lives in tenured; leaving the to-space entry would let a
+    follow-up `age-tick' double-age the same logical object)."
+  (unless (nelisp-gc-inner--semispace-p semi)
+    (signal 'wrong-type-argument (list 'nelisp-gc-inner--semispace-p semi)))
+  (unless (hash-table-p to-space-objects-table)
+    (signal 'wrong-type-argument
+            (list 'hash-table-p to-space-objects-table)))
+  (unless (and (integerp candidate-addr) (>= candidate-addr 0))
+    (signal 'wrong-type-argument
+            (list 'integerp candidate-addr)))
+  (unless (and (integerp size) (> size 0))
+    (signal 'wrong-type-argument
+            (list 'positive-integer-p size)))
+  (let ((cell (gethash candidate-addr to-space-objects-table)))
+    (unless cell
+      (error "nelisp-gc-inner-promote-to-tenured: addr %S not in to-space"
+             candidate-addr))
+    (let* ((bare-family (nelisp-integration-family-from-keyword family))
+           ;; Step 2: tenured-alloc — Phase 7.5 backend signs off the
+           ;; allocator + gc-inner family namespaces have a single
+           ;; bridge (`nelisp-integration-keyword-family-map').  In the
+           ;; simulator the allocator returns a fresh address that is
+           ;; disjoint from any from-space / to-space address by
+           ;; construction (region table separation, Doc 29 §1.4).
+           (tenured-addr (nelisp-allocator-tenured-alloc
+                          tenured bare-family size))
+           ;; Step 3 + 4: build the tenured cell.  Header age = 0
+           ;; (tenured objects start fresh under the v2 §2.13 invariant
+           ;; "tenured headers always carry age >= 0", and the
+           ;; allocator's promote already bumps to 1; we keep
+           ;; tenured-alloc's freshly-installed header — it has age 0
+           ;; and will get aged by future major cycles instead).
+           (fields (plist-get cell :fields)))
+      ;; The tenured-alloc above wrote the canonical Doc 30 v2 §2.13
+      ;; header for us into the allocator's `headers' map; we don't
+      ;; need to touch it.  But we *do* maintain a parallel cell in
+      ;; the to-space-objects-table at the *new* tenured address so
+      ;; downstream walkers (e.g. ERTs) can see the same `:fields'
+      ;; without round-tripping through the allocator's hash.  This
+      ;; mirrors how production code keeps a single header slot per
+      ;; object — both sides tracked here are pointers to the same
+      ;; logical heap word, just spread across two side-tables in the
+      ;; simulator.
+      (puthash tenured-addr
+               (list :addr   tenured-addr
+                     :header (nelisp-allocator-pack-header
+                              bare-family size 0 nil nil)
+                     :fields fields
+                     :size   size
+                     :tenured t)
+               to-space-objects-table)
+      ;; Step 5: forward + drop the old to-space entry so it doesn't
+      ;; double-age on the next minor-GC's age-tick.
+      ;;
+      ;; The semispace `copied-objects' hash currently records
+      ;;     from-addr → CANDIDATE-ADDR (to-space addr)
+      ;; for every entry whose to-addr is CANDIDATE-ADDR — typically
+      ;; one entry, but the simulator keeps the side-table inverted-
+      ;; lookup-friendly so we walk it once and overwrite each
+      ;; matching entry to point at TENURED-ADDR instead.  We *also*
+      ;; install CANDIDATE-ADDR → TENURED-ADDR so a caller that has
+      ;; only the to-space addr (e.g. ERT inspecting the stats plist)
+      ;; resolves correctly.
+      (remhash candidate-addr to-space-objects-table)
+      (let ((co (nelisp-gc-inner--semispace-copied-objects semi))
+            (rewires nil))
+        (maphash (lambda (from-addr to-addr)
+                   (when (eql to-addr candidate-addr)
+                     (push from-addr rewires)))
+                 co)
+        (dolist (from-addr rewires)
+          (puthash from-addr tenured-addr co))
+        (puthash candidate-addr tenured-addr co))
+      tenured-addr)))
+
+
+;;;; §12.4 Minor GC + promotion integration ------------------------
+
+(defun nelisp-gc-inner-run-minor-gc-with-promotion
+    (semi tenured card-table root-set
+          from-space-objects-fn tenured-objects-fn)
+  "Run minor GC + age-tick + promote candidates into TENURED.
+
+Pipeline:
+  1. `run-minor-gc-with-barrier' (T26) — Cheney copy with the
+     remembered-set extension and card-table clear.
+  2. `collect-promotion-candidates' on the resulting to-space hash.
+  3. For each candidate, `promote-to-tenured' it.
+
+Arguments:
+  SEMI                  — Cheney semispace
+  TENURED               — `nelisp-allocator--tenured'
+  CARD-TABLE            — `nelisp-gc-inner--card-table' over tenured
+  ROOT-SET              — caller-supplied mutator roots
+  FROM-SPACE-OBJECTS-FN — `(lambda (addr) → plist)' for nursery
+  TENURED-OBJECTS-FN    — `(lambda () → ALIST)' for tenured side
+                          (consumed by `scan-remembered-set')
+
+Returns a stats plist:
+  (:copied-count N
+   :promoted-count N
+   :age-saturated-count N
+   :promotion-candidates ((TO-ADDR . (FAMILY . SIZE)) ...)
+   :tenured-addresses (TENURED-ADDR ...)
+   :cross-gen-roots N
+   :card-table-cleared t
+   :elapsed-ms INT
+   :kind :minor)
+
+The age-saturated count tracks objects whose age field had already
+hit 63 *before* this cycle — they're not re-promoted (already in
+tenured; if they're seen here it's because the simulator placed them
+back in nursery, an ERT-only fixture path).  In production this stays
+at 0."
+  (unless (nelisp-gc-inner--semispace-p semi)
+    (signal 'wrong-type-argument (list 'nelisp-gc-inner--semispace-p semi)))
+  (let* ((start (float-time))
+         ;; Step 1: minor GC + write-barrier-extended root set.
+         (minor-stats (nelisp-gc-inner-run-minor-gc-with-barrier
+                       semi card-table root-set
+                       from-space-objects-fn tenured-objects-fn))
+         (to-objects (plist-get minor-stats :to-space-objects))
+         ;; Step 2: candidate collection + age accounting.
+         (candidates (and to-objects
+                          (nelisp-gc-inner-collect-promotion-candidates
+                           to-objects)))
+         (saturated 0)
+         (promoted-addrs nil)
+         (promoted 0))
+    ;; Step 3: promote each candidate.
+    (when (and to-objects tenured)
+      (dolist (cand candidates)
+        (let* ((addr (car cand))
+               (family (cadr cand))
+               (size   (cddr cand))
+               (cell (gethash addr to-objects)))
+          (when cell
+            (let ((age (nelisp-gc-inner--header-age
+                        (or (plist-get cell :header) 0))))
+              (when (>= age nelisp-gc-inner--header-age-mask)
+                (cl-incf saturated)))
+            (let ((new-addr (nelisp-gc-inner-promote-to-tenured
+                             semi tenured to-objects addr family size)))
+              (push new-addr promoted-addrs)
+              (cl-incf promoted))))))
+    (append (list :kind :minor
+                  :promoted-count promoted
+                  :age-saturated-count saturated
+                  :promotion-candidates candidates
+                  :tenured-addresses (nreverse promoted-addrs)
+                  :elapsed-ms (round (* 1000.0 (- (float-time) start))))
+            minor-stats)))
+
+
+;;;; §12.5 Young-root-limited major mode (Doc 30 v2 §0 default) ----
+
+(defun nelisp-gc-inner-run-major-young-root-limited
+    (card-table semi root-set heap-regions
+                tenured-objects-fn &optional finalizer-table)
+  "Run a young-root-limited major cycle (Doc 30 v2 §0 default mode).
+
+Algorithm (Doc 30 v2 §0 BLOCKER 1 mitigation):
+  1. `scan-remembered-set' (T26) — extract cross-generation pointers
+     from CARD-TABLE's dirty cards.
+  2. Construct LIMITED-ROOTS = ROOT-SET ∪ cross-gen-pointers.  This
+     skips the static-globals / cold-tenured root frontier that a
+     `:major-full' cycle would walk; the trade-off is that cold
+     tenured garbage isn't reclaimed this cycle (waiting for the next
+     `:major-full' opt-in).
+  3. `run-mark-phase' (T17) with LIMITED-ROOTS.
+  4. *Limited sweep*: build a HEAP-REGIONS subset filtered to *only
+     the regions whose addresses fall on dirty cards*.  This is the
+     core 50ms-pause optimization — we never visit cold tenured pages.
+  5. `run-sweep-phase' (T21) on the filtered region set.
+  6. `clear-card-table' to reset for the next cycle.
+
+Pause-time target: 50ms (vs. 500ms-1s for `run-full-cycle').
+
+Arguments:
+  CARD-TABLE         — `nelisp-gc-inner--card-table' over tenured
+  SEMI               — Cheney semispace (used to decode nursery boundary)
+  ROOT-SET           — mutator roots
+  HEAP-REGIONS       — Doc 29 §1.4 region descriptors
+  TENURED-OBJECTS-FN — `(lambda () → ALIST)' for remembered-set scan
+  FINALIZER-TABLE    — optional, forwarded to `run-sweep-phase'
+
+Returns a stats plist:
+  (:kind :major-young-root-limited
+   :pause-ms INT                    ;; full-pipeline elapsed
+   :marked-count N                  ;; from mark phase
+   :swept-count N                   ;; from limited sweep
+   :promoted-count N                ;; (always 0 here; promotion is in :minor)
+   :cross-gen-roots N               ;; remembered-set yield
+   :card-table-cleared t)
+
+The `:promoted-count' field is always 0 in this mode — promotion is
+the minor-GC's responsibility.  We keep the field for symmetry with
+`run-minor-gc-with-promotion' so callers can treat the two stat
+plists uniformly."
+  (unless (nelisp-gc-inner--card-table-p card-table)
+    (signal 'wrong-type-argument
+            (list 'nelisp-gc-inner--card-table-p card-table)))
+  (unless (nelisp-gc-inner--semispace-p semi)
+    (signal 'wrong-type-argument (list 'nelisp-gc-inner--semispace-p semi)))
+  (unless (functionp tenured-objects-fn)
+    (signal 'wrong-type-argument (list 'functionp tenured-objects-fn)))
+  (let* ((start (float-time))
+         (nursery-region (nelisp-gc-inner--semispace-from-space semi))
+         ;; Step 1: scan remembered set.
+         (rem-set (nelisp-gc-inner-scan-remembered-set
+                   card-table nursery-region tenured-objects-fn))
+         (cross-gen-ptrs (apply #'append (mapcar #'cdr rem-set)))
+         ;; Step 2: limited root set.
+         (limited-roots (cl-remove-duplicates
+                         (append root-set cross-gen-ptrs)
+                         :test #'eql :from-end t))
+         ;; Step 3: mark phase.
+         (mark-stats (nelisp-gc-inner-run-mark-phase
+                      limited-roots heap-regions))
+         ;; Step 4: filter HEAP-REGIONS to only those that overlap a
+         ;; dirty card.  A region overlaps a dirty card when *any* of
+         ;; its `[:start :end)' interval intersects a 4KB page whose
+         ;; bit is set in `dirty-bits'.  The card-table covers exactly
+         ;; one tenured region; non-tenured regions (nursery) are
+         ;; always retained because the minor GC may have left
+         ;; unscanned residue (defensive — the doc spec says "tenured
+         ;; only" but we don't accidentally prune nursery cells if a
+         ;; caller passes a mixed list).
+         (limited-regions
+          (nelisp-gc-inner--filter-regions-by-dirty
+           card-table heap-regions))
+         ;; Step 5: sweep on filtered set.
+         (sweep-stats (nelisp-gc-inner-run-sweep-phase
+                       limited-regions finalizer-table)))
+    ;; Step 6: clear card table.
+    (nelisp-gc-inner-clear-card-table card-table)
+    (list :kind :major-young-root-limited
+          :pause-ms          (round (* 1000.0 (- (float-time) start)))
+          :marked-count      (or (plist-get mark-stats :marked-count) 0)
+          :swept-count       (or (plist-get sweep-stats :swept-count) 0)
+          :promoted-count    0
+          :cross-gen-roots   (length cross-gen-ptrs)
+          :card-table-cleared t
+          :mark              mark-stats
+          :sweep             sweep-stats
+          :limited-region-count (length limited-regions))))
+
+(defun nelisp-gc-inner--filter-regions-by-dirty (card-table regions)
+  "Return REGIONS filtered to those overlapping a dirty card on CARD-TABLE.
+
+A region with generation `:nursery' is *unconditionally* retained
+(the minor-GC pipeline may have produced freshly-copied objects we
+still want to sweep on a corner-case false-mark, and pruning would
+risk silent corruption).  Tenured regions are retained iff any
+4KB-aligned page within `[:start :end)' is dirty.
+
+Used by `run-major-young-root-limited' to scope the sweep set to
+just the dirty pages; the cold-page elision is what gives the mode
+its 50ms pause-time target."
+  (let ((bv     (nelisp-gc-inner--card-table-dirty-bits card-table))
+        (size   (nelisp-gc-inner--card-table-card-size  card-table))
+        (cstart (nelisp-gc-inner--card-table-region-start card-table))
+        (cend   (nelisp-gc-inner--card-table-region-end   card-table)))
+    (cl-remove-if-not
+     (lambda (region)
+       (cond
+        ((eq (plist-get region :generation) :nursery) t)
+        (t
+         (let* ((rstart (plist-get region :start))
+                (rend   (plist-get region :end))
+                ;; Compute the [overlap-start, overlap-end) interval
+                ;; between the region and the card-table's coverage.
+                (lo (max rstart cstart))
+                (hi (min rend   cend)))
+           (and (< lo hi)
+                ;; Walk the cards in [lo, hi) and stop at the first
+                ;; dirty bit.
+                (let ((found nil)
+                      (card-lo (/ (- lo cstart) size))
+                      (card-hi (/ (- hi cstart 1) size)))
+                  (cl-loop for i from card-lo to card-hi
+                           when (and (>= i 0)
+                                     (< i (length bv))
+                                     (aref bv i))
+                           do (setq found t) and return nil)
+                  found))))))
+     regions)))
+
+
+;;;; §12.6 Cycle dispatch v2 (Phase 7.3.5) -------------------------
+
+(defun nelisp-gc-inner-run-cycle-v2 (cycle-kind &rest args)
+  "Phase 7.3.5 cycle dispatch — extends T24's `run-cycle' with promotion.
+
+CYCLE-KIND is one of:
+  :minor — `(:minor SEMI TENURED CARD-TABLE ROOT-SET
+            FROM-SPACE-OBJECTS-FN TENURED-OBJECTS-FN)'.  Forwards to
+            `run-minor-gc-with-promotion'.  When TENURED is nil the
+            promotion step is skipped (the call degrades to a plain
+            minor GC); this matches Doc 30 v2 §3.3 \"promotion is
+            opt-in\" before tenured initialization completes.
+  :major-young-root-limited — `(:major-young-root-limited CARD-TABLE
+            SEMI ROOT-SET HEAP-REGIONS TENURED-OBJECTS-FN
+            [FINALIZER-TABLE])'.  Forwards to
+            `run-major-young-root-limited'.  This is the default major
+            mode (`nelisp-gc-major-mode' = `young-root-limited',
+            user signoff 2026-04-25).
+  :major-full — `(:major-full ROOT-SET HEAP-REGIONS [FINALIZER-TABLE])'.
+            Forwards to `run-full-cycle' (T21 SHIPPED).  Opt-out major
+            mode for batch / `gc-stress' bench / explicit `(let
+            ((nelisp-gc-major-mode \\='full)) ...)' contexts.
+
+Returns the wrapped result plist; `(plist-get RESULT :kind)' gives
+the demultiplex key."
+  (cond
+   ((eq cycle-kind :minor)
+    (let ((semi      (nth 0 args))
+          (tenured   (nth 1 args))
+          (card-table (nth 2 args))
+          (root-set  (nth 3 args))
+          (from-fn   (nth 4 args))
+          (tenured-fn (nth 5 args)))
+      (nelisp-gc-inner-run-minor-gc-with-promotion
+       semi tenured card-table root-set from-fn tenured-fn)))
+   ((eq cycle-kind :major-young-root-limited)
+    (let ((card-table  (nth 0 args))
+          (semi        (nth 1 args))
+          (root-set    (nth 2 args))
+          (heap-regions (nth 3 args))
+          (tenured-fn  (nth 4 args))
+          (finalizer-table (nth 5 args)))
+      (nelisp-gc-inner-run-major-young-root-limited
+       card-table semi root-set heap-regions tenured-fn finalizer-table)))
+   ((eq cycle-kind :major-full)
+    (let ((root-set     (nth 0 args))
+          (heap-regions (nth 1 args))
+          (finalizer-table (nth 2 args)))
+      (let ((res (nelisp-gc-inner-run-full-cycle
+                  root-set heap-regions finalizer-table)))
+        (cons :kind (cons :major-full res)))))
+   (t
+    (signal 'wrong-type-argument
+            (list 'nelisp-gc-inner--cycle-kind-v2-p cycle-kind)))))
 
 
 (provide 'nelisp-gc-inner)
