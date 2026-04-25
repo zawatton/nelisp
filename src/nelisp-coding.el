@@ -142,9 +142,25 @@ on invalid byte sequence. WHATWG Encoding Standard 準拠 = 連続 invalid byte
   "Invalid byte sequence in encoded text (catchable)"
   'nelisp-coding-error)
 
+;; T67 / Doc 31 v2 §2.4 LOCK: `strict' policy is documented as
+;; "uncatchable / process abort / state undefined".  In the host-Emacs
+;; MVP we cannot truly abort the host process (that would kill the
+;; debugger session), but we can structurally discourage callers from
+;; catching this via the generic `nelisp-coding-error' parent.  The
+;; parent is therefore the *toplevel* `error' rather than
+;; `nelisp-coding-error' — a `condition-case' on `nelisp-coding-error'
+;; will *not* catch strict violations, mirroring the spec's intent.
+;; Tests that need to assert strict-violation behaviour catch it by
+;; name (`:type 'nelisp-coding-strict-violation') or via the generic
+;; `error' parent (which the host runtime cannot prevent).
+;;
+;; Phase 7.5+ replaces this `signal' call with a process-abort
+;; primitive.  Code that catches `nelisp-coding-strict-violation'
+;; today will silently change behaviour at that point — DO NOT
+;; structure error recovery on this signal.
 (define-error 'nelisp-coding-strict-violation
-  "Strict mode invalid byte sequence (uncatchable, aborts process in Phase 7.5)"
-  'nelisp-coding-error)
+  "Strict mode violation (Phase 7.5+ aborts process; do NOT catch in user code)"
+  'error)
 
 (define-error 'nelisp-coding-invalid-codepoint
   "Codepoint cannot be encoded (surrogate or > U+10FFFF)"
@@ -1369,31 +1385,138 @@ last byte is a SJIS lead byte that has no trail yet."
 (defun nelisp-coding--stream-euc-jp-tail-pending (vec n)
   "How many trailing bytes might be an incomplete EUC-JP sequence?
 
-EUC-JP has 2-byte CS1 (0xA1-0xFE + 0xA1-0xFE), 2-byte CS2 (0x8E + ...)
-and 3-byte CS3 (0x8F + 0xA1-0xFE + 0xA1-0xFE).
+EUC-JP code-set structure:
+- CS0 (ASCII):  1 byte  0x00-0x7F
+- CS1 (X 0208): 2 byte  0xA1-0xFE + 0xA1-0xFE
+- CS2 (X 0201 halfwidth katakana): 2 byte  0x8E + 0xA1-0xDF
+- CS3 (X 0212): 3 byte  0x8F + 0xA1-0xFE + 0xA1-0xFE
 
-We defer:
-- 1 byte if last byte is 0x8E or 0x8F (waiting for CS2/CS3 trailers)
-- 1 byte if last byte is in 0xA1-0xFE (CS1 lead waiting for trail)
-- 2 bytes if last 2 bytes are 0x8F + 0xA1-0xFE (CS3 still 1 byte short)
-- 0 otherwise"
+We must return the *minimal* number of trailing bytes that could be a
+truly-incomplete sequence prefix.  Returning too many bytes (the T56
+audit bug, T67) corrupts complete sequences whose last byte happens to
+fall in the A1-FE range — `A4 A2', `8E B1', `8F A2 AF' all decoded
+incorrectly because the old code blindly deferred any A1-FE last byte.
+
+Algorithm — walk backward from byte index N-1 to find the start of the
+last (possibly partial) sequence:
+
+  1. Inspect the last byte (b1 = vec[n-1]).
+     - If b1 < 0x80 (ASCII)  → pending = 0.
+     - If b1 ∈ {0x8E, 0x8F}  → pending = 1 (CS2/CS3 lead alone).
+     - If b1 ∈ invalid range (0x80-0x8D / 0x90-0xA0 / 0xFF)
+                              → pending = 0 (decoder will signal/replace).
+     - If b1 ∈ A1-FE: ambiguous; consult the byte before it.
+
+  2. b1 ∈ A1-FE, n ≥ 2.  Inspect b2 = vec[n-2].
+     - b2 == 0x8F → CS3 with 2 of 3 bytes → pending = 2.
+     - b2 == 0x8E → CS2 complete (8E + b1 covers exactly 2 bytes;
+                   even if b1 ∉ A1-DF the decoder handles it as
+                   invalid, but the pair is *complete* — pending = 0).
+     - b2 < 0x80 or invalid range → b1 is a fresh CS1 lead alone
+                   after an anchor → pending = 1.
+     - b2 ∈ A1-FE: ambiguous; both bytes are in the CS1 trail/lead
+                   range.  Determine parity by walking back to the
+                   nearest anchor (= a byte that is *not* in A1-FE,
+                   or position -1 = start-of-buffer).  An anchor's
+                   role is fully determined:
+                   * 0x8F at pos p → consumes p..p+2 (CS3); A1-FE run
+                     after pos p+3 forms CS1 pairs.
+                   * 0x8E at pos p → consumes p..p+1 (CS2); A1-FE run
+                     after p+2 forms CS1 pairs.
+                   * any other anchor (ASCII / invalid) → bytes from
+                     pos p+1 onward form CS1 pairs.
+                   Count A1-FE bytes between (anchor-end + 1) and
+                   n - 1.  Parity = pending (even → 0, odd → 1).
+
+This is O(distance-to-last-anchor) which is bounded in practice (a
+chunk of pure CS1 text from start has all-A1-FE bytes; the worst case
+is a chunk-size-long walk, but only on chunks that are 100% CS1 with
+no anchor — extremely rare in practice and still O(N) once)."
   (cond
    ((<= n 0) 0)
    (t
-    (let ((last (aref vec (1- n))))
+    (let ((b1 (aref vec (1- n))))
       (cond
-       ;; Two-byte case: 0x8F + valid CS3 lead, awaiting trail.
-       ((and (>= n 2)
-             (= (aref vec (- n 2)) #x8F)
-             (nelisp-coding--euc-jp-x0208-byte-p last))
-        2)
-       ;; Single 0x8F (CS3 shifter) without anything after it.
-       ((= last #x8F) 1)
-       ;; Single 0x8E (CS2 shifter) without katakana trail.
-       ((= last #x8E) 1)
-       ;; Single CS1 lead byte without trail.
-       ((nelisp-coding--euc-jp-x0208-byte-p last) 1)
-       (t 0))))))
+       ;; ASCII / CS0 — complete.
+       ((< b1 #x80) 0)
+       ;; CS3 shifter alone at end → 1 byte pending.
+       ((= b1 #x8F) 1)
+       ;; CS2 shifter alone at end → 1 byte pending.
+       ((= b1 #x8E) 1)
+       ;; Invalid byte (0x80-0x8D except 8E/8F, 0x90-0xA0, 0xFF) — decoder
+       ;; will record it as invalid; from a streaming standpoint this is
+       ;; a complete (1-byte) "unit", so do not defer it.
+       ((or (and (>= b1 #x80) (< b1 #xA1))
+            (= b1 #xFF))
+        0)
+       ;; b1 ∈ A1-FE — ambiguous CS1 lead/trail or CS3 trail.  Look at b2.
+       (t
+        (cond
+         ((= n 1) 1)            ; lone A1-FE = CS1 lead alone.
+         (t
+          (let ((b2 (aref vec (- n 2))))
+            (cond
+             ;; CS3 with 2 of 3 bytes (8F + A1-FE awaiting final trail).
+             ((= b2 #x8F) 2)
+             ;; CS2 complete (8E + b1) — pair fully present.  Even if
+             ;; b1 ∉ A1-DF (technically out-of-range CS2 trail), the
+             ;; sequence is *2 bytes long* by EUC-JP framing rules and
+             ;; the one-shot decoder will tag it as invalid.  Pending=0.
+             ((= b2 #x8E) 0)
+             ;; b2 ∈ ASCII or invalid range → b1 is a fresh CS1 lead
+             ;; alone, awaiting trail.
+             ((or (< b2 #x80)
+                  (and (>= b2 #x80) (< b2 #xA1))
+                  (= b2 #xFF))
+              1)
+             ;; b2 ∈ A1-FE — both b1 and b2 are in the CS1 trail/lead
+             ;; range.  Walk further back to find the nearest anchor
+             ;; and use parity.
+             (t
+              (nelisp-coding--euc-jp-tail-parity vec n))))))))))))
+
+(defun nelisp-coding--euc-jp-tail-parity (vec n)
+  "Helper for `nelisp-coding--stream-euc-jp-tail-pending'.
+
+Walk backward from VEC index N-1 to the nearest *anchor* — a byte that
+is not in 0xA1-0xFE.  Return the pending byte count for the trailing
+A1-FE run based on parity (and the anchor type):
+
+- anchor at pos P with byte 0x8F: CS3 consumes P..P+2; A1-FE bytes from
+  P+3 to N-1 form CS1 pairs → parity of (N - P - 3).
+- anchor at pos P with byte 0x8E: CS2 consumes P..P+1; A1-FE bytes from
+  P+2 to N-1 form CS1 pairs → parity of (N - P - 2).
+- any other anchor at pos P: A1-FE bytes from P+1 to N-1 form CS1 pairs
+  → parity of (N - P - 1).
+- no anchor found (all bytes A1-FE from pos 0 to N-1): parity of N.
+
+Even count → pending = 0; odd count → pending = 1."
+  (let ((p (- n 1))                     ; we know vec[p] ∈ A1-FE already
+        (found-anchor nil)
+        (anchor-pos -1)
+        (anchor-byte nil))
+    ;; Walk back searching for the first non-A1-FE byte.
+    (while (and (>= p 0) (not found-anchor))
+      (let ((b (aref vec p)))
+        (if (and (>= b #xA1) (<= b #xFE))
+            (setq p (1- p))
+          (setq found-anchor t
+                anchor-pos p
+                anchor-byte b))))
+    (let* ((run-start
+            (cond
+             ((not found-anchor) 0)
+             ((= anchor-byte #x8F) (+ anchor-pos 3))
+             ((= anchor-byte #x8E) (+ anchor-pos 2))
+             (t                    (+ anchor-pos 1))))
+           (run-len (- n run-start)))
+      ;; Defensive: run-start may exceed n if the anchor is 0x8F/0x8E
+      ;; near the end (e.g., 0x8F at pos n-1 — but then vec[n-1] would
+      ;; not be in A1-FE and we wouldn't have entered the parity path).
+      (cond
+       ((<= run-len 0) 0)
+       ((zerop (mod run-len 2)) 0)
+       (t 1)))))
 
 (defun nelisp-coding--stream-tail-pending (encoding vec n)
   "Dispatch tail-pending byte count by ENCODING for VEC of length N."
@@ -1733,23 +1856,39 @@ ENCODING / STRATEGY are passed to `nelisp-coding-stream-state-create'.
 CHUNK-SIZE defaults to `nelisp-coding-stream-default-chunk-size'.
 
 Returns the same plist shape as `nelisp-coding-stream-decode-finalize'
-plus `:path PATH'."
+plus `:path PATH'.
+
+Implementation note (T67 fix): this is a *real streaming* read.  The
+file is read in CHUNK-SIZE byte windows via `insert-file-contents-
+literally' with explicit BEG/END byte ranges, so the entire file is
+*never* buffered in host memory at once.  Each chunk is decoded into
+the persistent stream state and the host buffer is wiped before the
+next read.  This restores the 1GB OOM-free streaming gate that the
+T56 audit flagged as broken in the prior `insert-file-contents-
+literally' (whole-file) implementation."
   (unless (file-readable-p path)
     (signal 'file-error (list "File not readable" path)))
   (let* ((eff-strategy (or strategy nelisp-coding-error-strategy))
          (eff-chunk (or chunk-size nelisp-coding-stream-default-chunk-size))
          (state (nelisp-coding-stream-state-create
-                 encoding 'decode eff-strategy)))
+                 encoding 'decode eff-strategy))
+         (file-size (file-attribute-size (file-attributes path)))
+         (pos 0))
     (with-temp-buffer
       (set-buffer-multibyte nil)
-      (insert-file-contents-literally path)
-      (let ((max (point-max))
-            (pos (point-min)))
-        (while (< pos max)
-          (let* ((end (min max (+ pos eff-chunk)))
-                 (chunk (buffer-substring-no-properties pos end)))
-            (nelisp-coding-stream-decode-chunk state chunk)
-            (setq pos end)))))
+      (while (< pos file-size)
+        (let ((end (min file-size (+ pos eff-chunk))))
+          ;; Reuse a single host buffer, wiping it between reads so the
+          ;; resident memory footprint is O(CHUNK-SIZE), not O(file-size).
+          (erase-buffer)
+          ;; insert-file-contents-literally with BEG/END reads only the
+          ;; specified byte range from disk — this is the actual streaming
+          ;; read primitive available to portable Emacs Lisp.
+          (insert-file-contents-literally path nil pos end)
+          (let ((chunk (buffer-substring-no-properties (point-min)
+                                                       (point-max))))
+            (nelisp-coding-stream-decode-chunk state chunk))
+          (setq pos end))))
     (let ((result (nelisp-coding-stream-decode-finalize state)))
       (plist-put result :path path))))
 
