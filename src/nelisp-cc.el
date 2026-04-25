@@ -527,5 +527,351 @@ first violation found.  Invariants enforced (see commentary):
                                 :user  (nelisp-cc--ssa-instr-id instr))))))))))
     t))
 
+;;; Linear-scan register allocation (Poletto-Sarkar 1999) ------------
+;;
+;; This section layers a *linear-scan register allocator* on top of
+;; the SSA scaffold above.  The algorithm is the classical Poletto-
+;; Sarkar 1999 design (ACM TOPLAS 21(5)), see Doc 28 §2.5 candidate A
+;; and §3.1 Phase 7.1.1 scope.  Two stages:
+;;
+;;   1. `nelisp-cc--compute-intervals' — walks the function in a
+;;      linearised order (reverse postorder of the forward DFS from
+;;      ENTRY) and assigns each instruction a *linear position*.  For
+;;      every SSA value (including parameters) it then records a
+;;      `nelisp-cc--ssa-interval' whose START is the def-point
+;;      position and whose END is the last-use position.  Parameters
+;;      conventionally start at position 0 (before the first
+;;      instruction); a value with no uses keeps END = START so it
+;;      still occupies a valid 1-position interval.
+;;
+;;   2. `nelisp-cc--linear-scan' — sorts the intervals by START and
+;;      sweeps once.  At each step it
+;;        (a) expires intervals in ACTIVE whose END < current START
+;;            (their register returns to FREE),
+;;        (b) if FREE has a slot, hands the current interval the slot
+;;            and inserts the interval into ACTIVE keyed by END,
+;;        (c) else *spills*: picks the longest-end candidate from
+;;            ACTIVE ∪ {current}, marks it `:spill', and assigns the
+;;            freed register (if any) to the survivor.
+;;
+;; *Scaffold caveats* (Doc 28 §3.1, deferred to Phase 7.1.5+):
+;;   - loop-induced live-interval extension is *not* performed; values
+;;     defined before a loop and used inside one will see their END
+;;     truncated to the in-linear-order last use.  A real allocator
+;;     would extend each interval to cover every loop that contains a
+;;     use.  Phase 7.1.5 graph-coloring will revisit this.
+;;   - the spill marker is the keyword `:spill'.  Stack-slot assignment
+;;     and reload code emission live in Phase 7.1.4 (mmap exec page
+;;     stage); this scaffold only marks who needs to spill.
+;;   - phi-merge handling, register coalescing and constraint-based
+;;     pre-coloring are out of scope (Phase 7.1.5 graph-coloring).
+
+(cl-defstruct (nelisp-cc--ssa-interval
+               (:constructor nelisp-cc--ssa-interval-make)
+               (:copier nil))
+  "Linear live interval for a single SSA value.
+VALUE is the `nelisp-cc--ssa-value' this interval describes.  START
+is the linear position of its def-point (0 for parameters).  END is
+the linear position of its last use, or START if the value has no
+uses (a defined-but-dead value still occupies its def-point slot).
+USES is the ordered list of linear positions at which the value is
+read (may be empty).  END is *not* :read-only — Phase 7.1.5 may
+extend it to cover loops; the scaffold leaves the field mutable so
+later passes do not have to allocate a fresh struct."
+  (value nil :read-only t)
+  (start 0 :read-only t)
+  (end 0)
+  (uses nil))
+
+(cl-defstruct (nelisp-cc--alloc-state
+               (:constructor nelisp-cc--alloc-state-make)
+               (:copier nil))
+  "Linear-scan allocator state, threaded through the sweep loop.
+FREE is the list of register names not currently held by any active
+interval.  ACTIVE is the list of intervals that have been assigned a
+register and whose END has not yet passed; it is kept sorted by END
+ascending so `expire-old' can stop at the first non-expiring entry.
+ASSIGNMENTS is the alist (VALUE-ID . REGISTER-OR-:spill) accumulating
+allocator decisions; the final result is the public output of
+`nelisp-cc--linear-scan'."
+  (free nil)
+  (active nil)
+  (assignments nil))
+
+(defconst nelisp-cc--default-int-registers
+  '(r0 r1 r2 r3 r4 r5 r6 r7)
+  "Default integer-register pool for the linear-scan allocator.
+Phase 7.1.2 (x86_64 System V) maps these to physical registers, and
+Phase 7.1.3 (arm64 AAPCS64) provides a separate mapping; the
+allocator itself stays ABI-agnostic and operates on these symbolic
+names.  Callers wanting a different pool (e.g. an 8-register
+floating-point bank, or a 4-register pressure stress test) pass an
+explicit REGISTERS list to `nelisp-cc--linear-scan'.")
+
+;;; Linearisation ----------------------------------------------------
+
+(defun nelisp-cc--ssa--reverse-postorder (fn)
+  "Return FN's blocks in reverse postorder of a forward DFS from ENTRY.
+
+Reverse postorder is the standard linearisation for forward dataflow
+problems: every block precedes its successors except across back
+edges (loops).  The scaffold ignores back edges entirely — see the
+file header for the loop-extension caveat.
+
+Implementation: iterative DFS with an explicit stack.  Each block is
+finished (postorder) when all its successors have been visited.
+Pushing each finished block onto the head of POST yields the reverse
+postorder directly — no extra `nreverse' needed at the end."
+  (let ((entry (nelisp-cc--ssa-function-entry fn))
+        (visited (make-hash-table :test 'eq))
+        (post nil)
+        (stack nil))
+    (when entry
+      (push (cons entry (nelisp-cc--ssa-block-successors entry)) stack)
+      (puthash entry t visited)
+      (while stack
+        (let* ((top (car stack))
+               (blk (car top))
+               (succs (cdr top)))
+          (cond
+           ((null succs)
+            ;; All successors visited — finish this block.
+            (push blk post)
+            (pop stack))
+           (t
+            (let ((next (car succs)))
+              (setcdr top (cdr succs))
+              (unless (gethash next visited)
+                (puthash next t visited)
+                (push (cons next (nelisp-cc--ssa-block-successors next))
+                      stack))))))))
+    post))
+
+(defun nelisp-cc--compute-intervals (fn)
+  "Compute live intervals for every SSA value of FN.
+
+Returns a list of `nelisp-cc--ssa-interval', sorted by START
+ascending (and by VALUE-ID as a stable tie-breaker, so two values
+defined at the same position keep a deterministic order).
+
+Linearisation rule:
+  - Position 0 is reserved for function parameters (their START).
+  - Instructions are numbered sequentially starting at 1, in the
+    order produced by `nelisp-cc--ssa--reverse-postorder' for blocks
+    and the natural INSTRS list order within each block.
+  - Each operand's USE position is the position of the consuming
+    instruction.
+  - END is the maximum of (START, max use-position).
+
+Caveat: loop-induced extension is deferred to Phase 7.1.5.  See
+section commentary above."
+  (let ((rpo (nelisp-cc--ssa--reverse-postorder fn))
+        (pos 1)
+        (instr-pos (make-hash-table :test 'eq))
+        (intervals (make-hash-table :test 'eql))) ; vid -> interval
+    ;; Seed parameter intervals at position 0.
+    (dolist (p (nelisp-cc--ssa-function-params fn))
+      (puthash (nelisp-cc--ssa-value-id p)
+               (nelisp-cc--ssa-interval-make :value p :start 0 :end 0)
+               intervals))
+    ;; First pass: assign linear positions to every instruction in the
+    ;; reverse-postorder block stream, and seed an interval for every
+    ;; def value at its def position.
+    (dolist (blk rpo)
+      (dolist (instr (nelisp-cc--ssa-block-instrs blk))
+        (puthash instr pos instr-pos)
+        (let ((def (nelisp-cc--ssa-instr-def instr)))
+          (when def
+            (puthash (nelisp-cc--ssa-value-id def)
+                     (nelisp-cc--ssa-interval-make
+                      :value def :start pos :end pos)
+                     intervals)))
+        (cl-incf pos)))
+    ;; Second pass: walk operand uses, extend each interval's END to
+    ;; cover the use position, and record the use position in USES.
+    (dolist (blk rpo)
+      (dolist (instr (nelisp-cc--ssa-block-instrs blk))
+        (let ((upos (gethash instr instr-pos)))
+          (dolist (op (nelisp-cc--ssa-instr-operands instr))
+            (let ((iv (gethash (nelisp-cc--ssa-value-id op) intervals)))
+              (when iv
+                (when (> upos (nelisp-cc--ssa-interval-end iv))
+                  (setf (nelisp-cc--ssa-interval-end iv) upos))
+                (setf (nelisp-cc--ssa-interval-uses iv)
+                      (append (nelisp-cc--ssa-interval-uses iv)
+                              (list upos)))))))))
+    ;; Collect, sort by (start, value-id) for determinism.
+    (let ((all nil))
+      (maphash (lambda (_vid iv) (push iv all)) intervals)
+      (sort all
+            (lambda (a b)
+              (let ((sa (nelisp-cc--ssa-interval-start a))
+                    (sb (nelisp-cc--ssa-interval-start b)))
+                (cond
+                 ((< sa sb) t)
+                 ((> sa sb) nil)
+                 (t (< (nelisp-cc--ssa-value-id
+                        (nelisp-cc--ssa-interval-value a))
+                       (nelisp-cc--ssa-value-id
+                        (nelisp-cc--ssa-interval-value b)))))))))))
+
+;;; Linear-scan sweep -----------------------------------------------
+
+(defun nelisp-cc--alloc--insert-active (interval active)
+  "Return ACTIVE with INTERVAL inserted, keeping the list sorted by END."
+  (let ((end (nelisp-cc--ssa-interval-end interval))
+        (head nil)
+        (tail active))
+    (while (and tail
+                (<= (nelisp-cc--ssa-interval-end (car tail)) end))
+      (push (car tail) head)
+      (setq tail (cdr tail)))
+    (append (nreverse head) (cons interval tail))))
+
+(defun nelisp-cc--alloc--expire-old (state start)
+  "Move intervals whose END < START out of ACTIVE, returning their registers.
+Mutates STATE's ACTIVE and FREE.  ACTIVE is sorted by END so we stop at
+the first non-expiring entry.  This is exactly the EXPIREOLDINTERVALS
+routine of Poletto-Sarkar."
+  (let ((active (nelisp-cc--alloc-state-active state))
+        (free (nelisp-cc--alloc-state-free state))
+        (assignments (nelisp-cc--alloc-state-assignments state)))
+    (while (and active
+                (< (nelisp-cc--ssa-interval-end (car active)) start))
+      (let* ((iv (car active))
+             (vid (nelisp-cc--ssa-value-id
+                   (nelisp-cc--ssa-interval-value iv)))
+             (cell (assq vid assignments))
+             (reg (and cell (cdr cell))))
+        ;; Only return the register if the interval was actually
+        ;; assigned a physical reg — spilled intervals never held one.
+        (when (and reg (not (eq reg :spill)))
+          (setq free (append free (list reg))))
+        (setq active (cdr active))))
+    (setf (nelisp-cc--alloc-state-active state) active
+          (nelisp-cc--alloc-state-free state) free)
+    state))
+
+(defun nelisp-cc--alloc--spill-at (state interval)
+  "Apply the SPILLATINTERVAL action: pick the longest-end victim.
+
+Either the new INTERVAL itself is spilled (if every active interval
+ends earlier or equal), or the existing active interval with the
+greatest END is evicted, its register handed to INTERVAL, and the
+victim recorded as `:spill'."
+  (let* ((active (nelisp-cc--alloc-state-active state))
+         (assignments (nelisp-cc--alloc-state-assignments state))
+         ;; Active is sorted by END ascending — last cell is the
+         ;; longest-end candidate.
+         (victim (car (last active))))
+    (cond
+     ((or (null victim)
+          (<= (nelisp-cc--ssa-interval-end victim)
+              (nelisp-cc--ssa-interval-end interval)))
+      ;; Spill the new interval; active is untouched.
+      (push (cons (nelisp-cc--ssa-value-id
+                   (nelisp-cc--ssa-interval-value interval))
+                  :spill)
+            assignments)
+      (setf (nelisp-cc--alloc-state-assignments state) assignments))
+     (t
+      ;; Evict victim, hand its register to interval, record victim
+      ;; as :spill, insert interval into active sorted by end.
+      (let* ((vvid (nelisp-cc--ssa-value-id
+                    (nelisp-cc--ssa-interval-value victim)))
+             (vcell (assq vvid assignments))
+             (reg (and vcell (cdr vcell))))
+        ;; Drop victim from active.
+        (setf (nelisp-cc--alloc-state-active state)
+              (cl-remove victim active :test #'eq))
+        ;; Re-mark victim as spilled.
+        (when vcell
+          (setcdr vcell :spill))
+        ;; Assign reg to the new interval, insert into active.
+        (push (cons (nelisp-cc--ssa-value-id
+                     (nelisp-cc--ssa-interval-value interval))
+                    reg)
+              (nelisp-cc--alloc-state-assignments state))
+        (setf (nelisp-cc--alloc-state-active state)
+              (nelisp-cc--alloc--insert-active
+               interval
+               (nelisp-cc--alloc-state-active state))))))
+    state))
+
+(defun nelisp-cc--linear-scan (fn &optional registers)
+  "Linear-scan register allocation on FN.
+
+REGISTERS is the available register pool (default
+`nelisp-cc--default-int-registers').  Returns the allocator's
+ASSIGNMENTS alist: each entry is (VALUE-ID . REGISTER-NAME) for an
+SSA value that received a register, or (VALUE-ID . :spill) for a
+value the allocator could not fit into the pool.
+
+Algorithm (Poletto-Sarkar 1999, fig.\\ 1):
+
+  for each interval i, in increasing START order:
+    EXPIREOLDINTERVALS(i)
+    if length(ACTIVE) == length(REGISTERS):
+       SPILLATINTERVAL(i)
+    else:
+       register := free.pop()
+       assignments[i.vid] := register
+       ACTIVE.insert(i, sorted by END)
+
+The scaffold extends nothing beyond the paper; loop-induced live
+ranges are *not* widened.  Phase 7.1.5 graph-coloring will revisit."
+  (let* ((regs (or registers nelisp-cc--default-int-registers))
+         (intervals (nelisp-cc--compute-intervals fn))
+         (state (nelisp-cc--alloc-state-make
+                 :free (copy-sequence regs)
+                 :active nil
+                 :assignments nil)))
+    (dolist (iv intervals)
+      (nelisp-cc--alloc--expire-old
+       state (nelisp-cc--ssa-interval-start iv))
+      (cond
+       ((null (nelisp-cc--alloc-state-free state))
+        (nelisp-cc--alloc--spill-at state iv))
+       (t
+        (let* ((free (nelisp-cc--alloc-state-free state))
+               (reg (car free)))
+          (setf (nelisp-cc--alloc-state-free state) (cdr free))
+          (push (cons (nelisp-cc--ssa-value-id
+                       (nelisp-cc--ssa-interval-value iv))
+                      reg)
+                (nelisp-cc--alloc-state-assignments state))
+          (setf (nelisp-cc--alloc-state-active state)
+                (nelisp-cc--alloc--insert-active
+                 iv (nelisp-cc--alloc-state-active state)))))))
+    ;; Reverse so the alist is in interval start order, which is
+    ;; friendlier for human reading and downstream printing.
+    (nreverse (nelisp-cc--alloc-state-assignments state))))
+
+;;; Public allocator helpers ----------------------------------------
+
+(defun nelisp-cc--alloc-spilled-values (assignments)
+  "Return the list of value IDs that ASSIGNMENTS marked `:spill'.
+The result is in the same order ASSIGNMENTS uses."
+  (let ((acc nil))
+    (dolist (cell assignments)
+      (when (eq (cdr cell) :spill)
+        (push (car cell) acc)))
+    (nreverse acc)))
+
+(defun nelisp-cc--alloc-register-of (assignments value-id)
+  "Look up the register assigned to VALUE-ID in ASSIGNMENTS.
+Returns the register symbol, the keyword `:spill' if the value was
+spilled, or nil if VALUE-ID is absent (e.g. a dead value the
+interval pass omitted, or an out-of-function id)."
+  (cdr (assq value-id assignments)))
+
+(defun nelisp-cc--alloc-pp (assignments)
+  "Pretty-print ASSIGNMENTS as an s-expression for debugging.
+Shape: (:assignments ((VID . REG) ...) :spilled (VID ...)).
+This is a *debug* helper — the round-trippable transport form is the
+raw alist returned by `nelisp-cc--linear-scan'."
+  (list :assignments (copy-sequence assignments)
+        :spilled (nelisp-cc--alloc-spilled-values assignments)))
+
 (provide 'nelisp-cc)
 ;;; nelisp-cc.el ends here
