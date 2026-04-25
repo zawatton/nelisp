@@ -158,6 +158,9 @@ assert_contains '"name":"defs-references"'
 assert_contains '"name":"defs-signature"'
 assert_contains '"name":"defs-who-requires"'
 assert_contains '"name":"defs-index-status"'
+# Phase 6.6.1 nelisp-org-index MVP MCP surface (Doc 26 §3.6.1 SHIPPED)
+assert_contains '"name":"org-index-rebuild"'
+assert_contains '"name":"org-index-search"'
 # git-status has no params — inputSchema.properties must be `{}` not `null`
 # (Claude Code zod schema rejects `null`; surfaced as "Failed to fetch tools"
 # invalid_type at tools[*].inputSchema.properties.)

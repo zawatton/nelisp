@@ -47,6 +47,7 @@
 (require 'nelisp-state)
 (require 'nelisp-http)
 (require 'nelisp-defs-index)
+(require 'nelisp-org-index)
 
 ;;; Data-store (scratch KV used by data-get/set-path) ---------------
 
@@ -910,6 +911,55 @@ clear; will error if any tool is still registered."
                         :properties (make-hash-table :test 'equal))
     :handler (lambda (_args)
                (nelisp-defs-index-status)))
+
+  ;; Phase 6.6.1 — nelisp-org-index MVP MCP surface (Doc 26).  Two
+  ;; tools expose `nelisp-org-index-rebuild' / `-search' so non-Emacs
+  ;; users can navigate org headlines over MCP without re-scanning
+  ;; every org file per query.
+
+  (nelisp-deftool org-index-rebuild
+    :description "Rebuild the org headline index for PATHS (default: containing git project)."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :paths (list :type "array"
+                                           :items (list :type "string")
+                                           :description "Optional list of project roots to index.")))
+    :handler (lambda (args)
+               (let* ((paths (alist-get 'paths args))
+                      (path-list (and paths (append paths nil))))
+                 (nelisp-org-index-rebuild path-list))))
+
+  (nelisp-deftool org-index-search
+    :description "Search the org headline index for NAME (substring on title) with optional file/tag/depth filters."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :name (list :type "string"
+                                          :description "Substring to match against headline title (LIKE %NAME%).")
+                              :file (list :type "string"
+                                          :description "Optional SQL LIKE pattern on file path.")
+                              :tag (list :type "string"
+                                         :description "Optional exact tag match.")
+                              :depth (list :type "integer"
+                                           :description "Optional outline depth filter (1 = top-level).")
+                              :limit (list :type "integer"
+                                           :description "Maximum rows (default 200)."))
+                        :required ["name"])
+    :handler (lambda (args)
+               (let ((name (alist-get 'name args))
+                     (file (alist-get 'file args))
+                     (tag (alist-get 'tag args))
+                     (depth (alist-get 'depth args))
+                     (limit (alist-get 'limit args)))
+                 (unless (stringp name)
+                   (error "org-index-search: missing string `name'"))
+                 (apply #'nelisp-org-index-search name
+                        (append
+                         (and (stringp file) (not (string-empty-p file))
+                              (list :file file))
+                         (and (stringp tag) (not (string-empty-p tag))
+                              (list :tag tag))
+                         (and (integerp depth) (list :depth depth))
+                         (and (integerp limit) (list :limit limit)))))))
 
   t)
 
