@@ -1,7 +1,7 @@
 #+TITLE: NeLisp Japanese coding table data — provenance
 #+DATE: 2026-04-25
-#+STATUS: SHIPPED v1 (Phase 7.4.3 partial MVP); Phase 7.5 で real 14000 entry generation
-#+AUTHOR: NeLisp Phase 7.4.3 (Doc 31 v2 LOCKED 2026-04-25)
+#+STATUS: SHIPPED v2 (Phase 7.4.5 full 20670 entry generation)
+#+AUTHOR: NeLisp Phase 7.4.3 → 7.4.5 (Doc 31 v2 LOCKED 2026-04-25)
 
 * §0 概要
 
@@ -22,26 +22,45 @@ contract artifact。
 | EUC-JP (JIS X 0208 / CS1) | derived from CP932.TXT (= JIS X 0208 portion ↔ EUC-JP 2-byte CS1 transform: source row/cell + 0x8080)                                 | derivative work, same upstream   | 2015-12-02   |
 | EUC-JP (JIS X 0212 / CS3) | JIS0212.TXT (https://unicode.org/Public/MAPPINGS/OBSOLETE/EASTASIA/JIS/JIS0212.TXT)                                                   | Unicode Inc. (Obsolete archive) | 1998-09-19   |
 
-** Phase 7.4.3 MVP frozen-via-host-Emacs 注意
+** Phase 7.4.3 MVP frozen-via-host-Emacs 注意 (historic)
 
 本 MVP partial table は *host Emacs ‘cp932 / ‘euc-jp coding system 上で
 =decode-coding-string= を回して取得*した値を hand-curate して固定した。
 host Emacs が内蔵する Japan coding tables は GNU Emacs 由来であり、
 *derivation chain は Microsoft / Unicode の上記 source-of-truth と一致*
-していることを Phase 7.5 generator が再生成時に同一性 check する想定。
+していることを Phase 7.4.5 generator が再生成時に同一性 check した。
 
-Phase 7.5 で =tools/coding-table-gen.el= を完成させた段階で、host Emacs
-依存は除去され、上記 Microsoft / Unicode の canonical source からの
-直接 download + parse に切り替わる。
+** Phase 7.4.5 full table (現在)
 
-* §2 generation procedure (Phase 7.5)
+Phase 7.4.5 (T34) で =tools/coding-table-gen.el= を完成させ、host Emacs
+依存は除去された。CP932.TXT / JIS0212.TXT を直接 download + parse して
+4 つの defconst を full size で emit するようになった。
+
+generator output (現値、2026-04-25):
+
+| table                                                | full entries |
+|------------------------------------------------------+--------------|
+| =nelisp-coding-shift-jis-x0208-decode-table=         |         6879 |
+| =nelisp-coding-cp932-extension-decode-table=         |          845 |
+| =nelisp-coding-euc-jp-x0208-decode-table=            |         6879 |
+| =nelisp-coding-euc-jp-x0212-decode-table=            |         6067 |
+| 合計                                                 |       20 670 |
+
+source 入力 SHA-256 (offline reproducibility 用、cache copy も
+=tools/.cache/= にコミット):
+
+| file                       | SHA-256                                                          |
+|----------------------------+------------------------------------------------------------------|
+| =tools/.cache/CP932.TXT=   | =c9bc0b0cd42e0fbcb82a09635bb5abed86afbdd4abc9e76fa5716638217cb59f= |
+| =tools/.cache/JIS0212.TXT= | =477820bb3055bbcc90880d788cd95607d221dc94457bae249231adecf13c12e6= |
+
+* §2 generation procedure (Phase 7.4.5+)
 
 ** 2.1 prerequisite
 
-- network 接続 (Unicode Consortium 公開アーカイブにアクセス)
-- Emacs 29+ (=url-retrieve-synchronously= + =sha256 secure-hash= 利用)
-- =tools/coding-table-gen.el= の =--parse-*-line= / =--write-tables=
-  実装が完成済 (Phase 7.4.3 ではまだ stub)
+- network 接続 (Unicode Consortium 公開アーカイブにアクセス) — ただし
+  =tools/.cache/{CP932,JIS0212}.TXT= が既に存在すれば不要 (offline run)
+- Emacs 29+ (=url-copy-file= + =sha256 secure-hash= 利用)
 
 ** 2.2 batch run
 
@@ -77,22 +96,45 @@ emacs --batch -L src \
 mismatch (=nelisp-coding-table-corruption= signal) 時は generator output
 と golden hash の synchronization が壊れている = 再 generation 必要。
 
-* §3 MVP partial table
+* §3 table coverage history
 
-Phase 7.4.3 (本 sub-phase) では partial table を hard-coded:
+| sub-phase | shift-jis-x0208 | cp932-extension | euc-jp-x0208 | euc-jp-x0212 | total | coverage |
+|-----------+-----------------+-----------------+--------------+--------------+-------+----------|
+| 7.4.3 MVP |             343 |             177 |          301 |           64 |   885 |    ~4 %  |
+| 7.4.5 FUL |            6879 |             845 |         6879 |         6067 | 20670 |   100 %  |
 
-| table                                                | MVP entries | full target | coverage |
-|------------------------------------------------------+-------------+-------------+----------|
-| =nelisp-coding-shift-jis-x0208-decode-table=         |         343 |       ~7000 |    ~5 %  |
-| =nelisp-coding-cp932-extension-decode-table=         |         177 |        ~845 |   ~21 %  |
-| =nelisp-coding-euc-jp-x0208-decode-table=            |         301 |       ~7000 |    ~4 %  |
-| =nelisp-coding-euc-jp-x0212-decode-table=            |          64 |       ~6000 |    ~1 %  |
-|------------------------------------------------------+-------------+-------------+----------|
-| 合計                                                 |         885 |     ~20 845 |    ~4 %  |
+** 3.1 MVP subset 選定基準 (historic, Phase 7.4.3)
 
-MVP coverage は intentionally narrow (代表的 entry で algorithm validate)。
-real 14000 entry generation は Phase 7.5 = =tools/coding-table-gen.el=
-完成後。
+- *JIS X 0208 punctuation* (row 1, 0x8140-0x819E): 句読点・括弧・記号
+- *Fullwidth digits / latin* (row 3, 0x824F-0x829A)
+- *Hiragana* (row 4 全, 0x829F-0x82F1)
+- *Katakana* (row 5 全, 0x8340-0x8396)
+- *代表的 kanji ~20 字* (亜・漢・字 etc, partial table validation 用)
+- *CP932 NEC special* (0x8740-0x879F): ①-⑳ + ㍉ etc
+- *CP932 IBM extension* (0xFA40-0xFA70 一部): ⅰ-ⅹ etc
+- *EUC-JP X 0208 punctuation + hiragana + katakana + 露西亜文字*
+  (= 同等カバレッジ確保)
+- *X 0212 supplementary kanji 64 字* (row 0x10 / 0x24 representative)
+
+** 3.2 full table classification (Phase 7.4.5)
+
+Phase 7.4.5 generator は CP932.TXT entries を以下の range で classify:
+
+| domain          | byte ranges                                                | count |
+|-----------------+------------------------------------------------------------+-------|
+| JIS X 0208 base | 0x8140-0x84BE + 0x889F-0x9FFC + 0xE040-0xEAA4              |  6879 |
+| CP932 ext (NEC) | 0x8740-0x879C                                              |    83 |
+| CP932 ext (IBM) | 0xED40-0xEEFC + 0xFA40-0xFC4B                              |   762 |
+| ASCII (skipped) | 0x00-0x7F                                                  |   128 |
+| JIS X 0201 kana | 0xA1-0xDF                                                  |    63 |
+
+ASCII + JIS X 0201 katakana は =nelisp-coding.el= が algorithm で直接
+処理するため table に格納しない。
+
+EUC-JP X 0208 entries は SJIS X 0208 から =SJIS → JIS row/cell= 変換で
+algorithmic に派生 (CP932 vendor extension は EUC-JP 等価コードを持た
+ないため除外)。JIS X 0212 は =JIS0212.TXT= から直接 parse、=EUC-INT=
+形 ((row|0x80) << 8 | (cell|0x80)) に正規化。
 
 ** 3.1 MVP subset 選定基準
 
@@ -123,13 +165,14 @@ real 14000 entry generation は Phase 7.5 = =tools/coding-table-gen.el=
 実装は =nelisp-coding-jis-tables--canonical-bytes= +
 =nelisp-coding-jis-tables-verify-hash= を参照。
 
-** 4.2 現値 (Phase 7.4.3 MVP)
+** 4.2 現値 (Phase 7.4.5 full)
 
 #+BEGIN_EXAMPLE
-eb0e024fd054b293edc263868d3f0d3358af2892fdd6a84f882104f435b590cc
+5739fb3b1bddbffdc6ebc6ed41f969bb4893a16bdd30ada961f52981b22b8ea5
 #+END_EXAMPLE
 
-Phase 7.5 generator 実走後は再計算され置換される。
+(Phase 7.4.3 MVP の旧値 =eb0e024fd054b293edc263868d3f0d3358af2892fdd6a84f882104f435b590cc=
+は full table 化に伴い置換された。)
 
 ** 4.3 mismatch 時の対応
 
@@ -160,19 +203,16 @@ Unicode license 表記の sub-set に過ぎず、redistribution 制限なし。P
 7.5 generator が direct download に切り替わった段階で license 表記は
 generator output の header comment に追加する。
 
-* §6 next steps (Phase 7.5)
+* §6 next steps
 
-- =tools/coding-table-gen.el= の =--parse-cp932-line= / =--parse-jis0212-line=
-  実装
-- =--write-tables= で defconst 4 連発 emit + golden SHA-256 計算 + embed
-- batch run + golden hash CI 自動更新フロー
-- regression 確認 (=make test= で =nelisp-coding-jis-tables-verify-hash-passes=
-  + 既存 12 ERT 全 PASS)
 - full-table coverage で =round-trip 100MB Shift-JIS= benchmark 実走 (Doc
   31 v2 §3.3 / §7.2 完遂 gate)
+- Phase 7.5+ で real Japanese file processing on full table (production
+  scale)
 
 * §7 changelog
 
-| date       | who       | change                                                                          |
-|------------+-----------+---------------------------------------------------------------------------------|
-| 2026-04-25 | session-A | v1 SHIPPED (Phase 7.4.3 partial MVP), 885 entries, golden hash eb0e02...b590cc |
+| date       | who       | change                                                                                |
+|------------+-----------+---------------------------------------------------------------------------------------|
+| 2026-04-25 | session-A | v1 SHIPPED (Phase 7.4.3 partial MVP), 885 entries, golden hash eb0e02...b590cc       |
+| 2026-04-25 | T34       | v2 SHIPPED (Phase 7.4.5 full generation), 20670 entries, golden hash 5739fb...b8ea5 |
