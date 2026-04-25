@@ -1466,7 +1466,15 @@ MERGE-BLOCK)."
 (defun nelisp-cc--lower-let (fn block scope bindings body)
   "Lower `(let ((VAR INIT) ...) BODY...)' in BLOCK with SCOPE.
 INIT forms are evaluated in the *outer* SCOPE (Elisp `let' semantics);
-BODY is evaluated in SCOPE extended with all (VAR . SSA-VALUE) pairs."
+BODY is evaluated in SCOPE extended with all (VAR . SSA-VALUE) pairs.
+
+T84 Phase 7.5 wire — when VAR appears as a `setq' target anywhere in
+BODY (the AST-level walker reuses
+`nelisp-cc--source-symbol-setq-p'), additionally emit a `:store-var
+:name VAR :let-init t' instruction so the post-codegen rewriter
+sees the binding's origin VID.  Pre-T84 ERT pinned the let-binding
+SSA to `(const call return)' (no store-var) — keeping the conditional
+emit preserves those golden tests when the body never `setq's VAR."
   (let ((cur-block block)
         (new-bindings nil))
     (dolist (b bindings)
@@ -1480,14 +1488,58 @@ BODY is evaluated in SCOPE extended with all (VAR . SSA-VALUE) pairs."
         (cl-destructuring-bind (val nb)
             (nelisp-cc--lower-expr fn cur-block scope init)
           (setq cur-block nb)
+          ;; T84 — only emit let-init store-var when the body does
+          ;; `(setq VAR ...)'.  This keeps the const-fold ERT golden
+          ;; tests stable while still surfacing the origin VID for
+          ;; loops that mutate the binding.
+          (when (nelisp-cc--source-symbol-setq-p var body)
+            (let* ((store-def (nelisp-cc--ssa-make-value fn nil))
+                   (store-instr (nelisp-cc--ssa-add-instr
+                                 fn cur-block 'store-var
+                                 (list val) store-def)))
+              (setf (nelisp-cc--ssa-instr-meta store-instr)
+                    (list :name var :let-init t))))
           (push (cons var val) new-bindings))))
     (nelisp-cc--lower-progn
      fn cur-block
      (nelisp-cc--scope-extend scope (nreverse new-bindings))
      body)))
 
+(defun nelisp-cc--source-symbol-setq-p (sym forms)
+  "Return non-nil when any FORM in FORMS contains `(setq SYM ...)' or
+`(setq ... SYM ...)' as a syntactic subform.  T84 Phase 7.5 wire —
+used by `--lower-let' to decide whether to emit a let-init
+store-var marker.
+
+The walk is a structural recursion that does *not* expand macros —
+the frontend pipeline expands first via `nelisp-cc--frontend-expand'
+so any setq introduced by macroexpansion has already surfaced into
+the lowered form."
+  (catch 'found
+    (nelisp-cc--symbol-setq-walk sym forms)
+    nil))
+
+(defun nelisp-cc--symbol-setq-walk (sym tree)
+  "Helper for `--source-symbol-setq-p' — throw `'found' when SYM is
+the target of a `setq' anywhere within TREE."
+  (cond
+   ((null tree) nil)
+   ((not (consp tree)) nil)
+   ((eq (car tree) 'setq)
+    (let ((rest (cdr tree)))
+      (while (and rest (cdr rest))
+        (when (eq (car rest) sym)
+          (throw 'found t))
+        (nelisp-cc--symbol-setq-walk sym (cadr rest))
+        (setq rest (cddr rest)))))
+   (t
+    (dolist (sub tree)
+      (nelisp-cc--symbol-setq-walk sym sub)))))
+
 (defun nelisp-cc--lower-let* (fn block scope bindings body)
-  "Lower `(let* ((VAR INIT) ...) BODY...)' — sequential (each INIT sees prior)."
+  "Lower `(let* ((VAR INIT) ...) BODY...)' — sequential (each INIT sees prior).
+T84 Phase 7.5 wire — same conditional `:let-init' store-var as
+`--lower-let'."
   (let ((cur-block block)
         (cur-scope scope))
     (dolist (b bindings)
@@ -1500,6 +1552,13 @@ BODY is evaluated in SCOPE extended with all (VAR . SSA-VALUE) pairs."
                     (list :bad-let*-binding b))))
         (cl-destructuring-bind (val nb)
             (nelisp-cc--lower-expr fn cur-block cur-scope init)
+          (when (nelisp-cc--source-symbol-setq-p var body)
+            (let* ((store-def (nelisp-cc--ssa-make-value fn nil))
+                   (store-instr (nelisp-cc--ssa-add-instr
+                                 fn nb 'store-var
+                                 (list val) store-def)))
+              (setf (nelisp-cc--ssa-instr-meta store-instr)
+                    (list :name var :let-init t))))
           (setq cur-block nb
                 cur-scope (nelisp-cc--scope-extend
                            cur-scope (list (cons var val)))))))

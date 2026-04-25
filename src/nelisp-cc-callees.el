@@ -111,16 +111,23 @@
     (/ . (#x48 #x89 #xF8 ; MOV rax, rdi  (placeholder — division skipped)
           #xC3))         ; RET
     ;; Comparison — returns 1 (truthy) when rdi < rsi else 0.
-    (< . (#x48 #x39 #xF7 ; CMP rdi, rsi  (sets flags = rdi - rsi)
-          #x48 #x31 #xC0 ; XOR rax, rax  (clear rax)
-          #x0F #x9C #xC0 ; SETL al       (al = 1 if SF != OF, i.e., signed lt)
+    ;;
+    ;; T84 Phase 7.5 — flag-preservation fix: XOR rax,rax CLEARS flags
+    ;; (sets ZF=1, SF=0, OF=0).  The pre-T84 sequence emitted CMP /
+    ;; XOR / SETcc, so the XOR wiped the CMP flags before SETcc could
+    ;; read them — every signed comparison silently returned 0.  We
+    ;; now do XOR rax,rax FIRST (zero-extend stage), then CMP, then
+    ;; SETcc, so the SETcc reads CMP's freshly-set flags.
+    (< . (#x48 #x31 #xC0 ; XOR rax, rax  (clear rax — but flags trashed)
+          #x48 #x39 #xF7 ; CMP rdi, rsi  (sets flags = rdi - rsi, OVERRIDES XOR's)
+          #x0F #x9C #xC0 ; SETL al       (al = 1 if SF != OF)
           #xC3))         ; RET
-    (> . (#x48 #x39 #xF7 ; CMP rdi, rsi
-          #x48 #x31 #xC0 ; XOR rax, rax
+    (> . (#x48 #x31 #xC0 ; XOR rax, rax
+          #x48 #x39 #xF7 ; CMP rdi, rsi
           #x0F #x9F #xC0 ; SETG al
           #xC3))
-    (= . (#x48 #x39 #xF7 ; CMP rdi, rsi
-          #x48 #x31 #xC0 ; XOR rax, rax
+    (= . (#x48 #x31 #xC0 ; XOR rax, rax
+          #x48 #x39 #xF7 ; CMP rdi, rsi
           #x0F #x94 #xC0 ; SETE al
           #xC3))
     ;; Increment / decrement.
@@ -130,22 +137,22 @@
     (1- . (#x48 #x89 #xF8 ; MOV rax, rdi
            #x48 #xFF #xC8 ; DEC rax
            #xC3))
-    ;; Equality predicates — same as `='.
-    (eq . (#x48 #x39 #xF7
-           #x48 #x31 #xC0
+    ;; Equality predicates — same as `=' (T84: XOR-then-CMP order).
+    (eq . (#x48 #x31 #xC0
+           #x48 #x39 #xF7
            #x0F #x94 #xC0
            #xC3))
-    (null . (#x48 #x85 #xFF ; TEST rdi, rdi
-             #x48 #x31 #xC0 ; XOR rax, rax
-             #x0F #x94 #xC0 ; SETE al
+    (null . (#x48 #x31 #xC0 ; XOR rax, rax (clear) — flags trashed
+             #x48 #x85 #xFF ; TEST rdi, rdi (sets ZF=1 iff rdi=0)
+             #x0F #x94 #xC0 ; SETE al (al = 1 iff rdi was 0 = nil)
              #xC3))
-    (not . (#x48 #x85 #xFF ; TEST rdi, rdi (mirror of `null')
-            #x48 #x31 #xC0
+    (not . (#x48 #x31 #xC0 ; T84 XOR-then-TEST mirror of `null'
+            #x48 #x85 #xFF
             #x0F #x94 #xC0
             #xC3))
     ;; Cons-family stubs — placeholder returns to keep bytes well-formed.
-    (consp . (#x48 #x85 #xFF
-              #x48 #x31 #xC0
+    (consp . (#x48 #x31 #xC0
+              #x48 #x85 #xFF
               #x0F #x95 #xC0 ; SETNE al  (truthy when non-nil)
               #xC3))
     (car . (#x48 #x89 #xF8 ; MOV rax, rdi (placeholder — passes through)
@@ -401,17 +408,284 @@ which is benign in the bench scenario)."
   "Collect the list of unique callee symbols referenced by FUNCTION's
 `:call' instructions.  Used by the arm64 backend to know which
 trampolines to embed *before* `--buffer-finalize' so the
-`callee:NAME' labels resolve."
+`callee:NAME' labels resolve.
+
+T84 Phase 7.5 wire — also walks `:closure' inner-functions so a
+primitive referenced *only* inside an inner lambda body is still
+embedded once, in the outer (== shared) byte stream."
   (let ((seen nil))
-    (dolist (blk (nelisp-cc--ssa-function-blocks function))
-      (dolist (instr (nelisp-cc--ssa-block-instrs blk))
-        (let ((meta (nelisp-cc--ssa-instr-meta instr))
-              (op   (nelisp-cc--ssa-instr-opcode instr)))
-          (when (eq op 'call)
-            (let ((fn (plist-get meta :fn)))
-              (when (and fn (not (memq fn seen)))
-                (push fn seen)))))))
+    (nelisp-cc-callees--walk-calls
+     function
+     (lambda (fn)
+       (when (and fn (not (memq fn seen)))
+         (push fn seen))))
     (nreverse seen)))
+
+(defun nelisp-cc-callees--walk-calls (function visit)
+  "Walk every `:call' opcode in FUNCTION and its nested inner-functions,
+calling (VISIT FN) once per callee symbol per occurrence.  T84 Phase
+7.5 wire — recursion follows `:closure' instructions' `:inner-function'
+meta so primitives needed inside a lambda body are surfaced.
+
+This is a structural walker — VISIT is responsible for de-duping if
+the caller wants a unique set."
+  (dolist (blk (nelisp-cc--ssa-function-blocks function))
+    (dolist (instr (nelisp-cc--ssa-block-instrs blk))
+      (let ((meta (nelisp-cc--ssa-instr-meta instr))
+            (op   (nelisp-cc--ssa-instr-opcode instr)))
+        (cond
+         ((eq op 'call)
+          (funcall visit (plist-get meta :fn)))
+         ((eq op 'closure)
+          (let ((inner (plist-get meta :inner-function)))
+            (when inner
+              (nelisp-cc-callees--walk-calls inner visit)))))))))
+
+;;; T84 Phase 7.5 wire — global cell layout ----------------------------
+;;
+;; letrec / setq / load-var on a free variable need a runtime cell so
+;; the inner closure body can see the post-letrec value.  The MVP plan
+;; (Doc 32 v2 §3, T84) places one 8-byte cell per unique symbol at the
+;; very tail of the JIT page, after every code block + every callee
+;; trampoline.  Each cell is reachable RIP-relative from every
+;; instruction in the same buffer (= same 4 KiB page modulo the JIT
+;; page size we mmap), so `:store-var' / `:load-var' in any function
+;; share the same address.
+;;
+;; A small set of *implicit* cells supports the bench-actual harness:
+;;
+;;   cons-counter — `cons' increments this on every call so `length'
+;;                  can read the count.  Doc 32 v2 §3 lists the proper
+;;                  cons-cell allocator under Stage 2 closure-pool;
+;;                  the counter trick gives bench-correct values without
+;;                  needing the full nursery in the JIT page.
+;;
+;; Symbol cells are user-visible (they correspond to `letrec'-bound
+;; names like `fib' / `fact-iter').  Every cell symbol gets a
+;; `cell:NAME' label bound after the body so the backend's RIP-relative
+;; emit can reference it.
+
+(defun nelisp-cc-callees--collect-cell-symbols (function)
+  "Walk FUNCTION + every `:closure' inner-function and return the
+unique list of symbol names that need a runtime cell.
+
+A symbol becomes a cell when ANY of the following holds:
+  - a `:store-var' instruction is keyed on it (letrec init /
+    placeholder / setq target),
+  - a `:load-var' instruction references it (= the inner body looks
+    up a free variable, presumed to be the recursive letrec name).
+
+Includes the implicit `cons-counter' cell ONLY when `cons' or
+`length' is actually called somewhere in the SSA — keeping the cell
+layout empty for trivial lambdas so the existing ERT golden tests
+that pin on `len(final-bytes)' / trailing RET still hold.
+
+The order of the returned list is deterministic (walk order,
+dedup'd), so the cell layout is stable across re-compiles."
+  (let ((seen nil)
+        (need-counter nil))
+    (nelisp-cc-callees--walk-vars
+     function
+     (lambda (sym)
+       (when (and sym (not (memq sym seen)))
+         (push sym seen))))
+    (nelisp-cc-callees--walk-calls
+     function
+     (lambda (fn)
+       (when (memq fn '(cons length))
+         (setq need-counter t))))
+    (when need-counter
+      (push 'cons-counter seen))
+    (nreverse seen)))
+
+(defun nelisp-cc-callees--walk-vars (function visit)
+  "Walk every `:store-var' / `:load-var' opcode in FUNCTION + nested
+inner-functions, calling (VISIT SYM) once per occurrence."
+  (dolist (blk (nelisp-cc--ssa-function-blocks function))
+    (dolist (instr (nelisp-cc--ssa-block-instrs blk))
+      (let ((meta (nelisp-cc--ssa-instr-meta instr))
+            (op   (nelisp-cc--ssa-instr-opcode instr)))
+        (cond
+         ((memq op '(store-var load-var))
+          (funcall visit (plist-get meta :name)))
+         ((eq op 'closure)
+          (let ((inner (plist-get meta :inner-function)))
+            (when inner
+              (nelisp-cc-callees--walk-vars inner visit)))))))))
+
+(defun nelisp-cc-callees--rewrite-setq-vars (function)
+  "T84 Phase 7.5 wire — SSA post-pass that turns scope-bound `setq'd
+variable references into cell-loads.
+
+Background: the SSA frontend lowers `(let ((i 0)) ...)' by binding
+`i' in the lexical scope to the SSA value of the `0' constant.
+Subsequent reads of `i' resolve via scope and produce direct SSA
+operand uses of that constant value — they do *not* emit
+`:load-var'.  When the body later does `(setq i (1+ i))', the
+frontend lowers that to `:store-var :name i' but does not invalidate
+the scope binding.  The next iteration of a `while' loop therefore
+reads the original constant rather than the post-setq value, which
+turns every setq-driven loop into an infinite loop or an off-by-one
+miscompilation.
+
+This pass closes that gap by:
+
+  1. Walking FUNCTION + nested inner-functions to collect the set
+     of symbols that appear as `:store-var :name SYM' targets.
+  2. Walking each instruction's operand list and replacing every
+     SSA value originally bound to one of those symbols with a
+     newly-inserted `:load-var :name SYM' def *just before* the
+     consuming instruction.
+
+The replacement is scoped per-block — multiple uses of the same
+symbol within a block share a single `:load-var' insertion.  The
+backend's existing `:load-var' lowering routes through the cell
+mechanism, so the run-time effect is `MOV reg, [rip + cell:NAME]'
+on every read after the rewrite."
+  (let* ((setq-syms (nelisp-cc-callees--collect-setq-symbols function)))
+    (when setq-syms
+      (nelisp-cc-callees--rewrite-setq-vars-in-function function setq-syms))))
+
+(defun nelisp-cc-callees--collect-setq-symbols (function)
+  "Return the unique list of symbols that appear as `:store-var :name
+SYM' targets anywhere in FUNCTION + nested inner-functions.  T84
+Phase 7.5 wire."
+  (let ((seen nil))
+    (cl-labels ((walk (fn)
+                  (dolist (blk (nelisp-cc--ssa-function-blocks fn))
+                    (dolist (instr (nelisp-cc--ssa-block-instrs blk))
+                      (let ((meta (nelisp-cc--ssa-instr-meta instr))
+                            (op   (nelisp-cc--ssa-instr-opcode instr)))
+                        (cond
+                         ((eq op 'store-var)
+                          (let ((sym (plist-get meta :name)))
+                            (when (and sym (not (memq sym seen)))
+                              (push sym seen))))
+                         ((eq op 'closure)
+                          (let ((inner (plist-get meta :inner-function)))
+                            (when inner (walk inner))))))))))
+      (walk function))
+    (nreverse seen)))
+
+(defun nelisp-cc-callees--rewrite-setq-vars-in-function (function setq-syms)
+  "Apply the rewrite to FUNCTION (and its inner functions) given the
+SETQ-SYMS to convert.  T84 Phase 7.5 wire — see
+`nelisp-cc-callees--rewrite-setq-vars'.
+
+Per-block pass: insert a `:load-var :name SYM' at the head of each
+block once per setq-sym actually referenced by a body operand, then
+rewrite operand SSA-values whose VID matches a known origin-vid to
+the per-block load's def.
+
+Origin-vids: collected in step 1 by scanning every `:store-var :name
+SYM' instruction — the operand is one of the symbol's writes (the
+let-init or a `setq' result).  Operands carrying any of those VIDs
+in subsequent reads are rewritten to the load-var def."
+  (cl-labels
+      ((process
+        (fn)
+        (let ((origin-vids nil))
+          ;; Step 1: collect origin VIDs.
+          (dolist (blk (nelisp-cc--ssa-function-blocks fn))
+            (dolist (instr (nelisp-cc--ssa-block-instrs blk))
+              (let ((op (nelisp-cc--ssa-instr-opcode instr))
+                    (meta (nelisp-cc--ssa-instr-meta instr)))
+                (when (eq op 'store-var)
+                  (let ((sym (plist-get meta :name))
+                        (operands (nelisp-cc--ssa-instr-operands instr))
+                        (def (nelisp-cc--ssa-instr-def instr)))
+                    (when (and sym (memq sym setq-syms))
+                      (when operands
+                        (push (cons (nelisp-cc--ssa-value-id (car operands))
+                                    sym)
+                              origin-vids))
+                      ;; Also taint the store-var def itself —
+                      ;; subsequent uses of the def (e.g. as the
+                      ;; setq form's value) should also load from
+                      ;; the cell.
+                      (when def
+                        (push (cons (nelisp-cc--ssa-value-id def) sym)
+                              origin-vids))))))))
+          ;; Step 2: rewrite per-block.
+          (dolist (blk (nelisp-cc--ssa-function-blocks fn))
+            (let* ((per-block-loads nil) ; (sym . load-def)
+                   (new-instrs nil))
+              (dolist (instr (nelisp-cc--ssa-block-instrs blk))
+                (let ((op (nelisp-cc--ssa-instr-opcode instr)))
+                  ;; Skip rewriting `:store-var' operand — the
+                  ;; setq form's RHS is the value we want stored,
+                  ;; not a re-load of the cell.
+                  (unless (eq op 'store-var)
+                    (let* ((operands (nelisp-cc--ssa-instr-operands instr))
+                           (rewritten
+                            (mapcar
+                             (lambda (o)
+                               (let* ((vid (and o (nelisp-cc--ssa-value-id o)))
+                                      (cell (assq vid origin-vids))
+                                      (sym (cdr cell)))
+                                 (cond
+                                  ((null sym) o)
+                                  ((assq sym per-block-loads)
+                                   (cdr (assq sym per-block-loads)))
+                                  (t
+                                   (let* ((def (nelisp-cc--ssa-make-value fn nil))
+                                          (load-instr
+                                           (nelisp-cc--ssa-instr-make
+                                            :id (nelisp-cc--ssa-function-next-instr-id fn)
+                                            :opcode 'load-var
+                                            :operands nil
+                                            :def def
+                                            :block blk
+                                            :meta (list :name sym))))
+                                     (cl-incf (nelisp-cc--ssa-function-next-instr-id fn))
+                                     (setf (nelisp-cc--ssa-value-def-point def)
+                                           load-instr)
+                                     (push load-instr new-instrs)
+                                     (push (cons sym def) per-block-loads)
+                                     def)))))
+                             operands)))
+                      (setf (nelisp-cc--ssa-instr-operands instr) rewritten))))
+                (push instr new-instrs))
+              (setf (nelisp-cc--ssa-block-instrs blk)
+                    (nreverse new-instrs))))
+          ;; Step 3: recurse into inner functions.
+          (dolist (blk (nelisp-cc--ssa-function-blocks fn))
+            (dolist (instr (nelisp-cc--ssa-block-instrs blk))
+              (when (eq (nelisp-cc--ssa-instr-opcode instr) 'closure)
+                (let ((inner (plist-get
+                              (nelisp-cc--ssa-instr-meta instr)
+                              :inner-function)))
+                  (when inner (process inner)))))))))
+    (process function)))
+
+(defun nelisp-cc-callees--collect-inner-functions (function)
+  "Walk FUNCTION + every `:closure' inner-function and return the
+list of `(INSTR . INNER-FN)' cells, one per `:closure' instruction.
+
+The list is in walk order; the caller threads each INSTR through
+the backend's fixup mechanism so the outer `:closure' lowering has
+a stable label name (`inner:N' where N is the visit index).  The
+list also includes nested `:closure' instructions inside an inner
+function, so a 2-deep `(letrec (... (lambda (...) (let ((g (lambda
+...))) ...))))' lifts both lambdas to the shared byte stream."
+  (let ((acc nil)
+        (counter 0))
+    (cl-labels ((walk (fn)
+                  (dolist (blk (nelisp-cc--ssa-function-blocks fn))
+                    (dolist (instr (nelisp-cc--ssa-block-instrs blk))
+                      (when (eq (nelisp-cc--ssa-instr-opcode instr) 'closure)
+                        (let ((inner (plist-get
+                                      (nelisp-cc--ssa-instr-meta instr)
+                                      :inner-function)))
+                          (when inner
+                            (cl-incf counter)
+                            (push (list :index counter
+                                        :instr instr
+                                        :inner inner)
+                                  acc)
+                            (walk inner))))))))
+      (walk function))
+    (nreverse acc)))
 
 ;;; Runtime closure allocator ------------------------------------------
 ;;

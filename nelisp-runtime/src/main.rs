@@ -163,10 +163,14 @@ fn exec_bytes(path: &str) -> i32 {
         // MAP_JIT is a no-op and the page is still RW.
         nelisp_runtime::nelisp_syscall_jit_write_protect(1);
 
-        let prot_rx = nelisp_runtime::NELISP_PROT_READ | nelisp_runtime::NELISP_PROT_EXEC;
+        // T84 Phase 7.5 wire — same RWX rationale as the in-process
+        // module wrapper: cells live in the same JIT page as the code.
+        let prot_rx = nelisp_runtime::NELISP_PROT_READ
+            | nelisp_runtime::NELISP_PROT_WRITE
+            | nelisp_runtime::NELISP_PROT_EXEC;
         let mp = nelisp_runtime::nelisp_syscall_mprotect(p, mapped_size, prot_rx);
         if mp != 0 {
-            eprintln!("nelisp-runtime: exec-bytes: mprotect(RX) failed");
+            eprintln!("nelisp-runtime: exec-bytes: mprotect(RWX) failed");
             // Best-effort cleanup before we bail.
             let _ = nelisp_runtime::nelisp_syscall_munmap(p, mapped_size);
             return 5;

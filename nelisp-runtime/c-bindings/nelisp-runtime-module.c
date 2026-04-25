@@ -633,15 +633,24 @@ Fnelisp_runtime_module_exec_bytes (emacs_env *env, ptrdiff_t nargs,
   memcpy (page, buf, code_len);
   free (buf);
 
-  /* 6. macOS: lock back to exec-only.  Linux: flip RW → RX.  */
+  /* 6. T84 Phase 7.5 wire — keep the page RW+X so the JIT bytes can
+   * read & write their embedded cell area at the page tail (`cell:NAME'
+   * slots holding letrec values + the `cons-counter' bump cell).
+   * The pre-T84 path mprotect'd to RX after copy, but the new pipeline
+   * lays cells out in the same page as the code; without W permission
+   * the first MOV [rip+disp], rax SIGSEGV's at execution time.
+   * macOS hardened runtime does not allow RWX in a JIT page; macOS
+   * support is deferred to Phase 7.6 (Doc 28 §6.10) which moves cells
+   * to a separate writable region.  */
   sym_jit_wp (1);
   int rc = sym_mprotect (page, mapped_len,
-                         NELISP_PROT_READ | NELISP_PROT_EXEC);
+                         NELISP_PROT_READ | NELISP_PROT_WRITE
+                         | NELISP_PROT_EXEC);
   if (rc != 0)
     {
       sym_munmap (page, mapped_len);
       signal_error_kind (env, ERR_SYM_MPROTECT,
-                         "nelisp-runtime-module-exec-bytes: mprotect(RX) failed");
+                         "nelisp-runtime-module-exec-bytes: mprotect(RWX) failed");
       return prebuilt_nil;
     }
 
