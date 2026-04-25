@@ -1,0 +1,106 @@
+書き込みは sandbox の read-only 制約で拒否されました。以下が `/tmp/anvil-codex-arch-audit.md` に入れる内容です。
+
+```md
+# anvil.el architecture codex audit
+
+## verdict: CRITICAL
+
+## 観点 A: MCP server
+- [CRITICAL] anvil-stdio.sh:209 / anvil-server-commands.el:76 / anvil-server.el:1253 request/response framing が line-delimited raw JSON 前提で、MCP stdio の `Content-Length` framing に非準拠。
+  reasoning: `while read -r line` と `read-from-minibuffer ""` で 1 行ずつ処理しており、header/body 分離も content length 解析もない。
+  impact: header 付きの標準 MCP client、複数行 JSON、pretty-printed payload で即壊れる。相互運用性の最上流で詰む。
+  proposal: stdio transport を header-aware parser/serializer に置き換え、line mode は legacy/test 専用 fallback に落とす。
+
+- [MAJOR] anvil-stdio.sh:229 / anvil-server.el:753 transport が 1 request = 1 synchronous `emacsclient` 呼び出しで、`notifications/cancelled` も no-op。
+  reasoning: in-flight request を server 側で追跡せず、キャンセル通知を捨てている。長時間 tool 実行中は後続 request も詰まる。
+  impact: concurrent request handling は実質なし。tool timeout/abort を protocol レベルで伝播できない。
+  proposal: persistent batch loop か daemon-local queue を持ち、request id ごとの cancellation token を通す。
+
+- [MINOR] anvil-server.el:314 / anvil-server.el:1440 schema は raw handler 由来で同期している一方、型はほぼ `"string"` 固定。
+  reasoning: dispatcher 側は arglist ベースで堅いが、数値/JSON/object を使う tool は wrapper ごとに手動 parse している。
+  impact: schema/dispatcher drift は抑えられているが、typed tool surface が増えるほど wrapper 実装に負債が寄る。
+  proposal: registration に typed schema と coercion hook を追加して、server core で型変換を吸収する。
+
+## 観点 B: memory engine
+- [MAJOR] anvil-memory.el:425 / anvil-memory.el:905 / anvil-memory.el:1005 multi-step SQLite mutation に transaction boundary がない。
+  reasoning: scan/promote/reindex が `memory_meta` と `memory_body_fts` を別々に更新するが、`BEGIN/COMMIT` で束ねていない。対照的に anvil-state.el:113 には transaction macro がある。
+  impact: 中断・例外・将来の async 化で meta/FTS が torn state になる。
+  proposal: `scan/promote/reindex/contradictions` を transaction 化し、meta + FTS を atomic に更新する。
+
+- [MAJOR] anvil-memory.el:302 / anvil-memory.el:380 / anvil-memory.el:425 / anvil-memory.el:575 retention policy が audit 止まりで、provider/namespace lifecycle を管理していない。
+  reasoning: schema に provider/ns 列がなく、scan は seen file を upsert するだけで vanished row を prune しない。TTL も `flag` を返すだけ。
+  impact: provider の uninstall・path rename・一時 mount 消失後も stale memory が永続化する。運用上は “腐る DB” になる。
+  proposal: provider/ns 列を追加し、scan に tombstone/prune モード、TTL purge API、namespace 単位 GC を入れる。
+
+- [MAJOR] anvil-memory.el:166 / anvil-memory.el:625 / anvil-memory.el:696 / anvil-memory.el:819 trigram tokenizer を入れても、上位の similarity/search workflow は CJK に一貫して最適化されていない。
+  reasoning: `memory-search` は FTS raw query 依存だが、`save-check`/`duplicates` は `anvil-memory--tokens` の独自 tokenization に寄っており、`>=3 chars` と `[[:alnum:]]` ベースの heuristic が強い。
+  impact: CJK で期待した trigram 効果が `memory-search` 以外へ波及しない。重複判定・contradiction shortlist の recall が落ちる。
+  proposal: tokenizer-aware n-gram pathを共通化し、FTS shortlist と similarity tokenization を同じ言語戦略に揃える。
+
+## 観点 C: orchestrator dispatch model
+- [CRITICAL] anvil-orchestrator-routing.el:101 provider registry の列挙が壊れている。
+  reasoning: 実装は `anvil-orchestrator--providers` を hash-table として定義しているのに、routing 側は `(mapcar #'car anvil-orchestrator--providers)` と alist 扱い。`auto` routing 呼び出し元は anvil-orchestrator.el:1942。tests/anvil-orchestrator-routing-test.el:185 は誤って alist を let-bind しており本番 shape を再現していない。
+  impact: `:provider auto` が実ランタイムで壊れる可能性が高い。routing 機能の存在意義を直接損なう。
+  proposal: `hash-table-keys` ベースへ修正し、ERT も本物の hash-table fixture に切り替える。
+
+- [MAJOR] anvil-orchestrator.el:1441 / anvil-orchestrator.el:1464 worktree isolation の contract が破綻している。
+  reasoning: docs は non-native provider への fallback worktree を約束するが、`--should-worktree` が `supports-worktree` を必須にしているため generic branch が到達不能。さらに create 後の cleanup も見当たらない。
+  impact: isolation が provider によって silently 無効化される。将来 predicate を直しても今度は worktree leak が出る。
+  proposal: `should-isolate` と `supports-native-worktree` を分離し、generic path では finalize/cancel/retry で `anvil-git-worktree-remove` まで責務を閉じる。
+
+- [MAJOR] anvil-orchestrator.el:2244 / anvil-orchestrator.el:2381 consensus/voting protocol が summary line Jaccard に過度依存している。
+  reasoning: `done` かつ summary 同士の line-set 類似度だけで `unanimous` 判定する。anvil-orchestrator.el:1634 では exit=0 なら summary nil でも `done` になりうる。
+  impact: boilerplate / empty / templated output で false unanimous が起きる。judge 以前の gate としては脆い。
+  proposal: non-empty structured answer を必須化し、verdict を `all-done + quality floor + semantic judge or schema match` に引き上げる。
+
+- [MAJOR] anvil-offload.el:209 cancel semantics が pool lifecycle を壊しうる。
+  reasoning: `anvil-future-cancel` は local tracking だけ外し、subprocess は走り続ける。pool size 1 では slot 占有がそのまま head-of-line blocking になる。
+  impact: “cancelled” に見えても実際は capacity を食い続ける。offload を重い memory/index 系で使い始めると詰まりやすい。
+  proposal: cooperative cancel protocol か、cancel 時に slot replacement まで含めた drain/respawn を提供する。
+
+## 観点 D: cross-module hygiene
+- [MAJOR] anvil.el:264 top-level `anvil-server-id` defcustom が実質 dead config。
+  reasoning: core は server id を customization として見せるが、memory は anvil-memory.el:86、orchestrator は anvil-orchestrator.el:69 で別の固定 id を使う。
+  impact: user から見ると “global server-id knob” が効かない。module ごとに surface が分裂する。
+  proposal: server-id 解決を core API に集約し、module 側の fixed constant をやめる。
+
+- [MAJOR] anvil.el:302 `anvil-enable` が module load failure を message だけで飲み、最終的に `anvil--enabled` を true にする。
+  reasoning: core module / optional module どちらも fail-fast しない。
+  impact: partial registration 状態でも “enabled” 扱いになる。監査・運用・support の観点でかなり追いにくい。
+  proposal: core module failure は hard fail、optional module は skipped list を返し、health summary を明示する。
+
+- [MAJOR] Makefile:10 default test target が薄すぎて、今回レベルの regression を逃す。
+  reasoning: `make test` は `tests/anvil-test.el` しか走らない。routing/memory/orchestrator 専用 suite は `test-all` 依存。
+  impact: provider registry shape mismatch のような実害 bug が通常 CI から漏れる。
+  proposal: `test` を aggregate target に上げるか、少なくとも orchestrator/routing/memory suites を標準に含める。
+
+- [MINOR] anvil.el:319 / anvil-memory.el:2301 / anvil-orchestrator.el:4109 disable は unregister 止まりで feature unload/reload hygiene が弱い。
+  reasoning: iterative dev で `disable -> enable` しても feature 自体は reload されず、stale definitions や private state が残りやすい。
+  impact: byte-compile/load-time の差分や `setq` 済み state を再現しづらい。
+  proposal: dev-only の `anvil-reload-module` を用意するか、unload-safe state reset 方針を module 契約にする。
+
+## summary
+- top CRITICAL
+  anvil-orchestrator-routing の provider registry shape bug で `:provider auto` が本番で壊れる。
+  MCP stdio transport が `Content-Length` framing 非対応で、標準クライアント互換性が低い。
+- top MAJOR
+  memory engine の multi-step DB update が non-atomic。
+  memory retention/provider lifecycle が未管理で stale row が蓄積する。
+  orchestrator の worktree isolation contract が未完成かつ cleanup 不在。
+  default CI が薄く、専用 suite 依存の回帰を逃しやすい。
+- MINOR
+  server schema typing が wrapper 側に寄りすぎ。
+  offload cancel semantics が “見かけ上の cancel” に留まる。
+  disable/re-enable の reload hygiene が弱い。
+- positives
+  anvil-server.el:982 の tool error containment は堅い。tool failure が server crash に直結しにくい。
+  anvil-memory.el:246 の trigram probe と non-destructive indexing 方針は保守的で良い。
+  anvil-orchestrator.el:1378 の interrupted-task restore/resume は failure recovery の設計意図が明確。
+
+## next-step suggestion
+- 1. `anvil-orchestrator-routing--candidates` を hash-table 前提へ修正し、routing ERT を本番 shape に揃える。
+- 2. stdio transport を `Content-Length` framing に切り替え、cancel/request multiplexing の土台を入れる。
+- 3. memory scan/promote/reindex を transaction 化し、provider/ns 列 + prune API を追加する。
+- 4. worktree isolation を contract から実装まで閉じ、create/remove lifecycle を finalize/cancel/retry に接続する。
+- 5. `make test` を smoke ではなく real regression gate に上げ、orchestrator/routing/memory suite を常時実行にする。
+```

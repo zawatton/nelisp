@@ -1,0 +1,51 @@
+# NeLisp defs-index + org-index codex audit
+
+## verdict: CRITICAL
+
+## 観点 A: schema design
+- [MAJOR] `/home/madblack-21/Notes/dev/nelisp/src/nelisp-org-index.el:161-172` `headline.parent_id` に外部キー制約がなく、木構造整合性が DB で担保されていません。現在は再構築前提で表面化しにくいですが、将来の incremental update / watcher 導入時に orphan headline を防げません。
+- [MAJOR] `/home/madblack-21/Notes/dev/nelisp/src/nelisp-org-index.el:174-177` + `/home/madblack-21/Notes/dev/nelisp/src/nelisp-org-index.el:511-541` `idx_headline_title` を張っている一方、実検索は常時 `LIKE '%term%'` なので B-tree がほぼ効きません。index size を払っても主要クエリを加速できていない設計です。
+- [MINOR] `/home/madblack-21/Notes/dev/nelisp/src/nelisp-defs-index.el:186-188` + `/home/madblack-21/Notes/dev/nelisp/src/nelisp-defs-index.el:657-670` defs 側も fuzzy search は `%term%` で、`idx_defs_name` は exact search には効くが fuzzy には効きません。用途別に割り切るなら許容ですが、index budget と query shape の整合は弱いです。
+- [MINOR] `/home/madblack-21/Notes/dev/nelisp/src/nelisp-defs-index.el:190-205` `refs.kind` / `features.kind`、`obsolete_p` に CHECK 制約がありません。現状はアプリ側でしか値域を守っておらず、スキーマ防御が薄いです。
+
+## 観点 B: ingestion / rebuild
+- [CRITICAL] `/home/madblack-21/Notes/dev/nelisp/src/nelisp-defs-index.el:605-617` + `/home/madblack-21/Notes/dev/nelisp/src/nelisp-org-index.el:471-482` rebuild が最初に全削除を commit し、その後ファイルごとに再投入しています。途中失敗時に live DB が empty/partial state になり、しかも `condition-case _ (error nil)` で失敗を握り潰すため、破損 source / lock failure が silent data loss になります。
+- [MAJOR] `/home/madblack-21/Notes/dev/nelisp/src/nelisp-defs-index.el:275-295` + `/home/madblack-21/Notes/dev/nelisp/src/nelisp-org-index.el:259-280` `git ls-files` fallback の `directory-files-recursively` では hidden dir policy が実質 `exclude-patterns` 任せです。`.direnv` `.cache` などは git 成功時と失敗時で index 対象が変わり得ます。symlink も明示方針がなく、walker correctness が環境依存です。
+- [MINOR] `/home/madblack-21/Notes/dev/nelisp/src/nelisp-org-index.el:39-44` vs `/home/madblack-21/Notes/dev/nelisp/src/nelisp-org-index.el:322-361` Commentary は planning line を扱うと書いていますが、実装に `SCHEDULED/DEADLINE/CLOSED` 処理はありません。doc-impl drift です。
+- [MINOR] `/home/madblack-21/Notes/dev/nelisp/docs/design/26-phase6.6-nelisp-org-index.org:98-101` 現行 SHIPPED MVP には filenotify incremental path 自体が未実装です。現時点の監査対象は full rebuild のみで、reactive correctness は未成立です。
+
+## 観点 C: query / search
+- [MAJOR] `/home/madblack-21/Notes/dev/nelisp/docs/design/26-phase6.6-nelisp-org-index.org:103-106` + `/home/madblack-21/Notes/dev/nelisp/src/nelisp-org-index.el:489-554` org-index は trigram/FTS5 が未導入で、検索は単純 `LIKE` です。CJK tokenization・substring relevance・ranking は未対応で、memory 前提の「trigram tokenizer CJK 対応」は満たしていません。
+- [MAJOR] `/home/madblack-21/Notes/dev/nelisp/src/nelisp-defs-index.el:356-373` + `/home/madblack-21/Notes/dev/nelisp/src/nelisp-defs-index.el:506-507` defs の deep walker は top-level form 全体を歩き、list head symbol を一律 `call` として記録します。結果として `defun` `let` 等の special form/macro、定義名、引数 symbol まで refs に入り、`references` の意味が「実 call site」よりかなり広く、ノイズが多いです。
+- [MAJOR] `/home/madblack-21/Notes/dev/nelisp/src/nelisp-org-index.el:493-494` + `/home/madblack-21/Notes/dev/nelisp/src/nelisp-org-index.el:511-541` org-index は「SQLite default で case sensitive」と書いていますが、その前提は危ういです。`PRAGMA case_sensitive_like` を立てておらず、LIKE の大文字小文字挙動は少なくとも ASCII では期待とズレ得ます。unicode casefold も一貫しません。
+- [MINOR] `/home/madblack-21/Notes/dev/nelisp/src/nelisp-defs-index.el:637-639` + `/home/madblack-21/Notes/dev/nelisp/src/nelisp-org-index.el:506-514` defs は empty query を reject、org は match-all として許容しています。双子 module として search semantics が揃っていません。
+- [MINOR] `/home/madblack-21/Notes/dev/nelisp/src/nelisp-defs-index.el:667-670` + `/home/madblack-21/Notes/dev/nelisp/src/nelisp-org-index.el:511-520` SQL injection 自体は bind parameter で防げています。これは良い点です。ただし `%` と `_` の wildcard escaping は API 契約が弱く、literal search edge case は残っています。
+- [MINOR] `/home/madblack-21/Notes/dev/nelisp/src/nelisp-org-index.el:533-553` tags は `GROUP_CONCAT` に ORDER BY がなく、`:tags` の返却順が安定しません。membership 前提なら問題は小さいですが、result format consistency は弱いです。
+
+## 観点 D: concurrency / lock contention
+- [CRITICAL] `/home/madblack-21/Notes/dev/nelisp/src/nelisp-defs-index.el:153-159` + `/home/madblack-21/Notes/dev/nelisp/src/nelisp-defs-index.el:605-617` + `/home/madblack-21/Notes/dev/nelisp/src/nelisp-org-index.el:140-146` + `/home/madblack-21/Notes/dev/nelisp/src/nelisp-org-index.el:471-482` WAL は有効ですが、rebuild 全体は atomic ではありません。reader は delete 済み・途中投入中の partial DB を普通に読めます。Emacs server / emacsclient / subprocess 併用では検索結果が rebuild 中に揺れます。
+- [MAJOR] `/home/madblack-21/Notes/dev/nelisp/src/nelisp-defs-index.el:227-228` + `/home/madblack-21/Notes/dev/nelisp/src/nelisp-defs-index.el:153-159` + `/home/madblack-21/Notes/dev/nelisp/src/nelisp-org-index.el:211-212` + `/home/madblack-21/Notes/dev/nelisp/src/nelisp-org-index.el:140-146` `journal_mode=WAL` は入っていますが、`busy_timeout` / retry / `BEGIN IMMEDIATE` がありません。multi-process write 競合は `SQLITE_BUSY` で落ちやすく、その失敗を rebuild loop 側が黙殺します。
+- [MINOR] `/home/madblack-21/Notes/dev/nelisp/src/nelisp-defs-index.el:115-142` + `/home/madblack-21/Notes/dev/nelisp/src/nelisp-org-index.el:103-130` 接続は process-local cache のみで、cross-process coordination はありません。現状の full rebuild 中心運用では成立しますが、watcher/incremental を入れる前に設計更新が必要です。
+
+## summary
+- top CRITICAL
+  - rebuild が live DB を全削除してから partial 再投入するため、途中失敗や並行読取で empty/partial index を露出します。しかも失敗を握り潰しています。
+- top MAJOR
+  - org-index の検索基盤が `LIKE` 依存で、CJK/trigram/ranking が未成立です。
+  - defs refs は deep walker が広く拾いすぎて、call/reference の意味精度が低いです。
+  - concurrency は WAL だけで、busy timeout・writer serialization・atomic rebuild がありません。
+- MINOR
+  - hidden file / symlink policy が fallback 時にぶれます。
+  - org commentary と planning-line 実装がずれています。
+  - empty query・tag ordering など twin module 間の返却/契約整合が甘いです。
+- positives
+  - 両 module とも `WAL` と `foreign_keys` は有効化済みです。
+  - SQL は bind parameter を使っており、典型的な injection 耐性はあります。
+  - tag/property の正規化、defs/features の分離は素直で、MVP としては読みやすいです。
+  - テストは happy path の rebuild/search/status を一通り押さえています。
+
+## next-step suggestion
+1. rebuild を shadow DB か single-transaction snapshot swap に変えて、`all-or-nothing` にする。
+2. `SQLITE_BUSY` 対策として `busy_timeout` と retry policy を入れ、エラー黙殺をやめる。
+3. org-index は 6.6.3 を前倒しして FTS5 + trigram を入れる。少なくとも CJK と ranking は `LIKE` のままでは厳しい。
+4. defs refs は `defun`/special-form/arglist/name-sym を除外し、「runtime-ish reference」と「syntactic symbol」を分離する。

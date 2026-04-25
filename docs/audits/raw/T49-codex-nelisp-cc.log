@@ -1,0 +1,92 @@
+`/tmp/nelisp-cc-codex-audit.md` への書き出しは sandbox が read-only のため失敗しました (`/tmp` も書込不可)。監査結果はそのまま下に置きます。
+
+```md
+# NeLisp native compiler codex audit
+
+## verdict: CRITICAL ISSUES FOUND
+
+Static audit only. Known T43 items (`:call` unresolved rel32 and zero-placeholder `:closure`) are excluded below.
+
+## 観点 A: SSA correctness
+- [MAJOR] SSA verifier does not check dominance / visibility of defs; it only checks that an operand's `def-point` exists somewhere in the function. (`src/nelisp-cc.el:461-542`, especially `src/nelisp-cc.el:526-541`)
+  reasoning: `nelisp-cc--ssa-verify-function` never checks same-block ordering, block dominance, or phi predecessor semantics.
+  impact: use-before-def and non-dominating defs can pass verification and become backend miscompiles.
+  proposal: add dominance checks for non-`phi`, and predecessor-edge validation for `phi`.
+
+- [MAJOR] Phi lowering is not semantics-preserving when predecessor copies conflict; the pass explicitly emits sequential `:copy` instructions and defers the parallel-copy hazard. (`src/nelisp-cc.el:949-969`, `src/nelisp-cc.el:1003-1057`)
+  reasoning: one copy can overwrite the source needed by the next phi copy in the same predecessor.
+  impact: merge blocks with swaps/cycles can miscompile after phi lowering.
+  proposal: lower each predecessor phi bundle with a parallel-copy scheduler plus temporary scratch.
+
+## 観点 B: linear-scan
+- [CRITICAL] Register allocation is ABI-blind across calls: both backends allocate only caller-saved registers and never preserve values live across `:call` / `:call-indirect`. (`src/nelisp-cc.el:815-862`, `src/nelisp-cc-x86_64.el:101-106`, `src/nelisp-cc-x86_64.el:113-121`, `src/nelisp-cc-x86_64.el:843-896`, `src/nelisp-cc-x86_64.el:1013-1084`, `src/nelisp-cc-arm64.el:129-156`, `src/nelisp-cc-arm64.el:878-920`, `src/nelisp-cc-arm64.el:980-1043`)
+  reasoning: linear-scan never splits/spills call-crossing intervals; x86_64 pool maps to `rdi..r11`, arm64 pool maps to `x0..x7`, all call-clobbered.
+  impact: values live across calls are silently destroyed.
+  proposal: add call-aware allocation or explicit save/restore around calls.
+
+- [MAJOR] Interval computation is still incorrect for loop-carried liveness, and `while` now makes that path reachable in normal frontend output. (`src/nelisp-cc.el:571-576`, `src/nelisp-cc.el:680-681`, `src/nelisp-cc.el:1553-1581`)
+  reasoning: END is truncated to in-linear-order last use and not extended across back-edges.
+  impact: allocator can expire/reuse a register before the next iteration.
+  proposal: extend intervals over natural loops or switch to backward liveness.
+
+## 観点 C: backend ABI
+- [CRITICAL] x86_64 branch lowering assumes THEN fallthrough, but the actual RPO produced by the current DFS commonly places ELSE next, so ordinary `if` control flow is laid out incorrectly. (`src/nelisp-cc.el:627-662`, `src/nelisp-cc.el:1369-1402`, `src/nelisp-cc-x86_64.el:898-934`, `src/nelisp-cc-x86_64.el:1180-1189`)
+  reasoning: standard diamond order becomes effectively `entry, else, then, merge`, while backend emits `JE else` and assumes fallthrough goes to then.
+  impact: x86_64 `if` semantics are wrong even aside from T43.
+  proposal: make lowering layout-independent by emitting both edges explicitly or forcing THEN-next layout.
+
+- [CRITICAL] arm64 ignores explicit `:jump` instructions entirely, so CFG edges required by `if` merges and `while` back-edges disappear in emitted code. (`src/nelisp-cc.el:1390-1396`, `src/nelisp-cc.el:1585-1607`, `src/nelisp-cc-arm64.el:1074-1077`, `src/nelisp-cc-arm64.el:1127-1133`)
+  reasoning: frontend emits `jump` terminators, but arm64 dispatcher turns them into no-op.
+  impact: then-blocks can fall into else-blocks; loops cannot reliably jump back to headers.
+  proposal: lower `jump` to `B <label>` fixups.
+
+- [MAJOR] x86_64 tail-call rewrite is unsound once spill frames exist; the comment says non-zero frame size should suppress rewriting, but the implementation has no such check. (`src/nelisp-cc-runtime.el:689-692`, `src/nelisp-cc-runtime.el:673-724`, `src/nelisp-cc-runtime.el:1220-1224`)
+  reasoning: the rewriter drops epilogue/RET after CALL→JMP without consulting frame size.
+  impact: spilled tail-recursive functions can jump away with an unpopped frame.
+  proposal: disable TCO rewrite when spill frame > 0, or move TCO into backend lowering.
+
+## 観点 D: runtime + GC interaction
+- [CRITICAL] Implemented GC metadata does not satisfy the design contract: it records SSA value-id bitmaps, not live root locations, and it never produces a frame-layout descriptor. (`docs/design/28-phase7.1-native-compiler.org:312-321`, `src/nelisp-cc-runtime.el:501-514`, `src/nelisp-cc-runtime.el:530-560`, `src/nelisp-cc-runtime.el:575-585`, `src/nelisp-cc-runtime.el:600-609`)
+  reasoning: spec requires register/stack-slot root locations plus frame layout metadata; runtime emits a bool-vector indexed by SSA value id and `:frame-size 0`.
+  impact: a moving collector cannot reconstruct native roots.
+  proposal: generate post-allocation safe-point tables keyed by physical registers and spill slots, plus backend-specific frame descriptors.
+
+- [MAJOR] Safe-point metadata is computed before backend codegen, tail-call rewriting, and safe-point stub injection, then returned unchanged; `:pc-offset` and `:frame-size` therefore do not match final machine code. (`src/nelisp-cc-runtime.el:494-615`, `src/nelisp-cc-runtime.el:830-884`, `src/nelisp-cc-runtime.el:1217-1242`)
+  reasoning: metadata uses symbolic offsets (`0`, `1+block-id`, `-1`) and `:frame-size 0`, but later byte rewriting never patches it.
+  impact: even a future GC consumer would poll/decode the wrong PCs.
+  proposal: finalize GC metadata after codegen using backend labels and injected-stub lengths.
+
+- [MAJOR] Closure / indirect-call GC robustness is structurally unresolved because closure values are treated as ordinary machine words, with no relocation/update path when GC moves them. (`src/nelisp-cc.el:1627-1634`, `src/nelisp-cc-x86_64.el:1013-1041`, `src/nelisp-cc-arm64.el:980-1001`, `src/nelisp-cc-runtime.el:516-518`)
+  reasoning: `:closure` feeds `:call-indirect`, but metadata has no way to surface that machine location as a movable closure root.
+  impact: once real closure allocation lands, native code can retain stale closure pointers across safepoints/calls.
+  proposal: model closure/function-pointer carriers as first-class GC roots in the post-allocation location map.
+
+## summary
+- CRITICAL (= bench gate PASS の阻害要因)
+  - x86_64 branch layout is wrong for normal `if` diamonds.
+  - arm64 drops `:jump` edges entirely.
+  - call-crossing values are not preserved on either ISA.
+  - GC metadata contract is not usable by a moving collector.
+- MAJOR (= soak / arm64 verify で壊れる候補)
+  - verifier misses dominance / visibility bugs.
+  - phi lowering is not parallel-copy safe.
+  - loop-carried liveness is truncated.
+  - tail-call rewrite ignores spill frames.
+  - safe-point offsets / frame-size are stale after rewrites.
+  - closure pointers have no GC relocation story.
+- MINOR (= 設計 polish)
+  - none called out; the main issues are correctness-contract level.
+- positives (= solidity がある部位)
+  - Both backends reserve spill scratch outside the default allocator pool (`rax` / `x9`).
+  - Stack-slot allocation is deterministic and 16-byte aligned (`src/nelisp-cc.el:918-942`).
+  - arm64 indirect-call lowering correctly uses `x16`/IP0 for callee materialization (`src/nelisp-cc-arm64.el:989-997`, `src/nelisp-cc-arm64.el:1014-1040`).
+
+## next-step suggestion
+- Fix x86_64 CFG emission first and add an executable `if`-diamond ERT.
+- Implement real arm64 `:jump` lowering and add executable `while` back-edge coverage.
+- Add call-aware liveness/RA handling before chasing allocator quality.
+- Replace phi copy insertion with a parallel-copy resolver.
+- Redesign GC metadata after allocation/codegen so safe-points carry physical root locations and final PC offsets.
+```
+
+書き込み可能な環境なら、この内容をそのまま `/tmp/nelisp-cc-codex-audit.md` に落とします。

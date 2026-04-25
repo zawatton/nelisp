@@ -1,0 +1,804 @@
+#+TITLE: NeLisp + anvil.el Master Audit Report (2026-04-25)
+#+DATE: 2026-04-25
+#+AUTHOR: Claude (T66 consolidation)
+#+STATUS: SHIPPED
+#+SCOPE: NeLisp Phase 7.x + anvil.el architecture + Doc 34/35 review
+#+SOURCES: T44 + T45 + T47 + T49 + T51 + T53 + T55 + T56 + T58 + T59
+#+RAW: docs/audits/raw/{T44..T59}-{claude,codex}-*.{txt,log}
+
+* §1 Executive Summary
+
+** §1.1 Inputs
+
+8 review/audit を統合した本 master doc。verdict 内訳:
+
+| ID  | scope                       | verdict          | source                                      |
+|-----+-----------------------------+------------------+---------------------------------------------|
+| T44 | Doc 34 Phase 9b draft       | MAJOR REVISIONS  | raw/T44-claude-doc34.txt                    |
+| T45 | Doc 35 Claude SDK draft     | MAJOR REVISIONS  | raw/T45-claude-doc35.txt                    |
+| T47 | Doc 34 codex review         | MAJOR REVISIONS  | raw/T47-codex-doc34.log                     |
+| T49 | nelisp-cc native compiler   | CRITICAL ISSUES  | raw/T49-codex-nelisp-cc.log                 |
+| T51 | allocator + gc-inner        | CRITICAL ISSUES  | raw/T51-codex-allocator-gc.log              |
+| T53 | anvil.el architecture       | CRITICAL         | raw/T53-codex-anvil-arch.log                |
+| T55 | Doc 35 codex retry          | MAJOR REVISIONS  | raw/T55-codex-doc35-retry.log               |
+| T56 | nelisp-coding subsystem     | CRITICAL         | raw/T56-codex-coding.log                    |
+| T58 | C bindings (FFI)            | CRITICAL         | raw/T58-codex-c-bindings.log                |
+| T59 | defs-index + org-index      | CRITICAL         | raw/T59-codex-defs-org-index.log            |
+
+CRITICAL = 6 件 / MAJOR REVISIONS = 4 件 (Doc 34 + Doc 35 が claude/codex
+独立 2 review なので 2 doc × 2 reviewer)。
+
+** §1.2 高レベル所見
+
+*** bench gate PASS の裏で発覚した実体的 bug 群
+
+NeLisp 既存 SHIPPED component (Phase 7.x) は単体 ERT / bench gate を通過
+しているが、本 audit で contract/correctness/concurrency 観点の latent
+bugs が多数発覚:
+
+- [T49] x86_64 if 配置 + arm64 :jump drop = ordinary control flow が
+  両 ISA で壊れている (bench bench.el の "簡単 form 1 個" は通過するが、
+  helm/dired 等の real-world Elisp は壊れる recipe)。
+- [T51] allocator family-tag 1..5 vs gc-inner 0..4 = silent decode
+  mismatch、しかも unknown は cons-pool fallback。Doc 30 v2.13 ABI 違反。
+- [T56] EUC-JP streaming tail-pending bug = 完全な valid 終端を truncated
+  と誤判定、one-shot equivalence が崩れている。
+- [T58] partial dlsym poison + non-local exit 後 API 続行 = Emacs module
+  ABI 違反、次回 call で NULL function pointer crash。
+- [T59] defs/org-index rebuild が live DB 全削除 → 投入の non-atomic
+  実装 + 失敗握り潰し = silent data loss path。
+- [T53] anvil-orchestrator-routing が hash-table を alist として enumerate、
+  本番 :provider auto が壊れる shape bug。
+
+*** Tier 別 fix priority (本 doc §2/§3/§4 で詳述)
+
+- Tier 1 BLOCKING (= bench gate value-verified / 24h soak / standalone
+  ship path 阻害) = 8 critical findings (T49 4 件 + T51 4 件)
+- Tier 2 OPERATIONAL (= 運用安定性低下 risk、v1.x で fix) = 約 12 件
+  (T56 + T58 + T59 + T53 partial)
+- Tier 3 ARCHITECTURAL POLISH (= spec drift / hygiene / Doc review) =
+  約 25 件 (Doc 34 + Doc 35 + anvil hygiene + spec/impl drift)
+
+* §2 Tier 1 BLOCKING findings (= 即 fix 推奨)
+
+bench gate value-verified、24h soak、standalone ship path のいずれかを
+直接阻害する findings。fix なしには v1.0 完遂条件 (cond #4 = 4 核 C
+runtime) は満たせない。
+
+** §2.1 native compiler (T49) — 4 critical
+
+nelisp-cc は T50 letrec SIGSEGV の root cause を抱えており、bench gate を
+通過した form は "tested form" のみで、real-world Elisp の majority は
+miscompile する。
+
+*** §2.1.1 [CRITICAL T49-C1] x86_64 if branch layout が壊れている
+
+- *file:line*: src/nelisp-cc.el:627-662, src/nelisp-cc.el:1369-1402,
+  src/nelisp-cc-x86_64.el:898-934, src/nelisp-cc-x86_64.el:1180-1189
+- *summary*: backend は THEN fallthrough 前提で =JE else= を吐くが、
+  current DFS RPO は通常 =entry, else, then, merge= 配置。x86_64 の
+  ordinary =if= が常に逆動作する。
+- *impact*: T50 letrec SIGSEGV 根本原因の 1 つ、bench gate value-verify
+  fail の主因。
+- *proposal*: lowering を layout-independent に変更 (両 edge を explicit
+  emit) または THEN-next layout を強制。executable =if= diamond ERT 必須。
+
+*** §2.1.2 [CRITICAL T49-C2] arm64 が =:jump= 命令を完全に無視
+
+- *file:line*: src/nelisp-cc.el:1390-1396, src/nelisp-cc.el:1585-1607,
+  src/nelisp-cc-arm64.el:1074-1077, src/nelisp-cc-arm64.el:1127-1133
+- *summary*: frontend が =jump= terminator を出すが arm64 dispatcher は
+  no-op 化。CFG edges (=if= merge / =while= back-edge) が emitted code
+  に消滅。
+- *impact*: arm64 で then-block が else-block にフォールスルー、loop が
+  header に jump 戻れない = arm64 verify gate fail。
+- *proposal*: =jump= を =B <label>= fixup に lower。executable =while=
+  back-edge ERT 必須。
+
+*** §2.1.3 [CRITICAL T49-C3] call-crossing 値が両 ISA で破壊される
+
+- *file:line*: src/nelisp-cc.el:815-862, src/nelisp-cc-x86_64.el:101-106
+  / 113-121 / 843-896 / 1013-1084, src/nelisp-cc-arm64.el:129-156 /
+  878-920 / 980-1043
+- *summary*: 両 backend pool が caller-saved register のみ
+  (x86_64 rdi..r11、arm64 x0..x7、全 call-clobbered)。linear-scan は
+  call-crossing interval を split/spill しない。
+- *impact*: call を跨ぐ live value が silent destruction、bench gate で
+  単純 form 通過 / 複合 form silent miscompile。
+- *proposal*: call-aware allocation または call 周りに explicit
+  save/restore。
+
+*** §2.1.4 [CRITICAL T49-C4] GC metadata が moving collector で使えない
+
+- *file:line*: docs/design/28-phase7.1-native-compiler.org:312-321,
+  src/nelisp-cc-runtime.el:501-514 / 530-560 / 575-585 / 600-609
+- *summary*: spec は physical register / spill slot の root location +
+  frame layout descriptor を要求するが、実装は SSA value-id の bool-vector
+  + =:frame-size 0=。
+- *impact*: Phase 7.3 GC inner (Doc 30) で moving collector を有効化した
+  瞬間に native code が live root を再構築できず crash。standalone v1.0
+  ship 不能。
+- *proposal*: post-allocation safe-point table を physical register +
+  spill slot 基準で生成、backend-specific frame descriptor 追加。
+
+*** §2.1.5 関連 MAJOR (T49-M1..M5)
+
+- M1: SSA verifier が dominance / phi predecessor 未検査 (line 461-542)
+- M2: phi lowering が parallel-copy 安全でない (line 949-969 / 1003-1057)
+- M3: loop-carried liveness が back-edge を跨いで extend されない
+  (line 571-576 / 680-681 / 1553-1581)
+- M4: x86_64 tail-call rewrite が spill frame > 0 を check せず
+  (runtime.el:689-692 / 673-724 / 1220-1224)
+- M5: safe-point :pc-offset / :frame-size が rewrite 後に stale
+  (runtime.el:494-615 / 830-884 / 1217-1242)
+- M6: closure pointer が GC root として relocate されない
+  (cc.el:1627-1634 / arm64.el:980-1001)
+
+*** §2.1.6 fix path
+
+T63 (進行中) で C1-C4 を bundle、C1+C2 が直接 T50 unblock。M1-M6 は
+T63 完了後に bundle 化 (Tier 2 寄り、ただし C4 は C1-C3 と密結合)。
+
+** §2.2 allocator + gc-inner (T51) — 4 critical + 4 major
+
+Phase 7.2 / 7.3 schema bridge が "memory contract レベルで存在しない"
+状態。Doc 29 §6.10 / Doc 30 §2.13 (object header v2.13) と実装が乖離。
+
+*** §2.2.1 [CRITICAL T51-C1] heap-region schema bridge 未実装
+
+- *file:line*: src/nelisp-allocator.el:258-270, src/nelisp-gc-inner.el:236-249,
+  src/nelisp-gc-inner.el:649
+- *summary*: allocator は =nelisp-heap-region= struct + bare symbol を返す。
+  gc-inner は =:region-id/:generation/:family= plist keyword schema
+  しか受理しない。bridge =nelisp-allocator-snapshot-regions= は spec で
+  約束されているが実装が存在しない。
+- *impact*: Doc 29 §6.10 heap-region registry v1 の provider-consumer
+  接続が成立しておらず、allocator 実体を gc-inner が consume できない。
+- *proposal*: bridge を 1 箇所に実装、version/schema/family keyword 化を
+  そこで強制。allocator 実体経由 interop ERT 追加。
+
+*** §2.2.2 [CRITICAL T51-C2] family-tag enum mismatch (1..5 vs 0..4)
+
+- *file:line*: src/nelisp-allocator.el:97-105, src/nelisp-gc-inner.el:2073-2094
+- *summary*: allocator family-tag は 1..5、gc-inner decode は 0..4。
+  tag=1 cons は closure と誤読、tag=5 large-object は unknown フォールバック
+  で =:cons-pool= 化。
+- *impact*: promotion / header decode / type-family dispatch が silent
+  に壊れる。Doc 30 v2.13 family-tag invariant 違反。fail-fast せず
+  silent corruption。
+- *proposal*: family enum を単一定義に統合、両 module で共有。unknown
+  fallback は禁止して error に上げる (fail-fast)。
+
+*** §2.2.3 [CRITICAL T51-C3] nursery object header 未書込
+
+- *file:line*: src/nelisp-allocator.el:542-654, src/nelisp-allocator.el:339-365
+- *summary*: nursery で header を実書込みするのは tenured path のみ。
+  =alloc-closure= / =alloc-string-span= / =alloc-vector-span= /
+  =alloc-large-object= は bytes 予約のみ、=alloc-cons= は明示的に
+  headerless。
+- *impact*: Doc 29 §2.5 / Doc 30 §2.13 前提の family/size/forwarding
+  情報が nursery object に残らず、GC が allocator-produced object を
+  walk/forward/promote できない。
+- *proposal*: 全 heap object の header ABI を実装、または side-metadata
+  ABI を正式 contract 化して両 module で共有。
+
+*** §2.2.4 [CRITICAL T51-C4] semispace overflow 検査なし
+
+- *file:line*: src/nelisp-gc-inner.el:1172-1188, src/nelisp-gc-inner.el:1337-1360
+- *summary*: =init-semispace= は from/to の同容量を検証せず、
+  =--minor-copy-one= は =free-pointer= を =to-space :end= と比較しない。
+- *impact*: live set が to-space を超えると minor GC が黙って semispace 外
+  へ進み、Cheney copy が silent corruption。24h soak で必ず発覚する class。
+- *proposal*: semispace init 時に equal-size 必須化、copy 前に
+  =free + size <= to-end= 検査で fail-fast。
+
+*** §2.2.5 関連 MAJOR (T51-M1..M4)
+
+- M1: =collect-roots= が region.start を synthetic root 化 = nursery /
+  tenured / large-object 各 region 先頭 object が常時 live (line 408-436)
+- M2: =run-minor-gc-with-promotion= の returned :forwarded-roots が
+  promotion 後の rewrite を反映しない (line 2211-2279 / 2099-2195)
+- M3: scheduler が allocator hot path に hook されておらず、allocation
+  rate に基づく minor/major heuristic が成立しない (allocator.el:511-538 /
+  863-895、gc-inner.el:2563-2582)
+- M4: tenured exhaustion が =nelisp-allocator-tenured-overflow= signal
+  のみで emergency GC retry path なし (allocator.el:770-895)
+
+*** §2.2.6 fix path
+
+T65 (進行中) で C1-C4 + M1-M4 を bundle。T63 と独立で並行可。
+
+* §3 Tier 2 OPERATIONAL findings
+
+運用安定性に直接影響するが v1.0 ship gate 必須ではない findings。
+v1.x で iterate。
+
+** §3.1 coding subsystem (T56)
+
+*** §3.1.1 [CRITICAL T56-C1] EUC-JP streaming tail-pending bug
+
+- *file:line*: src/nelisp-coding.el:1369-1396, src/nelisp-coding.el:1519-1524
+- *summary*: =nelisp-coding--stream-euc-jp-tail-pending= が末尾 0xA1-0xFE
+  を常に pending 扱いするため、完全な EUC-JP CS1/CS2/CS3 終端 (=A4 A2=
+  / =8E B1= / =8F A2 AF=) を truncated prefix と誤判定。
+- *impact*: Doc 31 v2 chunk-boundary correctness 契約違反、EUC-JP
+  streaming decode が one-shot と非同値。
+- *proposal*: 末尾からの最短 valid prefix 判定に置換、CS1(A1-FE A1-FE)
+  / CS2(8E A1-DF) / CS3(8F A1-FE A1-FE) の complete/incomplete を明示。
+  EUC-JP stream ERT 必須追加。
+
+*** §3.1.2 関連 MAJOR
+
+- [T56-M1] =nelisp-coding-read-file-with-encoding= が
+  =insert-file-contents-literally= 全読み込み後に chunk 分割。Doc 31 v2
+  "1GB OOM-free streaming" gate 不達 (line 1743-1752)。
+- [T56-M2] EUC-JP streaming ERT が UTF-8/SJIS のみで CS2/CS3 boundary
+  split coverage gap (test/nelisp-coding-test.el:756-858)。
+- [T56-M3] =strict= policy が spec の "uncatchable / abort" と異なり
+  ordinary =signal= 実装、tests も =condition-case= で catch 前提
+  (Doc 31 §2.4 4 列 contract 不一致、coding.el:1457-1461 / 1605-1610)。
+
+*** §3.1.3 fix path
+
+T67 (proposed) coding EUC-JP tail + streaming wrapper + strict policy
+align。
+
+** §3.2 C bindings / Emacs module FFI (T58)
+
+*** §3.2.1 [CRITICAL T58-C1] partial dlsym poison
+
+- *file:line*: nelisp-runtime-module.c:127-217
+- *summary*: =dlopen= 成功直後に =runtime_handle= を global 確定、その後
+  の =dlsym= 失敗時に handle を戻さない。次回呼出は
+  =runtime_handle != NULL= で即成功扱い、未初期化 sym_* で NULL function
+  pointer crash。=dlclose= 不在で handle leak も発生。
+- *impact*: 一度の partial load で module が永続 poison state、subsequent
+  calls がプロセス致命。
+- *proposal*: local handle で全 dlsym 成功後に global へ commit、失敗時
+  =dlclose(local)= + 全 sym_* NULL 化。
+
+*** §3.2.2 [CRITICAL T58-C2] non-local exit pending 中の Emacs API 続行
+
+- *file:line*: nelisp-runtime-module.c:116-123, 252-275, 307-312, 356-359
+- *summary*: =non_local_exit_signal= 後に =env->intern= /
+  =env->make_integer= を継続呼出。Emacs module ABI 違反 (pending exit
+  中は API 呼出禁止)。
+- *impact*: error path 自体が ABI 違反、戻り値の生成や intern が未定義
+  動作寄り。
+- *proposal*: =signal_error= 後は即 return、返り値は事前用意の =nil=
+  固定。
+
+*** §3.2.3 [CRITICAL T58-C3] in-process JIT 実行に fault containment ゼロ
+
+- *file:line*: nelisp-runtime-module.c:343-345, 401-442
+- *summary*: 任意 bytes を Emacs プロセス内でそのまま実行、CPU fault /
+  abort / Rust fatal failure を Emacs signal へ変換する経路なし。
+  =release= profile に panic policy も明示なし。
+- *impact*: bad code path で Lisp error ではなく Emacs プロセス全体が
+  落ちる。エラー契約コメントが実装より強い。
+- *proposal*: comment を現実 (= CPU fault は fatal) に弱める、または
+  execute 部を subprocess 隔離。Rust panic policy 明示。
+
+*** §3.2.4 関連 MAJOR
+
+- [T58-M1] =bind_function= / =provide_feature= が funcall non-local
+  exit を check せず、=emacs_module_init= が常に 0 success 返却
+  (nelisp-runtime-module.c:453-515)。partial init success が module
+  load 成功と誤判定。
+- [T58-M2] BYTES の unibyte 性検証なし、multibyte 入力で JIT bytes
+  silent 変質 (line 337-345 / 361-385)。
+- [T58-M3] C 側 =long (*)(void)= vs Rust =extern "C" fn() -> i64= の
+  型不整合 (LP64 では一致するが ABI 表現として不正、line 436-444)。
+
+*** §3.2.5 fix path
+
+T68 (proposed) C bindings hardening (transactional dlsym + ABI compliance
++ unibyte validation + i64 統一 + Rust panic policy)。
+
+** §3.3 defs-index + org-index (T59)
+
+*** §3.3.1 [CRITICAL T59-C1] rebuild non-atomic + silent error swallow
+
+- *file:line*: src/nelisp-defs-index.el:605-617,
+  src/nelisp-org-index.el:471-482
+- *summary*: rebuild が最初に全削除 commit 後にファイル単位で再投入。
+  途中失敗で live DB が empty/partial state、しかも
+  =condition-case _ (error nil)= で握り潰し。破損 source / lock failure
+  が silent data loss。
+- *impact*: rebuild 中の reader が partial DB を見る、subsequent search
+  結果が不正。silent data loss path。
+- *proposal*: shadow DB or single-transaction snapshot swap で all-or-nothing
+  化、=condition-case= の error 握り潰し撤去。
+
+*** §3.3.2 [CRITICAL T59-C2] WAL のみ + busy_timeout / BEGIN IMMEDIATE 不在
+
+- *file:line*: src/nelisp-defs-index.el:227-228 / 153-159,
+  src/nelisp-org-index.el:211-212 / 140-146
+- *summary*: =journal_mode=WAL= は入っているが、=busy_timeout= / retry
+  / =BEGIN IMMEDIATE= がない。multi-process write 競合で =SQLITE_BUSY=
+  即失敗、しかも rebuild loop 側が黙殺。
+- *impact*: Emacs server / emacsclient / subprocess 並行運用で不安定。
+- *proposal*: =busy_timeout 5000= 設定 + =BEGIN IMMEDIATE= 移行 +
+  retry policy。error 黙殺撤去。
+
+*** §3.3.3 関連 MAJOR
+
+- [T59-M1] org-index 検索が =LIKE '%term%'= のみ、=idx_headline_title=
+  B-tree が効かず CJK trigram 未対応 (Doc 26 §6.6.3 前倒し必要)。
+- [T59-M2] defs deep walker が top-level form 全体を歩き list head を
+  一律 =call= 記録 = =defun= / =let= / 引数 symbol まで refs に混入、
+  reference 意味が広すぎる。
+- [T59-M3] hidden dir / symlink policy が =git ls-files= 成功時と
+  fallback で異なり、index 対象が環境依存。
+
+*** §3.3.4 fix path
+
+T69 (proposed) atomic rebuild (shadow DB) + busy_timeout + BEGIN IMMEDIATE
++ org-index FTS5/trigram 前倒し + defs refs 精度向上。
+
+* §4 Tier 3 ARCHITECTURAL findings
+
+design / hygiene / spec drift / Doc review。v1.0 ship blocking ではない
+が release 後 iterate で潰す対象。
+
+** §4.1 anvil.el architecture (T53)
+
+*** §4.1.1 [CRITICAL T53-C1] orchestrator-routing provider registry shape bug
+
+- *file:line*: anvil-orchestrator-routing.el:101, anvil-orchestrator.el:1942,
+  tests/anvil-orchestrator-routing-test.el:185
+- *summary*: 実装は =anvil-orchestrator--providers= を hash-table 定義
+  だが、routing は =(mapcar #'car anvil-orchestrator--providers)= alist
+  扱い。ERT は誤って alist 化した fixture で本番 shape を再現せず。
+- *impact*: =:provider auto= が本番ランタイムで壊れる、routing 機能の
+  存在意義を直接損なう。
+- *proposal*: =hash-table-keys= ベースに修正、ERT も hash-table fixture
+  に切り替え。
+
+*** §4.1.2 [CRITICAL T53-C2] MCP stdio が Content-Length framing 非対応
+
+- *file:line*: anvil-stdio.sh:209, anvil-server-commands.el:76,
+  anvil-server.el:1253
+- *summary*: =while read -r line= + =read-from-minibuffer ""= で
+  line-delimited raw JSON 前提。MCP stdio の Content-Length framing 非準拠
+  で、header 付き標準 client / 複数行 JSON / pretty-printed payload で
+  即壊れる。
+- *impact*: 標準 MCP client 互換性を最上流で詰む、相互運用性低下。
+- *proposal*: stdio transport を header-aware parser/serializer に置換、
+  line mode は legacy/test 専用 fallback。
+
+*** §4.1.3 関連 MAJOR
+
+- [T53-M1] memory engine の multi-step SQLite mutation が transaction
+  boundary なし (anvil-memory.el:425 / 905 / 1005、anvil-state.el:113
+  に macro はある)。
+- [T53-M2] memory retention が provider/namespace lifecycle を管理せず、
+  scan 後 vanished row prune なし、TTL は flag 返却のみ (line 302/380/
+  425/575)。
+- [T53-M3] worktree isolation の =--should-worktree= が
+  =supports-worktree= 必須化、generic provider が到達不能 + cleanup 不在
+  (anvil-orchestrator.el:1441 / 1464)。
+- [T53-M4] consensus protocol が summary line Jaccard 過度依存、empty /
+  template output で false unanimous (anvil-orchestrator.el:2244 / 2381)。
+- [T53-M5] =anvil-future-cancel= local tracking のみで subprocess は
+  走り続け、pool slot 占有が head-of-line blocking
+  (anvil-offload.el:209)。
+- [T53-M6] =anvil-server-id= defcustom が dead config (memory =86= /
+  orchestrator =69= で fixed id 使用、anvil.el:264)。
+- [T53-M7] =anvil-enable= が module load failure を message のみで飲み、
+  =anvil--enabled= true (anvil.el:302)。
+- [T53-M8] =make test= default が =tests/anvil-test.el= のみ、
+  routing/memory/orchestrator suite は =test-all= 依存 (Makefile:10)。
+
+** §4.2 Doc 34 (T44 + T47) Phase 9b extension substrate
+
+claude (T44) と codex (T47) 独立 review が以下に重複指摘:
+
+*** §4.2.1 共通 MAJOR — parent contract 整合性
+
+- *finding*: Doc 33 §4.2b 元 bullet (advice / minor mode / hook / 完全
+  regex / text-property face/display / process UI / file UI) のうち
+  hook 以外を別 doc 送り、代わりに window/frame/keymap/event-loop/
+  buflocal/undo を主対象化。Doc 33 errata なしで scope 再定義。
+- *T44 ref*: MAJOR-1.1, MAJOR-2.2
+- *T47 ref*: 観点 1 MAJOR (Doc 33 §4.2b 整合)
+- *proposal*: Doc 33 §4.2b errata で Doc 34 scope 再定義を formal 化、
+  または Doc 34 を =Phase 9b-interactive substrate= に rename。
+
+*** §4.2.2 共通 MAJOR — Phase 9a/9b API boundary 未確定
+
+- *finding*: Doc 33 §4.2a top 20-30 API に =put-text-property= /
+  =get-text-property= / =buffer-undo-list= が含まれるが、Doc 34 §4 で
+  同 API を Phase 9b 新規実装と宣言 (double-counting)。
+- *T44 ref*: MAJOR-2.1
+- *T47 ref*: 観点 1 MAJOR (9a/9b 境界)
+- *proposal*: §4 各 API table に "9a SHIPPED / 9b 拡張 / 9b 新規" 状態列
+  追加、overlap 表必須化。
+
+*** §4.2.3 T44 単独 MAJOR — frame stub mode invariant 未 LOCK
+
+- *finding*: §9.3 で frame stub mode 仕様 (frame-width 80 / height 24)
+  を仮置き、open question のまま v0 merge で SHIPPED 判定基準が成立せず。
+- *T44 ref*: MAJOR-3.3
+- *proposal*: §9.3 を §2.X LOCKED items に昇格、stub mode invariant を
+  v1 で固定 + §3.3.2 SHIPPED 判定を 2 段階明示 (stub 暫定 / Phase 11
+  full)。
+
+*** §4.2.4 T47 単独 MAJOR — replan gate quality
+
+- *finding*: M3/M6/M9 gate が "未完了" 単一基準のみで、coverage / bench /
+  package scenario / contract freeze の定量軸不在。downstream amendment
+  が弱く、placeholder bench に依存して close 条件成立せず。
+- *T47 ref*: 観点 4 MAJOR (gate quality + close 条件)
+- *proposal*: gate 通過条件を定量化 (件数 / scenario PASS)、bench gate
+  は post-9b.1 baseline 後 freeze と段階化。
+
+*** §4.2.5 関連 MINOR
+
+T44: §4 ABI list depth (MINOR-1.4) / SBCL precedent column (MINOR-2.4)
+/ event source contract under-spec (MAJOR-3.2、event 構造体 / timeout
+unit / queue overflow 未定) / undo ↔ Doc 30 GC contract 未定 (MAJOR-4.3)
+/ buffer-local thread-safety (MAJOR-4.1)。
+
+T47: §4 sibling 比 depth 不足 / =event-source unregister= 欠落 / =add-hook
+APPEND/DEPTH= 揺れ / per-buffer cleanup risk 不足。
+
+** §4.3 Doc 35 (T45 + T55) Claude self-extension SDK
+
+claude (T45) と codex (T55) 独立 review:
+
+*** §4.3.1 共通 MAJOR — anvil API fact errors (5 件)
+
+- *finding*: 以下の SDK 記述が ground truth と不一致:
+  1. =register-tools macro= → 実体は =anvil-server-register-tools= defun
+     (anvil-server.el:1497)
+  2. =anvil-offload-submit= / =-hard-kill= → 実体は =anvil-offload= +
+     =anvil-future-kill= (anvil-offload.el:443 / 220)
+  3. =anvil-offload= の auto =:timeout= 既備 → "Reserved for Phase 3
+     preemption" plist key のみで未実装
+  4. RLIMIT_AS / setrlimit setup → grep 0 hit、未実装
+  5. =on-stop= generic API → 存在しない、実在は =stop= event +
+     =anvil-compact-on-stop= (anvil-session.el:437 / 443)
+- *T45 ref*: MAJOR §1 anvil API 5 件、MINOR §1.4 anvil-server-ert /
+  §1.5 session lifecycle 名
+- *T55 ref*: 観点 1 MAJOR (API 名 + capability)
+- *proposal*: §1.2 / §2.3 / §3.A / §3.C / §6.1 を実装名に全面修正、
+  scaffold template も =anvil-server-register-tools= 関数ベースで書直し。
+  RLIMIT / auto-timeout / sandbox は "Phase C 新規実装" として LOC 見積
+  積み増し。
+
+*** §4.3.2 共通 MAJOR — sandbox claim と実装 gap
+
+- *finding*: =anvil-offload= は process isolation のみ (filesystem /
+  network / syscall / RLIMIT 制限なし)。Doc 35 sandbox section が誇大、
+  user 過信 risk。
+- *T45 ref*: MAJOR §4 sandbox claim
+- *T55 ref*: 観点 4 MAJOR (sandbox 根拠不整合)
+- *proposal*: "sandbox" 用語を "isolated subprocess" + "policy enforcement"
+  に二分、real syscall sandbox (seccomp / sandbox-exec / Job Object) は
+  Phase C v1 / Phase E 後送り。§6.1 全面書直し。
+
+*** §4.3.3 T45 単独 MAJOR — Doc 番号 conflict
+
+- *finding*: Doc 34 §7.3 / §8.1 で Doc 35-37 を "advice / minor mode /
+  完全 regex / process UI / file UI 完全互換" に予約済。Claude SDK は
+  Doc 36 以降に renumber 必須。
+- *T45 ref*: MAJOR §3 doc number
+- *proposal*: Claude SDK を Doc 36 or Doc 40 に移動、Doc 33 / 34 / 27 の
+  cross-ref update。
+
+*** §4.3.4 T55 単独 MAJOR — Phase E fallback と =--strict-no-emacs= gate 緊張
+
+- *finding*: =:nelisp t= でも silently host fallback する設計が Doc 27
+  =--strict-no-emacs= release qualification と対立、hidden dependency
+  温存。
+- *T55 ref*: 観点 3 MAJOR (NeLisp dependency)
+- *proposal*: fallback を dev-mode only 限定、release/CI で =:nelisp t=
+  failure を hard error 化。
+
+*** §4.3.5 共通 MAJOR — network default-allow 危険
+
+- *finding*: §3.D / §6 で network access が default allow、self-modify
+  context で supply chain / exfiltration の主経路。
+- *T45 ref*: MAJOR §4 supply chain
+- *T55 ref*: 観点 4 MAJOR (network default-allow)
+- *proposal*: default を network-deny に反転、allowlist 制。
+  =shell-allowed= と同格 explicit escalation。
+
+*** §4.3.6 関連 MINOR
+
+T45: KPI 30-60s 楽観 (LLM 生成 + reload retry 込み 2-5 min が現実) /
+ephemeral pool TTL 1h gc が user 不可視 / promotion gate 1+2 が claude
+self-closure 可能 / rationale body excerpt secret leak。
+
+T55: workflow examples が internal function 名と MCP tool id 混在 /
+ephemeral/permanent "pool" が anvil-offload pool と語彙衝突 /
+=anvil-extend-run-available-p= の =fboundp 'nelisp-eval=
+判定不十分。
+
+* §5 Cross-cutting concerns
+
+複数 audit で重複検出された structural pattern。fix priority は cross-cut
+の重みで決定。
+
+** §5.1 spec ↔ implementation drift
+
+design doc と実装の乖離が複数 subsystem で発覚:
+
+| spec doc                        | drift summary                              | source         |
+|---------------------------------+--------------------------------------------+----------------|
+| Doc 30 v2.13 object header      | family-tag enum 1..5 vs 0..4 + nursery     | T51 C2 / C3    |
+|                                 | header 未書込、cons headerless              |                |
+| Doc 30 v2.13 GC metadata        | physical register 基準でなく SSA value-id   | T49 C4         |
+|                                 | bool-vector + frame-size 0                 |                |
+| Doc 31 v2 streaming contract    | EUC-JP tail truncate + file I/O wrapper が | T56 C1 / M1    |
+|                                 | 全読込で 1GB OOM-free 不達                  |                |
+| Doc 31 §2.4 strict policy       | 仕様 "uncatchable / abort" vs 実装 ordinary | T56 M3         |
+|                                 | =signal=                                    |                |
+| Doc 35 (DRAFT v0)               | anvil API 名 5 件不一致                     | T45 §1 / T55  |
+|                                 | (register-tools macro / offload-submit etc)|                |
+| Doc 33 §4.2b                    | Doc 34 が scope を errata なしで再定義       | T44 / T47      |
+| Doc 33 §4.2a                    | Phase 9a/9b API double-counting             | T44 / T47      |
+
+*proposal*: 各 spec doc の next iteration (v2.14 / v3 / errata) で
+"impl 実体に揃えるか / spec を impl 側へ厳しく強制するか" の方向決定。
+silent drift を許容しない hygiene rule を Doc 18 (release process) に
+追加。
+
+** §5.2 fail-fast vs silent corruption
+
+fix priority の最大共通因子。"silent fallback" / "error 握り潰し" pattern
+が独立に 4 subsystem で発覚:
+
+| subsystem        | silent failure path                          | source     |
+|------------------+----------------------------------------------+------------|
+| allocator/gc     | unknown family-tag を =:cons-pool= フォール   | T51 C2     |
+|                  | バック (= silent type confusion)              |            |
+| allocator/gc     | semispace overflow を境界 check せず copy 続行 | T51 C4     |
+| C bindings       | partial dlsym poison + handle leak、次回 NULL | T58 C1     |
+|                  | function pointer crash                       |            |
+| C bindings       | =funcall= non-local exit を check せず module | T58 M1     |
+|                  | init success                                 |            |
+| defs/org-index   | rebuild が全削除 → 投入 + =condition-case=   | T59 C1     |
+|                  | error 握り潰し                                |            |
+| defs/org-index   | =SQLITE_BUSY= 即失敗 + 黙殺 (=busy_timeout=  | T59 C2     |
+|                  | 不在)                                         |            |
+| coding strict    | spec "uncatchable" vs 実装 catchable signal   | T56 M3     |
+| Doc 35 sandbox   | filesystem/network 制限なしで "sandbox" 名乗  | T45 / T55  |
+|                  | り、user 過信誘発                              |            |
+
+*proposal*: codebase 全体に "silent fallback ban" を hygiene rule 化、
+ERT で各 fallback path を明示 trigger テスト。Doc 18 (release process)
+に "fail-fast contract" 章を追加。
+
+** §5.3 contract boundary clarity
+
+provider-consumer ABI / schema bridge が design doc で約束されつつ
+実装欠落の pattern:
+
+| boundary                            | contract status                | source     |
+|-------------------------------------+--------------------------------+------------|
+| allocator → gc-inner heap region    | bridge =snapshot-regions= 約束 | T51 C1     |
+|                                     | のみ、impl 0 hit                |            |
+| allocator/gc family-tag             | enum 1..5 vs 0..4              | T51 C2     |
+| allocator/gc nursery header         | spec ABI vs impl partial       | T51 C3     |
+| C bindings module init              | success/failure ABI で          | T58 M1     |
+|                                     | non-local exit 不問              |            |
+| C bindings unibyte BYTES contract   | spec unibyte vs impl no check  | T58 M2     |
+| MCP stdio transport                 | spec Content-Length framing vs | T53 C2     |
+|                                     | impl line-delimited             |            |
+| coding strict policy                | spec abort vs impl signal       | T56 M3     |
+| anvil orchestrator provider registry| hash-table vs alist 扱い (内部) | T53 C1     |
+
+*proposal*: 各 spec doc に =contract version constant= + =boundary
+producer/consumer table= を必須化 (Doc 28 §6.10 versioned contract
+pattern を全 subsystem に拡張)。Doc 18 release process に "contract
+boundary audit gate" 追加。
+
+** §5.4 audit coverage gaps (= audit-of-audit findings)
+
+本 audit で見つけた audit pattern 自体の弱点:
+
+1. *単体 ERT pass = subsystem health* と誤解された箇所が多い (T49 bench
+   gate PASS で letrec SIGSEGV 見落し / T59 happy path テストで rebuild
+   non-atomic 見落し / T53 ERT が alist fixture で本番 shape 非再現)。
+2. *spec-vs-impl audit が独立して走らない* (Doc 30 / 31 の SHIPPED 判定
+   が impl 側 self-check のみで spec contract grep がない)。
+3. *cross-module ABI drift が CI gate にない* (T51 family-tag mismatch /
+   T53 provider registry shape は両側 grep で即発見可能だが gate なし)。
+4. *audit input 永続化が /tmp 依存* (codex sandbox の write 制約で
+   stdout 経由 → 本 task の deliverable 動機自体)。
+
+*proposal*: =anvil-dev-release-audit= を拡張、cross-module ABI grep
+scanner + spec-vs-impl drift detector + ERT fixture realism check を
+含める。
+
+* §6 Fix priority + dispatch plan
+
+** §6.1 Tier 1 (1-2 週間 wall clock、v1.0 ship 必須)
+
+- =T63 nelisp-cc CRITICAL bundle= (in-progress、§2.1 C1-C4 fix)
+  - C1 x86_64 if layout / C2 arm64 jump / C3 call-crossing RA / C4 GC
+    metadata physical location
+  - executable =if= diamond + =while= back-edge ERT 必須
+- =T65 alloc+gc CRITICAL bundle= (in-progress、§2.2 C1-C4 + M1-M4 fix)
+  - C1 region bridge / C2 family enum / C3 header ABI / C4 semispace
+    overflow + M1-M4 (synthetic root / promotion stats / scheduler / OOM)
+
+T63 と T65 は独立、並行可。両方完了で v1.0 ship gate Tier 1 解放。
+
+** §6.2 Tier 2 (3-5 週間、v1.1 / v1.2)
+
+- =T67 (proposed) coding EUC-JP tail + streaming= (§3.1)
+  - tail-pending 修正、streaming wrapper 真 streaming 化、strict policy
+    align、CS2/CS3 boundary ERT 追加
+- =T68 (proposed) C bindings hardening= (§3.2)
+  - transactional dlsym + non-local exit pending API 禁止 + unibyte
+    validation + i64 統一 + Rust panic policy + fault containment 明文化
+- =T69 (proposed) defs+org-index atomic rebuild + concurrency= (§3.3)
+  - shadow DB or single-tx swap で atomic、=busy_timeout= +
+    =BEGIN IMMEDIATE= + retry、condition-case 黙殺撤去、Doc 26 §6.6.3
+    FTS5/trigram 前倒し
+
+** §6.3 Tier 3 (5-10 週間、partial parallel)
+
+- =T70 (proposed) anvil-orchestrator-routing shape fix= (§4.1.1)
+  - =hash-table-keys= 化、ERT fixture を hash-table 化
+- =T71 (proposed) MCP stdio Content-Length transport= (§4.1.2)
+  - header-aware parser/serializer 実装、line mode を legacy fallback
+- =T72 (proposed) Doc 34 + Doc 35 LOCKED v2 finalize=
+  - Doc 34: parent contract 整合 (Doc 33 §4.2b errata or Doc 34 rename)
+    + 9a/9b API boundary table + frame stub LOCK + replan gate 定量化
+  - Doc 35: anvil API fact correct + sandbox 用語二分 + Doc 番号 renumber
+    + Phase E fallback hard-fail + network default-deny + supply chain
+    risk 章追加
+
+** §6.4 dispatch policy
+
+- T63 / T65: 既 dispatch 中、main session で direct 監視
+- T67 / T68 / T69: codex 主体 (実装 / refactor focus、claude review)
+- T70 / T71: Tier 3 polish、parallel 可
+- T72: claude 主体 (architecture / spec hygiene focus)
+
+* §7 v1.0 ship gate impact analysis
+
+** §7.1 v1.0 ship 必須条件 (cond #4 = 4 核 C runtime standalone)
+
+| ship gate item                      | blocker tier | T63 fix       | T65 fix       |
+|-------------------------------------+--------------+---------------+---------------|
+| bench gate value-verified           | Tier 1       | x86_64 if 修復 | semispace fail-fast |
+|                                     |              | call-crossing RA |             |
+|                                     |              | GC metadata ABI |              |
+| 24h soak (no silent corruption)     | Tier 1       | -             | family enum / |
+|                                     |              |               | header ABI    |
+| arm64 verify                        | Tier 1       | arm64 :jump   | -             |
+| standalone tarball ship             | Tier 1       | C runtime 完成| C runtime 完成 |
+
+T63 + T65 完了で Tier 1 全消化、v1.0 ship gate 解放可能。
+
+** §7.2 Tier 2 / Tier 3 は v1.0 ship 不要
+
+- Tier 2 (T67-T69): 運用安定性向上、v1.1 / v1.2 で iterate (warning
+  watch 扱い、user 既存 EUC-JP / FFI / index 経路は host Emacs 経由
+  fallback 可)。
+- Tier 3 (T70-T72): architectural polish、Doc LOCKED は post-v1.0 の
+  spec hygiene、anvil 側 fix は anvil release lifecycle で別管理。
+
+** §7.3 release sequencing 推奨
+
+1. T63 + T65 完了 → bench gate value-verified + 24h soak run
+2. arm64 verify (codex で actual hardware run 推奨)
+3. v1.0 standalone tarball release
+4. v1.0 release 後、T67-T72 を 4-8 週間で iterate
+5. v1.1 で Tier 2 全消化、v1.2 で Tier 3 完遂
+
+* §8 audit hygiene retrospective
+
+** §8.1 review pattern 強み
+
+- *Claude + codex 独立 review consensus*: Doc 34 (T44/T47) / Doc 35
+  (T45/T55) で同一 doc を 2 reviewer 独立投入し、共通 finding を §4.2 /
+  §4.3 で抽出可能。confirmation bias を避ける structural pattern。
+- *4 観点 critique format* (整合 / 妥当 / 依存 / risk-gate) で finding
+  比較が容易、cross-reviewer での finding mapping (= 共通 / 単独) が
+  自然に整理できる。
+- *file:line + verdict + impact + proposal の 4 つ組* で actionability
+  が高い、subsequent fix task (T63-T72) の scope 定義に直接使える。
+
+** §8.2 review pattern 弱み
+
+- *codex sandbox の write 制約*: =/tmp/*.md= 直接 write 不能で stdout
+  経由 capture が必要。本 task の deliverable 永続化動機。
+- *DRAFT v0 が main 未 merge*: codex は path resolve に
+  worktree branch 切り替えが必要、初回 dispatch (T48) で file-not-found
+  発生。retry で resolve。
+- *ERT fixture realism gap*: T53 C1 (orchestrator routing alist 化
+  fixture) が "本番 shape を再現しない ERT" の典型例。fix だけでなく
+  ERT realism も check する layer が必要。
+- *audit-of-audit*: 本 task 自体は audit を summarize するだけで、
+  個々 audit の精度 (false positive / negative) を再評価していない。
+  high-stakes finding は 3rd reviewer 推奨。
+
+** §8.3 improvement proposals
+
+1. *codex sandbox を =workspace-write= 化*: worktree 内なら write 可能
+   にする dispatch profile を anvil-orchestrator に追加。本 task で
+   /tmp 経由を強いられた弱点を構造解消。
+2. *audit doc の git-managed 永続化* (= 本 task の deliverable):
+   docs/audits/YYYY-MM-DD-master-audit.org + docs/audits/raw/ で baseline
+   を残す pattern を確立、future audit iteration の比較 baseline 化。
+3. *ERT fixture realism check*: anvil-dev-release-audit に "ERT fixture
+   が本番 data shape を再現するか" の grep scanner を追加 (= hash-table
+   vs alist の混在検出など)。
+4. *spec-vs-impl drift gate*: Doc 28-32 の =contract version constant=
+   を一覧化、impl 側 grep で version mismatch を CI で検出する gate
+   追加。
+5. *3rd reviewer escalation*: CRITICAL verdict の audit は最低 2 reviewer
+   独立 + user signoff、MAJOR REVISIONS は 1 reviewer + user で OK の
+   2-tier policy 化。
+
+* §9 Appendix: source mapping
+
+** §9.1 raw audit/review files
+
+| file                                         | size    | T#  | source                          |
+|----------------------------------------------+---------+-----+---------------------------------|
+| docs/audits/raw/T44-claude-doc34.txt         | 28 KB   | T44 | Claude Doc 34 review            |
+| docs/audits/raw/T45-claude-doc35.txt         | 28 KB   | T45 | Claude Doc 35 review            |
+| docs/audits/raw/T47-codex-doc34.log          | 11 KB   | T47 | codex Doc 34 review             |
+| docs/audits/raw/T49-codex-nelisp-cc.log      | 8 KB    | T49 | codex nelisp-cc audit           |
+| docs/audits/raw/T51-codex-allocator-gc.log   | 8 KB    | T51 | codex allocator+gc-inner audit  |
+| docs/audits/raw/T53-codex-anvil-arch.log     | 10 KB   | T53 | codex anvil arch audit          |
+| docs/audits/raw/T55-codex-doc35-retry.log    | 11 KB   | T55 | codex Doc 35 retry              |
+| docs/audits/raw/T56-codex-coding.log         | 8 KB    | T56 | codex coding audit              |
+| docs/audits/raw/T58-codex-c-bindings.log     | 9 KB    | T58 | codex C bindings audit          |
+| docs/audits/raw/T59-codex-defs-org-index.log | 8 KB    | T59 | codex defs+org-index audit      |
+
+** §9.2 finding count summary
+
+| Tier   | category                | count | dispatch task              |
+|--------+-------------------------+-------+----------------------------|
+| Tier 1 | nelisp-cc CRITICAL      | 4 + 6 | T63 (in-progress)          |
+| Tier 1 | allocator+gc CRITICAL   | 4 + 4 | T65 (in-progress)          |
+| Tier 2 | coding subsystem        | 1 + 3 | T67 (proposed)             |
+| Tier 2 | C bindings              | 3 + 3 | T68 (proposed)             |
+| Tier 2 | defs+org-index          | 2 + 3 | T69 (proposed)             |
+| Tier 3 | anvil-orchestrator routing | 1  | T70 (proposed)             |
+| Tier 3 | MCP stdio framing       | 1     | T71 (proposed)             |
+| Tier 3 | Doc 34 + Doc 35 finalize | 4 + 4 | T72 (proposed)            |
+
+合計: CRITICAL 20 件 + MAJOR 27 件 + MINOR 10+ 件 (本 master doc では
+high-impact のみ抽出、MINOR は raw/ 参照)。
+
+** §9.3 cross-cutting concern density
+
+| concern                          | subsystems hit | sources                             |
+|----------------------------------+----------------+-------------------------------------|
+| spec ↔ impl drift               | 7              | T49 / T51 / T56 / T44 / T47 / T45 / T55 |
+| fail-fast vs silent corruption   | 8              | T51 / T58 / T59 / T56 / T45 / T55  |
+| contract boundary clarity        | 8              | T49 / T51 / T58 / T53 / T56        |
+| audit coverage gaps              | 4              | (audit-of-audit 抽出)                |
+
+* §10 Closing
+
+本 master audit doc は 8 review/audit (10 raw inputs) を統合し、Tier 別
+fix priority と dispatch plan を確定した。
+
+- *Tier 1 dispatch 中*: T63 (nelisp-cc) + T65 (alloc+gc)、両者完了で
+  v1.0 ship gate 解放。
+- *Tier 2 proposed*: T67 (coding) + T68 (C bindings) + T69 (index)、
+  v1.1-v1.2 iterate。
+- *Tier 3 proposed*: T70 (routing) + T71 (MCP framing) + T72 (Doc
+  finalize)、parallel 可。
+
+cross-cutting concerns (§5) は anvil-dev-release-audit / Doc 18 release
+process / ERT fixture realism check / spec-vs-impl drift gate の 4 点
+で構造強化が望ましい。
+
+audit hygiene retrospective (§8) は次回 audit iteration の baseline と
+し、本 doc は future master-audit-YYYY-MM-DD.org の format prototype
+として参照される。
+
+---
+
+(end of master audit, T66 SHIPPED)

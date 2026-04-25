@@ -1,0 +1,85 @@
+# Doc 35 codex review
+
+## verdict: MAJOR REVISIONS
+
+## 観点 1 (anvil 整合)
+- [MAJOR] `35-claude-self-extension-sdk.org:373` API 名の fact が崩れています。`anvil-offload-submit` / `anvil-offload-hard-kill` は実在せず、実装の public API は `anvil-offload` と `anvil-future-kill` です (`anvil-offload.el:443`, `anvil-offload.el:220`)。
+  reasoning: sandbox 核心部の call graph が誤記だと、spec 全体の feasibility と実装見積が崩れます。加えて `anvil-offload` は future を返す API で、doc の「submit/hard-kill」前提とは制御面も違います。
+  proposal: §1.2, §3.C, §4.C を実装名に合わせて全面修正し、`future-await/cancel/kill/checkpoint` まで含めた state machine を明記してください。
+
+- [MAJOR] `35-claude-self-extension-sdk.org:114` の `register-tools macro` は、現 repo では確認できません。確認できる bulk register の実体は `anvil-server-register-tools` だけです (`anvil-server.el:1497`)。
+  reasoning: scaffold が「macro 生成形式を選択」とまで依存している一方、ground truth の shipped API は関数ベースです。ここを既存資産扱いすると「新規発明していない」の主張が弱くなります。
+  proposal: v0 では macro 前提を落とし、authoritative path を `anvil-server-register-tools` に一本化してください。macro は memory/別 branch 由来なら appendix に降格が妥当です。
+
+- [MINOR] `35-claude-self-extension-sdk.org:676` の `on-stop` は generic API としては存在しません。実在するのは Claude hook event `stop` と、その先で呼ばれる `anvil-compact-on-stop` です (`anvil-session.el:437`, `anvil-session.el:443`)。
+  reasoning: cleanup extension point を「既存 hook あり」と読ませる書き方ですが、現状の `anvil-session-hook-dispatch` に generic callback registry は見当たりません。
+  proposal: 「Stop event に extend cleanup を追加実装する」と書き換え、既存実装の再利用範囲を限定してください。
+
+- [POSITIVE] `35-claude-self-extension-sdk.org:108-110` の `anvil-server-register-tool(s)` 再利用方針は筋が良いです。`anvil-server` 側も `:intent/:layer/:stability` を pass-through できる設計です (`anvil-server.el:1469-1481`)。
+  reasoning: ここは新規 registration substrate を作らずに済むので、spec のうち最も堅い足場です。
+  proposal: scaffold 出力をこの spec-list path に寄せ、`--register-tools/--unregister-tools` の module pattern を canonical にしてください。
+
+## 観点 2 (workflow 現実性)
+- [MAJOR] `35-claude-self-extension-sdk.org:566` Example 1 の前提 tool 名が現実の anvil surface と一致していません。repo にあるのは `anvil-pdf-text` / `anvil-pdf-info` で (`anvil-pdf.el:124`, `anvil-pdf.el:131`)、`anvil-pdf-extract-text` は確認できません。
+  reasoning: example が「既存 tool の不足検知」を起点にしているのに、起点自体が現行 surface とズレています。しかも `anvil-pdf.el` はこのファイル上では MCP register もしておらず、helper layer です。
+  proposal: workflow 例は実在 MCP tool に合わせて書き直してください。少なくとも helper/function 名と MCP tool id を混同しないこと。
+
+- [MAJOR] `35-claude-self-extension-sdk.org:581-590` と `35-claude-self-extension-sdk.org:774-776` の `30-60s/tool` は、Example 1 の内容に対してかなり楽観的です。
+  reasoning: この例は scaffold, byte-compile, register, smoke ERT, 実運用 1 回, user signoff, permanent 配置まで入っています。さらに PDF 系は Python/pymupdf 依存です (`anvil-pdf.el:10`, `anvil-pdf.el:19-21`)。`anvil-orchestrator-submit-and-collect` 自体も「30s to a few minutes」を想定しています (`anvil-orchestrator.el:3229`)。現実的には「最短 happy path」と「常用 median」を分けないと KPI が壊れます。
+  proposal: KPI を `ephemeral scaffold+load smoke` と `promote完了` に分け、後者は signoff 待ち込みで別指標にしてください。
+
+- [MINOR] `35-claude-self-extension-sdk.org:635-637` Example 3 は function 名と MCP tool id が混在しています。現行 surface は `org-read-headline` / `memory-search` / `git-log` です (`anvil-org.el:1611`, `anvil-memory.el:2137`, `anvil-git.el:581`)。
+  reasoning: “Claude actual self-modify scenario” を名乗るなら、LLM が叩く surface は MCP id 基準で揃えるべきです。
+  proposal: examples は MCP id に統一し、内部関数名は appendix に退避してください。
+
+- [MINOR] `35-claude-self-extension-sdk.org:460-463` の ephemeral/permanent “pool” 命名は、既存 `anvil-offload` の subprocess pool (`anvil-offload.el:74-85`) と衝突的です。
+  reasoning: doc 全体で `pool` が「process pool」と「tool storage pool」の二義になります。
+  proposal: `tool pool` ではなく `ephemeral registry` / `permanent registry` に改名した方が安全です。
+
+## 観点 3 (NeLisp dependency)
+- [MAJOR] `35-claude-self-extension-sdk.org:48` と `35-claude-self-extension-sdk.org:431` が Phase 9a/9b 境界を曖昧にしています。Doc 34 は 9b を post-v2.0 の後段に置いており、dispatch 前提はまず 9a です (`34-phase9b-extension-substrate.org:27-35`, `34-phase9b-extension-substrate.org:81-90`)。
+  reasoning: Doc 35 は Layer 2 説明で `Phase 9a/9b` を束ねていますが、runtime dispatch gate を 9b まで含むように読むと dependency が不必要に重くなります。
+  proposal: Phase E の hard dependency を 9a のみに絞り、9b は “coverage expansion” として別節に切ってください。
+
+- [MAJOR] `35-claude-self-extension-sdk.org:440-442` の host Emacs fallback は、parent の `--strict-no-emacs` gate と緊張しています。Doc 27 では host Emacs auto-fallback は dev 補助線であり release qualification には不採用です (`27-phase7-c-runtime-self-impl.org:739-750`)。
+  reasoning: Doc 35 の書き方だと `:nelisp t` でも silently host fallback してしまい、NeLisp path の hidden dependency を見逃す設計になります。
+  proposal: fallback を `dev-mode only` に限定し、release/CI では `:nelisp t` failure を hard error にする gate を明文化してください。
+
+- [MINOR] `35-claude-self-extension-sdk.org:72-76` の A-D / E / F 分割自体は概ね clean です。
+  reasoning: host Emacs で先に価値を出し、NeLisp を後段最適化として差し込む順序は妥当です。
+  proposal: ただし E の dispatch 条件と fallback 禁止条件を parent doc の strict gate に合わせて sharpen する必要があります。
+
+## 観点 4 (security / safety)
+- [MAJOR] `35-claude-self-extension-sdk.org:371-385` の “sandbox” は、現状の `anvil-offload` を根拠にする限り成立していません。実装は長寿命 `emacs --batch` REPL に任意 form を `eval` しているだけです (`anvil-offload.el:14-18`, `anvil-offload.el:127-137`, `anvil-offload.el:443-471`)。
+  reasoning: doc は file write 制限, shell deny, network policy, RLIMIT_AS, RLIMIT_NPROC, 別 UID などを語っていますが、確認できる shipped code にはそれらがありません。`anvil-offload` は process isolation であって sandbox ではない、というのが現状の正しい評価です。
+  proposal: security section は “sandbox” を “isolation baseline only” に格下げし、真の sandbox は別実装 task として切り出してください。現状前提のまま self-modify を許すのは危険です。
+
+- [MAJOR] `35-claude-self-extension-sdk.org:465-471` と Example 1 `35-claude-self-extension-sdk.org:585-590` では、user signoff は permanent 化の gate でしかなく、ephemeral tool 実行自体は signoff 前に完了します。
+  reasoning: user 不可視 mitigation が弱いです。危険なのは permanent 汚染だけでなく、unreviewed ephemeral code が即座にファイル/ネットワーク/シェルへ触れることです。promotion gate は実行前安全策ではありません。
+  proposal: 高権限 policy の ephemeral tool は `execute-before-review` を禁止し、最低でも first run 前に diff preview + explicit consent を要求してください。
+
+- [MAJOR] `35-claude-self-extension-sdk.org:385` と `35-claude-self-extension-sdk.org:661-666` の `network default-allow` は self-modify 文脈では危険すぎます。
+  reasoning: supply chain / exfiltration リスクの主経路は network です。しかも現実装には network deny を enforce する仕組みが見当たりません。
+  proposal: default は `network-deny` に反転し、allowlist 制にしてください。`shell-allowed` と同格の explicit escalation 扱いが必要です。
+
+- [MINOR] `35-claude-self-extension-sdk.org:687-692` の promotion gate は permanent pool 品質管理としては方向性が良いです。
+  reasoning: git 管理 + optional codex review + user signoff は permanence に対しては妥当です。
+  proposal: ただし「実行前 safety」と「昇格前 quality」を分離して書くべきです。今は 1 つの gate に過剰な責務を載せています。
+
+## summary
+- top 3 MAJOR
+- `§3.C sandbox` の根拠が現行 `anvil-offload` 実装と不整合です。process isolation を sandbox と呼んでおり、API 名・resource 制限・policy enforcement も事実とズレています。
+- `Phase E fallback` が parent の `--strict-no-emacs` gate と噛んでいません。` :nelisp t ` でも host fallback する設計は hidden dependency を温存します。
+- workflow examples/KPI が現行 anvil surface と時間現実に合っていません。特に PDF 例は前提 tool 名からズレています。
+
+- top 3-5 MINOR
+- `register-tools macro` は現 repo で verify できず、authoritative shipped API は `anvil-server-register-tools` です。
+- `on-stop` は generic API ではなく、実在するのは `stop` event と `anvil-compact-on-stop` です。
+- examples が internal function 名と MCP tool id を混在させています。
+- `ephemeral/permanent pool` は `anvil-offload` pool と語彙衝突しています。
+- promotion gate の説明が「実行前 safety」と「昇格前 quality」を混同しています。
+
+- positives
+- `anvil-server-register-tool(s)` と discovery metadata を再利用する方針は堅いです。
+- Phase A-D を host Emacs 先行、Phase E を後段追加にする分割は大枠で正しいです。
+- permanent を git 管理に寄せる方針は auditability の面で良いです。

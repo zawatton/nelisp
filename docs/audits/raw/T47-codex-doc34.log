@@ -1,0 +1,85 @@
+`/tmp/doc34-codex-review.md` への書き出しは試行しましたが、この環境は read-only で失敗しました。内容はそのまま下に置きます。
+
+```md
+# Doc 34 codex review
+
+## verdict: MAJOR REVISIONS
+
+## 観点 1 (sibling v2 整合)
+- [MAJOR] Doc 34 は `Doc 33 §4.2b` の detailed decomposition を名乗りつつ、親が明示した coverage の大半を scope 外へ逃がしています。[Doc 34:61-79, 954-979] vs [Doc 33:571-584]
+  reasoning: 親の `4.2b` は `advice / minor mode / hook / 完全 regex / text-property face/display / process UI / file UI` を coverage 拡張として LOCK していますが、Doc 34 は `hook` 以外を別 doc 送りにし、代わりに `window/frame/keymap/event-loop/buflocal/undo` を主対象化しています。これは「詳細化」ではなく phase 再定義で、LOCKED parent contract 継承としては不正確です。
+  proposal: `Doc 33 §4.2b` を amendment して `interactive editor substrate` と follow-up docs を正式化するか、Doc 34 自体を `Phase 9b-interactive substrate` に改名して親とのズレを消すべきです。
+
+- [MAJOR] Phase 9a/9b 境界の継承が不正確です。[Doc 34:83-96] vs [Doc 33:554-564]
+  reasoning: 親 Doc 33 は `put-text-property / get-text-property` と `buffer-undo-list primitive` を明示的に `9a` 側へ入れていますが、Doc 34 の `1.2` は 9a 要約から text-property を落とし、9b 側に textprops/undo を再配置していて overlap が見えません。sibling v2 群がやっている「既存 contract を consume し、どこからどこまでを自分が追加するか」の表現密度に達していません。
+  proposal: `Doc 34a(Phase 9a)` と本 doc の overlap/non-overlap 表を追加し、`9a base primitive` と `9b extension semantics` を API 単位で明示してください。
+
+- [MINOR] §4 の API/ABI 記述深度が sibling v2 より浅いです。[Doc 34:585-708] vs [Doc 29:423-458], [Doc 30:757-770]
+  reasoning: sibling v2 は `入力境界 / 出力境界 / producer-consumer / versioned contract` まで固定していますが、Doc 34 は public API の平板な一覧に留まり、display/event/gap-buffer/GC との境界が別表化されていません。特に `event source` と `frame backend` は新設 contract なのに versioning も consumer 定義もありません。
+  proposal: §4 を `Architecture + contract boundary` に拡張し、`Phase 8 gap-buffer consumer`、`Doc 33 §6.1 display-spec consumer`、`Phase 7 GC interaction` を sibling と同じ粒度で固定してください。
+
+- [MINOR] header の依存宣言が実際の prerequisite とずれています。[Doc 34:5-6, 406-408, 1082-1084]
+  reasoning: 本文では `Phase 8 SHIPPED` と `Phase 9a SHIPPED` を着手前提に置いていますが、`DEPENDS_ON` には Doc 34a 相当や Phase 8 の設計 source が入っていません。LOCKED 文書群に合わせるなら「何を consume しているか」を header でも揃えるべきです。
+  proposal: `DEPENDS_ON` に `Phase 8 design doc` と `Doc 34a Phase 9a` を追加するか、未作成なら `pending prerequisite doc` として明記してください。
+
+## 観点 2 (scope 妥当性)
+- [MAJOR] package gate と実 scope が噛み合っていません。[Doc 34:913-926, 954-979]
+  reasoning: `helm/ido/dired/magit/org-mode/undo-tree` を minimum scenario gate に置いていますが、同じ文書で `minor mode / advice / 完全 regex / process UI / file UI / advanced undo` を scope 外にしています。これでは「popular package が動く」の代表ケースが、文書自身の out-of-scope に依存します。
+  proposal: gate package を `本 doc だけで成立するもの` に落とすか、逆に package gate を維持したいなら必要 API を in-scope へ戻してください。
+
+- [MAJOR] keymap subsystem は「minor-mode 互換」を主張する一方、必要 contract を API に落としていません。[Doc 34:438, 623-638, 845-848, 1053-1062]
+  reasoning: 本文は `overriding-local-map` 系、`minor-mode-map-alist`、`text-property keymap`、`emulation-mode-map-alists` の precedence が重要だと認めていますが、§4.3 の API list にはそれらが一切ありません。これでは `evil/magit` 系を gate に置く根拠がありません。
+  proposal: これら special variables / lookup precedence を §4.3 の frozen contract に昇格させるか、`minor-mode compatibility` の主張自体を下げてください。
+
+- [MINOR] 9b.1→9b.2→9b.3→9b.4 の大枠は妥当ですが、undo の位置づけがまだ曖昧です。[Doc 34:323-330, 547-583]
+  reasoning: undo は `text-properties` と `buffer-local` への依存は明確ですが、`window/frame` は「推奨」依存に留まり、sub-phase 境界が hard prerequisite になっていません。ここは foundation 後に 9b.4 を先行できるのか、UI 連動確認まで待つのかを決める必要があります。
+  proposal: `9b.4 = foundation-only ship` と `9b.4 = UI-integrated ship` を分け、どちらを release gate に採るか固定してください。
+
+## 観点 3 (display 依存境界)
+- [MAJOR] 「frame だけが display 強依存」という主張に対し、Doc 34 自身が親 contract 変更を提案しており leak しています。[Doc 34:118-125, 520-521, 783-789, 1023-1031] vs [Doc 33:828-869]
+  reasoning: `stub backend` を成立させるために `Doc 33 §6.1 contract に capability flag 追加` を mitigation に入れていますが、これは LOCKED 親 spec への後付け変更です。display 依存を切るどころか、9b 側の都合で 10/11 側 contract を押し広げています。
+  proposal: `stub mode` を Doc 33 既存 contract の範囲内で定義するか、親 doc amendment を前提条件として明示してください。
+
+- [MAJOR] window と event-loop は現状の記述では display 非依存で完結していません。[Doc 34:107-128, 443-452, 483-493, 793-805, 1015-1031] vs [Doc 33:619-625, 861-868]
+  reasoning: event-loop は `keyboard + SIGWINCH` や timeout polling に依存し、しかも `poll/select` の有無が open question のままです。window も `split/enlarge/shrink/window-start` を出しているのに geometry source と redisplay/stub semantics が未定義で、frame abstractionなしに閉じていません。
+  proposal: `display-independent` の主張を `mockable` に下げるか、window geometry と event source の stub invariants を §4 で固定してください。
+
+- [MINOR] text-properties も実は display/event leak を含んでいます。[Doc 34:362-368, 671-682, 992-996, 1058-1062]
+  reasoning: `get-char-property` を `overlay 含む取得` と書きつつ overlay は本 doc の scope に存在せず、open question では `text-property keymap` precedence まで持ち込んでいます。storage-only と言いながら、lookup/render/input 側の意味論が混ざっています。
+  proposal: `overlay` と `text-property keymap` を scope 外に落として semantics を削るか、最小 overlay contract を別節で明示してください。
+
+## 観点 4 (risks / gates)
+- [MAJOR] M3/M6/M9 replan gate が sibling v2 水準に達していません。[Doc 34:863-880]
+  reasoning: gate 条件が単に `未完了` で、coverage・bench・package scenario・contract freeze といった測定軸がありません。しかも `9b.2 未完了なら frame defer`、`9b.3 未完了なら undo defer` と downstream amendment が弱く、実リスクの中心である keymap/event-loop/package compatibility を捉えていません。
+  proposal: sibling v2 と同様に `何が何件 PASS なら通過か` を定量化し、gate fail 時の doc amendment 先も subsystem 単位で具体化してください。
+
+- [MAJOR] close 条件が placeholder bench に依存しており gate として成立していません。[Doc 34:755-769, 928-939]
+  reasoning: §5.2 は target 数値を `placeholder` と明言しているのに、§7.2 ではその達成を Phase close 条件に入れています。LOCKED 前提の gate としては未定義値参照で、sibling v2 の ratio/absolute 2-tier gate より明確に弱いです。
+  proposal: `bench gate は post-9b.1 baseline 後に freeze` と段階化するか、今の段階で relative target を先に固定してください。
+
+- [MINOR] risk register は 8 件あるものの、cross-system concern の配分が偏っています。[Doc 34:807-820, 822-835, 850-861]
+  reasoning: `buffer-local GC 解放` と `interval tree GC 解放` は ERT に出てくるのに、risk register では undo の GC 連動ばかりが前面にあり、event source lifecycle や per-buffer structure cleanup は独立 risk になっていません。cross-system concern を強調するなら、GC/cleanup と event-source deregistration を別項目化した方が gate に効きます。
+  proposal: `per-buffer metadata cleanup` と `event source lifecycle/unregister leak` を追加し、現 8 件を 9-10 件へ拡張してください。
+
+- [POSITIVE] risk の方向性自体は重要ポイントを押さえています。[Doc 34:791-805, 822-848, 882-896]
+  reasoning: `non-blocking I/O`、`gap-buffer/textprop 整合`、`keymap chain`、`package gate 客観性` を risk として表に出しているのは正しいです。v0 としては「どこが壊れやすいか」の勘所は悪くありません。
+  proposal: この骨格は維持し、各 risk を sibling v2 と同じく contract/gate/amendment に結び直してください。
+
+## summary
+- top 3 MAJOR (= LOCKED 前必須修正)
+- Doc 33 §4.2b の coverage を Doc 34 が実質再定義している点を解消すること。親 amendment か doc rename のどちらかが必要。
+- 9a/9b 境界を API 単位で再固定すること。特に text-property と undo primitive の overlap を曖昧にしたまま LOCKED は不可。
+- package gate と actual scope を一致させること。現状の `helm/ido/dired/magit/org-mode/undo-tree` は out-of-scope 項目に依存しすぎています。
+
+- next 3-5 MINOR (= 望ましい修正)
+- §4 を sibling v2 並みに `input/output/consumer/version` まで深掘りする。
+- `event-source` contract から `unregister` 欠落と命名揺れ (`pull` / `pull-next`) を解消する。
+- `add-hook` の `APPEND/DEPTH` 表現揺れを修正し、Emacs 互換 signature を固定する。
+- release cycle 記述の揺れ (`9b.1→v2.1, 9b.2→v2.2...` と `v2.1.0/1/2/3`) を一本化する。
+- risk register に `per-buffer metadata cleanup` と `event source lifecycle` を追加する。
+
+- positives (= keep as-is)
+- 9b を `foundation / interactive / display-abstract / undo` に割る発想自体は整理されている。
+- `stub backend` と `mock event source` で ERT 駆動しようとする方向性は妥当。
+- out-of-scope を明示しているので、修正時に scope を絞り直しやすい。
+```
