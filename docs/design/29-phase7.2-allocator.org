@@ -1,0 +1,723 @@
+#+TITLE: Phase 7.2 — allocator NeLisp 化 (Doc 27 §3 7.2 詳細設計)
+#+DATE: 2026-04-25
+#+AUTHOR: zawatton + Claude (session-B 起草、autonomous parallel dev、session-A monitored)
+#+STATUS: DRAFT-2026-04-25 (session-A による orchestrator review + user signoff で LOCKED 化)
+
+* §0 要旨 (TL;DR)
+
+Doc 27 LOCKED 2026-04-25 (=2a52bda main=) で確定した *NeLisp purity max
+path* (=syscall= 最小 Rust + 残 3 核 NeLisp) の第 2 番目の核 =
+*Phase 7.2 allocator NeLisp 化* の詳細設計。
+
+Doc 27 §3 7.2 で示された粗い構成 (~800-1500 LOC NeLisp / 3-4 週間) を、
+3 sub-phase (7.2.1〜7.2.3) + LOCKED 10 items + ERT smoke +20 + 完遂
+gate (alloc-heavy 5x 軸 + per-pool throughput) に分解する。
+
+*位置づけ*:
+- Phase 7.0 (Rust syscall stub) は SHIPPED (commit =7df50f8= main merge)
+- Phase 7.1 (NeLisp native compiler) は LOCKED-2026-04-25-v2 (Doc 28、
+  user signoff 待ち)
+- Phase 7.2 SHIPPED は Phase 7.3 (GC inner NeLisp 化) の前提条件 =
+  GC metadata contract (Doc 28 §2.9) を消費する collector 側を支える
+  heap layout の lock-in
+- SBCL =src/runtime/alloc.lisp= (~3000 LOC CL) + Emacs =src/alloc.c=
+  (~6000 LOC C) の dual precedent reference の上に、*scope 縮小*
+  (NeLisp subset / 2-generation MVP / per-type pool / Phase 7.1 native
+  compile 前提) で *1500-3000 LOC NeLisp + ~50 LOC Rust / 3-5 週間
+  (anvil leverage 前提)* を狙う
+
+*工数見積*: 3-5 週間 (anvil.el + 並列 session full leverage 前提)。
+Doc 27 §3 7.2 「3-4 週間」を base case、Phase 7.1 (native compiler)
+の hot-path JIT を前提に sub-phase 7.2.3 で per-type pool + bulk API
+を後付けする。
+
+*完遂 gate*:
+- =alloc-heavy (cons stress 1M)= が Phase 7.1 完遂 gate (=bytecode 比 5x=)
+  の baseline 上で *C-equivalent 70-90% throughput* (~7-9M alloc/sec)
+- =per-pool stress= (cons / string / vector / closure) で各 pool 単独
+  ~10M alloc/sec
+- promotion / fragmentation の age-aware 動作確認
+- ERT +20 (=test/nelisp-allocator-test.el=)
+- =cargo build --release= / =cargo test --all= / =cargo clippy= 0 warning
+- NeLisp 既存 ERT regression-free (Phase 7.1 完遂時点 1086+44〜49)
+
+* §1 背景
+
+** 1.1 Doc 27 LOCKED 後の position
+
+Doc 27 (2a52bda) §3 sub-phase table:
+
+| Phase | scope                                           | 期間          |
+|-------+-------------------------------------------------+---------------|
+| 7.0   | Rust syscall stub + scaffold                    | 2-3 週間      |
+| 7.1   | NeLisp native compiler 新設 (Doc 28)            | 12-20 週間    |
+| *7.2* | *allocator NeLisp 化 (本 doc)*                  | *3-4 週間*    |
+| 7.3   | GC inner NeLisp 化 (最難)                        | 1-2 ヶ月      |
+| 7.4   | coding NeLisp 化                                 | 2-3 週間      |
+| 7.5   | integration + standalone E2E                    | 2 週間        |
+
+7.2 が SHIPPED していなければ 7.3 (GC) は heap layout 不定で着手不能。
+Phase 7.2 = GC 着手の前提 + Phase 7.1 native compiler の hot-path
+target 第一弾。
+
+** 1.2 既存 NeLisp memory layout (踏襲できる前提)
+
+NeLisp は host Emacs の =Lisp_Object= layout を踏襲し、3-bit low-tag
+pointer + 単一 heap (host Emacs allocator 経由) で動作してきた。Phase
+7.2 では host Emacs allocator を捨て、NeLisp 自前 allocator が
+=mmap= (Phase 7.0 syscall) でページ確保 → bookkeeping を Lisp で実装する。
+
+| 既存資産                            | LOC | 7.2 での役割                                       |
+|-------------------------------------+-----+----------------------------------------------------|
+| =src/nelisp-types.el= (3-bit tag)   | -   | tag 定義踏襲、本 phase で変更しない                |
+| =src/nelisp-runtime= (Phase 7.0)    | 689 | =mmap= / =munmap= / =mprotect= 経由でページ確保    |
+| =src/nelisp-cc= (Phase 7.1)         | -   | hot-path (alloc / promotion) を JIT、bytecode 比 ~30-50x |
+| =src/nelisp-defs-index= (Phase 6.5) | 793 | per-type pool の type 解決 1 query                 |
+
+= Phase 7.2 allocator は *Phase 7.0 mmap 経由 / Phase 7.1 native JIT /
+=nelisp-defs-index= type 解決* の interface が既に固定された位置で
+動く。自由度が制約され設計が安定する (Doc 28 §1.2 と同 pattern)。
+
+** 1.3 SBCL alloc.lisp + Emacs alloc.c dual precedent reference
+
+NeLisp の allocator は SBCL =src/runtime/alloc.lisp= (CL ~3000 LOC、
+25 年維持) と Emacs =src/alloc.c= (C ~6000 LOC、Emacs 1985-) の dual
+precedent を踏まえ、*runtime purity 軸で両者を超え、allocator
+capability 軸では両者の MVP subset* を狙う (Doc 28 §1.3 と同 pattern)。
+
+| 軸           | SBCL alloc.lisp          | Emacs alloc.c            | NeLisp Phase 7.2          |
+|--------------+--------------------------+--------------------------+---------------------------|
+| 実装 lang    | CL                       | C                        | NeLisp                    |
+| GC type      | generational mark-region | mark-sweep (主)          | Phase 7.3 で決定           |
+| allocator    | bump + free-list         | block + free-list        | bump + free-list (2 gen)  |
+| heap layout  | semi-space (Cheney)      | per-type block           | 2-gen (nursery / tenured) |
+| LOC          | ~3000 CL                 | ~6000 C                  | 1500-3000 NeLisp          |
+| thread model | multi (mutator + GC)     | single (主) / pthread mutex | single MVP (Phase 7.5+ multi) |
+
+*SBCL precedent との差別化軸*:
+1. *Purity*: NeLisp は host Emacs allocator を Phase 7.2 で永久放棄、
+   pure NeLisp + mmap syscall pipeline を確立する
+2. *Bootstrap simplicity*: SBCL は genesis-2 で半空間 image を構築する
+   が、NeLisp は Phase 7.0 syscall stub の =mmap= 直叩きで簡略化
+3. *Cheney semispace は Phase 7.3 で導入*: Phase 7.2 の本 phase は
+   bump + free-list の moveable arena まで、コピー型は GC 着手と co-design
+
+*Emacs alloc.c precedent との差別化軸*:
+1. per-type block (=cons_block= / =string_block= 等) の発想は踏襲、
+   ただし 2-generation 化 (nursery / tenured) で promotion を入れる
+2. host C dependency を完全除去、=malloc= / =free= は Phase 7.0 syscall
+   stub 経由 =mmap= に置換
+
+** 1.4 Doc 28 §2.9 GC metadata contract との関係
+
+Doc 28 §2.9 LOCKED で *Phase 7.1 in-scope* に追加された GC metadata
+contract (safe-point ID / live root bitmap / frame layout descriptor)
+を、Phase 7.2 allocator も *root scanning 候補のページ範囲を提供する
+側* として参照する。
+
+具体的に:
+- allocator は確保したページを =GC_REGION= entry として登録
+  (=nelisp-allocator--region-table=)
+- mark phase (Phase 7.3) は GC metadata contract で root を取得し、
+  heap region 内の object graph を walk
+- contract format は =GC_METADATA_VERSION= (Doc 28 §6.10) で versioned、
+  Phase 7.2 が独自に format 変更しないこと
+
+= Phase 7.2 allocator は *GC metadata contract の consumer ではなく
+provider 側*、Phase 7.3 着手時に retrofit が不要な構造で実装する。
+
+* §2 LOCKED decisions (default = 第一推奨、user signoff 待ち)
+
+Doc 28 §2 schema (10 LOCKED items) に揃える。default 案を提示し
+session-B が DRAFT で fix、orchestrator review (claude+codex) で
+precedent miss を指摘してもらう構造。signoff は user。
+
+** 2.1 allocator algorithm [推奨 = A bump + free-list 2-generation]
+
+| 候補 | 戦略                                                 | 利点                                       |
+|------+------------------------------------------------------+--------------------------------------------|
+| A    | bump (nursery) + free-list (tenured) (default)       | SBCL/Emacs dual precedent middle path、moveable arena まで |
+| B    | Cheney semispace 直導入                              | Phase 7.3 GC と同時導入、本 phase scope 過大 |
+| C    | mark-region (= G1GC 風)                              | scope 過大、Phase 8+ で検討                 |
+
+*推奨 A 理由*:
+- Cheney semispace は Phase 7.3 (GC inner) で collector 本体と co-design
+  するのが rational、本 phase は moveable arena まで
+- bump allocator は hot-path で 1 命令 (pointer increment) = Phase 7.1
+  native JIT で C 同等速度
+- free-list (tenured) は size-class 化で fragmentation 抑制
+
+** 2.2 heap layout [推奨 = A 2-generation (nursery / tenured)]
+
+| 候補 | 戦略                                                | 利点                                     |
+|------+-----------------------------------------------------+------------------------------------------|
+| A    | 2-generation (nursery 4MB default / tenured 64MB) (default) | generational hypothesis 活用、Phase 7.3 で minor GC 容易 |
+| B    | 単一 heap (generation なし)                         | 実装最簡だが GC pause time 不利           |
+| C    | 3+ generation                                       | scope 過大、Phase 8+ で検討               |
+
+*推奨 A 理由*:
+- short-lived object (=let= local / closure / arithmetic intermediate)
+  が 95%+ という generational hypothesis は Lisp で実証済 (SBCL 等)
+- size 配分 (nursery 4MB / tenured 64MB) は user tunable
+  (=defcustom nelisp-allocator-nursery-size=) とし MVP default は
+  典型 Lisp workload に合わせる
+
+** 2.3 page granularity [推奨 = A 4KB page + 16-page chunk]
+
+| 候補 | 戦略                              | 利点                                     |
+|------+-----------------------------------+------------------------------------------|
+| A    | 4KB page + 16-page chunk (= 64KB) (default) | OS native page size align、TLB friendly  |
+| B    | 2MB huge page                     | TLB miss 削減、allocator overhead 大     |
+| C    | 1KB sub-page                      | mmap syscall overhead 過大               |
+
+*推奨 A 理由*:
+- 4KB は Linux/macOS/Windows で OS native page size、=mmap= overhead
+  最小
+- 16-page chunk (64KB) で =mmap= syscall 頻度を 1/16 に圧縮、
+  fragmentation も許容範囲
+
+** 2.4 type tag [推奨 = A 既存 NeLisp 3-bit low tag 踏襲]
+
+| 候補 | 戦略                                              | 利点                                       |
+|------+---------------------------------------------------+--------------------------------------------|
+| A    | 既存 NeLisp 3-bit low tag 踏襲 (default)          | 互換性 100%、=defs-index= で確認済          |
+| B    | 4-bit tag に拡張                                  | type 種別増、ABI 破綻                       |
+| C    | NaN-boxing                                        | scope 過大、Phase 8+ で検討                 |
+
+*推奨 A 理由*:
+- 既存 NeLisp =Lisp_Object= layout (Phase 5-B SHIPPED) を破綻させない
+- =defs-index= で symbol → type 1 query で解決可能 (Phase 6.5 SHIPPED)
+- Phase 7.2 内で tag layout を変更しない (= ABI freeze)
+
+** 2.5 pool 管理 [推奨 = A per-type pool + free-list]
+
+| 候補 | 戦略                                                | 利点                                       |
+|------+-----------------------------------------------------+--------------------------------------------|
+| A    | per-type pool (cons / string / vector / closure) (default) | type-aware、Emacs alloc.c precedent 踏襲   |
+| B    | size-class pool (8 / 16 / 32 / ... byte)            | jemalloc 風、type 情報 lost                 |
+| C    | 単一 free-list                                      | fragmentation 不利                          |
+
+*推奨 A 理由*:
+- Emacs =cons_block= / =string_block= 風の per-type pool が generational
+  GC と協調しやすい (Phase 7.3 で minor GC 着手時)
+- =defs-index= で type → pool 1 query で解決
+- 各 pool 独立 free-list で fragmentation 局所化
+
+** 2.6 GC interface [推奨 = A Doc 28 §2.9 metadata contract 準拠]
+
+| 候補 | 戦略                                                  | 利点                                       |
+|------+-------------------------------------------------------+--------------------------------------------|
+| A    | Doc 28 §2.9 metadata contract 準拠 (=GC_METADATA_VERSION=) (default) | Phase 7.3 着手時 retrofit 不要              |
+| B    | Phase 7.2 独自 contract                               | Phase 7.3 で再 design 必須、ABI 破綻 risk  |
+| C    | Phase 7.3 完了まで stub のみ                          | Phase 7.3 着手 block                       |
+
+*推奨 A 理由*:
+- Doc 28 §6.10 GC metadata contract Phase 7.3 ABI 連動 risk の
+  mitigation = =GC_METADATA_VERSION= constant + versioned contract
+- Phase 7.2 = metadata contract の *provider* 側 (allocator 自身が
+  region table / page list を提供)、consumer (mark phase) は Phase 7.3
+
+** 2.7 API design [推奨 = A nelisp-alloc-* + bulk-alloc/bulk-free]
+
+| 候補 | 戦略                                                   | 利点                                       |
+|------+--------------------------------------------------------+--------------------------------------------|
+| A    | =nelisp-alloc-cons= / =nelisp-alloc-string= / etc + bulk API (default) | type-aware、Emacs alloc.c API style 踏襲   |
+| B    | 単一 =nelisp-alloc= (size, tag) interface             | 簡略だが per-type 最適化困難                |
+| C    | C-style =malloc= / =free= 互換                        | type 情報 lost、host Emacs 互換失う        |
+
+*推奨 A 理由*:
+- per-type API で hot path の inline expansion (Phase 7.1 =declare
+  (inline t)=) と相性
+- bulk API (=nelisp-alloc-bulk-cons (n)= / =nelisp-alloc-bulk-free=)
+  で =mapcar= 等の hot path で syscall 1 回に圧縮
+- =alloc-stats= (=nelisp-alloc-stats= / =--alloc-profile= flag) を
+  sub-phase 7.2.3 で integration
+
+** 2.8 LOC budget [推奨 = A 1500-3000 LOC NeLisp + ~50 LOC Rust]
+
+Doc 27 §3 7.2 「~800-1500 LOC NeLisp」を baseline、本 doc では sub-phase
+7.2.3 (per-type pool + bulk API + stats) を追加した結果 1500-3000 LOC
+NeLisp に拡大。Rust 側は Phase 7.0 既存の =mmap= / =mprotect= 経由で
+allocator helper を ~50 LOC 追加 (=nelisp_runtime_mmap_chunk= helper
+等) のみ。
+
+| 言語   | LOC          | 範囲                                |
+|--------+--------------+-------------------------------------|
+| NeLisp | 1500-3000    | 7.2.1 (~500-1000) + 7.2.2 (~500-1000) + 7.2.3 (~500-1000) |
+| Rust   | ~50          | Phase 7.0 拡張 (mmap chunk helper) |
+
+** 2.9 thread-safety [推奨 = A Phase 7.2 single-thread MVP]
+
+| 候補 | 戦略                                                | 利点                                       |
+|------+-----------------------------------------------------+--------------------------------------------|
+| A    | Phase 7.2 single-thread MVP (default、Phase 7.5+ multi) | scope 縮小、Phase 4 actor との統合は後送り |
+| B    | 初期から multi-thread (per-thread arena)            | scope 過大、SBCL precedent 25 年要した      |
+| C    | global mutex 1 個                                   | hot path bottleneck、性能不足              |
+
+*推奨 A 理由*:
+- Phase 7.5 (integration) で Phase 4 actor との co-design 時に
+  per-thread arena 導入が rational
+- single-thread MVP で =alloc-heavy= bench gate 達成、multi 化は
+  incremental
+- SBCL も 1999-2003 で single-thread MVP 開始、multi 化は 2005-2010
+  かけて段階的
+
+** 2.10 stats / instrumentation [推奨 = A nelisp-alloc-stats + --alloc-profile flag]
+
+| 候補 | 戦略                                                   | 利点                                       |
+|------+--------------------------------------------------------+--------------------------------------------|
+| A    | =nelisp-alloc-stats= (Lisp API) + =--alloc-profile= flag (CLI、default) | dev 用 instrumentation、Doc 28 §2.11 profiling と統合 |
+| B    | 完全省略                                               | debug / regression 検出困難                |
+| C    | 常時記録 + 詳細 trace                                  | runtime overhead 過大                       |
+
+*推奨 A 理由*:
+- =nelisp-alloc-stats= = Lisp API で plist 形式 (=:cons-allocated= /
+  =:tenured-bytes= / =:promotions=) を返す
+- =--alloc-profile= flag で startup から終了まで stats を記録、終了時
+  stderr に dump
+- Phase 7.1 =--profile= flag (Doc 28 §2.11) と共存、Phase 7.5 で
+  =anvil-dashboard= に統合
+
+* §3 Sub-phase 7.2.1〜7.2.3 詳細
+
+Doc 28 §3 schema 踏襲、3 sub-phase に分割。各 sub-phase は独立 SHIPPED
+可能、main へ feat branch =--no-ff= merge。
+
+| sub-phase | scope                                                  | LOC          | 期間       | ERT delta |
+|-----------+--------------------------------------------------------+--------------+------------+-----------|
+| 7.2.1     | bump allocator nursery (single generation)              | ~500-1000    | 1-2 週間   | +8        |
+| 7.2.2     | tenured generation + free-list + promotion              | ~500-1000    | 1-2 週間   | +6        |
+| 7.2.3     | per-type pool + bulk API + alloc-stats                  | ~500-1000    | 1 週間     | +6        |
+|-----------+--------------------------------------------------------+--------------+------------+-----------|
+|           | 合計                                                   | ~1500-3000   | *3-5 週間* | +20       |
+
+** 3.1 Phase 7.2.1 — bump allocator nursery (single generation)
+
+新規 module: =src/nelisp-allocator.el= (~500-1000 LOC NeLisp)。
+
+*** scope
+- =mmap= 経由 nursery 領域確保 (default 4MB、=defcustom=)
+- bump allocator 実装 (=nelisp-alloc--bump-pointer= + size check)
+- =nelisp-alloc-cons= primitive を bump allocator 経由に切替 (host
+  Emacs allocator から離脱)
+- nursery overflow 時の =trigger-minor-gc= stub (Phase 7.3 で実装、
+  本 phase は no-op + abort)
+- region table (=nelisp-allocator--region-table=) 初版実装、
+  GC metadata contract provider 側
+
+*** ERT smoke (+8)
+- =nelisp-alloc-cons= 単発 alloc test
+- 1M cons alloc で nursery 4MB 充足 → overflow 検出 test
+- region table が allocator confirm 後 1 entry 追加されている test
+- bump pointer 単調増加 invariant test
+- nursery 領域内 cons alloc が NeLisp 3-bit tag 適合 test
+
+*** risks
+- nursery overflow 時の abort handling = Phase 7.3 GC との co-design
+  → mitigation: §6 risk 1 で stub のみ、Phase 7.3 着手時に co-design
+
+** 3.2 Phase 7.2.2 — tenured generation + free-list + promotion
+
+新規 module: =src/nelisp-allocator-tenured.el= (~500-1000 LOC NeLisp)。
+
+*** scope
+- =mmap= 経由 tenured 領域確保 (default 64MB、=defcustom=)
+- size-class free-list (8 / 16 / 32 / 64 / 128 / 256 / 512 byte)
+- promotion path (nursery → tenured、age-aware、Phase 7.3 minor GC で
+  triggered、本 phase は manual API)
+- region table 拡張 (nursery / tenured 区別)
+
+*** ERT smoke (+6)
+- tenured size-class free-list 各 class の alloc/free test
+- =nelisp-alloc-promote= (manual promotion API、Phase 7.3 で auto 化)
+  test
+- region table が nursery/tenured 区別を正しく持つ test
+- fragmentation invariant test (free 後の coalescing)
+- 100K promotion で tenured 64MB 内に収まる test
+- promotion 後の object 完全性 (3-bit tag / data 不変) test
+
+*** risks
+- size-class 選定が Emacs alloc.c (8 / 16 / 32 / ...) precedent と
+  divergence
+  → mitigation: §6 risk 2 で precedent 直接 transfer、Phase 7.5 で
+  実測 tuning
+
+** 3.3 Phase 7.2.3 — per-type pool + bulk API + alloc-stats
+
+既存 module 拡張: =src/nelisp-allocator.el= + =src/nelisp-allocator-tenured.el=
+(~500-1000 LOC NeLisp)。
+
+*** scope
+- per-type pool 実装 (cons / string / vector / closure)
+- bulk API (=nelisp-alloc-bulk-cons (n)= / =nelisp-alloc-bulk-free=)
+- =nelisp-alloc-stats= (Lisp API、plist return)
+- =--alloc-profile= flag (CLI、startup から終了まで stats 記録)
+- Phase 7.1 native JIT integration (hot path =declare (inline t)=)
+
+*** ERT smoke (+6)
+- per-type pool 各 type の alloc/free test
+- bulk-cons (1000) で syscall 1 回に圧縮 confirm test
+- =nelisp-alloc-stats= return value plist format test
+- =--alloc-profile= flag で stats が stderr に dump される test
+- Phase 7.1 native JIT による hot path =alloc-cons= の bytecode 比 30x
+  speedup confirm test
+- regression: NeLisp 既存 ERT 1086+44〜49 全 PASS (Phase 7.1 完遂時点)
+
+*** risks
+- bulk API の semantics (=mapcar= 等で連続 cons の bulk 化) で既存
+  semantic 破綻 risk
+  → mitigation: §6 risk 3 で bulk 化は opt-in (=declare (bulk-alloc t)=)、
+  default は per-call
+
+* §4 Architecture (page allocation 経路)
+
+#+begin_src text
+[NeLisp source]
+    │ nelisp-cc.el (Phase 7.1 SHIPPED)
+    ▼
+[native code: nelisp-alloc-cons / nelisp-alloc-string / etc]
+    │
+    │ Phase 7.2.3 inline JIT (per-type pool fast path)
+    ▼
+[per-type pool free-list (tenured) or bump pointer (nursery)]
+    │
+    │ overflow → nursery: trigger-minor-gc (Phase 7.3 stub)
+    │ overflow → tenured: =mmap= via Phase 7.0 syscall stub
+    ▼
+[region table (= GC metadata contract provider)]
+    │
+    │ Phase 7.3 mark phase が consume (root scanning)
+    ▼
+[Phase 7.3 GC inner (NeLisp、本 phase scope 外)]
+#+end_src
+
+** 4.1 入力境界 (NeLisp source via Phase 7.1 native compile)
+
+Phase 7.1 (Doc 28) SHIPPED 後、=nelisp-alloc-cons= primitive は native
+JIT で inline expanded、bytecode VM 比 30-50x speedup。Phase 7.2 hot
+path は per-type pool の bump pointer increment 1 命令で C 同等速度。
+
+** 4.2 出力境界 (region table = GC metadata contract provider)
+
+allocator が確保した nursery / tenured ページを =region-table= に
+登録、Phase 7.3 mark phase が =GC_METADATA_VERSION= 経由で consume。
+本 phase 7.2 は provider 側のみ実装、consumer (mark phase) は Phase
+7.3 scope。
+
+** 4.3 syscall 経路
+
+Phase 7.0 syscall stub の =mmap= / =mprotect= に依存:
+- nursery: =mmap MAP_ANONYMOUS | MAP_PRIVATE PROT_READ|PROT_WRITE= 4MB
+- tenured: =mmap MAP_ANONYMOUS | MAP_PRIVATE PROT_READ|PROT_WRITE= 64MB
+
+各 chunk (64KB = 16-page) 単位で =mmap= 拡張、tenured 領域 overflow
+時は =munmap= の代わりに free-list 統合 (fragmentation 抑制)。
+
+* §5 ERT smoke + bench plan
+
+各 sub-phase の ERT smoke を集約した最終 +20 ERT で
+=test/nelisp-allocator-test.el= を構築。
+
+| sub-phase | ERT module                                | count |
+|-----------+-------------------------------------------+-------|
+| 7.2.1     | nelisp-allocator-nursery-test             | +8    |
+| 7.2.2     | nelisp-allocator-tenured-test             | +6    |
+| 7.2.3     | nelisp-allocator-pool-stats-test          | +6    |
+|-----------+-------------------------------------------+-------|
+|           | 合計                                      | +20   |
+
+CI matrix:
+- Linux x86_64 (GitHub Actions ubuntu-latest)
+- macOS arm64 (GitHub Actions macos-14)
+- Linux arm64 (Phase 7.1.5 で整備済)
+
+** 5.1 alloc-heavy bench gate (Doc 28 §5.2 budget 引き継ぎ)
+
+Doc 28 §5.2 で *alloc-heavy 5x* (Phase 7.1 完遂時 budget) と設定済。
+Phase 7.2 完遂で *Phase 7.1 5x の上に更に C-equivalent 70-90%
+throughput*:
+
+| benchmark         | 軸性質              | Phase 7.1 完遂時 | Phase 7.2 完遂時 (target) | C reference |
+|-------------------+---------------------+------------------+---------------------------+-------------|
+| =alloc-heavy=      | cons stress 1M      | bytecode 比 5x   | C 比 70-90% (~7-9M alloc/sec) | ~10M alloc/sec |
+| =per-pool stress= | pool 単独 alloc     | (測定なし)       | ~10M alloc/sec / pool      | ~10M alloc/sec |
+| =bulk-alloc=       | bulk-cons 1000     | (測定なし)       | C 比 90%+ (syscall 圧縮) | -           |
+
+** 5.2 promotion / fragmentation bench
+
+| benchmark            | 内容                                         | target |
+|----------------------+----------------------------------------------+--------|
+| =promotion-rate=     | nursery → tenured promotion 100K cycle 走行  | < 5ms / cycle |
+| =fragmentation-test= | random alloc/free 1M で free-list coalescing | tenured 80%+ utilization |
+
+bench gate (§7) は 3 軸全部必達 + promotion/fragmentation 試験 PASS。
+
+* §6 Risks (6 項目)
+
+** 6.1 nursery overflow handling (Phase 7.3 GC co-design)
+
+Phase 7.2.1 で nursery overflow 時 =trigger-minor-gc= stub のみ実装、
+Phase 7.3 で actual collector 実装 = co-design 必須。
+
+*影響*: Phase 7.3 で minor GC algorithm (Cheney semispace? mark-region?)
+が確定するまで nursery → tenured promotion path の interface が確定
+しない。
+
+*mitigation*:
+- Phase 7.2.1 で stub 化、Phase 7.3 着手時 orchestrator consensus review
+  1 回 (Doc 28 §6.2 と同 pattern)
+- region table format = =GC_METADATA_VERSION= で versioned (§2.6)、
+  Phase 7.3 で incompatible 改訂が必要なら version bump
+
+** 6.2 size-class 選定 (Emacs alloc.c precedent との divergence)
+
+§2.5 推奨 A で per-type pool + size-class free-list を採用、size-class
+(8 / 16 / 32 / ...) は Emacs alloc.c precedent 直接 transfer したが、
+NeLisp workload (Phase 5-B selfhost) と差がある可能性。
+
+*影響*: tenured fragmentation 増、Phase 7.5 で実測 tuning 必須。
+
+*mitigation*:
+- Phase 7.2.2 で precedent 直接 transfer、Phase 7.5 integration で
+  =alloc-profile= 経由 size-class histogram 採取
+- Phase 8+ で size-class tuning task として後続化
+
+** 6.3 type tag conflict (既存 NeLisp 3-bit tag 制約)
+
+§2.4 推奨 A で既存 NeLisp 3-bit low tag 踏襲、tag 種別 (cons / string
+/ vector / closure / float / int / symbol / misc) は 8 種で固定。新
+type 追加時に tag 不足 risk。
+
+*影響*: Phase 7.2.3 per-type pool で type 種別追加 (例: bignum /
+hash-table) 時に tag layout 改訂必須、ABI 破綻。
+
+*mitigation*:
+- Phase 7.2 内で tag layout 変更しない (= ABI freeze、§2.4)
+- 新 type 追加は Phase 8+ で =defs-index= 経由 secondary tag 経路
+  (=misc-tag= subtype) で対応、3-bit primary tag は不変
+
+** 6.4 nursery / tenured promotion threshold tuning
+
+§2.2 推奨 A で 2-generation default (nursery 4MB / tenured 64MB)、
+promotion threshold (= age N で nursery → tenured 移送) は Phase
+7.3 minor GC で確定。
+
+*影響*: 現実的 Lisp workload (Phase 5-B selfhost) で promotion 過多
+or 過少だと bench gate (§5.1) C 比 70-90% 未達 risk。
+
+*mitigation*:
+- Phase 7.2.2 で manual promotion API (=nelisp-alloc-promote=) のみ
+  実装、auto promotion は Phase 7.3 で
+- Phase 7.5 integration で =alloc-profile= 経由 promotion rate 採取、
+  threshold tuning task
+
+** 6.5 fragmentation accumulation
+
+長時間動作で tenured 領域 fragmentation 累積、Phase 7.2.2 free-list
+coalescing で 80%+ utilization 維持を target。defragmentation (=
+mark-compact / Cheney semispace) は Phase 7.3 で導入 = Phase 7.2 単体
+では fragmentation 累積止め切れない。
+
+*影響*: long-running NeLisp process (例: anvil daemon) で OOM。
+
+*mitigation*:
+- Phase 7.2.2 free-list coalescing で 80%+ utilization 維持を ERT で
+  固定 (=fragmentation-test=、§5.2)
+- Phase 7.3 mark-compact 実装で defragmentation を補助、Phase 7.5
+  integration で long-running soak test
+
+** 6.6 anvil leverage 過大評価 (Doc 28 §6.6 同 pattern)
+
+Doc 27 で SBCL 25 年 → 3-4 週間の見積。本 doc 7.2 で 3-5 週間に
+re-baseline したが、なお下振れ risk あり。Doc 28 §6.6 の week 4/8/12
+replan gate 同 pattern で *2 replan gate* を導入。
+
+*影響*: Phase 7.3 (GC) の着手遅延 = Doc 27 全体 STATE 遅延。
+
+*mitigation (Doc 28 §6.6 v2 と同 pattern)*:
+
+| gate    | 時期    | 評価対象            | kill criteria (= 達成不能なら scope 切り) |
+|---------+---------+---------------------+-------------------------------------------|
+| gate-W2 | week 2  | 7.2.1 nursery 完成度 | 7.2.1 未完了 → *bulk API + stats 後送り*: Phase 7.2.3 を Phase 7.5 へ繰越、Phase 7.2 完遂 gate から外す |
+| gate-W3 | week 3  | 7.2.2 tenured + promotion 進捗 | 7.2.2 未完了 → *2-generation 縮小*: 単一 heap MVP に縮小、promotion path を Phase 7.5 で再導入 |
+
+判断主体: gate ごとに =anvil-dev release-audit :scope phase-7.2=
+スクリプトが進捗を計測、=anvil-dashboard= で可視化、user signoff で
+発動。
+
+* §7 完遂 gate (LOCKED 化条件)
+
+Doc 28 §7 schema 踏襲。Phase 7.2 全体の LOCKED 化は以下全条件で成立:
+
+** 7.1 各 sub-phase 7.2.1〜7.2.3 SHIPPED 条件
+
+各 sub-phase で:
+1. =cargo build --release= 緑
+2. =cargo test --all= 緑
+3. NeLisp ERT regression-free (Phase 7.1 完遂時点 1086+44〜49 を維持)
+4. =cargo clippy= 0 warning
+5. =make test= (NeLisp 既存 Makefile) 緑
+6. design doc §3 の該当 sub-phase に SHIPPED stamp
+7. main へ feat branch =--no-ff= merge
+
+** 7.2 Phase 7.2 完全 close 条件
+
+Phase 7.2.1〜7.2.3 全 SHIPPED + 以下:
+
+- =alloc-heavy (cons stress 1M)= が *C-equivalent 70-90% throughput*
+  (~7-9M alloc/sec、§5.1)
+- =per-pool stress= 各 pool ~10M alloc/sec (§5.1)
+- promotion / fragmentation 試験 PASS (§5.2)
+- ERT +20 全 PASS
+- region table = GC metadata contract provider 側 implementation 完了
+- =cargo build --release= / =cargo test --all= / =cargo clippy= 0 warning
+- NeLisp 既存 ERT regression-free
+- LOCKED → SHIPPED stamp + main merge (=--no-ff=)
+
+** 7.3 後続 Phase の解放
+
+Phase 7.2 SHIPPED で:
+- Phase 7.3 (GC inner NeLisp 化) 着手可能 (region table = GC metadata
+  contract provider 側 lock-in 完了)
+- Phase 7.4 (coding NeLisp 化) は Phase 7.2 と independent、parallel walk 可
+- Phase 7.5 (integration) で全核 (allocator / GC / coding) 合流
+
+* §8 Out of scope
+
+本 Phase 7.2 では以下を扱わない:
+
+** 8.1 Cheney semispace / mark-compact
+
+Phase 7.3 GC inner で collector 本体と co-design。本 phase は bump +
+free-list の moveable arena まで (§2.1)。
+
+** 8.2 multi-thread allocator (per-thread arena)
+
+Phase 7.5+ で Phase 4 actor との co-design 時に導入 (§2.9)。
+SBCL も 1999-2003 で single-thread MVP 開始、multi 化は段階的。
+
+** 8.3 generational write barrier
+
+Phase 7.3 で minor GC 実装時に導入。Phase 7.2 単体は manual promotion
+API (=nelisp-alloc-promote=) のみ、auto promotion (= write barrier
+trigger) は Phase 7.3。
+
+** 8.4 NUMA-aware allocation
+
+NeLisp v2.0+ で検討事項。Phase 7.2 では考慮しない。
+
+** 8.5 huge page (2MB) 対応
+
+§2.3 で 4KB page 固定。huge page は Phase 8+ で =defcustom= 経由 opt-in
+化検討。
+
+* §9 Open questions
+
+** 9.1 nursery / tenured size 配分の default
+
+§2.2 で nursery 4MB / tenured 64MB を default として提示したが、
+Phase 5-B selfhost workload + anvil daemon long-running 想定で
+現実的な default は未測定。
+
+*default*: 本 doc で nursery 4MB / tenured 64MB 仮置き、Phase 7.5
+integration で =alloc-profile= 経由実測 tuning。
+
+** 9.2 size-class の刻み (Emacs alloc.c precedent vs NeLisp tuning)
+
+§2.5 / §6.2 で size-class (8 / 16 / 32 / 64 / 128 / 256 / 512) を
+Emacs alloc.c precedent 直接 transfer。Phase 5-B selfhost workload
+で実測差があれば Phase 7.5 で tuning 必須。
+
+*default*: Emacs alloc.c precedent 直接 transfer、Phase 7.5 で実測
+tuning task として後続化。
+
+** 9.3 alloc-stats の Lisp API plist key 命名
+
+§2.10 で =:cons-allocated= / =:tenured-bytes= / =:promotions= 例示
+したが、key 命名規則 (=:bytes-= prefix or =:count-= prefix etc) は
+未確定。
+
+*default*: =:cons-allocated= / =:string-allocated= / etc の type prefix
++ =-allocated= / =-freed= / =-promoted= suffix で統一。Phase 7.2.3
+実装時 user signoff or orchestrator review で確定。
+
+** 9.4 Phase 7.3 GC との region table format 詳細
+
+§2.6 / §4.2 で region table = GC metadata contract provider と位置
+づけ、Doc 28 §2.9 contract format を踏襲する。具体 record format
+(=(:start ADDR :end ADDR :generation nursery|tenured :type cons|...)=
+等) は Phase 7.3 着手時の orchestrator consensus review で確定。
+
+*default*: 上記 plist format を sub-phase 7.2.1 で初版実装、Phase
+7.3 着手時 review で正式 freeze。
+
+* §10 関連 doc
+
+** internal NeLisp design docs
+
+- =docs/design/27-phase7-c-runtime-self-impl.org= (Doc 27 LOCKED
+  2026-04-25 = 2a52bda main、本 doc 親)
+- =docs/design/28-phase7.1-native-compiler.org= (Doc 28 LOCKED-2026-04-25-v2、
+  本 doc §1.4 GC metadata contract / §2.6 / §6.6 replan gate pattern 引き継ぎ)
+- =docs/design/18-stage-d-standalone.org= (Stage D, Phase 6.1
+  architecture α SHIPPED)
+- =docs/design/25-phase6.5-nelisp-defs-index.org= (=nelisp-defs-index=
+  Phase 6.5 SHIPPED、本 doc §2.5 per-type pool の type 解決 backing)
+- =docs/03-architecture.org= (NeLisp 4 核 architecture、Doc 27 §1.4
+  Rhodes 5-stage map)
+
+** external precedent reference
+
+- *SBCL =src/runtime/alloc.lisp=*: ~3000 LOC CL、25 年維持。
+  generational mark-region + bump + free-list の dual precedent
+- *Emacs =src/alloc.c=*: ~6000 LOC C、Emacs 1985-。per-type block
+  (=cons_block= / =string_block= 等) precedent
+- *Cheney (1970)* "A Nonrecursive List Compacting Algorithm":
+  CACM 13(11)、Phase 7.3 で導入予定の semispace algorithm 典拠
+- *Wilson (1992)* "Uniprocessor Garbage Collection Techniques":
+  Lecture Notes in Computer Science 637、generational hypothesis +
+  promotion path の定本
+
+** 関連 memory
+
+- =project_nelisp.md= (Phase 4-6.5 SHIPPED summary、Stage D 配布レディ)
+- =project_nelisp_defs_index.md= (Phase 6.5 SHIPPED detail、本 doc
+  §2.5 per-type pool の type 解決 backing)
+- =feedback_anvil_master_integration_gate.md= (design doc は LOCKED
+  で main merge 可)
+- =feedback_canonical_byte_compile_stale_elc.md= (worktree 内
+  byte-compile、canonical では .elc 残さない)
+- =feedback_orchestrator_role_split.md= (orchestrator review
+  claude+codex+gemma、judge=claude)
+- =feedback_nelisp_announcement_standalone_gate.md= (Phase 7+ 完遂で
+  公開告知保留解除)
+- =feedback_git_worktree_parallel_sessions.md= (Phase 7.2 sub-phase
+  ごとに別 worktree 推奨)
+
+* §11 Sign-off
+
+** v0 DRAFT
+
+| version  | date       | author                       | 主要 |
+|----------+------------+------------------------------+------|
+| v0 DRAFT | 2026-04-25 | session-B 起草 (autonomous)  | 3 sub-phase / 10 LOCKED items / 6 risks / alloc-heavy 5x → C 比 70-90% gate / region table = GC metadata contract provider |
+
+** main merge gate
+
+- Doc 27 LOCKED 維持 (本 doc は Doc 27 §3 7.2 と完全整合)
+- Doc 28 §2.9 GC metadata contract / §6.6 replan gate pattern と整合
+- ERT regression-free (本 doc は文書のみだが、§3 sub-phase の
+  scope/LOC/期間が Doc 27 §3 7.2 と矛盾しないこと)
+- =anvil-dev release-audit :scope doc 29= 緑 (LOCKED stamp 整合、
+  reference 整合)
+- 本 v0 = DRAFT-2026-04-25、user signoff + orchestrator review 後に
+  =LOCKED-2026-04-2X= 昇格、main =--no-ff= merge 解禁
+
+** 次の action (本 DRAFT push 後)
+
+1. session-A が =anvil-orchestrator-consensus-submit= で本 doc を
+   claude + codex review (judge=claude)
+2. revised proposal を user signoff 待ちで提示
+3. user signoff → STATE: =DRAFT-2026-04-25= → =LOCKED-2026-04-2X=
+4. main へ =--no-ff= merge (=feedback_anvil_master_integration_gate.md=
+   準拠、design doc は LOCKED で merge 可)
