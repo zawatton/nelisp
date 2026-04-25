@@ -26,6 +26,20 @@ crate-type = ["cdylib", "rlib", "staticlib"]
 name = "nelisp-runtime"
 path = "src/main.rs"
 
+# Phase 7.1 完遂 gate 3-axis bench (Doc 28 v2 §5.1).  This is the
+# *secondary* baseline measuring the FFI bridge overhead in isolation
+# — the primary 3-axis gate (fib(30) 30x / fact-iter 20x / alloc-heavy
+# 5x speedup vs bytecode VM) lives on the Lisp side and is driven by
+# `make bench-actual`.  See benches/nelisp_cc_bench.rs commentary.
+#
+# Registered via `[[bench]]` with `harness = false` so we get a plain
+# `fn main()` instead of the libtest harness; criterion is intentionally
+# kept out of the dep graph (Doc 27 §3 7.0 keeps Cargo.toml libc-only).
+[[bench]]
+name = "nelisp_cc_bench"
+path = "benches/nelisp_cc_bench.rs"
+harness = false
+
 [dependencies]
 libc = "0.2"
 
