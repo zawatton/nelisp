@@ -25,9 +25,11 @@ gate (UTF-8 throughput / round-trip / streaming OOM-free) に分解する。
   gate は invalid byte sequence で物理的に不成立。v2 で *valid corpus
   byte-perfect = strict gate* と *invalid corpus policy conformance =
   strategy 別 expected behavior gate* に分割
-- *Shift-JIS scope 確定 (codex 観点 2.5)*: §2.X / §3.3 で MVP scope を
-  *ASCII + JIS X 0201 kana + JIS X 0208 strict only* に縮小、JIS X 0212
-  は EUC-JP のみ、CP932 / Windows-31J は v2.0
+- *Shift-JIS scope 確定 (codex 観点 2.5 + user signoff 2026-04-25 で
+  CP932 拡張)*: §2.1 / §3.3 で MVP scope を *ASCII + JIS X 0201 kana +
+  JIS X 0208 + CP932 拡張部 (NEC 特殊文字 + IBM 拡張、~845 entry 追加)*
+  に確定、Windows 日本語 user の事実上 Shift-JIS = CP932 をカバー。
+  JIS X 0212 は EUC-JP のみ (Shift-JIS では encode 不可)
 - *Japanese table generated artifact 化 (codex 観点 2.4)*: ~7000 entry
   × 2 = ~14000 entry の table を *generator script + 元データ provenance
   + checksum/bijection test = required deliverable* として明示、手書き
@@ -177,20 +179,38 @@ Doc 28 §2 / Doc 29 §2 / Doc 30 §2 schema (10 LOCKED items) に揃える。
 default 案を提示し session-T7 が DRAFT で fix、orchestrator review
 (claude+codex) で precedent miss を指摘してもらう構造。signoff は user。
 
-** 2.1 supported encodings (MVP) [推奨 = A 4 encoding]
+** 2.1 supported encodings (MVP) [推奨 = A 4 encoding + CP932 拡張、user signoff 2026-04-25 で v2 改訂]
+
+v2 改訂 (user signoff 2026-04-25 option B): Shift-JIS scope を v1 の
+"strict JIS X 0208 only" から *CP932 (Windows-31J) 拡張部含む* に拡張。
+日本語 Windows user の Shift-JIS は事実上 CP932 = Excel / file name /
+Windows tool 連携に CP932 必須のため。
 
 | 候補 | 戦略                                                   | 利点                                       |
 |------+--------------------------------------------------------+--------------------------------------------|
-| A    | UTF-8 / Latin-1 / Shift-JIS / EUC-JP (default、4 種)   | NeLisp 主用途 (英 / 西欧 / 日本) cover、scope 2-3 週間 |
-| B    | UTF-8 のみ                                             | scope 1 週間、日本語 file 既存資産 (Emacs world) 取り込め無い |
+| A    | UTF-8 / Latin-1 / Shift-JIS (CP932) / EUC-JP (default、4 種) | NeLisp 主用途 (英 / 西欧 / 日本 Windows-31J 含む) cover |
+| B    | UTF-8 のみ                                             | scope 1 週間、日本語 file 既存資産 取り込め無い |
 | C    | A + UTF-16 / GBK / Big5 / Korean                       | scope 1.5-2x 拡大、Phase 7.5 着手遅延 risk |
 
-*推奨 A 理由*:
+*推奨 A 理由 (v2 改訂)*:
 - UTF-8 = JSON-RPC / 現代 web mandatory、Phase 7.5 MCP 経路必須
 - Latin-1 = 単 byte trivial、ASCII fast path
-- Shift-JIS / EUC-JP = NeLisp 主用途 (日本 user) で legacy 日本語 file
-  読込に必須
+- *Shift-JIS (CP932 拡張部含む)* = NeLisp 日本 Windows user の事実上の
+  Shift-JIS、CP932 (Windows-31J) は JIS X 0208 strict + Microsoft 拡張
+  (NEC 特殊文字 / IBM 拡張) を含み、Windows 環境の Excel / file name /
+  legacy 日本語 Windows tool 連携に必須
+- EUC-JP = JIS X 0208 + JIS X 0212 + 単 byte ASCII、Unix legacy 日本語 file
 - UTF-16 / GBK / Big5 / Korean = v2.0 で =defcustom= 経由 opt-in 化
+
+*Shift-JIS scope detail (v2 LOCKED)*:
+- *MVP 含む*: ASCII + JIS X 0201 kana + JIS X 0208 + CP932 拡張
+  (NEC 特殊文字 ~83 字 + IBM 拡張 ~388 字 + NEC 選定 IBM 拡張 ~374 字 =
+  Microsoft 公式 CP932 mapping)
+- *MVP out*: JIS X 0212 (= Shift-JIS では encode 不可、EUC-JP のみ対応)
+- *table size*: ~7000 + 845 拡張 = ~7845 entry (CP932 包含で ~12% 増)
+- *generator script*: =tools/coding-table-gen.el= = Unicode UCD の
+  Microsoft CP932 mapping (=public domain `WindowsBestFit932.txt`= or
+  =Unicode CP932.TXT=) を入力、source-of-truth は Microsoft 公式 mapping
 
 ** 2.2 internal representation [推奨 = A UTF-8 byte string + char count]
 
