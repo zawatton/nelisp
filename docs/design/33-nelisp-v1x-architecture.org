@@ -11,15 +11,27 @@ tag、main 現状) を境に確立する *strategic positioning shift* に従っ
 *core + 3-layer extension separation* の architecture を確定する。
 
 *Phase 7+ SHIPPED 後の position*:
-- NeLisp = "Emacs Lisp implementation" → *"general-purpose Lisp runtime
-  substrate"* (= Emacs Lisp 互換性に限定しない、cross-platform GUI /
-  batch script / AI tool / template engine / codegen 等 wide use case の
-  pure Lisp runtime)
+- NeLisp = "Emacs Lisp implementation" → *"Emacs Lisp runtime + Lisp
+  dialect agnostic backend"* (= 現状 Elisp specific frontend + dialect
+  不問 backend ~70%、cross-platform GUI / batch script / AI tool /
+  template engine / codegen 等 wide use case で Elisp ecosystem 経由活用、
+  *他 Lisp dialect への直接応用 = future work、Phase 8+ で Layer 0/1
+  separation 後 community-driven*)
 - Buffer / marker / overlay / display / undo は全部 *extension package
   化*、NeLisp core は super-minimal で *Phase 7+ で freeze* (Phase 8 で
   mutable text primitive 1 件のみ追加)
 - Display engine ecosystem = *separate ecosystem*、各 backend (gtk /
   cocoa / win32 / wgpu / tui) は community 主導で独立 repo
+
+*"general-purpose" claim の正確化 (user 2026-04-25 confirm)*:
+- Layer 0 (backend、~70%): GC / allocator / native compiler IR / x86_64 +
+  arm64 backend / mmap exec / coding / syscall / Rust runtime = *Lisp
+  dialect agnostic*、他 Lisp 実装で再利用可能 (= general-purpose 適性)
+- Layer 1A (frontend、現 ~30%): reader / evaluator / special forms /
+  AST→SSA Elisp lowering = *Elisp specific*、他 Lisp 直接応用不可
+- 真の "general-purpose Lisp runtime" には Layer 0/1 boundary を design
+  level で確立 (= §4 future work)、CL / Scheme / Clojure 等 Layer 1B/C/D
+  を community-driven で実装する道筋を残す
 
 *3 層分離*:
 1. *Layer 1: NeLisp core* (Phase 7+ で freeze + Phase 8 で mutable text
@@ -218,16 +230,40 @@ Phase 7+ 全 sub-phase SHIPPED 済 + 以下 3 件で v1.0 ship:
 
 ** 3.1 Layer 1: NeLisp core (Phase 7+ で freeze + Phase 8 で 1 拡張)
 
-*content* (現 Phase 7+ SHIPPED + Phase 8 で追加):
-- Lisp runtime: eval / reader / VM / native compiler (Phase 7.1)
-- GC inner / allocator (Phase 7.2 + 7.3)
-- coding (Phase 7.4)
-- syscall stub (Phase 7.0、Rust thin wrapper ~819 LOC)
-- standard library (cl-lib / pcase / regexp / etc)
-- =nelisp-defs-index= / =nelisp-org-index= / =nelisp-state= / =nelisp-http= /
-  =nelisp-coding= / =nelisp-allocator= / =nelisp-gc-inner= / =nelisp-cc=
-  全 sub-module (Phase 5/6/7 で SHIPPED)
-- *Phase 8 で追加 mutable text primitive* (gap-buffer based、display 概念 0)
+*v0 → v1 改訂 (user 2026-04-25 confirm)*: Layer 1 NeLisp core を *Layer 0
+backend* (dialect 不問、~70% LOC) と *Layer 1A frontend* (Elisp specific、
+~30% LOC) に *internal sub-divide*、core API freeze と同時に Layer 0/1
+boundary を design level で明示。Layer 0/1 separation 自体は v2.0+ task
+(=§4.X future work=)、現 v1.x 期間は Layer 1A (Elisp) 完成のみ。
+
+*Layer 0: dialect-agnostic backend (~70%、現 Phase 7+ SHIPPED 内訳)*:
+- GC inner / allocator (Phase 7.2 + 7.3、~3500 LOC NeLisp)
+- coding (Phase 7.4、~1789 LOC + ~20670 entry table)
+- syscall stub (Phase 7.0、~819 LOC Rust)
+- native compiler IR + linear-scan + x86_64 / arm64 backend (Phase 7.1.X、
+  ~3500 LOC NeLisp)
+- mmap exec / FFI bridge (Phase 7.5、~700 LOC NeLisp + ~517 LOC C module)
+- bootstrap + integration helper (Phase 7.5、~500 LOC NeLisp)
+- *boundary*: Lisp dialect 不問。SSA IR は形式のみ Lisp-flavor agnostic、
+  family-tag / object header layout も dialect 不問。他 Lisp dialect の
+  AST→SSA frontend が plug-in 可能 (= future Layer 1B/C/D が同 backend を
+  reuse)
+- *Phase 8 で追加 mutable text primitive* (gap-buffer based、display 概念 0、
+  dialect 不問でこの Layer 0 に追加)
+
+*Layer 1A: Elisp specific frontend (~30%、現 Phase 7+ SHIPPED 内訳)*:
+- =nelisp-read.el= (Elisp reader、Phase 3a SHIPPED)
+- =nelisp-eval.el= (Elisp evaluator、default dynamic binding、Phase 3 SHIPPED)
+- =nelisp-bytecode.el= (Elisp bytecode VM、Phase 3b SHIPPED)
+- AST→SSA Elisp lowering (Phase 7.1.1 T6 SHIPPED、14 forms = literal /
+  quote / function / variable-ref / setq / if / let / let* / lambda /
+  progn / call / call-indirect + macro-expanded and / or / cond / when / unless)
+- standard library (=cl-lib= / =pcase= / =regexp= / etc Elisp form)
+- =nelisp-defs-index= / =nelisp-org-index= / =nelisp-state= / =nelisp-http= 等
+  (Phase 5/6 SHIPPED、Elisp ecosystem の便利 layer)
+- *boundary*: Elisp specific、他 Lisp dialect から直接利用不可
+- 他 Lisp dialect 対応は v2.0+ で community-driven Layer 1B (CL) /
+  Layer 1C (Scheme) / Layer 1D (Clojure) として並列開発 (= §4.X)
 
 *boundary criteria* (= NeLisp core 採用条件):
 1. *言語 semantic critical* — 大半 Lisp program が必要 (eval / reader /
@@ -422,6 +458,61 @@ backend 揃い)、ただし各 backend は独立 release で先行可。
 
 *別 repo*: 各 community 主導、=github.com/<community>/nelisp-display-<backend>=
 想定。
+
+** 4.6 v2.0+ future work: Layer 0/1 separation = multi-Lisp-dialect support
+
+*v0 → v1 改訂で追加 (user 2026-04-25 confirm)*: NeLisp = "general-purpose
+Lisp runtime" claim を真に成立させるため、Layer 0 (dialect-agnostic
+backend、~70%) と Layer 1A (Elisp frontend、~30%) を *physical separation
+する future work*。v1.x 期間は Layer 1A Elisp で完結、v2.0+ で他 Lisp
+dialect 対応を community-driven で開始可能化。
+
+*Phase 16 (v2.0+、Layer 0/1 boundary 確立)*:
+- 現 src/* から Layer 0 module (=nelisp-cc= / =nelisp-cc-x86_64= /
+  =nelisp-cc-arm64= / =nelisp-cc-runtime= / =nelisp-allocator= /
+  =nelisp-gc-inner= / =nelisp-coding= / =nelisp-runtime/=) を *Layer 0
+  identifier* で marking、Layer 1A Elisp frontend (=nelisp-read= /
+  =nelisp-eval= / =nelisp-bytecode= / =nelisp-cc.el= の AST→SSA Elisp
+  lowering) と internal API boundary を定義
+- 各 Layer 0 module は dialect-agnostic という invariant を design level で
+  document、Lisp-flavor specific 仮定 (例: nil/t representation、symbol
+  package etc) を Layer 1A 経由でのみ受け取る pure functional API へ refactor
+- ~1000-2000 LOC refactoring + ERT regression-free verify
+- 期間 = ~2-3 ヶ月 (anvil leverage)、release = v2.0+
+
+*Phase 17+ (v2.0+、community-driven Layer 1B/C/D)*:
+- =nelisp-cl-frontend= = Common Lisp frontend (CL reader / package /
+  evaluator / restart system / etc、Layer 0 backend reuse、~5000-10000 LOC、
+  community 主導)
+- =nelisp-scheme-frontend= = R7RS Scheme frontend (proper tail-call /
+  hygienic macros / continuations、~5000-10000 LOC、community 主導)
+- =nelisp-clojure-frontend= = Clojure-on-NeLisp (immutable defaults、
+  protocol、~10000-20000 LOC、community 主導、JVM-host alternative)
+- 各 frontend = 別 repo、community contribution、Layer 0 NeLisp core
+  と semver compatible (= NeLisp core major bump 時のみ frontend 改訂要)
+
+*architecture rationale*:
+- Layer 0 boundary を v2.0+ で確立することで、NeLisp core が *真の Lisp
+  runtime substrate* (= "Lisp 系 implementation の foundation") として
+  positioning 可能化
+- SBCL = "Common Lisp 専用 implementation" の precedent に対し、NeLisp =
+  "Lisp dialect agnostic runtime + Elisp/CL/Scheme frontend choice" として
+  alternative ecosystem を提供
+- ただし v1.x 期間中は *Layer 0/1 boundary aware* な code structure 維持
+  のみ (= future work の prerequisite)、actual frontend 多重化は v2.0+ で
+
+*v1.x との関係*:
+- v1.0 / v1.1 ship 期間中は Layer 1A Elisp 完結、Layer 0/1 separation は
+  conceptual のみ (= 物理 file 分離はせず、将来 refactoring 可能性を design
+  level で確保)
+- v2.0+ で Phase 16 LAYER 0/1 separation 着手 + Layer 1B/C/D community
+  invite
+
+*risks*:
+- Layer 0 と Layer 1A の現 boundary が *implicit* (= 各 module 内で混在)、
+  refactoring cost を v2.0 で支払う必要
+- mitigation: Phase 8-12 期間中、新 code は Layer 0/1 awareness を意識した
+  module 分離で書く (= retrofit cost 抑制)
 
 * §5 Phase 8 mutable text primitive design
 
