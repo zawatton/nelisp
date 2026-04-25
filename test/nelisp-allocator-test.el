@@ -200,5 +200,211 @@ requires Doc 29 / Doc 30 amendment + LOCKED-bump."
          (region (car (nelisp-allocator-region-table-snapshot))))
     (should (= 1 (nelisp-heap-region-version region)))))
 
+;;; ----------------------------------------------------------------
+;;; Phase 7.2.2 — tenured generation + free-list + promotion (+6 ERT)
+;;; ----------------------------------------------------------------
+;;
+;; Doc 29 v2 LOCKED 2026-04-25 §3.2 ERT smoke (+6) tabulated below.
+;; Every test re-resets the region table so tenured bookkeeping
+;; starts from a known clean state — production code never calls
+;; `--reset-region-table' but ERT fixtures must isolate.
+;;
+;;   1. init-tenured registers a `tenured' generation region.
+;;   2. tenured-alloc rounds the request up to the matching size-class
+;;      bin (request 9 → class 16 etc).
+;;   3. tenured-free pushes the block back onto the size-class bin so
+;;      the next alloc reuses the same address.
+;;   4. promote bumps the age 6-bit field (Doc 30 v2 §2.13) by 1.
+;;   5. tenured-coalesce merges adjacent buddies of the same size-class
+;;      into the next-larger bin.
+;;   6. tenured-stats reports utilisation that tracks alloc / free.
+
+;;; (9) init-tenured registers a tenured region ---------------------
+
+(ert-deftest nelisp-allocator-init-tenured-creates-region ()
+  "`init-tenured' registers exactly one new region (generation =
+`tenured') in addition to whatever the nursery already added."
+  (nelisp-allocator--reset-region-table)
+  (let* ((tenured (nelisp-allocator-init-tenured (* 64 1024)))
+         (snapshot (nelisp-allocator-region-table-snapshot)))
+    (should (nelisp-allocator--tenured-p tenured))
+    (should (= 1 (length snapshot)))
+    (let ((region (car snapshot)))
+      (should (nelisp-heap-region-p region))
+      (should (eq 'tenured (nelisp-heap-region-generation region)))
+      (should (= 1 (nelisp-heap-region-version region)))
+      (should (= (nelisp-heap-region-start region)
+                 (nelisp-allocator--tenured-bump tenured)))
+      (should (= (- (nelisp-heap-region-end region)
+                    (nelisp-heap-region-start region))
+                 (nelisp-allocator--tenured-capacity tenured))))))
+
+;;; (10) tenured-alloc uses the size-class bin ---------------------
+
+(ert-deftest nelisp-allocator-tenured-alloc-uses-size-class ()
+  "Allocating 9 byte rounds up to the 16-byte size-class; the
+allocator records the size-class for later free-list lookup, and
+the bump cursor advances by exactly 16 byte (not the requested 9)."
+  (nelisp-allocator--reset-region-table)
+  (let* ((tenured (nelisp-allocator-init-tenured (* 64 1024)))
+         (start (nelisp-allocator--tenured-bump tenured))
+         (addr (nelisp-allocator-tenured-alloc tenured 'closure-pool 9)))
+    (should (= addr start))
+    (should (= 16 (gethash addr
+                           (nelisp-allocator--tenured-block-sizes tenured))))
+    (should (= (+ start 16) (nelisp-allocator--tenured-bump tenured)))
+    (let ((header (gethash addr
+                           (nelisp-allocator--tenured-headers tenured))))
+      (should (integerp header))
+      (should (eq 'closure-pool
+                  (nelisp-allocator-header-family header)))
+      (should (= 16 (nelisp-allocator-header-size header))))
+    ;; Round-up holds at every bin: 5 → 8, 33 → 64, 200 → 256.
+    (should (= 8  (nelisp-allocator--size-class-of 5)))
+    (should (= 64 (nelisp-allocator--size-class-of 33)))
+    (should (= 256 (nelisp-allocator--size-class-of 200)))))
+
+;;; (11) tenured-free returns to the bin ---------------------------
+
+(ert-deftest nelisp-allocator-tenured-free-returns-to-bin ()
+  "`tenured-free' pushes the block back onto the size-class bin so
+a subsequent same-class alloc reuses the address (LIFO order)."
+  (nelisp-allocator--reset-region-table)
+  (let* ((tenured (nelisp-allocator-init-tenured (* 64 1024)))
+         (a (nelisp-allocator-tenured-alloc tenured 'cons-pool 16))
+         (b (nelisp-allocator-tenured-alloc tenured 'cons-pool 16)))
+    ;; Both blocks are live → no free-list entries yet.
+    (should (null (cdr (assq 16 (nelisp-allocator--tenured-free-lists
+                                 tenured)))))
+    (nelisp-allocator-tenured-free tenured a)
+    (should (equal (list a)
+                   (cdr (assq 16 (nelisp-allocator--tenured-free-lists
+                                  tenured)))))
+    ;; Re-alloc reuses the freed block (fast path) without bumping.
+    (let ((bump-before (nelisp-allocator--tenured-bump tenured))
+          (c (nelisp-allocator-tenured-alloc tenured 'cons-pool 16)))
+      (should (= a c))
+      (should (= bump-before (nelisp-allocator--tenured-bump tenured))))
+    ;; Free a second time should still work for B independently.
+    (nelisp-allocator-tenured-free tenured b)
+    (should (equal (list b)
+                   (cdr (assq 16 (nelisp-allocator--tenured-free-lists
+                                  tenured)))))
+    ;; Double-free guards against bookkeeping corruption.
+    (should-error (nelisp-allocator-tenured-free tenured b)
+                  :type 'nelisp-allocator-error)))
+
+;;; (12) promote bumps the age field -------------------------------
+
+(ert-deftest nelisp-allocator-promote-bumps-age-bit ()
+  "`nelisp-allocator-promote' allocates a tenured slot and writes a
+header whose age field is 1 (the freshly-promoted object's first
+generational tick).  Doc 30 v2 §2.13 invariant: tenured headers
+carry age >= 1."
+  (nelisp-allocator--reset-region-table)
+  (let* ((nursery (nelisp-allocator-init-nursery (* 64 1024)))
+         (tenured (nelisp-allocator-init-tenured (* 64 1024)))
+         (nursery-addr (nelisp-allocator-alloc-cons nursery))
+         (new-addr (nelisp-allocator-promote
+                    nursery tenured nursery-addr 16 'cons-pool))
+         (headers (nelisp-allocator--tenured-headers tenured))
+         (header (gethash new-addr headers)))
+    (should (integerp new-addr))
+    (should (= 1 (nelisp-allocator-header-age header)))
+    (should (eq 'cons-pool (nelisp-allocator-header-family header)))
+    ;; Promote a second time on the same slot's bytes — age saturates
+    ;; only at 63 (6-bit ceiling) so a single extra bump must increment.
+    (nelisp-allocator--update-age tenured new-addr 1)
+    (should (= 2 (nelisp-allocator-header-age
+                  (gethash new-addr headers))))
+    ;; Saturation test: bump by a huge increment, age clamps at 63.
+    (nelisp-allocator--update-age tenured new-addr 1000)
+    (should (= nelisp-allocator--header-age-mask
+               (nelisp-allocator-header-age
+                (gethash new-addr headers))))))
+
+;;; (13) coalesce merges adjacent buddies --------------------------
+
+(ert-deftest nelisp-allocator-tenured-coalesce-merges-adjacent ()
+  "`tenured-coalesce' merges adjacent same-class free blocks whose
+base address is aligned to the next-larger class.
+
+Allocate 4 consecutive 16-byte blocks at 16-byte-aligned bump-base,
+free all 4 → coalesce should merge (a, b) → 32, (c, d) → 32, then
+(ab, cd) → 64 if the alignment supports it."
+  (nelisp-allocator--reset-region-table)
+  (let* ((tenured (nelisp-allocator-init-tenured (* 64 1024)))
+         (a (nelisp-allocator-tenured-alloc tenured 'cons-pool 16))
+         (b (nelisp-allocator-tenured-alloc tenured 'cons-pool 16))
+         (c (nelisp-allocator-tenured-alloc tenured 'cons-pool 16))
+         (d (nelisp-allocator-tenured-alloc tenured 'cons-pool 16)))
+    ;; Confirm contiguous layout (the bump cursor packs them tightly).
+    (should (= b (+ a 16)))
+    (should (= c (+ b 16)))
+    (should (= d (+ c 16)))
+    (mapc (lambda (addr) (nelisp-allocator-tenured-free tenured addr))
+          (list a b c d))
+    ;; All 4 sit in the 16-byte bin pre-coalesce.
+    (should (= 4 (length (cdr (assq 16
+                                    (nelisp-allocator--tenured-free-lists
+                                     tenured))))))
+    (let ((merges (nelisp-allocator-tenured-coalesce tenured)))
+      ;; A & B align on 32 only if A is 32-aligned.  Construct so that
+      ;; a is 32-aligned by the simulator's page-aligned region.start
+      ;; (=`nelisp-allocator--alloc-sim-address' returns page-aligned
+      ;; addresses, so the bump pointer at start is 4096-aligned, hence
+      ;; trivially 32-aligned).  After (a,b) → 32 and (c,d) → 32, the
+      ;; pair (ab=a, cd=c) is 32-aligned only if a is 64-aligned, which
+      ;; holds for the 4096-aligned start.  So we expect 3 merges:
+      ;; (a,b)→32, (c,d)→32, then (a,c)→64.
+      (should (= 3 merges)))
+    ;; 16-byte bin is now empty (all blocks coalesced upward).
+    (should (null (cdr (assq 16 (nelisp-allocator--tenured-free-lists
+                                 tenured)))))
+    ;; A single 64-byte block now lives in the 64-byte bin.
+    (should (equal (list a)
+                   (cdr (assq 64 (nelisp-allocator--tenured-free-lists
+                                  tenured)))))))
+
+;;; (14) tenured-stats utilisation ---------------------------------
+
+(ert-deftest nelisp-allocator-tenured-stats-utilization ()
+  "`tenured-stats' reports utilisation that tracks alloc and free.
+
+Allocate two blocks → utilisation rises above zero.  Free both →
+utilisation returns to zero (every byte back on the free-list, no
+live tenured payload).  The plist format must include every key
+documented at the top of the function."
+  (nelisp-allocator--reset-region-table)
+  (let* ((tenured (nelisp-allocator-init-tenured (* 64 1024)))
+         (cap (nelisp-allocator--tenured-capacity tenured))
+         (s0 (nelisp-allocator-tenured-stats tenured)))
+    (should (= cap (plist-get s0 :capacity)))
+    (should (= 0  (plist-get s0 :allocated)))
+    (should (= cap (plist-get s0 :free)))
+    (should (= 0  (plist-get s0 :utilization-percent)))
+    (should (listp (plist-get s0 :size-class-distribution)))
+    ;; All bins start empty.
+    (dolist (entry (plist-get s0 :size-class-distribution))
+      (should (= 0 (cdr entry))))
+    ;; Allocate two 256-byte blocks → 512 byte allocated.
+    (let ((a (nelisp-allocator-tenured-alloc tenured 'string-span 200))
+          (b (nelisp-allocator-tenured-alloc tenured 'string-span 250))
+          (s1 nil))
+      (setq s1 (nelisp-allocator-tenured-stats tenured))
+      (should (= 512 (plist-get s1 :allocated)))
+      (should (= (- cap 512) (plist-get s1 :free)))
+      (should (= (/ (* 100 512) cap)
+                 (plist-get s1 :utilization-percent)))
+      ;; Free both → allocated returns to 0; the 256-byte bin holds 2.
+      (nelisp-allocator-tenured-free tenured a)
+      (nelisp-allocator-tenured-free tenured b)
+      (let ((s2 (nelisp-allocator-tenured-stats tenured)))
+        (should (= 0 (plist-get s2 :allocated)))
+        (should (= cap (plist-get s2 :free)))
+        (should (= 0 (plist-get s2 :utilization-percent)))
+        (let ((dist (plist-get s2 :size-class-distribution)))
+          (should (= 2 (cdr (assq 256 dist)))))))))
+
 (provide 'nelisp-allocator-test)
 ;;; nelisp-allocator-test.el ends here
