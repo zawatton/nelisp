@@ -1,0 +1,182 @@
+#+TITLE: Doc 26 — Phase 6.6: anvil-org-index (SQLite org headline index) port to NeLisp
+#+AUTHOR: zawatton + Claude (session-A)
+#+DATE: 2026-04-25
+#+STATE: LOCKED-2026-04-25
+#+STATUS: §2 全 7 項目 LOCKED 2026-04-25 全 default 採用、Phase 6.6.1 MVP 着手待ち (session-B 合流後)
+
+* §0 要旨
+
+Stage A Phase 5-F.3 で =org-read-outline-tree= 単発 tool を NeLisp 側
+=nelisp-tools.el= に port 済 (file 1 個ずつの構造抽出)。本 doc では
+*複数 org file を SQLite で index 化* し、cross-file 検索 / headline
+high-speed lookup を可能にする =nelisp-org-index= module を新設する。
+
+port 元: =anvil-org-index.el= (Doc 02 SHIPPED、1419 LOC、user 実機で
+1500 files / 71k headlines を 2.7s rebuild + 177x faster than
+file-scan の実績)。session-B が完了させた =nelisp-defs-index= (Phase
+6.5.1 9746ed6) と双子の構造 = SQLite-backed index + rebuild + search、
+schema が 4 table で walker pattern も類似。
+
+** なぜ port するか
+- Stage D ユーザ (非 Emacs user 含む) で *業務 / 個人記録の org 利用
+  者* に対する価値を提供。Claude Code から「この headline を探せ」
+  「この tag が付いた entry list 化」が SQLite-backed で即時返却
+- =nelisp-state= (Phase 5-F.1.1) + Phase 5-F.3 の org parser を再利用、
+  実装は schema + scanner + search query 層のみ
+- session-B の Phase 6.5 と並走: 両者とも「rebuild + search」MVP →
+  「watcher」拡張 → 「deep walker」進化 の 3 phase 分割で同形
+
+** 非目標
+- org ファイル *編集* (read-only 運用、edit は anvil-org-index にも
+  ない)
+- =org-read-by-id= / =-read-headline= 等の単発 reader は Phase 5-F.3
+  の =org-read-outline-tree= で既に対応済、本 doc では DEFER
+
+* §1 audit (port 元 anvil-org-index.el)
+
+** 1.1 サイズ + 構造
+- =anvil-org-index.el= = *1419 LOC*
+- 公開 API 13 件 (enable / disable / rebuild / refresh-if-stale /
+  refresh-async / periodic-scan-start / watch / unwatch /
+  read-by-id / read-headline / read-outline / read-outline-json /
+  search / status)
+- MCP tool 2 件のみ (=org-index-search= / =org-index-rebuild=)
+- 内部 defun 60+ 個 (schema migration / collect / parse /
+  refs / watcher / search compose 等)
+
+** 1.2 host 依存
+| dep | 用途 | NeLisp 側状況 |
+|-----+------+---------------|
+| =sqlite= | core index | Phase 5-F.1.0 primitive 済 ✓ |
+| =org-element= | parser | NeLisp 側 *未実装*、Phase 5-F.3 の =--org-flat-headlines= で代替 |
+| =org-id= | UUID lookup | optional、本 phase では DEFER |
+| =filenotify= | watcher | Phase 5-C.0 primitive あり、Phase 6.6.2 で使用 |
+| =nelisp-state= | tx + connection | Phase 5-F.1.1 で port 済 ✓ |
+
+** 1.3 既存 NeLisp 側との関係
+Phase 5-F.3 で =nelisp-tools--org-flat-headlines= + =--org-build-tree=
+が =nelisp-tools.el= 内に存在 (=org-read-outline-tree= 用、~30 LOC)。
+本 phase は同 parser を *export* して =nelisp-org-index= から呼べる
+ようにする (parser 再実装ゼロ)。
+
+* §2 decisions (STATE = LOCKED 2026-04-25、全 default 採用)
+
+#+begin_example
+§2.1  port 戦略: pure Elisp、anvil-org-index 1:1 移植 (anvil dep なし)
+§2.2  schema: anvil-org-index と互換 (file / headlines / tags / properties
+       4 table、source 列で nelisp 区別)
+§2.3  parser: Phase 5-F.3 の --org-flat-headlines を nelisp-tools
+       から export し共有
+§2.4  DB path = ~/.cache/nelisp/nelisp-org-index.db (XDG cache)
+§2.5  MVP scope: rebuild + search 2 MCP tool (anvil parity、watcher
+       / advanced search は Phase 6.6.2+ DEFER)
+§2.6  defcustom は defvar 化 (Phase 5-F.1.1 / 6.2.1 同方針)
+§2.7  ERT: skip-unless sqlite-available-p、self-bootstrap で
+       Notes/capture/*.org を index 化して動作確認
+#+end_example
+
+* §3 sub-phase 分割
+
+** Phase 6.6.1 — rebuild + search MVP (3-5 時間) ← Phase 1
+- =src/nelisp-org-index.el= 新設 (~400-500 LOC):
+  - schema = anvil-org-index 4 table 互換 (file / headlines / tags /
+    properties)
+  - =--collect-files= (=git ls-files= + =directory-files-recursively=
+    fallback、=*.org= filter)
+  - =--scan-file= = Phase 5-F.3 parser 共有
+  - public:
+    - =nelisp-org-index-rebuild= [&optional PATHS]
+    - =nelisp-org-index-search= NAME &key file tag depth
+    - =nelisp-org-index-enable= / =-disable=
+- =test/nelisp-org-index-test.el= +8-10 ERT
+- =src/nelisp-tools.el= 末尾 +2 deftool: =org-index-rebuild= /
+  =org-index-search=
+- =test/nelisp-server-smoke.sh= 末尾 +2 assert
+- tools/list 35 → 37 (session-B Phase 6.5.2/3 完遂で 39 になっていれば
+  39 → 41)
+
+** Phase 6.6.2 — watcher + refresh (2-3 時間)
+- =filenotify-add-watch= 経由 incremental update
+- =--refresh-if-stale= で mtime 比較 → diff だけ re-scan
+- =periodic-scan-start= timer 起動
+
+** Phase 6.6.3 — advanced search (3-4 時間)
+- FTS5 full-text search (anvil-org-index と同 trigram tokenizer)
+- tag filter (intersection / union)
+- date range filter (SCHEDULED / DEADLINE)
+
+** 工数見積 (合計)
+| sub-phase | 時間 | gate |
+|-----------+------+------|
+| 6.6.1 | 3-5h | rebuild + search 縦串 |
+| 6.6.2 | 2-3h | watcher + refresh |
+| 6.6.3 | 3-4h | FTS5 + filters |
+| *合計* | *8-12h* | tools/list 35 → 37 (Phase 6.6.1 単体)、最終 Doc 26 close で +5 tools |
+
+* §4 衝突回避 (session-A/B 並行運用)
+
+session-B は本日 Phase 6.5.2/6.5.3 deep walker 進行中、=src/nelisp-tools.el= +
+=test/nelisp-server-smoke.sh= 末尾 append を予定。本 Doc 26 の Phase
+6.6.1 実装は *session-B が main へ merge した後に着手* することで完全
+衝突回避を保証する。LOCK 状態の本 doc 自体は新規 file (=docs/design/26-*=)
+なので即時 commit 可能、session-B と非衝突。
+
+実装着手の gate:
+1. session-B の Phase 6.5.2/6.5.3 が main に merge されていること
+2. =make test= が緑 (現 1005 → session-B merge 後 1011+)
+3. =make smoke= が緑
+
+session-B 完了前に着手したい場合:
+- 新 file 2 件 (=src/nelisp-org-index.el= / =test/nelisp-org-index-test.el=)
+  + Doc 26 sync のみ commit、tools.el / smoke.sh 末尾追記は session-B
+  merge 後の別 commit に分割
+
+* §5 関連 doc
+
+- =docs/design/16-phase5e-anvil-port.org= (Stage A 5-E、tool 雛形)
+- =docs/design/17-phase5f-state-port.org= (5-F.1、SQLite primitive 元)
+- =docs/design/19-phase5f-tool-port.org= (5-F.2、deftool pattern)
+- =docs/design/20-phase5f-3-audit.org= (5-F.3、=org-read-outline-tree= 元)
+- =docs/design/24-phase6-2-anvil-http.org= (Phase 6.2、defvar 化方針)
+- =docs/design/25-phase6.5-nelisp-defs-index.org= (Phase 6.5、双子 module)
+- anvil =anvil-org-index.el= = port reference (Doc 02 SHIPPED 1419 LOC)
+- memory =project_anvil_org_index.md= (anvil 側 SHIPPED 記録)
+
+* §6 想定リスク
+
+** 6.1 org parser の Phase 5-F.3 surface
+=nelisp-tools--org-flat-headlines= は private function (=--= prefix)。
+本 phase で公開化する必要あり。対策: 名前を =nelisp-org-flat-headlines=
+に rename し、session-B の Phase 6.5.2/3 が触らないファイル
+(=nelisp-tools.el= 内 helper section) を session-B merge 後に touch。
+
+** 6.2 SQLite WAL モード + 複数 process
+Phase 6.5.1 と同じ DB ファイルではなく別 file (=nelisp-org-index.db=
+vs =nelisp-state.db=) なので process 並行アクセスの問題は別個。
+nelisp-state の transaction macro を再利用すれば OK。
+
+** 6.3 file scanner の throughput
+1500 files / 71k headlines を 2.7s で anvil-org-index は処理する。
+NeLisp 側は host Elisp なので速度は同等以上のはず。MVP は
+=insert-file-contents= + regex scanner で十分、=org-element= 不要。
+
+** 6.4 org-id (=:ID:= property) lookup
+anvil-org-index は =org-id= による lookup を提供するが、本 MVP では
+DEFER。Phase 6.6.3 で再評価。
+
+* §7 完遂 gate
+
+** Phase 6.6.1 SHIPPED 条件
+1. =make test= 1005 → 1015+ pass (session-B merge 後 1011+ → 1021+)
+2. =make smoke= pass、=org-index-rebuild= / =org-index-search= 名検証
+3. =make compile= 0 warning
+4. self-bootstrap: =nelisp-org-index-rebuild '("/home/madblack-21/Cowork/Notes/capture")=
+   が headline 数 100+ で完走、=nelisp-org-index-search "Phase"= で hit
+5. tools/list = 37 (session-B 39 base なら 41)
+6. main へ feat branch 経由 =--no-ff= merge
+
+** Doc 26 完全 close 条件 (Phase 6.6.1/.2/.3 全 SHIPPED)
+- tools/list 37 → 5 tools 増加 (org-index-rebuild / -search /
+  -refresh / -watch / -status)
+- FTS5 検索が 1500 files / 71k headlines を 100ms 以内
+- watcher が file 編集 5 秒以内に DB 反映
