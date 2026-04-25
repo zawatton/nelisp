@@ -46,6 +46,7 @@
 (require 'nelisp-network)
 (require 'nelisp-state)
 (require 'nelisp-http)
+(require 'nelisp-defs-index)
 
 ;;; Data-store (scratch KV used by data-get/set-path) ---------------
 
@@ -800,6 +801,50 @@ clear; will error if any tool is still registered."
                                 (and no-cache (list :no-cache t))
                                 (and selector (list :selector selector))
                                 (and json-path (list :json-path json-path)))))))
+
+  ;; Phase 6.5.1 — nelisp-defs-index MVP MCP surface (Doc 25).  Two
+  ;; tools expose `nelisp-defs-index-rebuild' / `-search' so non-Emacs
+  ;; users can navigate elisp definitions over MCP without a Grep loop.
+
+  (nelisp-deftool defs-index-rebuild
+    :description "Rebuild the elisp defs index for PATHS (default: containing git project)."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :paths (list :type "array"
+                                           :items (list :type "string")
+                                           :description "Optional list of project roots to index.")))
+    :handler (lambda (args)
+               (let* ((paths (alist-get 'paths args))
+                      (path-list (and paths (append paths nil))))
+                 (nelisp-defs-index-rebuild path-list))))
+
+  (nelisp-deftool defs-search
+    :description "Search the elisp defs index for NAME (exact by default; pass fuzzy=true for substring)."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :name (list :type "string"
+                                          :description "Symbol name to search for.")
+                              :kind (list :type "string"
+                                          :description "Optional comma-separated kind filter (e.g. \"defun,cl-defun\").")
+                              :fuzzy (list :type "boolean"
+                                           :description "When true, use LIKE %NAME% matching.")
+                              :limit (list :type "integer"
+                                           :description "Maximum rows (default 50)."))
+                        :required ["name"])
+    :handler (lambda (args)
+               (let* ((name (alist-get 'name args))
+                      (kind-raw (alist-get 'kind args))
+                      (fuzzy (alist-get 'fuzzy args))
+                      (limit (alist-get 'limit args))
+                      (kind-list (and (stringp kind-raw)
+                                      (not (string-empty-p kind-raw))
+                                      (split-string kind-raw "[ ,]+" t)))
+                      (opts (append (and kind-list (list :kind kind-list))
+                                    (and fuzzy (list :fuzzy t))
+                                    (and (integerp limit) (list :limit limit)))))
+                 (unless (stringp name)
+                   (error "defs-search: missing string `name'"))
+                 (nelisp-defs-index-search name opts))))
 
   t)
 

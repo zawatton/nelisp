@@ -150,6 +150,9 @@ assert_contains '"name":"http-post"'
 # Phase 6.2.5 + 6.2.6 robots.txt + batch fetch (Doc 24 完全クローズ)
 assert_contains '"name":"http-robots-check"'
 assert_contains '"name":"http-fetch-batch"'
+# Phase 6.5.1 nelisp-defs-index MVP MCP surface (Doc 25 §3 SHIPPED)
+assert_contains '"name":"defs-index-rebuild"'
+assert_contains '"name":"defs-search"'
 # git-status has no params — inputSchema.properties must be `{}` not `null`
 # (Claude Code zod schema rejects `null`; surfaced as "Failed to fetch tools"
 # invalid_type at tools[*].inputSchema.properties.)
