@@ -46,8 +46,15 @@ harness = false
 # code surgery.  Default ON: the standalone anvil bootstrap path Doc
 # 27/32 calls out as Phase 9d depends on these primitives.
 [features]
-default = ["fileio-syscalls"]
+default = ["fileio-syscalls", "process-syscalls"]
 fileio-syscalls = []
+# Phase 9d.J (T100 / Doc 39 LOCKED-2026-04-25-v2 §3.J) — subprocess
+# syscall extension (~12 new `nl_syscall_*` symbols: fork / execve /
+# posix_spawn / pipe2 / waitpid / kill / dup2 / setsid / getrlimit /
+# setrlimit / prlimit / select).  Default ON: anvil bootstrap M2
+# milestone (= host-Emacs-free `bin/anvil --no-emacs`) requires them,
+# but a future "mini build" can opt out without code surgery.
+process-syscalls = []
 
 [dependencies]
 libc = "0.2"

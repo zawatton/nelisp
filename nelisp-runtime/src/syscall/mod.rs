@@ -31,6 +31,9 @@ pub mod unix;
 #[cfg(feature = "fileio-syscalls")]
 pub mod fileio;
 
+#[cfg(feature = "process-syscalls")]
+pub mod process;
+
 pub use error::SyscallError;
 pub use unix::NelispStat;
 
@@ -54,6 +57,18 @@ pub use filenotify::{
     nl_filenotify_add_watch, nl_filenotify_close, nl_filenotify_init, nl_filenotify_read,
     nl_filenotify_rm_watch, NL_IN_ATTRIB, NL_IN_CREATE, NL_IN_DELETE, NL_IN_MODIFY,
     NL_IN_MOVED_FROM, NL_IN_MOVED_TO,
+};
+
+// Phase 9d.J (T100 / Doc 39 LOCKED-2026-04-25-v2 §3.J) subprocess
+// substrate.  Twelve `nl_syscall_*` thin wrappers re-exported at
+// `syscall::*` so the lib.rs surface picks them up alongside Phase
+// 7.0 + 9d.A1 + 9d.A4.  Behind the `process-syscalls` feature flag
+// (default ON) per Doc 39 §3.J / §6.3 fd-leak hygiene contract.
+#[cfg(feature = "process-syscalls")]
+pub use process::{
+    nl_syscall_dup2, nl_syscall_execve, nl_syscall_fork, nl_syscall_getrlimit,
+    nl_syscall_kill, nl_syscall_pipe2, nl_syscall_posix_spawn, nl_syscall_prlimit,
+    nl_syscall_select, nl_syscall_setrlimit, nl_syscall_setsid, nl_syscall_waitpid,
 };
 
 use libc::{c_char, c_int, mode_t, off_t, size_t, ssize_t};
