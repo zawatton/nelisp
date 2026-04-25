@@ -5,9 +5,22 @@ edition = "2021"
 description = "NeLisp Phase 7.0 OS syscall stub (Rust thin wrapper, ~300-500 LOC)"
 license = "GPL-3.0-or-later"
 
+# Phase 7.5.1 (Doc 32 v2 LOCKED §2.1 + §3.1) — staticlib added so the
+# bin/anvil --strict-no-emacs path can statically link the runtime
+# (rlib for cargo-internal consumers; staticlib for non-Rust binaries
+# such as a future bin/anvil rewrite or C-side embeds).  cdylib is
+# preserved for library users that prefer dynamic loading.
+#
+#   cargo build --release  →  target/release/
+#     libnelisp_runtime.so      (cdylib, Linux)
+#     libnelisp_runtime.dylib   (cdylib, macOS)
+#     nelisp_runtime.dll        (cdylib, Windows)
+#     libnelisp_runtime.rlib    (rlib, cargo-internal)
+#     libnelisp_runtime.a       (staticlib, Linux/macOS)
+#     nelisp_runtime.lib        (staticlib, Windows MSVC)
 [lib]
 name = "nelisp_runtime"
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib", "rlib", "staticlib"]
 
 [[bin]]
 name = "nelisp-runtime"
