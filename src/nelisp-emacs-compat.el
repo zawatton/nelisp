@@ -8,8 +8,8 @@
 ;; required for `claude' self-extension via `anvil.el'.  Extension
 ;; packages outside NeLisp core can `(require 'nelisp-emacs-compat)' and
 ;; immediately call `nelisp-ec-*' to manipulate buffers, points, markers,
-;; narrowing, and perform literal substring search — without dragging in
-;; the full Emacs C runtime.
+;; narrowing, and perform literal / regex search — without dragging in the
+;; full Emacs C runtime.
 ;;
 ;; Prefix: `nelisp-ec-' (= NeLisp Emacs Compat) so that loading this
 ;; module inside a host Emacs does NOT shadow `current-buffer',
@@ -18,7 +18,7 @@
 ;; itself the symbol mapping (= `nelisp-ec-insert' → `insert') happens
 ;; in the loader.
 ;;
-;; API surface (30 public APIs, MVP scope per Doc 33 v2 §4.2a):
+;; API surface (37 public APIs after Phase 9a regex wire):
 ;;
 ;;   A. buffer registry + current buffer  (5)
 ;;      generate-new-buffer, current-buffer, set-buffer,
@@ -42,12 +42,13 @@
 ;;      make-marker, set-marker, marker-position, marker-buffer,
 ;;      point-marker
 ;;
-;;   G. search  (3)
-;;      search-forward, search-backward, looking-at-p
+;;   G. search + match-data  (9)
+;;      search-forward, search-backward, looking-at-p,
+;;      re-search-forward, re-search-backward, looking-at,
+;;      match-data, match-beginning, match-end
 ;;
-;; Non-goals (deferred to Phase 9b per spec):
-;;   - regex search (literal-only in MVP; `looking-at-p' treats its
-;;     argument as a literal prefix string)
+;; Non-goals (deferred to later phases per spec):
+;;   - full Emacs regexp compatibility beyond `nelisp-regex' MVP syntax
 ;;   - marker insertion-type (advance-on-insert) — markers in MVP are
 ;;     "static": they hold a position that does NOT auto-update when
 ;;     surrounding text is inserted/deleted.  This keeps the data flow
@@ -67,6 +68,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'nelisp-regex)
 (require 'nelisp-text-buffer)
 
 ;;; defstruct: buffer (Layer 2, wraps Layer 0 text-buffer)
@@ -142,6 +144,15 @@ Killed buffers are removed.  This is the single source of truth for
 (defvar nelisp-ec--current-buffer nil
   "The currently-selected `nelisp-ec-buffer', or nil if none.")
 
+(defvar nelisp-ec--match-data nil
+  "Last successful match data in Emacs-compatible list form.
+
+The representation is a flat list of 1-based buffer positions:
+  (MATCH-START MATCH-END G1-START G1-END ...)
+
+Unmatched optional groups are stored as nil pairs.  The list is updated
+by successful literal/regex search APIs and by `nelisp-ec-looking-at'.")
+
 (defun nelisp-ec--ensure-current ()
   "Return the current buffer or signal `nelisp-ec-no-current-buffer'."
   (or nelisp-ec--current-buffer
@@ -173,6 +184,43 @@ Call this immediately before any text mutation on BUF's underlying
 `nelisp-text-buffer', so that the gap is positioned correctly."
   (text-buffer-set-cursor (nelisp-ec--text buf)
                           (1- (nelisp-ec-buffer-point buf))))
+
+(defun nelisp-ec--search-region (buf)
+  "Return searchable region metadata for BUF as (BASE TEXT POINT-INDEX HI).
+
+BASE is the absolute 1-based position corresponding to TEXT index 0.
+TEXT spans the current visible region (`point-min'..`point-max').
+POINT-INDEX is the current point as a 0-based index into TEXT.
+HI is the absolute exclusive upper bound of the visible region."
+  (let* ((base (or (nelisp-ec-buffer-narrow-start buf) 1))
+         (hi (or (nelisp-ec-buffer-narrow-end buf)
+                 (1+ (text-buffer-length (nelisp-ec--text buf)))))
+         (text (text-buffer-substring (nelisp-ec--text buf)
+                                      (1- base)
+                                      (1- hi)))
+         (point-index (- (nelisp-ec-buffer-point buf) base)))
+    (list base text point-index hi)))
+
+(defun nelisp-ec--set-match-data (data)
+  "Store DATA as the current match-data and return DATA."
+  (setq nelisp-ec--match-data data))
+
+(defun nelisp-ec--set-simple-match-data (start end)
+  "Store a whole-match START/END pair in `nelisp-ec--match-data'."
+  (nelisp-ec--set-match-data (list start end)))
+
+(defun nelisp-ec--rx-match-data-to-ec (base match)
+  "Convert regex MATCH relative to BASE into Emacs-compatible match-data."
+  (let ((data (list (+ base (plist-get match :start))
+                    (+ base (plist-get match :end)))))
+    (dolist (group (plist-get match :groups))
+      (let ((gstart (plist-get group :start))
+            (gend (plist-get group :end)))
+        (setq data
+              (append data
+                      (list (and gstart (+ base gstart))
+                            (and gend (+ base gend)))))))
+    (nelisp-ec--set-match-data data)))
 
 ;;; A. buffer registry + current buffer  (5 APIs)
 
@@ -561,7 +609,7 @@ affects where you can move POINT, not where a marker may sit."
                           (nelisp-ec-buffer-point buf)
                           buf)))
 
-;;; G. search  (3 APIs)
+;;; G. search + match-data  (9 APIs)
 
 ;;;###autoload
 (defun nelisp-ec-search-forward (string &optional bound noerror)
@@ -569,9 +617,7 @@ affects where you can move POINT, not where a marker may sit."
 On match: move POINT past the match and return the new POINT (= end
 position of the match).  On failure: if NOERROR is non-nil return nil,
 else signal `nelisp-ec-error'.  BOUND, if non-nil, is the upper
-position bound (1-based) — searches stop without matching past it.
-
-Phase 9a MVP: literal substring only — regex deferred to Phase 9b."
+position bound (1-based) — searches stop without matching past it."
   (unless (stringp string)
     (signal 'wrong-type-argument (list 'stringp string)))
   (let* ((buf (nelisp-ec--ensure-current))
@@ -585,6 +631,7 @@ Phase 9a MVP: literal substring only — regex deferred to Phase 9b."
                   (<= match-end-pos (nelisp-ec-point-max)))))
       (let ((new-point (1+ (+ hit (length string)))))
         (setf (nelisp-ec-buffer-point buf) new-point)
+        (nelisp-ec--set-simple-match-data (1+ hit) new-point)
         new-point))
      (noerror nil)
      (t (signal 'nelisp-ec-error
@@ -595,9 +642,7 @@ Phase 9a MVP: literal substring only — regex deferred to Phase 9b."
   "Search backward from POINT for literal STRING.
 On match: move POINT to the start of the match and return new POINT.
 On failure honor NOERROR like `nelisp-ec-search-forward'.  BOUND, if
-non-nil, is the lower position bound (1-based).
-
-Phase 9a MVP: literal substring only — regex deferred to Phase 9b."
+non-nil, is the lower position bound (1-based)."
   (unless (stringp string)
     (signal 'wrong-type-argument (list 'stringp string)))
   (let* ((buf (nelisp-ec--ensure-current))
@@ -625,6 +670,7 @@ Phase 9a MVP: literal substring only — regex deferred to Phase 9b."
      (best
       (let ((new-point (1+ best)))
         (setf (nelisp-ec-buffer-point buf) new-point)
+        (nelisp-ec--set-simple-match-data new-point (+ new-point slen))
         new-point))
      (noerror nil)
      (t (signal 'nelisp-ec-error
@@ -633,11 +679,8 @@ Phase 9a MVP: literal substring only — regex deferred to Phase 9b."
 ;;;###autoload
 (defun nelisp-ec-looking-at-p (string)
   "Return non-nil if text at POINT begins with literal STRING.
-Phase 9a MVP: STRING is interpreted *literally* (= as a fixed
-substring), not as a regular expression.  Regex `looking-at-p' is
-deferred to Phase 9b.  This contract is intentional: callers that need
-regex semantics should use the (future) `nelisp-regex-emacs-compat'
-extension package."
+STRING is interpreted *literally* (= as a fixed substring), not as a
+regular expression."
   (unless (stringp string)
     (signal 'wrong-type-argument (list 'stringp string)))
   (let* ((buf (nelisp-ec--ensure-current))
@@ -651,7 +694,99 @@ extension package."
       (let ((substr (text-buffer-substring (nelisp-ec--text buf)
                                            (1- point)
                                            (+ (1- point) slen))))
-        (string-equal substr string))))))
+        (when (string-equal substr string)
+          (nelisp-ec--set-simple-match-data point (+ point slen))))))))
+
+;;;###autoload
+(defun nelisp-ec-re-search-forward (regexp &optional bound noerror)
+  "Search forward from POINT for REGEXP via `nelisp-regex'.
+
+On match, move POINT to the end of the match and return that position.
+BOUND, if non-nil, is an absolute 1-based upper bound on the match end.
+On failure, return nil when NOERROR is non-nil, else signal
+`nelisp-ec-error'."
+  (unless (stringp regexp)
+    (signal 'wrong-type-argument (list 'stringp regexp)))
+  (let* ((buf (nelisp-ec--ensure-current))
+         (region (nelisp-ec--search-region buf))
+         (base (nth 0 region))
+         (text (nth 1 region))
+         (point-index (nth 2 region))
+         (match (nelisp-rx-string-match regexp text point-index))
+         (abs-end (and match (+ base (plist-get match :end)))))
+    (cond
+     ((and match
+           (or (null bound) (<= abs-end bound)))
+      (setf (nelisp-ec-buffer-point buf) abs-end)
+      (nelisp-ec--rx-match-data-to-ec base match)
+      abs-end)
+     (noerror nil)
+     (t (signal 'nelisp-ec-error
+                (list "Search failed" regexp))))))
+
+;;;###autoload
+(defun nelisp-ec-re-search-backward (regexp &optional bound noerror)
+  "Search backward from POINT for REGEXP via `nelisp-regex'.
+
+Returns the 1-based start position of the rightmost match whose end is
+at or before POINT and whose start is at or after BOUND when BOUND is
+non-nil.  On failure honor NOERROR like `nelisp-ec-re-search-forward'."
+  (unless (stringp regexp)
+    (signal 'wrong-type-argument (list 'stringp regexp)))
+  (let* ((buf (nelisp-ec--ensure-current))
+         (region (nelisp-ec--search-region buf))
+         (base (nth 0 region))
+         (text (nth 1 region))
+         (point-index (nth 2 region))
+         (lo-index (if bound (max 0 (- bound base)) 0))
+         (matches (nelisp-rx-string-match-all regexp text lo-index))
+         (best nil))
+    (dolist (match matches)
+      (when (and (>= (plist-get match :start) lo-index)
+                 (<= (plist-get match :end) point-index))
+        (setq best match)))
+    (cond
+     (best
+      (let ((new-point (+ base (plist-get best :start))))
+        (setf (nelisp-ec-buffer-point buf) new-point)
+        (nelisp-ec--rx-match-data-to-ec base best)
+        new-point))
+     (noerror nil)
+     (t (signal 'nelisp-ec-error
+                (list "Search failed" regexp))))))
+
+;;;###autoload
+(defun nelisp-ec-looking-at (regexp)
+  "Return non-nil if REGEXP matches starting exactly at POINT."
+  (unless (stringp regexp)
+    (signal 'wrong-type-argument (list 'stringp regexp)))
+  (let* ((buf (nelisp-ec--ensure-current))
+         (region (nelisp-ec--search-region buf))
+         (base (nth 0 region))
+         (text (nth 1 region))
+         (point-index (nth 2 region))
+         (match (nelisp-rx-string-match regexp text point-index)))
+    (when (and match (= (plist-get match :start) point-index))
+      (nelisp-ec--rx-match-data-to-ec base match))))
+
+;;;###autoload
+(defun nelisp-ec-match-data ()
+  "Return the last successful match data in Emacs-compatible list form."
+  (copy-sequence nelisp-ec--match-data))
+
+;;;###autoload
+(defun nelisp-ec-match-beginning (subexp)
+  "Return the start position of SUBEXP from `nelisp-ec-match-data'."
+  (unless (integerp subexp)
+    (signal 'wrong-type-argument (list 'integerp subexp)))
+  (nth (* 2 subexp) nelisp-ec--match-data))
+
+;;;###autoload
+(defun nelisp-ec-match-end (subexp)
+  "Return the end position of SUBEXP from `nelisp-ec-match-data'."
+  (unless (integerp subexp)
+    (signal 'wrong-type-argument (list 'integerp subexp)))
+  (nth (1+ (* 2 subexp)) nelisp-ec--match-data))
 
 (provide 'nelisp-emacs-compat)
 ;;; nelisp-emacs-compat.el ends here
