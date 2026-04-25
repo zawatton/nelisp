@@ -513,15 +513,32 @@ The last element of ARGLIST is spliced in (Emacs `apply' semantics)."
     (nelisp-special-forms--apply fn effective)))
 
 (defun nelisp-special-forms--apply (fn args)
-  "Apply FN to ARGS, dispatching on closure tag or host fboundp."
+  "Apply FN to ARGS, dispatching on closure tag or host fboundp.
+
+Recognises three callable shapes:
+  1. Phase 7+B `(nelisp-sf-closure ENV PARAMS BODY)' tag —
+     dispatched via `nelisp-special-forms--apply-closure'.
+  2. Phase 7+C `nelisp-closure' record (cl-defstruct) — dispatched
+     via `nelisp-closure-apply' when that module is loaded.  This
+     is a *runtime* `fboundp' check so this file imposes no
+     load-time dependency on `nelisp-closure.el'.
+  3. Host-Emacs symbol or function value — falls through to the
+     host `apply'."
   (cond
    ((nelisp-special-forms--closure-p fn)
     (nelisp-special-forms--apply-closure fn args))
+   ((and (fboundp 'nelisp-closure-p)
+         (funcall (symbol-function 'nelisp-closure-p) fn))
+    (funcall (symbol-function 'nelisp-closure-apply) fn args))
    ((symbolp fn)
     (let ((resolved (nelisp-special-forms--function-of fn)))
-      (if (nelisp-special-forms--closure-p resolved)
-          (nelisp-special-forms--apply-closure resolved args)
-        (apply resolved args))))
+      (cond
+       ((nelisp-special-forms--closure-p resolved)
+        (nelisp-special-forms--apply-closure resolved args))
+       ((and (fboundp 'nelisp-closure-p)
+             (funcall (symbol-function 'nelisp-closure-p) resolved))
+        (funcall (symbol-function 'nelisp-closure-apply) resolved args))
+       (t (apply resolved args)))))
    ((functionp fn)
     (apply fn args))
    (t
