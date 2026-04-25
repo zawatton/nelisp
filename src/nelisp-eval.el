@@ -93,6 +93,11 @@
 ;;; Code:
 
 (require 'nelisp-read)
+;; Phase 6.2.0 — anvil-http port preparation. `url-host' / `url-port' /
+;; `url-filename' / `url-type' are cl-defstruct accessors defined in
+;; `url-parse'; without an explicit require they remain unbound and the
+;; primitive install loop trips on `symbol-function'.
+(require 'url-parse)
 
 (define-error 'nelisp-eval-error
   "NeLisp evaluation error")
@@ -684,6 +689,20 @@ dispatches straight into the VM."
     ;; のため primitive 化せず、手書き BEGIN/COMMIT で回避)
     sqlite-available-p sqlitep sqlite-open sqlite-close
     sqlite-execute sqlite-select
+    ;; URL + crypto primitives (Phase 6.2.0 — anvil-http port 前提、
+    ;; SBCL-style host 委譲。url package は Emacs 29 built-in、
+    ;; url-host / url-port / url-filename / url-type は url-parse の
+    ;; cl-defstruct accessors なので require 'url-parse 済 (上記)。
+    ;; 動的バインド変数 url-request-method / url-request-extra-headers
+    ;; は host symbol cell に住むため NeLisp 側の dynamic-let では
+    ;; 触れない — 高水準 wrapper (nelisp-http-fetch 等、Phase 6.2.1)
+    ;; が host で let-bind してから url-retrieve-synchronously を呼ぶ
+    ;; 設計とする)
+    url-retrieve-synchronously url-generic-parse-url
+    url-encode-url url-hexify-string url-unhex-string
+    url-recreate-url
+    url-host url-port url-filename url-type
+    secure-hash
     ;; Error plumbing — `error' / `signal' / `user-error' / `define-error'
     ;; all hook into the host condition system that `condition-case'
     ;; already knows how to catch.

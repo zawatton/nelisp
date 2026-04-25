@@ -209,6 +209,38 @@ binding is visible on each invocation.  Tightens the lexical contract."
   (should (equal (nelisp-eval-string "(let ((x 5)) (list x x))")
                  '(5 5))))
 
+;;; Phase 6.2.0 — url-* + secure-hash primitive registration ----------
+
+(ert-deftest nelisp-eval-primitive-url-symbols-installed ()
+  "Phase 6.2.0: 11 url + secure-hash primitives are reachable through
+the NeLisp function table after `nelisp--install-primitives'."
+  (nelisp--reset)
+  (dolist (sym '(url-retrieve-synchronously url-generic-parse-url
+                 url-encode-url url-hexify-string url-unhex-string
+                 url-recreate-url url-host url-port url-filename
+                 url-type secure-hash))
+    (should (nelisp-eval `(fboundp (quote ,sym))))))
+
+(ert-deftest nelisp-eval-primitive-url-parse-roundtrip ()
+  "Phase 6.2.0: NeLisp source can parse a URL via the host primitive
+and read back individual fields."
+  (nelisp--reset)
+  (let ((parsed (nelisp-eval
+                 '(url-generic-parse-url
+                   "https://example.com:8443/foo/bar?x=1"))))
+    (should (equal (url-type parsed) "https"))
+    (should (equal (url-host parsed) "example.com"))
+    (should (= (url-port parsed) 8443))))
+
+(ert-deftest nelisp-eval-primitive-secure-hash-cache-key ()
+  "Phase 6.2.0: secure-hash is reachable for cache-key derivation
+(Phase 6.2.1 nelisp-http--cache-key uses sha1 over URL)."
+  (nelisp--reset)
+  (should (equal (nelisp-eval '(secure-hash 'sha1 "https://example.com/"))
+                 "b559c7edd3fb67374c1a25e739cdd7edd1d79949"))
+  (should (equal (nelisp-eval '(url-hexify-string "a b/c"))
+                 "a%20b%2Fc")))
+
 (provide 'nelisp-eval-test)
 
 ;;; nelisp-eval-test.el ends here
