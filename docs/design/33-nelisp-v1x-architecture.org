@@ -1,0 +1,875 @@
+#+TITLE: Doc 33 — NeLisp v1.x architecture (core + 3-layer extension model)
+#+AUTHOR: zawatton + Claude (session-A 起草、parallel dev T35 worktree、user signoff 待ち)
+#+DATE: 2026-04-25
+#+STATUS: DRAFT-2026-04-25 (Phase 7+ 完遂後の strategic positioning 確定 + Phase 8-12 ロードマップ parent doc、user signoff で LOCKED 化想定)
+
+* §0 要旨 (TL;DR)
+
+Doc 33 = NeLisp v1.x architecture の design doc parent。本日 2026-04-25
+Phase 7+ 全 sub-phase SHIPPED (=phase-7-implementation-shipped-2026-04-25=
+tag、main 現状) を境に確立する *strategic positioning shift* に従って、
+*core + 3-layer extension separation* の architecture を確定する。
+
+*Phase 7+ SHIPPED 後の position*:
+- NeLisp = "Emacs Lisp implementation" → *"general-purpose Lisp runtime
+  substrate"* (= Emacs Lisp 互換性に限定しない、cross-platform GUI /
+  batch script / AI tool / template engine / codegen 等 wide use case の
+  pure Lisp runtime)
+- Buffer / marker / overlay / display / undo は全部 *extension package
+  化*、NeLisp core は super-minimal で *Phase 7+ で freeze* (Phase 8 で
+  mutable text primitive 1 件のみ追加)
+- Display engine ecosystem = *separate ecosystem*、各 backend (gtk /
+  cocoa / win32 / wgpu / tui) は community 主導で独立 repo
+
+*3 層分離*:
+1. *Layer 1: NeLisp core* (Phase 7+ で freeze + Phase 8 で mutable text
+   primitive 1 件追加、~50000-60000 LOC NeLisp + ~819 LOC Rust syscall)
+2. *Layer 2: extension packages* (=nelisp-elisp-compat= / =nelisp-display-spec=、
+   各々独立 repo、~5000-10000 LOC + ~1000-2000 LOC)
+3. *Layer 3: backend implementations* (=nelisp-display-tui= reference +
+   community-driven =gtk= / =cocoa= / =win32= / =wgpu=、各 ~3000-5000 LOC)
+
+*v1.0 → v3.0 release roadmap (詳細 §7)*:
+- *v1.0 ship* (Phase 7+ 完遂 + 3-軸 bench + 24h soak + arm64 verify) =
+  pure Lisp runtime distributable
+- *v1.1 ship* (Phase 8 mutable text primitive、~500-1000 LOC 1-2 ヶ月) =
+  + gap-buffer based mutable text container (display 概念 0、batch script 用)
+- *v2.0 ship* (Phase 11 完遂、~5000-10000 LOC + reference TUI 6-12 ヶ月) =
+  + nelisp-elisp-compat + nelisp-display-spec + nelisp-display-tui (最初の GUI demo)
+- *v3.0 ship* (Phase 12+ community 主導、~10000-20000 LOC、無期限) =
+  cross-platform desktop GUI runtime (gtk + cocoa + win32 揃い)
+
+*本 doc の主張*:
+- Phase 7+ で確立した "NeLisp purity max path" は Emacs Lisp に閉じない
+  pure Lisp runtime substrate として価値があり、ecosystem を *core で
+  freeze + extension で広げる* の方が 25 年以上の永続性が高い
+- SBCL = "freeze 4 核 C で 25 年永続" の precedent を NeLisp は
+  *freeze pure Lisp core* に置き換えて transfer
+- 各 layer 独立 release で community contribution の barrier を最小化
+
+* §1 背景
+
+** 1.1 Phase 7+ SHIPPED 後の position (2026-04-25)
+
+Phase 7+ 完遂 = NeLisp v1.0 完遂条件 #4 (= 残存 C = SBCL-style 4 核
+syscall / allocator / GC inner / coding のみ) を *purity max path* で
+達成。本日 2026-04-25 main commit =be6bab6= 時点:
+
+| sub-phase | 内容                                                   | 状態      | LOC                   |
+|-----------+--------------------------------------------------------+-----------+-----------------------|
+| 7.0       | Rust syscall stub + MAP_JIT update                     | ✅ SHIPPED | 819 Rust              |
+| 7.1       | NeLisp native compiler 新設                            | ✅ SHIPPED | ~5000-10000 NeLisp    |
+| 7.2       | allocator NeLisp 化                                     | ✅ SHIPPED | ~2000-3000 NeLisp     |
+| 7.3       | GC inner NeLisp 化                                      | ✅ SHIPPED | ~3000-5000 NeLisp     |
+| 7.4       | coding NeLisp 化 (14000-entry JIS table 込み)           | ✅ SHIPPED | ~2000-3000 NeLisp     |
+| 7.5       | integration + standalone E2E + 126x Emacs module FFI   | ✅ SHIPPED | ~900-1500 NeLisp + integration glue |
+
+= *NeLisp は "100% Lisp" project として SBCL precedent を超える研究
+価値を確立* (Doc 27 §0 mission 達成)、残作業は v1.0 ship gate のみ:
+- 3-軸 bench actual measurement (=fib(30) 30x= / =fact-iter 20x= /
+  =alloc-heavy 5x=、Doc 28 v2 §5.2)
+- 24h soak verify (Doc 32 v2 post-RC、安定性 confirm)
+- arm64 hardware verify (Doc 32 v2 §11、v1.0 best-effort、v1.1 promote)
+
+** 1.2 user 2026-04-25 strategic shift
+
+Phase 7+ 完遂 + 真 standalone binary 配布の preparation 段階で、user
+signoff 2026-04-25 が以下 strategic shift を確立:
+
+*shift 1*: NeLisp = "Emacs Lisp implementation" の枠を超え、*pure Lisp
+runtime substrate* として positioning。Emacs Lisp 互換性は *extension
+package* (=nelisp-elisp-compat=) で提供、NeLisp core 自体は editor 概念
+を一切持たない汎用 runtime。
+
+*shift 2*: Buffer / marker / overlay / text-property / undo は editor
+domain concept、NeLisp core の責務外。これらを実装する =nelisp-elisp-compat=
+は別 repo / 別 maintainer / 別 release cadence。
+
+*shift 3*: Display engine = community-driven separate ecosystem。NeLisp
+core team は =nelisp-display-spec= (API contract) と =nelisp-display-tui=
+(reference impl) のみ提供、=gtk= / =cocoa= / =win32= / =wgpu= は community
+が独立 repo で開発。
+
+*shift 4*: NeLisp core API stability guarantee を *25 年保証* baseline
+で運用 (SBCL precedent transfer)。breaking change は major version
+(=v2.0=) のみ、deprecation 期間 1 年以上。
+
+** 1.3 ecosystem precedent 比較
+
+NeLisp v1.x architecture と既存 Lisp ecosystem の比較:
+
+| ecosystem               | core scope                | extension model         | display model                           | 25年永続 |
+|-------------------------+---------------------------+-------------------------+-----------------------------------------+----------|
+| *Emacs Lisp*            | editor + Lisp runtime monolithic | minor mode / package | builtin (redisplay)                     | ✅       |
+| *SBCL Common Lisp*      | Lisp runtime (4 核 C 含む) | ASDF + Quicklisp        | none (CLIM / McCLIM が separate)        | ✅       |
+| *Racket*                | Lisp runtime + framework  | racket-lib              | racket/gui (builtin per-platform)       | ✅       |
+| *Clojure*               | Lisp runtime (JVM)        | Leiningen / deps.edn    | none (Swing / JavaFX を delegate)       | ✅       |
+| *NeLisp (Phase 7+)*     | *pure Lisp runtime only*  | *separate package repo* | *separate spec + community backends*    | (target) |
+
+NeLisp は *Clojure model に近い* — core は Lisp runtime のみ、display
+は完全 delegate。ただし Clojure が JVM に乗ることで platform を JVM に
+固定するのに対し、NeLisp は own runtime で platform 自由度を保つ。
+
+** 1.4 既存 Doc 27-32 v2 LOCKED との関係
+
+Doc 27 LOCKED-2026-04-25-v2 は *Phase 7+ 全体の parent abstraction*、
+Doc 28-32 は *各 sub-phase 詳細*。本 Doc 33 は *Phase 7+ 完遂後の Phase
+8-12 parent abstraction* で、Doc 27 と sibling 関係:
+
+| doc      | scope                                  | timeline                |
+|----------+----------------------------------------+-------------------------|
+| Doc 27   | Phase 7+ 全 sub-phase parent           | 2026-04 Phase 7+ 完遂   |
+| Doc 28   | Phase 7.1 native compiler 詳細          | (Doc 27 child)          |
+| Doc 29   | Phase 7.2 allocator 詳細                | (Doc 27 child)          |
+| Doc 30   | Phase 7.3 GC inner 詳細                 | (Doc 27 child)          |
+| Doc 31   | Phase 7.4 coding 詳細                   | (Doc 27 child)          |
+| Doc 32   | Phase 7.5 integration 詳細              | (Doc 27 child)          |
+| *Doc 33* | *Phase 8-12 parent (本 doc)*           | *2026-04 以降長期*      |
+| Doc 34+  | Phase 8-12 各 sub-phase 詳細 (TBD)     | (Doc 33 child)          |
+
+* §2 LOCKED items (default 採用、user signoff で確定)
+
+本 doc の核となる boundary 確定 / 3-layer 分離 / community contribution
+model の LOCKED items。各項目は default 採用、user signoff で確定する。
+
+** L1: NeLisp core は Phase 7+ で freeze (= core API 不変)
+
+Phase 7+ で SHIPPED した NeLisp core (~50000-60000 LOC NeLisp + ~819 LOC
+Rust syscall) は v1.0 で freeze、Phase 8 で mutable text primitive 1
+件のみ追加。それ以外の core 拡張は *NeLisp v2.0 以降* (= 1 年以上の
+deprecation 期間 + breaking change OK の major version)。
+
+** L2: editor concept (buffer / marker / overlay / undo) は extension package
+
+editor concept は NeLisp core の責務外、=nelisp-elisp-compat= 別 repo
+で実装。Emacs Lisp 互換性が必要な user は当該 package を install。
+NeLisp 単体 (= no extension) でも汎用 Lisp runtime として動作する。
+
+** L3: display engine = nelisp-display-spec + community backends
+
+display engine API contract は =nelisp-display-spec= 別 repo で確立、
+各 backend (=tui= / =gtk= / =cocoa= / =win32= / =wgpu=) は community
+主導で独立 repo + 独立 release。NeLisp core team は =nelisp-display-tui=
+reference impl のみ提供。
+
+** L4: Phase 8 で NeLisp core 拡張 1 件のみ (mutable text primitive)
+
+NeLisp core への Phase 8 拡張は *mutable text primitive 1 件のみ* (~500-1000 LOC、
+gap-buffer based、display 概念 0)。template engine / codegen / batch
+script 等 *editor 不要 use case* で利用可能、editor 機能は extension で
+構築する。
+
+詳細 §5。
+
+** L5: nelisp-elisp-compat は Emacs Lisp 互換 surface (Phase 9)
+
+=nelisp-elisp-compat= = Emacs Lisp の buffer / marker / overlay /
+text-property / undo / find-file / make-process 等の互換 API を NeLisp
+core 上に build した extension package。~5000-10000 LOC、6-12 ヶ月。
+
+詳細 §3.2 / §4.2。
+
+** L6: nelisp-display-spec は editor-agnostic API contract (Phase 10)
+
+=nelisp-display-spec= = editor / GUI 概念抽象化、各 backend (=tui= /
+=gtk= / =cocoa= / =win32= / =wgpu=) が同 API 実装する contract。
+~1000-2000 LOC、2-3 ヶ月。
+
+詳細 §3.3 / §4.3 / §6。
+
+** L7: 各 layer 独立 release / 独立 repo / 独立 maintainer
+
+各 layer は別 repo (例: =github.com/<org>/nelisp= / =nelisp-elisp-compat= /
+=nelisp-display-spec= / =nelisp-display-tui= / community backends)、別
+maintainer 体制、別 release cadence。NeLisp core への dependency は
+semver で contract 管理。
+
+詳細 §9。
+
+** L8: API stability guarantee = SBCL precedent 25 年 baseline
+
+NeLisp core API stability:
+- *patch* (=v1.0.x=): bug fix only、API 不変
+- *minor* (=v1.x.0=): API 追加 OK、既存 API 不変 (= backward-compatible)
+- *major* (=vx.0.0=): breaking change OK、ただし 1 年以上の deprecation
+  期間 + 移行 path 提供 + community RFC 必須
+
+SBCL =v1.x= が 25 年 backward-compatible で動作している precedent を
+transfer、NeLisp も同様の長期安定性を提供する。
+
+** L9: T33 Emacs module 126x speedup は NeLisp core の Phase 7.5.4 として SHIPPED 済
+
+Phase 7.5.4 (=T33 SHIPPED 2026-04-25=、commit =376d620=) で、Emacs FFI
+module bridge により subprocess 経由 (Stage D Phase 6.1) 比 126x の
+speedup を達成。本 doc は NeLisp core 内の Phase 7.5.4 SHIPPED として
+扱い、新 phase 化はしない。
+
+** L10: v1.0 ship gate = 3-軸 bench + 24h soak + arm64 verify
+
+Phase 7+ 全 sub-phase SHIPPED 済 + 以下 3 件で v1.0 ship:
+- 3-軸 bench actual measurement (Doc 28 v2 §5.2)
+- 24h soak verify (Doc 32 v2 post-RC)
+- arm64 hardware verify (Doc 32 v2 §11、v1.0 best-effort)
+
+これら完遂で =stage-d-v2.0= 真 standalone binary 配布 + NeLisp 公開
+告知保留解除 (=feedback_nelisp_announcement_standalone_gate.md=)。
+
+* §3 Layer 詳細
+
+** 3.1 Layer 1: NeLisp core (Phase 7+ で freeze + Phase 8 で 1 拡張)
+
+*content* (現 Phase 7+ SHIPPED + Phase 8 で追加):
+- Lisp runtime: eval / reader / VM / native compiler (Phase 7.1)
+- GC inner / allocator (Phase 7.2 + 7.3)
+- coding (Phase 7.4)
+- syscall stub (Phase 7.0、Rust thin wrapper ~819 LOC)
+- standard library (cl-lib / pcase / regexp / etc)
+- =nelisp-defs-index= / =nelisp-org-index= / =nelisp-state= / =nelisp-http= /
+  =nelisp-coding= / =nelisp-allocator= / =nelisp-gc-inner= / =nelisp-cc=
+  全 sub-module (Phase 5/6/7 で SHIPPED)
+- *Phase 8 で追加 mutable text primitive* (gap-buffer based、display 概念 0)
+
+*boundary criteria* (= NeLisp core 採用条件):
+1. *言語 semantic critical* — 大半 Lisp program が必要 (eval / reader /
+   VM / closure / dynamic binding 等)
+2. *self-host bootstrap で必要* — Phase 7.1.5 4-stage bootstrap が回る
+   prerequisite
+3. *hot path 性能 critical* — GC / allocator / native compile / mutable
+   text 等、bytecode VM 比 5-30x speedup 必須
+
+*excluded* (= extension package 化、core から除外):
+- buffer (= editor concept、=nelisp-elisp-compat= へ)
+- marker / overlay (= editor concept)
+- text-property face / display (= editor concept)
+- undo / redo (= editor concept)
+- frame / window / display (= GUI concept、=nelisp-display-*= へ)
+- file UI (= editor concept、=find-file= 等 wrapper は =nelisp-elisp-compat= へ)
+- process UI (= editor concept、=make-process= 等 wrapper は =nelisp-elisp-compat= へ)
+- regex engine (Emacs 互換 regex が必要なら =nelisp-elisp-compat= へ、core
+  は ICU 風 simple regex のみ)
+- network / OS-specific I/O (=nelisp-elisp-compat= or =nelisp-syscall-ext=)
+
+*core 維持 invariant* (Phase 7+ で freeze):
+- 4 核 = syscall (Rust 最小) / allocator (NeLisp) / GC inner (NeLisp) /
+  coding (NeLisp) のみ
+- editor concept 0、GUI concept 0
+- 単体 binary (=stage-d-v2.0=) で動作可、host Emacs 不要 (Phase 7.5 SHIPPED)
+
+** 3.2 Layer 2 extension: nelisp-elisp-compat
+
+*goal*: Emacs Lisp 互換 surface を NeLisp core 上に build。Emacs Lisp
+package を NeLisp 上で動かしたい user 向け。
+
+*content*:
+- buffer primitive (=current-buffer= / =get-buffer-create= / =with-current-buffer= /
+  =insert= / =delete-region= / =goto-char= / =point-min= / =point-max= 等)
+- marker / overlay / text-property
+- undo / redo
+- =find-file= / =write-file= / =save-buffer= 等 file UI wrapper
+- =make-process= / =start-process= / =call-process= 等 process UI wrapper
+- Emacs 互換 regex engine
+- =defadvice= / advice.el 互換
+- minor mode / hook / =run-hooks=
+
+*依存*: NeLisp core (= Layer 1) のみ。Layer 3 backend 非依存 (= GUI 不要)。
+
+*scope*: ~5000-10000 LOC NeLisp、6-12 ヶ月 (Phase 9 詳細 §4.2)。
+
+*別 repo 想定*: =github.com/<org>/nelisp-elisp-compat=、別 maintainer
+体制可、Doc 33 §9 community contribution model に従う。
+
+** 3.3 Layer 2 extension: nelisp-display-spec
+
+*goal*: editor / GUI 概念の API contract 確立。各 backend (=tui= /
+=gtk= / =cocoa= / =win32= / =wgpu=) が実装する spec、application 側は
+spec を target に code を書けば backend 切替で portable。
+
+*content*:
+- frame / window / canvas primitive
+- drawing operations (rect / text / image / path / fill / stroke)
+- event sources (key / mouse / window / timer)
+- layout primitive (box / grid / constraint)
+- font / face / image abstraction
+- input method integration
+
+*依存*: NeLisp core (= Layer 1) のみ。Layer 3 backend は spec 実装 side
+で逆依存。
+
+*scope*: ~1000-2000 LOC NeLisp、2-3 ヶ月 (Phase 10 詳細 §4.3 + §6)。
+
+*別 repo 想定*: =github.com/<org>/nelisp-display-spec=。
+
+** 3.4 Layer 3: backend implementations
+
+Layer 3 = =nelisp-display-spec= contract を実装する各 backend:
+
+| backend                | platform                              | 開発主体        | reference 実装 source                              | scope        |
+|------------------------+---------------------------------------+-----------------+----------------------------------------------------+--------------|
+| =nelisp-display-tui=   | terminal (Linux / macOS / Windows)    | session-A       | curses / vterm precedent                            | ~3000-5000 LOC |
+| =nelisp-display-gtk=   | Linux / Unix                          | community 主導  | Emacs gtk port + GTK4 binding                       | ~3000-5000 LOC |
+| =nelisp-display-cocoa= | macOS                                 | community 主導  | Emacs ns-* port + AppKit binding                    | ~3000-5000 LOC |
+| =nelisp-display-win32= | Windows                               | community 主導  | Emacs w32 port + Win32 API binding                  | ~3000-5000 LOC |
+| =nelisp-display-wgpu=  | cross-platform (web + native)         | community 主導  | wgpu-rs binding (= Rust delegate)、experimental    | ~5000-8000 LOC |
+
+各 backend = 独立 repo / 独立 release / 独立 maintainer。NeLisp core team
+は =nelisp-display-tui= の reference impl のみ提供 (Phase 11 SHIPPED)、
+他 4 backend は community 主導。
+
+*backend 選択 model* (application side):
+#+begin_src elisp
+(require 'nelisp-display-spec)
+(nelisp-display-init :backend 'gtk)  ;; or 'tui / 'cocoa / 'win32 / 'wgpu
+(nelisp-display-frame-create ...)
+#+end_src
+
+application code は backend 非依存、=:backend= argument で実行時切替。
+
+* §4 Phase 8-12 ロードマップ
+
+本 doc は parent abstraction、各 phase の詳細は Doc 34+ で別 design doc
+化想定。本 §4 は scope / 工数 / 依存関係のみ。
+
+** 4.1 Phase 8: NeLisp core 拡張 (mutable text primitive)
+
+*goal*: NeLisp core に *display 概念 0* の mutable text container を 1
+件追加 (gap-buffer based)。pure text manipulation use case (batch
+script / template engine / codegen 等) で利用可能、editor 機能は不要。
+
+*scope*: ~500-1000 LOC NeLisp、1-2 ヶ月。
+
+*依存*: Phase 7+ 完遂 (本日 2026-04-25 SHIPPED 済)、v1.0 ship 必須。
+
+*release*: =v1.1= で ship。
+
+詳細 §5。
+
+** 4.2 Phase 9: nelisp-elisp-compat package
+
+*goal*: Emacs Lisp 互換 surface 実装。Emacs Lisp package を NeLisp 上で
+動かす environment 提供。
+
+*scope*: ~5000-10000 LOC NeLisp、6-12 ヶ月。
+
+*依存*: Phase 8 完遂 (mutable text primitive 必須)。
+
+*sub-phase 仮置き* (詳細は Doc 34+ で別 design doc):
+- 9.1 buffer primitive (~1500-2500 LOC、~2 ヶ月)
+- 9.2 marker / overlay / text-property (~1500-2500 LOC、~2 ヶ月)
+- 9.3 undo / redo (~500-1000 LOC、~1 ヶ月)
+- 9.4 file UI / process UI wrapper (~1000-2000 LOC、~2 ヶ月)
+- 9.5 Emacs 互換 regex (~500-1000 LOC、~1 ヶ月)
+- 9.6 advice / minor mode / hook (~500-1000 LOC、~1 ヶ月)
+
+*別 repo*: =github.com/<org>/nelisp-elisp-compat=。
+
+*release*: =v2.0= に向けた前提 layer。
+
+** 4.3 Phase 10: nelisp-display-spec package
+
+*goal*: display engine API contract 確立。各 backend が実装する spec。
+
+*scope*: ~1000-2000 LOC NeLisp、2-3 ヶ月。
+
+*依存*: Phase 9 完遂が望ましい (= editor 概念で frame / window 概念を
+連動定義可能)、ただし 9 と並行可。
+
+*別 repo*: =github.com/<org>/nelisp-display-spec=。
+
+*release*: =v2.0= に向けた前提 layer。詳細 §6。
+
+** 4.4 Phase 11: nelisp-display-tui reference implementation
+
+*goal*: TUI backend の reference implementation 提供。最初の GUI demo、
+v2.0 release の核。
+
+*scope*: ~3000-5000 LOC NeLisp、6-12 ヶ月。
+
+*依存*: Phase 10 完遂 (display-spec 必須)。
+
+*sub-phase 仮置き* (詳細は Doc 34+):
+- 11.1 terminal capability detection + raw mode (~500-1000 LOC)
+- 11.2 frame / window / canvas → terminal cell renderer (~1000-1500 LOC)
+- 11.3 drawing op (rect / text / fg-color / bg-color、image は不可) (~1000-1500 LOC)
+- 11.4 event source (key / mouse / SIGWINCH / timer) (~500-1000 LOC)
+- 11.5 layout primitive (box / grid) (~500-1000 LOC)
+- 11.6 mini-Emacs demo (Phase 5 mini-Emacs を Layer 構成で再実装、
+  =nelisp-elisp-compat= + =nelisp-display-tui= 上で動作)
+
+*別 repo*: =github.com/<org>/nelisp-display-tui=。
+
+*release*: =v2.0= ship gate (= 最初の GUI demo)。
+
+** 4.5 Phase 12+: community-driven backends (gtk / cocoa / win32 / wgpu)
+
+*goal*: cross-platform desktop GUI runtime 完成。
+
+*scope*: 各 ~3000-5000 LOC NeLisp + 各 platform binding (FFI 経由、
+Rust delegate 想定)、各 6-12 ヶ月。
+
+*依存*: Phase 10 SHIPPED 必須 (display-spec が contract source)、Phase
+11 reference impl 推奨 (= TUI が動作する保証で spec が "実装可能" 確認済)。
+
+*phase 化*:
+- Phase 12: =nelisp-display-gtk= (Linux ecosystem 最 priority、Emacs gtk
+  port + GTK4 binding precedent あり)
+- Phase 13: =nelisp-display-cocoa= (macOS、Emacs ns-* port precedent)
+- Phase 14: =nelisp-display-win32= (Windows、Emacs w32 port precedent +
+  =anvil-pty-broker= 経路と協調)
+- Phase 15+: =nelisp-display-wgpu= (cross-platform / web、experimental)
+
+*release*: =v3.0= ship gate (= cross-platform desktop GUI runtime、3+
+backend 揃い)、ただし各 backend は独立 release で先行可。
+
+*別 repo*: 各 community 主導、=github.com/<community>/nelisp-display-<backend>=
+想定。
+
+* §5 Phase 8 mutable text primitive design
+
+*goal*: NeLisp core に *display 概念 0* の mutable text container を 1
+件追加。pure text manipulation use case (batch script / template engine /
+codegen / etc) で利用可能、editor 機能は不要。
+
+** 5.1 data structure 選択
+
+| 方式           | 性能 (insert at random)  | 性能 (sequential)        | 実装複雑度 | precedent           |
+|----------------+--------------------------+--------------------------+------------+---------------------|
+| gap-buffer     | O(1) amortized at gap    | O(1) at gap              | 低         | Emacs Lisp 25 年    |
+| piece-table    | O(log n) random access   | O(log n)                 | 中         | VS Code、Atom        |
+| rope           | O(log n)                 | O(log n)                 | 高         | Xi Editor、CRDT      |
+
+*推奨: gap-buffer*
+- Emacs 25 年 precedent、performance characteristics 既知
+- 実装最簡 (~500 LOC NeLisp)
+- editor use case と batch script use case 両方 cover
+- piece-table / rope は *拡張 package* で =nelisp-text-piece-table= /
+  =nelisp-text-rope= として並列開発可能 (Layer 2 candidate、Phase 10+ で検討)
+
+*gap-buffer の操作 cost (Emacs 等から既知)*:
+- insert at gap: O(1)
+- delete at gap: O(1)
+- insert / delete at random pos: O(d) where d = gap 移動距離
+- random access (substring): O(1) (gap-aware indexing で)
+- search: O(n)
+- search with regex: O(n×k)
+
+** 5.2 API sketch (~10 primitives)
+
+#+begin_src elisp
+;; constructor / destructor
+(make-text-buffer &optional initial-content) ;; → tb (mutable text buffer)
+
+;; basic operations
+(text-buffer-insert tb str)                  ;; cursor pos に str 挿入
+(text-buffer-delete tb start end)             ;; [start, end) range 削除
+(text-buffer-cursor tb)                       ;; 現 cursor pos (0-indexed char)
+(text-buffer-set-cursor tb pos)               ;; cursor 移動
+(text-buffer-substring tb start end)          ;; [start, end) range の string
+
+;; search
+(text-buffer-search tb pattern &optional from-pos)        ;; 部分一致
+(text-buffer-search-regex tb regex &optional from-pos)    ;; regex 検索
+
+;; metadata
+(text-buffer-length tb)                       ;; char 単位 length
+(text-buffer-multibyte-p tb)                  ;; multibyte / unibyte
+(text-buffer-byte-length tb)                  ;; byte 単位 length
+#+end_src
+
+display 概念は完全に 0 (no point/marker/overlay/face、純粋 cursor +
+mutable text 操作)。
+
+** 5.3 Emacs Lisp との 差別化
+
+Emacs =buffer= type と意図的に *別 type 名*:
+- Emacs =buffer= = mutable text + marker + overlay + text-property + undo +
+  major mode + buffer-local var + ... (重い editor concept)
+- NeLisp =text-buffer= = mutable text + cursor のみ (display 概念 0)
+
+=nelisp-elisp-compat= の =buffer= 実装は内部で =text-buffer= を使うが、
+そこに marker / overlay / text-property を *上から build* する model
+(= Layer 1 = =text-buffer=、Layer 2 = =buffer=)。
+
+** 5.4 sub-phase 仮置き (Phase 8、~1-2 ヶ月)
+
+| sub-phase | 内容                                            | LOC      | 期間   |
+|-----------+-------------------------------------------------+----------+--------|
+| 8.1       | gap-buffer data structure + 基本 API             | ~300-500 | 2-3 週 |
+| 8.2       | search / regex / multibyte 対応                  | ~200-300 | 1-2 週 |
+| 8.3       | ERT test +30 + bench (vs Emacs buffer baseline)  | ~50      | 1 週   |
+| 8.4       | LOCKED → SHIPPED + main merge                    | -        | 1 週   |
+
+* §6 nelisp-display-spec API skeleton (Phase 10)
+
+*goal*: editor-agnostic な display engine API contract 確立。各 backend
+(=gtk= / =cocoa= / =win32= / =wgpu= / =tui=) は同 API を実装、application
+は backend 選択して bind。
+
+*Layer 2 extension package*、別 repo 想定 (=github.com/<org>/nelisp-display-spec=)。
+
+** 6.1 frame / window / canvas
+
+#+begin_src elisp
+;; bind display backend (アプリ起動時 1 回)
+(nelisp-display-init :backend 'gtk)         ;; or 'tui / 'cocoa / 'win32 / 'wgpu
+
+;; frame creation (top-level window)
+(nelisp-display-frame-create :title "App"
+                              :width 800 :height 600
+                              :on-close (lambda () ...))
+;; → frame handle
+
+;; window (frame 内分割) creation
+(nelisp-display-window-create frame :type 'window/popup/modal)
+;; → window handle
+
+;; canvas (drawing surface) 取得
+(nelisp-display-canvas window)
+;; → canvas handle
+#+end_src
+
+** 6.2 drawing operations
+
+#+begin_src elisp
+(nelisp-display-draw-rect canvas x y w h :color "#FF0000")
+(nelisp-display-draw-text canvas x y "Hello" :font default :face foreground)
+(nelisp-display-draw-image canvas x y image-data)
+(nelisp-display-draw-path canvas points :stroke 2 :color ...)
+(nelisp-display-flush canvas)               ;; double-buffer commit
+#+end_src
+
+** 6.3 event sources
+
+#+begin_src elisp
+(nelisp-display-event-loop frame)           ;; main event loop start
+
+;; event handler dispatch (= 各 event 種に handler bind):
+(nelisp-display-on frame 'key-press     (lambda (key modifiers) ...))
+(nelisp-display-on frame 'mouse-click   (lambda (x y button) ...))
+(nelisp-display-on frame 'window-resize (lambda (w h) ...))
+(nelisp-display-on frame 'timer t-id    (lambda () ...))
+#+end_src
+
+** 6.4 layout primitive
+
+#+begin_src elisp
+(nelisp-display-layout-box :direction 'horizontal :spacing 10
+                            :children (list w1 w2 w3))
+(nelisp-display-layout-grid :rows 3 :columns 4 :children ...)
+(nelisp-display-layout-constraint :anchor parent :align 'center)
+#+end_src
+
+** 6.5 font / face / image abstraction
+
+#+begin_src elisp
+;; font
+(nelisp-display-font-make :family "Noto Sans" :size 12 :weight 'normal)
+;; face (color + style)
+(nelisp-display-face-make :foreground "#000000" :background "#FFFFFF"
+                           :font default-font)
+;; image (PNG / JPEG / SVG)
+(nelisp-display-image-load "path/to/image.png")
+#+end_src
+
+** 6.6 input method integration
+
+各 platform の IME (= macOS / Windows / Linux IBus) を spec で抽象化:
+
+#+begin_src elisp
+(nelisp-display-im-enable frame)
+(nelisp-display-im-on-commit frame (lambda (text) ...))
+(nelisp-display-im-on-preedit frame (lambda (text) ...))
+#+end_src
+
+* §7 v1.0 → v3.0 release roadmap
+
+| version | ship gate                                                             | scope                                            | 期間             |
+|---------+-----------------------------------------------------------------------+--------------------------------------------------+------------------|
+| v1.0    | Phase 7+ 完遂 (本日 2026-04-25 SHIPPED) + 3-軸 bench + 24h soak + arm64 | pure Lisp runtime, =stage-d-v2.0= standalone     | 残 1-2 ヶ月      |
+| v1.1    | + Phase 8 mutable text primitive (~500-1000 LOC)                      | + gap-buffer text container                       | 1-2 ヶ月         |
+| v2.0    | + Phase 9 (nelisp-elisp-compat) + Phase 10 (display-spec) + Phase 11 (tui) | + Emacs Lisp 互換 + display API + TUI ref impl   | 12-24 ヶ月       |
+| v3.0    | + Phase 12+ community backends 3+ 揃い (= gtk + cocoa + win32 想定)   | + cross-platform desktop GUI runtime              | 24-48 ヶ月       |
+
+各 release の announcement 戦略:
+- *v1.0* = Phase 7+ 完遂で =feedback_nelisp_announcement_standalone_gate.md=
+  解除、HN / Lobsters / Reddit (=/r/emacs= / =/r/lisp= / =/r/programming=) で
+  "100% Lisp project transcends SBCL precedent" angle で告知
+- *v1.1* = mutable text primitive 追加、batch script / codegen ecosystem
+  向けに告知 (=/r/programming= / Hacker News)
+- *v2.0* = TUI demo + Emacs Lisp 互換 surface、ELS / EmacsConf main talk +
+  anvil v3 release と同時検討
+- *v3.0* = cross-platform desktop GUI runtime、Linux desktop ecosystem
+  (GNOME / KDE) + macOS dev community + Windows dev community 各々で告知
+
+* §8 risks
+
+** R1: Phase 11 display engine TUI scope creep
+
+terminal capability の variety (xterm-256color / kitty / iTerm2 /
+Windows Terminal / tmux / mosh / etc) を fully support しようとすると
+6 ヶ月 → 12 ヶ月 → 18 ヶ月と scope creep。
+
+*mitigation*:
+- Phase 11.1 で *target terminal を限定* (xterm-256color + kitty + Windows
+  Terminal の 3 つに集中、他は best-effort)
+- =vterm= / =eat= 等 precedent を analyze、必要 capability subset を抽出
+- escape hatch: Phase 11.6 mini-Emacs demo を deliverable から除外可、
+  =nelisp-display-tui= の minimal MVP のみで v2.0 ship
+
+** R2: community ecosystem fragmentation
+
+各 backend 独立 repo / 独立 maintainer の design が community
+fragmentation を生む可能性 (= 各 backend の維持品質 ばらつき / contract
+violation / etc)。
+
+*mitigation*:
+- =nelisp-display-spec= の compliance test suite を提供、各 backend が
+  CI で同 suite を回す protocol
+- 各 backend に *NeLisp core team が co-maintainer 1 人 review*、
+  contract violation を catch
+- 6 ヶ月 dormancy で =community-archived= stamp、再活性化は新 maintainer
+  ぐみ前提
+
+** R3: elisp 互換性 partial coverage
+
+=nelisp-elisp-compat= が Emacs Lisp の全 surface を cover できるか不明、
+特に:
+- =overlay= の display property (face / before-string / after-string)
+- =text-property= の hot path 性能
+- =advice= の around / before / after combinator
+- minor mode の =keymap= chain
+- =defadvice= の deprecated 互換
+
+*mitigation*:
+- Phase 9 着手前に *coverage assessment* (= 既存 Emacs Lisp package
+  500 件で必要 surface を統計、=anvil-defs= search で frequency 順位付け)
+- Phase 9 では top 80% frequency surface のみ cover、残 20% は v2.x で
+  徐々追加
+- Emacs Lisp 互換性は *best-effort* 宣言、100% 互換は v3.x 以降の目標
+
+** R4: cross-platform backend porting cost
+
+各 backend は各 platform の native API を 触る必要があり、Rust binding
+経由でも porting cost が高い:
+- =nelisp-display-gtk= = GTK4 + Cairo + Pango binding
+- =nelisp-display-cocoa= = AppKit + Core Graphics + Core Text binding
+- =nelisp-display-win32= = Win32 + GDI+ + DirectWrite binding
+- =nelisp-display-wgpu= = wgpu-rs binding (Rust delegate)
+
+*mitigation*:
+- 各 backend は *Rust crate* で binding 提供、NeLisp 側は high-level
+  API のみ呼ぶ (= NeLisp 側 LOC 最小化)
+- =nelisp-display-spec= は backend 共通 API、低水準は各 backend repo に閉じる
+- community 主導 = NeLisp core team は porting しない、backend 別 repo
+  で backend maintainer が責務
+
+** R5: NeLisp core API freeze 後の breaking change risk
+
+Phase 7+ で freeze した core API に bug fix で breaking change が必要に
+なる可能性 (例: =eval= の corner case で従来 behavior が間違いと判明)。
+
+*mitigation*:
+- bug fix は patch version (=v1.0.x=) で API 不変が原則、breakage を
+  発見したら *deprecation 期間 1 年* で =v2.0= 統合
+- breaking change RFC を community で公開、3 ヶ月 review 期間
+- semver compat shim を =nelisp-compat-v1= 等の透明 layer で提供、=v2.0=
+  でも =v1.x= API を opt-in で維持
+
+** R6: gap-buffer 性能不足 (Phase 8)
+
+gap-buffer は random access に対して O(d) (d = gap 移動距離) コスト、
+template engine 等で random insert pattern が頻発すると性能不足の懸念。
+
+*mitigation*:
+- Phase 8.3 bench で *Emacs buffer 比 0.5x 以上* を gate、未達なら
+  piece-table / rope を =nelisp-text-piece-table= / =nelisp-text-rope=
+  で別 package 化 (= core は gap-buffer 維持、性能必要 user は別 package)
+- gap-buffer の =gap-resize= heuristic を SBCL =adjust-array= 風 amortize
+- 必要なら Phase 8.5 で =text-buffer-multi-gap= 実験 (= 複数 gap 維持で
+  random access 性能 boost)
+
+** R7: T33 Emacs module 経路と standalone 経路の divergence
+
+Phase 7.5.4 (T33 SHIPPED 2026-04-25) で実現した 126x speedup は Emacs
+module 経由、=stage-d-v2.0= 真 standalone は別 path。両 path の
+behavior divergence を維持 cost が増す。
+
+*mitigation*:
+- =stage-d-v2.0= が *primary*、Emacs module は *legacy compatibility*
+  位置づけで明示 (Doc 32 §11)
+- ERT test suite を両 path で実行、divergence は CI で check
+- Emacs module path の deprecate 時期 = =v2.0= ship 後 6 ヶ月、移行
+  guide を anvil README に明記
+
+** R8: Phase 8-12 スケジュール 12-48 ヶ月の長期化リスク
+
+Doc 33 全 phase 完遂 = v3.0 ship までに 24-48 ヶ月の長期 timeline、
+週末研究 8-16h/月 baseline で実現可能性に懸念。
+
+*mitigation*:
+- Phase 8 (1-2 ヶ月) で v1.1 ship → community 早期 awareness 獲得
+- Phase 9 / 10 / 11 を *並行 track* で進行 (Phase 9 と Phase 10 は
+  独立、両者 SHIPPED 後に Phase 11 着手)
+- Phase 12+ community backends は NeLisp core team の責務外、各 community
+  contributor のペース尊重
+- v3.0 timeline は *target* であり *commitment* ではない、ship 順序は
+  community 状況で柔軟調整
+
+* §9 Community contribution model
+
+** 9.1 layer別 開発主体
+
+| layer                 | 開発主体                          | release cadence    | maintainer 想定               |
+|-----------------------+-----------------------------------+--------------------+-------------------------------|
+| NeLisp core           | session-A + community PR review   | quarterly          | zawatton + co-maintainer 1-2  |
+| =nelisp-elisp-compat= | session-A + community 半々         | quarterly          | zawatton + community 1-2      |
+| =nelisp-display-spec= | session-A maintainer              | semi-annual        | zawatton                      |
+| =nelisp-display-tui=  | session-A reference impl          | semi-annual        | zawatton                      |
+| =nelisp-display-gtk=  | community 主導                    | community schedule | community contributor         |
+| =nelisp-display-cocoa= | community 主導                   | community schedule | community contributor (macOS user 想定) |
+| =nelisp-display-win32= | community 主導                   | community schedule | community contributor (Windows user 想定) |
+| =nelisp-display-wgpu= | community 主導 (experimental)    | community schedule | community contributor (web / cross-platform) |
+
+** 9.2 各 layer 独立 repo 想定
+
+各 backend / extension package = 別 repo で独立 issue tracker / release。
+NeLisp core は API stability guarantee (=L8=、§2 LOCKED)、各 backend /
+extension は自由 release schedule。
+
+repo 命名 convention:
+- =github.com/<org>/nelisp= = Layer 1 NeLisp core
+- =github.com/<org>/nelisp-elisp-compat= = Layer 2 extension
+- =github.com/<org>/nelisp-display-spec= = Layer 2 extension
+- =github.com/<org>/nelisp-display-tui= = Layer 3 reference backend
+- =github.com/<community>/nelisp-display-<backend>= = Layer 3 community backend
+
+(=<org>= = NeLisp project organization、=<community>= = backend maintainer
+個人 / org)
+
+** 9.3 API stability guarantee
+
+NeLisp core API:
+- *patch* (=v1.0.x=): bug fix only、API 不変
+- *minor* (=v1.x.0=): API 追加 OK、既存 API 不変 (= backward-compatible)
+- *major* (=vx.0.0=): breaking change OK、ただし 1 年以上の deprecation
+  期間 + 移行 path 提供 + community RFC 必須
+
+=nelisp-display-spec= API:
+- 同 stability、各 backend は spec major version 互換維持
+- spec breaking change は backend community RFC 経由で 6 ヶ月 review
+
+extension package (=nelisp-elisp-compat= 等):
+- core API stability に依存、core が major bump しない限り extension
+  は内部実装自由
+
+** 9.4 issue tracker / PR review process
+
+各 repo 独立の issue tracker、ただし *cross-cutting issue* は NeLisp
+core repo の =discussions= で議論。
+
+PR review:
+- NeLisp core: NeLisp core team co-maintainer 1+ approve 必須
+- =nelisp-elisp-compat=: NeLisp core team co-maintainer 1+ approve 推奨、
+  community maintainer 単独 merge 可
+- backend: backend maintainer 単独 merge 可、ただし *spec compliance test*
+  CI 緑必須
+
+** 9.5 contribution barriers の最小化
+
+community contribution の障壁を最小化する design:
+- 各 layer 独立 repo = 各 backend が NeLisp core への commit 権限不要
+- =nelisp-display-spec= compliance test = backend の "正しさ" を機械的 check
+- core API stability guarantee = backend が core breaking change で壊れない保証
+- license = GPLv3+ (NeLisp core) / 各 backend は自由 (MIT / BSD / GPL 等)、
+  ただし dual-license は推奨
+
+* §10 関連 doc
+
+** internal NeLisp design docs
+
+- =docs/design/27-phase7-c-runtime-self-impl.org= LOCKED-2026-04-25-v2
+  (Phase 7+ 全 sub-phase parent、本 doc の sibling = Doc 27 完遂後の
+  position が本 doc 起点)
+- =docs/design/28-phase7.1-native-compiler.org= LOCKED-2026-04-25-v2
+  (Phase 7.1 詳細、本 doc Layer 1 NeLisp core の native compiler implementation)
+- =docs/design/29-phase7.2-allocator.org= LOCKED-2026-04-25-v2
+- =docs/design/30-phase7.3-gc-inner.org= LOCKED-2026-04-25-v2
+- =docs/design/31-phase7.4-coding.org= LOCKED-2026-04-25-v2
+- =docs/design/32-phase7.5-integration.org= LOCKED-2026-04-25-v2
+- =docs/design/18-stage-d-standalone.org= LOCKED (=stage-d-v2.0= 真
+  standalone binary 配布 architecture)
+- =docs/design/24-phase6-2-anvil-http.org= (anvil-http port、Layer 1
+  NeLisp core 内 sub-module)
+- =docs/design/25-phase6.5-nelisp-defs-index.org= (=nelisp-defs-index=、
+  NeLisp core 内 SQLite Elisp 定義 index)
+- =docs/design/26-phase6.6-nelisp-org-index.org= (=nelisp-org-index=、
+  NeLisp core 内 SQLite org headline index)
+
+** internal NeLisp non-design docs
+
+- =docs/05-roadmap.org= (NeLisp 全 Phase ロードマップ、Phase 1-5 完遂 +
+  Stage D 並行 track 反映)
+- =docs/03-architecture.org= (NeLisp 4 核 architecture、Doc 27 §1.4
+  Rhodes 5-stage map)
+- =docs/02-scoping.org= (v1.0 完遂条件 4 項目)
+
+** 関連 memory
+
+- =project_nelisp.md= (Phase 4-6.5 SHIPPED summary、Stage D 配布レディ)
+- =project_nelisp_defs_index.md= (Phase 6.5 SHIPPED detail)
+- =project_nelisp_org_index.md= (Phase 6.6 SHIPPED detail)
+- =project_stage_d_standalone.md= (Stage D Doc 18 LOCKED、=stage-d-v2.0= 想定)
+- =feedback_nelisp_announcement_standalone_gate.md= (NeLisp 公開告知保留)
+- =feedback_anvil_uses_nelisp_architecture.md= (anvil-XXX が NeLisp 内部
+  使用、本 doc Layer 1/2 separation の anvil 側 contract)
+- =feedback_anvil_master_integration_gate.md= (design doc は LOCKED で
+  main merge 可)
+- =feedback_orchestrator_role_split.md= (orchestrator review claude+codex+gemma)
+- =feedback_git_worktree_parallel_sessions.md= (Phase 8-12 sub-phase
+  ごとに別 worktree 推奨)
+
+** external precedent reference
+
+- *SBCL ecosystem*: =sb-c= 25 年永続、ASDF / Quicklisp 別 ecosystem。
+  本 doc Layer 分離の inspiration source
+- *Racket ecosystem*: racket-lib 別 ecosystem、racket/gui builtin
+  per-platform。本 doc とは方針が逆 (= Racket は GUI builtin、NeLisp は
+  GUI extension)
+- *Clojure ecosystem*: JVM 上の Lisp、display delegate 主義。本 doc model
+  に最も近い
+- *Emacs Lisp ecosystem*: editor + Lisp runtime monolithic。NeLisp が
+  脱却する model
+- *Andrea Corallo, Emacs native-comp* (2019-): Emacs 28.1+ libgccjit 経路、
+  本 doc Layer 1 NeLisp core の Phase 7.1 native compiler の差別化軸
+  (purity vs capability)
+
+* §11 Sign-off
+
+** v1 DRAFT 経緯
+
+| version    | date       | author                       | 主要内容                                                       |
+|------------+------------+------------------------------+----------------------------------------------------------------|
+| v1 DRAFT   | 2026-04-25 | session-A 起草 (T35 worktree) | Phase 7+ 完遂後の strategic positioning + 3-layer separation + Phase 8-12 ロードマップ + mutable text primitive design + display-spec API skeleton + community contribution model + 8 risks |
+
+** DRAFT → LOCKED 想定 path
+
+1. 本 DRAFT push (commit on =feat/doc-33-architecture-v1x= worktree、
+   =/tmp/nelisp-doc33-wt=)
+2. session-A が =anvil-orchestrator-consensus-submit= で本 doc を
+   claude+codex+gemma review 想定 (judge=claude)、ただし strategic
+   positioning + parent abstraction なので review なしで user signoff も可
+3. user signoff → STATE: =DRAFT-2026-04-25= → =LOCKED-2026-04-2X=
+4. main へ =--no-ff= merge (=feedback_anvil_master_integration_gate.md=
+   準拠、design doc は LOCKED で merge 可)
+5. main merge 後、各 phase の詳細 design doc (Doc 34+) を起こして
+   LOCKED 化
+6. Phase 8 (mutable text primitive) 着手は v1.0 ship (= 3-軸 bench +
+   24h soak + arm64 verify) 完遂後
+
+** main merge gate
+
+- Doc 27 LOCKED-2026-04-25-v2 維持 (本 doc は Doc 27 完遂後の sibling
+  parent abstraction、Doc 27 と矛盾なし)
+- 本 doc は文書のみ、ERT regression-free 自動成立
+- =anvil-dev release-audit :scope doc-33= 緑 (DRAFT stamp 整合、reference
+  整合、Phase 7+ SHIPPED 状態の cross-check)
+- 本 v1 = =DRAFT-2026-04-25=、user signoff で main =--no-ff= merge 解禁
