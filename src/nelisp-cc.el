@@ -873,5 +873,597 @@ raw alist returned by `nelisp-cc--linear-scan'."
   (list :assignments (copy-sequence assignments)
         :spilled (nelisp-cc--alloc-spilled-values assignments)))
 
+;;; AST → SSA conversion (frontend) ---------------------------------
+;;
+;; This section layers a *NeLisp lambda → SSA function* lowering pass
+;; on top of the data-structure substrate above.  It is the third and
+;; final stage of Phase 7.1.1: scaffold (T2) → linear-scan (T4) →
+;; AST→SSA conversion (T6).  After this stage the front-half of the
+;; compiler pipeline is closed; `nelisp-cc-build-ssa-from-ast' takes
+;; raw NeLisp source `(lambda (PARAMS...) BODY...)' and produces a
+;; verified `nelisp-cc--ssa-function' that the linear-scan allocator
+;; can drive without further preprocessing.
+;;
+;; *Supported forms* (MVP, fail-fast on anything else):
+;;   - literal:    number / string / vector / nil / t / keyword
+;;   - (quote X):                                    -> :const
+;;   - variable reference (bare symbol):             -> :load-var
+;;   - (setq SYM EXPR):                              -> :store-var
+;;   - (if COND THEN ELSE):                          -> :branch + :phi
+;;   - (let / let* ((VAR INIT) ...) BODY ...):       -> sequential
+;;   - (lambda (PARAMS) BODY...):                    -> :closure
+;;   - (function FN-EXPR):                           -> wraps lambda
+;;   - (progn BODY...):                              -> sequential
+;;   - (FN ARG ...):                                 -> :call
+;;
+;; Anything else (catch / condition-case / unwind-protect / while /
+;; explicit defun outside top-level / unquote tokens / dot-pair calls)
+;; raises `nelisp-cc-unsupported-form' immediately — silent miscompile
+;; is a much worse failure mode than fail-fast.
+;;
+;; Macro expansion: when `nelisp-macroexpand-all' is loaded (the
+;; production path) we run it once over the whole body so user-defined
+;; macros and core macros (`when' / `unless' / `dolist' / `dotimes' /
+;; `pcase' / `cl-block' ...) get rewritten to the small kernel above.
+;; When `nelisp-macro' has not been loaded — typical in standalone
+;; ERT runs that exercise only `nelisp-cc' — a built-in scaffold
+;; expander handles the *fixed* set of derived macros (`and' / `or' /
+;; `cond' / `when' / `unless') by lowering them to the supported
+;; kernel.  This keeps the unit tests free of a hard dependency on
+;; the larger NeLisp runtime.
+;;
+;; Function-call resolution is *not* performed here.  `:call'
+;; instructions carry the callee symbol in their META plist
+;; (`:fn SYM :args (...)`) and Phase 7.1.2 backend pulls
+;; `nelisp-defs-index' (Phase 6.5) to resolve definitions.  The frontend
+;; only commits a stable surface for the backend to consume.
+
+(define-error 'nelisp-cc-unsupported-form
+  "NeLisp source form not supported by the SSA frontend"
+  'nelisp-cc-error)
+
+;;; Macro expansion shim --------------------------------------------
+
+(defun nelisp-cc--frontend-self-expand (form)
+  "Recursively expand FORM using the built-in scaffold expander.
+Handles `and' / `or' / `cond' / `when' / `unless' by rewriting them
+into the supported kernel (`if' / `progn').  Everything else is
+recurred-into structurally (preserving `quote' opacity and `lambda'
+parameter lists).  This expander is intentionally minimal — the
+production path layers `nelisp-macroexpand-all' on top of this."
+  (cond
+   ;; Atoms pass through.
+   ((not (consp form)) form)
+   ;; (quote DATUM) is opaque.
+   ((eq (car form) 'quote) form)
+   ;; (function ARG): if ARG is a lambda, recur into its body only.
+   ((eq (car form) 'function)
+    (let ((arg (cadr form)))
+      (if (and (consp arg) (eq (car arg) 'lambda))
+          (list 'function
+                (cons 'lambda
+                      (cons (cadr arg)
+                            (mapcar #'nelisp-cc--frontend-self-expand
+                                    (cddr arg)))))
+        form)))
+   ;; (lambda (PARAMS) BODY...): keep params literal, recur body.
+   ((eq (car form) 'lambda)
+    (cons 'lambda
+          (cons (cadr form)
+                (mapcar #'nelisp-cc--frontend-self-expand (cddr form)))))
+   ;; (let / let* ((VAR INIT) ...) BODY...): recur init forms + body.
+   ((memq (car form) '(let let*))
+    (let* ((head (car form))
+           (bindings (cadr form))
+           (body (cddr form))
+           (new-bindings
+            (mapcar (lambda (b)
+                      (cond
+                       ((symbolp b) b)
+                       ((and (consp b) (consp (cdr b)))
+                        (list (car b)
+                              (nelisp-cc--frontend-self-expand (cadr b))))
+                       (t b)))
+                    bindings)))
+      (cons head (cons new-bindings
+                       (mapcar #'nelisp-cc--frontend-self-expand body)))))
+   ;; (and BODY...) → nested `if': empty → t, single → expr,
+   ;; (and a b c) → (if a (if b c nil) nil).
+   ((eq (car form) 'and)
+    (let ((args (cdr form)))
+      (cond
+       ((null args) t)
+       ((null (cdr args)) (nelisp-cc--frontend-self-expand (car args)))
+       (t (list 'if
+                (nelisp-cc--frontend-self-expand (car args))
+                (nelisp-cc--frontend-self-expand (cons 'and (cdr args)))
+                nil)))))
+   ;; (or BODY...) → nested `if': empty → nil, single → expr,
+   ;; (or a b ...) → (let ((g a)) (if g g (or ...))).  We use a
+   ;; gensym to avoid double-evaluating the test.
+   ((eq (car form) 'or)
+    (let ((args (cdr form)))
+      (cond
+       ((null args) nil)
+       ((null (cdr args)) (nelisp-cc--frontend-self-expand (car args)))
+       (t (let ((g (make-symbol "or-tmp")))
+            (list 'let (list (list g (nelisp-cc--frontend-self-expand
+                                      (car args))))
+                  (list 'if g g
+                        (nelisp-cc--frontend-self-expand
+                         (cons 'or (cdr args))))))))))
+   ;; (when COND BODY...) → (if COND (progn BODY...) nil)
+   ((eq (car form) 'when)
+    (let ((c (cadr form))
+          (body (cddr form)))
+      (list 'if
+            (nelisp-cc--frontend-self-expand c)
+            (cons 'progn (mapcar #'nelisp-cc--frontend-self-expand body))
+            nil)))
+   ;; (unless COND BODY...) → (if COND nil (progn BODY...))
+   ((eq (car form) 'unless)
+    (let ((c (cadr form))
+          (body (cddr form)))
+      (list 'if
+            (nelisp-cc--frontend-self-expand c)
+            nil
+            (cons 'progn (mapcar #'nelisp-cc--frontend-self-expand body)))))
+   ;; (cond CLAUSE...) — empty → nil.  Each clause (TEST BODY...).
+   ;; Special case: (TEST) with no body becomes (or TEST <rest>).
+   ((eq (car form) 'cond)
+    (nelisp-cc--frontend-cond-expand (cdr form)))
+   ;; (setq SYM EXPR ...): every odd cdr position is a value form.
+   ((eq (car form) 'setq)
+    (let ((rest (cdr form))
+          (out nil))
+      (while rest
+        (push (car rest) out)
+        (setq rest (cdr rest))
+        (when rest
+          (push (nelisp-cc--frontend-self-expand (car rest)) out)
+          (setq rest (cdr rest))))
+      (cons 'setq (nreverse out))))
+   ;; Default: (HEAD ARG ...) — recur into every arg position.
+   (t (cons (car form)
+            (mapcar #'nelisp-cc--frontend-self-expand (cdr form))))))
+
+(defun nelisp-cc--frontend-cond-expand (clauses)
+  "Helper: expand a list of `cond' CLAUSES into nested `if' forms."
+  (cond
+   ((null clauses) nil)
+   (t
+    (let* ((c (car clauses))
+           (rest (cdr clauses)))
+      (cond
+       ((not (consp c))
+        (signal 'nelisp-cc-unsupported-form
+                (list :bad-cond-clause c)))
+       ((null (cdr c))
+        ;; (TEST) with empty body — value of TEST when truthy, else
+        ;; recurse.  We model this with `(let ((g TEST)) (if g g
+        ;; <rest>))' to match Elisp semantics (don't evaluate TEST
+        ;; twice).
+        (let ((g (make-symbol "cond-tmp")))
+          (list 'let
+                (list (list g (nelisp-cc--frontend-self-expand (car c))))
+                (list 'if g g
+                      (nelisp-cc--frontend-cond-expand rest)))))
+       (t
+        (list 'if
+              (nelisp-cc--frontend-self-expand (car c))
+              (cons 'progn
+                    (mapcar #'nelisp-cc--frontend-self-expand (cdr c)))
+              (nelisp-cc--frontend-cond-expand rest))))))))
+
+(defun nelisp-cc--frontend-expand (form)
+  "Run macro expansion over FORM before SSA lowering.
+When `nelisp-macroexpand-all' is loaded, defer to it (covers user-
+defined macros).  Otherwise fall back to the scaffold expander.  The
+result is always re-walked through the scaffold so derived kernel
+forms (`when' / `unless' / `cond' / etc.) are guaranteed to be
+collapsed into the small set the lowering pass natively supports."
+  (let ((expanded
+         (if (fboundp 'nelisp-macroexpand-all)
+             (funcall (symbol-function 'nelisp-macroexpand-all) form)
+           form)))
+    (nelisp-cc--frontend-self-expand expanded)))
+
+;;; Scope helpers ---------------------------------------------------
+
+(defun nelisp-cc--scope-extend (scope bindings)
+  "Return SCOPE prepended with BINDINGS (an alist of (SYM . SSA-VALUE)).
+The original SCOPE is not mutated.  Lookups via `assq' will find the
+freshest binding first because new entries are pushed onto the head."
+  (append bindings scope))
+
+(defun nelisp-cc--scope-lookup (scope sym)
+  "Return the SSA value bound to SYM in SCOPE, or nil if free.
+Free variables (no scope entry) are emitted as `:load-var' by the
+caller — a free variable is not an error, it is a deferred resolution
+the backend completes against `nelisp-defs-index'."
+  (cdr (assq sym scope)))
+
+;;; Builder API ------------------------------------------------------
+
+(defun nelisp-cc--fresh-block-id (function)
+  "Return the next block ID to be issued by FUNCTION.
+This is a peek — the counter is not advanced.  Real allocation goes
+through `nelisp-cc--ssa-make-block', which advances the counter."
+  (nelisp-cc--ssa-function-next-block-id function))
+
+(defun nelisp-cc--emit-phi (fn block predecessors values &optional type)
+  "Append a `phi' instruction to BLOCK in FN with parallel PREDECESSORS / VALUES.
+PREDECESSORS is a list of `nelisp-cc--ssa-block', and VALUES is the
+matching list of `nelisp-cc--ssa-value' (one per predecessor).  The
+instruction's META plist records `:phi-arms' as the alist
+`((PRED-BLOCK-ID . VALUE-ID) ...)' so backend lowering knows which
+incoming edge feeds each operand without rebuilding the mapping."
+  (unless (= (length predecessors) (length values))
+    (signal 'nelisp-cc-verify-error
+            (list :phi-mismatch (length predecessors) (length values))))
+  (let* ((def (nelisp-cc--ssa-make-value fn type))
+         (instr (nelisp-cc--ssa-add-instr fn block 'phi values def))
+         (arms (cl-mapcar (lambda (p v)
+                            (cons (nelisp-cc--ssa-block-id p)
+                                  (nelisp-cc--ssa-value-id v)))
+                          predecessors values)))
+    (setf (nelisp-cc--ssa-instr-meta instr)
+          (list :phi-arms arms))
+    def))
+
+;;; Lowering ---------------------------------------------------------
+
+;; The lowering helpers thread three pieces of mutable state:
+;;   - FN     : the `nelisp-cc--ssa-function' under construction
+;;   - BLOCK  : the *current* block we are appending into.  Control-
+;;              flow forms (if / let in some shapes) replace this with
+;;              a fresh merge block.  The lowering helpers therefore
+;;              return *both* the result SSA value *and* the block we
+;;              ended up in — callers thread that block forward.
+;;   - SCOPE  : the lexical environment alist (see scope-extend).
+;;
+;; Every helper has the contract:  (SSA-VALUE BLOCK)
+;; — i.e. a 2-element list where the first item is the SSA value
+;; carrying the result of the form (for void forms, the literal
+;; `nil-value' constant) and the second is the block control flow
+;; reached after evaluation.
+
+(defun nelisp-cc--literal-p (form)
+  "Return non-nil when FORM is a self-evaluating literal."
+  (or (numberp form)
+      (stringp form)
+      (vectorp form)
+      (null form)
+      (eq form t)
+      (keywordp form)))
+
+(defun nelisp-cc--lower-const (fn block literal &optional type)
+  "Emit `:const' for LITERAL in BLOCK and return (VALUE . BLOCK)."
+  (let* ((v (nelisp-cc--ssa-make-value fn type))
+         (instr (nelisp-cc--ssa-add-instr fn block 'const nil v)))
+    (setf (nelisp-cc--ssa-instr-meta instr)
+          (list :literal literal))
+    (list v block)))
+
+(defun nelisp-cc--lower-load-var (fn block sym)
+  "Emit `:load-var' for free variable SYM in BLOCK."
+  (let* ((v (nelisp-cc--ssa-make-value fn nil))
+         (instr (nelisp-cc--ssa-add-instr fn block 'load-var nil v)))
+    (setf (nelisp-cc--ssa-instr-meta instr)
+          (list :name sym))
+    (list v block)))
+
+(defun nelisp-cc--lower-store-var (fn block scope sym expr)
+  "Lower (setq SYM EXPR) in BLOCK with SCOPE."
+  (cl-destructuring-bind (val block2)
+      (nelisp-cc--lower-expr fn block scope expr)
+    (let* ((def (nelisp-cc--ssa-make-value fn nil))
+           (instr (nelisp-cc--ssa-add-instr fn block2 'store-var
+                                            (list val) def)))
+      (setf (nelisp-cc--ssa-instr-meta instr)
+            (list :name sym))
+      (list def block2))))
+
+(defun nelisp-cc--lower-progn (fn block scope body)
+  "Lower a sequence BODY in BLOCK; return last value + final block."
+  (cond
+   ((null body)
+    ;; Empty progn evaluates to nil.
+    (nelisp-cc--lower-const fn block nil))
+   (t
+    (let ((cur-block block)
+          (result nil)
+          (forms body))
+      (while forms
+        (cl-destructuring-bind (val nb)
+            (nelisp-cc--lower-expr fn cur-block scope (car forms))
+          (setq result val
+                cur-block nb
+                forms (cdr forms))))
+      (list result cur-block)))))
+
+(defun nelisp-cc--lower-if (fn block scope cond-form then-form else-form)
+  "Lower (if COND-FORM THEN-FORM ELSE-FORM) in BLOCK with SCOPE.
+Allocates a then-block, an else-block, and a merge-block; emits a
+`:branch' terminator on the entry block, recurses into THEN/ELSE,
+and merges via `:phi' on the merge-block.  Returns (PHI-VALUE
+MERGE-BLOCK)."
+  (cl-destructuring-bind (cval cblock)
+      (nelisp-cc--lower-expr fn block scope cond-form)
+    (let* ((then-blk (nelisp-cc--ssa-make-block fn "then"))
+           (else-blk (nelisp-cc--ssa-make-block fn "else"))
+           (merge-blk (nelisp-cc--ssa-make-block fn "merge")))
+      ;; Branch terminator on the predecessor block.
+      (let ((br (nelisp-cc--ssa-add-instr fn cblock 'branch (list cval) nil)))
+        (setf (nelisp-cc--ssa-instr-meta br)
+              (list :then (nelisp-cc--ssa-block-id then-blk)
+                    :else (nelisp-cc--ssa-block-id else-blk))))
+      (nelisp-cc--ssa-link-blocks cblock then-blk)
+      (nelisp-cc--ssa-link-blocks cblock else-blk)
+      ;; Lower then-arm.
+      (cl-destructuring-bind (tval tblock)
+          (nelisp-cc--lower-expr fn then-blk scope then-form)
+        (nelisp-cc--ssa-add-instr fn tblock 'jump nil nil)
+        (nelisp-cc--ssa-link-blocks tblock merge-blk)
+        ;; Lower else-arm.
+        (cl-destructuring-bind (eval-val eblock)
+            (nelisp-cc--lower-expr fn else-blk scope else-form)
+          (nelisp-cc--ssa-add-instr fn eblock 'jump nil nil)
+          (nelisp-cc--ssa-link-blocks eblock merge-blk)
+          ;; phi on merge-blk.
+          (let ((phi (nelisp-cc--emit-phi
+                      fn merge-blk
+                      (list tblock eblock)
+                      (list tval eval-val))))
+            (list phi merge-blk)))))))
+
+(defun nelisp-cc--lower-let (fn block scope bindings body)
+  "Lower `(let ((VAR INIT) ...) BODY...)' in BLOCK with SCOPE.
+INIT forms are evaluated in the *outer* SCOPE (Elisp `let' semantics);
+BODY is evaluated in SCOPE extended with all (VAR . SSA-VALUE) pairs."
+  (let ((cur-block block)
+        (new-bindings nil))
+    (dolist (b bindings)
+      (let ((var nil) (init nil))
+        (cond
+         ((symbolp b) (setq var b init nil))
+         ((and (consp b) (symbolp (car b)) (consp (cdr b)))
+          (setq var (car b) init (cadr b)))
+         (t (signal 'nelisp-cc-unsupported-form
+                    (list :bad-let-binding b))))
+        (cl-destructuring-bind (val nb)
+            (nelisp-cc--lower-expr fn cur-block scope init)
+          (setq cur-block nb)
+          (push (cons var val) new-bindings))))
+    (nelisp-cc--lower-progn
+     fn cur-block
+     (nelisp-cc--scope-extend scope (nreverse new-bindings))
+     body)))
+
+(defun nelisp-cc--lower-let* (fn block scope bindings body)
+  "Lower `(let* ((VAR INIT) ...) BODY...)' — sequential (each INIT sees prior)."
+  (let ((cur-block block)
+        (cur-scope scope))
+    (dolist (b bindings)
+      (let ((var nil) (init nil))
+        (cond
+         ((symbolp b) (setq var b init nil))
+         ((and (consp b) (symbolp (car b)) (consp (cdr b)))
+          (setq var (car b) init (cadr b)))
+         (t (signal 'nelisp-cc-unsupported-form
+                    (list :bad-let*-binding b))))
+        (cl-destructuring-bind (val nb)
+            (nelisp-cc--lower-expr fn cur-block cur-scope init)
+          (setq cur-block nb
+                cur-scope (nelisp-cc--scope-extend
+                           cur-scope (list (cons var val)))))))
+    (nelisp-cc--lower-progn fn cur-block cur-scope body)))
+
+(defun nelisp-cc--lower-call (fn block scope head args)
+  "Lower a function call (HEAD ARGS...) in BLOCK with SCOPE."
+  (let ((cur-block block)
+        (operand-vals nil))
+    (dolist (a args)
+      (cl-destructuring-bind (v nb)
+          (nelisp-cc--lower-expr fn cur-block scope a)
+        (setq cur-block nb)
+        (push v operand-vals)))
+    (let* ((operands (nreverse operand-vals))
+           (def (nelisp-cc--ssa-make-value fn nil))
+           (instr (nelisp-cc--ssa-add-instr fn cur-block 'call operands def)))
+      (setf (nelisp-cc--ssa-instr-meta instr)
+            (list :fn head :unresolved t))
+      (list def cur-block))))
+
+(defun nelisp-cc--lower-lambda (fn block lambda-form)
+  "Lower a nested `(lambda (PARAMS) BODY...)' — recurses into a fresh SSA fn."
+  (let* ((inner (nelisp-cc-build-ssa-from-ast lambda-form))
+         (def (nelisp-cc--ssa-make-value fn nil))
+         (instr (nelisp-cc--ssa-add-instr fn block 'closure nil def)))
+    (setf (nelisp-cc--ssa-instr-meta instr)
+          (list :inner-function inner))
+    (list def block)))
+
+(defun nelisp-cc--lower-expr (fn block scope expr)
+  "Lower EXPR into FN's BLOCK with SCOPE; return (SSA-VALUE END-BLOCK).
+This is the master dispatch.  Unknown / unsupported forms raise
+`nelisp-cc-unsupported-form' immediately."
+  (cond
+   ;; Self-evaluating literals.
+   ((nelisp-cc--literal-p expr)
+    (nelisp-cc--lower-const fn block expr))
+   ;; Bare symbol — variable reference.
+   ((symbolp expr)
+    (let ((bound (nelisp-cc--scope-lookup scope expr)))
+      (if bound
+          (list bound block)
+        (nelisp-cc--lower-load-var fn block expr))))
+   ;; Compound forms — dispatch on car.
+   ((consp expr)
+    (let ((head (car expr))
+          (rest (cdr expr)))
+      (cond
+       ((eq head 'quote)
+        (nelisp-cc--lower-const fn block (car rest)))
+       ((eq head 'function)
+        (let ((arg (car rest)))
+          (cond
+           ((and (consp arg) (eq (car arg) 'lambda))
+            (nelisp-cc--lower-lambda fn block arg))
+           ((symbolp arg)
+            ;; Treat (function SYM) as a const symbol reference for
+            ;; backend resolution.
+            (nelisp-cc--lower-const fn block arg))
+           (t (signal 'nelisp-cc-unsupported-form
+                      (list :bad-function arg))))))
+       ((eq head 'lambda)
+        (nelisp-cc--lower-lambda fn block expr))
+       ((eq head 'progn)
+        (nelisp-cc--lower-progn fn block scope rest))
+       ((eq head 'if)
+        (let ((c (nth 0 rest))
+              (th (nth 1 rest))
+              (el (nth 2 rest)))
+          (nelisp-cc--lower-if fn block scope c th el)))
+       ((eq head 'let)
+        (nelisp-cc--lower-let fn block scope (car rest) (cdr rest)))
+       ((eq head 'let*)
+        (nelisp-cc--lower-let* fn block scope (car rest) (cdr rest)))
+       ((eq head 'setq)
+        (nelisp-cc--lower-setq-chain fn block scope rest))
+       ((memq head '(catch condition-case unwind-protect while
+                           save-excursion save-restriction
+                           save-current-buffer
+                           defun defmacro defvar defconst
+                           lambda*))
+        (signal 'nelisp-cc-unsupported-form
+                (list :head head :form expr)))
+       ((symbolp head)
+        (nelisp-cc--lower-call fn block scope head rest))
+       (t
+        ;; (FN-EXPR ARG...) where FN-EXPR is itself a non-symbol form
+        ;; (e.g. ((lambda ...) ARG)) — supported by lowering FN-EXPR
+        ;; first and emitting an indirect call.
+        (cl-destructuring-bind (fn-val fb)
+            (nelisp-cc--lower-expr fn block scope head)
+          (let ((cur-block fb)
+                (operand-vals nil))
+            (dolist (a rest)
+              (cl-destructuring-bind (v nb)
+                  (nelisp-cc--lower-expr fn cur-block scope a)
+                (setq cur-block nb)
+                (push v operand-vals)))
+            (let* ((operands (cons fn-val (nreverse operand-vals)))
+                   (def (nelisp-cc--ssa-make-value fn nil))
+                   (instr (nelisp-cc--ssa-add-instr
+                           fn cur-block 'call-indirect operands def)))
+              (setf (nelisp-cc--ssa-instr-meta instr)
+                    (list :indirect t))
+              (list def cur-block))))))))
+   (t
+    (signal 'nelisp-cc-unsupported-form
+            (list :unknown-form expr)))))
+
+(defun nelisp-cc--lower-setq-chain (fn block scope pairs)
+  "Lower `(setq SYM1 V1 SYM2 V2 ...)' as a sequence of stores.
+The result of the form is the value of the *last* assignment, matching
+Elisp `setq' semantics.  An empty `(setq)' is `nil'."
+  (cond
+   ((null pairs)
+    (nelisp-cc--lower-const fn block nil))
+   (t
+    (let ((cur-block block)
+          (result nil)
+          (rest pairs))
+      (while rest
+        (let ((sym (car rest))
+              (val (cadr rest)))
+          (unless (and (symbolp sym) (consp (cdr rest)))
+            (signal 'nelisp-cc-unsupported-form
+                    (list :bad-setq-chain rest)))
+          (cl-destructuring-bind (v nb)
+              (nelisp-cc--lower-store-var fn cur-block scope sym val)
+            (setq result v
+                  cur-block nb
+                  rest (cddr rest)))))
+      (list result cur-block)))))
+
+;;; Public entry ----------------------------------------------------
+
+(defun nelisp-cc--lambda-extract-params (param-list)
+  "Return (CLEAN-PARAMS . PARAM-TYPES) from PARAM-LIST.
+For now &optional / &rest are *passed through* verbatim — they remain
+in CLEAN-PARAMS so backend ABI lowering can see them, and PARAM-TYPES
+is a list of nils of equal length so every positional slot gets an SSA
+value placeholder.  The marker symbols `&optional' / `&rest' are
+themselves represented as scope entries pointing to a `:const' nil
+value — the lowering pass never *reads* them, only the param list
+position matters for ABI lowering."
+  (let ((clean nil)
+        (types nil))
+    (dolist (p param-list)
+      (cond
+       ((memq p '(&optional &rest))
+        ;; Skip ABI markers — they consume no argument slot.
+        nil)
+       ((symbolp p)
+        (push p clean)
+        (push nil types))
+       (t (signal 'nelisp-cc-unsupported-form
+                  (list :bad-param p)))))
+    (cons (nreverse clean) (nreverse types))))
+
+(defun nelisp-cc-build-ssa-from-ast (lambda-form)
+  "Convert NeLisp LAMBDA-FORM into a verified `nelisp-cc--ssa-function'.
+
+LAMBDA-FORM is `(lambda (PARAMS...) BODY...)' (the `function'
+wrapper, if present, is unwrapped automatically).  The result is a
+fully built SSA function that
+  - has a single entry block plus enough subordinate blocks to encode
+    every `if' branch / merge,
+  - terminates in a `:return' instruction whose operand carries the
+    last expression's value,
+  - passes `nelisp-cc--ssa-verify-function' (the caller may rely on
+    this).
+
+Macro expansion is performed via `nelisp-macroexpand-all' (when
+loaded) plus a built-in scaffold expander (see
+`nelisp-cc--frontend-self-expand').  Unsupported forms raise
+`nelisp-cc-unsupported-form' rather than miscompiling silently."
+  ;; Tolerate (function (lambda ...)).
+  (when (and (consp lambda-form)
+             (eq (car lambda-form) 'function)
+             (consp (cdr lambda-form))
+             (consp (cadr lambda-form))
+             (eq (car (cadr lambda-form)) 'lambda))
+    (setq lambda-form (cadr lambda-form)))
+  (unless (and (consp lambda-form)
+               (eq (car lambda-form) 'lambda)
+               (consp (cdr lambda-form)))
+    (signal 'nelisp-cc-unsupported-form
+            (list :not-a-lambda lambda-form)))
+  (let* ((param-list (cadr lambda-form))
+         (body (cddr lambda-form))
+         (parsed (nelisp-cc--lambda-extract-params param-list))
+         (clean-params (car parsed))
+         (param-types (cdr parsed))
+         (fn (nelisp-cc--ssa-make-function nil param-types))
+         (entry (nelisp-cc--ssa-function-entry fn))
+         (initial-scope
+          (cl-mapcar #'cons clean-params
+                     (nelisp-cc--ssa-function-params fn)))
+         (expanded-body
+          (mapcar #'nelisp-cc--frontend-expand body)))
+    ;; Lower body as an implicit progn; if empty, the lambda evaluates
+    ;; to nil.
+    (cl-destructuring-bind (rval rblock)
+        (if expanded-body
+            (nelisp-cc--lower-progn fn entry initial-scope expanded-body)
+          (nelisp-cc--lower-const fn entry nil))
+      (nelisp-cc--ssa-add-instr fn rblock 'return (list rval) nil))
+    ;; Final invariant check — a fail here is a frontend bug.
+    (nelisp-cc--ssa-verify-function fn)
+    fn))
+
 (provide 'nelisp-cc)
 ;;; nelisp-cc.el ends here
