@@ -1,0 +1,1956 @@
+#+TITLE: NeLisp Phase 9c — Text Property Advanced (face / display / keymap / overlay / hooks) Design
+#+DATE: 2026-04-25
+#+AUTHOR: zawatton + Claude (session-T109 v0 baseline → session-T121 v1 revise → session-T133 v2 polish)
+#+STATUS: LOCKED-2026-04-25-v2 (Phase 9c text-property advanced、T109 v0 → T115 review (5 MAJOR + 7 MINOR) → T121 v1 → T128 第二弾 review READY-TO-LOCK + 1 MINOR + 3 軽微 polish → T133 v2 polish、+1214→1956 LOC、5 sub-phase + contract version 並走 model + Doc 34 §4.6 errata candidate a)
+#+DEPENDS_ON: Doc 33 v2 LOCKED-2026-04-25 §4.2b / §6.1, Doc 34 LOCKED-2026-04-25-v2 §2.6 / §4.6 / §8.7, Doc 39 LOCKED-2026-04-25-v2 §2.4 / §2.10 (Phase 9d eventloop), Phase 11 display backend (Doc 36 想定、未着手) co-design, Phase 8 mutable text primitive (Stage D / Doc 18 SHIPPED), Phase 9a SHIPPED, Phase 9b (Doc 34) SHIPPED として完成し終えていること
+#+PARENT: Doc 33 v2 §4.2b (interactive package compatibility surface), Doc 34 §8.7 (text-property face / display / overlay / text-property keymap)
+
+* §0 要旨 (TL;DR)
+
+Doc 34 (Phase 9b、LOCKED-2026-04-25-v2) は text-property *MVP* を §4.6 に
+12 件の API contract で凍結したが、Doc 34 §2.6 と §8.7 は以下を *明示
+scope 外* として後送りしている:
+
+- overlay semantics 全般
+- overlay-aware =get-char-property=
+- text-property keymap
+- text-property =display= property の actual render
+- text-property =face= property の actual render
+- =modification-hooks= / =insert-in-front-hooks= / =insert-behind-hooks=
+  / =point-entered= / =point-left= の text-property hook 系
+- overlay change hook (=overlay-change-functions=)
+
+本 doc (= Doc 41) はこれら *Phase 9b text-property advanced features* を
+Layer 2 (=nelisp-elisp-compat=) で完成させる *Phase 9c* の design draft
+である。Phase 9b と同じ "interval tree storage 上に拡張機能を積む"
+方針を取り、render 自体は Phase 11 display backend に委譲する。
+
+*担当 scope*:
+- 9c.1 face property + face inheritance + face spec resolver (storage / query side)
+- 9c.2 display property (string / image / margin / nested spec) (storage / query side)
+- 9c.3 text-property keymap dispatch (keymap chain への inject 経路)
+- 9c.4 overlay full (interval-overlay tree + priority + after-string / before-string)
+- 9c.5 text-property change hook + point-entered / point-left + overlay change hook
+
+*scope 外*:
+- actual render (= bitmap / TUI cell 配置 / image decode / glyph layout)
+  → Phase 11 display backend
+- font / face attribute の OS 依存 fallback
+- overlay の display-engine integration ( Phase 11)
+- tooltip / mouse-face の event dispatch ( Phase 11 と co-design)
+- composition / bidi / stretch glyph (= Phase 11+ で扱う)
+- 詳細は §8 で列挙
+
+*v0 で固定したいこと*:
+- overlay は interval-tree based、text-property tree とは別物として
+  per-buffer に独立保持する (Emacs precedent と整合)
+- =get-char-property= の precedence を Doc 34 §2.6 から拡張し
+  *overlay > text-property > default* の 3 段に固定
+- text-property keymap は Doc 34 §2.3 の keymap precedence chain に
+  *overlay keymap と同列で挿入* する (= 9c で precedence table を拡張)
+- face / display property の値 schema は *opaque payload + accessor
+  helper* に分離し、render は backend へ委譲する pure-data design に
+  する
+
+*ship gate 要約*:
+- 9c.1 〜 9c.5 を sub-phase ごとに ERT + integration + scenario gate
+  通過
+- 9c.4 overlay は stub render (= no-op render backend) で暫定 SHIPPED、
+  Phase 11 actual render 接続後 full SHIPPED
+- 9c.3 keymap inject は Doc 34 §2.3 precedence の *差分 errata* を
+  本 doc 側で扱う option B 方式 (Doc 34 LOCKED は不変)、ただし
+  *contract version 並走 model* (= 既存 Doc 34 chain は v=1 で pin、
+  本 doc が拡張する 9 段 chain は =KEYMAP_CHAIN_INJECT_CONTRACT_VERSION
+  = 1= かつ Doc 34 §2.3 chain が =KEYMAP_CONTRACT_VERSION = 1 のまま)
+  で互換性確保。詳細は §2.5 + §6.2
+- =get-char-property= は contract v1 → v2 増分、ただし *de facto 非
+  breaking* (= overlay 0 件時 v1 と byte-identical)、Emacs precedent
+  と整合する正方向 fix。詳細は §4.5 + §6.3 + §7.5
+- *parallel set escape hatch*: {9c.1, 9c.2, 9c.3} は dependency 上
+  独立、anvil leverage で同時 dispatch 可、最良 case で 6-8 ヶ月 →
+  4-6 ヶ月圧縮可能 (詳細は §3 table)
+- *LOC budget* (POLISH-1 反映): §2.9 で *production code* base 4200
+  LOC、range 2400-6000 (Doc 34 base 3800 と同オーダー)、5 sub-phase
+  内訳は §3 table 参照。本 design 文書自体の LOC は §11.5 + §11.6 +
+  §11.7 込みで ~1956 LOC、§0-§10 本文は ~1700 LOC で sibling
+  Doc 34 v2 / Doc 39 v2 と同レンジ
+
+* §1 背景 + scope
+
+** 1.1 Doc 34 との関係 (option B 継承)
+
+Doc 34 (Phase 9b) は LOCKED-2026-04-25-v2 で凍結済。本 doc は Doc 34
+を amend しない。Doc 34 §8.7 が "本 doc scope 外" として明示した項目
+群を、本 doc が *follow-up doc* として独立 spec する。
+
+Doc 34 が採用した *option B* (= parent Doc 33 LOCKED 不変、本 doc 側で
+formal declaration) と同じ pattern を本 doc も継承する:
+
+- Doc 33 LOCKED は変更しない
+- Doc 34 LOCKED は変更しない
+- Doc 34 §8.7 を *Phase 9c の formal source* と解釈する
+- 本 doc は Doc 33 §4.2b の interactive surface を text-property /
+  overlay / face / display layer で拡張する第二分割 doc である
+
+*formal declaration*:
+
+| parent reference          | 本 doc での扱い                                    |
+|---------------------------+----------------------------------------------------|
+| Doc 33 §4.2b              | text-property advanced は本 doc が担当             |
+| Doc 34 §2.6 LOCKED        | text-property MVP の *上位 layer* として extend     |
+| Doc 34 §4.6 contract      | =TEXT_PROPERTY_CONTRACT_VERSION = 1= を v=2 に増分 |
+| Doc 34 §2.3 keymap chain  | precedence table に slot を 1 件 inject (overlay/text-property keymap 共通 slot) |
+| Doc 34 §8.7 scope 外      | 本 doc が *formal scope inheritor* として宣言       |
+
+** 1.2 Doc 34 §4.6 → Doc 41 拡張 mapping
+
+Doc 34 が固定した 12 件の API は本 doc では *未変更* で再利用する。
+本 doc は同 storage (= per-buffer interval tree) に *新 property
+semantics + 新 API surface* を追加する。
+
+| Doc 34 §4.6 API            | 本 doc での影響                                |
+|----------------------------+-----------------------------------------------|
+| =put-text-property=        | face / display / keymap value schema を 9c で freeze (validator 経由)、actual render は依然 backend 委譲 (= partial 維持) |
+| =get-text-property=        | overlay 非対象は不変                            |
+| =get-char-property=        | *overlay precedence inject* (本 doc で拡張、§4.5 参照) |
+| =add-text-properties=      | unchanged                                      |
+| =remove-text-properties=   | unchanged                                      |
+| =propertize=               | face/display value schema を 9c で freeze (validator 経由) |
+| =next-property-change=     | unchanged                                      |
+| =previous-property-change= | unchanged                                      |
+| =text-properties-at=       | unchanged                                      |
+| =set-text-properties=      | unchanged                                      |
+| =next-single-property-change=     | unchanged                                |
+| =previous-single-property-change= | unchanged                                |
+
+つまり Doc 34 の API surface は壊さず、*=get-char-property= だけが
+overlay-aware semantics に拡張される*。それ以外は新 API として本 doc
+で追加する。
+
+*"正式化" の semantics 明示 (MINOR-A.4 反映)*:
+- 本 doc が 9c.1 / 9c.2 で行うのは *value schema validator の freeze*
+  (= face spec の 3 形式 normalize、display spec 8 type validator)、
+  および *opaque payload の storage / query path* の formalize
+- *actual render は依然 Phase 11 backend 委譲* なので、Doc 34 §4.6 の
+  =put-text-property= / =propertize= の compatibility 列 (= partial)
+  は不変
+- Doc 41 §4.1 / §4.2 の compatibility 列も "partial" のまま、本 doc
+  でも render を持たない事実を反映する
+- Doc 41 §4.5 errata は =get-char-property= 1 件に限定、Doc 34 §4.6
+  table の他 11 件は compatibility 列も含めて完全不変
+
+** 1.3 Doc 33 §4.2b の他 follow-up doc との境界
+
+Doc 33 §4.2b "interactive package compatibility surface" の interactive
+substrate 群は以下に分割される (= 本 doc 提案):
+
+| follow-up doc | 担当 scope                                           |
+|---------------+------------------------------------------------------|
+| Doc 34 (9b)   | window / frame / keymap / event-loop / buffer-local / textprop MVP / hooks / undo |
+| *Doc 41 (9c)* | text-property advanced (face / display / keymap / overlay / hooks) |
+| Doc 35 想定    | advice / minor mode / 完全 regex / process UI / file UI 完全互換                  |
+
+本 doc は Doc 35 想定群の *advice / minor mode* と semantic overlap が
+ある (= text-property hooks 周辺) ため、§1.4 で boundary を確定する。
+
+** 1.4 Doc 35 想定との境界 (text-property hook vs advice)
+
+| 機能                                | 本 doc 担当 | Doc 35 担当 |
+|-------------------------------------+-------------+-------------|
+| =modification-hooks= property       | はい         | いいえ      |
+| =insert-in-front-hooks= property    | はい         | いいえ      |
+| =insert-behind-hooks= property      | はい         | いいえ      |
+| =point-entered= / =point-left= prop | はい         | いいえ      |
+| =overlay-change-functions=          | はい         | いいえ      |
+| advice-add / advice-remove          | いいえ       | はい        |
+| define-minor-mode                   | いいえ       | はい        |
+| 完全 regex (look-ahead / lookbehind) | いいえ      | はい        |
+| process UI 完全 (filter chain)       | いいえ      | はい        |
+
+text-property hook と overlay hook は *interval mutation event* に
+紐付く buffer-local hook である一方、advice / minor mode は *function
+boundary に乗る meta-programming 機能* なので分離する。
+
+** 1.5 Phase 11 display backend との境界
+
+本 doc は *storage / query / hook trigger* までを担当し、actual render
+には触れない。face / display property の payload は Phase 11 display
+backend が実 render する。
+
+| layer                         | 本 doc | Phase 11 display backend |
+|-------------------------------+--------+--------------------------|
+| face spec storage             | はい    | いいえ                   |
+| face spec resolution (= attribute merge) | はい (pure resolver) | いいえ |
+| face → glyph attribute mapping | いいえ | はい                    |
+| display property storage      | はい    | いいえ                   |
+| display spec parser           | はい (pure validator) | いいえ        |
+| display spec → glyph 配置     | いいえ  | はい                     |
+| overlay storage               | はい    | いいえ                   |
+| overlay → glyph 配置          | いいえ  | はい                     |
+| modification hook trigger     | はい    | いいえ                   |
+| keymap dispatch chain         | はい    | いいえ                   |
+
+*boundary contract*:
+- 本 doc は =display-spec contract version= を 1 → 2 に増分する余地を
+  §2.10 に置くが、実 render は Phase 11 が担当する
+- face / display property の opaque payload を Phase 11 が解釈する
+  protocol は §2.7 に固定する
+- =default-text-properties= は本 doc 9c では未対応、Phase 11 backend
+  と co-design (= 9c.4 SHIPPED 後も =get-char-property= は full parity
+  には到達せず、partial+ = "overlay-aware かつ default-text-properties
+  なし" のまま)
+- *point-motion-hook trigger 経路* (= =point-entered= / =point-left=) は
+  Doc 34 §2.4 event-loop が cursor mutation event source として
+  provide、本 doc 9c.5 が consumer として subscribe する。Doc 39
+  (Phase 9d) eventloop が ship 順序的に先に来た場合、本 doc 9c.5 は
+  Doc 34 §2.4 + Doc 39 §2.4 の 2 経路で event-source を統合した
+  subscription を行う (詳細は §3.5 prerequisite + §6.X point-motion
+  ship 順序 risk)
+- *本 doc 単独 freeze 可の範囲*: storage / query / hook trigger の 3
+  layer は本 doc 内で freeze 可、ただし Phase 11 backend が consume
+  する pull granularity / threading model / cache invalidation event
+  granularity は Phase 11 design doc (Doc 36 想定) と co-design 必須。
+  §2.7 で抽象 API surface は freeze するが、contract v2 余地を残す
+
+** 1.6 Phase 9c sub-phase 構成
+
+本 doc は 5 sub-phase に分割する。
+
+| sub-phase | scope                                          | 主成果                    |
+|-----------+------------------------------------------------+---------------------------|
+| 9c.1 | face property (storage + resolver)                  | face spec value object + resolver |
+| 9c.2 | display property (storage + parser)                 | display spec parser + accessor   |
+| 9c.3 | text-property keymap dispatch                       | keymap precedence inject         |
+| 9c.4 | overlay full (storage + accessor + priority + interaction with text-prop) | overlay tree + accessor + 9b keymap chain inject |
+| 9c.5 | text-property change hook + point-entered / left + overlay change hook    | hook trigger machinery           |
+
+*dependency chain (§3 table と完全一致、MAJOR-B.1 反映)*:
+- 9c.1: independent (= no hard prerequisite within Phase 9c)
+- 9c.2: independent (= no hard prerequisite within Phase 9c)
+- 9c.3: independent (= no hard prerequisite within Phase 9c)
+- 9c.4: hard depends on 9c.1 (= face payload) + 9c.3 (= keymap inject slot)、
+  9c.2 は不要 (= overlay の display payload は 9c.2 SHIPPED 前でも storage 可)
+- 9c.5: hard depends on 9c.1 (= face payload mutation hook 検証) + 9c.4
+  (= overlay hook fan-out)、9c.2 / 9c.3 は soft (= display / keymap 周りの
+  hook 検証で beneficial だが mandatory ではない)
+
+*parallel set (anvil leverage で同時 dispatch 可、MINOR-B.4 反映)*:
+- *parallel set 1*: {9c.1, 9c.2, 9c.3} を同時 dispatch、9c.4 着手前に
+  全 SHIPPED で 9c.4 を unblock
+- *sequential phase*: 9c.4 → 9c.5 は overlay storage + hook fan-out
+  surface の natural sequence で sequential 必須
+- 期間圧縮: sequential 6-8 ヶ月 → parallel 4-6 ヶ月 (= 9c.1+9c.2+9c.3
+  を 1 ヶ月 parallel + 9c.4 = 2-3 ヶ月 + 9c.5 = 1 ヶ月)
+- 圧縮の trigger 条件: anvil orchestrator 3 並列で着手可能、claude /
+  codex / claude を A/B/A 配分
+
+** 1.7 precedent reference
+
+| 軸                          | Emacs                          | NeLisp 方針                     |
+|-----------------------------+--------------------------------+--------------------------------|
+| text-property storage       | =textprop.c= / =intervals.c=   | Doc 34 MVP interval tree 継続   |
+| overlay storage             | =buffer.c= overlay list        | per-buffer 独立 interval tree   |
+| face spec resolution        | =faces.el= attribute merge     | pure resolver で同等 merge      |
+| display spec parsing        | =disp-table= / =xdisp.c=       | pure validator + opaque payload |
+| keymap chain inject         | =keymap.c= text-property keymap | Doc 34 §2.3 chain に 1 slot 追加 |
+| modification hook semantics | text-property + overlay        | Emacs precedent そのまま        |
+
+* §2 LOCKED decisions
+
+本 doc の LOCKED identifier は Doc 34 と同様 =§2.X= 形式を採用する。
+DRAFT v0 の段階では各項目は "推奨 = X" とだけ示し、最終 LOCKED 時に
+LOCK marker を付ける。
+
+** 2.1 face property storage [推奨 = A interval tree value layer reuse]
+
+| 候補 | 戦略                                                  | 利点                              |
+|------+-------------------------------------------------------+-----------------------------------|
+| A    | Doc 34 §2.6 interval tree の payload に face value 載せ | storage layer 1 本化、cleanup 共通 |
+| B    | face 専用 secondary tree                              | query 高速化期待、複雑性増         |
+| C    | per-char vector                                       | memory 過大                       |
+
+*推奨 A 理由*:
+- Doc 34 MVP interval tree がすでに gap-buffer adjust contract を持つ
+- face 値は opaque payload で良いので tree shape を変える必要なし
+- range query / boundary query の semantics を Doc 34 §4.6 と統一できる
+
+** 2.2 face spec value schema [推奨 = A nested face spec list]
+
+| 候補 | 戦略                                                | 利点                             |
+|------+----------------------------------------------------+----------------------------------|
+| A    | =face-symbol= / =(face-symbol ...)= / =(plist)= 3 形式受入 | Emacs precedent 互換             |
+| B    | symbol 単独のみ                                     | 互換性不足                        |
+| C    | 専用 record type                                    | Emacs 既存 spec から conversion 必須 |
+
+*推奨 A 理由*:
+- =put-text-property= で受け取れる face value の Emacs 既存形は 3 種ある
+- 3 形式 normalize は pure data 処理で副作用なし
+- =face-attribute-merge= の resolver が単一 in-memory model に集約できる
+
+*schema (DRAFT v0)*:
+
+#+begin_src text
+face-spec ::= face-symbol
+            | (face-symbol ...)               ;; cascade list
+            | (:foreground STR :background STR :weight SYM ...)  ;; raw plist
+            | nil
+#+end_src
+
+** 2.3 face inheritance / merge resolver [推奨 = A pure left-to-right merge]
+
+| 候補 | 戦略                                                  | 利点                            |
+|------+-------------------------------------------------------+---------------------------------|
+| A    | left-to-right plist merge + =:inherit= chain expansion | Emacs precedent 互換             |
+| B    | right-to-left merge                                   | 既存 Emacs Lisp が逆解釈する risk |
+| C    | merge 不要 (= 最終 face のみ)                          | inherit chain が機能しない       |
+
+*推奨 A 理由*:
+- Emacs =face-attribute-merge= と semantic 一致
+- inherit chain (=:inherit some-other-face=) を pure に展開できる
+- resolver は backend 不要、本 doc 単体で freezable
+
+*resolver contract*:
+- =nelisp-face-resolve (face-spec) -> normalized-attribute-plist=
+- =:inherit= は depth ≤ 16 で truncate (= Emacs と同様 cycle 回避)
+- =unspecified= 値はそのまま残し、backend が解釈
+
+** 2.4 display property schema [推奨 = A typed alist + nested spec]
+
+| 候補 | 戦略                                                  | 利点                                |
+|------+-------------------------------------------------------+-------------------------------------|
+| A    | typed alist =(:type display-type :payload ...)= 群     | Emacs spec 互換、validator 書きやすい |
+| B    | string only subset                                     | Emacs package 互換性不足             |
+| C    | display 専用 record type                               | conversion 必須                       |
+
+*推奨 A 理由*:
+- Emacs display spec は extensible alist であり、nested spec が頻出
+- validator + accessor を pure に書けて render は backend に委譲できる
+- Phase 11 backend 切替時に payload 互換性を保ちやすい
+
+*v0 で受入れる display type 集合*:
+| display type | semantics                      | render delegation |
+|--------------+--------------------------------+-------------------|
+| =string=     | =(:type 'string :payload "X")=  | backend           |
+| =image=      | =(:type 'image :payload PLIST)= | backend (image lib 依存) |
+| =margin=     | left/right margin slot         | backend           |
+| =space=      | width-pixel / width-char        | backend           |
+| =height=     | scale factor                   | backend           |
+| =raise=      | vertical raise                 | backend           |
+| =slice=      | sub-region of image            | backend           |
+| =replace=    | replacement spec for region    | parser + backend  |
+
+** 2.5 text-property keymap chain inject [推奨 = A contract version 並走 model]
+
+| 候補 | 戦略                                                  | 利点                            |
+|------+-------------------------------------------------------+---------------------------------|
+| A    | Doc 34 §2.3 chain は LOCKED 不変、本 doc が新 contract =KEYMAP_CHAIN_INJECT_CONTRACT_VERSION = 1= で *9 段 chain provider* を提供。Doc 34 SHIPPED bin caller は v=1 chain (= 7 段) のまま、本 doc 適用後 caller は v=2 chain (= 9 段) を opt-in (=nelisp-keymap-chain-with-textprop= デフォ nil) | Doc 34 LOCKED 不変、option B 整合、breaking change なし |
+| B    | Doc 34 LOCKED amend (= option A errata 別 task)        | scope creep、Doc 34 LOCKED v3 化必要 |
+| C    | precedence chain 全面再設計                            | 互換性破綻                       |
+
+*v1 推奨 A 理由 (MAJOR-A.1 反映)*:
+- v0 の "Doc 34 LOCKED 文書を編集しない = option B 整合" だけでは、
+  Doc 34 §4.3 lookup-key API の binary semantics が変わる (= 7 段 →
+  9 段)。Doc 34 §2.3 explicit exclusions (= text-property keymap /
+  overlay keymap / transient maps beyond above precedence) を本 doc
+  が runtime semantics で覆す行為で、option B の本質と本質 conflict
+- v1 では *contract version 並走 model* に切替え、以下の方法で互換維持:
+  - Doc 34 §2.3 chain provider (= 7 段) は =KEYMAP_CONTRACT_VERSION = 1=
+    のまま不変、Doc 34 SHIPPED bin の caller はそのまま使用継続
+  - 本 doc は新 contract =KEYMAP_CHAIN_INJECT_CONTRACT_VERSION = 1=
+    で *9 段 chain provider* を提供、call site が opt-in flag
+    =nelisp-keymap-chain-with-textprop= = t で v=2 (= 9 段) を選択
+  - =lookup-key= / =command-execute= は Doc 34 §4.3 既存 API 不変、
+    本 doc 9c.3 が *新 chain provider helper* =nelisp-keymap-chain-at=
+    を追加、Doc 34 既存 helper は不変
+- *option A 切替の余地* (= Doc 34 §2.3 errata 別 task で v3 化) は §7.4
+  に LOCKED 前 user signoff の選択肢として残置
+
+*precedence (本 doc 拡張 LOCKED v1、9 段、=nelisp-keymap-chain-with-textprop= = t 時のみ)*:
+1. =overriding-terminal-local-map=
+2. =overriding-local-map=
+3. =minor-mode-overriding-map-alist=
+4. =minor-mode-map-alist=
+5. =emulation-mode-map-alists=
+6. *overlay keymap at point* (本 doc 9c.4、=keymap= prop > =local-map= prop)
+7. *text-property keymap at point* (本 doc 9c.3)
+8. =current-local-map=
+9. =global-map=
+
+*sub-precedence detail (MAJOR-A.3 反映、decision 格上げ)*:
+- *overlay slot 内* (= slot 6):
+  - 第一 key: overlay =priority= property 降順
+  - =priority= = nil の場合は -∞ 扱い (= 全 numeric priority より下)、
+    Emacs precedent (=keymap.c=) と一致
+  - 同 priority の二次 key: overlay insertion 順 (= 後から作った overlay
+    が後)、§9.4 を decision に格上げ
+  - 同 overlay 内: =keymap= property > =local-map= property (= Emacs
+    precedent と一致、=keymap= が先 lookup される)
+- *text-property slot 内* (= slot 7):
+  - 第一 key: =keymap= property を持つ range の最短 (= 最内側 range)
+  - 同 length range の二次 key: range 開始点 後優先 (= start position
+    が大きい方が勝ち、Emacs precedent と一致)
+- *cross-slot*: slot 6 (overlay) unconditionally > slot 7 (text-property)
+
+*v1 → v2 並走 invariant (MAJOR-A.1 反映)*:
+- =nelisp-keymap-chain-with-textprop= = nil (= デフォ): chain は Doc 34
+  §2.3 7 段、Doc 34 SHIPPED bin と byte-identical
+- =nelisp-keymap-chain-with-textprop= = t: chain は本 doc §2.5 9 段、
+  =KEYMAP_CHAIN_INJECT_CONTRACT_VERSION = 1= 適用
+- 9c.3 ERT は両 mode で全 PASS、9c.4 ERT も両 mode で 9b regression-free
+
+** 2.6 overlay storage [推奨 = A per-buffer interval tree, 独立]
+
+| 候補 | 戦略                                                  | 利点                                |
+|------+-------------------------------------------------------+-------------------------------------|
+| A    | text-property tree とは別の per-buffer overlay tree    | semantics 独立、Emacs precedent 一致 |
+| B    | text-property tree に統合                              | semantics 混線                       |
+| C    | flat list                                             | range query が O(N) 化               |
+
+*推奨 A 理由*:
+- overlay は range が text-property より dynamic に変化 (= insertion-type
+  marker semantics を持つ前後 endpoint)
+- text-property tree と独立 storage にすることで gap-buffer adjust
+  contract を独立に書ける
+- =overlay-priority= の semantics を tree 内 secondary index で実装可
+
+*overlay endpoint type (LOCKED v0)*:
+- =front-advance= = nil / t (= insertion 時に start endpoint を移動するか)
+- =rear-advance= = nil / t
+- =OVERLAY_CONTRACT_VERSION = 1=
+
+** 2.7 face / display property → backend payload protocol [推奨 = A pull-on-demand]
+
+| 候補 | 戦略                                                  | 利点                              |
+|------+-------------------------------------------------------+-----------------------------------|
+| A    | backend が =nelisp-textprop-resolve-at point property= を pull | backend non-intrusive、本 doc 側で freeze 可 |
+| B    | property mutation 時に backend へ push                | backend lifecycle 依存             |
+| C    | snapshot を backend に渡す                            | memory copy overhead              |
+
+*推奨 A 理由*:
+- backend (Phase 11) は pull で必要な property を取得すれば良い
+- 本 doc は =resolve-at= helper を pure に提供できる
+- Phase 11 と本 doc の release cycle を分離できる
+
+*pull API (LOCKED v1、本 doc 内部 + backend FFI)*:
+- =(nelisp-textprop-resolve-at POINT PROPERTY)= → opaque payload
+- =(nelisp-overlay-resolve-at POINT PROPERTY)= → opaque payload
+- =(nelisp-display-spec-validate SPEC)= → t / =(error REASON)=
+
+*invalidation event protocol (LOCKED v1、MINOR-C.3 反映)*:
+- Pull-only protocol だけでは Phase 11 backend が naïve に毎 frame
+  resolve することになり overhead 過大、cache + invalidation event
+  が必須
+- 本 doc は producer 側として以下の invalidation event hook を提供:
+  - =nelisp-textprop-changed-functions= 変数 (= abnormal-hook、本 doc 提供)
+    - mutation 時に =(BUFFER BEG END PROPERTY-LIST)= を fan-out
+    - backend が subscribe して cache invalidate
+    - granularity = property-list 単位 (= face / display / keymap 単位)
+  - =nelisp-overlay-changed-functions= 変数 (= abnormal-hook、本 doc 提供)
+    - overlay 作成 / 削除 / move / property mutation で
+      =(BUFFER OVERLAY-LIST EVENT-TYPE)= を fan-out
+    - EVENT-TYPE ∈ {=create=, =delete=, =move=, =property-change=}
+- Phase 11 backend は上記 2 hook を subscribe、cache invalidation
+  granularity の最終決定 (= property 単位 / range 単位 / buffer 単位)
+  は §9.8 open question として Phase 11 着手時に確定
+
+*本 doc 単独 freeze 範囲 (LOCKED v1、MAJOR-D.1 反映)*:
+- *本 doc 単独で freeze 可*: API surface (= pull helper 3 件 +
+  invalidation event hook 2 件)、storage / query / hook trigger の
+  内部 implementation
+- *Phase 11 co-design 必須*: pull granularity (= 毎 frame / 毎 redisplay
+  / 毎 mutation) / threading model (= main thread / render thread) /
+  cache invalidation event granularity / face attribute plist の
+  TUI vs GUI format 揺れ
+- v1 では API surface (= 5 件) を freeze、Phase 11 design 着手時に
+  contract v2 余地 (= pull granularity 拡張、invalidation event 拡張、
+  cache hint API) を残す escape hatch を §10 + §9.8 で declare
+
+** 2.8 modification hook trigger [推奨 = A range-overlap fan-out]
+
+| 候補 | 戦略                                                  | 利点                                  |
+|------+-------------------------------------------------------+---------------------------------------|
+| A    | mutation の range と重なる全 hook を fan-out           | Emacs precedent 互換                   |
+| B    | mutation point だけで判定                              | range hook が漏れる                    |
+| C    | hook 廃止                                             | package 互換性破綻                     |
+
+*推奨 A 理由*:
+- =modification-hooks= property を持つ range と重なる mutation で trigger
+- =insert-in-front-hooks= は range start = mutation start で trigger
+- =insert-behind-hooks= は range end = mutation end で trigger
+- overlay hook も同様の fan-out で trigger
+
+*re-entrancy semantics (LOCKED v1、MAJOR-B.3 反映)*:
+- hook 内 mutation は *secondary trigger を抑制* する depth=1 ガードを持つ
+- ガード切替は Emacs と同様 =inhibit-modification-hooks= 変数で行う
+- 本 doc 9c.5 で導入する変数:
+  - =inhibit-modification-hooks=
+  - =inhibit-point-motion-hooks= (point-entered / left 用)
+
+*guard implementation contract (LOCKED v1、9c.5 freeze 必須)*:
+- *counter scope*: =modification-hook-depth= は *per-buffer counter*
+  (= buffer-local cell)、Emacs precedent (=textprop.c= /
+  =modify_text= の =inhibit_modification_hooks=) と一致
+- *cross-buffer mutation*: hook 内で *別 buffer mutation* した場合は
+  別 buffer の counter (= cross-buffer 抑制なし)。これにより
+  hook 内 minibuffer 編集や別 buffer ログ書き込みが secondary
+  trigger される (= Emacs precedent と一致)
+- *guard variable semantics*:
+  - =inhibit-modification-hooks= は *dynamic binding (let-bind) で復活*
+    可能、unwind 時に元の値に戻る
+  - =setq= 直書きは *undefined behavior* (= Doc 41 sub-doc 内では
+    挙動を未定義扱い、ERT は let-bind のみで gate)
+- *hook 種別ごと独立 counter*:
+  - point-motion-hook (=point-entered= / =point-left=) と
+    modification-hook (= =modification-hooks= / =insert-in-front-hooks=
+    / =insert-behind-hooks=) は *独立 counter*
+  - overlay-change-hook (= =overlay-change-functions=) も独立 counter
+  - これにより一方の hook 内で他方を trigger 可能 (= Emacs precedent)
+- *signal-safe unwind*:
+  - hook が C-level signal (= =keyboard-quit=、Emacs Lisp =signal=、
+    Rust panic) で abort した場合、counter は *unwind-protect で reset*
+  - 9c.5 内部 helper =nelisp-with-modification-hook-guard= マクロで
+    全 hook 起動を wrap、=unwind-protect= による counter decrement
+    を保証
+- *fail-safe*:
+  - counter が想定値を超えた場合 (= 内部 bug) は warning 出力 + counter
+    強制 reset、user 操作不能化を回避
+
+*ERT gate に追加する 5 corner cases (MAJOR-B.3 反映、§3.5.5 で +5)*:
+1. hook 内 mutation で secondary trigger 抑制
+2. hook 内別 buffer mutation で secondary trigger 発火 (= cross-buffer
+   非抑制)
+3. =inhibit-modification-hooks= let-bind で復活
+4. signal abort 時 counter reset (= 後続 mutation で hook 再 fire)
+5. point-motion-hook と modification-hook の独立 counter (= 一方 trigger
+   中に他方が fire)
+
+** 2.9 LOC budget [推奨 = A base 4200 LOC、range 2400-6000]
+
+| sub-phase | base LOC | range     | note                             |
+|-----------+----------+-----------+----------------------------------|
+| 9c.1      | 700      | 400-1000  | face spec resolver pure           |
+| 9c.2      | 700      | 400-1000  | display spec validator + accessor |
+| 9c.3      | 600      | 350-900   | keymap inject + lookup hook       |
+| 9c.4      | 1500     | 900-2200  | overlay tree + accessor + chain   |
+| 9c.5      | 700      | 350-900   | hook trigger machinery            |
+|-----------+----------+-----------+----------------------------------|
+| 合計       | 4200     | 2400-6000 | Doc 34 base 3800 と同オーダー      |
+
+** 2.10 release cycle [推奨 = A v2.2.x incremental]
+
+| 候補 | 戦略                                                  | 利点                              |
+|------+-------------------------------------------------------+-----------------------------------|
+| A    | =v2.2.0 → v2.2.4= incremental                          | Doc 34 v2.1.x の自然継続           |
+| B    | 9c 完了まで単一 tag                                    | feedback 遅い                      |
+| C    | v3 へ defer                                            | text-property advanced が遅すぎる   |
+
+*推奨 A 理由*:
+- 9c.1 = =v2.2.0=、9c.2 = =v2.2.1=、9c.3 = =v2.2.2=、9c.4 = =v2.2.3=、
+  9c.5 = =v2.2.4=
+- 各 sub-phase で release 可能、bench gate も sub-phase 単位
+
+** 2.11 stub render mode invariant [推奨 = A backend 不在で no-op]
+
+| 候補 | 戦略                                                  | 利点                                |
+|------+-------------------------------------------------------+-------------------------------------|
+| A    | backend 不在時 face / display property は storage / query のみ機能、render は no-op | Phase 11 前後で deterministic        |
+| B    | warning 出力                                          | log noise が増える                   |
+| C    | error                                                 | 9c.1 〜 9c.5 が Phase 11 で block される |
+
+*LOCKED invariant (v0)*:
+- =nelisp-display-backend= が =nil= の時、本 doc API は storage / query
+  / hook 完備、render の effect は持たない
+- ERT は backend なしで全 PASS する
+- Phase 11 SHIPPED 後 actual render integration ERT が追加で full SHIPPED
+
+* §3 Sub-phase 9c.1 〜 9c.5 詳細
+
+| sub-phase | scope                                | LOC      | 期間     | ERT delta | hard prerequisite | soft prerequisite | parallel set |
+|-----------+--------------------------------------+----------+----------+-----------+-------------------+-------------------+--------------|
+| 9c.1 | face property + face resolver              | 400-1000 | 1 ヶ月   | +20       | Doc 34 SHIPPED    | -                 | set 1 (parallel) |
+| 9c.2 | display property + display validator       | 400-1000 | 1 ヶ月   | +22       | Doc 34 SHIPPED    | -                 | set 1 (parallel) |
+| 9c.3 | text-property keymap dispatch              | 350-900  | 1 ヶ月   | +18       | Doc 34 SHIPPED    | -                 | set 1 (parallel) |
+| 9c.4 | overlay full                               | 900-2200 | 2-3 ヶ月 | +40       | 9c.1 / 9c.3       | -                 | sequential   |
+| 9c.5 | text-property change + point + overlay hook | 350-900  | 1 ヶ月   | +25       | 9c.1 / 9c.4       | 9c.2 / 9c.3       | sequential   |
+|-----------+--------------------------------------+----------+----------+-----------+-------------------+-------------------+--------------|
+| 合計  |                                            | 2400-6000 | 6-8 ヶ月 (sequential) / 4-6 ヶ月 (parallel set 1 同時 dispatch) | +125 (+24 integration = +149) |   |   |   |
+
+*parallel set escape hatch (MINOR-B.4 反映)*:
+- *parallel set 1* = {9c.1, 9c.2, 9c.3} (= Phase 9c hard depend なし、
+  Doc 34 SHIPPED のみ前提)
+- anvil orchestrator で 3 並列 dispatch (= claude / codex / claude
+  3 worker)、合計 1 ヶ月で 3 sub-phase 完了
+- 9c.4 着手前に parallel set 1 全 SHIPPED 必須、9c.4 → 9c.5 は
+  sequential 必須 (= overlay storage + hook fan-out surface の natural
+  sequence)
+- 圧縮 case: 1 ヶ月 (parallel set 1) + 2-3 ヶ月 (9c.4) + 1 ヶ月 (9c.5)
+  = 4-6 ヶ月、sequential case の 2 ヶ月圧縮
+
+** 3.1 Phase 9c.1 — face property + face spec resolver
+
+新規 module 想定:
+- =src/nelisp-emacs-compat-face.el=
+
+*** 3.1.1 face spec storage
+
+scope:
+- text-property =face= の payload normalize
+- =put-text-property= で受け取った face value を §2.2 schema に正規化
+- =get-text-property= で取り出した value をそのまま返す (= round-trip)
+
+*** 3.1.2 face attribute resolver
+
+scope:
+- =nelisp-face-attribute-merge (FACE-LIST) → ATTR-PLIST=
+- =nelisp-face-resolve (FACE-VALUE) → ATTR-PLIST=
+- =:inherit= chain expansion (depth ≤ 16)
+- =unspecified= 値の保持
+
+*** 3.1.3 face registry
+
+scope:
+- =nelisp-face-define (NAME ATTR-PLIST)=
+- =nelisp-face-attributes (NAME) → ATTR-PLIST=
+- =nelisp-face-list () → (NAME ...)=
+- =nelisp-face-equal-p (FACE1 FACE2)=
+
+*** 3.1.4 ERT smoke (+20)
+
+- face value 3 形式 round-trip
+- =:inherit= chain expansion (depth 1, 4, 16, cycle truncate)
+- =unspecified= 保持
+- registry add / lookup
+- =nelisp-face-equal-p= reflexivity / symmetry / transitivity
+- per-buffer face value boundary
+- 9b regression-free
+- pure resolver (= backend 不要) で全 PASS
+
+*** 3.1.x prerequisite
+
+- Doc 34 §4.6 SHIPPED
+- =put-text-property= / =get-text-property= の primitive 動作確認
+
+** 3.2 Phase 9c.2 — display property + display spec validator
+
+新規 module 想定:
+- =src/nelisp-emacs-compat-display-prop.el=
+
+*** 3.2.1 display spec validator
+
+scope:
+- =nelisp-display-spec-validate (SPEC) → t / (error REASON)=
+- §2.4 で列挙した 8 type を v0 で受け入れる
+- nested spec (= =replace= type 内の =image= 等) も recursive validate
+
+*** 3.2.2 display spec accessor
+
+scope:
+- =nelisp-display-spec-type (SPEC) → SYMBOL=
+- =nelisp-display-spec-payload (SPEC) → ANY=
+- =nelisp-display-spec-replace-spec (SPEC) → SUB-SPEC=
+
+*** 3.2.3 text-property hook integration
+
+scope:
+- =put-text-property= で =display= property 受入時 validator 実行
+- =add-text-properties= も同様
+- validator fail は =wrong-type-argument= signal
+
+*** 3.2.4 ERT smoke (+22)
+
+- 8 display type それぞれ valid spec 受入
+- 8 display type それぞれ invalid spec reject
+- nested spec 受入
+- =replace= type 内 nested image 受入
+- accessor round-trip
+- per-buffer display value boundary
+- 9b regression-free
+- backend なしで storage / query 全 PASS
+
+*** 3.2.x prerequisite
+
+- Doc 34 §4.6 SHIPPED
+
+** 3.3 Phase 9c.3 — text-property keymap dispatch
+
+新規 module 想定:
+- =src/nelisp-emacs-compat-tp-keymap.el=
+
+*** 3.3.1 keymap chain inject
+
+scope:
+- §2.5 precedence slot 7 への inject
+- =(nelisp-keymap-chain-at POINT) → (KEYMAP ...)= helper
+- =lookup-key= / =command-execute= は Doc 34 §4.3 既存 API を変更せず、
+  *chain provider* だけを 9c で増やす
+
+*** 3.3.2 text-property keymap value semantics
+
+scope:
+- =keymap= property を持つ range 内 point の lookup を Doc 34 keymap
+  precedence chain に inject
+- 同 point に複数 range が重なる場合は range 最短を採用
+
+*** 3.3.3 ERT smoke (+18)
+
+- keymap property を持つ range の point で lookup hit
+- range 外 point で lookup miss (= 既存 chain にフォールバック)
+- 重なり range で短い range が勝つ
+- =overriding-local-map= は本 doc inject より優先 (= precedence slot 2)
+- =current-local-map= は本 doc inject より下 (= precedence slot 8)
+- 9b regression-free (= text-property keymap なしで挙動不変)
+
+*** 3.3.x prerequisite
+
+- Doc 34 §4.3 keymap SHIPPED
+- Doc 34 §4.6 text-property SHIPPED
+
+** 3.4 Phase 9c.4 — overlay full
+
+新規 module 想定:
+- =src/nelisp-emacs-compat-overlay.el=
+
+*** 3.4.1 overlay storage
+
+scope:
+- per-buffer overlay tree (interval-tree based)
+- =OVERLAY_CONTRACT_VERSION = 1= 凍結
+
+*** 3.4.2 overlay API
+
+scope:
+- =make-overlay (BEG END &optional BUFFER FRONT-ADVANCE REAR-ADVANCE)=
+- =delete-overlay (OVERLAY)=
+- =overlay-start (OVERLAY) → INT=
+- =overlay-end (OVERLAY) → INT=
+- =overlay-buffer (OVERLAY) → BUFFER=
+- =overlay-properties (OVERLAY) → PLIST=
+- =overlay-get (OVERLAY PROPERTY) → ANY=
+- =overlay-put (OVERLAY PROPERTY VALUE) → VALUE=
+- =move-overlay (OVERLAY BEG END &optional BUFFER)=
+- =overlays-at (POINT &optional SORTED) → (OVERLAY ...)=
+- =overlays-in (BEG END) → (OVERLAY ...)=
+- =next-overlay-change (POINT) → INT=
+- =previous-overlay-change (POINT) → INT=
+- =overlay-recenter (POINT)=
+- =overlay-lists () → (BEFORE-LIST . AFTER-LIST)=
+- =overlay-priority (OVERLAY) → INT or nil=
+
+*** 3.4.3 overlay precedence + property semantics
+
+scope:
+- priority property
+- =face= / =display= property の payload 受入 (storage / query のみ、
+  9c.1 / 9c.2 と同じ pull protocol)
+- =keymap= / =local-map= property → §2.5 precedence slot 6 へ inject
+- =before-string= / =after-string= storage / accessor (render は backend)
+- =invisible= property storage (render は backend)
+
+*** 3.4.4 =get-char-property= の overlay-aware 化 (Doc 34 §4.6 拡張)
+
+scope:
+- Doc 34 §4.6 では overlay 非対象だった =get-char-property= を、本 doc
+  で *overlay > text-property > default* の precedence で解決する
+- API 自体は Doc 34 と同じ surface だが semantics が *上書き*
+- =TEXT_PROPERTY_CONTRACT_VERSION= を 1 → 2 に増分する
+
+*** 3.4.5 ERT smoke (+40、MAJOR-D.2 反映)
+
+- overlay create / delete / move
+- overlay endpoint type (front-advance / rear-advance) semantics
+- =overlay-priority= ordering (priority nil = -∞ 扱い、insertion
+  順 二次 key)
+- =overlays-at= / =overlays-in= range query
+- =next-overlay-change= / =previous-overlay-change= 双方向
+- =get-char-property= の overlay-aware semantics
+- *=get-char-property= overlay 0 件時 v1 と byte-identical* (= MAJOR-A.2
+  + MAJOR-C.1 反映、9c.4 close blocker gate)
+- buffer kill 時 overlay registry cleanup
+- gap-buffer adjust 後 endpoint 保持
+- 9c.3 keymap inject との precedence (= overlay > text-property)
+- 9c.1 face / 9c.2 display property の overlay 経由 round-trip
+- =before-string= / =after-string= storage round-trip
+- =invisible= storage round-trip
+- 1M overlay 領域 query complexity sanity
+- *load test (MAJOR-D.2 +5 cases)*:
+  - 1M buffer × 10K overlay × face/display payload で memory footprint
+    計測 (= upper bound 50MB 想定、超過は 9c.4 close blocker)
+  - interval tree split chain stress (= sequential insert 100K で
+    amortized O(log N) 確認、worst-case で O(N) 検出時は 9c.4 close blocker)
+  - hook 内 =delete-overlay= recursion で safe 完了 (= dangling reference
+    なし、guard counter 適切に decrement)
+  - GC pressure under 10K overlay churn (= 1 ヶ月 churn = create+delete
+    1M 回 simulate、Phase 7.3 GC との interaction で leak なし)
+  - overlay 同 priority insertion 順 二次 key (= 後から作った overlay
+    が後の lookup で勝つ)
+- 9b regression-free
+
+*** 3.4.x prerequisite
+
+- 9c.1 SHIPPED (= face payload)
+- 9c.3 SHIPPED (= keymap inject slot)
+
+** 3.5 Phase 9c.5 — text-property change hook + overlay change hook
+
+新規 module 想定:
+- =src/nelisp-emacs-compat-tp-hooks.el=
+
+*** 3.5.1 text-property change hook
+
+scope:
+- =modification-hooks= property
+- =insert-in-front-hooks= property
+- =insert-behind-hooks= property
+- mutation で range と overlap した hook を fan-out
+- =inhibit-modification-hooks= 変数
+
+*** 3.5.2 point motion hook
+
+scope:
+- =point-entered= property
+- =point-left= property
+- =goto-char= / cursor 移動 (Doc 34 9b では event-loop 経由) の interaction
+- =inhibit-point-motion-hooks= 変数
+
+*** 3.5.3 overlay change hook
+
+scope:
+- =overlay-change-functions= 変数 (buffer global)
+- per-overlay =modification-hooks= / =insert-in-front-hooks= / =insert-behind-hooks=
+  property
+- mutation で重なる overlay の hook を fan-out
+
+*** 3.5.4 re-entrancy semantics
+
+scope:
+- §2.8 LOCKED v1 contract に従い、hook 内 mutation の secondary trigger を抑制
+- =inhibit-modification-hooks= / =inhibit-point-motion-hooks= で全体抑制可
+- depth=1 guard は per-buffer counter + signal-safe unwind-protect で実装
+- 9c.5 内部 helper =nelisp-with-modification-hook-guard= マクロで全 hook
+  起動を wrap
+
+*** 3.5.5 ERT smoke (+25、MAJOR-B.3 反映)
+
+- =modification-hooks= range overlap fan-out
+- =insert-in-front-hooks= start match trigger
+- =insert-behind-hooks= end match trigger
+- =point-entered= / =point-left= 双方向
+- =overlay-change-functions= mutation 連動
+- per-overlay hook fan-out
+- =inhibit-modification-hooks= guard
+- =inhibit-point-motion-hooks= guard
+- depth=1 secondary trigger 抑制
+- buffer kill 時 hook owner cleanup
+- *re-entrancy guard 5 corner cases (MAJOR-B.3 反映)*:
+  - hook 内 mutation で secondary trigger 抑制
+  - hook 内別 buffer mutation で secondary trigger 発火 (= cross-buffer
+    非抑制)
+  - =inhibit-modification-hooks= let-bind で復活
+  - signal abort 時 counter reset (= 後続 mutation で hook 再 fire)
+  - point-motion-hook と modification-hook の独立 counter (= 一方 trigger
+    中に他方が fire)
+- 9b regression-free
+
+*** 3.5.x prerequisite
+
+- 9c.1 SHIPPED (= face payload mutation で hook trigger 検証)
+- 9c.4 SHIPPED (= overlay hook 用)
+- 9c.2 SHIPPED は soft prerequisite (= display payload mutation での hook 検証)
+- 9c.3 SHIPPED は soft prerequisite (= keymap mutation での hook 検証)
+- *Doc 34 §2.4 event-loop SHIPPED* (= point-motion-hook trigger 用、
+  cursor mutation event source として subscribe、MAJOR-D.3 反映)
+- *Doc 39 §2.4 event-source* (= Phase 9d eventloop) が ship 順序的に
+  Doc 34 より先に来た場合は Doc 34 §2.4 + Doc 39 §2.4 の 2 経路で
+  event-source を統合 subscription (= MAJOR-D.3 反映、§9.5 で decision
+  に格上げ)
+
+* §4 Architecture / contract / API list
+
+各 sub-system で以下を固定する。
+- status: =9b SHIPPED= / =9c 拡張= / =9c 新規=
+- compatibility: =full= / =partial= / =N/A=
+- producer / consumer
+- versioned contract
+
+** 4.1 face property contract (storage + resolver, 7 件)
+
+*input/output boundary*:
+- input = face spec value (3 形式)、registry mutation
+- output = normalized attribute plist
+- producer = editing commands / package code
+- consumer = Phase 11 display backend (pull)
+- contract version = =FACE_PROPERTY_CONTRACT_VERSION = 1=
+
+| API                          | status   | compatibility | semantics                          |
+|------------------------------+----------+---------------+------------------------------------|
+| =put-text-property= (face)   | 9b SHIPPED | partial       | face value 受入 (本 doc で正式化)   |
+| =nelisp-face-resolve=        | 9c 新規   | full          | spec → attribute plist             |
+| =nelisp-face-attribute-merge=| 9c 新規   | full          | merge cascade                      |
+| =nelisp-face-define=         | 9c 新規   | partial       | 9c.1 では runtime registry のみ     |
+| =nelisp-face-attributes=     | 9c 新規   | full          | registry lookup                    |
+| =nelisp-face-list=           | 9c 新規   | full          | registry list                      |
+| =nelisp-face-equal-p=        | 9c 新規   | full          | normalized attribute 比較          |
+
+*invariants*:
+- resolver は pure、副作用なし
+- =:inherit= chain depth ≤ 16
+- registry は per-runtime global (= per-buffer ではない)
+
+** 4.2 display property contract (storage + validator, 5 件)
+
+*input/output boundary*:
+- input = display spec alist
+- output = validated spec / accessor result
+- producer = editing commands / package code
+- consumer = Phase 11 display backend (pull)
+- contract version = =DISPLAY_PROPERTY_CONTRACT_VERSION = 1=
+
+| API                                | status   | compatibility | semantics                       |
+|------------------------------------+----------+---------------+---------------------------------|
+| =put-text-property= (display)      | 9b SHIPPED | partial       | display value 受入 (本 doc で正式化) |
+| =nelisp-display-spec-validate=     | 9c 新規   | full          | validator                        |
+| =nelisp-display-spec-type=         | 9c 新規   | full          | type accessor                    |
+| =nelisp-display-spec-payload=      | 9c 新規   | full          | payload accessor                 |
+| =nelisp-display-spec-replace-spec= | 9c 新規   | full          | nested spec accessor             |
+
+*invariants*:
+- validator は pure、副作用なし
+- v0 受入 type 集合は §2.4 で固定
+- 拡張時は contract version を増分する
+
+** 4.3 keymap chain inject contract (5 件 + 1 helper)
+
+*input/output boundary*:
+- input = point, buffer, overlay tree, text-property tree
+- output = keymap chain (priority ordered list)
+- producer = 本 doc 9c.3 / 9c.4
+- consumer = Doc 34 §4.3 =lookup-key= / =command-execute=
+- contract version = =KEYMAP_CHAIN_INJECT_CONTRACT_VERSION = 1=
+
+| API / variable                | status   | compatibility | semantics                       |
+|-------------------------------+----------+---------------+---------------------------------|
+| =keymap= text-property        | 9c 新規   | partial       | range 最短勝ち                   |
+| =keymap= overlay property     | 9c 新規   | partial       | priority 高い順                  |
+| =local-map= overlay property  | 9c 新規   | partial       | =keymap= と同 slot               |
+| =nelisp-keymap-chain-at=      | 9c 新規   | full          | chain provider helper           |
+| Doc 34 §2.3 chain (extended)  | 9c errata | -             | precedence slot 6 / 7 を inject  |
+
+*precedence (本 doc 拡張版)*:
+- §2.5 LOCKED 9 段に固定
+
+*defcustom default transition timeline (LOCKED v2、MINOR-X1 反映)*:
+
+opt-in flag =nelisp-keymap-chain-with-textprop= (= デフォ nil) は
+contract version 並走 model (= MAJOR-A.1) を release 中に維持しつつ、
+将来 t flip でデフォ 9 段 chain に統合する。dead code 化を防ぐ。
+sibling Doc 42 v1 §4.3 defcustom transition log pattern と整合。
+
+| release 区間                              | =nelisp-keymap-chain-with-textprop= デフォ | 理由                                                                  |
+|-------------------------------------------+-------------------------------------------+-----------------------------------------------------------------------|
+| v2.2.0 (= 9c.1 SHIPPED) 〜 v2.2.4 (= 9c.5 SHIPPED) | nil                                       | Doc 34 SHIPPED bin caller の binary semantics 不変、互換維持を最優先 |
+| v2.2.x maintenance 期 (= Phase 11 design 着手中) | nil                                       | Phase 11 backend co-design 進行中、actual render 不在で flip 価値小   |
+| Phase 11 SHIPPED + popular package gate PASS 後 | t (= 候補)                                 | 9 段 chain が default 化、=KEYMAP_CHAIN_INJECT_CONTRACT_VERSION = 2= 余地で再 freeze |
+
+*flip 時 user signoff 要件*:
+- Phase 11 backend SHIPPED gate (= actual render 接続完了)
+- popular package gate PASS (= which-key core / flycheck core /
+  helm core で v=2 chain 環境下 ERT 全 PASS)
+- §7.4 option A 切替 (= Doc 34 §2.3 errata 別 task で v3 化) との
+  併記、user signoff round で confirm
+- flip と同 release で =KEYMAP_CHAIN_INJECT_CONTRACT_VERSION = 2= に
+  bump、新 contract で formal re-freeze (= v=1 caller の forward
+  semantics 保証は §6.2 mitigation で維持)
+
+*dead code 化回避 invariant*:
+- =nelisp-keymap-chain-at= helper 自体は v2.2.0 SHIPPED 時から live (=
+  call site が opt-in で =nelisp-keymap-chain-with-textprop= = t
+  bind して使用可)、defcustom デフォ nil 期間でも *機能は活性*
+- popular package (= which-key / flycheck) の v=2 環境 ERT は
+  v2.2.0 から CI で run、Doc 27 release-audit で gate
+- flip 後も v=1 mode (= デフォ nil 設定で起動した既存 caller) は
+  最低 2 release cycle (= v2.2.x → v2.3.x) は legacy support、
+  v2.4.x で deprecation warning + v2.5.x で removal の慎重 path
+
+** 4.4 overlay contract (16 件)
+
+*input/output boundary*:
+- input = beg / end / buffer / properties / endpoint type
+- output = overlay handle / property mutation / range query
+- producer = package code
+- consumer = =get-char-property= (本 doc 拡張) / display backend / hooks
+- contract version = =OVERLAY_CONTRACT_VERSION = 1=
+
+| API                          | status | compatibility | semantics                       |
+|------------------------------+--------+---------------+---------------------------------|
+| =make-overlay=               | 9c 新規 | partial       | front/rear-advance subset       |
+| =delete-overlay=             | 9c 新規 | full          | overlay 削除                     |
+| =overlay-start=              | 9c 新規 | full          | beg 取得                         |
+| =overlay-end=                | 9c 新規 | full          | end 取得                         |
+| =overlay-buffer=             | 9c 新規 | full          | buffer 取得                      |
+| =overlay-properties=         | 9c 新規 | full          | plist 取得                       |
+| =overlay-get=                | 9c 新規 | full          | property 取得                    |
+| =overlay-put=                | 9c 新規 | full          | property 設定                    |
+| =move-overlay=               | 9c 新規 | partial       | buffer 引数 subset               |
+| =overlays-at=                | 9c 新規 | partial       | sorted subset                    |
+| =overlays-in=                | 9c 新規 | full          | range 列挙                       |
+| =next-overlay-change=        | 9c 新規 | full          | 次境界                           |
+| =previous-overlay-change=    | 9c 新規 | full          | 前境界                           |
+| =overlay-recenter=           | 9c 新規 | partial       | recenter no-op 可                |
+| =overlay-lists=              | 9c 新規 | partial       | (before . after) subset          |
+| =overlay-priority= helper    | 9c 新規 | full          | priority accessor                |
+
+*invariants*:
+- overlay storage は per-buffer 独立 interval tree
+- buffer kill 時 cleanup
+- gap-buffer insertion / deletion 時 endpoint adjust
+
+** 4.5 text-property contract v2 errata (Doc 34 §4.6 拡張)
+
+*input/output boundary 変化*:
+- input は不変
+- output: =get-char-property= が overlay-aware に拡張
+- contract version = =TEXT_PROPERTY_CONTRACT_VERSION = 1 → 2=
+
+| API                  | status   | compatibility | semantics 変化                       |
+|----------------------+----------+---------------+--------------------------------------|
+| =get-char-property=  | 9c 拡張   | partial → partial+ | overlay > text-property > default で解決 (overlay-aware)、=default-text-properties= 未対応のため full parity ではない |
+| 他 11 件              | 9b SHIPPED | unchanged (= partial pin) | Doc 34 §4.6 compatibility 列は不変、value schema validator が 9c で freeze するのみ |
+
+*lookup precedence (=get-char-property= 拡張版)*:
+1. point の overlay (= priority 高い順、=priority= = nil は -∞ 扱い、
+   同 priority は insertion 順 二次 key)
+2. point の text-property
+3. =default-text-properties= (= 9c では未対応、Phase 11 と co-design)
+
+*backward compat 機構 (LOCKED v1、MAJOR-A.2 反映、候補 a 採用)*:
+- *確定 stance*: =get-char-property= は v2 fixed (= 常に overlay-aware)、
+  Doc 34 SHIPPED bin caller は overlay 0 件想定で動作は不変 (= 後方
+  互換は事実上維持)
+- *byte-identical invariant (9c.4 close blocker gate)*: overlay 0 件時
+  v1 (= Doc 34 §4.6 SHIPPED 実装) と本 doc v2 実装が *byte-identical*
+  な結果を返す。9c.4 ERT で gate 設定、fail 時は 9c.4 close blocker
+- *runtime selector / opt-in flag は不要*: 候補 b (= dynamic var で
+  v1 mode opt-in) や候補 c (= =get-char-property-v1= alias) は v0 で
+  検討したが、Emacs precedent (= overlay 0 件で同 semantics) と整合
+  するため不採用
+- *call site 影響*: Doc 34 SHIPPED bin で書かれた caller は overlay
+  作成 / delete を行わない限り挙動不変。overlay 1+ 件時の挙動は Doc 34
+  §4.6 で *未定義動作* (= overlay 非対象) なので Doc 41 で定義する側
+  が free
+
+*breaking nature 確定 (LOCKED v1、MAJOR-C.1 反映)*:
+- *de facto 非 breaking*: overlay 0 件時 v1 = v2 byte-identical
+- *semantically breaking but 正方向 fix*: overlay 1+ 件時 v1 と異なる
+  結果 (= overlay 値が visible になる)、Emacs precedent と整合する
+  正方向の semantics 修正
+- *Doc 34 errata 不要 path*: 上記 stance に基づき Doc 34 §4.6 contract
+  表 (= compatibility partial) も不変で merge 可能、§11.4 main merge
+  gate で再確認
+
+*compatibility 列 semantics 確定 (LOCKED v1、MAJOR-C.2 反映)*:
+- =get-char-property= compatibility: "partial → partial+" (= partial
+  with overlay-aware)
+- "full" 主張は撤回 (= =default-text-properties= 未対応のため Emacs
+  full parity に到達しない)
+- §1.5 boundary contract に "default-text-properties 未対応 = full
+  parity 不可、9c 完了後も partial+ のまま" 明示済 (上記 §1.5 修正)
+- §7.3 full close 条件にも "default-text-properties Phase 11 待ち" の
+  脚注追加 (§7.3 修正で対応)
+
+** 4.6 modification / overlay change hook contract (5 件 + 2 var)
+
+*input/output boundary*:
+- input = mutation event (= start / end / before-after type / inserted text)
+- output = registered hook fan-out
+- producer = editing commands / overlay mutation
+- consumer = package code (= mode setup, font-lock, etc.)
+- contract version = =TEXT_PROPERTY_HOOK_CONTRACT_VERSION = 1=
+
+| API / property / variable          | status | compatibility | semantics                       |
+|------------------------------------+--------+---------------+---------------------------------|
+| =modification-hooks= property      | 9c 新規 | full          | range overlap fan-out           |
+| =insert-in-front-hooks= property   | 9c 新規 | full          | range start match               |
+| =insert-behind-hooks= property     | 9c 新規 | full          | range end match                 |
+| =point-entered= property           | 9c 新規 | partial       | cursor 移動連動                  |
+| =point-left= property              | 9c 新規 | partial       | cursor 移動連動                  |
+| =overlay-change-functions= var     | 9c 新規 | full          | global hook                     |
+| =inhibit-modification-hooks= var   | 9c 新規 | full          | guard                           |
+| =inhibit-point-motion-hooks= var   | 9c 新規 | full          | guard                           |
+
+*re-entrancy (LOCKED v1、MAJOR-B.3 反映)*:
+- depth=1 secondary trigger 抑制
+- guard 変数で全体抑制可
+- *guard counter scope invariant*: per-buffer counter + signal-safe
+  unwind-protect。modification / point-motion / overlay-change の 3
+  hook 種別は独立 counter。cross-buffer mutation は別 counter (=
+  抑制なし)。=inhibit-modification-hooks= は dynamic binding (let-bind)
+  で復活、=setq= 直書きは undefined behavior
+
+** 4.7 Cross-system cleanup / leak boundaries
+
+| concern                       | producer                          | consumer                | cleanup owner            |
+|-------------------------------+-----------------------------------+-------------------------+--------------------------|
+| buffer kill                   | overlay / text-property hook       | all subsystems          | buffer lifecycle manager |
+| overlay registry              | =make-overlay= / =delete-overlay=  | =overlays-at= 等         | overlay registry         |
+| face registry                 | =nelisp-face-define=               | resolver                | face registry            |
+| keymap chain inject           | text-property / overlay            | Doc 34 lookup-key       | inject helper            |
+| modification hook fan-out     | mutation                          | hook bodies             | hook trigger machinery   |
+| point motion hook fan-out     | =goto-char= 系 + Doc 34 §2.4 event-loop | hook bodies         | hook trigger machinery + event-loop subscription |
+| Doc 34 §4.6 v2 errata         | 9c.4 overlay-aware =get-char-property= | package code            | text-property tree      |
+| invalidation event            | text-property / overlay mutation   | Phase 11 backend cache  | invalidation event hook (本 doc 提供) |
+| re-entrancy guard counter     | hook trigger (modification / point-motion / overlay-change) | hook bodies | per-buffer counter + signal-safe unwind |
+
+* §5 ERT smoke + bench plan
+
+| sub-phase | ERT module                  | count |
+|-----------+-----------------------------+-------|
+| 9c.1      | face property + resolver    | +20   |
+| 9c.2      | display property + validator| +22   |
+| 9c.3      | text-property keymap        | +18   |
+| 9c.4      | overlay full                | +40   |
+| 9c.5      | hook trigger                | +25   |
+| integration | cross-system               | +24   |
+|-----------+-----------------------------+-------|
+| total      |                             | +149  |
+
+*ERT count change rationale (v0 +139 → v1 +149)*:
+- 9c.4 +35 → +40 (= MAJOR-D.2 反映、memory growth + interval tree
+  amortized cost + hook-internal delete recursion + GC pressure churn
+  + overlay 同 priority insertion 順 二次 key の 5 case 追加)
+- 9c.5 +20 → +25 (= MAJOR-B.3 反映、re-entrancy guard 5 corner cases
+  追加: cross-buffer 非抑制 / let-bind 復活 / signal abort reset /
+  独立 counter / hook 内 secondary trigger 抑制)
+
+** 5.1 integration test
+
+| test                                        | subsystems                | count | shipped gate relevance |
+|---------------------------------------------+---------------------------+-------+------------------------|
+| face spec round-trip + overlay-aware get-char-property | 9c.1 + 9c.4         | +4    | 9c.4                  |
+| display spec round-trip + overlay-aware     | 9c.2 + 9c.4               | +4    | 9c.4                  |
+| keymap inject precedence                    | 9c.3 + 9c.4 + Doc 34 §4.3 | +5    | 9c.4                  |
+| modification hook + overlay mutation        | 9c.5 + 9c.4               | +5    | 9c.5                  |
+| point motion hook + Doc 34 event-loop       | 9c.5 + Doc 34 §4.4         | +3    | 9c.5                  |
+| backend stub mode で全 5 sub-phase no-op render | all                    | +3    | full close            |
+
+** 5.2 bench plan (DRAFT v1、ratio gate + absolute baseline 固定)
+
+absolute baseline は *Doc 34 SHIPPED 時点 absolute 値* で固定し、
+ratio compound (= 1.30 × 1.30 = 1.69x) を回避する (MAJOR-B.2 反映)。
+
+| benchmark                       | 内容                              | DRAFT v1 ratio gate (Doc 34 SHIPPED 時点 absolute baseline 比) | absolute freeze timing | bench harness |
+|---------------------------------+-----------------------------------+----------------------------------------------------------------+------------------------+---------------|
+| =face-resolve=                  | 1M face value resolve             | Doc 34 SHIPPED 時点 baseline (= 9c.1 着手前の textprop value resolve baseline) 比 ≤ 1.30x | 9c.1 SHIPPED 後         | =bin/anvil --self-bench-textprop= |
+| =display-validate=              | 1M display spec validate          | Doc 34 SHIPPED 時点 baseline (= 9c.2 着手前の textprop value resolve baseline) 比 ≤ 1.30x | 9c.2 SHIPPED 後         | =bin/anvil --self-bench-textprop= |
+| =keymap-chain-at=               | 1M point chain build              | *Doc 34 SHIPPED 時点 keymap-dispatch absolute baseline* 比 ≤ 1.30x | 9c.3 SHIPPED 後         | =bin/anvil --self-bench-keymap-chain= |
+| =overlay-range-query=           | 1M char buffer / 10K overlay query | *Doc 34 SHIPPED 時点 text-prop-range-query absolute baseline* 比 ≤ 1.50x | 9c.4 SHIPPED 後         | =bin/anvil --self-bench-overlay= |
+| =modification-hook-fan-out=     | 100 hook chain trigger            | *Doc 34 SHIPPED 時点 hook-run absolute baseline* 比 ≤ 1.30x | 9c.5 SHIPPED 後         | =bin/anvil --self-bench-hook= |
+
+*compound ratio 不在 invariant (LOCKED v1、MAJOR-B.2 反映)*:
+- 全 ratio gate baseline は *Doc 34 SHIPPED 時点* に固定 (= self-relative
+  ではなく cross-phase absolute baseline)
+- これにより 1.30 × 1.30 = 1.69x の compound deviation を回避
+- Doc 34 §5.2 ratio (= 9b.1 baseline 比) と Doc 41 §5.2 ratio (= Doc 34
+  SHIPPED 時点 baseline 比) は *別 baseline* なので加算 / 乗算しない
+- absolute freeze timing は sub-phase 粒度 (= 各 sub-phase SHIPPED 後
+  個別固定、§9.6 で sub-phase 粒度の trigger を decision に格上げ)
+
+gate fail 時:
+- DRAFT v1 では ratio fail を即 ship-blocker にしない
+- gate-M9c.4 以降は 3 軸 (= overlay-range-query / keymap-chain-at /
+  modification-hook-fan-out) を minimum freeze set とする
+
+* §6 Risks
+
+** 6.1 Phase 11 display backend 依存
+
+影響:
+- face / display / overlay の actual render は Phase 11 待ち
+- pull granularity / threading model / cache invalidation event
+  granularity は Phase 11 design doc (Doc 36 想定) と co-design 必須
+- face attribute plist (= =:weight= 値域、=:foreground= color spec
+  format) は TUI vs GUI で format が違い、Phase 11 backend 確定後に
+  contract v2 余地で再 formalize する可能性
+
+mitigation:
+- §2.7 pull-on-demand protocol + invalidation event protocol を v1 で
+  抽象 API surface freeze (= 5 件 = pull helper 3 件 + invalidation
+  event hook 2 件)
+- §2.11 stub render mode invariant LOCK
+- backend なしで storage / query / hook 全 ERT が緑
+- Phase 11 SHIPPED 後 actual render integration ERT 追加で full SHIPPED
+- *本 doc 単独 freeze 主張の慎重 phrase (MAJOR-D.1 反映)*: storage /
+  query / hook trigger までは本 doc 単独 freeze 可、ただし pull
+  granularity / threading model / cache invalidation event granularity
+  / face attribute format 揺れは Phase 11 co-design 必須。§2.7 で
+  抽象 API surface は freeze するが contract v2 余地を残す escape
+  hatch を §10 + §9.8 で declare
+
+** 6.2 Doc 34 §2.3 keymap precedence の errata (MAJOR-A.1 反映)
+
+影響:
+- 本 doc が precedence chain に slot 6 / 7 を inject すると、Doc 34
+  LOCKED の precedence table が "本 doc 適用後は 9 段" になる
+- v0 では "option B = Doc 34 LOCKED 不変" だけを宣言していたが、
+  binary semantics が変わるため Doc 34 SHIPPED bin の caller が落ちる
+  risk があった (= MAJOR-A.1)
+
+mitigation (LOCKED v1):
+- *contract version 並走 model* で Doc 34 LOCKED を amend せず、本 doc
+  §2.5 で *opt-in flag + 9 段 chain provider* を declare:
+  - Doc 34 §2.3 chain provider (= 7 段) は =KEYMAP_CONTRACT_VERSION = 1=
+    のまま不変、Doc 34 SHIPPED bin caller は影響なし
+  - 本 doc が新 contract =KEYMAP_CHAIN_INJECT_CONTRACT_VERSION = 1=
+    で 9 段 chain provider を提供
+  - call site が opt-in flag =nelisp-keymap-chain-with-textprop= = t
+    で v=2 (= 9 段) を選択
+  - =lookup-key= / =command-execute= は Doc 34 §4.3 既存 API 不変、
+    本 doc 9c.3 が新 chain provider helper =nelisp-keymap-chain-at=
+    を追加
+- Doc 34 §4.3 lookup-key API 自体は変更しない、binary semantics も
+  =nelisp-keymap-chain-with-textprop= = nil (= デフォ) で Doc 34
+  SHIPPED bin と byte-identical
+- *option A 切替の余地* (= Doc 34 §2.3 errata 別 task で v3 化) は §7.4
+  に LOCKED 前 user signoff の選択肢として残置
+
+** 6.3 Doc 34 §4.6 =get-char-property= semantics 上書き (MAJOR-A.2 + MAJOR-C.1 反映)
+
+影響:
+- Doc 34 では overlay 非対象、本 doc で overlay-aware に拡張する
+- Doc 34 SHIPPED bin で書かれた package が本 doc 適用後に挙動が変わる
+  (= overlay が見えるようになる)
+- v0 では "v1/v2 並走可" だけで具体機構不在、§4.5 で確定 stance 揺れ
+
+mitigation (LOCKED v1):
+- =TEXT_PROPERTY_CONTRACT_VERSION= を 1 → 2 に増分 (= defensive 表記
+  維持)
+- *確定 stance (MAJOR-A.2 + MAJOR-C.1 反映)*:
+  - =get-char-property= は v2 fixed (= 常に overlay-aware)、Doc 34
+    SHIPPED bin caller は overlay 0 件想定で動作不変 (= 後方互換は
+    事実上維持)
+  - *byte-identical invariant* (= 9c.4 close blocker gate): overlay 0
+    件時 v1 = v2 byte-identical、9c.4 ERT で gate 設定
+  - de facto 非 breaking: overlay 0 件時 v1 = v2 byte-identical
+  - semantically breaking but 正方向 fix: overlay 1+ 件時 v1 と異なる
+    結果 (= overlay 値が visible)、Emacs precedent と整合
+- runtime selector / opt-in flag は不要 (= Emacs precedent に近づく
+  ため候補 b / c は v0 で検討するも v1 で不採用)
+- Doc 34 SHIPPED bin で書かれた期待 (= overlay 非対象) は overlay 0
+  件 case で byte-identical なので *de facto 維持*、overlay 1+ 件時
+  の挙動は Doc 34 §4.6 で *未定義動作* (= overlay 非対象) なので Doc
+  41 が定義する側で free
+- 9c.4 ERT で overlay-aware semantics を凍結 + byte-identical gate
+  設定
+- Doc 34 §4.6 errata は本 doc §4.5 で formal declare、Doc 34 §4.6
+  contract 表 (= compatibility partial) は不変で Doc 34 errata 不要 (=
+  §11.4 main merge gate と整合)
+
+** 6.4 overlay storage の gap-buffer adjust
+
+影響:
+- overlay endpoint (= front/rear-advance) の semantics が gap shift と
+  整合しないと package scenario が壊れる
+
+mitigation:
+- §2.6 endpoint type LOCK
+- 9c.4 ERT に large-buffer + gap shift シナリオを追加
+- Doc 34 textprops MVP の adjust contract を template として再利用
+
+*adjust helper 仕様 (LOCKED v1、MINOR-D.7 反映)*:
+- helper 名: =nelisp-overlay-tree-adjust-after-mutation (BEG END LEN-OLD LEN-NEW)=
+- 適用範囲: insert / delete / replace primitive 全てから call (= Phase 8
+  mutable text primitive boundary に hook)
+- endpoint type ごとの adjust rule (front-advance t/nil × rear-advance
+  t/nil で 4 cases):
+  - =front-advance= = nil + =rear-advance= = nil: insertion at start
+    では beg 移動なし、end は move (= デフォルト Emacs 挙動)
+  - =front-advance= = t + =rear-advance= = nil: insertion at start
+    では beg も移動 (= "前 advance")
+  - =front-advance= = nil + =rear-advance= = t: insertion at end
+    では end も移動 (= "後 advance")
+  - =front-advance= = t + =rear-advance= = t: 両 endpoint 共 move
+- Doc 34 textprop adjust helper (= =nelisp-textprop-tree-adjust-after-mutation=)
+  と signature 一致 (= 互換性確保)
+- 9c.4 ERT で 4 cases 全 PASS、large-buffer + gap shift シナリオ込み
+- Doc 34 §6.4 mitigation も同 helper 命名 (= =nelisp-textprop-tree-
+  adjust-after-mutation=) で 1 line errata 追加余地 (= option A 余地、
+  §7.4 で signoff 時に併記)
+
+** 6.5 modification hook re-entrancy
+
+影響:
+- hook 内 mutation で無限 trigger / stack overflow
+
+mitigation:
+- §2.8 depth=1 guard LOCK
+- =inhibit-modification-hooks= 変数を導入
+- 9c.5 ERT に nested hook シナリオを追加
+
+** 6.6 face inheritance cycle
+
+影響:
+- =:inherit= chain が循環すると stack overflow
+
+mitigation:
+- §2.3 depth ≤ 16 で truncate
+- 9c.1 ERT に cycle truncate を追加
+
+** 6.7 display spec extensibility
+
+影響:
+- §2.4 で v0 受入 type 集合を 8 件に固定したが、Emacs Lisp package が
+  それ以外の type を要求する可能性
+
+mitigation:
+- =DISPLAY_PROPERTY_CONTRACT_VERSION= を 1 で v0 release、不足が出れば
+  contract v2 で拡張
+- v0 では未知 type を =wrong-type-argument= signal で reject (= silent
+  drop しない)
+
+** 6.8 overlay priority + text-property の precedence collision
+
+影響:
+- 同 point に overlay と text-property の両方で =face= が指定されたとき
+  どちらが勝つか
+
+mitigation:
+- §4.5 で *overlay > text-property > default* に固定
+- 9c.4 ERT に collision シナリオを追加
+
+** 6.10 overlay storage memory growth + GC pressure (MAJOR-D.2)
+
+影響:
+- 1M buffer × 10K overlay × face/display payload で memory footprint が
+  数MB に到達する case あり (= interval tree node ~64 bytes × 10K +
+  payload 巨大化)
+- flycheck core gate (= 1000 件 / 100ms) では memory + GC pressure が
+  立ち上がる
+- Phase 7.3 GC との interaction で leak が発生し得る (= overlay handle
+  cleanup 遅延)
+
+mitigation:
+- §3.4.5 ERT に "1M buffer × 10K overlay × payload で memory footprint
+  計測 (= upper bound 50MB 想定、超過は 9c.4 close blocker)" 追加
+- §3.4.5 ERT に "GC pressure under 10K overlay churn (= create+delete
+  1M 回 simulate、leak なし)" 追加
+- buffer kill 時 overlay registry cleanup 強制実行
+- Phase 7.3 GC root として overlay tree を登録 (= weak reference では
+  ない strong root)
+
+** 6.11 interval tree split/merge の amortized cost (MAJOR-D.2)
+
+影響:
+- insertion で O(log N) 期待だが、worst case で O(N) split chain が
+  発生し得る
+- sequential insert 100K で amortized O(log N) を保証できないと 9c.4
+  close blocker
+
+mitigation:
+- §3.4.5 ERT に "interval tree split chain stress (= sequential insert
+  100K で amortized O(log N) 確認)" 追加
+- worst case 検出時は AVL / red-black 等の self-balancing tree に
+  実装切替 (= 9c.4 内部 implementation の自由度、API 不変)
+- Doc 34 §2.6 textprop interval tree の implementation を template
+  として再利用
+
+** 6.12 hook 内 overlay delete recursion (MAJOR-D.2)
+
+影響:
+- =overlay-change-functions= や per-overlay =modification-hooks= が
+  hook 内で =delete-overlay= を呼ぶと dangling reference や recursion
+  stack overflow が発生し得る
+- §2.8 depth=1 guard で抑制対象だが、guard counter scope を間違えると
+  hook 内 delete が secondary trigger を fire させ得る
+
+mitigation:
+- §2.8 depth=1 guard counter は per-buffer + 独立 counter (= 上記 LOCKED v1
+  contract)
+- §3.4.5 ERT に "hook 内 =delete-overlay= recursion で safe 完了
+  (= dangling reference なし、guard counter 適切に decrement)" 追加
+- =nelisp-with-modification-hook-guard= マクロで全 hook 起動を wrap、
+  signal abort 時 unwind-protect で counter reset
+
+** 6.13 point-motion-hook + Doc 34 / Doc 39 event-loop interaction (MAJOR-D.3)
+
+影響:
+- 9c.5 =point-entered= / =point-left= は cursor mutation event (=
+  =goto-char= / Doc 34 §2.4 event-loop / Doc 39 §2.4 event-loop) を
+  catch する必要あり
+- ship 順序が doc 間で未調整だと、Doc 39 (Phase 9d) eventloop が Doc 34
+  より先に来た場合に本 doc 9c.5 が event-source を 2 経路で確認する
+  必要あり
+- Doc 34 §2.4 event-source lifecycle に point-motion event が登録
+  されない場合、本 doc 9c.5 は Doc 34 errata (= option B 違反) を
+  必要とする
+
+mitigation:
+- §1.5 boundary contract に "point-motion-hook trigger は Doc 34 §2.4
+  event-loop が cursor mutation event source として provide、本 doc が
+  consumer として subscribe" 明示済 (上記 §1.5 修正)
+- §3.5.x prerequisite に "Doc 34 §2.4 event-loop SHIPPED + Doc 39 §2.4
+  event-source ship 順序確認" 追加
+- §9.5 を "open" から "decision" に格上げ:
+  - 第一候補: Doc 34 §2.4 event-source は cursor mutation event を
+    既に broadcast (= 本 doc 9c.5 が pure consumer として subscribe、
+    Doc 34 errata 不要)
+  - 第二候補: Doc 34 §2.4 errata で cursor mutation event source を
+    追加 (= option A 余地、別 task 必要)
+  - 第三候補: Doc 39 §2.4 eventloop が cursor mutation を broadcast
+    する場合は本 doc 9c.5 がそれにも subscribe
+  - 9c.5 着手時に Doc 34 maintainer + Doc 39 maintainer 1-on-1 で
+    確認、§7.5 LOCKED 前 checklist に追加
+- §10 関連 doc に Doc 39 を明示参照済 (上記 #+DEPENDS_ON 修正)
+
+** 6.14 schedule / scope replan gate (旧 6.9、v1 で 6.10〜6.13 追加に伴い renumber)
+
+Doc 34 §6.10 と同 pattern。
+
+| gate | 評価対象 (定量) | kill criteria (milestone 軸) | kill criteria (quality 軸) | downstream amendment |
+|------+-----------------+------------------------------+----------------------------+----------------------|
+| gate-M9c.1 | 9c.1 ERT 20 件中 15 件以上 PASS / coverage 70%+ | 9c.5 を v3.x へ defer | display backend pull protocol 未確定なら 9c.4 着手保留 | 本 doc §3.4 amend |
+| gate-M9c.4 | 9c.4 ERT 40 件中 32 件以上 PASS / overlay-aware get-char-property ERT 全 PASS / *byte-identical invariant gate (overlay 0 件時) PASS* | 9c.5 を 9c.4.x patch にして minimum hook のみ ship | bench gate を 5 軸 → 3 軸へ縮小 | 本 doc §3.5 amend |
+| gate-M9c.5 | 9c.5 ERT 25 件中 20 件以上 PASS / re-entrancy ERT 全 PASS / *event-loop interaction (Doc 34 §2.4 + Doc 39 §2.4) decision PASS* | point motion hook を v3.x へ defer | 本 doc 9c.5 を modification + overlay change hook のみで close | 本 doc §3.5 amend |
+
+判断主体:
+- =anvil-dev release-audit :scope phase-9c=
+- user signoff
+
+* §7 完遂 gate
+
+** 7.1 各 sub-phase SHIPPED 条件
+
+各 sub-phase 共通:
+1. 当該 ERT PASS
+2. 既存 ERT regression-free (= Doc 34 含む)
+3. 該当 integration ERT PASS
+4. contract version / table freeze 済
+5. branch merge 準備完了
+
+sub-phase 別補足:
+- 9c.1: face spec resolver + registry freeze、=:inherit= cycle ERT PASS
+- 9c.2: display spec validator freeze、未知 type reject ERT PASS
+- 9c.3: keymap chain inject precedence freeze、Doc 34 §2.3 errata declared
+- 9c.4: overlay storage + endpoint type freeze、=get-char-property= v2 errata declared
+- 9c.5: modification / point / overlay hook fan-out freeze、re-entrancy guard ERT PASS
+
+*sub-phase quality gate detail*:
+
+| sub-phase | minimum coverage | contract freeze                         | bench expectation                | package requirement |
+|-----------+------------------+-----------------------------------------+----------------------------------+---------------------|
+| 9c.1      | 70%+             | face property v1 frozen                  | face-resolve ratio gate pass     | font-lock core      |
+| 9c.2      | 70%+             | display property v1 frozen               | display-validate ratio gate pass | image-mode subset   |
+| 9c.3      | 75%+             | keymap chain inject v1 frozen            | keymap-chain-at ratio gate pass  | which-key core      |
+| 9c.4      | 75%+             | overlay v1 + textprop v2 errata frozen   | overlay-range-query ratio gate pass | flycheck core      |
+| 9c.5      | 75%+             | text-property hook v1 frozen             | modification-hook-fan-out ratio gate pass | font-lock + overlay-aware mode |
+
+** 7.2 popular package gate (in-scope のみ)
+
+Doc 34 §7.2 と同 pattern で in-scope only に縮小。
+
+| sub-phase | package           | minimum interaction scenario                              | in-scope check                  |
+|-----------+-------------------+-----------------------------------------------------------+---------------------------------|
+| 9c.1      | font-lock core    | face spec を text-property に乗せて get-text-property で復元 | OK (face + textprop)            |
+| 9c.2      | image-mode subset | display spec image type を put / get round-trip          | OK (display + textprop)         |
+| 9c.3      | which-key core    | text-property keymap で popup-suppression-on-prefix dispatch | OK (keymap inject + text-prop) |
+| 9c.4      | flycheck core     | overlay で error highlight を 1000 件作成 / delete         | OK (overlay)                    |
+| 9c.5      | font-lock + overlay-aware mode | mutation 時に modification-hook fan-out が Emacs と等価 | OK (hook + overlay)        |
+
+*gate から除外するもの*:
+- magit: process UI 完全に依存
+- evil: text-property keymap の advanced semantics + minor mode
+- LSP client: process UI + advanced display spec (Phase 11+ 待ち)
+- pixel-scroll-precision-mode: actual render 必須 (Phase 11 待ち)
+
+*scenario freeze detail*:
+- font-lock core: face cascade に =:inherit= chain 1 段を含む
+- image-mode subset: =image= display type の payload alist を valid に round-trip
+- which-key core: text-property keymap の prefix sequence dispatch
+- flycheck core: overlay create / delete / move を 1000 件 / 100ms 以内
+- font-lock + overlay-aware mode: modification-hook fan-out 順序が Emacs precedent と一致
+
+** 7.3 Phase 9c full close 条件
+
+以下すべてで close:
+- +149 ERT 全 PASS (= v0 +139 → v1 +149、9c.4 +5 + 9c.5 +5)
+- package scenario PASS
+- ratio bench gate PASS (= Doc 34 SHIPPED 時点 absolute baseline 比、
+  compound deviation なし)
+- contract tables frozen (= face v1 / display v1 / keymap chain inject
+  v1 / overlay v1 / textprop v2 errata / hook v1 の 6 contract)
+- 9c.4 / 9c.5 は stub render mode で PASS、Phase 11 actual render
+  integration placeholder compatible
+- *byte-identical invariant gate PASS* (= overlay 0 件時 v1 = v2
+  byte-identical、9c.4 ERT で gate)
+- release tags =v2.2.0= ... =v2.2.4= 発行
+- option B + contract version 並走 model declaration を維持したまま
+  Doc 34 errata 不要で main merge 可能 (= MAJOR-A.1 + MAJOR-A.2 反映)
+- *partial+ stance 維持* (MAJOR-C.2 反映): =get-char-property= は
+  overlay-aware だが =default-text-properties= 未対応のため Emacs full
+  parity ではない、partial+ で close。脚注: =default-text-properties=
+  対応は Phase 11 backend 接続後に再評価
+
+** 7.4 Parent errata proposal の余地
+
+本 task は option B 採用で進める。最終 LOCKED 前に strong case が出た
+場合のみ、以下を別 task として扱う。
+- option A: Doc 34 §2.3 keymap precedence chain に slot 6 / 7 を errata 追加
+- option C: option A + Doc 33 §4.2b に face / display / overlay subset の errata 追加
+
+現時点では *option B を推奨 path として維持* する。
+
+** 7.5 LOCKED 前確認 checklist
+
+1. option B + contract version 並走 model declaration が §0 / §1 / §2.5 /
+   §6.2 / §7 / §11 で一貫している (MAJOR-A.1 反映)
+2. Doc 34 §4.6 の overlap APIs (= 12 件) が =9b SHIPPED= として記載され、
+   compatibility 列が partial pin で不変であることが §1.2 / §4.5 で確認
+   されている (MINOR-A.4 反映)
+3. =get-char-property= の overlay-aware 化が contract v1 → v2 で declare
+   され、*byte-identical invariant* (= overlay 0 件時) が §4.5 / §6.3 /
+   §7.1 / §7.3 で一貫 (MAJOR-A.2 + MAJOR-C.1 反映)
+4. keymap chain inject の precedence が §2.5 / §4.3 で一致、sub-precedence
+   (= overlay nil priority -∞、insertion 順 二次 key、=keymap= > =local-map=、
+   text-property range 最短 + start 後優先、cross-slot overlay > textprop)
+   が §2.5 で固定 (MAJOR-A.3 反映)
+5. overlay endpoint type (front / rear-advance) が §2.6 / §4.4 / §6.4 で
+   一致、adjust helper 仕様 (=nelisp-overlay-tree-adjust-after-mutation=)
+   が §6.4 で固定 (MINOR-D.7 反映)
+6. modification hook re-entrancy guard が §2.8 / §4.6 で一致、guard
+   counter scope (= per-buffer + 独立 counter + signal-safe unwind) が
+   §2.8 で固定、5 corner cases ERT が §3.5.5 にある (MAJOR-B.3 反映)
+7. package gate に magit / evil / LSP / pixel-scroll が残っていない
+8. bench gate が ratio → absolute の 2-tier、*Doc 34 SHIPPED 時点
+   absolute baseline* で compound deviation 不在 (= 1.30 × 1.30 = 1.69x
+   なし)、bench harness 名 (= =bin/anvil --self-bench-textprop= 等) が
+   §5.2 で明示 (MAJOR-B.2 反映)
+9. Phase 11 stub render mode invariant が open question ではなく §2.11
+   に固定されている
+10. *event-loop interaction* (= Doc 34 §2.4 + Doc 39 §2.4) の subscription
+    decision が §6.13 + §9.5 + §3.5.x prerequisite で一貫、Doc 34
+    maintainer + Doc 39 maintainer 1-on-1 確認済 (MAJOR-D.3 反映)
+11. *Phase 11 backend co-design boundary* (= pull granularity / threading
+    / cache invalidation / face attribute format) が §1.5 / §2.7 / §6.1 /
+    §10 / §9.8 で escape hatch 入り phrase で明示 (MAJOR-D.1 反映)
+12. *invalidation event protocol* (= =nelisp-textprop-changed-functions= /
+    =nelisp-overlay-changed-functions=) が §2.7 / §4.7 / §9.8 で declare
+    (MINOR-C.3 反映)
+13. *parallel set escape hatch* (= {9c.1, 9c.2, 9c.3} 同時 dispatch で
+    4-6 ヶ月圧縮可) が §0 / §1.6 / §3 で一貫 (MINOR-B.4 反映)
+14. *open → decision 格上げ* が §9.2 (face registry) / §9.5 (event-loop) /
+    §9.6 (absolute bench sub-phase 粒度) / §9.7 (mini demo scope) で
+    完了、open question section に残るのは §9.1 / §9.3 / §9.4 / §9.8
+    のみ (MINOR-D.4 + MINOR-D.5 + MINOR-D.6 反映)
+
+* §8 Out of scope
+
+** 8.1 actual render
+
+face / display / overlay の actual render (= bitmap / TUI cell 配置 /
+image decode / glyph layout) は Phase 11 display backend で扱う。
+
+** 8.2 font / face attribute の OS 依存 fallback
+
+font fallback / glyph substitution / fontset / encoding-specific font は
+Phase 11 + OS-specific backend (= TUI / GTK / Cocoa / win32 / wgpu) で扱う。
+
+** 8.3 tooltip / mouse-face
+
+mouse event dispatch + tooltip popup は Phase 11 event-loop と co-design。
+
+** 8.4 composition / bidi / stretch glyph
+
+complex script (= Arabic / Hebrew / Devanagari) shaping、bidi-iterator、
+stretch glyph は Phase 11+ で扱う。
+
+** 8.5 advanced display spec extensions
+
+v0 で固定した 8 type 以外の display type (= xwidget / svg / animation /
+tab-line) は contract v2 へ defer。
+
+** 8.6 overlay advanced
+
+overlay の display-engine integration (= lazy redisplay、overlay-arrow-position)
+は Phase 11 と co-design。
+
+** 8.7 advice / minor mode
+
+Doc 35 想定 (= advice / define-minor-mode / 完全 regex / process UI 完全 /
+file UI 完全) は本 doc 担当外。
+
+** 8.8 multi-thread NeLisp
+
+Phase 7.5+ co-design 領域。
+
+* §9 Open questions + decisions
+
+** 9.1 Doc 34 §2.3 errata の正式化 timing (open)
+
+option B + contract version 並走 model (= v1 LOCKED) で本 doc 内
+declare のまま release するか、Doc 34 LOCKED に errata 追加で正式化
+(= option A) するか。LOCKED 直前 user signoff で決定。
+
+** 9.2 face registry の persistence (decision、MINOR-D.6 反映)
+
+*decision*: per-runtime global (= 9c.1 で確定)、Phase 11 backend 接続後
+per-package isolation の余地を contract v2 で再評価。
+
+理由:
+- §4.1 invariants で "per-runtime global" 既に確定
+- v0 では open に残しつつ invariant で確定する unconventional pattern
+  だったので、v1 で正式に decision 格上げ
+- Phase 11 backend 接続後 per-package isolation が必要になった場合は
+  =FACE_PROPERTY_CONTRACT_VERSION= 増分で対応
+
+** 9.3 display spec v2 拡張集合 (open)
+
+Phase 11 backend 接続後、xwidget / svg / animation 等を contract v2 で
+正式化するかは Phase 11 と co-design。
+
+** 9.4 overlay priority の二次 key (decision、MAJOR-A.3 反映)
+
+*decision*: insertion order (= v0 採用案を v1 で正式格上げ)、§2.5 sub-
+precedence で固定。
+
+理由:
+- v0 では "9c.4 SHIPPED 後に再評価" と open に残していたが、§2.5
+  sub-precedence で確定する必要あり (= MAJOR-A.3)
+- Emacs precedent (=keymap.c=) と一致、9c.4 SHIPPED 時の挙動安定性
+  優先
+
+** 9.5 point motion hook の event-loop integration (decision、MAJOR-D.3 反映)
+
+*decision*: Doc 34 §2.4 event-source は cursor mutation event source
+として provide、本 doc 9c.5 が consumer として subscribe (= 第一候補
+採用)。Doc 39 (Phase 9d) eventloop が ship 順序的に先に来た場合は
+Doc 34 §2.4 + Doc 39 §2.4 の 2 経路で event-source を統合 subscription。
+
+理由:
+- Doc 34 §2.4 event-source lifecycle に cursor mutation event が
+  既に含まれている (= 第一候補で進める)
+- Doc 34 errata (= 第二候補 / option A) は §7.4 で signoff 時に併記、
+  必要なら別 task で dispatch
+- 9c.5 着手時に Doc 34 maintainer + Doc 39 maintainer 1-on-1 で確認
+  (= §6.13 mitigation + §7.5 LOCKED 前 checklist)
+
+** 9.6 absolute bench target freeze trigger (decision、MINOR-D.4 反映)
+
+*decision*: sub-phase 粒度で freeze trigger を分解。
+
+| benchmark                       | absolute freeze trigger |
+|---------------------------------+--------------------------|
+| =face-resolve=                  | 9c.1 SHIPPED 後          |
+| =display-validate=              | 9c.2 SHIPPED 後          |
+| =keymap-chain-at=               | 9c.3 SHIPPED 後          |
+| =overlay-range-query=           | 9c.4 SHIPPED 後          |
+| =modification-hook-fan-out=     | 9c.5 SHIPPED 後          |
+
+理由:
+- v0 では "9c.1 SHIPPED 後 baseline を取って absolute 値を固定" と
+  書いたが、5 bench 全部を 9c.1 SHIPPED 後に固定するのは無理
+- §5.2 each row の "absolute freeze timing" 列と一致
+
+** 9.7 mini demo scope (decision、MINOR-D.5 反映)
+
+*decision*: 2-buffer demo (= font-lock core 適用 buffer-1 + overlay
+highlight 適用 buffer-2 を split-window で表示、Phase 11 backend stub
+mode で render は no-op)。
+
+理由:
+- v0 では "release 直前に再確認" と open だったが、Doc 34 §9.5 mini
+  demo scope と同 pattern で LOCKED 化前に確定すべき
+- §7.2 popular package gate にも mini demo scenario freeze 行を
+  追加対応
+
+** 9.8 Phase 11 backend co-design boundary (open、MAJOR-D.1 + MINOR-C.3 統合)
+
+Phase 11 backend (= Doc 36 想定、未着手) の以下 boundary は co-design
+で確定する:
+- pull granularity (= 毎 frame / 毎 redisplay / 毎 mutation)
+- threading model (= main thread / render thread)
+- cache invalidation event granularity (= property 単位 / range 単位 /
+  buffer 単位)
+- face attribute plist の TUI vs GUI format 揺れ (= =:weight= 値域、
+  =:foreground= color spec format)
+
+本 doc は API surface (= pull helper 3 件 + invalidation event hook
+2 件) を v1 で freeze、Phase 11 design doc 着手時に contract v2 余地で
+拡張する escape hatch を §2.7 / §10 に declare。
+
+* §10 関連 doc
+
+** internal docs
+
+- =docs/design/27-phase7-c-runtime-self-impl.org=
+- =docs/design/28-phase7.1-native-compiler.org=
+- =docs/design/29-phase7.2-allocator.org=
+- =docs/design/30-phase7.3-gc-inner.org=
+- =docs/design/31-phase7.4-coding.org=
+- =docs/design/32-phase7.5-integration.org=
+- =docs/design/33-nelisp-v1x-architecture.org= (parent §4.2b)
+- =docs/design/34-phase9b-extension-substrate.org= (Doc 34 LOCKED v2、本 doc parent of scope)
+- =docs/design/39-phase9d-arch-alpha-eventloop.org= (Doc 39 LOCKED v2、§2.4
+  event-source / §2.10 process wrapper、本 doc 9c.5 point-motion-hook が
+  consumer として subscribe、MAJOR-D.3 反映)
+- =docs/design/(pending) Doc 36 想定 Phase 11 display backend= (Phase 11
+  display backend、本 doc co-design 必須、§2.7 pull-on-demand + invalidation
+  event protocol consumer、MAJOR-D.1 + MINOR-C.3 反映)
+- =docs/design/18-stage-d-standalone.org=
+- =docs/design/(pending) Doc 35 想定 advice / minor mode / 完全 regex= (sibling follow-up)
+
+** external precedent
+
+- Emacs =textprop.c= / =intervals.c= (text-property storage)
+- Emacs =buffer.c= overlay list (overlay storage)
+- Emacs =faces.el= (face spec resolver)
+- Emacs =xdisp.c= / =disp-table= (display spec)
+- Emacs =keymap.c= (text-property keymap precedence)
+- Emacs modification hook semantics (=textprop.c=, =insdel.c=)
+
+* §11 Sign-off
+
+** 11.1 revise history
+
+| version    | date       | author                 | summary                                      |
+|------------+------------+------------------------+----------------------------------------------|
+| *DRAFT v0* | 2026-04-25 | session-T109 baseline   | initial decomposition                         |
+| *DRAFT v1* | 2026-04-25 | session-T121 revise     | T115 review (5 MAJOR + 7-8 MINOR) 反映 + reviewer addendum |
+| *LOCKED-2026-04-25-v2* | 2026-04-25 | session-T133 polish    | T128 第二弾 review (READY-TO-LOCK + 1 MINOR + 3 軽微 polish) 反映、MINOR-X1 (defcustom default transition timeline) + POLISH-1 (LOC budget anchor) + POLISH-2 (LOC breakdown) + POLISH-3 (sibling format note)、+1824 → 1830+ LOC、user signoff 完了 |
+
+** 11.2 LOCKED path
+
+1. DRAFT v0 に対して claude 第一弾 review (T115、MAJOR REVISIONS classification、5 MAJOR + 7-8 MINOR)
+2. option B + contract version 並走 model path の signoff
+3. residual gate / wording 修正 → DRAFT v1 (= T121 dispatch、5 MAJOR + 7 MINOR 全反映)
+4. DRAFT v1 に対して claude 第二弾 review (= T128、READY-TO-LOCK + 1 MINOR + 3 軽微 polish)
+5. =LOCKED-2026-04-25-v2= 化 (= T133 polish dispatch、本 v2、MINOR-X1 + POLISH-1/2/3 反映)
+6. main =--no-ff= merge (= LOCKED-2026-04-25-v2 として完了)
+
+*v2 STATUS line format policy*:
+- sibling Doc 28-32 v2 / Doc 34 v2 と同様、LOCKED 時は
+  =LOCKED-YYYY-MM-DD-v2 (major revise summary + signoff state)= を用いる
+- 本 v1 の =DRAFT v1= はその前段 metadata とする
+
+** 11.3 prerequisite / header hygiene
+
+v1 の header に以下を含めた:
+- =DEPENDS_ON= に Doc 33 v2 / Doc 34 v2 / *Doc 39 v2 (Phase 9d
+  eventloop)* / *Phase 11 display backend (Doc 36 想定、未着手) co-design* /
+  Phase 8 / Phase 9a / Phase 9b
+- =PARENT= に Doc 33 §4.2b と Doc 34 §8.7 を併記
+- sibling v2 と同様、本文 prerequisite と header prerequisite を一致させる
+- v0 → v1 で Doc 39 / Phase 11 (Doc 36) を追加 (MAJOR-D.1 + MAJOR-D.3
+  反映)
+
+** 11.4 main merge gate
+
+- Doc 33 errata 不要
+- Doc 34 errata 不要 (= option B + contract version 並走 model で本 doc
+  側 declare、MAJOR-A.1 + MAJOR-A.2 反映で具体機構を §2.5 / §4.5 で固定)
+- sibling Doc 28-32 v2 / Doc 34 v2 と contract depth 整合
+- release-audit 緑
+- 文書のみ main merge 可
+
+** 11.5 revise log
+
+v0 baseline:
+- session-T109 dispatch で initial decomposition
+- option B parent integration path 採用
+- Doc 34 §8.7 を formal scope inheritor として宣言
+- 5 sub-phase (= 9c.1 face / 9c.2 display / 9c.3 keymap / 9c.4 overlay /
+  9c.5 hook) で incremental release を design
+- Doc 34 §4.6 contract v1 → v2 errata を本 doc §4.5 で formal declare
+- Doc 34 §2.3 keymap precedence chain に slot 6 / 7 を inject、本 doc §2.5
+  で 9 段拡張版を declare
+
+v1 revise (T121、claude T115 review 反映):
+- *5 MAJOR 反映*:
+  - MAJOR-A.1: §2.5 keymap precedence chain inject を *contract version
+    並走 model* (= opt-in flag =nelisp-keymap-chain-with-textprop= デフォ
+    nil + =KEYMAP_CHAIN_INJECT_CONTRACT_VERSION = 1=) に切替、option B
+    本質 conflict を解消
+  - MAJOR-A.2: §4.5 =get-char-property= contract v1 → v2 errata の
+    backward compat 機構を *候補 a (overlay 0 件で byte-identical)* に
+    確定、9c.4 ERT で byte-identical invariant gate 設定
+  - MAJOR-A.3: §2.5 sub-precedence (= overlay nil priority -∞、insertion
+    順 二次 key、=keymap= > =local-map=、text-property range 最短 + start
+    後優先、cross-slot overlay > textprop) を decision に格上げ
+  - MAJOR-B.1: §1.6 narrative と §3 table の dependency chain を完全
+    一致 (= 9c.5 prerequisite に 9c.3 を soft で追加、parallel set 列追加)
+  - MAJOR-B.2: §5.2 ratio gate baseline を *Doc 34 SHIPPED 時点 absolute
+    baseline* に明示変更、compound deviation (= 1.30 × 1.30 = 1.69x)
+    回避、bench harness 名 (= =bin/anvil --self-bench-textprop= 等) を
+    §5.2 で明示
+  - MAJOR-B.3: §2.8 + §3.5.4 + §4.6 の depth=1 re-entrancy guard
+    implementation contract を詳細化 (= per-buffer counter / signal-safe
+    unwind / hook 種別ごと独立 counter / let-bind 復活 / cross-buffer
+    非抑制)、5 corner cases ERT を §3.5.5 に追加 (+5 = +20 → +25)
+  - MAJOR-C.1: §4.5 + §6.3 + §7.1 で *breaking nature 確定 stance* (= de
+    facto 非 breaking + semantically breaking but 正方向 fix) を明示
+  - MAJOR-C.2: §4.5 table の compatibility 列を "partial → partial+"
+    に書換、full 主張撤回、§7.3 close 条件にも partial+ stance 明示
+  - MAJOR-D.1: §1.5 + §2.7 + §6.1 の "本 doc 単独 freeze 可" 主張を
+    "storage / query / hook freeze 可、Phase 11 backend pull granularity /
+    threading / cache invalidation event は co-design 必須" と慎重 phrase に
+    書換、§9.8 open question 追加
+  - MAJOR-D.2: §6.10 + §6.11 + §6.12 の 3 risk 追加 (= overlay storage
+    memory growth / interval tree amortized cost / hook 内 delete recursion)、
+    §3.4.5 ERT に 5 case 追加 (+5 = +35 → +40)
+  - MAJOR-D.3: §1.5 + §3.5.x prerequisite + §6.13 + §9.5 で Doc 34 §2.4
+    event-loop と Doc 39 §2.4 event-source の interaction を明示、§9.5
+    を decision に格上げ
+- *7-8 MINOR 反映*:
+  - MINOR-A.4: §1.2 mapping table "本 doc で正式化" semantics 明示、
+    Doc 34 §4.6 partial 列は不変確認
+  - MINOR-B.4: §3 table + §0 ship gate 要約 + §1.6 に anvil leverage
+    parallel set escape hatch (= {9c.1, 9c.2, 9c.3} 同時 dispatch で
+    4-6 ヶ月圧縮可) note 追加
+  - MINOR-C.3: §2.7 + §4.7 に invalidation event 双方向 protocol (=
+    =nelisp-textprop-changed-functions= / =nelisp-overlay-changed-functions=)
+    追加、§9.8 で Phase 11 cache invalidation event granularity を open
+  - MINOR-D.4: §9.6 absolute bench target freeze trigger を sub-phase
+    粒度に分解 (= face-resolve = 9c.1 SHIPPED 後 / display-validate =
+    9c.2 SHIPPED 後 / keymap-chain-at = 9c.3 SHIPPED 後 / overlay-range-
+    query = 9c.4 SHIPPED 後 / modification-hook-fan-out = 9c.5 SHIPPED 後)
+  - MINOR-D.5: §9.7 mini demo scope を decision に格上げ (= 2-buffer
+    demo: font-lock core 適用 buffer-1 + overlay highlight 適用 buffer-2
+    を split-window で表示、Phase 11 backend stub mode で render は
+    no-op)
+  - MINOR-D.6: §9.2 face registry persistence を decision に格上げ
+    (= per-runtime global、Phase 11 backend 接続後 per-package isolation
+    の余地を contract v2 で再評価)
+  - MINOR-D.7: §6.4 overlay gap-buffer adjust helper 命名 (=
+    =nelisp-overlay-tree-adjust-after-mutation=) + 4 cases adjust rule
+    具体化、Doc 34 textprop adjust helper との signature 一致確認
+- *ERT count change*: v0 +139 → v1 +149 (= 9c.4 +35 → +40、9c.5 +20 → +25)
+- *header*: STATUS DRAFT v0 → DRAFT v1、AUTHOR session-T109 → session-T121、
+  DEPENDS_ON に Doc 39 v2 / Phase 11 (Doc 36) を追加
+
+v2 revise (T133、claude T128 review READY-TO-LOCK + 1 MINOR + 3 軽微 polish 反映):
+- *MINOR-X1 反映*: §4.3 末尾に *defcustom default transition timeline*
+  節を追加 (= =nelisp-keymap-chain-with-textprop= デフォ nil → t flip
+  schedule、release 区間表 + flip 時 user signoff 要件 + dead code 化
+  回避 invariant の 3 sub-block)。sibling Doc 42 v1 §4.3 defcustom
+  transition log pattern と整合。dead code risk の構造的回避を doc-level
+  で encoding
+- *POLISH-1 反映*: §0 ship gate 要約末尾に *LOC budget* anchor 1 段落
+  追加 (= §2.9 production code base 4200 LOC + 本 design 文書 LOC ~1830
+  内訳の 2 軸)。reader が "spec LOC" と "design 文書 LOC" を混同しない
+  ように明示
+- *POLISH-2 反映*: §11.6 末尾に v0 → v1 +610 LOC breakdown 1 行追加
+  (= 5 MAJOR ~+300、7 MINOR ~+150、reviewer addendum ~+30、revise log
+  ~+80、header hygiene + checklist ~+50)、reviewer 確認容易化
+- *POLISH-3 反映*: §11.7 reviewer addendum (T128) を §11.6 (T115) と
+  同 format で追加、sibling Doc 39 v2 / Doc 42 v2 と統一せず本 doc は
+  *MAJOR/MINOR 全列挙 in §11.5 + reviewer addendum in §11.6/§11.7* の
+  format を維持 (= 第二弾 review で十分 readable と判定)
+- *header*: STATUS DRAFT v1 → LOCKED-2026-04-25-v2、AUTHOR session-T121
+  → session-T133 polish、DEPENDS_ON は v1 から不変
+- *ERT count change*: v1 +149 から不変 (= 本 v2 polish round では
+  spec change なし、文書 metadata + transition timeline + reviewer
+  addendum のみ追加)
+
+** 11.6 reviewer addendum (T115 claude review)
+
+T115 (claude Opus 4.7 1M context) review:
+- target: =/tmp/nelisp-doc41-textprop-wt/docs/design/41-phase9c-textprop-advanced.org=
+- date: 2026-04-25
+- LOC: 1214
+- verdict: *MAJOR REVISIONS* (5 MAJOR + 7-8 MINOR)
+- 主な findings:
+  - MAJOR-A.1: option B + precedence chain inject の本質 conflict
+  - MAJOR-A.2: =get-char-property= contract v1 → v2 errata の具体機構不在
+  - MAJOR-A.3: chain 9 段拡張 sub-precedence under-spec
+  - MAJOR-B.1: §1.6 narrative と §3 table の dependency 矛盾
+  - MAJOR-B.2: ratio bench gate baseline compound 問題
+  - MAJOR-B.3: 9c.5 hook depth=1 re-entrancy guard under-spec
+  - MAJOR-C.1: §4.5 breaking change 確定 stance 不在
+  - MAJOR-C.2: compatibility partial → full 主張 vs Phase 11 dependency 不整合
+  - MAJOR-D.1: Phase 11 backend pull-on-demand protocol freeze 主張根拠薄
+  - MAJOR-D.2: overlay storage memory + interval tree + hook delete 3 risk 不在
+  - MAJOR-D.3: Phase 9d (Doc 39) eventloop + Phase 9b event-loop interaction 未参照
+  - MINOR (7 件): A.4 / B.4 / C.3 / D.4 / D.5 / D.6 / D.7
+- v1 revise dispatch: T121 (session-A、claude 同 model)
+- v1 → v2 revise path 提案 (T115 review より):
+  1. session-A revise dispatch (Doc 34 / Doc 38 / Doc 39 と同 pattern) ← *済 (T121)*
+  2. v0 → v1 で 5 MAJOR + 7-8 MINOR 全反映 (~1 day session) ← *済 (T121)*
+  3. v1 で claude review 第二弾 (= 本 doc + 残課題 = option B vs option A
+     切替 confirm + Doc 34 §2.4 event-source errata 提案 confirm) →
+     READY-TO-LOCK 想定 ← *次 dispatch*
+  4. v1 → v2 で user signoff + LOCKED stamp + main =--no-ff= merge
+
+merge gate 追加 (T115 review より、本 doc v1 で部分対応済、v2 で最終
+確定):
+- *option B vs option A 切替 decision*: v1 で option B + contract version
+  並走 model に確定 (= MAJOR-A.1 反映)、option A 余地は §7.4 + §9.1 に
+  残置
+- *Phase 9 series ship 順序*: v1 で Doc 39 §2.4 を §1.5 + §3.5.x
+  prerequisite + §6.13 + §9.5 で参照 (= MAJOR-D.3 反映)、本 doc 9c.5
+  prerequisite に Doc 34 §2.4 SHIPPED + Doc 39 §2.4 ship 順序確認を追加
+- *Doc 27 §3 sub-phase carryforward 節*: 別 task で対応 (= 本 doc 範囲外)
+
+*v0 → v1 LOC breakdown (POLISH-2 反映、2026-04-25)*:
+- v0 baseline: 1214 LOC (T115 review target)
+- v1 final: 1824 LOC (= +610 LOC)
+  - 5 MAJOR 反映 (= §2.5 + §4.5 + §6.10-6.13 + §3.4.5 + §3.5.5 +
+    §1.5 + §6.2 + §6.3): ~+300 LOC
+  - 7 MINOR 反映 (= §1.2 + §2.7 invalidation + §3 parallel set + §6.4
+    helper + §9.6 + §9.7 + §9.2): ~+150 LOC
+  - reviewer addendum (= §11.6): ~+30 LOC
+  - revise log (= §11.5): ~+80 LOC
+  - header hygiene + #+DEPENDS_ON + 横串 checklist (= §7.5 拡張):
+    ~+50 LOC
+- design 文書 §0-§10 本文のみは ~1711 LOC (= sibling Doc 34 v2 / Doc 39
+  v2 と同レンジ、想定 1500-1800 内)、§11 sub-section 込みで +24 line
+  超過説明可
+
+** 11.7 reviewer addendum (T128 claude 第二弾 review)
+
+T128 (claude Opus 4.7 1M context) review:
+- target: =/tmp/nelisp-doc41-v1-wt/docs/design/41-phase9c-textprop-advanced.org=
+- date: 2026-04-25
+- LOC: 1824 (= v1 final)
+- verdict: *READY-TO-LOCK (with 1 MINOR polish, MAJOR REVISIONS なし)*
+- 主な findings:
+  - 観点 A (= T115 反映確認): 5 MAJOR + 7 MINOR = 12/12 全完全反映
+    (= MAJOR-A.1/A.2/A.3、B.1/B.2/B.3、B.4、C.1/C.2、C.3、D.1/D.2/D.3、
+    D.4/D.5/D.6/D.7、A.4 すべて status "反映 OK、追加修正なし")
+  - 観点 B (= 第二弾発見): MAJOR 0 件、MINOR 1 件 (= MINOR-X1
+    defcustom default transition timeline 不在) + 軽微 polish 3 件
+    (= POLISH-1 LOC budget anchor / POLISH-2 LOC breakdown / POLISH-3
+    sibling format)
+  - 観点 C (= contract version 並走 model implementation feasibility):
+    feasibility 高、Doc 34 LOCKED v2 binary semantics 不変 + 本 doc
+    opt-in extension の 2 layer 設計が clean、blocker なし
+  - 観点 D (= ERT count + LOC budget validation): ERT +149 妥当、
+    LOC 1824 (= 想定 1500-1800 +24 超過) は §11.5 + §11.6 sub-section
+    込みで超過説明可、本文 §0-§10 のみは 1711 LOC で range 内
+- v2 polish dispatch: T133 (session-A、claude 同 model)
+- v1 → v2 polish 内容 (T128 提案より、全反映):
+  1. MINOR-X1 反映 (= §4.3 末尾に defcustom default transition
+     timeline 1 段落追加) ← *済 (T133)*
+  2. POLISH-1 反映 (= §0 ship gate 要約末尾に LOC budget anchor 1 line) ← *済 (T133)*
+  3. POLISH-2 反映 (= §11.6 末尾に v0 → v1 +610 LOC breakdown) ← *済 (T133)*
+  4. POLISH-3 反映 (= §11.7 reviewer addendum を §11.6 と同 format で
+     追加、sibling との統一は本 doc 不要と判断、現状 readable) ← *済 (T133)*
+  5. user signoff 2 件 (= option B 維持確認 + Doc 34 §2.4 event-source
+     maintainer confirm) ← *済 (T133 polish round)*
+
+merge gate 追加 (T128 review より、本 doc v2 で最終確定):
+- *option B 維持 + contract version 並走 model* signoff (= MAJOR-A.1
+  反映済、user 確認完了)
+- *=KEYMAP_CHAIN_INJECT_CONTRACT_VERSION = 1= defcustom default
+  transition timeline* 反映 (= MINOR-X1 反映、§4.3 末尾、T133 で完了)
+- *Doc 34 §2.4 event-source maintainer 1-on-1 confirm* (= MAJOR-D.3
+  反映済、user signoff round で確定)
+- *Phase 11 (Doc 36 想定) co-design boundary* declaration が §1.5 /
+  §2.7 / §6.1 / §10 / §9.8 で escape hatch phrase 維持 (= MAJOR-D.1
+  反映済、本 v2 で最終 verify)
+
+第二弾 review summary:
+- v1 で T115 5 MAJOR + 7 MINOR の *全 12 件* を実体ある書き換えで
+  反映済、構造的完成度は v0 比で大幅向上
+- 第二弾固有 MAJOR 0 件、MINOR 1 件 (= MINOR-X1) + 軽微 polish 3 件のみ
+- v2 polish round で MINOR-X1 + POLISH-1/2/3 全反映 → LOCKED-2026-04-25-v2
+  化 + main =--no-ff= merge ready
+- 第三弾 review 不要、本 v2 で文書 freeze、production 着手は §3 table
+  + parallel set escape hatch に従い 9c.1 / 9c.2 / 9c.3 同時 dispatch
+  可
