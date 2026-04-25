@@ -157,6 +157,14 @@ that differs between the two encodings).")
   "NeLisp Phase 7.5.1 subprocess exec-bytes failed (non-zero exit)"
   'nelisp-cc-runtime-error)
 
+(define-error 'nelisp-cc-runtime-module-missing
+  "NeLisp Phase 7.5.4 nelisp-runtime-module.so not found (run `make runtime-module')"
+  'nelisp-cc-runtime-error)
+
+(define-error 'nelisp-cc-runtime-module-unsupported
+  "NeLisp Phase 7.5.4 in-process FFI requires Emacs built with module support"
+  'nelisp-cc-runtime-error)
+
 ;;; Phase 7.5.1 FFI bridge MVP — exec mode -------------------------
 ;;
 ;; The simulator path (T11 SHIPPED) records the W^X protocol without
@@ -186,9 +194,37 @@ introspection.  Bytes are *not* executed.  Safe on any host.
 and shells out to `nelisp-runtime exec-bytes <file>', which mmaps
 PROT_EXEC, calls the bytes as `extern \"C\" fn() -> i64', and prints
 the i64 return value.  Requires the Rust binary to have been built
-(`make runtime')."
+(`make runtime').
+
+`in-process' — Phase 7.5.4 (T33).  Loads the Emacs module wrapper
+\(`nelisp-runtime-module.so') via `module-load' and executes the
+bytes in-process through the cdylib's `nelisp_syscall_*' surface +
+`nelisp-runtime-module-exec-bytes'.  Round-trip is ~10 µs / call
+\(~100x faster than the subprocess hop) and the i64 return value is
+produced as the function's value directly — no temp file, no
+`RESULT:' parsing.  Requires both the Rust cdylib and the C
+wrapper to have been built (`make runtime' + `make runtime-module')."
   :type '(choice (const :tag "Simulator (no real exec)" simulator)
-                 (const :tag "Real subprocess exec" real))
+                 (const :tag "Real subprocess exec" real)
+                 (const :tag "In-process Emacs module" in-process))
+  :group 'nelisp-cc-runtime)
+
+(defcustom nelisp-cc-runtime-module-path nil
+  "Path to `nelisp-runtime-module.so' (Phase 7.5.4 Emacs module wrapper).
+
+When nil, `nelisp-cc-runtime--locate-runtime-module' auto-discovers it
+in the same `target/release' directory as the Rust binary.  When set,
+this absolute path is used verbatim — useful for out-of-tree builds
+and CI matrices where the module sits elsewhere.
+
+The module wraps `libnelisp_runtime.so' (the Rust cdylib produced by
+`cargo build --release') via `dlopen'/`dlsym' and exposes
+`nelisp-runtime-module-exec-bytes' for in-process execution.  The
+bytes still follow the System V AMD64 / AAPCS64 `extern \"C\" fn() ->
+i64' calling convention; the difference vs `real' mode is purely
+the elimination of the subprocess hop."
+  :type '(choice (const :tag "Auto-detect" nil)
+                 (file  :tag "Explicit path"))
   :group 'nelisp-cc-runtime)
 
 (defcustom nelisp-cc-runtime-binary-override nil
@@ -972,7 +1008,147 @@ deleted via `unwind-protect'."
       (when (file-exists-p tmp-file)
         (ignore-errors (delete-file tmp-file))))))
 
-;;; End-to-end pipeline --------------------------------------------
+;;; Phase 7.5.4 in-process FFI — Emacs module wrapper -------------
+;;
+;; `nelisp-runtime-module.so' (built by `make runtime-module') is a
+;; thin C wrapper around `libnelisp_runtime.so' that lets Emacs Lisp
+;; call the cdylib in-process via the Emacs module API (Emacs 25+).
+;; Round-trip is ~10 µs / call vs ~1 ms for the subprocess path —
+;; Doc 32 v2 §7's bench gate (≥100 tool calls/sec) becomes trivially
+;; reachable, and tight test loops no longer pay process-spawn tax.
+;;
+;; The locator follows the same dominator-walk pattern as the binary
+;; locator so `make' invocations from anywhere in the worktree still
+;; find the artifact.  If the module was never built we signal
+;; `nelisp-cc-runtime-module-missing' with an actionable hint, and
+;; the caller is expected to either build it (`make runtime-module')
+;; or fall back to the subprocess path.
+
+(defun nelisp-cc-runtime--locate-runtime-module ()
+  "Locate `nelisp-runtime-module.so' (the Phase 7.5.4 Emacs module).
+
+Resolution order (first hit wins):
+
+  1. `nelisp-cc-runtime-module-path' (defcustom).
+  2. `NELISP_REPO_ROOT' env var, joined with the standard Cargo
+     `nelisp-runtime/target/release/nelisp-runtime-module.so' path.
+  3. `locate-dominating-file' starting from this source file's
+     directory, then `default-directory', looking for the same
+     Makefile-and-nelisp-runtime/ pair the binary locator uses.
+
+Signals `nelisp-cc-runtime-module-missing' when no candidate file
+exists so callers can present `make runtime-module' as the fix."
+  (let* ((override nelisp-cc-runtime-module-path)
+         (env-root (getenv "NELISP_REPO_ROOT"))
+         (predicate (lambda (dir)
+                      (and (file-exists-p (expand-file-name "Makefile" dir))
+                           (file-directory-p
+                            (expand-file-name "nelisp-runtime" dir)))))
+         (start-dirs (delq nil
+                           (list (and nelisp-cc-runtime--this-file
+                                      (file-name-directory
+                                       nelisp-cc-runtime--this-file))
+                                 default-directory)))
+         (root (or (and env-root (file-name-as-directory env-root))
+                   (cl-some (lambda (d) (locate-dominating-file d predicate))
+                            start-dirs)))
+         (path (or override
+                   (and root
+                        (expand-file-name
+                         "nelisp-runtime/target/release/nelisp-runtime-module.so"
+                         root)))))
+    (cond
+     ((and path (file-readable-p path)) path)
+     (t
+      (signal 'nelisp-cc-runtime-module-missing
+              (list :looked-at path
+                    :hint "run `make runtime-module' from the NeLisp worktree root"))))))
+
+(defun nelisp-cc-runtime--module-supported-p ()
+  "Return non-nil when the host Emacs supports dynamic modules.
+
+Module support requires Emacs ≥ 25 built with `--with-modules', which
+populates `module-file-suffix' and exposes `module-load'.  Hosts where
+either is missing fall back to the subprocess path automatically; no
+external configuration is required."
+  (and (boundp 'module-file-suffix)
+       module-file-suffix
+       (fboundp 'module-load)))
+
+(defvar nelisp-cc-runtime--module-loaded-p nil
+  "Non-nil when `nelisp-runtime-module.so' has been `module-load'-ed.
+
+Tracked separately from `featurep' because the module's
+`provide_feature' call is a side effect of `emacs_module_init' and
+not under our control: we want a boolean we set ourselves so the
+caching is deterministic across Emacs versions.")
+
+(defun nelisp-cc-runtime--ensure-module-loaded ()
+  "Ensure `nelisp-runtime-module' is loaded, idempotently.
+
+Walks the locator on first call, then `module-load's the result; on
+subsequent calls returns immediately (the module is process-global,
+no need to re-load).  Signals `nelisp-cc-runtime-module-unsupported'
+when the host Emacs lacks module support, and
+`nelisp-cc-runtime-module-missing' when the .so is not on disk yet."
+  (unless (nelisp-cc-runtime--module-supported-p)
+    (signal 'nelisp-cc-runtime-module-unsupported
+            (list :emacs-version emacs-version
+                  :hint "rebuild Emacs with --with-modules")))
+  (unless (or nelisp-cc-runtime--module-loaded-p
+              (fboundp 'nelisp-runtime-module-exec-bytes))
+    (let* ((path (nelisp-cc-runtime--locate-runtime-module))
+           ;; The cdylib lives in the same `target/release' directory
+           ;; as the module wrapper.  We pass its absolute path
+           ;; explicitly via `nelisp-runtime-module-load-cdylib' —
+           ;; Emacs `setenv' only updates `process-environment', not
+           ;; libc's env, so the env-var hook on the C side is
+           ;; unreliable.  This is the documented bootstrap contract.
+           (so-path (expand-file-name "libnelisp_runtime.so"
+                                      (file-name-directory path))))
+      (module-load path)
+      (when (and (fboundp 'nelisp-runtime-module-load-cdylib)
+                 (file-readable-p so-path))
+        (funcall (intern "nelisp-runtime-module-load-cdylib") so-path))
+      (setq nelisp-cc-runtime--module-loaded-p t)))
+  ;; Belt-and-suspenders: even if `featurep' lies (the C side
+  ;; provides 'nelisp-runtime-module unconditionally on success), the
+  ;; defun must exist or all bets are off.
+  (unless (fboundp 'nelisp-runtime-module-exec-bytes)
+    (signal 'nelisp-cc-runtime-module-missing
+            (list :hint "module loaded but exec-bytes binding absent — stale .so?"))))
+
+(defun nelisp-cc-runtime--exec-in-process (bytes)
+  "Execute BYTES via the in-process Emacs module wrapper (Phase 7.5.4).
+
+BYTES is a vector / list / unibyte string of small ints (0..255)
+representing a ready-to-run machine code stream that follows the
+System V AMD64 / AAPCS64 `extern \"C\" fn() -> i64' calling
+convention (no args, i64 return in rax / x0).
+
+Returns a tuple matching `nelisp-cc-runtime--exec-real' so callers
+can branch on the same shape regardless of which mode is active:
+
+  (:result 0 INT)        — module exec succeeded, INT is the i64 return
+  (:error  -1 MSG)       — module exec signalled (error MSG)
+  (:no-result -1 MSG)    — module loaded but the exec function is
+                           absent (should never happen, included for
+                           protocol drift surfacing)
+
+Performance: ~10 µs / call on Linux x86_64, ~100x faster than the
+subprocess path.  The module is `module-load'-ed once on first call
+and cached process-globally."
+  (condition-case err
+      (progn
+        (nelisp-cc-runtime--ensure-module-loaded)
+        (if (fboundp 'nelisp-runtime-module-exec-bytes)
+            (let* ((str (nelisp-cc-runtime--bytes-to-unibyte-string bytes))
+                   (result (funcall (intern "nelisp-runtime-module-exec-bytes")
+                                    str)))
+              (list :result 0 result))
+          (list :no-result -1 "nelisp-runtime-module-exec-bytes unbound")))
+    (error
+     (list :error -1 (error-message-string err)))))
 
 (defun nelisp-cc-runtime--default-backend (&optional platform)
   "Pick a default backend for PLATFORM.
@@ -1048,8 +1224,12 @@ not have to slice the page buffer manually."
          (final (nelisp-cc-runtime--inject-safepoint-stubs post-tail be))
          (page (nelisp-cc-runtime--alloc-exec-page final))
          (mode nelisp-cc-runtime-exec-mode)
-         (exec-result (when (eq mode 'real)
-                        (nelisp-cc-runtime--exec-real final))))
+         (exec-result (cond
+                       ((eq mode 'real)
+                        (nelisp-cc-runtime--exec-real final))
+                       ((eq mode 'in-process)
+                        (nelisp-cc-runtime--exec-in-process final))
+                       (t nil))))
     (append
      (list :exec-mode mode)
      (when exec-result (list :exec-result exec-result))
