@@ -6,12 +6,13 @@
 # $XDG_CACHE_HOME/nelisp/nelisp-state.db (Doc 17 §2.2) を想定。
 #
 # Phase 6.0 時点では Emacs を user install 前提で検出 (Doc 18 §2.5 B)。
-# Phase 6.2 で anvil-http 込みの完成形、Phase 6.3 で GitHub Release、
-# Phase 6.4 で Windows 対応予定。
+# Phase 6.2 (Doc 24) で anvil-http MVP port が tools/list 25 → 30 に
+# 増強済 (http-fetch / http-head / http-cache-{get,clear,status})、
+# Phase 6.3 で GitHub Release pipeline、Phase 6.4 で Windows 対応予定。
 
 set -euo pipefail
 
-ANVIL_VERSION="0.0.1-stage-d-scaffold"
+ANVIL_VERSION="stage-d-v0.2-pre"
 ANVIL_HOME="${ANVIL_HOME:-$(cd "$(dirname "$0")/.." && pwd)}"
 XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
