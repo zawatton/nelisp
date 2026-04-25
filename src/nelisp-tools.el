@@ -751,6 +751,56 @@ clear; will error if any tool is still registered."
                          :total-headlines (length flat)
                          :tree tree)))))
 
+  ;; Phase 6.2.5 + 6.2.6 — robots.txt + batch fetch (Doc 24 全 9
+  ;; sub-phase クローズ).  session 並行進行のため末尾 append のみ。
+
+  (nelisp-deftool http-robots-check
+    :description "Evaluate URL against its origin's robots.txt; report :allowed / :origin / :robots-present."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :url (list :type "string"
+                                         :description "HTTP/HTTPS URL")
+                              :user-agent (list :type "string"
+                                                :description "Optional UA override (default `nelisp-http-user-agent')"))
+                        :required ["url"])
+    :handler (lambda (args)
+               (let ((url (alist-get 'url args))
+                     (ua (alist-get 'user-agent args)))
+                 (unless (stringp url)
+                   (error "http-robots-check: missing string `url'"))
+                 (nelisp-http-robots-check url ua))))
+
+  (nelisp-deftool http-fetch-batch
+    :description "Sequentially fetch URLS; per-URL errors surface as (:url :error) without sinking the batch."
+    :input-schema (list :type "object"
+                        :properties
+                        (list :urls (list :type "array"
+                                          :items (list :type "string")
+                                          :description "Array of HTTP/HTTPS URLs")
+                              :timeout-sec (list :type "integer")
+                              :ttl (list :type "integer")
+                              :no-cache (list :type "boolean")
+                              :selector (list :type "string"
+                                              :description "Apply CSS-subset selector to every successful HTML response")
+                              :json-path (list :type "string"
+                                               :description "Apply dotted-path to every successful JSON response"))
+                        :required ["urls"])
+    :handler (lambda (args)
+               (let* ((urls (alist-get 'urls args))
+                      (timeout (alist-get 'timeout-sec args))
+                      (ttl (alist-get 'ttl args))
+                      (no-cache (alist-get 'no-cache args))
+                      (selector (alist-get 'selector args))
+                      (json-path (alist-get 'json-path args)))
+                 (unless (listp urls)
+                   (error "http-fetch-batch: missing array `urls'"))
+                 (apply #'nelisp-http-fetch-batch (append urls nil)
+                        (append (and timeout (list :timeout-sec timeout))
+                                (and ttl (list :ttl ttl))
+                                (and no-cache (list :no-cache t))
+                                (and selector (list :selector selector))
+                                (and json-path (list :json-path json-path)))))))
+
   t)
 
 ;; Auto-register at load time so `require 'nelisp-tools' is enough
