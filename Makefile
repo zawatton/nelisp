@@ -1,4 +1,4 @@
-.PHONY: test compile clean all bench gc-bench actor-bench soak smoke
+.PHONY: test compile clean all bench gc-bench actor-bench soak smoke stage-d-tarball
 
 EMACS ?= emacs
 
@@ -85,3 +85,29 @@ soak:
 # nelisp-server-run-stdio) is wired correctly for Claude Code.
 smoke:
 	./test/nelisp-server-smoke.sh
+
+# Phase 6.3 (Stage D, Doc 18) distribution tarball.  Bundles only what
+# `bin/anvil mcp serve' needs at runtime — bin/, src/*.el, README,
+# LICENSE, install.sh — under a versioned prefix so `tar -xzf
+# --strip-components=1' lands cleanly on the install target.
+#
+#   make stage-d-tarball                 → dist/anvil-stage-d-vDEV.tar.gz
+#   make stage-d-tarball ANVIL_VERSION=stage-d-v0.1
+#                                        → dist/anvil-stage-d-v0.1.tar.gz
+ANVIL_VERSION ?= stage-d-vDEV
+STAGE_D_NAME  := anvil-$(ANVIL_VERSION)
+STAGE_D_DIR   := dist/$(STAGE_D_NAME)
+STAGE_D_TAR   := dist/$(STAGE_D_NAME).tar.gz
+
+stage-d-tarball:
+	@rm -rf "$(STAGE_D_DIR)"
+	@mkdir -p "$(STAGE_D_DIR)/bin" "$(STAGE_D_DIR)/src"
+	cp bin/anvil       "$(STAGE_D_DIR)/bin/"
+	cp $(SRCS)         "$(STAGE_D_DIR)/src/"
+	cp LICENSE         "$(STAGE_D_DIR)/" 2>/dev/null || true
+	cp README-stage-d.org "$(STAGE_D_DIR)/README.org"
+	cp install.sh      "$(STAGE_D_DIR)/" 2>/dev/null || true
+	@printf "%s\n" "$(ANVIL_VERSION)" > "$(STAGE_D_DIR)/VERSION"
+	tar -czf "$(STAGE_D_TAR)" -C dist "$(STAGE_D_NAME)"
+	@rm -rf "$(STAGE_D_DIR)"
+	@printf "  \033[1;32m✓\033[0m built %s ($$(du -h "$(STAGE_D_TAR)" | cut -f1))\n" "$(STAGE_D_TAR)"

@@ -1,0 +1,205 @@
+#+TITLE: anvil — Stage D Quickstart (non-Emacs user)
+#+AUTHOR: zawatton
+#+DATE: 2026-04-25
+
+* What is anvil (Stage D)?
+
+A Claude Code MCP tool launcher backed by *NeLisp* (Emacs Lisp VM in
+pure Elisp).  The =bin/anvil= command exposes a 25-tool MCP surface
+covering file ops, git, HTTP fetch, persistent KV state, and org-mode
+inspection — all over JSON-RPC 2.0 stdio.
+
+You don't need to know Emacs; you just need *Emacs 29+* installed
+(it's used as the runtime, not as the editor).  Every interaction
+happens through Claude Code via MCP.
+
+Why a separate launcher? See =docs/design/18-stage-d-standalone.org=.
+
+* Install
+
+** Quickstart (curl | bash)
+
+#+begin_src shell
+curl -fsSL https://raw.githubusercontent.com/zawatton/nelisp/main/install.sh | bash
+#+end_src
+
+This:
+1. Verifies =emacs= 29+ is on your PATH.
+2. Downloads the latest =stage-d-v*= tarball under =~/.local/share/anvil=.
+3. Symlinks =~/.local/bin/anvil= → installed launcher.
+4. Prints the Claude Code =.mcp.json= snippet.
+
+Make sure =~/.local/bin= is on PATH:
+
+#+begin_src shell
+export PATH="$HOME/.local/bin:$PATH"
+#+end_src
+
+** Manual install (from source)
+
+#+begin_src shell
+git clone https://github.com/zawatton/nelisp ~/anvil
+ln -sf ~/anvil/bin/anvil ~/.local/bin/anvil
+anvil doctor
+#+end_src
+
+** Prerequisites
+
+| Component | Version | Install |
+|-----------+---------+---------|
+| Emacs | 29+ (sqlite built-in) | =brew install --cask emacs= / =apt install emacs= |
+| bash | 4+ | preinstalled on most distros |
+| git | any | preinstalled or =apt install git= |
+
+* Hello World
+
+#+begin_src shell
+anvil --version
+anvil doctor      # environment diagnosis
+anvil mcp serve   # MCP stdio server (Claude Code will spawn this)
+#+end_src
+
+* Claude Code integration
+
+Add to your project's =.mcp.json=:
+
+#+begin_src json
+{
+  "mcpServers": {
+    "anvil": {
+      "command": "anvil",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+#+end_src
+
+In Claude Code, run =/mcp= to confirm =anvil= is connected, then call
+any of the 25 tools below directly.
+
+* Tools (25 total)
+
+** File operations (7)
+
+| tool | purpose |
+|------+---------|
+| =file-read= | Full file contents |
+| =file-outline= | Structural outline (.el / .org / .md) |
+| =file-read-snippet= | Window of N lines around a target line |
+| =file-replace-string= | Substring replacement, returns count |
+| =file-insert-at-line= | Insert at 1-indexed line |
+| =file-delete-lines= | Remove range of lines |
+| =file-append= | Append content at EOF |
+
+** Git (5)
+
+| tool | purpose |
+|------+---------|
+| =git-log= | Recent commits (oneline) |
+| =git-status= | Short-format working tree status |
+| =git-diff-names= | Files changed (working tree, or since rev) |
+| =git-head-sha= | Full SHA of HEAD |
+| =git-branch-current= | Current branch (symbolic short name) |
+| =git-repo-root= | Toplevel path |
+
+** HTTP (1)
+
+| tool | purpose |
+|------+---------|
+| =http-get= | Fetch URL with cache TTL |
+
+** Persistent KV state (6)
+
+Backed by SQLite at =$XDG_CACHE_HOME/nelisp/nelisp-state.db= (anvil
+schema-compatible, =source= column tagged "nelisp").
+
+| tool | purpose |
+|------+---------|
+| =state-set= | Persist value (=:ns=, =:ttl= seconds) |
+| =state-get= | Fetch value (=:ns=, =:default=) |
+| =state-delete= | Remove key, returns =:deleted t/nil= |
+| =state-list-ns= | Sorted namespaces |
+| =state-list-keys= | Sorted keys (=:ns= required, =:limit= optional) |
+| =state-count= | Live row count (=ns= optional) |
+
+** In-memory data store (4)
+
+Process-lifetime KV with dotted-path nav (e.g., =a.b.c=):
+
+| tool | purpose |
+|------+---------|
+| =data-set-path= | Store value at dotted path |
+| =data-get-path= | Read value |
+| =data-list-keys= | Keys at top-level or nested path |
+| =data-delete-path= | Set path to nil (effectively unset) |
+
+** Org-mode (1)
+
+| tool | purpose |
+|------+---------|
+| =org-read-outline-tree= | Hierarchical headline tree (parent/child) |
+
+** Meta (1)
+
+| tool | purpose |
+|------+---------|
+(no anvil meta-tool yet — Phase 6.x candidate)
+
+* Configuration
+
+Both directories follow XDG Base Directory spec:
+
+| Path | Default | Override |
+|------+---------+----------|
+| Cache (state DB, logs) | =$XDG_CACHE_HOME/nelisp/= | =ANVIL_CACHE_DIR= |
+| Config (future) | =$XDG_CONFIG_HOME/anvil/= | =ANVIL_CONFIG_DIR= |
+| Install root | =~/.local/share/anvil= | =ANVIL_PREFIX= during install |
+
+The state DB =nelisp-state.db= is *binary-compatible* with anvil-state
+(Emacs side); both can coexist via the =source= column tag.
+
+* Troubleshooting
+
+** "Emacs binary not found"
+
+Install Emacs 29+ via your package manager.  =anvil doctor= reports
+the resolved path.
+
+** "Failed to fetch tools" (Claude Code)
+
+The MCP stdio handshake reached =anvil mcp serve= but tools/list
+failed.  Run =anvil mcp serve= directly and pipe in:
+
+#+begin_src shell
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | anvil mcp serve
+#+end_src
+
+You should see 25 tool entries.  If not, file an issue with the
+output of =anvil doctor=.
+
+** "anvil: command not found" after install
+
+Add the bin dir to PATH:
+
+#+begin_src shell
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc  # or ~/.zshrc
+#+end_src
+
+* Architecture (one-paragraph)
+
+=bin/anvil= is a bash launcher that =exec=s Emacs in =--batch= mode
+loading =src/nelisp-server.el= + =src/nelisp-tools.el= and entering
+the JSON-RPC stdio loop on stdout.  No Emacs UI is shown.  The MCP
+tools are pure Emacs Lisp implementations (no =anvil.el=
+dependency); SQLite primitives use Emacs 29's built-in sqlite-* API.
+See =docs/design/18-stage-d-standalone.org= for the full Stage D
+design.
+
+* License
+
+GPL-3.0-or-later.  See =LICENSE=.
+
+* Reporting issues
+
+GitHub issues at https://github.com/zawatton/nelisp/issues.  Tag
+with =stage-d= for non-Emacs distribution concerns.
