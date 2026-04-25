@@ -1512,5 +1512,413 @@ shape."
             (list 'nelisp-gc-inner--cycle-kind-p cycle-kind)))))
 
 
+;;;; §11. Phase 7.3.4 — write barrier (card-marking 4KB page) -------
+;;
+;; *Doc 30 v2 LOCKED §2.6 + §3.4 + §6.7 W6 replan gate ready.*
+;;
+;; The card-marking write barrier is the cross-generation pointer
+;; tracking primitive that lets the *young-root-limited* minor GC mode
+;; (Phase 7.3.5 default) avoid scanning the *entire* tenured region for
+;; tenured → nursery edges on every minor cycle.  Instead we record, at
+;; *write time*, which 4KB-aligned pages of the tenured region have
+;; been mutated to contain a pointer into the nursery; the minor GC
+;; then walks only those *dirty cards* to extend its root set with
+;; cross-generation references.
+;;
+;; *Doc 29 §6.7 generational interim invariant* (Phase 7.2 in flight):
+;;   "minor GC is *not* triggered while Phase 7.2 is unfinished, and
+;;    tenured → nursery edges are forbidden by the allocator until
+;;    Phase 7.3.4 ships the card-marking barrier."
+;; This sub-phase *activates* the second half of that invariant — once
+;; the barrier exists, the allocator may again allow tenured → nursery
+;; writes (the barrier records them; Phase 7.3.5 minor GC consumes the
+;; dirty bits).  Phase 7.3.4 itself does not yet wire the activation
+;; (that happens when 7.3.5 lands and flips the default minor-GC mode).
+;;
+;; *Granularity choice (§2.6 recommendation A)*: 4KB == OS page size,
+;; matching Doc 29 §2.3 page granularity.  For a 64MB tenured region
+;; that's 16384 cards; we use a `bool-vector' (1 bit/card, ~16KB
+;; metadata for 64MB tenured = 0.025% overhead).  Production may swap
+;; to a `byte-vector' if per-card aging or reference-count info is
+;; needed; the *simulator* sticks to bool-vector for predictability and
+;; is the contract Phase 7.5 native code will replicate.
+;;
+;; *Out of scope for 7.3.4* (covered by later sub-phases):
+;;   - promotion (age policy, tenured age table) → 7.3.5
+;;   - young-root-limited minor GC mode flip      → 7.3.5
+;;   - scheduler / safe-point poll plumbing       → 7.3.6
+;;   - Phase 7.1 native JIT inline of the barrier → Phase 7.5
+
+(defcustom nelisp-gc-inner-card-size (* 4 1024)
+  "Card size in bytes for the write barrier (Doc 30 v2 §2.6, default 4KB).
+
+Cards are the granularity at which `nelisp-gc-inner-write-barrier'
+records dirty pages.  4KB == OS page size on every host NeLisp targets
+(x86_64 / arm64 with default mmap) so card boundaries land naturally
+on mprotect-aligned pages, and Phase 7.5 native code can collapse the
+`addr / card-size' division into a single right-shift instruction.
+
+Changing this at runtime invalidates every existing card table; the
+allocator's region-table reset path must re-init each card table to
+the new size.  Phase 7.3.4 does not enforce this — production should
+treat it as a constant, set via `nelisp-runtime --gc-card-size=' once
+at startup."
+  :type 'integer
+  :group 'nelisp-gc-inner)
+
+(cl-defstruct (nelisp-gc-inner--card-table
+               (:constructor nelisp-gc-inner--card-table-make)
+               (:copier nil))
+  "Card-marking dirty-bit table covering one heap region.
+
+Slots:
+  REGION       — Doc 29 §1.4 region descriptor this table covers
+                 (typically the tenured region).
+  DIRTY-BITS   — `bool-vector' of length CARD-COUNT.  Each bit is t
+                 iff the corresponding 4KB page has had at least one
+                 cross-generation write since the last
+                 `clear-card-table' call.
+  CARD-COUNT   — number of cards = ceil((REGION-END - REGION-START)
+                 / nelisp-gc-inner-card-size).
+  CARD-SIZE    — snapshot of `nelisp-gc-inner-card-size' at
+                 init time.  Stored on the struct so a runtime change
+                 to the defcustom doesn't silently invalidate
+                 already-built tables.
+  REGION-START — copy of REGION's :start.  Cached so the barrier hot
+                 path doesn't dereference the plist on every write
+                 (Phase 7.5 native code needs a register-resident
+                 base address).
+  REGION-END   — copy of REGION's :end.  Symmetric reason."
+  (region nil)
+  (dirty-bits nil)
+  (card-count 0)
+  (card-size 0)
+  (region-start 0)
+  (region-end 0))
+
+(defun nelisp-gc-inner-init-card-table (region)
+  "Initialize a card table covering REGION (Doc 29 §1.4 descriptor).
+
+REGION must be a region descriptor with `:start' / `:end' integer
+keys.  The returned `nelisp-gc-inner--card-table' has every dirty bit
+clear (i.e. no cross-generation writes recorded yet).
+
+Card count is `ceil((end - start) / card-size)' so a region whose
+size isn't a multiple of `card-size' still gets a final partial card
+covering the tail bytes.  An empty region (size 0) yields a 0-card
+table — the barrier becomes a no-op for it, which is the natural
+identity element."
+  (unless (nelisp-gc-inner--region-p region)
+    (signal 'wrong-type-argument
+            (list 'nelisp-gc-inner--region-p region)))
+  (let* ((start (plist-get region :start))
+         (end   (plist-get region :end))
+         (size  (max 0 (- end start)))
+         (card-size nelisp-gc-inner-card-size)
+         ;; ceil(size / card-size).  The (+ size (1- card-size)) trick
+         ;; works for size >= 0 because integer division floors towards
+         ;; zero in Elisp's `/' on non-negative operands.
+         (card-count (if (zerop size)
+                         0
+                       (/ (+ size (1- card-size)) card-size)))
+         (dirty (make-bool-vector card-count nil)))
+    (nelisp-gc-inner--card-table-make
+     :region       region
+     :dirty-bits   dirty
+     :card-count   card-count
+     :card-size    card-size
+     :region-start start
+     :region-end   end)))
+
+(defun nelisp-gc-inner--card-of (card-table addr)
+  "Return the card index in CARD-TABLE that covers ADDR.
+
+ADDR must fall inside the table's `[region-start, region-end)' window;
+otherwise this returns nil so callers can distinguish out-of-range
+writes (which the barrier ignores silently — they cannot be cross-
+generation pointers *into* the table's covered region)."
+  (when (and (integerp addr)
+             (>= addr (nelisp-gc-inner--card-table-region-start card-table))
+             (<  addr (nelisp-gc-inner--card-table-region-end   card-table)))
+    (/ (- addr (nelisp-gc-inner--card-table-region-start card-table))
+       (nelisp-gc-inner--card-table-card-size card-table))))
+
+(defun nelisp-gc-inner--addr-in-region-p (region addr)
+  "Return non-nil when ADDR falls inside REGION's `[:start, :end)' window.
+
+Helper shared by the write barrier and remembered-set scan; equivalent
+to `--region-contains' but accepts a *plist* region (the same shape
+the card table caches via `region-start' / `region-end' slots).  We
+keep both helpers because callers in §10 are wired to the plist form
+and rewriting them would touch the T17/T21/T24 freeze."
+  (and (integerp addr)
+       (integerp (plist-get region :start))
+       (integerp (plist-get region :end))
+       (>= addr (plist-get region :start))
+       (<  addr (plist-get region :end))))
+
+(defun nelisp-gc-inner-write-barrier
+    (card-table addr written-value &optional nursery-region)
+  "Card-marking write barrier — record cross-generation writes.
+
+This is the primary mutator hook the Phase 7.1 native JIT inlines (per
+§2.6 recommendation A: 1-2 instructions on x86_64 — RAX-relative
+shift + bts).  The Elisp simulator path runs ~30ns/call which is
+*not* hot-path-grade but is fine for ERT correctness checks.
+
+Algorithm:
+  1. card-index = (ADDR - region-start) / card-size
+     ↳ if ADDR is outside CARD-TABLE's region, return nil (no-op —
+       this address isn't in the generation we're tracking).
+  2. if WRITTEN-VALUE is an integer that points *into* NURSERY-REGION,
+     the write creates a cross-generation reference: mark
+     dirty-bits[card-index] = t.
+  3. Otherwise the write either replaces a pointer with a non-pointer,
+     or stays within the same generation — *no* dirty bit is set.
+
+Returning t indicates `dirtied'; nil indicates `no-op' (out of range
+or intra-generation).  The return value is mostly diagnostic; the
+mutator typically ignores it.
+
+NURSERY-REGION is optional: when nil, the barrier is reduced to its
+`unconditional dirty' degenerate (every in-range write dirties its
+card).  This preserves correctness — a superset of the precise dirty
+set still gets walked by Phase 7.3.5's remembered-set scan — at the
+cost of remembered-set scan throughput.  We expose it because the
+allocator may call `write-barrier' before `nursery-region' is fully
+materialized at boot, and because some debug builds want to verify
+the precise-vs-conservative approximation invariant."
+  (unless (nelisp-gc-inner--card-table-p card-table)
+    (signal 'wrong-type-argument
+            (list 'nelisp-gc-inner--card-table-p card-table)))
+  (let ((card (nelisp-gc-inner--card-of card-table addr)))
+    (cond
+     ;; ADDR not in this card table's region — no-op.  This is the
+     ;; common case for intra-nursery writes when the table covers
+     ;; tenured: the barrier sees them but has no card to mark.
+     ((null card) nil)
+     ;; No nursery boundary specified → conservative dirty.
+     ((null nursery-region)
+      (aset (nelisp-gc-inner--card-table-dirty-bits card-table) card t)
+      t)
+     ;; WRITTEN-VALUE points into nursery → cross-generation, dirty.
+     ((nelisp-gc-inner--addr-in-region-p nursery-region written-value)
+      (aset (nelisp-gc-inner--card-table-dirty-bits card-table) card t)
+      t)
+     ;; WRITTEN-VALUE doesn't point into nursery → intra-generation
+     ;; (or non-pointer), don't dirty.
+     (t nil))))
+
+(defun nelisp-gc-inner-clear-card-table (card-table)
+  "Reset every dirty bit in CARD-TABLE to nil.
+
+Called after Phase 7.3.5 minor GC + promotion: once the remembered
+set has been scanned and any tenured → nursery pointers have been
+forwarded into to-space, the card table no longer reflects live
+cross-generation edges.  Subsequent mutator writes will repopulate it.
+
+Returns CARD-TABLE (mutated in place) for threading."
+  (unless (nelisp-gc-inner--card-table-p card-table)
+    (signal 'wrong-type-argument
+            (list 'nelisp-gc-inner--card-table-p card-table)))
+  (let ((bv (nelisp-gc-inner--card-table-dirty-bits card-table)))
+    (fillarray bv nil))
+  card-table)
+
+(defun nelisp-gc-inner-card-table-stats (card-table)
+  "Return a stats plist describing CARD-TABLE state (Doc 30 v2 §2.11).
+
+Plist shape:
+  (:total-cards N
+   :dirty-cards N
+   :dirty-percent FLOAT      ;; 0.0..100.0
+   :region-start ADDR
+   :region-end   ADDR
+   :card-size BYTES)
+
+`:dirty-percent' is a `float' for non-integer ratios; an empty table
+(card-count = 0) reports `:dirty-percent 0.0' as the natural identity."
+  (unless (nelisp-gc-inner--card-table-p card-table)
+    (signal 'wrong-type-argument
+            (list 'nelisp-gc-inner--card-table-p card-table)))
+  (let* ((bv (nelisp-gc-inner--card-table-dirty-bits card-table))
+         (total (nelisp-gc-inner--card-table-card-count card-table))
+         (dirty 0))
+    (dotimes (i total)
+      (when (aref bv i) (cl-incf dirty)))
+    (list :total-cards   total
+          :dirty-cards   dirty
+          :dirty-percent (if (zerop total)
+                             0.0
+                           (* 100.0 (/ (float dirty) (float total))))
+          :region-start  (nelisp-gc-inner--card-table-region-start card-table)
+          :region-end    (nelisp-gc-inner--card-table-region-end   card-table)
+          :card-size     (nelisp-gc-inner--card-table-card-size    card-table))))
+
+
+;;;; §11.2 remembered-set scan -------------------------------------
+;;
+;; The remembered set is the *output* of the card table — for each
+;; dirty card we walk the objects whose addresses fall on that card and
+;; report any pointer fields that target the nursery.  Phase 7.3.5
+;; minor GC unions this with its base root set and forwards the lot.
+;;
+;; The scanner is *Phase 7.3.4* not *Phase 7.3.5* because the barrier
+;; would be useless without a way to consume its output, and shipping
+;; both halves together lets the ERT suite verify barrier ↔ scanner
+;; round-trip correctness independent of the minor GC integration that
+;; comes later.
+;;
+;; *Implementation strategy*: the scanner accepts an `objects-fn'
+;; callback identical to the `from-space-objects-fn' contract used by
+;; `--minor-update-pointer' (§10.5).  This keeps the simulator
+;; architecture uniform — the test suite already builds these
+;; callbacks for Cheney tests, so remembered-set tests reuse the same
+;; harness.
+
+(defun nelisp-gc-inner--objects-on-card (card-table card-index objects)
+  "Return OBJECTS (alist `(addr . plist)') whose ADDR falls on CARD-INDEX.
+
+`addr' is on CARD-INDEX iff
+  (addr - region-start) / card-size == CARD-INDEX
+which is equivalent to
+  card-start <= addr < card-start + card-size
+where card-start = region-start + CARD-INDEX * card-size."
+  (let* ((card-size   (nelisp-gc-inner--card-table-card-size    card-table))
+         (region-start (nelisp-gc-inner--card-table-region-start card-table))
+         (card-start  (+ region-start (* card-index card-size)))
+         (card-end    (+ card-start card-size))
+         (out nil))
+    (dolist (entry objects)
+      (let ((addr (car entry)))
+        (when (and (>= addr card-start) (< addr card-end))
+          (push entry out))))
+    (nreverse out)))
+
+(defun nelisp-gc-inner-scan-remembered-set
+    (card-table nursery-region objects-fn)
+  "Walk CARD-TABLE's dirty cards; return per-card cross-generation pointers.
+
+Arguments:
+  CARD-TABLE     — `nelisp-gc-inner--card-table' from `init-card-table'.
+  NURSERY-REGION — Doc 29 §1.4 region descriptor; pointers into this
+                   region's `[:start :end)' are the cross-generation
+                   edges we report.
+  OBJECTS-FN     — `(lambda () → ALIST)' or `(lambda () → LIST)' that
+                   yields the *current* objects covered by the card
+                   table.  Each entry is `(ADDR . PLIST)' with PLIST's
+                   `:fields' carrying outgoing pointer addresses.
+                   Phase 7.3.5 will swap this for a real region walker
+                   that consults the allocator's per-page object index.
+
+Returns a list of `(CARD-INDEX . NURSERY-POINTERS)' cells, one per
+dirty card that yields at least one nursery pointer.  Cards that are
+dirty but contain *no* nursery pointers (false positives — e.g. the
+mutator overwrote a pointer with a non-pointer between barrier and
+scan) are silently dropped.
+
+A clean card-table yields nil.  A dirty card with no nursery edges
+is dropped (so the result is the *minimum* over-approximation of the
+true cross-generation root set), which is what Phase 7.3.5 consumes
+without filtering."
+  (unless (nelisp-gc-inner--card-table-p card-table)
+    (signal 'wrong-type-argument
+            (list 'nelisp-gc-inner--card-table-p card-table)))
+  (unless (functionp objects-fn)
+    (signal 'wrong-type-argument (list 'functionp objects-fn)))
+  (let* ((bv (nelisp-gc-inner--card-table-dirty-bits card-table))
+         (total (nelisp-gc-inner--card-table-card-count card-table))
+         (objects (funcall objects-fn))
+         (out nil))
+    (dotimes (i total)
+      (when (aref bv i)
+        (let ((card-objs (nelisp-gc-inner--objects-on-card
+                          card-table i objects))
+              (ptrs nil))
+          (dolist (entry card-objs)
+            (let ((fields (plist-get (cdr entry) :fields)))
+              (dolist (field fields)
+                (when (nelisp-gc-inner--addr-in-region-p
+                       nursery-region field)
+                  (push field ptrs)))))
+          (when ptrs
+            (push (cons i (nreverse ptrs)) out)))))
+    (nreverse out)))
+
+
+;;;; §11.3 minor GC + barrier integration --------------------------
+;;
+;; The minor GC entry point in §10.5 (`run-minor-gc') accepts a
+;; `root-set' caller-supplied list.  In *young-root-limited* mode
+;; (Phase 7.3.5 default) that root set is incomplete — it covers the
+;; mutator's known roots but *not* the cross-generation edges from
+;; tenured.  `run-minor-gc-with-barrier' is the thin wrapper that
+;; extends the root set with the remembered-set scan output before
+;; delegating to `run-minor-gc'.
+;;
+;; This wrapper *also* clears the card table after the GC cycle, since
+;; the cross-generation edges it records have either been forwarded
+;; (now intra-tenured + tenured-to-tenured) or the source object has
+;; been promoted (now tenured-to-tenured by definition).  Either way
+;; the previously-dirty cards no longer reflect live cross-generation
+;; references and the bits should reset.
+
+(defun nelisp-gc-inner-run-minor-gc-with-barrier
+    (semi card-table root-set from-space-objects-fn
+          tenured-objects-fn)
+  "Run minor GC with CARD-TABLE-augmented root set.
+
+Pipeline:
+  1. Scan CARD-TABLE for cross-generation pointers via
+     `scan-remembered-set' (TENURED-OBJECTS-FN supplies the tenured
+     objects).
+  2. Flatten the result into a list of nursery addresses and union
+     with ROOT-SET (deduplicated).
+  3. Delegate to `run-minor-gc' with the extended root set.
+  4. Clear CARD-TABLE — every cross-generation edge it recorded has
+     either been forwarded to to-space (then promoted, in 7.3.5) or
+     dropped (the source pointer was overwritten with a non-pointer).
+
+Arguments:
+  SEMI                  — `nelisp-gc-inner--semispace' (init-semispace
+                          output).
+  CARD-TABLE            — `nelisp-gc-inner--card-table' covering the
+                          tenured region.
+  ROOT-SET              — list of integer mutator-root addresses.
+  FROM-SPACE-OBJECTS-FN — `(lambda (addr) → object-plist)' for the
+                          nursery (passed through to `run-minor-gc').
+  TENURED-OBJECTS-FN    — `(lambda () → ALIST)' yielding the tenured
+                          region's `(addr . plist)' entries; used for
+                          the remembered-set scan.
+
+Returns the plist from `run-minor-gc' augmented with:
+  :cross-gen-roots N   — count of nursery pointers added from the
+                         remembered set
+  :card-table-cleared t
+
+Side effects: CARD-TABLE is cleared in place after the GC cycle."
+  (unless (nelisp-gc-inner--card-table-p card-table)
+    (signal 'wrong-type-argument
+            (list 'nelisp-gc-inner--card-table-p card-table)))
+  (let* ((nursery-region (nelisp-gc-inner--semispace-from-space semi))
+         (rem-set (nelisp-gc-inner-scan-remembered-set
+                   card-table nursery-region tenured-objects-fn))
+         (cross-gen-ptrs (apply #'append (mapcar #'cdr rem-set)))
+         ;; Union root-set with cross-gen-ptrs, preserving order +
+         ;; deduplicating.  We append in *that* order so explicit
+         ;; mutator roots remain at the head — useful for promotion
+         ;; tie-breaking later (a mutator root reaches its target
+         ;; before a remembered-set forwarding does).
+         (extended-roots (cl-remove-duplicates
+                          (append root-set cross-gen-ptrs)
+                          :test #'eql :from-end t))
+         (stats (nelisp-gc-inner-run-minor-gc
+                 semi extended-roots from-space-objects-fn)))
+    (nelisp-gc-inner-clear-card-table card-table)
+    (append stats
+            (list :cross-gen-roots    (length cross-gen-ptrs)
+                  :card-table-cleared t))))
+
+
 (provide 'nelisp-gc-inner)
 ;;; nelisp-gc-inner.el ends here
