@@ -39,9 +39,13 @@ require_emacs() {
     emacs_bin="$(command -v emacs)"
   else
     err "Emacs binary not found. Install Emacs 29+ first."
-    err "  macOS:  brew install --cask emacs"
-    err "  Debian: sudo apt install emacs"
-    err "  Fedora: sudo dnf install emacs"
+    err "  macOS:    brew install --cask emacs"
+    err "  Debian:   sudo apt install emacs"
+    err "  Fedora:   sudo dnf install emacs"
+    err "  Arch:     sudo pacman -S emacs"
+    err "  Windows:  pacman -S mingw-w64-x86_64-emacs   (msys2)"
+    err "            choco install emacs                (chocolatey)"
+    err "            (run install.sh from an msys2 mingw64 shell)"
     exit 1
   fi
   local version

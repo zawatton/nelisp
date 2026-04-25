@@ -43,12 +43,47 @@ ln -sf ~/anvil/bin/anvil ~/.local/bin/anvil
 anvil doctor
 #+end_src
 
+** Windows (msys2 + mingw64) — Phase 6.4
+
+anvil ships =bin/anvil.cmd= so cmd.exe / PowerShell / Claude Code can
+invoke it without an msys2 shell.  Steps:
+
+#+begin_src powershell
+# 1. Install msys2 (bash + emacs).  https://www.msys2.org
+#    Then from mingw64 shell:
+pacman -S mingw-w64-x86_64-emacs
+
+# 2. Clone (PowerShell or msys2 shell):
+git clone https://github.com/zawatton/nelisp $env:USERPROFILE\anvil
+
+# 3. Verify from PowerShell:
+$env:USERPROFILE\anvil\bin\anvil.cmd doctor
+#+end_src
+
+Claude Code =.mcp.json= snippet (Windows):
+
+#+begin_src json
+{
+  "mcpServers": {
+    "anvil": {
+      "command": "C:\\Users\\YOU\\anvil\\bin\\anvil.cmd",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+#+end_src
+
+The =.cmd= wrapper auto-locates =C:\msys64\usr\bin\bash.exe= (or Git
+Bash) and forwards every argument to the bash launcher.  Override with
+=set EMACS=C:\path\to\emacs.exe= if your Emacs lives outside the
+default search list.
+
 ** Prerequisites
 
 | Component | Version | Install |
 |-----------+---------+---------|
-| Emacs | 29+ (sqlite built-in) | =brew install --cask emacs= / =apt install emacs= |
-| bash | 4+ | preinstalled on most distros |
+| Emacs | 29+ (sqlite built-in) | =brew install --cask emacs= / =apt install emacs= / =pacman -S mingw-w64-x86_64-emacs= (Windows msys2) |
+| bash | 4+ | preinstalled on most distros / msys2 ships it on Windows |
 | git | any | preinstalled or =apt install git= |
 
 * Hello World

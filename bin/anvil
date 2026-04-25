@@ -6,13 +6,22 @@
 # $XDG_CACHE_HOME/nelisp/nelisp-state.db (Doc 17 §2.2) を想定。
 #
 # Phase 6.0 時点では Emacs を user install 前提で検出 (Doc 18 §2.5 B)。
-# Phase 6.2 (Doc 24) で anvil-http MVP port が tools/list 25 → 30 に
-# 増強済 (http-fetch / http-head / http-cache-{get,clear,status})、
-# Phase 6.3 で GitHub Release pipeline、Phase 6.4 で Windows 対応予定。
+# Phase 6.2 (Doc 24) で anvil-http MVP port 完了 (tools/list 33)。
+# Phase 6.3 で GitHub Release pipeline、Phase 6.4 で Windows 対応 (msys2
+# mingw64 検出 + native Emacs path、bin/anvil.cmd wrapper)。
 
 set -euo pipefail
 
 ANVIL_VERSION="stage-d-v0.2-pre"
+
+# OS / shell detection (Phase 6.4 Windows support)
+ANVIL_OS="linux"
+case "$(uname -s 2>/dev/null || echo)" in
+  Darwin*)              ANVIL_OS="macos" ;;
+  MINGW*|MSYS*|CYGWIN*) ANVIL_OS="windows-msys" ;;
+  Linux*)               ANVIL_OS="linux" ;;
+  *)                    ANVIL_OS="unknown" ;;
+esac
 ANVIL_HOME="${ANVIL_HOME:-$(cd "$(dirname "$0")/.." && pwd)}"
 XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
@@ -49,16 +58,46 @@ detect_emacs() {
     command -v emacs
     return 0
   fi
+  # Windows-specific fallback paths (Phase 6.4).  MSYS / mingw64 ship
+  # emacs.exe under /mingw64/bin; native Emacs (gnu.org build) lives
+  # under Program Files when launched outside msys.
+  if [[ "$ANVIL_OS" == "windows-msys" ]]; then
+    for candidate in \
+      "/mingw64/bin/emacs.exe" \
+      "/c/Program Files/Emacs/emacs-30.1/bin/emacs.exe" \
+      "/c/Program Files/Emacs/emacs-29.4/bin/emacs.exe" \
+      "/c/Program Files/Emacs/bin/emacs.exe" \
+      "/c/msys64/mingw64/bin/emacs.exe" \
+    ; do
+      if [[ -x "$candidate" ]]; then
+        echo "$candidate"
+        return 0
+      fi
+    done
+  fi
   echo "error: emacs binary not found. Install Emacs 29+ and retry." >&2
-  echo "  macOS:  brew install --cask emacs" >&2
-  echo "  Debian: sudo apt install emacs" >&2
-  echo "  Fedora: sudo dnf install emacs" >&2
+  case "$ANVIL_OS" in
+    macos)
+      echo "  macOS:    brew install --cask emacs" >&2 ;;
+    linux)
+      echo "  Debian:   sudo apt install emacs" >&2
+      echo "  Fedora:   sudo dnf install emacs" >&2
+      echo "  Arch:     sudo pacman -S emacs" >&2 ;;
+    windows-msys)
+      echo "  msys2:    pacman -S mingw-w64-x86_64-emacs" >&2
+      echo "  choco:    choco install emacs" >&2
+      echo "  manual:   https://www.gnu.org/software/emacs/download.html" >&2
+      echo "  (then re-run this script from an msys2 mingw64 shell)" >&2 ;;
+    *)
+      echo "  see https://www.gnu.org/software/emacs/" >&2 ;;
+  esac
   return 1
 }
 
 cmd_doctor() {
   echo "anvil doctor — environment diagnosis"
   echo "  version         : $ANVIL_VERSION"
+  echo "  os              : $ANVIL_OS"
   echo "  ANVIL_HOME      : $ANVIL_HOME"
   echo "  config dir      : $ANVIL_CONFIG_DIR $( [[ -d "$ANVIL_CONFIG_DIR" ]] && echo "(exists)" || echo "(not yet)" )"
   echo "  cache dir       : $ANVIL_CACHE_DIR $( [[ -d "$ANVIL_CACHE_DIR" ]] && echo "(exists)" || echo "(not yet)" )"
