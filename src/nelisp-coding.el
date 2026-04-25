@@ -43,17 +43,35 @@
 ;;   - MVP partial table (~885 entries) validates algorithm; full ~14000
 ;;     entry generation deferred to Phase 7.5 via =tools/coding-table-gen.el=
 ;;
+;; Scope (Phase 7.4.4 — Doc 31 v2 §2.5 / §2.7 / §6.5):
+;;   - streaming codec state (`nelisp-coding--stream-state' cl-defstruct):
+;;     pending-byte buffer + decoder state across chunk boundaries
+;;   - stream-decode-chunk / stream-decode-finalize for incremental decode
+;;     (4 encodings: utf-8 / latin-1 / shift-jis / euc-jp)
+;;   - stream-encode-chunk / stream-encode-finalize for incremental encode
+;;     (encode side has no byte-boundary problem since chunks are char-aligned)
+;;   - file I/O wrappers (`nelisp-coding-read-file-with-encoding' /
+;;     `nelisp-coding-write-file-with-encoding') as MVP simulators that
+;;     bridge to the actual stream API; real Phase 7.0 syscall integration
+;;     is Phase 7.5.
+;;   - chunk-boundary stress test contract (Doc 31 v2 §6.5 silent corruption
+;;     mitigation): multi-byte sequence split across chunks must decode
+;;     identical to a one-shot decode of the concatenated bytes.
+;;
 ;; Deferred to later sub-phases:
-;;   - Phase 7.4.4: streaming chunk-based callback + file I/O integration
 ;;   - Phase 7.5: process-coding-system 本体実装、resume-coding primitive、
-;;     real 14000 entry table generation via =tools/coding-table-gen.el=
+;;     real 14000 entry table generation via =tools/coding-table-gen.el=、
+;;     real Phase 7.0 syscall =read=/=write= integration (replacing the
+;;     `insert-file-contents-literally' / `write-region' simulators in
+;;     Phase 7.4.4).
 ;;
 ;; SBCL =sb-impl/external-formats.lisp= + Emacs =coding.c= dual precedent。
-;; Phase 7.4.1 + 7.4.2 + 7.4.3 はそれら subset で UTF-8 / Latin-1 / Japanese
-;; + BOM + 3 strategy。
+;; Phase 7.4.1 + 7.4.2 + 7.4.3 + 7.4.4 はそれら subset で UTF-8 / Latin-1 /
+;; Japanese + BOM + 3 strategy + streaming chunk-based callback。
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'subr-x)
 (require 'nelisp-coding-jis-tables)
 
@@ -1178,6 +1196,593 @@ Returns plist:
   "Like `nelisp-coding-euc-jp-encode' but return an Emacs unibyte string."
   (apply #'unibyte-string
          (plist-get (nelisp-coding-euc-jp-encode string strategy) :bytes)))
+
+;;;; ────────────────────────────────────────────────────────────────────
+;;;; Phase 7.4.4 — streaming API + file I/O integration (Doc 31 v2 §2.5
+;;;; / §2.7 / §6.5)
+;;;; ────────────────────────────────────────────────────────────────────
+;;
+;; Design (Doc 31 v2 §2.5 推奨 A):
+;; - chunk-based callback API, Emacs `accept-process-output' compatible.
+;; - default chunk size 64 KB. Caller supplies arbitrary chunks (filtered
+;;   read from process / file etc).
+;; - decode side: a streaming state struct holds pending bytes that may
+;;   have started a multi-byte sequence which was truncated at the chunk
+;;   boundary. The next chunk is prepended with these pending bytes
+;;   *before* decoding — the per-encoding tail-trimmer figures out how
+;;   many trailing bytes to defer.
+;; - encode side: the state holds no carry-over (chunks are split at
+;;   char boundaries by definition), but tracking is symmetric for
+;;   stats / invalid-position aggregation.
+;; - finalize: any pending bytes still in the buffer at end-of-stream
+;;   are treated as a truncated sequence per the configured strategy.
+;;
+;; Doc 31 v2 §6.5 silent-corruption mitigation: each ERT smoke test for
+;; this phase exercises chunk splitting at every byte position of a
+;; multi-byte char and asserts the decoded char is identical to the
+;; one-shot result.
+
+(defcustom nelisp-coding-stream-default-chunk-size (* 64 1024)
+  "Default chunk size for streaming codec (64 KB, Doc 31 v2 §2.5).
+
+The caller is free to feed chunks of any size; this constant is the
+suggested page-aligned default for read-loop callers (e.g.
+`nelisp-coding-read-file-with-encoding' below)."
+  :type 'integer
+  :group 'nelisp-coding)
+
+(cl-defstruct (nelisp-coding--stream-state
+               (:constructor nelisp-coding--stream-state-make)
+               (:copier nelisp-coding--stream-state-copy))
+  "Streaming codec state (Doc 31 v2 §2.5).
+
+Slots:
+- ENCODING — symbol naming the codec (`utf-8' / `latin-1' / `shift-jis' /
+  `cp932' / `euc-jp'). For symmetry with one-shot APIs, both `shift-jis'
+  and `cp932' route through the same SJIS/CP932 decoder.
+- DIRECTION — either `decode' (bytes → chars) or `encode' (chars → bytes).
+- STRATEGY — one of `replace' (default), `error', `strict' per Doc 31
+  v2 §2.4 contract LOCK. Inherits `nelisp-coding-error-strategy' if nil.
+- PENDING-BYTES — list of byte integers carried over from the previous
+  decode chunk because they began an incomplete multi-byte sequence.
+  Always empty for `latin-1' (single-byte encoding) and for the encode
+  direction (chunks are split at char boundaries).
+- DECODED-CHARS — accumulated decoded codepoints, in REVERSE order
+  (= push order). Reversed once on finalize.
+- ENCODED-BYTES — accumulated encoded bytes, in REVERSE order. Reversed
+  once on finalize.
+- CHUNKS-PROCESSED — total count of chunks fed to the state.
+- BYTES-CONSUMED — total bytes drained from the input side (decode:
+  bytes accepted; encode: bytes emitted).
+- CHARS-EMITTED — total chars emitted from decode / consumed by encode.
+- INVALID-POSITIONS — list of offsets (BYTE for decode side, CHAR for
+  encode side) at which an invalid sequence was detected. Aggregated
+  across chunks, in REVERSE order (reversed on finalize).
+- REPLACEMENTS — total count of replacement codepoints/bytes emitted
+  under `replace' strategy.
+- BOM-CHECKED — t once a UTF-8 BOM detection has been attempted on
+  the very first decoded chunk (so subsequent chunks do not strip BOM
+  again, and `had-bom' is recorded once).
+- HAD-BOM — t when a UTF-8 BOM was stripped from the very first chunk.
+- TOTAL-INPUT-OFFSET — running offset of the *original input* used to
+  report `:invalid-positions' in stable absolute coordinates across
+  chunks (incremented by every byte consumed, including BOM bytes)."
+  (encoding 'utf-8)
+  (direction 'decode)
+  (strategy nil)
+  (pending-bytes nil)
+  (decoded-chars nil)
+  (encoded-bytes nil)
+  (chunks-processed 0)
+  (bytes-consumed 0)
+  (chars-emitted 0)
+  (invalid-positions nil)
+  (replacements 0)
+  (bom-checked nil)
+  (had-bom nil)
+  (total-input-offset 0))
+
+(defun nelisp-coding-stream-state-create (encoding direction &optional strategy)
+  "Public constructor for a streaming codec state.
+
+ENCODING must be one of `utf-8', `latin-1', `shift-jis', `cp932',
+`euc-jp'. DIRECTION is either `decode' or `encode'. STRATEGY (optional,
+default `nelisp-coding-error-strategy') is one of `replace', `error',
+`strict' per Doc 31 v2 §2.4.
+
+Returns a fresh `nelisp-coding--stream-state' struct."
+  (unless (memq encoding '(utf-8 latin-1 shift-jis cp932 euc-jp))
+    (signal 'nelisp-coding-error
+            (list :reason 'unknown-encoding :encoding encoding)))
+  (unless (memq direction '(decode encode))
+    (signal 'nelisp-coding-error
+            (list :reason 'unknown-direction :direction direction)))
+  (let ((eff-strategy (or strategy nelisp-coding-error-strategy)))
+    (unless (memq eff-strategy '(replace error strict))
+      (setq eff-strategy 'replace))
+    (nelisp-coding--stream-state-make
+     :encoding encoding
+     :direction direction
+     :strategy eff-strategy)))
+
+;;; ── Per-encoding tail trimmer (decode side) ──
+;;
+;; Given a vector of bytes representing the freshly-arrived chunk
+;; (possibly already prepended with the previous chunk's pending bytes),
+;; return the index FROM THE END at which we must stop decoding because
+;; the trailing bytes might be an incomplete multi-byte sequence whose
+;; remainder is in the next chunk. The caller decodes [0..N-K) and
+;; saves [N-K..N) into PENDING-BYTES.
+;;
+;; Returns 0 if the chunk has no incomplete tail (= safe to decode the
+;; whole chunk).
+
+(defun nelisp-coding--stream-utf8-tail-pending (vec n)
+  "How many trailing bytes of VEC (length N) might be an incomplete UTF-8 seq?
+
+Walks back up to 4 bytes (max UTF-8 sequence length) looking for a
+leading byte. If found at offset N-K with K bytes available but its
+expected sequence length is L > K, return K (defer those bytes). If
+no leading byte appears within the last 4 bytes (= all continuation
+bytes), the trailing run cannot make sense as a fresh sequence; we
+defer 0 (the per-byte error path will handle it). 0 if the last byte
+is itself a complete 1-byte ASCII (< 0x80)."
+  (cond
+   ((<= n 0) 0)
+   ;; Last byte is ASCII = no carry-over needed.
+   ((< (aref vec (1- n)) #x80) 0)
+   (t
+    (let ((k 1)
+          (found nil))
+      ;; Scan backward up to 4 bytes for a leading byte.
+      (while (and (not found) (<= k 4) (<= k n))
+        (let* ((byte (aref vec (- n k)))
+               (info (nelisp-coding--utf8-leading-byte-info byte)))
+          (cond
+           ((and info (= (car info) 1))
+            ;; ASCII (1-byte) — found a complete fresh codepoint just before
+            ;; the multi-byte tail. Defer the (k-1) trailing continuation
+            ;; bytes (they cannot be a fresh leading byte each).
+            (setq found (1- k)))
+           (info
+            ;; Multi-byte leading byte. If expected length > available, defer.
+            (let ((expected-len (car info)))
+              (if (> expected-len k)
+                  (setq found k)
+                ;; Sequence is complete inside the chunk.
+                (setq found 0))))
+           (t
+            ;; Continuation byte — keep scanning.
+            (setq k (1+ k))))))
+      (or found 0)))))
+
+(defun nelisp-coding--stream-shift-jis-tail-pending (vec n)
+  "How many trailing bytes might be an incomplete Shift-JIS sequence?
+
+SJIS multi-byte sequences are exactly 2 bytes. So defer 1 byte iff the
+last byte is a SJIS lead byte that has no trail yet."
+  (if (and (> n 0)
+           (nelisp-coding--shift-jis-lead-byte-p (aref vec (1- n))))
+      1
+    0))
+
+(defun nelisp-coding--stream-euc-jp-tail-pending (vec n)
+  "How many trailing bytes might be an incomplete EUC-JP sequence?
+
+EUC-JP has 2-byte CS1 (0xA1-0xFE + 0xA1-0xFE), 2-byte CS2 (0x8E + ...)
+and 3-byte CS3 (0x8F + 0xA1-0xFE + 0xA1-0xFE).
+
+We defer:
+- 1 byte if last byte is 0x8E or 0x8F (waiting for CS2/CS3 trailers)
+- 1 byte if last byte is in 0xA1-0xFE (CS1 lead waiting for trail)
+- 2 bytes if last 2 bytes are 0x8F + 0xA1-0xFE (CS3 still 1 byte short)
+- 0 otherwise"
+  (cond
+   ((<= n 0) 0)
+   (t
+    (let ((last (aref vec (1- n))))
+      (cond
+       ;; Two-byte case: 0x8F + valid CS3 lead, awaiting trail.
+       ((and (>= n 2)
+             (= (aref vec (- n 2)) #x8F)
+             (nelisp-coding--euc-jp-x0208-byte-p last))
+        2)
+       ;; Single 0x8F (CS3 shifter) without anything after it.
+       ((= last #x8F) 1)
+       ;; Single 0x8E (CS2 shifter) without katakana trail.
+       ((= last #x8E) 1)
+       ;; Single CS1 lead byte without trail.
+       ((nelisp-coding--euc-jp-x0208-byte-p last) 1)
+       (t 0))))))
+
+(defun nelisp-coding--stream-tail-pending (encoding vec n)
+  "Dispatch tail-pending byte count by ENCODING for VEC of length N."
+  (pcase encoding
+    ('utf-8     (nelisp-coding--stream-utf8-tail-pending vec n))
+    ('latin-1   0)
+    ((or 'shift-jis 'cp932)
+     (nelisp-coding--stream-shift-jis-tail-pending vec n))
+    ('euc-jp    (nelisp-coding--stream-euc-jp-tail-pending vec n))
+    (_ 0)))
+
+;;; ── Per-encoding one-shot decode dispatcher ──
+
+(defun nelisp-coding--stream-decode-call (encoding bytes strategy)
+  "Run a one-shot decode of BYTES under ENCODING + STRATEGY, return plist.
+
+Used internally by `nelisp-coding-stream-decode-chunk' on the trimmed
+chunk body (= bytes that are guaranteed to end on a complete-sequence
+boundary)."
+  (pcase encoding
+    ('utf-8     (nelisp-coding-utf8-decode bytes strategy))
+    ('latin-1   (nelisp-coding-latin1-decode bytes))
+    ((or 'shift-jis 'cp932)
+     (nelisp-coding-shift-jis-decode bytes strategy))
+    ('euc-jp    (nelisp-coding-euc-jp-decode bytes strategy))
+    (_ (signal 'nelisp-coding-error
+               (list :reason 'unknown-encoding :encoding encoding)))))
+
+(defun nelisp-coding--stream-encode-call (encoding string strategy)
+  "Run a one-shot encode of STRING under ENCODING + STRATEGY, return plist."
+  (pcase encoding
+    ('utf-8
+     ;; nelisp-coding-utf8-encode signals on bad codepoint regardless
+     ;; of strategy (Phase 7.4.1 contract). Wrap into the plist shape.
+     (let ((bytes (nelisp-coding-utf8-encode string)))
+       (list :bytes bytes
+             :strategy 'replace
+             :invalid-positions nil
+             :replacements 0)))
+    ('latin-1   (nelisp-coding-latin1-encode string strategy))
+    ((or 'shift-jis 'cp932)
+     (nelisp-coding-shift-jis-encode string strategy))
+    ('euc-jp    (nelisp-coding-euc-jp-encode string strategy))
+    (_ (signal 'nelisp-coding-error
+               (list :reason 'unknown-encoding :encoding encoding)))))
+
+;;; ── Public API: decode side ──
+
+(defun nelisp-coding-stream-decode-chunk (state chunk-bytes)
+  "Decode CHUNK-BYTES into STATE (a `nelisp-coding--stream-state').
+
+CHUNK-BYTES may be a unibyte string, a vector of integers, or a list
+of integers. Multi-byte sequences whose tail extends past the chunk
+boundary are buffered into STATE.PENDING-BYTES and consumed on the
+next chunk.
+
+UTF-8 BOM stripping is performed exactly once, on the very first chunk
+fed to the state (Doc 31 v2 §2.3). The stripped BOM bytes count toward
+TOTAL-INPUT-OFFSET so subsequent `:invalid-positions' remain absolute.
+
+For \\='replace strategy invalid sequences are recorded with absolute
+offsets in STATE.INVALID-POSITIONS (push order = reverse), and U+FFFD
+is appended to STATE.DECODED-CHARS. For \\='error / \\='strict, the
+per-call one-shot decoder signals; the state is left in a consistent
+half-decoded form (caller may catch and inspect).
+
+Returns the same STATE (mutated in place); signals on direction
+mismatch."
+  (unless (eq (nelisp-coding--stream-state-direction state) 'decode)
+    (signal 'nelisp-coding-error
+            (list :reason 'wrong-direction
+                  :direction (nelisp-coding--stream-state-direction state))))
+  (let* ((encoding (nelisp-coding--stream-state-encoding state))
+         (strategy (nelisp-coding--stream-state-strategy state))
+         (chunk-list (nelisp-coding--bytes-to-list chunk-bytes))
+         (combined (append (nelisp-coding--stream-state-pending-bytes state)
+                           chunk-list))
+         ;; Carry-over offset = absolute starting offset of `combined'
+         ;; in the original input. The pending bytes were already at
+         ;; (total - len(pending)).
+         (pending-len (length
+                       (nelisp-coding--stream-state-pending-bytes state)))
+         (combined-base
+          (- (nelisp-coding--stream-state-total-input-offset state)
+             pending-len))
+         (had-bom-now nil))
+    ;; UTF-8 BOM strip: only on the very first attempt (first chunk that
+    ;; brings ≥3 bytes total). We want to detect at the absolute offset
+    ;; 0 of the input — so check `combined' iff total-input-offset
+    ;; minus pending was 0 at entry (= we have not consumed any non-
+    ;; pending bytes yet) and we have not already attempted a strip.
+    (when (and (eq encoding 'utf-8)
+               (not (nelisp-coding--stream-state-bom-checked state))
+               (= combined-base 0)
+               (>= (length combined) 3))
+      (setf (nelisp-coding--stream-state-bom-checked state) t)
+      (when (and (= (nth 0 combined) #xEF)
+                 (= (nth 1 combined) #xBB)
+                 (= (nth 2 combined) #xBF))
+        (setq combined (nthcdr 3 combined))
+        (setq combined-base 3)
+        (setf (nelisp-coding--stream-state-had-bom state) t)
+        (setq had-bom-now t)))
+    ;; If we see fewer than 3 bytes total on the first call but BOM
+    ;; could still arrive, defer everything (keep bom-checked nil).
+    (cond
+     ((and (eq encoding 'utf-8)
+           (not (nelisp-coding--stream-state-bom-checked state))
+           (= combined-base 0)
+           (< (length combined) 3))
+      ;; Defer the entire combined buffer — we cannot tell whether
+      ;; this is BOM yet. Update bookkeeping minimally.
+      (setf (nelisp-coding--stream-state-pending-bytes state) combined)
+      (cl-incf (nelisp-coding--stream-state-bytes-consumed state)
+               (length chunk-list))
+      (cl-incf (nelisp-coding--stream-state-total-input-offset state)
+               (length chunk-list))
+      (cl-incf (nelisp-coding--stream-state-chunks-processed state))
+      state)
+     (t
+      (let* ((vec (vconcat combined))
+             (n (length vec))
+             (k (nelisp-coding--stream-tail-pending encoding vec n))
+             (decode-len (- n k))
+             (to-decode (substring vec 0 decode-len))
+             (new-pending (if (> k 0)
+                              (append (substring vec decode-len) nil)
+                            nil)))
+        (when (> decode-len 0)
+          (let* ((res (nelisp-coding--stream-decode-call
+                       encoding to-decode strategy))
+                 (decoded-string (plist-get res :string))
+                 (rel-invalid (plist-get res :invalid-positions))
+                 (replacements (or (plist-get res :replacements) 0))
+                 ;; Adjust :invalid-positions to absolute coordinates.
+                 (abs-invalid
+                  (mapcar (lambda (pos) (+ pos combined-base))
+                          rel-invalid)))
+            ;; Push decoded codepoints in reverse onto state's reverse list.
+            (let ((i 0)
+                  (m (length decoded-string)))
+              (while (< i m)
+                (push (aref decoded-string i)
+                      (nelisp-coding--stream-state-decoded-chars state))
+                (setq i (1+ i))))
+            ;; Append invalid-positions (already absolute, in original
+            ;; left-to-right order; we push in reverse so finalize can
+            ;; nreverse to a single sorted list).
+            (dolist (p (reverse abs-invalid))
+              (push p (nelisp-coding--stream-state-invalid-positions state)))
+            (cl-incf (nelisp-coding--stream-state-replacements state)
+                     replacements)
+            (cl-incf (nelisp-coding--stream-state-chars-emitted state)
+                     (length decoded-string))))
+        ;; Update per-state bookkeeping.
+        (setf (nelisp-coding--stream-state-pending-bytes state) new-pending)
+        ;; total-input-offset advanced by the length of *new* input
+        ;; bytes only (not by the previously-pending bytes, which were
+        ;; already counted).
+        (cl-incf (nelisp-coding--stream-state-total-input-offset state)
+                 (length chunk-list))
+        ;; bytes-consumed counts decode-progress bytes (= bytes that
+        ;; left the buffer this call). Excludes BOM, since BOM is
+        ;; metadata not user data.
+        (cl-incf (nelisp-coding--stream-state-bytes-consumed state)
+                 (- decode-len (if had-bom-now 0 0)))
+        ;; (Note: the BOM bytes are counted toward total-input-offset
+        ;; via the chunk-list length; bytes-consumed reflects raw
+        ;; user-data bytes effectively decoded.)
+        (cl-incf (nelisp-coding--stream-state-chunks-processed state))
+        state)))))
+
+(defun nelisp-coding-stream-decode-finalize (state)
+  "Finalize decoding for STATE; returns a final result plist.
+
+Any bytes still in PENDING-BYTES are treated as a truncated multi-byte
+sequence per STATE.STRATEGY:
+- `replace' — emit a single U+FFFD and record each pending byte's
+  absolute offset in :invalid-positions
+- `error'   — signal `nelisp-coding-invalid-byte' with :truncated
+- `strict'  — signal `nelisp-coding-strict-violation' with :truncated
+
+Returns a plist:
+  (:string DECODED-FULL-STRING
+   :strategy STRATEGY
+   :invalid-positions (LIST OF BYTE-OFFSET, sorted ascending)
+   :replacements N
+   :had-bom BOOLEAN-OR-NIL
+   :chunks-processed N
+   :bytes-consumed N
+   :chars-emitted N)"
+  (unless (eq (nelisp-coding--stream-state-direction state) 'decode)
+    (signal 'nelisp-coding-error
+            (list :reason 'wrong-direction
+                  :direction (nelisp-coding--stream-state-direction state))))
+  (let* ((strategy (nelisp-coding--stream-state-strategy state))
+         (pending (nelisp-coding--stream-state-pending-bytes state))
+         (pending-len (length pending))
+         (total-offset (nelisp-coding--stream-state-total-input-offset state))
+         (truncated-base (- total-offset pending-len)))
+    (when (> pending-len 0)
+      (pcase strategy
+        ('error
+         (signal 'nelisp-coding-invalid-byte
+                 (list :offset truncated-base
+                       :strategy 'error
+                       :reason 'truncated
+                       :pending pending)))
+        ('strict
+         (signal 'nelisp-coding-strict-violation
+                 (list :offset truncated-base
+                       :strategy 'strict
+                       :reason 'truncated
+                       :pending pending)))
+        (_
+         ;; replace — single U+FFFD + record one position per pending byte
+         (push nelisp-coding-utf8-replacement-char
+               (nelisp-coding--stream-state-decoded-chars state))
+         (cl-incf (nelisp-coding--stream-state-replacements state))
+         (cl-incf (nelisp-coding--stream-state-chars-emitted state))
+         (let ((i 0))
+           (while (< i pending-len)
+             (push (+ truncated-base i)
+                   (nelisp-coding--stream-state-invalid-positions state))
+             (setq i (1+ i))))
+         (setf (nelisp-coding--stream-state-pending-bytes state) nil))))
+    (let ((chars (nreverse
+                  (nelisp-coding--stream-state-decoded-chars state)))
+          (invalid-list
+           (nreverse
+            (nelisp-coding--stream-state-invalid-positions state))))
+      (list :string (apply #'string chars)
+            :strategy strategy
+            :invalid-positions invalid-list
+            :replacements (nelisp-coding--stream-state-replacements state)
+            :had-bom (nelisp-coding--stream-state-had-bom state)
+            :chunks-processed
+            (nelisp-coding--stream-state-chunks-processed state)
+            :bytes-consumed
+            (nelisp-coding--stream-state-bytes-consumed state)
+            :chars-emitted
+            (nelisp-coding--stream-state-chars-emitted state)))))
+
+;;; ── Public API: encode side ──
+;;
+;; Encode chunks are by definition split at codepoint boundaries (the
+;; caller hands us a fragment of a NeLisp string), so there is no
+;; carry-over byte buffer. The state still tracks aggregated bytes /
+;; invalid-positions / replacements for symmetry with the decode side.
+
+(defun nelisp-coding-stream-encode-chunk (state chunk-string)
+  "Encode CHUNK-STRING into STATE (a `nelisp-coding--stream-state').
+
+CHUNK-STRING is a host Emacs string (codepoint-indexed). The encoded
+bytes are appended to STATE.ENCODED-BYTES (in REVERSE order) and
+metadata aggregated. Returns the same STATE (mutated)."
+  (unless (eq (nelisp-coding--stream-state-direction state) 'encode)
+    (signal 'nelisp-coding-error
+            (list :reason 'wrong-direction
+                  :direction (nelisp-coding--stream-state-direction state))))
+  (unless (stringp chunk-string)
+    (signal 'wrong-type-argument (list 'stringp chunk-string)))
+  (let* ((encoding (nelisp-coding--stream-state-encoding state))
+         (strategy (nelisp-coding--stream-state-strategy state))
+         (chars-base (nelisp-coding--stream-state-chars-emitted state))
+         (res (nelisp-coding--stream-encode-call encoding chunk-string strategy))
+         (bytes (plist-get res :bytes))
+         (rel-invalid (plist-get res :invalid-positions))
+         (replacements (or (plist-get res :replacements) 0))
+         (abs-invalid (mapcar (lambda (pos) (+ pos chars-base))
+                              rel-invalid)))
+    (dolist (b bytes)
+      (push b (nelisp-coding--stream-state-encoded-bytes state)))
+    (dolist (p (reverse abs-invalid))
+      (push p (nelisp-coding--stream-state-invalid-positions state)))
+    (cl-incf (nelisp-coding--stream-state-replacements state)
+             replacements)
+    (cl-incf (nelisp-coding--stream-state-bytes-consumed state)
+             (length bytes))
+    (cl-incf (nelisp-coding--stream-state-chars-emitted state)
+             (length chunk-string))
+    (cl-incf (nelisp-coding--stream-state-chunks-processed state))
+    state))
+
+(defun nelisp-coding-stream-encode-finalize (state)
+  "Finalize encoding for STATE; returns a final result plist.
+
+Returns:
+  (:bytes (LIST OF BYTES)
+   :strategy STRATEGY
+   :invalid-positions (LIST OF CHAR-OFFSET, sorted ascending)
+   :replacements N
+   :chunks-processed N
+   :bytes-consumed N (= total bytes emitted)
+   :chars-consumed N (= total chars accepted))
+
+Note: encode-side `:bytes-consumed' equals the total bytes emitted
+(symmetric with decode-side `:bytes-consumed' = bytes accepted), and
+`:chars-consumed' is the symmetric peer of `:chars-emitted' for the
+decode direction."
+  (unless (eq (nelisp-coding--stream-state-direction state) 'encode)
+    (signal 'nelisp-coding-error
+            (list :reason 'wrong-direction
+                  :direction (nelisp-coding--stream-state-direction state))))
+  (let* ((bytes (nreverse
+                 (nelisp-coding--stream-state-encoded-bytes state)))
+         (invalid-list
+          (nreverse
+           (nelisp-coding--stream-state-invalid-positions state))))
+    (list :bytes bytes
+          :strategy (nelisp-coding--stream-state-strategy state)
+          :invalid-positions invalid-list
+          :replacements (nelisp-coding--stream-state-replacements state)
+          :chunks-processed
+          (nelisp-coding--stream-state-chunks-processed state)
+          :bytes-consumed
+          (nelisp-coding--stream-state-bytes-consumed state)
+          :chars-consumed
+          (nelisp-coding--stream-state-chars-emitted state))))
+
+;;;; ────────────────────────────────────────────────────────────────────
+;;;; Phase 7.4.4 file I/O wrappers (Doc 31 v2 §2.7 推奨 A)
+;;;; ────────────────────────────────────────────────────────────────────
+;;
+;; MVP implementation reads/writes the whole file via host Emacs
+;; primitives (`insert-file-contents-literally' / `write-region') and
+;; pipes through the streaming codec API in chunks. The host primitives
+;; are used as a *simulator* for the Phase 7.0 syscall stub (real
+;; integration is Phase 7.5). NeLisp purity is preserved at the API
+;; boundary — callers see the same plist contract as the streaming API.
+
+(defun nelisp-coding-read-file-with-encoding
+    (path encoding &optional strategy chunk-size)
+  "Read PATH, decode under ENCODING + STRATEGY in chunks, return result plist.
+
+ENCODING / STRATEGY are passed to `nelisp-coding-stream-state-create'.
+CHUNK-SIZE defaults to `nelisp-coding-stream-default-chunk-size'.
+
+Returns the same plist shape as `nelisp-coding-stream-decode-finalize'
+plus `:path PATH'."
+  (unless (file-readable-p path)
+    (signal 'file-error (list "File not readable" path)))
+  (let* ((eff-strategy (or strategy nelisp-coding-error-strategy))
+         (eff-chunk (or chunk-size nelisp-coding-stream-default-chunk-size))
+         (state (nelisp-coding-stream-state-create
+                 encoding 'decode eff-strategy)))
+    (with-temp-buffer
+      (set-buffer-multibyte nil)
+      (insert-file-contents-literally path)
+      (let ((max (point-max))
+            (pos (point-min)))
+        (while (< pos max)
+          (let* ((end (min max (+ pos eff-chunk)))
+                 (chunk (buffer-substring-no-properties pos end)))
+            (nelisp-coding-stream-decode-chunk state chunk)
+            (setq pos end)))))
+    (let ((result (nelisp-coding-stream-decode-finalize state)))
+      (plist-put result :path path))))
+
+(defun nelisp-coding-write-file-with-encoding
+    (path string encoding &optional strategy chunk-size)
+  "Encode STRING under ENCODING + STRATEGY in chunks and write to PATH.
+
+ENCODING / STRATEGY are passed to `nelisp-coding-stream-state-create'.
+CHUNK-SIZE defaults to `nelisp-coding-stream-default-chunk-size' but is
+applied to STRING char-count (= encode-side chunks are char-aligned).
+
+Returns the same plist shape as `nelisp-coding-stream-encode-finalize'
+plus `:path PATH', and writes the encoded bytes to PATH."
+  (unless (stringp string)
+    (signal 'wrong-type-argument (list 'stringp string)))
+  (let* ((eff-strategy (or strategy nelisp-coding-error-strategy))
+         (eff-chunk (or chunk-size nelisp-coding-stream-default-chunk-size))
+         (state (nelisp-coding-stream-state-create
+                 encoding 'encode eff-strategy))
+         (n (length string))
+         (pos 0))
+    (while (< pos n)
+      (let* ((end (min n (+ pos eff-chunk)))
+             (chunk (substring string pos end)))
+        (nelisp-coding-stream-encode-chunk state chunk)
+        (setq pos end)))
+    (let* ((result (nelisp-coding-stream-encode-finalize state))
+           (bytes (plist-get result :bytes))
+           ;; Convert byte list to a unibyte string for write-region.
+           (unibyte (apply #'unibyte-string bytes))
+           (coding-system-for-write 'no-conversion))
+      (write-region unibyte nil path nil 'silent)
+      (plist-put result :path path))))
 
 (provide 'nelisp-coding)
 
