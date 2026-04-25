@@ -1,0 +1,1769 @@
+#+TITLE: Doc 40 — NeLisp Phase 7+ Lisp Evaluator (Reader + Interpreter) Design (T97 finding parent、anvil bootstrap M3 prerequisite)
+#+DATE: 2026-04-25
+#+AUTHOR: zawatton + Claude (session-A 起草 v0、Opus 4.7 1M context、T108) + Claude (session 起草 v1、Opus 4.7 1M context、T120、T114 review 反映) + Claude (session 起草 v2、Opus 4.7 1M context、T131、T127 第二弾 review 反映)
+#+STATUS: LOCKED-2026-04-25-v2 (Phase 7+ evaluator、T108 v0 → T114 review (10 MAJOR + 7 MINOR + 3 NIT) → T120 v1 → T127 第二弾 review (MINOR REVISIONS, 6 MINOR) → T131 v2、+1279→1700+ LOC、6 sub-phase + 3 段階 errata pair commit sequence + 4 user signoff items)
+#+DEPENDS_ON: Doc 27 LOCKED-2026-04-25-v2 §3 (Phase 7.X parent + Phase 7.0 SHIPPED 後の syscall set), Doc 28 LOCKED-2026-04-25-v2 §11.5 (bench gate redefine errata + native compiler artifact pipeline、本 doc §6.6 v.s. native-compile coexist), Doc 32 LOCKED-2026-04-25-v2 §3 (Phase 7.5 cold-init / standalone E2E、本 doc §3.E artifact 経路再利用), Doc 33 v2 §3 / §4 Layer 1A "frontend = reader / evaluator / special forms" 既述 (本 doc が parent doc 化), Doc 34 LOCKED-2026-04-25-v2 §2.4 (event-source contract、本 doc §3.E condition-case / unwind-protect の I/O 介入境界), Doc 38 LOCKED-2026-04-25-v2 §3.E (claude self-extension SDK NeLisp exec フック、本 doc 完遂が dependency), Doc 39 LOCKED-2026-04-25-v2 §3.L (NeLisp process wrapper の filter / sentinel が macro / closure capture を経由するため本 doc Phase 3.C 既述と整合), T97 M1 boot smoke report (=docs/bench-results/m1-bootsmoke-2026-04-25-T97.md=、本 doc §0 / §1 直接 cite)
+#+PARENT: Doc 27 v2 §3 7.X (= Phase 7+ critical path に追加 sub-phase が必要との T97 finding 帰結)
+
+* §0 要旨 (TL;DR)
+
+T97 (=M1 anvil-server NeLisp standalone boot smoke=、SHIPPED
+2026-04-25、commit =9879598=) で *Phase 7+ pipeline (Doc 27 + Doc
+28-32 v2 LOCKED) を SHIPPED しても anvil-* module を NeLisp
+standalone subprocess 内で eval することは不可能* と判明した。本 Doc
+40 で =NeLisp 自身による Lisp 評価 path (= reader + evaluator +
+special-forms + macro)= の Phase 7+ critical path に立つ sub-phase
+を spec する。
+
+T97 finding 要約 (=docs/bench-results/m1-bootsmoke-2026-04-25-T97.md=
+直接 cite):
+- M1 boot smoke = nelisp-* substrate load 10/10 PASS、anvil-* 全 58
+  module =require= clean、MCP =initialize / tools/list= 6 tool
+  round-trip PASS
+- *call-site granularity で見ると ~50% functional* (T54 baseline
+  Wave 1+2 post 8-10% に対して大幅前進)
+- *残り 50% の半分以上* = =setq / let / let* / defun / defmacro=
+  等の *special-form 群が defalias-bridge 不可能* という構造的
+  blocker = "the real M1 blocker"
+- string-surgery layer (Phase 9d.A5 想定、~600-1000 LOC) は
+  bridge で対処可能、本 Doc 40 scope 外
+- Doc 38 §3.E (claude self-extension SDK NeLisp exec) は
+  *LOCKED-2026-04-25-v2 段階で Phase 7.5 SHIPPED を gate*、Doc 40
+  Phase 7+ への直接 prerequisite 化は *本 Doc 40 errata pair commit
+  (§11.5 v1)* で初めて成立。本 Doc 40 LOCKED v2 round で Doc 38 →
+  v3 LOCKED 同期 errata を先行 commit、SDK Phase E unblock の textual
+  evidence を双方向で確立 (T114 E2 反映 v1)
+
+*位置づけ*:
+- Doc 27 LOCKED-2026-04-25-v2 §3 が定める Phase 7.0/7.1/7.2/7.3/7.4/7.5
+  pipeline は v1.0 ship gate を構成、本 Doc 40 = 同 pipeline に *並走
+  する追加 critical path* (= Phase 7+ Lisp evaluator subsystem)
+- 既存の =src/nelisp-read.el= (Phase 3a SHIPPED、494 LOC)、
+  =src/nelisp-eval.el= (Phase 3 SHIPPED、925 LOC)、=src/nelisp-macro.el=
+  (Phase 3+ SHIPPED、278 LOC) は *基礎は済*、本 Doc 40 は =その上に
+  anvil-* hot path を載せるための完全 wiring + 互換 polish + standalone
+  cold-init= を spec
+- Phase 7.1 (Doc 28 v2) NeLisp native compiler とは *peaceful coexist*
+  (本 doc §6.6): 本 Doc 40 の interpret path = fallback / debug /
+  bootstrap stage0、native compile 通った hot path はそのまま VM /
+  native code 経由 (= 二択ではなく階層)
+
+*工数見積 (DRAFT v1、T114 B2 反映 = §3 sub-phase sum との整合 + 2x 補正
+明示)*:
+- *raw sum (DRAFT v0)*: 8-13 週間 (= §3 sub-phase 期間和 = 7+A 1.5-2.5 +
+  7+B 1-2 + 7+C 1-1.5 + 7+D 1.5-2 + 7+E 2-3 + 7+F 1-2)
+- *§0 表記レンジ (本 v1 で §3 と整合)*: *8-14 週間* (= raw sum 8-13 +
+  上限 1 週 buffer = sub-phase 切替 overhead)
+- *+2x realistic 補正後 (Doc 28-32 v2 detailed decomposition pattern
+  と同パターン)*: *16-26 週間 (= 4-7 ヶ月)*
+- 6 sub-phase 構成 = =Phase 7+A 〜 7+F=、anvil.el + 並列 session
+  leverage 前提
+- Phase 7.0 SHIPPED 後の任意 timing で dispatch 可能 (= Phase 7.1-7.5
+  と並行可、ただし Phase 7.5 standalone E2E に本 doc 完遂を gate 追加
+  するか open question §9-?5 で議論)
+- *並走前提への影響 (T114 B2 / D1 反映)*: +2x 補正後 16-26 週は Doc 27
+  §3 7.X 全 sum (= 6-10 ヶ月) と "ほぼ同期間 sub-pipeline"、§1.3 path-α
+  "並走" の前提 = 物理時間 sum 不変 (= attention 1-2 名 dispatch で
+  parallel session leverage)。並走可能性根拠は §11.1 errata pair
+  commit content の依存 matrix で pin 済
+
+*完遂 gate (DRAFT v0、Doc 32 v2 §0 4-tier taxonomy + common 軸 整合)*:
+- *blocker (release qualification、anvil bootstrap M3 milestone trigger)*:
+  - =read-from-string= が 30+ Elisp source corpus を round-trip parse
+    成功 (= reader 完成、§3.A)
+  - =setq / let / let* / defun / defmacro= 5 special-form の anvil-*
+    実 call-site round-trip 緑 (= T97 finding 直接対応、§3.B + §3.D)
+  - =condition-case / unwind-protect / catch / throw= 4 件 + advice
+    最低 2 形式 (=:before= / =:after=) で anvil-server tool dispatch
+    緑 (= §3.E)
+  - lexical closure 4 形式 (= self-recursive / mutual-recursive /
+    captured-mutate / over-captured) 全 PASS (= §3.C)
+  - anvil-server.el 全 module を NeLisp eval で動作 (= M3 milestone、
+    Doc 38 §3.E SDK NeLisp exec unblock)
+- *non-blocker qualification (best-effort、v1.x 限定)*:
+  - macro hygiene (Common Lisp 流) は scope 外、Emacs Lisp pseudo-
+    hygienic 互換のみ (= §6.4)
+  - tail-call optimization は Phase 7.1.5 (Doc 28 v2 §11.5 errata)
+    で SHIPPED 済の native path 経由を再利用、interpret path での
+    別実装は scope 外
+- *post-ship audit (release-audit、blocker ではない)*:
+  - 24h soak (release-audit weekly) で M3 milestone 安定動作 (anvil
+    bootstrap = 1000+ tools/call cycle 無 crash)
+  - Phase 7.1 native compile path との semantic divergence 0 件
+- *release artifact ready*:
+  - =src/nelisp-read.el= +400-700 LOC (Phase 3a base 494 → 900-1200)
+  - =src/nelisp-eval.el= +1200-2000 LOC (Phase 3 base 925 → 2100-2900)
+  - =src/nelisp-special-forms.el= 新規 ~500-1000 LOC (Phase 3 で
+    eval.el 内置きを分離 + 不足 special-form 補完)
+  - =src/nelisp-macro.el= +400-700 LOC (Phase 3+ base 278 → 700-1000)
+  - =src/nelisp-advice.el= 新規 ~300-500 LOC (=advice-add= /
+    =advice-remove= 最小、§6.7)
+  - 合計 ~2800-4900 LOC delta (Doc 28 v2 detailed decomposition pattern
+    と同 +2x realistic)
+
+*common (tier 外、全 tier 共通の必須項目、Doc 32 v2 §0 整合)*:
+- ERT +138+ (T114 A2 反映 v1: =test/nelisp-eval-test.el= 既存拡張 +
+  =-reader-test.el= +30 + =-special-forms-test.el= 新規 +40 +
+  =-macro-test.el= 拡張 +24 (= +pcase 4 件) + =-advice-test.el= 新規
+  +10 + =-closure-test.el= 拡張 +15 + =m3-anvilboot-smoke-test.el=
+  新規 +19+ (= +9 semantic divergence 3 class × +3))
+- =cargo build --release= / =cargo test --all= regression-free
+  (= 本 doc は NeLisp side のみ、Rust side は Phase 7.0 SHIPPED 結果
+  を unchanged で借用)
+- NeLisp 既存 ERT regression-free
+  - *baseline 式 (順序 agnostic、Doc 39 §0 と同 phrase)*:
+    "Phase 7+ 完遂時点 1244 + Phase 9 series cumulative delta + 本 phase
+    +138" (T114 A2 反映 v1、+125 → +138) (= Phase 7.5 完遂 / Phase 9
+    series 完遂時点で実数確定、本 doc は式提示のみ)
+
+* §1 背景
+
+** 1.1 T97 finding: M1 boot は OK / 評価器 wiring が真 blocker
+
+T97 SHIPPED report (=docs/bench-results/m1-bootsmoke-2026-04-25-T97.md=)
+の *§"missing subsystem"* で以下が確認された (raw 引用):
+
+#+begin_quote
+| anvil-used name                       | in 54-entry bridge | gap kind            |
+| =message=                             | NO                 | I/O primitive       |
+| =format=                              | NO                 | core stringer       |
+| =replace-regexp-in-string=            | NO                 | regex (string-side) |
+| =buffer-substring-no-properties=      | NO                 | text extraction     |
+| =string-match=                        | NO                 | regex (string-side) |
+| =split-string=                        | NO                 | string surgery      |
+| =mapconcat=                           | NO                 | string surgery      |
+| =setq= / =let= / =let*= / =defun=     | NO (special-form)  | reader / evaluator  |
+
+The reader / evaluator / special-form group is **the** big-rock
+gap — those are not bridge-able by =defalias=, they need a real
+subsystem.
+#+end_quote
+
+string-surgery 列は次 task (= Phase 9d.A5 想定 string-surgery 拡張、
+~600-1000 LOC、defalias bridge で対応可) に分離可能だが、最終行の
+=setq / let / let* / defun= 等は *NeLisp 自身が special-form を eval
+できなければ host bridge では原理的に解決しない* (host Emacs と NeLisp
+で symbol 解決 / lexical environment / dynamic binding stack が物理
+分離されているため)。
+
+本 Doc 40 = この *構造的 blocker を NeLisp Phase 7+ Lisp evaluator
+subsystem として spec* する parent doc。
+
+** 1.2 既存 Phase 3 SHIPPED 資産の再評価
+
+2026-04-25 時点 src/ 内の関連 module:
+- =src/nelisp-read.el= (494 LOC、Phase 3a SHIPPED) — Elisp reader、
+  s-expr / quote / backquote / string escape / character literal
+  対応済、ただし =#@= / =#,= / =##= 等の edge case syntax は未対応
+- =src/nelisp-eval.el= (925 LOC、Phase 3 SHIPPED) — 23 special-form
+  実装済 (=quote / function / if / cond / and / or / when / unless /
+  progn / prog1 / prog2 / let / let* / lambda / defun / defvar /
+  defconst / setq / while / catch / throw / unwind-protect /
+  condition-case=)、closure 形式 =(nelisp-closure ENV PARAMS BODY)=
+  確立、bytecode VM 統合済 (= =nelisp--make-closure= が
+  =nelisp-bc-try-compile-lambda= を first try)
+- =src/nelisp-macro.el= (278 LOC、Phase 3+ SHIPPED) — =defmacro= /
+  =macroexpand= / =macroexpand-all= 実装済、core macros (=defsubst /
+  declare-function / push / pop / dolist / dotimes=) を NeLisp 自身で
+  記述 + boot 時 install
+
+*Phase 3 で済んでいる事項*:
+- 純粋 Lisp algorithm (= =fib= / =factorial= / =cond= 駆動 recursion)
+  は緑、closure capture + mutate 緑、tagged non-local exit 緑、
+  =condition-case= による error trap 緑、=defvar= / =defconst= 経由の
+  dynamic binding 緑
+
+*Phase 3 で済んでいない事項 (本 Doc 40 が拾う)*:
+- =src/nelisp-eval.el= の Commentary §"Primitive function bindings are
+  still borrowed from Emacs" が示す通り、*primitive function は host
+  Elisp の =defun= 本体を borrow* — anvil-* module はこの borrow chain
+  経由で boot しているが、=anvil-server-with-error-handling= 等が
+  *macro として展開* される箇所で NeLisp macro register に解決手が
+  ない (= =defmacro= は SHIPPED 済だが、anvil-server.el を NeLisp
+  reader で読んだ後 NeLisp macro 展開器に流す cold-init protocol が
+  欠如)
+- =read-from-string= の corpus coverage 不足 (= Elisp reader の
+  edge-case syntax = =#@N= byte-skip / =#,FORM= eval-at-read /
+  =#@-1= etc が未対応、anvil-* の docstring / macro body を一部
+  parse fail)
+- =advice-add= / =advice-remove= 未実装 — anvil-orchestrator が
+  middleware として hook 多用、host Emacs では透過動作するが
+  standalone では即 =void-function=
+
+** 1.3 Phase 7+ pipeline (Doc 27 + Doc 28-32 v2) との関係
+
+Doc 27 LOCKED §3 7.X table の現状 (本 doc 着手時点):
+
+| Phase | scope                           | 状態 (2026-04-25、T114 A4 反映 v1 で Doc 27 §3 最新 phrasing と同期)             |
+|-------+----------------------------------+--------------------------------|
+| 7.0   | Rust syscall stub + scaffold     | SHIPPED (=7df50f8 main= + MAP_JIT update =20ecef4=) |
+| 7.1   | NeLisp native compiler 新設     | LOCKED v2 + Phase 7.1.X scaffold SHIPPED |
+| 7.2   | allocator NeLisp 化              | LOCKED v2 + Phase 7.2.1 SHIPPED |
+| 7.3   | GC inner NeLisp 化               | LOCKED v2 + Phase 7.3.1 SHIPPED |
+| 7.4   | coding NeLisp 化                 | LOCKED v2 + Phase 7.4.1 SHIPPED |
+| 7.5   | integration + standalone E2E     | LOCKED v2                      |
+
+本 Doc 40 = *上記 7.0-7.5 critical path とは別軸の sub-phase pipeline*
+(= "Phase 7+ Lisp evaluator subsystem")、以下 3 path のいずれかで
+parent doc 化する:
+- *path-α (proposed default)*: Doc 27 §3 errata で *Phase 7+ "evaluator"*
+  を新設 (Phase 番号は 7.X の隙間、本 doc §3 で =Phase 7+A 〜 7+F= の
+  letter id 採用 = Phase 9d sub-phase の =9d.J/K/L= と同 letter pattern)
+- path-β: Doc 27 §3 を変えず、本 Doc 40 を *post-v1.0 sub-phase* (=
+  v1.x 候補) として並走 = anvil bootstrap M3 milestone は v1.0 後に
+  ずれる
+- path-γ: Phase 7.5 (Doc 32 v2) integration の中に本 Doc 40 を
+  swallow = Phase 7.5 LOC budget を 200 → 1500-3000 に拡張
+
+LOCKED v2 化までに reviewer dispatch で path 選択 (open question
+§9-?5、推奨 = path-α = critical path 化、anvil bootstrap M3 を v1.0
+ship gate に組み込む)。
+
+** 1.4 anvil bootstrap M2 / M3 milestone との関係
+
+anvil bootstrap milestone roadmap (=memory: project_anvil_general_b2cd_pivot=、
+=feedback_anvil_uses_nelisp_architecture= 整合):
+- M1 = NeLisp standalone boot + MCP =initialize / tools/list=
+  round-trip = T97 SHIPPED PARTIAL
+- M2 = NeLisp standalone subprocess + Phase 9d process wrapper
+  完備 = T106 (Doc 39 §3.L) SHIPPED 2026-04-25、anvil-host /
+  anvil-worker / anvil-orchestrator が child process spawn 可能
+- *M3 = anvil-server.el 全 module を NeLisp eval で動作* = 本 Doc 40
+  完遂 = Doc 38 §3.E claude self-extension SDK Phase E (NeLisp exec)
+  unblock = anvil 全機能 standalone path 確立 (= ただし Doc 38 v2
+  LOCKED 段階では Doc 40 への明示 dependency は未記載、本 Doc 40
+  §11.5 errata pair commit で双方向 textual evidence 化、T114 E2
+  反映 v1)
+
+M3 = NeLisp 公開告知 gate の前提条件 (=memory:
+feedback_nelisp_announcement_standalone_gate=)。
+
+** 1.5 v1.0 ship との関係 + ship 順序 escape hatch
+
+*open question §9-?5* で path-α/β/γ を確定するが、現時点 default 想定:
+- path-α (推奨) = Doc 27 §3 に *Phase 7+ "evaluator" を critical path
+  追加*、Phase 7.5 standalone E2E gate に "anvil-server.el M3
+  milestone" を組み込む
+- ただし v1.0 ship を *本 Doc 40 完遂で gate しない escape hatch* も
+  保持 (= Doc 39 §1.5 ship 順序 swap proposal pattern と同形): 本
+  Doc 40 が 8-14 週間枠を超えた場合、v1.0 ship は Phase 7.5 完遂
+  + Doc 38 §3.E SDK Phase E を post-v1.0 carryforward に降格
+- escape hatch 採用時の re-design merge cost は Doc 39 §1.5 と同レベル
+  (~2-4 週間 buffer 必要)、v2 LOCKED 時に明文化
+
+** 1.6 out-of-scope (本 Doc 40 で扱わない)
+
+- =src/nelisp-bytecode.el= bytecode VM = Phase 3+ SHIPPED の
+  =nelisp-bc-try-compile-lambda= path はそのまま (= 本 doc は VM
+  には触らず、interpret path のみ拡充)
+- Phase 7.1 native compiler (Doc 28 v2) との競合 = §6.6 で peaceful
+  coexist 設計、native compile 通った hot path は VM / native code
+  経由を維持
+- 完全 Common Lisp hygienic macro = Emacs Lisp 流 pseudo-hygienic
+  互換のみ (= =cl-gensym= ベースの自前 hygiene は user 側責任、§6.4)
+- thread-local =let= dynamic binding (= Emacs ≥27 の thread support)
+  = single-thread MVP (= Phase 9d single-thread MVP と整合、Doc 39
+  §6.5)
+- mini-buffer / completion / display-related special-form = Phase 9b
+  (Doc 34) の event-loop / keymap layer 完成後に別 phase で
+- =eval-when-compile= / =eval-after-load= 等の load-time control
+  forms = path-α path-β 確定後に別 round で (open question §9-?2)
+
+* §2 LOCKED decisions (DRAFT v1、T114 review 反映済、第二弾 reviewer dispatch 後 v2 で第一推奨を default 化)
+
+DRAFT v0 段階のため *全項目 v1 反映待ち*。各項目に第一推奨候補を
+明示、user signoff + reviewer (Codex / Claude) round 後 v2 LOCKED。
+
+** 2.1 reader scope: =read= / =read-from-string= 完全 Elisp 互換 [推奨 = A 完全互換]
+
+A. *完全互換 (推奨)* — =#@N= byte-skip / =#,FORM= eval-at-read /
+   =##= empty-symbol / =#s(...)= record / =#x= hex / =#o= octal /
+   =#b= binary / =?\C-a= control char / =?\M-x= meta char / =あ=
+   unicode escape を *全件 round-trip*、Emacs Lisp file を unchanged で読める
+
+B. subset MVP — 上記から =#@N= / =#,FORM= の 2 件を out-of-scope (=
+   anvil-* corpus で実使用 0 件と確認済の前提、後続 Phase で補完)
+
+C. 既存 Phase 3a level 維持 — 本 Doc 40 では reader は触らない (=
+   Phase 3a の不足 syntax は補完しない、anvil-* corpus を pre-process
+   で = =#@= 行を strip = で逃げる)
+
+LOCKED 推奨 = A、根拠: anvil-* docstring に =#@= byte-skip が頻出 (=
+docstring の position cache、Emacs FNS)、A 以外は anvil 全 module
+load 不可能 = M3 milestone 達成不能。
+
+** 2.2 evaluator core: tree-walking interpreter [推奨 = A、Phase 7.1 と階層]
+
+A. *tree-walking interpreter (推奨)* — Phase 3 SHIPPED の
+   =nelisp-eval-form= 系列を *拡張・分離* (= special-form を別ファイル
+   =src/nelisp-special-forms.el= に切り出し)、Phase 7.1 native compile
+   が通る hot path はそのまま VM / native、interpret path は fallback /
+   debug / cold-init で活用
+
+B. CPS transform + trampoline — tail-call MVP の代替案、Phase 7.1.5
+   既 SHIPPED の TCO と機能重複、本 doc では実装しない
+
+C. 完全 Phase 7.1 native compile 強制 — interpret path 廃止、anvil-*
+   module も全件 native compile 経由のみ → cold-init time 爆発 (= 4-stage
+   bootstrap 経由で Phase 7.1.5 stage1 が anvil-* 全 module 通過 必要)
+
+LOCKED 推奨 = A、根拠: Phase 3 SHIPPED 資産再利用 + Phase 7.1 と
+peaceful coexist (§6.6)、cold-init cost 抑制。
+
+** 2.3 lexical / dynamic binding policy [推奨 = A、Emacs Lisp 既定踏襲]
+
+A. *Emacs Lisp 既定 (推奨)* — file-level =;; -*- lexical-binding: t;
+   -*-= file variable で lexical / dynamic 切替、=defvar= / =defconst=
+   宣言された symbol は dynamic、それ以外 lexical (Phase 3 SHIPPED
+   挙動と同)
+
+B. lexical-only — file variable 無視、全 symbol lexical = legacy
+   Elisp 互換崩れ (anvil-* も一部 dynamic 前提あり、grep で audit 必要)
+
+C. dynamic-only — Common Lisp / SBCL 互換寄り、Emacs Lisp 通常 pkg
+   ロードで escaped binding bug 多発、scope 外
+
+LOCKED 推奨 = A、根拠: anvil-* 全 module は =;; -*- lexical-binding:
+t; -*-= header 統一 (= anvil dev convention、=memory:
+project_anvil_package=)、A 以外は corpus level で互換崩れ。
+
+** 2.4 macro expansion timing [推奨 = A、eval-time + memo cache]
+
+A. *eval-time + memo cache (推奨)* — =defmacro= で macro 登録、
+   =eval-form= 中の =cons head= ↔ =nelisp--macros= lookup hit で
+   =macroexpand-1= → expanded form を再 eval、expand 結果を form
+   key に hash memoize (= 同 form 二度目以降は cache hit)
+
+B. read-time eager expansion — =read-from-string= 直後に expand 全
+   完了、eval-time は walker 不要 → 但し =defmacro= 自体が読まれる
+   前に macro call が現れると fail = anvil-server.el 順序依存
+
+C. eval-time pure (no memo) — A から memo 削除、CPU cost 増 (=
+   anvil-server tool dispatch が macro 展開重ね掛けで 2-3x slowdown)
+
+LOCKED 推奨 = A、根拠: B は anvil-orchestrator のような top-level
+=defmacro= 後置 module で詰まる、C は perf 不足 (Phase 7.1 native
+compile path が無い場合)。
+
+** 2.5 closure capture model [推奨 = A、現 Phase 3 model 維持]
+
+A. *=(nelisp-closure ENV PARAMS BODY)= alist env (推奨)* — Phase 3
+   既 SHIPPED 形式、ENV = =((sym . val) ...)= alist、=nelisp--lookup=
+   が =assq= で逐次検索 (small env で十分速い)
+
+B. flat-vector env + lexical address — Phase 7.1 native compile
+   (Doc 28 v2) が採用する SSA frontend と同レイアウト、interpret
+   path も統一すれば binding lookup O(1) → 但し env mutation
+   (=setq= local) で COW 必要、複雑度激増
+
+C. hash-table env — 中間案、binding lookup O(1) だが closure capture
+   時の deep-copy cost、small env で alist 比 perf 劣化
+
+LOCKED 推奨 = A、根拠: small env (= Lisp 通常 ≤10 binding) で alist
+が最速、Phase 7.1 native path が hot site を引き継ぐ前提なら
+interpret path の lookup perf 寄与は限定的。
+
+** 2.6 advice 実装 [推奨 = A、新規 =src/nelisp-advice.el= 最小]
+
+A. *=advice-add= / =advice-remove= 最小 (推奨)* — =:before / :after
+   / :around / :override= 4 種、=:filter-args / :filter-return= は
+   v2 carryforward、=src/nelisp-advice.el= 新規 ~300-500 LOC
+
+B. nadvice (= Emacs ≥24.4 の defadvice 全機能) — 完全互換、~1000-1500
+   LOC、scope 過大
+
+C. advice 不実装 = anvil-orchestrator 等 advice 多用 module を
+   standalone で動かさない方針 = M3 milestone 達成不能
+
+LOCKED 推奨 = A、根拠: anvil-* 内 advice 使用箇所を grep audit (=
+本 doc §6.7 risk に列挙)、4 種で 95%+ カバー、残 5% は v2 carryforward
+で問題なし。
+
+** 2.7 special-form 完全 list freeze [推奨 = A、Phase 3 SHIPPED 23 + 追加 12 = 35、内 11 件 7+B + 1 件 (pcase) 7+D]
+
+A. *35 件 freeze (推奨)* — Phase 3 SHIPPED 23 件 (=quote / function
+   / if / cond / and / or / when / unless / progn / prog1 / prog2 /
+   let / let* / lambda / defun / defvar / defconst / setq / while /
+   catch / throw / unwind-protect / condition-case=) + 追加 12 件
+   (=save-excursion / save-restriction / save-current-buffer /
+   save-match-data / setq-default / setq-local / let-when-compile /
+   eval-when-compile / eval-and-compile / pcase / inline-let / declare=)
+
+   *T114 B1 反映 (v1)*: =pcase= は内部 macro expansion 量が cl-loop 級
+   (~100 line/expand) で、Phase 7+B 時点では Phase 7+D macro memoize
+   cache 未完。担当 phase を *7+B → 7+D に統一移動* (= §3.2 / §3.4 / §4.3
+   3 箇所同時更新)。7+B "追加 12 件" → "追加 11 件 (pcase 除く) + 7+D
+   で pcase 1 件" の split に carry-over 数を修正。35 件 freeze 自体は
+   不変。
+
+B. 50+ 件完全互換 — Emacs source の =subr.el= で =special-form-p=
+   が t を返す全件、scope 過大
+
+C. Phase 3 SHIPPED 23 件で freeze、追加なし — anvil-* で
+   =save-excursion= / =save-match-data= 多用、追加なしでは bug
+   多発
+
+LOCKED 推奨 = A、根拠: anvil-* 全 module を grep audit して頻出 12
+件を pin (= reviewer dispatch 時に raw data table を §4.3 に追加予定)。
+
+** 2.8 LOC budget [推奨 = A、~2800-4900 LOC delta]
+
+A. *推奨 = ~2800-4900 LOC delta* — §0 release artifact ready 内訳:
+  - reader +400-700 (Phase 3a 494 → 900-1200)
+  - eval +1200-2000 (Phase 3 925 → 2100-2900)
+  - special-forms 新規 ~500-1000
+  - macro +400-700 (Phase 3+ 278 → 700-1000)
+  - advice 新規 ~300-500
+  Doc 28-32 v2 detailed decomposition pattern と同 +2x realistic
+
+B. 1500-2500 LOC budget (= 当初 rough estimate) — DRAFT v0 で +2x
+   補正前、reviewer dispatch で realism 検証
+
+C. 5000-8000 LOC budget — Phase 7.1 (Doc 28 v2 §2.12) ~5000-10000
+   LOC と同レベル、過大 (= reader / eval は native compile より
+   構造単純)
+
+LOCKED 推奨 = A。
+
+** 2.9 stats / instrumentation [推奨 = A、minimal counter]
+
+A. *minimal counter (推奨)* — =nelisp-eval-stats= plist (=:eval-form-count
+   :macroexpand-count :advice-fire-count=) を =defcustom
+   nelisp-eval-stats-enable= で opt-in、production default = nil
+
+B. tracing — full call stack trace、debug 用、Phase 9b open question
+   §9.5 と整合 (interpret path debug は別 phase)
+
+C. なし — perf regression 検出に必要 (Phase 7.1 native path との
+   div check)
+
+LOCKED 推奨 = A。
+
+** 2.10 cold-init protocol [推奨 = A、Phase 7.5 4-stage 経路再利用]
+
+A. *Phase 7.5 4-stage bootstrap 経路再利用 (推奨)* — Doc 28 v2 §3.5
+   で確立した stage0 host bytecode → stage1 native → stage2 semantic
+   diff → stage3 self-recompile pipeline の *stage1 入口に
+   anvil-server.el 全 module を読み込む step を追加*、interpret path
+   は stage0 の host bytecode 経路で活用
+
+B. 独立 cold-init protocol — Doc 40 専用の boot pipeline を新設、
+   Phase 7.5 と二重管理
+
+C. cold-init なし、boot 時に on-demand load — anvil-server.el
+   tools/list 初回 hit で load = first hit latency 数秒、user
+   experience 悪化
+
+LOCKED 推奨 = A。
+
+* §3 Sub-phase 7+A 〜 7+F 詳細
+
+DRAFT v1 段階 (T114 B1 反映 = pcase 7+B → 7+D 移動済)、各 sub-phase
+は scope / ERT smoke / risks の 3 段構成 (Doc 39 §3 と同 pattern)。
+
+** 3.1 Phase 7+A — reader 完全 Elisp 互換 (~1.5-2.5 週間)
+
+LOC 見積: =src/nelisp-read.el= +400-700 (Phase 3a 494 → 900-1200)
+
+*** scope
+
+- =#@N= byte-skip support — Emacs FNS docstring position cache、
+  =read-from-string= が遭遇したら N byte skip + 残 form を return
+- =#,FORM= eval-at-read — read 中に FORM を eval、結果を呑む (=
+  Elisp の =read-eval= 設定で gate)
+- =##= empty-symbol literal
+- =#s(...)= record literal — =cl-defstruct= 経由、anvil-* で =url-host=
+  等 cl-defstruct accessor 使用箇所で必要 (Phase 3 で url-parse require
+  済の文脈と整合)
+- =?\C-a= / =?\M-x= / =?\C-\M-x= control / meta char literal
+- =あ= unicode escape — UTF-8 raw も対応 (Phase 7.4 coding と整合)
+- =#x / #o / #b= integer prefix
+- =#'= sharp-quote (= =function= shorthand) — Phase 3a 既対応のはず
+  だが reviewer audit で確認
+- corpus check: =anvil-* / nelisp-* / Emacs subr.el= 全件を
+  =read-from-string= で round-trip parse、failure log を 0 件化
+
+*** ERT smoke (+30、=test/nelisp-reader-test.el= 新規 or 既存拡張)
+
+- =#@N= 5 件 (= boundary N=0/1/short/long/file-end)
+- =#,FORM= 3 件 (= eval-time integer / string / cons)
+- =##= 1 件
+- =#s(...)= 5 件 (= 0-field / 1-field / 多 field / nested / cl-defstruct
+  既存 type)
+- char literal 8 件 (= ascii / control / meta / control-meta / unicode
+  raw / unicode escape / surrogate pair / negative)
+- integer prefix 6 件 (= hex / octal / binary / hex-negative / boundary
+  fixnum / boundary bignum)
+- corpus round-trip 2 件 (= anvil corpus / nelisp corpus、各 1 整合
+  hash)
+
+*** risks
+
+- =#,FORM= の eval-at-read = =read-eval= security boundary、anvil-*
+  source は信頼境界内だが第三者 elisp 読み時に RCE = =defcustom
+  nelisp-read-eval-default= で opt-in default nil
+- =#s(...)= record reader = cl-defstruct 依存、boot 時 cl-lib load
+  必要 (Phase 3 で url-parse 経由で間接的に require 済、要確認)
+- corpus round-trip = file size 大 (= anvil corpus ~58 module、
+  ~50000 LOC)、CI で 30s 内に完走するか calibrate 必要
+
+** 3.2 Phase 7+B — basic special-forms freeze (~1-2 週間)
+
+LOC 見積: =src/nelisp-special-forms.el= 新規 ~500-1000、=src/nelisp-eval.el=
+からの分離 + 11 件追加 (pcase は 7+D、T127 B-NEW-4 解消で v2 に carry-over)
+
+*** scope
+
+- 既存 Phase 3 SHIPPED 23 件を =src/nelisp-special-forms.el= に move
+  (= file 分割 refactor、ERT regression-free 必須)
+- 追加 11 件 (pcase 除く、T114 B1 反映で v1 に carry-over 数修正):
+  - =save-excursion= / =save-restriction= / =save-current-buffer= /
+    =save-match-data= — buffer state save/restore (Phase 9b buffer
+    primitive と協調、stub も可)
+  - =setq-default= / =setq-local= — global / buffer-local 仕分け
+  - =eval-when-compile= / =eval-and-compile= — bytecompile 時 eval、
+    interpret path では即 eval (= byte-compile path は Phase 7.1
+    native compiler 担当)
+  - =let-when-compile= — 変数版
+  - =inline-let= / =declare= — declarative、no-op or trivial
+- *=pcase= は本 phase scope 外、Phase 7+D で完全実装* (T114 B1 反映、
+  §3.4 scope 参照)。本 phase で stub も置かない (= macro expansion が
+  必要なため Phase 7+D macro memoize 完成後に初めて wire 可能)。
+- =eval-form= dispatcher table を =cond head= 大連鎖 → hash-table
+  lookup に refactor (= 35 件規模で perf 差出る、Phase 3 既存
+  =cond= 大連鎖を維持しても可、reviewer dispatch で benchmark)
+
+*** ERT smoke (+40、=test/nelisp-special-forms-test.el= 新規)
+
+- 既存 Phase 3 special-form 23 件 regression (= move 後の path 健全性)
+- 新規 11 件 × 平均 1.5 件 = 17 件 (= save-* 系の error path / restore
+  path / nested 等の edge case 含む、pcase 4 件は §3.4 Phase 7+D ERT
+  smoke 内訳、T127 B-NEW-4 解消で v2 carry-over)
+
+*** risks
+
+- =save-excursion= / =save-restriction= が NeLisp standalone で何を
+  保存・復元するか — buffer object の identity が host Emacs と
+  divergent (= NeLisp side では nelisp-buffer object、host Emacs side
+  は Lisp_Buffer)、cross 操作時の save/restore semantics は §6.x で
+  enumerate
+- (T114 B1 解消済) =pcase= は本 phase scope から除外、§3.4 Phase 7+D
+  scope に正式 move、本 phase では reader 側 read-only (=
+  =read-from-string= で =pcase= form を parse できれば足る、eval は
+  Phase 7+D 完成まで signal =void-function 'pcase=)
+- file 分割 refactor で require chain 変更 = Phase 3 SHIPPED ERT が
+  fail する場合、move 順序を =eval.el= → =special-forms.el= → ERT
+  green → eval.el の元 def 削除 の 3 段階で safety margin
+
+** 3.3 Phase 7+C — closure / lexical binding 完全互換 (~1-1.5 週間)
+
+LOC 見積: =src/nelisp-eval.el= +200-400 (closure capture / mutate /
+over-capture polish)
+
+*** scope
+
+- self-recursive closure (= =letrec= 風 = Emacs では =cl-letf= 経由
+  or =funcall= 自身経由) — Phase 3 SHIPPED で動くはず、ERT pin
+- mutual-recursive closure (= 2 closure が互いに funcall) — Phase 3
+  SHIPPED で動くはず、ERT pin
+- captured-mutate (= closure 内 =setq= が外 lexical を更新) — Phase 3
+  SHIPPED で動くはず (alist env の =setcdr=)、ERT pin
+- *over-captured (= 同 sym の lexical → dynamic 昇格、=defvar= 後置)*
+  — Phase 3 SHIPPED の =nelisp--specials= lookup 順序を audit、bug
+  あれば fix
+- =funcall= / =apply= の =&rest= 処理、=&optional= default value
+- closure printed representation (= =(closure (env) (params) body)=
+  Emacs 形式互換) — repl debug 用、optional
+- =fset= / =defalias= が NeLisp closure を host Elisp に export する
+  経路 (= bridge 接続、host Emacs 互換テストで利用)
+
+*** ERT smoke (+15、=test/nelisp-closure-test.el= 既存拡張)
+
+- Phase 3 SHIPPED closure 4 形式 (self-rec / mutual-rec /
+  captured-mutate / over-captured) の pin
+- =&rest= / =&optional= 各 3 件 = 6 件
+- closure printed repr 2 件
+- =fset= bridge round-trip 3 件
+
+*** risks
+
+- =&optional= default value の eval timing = 各 call で eval (Emacs
+  compatible)、Phase 3 既実装か要確認
+- over-captured の dynamic 昇格 = Phase 3 SHIPPED で =defvar= 順序
+  に依存、anvil-* 内で =defvar= 後置の例があれば fix (audit が本
+  phase 着手前に必要)
+- closure printed repr の =(closure ENV PARAMS BODY)= vs
+  =(nelisp-closure ENV PARAMS BODY)= = 内部 tag 差異、host Emacs
+  との bridge で format 翻訳必要
+
+** 3.4 Phase 7+D — macro expansion 完全 (~1.5-2 週間)
+
+LOC 見積: =src/nelisp-macro.el= +400-700 (Phase 3+ 278 → 700-1000)
+
+*** scope
+
+- =defmacro= 既 SHIPPED — 拡張: =&body= / =&rest= / =&optional=
+  declare 完全対応
+- =macroexpand-1= / =macroexpand= / =macroexpand-all= の 3 段 API
+  完成、env 引数対応 (= local macros via =cl-macrolet=)
+- macro memoize cache (= §2.4 推奨 A 実装)
+- =declare= form 内 =(debug ...)= / =(indent ...)= = 読み飛ばし、no-op
+- =defalias= が macro symbol に対しても動作 (= 既存 Phase 3+ 動作確認)
+- =defsubst= / =defun= で生成された functions の inline expansion
+  (Phase 7.1 native compile が担当、interpret path では no-op)
+- core macros (=push / pop / dolist / dotimes=) 既 NeLisp 自身で
+  記述 + boot 時 install — 本 phase で audit + 不足分追加 (=
+  =cl-loop= / =when-let / when-let* / if-let / pcase= 等を anvil-*
+  使用度に応じて pin)
+- *=pcase= 完全実装 (T114 B1 反映で 7+B → 7+D 移動)* — pattern match
+  special-form、Emacs Lisp で広く利用、anvil-* 内も多用。本 phase で
+  =pcase= を §4.3 #33 として正式 wire (interpret path、Phase 7.1
+  native はそのまま compile)。memoize cache hit 率は cl-loop と同等
+  か上 (~100 line/expand × 反復) を要求、§3.4 risks に追記
+
+*** ERT smoke (+24、=test/nelisp-macro-test.el= 既存拡張、§5.1 table と
+同期、T127 B-NEW-5 解消で v2 で 3 数値統一: header +24 / 内訳和 24 /
+§5.1 table +24 / §0 / §7 baseline +138 据置)
+
+- =defmacro &body= / =&rest= / =&optional= 6 件
+- =macroexpand-1= / =macroexpand= / =macroexpand-all= 各 2 件 = 6 件
+  (T127 B-NEW-5 反映で各 3 → 各 2 に縮退、+138 baseline 据置)
+- macro memoize cache hit/miss 2 件
+- =declare= form skip 1 件
+- core macros (=push / pop / dolist / dotimes / cl-loop=) 各 1 件 = 5 件
+  (T127 B-NEW-5 反映で 6 → 5 に縮退、=when-let= は §3.4 risks
+  carryforward)
+- *=pcase= eval 4 件* (T114 B1 反映、本 phase で wire): basic literal
+  pattern / cons + guard / nested / =memoize cache 100x hit rep=
+- 内訳和 = 6 + 6 + 2 + 1 + 5 + 4 = 24 (= ERT smoke header / §5.1
+  table cell と一致)
+
+*** risks
+
+- macro memoize cache invalidation = =defmacro= 再 def 時に cache
+  flush 必要、忘れると stale expansion で silent bug (cf.
+  =memory: feedback_canonical_byte_compile_stale_elc= の stale .elc
+  pattern と同質)
+- =cl-loop= は内部で大規模 macro expansion (~100 line per call)、
+  cache 必須 — cache miss 時の latency が user-visible
+- =cl-macrolet= の local macros = env 引数追加で API 互換破壊あり、
+  Phase 3+ 既存 caller を全数 audit して signature 更新
+- (T114 B1 反映 v1) =pcase= の expansion size は cl-loop と同等
+  (~100 line/expand)。memoize cache hit 率を本 phase ERT で計測、
+  cache hit 率 90% 未満なら §6.10 gate-W6 (B3 反映) で cache size
+  拡大 replan。pcase の 7+B → 7+D 移動はこの依存性が根拠
+
+** 3.5 Phase 7+E — control flow + advice (~2-3 週間)
+
+LOC 見積: =src/nelisp-eval.el= +200-400 (control flow polish)、
+=src/nelisp-advice.el= 新規 ~300-500
+
+*** scope
+
+- =condition-case= / =unwind-protect= / =catch= / =throw= 既 Phase 3
+  SHIPPED — 拡張: =condition-case-unless-debug= / =with-demoted-errors=
+  / =ignore-errors= の 3 macro を core macros に追加
+- =signal= / =error= / =user-error= primitive の error data shape
+  = Emacs 互換 (= =(error-symbol . data)= cons)、condition-case の
+  pattern matching が正常動作
+- *advice subsystem 新規 (=src/nelisp-advice.el=)*:
+  - =advice-add SYM HOW FUNCTION &optional PROPS= — HOW =
+    =:before / :after / :around / :override= 4 種
+  - =advice-remove SYM FUNCTION=
+  - =advice--p= / =advice-mapc= / =get-advice= helpers
+  - =funcall= / =apply= dispatcher 内 hook = symbol → function
+    解決時 advice chain 経由
+- error symbol propagation across NeLisp ↔ host Elisp boundary (=
+  bridge 経由 call、condition-case で trap 可能)
+
+*** ERT smoke (+10、=test/nelisp-advice-test.el= 新規)
+
+- advice 4 種 × 各 2 件 = 8 件 (= simple + nested)
+- =advice-remove= 1 件
+- error propagation across bridge 1 件
+
+*** risks
+
+- advice ordering = =:around= が =:before= / =:after= を sandwich する
+  semantics、Emacs nadvice の実装複雑、reviewer dispatch で
+  precedence 仕様 freeze 必要
+- =unwind-protect= の cleanup form が advice 内で signal する場合の
+  unwind 順序 — Emacs の動作と byte-perfect 一致を要求するか
+  semantic 一致で足るか open question §9-?6
+- bridge 経由 error propagation = NeLisp signal → host Elisp の
+  =(error nelisp-... . data)= 形式に変換、host から catch 可能
+
+** 3.6 Phase 7+F — anvil-server.el M3 milestone (~1-2 週間)
+
+LOC 見積: cold-init wiring + integration test ~200-400
+
+*** scope
+
+- =Phase 7.5 4-stage bootstrap= の stage1 入口に anvil-server.el
+  全 module load step を追加 (§2.10 推奨 A)
+- =anvil-server-with-error-handling= 等の anvil 自前 macro が NeLisp
+  macro register に登録される cold-init protocol 確立
+- M3 smoke harness: =scripts/m3-anvilboot-smoke.sh= 新規 (= T97 の
+  =scripts/m1-bootsmoke.sh= 後継)
+- T97-FOLLOWUP-1 (= anvil-server return-shape contract bug、=cons=
+  return reject) 解消 — anvil-server 側 fix or NeLisp eval side で
+  =prin1-to-string= auto-wrap (= 別 PR、本 doc 完遂前に解消必要)
+- Doc 38 §3.E claude self-extension SDK Phase E (NeLisp exec) との
+  integration smoke = SDK manifest からの NeLisp eval call が
+  round-trip 成功
+
+*** ERT smoke (+10+、=test/m3-anvilboot-smoke-test.el= 新規)
+
+- anvil-server 全 58 module を NeLisp eval で require 緑 (T97 ベース)
+- MCP =tools/call= round-trip = T97-FOLLOWUP-1 解消後 6 tool 全件 PASS
+- anvil-server-with-error-handling macro 経由 tool 呼出 1 件
+- claude SDK Phase E NeLisp exec 経路 1 件 (Doc 38 §3.E と整合)
+- 1h soak (CI、blocker) — anvil bootstrap M3 smoke 連続 100 cycle
+  無 crash + RSS growth bound (= Doc 39 §0 1h soak と同形)
+
+*** risks
+
+- anvil-server 内 macro chain が深い (= =anvil-server-with-error-handling=
+  → =anvil-defs--with-something= → =cl-flet=) — macro expand cost
+  が phase 7+D の memoize cache hit 率に強く依存、cache miss 連発で
+  cold-init time 数 10 秒の risk
+- T97-FOLLOWUP-1 fix は本 doc scope 外 (= anvil-server side fix が
+  別 PR で先行必要)、解消遅れで M3 milestone 滑り risk
+- SDK Phase E 経路 (Doc 38 §3.E) との dependency = SDK 側 manifest
+  spec が freeze 済か再確認、変動あれば本 phase 着手 timing 調整
+
+* §4 Architecture / API list
+
+** 4.1 reader API (=src/nelisp-read.el= 公開 surface)
+
+公開関数 (Phase 7+A 完遂時の最終 API):
+- =(nelisp-read &optional STREAM)= — single form を STREAM から read、
+  EOF で =eof= signal
+- =(nelisp-read-from-string STRING &optional START END)= — STRING
+  の START..END 範囲から single form + next-position の cons を return、
+  Emacs =read-from-string= 互換 signature
+- =(nelisp-read-all STRING)= — STRING 内全 form を list で return、
+  anvil-* module 全体 load 用 helper
+- =(nelisp-read-corpus-check FILES)= — FILES list を全件 round-trip
+  parse audit、失敗 file の plist list を return (CI 用)
+
+内部 helper (本 doc 経由 unstable):
+- =nelisp-read--skip-byte-compiled-doc= (=#@N=)
+- =nelisp-read--read-eval= (=#,FORM=)
+- =nelisp-read--read-record= (=#s(...)=)
+
+** 4.2 evaluator API (=src/nelisp-eval.el= 公開 surface)
+
+公開関数 (Phase 7+B 完遂時):
+- =(nelisp-eval FORM)= — top-level eval (env = nil dynamic only)、
+  Phase 3 既存
+- =(nelisp-eval-form FORM ENV)= — explicit env 指定、Phase 3 既存
+- =(nelisp-funcall FN &rest ARGS)= — funcall semantics、closure /
+  primitive 両対応
+- =(nelisp-apply FN ARGLIST)= — apply semantics
+- =(nelisp-eval-buffer)= / =(nelisp-eval-region START END)= — Emacs
+  互換、anvil-* batch load 用
+- =(nelisp-eval-stats)= — §2.9 推奨 A の stats plist getter
+
+** 4.3 special-forms 完全 list (Phase 7+B 後の確定 list、§2.7 推奨 A = 35 件、T114 C4 反映 v1 で Phase 3 SHIPPED commit cite)
+
+*Phase 3 SHIPPED 状態 (= 23 件) cite (T114 C4 反映 v1)*: =src/nelisp-eval.el=
+925 LOC = Phase 3 SHIPPED (= main commit log = =git log --oneline src/nelisp-eval.el=
+で確認)、各 special-form は同 file 内 =cond= 大連鎖 dispatcher 内に
+定義。reviewer round で =git blame src/nelisp-eval.el | grep
+"defun nelisp--eval-form\|special-form"= で commit hash 確定予定
+(本 v1 では cite placeholder のみ、reviewer dispatch 1 round で値 pin)。
+
+
+| #  | name                       | Phase 3 状態 | 本 doc 担当 phase |
+|----+----------------------------+--------------+-------------------|
+|  1 | quote                      | SHIPPED      | 7+B (move)        |
+|  2 | function                   | SHIPPED      | 7+B (move)        |
+|  3 | if                         | SHIPPED      | 7+B (move)        |
+|  4 | cond                       | SHIPPED      | 7+B (move)        |
+|  5 | and                        | SHIPPED      | 7+B (move)        |
+|  6 | or                         | SHIPPED      | 7+B (move)        |
+|  7 | when                       | SHIPPED      | 7+B (move)        |
+|  8 | unless                     | SHIPPED      | 7+B (move)        |
+|  9 | progn                      | SHIPPED      | 7+B (move)        |
+| 10 | prog1                      | SHIPPED      | 7+B (move)        |
+| 11 | prog2                      | SHIPPED      | 7+B (move)        |
+| 12 | let                        | SHIPPED      | 7+B (move + audit)|
+| 13 | let*                       | SHIPPED      | 7+B (move + audit)|
+| 14 | lambda                     | SHIPPED      | 7+B (move + 7+C)  |
+| 15 | defun                      | SHIPPED      | 7+B (move)        |
+| 16 | defvar                     | SHIPPED      | 7+B (move)        |
+| 17 | defconst                   | SHIPPED      | 7+B (move)        |
+| 18 | setq                       | SHIPPED      | 7+B (move)        |
+| 19 | while                      | SHIPPED      | 7+B (move)        |
+| 20 | catch                      | SHIPPED      | 7+B (move)        |
+| 21 | throw                      | SHIPPED      | 7+B (move)        |
+| 22 | unwind-protect             | SHIPPED      | 7+B (move + 7+E)  |
+| 23 | condition-case             | SHIPPED      | 7+B (move + 7+E)  |
+| 24 | save-excursion             | NEW          | 7+B               |
+| 25 | save-restriction           | NEW          | 7+B               |
+| 26 | save-current-buffer        | NEW          | 7+B               |
+| 27 | save-match-data            | NEW          | 7+B               |
+| 28 | setq-default               | NEW          | 7+B               |
+| 29 | setq-local                 | NEW          | 7+B               |
+| 30 | let-when-compile           | NEW          | 7+B               |
+| 31 | eval-when-compile          | NEW          | 7+B               |
+| 32 | eval-and-compile           | NEW          | 7+B               |
+| 33 | pcase                      | NEW          | 7+D (T114 B1 で 7+B → 7+D 移動済、macro memoize 完成依存) |
+| 34 | inline-let                 | NEW          | 7+B               |
+| 35 | declare                    | NEW (no-op)  | 7+B               |
+
+reviewer dispatch round で anvil-* corpus 内使用度の raw data table
+を本 §4.3 に追加予定 (= grep audit 結果)。
+
+*T114 C1 反映 v1 (= grep audit script + 実 data 取得 protocol)*:
+
+audit script = =scripts/audit-special-form-usage.sh= 新規 (Phase 7+B
+着手前必達):
+
+#+begin_src bash
+#!/usr/bin/env bash
+# audit-special-form-usage.sh
+# anvil-* / nelisp-* corpus 内 special-form 使用度を 35 件 freeze list
+# から grep 計測、raw data table を出力
+CORPUS_DIRS=("/home/madblack-21/Cowork/Notes/dev/anvil.el" \
+             "/home/madblack-21/Cowork/Notes/dev/nelisp/src" \
+             "/home/madblack-21/Cowork/Notes/dev/nelisp/test")
+SPECIAL_FORMS=(quote function if cond and or when unless progn prog1 prog2 \
+               let "let\\*" lambda defun defvar defconst setq while catch throw \
+               unwind-protect condition-case save-excursion save-restriction \
+               save-current-buffer save-match-data setq-default setq-local \
+               let-when-compile eval-when-compile eval-and-compile pcase \
+               inline-let declare)
+for sf in "${SPECIAL_FORMS[@]}"; do
+  count=$(grep -rh "(\b${sf}\b" "${CORPUS_DIRS[@]}" 2>/dev/null | wc -l)
+  echo "${sf} ${count}"
+done | sort -k2 -n -r
+#+end_src
+
+実 data table 取得後に本 §4.3 に追記予定 (Phase 7+B 着手前必達、
+LOCKED v2 化条件)。35 件 freeze の根拠を data 駆動化、頻度 0 件の
+special-form は v1.x carryforward 候補に降格判定可能 (= §6.10 gate-W4
+kill criteria の "27 件縮退" 候補選定にも利用)。
+
+*欠落候補 audit (T114 C1 raw)*: =defalias= / =interactive= / =letrec= /
+=progv= / =backquote= の 5 件は 35 件 list に未含、anvil-* corpus grep
+で頻度評価 → 高頻度なら 35 件 → 40 件拡張 (= reviewer round で再
+freeze)、低頻度なら v1.x carryforward。Phase 7+B 着手前 grep 必達。
+
+** 4.4 macro API (=src/nelisp-macro.el= 公開 surface、Phase 7+D 後)
+
+- =(nelisp-defmacro NAME ARGLIST &rest BODY)= — Phase 3+ 既存
+- =(nelisp-macroexpand-1 FORM &optional ENV)= — env 引数で local
+  macros (=cl-macrolet=) 対応
+- =(nelisp-macroexpand FORM &optional ENV)= — fixed-point expansion
+- =(nelisp-macroexpand-all FORM &optional ENV)= — sub-expression
+  含む全 expand
+- =(nelisp-macro-cache-clear)= — memoize cache 全 flush (= =defmacro=
+  再 def 時 hook)
+- =(nelisp-macro-cache-stats)= — cache hit/miss/size の plist
+
+** 4.5 advice API (=src/nelisp-advice.el= 公開 surface、Phase 7+E 後)
+
+- =(nelisp-advice-add SYMBOL HOW FUNCTION &optional PROPS)= — HOW =
+  =:before / :after / :around / :override=
+- =(nelisp-advice-remove SYMBOL FUNCTION)=
+- =(nelisp-advice-mapc FUNCTION SYMBOL)= — 反復子
+- =(nelisp-get-advice SYMBOL)= — debug 用 introspection
+
+** 4.6 cold-init protocol (Phase 7+F、§2.10 推奨 A)
+
+Phase 7.5 4-stage bootstrap の stage1 (= native compile pre-warm)
+入口に以下 step を追加:
+
+1. =nelisp-read-corpus-check= で anvil-* / nelisp-* / Emacs core
+   subset の round-trip parse 健全性確認
+2. anvil-server.el の =nelisp-eval-buffer= 経由 load — macro
+   register / advice register に必要 entries 全 install
+3. =scripts/m3-anvilboot-smoke.sh= equivalent の self-test (=
+   =initialize / tools/list / tools/call= 各 1 件)
+4. error 時 stage0 (host bytecode) fallback — Doc 32 v2 §2.6 と同形
+
+* §5 ERT smoke + bench plan
+
+** 5.1 ERT delta +100+ (本 phase 合計)
+
+| sub-phase | file                                              | delta |
+|-----------+---------------------------------------------------+-------|
+| 7+A       | =test/nelisp-reader-test.el= 拡張                 | +30   |
+| 7+B       | =test/nelisp-special-forms-test.el= 新規          | +40   |
+| 7+C       | =test/nelisp-closure-test.el= 拡張                | +15   |
+| 7+D       | =test/nelisp-macro-test.el= 拡張 (+ pcase 4 件)   | +24   |
+| 7+E       | =test/nelisp-advice-test.el= 新規                 | +10   |
+| 7+F       | =test/m3-anvilboot-smoke-test.el= 新規 + semantic divergence 3 class × +3 = +9 件 (T114 A2 反映 v1) | +19+  |
+| 合計      |                                                   | +138+ |
+
+** 5.2 bench plan (DRAFT v1、ratio gate)
+
+bench script = =bench/nelisp-eval-bench.el= 新規 (Phase 7.1.5 既存
+=bench/nelisp-bench.el= と並設):
+
+- =eval-fib-30= = =fib(30)= を interpret path のみで eval、Phase 3
+  SHIPPED baseline 比 ±5% (= refactor regression check、native path
+  比較は Phase 7.1.5 既存 bench で別計測)
+- =macroexpand-cl-loop= = 中規模 =cl-loop= 1 form の =macroexpand-all=、
+  cache miss 1 回目 + cache hit 100 回目で 50x+ speedup pin
+- =cold-init-anvil= = anvil-server.el load 時間 (T114 E1 反映 v1、Doc 32
+  v2 §0 完遂 gate "cold-init ≤ 500ms (pinned reference host、p95、N=100)"
+  と整合する subset gate に書き直し):
+  - *gate (本 doc Phase 7+F)*: anvil-server.el load + 必要 macro register
+    + 必要 advice register の 3 step 合計が *Doc 32 v2 §0 cold-init
+    ≤ 500ms の中で ≤ 200-300ms* (= subset gate)
+  - measurement protocol = Doc 32 v2 §0 と同 reference host (= Linux
+    x86_64 baseline)、N=100、p95
+  - =cold-init-anvil= の 200-300ms = Doc 32 §0 500ms budget を
+    (1) Rust side runtime initialize ~100ms + (2) NeLisp core load
+    ~100ms + (3) anvil-server.el load ~200-300ms に decompose した
+    subset。3 + (1)+(2) = ≤ 500ms 整合
+  - もし subset gate 未達 (= 200-300ms 超) なら §6.10 gate-W10 kill
+    criteria 発動 (= 30s 超で escape hatch、200-300ms 〜 30s の中間
+    範囲は Doc 32 §0 500ms gate 全体超過 = Doc 32 v2 §6.6 replan gate
+    引き継ぎ、§11.3 errata 内に明示)
+  - *NB*: v0 で書いた "5s 以内" は Doc 32 §0 と桁違い (10x) で互換
+    崩れ、本 v1 で subset gate 化 (200-300ms) に再定義済 (T114 E1
+    解消)。v0 の "5s" / "20-30s 緩和" 文言は §9.7 で v1 reviewer round
+    に向けて削除予定 (= subset gate 内の measurement protocol 確定が
+    open question で残る、§9.7 v1 反映)
+- =m3-tools-call-rt= = =initialize / tools/list / tools/call= 各 1 件
+  の round-trip latency、目標 100ms 以下 (interpret path のみ)
+
+** 5.3 anvil bootstrap M3 smoke (~5+ scenario)
+
+- M3-1: anvil-server initialize round-trip
+- M3-2: anvil-server tools/list 6+ tool 列挙
+- M3-3: anvil-server tools/call =defs-search= round-trip 緑
+- M3-4: anvil-orchestrator child session spawn (Phase 9d.L 完成 path
+  経由) + tools/call round-trip
+- M3-5: claude SDK Phase E (Doc 38 §3.E) NeLisp exec 経路 1 件
+
+** 5.4 measurement protocol (Doc 39 §5.X 整合)
+
+- bench host = Doc 28 v2 / Doc 29 v2 / Doc 32 v2 と同 reference host
+  (= Linux x86_64 baseline、macOS arm64 secondary)
+- =cargo build --release= 経由、host Emacs 経路と Phase 7.5
+  =--no-emacs= 経路の両方で計測 (= peaceful coexist 検証)
+- 1h soak は CI runner 占有、24h soak は release-audit infra weekly
+- *T114 E3 反映 v1 (= Phase 3 SHIPPED baseline data 整備 protocol)*:
+  - §5.2 "eval-fib-30 = Phase 3 SHIPPED baseline 比 ±5%" の baseline
+    が =docs/bench-results/= 配下に commit 済か Phase 7+A 着手前に
+    grep 確認 (= =ls docs/bench-results/ | grep -i "phase3\|eval-fib"=)
+  - 無い場合は本 doc Phase 7+A 着手前に baseline measurement PR を
+    別途出す (= =bench/nelisp-eval-bench.el= prototype 1 件 + raw
+    data 1 件 commit)
+  - baseline 不在で本 doc 着手すると ±5% gate が無効化、本 phase 完遂
+    判定不能 = blocker
+
+* §6 Risks
+
+** 6.1 lexical binding closure capture correctness
+
+Phase 3 SHIPPED の =nelisp-closure ENV PARAMS BODY= alist env が
+over-captured (= 同 sym の lexical → dynamic 昇格、=defvar= 後置)
+で edge case bug がある可能性。Phase 7+C 着手前に =anvil-* / nelisp-*=
+全 corpus を =defvar= 後置 grep audit、bug 候補があれば fix scope を
+phase 7+C 内に組み込む。
+
+mitigation:
+- ERT pin 4 形式 (self-rec / mutual-rec / captured-mutate /
+  over-captured) を必須化
+- audit script = =scripts/audit-defvar-postpose.sh= 新規 (= 1 file
+  内で =defvar SYM= が =setq SYM= や =SYM= reference より後置の箇所
+  検出)
+- corpus level の interpret path round-trip = M3 smoke で検出可能
+
+** 6.2 dynamic binding fallback の Emacs 互換境界
+
+Emacs Lisp の dynamic binding は file-level =;; -*- lexical-binding:
+nil; -*-= で activate、anvil-* は全 lexical-binding: t、ただし
+=cl-loop= 等 macro が内部で dynamic 風 idiom を使う場合あり。Phase
+3 SHIPPED で動いている事実が baseline、本 doc では新規破壊しない。
+
+mitigation:
+- file-level lexical-binding header を Phase 7+A reader が確実に
+  parse + propagate
+- =defvar= / =defconst= 後の dynamic 昇格は Phase 3 既挙動 (=
+  =nelisp--specials= 経由) を維持
+- ERT regression suite で全 Phase 3 既存 ERT 緑保持
+
+** 6.3 tail-call optimization (Phase 7.1.5 既 SHIPPED と整合)
+
+interpret path での TCO は scope 外 (= Phase 7.1.5 native path で
+SHIPPED 済、Doc 28 v2 §11.5 errata 反映)。interpret path では deep
+recursion で stack 食う = stack overflow risk。
+
+mitigation:
+- =max-lisp-eval-depth= / =max-specpdl-size= の Emacs 互換
+  =defcustom= を提供、user 側で増設可
+- anvil-* 内 deep recursion 用法は Phase 7.1 native compile
+  routing で実用上問題なし (= interpret path は cold-init / debug
+  限定)
+- 完全 TCO 求める user は Phase 7.1.5 native compile 経由を推奨
+
+** 6.4 macro hygiene (Emacs Lisp pseudo-hygienic 互換)
+
+完全 hygienic macro は scope 外 (§1.6)、Emacs Lisp 流 =cl-gensym=
+ベースの自前 hygiene を user 側責任で実装してもらう方針。
+
+mitigation:
+- =cl-gensym= primitive 提供 (= Phase 3 SHIPPED 済、*T114 C3 反映 v1
+  で grep audit 必達*: =grep -n "cl-gensym\|gensym" src/nelisp-*.el
+  test/nelisp-*-test.el= で実装存在 + ERT 件数を確認、Phase 7+D 着手
+  前必達)
+- core macros (=push / pop / dolist / dotimes=) は内部で =cl-gensym=
+  使い hygiene 確保 (= NeLisp 実装記述時の dev convention) — *T114
+  C3 反映 v1: =src/nelisp-macro.el= 278 LOC を audit、core macros
+  各々が =cl-gensym= 使用 hygiene 確保しているか source review、不足
+  分は §3.4 Phase 7+D scope 内で fix*
+- macro expansion debug 用に =macroexpand-all= の =env= 引数で
+  binding 視覚化 (Phase 7+D)
+- audit 結果は §6.4 v2 LOCKED 時に raw data として inline 予定 (=
+  reviewer round で grep evidence pin)
+
+** 6.5 read syntax 完全互換 (=#@= / =#,= / etc edge case)
+
+§3.1 で扱う edge case の一部 (=#,FORM= eval-at-read) は security
+boundary issue を伴う。
+
+mitigation:
+- =defcustom nelisp-read-eval-default= で =#,FORM= の eval 動作
+  opt-in default nil
+- corpus round-trip audit = anvil / nelisp / Emacs subr.el で 0
+  件 fail を完遂条件化
+- 第三者 elisp 読み時の RCE risk は user / SDK 側で sandboxing 担当
+
+** 6.6 perf vs native-compile (Phase 7.1 既 SHIPPED と peaceful coexist)
+
+interpret path は native compile (Doc 28 v2) と階層関係:
+- *cold path* = interpret = boot / debug / cold-init / 一度しか
+  呼ばれない / =eval-when-compile= 系
+- *hot path* = native compile = bench gate 対象 (Doc 28 v2 §5.2)
+  fib / fact-iter / alloc-heavy 等
+
+interpret path の perf は Phase 3 SHIPPED baseline 比 ±5% を維持
+(= refactor regression なし)、bench gate 通過は native path 既
+SHIPPED 担当。
+
+mitigation:
+- bench gate 二重化 = =bench/nelisp-bench.el= (native path、既存)
+  + =bench/nelisp-eval-bench.el= (interpret path、新規) を別 CI
+  job で計測、後者は ratio ±5%
+- semantic divergence 0 件 = 同 form の native-compile 結果と
+  interpret 結果が =equal= で一致 (= ERT cross-validation、T114 A2
+  反映 v1 で 1 件 → 3 class × 各 +3 件 = +9 件 に class 化):
+  - *class 1: macro expansion equivalence* — eval-time vs read-time
+    defer の 2 path で同 form の expansion result equal、3 件 (=
+    simple defmacro / cl-loop / pcase)
+  - *class 2: advice :around order equivalence* — interpret path と
+    native path で advice chain の execute 順序が一致、3 件 (=
+    single :around / nested :around 2 段 / mixed :before+:around+:after)
+  - *class 3: closure capture equivalence* — over-captured (=
+    lexical → dynamic 昇格) closure が両 path で identical capture、
+    3 件 (= self-rec / mutual-rec / captured-mutate + over-captured
+    boundary)
+  - 合計 +9 件、Phase 7+F integration ERT に追加 (§5.1 ERT 合計
+    +125+ → +138+ に v2 carry-over、§5.1 table v2 で更新、内訳 = +9
+    (A2 semantic divergence) + +4 (B1 pcase) を 7+F / 7+D 各 row に
+    分配、T127 B-NEW-1 解消)
+- *closure object format compat (T114 C2 反映 v1)*: interpret path
+  alist env (§2.5 推奨 A) と native compile path flat-vector env
+  (Doc 28 v2 §2 想定) の cross-call 形式変換は本 doc §6.6 範囲外
+  だが、mixed-mode dispatch (= interpret 中の closure を native で
+  call back) で alist → flat-vector 変換 cost が funcall 毎に発生
+  する risk。Doc 28 v2 §2 担当者と reviewer round 1 で format 確定
+  予定、共通中間形式 vs per-path format + 変換 helper の choice は
+  本 doc §9 open question (= §9.8 として v1 新規、T127 B-NEW-6 解消で
+  v2 で numbering 表記揺れ統一) に追加
+
+** 6.7 advice 実装の anvil 既使用 audit
+
+anvil-* 内 advice 使用箇所 (= 推測、reviewer dispatch で grep audit
+予定):
+- anvil-orchestrator: provider middleware として =:around= 多用
+- anvil-host: process-* 系の =:before= log injection
+- anvil-defs: tool dispatch の =:filter-args= (= §2.6 v2 carryforward)
+
+mitigation:
+- 完遂前に =grep -rn 'advice-add\|defadvice' anvil.el/= 実行、使用
+  形式 audit + 4 種 (=:before / :after / :around / :override=) で
+  カバー率 95%+ pin
+- =:filter-args / :filter-return= は v2 carryforward、間に合わない
+  module は M3 milestone から carve out (= 個別 release-audit
+  follow-up)
+- *T114 D4 反映 v1*: §13 ?-3 default 採用 (= 4 種 minimum) の根拠
+  data として、v1 reviewer round で grep audit raw data table を本
+  §6.7 に inline 必達 (= advice-add / defadvice 行を file:line で
+  全列挙、HOW 別 (=:before / :after / :around / :override / その他)
+  で集計)
+
+** 6.8 macro expansion + advice + closure capture の三位一体 cost
+
+Phase 7+D macro memoize + Phase 7+E advice chain + Phase 7+C closure
+capture の組合せで anvil-server tool dispatch 1 cycle が
+=macroexpand × N + advice × M + closure × K= の重ね掛け、最悪 case
+で latency 数 10ms の risk。
+
+mitigation:
+- macro memoize cache hit 率 95%+ を bench gate に組み込む (Phase
+  7+D)
+- advice chain 深さは module 設計側で <=3 を guideline 化
+- closure capture の env size <=10 entry に anvil dev convention
+  で pin (= small-env で alist lookup 最速、§2.5 推奨 A 根拠)
+
+** 6.9 anvil-server return-shape contract bug (T97-FOLLOWUP-1) 解消遅れ
+
+T97 で発覚した contract bug (= =anvil-server-with-error-handling= が
+=cons= return reject) は本 Doc 40 scope 外で解消必要、解消遅れで
+M3 milestone 滑り。
+
+mitigation:
+- 本 doc Phase 7+F 着手 6 週間前に T97-FOLLOWUP-1 を別 PR で解消
+  (= anvil-server side fix or NeLisp eval side =prin1-to-string=
+  auto-wrap、どちらか)
+- Phase 7+F 着手 gate に "T97-FOLLOWUP-1 closed" を必須化
+
+** 6.10 schedule / scope replan gate (= week-N kill criteria + escape hatch、T114 B3 反映 v1)
+
+Phase 7+A〜7+F の 8-14 週間枠を超えた場合の replan 手順 = Doc 28 v2 §6.6
+gate-W4/W8/W12 pattern を本 doc 用に 5 gate へ展開。各 gate で
+=anvil-dev release-audit :scope phase-7+= 相当 script が進捗計測、
+=anvil-dashboard= で可視化、user signoff で発動。判断遅延は本 risk
+の自爆 path、weekly review 必須。
+
+| gate     | 時期      | 評価対象                | kill criteria (= 達成不能なら scope 切り)                |
+|----------+-----------+-------------------------+----------------------------------------------------------|
+| gate-W2  | week 2    | 7+A reader 進捗 + corpus round-trip | 7+A 未完 → corpus を anvil-server.el + anvil-orchestrator.el 2 module subset に縮退 (= 残 56 module は 7+F で再 attack)、=#@N= / =#,FORM= 双方完成必達 |
+| gate-W4  | week 4    | 7+B + 7+C 進捗          | 7+B 未完 → 35 件 freeze を 27 件に縮退 (= Phase 3 SHIPPED 23 + 必須 4 = =save-excursion / save-restriction / save-match-data / setq-local=)、残 7 件 (=setq-default / let-when-compile / eval-when-compile / eval-and-compile / inline-let / declare / save-current-buffer=) は v1.x carryforward (T127 B-NEW-3 解消、=pcase= は 7+D scope = gate-W6 評価対象) |
+| gate-W6  | week 6    | 7+D macro memoize       | memoize cache hit 率 < 50% → cache size 拡大 (= LRU 64 → 256 entry) + cl-loop / pcase 級 macro を pre-compute table に格上げ。それでも未達なら Phase 7.1 native compile path 経由を default 化、interpret path は debug only に降格 |
+| gate-W8  | week 8    | 7+E advice + 制御 flow  | advice :around 未完 → =:before= / =:after= 2 種のみで anvil-host log injection は救えるが、anvil-orchestrator =:around= middleware は v1.x carryforward (= 該当 provider 群を host Emacs path 経由に fallback) |
+| gate-W10 | week 10   | 7+F M3 cold-init        | cold-init > 30s → escape hatch 発動 = 本 doc を v1.0 ship gate から外す (§1.5)、anvil bootstrap M3 milestone は post-v1.0 carryforward 化、Doc 38 §3.E SDK Phase E も同期で post-v1.0 (= Doc 38 errata pair commit を本 doc LOCKED v2 round に束ねる、§11.5 参照) |
+
+*replan 時の優先度* (kill 順位、低 → 残置 / 高 → 切り捨て候補):
+7+F (M3 直結、不可侵) > 7+A (reader 不可侵) > 7+B (基礎 special-form 必須) >
+7+E (advice、anvil-orchestrator 必須) > 7+D (macro polish、core macros
+は phase 3 で動く) > 7+C (closure polish、phase 3 baseline で 95% 動く)
+
+*kill criteria 発動主体*: gate-WN 時点で =anvil-dashboard= 表示の進捗
+metric を user 確認 → user signoff で kill 発動 → 該当 sub-phase scope を
+ERT regression-free のまま縮退、残 task は v1.x carryforward log に記録
+(= =/handoff/nelisp_phase7plus_doc40_carryforward.org= 新規想定)。
+
+*gate-W10 → escape hatch chain*: gate-W10 cold-init > 30s で escape hatch
+発動 = §1.5 / §7 v1.0 ship gate からの carve-out、Doc 38 §3.E SDK
+Phase E も同期 carryforward 化。escape hatch 採用判断は Doc 39 §1.5
+ship 順序 swap proposal pattern と同形、~2-4 週間 buffer 必要。
+
+* §7 完遂 gate (DRAFT v1、T114 反映、LOCKED 化条件 + 順序 agnostic baseline 式 + escape hatch + week-N kill criteria)
+
+** 必須条件 (= LOCKED v2 化 = main merge gate)
+
+- Phase 7+A 〜 7+F 全 sub-phase SHIPPED (各 sub-phase ERT delta 達成
+  + 各 §3 risks の mitigation 完了)
+- 合計 ERT +138+ 新規 PASS (T114 A2 反映 v1、§5.1 table 整合)、既存
+  NeLisp ERT regression-free
+- M3 milestone smoke (= anvil-server 全 58 module を NeLisp eval で
+  動作 + tools/call round-trip 緑) PASS
+- 1h soak (CI、blocker) PASS = 100 cycle anvil bootstrap M3 smoke
+  無 crash + RSS growth bound
+- bench gate (§5.2) PASS = interpret path Phase 3 SHIPPED baseline
+  比 ±5%、*cold-init subset gate ≤ 200-300ms (Doc 32 v2 §0 cold-init
+  ≤ 500ms 整合の subset、T114 E1 反映 v1)*、tools/call round-trip <100ms
+- Doc 38 §3.E claude self-extension SDK Phase E (NeLisp exec) との
+  integration smoke 緑
+
+** Doc 40 LOCKED 化 + main merge gate
+
+baseline 式 (順序 agnostic、Doc 39 §0 と同 phrase):
+"Phase 7+ 完遂時点 1244 + Phase 9 series cumulative delta + 本
+phase +138+" (T114 A2 反映 v1、+125+ → +138+) (= Phase 7.5 完遂 +
+Phase 9 series 完遂時点で実数確定、本 doc は式提示のみ)
+
+** anvil bootstrap M3 milestone trigger
+
+Phase 7+F SHIPPED + T97-FOLLOWUP-1 解消 + Doc 38 §3.E SDK integration
+緑 = M3 milestone trigger:
+- anvil-server.el 全機能 standalone path 確立
+- claude self-extension SDK Phase E (NeLisp exec) unblock
+- NeLisp 公開告知 gate 充足 (=memory:
+  feedback_nelisp_announcement_standalone_gate= 整合)
+
+** v1.0 ship との関係 (escape hatch、§1.5 と整合)
+
+- default = 本 Doc 40 完遂を v1.0 ship gate に組み込む (= path-α、
+  §1.3 推奨)
+- escape hatch = 8-14 週間枠超過時に v1.0 ship gate から外し、
+  post-v1.0 carryforward 化 (= §6.10 replan gate と同条件)
+
+* §8 Out of scope
+
+- bytecode VM (=src/nelisp-bytecode.el=) の改修 (Phase 3+ SHIPPED
+  そのまま使用)
+- Phase 7.1 native compiler (Doc 28 v2) との競合 = §6.6 で
+  peaceful coexist
+- 完全 hygienic macro (= Emacs Lisp pseudo-hygienic 互換のみ)
+- thread-local =let= dynamic binding (= single-thread MVP、Phase
+  9d / Doc 39 §6.5 整合)
+- mini-buffer / completion / display special-form (= Phase 9b /
+  Doc 34 後 phase)
+- =eval-when-compile= 内 byte-compile (= Phase 7.1 native compiler
+  担当)
+- bench gate value 軸 fib(30) = Doc 28 v2 §11.5 errata で post-v1.0
+  defer 済、本 doc も同方針継承
+- string-surgery layer 拡張 (= 別 task = Phase 9d.A5 想定 ~600-1000
+  LOC、defalias bridge で対応可、§1.1 / T97 finding 整合)
+- T97-FOLLOWUP-1 (= anvil-server return-shape contract bug) 解消 =
+  別 PR、§6.9
+
+* §9 Open questions
+
+** 9.1 lexical-binding default (= t / nil / per-file)
+
+§2.3 で推奨 A = Emacs Lisp 既定踏襲 (file-level header)。reviewer
+round で確定。本 doc default = A、ただし全 anvil-* / nelisp-* file
+が =;; -*- lexical-binding: t; -*-= header 統一済の事実が確認
+できれば B (lexical-only) も検討余地あり (= header parse 削れる perf
+微改善)。
+
+** 9.2 macro 展開 timing (= read-time vs eval-time)
+
+§2.4 で推奨 A = eval-time + memo cache。reviewer round で確定。
+Phase 3+ SHIPPED が既に eval-time であり、本 doc も eval-time 維持
+が default、read-time eager expansion (B) は anvil-server.el の
+top-level =defmacro= 後置で詰まる risk あり。
+
+** 9.3 native-compile path との関係 (= eval は fallback?)
+
+§6.6 で peaceful coexist = interpret path は cold / native path は
+hot の階層関係。reviewer round で正式確定。fallback only (= native
+が必ず先、fail 時のみ interpret) も option、その場合 cold-init
+protocol が複雑化。
+
+** 9.4 advice 実装 (= Phase 9b と Doc 40 のどちらが担当、T114 B4 反映 v1)
+
+§2.6 で本 doc =src/nelisp-advice.el= 新規担当、Phase 9b (Doc 34) は
+buffer-local / hooks のみ。
+
+*T114 B4 反映 v1 (= LOCKED v2 必達の追加 sub-task)*:
+
+LOCKED v2 化までに Doc 34 担当者と consensus 必達:
+- Doc 34 §2.X / §3.X に "advice subsystem は本 Doc 40 §2.6 担当、Doc 34
+  scope 外" と明示記述があることを reviewer round で grep 確認
+- 無い場合 = Doc 34 errata pair commit を本 Doc 40 LOCKED v2 round に
+  追加 (= §11.6 errata 新規予定、v2 で §11 chapter 末尾に物理 section
+  化済 = T127 B-NEW-2 解消、実体化判断は LOCKED v2 main merge 直前の
+  grep audit 結果次第)
+- §2.6 LOCKED 推奨 A の根拠に "Doc 34 §X.Y で boundary 確定済 (commit
+  XXX)" を pin、なければ §13 user signoff item ?-3 (advice scope) に
+  "Doc 34 boundary も同時 freeze" 文言を追加
+
+*v1 reviewer round 着手前の grep audit script (推奨)*:
+=grep -n "advice\|nelisp-advice" docs/design/34-*.org=
+
+→ 結果が "buffer-local / hooks 内 advice"言及のみで Doc 40 担当宣言が
+無ければ pair commit 必達。0 件なら本 doc §2.6 単独で LOCKED 可能。
+
+** 9.5 Doc 27 §3 errata path 選択 (path-α / path-β / path-γ)
+
+§1.3 で path-α (推奨) = Doc 27 §3 critical path に Phase 7+
+"evaluator" 追加。reviewer round + user signoff で確定。path-β =
+post-v1.0 並走、path-γ = Phase 7.5 swallow。
+
+** 9.6 unwind-protect cleanup form 内 signal の unwind 順序
+
+§3.5 risks で言及。Emacs nadvice 実装と byte-perfect 一致を要求
+するか semantic 一致で足るか。reviewer round で確定 (= byte-perfect
+要求は ERT 数件追加、semantic で足りるなら本 doc default で OK)。
+
+** 9.7 cold-init time budget (Phase 7+F gate、T114 E1 反映 v1 で再定義)
+
+v1 で §5.2 を *Doc 32 v2 §0 cold-init ≤ 500ms 整合の subset gate* に
+書き直し済 (= anvil-server.el load + macro register + advice register
+合計 ≤ 200-300ms)。本 open question は subset gate 内 measurement
+protocol 詳細 (= 3 step decompose の比率調整、各 step の bench harness
+名 + reference host class + N trials + percentile) の reviewer round
+確定に絞られる。
+
+具体 reviewer round 確認項目:
+- (1) Rust side runtime initialize ~100ms / (2) NeLisp core load ~100ms /
+  (3) anvil-server.el load ~200-300ms の比率は anvil corpus 58 module /
+  Phase 7+D macro register volume / Phase 7+E advice register volume
+  に直接依存、Phase 7+F 着手前に実 measurement で再 calibrate
+- 3 step subset gate 各々の =anvil-dev release-audit :scope phase-7+F=
+  scripts 整備 (= Doc 32 v2 §5.X bench harness pattern と同形)
+- macOS arm64 / Linux arm64 = 同 subset gate pass 必須 (= Doc 32 v2 §0
+  non-blocker qualification 整合)
+
+旧 v0 表記 "5s / 20-30s に緩和" は v1 で本 §9.7 から削除済 = Doc 32
+§0 と桁違い解消 (T114 E1)。
+
+** 9.8 closure object format compat (= alist env vs flat-vector env、T114 C2 反映 v1 新規)
+
+§6.6 mitigation 内の "closure object format compat" 節で言及済の
+open question:
+
+interpret path alist env (§2.5 推奨 A) と native compile path
+flat-vector env (Doc 28 v2 §2 想定) の cross-call で alist →
+flat-vector 変換 cost が funcall 毎に発生する risk。Doc 28 v2 §2
+担当者と reviewer round 1 で format 確定:
+- (a) 共通中間形式 (= 両 path で同 layout、変換 helper 不要、ただし
+  perf 劣化 risk)
+- (b) per-path format + 変換 helper (= 既存 alist / flat-vector を
+  維持、cross-call 時のみ変換 cost)
+
+推奨 = reviewer round で確定、本 v1 default なし。
+
+* §10 関連 doc
+
+** internal NeLisp design docs
+
+- Doc 27 LOCKED-2026-04-25-v2 (Phase 7+ critical path parent、本 doc
+  §1.3 path-α で errata 提案)
+- Doc 28 LOCKED-2026-04-25-v2 (Phase 7.1 native compiler、本 doc §6.6
+  peaceful coexist)
+- Doc 28 §11.5 errata (bench gate redefine、本 doc §8 fib(30) defer
+  整合)
+- Doc 32 LOCKED-2026-04-25-v2 (Phase 7.5 integration、本 doc §2.10
+  cold-init 4-stage bootstrap 経路再利用 + §3.6 stage1 anvil-* load
+  追加 errata 提案)
+- Doc 33 v2 (architecture、本 doc Layer 1A frontend 既述に対する
+  parent doc 化)
+- Doc 34 LOCKED-2026-04-25-v2 (Phase 9b extension substrate、本 doc
+  §2.6 advice 担当 boundary)
+- Doc 38 LOCKED-2026-04-25-v2 (claude self-extension SDK、本 doc
+  §3.6 Phase E NeLisp exec dependency)
+- Doc 39 LOCKED-2026-04-25-v2 (Phase 9d process subprocess、本 doc
+  §3.6 anvil-orchestrator child session integration)
+
+** external precedent reference
+
+- Emacs Lisp Manual §10 "Functions" / §12 "Macros" / §13 "Loading"
+  (special-form / macro / advice spec source-of-truth)
+- SBCL =sb-impl/eval.lisp= (= interpret path coexist with
+  native-compile precedent、本 doc §6.6 階層関係 root reference)
+- Racket interpret/native split (= mixed-mode evaluator pattern)
+- T97 M1 boot smoke report =docs/bench-results/m1-bootsmoke-2026-04-25-T97.md=
+  (本 doc §0 / §1.1 直接 cite 元)
+
+** 関連 memory
+
+- =project_nelisp= (NeLisp v1.0 完遂条件 #4 + Phase 7+ design pipeline
+  完結 status)
+- =project_nelisp_defs_index= (Phase 6.5、本 doc cold-init で利用)
+- =project_nelisp_org_index= (Phase 6.6.1、本 doc cold-init で利用)
+- =project_anvil_general_b2cd_pivot= (anvil bootstrap milestone
+  roadmap、本 doc M3 trigger 先)
+- =feedback_nelisp_announcement_standalone_gate= (= NeLisp 公開告知
+  gate に M3 = 本 doc 完遂が含まれる)
+- =feedback_anvil_uses_nelisp_architecture= (anvil ↔ NeLisp 整合、
+  本 doc M3 milestone 中心 record)
+- =feedback_canonical_byte_compile_stale_elc= (= macro memoize cache
+  invalidation の同質 risk、§3.4 risks)
+
+* §11 Parent doc errata 提案 (DRAFT v1、T114 反映、第二弾 reviewer dispatch 後 v2 で確定 / 取下げ)
+
+** 11.1 Doc 27 §3 errata: Phase 7+ "evaluator" 新設 (path-α 採用時、T114 A1 反映 v1)
+
+§1.3 path-α 採用時、Doc 27 LOCKED-2026-04-25-v2 §3 7.X table に以下
+*独立 row* (= 7.X とは別 axis、並走 sub-pipeline) を追加:
+
+| Phase id        | scope                                  | LOC delta        | 期間          | 並走 / 直列 | 状態 (本 doc 完遂時)            |
+|-----------------+----------------------------------------+------------------+---------------+-------------+----------------------------------|
+| 7+ (= 7.X 別 axis) | NeLisp Lisp evaluator (Doc 40、6 sub-phase 7+A〜7+F) | +2800-4900 LOC delta | 8-14 週間 (+2x 補正後 16-26 週間想定) | 並走 (Phase 7.0 SHIPPED 後で着手可、Phase 7.1-7.5 と平行) | Phase 7+A〜7+F 全 SHIPPED 時 LOCKED v2 |
+
+errata 適用時の Doc 27 §3 sum 行への影響 (= sum 計算式、T114 A1 解消):
+
+- *LOC sum 計算式*:
+  =Doc 27 §3 sum LOC = Σ(Phase 7.0-7.5 LOC) + Doc 40 LOC delta=
+  - Doc 27 §3 7.X table 既存合計 (= 既 LOCKED 値) を baseline、
+    Doc 40 LOC delta +2800-4900 を *並走 axis として独立加算*
+  - 並走想定なら sum 期間影響なし、ただし LOC sum は単純加算
+- *期間 sum (並走 vs 直列)*:
+  - *並走 (= path-α default)*: Phase 7.0 SHIPPED 後の任意 timing で
+    Doc 40 着手、Phase 7.1-7.5 と physical resource (= dev attention)
+    のみ競合。並走可能性根拠 = (1) Phase 7+A reader / 7+B special-form
+    は Phase 7.1 SSA IR 着手前後で独立、(2) Phase 7+F M3 cold-init は
+    Phase 7.5 stage1 完成後に embed (= §11.3 errata で Phase 7.5
+    内に load step 追加)、(3) Phase 7+D macro / 7+E advice は Phase
+    7.1.X scaffold 後の任意 timing で、4 sub-phase (7+A/B/C/D) は
+    7.1 排他依存なし
+  - *並走時の attention 競合 mitigation*: Doc 40 着手 dev (= 1-2 名)
+    と Phase 7.1-7.5 dev は別 dispatch、parallel session leverage
+    (= memory: feedback_git_worktree_parallel_sessions) で物理隔離
+  - *直列 (= 並走不能と判明時の fallback)*: Phase 7.5 完遂後に Doc 40
+    着手 = sum 期間 +8-14 週 (+2x 補正後 +16-26 週 = +4-7 ヶ月)
+- *依存 matrix (= Doc 40 sub-phase ↔ Doc 27 sub-phase)*:
+
+  | Doc 40 sub-phase | 7.0 | 7.1 | 7.2 | 7.3 | 7.4 | 7.5 |
+  |------------------+-----+-----+-----+-----+-----+-----|
+  | 7+A reader       | -   | -   | -   | -   | -   | -   |
+  | 7+B special-form | -   | -   | -   | -   | -   | -   |
+  | 7+C closure      | -   | -   | -   | -   | -   | -   |
+  | 7+D macro        | -   | -   | -   | -   | -   | -   |
+  | 7+E control flow | -   | -   | -   | -   | -   | -   |
+  | 7+F M3 cold-init | -   | -   | -   | -   | -   | embed (§11.3) |
+
+  =-= = 直接依存なし (並走可)。7+F のみ Phase 7.5 stage1 入口に embed
+  (= Doc 32 errata §11.3 で stage1 入口に anvil-server.el load step
+  追加)。
+
+*errata pair commit content (Doc 27 v2 → v3 LOCKED)*:
+
+1. Doc 27 §3 7.X table に Phase 7+ row を *独立 axis として追加*
+   (上記 table、=Phase id= 列 fmt = =7+= で 7.X と区別)
+2. Doc 27 §3 sum 行に "並走想定 = 期間影響なし、LOC delta は別 axis
+   で +2800-4900" の補足追記
+3. Doc 27 §0 v1.0 完遂条件 #4 (= 4 核 NeLisp 化) を "*+ Phase 7+
+   evaluator subsystem (Doc 40 LOCKED v2 完遂)*" として明示拡張
+4. Doc 27 §3 末尾に "Phase 7+ pipeline = Doc 40 で詳細 spec、本 doc は
+   axis 名のみ pin" の cross-ref 追記
+
+*pair commit 順序*: 本 Doc 40 LOCKED v2 main merge と *同 commit 群*
+で実施。順序 = (1) Doc 38 §3.E errata 先行 (§11.5、E2 の chicken-egg
+回避) → (2) Doc 40 LOCKED v2 stamp → (3) Doc 27 / Doc 32 errata pair
+を 1 commit で同時 merge。Doc 27 v3 LOCKED に格上げ (Doc 40 LOCKED v2
+が gate)。
+
+*path-β / path-γ 採用時の Doc 27 errata*:
+- path-β: Doc 27 errata なし (= 本 doc は post-v1.0 doc、Doc 27 v2
+  LOCKED 不変)
+- path-γ: Doc 27 §3 表の Phase 7.5 row に "LOC delta +1500-3000 拡張
+  (Doc 40 swallow)" を追記、別 axis ではなく Phase 7.5 内 step 化
+
+** 11.2 Doc 28 v2 §11.5 errata との関係 (本 doc §8 fib(30) defer 整合、T114 A3 反映 v1)
+
+Doc 28 LOCKED-2026-04-25-v2 §11.5 errata (=docs/design/28-phase7.1-native-compiler.org=
+line 1025+ "*§11.5 bench gate redefine errata*") で fib(30) 30x bar を
+post-v1.0 future Phase に defer 済 (= line 1047-1048 "fib 30x bar は
+post-v1.0 future Phase (recursive inliner / escape analysis) に defer")。
+
+確認 grep (= 2026-04-25 verified):
+- =grep -n "11.5\|fib.*defer" docs/design/28-phase7.1-native-compiler.org=
+  → §11.5 chapter heading at line 1025、fib defer 言及 line 1047-1048
+- §11.5 chapter は "v2 LOCKED 後の post-LOCK errata、T96 finding 反映"
+  と書かれており、本文 (line 1029-1062) で 5/6 必達 (3 value + 2/3
+  timing) に gate redefine 済
+
+→ 本 Doc 40 起草時点で Doc 28 §11.5 既反映済 = errata 不要、§8 fib(30)
+defer 継承で問題なし。T114 A3 raised の "Doc 28 §11.5 chapter 不在
+risk" は line 1025 で実在確認、grep evidence で解消。
+
+** 11.3 Doc 32 v2 §3.X errata: stage1 入口に anvil-server.el load 追加 (path-α 採用時)
+
+§2.10 推奨 A 採用時、Doc 32 LOCKED-2026-04-25-v2 §3.2 (Phase 7.5.2
+=bin/anvil --no-emacs= mode + 4-stage cold-init) の scope に以下
+step を追加:
+
+#+begin_quote
+- stage1 入口に Doc 40 Phase 7+F cold-init protocol 経由
+  =anvil-server.el= 全 module load step を追加
+- macro register / advice register 必要 entries 全 install
+#+end_quote
+
+errata 適用時の Doc 32 LOC budget +200 (= cold-init wiring) を §0
+release artifact ready に反映予定。
+
+** 11.4 Doc 33 v2 §4 / §6.1 errata: Layer 1A frontend description 更新 (T114 E4 反映 v1 = main merge gate 外し)
+
+Doc 33 v2 §3 / §4 で Layer 1A = "frontend = reader / evaluator /
+special forms / ..." と既述あり、本 Doc 40 起草で *parent doc 化*
+される。
+
+errata 適用時:
+- Doc 33 v2 §4 表の "=src/nelisp-read.el=" / "=src/nelisp-eval.el="
+  行に "本 doc Doc 40 で Phase 7+ で拡張" を追記
+- Doc 33 v2 §6.1 (関連 doc) 表に "Doc 40 Phase 7+ Lisp evaluator"
+  を追加
+
+*T114 E4 反映 v1*: 本 §11.4 errata は実質 doc tag 更新のみ (= cosmetic)、
+Doc 33 v2 を re-LOCKED する必要なし。本 Doc 40 LOCKED v2 main merge
+gate (= §13 main merge gate) からは *外す*、後続 follow-up commit で
+追記 (= LOCKED v2 main merge と独立、速度面で合理)。
+
+** 11.5 Doc 38 LOCKED-2026-04-25-v2 §3.E errata: NeLisp exec dependency 明示 (T114 E2 反映 v1)
+
+*T114 E2 finding (= 双方向 textual evidence verify)*:
+
+Doc 38 §3.E LOCKED-2026-04-25-v2 を grep 確認 (= 2026-04-25 verified、
+=docs/design/38-claude-self-extension-sdk.org=):
+
+- Doc 38 §3.E (line 740-): *前提 = Phase E dispatch gate*:
+  - "Doc 32 v2 Phase 7.5 SHIPPED (= =bin/anvil mcp serve --strict-no-emacs= 動作)"
+  - "Phase 9a only (= D2 反映): =nelisp-elisp-compat= MVP top 20-30 API"
+  - "Phase 9b は coverage expansion として別節 (§3.E.coverage)、Phase E
+    hard dependency には **入らない**"
+- Doc 38 §1.4 (line 222-): "ただし Phase 7+ は 2026-04-25 段階で未完成"
+  と書かれているが *Doc 40 / Phase 7+ evaluator subsystem への明示参照
+  は 0 件* (= grep "Doc 40\|Phase 7\\+" docs/design/38-*.org = §1.4 +
+  §1.4 概念的言及のみ、§3.E 前提 list には入っていない)
+
+→ *Doc 38 v2 LOCKED は Doc 32 v2 Phase 7.5 SHIPPED を gate 化、Doc 40
+Phase 7+ を直接 prerequisite 化していない*。本 v0 の "Doc 38 already
+depends on Doc 40" 文言 (= §0 line 32 / §1.4 / §11.5 v0) は textual
+evidence 不在 = chicken-egg risk あり。
+
+*v1 errata 解消 path*:
+
+Doc 38 §3.E に *Doc 40 dependency を明示 textual evidence として追記*
+する pair commit を本 Doc 40 LOCKED v2 round に *先行 commit として
+束ねる* (= 順序: Doc 38 errata 先行 → Doc 40 LOCKED v2 stamp → Doc 27
+/ Doc 32 errata pair の 3 段階)。chicken-egg を構造的回避。
+
+errata 適用 Doc 38 v2 → v3 LOCKED 内容:
+
+1. Doc 38 §3.E *前提 (= Phase E dispatch gate)* list に row 追加:
+   - "*Doc 40 Phase 7+F SHIPPED (= NeLisp Lisp evaluator subsystem
+     完遂、anvil-server.el 全 module を NeLisp eval で動作可能)*"
+   - "*DEPENDS_ON: Doc 40 LOCKED v2 main merge*"
+2. Doc 38 §1.4 (= NeLisp Phase 7+ との関係) に Doc 40 cross-ref 追記:
+   - "本 Phase 7+ subsystem の詳細 spec は Doc 40 で別 doc 化、本 doc
+     §3.E SDK Phase E は Doc 40 Phase 7+F SHIPPED 後に着手"
+3. Doc 38 §0 完遂 gate の "Phase E 着手 gate" entry に "Doc 40 Phase
+   7+F SHIPPED 必達" を追記
+4. Doc 38 LOC budget / 期間 自体は不変、着手 gate のみ shift
+5. Doc 38 v2 LOCKED stamp は v3 LOCKED に格上げ (= 本 Doc 40 LOCKED v2
+   が gate)
+
+*errata pair commit 順序*: 本 Doc 40 LOCKED v2 main merge round 内で
+Doc 38 errata を *先行 commit*、その後 Doc 40 LOCKED stamp、その後
+Doc 27 / Doc 32 errata pair (= §11.1 / §11.3) を 1 commit で同時 merge。
+3 段階 sequence で chicken-egg 完全回避 (= Doc 40 が Doc 38 を待たず、
+Doc 38 errata が Doc 40 stamp を待たず、各々独立に commit 可能)。
+
+*v1 で v0 文言を撤回*: §0 / §1.4 の "Doc 38 §3.E が prerequisite 化"
+記述は v1 で "Doc 38 §3.E は Phase 7.5 SHIPPED を gate、本 doc errata
+で Doc 40 Phase 7+F も gate 追加予定" に書き直し済 (= 双方向 textual
+evidence verify 完了、T114 E2 解消)。
+
+** 11.6 Doc 34 LOCKED-2026-04-25-v2 §2.X / §3.X errata: advice subsystem boundary 明示 (T114 B4 反映 v1 placeholder、T127 B-NEW-2 解消で v2 で物理 section 化)
+
+§9.4 (= T114 B4 反映) で言及した Doc 34 errata pair commit の placeholder
+section。本 v2 では実体化条件のみ pin、actual errata content は v2 LOCKED
+化 round の grep audit 結果次第:
+
+*実体化条件* (= LOCKED v2 化 round で grep audit 実行):
+- =grep -n "advice\|nelisp-advice" docs/design/34-*.org=
+- 結果が "buffer-local / hooks 内 advice" 言及のみで Doc 40 担当宣言が
+  無ければ → 本 §11.6 を errata pair commit として実体化、Doc 34 v3
+  LOCKED に格上げ
+- 結果が既に "advice subsystem は本 Doc 40 §2.6 担当、Doc 34 scope 外"
+  と明示済なら → 本 §11.6 errata 不要、§9.4 cross-ref のみで足る
+
+*errata 適用時の Doc 34 v2 → v3 LOCKED 内容 (実体化時の予定)*:
+
+1. Doc 34 §2.X (event-source contract 周辺) に "advice subsystem は
+   本 Doc 40 §2.6 担当、本 Doc 34 scope 外 = buffer-local / hooks のみ"
+   を明示記述
+2. Doc 34 §3.X 関連 doc に "Doc 40 Phase 7+E (advice 新設)" を cross-ref
+
+*pair commit 順序*: 実体化判断は本 Doc 40 LOCKED v2 main merge 直前の
+grep audit 結果次第、本 §13 main merge gate からは *外す* (= §11.4
+cosmetic errata と同パターン、follow-up commit で対応)。LOCKED v2
+stamp は本 §11.6 実体化と無関係に進行可能 (T127 B-NEW-2 で物理 section
+化済 = §9.4 dangling cross-ref 解消)。
+
+* §12 v0 → v1 → v2 LOCKED path
+
+** v0 (T108 SHIPPED 起草、2026-04-25)
+
+- session-A 起草、本 doc structure freeze
+- 6 sub-phase 構成 + §3 各 sub-phase scope / ERT smoke / risks 列挙
+- §0 4-tier taxonomy (blocker / non-blocker qualification / post-ship
+  audit / release artifact ready) + common 軸 (Doc 32 v2 §0 整合)
+- §6 risks 10 件、§9 open questions 7 件、§11 parent doc errata 提案
+  5 件
+- LOCKED 推奨 = §2 全 11 項目で第一推奨 = A、ただし v1 reviewer
+  round で確定
+
+** v0 → v1 (T114 review = MAJOR REVISIONS、SHIPPED 2026-04-25 T120 session)
+
+T114 review 反映 (= P0 6 件 + P1 11 件 + NIT 3 件):
+- *P0 全 6 件 SHIPPED*:
+  - A1: §11.1 Doc 27 errata pair の sum 計算式 + 並走 vs 直列 + 依存
+    matrix 詳細 pin
+  - B1: pcase 担当 phase を 7+B → 7+D に統一 (= §2.7 / §3.2 / §3.4 /
+    §4.3 4 箇所同期)
+  - B3: §6.10 escape hatch を gate-W2/W4/W6/W8/W10 + kill criteria
+    full table 化 (Doc 28 v2 §6.6 pattern)
+  - D1: §13 ?-1 を path-α/β/γ 比較 matrix で書き直し
+  - E1: §5.2 cold-init 5s → Doc 32 v2 §0 ≤ 500ms 整合の subset gate
+    (≤ 200-300ms) に再定義
+  - E2: Doc 38 §3.E に Doc 40 dependency 明示 textual evidence 追記
+    errata (§11.5)、双方向 verify 完了
+- *P1 best-effort 反映 (11/11)*:
+  - A2: §6.6 semantic divergence ERT class 化 (3 class × +3 = +9 件)
+  - A3: Doc 28 §11.5 errata の line 番号 pin (line 1025)
+  - B2: §0 vs §3 期間 sum 1 週ズレ修正 + +2x 補正後 16-26 週明示
+  - B4: Doc 34 advice boundary consensus protocol pin
+  - C1: §4.3 corpus grep audit script 提示 + 欠落候補 audit 5 件
+  - C2: §6.6 closure object format compat 節追加 + §9.8 open question 化
+  - C3: cl-gensym SHIPPED 確認 + core macros hygiene audit script
+  - D2: §13 ?-4 として T97-FOLLOWUP-1 path (a)(b) を user signoff 化
+  - D3: §13 ?-2 escape hatch 詳細 inline (= §6.10 v1 と整合)
+  - E3: §5.4 Phase 3 SHIPPED bench baseline 整備 protocol
+  - E4: §13 main merge gate から §11.4 cosmetic errata 除外
+- *NIT 反映 (3/3)*:
+  - A4: §1.3 Doc 27 §3 7.X table phrasing 最新化
+  - C4: §4.3 Phase 3 SHIPPED commit cite protocol
+  - D4: §6.7 advice grep audit raw data table 必達化
+
+LOC: v0 1279 → v1 想定 ~1500-1900。第二弾 reviewer dispatch (= codex
+or 別 Claude session) で MINOR REVISIONS / READY-TO-LOCK 判定を求める
+T93 第二弾 review pattern。
+
+** v1 → v2 LOCKED (T93 第二弾 review pattern 想定、~1-2 日)
+
+- 第二弾 reviewer dispatch (= Codex 第二弾 or 第三 reviewer)
+- MINOR REVISIONS / polish 反映
+- v2 LOCKED stamp + main merge gate 充足
+- 本 doc LOCKED 化と同 commit で parent doc errata pair commit
+  実施 (= Doc 27 / Doc 32 / Doc 33 / Doc 38 同期)
+
+* §13 Sign-off
+
+** 起草履歴
+
+- T108 (本 doc DRAFT v0、2026-04-25、session-A、Opus 4.7 1M context)
+- T97 finding (parent、=docs/bench-results/m1-bootsmoke-2026-04-25-T97.md=
+  SHIPPED 2026-04-25 commit =9879598=) を直接 cite
+- 既存 Phase 3 SHIPPED 資産 (=src/nelisp-read.el= 494 LOC /
+  =nelisp-eval.el= 925 LOC / =nelisp-macro.el= 278 LOC = 計 1697 LOC)
+  を base、本 doc は +2800-4900 LOC delta 想定
+
+** v0 → v1 reviewer addendum (T114 Claude single-reviewer、SHIPPED 2026-04-25)
+
+T114 review (= Claude Opus 4.7 1M context、single-reviewer) verdict =
+*MAJOR REVISIONS* (= 10 MAJOR + 7 MINOR + 3 NIT、no BLOCKER):
+- Issue 集中 = parent-doc errata pair atomicity (A1 / E2)、sub-phase
+  ordering inversion (B1)、period sum / escape hatch kill criteria
+  (B2 / B3)、cold-init time budget vs Doc 32 v2 §0 gate 桁違い (E1)、
+  user signoff matrix 完整性 (D1 / D2)
+- T120 session で v0 → v1 revise SHIPPED (本 doc)、P0 6 件 + P1 11 件
+  + NIT 3 件 全反映、=feat/doc40-v1-revise= branch
+- 第二弾 reviewer dispatch (= codex 想定 or 別 Claude session) で
+  MINOR REVISIONS / READY-TO-LOCK 判定を求める
+
+** 起草履歴 v1 (T120 session、2026-04-25)
+
+- session = T120 dispatch、Opus 4.7 1M context、worktree
+  =/tmp/nelisp-doc40-v1-wt= で =feat/doc40-v1-revise= branch
+- v0 1279 LOC → v1 ~1500-1900 LOC、incremental Edit (small increment)
+  で stall 回避
+- design only、byte-compile / ERT 不要 (= テキスト編集のみ)
+- canonical 触らず、worktree 内のみ
+
+** v1 → v2 LOCKED reviewer addendum (T127 Claude 第二弾 single-reviewer、SHIPPED 2026-04-25)
+
+T127 review (= Claude Opus 4.7 1M context、single-reviewer 第二弾) verdict =
+*MINOR REVISIONS* (= 6 MINOR + 3 POSITIVE、no MAJOR、no BLOCKER):
+- T114 review の P0 6 件 + P1 11 件 + NIT 3 件 = 全 20 件 specific
+  section/line で反映確認済 (= MAJOR REVISIONS から MINOR REVISIONS への
+  進化完遂)
+- v1 反映過程で arithmetic / cross-reference / phasing inconsistency
+  が新規 6 件発生 (= B-NEW-1〜B-NEW-6)、いずれも MINOR で 1-2 行修正
+  - B-NEW-1: §6.6 line 1062 carry-over 表記 +134+ → +138+ 修正
+  - B-NEW-2: §11 chapter に §11.6 placeholder section 物理追加 +
+    §9.4 cross-ref 整合
+  - B-NEW-3: §6.10 gate-W4 carryforward list から =pcase= 削除 (8 → 7)
+  - B-NEW-4: §3.2 LOC 見積 + ERT smoke の "12 件" → "11 件" carry-over
+  - B-NEW-5: §3.4 ERT smoke header "+20" を "+24" に確定 (内訳 list を
+    24 に縮退、§5.1 table / §0 / §7 baseline +138 据置)
+  - B-NEW-6: §6.6 line 1070 "?-9" を "§9.8" に統一、numbering 表記揺れ解消
+- POSITIVE 3 件: chicken-egg 回避 sequence (§11.5 → §11.1) / escape
+  hatch + week-N kill criteria (§6.10) / user signoff matrix (§13 ?-1)
+  の 3 大改善が LOCKED v2 化 main merge gate を構造的に許可
+- T131 session で v1 → v2 polish SHIPPED (本 doc)、6 MINOR 全反映、
+  =feat/doc40-v2-locked= branch
+- 第三弾 reviewer dispatch 不要、本 v2 polish round で main merge gate
+  に直接接続可能 = READY-TO-LOCK 確認
+
+** 起草履歴 v2 (T131 session、2026-04-25)
+
+- session = T131 dispatch、Opus 4.7 1M context、worktree
+  =/tmp/nelisp-doc40-v2-wt= で =feat/doc40-v2-locked= branch
+- v1 1698 LOC → v2 想定 ~1750 LOC、incremental Edit (1-2 行修正)
+  で polish のみ
+- design only、byte-compile / ERT 不要 (= テキスト編集のみ)
+- canonical 触らず、worktree 内のみ
+- 6 MINOR (B-NEW-1〜B-NEW-6) 全反映、構造的変更なし、numeric /
+  cross-ref / phasing inconsistency のみ解消
+
+** user signoff 案件 (本 v1 DRAFT で 4 件、明示。T114 D1 / D2 反映で v0 3 件 → v1 4 件、?-1 を比較 matrix で書き直し)
+
+- *?-1*: §1.3 / §11.1 path-α / path-β / path-γ のいずれを採用するか
+  (T114 D1 反映 = path 比較 matrix で書き直し):
+
+  | path | Doc 27 errata        | Doc 32 errata             | Doc 38 errata         | v1.0 ship 影響     | M3 milestone trigger | LOC sum 影響 (= 開発 attention) |
+  |------+----------------------+---------------------------+-----------------------+--------------------+----------------------+---------------------------------|
+  | α (推奨) | §3 7+ row 追加 + sum 並走根拠 (§11.1) | §3.2 stage1 入口 step 追加 + LOC +200 (§11.3) | §3.E "DEPENDS_ON: Doc 40 7+F" 明示 (§11.5) | +8-14 週 (= +2-3 ヶ月、並走 = 物理時間 sum 不変、attention competition のみ) | v1.0 同時 (= ship gate 内) | +2800-4900 LOC を別 axis 並走、attention 1-2 名 dispatch |
+  | β    | (errata なし、Doc 27 v2 LOCKED 不変) | (errata なし、Doc 32 v2 LOCKED 不変) | (errata なし、Doc 38 v2 LOCKED 不変、ただし §3.E SDK Phase E は post-v1.0 carryforward に降格) | 不変 (= 現 6-10 ヶ月)、本 doc は v1.x carryforward | v1.x carryforward = NeLisp 公開告知 gate も v1.x 移動 | 0 LOC (= 本 doc 着手は post-v1.0) |
+  | γ    | §3 7.5 LOC budget +1500-3000 拡張 (= Doc 27 v3 LOCKED へ格上げ) | §3.X 内 swallow + LOC 大幅増 (~+1500-3000) + 期間 +8-14 週 (= 7.5 期間 2 → 10-16 週) | §3.E "DEPENDS_ON: Phase 7.5" のまま (Doc 38 errata 不要) | +8-14 週 (= Phase 7.5 内 sum 期間延長で v1.0 ship gate 直接遅延) | v1.0 同時 (= ship gate 内) | +2800-4900 LOC を Phase 7.5 dev に集中、attention 競合最大 |
+
+  *推奨 = path-α* (§1.3 default、user signoff 待ち):
+  - Doc 27 errata pair commit (= §11.1) で並走 axis として独立、attention
+    競合は parallel session leverage で物理隔離
+  - v1.0 ship gate 内に anvil bootstrap M3 milestone を組み込み、Doc 38
+    SDK Phase E を v1.0 同時 unblock
+  - Doc 27 v2 LOCKED stamp は v3 LOCKED に格上げ、ただし sum 行への
+    影響は "並走想定 = 期間影響なし、LOC delta は別 axis" の 1 行追記
+    (§11.1 errata pair commit content)
+- *?-2*: §1.5 / §6.10 escape hatch (= 8-14 週間超過時 v1.0 ship gate
+  から外し post-v1.0 carryforward 化) を採用するか (T114 D3 反映で
+  §6.10 の week-N kill criteria full table を inline、user 判断材料
+  pin 済):
+
+  - escape hatch 採用 (= 推奨 default、§6.10 v1 反映):
+    - gate-W2/W4/W6/W8/W10 各 gate で kill criteria 評価
+    - gate-W10 cold-init > 30s で escape hatch 発動 = 本 doc を v1.0
+      ship gate から外す、Doc 38 §3.E SDK Phase E 同期 carryforward 化
+    - Doc 39 §1.5 swap proposal pattern と同形、~2-4 週間 buffer 必要
+  - escape hatch 不採用 (= path-α 完遂を v1.0 ship gate に必達):
+    - 8-14 週間超過時の replan = scope 縮退のみ、v1.0 ship 遅延を許容
+    - kill criteria でも救えない場合は v1.0 ship 全体が遅延
+- *?-3*: §2.6 advice 実装 scope (= =:before / :after / :around /
+  :override= 4 種 minimum vs nadvice 全機能 vs 不実装) のいずれを
+  default とするか (推奨 = 4 種 minimum、§6.7 で grep audit 実施
+  予定 = T114 D4 反映で v1 reviewer round 必達)
+- *?-4 (T114 D2 反映 v1 新規)*: §6.9 T97-FOLLOWUP-1 (= anvil-server
+  return-shape contract bug、=cons= return reject) 解消 path:
+  - (a) anvil-server side fix (= cons return を accept する) — anvil.el
+    repo (別 repo) coordination 必要、別 PR タイミングが本 doc 完遂
+    timeline 直接影響 (= 6 週間先行 PR 必達)
+  - (b) NeLisp eval side で =prin1-to-string= auto-wrap — 本 doc §3.6
+    Phase 7+F scope に "auto-wrap helper" 組込み、LOC +200-500 増 +
+    副作用 (= 既存 NeLisp eval client が string expecting しない場合
+    の breaking change risk)
+  - 推奨 = (a) anvil-server side fix (= 副作用 risk なし、別 repo
+    coordination は 6 週 buffer 内で完結可能)、ただし user signoff
+    で確定
+
+** 起草根拠
+
+- T97 finding が "=setq / let / let* / defun= は defalias bridge 不可、
+  reader / evaluator が真 blocker" と明示
+- Doc 38 §3.E NeLisp exec が claude self-extension SDK Phase E
+  prerequisite として "Phase 7+ evaluator landing" を gate 化
+- anvil bootstrap M3 milestone (= anvil-server.el 全機能 standalone
+  path) の前提 sub-phase pipeline が本 doc で初めて整理される
+- Phase 3 SHIPPED reader / eval / macro 1697 LOC を再利用 + 拡張、
+  scratch から作らない
+
+** main merge gate (T114 E4 反映 v1 で §11.4 cosmetic errata を外す)
+
+- §7 必須条件 全充足
+- §11 parent doc errata の採否 + (採用時) 当該 doc errata pair commit
+  実施 (= T114 E4 反映 v1 で §11.4 Doc 33 v2 cosmetic errata は除外):
+  - 必達 errata pair (= main merge gate 内): §11.1 Doc 27 v3 LOCKED
+    格上げ + §11.3 Doc 32 v3 LOCKED 格上げ + §11.5 Doc 38 v3 LOCKED
+    格上げ
+  - 除外 errata (= follow-up commit、main merge gate 外): §11.4 Doc 33
+    v2 cosmetic 更新 (Layer 1A frontend description、Doc 33 v2 stamp
+    変更不要)
+- v2 LOCKED stamp 完了
+- session-A 起草 worktree =/tmp/nelisp-doc40-evaluator-wt= で
+  feat/doc40-evaluator-design branch (v0)、v1 revise 作業 worktree
+  =/tmp/nelisp-doc40-v1-wt= feat/doc40-v1-revise (本 v1 起草)、main
+  merge は v2 LOCKED 後
