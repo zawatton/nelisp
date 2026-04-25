@@ -20,10 +20,15 @@ LOCKED) が完結*、NeLisp 公開告知保留 (=feedback_nelisp_announcement_st
 
 *v2 改訂方針 (orchestrator codex review MAJOR REVISIONS 7 issues 反映、
 BLOCKER なし、5 MAJOR + 2 MINOR)*:
-- *arm64 contract 整合 (codex 観点 1.1)*: Doc 28 v2 = "x86_64 first-class
-  + arm64 provisional" と整合させ、本 v2 で arm64 を *non-blocking
-  release qualification* に格下げ。release blocker は Linux x86_64 のみ、
-  arm64 は best-effort (Doc 28 v2 §6.6 escape hatch 連動)
+- *arm64 contract 整合 (codex 観点 1.1 + user signoff 2026-04-25 で
+  時限措置化)*: Doc 28 v2 = "x86_64 first-class + arm64 provisional" と
+  整合させ、本 v2 で arm64 を *v1.0 限定 non-blocking release
+  qualification* に格下げ (= 時限措置)。release blocker は Linux x86_64
+  のみ、arm64 (macOS Apple Silicon / Linux arm64) は v1.0 では best-effort
+  (95%+ target、未達でも release blocker ではない)。*v1.1+ で arm64 =
+  blocker promote 想定* (Doc 28 v3 で arm64 first-class 昇格、本 doc §11
+  v2 LOCKED note)。これにより macOS Apple Silicon dev 環境主流が長期
+  ignored される懸念を時限化で抑制
 - *Doc 27 base からの拡張理由明文化 (codex 観点 1.2)*: §0 / §3 冒頭で
   Doc 27 base (薄い integration phase) からの "release engineering 拡張"
   を明示 + 2 週間枠に収まる根拠 (anvil leverage + scope 縮小)
@@ -79,9 +84,14 @@ runtime integration core を 2 週間に死守。Phase 7.5 自体は scope 中
   - 1h soak (CI、blocker) 無 crash + memory bound (RSS growth < 5MB / 1h)
   - cold-init ≤ 500ms (pinned reference host、p95、N=100、§5.X v2)
   - throughput ≥ 100 tool calls/sec (同上、§5.X v2)
-- *non-blocker qualification (best-effort、arm64 = Doc 28 v2 escape hatch)*:
+- *non-blocker qualification (best-effort、v1.0 限定の時限措置、Doc 28 v2
+  escape hatch 連動)*:
   - macOS arm64 / Linux arm64 = 同 smoke + cold-init success rate
-    target 95%+、未達でも release blocker ではない
+    target 95%+、未達でも v1.0 release blocker ではない
+  - *v1.1+ で blocker promote 想定*: Doc 28 v3 で arm64 first-class 昇格
+    + Phase 7.1.3 arm64 backend full implementation 完成後、本 gate を
+    blocker に promote。v1.0 ship 後の最初の minor release で対応 (= 6 ヶ月
+    以内 target、anvil leverage 込み)
 - *post-ship audit (release-audit、blocker ではない)*:
   - 24h soak (release-audit infra weekly) 無 crash + RSS growth < 10MB / 24h
 - *release artifact ready (本 phase scope 内)*:
