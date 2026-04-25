@@ -1,0 +1,752 @@
+#+TITLE: Phase 7.1 — NeLisp native compiler 新設 (Doc 27 §3 7.1 詳細設計)
+#+DATE: 2026-04-25
+#+AUTHOR: zawatton + Claude (session-A 起草、session-B DRAFT 化)
+#+STATUS: DRAFT-2026-04-25 (orchestrator review 待ち、user signoff で LOCKED 化)
+
+* §0 要旨 (TL;DR)
+
+Doc 27 LOCKED 2026-04-25 (=2a52bda main=) で確定した *NeLisp purity
+max path* (=syscall= 最小 Rust + 残 3 核 NeLisp) の critical path =
+*Phase 7.1 NeLisp native compiler 新設* の詳細設計。
+
+Doc 27 §2.12 LOCKED A により、NeLisp source → x86_64/ARM64 machine
+code の compiler を Phase 7.1 で新設する。本 doc は Doc 27 §3 7.1 と
+§6.7 mitigation で示された粗い構成を、5 sub-phase (7.1.1〜7.1.5) +
+LOCKED 12 items + ERT smoke +50 + 完遂 gate (=fib(30)= 50x speedup
+over bytecode) に分解する。
+
+*位置づけ*:
+- Phase 7.0 (Rust syscall stub) と同時並行で session-A が着手済、
+  本 7.1 は Phase 7.0 SHIPPED 後に session-B/C で着手予定
+- Phase 7.1 SHIPPED は Phase 7.2 (allocator NeLisp 化) /
+  Phase 7.3 (GC NeLisp 化) / Phase 7.4 (coding NeLisp 化) の前提条件
+  = critical path の単独失敗で全停止 (Doc 27 §6.7)
+- SBCL =sb-c= module precedent (~30000 LOC CL、25 年維持) に対し、
+  scope 縮小 (Elisp subset / x86_64+ARM64 のみ / 簡易 optimization)
+  で *5000-10000 LOC NeLisp / 1-2 ヶ月 (anvil leverage 前提)* を狙う
+
+*工数見積*: 1-2 ヶ月 (anvil.el + 並列 session full leverage 前提)。
+Doc 27 §3 7.1 = "1-2 ヶ月" と整合。base case 9-12 週間、scope 縮小
+で 6-8 週間も視野。
+
+*完遂 gate (Doc 27 §3 7.1 踏襲)*:
+- =fib(30)= が bytecode VM 比 ~50x speedup (cargo bench 実測)
+- cross-arch (x86_64 + ARM64) 両方緑
+- ERT +30〜+50 (=test/nelisp-cc-test.el=)
+- =cargo build --release= / =cargo test --all= / =cargo clippy= 0 warning
+- NeLisp 既存 ERT regression-free (現 1086/1091 を後退させない)
+
+* §1 背景
+
+** 1.1 Doc 27 LOCKED 後の position
+
+Doc 27 (2a52bda) §3 sub-phase table:
+
+| Phase | scope                                           | 期間          |
+|-------+-------------------------------------------------+---------------|
+| 7.0   | Rust syscall stub + scaffold                    | 2-3 週間      |
+| *7.1* | *NeLisp native compiler 新設 (本 doc)*          | *1-2 ヶ月*    |
+| 7.2   | allocator NeLisp 化                             | 3-4 週間      |
+| 7.3   | GC inner NeLisp 化 (最難)                        | 1-2 ヶ月      |
+| 7.4   | coding NeLisp 化                                 | 2-3 週間      |
+| 7.5   | integration + standalone E2E                    | 2 週間        |
+
+7.1 が完成しなければ 7.2-7.4 の hot path 性能 (allocator / GC /
+coding は 10-100x slower for bytecode VM) で実用不可。すなわち
+Phase 7.1 = critical path、本 doc 完遂で残 3 核実装の道筋が立つ。
+
+** 1.2 既存 NeLisp 資産 (踏襲できる前提)
+
+| module                                | LOC   | role for native compiler                       |
+|---------------------------------------+-------+------------------------------------------------|
+| =src/nelisp-read.el= (Phase 3a)       | 494   | source → AST 入力境界                          |
+| =src/nelisp-bytecode.el= (Phase 3b)   | 1845  | 既存 bytecode VM (置換ではなく hybrid 並存)    |
+| =src/nelisp-jit.el=                    | 330   | bytecode VM 上の inline-primitive optimizer    |
+| =src/nelisp-defs-index.el= (Phase 6.5) | 793   | symbol table (defun/defmacro/defvar index) backing |
+| =src/nelisp-eval.el=                  | 925   | 評価器 (closure / specbind / unwind-protect)    |
+| Phase 5-B 3 大 core elisp 化           | -     | self-host 確認済み                             |
+| Phase 5-C AI-critical path             | -     | runtime 動作確認済                             |
+| Doc 27 §3 7.0 (Rust syscall stub)      | -     | session-A 着手中、=mmap=/=mprotect= 提供       |
+
+= Phase 7.1 native compiler は *AST 入力 / syscall 出力 /
+=nelisp-defs-index= symbol table 連携* の interface が既に固定された
+位置で動く。自由度が制約され設計が安定する。
+
+*** 1.2.1 既存 =nelisp-jit.el= との関係
+
+既存 =nelisp-jit.el= は bytecode VM 内の inline-primitive optimizer
+(~30 primitive を直接 host call に置換、330 LOC)。これは "JIT" を
+名乗るが実態は peephole optimizer であり、native code 生成は行わない
+= Phase 7.1 で置換されるものではなく、Phase 7.1 native compiler の
+*input optimization stage* として再利用可能。
+
+| 既存 =nelisp-jit=                  | Phase 7.1 native compiler          |
+|------------------------------------+------------------------------------|
+| input: lambda S-expr                | input: lambda S-expr (同じ)         |
+| stage: bytecode VM 内 inline 展開   | stage: SSA IR → machine code       |
+| output: 最適化済 bcl                | output: mmap PROT_EXEC page + jump |
+| target: 30 primitives               | target: 全 NeLisp form              |
+
+Phase 7.1.1 (SSA IR) で =nelisp-jit--inline-primitives= の判定 logic
+を SSA constant-folding に取り込む。
+
+** 1.3 SBCL =sb-c= module 参照点 (precedent reference)
+
+SBCL の native compiler module =src/compiler/= 全体 ~30000 LOC CL、
+25 年維持。NeLisp はその precedent を超える方針 (=user 2026-04-25=)、
+ただし *scope 縮小* で managed:
+
+| 削減方針     | SBCL =sb-c=                       | NeLisp =nelisp-cc=                          |
+|--------------+-----------------------------------+---------------------------------------------|
+| 多段最適化   | 多段 IR + register coloring 等    | 1-pass codegen MVP、最適化は phase 7.1.5 以降  |
+| inline       | 高度 inline expansion             | =defsubst= / =declare (inline t)= のみ      |
+| target       | x86, x86-64, arm64, ppc, ...      | x86_64 + arm64 のみ                          |
+| FFI          | sb-alien 完備                     | syscall stub 経由のみ                       |
+| LOC          | ~30000 LOC CL                      | 5000-10000 LOC NeLisp                       |
+| 期間         | 25 年維持 (初版 1999-2003)         | 1-2 ヶ月 (anvil leverage 前提)              |
+
+scope 圧縮で *~5000-10000 LOC NeLisp = 1-2 ヶ月* 達成可能と見積もる
+(Doc 27 §0 = "1 年見積が 1 日" の 300-365x productivity multiplier
+を partial に取り込んだ realistic 見積)。
+
+** 1.4 SBCL Rhodes 5-stage 内の position
+
+Doc 27 §1.4 Rhodes 5-stage methodology に対し、Phase 7.1 は
+*target-1 stage 内の sub-stage* に位置する:
+
+| Rhodes stage | NeLisp 対応                                                  |
+|--------------+--------------------------------------------------------------|
+| host-1       | Host Emacs が NeLisp xc を byte-compile                       |
+| target-1     | *残余 C 4 核 build (本 Phase 7+)*                             |
+|              |   ├ 7.0 syscall stub (Rust)                                  |
+|              |   └ *7.1 native compiler ← 本 doc*                            |
+| host-2       | NeLisp xc で NeLisp source 再コンパイル                       |
+| genesis-2    | target image を Emacs buffer/vector で構築                     |
+| target-2     | cold-init (最難)、warm phase で system load                  |
+
+Phase 7.1 完成後、target-2 cold-init で *NeLisp が NeLisp を native
+compile する瞬間* が self-host bootstrap (= sub-phase 7.1.5)。
+
+* §2 LOCKED decisions (default = 第一推奨、user signoff 待ち)
+
+Doc 27 §2 schema (#1-12 LOCKED items) に揃える。default 案を提示し
+session-B が DRAFT で fix、orchestrator review (claude+codex+gemma)
+で precedent miss を指摘してもらう構造。signoff は user。
+
+** 2.1 target ISA [推奨 = A x86_64 + arm64 第一級]
+
+| 候補 | 戦略                                              | 利点                              |
+|------+---------------------------------------------------+-----------------------------------|
+| A    | x86_64 + arm64 両方第一級 (default)                | Linux x86 + macOS Apple Silicon 両対応 |
+| B    | x86_64 のみ MVP、arm64 後回し                     | 期間短縮 (~1-2 週間)              |
+| C    | RISC-V 第一級追加                                  | scope 拡大、不採用                |
+
+*推奨 A 理由*:
+- Doc 27 §2.12 で "x86_64 + ARM64 のみ MVP" 明記
+- macOS user (M1/M2/M3) priority 想定
+- arm64 backend は ABI 単純 (AAPCS64 fixed register convention) で
+  実装コスト x86_64 比 70-80%、後回しによる節約効果 < 1 月
+
+** 2.2 output format [推奨 = A in-process JIT (mmap PROT_EXEC)]
+
+| 候補 | 戦略                                            | 利点                          |
+|------+-------------------------------------------------+-------------------------------|
+| A    | mmap PROT_EXEC page (in-process JIT、default)    | ELF/Mach-O 不要、syscall stub と一致 |
+| B    | ELF object file 出力 + dlopen                    | LD/dlopen 必要、Phase 7.0 scope 拡大 |
+| C    | AOT executable                                   | bootstrap 完結後、Phase 7.5 で検討 |
+
+*推奨 A 理由*:
+- Doc 27 §2.12 "mmap 経由 (syscall stub) で executable page に書込 + jump"
+- Phase 7.0 syscall stub に =mmap= / =mprotect= 提供済
+- ELF/Mach-O linker 不要 = LOC 1500-2500 LOC 削減
+
+** 2.3 calling convention [推奨 = A System V AMD64 + AAPCS64]
+
+| 候補 | 戦略                                              |
+|------+---------------------------------------------------|
+| A    | System V AMD64 ABI (Linux/macOS) + AAPCS64 (default) |
+| B    | 独自 calling convention (SBCL 同様 Lisp-internal)  |
+| C    | Win64 (Windows MSVC ABI) も第一級                  |
+
+*推奨 A 理由*:
+- syscall stub (Phase 7.0) と calling conv 一致 → FFI cost 0
+- Windows native は Stage A (anvil 単体) 経路で別解 (=Doc 18 Stage D=)、
+  Phase 7.1 では opt-in (Win64 ABI 対応は phase 7.1.5 以降に繰越)
+
+** 2.4 IR の階層 [推奨 = A 1-pass MVP + 後で SSA 拡張]
+
+| 候補 | 戦略                                              |
+|------+---------------------------------------------------|
+| A    | 1-pass codegen MVP (default、phase 7.1.5 で多段化検討) |
+| B    | 初期から SSA + 多段最適化 (SBCL 同 pattern)        |
+| C    | LLVM IR backend (NeLisp purity 破綻、不採用)       |
+
+*推奨 A 理由*:
+- 5000 LOC budget で多段 IR は overrun risk 高
+- bench gate 50x speedup は 1-pass + linear-scan で十分達成可
+- Phase 7.1.5 (= self-host) 完了後、phase 7.1.6 として SSA + dead-code-elim
+  / GVN 等を後付け増設
+
+ただし sub-phase 7.1.1 で "*SSA を data structure として持ち、
+optimization pass は MVP では空*" の構造にしておくこと (= 後付け
+増設の余地を残す)。
+
+** 2.5 register allocation [推奨 = A linear-scan]
+
+| 候補 | 戦略                                              |
+|------+---------------------------------------------------|
+| A    | linear-scan (default、Poletto-Sarkar 1999)        |
+| B    | graph-coloring (SBCL = Chaitin-Briggs)            |
+| C    | greedy / register-window (RISC-V スタイル)         |
+
+*推奨 A 理由*:
+- LOC ~400 で実装可能、graph-coloring は 1500-2500 LOC
+- hot loop SBCL 比 30-50% 遅い risk 受容 (§6 risk 1)
+- Phase 7.1.5 で graph-coloring 後付け可
+
+** 2.6 tail call [推奨 = A proper tail-call 必須]
+
+Phase 5-B selfhost で tail recursion 多用 (e.g. =nelisp-defs-index=
+の tree walker) のため proper tail-call 必須。Phase 7.1.4 で実装、
+=jmp= (jump-to-tail-target) 形式で stack frame 再利用。
+
+** 2.7 inline expansion [推奨 = A defsubst + declare のみ]
+
+| 候補 | 戦略                                              |
+|------+---------------------------------------------------|
+| A    | =defsubst= / =declare (inline t)= のみ (default) |
+| B    | call-site profile 駆動 inline (SBCL pattern)      |
+| C    | 完全 inline 不対応                                 |
+
+*推奨 A 理由*:
+- =nelisp-jit--inline-primitives= の 30 primitive を =declare (inline t)=
+  注釈付きで提供、Phase 7.1.1 で SSA constant-fold に取り込む
+- profile 駆動 inline は phase 7.1.5 以降
+
+** 2.8 symbol table [推奨 = A nelisp-defs-index 経由]
+
+Phase 6.5 SHIPPED の =nelisp-defs-index= (793 LOC + SQLite backing)
+を symbol table として再利用。重複実装回避、bootstrap 時の defun /
+defmacro / defvar 解決を 1 query で済ませる。
+
+** 2.9 GC integration [推奨 = A safe-point 機構を Phase 7.3 と co-design]
+
+Phase 7.1 で safe-point insertion point だけ確保 (loop back-edge +
+function entry/exit)、actual GC root scanning は Phase 7.3 で
+co-design。Phase 7.1.4 で safe-point の =call gc-poll= stub のみ
+emit、stub 中身は no-op。
+
+** 2.10 bootstrap [推奨 = A NeLisp source → byte-code → mmap exec]
+
+| 候補 | 戦略                                                |
+|------+-----------------------------------------------------|
+| A    | NeLisp source → Emacs byte-code → mmap exec (default) |
+| B    | 直接 NeLisp source → mmap exec (bootstrap でも host Emacs 不要) |
+
+*推奨 A 理由*:
+- Stage D Phase 6.1 で host Emacs 経由 byte-compile path 確立済
+- B は Phase 7.5 (integration) で改めて検討、Phase 7.1 内 scope 外
+
+** 2.11 profiling [推奨 = A nelisp-runtime --profile flag]
+
+=cargo bench= harness + =--profile= flag で hot path 計測。
+Phase 7.1.4 までは bench harness のみ整備、actual profile UI は
+phase 7.1.5 で。
+
+** 2.12 LOC budget [推奨 = A 5000-10000 LOC NeLisp + ~200 LOC Rust mmap helper]
+
+Doc 27 §2.12 LOCKED の "5000-10000 LOC NeLisp" 踏襲。Rust 側は
+Phase 7.0 で =mmap= / =mprotect= 既に提供済、追加は ~200 LOC
+(=nelisp_runtime_emit_native_page= helper) のみ。
+
+* §3 Sub-phase 7.1.1〜7.1.5 詳細
+
+Doc 27 §6.7 mitigation の 4 sub-sub-phase 構成を baseline、self-host
+bootstrap を sub-phase 7.1.5 として追加した 5 sub-phase 構成。各
+sub-phase は独立 SHIPPED 可能、main へ feat branch =--no-ff= merge。
+
+| sub-phase | scope                                                | LOC          | 期間   | ERT delta |
+|-----------+------------------------------------------------------+--------------+--------+-----------|
+| 7.1.1     | SSA IR + linear-scan register allocation              | ~1500-3000   | 3-4 週間 | +10〜+15  |
+| 7.1.2     | x86_64 backend (System V AMD64)                       | ~1500-2500   | 2-3 週間 | +10       |
+| 7.1.3     | arm64 backend (AAPCS64)                                | ~1500-2500   | 2 週間 | +8        |
+| 7.1.4     | mmap exec page + tail-call + safe-point + GC interop | ~500-1000    | 1-2 週間 | +6        |
+| 7.1.5     | self-host bootstrap + bench harness + 50x gate        | ~500-1000    | 1-2 週間 | +10       |
+|-----------+------------------------------------------------------+--------------+--------+-----------|
+|           | 合計                                                  | ~5000-10000  | 9-13 週間 | +44〜+49  |
+
+期間 anvil leverage 込み 1.5-2 ヶ月、Doc 27 §3 7.1 = "1-2 ヶ月" 整合。
+
+** 3.1 Phase 7.1.1 — SSA IR + linear-scan register allocation
+
+新規 module: =src/nelisp-cc.el= (~1500-3000 LOC NeLisp)。
+
+*** scope
+- AST → SSA IR data structure (=nelisp-cc--ssa-block= /
+  =nelisp-cc--ssa-instr= の defstruct)
+- 既存 bytecode compiler の SSA 拡張 (constant folding /
+  dead-code-elim 簡易版を SSA pass として実装)
+- linear-scan register allocator (Poletto-Sarkar 1999、~400 LOC)
+- =nelisp-jit--inline-primitives= 30 primitive を SSA constant-fold
+  に取り込み
+
+*** ERT smoke (+10〜+15)
+- SSA IR 構築の round-trip (AST → SSA → printer → diff)
+- constant folding (=(+ 1 2)= → SSA constant 3)
+- dead-code-elim (unused let)
+- linear-scan の interval 計算
+- spill 発生 case (>16 live variables)
+
+*** risks
+- SSA IR の data structure 設計に時間消費 (3-4 週間 を 5 週間に延伸 risk)
+  → mitigation: =nelisp-cc--ssa-block= は Phase 7.1.1 内で freeze、
+  以降 sub-phase で field 追加禁止
+
+** 3.2 Phase 7.1.2 — x86_64 backend (System V AMD64)
+
+新規 module: =src/nelisp-cc-x86_64.el= (~1500-2500 LOC NeLisp)。
+
+*** scope
+- SSA IR → x86_64 machine code emitter
+- System V AMD64 calling convention (rdi/rsi/rdx/rcx/r8/r9 引数、
+  rax 戻り値、xmm0-7 SIMD 引数)
+- macOS / Linux 両対応 (red zone / TLS register r15 違い)
+- Win64 ABI (rcx/rdx/r8/r9 + 32-byte shadow space) は phase 7.1.5
+  以降に繰越 (§2.3 Win64 opt-in)
+- mmap PROT_EXEC page への bytes 書込 (=nelisp-cc--emit-bytes=)
+
+*** ERT smoke (+10)
+- 単純 fn (=(defun f (x) (+ x 1))=) の x86_64 codegen
+- arithmetic (=(- 5 3)=) の eax/edx 操作
+- conditional branch (=(if cond a b)=)
+- function call (=(f 1 2 3)=) の rdi/rsi/rdx 配置
+- spill / reload (>6 引数 → stack)
+- prologue/epilogue (rbp save / restore)
+
+*** risks
+- ABI corner case (struct passing / red zone / SIMD register save)
+  → mitigation: §6 risk 7 で table-driven test 必須化
+
+** 3.3 Phase 7.1.3 — arm64 backend (AAPCS64)
+
+新規 module: =src/nelisp-cc-arm64.el= (~1500-2500 LOC NeLisp)。
+
+*** scope
+- SSA IR → ARM64 machine code emitter
+- AAPCS64 calling convention (x0-x7 引数、x0 戻り値、v0-v7 SIMD)
+- macOS Apple Silicon + Linux ARM 両対応
+- mmap PROT_EXEC page への bytes 書込
+
+*** ERT smoke (+8)
+- x86_64 と同等の test を ARM64 で再実行 (cross-arch CI)
+- AAPCS64 引数 8 個 → x0-x7
+- spill (>8 引数 → stack)
+- frame pointer (x29) save / restore
+
+*** risks
+- macOS Apple Silicon の =MAP_JIT= flag 必須 (=mprotect= 単独では
+  PROT_EXEC 取得不可)
+  → mitigation: Phase 7.0 syscall stub に =MAP_JIT= 対応追加 (session-A
+  に依頼、本 doc §9 open question)
+
+** 3.4 Phase 7.1.4 — mmap exec page + tail-call + safe-point + GC interop
+
+新規 module 不要、=src/nelisp-cc.el= に追加 (~500-1000 LOC)。
+
+*** scope
+- mmap PROT_EXEC page allocation/free helper
+- proper tail-call (=jmp= 形式で stack frame 再利用)
+- safe-point insertion (loop back-edge + function entry/exit)
+- =call gc-poll= stub emit (Phase 7.3 で中身、本 phase は no-op)
+
+*** ERT smoke (+6)
+- =mmap-exec-page= alloc/free
+- tail recursion (=fact-tail= 100k loop で stack overflow なし)
+- safe-point の挿入位置 verify
+- gc-poll stub call の disassembly
+
+*** risks
+- safe-point 設計 GC との co-design で deadlock or pause spike risk
+  → mitigation: §6 risk 2 で Phase 7.3 と共同 design 必須
+
+** 3.5 Phase 7.1.5 — self-host bootstrap + bench harness + 50x gate
+
+新規 file: =test/nelisp-cc-bench.el= + =test/nelisp-cc-test.el= 強化。
+
+*** scope
+- =./nelisp-runtime --self-compile= で =src/nelisp-cc.el= を native
+  compile し、結果を read-eval で再実行可能 (self-host)
+- =cargo bench= harness で =fib(30)= を bytecode VM 比 50x speedup 検証
+- 多段 IR 検討 (phase 7.1.6 への bridge): SSA 上の dead-code-elim /
+  GVN / instruction selection の prototype (出荷必須ではない)
+- profile UI (=nelisp-runtime --profile=) integration
+
+*** ERT smoke (+10)
+- self-host: =nelisp-cc.el= を native compile して結果を read-eval
+- bench: =fib(30)= bytecode 比 50x 以上
+- bench: =fib(40)= bytecode 比 60x 以上 (より hot path 寄り)
+- regression: 既存 1086/1091 ERT 全 PASS
+
+*** risks
+- self-host bootstrap chicken-egg: phase 7.1.5 で NeLisp が NeLisp
+  compile する瞬間の状態管理 (Rhodes target-2 cold-init 類比)
+  → mitigation: §6 risk 3 で 2-stage bootstrap (host Emacs byte-code
+  経由 → 自己 native compile) で chicken-egg 回避
+
+* §4 Architecture (5-stage pipeline)
+
+#+begin_src text
+[NeLisp source]
+    │ nelisp-read.el (Phase 3a SHIPPED)
+    ▼
+[AST (S-expr tree)]
+    │ nelisp-cc.el §3.1 (Phase 7.1.1)
+    │   ├ macro-expand (既存 nelisp-macro.el)
+    │   ├ AST → SSA IR
+    │   └ optimization pass (constant fold / dead-code-elim)
+    ▼
+[SSA IR + register allocation]
+    │ nelisp-cc-x86_64.el §3.2 (Phase 7.1.2)
+    │ nelisp-cc-arm64.el §3.3 (Phase 7.1.3)
+    │   ├ instruction selection
+    │   ├ linear-scan register allocation
+    │   └ codegen (machine bytes)
+    ▼
+[Machine code bytes]
+    │ nelisp-cc.el §3.4 (Phase 7.1.4)
+    │   ├ mmap PROT_EXEC page (Phase 7.0 syscall stub)
+    │   ├ relocation (call/jmp targets fixup)
+    │   └ safe-point + tail-call emit
+    ▼
+[Executable mmap page]
+    │ jump (= function pointer call)
+    ▼
+[runtime execution]
+#+end_src
+
+** 4.1 入力境界 (AST)
+
+=nelisp-read.el= (Phase 3a SHIPPED) の AST 形式を踏襲、変更しない。
+quote / backquote / sharp-quote 等の reader form は AST 段階で展開
+済 = native compiler は plain S-expr のみ受け取る。
+
+** 4.2 出力境界 (mmap exec page)
+
+Phase 7.0 syscall stub の =mmap=/=mprotect= に依存。Linux/macOS
+=MAP_ANONYMOUS | MAP_PRIVATE= + =PROT_READ|PROT_WRITE|PROT_EXEC=
+(macOS Apple Silicon は =MAP_JIT= flag 追加必須、§9 open question)。
+
+** 4.3 symbol table 連携
+
+=nelisp-defs-index= (Phase 6.5 SHIPPED) を経由して defun/defmacro/
+defvar の name → AST or native code address mapping を 1 SQL query
+で解決。Phase 7.1.5 self-host 時、=nelisp-cc.el= 自体の defun が
+=nelisp-defs-index= に登録され、自身を native compile する循環が
+成立する。
+
+* §5 ERT smoke test plan
+
+各 sub-phase の ERT smoke を集約した最終 +44〜+49 ERT で
+=test/nelisp-cc-test.el= を構築。
+
+| sub-phase | ERT module                              | count    |
+|-----------+-----------------------------------------+----------|
+| 7.1.1     | nelisp-cc-test (SSA IR / linear-scan)    | +10〜+15 |
+| 7.1.2     | nelisp-cc-x86_64-test                    | +10      |
+| 7.1.3     | nelisp-cc-arm64-test                     | +8       |
+| 7.1.4     | nelisp-cc-runtime-test (mmap/tail/safe-point) | +6  |
+| 7.1.5     | nelisp-cc-bench (self-host + 50x gate)   | +10      |
+|-----------+-----------------------------------------+----------|
+|           | 合計                                    | +44〜+49 |
+
+CI matrix:
+- Linux x86_64 (GitHub Actions ubuntu-latest)
+- macOS arm64 (GitHub Actions macos-14)
+- Linux arm64 (self-hosted runner、Phase 7.1.5 で整備)
+
+** 5.1 cargo bench harness
+
+Phase 7.0 で =Cargo.toml= 整備済の前提で、本 phase は
+=benches/nelisp_cc_bench.rs= を追加 (=cargo bench --bench
+nelisp_cc_bench=)。比較対象: bytecode VM 解釈 = =nelisp-bc-run=、
+native = =nelisp-cc-compile-and-run=。
+
+** 5.2 bench gate
+
+| benchmark   | bytecode VM (baseline) | native (target) | ratio |
+|-------------+-----------------------+-----------------+-------|
+| =fib(30)=    | ~5000 ms              | ≤100 ms         | 50x   |
+| =fib(40)=    | ~600000 ms            | ≤10000 ms       | 60x   |
+| =sum 1..10000= | ~50 ms              | ≤1 ms           | 50x   |
+
+bench gate (§7) は =fib(30)= 50x 必達、=fib(40)= 60x は努力目標。
+
+* §6 Risks (8 項目)
+
+** 6.1 register allocation 性能
+
+linear-scan で SBCL の graph-coloring に対し hot loop 30-50%
+遅い可能性。
+
+*影響*: bench gate 50x speedup 未達 risk。
+
+*mitigation*:
+- Phase 7.1.5 で graph-coloring 後付け可能な構造を §3.1 で確保
+- bench miss 時は scope 削減 (gate 30x speedup に下方修正、user
+  signoff 要)
+
+** 6.2 safe-point 設計
+
+GC との co-design で deadlock or pause spike risk。
+
+*影響*: Phase 7.3 (GC NeLisp 化) で発覚すると 7.1 の retrofit が必要。
+
+*mitigation*:
+- §3.4 で safe-point insertion point だけ確保、actual root scanning
+  は Phase 7.3 と共同 design
+- Phase 7.1.4 完了時点で Phase 7.3 担当 (session-X) と
+  orchestrator consensus review 1 回
+
+** 6.3 self-host bootstrap chicken-egg
+
+Phase 7.1.5 で NeLisp が NeLisp compile する瞬間の状態管理
+(Rhodes target-2 cold-init 類比)。
+
+*影響*: bootstrap 失敗で Phase 7.1 全停止。
+
+*mitigation*:
+- 2-stage bootstrap: 第1 stage = host Emacs byte-code 経由
+  =nelisp-cc.el= ロード、第2 stage = ロード済 =nelisp-cc-compile= で
+  =nelisp-cc.el= 自己 native compile
+- chicken-egg は第1→第2 移行点だけに集中、bytecode interpret 経路を
+  fallback として維持
+
+** 6.4 Emacs byte-code FFI 維持コスト
+
+Phase 7.0 完了まで Emacs byte-code 経由 dispatch、native code との
+dual path 期間が長期化。
+
+*影響*: Phase 7.0 + 7.1 並走期間 (~3 ヶ月) で dual path bug 発生 risk。
+
+*mitigation*:
+- Phase 7.0 SHIPPED gate に "syscall stub 全 ERT 緑" を必達化済
+  (Doc 27 §3 7.0)
+- Phase 7.1.1〜7.1.4 は bytecode VM の output と semantic equivalence
+  test を 100% maintain (semantic regression なし)
+
+** 6.5 x86_64 / arm64 binary divergence
+
+両 ISA 第一級維持のテスト負荷増、CI matrix 倍加。
+
+*影響*: CI 時間 + メンテコスト。
+
+*mitigation*:
+- §5 CI matrix で Linux x86_64 / macOS arm64 / Linux arm64 の 3 環境
+  全部緑を強制
+- arm64 backend は AAPCS64 fixed register convention で実装 simple、
+  divergence は =nelisp-cc-arm64-test= で吸収
+
+** 6.6 anvil leverage 過大評価
+
+Doc 27 で SBCL 25 年 → 1-2 ヶ月の見積。現実 3-4 ヶ月に伸びれば
+Phase 7.0 と並走で deadlock しないこと。
+
+*影響*: Phase 7.2-7.4 の着手遅延 = Doc 27 全体 STATE 遅延。
+
+*mitigation*:
+- 各 sub-phase で 1-2 週間 milestone、超過時 scope 削減
+  (例: ARM64 を Phase 7.5 へ後送り、x86_64 のみで MVP)
+- Phase 7.1.1 (SSA IR) 完成時点で Phase 7.2 (allocator) スケッチ着手、
+  parallel に walk (Doc 27 §6.7 mitigation 踏襲)
+
+** 6.7 ABI compliance bug 検出困難
+
+System V/AAPCS の corner case (struct passing / red zone / SIMD
+register save) は table-driven test 必須。
+
+*影響*: silent miscompile で Phase 7.2 以降の hot path に潜伏 bug。
+
+*mitigation*:
+- =test/nelisp-cc-abi-test.el= を Phase 7.1.2/.3 で table-driven 整備
+- C 製 reference implementation (musl libc / Apple libsystem) と
+  bytes-level diff を CI で取る
+
+** 6.8 NeLisp purity max path 全体の自爆 risk
+
+Phase 7.1 で詰まれば Doc 27 全体 (3 核 NeLisp 化) 連鎖遅延 = critical
+path 全停止 (Doc 27 §6.7)。
+
+*影響*: NeLisp v1.0 完遂条件 #4 達成不能 → 公開告知保留 (
+=feedback_nelisp_announcement_standalone_gate.md=) 解除されず。
+
+*mitigation*:
+- 各 sub-phase 7.1.X SHIPPED で本 risk を継続 audit (=anvil-dev=
+  =release-audit= scope=)
+- Phase 7.1.3 (arm64) 後に "scope 圧縮 emergency procedure" を
+  invoke 可能化:
+  - 7.1.3 ARM64 を Phase 7.5 へ後送り
+  - 7.1.4 の safe-point 簡素化 (loop back-edge のみ)
+  - 7.1.5 bench gate 30x へ下方修正
+- 上記 emergency 発動時 user signoff + Doc 27 STATUS 改訂
+
+* §7 完遂 gate (LOCKED 化条件)
+
+Doc 27 §7 各 sub-phase SHIPPED 条件を踏襲。Phase 7.1 全体の LOCKED
+化は以下全条件で成立:
+
+** 7.1 各 sub-phase 7.1.1〜7.1.5 SHIPPED 条件
+
+各 sub-phase で:
+1. =cargo build --release= 緑
+2. =cargo test --all= 緑
+3. NeLisp ERT regression-free (現 1086/1091 を後退させない)
+4. =cargo clippy= 0 warning
+5. =make test= (NeLisp 既存 Makefile) 緑
+6. design doc §3 の該当 sub-phase に SHIPPED stamp
+7. main へ feat branch =--no-ff= merge
+
+** 7.2 Phase 7.1 完全 close 条件
+
+Phase 7.1.1〜7.1.5 全 SHIPPED + 以下:
+- =./nelisp-runtime --self-compile= で =src/nelisp-cc.el= を native
+  compile し、結果を read-eval で再実行可能 (self-host)
+- =fib(30)= が bytecode VM 比 50x speedup (=cargo bench= 実測)
+- cross-arch (Linux x86_64 + macOS arm64 + Linux arm64) 全緑
+- ERT +44〜+49 全 PASS
+- LOCKED → SHIPPED stamp + main merge (=--no-ff=)
+
+** 7.3 後続 Phase の解放
+
+Phase 7.1 SHIPPED で:
+- Phase 7.2 (allocator NeLisp 化) 着手可能
+- Phase 7.3 (GC inner NeLisp 化) 着手可能 (Phase 7.1.4 safe-point
+  と共同 design 開始)
+- Phase 7.4 (coding NeLisp 化) 着手可能
+- 全部 parallel walk 可、Phase 7.5 (integration) で合流
+
+* §8 Out of scope
+
+本 Phase 7.1 では以下を扱わない:
+
+** 8.1 SBCL-style 多段最適化
+
+phase 7.1.5 以降に繰越 (本 doc §2.4 IR の階層 [推奨 A])。
+
+- type inference / type-driven specialization
+- profile-guided optimization
+- whole-program analysis
+
+** 8.2 Win64 ABI 第一級
+
+§2.3 calling convention で opt-in 化、phase 7.1.5 以降に繰越。
+Windows native 経路は Stage A (anvil 単体、Doc 18) で別解。
+
+** 8.3 RISC-V / PowerPC
+
+§2.1 target ISA で除外。NeLisp v2.0 以降の検討事項。
+
+** 8.4 sb-alien 相当 FFI
+
+§1.3 SBCL 比較で除外。NeLisp は syscall stub (Phase 7.0) 経由のみ
+で外部 call、C library 直接 link は不採用。
+
+** 8.5 Phase 7.2-7.5 の実装
+
+本 doc は Phase 7.1 の design 専念。後続 Phase は Doc 29-32 (DRAFT
+予定) で詳述。
+
+* §9 Next action / open questions
+
+** 9.1 next action (本 DRAFT push 後)
+
+session-A (zawatton + Claude Opus 4.7) が以下を実施:
+1. =anvil-orchestrator-consensus-submit= で本 doc を claude+codex+gemma
+   review (judge=claude)
+2. revised proposal を user signoff 待ちで提示
+3. user signoff → STATE: =DRAFT-2026-04-25= → =LOCKED-2026-04-2X=
+4. main へ =--no-ff= merge (=feedback_anvil_master_integration_gate.md=
+   準拠、design doc は LOCKED で merge 可)
+
+session-B/C は Phase 7.0 SHIPPED 待ち、Phase 7.0 SHIPPED 後に Phase
+7.1.1 着手 (=feat/phase7.1.1-ssa-ir= worktree)。
+
+** 9.2 open questions (orchestrator review or user signoff で resolve)
+
+1. =Phase 7.1.1 で x86_64 と arm64 のどちらを先行するか?=
+   default x86_64 (§3.2) 推奨だが arm64 macOS user (M1/M2/M3)
+   priority があれば arm64 先行可。両 backend は SSA IR を共有する
+   ため順序は LOC 影響なし、CI infra (macOS runner) availability で
+   決定推奨。
+
+2. =SIMD register (xmm/ymm/zmm + ARM v0-v7) save/restore 対応の Phase 7.1 内 vs 7.1.5 繰越=
+   default phase 7.1.5 (§2.7 inline、§5 ERT で table-driven test)
+   推奨。Phase 5-B selfhost で SIMD 利用が hot path にない事を
+   =defs-index= で confirm 済 (=anvil-defs= search で SIMD primitive
+   call 0 件)。
+
+3. =nelisp-runtime --self-compile= の bench target は bytecode 比 50x で良いか?=
+   Doc 27 §3 7.1 = "~50x speedup" 踏襲が default。Phase 7.3 GC
+   NeLisp 化を考えると 70x 必要かもしれない (allocator hot path で
+   GC pause 込み 50x が現実的か)。signoff 要。
+
+4. =self-host bootstrap (phase 7.1.5) で Doc 27 §3 7.5 integration とどこで合流?=
+   default = Phase 7.5 で =./nelisp-runtime= binary 内に
+   =--self-compile= subcommand を embed、Phase 7.1.5 は subcommand
+   実装まで。Phase 7.5 は =bin/anvil mcp serve --no-emacs= の cold-init
+   実証まで。
+
+5. =macOS Apple Silicon =MAP_JIT= flag 対応を Phase 7.0 syscall stub に追加するか?=
+   §3.3 Phase 7.1.3 risk mitigation で必要。session-A (Phase 7.0
+   担当) に追加依頼必要、本 doc orchestrator review で session-A 通知。
+
+6. =既存 nelisp-jit.el の扱い (置換 / 並存 / deprecated)=
+   §1.2.1 で "input optimization stage として再利用" と書いたが、
+   Phase 7.1.5 self-host 完成後は role が重複する。default = Phase
+   7.5 で deprecated stamp、main コードからは Phase 8 で削除。
+
+これらは本 DRAFT に =OPEN QUESTION:= prefix で書き留めたものを
+orchestrator review or user signoff で resolve。
+
+* §10 関連 doc
+
+- =docs/design/27-phase7-c-runtime-self-impl.org= (Doc 27 LOCKED
+  2026-04-25 = 2a52bda main、本 doc 親)
+- =docs/design/18-stage-d-standalone.org= (Stage D, Phase 6.1
+  architecture α SHIPPED)
+- =docs/design/25-phase6.5-nelisp-defs-index.org= (=nelisp-defs-index=
+  Phase 6.5 SHIPPED、本 doc §2.8 symbol table 連携)
+- =docs/design/13-phase5b-core-substrate.org= (Phase 5-B selfhost
+  SHIPPED、本 doc §1.4 Rhodes host-1 stage 確立)
+- =docs/03-architecture.org= (NeLisp 4 核 architecture、Doc 27 §1.4
+  Rhodes 5-stage map)
+
+** 関連 memory
+
+- =project_nelisp.md= (Phase 4-6.5 SHIPPED summary、Stage D 配布レディ)
+- =project_nelisp_defs_index.md= (Phase 6.5 SHIPPED detail、本 doc
+  §2.8 symbol table backing)
+- =feedback_anvil_master_integration_gate.md= (design doc は LOCKED
+  で main merge 可)
+- =feedback_canonical_byte_compile_stale_elc.md= (worktree 内 byte-compile、
+  canonical では .elc 残さない)
+- =feedback_commit_dead_code_claim_must_grep.md= ("dead code" claim 前に
+  grep audit)
+- =feedback_orchestrator_role_split.md= (orchestrator review claude+codex+gemma、
+  judge=claude)
+- =feedback_nelisp_announcement_standalone_gate.md= (Phase 7+ 完遂で
+  公開告知保留解除)
+- =feedback_git_worktree_parallel_sessions.md= (Phase 7.1 sub-phase
+  ごとに別 worktree 推奨)
+
+* §11 Sign-off
+
+本 DRAFT は session-A 起草、session-B 受領で git push 完了。
+orchestrator review (claude + codex + gemma、judge=claude) → revised
+proposal → user signoff の流れで LOCKED 化を見込む。
+
+LOCKED 化後の main merge gate:
+- Doc 27 LOCKED 維持 (本 doc は Doc 27 §3 7.1 と完全整合)
+- ERT regression-free (本 doc は文書のみだが、§3 sub-phase の
+  scope/LOC/期間が Doc 27 §3 7.1 + §6.7 + §7 と矛盾しないこと)
+- =anvil-dev release-audit :scope doc 28= 緑 (DRAFT/SHIPPED stamp
+  整合、reference 整合)
