@@ -1287,3 +1287,15 @@ v0 -> v1:
 - HIGH 3 反映
 - divergence D1-D14 反映
 - option B parent integration path 選択
+
+** 11.6 ship 順序 errata (2026-04-25 v2 post-LOCK)
+
+Doc 39 v2 (Phase 9d process subprocess substrate、LOCKED-2026-04-25-v2)
+の T93 review で Doc 34 §2.4 event-source contract と Doc 39 §3.K eventloop multiplexer が
+fd polling primitive を独立 spec している重複が発覚。本 doc §2.4
+=EVENT_SOURCE_CONTRACT_VERSION = 1= は不変、Doc 39 fd polling primitive を
+=pull-fn= の implementation source として再利用する adapter pattern で integration。
+
+ship 順序: 9a (T39 SHIPPED) -> *9d (Doc 39)* -> *9b (Doc 34)* -> 9c (= 元 9a -> 9b -> 9c -> 9d から swap)。
+9d eventloop が 9b の prerequisite (= 9b は 9d の上に乗る)。詳細は Doc 39 §1.5 + §11.4 参照。
+本 doc 内の API surface / contract version は **不変**、ship 順序のみ swap。
