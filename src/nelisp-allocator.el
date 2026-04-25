@@ -653,5 +653,439 @@ without changing call sites) but is not currently consulted."
                   total 'nursery 'large-object)))
     (nelisp-heap-region-start region)))
 
+;;; ----------------------------------------------------------------
+;;; Phase 7.2.2 — tenured generation + free-list + promotion
+;;; ----------------------------------------------------------------
+;;
+;; Doc 29 v2 LOCKED 2026-04-25 §3.2 sub-phase 7.2.2 scope:
+;;   - tenured region (default 64 MB, defcustom)
+;;   - size-classed free-list (10 bins, 8 .. 4096 byte powers of 2)
+;;   - manual promotion API (Doc 29 §6.4 — auto promotion is Phase 7.3)
+;;   - free-block coalescing (Doc 29 §6.5 — 80%+ utilisation target)
+;;   - tenured stats helper (subset of Doc 29 §2.10 — full alloc-stats
+;;     plist arrives in Phase 7.2.3)
+;;
+;; Phase 7.2 interim invariant (Doc 29 §6.7 v2): minor GC is *not*
+;; executed during Phase 7.2; tenured → nursery references defer to
+;; the slow path until Phase 7.3 enables the write barrier.  The
+;; promotion API below therefore copies the header alone — payload
+;; bytes are zero-filled in the simulator, since real `mmap'-backed
+;; bytes do not exist until Phase 7.5 wires the FFI bridge.
+;;
+;; Design notes (simulator path):
+;;   - `headers' hash maps addr → packed 64-bit header word.  This is
+;;     a logical stand-in for the bytes the real allocator would write
+;;     into the `mmap' span; it lets ERTs assert age-bit / family-tag
+;;     state without committing to real memory before Phase 7.5.
+;;   - `block-sizes' hash maps addr → size-class so `tenured-free' can
+;;     find the right free-list bin in O(1) without re-deriving the
+;;     class from the SIZE argument (which the caller might round
+;;     differently than `--size-class-of').
+;;   - Coalescing uses the "buddy" property of power-of-2 size-classes:
+;;     two adjacent size-N free blocks merge into a single size-2N
+;;     block, recursively up to the largest class.  This is the
+;;     standard buddy-allocator merge step (Knuth TAOCP vol. 1 §2.5),
+;;     adapted to NeLisp's 10-bin layout.
+
+;;; Tenured: customization ------------------------------------------
+
+(defcustom nelisp-allocator-tenured-size (* 64 1024 1024)
+  "Tenured generation size in bytes (default 64 MB).
+
+Doc 29 v2 §2.2 推奨 A: 2-generation default with tenured = 64 MB.
+Tunable per workload.  Phase 7.2.2 MVP allocates a single tenured
+region; per-family tenured pools land in Phase 7.2.3.
+
+Must be a positive multiple of `nelisp-allocator-page-size' so the
+size-class free-list always lands inside the registered region."
+  :type 'integer
+  :group 'nelisp-allocator)
+
+;;; Tenured: constants ----------------------------------------------
+
+(defconst nelisp-allocator-tenured-size-classes
+  '(8 16 32 64 128 256 512 1024 2048 4096)
+  "Size-class bins (bytes) for the tenured free-list.
+
+Doc 29 v2 §2.5 size-classed span: 10 power-of-2 bins from 8 byte
+(minimum 64-bit-word footprint) up to 4096 byte (= the
+`nelisp-allocator-large-object-threshold' boundary).  Allocations
+above 4096 byte should be routed via the large-object family
+before reaching this list.
+
+Power-of-2 spacing also enables the buddy coalescing step in
+`nelisp-allocator-tenured-coalesce' — two adjacent size-N blocks
+merge into a size-2N block.  Bumping the bin count or breaking the
+power-of-2 invariant must update the coalesce algorithm in lock
+step, since the merge step assumes pairs of equal-size buddies.")
+
+;;; Tenured: state struct -------------------------------------------
+
+(cl-defstruct (nelisp-allocator--tenured
+               (:constructor nelisp-allocator--tenured-make)
+               (:copier nil))
+  "Tenured generation state with size-classed free-list (Doc 29 §3.2).
+
+Slots:
+  REGION          — `nelisp-heap-region' (generation = `tenured').
+  FREE-LISTS      — alist (size-class . list-of-free-addr).  Each
+                    bin holds the base addresses of *available*
+                    blocks of that size.  Pop = alloc fast path,
+                    push = free fast path.
+  BUMP            — next fresh address to carve when no free-list
+                    bin satisfies the request.  Initially equal to
+                    `region.start'; advances monotonically up to
+                    `region.end'.
+  ALLOCATED-BYTES — sum of the size-classes of every currently
+                    *live* (= not on a free-list) tenured block.
+                    Free-list pushes decrement, alloc-from-free-list
+                    increments, fresh-carve increments.
+  CAPACITY        — total tenured capacity (= region.end - region.start).
+  HEADERS         — addr → packed 64-bit header word (Doc 30 v2 §2.13).
+                    Simulator-only stand-in for the real `mmap' bytes;
+                    Phase 7.5 will replace this with raw-byte writes
+                    through the FFI bridge.
+  BLOCK-SIZES     — addr → size-class.  Used by `tenured-free' to
+                    locate the correct free-list bin in O(1) without
+                    asking the caller to remember which class their
+                    block was rounded to."
+  (region nil)
+  (free-lists nil)
+  (bump 0)
+  (allocated-bytes 0)
+  (capacity 0)
+  (headers (make-hash-table :test 'eql))
+  (block-sizes (make-hash-table :test 'eql)))
+
+(defvar nelisp-allocator--current-tenured nil
+  "Process-wide active tenured generation.
+
+Phase 7.2.2 has a single global tenured region (per-family tenured
+pools land in Phase 7.2.3, multi-thread arenas in Phase 7.5).
+`nelisp-allocator-init-tenured' replaces this binding; ERT
+fixtures use `let'-binding to isolate per-test state.")
+
+;;; Tenured: errors -------------------------------------------------
+
+(define-error 'nelisp-allocator-tenured-overflow
+  "Tenured region exhausted; major GC required (Phase 7.3 stub)"
+  'nelisp-allocator-error)
+
+;;; Tenured: helpers ------------------------------------------------
+
+(defun nelisp-allocator--size-class-of (size)
+  "Return the smallest size-class (Doc 29 §3.2) that fits SIZE bytes.
+
+Signals `nelisp-allocator-error' if SIZE exceeds the largest
+size-class — caller is expected to route to the large-object
+family for sizes above `nelisp-allocator-large-object-threshold'."
+  (when (or (not (integerp size)) (<= size 0))
+    (signal 'nelisp-allocator-error
+            (list "size-class lookup requires a positive integer" size)))
+  (or (cl-find-if (lambda (sz) (>= sz size))
+                  nelisp-allocator-tenured-size-classes)
+      (signal 'nelisp-allocator-error
+              (list "size exceeds largest tenured size-class"
+                    size
+                    (car (last nelisp-allocator-tenured-size-classes))))))
+
+(defun nelisp-allocator--tenured-free-list-bin (tenured size-class)
+  "Return the cons cell (CLASS . LIST) for SIZE-CLASS in TENURED's
+free-lists alist, creating it if absent.  Returns the cell so callers
+can mutate its `cdr' in place."
+  (let ((cell (assq size-class
+                    (nelisp-allocator--tenured-free-lists tenured))))
+    (unless cell
+      (setq cell (cons size-class nil))
+      (setf (nelisp-allocator--tenured-free-lists tenured)
+            (cons cell (nelisp-allocator--tenured-free-lists tenured))))
+    cell))
+
+;;; Tenured: init ---------------------------------------------------
+
+(defun nelisp-allocator-init-tenured (&optional size)
+  "Initialise the tenured generation with SIZE bytes (default
+`nelisp-allocator-tenured-size').
+
+Allocates a fresh `nelisp-heap-region' (generation = `tenured',
+family = `cons-pool' as the dominant family — per-family tenured
+pools arrive in Phase 7.2.3) and returns the new
+`nelisp-allocator--tenured' struct.  Also stored in
+`nelisp-allocator--current-tenured' for production use.
+
+Unlike `nelisp-allocator-init-nursery', this function does *not*
+reset the region table — production code calls init-nursery first
+(which clears the table) and init-tenured second (which extends
+it).  ERT fixtures call `nelisp-allocator--reset-region-table' if
+they need a clean slate."
+  (let ((tenured-size (or size nelisp-allocator-tenured-size)))
+    (unless (and (integerp tenured-size)
+                 (> tenured-size 0)
+                 (zerop (% tenured-size nelisp-allocator-page-size)))
+      (signal 'nelisp-allocator-bad-config
+              (list "tenured size must be a positive page-multiple"
+                    tenured-size nelisp-allocator-page-size)))
+    (let* ((region (nelisp-allocator--make-region
+                    tenured-size 'tenured 'cons-pool))
+           (start (nelisp-heap-region-start region))
+           (end (nelisp-heap-region-end region))
+           (tenured (nelisp-allocator--tenured-make
+                     :region region
+                     :free-lists nil
+                     :bump start
+                     :allocated-bytes 0
+                     :capacity (- end start)
+                     :headers (make-hash-table :test 'eql)
+                     :block-sizes (make-hash-table :test 'eql))))
+      (setq nelisp-allocator--current-tenured tenured)
+      tenured)))
+
+;;; Tenured: alloc / free -------------------------------------------
+
+(defun nelisp-allocator-tenured-alloc (tenured family size)
+  "Allocate SIZE bytes from TENURED for FAMILY object family.
+
+SIZE is rounded up to the smallest fitting bin in
+`nelisp-allocator-tenured-size-classes'.  The fast path pops a
+free address from the matching bin; the slow path carves a fresh
+block off the bump cursor.  Both paths write a packed 64-bit
+header (Doc 30 v2 §2.13: family-tag set, mark/forwarding/age = 0)
+into the simulator `headers' map.
+
+Signals `nelisp-allocator-tenured-overflow' if neither the
+free-list nor the bump cursor can satisfy the request.
+
+Returns the allocated base address (integer)."
+  (unless (nelisp-allocator--tenured-p tenured)
+    (signal 'nelisp-allocator-error (list "not a tenured" tenured)))
+  (unless (assq family nelisp-allocator--family-tag-alist)
+    (signal 'nelisp-allocator-unknown-family (list family)))
+  (let* ((size-class (nelisp-allocator--size-class-of size))
+         (bin (nelisp-allocator--tenured-free-list-bin tenured size-class))
+         (free-list (cdr bin))
+         (region (nelisp-allocator--tenured-region tenured))
+         (region-end (nelisp-heap-region-end region))
+         (addr nil))
+    (cond
+     ;; Fast path: pop a free block from the matching bin.
+     (free-list
+      (setq addr (car free-list))
+      (setcdr bin (cdr free-list)))
+     ;; Slow path: carve a fresh block off the bump cursor.
+     (t
+      (let* ((bump (nelisp-allocator--tenured-bump tenured))
+             (next (+ bump size-class)))
+        (when (> next region-end)
+          (signal 'nelisp-allocator-tenured-overflow
+                  (list "tenured exhausted"
+                        :requested size-class
+                        :family family
+                        :bump bump
+                        :end region-end)))
+        (setq addr bump)
+        (setf (nelisp-allocator--tenured-bump tenured) next))))
+    ;; Common: write the header + size-class index, bump allocated bytes.
+    (puthash addr
+             (nelisp-allocator-pack-header family size-class)
+             (nelisp-allocator--tenured-headers tenured))
+    (puthash addr size-class
+             (nelisp-allocator--tenured-block-sizes tenured))
+    (cl-incf (nelisp-allocator--tenured-allocated-bytes tenured)
+             size-class)
+    addr))
+
+(defun nelisp-allocator-tenured-free (tenured addr &optional size)
+  "Return the block at ADDR (size SIZE) to TENURED's free-list.
+
+SIZE defaults to the size-class recorded at alloc time
+(`block-sizes' map); explicit SIZE rounds up to its size-class for
+sanity-check parity with the caller.
+
+The header at ADDR is *not* cleared — Phase 7.3 GC may want to
+inspect the family-tag of recently-freed blocks during sweep.
+Returns the size-class the block was recycled into."
+  (unless (nelisp-allocator--tenured-p tenured)
+    (signal 'nelisp-allocator-error (list "not a tenured" tenured)))
+  (let* ((known-size (gethash addr
+                              (nelisp-allocator--tenured-block-sizes tenured)))
+         (effective-size (or known-size
+                             (and size
+                                  (nelisp-allocator--size-class-of size))
+                             (signal 'nelisp-allocator-error
+                                     (list "tenured-free: addr never alloc'd"
+                                           addr))))
+         (bin (nelisp-allocator--tenured-free-list-bin
+               tenured effective-size)))
+    (when (memql addr (cdr bin))
+      (signal 'nelisp-allocator-error
+              (list "tenured-free: double free" addr)))
+    (setcdr bin (cons addr (cdr bin)))
+    (cl-decf (nelisp-allocator--tenured-allocated-bytes tenured)
+             effective-size)
+    effective-size))
+
+;;; Tenured: header age update --------------------------------------
+
+(defun nelisp-allocator--update-age (tenured addr increment)
+  "Increment the 6-bit age field of the header at ADDR by INCREMENT.
+
+Doc 30 v2 §2.13 layout: bits [61:56].  The simulator stores the
+header in TENURED's `headers' map; Phase 7.5 will rewrite this to
+mutate the actual `mmap'-backed bytes.
+
+Saturates at the 6-bit ceiling (63) — once an object has reached
+the maximum age it stays there until promoted again or freed.
+Returns the new age."
+  (unless (nelisp-allocator--tenured-p tenured)
+    (signal 'nelisp-allocator-error (list "not a tenured" tenured)))
+  (let* ((headers (nelisp-allocator--tenured-headers tenured))
+         (header (gethash addr headers)))
+    (unless header
+      (signal 'nelisp-allocator-error
+              (list "update-age: no header for addr" addr)))
+    (let* ((cur (nelisp-allocator-header-age header))
+           (new (min (+ cur increment) nelisp-allocator--header-age-mask))
+           (cleared (logand header
+                            (lognot (ash nelisp-allocator--header-age-mask
+                                         nelisp-allocator--header-age-shift))))
+           (rewritten (logior cleared
+                              (ash new nelisp-allocator--header-age-shift))))
+      (puthash addr rewritten headers)
+      new)))
+
+;;; Tenured: manual promotion (Doc 29 §6.4) -------------------------
+
+(defun nelisp-allocator-promote (_nursery tenured addr size family)
+  "Manually promote the object at ADDR (SIZE bytes, FAMILY) into TENURED.
+
+Allocates a tenured slot of the same size-class, copies the simulator
+header (age incremented by 1, capped at the 6-bit ceiling) into it,
+and returns the new tenured address.
+
+Phase 7.2.2 ships only the *manual* API per Doc 29 §6.4; auto
+promotion (driven by Phase 7.3 minor GC reaching the age threshold)
+is out of scope and lands in Phase 7.3.  Doc 29 §6.7 v2 interim
+invariant — Phase 7.2 must not run minor GC, so promotion is caller
+driven (e.g. tests, anvil dashboards), never reaper-driven.
+
+The NURSERY argument is currently unused (the simulator does not
+free the original nursery slot — that requires Phase 7.3 evacuation
+semantics) but is accepted for API symmetry with the auto-promotion
+signature Phase 7.3 will introduce."
+  (unless (nelisp-allocator--tenured-p tenured)
+    (signal 'nelisp-allocator-error (list "not a tenured" tenured)))
+  (unless (assq family nelisp-allocator--family-tag-alist)
+    (signal 'nelisp-allocator-unknown-family (list family)))
+  (when (or (not (integerp size)) (<= size 0))
+    (signal 'nelisp-allocator-error
+            (list "promote: size must be positive" size)))
+  (let* ((new-addr (nelisp-allocator-tenured-alloc tenured family size))
+         (_ (ignore addr)))
+    ;; Bump age on the freshly-installed tenured header.  The
+    ;; tenured-alloc above wrote a fresh header (age = 0); promotion
+    ;; semantics demand age ≥ 1 so the very next promotion attempt
+    ;; sees a non-zero age (Doc 30 §2.13 invariant: tenured headers
+    ;; always carry age ≥ 1, only nursery headers may have age 0).
+    (nelisp-allocator--update-age tenured new-addr 1)
+    new-addr))
+
+;;; Tenured: coalesce (Doc 29 §6.5) ---------------------------------
+
+(defun nelisp-allocator-tenured-coalesce (tenured)
+  "Merge adjacent free blocks of the same size-class in TENURED.
+
+Doc 29 v2 §6.5 fragmentation mitigation: 80%+ utilisation target.
+Power-of-2 size-classes mean two adjacent size-N free blocks form
+a buddy pair that fits exactly into one size-2N free block.  This
+function walks every bin in ascending order and promotes such
+pairs into the next-larger bin, repeating up to the largest class
+(4096 byte).
+
+Returns the total number of merge operations performed across all
+bins (each merge consumes 2 size-N blocks and produces 1 size-2N
+block, so the live free-block count strictly decreases by 1 per
+merge)."
+  (unless (nelisp-allocator--tenured-p tenured)
+    (signal 'nelisp-allocator-error (list "not a tenured" tenured)))
+  (let ((merges 0)
+        (classes nelisp-allocator-tenured-size-classes)
+        (block-sizes (nelisp-allocator--tenured-block-sizes tenured))
+        (headers (nelisp-allocator--tenured-headers tenured)))
+    (while (cdr classes)
+      (let* ((class (car classes))
+             (next-class (cadr classes))
+             (bin (nelisp-allocator--tenured-free-list-bin tenured class))
+             ;; Sort the bin ascending so adjacency tests are linear.
+             (sorted (sort (copy-sequence (cdr bin)) #'<))
+             (remaining nil))
+        (while sorted
+          (let ((a (car sorted))
+                (rest (cdr sorted)))
+            (cond
+             ((and rest
+                   (= (+ a class) (car rest))
+                   ;; Buddy alignment: a must be aligned to 2N so the
+                   ;; merged block lands on a 2N boundary too.
+                   (zerop (% a next-class)))
+              ;; Merge a + (a + class) into a single size-next-class block.
+              (let ((next-bin (nelisp-allocator--tenured-free-list-bin
+                               tenured next-class)))
+                (setcdr next-bin (cons a (cdr next-bin)))
+                ;; Drop the buddy's bookkeeping: it is no longer a
+                ;; standalone block, only the survivor at A is.
+                (remhash (car rest) block-sizes)
+                (remhash (car rest) headers)
+                ;; Update the survivor's size-class so a future
+                ;; tenured-free targeting A goes to next-class bin.
+                (puthash a next-class block-sizes))
+              (cl-incf merges)
+              (setq sorted (cdr rest)))
+             (t
+              (push a remaining)
+              (setq sorted rest)))))
+        (setcdr bin (nreverse remaining)))
+      (setq classes (cdr classes)))
+    merges))
+
+;;; Tenured: stats (Doc 29 §2.10 subset) -----------------------------
+
+(defun nelisp-allocator-tenured-stats (tenured)
+  "Return a plist describing the current state of TENURED.
+
+Doc 29 v2 §2.10 推奨 A allocator stats subset (the full
+`nelisp-alloc-stats' plist arrives in Phase 7.2.3 with promotion
+counts, per-family bytes, and bulk-alloc counters):
+
+  (:capacity N
+   :allocated N
+   :free N
+   :utilization-percent N
+   :size-class-distribution ((CLASS . COUNT) ...))
+
+`utilization-percent' is `(allocated / capacity) * 100' rounded to
+the nearest integer; 0 for an empty tenured.  The
+`size-class-distribution' alist enumerates *free-list* occupancy
+per bin (not allocated-block counts) — Phase 7.3 will swap this
+for live-block counts once the heap walker can tell the two apart."
+  (unless (nelisp-allocator--tenured-p tenured)
+    (signal 'nelisp-allocator-error (list "not a tenured" tenured)))
+  (let* ((capacity (nelisp-allocator--tenured-capacity tenured))
+         (allocated (nelisp-allocator--tenured-allocated-bytes tenured))
+         (free (- capacity allocated))
+         (utilisation (if (zerop capacity)
+                          0
+                        (/ (* 100 allocated) capacity)))
+         (dist (mapcar (lambda (class)
+                         (let ((bin (assq class
+                                          (nelisp-allocator--tenured-free-lists
+                                           tenured))))
+                           (cons class (length (cdr bin)))))
+                       nelisp-allocator-tenured-size-classes)))
+    (list :capacity capacity
+          :allocated allocated
+          :free free
+          :utilization-percent utilisation
+          :size-class-distribution dist)))
+
 (provide 'nelisp-allocator)
 ;;; nelisp-allocator.el ends here
