@@ -1,0 +1,1289 @@
+#+TITLE: Phase 9b — Interactive Editor Substrate (window/frame/keymap/event-loop/buffer-local/text-properties/hooks/undo) Design
+#+DATE: 2026-04-25
+#+AUTHOR: zawatton + Claude + Codex (session-T41 v0 baseline, session-A T61 revise)
+#+STATUS: DRAFT v1 (option B parent integration path、BLOCKING 5 + HIGH 3 + divergence D1-D14 反映)
+#+DEPENDS_ON: Doc 27 LOCKED-2026-04-25, Doc 28-32 v2 LOCKED-2026-04-25, Doc 33 v2 LOCKED-2026-04-25 §4.2a/§4.2b/§6.1, Phase 8 mutable text primitive design source (Stage D / Doc 18 architecture alpha shipped lineage), Doc 34a Phase 9a design (pending detailed decomposition, parent source = Doc 33 §4.2a)
+#+PARENT: Doc 33 v2 §4.2b
+
+* §0 要旨 (TL;DR)
+
+Doc 33 v2 §4.2b で =v2.x 後送り= とされた *Phase 9b package compatibility
+surface* のうち、本 doc は *interactive editor substrate* を担当する
+DRAFT v1。option B を採用し、Doc 33 LOCKED は不変のまま、本 doc 側で
+"Doc 33 §4.2b の interactive subset" として formal declare する。
+
+*担当 scope*:
+- window / frame / keymap / event-loop / buffer-local / text-properties /
+  hooks / undo の 8 sub-system
+- 4 sub-phase (9b.1〜9b.4) で incremental release
+- Phase 9a SHIPPED API 31 件を consume し、その上に 9b extension/new API
+  を積む
+
+*明示 scope 外*:
+- advice / minor mode / 完全 regex / process UI / file UI 完全互換 /
+  text-property face/render / advanced undo / actual GUI backend
+- 上記は parent Doc 33 §4.2b の follow-up docs (Doc 35+) で扱う
+
+*v1 で固定した点*:
+- parent contract は option B で整合
+- Phase 9a / 9b 境界を API list ベースで明示
+- §4 を sibling v2 depth 相当の contract section に拡張
+- frame stub mode invariant を §2 LOCKED に昇格
+- replan gate / package gate / bench gate を定量条件へ再定義
+
+*ship gate 要約*:
+- 9b.1〜9b.4 の ERT / integration / contract freeze / package scenario /
+  bench ratio gate を順次通過
+- 9b.3 は stub backend 互換で暫定 SHIPPED、Phase 11 placeholder
+  substitution 互換で full SHIPPED
+- popular package gate は本 doc in-scope API のみで成立する set に縮小
+
+* §1 背景 + scope
+
+** 1.1 Parent contract integration path (option B 固定)
+
+本 doc は *Doc 33 v2 §4.2b の interactive editor substrate 解釈宣言* である。
+Doc 33 LOCKED 本文は変更しない。parent の "Phase 9b package compatibility
+surface" のうち、interactive editor を成立させる substrate を本 doc で詳細化
+し、それ以外の package-compat surface は follow-up doc に切り出す。
+
+*formal declaration*:
+- 本 doc が担当する subset:
+  window / frame / keymap / event-loop / buffer-local / text-properties
+  (storage/query only) / hooks / undo
+- 本 doc が担当しない parent bullet:
+  advice / minor mode / 完全 regex / process UI / file UI 完全互換 /
+  text-property face/display render
+- 親 Doc 33 §4.2b は "interactive package compatibility surface" の umbrella
+  と解釈し、本 doc はその第一分割 doc と位置づける
+- parent errata は本 task では不要。ただし LOCKED 前最終 signoff 時に
+  option A/C を再検討する余地は §7.4 に note として残す
+
+この option B は工数最小であり、LOCKED parent を動かさず sibling docs と
+整合した revise path を維持できる。したがって本 DRAFT v1 は option B を
+default path として固定する。
+
+** 1.2 Doc 33 §4.2b との対応表 (subset / follow-up 分離)
+
+Doc 33 §4.2b の bullet と本 doc の責務を二段で表す。
+
+*上段: parent bullet → 本 doc 配置 (interactive subset only)*
+
+| Doc 33 §4.2b bullet                     | 本 doc で扱う部分 | 配置 |
+|-----------------------------------------+-------------------+------|
+| advice / minor mode / hook              | hook のみ         | hooks (9b.1) |
+| 完全 regex                              | なし              | scope 外 |
+| text-property face / display            | storage/query のみ | text-properties (9b.1) |
+| process UI 完全                         | なし              | scope 外 |
+| file UI 完全                            | なし              | scope 外 |
+
+*下段: 本 doc 独自 sub-system → parent 解釈上の正当化*
+
+| 本 doc sub-system | parent 解釈上の位置づけ |
+|-------------------+--------------------------|
+| window            | interactive editor substrate の UI state primitive |
+| frame             | Doc 33 §6.1 display contract の consumer facade |
+| keymap            | package command dispatch substrate |
+| event-loop        | interactive input / command-loop substrate |
+| buffer-local      | mode 単位 state isolation substrate |
+| undo              | interactive editing history substrate |
+
+= 本 doc は Doc 33 §4.2b の "package compatibility surface" を再定義するのではなく、
+そのうち interactive editor substrate を先行分解する doc である。
+
+** 1.3 Phase 9a と Phase 9b の境界
+
+Phase 9a は *batch / simple script / minimal editing* を成立させる 31 API の
+MVP。Phase 9b はその基盤を consume し、interactive editor substrate を追加する。
+
+*Phase 9a SHIPPED API 31 件* (= /home/madblack-21/Notes/dev/nelisp/src/nelisp-emacs-compat.el)
+
+| category | APIs |
+|----------+------|
+| buffer registry + current buffer (5) | =generate-new-buffer= / =current-buffer= / =set-buffer= / =with-current-buffer= / =kill-buffer= |
+| point + cursor control (7) | =point= / =point-min= / =point-max= / =goto-char= / =forward-char= / =backward-char= / =buffer-size= |
+| text editing (6) | =insert= / =delete-region= / =delete-char= / =erase-buffer= / =buffer-substring= / =buffer-string= |
+| save-* family (3) | =save-excursion= / =save-restriction= / =save-current-buffer= |
+| narrowing (2) | =narrow-to-region= / =widen= |
+| marker (5) | =make-marker= / =set-marker= / =marker-position= / =marker-buffer= / =point-marker= |
+| search (3) | =search-forward= / =search-backward= / =looking-at-p= |
+
+Doc 33 §4.2a は text-property primitive と =buffer-undo-list= primitive も
+9a 側の parent-level boundary に含めている。本 doc はその overlap を
+"9a base primitive consumed by 9b extension" として扱う。
+
+*Phase 9a / 9b overlap summary*
+
+| sub-system  | 9a SHIPPED | 9b 拡張 | 9b 新規 | 合計 |
+|-------------+------------+---------+---------+------|
+| window      | 0          | 0       | 13      | 13   |
+| frame       | 0          | 0       | 10      | 10   |
+| keymap      | 0          | 0       | 17      | 17   |
+| event-loop  | 0          | 0       | 10      | 10   |
+| buffer-local| 0          | 0       | 7       | 7    |
+| textprops   | 2          | 10      | 0       | 12   |
+| hooks       | 0          | 0       | 6       | 6    |
+| undo        | 1          | 5       | 0       | 6    |
+|-------------+------------+---------+---------+------|
+| 合計        | 3          | 15      | 53      | 71   |
+
+*boundary interpretation*:
+- =put-text-property= / =get-text-property= は 9a primitive 前提、9b では
+  interval-tree / property traversal / change hooks / plist APIs まで拡張
+- =buffer-undo-list= は 9a primitive slot 前提、9b では =undo-boundary= /
+  =buffer-disable-undo= / =buffer-enable-undo= / =undo= / =primitive-undo=
+  を追加
+- 9a API 31 件は本 doc の実装対象ではなく prerequisite contract
+- 9b API tables の status 列では `9a SHIPPED` / `9b 拡張` / `9b 新規` の
+  3 値で凍結する
+
+** 1.4 Phase 11 display engine への依存境界
+
+Doc 33 v2 §6.1 の display-spec contract を parent とし、本 doc はその consumer
+側に留まる。親 contract の amend は行わない。
+
+| sub-system      | display 依存 | backend 依存度 | stub backend 可否 | full integration 必須 |
+|-----------------+--------------+----------------+-------------------+-----------------------|
+| window          | indirect     | 中             | 可                | はい |
+| frame           | direct       | 強             | 可                | はい |
+| keymap          | なし         | なし           | 不要              | いいえ |
+| event-loop      | indirect     | 中             | 可                | はい |
+| buffer-local    | なし         | なし           | 不要              | いいえ |
+| text-properties | なし         | なし           | 不要              | いいえ |
+| hooks           | なし         | なし           | 不要              | いいえ |
+| undo            | なし         | なし           | 不要              | いいえ |
+
+*boundary rules*:
+- frame は =nelisp-display-frame-create= 等の parent contract consumer
+- window は frame geometry provider を通じて indirect dependency
+- event-loop は event source provider を通じて indirect dependency
+- text-properties は storage/query のみ。face/display render は scope 外
+- stub mode contract は §2.11 で LOCK し、open question から除外する
+
+** 1.5 precedent reference (Emacs / SBCL / Clojure / Racket)
+
+本 phase の直接 precedent は Emacs。ただし "editor-less Lisp runtime に
+editor extension surface を載せる" という構図では Clojure / Racket 的な
+分離も参考になる。
+
+| 軸 | Emacs precedent | SBCL / Clojure / Racket precedent | NeLisp 方針 |
+|----+-----------------+------------------------------------+------------|
+| runtime と editor の一体性 | Emacs は一体型 | SBCL は editor 非内蔵、Clojure/Racket は editor binding 分離 | runtime と extension substrate を分離 |
+| API source | =window.c= / =frame.c= / =keymap.c= 等 | editor API precedent は薄い | Emacs semantic を優先、実装層は分離 |
+| package ecosystem 接続 | Emacs Lisp package 前提 | host runtime + tooling 分離 | 9a/9b/35+ に段階分割して導入 |
+
+このため、本 doc は Emacs semantic precedent を採用しつつ、Doc 33 / Phase 7-11
+の layered architecture に合わせて consumer/producer contract を明示する。
+
+* §2 LOCKED decisions
+
+本 doc の LOCKED identifier は sibling Doc 28-32 v2 と統一して =§2.X= 形式を
+採用する。Doc 33 の =L1-L12= とは別 namespace。
+
+** 2.1 window primitive design [推奨 = A logical window + frame 紐付け]
+
+| 候補 | 戦略 | 利点 |
+|------+------|------|
+| A    | logical window split tree + frame 紐付け | Emacs precedent 直接 transfer、Phase 11 consumer と整合 |
+| B    | flat window list only | 実装は軽いが split tree 互換不可 |
+| C    | frame に吸収 | semantic 縮小、互換性破綻 |
+
+*推奨 A 理由*:
+- =split-window= / =window-tree= / =delete-other-windows= の semantic に必須
+- dired basic / org-mode basic の multi-window scenario を成立させる
+- stub backend でも geometry 計算を deterministic に固定できる
+
+** 2.2 frame primitive design [推奨 = A abstract handle + backend consumer]
+
+| 候補 | 戦略 | 利点 |
+|------+------|------|
+| A    | abstract handle + Doc 33 §6.1 backend consumer | parent contract 不変、Phase 11 後送り可 |
+| B    | 9b 内で TUI backend 実装 | scope 過大、Phase 11 と重複 |
+| C    | single-frame 固定 | package 互換性不足 |
+
+*推奨 A 理由*:
+- frame は display-spec producer ではなく consumer facade に限定
+- =FRAME_BACKEND_CONTRACT_VERSION = 1= を本 doc で凍結
+- capability flag を parent に要求せず、stub invariant で self-contained に扱う
+
+** 2.3 keymap primitive design [推奨 = A sparse + full hybrid + precedence freeze]
+
+| 候補 | 戦略 | 利点 |
+|------+------|------|
+| A    | sparse + full hybrid + chain + special vars | Emacs 互換、package 実用域 |
+| B    | sparse のみ | full-keymap 前提 package が壊れる |
+| C    | trie | precedent 不足、過設計 |
+
+*推奨 A 理由*:
+- =make-keymap= / =make-sparse-keymap= 両対応が必要
+- special variables を contract に含めないと precedence が固定できない
+- text-property keymap は scope 外とし、lookup precedence から除外する
+
+*special variables (LOCKED)*:
+- =overriding-terminal-local-map=
+- =overriding-local-map=
+- =minor-mode-overriding-map-alist=
+- =minor-mode-map-alist=
+- =emulation-mode-map-alists=
+
+*lookup precedence (LOCKED v1)*:
+1. =overriding-terminal-local-map=
+2. =overriding-local-map=
+3. =minor-mode-overriding-map-alist=
+4. =minor-mode-map-alist=
+5. =emulation-mode-map-alists=
+6. =current-local-map=
+7. =global-map=
+
+=text-property keymap= は overlay / advanced input dispatch と同様に本 doc
+scope 外。したがって precedence に含めない。
+
+** 2.4 event-loop design [推奨 = A abstract event source + minimal command-loop]
+
+| 候補 | 戦略 | 利点 |
+|------+------|------|
+| A    | abstract event source + minimal command-loop | backend 独立、ERT mock 駆動可 |
+| B    | Emacs =keyboard.c= 完全移植 | scope 過大 |
+| C    | event-loop 省略 | interactive 不成立 |
+
+*event variant typed alist (LOCKED)*:
+- key event: =(:type 'key :code <keycode> :modifiers <list>)=
+- mouse event: =(:type 'mouse :x <int> :y <int> :button <symbol>)=
+- window event: =(:type 'window :delta-w <int> :delta-h <int>)=
+- timer event: =(:type 'timer :timer-id <symbol>)=
+
+*contract (LOCKED)*:
+- timeout 単位 = ms
+- register 順 FIFO で source priority 固定
+- queue capacity = =nelisp-event-queue-capacity= default 1000
+- overflow policy = oldest-first drop
+- register failure = error signal
+- unregister 済み source の pull = nil + warning
+- naming は =register / unregister / pull= に統一
+- =EVENT_SOURCE_CONTRACT_VERSION = 1=
+
+#+begin_src text
+(nelisp-event-source-register :name <symbol> :pull-fn <function>) -> source-id
+(nelisp-event-source-unregister :id <source-id>) -> boolean
+(nelisp-event-source-pull :timeout-ms <integer>) -> (or event nil)
+#+end_src
+
+*producer / consumer*:
+- producer = Phase 11 backend, mock backend, timer provider
+- consumer = command-loop / =read-event= / =read-key=
+- cleanup owner = event-loop registry
+
+** 2.5 buffer-local variables [推奨 = A per-buffer hash + cleanup contract]
+
+| 候補 | 戦略 | 利点 |
+|------+------|------|
+| A    | per-buffer hash + symbol property | Emacs precedent、cleanup しやすい |
+| B    | symbol-only metadata | buffer 単位 override が崩れる |
+| C    | dynamic binding 置換 | semantic 混線 |
+
+*推奨 A 理由*:
+- =defvar-local= / =make-local-variable= / =buffer-local-value= に必須
+- per-buffer cleanup を kill-buffer で deterministic に実行できる
+- Phase 7 GC と object lifetime を結びやすい
+
+*cleanup contract (LOCKED)*:
+- buffer kill 時に local-vars hash を切り離す
+- symbol 側 metadata は weak owner list で prune 可能とする
+- =BUFFER_LOCAL_CONTRACT_VERSION = 1=
+
+** 2.6 text-properties storage [推奨 = A interval tree, overlay 非対象]
+
+| 候補 | 戦略 | 利点 |
+|------+------|------|
+| A    | interval tree | range query 効率、Emacs precedent |
+| B    | per-char vector | memory 過大 |
+| C    | symbol-only | semantics 不足 |
+
+*推奨 A 理由*:
+- range update / split / merge が O(log N) 想定
+- gap-buffer shift 連動を contract 化しやすい
+- overlay / face render を scope 外に分離できる
+
+*scope boundary (LOCKED)*:
+- overlay semantics は対象外
+- =get-char-property= は *overlay を見ない text-property only subset* とする
+- face/display property は storage/query 対象、render は scope 外
+- =TEXT_PROPERTY_CONTRACT_VERSION = 1=
+
+** 2.7 hooks design [推奨 = A normal + abnormal + add-hook signature freeze]
+
+| 候補 | 戦略 | 利点 |
+|------+------|------|
+| A    | normal + abnormal + local hook | package 互換性高 |
+| B    | normal only | abnormal hook 不可 |
+| C    | observer pattern 置換 | Emacs API 非互換 |
+
+*推奨 A 理由*:
+- =pre-command-hook= / =post-command-hook= / mode hook に必須
+- local hook と global hook の chain を分けて扱える
+- signature 揺れを v1 で止める必要がある
+
+*signature freeze*:
+- =add-hook (hook function &optional append local depth) -> nil=
+- =append= は boolean、=local= は boolean、=depth= は integer or nil
+- order は depth 昇順、同 depth は append/push で順序決定
+- =HOOK_CONTRACT_VERSION = 1=
+
+** 2.8 undo system design [推奨 = A buffer-local undo-list + versioned contract]
+
+| 候補 | 戦略 | 利点 |
+|------+------|------|
+| A    | buffer-local undo-list + boundary | Emacs precedent、interactive 向き |
+| B    | global undo-list | multi-buffer 不整合 |
+| C    | log-structured redesign | scope 過大 |
+
+*推奨 A 理由*:
+- =buffer-undo-list= primitive を 9a から consume しやすい
+- =undo-boundary= / =primitive-undo= を 9b 拡張として追加できる
+- text-properties と buffer-local の mutation を同 history stream に載せられる
+
+*contract notes*:
+- owner = per-buffer history list
+- GC integration = Phase 7.3 で old records reclaim
+- =UNDO_CONTRACT_VERSION = 1=
+
+** 2.9 LOC budget [推奨 = A base 3300 LOC、range 2100-5400]
+
+| sub-phase | base LOC | range | note |
+|-----------+----------+-------+------|
+| 9b.1      | 1100     | 700-1700 | contract depth 増を含む |
+| 9b.2      | 1300     | 800-2000 | keymap precedence + lifecycle 含む |
+| 9b.3      | 900      | 500-1400 | stub invariant 含む |
+| 9b.4      | 500      | 300-700  | undo + GC integration 含む |
+|-----------+----------+-------+------|
+| 合計      | 3800     | 2100-5400 | Doc 33 baseline 内に収まる |
+
+** 2.10 release cycle [推奨 = A v2.1.x incremental]
+
+| 候補 | 戦略 | 利点 |
+|------+------|------|
+| A    | =v2.1.0 -> v2.1.3= incremental | naming 一貫、sub-phase ごと release 可 |
+| B    | 9b 完了まで単一 tag | feedback 遅い |
+| C    | v3 へ defer | package ecosystem 接続が遅すぎる |
+
+*推奨 A 理由*:
+- release naming 揺れを廃止し =v2.1.0 / v2.1.1 / v2.1.2 / v2.1.3= に統一
+- 9b.1 = v2.1.0、9b.2 = v2.1.1、9b.3 = v2.1.2、9b.4 = v2.1.3 想定
+- gate fail 時は sub-phase 単位 amend に落としやすい
+
+** 2.11 frame stub mode invariant [推奨 = A 80x24 fixed + unique frame-id]
+
+| 候補 | 戦略 | 利点 |
+|------+------|------|
+| A    | 80x24 fixed + unique frame-id + placeholder substitution compatible | Phase 11 前後で deterministic |
+| B    | env var で可変 | ERT reproducibility が落ちる |
+| C    | stub mode 廃止 | 9b.3 が Phase 11 に block される |
+
+*LOCKED invariant*:
+- =make-frame= は unique frame-id を返す
+- =frame-width= = 80=、=frame-height= = 24= を返す
+- =delete-frame= は registry 更新のみ、backend では no-op 可
+- placeholder backend object は Doc 33 §6.1 の既存 shape と互換であること
+- 9b.3 SHIPPED 判定:
+  1. stub backend で全 frame/window API ERT が緑
+  2. Phase 11 placeholder substitution と互換
+  3. Phase 11 実 backend 接続後 integration ERT 追加で full SHIPPED
+
+* §3 Sub-phase 9b.1〜9b.4 詳細
+
+| sub-phase | scope | LOC | 期間 | ERT delta | hard prerequisite | soft prerequisite |
+|-----------+-------+-----+------+-----------+-------------------+-------------------|
+| 9b.1 | buffer-local + text-properties + hooks | 700-1700 | 1-2 ヶ月 | +33 | Phase 9a / Phase 8 / Phase 7 | - |
+| 9b.2 | keymap + event-loop | 800-2000 | 2-3 ヶ月 | +35 | 9b.1 | - |
+| 9b.3 | window + frame | 500-1400 | 1-2 ヶ月 | +25 | 9b.2 | Phase 11 actual backend |
+| 9b.4 | undo | 300-700 | 1 ヶ月 | +25 | 9b.1 | 9b.3 integration |
+|-----------+-------+-----+------+-----------+-------------------+-------------------|
+| 合計 |  | 2100-5400 | 6-12 ヶ月 | +118 |  |  |
+
+** 3.1 Phase 9b.1 — buffer-local + text-properties + hooks
+
+新規 module 想定:
+- =src/nelisp-emacs-compat-buflocal.el=
+- =src/nelisp-emacs-compat-textprops.el=
+- =src/nelisp-emacs-compat-hooks.el=
+
+*** 3.1.1 buffer-local variables
+
+scope:
+- =make-local-variable=
+- =make-variable-buffer-local=
+- =buffer-local-value=
+- =buffer-local-variables=
+- =kill-local-variable=
+- =local-variable-p=
+- =defvar-local=
+
+contract additions:
+- producer = mode code / package code
+- consumer = command implementations / hook bodies / keymap-local state
+- storage = per-buffer local-vars hash + symbol local-binding metadata
+- cleanup = buffer kill 時に per-buffer hash を確実に detach
+- GC interaction = orphan local hash が Phase 7.3 で reclaim 可能
+
+ERT smoke (+10):
+- local override が global を破壊しない
+- symbol-wide buffer-local が新規 buffer に反映
+- =defvar-local= docstring 維持
+- cross-buffer mutation isolation
+- kill-buffer 後 metadata cleanup
+- existing 9a ERT regression-free
+
+*** 3.1.2 text-properties
+
+scope:
+- 9a base consume: =put-text-property= / =get-text-property=
+- 9b extension:
+  =get-char-property= / =add-text-properties= / =remove-text-properties= /
+  =propertize= / =next-property-change= / =previous-property-change= /
+  =text-properties-at= / =set-text-properties= /
+  =next-single-property-change= / =previous-single-property-change=
+
+contract additions:
+- producer = editing commands / package code
+- consumer = package logic / undo recorder / future display backend
+- storage = per-buffer interval tree
+- persistence = none
+- overlay interaction = none (explicitly unsupported in this doc)
+- gap-buffer integration = insertion/deletion で interval boundary adjust
+
+ERT smoke (+15):
+- put/get round-trip
+- overlapping ranges merge/split
+- property traversal forward/backward
+- gap shift 後 boundary 保持
+- modification hook trigger
+- buffer kill cleanup
+- 1M char buffer query complexity sanity
+
+*** 3.1.3 hooks
+
+scope:
+- =add-hook=
+- =remove-hook=
+- =run-hooks=
+- =run-hook-with-args=
+- =run-hook-with-args-until-success=
+- =run-hook-with-args-until-failure=
+
+contract additions:
+- producer = mode/package registration code
+- consumer = event-loop / file commands / package lifecycle
+- storage = symbol global hook list + per-buffer local hook list
+- ordering = depth first, then append/push
+- local hook cleanup = buffer kill 時 detach
+
+ERT smoke (+8):
+- append/local/depth semantics
+- abnormal hook args propagation
+- until-success / until-failure short-circuit
+- nested hook call reentrancy
+- cleanup on buffer kill
+
+*** 3.1.x common prerequisite
+
+- Phase 9a SHIPPED
+- Phase 8 mutable text primitive SHIPPED
+- Phase 7 runtime / allocator / GC SHIPPED
+
+** 3.2 Phase 9b.2 — keymap + event-loop
+
+新規 module 想定:
+- =src/nelisp-emacs-compat-keymap.el=
+- =src/nelisp-emacs-compat-event.el=
+
+*** 3.2.1 keymap
+
+scope:
+- =make-keymap=
+- =make-sparse-keymap=
+- =define-key=
+- =lookup-key=
+- =global-map=
+- =current-local-map=
+- =use-local-map=
+- =set-keymap-parent=
+- =keymap-parent=
+- =copy-keymap=
+- =keymap-prompt=
+- =map-keymap=
+- 5 special variables
+
+contract additions:
+- producer = package setup code / mode init / command-loop
+- consumer = =lookup-key= / =command-execute=
+- lookup precedence は §2.3 に固定
+- text-property keymap / overlay keymap は対象外
+
+ERT smoke (+15):
+- full keymap / sparse keymap round-trip
+- parent fallback
+- prefix sequence
+- minor-mode chain
+- overriding map precedence
+- no text-property keymap dependency
+
+*** 3.2.2 event-loop
+
+scope:
+- =read-event=
+- =read-key=
+- =unread-command-events=
+- =this-command=
+- =last-command=
+- =command-execute=
+- =keyboard-quit=
+- =recursive-edit=
+- =nelisp-event-source-register=
+- =nelisp-event-source-unregister=
+- =nelisp-event-source-pull=
+
+contract additions:
+- producer = event sources
+- consumer = command-loop
+- non-blocking I/O semantic:
+  timeout expiration で nil、busy-wait 禁止、backend 不在でも mock source で動作
+- lifecycle:
+  register -> pull -> unregister -> cleanup
+- source cleanup:
+  loop exit / recursive-edit unwind 時に active source registry を整合状態へ戻す
+
+ERT smoke (+20):
+- mock source から event pull
+- timeout nil return
+- unread pushback ordering
+- key dispatch + this/last-command 更新
+- pre/post-command-hook 連動
+- unregister 後 nil + warning path
+- 10K event leak-free
+
+*** 3.2.x common prerequisite
+
+- 9b.1 SHIPPED
+- Phase 7 syscall layer の non-blocking primitive 確認済
+
+** 3.3 Phase 9b.3 — window + frame
+
+新規 module 想定:
+- =src/nelisp-emacs-compat-window.el=
+- =src/nelisp-emacs-compat-frame.el=
+
+*** 3.3.1 window
+
+scope:
+- =selected-window=
+- =select-window=
+- =split-window=
+- =delete-window=
+- =delete-other-windows=
+- =enlarge-window=
+- =shrink-window=
+- =window-buffer=
+- =set-window-buffer=
+- =window-point=
+- =set-window-point=
+- =next-window=
+- =window-list=
+
+contract additions:
+- producer = window commands / package layout code
+- consumer = future display layout translation / package logic
+- geometry source = selected frame size, or stub invariant 80x24
+- persistence = none
+- full redisplay responsibility = Phase 11
+
+ERT smoke (+15):
+- initial single-window invariant
+- split / delete / resize
+- frame association
+- deterministic geometry under stub mode
+
+*** 3.3.2 frame
+
+scope:
+- =selected-frame=
+- =select-frame=
+- =make-frame=
+- =delete-frame=
+- =frame-width=
+- =frame-height=
+- =frame-list=
+- =frame-parameters=
+- =set-frame-parameters=
+- =frame-live-p=
+
+contract additions:
+- producer = user/package frame commands
+- consumer = display backend contract
+- backend call site = parent Doc 33 §6.1 API only
+- stub mode SHIPPED gate = §2.11 に従う
+
+ERT smoke (+10):
+- stub handle creation
+- width/height fixed return
+- frame registry and selection
+- placeholder substitution compatibility
+
+*** 3.3.x common prerequisite
+
+- 9b.2 SHIPPED
+- Phase 11 actual backend は soft prerequisite
+- stub backend で暫定 SHIPPED 判定可
+
+** 3.4 Phase 9b.4 — undo system
+
+新規 module 想定:
+- =src/nelisp-emacs-compat-undo.el=
+
+scope:
+- 9a base consume: =buffer-undo-list=
+- 9b extension:
+  =undo-boundary= / =buffer-disable-undo= / =buffer-enable-undo= / =undo= /
+  =primitive-undo=
+- linear undo のみ
+
+contract additions:
+- producer = editing commands / text-property mutation / buffer-local mutation
+- consumer = =undo= command / package edit flows
+- storage = per-buffer undo record list
+- cleanup = buffer kill 時 clear
+- GC integration = =undo-limit= / =undo-strong-limit= と Phase 7.3 reclaim
+
+ERT smoke (+25):
+- insertion/deletion record
+- boundary grouping
+- enable/disable toggle
+- text-property mutation undo
+- buffer-local mutation undo
+- large buffer round-trip
+
+prerequisite:
+- hard: 9b.1 SHIPPED
+- soft: 9b.3 SHIPPED (redisplay integration 検証)
+
+* §4 Architecture / contract / API list
+
+各 sub-system で以下を固定する。
+- status: `9a SHIPPED` / `9b 拡張` / `9b 新規`
+- compatibility: `full` / `partial` / `N/A`
+- producer / consumer
+- versioned contract
+
+** 4.1 window contract (13 件)
+
+*input/output boundary*:
+- input = frame geometry, command requests, selected buffer/window state
+- output = logical window tree, selected window, per-window cursor metadata
+- producer = command layer / package layout code
+- consumer = future display translator / package code
+- contract version = =WINDOW_CONTRACT_VERSION = 1=
+
+| API | status | compatibility | semantics |
+|-----+--------+---------------+-----------|
+| =selected-window= | 9b 新規 | full | 現在 selected window |
+| =select-window= | 9b 新規 | partial | norecord subset |
+| =split-window= | 9b 新規 | partial | pixelwise subset なし |
+| =delete-window= | 9b 新規 | full | window 削除 |
+| =delete-other-windows= | 9b 新規 | full | selected 以外削除 |
+| =enlarge-window= | 9b 新規 | partial | pixelwise なし |
+| =shrink-window= | 9b 新規 | partial | pixelwise なし |
+| =window-buffer= | 9b 新規 | full | buffer 取得 |
+| =set-window-buffer= | 9b 新規 | partial | keep-margins subset |
+| =window-point= | 9b 新規 | full | per-window point |
+| =set-window-point= | 9b 新規 | full | point 設定 |
+| =next-window= | 9b 新規 | partial | minibuf/all-frames subset |
+| =window-list= | 9b 新規 | partial | logical list only |
+
+*invariants*:
+- geometry は frame size または stub 80x24 を source とする
+- redisplay side effect は持たない
+- window tree は frame delete と同時 cleanup
+
+** 4.2 frame contract (10 件)
+
+*input/output boundary*:
+- input = frame parameter alist, backend create/delete hooks
+- output = frame handle registry, width/height, selected frame
+- producer = user/package frame commands
+- consumer = display backend contract bridge
+- contract version = =FRAME_BACKEND_CONTRACT_VERSION = 1=
+- capability model = Doc 33 §6.1 既存範囲のみを consume
+
+| API | status | compatibility | semantics |
+|-----+--------+---------------+-----------|
+| =selected-frame= | 9b 新規 | full | 現在 selected frame |
+| =select-frame= | 9b 新規 | partial | norecord subset |
+| =make-frame= | 9b 新規 | partial | limited parameters |
+| =delete-frame= | 9b 新規 | partial | stub では no-op backend 許容 |
+| =frame-width= | 9b 新規 | full | width 取得 |
+| =frame-height= | 9b 新規 | full | height 取得 |
+| =frame-list= | 9b 新規 | full | registry 列挙 |
+| =frame-parameters= | 9b 新規 | partial | supported subset only |
+| =set-frame-parameters= | 9b 新規 | partial | supported subset only |
+| =frame-live-p= | 9b 新規 | full | live 判定 |
+
+*consumer / producer contract*:
+- producer = frame command layer
+- consumer = Phase 11 display backend
+- placeholder substitution compatibility must hold under stub mode
+
+** 4.3 keymap contract (17 件)
+
+*input/output boundary*:
+- input = key sequence, active keymap chain, special variables
+- output = binding / nil / prefix result
+- producer = mode/package init, command-loop
+- consumer = command-execute
+- contract version = =KEYMAP_CONTRACT_VERSION = 1=
+
+| API / variable | status | compatibility | semantics |
+|----------------+--------+---------------+-----------|
+| =make-keymap= | 9b 新規 | full | full keymap |
+| =make-sparse-keymap= | 9b 新規 | full | sparse keymap |
+| =define-key= | 9b 新規 | partial | remove arg subset |
+| =lookup-key= | 9b 新規 | partial | lookup precedence frozen |
+| =global-map= | 9b 新規 | full | global keymap variable |
+| =current-local-map= | 9b 新規 | full | local keymap |
+| =use-local-map= | 9b 新規 | full | local keymap 設定 |
+| =set-keymap-parent= | 9b 新規 | full | parent chain |
+| =keymap-parent= | 9b 新規 | full | parent 取得 |
+| =copy-keymap= | 9b 新規 | full | keymap 複製 |
+| =keymap-prompt= | 9b 新規 | partial | prompt subset |
+| =map-keymap= | 9b 新規 | full | traversal |
+| =overriding-terminal-local-map= | 9b 新規 | partial | precedence slot 1 |
+| =overriding-local-map= | 9b 新規 | partial | precedence slot 2 |
+| =minor-mode-overriding-map-alist= | 9b 新規 | partial | precedence slot 3 |
+| =minor-mode-map-alist= | 9b 新規 | partial | precedence slot 4 |
+| =emulation-mode-map-alists= | 9b 新規 | partial | precedence slot 5 |
+
+*lookup precedence table (frozen)*:
+
+| order | source | note |
+|-------+--------+------|
+| 1 | =overriding-terminal-local-map= | terminal override |
+| 2 | =overriding-local-map= | local override |
+| 3 | =minor-mode-overriding-map-alist= | major-mode specific override |
+| 4 | =minor-mode-map-alist= | enabled minor modes |
+| 5 | =emulation-mode-map-alists= | emulation layer |
+| 6 | =current-local-map= | buffer-local map |
+| 7 | =global-map= | fallback |
+
+*explicit exclusions*:
+- text-property keymap
+- overlay keymap
+- transient maps beyond above precedence
+
+** 4.4 event-loop contract (10 件 + 1 lifecycle)
+
+*input/output boundary*:
+- input = event sources, timeout-ms, unread queue
+- output = event / key / command dispatch side effect
+- producer = backend/mock/timer sources
+- consumer = command-loop, read-event callers
+- contract version = =EVENT_SOURCE_CONTRACT_VERSION = 1=
+
+| API / variable | status | compatibility | semantics |
+|----------------+--------+---------------+-----------|
+| =read-event= | 9b 新規 | partial | timeout-ms semantics fixed |
+| =read-key= | 9b 新規 | partial | key-only subset |
+| =unread-command-events= | 9b 新規 | partial | list pushback queue |
+| =this-command= | 9b 新規 | full | current command |
+| =last-command= | 9b 新規 | full | previous command |
+| =command-execute= | 9b 新規 | partial | special arg subset |
+| =keyboard-quit= | 9b 新規 | full | quit signal |
+| =recursive-edit= | 9b 新規 | partial | nested loop subset |
+| =nelisp-event-source-register= | 9b 新規 | N/A | source registration |
+| =nelisp-event-source-unregister= | 9b 新規 | N/A | source deregistration |
+| =nelisp-event-source-pull= | 9b 新規 | N/A | source pull |
+
+*lifecycle contract*:
+1. register: unique source-id 発行、name 重複は error
+2. active: =pull= が FIFO source order で poll
+3. unregister: source registry から除去、戻り値 boolean
+4. cleanup: recursive-edit unwind / command-loop exit 時に zombie source を残さない
+
+*non-blocking I/O semantic*:
+- timeout 未満で event が無ければ nil
+- backend polling は blocking でも caller からは non-busy semantics を保証
+- source 1 件の failure は warning + source disable、全 loop crash は避ける
+
+** 4.5 buffer-local contract (7 件)
+
+*input/output boundary*:
+- input = symbol, buffer, local declarations
+- output = per-buffer local value map
+- producer = mode/package code
+- consumer = command bodies / hooks / keymap-local state
+- contract version = =BUFFER_LOCAL_CONTRACT_VERSION = 1=
+
+| API | status | compatibility | semantics |
+|-----+--------+---------------+-----------|
+| =make-local-variable= | 9b 新規 | full | local 化 |
+| =make-variable-buffer-local= | 9b 新規 | full | symbol-wide local |
+| =buffer-local-value= | 9b 新規 | full | 他 buffer の値 |
+| =buffer-local-variables= | 9b 新規 | partial | metadata subset |
+| =kill-local-variable= | 9b 新規 | full | local 解除 |
+| =local-variable-p= | 9b 新規 | full | local 判定 |
+| =defvar-local= | 9b 新規 | full | declarative form |
+
+*GC / cleanup contract*:
+- buffer kill -> local hash detach -> weak owner prune
+- global symbol metadata は dangling buffer reference を残さない
+
+** 4.6 text-properties contract (12 件)
+
+*input/output boundary*:
+- input = start/end/position/property/plist/object
+- output = property mutation / query result / property boundary
+- producer = editing commands / package code
+- consumer = package logic / undo recorder / future display backend
+- contract version = =TEXT_PROPERTY_CONTRACT_VERSION = 1=
+
+| API | status | compatibility | semantics |
+|-----+--------+---------------+-----------|
+| =put-text-property= | 9a SHIPPED | partial | primitive set |
+| =get-text-property= | 9a SHIPPED | partial | primitive get |
+| =get-char-property= | 9b 拡張 | partial | text-property only subset |
+| =add-text-properties= | 9b 拡張 | partial | plist merge |
+| =remove-text-properties= | 9b 拡張 | partial | plist remove |
+| =propertize= | 9b 拡張 | full | string constructor |
+| =next-property-change= | 9b 拡張 | full | next boundary |
+| =previous-property-change= | 9b 拡張 | full | previous boundary |
+| =text-properties-at= | 9b 拡張 | full | plist query |
+| =set-text-properties= | 9b 拡張 | partial | full replace |
+| =next-single-property-change= | 9b 拡張 | full | prop boundary |
+| =previous-single-property-change= | 9b 拡張 | full | prop boundary |
+
+*storage contract*:
+- interval tree is per-buffer and lazily allocated
+- overlay data structure is absent by design
+- face/display property values are opaque payload only
+
+** 4.7 hooks contract (6 件)
+
+*input/output boundary*:
+- input = hook symbol, function, append/local/depth, args
+- output = callback execution / short-circuit result
+- producer = registration code
+- consumer = command-loop / package lifecycle
+- contract version = =HOOK_CONTRACT_VERSION = 1=
+
+| API | status | compatibility | semantics |
+|-----+--------+---------------+-----------|
+| =add-hook= | 9b 新規 | partial | append/local/depth frozen |
+| =remove-hook= | 9b 新規 | full | hook remove |
+| =run-hooks= | 9b 新規 | full | normal hook |
+| =run-hook-with-args= | 9b 新規 | full | abnormal hook |
+| =run-hook-with-args-until-success= | 9b 新規 | full | short-circuit success |
+| =run-hook-with-args-until-failure= | 9b 新規 | full | short-circuit failure |
+
+*signature note*:
+- v0 の `DEPTH / LOCAL` 揺れは廃止し、append/local/depth をこの順で固定
+
+** 4.8 undo contract (6 件)
+
+*input/output boundary*:
+- input = editing mutation stream, buffer-local history, undo limits
+- output = history append / revert result
+- producer = text edit / text-property edit / buffer-local edit
+- consumer = =undo= command / package flows
+- contract version = =UNDO_CONTRACT_VERSION = 1=
+
+| API / variable | status | compatibility | semantics |
+|----------------+--------+---------------+-----------|
+| =buffer-undo-list= | 9a SHIPPED | partial | primitive per-buffer history |
+| =undo-boundary= | 9b 拡張 | full | group separator |
+| =buffer-disable-undo= | 9b 拡張 | full | disable |
+| =buffer-enable-undo= | 9b 拡張 | full | enable |
+| =undo= | 9b 拡張 | partial | linear undo only |
+| =primitive-undo= | 9b 拡張 | full | low-level apply |
+
+*GC contract*:
+- =undo-limit= / =undo-strong-limit= は ratio gate 後 absolute freeze
+- old record truncation は buffer-local cleanup と一貫して動作する
+
+** 4.9 Cross-system cleanup / leak boundaries
+
+v1 で cross-system risk を subsystem ごとに配分し直す。
+
+| concern | producer | consumer | cleanup owner |
+|---------+----------+----------+---------------|
+| buffer kill | buffer-local / textprops / undo / local hooks | all editing subsystems | buffer lifecycle manager |
+| event source unregister | backend/mock source | command-loop | event registry |
+| frame delete | frame/window | display bridge | frame registry |
+| recursive-edit unwind | event-loop / hooks | command-loop | loop controller |
+
+* §5 ERT smoke + bench plan
+
+| sub-phase | ERT module | count |
+|-----------+------------+-------|
+| 9b.1 | buflocal + textprops + hooks | +33 |
+| 9b.2 | keymap + event-loop | +35 |
+| 9b.3 | window + frame | +25 |
+| 9b.4 | undo | +25 |
+| integration | cross-system | +29 |
+|-----------+------------+-------|
+| total |  | +147 |
+
+** 5.1 integration test
+
+| test | subsystems | count | shipped gate relevance |
+|------|------------+-------+------------------------|
+| keymap dispatch -> command-loop -> this-command | keymap + event-loop | +5 | 9b.2 |
+| pre/post-command-hook | hooks + event-loop | +5 | 9b.2 |
+| buffer-local + text-properties | buflocal + textprops | +3 | 9b.1 |
+| window split + frame stub | window + frame | +5 | 9b.3 |
+| undo + text-properties | undo + textprops | +5 | 9b.4 |
+| recursive edit + undo boundary | event-loop + undo | +3 | 9b.4 |
+| mini-Emacs demo (stub / Phase 11 actual) | all | +3 | 9b.3 / full close |
+
+** 5.2 bench plan (DRAFT v1、ratio gate)
+
+absolute 値を現時点で freeze しない。まず *post-9b.1 baseline* を取得し、
+DRAFT v1 では relative ratio gate を LOCK する。
+
+| phase | bench gate level |
+|-------+------------------|
+| DRAFT v1 | relative ratio target を freeze |
+| 9b.1 SHIPPED 後 | baseline capture |
+| 9b full close 前 | absolute target freeze + verify |
+
+*ratio targets*:
+
+| benchmark | 内容 | DRAFT v1 ratio gate | absolute freeze timing |
+|-----------+------|---------------------+------------------------|
+| =keymap-dispatch= | 1M key dispatch | 9b.1 baseline 比 <= 1.40x | 9b.2 SHIPPED 後 |
+| =command-loop-cycle= | read -> dispatch -> execute | 9b.1 baseline 比 <= 1.60x | 9b.2 SHIPPED 後 |
+| =text-prop-range-query= | 1M char buffer query | 9b.1 baseline 比 <= 1.50x | 9b.1 SHIPPED 後 |
+| =hook-run= | 100 callback chain | 9b.1 baseline 比 <= 1.30x | 9b.1 SHIPPED 後 |
+| =undo-record-append= | 1M history append | 9b.1 baseline 比 <= 1.35x | 9b.4 SHIPPED 後 |
+
+gate fail 時:
+- DRAFT v1 では ratio fail を即 ship-blocker にはしない
+- ただし gate-M9 以降は 3 bench 軸 (= keymap-dispatch / command-loop-cycle /
+  text-prop-range-query) を minimum freeze set とする
+
+* §6 Risks
+
+** 6.1 Phase 11 display backend 依存 (frame / window)
+
+影響:
+- 9b.3 の actual integration は Phase 11 に依存
+
+mitigation:
+- §2.11 stub invariant を LOCK 済
+- stub backend で全 frame/window API ERT を回す
+- placeholder substitution 互換を ship 条件に含める
+- Phase 11 SHIPPED 後に actual integration ERT 追加で full SHIPPED
+
+** 6.2 event-loop の non-blocking I/O
+
+影響:
+- syscall layer の poll/select 相当が不十分だと timeout semantics が崩れる
+
+mitigation:
+- event source abstraction で mock source を first-class に扱う
+- timeout 単位を ms へ固定
+- busy-wait 禁止を contract に入れる
+
+** 6.3 undo memory growth
+
+影響:
+- long-running session で undo list が肥大
+
+mitigation:
+- =undo-limit= / =undo-strong-limit= 導入
+- Phase 7.3 GC と連携
+- absolute default は post-baseline で freeze
+
+** 6.4 text-properties / gap-buffer 整合
+
+影響:
+- gap shift 後 interval boundary がずれる
+
+mitigation:
+- insertion/deletion adjust helper を必須化
+- large-buffer ERT を追加
+
+** 6.5 keymap precedence / special variable 互換
+
+影響:
+- overriding map / minor-mode map precedence が崩れると package scenario が壊れる
+
+mitigation:
+- special vars 5 件を contract へ昇格
+- precedence table を §2.3 / §4.3 で LOCK
+
+** 6.6 buffer-local thread-safety / future retrofit hygiene
+
+影響:
+- Phase 7.5+ multi-thread 化時に race risk
+
+mitigation:
+- 本 doc は single-thread MVP 前提
+- cleanup owner と weak owner model を先に固定
+- thread-safe retrofit point を local hash boundary に限定
+
+** 6.7 per-buffer cleanup leak
+
+影響:
+- buffer kill 後に local-vars / textprops / undo / local hooks が残る
+
+mitigation:
+- subsystem 横断 cleanup owner を §4.9 で定義
+- kill-buffer integration ERT を minimum gate に含める
+
+** 6.8 event-source lifecycle leak
+
+影響:
+- unregister 漏れ、recursive-edit unwind 後 zombie source 残留
+
+mitigation:
+- register/unregister/pull lifecycle を §2.4 / §4.4 で固定
+- unregister failure path を ERT 化
+
+** 6.9 package gate の scope mismatch
+
+影響:
+- out-of-scope 機能に依存した package scenario を gate に置くと close 判定が壊れる
+
+mitigation:
+- package list を in-scope scenario のみに縮小
+- magit / undo-tree を gate から除外
+
+** 6.10 schedule / scope replan gate
+
+Doc 28 v2 §6.6 pattern に揃え、品質軸付き gate を導入する。
+
+| gate | 評価対象 (定量) | kill criteria (milestone 軸) | kill criteria (quality 軸) | downstream amendment |
+|------+-----------------+------------------------------+----------------------------+----------------------|
+| gate-M3 | 9b.1 ERT 33 件中 25 件以上 PASS / coverage 70%+ | 9b.4 を v2.2+ へ defer | package gate を 9b.1 では無しに固定、contract freeze 未達なら textprops/hook split | 本 doc §3.4 amend、Doc 33 errata 不要のまま option B 維持 |
+| gate-M6 | 9b.2 ERT 35 件中 28 件以上 PASS / keymap precedence ERT 全 PASS | frame を v2.2+ へ defer、window のみ進行 | package list を 5 -> 2 (= helm core + ido) に縮小、integration +29 -> +10 | 本 doc §3.3.2 amend、mini demo を simple dispatch demo に縮小 |
+| gate-M9 | 9b.3 ERT 25 件中 20 件以上 PASS / stub mini-demo 動作 | undo を v2.2+ へ defer | bench gate を 5 軸 -> 3 軸へ縮小、contract freeze 未達なら 9b.3 close 保留 | 本 doc §3.4 amend |
+
+判断主体:
+- =anvil-dev release-audit :scope phase-9b=
+- user signoff
+
+* §7 完遂 gate
+
+** 7.1 各 sub-phase SHIPPED 条件
+
+各 sub-phase 共通:
+1. 当該 ERT PASS
+2. 既存 ERT regression-free
+3. 該当 integration ERT PASS
+4. contract version / table freeze 済
+5. branch merge 準備完了
+
+sub-phase 別補足:
+- 9b.1: cleanup ERT + textprop/gap-buffer ERT + hook signature freeze 完了
+- 9b.2: special variables / event-source lifecycle / timeout semantics freeze 完了
+- 9b.3: §2.11 stub invariant PASS + placeholder substitution compatibility
+- 9b.4: undo/textprop/buflocal cross-system ERT PASS
+
+*sub-phase quality gate detail*:
+
+| sub-phase | minimum coverage | contract freeze | bench expectation | package requirement |
+|-----------+------------------+-----------------+-------------------+---------------------|
+| 9b.1 | 70%+ | buflocal/textprop/hook v1 frozen | textprop / hook ratio gate pass | なし |
+| 9b.2 | 75%+ | keymap/event-source v1 frozen | keymap / command-loop ratio gate pass | helm core / ido |
+| 9b.3 | 75%+ | window/frame/stub v1 frozen | geometry sanity only | dired basic / mini demo |
+| 9b.4 | 75%+ | undo v1 frozen | undo append ratio gate pass | org-mode core basic edit |
+
+** 7.2 popular package gate (in-scope のみ)
+
+v0 の gate package を縮小し、本 doc in-scope API だけで成立する scenario に
+限定する。
+
+| sub-phase | package | minimum interaction scenario | in-scope check |
+|-----------+---------+------------------------------+----------------|
+| 9b.1 | なし | 基盤のみ | - |
+| 9b.2 | helm core | C-x C-f 相当の選択 UI dispatch | OK (keymap + event-loop + buffer-local) |
+|  | ido | C-x C-f 補完 | OK |
+| 9b.3 | dired (basic only) | listing -> file open | OK (window + buffer + keymap) |
+|  | mini editor demo | 2 buffer / 2 window / split / select | OK |
+| 9b.4 | org-mode core (basic edit only) | buffer edit + undo | OK (textprops + undo + keymap) |
+
+*gate から除外するもの*:
+- magit: process UI 完全に依存
+- undo-tree: advanced undo に依存
+- evil: text-property keymap / transient / deeper minor-mode behavior を含む
+
+*scenario freeze detail*:
+- helm core:
+  minibuffer-like selection command が key sequence dispatch で到達し、
+  選択結果を buffer-local state に反映できること
+- ido:
+  incremental completion state が buffer-local variable と event-loop 更新で
+  破綻しないこと
+- dired basic:
+  listing buffer を 2 window に分割し、selected window 切替で file open できること
+- org-mode core basic:
+  text property を保持した buffer で edit -> undo-boundary -> undo が通ること
+
+** 7.3 Phase 9b full close 条件
+
+以下すべてで close:
+- +147 ERT 全 PASS
+- package scenario PASS
+- ratio bench gate PASS
+- contract tables frozen
+- 9b.3 は stub mode PASS + Phase 11 integration placeholder compatible
+- release tags =v2.1.0= ... =v2.1.3= 発行
+- option B declaration を維持したまま parent errata 不要で main merge 可能
+
+** 7.4 Parent errata proposal の余地
+
+本 task は option B 採用で進める。最終 LOCKED 前に strong case が出た場合のみ、
+以下を別 task として扱う。
+- option A: Doc 33 §4.2b に interactive subset / follow-up docs の errata 追加
+- option C: option A + Doc 34 subtitle 両方
+
+現時点では *option B を推奨 path として維持* する。
+
+** 7.5 LOCKED 前確認 checklist
+
+1. option B declaration が §1 / §7 / §11 で一貫している
+2. Phase 9a overlap APIs (= put/get text-property, buffer-undo-list) が
+   `9a SHIPPED` として記載されている
+3. special variables 5 件と precedence table が §2.3 / §4.3 で一致する
+4. event-source naming が `pull-next` ではなく `pull` に統一されている
+5. frame stub invariant が open question ではなく §2.11 に固定されている
+6. package gate に magit / undo-tree が残っていない
+7. bench gate が ratio -> absolute の 2-tier になっている
+
+* §8 Out of scope
+
+** 8.1 advice / minor mode
+
+parent umbrella には属するが、本 doc では扱わない。follow-up doc (Doc 35
+想定) で扱う。
+
+** 8.2 完全 regex
+
+Phase 9a simple subset の先は別 doc。
+
+** 8.3 process UI 完全
+
+=make-process= async filter / sentinel chain は別 doc。
+
+** 8.4 file UI 完全
+
+auto-save / file-locking / remote file UI は別 doc。
+
+** 8.5 advanced undo
+
+redo / undo-tree / non-linear history は別 doc ないし community package。
+
+** 8.6 multi-thread NeLisp
+
+Phase 7.5+ co-design 領域。
+
+** 8.7 overlay / text-property keymap / face render
+
+overlay semantics、overlay-aware =get-char-property=、text-property keymap、
+actual face/display render は scope 外。
+
+** 8.8 actual GUI backend
+
+gtk / cocoa / win32 / wgpu は Phase 12+。
+
+* §9 Open questions
+
+v0 から open question を縮小し、LOCK 済項目を除外した。
+
+** 9.1 package gate final signoff
+
+helm / ido / dired basic / org-mode core のセットを最終 signoff 時に確認する。
+
+** 9.2 syscall primitive verification
+
+poll/select 相当が 9b.2 timeout semantic を十分満たすか、着手時に再確認。
+
+** 9.3 absolute bench target freeze
+
+9b.1 SHIPPED 後 baseline を取って absolute 値を固定する。
+
+** 9.4 undo default limit tuning
+
+long-running soak test 後に =undo-limit= default を確定する。
+
+** 9.5 mini demo scope
+
+2 buffer / 2 window / open-save-quit 程度で十分かを release 直前に再確認。
+
+* §10 関連 doc
+
+** internal docs
+
+- =docs/design/27-phase7-c-runtime-self-impl.org=
+- =docs/design/28-phase7.1-native-compiler.org=
+- =docs/design/29-phase7.2-allocator.org=
+- =docs/design/30-phase7.3-gc-inner.org=
+- =docs/design/31-phase7.4-coding.org=
+- =docs/design/32-phase7.5-integration.org=
+- =docs/design/33-nelisp-v1x-architecture.org=
+- =docs/design/(pending) Doc 34a Phase 9a detailed decomposition=
+- =docs/design/18-stage-d-standalone.org=
+
+** external precedent
+
+- Emacs =window.c=
+- Emacs =frame.c=
+- Emacs =keymap.c=
+- Emacs =keyboard.c=
+- Emacs =buffer.c=
+- Emacs =textprop.c= / =intervals.c=
+- Emacs =eval.c=
+- Emacs =undo.c=
+- Clojure / Racket editor-less runtime precedent
+
+* §11 Sign-off
+
+** 11.1 revise history
+
+| version | date | author | summary |
+|---------+------+--------+---------|
+| DRAFT v0 | 2026-04-25 | session-T41 | initial decomposition |
+| *DRAFT v1* | 2026-04-25 | session-A T61 revise | option B parent integration、9a/9b boundary freeze、§4 contract depth up、stub invariant LOCK、gate/package/bench revise |
+
+** 11.2 LOCKED path
+
+1. DRAFT v1 に対して codex 第二弾 review
+2. option B path の signoff
+3. residual gate / wording 修正
+4. =LOCKED-2026-04-25-v2= 化
+
+*v2 STATUS line format policy*:
+- sibling Doc 28-32 v2 と同様、LOCKED 時は
+  `LOCKED-YYYY-MM-DD-v2 (major revise summary + signoff state)` を用いる
+- 本 v1 の `DRAFT v1 (...)` はその前段 metadata とする
+
+** 11.3 prerequisite / header hygiene
+
+v1 で header を以下に合わせた。
+- =DEPENDS_ON= に parent Doc 33 §4.2a/§4.2b/§6.1 を追加
+- Phase 8 lineage source を dependency として明示
+- Doc 34a pending detailed decomposition を依存として明記
+- sibling v2 と同様、本文 prerequisite と header prerequisite を一致させる
+
+** 11.4 main merge gate
+
+- Doc 33 errata 不要
+- Doc 34 rename + §1 formal declaration で parent contract 継承成立
+- sibling Doc 28-32 v2 と contract depth 整合
+- release-audit 緑
+- 文書のみ main merge 可
+
+** 11.5 revise log
+
+v0 -> v1:
+- BLOCKING 5 反映
+- HIGH 3 反映
+- divergence D1-D14 反映
+- option B parent integration path 選択
