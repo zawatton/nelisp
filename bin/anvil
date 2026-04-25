@@ -17,33 +17,71 @@ ANVIL_VERSION="stage-d-v0.2-pre"
 # Phase 7.5.1 (Doc 32 v2 LOCKED §2.6 + §3.1) — --strict-no-emacs flag
 # scaffold.  v2.6 specifies that bin/anvil --no-emacs falls back to the
 # host Emacs path on cold-init failure; --strict-no-emacs suppresses
-# that fallback (CI / debugging use).  Phase 7.5.1 only parses the flag
-# and exports the resulting state; real --no-emacs cold-init lands in
-# Phase 7.5.2.  Today --strict-no-emacs prints a notice and proceeds
-# down the existing Stage D Phase 6.1 path (host Emacs).
+# that fallback (CI / debugging use).
+#
+# Phase 7.5.2 (Doc 32 v2 LOCKED §3.2, this expansion) — wires the real
+# cold-init invocation.  The launcher now:
+#   1. parses --strict-no-emacs + --no-emacs (alias)
+#   2. shells into emacs --batch with `nelisp-integration-cold-init-run'
+#   3. on :status pass — proceeds with strict mode (today still falls
+#      through to host Emacs since the static-linked binary lands in
+#      Phase 7.5.3 stage-d-v2.0)
+#   4. on :status fail — falls back to host Emacs path *unless*
+#      --strict-no-emacs is also set, in which case the launcher exits
+#      non-zero so CI can flag the cold-init failure.
 NELISP_STRICT_NO_EMACS=0
+NELISP_NO_EMACS=0
 NELISP_STRICT_FILTERED_ARGS=()
 for arg in "$@"; do
   case "$arg" in
     --strict-no-emacs)
       NELISP_STRICT_NO_EMACS=1
+      NELISP_NO_EMACS=1
+      ;;
+    --no-emacs)
+      NELISP_NO_EMACS=1
       ;;
     *)
       NELISP_STRICT_FILTERED_ARGS+=("$arg")
       ;;
   esac
 done
-if [[ $NELISP_STRICT_NO_EMACS -eq 1 ]]; then
-  cat >&2 <<'STRICT_EOF'
-anvil: --strict-no-emacs requested (Phase 7.5.1 scaffold).
-  Real --no-emacs cold-init + 4-stage bootstrap is reserved for
-  Phase 7.5.2 (Doc 32 v2 LOCKED §3.2).  This invocation continues
-  via the Stage D Phase 6.1 host Emacs path; the env var
-  NELISP_STRICT_NO_EMACS=1 is exported so downstream tools can
-  observe the user intent.
-STRICT_EOF
+
+# Phase 7.5.2 cold-init invocation helper.
+# Returns 0 when the cold-init coordinator reports :status pass; 1
+# otherwise.  Stdout is the coordinator's serialized status plist
+# (read by callers for diagnostics).  Stderr is suppressed unless
+# NELISP_COLDINIT_VERBOSE=1 in the environment.
+run_cold_init() {
+  local emacs_bin="$1"
+  local src_dir="$2"
+  local err_redir="2>/dev/null"
+  if [[ "${NELISP_COLDINIT_VERBOSE:-0}" -eq 1 ]]; then
+    err_redir=""
+  fi
+  local result
+  result=$(eval "\"$emacs_bin\" --batch -Q -L \"$src_dir\" \
+    --eval \"(setq load-prefer-newer t)\" \
+    -l nelisp-integration \
+    --eval \"(princ (prin1-to-string (nelisp-integration-cold-init-run)))\" \
+    $err_redir") || return 1
+  # Emit the coordinator plist to stderr so stdout stays reserved
+  # for the MCP server's JSON-RPC stream when this function is
+  # invoked inside `cmd_mcp_serve'.
+  echo "$result" >&2
+  echo "$result" | grep -q ":status pass"
+  return $?
+}
+
+if [[ $NELISP_NO_EMACS -eq 1 ]]; then
+  if [[ $NELISP_STRICT_NO_EMACS -eq 1 ]]; then
+    echo "anvil: --strict-no-emacs requested (Phase 7.5.2 cold-init coordinator)" >&2
+  else
+    echo "anvil: --no-emacs requested (Phase 7.5.2 cold-init coordinator + host fallback)" >&2
+  fi
   export NELISP_STRICT_NO_EMACS
-  # Replace positional args with the filtered list (drop --strict-no-emacs)
+  export NELISP_NO_EMACS
+  # Replace positional args with the filtered list (drop --strict-no-emacs / --no-emacs)
   if [[ ${#NELISP_STRICT_FILTERED_ARGS[@]} -gt 0 ]]; then
     set -- "${NELISP_STRICT_FILTERED_ARGS[@]}"
   else
@@ -274,6 +312,28 @@ cmd_mcp_serve() {
   emacs_bin="$(detect_emacs)"
   mkdir -p "$ANVIL_CACHE_DIR"
   local src_dir="$ANVIL_HOME/src"
+
+  # Phase 7.5.2 (Doc 32 v2 LOCKED §3.2) — when --no-emacs / --strict-no-emacs
+  # was passed, run the cold-init coordinator first.  On :status pass the
+  # 4-stage bootstrap is structurally green; in Phase 7.5.2 the actual MCP
+  # serve still runs through host Emacs because the static-linked binary
+  # lands in Phase 7.5.3 stage-d-v2.0.  --strict-no-emacs surfaces a fail
+  # by exiting 1 (CI gate); plain --no-emacs falls back silently.
+  if [[ "${NELISP_NO_EMACS:-0}" -eq 1 ]]; then
+    if run_cold_init "$emacs_bin" "$src_dir"; then
+      echo "anvil: cold-init coordinator green (Phase 7.5.2)" >&2
+      echo "anvil: Phase 7.5.2 partial — actual MCP serve via static-linked binary" >&2
+      echo "       lands in Phase 7.5.3 (stage-d-v2.0); falling through to host Emacs" >&2
+      echo "       path with NELISP_STRICT_NO_EMACS=$NELISP_STRICT_NO_EMACS exported." >&2
+    else
+      echo "anvil: cold-init coordinator FAIL (Phase 7.5.2)" >&2
+      if [[ "${NELISP_STRICT_NO_EMACS:-0}" -eq 1 ]]; then
+        echo "       --strict-no-emacs set — exiting 1 (CI / release-qual gate)" >&2
+        exit 1
+      fi
+      echo "       falling back to host Emacs path (--no-emacs non-strict)" >&2
+    fi
+  fi
 
   # Stage D Phase 6.1 architecture α: prefer anvil.el headless profile
   # when available (anvil-server delegates to nelisp-* internals via
