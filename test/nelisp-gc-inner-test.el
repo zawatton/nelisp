@@ -167,5 +167,213 @@ ADDR after drain."
     (should (= 0 (nelisp-gc-inner-finalizer-queue-length)))))
 
 
+;;; 6. Sweep phase — per-pool free-list rebuild (Phase 7.3.2) -------
+
+(defun nelisp-gc-inner-test--mk-region-with-objects
+    (id start end family objects &optional children-of)
+  "Build a Doc 29 §1.4 region descriptor that carries OBJECTS.
+OBJECTS is the `(addr . size)' list returned to the sweep phase via
+the `:objects' key.  CHILDREN-OF is an optional walker used by the
+mark phase (defaults to a no-edges leaf walker so tests don't need
+to wire one up when they only care about sweep)."
+  (list :region-id   id
+        :start       start
+        :end         end
+        :generation  :nursery
+        :family      family
+        :objects     objects
+        :children-of (or children-of #'ignore)))
+
+(ert-deftest nelisp-gc-inner-sweep-removes-white-objects ()
+  "Whites land on the free-list, blacks do not — basic per-region sweep.
+Address 100 is marked black (live root), 200 is left white (unreachable);
+the post-sweep cons-pool free-list contains exactly (200 . 16)."
+  (nelisp-gc-inner-test--reset)
+  (let ((region (nelisp-gc-inner-test--mk-region-with-objects
+                 0 100 1000 :cons-pool
+                 '((100 . 16) (200 . 16)))))
+    ;; Manually colour: 100 black (live), 200 default-white.
+    (nelisp-gc-inner-set-color 100 :black)
+    (let ((stats (nelisp-gc-inner-run-sweep-phase (list region))))
+      (should (eq 1 (plist-get stats :swept-count)))
+      (should (eq 16 (plist-get stats :freed-bytes)))
+      (should (eq 1 (plist-get stats :live-count))))
+    (let ((fl (nelisp-gc-inner-free-list-for-family :cons-pool)))
+      (should (equal fl '((200 . 16))))
+      ;; closure-pool was untouched by this sweep.
+      (should (null (nelisp-gc-inner-free-list-for-family :closure-pool))))))
+
+(ert-deftest nelisp-gc-inner-sweep-per-family-isolation ()
+  "Sweeping cons-pool whites does not perturb closure-pool whites.
+Two regions of different families both have whites; per-family free-
+lists are populated independently and the per-family stats slice
+reports the right family-keyed totals."
+  (nelisp-gc-inner-test--reset)
+  (let* ((cons-region (nelisp-gc-inner-test--mk-region-with-objects
+                       0 100 1000 :cons-pool
+                       '((100 . 16) (116 . 16))))
+         (closure-region (nelisp-gc-inner-test--mk-region-with-objects
+                          1 1000 2000 :closure-pool
+                          '((1000 . 32) (1032 . 32))))
+         ;; Mark only one of the cons addresses live, none of closures live.
+         (_ (nelisp-gc-inner-set-color 100 :black))
+         (stats (nelisp-gc-inner-run-sweep-phase
+                 (list cons-region closure-region)))
+         (per-fam (plist-get stats :per-family)))
+    ;; cons-pool: one white (116), one black (100).
+    (let ((c (cdr (assq :cons-pool per-fam))))
+      (should (eq 1 (plist-get c :swept-count)))
+      (should (eq 16 (plist-get c :freed-bytes)))
+      (should (eq 1 (plist-get c :live-count))))
+    ;; closure-pool: two whites, zero blacks.
+    (let ((c (cdr (assq :closure-pool per-fam))))
+      (should (eq 2 (plist-get c :swept-count)))
+      (should (eq 64 (plist-get c :freed-bytes)))
+      (should (eq 0 (plist-get c :live-count))))
+    ;; Free-lists are family-isolated.
+    (should (equal (nelisp-gc-inner-free-list-for-family :cons-pool)
+                   '((116 . 16))))
+    (let ((cfl (nelisp-gc-inner-free-list-for-family :closure-pool)))
+      ;; Walker prepends as it scans, so order is reversed-input.
+      (should (= 2 (length cfl)))
+      (should (memq 1000 (mapcar #'car cfl)))
+      (should (memq 1032 (mapcar #'car cfl))))))
+
+(ert-deftest nelisp-gc-inner-sweep-frees-correct-bytes ()
+  "Total :freed-bytes = sum of white object sizes across every region.
+Three regions, mixed sizes (16/32/64), only some marked live; the
+top-level :freed-bytes must match the white-only byte total."
+  (nelisp-gc-inner-test--reset)
+  (let* ((r1 (nelisp-gc-inner-test--mk-region-with-objects
+              0 100 1000 :cons-pool
+              '((100 . 16) (116 . 16) (132 . 16))))
+         (r2 (nelisp-gc-inner-test--mk-region-with-objects
+              1 1000 2000 :closure-pool
+              '((1000 . 32) (1032 . 32))))
+         (r3 (nelisp-gc-inner-test--mk-region-with-objects
+              2 2000 3000 :vector-span
+              '((2000 . 64))))
+         ;; Whites: 116, 132, 1000, 1032, 2000.  Live: 100.
+         (_ (nelisp-gc-inner-set-color 100 :black))
+         (stats (nelisp-gc-inner-run-sweep-phase (list r1 r2 r3))))
+    (should (eq (+ 16 16 32 32 64) (plist-get stats :freed-bytes)))
+    (should (eq 5 (plist-get stats :swept-count)))
+    (should (eq 1 (plist-get stats :live-count)))
+    (should (eq 3 (plist-get stats :region-count)))))
+
+(ert-deftest nelisp-gc-inner-sweep-large-object-special-case ()
+  "Large-object family uses dedicated regions; sweep handles them like
+any other family — the family-tag flows through `:per-family' entries."
+  (nelisp-gc-inner-test--reset)
+  (let* ((region (nelisp-gc-inner-test--mk-region-with-objects
+                  0 #x100000 #x200000 :large-object
+                  '((#x100000 . 8192))))
+         ;; Default white (no mark call) → goes to free-list.
+         (stats (nelisp-gc-inner-run-sweep-phase (list region)))
+         (fl    (nelisp-gc-inner-free-list-for-family :large-object))
+         (lp    (cdr (assq :large-object (plist-get stats :per-family)))))
+    (should (eq 1 (plist-get lp :swept-count)))
+    (should (eq 8192 (plist-get lp :freed-bytes)))
+    (should (equal fl '((#x100000 . 8192))))
+    ;; Other families remain empty per-family entries.
+    (let ((c (cdr (assq :cons-pool (plist-get stats :per-family)))))
+      (should (eq 0 (plist-get c :swept-count)))
+      (should (eq 0 (plist-get c :freed-bytes))))))
+
+(ert-deftest nelisp-gc-inner-finalizer-enqueued-on-white-with-registered ()
+  "Whites with a registered finalizer push onto the finalizer queue;
+the registered :black does not.  (Doc 30 §6.9 v2 BLOCKER 2 mitigation.)"
+  (nelisp-gc-inner-test--reset)
+  (let* ((calls 0)
+         (fn (lambda (_a) (cl-incf calls)))
+         (finalizer-table (list (cons 100 fn) (cons 200 fn)))
+         (region (nelisp-gc-inner-test--mk-region-with-objects
+                  0 100 1000 :cons-pool
+                  '((100 . 16) (200 . 16))))
+         ;; 100 = black (live), 200 = white (garbage).
+         (_ (nelisp-gc-inner-set-color 100 :black))
+         (stats (nelisp-gc-inner-run-sweep-phase
+                 (list region) finalizer-table)))
+    (should (eq 1 (plist-get stats :finalizers-queued)))
+    (should (eq 1 (nelisp-gc-inner-finalizer-queue-length)))
+    ;; Until drain, fn has not actually fired.
+    (should (eq 0 calls))
+    (let ((dstats (nelisp-gc-inner-drain-finalizer-queue)))
+      (should (eq 1 (plist-get dstats :fired)))
+      (should (eq 0 (plist-get dstats :errors))))
+    (should (eq 1 calls))))
+
+(ert-deftest nelisp-gc-inner-fragmentation-stats-reports-largest ()
+  "Fragmentation stats find the largest free block + ratio is sensible.
+Two same-size whites in cons-pool plus one giant white in vector-span:
+:largest-free-block must equal the giant, ratio = giant / total."
+  (nelisp-gc-inner-test--reset)
+  (let* ((r-cons (nelisp-gc-inner-test--mk-region-with-objects
+                  0 100 1000 :cons-pool
+                  '((100 . 16) (200 . 16))))
+         (r-vec  (nelisp-gc-inner-test--mk-region-with-objects
+                  1 2000 3000 :vector-span
+                  '((2000 . 1024))))
+         (_     (nelisp-gc-inner-run-sweep-phase (list r-cons r-vec)))
+         (frag  (nelisp-gc-inner-sweep-fragmentation-stats)))
+    (should (eq 1024 (plist-get frag :largest-free-block)))
+    (should (eq (+ 16 16 1024) (plist-get frag :total-free-bytes)))
+    (should (eq 3 (plist-get frag :total-free-blocks)))
+    (let ((ratio (plist-get frag :fragmentation-ratio)))
+      (should (numberp ratio))
+      (should (< 0.9 ratio))
+      (should (<= ratio 1.0)))
+    ;; Per-family slice spells out the largest within each family.
+    (let ((cf (cdr (assq :cons-pool (plist-get frag :per-family))))
+          (vf (cdr (assq :vector-span (plist-get frag :per-family)))))
+      (should (eq 16 (plist-get cf :largest)))
+      (should (eq 1024 (plist-get vf :largest))))))
+
+(ert-deftest nelisp-gc-inner-full-cycle-mark-then-sweep ()
+  "`run-full-cycle' chains mark + sweep + finalizer enqueue end-to-end.
+Two-object cons-pool region: only one is reached from the root, so
+sweep must report exactly one white and the live one must be black
+in the post-mark state."
+  (nelisp-gc-inner-test--reset)
+  (let* ((graph (let ((h (make-hash-table :test 'eql)))
+                  (puthash 100 nil h)  ; live leaf
+                  (puthash 200 nil h)  ; unreachable leaf
+                  h))
+         (region (list :region-id 0 :start 100 :end 1000
+                       :generation :nursery :family :cons-pool
+                       :children-of (lambda (a) (gethash a graph))
+                       :objects '((100 . 16) (200 . 16))))
+         (out   (nelisp-gc-inner-run-full-cycle '(100) (list region))))
+    (let ((mark (plist-get out :mark))
+          (sweep (plist-get out :sweep)))
+      (should (eq 0 (plist-get mark :grey-count)))
+      (should (eq 1 (plist-get mark :marked-count)))
+      (should (eq 1 (plist-get sweep :swept-count)))
+      (should (eq 16 (plist-get sweep :freed-bytes)))
+      (should (eq :black (nelisp-gc-inner-mark-color 100)))
+      ;; 200 was popped *off* the free-list-feeding white set, but
+      ;; sweep does not relabel; mark colour stays :white.
+      (should (eq :white (nelisp-gc-inner-mark-color 200))))))
+
+(ert-deftest nelisp-gc-inner-rebuild-free-list-empty-on-fully-marked ()
+  "When every object in a region is :black, that family's free-list is
+empty after sweep — no free-list entry leaks for live objects."
+  (nelisp-gc-inner-test--reset)
+  (let ((region (nelisp-gc-inner-test--mk-region-with-objects
+                 0 100 1000 :cons-pool
+                 '((100 . 16) (200 . 16) (300 . 16)))))
+    (nelisp-gc-inner-set-color 100 :black)
+    (nelisp-gc-inner-set-color 200 :black)
+    (nelisp-gc-inner-set-color 300 :black)
+    (let ((stats (nelisp-gc-inner-run-sweep-phase (list region))))
+      (should (eq 0 (plist-get stats :swept-count)))
+      (should (eq 0 (plist-get stats :freed-bytes)))
+      (should (eq 3 (plist-get stats :live-count))))
+    (should (null (nelisp-gc-inner-rebuild-free-list-for-family :cons-pool)))
+    ;; All other families also empty.
+    (dolist (fam '(:closure-pool :string-span :vector-span :large-object))
+      (should (null (nelisp-gc-inner-rebuild-free-list-for-family fam))))))
+
+
 (provide 'nelisp-gc-inner-test)
 ;;; nelisp-gc-inner-test.el ends here
