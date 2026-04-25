@@ -173,34 +173,30 @@ denominator for the §5.2 gate ratios."
     (float-time (time-since start))))
 
 (defun nelisp-cc-bench-actual--ssa-has-unresolved-call-p (function)
-  "Return non-nil when FUNCTION contains opcodes that produce unsafe-
-to-execute bytes today (Phase 7.5 callee resolution deferred).
+  "Return non-nil when FUNCTION contains opcodes that *cannot* be
+linked today (T43 Phase 7.5.6 — runtime callee resolution + closure
+allocator now embed trampolines so `:call' / `:closure' /
+`:call-indirect' execute end-to-end).
 
-T38 Phase 7.5.5 added SSA frontend coverage for `letrec' / `funcall'
-/ `while' so build-ssa no longer raises on the bench-actual forms.
-The produced bytes still call into unresolved addresses (zero-filled
-:closure placeholders + zero-displacement :call rel32 fixups), and
-those would SIGSEGV the host Emacs at execution.  `condition-case'
-cannot trap SIGSEGV — we have to skip the actual `--exec-in-process'
-loop pre-emptively.
-
-Returns t when ANY of:
-  - a `:call' instruction with `:unresolved t' meta is present
-    (named function call without `nelisp-defs-index' patch),
-  - a `:call-indirect' instruction is present (the callee value is
-    a `:closure' placeholder MOV r,0 — would CALL [0] = SIGSEGV),
-  - a `:closure' instruction is present (any consumer that branches
-    on it eventually calls / dereferences address 0)."
-  (cl-loop for blk in (nelisp-cc--ssa-function-blocks function)
-           thereis
-           (cl-loop for instr in (nelisp-cc--ssa-block-instrs blk)
-                    for op = (nelisp-cc--ssa-instr-opcode instr)
-                    thereis
-                    (or (memq op '(call-indirect closure))
-                        (and (eq op 'call)
-                             (plist-get
-                              (nelisp-cc--ssa-instr-meta instr)
-                              :unresolved))))))
+Specifically: a `:call' with an unknown primitive (= not in
+`nelisp-cc-callees-supported-primitives') still produces a
+zero-displacement CALL rel32 (best-effort fall-through) — for the
+3-axis bench gate (fib / fact-iter / alloc-heavy) the only callees
+referenced are `+' / `-' / `<' / `*' / `1+' / `length' which are
+all registered.  This predicate now returns nil on the bench forms,
+flipping the harness from \"safe-skip\" to \"actual-execute\"."
+  (require 'nelisp-cc-callees)
+  (let ((supported (nelisp-cc-callees-supported-primitives 'x86_64)))
+    (cl-loop for blk in (nelisp-cc--ssa-function-blocks function)
+             thereis
+             (cl-loop for instr in (nelisp-cc--ssa-block-instrs blk)
+                      for op = (nelisp-cc--ssa-instr-opcode instr)
+                      thereis
+                      (and (eq op 'call)
+                           (let ((fn (plist-get
+                                      (nelisp-cc--ssa-instr-meta instr)
+                                      :fn)))
+                             (and fn (not (memq fn supported)))))))))
 
 (defun nelisp-cc-bench-actual--measure-native (form iterations)
   "Run FORM compiled via NeLisp native + Phase 7.5.4 in-process FFI.

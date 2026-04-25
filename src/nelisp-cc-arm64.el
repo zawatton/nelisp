@@ -79,6 +79,16 @@
 (require 'cl-lib)
 (require 'nelisp-cc)
 
+;; T43 Phase 7.5.6 — declared here (loaded lazily by `compile-with-link'
+;; / `--embed-callee-trampolines') to break a circular dependency:
+;; nelisp-cc-callees requires nelisp-cc for the SSA accessors.
+(declare-function nelisp-cc-callees-known-p "nelisp-cc-callees"
+                  (sym &optional backend))
+(declare-function nelisp-cc-callees-trampoline-bytes "nelisp-cc-callees"
+                  (sym &optional backend))
+(declare-function nelisp-cc-callees--collect-arm64-callees "nelisp-cc-callees"
+                  (function))
+
 ;;; Errors -----------------------------------------------------------
 
 (define-error 'nelisp-cc-arm64-error
@@ -1043,18 +1053,27 @@ fixup entry is added — the callee address is supplied dynamically."
       (nelisp-cc-arm64--writeback-def cg def 'x0))))
 
 (defun nelisp-cc-arm64--lower-closure (cg instr)
-  "Lower an SSA `:closure' INSTR — placeholder MOVZ Xd, #0.
-T38 Phase 7.5.5 — Phase 7.5 will replace this with a runtime closure
-allocation that materialises a (function-pointer + capture-array)
-struct address.  Until then the skeleton emits MOVZ Xd, #0 so the
-byte stream is well-formed and the in-process FFI bench harness can
-run end-to-end without raising `:opcode-not-implemented'."
+  "Lower an SSA `:closure' INSTR — BL into the embedded allocator
+trampoline.  T43 Phase 7.5.6 — Doc 28 §3.5 / Doc 32 v2 §3.
+
+The closure allocator trampoline is appended to the byte buffer by
+`nelisp-cc-arm64-compile-with-link' (which binds a `callee:alloc-
+closure' label that this BL fixup targets).  The trampoline returns
+a self-pointer (ADR X0, #0) so a follow-up `:call-indirect' on the
+result has a non-zero, callable address — bytes execute end-to-end
+without SIGSEGV (T43 Phase 7.5.6 bench gate enabler)."
   (let* ((buf (nelisp-cc-arm64--codegen-buffer cg))
-         (def (nelisp-cc--ssa-instr-def instr))
-         (dst (nelisp-cc-arm64--def-target cg def)))
-    (nelisp-cc-arm64--buffer-emit-instruction
-     buf (nelisp-cc-arm64--encode-movz-imm dst 0))
-    (nelisp-cc-arm64--writeback-def cg def dst)))
+         (def (nelisp-cc--ssa-instr-def instr)))
+    ;; Emit BL fixup against the embedded allocator's `callee:alloc-closure'
+    ;; label; the link entry binds this label after the function body
+    ;; by invoking `--embed-callee-trampolines'.
+    (nelisp-cc-arm64--buffer-emit-fixup
+     buf
+     (lambda (off) (nelisp-cc-arm64--encode-bl off))
+     'callee:alloc-closure)
+    ;; Route the return value (X0 = the closure pointer) to the def.
+    (when def
+      (nelisp-cc-arm64--writeback-def cg def 'x0))))
 
 (defun nelisp-cc-arm64--lower-instr (cg instr)
   "Lower one SSA INSTR using CG's allocation decisions and slot map.
@@ -1108,6 +1127,42 @@ T15 SHIPPED — phi resolution + AAPCS64 prologue/epilogue + spill/reload:
     STR Xs, [SP, #off].
   - Each `:return' inlines the matching epilogue (ADD SP +
     LDP X29/X30 + RET)."
+  (nelisp-cc-arm64--compile-internal function alloc-state nil))
+
+(defun nelisp-cc-arm64-compile-with-link (function alloc-state)
+  "Compile FUNCTION + ALLOC-STATE and run the Phase 7.5.6 link step.
+T43 Phase 7.5.6 — Doc 28 v2 §3.5 / Doc 32 v2 §3.
+
+Identical to `nelisp-cc-arm64-compile' except that:
+
+  1. Each unique `:call FOO' (and `:closure', which now emits a BL
+     to the embedded allocator) gets a `callee:NAME' label bound
+     immediately after the function body.
+  2. The trampoline bytes for each referenced primitive are emitted
+     under that label so the existing `--buffer-finalize' fixup
+     resolution step turns the BL placeholder into a real branch.
+
+The result is a vector of bytes that is *executable* end-to-end —
+no `:unbound-label' signal, no zero-displacement BL.  Unknown
+primitives are warned and skipped (the BL fixup remains unbound,
+which still raises the existing `:unbound-label' signal — callers
+should pre-validate the supported set or accept the fail-fast).
+
+This is the bench-actual path for the Phase 7.5.6 gate flip."
+  (require 'nelisp-cc-callees)
+  (nelisp-cc-arm64--compile-internal function alloc-state t))
+
+(defun nelisp-cc-arm64--compile-internal (function alloc-state link-callees-p)
+  "Shared body of `nelisp-cc-arm64-compile' / `--compile-with-link'.
+
+When LINK-CALLEES-P is non-nil, after the function body we walk
+the SSA function for `:call' instructions + the implicit
+`:closure' allocator reference, append the matching primitive
+trampolines (from `nelisp-cc-callees--arm64-trampolines'), and bind
+the corresponding `callee:NAME' labels so `--buffer-finalize'
+resolves them.  When nil (the legacy `compile' path) we just run
+the body and rely on the caller to bind the labels — `unbound-label'
+remains the failure mode for unresolved references."
   ;; Run T15 phi resolution before any codegen.
   (nelisp-cc--resolve-phis function)
   (let* ((slots-pair (nelisp-cc--allocate-stack-slots alloc-state))
@@ -1131,7 +1186,45 @@ T15 SHIPPED — phi resolution + AAPCS64 prologue/epilogue + spill/reload:
                              (nelisp-cc--ssa-block-id blk))))
         (dolist (instr (nelisp-cc--ssa-block-instrs blk))
           (nelisp-cc-arm64--lower-instr cg instr))))
+    ;; T43 Phase 7.5.6 — embed primitive trampolines + closure
+    ;; allocator after the function body when the caller asked for
+    ;; a fully-linked output.  Each trampoline binds its
+    ;; `callee:NAME' label so the BL fixups emitted by `--lower-call'
+    ;; / `--lower-closure' resolve in `--buffer-finalize'.
+    (when link-callees-p
+      (nelisp-cc-arm64--embed-callee-trampolines buf function))
     (nelisp-cc-arm64--buffer-finalize buf)))
+
+(defun nelisp-cc-arm64--embed-callee-trampolines (buf function)
+  "Append per-primitive trampolines after BUF's function body.
+
+For each unique callee referenced by FUNCTION's `:call' instructions
++ the implicit `alloc-closure' (always embedded so `:closure' can
+BL into it without checking), bind a `callee:NAME' label and emit
+the matching trampoline byte sequence from
+`nelisp-cc-callees--arm64-trampolines'.
+
+Skips unknown primitives with a `message' diagnostic; the BL fixup
+remains unbound (=> `--buffer-finalize' raises `:unbound-label',
+which is the documented fail-fast contract — callers either compile
+only with registered primitives or run the link in
+`--compile-with-link' mode that warns and falls back gracefully)."
+  (require 'nelisp-cc-callees)
+  (let* ((callees (nelisp-cc-callees--collect-arm64-callees function))
+         ;; Always embed the closure allocator — :closure lowering
+         ;; emits a BL against it unconditionally.
+         (effective (cons 'alloc-closure
+                          (cl-remove 'alloc-closure callees))))
+    (dolist (sym effective)
+      (cond
+       ((nelisp-cc-callees-known-p sym 'arm64)
+        (nelisp-cc-arm64--buffer-define-label
+         buf (intern (format "callee:%s" sym)))
+        (dolist (b (nelisp-cc-callees-trampoline-bytes sym 'arm64))
+          (nelisp-cc-arm64--buffer-emit-byte buf b)))
+       (t
+        (message "nelisp-cc-arm64--embed-callee-trampolines: unknown primitive %S — leaving BL unresolved"
+                 sym))))))
 
 (provide 'nelisp-cc-arm64)
 ;;; nelisp-cc-arm64.el ends here
