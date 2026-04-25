@@ -2,8 +2,10 @@
 
 ;; Phase 7.4.1 (Doc 31 v2 LOCKED 2026-04-25) — UTF-8 encode/decode +
 ;; BOM handling + 3 invalid-sequence strategy contract LOCK.
+;; Phase 7.4.2 (Doc 31 v2 LOCKED 2026-04-25) — Latin-1 (ISO-8859-1)
+;; encode/decode + placeholder handling for U+0100+ codepoints.
 ;;
-;; Scope (Phase 7.4.1 only — Doc 31 v2 §3.1):
+;; Scope (Phase 7.4.1 — Doc 31 v2 §3.1):
 ;;   - UTF-8 byte sequence (1-4 byte) encode/decode loop
 ;;   - BOM (=EF BB BF=) strip on read / no emit on write (default)
 ;;   - error handling 3 strategy (=replace= / =error= / =strict=)、default =replace=
@@ -11,14 +13,24 @@
 ;;   - emoji / supplementary plane (=U+10000-U+10FFFF=) support
 ;;   - reject overlong / surrogate / >U+10FFFF / truncated / bad continuation
 ;;
+;; Scope (Phase 7.4.2 — Doc 31 v2 §3.2):
+;;   - Latin-1 (=ISO-8859-1=) single-byte encode/decode (=U+0000-U+00FF= ↔
+;;     byte 0x00-0xFF, bijective)
+;;   - decode = always succeeds (全 256 byte 値が valid Latin-1)
+;;   - encode = U+0100+ codepoint で 3 strategy 分岐 (=replace= → '?'
+;;     ASCII 0x3F default per §6.2 / =error= → signal
+;;     `nelisp-coding-invalid-codepoint' / =strict= → signal
+;;     `nelisp-coding-strict-violation')
+;;   - placeholder codepoint customizable via
+;;     `nelisp-coding-latin1-replacement-codepoint' (default ?\?, U+003F)
+;;
 ;; Deferred to later sub-phases:
-;;   - Phase 7.4.2: Latin-1 (single-byte trivial)
 ;;   - Phase 7.4.3: Shift-JIS (CP932 拡張) + EUC-JP + ~14000 entry table
 ;;   - Phase 7.4.4: streaming chunk-based callback + file I/O integration
 ;;   - Phase 7.5: process-coding-system 本体実装、resume-coding primitive
 ;;
 ;; SBCL =sb-impl/external-formats.lisp= + Emacs =coding.c= dual precedent。
-;; Phase 7.4.1 はそれら subset で UTF-8 + BOM + 3 strategy のみ。
+;; Phase 7.4.1 + 7.4.2 はそれら subset で UTF-8 / Latin-1 + BOM + 3 strategy。
 
 ;;; Code:
 
@@ -49,6 +61,18 @@ Doc 31 v2 §2.4 contract LOCK の 3 strategy:
   :type '(choice (const :tag "Replace with U+FFFD" replace)
                  (const :tag "Signal error (catchable)" error)
                  (const :tag "Strict (uncatchable, abort)" strict))
+  :group 'nelisp-coding)
+
+(defcustom nelisp-coding-latin1-replacement-codepoint ?\?
+  "Replacement codepoint for U+0100+ chars in Latin-1 encoding (=:replace=
+strategy default).
+
+Doc 31 v2 §6.2: ASCII '?' (=U+003F=, byte =0x3F=) を default per Emacs
+=coding.c= precedent。User は U+003F (default)、U+001A (SUB)、U+0020
+(space) 等選択可。値は必ず Latin-1 範囲 (=U+0000-U+00FF=) でなければ
+ならない (= encode 結果が必ず単 byte に収まる)。範囲外設定時は
+encode 呼び出しで `nelisp-coding-invalid-codepoint' signal。"
+  :type 'integer
   :group 'nelisp-coding)
 
 ;;; Constants
@@ -399,6 +423,152 @@ ASCII-only strings take the 1-byte fast path."
   "Like `nelisp-coding-utf8-encode' but return an Emacs unibyte string."
   (apply #'unibyte-string
          (nelisp-coding-utf8-encode string bom-emit)))
+
+;;;; ────────────────────────────────────────────────────────────────────
+;;;; Phase 7.4.2 — Latin-1 (ISO-8859-1) codec (Doc 31 v2 §3.2 / §6.2)
+;;;; ────────────────────────────────────────────────────────────────────
+;;
+;; Latin-1 = single-byte encoding、=U+0000-U+00FF= ↔ byte =0x00-0xFF=
+;; bijective。decode は常に成功 (全 256 値 valid)。encode で U+0100+
+;; codepoint 出現時のみ 3 strategy 分岐 = §2.4 contract LOCK 完全準拠。
+;;
+;; Doc 31 v2 §6.2 placeholder = =:replace= 時 default '?' (=0x3F=) emit
+;; per Emacs =coding.c= precedent、=defcustom
+;; nelisp-coding-latin1-replacement-codepoint= で customize 可。
+
+(defconst nelisp-coding-latin1-max-codepoint #xFF
+  "Maximum Latin-1 representable codepoint (U+00FF).
+=U+0100+= codepoints require 3 strategy dispatch on encode.")
+
+;;; Public API: Latin-1 decode
+
+(defun nelisp-coding-latin1-decode (bytes)
+  "Decode Latin-1 BYTES (string / vector / list of bytes) to NeLisp string.
+
+全 byte =0x00-0xFF= は直接 codepoint =U+0000-U+00FF= にマップ
+(bijective single-byte cast)。Latin-1 仕様により invalid byte sequence
+は存在しない (= 256 値全て valid)。
+
+Returns plist (T19 形式踏襲、API 一貫性):
+  (:string DECODED-STRING
+   :strategy \\='replace
+   :invalid-positions nil
+   :replacements 0)
+
+STRATEGY field is always \\='replace (= no-op、Latin-1 では invalid byte
+が存在しないため strategy 分岐自体が起こらない)。INVALID-POSITIONS / REPLACEMENTS
+は API 一貫性のため常に nil / 0。"
+  (let* ((raw-list (nelisp-coding--bytes-to-list bytes))
+         (codepoints '()))
+    ;; Latin-1 = direct byte → codepoint cast。0x00-0xFF 全て valid。
+    (dolist (b raw-list)
+      (push b codepoints))
+    (list :string (apply #'string (nreverse codepoints))
+          :strategy 'replace
+          :invalid-positions nil
+          :replacements 0)))
+
+;;; Public API: Latin-1 encode
+
+(defun nelisp-coding--latin1-encode-codepoint (codepoint)
+  "Encode one CODEPOINT to a single Latin-1 byte (integer 0-255).
+Reject codepoint < 0 with `nelisp-coding-invalid-codepoint'.
+Caller must dispatch U+0100+ via strategy logic (here always returns
+the byte if in range, signals if out of Latin-1 range)."
+  (cond
+   ((or (not (integerp codepoint)) (< codepoint 0))
+    (signal 'nelisp-coding-invalid-codepoint
+            (list :codepoint codepoint :reason 'negative-or-non-integer)))
+   ((> codepoint nelisp-coding-latin1-max-codepoint)
+    (signal 'nelisp-coding-invalid-codepoint
+            (list :codepoint codepoint :reason 'out-of-latin1-range)))
+   (t codepoint)))
+
+(defun nelisp-coding-latin1-encode (string &optional strategy)
+  "Encode NeLisp STRING (host Emacs string of codepoints) to Latin-1 bytes.
+
+Returns a plist (Doc 31 v2 §2.4 contract + T19 形式踏襲):
+  (:bytes (LIST OF BYTES)
+   :strategy STRATEGY
+   :invalid-positions (LIST OF CHAR-OFFSET)
+   :replacements N)
+
+STRATEGY (default = `nelisp-coding-error-strategy', i.e. `replace'):
+- `replace' / nil — U+0100+ codepoint emit replacement byte (default
+  =0x3F= question-mark, customizable via
+  `nelisp-coding-latin1-replacement-codepoint'); CHAR-OFFSET in
+  `:invalid-positions' is the input string char index, NOT byte offset
+  since input is char-indexed.
+- `error'         — first U+0100+ signals `nelisp-coding-invalid-codepoint'
+  with data plist =(:offset N :codepoint CP :strategy \\='error)=
+  (catchable via `condition-case'). Partial result discarded.
+- `strict'        — first U+0100+ signals `nelisp-coding-strict-violation'
+  (uncatchable in streaming; Phase 7.5 で process abort と integrate).
+
+ASCII (U+0000-U+007F) は UTF-8 と互換 (ASCII fast path)。
+U+0080-U+00FF は Latin-1 拡張範囲、direct byte cast。
+U+0100+ は Latin-1 表現不能 → strategy dispatch。
+
+Note: Latin-1 は仕様上 BOM を持たないため bom-emit 引数なし。"
+  (unless (stringp string)
+    (signal 'wrong-type-argument (list 'stringp string)))
+  (let ((effective-strategy (or strategy nelisp-coding-error-strategy))
+        (out '())
+        (invalid-positions '())
+        (replacements 0)
+        (i 0)
+        (n (length string)))
+    (while (< i n)
+      (let ((cp (aref string i)))
+        (cond
+         ((or (not (integerp cp)) (< cp 0))
+          ;; Defensive: malformed string codepoint
+          (signal 'nelisp-coding-invalid-codepoint
+                  (list :codepoint cp :reason 'negative-or-non-integer
+                        :offset i)))
+         ((<= cp nelisp-coding-latin1-max-codepoint)
+          ;; In-range: bijective byte cast.
+          (push cp out))
+         (t
+          ;; U+0100+ : strategy dispatch.
+          (pcase effective-strategy
+            ('error
+             (signal 'nelisp-coding-invalid-codepoint
+                     (list :offset i :codepoint cp :strategy 'error)))
+            ('strict
+             (signal 'nelisp-coding-strict-violation
+                     (list :offset i :codepoint cp :strategy 'strict)))
+            (_
+             ;; replace / nil / unknown → replace strategy
+             ;; Validate replacement codepoint is in Latin-1 range so the
+             ;; placeholder is itself a single byte (= encode terminates).
+             (let ((repl nelisp-coding-latin1-replacement-codepoint))
+               (unless (and (integerp repl)
+                            (>= repl 0)
+                            (<= repl nelisp-coding-latin1-max-codepoint))
+                 (signal 'nelisp-coding-invalid-codepoint
+                         (list :codepoint repl
+                               :reason 'replacement-out-of-latin1-range)))
+               (push repl out)
+               (push i invalid-positions)
+               (setq replacements (1+ replacements))))))))
+      (setq i (1+ i)))
+    (list :bytes (nreverse out)
+          :strategy (if (memq effective-strategy '(replace error strict))
+                        effective-strategy
+                      'replace)
+          :invalid-positions (nreverse invalid-positions)
+          :replacements replacements)))
+
+(defun nelisp-coding-latin1-encode-string (string &optional strategy)
+  "Like `nelisp-coding-latin1-encode' but return an Emacs unibyte string.
+
+Convenience wrapper that drops the metadata plist and returns only
+the encoded byte sequence as a unibyte string. Use the plist API
+(`nelisp-coding-latin1-encode') when caller needs replacement count
+or invalid positions."
+  (apply #'unibyte-string
+         (plist-get (nelisp-coding-latin1-encode string strategy) :bytes)))
 
 (provide 'nelisp-coding)
 

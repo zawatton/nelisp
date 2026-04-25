@@ -1,9 +1,11 @@
-;;; nelisp-coding-test.el --- ERT tests for nelisp-coding (Phase 7.4.1)  -*- lexical-binding: t; -*-
+;;; nelisp-coding-test.el --- ERT tests for nelisp-coding  -*- lexical-binding: t; -*-
 
 ;; Doc 31 v2 LOCKED 2026-04-25 §3.1 sub-phase 7.4.1 — UTF-8 encode/decode +
 ;; BOM handling + 3 invalid-sequence strategy contract LOCK.
+;; Doc 31 v2 LOCKED 2026-04-25 §3.2 sub-phase 7.4.2 — Latin-1 (ISO-8859-1)
+;; encode/decode + placeholder handling for U+0100+.
 ;;
-;; +10 ERT (per Doc 31 v2 §3.1 / §5):
+;; +10 ERT (Phase 7.4.1, per Doc 31 v2 §3.1 / §5):
 ;;   1. encode-ascii-passthrough        — "hello" → 5 byte ASCII
 ;;   2. encode-multibyte-3byte          — "あいう" → 9 byte (3 chars × 3 bytes)
 ;;   3. encode-emoji-4byte              — "🦀" (U+1F980) → F0 9F A6 80
@@ -14,6 +16,14 @@
 ;;   8. decode-rejects-overlong         — 0xC0 0x80 (overlong U+0000) reject
 ;;   9. decode-rejects-surrogate        — encoded surrogate (ED A0 80) reject
 ;;   10. bom-strip-and-prepend          — strip on read / prepend opt-in
+;;
+;; +6 ERT (Phase 7.4.2, per Doc 31 v2 §3.2 / §6.2):
+;;   11. latin1-encode-ascii-passthrough           — "hello" → 5 byte ASCII
+;;   12. latin1-decode-roundtrip-bmp-low           — 0x00-0xFF identity
+;;   13. latin1-decode-no-invalid-byte             — random 256 byte all valid
+;;   14. latin1-encode-replace-out-of-range        — "あいう" → 3× 0x3F + count 3
+;;   15. latin1-encode-error-signals               — out-of-range signals invalid-codepoint
+;;   16. latin1-encode-strict-signals              — out-of-range signals strict-violation
 
 (require 'ert)
 (require 'cl-lib)
@@ -226,6 +236,172 @@ or `nelisp-coding-utf8-bom-emit-on-write' defcustom."
   ;; Prepend helper.
   (let ((prepended (nelisp-coding--prepend-utf8-bom (list #x41 #x42))))
     (should (equal prepended (list #xEF #xBB #xBF #x41 #x42)))))
+
+;;;; ──────────────────────────────────────────────────────────────────
+;;;; Phase 7.4.2 — Latin-1 (ISO-8859-1) ERT (+6, Doc 31 v2 §3.2 / §6.2)
+;;;; ──────────────────────────────────────────────────────────────────
+
+;;;; 11. Latin-1 encode ASCII passthrough — "hello" → 5 bytes (UTF-8 互換)
+
+(ert-deftest nelisp-coding-latin1-encode-ascii-passthrough ()
+  "ASCII string \"hello\" encodes to 5 single-byte sequence (Latin-1 / UTF-8
+ASCII compatibility, U+0000-U+007F)."
+  (let* ((result (nelisp-coding-latin1-encode "hello"))
+         (bytes  (plist-get result :bytes)))
+    (should (= (length bytes) 5))
+    (should (equal bytes '(?h ?e ?l ?l ?o)))
+    (should (= (plist-get result :replacements) 0))
+    (should (null (plist-get result :invalid-positions)))
+    (should (eq (plist-get result :strategy) 'replace)))
+  ;; Convenience wrapper returns unibyte string.
+  (let ((s (nelisp-coding-latin1-encode-string "hello")))
+    (should (equal s (unibyte-string ?h ?e ?l ?l ?o)))
+    (should (= (length s) 5))))
+
+;;;; 12. Latin-1 decode roundtrip BMP-low — 0x00-0xFF identity (bijective)
+
+(ert-deftest nelisp-coding-latin1-decode-roundtrip-bmp-low ()
+  "Decode 0x00-0xFF then encode produces identical byte sequence
+(bijective single-byte Latin-1 mapping). All 256 byte values map
+1:1 to U+0000-U+00FF."
+  (let* ((all-bytes (let (lst)
+                      (dotimes (i 256)
+                        (push i lst))
+                      (nreverse lst)))
+         (decoded (nelisp-coding-latin1-decode all-bytes))
+         (decoded-string (plist-get decoded :string)))
+    ;; All 256 bytes valid → 0 replacements, no invalid positions.
+    (should (= (plist-get decoded :replacements) 0))
+    (should (null (plist-get decoded :invalid-positions)))
+    ;; Decoded string has 256 chars, each char i has codepoint i.
+    (should (= (length decoded-string) 256))
+    (dotimes (i 256)
+      (should (= (aref decoded-string i) i)))
+    ;; Round-trip: encode the decoded string back and compare.
+    (let* ((reencoded (nelisp-coding-latin1-encode decoded-string))
+           (reencoded-bytes (plist-get reencoded :bytes)))
+      (should (equal reencoded-bytes all-bytes))
+      (should (= (plist-get reencoded :replacements) 0))
+      (should (null (plist-get reencoded :invalid-positions))))))
+
+;;;; 13. Latin-1 decode no invalid byte — Latin-1 spec = all 256 valid
+
+(ert-deftest nelisp-coding-latin1-decode-no-invalid-byte ()
+  "Latin-1 仕様により全 256 byte 値が valid (= invalid sequence
+が存在しない)。任意の byte 列 decode で :replacements = 0、
+:invalid-positions = nil が必ず保証される。"
+  ;; Random-ish byte sequence covering edge values.
+  (let* ((bytes (list 0 1 #x7F #x80 #x81 #xA0 #xC0 #xE0 #xF0 #xFE #xFF))
+         (result (nelisp-coding-latin1-decode bytes))
+         (s (plist-get result :string)))
+    (should (= (length s) (length bytes)))
+    (should (= (plist-get result :replacements) 0))
+    (should (null (plist-get result :invalid-positions)))
+    (should (eq (plist-get result :strategy) 'replace))
+    ;; Each char codepoint matches input byte.
+    (cl-loop for i from 0 below (length bytes)
+             do (should (= (aref s i) (nth i bytes)))))
+  ;; Empty input edge case.
+  (let* ((empty (nelisp-coding-latin1-decode '()))
+         (s (plist-get empty :string)))
+    (should (equal s ""))
+    (should (= (plist-get empty :replacements) 0))
+    (should (null (plist-get empty :invalid-positions))))
+  ;; Vector and unibyte string input forms accepted.
+  (let ((vec-result (nelisp-coding-latin1-decode (vector #xA0 #xC1 #xFF))))
+    (should (= (length (plist-get vec-result :string)) 3))
+    (should (= (aref (plist-get vec-result :string) 1) #xC1)))
+  (let ((str-result (nelisp-coding-latin1-decode (unibyte-string #x80 #x90))))
+    (should (= (length (plist-get str-result :string)) 2))
+    (should (= (aref (plist-get str-result :string) 0) #x80))))
+
+;;;; 14. Latin-1 encode replace strategy — U+0100+ → '?' + count
+
+(ert-deftest nelisp-coding-latin1-encode-replace-strategy-out-of-range ()
+  "Encoding \"あいう\" (U+3042/U+3044/U+3046, all > U+00FF) under :replace
+strategy emits 3 placeholder bytes (default 0x3F = '?') and reports
+:replacements = 3 + :invalid-positions = (0 1 2) (= input char offsets)."
+  ;; Default placeholder = 0x3F.
+  (let* ((input (string #x3042 #x3044 #x3046))
+         (result (nelisp-coding-latin1-encode input 'replace))
+         (bytes (plist-get result :bytes)))
+    (should (= (length bytes) 3))
+    (should (equal bytes (list ?\? ?\? ?\?)))
+    (should (= (plist-get result :replacements) 3))
+    (should (equal (plist-get result :invalid-positions) '(0 1 2)))
+    (should (eq (plist-get result :strategy) 'replace)))
+  ;; Mixed in-range + out-of-range: "Aあ" → (0x41 0x3F).
+  (let* ((input (string ?A #x3042))
+         (result (nelisp-coding-latin1-encode input 'replace)))
+    (should (equal (plist-get result :bytes) (list ?A ?\?)))
+    (should (= (plist-get result :replacements) 1))
+    (should (equal (plist-get result :invalid-positions) '(1))))
+  ;; Default strategy (nil) honors `nelisp-coding-error-strategy' = replace.
+  (let* ((nelisp-coding-error-strategy 'replace)
+         (input (string #x3042))
+         (result (nelisp-coding-latin1-encode input)))
+    (should (= (plist-get result :replacements) 1))
+    (should (equal (plist-get result :bytes) (list ?\?))))
+  ;; Customizable placeholder (e.g. SUB U+001A).
+  (let* ((nelisp-coding-latin1-replacement-codepoint #x1A)
+         (input (string #x3042))
+         (result (nelisp-coding-latin1-encode input 'replace)))
+    (should (equal (plist-get result :bytes) (list #x1A)))
+    (should (= (plist-get result :replacements) 1))))
+
+;;;; 15. Latin-1 encode error strategy — signal nelisp-coding-invalid-codepoint
+
+(ert-deftest nelisp-coding-latin1-encode-error-strategy-signals-invalid-codepoint ()
+  "Encoding U+0100+ codepoint under :error strategy signals
+`nelisp-coding-invalid-codepoint' with data plist =(:offset N :codepoint
+CP :strategy 'error)=, catchable via condition-case."
+  (let ((input (string ?A #x3042 ?B)))
+    (should-error
+     (nelisp-coding-latin1-encode input 'error)
+     :type 'nelisp-coding-invalid-codepoint)
+    ;; Verify signal data carries offset + codepoint + strategy.
+    (let ((caught nil))
+      (condition-case err
+          (nelisp-coding-latin1-encode input 'error)
+        (nelisp-coding-invalid-codepoint
+         (setq caught (cdr err))))
+      (should caught)
+      (should (equal (plist-get caught :offset) 1))
+      (should (equal (plist-get caught :codepoint) #x3042))
+      (should (eq (plist-get caught :strategy) 'error))))
+  ;; Pure-ASCII input under :error must NOT signal.
+  (let* ((result (nelisp-coding-latin1-encode "hi" 'error)))
+    (should (equal (plist-get result :bytes) '(?h ?i)))
+    (should (= (plist-get result :replacements) 0))))
+
+;;;; 16. Latin-1 encode strict strategy — signal nelisp-coding-strict-violation
+
+(ert-deftest nelisp-coding-latin1-encode-strict-strategy-signals-strict-violation ()
+  "Encoding U+0100+ codepoint under :strict strategy signals
+`nelisp-coding-strict-violation'. Phase 7.4.2 では signal のみ;
+process abort integration は Phase 7.5。"
+  (let ((input (string ?A #x3042)))
+    (should-error
+     (nelisp-coding-latin1-encode input 'strict)
+     :type 'nelisp-coding-strict-violation)
+    ;; Verify both error symbols are subtypes of nelisp-coding-error
+    ;; (parent type, allows uniform catch with utf-8 strict path).
+    (let ((caught-parent nil))
+      (condition-case _err
+          (nelisp-coding-latin1-encode input 'strict)
+        (nelisp-coding-error
+         (setq caught-parent t)))
+      (should caught-parent))
+    ;; Verify signal data carries offset + codepoint + strategy.
+    (let ((caught nil))
+      (condition-case err
+          (nelisp-coding-latin1-encode input 'strict)
+        (nelisp-coding-strict-violation
+         (setq caught (cdr err))))
+      (should caught)
+      (should (equal (plist-get caught :offset) 1))
+      (should (equal (plist-get caught :codepoint) #x3042))
+      (should (eq (plist-get caught :strategy) 'strict)))))
 
 (provide 'nelisp-coding-test)
 
