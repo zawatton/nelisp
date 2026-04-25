@@ -601,5 +601,370 @@ Returns a stats plist:
           :remaining nelisp-gc-inner--finalizer-count)))
 
 
+;;; §7. Sweep phase — per-pool free-list rebuild (Doc 30 v2 §3.2) ----
+
+;; T17 (Phase 7.3.1) shipped the *mark* half of mark-sweep.  T21 wires
+;; the *sweep* half: after mark phase termination, every region in the
+;; Doc 29 §1.4 heap-region registry is walked once, each object's
+;; mark colour decides its fate:
+;;
+;;   :black  — live, *not* added to the free-list.
+;;   :white  — unreachable garbage; (addr . size) is appended to the
+;;             family-keyed free-list, and if a finalizer was
+;;             registered for this address, it is *enqueued* (not
+;;             fired — Doc 30 §6.9 v2 BLOCKER 2 mitigation: real
+;;             execution happens later in mutator context via
+;;             `nelisp-gc-inner-drain-finalizer-queue').
+;;   :grey   — invariant violation; the mark phase must terminate
+;;             with grey-count = 0.  We `signal' a hard error rather
+;;             than silently lose objects.
+;;
+;; Each region's descriptor must carry an `:objects' callback (a
+;; function of one argument, the region descriptor) returning a list
+;; of `(ADDR . SIZE)' pairs — analogous to the `:children-of'
+;; callback used by the mark phase.  The allocator (Phase 7.2.x) is
+;; the producer of this callback; tests stub it directly.
+;;
+;; Per-family free-lists live in `nelisp-gc-inner--free-lists', a
+;; hash whose keys are the Doc 29 §2.5 family symbols (`cons-pool',
+;; `closure-pool', `string-span', `vector-span', `large-object').
+;; The sweep phase *rebuilds* them from scratch — any leftover entry
+;; from a previous cycle would be wrong, since the live/dead
+;; classification is decided by the just-completed mark phase.
+;;
+;; Coalescing of physically-adjacent free blocks is *not* part of
+;; this sub-phase; it is left to a defragmentation pass (Doc 30 §6.5
+;; / §8.2 — Phase 7.5+).  The fragmentation stats reported here
+;; therefore reflect the *post-sweep, pre-coalesce* state, which is
+;; what Doc 30 §6.5 calls the "fragmentation high-water mark".
+
+(defconst nelisp-gc-inner--known-families
+  '(:cons-pool :closure-pool :string-span :vector-span :large-object)
+  "Doc 29 §2.5 v2 object family table — keyword form.
+T17 froze the consumer-side family encoding as keyword symbols
+(see `--region-p').  The Phase 7.2 producer (Doc 29 allocator) uses
+bare symbols (`cons-pool', etc.); the wire from producer to consumer
+is bridged at `nelisp-allocator-snapshot-regions' time.  Unknown
+families coming through the registry signal an error rather than
+silently bypass the family-aware sweep path.")
+
+(defvar nelisp-gc-inner--free-lists (make-hash-table :test 'eq)
+  "Family symbol → list of `(ADDR . SIZE)' pairs (sweep output).
+Rebuilt fresh on every `nelisp-gc-inner-run-sweep-phase' call — the
+old free-list is discarded because the mark cycle that produced it
+already fed the allocator and any stale entry would re-hand-out a
+now-live address.")
+
+(defun nelisp-gc-inner--reset-free-lists ()
+  "Wipe `--free-lists' so a sweep cycle rebuilds from scratch."
+  (clrhash nelisp-gc-inner--free-lists)
+  ;; Pre-seed every known family with an empty list so downstream
+  ;; callers (fragmentation stats, allocator pop) get deterministic
+  ;; per-family entries even when a family had zero whites.
+  (dolist (fam nelisp-gc-inner--known-families)
+    (puthash fam nil nelisp-gc-inner--free-lists)))
+
+(defun nelisp-gc-inner-free-list-for-family (family)
+  "Return the current free-list for FAMILY (a list of `(ADDR . SIZE)').
+Empty list when FAMILY has no whites *or* the family has never been
+swept this process — the two are indistinguishable by design (and
+that's the right answer: an unswept family yields nothing for the
+allocator to pop)."
+  (gethash family nelisp-gc-inner--free-lists))
+
+(defun nelisp-gc-inner--region-objects (region)
+  "Return the `(ADDR . SIZE)' object list for REGION.
+
+Lookup chain mirrors `--children-of-addr' (Doc 30 §3.1):
+  1. REGION's `:objects' key — preferred, used by tests directly.
+  2. REGION's `:objects-of' callback — funcall on REGION; allocator-
+     supplied walker pattern, parallel to `:children-of'.
+  3. nil — empty region (legitimate during nursery start-up).
+
+Each element is a `(ADDR . SIZE)' cons; SIZE in bytes.  The walker
+must *not* return overlapping ranges — Doc 29 §2.5 family-aware
+allocation guarantees disjointness within a single region, and the
+sweep relies on it to bound the per-region work to O(objects)."
+  (let ((static (plist-get region :objects)))
+    (cond
+     ((listp static) static)
+     (t
+      (let ((walker (plist-get region :objects-of)))
+        (when (functionp walker)
+          (funcall walker region)))))))
+
+(defun nelisp-gc-inner--sweep-region (region &optional finalizer-table)
+  "Sweep one heap region, returning a per-region stats plist.
+
+REGION is a Doc 29 §1.4 plist descriptor (matches `--region-p').
+FINALIZER-TABLE — optional `(addr . fn)' alist *or* hash-table; whites
+that have a registered finalizer are pushed onto the queue via
+`nelisp-gc-inner-enqueue-finalizer'.
+
+Returns:
+  (:family FAMILY-SYM
+   :swept-count NUM-WHITES-FOUND
+   :freed-bytes SUM-OF-WHITE-SIZES
+   :live-count  NUM-BLACKS-FOUND
+   :finalizers-queued FINALIZER-PUSHES)
+
+Side effects: appends `(ADDR . SIZE)' for each white onto the
+family's entry in `--free-lists'; calls
+`nelisp-gc-inner-enqueue-finalizer' once per registered-finalizer
+white.  Order of free-list entries reflects walker order; sweep
+does not sort."
+  (unless (nelisp-gc-inner--region-p region)
+    (signal 'wrong-type-argument (list 'nelisp-gc-inner--region-p region)))
+  (let ((family (plist-get region :family))
+        (objects (nelisp-gc-inner--region-objects region))
+        (swept 0) (freed 0) (live 0) (queued 0))
+    (unless (memq family nelisp-gc-inner--known-families)
+      (signal 'wrong-type-argument
+              (list 'nelisp-gc-inner--known-family family)))
+    (dolist (obj objects)
+      (let* ((addr (car-safe obj))
+             (size (or (cdr-safe obj) 0))
+             (color (nelisp-gc-inner-mark-color addr)))
+        (cond
+         ((eq color :black)
+          (cl-incf live))
+         ((eq color :white)
+          (cl-incf swept)
+          (cl-incf freed size)
+          ;; Append to free-list (prepend; sweep does not sort).
+          (puthash family
+                   (cons (cons addr size)
+                         (gethash family nelisp-gc-inner--free-lists))
+                   nelisp-gc-inner--free-lists)
+          ;; Finalizer enqueue (Doc 30 §6.9 v2).
+          (when finalizer-table
+            (let ((fn (cond
+                       ((hash-table-p finalizer-table)
+                        (gethash addr finalizer-table))
+                       ((listp finalizer-table)
+                        (cdr-safe (assq addr finalizer-table))))))
+              (when (functionp fn)
+                (nelisp-gc-inner-enqueue-finalizer fn addr)
+                (cl-incf queued)))))
+         ((eq color :grey)
+          ;; Mark phase invariant breach — fail loud rather than
+          ;; silently free a still-grey object.
+          (error
+           "nelisp-gc-inner: sweep saw :grey addr %S in region %S (mark phase did not terminate)"
+           addr (plist-get region :region-id))))))
+    (list :family family
+          :swept-count swept
+          :freed-bytes freed
+          :live-count live
+          :finalizers-queued queued)))
+
+(defun nelisp-gc-inner-run-sweep-phase (heap-regions &optional finalizer-table)
+  "Run sweep phase across HEAP-REGIONS using the *current* mark state.
+
+Pre-condition: `nelisp-gc-inner-run-mark-phase' has just run and
+populated the per-address mark state (we read but do not modify it).
+
+For every region:
+  - Walk its objects via `--region-objects'.
+  - :black objects stay live (no free-list entry).
+  - :white objects are enqueued onto the family-keyed free-list, and
+    any registered finalizer is pushed onto the finalizer queue.
+  - :grey objects are an invariant violation and `error'.
+
+FINALIZER-TABLE is forwarded to `--sweep-region' verbatim; pass nil
+if there are no registered finalizers.
+
+Returns a stats plist:
+  (:swept-count   N    ;; total whites across all regions
+   :freed-bytes   N    ;; sum of white sizes
+   :live-count    N    ;; total blacks
+   :region-count  N    ;; regions visited
+   :finalizers-queued N
+   :elapsed-ms    INT
+   :per-family ((FAMILY . (:swept-count N :freed-bytes N
+                          :live-count N :finalizers-queued N)) ...))
+
+`per-family' is sorted in `--known-families' order so test diffs are
+stable across walker output ordering."
+  (nelisp-gc-inner--reset-free-lists)
+  (let ((start (float-time))
+        (swept 0) (freed 0) (live 0) (queued 0)
+        (regions 0)
+        ;; Per-family accumulator: hash of family → (swept freed live queued).
+        (per-fam (make-hash-table :test 'eq)))
+    (dolist (fam nelisp-gc-inner--known-families)
+      (puthash fam (list 0 0 0 0) per-fam))
+    (dolist (region heap-regions)
+      (cl-incf regions)
+      (let* ((rstats (nelisp-gc-inner--sweep-region region finalizer-table))
+             (fam   (plist-get rstats :family))
+             (rs    (plist-get rstats :swept-count))
+             (rf    (plist-get rstats :freed-bytes))
+             (rl    (plist-get rstats :live-count))
+             (rq    (plist-get rstats :finalizers-queued))
+             (acc   (gethash fam per-fam (list 0 0 0 0))))
+        (cl-incf swept rs) (cl-incf freed rf)
+        (cl-incf live rl)  (cl-incf queued rq)
+        (puthash fam
+                 (list (+ (nth 0 acc) rs)
+                       (+ (nth 1 acc) rf)
+                       (+ (nth 2 acc) rl)
+                       (+ (nth 3 acc) rq))
+                 per-fam)))
+    (let ((per-family-out
+           (mapcar (lambda (fam)
+                     (let ((a (gethash fam per-fam (list 0 0 0 0))))
+                       (cons fam (list :swept-count (nth 0 a)
+                                       :freed-bytes (nth 1 a)
+                                       :live-count  (nth 2 a)
+                                       :finalizers-queued (nth 3 a)))))
+                   nelisp-gc-inner--known-families)))
+      (list :swept-count swept
+            :freed-bytes freed
+            :live-count live
+            :region-count regions
+            :finalizers-queued queued
+            :elapsed-ms (round (* 1000.0 (- (float-time) start)))
+            :per-family per-family-out))))
+
+(defun nelisp-gc-inner--enqueue-finalizers-for-white (mark-state-or-nil
+                                                     finalizer-table)
+  "Standalone finalizer enqueue helper for white addresses.
+
+Walks FINALIZER-TABLE — `(addr . fn)' alist or hash-table — and for
+each address whose current mark colour is :white pushes the thunk
+onto the finalizer queue.  Used by tests that exercise finalizer
+plumbing without a full sweep walk; the production sweep path goes
+through `--sweep-region' instead so the same address isn't double-
+queued.
+
+MARK-STATE-OR-NIL is reserved for a future API where the caller
+supplies an alternative mark-state hash; nil means \"use the current
+global state\" (Phase 7.3.2 only ships the nil case).  Returns the
+number of finalizers actually queued."
+  (when mark-state-or-nil
+    (error "nelisp-gc-inner: alternate mark-state arg not implemented"))
+  (let ((queued 0)
+        (entries (cond
+                  ((hash-table-p finalizer-table)
+                   (let (acc)
+                     (maphash (lambda (k v) (push (cons k v) acc))
+                              finalizer-table)
+                     acc))
+                  ((listp finalizer-table) finalizer-table)
+                  (t nil))))
+    (dolist (e entries)
+      (let ((addr (car-safe e))
+            (fn   (cdr-safe e)))
+        (when (and (integerp addr)
+                   (functionp fn)
+                   (eq (nelisp-gc-inner-mark-color addr) :white))
+          (nelisp-gc-inner-enqueue-finalizer fn addr)
+          (cl-incf queued))))
+    queued))
+
+(defun nelisp-gc-inner-rebuild-free-list-for-family (family)
+  "Convenience: return the just-rebuilt free-list for FAMILY.
+Equivalent to `nelisp-gc-inner-free-list-for-family' but spelled to
+make the *rebuild-after-sweep* invariant explicit at call sites.
+Doc 29 §2.5 family-aware: each family is independent; sweeping
+cons-pool never disturbs closure-pool's free-list."
+  (unless (memq family nelisp-gc-inner--known-families)
+    (signal 'wrong-type-argument
+            (list 'nelisp-gc-inner--known-family family)))
+  (gethash family nelisp-gc-inner--free-lists))
+
+
+;;; §8. Fragmentation stats (Doc 30 v2 §6.5) -------------------------
+
+(defun nelisp-gc-inner-sweep-fragmentation-stats (&optional free-lists)
+  "Compute fragmentation metrics from the rebuilt free-lists.
+
+FREE-LISTS — optional alternative source `((FAMILY . FL) ...)';
+nil means \"use the global `--free-lists'\" written by the most
+recent `run-sweep-phase'.
+
+Returns:
+  (:total-free-bytes BYTES
+   :total-free-blocks COUNT
+   :largest-free-block BYTES   ;; 0 when no whites
+   :fragmentation-ratio RATIO  ;; largest / total, 1.0 = none, 0.0 = ∞
+   :per-family ((FAMILY . (:free-blocks N :largest BYTES
+                          :total-bytes N)) ...))
+
+Doc 30 §6.5 calls a ratio < 0.5 a fragmentation high-water mark
+(largest block holds < half of free space) — the allocator is then
+forced through small-block paths that historically hit pathological
+behaviour.  This sub-phase only *measures*; defragmentation is
+deferred to Phase 7.5+.
+
+The :fragmentation-ratio convention follows SBCL precedent:
+  ratio = largest_free / total_free
+  - 1.0 means every free byte is in one contiguous block (ideal).
+  - small ratio means many tiny blocks (pathological)."
+  (let ((source (cond
+                 ((null free-lists)
+                  (let (acc)
+                    (dolist (fam nelisp-gc-inner--known-families)
+                      (push (cons fam (gethash fam nelisp-gc-inner--free-lists))
+                            acc))
+                    (nreverse acc)))
+                 ((listp free-lists) free-lists)
+                 (t (signal 'wrong-type-argument
+                            (list 'listp free-lists)))))
+        (total 0) (blocks 0) (largest 0)
+        (per-family-out nil))
+    (dolist (entry source)
+      (let* ((fam (car entry))
+             (fl  (cdr entry))
+             (fam-bytes 0) (fam-blocks 0) (fam-largest 0))
+        (dolist (b fl)
+          (let ((sz (or (cdr-safe b) 0)))
+            (cl-incf fam-bytes sz)
+            (cl-incf fam-blocks)
+            (when (> sz fam-largest) (setq fam-largest sz))))
+        (cl-incf total fam-bytes)
+        (cl-incf blocks fam-blocks)
+        (when (> fam-largest largest) (setq largest fam-largest))
+        (push (cons fam (list :free-blocks fam-blocks
+                              :largest fam-largest
+                              :total-bytes fam-bytes))
+              per-family-out)))
+    (list :total-free-bytes total
+          :total-free-blocks blocks
+          :largest-free-block largest
+          :fragmentation-ratio (if (zerop total) 1.0
+                                 (/ (float largest) (float total)))
+          :per-family (nreverse per-family-out))))
+
+
+;;; §9. Full-cycle helper (mark + sweep) -----------------------------
+
+(defun nelisp-gc-inner-run-full-cycle (root-set heap-regions
+                                                &optional finalizer-table)
+  "Run one complete GC cycle: mark + sweep + finalizer enqueue.
+
+ROOT-SET / HEAP-REGIONS as for `nelisp-gc-inner-run-mark-phase'.
+FINALIZER-TABLE forwarded to `nelisp-gc-inner-run-sweep-phase'.
+
+Returns the *combined* stats plist:
+  (:mark   MARK-PLIST    ;; full output of run-mark-phase
+   :sweep  SWEEP-PLIST   ;; full output of run-sweep-phase
+   :elapsed-ms INT       ;; mark + sweep elapsed (sum)
+   :grey-count 0)        ;; convenience: re-exposed from mark stats
+
+Phase 7.3.6 (scheduler) will replace this with a stop-the-world
+driver that adds safe-point handshake; for Phase 7.3.2 callers
+(tests + future consumers that don't care about pause time) the
+simple sequencing is enough."
+  (let* ((mark  (nelisp-gc-inner-run-mark-phase  root-set heap-regions))
+         (sweep (nelisp-gc-inner-run-sweep-phase heap-regions finalizer-table)))
+    (list :mark mark
+          :sweep sweep
+          :elapsed-ms (+ (or (plist-get mark  :elapsed-ms) 0)
+                         (or (plist-get sweep :elapsed-ms) 0))
+          :grey-count (plist-get mark :grey-count))))
+
+
 (provide 'nelisp-gc-inner)
 ;;; nelisp-gc-inner.el ends here
