@@ -297,6 +297,19 @@ imm26 is OFFSET >> 2, sign-extended to 64 bits at execution time."
               (list :bl-out-of-range offset)))
     (logior #x94000000 (logand imm26 #x3FFFFFF))))
 
+(defun nelisp-cc-arm64--encode-blr (reg)
+  "Encode BLR Xn — branch with link to register-held address.
+T38 Phase 7.5.5 — first-class function call backend lowering.
+
+REG is a physical 64-bit register symbol (`x16', `x9', ...).  After
+BLR the link register X30 holds the return PC and PC = REG.
+
+  1 1 0 1 0 1 1 0 0 0 1 1 1 1 1 1 0 0 0 0 0 0 Xn 0 0 0 0 0
+  0xD63F0000 | (Xn << 5)"
+  (let ((rn (nelisp-cc-arm64--reg-encoding reg)))
+    (logior #xD63F0000
+            (ash (logand rn #x1F) 5))))
+
 (defun nelisp-cc-arm64--encode-b (offset)
   "Encode B #imm (unconditional branch).
 OFFSET is the byte displacement (4-byte aligned, ±128 MiB).
@@ -964,19 +977,100 @@ when slots are involved)."
          (src-reg  (nelisp-cc-arm64--materialise-operand cg src-val)))
     (nelisp-cc-arm64--writeback-def cg def src-reg)))
 
+(defun nelisp-cc-arm64--lower-call-indirect (cg instr)
+  "Lower an SSA `:call-indirect' INSTR — first-class function call.
+T38 Phase 7.5.5 — Doc 28 §3.1 first-class call lowering for AAPCS64.
+
+Operand layout:
+  operands[0] = SSA value holding the function pointer (callee).
+  operands[1..N] = SSA values for the positional arguments.
+
+Codegen sequence:
+  1. Materialise the callee value into X16 (intra-procedure-call
+     scratch register IP0, caller-saved per AAPCS64).  X16 is
+     deliberately *outside* the integer argument register bank
+     (X0..X7) so argument marshalling cannot clobber it, and outside
+     the spill scratch X9 so spill-aware reload of arguments is also
+     safe.
+  2. Marshal each argument into X0..X7 with spill-aware loads
+     (mirrors `--lower-call').
+  3. Emit `BLR X16'.
+  4. Route the return value (X0) to the def via `--writeback-def'.
+
+Args >8 are not yet supported (matching the direct-call bound).  No
+fixup entry is added — the callee address is supplied dynamically."
+  (let* ((buf      (nelisp-cc-arm64--codegen-buffer cg))
+         (def      (nelisp-cc--ssa-instr-def instr))
+         (operands (nelisp-cc--ssa-instr-operands instr))
+         (callee-val (car operands))
+         (arg-vals (cdr operands))
+         (n        (length arg-vals)))
+    (unless callee-val
+      (signal 'nelisp-cc-arm64-error
+              (list :call-indirect-without-callee instr)))
+    (when (> n (length nelisp-cc-arm64--int-arg-regs))
+      (signal 'nelisp-cc-arm64-todo
+              (list :stack-arg-spill-not-implemented n)))
+    ;; Step 1: materialise callee into X16 (IP0).
+    (let ((slot (nelisp-cc-arm64--reg-or-spill cg callee-val)))
+      (pcase slot
+        (`(:reg ,r)
+         (unless (eq r 'x16)
+           (nelisp-cc-arm64--buffer-emit-instruction
+            buf (nelisp-cc-arm64--encode-mov-reg-reg 'x16 r))))
+        (`(:spill ,off)
+         (nelisp-cc-arm64--buffer-emit-instruction
+          buf (nelisp-cc-arm64--encode-ldr-reg-sp-imm 'x16 off)))))
+    ;; Step 2: marshal arguments.
+    (cl-loop for op in arg-vals
+             for arg-reg in nelisp-cc-arm64--int-arg-regs
+             for slot = (nelisp-cc-arm64--reg-or-spill cg op)
+             do (pcase slot
+                  (`(:reg ,r)
+                   (unless (eq r arg-reg)
+                     (nelisp-cc-arm64--buffer-emit-instruction
+                      buf (nelisp-cc-arm64--encode-mov-reg-reg
+                           arg-reg r))))
+                  (`(:spill ,off)
+                   (nelisp-cc-arm64--buffer-emit-instruction
+                    buf (nelisp-cc-arm64--encode-ldr-reg-sp-imm
+                         arg-reg off)))))
+    ;; Step 3: BLR X16.
+    (nelisp-cc-arm64--buffer-emit-instruction
+     buf (nelisp-cc-arm64--encode-blr 'x16))
+    ;; Step 4: harvest return value.
+    (when def
+      (nelisp-cc-arm64--writeback-def cg def 'x0))))
+
+(defun nelisp-cc-arm64--lower-closure (cg instr)
+  "Lower an SSA `:closure' INSTR — placeholder MOVZ Xd, #0.
+T38 Phase 7.5.5 — Phase 7.5 will replace this with a runtime closure
+allocation that materialises a (function-pointer + capture-array)
+struct address.  Until then the skeleton emits MOVZ Xd, #0 so the
+byte stream is well-formed and the in-process FFI bench harness can
+run end-to-end without raising `:opcode-not-implemented'."
+  (let* ((buf (nelisp-cc-arm64--codegen-buffer cg))
+         (def (nelisp-cc--ssa-instr-def instr))
+         (dst (nelisp-cc-arm64--def-target cg def)))
+    (nelisp-cc-arm64--buffer-emit-instruction
+     buf (nelisp-cc-arm64--encode-movz-imm dst 0))
+    (nelisp-cc-arm64--writeback-def cg def dst)))
+
 (defun nelisp-cc-arm64--lower-instr (cg instr)
   "Lower one SSA INSTR using CG's allocation decisions and slot map.
 Dispatches on `nelisp-cc--ssa-instr-opcode'.  Unknown opcodes raise
 `nelisp-cc-arm64-todo'."
   (let ((op (nelisp-cc--ssa-instr-opcode instr)))
     (pcase op
-      ('const     (nelisp-cc-arm64--lower-const     cg instr))
-      ('return    (nelisp-cc-arm64--lower-return    cg instr))
-      ('call      (nelisp-cc-arm64--lower-call      cg instr))
-      ('copy      (nelisp-cc-arm64--lower-copy      cg instr))
-      ('branch    (nelisp-cc-arm64--lower-branch    cg instr))
-      ('load-var  (nelisp-cc-arm64--lower-load-var  cg instr))
-      ('store-var (nelisp-cc-arm64--lower-store-var cg instr))
+      ('const          (nelisp-cc-arm64--lower-const     cg instr))
+      ('return         (nelisp-cc-arm64--lower-return    cg instr))
+      ('call           (nelisp-cc-arm64--lower-call      cg instr))
+      ('call-indirect  (nelisp-cc-arm64--lower-call-indirect cg instr))
+      ('closure        (nelisp-cc-arm64--lower-closure   cg instr))
+      ('copy           (nelisp-cc-arm64--lower-copy      cg instr))
+      ('branch         (nelisp-cc-arm64--lower-branch    cg instr))
+      ('load-var       (nelisp-cc-arm64--lower-load-var  cg instr))
+      ('store-var      (nelisp-cc-arm64--lower-store-var cg instr))
       ('jump
        ;; Trivial straight-line jump elision — Phase 7.1.5 generalises
        ;; with explicit B fixups for cross-block control flow.

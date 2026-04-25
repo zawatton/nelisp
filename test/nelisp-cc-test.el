@@ -35,6 +35,8 @@
 
 (require 'ert)
 (require 'nelisp-cc)
+(require 'nelisp-cc-x86_64)
+(require 'nelisp-cc-arm64)
 
 ;;; (1) entry block ---------------------------------------------------
 
@@ -611,10 +613,12 @@ produces maximum register pressure with minimal CFG complexity."
    (nelisp-cc-build-ssa-from-ast
     '(lambda () (condition-case nil (foo) (error nil))))
    :type 'nelisp-cc-unsupported-form)
-  ;; `while' is also out of MVP scope (loop linearisation deferred).
+  ;; T38 Phase 7.5.5: `while' is now supported — see ERT (30) below.
+  ;; `unwind-protect' remains out of scope (cleanup-action lowering
+  ;; defers to Phase 7.1.5 graph-coloring + safe-point insertion).
   (should-error
    (nelisp-cc-build-ssa-from-ast
-    '(lambda () (while t)))
+    '(lambda () (unwind-protect 1 2)))
    :type 'nelisp-cc-unsupported-form)
   ;; Non-lambda input is rejected before any lowering happens.
   (should-error
@@ -681,6 +685,227 @@ produces maximum register pressure with minimal CFG complexity."
     ;; Every assignment maps to a register from the default pool.
     (dolist (cell assignments)
       (should (memq (cdr cell) nelisp-cc--default-int-registers)))))
+
+;;; T38 Phase 7.5.5 SSA frontend extension (28-33) ------------------
+;;
+;; Six smoke tests for the three deferred forms now in scope (`letrec'
+;; / `funcall' closure target / `while') plus the matching backend
+;; `:call-indirect' bytes (x86_64 CALL [reg] / arm64 BLR Xn) plus a
+;; full pipeline run that proves fib(30) builds + allocates + emits
+;; bytes end-to-end (the bench gate unblock smoke).
+
+;;; (28) AST → SSA — letrec mutual recursion -------------------------
+
+(ert-deftest nelisp-cc-build-ssa-letrec-mutual-recursion ()
+  "`letrec' lowers a recursive lambda into SSA; the inner `funcall fib'
+references the binding NAME and must resolve to the outer `letrec'
+slot rather than a free variable.  We exercise the canonical bench
+shape `(letrec ((fib LAMBDA)) (funcall fib N))' and assert:
+
+  - the build itself succeeds (the `:unknown-opcode closure 0' regression
+    was the original bench-gate failure mode),
+  - the resulting SSA function passes `nelisp-cc--ssa-verify-function',
+  - the entry block contains at least one `:store-var' (the placeholder
+    + final write the `--lower-letrec' two-pass scheme emits),
+  - and at least one `:call-indirect' sits somewhere in the function
+    (the `funcall fib' call site)."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast
+              '(lambda ()
+                 (letrec ((fib (lambda (n)
+                                 (if (< n 2) n
+                                   (+ (funcall fib (- n 1))
+                                      (funcall fib (- n 2)))))))
+                   (funcall fib 5)))))
+         (entry (nelisp-cc--ssa-function-entry fn))
+         (entry-instrs (nelisp-cc--ssa-block-instrs entry))
+         (entry-opcodes (mapcar #'nelisp-cc--ssa-instr-opcode
+                                entry-instrs))
+         (all-opcodes
+          (cl-loop for blk in (nelisp-cc--ssa-function-blocks fn)
+                   append (mapcar #'nelisp-cc--ssa-instr-opcode
+                                  (nelisp-cc--ssa-block-instrs blk)))))
+    (should (eq t (nelisp-cc--ssa-verify-function fn)))
+    ;; letrec emits the placeholder `:store-var' + final `:store-var'
+    ;; on the entry block (no merge / branch in this lowering shape).
+    (should (memq 'store-var entry-opcodes))
+    ;; The inner `funcall fib N' must have produced a :call-indirect
+    ;; somewhere — it lives inside the inner lambda's SSA function,
+    ;; which is captured as the META :inner-function of the entry
+    ;; block's :closure instruction.  We surface that via the entry's
+    ;; opcode list (the closure instruction itself) plus the outer
+    ;; block's `(funcall fib 5)' call-indirect.
+    (should (memq 'closure entry-opcodes))
+    (should (memq 'call-indirect all-opcodes))))
+
+;;; (29) AST → SSA — funcall closure target -------------------------
+
+(ert-deftest nelisp-cc-build-ssa-funcall-closure-target ()
+  "`(funcall LAMBDA ARG)' lowers via the indirect-call path.  We assert
+that the SSA function contains exactly one `:call-indirect' (no `:call'
+to the symbol `funcall' — that would mean the dispatch fell through to
+`--lower-call' and treated `funcall' as a named function)."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast
+              '(lambda () (funcall (lambda (x) x) 42))))
+         (all-opcodes
+          (cl-loop for blk in (nelisp-cc--ssa-function-blocks fn)
+                   append (mapcar #'nelisp-cc--ssa-instr-opcode
+                                  (nelisp-cc--ssa-block-instrs blk))))
+         (n-indirect (cl-count 'call-indirect all-opcodes))
+         (n-call-funcall
+          (cl-count-if
+           (lambda (instr)
+             (and (eq (nelisp-cc--ssa-instr-opcode instr) 'call)
+                  (eq (plist-get (nelisp-cc--ssa-instr-meta instr) :fn)
+                      'funcall)))
+           (cl-loop for blk in (nelisp-cc--ssa-function-blocks fn)
+                    append (nelisp-cc--ssa-block-instrs blk)))))
+    (should (eq t (nelisp-cc--ssa-verify-function fn)))
+    (should (= 1 n-indirect))
+    (should (zerop n-call-funcall))))
+
+;;; (30) AST → SSA — while loop back-edge ---------------------------
+
+(ert-deftest nelisp-cc-build-ssa-while-loop-back-edge ()
+  "`(while COND BODY)' allocates three blocks (header / body / exit) and
+wires a back-edge from body to header.  We assert the structural
+invariants:
+
+  - 4 blocks exist (entry + header + body + exit),
+  - header has at least 2 predecessors (entry + body's back-edge),
+  - body has exactly one successor and it is the header (back-edge),
+  - the function still verifies (loop reachability + bidirectional
+    edges + no orphans)."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast
+              '(lambda ()
+                 (let ((i 0))
+                   (while (< i 10)
+                     (setq i (1+ i)))
+                   i))))
+         (blocks (nelisp-cc--ssa-function-blocks fn))
+         (header
+          (cl-find-if (lambda (b)
+                        (equal (nelisp-cc--ssa-block-label b)
+                               "while-header"))
+                      blocks))
+         (body
+          (cl-find-if (lambda (b)
+                        (equal (nelisp-cc--ssa-block-label b)
+                               "while-body"))
+                      blocks))
+         (exit
+          (cl-find-if (lambda (b)
+                        (equal (nelisp-cc--ssa-block-label b)
+                               "while-exit"))
+                      blocks)))
+    (should (eq t (nelisp-cc--ssa-verify-function fn)))
+    (should header)
+    (should body)
+    (should exit)
+    ;; Header has ≥ 2 predecessors (entry path + body back-edge).
+    (should (>= (length (nelisp-cc--ssa-block-predecessors header)) 2))
+    ;; Body's single successor is the header (back-edge).
+    (should (= 1 (length (nelisp-cc--ssa-block-successors body))))
+    (should (eq header (car (nelisp-cc--ssa-block-successors body))))))
+
+;;; (31) x86_64 :call-indirect emits CALL [reg] bytes ---------------
+
+(ert-deftest nelisp-cc-x86_64-call-indirect-emits-bytes ()
+  "Lowering a `:call-indirect' SSA function emits a sequence containing
+the `0xFF /2' (CALL r/m64) opcode pattern.
+
+The fixture builds an SSA function with the shape
+  `(lambda (f) (funcall f))'
+which lowers to: load param[0] → :call-indirect with no args → return.
+After linear-scan + backend compile the buffer must contain at least
+one `0x48 0xFF 0xD0' triplet (REX.W + CALL /2 + ModR/M with rm=rax,
+mod=11, reg=2 — i.e. CALL [rax], the canonical indirect-call shape
+the lower helper emits)."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast
+              '(lambda (f) (funcall f))))
+         (alloc (nelisp-cc--linear-scan fn))
+         (bytes (nelisp-cc-x86_64-compile fn alloc))
+         (bvec  (append bytes nil))
+         (found-call-indirect-p nil))
+    ;; Walk the byte stream looking for the triplet.  We cannot
+    ;; predict the exact prologue size in test (depends on spill
+    ;; frame), so we scan the whole buffer.
+    (cl-loop for tail on bvec
+             when (and (eq (car  tail) #x48)
+                       (eq (cadr tail) #xFF)
+                       (cl-caddr tail)
+                       ;; ModR/M for CALL [rax]:
+                       ;;   mod=11 reg=2 rm=0 = #b11_010_000 = 0xD0.
+                       (eq (cl-caddr tail) #xD0))
+             do (setq found-call-indirect-p t))
+    (should found-call-indirect-p)))
+
+;;; (32) arm64 :call-indirect emits BLR bytes -----------------------
+
+(ert-deftest nelisp-cc-arm64-call-indirect-emits-bytes ()
+  "Lowering a `:call-indirect' SSA function on AAPCS64 emits the BLR X16
+instruction word `0xD63F0200' (little-endian bytes 00 02 3F D6).
+
+The lower helper materialises the callee into X16 (IP0, intra-
+procedure-call scratch) and emits `BLR X16'.  The encoded word is
+0xD63F0000 | (16 << 5) = 0xD63F0200.  Little-endian byte sequence in
+the buffer: 0x00 0x02 0x3F 0xD6."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast
+              '(lambda (f) (funcall f))))
+         (alloc (nelisp-cc--linear-scan fn))
+         (bytes (nelisp-cc-arm64-compile fn alloc))
+         (bvec  (append bytes nil))
+         (found-blr-p nil))
+    (cl-loop for tail on bvec
+             when (and (eq (car  tail)         #x00)
+                       (eq (cadr tail)         #x02)
+                       (cl-caddr tail)
+                       (eq (cl-caddr tail)     #x3F)
+                       (cdddr tail)
+                       (eq (cadddr tail)       #xD6))
+             do (setq found-blr-p t))
+    (should found-blr-p)))
+
+;;; (33) full pipeline fib(30) builds + allocates + emits -----------
+
+(ert-deftest nelisp-cc-pipeline-fib-30-builds-and-allocates ()
+  "End-to-end pipeline smoke for the bench-actual fib(30) form.
+
+Doc 28 v2 §5.2 LOCKED 30x speedup gate is downstream of this smoke —
+before T38 the SSA build itself raised
+`nelisp-cc-unsupported-form :head while' / unknown-opcode `closure 0'
+on the bench-actual form (T37 measurement reported 0/3 axes pass).
+After T38 the same form must:
+
+  1. build a verifier-clean SSA function,
+  2. linear-scan without raising (loops + indirect calls + closures
+     all share the supported opcode set),
+  3. lower to x86_64 bytes without `:unknown-opcode' (the bench gate
+     unblock condition).
+
+We do NOT assert on speedup or correctness of the executed bytes —
+that is the bench-actual harness's job once the runtime module is
+built (Doc 28 §5.2 caveat — semantic correctness pending Phase 7.5
+callee resolution)."
+  (let* ((fib-30-form
+          '(lambda ()
+             (letrec ((fib (lambda (n)
+                             (if (< n 2) n
+                               (+ (funcall fib (- n 1))
+                                  (funcall fib (- n 2)))))))
+               (funcall fib 30))))
+         (fn (nelisp-cc-build-ssa-from-ast fib-30-form))
+         (alloc (nelisp-cc--linear-scan fn))
+         (bytes (nelisp-cc-x86_64-compile fn alloc)))
+    (should (eq t (nelisp-cc--ssa-verify-function fn)))
+    (should (listp alloc))
+    ;; The allocator returns an alist of (VID . REGISTER-OR-:spill).
+    (dolist (cell alloc)
+      (should (integerp (car cell)))
+      (should (or (memq (cdr cell) nelisp-cc--default-int-registers)
+                  (eq (cdr cell) :spill))))
+    ;; The byte vector must be non-empty (prologue + body + return).
+    (should (vectorp bytes))
+    (should (> (length bytes) 0))))
 
 (provide 'nelisp-cc-test)
 ;;; nelisp-cc-test.el ends here

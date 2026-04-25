@@ -39,6 +39,20 @@
 ;;       4. every block in the table is reachable from entry (no orphans)
 ;;       5. every successor referenced by some block is itself in the table
 ;;
+;; Phase 7.5.5 (T38) extension — three deferred forms now lowered:
+;;
+;;   - `letrec' — mutually recursive bindings via the
+;;     allocate-then-fill pattern (each NAME placeholder-stored to nil
+;;     before any INIT is evaluated, so each INIT sees every NAME).
+;;   - `funcall' — first-class function call.  `(funcall FN-EXPR ARG...)'
+;;     lowers FN-EXPR to an SSA value and emits `:call-indirect' with
+;;     the callee value as operand[0].
+;;   - `while' — loop with explicit back-edge.  Three blocks
+;;     (loop-header / loop-body / loop-exit) are wired with one
+;;     forward branch (header → body / exit) and one back-edge
+;;     (body → header).  The form's value is `nil' (per Emacs Lisp
+;;     spec), materialised as a `:const' on the exit block.
+;;
 ;; Out of scope (deferred to subsequent Phase 7.1.x):
 ;;   - AST → SSA conversion (Phase 7.1.1 full)
 ;;   - Linear-scan register allocator (Poletto-Sarkar 1999, Phase 7.1.1 full)
@@ -1429,6 +1443,171 @@ BODY is evaluated in SCOPE extended with all (VAR . SSA-VALUE) pairs."
                            cur-scope (list (cons var val)))))))
     (nelisp-cc--lower-progn fn cur-block cur-scope body)))
 
+(defun nelisp-cc--lower-letrec (fn block scope bindings body)
+  "Lower `(letrec ((NAME INIT) ...) BODY...)' in BLOCK with SCOPE.
+T38 Phase 7.5.5 — mutually recursive bindings.
+
+Strategy (allocate-then-fill, matching Emacs Lisp `letrec' semantics):
+  1. For each (NAME INIT) emit a `:const' nil placeholder, capture its
+     SSA value as the initial binding for NAME, and emit a `:store-var'
+     so the slot exists in the symbol-value cell when an INIT closure
+     references NAME at runtime.
+  2. Extend SCOPE so every NAME is visible to every INIT (fixes the
+     classic mutual-recursion case `(letrec ((f (lambda () (g)))
+     (g (lambda () (f)))) ...)').
+  3. Evaluate each INIT in the extended scope and emit `:store-var' for
+     NAME to update the cell to the final value; the SSA scope binding
+     is replaced with the new value so subsequent BODY references see
+     the resolved binding (rather than the placeholder nil).
+  4. Lower BODY as an implicit progn with the extended scope.
+
+Bindings without an INIT are accepted (`(letrec (x) BODY)') and bind
+NAME to nil — same shape as `let'."
+  (let ((cur-block block)
+        (placeholders nil))
+    ;; Pass 1: allocate placeholder nil + initial store-var per NAME.
+    ;; Each NAME starts bound to its placeholder SSA value so that
+    ;; pass-2 evaluation of its INIT can see itself + every sibling.
+    (dolist (b bindings)
+      (let ((var nil))
+        (cond
+         ((symbolp b) (setq var b))
+         ((and (consp b) (symbolp (car b)) (consp (cdr b)))
+          (setq var (car b)))
+         (t (signal 'nelisp-cc-unsupported-form
+                    (list :bad-letrec-binding b))))
+        (cl-destructuring-bind (placeholder nb)
+            (nelisp-cc--lower-const fn cur-block nil)
+          (setq cur-block nb)
+          ;; Emit a store-var so the symbol-value cell holds nil for
+          ;; the placeholder window — keeps backend semantics simple
+          ;; (free-variable references to NAME during INIT walk read
+          ;; nil rather than an undefined slot).
+          (let* ((store-def (nelisp-cc--ssa-make-value fn nil))
+                 (store-instr (nelisp-cc--ssa-add-instr
+                               fn cur-block 'store-var
+                               (list placeholder) store-def)))
+            (setf (nelisp-cc--ssa-instr-meta store-instr)
+                  (list :name var :letrec-placeholder t))
+            (push (cons var store-def) placeholders)))))
+    (let ((scope-with-placeholders
+           (nelisp-cc--scope-extend scope (nreverse placeholders)))
+          (final-bindings nil))
+      ;; Pass 2: evaluate each INIT in the extended scope, store-var
+      ;; the result, replace the binding with the final SSA value.
+      (dolist (b bindings)
+        (let ((var nil) (init nil))
+          (cond
+           ((symbolp b) (setq var b init nil))
+           ((and (consp b) (symbolp (car b)) (consp (cdr b)))
+            (setq var (car b) init (cadr b))))
+          (cl-destructuring-bind (val nb)
+              (nelisp-cc--lower-expr fn cur-block
+                                     scope-with-placeholders init)
+            (setq cur-block nb)
+            (let* ((store-def (nelisp-cc--ssa-make-value fn nil))
+                   (store-instr (nelisp-cc--ssa-add-instr
+                                 fn cur-block 'store-var
+                                 (list val) store-def)))
+              (setf (nelisp-cc--ssa-instr-meta store-instr)
+                    (list :name var :letrec-init t))
+              (push (cons var store-def) final-bindings)))))
+      ;; Pass 3: lower BODY with NAMES bound to their *final* SSA
+      ;; values.  We rebuild the scope rather than mutating the
+      ;; placeholder alist so two distinct lookups (during the
+      ;; placeholder window vs. after) return different values, which
+      ;; preserves SSA single-assignment semantics.
+      (let ((final-scope
+             (nelisp-cc--scope-extend scope (nreverse final-bindings))))
+        (nelisp-cc--lower-progn fn cur-block final-scope body)))))
+
+(defun nelisp-cc--lower-funcall (fn block scope fn-form args)
+  "Lower `(funcall FN-FORM ARGS...)' as `:call-indirect'.
+T38 Phase 7.5.5 — first-class function call.
+
+FN-FORM is lowered first (its result is the callee function pointer),
+then ARGS are lowered left-to-right and threaded as the remaining
+operands.  The emitted instruction's META plist carries `:indirect t'
+so the backend can branch on indirect vs. direct call.
+
+This shares the `:call-indirect' opcode with the existing `((lambda
+...) ARG)' indirect-call path in `--lower-expr', so backend lowering
+only has to handle one indirect-call shape."
+  (cl-destructuring-bind (fn-val fb)
+      (nelisp-cc--lower-expr fn block scope fn-form)
+    (let ((cur-block fb)
+          (operand-vals nil))
+      (dolist (a args)
+        (cl-destructuring-bind (v nb)
+            (nelisp-cc--lower-expr fn cur-block scope a)
+          (setq cur-block nb)
+          (push v operand-vals)))
+      (let* ((operands (cons fn-val (nreverse operand-vals)))
+             (def (nelisp-cc--ssa-make-value fn nil))
+             (instr (nelisp-cc--ssa-add-instr
+                     fn cur-block 'call-indirect operands def)))
+        (setf (nelisp-cc--ssa-instr-meta instr)
+              (list :indirect t :funcall t))
+        (list def cur-block)))))
+
+(defun nelisp-cc--lower-while (fn block scope cond-form body)
+  "Lower `(while COND-FORM BODY...)' in BLOCK with SCOPE.
+T38 Phase 7.5.5 — loop with explicit back-edge.
+
+Three basic blocks are allocated:
+
+  loop-header   COND-FORM evaluated → :branch (then=loop-body,
+                                              else=loop-exit)
+  loop-body     BODY... evaluated, last value discarded → :jump back
+                to loop-header (the back-edge)
+  loop-exit     :const nil — the form's value (Emacs Lisp `while'
+                always returns nil)
+
+The current BLOCK is wired with an unconditional `:jump' to
+loop-header so straight-line dataflow reaches the loop entry — this
+keeps the verifier happy (loop-header has at least one predecessor)
+and gives the linear-scan allocator a deterministic linearisation
+point.
+
+Returns `(NIL-VALUE LOOP-EXIT-BLOCK)' as the standard 2-element
+contract.  Caveat: the linearisation pass
+`nelisp-cc--ssa--reverse-postorder' deliberately ignores the back-edge
+(the visited bitmap prevents a re-visit of loop-header), which is the
+Phase 7.1.5-deferred loop-extension behaviour Doc 28 §3.1 calls out.
+The interval allocator therefore truncates each loop-carried value's
+END to its in-linear-order last use; live values that cross the
+back-edge spill at the cost of correctness preservation only when T15
+spill-aware reload kicks in.  The fib / fact-iter / alloc-heavy bench
+exercises this on real silicon."
+  (let ((header (nelisp-cc--ssa-make-block fn "while-header"))
+        (body-blk (nelisp-cc--ssa-make-block fn "while-body"))
+        (exit-blk (nelisp-cc--ssa-make-block fn "while-exit")))
+    ;; Wire BLOCK → header with an unconditional jump.
+    (nelisp-cc--ssa-add-instr fn block 'jump nil nil)
+    (nelisp-cc--ssa-link-blocks block header)
+    ;; loop-header: lower COND-FORM, emit branch.
+    (cl-destructuring-bind (cval cblock)
+        (nelisp-cc--lower-expr fn header scope cond-form)
+      (let ((br (nelisp-cc--ssa-add-instr
+                 fn cblock 'branch (list cval) nil)))
+        (setf (nelisp-cc--ssa-instr-meta br)
+              (list :then (nelisp-cc--ssa-block-id body-blk)
+                    :else (nelisp-cc--ssa-block-id exit-blk)
+                    :loop-header t))
+        (nelisp-cc--ssa-link-blocks cblock body-blk)
+        (nelisp-cc--ssa-link-blocks cblock exit-blk)))
+    ;; loop-body: lower BODY (discard result), then jump back to
+    ;; header — this is the back-edge.
+    (let* ((body-result (nelisp-cc--lower-progn fn body-blk scope body))
+           (bblock (cadr body-result)))
+      ;; Body's last value is discarded by `while' semantics.
+      (let ((j (nelisp-cc--ssa-add-instr fn bblock 'jump nil nil)))
+        (setf (nelisp-cc--ssa-instr-meta j)
+              (list :loop-back-edge t)))
+      (nelisp-cc--ssa-link-blocks bblock header))
+    ;; loop-exit: materialise nil as the form's value.
+    (nelisp-cc--lower-const fn exit-blk nil)))
+
 (defun nelisp-cc--lower-call (fn block scope head args)
   "Lower a function call (HEAD ARGS...) in BLOCK with SCOPE."
   (let ((cur-block block)
@@ -1499,9 +1678,28 @@ This is the master dispatch.  Unknown / unsupported forms raise
         (nelisp-cc--lower-let fn block scope (car rest) (cdr rest)))
        ((eq head 'let*)
         (nelisp-cc--lower-let* fn block scope (car rest) (cdr rest)))
+       ((eq head 'letrec)
+        ;; T38 Phase 7.5.5: mutually recursive bindings.
+        (nelisp-cc--lower-letrec fn block scope (car rest) (cdr rest)))
+       ((eq head 'while)
+        ;; T38 Phase 7.5.5: loop with explicit back-edge.
+        (let ((cond-form (car rest))
+              (body (cdr rest)))
+          (nelisp-cc--lower-while fn block scope cond-form body)))
+       ((eq head 'funcall)
+        ;; T38 Phase 7.5.5: first-class function call.  `(funcall FN
+        ;; ARG...)' lowers FN to an SSA value and emits
+        ;; `:call-indirect' with the function pointer as operand[0].
+        ;; Empty `(funcall)' is malformed (Emacs Lisp signals
+        ;; `wrong-number-of-arguments' at run time); we treat it as a
+        ;; frontend error to avoid emitting a degenerate instruction.
+        (unless rest
+          (signal 'nelisp-cc-unsupported-form
+                  (list :empty-funcall expr)))
+        (nelisp-cc--lower-funcall fn block scope (car rest) (cdr rest)))
        ((eq head 'setq)
         (nelisp-cc--lower-setq-chain fn block scope rest))
-       ((memq head '(catch condition-case unwind-protect while
+       ((memq head '(catch condition-case unwind-protect
                            save-excursion save-restriction
                            save-current-buffer
                            defun defmacro defvar defconst

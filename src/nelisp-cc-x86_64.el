@@ -358,6 +358,26 @@ instruction (i.e. from the byte after the 5-byte CALL itself).
 Bytes: 0xE8 | rel32 little-endian."
   (cons #xE8 (nelisp-cc-x86_64--imm32-bytes rel32)))
 
+(defun nelisp-cc-x86_64--emit-call-indirect-reg (reg)
+  "Encode CALL r/m64 (indirect call via REG) — opcode FF /2.
+T38 Phase 7.5.5 — first-class function call backend lowering.
+
+Bytes: [REX.B] FF (mod=11 reg=2 rm=REG.low3)
+  - REX prefix is 0x48 always (W=1 to keep the slot 64-bit) plus
+    REX.B when REG ∈ {r8..r15} (low 3 bits truncate; B selects high
+    bank).  System V near indirect call defaults to 64-bit operand
+    size, so W is conventional.
+
+REG is a physical register symbol (`rax', `r10', ...).  Returns a
+list of 3 bytes (or 4 with REX.B)."
+  (let* ((rm-low3 (nelisp-cc-x86_64--reg-low3 reg))
+         (rex-b   (nelisp-cc-x86_64--reg-rex-ext-p reg))
+         (rex     (nelisp-cc-x86_64--rex-byte 1 0 0 (if rex-b 1 0)))
+         ;; ModR/M: mod=11 (register direct), reg=2 (the /2 opcode
+         ;; extension for CALL r/m64), rm = REG's low 3 bits.
+         (modrm   (nelisp-cc-x86_64--modrm-byte 3 2 rm-low3)))
+    (list rex #xFF modrm)))
+
 (defun nelisp-cc-x86_64--emit-jmp-rel32 (rel32)
   "Encode JMP rel32 (unconditional near jump, 5 bytes).
 
@@ -990,6 +1010,100 @@ load lands the value directly in the return register)."
       (nelisp-cc-x86_64--buffer-emit-byte buf #x5D)) ; POP rbp
     (nelisp-cc-x86_64--buffer-emit-bytes buf (nelisp-cc-x86_64--emit-ret))))
 
+(defun nelisp-cc-x86_64--lower-call-indirect (cg instr)
+  "Lower an SSA `:call-indirect' INSTR — first-class function call.
+T38 Phase 7.5.5 — Doc 28 §3.1 first-class call lowering.
+
+Operand layout:
+  operands[0] = SSA value holding the function pointer (callee).
+  operands[1..N] = SSA values for the positional arguments.
+
+Codegen sequence:
+  1. Materialise the callee value into rax (a caller-saved scratch
+     register that is *not* in the System V argument bank, so
+     argument marshalling will not clobber it).
+  2. Marshal each argument into rdi/rsi/rdx/rcx/r8/r9 with
+     spill-aware loads (mirrors `--lower-call').
+  3. Emit `CALL [rax]' (FF /2 with ModR/M rm=rax).
+  4. Route the return value (rax) to the def via `--writeback-def'.
+
+Spill-aware: callee + each arg may live in a stack slot.  Args ≤ 6
+are required (the same bound as direct `:call'); >6 args raise
+`nelisp-cc-x86_64-unsupported-opcode' until the stack-spill ABI
+lowering lands in a follow-up.
+
+Note: there is *no* call-fixup entry — the callee address is
+provided dynamically by the SSA value, so Phase 7.5
+`nelisp-defs-index' patching is bypassed for indirect calls.
+Closures whose runtime construction is also Phase 7.5 territory will
+materialise their function pointer via the eventual `:closure'
+runtime-cell load; the MVP `:closure' lowering currently emits a
+zero placeholder (see `--lower-closure')."
+  (let* ((buf      (nelisp-cc-x86_64--codegen-buffer cg))
+         (def      (nelisp-cc--ssa-instr-def instr))
+         (operands (nelisp-cc--ssa-instr-operands instr))
+         (callee-val (car operands))
+         (arg-vals (cdr operands))
+         (n        (length arg-vals)))
+    (unless callee-val
+      (signal 'nelisp-cc-x86_64-encoding-error
+              (list :call-indirect-without-callee instr)))
+    (when (> n (length nelisp-cc-x86_64--int-arg-regs))
+      (signal 'nelisp-cc-x86_64-unsupported-opcode
+              (list :stack-arg-spill-not-implemented n)))
+    ;; Step 1: materialise callee into rax *before* argument
+    ;; marshalling so a callee that happens to live in an argument
+    ;; register (rdi..r9) does not get clobbered by the arg moves.
+    (let ((callee-slot (nelisp-cc-x86_64--reg-or-spill cg callee-val)))
+      (pcase callee-slot
+        (`(:reg ,r)
+         (unless (eq r 'rax)
+           (nelisp-cc-x86_64--buffer-emit-bytes
+            buf (nelisp-cc-x86_64--emit-mov-reg-reg 'rax r))))
+        (`(:spill ,off)
+         (nelisp-cc-x86_64--emit-load-spill buf 'rax off))))
+    ;; Step 2: marshal arguments (same as direct call).
+    (cl-loop for op in arg-vals
+             for arg-reg in nelisp-cc-x86_64--int-arg-regs
+             for slot = (nelisp-cc-x86_64--reg-or-spill cg op)
+             do (pcase slot
+                  (`(:reg ,r)
+                   (unless (eq r arg-reg)
+                     (nelisp-cc-x86_64--buffer-emit-bytes
+                      buf (nelisp-cc-x86_64--emit-mov-reg-reg
+                           arg-reg r))))
+                  (`(:spill ,off)
+                   (nelisp-cc-x86_64--emit-load-spill
+                    buf arg-reg off))))
+    ;; Step 3: CALL [rax].
+    (nelisp-cc-x86_64--buffer-emit-bytes
+     buf (nelisp-cc-x86_64--emit-call-indirect-reg 'rax))
+    ;; Step 4: harvest return value.
+    (when def
+      (nelisp-cc-x86_64--writeback-def
+       cg def nelisp-cc-x86_64--return-reg))))
+
+(defun nelisp-cc-x86_64--lower-closure (cg instr)
+  "Lower an SSA `:closure' INSTR — placeholder MOV r64, 0.
+T38 Phase 7.5.5 — Phase 7.5 will replace this with a runtime closure
+allocation that materialises a (function-pointer + capture-array)
+struct address into the def's register.  Until then the skeleton
+emits MOV r64, 0 so the byte stream is well-formed and the in-process
+FFI bench harness can run end-to-end without raising
+`:unknown-opcode' (the executed bytes return zero, which is exactly
+the bench-infrastructure baseline behaviour Doc 28 §5.2 captures —
+the gate flips to semantic verification when Phase 7.5 closure
+allocation lands).
+
+Spill-aware: when DEF is spilled the placeholder zero lands in the
+scratch register first, then is stored to the spill slot."
+  (let* ((buf (nelisp-cc-x86_64--codegen-buffer cg))
+         (def (nelisp-cc--ssa-instr-def instr))
+         (dst (nelisp-cc-x86_64--def-target cg def)))
+    (nelisp-cc-x86_64--buffer-emit-bytes
+     buf (nelisp-cc-x86_64--emit-mov-reg-imm32 dst 0))
+    (nelisp-cc-x86_64--writeback-def cg def dst)))
+
 (defun nelisp-cc-x86_64--lower-instr (cg instr)
   "Dispatch a single SSA INSTR to its per-opcode lower helper.
 
@@ -997,14 +1111,16 @@ Skeleton subset — opcodes outside the supported set raise
 `nelisp-cc-x86_64-unsupported-opcode'.  phi nodes specifically must
 be lowered out by a phi-out pass before this dispatch sees them."
   (pcase (nelisp-cc--ssa-instr-opcode instr)
-    ('const     (nelisp-cc-x86_64--lower-const cg instr))
-    ('load-var  (nelisp-cc-x86_64--lower-load-var cg instr))
-    ('store-var (nelisp-cc-x86_64--lower-store-var cg instr))
-    ('call      (nelisp-cc-x86_64--lower-call cg instr))
-    ('copy      (nelisp-cc-x86_64--lower-copy cg instr))
-    ('branch    (nelisp-cc-x86_64--lower-branch cg instr))
-    ('jump      (nelisp-cc-x86_64--lower-jump cg instr))
-    ('return    (nelisp-cc-x86_64--lower-return cg instr))
+    ('const          (nelisp-cc-x86_64--lower-const cg instr))
+    ('load-var       (nelisp-cc-x86_64--lower-load-var cg instr))
+    ('store-var      (nelisp-cc-x86_64--lower-store-var cg instr))
+    ('call           (nelisp-cc-x86_64--lower-call cg instr))
+    ('call-indirect  (nelisp-cc-x86_64--lower-call-indirect cg instr))
+    ('closure        (nelisp-cc-x86_64--lower-closure cg instr))
+    ('copy           (nelisp-cc-x86_64--lower-copy cg instr))
+    ('branch         (nelisp-cc-x86_64--lower-branch cg instr))
+    ('jump           (nelisp-cc-x86_64--lower-jump cg instr))
+    ('return         (nelisp-cc-x86_64--lower-return cg instr))
     ('phi
      (signal 'nelisp-cc-x86_64-unsupported-opcode
              (list :phi-must-be-lowered-out-before-codegen
