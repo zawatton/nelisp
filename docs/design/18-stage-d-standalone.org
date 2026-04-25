@@ -2,7 +2,7 @@
 #+AUTHOR: zawatton + Claude
 #+DATE: 2026-04-25
 #+STATE: LOCKED-2026-04-25
-#+STATUS: §2 全 10 項目全 RECOMMENDED default 採用 LOCKED (user 2026-04-25)、Phase 6.0 着手待ち
+#+STATUS: §2 全 10 項目 LOCKED 2026-04-25 / Phase 6.0 + 6.3 SHIPPED (bin/anvil + audit + install.sh + tarball + README、tools/list 25)、6.1/6.2/6.4 残
 
 * §0 要旨
 
@@ -217,11 +217,18 @@ UX* として成立。C は memory 永続化を要するので SQLite 同梱が�
 - =url-retrieve= host 依存を POSIX curl / libcurl FFI で代替可能に
 - cache / extract / overflow / robots / batch の 5 MCP tool expose
 
-** Phase 6.3 — distribution polish (1-2 週)
-- GitHub Release v0.1 (Stage D 独立 tag)
-- =install.sh= (curl|bash)
-- README + screencast (non-Emacs user 向け dogfood 用)
-- Homebrew tap (optional, community 募集)
+** Phase 6.3 — distribution polish *SHIPPED 2026-04-25*
+- =install.sh= (curl|bash) — 132 行、Emacs 29+ check / GitHub Release
+  download / XDG dir 作成 / .mcp.json snippet 表示
+- =README-stage-d.org= — non-Emacs user 向け Quickstart、25 tool 一覧、
+  Claude Code 連携 snippet、troubleshooting
+- =Makefile stage-d-tarball= target — =dist/anvil-$VERSION.tar.gz=
+  生成 (~120KB、bin + src + README + LICENSE のみ、test/docs 除外)
+- end-to-end 検証: 一時 dir に extract → =anvil --version= /
+  =anvil doctor= 緑 / =anvil mcp serve= に tools/list 投げて
+  *25 tool* 返却確認
+- 残: GitHub Release v0.1 push (=stage-d-v0.1= tag、user 判断待ち)、
+  screencast (community 拡散時)、Homebrew tap (community)
 
 ** Phase 6.4 — Windows 対応 (2-3 週)
 - anvil-pty-broker (Doc 27 派生) 経路で Windows 対応
