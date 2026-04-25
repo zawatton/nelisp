@@ -1,0 +1,490 @@
+#+TITLE: Doc 27 — Phase 7+ : Self-implemented C runtime (4 核 = syscall / allocator / GC inner / coding)
+#+AUTHOR: zawatton + Claude (session-A)
+#+DATE: 2026-04-25
+#+STATE: DRAFT-2026-04-25 (user signoff 待ち、§2 全 11 項目 default 提示中)
+#+STATUS: NeLisp v1.0 完遂条件 #4 達成 = 真 standalone binary 配布 = NeLisp 公開告知ゲート。Phase 5-B/5-C/Stage D 完遂直後の本日起草、scope 6-18 ヶ月、user 判断後 §2 LOCK で実装着手
+
+* §0 要旨 (TL;DR)
+
+NeLisp v1.0 完遂条件 4 項のうち、最後に残った *条件 #4 = 残存 C は
+SBCL-style 4 核 (syscall / allocator / GC inner / coding) のみ* を
+達成するための design doc。本 phase 完遂で:
+
+- =bin/anvil mcp serve= が真の "no Emacs" で動く standalone binary に
+- Stage D Option B (=stage-d-v2.0= 想定) が現実化
+- =NeLisp 公開告知保留= (=feedback_nelisp_announcement_standalone_gate.md=)
+  の解除条件達成
+
+工数見積 6-18 ヶ月 (memory consensus)。本 doc は SBCL Rhodes 5-stage
+methodology (=docs/03-architecture.org §1=) を直接 transfer する形で
+設計、=Doc 13 (Phase 5-B)= / =Doc 14 (Phase 5-C)= の SHIPPED 結果を
+前提にする。
+
+* §1 背景
+
+** 1.1 v1.0 完遂条件 4 項目の現状 (2026-04-25 時点)
+
+| # | 条件                              | 状態                                  |
+|---+-----------------------------------+---------------------------------------|
+| 1 | self-host 到達                    | ✅ Phase 2 達成 2026-04-23            |
+| 2 | 3 大 core module Elisp 化         | ✅ Phase 5-B SHIPPED 2026-04-24 (PoC) |
+| 3 | AI-critical path 5 領域動作       | ✅ Phase 5-C SHIPPED 2026-04-24       |
+| 4 | 残存 C = SBCL-style 4 核のみ      | ❌ *本 Phase 7+ で対応*               |
+
+= 4 条件中 3 完遂、本 phase 完遂で v1.0 到達。
+
+** 1.2 4 核の定義 (=docs/03-architecture.org §0= LOCKED)
+
+SBCL が 25 年間維持してきた 4 核境界を NeLisp に transfer:
+
+| #   | 核                              | 役割                                                                  |
+|-----+---------------------------------+-----------------------------------------------------------------------|
+| 1   | *syscall*                       | OS との接点 — file I/O / process / signal / time / network primitive  |
+| 2   | *allocator*                     | heap memory primitive — malloc / mmap 抽象化、page 管理                 |
+| 3   | *GC inner*                      | mark-sweep の hot loop (Phase 3c で algorithm 確立済、それを native 化) |
+| 4   | *coding (encoding)*             | UTF-8 / Latin-1 / Shift-JIS / EUC-JP 等 char ↔ byte 変換                |
+
+これ以外 (eval / reader / VM / buffer / redisplay / event-loop / actor /
+state / I/O orchestration) は全て NeLisp 上で動作 (= Phase 2-5 SHIPPED)。
+
+** 1.3 Stage D 関係 (Doc 18) と本 Phase の差
+
+| Stage    | 内容                                            | 状態                  |
+|----------+-------------------------------------------------+-----------------------|
+| Stage A  | NeLisp substrate Elisp 化                        | Phase 5-F SHIPPED     |
+| Stage D  | Emacs install 前提だが distributable             | Phase 6.1 SHIPPED     |
+| Stage E  | (本 Doc 27 = Stage D v2.0 / Option B 相当) 真 standalone | Phase 7+ で対応 *本 doc* |
+
+Stage D は "Emacs ありき" の配布形態 (Phase 6.1 で =bin/anvil mcp serve=
+が headless profile で動作するが内部は =emacs --batch= subprocess)。
+本 Phase 7+ で =emacs --batch= ですら不要な真 standalone を実現する。
+
+** 1.4 SBCL Rhodes 5-stage methodology (NeLisp 適応版)
+
+Rhodes "SBCL: A Sanely-Bootstrappable Common Lisp" (LNCS 5146, 2008)
+の 5-stage genesis を NeLisp に transfer (=docs/03-architecture.org §1=):
+
+| Rhodes stage | NeLisp 類比                                                       |
+|--------------+-------------------------------------------------------------------|
+| host-1       | Host Emacs が NeLisp cross-compiler (=nelisp-xc=) を byte-compile   |
+| target-1     | *残余 C (syscall/allocator/GC inner/coding) を build* ← 本 Phase 7+ |
+| host-2       | NeLisp xc で NeLisp source 再コンパイル、独自 bytecode 生成          |
+| genesis-2    | target image を Emacs buffer/vector で構築、不可 action を defer    |
+| target-2     | cold-init (最難)、warm phase で system load                         |
+
+本 Phase 7+ は *target-1 stage に相当* = "残余 C 4 核 build" の実装。
+target-2 cold-init の困難は *Phase 5-B/5-C で既に確立済の elisp 実装*
+を target binary 上で再現可能なため、SBCL が 25 年支払ったコストの
+大部分を NeLisp は支払わない。
+
+** 1.5 NeLisp 独自 adaptation gap (Phase 7+ で扱うべき 3 点)
+
+=docs/03-architecture.org §1 wave 2 audit= で判明:
+
+1. =eval-when= 非存在 → phase flag (=nl-phase=) / file 分離で代替
+2. =make-load-form= 非存在 → =print/read= 組合せ or 独自 encoder 設計
+3. Buffer-centric primitive の扱い → cross-compiler image での
+   exclude/stub/carry 設計
+
+これら 3 点は本 Phase 7+ の §3 sub-phase で具体化する。
+
+* §2 LOCKED decisions (user signoff 待ち、全 default = 第一推奨)
+
+各項目に *推奨 default* を提示。user signoff で全 default を採用する
+場合は "§2 全 11 項目 default 採用" の一行 LOCK で完了 (=Doc 13/14/18=
+と同 pattern)。
+
+** 2.1 Phase 番号付け [推奨 = B]
+
+NeLisp の現 Phase は 5-F (Stage A) + 6.x (Stage D) で進行中。本 phase
+を何と呼ぶか:
+
+| 候補 | 番号付け                       | 利点                                       |
+|------+--------------------------------+--------------------------------------------|
+| A    | Phase 7 単独                   | シンプル                                   |
+| B    | Phase 7.0/7.1/.../7.4 (sub分割) | 4 核個別管理、SHIPPED 刻みやすい *推奨*    |
+| C    | Phase 5-G + 5-H + ... (5 系列拡張) | 連続性                                     |
+
+*推奨 B 理由*: 4 核は logical に独立 (syscall / allocator / GC / coding)。
+sub-phase 分割で各核の SHIPPED を独立に gate 可能、Phase 4.1〜4.7 と
+同 pattern。
+
+** 2.2 4 核 implementation 言語 [推奨 = B Rust]
+
+最重要決定。残余 C 4 核を何で書くか:
+
+| 候補 | 言語     | 利点                                                          | 欠点                                                  |
+|------+----------+---------------------------------------------------------------+-------------------------------------------------------|
+| A    | C        | Emacs C / SBCL precedent と直接 align、移植性最大、依存 0     | safety / build complexity 高                          |
+| B    | *Rust*   | safety, Cargo 単一 build、modern toolchain *推奨*             | LLVM 依存、binary 大、bootstrap 複雑                  |
+| C    | Zig      | C ABI compat + safety、cross-comp first-class                 | community 小、stability 中、知名度低                  |
+| D    | mixed    | 核ごとに最適 (e.g. allocator = C、GC = Rust)                  | 複雑度爆発、build 系 multi、debug 困難                |
+
+*推奨 B (Rust) 理由*:
+- safety = NeLisp が *研究 / dev tool* なので memory bug 即 trace 可能性
+  が valuable (gdb で C の core dump 解析より rust panic 解析が短時間)
+- Cargo single command = build / cross-comp / test / fmt が統一
+- C ABI 互換 (=#[repr(C)]=) で Emacs ABI 継承 LOCK 維持
+- bootstrap 複雑度: Rust 自身も Rust-on-OCaml/C bootstrap 経由なので
+  「依存少なく」とは言えないが、Rhodes の "host CL は何でも" 思想を
+  そのまま transfer すれば OK (NeLisp host = Emacs であり Rust 自体の
+  bootstrap 問題は NeLisp の問題ではない)
+
+代替: Zig (候補 C) は Rust より新しく軽量、stage-d-v2.0 リリース時に
+"Zig + NeLisp" の対が話題性高いが、project complexity を考えると Rust
+の community 厚さが優位。
+
+** 2.3 Bootstrap 戦略 [推奨 = A Rhodes 5-stage 完全踏襲]
+
+| 候補 | 戦略                                  | 利点                                  |
+|------+---------------------------------------+---------------------------------------|
+| A    | Rhodes 5-stage 完全踏襲 *推奨*         | 学術的に確立、SBCL 25 年実績          |
+| B    | Direct compile (cross-comp なし)      | シンプル、しかし self-host fixpoint 不可 |
+| C    | Hybrid (host-1/target-1 のみ Rhodes、host-2 以降簡略) | 折衷案                                |
+
+*推奨 A 理由*:
+- Phase 2 self-host 達成済 = Rhodes stage host-1/target-1 の概念は
+  既に NeLisp 内で機能している
+- target-1 stage = 本 Phase 7+ で書く 4 核 = 後続 stage が自動的に
+  動作する (Phase 5-B/5-C の Elisp 実装が target-2 上で動く)
+- SBCL の 25 年間の bootstrap pitfall (cold-init 順序 / =eval-when=
+  phase 制御 etc) を全て継承可能 (=docs/papers/rhodes-2008-sbcl.org=
+  詳細 reading 済)
+
+** 2.4 4 核 module 着手順序 [推奨 = A syscall → allocator → GC → coding]
+
+| 候補 | 順序                                              | 理由                                                |
+|------+---------------------------------------------------+-----------------------------------------------------|
+| A    | *syscall → allocator → GC inner → coding* *推奨*  | 依存順 (syscall は最基礎、coding は最応用)          |
+| B    | allocator → GC → syscall → coding                 | memory 系から先                                     |
+| C    | coding → syscall → allocator → GC                 | I/O 系から先 (実用 demo 早く出る)                   |
+
+*推奨 A 理由*:
+- syscall = OS との接点で他 3 核がほぼ全て依存 (mmap で allocator、
+  brk で GC、read/write で coding)
+- coding は応用層 = syscall/allocator が動かないと test できない
+
+各 sub-phase の MVP scope は §3 で具体化。
+
+** 2.5 build 系 [推奨 = A Cargo 単一]
+
+| 候補 | 系統                            | 利点                                                |
+|------+---------------------------------+-----------------------------------------------------|
+| A    | *Cargo 単一* *推奨*              | Rust crate 1 つ、=cargo build= で完結               |
+| B    | Cargo + Make 混在                | NeLisp 既存 Makefile と統合                         |
+| C    | Bazel / Buck                    | scaling、ただし dev 1 名では oversize               |
+
+*推奨 A 理由*: Rust 採用 (§2.2) 前提で Cargo 一択が rational。NeLisp
+既存 Makefile (=make test= / =make stage-d-tarball=) は別系として残し、
+本 phase 7+ は =cargo= で完結、tarball に binary をコピーする形で
+Stage D と統合。
+
+** 2.6 distribution surface [推奨 = B per-OS multi binary]
+
+| 候補 | 形態                                  | 利点                                       |
+|------+---------------------------------------+--------------------------------------------|
+| A    | Linux 単独 binary                     | scope 最小、release 早い                   |
+| B    | *Linux + macOS + Windows*             | non-Emacs user 全 OS 対応 *推奨*           |
+| C    | Linux/macOS は Phase 7、Windows は Phase 8 | 段階的、Windows complexity 後送り          |
+
+*推奨 B 理由*:
+- Stage D Phase 6.4 で Windows wrapper + path 拡張済 (=bin/anvil.cmd=
+  + =anvil_lisp_dir= USERPROFILE candidate)
+- Rust の Windows-MSVC / macOS / Linux クロスコンパイルは Cargo で
+  即対応可能
+- non-Emacs user 全層を 1 release で取り込めると announcement 価値最大
+
+** 2.7 test 戦略 [推奨 = A multi-layer]
+
+| 候補 | layers                                                                | 利点                                       |
+|------+-----------------------------------------------------------------------+--------------------------------------------|
+| A    | *NeLisp ERT (内部) + Rust unit test (核内) + smoke (E2E binary) 3 層* | 完全 *推奨*                                |
+| B    | NeLisp ERT のみ                                                       | 既存資産再利用、ただし C 側 bug 発見不可   |
+| C    | Rust test + smoke のみ                                                | 新規重視、ERT 既存資産無駄                 |
+
+*推奨 A 理由*:
+- 核内 hot loop は Rust unit test (cargo test) で最速 verify
+- NeLisp 動作は ERT で既に 1327 件積上げ済、Phase 7+ で壊さない validation
+- E2E smoke = =./anvil mcp serve= で initialize / tools/list が
+  Emacs 不在環境で動作確認
+
+** 2.8 Stage D との関係 [推奨 = A 共存 + binary 上書き optional]
+
+| 候補 | 関係                                                                | 利点                                       |
+|------+---------------------------------------------------------------------+--------------------------------------------|
+| A    | *Stage D Phase 6.1 (anvil-lib bundle) はそのまま、Phase 7+ binary を別 distribution として add* | 互換 100%、リリース別管理 *推奨*           |
+| B    | Stage D Phase 6.1 を deprecate、Phase 7+ binary に統合              | clean、ただし Phase 6.1 build / user 失う  |
+| C    | 同 tarball に両方同梱 (Emacs build + standalone binary)             | tarball 巨大、選択制で confuse             |
+
+*推奨 A 理由*:
+- =stage-d-v0.x= シリーズ = Stage D Phase 6.1 layout (= 現状 624K tarball)
+- =stage-d-v2.0= シリーズ = Phase 7+ standalone binary (= Rust crate
+  からの cross-comp、~5-15MB binary 想定)
+- user は OS install policy / Emacs install policy で選択
+
+** 2.9 Public 告知 timing [推奨 = A v1.0 完遂後即時]
+
+=feedback_nelisp_announcement_standalone_gate.md=:
+- "NeLisp 公開告知は v1.0 condition #4 (4 核 C runtime) 達成まで保留"
+
+| 候補 | timing                                          | 利点                                       |
+|------+-------------------------------------------------+--------------------------------------------|
+| A    | *Phase 7+ 4 核全 SHIPPED + standalone binary E2E 検証後即時* *推奨* | 元 strategy 通り、爆発的普及狙い           |
+| B    | Phase 7.1 (syscall) SHIPPED 時点で early access | 早期 feedback、ただし未完成感              |
+| C    | Phase 7+ 完遂 + 1 ヶ月の dogfooding 後          | 安全運転、ただし機会損失                   |
+
+*推奨 A 理由*: Phase 7+ 完遂 = standalone binary 動作確認 = 公開告知
+gate 達成。dogfooding は Stage D Phase 6.1 で既に済 (anvil 経由)。
+
+** 2.10 既存 Phase 5-B / 5-C との互換 [推奨 = A 不変保証]
+
+Phase 7+ 4 核 binary 上で既存 Phase 5-B/5-C/Stage A の Elisp 実装が
+動作 (= target-2 cold-init 後に現 nelisp.el / nelisp-buffer.el /
+nelisp-eventloop.el / etc が load 完了し、=make test= 1327/1333 が
+緑になる) ことを保証:
+
+| 候補 | 互換policy                                                | 利点                                                |
+|------+-----------------------------------------------------------+-----------------------------------------------------|
+| A    | *binary 上で全既存 ERT 1327/1333 緑* *推奨*                | 完全 regression-free                                |
+| B    | core 機能のみ (~80% 緑)                                   | scope 縮小                                          |
+| C    | Phase 7+ 用 ERT subset を新設                             | Phase 5-B/5-C ERT 古いとみなして scope 外          |
+
+*推奨 A 理由*: Phase 7+ は target-1 stage = "container" の交換であり、
+container 内の Elisp 実装は不変。ERT が同等動作するのが正しい。1327/1333
+緑 (skip 6 = live-only) を Phase 7+ 完遂 gate に含む。
+
+** 2.11 stage-d-v2.0 release tag + GitHub Release [推奨 = B Phase 7+ 完遂時]
+
+| 候補 | timing                              | 利点                                       |
+|------+-------------------------------------+--------------------------------------------|
+| A    | Phase 7.1 完遂時 stage-d-v2.0-alpha | 早期 stake、ただし alpha 4 核混在で confuse |
+| B    | *Phase 7+ 全 SHIPPED 時 stage-d-v2.0* *推奨* | 完遂表示、自然リリース cycle               |
+| C    | Phase 7+ + Phase 8 (extras) 後      | 過剰待機、機会損失                         |
+
+*推奨 B 理由*: =stage-d-v0.x= = Phase 6.1 (Emacs 必要) / =stage-d-v2.0=
+= Phase 7+ (Emacs 不要) の意味的飛躍を tag で表現。
+
+* §3 Sub-phase breakdown (推奨 §2 全 default 採用前提)
+
+** Phase 7.0 — scaffold + cross-compiler skeleton (1-2 ヶ月)
+
+- =Cargo.toml= 新規 / =cargo new --lib nelisp-runtime=
+- 4 核 mod: =mod syscall; mod allocator; mod gc; mod coding;=
+- =build.rs= で NeLisp .el を pre-compile (host-1 stage)
+- C ABI =#[repr(C)]= struct で Emacs Lisp_Object 互換
+- =bin/anvil-runtime= 仮 main で =initialize= reply のみ
+- ERT: =test/nelisp-runtime-test.el= +5 (smoke 起動 / abi compat)
+
+** Phase 7.1 — syscall core (2-3 ヶ月)
+
+- file I/O primitives: =open / read / write / close / stat / mkdir /
+  rename / unlink / readlink=
+- process primitives: =fork / exec / wait / signal / kill=
+- time: =gettimeofday / clock_gettime=
+- network: =socket / bind / connect / accept / recv / send=
+- =mod syscall= = ~1000-2000 LOC Rust + 数十 unit test
+- NeLisp 側 nelisp-process / nelisp-network が syscall 経由で動く
+
+** Phase 7.2 — allocator core (1-2 ヶ月)
+
+- =mmap= ベース page-grained allocator (4KB / 8KB page)
+- 既存 Phase 3c GC algorithm の memory layout 維持
+- per-thread allocator (Phase 4 actor / future thread 対応)
+- =mod allocator= = ~500-1000 LOC + bench
+- regression: NeLisp ERT 1327/1333 緑 (allocator 切替後)
+
+** Phase 7.3 — GC inner core (2-3 ヶ月)
+
+- mark-sweep hot loop (Phase 3c で algorithm 確立済) の Rust port
+- write barrier (generational GC への足場)
+- root scanning (stack / global / actor mailbox)
+- =mod gc= = ~800-1500 LOC + GC stress test
+- 並行性: actor (Phase 4) との yield 整合 (=yield-during-mark=)
+
+** Phase 7.4 — coding core (1-2 ヶ月)
+
+- UTF-8 / Latin-1 / Shift-JIS / EUC-JP encode/decode
+- char ↔ byte 変換 = NeLisp string primitive 互換
+- multibyte buffer ↔ external bytes
+- =mod coding= = ~500-800 LOC + unit test
+- regression: 日本語含む ERT (=anvil-org-index= related etc) 緑
+
+** Phase 7.5 — integration + standalone E2E (1 ヶ月)
+
+- =./anvil-runtime mcp serve= で Emacs 不在で initialize / tools/list
+- =./anvil-runtime --self-test= で NeLisp ERT 1327/1333 緑
+- Stage D tarball = =stage-d-v2.0= layout で binary 同梱
+- README で OS install instructions
+- GitHub Release v1.0.0 + 公開告知 (Reddit / HN / blog)
+
+** 工数見積 (合計)
+
+| Phase | 想定 LOC (Rust)        | 想定期間 |
+|-------+------------------------+----------|
+| 7.0   | ~200 (skeleton)        | 1-2 ヶ月 |
+| 7.1   | ~1000-2000 (syscall)   | 2-3 ヶ月 |
+| 7.2   | ~500-1000 (allocator)  | 1-2 ヶ月 |
+| 7.3   | ~800-1500 (GC)         | 2-3 ヶ月 |
+| 7.4   | ~500-800 (coding)      | 1-2 ヶ月 |
+| 7.5   | ~200 (glue) + release  | 1 ヶ月   |
+| 合計  | *~3000-5000 LOC Rust*  | *8-13 ヶ月* |
+
+memory =project_nelisp.md= の "6-18 ヶ月" 見積と整合 (中央値 ~12 ヶ月)。
+
+* §4 衝突回避 (Stage A / Stage D / anvil.el との並行)
+
+** 4.1 Stage A 本線との関係
+
+Stage A (= NeLisp Elisp substrate) は Phase 5-F まで SHIPPED 済。
+本 Phase 7+ は target-1 (4 核 C runtime build) のみで Stage A の
+Elisp 実装は不変 = 並行可能。
+
+ただし Phase 5-B/5-C で host primitive を借用している箇所
+(=insert-file-contents= 等 host Emacs C primitive) が Phase 7+ binary
+上で動作するためには nelisp-syscall (Phase 7.1) で再実装必要。
+これは Phase 7.1 の scope 内。
+
+** 4.2 Stage D Phase 6.1 (anvil-lib) との関係
+
+§2.8 推奨 A 通り共存。Stage D v0.x シリーズ = 現状継続、Stage D v2.0
+シリーズ = Phase 7+ binary。tarball layout は別、両方とも =bin/anvil=
+launcher が前面 (内部 dispatch で binary を選択)。
+
+** 4.3 anvil.el との関係
+
+architecture α delegate chain は Phase 7+ でも保持:
+- anvil-XXX (Emacs Lisp side、anvil.el repo)
+- nelisp-XXX (NeLisp Elisp side、nelisp main repo)
+- *Phase 7+ runtime* (Rust crate、新 repo or src/runtime/ subdir)
+
+anvil-XXX → nelisp-XXX → (Phase 7+ binary 上で動作) の順序。anvil-* tools
+は変わらず、container だけ変わる (Emacs → standalone binary)。
+
+** 4.4 並行 dev session
+
+Phase 7+ は scope 大なので、並行 session 2-3 並列で sub-phase 担当:
+- session-A: Phase 7.0 + 7.5 (orchestrator)
+- session-B: Phase 7.1 (syscall) + 7.4 (coding)
+- session-C (if available): Phase 7.2 (allocator) + 7.3 (GC)
+
+各 session は独立 worktree (=/tmp/nelisp-phase7-X-wt=) + 独立 feat
+branch。Cargo workspace で crate 分割すれば conflict 0。
+
+* §5 関連 doc
+
+- =docs/01-related-work.org= — Lisp implementation lineage
+- =docs/02-scoping.org§0= — AI-critical path 5 領域 + 残 C SBCL 4 核
+- =docs/03-architecture.org§1= — Bootstrap A LOCKED + Rhodes 5-stage
+- =docs/04-concurrency.org= — actor / STM / thread (Phase 4 SHIPPED)
+- =docs/05-roadmap.org= — Phase ロードマップ全体
+- =docs/papers/rhodes-2008-sbcl.org= — SBCL methodology paper notes
+- =docs/design/13-phase5b-core-substrate.org= — Phase 5-B SHIPPED
+- =docs/design/14-phase5c-network-process.org= — Phase 5-C SHIPPED
+- =docs/design/18-stage-d-standalone.org= — Stage D 全 phase SHIPPED
+
+** 関連 memory
+
+- =project_nelisp.md= — v1.0 完遂条件 3/4 達成、本 phase で #4
+- =project_stage_d_standalone.md= — Phase 6.1 SHIPPED + Phase 7+ 残
+- =feedback_nelisp_announcement_standalone_gate.md= — 公開告知保留方針
+  (本 phase 完遂で解除)
+- =feedback_anvil_uses_nelisp_architecture.md= — architecture α
+- =feedback_canonical_byte_compile_stale_elc.md= — worktree 規律
+- =feedback_git_worktree_parallel_sessions.md= — 並行 session 必須
+
+* §6 想定リスク
+
+** 6.1 cold-init の困難 (Rhodes §3.2 "most fragile")
+
+SBCL の 25 年で最も繰り返し fix されてきた領域。NeLisp の優位:
+*host Emacs debugger が cold-init 中に使える* (Elisp 実装ゆえ)。
+ただし target-2 stage を Rust binary で実行する時点では Emacs が
+無いため、cold-init 中の crash は Rust gdb / printf debug に頼る。
+Phase 7.0 で *cold-init 用 trace 機構* を最初に整備するべし。
+
+** 6.2 言語 lock-in (Rust 採用後の戦略変更困難)
+
+§2.2 推奨 B (Rust) を LOCK すると Phase 7+ 着手後は変更困難。
+mitigation: Phase 7.0 scaffold で C ABI =#[repr(C)]= 厳守、Rust 部分
+は *別 crate* 化、最悪 C / Zig 移植が可能な layer 分離。
+
+** 6.3 工数 6-18 ヶ月の overrun (典型 software engineering risk)
+
+mitigation:
+- sub-phase 単位 (7.0/7.1/.../7.5) で SHIPPED gate (=Doc 13 と同)
+- 4 ヶ月 milestone で再 estimate (= Phase 7.1 syscall SHIPPED 時点
+  での残工数見直し)
+- 6 ヶ月以内 overrun 許容 (= 12 → 18 ヶ月)、それ超で scope 削減判断
+
+** 6.4 user 単独 dev capacity
+
+Phase 7+ は集中度高い work。memory =user_collaboration_philosophy.md=
+通り user は AI の自己拡張プロセス自体を価値とする = Claude による
+sub-phase 並行 dispatch が work model。session 並行性 + worktree 隔離
++ design doc LOCK の規律 (本 doc + Doc 13/14/18 pattern) で進行管理。
+
+** 6.5 既存 Stage D Phase 6.1 user の混乱
+
+stage-d-v0.x ↔ stage-d-v2.0 シリーズ並行 (§2.8 推奨 A) で:
+- v0.x = Emacs 必要 / smaller tarball (~624K) / dev / power user 向け
+- v2.0 = Emacs 不要 / larger binary (~5-15MB) / non-Emacs user 向け
+
+README で位置づけ明確化必須。
+
+* §7 完遂 gate
+
+** Phase 7.X (各 sub-phase) SHIPPED 条件
+
+各 sub-phase で:
+1. =cargo build --release= 緑
+2. =cargo test --all= 緑
+3. NeLisp ERT 1327/1333 緑 (regression-free 維持)
+4. =cargo clippy= 0 warning
+5. =make test= (NeLisp 既存 Makefile) 緑
+6. design doc §3 の該当 sub-phase に SHIPPED stamp
+7. main へ feat branch =--no-ff= merge
+
+** Doc 27 完全 close 条件 (Phase 7.0/.1/.../.5 全 SHIPPED)
+
+1. =./anvil-runtime mcp serve= が Emacs 不在環境で動作確認
+   (Linux / macOS / Windows の 3 OS で各 1 回)
+2. =./anvil-runtime --self-test= で NeLisp ERT 1327/1333 緑
+3. =stage-d-v2.0= release tag push + GitHub Release publication
+4. README + announcement post 公開
+5. memory =feedback_nelisp_announcement_standalone_gate.md= の
+   "保留" → "達成" 状態移行
+6. =project_nelisp.md= description = v1.0 完遂 4/4 達成版に update
+
+** = NeLisp v1.0 達成
+
+本 doc の完全 close = NeLisp project の v1.0 milestone 達成。
+公開告知ゲート解除、announcement / Reddit / HN / blog post の機が熟す。
+
+* §8 user signoff section
+
+** 全 default 採用 LOCK 文 (推奨)
+
+#+begin_quote
+本 doc §2 全 11 項目 (2.1〜2.11) の推奨 default をそのまま採用、
+Phase 7+ 着手 LOCK 状態。実装は Phase 7.0 scaffold から
+session-A 主導で進行、必要に応じ session-B/C 並行。
+#+end_quote
+
+** 個別変更を希望する場合
+
+各 §2.X について別 candidate (A/B/C) を選んで明記:
+- 例: "§2.2 = Zig (候補 C) を採用、§2.5 = B (Cargo + Make 混在)"
+
+** 再議論を希望する項目
+
+各 §2.X / §3 / §6 で詳細議論を希望する箇所を明記。
+
+* §9 next action (signoff 後)
+
+1. user signoff (本 doc §8 で LOCK or 変更)
+2. design doc top =STATE= を =DRAFT= → =LOCKED= に更新
+3. Phase 7.0 scaffold 着手 (新 worktree、=Cargo.toml= + 4 mod skeleton)
+4. =cargo new=, ERT smoke +5、design doc §3 7.0 を SHIPPED stamp
+5. session-B 並行 dispatch 検討 (Phase 7.1 syscall = 別 worktree)
+
+以上、user signoff を待つ。
