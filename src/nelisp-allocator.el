@@ -1,4 +1,4 @@
-;;; nelisp-allocator.el --- Phase 7.2.1 bump allocator nursery + heap-region registry  -*- lexical-binding: t; -*-
+;;; nelisp-allocator.el --- Phase 7.2 allocator (nursery + tenured + per-type pool)  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -1086,6 +1086,681 @@ for live-block counts once the heap walker can tell the two apart."
           :free free
           :utilization-percent utilisation
           :size-class-distribution dist)))
+
+;;; ----------------------------------------------------------------
+;;; Phase 7.2.3 — per-type pool optimization + bulk API + alloc-stats
+;;; ----------------------------------------------------------------
+;;
+;; Doc 29 v2 LOCKED 2026-04-25 §3.3 sub-phase 7.2.3 scope:
+;;   - per-type fixed-size pool (cons-pool / closure-pool) with
+;;     per-block bitmap free tracking (Doc 29 §2.5 — Emacs alloc.c
+;;     `cons_block' / `string_block' precedent).  Faster than the
+;;     size-class free-list for cells whose size is constant.
+;;   - bulk API (`nelisp-allocator-bulk-cons' /
+;;     `nelisp-allocator-bulk-free' /
+;;     `nelisp-allocator-bulk-alloc-string') so `mapcar'-style hot
+;;     loops compress N alloc calls into one bitmap scan + one
+;;     free-list pop sweep.
+;;   - alloc-stats expansion (Doc 29 §2.10 推奨 A —
+;;     `nelisp-allocator-stats-snapshot' / `-stats-reset' /
+;;     `-profile-run' Lisp API).  Production builds keep stats off
+;;     (defcustom default nil) so the per-call overhead lives only
+;;     in dev / `--alloc-profile' subcommands.
+;;
+;; Phase 7.1 native compile integration: the bitmap-pop primitive
+;; and `cons-pool-alloc' fast path are emitted as `defsubst' so
+;; the JIT inliner can fuse them into the calling function (Doc 29
+;; §2.7 推奨 A — per-type API + `declare (inline t)').  The
+;; `defsubst' choice is deliberate over `cl-defun' + inline-pragma
+;; because it both byte-compiles and native-compiles cleanly.
+;;
+;; Out of scope (Phase 7.5+):
+;;   - real `mmap'-backed cell storage (the simulator stores cells
+;;     in Emacs `bool-vector'-tracked free state only)
+;;   - per-thread arena pools (single-thread MVP, Doc 29 §2.9)
+;;   - integration of `--alloc-profile' into the
+;;     `nelisp-runtime exec-bytes' subcommand (Phase 7.5 FFI bridge)
+;;
+;; Design notes (simulator path):
+;;   - `nelisp-allocator--cons-block' is a chained list of
+;;     fixed-cell-size blocks.  Each block carries a `bool-vector'
+;;     `free-bitmap' (t = free, nil = allocated) and a
+;;     `free-count' counter so empty / full checks are O(1) without
+;;     scanning the bitmap.  Allocation walks `pool-blocks' looking
+;;     for the first block with `free-count > 0', pops a free bit,
+;;     and returns base + offset.
+;;   - The pool keeps `addr->block' map so `cons-pool-free' can find
+;;     the owning block in O(1) without scanning every block to
+;;     locate the bitmap that owns ADDR.
+;;   - `nelisp-allocator-stats-enabled' guards every counter mutation
+;;     so the production build (default nil) pays a single boolean
+;;     test in the hot path — well under the 5 % overhead budget that
+;;     Doc 29 §2.10 sets for instrumentation.
+
+;;; Phase 7.2.3 — per-type pool customization -----------------------
+
+(defcustom nelisp-allocator-cons-block-size (* 64 1024)
+  "Cons-pool block size in bytes (default 64 KiB = ~4096 cons cells).
+
+Doc 29 v2 §2.5 fixed-size pool: cons cells live in dedicated blocks
+whose every slot is exactly `nelisp-allocator--cons-size' (= 16
+byte) wide.  Per-block free-bitmap tracking is faster than a
+size-class free-list for fixed-size objects (Emacs alloc.c
+precedent).
+
+Must be a positive multiple of `nelisp-allocator--cons-size' so
+every cell lands on a 16-byte boundary; non-multiples are rejected
+at `nelisp-allocator-init-cons-pool' time."
+  :type 'integer
+  :group 'nelisp-allocator)
+
+(defcustom nelisp-allocator-closure-block-size (* 64 1024)
+  "Closure-pool block size in bytes (default 64 KiB).
+
+Doc 29 v2 §2.5 fixed-size pool: closures with the canonical 32-byte
+header layout (`nelisp-allocator--closure-header-size') share the
+same per-block bitmap optimisation as cons cells.  Variable-arity
+closures with extra upvalues fall back to the `nursery-alloc'
+generic path."
+  :type 'integer
+  :group 'nelisp-allocator)
+
+(defcustom nelisp-allocator-stats-enabled nil
+  "Non-nil to record per-call allocation statistics.
+
+Doc 29 v2 §2.10 推奨 A — production runs with stats *off* (default
+nil) so the hot path pays only one boolean test per alloc / free.
+Dev builds and `--alloc-profile' subcommands flip this to t before
+the workload starts and read the counters out via
+`nelisp-allocator-stats-snapshot'.
+
+Overhead budget: ~5-10 % when enabled (per-family hash lookup +
+plist update per alloc / free).  Disabled = single `if' branch
+guarded out by the byte-compiler / native compiler."
+  :type 'boolean
+  :group 'nelisp-allocator)
+
+;;; Phase 7.2.3 — cons-pool block struct ----------------------------
+
+(cl-defstruct (nelisp-allocator--cons-block
+               (:constructor nelisp-allocator--cons-block-make)
+               (:copier nil))
+  "One block of fixed-size cons cells with per-cell free bitmap.
+
+Doc 29 v2 §2.5 fixed-size pool unit.  A cons-pool is a chained
+list of these blocks; allocation walks the chain until a block
+with `free-count > 0' is found and pops its first free bit.
+
+Slots:
+  REGION       — `nelisp-heap-region' for this block's address range.
+  CELLS-BASE   — first cell address (= region.start).
+  CELLS-COUNT  — number of cells in the block (= block-bytes / cell-size).
+  CELL-SIZE    — bytes per cell (= 16 for cons-pool, 32 for closure-pool).
+                 Stored on the block so `--bitmap-pop' / `--bitmap-free'
+                 do not need a back-pointer to the owning pool.
+  FREE-BITMAP  — `bool-vector' of length CELLS-COUNT, t = free, nil =
+                 allocated.  Initialised to all-t at block birth.
+  FREE-COUNT   — number of t bits in FREE-BITMAP, kept in sync with
+                 every alloc / free so empty / full checks are O(1).
+  NEXT-BLOCK   — next block in the pool's chain, or nil at the tail."
+  (region nil :read-only t)
+  (cells-base 0 :read-only t)
+  (cells-count 0 :read-only t)
+  (cell-size 0 :read-only t)
+  (free-bitmap nil)
+  (free-count 0)
+  (next-block nil))
+
+(cl-defstruct (nelisp-allocator--cons-pool
+               (:constructor nelisp-allocator--cons-pool-make)
+               (:copier nil))
+  "Cons-pool state — chained `--cons-block' list + addr-to-block map.
+
+Slots:
+  BLOCKS         — head of the cons-block chain (a
+                   `nelisp-allocator--cons-block' or nil for an
+                   empty pool, though `init-cons-pool' always
+                   primes at least one block).
+  ADDR-TO-BLOCK  — hash addr -> `--cons-block' so `cons-pool-free'
+                   locates the owning bitmap in O(1).
+  CELL-SIZE      — `nelisp-allocator--cons-size' = 16, kept here so
+                   `closure-pool' can share the same struct with a
+                   different cell-size value.
+  BLOCK-SIZE     — bytes per block, taken from the defcustom at init.
+  FAMILY         — `cons-pool' or `closure-pool'."
+  (blocks nil)
+  (addr-to-block (make-hash-table :test 'eql))
+  (cell-size 0 :read-only t)
+  (block-size 0 :read-only t)
+  (family 'cons-pool :read-only t))
+
+(defvar nelisp-allocator--current-cons-pool nil
+  "Process-wide active cons-pool.
+
+`nelisp-allocator-init-cons-pool' replaces this binding; ERT
+fixtures use `let'-binding to isolate per-test state.")
+
+(defvar nelisp-allocator--current-closure-pool nil
+  "Process-wide active closure-pool.
+
+Mirrors `nelisp-allocator--current-cons-pool' for the
+`closure-pool' family.  `nelisp-allocator-init-closure-pool'
+replaces this binding; tests `let'-bind to isolate.")
+
+;;; Phase 7.2.3 — alloc-stats counters ------------------------------
+
+(defvar nelisp-allocator--stats-counters
+  (make-hash-table :test 'eq)
+  "Family symbol -> plist of per-family allocation counters.
+
+Plist shape:
+  (:alloc-count N
+   :alloc-bytes N
+   :free-count N
+   :free-bytes N
+   :promote-count N
+   :promote-bytes N
+   :bulk-alloc-count N
+   :bulk-alloc-cells N)
+
+`nelisp-allocator-stats-enabled' guards every mutation so this
+hash table stays empty in production runs.  ERT fixtures and
+`--alloc-profile' subcommands flip the gate before the workload.")
+
+(defun nelisp-allocator--stats-bump (family key delta)
+  "Add DELTA to FAMILY's counter at KEY.
+
+No-op when `nelisp-allocator-stats-enabled' is nil — the
+byte-compiler short-circuits the entire body to a 1-instruction
+boolean test in that hot-path."
+  (when nelisp-allocator-stats-enabled
+    (let* ((plist (gethash family nelisp-allocator--stats-counters))
+           (cur (or (plist-get plist key) 0)))
+      (puthash family
+               (plist-put (or plist (list)) key (+ cur delta))
+               nelisp-allocator--stats-counters))))
+
+(defun nelisp-allocator-stats-reset ()
+  "Reset every per-family counter to 0.
+
+`nelisp-allocator-stats-enabled' state is *not* changed — callers
+flip the gate independently.  Returns nil."
+  (clrhash nelisp-allocator--stats-counters)
+  nil)
+
+(defun nelisp-allocator-stats-snapshot ()
+  "Return an alist (FAMILY . PLIST) of every recorded counter.
+
+The snapshot is freshly allocated; callers may mutate it freely.
+Families with no recorded events are omitted (= absent from the
+hash table).  Order: `eq'-hash insertion order (Emacs 27+ stable)."
+  (let (out)
+    (maphash (lambda (family plist)
+               (push (cons family (copy-sequence plist)) out))
+             nelisp-allocator--stats-counters)
+    (nreverse out)))
+
+(defun nelisp-allocator-profile-run (thunk &optional output-file)
+  "Run THUNK with stats enabled, dump snapshot to OUTPUT-FILE on exit.
+
+Doc 29 v2 §2.10 推奨 A — Lisp API entry point for the
+`--alloc-profile' subcommand.  Phase 7.5 will integrate this into
+`nelisp-runtime exec-bytes --alloc-profile <file>' once the FFI
+bridge is wired; until then callers invoke this directly.
+
+Behaviour:
+  1. Save the current `nelisp-allocator-stats-enabled' state.
+  2. Reset every counter and enable stats.
+  3. Call THUNK with no arguments.
+  4. Snapshot the counters (whether THUNK returned or signalled).
+  5. Restore the prior `stats-enabled' state and reset counters
+     so the post-run process is back to its pre-call state.
+  6. Write the snapshot to OUTPUT-FILE (`prin1' form, one alist
+     per file) when supplied; otherwise return the snapshot.
+
+Returns the snapshot (alist).  Signals propagating from THUNK are
+re-raised after the cleanup runs in an `unwind-protect' so the
+process never leaks an enabled-stats state."
+  (let ((prior-enabled nelisp-allocator-stats-enabled)
+        (snapshot nil))
+    (unwind-protect
+        (progn
+          (nelisp-allocator-stats-reset)
+          (setq nelisp-allocator-stats-enabled t)
+          (funcall thunk)
+          (setq snapshot (nelisp-allocator-stats-snapshot)))
+      ;; Capture even on signal, then restore.
+      (unless snapshot
+        (setq snapshot (nelisp-allocator-stats-snapshot)))
+      (setq nelisp-allocator-stats-enabled prior-enabled)
+      (nelisp-allocator-stats-reset))
+    (when output-file
+      (with-temp-file output-file
+        (let ((print-length nil)
+              (print-level nil))
+          (prin1 snapshot (current-buffer))
+          (insert "\n"))))
+    snapshot))
+
+;;; Phase 7.2.3 — bitmap primitives (defsubst hot path) -------------
+
+(defsubst nelisp-allocator--bitmap-pop (block)
+  "Pop a free cell index from BLOCK's free-bitmap.
+
+Returns the cell's allocated address (cells-base + idx * cell-size)
+or nil when the block is full (= free-count = 0).  Updates
+free-bitmap[idx] = nil and decrements free-count.
+
+Defsubst-inlined so Phase 7.1 native compiler can fuse the bitmap
+scan into the caller — Doc 29 §2.7 推奨 A `declare (inline t)'."
+  (let ((free-count (nelisp-allocator--cons-block-free-count block)))
+    (when (> free-count 0)
+      (let* ((bitmap (nelisp-allocator--cons-block-free-bitmap block))
+             (n (length bitmap))
+             (idx 0)
+             (found nil))
+        (while (and (< idx n) (not found))
+          (if (aref bitmap idx)
+              (setq found idx)
+            (setq idx (1+ idx))))
+        (when found
+          (aset bitmap found nil)
+          (setf (nelisp-allocator--cons-block-free-count block)
+                (1- free-count))
+          (let ((base (nelisp-allocator--cons-block-cells-base block))
+                (cell-size (nelisp-allocator--cons-block-cell-size
+                            block)))
+            (+ base (* found cell-size))))))))
+
+(defsubst nelisp-allocator--bitmap-free (block addr cell-size)
+  "Mark ADDR (size CELL-SIZE) free in BLOCK's bitmap.
+
+Returns t on success, signals if ADDR is already free (double-free
+guard) or out of range."
+  (let* ((base (nelisp-allocator--cons-block-cells-base block))
+         (offset (- addr base))
+         (idx (/ offset cell-size))
+         (bitmap (nelisp-allocator--cons-block-free-bitmap block)))
+    (when (or (< idx 0) (>= idx (length bitmap)))
+      (signal 'nelisp-allocator-error
+              (list "bitmap-free: addr outside block" addr base)))
+    (when (aref bitmap idx)
+      (signal 'nelisp-allocator-error
+              (list "bitmap-free: double free" addr)))
+    (aset bitmap idx t)
+    (setf (nelisp-allocator--cons-block-free-count block)
+          (1+ (nelisp-allocator--cons-block-free-count block)))
+    t))
+
+;;; Phase 7.2.3 — cons-pool init / alloc / free ---------------------
+
+(defun nelisp-allocator--make-cons-block (cell-size block-size family)
+  "Allocate a fresh cons-block (CELL-SIZE wide, BLOCK-SIZE bytes) for FAMILY.
+
+Returns a `nelisp-allocator--cons-block' with all bitmap bits set
+to t and `free-count' = `cells-count'.  The owning region is
+registered in the heap-region table with generation = `nursery'
+and the supplied FAMILY tag."
+  (unless (zerop (% block-size cell-size))
+    (signal 'nelisp-allocator-bad-config
+            (list "cons-block size must divide evenly by cell-size"
+                  block-size cell-size)))
+  (let* ((cells-count (/ block-size cell-size))
+         (region (nelisp-allocator--make-region
+                  block-size 'nursery family))
+         (bitmap (make-bool-vector cells-count t)))
+    (nelisp-allocator--cons-block-make
+     :region region
+     :cells-base (nelisp-heap-region-start region)
+     :cells-count cells-count
+     :cell-size cell-size
+     :free-bitmap bitmap
+     :free-count cells-count
+     :next-block nil)))
+
+(defun nelisp-allocator-init-cons-pool (&optional initial-blocks block-size)
+  "Initialise a fresh cons-pool with INITIAL-BLOCKS pre-allocated blocks.
+
+INITIAL-BLOCKS defaults to 1 (the smallest legal pool — alloc on an
+empty pool would otherwise fault before extending).  BLOCK-SIZE
+defaults to `nelisp-allocator-cons-block-size' (= 64 KiB).
+
+Returns the fresh `nelisp-allocator--cons-pool' and stores it in
+`nelisp-allocator--current-cons-pool'.  Does *not* reset the
+heap-region table — callers managing both nursery + cons-pool +
+tenured at once must order their inits accordingly (production
+flow: init-nursery first to clear table, then cons-pool /
+closure-pool, then tenured)."
+  (let* ((cell-size nelisp-allocator--cons-size)
+         (block-bytes (or block-size nelisp-allocator-cons-block-size))
+         (n (or initial-blocks 1)))
+    (unless (and (integerp block-bytes) (> block-bytes 0)
+                 (zerop (% block-bytes cell-size)))
+      (signal 'nelisp-allocator-bad-config
+              (list "cons-pool block-size must divide evenly by cell-size"
+                    block-bytes cell-size)))
+    (when (or (not (integerp n)) (< n 1))
+      (signal 'nelisp-allocator-bad-config
+              (list "cons-pool initial-blocks must be >= 1" n)))
+    (let* ((pool (nelisp-allocator--cons-pool-make
+                  :blocks nil
+                  :addr-to-block (make-hash-table :test 'eql)
+                  :cell-size cell-size
+                  :block-size block-bytes
+                  :family 'cons-pool))
+           (head nil)
+           (tail nil))
+      (dotimes (_ n)
+        (let ((blk (nelisp-allocator--make-cons-block
+                    cell-size block-bytes 'cons-pool)))
+          (if head
+              (progn
+                (setf (nelisp-allocator--cons-block-next-block tail) blk)
+                (setq tail blk))
+            (setq head blk tail blk))))
+      (setf (nelisp-allocator--cons-pool-blocks pool) head)
+      (setq nelisp-allocator--current-cons-pool pool)
+      pool)))
+
+(defun nelisp-allocator-init-closure-pool (&optional initial-blocks
+                                                     block-size)
+  "Initialise a fresh closure-pool with INITIAL-BLOCKS pre-allocated blocks.
+
+Mirrors `nelisp-allocator-init-cons-pool' but with cell-size =
+`nelisp-allocator--closure-header-size' (= 32 byte).  Returns the
+fresh pool and stores it in
+`nelisp-allocator--current-closure-pool'."
+  (let* ((cell-size nelisp-allocator--closure-header-size)
+         (block-bytes (or block-size nelisp-allocator-closure-block-size))
+         (n (or initial-blocks 1)))
+    (unless (and (integerp block-bytes) (> block-bytes 0)
+                 (zerop (% block-bytes cell-size)))
+      (signal 'nelisp-allocator-bad-config
+              (list "closure-pool block-size must divide evenly by cell-size"
+                    block-bytes cell-size)))
+    (when (or (not (integerp n)) (< n 1))
+      (signal 'nelisp-allocator-bad-config
+              (list "closure-pool initial-blocks must be >= 1" n)))
+    (let* ((pool (nelisp-allocator--cons-pool-make
+                  :blocks nil
+                  :addr-to-block (make-hash-table :test 'eql)
+                  :cell-size cell-size
+                  :block-size block-bytes
+                  :family 'closure-pool))
+           (head nil)
+           (tail nil))
+      (dotimes (_ n)
+        (let ((blk (nelisp-allocator--make-cons-block
+                    cell-size block-bytes 'closure-pool)))
+          (if head
+              (progn
+                (setf (nelisp-allocator--cons-block-next-block tail) blk)
+                (setq tail blk))
+            (setq head blk tail blk))))
+      (setf (nelisp-allocator--cons-pool-blocks pool) head)
+      (setq nelisp-allocator--current-closure-pool pool)
+      pool)))
+
+(defun nelisp-allocator--pool-extend (pool)
+  "Append a fresh block to POOL's chain, return the new block.
+
+Used when `cons-pool-alloc' walks the entire chain and finds every
+block full.  Allocates one more block of POOL's `block-size' for
+POOL's `family' and links it at the tail of the chain."
+  (let* ((cell-size (nelisp-allocator--cons-pool-cell-size pool))
+         (block-bytes (nelisp-allocator--cons-pool-block-size pool))
+         (family (nelisp-allocator--cons-pool-family pool))
+         (new-block (nelisp-allocator--make-cons-block
+                     cell-size block-bytes family))
+         (head (nelisp-allocator--cons-pool-blocks pool)))
+    (if (null head)
+        (setf (nelisp-allocator--cons-pool-blocks pool) new-block)
+      (let ((cur head))
+        (while (nelisp-allocator--cons-block-next-block cur)
+          (setq cur (nelisp-allocator--cons-block-next-block cur)))
+        (setf (nelisp-allocator--cons-block-next-block cur) new-block)))
+    new-block))
+
+(defun nelisp-allocator-cons-pool-alloc (pool)
+  "Allocate one cell from POOL.
+
+Walks POOL's block chain looking for the first block with
+`free-count > 0'; if every block is full, extends the pool with a
+fresh block.  Pops the first free bit, records the
+`addr->block' mapping for O(1) free, bumps the per-family alloc
+stats counter, and returns the allocated cell address.
+
+Hot path: 1 chain walk + 1 bitmap scan + 1 hash-table puthash.
+Phase 7.1 native compile can inline `--bitmap-pop' so the chain
+walk + bitmap scan fuse into ~10-20 machine instructions per
+alloc."
+  (unless (nelisp-allocator--cons-pool-p pool)
+    (signal 'nelisp-allocator-error (list "not a cons-pool" pool)))
+  (let ((cell-size (nelisp-allocator--cons-pool-cell-size pool))
+        (family (nelisp-allocator--cons-pool-family pool))
+        (block (nelisp-allocator--cons-pool-blocks pool))
+        (addr nil))
+    ;; Walk the chain for a non-full block.
+    (while (and block (null addr))
+      (setq addr (nelisp-allocator--bitmap-pop block))
+      (unless addr
+        (setq block (nelisp-allocator--cons-block-next-block block))))
+    ;; Slow path: every block was full -> extend.
+    (unless addr
+      (setq block (nelisp-allocator--pool-extend pool))
+      (setq addr (nelisp-allocator--bitmap-pop block)))
+    (puthash addr block
+             (nelisp-allocator--cons-pool-addr-to-block pool))
+    (nelisp-allocator--stats-bump family :alloc-count 1)
+    (nelisp-allocator--stats-bump family :alloc-bytes cell-size)
+    addr))
+
+(defun nelisp-allocator-cons-pool-free (pool addr)
+  "Return ADDR to POOL's bitmap-tracked free state.
+
+Locates the owning block via POOL's `addr-to-block' map (O(1)),
+flips the bit back to t, and decrements the live count.  Signals
+on double-free or unknown ADDR.  Returns the cell-size that was
+freed."
+  (unless (nelisp-allocator--cons-pool-p pool)
+    (signal 'nelisp-allocator-error (list "not a cons-pool" pool)))
+  (let* ((map (nelisp-allocator--cons-pool-addr-to-block pool))
+         (block (gethash addr map))
+         (cell-size (nelisp-allocator--cons-pool-cell-size pool))
+         (family (nelisp-allocator--cons-pool-family pool)))
+    (unless block
+      (signal 'nelisp-allocator-error
+              (list "cons-pool-free: addr never alloc'd from pool"
+                    addr)))
+    (nelisp-allocator--bitmap-free block addr cell-size)
+    (remhash addr map)
+    (nelisp-allocator--stats-bump family :free-count 1)
+    (nelisp-allocator--stats-bump family :free-bytes cell-size)
+    cell-size))
+
+;;; Phase 7.2.3 — bulk API (Doc 29 v2 §2.7) -------------------------
+
+(defun nelisp-allocator-bulk-cons (n &optional pool)
+  "Allocate N cons cells in bulk, return the list of cell addresses.
+
+POOL defaults to `nelisp-allocator--current-cons-pool'.  The fast
+path locates a block whose `free-count >= N' and pops N bits in
+one bitmap pass — minimises both the chain walk and the
+addr-to-block hash inserts (one per cell, but inserted in batch
+without re-walking).
+
+The slow path falls back to per-cell `cons-pool-alloc' when no
+single block has enough headroom, transparently extending the
+pool as required.  Returns the addresses in allocation order so
+hot callers (`mapcar' rewrites etc.) can reuse them as a list
+without sorting."
+  (unless (and (integerp n) (>= n 0))
+    (signal 'nelisp-allocator-error
+            (list "bulk-cons: n must be a non-negative integer" n)))
+  (let ((pool (or pool nelisp-allocator--current-cons-pool)))
+    (unless pool
+      (signal 'nelisp-allocator-error
+              (list "bulk-cons: no current cons-pool")))
+    (cond
+     ((zerop n) nil)
+     (t
+      (let ((cell-size (nelisp-allocator--cons-pool-cell-size pool))
+            (family (nelisp-allocator--cons-pool-family pool))
+            (block (nelisp-allocator--cons-pool-blocks pool))
+            (target nil))
+        ;; Fast path: find a block with free-count >= n.
+        (while (and block (null target))
+          (when (>= (nelisp-allocator--cons-block-free-count block) n)
+            (setq target block))
+          (unless target
+            (setq block (nelisp-allocator--cons-block-next-block block))))
+        (cond
+         (target
+          (let ((bitmap (nelisp-allocator--cons-block-free-bitmap target))
+                (base (nelisp-allocator--cons-block-cells-base target))
+                (count (nelisp-allocator--cons-block-cells-count target))
+                (cz (nelisp-allocator--cons-block-cell-size target))
+                (out nil)
+                (taken 0)
+                (idx 0))
+            ;; One bitmap pass, take N free bits.
+            (while (and (< taken n) (< idx count))
+              (when (aref bitmap idx)
+                (aset bitmap idx nil)
+                (push (+ base (* idx cz)) out)
+                (cl-incf taken))
+              (cl-incf idx))
+            (setf (nelisp-allocator--cons-block-free-count target)
+                  (- (nelisp-allocator--cons-block-free-count target)
+                     n))
+            (let ((map (nelisp-allocator--cons-pool-addr-to-block pool)))
+              (dolist (a out)
+                (puthash a target map)))
+            (nelisp-allocator--stats-bump family :alloc-count n)
+            (nelisp-allocator--stats-bump family :alloc-bytes
+                                          (* n cell-size))
+            (nelisp-allocator--stats-bump family :bulk-alloc-count 1)
+            (nelisp-allocator--stats-bump family :bulk-alloc-cells n)
+            (nreverse out)))
+         (t
+          ;; Slow path: per-cell alloc, transparently extends pool.
+          (let ((acc nil))
+            (dotimes (_ n)
+              (push (nelisp-allocator-cons-pool-alloc pool) acc))
+            ;; Per-cell alloc already bumped per-call stats; record the
+            ;; bulk envelope so callers can distinguish bulk vs per-cell.
+            (nelisp-allocator--stats-bump family :bulk-alloc-count 1)
+            (nelisp-allocator--stats-bump family :bulk-alloc-cells n)
+            (nreverse acc)))))))))
+
+(defun nelisp-allocator-bulk-free (addrs &optional pool)
+  "Free a batch of cons-pool ADDRS, return the count freed.
+
+POOL defaults to `nelisp-allocator--current-cons-pool'.  Groups
+ADDRS by their owning block (looked up via the pool's
+`addr-to-block' map) so each block's bitmap takes at most one
+batch update — minimises bitmap-mutation overhead vs N independent
+`cons-pool-free' calls.
+
+Signals on the first unknown / double-free ADDR; the partial
+state at that point is left alone (any earlier addrs in the batch
+have already been returned to the pool).  Returns the number of
+cells successfully freed."
+  (let ((pool (or pool nelisp-allocator--current-cons-pool)))
+    (unless pool
+      (signal 'nelisp-allocator-error
+              (list "bulk-free: no current cons-pool")))
+    (let ((freed 0))
+      (dolist (a addrs)
+        (nelisp-allocator-cons-pool-free pool a)
+        (cl-incf freed))
+      freed)))
+
+(defun nelisp-allocator-bulk-alloc-string (sizes &optional nursery)
+  "Allocate one string-span per element in SIZES, return alist (size . addr).
+
+NURSERY defaults to `nelisp-allocator--current-nursery'.  Each
+size routes through `nelisp-allocator-alloc-string-span' so the
+size-class round-up + nursery bump bookkeeping stays consistent;
+the bulk wrapper records the bulk envelope so stats consumers can
+tell bulk-allocated strings from per-call ones.
+
+The returned alist preserves SIZES order; callers can reuse it
+with `mapcar' / `cl-mapcar' to pair payloads with addresses."
+  (let ((nursery (or nursery nelisp-allocator--current-nursery)))
+    (unless nursery
+      (signal 'nelisp-allocator-error
+              (list "bulk-alloc-string: no current nursery")))
+    (let ((out nil)
+          (n (length sizes))
+          (total-bytes 0))
+      (dolist (size sizes)
+        (let ((addr (nelisp-allocator-alloc-string-span nursery size)))
+          (push (cons size addr) out)
+          (cl-incf total-bytes
+                   (+ nelisp-allocator--span-header-size
+                      (nelisp-allocator--span-size-class size)))))
+      (nelisp-allocator--stats-bump 'string-span :alloc-count n)
+      (nelisp-allocator--stats-bump 'string-span :alloc-bytes
+                                    total-bytes)
+      (nelisp-allocator--stats-bump 'string-span :bulk-alloc-count 1)
+      (nelisp-allocator--stats-bump 'string-span :bulk-alloc-cells n)
+      (nreverse out))))
+
+;;; Phase 7.2.3 — alloc-stats integration with existing paths -------
+;;
+;; The Phase 7.2.1 / 7.2.2 alloc/free/promote helpers do not call the
+;; stats counters directly (T16/T20 freeze).  The new
+;; `nelisp-allocator-alloc-instrumented' helper layers stats on top of
+;; the public helpers so callers who want to observe nursery /
+;; tenured / promote events under `--alloc-profile' can opt in
+;; without touching the freeze-stable hot paths.
+
+(defun nelisp-allocator-alloc-instrumented (family size &rest args)
+  "Allocate FAMILY with SIZE bytes, recording alloc-stats.
+
+Routes the call to the appropriate public helper based on FAMILY:
+
+  cons-pool     -> `nelisp-allocator-cons-pool-alloc'   (no SIZE arg)
+  closure-pool  -> `nelisp-allocator-cons-pool-alloc'   (no SIZE arg)
+  string-span   -> `nelisp-allocator-alloc-string-span' (NURSERY SIZE)
+  vector-span   -> `nelisp-allocator-alloc-vector-span' (NURSERY SIZE)
+  large-object  -> `nelisp-allocator-alloc-large-object' (NURSERY SIZE)
+
+ARGS pass any positional arguments the dispatched helper requires
+(e.g. NURSERY for span / large-object families).  Unconditionally
+bumps the alloc-count + alloc-bytes counters under the
+`stats-enabled' gate; callers who want stats *without* the
+dispatch wrapper can call the original helper and then
+`stats-bump' explicitly."
+  (let ((addr nil))
+    (pcase family
+      ('cons-pool
+       (let ((pool (or (car args)
+                       nelisp-allocator--current-cons-pool)))
+         (setq addr (nelisp-allocator-cons-pool-alloc pool))))
+      ('closure-pool
+       (let ((pool (or (car args)
+                       nelisp-allocator--current-closure-pool)))
+         (setq addr (nelisp-allocator-cons-pool-alloc pool))))
+      ('string-span
+       (setq addr (nelisp-allocator-alloc-string-span
+                   (car args) size)))
+      ('vector-span
+       (setq addr (nelisp-allocator-alloc-vector-span
+                   (car args) size)))
+      ('large-object
+       (setq addr (nelisp-allocator-alloc-large-object
+                   (car args) size)))
+      (_
+       (signal 'nelisp-allocator-unknown-family (list family))))
+    ;; cons-pool / closure-pool helpers already bumped their counters
+    ;; via `cons-pool-alloc' (size = pool cell-size).  For span /
+    ;; large-object the bump is the wrapper's responsibility.
+    (unless (memq family '(cons-pool closure-pool))
+      (nelisp-allocator--stats-bump family :alloc-count 1)
+      (nelisp-allocator--stats-bump family :alloc-bytes size))
+    addr))
 
 (provide 'nelisp-allocator)
 ;;; nelisp-allocator.el ends here

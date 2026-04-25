@@ -406,5 +406,209 @@ documented at the top of the function."
         (let ((dist (plist-get s2 :size-class-distribution)))
           (should (= 2 (cdr (assq 256 dist)))))))))
 
+;;; ----------------------------------------------------------------
+;;; Phase 7.2.3 — per-type pool + bulk API + alloc-stats (+6 ERT)
+;;; ----------------------------------------------------------------
+;;
+;; Doc 29 v2 LOCKED 2026-04-25 §3.3 ERT smoke (+6) tabulated below.
+;; Every test re-resets the region table so per-type pool / stats
+;; bookkeeping starts from a known clean state — production code never
+;; calls `--reset-region-table' but ERT fixtures must isolate.
+;;
+;;   1. cons-pool-alloc fast path: bitmap pop returns 1 cell with
+;;      the `addr->block' map seeded so `cons-pool-free' can find it.
+;;   2. cons-pool-free marks the bitmap bit free again, increments
+;;      the block's free-count, and re-allocates the same address.
+;;   3. cons-pool-alloc transparently extends to a new block when
+;;      every existing block is full.
+;;   4. bulk-cons (1000) with stats-enabled produces 1000 unique
+;;      addresses and records exactly one bulk envelope event.
+;;   5. stats counters track alloc-count / free-count consistently
+;;      across cons-pool-alloc and cons-pool-free pairs.
+;;   6. profile-run enables stats around THUNK, dumps a snapshot,
+;;      then restores prior `stats-enabled' state and resets counters.
+
+;;; (15) cons-pool-alloc fast path ---------------------------------
+
+(ert-deftest nelisp-allocator-cons-pool-alloc-fast-path ()
+  "First `cons-pool-alloc' on a freshly-init'd pool returns the
+first cell of the first block (cells-base + 0).  The bitmap bit
+flips to nil and free-count drops by 1 atomically."
+  (nelisp-allocator--reset-region-table)
+  (let* ((pool (nelisp-allocator-init-cons-pool 1 (* 16 16)))
+         (head (nelisp-allocator--cons-pool-blocks pool))
+         (base (nelisp-allocator--cons-block-cells-base head))
+         (free-before (nelisp-allocator--cons-block-free-count head))
+         (addr (nelisp-allocator-cons-pool-alloc pool)))
+    (should (= addr base))
+    (should (= (1- free-before)
+               (nelisp-allocator--cons-block-free-count head)))
+    (let ((bitmap (nelisp-allocator--cons-block-free-bitmap head)))
+      (should-not (aref bitmap 0)))
+    ;; addr-to-block map seeded so cons-pool-free locates the block.
+    (should (eq head
+                (gethash addr
+                         (nelisp-allocator--cons-pool-addr-to-block
+                          pool))))))
+
+;;; (16) cons-pool-free returns to bitmap --------------------------
+
+(ert-deftest nelisp-allocator-cons-pool-free-marks-bitmap-free ()
+  "`cons-pool-free' flips the bitmap bit back to t, increments
+free-count, removes the addr-to-block entry, and the next
+`cons-pool-alloc' reuses the same address (LIFO of the bitmap
+scan picks the lowest-free idx)."
+  (nelisp-allocator--reset-region-table)
+  (let* ((pool (nelisp-allocator-init-cons-pool 1 (* 16 16)))
+         (head (nelisp-allocator--cons-pool-blocks pool))
+         (a (nelisp-allocator-cons-pool-alloc pool))
+         (b (nelisp-allocator-cons-pool-alloc pool)))
+    (should (= 16 (- b a)))
+    (nelisp-allocator-cons-pool-free pool a)
+    (let ((bitmap (nelisp-allocator--cons-block-free-bitmap head)))
+      (should (aref bitmap 0)))
+    (should-not (gethash a
+                         (nelisp-allocator--cons-pool-addr-to-block
+                          pool)))
+    ;; Re-alloc reuses the freed cell (lowest free idx wins).
+    (let ((c (nelisp-allocator-cons-pool-alloc pool)))
+      (should (= a c)))
+    ;; Double-free must signal.
+    (nelisp-allocator-cons-pool-free pool b)
+    (should-error (nelisp-allocator-cons-pool-free pool b)
+                  :type 'nelisp-allocator-error)))
+
+;;; (17) cons-pool extends when full -------------------------------
+
+(ert-deftest nelisp-allocator-cons-pool-allocates-new-block-when-full ()
+  "Filling every cell of the only block forces `cons-pool-alloc'
+to extend the chain with a fresh block and allocate from it."
+  (nelisp-allocator--reset-region-table)
+  ;; 1 block, exactly 4 cells (16 byte * 4 = 64 byte block).
+  (let* ((pool (nelisp-allocator-init-cons-pool 1 64))
+         (head (nelisp-allocator--cons-pool-blocks pool))
+         (cells (nelisp-allocator--cons-block-cells-count head)))
+    (should (= 4 cells))
+    ;; Fill the block.
+    (let ((addrs (cl-loop repeat cells
+                          collect (nelisp-allocator-cons-pool-alloc pool))))
+      (should (= cells (length addrs)))
+      (should (zerop (nelisp-allocator--cons-block-free-count head)))
+      ;; Next alloc must extend.
+      (let ((extra (nelisp-allocator-cons-pool-alloc pool))
+            (next (nelisp-allocator--cons-block-next-block head)))
+        (should next)
+        (should (= (nelisp-allocator--cons-block-cells-base next)
+                   extra))
+        ;; Original block stays full, the new block lost one cell.
+        (should (zerop (nelisp-allocator--cons-block-free-count head)))
+        (should (= (1- cells)
+                   (nelisp-allocator--cons-block-free-count next)))))))
+
+;;; (18) bulk-cons in batch ----------------------------------------
+
+(ert-deftest nelisp-allocator-bulk-cons-batch-1000 ()
+  "`bulk-cons' (1000) returns exactly 1000 unique addresses; with
+stats enabled it records one bulk-alloc envelope (independent of
+how many physical blocks were carved)."
+  (nelisp-allocator--reset-region-table)
+  ;; Big enough block: 1024 cells -> 16 KiB.
+  (let* ((pool (nelisp-allocator-init-cons-pool 1 (* 16 1024)))
+         (nelisp-allocator-stats-enabled t))
+    (nelisp-allocator-stats-reset)
+    (let ((addrs (nelisp-allocator-bulk-cons 1000 pool)))
+      (should (= 1000 (length addrs)))
+      ;; Every address unique.
+      (should (= 1000 (length (cl-remove-duplicates addrs))))
+      ;; Snapshot has cons-pool with bulk-alloc-count = 1, cells = 1000.
+      (let* ((snap (nelisp-allocator-stats-snapshot))
+             (cons-stats (cdr (assq 'cons-pool snap))))
+        (should cons-stats)
+        (should (= 1 (plist-get cons-stats :bulk-alloc-count)))
+        (should (= 1000 (plist-get cons-stats :bulk-alloc-cells)))
+        (should (= 1000 (plist-get cons-stats :alloc-count)))
+        (should (= (* 1000 16) (plist-get cons-stats :alloc-bytes)))))
+    ;; Empty bulk-cons returns nil cleanly.
+    (should (null (nelisp-allocator-bulk-cons 0 pool)))
+    (nelisp-allocator-stats-reset)))
+
+;;; (19) stats counters across alloc + free ------------------------
+
+(ert-deftest nelisp-allocator-stats-tracks-alloc-and-free ()
+  "Stats counters track every cons-pool-alloc and cons-pool-free
+event when `nelisp-allocator-stats-enabled' is t.  When the gate
+is nil the counters stay at zero so production builds pay only
+the boolean test."
+  (nelisp-allocator--reset-region-table)
+  (let* ((pool (nelisp-allocator-init-cons-pool 1 (* 16 16))))
+    ;; Stats disabled — counters stay empty.
+    (let ((nelisp-allocator-stats-enabled nil))
+      (nelisp-allocator-stats-reset)
+      (let ((a (nelisp-allocator-cons-pool-alloc pool)))
+        (nelisp-allocator-cons-pool-free pool a))
+      (should (null (nelisp-allocator-stats-snapshot))))
+    ;; Stats enabled — counters track each event.
+    (let ((nelisp-allocator-stats-enabled t))
+      (nelisp-allocator-stats-reset)
+      (let* ((a (nelisp-allocator-cons-pool-alloc pool))
+             (b (nelisp-allocator-cons-pool-alloc pool))
+             (c (nelisp-allocator-cons-pool-alloc pool)))
+        (nelisp-allocator-cons-pool-free pool b)
+        (nelisp-allocator-cons-pool-free pool c)
+        (ignore a))
+      (let* ((snap (nelisp-allocator-stats-snapshot))
+             (cons-stats (cdr (assq 'cons-pool snap))))
+        (should (= 3 (plist-get cons-stats :alloc-count)))
+        (should (= (* 3 16) (plist-get cons-stats :alloc-bytes)))
+        (should (= 2 (plist-get cons-stats :free-count)))
+        (should (= (* 2 16) (plist-get cons-stats :free-bytes))))
+      (nelisp-allocator-stats-reset))))
+
+;;; (20) profile-run lifecycle -------------------------------------
+
+(ert-deftest nelisp-allocator-profile-run-resets-on-completion ()
+  "`profile-run' enables stats, calls THUNK, snapshots, restores
+the prior `stats-enabled' state and resets the counters.  The
+returned snapshot reflects the work THUNK did even though the
+post-call state is back to fresh."
+  (nelisp-allocator--reset-region-table)
+  (let* ((pool (nelisp-allocator-init-cons-pool 1 (* 16 16))))
+    ;; Pre-state: stats off, counters empty (other tests reset).
+    (nelisp-allocator-stats-reset)
+    (let ((nelisp-allocator-stats-enabled nil))
+      (let ((snap (nelisp-allocator-profile-run
+                   (lambda ()
+                     (let ((a (nelisp-allocator-cons-pool-alloc pool))
+                           (b (nelisp-allocator-cons-pool-alloc pool)))
+                       (nelisp-allocator-cons-pool-free pool a)
+                       (ignore b))))))
+        ;; Snapshot reflects THUNK's work.
+        (let ((cons-stats (cdr (assq 'cons-pool snap))))
+          (should (= 2 (plist-get cons-stats :alloc-count)))
+          (should (= 1 (plist-get cons-stats :free-count))))
+        ;; Stats-enabled restored to nil; counters are clean.
+        (should-not nelisp-allocator-stats-enabled)
+        (should (null (nelisp-allocator-stats-snapshot)))))
+    ;; A signalling THUNK still runs cleanup.
+    (condition-case _
+        (nelisp-allocator-profile-run
+         (lambda () (signal 'nelisp-allocator-error (list "boom"))))
+      (nelisp-allocator-error nil))
+    (should-not nelisp-allocator-stats-enabled)
+    (should (null (nelisp-allocator-stats-snapshot)))
+    ;; Output-file path round-trips the snapshot.
+    (let ((tmp (make-temp-file "nelisp-allocator-stats" nil ".eld")))
+      (unwind-protect
+          (let ((snap (nelisp-allocator-profile-run
+                       (lambda ()
+                         (nelisp-allocator-cons-pool-alloc pool))
+                       tmp)))
+            (should (file-exists-p tmp))
+            (let ((written (with-temp-buffer
+                             (insert-file-contents tmp)
+                             (read (current-buffer)))))
+              (should (equal snap written))))
+        (when (file-exists-p tmp) (delete-file tmp))))))
+
 (provide 'nelisp-allocator-test)
 ;;; nelisp-allocator-test.el ends here
