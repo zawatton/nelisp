@@ -17,12 +17,15 @@ soak gate* (1h LOCKED blocker / 24h post-ship audit) に分解する。
 
 *v2 改訂方針 (orchestrator codex review MAJOR REVISIONS 8 issues 反映、
 うち BLOCKER 2 件)*:
-- *BLOCKER 1 解消*: =mark throughput 50MB/sec= と =major pause 50ms= が
-  64MB tenured ~1.3sec scan で同時不成立。v2 で *major pause budget を
-  500ms-1s に緩和* + =minor pause 5ms= は stop-the-world Cheney nursery
-  で維持 + =major-young-root-limited mode= (= card-table dirty page のみ
-  scan) を sub-phase 7.3.5 で導入し pause 50ms 以下 を opt-in mode で
-  達成可能化
+- *BLOCKER 1 解消 (user signoff 2026-04-25 で default 切替)*: =mark
+  throughput 50MB/sec= と =major pause 50ms= が 64MB tenured ~1.3sec
+  scan で同時不成立。v2 で *major pause を 2 mode 化*:
+  - *default mode = young-root-limited* (sub-phase 7.3.5、card-table dirty
+    page only scan) で *pause 50ms 以下* (interactive UX 維持、anvil daemon
+    用途主流のため default)
+  - *opt-out mode = full mark-sweep* で pause 500ms-1s (64MB tenured 物理
+    上限、batch / GC stress 用、=defcustom= or =--gc-mode=full= で選択)
+  - =minor pause 5ms= は stop-the-world Cheney nursery で全 mode 共通維持
 - *BLOCKER 2 解消*: sweep 中 finalizer 直接実行は再入 GC + invariant 破壊
   risk。v2 で *finalizer queue 分離* (sweep 完了後 mutator context で
   実行) + =resurrection policy LOCK= ("復活可、1 回のみ" の MVP)
@@ -69,14 +72,17 @@ Doc 27 §3 7.3 「1-2 ヶ月」と整合)。本 v2 で 4→6 sub-phase 再分割
 の budget chain を引き継ぎ)*:
 - *mark throughput* = 全 mark phase で *50MB/sec 以上* (tenured 64MB
   scan を ~1.3 sec、Doc 29 §2.2 default heap layout)
-- *pause time (v2 二段化)*:
+- *pause time (v2 二段化、user signoff 2026-04-25 で default mode 切替)*:
   - =minor pause= = stop-the-world Cheney nursery copy で *5ms 以下*
     (interactive UX 維持)
-  - =major pause (default mode)= = stop-the-world full mark-sweep で
-    *500ms-1s 以下* (64MB tenured 走査の物理上限、v2 で実数値に修正)
-  - =major-young-root-limited mode (opt-in、§3.5 sub-phase 7.3.5)= =
-    card-table dirty page only scan で *50ms 以下* (interactive workload
-    向け、user-tunable)
+  - =major pause (default mode = young-root-limited、§3.5 sub-phase
+    7.3.5)= = card-table dirty page only scan で *50ms 以下*
+    (interactive workload 主流、=bin/anvil mcp serve= = anvil daemon =
+    Claude Code session の MCP request 体感 freeze を回避)
+  - =major pause (opt-out mode = full mark-sweep、batch / GC stress
+    用)= = stop-the-world で *500ms-1s 以下* (64MB tenured 走査の物理
+    上限)、=defcustom nelisp-gc-major-mode= で =:full= 選択 or
+    =--gc-mode=full= flag で起動 opt-out
 - *promotion correctness* = nursery → tenured promotion 100K cycle で
   live root mis-classification 0 件 + heap verifier PASS (silent memory
   corruption 検出 gate)
@@ -1046,13 +1052,16 @@ Doc 28 §7 / Doc 29 §7 schema 踏襲。Phase 7.3 全体の LOCKED 化は以下
 
 Phase 7.3.1〜7.3.6 全 SHIPPED + 以下:
 
-- *bench gate v2 (二段 pause)* (§5.1):
+- *bench gate v2 (二段 pause、user signoff 2026-04-25 で default 切替)* (§5.1):
   * =mark-throughput= 50MB/sec 以上
   * =minor pause= 5ms 以下 (stop-the-world Cheney nursery、interactive UX)
-  * =major pause (default mode)= 500ms-1s 以下 (64MB tenured 走査の物理上限、
-    BLOCKER 1 解消による v2 緩和、stop-the-world full mark-sweep)
-  * =major pause (young-root-limited mode、opt-in)= 50ms 以下
-    (sub-phase 7.3.5、card-table dirty page only scan、interactive workload 向け)
+  * =major pause (default mode = young-root-limited)= *50ms 以下*
+    (sub-phase 7.3.5、card-table dirty page only scan、=bin/anvil mcp serve=
+    interactive 主流のため default、anvil daemon Claude Code session
+    freeze 回避)
+  * =major pause (opt-out mode = full mark-sweep)= 500ms-1s 以下 (64MB
+    tenured 走査の物理上限、=defcustom nelisp-gc-major-mode= = =:full= or
+    =--gc-mode=full= で opt-out、batch / GC stress 用)
 - *promotion correctness gate* (§5.2): live root mis-classification 0 件
   + heap verifier PASS (silent corruption oracle、§6.10 v2)
 - *invariant gate (v2 必須)*: =verify-heap= / =verify-card-table= /
