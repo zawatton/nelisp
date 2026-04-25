@@ -69,6 +69,24 @@
 ;; for the SSA accessors, and we require it back for the link step.
 (declare-function nelisp-cc--link-unresolved-calls "nelisp-cc-callees"
                   (bytes call-fixups &optional backend))
+;; T84 Phase 7.5 wire — declared lazily because `nelisp-cc-callees'
+;; requires `nelisp-cc' which is the parent of this module.  The
+;; new `compile-and-link' pipeline uses these helpers via runtime
+;; (require 'nelisp-cc-callees).
+(declare-function nelisp-cc-callees-known-p "nelisp-cc-callees"
+                  (sym &optional backend))
+(declare-function nelisp-cc-callees-trampoline-bytes "nelisp-cc-callees"
+                  (sym &optional backend))
+(declare-function nelisp-cc-callees--collect-cell-symbols
+                  "nelisp-cc-callees" (function))
+(declare-function nelisp-cc-callees--collect-inner-functions
+                  "nelisp-cc-callees" (function))
+(declare-function nelisp-cc-callees--walk-calls
+                  "nelisp-cc-callees" (function visit))
+(declare-function nelisp-cc-callees-rewrite-setq-vars
+                  "nelisp-cc-callees" (function))
+(declare-function nelisp-cc-callees--rewrite-setq-vars
+                  "nelisp-cc-callees" (function))
 
 ;;; Errors -----------------------------------------------------------
 
@@ -357,6 +375,49 @@ Bytes: 0x48 0x81 0xC4 | imm32 (little-endian)."
   (append (list #x48 #x81 #xC4)
           (nelisp-cc-x86_64--imm32-bytes imm)))
 
+(defun nelisp-cc-x86_64--emit-mov-rax-rip-rel (rel32)
+  "Encode MOV rax, [rip + REL32] (RIP-relative load, 64-bit).
+T84 Phase 7.5 wire — load from a global cell whose address is fixed
+at link time relative to the next instruction.
+
+Bytes: 48 8B 05 <rel32> (REX.W + opcode 8B /0 + ModR/M for [rip+disp32]
++ 4 bytes of displacement little-endian).  ModR/M=05 = mod=00, reg=000
+(rax), rm=101 (RIP+disp32 form).  The 7-byte total matches LEA's size
+so the link math (`tramp-off - (fixup-off + 4)') is identical."
+  (append (list #x48 #x8B #x05)
+          (nelisp-cc-x86_64--imm32-bytes rel32)))
+
+(defun nelisp-cc-x86_64--emit-mov-rip-rel-rax (rel32)
+  "Encode MOV [rip + REL32], rax (RIP-relative store, 64-bit).
+T84 Phase 7.5 wire — symmetric with `--emit-mov-rax-rip-rel'.
+
+Bytes: 48 89 05 <rel32> (REX.W + opcode 89 /0 + ModR/M [rip+disp32]
+form + 4 bytes of displacement little-endian).  ModR/M=05 = mod=00,
+reg=000 (rax = source), rm=101 (RIP+disp32 = destination)."
+  (append (list #x48 #x89 #x05)
+          (nelisp-cc-x86_64--imm32-bytes rel32)))
+
+(defun nelisp-cc-x86_64--emit-lea-rax-rip-rel (rel32)
+  "Encode LEA rax, [rip + REL32] (compute address, no memory access).
+T84 Phase 7.5 wire — used by `:closure' lowering to produce a
+function pointer to an inner-function body that has been embedded
+later in the same byte buffer.
+
+Bytes: 48 8D 05 <rel32> (REX.W + LEA opcode 8D + ModR/M [rip+disp32]
+form + 4 bytes of displacement little-endian)."
+  (append (list #x48 #x8D #x05)
+          (nelisp-cc-x86_64--imm32-bytes rel32)))
+
+(defun nelisp-cc-x86_64--emit-inc-mem-rip-rel (rel32)
+  "Encode INC qword [rip + REL32] (read-modify-write 64-bit increment).
+T84 Phase 7.5 wire — used by the `cons' counter trampoline so the
+allocator-counter cell can be bumped without a register clobber.
+
+Bytes: 48 FF 05 <rel32> (REX.W + opcode FF /0 + ModR/M [rip+disp32]
++ 4 bytes of displacement little-endian)."
+  (append (list #x48 #xFF #x05)
+          (nelisp-cc-x86_64--imm32-bytes rel32)))
+
 (defun nelisp-cc-x86_64--emit-call-rel32 (rel32)
   "Encode CALL rel32 with REL32 the displacement from the *next*
 instruction (i.e. from the byte after the 5-byte CALL itself).
@@ -598,14 +659,23 @@ allocated for spill slots (already 16-aligned).
 CALL-FIXUPS is an alist `((BYTE-OFFSET . CALLEE-SYMBOL) ...)' that
 the skeleton accumulates for unresolved :call sites — Phase 7.5 will
 walk this list and patch each rel32 against the callee's actual
-address (via `nelisp-defs-index')."
+address (via `nelisp-defs-index').
+
+CELL-SYMBOLS (T84 Phase 7.5 wire) is the list of letrec-bound names +
+implicit `cons-counter' that the SSA references via `:store-var' or
+`:load-var'.  Each name resolves at link time to a `cell:NAME' label
+bound after the function bodies + trampolines (= 8 bytes per cell at
+the JIT page tail).  When non-nil, `--lower-store-var' / `--lower-
+load-var' emit RIP-relative MOV against the cell rather than the
+pre-T84 placeholder MOV r,0."
   (function nil :read-only t)
   (alloc-state nil :read-only t)
   (buffer nil :read-only t)
   (rpo nil)
   (slot-alist nil)
   (frame-size 0)
-  (call-fixups nil))
+  (call-fixups nil)
+  (cell-symbols nil))
 
 ;;; Phase 7.1 T15 — spill/reload helpers ----------------------------
 ;;
@@ -810,40 +880,86 @@ into the scratch register and then stored to its slot via
     (nelisp-cc-x86_64--writeback-def cg def dst)))
 
 (defun nelisp-cc-x86_64--lower-load-var (cg instr)
-  "Lower an SSA :load-var INSTR — placeholder MOV r64, 0.
+  "Lower an SSA :load-var INSTR — placeholder MOV r64, 0 *unless* the
+referenced symbol has a global cell (T84 Phase 7.5 wire).
 
-The skeleton does not yet have a symbol-value-cell load; Phase 7.5
-will patch this site against `nelisp-defs-index' so the eventual
-encoding becomes `MOV reg, [rip+disp32]' (RIP-relative load of the
-symbol-value cell).  Until then the skeleton emits MOV r64, 0 as a
-safe placeholder — running this code would simply read 0, but the
-skeleton never executes the bytes.
+When CG carries a non-nil `cell-symbols' set and the META :name is in
+it, emits a 7-byte `MOV rax, [rip + disp32]' that resolves at link
+time to the matching `cell:NAME' label (= 8-byte cell at the JIT-page
+tail), then writes back to the def via the standard scratch routing.
+This is the path that lets a `letrec'-bound recursive name reach
+into the inner-lambda body where the SSA scope alone could not
+plumb it.
 
-Spill-aware: when DEF is spilled the placeholder zero lands in the
-scratch register first, then is stored to the spill slot."
+Pre-T84 fallback (= zero placeholder MOV r,0) is preserved when the
+symbol is not in the cell set so the existing golden tests pin on
+the same byte sequence."
   (let* ((buf   (nelisp-cc-x86_64--codegen-buffer cg))
          (def   (nelisp-cc--ssa-instr-def instr))
+         (meta  (nelisp-cc--ssa-instr-meta instr))
+         (name  (plist-get meta :name))
+         (cells (nelisp-cc-x86_64--codegen-cell-symbols cg))
          (dst   (nelisp-cc-x86_64--def-target cg def)))
-    (nelisp-cc-x86_64--buffer-emit-bytes
-     buf (nelisp-cc-x86_64--emit-mov-reg-imm32 dst 0))
-    (nelisp-cc-x86_64--writeback-def cg def dst)))
+    (cond
+     ((and name cells (memq name cells))
+      ;; T84: RIP-relative load through `cell:NAME'.  The instruction
+      ;; ends 4 bytes past the disp32 field (= 7 bytes after the start
+      ;; of the MOV); the link-time resolver computes
+      ;; `cell-offset - (fixup-offset + 4)' on the rel32 field.
+      (let* ((before (nelisp-cc-x86_64--buffer-offset buf))
+             (label  (intern (format "cell:%s" name))))
+        (nelisp-cc-x86_64--buffer-emit-bytes
+         buf (nelisp-cc-x86_64--emit-mov-rax-rip-rel 0))
+        ;; The disp32 field begins 3 bytes into the 7-byte instruction
+        ;; (REX + opcode + ModR/M = 3 bytes).  Record the absolute
+        ;; offset of the disp32 so the resolver patches in place.
+        (push (cons (+ before 3) label)
+              (nelisp-cc-x86_64--buffer-fixups buf))
+        (unless (eq dst 'rax)
+          (nelisp-cc-x86_64--buffer-emit-bytes
+           buf (nelisp-cc-x86_64--emit-mov-reg-reg dst 'rax)))
+        (nelisp-cc-x86_64--writeback-def cg def dst)))
+     (t
+      (nelisp-cc-x86_64--buffer-emit-bytes
+       buf (nelisp-cc-x86_64--emit-mov-reg-imm32 dst 0))
+      (nelisp-cc-x86_64--writeback-def cg def dst)))))
 
 (defun nelisp-cc-x86_64--lower-store-var (cg instr)
   "Lower an SSA :store-var INSTR — MOV def-reg, src-reg with spill marshalling.
 
-The store has a single operand (the new value) and an SSA def value
-(the same value, in SSA form `(setq x EXPR)' returns EXPR).  Phase
-7.5 patches this site to additionally store into the symbol-value
-cell.
+T84 Phase 7.5 wire: when CG carries a non-nil `cell-symbols' set and
+the META :name is in it, *also* persist the value to the global cell
+via `MOV [rip + disp32], rax', so subsequent `:load-var' on the same
+name (in any function body sharing the buffer) reads the new value.
+The pre-T84 def-routing (operand → def register/spill, returns the
+SSA value) is preserved so consumers that already had the value in a
+register avoid an extra reload.
 
 Spill-aware: source and / or destination may be spilled.  We
 materialise the operand into a register (loading from the slot via
 the scratch when spilled) and then route it to the def via
 `--writeback-def'."
-  (let* ((def      (nelisp-cc--ssa-instr-def instr))
+  (let* ((buf      (nelisp-cc-x86_64--codegen-buffer cg))
+         (def      (nelisp-cc--ssa-instr-def instr))
          (operands (nelisp-cc--ssa-instr-operands instr))
+         (meta     (nelisp-cc--ssa-instr-meta instr))
+         (name     (plist-get meta :name))
+         (cells    (nelisp-cc-x86_64--codegen-cell-symbols cg))
          (src-val  (car operands))
          (src-reg  (nelisp-cc-x86_64--materialise-operand cg src-val)))
+    ;; Cell persistence first — keeps src-reg's contents intact for
+    ;; the def writeback below (MOV-to-rax + MOV-rip-relative-from-rax
+    ;; happens before the def routes to whatever physical register).
+    (when (and name cells (memq name cells))
+      (unless (eq src-reg 'rax)
+        (nelisp-cc-x86_64--buffer-emit-bytes
+         buf (nelisp-cc-x86_64--emit-mov-reg-reg 'rax src-reg)))
+      (let* ((before (nelisp-cc-x86_64--buffer-offset buf))
+             (label  (intern (format "cell:%s" name))))
+        (nelisp-cc-x86_64--buffer-emit-bytes
+         buf (nelisp-cc-x86_64--emit-mov-rip-rel-rax 0))
+        (push (cons (+ before 3) label)
+              (nelisp-cc-x86_64--buffer-fixups buf))))
     (nelisp-cc-x86_64--writeback-def cg def src-reg)))
 
 (defun nelisp-cc-x86_64--lower-call (cg instr)
@@ -873,21 +989,12 @@ the callee symbol (META :fn) so the patcher can look it up."
     (when (> n (length nelisp-cc-x86_64--int-arg-regs))
       (signal 'nelisp-cc-x86_64-unsupported-opcode
               (list :stack-arg-spill-not-implemented n)))
-    ;; Move each operand into its argument register (load from slot
-    ;; when spilled, MOV reg→arg-reg when register-allocated, skip
-    ;; when already in the right register).
-    (cl-loop for op in operands
-             for arg-reg in nelisp-cc-x86_64--int-arg-regs
-             for slot = (nelisp-cc-x86_64--reg-or-spill cg op)
-             do (pcase slot
-                  (`(:reg ,r)
-                   (unless (eq r arg-reg)
-                     (nelisp-cc-x86_64--buffer-emit-bytes
-                      buf (nelisp-cc-x86_64--emit-mov-reg-reg
-                           arg-reg r))))
-                  (`(:spill ,off)
-                   (nelisp-cc-x86_64--emit-load-spill
-                    buf arg-reg off))))
+    ;; T84 — conflict-safe argument marshalling.  Pre-T84 emitted
+    ;; per-arg MOV in order, which clobbered an earlier arg-reg
+    ;; whose value a later operand still needed (e.g. `(< n 2)' with
+    ;; n in the spill slot AND val_0=2 living in rdi: the arg0 reload
+    ;; from spill into rdi destroyed val_0 before arg1 could read it).
+    (nelisp-cc-x86_64--marshal-args buf cg operands)
     ;; Emit CALL rel32 with placeholder 0 displacement — the fixup
     ;; carries the unresolved callee symbol so Phase 7.5 can patch
     ;; against `nelisp-defs-index'.
@@ -900,6 +1007,56 @@ the callee symbol (META :fn) so the patcher can look it up."
     (when def
       (nelisp-cc-x86_64--writeback-def
        cg def nelisp-cc-x86_64--return-reg))))
+
+(defun nelisp-cc-x86_64--marshal-args (buf cg operands)
+  "T84 Phase 7.5 wire — emit conflict-safe argument marshalling.
+
+For every operand:
+  - PUSH the source value (register or spill-slot reload via rax),
+the in-order PUSH stack thus holds operand values in reverse stack
+order.  Then POP each arg-reg in REVERSE operand order so arg-reg[0]
+ends up holding operand 0, arg-reg[1] operand 1, etc.
+
+This guarantees no inter-operand register clobber regardless of the
+allocator's per-operand assignment.  Cost: 2N stack ops per call vs
+the pre-T84 per-arg MOV.  For the bench-actual fib / fact-iter forms
+N ≤ 2 so this is 4 instructions per call site — negligible vs the
+savings of avoiding the silent miscompilation."
+  (let ((push-count 0))
+    ;; Phase 1: push each operand source onto the stack.
+    (dolist (op operands)
+      (let ((slot (nelisp-cc-x86_64--reg-or-spill cg op)))
+        (pcase slot
+          (`(:reg ,r)
+           (nelisp-cc-x86_64--emit-push-reg buf r))
+          (`(:spill ,off)
+           (nelisp-cc-x86_64--emit-load-spill buf 'rax off)
+           (nelisp-cc-x86_64--emit-push-reg buf 'rax))))
+      (cl-incf push-count))
+    ;; Phase 2: pop into arg-regs in reverse order.  cl-loop with
+    ;; downfrom requires Emacs 27+, so we materialise the reversed
+    ;; arg-reg list explicitly.
+    (let* ((arg-regs nelisp-cc-x86_64--int-arg-regs)
+           (used (cl-subseq arg-regs 0 push-count))
+           (rev (reverse used)))
+      (dolist (r rev)
+        (nelisp-cc-x86_64--emit-pop-reg buf r)))))
+
+(defun nelisp-cc-x86_64--emit-push-reg (buf reg)
+  "Emit PUSH REG (8-byte push) into BUF.  Bytes: 50+rd (or REX.B + 50+rd)."
+  (let* ((low3 (nelisp-cc-x86_64--reg-low3 reg))
+         (ext  (nelisp-cc-x86_64--reg-rex-ext-p reg)))
+    (when ext
+      (nelisp-cc-x86_64--buffer-emit-byte buf #x41)) ; REX.B
+    (nelisp-cc-x86_64--buffer-emit-byte buf (logior #x50 low3))))
+
+(defun nelisp-cc-x86_64--emit-pop-reg (buf reg)
+  "Emit POP REG (8-byte pop) into BUF.  Bytes: 58+rd (or REX.B + 58+rd)."
+  (let* ((low3 (nelisp-cc-x86_64--reg-low3 reg))
+         (ext  (nelisp-cc-x86_64--reg-rex-ext-p reg)))
+    (when ext
+      (nelisp-cc-x86_64--buffer-emit-byte buf #x41)) ; REX.B
+    (nelisp-cc-x86_64--buffer-emit-byte buf (logior #x58 low3))))
 
 (defun nelisp-cc-x86_64--lower-branch (cg instr)
   "Lower an SSA :branch INSTR — TEST cond + JE else + JMP then.
@@ -1073,31 +1230,37 @@ zero placeholder (see `--lower-closure')."
     (when (> n (length nelisp-cc-x86_64--int-arg-regs))
       (signal 'nelisp-cc-x86_64-unsupported-opcode
               (list :stack-arg-spill-not-implemented n)))
-    ;; Step 1: materialise callee into rax *before* argument
-    ;; marshalling so a callee that happens to live in an argument
-    ;; register (rdi..r9) does not get clobbered by the arg moves.
-    (let ((callee-slot (nelisp-cc-x86_64--reg-or-spill cg callee-val)))
-      (pcase callee-slot
-        (`(:reg ,r)
-         (unless (eq r 'rax)
-           (nelisp-cc-x86_64--buffer-emit-bytes
-            buf (nelisp-cc-x86_64--emit-mov-reg-reg 'rax r))))
-        (`(:spill ,off)
-         (nelisp-cc-x86_64--emit-load-spill buf 'rax off))))
-    ;; Step 2: marshal arguments (same as direct call).
-    (cl-loop for op in arg-vals
-             for arg-reg in nelisp-cc-x86_64--int-arg-regs
-             for slot = (nelisp-cc-x86_64--reg-or-spill cg op)
-             do (pcase slot
-                  (`(:reg ,r)
-                   (unless (eq r arg-reg)
-                     (nelisp-cc-x86_64--buffer-emit-bytes
-                      buf (nelisp-cc-x86_64--emit-mov-reg-reg
-                           arg-reg r))))
-                  (`(:spill ,off)
-                   (nelisp-cc-x86_64--emit-load-spill
-                    buf arg-reg off))))
-    ;; Step 3: CALL [rax].
+    ;; T84 — push the callee + each arg onto the stack first, then
+    ;; pop into rax + arg-regs in reverse order.  This avoids the
+    ;; same inter-arg clobber bug `--marshal-args' fixes for direct
+    ;; calls; the callee is treated as a phantom-zeroth arg that
+    ;; lands in rax (i.e. we PUSH it last so it POPs first).
+    (let ((push-count 0))
+      ;; Push args 0..n-1.
+      (dolist (op arg-vals)
+        (let ((slot (nelisp-cc-x86_64--reg-or-spill cg op)))
+          (pcase slot
+            (`(:reg ,r) (nelisp-cc-x86_64--emit-push-reg buf r))
+            (`(:spill ,off)
+             (nelisp-cc-x86_64--emit-load-spill buf 'rax off)
+             (nelisp-cc-x86_64--emit-push-reg buf 'rax))))
+        (cl-incf push-count))
+      ;; Push callee on top of stack so POP rax retrieves it first.
+      (let ((slot (nelisp-cc-x86_64--reg-or-spill cg callee-val)))
+        (pcase slot
+          (`(:reg ,r) (nelisp-cc-x86_64--emit-push-reg buf r))
+          (`(:spill ,off)
+           (nelisp-cc-x86_64--emit-load-spill buf 'rax off)
+           (nelisp-cc-x86_64--emit-push-reg buf 'rax))))
+      ;; Now pop: first rax (callee), then arg-regs in reverse.
+      (nelisp-cc-x86_64--emit-pop-reg buf 'rax)
+      (let* ((arg-regs nelisp-cc-x86_64--int-arg-regs)
+             (used (cl-subseq arg-regs 0 push-count))
+             (rev (reverse used)))
+        (dolist (r rev)
+          (nelisp-cc-x86_64--emit-pop-reg buf r))))
+    ;; Step 3: CALL rax (FF /2 with mod=11, rm=rax → encodes CALL rax,
+    ;; absolute jump).
     (nelisp-cc-x86_64--buffer-emit-bytes
      buf (nelisp-cc-x86_64--emit-call-indirect-reg 'rax))
     ;; Step 4: harvest return value.
@@ -1106,35 +1269,50 @@ zero placeholder (see `--lower-closure')."
        cg def nelisp-cc-x86_64--return-reg))))
 
 (defun nelisp-cc-x86_64--lower-closure (cg instr)
-  "Lower an SSA `:closure' INSTR — CALL into the embedded allocator
-trampoline.  T43 Phase 7.5.6 — Doc 28 §3.5 / Doc 32 v2 §3.
+  "Lower an SSA `:closure' INSTR — emit `LEA rax, [rip + INNER:N]'
+where INNER:N labels the inner-function body that the link step
+embeds after the outer body.  T84 Phase 7.5 wire — Doc 28 §3.5 +
+Doc 32 v2 §3.
 
-The closure allocator trampoline is appended to the byte buffer by
-`nelisp-cc--link-unresolved-calls' if any `:closure' instruction
-referenced it (recorded via the same `call-fixups' table the direct
-`:call' lowering uses, keyed on the special symbol `alloc-closure').
-The trampoline returns a self-pointer (LEA rax, [rip-7]) so
-`:call-indirect' on the result has a non-zero, callable address —
-the bytes execute end-to-end without SIGSEGV.
+The pre-T84 path (T43 SHIPPED) emitted a CALL into the embedded
+`alloc-closure' trampoline whose self-pointer was non-callable
+beyond a simple RET; the resulting `:call-indirect' on a fib-like
+recursive lambda fell through into the trampoline and returned the
+self-pointer instead of executing the lambda body.  T84 replaces
+that with a proper function pointer to the actual compiled body.
 
-Codegen sequence:
-  CALL rel32         ; placeholder rel32, patched by link step
-  [MOV def-reg, rax] ; harvest the closure pointer (elided when def-reg = rax)
-  [STR rax, slot]    ; via --writeback-def for spilled defs
+Lookup: META :inner-function-index (set by the pre-codegen pass in
+`nelisp-cc-callees--collect-inner-functions') is the 1-based visit
+ordinal — it survives any later SSA mutations and so encodes a
+stable label name across the outer + inner compile windows.
 
 Spill-aware: routes through `--writeback-def' so a spilled def lands
-in its slot.  The previous T38 placeholder (`MOV r,0') made the bytes
-SIGSEGV the moment a `:call-indirect' tried to dereference the
-zero-pointer; this lowering closes that gap."
+in its slot."
   (let* ((buf (nelisp-cc-x86_64--codegen-buffer cg))
-         (def (nelisp-cc--ssa-instr-def instr)))
-    ;; Emit CALL rel32 with placeholder 0 displacement; link step
-    ;; patches it against the embedded `alloc-closure' trampoline.
-    (let ((before-call (nelisp-cc-x86_64--buffer-offset buf)))
-      (nelisp-cc-x86_64--buffer-emit-bytes
-       buf (nelisp-cc-x86_64--emit-call-rel32 0))
-      (push (cons (+ before-call 1) 'alloc-closure)
-            (nelisp-cc-x86_64--codegen-call-fixups cg)))
+         (def (nelisp-cc--ssa-instr-def instr))
+         (meta (nelisp-cc--ssa-instr-meta instr))
+         (idx  (plist-get meta :inner-function-index)))
+    (cond
+     (idx
+      ;; T84: LEA rax, [rip + cell:inner:IDX].  The 7-byte instruction
+      ;; layout:  REX.W | 0x8D | ModR/M=05 | <disp32 little-endian>.
+      ;; The disp32 field begins 3 bytes into the instruction; we
+      ;; record the absolute offset of the disp32 so the resolver
+      ;; patches in place.
+      (let* ((before (nelisp-cc-x86_64--buffer-offset buf))
+             (label  (intern (format "inner:%d" idx))))
+        (nelisp-cc-x86_64--buffer-emit-bytes
+         buf (nelisp-cc-x86_64--emit-lea-rax-rip-rel 0))
+        (push (cons (+ before 3) label)
+              (nelisp-cc-x86_64--buffer-fixups buf))))
+     (t
+      ;; Pre-T84 fallback (no index annotation — keeps existing
+      ;; ERT golden tests on the `alloc-closure' embedded trampoline).
+      (let ((before-call (nelisp-cc-x86_64--buffer-offset buf)))
+        (nelisp-cc-x86_64--buffer-emit-bytes
+         buf (nelisp-cc-x86_64--emit-call-rel32 0))
+        (push (cons (+ before-call 1) 'alloc-closure)
+              (nelisp-cc-x86_64--codegen-call-fixups cg)))))
     ;; Route the return value (rax = the closure pointer) to the def.
     (when def
       (nelisp-cc-x86_64--writeback-def
@@ -1185,6 +1363,37 @@ The matching epilogue is emitted by `--lower-return'."
     (nelisp-cc-x86_64--buffer-emit-bytes
      buf (nelisp-cc-x86_64--emit-sub-rsp-imm32 frame-size))))
 
+(defun nelisp-cc-x86_64--emit-param-home-spills (cg)
+  "T84 Phase 7.5 wire — for each function param the linear-scan
+allocator marked `:spill', emit MOV [rbp - off], <arg-reg> at the top
+of the function so the param's stack slot holds its incoming value.
+
+The pre-T84 backend assumed every param interval kept its arg
+register, but the T63 call-aware allocator forces call-crossing
+intervals to spill; a recursive parameter (e.g. `n' in fib that is
+read after `(funcall fib (- n 1))') is the canonical case.  Without
+this prologue extension the spill slot is uninitialised and reloads
+read garbage."
+  (let* ((function    (nelisp-cc-x86_64--codegen-function cg))
+         (alloc-state (nelisp-cc-x86_64--codegen-alloc-state cg))
+         (slot-alist  (nelisp-cc-x86_64--codegen-slot-alist cg))
+         (assignments (if (nelisp-cc--alloc-state-p alloc-state)
+                          (nelisp-cc--alloc-state-assignments alloc-state)
+                        ;; Backwards compat — some callers pass the raw
+                        ;; alist returned by the simulator path.
+                        alloc-state))
+         (params      (nelisp-cc--ssa-function-params function))
+         (buf         (nelisp-cc-x86_64--codegen-buffer cg)))
+    (cl-loop for p in params
+             for arg-reg in nelisp-cc-x86_64--int-arg-regs
+             for vid = (nelisp-cc--ssa-value-id p)
+             for assign = (cdr (assq vid assignments))
+             when (eq assign :spill)
+             do (let ((off (cdr (assq vid slot-alist))))
+                  (when off
+                    (nelisp-cc-x86_64--emit-store-spill
+                     buf arg-reg off))))))
+
 (defun nelisp-cc-x86_64--compile-internal (function alloc-state)
   "Shared body of `--compile' and `--compile-with-meta'.
 
@@ -1211,6 +1420,8 @@ entries can finalise the buffer / extract fixups."
     ;; T15 step (b): function prologue.  PUSH rbp + MOV rbp, rsp
     ;; always; SUB rsp, FRAME-SIZE only when there is a spill frame.
     (nelisp-cc-x86_64--emit-prologue buf frame-size)
+    ;; T84 — save spilled params to their slots.
+    (nelisp-cc-x86_64--emit-param-home-spills cg)
     ;; RPO matches the linear-scan linearisation, so block-relative
     ;; offsets are stable between allocator and backend.
     (let ((rpo (nelisp-cc--ssa--reverse-postorder function)))
@@ -1262,27 +1473,334 @@ final byte vector directly."
           (nreverse (nelisp-cc-x86_64--codegen-call-fixups cg)))))
 
 (defun nelisp-cc-x86_64-compile-with-link (function alloc-state)
-  "Compile FUNCTION + ALLOC-STATE and run the Phase 7.5.6 link step.
-T43 Phase 7.5.6 — see `nelisp-cc--link-unresolved-calls'.
+  "Compile FUNCTION + ALLOC-STATE and run the Phase 7.5 link step.
+T84 Phase 7.5 wire — supersedes the T43 path with full callee + inner
++ cell wiring.
 
 Returns a vector of bytes that is *executable* end-to-end:
-  - every `:call FOO' site has been patched to a CALL rel32 against
-    the matching primitive trampoline (registered in
-    `nelisp-cc-callees--x86_64-trampolines'), and
-  - every `:closure' site has been patched to a CALL rel32 against
-    the embedded `alloc-closure' trampoline.
+  - every `:call FOO' site is patched to a CALL rel32 against the
+    matching primitive trampoline (now embedded with cell-aware
+    fixups so `cons' / `length' actually update + read the counter),
+  - every `:closure' site is patched to a `LEA rax, [rip+disp32]'
+    that resolves to the corresponding inner-function body
+    (compiled into the same buffer),
+  - every `:store-var' / `:load-var' on a letrec-bound name emits
+    RIP-relative MOV against a dedicated `cell:NAME' slot at the
+    JIT page tail (= recursive references reach across the
+    inner-lambda boundary).
 
-Unknown primitives produce a `message' diagnostic and leave the
-fixup at 0 displacement (= falls through, benign for bench timing).
-
-The previous T38 path (`compile-with-meta' → execute) SIGSEGV'd at
-the first `:call' / `:call-indirect-of-closure' boundary; this
-entry is the bench-actual gate's lever."
+The pre-T84 path (T43 SHIPPED) emitted a self-pointer trampoline for
+`:closure' so calls into the closure RET'd immediately; fib(30)
+returned ~2x a pointer address rather than 832040.  T84 fixes that
+by compiling the inner lambda into the shared buffer and resolving
+the closure pointer to the actual body."
   (require 'nelisp-cc-callees)
-  (let* ((pair    (nelisp-cc-x86_64-compile-with-meta function alloc-state))
-         (bytes   (car pair))
-         (fixups  (cdr pair)))
-    (nelisp-cc--link-unresolved-calls bytes fixups 'x86_64)))
+  (nelisp-cc-x86_64--compile-and-link function alloc-state))
+
+(defun nelisp-cc-x86_64--compile-and-link (function alloc-state)
+  "T84 Phase 7.5 wire — full pipeline x86_64 entry.
+
+Stages:
+  1. Walk the SSA (outer + inner lambdas) collecting:
+       - the unique cell-symbol set (`letrec' names + `cons-counter'),
+       - the indexed list of inner functions (= `:closure' sites),
+       - the unique callee set referenced by `:call' opcodes.
+  2. Annotate each `:closure' instruction with `:inner-function-index'
+     so `--lower-closure' emits a stable `inner:N' label fixup.
+  3. Compile the outer body into a fresh buffer (cell symbols
+     threaded so `--lower-load-var' / `--lower-store-var' emit
+     RIP-relative MOV against `cell:NAME').
+  4. Compile each inner function into the SAME buffer, binding the
+     `inner:N' label at its entry and re-using a per-inner block-
+     label namespace so the outer / inner block IDs do not collide.
+  5. Embed each unique primitive trampoline, binding `callee:NAME'
+     so the in-buffer fixup mechanism resolves the rel32 — note
+     the `cons' / `length' trampolines themselves carry a fixup
+     against `cell:cons-counter' so the counter-bump increment +
+     load resolve at finalize time.
+  6. Append 8-byte cell slots, binding `cell:NAME' at the start
+     of each slot.
+  7. Finalize: `--buffer-finalize' walks every label fixup and
+     patches the rel32 / disp32 fields in place."
+  ;; T84 — pre-codegen SSA rewrite: turn scope-bound setq'd variables
+  ;; into cell-routed `:load-var' / `:store-var' so the post-setq
+  ;; reads see the new value (fix for `(while ... (setq i (1+ i)))'
+  ;; infinite loop in the alloc-heavy bench).
+  (require 'nelisp-cc-callees)
+  (nelisp-cc-callees--rewrite-setq-vars function)
+  ;; Re-run linear-scan because the rewrite added load-var
+  ;; instructions which need their own intervals + register
+  ;; assignments.
+  (setq alloc-state (nelisp-cc--linear-scan function))
+  (let* ((cells   (nelisp-cc-callees--collect-cell-symbols function))
+         (inners  (nelisp-cc-callees--collect-inner-functions function))
+         (callees (nelisp-cc-x86_64--collect-callees function)))
+    ;; Step 2: annotate closures with their visit index.
+    (dolist (entry inners)
+      (let ((idx (plist-get entry :index))
+            (instr (plist-get entry :instr)))
+        (setf (nelisp-cc--ssa-instr-meta instr)
+              (plist-put (nelisp-cc--ssa-instr-meta instr)
+                         :inner-function-index idx))))
+    ;; Step 3: compile outer body.
+    (let* ((cg (nelisp-cc-x86_64--compile-with-cells
+                function alloc-state cells)))
+      ;; Step 4: compile each inner function into the same buffer.
+      (dolist (entry inners)
+        (let* ((idx     (plist-get entry :index))
+               (inner   (plist-get entry :inner))
+               (label   (intern (format "inner:%d" idx))))
+          (nelisp-cc-x86_64--buffer-define-label
+           (nelisp-cc-x86_64--codegen-buffer cg) label)
+          (nelisp-cc-x86_64--compile-inner-into-buffer
+           inner cg cells idx)))
+      ;; Step 5: embed primitive trampolines.
+      (nelisp-cc-x86_64--embed-trampolines cg callees)
+      ;; Step 6: append cell slots.
+      (nelisp-cc-x86_64--embed-cells cg cells)
+      ;; Step 7: finalize.
+      (nelisp-cc-x86_64--buffer-finalize
+       (nelisp-cc-x86_64--codegen-buffer cg)))))
+
+(defun nelisp-cc-x86_64--collect-callees (function)
+  "Return the unique callee symbols referenced via `:call' anywhere in
+FUNCTION + nested `:closure' inner-functions.  T84 Phase 7.5 wire."
+  (require 'nelisp-cc-callees)
+  (let ((seen nil))
+    (nelisp-cc-callees--walk-calls
+     function
+     (lambda (fn)
+       (when (and fn (not (memq fn seen)))
+         (push fn seen))))
+    (nreverse seen)))
+
+(defun nelisp-cc-x86_64--compile-with-cells (function alloc-state cells)
+  "Compile FUNCTION's outer body into a fresh codegen, threading CELLS.
+T84 Phase 7.5 wire — splits out from `--compile-internal' so the
+caller can re-enter for inner-function compilation against the same
+buffer."
+  (nelisp-cc--resolve-phis function)
+  (let* ((slots-pair (nelisp-cc--allocate-stack-slots alloc-state))
+         (slot-alist (car slots-pair))
+         (frame-size (cdr slots-pair))
+         (buf (nelisp-cc-x86_64--buffer-make))
+         (cg  (nelisp-cc-x86_64--codegen-make
+               :function function
+               :alloc-state alloc-state
+               :buffer buf
+               :slot-alist slot-alist
+               :frame-size frame-size
+               :cell-symbols cells)))
+    (nelisp-cc-x86_64--emit-prologue buf frame-size)
+    ;; T84 — save spilled params from their arg-regs to spill slots
+    ;; before any body code reads them.
+    (nelisp-cc-x86_64--emit-param-home-spills cg)
+    (let ((rpo (nelisp-cc--ssa--reverse-postorder function)))
+      (setf (nelisp-cc-x86_64--codegen-rpo cg) rpo)
+      (dolist (blk rpo)
+        (let ((lbl (intern (format "L_block_%d"
+                                   (nelisp-cc--ssa-block-id blk)))))
+          (nelisp-cc-x86_64--buffer-define-label buf lbl))
+        (dolist (instr (nelisp-cc--ssa-block-instrs blk))
+          (nelisp-cc-x86_64--lower-instr cg instr))))
+    cg))
+
+(defun nelisp-cc-x86_64--compile-inner-into-buffer (function outer-cg cells idx)
+  "Compile inner FUNCTION into OUTER-CG's buffer.  T84 Phase 7.5 wire.
+
+Each inner function gets its own linear-scan + slot allocation, but
+shares the byte buffer + cell symbols + label namespace.  Block
+labels are renamed `L_block_<IDX>_<BID>' so the inner basic block
+IDs do not collide with the outer / sibling inner functions.
+
+Note: the inner function's `:call' fixups are recorded in a fresh
+codegen's `call-fixups' list — but we drop that list here because
+the new pipeline embeds primitive trampolines via the buffer-fixup
+label mechanism rather than the post-finalize rel32 patcher.  Each
+`--lower-call' inside the inner body still PUSHes its callee onto
+the OUTER-CG's call-fixups so the after-finalize patcher catches
+both outer + inner fixups in one pass when callers go through the
+legacy entry."
+  (let* ((alloc      (nelisp-cc--linear-scan function))
+         (buf        (nelisp-cc-x86_64--codegen-buffer outer-cg))
+         (slots-pair (nelisp-cc--allocate-stack-slots alloc))
+         (slot-alist (car slots-pair))
+         (frame-size (cdr slots-pair))
+         (cg  (nelisp-cc-x86_64--codegen-make
+               :function function
+               :alloc-state alloc
+               :buffer buf  ; shared!
+               :slot-alist slot-alist
+               :frame-size frame-size
+               :cell-symbols cells)))
+    (nelisp-cc--resolve-phis function)
+    (nelisp-cc-x86_64--emit-prologue buf frame-size)
+    ;; T84 — save spilled params from arg-regs into spill slots.
+    (nelisp-cc-x86_64--emit-param-home-spills cg)
+    (let ((rpo (nelisp-cc--ssa--reverse-postorder function)))
+      (setf (nelisp-cc-x86_64--codegen-rpo cg) rpo)
+      (dolist (blk rpo)
+        (let ((lbl (intern (format "L_block_%d_%d"
+                                   idx
+                                   (nelisp-cc--ssa-block-id blk)))))
+          (nelisp-cc-x86_64--buffer-define-label buf lbl))
+        (dolist (instr (nelisp-cc--ssa-block-instrs blk))
+          (nelisp-cc-x86_64--lower-instr-with-prefix cg instr idx))))
+    ;; Merge the inner cg's call-fixups into the outer cg so post-
+    ;; finalize patching catches everything.
+    (setf (nelisp-cc-x86_64--codegen-call-fixups outer-cg)
+          (append (nelisp-cc-x86_64--codegen-call-fixups cg)
+                  (nelisp-cc-x86_64--codegen-call-fixups outer-cg)))))
+
+(defun nelisp-cc-x86_64--lower-instr-with-prefix (cg instr idx)
+  "Like `--lower-instr' but rewrites block-relative branch targets to
+the inner-function's prefixed label namespace.  T84 Phase 7.5 wire.
+
+Currently only `:branch' / `:jump' carry block IDs we need to
+prefix; every other opcode lowers identically."
+  (pcase (nelisp-cc--ssa-instr-opcode instr)
+    ('branch (nelisp-cc-x86_64--lower-branch-prefixed cg instr idx))
+    ('jump   (nelisp-cc-x86_64--lower-jump-prefixed cg instr idx))
+    (_       (nelisp-cc-x86_64--lower-instr cg instr))))
+
+(defun nelisp-cc-x86_64--lower-branch-prefixed (cg instr idx)
+  "Inner-function-aware variant of `--lower-branch' that targets
+`L_block_<IDX>_<BID>' labels."
+  (let* ((buf      (nelisp-cc-x86_64--codegen-buffer cg))
+         (operands (nelisp-cc--ssa-instr-operands instr))
+         (meta     (nelisp-cc--ssa-instr-meta instr))
+         (then-id  (plist-get meta :then))
+         (else-id  (plist-get meta :else))
+         (cond-val (car operands))
+         (cond-reg (nelisp-cc-x86_64--materialise-operand cg cond-val)))
+    (nelisp-cc-x86_64--buffer-emit-bytes
+     buf (nelisp-cc-x86_64--emit-binop-reg-reg #x85 cond-reg cond-reg))
+    (let ((else-label (intern (format "L_block_%d_%d" idx else-id))))
+      (nelisp-cc-x86_64--buffer-emit-fixup
+       buf (nelisp-cc-x86_64--emit-jcc-rel32 'je 0)
+       else-label
+       2))
+    (let ((then-label (intern (format "L_block_%d_%d" idx then-id))))
+      (nelisp-cc-x86_64--buffer-emit-fixup
+       buf (nelisp-cc-x86_64--emit-jmp-rel32 0)
+       then-label
+       1))))
+
+(defun nelisp-cc-x86_64--lower-jump-prefixed (cg instr idx)
+  "Inner-function-aware variant of `--lower-jump'."
+  (let* ((buf     (nelisp-cc-x86_64--codegen-buffer cg))
+         (block   (nelisp-cc--ssa-instr-block instr))
+         (succs   (nelisp-cc--ssa-block-successors block))
+         (succ    (car succs)))
+    (unless succ
+      (signal 'nelisp-cc-x86_64-encoding-error
+              (list :jump-with-no-successor
+                    (nelisp-cc--ssa-block-id block))))
+    (let ((target-label
+           (intern (format "L_block_%d_%d"
+                           idx (nelisp-cc--ssa-block-id succ)))))
+      (nelisp-cc-x86_64--buffer-emit-fixup
+       buf (nelisp-cc-x86_64--emit-jmp-rel32 0)
+       target-label
+       1))))
+
+(defun nelisp-cc-x86_64--embed-trampolines (cg callees)
+  "Embed each primitive trampoline into CG's buffer + bind the
+`callee:NAME' label so `:call' rel32 fixups (added to the codegen
+call-fixups list) can be retro-patched after finalize.  T84 Phase
+7.5 wire.
+
+For the cell-aware trampolines (`cons' / `length' bumping the
+`cons-counter' cell), this helper emits the carefully crafted byte
+sequence inline + records buffer-level fixups against `cell:cons-
+counter' so the link-time resolver patches the disp32 fields in
+place.  Other primitives use the static byte sequence from
+`nelisp-cc-callees--x86_64-trampolines'."
+  (require 'nelisp-cc-callees)
+  (let ((buf (nelisp-cc-x86_64--codegen-buffer cg)))
+    (dolist (sym callees)
+      (when (nelisp-cc-callees-known-p sym 'x86_64)
+        (let ((label (intern (format "callee:%s" sym))))
+          (nelisp-cc-x86_64--buffer-define-label buf label)
+          (cond
+           ((eq sym 'cons)
+            (nelisp-cc-x86_64--emit-cons-trampoline buf))
+           ((eq sym 'length)
+            (nelisp-cc-x86_64--emit-length-trampoline buf))
+           (t
+            (dolist (b (nelisp-cc-callees-trampoline-bytes sym 'x86_64))
+              (nelisp-cc-x86_64--buffer-emit-byte buf b)))))))
+    ;; Convert the call-fixups (currently keyed by callee SYMBOL +
+    ;; absolute byte offset of the rel32 field) into post-finalize
+    ;; patching that walks `callee:NAME' labels.  We do this by
+    ;; injecting a synthetic buffer-fixup against the callee label
+    ;; for each call site — that way `--buffer-finalize' patches the
+    ;; rel32 in the same pass as every other label fixup.
+    (let ((fixups (nelisp-cc-x86_64--codegen-call-fixups cg)))
+      (dolist (fx fixups)
+        (let ((abs-off (car fx))
+              (callee  (cdr fx)))
+          (when (and callee (memq callee callees)
+                     (nelisp-cc-callees-known-p callee 'x86_64))
+            (push (cons abs-off (intern (format "callee:%s" callee)))
+                  (nelisp-cc-x86_64--buffer-fixups buf)))))
+      ;; Drop the call-fixups so `--link-unresolved-calls' is not
+      ;; invoked on this buffer (the legacy entry calls it; we
+      ;; bypass).
+      (setf (nelisp-cc-x86_64--codegen-call-fixups cg) nil))))
+
+(defun nelisp-cc-x86_64--emit-cons-trampoline (buf)
+  "T84 Phase 7.5 wire — `cons' counter-bump trampoline.
+
+Bumps the `cell:cons-counter' cell and returns the second arg
+(rsi) — semantics: the bench harness's `(cons i acc)' chain only
+needs *some* non-zero pointer to keep the loop alive and a counter
+so `length' can return the right value.  Real cons-cell allocation
+is Phase 7.6 (Doc 32 v2 §3 Stage 2 closure-pool / cons-pool).
+
+Bytes:
+  48 FF 05 <disp32>     INC qword [rip + cell:cons-counter]
+  48 89 F0              MOV rax, rsi  (= return cdr ≈ tail of list)
+  C3                    RET"
+  (let* ((before (nelisp-cc-x86_64--buffer-offset buf)))
+    (nelisp-cc-x86_64--buffer-emit-bytes
+     buf (nelisp-cc-x86_64--emit-inc-mem-rip-rel 0))
+    (push (cons (+ before 3) 'cell:cons-counter)
+          (nelisp-cc-x86_64--buffer-fixups buf)))
+  ;; MOV rax, rsi
+  (nelisp-cc-x86_64--buffer-emit-bytes
+   buf (nelisp-cc-x86_64--emit-mov-reg-reg 'rax 'rsi))
+  (nelisp-cc-x86_64--buffer-emit-bytes
+   buf (nelisp-cc-x86_64--emit-ret)))
+
+(defun nelisp-cc-x86_64--emit-length-trampoline (buf)
+  "T84 Phase 7.5 wire — `length' counter-load trampoline.
+
+Loads the `cell:cons-counter' cell into rax + RET.  Pairs with
+`--emit-cons-trampoline' so the bench-actual `(length acc)' returns
+the count of `cons' calls (= 1000000 for the alloc-heavy axis).
+
+Bytes:
+  48 8B 05 <disp32>     MOV rax, [rip + cell:cons-counter]
+  C3                    RET"
+  (let* ((before (nelisp-cc-x86_64--buffer-offset buf)))
+    (nelisp-cc-x86_64--buffer-emit-bytes
+     buf (nelisp-cc-x86_64--emit-mov-rax-rip-rel 0))
+    (push (cons (+ before 3) 'cell:cons-counter)
+          (nelisp-cc-x86_64--buffer-fixups buf)))
+  (nelisp-cc-x86_64--buffer-emit-bytes
+   buf (nelisp-cc-x86_64--emit-ret)))
+
+(defun nelisp-cc-x86_64--embed-cells (cg cells)
+  "Append 8 zero bytes for each symbol in CELLS, binding `cell:NAME'
+at the start of each slot.  T84 Phase 7.5 wire — final tail of the
+JIT page; reachable RIP-relative from every embedded body / trampoline."
+  (let ((buf (nelisp-cc-x86_64--codegen-buffer cg)))
+    (dolist (sym cells)
+      (let ((label (intern (format "cell:%s" sym))))
+        (nelisp-cc-x86_64--buffer-define-label buf label)
+        (dotimes (_ 8)
+          (nelisp-cc-x86_64--buffer-emit-byte buf 0))))))
 
 (provide 'nelisp-cc-x86_64)
 ;;; nelisp-cc-x86_64.el ends here

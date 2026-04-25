@@ -170,18 +170,19 @@ the documented bench-friendly degraded mode."
   "Compiling the bench-actual fib(30) form through `compile-with-link'
 must produce a byte vector that:
   - is non-empty,
-  - contains the embedded closure allocator (= `0x48 0x8D 0x05 0xF9
-    0xFF 0xFF 0xFF' LEA rax, [rip-7] sequence) — fib uses `letrec'
-    + `lambda', so the outer function compiles to a `:closure'
-    instruction that emits a CALL into the embedded allocator.
+  - contains the LEA rax, [rip+disp32] (`48 8D 05 ...') prefix that
+    T84 emits for the outer `:closure' instruction targetting the
+    inner fib body,
+  - contains a `48 FF D0' (= REX.W + CALL rax) for `:call-indirect',
+  - contains the `+' trampoline body (= `48 89 F8 48 01 F0 C3' MOV
+    rax, rdi; ADD rax, rsi; RET) embedded into the same buffer
+    because the *inner* fib body now carries `:call '+' ...' and the
+    link step accumulates inner-function callees.
 
-Note: the `+' / `-' / `<' trampolines are embedded only when the
-*outer* function references those primitives directly.  In the
-bench-actual fib form the arithmetic lives inside the *inner*
-lambda (the recursive closure body) which is a separate SSA
-function — when Phase 7.5 wires inner-function compile, those
-trampolines will appear in the inner unit.  For T43 we assert only
-on the closure allocator embedding."
+T84 retires the alloc-closure self-pointer trampoline; the LEA
+sequence asserted here is the new closure-pointer pattern.  T43's
+`F9 FF FF FF' tail (= LEA rax, [rip-7] for self-loop) is no
+longer present."
   (let* ((fn (nelisp-cc-build-ssa-from-ast
               '(lambda ()
                  (letrec ((fib (lambda (n)
@@ -192,18 +193,37 @@ on the closure allocator embedding."
          (alloc (nelisp-cc--linear-scan fn))
          (bytes (nelisp-cc-x86_64-compile-with-link fn alloc))
          (lst   (append bytes nil))
-         (found-lea-self nil))
+         (found-lea-rip   nil)
+         (found-call-rax  nil)
+         (found-plus-tramp nil))
     (should (vectorp bytes))
     (should (> (length bytes) 0))
     (cl-loop for tail on lst
-             when (and (eq (car tail)         #x48)
-                       (eq (cadr tail)        #x8D)
+             when (and (eq (car tail)        #x48)
+                       (eq (cadr tail)       #x8D)
                        (cl-caddr tail)
-                       (eq (cl-caddr tail)    #x05)
+                       (eq (cl-caddr tail)   #x05))
+             do (setq found-lea-rip t))
+    (cl-loop for tail on lst
+             when (and (eq (car tail) #x48)
+                       (eq (cadr tail) #xFF)
+                       (cl-caddr tail)
+                       (eq (cl-caddr tail) #xD0))
+             do (setq found-call-rax t))
+    ;; `+' trampoline body sequence: 48 89 F8 48 01 F0 C3.
+    (cl-loop for tail on lst
+             when (and (eq (car tail)      #x48)
+                       (eq (cadr tail)     #x89)
+                       (cl-caddr tail)
+                       (eq (cl-caddr tail) #xF8)
                        (cdddr tail)
-                       (eq (cadddr tail)      #xF9))
-             do (setq found-lea-self t))
-    (should found-lea-self)))
+                       (eq (cadddr tail)   #x48)
+                       (cdr (cdddr tail))
+                       (eq (cadr (cdddr tail)) #x01))
+             do (setq found-plus-tramp t))
+    (should found-lea-rip)
+    (should found-call-rax)
+    (should found-plus-tramp)))
 
 (ert-deftest nelisp-cc-x86_64-compile-with-link-direct-arith-form ()
   "When the *outer* function directly references arithmetic
@@ -227,39 +247,36 @@ After T43 compile-with-link the bytes must include the `0x48 0x89
 
 ;;; (9) B.2 :closure now emits CALL (not MOV r,0) -------------------
 
-(ert-deftest nelisp-cc-x86_64-closure-emits-call-not-zero-mov ()
-  "After T43 the `:closure' lowering MUST NOT emit `MOV r,0' (the T38
-placeholder); instead it emits a `CALL rel32' that the link step
-patches against the embedded `alloc-closure' trampoline.
+(ert-deftest nelisp-cc-x86_64-closure-emits-lea-not-zero-mov ()
+  "T84 Phase 7.5 wire: the `:closure' lowering MUST NOT emit `MOV r,0'
+(the T38 placeholder) and MUST NOT emit a CALL into the legacy
+`alloc-closure' trampoline (the T43 path); instead it emits a
+`LEA rax, [rip + INNER:N]' that resolves to the inner-function body
+embedded in the same buffer.
 
 We assert this by:
   - compiling a function that defines a closure but does not call it,
-  - confirming the bytes include a CALL opcode (0xE8) and the LEA
-    self-pointer trampoline (0x48 0x8D 0x05 0xF9 ...),
-  - confirming the bytes do NOT contain a 'MOV r,0' = REX 0x48 0xC7
-    0xC0 0x00 0x00 0x00 0x00 unless that exact byte sequence is
-    incidental.  We weaken the second assertion to: the CALL +
-    trampoline pair must be present."
+  - confirming the bytes include a LEA rax, [rip+disp32] (0x48 0x8D
+    0x05) prefix matching the new closure lowering,
+  - and the inner body's own prologue (PUSH rbp + MOV rbp, rsp) follows
+    after the outer body's RET.
+
+Pre-T84 (T43) this test asserted on the alloc-closure trampoline's
+self-pointer LEA; T84 retires that trampoline because the inner
+body is now reachable directly via LEA + the call-indirect path."
   (let* ((fn (nelisp-cc-build-ssa-from-ast
               '(lambda () (lambda (x) x))))
          (alloc (nelisp-cc--linear-scan fn))
          (bytes (nelisp-cc-x86_64-compile-with-link fn alloc))
          (lst   (append bytes nil))
-         (found-call nil)
-         (found-lea-self nil))
+         (found-lea-rax-rip nil))
     (cl-loop for tail on lst
-             when (eq (car tail) #xE8)
-             do (setq found-call t))
-    (cl-loop for tail on lst
-             when (and (eq (car tail)         #x48)
-                       (eq (cadr tail)        #x8D)
+             when (and (eq (car tail)        #x48)
+                       (eq (cadr tail)       #x8D)
                        (cl-caddr tail)
-                       (eq (cl-caddr tail)    #x05)
-                       (cdddr tail)
-                       (eq (cadddr tail)      #xF9))
-             do (setq found-lea-self t))
-    (should found-call)
-    (should found-lea-self)))
+                       (eq (cl-caddr tail)   #x05))
+             do (setq found-lea-rax-rip t))
+    (should found-lea-rax-rip)))
 
 ;;; (10) A.3 arm64 compile-with-link end-to-end --------------------
 
@@ -327,12 +344,16 @@ endian) so the BL fixup resolves."
   "End-to-end byte-level smoke for the closure-funcall pattern that
 the bench-actual letrec forms exercise:
   (let ((f (lambda (x) (+ x 1)))) (funcall f 41))
-After T43 compile-with-link this must:
+T84 Phase 7.5 wire — the new pipeline lowers `:closure' to a LEA
+against `inner:N' (= the inner body in the same buffer) and lowers
+`:call-indirect' to `CALL rax'.  We assert:
   - produce bytes (no SSA / linear-scan / backend signal),
-  - contain a CALL [rax] (FF /2, 0x48 0xFF 0xD0) for :call-indirect,
-  - contain a CALL rel32 (0xE8) for both the :closure allocation +
-    the :call (+) site,
-  - contain the LEA rax, [rip-7] alloc-closure self-pointer."
+  - contain a CALL rax (REX.W + FF /2, 0x48 0xFF 0xD0) for
+    `:call-indirect',
+  - contain a CALL rel32 (0xE8) for the `:call (+)' site (now part
+    of the link-step's callee-label resolution).
+The LEA self-pointer is no longer emitted (the alloc-closure
+trampoline is retired post-T84)."
   (let* ((fn (nelisp-cc-build-ssa-from-ast
               '(lambda ()
                  (let ((f (lambda (x) (+ x 1))))
@@ -341,8 +362,7 @@ After T43 compile-with-link this must:
          (bytes (nelisp-cc-x86_64-compile-with-link fn alloc))
          (lst   (append bytes nil))
          (found-call-indirect nil)
-         (found-call-rel32   nil)
-         (found-lea-self     nil))
+         (found-call-rel32   nil))
     (cl-loop for tail on lst
              when (and (eq (car tail) #x48)
                        (eq (cadr tail) #xFF)
@@ -352,17 +372,8 @@ After T43 compile-with-link this must:
     (cl-loop for tail on lst
              when (eq (car tail) #xE8)
              do (setq found-call-rel32 t))
-    (cl-loop for tail on lst
-             when (and (eq (car tail)         #x48)
-                       (eq (cadr tail)        #x8D)
-                       (cl-caddr tail)
-                       (eq (cl-caddr tail)    #x05)
-                       (cdddr tail)
-                       (eq (cadddr tail)      #xF9))
-             do (setq found-lea-self t))
     (should found-call-indirect)
-    (should found-call-rel32)
-    (should found-lea-self)))
+    (should found-call-rel32)))
 
 ;;; (12) A.2 rel32 underflow / overflow signals --------------------
 

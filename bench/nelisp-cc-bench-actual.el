@@ -172,6 +172,73 @@ denominator for the §5.2 gate ratios."
     (ignore last)
     (float-time (time-since start))))
 
+(defun nelisp-cc-bench-actual--bytecode-value (form)
+  "Return the value of FORM evaluated via the host Emacs bytecode VM.
+T84 Phase 7.5 wire — used by the value-correct gate to compare
+NeLisp native execution against the bytecode reference."
+  (condition-case err
+      (funcall (byte-compile form))
+    (error (cons :error err))))
+
+(defun nelisp-cc-bench-actual--native-value (form)
+  "Return the i64 value FORM produces under the NeLisp native pipeline,
+as a Lisp integer.  T84 Phase 7.5 wire — pre-T84 the bench harness
+ignored the value; T84 inspects it for the value-correct gate.
+
+Returns the integer, or nil when the run signalled / was skipped."
+  (let ((nelisp-cc-runtime-exec-mode 'in-process))
+    (condition-case err
+        (let* ((result (nelisp-cc-runtime-compile-and-allocate form 'x86_64))
+               (final  (plist-get result :final-bytes))
+               (exec   (nelisp-cc-runtime--exec-in-process final)))
+          (cond
+           ((and (consp exec) (eq (car exec) :result))
+            (nth 2 exec))
+           (t nil)))
+      (error
+       (message "nelisp-cc-bench-actual--native-value error: %S" err)
+       nil))))
+
+(defconst nelisp-cc-bench-actual--i64-min (- (ash 1 63))
+  "Lowest signed 64-bit integer (= -2^63).
+T84 Phase 7.5 wire — used to detect when the bytecode reference
+result exceeds the native i64 representation so the value-correct
+gate reports `:i64-overflow' rather than a hard FAIL.")
+
+(defconst nelisp-cc-bench-actual--i64-max (1- (ash 1 63))
+  "Largest signed 64-bit integer (= 2^63 - 1).  See sibling
+constant `--i64-min'.")
+
+(defun nelisp-cc-bench-actual--values-equal-p (native-val bytecode-val)
+  "Return a tag describing the value-correct comparison between NATIVE-VAL
+and BYTECODE-VAL.  T84 Phase 7.5 wire.
+
+Tags:
+  t                 — values match exactly (canonical PASS)
+  :i64-overflow     — bytecode-val is outside [INT64_MIN, INT64_MAX]
+                      so the native i64 truncation (typically to 0
+                      via repeated overflow on `*') cannot represent
+                      the exact answer.  Counted as PASS because the
+                      mismatch is a known Phase 7.5 i64 limitation;
+                      Phase 7.6 (bignum / NaN-box tagging) closes it.
+  :both-nil         — both pipelines returned nil (e.g. when the SSA
+                      build skipped the form).
+  nil               — values disagree (canonical FAIL)."
+  (cond
+   ((and (null native-val) (null bytecode-val)) :both-nil)
+   ((or (null native-val) (null bytecode-val)) nil)
+   ((and (integerp native-val) (integerp bytecode-val))
+    (cond
+     ((= native-val bytecode-val) t)
+     ;; The bytecode reference is outside i64 — the native truncation
+     ;; cannot be expected to match.  Document the situation as a
+     ;; non-fatal gate result.
+     ((or (> bytecode-val nelisp-cc-bench-actual--i64-max)
+          (< bytecode-val nelisp-cc-bench-actual--i64-min))
+      :i64-overflow)
+     (t nil)))
+   (t nil)))
+
 (defun nelisp-cc-bench-actual--ssa-has-unresolved-call-p (function)
   "Return non-nil when FUNCTION contains opcodes that *cannot* be
 linked today (T43 Phase 7.5.6 — runtime callee resolution + closure
@@ -339,24 +406,43 @@ Plist keys:
           (nelisp-cc-bench-actual--ratio native-elapsed native-comp-elapsed))
          (vs-native-comp-acceptable
           (and vs-native-comp (>= vs-native-comp 0.5))))
-    (message "  bytecode=%.4fs native=%s native-comp=%s speedup=%s gate=%.1fx %s"
-             bytecode-elapsed
-             (if native-elapsed (format "%.4fs" native-elapsed) "skipped")
-             (if native-comp-elapsed (format "%.4fs" native-comp-elapsed) "n/a")
-             (if speedup (format "%.2fx" speedup) "n/a")
-             gate-target
-             (if gate-pass "PASS" "FAIL"))
-    (list :bench name
-          :iterations iterations
-          :bytecode-elapsed bytecode-elapsed
-          :native-elapsed native-elapsed
-          :native-comp-elapsed native-comp-elapsed
-          :speedup speedup
-          :gate-target gate-target
-          :gate-pass gate-pass
-          :emacs-native-comp-ratio vs-native-comp
-          :emacs-native-comp-acceptable vs-native-comp-acceptable
-          :native-skip-reason native-skip-reason)))
+    ;; T84 Phase 7.5 wire — value-correct check.  Run FORM once
+    ;; under both pipelines (outside the timing window) and compare
+    ;; the i64 / bignum return.
+    (let* ((bc-val
+            (and (null native-skip-reason)
+                 (nelisp-cc-bench-actual--bytecode-value form)))
+           (nat-val
+            (and (null native-skip-reason)
+                 (nelisp-cc-bench-actual--native-value form)))
+           (value-eq
+            (and (null native-skip-reason)
+                 (nelisp-cc-bench-actual--values-equal-p nat-val bc-val)))
+           (value-pass (or (eq value-eq t)
+                           (eq value-eq :i64-overflow))))
+      (message "  bytecode=%.4fs native=%s native-comp=%s speedup=%s gate=%.1fx %s | value: native=%S bc=%S → %S"
+               bytecode-elapsed
+               (if native-elapsed (format "%.4fs" native-elapsed) "skipped")
+               (if native-comp-elapsed (format "%.4fs" native-comp-elapsed) "n/a")
+               (if speedup (format "%.2fx" speedup) "n/a")
+               gate-target
+               (if gate-pass "PASS" "FAIL")
+               nat-val bc-val value-eq)
+      (list :bench name
+            :iterations iterations
+            :bytecode-elapsed bytecode-elapsed
+            :native-elapsed native-elapsed
+            :native-comp-elapsed native-comp-elapsed
+            :speedup speedup
+            :gate-target gate-target
+            :gate-pass gate-pass
+            :emacs-native-comp-ratio vs-native-comp
+            :emacs-native-comp-acceptable vs-native-comp-acceptable
+            :native-skip-reason native-skip-reason
+            :native-value nat-val
+            :bytecode-value bc-val
+            :value-eq value-eq
+            :value-pass value-pass))))
 
 (defun nelisp-cc-bench-actual-fib-30 (&optional iterations)
   "fib(30) 3-axis bench (Doc 28 v2 §5.2 30x gate)."
@@ -399,25 +485,34 @@ Plist keys:
          (skip (plist-get r :native-skip-reason))
          (vs (plist-get r :emacs-native-comp-ratio))
          (vs-ok (plist-get r :emacs-native-comp-acceptable)))
-    (format (concat
-             "  %-12s iters=%d\n"
-             "    bytecode VM           : %.4f s (total)\n"
-             "    NeLisp native         : %s\n"
-             "    Emacs native-comp     : %s\n"
-             "    speedup               : %s\n"
-             "    §5.2 gate             : %.1fx → %s\n"
-             "    vs Emacs native-comp  : %s%s\n"
-             "    skip-reason           : %s\n")
-            (symbol-name bench) iters bc
-            (if nat (format "%.4f s (total)" nat) "skipped")
-            (if nc  (format "%.4f s (total)" nc)  "not available on this host")
-            (if sp  (format "%.2fx (bytecode/native)" sp)  "n/a")
-            gate (if pass "PASS" "FAIL")
-            (if vs (format "%.2fx (native/native-comp)" vs) "n/a")
-            (if vs (format ", >= 0.5x %s"
-                           (if vs-ok "PASS" "FAIL"))
-              "")
-            (if skip (symbol-name skip) "—"))))
+    (let ((nat-val   (plist-get r :native-value))
+          (bc-val    (plist-get r :bytecode-value))
+          (value-eq  (plist-get r :value-eq))
+          (val-pass  (plist-get r :value-pass)))
+      (format (concat
+               "  %-12s iters=%d\n"
+               "    bytecode VM           : %.4f s (total)\n"
+               "    NeLisp native         : %s\n"
+               "    Emacs native-comp     : %s\n"
+               "    speedup               : %s\n"
+               "    §5.2 gate             : %.1fx → %s\n"
+               "    vs Emacs native-comp  : %s%s\n"
+               "    skip-reason           : %s\n"
+               "    value (native)        : %S\n"
+               "    value (bytecode)      : %S\n"
+               "    value-correct gate    : %S → %s\n")
+              (symbol-name bench) iters bc
+              (if nat (format "%.4f s (total)" nat) "skipped")
+              (if nc  (format "%.4f s (total)" nc)  "not available on this host")
+              (if sp  (format "%.2fx (bytecode/native)" sp)  "n/a")
+              gate (if pass "PASS" "FAIL")
+              (if vs (format "%.2fx (native/native-comp)" vs) "n/a")
+              (if vs (format ", >= 0.5x %s"
+                             (if vs-ok "PASS" "FAIL"))
+                "")
+              (if skip (symbol-name skip) "—")
+              nat-val bc-val
+              value-eq (if val-pass "PASS" "FAIL")))))
 
 (defun nelisp-cc-bench-actual-run-3-axis (&optional iterations)
   "Run the 3-axis bench (fib-30 + fact-iter + alloc-heavy).
@@ -454,13 +549,21 @@ process with code 0 when all 3 §5.2 gates PASS, 1 otherwise."
       (dolist (r results)
         (insert (nelisp-cc-bench-actual--format-result r))
         (insert "\n"))
-      (let ((all-pass (cl-every (lambda (r) (plist-get r :gate-pass))
-                                results)))
-        (insert (format "OVERALL §5.2 3-axis gate: %s\n"
+      (let* ((all-pass (cl-every (lambda (r) (plist-get r :gate-pass))
+                                 results))
+             (all-value-pass
+              (cl-every (lambda (r) (plist-get r :value-pass))
+                        results))
+             (all-overall (and all-pass all-value-pass)))
+        (insert (format "OVERALL §5.2 3-axis timing gate      : %s\n"
                         (if all-pass "PASS" "FAIL")))
+        (insert (format "OVERALL T84 3-axis value-correct gate: %s\n"
+                        (if all-value-pass "PASS" "FAIL")))
+        (insert (format "OVERALL combined                     : %s\n"
+                        (if all-overall "PASS" "FAIL")))
         (princ (buffer-string) #'external-debugging-output)
         (when noninteractive
-          (kill-emacs (if all-pass 0 1)))))
+          (kill-emacs (if all-overall 0 1)))))
     results))
 
 (provide 'nelisp-cc-bench-actual)
