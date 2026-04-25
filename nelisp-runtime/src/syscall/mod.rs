@@ -27,8 +27,23 @@
 pub mod error;
 pub mod unix;
 
+#[cfg(feature = "fileio-syscalls")]
+pub mod fileio;
+
 pub use error::SyscallError;
 pub use unix::NelispStat;
+
+// Phase 9d.A1 (T76 / T54 Wave 1 agent A) — re-export the eight new
+// file I/O extern "C" symbols at `syscall::*` so the lib.rs surface
+// can pick them up alongside the Phase 7.0 base set.  Behind the
+// `fileio-syscalls` feature flag (default ON) so a future "mini build"
+// without file I/O can opt out without code surgery.
+#[cfg(feature = "fileio-syscalls")]
+pub use fileio::{
+    nl_syscall_access, nl_syscall_closedir, nl_syscall_mkdir, nl_syscall_opendir,
+    nl_syscall_readdir, nl_syscall_rename, nl_syscall_stat_ex, nl_syscall_unlink,
+    NELISP_FILEIO_PATH_MAX,
+};
 
 use libc::{c_char, c_int, mode_t, off_t, size_t, ssize_t};
 

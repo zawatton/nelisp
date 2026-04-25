@@ -27,3 +27,15 @@ pub use syscall::{
     NELISP_O_RDONLY, NELISP_O_RDWR, NELISP_O_TRUNC, NELISP_O_WRONLY, NELISP_PROT_EXEC,
     NELISP_PROT_NONE, NELISP_PROT_READ, NELISP_PROT_WRITE,
 };
+
+// Phase 9d.A1 — file I/O syscall extension.  The eight new `nl_syscall_*`
+// symbols are wired through here so callers can write
+// `nelisp_runtime::nl_syscall_mkdir` without spelling `::syscall::fileio::`.
+// Gated behind the `fileio-syscalls` feature (default ON) per Doc 27 §3
+// 7.0 freeze contract: a "mini build" without file I/O still compiles.
+#[cfg(feature = "fileio-syscalls")]
+pub use syscall::{
+    nl_syscall_access, nl_syscall_closedir, nl_syscall_mkdir, nl_syscall_opendir,
+    nl_syscall_readdir, nl_syscall_rename, nl_syscall_stat_ex, nl_syscall_unlink,
+    NELISP_FILEIO_PATH_MAX,
+};

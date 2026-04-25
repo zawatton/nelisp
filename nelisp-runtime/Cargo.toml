@@ -40,6 +40,15 @@ name = "nelisp_cc_bench"
 path = "benches/nelisp_cc_bench.rs"
 harness = false
 
+# Phase 9d.A1 (T76 / T54 Wave 1 agent A) — file I/O syscall extension
+# is gated behind `fileio-syscalls` so a future "mini build" of the
+# runtime (no directory / unlink / rename surface) can opt out without
+# code surgery.  Default ON: the standalone anvil bootstrap path Doc
+# 27/32 calls out as Phase 9d depends on these primitives.
+[features]
+default = ["fileio-syscalls"]
+fileio-syscalls = []
+
 [dependencies]
 libc = "0.2"
 

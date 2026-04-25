@@ -236,3 +236,16 @@ unsafe fn copy_stat(_buf: &libc::stat, out: &mut NelispStat) {
     // leave the struct zeroed so callers can detect the gap.
     *out = NelispStat::default();
 }
+
+/// Phase 9d.A1 re-export of `copy_stat` for the `fileio` module.
+///
+/// `copy_stat` itself stays private (per-OS cfg variants live next to
+/// each other).  `fileio.rs` lives in a sibling module so it can't
+/// reach the private helper directly; this thin wrapper delegates to
+/// whichever `copy_stat` the host cfg gates picked.  Only compiled
+/// when the `fileio-syscalls` feature is on, otherwise the function
+/// trips dead-code warnings on the mini build.
+#[cfg(feature = "fileio-syscalls")]
+pub(crate) unsafe fn copy_stat_for_ex(buf: &libc::stat, out: &mut NelispStat) {
+    copy_stat(buf, out)
+}
