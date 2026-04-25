@@ -144,23 +144,32 @@ seats the FFI in Emacs's process."
 ;;; (3) Arithmetic add — byte-level shape only --------------------
 
 (ert-deftest nelisp-cc-real-exec-arithmetic-add ()
-  "`(lambda (x y) (+ x y))' compiles to a CALL + epilogue + RET.
+  "`(lambda (x y) (+ x y))' inline-lowers `+' as a direct ADD r/m64
+instruction (T96 Phase 7.1.5) — the trampoline CALL is bypassed.
 
-Phase 7.5 will resolve the `+' primitive and patch the rel32; for
-T15 the body still emits an unresolved CALL whose rel32 is 0,
-which would jump to a near-but-not-meaningful address if executed.
-We therefore assert the byte-level *shape* (CALL opcode 0xE8
-appears + a non-zero call-fixup is recorded against `+') without
-running the bytes — call-resolution is out of scope for the MVP."
+Pre-T96 (T15 SHIPPED through T84) the body emitted an unresolved
+CALL `+' whose rel32 was patched at link time against the primitive
+trampoline registry (= a CALL+RET round trip per dynamic op).  T96
+inlines `+ - * 1+ 1- < > = eq null not' so the hot path is just
+ADD / SUB / IMUL / INC / DEC / CMP+SETcc — no CALL.
+
+We therefore assert the byte-level T96 shape: the ADD opcode
+(REX.W + 0x01) appears in the produced bytes, and *no* fixup
+against the `+' symbol survives (= the inline path skipped the
+fixup path entirely).  The prologue / epilogue invariants still
+hold."
   (let* ((fn      (nelisp-cc-build-ssa-from-ast '(lambda (x y) (+ x y))))
          (alloc   (nelisp-cc--linear-scan fn))
          (result  (nelisp-cc-x86_64-compile-with-meta fn alloc))
          (bytes   (car result))
-         (fixups  (cdr result)))
-    ;; CALL (0xE8) opcode appears.
-    (should (cl-some (lambda (b) (= b #xE8)) (append bytes nil)))
-    ;; A fixup against `+' is recorded.
-    (should (cl-some (lambda (cell) (eq (cdr cell) '+)) fixups))
+         (fixups  (cdr result))
+         (bv      (if (vectorp bytes) bytes (vconcat bytes))))
+    ;; ADD r/m64 (REX.W + opcode 0x01) appears — the inline emit.
+    (should (cl-loop for i from 0 below (1- (length bv))
+                     thereis (and (= (aref bv i) #x48)
+                                  (= (aref bv (1+ i)) #x01))))
+    ;; No fixup against `+' (inline emit bypasses the trampoline path).
+    (should-not (cl-some (lambda (cell) (eq (cdr cell) '+)) fixups))
     ;; Prologue (PUSH rbp = 0x55) + epilogue (POP rbp = 0x5D) survive.
     (should (nelisp-cc-real-exec-test--bytes-balanced-p bytes))))
 

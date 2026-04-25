@@ -1626,6 +1626,20 @@ NAME to nil — same shape as `let'."
               (nelisp-cc--lower-expr fn cur-block
                                      scope-with-placeholders init)
             (setq cur-block nb)
+            ;; T96 Phase 7.1.5 — when INIT is a `(lambda ...)' form
+            ;; the lower-expr above produced a `:closure' instruction
+            ;; whose def is VAL.  Tag that closure's META with the
+            ;; letrec name so the backend's TCO pass can recognise
+            ;; recursive `(funcall NAME ...)' calls inside the inner
+            ;; body and rewrite them as JMP-to-self instead of
+            ;; CALL+RET.
+            (let ((origin (and val (nelisp-cc--ssa-value-def-point val))))
+              (when (and (nelisp-cc--ssa-instr-p origin)
+                         (eq (nelisp-cc--ssa-instr-opcode origin)
+                             'closure))
+                (setf (nelisp-cc--ssa-instr-meta origin)
+                      (plist-put (nelisp-cc--ssa-instr-meta origin)
+                                 :letrec-name var))))
             (let* ((store-def (nelisp-cc--ssa-make-value fn nil))
                    (store-instr (nelisp-cc--ssa-add-instr
                                  fn cur-block 'store-var

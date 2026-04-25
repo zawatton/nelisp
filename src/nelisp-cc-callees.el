@@ -658,6 +658,76 @@ in subsequent reads are rewritten to the load-var def."
                   (when inner (process inner)))))))))
     (process function)))
 
+(defun nelisp-cc-callees--mark-tail-self-calls (function letrec-name)
+  "T96 Phase 7.1.5 — mark `:call-indirect' instructions in FUNCTION
+that target the letrec-bound self.  LETREC-NAME is the symbol naming
+the closure that contains FUNCTION; for
+`(letrec ((fact-iter (lambda ...))) ...)' it would be `fact-iter'.
+
+Two kinds of marks are produced:
+
+A. `:tail-call-self LETREC-NAME' — emitted when the call's def
+   has exactly one use which is a `:phi' whose def has exactly one
+   use which is the function's `:return'.  The backend rewrites
+   these as JMP `inner:IDX:body' (= reuse the current frame).
+
+B. `:self-direct-call LETREC-NAME' — emitted on every other
+   `:call-indirect' whose callee is a `:load-var :name LETREC-NAME'
+   match.  The backend can then emit `CALL inner:IDX' rel32
+   directly, bypassing the cell-load + indirect call dance.  This
+   saves a memory read + the PUSH/POP of the callee per call site
+   (= small but real on `fib' which does 2 self-calls per frame).
+
+Mutates each matching `:call-indirect' instruction's META.  Returns
+a plist `(:tail (IDS-A...) :direct (IDS-B...))' for diagnostics."
+  (let ((tail-marked nil)
+        (direct-marked nil))
+    (when letrec-name
+      (dolist (blk (nelisp-cc--ssa-function-blocks function))
+        (dolist (instr (nelisp-cc--ssa-block-instrs blk))
+          (when (eq (nelisp-cc--ssa-instr-opcode instr) 'call-indirect)
+            (let* ((operands (nelisp-cc--ssa-instr-operands instr))
+                   (callee   (car operands))
+                   (callee-def (and callee
+                                    (nelisp-cc--ssa-value-def-point callee))))
+              (when (and (nelisp-cc--ssa-instr-p callee-def)
+                         (eq (nelisp-cc--ssa-instr-opcode callee-def)
+                             'load-var)
+                         (eq (plist-get
+                              (nelisp-cc--ssa-instr-meta callee-def)
+                              :name)
+                             letrec-name))
+                ;; Self call detected.  Decide tail vs direct.
+                (let* ((def (nelisp-cc--ssa-instr-def instr))
+                       (uses (and def (nelisp-cc--ssa-value-use-list def)))
+                       (is-tail
+                        (and uses
+                             (= (length uses) 1)
+                             (eq (nelisp-cc--ssa-instr-opcode (car uses))
+                                 'phi)
+                             (let* ((phi-instr (car uses))
+                                    (phi-def (nelisp-cc--ssa-instr-def phi-instr))
+                                    (phi-uses (and phi-def
+                                                   (nelisp-cc--ssa-value-use-list phi-def))))
+                               (and phi-uses
+                                    (= (length phi-uses) 1)
+                                    (eq (nelisp-cc--ssa-instr-opcode (car phi-uses))
+                                        'return))))))
+                  (cond
+                   (is-tail
+                    (setf (nelisp-cc--ssa-instr-meta instr)
+                          (plist-put
+                           (nelisp-cc--ssa-instr-meta instr)
+                           :tail-call-self letrec-name))
+                    (push (nelisp-cc--ssa-instr-id instr) tail-marked))
+                   (t
+                    (setf (nelisp-cc--ssa-instr-meta instr)
+                          (plist-put
+                           (nelisp-cc--ssa-instr-meta instr)
+                           :self-direct-call letrec-name))
+                    (push (nelisp-cc--ssa-instr-id instr) direct-marked))))))))))
+    (list :tail (nreverse tail-marked) :direct (nreverse direct-marked))))
+
 (defun nelisp-cc-callees--collect-inner-functions (function)
   "Walk FUNCTION + every `:closure' inner-function and return the
 list of `(INSTR . INNER-FN)' cells, one per `:closure' instruction.

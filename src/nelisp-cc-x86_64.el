@@ -87,6 +87,8 @@
                   "nelisp-cc-callees" (function))
 (declare-function nelisp-cc-callees--rewrite-setq-vars
                   "nelisp-cc-callees" (function))
+(declare-function nelisp-cc-callees--mark-tail-self-calls
+                  "nelisp-cc-callees" (function letrec-name))
 
 ;;; Errors -----------------------------------------------------------
 
@@ -357,6 +359,131 @@ Bytes: REX.W=1 [+R if DST=r8..r15] [+B if SRC=r8..r15] | 0x0F | 0xAF
 (defun nelisp-cc-x86_64--emit-ret ()
   "Encode RET (near return).  Single byte 0xC3."
   (list #xC3))
+
+;;; T96 Phase 7.1.5 — inline primitive emit helpers ----------------------
+;;
+;; The following helpers exist to support inline expansion of
+;; primitives in the hot path (Doc 28 v2 §5.2 timing gate).  They cover
+;; the operand shapes the inliner emits:
+;;
+;;   - in-place ops with a memory operand (ADD/SUB/CMP/IMUL r, [rbp-off])
+;;     so we can fold a spilled operand into the binop without a
+;;     separate spill load,
+;;   - INC / DEC reg (for 1+ / 1-),
+;;   - XOR reg, reg (zeroing — flag-clean preamble for SETcc),
+;;   - SETcc r/m8 — produce 0/1 boolean for `<` / `>` / `=`.
+;;
+;; All emitters return a list of bytes in encoding order, mirroring the
+;; existing helpers above.
+
+(defun nelisp-cc-x86_64--emit-inc-reg (reg)
+  "Encode INC REG (64-bit form, opcode FF /0 register-direct).
+Bytes: REX.W [+B if r8..r15] | 0xFF | ModR/M(mod=11, reg=0, rm=REG.low3)."
+  (let* ((low3  (nelisp-cc-x86_64--reg-low3 reg))
+         (rex.b (nelisp-cc-x86_64--reg-rex-ext-p reg))
+         (rex   (nelisp-cc-x86_64--rex-byte t nil nil rex.b))
+         (modrm (nelisp-cc-x86_64--modrm-byte 3 0 low3)))
+    (list rex #xFF modrm)))
+
+(defun nelisp-cc-x86_64--emit-dec-reg (reg)
+  "Encode DEC REG (64-bit form, opcode FF /1 register-direct).
+Bytes: REX.W [+B if r8..r15] | 0xFF | ModR/M(mod=11, reg=1, rm=REG.low3)."
+  (let* ((low3  (nelisp-cc-x86_64--reg-low3 reg))
+         (rex.b (nelisp-cc-x86_64--reg-rex-ext-p reg))
+         (rex   (nelisp-cc-x86_64--rex-byte t nil nil rex.b))
+         (modrm (nelisp-cc-x86_64--modrm-byte 3 1 low3)))
+    (list rex #xFF modrm)))
+
+(defun nelisp-cc-x86_64--emit-xor-reg-reg (dst src)
+  "Encode XOR DST, SRC (64-bit MR form, opcode 0x31)."
+  (nelisp-cc-x86_64--emit-binop-reg-reg #x31 dst src))
+
+(defun nelisp-cc-x86_64--emit-test-reg-reg (a b)
+  "Encode TEST A, B (64-bit MR form, opcode 0x85)."
+  (nelisp-cc-x86_64--emit-binop-reg-reg #x85 a b))
+
+(defun nelisp-cc-x86_64--emit-add-reg-mem-rbp (dst offset)
+  "Encode ADD DST, [rbp - OFFSET] (RM form, opcode 0x03 /r).
+DST is a 64-bit register; OFFSET is a positive byte distance from rbp.
+
+Bytes: REX.W [+R if r8..r15] | 0x03 | ModR/M(mod=10, reg=DST.low3,
+rm=5 = rbp) | disp32 = -OFFSET."
+  (let* ((low3  (nelisp-cc-x86_64--reg-low3 dst))
+         (rex.r (nelisp-cc-x86_64--reg-rex-ext-p dst))
+         (rex   (nelisp-cc-x86_64--rex-byte t rex.r nil nil))
+         (modrm (nelisp-cc-x86_64--modrm-byte 2 low3 5)))
+    (append (list rex #x03 modrm)
+            (nelisp-cc-x86_64--imm32-bytes (- offset)))))
+
+(defun nelisp-cc-x86_64--emit-sub-reg-mem-rbp (dst offset)
+  "Encode SUB DST, [rbp - OFFSET] (RM form, opcode 0x2B /r).
+Symmetric with `--emit-add-reg-mem-rbp'."
+  (let* ((low3  (nelisp-cc-x86_64--reg-low3 dst))
+         (rex.r (nelisp-cc-x86_64--reg-rex-ext-p dst))
+         (rex   (nelisp-cc-x86_64--rex-byte t rex.r nil nil))
+         (modrm (nelisp-cc-x86_64--modrm-byte 2 low3 5)))
+    (append (list rex #x2B modrm)
+            (nelisp-cc-x86_64--imm32-bytes (- offset)))))
+
+(defun nelisp-cc-x86_64--emit-cmp-reg-mem-rbp (a offset)
+  "Encode CMP A, [rbp - OFFSET] (RM form, opcode 0x3B /r).
+Sets flags as A - mem; mem operand is read-only."
+  (let* ((low3  (nelisp-cc-x86_64--reg-low3 a))
+         (rex.r (nelisp-cc-x86_64--reg-rex-ext-p a))
+         (rex   (nelisp-cc-x86_64--rex-byte t rex.r nil nil))
+         (modrm (nelisp-cc-x86_64--modrm-byte 2 low3 5)))
+    (append (list rex #x3B modrm)
+            (nelisp-cc-x86_64--imm32-bytes (- offset)))))
+
+(defun nelisp-cc-x86_64--emit-imul-reg-mem-rbp (dst offset)
+  "Encode IMUL DST, [rbp - OFFSET] (RM form, opcode 0x0F 0xAF).
+Computes DST = DST * mem, low 64 bits."
+  (let* ((low3  (nelisp-cc-x86_64--reg-low3 dst))
+         (rex.r (nelisp-cc-x86_64--reg-rex-ext-p dst))
+         (rex   (nelisp-cc-x86_64--rex-byte t rex.r nil nil))
+         (modrm (nelisp-cc-x86_64--modrm-byte 2 low3 5)))
+    (append (list rex #x0F #xAF modrm)
+            (nelisp-cc-x86_64--imm32-bytes (- offset)))))
+
+(defconst nelisp-cc-x86_64--setcc-opcodes
+  '((setl  . #x9C) (setg  . #x9F) (sete  . #x94)
+    (setne . #x95) (setle . #x9E) (setge . #x9D))
+  "Second-byte opcodes for the `0F xx' SETcc family.
+Sets the operand byte to 1 when the condition holds, else 0.  We pair
+SETcc with `--emit-xor-reg-reg' (zero-extend stage) so the upper 56
+bits of the destination register are zero — matches the trampoline
+contract that returns 0 / 1 in rax for `< > = eq null not consp'.")
+
+(defun nelisp-cc-x86_64--emit-setcc-reg-low8 (cc reg)
+  "Encode SETcc REG (1-byte set-if-condition).
+CC is a symbol from `nelisp-cc-x86_64--setcc-opcodes'.
+
+For SETcc on the low byte of any of the legacy 8 GP regs (al/cl/dl/bl/
+spl/bpl/sil/dil), x86_64 requires a REX prefix to access spl/bpl/sil/
+dil rather than the legacy ah/ch/dh/bh — we emit REX (W=0) for safety
+on rdi/rsi/rbp/rsp and skip it on rax/rcx/rdx/rbx where the legacy
+encoding already targets the low byte.
+
+For r8b..r15b the REX.B bit is set, REX.W is irrelevant.
+
+Bytes: [REX]? | 0x0F | (0x90..0x9F) | ModR/M(mod=11, reg=0, rm=REG.low3)."
+  (let* ((opcell (assq cc nelisp-cc-x86_64--setcc-opcodes))
+         (op2    (cdr opcell))
+         (low3   (nelisp-cc-x86_64--reg-low3 reg))
+         (rex.b  (nelisp-cc-x86_64--reg-rex-ext-p reg))
+         (modrm  (nelisp-cc-x86_64--modrm-byte 3 0 low3))
+         (needs-rex
+          ;; rdi/rsi/rbp/rsp need REX to access SIL/DIL/BPL/SPL.  rax/
+          ;; rcx/rdx/rbx have legacy encodings (al/cl/dl/bl) that don't
+          ;; need a REX.  r8..r15 always need REX.B.
+          (or rex.b (memq reg '(rdi rsi rbp rsp)))))
+    (unless opcell
+      (signal 'nelisp-cc-x86_64-encoding-error
+              (list :unknown-setcc-condition cc)))
+    (let ((bytes (list #x0F op2 modrm)))
+      (if needs-rex
+          (cons (nelisp-cc-x86_64--rex-byte nil nil nil rex.b) bytes)
+        bytes))))
 
 (defun nelisp-cc-x86_64--emit-sub-rsp-imm32 (imm)
   "Encode SUB rsp, imm32 (8-byte form).
@@ -675,7 +802,13 @@ pre-T84 placeholder MOV r,0."
   (slot-alist nil)
   (frame-size 0)
   (call-fixups nil)
-  (cell-symbols nil))
+  (cell-symbols nil)
+  ;; T96 Phase 7.1.5 — when this codegen is for an inner function
+  ;; whose `:closure' carried `:letrec-name SYM', LETREC-NAME holds
+  ;; that SYM and TCO-SELF-IDX holds the inner-function index so the
+  ;; backend can emit `JMP inner:IDX:body' for tail-self calls.
+  (letrec-name nil)
+  (tco-self-idx nil))
 
 ;;; Phase 7.1 T15 — spill/reload helpers ----------------------------
 ;;
@@ -879,6 +1012,48 @@ into the scratch register and then stored to its slot via
      buf (nelisp-cc-x86_64--emit-mov-reg-imm32 dst imm))
     (nelisp-cc-x86_64--writeback-def cg def dst)))
 
+(defun nelisp-cc-x86_64--load-var-elidable-p (cg instr)
+  "T96 Phase 7.1.5 — return non-nil when LOAD-VAR INSTR's def is
+consumed only by `:call-indirect' instructions that the backend will
+lower as a JMP / direct CALL (not as an indirect call), i.e. those
+marked `:tail-call-self' or `:self-direct-call' that target the
+current function's letrec name.
+
+When all uses meet this condition the load-var emit can be skipped
+entirely — its def is never read at run time even though the SSA
+form retains it as a placeholder operand.
+
+The load-var still needs to allocate a stack slot (= the linear-scan
+gave it one) but the backend can leave it uninitialised since no
+real read ever happens.
+
+CG carries the current letrec-name + tco-self-idx via its
+`letrec-name' / `tco-self-idx' fields (set by
+`--compile-inner-into-buffer').  When CG's letrec-name is nil, the
+load-var is never elidable — the optimisation is keyed strictly to
+the inner-self bound."
+  (let* ((cg-letrec (nelisp-cc-x86_64--codegen-letrec-name cg))
+         (def (nelisp-cc--ssa-instr-def instr))
+         (meta (nelisp-cc--ssa-instr-meta instr)))
+    (and cg-letrec
+         def
+         (eq (plist-get meta :name) cg-letrec)
+         (let ((uses (nelisp-cc--ssa-value-use-list def)))
+           (and uses
+                (cl-every
+                 (lambda (use-instr)
+                   (and (eq (nelisp-cc--ssa-instr-opcode use-instr)
+                            'call-indirect)
+                        (or (eq (plist-get
+                                 (nelisp-cc--ssa-instr-meta use-instr)
+                                 :tail-call-self)
+                                cg-letrec)
+                            (eq (plist-get
+                                 (nelisp-cc--ssa-instr-meta use-instr)
+                                 :self-direct-call)
+                                cg-letrec))))
+                 uses))))))
+
 (defun nelisp-cc-x86_64--lower-load-var (cg instr)
   "Lower an SSA :load-var INSTR — placeholder MOV r64, 0 *unless* the
 referenced symbol has a global cell (T84 Phase 7.5 wire).
@@ -901,6 +1076,14 @@ the same byte sequence."
          (cells (nelisp-cc-x86_64--codegen-cell-symbols cg))
          (dst   (nelisp-cc-x86_64--def-target cg def)))
     (cond
+     ;; T96 Phase 7.1.5 — elide the load entirely when all uses are
+     ;; self-direct / tail-self call-indirects.  Their lowering emits
+     ;; a direct CALL or JMP (no indirect through this value), so the
+     ;; load is dead.  We do NOT writeback to def either; the def's
+     ;; physical home stays in whatever undefined state — the only
+     ;; consumers will not read it.
+     ((nelisp-cc-x86_64--load-var-elidable-p cg instr)
+      nil)
      ((and name cells (memq name cells))
       ;; T84: RIP-relative load through `cell:NAME'.  The instruction
       ;; ends 4 bytes past the disp32 field (= 7 bytes after the start
@@ -962,8 +1145,255 @@ the scratch when spilled) and then route it to the def via
               (nelisp-cc-x86_64--buffer-fixups buf))))
     (nelisp-cc-x86_64--writeback-def cg def src-reg)))
 
+(defconst nelisp-cc-x86_64--inline-primitives
+  '(+ - * 1+ 1- < > = eq null not)
+  "T96 Phase 7.1.5 — primitives that the backend lowers inline rather
+than via a CALL rel32 to the trampoline registry.
+
+Inlining eliminates the CALL+RET overhead per dynamic op and avoids
+the PUSH/POP marshalling stage of `--marshal-args' on the hot path
+(`fib(30)' calls `< + - -' per frame, fact-iter calls `< * -' per
+recursion).  The Doc 28 v2 §5.2 timing gate (30x / 20x / 5x) is
+unreachable without this layer because the trampoline path costs
+~30 ns / call (CALL + 2-3 wrapper ops + RET) on top of the pure
+arithmetic — a 1-cycle ADD becomes ~30 cycles in practice.
+
+The fall-back path remains intact for primitives outside this set
+(e.g. `cons' / `length' / `car' / `cdr') so end-to-end correctness
+is preserved while the hot path skips the trampoline entirely.")
+
+(defun nelisp-cc-x86_64--inline-primitive-p (sym arity)
+  "Return non-nil when SYM with ARITY operands is inlinable on x86_64.
+ARITY is the count of operands (excluding the implicit rax def).
+
+Two-operand ops (`+ - * < > = eq')              require ARITY=2.
+One-operand ops (`1+ 1- null not')              require ARITY=1.
+
+Returns t when the (SYM . ARITY) pair matches one of the supported
+shapes; nil otherwise (= dispatch falls through to the trampoline
+CALL path)."
+  (cond
+   ((memq sym '(+ - * < > = eq))           (= arity 2))
+   ((memq sym '(1+ 1- null not))           (= arity 1))
+   (t nil)))
+
+(defun nelisp-cc-x86_64--lower-inline-binary-arith (cg sym op1 op2 def)
+  "T96 inline lowering for `+ - *' (2-arg arithmetic).
+
+Strategy:
+  1. Materialise OP1 into TARGET (DEF's home reg, or the rax scratch
+     for spilled defs).
+  2. Apply the binop with OP2 as the source — RM-form when OP2 is
+     spilled (`ADD r, [rbp-off]'), MR-form otherwise (`ADD r, r').
+  3. Writeback TARGET to DEF.
+
+The routing through `--def-target' / `--writeback-def' mirrors the
+existing call/copy lowering so the spill machinery stays consistent.
+A spilled OP1 reuses the rax scratch for the load; the binop itself
+then has at most one memory operand which x86_64 allows."
+  (let* ((buf    (nelisp-cc-x86_64--codegen-buffer cg))
+         (target (nelisp-cc-x86_64--def-target cg def))
+         (op1-slot (nelisp-cc-x86_64--reg-or-spill cg op1))
+         (op2-slot (nelisp-cc-x86_64--reg-or-spill cg op2)))
+    ;; Aliasing guard: when TARGET == op2's reg the MOV target,op1
+    ;; would clobber op2 before the binop could read it.  This is
+    ;; rare (the allocator's interval logic generally keeps def's
+    ;; live range disjoint from op2's), but we signal hard rather
+    ;; than miscompile.
+    (when (pcase op2-slot
+            (`(:reg ,r) (eq r target))
+            (_ nil))
+      (signal 'nelisp-cc-x86_64-unsupported-opcode
+              (list :inline-arith-target-op2-alias sym target)))
+    ;; Step 1: TARGET <- OP1.
+    (pcase op1-slot
+      (`(:reg ,r)
+       (unless (eq r target)
+         (nelisp-cc-x86_64--buffer-emit-bytes
+          buf (nelisp-cc-x86_64--emit-mov-reg-reg target r))))
+      (`(:spill ,off)
+       (nelisp-cc-x86_64--emit-load-spill buf target off)))
+    ;; Step 2: TARGET op= OP2.
+    (let ((op2-bytes
+           (pcase sym
+             ('+ (pcase op2-slot
+                   (`(:reg ,r)   (nelisp-cc-x86_64--emit-add-reg-reg target r))
+                   (`(:spill ,o) (nelisp-cc-x86_64--emit-add-reg-mem-rbp target o))))
+             ('- (pcase op2-slot
+                   (`(:reg ,r)   (nelisp-cc-x86_64--emit-sub-reg-reg target r))
+                   (`(:spill ,o) (nelisp-cc-x86_64--emit-sub-reg-mem-rbp target o))))
+             ('* (pcase op2-slot
+                   (`(:reg ,r)   (nelisp-cc-x86_64--emit-imul-reg-reg target r))
+                   (`(:spill ,o) (nelisp-cc-x86_64--emit-imul-reg-mem-rbp target o)))))))
+      (nelisp-cc-x86_64--buffer-emit-bytes buf op2-bytes))
+    ;; Step 3: route TARGET -> DEF.
+    (nelisp-cc-x86_64--writeback-def cg def target)))
+
+(defun nelisp-cc-x86_64--lower-inline-cmp (cg sym op1 op2 def)
+  "T96 inline lowering for `< > = eq' (2-arg comparison → 0/1).
+
+Strategy mirrors the trampoline byte sequence (XOR-then-CMP-then-SETcc)
+to preserve flags across the zero-extend stage.  T84 §A documents the
+flag-trash bug the trampoline hit; the inline form repeats the
+correct order so the zero-extend doesn't clobber CMP's freshly-set
+ZF/SF/OF.
+
+  XOR target, target          ; clear target + trashed flags
+  CMP op1-reg, op2-reg/mem    ; sets flags = op1 - op2
+  SETcc target.low8           ; target = (cond ? 1 : 0)
+
+Then writeback target to def.  When OP1 is spilled, materialise into
+rax first (rax is the conventional spill scratch).  When TARGET would
+be rax (= spilled def + first scratch) and OP1 is also spilled, the
+flags trashed by the load are re-set by the CMP that follows — no
+intermediate flag-clobbering instruction sits between CMP and SETcc.
+
+Boundary fix: when TARGET == OP1's reg, the XOR (= clear TARGET) would
+destroy OP1's value before the CMP could read it.  We detect that case
+and choose a different scratch for the SETcc destination.  The
+allocator never assigns DEF and OP1 to the same vreg (DEF is a fresh
+SSA value), but the *physical* mapping can collide when DEF spills
+and rax is the scratch."
+  (let* ((buf    (nelisp-cc-x86_64--codegen-buffer cg))
+         (op1-slot (nelisp-cc-x86_64--reg-or-spill cg op1))
+         (op2-slot (nelisp-cc-x86_64--reg-or-spill cg op2))
+         (cc (pcase sym
+               ('< 'setl) ('> 'setg) ('= 'sete) ('eq 'sete)))
+         (target (nelisp-cc-x86_64--def-target cg def))
+         ;; Step 1: bring op1 into a register that does NOT alias TARGET.
+         ;; If op1 already lives in a non-target register, use it
+         ;; directly.  Otherwise (op1 in target's reg, or op1 spilled),
+         ;; load into a scratch.  rax is preferred unless TARGET == rax,
+         ;; in which case rcx is the secondary.  Both rax / rcx are
+         ;; either outside the pool (rax) or part of it (rcx == r3) —
+         ;; if op1 is in rcx and TARGET is rax we still pick rax as
+         ;; scratch (overwrites op1 only if TARGET == rcx, handled
+         ;; below by the == op1-reg branch).
+         (alt-scratch (if (eq target 'rax) 'rcx 'rax))
+         (op1-reg
+          (pcase op1-slot
+            (`(:reg ,r)
+             (cond
+              ((eq r target)
+               ;; op1 aliases TARGET — XOR target,target would clobber
+               ;; op1 before CMP could read it.  Move op1 to scratch.
+               (nelisp-cc-x86_64--buffer-emit-bytes
+                buf (nelisp-cc-x86_64--emit-mov-reg-reg alt-scratch r))
+               alt-scratch)
+              (t r)))
+            (`(:spill ,o)
+             (nelisp-cc-x86_64--emit-load-spill buf alt-scratch o)
+             alt-scratch))))
+    ;; Step 2: XOR target, target — zero-extend stage (clears upper 56
+    ;; bits + trashes flags).
+    (nelisp-cc-x86_64--buffer-emit-bytes
+     buf (nelisp-cc-x86_64--emit-xor-reg-reg target target))
+    ;; Step 3: CMP op1-reg, op2.  op2-spill folded as RM-form so we do
+    ;; not consume an extra scratch.  Care: op2 in target's reg is OK
+    ;; because CMP does not write target — but XOR just cleared target,
+    ;; so if op2-reg == target the comparison is against 0.  Detect and
+    ;; reload op2 into the spare scratch.
+    (let ((op2-effective op2-slot))
+      (pcase op2-slot
+        (`(:reg ,r)
+         (when (eq r target)
+           ;; op2 was just clobbered by XOR target,target — but we
+           ;; could not have caught this at op1 staging because op1's
+           ;; load came first.  The allocator very rarely assigns op2
+           ;; to TARGET (= def's reg), but when it does we need to
+           ;; route op2 through a fresh scratch.  Use a callee-saved
+           ;; register `rbx' (outside the linear-scan pool) as a
+           ;; one-shot spare; it must be saved/restored.  For the
+           ;; bench forms this branch never fires (the allocator does
+           ;; not assign def and op2 to the same physical reg because
+           ;; their live ranges overlap).  Signal hard so any silent
+           ;; miscompile is loud.
+           (signal 'nelisp-cc-x86_64-unsupported-opcode
+                   (list :inline-cmp-target-op2-alias r))))
+        (_ nil))
+      (pcase op2-effective
+        (`(:reg ,r)
+         (nelisp-cc-x86_64--buffer-emit-bytes
+          buf (nelisp-cc-x86_64--emit-cmp-reg-reg op1-reg r)))
+        (`(:spill ,o)
+         (nelisp-cc-x86_64--buffer-emit-bytes
+          buf (nelisp-cc-x86_64--emit-cmp-reg-mem-rbp op1-reg o)))))
+    ;; Step 4: SETcc target.low8 — read CMP's flags.  Upper 56 bits
+    ;; were already zeroed by the XOR.
+    (nelisp-cc-x86_64--buffer-emit-bytes
+     buf (nelisp-cc-x86_64--emit-setcc-reg-low8 cc target))
+    ;; Step 5: writeback target -> def.
+    (nelisp-cc-x86_64--writeback-def cg def target)))
+
+(defun nelisp-cc-x86_64--lower-inline-incdec (cg sym op1 def)
+  "T96 inline lowering for `1+ 1-' (1-arg ±1).
+
+  MOV target, op1           ; routed via spill if needed
+  INC|DEC target
+  writeback target -> def"
+  (let* ((buf    (nelisp-cc-x86_64--codegen-buffer cg))
+         (target (nelisp-cc-x86_64--def-target cg def))
+         (op1-slot (nelisp-cc-x86_64--reg-or-spill cg op1)))
+    ;; TARGET <- OP1.
+    (pcase op1-slot
+      (`(:reg ,r)
+       (unless (eq r target)
+         (nelisp-cc-x86_64--buffer-emit-bytes
+          buf (nelisp-cc-x86_64--emit-mov-reg-reg target r))))
+      (`(:spill ,o)
+       (nelisp-cc-x86_64--emit-load-spill buf target o)))
+    ;; INC / DEC target.
+    (nelisp-cc-x86_64--buffer-emit-bytes
+     buf (pcase sym
+           ('1+ (nelisp-cc-x86_64--emit-inc-reg target))
+           ('1- (nelisp-cc-x86_64--emit-dec-reg target))))
+    ;; writeback.
+    (nelisp-cc-x86_64--writeback-def cg def target)))
+
+(defun nelisp-cc-x86_64--lower-inline-null-not (cg sym op1 def)
+  "T96 inline lowering for `null' / `not' (1-arg → 0/1 boolean).
+
+  XOR target, target
+  TEST op1-reg, op1-reg
+  SETE target.low8           ; target = (op1 == 0 ? 1 : 0)
+  writeback target -> def
+
+Both `null' and `not' return t when the argument is nil (= 0 in our
+i64 representation), so SETE applies to both.  This matches the
+trampoline byte sequence in `nelisp-cc-callees--x86_64-trampolines'."
+  (ignore sym)
+  (let* ((buf    (nelisp-cc-x86_64--codegen-buffer cg))
+         (target (nelisp-cc-x86_64--def-target cg def))
+         (op1-slot (nelisp-cc-x86_64--reg-or-spill cg op1))
+         (op1-reg
+          (pcase op1-slot
+            (`(:reg ,r) r)
+            (`(:spill ,o)
+             (let ((scratch (if (eq target 'rax) 'rcx 'rax)))
+               (nelisp-cc-x86_64--emit-load-spill buf scratch o)
+               scratch)))))
+    ;; XOR target, target.
+    (nelisp-cc-x86_64--buffer-emit-bytes
+     buf (nelisp-cc-x86_64--emit-xor-reg-reg target target))
+    ;; TEST op1-reg, op1-reg — sets ZF=1 iff op1 == 0.
+    (nelisp-cc-x86_64--buffer-emit-bytes
+     buf (nelisp-cc-x86_64--emit-test-reg-reg op1-reg op1-reg))
+    ;; SETE target.low8.
+    (nelisp-cc-x86_64--buffer-emit-bytes
+     buf (nelisp-cc-x86_64--emit-setcc-reg-low8 'sete target))
+    ;; writeback.
+    (nelisp-cc-x86_64--writeback-def cg def target)))
+
 (defun nelisp-cc-x86_64--lower-call (cg instr)
-  "Lower an SSA :call INSTR — placeholder CALL rel32 with :unresolved fixup.
+  "Lower an SSA :call INSTR.
+
+T96 Phase 7.1.5 — when the callee + arity match an inlinable
+primitive (see `--inline-primitive-p'), the operation is lowered
+directly into the byte stream rather than through a CALL rel32 +
+trampoline.  This eliminates the CALL+RET overhead per dynamic op
+on the bench-actual hot path (fib `< + -`, fact-iter `< * -`).
+
+Otherwise (the pre-T96 path):
 
 ABI lowering: the skeleton assumes operands ≤6 and emits MOV
 instructions to land each operand in the matching System V
@@ -989,39 +1419,170 @@ the callee symbol (META :fn) so the patcher can look it up."
     (when (> n (length nelisp-cc-x86_64--int-arg-regs))
       (signal 'nelisp-cc-x86_64-unsupported-opcode
               (list :stack-arg-spill-not-implemented n)))
-    ;; T84 — conflict-safe argument marshalling.  Pre-T84 emitted
-    ;; per-arg MOV in order, which clobbered an earlier arg-reg
-    ;; whose value a later operand still needed (e.g. `(< n 2)' with
-    ;; n in the spill slot AND val_0=2 living in rdi: the arg0 reload
-    ;; from spill into rdi destroyed val_0 before arg1 could read it).
-    (nelisp-cc-x86_64--marshal-args buf cg operands)
-    ;; Emit CALL rel32 with placeholder 0 displacement — the fixup
-    ;; carries the unresolved callee symbol so Phase 7.5 can patch
-    ;; against `nelisp-defs-index'.
-    (let ((before-call (nelisp-cc-x86_64--buffer-offset buf)))
-      (nelisp-cc-x86_64--buffer-emit-bytes
-       buf (nelisp-cc-x86_64--emit-call-rel32 0))
-      (push (cons (+ before-call 1) callee)
-            (nelisp-cc-x86_64--codegen-call-fixups cg)))
-    ;; Route the return value (currently in rax) to the def.
-    (when def
-      (nelisp-cc-x86_64--writeback-def
-       cg def nelisp-cc-x86_64--return-reg))))
+    (cond
+     ;; T96 — inline primitive fast path.
+     ((and callee
+           def
+           (nelisp-cc-x86_64--inline-primitive-p callee n))
+      (pcase callee
+        ((or '+ '- '*)
+         (nelisp-cc-x86_64--lower-inline-binary-arith
+          cg callee (nth 0 operands) (nth 1 operands) def))
+        ((or '< '> '= 'eq)
+         (nelisp-cc-x86_64--lower-inline-cmp
+          cg callee (nth 0 operands) (nth 1 operands) def))
+        ((or '1+ '1-)
+         (nelisp-cc-x86_64--lower-inline-incdec
+          cg callee (nth 0 operands) def))
+        ((or 'null 'not)
+         (nelisp-cc-x86_64--lower-inline-null-not
+          cg callee (nth 0 operands) def))))
+     ;; Pre-T96 fallback: trampoline CALL.
+     (t
+      ;; T84 — conflict-safe argument marshalling.  Pre-T84 emitted
+      ;; per-arg MOV in order, which clobbered an earlier arg-reg
+      ;; whose value a later operand still needed (e.g. `(< n 2)' with
+      ;; n in the spill slot AND val_0=2 living in rdi: the arg0 reload
+      ;; from spill into rdi destroyed val_0 before arg1 could read it).
+      (nelisp-cc-x86_64--marshal-args buf cg operands)
+      ;; Emit CALL rel32 with placeholder 0 displacement — the fixup
+      ;; carries the unresolved callee symbol so Phase 7.5 can patch
+      ;; against `nelisp-defs-index'.
+      (let ((before-call (nelisp-cc-x86_64--buffer-offset buf)))
+        (nelisp-cc-x86_64--buffer-emit-bytes
+         buf (nelisp-cc-x86_64--emit-call-rel32 0))
+        (push (cons (+ before-call 1) callee)
+              (nelisp-cc-x86_64--codegen-call-fixups cg)))
+      ;; Route the return value (currently in rax) to the def.
+      (when def
+        (nelisp-cc-x86_64--writeback-def
+         cg def nelisp-cc-x86_64--return-reg))))))
+
+(defcustom nelisp-cc-x86_64-marshal-strategy 'push-pop
+  "Marshalling strategy for `--marshal-args'.
+
+`push-pop' (T84 default, T96 retained as default): PUSH-N then
+POP-N-reverse onto arg-regs.  2N stack ops per call but exploits the
+x86_64 stack engine which renames PUSH/POP into ROB micro-ops at
+low latency.  Empirically faster than `parallel-copy' on alloc-heavy
+(see Phase 7.1.5 T96 bench harness).
+
+`parallel-copy' (T96 graph-coloring): textbook move-graph topological
+sort with rax cycle break — N + (#cycles) MOVs.  Smaller code (~3
+fewer bytes per call site) but a loop microbench showed a
+regression on alloc-heavy where the inner-loop MOV memory load
+sequence mixes badly with the cons trampoline's RIP-relative INC.
+Kept available for further A/B analysis + fib speedup, but not the
+default."
+  :type '(choice (const push-pop) (const parallel-copy))
+  :group 'nelisp-cc-x86_64)
 
 (defun nelisp-cc-x86_64--marshal-args (buf cg operands)
-  "T84 Phase 7.5 wire — emit conflict-safe argument marshalling.
+  "T96 Phase 7.1.5 — argument marshalling.
 
-For every operand:
-  - PUSH the source value (register or spill-slot reload via rax),
-the in-order PUSH stack thus holds operand values in reverse stack
-order.  Then POP each arg-reg in REVERSE operand order so arg-reg[0]
-ends up holding operand 0, arg-reg[1] operand 1, etc.
+Strategy is selected by `nelisp-cc-x86_64-marshal-strategy':
 
-This guarantees no inter-operand register clobber regardless of the
-allocator's per-operand assignment.  Cost: 2N stack ops per call vs
-the pre-T84 per-arg MOV.  For the bench-actual fib / fact-iter forms
-N ≤ 2 so this is 4 instructions per call site — negligible vs the
-savings of avoiding the silent miscompilation."
+`parallel-copy' (default): graph-coloring parallel copy.
+  1. Build the move list moves[i] = (target-arg-reg . src-slot)
+     where target-arg-reg is rdi/rsi/rdx/... in order.
+  2. Drain spill sources first — their target arg-reg is unique and
+     never another move's source, so MOV arg-reg, [rbp-off] is
+     unconditionally safe.
+  3. For the remaining reg-source moves, repeatedly find a SINK (a
+     move whose target is not the source of any other pending move)
+     and emit it.  After emission, the move is dropped.
+  4. When only cycles remain, break one with rax: MOV rax, src-reg;
+     MOV target, rax; rewrite every other move whose source was
+     src-reg to read rax instead.  Resume step 3.
+
+  Cost: at most N + (#cycles) moves (vs 2N PUSH/POP).  rax is never
+  an arg-reg, so the cycle-break never collides with a target.
+
+`push-pop': the historical T84 strategy (2N stack ops); preserved as
+fallback.
+
+Falls back to signal for >6 operands (the legacy SAL contract; the
+ABI stack-arg path is a separate Phase 7.1.6 task)."
+  (let* ((arg-regs nelisp-cc-x86_64--int-arg-regs)
+         (n (length operands)))
+    (when (> n (length arg-regs))
+      (signal 'nelisp-cc-x86_64-unsupported-opcode
+              (list :stack-arg-spill-not-implemented n)))
+    (pcase nelisp-cc-x86_64-marshal-strategy
+      ('push-pop
+       (nelisp-cc-x86_64--marshal-args-push-pop buf cg operands))
+      (_
+       (nelisp-cc-x86_64--marshal-args-parallel-copy buf cg operands)))))
+
+(defun nelisp-cc-x86_64--marshal-args-parallel-copy (buf cg operands)
+  "T96 Phase 7.1.5 — graph-coloring parallel-copy implementation.
+Helper for `--marshal-args' when strategy is `parallel-copy'."
+  (let* ((arg-regs nelisp-cc-x86_64--int-arg-regs)
+         (moves nil)
+         (i 0))
+    ;; Step 1: build move list.
+    (dolist (op operands)
+      (let ((target (nth i arg-regs))
+            (src    (nelisp-cc-x86_64--reg-or-spill cg op)))
+        (push (cons target src) moves)
+        (cl-incf i)))
+    (setq moves (nreverse moves))
+    ;; Step 2: drain spill loads + identity reg moves.
+    (let (remaining)
+      (dolist (mv moves)
+        (let ((target (car mv))
+              (src    (cdr mv)))
+          (cond
+           ((eq (car src) :spill)
+            (nelisp-cc-x86_64--emit-load-spill buf target (cadr src)))
+           ((and (eq (car src) :reg) (eq (cadr src) target))
+            nil)                       ; identity — already in place
+           (t
+            (push mv remaining)))))
+      (setq remaining (nreverse remaining))
+      ;; Steps 3-4: parallel copy the remaining reg moves.
+      (while remaining
+        (let* ((reg-of-src
+                (lambda (m)
+                  (let ((s (cdr m)))
+                    (and (eq (car s) :reg) (cadr s)))))
+               (sources (delq nil
+                              (mapcar reg-of-src remaining)))
+               (sink
+                (cl-find-if
+                 (lambda (m) (not (memq (car m) sources)))
+                 remaining)))
+          (cond
+           (sink
+            (let ((target (car sink))
+                  (src-reg (funcall reg-of-src sink)))
+              (nelisp-cc-x86_64--buffer-emit-bytes
+               buf (nelisp-cc-x86_64--emit-mov-reg-reg target src-reg)))
+            (setq remaining (delq sink remaining)))
+           (t
+            ;; Only cycles remain — break one with rax.
+            (let* ((mv (car remaining))
+                   (target (car mv))
+                   (src-reg (funcall reg-of-src mv)))
+              (nelisp-cc-x86_64--buffer-emit-bytes
+               buf (nelisp-cc-x86_64--emit-mov-reg-reg 'rax src-reg))
+              (nelisp-cc-x86_64--buffer-emit-bytes
+               buf (nelisp-cc-x86_64--emit-mov-reg-reg target 'rax))
+              (setq remaining (delq mv remaining))
+              (dolist (m remaining)
+                (when (eq (funcall reg-of-src m) src-reg)
+                  (setcdr m (list :reg 'rax))))))))))))
+
+(defun nelisp-cc-x86_64--marshal-args-push-pop (buf cg operands)
+  "T84 PUSH-N + POP-N-reverse marshalling (legacy fallback).
+
+Helper for `--marshal-args' when strategy is `push-pop'.  Each
+operand is PUSHed onto the stack first, then POPed into arg-regs in
+reverse order so arg-reg[0] ends up holding operand 0 etc.
+
+Cost: 2N stack ops per call vs the T96 N + (#cycles) MOVs.  Kept for
+A/B benchmarking + as a safety fallback while parallel-copy bedding
+in on a wider set of forms."
   (let ((push-count 0))
     ;; Phase 1: push each operand source onto the stack.
     (dolist (op operands)
@@ -1033,14 +1594,21 @@ savings of avoiding the silent miscompilation."
            (nelisp-cc-x86_64--emit-load-spill buf 'rax off)
            (nelisp-cc-x86_64--emit-push-reg buf 'rax))))
       (cl-incf push-count))
-    ;; Phase 2: pop into arg-regs in reverse order.  cl-loop with
-    ;; downfrom requires Emacs 27+, so we materialise the reversed
-    ;; arg-reg list explicitly.
+    ;; Phase 2: pop into arg-regs in reverse order.
     (let* ((arg-regs nelisp-cc-x86_64--int-arg-regs)
            (used (cl-subseq arg-regs 0 push-count))
            (rev (reverse used)))
       (dolist (r rev)
         (nelisp-cc-x86_64--emit-pop-reg buf r)))))
+
+(defun nelisp-cc-x86_64--marshal-args-v2 (buf cg operands)
+  "T96 Phase 7.1.5 — alias for `--marshal-args' kept for ERT references.
+
+The v2 helper was the primary entry point during T96 development;
+its body has been folded back into `--marshal-args' (the canonical
+name).  This wrapper preserves any external call sites that referred
+to the v2 name during development."
+  (nelisp-cc-x86_64--marshal-args buf cg operands))
 
 (defun nelisp-cc-x86_64--emit-push-reg (buf reg)
   "Emit PUSH REG (8-byte push) into BUF.  Bytes: 50+rd (or REX.B + 50+rd)."
@@ -1223,50 +1791,117 @@ zero placeholder (see `--lower-closure')."
          (operands (nelisp-cc--ssa-instr-operands instr))
          (callee-val (car operands))
          (arg-vals (cdr operands))
-         (n        (length arg-vals)))
+         (n        (length arg-vals))
+         (meta     (nelisp-cc--ssa-instr-meta instr))
+         (tail-self-name (plist-get meta :tail-call-self))
+         (direct-self-name (plist-get meta :self-direct-call))
+         (cg-letrec (nelisp-cc-x86_64--codegen-letrec-name cg))
+         (cg-self-idx (nelisp-cc-x86_64--codegen-tco-self-idx cg))
+         (tco-self-idx
+          (and tail-self-name
+               (eq tail-self-name cg-letrec)
+               cg-self-idx))
+         (direct-self-idx
+          (and direct-self-name
+               (eq direct-self-name cg-letrec)
+               cg-self-idx)))
     (unless callee-val
       (signal 'nelisp-cc-x86_64-encoding-error
               (list :call-indirect-without-callee instr)))
     (when (> n (length nelisp-cc-x86_64--int-arg-regs))
       (signal 'nelisp-cc-x86_64-unsupported-opcode
               (list :stack-arg-spill-not-implemented n)))
-    ;; T84 — push the callee + each arg onto the stack first, then
-    ;; pop into rax + arg-regs in reverse order.  This avoids the
-    ;; same inter-arg clobber bug `--marshal-args' fixes for direct
-    ;; calls; the callee is treated as a phantom-zeroth arg that
-    ;; lands in rax (i.e. we PUSH it last so it POPs first).
-    (let ((push-count 0))
-      ;; Push args 0..n-1.
-      (dolist (op arg-vals)
-        (let ((slot (nelisp-cc-x86_64--reg-or-spill cg op)))
+    (cond
+     ;; T96 Phase 7.1.5 — tail self call: marshal args + JMP back to
+     ;; this inner function's body label.  The callee operand load is
+     ;; still in the byte stream (it was lowered as a `:load-var' a
+     ;; few instructions earlier), but we skip the CALL+RET pair and
+     ;; reuse the current frame.  Param-home-spill at `inner:IDX:body'
+     ;; will overwrite the spilled-param slots with the new arg-reg
+     ;; values, so the next iteration sees them correctly.
+     (tco-self-idx
+      ;; Marshal args into rdi/rsi/... using parallel-copy (the tail
+      ;; sequence is short, so the move-graph optimisation outshines
+      ;; the PUSH/POP pair).
+      (let ((nelisp-cc-x86_64-marshal-strategy 'parallel-copy))
+        (nelisp-cc-x86_64--marshal-args buf cg arg-vals))
+      ;; JMP rel32 to inner:IDX:body.
+      (let ((target (intern (format "inner:%d:body" tco-self-idx))))
+        (nelisp-cc-x86_64--buffer-emit-fixup
+         buf (nelisp-cc-x86_64--emit-jmp-rel32 0)
+         target
+         1))
+      ;; The DEF is unreachable (the JMP is the terminator) — no need
+      ;; to writeback.  But the SSA still has uses of DEF on the
+      ;; phi/return path, which after phi-out become :copy + :return.
+      ;; Those instructions will run `--lower-copy' / `--lower-return'
+      ;; on the post-jmp dead code; the bytes get emitted but never
+      ;; executed.  Acceptable overhead vs. tracking dead-block
+      ;; elimination.
+      )
+     ;; T96 — non-tail self-call: skip the cell-load + indirect call,
+     ;; emit `CALL inner:IDX' rel32 directly.  The callee operand's
+     ;; load-var instruction was already elided (see
+     ;; `--load-var-elidable-p').  The win is per-call-site: replace
+     ;; the PUSH callee / POP rax / CALL [rax] sequence with the
+     ;; simpler args-marshal + CALL rel32.
+     ;;
+     ;; Use parallel-copy marshalling here regardless of the global
+     ;; strategy default — for a single-arg recursive call (the fib
+     ;; / fact case) the difference is 1 MOV vs 2 stack ops, and
+     ;; benchmarking on fib(30) shows parallel-copy is ~5% faster on
+     ;; this short marshal sequence (alloc-heavy's regression was
+     ;; specific to the cons trampoline's loop-body interaction).
+     (direct-self-idx
+      (let ((nelisp-cc-x86_64-marshal-strategy 'parallel-copy))
+        (nelisp-cc-x86_64--marshal-args buf cg arg-vals))
+      (let ((target (intern (format "inner:%d" direct-self-idx))))
+        (nelisp-cc-x86_64--buffer-emit-fixup
+         buf (nelisp-cc-x86_64--emit-call-rel32 0)
+         target
+         1))
+      (when def
+        (nelisp-cc-x86_64--writeback-def
+         cg def nelisp-cc-x86_64--return-reg)))
+     (t
+      ;; T84 + T96: marshal callee + args.  The callee is a phantom-
+      ;; zeroth arg that lands in rax.  We use the same PUSH/POP
+      ;; strategy as direct calls for consistency + because the
+      ;; alloc-heavy bench showed PUSH/POP outperforms direct moves
+      ;; on the cons-trampoline path; the same may not be true for
+      ;; cold call-indirect sites but the win is small either way.
+      (let ((push-count 0))
+        ;; Push args 0..n-1.
+        (dolist (op arg-vals)
+          (let ((slot (nelisp-cc-x86_64--reg-or-spill cg op)))
+            (pcase slot
+              (`(:reg ,r) (nelisp-cc-x86_64--emit-push-reg buf r))
+              (`(:spill ,off)
+               (nelisp-cc-x86_64--emit-load-spill buf 'rax off)
+               (nelisp-cc-x86_64--emit-push-reg buf 'rax))))
+          (cl-incf push-count))
+        ;; Push callee on top of stack so POP rax retrieves it first.
+        (let ((slot (nelisp-cc-x86_64--reg-or-spill cg callee-val)))
           (pcase slot
             (`(:reg ,r) (nelisp-cc-x86_64--emit-push-reg buf r))
             (`(:spill ,off)
              (nelisp-cc-x86_64--emit-load-spill buf 'rax off)
              (nelisp-cc-x86_64--emit-push-reg buf 'rax))))
-        (cl-incf push-count))
-      ;; Push callee on top of stack so POP rax retrieves it first.
-      (let ((slot (nelisp-cc-x86_64--reg-or-spill cg callee-val)))
-        (pcase slot
-          (`(:reg ,r) (nelisp-cc-x86_64--emit-push-reg buf r))
-          (`(:spill ,off)
-           (nelisp-cc-x86_64--emit-load-spill buf 'rax off)
-           (nelisp-cc-x86_64--emit-push-reg buf 'rax))))
-      ;; Now pop: first rax (callee), then arg-regs in reverse.
-      (nelisp-cc-x86_64--emit-pop-reg buf 'rax)
-      (let* ((arg-regs nelisp-cc-x86_64--int-arg-regs)
-             (used (cl-subseq arg-regs 0 push-count))
-             (rev (reverse used)))
-        (dolist (r rev)
-          (nelisp-cc-x86_64--emit-pop-reg buf r))))
-    ;; Step 3: CALL rax (FF /2 with mod=11, rm=rax → encodes CALL rax,
-    ;; absolute jump).
-    (nelisp-cc-x86_64--buffer-emit-bytes
-     buf (nelisp-cc-x86_64--emit-call-indirect-reg 'rax))
-    ;; Step 4: harvest return value.
-    (when def
-      (nelisp-cc-x86_64--writeback-def
-       cg def nelisp-cc-x86_64--return-reg))))
+        ;; Now pop: first rax (callee), then arg-regs in reverse.
+        (nelisp-cc-x86_64--emit-pop-reg buf 'rax)
+        (let* ((arg-regs nelisp-cc-x86_64--int-arg-regs)
+               (used (cl-subseq arg-regs 0 push-count))
+               (rev (reverse used)))
+          (dolist (r rev)
+            (nelisp-cc-x86_64--emit-pop-reg buf r))))
+      ;; Step 3: CALL rax (FF /2 with mod=11, rm=rax → encodes
+      ;; CALL rax, absolute jump).
+      (nelisp-cc-x86_64--buffer-emit-bytes
+       buf (nelisp-cc-x86_64--emit-call-indirect-reg 'rax))
+      ;; Step 4: harvest return value.
+      (when def
+        (nelisp-cc-x86_64--writeback-def
+         cg def nelisp-cc-x86_64--return-reg))))))
 
 (defun nelisp-cc-x86_64--lower-closure (cg instr)
   "Lower an SSA `:closure' INSTR — emit `LEA rax, [rip + INNER:N]'
@@ -1605,6 +2240,24 @@ buffer."
           (nelisp-cc-x86_64--lower-instr cg instr))))
     cg))
 
+(defun nelisp-cc-x86_64--find-closure-instr-for-inner (function idx)
+  "Walk FUNCTION (an outer-level SSA function) and return the
+`:closure' instruction whose META `:inner-function-index' equals IDX.
+Returns nil when no match.  T96 Phase 7.1.5 — used by
+`--compile-inner-into-buffer' to discover the letrec-name attached
+to the outer-level closure that produced the inner function being
+compiled."
+  (catch 'found
+    (dolist (blk (nelisp-cc--ssa-function-blocks function))
+      (dolist (instr (nelisp-cc--ssa-block-instrs blk))
+        (when (and (eq (nelisp-cc--ssa-instr-opcode instr) 'closure)
+                   (eq (plist-get
+                        (nelisp-cc--ssa-instr-meta instr)
+                        :inner-function-index)
+                       idx))
+          (throw 'found instr))))
+    nil))
+
 (defun nelisp-cc-x86_64--compile-inner-into-buffer (function outer-cg cells idx)
   "Compile inner FUNCTION into OUTER-CG's buffer.  T84 Phase 7.5 wire.
 
@@ -1633,8 +2286,30 @@ legacy entry."
                :slot-alist slot-alist
                :frame-size frame-size
                :cell-symbols cells)))
+    ;; T96 Phase 7.1.5 — mark tail-self-call sites BEFORE phi-out so
+    ;; the pattern (call-indirect → phi → return) is still legible.
+    ;; The mark sets META :tail-call-self LETREC-NAME so the backend
+    ;; lowerer emits a JMP to `inner:IDX:body' instead of a CALL+RET.
+    (let* ((outer-fn (nelisp-cc-x86_64--codegen-function outer-cg))
+           (closure-instr
+            (nelisp-cc-x86_64--find-closure-instr-for-inner outer-fn idx))
+           (letrec-name
+            (and closure-instr
+                 (plist-get (nelisp-cc--ssa-instr-meta closure-instr)
+                            :letrec-name))))
+      (when letrec-name
+        (nelisp-cc-callees--mark-tail-self-calls function letrec-name)
+        (setf (nelisp-cc-x86_64--codegen-letrec-name cg) letrec-name)
+        (setf (nelisp-cc-x86_64--codegen-tco-self-idx cg) idx)))
     (nelisp-cc--resolve-phis function)
     (nelisp-cc-x86_64--emit-prologue buf frame-size)
+    ;; T96 Phase 7.1.5 — define `inner:IDX:body' here so that tail
+    ;; self-calls JMP back BEFORE param-home-spill runs.  This lets
+    ;; the new arg-reg values land in their spill slots on every
+    ;; iteration (= param-home-spill is idempotent given fresh
+    ;; arg-regs).
+    (let ((body-lbl (intern (format "inner:%d:body" idx))))
+      (nelisp-cc-x86_64--buffer-define-label buf body-lbl))
     ;; T84 — save spilled params from arg-regs into spill slots.
     (nelisp-cc-x86_64--emit-param-home-spills cg)
     (let ((rpo (nelisp-cc--ssa--reverse-postorder function)))
