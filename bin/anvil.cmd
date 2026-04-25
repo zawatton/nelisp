@@ -9,6 +9,19 @@ rem   1. %EMACS% if set and exists
 rem   2. %ProgramFiles%\Emacs\emacs-XX.X\bin\emacs.exe (gnu.org build)
 rem   3. C:\msys64\mingw64\bin\emacs.exe (msys2 mingw64)
 rem
+rem Phase 6.1 architecture α (anvil headless profile):
+rem   bin/anvil auto-detects a bundled anvil.el under %ANVIL_HOME%\anvil-lib
+rem   (= the Stage D tarball layout).  Override the search via:
+rem
+rem     set ANVIL_LISP_DIR=C:\path\to\anvil.el           (cmd.exe)
+rem     $env:ANVIL_LISP_DIR = "C:\path\to\anvil.el"      (PowerShell)
+rem
+rem   Both forms are forwarded through this script (env passthrough).
+rem   When anvil.el is found, `anvil mcp serve' starts the headless
+rem   profile (server-id emacs-eval-headless, ~28 tools); otherwise it
+rem   falls back to nelisp-server (Phase 6.0 baseline).  Run
+rem   `anvil doctor' to confirm which mode is active.
+rem
 rem Claude Code .mcp.json snippet (PowerShell):
 rem   {
 rem     "mcpServers": {

@@ -182,20 +182,46 @@ cmd_version() {
 
 ## anvil_lisp_dir [internal]
 ##   Resolve the path to a bundled anvil.el checkout, or empty when
-##   absent.  Honour ANVIL_LISP_DIR override; otherwise probe the
-##   conventional locations beside the launcher (anvil-lib/) and the
-##   user's dev tree (Notes/dev/anvil.el).
+##   absent.  Honour ANVIL_LISP_DIR override (cmd.exe / PowerShell users
+##   set it via `set ANVIL_LISP_DIR=C:\path` / `$env:ANVIL_LISP_DIR`,
+##   forwarded through bin/anvil.cmd's `set "ANVIL_LISP_DIR=..."`);
+##   otherwise probe the conventional locations beside the launcher
+##   (anvil-lib/) and the user's dev tree (Notes/dev/anvil.el).
+##   Windows (msys2 / Git Bash) candidates use $USERPROFILE when set.
 anvil_lisp_dir() {
-  if [[ -n "${ANVIL_LISP_DIR:-}" && -f "$ANVIL_LISP_DIR/anvil.el" ]]; then
-    printf '%s' "$ANVIL_LISP_DIR"
-    return 0
+  # Honour ANVIL_LISP_DIR override.  On Windows the env var may arrive
+  # as a backslash path (`C:\path\to\anvil.el`); msys2 / Git Bash bash
+  # treats those as foreign — flip to forward slashes for the test.
+  if [[ -n "${ANVIL_LISP_DIR:-}" ]]; then
+    local lisp_dir="${ANVIL_LISP_DIR//\\//}"
+    if [[ -f "$lisp_dir/anvil.el" ]]; then
+      printf '%s' "$lisp_dir"
+      return 0
+    fi
   fi
+
+  # Build candidate list.  Stage D Phase 6.1 tarball layout
+  # ($ANVIL_HOME/anvil-lib) covers the ordinary distribution path on
+  # every OS — works identically on Linux, macOS, and Windows (msys2).
   local candidates=(
     "$ANVIL_HOME/anvil-lib"
     "$ANVIL_HOME/../anvil.el"
     "$HOME/Notes/dev/anvil.el"
     "$HOME/.emacs.d/external-packages/anvil.el"
   )
+
+  # Windows-only fallback: when running under msys2 / Git Bash,
+  # $HOME often differs from %USERPROFILE% (msys home vs Windows
+  # home).  Add Windows-native candidates if USERPROFILE is set.
+  if [[ -n "${USERPROFILE:-}" ]]; then
+    local up="${USERPROFILE//\\//}"
+    candidates+=(
+      "$up/Notes/dev/anvil.el"
+      "$up/.emacs.d/external-packages/anvil.el"
+      "$up/AppData/Local/anvil/anvil-lib"
+    )
+  fi
+
   local d
   for d in "${candidates[@]}"; do
     if [[ -f "$d/anvil.el" && -f "$d/anvil-server-commands.el" ]]; then
