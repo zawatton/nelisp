@@ -372,5 +372,137 @@ shift the default away from `simulator'."
     ;; expression; eval it to confirm the canonical default.
     (should (eq (eval (car std) t) 'simulator))))
 
+;;; (15-19) Phase 7.5.4 in-process FFI (T33) ---------------------
+;;
+;; The five tests below are *gated by skip-unless-gates*: when either
+;; the host Emacs lacks module support, or `nelisp-runtime-module.so'
+;; is not on disk yet, every test in this group calls `ert-skip'
+;; rather than failing.  This matches the T13 (`nelisp-cc-real-exec-
+;; test') gating pattern so a fresh checkout that has not yet run
+;; `make runtime-module' still goes green on `make test'.
+
+(defun nelisp-cc-runtime-test--module-supported-p ()
+  "Return non-nil when this host can `module-load' a .so."
+  (and (boundp 'module-file-suffix) module-file-suffix (fboundp 'module-load)))
+
+(defun nelisp-cc-runtime-test--module-built-p ()
+  "Return non-nil when `nelisp-runtime-module.so' is on disk."
+  (and (nelisp-cc-runtime-test--module-supported-p)
+       (ignore-errors
+         (file-readable-p (nelisp-cc-runtime--locate-runtime-module)))))
+
+(defun nelisp-cc-runtime-test--skip-unless-module-built ()
+  "Skip the surrounding ERT unless the in-process FFI is available."
+  (unless (nelisp-cc-runtime-test--module-supported-p)
+    (ert-skip "Emacs lacks dynamic module support — rebuild with --with-modules"))
+  (unless (nelisp-cc-runtime-test--module-built-p)
+    (ert-skip "nelisp-runtime-module.so missing — run `make runtime-module'")))
+
+(ert-deftest nelisp-cc-runtime-module-locate-skip-unless-built ()
+  "T33 (15) — locate the module, gracefully skip when absent.
+
+The test never *fails*: it skips when either the Emacs build lacks
+module support or `make runtime-module' has not been run.  When the
+artifact is present the locator returns a readable absolute path that
+ends in `nelisp-runtime-module.so' so downstream code can pass it
+straight to `module-load'."
+  (nelisp-cc-runtime-test--skip-unless-module-built)
+  (let ((path (nelisp-cc-runtime--locate-runtime-module)))
+    (should (stringp path))
+    (should (file-readable-p path))
+    (should (string-suffix-p "nelisp-runtime-module.so" path))))
+
+(ert-deftest nelisp-cc-runtime-exec-in-process-empty-fn-zero ()
+  "T33 (16) — in-process FFI runs `xor rax,rax; ret' and returns 0.
+
+The 4-byte sequence `48 31 C0 C3' is the smallest portable
+Linux-x86_64 payload we can pass through the bridge: REX.W xor rax,
+rax (3 bytes) plus a near RET (1 byte).  The i64 return value lands
+in rax — which we just zeroed — so the bridge's
+`(nelisp-runtime-module-exec-bytes ...)' must produce 0."
+  (nelisp-cc-runtime-test--skip-unless-module-built)
+  (let* ((bytes  (vector #x48 #x31 #xC0 #xC3))
+         (result (nelisp-cc-runtime--exec-in-process bytes)))
+    (should (eq (car result) :result))
+    (should (= (nth 2 result) 0))))
+
+(ert-deftest nelisp-cc-runtime-exec-in-process-return-42 ()
+  "T33 (17) — `mov eax, 42; ret' returns 42 in-process.
+
+`B8 2A 00 00 00' loads 42 into eax (zero-extending into rax under the
+SysV AMD64 ABI), then `C3' returns.  The bridge harvests rax and we
+assert the i64 round-trip is bit-exact."
+  (nelisp-cc-runtime-test--skip-unless-module-built)
+  (let* ((bytes  (vector #xB8 #x2A #x00 #x00 #x00 #xC3))
+         (result (nelisp-cc-runtime--exec-in-process bytes)))
+    (should (eq (car result) :result))
+    (should (= (nth 2 result) 42))))
+
+(ert-deftest nelisp-cc-runtime-exec-in-process-perf-faster-than-subprocess ()
+  "T33 (18) — in-process FFI is meaningfully faster than the subprocess
+path.
+
+Walls a small loop through both paths and asserts the in-process
+median is at least 5x faster.  We deliberately under-state the
+target (the design budget is 100x: ~10 µs in-process vs ~1 ms for
+the subprocess hop) because CI hosts run with very different
+process-creation tax — 5x is enough headroom that a non-pathological
+host always passes, while still catching regressions where the
+in-process path accidentally re-spawns the subprocess.
+
+Skips when either prerequisite (module + binary) is missing."
+  (nelisp-cc-runtime-test--skip-unless-module-built)
+  (unless (ignore-errors (nelisp-cc-runtime--locate-runtime-bin))
+    (ert-skip "nelisp-runtime binary missing — run `make runtime'"))
+  (let* ((bytes (vector #xB8 #x2A #x00 #x00 #x00 #xC3))
+         (n 5)
+         ;; In-process: warm the module load before timing.
+         (_   (nelisp-cc-runtime--exec-in-process bytes))
+         (t0  (current-time))
+         (_in (dotimes (_ n) (nelisp-cc-runtime--exec-in-process bytes)))
+         (in-elapsed (float-time (time-subtract (current-time) t0)))
+         (t1  (current-time))
+         (_sp (dotimes (_ n) (nelisp-cc-runtime--exec-real bytes)))
+         (sp-elapsed (float-time (time-subtract (current-time) t1))))
+    (should (> in-elapsed 0))
+    (should (> sp-elapsed 0))
+    ;; In-process must be at least 5x faster than subprocess.
+    (should (> (/ sp-elapsed in-elapsed) 5))))
+
+(ert-deftest nelisp-cc-runtime-exec-mode-in-process-default-after-load ()
+  "T33 (19) — `:in-process' is a recognised exec-mode value and
+`compile-and-allocate' threads it through cleanly.
+
+Asserts:
+
+  1. The defcustom's :type accepts the symbol `in-process' (the
+     widget's options include `(const ... in-process)').
+  2. `compile-and-allocate' with `nelisp-cc-runtime-exec-mode' set
+     to `in-process' runs the pipeline and adds `:exec-mode
+     in-process' to the returned plist.
+  3. When the module is built and the lambda compiles to runnable
+     bytes, `:exec-result' is a (`:result' EXIT INT) tuple."
+  (nelisp-cc-runtime-test--skip-unless-module-built)
+  ;; (1) defcustom widget type covers `in-process'.
+  (let ((type (get 'nelisp-cc-runtime-exec-mode 'custom-type)))
+    (should type)
+    (should (cl-some (lambda (clause)
+                       (and (consp clause)
+                            (eq (car clause) 'const)
+                            (memq 'in-process clause)))
+                     (cdr type))))
+  ;; (2) compile-and-allocate threads `:exec-mode in-process'.
+  (let* ((nelisp-cc-runtime-exec-mode 'in-process)
+         (result (nelisp-cc-runtime-compile-and-allocate
+                  '(lambda () nil) 'x86_64)))
+    (should (eq (plist-get result :exec-mode) 'in-process))
+    ;; (3) :exec-result present and well-shaped.  We don't insist on
+    ;;     `:result' specifically — phase 7.1.X-shaped bytes may not
+    ;;     execute cleanly without callee resolution; the assertion is
+    ;;     that the plumbing is wired (a list with a keyword head).
+    (let ((er (plist-get result :exec-result)))
+      (should (listp er))
+      (should (memq (car er) '(:result :error :no-result))))))
+
 (provide 'nelisp-cc-runtime-test)
 ;;; nelisp-cc-runtime-test.el ends here

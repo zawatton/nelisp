@@ -1,6 +1,6 @@
 .PHONY: test compile clean all bench gc-bench actor-bench soak smoke stage-d-tarball \
         runtime runtime-test runtime-clean test-runtime \
-        runtime-staticlib stage-d-v2-bin \
+        runtime-staticlib runtime-module runtime-module-clean stage-d-v2-bin \
         release-artifact release-checksum soak-blocker soak-post-ship
 
 EMACS ?= emacs
@@ -146,6 +146,34 @@ runtime-staticlib:
 	    printf "  \033[1;33m!\033[0m staticlib NOT produced — check Cargo.toml crate-type contains \"staticlib\"\n"; \
 	    exit 1; \
 	fi
+
+# Phase 7.5.4 (Doc 32 v2 §7 / T33) — Emacs module wrapper for in-process
+# FFI.  Built on top of the cdylib (`libnelisp_runtime.so`); the C
+# wrapper `nelisp-runtime-module.c` dlopens the cdylib at module init
+# time so a single `make runtime-module' produces an artifact that
+# loads cleanly via (module-load ...) without further setup.  ~10 µs /
+# call vs ~1 ms for the subprocess path — Doc 32 v2 §7 bench gate
+# (≥100 tool calls/sec) reachable without per-call subprocess budget.
+NELISP_RUNTIME_MODULE_SRC := $(NELISP_RUNTIME_DIR)/c-bindings/nelisp-runtime-module.c
+NELISP_RUNTIME_MODULE     := $(NELISP_RUNTIME_DIR)/target/release/nelisp-runtime-module.so
+EMACS_MODULE_INC ?= $(shell pkg-config --cflags emacs-module 2>/dev/null || echo "-I/usr/include")
+
+runtime-module: runtime
+	cc -shared -fPIC -Wall -Wextra \
+	  $(EMACS_MODULE_INC) \
+	  -L $(NELISP_RUNTIME_DIR)/target/release \
+	  -o $(NELISP_RUNTIME_MODULE) \
+	  $(NELISP_RUNTIME_MODULE_SRC) \
+	  -ldl
+	@if [ -f "$(NELISP_RUNTIME_MODULE)" ]; then \
+	    printf "  \033[1;32m✓\033[0m runtime-module built: %s ($$(du -h "$(NELISP_RUNTIME_MODULE)" | cut -f1))\n" "$(NELISP_RUNTIME_MODULE)"; \
+	else \
+	    printf "  \033[1;33m!\033[0m runtime-module NOT produced — check cc + emacs-module.h availability\n"; \
+	    exit 1; \
+	fi
+
+runtime-module-clean:
+	rm -f $(NELISP_RUNTIME_MODULE)
 
 # Phase 7.5.1 (Doc 32 v2 LOCKED §3.1) — stage-d-v2.0 candidate binary
 # scaffold.  This target reserves the build edge for Phase 7.5.2 where
