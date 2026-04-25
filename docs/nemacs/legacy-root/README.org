@@ -1,0 +1,62 @@
+#+TITLE: nelisp-emacs — Emacs C → Elisp Port Project
+#+AUTHOR: zawatton + Claude
+#+DATE: 2026-04-25
+#+STATUS: BOOTSTRAP
+
+* Vision
+
+Emacs core C を Elisp で再実装、NeLisp runtime 上で動作させる pure
+Elisp Emacs を build する long-term project。
+
+* Relationship to NeLisp
+
+- Layer 1 (NeLisp core runtime) = =/Notes/dev/nelisp/= (= 既存、本 repo
+  触らない)
+- Layer 2 (extension package) = 一部既 SHIPPED 済 (=
+  =nelisp-emacs-compat= / =nelisp-process= / =nelisp-eventloop-multiplex=
+  / =nelisp-regex= / =nelisp-coding= / =nelisp-sqlite= / =nelisp-base64=
+  / =nelisp-secure-hash= / =nelisp-json= / =nelisp-filenotify= 等)、本
+  repo は **残 Layer 2 + Layer 3 (display backend)** を担当
+- Layer 3 (display backend) = TUI primary、GTK / Cocoa / Win32 / wgpu は
+  community
+
+* Initial Scope (Phase 1)
+
+per Doc 01 architecture LOCKED:
+1. =src/emacs-buffer.el= = buffer.c port (= 既 nelisp-emacs-compat の上
+   に乗る、buffer-local-variable / advanced text-property / undo full)
+2. =src/emacs-window.el= = window.c port
+3. =src/emacs-frame.el= = frame.c port (= display backend abstraction)
+4. =src/emacs-keymap.el= = keymap.c port
+5. =src/emacs-minibuffer.el= = minibuffer.c port
+6. =src/emacs-tui-backend.el= = TUI display backend MVP (=
+   ncurses-style、reference impl)
+
+* Long-term Roadmap
+
+| Phase   | scope                              | LOC 目安 | 期間 |
+|---------+------------------------------------+----------+------|
+| Phase 1 | Layer 2 残 (buffer/window/keymap)  | ~5-10K   | 6-12 ヶ月 |
+| Phase 2 | TUI backend reference impl         | ~5-10K   | 6-12 ヶ月 |
+| Phase 3 | xdisp.c port (= 最大難所、display) | ~10-30K  | 12-24 ヶ月 |
+| Phase 4 | MELPA compat layer (= shim)        | ~20-50K  | 1-2 年 |
+| Phase 5 | Emacs bootstrap (= self-host)      | full     | 3-5 年 |
+
+* Dependencies
+
+- =nelisp= (= /Notes/dev/nelisp/、Layer 1 runtime + Layer 2 既 substrate)
+- =anvil.el= (= /Notes/dev/anvil.el/、tooling、optional)
+
+* License
+
+(TBD per public release timing、現状 private dev)
+
+* Status
+
+GitHub 公開予定なし (= private dev)、本 repo は local 開発 only。
+
+* Reference Docs
+
+- NeLisp Doc 33 v2 LOCKED (= overall architecture)
+- NeLisp Doc 34 v2 LOCKED (= Phase 9b interactive editor substrate)
+- NeLisp Doc 39 v2 LOCKED (= Phase 9d process subprocess、ship 順序 swap)
