@@ -877,5 +877,160 @@ to-space.  The candidate's :fields survive the round trip."
     (should (eq t (plist-get stats :card-table-cleared)))))
 
 
+
+;;; 14. Phase 7.3.6 — scheduler + safe-point + finalizer executor ---
+
+(ert-deftest nelisp-gc-inner-scheduler-triggers-minor-on-nursery-full ()
+  "scheduler-on-allocation accumulates bytes; once it crosses the
+nursery threshold the *next* allocation returns `'minor', and the
+counter does *not* reset until the GC dispatch path resets it.
+
+Coverage matrix:
+  - sub-threshold alloc → `'none'
+  - cumulative crossing → `'minor', minor-trigger-count++
+  - tenured 80%+ utilization → `'major', major-trigger-count++
+  - minor takes precedence over major when both fire"
+  (nelisp-gc-inner-test--reset)
+  (nelisp-allocator--reset-region-table)
+  (nelisp-gc-inner-scheduler-reset)
+  ;; Drop the threshold to a tiny value so we can exercise crossing
+  ;; without actually allocating 4MB worth of fixtures.
+  (let ((nelisp-gc-inner-nursery-trigger-bytes 1024)
+        (nelisp-gc-inner-tenured-trigger-percent 80))
+    ;; First alloc 512 bytes — below threshold, no GC.
+    (should (eq 'none (nelisp-gc-inner-scheduler-on-allocation 512 nil)))
+    (should (= 512 nelisp-gc-inner--bytes-since-minor))
+    (should (= 0 nelisp-gc-inner--minor-trigger-count))
+    ;; Second alloc 600 bytes — total 1112, crosses 1024 → 'minor.
+    (should (eq 'minor (nelisp-gc-inner-scheduler-on-allocation 600 nil)))
+    (should (= 1 nelisp-gc-inner--minor-trigger-count))
+    ;; Counter still 1112 — scheduler does not auto-reset; the
+    ;; dispatcher (safe-point-poll) is responsible.  Reset manually
+    ;; to test the major path next.
+    (setq nelisp-gc-inner--bytes-since-minor 0)
+    ;; Now wire a tenured at 80% utilization and check 'major fires.
+    (let* ((tenured (nelisp-allocator-init-tenured (* 64 1024))))
+      ;; Force allocated-bytes to slightly above 80% of capacity (= 80%
+      ;; of 64KB).  Integer-math `pct = used * 100 / cap', so we set
+      ;; used so that `(used * 100) >= cap * 80'.  Use ceiling form to
+      ;; avoid truncation putting us at 79% when computing the fixture
+      ;; from the other direction.
+      (setf (nelisp-allocator--tenured-allocated-bytes tenured)
+            (1+ (/ (* (nelisp-allocator--tenured-capacity tenured) 80)
+                   100)))
+      (should (eq 'major (nelisp-gc-inner-scheduler-on-allocation
+                          16 tenured)))
+      (should (= 1 nelisp-gc-inner--major-trigger-count))
+      ;; Minor takes precedence: bump bytes-since-minor over the
+      ;; nursery threshold while tenured is still 80%; expect 'minor.
+      (setq nelisp-gc-inner--bytes-since-minor 0)
+      (should (eq 'minor (nelisp-gc-inner-scheduler-on-allocation
+                          2048 tenured)))
+      (should (= 2 nelisp-gc-inner--minor-trigger-count)))))
+
+(ert-deftest nelisp-gc-inner-finalizer-executor-drains-with-resurrection-once ()
+  "drain-finalizer-queue-with-policy fires every queued thunk with
+:once resurrection bookkeeping — a resurrected ADDR is recorded in
+`--finalizer-fired' so a re-enqueue from inside the thunk is dropped
+on the floor.
+
+Coverage matrix:
+  - all queued thunks fire (FIFO, no leaks)
+  - one thunk signals; errors counter increments, drain continues
+  - one thunk's ADDR resurrects; resurrected counter increments and
+    re-enqueue of that ADDR is silently dropped
+  - queue is empty post-drain (atomic swap invariant)"
+  (nelisp-gc-inner-test--reset)
+  (nelisp-gc-inner-scheduler-reset)
+  (let* ((seen nil)
+         (fn-ok (lambda (a) (push a seen)))
+         (fn-err (lambda (_a) (signal 'arith-error nil)))
+         (fn-resurrect (lambda (a) (push a seen)))
+         ;; Resurrection check: ADDR 200 is "still reachable" post-call.
+         (rcheck (lambda (a) (eql a 200))))
+    (nelisp-gc-inner-enqueue-finalizer fn-ok 100)
+    (nelisp-gc-inner-enqueue-finalizer fn-resurrect 200)
+    (nelisp-gc-inner-enqueue-finalizer fn-err 300)
+    (should (= 3 (nelisp-gc-inner-finalizer-queue-length)))
+    (let ((stats (nelisp-gc-inner-drain-finalizer-queue-with-policy rcheck)))
+      ;; All three FN bodies invoked.
+      (should (eq 3 (plist-get stats :fired)))
+      ;; Exactly one signalled.
+      (should (eq 1 (plist-get stats :errors)))
+      ;; Exactly one ADDR was reachable post-call.
+      (should (eq 1 (plist-get stats :resurrected)))
+      (should (eq 0 (plist-get stats :remaining))))
+    ;; Both successful FNs ran, in FIFO order; the error FN didn't push.
+    (should (equal (sort (copy-sequence seen) #'<) '(100 200)))
+    ;; :once policy — re-enqueue 200 dedups silently.
+    (should (= 0 (nelisp-gc-inner-enqueue-finalizer fn-ok 200)))
+    (should (= 0 (nelisp-gc-inner-finalizer-queue-length)))
+    ;; And re-enqueue of 100 (also fired) likewise dedups.
+    (should (= 0 (nelisp-gc-inner-enqueue-finalizer fn-ok 100)))
+    (should (= 0 (nelisp-gc-inner-finalizer-queue-length)))))
+
+(ert-deftest nelisp-gc-inner-run-managed-cycle-end-to-end ()
+  "run-managed-cycle integrates safe-point-poll + drain end-to-end.
+
+Setup: nursery with one survivor, threshold dialled low so the
+allocation-triggered scheduler fires `'minor' on next tick.  Wire a
+finalizer-table entry for an unreachable nursery address (no longer
+forwarded post-copy → eligible for queue + drain).
+
+Expect:
+  - poll plist reports `:gc-kind 'minor' and a non-nil cycle-result
+  - drain plist reports `:fired ≥ 0' (queue may be empty in this
+    minor-only path; key invariant is shape correctness)
+  - bytes-since-minor reset to 0 after dispatch"
+  (nelisp-gc-inner-test--reset)
+  (nelisp-allocator--reset-region-table)
+  (nelisp-gc-inner-scheduler-reset)
+  (let* ((from   (nelisp-gc-inner-test--mk-nursery-region 0 100  500))
+         (to     (nelisp-gc-inner-test--mk-nursery-region 1 1000 1500))
+         (tenured-region (nelisp-gc-inner-test--mk-large-tenured
+                          2 (* 64 1024) (* 128 1024)))
+         (card-table (nelisp-gc-inner-init-card-table tenured-region))
+         (live-hdr  (nelisp-gc-inner--make-header 16 0 0))
+         (live-from-addr 100)
+         (objects
+          (list
+           (cons live-from-addr (list :header live-hdr :fields nil :size 16))))
+         (objs-fn (nelisp-gc-inner-test--mk-from-space-fn objects))
+         (semi (nelisp-gc-inner-init-semispace from to))
+         (tenured (nelisp-allocator-init-tenured (* 64 1024)))
+         (tenured-objects-fn (lambda () nil))
+         ;; Seed the scheduler so a tick will trigger 'minor.
+         (nelisp-gc-inner-nursery-trigger-bytes 1024))
+    (setq nelisp-gc-inner--bytes-since-minor 2048)
+    ;; Also enqueue a finalizer so the drain path has something to do.
+    (let* ((fired-addrs nil)
+           (fin-fn (lambda (a) (push a fired-addrs))))
+      (nelisp-gc-inner-enqueue-finalizer fin-fn 999)
+      (let* ((heap-regions (list from to tenured-region))
+             (result
+              (nelisp-gc-inner-run-managed-cycle
+               semi card-table tenured (list live-from-addr)
+               objs-fn tenured-objects-fn heap-regions
+               nil ;; finalizer-table — not used by the minor path
+               nil ;; resurrection-check-fn
+               )))
+        (let ((poll (plist-get result :poll))
+              (drain (plist-get result :drain)))
+          ;; Poll dispatched 'minor.
+          (should (eq 'minor (plist-get poll :gc-kind)))
+          (should (plist-get poll :cycle-result))
+          ;; Bytes counter reset post-dispatch.
+          (should (eq 0 (plist-get poll :bytes-since-minor-after)))
+          ;; Drain executed our enqueued finalizer.
+          (should (eq 1 (plist-get drain :fired)))
+          (should (eq 0 (plist-get drain :errors)))
+          (should (eq 0 (plist-get drain :remaining))))
+        ;; Top-level shape: elapsed + version field.
+        (should (integerp (plist-get result :elapsed-ms)))
+        (should (eq 1 (plist-get result :phase-7-3-6-version))))
+      ;; The fin-fn body actually ran (post-mutator drain).
+      (should (equal '(999) fired-addrs)))))
+
+
 (provide 'nelisp-gc-inner-test)
 ;;; nelisp-gc-inner-test.el ends here

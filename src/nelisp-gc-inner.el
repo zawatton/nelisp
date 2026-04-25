@@ -2475,5 +2475,379 @@ the demultiplex key."
             (list 'nelisp-gc-inner--cycle-kind-v2-p cycle-kind)))))
 
 
+;;;; §13. Phase 7.3.6 — scheduler + safe-point + finalizer executor --
+
+;; T30 (Phase 7.3.6) — the *closing* sub-phase of Phase 7.3 inner GC.
+;; Three concerns ship here, all consumer-side glue around T17/T21/
+;; T24/T26/T29 primitives that are already frozen above:
+;;
+;;   1. *Allocation-triggered scheduler* (Doc 30 v2 §2.10 推奨 A).
+;;      Counts bytes-since-minor; once the counter crosses
+;;      `nelisp-gc-inner-nursery-trigger-bytes' the next allocation
+;;      returns `'minor' from `scheduler-on-allocation' so the
+;;      mutator's allocator can route through `safe-point-poll' on
+;;      the way out.  Tenured-side trigger fires when the tenured
+;;      generation crosses `nelisp-gc-inner-tenured-trigger-percent'
+;;      utilization; the dispatch decides between `:major-young-
+;;      root-limited' (default, Doc 30 v2 §0 BLOCKER 1) and
+;;      `:major-full' (escape hatch).
+;;
+;;   2. *Safe-point poll plumbing* (T11 emit-gc-poll-stub consumer
+;;      side, Doc 28 §2.9 contract).  The compiler emits an inline
+;;      NOP per safe-point; this module's `safe-point-poll' is what
+;;      fires when the runtime patches that NOP into a call.  Phase
+;;      7.5 hooks the patched call to this function via FFI; for
+;;      Phase 7.3.6 the simulator-path test just calls it directly.
+;;
+;;   3. *Finalizer queue executor* (Doc 30 §6.9 v2 BLOCKER 2 final
+;;      mitigation).  T17 staged the queue + `:once' policy; T21
+;;      enqueues whites-with-finalizer during sweep; this module's
+;;      `drain-finalizer-queue-with-policy' is the post-GC mutator
+;;      drain that actually fires user thunks.  Resurrection bookkeep-
+;;      ing is layered on top of T17's `--finalizer-fired' set so the
+;;      resurrected object's finalizer is *not* re-registered next
+;;      cycle.
+
+;;;; §13.1 Scheduler defcustom + counters ---------------------------
+
+(defcustom nelisp-gc-inner-nursery-trigger-bytes (* 4 1024 1024)
+  "Bytes allocated since last minor GC before triggering the next minor GC.
+
+Default 4MB matches the Doc 30 v2 §2.9 nursery size — the trigger
+fires \"when the nursery is full\" in the steady state.  Operators
+who run with a non-default nursery size must set both this value
+and `nelisp-allocator-nursery-size' together; mismatch is not a
+hard error but produces premature or late GC."
+  :type 'integer
+  :group 'nelisp)
+
+(defcustom nelisp-gc-inner-tenured-trigger-percent 80
+  "Tenured utilization percent (0-100) before triggering a major GC.
+
+Default 80 matches the Doc 30 v2 §2.10 LOCK.  At 80% utilization
+the scheduler returns `'major' from `scheduler-on-allocation';
+which major mode (`:major-young-root-limited' vs `:major-full')
+runs is decided separately by `nelisp-gc-major-mode' at dispatch
+time."
+  :type 'integer
+  :group 'nelisp)
+
+(defvar nelisp-gc-inner--bytes-since-minor 0
+  "Bytes allocated since the last minor GC.
+Reset to 0 after every successful minor / major cycle.  The
+allocator increments this on every alloc via
+`nelisp-gc-inner-scheduler-on-allocation'.")
+
+(defvar nelisp-gc-inner--minor-trigger-count 0
+  "Cumulative count of `'minor' triggers returned by the scheduler.
+Exposed for the `:scheduler-stats' field of cycle results so
+operators can correlate trigger frequency with allocation rate.")
+
+(defvar nelisp-gc-inner--major-trigger-count 0
+  "Cumulative count of `'major' triggers returned by the scheduler.")
+
+(defun nelisp-gc-inner-scheduler-reset ()
+  "Reset every scheduler-side mutable counter.
+
+Used by ERTs and by the post-major-GC handshake when the entire
+heap is known to have been swept (so trigger counters restart from
+scratch).  Does *not* touch the finalizer queue or the mark state
+— callers chain `finalizer-queue-reset' / `init-mark-state'
+separately when a full reset is desired."
+  (setq nelisp-gc-inner--bytes-since-minor 0
+        nelisp-gc-inner--minor-trigger-count 0
+        nelisp-gc-inner--major-trigger-count 0))
+
+;;;; §13.2 Allocation-triggered scheduler (Doc 30 v2 §2.10) --------
+
+(defun nelisp-gc-inner-scheduler-on-allocation (size tenured)
+  "Update scheduler counters for an allocation of SIZE bytes.
+
+TENURED is the current `nelisp-allocator--tenured' struct (or nil
+if tenured isn't initialised yet — e.g.  startup before the first
+init-tenured call; the major trigger is then unconditionally
+suppressed).
+
+Returns the GC kind to trigger:
+  `'none'  — no GC needed
+  `'minor' — bytes-since-minor crossed `nursery-trigger-bytes'
+  `'major' — tenured utilization crossed `tenured-trigger-percent'
+
+Minor takes precedence: if both thresholds are met simultaneously,
+`'minor' is returned and the major trigger is checked again on the
+*next* allocation after the minor GC drops bytes-since-minor to 0.
+
+This function does not actually run any GC — it only computes the
+recommendation.  The caller (mutator-side allocator) is expected to
+route through `safe-point-poll' to actually execute the trigger."
+  (unless (and (integerp size) (>= size 0))
+    (signal 'wrong-type-argument (list 'natnump size)))
+  (cl-incf nelisp-gc-inner--bytes-since-minor size)
+  (cond
+   ((>= nelisp-gc-inner--bytes-since-minor
+        nelisp-gc-inner-nursery-trigger-bytes)
+    (cl-incf nelisp-gc-inner--minor-trigger-count)
+    'minor)
+   ((and tenured
+         (nelisp-allocator--tenured-p tenured)
+         (let* ((cap (nelisp-allocator--tenured-capacity tenured))
+                (used (nelisp-allocator--tenured-allocated-bytes tenured))
+                ;; percent = used * 100 / cap, integer math (no float)
+                (pct (if (> cap 0) (/ (* used 100) cap) 0)))
+           (>= pct nelisp-gc-inner-tenured-trigger-percent)))
+    (cl-incf nelisp-gc-inner--major-trigger-count)
+    'major)
+   (t 'none)))
+
+(defun nelisp-gc-inner-scheduler-tick (semi card-table tenured)
+  "Periodic scheduler tick — re-evaluate thresholds without an alloc.
+
+Called by the mutator at safe-point poll boundaries (Phase 7.1
+backend may schedule a tick at every back-edge in addition to the
+inline poll).  Unlike `scheduler-on-allocation' this does *not*
+increment bytes-since-minor — it just recomputes `'none' / `'minor'
+/ `'major' from the current counter state.
+
+SEMI / CARD-TABLE / TENURED are passed through for v1.0 multi-thread
+extension (Phase 7.5+) but are unused by Phase 7.3.6 single-thread
+path.  They appear in the signature so downstream callers don't
+have to change shape when the multi-thread variant lands.
+
+Returns plist:
+  `(:gc-kind SYM :bytes-since-minor N :tenured-pct N)'."
+  (ignore semi card-table)
+  (let* ((kind (cond
+                ((>= nelisp-gc-inner--bytes-since-minor
+                     nelisp-gc-inner-nursery-trigger-bytes)
+                 'minor)
+                ((and tenured
+                      (nelisp-allocator--tenured-p tenured)
+                      (let* ((cap (nelisp-allocator--tenured-capacity tenured))
+                             (used (nelisp-allocator--tenured-allocated-bytes
+                                    tenured))
+                             (pct (if (> cap 0) (/ (* used 100) cap) 0)))
+                        (>= pct
+                            nelisp-gc-inner-tenured-trigger-percent)))
+                 'major)
+                (t 'none)))
+         (tenured-pct (if (and tenured
+                               (nelisp-allocator--tenured-p tenured))
+                          (let* ((cap (nelisp-allocator--tenured-capacity
+                                       tenured))
+                                 (used (nelisp-allocator--tenured-allocated-bytes
+                                        tenured)))
+                            (if (> cap 0) (/ (* used 100) cap) 0))
+                        0)))
+    (list :gc-kind kind
+          :bytes-since-minor nelisp-gc-inner--bytes-since-minor
+          :tenured-pct tenured-pct
+          :minor-trigger-count nelisp-gc-inner--minor-trigger-count
+          :major-trigger-count nelisp-gc-inner--major-trigger-count)))
+
+;;;; §13.3 Safe-point poll plumbing (T11 stub consumer) ------------
+
+(defun nelisp-gc-inner-safe-point-poll
+    (semi card-table tenured root-set
+          from-space-objects-fn tenured-objects-fn heap-regions
+          &optional finalizer-table)
+  "Safe-point poll handler — the consumer side of T11's emit-gc-poll-stub.
+
+When the Phase 7.1 backend patches the inline NOP at a safe-point
+into a call, the call lands here (Phase 7.5 wires the FFI; Phase
+7.3.6 keeps it in-process).
+
+Algorithm:
+  1. `scheduler-tick' decides `'none' / `'minor' / `'major'.
+  2. If non-`'none', dispatch through `run-cycle-v2' (T29) with the
+     appropriate cycle kind:
+       `'minor' → `:minor'
+       `'major' → either `:major-young-root-limited' (default) or
+                 `:major-full' depending on `nelisp-gc-major-mode'.
+  3. After the cycle, reset bytes-since-minor to 0 and return the
+     wrapped result.
+
+Note: this function is the *plumbing* — finalizer drain happens
+in the dedicated `drain-finalizer-queue-with-policy' call
+documented at §13.4 / `run-managed-cycle' at §13.5, *not* here.  The
+contract is: collector path enqueues, mutator path drains.
+
+Arguments:
+  SEMI / CARD-TABLE / TENURED — see `run-cycle-v2'
+  ROOT-SET                    — caller-supplied mutator roots
+  FROM-SPACE-OBJECTS-FN       — `(lambda (addr) → plist)' for nursery
+  TENURED-OBJECTS-FN          — `(lambda () → ALIST)' for tenured side
+  HEAP-REGIONS                — Doc 29 §1.4 region descriptors
+  FINALIZER-TABLE             — optional, forwarded to `run-sweep-phase'
+
+Returns plist:
+  `(:gc-kind \\='none|\\='minor|\\='major
+    :cycle-result PLIST-or-nil
+    :bytes-since-minor-after N
+    :scheduler-stats PLIST)'."
+  (let* ((tick (nelisp-gc-inner-scheduler-tick semi card-table tenured))
+         (kind (plist-get tick :gc-kind))
+         (cycle-result nil))
+    (cond
+     ((eq kind 'minor)
+      (setq cycle-result
+            (nelisp-gc-inner-run-cycle-v2
+             :minor semi tenured card-table root-set
+             from-space-objects-fn tenured-objects-fn))
+      (setq nelisp-gc-inner--bytes-since-minor 0))
+     ((eq kind 'major)
+      (cond
+       ((eq nelisp-gc-major-mode 'young-root-limited)
+        (setq cycle-result
+              (nelisp-gc-inner-run-cycle-v2
+               :major-young-root-limited card-table semi root-set
+               heap-regions tenured-objects-fn finalizer-table)))
+       ((eq nelisp-gc-major-mode 'full)
+        (setq cycle-result
+              (nelisp-gc-inner-run-cycle-v2
+               :major-full root-set heap-regions finalizer-table)))
+       (t
+        (signal 'wrong-type-argument
+                (list 'nelisp-gc-major-mode-p nelisp-gc-major-mode))))
+      (setq nelisp-gc-inner--bytes-since-minor 0)))
+    (list :gc-kind kind
+          :cycle-result cycle-result
+          :bytes-since-minor-after nelisp-gc-inner--bytes-since-minor
+          :scheduler-stats tick)))
+
+;;;; §13.4 Finalizer queue executor (Doc 30 §6.9 BLOCKER 2 final) --
+
+(defun nelisp-gc-inner-drain-finalizer-queue-with-policy
+    (&optional resurrection-check-fn)
+  "Drain the finalizer queue in mutator context with resurrection policy.
+
+Doc 30 §6.9 v2 BLOCKER 2 *complete* mitigation: T17 + T21 staged the
+queue + sweep-time enqueue, this is the post-GC mutator drain that
+actually fires user thunks.
+
+RESURRECTION-CHECK-FN is an optional `(lambda (ADDR) → bool)' that
+returns non-nil when ADDR is reachable again *after* the finalizer
+returns.  When non-nil and the policy is `:once', that ADDR is
+recorded in `--finalizer-fired' so a re-register from inside the
+thunk takes the dedup path (= the resurrected object's finalizer
+fires exactly once).
+
+Algorithm:
+  1. Atomically swap the queue with an empty queue (so collector
+     re-enqueue during drain is safe — the new entry goes onto the
+     empty fresh queue, not into the snapshot we're draining).  This
+     is the v2 §6.9 invariant: collector enqueues, mutator drains, no
+     overlap.
+  2. For each (FN . ADDR) in the swapped snapshot:
+       a. Mark ADDR as fired (=:once= dedup).
+       b. condition-case-wrap FN; on signal, increment errors and
+          continue with the next entry.
+       c. If RESURRECTION-CHECK-FN supplied and returns non-nil,
+          increment resurrected count.  ADDR is *already* in
+          `--finalizer-fired' from step (a), so future re-enqueues
+          dedup automatically.
+  3. Return stats plist:
+       `(:fired N      ;; count of FN invocations attempted
+         :errors N     ;; count of FN that signalled
+         :resurrected N ;; count of FN whose ADDR was reachable post-call
+         :overflow N   ;; cumulative drop-oldest count since reset
+         :remaining N) ;; queue length after drain (always 0)'
+
+The queue snapshot is processed FIFO (head-to-tail) per Doc 30 §6.9
+v2 LOCK; tests should not depend on intra-cycle ordering between
+finalizers but the FIFO contract is stable across phases."
+  (let* ((cap (length nelisp-gc-inner--finalizer-queue))
+         (snapshot-vec nelisp-gc-inner--finalizer-queue)
+         (snapshot-head nelisp-gc-inner--finalizer-head)
+         (snapshot-count nelisp-gc-inner--finalizer-count)
+         (fired 0)
+         (errors 0)
+         (resurrected 0))
+    ;; Atomic swap — fresh queue ready for collector re-enqueue while
+    ;; we drain the snapshot.  Counters reset; overflow count is *not*
+    ;; reset (it's cumulative since `finalizer-queue-reset' per T17
+    ;; contract).
+    (setq nelisp-gc-inner--finalizer-queue
+          (make-vector cap nil)
+          nelisp-gc-inner--finalizer-head 0
+          nelisp-gc-inner--finalizer-tail 0
+          nelisp-gc-inner--finalizer-count 0)
+    ;; Drain snapshot FIFO.
+    (let ((idx snapshot-head)
+          (remaining snapshot-count))
+      (while (> remaining 0)
+        (let* ((entry (aref snapshot-vec idx))
+               (fn   (car-safe entry))
+               (addr (cdr-safe entry)))
+          (when (functionp fn)
+            (when (eq nelisp-gc-inner-resurrection-policy :once)
+              (puthash addr t nelisp-gc-inner--finalizer-fired))
+            (cl-incf fired)
+            (condition-case err
+                (funcall fn addr)
+              (error
+               (cl-incf errors)
+               (message "nelisp-gc-inner: finalizer error for %S: %S"
+                        addr err)))
+            (when (and (functionp resurrection-check-fn)
+                       (condition-case _
+                           (funcall resurrection-check-fn addr)
+                         (error nil)))
+              (cl-incf resurrected)
+              ;; --finalizer-fired already records ADDR via :once
+              ;; policy step (a); explicit puthash is idempotent.
+              (puthash addr t nelisp-gc-inner--finalizer-fired)))
+          (setq idx (mod (1+ idx) cap))
+          (cl-decf remaining))))
+    (list :fired       fired
+          :errors      errors
+          :resurrected resurrected
+          :overflow    nelisp-gc-inner--finalizer-overflow-count
+          :remaining   nelisp-gc-inner--finalizer-count)))
+
+;;;; §13.5 Integrated managed-cycle (Phase 7.3 完遂 trigger) -------
+
+(defun nelisp-gc-inner-run-managed-cycle
+    (semi card-table tenured root-set
+          from-space-objects-fn tenured-objects-fn heap-regions
+          &optional finalizer-table resurrection-check-fn)
+  "Phase 7.3 完遂 — full integrated managed GC cycle.
+
+Pipeline:
+  1. `safe-point-poll' (§13.3) — scheduler-tick + optional
+     run-cycle-v2 dispatch.
+  2. `drain-finalizer-queue-with-policy' (§13.4) — post-GC mutator
+     drain with resurrection-aware `:once' policy enforcement.
+
+This is the *one* entry point a Phase 7.5+ runtime FFI bridge needs
+to expose to the JIT-emitted poll site.  All Doc 30 v2 §3.6 sub-phase
+7.3.6 features compose here.
+
+Arguments:
+  SEMI / CARD-TABLE / TENURED   — see `run-cycle-v2'
+  ROOT-SET                      — mutator roots
+  FROM-SPACE-OBJECTS-FN         — nursery walker
+  TENURED-OBJECTS-FN            — tenured walker
+  HEAP-REGIONS                  — Doc 29 §1.4 region descriptors
+  FINALIZER-TABLE               — optional, forwarded to sweep
+  RESURRECTION-CHECK-FN         — optional, forwarded to drain
+
+Returns plist combining stages:
+  (:poll PLIST                ;; from safe-point-poll
+   :drain PLIST               ;; from drain-finalizer-queue-with-policy
+   :elapsed-ms INT             ;; full pipeline elapsed time
+   :phase-7-3-6-version 1)    ;; bumped on v2 wire-shape change"
+  (let* ((start (float-time))
+         (poll (nelisp-gc-inner-safe-point-poll
+                semi card-table tenured root-set
+                from-space-objects-fn tenured-objects-fn heap-regions
+                finalizer-table))
+         (drain (nelisp-gc-inner-drain-finalizer-queue-with-policy
+                 resurrection-check-fn)))
+    (list :poll poll
+          :drain drain
+          :elapsed-ms (round (* 1000.0 (- (float-time) start)))
+          :phase-7-3-6-version 1)))
+
+
 (provide 'nelisp-gc-inner)
 ;;; nelisp-gc-inner.el ends here
