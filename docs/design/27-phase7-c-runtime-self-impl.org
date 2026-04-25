@@ -448,20 +448,30 @@ UTF-8 / Latin-1 / Shift-JIS / EUC-JP encode/decode を NeLisp で実装:
 
 ** 工数見積 (合計、anvil.el + 並列 session full leverage 前提)
 
-| Phase | 言語       | 想定 LOC                | 想定期間   | 状態                       |
-|-------+------------+-------------------------+------------+----------------------------|
-| 7.0   | Rust       | ~300-500 (syscall stub) | 2-3 週間   | *✅ SHIPPED 2026-04-25 (335 LOC) + MAP_JIT update SHIPPED 2026-04-25 (Doc 28 v2 §6.9: mmap_jit / clear_icache / jit_write_protect, ~120 LOC)* |
-| 7.1   | NeLisp     | ~4500-8000 (native cc)  | 1-2 ヶ月   | DRAFT (Doc 28 起草中)      |
-| 7.2   | NeLisp     | ~800-1500 (allocator)   | 3-4 週間   | -                          |
-| 7.3   | NeLisp     | ~1200-2000 (GC)         | 1-2 ヶ月   | -                          |
-| 7.4   | NeLisp     | ~600-1000 (coding)      | 2-3 週間   | -                          |
-| 7.5   | (glue)     | ~200 + release          | 2 週間     | -                          |
-| 合計  | -          | *~7700-13200 LOC* (Rust ~400 + NeLisp ~7500-12500) | *4-8 ヶ月* | -                          |
+*errata 2026-04-25 (Doc 28 v2 + Doc 29 v2 + Doc 30 v2 + Doc 31 v2 +
+Doc 32 v2 LOCKED 反映)*: Doc 28-32 v2 LOCKED で各 phase の baseline を
+detailed decomposition で更新。本 §3 table を v2 LOCKED 値に追従。
 
-*Rust 量は当初 DRAFT の 3000-5000 LOC から 300-500 LOC へ激減* (~10x
-減)、代わりに NeLisp 実装が ~7500-12500 LOC 増 (= NeLisp purity max
-path の cost)。期間は anvil.el + 並列 session leverage で 4-8 ヶ月、
-当初 14-24 ヶ月 (1 dev) より ~3x 速い。
+| Phase | 言語       | 想定 LOC (v2 detailed)                                   | 想定期間 (v2)         | 状態                       |
+|-------+------------+----------------------------------------------------------+-----------------------+----------------------------|
+| 7.0   | Rust       | 819 (12 syscall + MAP_JIT/clear_icache/jit_write_protect) | 2-3 週間              | *✅ SHIPPED 2026-04-25* (commit =7264ba7= + =20ecef4= main、Doc 28 v2 §6.9 risk 解消) |
+| 7.1   | NeLisp     | ~5000-10000 (Doc 28 v2 §2.12)                            | *13-16 週間 (full) / 11-13 週間 (escape hatch)* | LOCKED v2 + Phase 7.1.X 全 sub-phase scaffold SHIPPED (commit =c7dbf3b= → =e668ea2= main、4471 LOC scaffold + 56 ERT) |
+| 7.2   | NeLisp     | ~1500-3000 (Doc 29 v2 §2.8、当初 800-1500 から detailed decomposition で +2x) | 3-5 週間 (Doc 29 v2)  | LOCKED v2 (commit =9dd2fa2= main) |
+| 7.3   | NeLisp     | ~2000-4000 (Doc 30 v2 §2.12、当初 1200-2000 から detailed decomposition で +2x) | 6-10 週間 (Doc 30 v2、最難 phase、6 sub-phase split) | LOCKED v2 (commit =57f6e9a= main) |
+| 7.4   | NeLisp     | ~1500-2500 (Doc 31 v2 §0、当初 600-1000 から detailed + CP932 拡張で +2.5x) + ~14000 entry generated table | 2-3 週間 (Doc 31 v2)  | LOCKED v2 (commit =cafc43a= main) |
+| 7.5   | (glue)     | ~900-1500 (Doc 32 v2 §2.9、当初 ~200 から release engineering 含む拡張) | 2 週間 (Doc 32 v2)    | LOCKED v2 (commit =3b2fd2c= main) |
+| 合計  | -          | *~10900-21000 LOC* (Rust ~819 + NeLisp ~10100-20200) + ~14000 entry table | *6-10 ヶ月 (v2 detailed)* | Phase 7+ 全 design pipeline 完結 (Doc 27 + 28-32 v2 LOCKED) |
+
+*v2 errata の意味*: 当初 Doc 27 §3 (DRAFT) の rough baseline に対し、
+Doc 28-32 v2 LOCKED で detailed decomposition + 反映漏れ修正 (CP932 /
+arm64 escape hatch / GC 6 sub-phase split / 二段 pause / etc) を経た
+realistic 値。期間は anvil.el + 並列 session leverage で 6-10 ヶ月
+(当初 4-8 ヶ月見積より +2 ヶ月、Doc 30 最難 phase の week milestone
+細分化と Doc 29 single-thread MVP 確定を反映)。
+
+*Rust 量は当初 DRAFT の 3000-5000 LOC から 819 LOC へ激減* (~5x
+減)、代わりに NeLisp 実装が ~10100-20200 LOC 増 (= NeLisp purity max
+path の cost、Doc 28-32 v2 detailed decomposition で +2x)。
 
 *productivity multiplier 根拠*: 2026-04-25 1 日で architecture α 16
 commit + Stage D Phase 6.1 全完成 + Doc 26 Phase 6.6.1 SHIPPED + Doc 27
