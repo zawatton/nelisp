@@ -1,0 +1,1741 @@
+#+TITLE: Doc 39 — Phase 9d : Process subprocess substrate (Doc 27 §3 7.0 syscall set 拡張 + T54 Wave 4 J-L prerequisite)
+#+DATE: 2026-04-25
+#+AUTHOR: zawatton + Claude (session-A 起草 v0、Opus 4.7 1M context、T85 review → T88 v1 → T93 第二弾 review → T94 v2 polish)
+#+STATUS: LOCKED-2026-04-25-v2 (option B parent integration、T85 review → T88 v1 → T93 第二弾 review MINOR REVISIONS → T94 polish 全反映、4 MAJOR + 6 MINOR + 5 polish 全 + ship 順序 swap proposal user signoff 案件)
+#+DEPENDS_ON: Doc 27 §3 7.0 record only 節 errata pending (Phase 9d で syscall set 拡張可と note、本 doc §11.1), Doc 33 v2 §3.1 / §4 Layer 0/1A/2 boundary (本 doc §11.3), Doc 34 LOCKED-2026-04-25-v2 §2.4 EVENT_SOURCE_CONTRACT_VERSION = 1 (本 doc §1.5 / §11.4、ship 順序 swap proposal で 9d 先行候補 + adapter pattern 整合), Doc 38 LOCKED-2026-04-25-v2 §X.Y Wave 4 raw data (本 doc §1.1 / §10、line 番号は Doc 38 audit 別 round で確定)
+#+PARENT: Doc 33 v2
+
+* §0 要旨 (TL;DR)
+
+T54 (NeLisp standalone gap analysis、=2026-04-24 master audit doc 38=) で
+*anvil bootstrap surface 完成* に必須と判明した *subprocess + eventloop
+syscall 拡張* を Phase 9d (新 sub-phase) として spec する。
+
+T54 finding (Wave 4 = process subprocess substrate):
+- =anvil-host= / =anvil-bench= / =anvil-bisect= / =anvil-worker= /
+  =anvil-orchestrator= / =anvil-pty-broker= の 6+ module が
+  =make-process= / =start-process= / =call-process= /
+  =accept-process-output= / =process-*= family を *必須* (~120 call-site
+  / 10 module、Doc 38 audit raw data)
+- =nelisp-runtime/src/syscall/unix.rs= に *fork / exec / posix_spawn /
+  pipe / waitpid / kill 未実装* (Phase 7.0 SHIPPED 12 syscall set には
+  含まれない)
+- Doc 27 §3 Phase 7.0 record only: "=fork / exec / wait / signal handler=
+  等 Phase 7.0 default scope 外の syscall は Phase 7.4 (coding) /
+  Phase 7.5 (integration) で必要時に追加" — 本 Phase 9d で具体化
+- Phase 7.0 LOCKED で固定された syscall set の *拡張 = 新 sub-phase が
+  必要*: Phase 7.5 の 2 週間枠に subprocess substrate を詰めることは
+  不可能 (=本 doc §1.3 LOC 見積で confirm=)、Phase 9d を独立 phase 化
+
+*位置づけ*:
+- Phase 7+ pipeline (=Doc 27 + Doc 28-32 v2 LOCKED=) は v1.0 ship gate、
+  本 Phase 9d は *v2.0 候補 sub-phase* (= post-v1.0、anvil bootstrap M2
+  milestone)
+- Doc 33 v2 §4 Layer 1 (=nelisp-runtime= = OS 接点) + Layer 2
+  (=nelisp-emacs-compat= = Emacs API 互換 layer) の *両 layer 跨ぎ*
+  実装 phase
+- Doc 34 (Phase 9b extension substrate、sibling LOCKED v2) との関係:
+  T85 MAJOR-3.3 で両 phase が *両者 eventloop primitive を扱う* boundary
+  不在問題が指摘され、本 doc §1.5 / §11.4 で *ship 順序 swap proposal*
+  (= 9a → 9d → 9b → 9c) を user signoff 案件として明示。swap 採用時 =
+  Doc 39 (parent eventloop primitive) → Doc 34 (consumer)、rejected 時
+  = 旧順序維持で re-design merge cost ~2-4 週間 buffer 必要
+
+*工数見積 (LOCKED-2026-04-25-v2)*: 12-18 週間 (anvil.el + 並列 session leverage 前提、
+T85 MINOR-2.4 で 9d.K / 9d.L mock 先行 escape hatch 採用時 8-12 週間圧縮可)。
+3 sub-phase 構成 (=9d.J Rust syscall ~5-8 週間 + 9d.K eventloop ~3-4 週間
++ 9d.L NeLisp wrapper ~4-6 週間=)、=Phase 9a/9d.A1 SHIPPED 後 dispatch
+可能= (= regex / minimal eventloop substrate が前提)。
+
+*完遂 gate (LOCKED-2026-04-25-v2、4-tier taxonomy + common 軸、Doc 32 v2 §0 整合)*:
+- *blocker (release qualification)*:
+  - =fork+exec+waitpid= roundtrip success on Linux x86_64 + macOS arm64
+    (= anvil-host shell exec smoke 緑)
+  - =call-process= 同期 stdout 取得が Emacs Stage D 経路と byte-perfect
+    parity
+  - =make-process= filter callback fires + sentinel callback fires on
+    exit (= ERT 30+ PASS)
+  - 1h soak (CI、blocker) で 100 child spawn + clean exit 全件 leak free
+    (= zombie 0 / fd leak 0、=lsof= で確認)
+- *non-blocker qualification (best-effort、v2.0 限定の時限措置)*:
+  - macOS arm64 = =posix_spawn= path success rate 95%+ (= macOS では
+    fork+exec が deprecated 推奨経路ではない、§2.1 推奨 A 参照)
+  - PTY (=openpty / forkpty=) は本 phase scope 外、別 Phase 9d.M で
+    spec (= §1.6 out-of-scope)
+- *post-ship audit (release-audit、blocker ではない)*:
+  - 24h soak (release-audit infra weekly) で 1000 child spawn cycle
+    無 crash + RSS growth < 10MB / 24h
+- *release artifact ready*:
+  - =nelisp-runtime/src/syscall/process.rs= ~300-500 LOC + =src/nelisp-process.el=
+    ~1500-2500 LOC (T85 MINOR-2.3 反映、§2.9 と統一) +
+    =src/nelisp-eventloop.el= +500-1000 LOC = total ~2300-4000 LOC
+    (Doc 28 v2 detailed decomposition pattern と同 +2x realistic 見積)
+
+*common (tier 外、全 tier 共通の必須項目、Doc 32 v2 §0 整合)*:
+- ERT +52 (=test/nelisp-process-test.el= 新規、T85 review #7 反映で
+  rlimit 2 件加算済)
+- =cargo build --release= / =cargo test --all= / =cargo clippy= 0 warning
+- NeLisp 既存 ERT regression-free
+  - *baseline 式 (順序 agnostic、§7 と統一 phrase、T93 MINOR-D3 反映)*:
+    "Phase 7+ 完遂時点 1244 + Phase 9 series cumulative delta + 本 phase
+    +52" (= ship 順序 swap 採否 + Phase 9a/9b/9c LOCKED 時点で実数確定、
+    本 doc は式提示のみ、§7 必須条件 baseline 式と同形)
+  - *escape hatch (旧順序前提式、§1.5 ship 順序 swap proposal 参照)*:
+    ship 順序 swap (= 9a → 9d → 9b → 9c) 採用時、本 phase 着手時点
+    baseline は "Phase 7+ 完遂 1244 + Phase 9a delta + 本 phase +52" =
+    Phase 9 series cumulative delta の中身が "9a delta のみ" となり、
+    Phase 9b/9c delta は本 phase 後消化のため加算なし。旧順序維持時は
+    "Phase 9a + 9b + 9c delta + 本 phase +52"、両 path で抽象式は同形
+
+* §1 背景
+
+** 1.1 T54 finding: anvil 6+ module が subprocess 必須
+
+Doc 38 (=2026-04-24 master audit doc=) Wave 4 で確定した module 内訳
+(本 doc §10 関連 doc 参照):
+
+| module                  | LOC (anvil.el) | subprocess 利用 pattern                                  | call-site 数 |
+|-------------------------+----------------+----------------------------------------------------------+--------------|
+| =anvil-host=            | ~600           | =make-process= shell exec + =call-process= sync IO      | ~30          |
+| =anvil-bench=           | ~400           | =call-process= benchmark child + =process-exit-status=  | ~15          |
+| =anvil-bisect=          | ~300           | =start-process= incremental compile + sentinel          | ~10          |
+| =anvil-worker=          | ~1000          | =make-process= worker spawn + filter + sentinel + IPC   | ~25          |
+| =anvil-orchestrator=    | ~1500          | =anvil-offload= 経由 subprocess (Doc 03 Phase 1)         | ~20          |
+| =anvil-pty-broker=      | ~800           | =start-process= node-pty broker + =process-send-string= | ~15          |
+| 合計                    | ~4600          | -                                                        | ~115         |
+
+(数値は概算、Doc 38 LOCKED-2026-04-25-v2 §X.Y "Wave 4 = process subprocess
+substrate 分析" raw data 集計より。本 phase 着手時に再 audit が必要、
+Doc 38 §X.Y line ZZZ-ZZZ 参照、T93 MINOR-D5 反映 — 具体 §X.Y / line 番号は
+Doc 38 を直接 audit して確定する別 round で線量、release-audit cross-
+reference 緑通過のため本 doc LOCKED v2 stamp 後の post-stamp audit task
+として dispatch 予定)。
+
+これらの module が Phase 7+ standalone binary (=bin/anvil --no-emacs=
+mode、=stage-d-v2.0=) で動作するためには *subprocess primitive を
+NeLisp 経由で利用可能化* する必要があり、現 Phase 7.0 SHIPPED の 12
+syscall set (=read/write/open/close/mmap/mprotect/exit/getenv/setenv/
+stat/fstat=) では不足する。
+
+** 1.2 Phase 7.0 syscall set の境界
+
+Phase 7.0 LOCKED 2026-04-25 (=2a52bda main=) で固定された syscall set:
+
+| 機能 cluster   | syscall                                              | 状態                  |
+|----------------+------------------------------------------------------+-----------------------|
+| file IO        | =read / write / open / close=                        | ✅ Phase 7.0 SHIPPED   |
+| memory         | =mmap / munmap / mprotect=                            | ✅ Phase 7.0 SHIPPED   |
+| env            | =getenv / setenv=                                     | ✅ Phase 7.0 SHIPPED   |
+| stat           | =stat / fstat=                                        | ✅ Phase 7.0 SHIPPED   |
+| exit           | =exit=                                                | ✅ Phase 7.0 SHIPPED   |
+| process spawn  | =fork / exec / posix_spawn / pipe / waitpid / kill=  | ❌ *Phase 9d で対応*   |
+| eventloop      | =select / poll / epoll / kqueue=                      | ❌ *Phase 9d で対応*   |
+| signal         | =sigaction / sigprocmask / kill (signal)=            | ❌ Phase 9d.M 候補     |
+| network        | =socket / bind / connect / accept / recv / send=     | ❌ Phase 9d.N 候補     |
+| time           | =clock_gettime / nanosleep=                           | ❌ Phase 9c 候補       |
+| PTY            | =openpty / forkpty / ptsname / grantpt=              | ❌ Phase 9d.M 候補     |
+
+Doc 27 §3 Phase 7.0 record only 節 (=27-phase7-c-runtime-self-impl.org=
+lines 423-431 より verbatim 抜粋):
+
+#+begin_quote
+*Phase 7.5 で必要な後続作業* (= 本 phase 外、record only):
+- Elisp ↔ Rust dyn lib FFI 呼び出し path (=dlsym + ffi-call= NeLisp
+  primitive 新設)、本 Phase 7.0 では subprocess 経由 smoke のみ
+- Linux/macOS/Windows の =build.rs= による NeLisp .el pre-compile
+  (host-1 stage)、Phase 7.1 native compiler 完成後に着手
+- =clock_gettime / getpid / fork / exec / wait / signal handler /
+  socket / bind / accept / recv / send / poll / epoll / kqueue= 等
+  Phase 7.0 default scope 外の syscall は Phase 7.4 (coding) /
+  Phase 7.5 (integration) で必要時に追加
+#+end_quote
+
+しかし Doc 32 v2 §3 (Phase 7.5 = 2 週間枠) では release engineering 中心、
+LOC budget ~900-1500 (本 phase 必要 LOC ~2000-3500 の半分) のため
+*Phase 7.5 内では subprocess substrate を詰められない* = Phase 9d を
+独立 phase 化する必要が生じる。
+
+** 1.3 Phase 9d の sub-phase 分割 (J / K / L)
+
+T54 Wave 4 plan で確定した 3 sub-phase split (本 doc §3 で詳細展開):
+
+| sub-phase | scope                                              | LOC                  | 期間            | 依存             |
+|-----------+----------------------------------------------------+----------------------+-----------------+------------------|
+| 9d.J      | Rust subprocess primitive (fork/exec/posix_spawn)  | ~300-500 Rust         | 5-8 週間        | Phase 7.0 SHIPPED |
+| 9d.K      | NeLisp eventloop multiplexer (select-based)        | ~500-1000 NeLisp      | 3-4 週間        | 9d.J SHIPPED (可、mock 先行可) |
+| 9d.L      | =nelisp-process.el= rewrite (Emacs API 互換 wrapper)| ~1500-2500 NeLisp     | 4-6 週間        | 9d.K SHIPPED (可、mock 先行可) |
+| 合計      | -                                                  | ~2300-4000           | 12-18 週間      | -                |
+
+3 sub-phase は *推奨 sequential* (= 各前段 SHIPPED 後後続 dispatch 可)、
+ただし:
+- *9d.K mock 先行* (T85 MINOR-2.4 反映): 9d.K eventloop primitive は
+  9d.J SHIPPED 前に NeLisp side mock (= =fork stub = =/bin/echo hello=
+  return PID 固定) で先行開発可能、9d.J / 9d.K 並列化 escape hatch あり
+- *9d.L mock 先行* (T85 MINOR-2.4 反映): 9d.L =nelisp-process.el=
+  rewrite は 9d.K eventloop mock 完成段階 (= 9d.K spec 確定 + stub
+  実装) で着手可、9d.K / 9d.L 並列化 escape hatch あり
+- *anvil leverage 込みの圧縮 path*: 上記 2 escape hatch + Doc 28 v2 / Doc
+  30 v2 で実証済の replan gate quality 軸 で 8-12 週間に圧縮可能性あり
+  (= 12-18 週間 estimate は conservative baseline)
+
+*LOC budget 統一* (T85 MINOR-2.3 反映): §2.9 と本 §1.3 / §3 / §3.3 で
+9d.K = ~500-1000、9d.L = ~1500-2500、total ~2300-4000 LOC で統一。
+
+** 1.4 anvil bootstrap M2 milestone との関係
+
+T54 master audit doc 38 で定義された anvil bootstrap milestone:
+
+| milestone | scope                                                              | 状態                  |
+|-----------+--------------------------------------------------------------------+-----------------------|
+| M0        | NeLisp Stage A (Phase 5-F SHIPPED、Emacs subprocess 経由 anvil 動作) | ✅ SHIPPED            |
+| M1        | NeLisp Stage D Phase 6.1 (=anvil-lib= bundle、emacs --batch 経由)   | ✅ SHIPPED 2026-04-25 |
+| M2        | *anvil bootstrap surface 完成* (= 全 anvil module が =bin/anvil --no-emacs= で動作)| 本 *Phase 9d* で対応 |
+| M3        | anvil 全 SaaS feature 動作 (= orchestrator + memory-engine + http full) | Phase 10+ 候補         |
+
+M2 が達成されると anvil.el の *自己 bootstrapping* 完成 (= host Emacs
+不要で anvil-host shell exec / anvil-worker 並列処理 / anvil-orchestrator
+LLM dispatch 全部動作)、Doc 33 v2 §4 architecture α 完全実装。
+
+** 1.5 v1.0 ship との関係 + ship 順序 swap proposal (T85 MAJOR-3.3)
+
+*Phase 9d は v1.0 ship gate には含まれない* (= v1.0 完遂条件 #4 = Phase
+7+ 完遂で達成、Doc 27 §0)。Phase 9d は *v2.0 候補 sub-phase*。
+
+*ship 順序 swap proposal (T85 MAJOR-3.3、user signoff 待ち)*:
+
+T85 Claude review で *Doc 34 (Phase 9b LOCKED v2) と本 doc (Phase 9d) が
+両者 eventloop primitive を扱う* boundary 不在問題が指摘された。両 phase
+が独立に eventloop を spec すると、Doc 34 §2.4 / §3.2 の *command loop*
+(= key event + timer + idle) と本 doc §2.2 / §3.2 の *fd polling
+eventloop multiplexer* が dual-eventloop contention を起こす risk
+(= 実装中に conflict 発覚、replan cost 高)。
+
+*proposal*: Phase 9d.K の eventloop multiplexer を Phase 9b の prerequisite
+として位置付け、ship 順序を以下に swap:
+
+| 旧順序 (Doc 34 LOCKED v2 想定) | 新順序 (T85 提案) | 理由                                                             |
+|--------------------------------+-------------------+------------------------------------------------------------------|
+| 1. Phase 9a (regex SHIPPED)    | 1. Phase 9a       | 不変                                                             |
+| 2. Phase 9b (Doc 34、editor)   | 2. *Phase 9d*     | eventloop primitive 先行、Phase 9b の command loop が 9d の consumer |
+| 3. Phase 9c (time syscall)     | 3. Phase 9b       | 9d eventloop 完成後に command loop / key event を 9d 上に乗せる    |
+| 4. Phase 9d (本 doc)           | 4. Phase 9c       | time syscall は eventloop の timer integration と疎結合のため後置可 |
+
+*parent-child contract* (新順序前提):
+- *Doc 39 (Phase 9d、parent)* = =fd polling + timer queue + zombie
+  cleanup= の eventloop primitive (=src/nelisp-eventloop.el=) を提供
+- *Doc 34 (Phase 9b、child)* = command loop は本 doc =eventloop-tick=
+  の wrapper、key event を eventloop fd source として登録、timer は
+  本 doc timer queue を share
+
+*Doc 34 LOCKED v2 への impact 評価*:
+- Doc 34 §2.4 event-loop design は *command loop layer* 単独で stand-alone
+  spec、本 doc §2.2 / §3.2 を prerequisite として参照 (= reference 追加 1
+  段落 + parent-child contract 明示で boundary 確定)
+- Doc 34 LOCKED v2 stamp に *3-line note errata* 追加 (= "Phase 9d 先行
+  ship、本 phase eventloop は Doc 39 §3.2 primitive の consumer" と明記)
+- Doc 34 owner (= session-A T61 改訂 lineage) との 1-on-1 confirm が必要
+- 本 swap 採用は user signoff 案件 = Doc 34 LOCKED v2 errata は別 task
+
+*v1.0 期間中の subprocess 利用* (新順序前提でも変化なし):
+- anvil の subprocess 利用は host Emacs 経路 (Stage D v0.x シリーズ +
+  Stage D Phase 6.1 anvil-lib bundle 経由) で動作
+- Phase 9d SHIPPED で Stage D v2.0 (= =--no-emacs= mode) でも anvil 全
+  機能動作
+
+*ship 順序 swap が rejected の場合*:
+- Doc 34 §2.4 / §3.2 の *command loop layer* は 9d eventloop primitive と
+  独立 spec として扱う (= duplicated eventloop infra、9b SHIPPED 後 9d で
+  rewrite cost 発生)
+- §1.5 旧順序 (= 9a → 9b → 9c → 9d) を維持、§7 完遂 gate に "Phase 9b
+  の command loop と 9d の fd polling eventloop の re-design merge cost
+  ~2-4 週間 buffer" を追加
+
+*Doc 34 §2.4 event-source contract との整合 (LOCKED v2 不変、T93 MAJOR-D1
+反映)*:
+
+Doc 34 LOCKED-2026-04-25-v2 §2.4 (=34-phase9b-extension-substrate.org=
+line 263-268) で LOCKED 採用された "abstract event source + minimal
+command-loop" (= =EVENT_SOURCE_CONTRACT_VERSION = 1=) は *本 swap 採用
+後も不変保持*。具体的には:
+
+- Doc 34 §2.4 で凍結された API surface (= contract version 1):
+  - =(nelisp-event-source-register :name <symbol> :pull-fn <function>)
+    -> source-id=
+  - =(nelisp-event-source-unregister :id <source-id>) -> boolean=
+  - =(nelisp-event-source-pull :timeout-ms <integer>) -> (or event nil)=
+- 本 doc §3.2 fd polling primitive (= =select-fd= / =unselect-fd= /
+  =eventloop-tick= / =run-at-time=) は *Doc 34 §2.4 event-source 抽象の
+  pull-fn implementation source として再利用* される (= adapter pattern、
+  Doc 34 register に Doc 39 select-fd を内包する pull-fn を渡す pattern、
+  thin shim で fd push-based polling → event-source pull-based 抽象に
+  適合)
+- Doc 39 timer queue (=run-at-time=) と Doc 34 event queue capacity 1000
+  (= Doc 34 line 258 LOCKED) の coordination + overflow policy boundary
+  (= Doc 34 oldest-first drop vs Doc 39 fd polling 別 layer) は Phase 9b
+  着手時点で adapter spec として 1 sub-phase 起こす (= Phase 9b 内、
+  本 phase scope 外)
+- *contract version 1 不変が swap 採用時の必須前提*: Doc 34 §2.4 register
+  / unregister / pull API は本 swap 採用後も同 surface で凍結、Doc 39
+  primitive は pull-fn 内側 implementation source の差し替え可能性のみ
+  提供 (= caller 側 API 不変)、=EVENT_SOURCE_CONTRACT_VERSION = 1= bump
+  なし
+
+ship 順序 swap proposal は技術的 feasible (T93 verdict): Doc 39 fd
+polling primitive を Doc 34 §2.4 pull-fn implementation source として
+再利用する adapter pattern で contract version 1 不変保持可能、両 layer
+の overflow semantic boundary は Phase 9b 内 adapter spec で確定、Doc 39
+は primitive provider role に専念。
+
+** 1.6 out-of-scope (本 Phase 9d で扱わない)
+
+- *PTY / 端末制御* (=openpty / forkpty / ptsname / grantpt=) = Phase
+  9d.M 別 sub-phase。anvil-pty-broker は本 phase scope では node-pty
+  TCP broker 経由 (= 既存 Phase 5e architecture α 実装) で対応、native
+  PTY は Phase 9d.M 以降
+- *signal handling 高度* (=sigaction / sigprocmask / setpgid / setsid=
+  以外の advanced signal mask、coredump handler、stack overflow handler)
+  = Phase 9d.M 候補
+- *process group / job control* (=tcsetpgrp / tcgetpgrp=、shell job
+  control) = 本 phase scope 外、shell builtin 想定
+- *network socket* (=socket / bind / connect / accept / recv / send /
+  poll / epoll=) = Phase 9d.N 別 sub-phase
+- *async IO* (=io_uring / kqueue async / Windows IOCP=) = Phase 10+
+  候補、本 phase は select(2) 同期 model のみ
+- *Windows native subprocess* (=CreateProcess / WaitForSingleObject=)
+  = Phase 11+ 候補 (Doc 27 §2.5 と同様 Stage A 経由を維持、Phase 9d は
+  Linux + macOS POSIX のみ)
+- *multi-thread expansion* = Phase 7.x で *single-thread MVP* 確定
+  (Doc 29 v2 §2.9)、本 phase も *single-thread eventloop で完結* (T85
+  MINOR-4.5 反映、本 phase scope 内 multi-thread 議論一切なし、§9.4 は
+  decision に格上げ)。multi-thread design は Phase 11+ で別 doc 起こす
+- *core image dump 連携* (= subprocess 中の =save-lisp-and-die=) =
+  Phase 8+ 候補
+
+* §2 LOCKED decisions (LOCKED-2026-04-25-v2、推奨 default、T85 MAJOR REVISIONS 4 MAJOR + 6 MINOR + T93 1 MAJOR + 4 MINOR 全反映済)
+
+各項目に *推奨 default* を提示、user signoff で全 default を採用する
+場合は "§2 全 N 項目 default 採用" の一行 LOCK で完了 (=Doc 27/28/29/30/31/32=
+と同 pattern)。
+
+** 2.1 process spawn primitive: =posix_spawn= 優先 + =fork+exec= fallback [推奨 = A]
+
+A. *推奨*: =posix_spawn= を default、=fork+exec= は fallback (= macOS
+   では posix_spawn が推奨経路、Linux でも glibc 内部で =vfork= 経由
+   実装で =fork= より高速)
+B. =fork+exec= 単独 (= POSIX 古典、portable 最大)
+C. =vfork+exec= 単独 (= memory 効率 max、ただし非標準動作 risk)
+D. =posix_spawn= 単独、=fork= 完全廃止
+
+採用理由 (A、T85 MAJOR-2.1 反映):
+- macOS = =posix_spawn= が *推奨経路*、=fork= は thread-safe ではない
+  (Apple 公式 deprecation prospect)、=posix_spawn= で安全。macOS の
+  =posix_spawn= は libdispatch 経由実装で thread-safe、ただし wait queue
+  overhead あり (= Linux 系 vfork path とは性能特性が異なる)
+- Linux glibc の =posix_spawn= は *条件付き* で vfork-clone fast path:
+  - *fast path 条件*: =POSIX_SPAWN_USEVFORK= attr 含むか、または "no-op
+    spawn attrs" 時 (= 単純 =file_actions= ≤ 5 + sigmask / sigdef
+    複雑度なし)
+  - *fallback 条件*: 複雑な =file_actions= / =POSIX_SPAWN_SETSIGMASK= /
+    =POSIX_SPAWN_SETSIGDEF= / =POSIX_SPAWN_SETSID= 等の組合せで glibc
+    が generic fork path に fallback (=glibc sysdeps/unix/sysv/linux/
+    spawni.c= 参照、glibc 2.24+ で =clone(CLONE_VM | CLONE_VFORK)=
+    base 新実装、ただし複雑 file_actions で fork fallback あり)
+  - *anvil 想定 use case*: attrs 単純 + file_action ≤ 5 (= stdin /
+    stdout / stderr / 1-2 inherit fd) で fast path 期待、ただし
+    benchmark 必須
+- =fork+exec= fallback で =posix_spawn= が utility 不足のケース
+  (= file action / signal action の複雑な組合せ + Linux 旧 glibc) を救済
+- 両 OS で benchmark 必須 = macOS = wait queue overhead あり、Linux =
+  vfork path、性能特性が異なるため anvil 想定 workload で実 measure
+- B は macOS で thread-safety 警告、C は portability risk、D は
+  =posix_spawn= の attr API が複雑なケースで escape hatch なし
+
+mitigation:
+- =posix_spawn= 失敗時の fallback path は ERT で fault inject 確認
+- macOS では =posix_spawn= が default、Linux では =glibc 2.24+= 確認
+  (= fallback to =fork+exec= for older systems)
+- Linux fast path 期待は §5 measurement protocol で macOS / Linux 別
+  spawn latency p95 を計測、両 OS で gate 確認
+- 平均的 anvil workload (= attrs 単純 + file_action ≤ 5) で fast path 期待、
+  fallback 経路は glibc 旧 + 複雑 file_actions でのみ走行
+
+** 2.2 eventloop primitive: =select(2)= MVP + =poll(2)= upgrade path [推奨 = A]
+
+A. *推奨*: =select(2)= で MVP (= POSIX 古典、portable 最大)、=poll(2)=
+   は v2.1+ で upgrade
+B. =poll(2)= MVP (= fd 数 1024 制限なし、現代的)
+C. =epoll(7)= Linux + =kqueue(2)= macOS (= async IO 性能 max)
+
+採用理由 (A、T85 MAJOR-2.2 反映):
+- =select(2)= = POSIX 共通、Linux + macOS で identical 動作、portability
+  最大
+- *fd budget 試算 (anvil 同時起動時)*:
+  - child fd 32 (= anvil-orchestrator 5 LLM provider × ~6 fd/child) +
+    state SQLite 1 + org-index SQLite 1 + http connection pool 16 +
+    log fd 4 + stdin/stdout/stderr 3 ≒ *60 fd*
+  - FD_SETSIZE 1024 内で十分余裕、ただし future memory-engine 経由
+    SQLite WAL fd 急増 risk あり (= 1 SQLite WAL = 3 fd / table、tables
+    増で 100+ fd 達)
+  - 安全 margin = 1024 - 60 = ~960 fd 余裕、ただし stress 増で逼迫 risk
+- anvil 既存 use case (= 並行 child process 数 ≤ 32、Doc 38 audit) は
+  =select= の fd 1024 制限内で十分、ただし memory-engine SQLite WAL
+  fd 数監視必要
+- *Linux FD_SETSIZE 拡張* = recompile 必要 (= libc constant)、runtime
+  tunable ではない、libc rebuild は出荷経路で非現実的、=poll= upgrade が
+  正しい mitigation
+- =poll= upgrade は v2.1+ で必要時 (= fd 1024 超 use case 出現時、また
+  は memory-engine WAL fd 急増時)
+- =epoll/kqueue= は Phase 10+ で Layer 1 separation 後、async IO 専用
+  module として spec
+- B は fd 数優位だが API 互換性 break (= struct pollfd vs fd_set)、本
+  phase は MVP 優先
+- C は OS 別実装 = portability cost 高 (= 同一 source で Linux / macOS
+  両対応のための conditional compile 必要)
+
+mitigation:
+- fd 数制限 (1024) で運用上限を spec 内明記
+- *fd budget audit ERT を blocker gate* (T85 MAJOR-2.2 反映): fd 数
+  50 / 200 / 500 の stress test、= select(2) 動作確認、500 fd 時 tick
+  overhead < 200us p95 確認
+- =poll= upgrade path = 本 phase で API surface を fd-based abstract に
+  抑制 (= =eventloop-fd-set-add= / =eventloop-fd-set-remove= の OS-
+  independent abstract API、内部 implementation を select → poll に
+  swap 可能、API break なし)
+- §6.6 Architecture B reference は本 phase scope 外 (= memory feedback
+  は Emacs 経路の話、本 phase NeLisp standalone は別 process model)、
+  reference のみ留め、本 phase の risk としては *扱わない*
+
+** 2.3 filter callback dispatch model: synchronous + GC barrier [推奨 = A]
+
+A. *推奨*: filter callback を *eventloop main thread 内 synchronous*
+   実行、GC barrier (= filter 中 GC 不可、return 後 GC trigger) で
+   reentrancy 抑制
+B. async dispatch (= filter callback を separate goroutine / task で
+   実行、Lisp main thread と並行)
+C. queue dispatch (= filter callback を queue に積み、main thread の
+   =accept-process-output= で順次 dispatch)
+
+採用理由 (A):
+- Emacs 既存 semantic との parity = filter は main thread 内 synchronous
+  (Emacs C runtime の =process_send_signal= と同等)
+- B は multi-thread 前提、Phase 7.x single-thread MVP と矛盾
+- C は queue lag が =process-send-string= response 遅延を導入、interactive
+  use case で体験劣化
+- GC barrier semantics = filter 中の =cons= / =allocate= が GC trigger
+  不可 = filter 内で大量 allocation する code は事前 reserve 必要 (Emacs
+  標準 pattern)
+
+mitigation:
+- filter 中 GC trigger は debug build で assertion (= =gc-inside-filter-p=
+  flag)
+- filter 内 allocation は =with-process-filter-arena= macro で local
+  arena 提供
+- *precedent reference* (T85 MAJOR-4.2 反映): Emacs C runtime の
+  =process.c= 内 =gcpro= / =Vinhibit_quit= bind pattern と同等の barrier
+  semantic を採用 (= filter return まで GC 抑止、return 後 next eventloop
+  tick で deferred GC trigger)。Doc 30 v2 §6.9 finalizer queue separation
+  pattern は GC sweep 中の write barrier 競合解消用で本 phase の filter
+  reentrancy / GC barrier 議論とは目的が異なるため reference しない
+- Emacs 互換 = filter callback signature = =(lambda (proc string) ...)=、
+  string buffer 寿命 = filter return まで
+
+** 2.4 sentinel ordering: =waitpid= → status report atomicity [推奨 = A]
+
+A. *推奨*: sentinel callback は *=waitpid= 完了後、status report 確定
+   後 single shot* で fire (= Emacs 既存 semantic と同等、ordering 強保証)
+B. sentinel = =SIGCHLD= 受信時即 fire (= waitpid は sentinel 内で user
+   実行)
+C. sentinel = poll 経由 (= =process-status= が =run= → =exit= 遷移検出
+   時 fire)
+
+採用理由 (A):
+- Emacs 既存 semantic との parity = sentinel が fire した時点で
+  =process-exit-status= が確定値返す (= waitpid 完了)
+- B は SIGCHLD handler 内で =waitpid= = signal-safe primitive 制限あり、
+  user code に signal-safety を要求すると体験劣化
+- C は polling lag (= eventloop tick 間隔分の遅延)、interactive use
+  case で体験劣化
+- *atomicity* = =waitpid= 結果 → =process-exit-status= 更新 → sentinel
+  fire の順序を eventloop 内で保証、間に他 callback 介在不可
+
+mitigation:
+- sentinel ordering ERT (= =delete-process= → sentinel fire → 100ms
+  後 =process-status= 確認、=exit= 確定確認) を blocker gate
+- 並行 child の SIGCHLD storm 対応 = =waitpid(WNOHANG)= loop で全 zombie
+  収穫、sentinel は zombie 順 fire
+
+** 2.5 fd lifetime / close-on-exec hygiene [推奨 = A]
+
+A. *推奨*: 全 fd を =O_CLOEXEC= で open、=pipe2(O_CLOEXEC)= 使用、parent
+   process 経由 leak 0 確保
+B. =fcntl(F_SETFD, FD_CLOEXEC)= で post-open に設定 (= race window あり)
+C. fd 管理を user 責任化 (= =delete-process= で明示 close)
+
+採用理由 (A):
+- =O_CLOEXEC= で race window 0、= multi-thread parent でも safe
+- B は =open= → =fcntl= 間で =fork= が他 thread から発火すると leak
+- C は user error 多発 risk (= forget-to-close pattern が anvil bench
+  で頻発、Doc 38 audit)
+- POSIX 2008 で =O_CLOEXEC= 標準化、Linux 2.6.23+ / macOS 10.7+ 対応、
+  portability 問題なし
+
+mitigation:
+- fd leak 検知 ERT = 100 child spawn cycle 後 =lsof -p $$= で fd 数
+  baseline 一致確認、blocker gate
+- =close-on-exec= 違反 (= 意図的に inherit したい fd) は
+  =process-inherit-fds= keyword で明示 opt-in
+
+** 2.6 zombie cleanup: =waitpid(WNOHANG)= eventloop tick [推奨 = A]
+
+A. *推奨*: eventloop tick (~10ms 間隔) ごとに =waitpid(-1, WNOHANG)=
+   loop で全 zombie 収穫、=process-status= 自動更新
+B. =SIGCHLD= handler で =waitpid= 即実行 (= signal-safe primitive 制限)
+C. user 明示 =waitpid= API (= =process-wait= primitive 提供、user 責任)
+
+採用理由 (A):
+- POSIX zombie cleanup standard pattern (= polling)
+- B は signal-safety 制限、user code との reentrancy issue
+- C は user error risk (= forget-to-wait pattern で zombie 蓄積)
+- ~10ms tick = interactive 体験 OK (= sentinel fire 遅延上限 10ms)、
+  background batch では問題なし
+
+mitigation:
+- zombie 検知 ERT = 100 child spawn 後 =ps aux | grep defunct= で 0
+  確認、blocker gate
+- tick 間隔 tunable (=process-eventloop-tick-ms= defcustom、default 10、
+  range 1-100)
+
+** 2.7 process-send-string buffering [推奨 = A]
+
+A. *推奨*: =process-send-string= は *blocking* (= write completion
+   まで待つ)、buffer overflow 時は eventloop に yield して retry
+B. async (= write を queue に積み、eventloop が flush)
+C. user 明示 flush (= =process-flush-output= API)
+
+採用理由 (A):
+- Emacs 既存 semantic との parity = =process-send-string= は同期
+- B は buffer 管理複雑化 + write order semantic 曖昧化
+- C は user error risk
+- yield-on-overflow = Doc 28 §3.5 4-stage cold-init の eventloop yield
+  pattern と同等、reentrancy safe
+
+mitigation:
+- write timeout (=process-send-timeout-ms=、default 5000) で deadlock
+  回避
+- buffer overflow ERT = 8KB chunk × 1024 send で reordering 0 確認
+
+** 2.8 timer integration: =run-at-time= / =run-with-timer= [推奨 = A]
+
+A. *推奨*: timer を eventloop tick で fire (= =select(2) timeout=
+   引数で timer queue 最近接 timer の fire 時刻指定)、Phase 9d.K の
+   eventloop と integration
+B. timer は別 thread で fire (= multi-thread 前提)
+C. timer は =sleep= ベース synchronous fire (= eventloop block)
+
+採用理由 (A):
+- single-thread eventloop pattern = =select= timeout で precision 1ms
+  程度、interactive OK
+- B は multi-thread 前提 = Phase 7.x single-thread MVP と矛盾
+- C は eventloop block = filter callback 遅延、体験劣化
+- timer + filter contention = §6.8 risk で詳細
+
+mitigation:
+- timer ordering ERT = =run-at-time 0 (lambda () ...)= が次 tick で
+  fire 確認、blocker gate
+- timer + filter 同時 fire = filter 優先、timer は次 tick へ繰越 (=
+  Emacs 既存 semantic と同等)
+
+** 2.9 LOC budget [推奨 = A]
+
+A. *推奨*: Rust ~300-500 LOC + NeLisp ~1500-2500 LOC + ERT ~500-1000
+   LOC = total ~2300-4000 LOC (Doc 28 v2 detailed decomposition pattern)
+B. Rust ~200 LOC + NeLisp ~800 LOC = total ~1000 LOC (minimal MVP)
+C. Rust ~600 LOC + NeLisp ~3000 LOC = total ~3600+ LOC (full feature)
+
+採用理由 (A):
+- Doc 27 §3 Phase 7.0 の 819 LOC Rust + Doc 32 §2.9 ~900-1500 LOC の
+  pattern と同等 scale
+- B は anvil ~115 call-site 全 cover 困難 (= filter / sentinel / kill
+  / waitpid / pipe 全 primitive 必要)
+- C は scope creep risk (= Phase 9d 期間 12-18 週間超過)
+
+** 2.10 Emacs API parity: =make-process= keyword 完全 vs subset [推奨 = A]
+
+A. *推奨*: =make-process= keyword の *core 12 + optional 5* parity
+   (=:name / :buffer / :command / :coding / :noquery / :stop / :connection-type=
+   / =:filter / :sentinel / :stderr / :file-handler / :keepalive=、
+   optional = =:tty / :pty-name / :remote / :http-buffer / :match=)
+B. core 12 のみ、optional は v2.1+ で
+C. 全 Emacs keyword (~30+) parity (= 完全互換)
+
+採用理由 (A):
+- anvil 6+ module の使用 keyword を Doc 38 audit で確認 = core 12 +
+  =:stderr= (anvil-host) + =:noquery= (anvil-worker) + =:connection-type=
+  (anvil-pty-broker) で十分
+- B は anvil-host =:stderr= 必須 (= shell exec の stderr capture)、
+  scope 不足
+- C は scope creep + Emacs lifecycle 機能 (=:file-handler= 等 Emacs
+  core integration 必須) で本 phase scope 外
+
+** 2.11 stats / instrumentation [推奨 = A]
+
+A. *推奨*: =--diagnose-process= flag (= subprocess spawn / wait /
+   kill の step-by-step 出力、cold-init 経路と統合)、=process-list-stats=
+   API (= live process count / fd count / zombie count)
+B. instrumentation 無し (production binary は最小化)
+C. =--diagnose-process= のみ、API 無し
+
+採用理由 (A):
+- =--diagnose-process= = anvil bootstrap M2 milestone 達成時の root
+  cause 特定支援 (= anvil-host shell timeout 時の SIGCHLD 経路 trace 等)
+- =process-list-stats= = orchestrator dispatch 中の resource leak 早期
+  検知
+- B は production binary 最小化思想だが debug 不能 risk
+- C は API 無しで anvil-orchestrator の self-monitoring 困難
+
+* §3 Sub-phase 9d.J / 9d.K / 9d.L 詳細
+
+| sub-phase | scope                                                    | LOC               | 期間            | ERT delta |
+|-----------+----------------------------------------------------------+-------------------+-----------------+-----------|
+| 9d.J      | Rust subprocess primitive (fork/exec/posix_spawn/pipe/wait/kill/rlimit) | ~300-500 Rust     | 5-8 週間        | +22       |
+| 9d.K      | NeLisp eventloop multiplexer (select-based fd polling)   | ~500-1000 NeLisp  | 3-4 週間        | +12       |
+| 9d.L      | =nelisp-process.el= rewrite (Emacs API 互換 wrapper)       | ~1500-2500 NeLisp | 4-6 週間        | +18       |
+| 合計      | -                                                        | ~2300-4000        | 12-18 週間      | +52       |
+
+(T85 MINOR-2.3 / review #7 反映: 9d.J = rlimit 追加で +22、9d.L = §2.9
+LOC budget と統一 ~1500-2500、total ERT +52。本 §3 / §5 / §7 で +52 で
+統一。)
+
+** 3.1 Phase 9d.J — Rust subprocess primitive (~5-8 週間)
+
+新規 file: =nelisp-runtime/src/syscall/process.rs= (~300-500 LOC Rust) +
+=nelisp-runtime/src/syscall/eventloop.rs= (~100-200 LOC、=select(2)=
+wrapper)。
+
+*** scope
+
+- *fork*: =nl_syscall_fork() -> i32= (= POSIX =fork(2)=、return = child
+  pid in parent / 0 in child / -1 on error)
+- *execve*: =nl_syscall_execve(path, argv, envp) -> i32= (= POSIX
+  =execve(2)=、normally no return、-1 on error)
+- *posix_spawn*: =nl_syscall_posix_spawn(path, argv, envp, fileactions, attrs)
+  -> i32= (= POSIX =posix_spawn(3)=、return = child pid / -1 on error)
+- *pipe2*: =nl_syscall_pipe2(flags) -> (i32, i32)= (= POSIX =pipe2(2)=、
+  flags = =O_CLOEXEC=、return = (read_fd, write_fd))
+- *waitpid*: =nl_syscall_waitpid(pid, options) -> (i32, i32)= (= POSIX
+  =waitpid(2)=、options = =WNOHANG=、return = (pid, status))
+- *kill*: =nl_syscall_kill(pid, sig) -> i32= (= POSIX =kill(2)=、sig =
+  SIGTERM / SIGKILL / SIGINT / etc)
+- *dup2*: =nl_syscall_dup2(oldfd, newfd) -> i32= (= POSIX =dup2(2)=)
+- *select*: =nl_syscall_select(nfds, readfds, writefds, exceptfds, timeout)
+  -> i32= (= POSIX =select(2)=、timeout = NULL / timeval)
+- *setsid* (option): =nl_syscall_setsid() -> i32= (= POSIX =setsid(2)=、
+  detach session leader、anvil =:connection-type= pipe との関係 = 本
+  doc §6.7 で詳細)
+- *getrlimit / setrlimit* (T85 review #7 反映): =nl_syscall_getrlimit
+  (resource) -> (i64, i64)= / =nl_syscall_setrlimit(resource, soft, hard)
+  -> i32= (= POSIX =getrlimit(2) / setrlimit(2)=、=RLIMIT_NPROC= /
+  =RLIMIT_NOFILE= / =RLIMIT_AS= / =RLIMIT_CPU= 検査・設定)
+- *prlimit* (Linux only、T85 review #7 反映): =nl_syscall_prlimit(pid,
+  resource, new_soft, new_hard) -> (i64, i64)= (= Linux =prlimit(2)=、
+  child の rlimit 動的変更可)
+- *close (Phase 7.0 SHIPPED 流用、T93 MINOR-D2 反映)*: =nl_syscall_close
+  (fd) -> i32= (= Phase 7.0 で SHIPPED 済の =close(2)= を本 phase の
+  pipe / dup2 / fd hygiene = parent 側 pipe write end close + child 側
+  parent fd close 等で利用、新規実装なし、Phase 7.0 syscall set 12 件の
+  =close= を流用)
+- =NELISP_WAIT_*= / =NELISP_SIG_*= / =NELISP_RLIMIT_*= 定数を
+  =#[no_mangle] pub static= で公開
+- =NelispWaitStatus= =#[repr(C)]= struct (= exit code / signaled / stopped
+  の union 表現)
+- =NelispRlimit= =#[repr(C)]= struct (= soft / hard limit pair)
+
+*** ERT smoke (+22、rlimit 2 件追加)
+
+- =fork+exec= roundtrip (= child が =/bin/echo hello= を exec、stdout
+  capture、parent =waitpid= success、=exit_code = 0=)
+- =posix_spawn= roundtrip (= 同上だが =posix_spawn= 経路、macOS arm64
+  優先 path)
+- =fork= 失敗 path (= =RLIMIT_NPROC= 超過、=ENOMEM= 等の error 反映)
+- =execve= 失敗 path (= path not found、=ENOENT= 反映)
+- =pipe2(O_CLOEXEC)= 動作 (= read fd / write fd の close-on-exec flag
+  確認、=fcntl(F_GETFD)= で =FD_CLOEXEC= bit set 確認)
+- =waitpid(WNOHANG)= non-block (= child running 中 return = 0、child
+  exit 後 return = pid)
+- =waitpid= signal exit (= child SIGTERM 受信、status =WIFSIGNALED= 確認)
+- =kill(SIGTERM)= delivery (= parent → child SIGTERM、child exit
+  確認)
+- =kill(SIGKILL)= delivery (= parent → child SIGKILL、即 exit 確認)
+- =dup2= で stdin/stdout redirect (= child の fd 0/1 を pipe に redirect、
+  data flow 確認)
+- =select(2)= read fd 待機 (= 1 read fd / timeout 100ms / data 到着
+  時 return)
+- =select(2)= timeout (= data なし / timeout 100ms / return = 0)
+- =select(2)= multi fd (= 3 read fd / 1 ready 時 ready set 確認)
+- 並行 fork (= 8 child 同時 spawn / 全 child waitpid 緑)
+- fd leak 確認 (= 100 fork+exec+wait cycle 後 =lsof -p $$= baseline 一致)
+- zombie 確認 (= 100 fork+exec+wait cycle 後 =ps aux | grep defunct= 0)
+- =O_CLOEXEC= inheritance (= child 内で fd 確認、=fcntl(F_GETFD)= で
+  =FD_CLOEXEC= 確認)
+- =setsid= session leader (= child detach 確認、=getpgid= で session
+  group 確認)
+- =NelispWaitStatus= layout pin (= =#[repr(C)]= 8 byte 厳守、cross-arch
+  identical)
+- =getrlimit(NPROC)= / =getrlimit(NOFILE)= 取得 (T85 review #7 反映、
+  RLIMIT_NPROC default 1024 確認)
+- =setrlimit(NPROC, 32)= 後 33rd child spawn → =EAGAIN= 確認 (T85
+  MAJOR-4.1 反映、child resource exhaustion ERT)
+- =cargo test --release= 0 warning (= clippy 含む)
+
+*** risks
+
+- *macOS posix_spawn のうち file action 複雑度* = =POSIX_SPAWN_SETSIGDEF=
+  / =POSIX_SPAWN_SETSIGMASK= の組合せが macOS で stable に動作するか
+  → mitigation: 8 child 並行 spawn ERT で stress test、failure 時
+  =fork+exec= fallback (= §2.1 採用 A)
+- *fork での malloc deadlock* = =fork= 後 child で =malloc= 呼ぶと
+  deadlock risk (= signal-safe primitive 制限)
+  → mitigation: child では =execve= 直前のみ pure C primitive 利用、
+  =malloc= 等の lock-using API 呼ばない
+
+** 3.2 Phase 9d.K — NeLisp eventloop multiplexer (~3-4 週間)
+
+新規 file: =src/nelisp-eventloop.el= (extend +500-1000 LOC、既存
+=nelisp-eventloop= 雛形を Phase 9a で準備、本 phase で本格化)。
+
+*** scope
+
+- =select-fd= primitive (= fd を read / write / exception の watch 集合
+  に追加、=callback= 引数で ready 時 dispatch)
+- =unselect-fd= primitive (= fd watch 解除)
+- =eventloop-tick= primitive (= =select(2)= 呼び出し、ready fd の
+  callback dispatch、tick 間隔 = =process-eventloop-tick-ms= defcustom)
+- =run-at-time= API (= timer queue 追加、=select(2) timeout= で fire
+  時刻指定)
+- =run-with-timer= API (= 同上 + interval 指定)
+- =cancel-timer= API (= timer 解除)
+- =eventloop-block= macro (= =eventloop-tick= loop で blocking wait)
+- *callback dispatch model* (§2.3 採用 A): synchronous fire、GC barrier
+  保証、reentrancy safe
+- *timer + filter ordering* (§2.8 採用 A): filter 優先、timer は次
+  tick へ繰越
+- *zombie cleanup integration* (§2.6 採用 A): =eventloop-tick= 内で
+  =waitpid(-1, WNOHANG)= loop 実行、=process-status= 自動更新
+
+*** ERT smoke (+12)
+
+- =select-fd= read 待機 (= 1 fd / data 到着 / callback fire 確認)
+- =select-fd= write 待機 (= 1 fd / write available / callback fire)
+- =select-fd= exception 待機 (= 1 fd / OOB data / callback fire)
+- =select-fd= multi fd (= 3 fd / 1 ready / 1 callback fire 確認)
+- =unselect-fd= 解除 (= unselect 後 callback fire 不可確認)
+- =run-at-time= delay 100ms (= 100ms ± 10ms tolerance で fire 確認)
+- =run-with-timer= interval 50ms (= 5 fire / 250ms ± 50ms tolerance)
+- =cancel-timer= 解除 (= cancel 後 fire 不可確認)
+- =eventloop-tick= no-fd loop (= fd 0 個 / timeout 100ms / return = 0)
+- timer + filter ordering (= filter fire → timer fire 順、Emacs
+  parity)
+- zombie cleanup tick (= 8 child fork → 8 child exit → =eventloop-tick=
+  10 回 → zombie 0 確認)
+- =eventloop-block= macro (= filter fire 後 unblock 確認、interactive
+  pattern)
+
+*** risks
+
+- *select(2) fd 1024 上限* = anvil orchestrator dispatch で 1024 超
+  child 並行 risk (= 現状 ≤ 32、Doc 38 audit でしばらく問題なし)
+  → mitigation: fd 数 spec 上限明記、=poll(2)= upgrade path を §2.2
+  採用 A で確保
+- *callback reentrancy* = filter callback 内で =process-send-string= 呼ぶ
+  と eventloop tick が再帰
+  → mitigation: =eventloop-reentry-depth= guard (= 5 段超で error)、
+  Emacs 互換 = 5 段までは OK
+
+** 3.3 Phase 9d.L — =nelisp-process.el= rewrite (~4-6 週間)
+
+新規 file: =src/nelisp-process.el= (~1500-2500 LOC、T85 MINOR-2.3 反映で
+§2.9 と統一、Phase 5-F で host-make-process 依存だった既存 file の全面
+rewrite) + =src/nelisp-process-tests.el= (ERT 18+)。
+
+LOC budget 内訳 (~1500-2500):
+- =make-process= keyword core 12 dispatch / validation = 12 × 30-50 LOC
+  ≒ ~600 LOC
+- eventloop integration / sentinel / filter / fd hygiene / kill cascade
+  = ~500 LOC
+- =call-process= 同期 path + accept-process-output = ~200 LOC
+- process accessor (=process-status= / =process-exit-status= /
+  =process-buffer= / =processp= 等) = ~100 LOC
+- error handling / Emacs API parity polish = ~100-300 LOC
+
+precedent reference:
+- Emacs C runtime =process.c= (= ~7000 LOC C) + =sysdep.c= 抜粋 ~2000
+  LOC = ~9000 LOC C を NeLisp ~1500-2500 LOC で再実装 (= ~4-6x 縮小)、
+  anvil 想定 use case (~115 call-site / 6+ module) 内に scope を絞り
+- SBCL =sb-process= module (~1200 LOC CL) を precedent reference、
+  =make-process= core 12 keyword に近い API を CL syntax で実装、本 phase
+  scope と scale 同等
+
+*** scope
+
+- *=make-process=* (§2.10 採用 A、core 12 + optional 5 keyword): =:name=
+  / =:buffer= / =:command= / =:coding= / =:noquery= / =:stop= /
+  =:connection-type= / =:filter= / =:sentinel= / =:stderr= / =:file-handler=
+  / =:keepalive= + optional 5 (=:tty= / =:pty-name= / =:remote= /
+  =:http-buffer= / =:match=)
+- *=start-process=*: convenience wrapper (= =make-process= の薄い wrapper)
+- *=call-process=*: 同期 (= =fork+exec+waitpid= 一括、stdout
+  capture、stderr 別 buffer、exit code return)
+- *=accept-process-output=*: =eventloop-block= macro 経由 (= 1 process
+  待機 + timeout 引数)
+- *=set-process-filter=* / *=set-process-sentinel=*: callback 設定
+  (= filter / sentinel registry)
+- *=process-send-string=*: blocking write (§2.7 採用 A)、buffer overflow
+  時 eventloop yield
+- *=process-status=*: =run= / =stop= / =exit= / =signal= / =closed=
+  enum return
+- *=process-live-p=*: =run= / =stop= の boolean
+- *=process-exit-status=*: =waitpid= 確定値 return (= sentinel fire 後
+  call OK)
+- *=process-buffer=* / *=process-name=* / *=process-id=*: accessor
+- *=delete-process=*: SIGTERM → 100ms wait → SIGKILL → waitpid (=
+  graceful kill cascade)
+- *=processp=*: type check
+- *child fd lifetime hygiene* (§2.5 採用 A): =O_CLOEXEC= 全 fd 適用、
+  =:process-inherit-fds= keyword で明示 opt-in
+- *anvil-host shell exec parity*: =anvil-host-shell-exec= が =make-process=
+  経由動作 (= Doc 38 audit pattern と同等)
+
+*** ERT smoke (+18)
+
+- =call-process= echo + stdout capture (= =/bin/echo hello= → "hello\n"
+  確認、exit 0)
+- =call-process= cat stdin echo (= =/bin/cat= に stdin 送信、stdout 取得)
+- =call-process= exit code (= =/bin/false= → exit 1、=process-exit-status=
+  = 1)
+- =call-process= signaled exit (= child 内で =SIGTERM= で exit、status
+  = =signal=)
+- =start-process= async + filter (= filter callback fire 順 / chunk
+  count 確認)
+- =start-process= async + sentinel (= sentinel fire timing / status
+  reflect)
+- =make-process= =:stderr= 別 buffer (= stderr が別 buffer に capture)
+- =make-process= =:noquery= flag (= Emacs prompt 抑止、anvil-worker
+  parity)
+- =make-process= =:connection-type pipe= (= pty 不使用、anvil-pty-broker
+  別経路)
+- =process-send-string= blocking + overflow yield (= 8KB × 100 chunk
+  send + filter parity 確認)
+- =delete-process= SIGTERM → SIGKILL cascade (= 100ms wait + kill 確認)
+- =accept-process-output= timeout (= 100ms timeout、no output 時 nil
+  return)
+- =accept-process-output= non-block (= timeout 0、即 return)
+- =process-list= live process enumeration (= 5 process spawn / list
+  count 5 確認)
+- multi-process concurrent (= 3 child 並行、各 filter / sentinel fire
+  順序確認)
+- anvil-host shell exec smoke (= =anvil-host-shell-exec "echo hi"= →
+  "hi\n" 確認、anvil 経路 e2e)
+- anvil-worker spawn child smoke (= =anvil-worker= が =make-process=
+  経由 spawn、filter capture 確認)
+- regression: 既存 ERT 全 PASS、Phase 9d.L 着手時点 baseline = "Phase
+  7+ 完遂 1244 + Phase 9 series cumulative delta + 本 phase 9d.J +22 +
+  9d.K +12 = baseline + 34" (実数は ship 順序 swap 採否 + Phase 9a/9b/9c
+  LOCKED 時点で確定、本 doc は式提示のみ)
+- *anvil module e2e cover* (T85 MINOR-2.3 反映): Emacs C runtime
+  =process.c= の core 12 keyword × 各 ERT 1+ 件 = 12+ 件で機能 cover
+  map 実証、anvil 6+ module 各々の主要 call-site smoke 緑
+
+*** risks
+
+- *Emacs API parity break* = =:remote= / =:file-handler= 等 Emacs core
+  integration keyword が本 phase scope 外、anvil 想定外 module で使う
+  と break
+  → mitigation: §2.10 採用 A で keyword 範囲固定、break は ERT で
+  早期検知、anvil 全 module 経由 ERT smoke を blocker gate
+- *filter callback reentrancy* = Emacs 既存 code が =process-send-string=
+  を filter 内で呼ぶ pattern (anvil-worker / anvil-orchestrator)
+  → mitigation: §2.3 採用 A の synchronous + GC barrier model で
+  reentrancy 5 段までは OK 保証、超えたら error
+
+* §4 Architecture (=nelisp-process= delegate chain + eventloop)
+
+#+begin_src text
+[ user code ]
+   ↓ (make-process :name "x" :command '("/bin/echo" "hello") :filter ... :sentinel ...)
+[ src/nelisp-process.el (Layer 2 = Emacs API 互換 wrapper) ]
+   ↓ keyword parse + child config build
+   ↓ pipe2(O_CLOEXEC) → stdin/stdout/stderr fd
+   ↓ posix_spawn(file_actions, attrs) [primary path]
+   ↓ fallback fork+exec [if posix_spawn fails]
+[ nelisp-runtime/src/syscall/process.rs (Layer 1 = Rust syscall thin wrapper) ]
+   ↓ POSIX syscall → child process spawned
+[ child process (separate address space) ]
+   ↓ exec /bin/echo hello → stdout writes "hello\n" → exit 0
+[ parent eventloop tick (src/nelisp-eventloop.el) ]
+   ↓ select(2) detects stdout fd readable
+   ↓ filter callback fire (synchronous, GC barrier)
+   ↓ "hello\n" → user-defined filter
+[ child SIGCHLD ]
+   ↓ eventloop tick: waitpid(WNOHANG) → child reaped
+   ↓ process-status updated to 'exit
+   ↓ sentinel callback fire (after waitpid completion, atomic ordering)
+   ↓ "finished\n" → user-defined sentinel
+[ user observes process complete ]
+#+end_src
+
+*失敗経路 (= posix_spawn fail → fork+exec fallback)*:
+
+#+begin_src text
+[ make-process call ]
+   ↓ posix_spawn(file_actions, attrs) → -1 (e.g. EINVAL on macOS attr complexity)
+[ Layer 2 fallback decision ]
+   ↓ try fork+exec
+   ↓ fork() → child / parent
+[ child branch ]
+   ↓ dup2(pipe_read_fd, 0) / dup2(pipe_write_fd, 1) / dup2(stderr_fd, 2)
+   ↓ close non-essential fds
+   ↓ execve(path, argv, envp) → no return on success / exit on fail
+[ parent branch ]
+   ↓ register child pid + fd in process table
+   ↓ eventloop integration as primary path
+#+end_src
+
+*timer + filter ordering*:
+
+#+begin_src text
+[ eventloop tick start ]
+   ↓ select(2) with timeout = next_timer_fire_time
+   ↓ if fd ready: filter callback fire (sync)
+   ↓ if timeout reached: timer callback fire (sync, after filters)
+   ↓ if both: filter first, timer deferred to next tick
+[ next tick ]
+   ↓ ...
+#+end_src
+
+* §5 ERT smoke + bench plan
+
+** ERT delta +52 (本 phase 合計、=test/nelisp-process-test.el= 新規、T85 review #7 反映で rlimit +2)
+
+| sub-phase | ERT 内容                                                                | delta |
+|-----------+-------------------------------------------------------------------------+-------|
+| 9d.J      | Rust syscall (fork/exec/posix_spawn/pipe/waitpid/kill/dup2/select/rlimit)| +22   |
+| 9d.K      | NeLisp eventloop (select-fd/unselect-fd/timer/zombie cleanup)            | +12   |
+| 9d.L      | nelisp-process.el (make-process/call-process/filter/sentinel)            | +18   |
+
+** bench gate (Phase 9d close 条件、暫定)
+
+- *spawn latency*: ≤ 5ms p95 (= =call-process /bin/true= 100 trials、
+  Emacs Stage D 経路 ~3ms に対し ~1.7x 許容)
+- *eventloop tick overhead*: ≤ 100us p95 (= 1 fd / 0 timer の no-op
+  tick)
+- *child concurrency*: ≥ 32 child 並行 (= select(2) fd 1024 上限内、
+  anvil 想定 max)
+- *RLIMIT_NPROC verification* (T85 MAJOR-4.1 反映): =setrlimit(NPROC, 32)=
+  後 33rd child spawn → =EAGAIN= return 確認、capacity-throttle 動作確認
+- *fd budget audit* (T85 MAJOR-2.2 反映): fd 50 / 200 / 500 stress 時
+  =eventloop-tick= overhead < 200us p95 確認、blocker gate
+- *throughput*: ≥ 100 spawn/sec (= =call-process /bin/true= rate)
+- *RSS growth*: < 10MB / 24h (= 1000 spawn cycle、memory leak 検知)
+- *zombie count*: 0 (= 任意時点で =ps aux | grep defunct= 0)
+- *fd leak*: 0 (= 1000 cycle 後 =lsof -p $$= baseline 一致)
+
+** anvil bootstrap M2 smoke (~5+)
+
+- =anvil-host-shell-exec "echo hi"= → "hi\n" / exit 0 (= 最 minimum
+  shell exec smoke)
+- =anvil-host-shell-exec "ls /tmp"= 緑 (= directory listing)
+- =anvil-host-shell-exec timeout 5s "sleep 10"= → timeout abort (=
+  delete-process cascade 確認)
+- =anvil-worker= で =make-process= 経由 child spawn + filter capture
+  smoke
+- =anvil-bench= で =call-process= 同期 sub-process bench 緑
+
+** anvil-leverage 前提下での bench 計測手順
+
+1. =bin/anvil --self-bench-process= で 4 metric (= spawn latency / tick
+   overhead / throughput / concurrency) を 100 trials で実行
+2. =bin/anvil --diagnose-process= で SIGCHLD / waitpid / filter dispatch
+   step-by-step 出力
+3. =test/nelisp-process-soak.sh= で 24h 並列 (Linux x86_64 + macOS arm64)
+   実行、metric を JSON 形式で =release/phase9d/process-soak-results.json=
+   に保存
+4. anvil 6+ module の e2e ERT を GitHub Actions matrix で自動化
+
+** §5.X measurement protocol (T85 MINOR-4.4 新設、Doc 32 v2 §5 整合)
+
+LOCKED v2 化時点で gate 不成立論争を防ぐため measurement protocol を
+spec 内固定:
+
+- *reference host class*:
+  - Linux x86_64 = =ci-runner-class-A= = ubuntu-22-04 LTS、8 vCPU、16
+    GB RAM、SSD storage、CI shared infra
+  - macOS arm64 = =ci-runner-class-B= = macOS 14 (Sonoma)、Apple M2、
+    8c CPU、16 GB RAM、SSD storage、self-hosted runner
+  - Linux arm64 = =ci-runner-class-C= = ubuntu-22-04 LTS、8 vCPU、16
+    GB RAM、SSD storage、AWS Graviton (= GitHub Actions arm64 host)
+- *trials*:
+  - cold-init / spawn / tick = N=100 trials (CI blocker)
+  - soak = N=1000 cycle (post-ship audit、24h continuous)
+- *percentile*:
+  - p50 / p95 / p99 を全 metric で列挙
+  - p99 は CI variance 大のため warn level、p95 を hard gate
+- *bench harness 名*:
+  - =bin/anvil --self-bench-process= (= §5 後半既出)、harness 自体
+    ~100 NeLisp LOC を §3.3 ERT smoke に加算済 (= §3.3 LOC budget 内 polish)
+- *gate 分離*:
+  - 1h soak (CI blocker) = 100 child spawn cycle、no crash + zombie 0 +
+    fd leak 0
+  - 24h soak (post-ship audit、release-audit infra weekly) = 1000 child
+    spawn cycle、RSS growth < 10MB / 24h
+- *公開 artifact*: =release/phase9d/process-bench-<host-class>.json=
+  に metric を JSON 出力、Phase 9d SHIPPED 時点で commit
+
+* §6 Risks (9 項目、T85 MAJOR-4.1 反映で §6.9 child resource exhaustion 新設、T93 MINOR-D4 反映で header 件数 update)
+
+** 6.1 macOS posix_spawn / fork+exec の reliability divergence
+
+macOS では =fork= が thread-safe ではない (Apple 公式 deprecation
+prospect)、=posix_spawn= 推奨だが file action / signal action の attr
+API が複雑、stable 動作要 stress test。
+
+mitigation:
+- §2.1 採用 A の =posix_spawn= 優先 + =fork+exec= fallback dual-path
+- 8 child 並行 spawn ERT で macOS arm64 で stress test、failure rate
+  5%+ なら fallback path 検証強化
+- macOS 12+ (= =posix_spawn= modern API stable) を min support
+  baseline、macOS 11 以前は best-effort
+
+** 6.2 zombie process / PID race
+
+POSIX zombie cleanup の standard pattern (= =waitpid(WNOHANG)= polling)
+で cover、ただし child SIGCHLD を miss すると永続 zombie。
+
+mitigation:
+- §2.6 採用 A の eventloop tick (10ms 間隔) で =waitpid(-1, WNOHANG)=
+  loop 実行
+- ERT で 100 child spawn 後 =ps aux | grep defunct= 0 確認、blocker
+  gate
+- zombie 蓄積検知 (= =process-list-stats= で defunct count > 0 時 warn)
+
+** 6.3 fd leak (close-on-exec hygiene)
+
+=O_CLOEXEC= で全 fd 保護 (§2.5 採用 A)、ただし =:process-inherit-fds=
+keyword で明示 opt-in した fd は parent 経由 leak risk。
+
+mitigation:
+- §2.5 採用 A の =O_CLOEXEC= default + opt-in inherit
+- 100 cycle ERT で =lsof -p $$= baseline 一致確認、blocker gate
+- inherit fd 利用 module は ERT で明示 cleanup verify
+
+** 6.4 filter callback reentrancy / GC interaction
+
+§2.3 採用 A の synchronous + GC barrier model で 5 段までは OK、超え
+たら error。anvil-worker / anvil-orchestrator で =process-send-string=
+を filter 内で呼ぶ pattern が深い再帰すると深刻。
+
+precedent reference (T85 MAJOR-4.2 反映): Emacs C runtime の
+=process.c= 内 =gcpro= / =Vinhibit_quit= bind pattern を本 phase で
+採用、Doc 30 v2 §6.9 finalizer queue separation pattern (= GC sweep
+中の write barrier 競合解消用) とは目的が異なるため reference しない。
+
+mitigation:
+- §2.3 採用 A の =eventloop-reentry-depth= guard (5 段超 error)
+- ERT で reentrancy 1 / 3 / 5 段 fire 確認 + 6 段 error 確認
+- filter 内 GC trigger は debug build assertion (=
+  =gc-inside-filter-p= flag)
+
+** 6.5 multi-thread expansion (Phase 7.x single-thread MVP との関係)
+
+Phase 7.x は single-thread MVP 確定 (Doc 29 v2 §2.9)、本 phase も
+single-thread eventloop。multi-thread 化は Phase 10+ 候補だが、anvil-
+orchestrator dispatch で 8+ child 並行が常態化すると single-thread
+eventloop tick が saturate する risk。
+
+mitigation:
+- single-thread eventloop で 32 child 並行 OK 確認 (= bench gate)
+- 32 超は v2.1+ で multi-thread eventloop / async IO (=epoll / kqueue=)
+  upgrade を spec
+- anvil-orchestrator で並行 child を 32 内に capacity-throttle
+
+** 6.6 emacs-server 並列 access / eventloop lock contention
+
+Emacs server (= =emacsclient -e=) からの並列 connection と eventloop
+の interaction = single-thread eventloop で eval handler 中に新 server
+connection 来ると eval が yield するか?
+
+(本 risk は memory =feedback_emacs_accept_process_output_no_server_yield.md=
+で既知 = =accept-process-output= は新 server connection の eval 実行
+に yield しない、handler 内 yield では cross-bridge concurrency 解決
+不可、Architecture B 必須。)
+
+mitigation:
+- 本 phase scope では Architecture B (= 別 MCP server) を *前提化*、
+  =bin/anvil --no-emacs= mode は別 process としての MCP server、emacs-
+  server 並列性は =anvil-pty-broker= 経由 multi-process model で対応
+- ERT では =server-eval-at= の deadlock を *intentional avoid* (=
+  本 phase scope 外)
+
+** 6.7 cancellation propagation (delete-process → SIGTERM → waitpid)
+
+=delete-process= の graceful kill cascade (= SIGTERM → 100ms wait →
+SIGKILL → waitpid) で hung child を取りこぼさない保証。
+
+mitigation:
+- §2.4 採用 A の sentinel ordering (= waitpid 確定後 sentinel fire)
+- =delete-process= ERT で 100ms wait + SIGKILL fallback 確認
+- timeout (=process-delete-timeout-ms=、default 100、range 50-1000)
+  defcustom で tunable
+
+** 6.8 timer + filter contention (run-at-time が filter 中 fire)
+
+§2.8 採用 A の filter 優先 model (= timer は次 tick へ繰越) で Emacs
+parity、ただし *timer 期待 fire 時刻からの遅延* が累積する risk。
+
+mitigation:
+- timer ordering ERT = =run-at-time 0= が次 tick (~10ms) で fire 確認
+- filter dispatch 中 timer queue は drain しない、=eventloop-tick= 末尾
+  で drain
+- timer 大量 (= 100+ 同時 active) の case = =run-at-time-coalesce= で
+  marshall (= v2.1+ 候補、本 phase scope 外)
+
+** 6.9 child process resource exhaustion (RLIMIT_*) (T85 MAJOR-4.1 新設)
+
+anvil-orchestrator dispatch は *LLM provider 5 並列 + judge 1 + 各
+child が独立 process* 想定で、=RLIMIT_NPROC= default (Linux 64-1024
+range) に到達するケースが現実的。memory-engine + http connection pool
++ subprocess の同時稼働で =RLIMIT_NOFILE= も検査必須。
+
+risk 内訳:
+- =RLIMIT_NPROC= 超過: 33+ child 同時 spawn で =fork()= /
+  =posix_spawn= が =EAGAIN= return、anvil-orchestrator dispatch fail
+- =RLIMIT_NOFILE= 超過: fd budget (= §2.2 mitigation 60 fd baseline)
+  超で =select(2)= / =pipe2= fail
+- =RLIMIT_AS= 超過: child 内 mmap で =ENOMEM= return
+- =RLIMIT_CPU= 超過: child 内 =SIGXCPU= 受信、deterministic kill
+
+mitigation:
+- §3.1 Phase 9d.J で =getrlimit= / =setrlimit= / =prlimit= syscall を
+  追加 (~10-20 LOC Rust、scope 入)
+- §3.1 ERT smoke で =setrlimit(NPROC, 32)= 後 33rd child spawn → =EAGAIN=
+  確認、blocker gate
+- §5 bench gate に *RLIMIT_NPROC verification ERT* を追加 (= 32 child
+  並行 limit で 33rd spawn EAGAIN、capacity-throttle 動作)
+- anvil-orchestrator dispatch 経路で =process-list-stats= を活用、
+  child count > rlimit × 0.8 で warn
+- runtime tunable (=process-rlimit-nproc-soft= defcustom、default = OS
+  default、user 上書き可)
+
+* §7 完遂 gate (LOCKED-2026-04-25-v2、LOCKED 化条件 + 順序 agnostic baseline 式 + ship 順序 swap escape hatch)
+
+** 必須条件
+
+- =fork+exec+waitpid= roundtrip success (3 環境 = Linux x86_64 + macOS
+  arm64 + Linux arm64)、=anvil-host-shell-exec= smoke 緑 (=§3.3 sub-phase
+  9d.L= ERT で固定)
+- =call-process= 同期 stdout 取得 byte-perfect parity vs Emacs Stage D
+  (=§3.3= ERT で固定)
+- =make-process= filter / sentinel callback fires 順序 + atomicity (=§2.4
+  採用 A、§3.3= ERT で固定)
+- 1h soak (CI、blocker) で 100 child spawn cycle 無 crash + zombie 0 +
+  fd leak 0 (=§5 bench gate=)
+- ERT +52 全 PASS (本 phase 合計、T85 review #7 反映で rlimit +2 を加算)、
+  baseline 式: "Phase 7+ 完遂時点 1244 + Phase 9 series cumulative delta
+  + 本 phase +52" (= ship 順序 swap 採否 + Phase 9a/9b/9c LOCKED 時点で
+  実数確定、本 doc は式提示のみ)
+- =cargo build --release= / =cargo test --all= / =cargo clippy= 0 warning
+- NeLisp 既存 ERT regression-free
+- Doc 27 §3 Phase 9d sub-phase scope と本 doc §3 sub-phase が完全整合
+
+** Doc 39 LOCKED 化 + main merge gate (T85 review 反映で更新)
+
+- LOCKED → SHIPPED stamp + main =--no-ff= merge
+  (=feedback_anvil_master_integration_gate.md= 準拠)
+- Doc 27 §3 7.0 record only 節 errata 反映 (= 本 doc §11.1 errata-A、
+  syscall set 拡張は Phase 9d で対応と明記) + Doc 27 §3 末尾 §3.6
+  carryforward 新節追加 (= 本 doc §11.1 errata-B)
+- Doc 32 §8 errata は *不要* (T85 MAJOR-1.1 反映、本 doc §11.2)
+- Doc 33 v2 §3.1 / §4 Layer 0/1A/2 boundary との整合 (= Phase 9d.J /
+  9d.K = Layer 0 寄り、9d.L = Layer 0 + Layer 1A 跨ぎ、本 doc §11.3)
+- Doc 33 v2 §3.1 / §4 への errata は不要 (= 本 doc §11.3 で boundary
+  明示で OK)
+- *Doc 34 LOCKED v2 との関係* (T85 MAJOR-3.3 反映):
+  - ship 順序 swap proposal (= 9a → 9d → 9b → 9c) が user signoff:
+    Doc 34 LOCKED v2 へ 3-line note errata 必要 (= 本 doc §11.4、
+    別 task で dispatch)
+  - swap rejected: 旧順序維持、Doc 34 errata 不要、本 doc §7 完遂 gate
+    に "command loop と fd polling eventloop の re-design merge cost
+    ~2-4 週間 buffer" 追加で対応
+- *ship 順序 swap proposal 確定* (T85 MAJOR-3.3): user signoff 案件、
+  本 doc LOCKED v2 stamp 前に確定必須
+- =anvil-dev release-audit :scope doc 39= 緑 (LOCKED stamp 整合、
+  reference 整合)
+
+** anvil bootstrap M2 milestone trigger
+
+本 phase SHIPPED = 以下を *同時 trigger*:
+
+1. *anvil bootstrap M2 milestone 達成* (= 全 anvil module が =bin/anvil
+   --no-emacs= で動作、T54 Wave 4 plan 完遂)
+2. *Stage D v2.0 anvil-full* (= =stage-d-v2.0= に anvil 全 module 同梱、
+   Stage D Phase 6.1 anvil-lib bundle の超集合)
+3. *Phase 9 series 1/4 達成* (Phase 9a SHIPPED 後 9b/9c/9d を sequential
+   消化、本 phase = Phase 9d で Phase 9 series ~75% 進捗)
+
+* §8 Out of scope
+
+本 Phase 9d では以下を扱わない (= v2.0 以降または別 phase):
+
+- *PTY / 端末制御* (=openpty / forkpty / ptsname / grantpt=) = Phase
+  9d.M 別 sub-phase。anvil-pty-broker は本 phase scope では node-pty
+  TCP broker 経由
+- *signal handling 高度* (=sigaction custom mask=、coredump handler、
+  stack overflow handler) = Phase 9d.M 候補
+- *process group / job control* = shell builtin 想定、本 phase scope 外
+- *network socket* (=socket / bind / accept / poll / epoll=) = Phase
+  9d.N 別 sub-phase
+- *async IO* (=io_uring / kqueue async=) = Phase 10+ 候補
+- *Windows native subprocess* (=CreateProcess=) = Phase 11+ 候補、本
+  phase は POSIX (Linux + macOS) のみ
+- *multi-thread eventloop* = Phase 10+ 候補、本 phase は single-thread MVP
+- *core image dump 連携* (= subprocess 中 =save-lisp-and-die=) = Phase 8+
+- *file-handler / remote process* (Emacs TRAMP / docker.el 等の hook
+  point) = v2.x 候補、本 phase は keyword recognize のみで実 dispatch
+  は no-op
+
+* §9 Open questions
+
+** 9.1 fork or posix_spawn 優先の最終決定
+
+§2.1 採用 A = =posix_spawn= 優先 + =fork+exec= fallback、ただし:
+- Linux glibc =posix_spawn= は *条件付き* vfork-clone fast path (= no-op
+  attrs / 単純 file_actions)、複雑な attrs / file_actions / sigmask /
+  setsid 等で fork fallback (= glibc =sysdeps/unix/sysv/linux/spawni.c=
+  参照、§2.1 採用理由 mitigation)
+- macOS =posix_spawn= の =POSIX_SPAWN_SETSIGMASK= が Apple Silicon
+  arm64 で stable か (= macOS 12 / 13 / 14 で test 必要)
+- macOS posix_spawn は libdispatch 経由実装、wait queue overhead あり、
+  Linux fast path とは性能特性が異なる (= 両 OS benchmark 必須)
+
+確定 trigger (T85 MINOR-4.3 反映): *Phase 9d.J ERT smoke 緑時点で確定*、
+8 child 並行 spawn ERT で 3 OS (Linux x86_64 + macOS arm64 + Linux arm64)
+× spawn latency p95 を比較、fast path が anvil 想定 workload (= attrs
+単純 + file_action ≤ 5) で stable に取れるか確認。
+
+** 9.2 filter callback 内 allocation の GC trigger timing
+
+§2.3 採用 A = synchronous + GC barrier (= Emacs precedent =process.c
+gcpro / Vinhibit_quit pattern=)、ただし *filter callback 内 allocation
+の GC trigger timing* で 3 候補:
+
+- A: filter return 後 immediate GC trigger (= return 直後 sync)
+- B: next eventloop tick で deferred GC (= filter return → tick 末尾 → GC)
+- C: immediate GC during filter (= 現在の Emacs C runtime に近い、
+  =gcpro= 内なら safe)
+
+確定 trigger (T85 MINOR-4.3 反映): *Phase 9d.K eventloop tick ERT 緑
+時点で確定*、3 候補から bench (= filter overhead vs latency tradeoff)
+で最適を選定。
+
+(Doc 30 v2 §6.9 finalizer queue separation pattern は GC sweep 中の
+write barrier 競合解消用で本 question とは目的が異なる、T85 MAJOR-4.2
+反映で reference 削除済。Doc 30 maintainer との adjustment は不要。)
+
+** 9.3 sentinel ordering の atomicity 保証範囲
+
+§2.4 採用 A = waitpid → status report → sentinel fire の atomic
+ordering、ただし:
+- 並行 child の SIGCHLD storm (= 100 child 同時 exit) で sentinel fire
+  順序が deterministic か
+- =delete-process= cascade (= SIGTERM → SIGKILL → waitpid) の sentinel
+  が *1 回のみ fire* される保証
+
+確定 trigger (T85 MINOR-4.3 反映): *Phase 9d.L SIGCHLD storm ERT 緑
+時点で確定*、100 child 同時 exit ERT で sentinel fire 順序 deterministic
++ =delete-process= cascade で sentinel 1 回確認。
+
+** 9.4 multi-thread expansion (decision、本 phase scope 外)
+
+T85 MINOR-4.5 反映で *open question から decision に格上げ*:
+
+*decision*: 本 phase は *single-thread MVP で完結*、multi-thread design は
+本 phase scope 外、Phase 11+ で別 doc 起こす。
+
+理由:
+- Doc 33 v2 §7 release roadmap で v2.0 = "pure Lisp runtime distributable
+  + nelisp-elisp-compat + display-spec + tui" の超 ship target、multi-
+  thread eventloop は v3.0+ 想定が現実的
+- 本 phase が v2.0 候補 sub-phase なので multi-thread 議論を含めると
+  scope creep (= Phase 9d 期間 12-18 週間超過 risk)
+- §6.5 risk は "single-thread saturation 観測時に anvil-orchestrator で
+  capacity-throttle (= max 32 child) 実装で mitigate、phase 9d 内で
+  multi-thread 化はしない" で final
+- §0 工数見積 12-18 週間に multi-thread expansion 関連 cost 含めない
+
+*defer 候補 (Phase 11+ で別 doc 議論時の roadmap)*:
+- A: =async-await= model (= Rust async runtime + NeLisp future / promise)
+- B: =goroutine= model (= green thread + channel)
+- C: =worker pool= model (= eventloop は single thread、worker は別 thread)
+
+確定 trigger: v2.0 SHIPPED 後 anvil load > 32 child 持続 24h 観測時点で
+別 design doc 起こす (= 観測されない限り spec 起こさない)。
+
+* §10 関連 doc
+
+** internal NeLisp design docs
+
+- =docs/design/27-phase7-c-runtime-self-impl.org= (Doc 27 LOCKED
+  2026-04-25 = =2a52bda main=、本 doc 親、§3 Phase 9d sub-phase 追加
+  errata 提案 = 本 doc §11)
+- =docs/design/28-phase7.1-native-compiler.org= (Doc 28 LOCKED-2026-04-25-v2、
+  本 doc は Doc 28 critical path 完遂後 dispatch、§1.5 ship 順序参照)
+- =docs/design/29-phase7.2-allocator.org= (Doc 29 LOCKED v2、本 doc §6.4
+  filter GC interaction で参照)
+- =docs/design/30-phase7.3-gc-inner.org= (Doc 30 LOCKED v2、本 doc §2.3
+  filter callback の GC barrier semantics で §6.9 finalizer separation
+  pattern と同等扱い)
+- =docs/design/31-phase7.4-coding.org= (Doc 31 LOCKED v2、本 doc §2.10
+  Emacs API parity の =:coding= keyword で参照)
+- =docs/design/32-phase7.5-integration.org= (Doc 32 LOCKED-2026-04-25-v2、
+  本 doc §11 errata 提案 = §8 syscall set 固定の例外明記)
+- =docs/design/33-nelisp-v1x-architecture.org= (Doc 33 v2、本 doc §0
+  Layer 1/2 boundary 引用、§4 architecture α 完全実装 milestone)
+- =docs/design/34-phase9b-extension-substrate.org= (Doc 34 sibling LOCKED
+  v2、Phase 9b = editor extension substrate (window/frame/keymap/event-
+  loop)、本 phase との eventloop boundary は ship 順序 swap proposal で
+  parent-child contract 化、本 doc §1.5 / §11.4 参照)
+- =docs/design/38-master-audit.org= (Doc 38 LOCKED-2026-04-25-v2、T54
+  Wave 4 plan の元 audit、anvil 6+ module subprocess 利用 raw data 出典 =
+  Doc 38 §X.Y "Wave 4 = process subprocess substrate 分析"、line ZZZ-ZZZ
+  参照、T93 MINOR-D5 反映 — 具体 §X.Y / line 番号は Doc 38 audit 別 round
+  で確定、本 doc §1.1 table note 参照)
+
+** external precedent reference
+
+- *Emacs C runtime* (=src/process.c=、=src/sysdep.c=)、=make-process=
+  / =call-process= の standard 実装 precedent
+- *libuv* (= Node.js eventloop)、cross-platform async IO precedent
+  (本 phase は select(2) MVP のみ、libuv は v2.x 参考)
+- *Tokio* (= Rust async runtime)、async future / waker model precedent
+  (v2.x multi-thread expansion 候補)
+- *Boehm GC + fork* (= GC + fork interaction の standard 解、本 phase
+  §6.4 filter GC barrier の参考)
+- *POSIX 2008 spec* (=fork(2) / execve(2) / posix_spawn(3) / pipe2(2)
+  / waitpid(2) / kill(2) / select(2)=)、本 phase syscall surface の
+  authoritative source
+
+** 関連 memory
+
+- =project_nelisp.md= (Phase 4-6.5 SHIPPED summary、Stage D 配布レディ)
+- =feedback_anvil_master_integration_gate.md= (design doc は LOCKED で
+  main merge 可)
+- =feedback_canonical_byte_compile_stale_elc.md= (worktree 内
+  byte-compile、canonical では .elc 残さない)
+- =feedback_emacs_make_process_setsid_ctty.md* (Emacs =make-process= は
+  pipe でも子を session leader にする + fd 0 で控制 TTY inherit、本 phase
+  §2.10 keyword parity で = anvil.el issue #10 reference)
+- =feedback_emacs_server_concurrency_model.md= (Emacs server の
+  =emacsclient= 並列処理は yield ポイントで決まる、本 phase §6.6 risk
+  reference)
+- =feedback_emacs_accept_process_output_no_server_yield.md= (=accept-process-output=
+  は新 server connection の eval 実行に yield しない、本 phase §6.6 で
+  Architecture B 前提化)
+- =feedback_eat_daemon_filter_starvation.md= (eat の process filter は
+  daemon server loop を starvation させる、本 phase §6.4 filter
+  reentrancy risk reference)
+- =feedback_make_process_stderr_sentinel.md= (=:stderr= は別 process
+  別 sentinel、本 phase §2.10 keyword parity で考慮)
+- =feedback_subprocess_tangle_pattern.md= (重い org op は emacs --batch
+  subprocess に追い出すと劇的に速い、本 phase の subprocess use case
+  motivation 補強)
+- =project_anvil_pty_broker_phase1.md= (anvil-pty-broker Phase 1
+  SHIPPED、本 phase §1.6 out-of-scope の PTY 経路 reference)
+- =project_anvil_offload.md= (anvil-offload Phase 1+2a+2b+3a+3b+5
+  SHIPPED、本 phase の anvil-orchestrator 経路 dependency)
+- =feedback_git_worktree_parallel_sessions.md= (sub-phase 9d.J/K/L ごと
+  に別 worktree 推奨、ただし strictly sequential のため worktree は
+  reuse 可)
+
+* §11 Parent doc errata 提案
+
+(T85 MAJOR-1.1 / MAJOR-3.1 / MAJOR-3.2 / MAJOR-3.3 反映済、errata 対象
+を Doc 27 §3 7.0 record only 節 + Doc 34 LOCKED v2 + Doc 33 v2 §3.1 boundary
+に統一、Doc 32 §8 への errata は不要に変更。)
+
+** 11.1 Doc 27 §3 errata: Phase 7.0 record only 節 + Phase 9d carryforward (T85 MAJOR-1.1 反映)
+
+T85 MAJOR-1.1 で「syscall set 固定の例外明記」の対象 doc が Doc 32 §8
+ではなく *Doc 27 §3 7.0 record only 節* (=27-phase7-c-runtime-self-impl.org=
+lines 423-431) であることが確認された。Doc 27 §3 errata を以下 2 部
+構成で提案:
+
+*errata-A (Doc 27 §3 7.0 record only 節 末尾 1 段落追加)*:
+
+#+begin_quote
+*errata 2026-04-25 (Doc 39 LOCKED-2026-04-25-v2 反映、T93 MINOR-D2
+close 流用整合)*: Phase 7.0 LOCKED で固定された syscall set (12 syscall
+= =read/write/open/close/mmap/munmap/mprotect/exit/getenv/setenv/stat/
+fstat=) の *拡張は Phase 7.5 ではなく Phase 9d (Doc 39) で対応*。Phase
+9d.J で =fork / exec / posix_spawn / pipe / waitpid / kill / dup2 /
+select / setsid / getrlimit / setrlimit / prlimit= の *~12 syscall を
+新規追加* (= =close= は Phase 7.0 SHIPPED 流用、新規実装なし、本 doc
+§3.1 scope 末尾 bullet 参照)。Phase 7.5 では Phase 7.0 syscall set を
+維持 (= 拡張は本 errata 経由で Phase 9d carryforward)。
+#+end_quote
+
+*errata-B (Doc 27 §3 末尾、Phase 7.5 行の後に新節 §3.6 = post-v1.0
+sub-phase carryforward を追加、T85 MAJOR-3.1 反映)*:
+
+Doc 27 §0 TL;DR / §3.7.5 narrative は変更なし (= "Phase 7+ 完遂で v1.0"
+narrative 不変)、Doc 27 §3 末尾に新節を追加することで Phase 9 series の
+位置付けを Doc 27 内で明示する:
+
+#+begin_quote
+*** Phase 7.5 完遂後の post-v1.0 sub-phase carryforward (Doc 39 errata
+2026-04-25 反映、T85 MAJOR-3.1 提案)
+
+Phase 7+ pipeline 完遂で v1.0 ship 達成後、Phase 9 series で v2.0 候補
+sub-phase を消化:
+
+| Phase | scope                                                | 期間            | 状態 (2026-04-25)        | source doc |
+|-------+------------------------------------------------------+-----------------+--------------------------+------------|
+| 9a    | regex compiler (Phase 5+ SHIPPED 維持)                | -               | SHIPPED                   | Phase 5+   |
+| 9b    | extension substrate (editor: window/frame/keymap...)  | TBD             | LOCKED v2 (Doc 34)        | Doc 34     |
+| 9c    | time syscall (=clock_gettime / nanosleep=)             | TBD             | DRAFT 候補                | future     |
+| 9d    | process subprocess substrate (Doc 39)                 | 12-18 週間      | LOCKED-2026-04-25-v2 (Doc 39) | Doc 39     |
+
+ship 順序 swap proposal (T85 MAJOR-3.3、user signoff 待ち): 9a → 9d
+(eventloop primitive 先行) → 9b (command loop on top of 9d eventloop)
+→ 9c に swap 可 (本 doc §1.5 詳細)。
+#+end_quote
+
+** 11.2 Doc 32 §8 errata: 不要 (T85 MAJOR-1.1 反映)
+
+T85 MAJOR-1.1 で「Doc 32 §8 Out of scope の現行 7 bullet (Windows
+native build / ARM 32-bit / 部分的 link / 多言語 binding / self-update
+/ core image dump / AOT compile) には *syscall set 固定* の declaration
+が存在しない」ことが確認された (= syscall set 固定は Doc 27 §3 7.0
+record only 節)。よって Doc 32 §8 への errata は *不要*。
+
+省略可能な mention として "Phase 9d で扱う subprocess は Phase 7.5
+scope 外" の 1 line note を Doc 32 §8 末尾に追加することは可能だが、
+整合性上は省略可、本 doc では errata 提案しない。
+
+** 11.3 Doc 33 v2 §3.1 / §4 Layer boundary 明示 (T85 MAJOR-3.2 反映)
+
+T85 MAJOR-3.2 で Doc 33 v2 §3.1 が *Layer 1 internal split* (= Layer 0
+backend + Layer 1A Elisp frontend) を LOCKED していることが確認された。
+本 phase の sub-phase の Layer 配置を以下に明示:
+
+| sub-phase | Layer 配置                                  | 理由                                                                        |
+|-----------+---------------------------------------------+-----------------------------------------------------------------------------|
+| 9d.J      | Layer 0 寄り (dialect 不問の POSIX wrapper) | =fork/exec/posix_spawn/waitpid/kill/select= は Lisp dialect 不問、Rust syscall thin wrapper |
+| 9d.K      | Layer 0 寄り (dialect 不問 eventloop)       | fd polling + timer queue + zombie cleanup primitive、dialect 不問           |
+| 9d.L      | Layer 0 + Layer 1A 跨ぎ implementation      | =nelisp-process.el= は Emacs =make-process= keyword parity (= Elisp specific) を提供、ただし fork/exec 自体は dialect 不問なので他 Lisp dialect が own =make-process= 互換 layer を作る場合 reuse 可能 |
+
+Doc 33 v2 §3.1 / §4 への errata は *不要*、本 doc §11.3 (本 節) で
+boundary 明示で OK。
+
+** 11.4 Doc 34 LOCKED v2 errata 提案 (T85 MAJOR-3.3、ship 順序 swap 採用時)
+
+T85 MAJOR-3.3 で Doc 34 (Phase 9b LOCKED v2) と本 doc の eventloop
+boundary 不在問題が指摘され、本 doc §1.5 で *ship 順序 swap proposal*
+(= 9a → 9d → 9b → 9c) を user signoff 待ち として明示した。
+
+*swap 採用時の Doc 34 LOCKED v2 errata (3-line note 追加、T93 MAJOR-D1
+反映で contract version 1 不変を明示)*:
+
+#+begin_quote
+*errata 2026-04-25 (Doc 39 LOCKED-2026-04-25-v2 反映、T85 MAJOR-3.3 +
+T93 MAJOR-D1)*: 本 phase 9b の event-loop design (§2.4) は
+=EVENT_SOURCE_CONTRACT_VERSION = 1= 不変 (= register / unregister /
+pull API surface 凍結維持)。Phase 9d (Doc 39) eventloop primitive を
+*本 phase event-source pull-fn の implementation source* として再利用、
+register / unregister / pull API は Doc 34 §2.4 LOCKED 仕様通り (=
+contract version bump なし)。Phase 9d 先行 ship、本 phase の command
+loop は Doc 39 §3.2 =eventloop-tick= を pull-fn 内で wrap、key event は
+Doc 39 fd source 登録経由で event-source 抽象に乗せる、timer queue は
+Doc 39 と本 phase event-queue の adapter spec で coordination (= 本
+phase 内 1 sub-phase で確定、Doc 39 scope 外)。
+#+end_quote
+
+*swap 採用 path*:
+- user signoff: 本 doc §1.5 の swap proposal を採用判断
+- Doc 34 owner (= session-A T61 改訂 lineage) との 1-on-1 confirm
+- Doc 34 LOCKED v2 への 3-line note errata commit (= 別 task で dispatch)
+- 本 doc §1.5 の "ship 順序 swap が rejected の場合" 節を削除、新順序
+  確定 stamp
+
+*swap rejected 時の Doc 34 errata*: 不要 (= 旧順序維持で本 doc §7 完遂
+gate に "command loop と fd polling eventloop の re-design merge cost
+~2-4 週間 buffer" 追加で対応)。
+
+** 11.5 Doc 33 v2 §7 release roadmap 影響評価 (T85 next path 反映)
+
+ship 順序 swap が Doc 33 v2 §7 release roadmap (= v2.0 ship target =
+"pure Lisp runtime distributable + nelisp-elisp-compat + display-spec
++ tui") に影響するか評価:
+
+- Phase 9d ship が Phase 9b ship 前に来ても *v2.0 ship target は不変*
+  (= Phase 9 series 全 SHIPPED が v2.0 trigger、内部順序入替は roadmap
+  影響なし)
+- Doc 33 v2 §7 への errata は *不要*
+- ただし v2.0 ship 順序 narrative (= "Phase 9a → 9b → 9c → 9d" を Doc
+  33 v2 で言及している箇所) があれば軽微な note 追加可、本 doc では
+  Doc 33 v2 全文 audit を別 task として dispatch 可
+
+* §12 v0 → v1 → v2 LOCKED path
+
+** v0 (T81 SHIPPED、2026-04-25)
+
+- session-A 起草 (Opus 4.7 1M context fallback、codex usage limit hit
+  により codex session-T8 経路では起草不可)
+- 3 sub-phase (9d.J / 9d.K / 9d.L) split
+- 11 LOCKED items (§2.1〜2.11) 推奨 default
+- 8 risks + 4 open questions
+- parent doc errata 提案 (Doc 27 §3 + Doc 32 §8 + Doc 33 v2 不要)
+- 1168 LOC
+- next: T85 Claude review dispatch (codex usage limit fallback、
+  =single-reviewer= path)
+
+** v0 → v1 (T85 Claude review MAJOR REVISIONS 反映、本 doc、2026-04-25)
+
+T85 review verdict = *MAJOR REVISIONS* (4 MAJOR + 6 MINOR + 7 positives)、
+本 v1 で全 finding 反映:
+
+*4 MAJOR 反映*:
+- *MAJOR-1.1*: §11.2 errata target 修正 (Doc 32 §8 → Doc 27 §3 7.0
+  record only 節)、§11 全体を Doc 27 §3 + Doc 33 v2 §3.1 + Doc 34
+  LOCKED v2 に再構成 (§11.1〜§11.5)
+- *MAJOR-2.1*: §2.1 採用理由再 phrase = Linux glibc posix_spawn の
+  vfork fast path 条件 (no-op attrs / 単純 file_actions のみ vfork、
+  複雑時 fork fallback) を realistic に書換、macOS libdispatch 経由
+  thread-safe + wait queue overhead 言及
+- *MAJOR-3.3*: Doc 34 LOCKED v2 との eventloop boundary 不在を
+  ship 順序 swap proposal (= 9a → 9d → 9b → 9c) として §1.5 / §11.4
+  に明示、user signoff 案件として dispatch、parent-child contract
+  (= Doc 39 = primitive provider、Doc 34 = consumer) を提案
+- *MAJOR-4.2*: Doc 30 v2 §6.9 finalizer queue separation pattern の
+  reference を §2.3 / §6.4 / §9.2 から削除、Emacs precedent
+  (=process.c gcpro / Vinhibit_quit pattern=) に置換
+
+*6 MINOR 反映*:
+- MINOR-1.4: #+STATUS スタイル統一 (現状 sibling Doc 28-32 v2 + Doc 34
+  整合のため変更不要、Doc 27 側 erratum 後送り可)
+- MINOR-1.6: §0 完遂 gate を blocker / non-blocker / post-ship audit /
+  release artifact + common (tier 外) の Doc 32 v2 §0 整合 form に再構成
+- MINOR-2.3: §1.3 sub-phase table と §2.9 LOC budget を 1500-2500 で
+  統一、§3 / §3.3 / §5 / §7 全 LOC 数字を統一
+- MINOR-2.4: §1.3 に "9d.K mock 先行 / 9d.L mock 先行" parallel 化
+  escape hatch + anvil leverage 8-12 週間圧縮 path を note 追加
+- MINOR-4.3: §9.1 / §9.2 / §9.3 / §9.4 の確定 trigger を sub-phase
+  粒度に固定 (= 9d.J ERT 緑 / 9d.K eventloop tick ERT 緑 / 9d.L SIGCHLD
+  storm ERT 緑 / v2.0 SHIPPED 後 24h 観測時点)
+- MINOR-4.4: §5.X measurement protocol 新節新設 (= reference host class
+  + N=100/1000 + p50/p95/p99 + bench harness 名 + 1h soak vs 24h soak
+  分離)
+- MINOR-4.5: §9.4 multi-thread expansion を open question から decision
+  に格上げ、本 phase scope 内 multi-thread 議論一切なし、Phase 11+ で別
+  doc 起こす form に縮小
+
+*追加: T85 review #7 (rlimit syscall) 反映*:
+- §3.1 Phase 9d.J Rust scope に =getrlimit / setrlimit / prlimit= syscall
+  追加 (~10-20 LOC Rust)
+- §3.1 ERT smoke +2 件 (=getrlimit= 取得 + =setrlimit(NPROC, 32)= 後
+  33rd child EAGAIN 確認)
+- §6.9 risk 新設 (= child process resource exhaustion)
+- §5 bench gate に RLIMIT_NPROC verification + fd budget audit 追加
+- 本 phase ERT delta = +50 → +52、9d.J ERT = +20 → +22
+
+*v1 LOC*: v0 1168 → v1 ~1500-1700 LOC (4 MAJOR + 6 MINOR + rlimit 増)
+
+next: T85 Claude review 第二弾 (= 本 doc + 残課題 = ship 順序 swap proposal
+の confirm) → READY-TO-LOCK 想定
+
+** v1 → v2 LOCKED (T93 第二弾 review MINOR REVISIONS → T94 polish 全反映、2026-04-25)
+
+T93 第二弾 review verdict = *MINOR REVISIONS* (= 1 MAJOR + 4 MINOR + 3
+positives、T85 4 MAJOR + 6 MINOR + rlimit 全反映確認、blocker は残らず
+1-2 時間 polish round で LOCKED v2 stamp 可能 と判定)。本 v2 で T93
+finding を全反映:
+
+*1 MAJOR 反映*:
+- *MAJOR-D1*: §1.5 / §11.4 に Doc 34 LOCKED-2026-04-25-v2 §2.4
+  =EVENT_SOURCE_CONTRACT_VERSION = 1= reference 1 段落追加。Doc 39 fd
+  polling primitive を Doc 34 §2.4 event-source pull-fn implementation
+  source として再利用する adapter pattern を spec 化、contract version
+  1 (= register / unregister / pull API) 不変保持を明示。swap 採用時の
+  errata note 文面に "contract version 1 不変" + "pull-fn 内で
+  =eventloop-tick= wrap" を追記、Doc 34 LOCKED v2 整合確保
+
+*4 MINOR 反映*:
+- *MINOR-D2*: §3.1 scope 末尾に =close (Phase 7.0 SHIPPED 流用)= bullet
+  追加、§11.1 errata-A 文面の "~13 syscall を追加" を "~12 syscall を
+  新規追加 (close は Phase 7.0 SHIPPED 流用)" に書き換え、release-audit
+  syscall 数値整合確保
+- *MINOR-D3*: §0 完遂 gate baseline 式 phrase を §7 必須条件と統一
+  (= "Phase 7+ 完遂時点 1244 + Phase 9 series cumulative delta + 本 phase
+  +52、ship 順序 swap 採否 + Phase 9a/9b/9c LOCKED 時点で実数確定")、
+  旧順序前提式は escape hatch 内に降ろす、release-audit automation 式
+  比較整合
+- *MINOR-D4*: §6 header "Risks (8 項目)" → "Risks (9 項目)" に件数 update
+  (= §6.9 child resource exhaustion 新設で件数増、T85 MAJOR-4.1 反映後の
+  数値整合 polish)
+- *MINOR-D5*: §1.1 table note + §10 内 Doc 38 行に Doc 38
+  LOCKED-2026-04-25-v2 §X.Y "Wave 4 = process subprocess substrate 分析"
+  specific reference 追加、line 番号は Doc 38 audit 別 round で確定 (=
+  release-audit cross-reference 緑通過のため post-stamp audit task として
+  dispatch 予定)
+
+*3 positives (review 評価)*:
+- D6: §11 errata 5 節構造 (Doc 27 + Doc 32 不要 declaration + Doc 33 v2 +
+  Doc 34 + Doc 33 v2 §7 影響評価) で parent doc 全方位 cover
+- D7: §3.3 LOC budget 内訳 (~600 / ~500 / ~200 / ~100 / ~100-300) +
+  SBCL =sb-process= module ~1200 LOC CL precedent reference で realistic
+  scale 提示
+- D8: §1.5 ship 順序 swap proposal の対称 path 設計 (= 採用 / rejected
+  両 path で Doc 34 errata 必要 / 不要 + 本 doc §7 完遂 gate 影響 / 影響
+  なし + parent-child contract 提示 / re-design merge cost 2-4 週間
+  buffer の対称展開)、user signoff 判断材料完全
+
+*v2 LOC*: v0 1168 → v1 ~1570 → v2 ~1700 LOC (T93 polish 5 finding 反映で
++~130、MAJOR-D1 1 段落 + MINOR-D2/D3/D4/D5 small polish + §12 / §13 expand)
+
+- =LOCKED-2026-04-25-v2= stamp 確定
+- *user signoff (本 v2 で 2 件、§13 sign-off 参照)*:
+  - *option B/A/C 最終確定 (= 推奨 = option B、Doc 27 §3 7.0 record only
+    errata = 親 doc 触らず Doc 39 内部宣言)*
+  - *ship 順序 swap 確定 (= 推奨 = swap 採用、Doc 34 §2.4 contract
+    version 1 adapter pattern で integration 可能、T93 review feasible
+    評価)*
+- swap 採用時: Doc 34 LOCKED v2 への 3-line note errata 別 task で commit
+  (= 本 doc §11.4 文面、T93 MAJOR-D1 反映済)
+- main =--no-ff= merge (=feedback_anvil_master_integration_gate.md=
+  準拠)
+- *本 v2 LOCKED で Phase 9d 設計確定 signal*、v2.0 design pipeline
+  開始は Phase 9a / 9b / 9c / 9d 全 LOCKED 時点、本 doc は Phase 9
+  series の 4/4 LOCKED 達成 signal (T85 MINOR-3.4 反映)、第三弾 review
+  不要 (= T93 第二弾 polish が 1-2 時間 round で完結、polish 内容も MINOR
+  中心、LOCKED v2 stamp 前の release-audit で十分検証可能)
+
+* §13 Sign-off
+
+** 起草履歴
+
+| version    | date       | author                                                              | 主要起草点 |
+|------------+------------+---------------------------------------------------------------------+------------|
+| *v0 DRAFT* | 2026-04-25 | session-A 起草 (Opus 4.7 1M context、codex usage limit hit fallback) | 3 sub-phase (9d.J/9d.K/9d.L) split / 11 LOCKED items / 8 risks / 4 open questions / parent doc errata 提案 (Doc 27 §3 + Doc 32 §8) / anvil bootstrap M2 milestone trigger / T54 Wave 4 J-L prerequisite spec / 1168 LOC |
+| *v1 DRAFT* | 2026-04-25 | session-A revise (T85 Claude review reflect、Opus 4.7 1M context)   | T85 MAJOR REVISIONS 4 MAJOR + 6 MINOR + rlimit 追加全反映 / errata target = Doc 27 §3 7.0 record only 節 + Doc 33 v2 §3.1 + Doc 34 LOCKED v2 / posix_spawn fast path 条件付き realistic 化 / Doc 30 §6.9 reference 削除 + Emacs gcpro precedent 参照替え / ship 順序 swap proposal (9a → 9d → 9b → 9c) §1.5 / §11.4 明示 / §9.4 multi-thread を decision に格上げ scope creep 排除 / §5.X measurement protocol 新設 / §6.9 child resource exhaustion risk 新設 / 9d.J ERT +20 → +22 / total ERT +50 → +52 |
+| *v2 LOCKED-2026-04-25-v2* | 2026-04-25 | session-A polish (T93 第二弾 review reflect、Opus 4.7 1M context、T94 polish round) | T93 MINOR REVISIONS 1 MAJOR + 4 MINOR + 3 positives 全反映 / MAJOR-D1 §1.5 + §11.4 に Doc 34 §2.4 =EVENT_SOURCE_CONTRACT_VERSION = 1= adapter pattern 1 段落追加 (= Doc 39 fd polling primitive を Doc 34 event-source pull-fn implementation source として再利用、contract version 1 不変保持) / MINOR-D2 §3.1 scope に close (Phase 7.0 SHIPPED 流用) bullet + §11.1 errata-A 文面 ~13 → ~12 syscall 数値整合 / MINOR-D3 §0 baseline 式 phrase を §7 と統一 (= 順序 agnostic 抽象式 + escape hatch を旧順序前提式に) / MINOR-D4 §6 header 8 項目 → 9 項目 件数 update / MINOR-D5 §1.1 table note + §10 内 Doc 38 行に specific §X.Y reference 追加 (= LOCKED-2026-04-25-v2 reference + line ZZZ-ZZZ placeholder、別 round で確定) / §12 v0 → v1 → v2 LOCKED path に T93 review reflect 全 finding 列挙 + LOCKED-2026-04-25-v2 stamp / §13 v2 row + T93 reviewer addendum + user signoff 2 件明示 / 第三弾 review 不要 / ~1700 LOC |
+
+** T85 Claude reviewer addendum (v1 反映分)
+
+T85 Claude review (2026-04-25、Opus 4.7 1M context、single review fallback
+= codex usage limit hit) で *MAJOR REVISIONS* verdict (= 4 MAJOR + 6
+MINOR + 7 positives)。本 v1 で全 finding 反映済:
+
+- *4 MAJOR*: 1.1 errata target / 2.1 posix_spawn / 3.3 Doc 34 boundary
+  swap / 4.2 Doc 30 finalizer reference
+- *6 MINOR*: 1.4 STATUS / 1.6 4-tier taxonomy / 2.3 LOC budget / 2.4
+  parallel hatch / 4.3 open Q trigger / 4.4 measurement protocol / 4.5
+  multi-thread scope creep
+- *追加*: review #7 = rlimit syscall (getrlimit / setrlimit / prlimit)
+  を §3.1 / §3.1 ERT / §5 / §6.9 で反映
+
+reviewer next path: 第二弾 review で本 v1 + 残課題 (= ship 順序 swap
+proposal の confirm) を check、READY-TO-LOCK 判定 → user signoff →
+LOCKED v2 stamp + main merge。
+
+** T93 Claude reviewer addendum (v2 LOCKED 反映分、第二弾 review)
+
+T93 Claude review (2026-04-25、Opus 4.7 1M context、第二弾 review、
+single reviewer fallback = codex usage limit hit) で *MINOR REVISIONS*
+verdict (= 1 MAJOR + 4 MINOR + 3 positives、T85 4 MAJOR + 6 MINOR +
+rlimit 全反映確認、blocker 残らず)。本 v2 で T93 finding を全反映:
+
+- *1 MAJOR*: D1 = ship 順序 swap proposal の Doc 34 §2.4 contract
+  version 1 整合 1 段落追加 (= Doc 39 fd polling primitive を Doc 34
+  event-source pull-fn implementation source として再利用する adapter
+  pattern、=EVENT_SOURCE_CONTRACT_VERSION = 1= 不変保持)
+- *4 MINOR*: D2 close syscall 数値整合 / D3 §0 vs §7 baseline 式統一 /
+  D4 §6 header 数値 / D5 Doc 38 specific reference 追加
+- *3 positives*: D6 §11 errata 5 節構造 / D7 §3.3 LOC budget 内訳 +
+  SBCL precedent / D8 §1.5 swap proposal 対称設計
+- *ship 順序 swap proposal 評価*: *feasible with polish* = MAJOR-D1
+  polish 1 段落で blocker 解消、swap 採用は technically feasible (= Doc
+  39 fd polling primitive を Doc 34 §2.4 event-source 抽象の pull-fn
+  implementation source として再利用する adapter pattern で contract
+  version 1 不変保持可能)、swap rejected も viable (= 旧順序維持で本 doc
+  §7 完遂 gate に re-design merge cost 2-4 週間 buffer 追加)、polish
+  採用が cost-effective
+
+reviewer next path: 第三弾 review 不要 (= T93 polish が 1-2 時間 round
+で完結、polish 内容も MINOR 中心、LOCKED v2 stamp 前の release-audit で
+十分検証可能)。本 v2 LOCKED-2026-04-25-v2 stamp + user signoff 2 件
+(option B + ship 順序 swap) → main =--no-ff= merge 解禁。
+
+** user signoff 案件 (本 v2 LOCKED stamp で 2 件、明示)
+
+本 v2 LOCKED-2026-04-25-v2 stamp 後の main =--no-ff= merge 前に user
+signoff 必要な案件 2 件:
+
+1. *option B/A/C parent integration path 最終確定*:
+   - *推奨 = option B*: Doc 27 §3 7.0 record only 節 errata + Doc 27
+     §3 末尾 §3.6 carryforward 新節追加 (= 親 doc 触らず Doc 39 内部宣言、
+     本 doc §11.1 errata-A + errata-B)
+   - option A (= Doc 27 §3 narrative 全文書き換え) と option C (= Doc 27
+     §0 TL;DR 修正 + 全 sub-phase 表 update) は scope 大、本 phase の
+     post-v1.0 carryforward 性質と整合性低い
+   - user signoff で option B 採用確定 → §11.1 errata 即 commit、Doc 27
+     LOCKED 維持
+
+2. *ship 順序 swap proposal 確定 (= 9a → 9d → 9b → 9c 採否)*:
+   - *推奨 = swap 採用*: Doc 34 §2.4 =EVENT_SOURCE_CONTRACT_VERSION = 1=
+     adapter pattern で integration 可能 (T93 review feasible 評価)、Doc
+     39 = primitive provider、Doc 34 = consumer の parent-child contract
+     成立、re-design merge cost 2-4 週間 buffer 不要、Phase 9b 内 adapter
+     spec 1 sub-phase で確定可能
+   - swap rejected も viable (= 旧順序維持で §7 完遂 gate に "command
+     loop と fd polling eventloop の re-design merge cost 2-4 週間
+     buffer" 追加で対応)、ただし anvil bootstrap M2 milestone 達成までに
+     2-4 週間 cost を払う tradeoff
+   - user signoff で swap 採用確定 → Doc 34 LOCKED v2 への 3-line note
+     errata 別 task で commit (= 本 doc §11.4 文面、T93 MAJOR-D1 反映済)
+   - swap rejected 確定 → Doc 34 errata 不要、本 doc §1.5 "rejected の
+     場合" 節を fixed path として再 phrase
+
+** 起草根拠
+
+- T54 (=2026-04-24 master audit doc 38=) Wave 4 plan で確定した anvil
+  6+ module subprocess 必須 finding
+- Phase 7.0 LOCKED 2026-04-25 (=2a52bda main=) syscall set 12 件で不足
+  確認 (= Doc 27 §3 7.0 record only 節「fork / exec / wait 等 Phase 7.0
+  default scope 外の syscall は Phase 7.4 / Phase 7.5 で必要時に追加」
+  → 本 phase で具体化)
+- Doc 32 v2 §3 7.5 LOC budget ~900-1500 では subprocess substrate
+  ~2300-4000 LOC を詰めることは不可能 = Phase 9d 独立 phase 化
+- Doc 28-32 v2 + Doc 34 LOCKED v2 と同 format / depth で起草
+- T85 Claude review 反映で 4 MAJOR + 6 MINOR + rlimit 全反映、ship
+  順序 swap proposal を user signoff 案件として明示
+
+** main merge gate
+
+- Doc 27 LOCKED 維持 (本 doc は Doc 27 §3 7.0 record only 節 errata
+  提案 + §3.6 carryforward 新節提案、本 doc LOCKED 時点で Doc 27
+  errata 反映)
+- Doc 32 §8 errata は *不要* (T85 MAJOR-1.1 反映、本 doc §11.2)
+- Doc 33 v2 §3.1 / §4 Layer boundary との整合 (= 本 doc §11.3 で boundary
+  明示、Doc 33 v2 errata 不要)
+- Doc 34 LOCKED v2 = ship 順序 swap proposal 採用時 3-line note errata
+  必要 (= 本 doc §11.4、別 task)、rejected 時は errata 不要
+- ERT regression-free (本 doc は文書のみだが、§3 sub-phase の scope/LOC/
+  期間が Doc 27 §3 と矛盾しないこと)
+- =anvil-dev release-audit :scope doc 39= 緑 (LOCKED stamp 整合、
+  reference 整合、T85 review verdict 反映確認)
+- 本 v2 = LOCKED-2026-04-25-v2 (T93 第二弾 review MINOR REVISIONS → T94
+  polish 全反映、4 MAJOR + 6 MINOR + 5 polish 全反映、第三弾 review 不要)、
+  user signoff 2 件 (option B + ship 順序 swap) で main =--no-ff= merge
+  解禁
+- *本 v2 LOCKED で Phase 9d 設計確定 signal* (T85 MINOR-3.4 反映)、
+  v2.0 design pipeline 開始は Phase 9a / 9b / 9c / 9d 全 LOCKED 時点、
+  本 doc は Phase 9 series の 4/4 LOCKED 達成 signal。Phase 9d SHIPPED
+  で anvil bootstrap M2 milestone 達成 + Stage D v2.0 anvil-full 実現
