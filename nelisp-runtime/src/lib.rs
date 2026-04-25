@@ -27,3 +27,12 @@ pub use syscall::{
     NELISP_O_RDONLY, NELISP_O_RDWR, NELISP_O_TRUNC, NELISP_O_WRONLY, NELISP_PROT_EXEC,
     NELISP_PROT_NONE, NELISP_PROT_READ, NELISP_PROT_WRITE,
 };
+
+// Phase 9d.A4 file-notify FFI surface.  Re-exported at crate root so
+// cargo-side tests in `tests/filenotify_test.rs` can call the symbols
+// without spelling `::syscall::filenotify::` each time.
+pub use syscall::{
+    nl_filenotify_add_watch, nl_filenotify_close, nl_filenotify_init, nl_filenotify_read,
+    nl_filenotify_rm_watch, NL_IN_ATTRIB, NL_IN_CREATE, NL_IN_DELETE, NL_IN_MODIFY,
+    NL_IN_MOVED_FROM, NL_IN_MOVED_TO,
+};
