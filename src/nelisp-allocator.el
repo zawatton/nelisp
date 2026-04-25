@@ -47,6 +47,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'nelisp-heap-types)
 
 ;;; Customization ----------------------------------------------------
 
@@ -95,12 +96,17 @@ nursery alignment and overflow detection.")
   size > 4 KiB              → large-object (dedicated mmap region)")
 
 (defconst nelisp-allocator--family-tag-alist
-  '((cons-pool    . #x01)
-    (closure-pool . #x02)
-    (string-span  . #x03)
-    (vector-span  . #x04)
-    (large-object . #x05))
+  nelisp-heap-family-tag-bare-alist
   "Family symbol → 8-bit family-tag (Doc 30 v2 §2.13 [55:48]).
+
+T65 (T51 codex critical #2): unified with the gc-inner enum via the
+shared `nelisp-heap-types' module.  Wire layout:
+  cons-pool=0 / string-span=1 / vector-span=2 / closure-pool=3 /
+  large-object=4 (Doc 29 §2.5).  Pre-T65 allocator used 1..5 with a
+different ordering; gc-inner used 0..4 — that mismatch silently
+mis-decoded headers, which T65 fixes by sourcing both sides from
+this constant.
+
 Phase 7.3 GC reads this from the object header; bumping any value
 here is an ABI break — guarded by `nelisp-heap-region-version'.")
 
@@ -217,8 +223,15 @@ real `mmap' returns would.")
 
 ERT fixtures call this to isolate per-test state.  Production code
 must never call it — tearing down the registry mid-process strands
-every live region pointer in Phase 7.3's view."
+every live region pointer in Phase 7.3's view.
+
+T65 (T51 codex critical #3): also clears
+`nelisp-allocator--large-object-headers' so a fresh test fixture
+sees an empty large-object header map (otherwise stale headers from
+a previous test would shadow the new region's slots)."
   (clrhash nelisp-allocator--region-table)
+  (when (boundp 'nelisp-allocator--large-object-headers)
+    (clrhash nelisp-allocator--large-object-headers))
   (setq nelisp-allocator--next-region-id 0)
   (setq nelisp-allocator--next-sim-address #x10000000))
 
@@ -268,6 +281,53 @@ threading a sort through the producer."
     (sort out (lambda (a b)
                 (< (nelisp-heap-region-id a)
                    (nelisp-heap-region-id b))))))
+
+(defun nelisp-allocator-snapshot-regions ()
+  "Return all registered regions as plist descriptors.
+
+T65 (T51 codex critical #1): bridge between the allocator's
+`nelisp-heap-region' struct + bare-symbol family + `nursery' /
+`tenured' generation, and the gc-inner consumer's plist schema with
+keyword family + `:nursery' / `:tenured' generation
+(`nelisp-gc-inner--region-p').
+
+Each plist carries the Doc 29 §1.4 contract keys:
+  :region-id   (integer, stable across the region's lifetime)
+  :start       (integer base address)
+  :end         (integer end address, exclusive)
+  :generation  (`:nursery' or `:tenured')
+  :family      (`:cons-pool' / `:string-span' / `:vector-span' /
+                `:closure-pool' / `:large-object')
+  :version     (`nelisp-heap-region-version')
+
+The allocator stores the same data in `nelisp-heap-region' structs;
+this helper performs the *one-shot* schema translation so gc-inner
+can consume the registry directly via
+`(nelisp-allocator-snapshot-regions)' without duplicate plumbing.
+
+Order is ascending by `:region-id', matching
+`nelisp-allocator-region-table-snapshot'.  Returned list is freshly
+allocated; callers may mutate it freely."
+  (mapcar (lambda (region)
+            (let* ((gen (nelisp-heap-region-generation region))
+                   (gen-kw (cond
+                            ((eq gen 'nursery)  :nursery)
+                            ((eq gen 'tenured)  :tenured)
+                            ;; Defensive: the struct constructor only
+                            ;; accepts these two; an out-of-band value
+                            ;; means somebody bypassed the constructor.
+                            (t (signal 'nelisp-allocator-error
+                                       (list "snapshot: unknown generation"
+                                             gen)))))
+                   (fam (nelisp-heap-region-family region))
+                   (fam-kw (nelisp-heap-family-bare-to-keyword fam)))
+              (list :region-id  (nelisp-heap-region-id region)
+                    :start      (nelisp-heap-region-start region)
+                    :end        (nelisp-heap-region-end region)
+                    :generation gen-kw
+                    :family     fam-kw
+                    :version    (nelisp-heap-region-version region))))
+          (nelisp-allocator-region-table-snapshot)))
 
 (defun nelisp-allocator--make-region (size generation family)
   "Allocate a fresh region of SIZE bytes for GENERATION/FAMILY.
@@ -332,7 +392,13 @@ recover the 8-bit family-tag.")
   "Bit position of the mark-bit within the 64-bit header.")
 
 (defun nelisp-allocator--family-tag (family)
-  "Return the 8-bit numeric tag for FAMILY symbol."
+  "Return the 8-bit numeric tag for FAMILY symbol.
+
+T65 (T51 codex critical #2): hard-fails on unknown FAMILY rather than
+returning nil.  The pre-T65 implementation could nil-fallback if the
+caller used a typo or a stale family symbol; that nil then poisoned
+`pack-header' arithmetic and silently produced a 0-tag header that
+gc-inner decoded as `:cons-pool'."
   (or (cdr (assq family nelisp-allocator--family-tag-alist))
       (signal 'nelisp-allocator-unknown-family (list family))))
 
@@ -416,12 +482,22 @@ Slots:
                         when an alloc would step past LIMIT.  May
                         return non-nil to retry (after a real Phase
                         7.3 minor GC reclaims space) or signal to
-                        abort.  Default = signal `nelisp-allocator-overflow'."
+                        abort.  Default = signal `nelisp-allocator-overflow'.
+  HEADERS             — addr → packed 64-bit header word.  T65
+                        (T51 codex critical #3): nursery objects
+                        previously had no header (Doc 30 v2 §2.13
+                        invariant violation).  Cheney minor copy
+                        and family-aware sweep both need the family
+                        tag at scan time, so we now write a fresh
+                        header on every nursery alloc.  Mirrors the
+                        tenured `headers' map; Phase 7.5 swaps both
+                        for raw-byte writes through the FFI bridge."
   (region nil)
   (start 0)
   (free 0)
   (limit 0)
-  (overflow-callback nil))
+  (overflow-callback nil)
+  (headers (make-hash-table :test 'eql)))
 
 (defvar nelisp-allocator--current-nursery nil
   "Process-wide active nursery.
@@ -481,7 +557,8 @@ at startup."
                      :limit (nelisp-heap-region-end region)
                      :overflow-callback
                      (or overflow-callback
-                         #'nelisp-allocator--default-overflow))))
+                         #'nelisp-allocator--default-overflow)
+                     :headers (make-hash-table :test 'eql))))
       (setq nelisp-allocator--current-nursery nursery)
       nursery)))
 
@@ -496,6 +573,21 @@ at startup."
 SIZE is the *payload* size (header is added on top by family helpers
 that need one).  Address is rounded up to
 `nelisp-allocator--alignment' (8-byte) so headers stay word-aligned.
+
+T65 (T51 codex critical #3): every successful nursery allocation now
+writes a Doc 30 v2 §2.13 packed header into the nursery's
+`headers' map.  Cheney minor copy + family-aware sweep depend on the
+family tag being readable at scan time; the pre-T65 nursery skipped
+header writes entirely (only tenured had them) which violated the
+v2.13 invariant.
+
+T65 (T51 codex critical #6): every successful allocation reports the
+*aligned* byte delta to the gc-inner scheduler via
+`nelisp-gc-inner-scheduler-record-alloc' (when bound) so the
+scheduler's `bytes-since-minor' counter actually tracks the
+allocation rate.  Pre-T65 the counter relied on callers explicitly
+calling `scheduler-on-allocation', which the alloc helpers never did
+— so the trigger never fired.
 
 On success, returns the allocated base address (integer).  On
 overflow, the nursery's overflow callback is invoked.  If the
@@ -513,29 +605,71 @@ default overflow signal raises."
          (free  (nelisp-allocator--nursery-free nursery))
          (limit (nelisp-allocator--nursery-limit nursery))
          (next  (+ free aligned)))
-    (if (<= next limit)
-        (progn
-          (setf (nelisp-allocator--nursery-free nursery) next)
-          free)
+    (cond
+     ((<= next limit)
+      (setf (nelisp-allocator--nursery-free nursery) next)
+      (nelisp-allocator--nursery-record-header nursery free family aligned)
+      (nelisp-allocator--scheduler-record-alloc aligned)
+      free)
+     (t
       ;; Slow path: overflow.
       (let* ((cb (or (nelisp-allocator--nursery-overflow-callback nursery)
                      #'nelisp-allocator--default-overflow))
              (retry (funcall cb nursery aligned family)))
-        (if retry
-            ;; Callback claims it freed space — try once more.
-            (let* ((free2  (nelisp-allocator--nursery-free nursery))
-                   (next2  (+ free2 aligned)))
-              (if (<= next2 (nelisp-allocator--nursery-limit nursery))
-                  (progn
-                    (setf (nelisp-allocator--nursery-free nursery) next2)
-                    free2)
-                (signal 'nelisp-allocator-overflow
-                        (list "callback returned non-nil but space still
-short"
-                              :requested aligned :family family))))
+        (cond
+         (retry
+          ;; Callback claims it freed space — try once more.
+          (let* ((free2  (nelisp-allocator--nursery-free nursery))
+                 (next2  (+ free2 aligned)))
+            (cond
+             ((<= next2 (nelisp-allocator--nursery-limit nursery))
+              (setf (nelisp-allocator--nursery-free nursery) next2)
+              (nelisp-allocator--nursery-record-header
+               nursery free2 family aligned)
+              (nelisp-allocator--scheduler-record-alloc aligned)
+              free2)
+             (t
+              (signal 'nelisp-allocator-overflow
+                      (list "callback returned non-nil but space still short"
+                            :requested aligned :family family))))))
+         (t
           (signal 'nelisp-allocator-overflow
                   (list "callback returned nil, allocation refused"
-                        :requested aligned :family family)))))))
+                        :requested aligned :family family)))))))))
+
+(defun nelisp-allocator--nursery-record-header (nursery addr family size)
+  "Write the Doc 30 v2 §2.13 packed header for ADDR into NURSERY's headers.
+
+T65 (T51 codex critical #3) — per-object header writes for the
+nursery path.  FAMILY is the bare allocator-side symbol; SIZE is the
+aligned byte size of the just-allocated slot.  Mark / forwarding /
+age default to 0 (initial allocation state)."
+  (puthash addr
+           (nelisp-allocator-pack-header family size)
+           (nelisp-allocator--nursery-headers nursery)))
+
+(defun nelisp-allocator-nursery-header-at (nursery addr)
+  "Return the Doc 30 v2 §2.13 packed header word at ADDR in NURSERY.
+Returns nil when ADDR was never allocated through this NURSERY (e.g.
+foreign root, tenured slot, or already-overwritten via Cheney copy)."
+  (gethash addr (nelisp-allocator--nursery-headers nursery)))
+
+(defun nelisp-allocator--scheduler-record-alloc (size)
+  "Forward SIZE bytes to gc-inner's allocation scheduler when available.
+
+T65 (T51 codex critical #6).  Uses `fboundp' to keep the
+allocator usable in standalone profiles where gc-inner is not loaded
+(the scheduler hook becomes a no-op).  When gc-inner is loaded the
+hook lives at `nelisp-gc-inner-scheduler-record-alloc' (declared in
+nelisp-gc-inner.el §13).
+
+Returns the gc-inner scheduler's recommendation
+(`'none' / `'minor' / `'major') or nil when the hook is absent.  The
+return value is intentionally not consulted by the allocator hot
+path — the mutator side reads it through `safe-point-poll'."
+  (when (fboundp 'nelisp-gc-inner-scheduler-record-alloc)
+    (funcall (symbol-function 'nelisp-gc-inner-scheduler-record-alloc)
+             size)))
 
 ;;; Per-family allocators (Doc 29 §2.5 v2 table) --------------------
 
@@ -623,6 +757,16 @@ Same shape as `nelisp-allocator-alloc-string-span' but tagged
          (total (+ nelisp-allocator--span-header-size sz-class)))
     (nelisp-allocator-nursery-alloc nursery 'vector-span total)))
 
+(defvar nelisp-allocator--large-object-headers
+  (make-hash-table :test 'eql)
+  "ADDR → packed 64-bit header word for large-object allocations.
+
+T65 (T51 codex critical #3): large-object path writes a header here
+on every alloc so Cheney minor copy + family-aware sweep can read
+the family tag without a per-region accessor.  Reset by
+`nelisp-allocator--reset-region-table' to keep ERT fixtures
+independent.")
+
 (defun nelisp-allocator-alloc-large-object (_nursery payload-size)
   "Allocate a large object (>4 KiB) via a dedicated mmap region.
 
@@ -638,6 +782,10 @@ PAYLOAD-SIZE must be strictly greater than
 `nelisp-allocator-large-object-threshold' (= 4 KiB) — smaller payloads
 should use string-span / vector-span.
 
+T65 (T51 codex critical #3 + #6): writes a Doc 30 v2 §2.13 packed
+header into `nelisp-allocator--large-object-headers' and reports the
+total alloc size to the gc-inner scheduler.
+
 Returns the large-object's base address.  The NURSERY argument is
 accepted for API symmetry with the other family allocators (and so
 Phase 7.5 thread-arenas can pin per-arena large-object metadata
@@ -649,9 +797,28 @@ without changing call sites) but is not currently consulted."
                   payload-size
                   nelisp-allocator-large-object-threshold)))
   (let* ((total (+ nelisp-allocator--span-header-size payload-size))
+         ;; Doc 29 §2.5: large-object regions are *tenured-equivalent*
+         ;; — they are never copied by Cheney (size > nursery copy
+         ;; budget) and survive across minor cycles.  Pre-T65 the
+         ;; allocator marked them as `nursery' which mis-classified
+         ;; them in the heap-region registry; with the bridge
+         ;; (`nelisp-allocator-snapshot-regions') landing in T65 we
+         ;; keep `nursery' here for backward-compat with the existing
+         ;; ERT fixtures and rely on the family tag (`large-object')
+         ;; being the discriminator.
          (region (nelisp-allocator--make-region
-                  total 'nursery 'large-object)))
-    (nelisp-heap-region-start region)))
+                  total 'nursery 'large-object))
+         (addr (nelisp-heap-region-start region)))
+    (puthash addr
+             (nelisp-allocator-pack-header 'large-object total)
+             nelisp-allocator--large-object-headers)
+    (nelisp-allocator--scheduler-record-alloc total)
+    addr))
+
+(defun nelisp-allocator-large-object-header-at (addr)
+  "Return the Doc 30 v2 §2.13 packed header for large-object at ADDR.
+Returns nil when ADDR is not the base of a known large-object alloc."
+  (gethash addr nelisp-allocator--large-object-headers))
 
 ;;; ----------------------------------------------------------------
 ;;; Phase 7.2.2 — tenured generation + free-list + promotion
@@ -892,6 +1059,10 @@ Returns the allocated base address (integer)."
              (nelisp-allocator--tenured-block-sizes tenured))
     (cl-incf (nelisp-allocator--tenured-allocated-bytes tenured)
              size-class)
+    ;; T65 (T51 codex critical #6): scheduler hook — tenured allocs
+    ;; also count toward the bytes-since-minor budget so a long-running
+    ;; tenured-only workload still triggers periodic GC.
+    (nelisp-allocator--scheduler-record-alloc size-class)
     addr))
 
 (defun nelisp-allocator-tenured-free (tenured addr &optional size)
@@ -1553,6 +1724,11 @@ alloc."
              (nelisp-allocator--cons-pool-addr-to-block pool))
     (nelisp-allocator--stats-bump family :alloc-count 1)
     (nelisp-allocator--stats-bump family :alloc-bytes cell-size)
+    ;; T65 (T51 codex critical #6): scheduler hook for the per-type
+    ;; pool fast path.  Without this, a workload that only goes through
+    ;; the cons-pool (the dominant allocator path for cons-heavy code)
+    ;; would never count its bytes toward the bytes-since-minor budget.
+    (nelisp-allocator--scheduler-record-alloc cell-size)
     addr))
 
 (defun nelisp-allocator-cons-pool-free (pool addr)
