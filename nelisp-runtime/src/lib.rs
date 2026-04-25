@@ -9,6 +9,7 @@
 //! of `NELISP_PROT_*` / `NELISP_MAP_*` / `NELISP_O_*` constants so
 //! NeLisp does not need a per-OS libc clone.
 
+pub mod sqlite;
 pub mod syscall;
 
 // Re-export the FFI surface at the crate root for `cargo test` and
@@ -26,4 +27,12 @@ pub use syscall::{
     NELISP_MAP_ANONYMOUS, NELISP_MAP_JIT, NELISP_MAP_PRIVATE, NELISP_O_APPEND, NELISP_O_CREAT,
     NELISP_O_RDONLY, NELISP_O_RDWR, NELISP_O_TRUNC, NELISP_O_WRONLY, NELISP_PROT_EXEC,
     NELISP_PROT_NONE, NELISP_PROT_READ, NELISP_PROT_WRITE,
+};
+
+// T77 (Wave 1 agent C) — SQLite FFI surface.  Five public symbols for
+// the Emacs 30 `sqlite-*' compat layer in `src/nelisp-sqlite.el', plus
+// a `nl_sqlite_alive' liveness probe used by the `nelisp-sqlitep'
+// predicate.
+pub use sqlite::{
+    nl_sqlite_alive, nl_sqlite_close, nl_sqlite_execute, nl_sqlite_open, nl_sqlite_query,
 };
