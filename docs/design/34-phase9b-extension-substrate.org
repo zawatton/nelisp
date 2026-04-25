@@ -1,7 +1,7 @@
 #+TITLE: Phase 9b — Interactive Editor Substrate (window/frame/keymap/event-loop/buffer-local/text-properties/hooks/undo) Design
 #+DATE: 2026-04-25
 #+AUTHOR: zawatton + Claude + Codex (session-T41 v0 baseline, session-A T61 revise)
-#+STATUS: DRAFT v1 (option B parent integration path、BLOCKING 5 + HIGH 3 + divergence D1-D14 反映)
+#+STATUS: LOCKED-2026-04-25-v2 (option B parent integration、9a/9b API boundary 凍結、§4 contract depth up、frame stub invariant LOCK、replan gate quality 軸、event-source / package / bench 全反映 + sibling Doc 28-32 v2 整合 + T74 第二弾 review READY-TO-LOCK)
 #+DEPENDS_ON: Doc 27 LOCKED-2026-04-25, Doc 28-32 v2 LOCKED-2026-04-25, Doc 33 v2 LOCKED-2026-04-25 §4.2a/§4.2b/§6.1, Phase 8 mutable text primitive design source (Stage D / Doc 18 architecture alpha shipped lineage), Doc 34a Phase 9a design (pending detailed decomposition, parent source = Doc 33 §4.2a)
 #+PARENT: Doc 33 v2 §4.2b
 
@@ -347,7 +347,7 @@ scope 外。したがって precedence に含めない。
 - GC integration = Phase 7.3 で old records reclaim
 - =UNDO_CONTRACT_VERSION = 1=
 
-** 2.9 LOC budget [推奨 = A base 3300 LOC、range 2100-5400]
+** 2.9 LOC budget [推奨 = A base 3800 LOC、range 2100-5400]
 
 | sub-phase | base LOC | range | note |
 |-----------+----------+-------+------|
