@@ -966,5 +966,551 @@ simple sequencing is enough."
           :grey-count (plist-get mark :grey-count))))
 
 
+;;; §10. Cheney semispace nursery copy (Doc 30 v2 §3.3) --------------
+
+;; T24 (Phase 7.3.3) extends the inner GC with the *minor* half of the
+;; Cheney generational scheme: the nursery is split into two
+;; semispaces (from-space + to-space) of equal size, allocator hands
+;; out from `from-space' until full, then a stop-the-world *copy*
+;; phase walks the live root set and copies every reachable object
+;; into `to-space'.  After copy, the spaces are *flipped* — to-space
+;; becomes the new from-space for subsequent allocation.
+;;
+;; Cheney's elegance is that the work-list is the to-space itself: a
+;; `scan-pointer' chases the `free-pointer' until they meet, at which
+;; point every reachable object has been copied and (transitively)
+;; scanned for outgoing pointers.  No external work-list, no
+;; recursion, O(live-bytes) total.
+;;
+;; Forwarding pointer encoding piggy-backs on the Doc 30 v2 §2.13
+;; object header: bit 62 marks the cell as forwarded, and bits 47:0
+;; (formerly the size field) are repurposed to store the new address
+;; in to-space.  This is the same overload SBCL's gencgc uses; the
+;; reason it's safe is that forwarded objects in from-space are dead
+;; data that nothing inspects size-of after the copy completes.
+;;
+;; Promotion (age-based tenuring per Doc 30 v2 §2.5) is *split* between
+;; this sub-phase and 7.3.5: T24 only *identifies* candidates (objects
+;; whose age >= threshold survive the copy and are returned in the
+;; result plist's `:promotion-candidates'); the actual move-to-tenured
+;; copy + age reset is the 7.3.5 deliverable.  Keeping the split lets
+;; us land the copy core first and validate Cheney correctness in
+;; isolation before adding the inter-generational hand-off.
+;;
+;; In the simulator path used by the ERTs and by Phase 7.3.x consumers
+;; before the Phase 7.5 backend lands, "object" is a plist keyed by
+;; `:header' (uint64) and `:fields' (list of integer addresses to
+;; child objects).  This shape lines up with `--children-of-addr' in
+;; §3 so the same heap-region descriptor walker idiom keeps the
+;; collector decoupled from per-family concrete layout.
+
+;;;; §10.1 Object header bit layout (Doc 30 v2 §2.13) ----------------
+
+;; Doc 30 v2 §2.13 LOCKED layout:
+;;
+;;   bit 63       — mark bit (set during the major mark phase)
+;;   bit 62       — forwarding bit (1 = forwarded, [47:0] holds new addr)
+;;   bits 61:56   — age (6-bit, 0..63 nursery survival count)
+;;   bits 55:48   — family-tag (8-bit, Doc 29 §2.5 family enum)
+;;   bits 47:0    — size (when forwarding-bit=0) OR new-addr (=1)
+;;
+;; All offsets here are bit positions from LSB.
+
+(defconst nelisp-gc-inner--header-mark-bit         63
+  "Bit position of the major-mark bit in the object header.")
+(defconst nelisp-gc-inner--header-forwarding-bit   62
+  "Bit position of the forwarding bit in the object header.")
+(defconst nelisp-gc-inner--header-age-shift        56
+  "LSB position of the 6-bit age field in the object header.")
+(defconst nelisp-gc-inner--header-age-mask         #x3F
+  "Width-mask for the 6-bit age field (`age' field is 6 bits wide).")
+(defconst nelisp-gc-inner--header-family-shift     48
+  "LSB position of the 8-bit family-tag field in the object header.")
+(defconst nelisp-gc-inner--header-family-mask      #xFF
+  "Width-mask for the 8-bit family-tag field.")
+(defconst nelisp-gc-inner--header-size-mask
+  ;; (1 << 48) - 1 — a 48-bit address mask that fits the v2 §2.13
+  ;; "address space ≤ 256 TiB" assumption used across the doc.  We
+  ;; spell it out as a literal rather than `(1- (ash 1 48))' so the
+  ;; constant is byte-compile-resolvable on every host (the ash form
+  ;; is also fine, but the literal removes one tiny startup cost).
+  #xFFFFFFFFFFFF
+  "Width-mask for the 48-bit size/new-addr field (= 2^48 − 1).")
+
+(defun nelisp-gc-inner--make-header (size family-tag age
+                                          &optional mark-bit forwarding-bit)
+  "Construct a Doc 30 v2 §2.13 object header (uint64 integer).
+
+SIZE — object size in bytes (must fit in 48 bits when
+       FORWARDING-BIT is nil; if non-nil, callers should pass the
+       forwarded address here instead).
+FAMILY-TAG — small integer, 0..255 (Doc 29 §2.5 family enum).
+AGE — small integer, 0..63 (nursery survival count).
+MARK-BIT — non-nil to set bit 63.
+FORWARDING-BIT — non-nil to set bit 62 (and reinterpret SIZE as
+                 new-addr).
+
+Out-of-range arguments signal `wrong-type-argument' rather than
+silently truncating — overflow here produces a malformed object that
+would corrupt the heap walk."
+  (unless (and (integerp size) (>= size 0)
+               (<= size nelisp-gc-inner--header-size-mask))
+    (signal 'wrong-type-argument
+            (list 'nelisp-gc-inner--header-size-fits-p size)))
+  (unless (and (integerp family-tag) (>= family-tag 0)
+               (<= family-tag nelisp-gc-inner--header-family-mask))
+    (signal 'wrong-type-argument
+            (list 'nelisp-gc-inner--header-family-fits-p family-tag)))
+  (unless (and (integerp age) (>= age 0)
+               (<= age nelisp-gc-inner--header-age-mask))
+    (signal 'wrong-type-argument
+            (list 'nelisp-gc-inner--header-age-fits-p age)))
+  (logior
+   (if mark-bit       (ash 1 nelisp-gc-inner--header-mark-bit) 0)
+   (if forwarding-bit (ash 1 nelisp-gc-inner--header-forwarding-bit) 0)
+   (ash (logand age nelisp-gc-inner--header-age-mask)
+        nelisp-gc-inner--header-age-shift)
+   (ash (logand family-tag nelisp-gc-inner--header-family-mask)
+        nelisp-gc-inner--header-family-shift)
+   (logand size nelisp-gc-inner--header-size-mask)))
+
+(defun nelisp-gc-inner--header-mark-bit-p (header)
+  "Return non-nil when HEADER's major-mark bit (63) is set."
+  (/= 0 (logand header (ash 1 nelisp-gc-inner--header-mark-bit))))
+
+(defun nelisp-gc-inner--header-age (header)
+  "Extract the 6-bit age field from HEADER."
+  (logand (ash header (- nelisp-gc-inner--header-age-shift))
+          nelisp-gc-inner--header-age-mask))
+
+(defun nelisp-gc-inner--header-family (header)
+  "Extract the 8-bit family-tag field from HEADER."
+  (logand (ash header (- nelisp-gc-inner--header-family-shift))
+          nelisp-gc-inner--header-family-mask))
+
+(defun nelisp-gc-inner--header-size (header)
+  "Extract the 48-bit size field from HEADER (only valid when not forwarded)."
+  (logand header nelisp-gc-inner--header-size-mask))
+
+(defun nelisp-gc-inner--forwarded-p (header)
+  "Return non-nil when HEADER's forwarding bit (62) is set.
+Per Doc 30 v2 §2.13 a forwarded header carries the new (to-space)
+address in bits 47:0 and the original size field is irretrievable —
+which is fine because the from-space cell is dead after copy."
+  (/= 0 (logand header (ash 1 nelisp-gc-inner--header-forwarding-bit))))
+
+(defun nelisp-gc-inner--forwarded-addr (header)
+  "Return the to-space address encoded in a forwarded HEADER (bits 47:0).
+Result is meaningful only when `--forwarded-p' returns non-nil; for a
+non-forwarded header this returns the size field, which is the
+documented overload semantics from Doc 30 v2 §2.13."
+  (logand header nelisp-gc-inner--header-size-mask))
+
+(defun nelisp-gc-inner--header-with-age (header new-age)
+  "Return HEADER with the age field replaced by NEW-AGE (clamped 0..63)."
+  (let* ((age (logand (max 0 new-age) nelisp-gc-inner--header-age-mask))
+         (clear-mask (lognot
+                      (ash nelisp-gc-inner--header-age-mask
+                           nelisp-gc-inner--header-age-shift))))
+    (logior (logand header clear-mask)
+            (ash age nelisp-gc-inner--header-age-shift))))
+
+
+;;;; §10.2 Semispace state -----------------------------------------
+
+(cl-defstruct (nelisp-gc-inner--semispace
+               (:constructor nelisp-gc-inner--semispace-make)
+               (:copier nil))
+  "Cheney semispace state for the minor GC nursery copy.
+
+Slots:
+  FROM-SPACE — Doc 29 §1.4 region descriptor of the *current allocate
+               target* (the half mutator threads `bump-alloc' into).
+               At minor GC entry this region is the source of live
+               objects to copy.
+  TO-SPACE   — Doc 29 §1.4 region descriptor of the *next cycle's*
+               allocate target.  Copy phase fills it; afterwards the
+               two roles flip and TO-SPACE becomes the new
+               FROM-SPACE.
+  SCAN-POINTER — Cheney scan pointer.  Advances object-by-object
+               through TO-SPACE, scanning each object's outgoing
+               pointer fields and forwarding any from-space references
+               that haven't yet been forwarded.
+  FREE-POINTER — Next allocate position in TO-SPACE.  Forward
+               operations bump-allocate here.
+  COPIED-OBJECTS — Hash from from-addr → to-addr.  In production
+               this is *implicit* in the from-space header's
+               forwarding bit, but the simulator's plist-shaped object
+               representation has no in-place mutable header word, so
+               we keep an explicit side-table that tracks the same
+               forwarding semantics."
+  (from-space    nil)
+  (to-space      nil)
+  (scan-pointer  0)
+  (free-pointer  0)
+  (copied-objects (make-hash-table :test 'eql)))
+
+(defun nelisp-gc-inner-init-semispace (from-region to-region)
+  "Initialize a Cheney semispace from FROM-REGION + TO-REGION.
+
+FROM-REGION is the current nursery half (already populated with
+allocations during the previous mutator phase).  TO-REGION is the
+fresh half whose `[start, end)' will fill with copied live objects
+during the upcoming minor GC.
+
+Both regions must be Doc 29 §1.4 nursery descriptors of equal size
+(Cheney requires symmetric semispaces) and family `:nursery-half' or
+any of the per-family nursery families — Phase 7.3.3 doesn't enforce
+the latter (the allocator producer is responsible for handing us a
+matched pair).  We *do* assert generation `:nursery' on both.
+
+Returns a freshly-constructed `nelisp-gc-inner--semispace' with
+`scan-pointer' and `free-pointer' both initialized to TO-REGION's
+`:start'."
+  (unless (nelisp-gc-inner--region-p from-region)
+    (signal 'wrong-type-argument
+            (list 'nelisp-gc-inner--region-p from-region)))
+  (unless (nelisp-gc-inner--region-p to-region)
+    (signal 'wrong-type-argument
+            (list 'nelisp-gc-inner--region-p to-region)))
+  (unless (eq (plist-get from-region :generation) :nursery)
+    (signal 'wrong-type-argument (list :nursery-region-p from-region)))
+  (unless (eq (plist-get to-region   :generation) :nursery)
+    (signal 'wrong-type-argument (list :nursery-region-p to-region)))
+  (let ((to-start (plist-get to-region :start)))
+    (nelisp-gc-inner--semispace-make
+     :from-space    from-region
+     :to-space      to-region
+     :scan-pointer  to-start
+     :free-pointer  to-start
+     :copied-objects (make-hash-table :test 'eql))))
+
+(defun nelisp-gc-inner-flip-semispace (semi)
+  "Swap FROM-SPACE ↔ TO-SPACE on SEMI (post-minor-GC Cheney flip).
+
+After a minor GC, the `to-space' is the new live nursery (everything
+that survived the copy lives there); we make it the next cycle's
+`from-space' for allocation, and the now-vacated old from-space
+becomes the next cycle's empty to-space.  Pointers reset to the new
+to-space `:start'.
+
+Returns SEMI (mutated in place) for convenient threading."
+  (let ((from (nelisp-gc-inner--semispace-from-space semi))
+        (to   (nelisp-gc-inner--semispace-to-space   semi)))
+    (setf (nelisp-gc-inner--semispace-from-space   semi) to)
+    (setf (nelisp-gc-inner--semispace-to-space     semi) from)
+    (let ((new-to-start (plist-get from :start)))
+      (setf (nelisp-gc-inner--semispace-scan-pointer semi) new-to-start)
+      (setf (nelisp-gc-inner--semispace-free-pointer semi) new-to-start))
+    (clrhash (nelisp-gc-inner--semispace-copied-objects semi))
+    semi))
+
+
+;;;; §10.3 Forwarding pointer simulator ----------------------------
+
+;; In production the forwarding pointer lives *in* the from-space cell
+;; (bit 62 of its header).  In the simulator we keep an explicit
+;; `from-addr → to-addr' hash on the `nelisp-gc-inner--semispace'
+;; struct; semantically identical, just easier to test on plist-shaped
+;; objects that don't have a single mutable header word.
+;;
+;; The two helpers below — `--mark-forwarded' and
+;; `--lookup-forwarded' — are the simulator-side implementation of
+;; the §10.1 header bit operations: callers in §10.4 should use these,
+;; not the bit-manipulation helpers, until the Phase 7.5 backend
+;; replaces the simulator with real mmap-allocated cells.
+
+(defun nelisp-gc-inner--mark-forwarded (semi from-addr to-addr)
+  "Record that the object at FROM-ADDR has been forwarded to TO-ADDR.
+
+Side effect on SEMI's `copied-objects' hash.  Idempotent: a second
+call with the same FROM-ADDR but a different TO-ADDR is treated as a
+programming error and signals (forwarding once-only is a Cheney
+invariant; if it triggered twice we'd have lost the original
+to-address mid-cycle)."
+  (let ((existing (gethash from-addr
+                           (nelisp-gc-inner--semispace-copied-objects semi))))
+    (cond
+     ((null existing)
+      (puthash from-addr to-addr
+               (nelisp-gc-inner--semispace-copied-objects semi))
+      to-addr)
+     ((eql existing to-addr)
+      to-addr)
+     (t
+      (error
+       "nelisp-gc-inner: double-forward from %S → was %S now %S"
+       from-addr existing to-addr)))))
+
+(defun nelisp-gc-inner--lookup-forwarded (semi from-addr)
+  "If FROM-ADDR has been forwarded on SEMI, return the to-address; else nil."
+  (gethash from-addr
+           (nelisp-gc-inner--semispace-copied-objects semi)))
+
+(defun nelisp-gc-inner--forward (header to-addr)
+  "Apply the Doc 30 v2 §2.13 forwarding-bit overload to HEADER.
+
+Returns a new uint64 with bit 62 set and bits 47:0 replaced by
+TO-ADDR.  Mark bit / age / family-tag are preserved verbatim — they
+are still meaningful for debugging diagnostics that walk a forwarded
+cell post-copy.
+
+This is the *bit-level* helper that the production backend will call
+when the forwarding pointer must live inside the cell itself; the
+simulator path goes through `--mark-forwarded' / `--lookup-forwarded'
+on the side-table instead.  Both forms are kept in sync so the two
+expressions of the same invariant can be cross-checked from ERTs."
+  (unless (and (integerp to-addr) (>= to-addr 0)
+               (<= to-addr nelisp-gc-inner--header-size-mask))
+    (signal 'wrong-type-argument
+            (list 'nelisp-gc-inner--forwarded-addr-fits-p to-addr)))
+  (let ((preserved (logand header
+                           (lognot nelisp-gc-inner--header-size-mask))))
+    (logior preserved
+            (ash 1 nelisp-gc-inner--header-forwarding-bit)
+            (logand to-addr nelisp-gc-inner--header-size-mask))))
+
+
+;;;; §10.4 Promotion candidate identification (Doc 30 v2 §2.5) ------
+
+(defcustom nelisp-gc-inner-promotion-age-threshold 2
+  "Doc 30 v2 §2.5 default — survivor age that triggers tenured promotion.
+
+An object's age increments by 1 each minor GC it survives (the copy
+phase reads the from-cell age, increments, and writes it back into
+the to-cell).  When the post-increment age equals or exceeds this
+threshold, the object becomes a *promotion candidate*: Phase 7.3.5
+will copy candidates straight into a tenured region instead of the
+nursery to-space.  Phase 7.3.3 only *identifies* candidates and
+returns them in the minor-GC stats plist; the actual move is the
+7.3.5 deliverable."
+  :type 'integer
+  :group 'nelisp)
+
+(defun nelisp-gc-inner--promotion-candidate-p (header)
+  "Return non-nil when HEADER's age >= the promotion threshold."
+  (>= (nelisp-gc-inner--header-age header)
+      nelisp-gc-inner-promotion-age-threshold))
+
+
+;;;; §10.5 Minor GC copy phase (Doc 30 v2 §3.3) --------------------
+
+;; Simulator object representation shipping with T24:
+;;
+;;   (:addr ADDR :header HEADER :fields (CHILD-ADDR ...))
+;;
+;; The from-space `:objects' callback (parallel to the §3 / §7
+;; `:children-of' / `:objects' callbacks) returns a list of these
+;; plists.  T24 doesn't mutate the original from-space objects; it
+;; *constructs* fresh plists for to-space and remembers the mapping
+;; on `--semispace-copied-objects'.  The Phase 7.5 backend will
+;; replace this with real bump-pointer mmap copies.
+;;
+;; The `from-space-objects-fn' callback resolves a from-addr to its
+;; plist (so we can read its header / fields when transitively
+;; copying).  Callers (and ERTs) supply this in `run-minor-gc'.
+
+(defun nelisp-gc-inner--minor-copy-one
+    (semi from-addr from-space-objects-fn to-space-objects-table
+          promotion-candidates-acc)
+  "Copy a single object FROM-ADDR into SEMI's to-space.
+
+Cheney's invariant: this function is called only when the object has
+*not* yet been forwarded (the caller checks `--lookup-forwarded'
+first).  Side effects: bumps the semispace `free-pointer', records
+the forwarding via `--mark-forwarded', appends a fresh plist to
+TO-SPACE-OBJECTS-TABLE keyed by the new to-addr, and pushes the
+to-addr onto PROMOTION-CANDIDATES-ACC when post-increment age >=
+threshold.
+
+FROM-SPACE-OBJECTS-FN — a function `(lambda (addr) PLIST-OR-NIL)'
+that resolves a from-space address to its simulator object plist.
+
+Returns the to-space address the object was copied to.  Signals if
+FROM-SPACE-OBJECTS-FN returns nil (= dangling reference; caller's bug)."
+  (let ((src (funcall from-space-objects-fn from-addr)))
+    (unless src
+      (error "nelisp-gc-inner: from-addr %S has no source object"
+             from-addr))
+    (let* ((header (or (plist-get src :header) 0))
+           (fields (plist-get src :fields))
+           (size   (or (plist-get src :size)
+                       (nelisp-gc-inner--header-size header)))
+           ;; Bump-allocate in to-space.  Production backend would
+           ;; advance free-pointer by SIZE; the simulator advances by
+           ;; SIZE so to-space addresses remain disjoint and
+           ;; address-comparable.
+           (to-addr (nelisp-gc-inner--semispace-free-pointer semi))
+           ;; Increment age first; promotion check uses post-increment
+           ;; (the standard "this is the Nth survival" reading).
+           (new-age (min nelisp-gc-inner--header-age-mask
+                         (1+ (nelisp-gc-inner--header-age header))))
+           (new-header (nelisp-gc-inner--header-with-age header new-age))
+           (to-cell (list :addr to-addr
+                          :header new-header
+                          :fields fields
+                          :size   size)))
+      (setf (nelisp-gc-inner--semispace-free-pointer semi)
+            (+ to-addr (max size 1)))
+      (puthash to-addr to-cell to-space-objects-table)
+      (nelisp-gc-inner--mark-forwarded semi from-addr to-addr)
+      (when (nelisp-gc-inner--promotion-candidate-p new-header)
+        (push to-addr (car promotion-candidates-acc)))
+      to-addr)))
+
+(defun nelisp-gc-inner--minor-update-pointer
+    (semi child-addr from-space-objects-fn to-space-objects-table
+          promotion-candidates-acc)
+  "Resolve CHILD-ADDR to its post-copy address, copying if needed.
+
+Returns the to-space address the child now lives at.  If CHILD-ADDR
+points outside the from-space (e.g. into a tenured region or a
+foreign root), it is returned unchanged — the minor GC walk does not
+chase tenured edges (Doc 30 v2 §3.4 write-barrier territory)."
+  (let ((from (nelisp-gc-inner--semispace-from-space semi)))
+    (cond
+     ((or (null child-addr)
+          (not (integerp child-addr))
+          (not (nelisp-gc-inner--region-contains from child-addr)))
+      child-addr)
+     ((nelisp-gc-inner--lookup-forwarded semi child-addr))
+     (t
+      (nelisp-gc-inner--minor-copy-one
+       semi child-addr from-space-objects-fn to-space-objects-table
+       promotion-candidates-acc)))))
+
+(defun nelisp-gc-inner-run-minor-gc (semi root-set from-space-objects-fn)
+  "Cheney minor GC: copy live nursery objects from FROM-SPACE → TO-SPACE.
+
+SEMI — `nelisp-gc-inner--semispace' from `init-semispace'.
+ROOT-SET — list of integer addresses (mutator roots, output of
+           `nelisp-gc-inner-collect-roots').
+FROM-SPACE-OBJECTS-FN — `(lambda (addr) → object-plist)' walker.
+
+Algorithm (Cheney 1970):
+  1. For each root in ROOT-SET, if it points into from-space:
+     forward it (copy if not yet forwarded; otherwise look up the
+     existing to-addr).
+  2. Scan loop: while scan-pointer < free-pointer, read the to-space
+     object at scan-pointer, walk its `:fields', and update each
+     pointer via `--minor-update-pointer'.  Advance scan-pointer past
+     the object.
+  3. Bump scan-pointer until it catches free-pointer — Cheney's
+     termination condition (no unscanned live objects remain).
+
+Returns a stats plist:
+  (:copied-count N
+   :copied-bytes N
+   :promotion-candidates (TO-ADDR ...)
+   :forwarded-roots (TO-ADDR ...)   ;; updated root addresses
+   :scan-pointer SCAN
+   :free-pointer FREE
+   :elapsed-ms INT)
+
+Note: SEMI is *not* flipped here — caller invokes
+`flip-semispace' explicitly when ready to recycle from-space."
+  (unless (nelisp-gc-inner--semispace-p semi)
+    (signal 'wrong-type-argument (list 'nelisp-gc-inner--semispace-p semi)))
+  (unless (functionp from-space-objects-fn)
+    (signal 'wrong-type-argument (list 'functionp from-space-objects-fn)))
+  (let* ((start (float-time))
+         (to-objects (make-hash-table :test 'eql))
+         (promo-acc (list nil))   ; one-element box, mutated by --minor-copy-one
+         (forwarded-roots nil)
+         (initial-free (nelisp-gc-inner--semispace-free-pointer semi))
+         (copied-count 0))
+    ;; Step 1: forward roots.
+    (dolist (root root-set)
+      (let ((new-addr (nelisp-gc-inner--minor-update-pointer
+                       semi root from-space-objects-fn to-objects promo-acc)))
+        (push new-addr forwarded-roots)))
+    ;; Step 2: Cheney scan loop.  We walk the to-space object table in
+    ;; insertion order — `--minor-copy-one' assigns monotonically
+    ;; increasing to-addrs by bumping the free-pointer, so the natural
+    ;; iteration order through `to-objects' (sorted by addr) matches
+    ;; Cheney's "scan-pointer chases free-pointer" invariant.
+    (let ((scanned (make-hash-table :test 'eql)))
+      (cl-block scan-loop
+        (while t
+          (let ((next-unscanned nil))
+            ;; Find the lowest to-addr that hasn't been scanned yet —
+            ;; cheap because `to-objects' grows append-only and Cheney
+            ;; never revisits an already-scanned cell.
+            (maphash
+             (lambda (addr _cell)
+               (unless (gethash addr scanned)
+                 (when (or (null next-unscanned)
+                           (< addr next-unscanned))
+                   (setq next-unscanned addr))))
+             to-objects)
+            (unless next-unscanned
+              (cl-return-from scan-loop nil))
+            (setf (nelisp-gc-inner--semispace-scan-pointer semi)
+                  next-unscanned)
+            (let* ((cell (gethash next-unscanned to-objects))
+                   (fields (plist-get cell :fields))
+                   (new-fields nil))
+              (dolist (child-addr fields)
+                (let ((updated (nelisp-gc-inner--minor-update-pointer
+                                semi child-addr from-space-objects-fn
+                                to-objects promo-acc)))
+                  (push updated new-fields)))
+              ;; Replace the cell's :fields with the post-update list
+              ;; so callers reading to-space see the rewired pointers.
+              (let ((new-cell (copy-sequence cell)))
+                (plist-put new-cell :fields (nreverse new-fields))
+                (puthash next-unscanned new-cell to-objects))
+              (puthash next-unscanned t scanned)
+              (cl-incf copied-count))))))
+    ;; Bookkeeping: record final pointers + return stats.
+    (setf (nelisp-gc-inner--semispace-scan-pointer semi)
+          (nelisp-gc-inner--semispace-free-pointer semi))
+    (let ((copied-bytes
+           (- (nelisp-gc-inner--semispace-free-pointer semi) initial-free)))
+      (list :copied-count copied-count
+            :copied-bytes copied-bytes
+            :promotion-candidates (nreverse (car promo-acc))
+            :forwarded-roots (nreverse forwarded-roots)
+            :scan-pointer (nelisp-gc-inner--semispace-scan-pointer semi)
+            :free-pointer (nelisp-gc-inner--semispace-free-pointer semi)
+            :to-space-objects to-objects
+            :elapsed-ms (round (* 1000.0 (- (float-time) start)))))))
+
+
+;;;; §10.6 Cycle dispatch (minor / major) --------------------------
+
+(defun nelisp-gc-inner-run-cycle (cycle-kind &rest args)
+  "Dispatch a GC cycle by CYCLE-KIND.
+
+Supported kinds:
+  :minor — `(:minor SEMI ROOT-SET FROM-SPACE-OBJECTS-FN)'.  Forwards
+           to `nelisp-gc-inner-run-minor-gc' and returns its plist
+           tagged with `:kind :minor'.
+  :major — `(:major ROOT-SET HEAP-REGIONS [FINALIZER-TABLE])'.
+           Forwards to `nelisp-gc-inner-run-full-cycle' and returns
+           its plist tagged with `:kind :major'.
+
+Returns the wrapped result plist; callers can demultiplex by
+`(plist-get RESULT :kind)' without re-dispatching on argument
+shape."
+  (cond
+   ((eq cycle-kind :minor)
+    (let ((semi (nth 0 args))
+          (root-set (nth 1 args))
+          (objs-fn (nth 2 args)))
+      (let ((res (nelisp-gc-inner-run-minor-gc semi root-set objs-fn)))
+        (cons :kind (cons :minor res)))))
+   ((eq cycle-kind :major)
+    (let ((root-set (nth 0 args))
+          (heap-regions (nth 1 args))
+          (finalizer-table (nth 2 args)))
+      (let ((res (nelisp-gc-inner-run-full-cycle
+                  root-set heap-regions finalizer-table)))
+        (cons :kind (cons :major res)))))
+   (t
+    (signal 'wrong-type-argument
+            (list 'nelisp-gc-inner--cycle-kind-p cycle-kind)))))
+
+
 (provide 'nelisp-gc-inner)
 ;;; nelisp-gc-inner.el ends here

@@ -375,5 +375,155 @@ empty after sweep — no free-list entry leaks for live objects."
       (should (null (nelisp-gc-inner-rebuild-free-list-for-family fam))))))
 
 
+;;; 7. Cheney semispace nursery copy (Phase 7.3.3, T24) -----------
+
+(defun nelisp-gc-inner-test--mk-nursery-region (id start end)
+  "Build a `:nursery' Doc 29 §1.4 region descriptor for Cheney tests."
+  (list :region-id   id
+        :start       start
+        :end         end
+        :generation  :nursery
+        :family      :cons-pool
+        :children-of #'ignore))
+
+(defun nelisp-gc-inner-test--mk-from-space-fn (objects)
+  "Return a `(addr → plist)' lookup over OBJECTS (alist of `(addr . plist)').
+Plists carry `:header' / `:fields' / `:size'."
+  (let ((tbl (make-hash-table :test 'eql)))
+    (dolist (entry objects)
+      (puthash (car entry) (cdr entry) tbl))
+    (lambda (addr) (gethash addr tbl))))
+
+(ert-deftest nelisp-gc-inner-init-semispace-allocates-pointers ()
+  "init-semispace seeds scan-pointer = free-pointer = to-space :start."
+  (nelisp-gc-inner-test--reset)
+  (let* ((from (nelisp-gc-inner-test--mk-nursery-region 0 0     1000))
+         (to   (nelisp-gc-inner-test--mk-nursery-region 1 10000 11000))
+         (semi (nelisp-gc-inner-init-semispace from to)))
+    (should (nelisp-gc-inner--semispace-p semi))
+    (should (eq from (nelisp-gc-inner--semispace-from-space semi)))
+    (should (eq to   (nelisp-gc-inner--semispace-to-space   semi)))
+    (should (= 10000 (nelisp-gc-inner--semispace-scan-pointer semi)))
+    (should (= 10000 (nelisp-gc-inner--semispace-free-pointer semi)))
+    (should (zerop (hash-table-count
+                    (nelisp-gc-inner--semispace-copied-objects semi))))))
+
+(ert-deftest nelisp-gc-inner-forward-marks-bit-62 ()
+  "`--forward' sets bit 62 of the header (forwarding overload, §2.13)."
+  (let* ((header (nelisp-gc-inner--make-header 32 1 0))   ; size 32, fam 1, age 0
+         (forwarded (nelisp-gc-inner--forward header 12345)))
+    (should-not (nelisp-gc-inner--forwarded-p header))
+    (should (nelisp-gc-inner--forwarded-p forwarded))
+    ;; mark bit / age / family preserved across the forward.
+    (should-not (nelisp-gc-inner--header-mark-bit-p forwarded))
+    (should (= 0 (nelisp-gc-inner--header-age forwarded)))
+    (should (= 1 (nelisp-gc-inner--header-family forwarded)))))
+
+(ert-deftest nelisp-gc-inner-forwarded-addr-extract-correct ()
+  "`--forwarded-addr' returns the bits 47:0 we encoded via `--forward'."
+  (let* ((header (nelisp-gc-inner--make-header 64 2 1))
+         (target #xDEADBEEF)
+         (forwarded (nelisp-gc-inner--forward header target)))
+    (should (= target (nelisp-gc-inner--forwarded-addr forwarded)))
+    ;; The bit-level helper agrees with the simulator side-table:
+    ;; encoding survives a round trip through the bit operations.
+    (should (= target
+               (logand forwarded nelisp-gc-inner--header-size-mask)))))
+
+(ert-deftest nelisp-gc-inner-run-minor-gc-copies-reachable-only ()
+  "Cheney minor GC copies live (root-reachable) objects only.
+
+Three from-space objects: A (root-reachable), B (reachable from A),
+C (unreachable garbage).  After minor GC, A + B must be in to-space
+(forwarded) and C must remain only in from-space (not forwarded)."
+  (nelisp-gc-inner-test--reset)
+  (let* ((from   (nelisp-gc-inner-test--mk-nursery-region 0 100  500))
+         (to     (nelisp-gc-inner-test--mk-nursery-region 1 1000 1500))
+         (hdr    (nelisp-gc-inner--make-header 16 0 0))
+         (a-addr 100) (b-addr 200) (c-addr 300)
+         (objects
+          (list
+           (cons a-addr (list :header hdr :fields (list b-addr) :size 16))
+           (cons b-addr (list :header hdr :fields nil           :size 16))
+           (cons c-addr (list :header hdr :fields nil           :size 16))))
+         (objs-fn (nelisp-gc-inner-test--mk-from-space-fn objects))
+         (semi (nelisp-gc-inner-init-semispace from to))
+         (stats (nelisp-gc-inner-run-minor-gc semi (list a-addr) objs-fn)))
+    ;; A + B copied, C left behind.
+    (should (eq 2 (plist-get stats :copied-count)))
+    (should (eq 32 (plist-get stats :copied-bytes)))
+    (should (nelisp-gc-inner--lookup-forwarded semi a-addr))
+    (should (nelisp-gc-inner--lookup-forwarded semi b-addr))
+    (should (null (nelisp-gc-inner--lookup-forwarded semi c-addr)))
+    ;; Forwarded root list is non-empty + points into to-space range.
+    (let ((roots (plist-get stats :forwarded-roots)))
+      (should (= 1 (length roots)))
+      (should (>= (car roots) 1000))
+      (should (<  (car roots) 1500)))
+    ;; Cheney termination: scan = free at end.
+    (should (= (plist-get stats :scan-pointer)
+               (plist-get stats :free-pointer)))))
+
+(ert-deftest nelisp-gc-inner-run-minor-gc-flip-semispace ()
+  "After minor GC + flip, what was to-space becomes the new from-space."
+  (nelisp-gc-inner-test--reset)
+  (let* ((from   (nelisp-gc-inner-test--mk-nursery-region 0 100  500))
+         (to     (nelisp-gc-inner-test--mk-nursery-region 1 1000 1500))
+         (hdr    (nelisp-gc-inner--make-header 16 0 0))
+         (a-addr 100)
+         (objects
+          (list (cons a-addr (list :header hdr :fields nil :size 16))))
+         (objs-fn (nelisp-gc-inner-test--mk-from-space-fn objects))
+         (semi (nelisp-gc-inner-init-semispace from to)))
+    (nelisp-gc-inner-run-minor-gc semi (list a-addr) objs-fn)
+    (let ((from-before (nelisp-gc-inner--semispace-from-space semi))
+          (to-before   (nelisp-gc-inner--semispace-to-space   semi)))
+      (nelisp-gc-inner-flip-semispace semi)
+      ;; Roles swapped.
+      (should (eq to-before   (nelisp-gc-inner--semispace-from-space semi)))
+      (should (eq from-before (nelisp-gc-inner--semispace-to-space   semi)))
+      ;; Pointers reset to the new to-space (= old from-space) :start.
+      (should (= (plist-get from-before :start)
+                 (nelisp-gc-inner--semispace-scan-pointer semi)))
+      (should (= (plist-get from-before :start)
+                 (nelisp-gc-inner--semispace-free-pointer semi)))
+      ;; Forwarding side-table cleared for the next cycle.
+      (should (zerop (hash-table-count
+                      (nelisp-gc-inner--semispace-copied-objects semi)))))))
+
+(ert-deftest nelisp-gc-inner-promotion-candidate-age-threshold ()
+  "Objects whose post-survival age >= threshold land in :promotion-candidates.
+
+Threshold is `nelisp-gc-inner-promotion-age-threshold' (default 2).
+Set up two objects: one with age 0 (post-increment age 1, NOT a
+candidate), one with age 1 (post-increment 2, IS a candidate)."
+  (nelisp-gc-inner-test--reset)
+  (let* ((from   (nelisp-gc-inner-test--mk-nursery-region 0 100  500))
+         (to     (nelisp-gc-inner-test--mk-nursery-region 1 1000 1500))
+         (young  (nelisp-gc-inner--make-header 16 0 0))   ; age 0 → 1
+         (mature (nelisp-gc-inner--make-header 16 0 1))   ; age 1 → 2 (>= 2)
+         (young-addr  100)
+         (mature-addr 200)
+         (objects
+          (list
+           (cons young-addr  (list :header young  :fields nil :size 16))
+           (cons mature-addr (list :header mature :fields nil :size 16))))
+         (objs-fn (nelisp-gc-inner-test--mk-from-space-fn objects))
+         (semi (nelisp-gc-inner-init-semispace from to))
+         (stats (nelisp-gc-inner-run-minor-gc
+                 semi (list young-addr mature-addr) objs-fn)))
+    (let* ((candidates (plist-get stats :promotion-candidates))
+           (mature-to (nelisp-gc-inner--lookup-forwarded semi mature-addr))
+           (young-to  (nelisp-gc-inner--lookup-forwarded semi young-addr)))
+      (should (member mature-to candidates))
+      (should-not (member young-to candidates))
+      ;; Sanity: the candidate's stored to-cell carries the bumped age.
+      (let* ((to-objs (plist-get stats :to-space-objects))
+             (mature-cell (gethash mature-to to-objs))
+             (mature-hdr (plist-get mature-cell :header)))
+        (should (>= (nelisp-gc-inner--header-age mature-hdr) 2))
+        (should (nelisp-gc-inner--promotion-candidate-p mature-hdr))))))
+
+
 (provide 'nelisp-gc-inner-test)
 ;;; nelisp-gc-inner-test.el ends here
