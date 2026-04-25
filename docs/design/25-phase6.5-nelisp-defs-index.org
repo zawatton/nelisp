@@ -1,0 +1,232 @@
+#+TITLE: Doc 25 — Phase 6.5: anvil-defs (SQLite elisp index) port to NeLisp
+#+AUTHOR: zawatton + Claude (session-B)
+#+DATE: 2026-04-25
+#+STATE: LOCKED-2026-04-25
+#+STATUS: §2 全 8 項目 LOCKED 2026-04-25 全 default 採用 (handoff §1 必達条件、並行 session 着手)、Phase 6.5.1 MVP 着手中
+
+* §0 要旨
+
+handoff =handoff/nelisp_phase65_defs_index_parallel_2026-04-25.org= で
+LOCK 済。session-A が Doc 24 残 (6.2.5 robots / 6.2.6 batch) を進める間、
+session-B は *anvil-defs (Doc 11 SHIPPED) を NeLisp に 1:1 移植* する。
+
+目的: NeLisp 側に SQLite-backed elisp 定義 index を導入し、
+- "where is X defined?" を 1 MCP hop で回答
+- "who calls X?" を grep 5-loop でなく 1 hop で回答
+- "what requires module M?" を 1 hop で回答
+
+を Stage D 配布 binary からも提供する。Phase 5-F.1 で port 済の
+=nelisp-state= を backing storage として再利用 (=ns="defs"=)、
+SQLite 層は新規実装せず Phase 5-F.1.0 の sqlite primitive を利用。
+
+* §1 motivation
+
+** 1.1 audit (port 元 = anvil-defs.el)
+
+- =/home/madblack-21/Cowork/Notes/dev/anvil.el/anvil-defs.el= = *964 LOC*
+- defcustom 3 / defconst 4 / defvar 2
+- 内部 defun 18 / public defun 8
+- MCP tool 6 個 (=defs-search= / =defs-references= / =defs-signature=
+  / =defs-who-requires= / =defs-index-rebuild= / =defs-index-status=)
+- 外部依存:
+  - =anvil-server= → =nelisp-server= に対応 ✓
+  - =anvil-sexp= (top-level reader / project-root / kind 分類) ← 移植不要、
+    NeLisp 側は inline simple scanner で代替
+
+** 1.2 Phase 6.5 が成立する条件
+
+Phase 5-F.1.0 で sqlite primitive 6 本既出、Phase 5-F.1.1 で nelisp-state
+出。SQLite 層 / KV 層は再実装不要。Phase 6.5 は本質的に
+*scanner + schema + query* 3 層を新設するのみ。
+
+** 1.3 Stage D との相乗
+
+Stage D Phase 6.3 SHIPPED 済の binary 配布 = 25 tool 提供中。
+Phase 6.5.3 (本 doc 範疇外、stretch) で defs-* 6 tool が乗れば
+*tools/list が 31 → 36 程度* に増える。Claude Code から見た "elisp
+を読む / 触る" 体感が anvil 本家に近づく。
+
+* §2 decisions (STATE = LOCKED 2026-04-25、全 default 採用)
+
+handoff §1 必達条件に従い、議論なしで全 default LOCK。
+
+#+begin_example
+§2.1  B  port 範囲 = MVP (rebuild + search 2 本) → Phase 6.5.1
+        残 4 (references/signature/who-requires/index-status) は Phase 6.5.2-3
+§2.2  B  DB path = XDG ~/.cache/nelisp/nelisp-defs.db (Emacs 非依存)
+§2.3  B  schema = anvil-defs schema_meta v1 + 同一 4 table
+§2.4  B  defcustom → defvar (NeLisp self-host customize 未実装、Phase 5-A.2 同方針)
+§2.5  B  with-transaction defmacro port (手書き BEGIN/COMMIT、
+        feedback_sqlite_with_transaction_not_portable.md 準拠)
+§2.6  B  scanner = inline simple read (anvil-sexp 依存なし、insert-file-contents
+        + read で top-level form 列挙、:level 0 のみ)
+§2.7  A  ERT 8-10 本 (rebuild → row count、search 既知 / 不明 / kind filter、
+        schema columns、enable/disable 冪等性、ns 隔離)
+§2.8  B  Phase 6.5.1 MCP tool = defs-search + defs-index-rebuild の 2 本
+        smoke +2 assert
+#+end_example
+
+** §2.1 port 範囲 (MVP scope)
+
+- A. 全 6 public API + 6 deftool を一気に port
+- *B. MVP = rebuild + search 2 本のみ、残は Phase 6.5.2-3 で個別判断 ← RECOMMENDED (handoff §3.3)*
+- C. 全 API + tool だけ MVP (実装は spy stub)
+
+推奨理由: handoff §1.1 必達条件 = 本日中 SHIPPED。MVP 縦串で動作確認、
+残 4 API は Phase 6.5.2-3 stretch。MVP として最小有用 set (project ナビ
+ゲートの本丸 = name → file:line) が rebuild + search の 2 本。
+
+** §2.2 DB path
+
+- A. =user-emacs-directory= 追従 (anvil-defs と同じ =~/.emacs.d/...=)
+- *B. =~/.cache/nelisp/nelisp-defs.db= (XDG cache、Emacs 非依存) ← RECOMMENDED*
+- C. env var 必須 (explicit)
+
+推奨理由: nelisp-state と同方針 (Doc 17 §2.2 B)。Stage D 配布 binary
+からも使うため =user-emacs-directory= 依存禁止。XDG cache は Linux/macOS
+共通、=NELISP_CACHE_DIR= で override 可。
+
+** §2.3 schema 互換性
+
+- A. anvil-defs schema v1 と完全同一 (table 名 / column 名 / DDL)
+- *B. 同一 + schema_meta version 1 で固定、migration は drop-and-rebuild ← RECOMMENDED*
+- C. 独自 schema
+
+推奨理由: anvil-defs MVP rebuild の cost ~数秒、migration 不要。
+schema mismatch 時は drop-and-recreate が最小実装。
+
+** §2.4 defcustom 扱い
+
+- A. defcustom のまま port (NeLisp customize 未実装でも host で動く)
+- *B. defvar 化 (anvil-defs-paths / anvil-defs-exclude-patterns / DB path) ← RECOMMENDED*
+- C. defconst (運用変更不可)
+
+推奨理由: nelisp-state / nelisp-http と同方針 (Phase 5-A.2 / Doc 24 §2.9)。
+host 動作と self-host 動作の差を作らない。
+
+** §2.5 with-transaction macro
+
+- A. NeLisp defmacro で port (anvil-defs と同じ defmacro)
+- *B. nelisp-state--with-transaction の private 形を inline 再定義 ← RECOMMENDED*
+- C. 関数化 (callback)
+
+推奨理由: nelisp-state 側の private macro を re-export する手間より、
+inline 再定義 (~10 LOC) が独立性高い。anvil-defs と同形。
+
+** §2.6 scanner 戦略
+
+- A. anvil-sexp.el を含めて port (~600 LOC)
+- *B. inline simple scanner: insert-file-contents + read を loop、top-level
+  form の car が defun/defvar/defcustom/cl-defun/defmacro/defconst/
+  define-* なら index に投入 ← RECOMMENDED*
+- C. host elisp-mode でパース (font-lock 依存)
+
+推奨理由: anvil-sexp は Doc 12 で 600 LOC、現時点 NeLisp 側 port 価値なし。
+MVP は top-level の car symbol だけ見れば ~80% useful。引数アリティや
+docstring 抽出は Phase 6.5.2 で精緻化。
+
+** §2.7 ERT scope
+
+- A. anvil-defs-test 全 port (~30 ERT、anvil-sexp 前提含む)
+- *B. MVP scope の 8-10 本 (rebuild → row count、search known / missing /
+  kind filter、schema PRAGMA table_info、enable/disable 冪等性、
+  exclude pattern) ← RECOMMENDED*
+- C. integration smoke のみ (ERT 0)
+
+推奨理由: handoff §1.1 必達 = ERT 8-10 本。MVP 表面の往復 (insert →
+search → row 取得 → 復元) が回ることを保証。Phase 6.5.2 で参照解析
+ERT を追加。
+
+** §2.8 MCP tool
+
+- A. 全 6 tool 一気に expose (deftool 全部書いて未実装は stub)
+- *B. MVP = defs-index-rebuild + defs-search の 2 本のみ、smoke +2 assert ← RECOMMENDED (handoff §3.3)*
+- C. tool 0 本、Phase 6.5.2 で expose
+
+推奨理由: handoff §1.1 必達条件 4 = 「最低 2 deftool」。MVP スコープと
+align。実装無いなら expose しない方針 (anvil-defs と同じ "実装済の API
+だけ tool 化")。
+
+* §3 sub-phase 分割
+
+** Phase 6.5.1 — MVP (本日 SHIPPED 目標、3-5 時間) ← *本 doc 主対象*
+
+handoff §1.1 必達条件 = 本 phase。
+
+- =src/nelisp-defs-index.el= 新設 (~400-600 LOC):
+  - schema = file / defs / refs / features / schema_meta (Phase 6.5.1
+    では refs/features は CREATE のみ、INSERT なし)
+  - =nelisp-defs-index--collect-files PATHS= (=git ls-files= → fallback
+    =directory-files-recursively= for .el)
+  - =nelisp-defs-index--scan-file PATH= (top-level form の car symbol
+    pattern match で defun/defvar/defcustom/cl-defun 抽出)
+  - =nelisp-defs-index-rebuild &optional PATHS=
+  - =nelisp-defs-index-search NAME &optional OPTS= (=:kind= / =:fuzzy=
+    / =:limit=)
+  - =nelisp-defs-index-enable= / =nelisp-defs-index-disable=
+- =test/nelisp-defs-index-test.el= 8-10 ERT (§2.7)
+- =src/nelisp-tools.el= 末尾 append:
+  - =defs-index-rebuild= deftool (no args、count 報告)
+  - =defs-search= deftool (=name= / optional =kind= / =fuzzy= / =limit=)
+- =test/nelisp-server-smoke.sh= 末尾 +2 assert
+  (=defs-search= / =defs-index-rebuild=)
+- =make test= / =make compile= / =make smoke= 全部緑
+
+** Phase 6.5.2 — references + signature + who-requires (DEFER)
+
+- scanner を deep-walk 化 (anvil-defs--walk-form-refs を移植)
+- =nelisp-defs-index-references SYMBOL &optional OPTS=
+- =nelisp-defs-index-signature SYMBOL=
+- =nelisp-defs-index-who-requires FEATURE=
+- deftool +3 (defs-references / defs-signature / defs-who-requires)
+- ERT +5
+
+** Phase 6.5.3 — index-status + 残 polish (DEFER)
+
+- =nelisp-defs-index-status= (counts + DB path + schema version)
+- =nelisp-defs-index-refresh-if-stale= (mtime check による incremental)
+- deftool +1 (defs-index-status)
+
+* §4 リスク + 対策
+
+** R1. anvil-defs の隠れ依存
+
+handoff §9 R1: anvil-server / anvil-state 以外 require があれば工数増。
+audit 結果 (本 doc §1.1): =cl-lib= / =subr-x= / =anvil-server= /
+=anvil-sexp= (lazy require) のみ。anvil-sexp は移植せず inline scanner
+で回避 (§2.6 B)。
+
+→ 対策完了、リスク解消。
+
+** R2. SQLite schema migration
+
+handoff §9 R2: 本 phase は always v1 = drop-and-recreate でよい。
+
+→ 対策不要、§2.3 B で確定。
+
+** R3. =git ls-files= subprocess 失敗
+
+handoff §9 R3: =directory-files-recursively= で fallback。
+Phase 6.0 audit script と同パターン。
+
+→ 実装で =call-process "git" ... :exit-code = 0= 判定 + fallback。
+
+* §5 関連 doc
+
+- Doc 11 (anvil.el) — port 元、=anvil-defs.el= 964 LOC
+- Doc 17 — nelisp-state、本 phase の backing infrastructure
+- Doc 18 §3 — Stage D Phase 6.3 SHIPPED、本 phase 完成後 tarball
+  に nelisp-defs-index.el 自動同梱 (=Makefile SRCS glob=)
+- Doc 24 §3 6.2.x — 並行進行中、ファイル衝突回避は handoff §4
+
+* §6 完成定義 (Phase 6.5.1 = SHIPPED)
+
+handoff §1.1 必達と同義:
+
+1. =docs/design/25-*.org= LOCK ← (本ファイル)
+2. =src/nelisp-defs-index.el= MVP 実装 (rebuild + search 動作)
+3. =test/nelisp-defs-index-test.el= ERT 8-10 本 pass
+4. =src/nelisp-tools.el= 末尾 +2 deftool
+5. =test/nelisp-server-smoke.sh= 末尾 +2 assert
+6. =make test= 緑、=make smoke= 緑、=make compile= 0 warning
+7. main へ =--no-ff= merge、Co-Authored-By 必須

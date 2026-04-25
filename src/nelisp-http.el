@@ -48,8 +48,21 @@
 (defvar nelisp-http-max-redirections 5
   "Maximum redirects honoured by `url-retrieve-synchronously'.")
 
+(defvar nelisp-http-respect-robots-txt t
+  "When non-nil, fetch the origin's robots.txt and signal user-error
+on a Disallow match before any network round-trip (Phase 6.2.5).")
+
+(defvar nelisp-http-robots-ttl-sec 86400
+  "Cache TTL (seconds) for robots.txt entries.")
+
+(defvar nelisp-http-batch-max 64
+  "Maximum URL count accepted by `nelisp-http-fetch-batch' in one call.")
+
 (defconst nelisp-http--state-ns "http"
   "`nelisp-state' namespace for cached HTTP responses.")
+
+(defconst nelisp-http--robots-state-ns "http-robots"
+  "`nelisp-state' namespace for cached robots.txt entries.")
 
 ;;; URL hygiene -------------------------------------------------------
 
@@ -548,6 +561,199 @@ mismatches set :extract-miss t and tag :extract-engine."
          :extract-mode (cond (selector 'selector) (json-path 'json-path))
          :extract-engine 'content-type-mismatch))))))
 
+;;; URL origin / path helpers (Phase 6.2.5) --------------------------
+
+(defun nelisp-http--url-origin (url)
+  "Return scheme://host[:port] for URL, omitting the default port."
+  (let* ((u (url-generic-parse-url url))
+         (scheme (url-type u))
+         (host (url-host u))
+         (port (url-port u))
+         (default (pcase scheme ("http" 80) ("https" 443) (_ nil))))
+    (if (and (numberp port) default (= port default))
+        (format "%s://%s" scheme host)
+      (format "%s://%s:%s" scheme host port))))
+
+(defun nelisp-http--url-path (url)
+  "Return path+query of URL, defaulting to `/' when absent."
+  (let* ((u (url-generic-parse-url url))
+         (filename (url-filename u)))
+    (if (or (null filename) (string-empty-p filename))
+        "/"
+      filename)))
+
+(defun nelisp-http--is-robots-url-p (url)
+  "Return non-nil when URL itself points at /robots.txt."
+  (string-equal "/robots.txt" (nelisp-http--url-path url)))
+
+;;; robots.txt parser + matcher (Phase 6.2.5) ------------------------
+
+(defun nelisp-http--robots-parse (text)
+  "Parse robots.txt TEXT into a list of (UA-LIST . RULES).
+Each RULES element is `(DIRECTIVE . PATTERN)' where DIRECTIVE is
+`allow' or `disallow'.  Comments and unknown directives are ignored.
+Consecutive User-agent lines accumulate into one group until a rule
+follows, mirroring RFC 9309 group definition."
+  (let ((groups nil)
+        (current-uas nil)
+        (current-rules nil)
+        (in-rules nil))
+    (dolist (raw (split-string (or text "") "\n"))
+      (let* ((stripped (replace-regexp-in-string "#.*\\'" "" raw))
+             (line (string-trim stripped)))
+        (unless (string-empty-p line)
+          (when (string-match "\\`\\([A-Za-z-]+\\)[ \t]*:[ \t]*\\(.*\\)\\'"
+                              line)
+            (let ((key (downcase (match-string 1 line)))
+                  (val (string-trim (match-string 2 line))))
+              (pcase key
+                ("user-agent"
+                 (when in-rules
+                   (push (cons (nreverse current-uas)
+                               (nreverse current-rules))
+                         groups)
+                   (setq current-uas nil
+                         current-rules nil
+                         in-rules nil))
+                 (push val current-uas))
+                ("allow"
+                 (when current-uas
+                   (push (cons 'allow val) current-rules)
+                   (setq in-rules t)))
+                ("disallow"
+                 (when current-uas
+                   (push (cons 'disallow val) current-rules)
+                   (setq in-rules t)))
+                (_ nil)))))))
+    (when current-uas
+      (push (cons (nreverse current-uas)
+                  (nreverse current-rules))
+            groups))
+    (nreverse groups)))
+
+(defun nelisp-http--robots-pick-group (groups ua)
+  "Return rules for the group best matching UA string.
+Longest substring match wins; falls back to `*' group when no
+specific token matches."
+  (let ((ua-lc (downcase (or ua "")))
+        (best-rules nil)
+        (best-len -1)
+        (star-rules nil))
+    (dolist (group groups)
+      (let ((uas (car group))
+            (rules (cdr group)))
+        (dolist (u uas)
+          (let ((u-lc (downcase u)))
+            (cond
+             ((equal u-lc "*")
+              (unless star-rules (setq star-rules rules)))
+             ((and (not (string-empty-p u-lc))
+                   (string-match-p (regexp-quote u-lc) ua-lc)
+                   (> (length u-lc) best-len))
+              (setq best-rules rules
+                    best-len (length u-lc))))))))
+    (or best-rules star-rules)))
+
+(defun nelisp-http--robots-pattern-to-regex (pattern)
+  "Convert a robots.txt PATTERN to an Emacs regex.
+`*' expands to `.*', trailing `$' anchors to end-of-URL, every other
+character is regex-quoted.  Empty / nil PATTERN returns nil."
+  (when (and pattern (not (string-empty-p pattern)))
+    (let ((end-anchor nil)
+          (p pattern))
+      (when (string-suffix-p "$" p)
+        (setq end-anchor t)
+        (setq p (substring p 0 (1- (length p)))))
+      (let ((chunks (mapcar
+                     (lambda (ch)
+                       (cond
+                        ((eq ch ?*) ".*")
+                        (t (regexp-quote (char-to-string ch)))))
+                     (string-to-list p))))
+        (concat "\\`"
+                (mapconcat #'identity chunks "")
+                (if end-anchor "\\'" ""))))))
+
+(defun nelisp-http--robots-match (rules path)
+  "Return the winning rule for PATH against RULES.
+Longest pattern wins, Allow beats Disallow on ties (RFC 9309).
+Return value is (ALLOW-P . PATTERN-LENGTH) or nil."
+  (let ((best nil))
+    (dolist (rule rules)
+      (let* ((dir (car rule))
+             (pat (cdr rule))
+             (rx (nelisp-http--robots-pattern-to-regex pat)))
+        (when (and rx (string-match-p rx path))
+          (let* ((len (length pat))
+                 (allow-p (eq dir 'allow))
+                 (current (cons allow-p len)))
+            (cond
+             ((null best) (setq best current))
+             ((> len (cdr best)) (setq best current))
+             ((and (= len (cdr best)) allow-p)
+              (setq best current)))))))
+    best))
+
+(defun nelisp-http--robots-fetch (origin)
+  "Fetch ORIGIN/robots.txt, cache for `nelisp-http-robots-ttl-sec'.
+Returns (:body STR-OR-NIL :fetched-at FLOAT).  Nil body = fail-open
+(404, network error, non-200) per RFC 9309 guidance."
+  (let* ((url (concat origin "/robots.txt"))
+         (ns nelisp-http--robots-state-ns)
+         (cached (condition-case _e
+                     (nelisp-state-get url (list :ns ns))
+                   (error nil)))
+         (now (float-time))
+         (ttl nelisp-http-robots-ttl-sec))
+    (if (and cached
+             (numberp (plist-get cached :fetched-at))
+             (< (- now (plist-get cached :fetched-at)) ttl))
+        cached
+      (let ((entry
+             (condition-case _err
+                 (let ((resp (nelisp-http-fetch
+                              url
+                              :skip-robots-check t
+                              :no-cache t)))
+                   (if (= 200 (plist-get resp :status))
+                       (list :body (plist-get resp :body)
+                             :fetched-at now)
+                     (list :body nil :fetched-at now)))
+               (error (list :body nil :fetched-at now)))))
+        (condition-case _e
+            (nelisp-state-set url entry (list :ns ns))
+          (error nil))
+        entry))))
+
+(defun nelisp-http--robots-evaluate (url ua)
+  "Evaluate URL against its origin's robots.txt for UA.
+Returns (:origin :allowed :rule-length :robots-present).  fail-open
+when robots.txt is absent."
+  (let* ((origin (nelisp-http--url-origin url))
+         (entry (nelisp-http--robots-fetch origin))
+         (body (plist-get entry :body)))
+    (if (not body)
+        (list :origin origin
+              :allowed t
+              :rule-length nil
+              :robots-present nil)
+      (let* ((groups (nelisp-http--robots-parse body))
+             (rules (nelisp-http--robots-pick-group groups ua))
+             (path (nelisp-http--url-path url))
+             (match (and rules (nelisp-http--robots-match rules path))))
+        (list :origin origin
+              :allowed (if match (car match) t)
+              :rule-length (and match (cdr match))
+              :robots-present t)))))
+
+(defun nelisp-http--robots-check-signal (url)
+  "Raise `user-error' if URL is Disallowed by its origin's robots.txt."
+  (let ((r (nelisp-http--robots-evaluate url nelisp-http-user-agent)))
+    (unless (plist-get r :allowed)
+      (user-error
+       "nelisp-http: %s is Disallowed for %s by robots.txt at %s"
+       url nelisp-http-user-agent (plist-get r :origin)))))
+
 ;;; Public API --------------------------------------------------------
 
 (defun nelisp-http--response-plist (entry from-cache elapsed-ms)
@@ -563,7 +769,8 @@ mismatches set :extract-miss t and tag :extract-engine."
 ;;;###autoload
 (cl-defun nelisp-http-fetch (url &key headers timeout-sec ttl
                                  no-cache if-newer-than
-                                 selector json-path)
+                                 selector json-path
+                                 skip-robots-check)
   "GET URL with TTL cache via `nelisp-state' ns=\"http\".
 
 Keyword args:
@@ -583,6 +790,10 @@ Keyword args:
                    sub-tree serialized back to JSON."
   (nelisp-http--check-url url)
   (nelisp-state-enable)
+  (when (and nelisp-http-respect-robots-txt
+             (not skip-robots-check)
+             (not (nelisp-http--is-robots-url-p url)))
+    (nelisp-http--robots-check-signal url))
   (let* ((norm (nelisp-http--normalize-url url))
          (eff-ttl (or ttl nelisp-http-cache-ttl-sec))
          (now (truncate (float-time)))
@@ -633,6 +844,39 @@ Keyword args:
              selector json-path)))
          (t
           (error "nelisp-http: HTTP %d for %s" status url)))))))
+
+;;;###autoload
+(cl-defun nelisp-http-fetch-batch (urls &key headers timeout-sec ttl
+                                        no-cache selector json-path
+                                        skip-robots-check)
+  "Fetch URLS sequentially (MVP no async); return list in input order.
+
+Per-URL failures surface as (:url URL :error STR) plists so one bad
+entry does not sink the whole batch.  Cached entries within TTL are
+served zero-network like `nelisp-http-fetch'.
+
+Async parallel fetch (`url-queue-parallel-processes' fan-out) is
+DEFER scope — Phase 6.2.6 MVP keeps the surface simple and the
+shape compatible so a future async backend can drop in without
+caller changes."
+  (when (> (length urls) nelisp-http-batch-max)
+    (user-error
+     "nelisp-http: batch URL count %d exceeds `nelisp-http-batch-max' %d"
+     (length urls) nelisp-http-batch-max))
+  (mapcar
+   (lambda (url)
+     (condition-case err
+         (nelisp-http-fetch
+          url
+          :headers headers
+          :timeout-sec timeout-sec
+          :ttl ttl
+          :no-cache no-cache
+          :selector selector
+          :json-path json-path
+          :skip-robots-check skip-robots-check)
+       (error (list :url url :error (error-message-string err)))))
+   urls))
 
 (defun nelisp-http--merge-headers (base override)
   "Shallow-merge two header plists, OVERRIDE winning on clashes."
@@ -711,6 +955,15 @@ upstream may freshen validators we'd otherwise miss)."
 ;; ship their own in-memory hash cache + `nelisp-http-cache-clear' /
 ;; `-cache-size' helpers; we pick `nelisp-http-fetch-*' here so the two
 ;; backends can coexist until Phase 6.2.5+ consolidates them.
+
+;;;###autoload
+(defun nelisp-http-robots-check (url &optional ua)
+  "Evaluate URL against its origin's robots.txt for UA.
+Returns the same plist as `nelisp-http--robots-evaluate' — does not
+signal on Disallow, just reports."
+  (nelisp-http--check-url url)
+  (nelisp-state-enable)
+  (nelisp-http--robots-evaluate url (or ua nelisp-http-user-agent)))
 
 ;;;###autoload
 (defun nelisp-http-fetch-cache-clear (&optional url)

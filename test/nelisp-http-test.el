@@ -11,13 +11,14 @@
 (defvar nelisp-http-test--tmpdir nil)
 
 (defmacro nelisp-http-test--with-fresh-db (&rest body)
-  "Bind `nelisp-state-db-path' to a fresh temp DB so the http cache
-namespace starts empty for each test."
+  "Bind `nelisp-state-db-path' to a fresh temp DB and disable robots
+so the http cache + robots namespaces start empty for each test."
   (declare (indent 0) (debug t))
   `(let* ((nelisp-http-test--tmpdir
            (make-temp-file "nelisp-http-test-" t))
           (nelisp-state-db-path
-           (expand-file-name "test-state.db" nelisp-http-test--tmpdir)))
+           (expand-file-name "test-state.db" nelisp-http-test--tmpdir))
+          (nelisp-http-respect-robots-txt nil))
      (unwind-protect
          (progn
            (nelisp-state--close)
@@ -361,6 +362,122 @@ namespace starts empty for each test."
                                   :selector "h1")))
         (should (eq (plist-get r :extract-miss) t))
         (should (eq (plist-get r :extract-engine) 'content-type-mismatch))))))
+
+;;;; robots.txt (Phase 6.2.5)
+
+(ert-deftest nelisp-http-test-url-origin-and-path ()
+  (should (equal (nelisp-http--url-origin "https://example.com/foo?x=1")
+                 "https://example.com"))
+  (should (equal (nelisp-http--url-origin "http://example.com:8080/")
+                 "http://example.com:8080"))
+  (should (equal (nelisp-http--url-origin "https://example.com:443/x")
+                 "https://example.com"))
+  (should (equal (nelisp-http--url-path "https://example.com/foo/bar?x=1")
+                 "/foo/bar?x=1"))
+  (should (equal (nelisp-http--url-path "https://example.com") "/")))
+
+(ert-deftest nelisp-http-test-is-robots-url ()
+  (should (nelisp-http--is-robots-url-p "https://example.com/robots.txt"))
+  (should-not (nelisp-http--is-robots-url-p "https://example.com/other")))
+
+(ert-deftest nelisp-http-test-robots-parse-basic ()
+  (let* ((text "User-agent: *\nDisallow: /private\nAllow: /private/ok\n\nUser-agent: BadBot\nDisallow: /\n")
+         (groups (nelisp-http--robots-parse text)))
+    (should (= (length groups) 2))
+    (let ((star (cl-find-if (lambda (g) (member "*" (car g))) groups)))
+      (should star)
+      (should (equal (cdr star)
+                     '((disallow . "/private")
+                       (allow . "/private/ok")))))))
+
+(ert-deftest nelisp-http-test-robots-pattern-to-regex ()
+  (should (equal (nelisp-http--robots-pattern-to-regex "/foo/")
+                 "\\`/foo/"))
+  (should (equal (nelisp-http--robots-pattern-to-regex "/*.pdf$")
+                 "\\`/.*\\.pdf\\'"))
+  (should (null (nelisp-http--robots-pattern-to-regex "")))
+  (should (null (nelisp-http--robots-pattern-to-regex nil))))
+
+(ert-deftest nelisp-http-test-robots-match-allow-beats-disallow ()
+  "Equal-length tie → Allow wins (RFC 9309)."
+  (let ((rules '((disallow . "/foo") (allow . "/foo"))))
+    (should (eq (car (nelisp-http--robots-match rules "/foo")) t))))
+
+(ert-deftest nelisp-http-test-robots-match-longest-wins ()
+  (let ((rules '((disallow . "/") (allow . "/public"))))
+    (should (eq (car (nelisp-http--robots-match rules "/public/x")) t))
+    (should (eq (car (nelisp-http--robots-match rules "/secret")) nil))))
+
+(ert-deftest nelisp-http-test-robots-evaluate-fail-open ()
+  "Empty / failing robots.txt → :allowed t :robots-present nil."
+  (skip-unless (and (fboundp 'sqlite-available-p) (sqlite-available-p)))
+  (nelisp-http-test--with-fresh-db
+    (let ((nelisp-http-respect-robots-txt t))
+      (nelisp-state-enable)
+      (cl-letf (((symbol-function 'nelisp-http--request)
+                 (lambda (_m url _h _t &optional _b)
+                   (list :status 404 :headers nil :body nil :final-url url))))
+        (let ((r (nelisp-http--robots-evaluate
+                  "https://example.com/x" "test-agent")))
+          (should (eq (plist-get r :allowed) t))
+          (should (eq (plist-get r :robots-present) nil)))))))
+
+(ert-deftest nelisp-http-test-robots-disallow-signals ()
+  "Disallow-matched URL through fetch raises user-error."
+  (skip-unless (and (fboundp 'sqlite-available-p) (sqlite-available-p)))
+  (nelisp-http-test--with-fresh-db
+    (let ((nelisp-http-respect-robots-txt t))
+      (nelisp-state-enable)
+      (cl-letf (((symbol-function 'nelisp-http--request)
+                 (lambda (_m url _h _t &optional _b)
+                   (cond
+                    ((string-suffix-p "/robots.txt" url)
+                     (list :status 200
+                           :headers '(:content-type "text/plain")
+                           :body "User-agent: *\nDisallow: /forbidden\n"
+                           :final-url url))
+                    (t (list :status 200 :headers nil :body "ok"
+                             :final-url url))))))
+        (should-error
+         (nelisp-http-fetch "https://example.com/forbidden")
+         :type 'user-error)))))
+
+;;;; batch fetch (Phase 6.2.6)
+
+(ert-deftest nelisp-http-test-fetch-batch-roundtrip ()
+  "Each URL gets its own response plist; per-URL errors isolated."
+  (skip-unless (and (fboundp 'sqlite-available-p) (sqlite-available-p)))
+  (nelisp-http-test--with-fresh-db
+    (nelisp-state-enable)
+    (cl-letf (((symbol-function 'nelisp-http--request)
+               (lambda (_m url _h _t &optional _b)
+                 (if (string-match "fail" url)
+                     (list :status 500 :headers nil :body "" :final-url url)
+                   (list :status 200
+                         :headers '(:content-type "text/plain")
+                         :body (format "body=%s" url)
+                         :final-url url)))))
+      (let* ((urls '("https://example.com/a"
+                     "https://example.com/fail"
+                     "https://example.com/b"))
+             (results (nelisp-http-fetch-batch urls)))
+        (should (= (length results) 3))
+        ;; OK entry shape
+        (should (= (plist-get (nth 0 results) :status) 200))
+        (should (string-match-p "/a" (plist-get (nth 0 results) :body)))
+        ;; Error entry surfaces (:url :error)
+        (should (equal (plist-get (nth 1 results) :url)
+                       "https://example.com/fail"))
+        (should (stringp (plist-get (nth 1 results) :error)))
+        ;; Third URL still ran successfully
+        (should (= (plist-get (nth 2 results) :status) 200))))))
+
+(ert-deftest nelisp-http-test-fetch-batch-cap-exceeded ()
+  "URL count above `nelisp-http-batch-max' raises user-error."
+  (let ((nelisp-http-batch-max 2))
+    (should-error
+     (nelisp-http-fetch-batch '("a" "b" "c"))
+     :type 'user-error)))
 
 (provide 'nelisp-http-test)
 ;;; nelisp-http-test.el ends here

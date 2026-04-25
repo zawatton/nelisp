@@ -2,7 +2,7 @@
 #+AUTHOR: zawatton + Claude
 #+DATE: 2026-04-25
 #+STATE: LOCKED-2026-04-25
-#+STATUS: §2 LOCKED 2026-04-25、§3 全 5 MVP sub-phase SHIPPED + DEFER 2 件解放 2026-04-25 — 6.2.0/1/2/3/4 MVP + 6.2.8 POST + auth (568e3fc) + 6.2.7 HTML/JSON extract (本日)。残 DEFER = 6.2.5 robots / 6.2.6 batch のみ。tools/list 25 → 31、ERT 906→983 (+77)、http-fetch に :selector / :json-path 拡張済
+#+STATUS: 全 9 sub-phase 完全クローズ 2026-04-25 — 6.2.0/1/2/3/4 MVP + 6.2.7 extract + 6.2.8 POST + 6.2.5 robots + 6.2.6 batch。tools/list 25 → 33、ERT 906→993 (+87)、anvil-http full parity port 達成 (offload と metrics 系除く全機能)
 
 * §0 要旨
 
