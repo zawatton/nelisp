@@ -99,6 +99,13 @@ STAGE_D_NAME  := anvil-$(ANVIL_VERSION)
 STAGE_D_DIR   := dist/$(STAGE_D_NAME)
 STAGE_D_TAR   := dist/$(STAGE_D_NAME).tar.gz
 
+# Phase 6.1 architecture α: bundle anvil.el for the architecture α
+# delegate chain (anvil-XXX → nelisp-XXX via fboundp guard + fallback).
+# ANVIL_EL_SOURCE points at an anvil.el checkout.  Missing / empty =>
+# tarball ships without anvil-lib/ and bin/anvil falls back to
+# nelisp-server (Phase 6.0 baseline).
+ANVIL_EL_SOURCE ?= $(HOME)/Notes/dev/anvil.el
+
 stage-d-tarball:
 	@rm -rf "$(STAGE_D_DIR)"
 	@mkdir -p "$(STAGE_D_DIR)/bin" "$(STAGE_D_DIR)/src"
@@ -108,6 +115,18 @@ stage-d-tarball:
 	cp README-stage-d.org "$(STAGE_D_DIR)/README.org"
 	cp install.sh      "$(STAGE_D_DIR)/" 2>/dev/null || true
 	@printf "%s\n" "$(ANVIL_VERSION)" > "$(STAGE_D_DIR)/VERSION"
+	@if [ -f "$(ANVIL_EL_SOURCE)/anvil.el" ] && \
+	    [ -f "$(ANVIL_EL_SOURCE)/anvil-server-commands.el" ]; then \
+	    mkdir -p "$(STAGE_D_DIR)/anvil-lib"; \
+	    cp "$(ANVIL_EL_SOURCE)"/anvil*.el "$(STAGE_D_DIR)/anvil-lib/"; \
+	    [ -f "$(ANVIL_EL_SOURCE)/LICENSE" ] && \
+	        cp "$(ANVIL_EL_SOURCE)/LICENSE" \
+	           "$(STAGE_D_DIR)/anvil-lib/LICENSE-anvil" || true; \
+	    printf "  architecture α active — anvil.el bundled from %s (%d files)\n" \
+	        "$(ANVIL_EL_SOURCE)" "$$(ls $(STAGE_D_DIR)/anvil-lib/anvil*.el | wc -l)"; \
+	else \
+	    printf "  architecture α INACTIVE — set ANVIL_EL_SOURCE=<path> to bundle anvil.el\n"; \
+	fi
 	tar -czf "$(STAGE_D_TAR)" -C dist "$(STAGE_D_NAME)"
 	@rm -rf "$(STAGE_D_DIR)"
 	@printf "  \033[1;32m✓\033[0m built %s ($$(du -h "$(STAGE_D_TAR)" | cut -f1))\n" "$(STAGE_D_TAR)"
