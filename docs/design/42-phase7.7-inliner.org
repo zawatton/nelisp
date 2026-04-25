@@ -1,0 +1,833 @@
+#+TITLE: Phase 7.7 — Recursive inliner + escape analysis (Doc 28 §11.5 errata 担当 / post-v1.0 Phase)
+#+DATE: 2026-04-25
+#+AUTHOR: zawatton + Claude (T111 起草、T122 v1 revise、T126 v2 LOCKED)
+#+STATUS: LOCKED-2026-04-25-v2 (Doc 28 v2 §11.5 errata 直接 expansion、T116 1 MAJOR + 11 MINOR + T125 3 MINOR 全反映、post-v1.0 v1.x feature target)
+#+DEPENDS_ON: Doc 28 v2 LOCKED §11.5 (bench gate redefine errata、fib 30x bar defer)
+#+PARENT: Doc 28 v2 LOCKED §11.5 errata (本 doc は §11.5 で言及された "Phase 7.7 (or rename)" の defer 先 detailed design、Doc 27 §3 の Phase 7.x sub-phase 列挙への post-v1.0 追補。Doc 27 §3 への 7.7 entry 追記は本 doc v2 LOCKED merge と同 commit pair で行う後付けタスク)
+#+REVIEWED_BY: claude T116 (MINOR REVISIONS、1 MAJOR + 11 MINOR — A-4 / A-5 / A-6 / B-5 / B-6 / C-4 / C-5 / C-6 / D-7 / D-8 / E-1 / E-5、v1 で全反映) + claude T125 (MINOR REVISIONS、3 MINOR + 2 POSITIVE — B-1 数値 narrative 内部不整合 / B-2 12.5x 表現 ambiguous / B-5 §11.1a 節番号 anomaly、v2 で全反映)
+
+* §0 要旨 (TL;DR)
+
+Doc 28 v2 LOCKED-2026-04-25-v2 §11.5 errata で確定した *fib 30x bar
+の post-v1.0 defer* を担当する future Phase の詳細設計 DRAFT v1
+(T122 で T116 review = 1 MAJOR + 11 MINOR を全反映、v0 → v1 revise)。
+
+T96 (Phase 7.1.5 perf tuning、commit =79c5c8b= main merged) で適用された
+3 optimization (inline primitive + TCO + self-direct call + load-var
+elision) 後の actual measurement で以下が判明:
+
+| axis        | T96 speedup (vs bytecode) | T96 vs Emacs native-comp[fn:12.5x] | gate target | result                |
+|-------------+--------------------------+------------------------------------+-------------+-----------------------|
+| fib(30)     | *12.0x*                  | *12.5x*                            | 30x         | timing FAIL / value PASS |
+| fact-iter   | *25.6x*                  | n/a baseline                       | 20x         | *PASS*                |
+| alloc-heavy | *21.2x*                  | n/a baseline                       | 5x          | *PASS*                |
+
+[fn:12.5x] = NeLisp native / Emacs native-comp ratio on fib(30)、bytecode
+比 12x とは別軸 (= T125 review B-2 reflected、ambiguous な「12x = 12.5x」
+表記の clarify)。
+
+*Emacs native-comp 比較軸 (T116 review C-4 反映 + T125 review B-2
+clarify)*: T96 finding は 2 つの *別軸* 比較を確立:
+1. *NeLisp native vs bytecode*: fib(30) で *12x speedup* (= NeLisp native
+   が NeLisp 自身の bytecode VM より 12 倍速い)
+2. *NeLisp native vs Emacs native-comp*: 同 fib(30) bench で *12.5x
+   speedup* (= NeLisp native が Emacs 30+ libgccjit native-comp より
+   12.5 倍速い)
+両方とも fib(30) 軸単独の数値、bytecode と Emacs native-comp は別 baseline。
+"12x bytecode = Emacs native-comp の 12.5x" の旧 v1 表現は ambiguous
+だったため上記 2 行構造で書き分け (= T125 finding B-2 reflected、12x ≠
+12.5x の数値混乱を除去)。Phase 7.7.3 ship gate に Emacs native-comp
+比較を含めると、fib 30x 達成 = Emacs native-comp に対しても 30x+ (=
+全言語 top-tier 主張) という competitive marketing が立つ。§5.3 bench
+protocol で Emacs native-comp baseline 計測も同時実行する。
+
+T96 finding (=docs/bench-results/3-axis-actual-2026-04-25-T96.md=) で
+=fib 30x= が *T96-class optimization では構造的に unreachable*  と確定:
+- recursive call 多 + work less で Emacs native-comp も bytecode の 5%
+  以内 (libgccjit でも 同 axis では beat できない)
+- NeLisp native は bytecode VM 比 12x、Emacs native-comp 比 12.5x、
+  *同 compiler quality envelope 内では 12x が ceiling*
+- Per-call overhead が prologue (PUSH rbp / MOV / SUB rsp / param-home-spill
+  ~6 cycles) で支配されており、frame elimination = 関数 inliner なしでは
+  shrink 不可
+
+Doc 28 v2 §11.5 で v1.0 ship gate を *3/3 value-correct PASS + 2/3
+timing PASS* (= 5/6) に redefine、fib 30x bar は post-v1.0 defer。
+本 Phase 7.7 = その defer 先 future Phase = *recursive inliner + escape
+analysis + closure inline + lambda lifting* の 4 sub-phase で fib 30x
+gate 達成可能性を狙う。
+
+*v1.0 と本 Phase 7.7 の切り分け*:
+- v1.0 ship gate (Doc 28 §11.5 redefined): 5/6 必須、fib 30x は除外
+- v1.x feature target (本 doc): fib 30x bar 再 attempt + 関数呼出
+  overhead 全般削減 + closure escape SROA + λ-lift で free var 解消
+- *v1.0 release blocker ではない*。本 Phase は v1.0 公開告知後の
+  v1.1+ feature roadmap 候補
+
+*位置づけ*:
+- Doc 27 §3 は v1.0 critical path (Phase 7.0/7.1/7.2/7.3/7.4/7.5) を
+  列挙、本 doc は post-v1.0 7.7 を *新規追補*。Doc 27 §3 への 7.6/7.7
+  entry 追記は本 doc v2 LOCKED と同 commit pair で行う後付けタスク
+  (= T116 review A-4 で Doc 27 §3 に 7.x post-v1.0 sub-section が
+  存在しない fact が確定、本 doc が parent として "Doc 28 v2 §11.5
+  errata" に直接 hang する形に re-anchor 済み)
+- Phase 7.7 はその外側の post-v1.0 quality phase
+- Phase 7.6 番号は意図的に欠番化 (将来 dedicated GC tuning phase の
+  予約 anchor、本 doc では未定義、Doc 27 §3 への entry 追加は同様に
+  v2 LOCKED merge と同 commit pair の後付けタスク)
+- Phase 7.7 = SBCL =sb-c= が 25 年で漸次 evolution した recursive
+  inliner / escape analysis / lambda lifting の MVP subset を NeLisp
+  に移植
+- *number lock 注記* (T116 review A-6): Doc 28 v2 §11.5 の "Phase 7.7
+  (or rename)" を本 doc で *Phase 7.7 として固定*。Doc 28 v3 errata
+  or 本 doc v2 LOCKED merge と同 commit pair で番号 lock 化
+
+*工数見積*: 8-14 週間 (anvil.el + 並列 session full leverage 前提、Doc
+28 12-20 週間 比 軽量、すでに SSA + cost model 部品が揃っているため)。
+
+*完遂 gate (post-v1.0 v1.x feature target)*:
+- =fib(30)= bytecode VM 比 *30x speedup* attempt (= Doc 28 §11.5 errata
+  で defer された旧 gate の再 attempt、本 doc 主目的)
+- =fact-iter= / =alloc-heavy= 既存 PASS 維持 (regression-free)
+- ERT +30〜+50 (=test/nelisp-cc-inliner-test.el= + 関連 test)
+- code size budget 守備 (= inliner 暴走による .text 肥大は §6 risk
+  mitigation で具体化、後述)
+- compile time budget 守備 (= 1-pass cost model で線形 budget)
+- NeLisp 既存 ERT regression-free (本 phase 着手時点の baseline 数値は
+  v1.0 ship 時点で確定後に注入、本 doc v0/v1 では数値 placeholder。
+  T116 review C-5 で「v1.0 ship 後着手なので具体数 ~1224 は撤回」
+  reflected。v1.0 ship 時の `make test` 数値で v2 LOCKED 化前に注入)
+
+* §1 Scope
+
+** 1.1 motivation (= Doc 28 §11.5 errata の future Phase 担当)
+
+Doc 28 v2 §11.5 errata で *fib 30x bar の post-v1.0 defer* を確定、
+"Future Phase (post-v1.0): Phase 7.7 (or rename) = recursive inliner +
+escape analysis、期待効果 fib 30x+ gate 達成可能性、v1.x feature
+target、v1.0 ship gate からは除外" と明記された。本 doc がその Phase
+7.7 担当 design doc。
+
+T96 finding =Specific findings — why fib's 30x gate is unreachable= (= bench
+result md §) は 3 因子で fib 30x unreachability を analyze:
+
+1. *Emacs native-comp 自身が fib(30) で bytecode の 5% 以内* — libgccjit
+   でも escape analysis + scalar replacement of closure environment 無し
+   では recursive int arithmetic は specialise できない
+2. *NeLisp native at 12x bytecode = Emacs native-comp の 12.5x* — 同
+   compiler quality envelope 内では既に best-in-class
+3. *Per-call overhead = recursion structure dominated* — 50ms / 10 iter
+   / 2.7M calls = 1.85 ns / call = 5-6 cycle / call、prologue 単独 ~6
+   cycle で frame elimination 無しでは shrink 不可
+
+= 3 因子全てが *recursion を unrolling / inline で排除する* 方向の
+optimization 必要を指している。本 Phase 7.7 = まさにその optimization
+class を Phase として組成する。
+
+** 1.2 4 sub-phase の concrete scope
+
+| sub-phase | scope                                           | 期待効果 (fib 30x への寄与)             |
+|-----------+-------------------------------------------------+----------------------------------------|
+| 7.7.1     | escape analysis (closure env が caller frame に閉じるか SSA で証明) | inliner safety 保証、SROA gate 開放 (indirect) |
+| 7.7.2     | simple inline (1 callsite / leaf function only) | 5-15% 上乗せ (= leaf bound)           |
+| 7.7.3     | recursive inline (depth threshold + cost gate)  | *fib 30x main driver* (= 50-100% 上乗せ) |
+| 7.7.4     | lambda lift (free var → param 化 + flat dispatch) | nested lambda の constant overhead 排除 (= closure-heavy axis 専用、*fib 30x 直接寄与 0*) |
+
+= fib 30x driver は 7.7.3 単独 (= T116 review B-6 reflected、7.7.4 の
+寄与は closure-heavy axis のみ)、4 sub-phase 累積で =12.0x → 30x+= を
+狙う。各 sub-phase は単独で ship 可能な ERT subset を持ち、roll-back-
+friendly に分割。
+
+** 1.3 v1.0 critical path とは独立
+
+本 Phase は v1.0 ship gate (Doc 28 §11.5 redefined) には含まれない。
+v1.0 ship 後の最初の minor release (= v1.1 想定) で本 Phase に着手、
+v1.1 ship gate に "fib 30x attempt" を含めるかは v1.0 公開告知後の
+ecosystem 反応 (= 「fib bench で他言語と並びたい」需要) を見て
+re-prioritise。
+
+= *v1.0 release blocker ではない*、技術 debt でもない (= Doc 28 §11.5
+で正式に scope-out)。本 Phase は *v1.x feature target、競争力強化*
+として位置付け。
+
+* §2 Architecture
+
+** 2.1 SSA pass extension としての位置
+
+既存 Phase 7.1 SSA IR (=src/nelisp-cc.el= =src/nelisp-cc-callees.el=)
+を拡張、新 pass を追加する形で実装。SSA 自体の構造変更は最小限:
+
+- 既存 =nelisp-cc--ssa-instr= の =:meta= alist に inliner 用 hint
+  (=:inline-cost= / =:escape-class= / =:recursive-depth-budget=) を追加
+- 新 pass = =nelisp-cc--escape-analyse= / =nelisp-cc--inline-simple= /
+  =nelisp-cc--inline-recursive= / =nelisp-cc--lambda-lift= を順序付き
+  pipeline に挿入
+- backend (=src/nelisp-cc-x86_64.el= / =src/nelisp-cc-arm64.el=) は
+  未変更が原則 (= inliner 後の SSA を従来通り emit)
+
+= 既存 SSA invariant checker (=nelisp-cc--ssa-verify-function=) で
+inline 後 SSA の well-formedness を validate、pass 内バグの早期検出。
+
+** 2.2 cost model
+
+inliner の暴走を防ぐ central piece。3 軸 budget:
+
+| 軸                | budget                | 理由                                |
+|-------------------+-----------------------+-------------------------------------|
+| .text size        | 関数あたり ~4 KB hard cap | I-cache 64 KB / hot loop 16 関数想定 |
+| compile time      | 関数あたり ~500 ms hard cap | edit-compile cycle 体感維持        |
+| recursion depth   | 8 levels hard cap     | exponential explosion guard         |
+
+各 budget 越えで inliner は *partial inline* (=途中まで unroll、残りは
+recursive call 維持) に degrade、=:meta :inline-aborted-at= で抜けた
+位置を記録。
+
+** 2.3 heuristics
+
+cost model を満たす範囲で inline するか否かを決める predicate:
+
+- *leaf bias*: callee が leaf (= 自身が再帰呼び出ししない) なら +50 score
+- *small body bias*: callee SSA instr count ≤ 20 なら +30 score
+- *hot callsite bias*: profile feedback (Phase 7.7 第 2 iteration 以降
+  で profile-guided 化、初版は static heuristics only)
+- *closure env tiny bias*: closure free var ≤ 2 なら escape analysis
+  経由で SROA、+40 score
+- *recursive depth ≥ 4 expand bias*: fib 等 deep recursion で 4 階 unroll
+  すると base case に近づく、+25 score
+
+= 累積 score ≥ 80 で inline GO、それ以下は abort。score formula は
+=defcustom nelisp-cc-inline-score-threshold= で tunable。
+
+** 2.4 escape analysis の 3 class
+
+- *class A — closed*: closure env が caller frame に閉じる (= 上方
+  reference 無し)、SROA 適用可能、inliner GO
+- *class B — upward*: closure env が caller frame の外に escape
+  (return value / heap store)、SROA 不可、inliner は env 保存付きで
+  GO
+- *class C — unknown*: SSA で証明不能 (= dynamic dispatch 経由など)、
+  conservative に escape 扱い、inliner abort
+
+= class A の比率が fib 30x 達成可能性の主指標。fib body は class A
+100% 想定、本 Phase で実証する。
+
+* §3 Sub-phase 7.7.1〜7.7.4 詳細
+
+** 3.1 Phase 7.7.1 — escape analysis (~2-3 週間)
+
+*scope*:
+- closure env 全 free var の use chain SSA 走査、上方 escape の有無を
+  3 class に分類
+- =nelisp-cc--ssa-function= に =:escape-class= property 追加 (per-closure)
+- =defcustom nelisp-cc-escape-conservative= (default =t=) で class C
+  デフォルト conservative
+
+*deliverables*:
+- =src/nelisp-cc-escape.el= 新規 (~400-600 LOC)
+- ERT delta +12 (=test/nelisp-cc-escape-test.el=)
+- =nelisp-cc--escape-analyse= 1 pass の前後 invariant test
+
+*完遂 gate*:
+- 既存 ERT regression-free
+- escape class 分類精度: fib body = class A 100%、known closure-mutation
+  patterns = class B 100%、ambiguous = class C
+- bench impact 0% (本 phase 単独では codegen 変化 0、後続 phase の前提)
+
+** 3.2 Phase 7.7.2 — simple inline (~1-2 週間)
+
+*scope*:
+- 1 callsite + leaf callee + escape class A の triple condition で
+  inline
+- callee SSA を caller SSA に substitute、param SSA value を caller arg
+  SSA value で rewrite、return value を caller use site に rewrite
+- =defcustom nelisp-cc-inline-simple-enable= (default =nil=、opt-in 段階)
+
+*deliverables*:
+- =src/nelisp-cc-inline.el= 新規 (~500-700 LOC、本 phase + 7.7.3 で
+  重ね updates)
+- ERT delta +10 (=test/nelisp-cc-inline-simple-test.el=)
+- bench: =fact-iter= の inner =funcall= 経由 leaf call が 1 callsite
+  のとき speedup ~5-10% 上乗せ計測
+
+*完遂 gate*:
+- 既存 ERT regression-free
+- bench: =fact-iter 25.6x → 27-29x= 上乗せ実測 (regression-free 維持)
+- =fib(30) 12.0x= は 7.7.2 単独では未変更想定 (= 多 callsite + recursion
+  で本 phase の 1-callsite gate を踏まない)
+
+** 3.3 Phase 7.7.3 — recursive inline (~3-5 週間、本 phase 主軸)
+
+*scope*:
+- recursive function (= self-call を含む callee) を depth budget 内
+  unroll、cost model gate で abort 制御
+- depth 4-8 unroll で base case に近づき、残り再帰部分は recursive call
+  維持 (partial inline)
+- inline 後 SSA に対し既存 backend の TCO + self-direct + load-var
+  elision がそのまま効くこと検証
+- =defcustom nelisp-cc-inline-recursive-depth= (default =4=、tunable)
+
+*deliverables*:
+- =src/nelisp-cc-inline.el= 拡張 (~+400 LOC)
+- ERT delta +18 (=test/nelisp-cc-inline-recursive-test.el=)
+- bench: =fib(30) 12.0x → 30x+= attempt、達成失敗時は §6 risk
+  mitigation で iterate
+
+*50-100% 上乗せ根拠 (T116 review D-7 + T125 review B-1 reflected、再導出)*:
+
+T125 finding で v1 の calculation 「8x-15x 上乗せ × T96 baseline 12x =
+18-30x」が単位混乱 (上乗せの定義不明 + 算術不整合) を起こしていたため、
+本 v2 で *call-count saving 起点の per-iteration cycle ベース* で再導出:
+
+1. *call-count saving*: T96 で fib(30) = 2.7M call。depth 4 unroll で
+   fib leaf call 数を 1/16 (= 2^4) に削減 = 1.6M call 削減、残 1.1M call は
+   recursive depth 4 超で partial inline abort
+2. *cycle saving*: 削減 call 1.6M × per-call overhead 6 cycle = 9.6M cycle
+   = ~3 ms (3 GHz host 想定)
+3. *baseline iter cost*: T96 fib(30) bench は 50ms / 10 iter = 5 ms / iter
+4. *net speedup*: 3 ms saving / 5 ms baseline = *60% speedup* で baseline
+   12x → ~19x (= **+58% 上乗せ達成**、§1.2 表「50-100% 上乗せ」の下端と整合)
+5. *上限要因*: 残 30-40% の theoretical gain は以下で吸収され、実測 50-100%
+   範囲 = *18x-24x* に着地が現実予測:
+   - I-cache pressure (= 4x copy で hot path 0.5-1 KB → 8-16 KB 程度に膨張)
+   - branch predictor warm-up (= 新 inline body に対する BTB miss)
+   - register pressure 増 (= depth 4 unroll で live SSA value 4x、spill 増)
+6. *30x 到達条件*: depth 6+ unroll が必要 (= 2^6 = 64x call reduction)、
+   ただし §2.2 cost model の =.text size hard cap 4 KB / 関数= で抑制される
+   ため structural には reachable 限定的。GO gate (≥30x) は *stretch goal*、
+   DEGRADE gate (20x ≤ fib < 30x) が *default outcome* と位置付け
+
+*予測確率付き risk acknowledge (T125 finding B-1 mitigation)*:
+- *GO gate (≥30x) ≈ 20%*: depth 6+ unroll + cost model 例外運用 + heuristics
+  positive スコープが揃ったときのみ
+- *DEGRADE gate (20x ≤ fib < 30x) ≈ 50%*: depth 4 default + 18x-24x の
+  実測予測中央値、最有力 outcome
+- *ABORT gate (<20x) ≈ 30%*: cost model abort 多発 + I-cache pressure 想定
+  超 + branch predictor 悪化の重複時
+- = stakeholder の expectation calibration 用、Phase 7.7.3 着手時 §7.1
+  re-prioritise gate でも参照
+
+*完遂 gate (本 doc 主目的、3 段階 binary 判定 — T116 review C-6 reflected)*:
+- *"GO" gate*: =fib(30) ≥ 30x= で正規 ship + bench-results md で 30x lock
+  + Doc 28 §11.5 errata の defer 先 mission complete 宣言
+- *"DEGRADE" gate*: =20x ≤ fib(30) < 30x= で fallback ship +
+  bench-results md で achievable 値 lock + §9 open question に
+  "30x 再 attempt path" 追加 (= Phase 7.7 第 2 iteration への引き継ぎ)
+- *"ABORT" gate*: =fib(30) < 20x= で sub-phase ship 不可、Phase 7.7
+  第 2 iteration (profile-guided + より aggressive heuristics) に escalate、
+  本 sub-phase は revert
+- =fact-iter / alloc-heavy= 既存 PASS 維持 (regression-free 必須、3 tier
+  gate 全てで条件)
+- code size budget 順守 (.text 肥大 < 4 KB / 関数)
+- compile time budget 順守 (< 500 ms / 関数)
+- 既存 ERT regression-free
+- = §5.3 fallback target / §6.4 risk mitigation と整合
+
+** 3.4 Phase 7.7.4 — lambda lift (~2-3 週間)
+
+*scope*:
+- nested lambda の free var を outer param 化、lambda lift で flat
+  dispatch table 化
+- closure allocation を eliminate、heap pressure 削減
+- escape class B の一部を class A に reclassify、後続 inline 機会拡大
+
+*deliverables*:
+- =src/nelisp-cc-lambda-lift.el= 新規 (~300-400 LOC)
+- ERT delta +10 (=test/nelisp-cc-lambda-lift-test.el=)
+- bench: closure-heavy micro-bench 新設 + 既存 3 軸 regression-free
+
+*完遂 gate*:
+- closure-heavy bench 5x+ speedup (= 本 doc 独立 axis、*本 doc 内 spec
+  として完結* — T116 review A-5 reflected。Doc 28 v3 起草 trigger は
+  本 doc 内に持ち込まない。Doc 28 v2 §5.2 の 3-axis gate は Phase 7.7
+  完遂条件には含めない)
+- 既存 3 軸 PASS 維持 (regression-free)
+- ERT regression-free
+
+* §4 ABI / API list
+
+** 4.1 public API (=src/nelisp-cc-inline.el= / =src/nelisp-cc-escape.el=)
+
+| symbol                                    | purpose                              |
+|-------------------------------------------+--------------------------------------|
+| =nelisp-cc-escape-analyse=                | function 単位 escape class assignment |
+| =nelisp-cc-inline-simple=                 | 1-callsite + leaf inline pass        |
+| =nelisp-cc-inline-recursive=              | depth-budget recursive inline pass   |
+| =nelisp-cc-lambda-lift=                   | nested lambda free var → param 化   |
+| =nelisp-cc-inline-stats=                  | per-function inline 結果 (count, abort 理由) |
+| =nelisp-cc-escape-class-of=               | function → :A / :B / :C accessor    |
+
+** 4.2 private helper (=nelisp-cc--inline-*= / =nelisp-cc--escape-*=)
+
+| symbol                                    | purpose                              |
+|-------------------------------------------+--------------------------------------|
+| =nelisp-cc--inline-cost-of=               | callee SSA → cost model score      |
+| =nelisp-cc--inline-substitute=            | param value → arg value rewrite     |
+| =nelisp-cc--inline-return-rewrite=        | return → caller use site rewrite    |
+| =nelisp-cc--inline-budget-check=          | 3 軸 budget 超過 detect             |
+| =nelisp-cc--inline-partial-record=        | partial-inline cut-point 記録        |
+| =nelisp-cc--escape-walk-uses=             | use chain 走査 + escape detect       |
+| =nelisp-cc--escape-class-merge=           | A/B/C class lattice join            |
+
+** 4.3 defcustom 群
+
+| name                                        | default | purpose                              |
+|---------------------------------------------+---------+--------------------------------------|
+| =nelisp-cc-inline-score-threshold=          | 80      | inline GO 判定 score 閾値           |
+| =nelisp-cc-inline-recursive-depth=          | 4       | recursive unroll depth budget       |
+| =nelisp-cc-inline-text-size-cap=            | 4096    | .text size hard cap (byte / 関数)   |
+| =nelisp-cc-inline-compile-time-cap=         | 500     | compile time hard cap (ms / 関数)   |
+| =nelisp-cc-inline-simple-enable=            | nil     | 7.7.2 opt-in flag                   |
+| =nelisp-cc-inline-recursive-enable=         | nil     | 7.7.3 opt-in flag                   |
+| =nelisp-cc-lambda-lift-enable=              | nil     | 7.7.4 opt-in flag                   |
+| =nelisp-cc-escape-conservative=             | t       | class C デフォルト conservative     |
+
+= 全 defcustom = opt-in 段階。各 sub-phase ship 直後の minor release で
+=nil= → =t= 化、ただし transition release の changelog で *規約変更点*
+を明示、ユーザ側 opt-out path (= defcustom 値手動上書き) を docstring
+で案内 (= T116 review B-5 reflected、regression mitigation gate)。
+安定後 v1.x release で固定。
+
+** 4.4 stats / instrumentation
+
+- =nelisp-cc-inline-stats=: per-function alist `((:fn-name . SYMBOL)
+  (:inline-count . N) (:abort-count . N) (:abort-reasons . PLIST)
+  (:text-size-delta . BYTES) (:compile-time-ms . MS))'
+- =nelisp-cc-escape-stats=: per-function class A/B/C count
+- =nelisp-cc-inline-dashboard= MCP tool (anvil-defs-style、optional)
+
+* §5 Testing scope
+
+** 5.1 ERT delta +30〜+50 (本 phase 合計)
+
+| test file                                 | scope                              | count  |
+|-------------------------------------------+------------------------------------+--------|
+| =test/nelisp-cc-escape-test.el=           | escape class 分類精度               | +12    |
+| =test/nelisp-cc-inline-simple-test.el=    | 1-callsite leaf inline             | +10    |
+| =test/nelisp-cc-inline-recursive-test.el= | depth budget unroll + cost model   | +18    |
+| =test/nelisp-cc-lambda-lift-test.el=      | free var → param 化                | +10    |
+| (合計)                                    |                                    | *+50*  |
+
+minimum threshold は +30 (各 sub-phase の最小 essential test)、達成
+target は +50 (full coverage)。
+
+** 5.2 SSA invariant checker 拡張
+
+既存 =nelisp-cc--ssa-verify-function= に inline pass 後の追加 invariant:
+- substitute 済み param SSA value が dangling reference でないこと
+- inlined return rewrite 後の use chain が consistent
+- partial inline cut-point の SSA が well-formed
+
+= 各 inline pass 直後に verify を強制 (=defcustom
+nelisp-cc-inline-verify-after-pass= default =t=)、debug 時 only と
+ship 時 hot path で toggle。
+
+** 5.3 bench gate fib 30x re-attempt (本 phase 主目的)
+
+=docs/bench-results/3-axis-actual-2026-04-25-T96.md= の Doc 28 v2 §5.2
+3-axis bench harness をそのまま再利用、Phase 7.7.3 ship 後に再計測:
+
+- *target*: =fib(30) 30x speedup= (= Doc 28 §11.5 errata で defer
+  された旧 gate、bytecode VM 比 + Emacs native-comp 比 *両方* で 30x+
+  達成 — T116 review C-4 reflected)
+- *fallback target*: =fib(30) 20x speedup= (= 30x 不能時の next-best
+  gate、本 doc §6 risk mitigation で再 lock)
+- 計測 protocol = T96 と同じ N=3 trial average、variance ~3-5% 報告
+- *Emacs native-comp baseline 同時計測* (= T96 で 12.5x 比較が確立済、
+  本 phase でも同 baseline を bench harness に並列計測、competitive
+  marketing claim "全言語 top-tier" の evidence material 化)
+
+bench result md = =docs/bench-results/3-axis-fib-attempt-YYYY-MM-DD-T<NN>.md=
+として新規、Doc 42 LOCKED 化条件に組み込む。
+
+** 5.4 closure-heavy 新 bench (Phase 7.7.4 連動、本 doc 独立 spec)
+
+lambda-lift の効果計測用、*本 doc 独立の bench gate set* として完結
+(= T116 review A-5 reflected、Doc 28 v3 起草 trigger を本 doc 内に
+持ち込まない):
+- closure-create + invoke loop 1M iter、bytecode VM 比 5x+ target
+- bench harness 構造 + protocol 全て本 doc 内で規定、Doc 28 v2 §5.2
+  3-axis (fib / fact-iter / alloc-heavy) とは独立軸として運用
+- Phase 7.7 完遂 gate = §5.3 fib gate (3 tier) + 本 §5.4 closure-heavy
+  gate (5x+ target) の 2 set。Doc 28 v2 §5.2 の 3-axis gate は本 phase
+  完遂条件には含めない (= regression-free 維持のみ要求)
+
+* §6 Risks (= code size explosion / compile time / cache pressure)
+
+** 6.1 code size explosion (.text 肥大、I-cache pressure)
+
+*risk*: recursive inline depth 4 で fib body が ~16x copy、.text 肥大
+で I-cache miss 増、speedup を相殺するか負方向
+
+*mitigation*:
+- §2.2 cost model の .text size hard cap (4 KB / 関数)
+- =defcustom nelisp-cc-inline-text-size-cap= で実機 tuning
+- bench で .text 計測 + I-cache miss rate 計測 (=perf stat -e
+  L1-icache-load-misses=) を 7.7.3 ship 前に実行
+- 越えた場合 partial inline (= 途中で unroll 停止 + recursive call 復活)
+  に degrade
+
+** 6.2 compile time spike
+
+*risk*: inline + escape pass で 1 関数あたり ~500 ms 越え、edit-compile
+cycle 体感劣化
+
+*mitigation*:
+- §2.2 cost model の compile time hard cap (500 ms / 関数)
+- 1-pass cost model (linear walk、=O(n)= where n = SSA instr count)
+- profile feedback iteration は Phase 7.7 第 2 iteration 以降に defer
+- =nelisp-cc-inline-compile-time-cap= で実機 tuning
+
+** 6.3 cache pressure (D-cache + I-cache 同時)
+
+*risk*: inline 後 hot path 関数群が I-cache 64 KB 超 + closure SROA で
+D-cache 経路変化、cache replacement で speedup 食う
+
+*mitigation*:
+- hot loop 16 関数想定 (16 × 4 KB = 64 KB) を I-cache budget 上限
+- =nelisp-cc-inline-stats= の =:text-size-delta= 監視
+- =perf stat -e LLC-load-misses= で D-cache miss 計測、bench harness
+  に組み込み
+
+** 6.4 fib 30x 達成不能 (本 phase 主目的の miss)
+
+*risk*: recursive inline + escape analysis で fib(30) が 20x 止まり、
+30x gate 未達 (= Doc 28 §11.5 errata で defer された旧 gate を再 attempt
+するも未達)
+
+*mitigation*:
+- §5.3 fallback target =20x= で degrade 受容、bench-results md で
+  achievable 値 lock
+- *本 doc は v1.0 ship gate 外 = release blocker ではない*、未達でも
+  v1.x release は可能
+- Phase 7.7 第 2 iteration (profile-guided + より aggressive heuristics)
+  で再 attempt の余地
+
+** 6.5 SSA invariant 破壊 (inliner pass バグ)
+
+*risk*: substitute / return rewrite で dangling reference / phi node
+矛盾、backend で silent wrong-result
+
+*mitigation*:
+- §5.2 SSA invariant checker を全 pass 直後 強制実行 (default =t=)
+- ERT +30〜+50 で各 substitute / rewrite path covered
+- =nelisp-cc-inline-verify-after-pass= = =t= を ship 時も維持 (cost
+  許容範囲、後続 ship で =nil= 化検討)
+
+** 6.6 escape analysis false negative (class A → 実は B)
+
+*risk*: closure env が実は upward escape しているのに class A 誤判定、
+SROA で wrong-result
+
+*mitigation*:
+- §2.4 class C デフォルト conservative (=defcustom
+  nelisp-cc-escape-conservative= = =t=)
+- =nelisp-cc--escape-walk-uses= で全 use chain 走査 (= reachable from
+  any return / store)
+- ERT +12 (=test/nelisp-cc-escape-test.el=) で known escape patterns
+  全 cover
+- ambiguous case 専用 stress test (1000 random closure expression
+  generated + verify)
+
+** 6.7 lambda lift で free var capture semantics 破壊
+
+*risk*: lambda lift で free var を param 化する際、原 closure semantics
+(= captured value が caller scope で mutate されたとき visible) を破壊
+
+*mitigation*:
+- escape class A 限定で lift (= caller scope mutation 無し前提)
+- mutation detect は escape walk と同 pass で実施
+- ERT +10 で mutate-after-capture pattern 全 cover
+
+** 6.8 heuristics false positive (= 不要な inline で速度低下)
+
+*risk* (T116 review D-8 reflected): §2.3 heuristics の累積 score ≥ 80
+で inline GO 判定でも、実機 bench で「inline すると遅くなる」 corner
+case があり得る:
+- caller の register pressure 増、L1d-cache spill 増
+- branch predictor の cold path 増加
+- I-cache footprint 拡大による LRU eviction 増
+
+*mitigation*:
+- per-function bench harness で inline 前後比較、negative speedup 検出時
+  は cost model score 閾値を per-function override
+- =defcustom nelisp-cc-inline-score-threshold-override= alist
+  (= ((SYMBOL . SCORE) ...) で関数単位 override)
+- ~5% 以上の regression は inline 自動 abort + log 記録
+  (= =:meta :inline-aborted-by-regression= で記録)
+- 7.7.3 ship 後 1 週間の bench soak で regression-prone function を
+  detect、override alist の seed list を bench-results md に固定
+
+* §7 Release roadmap (= post-v1.0 v1.x feature target)
+
+** 7.1 v1.0 ship 後の最初 minor release で本 Phase 着手想定
+
+- v1.0 ship gate (Doc 28 §11.5 redefined) = 5/6 必須、fib 30x 除外
+- v1.0 公開告知 (=feedback_nelisp_announcement_standalone_gate.md= 解除
+  trigger = Phase 7.5 SHIPPED) 後、ecosystem 反応を見て本 Phase 着手
+- v1.1 ship gate に "fib 30x attempt" を含めるか否かは v1.0 公開後
+  re-prioritise
+
+** 7.2 想定 timeline (v1.0 ship を T0 とする)
+
+| 時点    | milestone                                          |
+|---------+----------------------------------------------------|
+| T0      | v1.0 ship (Phase 7.5 SHIPPED)                      |
+| T0+1m   | v1.0 公開告知 + ecosystem 反応 collection         |
+| T0+2m   | Phase 7.7 着手判断 (re-prioritise gate)           |
+| T0+2m〜 | Phase 7.7.1 escape analysis (~2-3 週間)            |
+| T0+3m〜 | Phase 7.7.2 simple inline (~1-2 週間)              |
+| T0+4m〜 | Phase 7.7.3 recursive inline (~3-5 週間、主軸)     |
+| T0+5m〜 | Phase 7.7.4 lambda lift (~2-3 週間)                |
+| T0+6m   | v1.1 ship 候補 (Phase 7.7 全 SHIPPED + bench result lock) |
+
+= T0+6m = 6 ヶ月 timeline、Doc 28 12-20 週間 比 軽量 (既存 SSA + cost
+model 部品流用)。
+
+*re-prioritise gate 分岐 (T116 review E-1 reflected)*:
+- *"GO"*: T0+2m〜 で Phase 7.7.1 着手、上記 timeline 通り進行
+- *"NO-GO" / "DEFER 6m"*: T0+8m (= 6m defer) で再 re-prioritise gate、
+  本 timeline は GO 前提。NO-GO の場合 §11.4 v2 LOCKED は =DEFERRED-
+  YYYY-MM-DD= status で main merge、再 evaluation 時期も明記
+
+** 7.3 v1.x feature target としての位置
+
+本 Phase = NeLisp 公開告知後の *competitive advantage* 強化:
+- fib 30x 達成 = "Emacs ecosystem 内 top-tier" → "全言語比較 top-tier"
+  への brand 強化
+- recursive inliner / escape analysis = SBCL 25 年で評価された
+  classic optimization、precedent あり
+- v1.0 ship 後の "次の質感向上" target、release engineering (Phase
+  7.5) と並列でない
+
+* §8 Out of scope
+
+本 Phase は以下を *含まない* (= 別 Phase or out-of-scope):
+
+** 8.1 profile-guided optimization (PGO)
+
+PGO = Phase 7.7 第 2 iteration 以降 (v1.2+) の future Phase。本 Phase
+は static heuristics only。
+
+** 8.2 polymorphic inline cache (PIC)
+
+PIC = dynamic dispatch site の type specialization、本 Phase の static
+inline とは別技術。Phase 7.x の更別 sub-phase で検討。
+
+** 8.3 type inference / type-driven specialization
+
+type inference = SBCL =sb-c= が 25 年掛けた hardest piece、Phase 7.7
+の MVP scope では out-of-scope。closure SROA / escape analysis のみが
+type-adjacent。
+
+** 8.4 inter-procedural analysis (IPA)
+
+IPA = whole-program optimization、本 Phase の per-function optimization
+とは別 axis。SBCL でも =sb-c= 単独では IPA 限定的。Phase 7.x の
+更別 sub-phase で検討。
+
+** 8.5 GC interaction の本格 tuning
+
+GC tuning = Doc 30 (Phase 7.3) の scope、本 Phase は inliner 後の SSA
+が GC root bitmap を正しく持つこと (= Doc 28 §2.9 commits) のみ
+保証。
+
+** 8.6 fib 30x bar 達成義務
+
+§6.4 で明記、本 Phase は *attempt* であり義務ではない。fallback
+target =20x= で degrade 受容。
+
+* §9 Open questions
+
+** 9.1 v1.0 ship 後の本 Phase 着手判断 trigger
+
+- ecosystem 反応 (= "fib bench で他言語と並びたい" 需要) の重み
+- v1.1 ship gate に "fib 30x attempt" を含めるか
+- 本 Phase と他 v1.x feature (例: extension substrate Doc 34 / process
+  substrate Doc 39) の優先順位
+
+= v1.0 ship 後 1 ヶ月 = T0+1m で re-prioritise gate を持つ、本 doc
+v0 では未確定。
+
+** 9.2 cost model の score 閾値 tuning
+
+- =nelisp-cc-inline-score-threshold= default =80= の妥当性は実機
+  bench で tune 必要
+- 関数 class (leaf / recursive / closure-heavy) ごとに別 threshold
+  必要か
+- 本 doc v0 では暫定値、Phase 7.7.2 ship 後の bench で lock
+
+** 9.3 partial inline の cut-point 戦略
+
+- depth budget 超で abort する際、どの depth で cut するか
+  - 一律 budget level で cut (simple)
+  - cost model score と連動して dynamic cut (complex)
+- 本 doc v0 では一律 budget level、Phase 7.7.3 ship 後 dynamic 化
+  検討
+
+** 9.4 lambda lift と closure mutation semantics の境界
+
+- escape class A 限定 = mutate-free 前提、ただし NeLisp の
+  =setq= / =setf= macro がどこまで用心深く検出できるか実装で確認
+- 本 doc v0 では conservative 寄り、Phase 7.7.4 着手時に refinement
+
+** 9.5 bench harness の reproducibility
+
+- T96 = N=3 trial average、variance 3-5%
+- fib 30x attempt の bench で同 protocol 適用、reference host pin の
+  詳細は Phase 7.7.3 ship 時 bench-results md で固定
+
+** 9.6 本 doc LOCKED 化のタイミング
+
+- v0 = T111 起草、本 phase は v1.0 ship 後着手
+- v1 化 = v1.0 ship 直前の re-review (T0 - 1m 想定)、Doc 28 §11.5
+  errata と整合再確認
+- v2 LOCKED = v1.0 ship 後 ecosystem 反応を踏まえた最終 lock (T0+1m
+  想定)
+
+* §10 関連 doc
+
+- *Doc 27* =27-phase7-c-runtime-self-impl.org= LOCKED — Phase 7.x
+  series の親 doc。Doc 27 §3 は v1.0 critical path (Phase 7.0〜7.5)
+  を列挙、本 doc は post-v1.0 7.7 を *新規追補*。Doc 27 §3 への 7.7
+  entry 追記は本 doc v2 LOCKED merge と同 commit pair で行う後付け
+  タスク (= T116 review A-4 reflected)
+- *Doc 28* =28-phase7.1-native-compiler.org= LOCKED v2 — 本 doc 直接
+  parent、§11.5 errata で fib 30x defer を確定、本 doc がその defer 先
+- *Doc 30* =30-phase7.3-gc-inner.org= LOCKED — Phase 7.3 GC consumer。
+  本 phase 7.7 inline pass 後の SSA が Doc 28 §2.9 GC metadata
+  contract を破壊しない事 (= GC root bitmap 正常維持) を Doc 30 と
+  cross-check (= T116 review E-5 reflected)
+- *Doc 32* =32-phase7.5-integration.org= LOCKED v2 — Phase 7.5
+  integration、本 Phase 7.7 の前提 = Phase 7.5 SHIPPED + v1.0 公開告知
+- *T96 bench result* =docs/bench-results/3-axis-actual-2026-04-25-T96.md=
+  — fib 30x unreachability 実測 evidence、本 doc の motivation 直接
+  source
+- *=src/nelisp-cc.el=* — Phase 7.1 SSA IR、本 phase が拡張する base
+- *=src/nelisp-cc-callees.el=* — Phase 7.1.5 callee marking、本 phase
+  の inline pass が連携
+- *=src/nelisp-cc-x86_64.el=* / *=src/nelisp-cc-arm64.el=* — backend、
+  本 phase は未変更原則 (= inline 後 SSA をそのまま emit)
+
+* §11 v0 → v1 → v2 LOCKED path
+
+*節番号 convention 注記 (T125 review B-5 reflected)*: v1 (T122 SHIPPED) で
+§11.1a alphanumeric suffix を使用していたが、v2 で *整数 numbering に
+unify* (= §11.1 v0、§11.2 v1、§11.3 v1→v2 review、§11.4 v2 LOCKED、§11.5
+main merge gate、§11.6 STATUS marker convention、§11.7 sign-off 履歴
+table)。org-mode の =org-cycle= outline navigation と整合、内部 cross-ref
+は本 v2 LOCKED 化で全て new numbering に updated。
+
+** 11.1 v0 (本 doc 初稿、T111 SHIPPED)
+
+- DRAFT 状態、Doc 28 §11.5 errata で defer された Phase 7.7 の
+  detailed scope 起こし
+- §1〜§10 完備、§9 open questions で v1 化までの未確定部分 explicit
+- canonical merge 不要、worktree =/tmp/nelisp-doc42-inliner-wt= 内のみ
+
+** 11.2 v1 (T122 SHIPPED — T116 review reflected)
+
+- DRAFT v0 → DRAFT v1、T116 (claude review、MINOR REVISIONS、1 MAJOR
+  + 11 MINOR) を反映:
+  - *A-4 [MAJOR]*: =#+PARENT:= を Doc 27 §3 → Doc 28 v2 LOCKED §11.5
+    errata に re-anchor、§0 末尾 / §10 / §11.4 (= v2 で §11.5 に renumber)
+    の "Doc 27 §3 7.x post-v1.0" 主張を撤回、Doc 27 §3 への 7.7 entry
+    追記は v2 LOCKED merge と同 commit pair の後付けタスクと明記
+  - *A-5 [MINOR]*: §3.4 / §5.4 で「Doc 28 v3 で 4-axis 化提案」削除、
+    closure-heavy bench を本 doc 内 spec として完結
+  - *A-6 [MINOR]*: §0 位置づけに「Doc 28 v2 §11.5 の "(or rename)" を
+    本 doc で Phase 7.7 として固定」number lock 注記追加
+  - *B-5 [MINOR]*: §4.3 末尾に defcustom transition log + ユーザ
+    opt-out 案内を補足
+  - *B-6 [MINOR]*: §1.2 表 7.7.4 行に「fib 30x 直接寄与 0」明記
+  - *C-4 [MINOR]*: §0 表に "Emacs native-comp 比" 列追加 + §5.3 bench
+    protocol に Emacs native-comp baseline 同時計測明記
+  - *C-5 [MINOR]*: §0 完遂 gate の "ERT ~1224 baseline" を v1.0 ship
+    時点で注入する placeholder 化、具体数撤回
+  - *C-6 [MINOR]*: §3.3 完遂 gate を 3 段階 (GO / DEGRADE / ABORT) で
+    binary 判定 logic 明記
+  - *D-7 [MINOR]*: §3.3 deliverables に "50-100% 上乗せ根拠" 数値
+    根拠追記 (depth 4 unroll → 1/16 call 数 + 理論 15x degrade 要因)
+  - *D-8 [MINOR]*: §6.8 で "heuristics false positive" risk 新設、
+    per-function override + auto-abort mitigation
+  - *E-1 [MINOR]*: §7.2 timeline 末尾に re-prioritise gate "GO" /
+    "NO-GO / DEFER 6m" 分岐明記
+  - *E-5 [MINOR]*: §10 関連 doc に Doc 30 cross-ref 追加
+- canonical merge 不要、worktree =/tmp/nelisp-doc42-v1-wt= 内のみ
+- v1 = =DRAFT-REVIEWED-v1=、第二弾 review (orchestrator codex) を T0
+  - 1m に走らせ、MINOR / NO REVISIONS で v2 LOCKED 化判定
+
+** 11.3 v1 → v2 LOCKED の review (v1.0 ship 直前の最終 re-review)
+
+- v1.0 ship 直前 (T0 - 1m 想定) で本 doc v1 を最終 re-review
+- Doc 28 §11.5 errata との整合再確認
+- §9 open questions の更新 (= v0 起草時から v1.0 ship までの間に判明
+  した事項を反映)
+- T122 (本 v1 SHIPPED) の 11 MINOR が全て吸収されているか確認、残
+  MINOR は v2 LOCKED 化前の post-T0 ecosystem 反応反映で吸収
+- orchestrator codex review 第二弾 (MAJOR REVISIONS / MINOR REVISIONS /
+  NO REVISIONS をフィードバック)
+- review pass で =DRAFT-REVIEWED-v2-pending=、user signoff 待ち
+
+** 11.4 v2 LOCKED (v1.0 ship 後 ecosystem 反応反映)
+
+- v1.0 ship + 公開告知 (T0) 後の 1 ヶ月で本 doc v2 lock
+- ecosystem 反応 (= fib bench 需要 / fib 30x 重要度) を §7.1 の
+  re-prioritise gate で反映
+- Phase 7.7 着手判断確定 (= GO / NO-GO / DEFER 6m)
+- 着手 GO の場合 v2 LOCKED で main merge、=anvil-dev release-audit
+  :scope doc 42= 緑
+- NO-GO / DEFER の場合 v2 = =DEFERRED=、re-evaluation timing 明記
+
+** 11.5 main merge gate (v2 LOCKED 化条件)
+
+- Doc 27 §3 への 7.7 entry 追加 commit を同 merge に含める (= T116
+  review A-4 reflected、本 doc 単独では Doc 27 §3 sub-section に entry
+  存在しない fact を後付け修正)
+- Doc 28 v2 LOCKED §11.5 整合 (本 doc が defer 先として完全 cover)
+- ERT regression-free (本 doc は文書のみだが、§3 sub-phase の
+  scope/LOC/期間が Doc 27 §3 7.x + §6.7 と矛盾しないこと)
+- =anvil-dev release-audit :scope doc 42= 緑
+- v1.0 ship + 公開告知 (T0) 完了
+- 本 v2 = =LOCKED-YYYY-MM-DD-v2=、user signoff で main =--no-ff= merge
+  解禁
+
+** 11.6 STATUS marker convention
+
+- v0: =DRAFT v0= (T111 SHIPPED)
+- v1 (本 doc): =DRAFT v1= (T122 SHIPPED、T116 review 11/11 MINOR 反映済)
+- v1 → v2 中間: =DRAFT-REVIEWED-v2-pending= (orchestrator 第二弾
+  review 後)
+- v2 LOCKED: =LOCKED-YYYY-MM-DD-v2= (T0+1m 想定)
+- 着手 NO-GO: =DEFERRED-YYYY-MM-DD= (再 review 時期も明記)
+
+** 11.7 v0 → v1 → v2 LOCKED sign-off 履歴 table
+
+| version | date       | author / reviewer                       | status                       | notes                                  |
+|---------+------------+-----------------------------------------+------------------------------+----------------------------------------|
+| v0      | 2026-04-25 | zawatton + Claude (T111 起草)            | =DRAFT v0=                   | Doc 28 §11.5 errata defer 先 detailed scope |
+| v1      | 2026-04-25 | T122 (Claude revise)                    | =DRAFT v1=                   | T116 (claude review) 1 MAJOR + 11 MINOR 全反映 |
+| v2      | 2026-04-25 | T126 (Claude revise + T125 review reflect) | =LOCKED-2026-04-25-v2=    | T125 (Claude 第二弾 review) 3 MINOR + 2 POSITIVE 全反映、§0 12.5x clarify + §3.3 calculation 再導出 + §11 整数 renumber |
+
+*reviewer addendum (T125 Claude 第二弾 review、2026-04-25)*:
+- *verdict*: MINOR REVISIONS (= 1 MAJOR 0 件 + 3 MINOR + 2 POSITIVE)
+- *T116 反映率*: 12/12 = 100% (1 MAJOR + 11 MINOR 全て v1 で反映済を verify)
+- *3 MINOR finding* (本 v2 で全反映):
+  - *B-1 [MINOR]*: §3.3 line 263-272 の「50-100% 上乗せ × T96 baseline 12x =
+    18-30x」calculation の単位混乱 → v2 で *call-count saving 起点* で再導出、
+    GO/DEGRADE/ABORT gate に *確率付き risk acknowledge* (GO ≈ 20% / DEGRADE
+    ≈ 50% / ABORT ≈ 30%) 追加で stakeholder expectation calibration 化
+  - *B-2 [MINOR]*: §0 line 25-26 の「12x bytecode = Emacs native-comp の 12.5x」
+    ambiguous 表現 → v2 で 2 行構造 (NeLisp vs bytecode = 12x / NeLisp vs
+    Emacs native-comp = 12.5x、両方とも fib(30) 軸単独) で書き分け、§0 表に
+    脚注 [fn:12.5x] 追加
+  - *B-5 [MINOR]*: §11.1a alphanumeric suffix → v2 で §11.1〜§11.7 の整数
+    numbering に unify、節番号 convention 注記を §11 冒頭に追加、内部
+    cross-ref (= §11.3 v2 LOCKED → §11.4) も同時 update
+- *2 POSITIVE finding*:
+  - *B-3 POSITIVE*: §11.6 (現 §11.7) sign-off 履歴 table が v0 → v1 → v2
+    chain visible で Doc 38 / 41 等 LOCKED design doc の規約と整合
+  - *B-4 POSITIVE*: §11.5 (現 §11.6) STATUS marker convention で全 status
+    (v0 / v1 / DRAFT-REVIEWED-v2-pending / LOCKED / DEFERRED) を統一表記、
+    後 session が辿りやすい
+- *next*: v2 LOCKED main merge ready (= Doc 27 §3 7.7 entry 追加 commit と
+  同 pair、§11.5 main merge gate 全条件 satisfied)
