@@ -2,7 +2,7 @@
 #+AUTHOR: zawatton + Claude
 #+DATE: 2026-04-25
 #+STATE: LOCKED-2026-04-25
-#+STATUS: §2 全 10 項目 LOCKED 2026-04-25 / Phase 6.0 + 6.3 SHIPPED (bin/anvil + audit + install.sh + tarball + README、tools/list 25)、6.1/6.2/6.4 残
+#+STATUS: §2 全 10 項目 LOCKED 2026-04-25 / Phase 6.0 + 6.2 全 9 sub-phase + 6.3 + 6.4 MVP SHIPPED 2026-04-25 — bin/anvil + audit + install.sh + tarball + README + Doc 24 anvil-http 完全パリティ + Windows wrapper、tools/list 25 → 33。残 Phase 6.1 launcher 本体 (anvil.el headless profile wire-up)
 
 * §0 要旨
 
