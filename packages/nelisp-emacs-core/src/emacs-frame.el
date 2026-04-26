@@ -601,6 +601,245 @@ a one-element list (or nil if no root-window has been wired in)."
   "Return the pseudo pixel-height of the implicit single display."
   emacs-frame--display-lines)
 
+;;; I. TUI backend wire-up (Doc 43 §3.1 Phase 11.A)
+;;
+;; Glue between `emacs-frame.el' (Doc 01 Phase 1, T140) and the Phase 2
+;; TUI substrate (`emacs-tui-backend.el' / `emacs-tui-event.el' /
+;; `emacs-tui-terminfo.el').  Wires the dispatch table per Doc 43 §2.1
+;; step 2 so that `emacs-frame-make-frame' / `set-frame-size' / ...
+;; flow into the real ANSI backend, while keeping the Layer 1 module
+;; load-clean of any TUI dependency (= TUI modules are required on
+;; demand from `emacs-frame-use-tui-backend' itself).
+
+;; Forward declarations so the byte-compiler is quiet without a hard
+;; load-time `require'.  Real definitions arrive when
+;; `emacs-frame-use-tui-backend' calls `(require 'emacs-tui-backend)'
+;; at the entry point.
+(declare-function emacs-tui-backend-init             "emacs-tui-backend"
+                  (&optional capabilities))
+(declare-function emacs-tui-backend-shutdown         "emacs-tui-backend"
+                  (handle))
+(declare-function emacs-tui-backend-handlep          "emacs-tui-backend"
+                  (object))
+(declare-function emacs-tui-backend-frame-create     "emacs-tui-backend"
+                  (handle name &optional params))
+(declare-function emacs-tui-backend-frame-destroy    "emacs-tui-backend"
+                  (handle frame))
+(declare-function emacs-tui-backend-frame-resize     "emacs-tui-backend"
+                  (handle frame width height))
+(declare-function emacs-tui-backend-cursor-show      "emacs-tui-backend"
+                  (handle frame row col))
+(declare-function emacs-tui-backend-cursor-hide      "emacs-tui-backend"
+                  (handle frame))
+(declare-function emacs-tui-backend-get-capability   "emacs-tui-backend"
+                  (handle cap-name))
+(declare-function emacs-tui-event-init               "emacs-tui-event"
+                  (&optional input-fd))
+(declare-function emacs-tui-event-shutdown           "emacs-tui-event"
+                  (handle))
+(declare-function emacs-tui-event-install-sigwinch   "emacs-tui-event"
+                  (handle callback))
+(declare-function emacs-tui-event-uninstall-sigwinch "emacs-tui-event"
+                  (handle))
+(declare-function emacs-tui-terminfo-detect          "emacs-tui-terminfo"
+                  (&optional env))
+(declare-function emacs-tui-terminfo-backend-init-args
+                  "emacs-tui-terminfo" (&optional env))
+
+(defvar emacs-frame--tui-handle nil
+  "Active `emacs-tui-backend-handle', or nil in stub mode.
+Set by `emacs-frame-use-tui-backend' and cleared by
+`emacs-frame-use-stub-backend'.  Module-private.")
+
+(defvar emacs-frame--tui-event-handle nil
+  "Active `emacs-tui-event-handle', or nil in stub mode.
+Module-private.  Mirrors `emacs-frame--tui-handle' lifecycle.")
+
+(defvar emacs-frame--tui-terminfo nil
+  "Plist describing the active terminfo detection result, or nil.
+Reflected verbatim from `emacs-tui-terminfo-detect'.  Used purely
+for introspection (= `emacs-frame-tui-info').")
+
+(defun emacs-frame--tui-frame-name (frame params)
+  "Compute a string name suitable for `emacs-tui-backend-frame-create'.
+
+Resolution order:
+1. PARAMS alist key `name' (must be a string).
+2. FRAME's struct `name' slot if non-nil and a string.
+3. Fallback `Fn' formed from FRAME's id."
+  (or (let ((p (cdr (assq 'name params))))
+        (and (stringp p) p))
+      (let ((n (emacs-frame-name frame)))
+        (and (stringp n) n))
+      (format "F%d" (emacs-frame-id frame))))
+
+(defun emacs-frame--tui-make-dispatch (handle event-handle)
+  "Construct the `emacs-frame--backend-dispatch' plist for HANDLE.
+HANDLE is an `emacs-tui-backend-handle' and EVENT-HANDLE is an
+`emacs-tui-event-handle'.  The returned plist is suitable for
+`emacs-frame-set-backend-dispatch'.
+
+The closure captures HANDLE so the plist can be installed without
+any further argument plumbing — every dispatch entry point routes
+through HANDLE and uses FRAME's BACKEND-OBJ slot as the per-frame
+TUI record.  EVENT-HANDLE is currently retained on the closure for
+parity with the resize-listener hook (Phase 11.A v2.x) but is not
+yet referenced from the dispatch table itself."
+  (ignore event-handle)
+  (list
+   :name 'tui
+   :frame-create
+   (lambda (frame params)
+     (let ((name (emacs-frame--tui-frame-name frame params)))
+       (emacs-tui-backend-frame-create
+        handle name
+        ;; Forward the size hints the TUI backend understands.
+        (let (out)
+          (when (integerp (cdr (assq 'width params)))
+            (push (cons :width  (cdr (assq 'width  params))) out))
+          (when (integerp (cdr (assq 'height params)))
+            (push (cons :height (cdr (assq 'height params))) out))
+          out))))
+   :frame-destroy
+   (lambda (frame)
+     (let ((obj (emacs-frame-backend-obj frame)))
+       (when obj
+         (emacs-tui-backend-frame-destroy handle obj))))
+   :frame-resize
+   (lambda (frame cols lines)
+     (let ((obj (emacs-frame-backend-obj frame)))
+       (when obj
+         (emacs-tui-backend-frame-resize handle obj cols lines))))
+   :frame-position
+   ;; TUI cells have no on-screen position; treat as a no-op so the
+   ;; stub-mode `emacs-frame-set-frame-position' invariant still
+   ;; holds (= struct slots updated, dispatch returns nil).
+   (lambda (_frame _x _y) nil)
+   :frame-visible
+   ;; Visibility = cursor toggle.  When marking visible we re-show the
+   ;; cursor at (0,0); marking invisible hides it.  Either way the
+   ;; canvas itself is preserved.
+   (lambda (frame visible-p)
+     (let ((obj (emacs-frame-backend-obj frame)))
+       (when obj
+         (if visible-p
+             (emacs-tui-backend-cursor-show handle obj 0 0)
+           (emacs-tui-backend-cursor-hide handle obj)))))
+   :frame-raise
+   (lambda (_frame) nil)
+   :frame-lower
+   (lambda (_frame) nil)
+   :capability-query
+   (lambda (capability)
+     ;; Always report the stub-mode core caps as supported (= the
+     ;; dispatch is ALWAYS able to satisfy frame-create/destroy/
+     ;; resize), then defer to the TUI backend handle for everything
+     ;; else (= text / basic-color / keyboard / resize / layout-* +
+     ;; optional 256-color / truecolor when the terminfo elevates).
+     (or (memq capability '(frame-create frame-destroy frame-resize))
+         (emacs-tui-backend-get-capability handle capability)))))
+
+;;;###autoload
+(defun emacs-frame-use-tui-backend (&optional terminfo-args)
+  "Install the Phase 2 TUI substrate as the active frame backend.
+
+TERMINFO-ARGS, if non-nil, is a plist of overrides forwarded to the
+backend init layer — keys recognised today:
+
+  :capabilities   list of capability symbols overriding terminfo
+                  detection (mostly for ERT / debugging).
+  :env            alist forwarded to `emacs-tui-terminfo-detect'.
+
+When TERMINFO-ARGS is nil the live `process-environment' is read
+through `emacs-tui-terminfo-detect' and the resulting capability
+list is handed to `emacs-tui-backend-init'.
+
+After install:
+- `emacs-frame-current-backend' returns `tui'.
+- All existing live frames have their BACKEND slot mutated to `tui'
+  (= Doc 43 §2.1 step 3 `swap restart recommended' note still
+  applies for in-flight redisplay).
+- Subsequent `emacs-frame-make-frame' invocations route through the
+  TUI backend; the per-frame TUI record is stored in BACKEND-OBJ.
+
+Returns a plist:
+  :backend BACKEND-HANDLE
+  :event   EVENT-HANDLE
+  :info    TERMINFO-DETECTION-RESULT (the plist from
+           `emacs-tui-terminfo-detect') or nil if `:capabilities'
+           was supplied directly.
+
+If a TUI backend is already active, it is shut down cleanly first
+(= idempotent re-install)."
+  (require 'emacs-tui-backend)
+  (require 'emacs-tui-event)
+  (require 'emacs-tui-terminfo)
+  ;; Idempotent: tear down any existing TUI backend first.
+  (when (or emacs-frame--tui-handle emacs-frame--tui-event-handle)
+    (emacs-frame-use-stub-backend))
+  (let* ((cap-override (and terminfo-args
+                            (plist-get terminfo-args :capabilities)))
+         (env          (and terminfo-args
+                            (plist-get terminfo-args :env)))
+         (info         (unless cap-override
+                         (emacs-tui-terminfo-detect env)))
+         (init-args    (cond
+                        (cap-override (list cap-override))
+                        (t (emacs-tui-terminfo-backend-init-args env))))
+         (backend-handle (apply #'emacs-tui-backend-init init-args))
+         (event-handle   (emacs-tui-event-init))
+         (dispatch       (emacs-frame--tui-make-dispatch
+                          backend-handle event-handle)))
+    (setq emacs-frame--tui-handle       backend-handle
+          emacs-frame--tui-event-handle event-handle
+          emacs-frame--tui-terminfo     info)
+    (emacs-frame-set-backend-dispatch dispatch)
+    (list :backend backend-handle
+          :event   event-handle
+          :info    info)))
+
+;;;###autoload
+(defun emacs-frame-use-stub-backend ()
+  "Revert frame backend dispatch to the stub-mode default (Doc 34 §2.11).
+
+If a TUI backend is currently active, its handles are shut down
+through `emacs-tui-backend-shutdown' / `emacs-tui-event-shutdown'
+and the per-frame BACKEND slot is reset to `stub'.  Any per-frame
+BACKEND-OBJ pointing at a TUI frame record is also cleared, since
+those records die with their handle.
+
+Returns t."
+  (when emacs-frame--tui-event-handle
+    (when (fboundp 'emacs-tui-event-shutdown)
+      (ignore-errors
+        (emacs-tui-event-shutdown emacs-frame--tui-event-handle))))
+  (when emacs-frame--tui-handle
+    (when (fboundp 'emacs-tui-backend-shutdown)
+      (ignore-errors
+        (emacs-tui-backend-shutdown emacs-frame--tui-handle))))
+  (setq emacs-frame--tui-handle       nil
+        emacs-frame--tui-event-handle nil
+        emacs-frame--tui-terminfo     nil)
+  ;; Clear stale BACKEND-OBJ on every live frame so a later
+  ;; re-install does not accidentally reuse a dead TUI frame.
+  (dolist (f emacs-frame--registry)
+    (when (emacs-frame-p f)
+      (setf (emacs-frame-backend-obj f) nil)))
+  (emacs-frame-set-backend-dispatch nil)
+  t)
+
+(defun emacs-frame-tui-handle ()
+  "Return the active `emacs-tui-backend-handle', or nil in stub mode."
+  emacs-frame--tui-handle)
+
+(defun emacs-frame-tui-event-handle ()
+  "Return the active `emacs-tui-event-handle', or nil in stub mode."
+  emacs-frame--tui-event-handle)
+
+(defun emacs-frame-tui-info ()
+  "Return the live terminfo detection plist, or nil in stub mode."
+  emacs-frame--tui-terminfo)
+
 (provide 'emacs-frame)
 
 ;;; emacs-frame.el ends here
