@@ -114,9 +114,11 @@ warm-up cost does not contaminate the measurement."
 
 (defun nelisp-cc-bench-actual--host-arm64-p ()
   "Return non-nil on arm64 / aarch64 hosts (M1/M2 mac etc).
-T162 follow-up — Phase 7.5.4 in-process FFI works on arm64 too once
-the cdylib is built; the bench backend has been wired (T10/T100)
-since Phase 7.0."
+The arm64 backend exists in skeleton form (T10/T100) but has known
+Phase 7.1.4 TODO gaps (`:const-wide-literal' etc) — bench-actual
+runs on arm64 produce `nil' values + meaningless speedups, so the
+host-supported predicate excludes arm64 until the backend is
+production-ready (Phase 7.1.5+ task)."
   (let ((cfg (downcase (or (and (boundp 'system-configuration)
                                 system-configuration)
                            ""))))
@@ -124,13 +126,20 @@ since Phase 7.0."
         (string-match-p "arm64" cfg))))
 
 (defun nelisp-cc-bench-actual--host-supported-p ()
-  "Return non-nil when the host CPU has a NeLisp native backend.
-Currently `x86_64' (T9) and `arm64' (T10) are SHIPPED."
-  (or (nelisp-cc-bench-actual--host-x86_64-p)
-      (nelisp-cc-bench-actual--host-arm64-p)))
+  "Return non-nil when the host CPU has a *production-ready* NeLisp backend.
+Currently only `x86_64' (T9) qualifies — the arm64 backend (T10)
+exists but has Phase 7.1.4 TODO gaps and is excluded from the §5.2
+gate run until Phase 7.1.5+ closes those gaps.  M1/M2 macOS users
+get an `arm64-backend-incomplete-phase7.1.4' skip-reason rather
+than a misleading PASS-with-nil-value report."
+  (nelisp-cc-bench-actual--host-x86_64-p))
 
 (defun nelisp-cc-bench-actual--host-backend ()
-  "Return the backend symbol matching the current host (`x86_64' or `arm64')."
+  "Return the backend symbol matching the current host (`x86_64' or `arm64').
+Note: this always reflects the host CPU so per-host code paths
+(notably `--native-value' / `--measure-native') target the matching
+codegen.  Whether a backend is *production-ready* is a separate
+question — see `--host-supported-p'."
   (cond ((nelisp-cc-bench-actual--host-x86_64-p) 'x86_64)
         ((nelisp-cc-bench-actual--host-arm64-p) 'arm64)
         (t (signal 'nelisp-cc-bench-actual-unsafe-bytes
@@ -325,7 +334,7 @@ host Emacs.  Phase 7.5 callee resolution flips this from
     ;; in-process exec call differs.  This mirrors the bytecode-VM
     ;; baseline (compile-once, run-N-times) so the ratio is fair.
     (let* ((compiled-once (nelisp-cc-runtime-compile-and-allocate
-                           form 'x86_64))
+                           form (nelisp-cc-bench-actual--host-backend)))
            (final-bytes   (plist-get compiled-once :final-bytes)))
       ;; Reset start AFTER the compile so we measure pure exec, not
       ;; compile-time.  This matches Doc 28 v2 §5.2's intent (gate is
@@ -391,6 +400,12 @@ Plist keys:
           (cond
            ((not (nelisp-cc-bench-actual--module-available-p))
             'module-not-built)
+           ((nelisp-cc-bench-actual--host-arm64-p)
+            ;; arm64 backend has Phase 7.1.4 TODO gaps — skip with an
+            ;; explicit reason rather than running and reporting nil
+            ;; values + meaningless speedups (= the M1 mac symptom on
+            ;; bench-actual T162 follow-up run).
+            'arm64-backend-incomplete-phase7.1.4)
            ((not (nelisp-cc-bench-actual--host-supported-p))
             'unsupported-host-cpu)
            (t nil)))
