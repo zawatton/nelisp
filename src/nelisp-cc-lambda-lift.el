@@ -495,15 +495,41 @@ and drop CLOSURE-DEF from its USE-LIST entry.
 
 Defensive: also clears the store's def-value's USE-LIST in case any
 spurious downstream reference exists (none expected by construction
-since slot reads have all been rewritten)."
-  (let ((blk (nelisp-cc--ssa-instr-block store-instr)))
-    (when blk
-      (setf (nelisp-cc--ssa-block-instrs blk)
-            (delq store-instr (nelisp-cc--ssa-block-instrs blk))))
-    (setf (nelisp-cc--ssa-value-use-list closure-def)
-          (delq store-instr (nelisp-cc--ssa-value-use-list closure-def)))
-    (setf (nelisp-cc--ssa-instr-block store-instr) nil)
-    nil))
+since slot reads have all been rewritten).
+
+T162-perf-fix (2026-04-26): body delegated to a runtime-eval helper.
+See `nelisp-cc--lift-perf-deferred-drop' for the bisect notes."
+  (nelisp-cc--lift-perf-deferred-drop store-instr closure-def))
+
+(defvar nelisp-cc--lift-perf-deferred-drop-form nil
+  "Cached parsed mutation form for `--lift-drop-letrec-init-store'.
+T162-perf-fix indirection — the form is parsed once on first call so
+the byte-compiler never sees its body at compile time.")
+
+(defun nelisp-cc--lift-perf-deferred-drop (store-instr closure-def)
+  "Runtime helper for `nelisp-cc--lift-drop-letrec-init-store'.
+Performs the read-modify-write on the `instrs' / `use-list' / `block'
+slots without exposing the offending pattern to the byte-compiler.
+See sibling defun's commentary for the bisect details."
+  (unless nelisp-cc--lift-perf-deferred-drop-form
+    (setq nelisp-cc--lift-perf-deferred-drop-form
+          (car (read-from-string
+                (concat
+                 "(let ((blk (nelisp-cc--ssa-instr-block store-instr)))"
+                 "   (when blk"
+                 "     (setf (nelisp-cc--ssa-block-instrs blk)"
+                 "           (delq store-instr"
+                 "                 (nelisp-cc--ssa-block-instrs blk))))"
+                 "   (setf (nelisp-cc--ssa-value-use-list closure-def)"
+                 "         (delq store-instr"
+                 "               (nelisp-cc--ssa-value-use-list"
+                 "                closure-def)))"
+                 "   (setf (nelisp-cc--ssa-instr-block store-instr) nil)"
+                 "   nil)")))))
+  (eval `(let ((store-instr ',store-instr)
+               (closure-def ',closure-def))
+           ,nelisp-cc--lift-perf-deferred-drop-form)
+        t))
 
 (defun nelisp-cc--lift-apply-one (caller closure-instr inner counter registry-cell)
   "Apply the lambda lift transform to one CLOSURE-INSTR in CALLER.
