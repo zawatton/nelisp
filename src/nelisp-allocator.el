@@ -152,6 +152,10 @@ exactly fills a span before the large-object path takes over.")
   "Unknown object family (Doc 29 §2.5 table)"
   'nelisp-allocator-error)
 
+(define-error 'nelisp-allocator-version-mismatch
+  "Heap-region registry contract version mismatch (Doc 29 §1.4)"
+  'nelisp-allocator-error)
+
 ;;; Heap region registry (Doc 29 §1.4) -------------------------------
 
 (cl-defstruct (nelisp-heap-region
@@ -328,6 +332,56 @@ allocated; callers may mutate it freely."
                     :family     fam-kw
                     :version    (nelisp-heap-region-version region))))
           (nelisp-allocator-region-table-snapshot)))
+
+(defun nelisp-allocator-region-check-version (region &optional consumer-version)
+  "Validate REGION carries the expected heap-region registry version.
+
+Doc 29 §1.4 / §7.2 LOCK-close: Phase 7.3 (and any future consumer)
+must refuse to walk a region whose `version' field it does not
+understand.  CONSUMER-VERSION defaults to `nelisp-heap-region-version'
+(= the version this build of the allocator produces).  Pass an
+explicit value when the consumer was compiled against a different
+contract revision and wants to assert compatibility before accepting
+the snapshot.
+
+REGION may be either a `nelisp-heap-region' struct (from
+`nelisp-allocator-region-table-snapshot') or a plist descriptor
+(from `nelisp-allocator-snapshot-regions').
+
+Signals `nelisp-allocator-version-mismatch' on disagreement so the
+caller can recover (e.g. fall back to the v1 walker, or abort).
+Returns the region unchanged on success so the helper composes with
+`mapcar' / `cl-find'."
+  (let* ((expected (or consumer-version nelisp-heap-region-version))
+         (actual (cond
+                  ((nelisp-heap-region-p region)
+                   (nelisp-heap-region-version region))
+                  ((listp region)
+                   (plist-get region :version))
+                  (t (signal 'nelisp-allocator-error
+                             (list "region-check-version: not a region"
+                                   region))))))
+    (unless (and (integerp actual) (= actual expected))
+      (signal 'nelisp-allocator-version-mismatch
+              (list :region region
+                    :expected expected
+                    :actual actual)))
+    region))
+
+(defun nelisp-allocator-region-table-check-versions (&optional consumer-version)
+  "Run `nelisp-allocator-region-check-version' across the entire registry.
+
+Convenience wrapper for Phase 7.3 / Phase 7.5 cold-init: pre-flight
+the global registry before kicking off a heap walk so a stale region
+(left over from a previous Emacs session that loaded an older
+`nelisp-allocator') aborts loudly rather than silently corrupting
+the GC walker.  Returns the snapshot list on success.
+
+CONSUMER-VERSION defaults to `nelisp-heap-region-version'."
+  (let ((snapshot (nelisp-allocator-region-table-snapshot)))
+    (dolist (region snapshot)
+      (nelisp-allocator-region-check-version region consumer-version))
+    snapshot))
 
 (defun nelisp-allocator--make-region (size generation family)
   "Allocate a fresh region of SIZE bytes for GENERATION/FAMILY.
