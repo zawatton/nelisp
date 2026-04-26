@@ -359,6 +359,23 @@ is interned so callers can use `eq' / `assq' on the registry."
                            counter)))
     (intern name-str)))
 
+(defun nelisp-cc--lift-resolve-name (caller closure-instr counter)
+  "Pick the name for the lifted function bound at CLOSURE-INSTR.
+
+T162 fix: prefer the closure's `:letrec-name' meta when present —
+T161's `:call-indirect → :call' rewrite uses `:letrec-name' as the
+direct-call `:fn' meta, so the lifted body must register under the
+same symbol or the post-finalize `callee:NAME' fixup cannot resolve.
+When `:letrec-name' is missing (= anonymous lambda lifted), fall back
+to the synthesised `<CALLER>$lift$N' name.
+
+CALLER + COUNTER are still threaded so the synthesised fallback is
+deterministic across multiple lift sites in the same caller."
+  (let* ((meta (and closure-instr
+                    (nelisp-cc--ssa-instr-meta closure-instr)))
+         (letrec-name (and meta (plist-get meta :letrec-name))))
+    (or letrec-name (nelisp-cc--lift-make-name caller counter))))
+
 ;;; rewrite primitives ---------------------------------------------
 
 (defun nelisp-cc--lift-rewrite-call-indirect (call-instr lifted-name)
@@ -436,11 +453,12 @@ Always returns INNER."
 
 ;;; lift driver ----------------------------------------------------
 
-(defun nelisp-cc--lift-name-and-record (caller inner counter registry-cell)
-  "Allocate a fresh lifted-name for INNER inside CALLER.
+(defun nelisp-cc--lift-name-and-record
+    (caller inner counter registry-cell &optional closure-instr)
+  "Allocate / resolve a top-level name for INNER inside CALLER.
 
 REGISTRY-CELL is a *cons* whose `car' is the live registry alist
-(`((NAME . SSA) ...)').  When a name is synthesised the helper
+(`((NAME . SSA) ...)').  When a name is chosen the helper
 re-binds the cell's car to the *augmented* alist so callers reading
 `(car registry-cell)' after the lift see the new entry.  Mutating
 through the cell rather than returning a fresh alist preserves
@@ -448,11 +466,19 @@ caller-side identity for the multi-function pipeline use case
 (passing the same alist into successive `nelisp-cc-lift-pass' calls
 across a registry of functions).
 
-Sets INNER's NAME to the synthesised symbol so the lifted function
+T162 fix: when CLOSURE-INSTR is supplied and carries `:letrec-name'
+meta, that name is preferred over the synthesised `<CALLER>$lift$N'
+form so T161-rewritten `:call :fn LETREC-NAME' instructions resolve
+to the lifted body via the matching `callee:LETREC-NAME' alias label
+that backend Step 4 binds.  Without this, lift would mint a fresh
+symbol that no `:call' references, and the lifted body becomes
+unreachable (= SIGSEGV when the call falls through to address 0).
+
+Sets INNER's NAME to the chosen symbol so the lifted function
 can be pretty-printed / inspected without ambiguity.
 
-Returns the synthesised name."
-  (let ((name (nelisp-cc--lift-make-name caller counter)))
+Returns the chosen name."
+  (let ((name (nelisp-cc--lift-resolve-name caller closure-instr counter)))
     (setf (nelisp-cc--ssa-function-name inner) name)
     (setcar registry-cell
             (cons (cons name inner) (car registry-cell)))
@@ -490,7 +516,7 @@ rewritten), then drops the `closure' instruction.  Returns the
 synthesised lifted name."
   (let* ((extended-inner (nelisp-cc--lift-extend-params inner closure-instr))
          (name (nelisp-cc--lift-name-and-record
-                caller extended-inner counter registry-cell))
+                caller extended-inner counter registry-cell closure-instr))
          (def (nelisp-cc--ssa-instr-def closure-instr))
          ;; Snapshot the use-list — the rewrite mutates it.
          (uses (copy-sequence (nelisp-cc--ssa-value-use-list def))))
@@ -541,9 +567,20 @@ unchanged and the count is 0."
     (dolist (site sites)
       (let ((decision (nelisp-cc--lift-decide site escape-info)))
         (when (eq :go (nelisp-cc--lift-status-verdict decision))
-          (let ((inner (nelisp-cc--lift-status-inner decision)))
-            (nelisp-cc--lift-apply-one
-             caller site inner counter registry-cell)
+          (let* ((inner (nelisp-cc--lift-status-inner decision))
+                 (lifted-name
+                  (nelisp-cc--lift-apply-one
+                   caller site inner counter registry-cell)))
+            ;; T162 fix Gap 1: record (NAME . INNER-FN) on caller so
+            ;; the backend's --compile-and-link can still find the
+            ;; inner body after the :closure instruction is gone.
+            ;; Without this, --collect-inner-functions returns 0
+            ;; (= no closure to walk), inner body is never emitted,
+            ;; and `callee:NAME' falls through to address 0 → SIGSEGV.
+            (when (and lifted-name inner)
+              (setf (nelisp-cc--ssa-function-lifted-inners caller)
+                    (append (nelisp-cc--ssa-function-lifted-inners caller)
+                            (list (cons lifted-name inner)))))
             (cl-incf counter)
             (cl-incf count)))))
     (cons caller count)))
