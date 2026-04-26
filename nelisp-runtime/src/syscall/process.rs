@@ -72,6 +72,18 @@
 #![allow(clippy::missing_safety_doc)]
 
 use libc::{c_char, c_int, pid_t, rlim_t};
+
+/// Cross-platform alias for the `resource' argument of
+/// `getrlimit(2)' / `setrlimit(2)'.  Linux glibc declares it as
+/// `__rlimit_resource_t' (= an unsigned-int enum); macOS / *BSD
+/// pass a plain `c_int'.  The value bits are identical (0..15
+/// mapping to RLIMIT_CPU/AS/NOFILE/etc), only the C type spelling
+/// differs.  T162 fix — pre-T162 the code hard-coded
+/// `NlRlimitResource' which broke `make runtime' on M1.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+type NlRlimitResource = libc::__rlimit_resource_t;
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+type NlRlimitResource = c_int;
 use std::mem::MaybeUninit;
 use std::ptr;
 
@@ -312,7 +324,7 @@ pub unsafe extern "C" fn nl_syscall_getrlimit(
     out_hard: *mut u64,
 ) -> i64 {
     let mut rl: MaybeUninit<libc::rlimit> = MaybeUninit::uninit();
-    let r = libc::getrlimit(resource as libc::__rlimit_resource_t, rl.as_mut_ptr());
+    let r = libc::getrlimit(resource as NlRlimitResource, rl.as_mut_ptr());
     if r != 0 {
         return -(SyscallError::last_os_error().raw() as i64);
     }
@@ -332,7 +344,7 @@ pub unsafe extern "C" fn nl_syscall_setrlimit(resource: i32, soft: u64, hard: u6
         rlim_cur: soft as rlim_t,
         rlim_max: hard as rlim_t,
     };
-    let r = libc::setrlimit(resource as libc::__rlimit_resource_t, &rl);
+    let r = libc::setrlimit(resource as NlRlimitResource, &rl);
     negate_errno(r)
 }
 
@@ -367,7 +379,7 @@ pub unsafe extern "C" fn nl_syscall_prlimit(
         };
         let r = libc::prlimit(
             _pid as pid_t,
-            _resource as libc::__rlimit_resource_t,
+            _resource as NlRlimitResource,
             new_ptr,
             old_rl.as_mut_ptr(),
         );
