@@ -441,32 +441,39 @@ Plist keys:
          (speedup
           (nelisp-cc-bench-actual--ratio bytecode-elapsed native-elapsed))
          (gate-pass
-          (and speedup (>= speedup gate-target)))
+          (cond (native-skip-reason :skipped)
+                ((and speedup (>= speedup gate-target)) t)
+                (t nil)))
          (vs-native-comp
           (nelisp-cc-bench-actual--ratio native-elapsed native-comp-elapsed))
          (vs-native-comp-acceptable
           (and vs-native-comp (>= vs-native-comp 0.5))))
     ;; T84 Phase 7.5 wire — value-correct check.  Run FORM once
     ;; under both pipelines (outside the timing window) and compare
-    ;; the i64 / bignum return.
-    (let* ((bc-val
-            (and (null native-skip-reason)
-                 (nelisp-cc-bench-actual--bytecode-value form)))
+    ;; the i64 / bignum return.  bc-val is always measured (it's the
+    ;; reference baseline, host-CPU independent); nat-val skipped =>
+    ;; value-eq = :skipped, value-pass = :skipped (treated as
+    ;; pass-through, not FAIL, by the OVERALL aggregator).
+    (let* ((bc-val (nelisp-cc-bench-actual--bytecode-value form))
            (nat-val
             (and (null native-skip-reason)
                  (nelisp-cc-bench-actual--native-value form)))
            (value-eq
-            (and (null native-skip-reason)
-                 (nelisp-cc-bench-actual--values-equal-p nat-val bc-val)))
-           (value-pass (or (eq value-eq t)
-                           (eq value-eq :i64-overflow))))
+            (cond (native-skip-reason :skipped)
+                  (t (nelisp-cc-bench-actual--values-equal-p nat-val bc-val))))
+           (value-pass (cond ((eq value-eq :skipped) :skipped)
+                             ((eq value-eq t) t)
+                             ((eq value-eq :i64-overflow) t)
+                             (t nil))))
       (message "  bytecode=%.4fs native=%s native-comp=%s speedup=%s gate=%.1fx %s | value: native=%S bc=%S → %S"
                bytecode-elapsed
                (if native-elapsed (format "%.4fs" native-elapsed) "skipped")
                (if native-comp-elapsed (format "%.4fs" native-comp-elapsed) "n/a")
                (if speedup (format "%.2fx" speedup) "n/a")
                gate-target
-               (if gate-pass "PASS" "FAIL")
+               (cond ((eq gate-pass :skipped) "SKIP")
+                     (gate-pass "PASS")
+                     (t "FAIL"))
                nat-val bc-val value-eq)
       (list :bench name
             :iterations iterations
@@ -545,14 +552,16 @@ Plist keys:
               (if nat (format "%.4f s (total)" nat) "skipped")
               (if nc  (format "%.4f s (total)" nc)  "not available on this host")
               (if sp  (format "%.2fx (bytecode/native)" sp)  "n/a")
-              gate (if pass "PASS" "FAIL")
+              gate (cond ((eq pass :skipped) "SKIP")
+                         (pass "PASS") (t "FAIL"))
               (if vs (format "%.2fx (native/native-comp)" vs) "n/a")
               (if vs (format ", >= 0.5x %s"
                              (if vs-ok "PASS" "FAIL"))
                 "")
               (if skip (symbol-name skip) "—")
               nat-val bc-val
-              value-eq (if val-pass "PASS" "FAIL")))))
+              value-eq (cond ((eq val-pass :skipped) "SKIP")
+                             (val-pass "PASS") (t "FAIL"))))))
 
 (defun nelisp-cc-bench-actual-run-3-axis (&optional iterations)
   "Run the 3-axis bench (fib-30 + fact-iter + alloc-heavy).
@@ -589,21 +598,38 @@ process with code 0 when all 3 §5.2 gates PASS, 1 otherwise."
       (dolist (r results)
         (insert (nelisp-cc-bench-actual--format-result r))
         (insert "\n"))
-      (let* ((all-pass (cl-every (lambda (r) (plist-get r :gate-pass))
-                                 results))
-             (all-value-pass
-              (cl-every (lambda (r) (plist-get r :value-pass))
-                        results))
-             (all-overall (and all-pass all-value-pass)))
+      ;; Aggregator semantics:
+      ;;   - per-axis gate-pass / value-pass values are t / nil / :skipped
+      ;;   - OVERALL FAIL  = at least one axis has the bool nil (= run produced
+      ;;                     a definite regression)
+      ;;   - OVERALL SKIP  = no FAIL + at least one :skipped (= host-CPU not
+      ;;                     production-ready, no regression info available)
+      ;;   - OVERALL PASS  = no FAIL + no :skipped (= all axes verified)
+      ;; exit code: 0 for PASS or SKIP (= not a regression), 1 for FAIL.
+      (let* ((classify (lambda (key)
+                         (let ((vs (mapcar (lambda (r) (plist-get r key))
+                                           results)))
+                           (cond ((memq nil vs) 'fail)
+                                 ((memq :skipped vs) 'skip)
+                                 (t 'pass)))))
+             (timing (funcall classify :gate-pass))
+             (value  (funcall classify :value-pass))
+             (overall (cond ((or (eq timing 'fail) (eq value 'fail)) 'fail)
+                            ((or (eq timing 'skip) (eq value 'skip)) 'skip)
+                            (t 'pass)))
+             (label (lambda (s)
+                      (cond ((eq s 'pass) "PASS")
+                            ((eq s 'skip) "SKIP")
+                            (t "FAIL")))))
         (insert (format "OVERALL §5.2 3-axis timing gate      : %s\n"
-                        (if all-pass "PASS" "FAIL")))
+                        (funcall label timing)))
         (insert (format "OVERALL T84 3-axis value-correct gate: %s\n"
-                        (if all-value-pass "PASS" "FAIL")))
+                        (funcall label value)))
         (insert (format "OVERALL combined                     : %s\n"
-                        (if all-overall "PASS" "FAIL")))
+                        (funcall label overall)))
         (princ (buffer-string) #'external-debugging-output)
         (when noninteractive
-          (kill-emacs (if all-overall 0 1)))))
+          (kill-emacs (if (eq overall 'fail) 1 0)))))
     results))
 
 (provide 'nelisp-cc-bench-actual)
