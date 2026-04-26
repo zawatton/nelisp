@@ -40,7 +40,8 @@
 
 (ert-deftest nelisp-cc-pipeline-empty-stats-on-leaf ()
   "On `(lambda (x) x)` the driver runs but every count stays at 0."
-  (let* ((fn (nelisp-cc-build-ssa-from-ast '(lambda (x) x)))
+  (let* ((nelisp-cc-enable-7.7-passes t)
+         (fn (nelisp-cc-build-ssa-from-ast '(lambda (x) x)))
          (result (nelisp-cc-pipeline-run-7.7-passes fn))
          (stats (cdr result)))
     (should (eq fn (car result)))
@@ -77,7 +78,8 @@
 when LEAF-ADD is in the registry."
   ;; Manually build caller + callee — same pattern as
   ;; `nelisp-cc-inline-test--make-leaf-add-fn'.
-  (let* ((callee
+  (let* ((nelisp-cc-enable-7.7-passes t)
+         (callee
           (let* ((fn (nelisp-cc--ssa-make-function 'leaf-add '(int int)))
                  (entry (nelisp-cc--ssa-function-entry fn))
                  (a (car (nelisp-cc--ssa-function-params fn)))
@@ -116,13 +118,18 @@ when LEAF-ADD is in the registry."
           (should (memq 'add opcodes)))))))
 
 (ert-deftest nelisp-cc-pipeline-bench-fib-form-shape ()
-  "Document the bench-form blocker — fib's recursion is `call-indirect`,
-NOT a named `call`, so the simple/recursive inliner cannot fire on
-the bench form as-is.  The lambda-lift ALSO declines because the
-closure is stored to a letrec slot (escape verdict rejects the
-`:stack-only' gate).  This test pins the negative outcome so any
-future change that flips it surfaces in CI rather than silently."
-  (let* ((fn (nelisp-cc-build-ssa-from-ast
+  "Bench-form fib drives the T161 rewrite + downstream rec-inline + lift.
+Before T161 the bench form was pinned as a negative outcome
+(`simple=0 rec=0 lifted=0') because the recursion sites lowered as
+`:call-indirect' (not named `:call') and the outer closure was stored
+to a letrec slot (escape verdict rejected the `:stack-only' gate).
+T161 closes both: a pre-pass rewrites eligible `:call-indirect' sites
+to `:call' (load-var-fed inner recursion + letrec-store-fed outer
+funcall), and the lambda-lift gate now tolerates the dead letrec-init
+write.  This test pins the new positive outcome so any future
+regression surfaces in CI."
+  (let* ((nelisp-cc-enable-7.7-passes t)
+         (fn (nelisp-cc-build-ssa-from-ast
               '(lambda ()
                  (letrec ((fib (lambda (n)
                                  (if (< n 2) n
@@ -133,10 +140,13 @@ future change that flips it surfaces in CI rather than silently."
          (stats (cdr result)))
     ;; Registry HAS the fib entry.
     (should (>= (nelisp-cc-pipeline-stats-registry-size stats) 1))
-    ;; But the inliner doesn't fire because every recursion site is
-    ;; `:call-indirect', not `:call' with `:fn fib' meta.
-    (should (= 0 (nelisp-cc-pipeline-stats-simple-inlined stats)))
-    (should (= 0 (nelisp-cc-pipeline-stats-rec-inlined stats)))))
+    ;; T161 — rewrite fires on inner self-recursion + outer funcall.
+    (should (>= (nelisp-cc-pipeline-stats-rewrote-call-indirect stats) 1))
+    ;; Recursive inliner now fires (= unrolled depth-bounded by
+    ;; `nelisp-cc-pipeline-rec-inline-depth-limit').
+    (should (>= (nelisp-cc-pipeline-stats-rec-inlined stats) 1))
+    ;; Lambda-lift hoists the outer closure out of the letrec slot.
+    (should (>= (nelisp-cc-pipeline-stats-lifted stats) 1))))
 
 (provide 'nelisp-cc-pipeline-test)
 

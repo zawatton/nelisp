@@ -77,17 +77,40 @@
 (require 'nelisp-cc-inline)
 (require 'nelisp-cc-recursive-inline)
 (require 'nelisp-cc-lambda-lift)
+(require 'nelisp-cc-rewrite)
 
 ;;; Feature flag ---------------------------------------------------
 
-(defcustom nelisp-cc-enable-7.7-passes t
+(defcustom nelisp-cc-enable-7.7-passes nil
   "Enable Phase 7.7 inliner passes in the codegen pipeline.
 When non-nil, `nelisp-cc-runtime-compile-and-allocate' runs the four
 Phase 7.7 passes (escape + simple inline + recursive inline +
 lambda lift) between `nelisp-cc-build-ssa-from-ast' and the linear-
-scan register allocator.  Set to nil to bypass the passes entirely
-(useful for A/B perf measurement against the pre-T158 baseline)."
+scan register allocator.
+
+T161 default flip: the SSA-level passes are correct (full ERT
+coverage) but the lambda-lift pass synthesises `:call :fn
+<CALLER>$lift$N' targets that the current backend's
+`nelisp-cc--link-unresolved-calls' cannot resolve (the synthetic
+name is not in the trampoline table → fixup left at 0 → segfault on
+exec).  Keep this flag nil until the Phase 7.7.5+ backend learns to
+emit + resolve synthetic callee bodies in the same translation unit.
+Tests that need the SSA-level outcome bind the variable locally —
+see `test/nelisp-cc-pipeline-test.el' and
+`test/nelisp-cc-rewrite-test.el'."
   :type 'boolean
+  :group 'nelisp-cc)
+
+(defcustom nelisp-cc-pipeline-rec-inline-depth-limit 2
+  "Pipeline-effective depth-limit override for the recursive inliner.
+Bound around `nelisp-cc-rec-inline-pass' invocations from the pipeline
+driver to avoid the exponential block growth (= snapshot bug — each
+self-call splice clones the *grown* function, not the pre-pass body).
+Default 2 keeps fib-30 unroll at 7 inlined sites / ~700 blocks
+(~10 ms compile latency).  Raise this once
+`nelisp-cc--rec-inline-clone-blocks' learns to snapshot the original
+callee body; for now the depth-limit is the conservative gate."
+  :type 'integer
   :group 'nelisp-cc)
 
 ;;; Statistics container -------------------------------------------
@@ -102,11 +125,15 @@ self-recursive splice events (T151) — possibly larger than the
 number of source-level call sites because the unroller iterates up
 to `nelisp-cc-rec-inline-depth-limit'.  LIFTED is the count of
 `:closure' instructions rewritten to top-level direct `:call' (T155).
-REGISTRY-SIZE is the number of `(NAME . FN)' entries the driver
-synthesised from walking the SSA's nested `:closure' instructions."
+REWROTE-CALL-INDIRECT is the count of `:call-indirect' instructions
+converted to `:call' by the T161 pre-pass (= load-var callee whose
+name is in the registry).  REGISTRY-SIZE is the number of
+`(NAME . FN)' entries the driver synthesised from walking the SSA's
+nested `:closure' instructions."
   (simple-inlined 0)
   (rec-inlined 0)
   (lifted 0)
+  (rewrote-call-indirect 0)
   (registry-size 0))
 
 ;;; Registry construction ------------------------------------------
@@ -148,6 +175,14 @@ the registry composition is deterministic across builds."
 
 Mutates FN in place; bumps the corresponding fields of STATS.
 Returns FN."
+  ;; (0) T161 — rewrite eligible `:call-indirect' sites whose
+  ;; load-var callee name appears in REGISTRY.  Run *before* the
+  ;; inliner so the simple/recursive inliner can resolve the callee
+  ;; via the new `:fn' meta.
+  (let* ((rewrite-result (nelisp-cc-rewrite-call-indirect-to-call fn registry))
+         (rewrite-count (cdr rewrite-result)))
+    (cl-incf (nelisp-cc-pipeline-stats-rewrote-call-indirect stats)
+             rewrite-count))
   ;; (1) escape verdict (fresh per pass run — see file commentary).
   (let* ((escape-info (nelisp-cc-escape-analyze fn))
          ;; (2) simple inline (T147).
@@ -157,7 +192,9 @@ Returns FN."
     (cl-incf (nelisp-cc-pipeline-stats-simple-inlined stats) simple-count)
     ;; (3) re-build escape verdict — simple-inline mutated the use graph.
     (let* ((escape-info-2 (nelisp-cc-escape-analyze after-simple))
-           (rec-result (nelisp-cc-rec-inline-pass after-simple escape-info-2 registry))
+           (rec-result (nelisp-cc-rec-inline-pass
+                        after-simple escape-info-2 registry
+                        nelisp-cc-pipeline-rec-inline-depth-limit))
            (after-rec (car rec-result))
            (rec-count (cdr rec-result)))
       (cl-incf (nelisp-cc-pipeline-stats-rec-inlined stats) rec-count)
@@ -187,27 +224,33 @@ The function is a *no-op* when `nelisp-cc-enable-7.7-passes' is nil
 This is the A/B-toggle entry the perf reports use to attribute the
 delta to the wire vs other contemporaneous changes.
 
-The driver runs the passes on FUNCTION first, then on every
-nested inner-function reachable through `:closure' instructions.
-Inner functions get their own escape verdict + their own pass
-sequence — keeping per-function complexity bounded at O(N) over
-each function's instruction count, exactly as Doc 42 §4.2 specifies."
+The driver runs the passes on every nested inner-function first
+(reachable through `:closure' instructions, indexed by registry),
+then on FUNCTION itself.  Inner-first ordering matters because the
+outer's lambda-lift step renames a hoisted closure's inner SSA
+function to `<CALLER>$lift$N' — running inner passes after that
+rename would cause the recursive inliner's `(eq callee-name
+self-name)' self-detection to fail (call sites still carry the
+original letrec name in their `:fn' meta).  Inner passes get their
+own escape verdict + their own pass sequence, keeping per-function
+complexity bounded at O(N) over each function's instruction count,
+exactly as Doc 42 §4.2 specifies."
   (let ((stats (nelisp-cc-pipeline-stats-make)))
     (when nelisp-cc-enable-7.7-passes
       (let ((registry (nelisp-cc-pipeline--collect-letrec-callee-registry
                        function)))
         (setf (nelisp-cc-pipeline-stats-registry-size stats)
               (length registry))
-        ;; (a) outer.
-        (nelisp-cc-pipeline--run-passes-on-fn function registry stats)
-        ;; (b) every inner — they may themselves contain calls that
-        ;; benefit from the same passes, especially after the outer
-        ;; lift rewrote `(call-indirect)' → direct `(call)' inside
-        ;; them.  Walk closures *after* the outer pass so the lifted
-        ;; closures are picked up by the same walk.
+        ;; (a) every inner — they may themselves contain calls that
+        ;; benefit from the same passes (= the bench-form `fib'
+        ;; recursion sites).  Run inner passes BEFORE the outer to
+        ;; preserve the inner's `:letrec-name'-derived self-name for
+        ;; the recursive inliner's self-detection.
         (dolist (cell registry)
           (let ((inner (cdr cell)))
-            (nelisp-cc-pipeline--run-passes-on-fn inner registry stats)))))
+            (nelisp-cc-pipeline--run-passes-on-fn inner registry stats)))
+        ;; (b) outer.
+        (nelisp-cc-pipeline--run-passes-on-fn function registry stats)))
     (cons function stats)))
 
 (provide 'nelisp-cc-pipeline)

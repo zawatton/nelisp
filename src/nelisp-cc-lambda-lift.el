@@ -177,13 +177,17 @@ The Phase 7.1 frontend stores the freshly built lambda body under
     (nreverse acc)))
 
 (defun nelisp-cc--lift-uses-only-as-callee-p (closure-def)
-  "Return t when every use of CLOSURE-DEF is a `call-indirect' at operand[0].
+  "Return t when every CLOSURE-DEF use is callee-position or letrec-init store.
 
 CLOSURE-DEF is the SSA value produced by a `closure' instruction.
-The lambda lift MVP only rewrites uses where the closure flows into
-the function position of an indirect call — anywhere else (return /
-data argument / store-var) the rewrite would change semantics or
-require a different transform.
+The lambda lift MVP rewrites uses where the closure flows into
+the function position of an indirect call.  T161 additionally
+tolerates `:store-var :letrec-init' uses — once the T161 pre-pass
+rewrote every call-indirect referencing the slot to a direct
+`:call', the letrec slot is write-only and the store survives only
+as dead-code-pending IR.  Anywhere else (return / data argument /
+non-letrec store-var / opaque call) the rewrite would change
+semantics or require a different transform.
 
 Returns nil when the use-list is empty (= :no-uses; surfaced as a
 distinct abort reason by the decision helper)."
@@ -191,10 +195,20 @@ distinct abort reason by the decision helper)."
     (and uses
          (cl-every
           (lambda (user)
-            (and (eq (nelisp-cc--ssa-instr-opcode user) 'call-indirect)
-                 (let ((ops (nelisp-cc--ssa-instr-operands user)))
-                   (and ops
-                        (eq (car ops) closure-def)))))
+            (let ((opcode (nelisp-cc--ssa-instr-opcode user))
+                  (ops (nelisp-cc--ssa-instr-operands user))
+                  (meta (nelisp-cc--ssa-instr-meta user)))
+              (cond
+               ;; Allowed: callee-position of call-indirect.
+               ((and (eq opcode 'call-indirect)
+                     ops
+                     (eq (car ops) closure-def))
+                t)
+               ;; Allowed (T161): letrec-init store-var.
+               ((and (eq opcode 'store-var)
+                     (plist-get meta :letrec-init))
+                t)
+               (t nil))))
           uses))))
 
 (defun nelisp-cc--lift-def-escapes-besides-callee-p (closure-def escape-info)
@@ -221,7 +235,8 @@ extension can consult per-operand verdicts."
   (catch 'esc
     (dolist (user (nelisp-cc--ssa-value-use-list closure-def))
       (let ((opcode (nelisp-cc--ssa-instr-opcode user))
-            (ops (nelisp-cc--ssa-instr-operands user)))
+            (ops (nelisp-cc--ssa-instr-operands user))
+            (meta (nelisp-cc--ssa-instr-meta user)))
         (cond
          ;; Allowed sink: callee position of `call-indirect'.
          ((and (eq opcode 'call-indirect)
@@ -230,6 +245,18 @@ extension can consult per-operand verdicts."
                ;; Closure must NOT also appear in the data-arg
                ;; positions — that would still be an escape.
                (not (memq closure-def (cdr ops))))
+          nil)
+         ;; T161 — Allowed sink: `:store-var :letrec-init' write
+         ;; (= the outer letrec slot fill).  Once every
+         ;; `:call-indirect' use of the closure is rewritten to a
+         ;; direct `:call' (T161 pre-pass) the letrec slot becomes
+         ;; *write-only* — no remaining instruction in the function
+         ;; reads back from the slot.  The store survives in the IR
+         ;; (a future DCE pass would remove it) but does not
+         ;; constitute a real escape — the closure object is never
+         ;; observed outside the current frame.
+         ((and (eq opcode 'store-var)
+               (plist-get meta :letrec-init))
           nil)
          (t (throw 'esc t)))))
     nil))
@@ -431,21 +458,54 @@ Returns the synthesised name."
             (cons (cons name inner) (car registry-cell)))
     name))
 
+(defun nelisp-cc--lift-drop-letrec-init-store (store-instr closure-def)
+  "Drop a `:store-var :letrec-init t' use whose operand is CLOSURE-DEF.
+
+The store survives in the IR after T161 rewrote every `:call-indirect'
+slot reader to a direct `:call' (no remaining instruction reads from
+the slot).  Lambda lift now eliminates the closure that fed the
+store; the store itself becomes dead — we remove it from its block
+and drop CLOSURE-DEF from its USE-LIST entry.
+
+Defensive: also clears the store's def-value's USE-LIST in case any
+spurious downstream reference exists (none expected by construction
+since slot reads have all been rewritten)."
+  (let ((blk (nelisp-cc--ssa-instr-block store-instr)))
+    (when blk
+      (setf (nelisp-cc--ssa-block-instrs blk)
+            (delq store-instr (nelisp-cc--ssa-block-instrs blk))))
+    (setf (nelisp-cc--ssa-value-use-list closure-def)
+          (delq store-instr (nelisp-cc--ssa-value-use-list closure-def)))
+    (setf (nelisp-cc--ssa-instr-block store-instr) nil)
+    nil))
+
 (defun nelisp-cc--lift-apply-one (caller closure-instr inner counter registry-cell)
   "Apply the lambda lift transform to one CLOSURE-INSTR in CALLER.
 
 Threads through `nelisp-cc--lift-name-and-record' to mint a name +
 register the lifted callee, rewrites every use-site
-`call-indirect' to a direct `call', then drops the `closure'
-instruction.  Returns the synthesised lifted name."
+`call-indirect' to a direct `call', drops any `:store-var
+:letrec-init t' uses (T161 — write-only after slot reads are
+rewritten), then drops the `closure' instruction.  Returns the
+synthesised lifted name."
   (let* ((extended-inner (nelisp-cc--lift-extend-params inner closure-instr))
          (name (nelisp-cc--lift-name-and-record
                 caller extended-inner counter registry-cell))
          (def (nelisp-cc--ssa-instr-def closure-instr))
          ;; Snapshot the use-list — the rewrite mutates it.
          (uses (copy-sequence (nelisp-cc--ssa-value-use-list def))))
-    (dolist (call-site uses)
-      (nelisp-cc--lift-rewrite-call-indirect call-site name))
+    (dolist (use uses)
+      (let ((opcode (nelisp-cc--ssa-instr-opcode use))
+            (meta (nelisp-cc--ssa-instr-meta use)))
+        (cond
+         ((eq opcode 'call-indirect)
+          (nelisp-cc--lift-rewrite-call-indirect use name))
+         ((and (eq opcode 'store-var)
+               (plist-get meta :letrec-init))
+          (nelisp-cc--lift-drop-letrec-init-store use def))
+         (t
+          (signal 'nelisp-cc-lift-error
+                  (list :unexpected-use opcode use))))))
     (nelisp-cc--lift-drop-closure-instr caller closure-instr)
     name))
 
