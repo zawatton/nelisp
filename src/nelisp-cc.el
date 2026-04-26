@@ -174,14 +174,27 @@ argument order.  ENTRY is the `nelisp-cc--ssa-block' that execution
 begins in; it lives in BLOCKS like every other block.  BLOCKS is the
 full block table (order is creation order, not topological).
 NEXT-VALUE-ID / NEXT-INSTR-ID / NEXT-BLOCK-ID are monotonic counters
-the builders advance — do not mutate from outside the builders."
+the builders advance — do not mutate from outside the builders.
+
+LIFTED-INNERS (T162 fix Gap 1) is a list of `(NAME . INNER-FN)' cells
+recorded by `nelisp-cc-lift-pass' when it removes a `:closure'
+instruction whose body must still be reachable for the backend to
+compile (= synthetic callee resolution).  When the lift pass drops a
+closure instruction in favour of a direct `:call :fn NAME' rewrite,
+the inner SSA function is no longer reachable via the outer's
+`:closure' chain — without this slot the backend's
+`--collect-inner-functions' walk misses it and `callee:NAME' falls
+through to address 0 → SIGSEGV on exec.  Backend's
+`--compile-and-link' merges this slot into its `inners' list before
+Step 4 so the body gets compiled + the alias label gets bound."
   (name nil)
   (params nil)
   (entry nil)
   (blocks nil)
   (next-value-id 0)
   (next-instr-id 0)
-  (next-block-id 0))
+  (next-block-id 0)
+  (lifted-inners nil))
 
 ;;; Builder helpers --------------------------------------------------
 

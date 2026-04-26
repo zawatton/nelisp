@@ -2168,28 +2168,87 @@ Stages:
   ;; assignments.
   (setq alloc-state (nelisp-cc--linear-scan function))
   (let* ((cells   (nelisp-cc-callees--collect-cell-symbols function))
-         (inners  (nelisp-cc-callees--collect-inner-functions function))
+         (closure-inners (nelisp-cc-callees--collect-inner-functions function))
+         ;; T162 fix Gap 1 part 2: merge lifted-inners (= recorded by
+         ;; `nelisp-cc-lift-pass' before it dropped the `:closure'
+         ;; instruction) into the inners list so Step 4 still compiles
+         ;; their bodies + binds `callee:<NAME>' aliases.  Pre-T162 the
+         ;; closure-inners walk was the *only* source — lambda-lift
+         ;; orphaned the inner SSA function as soon as it dropped the
+         ;; closure instr → inner body never emitted → CALL fell
+         ;; through to address 0 → SIGSEGV.
+         ;;
+         ;; Synthesise plist entries with a fresh :index counter that
+         ;; follows the closure-inners' last index so the `inner:N'
+         ;; namespace stays unique.  :instr is nil (no closure to
+         ;; annotate with `:inner-function-index' — the lifted inner
+         ;; is reached via :call :fn NAME, not :closure).
+         (lifted-inners-raw (nelisp-cc--ssa-function-lifted-inners function))
+         (lifted-inner-entries
+          (let ((next-idx (1+ (length closure-inners)))
+                (acc nil))
+            (dolist (cell lifted-inners-raw)
+              (let ((name (car cell))
+                    (inner (cdr cell)))
+                ;; Stamp the inner's name (= what `:call :fn NAME'
+                ;; references) so the Step 4 alias-label loop binds
+                ;; `callee:NAME' correctly.  lift-pass already does
+                ;; this via `--lift-name-and-record', but defensively
+                ;; ensure it here in case future lift variants don't.
+                (unless (nelisp-cc--ssa-function-name inner)
+                  (setf (nelisp-cc--ssa-function-name inner) name))
+                (push (list :index next-idx :instr nil :inner inner) acc)
+                (setq next-idx (1+ next-idx))))
+            (nreverse acc)))
+         (inners (append closure-inners lifted-inner-entries))
          (callees (nelisp-cc-x86_64--collect-callees function)))
     ;; Step 2: annotate closures with their visit index.
+    ;; T162 fix: skip lifted-inner entries (= `:instr nil') because
+    ;; their `:closure' instruction was already dropped by lift-pass —
+    ;; only annotate `:closure' entries from `closure-inners'.
     (dolist (entry inners)
       (let ((idx (plist-get entry :index))
             (instr (plist-get entry :instr)))
-        (setf (nelisp-cc--ssa-instr-meta instr)
-              (plist-put (nelisp-cc--ssa-instr-meta instr)
-                         :inner-function-index idx))))
+        (when instr
+          (setf (nelisp-cc--ssa-instr-meta instr)
+                (plist-put (nelisp-cc--ssa-instr-meta instr)
+                           :inner-function-index idx)))))
     ;; Step 3: compile outer body.
     (let* ((cg (nelisp-cc-x86_64--compile-with-cells
                 function alloc-state cells)))
       ;; Step 4: compile each inner function into the same buffer.
+      ;; T162 fix (Gap 1 = synthetic callee resolution): when the inner
+      ;; function carries a name (= letrec-name from frontend, lambda-
+      ;; lift synthesised `<CALLER>$lift$N' name, or a name rewritten in
+      ;; by T161 :call-indirect → :call pre-pass) AND that name appears
+      ;; in the outer-collected callee set, also bind `callee:<NAME>' as
+      ;; an alias at the inner's entry address.  This lets `:call :fn
+      ;; NAME' fixups (recorded by `--lower-call' for non-primitive
+      ;; callees) resolve to the inner body, the same way primitive
+      ;; trampolines do — without a separate trampoline step.
+      ;; Pre-T162: `embed-trampolines' only binds primitive callees, so
+      ;; `callee:fib' / `callee:anon$lift$0' fall through to address 0
+      ;; → SIGSEGV on exec when `nelisp-cc-enable-7.7-passes t'.
       (dolist (entry inners)
         (let* ((idx     (plist-get entry :index))
                (inner   (plist-get entry :inner))
-               (label   (intern (format "inner:%d" idx))))
+               (label   (intern (format "inner:%d" idx)))
+               (inner-name (and inner (nelisp-cc--ssa-function-name inner))))
           (nelisp-cc-x86_64--buffer-define-label
            (nelisp-cc-x86_64--codegen-buffer cg) label)
+          (when (and inner-name (memq inner-name callees))
+            ;; Alias label at the same byte offset — both `inner:<IDX>'
+            ;; and `callee:<NAME>' resolve here, then compile-inner-into
+            ;; -buffer emits the body.
+            (nelisp-cc-x86_64--buffer-define-label
+             (nelisp-cc-x86_64--codegen-buffer cg)
+             (intern (format "callee:%s" inner-name))))
           (nelisp-cc-x86_64--compile-inner-into-buffer
            inner cg cells idx)))
-      ;; Step 5: embed primitive trampolines.
+      ;; Step 5: embed primitive trampolines.  Only primitive callees
+      ;; get trampoline bodies here; synthetic callees were handled in
+      ;; Step 4 via the alias label so embed-trampolines is a no-op for
+      ;; them (the `nelisp-cc-callees-known-p' guard skips non-primitives).
       (nelisp-cc-x86_64--embed-trampolines cg callees)
       ;; Step 6: append cell slots.
       (nelisp-cc-x86_64--embed-cells cg cells)
@@ -2411,12 +2470,22 @@ place.  Other primitives use the static byte sequence from
     ;; injecting a synthetic buffer-fixup against the callee label
     ;; for each call site — that way `--buffer-finalize' patches the
     ;; rel32 in the same pass as every other label fixup.
+    ;;
+    ;; T162 fix: also convert fixups for *synthetic* callees (= names
+    ;; in `callees' that aren't primitive trampolines but ARE bound by
+    ;; the Step 4 alias-label path = lambda-lift / call-indirect rewrite
+    ;; products).  Pre-T162 this guard required `known-p' which is
+    ;; primitive-only, so synthetic call sites kept their call-fixups
+    ;; entry, were dropped by the `setf nil' below, and the rel32 stayed
+    ;; at 0 → SIGSEGV on exec under `nelisp-cc-enable-7.7-passes t'.
     (let ((fixups (nelisp-cc-x86_64--codegen-call-fixups cg)))
       (dolist (fx fixups)
         (let ((abs-off (car fx))
               (callee  (cdr fx)))
-          (when (and callee (memq callee callees)
-                     (nelisp-cc-callees-known-p callee 'x86_64))
+          (when (and callee (memq callee callees))
+            ;; Whether primitive (Step 5 embedded trampoline) or
+            ;; synthetic (Step 4 alias label), the post-finalize
+            ;; fixup against `callee:<NAME>' resolves identically.
             (push (cons abs-off (intern (format "callee:%s" callee)))
                   (nelisp-cc-x86_64--buffer-fixups buf)))))
       ;; Drop the call-fixups so `--link-unresolved-calls' is not

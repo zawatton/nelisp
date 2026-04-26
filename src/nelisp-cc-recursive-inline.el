@@ -322,7 +322,8 @@ substituted via the param-arg map populated by the caller."
   "Translate every operand in OPERANDS through VALUE-MAP."
   (mapcar (lambda (v) (or (gethash v value-map) v)) operands))
 
-(defun nelisp-cc--rec-inline-clone-blocks (caller callee value-map block-map)
+(defun nelisp-cc--rec-inline-clone-blocks
+    (caller callee value-map block-map &optional original-snapshot)
   "Allocate fresh blocks in CALLER cloned from CALLEE's blocks.
 
 VALUE-MAP is populated with mappings for every callee def value as
@@ -337,8 +338,20 @@ ordering.
 When CALLEE is CALLER (= self-recursion unroll), the source block
 list is *snapshotted* up front — calls to `nelisp-cc--ssa-make-block'
 append to CALLER's BLOCKS in place, and re-walking the live list
-would cause the cloner to clone the clones (= unbounded recursion)."
-  (let ((src-blocks (copy-sequence (nelisp-cc--ssa-function-blocks callee)))
+would cause the cloner to clone the clones (= unbounded recursion).
+
+ORIGINAL-SNAPSHOT, when non-nil (T162 fix per Doc 42 §3.3 Phase 7.7.5+
+post-mortem), overrides reading `(blocks callee)' at clone time.
+Driver must pass the pristine pre-pass blocks list captured before any
+splice — otherwise the second+ depth's `nelisp-cc-rec-inline-pass'
+iteration sees the *grown* caller (= original blocks + previously-cloned
+blocks), and the clone walker re-clones the previous clones →
+exponential growth (block count: 2 → 22 → 766 → ∞ at depths 1/2/3 in the
+original report).  When ORIGINAL-SNAPSHOT is nil, falls back to the live
+blocks list (= original behaviour, OK when CALLEE != CALLER)."
+  (let ((src-blocks
+         (or (and original-snapshot (copy-sequence original-snapshot))
+             (copy-sequence (nelisp-cc--ssa-function-blocks callee))))
         (src-instr-snapshots (make-hash-table :test 'eq)))
     ;; Pass 0: snapshot every source block's instr list because the
     ;; clone might mutate CALLER's blocks (callee = caller path).
@@ -575,7 +588,8 @@ construction which is Doc 42 §3.3 follow-up."
      block-map)
     (and (= 1 (length hits)) (car hits))))
 
-(defun nelisp-cc--rec-inline-splice-self (caller block call-instr callee value-map)
+(defun nelisp-cc--rec-inline-splice-self
+    (caller block call-instr callee value-map &optional original-snapshot)
   "Splice CALLEE's body into CALLER replacing CALL-INSTR.
 
 CALLER is the caller (= self-recursion target).  BLOCK is the
@@ -588,6 +602,11 @@ parameter values with the call's argument values.
 VALUE-MAP is a freshly-allocated hash-table to seed with the
 param→arg mappings (the cloner reads it for operand
 translation).
+
+ORIGINAL-SNAPSHOT (T162 fix) is the pristine pre-pass blocks list
+captured by the driver before any splice; passed through to
+`nelisp-cc--rec-inline-clone-blocks' to avoid re-cloning previously
+cloned blocks (Doc 42 §3.3 Phase 7.7.5+ post-mortem).
 
 Multi-block CFG strategy:
   1. Split BLOCK at the call site into PRE (everything before the
@@ -623,7 +642,7 @@ Returns BLOCK (the rewritten PRE block).  Mutates CALLER in place."
            (call-def (nelisp-cc--ssa-instr-def call-instr)))
       ;; (1) clone the callee body into CALLER.
       (nelisp-cc--rec-inline-clone-blocks
-       caller callee value-map block-map)
+       caller callee value-map block-map original-snapshot)
       (nelisp-cc--rec-inline-link-cloned-edges callee block-map)
       ;; (2) split BLOCK: keep PRE here, move POST to post-blk.
       (let ((cloned-entry
@@ -752,7 +771,16 @@ when the unroller has substituted a literal into the condition
             (list :not-a-function caller)))
   (let* ((nelisp-cc-rec-inline-depth-limit
           (max 0 (or depth-limit nelisp-cc-rec-inline-depth-limit)))
-         (count 0))
+         (count 0)
+         ;; T162 fix: snapshot caller's blocks BEFORE any splice.
+         ;; Each block's instr list is also snapshotted (= clone-blocks
+         ;; will further snapshot per block, but we cache the outer
+         ;; list here so subsequent depth iterations don't pick up the
+         ;; cloned bodies that splice-self appends to caller's blocks).
+         ;; This converts the previous exponential growth (2 → 22 → 766
+         ;; at depths 1/2/3) into linear depth-bounded growth.
+         (original-snapshot
+          (copy-sequence (nelisp-cc--ssa-function-blocks caller))))
     (let ((sites (nelisp-cc--rec-inline-list-self-call-sites caller))
           (depth 0))
       (while (and sites
@@ -768,7 +796,7 @@ when the unroller has substituted a literal into the condition
                       (callee (nelisp-cc--rec-inline-status-callee decision))
                       (vmap (make-hash-table :test 'eq)))
                   (nelisp-cc--rec-inline-splice-self
-                   caller blk site callee vmap)
+                   caller blk site callee vmap original-snapshot)
                   (cl-incf count)
                   (cl-incf iter-count)))
                (t nil))))
