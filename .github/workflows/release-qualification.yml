@@ -1,0 +1,119 @@
+name: Phase 7.5.3 release qualification
+
+# Doc 32 v2 LOCKED §3.3 + §7 4-tier gate taxonomy:
+#   - blocker            : linux-x86_64 build + 1h soak + checksum verify
+#   - non-blocker (v1.0 時限): macos-arm64 / linux-arm64 (§11、v1.1+ で blocker promote 想定)
+#   - post-ship audit    : weekly 24h soak (release-audit、別 workflow scope)
+#   - release artifact   : tarball + sha256 + ad-hoc signature (§2.3 採用 A + §2.10 採用 A)
+#
+# Triggers:
+#   - tag push matching stage-d-v2.* — release qualification on tagged commit
+#   - workflow_dispatch              — manual qualification run
+#
+# Artifacts: each platform matrix leg uploads its tarball + checksum + sig
+# under name `stage-d-v2.0-<platform>` so a downstream release-publish job
+# (out of scope for Phase 7.5.3) can collect them.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'stage-d-v2.*'
+
+jobs:
+  build-linux-x86_64:
+    name: blocker — linux-x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Emacs
+        uses: purcell/setup-emacs@v8.0
+        with:
+          version: '30.1'
+
+      - name: Build release artifact
+        run: ./tools/build-release-artifact.sh linux-x86_64 stage-d-v2.0
+
+      - name: Verify checksum
+        run: cd dist && sha256sum --check stage-d-v2.0-linux-x86_64.tar.gz.sha256
+
+      - name: Soak (blocker tier、1h)
+        env:
+          SOAK_DURATION_HOURS: '1'
+        run: ./tools/soak-test.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage-d-v2.0-linux-x86_64
+          path: |
+            dist/stage-d-v2.0-linux-x86_64.tar.gz
+            dist/stage-d-v2.0-linux-x86_64.tar.gz.sha256
+            dist/stage-d-v2.0-linux-x86_64.tar.gz.sig
+
+  build-macos-arm64:
+    name: non-blocker (v1.0 時限) — macos-arm64
+    runs-on: macos-14
+    # Doc 32 v2 §11 LOCKED: arm64 = v1.0 限定 non-blocker (時限措置)、
+    # v1.1+ で blocker promote 想定 (6 ヶ月以内 target、anvil leverage 込み).
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Emacs
+        uses: purcell/setup-emacs@v8.0
+        with:
+          version: '30.1'
+
+      - name: Build release artifact
+        run: ./tools/build-release-artifact.sh macos-arm64 stage-d-v2.0
+
+      - name: Verify checksum
+        run: cd dist && shasum -a 256 --check stage-d-v2.0-macos-arm64.tar.gz.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage-d-v2.0-macos-arm64
+          path: |
+            dist/stage-d-v2.0-macos-arm64.tar.gz
+            dist/stage-d-v2.0-macos-arm64.tar.gz.sha256
+            dist/stage-d-v2.0-macos-arm64.tar.gz.sig
+
+  build-linux-arm64:
+    name: non-blocker (v1.0 時限) — linux-arm64
+    runs-on: ubuntu-22.04-arm
+    # Doc 32 v2 §11 LOCKED: 同上 (v1.1+ で blocker promote 想定).
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Emacs
+        uses: purcell/setup-emacs@v8.0
+        with:
+          version: '30.1'
+
+      - name: Build release artifact
+        run: ./tools/build-release-artifact.sh linux-arm64 stage-d-v2.0
+
+      - name: Verify checksum
+        run: cd dist && sha256sum --check stage-d-v2.0-linux-arm64.tar.gz.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage-d-v2.0-linux-arm64
+          path: |
+            dist/stage-d-v2.0-linux-arm64.tar.gz
+            dist/stage-d-v2.0-linux-arm64.tar.gz.sha256
+            dist/stage-d-v2.0-linux-arm64.tar.gz.sig
