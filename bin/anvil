@@ -326,12 +326,26 @@ cmd_mcp_serve() {
       echo "       lands in Phase 7.5.3 (stage-d-v2.0); falling through to host Emacs" >&2
       echo "       path with NELISP_STRICT_NO_EMACS=$NELISP_STRICT_NO_EMACS exported." >&2
     else
+      # Phase 7.5.2 actionable diagnostics — surface the most common
+      # cold-init failure causes inline so users do not have to grep
+      # the coordinator plist or re-read Doc 32 v2 §3.2.
       echo "anvil: cold-init coordinator FAIL (Phase 7.5.2)" >&2
+      echo "" >&2
+      echo "  most likely causes:" >&2
+      echo "    1. nelisp-runtime binary missing  → run 'make runtime'" >&2
+      echo "    2. libnelisp_runtime.a missing    → run 'make runtime-staticlib'" >&2
+      echo "    3. src/nelisp-cc.el not on tree   → reinstall from a complete tarball" >&2
+      echo "    4. contract version skew          → check Doc 28 §6.10 + Doc 29 §1.4" >&2
+      echo "" >&2
+      echo "  for full diagnostics, re-run with NELISP_COLDINIT_VERBOSE=1:" >&2
+      echo "    NELISP_COLDINIT_VERBOSE=1 $0 $*" >&2
+      echo "" >&2
       if [[ "${NELISP_STRICT_NO_EMACS:-0}" -eq 1 ]]; then
-        echo "       --strict-no-emacs set — exiting 1 (CI / release-qual gate)" >&2
+        echo "  --strict-no-emacs set — exiting 1 (CI / release-qual gate)" >&2
+        echo "  remediation: install missing artefact above, then re-run." >&2
         exit 1
       fi
-      echo "       falling back to host Emacs path (--no-emacs non-strict)" >&2
+      echo "  falling back to host Emacs path (--no-emacs non-strict)" >&2
     fi
   fi
 

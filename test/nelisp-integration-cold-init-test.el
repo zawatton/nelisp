@@ -215,5 +215,186 @@ that is *not* mirrored into the registry surfaces here."
       (should (eq (plist-get r :ready) nil))
       (should (assq :contract-version-mismatch missing)))))
 
+;;;; --- Phase 7.5.2 SCAFFOLD-LAYER dispatcher + soak harness ERT ----
+;;
+;; The block above (tests 1-8) exercises the *real* coordinator that
+;; delegates to T12 `nelisp-cc-bootstrap-run' and skips when the T13
+;; binary is unbuilt.  The block below pins the *scaffold-layer*
+;; dispatcher contract (per-stage stub handlers + counter + error
+;; capture + soak harness) — these run on every host because the
+;; scaffold path has no binary dependency.  Phase 7.0-7.4 close will
+;; replace the stub handlers with real per-stage implementations
+;; without changing the dispatcher contract; the ERT below pins that
+;; contract so the swap cannot drift the plist shape silently.
+
+;;;; (S1) dispatcher default = all-stub run reports `:status fail' ----
+
+(ert-deftest nelisp-integration-cold-init-dispatch-default-stubs ()
+  "Default dispatcher (= every stage = stub) must:
+  - return `:scaffold t' (sentinel)
+  - return `:status fail' (stubs cannot be a green path)
+  - report `:stages-completed 0'
+  - return `:stages' as a list of length 4 (every stage attempted)
+  - first `:error' is one of the documented stub keywords
+  - never raise"
+  (let* ((r (nelisp-integration-cold-init-dispatch))
+         (stages (plist-get r :stages))
+         (err (plist-get r :error)))
+    (should (eq (plist-get r :scaffold) t))
+    (should (eq (plist-get r :status) 'fail))
+    (should (= (plist-get r :stages-completed) 0))
+    (should (= (length stages) 4))
+    (should (memq err
+                  (mapcar #'cdr
+                          nelisp-integration-cold-init-stage-pending-keyword)))
+    ;; Every stage entry has the documented contract shape.
+    (dolist (s stages)
+      (should (plist-get s :stage))
+      (should (plist-get s :status))
+      (should (numberp (plist-get s :elapsed-seconds)))
+      (should (>= (plist-get s :elapsed-seconds) 0.0)))))
+
+;;;; (S2) dispatcher with all-pass real handlers reports `:status pass' --
+
+(ert-deftest nelisp-integration-cold-init-dispatch-all-pass ()
+  "When every stage handler returns `(:status pass)' the dispatcher
+must report `:status pass :stages-completed 4'."
+  (let* ((pass-handler (lambda (&rest _) (list :status 'pass)))
+         (handlers (mapcar (lambda (s) (cons s pass-handler))
+                           nelisp-integration-cold-init-stage-order))
+         (r (nelisp-integration-cold-init-dispatch :handlers handlers)))
+    (should (eq (plist-get r :status) 'pass))
+    (should (= (plist-get r :stages-completed) 4))
+    (should (eq (plist-get r :error) nil))
+    (should (eq (plist-get r :scaffold) t))
+    (should (= (length (plist-get r :stages)) 4))))
+
+;;;; (S3) dispatcher error path — synthetic stage failure ------------
+
+(ert-deftest nelisp-integration-cold-init-dispatch-synthetic-failure ()
+  "When a stage handler raises, the dispatcher must:
+  - capture the error into the per-stage `:error' field
+  - mark that stage's `:status' as `fail'
+  - stop dispatch (default `:stop-on '(fail)') so subsequent stages
+    are not attempted
+  - report `:stages-completed' = number of stages that passed *before*
+    the failure
+  - report `:status fail' overall + `:error fail' (= the first
+    non-pass status seen)"
+  (let* ((pass (lambda (&rest _) (list :status 'pass)))
+         (boom (lambda (&rest _) (error "stage3 synthetic fault")))
+         (handlers `((stage1 . ,pass)
+                     (stage2 . ,pass)
+                     (stage3 . ,boom)
+                     (stage4 . ,pass)))
+         (r (nelisp-integration-cold-init-dispatch :handlers handlers))
+         (stages (plist-get r :stages)))
+    (should (eq (plist-get r :status) 'fail))
+    (should (= (plist-get r :stages-completed) 2))
+    (should (eq (plist-get r :error) 'fail))
+    ;; Default `:stop-on' = (fail) — only 3 stage entries should
+    ;; appear (the dispatcher stopped before stage4).
+    (should (= (length stages) 3))
+    (let ((stage3 (cl-find-if (lambda (s) (eq (plist-get s :stage) 'stage3))
+                              stages)))
+      (should stage3)
+      (should (eq (plist-get stage3 :status) 'fail))
+      (should (consp (plist-get stage3 :error))))))
+
+;;;; (S4) dispatcher `:stop-on nil' continues past stub returns ------
+
+(ert-deftest nelisp-integration-cold-init-dispatch-no-stop-on-stub ()
+  "With default `:stop-on '(fail)' the dispatcher must NOT stop on a
+stub return — it should attempt all four stages and report each.
+This proves stub keywords are visible without aborting dispatch."
+  (let* ((r (nelisp-integration-cold-init-dispatch))
+         (stages (plist-get r :stages)))
+    ;; Stub returns are not in `:stop-on' so all 4 stages run.
+    (should (= (length stages) 4))
+    (should (= (plist-get r :stages-completed) 0))
+    ;; Every stage status is a documented stub keyword.
+    (dolist (s stages)
+      (should (memq (plist-get s :status)
+                    (mapcar #'cdr
+                            nelisp-integration-cold-init-stage-pending-keyword))))))
+
+;;;; (S5) per-stage stub handler returns documented keyword ----------
+
+(ert-deftest nelisp-integration-cold-init-stub-handler-keyword-shape ()
+  "Each per-stage stub handler must return the documented
+`:stub-not-yet-impl-pending-phase-X.Y' keyword for its stage.
+Production callers grep this shape to detect a stub return."
+  (dolist (entry nelisp-integration-cold-init-stage-pending-keyword)
+    (let* ((stage (car entry))
+           (expected-kw (cdr entry))
+           (handler (nelisp-integration--cold-init-stub-handler stage))
+           (r (funcall handler nil)))
+      (should (eq (plist-get r :status) expected-kw))
+      (should (eq (plist-get r :stage) stage))
+      (should (stringp (plist-get r :blocked-by)))
+      ;; The keyword name must mention "stub-not-yet-impl-pending"
+      ;; — production callers grep this prefix.
+      (should (string-prefix-p ":stub-not-yet-impl-pending-phase-"
+                               (symbol-name expected-kw))))))
+
+;;;; (S6) soak harness scaffold returns documented contract ----------
+
+(ert-deftest nelisp-integration-soak-harness-default-contract ()
+  "Default soak harness (= scaffold dispatcher per iteration) must
+return the documented contract:
+  - `:scaffold t' sentinel
+  - `:iterations N' matches default
+  - `:passed + :failed = :iterations'
+  - `:status' = pass iff passed = iterations
+  - default = all stub → status fail
+  - never raises"
+  (let* ((r (nelisp-integration-soak-harness :iterations 3))
+         (passed (plist-get r :passed))
+         (failed (plist-get r :failed)))
+    (should (eq (plist-get r :scaffold) t))
+    (should (= (plist-get r :iterations) 3))
+    (should (= (+ passed failed) 3))
+    (should (numberp (plist-get r :elapsed-seconds)))
+    ;; Default harness handler = scaffold dispatcher with all stubs;
+    ;; every iteration reports fail, so passed = 0 / failed = 3.
+    (should (= passed 0))
+    (should (= failed 3))
+    (should (eq (plist-get r :status) 'fail))
+    (should (plist-get r :first-failure))))
+
+;;;; (S7) soak harness with passing handler reports `:status pass' ---
+
+(ert-deftest nelisp-integration-soak-harness-pass-handler ()
+  "Soak harness with a handler that always returns `:status pass'
+must report all-pass + zero failures + `:status pass' overall."
+  (let* ((r (nelisp-integration-soak-harness
+             :iterations 5
+             :handler (lambda (_i) (list :status 'pass)))))
+    (should (= (plist-get r :passed) 5))
+    (should (= (plist-get r :failed) 0))
+    (should (eq (plist-get r :status) 'pass))
+    (should (eq (plist-get r :first-failure) nil))))
+
+;;;; (S8) soak harness `:stop-on-fail' truncates the run -------------
+
+(ert-deftest nelisp-integration-soak-harness-stop-on-fail ()
+  "When `:stop-on-fail t' the soak harness aborts on the first
+non-pass iteration and reports the partial counter."
+  (let* ((counter 0)
+         (handler (lambda (_i)
+                    (cl-incf counter)
+                    (if (= counter 2)
+                        (list :status 'fail :reason 'synthetic)
+                      (list :status 'pass))))
+         (r (nelisp-integration-soak-harness
+             :iterations 10
+             :stop-on-fail t
+             :handler handler)))
+    ;; Iteration 1 = pass, iteration 2 = fail → stop.
+    (should (= (plist-get r :passed) 1))
+    (should (= (plist-get r :failed) 1))
+    (should (eq (plist-get r :status) 'fail))
+    (should (plist-get r :first-failure))))
+
 (provide 'nelisp-integration-cold-init-test)
 ;;; nelisp-integration-cold-init-test.el ends here
