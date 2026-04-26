@@ -464,5 +464,245 @@ is captured."
           :rate (if (zerop n) 0.0 (/ (float passed) n))
           :first-failure first-fail)))
 
+;;;; Phase 7.5.3 — release artifact verifier (Doc 32 v2 §3.3 prep)
+
+(defconst nelisp-integration-release-artifact-platforms
+  '("linux-x86_64" "macos-arm64" "linux-arm64")
+  "Platforms recognised by the Phase 7.5.3 release artifact verifier.
+Keep this list in sync with `tools/build-release-artifact.sh' and
+`.github/workflows/release-qualification.yml' — the §11 LOCKED tier
+matrix records linux-x86_64 as the v1.0 blocker; the two arm64 entries
+are non-blocker (v1.0 時限) and continue-on-error in CI.")
+
+(defconst nelisp-integration-release-artifact-default-version
+  "stage-d-v2.0"
+  "Default release artifact version recognised by the verifier.
+Mirrors the `RELEASE_VERSION' default in `Makefile' and the
+`VERSION' default in `tools/build-release-artifact.sh'.")
+
+(defun nelisp-integration--release-artifact-locate-dist ()
+  "Locate the `dist/' directory under the active worktree root.
+Returns an absolute path string when the directory exists, otherwise
+nil.  The lookup walks up from `nelisp-cc-runtime--this-file' (the same
+locator T13 uses for the runtime binary) so the verifier works
+regardless of the caller's `default-directory'."
+  (let* ((src (and (boundp 'nelisp-cc-runtime--this-file)
+                   nelisp-cc-runtime--this-file))
+         (root (and src (locate-dominating-file src "Makefile")))
+         (dist (and root (expand-file-name "dist" root))))
+    (and dist (file-directory-p dist) dist)))
+
+(defun nelisp-integration--release-artifact-paths (version platform)
+  "Return the absolute (TARBALL CHECKSUM SIG) paths for VERSION × PLATFORM.
+Resolves under the discovered `dist/' directory; returns nil when
+`dist/' itself is absent.  The paths are returned even when the files
+do not yet exist — callers use `file-exists-p' to discriminate."
+  (let* ((dist (nelisp-integration--release-artifact-locate-dist))
+         (base (and dist (format "%s-%s.tar.gz" version platform))))
+    (and dist
+         (list (expand-file-name base dist)
+               (expand-file-name (concat base ".sha256") dist)
+               (expand-file-name (concat base ".sig") dist)))))
+
+(defun nelisp-integration--release-artifact-recompute-sha256 (tarball)
+  "Return the lowercase hex SHA-256 of TARBALL, or nil on failure.
+Uses Emacs' built-in `secure-hash' so no external tool is required —
+the verifier still runs cleanly under emacs --batch on a host without
+sha256sum / shasum on PATH."
+  (condition-case _err
+      (with-temp-buffer
+        (set-buffer-multibyte nil)
+        (insert-file-contents-literally tarball)
+        (downcase (secure-hash 'sha256 (current-buffer))))
+    (error nil)))
+
+(defun nelisp-integration--release-artifact-parse-sha256-line (line)
+  "Extract the hex SHA-256 from LINE in the `<hash>  <file>' format.
+Returns the lowercase hash string when LINE matches the standard
+sha256sum / shasum line shape; nil otherwise."
+  (when (and (stringp line)
+             (string-match "\\`\\([0-9a-fA-F]\\{64\\}\\)[ \t]" line))
+    (downcase (match-string 1 line))))
+
+(defun nelisp-integration--release-artifact-read-checksum (checksum-file)
+  "Read CHECKSUM-FILE and return the embedded hex SHA-256 or nil."
+  (when (and checksum-file (file-readable-p checksum-file))
+    (with-temp-buffer
+      (insert-file-contents checksum-file)
+      (let ((line (buffer-substring-no-properties
+                   (point-min)
+                   (line-end-position))))
+        (nelisp-integration--release-artifact-parse-sha256-line line)))))
+
+(defun nelisp-integration--release-artifact-validate-signature (sig-file
+                                                                version
+                                                                platform)
+  "Validate the ad-hoc signature payload at SIG-FILE for VERSION × PLATFORM.
+Returns one of:
+  - t                         when the file exists and the payload
+                              starts with the documented prefix
+                              (Doc 32 v2 §2.5 ad-hoc placeholder).
+  - `:missing'                when the file does not exist.
+  - `:malformed'              when the file exists but the payload
+                              does not match the prefix shape.
+  - `:platform-mismatch'      when the payload references a different
+                              platform / version pair than requested."
+  (cond
+   ((not (and sig-file (file-readable-p sig-file)))
+    :missing)
+   (t
+    (let* ((body (with-temp-buffer
+                   (insert-file-contents sig-file)
+                   (buffer-substring-no-properties (point-min) (point-max))))
+           (line (car (split-string body "\n" t))))
+      (cond
+       ((null line) :malformed)
+       ((not (string-prefix-p "ad-hoc-signature " line)) :malformed)
+       ;; Payload shape: `ad-hoc-signature <version> <platform> <iso8601>'
+       ((not (and (string-match-p (regexp-quote (concat " " version " "))
+                                  line)
+                  (string-match-p (regexp-quote (concat " " platform " "))
+                                  line)))
+        :platform-mismatch)
+       (t t))))))
+
+(defun nelisp-integration-release-artifact-verify (&optional version platform)
+  "Verify the Phase 7.5.3 release artifact for VERSION × PLATFORM.
+
+VERSION defaults to `nelisp-integration-release-artifact-default-version'
+(currently `stage-d-v2.0'); PLATFORM defaults to `linux-x86_64' which
+matches the §11 blocker tier.  The verifier checks:
+
+  1. `dist/' is present (= `make release-artifact' was at least
+     attempted in this worktree).
+  2. The tarball, .sha256, and .sig files all exist for the
+     (version, platform) tuple.
+  3. The recomputed SHA-256 of the tarball matches the value in
+     the .sha256 file.
+  4. The .sig file carries the documented ad-hoc payload for the
+     correct (version, platform) tuple (Doc 32 v2 §2.5 placeholder
+     until v2.1 GPG signing).
+
+Returns a plist:
+  (:ready t | nil
+   :version VERSION
+   :platform PLATFORM
+   :tarball PATH-OR-NIL
+   :checksum PATH-OR-NIL
+   :signature PATH-OR-NIL
+   :checksum-recomputed HEX-OR-NIL
+   :checksum-recorded   HEX-OR-NIL
+   :signature-status    t | :missing | :malformed | :platform-mismatch
+   :missing  ((REASON-KEY . DETAIL) ...))
+
+Reasons in `:missing' include `:dist-dir-missing',
+`:tarball-missing', `:checksum-missing', `:checksum-mismatch',
+`:signature-missing', `:signature-malformed', and
+`:signature-platform-mismatch'.  The function never raises; on every
+failure path it returns `:ready nil' with a populated `:missing' list
+so bin/anvil callers can triage without a `condition-case' wrapper.
+
+This is the Phase 7.5.3 prep entry point — the *real* GPG signature
+verification + cdylib symbol probe land when v2.1 ships per Doc 32
+v2 §8 / §2.5.  Until then the ad-hoc signature placeholder is the
+only thing the verifier asserts on, and `--no-emacs' will not gate on
+this verifier (the cold-init coordinator at §3.2 is the operative
+gate).  Phase 7.5.3 wires the verifier into the release-artifact CI
+matrix so a malformed tarball never reaches GitHub Releases."
+  (let* ((version (or version
+                      nelisp-integration-release-artifact-default-version))
+         (platform (or platform "linux-x86_64"))
+         (paths (nelisp-integration--release-artifact-paths version platform))
+         missing tarball checksum signature
+         recomputed recorded sig-status)
+    (cond
+     ((null paths)
+      ;; dist/ itself missing — short-circuit with a single reason.
+      (push (cons :dist-dir-missing
+                  "no `dist/' directory found under worktree root — \
+run `make release-artifact'")
+            missing)
+      (list :ready nil
+            :version version
+            :platform platform
+            :tarball nil
+            :checksum nil
+            :signature nil
+            :checksum-recomputed nil
+            :checksum-recorded nil
+            :signature-status :missing
+            :missing (nreverse missing)))
+     (t
+      (setq tarball   (nth 0 paths)
+            checksum  (nth 1 paths)
+            signature (nth 2 paths))
+      ;; (a) tarball.
+      (unless (file-readable-p tarball)
+        (push (cons :tarball-missing
+                    (format "expected tarball at %s — \
+run `make release-artifact PLATFORM=%s'" tarball platform))
+              missing))
+      ;; (b) checksum file + recompute + compare.
+      (cond
+       ((not (file-readable-p checksum))
+        (push (cons :checksum-missing
+                    (format "expected checksum at %s" checksum))
+              missing))
+       ((not (file-readable-p tarball))
+        ;; Cannot recompute without the tarball; already noted above.
+        nil)
+       (t
+        (setq recorded (nelisp-integration--release-artifact-read-checksum
+                        checksum))
+        (setq recomputed (nelisp-integration--release-artifact-recompute-sha256
+                          tarball))
+        (cond
+         ((null recorded)
+          (push (cons :checksum-malformed
+                      (format "could not parse hex SHA-256 from %s"
+                              checksum))
+                missing))
+         ((null recomputed)
+          (push (cons :checksum-recompute-failed
+                      (format "could not recompute SHA-256 of %s"
+                              tarball))
+                missing))
+         ((not (string= recorded recomputed))
+          (push (cons :checksum-mismatch
+                      (format "recorded=%s recomputed=%s"
+                              recorded recomputed))
+                missing)))))
+      ;; (c) signature.
+      (setq sig-status
+            (nelisp-integration--release-artifact-validate-signature
+             signature version platform))
+      (pcase sig-status
+        (:missing
+         (push (cons :signature-missing
+                     (format "expected signature at %s" signature))
+               missing))
+        (:malformed
+         (push (cons :signature-malformed
+                     (format "signature payload at %s does not match \
+`ad-hoc-signature <version> <platform> <iso8601>' shape"
+                             signature))
+               missing))
+        (:platform-mismatch
+         (push (cons :signature-platform-mismatch
+                     (format "signature payload at %s does not reference \
+version=%s platform=%s" signature version platform))
+               missing))
+        (_ nil))
+      (list :ready (null missing)
+            :version version
+            :platform platform
+            :tarball tarball
+            :checksum checksum
+            :signature signature
+            :checksum-recomputed recomputed
+            :checksum-recorded recorded
+            :signature-status sig-status
+            :missing (nreverse missing))))))
+
 (provide 'nelisp-integration)
 ;;; nelisp-integration.el ends here
