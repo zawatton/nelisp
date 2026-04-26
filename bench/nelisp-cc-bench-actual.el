@@ -112,6 +112,30 @@ warm-up cost does not contaminate the measurement."
     (or (string-match-p "x86_64" cfg)
         (string-match-p "amd64" cfg))))
 
+(defun nelisp-cc-bench-actual--host-arm64-p ()
+  "Return non-nil on arm64 / aarch64 hosts (M1/M2 mac etc).
+T162 follow-up — Phase 7.5.4 in-process FFI works on arm64 too once
+the cdylib is built; the bench backend has been wired (T10/T100)
+since Phase 7.0."
+  (let ((cfg (downcase (or (and (boundp 'system-configuration)
+                                system-configuration)
+                           ""))))
+    (or (string-match-p "aarch64" cfg)
+        (string-match-p "arm64" cfg))))
+
+(defun nelisp-cc-bench-actual--host-supported-p ()
+  "Return non-nil when the host CPU has a NeLisp native backend.
+Currently `x86_64' (T9) and `arm64' (T10) are SHIPPED."
+  (or (nelisp-cc-bench-actual--host-x86_64-p)
+      (nelisp-cc-bench-actual--host-arm64-p)))
+
+(defun nelisp-cc-bench-actual--host-backend ()
+  "Return the backend symbol matching the current host (`x86_64' or `arm64')."
+  (cond ((nelisp-cc-bench-actual--host-x86_64-p) 'x86_64)
+        ((nelisp-cc-bench-actual--host-arm64-p) 'arm64)
+        (t (signal 'nelisp-cc-bench-actual-unsafe-bytes
+                   (list :reason 'unsupported-host-cpu)))))
+
 ;;; Bench cases ---------------------------------------------------
 
 ;; The lambdas below are the 3 axes' Lisp source.  Each takes 0
@@ -188,7 +212,8 @@ ignored the value; T84 inspects it for the value-correct gate.
 Returns the integer, or nil when the run signalled / was skipped."
   (let ((nelisp-cc-runtime-exec-mode 'in-process))
     (condition-case err
-        (let* ((result (nelisp-cc-runtime-compile-and-allocate form 'x86_64))
+        (let* ((result (nelisp-cc-runtime-compile-and-allocate
+                           form (nelisp-cc-bench-actual--host-backend)))
                (final  (plist-get result :final-bytes))
                (exec   (nelisp-cc-runtime--exec-in-process final)))
           (cond
@@ -366,8 +391,8 @@ Plist keys:
           (cond
            ((not (nelisp-cc-bench-actual--module-available-p))
             'module-not-built)
-           ((not (nelisp-cc-bench-actual--host-x86_64-p))
-            'non-x86_64-host)
+           ((not (nelisp-cc-bench-actual--host-supported-p))
+            'unsupported-host-cpu)
            (t nil)))
          (native-error nil)
          (native-unsafe-bytes-p nil)
