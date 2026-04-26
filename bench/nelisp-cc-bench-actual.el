@@ -376,6 +376,28 @@ not a gate input)."
         ((zerop denominator) most-positive-fixnum)
         (t (/ (float numerator) (float denominator)))))
 
+(defcustom nelisp-cc-bench-actual-value-print-cap 80
+  "Maximum `%S' length before bench value prints get truncated.
+fact-iter prints a ~2500-digit bignum that floods the bench transcript;
+when the printed form exceeds this cap the value is replaced with a
+sentinel `<NNNN-char value: HEAD…>' so the gate / speedup line stays
+greppable.  Set to nil to disable (prints full value, restoring pre-fix
+behavior)."
+  :type '(choice (integer :tag "cap (chars)") (const :tag "no cap" nil))
+  :group 'nelisp-cc-bench-actual)
+
+(defun nelisp-cc-bench-actual--print-value (v)
+  "Return printed representation of V, truncated per `--value-print-cap'."
+  (let ((s (format "%S" v)))
+    (if (and nelisp-cc-bench-actual-value-print-cap
+             (> (length s) nelisp-cc-bench-actual-value-print-cap))
+        (format "<%d-char value: %s…>"
+                (length s)
+                (substring s 0
+                           (max 1 (- nelisp-cc-bench-actual-value-print-cap
+                                     20))))
+      s)))
+
 ;;; Per-bench runners ---------------------------------------------
 
 (defun nelisp-cc-bench-actual--run-one (name form gate-target iterations)
@@ -465,7 +487,7 @@ Plist keys:
                              ((eq value-eq t) t)
                              ((eq value-eq :i64-overflow) t)
                              (t nil))))
-      (message "  bytecode=%.4fs native=%s native-comp=%s speedup=%s gate=%.1fx %s | value: native=%S bc=%S → %S"
+      (message "  bytecode=%.4fs native=%s native-comp=%s speedup=%s gate=%.1fx %s | value: native=%s bc=%s → %S"
                bytecode-elapsed
                (if native-elapsed (format "%.4fs" native-elapsed) "skipped")
                (if native-comp-elapsed (format "%.4fs" native-comp-elapsed) "n/a")
@@ -474,7 +496,9 @@ Plist keys:
                (cond ((eq gate-pass :skipped) "SKIP")
                      (gate-pass "PASS")
                      (t "FAIL"))
-               nat-val bc-val value-eq)
+               (nelisp-cc-bench-actual--print-value nat-val)
+               (nelisp-cc-bench-actual--print-value bc-val)
+               value-eq)
       (list :bench name
             :iterations iterations
             :bytecode-elapsed bytecode-elapsed
@@ -545,8 +569,8 @@ Plist keys:
                "    §5.2 gate             : %.1fx → %s\n"
                "    vs Emacs native-comp  : %s%s\n"
                "    skip-reason           : %s\n"
-               "    value (native)        : %S\n"
-               "    value (bytecode)      : %S\n"
+               "    value (native)        : %s\n"
+               "    value (bytecode)      : %s\n"
                "    value-correct gate    : %S → %s\n")
               (symbol-name bench) iters bc
               (if nat (format "%.4f s (total)" nat) "skipped")
@@ -559,7 +583,8 @@ Plist keys:
                              (if vs-ok "PASS" "FAIL"))
                 "")
               (if skip (symbol-name skip) "—")
-              nat-val bc-val
+              (nelisp-cc-bench-actual--print-value nat-val)
+              (nelisp-cc-bench-actual--print-value bc-val)
               value-eq (cond ((eq val-pass :skipped) "SKIP")
                              (val-pass "PASS") (t "FAIL"))))))
 

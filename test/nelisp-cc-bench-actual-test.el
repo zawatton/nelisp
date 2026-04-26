@@ -170,7 +170,31 @@ v1.0 ship audit, etc.) parses these keys.  This test catches drift."
     (should (symbolp (plist-get result :bench)))
     (should (integerp (plist-get result :iterations)))
     (should (numberp (plist-get result :gate-target)))
-    (should (memq (plist-get result :gate-pass) '(nil t)))))
+    ;; gate-pass is t / nil / :skipped (= host-CPU not production).
+    (should (memq (plist-get result :gate-pass) '(nil t :skipped)))))
+
+(ert-deftest nelisp-cc-bench-actual-print-value-truncates-bignum ()
+  "`--print-value' truncates long values into a `<NNNN-char value: HEAD…>'
+sentinel so fact-iter's ~2500-digit bignum doesn't flood the bench
+transcript.  Regression test for the 2026-04-26 token-budget fix."
+  (let* ((bignum (let ((acc 1)) (dotimes (i 1000) (setq acc (* acc (1+ i)))) acc))
+         (printed (nelisp-cc-bench-actual--print-value bignum)))
+    (should (< (length printed) 200))
+    (should (string-match-p "\\`<[0-9]+-char value: " printed))
+    (should (string-match-p "…>\\'" printed))))
+
+(ert-deftest nelisp-cc-bench-actual-print-value-passthrough-short ()
+  "`--print-value' returns short values unchanged (= no sentinel wrap)."
+  (should (equal (nelisp-cc-bench-actual--print-value 832040) "832040"))
+  (should (equal (nelisp-cc-bench-actual--print-value nil) "nil"))
+  (should (equal (nelisp-cc-bench-actual--print-value 'foo) "foo")))
+
+(ert-deftest nelisp-cc-bench-actual-print-value-cap-disable ()
+  "Setting `--value-print-cap' to nil disables truncation (= raw `%S')."
+  (let ((nelisp-cc-bench-actual-value-print-cap nil)
+        (long (make-string 500 ?x)))
+    (should (= (length (nelisp-cc-bench-actual--print-value long))
+               (+ 2 (length long))))))
 
 (provide 'nelisp-cc-bench-actual-test)
 
