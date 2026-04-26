@@ -86,6 +86,7 @@
 (require 'nelisp-cc)
 (require 'nelisp-cc-x86_64)
 (require 'nelisp-cc-arm64)
+(require 'nelisp-cc-pipeline)
 
 ;;; Constants -------------------------------------------------------
 
@@ -1303,6 +1304,12 @@ The `:final-bytes' equals `(--exec-page-bytes PAGE)' restricted to
 not have to slice the page buffer manually."
   (let* ((be (or backend (nelisp-cc-runtime--default-backend)))
          (fn (nelisp-cc-build-ssa-from-ast lambda-form))
+         ;; T158 — Phase 7.7 SSA passes (escape + inline + rec-inline +
+         ;; lift) wired between the SSA build and the linear-scan.  When
+         ;; `nelisp-cc-enable-7.7-passes' is nil the call is a no-op
+         ;; that returns FN unchanged + zero stats — see Doc 42 §3.
+         (pipeline-result (nelisp-cc-pipeline-run-7.7-passes fn))
+         (pipeline-stats (cdr pipeline-result))
          (gc-meta (nelisp-cc-runtime--insert-safe-points fn))
          (alloc (nelisp-cc--linear-scan fn))
          (raw   (nelisp-cc-runtime--compile-bytes fn alloc be))
@@ -1326,6 +1333,7 @@ not have to slice the page buffer manually."
            :tail-call-rewritten rewrote-p
            :backend be
            :ssa-function fn
+           :pipeline-stats pipeline-stats
            :raw-bytes raw
            :final-bytes final))))
 
