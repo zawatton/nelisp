@@ -1,4 +1,4 @@
-;;; nelisp-gc-verify-test.el --- ERTs for Phase 7.3 §6.10 oracle #1 -*- lexical-binding: t; -*-
+;;; nelisp-gc-verify-test.el --- ERTs for Phase 7.3 §6.10 oracles -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -8,11 +8,17 @@
 
 ;;; Commentary:
 
-;; ERT smoke tests for `nelisp-gc-verify' (Doc 30 v2 §6.10 oracle #1
-;; = `verify-heap').  Each oracle sub-check has a positive (PASS) and
-;; negative (catches the breach) test; the full walker
-;; (`verify-heap') gets a couple of integration tests proving it
-;; stops after the cap and keeps its accounting sane.
+;; ERT smoke tests for `nelisp-gc-verify' (Doc 30 v2 §6.10 oracles
+;; #1-#4):
+;;
+;;   #1 verify-heap              — region/object/free-list shape
+;;   #2 verify-card-table        — cross-gen pointer ↔ dirty bit
+;;   #3 verify-poison-from-space — Cheney from-space stays untouched
+;;   #4 verify-double-scan       — mark-phase determinism across runs
+;;
+;; Each oracle sub-check has a positive (PASS) and negative (catches
+;; the breach) test; the full walker (`verify-heap') gets integration
+;; tests proving it stops after the cap and keeps its accounting sane.
 ;;
 ;; See docs/design/30-phase7.3-gc-inner.org §6.10 for the contract.
 
@@ -257,6 +263,233 @@
          (result (nelisp-gc-verify-heap rs)))
     (should-not (plist-get result :passed-p))
     (should (<= (length (plist-get result :violations)) 16))))
+
+
+;;; 7. verify-card-table (oracle #2) -------------------------------
+
+(defun nelisp-gc-verify-test--mk-tenured-with-fields
+    (id start end objs-with-fields)
+  "Build a tenured region carrying :objects-with-fields."
+  (list :region-id id
+        :start start
+        :end   end
+        :generation :tenured
+        :family :cons-pool
+        :objects-with-fields objs-with-fields))
+
+(defun nelisp-gc-verify-test--mk-nursery-region (id start end)
+  "Build a nursery region descriptor."
+  (list :region-id id
+        :start start
+        :end   end
+        :generation :nursery
+        :family :cons-pool))
+
+(ert-deftest nelisp-gc-verify-card-table-passes-on-empty-tenured ()
+  "A tenured region with no walker (vacuously empty) → PASS."
+  (let* ((tenured (list :region-id 10 :start 0 :end 8192
+                        :generation :tenured :family :cons-pool))
+         (nursery (nelisp-gc-verify-test--mk-nursery-region 11 8192 16384))
+         (ct      (nelisp-gc-inner-init-card-table tenured)))
+    (should-not (nelisp-gc-verify-card-table ct tenured nursery))))
+
+(ert-deftest nelisp-gc-verify-card-table-passes-on-no-cross-gen ()
+  "Tenured object whose fields all stay in tenured → PASS."
+  (let* ((tenured (nelisp-gc-verify-test--mk-tenured-with-fields
+                   10 0 8192
+                   '((100 :fields (200 300))   ; both intra-tenured
+                     (400 :fields (500)))))
+         (nursery (nelisp-gc-verify-test--mk-nursery-region 11 8192 16384))
+         (ct      (nelisp-gc-inner-init-card-table tenured)))
+    (should-not (nelisp-gc-verify-card-table ct tenured nursery))))
+
+(ert-deftest nelisp-gc-verify-card-table-passes-when-write-barrier-fired ()
+  "Cross-gen pointer with a dirty card → PASS."
+  (let* ((tenured (nelisp-gc-verify-test--mk-tenured-with-fields
+                   10 0 8192
+                   '((100 :fields (8200))))) ; points into nursery
+         (nursery (nelisp-gc-verify-test--mk-nursery-region 11 8192 16384))
+         (ct      (nelisp-gc-inner-init-card-table tenured)))
+    ;; Simulate the write barrier having fired for the write to addr 100.
+    (nelisp-gc-inner-write-barrier ct 100 8200 nursery)
+    (should-not (nelisp-gc-verify-card-table ct tenured nursery))))
+
+(ert-deftest nelisp-gc-verify-card-table-flags-clean-card-with-cross-gen ()
+  "Cross-gen pointer on a *clean* card → fatal violation."
+  (let* ((tenured (nelisp-gc-verify-test--mk-tenured-with-fields
+                   10 0 8192
+                   '((100 :fields (8200)))))
+         (nursery (nelisp-gc-verify-test--mk-nursery-region 11 8192 16384))
+         (ct      (nelisp-gc-inner-init-card-table tenured)))
+    ;; Deliberately *do not* fire the write barrier — silent corruption.
+    (let ((v (nelisp-gc-verify-card-table ct tenured nursery)))
+      (should v)
+      (should (eq (plist-get v :severity) 'fatal))
+      (should (string-match-p "clean card" (plist-get v :reason)))
+      (should (eq (plist-get v :addr) 100))
+      (should (eq (plist-get v :field) 8200)))))
+
+(ert-deftest nelisp-gc-verify-card-table-rejects-non-card-table ()
+  "Non-card-table arg → fatal violation, no crash."
+  (let* ((tenured (nelisp-gc-verify-test--mk-tenured-with-fields
+                   10 0 8192 nil))
+         (nursery (nelisp-gc-verify-test--mk-nursery-region 11 8192 16384)))
+    (let ((v (nelisp-gc-verify-card-table :not-a-table tenured nursery)))
+      (should v)
+      (should (eq (plist-get v :severity) 'fatal)))))
+
+(ert-deftest nelisp-gc-verify-card-table-honours-objects-with-fields-of ()
+  "Callback walker (`:objects-with-fields-of') is consulted when static absent."
+  (let* ((nursery (nelisp-gc-verify-test--mk-nursery-region 11 8192 16384))
+         (tenured (list :region-id 10 :start 0 :end 8192
+                        :generation :tenured :family :cons-pool
+                        :objects-with-fields-of
+                        (lambda (_r) '((100 :fields (8200))))))
+         (ct      (nelisp-gc-inner-init-card-table tenured)))
+    ;; Fire barrier so the walker-supplied edge is covered → PASS.
+    (nelisp-gc-inner-write-barrier ct 100 8200 nursery)
+    (should-not (nelisp-gc-verify-card-table ct tenured nursery))))
+
+
+;;; 8. verify-poison-from-space (oracle #3) ------------------------
+
+(defun nelisp-gc-verify-test--reset-poison ()
+  "Reset poison-from-space side-table for clean test isolation."
+  (nelisp-gc-verify-poison-reset))
+
+(ert-deftest nelisp-gc-verify-poison-passes-when-no-touch ()
+  "Mark a region as poisoned, never touch it → PASS."
+  (nelisp-gc-verify-test--reset-poison)
+  (let ((r (nelisp-gc-verify-test--mk-nursery-region 20 0 4096)))
+    (nelisp-gc-verify-poison-mark r)
+    (should-not (nelisp-gc-verify-poison-from-space))))
+
+(ert-deftest nelisp-gc-verify-poison-passes-on-out-of-range-touch ()
+  "Touching an addr OUTSIDE every poisoned region → no-op, still PASS."
+  (nelisp-gc-verify-test--reset-poison)
+  (let ((r (nelisp-gc-verify-test--mk-nursery-region 20 0 4096)))
+    (nelisp-gc-verify-poison-mark r)
+    (should-not (nelisp-gc-verify-poison-touch 9999 'unrelated))
+    (should-not (nelisp-gc-verify-poison-from-space))))
+
+(ert-deftest nelisp-gc-verify-poison-flags-touch-after-mark ()
+  "Touching a poisoned addr → fatal verdict naming the addr."
+  (nelisp-gc-verify-test--reset-poison)
+  (let ((r (nelisp-gc-verify-test--mk-nursery-region 20 0 4096)))
+    (nelisp-gc-verify-poison-mark r)
+    (should (nelisp-gc-verify-poison-touch 100 'minor-gc-bug))
+    (let ((v (nelisp-gc-verify-poison-from-space)))
+      (should v)
+      (should (eq (plist-get v :severity) 'fatal))
+      (should (eq (plist-get v :region-id) 20))
+      (should (= 1 (plist-get v :touch-count)))
+      (should (eq nelisp-gc-verify-poison-stamp
+                  (plist-get v :stamp))))))
+
+(ert-deftest nelisp-gc-verify-poison-caps-touch-list-at-five ()
+  "Many touches → :touches reports up to five entries."
+  (nelisp-gc-verify-test--reset-poison)
+  (let ((r (nelisp-gc-verify-test--mk-nursery-region 21 0 4096)))
+    (nelisp-gc-verify-poison-mark r)
+    (dotimes (i 12) (nelisp-gc-verify-poison-touch (* 16 i) 'soak))
+    (let ((v (nelisp-gc-verify-poison-from-space)))
+      (should v)
+      (should (= 12 (plist-get v :touch-count)))
+      (should (<= (length (plist-get v :touches)) 5)))))
+
+(ert-deftest nelisp-gc-verify-poison-mark-rejects-malformed-region ()
+  "Region without :region-id / :start / :end → wrong-type-argument."
+  (nelisp-gc-verify-test--reset-poison)
+  (should-error (nelisp-gc-verify-poison-mark '(:start 0))
+                :type 'wrong-type-argument))
+
+(ert-deftest nelisp-gc-verify-poison-reset-clears-state ()
+  "Reset drops every poisoned-region marker."
+  (nelisp-gc-verify-test--reset-poison)
+  (nelisp-gc-verify-poison-mark
+   (nelisp-gc-verify-test--mk-nursery-region 22 0 4096))
+  (nelisp-gc-verify-poison-mark
+   (nelisp-gc-verify-test--mk-nursery-region 23 4096 8192))
+  (let ((cleared (nelisp-gc-verify-poison-reset)))
+    (should (= 2 cleared))
+    (should (null nelisp-gc-verify--poison-regions))
+    ;; A subsequent touch on the previously-poisoned addr is silent.
+    (should-not (nelisp-gc-verify-poison-touch 100 'post-reset))
+    (should-not (nelisp-gc-verify-poison-from-space))))
+
+
+;;; 9. verify-double-scan (oracle #4) ------------------------------
+
+(defun nelisp-gc-verify-test--mk-region-with-children
+    (id start end children-alist)
+  "Build a region with a `:children-of' lookup table."
+  (list :region-id id
+        :start start
+        :end   end
+        :generation :tenured
+        :family :cons-pool
+        :children-of
+        (lambda (addr) (cdr (assq addr children-alist)))))
+
+(ert-deftest nelisp-gc-verify-double-scan-passes-on-empty-roots ()
+  "Empty root set → both runs mark zero, identical → PASS."
+  (nelisp-gc-verify-test--reset)
+  (let ((rs (list (nelisp-gc-verify-test--mk-region 1 0 1024 :cons-pool))))
+    (should-not (nelisp-gc-verify-double-scan nil rs))))
+
+(ert-deftest nelisp-gc-verify-double-scan-passes-on-linear-chain ()
+  "A → B → C: both runs settle :black on all three addrs identically."
+  (nelisp-gc-verify-test--reset)
+  (let ((rs (list (nelisp-gc-verify-test--mk-region-with-children
+                   1 0 1024 '((100 200) (200 300) (300))))))
+    (should-not (nelisp-gc-verify-double-scan '(100) rs))))
+
+(ert-deftest nelisp-gc-verify-double-scan-passes-on-cyclic-graph ()
+  "Cycles don't break determinism — visited set guards re-enqueue."
+  (nelisp-gc-verify-test--reset)
+  (let ((rs (list (nelisp-gc-verify-test--mk-region-with-children
+                   1 0 1024
+                   '((100 200) (200 300) (300 100))))))
+    (should-not (nelisp-gc-verify-double-scan '(100) rs))))
+
+(ert-deftest nelisp-gc-verify-double-scan-passes-on-multi-root ()
+  "Two roots, two separate sub-graphs — second pass identical to first."
+  (nelisp-gc-verify-test--reset)
+  (let ((rs (list (nelisp-gc-verify-test--mk-region-with-children
+                   1 0 2048
+                   '((100 200) (200) (1000 1100) (1100))))))
+    (should-not (nelisp-gc-verify-double-scan '(100 1000) rs))))
+
+(ert-deftest nelisp-gc-verify-double-scan-flags-non-deterministic-walker ()
+  "Walker that returns *different* children on each call → divergence."
+  (nelisp-gc-verify-test--reset)
+  (let* ((toggle (cons 0 nil))      ; mutable counter inside cons cell
+         (rs (list (list :region-id 1 :start 0 :end 1024
+                         :generation :tenured :family :cons-pool
+                         :children-of
+                         (lambda (_addr)
+                           (cl-incf (car toggle))
+                           ;; Run 1: returns (200 300); run 2: (200 400)
+                           (if (eq (car toggle) 1) '(200 300) '(200 400))))))
+         (v (nelisp-gc-verify-double-scan '(100) rs)))
+    (should v)
+    (should (eq (plist-get v :severity) 'fatal))))
+
+(ert-deftest nelisp-gc-verify-double-scan-reports-marked-counts ()
+  "On divergence the violation includes both runs' marked-counts."
+  (nelisp-gc-verify-test--reset)
+  ;; Walker that on run 1 yields no child, on run 2 yields one.
+  (let* ((calls (cons 0 nil))
+         (rs (list (list :region-id 1 :start 0 :end 1024
+                         :generation :tenured :family :cons-pool
+                         :children-of
+                         (lambda (_addr)
+                           (cl-incf (car calls))
+                           (if (= (car calls) 1) nil '(200))))))
+         (v (nelisp-gc-verify-double-scan '(100) rs)))
+    (should v)
+    (should (integerp (plist-get v :first-marked-count)))
+    (should (integerp (plist-get v :second-marked-count)))))
 
 
 (provide 'nelisp-gc-verify-test)
