@@ -211,6 +211,104 @@ after 1M cons + length walk.  Doc 28 v2 §5.2 alloc-heavy gate."
                      (setq i (1+ i)))
                    (length acc)))))))
 
+;;; Phase 7: rec-inline survival-arm value-correctness ----------------
+;;
+;; The Phase 7.1 survival-arm fix (= splice's Pass 3 must skip
+;; phi-arm vids that have already been resolved by Pass 2) closed the
+;; `fib(n) at depth>=1 returns garbage' leak that the F3 ship surfaced
+;; (depth=1 fib(30)=687462 vs 832040 expected, monotonic convergence
+;; depth 1→4).  These tests pin the fix end-to-end via the in-process
+;; FFI: pipeline ON + rec-inline depth-limit 1..4 must all return the
+;; same value as the bytecode VM.  See
+;; `src/nelisp-cc-recursive-inline.el' Pass 3 `translated-ids' guard.
+
+(require 'nelisp-cc-pipeline)
+
+(defun nelisp-cc-value-verify-test--exec-with-pipeline (form depth)
+  "Compile FORM through the pipeline at DEPTH and return native i64."
+  (let* ((nelisp-cc-runtime-exec-mode 'in-process)
+         (nelisp-cc-enable-7.7-passes t)
+         (nelisp-cc-pipeline-rec-inline-depth-limit depth)
+         (result (nelisp-cc-runtime-compile-and-allocate form 'x86_64))
+         (final  (plist-get result :final-bytes))
+         (exec   (nelisp-cc-runtime--exec-in-process final)))
+    (cond
+     ((and (consp exec) (eq (car exec) :result))
+      (nth 2 exec))
+     (t
+      (error "rec-inline pipeline native exec failed: %S" exec)))))
+
+(defmacro nelisp-cc-value-verify-test--fib-form (n)
+  "Build a fib(N) lambda form."
+  `'(lambda ()
+      (letrec ((fib (lambda (n)
+                      (if (< n 2) n
+                        (+ (funcall fib (- n 1))
+                           (funcall fib (- n 2)))))))
+        (funcall fib ,n))))
+
+(ert-deftest nelisp-cc-value-verify-rec-inline-fib-5-depth-1 ()
+  "Phase 7.1 survival-arm fix: pipeline ON + rec-inline depth=1
+fib(5) returns 5 (= bytecode reference).  Pre-fix returned a
+random int64 because Pass 3 chained the param phi-arm through
+value-map into a deeper clone."
+  (skip-unless (nelisp-cc-value-verify-test--module-available-p))
+  (should (= 5
+             (nelisp-cc-value-verify-test--exec-with-pipeline
+              (nelisp-cc-value-verify-test--fib-form 5) 1))))
+
+(ert-deftest nelisp-cc-value-verify-rec-inline-fib-10-depth-1 ()
+  "Phase 7.1 survival-arm fix: pipeline ON + rec-inline depth=1
+fib(10) returns 55."
+  (skip-unless (nelisp-cc-value-verify-test--module-available-p))
+  (should (= 55
+             (nelisp-cc-value-verify-test--exec-with-pipeline
+              (nelisp-cc-value-verify-test--fib-form 10) 1))))
+
+(ert-deftest nelisp-cc-value-verify-rec-inline-fib-20-depth-1 ()
+  "Phase 7.1 survival-arm fix: pipeline ON + rec-inline depth=1
+fib(20) returns 6765."
+  (skip-unless (nelisp-cc-value-verify-test--module-available-p))
+  (should (= 6765
+             (nelisp-cc-value-verify-test--exec-with-pipeline
+              (nelisp-cc-value-verify-test--fib-form 20) 1))))
+
+(ert-deftest nelisp-cc-value-verify-rec-inline-fib-30-depth-1 ()
+  "Phase 7.1 survival-arm fix: pipeline ON + rec-inline depth=1
+fib(30) returns 832040 (= bytecode reference).  Pre-fix returned
+687462 (~17% short, monotonic convergence depth 1→4 = F3 report)."
+  (skip-unless (nelisp-cc-value-verify-test--module-available-p))
+  (should (= 832040
+             (nelisp-cc-value-verify-test--exec-with-pipeline
+              (nelisp-cc-value-verify-test--fib-form 30) 1))))
+
+(ert-deftest nelisp-cc-value-verify-rec-inline-fib-30-depth-2 ()
+  "Phase 7.1 survival-arm fix: pipeline ON + rec-inline depth=2
+fib(30) returns 832040.  Catches a regression that breaks at the
+larger unroll where the splice cascades through more cloned blocks."
+  (skip-unless (nelisp-cc-value-verify-test--module-available-p))
+  (should (= 832040
+             (nelisp-cc-value-verify-test--exec-with-pipeline
+              (nelisp-cc-value-verify-test--fib-form 30) 2))))
+
+(ert-deftest nelisp-cc-value-verify-rec-inline-fib-30-depth-3 ()
+  "Phase 7.1 survival-arm fix: pipeline ON + rec-inline depth=3
+fib(30) returns 832040."
+  (skip-unless (nelisp-cc-value-verify-test--module-available-p))
+  (should (= 832040
+             (nelisp-cc-value-verify-test--exec-with-pipeline
+              (nelisp-cc-value-verify-test--fib-form 30) 3))))
+
+(ert-deftest nelisp-cc-value-verify-rec-inline-fib-30-depth-4 ()
+  "Phase 7.1 survival-arm fix: pipeline ON + rec-inline depth=4
+fib(30) returns 832040.  Same value across depths 1..4 — the rec-
+inline pass must not introduce any value drift as a function of
+unroll depth."
+  (skip-unless (nelisp-cc-value-verify-test--module-available-p))
+  (should (= 832040
+             (nelisp-cc-value-verify-test--exec-with-pipeline
+              (nelisp-cc-value-verify-test--fib-form 30) 4))))
+
 (provide 'nelisp-cc-value-verify-test)
 
 ;;; nelisp-cc-value-verify-test.el ends here

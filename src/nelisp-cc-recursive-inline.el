@@ -485,32 +485,68 @@ wrong block (= wrong fib(n) result)."
     ;; Phi instructions DO need the re-walk because their operand
     ;; list mirrors the `:phi-arms' alist whose values may reference
     ;; defs from blocks that hadn't been cloned yet during Pass 2.
-    (dolist (b src-blocks)
-      (let ((new-blk (gethash b block-map)))
-        (dolist (instr (nelisp-cc--ssa-block-instrs new-blk))
-          (when (eq (nelisp-cc--ssa-instr-opcode instr) 'phi)
-            (let* ((old-ops (nelisp-cc--ssa-instr-operands instr))
-                   (new-ops
-                    (nelisp-cc--rec-inline-translate-operands
-                     old-ops value-map param-map)))
-              (unless (equal old-ops new-ops)
-                ;; Operand list changed — patch use lists.
-                (dolist (op old-ops)
-                  (setf (nelisp-cc--ssa-value-use-list op)
-                        (delq instr (nelisp-cc--ssa-value-use-list op))))
-                (setf (nelisp-cc--ssa-instr-operands instr) new-ops)
-                (dolist (op new-ops)
-                  (nelisp-cc--ssa-add-use op instr))))
-            ;; Re-translate meta (phi arms reference value-ids that
-            ;; may still be the original callee's; rewrite-meta is
-            ;; idempotent w.r.t. already-translated arms because the
-            ;; lookup walks by ID).
-            (let ((new-meta (nelisp-cc--rec-inline-rewrite-meta
-                             (nelisp-cc--ssa-instr-meta instr)
-                             block-map value-map param-map)))
-              (setf (nelisp-cc--ssa-instr-meta instr) new-meta))))))))
+    ;;
+    ;; Phase 7.1 survival-arm fix — Pass 3 must skip operands /
+    ;; phi-arm vids that have *already* been resolved in Pass 2.
+    ;; Both VALUE-MAP results (clones) and PARAM-MAP results
+    ;; (caller-side substitutes) can themselves be keys in VALUE-MAP
+    ;; under self-recursion (because CALLEE = CALLER, and a caller-
+    ;; side arg like `v5 = (- n 1)' is also defined by the original
+    ;; body, so the cloner re-allocates `v5 → cloned-v17').  Re-
+    ;; translating `v5' a second time would chain through to the
+    ;; clone's `v17' and silently rebind the phi arm to a use-before-
+    ;; def — the survival-arm fib leak.  Build a set of `already-
+    ;; translated' value-ids from PARAM-MAP values + VALUE-MAP values
+    ;; and skip any operand / arm whose value-id is in that set.
+    (let ((translated-ids (make-hash-table :test 'eql)))
+      (when param-map
+        (maphash (lambda (_orig new)
+                   (puthash (nelisp-cc--ssa-value-id new) t translated-ids))
+                 param-map))
+      (maphash (lambda (_orig new)
+                 (puthash (nelisp-cc--ssa-value-id new) t translated-ids))
+               value-map)
+      (dolist (b src-blocks)
+        (let ((new-blk (gethash b block-map)))
+          (dolist (instr (nelisp-cc--ssa-block-instrs new-blk))
+            (when (eq (nelisp-cc--ssa-instr-opcode instr) 'phi)
+              (let* ((old-ops (nelisp-cc--ssa-instr-operands instr))
+                     (new-ops
+                      (mapcar
+                       (lambda (v)
+                         (cond
+                          ;; Already a clone or caller-side substitute
+                          ;; — leave alone (= Pass 2 resolved it).
+                          ((gethash (nelisp-cc--ssa-value-id v)
+                                    translated-ids)
+                           v)
+                          ;; Param-map first (orig param → caller arg).
+                          ((and param-map (gethash v param-map nil))
+                           (gethash v param-map))
+                          ;; Value-map fallback (orig def → clone def).
+                          (t (or (gethash v value-map) v))))
+                       old-ops)))
+                (unless (equal old-ops new-ops)
+                  ;; Operand list changed — patch use lists.
+                  (dolist (op old-ops)
+                    (setf (nelisp-cc--ssa-value-use-list op)
+                          (delq instr (nelisp-cc--ssa-value-use-list op))))
+                  (setf (nelisp-cc--ssa-instr-operands instr) new-ops)
+                  (dolist (op new-ops)
+                    (nelisp-cc--ssa-add-use op instr))))
+              ;; Re-translate meta with the same translated-id guard.
+              ;; Pass 2 already rewrote arms whose vid was in the maps;
+              ;; re-rewriting via the bare lookup would chain a
+              ;; cloned-vid (= Pass 2 result) back through value-map
+              ;; into a deeper clone — exactly the survival-arm leak.
+              (let ((new-meta
+                     (nelisp-cc--rec-inline-rewrite-meta
+                      (nelisp-cc--ssa-instr-meta instr)
+                      block-map value-map param-map translated-ids)))
+                (setf (nelisp-cc--ssa-instr-meta instr) new-meta)))))))))
 
-(defun nelisp-cc--rec-inline-rewrite-meta (meta block-map value-map &optional param-map)
+(defun nelisp-cc--rec-inline-rewrite-meta
+    (meta block-map value-map &optional param-map translated-ids)
   "Rewrite META plist — translate :then/:else block-ids and :phi-arms.
 
 BLOCK-MAP maps original blocks to cloned blocks.  VALUE-MAP maps
@@ -519,9 +555,19 @@ substitutes original param values with the splice's call-site args
 and is consulted *before* VALUE-MAP for `:phi-arms' value lookups
 (so a phi-arm pointing at the original callee param resolves to
 the splice's arg verbatim instead of chaining through a cloner-
-allocated `param → ... → cloned-arg' translation).  Returns a fresh
-plist (never mutates META in place); plist keys not in the rewrite
-set fall through unchanged."
+allocated `param → ... → cloned-arg' translation).
+
+TRANSLATED-IDS, when non-nil, is a hash-table whose keys are the
+value-ids of *already-translated* values (= the values in PARAM-MAP
+plus the values in VALUE-MAP).  When a `:phi-arms' arm's vid is in
+this set the rewrite leaves the arm verbatim — Pass 2 already
+resolved it.  Without this guard a self-recursion splice's Pass 3
+re-rewrite chains an arm `(BID . v5)' (= Pass 2 result for the
+original param `v0') through `value-map[v5] = v17' and silently
+remaps the arm to a deeper clone — the survival-arm fib leak.
+
+Returns a fresh plist (never mutates META in place); plist keys not
+in the rewrite set fall through unchanged."
   (when meta
     (let ((kv (copy-sequence meta))
           (out nil))
@@ -558,31 +604,42 @@ set fall through unchanged."
                               pred-bid)
                             pred-bid))
                        (new-val-id
-                        (or
-                         ;; Phase 7.1 value-correctness fix: param-map
-                         ;; takes priority — a phi-arm referencing the
-                         ;; original callee param should resolve to
-                         ;; the splice's arg, not to a chained
-                         ;; cloner-allocated value.
-                         (and param-map
-                              (catch 'pp
-                                (maphash
-                                 (lambda (orig new)
-                                   (when (= val-id
-                                            (nelisp-cc--ssa-value-id orig))
-                                     (throw 'pp
-                                            (nelisp-cc--ssa-value-id new))))
-                                 param-map)
-                                nil))
-                         (catch 'v
-                           (maphash
-                            (lambda (orig new)
-                              (when (= val-id
-                                       (nelisp-cc--ssa-value-id orig))
-                                (throw 'v (nelisp-cc--ssa-value-id new))))
-                            value-map)
-                           val-id)
-                         val-id)))
+                        (cond
+                         ;; Phase 7.1 survival-arm fix: when the arm
+                         ;; vid is already a Pass 2-resolved value
+                         ;; (= a clone or a caller-side substitute),
+                         ;; leave it.  Re-running the lookup would
+                         ;; chain it through value-map into a deeper
+                         ;; clone (= the survival-arm fib leak).
+                         ((and translated-ids
+                               (gethash val-id translated-ids))
+                          val-id)
+                         (t
+                          (or
+                           ;; Phase 7.1 value-correctness fix:
+                           ;; param-map takes priority — a phi-arm
+                           ;; referencing the original callee param
+                           ;; should resolve to the splice's arg, not
+                           ;; to a chained cloner-allocated value.
+                           (and param-map
+                                (catch 'pp
+                                  (maphash
+                                   (lambda (orig new)
+                                     (when (= val-id
+                                              (nelisp-cc--ssa-value-id orig))
+                                       (throw 'pp
+                                              (nelisp-cc--ssa-value-id new))))
+                                   param-map)
+                                  nil))
+                           (catch 'v
+                             (maphash
+                              (lambda (orig new)
+                                (when (= val-id
+                                         (nelisp-cc--ssa-value-id orig))
+                                  (throw 'v (nelisp-cc--ssa-value-id new))))
+                              value-map)
+                             val-id)
+                           val-id)))))
                   (cons new-pred-bid new-val-id)))
               v))
             (t v))
