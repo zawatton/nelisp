@@ -38,37 +38,98 @@ NeLisp v1.0 ships *two standalone deployment paths* as of today:
 
 ** Install
 
-Stage-d-v3.0 standalone tarball — no Emacs binary in the archive,
-no Emacs runtime dependency:
+Two paths.
+
+*** From source — recommended for hacking and using the Elisp API
+
+#+begin_src shell
+git clone https://github.com/zawatton/nelisp ~/nelisp
+cd ~/nelisp/nelisp-runtime
+cargo build --release        # ~30 s on a warm cache
+cargo test --lib              # 281 unit tests, all PASS
+#+end_src
+
+Build outputs land under =target/release/=:
+- =libnelisp_runtime.so= — cdylib for embedding (Rust API in =src/lib.rs=)
+- =nelisp-runtime= — minimal CLI (=--version= / =--syscall-smoke=)
+
+The Elisp source for the host-Emacs entry points stays under =~/nelisp/src/=.
+
+*** Pre-built standalone tarball — single-binary deployment
+
+For users who want NeLisp + the bundled Rust runtime without
+cloning / building.  No Emacs install required at runtime:
 
 #+begin_src shell
 curl -fsSL https://github.com/zawatton/nelisp/releases/download/stage-d-v3.0/install-v3.sh | bash
 #+end_src
 
-After install, =anvil= is on =$PATH= (default
-=$HOME/.local/share/anvil-stage-d-v3.0/bin/=).  Run =anvil version=
-or =anvil doctor= to confirm.
-
-For local-iteration builds, manual extraction, the
-bundled-vs-runtime resolution order, and platform notes, see
+Default install root: =$HOME/.local/share/anvil-stage-d-v3.0/=.
+(The =anvil-= prefix is historical packaging — the tarball *is* the
+NeLisp runtime; the bundled =bin/anvil= launcher is one optional
+front end.)  Verification, manual extraction, and platform notes:
 [[file:README-stage-d-v3.0.org][README-stage-d-v3.0.org]].
 
-Older release lines (kept for reference, not the recommended
-path for new installs):
+Older release lines, for reference only:
 - =README-stage-d-v2.0.org= — bundled-Emacs tarball, ~25 MB
 - =README-stage-d.org= — legacy host-Emacs-required path
 
 ** Quick start
 
-After =Install= above, single-line invocation:
+NeLisp's evaluator is reachable three ways; pick the one that
+matches your context.
 
-#+begin_src shell
-anvil mcp serve --no-emacs
+*** From Emacs Lisp — REPL straight into NeLisp's own evaluator
+
+#+begin_src elisp
+(add-to-list 'load-path "~/nelisp/src")        ; or the install root's src/
+(require 'nelisp-bootstrap)
+(nelisp-bootstrap-init)             ; one-time self-host load
+
+(nelisp-eval-string "(+ 1 2 3)")    ; => 6
+(nelisp-eval-string
+ "(mapcar (lambda (n) (* n n)) '(1 2 3 4))")
+;; => (1 4 9 16)
+
+(nelisp-load-file "~/nelisp/examples/hello/hello.el")
+(nelisp-eval-string "(hello-world)")
+;; => "Hello, World!"
 #+end_src
 
-The default =--no-emacs= mode falls back to =emacs --batch= when the
-Rust runtime is missing (3-year safety window per Doc 44 §3.6 LOCKED).
-Use =--strict-no-emacs= to refuse the fallback.
+The forms go through NeLisp's own reader + evaluator (the Rust
+crate in cdylib mode, bridged into Elisp).  Host Emacs is a
+launcher only — result and host-evaluator state stay separate.
+
+*** From Rust — embed the runtime as a library
+
+#+begin_src rust
+use nelisp_runtime::{eval_str, Sexp};
+let v: Sexp = eval_str("(+ 1 2 3)").unwrap();
+assert_eq!(v, Sexp::Int(6));
+#+end_src
+
+Public Rust API: =src/lib.rs=.  Entry points are =eval=, =eval_str=,
+=eval_str_all=, =apply_function= (see =eval/mod.rs=).
+
+*** Acceptance demos via cargo test
+
+The Phase 8.0.2 test suite carries acceptance demos that exercise
+representative Elisp on the runtime end-to-end:
+
+#+begin_src shell
+cd ~/nelisp/nelisp-runtime
+cargo test --lib eval::tests::demo
+#+end_src
+
+Covers arithmetic / let / lambda / mapcar / if / condition-case
+(6 demos, ~10 ms total).
+
+#+begin_quote
+One downstream MCP-server front end that exposes NeLisp's
+evaluator as a Claude Code tool ships under =bin/anvil= in the
+standalone tarball.  That layer is optional; the runtime above is
+self-contained.
+#+end_quote
 
 ** Architecture (5-layer)
 
