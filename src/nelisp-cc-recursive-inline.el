@@ -318,12 +318,36 @@ substituted via the param-arg map populated by the caller."
         (puthash src-value new value-map)
         new)))
 
-(defun nelisp-cc--rec-inline-translate-operands (operands value-map)
-  "Translate every operand in OPERANDS through VALUE-MAP."
-  (mapcar (lambda (v) (or (gethash v value-map) v)) operands))
+(defun nelisp-cc--rec-inline-translate-operands (operands value-map &optional param-map)
+  "Translate every operand in OPERANDS through PARAM-MAP then VALUE-MAP.
+
+PARAM-MAP, when non-nil, is consulted *first* for each operand and
+its result is returned without further chaining through VALUE-MAP.
+Phase 7.1 self-recursion value-correctness fix — under self
+recursion CALLEE = CALLER so the call's args (= caller-side values
+like `v5 = (- n 1)') are *also* values that the cloner re-clones
+when walking the original body (because the original body defines
+v5 as well — they are eq).  If the param-arg mapping is mixed into
+the same hash that the cloner uses for `original-def → cloned-def',
+a Pass 3 retranslate of an operand `v0' resolves
+`v0 → v5 → cloned-v5', when the correct outcome is `v0 → v5'
+verbatim (= the caller-side value, not the cloner's fresh clone of
+v5).  Keeping the two maps separate avoids the chain.
+
+For non-self-recursion CALLEE != CALLER and PARAM-MAP can be nil
+(or empty) — VALUE-MAP retains the param-arg pairs as before."
+  (mapcar
+   (lambda (v)
+     (cond
+      ((and param-map (gethash v param-map nil))
+       (gethash v param-map))
+      (t (or (gethash v value-map) v))))
+   operands))
 
 (defun nelisp-cc--rec-inline-clone-blocks
-    (caller callee value-map block-map &optional original-snapshot original-state)
+    (caller callee value-map block-map
+            &optional original-snapshot original-state original-instr-meta
+            param-map)
   "Allocate fresh blocks in CALLER cloned from CALLEE's blocks.
 
 VALUE-MAP is populated with mappings for every callee def value as
@@ -362,7 +386,18 @@ mutation* instrs and the link pass reads the *post-mutation*
 successors, leaving cloned blocks with `jump'/`branch' terminators
 whose successor edges point to blocks that aren't in BLOCK-MAP →
 silently dropped → backend `:jump-with-no-successor' encoding
-error."
+error.
+
+ORIGINAL-INSTR-META (Phase 7.1 rec-inline value-correctness fix), when
+non-nil, is a hash-table mapping each pristine pre-pass instr to its
+pristine META plist.  At depth>=1 the splice's
+`--rec-inline-rewrite-succ-phi-arms' helper mutates phi-arms in
+original blocks (because the original successor's phi must point at
+the new post-blk predecessor).  Without this snapshot the cloner
+reads the *post-mutation* meta and embeds the post-blk id (= a block
+that isn't in the second splice's BLOCK-MAP) into the cloned phi's
+arms — `--phi-resolve-pass' then inserts the value bind into the
+wrong block (= wrong fib(n) result)."
   (let ((src-blocks
          (or (and original-snapshot (copy-sequence original-snapshot))
              (copy-sequence (nelisp-cc--ssa-function-blocks callee))))
@@ -404,10 +439,22 @@ error."
             ;; end to catch inter-block forward references.
             (let* ((new-ops
                     (nelisp-cc--rec-inline-translate-operands
-                     (nelisp-cc--ssa-instr-operands instr) value-map))
+                     (nelisp-cc--ssa-instr-operands instr) value-map
+                     param-map))
+                   ;; Phase 7.1 value-correctness fix: prefer the
+                   ;; pristine META snapshot when available so the
+                   ;; cloned phi-arms reference original-block ids
+                   ;; (which are in BLOCK-MAP and translate cleanly)
+                   ;; rather than post-blk ids written by a prior
+                   ;; splice's `--rewrite-succ-phi-arms' call.
+                   (src-meta
+                    (if (and original-instr-meta
+                             (gethash instr original-instr-meta nil))
+                        (gethash instr original-instr-meta)
+                      (nelisp-cc--ssa-instr-meta instr)))
                    (new-meta
                     (nelisp-cc--rec-inline-rewrite-meta
-                     (nelisp-cc--ssa-instr-meta instr) block-map value-map))
+                     src-meta block-map value-map param-map))
                    (cloned (nelisp-cc--ssa-instr-make
                             :id (nelisp-cc--ssa-function-next-instr-id caller)
                             :opcode (nelisp-cc--ssa-instr-opcode instr)
@@ -425,36 +472,56 @@ error."
                             (list cloned))))))))
     ;; Pass 3: re-translate operands now that every def is mapped
     ;; (catches phi arms that reference defs from later-cloned blocks).
+    ;;
+    ;; Phase 7.1 self-recursion value-correctness fix — restrict the
+    ;; retranslate to phi instructions only.  For non-phi opcodes
+    ;; every operand reaches its def in topological / SSA order, so
+    ;; Pass 2's translation is already correct.  Re-running the
+    ;; translation through value-map would chain a param substitution
+    ;; (`v0 → v5' from the splice's param-arg setup) into a cloner-
+    ;; allocated entry (`v5 → cloned-v17' added by clone-value when
+    ;; walking the original `(- n 1)' call) and corrupt the operand
+    ;; (= `v0 → v17', a use-before-def in the cloned entry block).
+    ;; Phi instructions DO need the re-walk because their operand
+    ;; list mirrors the `:phi-arms' alist whose values may reference
+    ;; defs from blocks that hadn't been cloned yet during Pass 2.
     (dolist (b src-blocks)
       (let ((new-blk (gethash b block-map)))
         (dolist (instr (nelisp-cc--ssa-block-instrs new-blk))
-          (let* ((old-ops (nelisp-cc--ssa-instr-operands instr))
-                 (new-ops
-                  (nelisp-cc--rec-inline-translate-operands old-ops value-map)))
-            (unless (equal old-ops new-ops)
-              ;; Operand list changed — patch use lists.
-              (dolist (op old-ops)
-                (setf (nelisp-cc--ssa-value-use-list op)
-                      (delq instr (nelisp-cc--ssa-value-use-list op))))
-              (setf (nelisp-cc--ssa-instr-operands instr) new-ops)
-              (dolist (op new-ops)
-                (nelisp-cc--ssa-add-use op instr))))
-          ;; Re-translate meta (phi arms reference value-ids that
-          ;; may still be the original callee's; rewrite-meta is
-          ;; idempotent w.r.t. already-translated arms because the
-          ;; lookup walks by ID).
-          (let ((new-meta (nelisp-cc--rec-inline-rewrite-meta
-                           (nelisp-cc--ssa-instr-meta instr)
-                           block-map value-map)))
-            (setf (nelisp-cc--ssa-instr-meta instr) new-meta)))))))
+          (when (eq (nelisp-cc--ssa-instr-opcode instr) 'phi)
+            (let* ((old-ops (nelisp-cc--ssa-instr-operands instr))
+                   (new-ops
+                    (nelisp-cc--rec-inline-translate-operands
+                     old-ops value-map param-map)))
+              (unless (equal old-ops new-ops)
+                ;; Operand list changed — patch use lists.
+                (dolist (op old-ops)
+                  (setf (nelisp-cc--ssa-value-use-list op)
+                        (delq instr (nelisp-cc--ssa-value-use-list op))))
+                (setf (nelisp-cc--ssa-instr-operands instr) new-ops)
+                (dolist (op new-ops)
+                  (nelisp-cc--ssa-add-use op instr))))
+            ;; Re-translate meta (phi arms reference value-ids that
+            ;; may still be the original callee's; rewrite-meta is
+            ;; idempotent w.r.t. already-translated arms because the
+            ;; lookup walks by ID).
+            (let ((new-meta (nelisp-cc--rec-inline-rewrite-meta
+                             (nelisp-cc--ssa-instr-meta instr)
+                             block-map value-map param-map)))
+              (setf (nelisp-cc--ssa-instr-meta instr) new-meta))))))))
 
-(defun nelisp-cc--rec-inline-rewrite-meta (meta block-map value-map)
+(defun nelisp-cc--rec-inline-rewrite-meta (meta block-map value-map &optional param-map)
   "Rewrite META plist — translate :then/:else block-ids and :phi-arms.
 
 BLOCK-MAP maps original blocks to cloned blocks.  VALUE-MAP maps
-original values to cloned values.  Returns a fresh plist (never
-mutates META in place); plist keys not in the rewrite set fall
-through unchanged."
+original values to cloned values.  PARAM-MAP, when non-nil,
+substitutes original param values with the splice's call-site args
+and is consulted *before* VALUE-MAP for `:phi-arms' value lookups
+(so a phi-arm pointing at the original callee param resolves to
+the splice's arg verbatim instead of chaining through a cloner-
+allocated `param → ... → cloned-arg' translation).  Returns a fresh
+plist (never mutates META in place); plist keys not in the rewrite
+set fall through unchanged."
   (when meta
     (let ((kv (copy-sequence meta))
           (out nil))
@@ -491,15 +558,31 @@ through unchanged."
                               pred-bid)
                             pred-bid))
                        (new-val-id
-                        (or (catch 'v
-                              (maphash
-                               (lambda (orig new)
-                                 (when (= val-id
-                                          (nelisp-cc--ssa-value-id orig))
-                                   (throw 'v (nelisp-cc--ssa-value-id new))))
-                               value-map)
-                              val-id)
-                            val-id)))
+                        (or
+                         ;; Phase 7.1 value-correctness fix: param-map
+                         ;; takes priority — a phi-arm referencing the
+                         ;; original callee param should resolve to
+                         ;; the splice's arg, not to a chained
+                         ;; cloner-allocated value.
+                         (and param-map
+                              (catch 'pp
+                                (maphash
+                                 (lambda (orig new)
+                                   (when (= val-id
+                                            (nelisp-cc--ssa-value-id orig))
+                                     (throw 'pp
+                                            (nelisp-cc--ssa-value-id new))))
+                                 param-map)
+                                nil))
+                         (catch 'v
+                           (maphash
+                            (lambda (orig new)
+                              (when (= val-id
+                                       (nelisp-cc--ssa-value-id orig))
+                                (throw 'v (nelisp-cc--ssa-value-id new))))
+                            value-map)
+                           val-id)
+                         val-id)))
                   (cons new-pred-bid new-val-id)))
               v))
             (t v))
@@ -628,7 +711,7 @@ construction which is Doc 42 §3.3 follow-up."
 
 (defun nelisp-cc--rec-inline-splice-self
     (caller block call-instr callee value-map
-            &optional original-snapshot original-state)
+            &optional original-snapshot original-state original-instr-meta)
   "Splice CALLEE's body into CALLER replacing CALL-INSTR.
 
 CALLER is the caller (= self-recursion target).  BLOCK is the
@@ -662,14 +745,21 @@ Multi-block CFG strategy:
 
 Returns BLOCK (the rewritten PRE block).  Mutates CALLER in place."
   (let* ((params (nelisp-cc--ssa-function-params callee))
-         (args (nelisp-cc--ssa-instr-operands call-instr)))
+         (args (nelisp-cc--ssa-instr-operands call-instr))
+         ;; Phase 7.1 self-recursion value-correctness fix: keep the
+         ;; param-arg substitutions in a *separate* hash so the
+         ;; cloner doesn't chain them through the cloned-def map.
+         ;; See `--rec-inline-translate-operands' commentary for the
+         ;; concrete `v0 → v5 → cloned-v17' use-before-def example
+         ;; that motivated the split.
+         (param-map (make-hash-table :test 'eq)))
     (unless (= (length params) (length args))
       (signal 'nelisp-cc-rec-inline-error
               (list :arity-mismatch
                     :callee (nelisp-cc--ssa-function-name callee)
                     :params (length params)
                     :args (length args))))
-    (cl-mapc (lambda (p a) (puthash p a value-map)) params args)
+    (cl-mapc (lambda (p a) (puthash p a param-map)) params args)
     (let* ((block-map (make-hash-table :test 'eq))
            ;; Snapshot original instr list so the split is
            ;; deterministic.
@@ -681,7 +771,8 @@ Returns BLOCK (the rewritten PRE block).  Mutates CALLER in place."
            (call-def (nelisp-cc--ssa-instr-def call-instr)))
       ;; (1) clone the callee body into CALLER.
       (nelisp-cc--rec-inline-clone-blocks
-       caller callee value-map block-map original-snapshot original-state)
+       caller callee value-map block-map
+       original-snapshot original-state original-instr-meta param-map)
       (nelisp-cc--rec-inline-link-cloned-edges callee block-map original-state)
       ;; (2) split BLOCK: keep PRE here, move POST to post-blk.
       (let ((cloned-entry
@@ -693,6 +784,19 @@ Returns BLOCK (the rewritten PRE block).  Mutates CALLER in place."
         ;; PRE → cloned entry edge.  Drop original successors of
         ;; BLOCK; they will be reattached to post-blk in step (3).
         (let ((orig-succs (nelisp-cc--ssa-block-successors block)))
+          ;; Phase 7.1 rec-inline value-correctness fix: every phi in
+          ;; the original successors carries an arm
+          ;; `(BLOCK-ID . VID)' that names BLOCK as the predecessor;
+          ;; after the rewire that predecessor is post-blk, not
+          ;; BLOCK.  Rewrite the arms so `--phi-resolve-pass' inserts
+          ;; the value-bind `:copy' into post-blk (= the new direct
+          ;; predecessor) rather than into BLOCK (= now an orphan
+          ;; w.r.t. the merge block, since BLOCK's only successor is
+          ;; the cloned entry).
+          (nelisp-cc--rec-inline-rewrite-succ-phi-arms
+           orig-succs
+           (nelisp-cc--ssa-block-id block)
+           (nelisp-cc--ssa-block-id post-blk))
           (dolist (s orig-succs)
             (setf (nelisp-cc--ssa-block-predecessors s)
                   (delq block (nelisp-cc--ssa-block-predecessors s)))
@@ -712,9 +816,23 @@ Returns BLOCK (the rewritten PRE block).  Mutates CALLER in place."
             (cl-destructuring-bind (ret-blk ret-instr ret-operand)
                 return-info
               ;; Patch call-def → translated return operand via copy.
+              ;;
+              ;; Phase 7.1 self-recursion value-correctness fix:
+              ;; `ret-operand' is the already-cloned operand of the
+              ;; cloned `return' (because `find-return' walks the
+              ;; new BLOCK-MAP), so a value-map lookup is at best
+              ;; redundant (when ret-operand is a fresh cloned def
+              ;; with no entry in value-map) and at worst harmful
+              ;; under self-recursion (when ret-operand is a param
+              ;; substitute like `v5' that ALSO happens to be a
+              ;; key in value-map because the cloner re-cloned the
+              ;; original `v5 = (- n 1)' def).  The previous
+              ;; chained `(or (gethash ret-operand value-map)
+              ;; ret-operand)' returned the cloner's fresh `v17',
+              ;; which is a use-before-def w.r.t. post-blk → wrong
+              ;; fib result.
               (when call-def
-                (let* ((translated
-                        (or (gethash ret-operand value-map) ret-operand))
+                (let* ((translated ret-operand)
                        (copy-instr
                         (nelisp-cc--rec-inline-make-instr
                          caller post-blk 'copy (list translated)
@@ -739,6 +857,47 @@ Returns BLOCK (the rewritten PRE block).  Mutates CALLER in place."
           (setf (nelisp-cc--ssa-value-use-list op)
                 (delq call-instr (nelisp-cc--ssa-value-use-list op))))
         block))))
+
+(defun nelisp-cc--rec-inline-rewrite-succ-phi-arms
+    (succ-blocks old-pred-bid new-pred-bid)
+  "Rewrite phi-arms in SUCC-BLOCKS so OLD-PRED-BID is replaced by NEW-PRED-BID.
+
+Phase 7.1 rec-inline value-correctness fix.  When the splice rewires
+the original call-site block's outgoing edge through the cloned-entry
++ post-blk chain, every successor of the original block is now reached
+via NEW-PRED-BID (= post-blk) rather than OLD-PRED-BID (= the original
+caller block whose splice replaced its terminator with `jump' to the
+clone).  Without this rewrite the merge block's `phi' instruction
+keeps an arm `(OLD-PRED-BID . VID)' that points to a block which is
+no longer a direct predecessor — `nelisp-cc--phi-resolve-pass' then
+inserts the value-bind `:copy' into the wrong predecessor, and the
+backend either drops the value or emits a bogus copy.  The symptom
+surfaces as `fib(n) returns garbage' at depth>=1 even though the CFG
+itself is well-formed (cf. E1's CFG-link snapshot fix).
+
+Walks every phi instruction in each block of SUCC-BLOCKS and updates
+the `:phi-arms' meta entries whose CAR matches OLD-PRED-BID.  The
+phi's operand list is left untouched (operand identity is preserved
+through the splice — only the *predecessor identity* changed).  Pure
+side-effect: returns nil."
+  (dolist (s succ-blocks)
+    (dolist (instr (nelisp-cc--ssa-block-instrs s))
+      (when (eq (nelisp-cc--ssa-instr-opcode instr) 'phi)
+        (let* ((meta (nelisp-cc--ssa-instr-meta instr))
+               (arms (plist-get meta :phi-arms)))
+          (when arms
+            (let ((new-arms
+                   (mapcar
+                    (lambda (cell)
+                      (if (and (numberp (car cell))
+                               (= (car cell) old-pred-bid))
+                          (cons new-pred-bid (cdr cell))
+                        cell))
+                    arms)))
+              (unless (equal arms new-arms)
+                (setf (nelisp-cc--ssa-instr-meta instr)
+                      (plist-put (copy-sequence meta)
+                                 :phi-arms new-arms))))))))))
 
 (defun nelisp-cc--rec-inline-build-jump (caller block target-block)
   "Construct a `jump' instr at BLOCK's tail targeting TARGET-BLOCK.
@@ -831,12 +990,26 @@ when the unroller has substituted a literal into the condition
          ;; mutated successor isn't in the new block-map), surfacing
          ;; later as `:jump-with-no-successor' encoding error in the
          ;; backend.
-         (original-state (make-hash-table :test 'eq)))
+         (original-state (make-hash-table :test 'eq))
+         ;; Phase 7.1 rec-inline value-correctness fix — also snapshot
+         ;; each instr's META plist so the cloner reads pristine
+         ;; `:phi-arms' even after `--rec-inline-rewrite-succ-phi-arms'
+         ;; has rewritten the live phi to point at post-blk.  Without
+         ;; this the second+ splice clones the mutated meta and the
+         ;; cloned phi ends up with arms naming a post-blk that isn't
+         ;; in the clone's block-map → arm pred-bid passes through
+         ;; unchanged (but stale) and `--phi-resolve-pass' inserts the
+         ;; bind into the wrong block (= wrong return value).
+         (original-instr-meta (make-hash-table :test 'eq)))
     (dolist (b original-snapshot)
       (puthash b
                (cons (copy-sequence (nelisp-cc--ssa-block-instrs b))
                      (copy-sequence (nelisp-cc--ssa-block-successors b)))
-               original-state))
+               original-state)
+      (dolist (instr (nelisp-cc--ssa-block-instrs b))
+        (puthash instr
+                 (copy-tree (nelisp-cc--ssa-instr-meta instr))
+                 original-instr-meta)))
     (let ((sites (nelisp-cc--rec-inline-list-self-call-sites caller))
           (depth 0))
       (while (and sites
@@ -853,7 +1026,7 @@ when the unroller has substituted a literal into the condition
                       (vmap (make-hash-table :test 'eq)))
                   (nelisp-cc--rec-inline-splice-self
                    caller blk site callee vmap
-                   original-snapshot original-state)
+                   original-snapshot original-state original-instr-meta)
                   (cl-incf count)
                   (cl-incf iter-count)))
                (t nil))))
