@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::anvil_data_registry::AnvilDataRegistry;
+use crate::anvil_file_registry::AnvilFileRegistry;
 use crate::anvil_host_registry::{AnvilHostRegistry, AnvilHostRegistryError};
 use crate::anvil_shell_filter_registry::AnvilShellFilterRegistry;
 use crate::mcp::protocol::{JsonRpcError, ERR_METHOD_NOT_FOUND};
@@ -27,6 +28,7 @@ pub struct AnvilToolsRegistry {
     host: AnvilHostRegistry,
     shell: Option<AnvilShellFilterRegistry>,
     data: Option<AnvilDataRegistry>,
+    file: AnvilFileRegistry,
 }
 
 impl AnvilToolsRegistry {
@@ -52,7 +54,8 @@ impl AnvilToolsRegistry {
                 None
             }
         };
-        Ok(Self { host, shell, data })
+        let file = AnvilFileRegistry::new();
+        Ok(Self { host, shell, data, file })
     }
 
     pub fn default_self_host_src_dir() -> PathBuf {
@@ -77,6 +80,7 @@ impl ToolRegistry for AnvilToolsRegistry {
         if let Some(data) = &self.data {
             out.extend(data.list());
         }
+        out.extend(self.file.list());
         out.sort_by(|a, b| a.name.cmp(&b.name));
         out
     }
@@ -102,6 +106,9 @@ impl ToolRegistry for AnvilToolsRegistry {
                 ERR_METHOD_NOT_FOUND,
                 format!("unknown tool: {}", name),
             ));
+        }
+        if name.starts_with("file-") || name == "directory-list" {
+            return self.file.call(name, args);
         }
         Err(JsonRpcError::new(
             ERR_METHOD_NOT_FOUND,

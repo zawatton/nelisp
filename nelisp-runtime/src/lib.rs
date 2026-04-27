@@ -10,6 +10,7 @@
 //! NeLisp does not need a per-OS libc clone.
 
 pub mod anvil_data_registry;
+pub mod anvil_file_registry;
 pub mod anvil_host_registry;
 pub mod anvil_shell_filter_registry;
 pub mod anvil_tools_registry;
