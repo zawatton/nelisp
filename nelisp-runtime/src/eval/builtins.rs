@@ -24,6 +24,7 @@ use super::env::Env;
 use super::error::EvalError;
 use super::sexp::Sexp;
 use super::special_forms::{is_truthy, sexp_eq};
+use std::path::{Path, PathBuf};
 
 /// Install every built-in into the given environment.  Idempotent —
 /// re-running just overwrites the function cells.
@@ -36,12 +37,15 @@ pub fn install_builtins(env: &mut Env) {
         // cons / list
         "car", "cdr", "cons", "list", "nth", "length", "nthcdr", "nreverse", "reverse", "append",
         // higher-order
-        "mapcar", "mapc", "memq", "member", "assq", "assoc",
+        "mapcar", "mapc", "memq", "member", "assq", "assoc", "alist-get",
         // predicates
         "null", "consp", "listp", "atom", "symbolp", "stringp", "numberp", "integerp", "floatp",
         "not", "functionp",
         // string
         "concat", "format", "substring", "intern", "symbol-name", "string-equal", "string=",
+        "string-empty-p", "string-prefix-p", "string-match-p", "regexp-quote",
+        // plist / file helpers
+        "plist-get", "plist-put", "plist-member", "expand-file-name", "file-truename",
         // symbol / function
         "symbol-value", "symbol-function", "fboundp", "boundp", "funcall", "apply", "eval",
         "signal", "error", "identity", "print", "princ", "prin1-to-string", "message",
@@ -92,6 +96,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "member" => bi_member(args),
         "assq" => bi_assq(args),
         "assoc" => bi_assoc(args),
+        "alist-get" => bi_alist_get(args),
         // ---- predicates ----
         "null" | "not" => bi_null(args),
         "consp" => bi_predicate(args, |v| matches!(v, Sexp::Cons(_, _))),
@@ -112,6 +117,15 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "intern" => bi_intern(args),
         "symbol-name" => bi_symbol_name(args),
         "string-equal" | "string=" => bi_string_eq(args),
+        "string-empty-p" => bi_string_empty_p(args),
+        "string-prefix-p" => bi_string_prefix_p(args),
+        "string-match-p" => bi_string_match_p(args),
+        "regexp-quote" => bi_regexp_quote(args),
+        "plist-get" => bi_plist_get(args),
+        "plist-put" => bi_plist_put(args),
+        "plist-member" => bi_plist_member(args),
+        "expand-file-name" => bi_expand_file_name(args, env),
+        "file-truename" => bi_file_truename(args, env),
         // ---- symbol / function ----
         "symbol-value" => bi_symbol_value(args, env),
         "symbol-function" => bi_symbol_function(args, env),
@@ -157,6 +171,10 @@ fn as_int(name: &str, v: &Sexp) -> Result<i64, EvalError> {
             got: other.clone(),
         }),
     }
+}
+
+fn truthy(value: bool) -> Sexp {
+    if value { Sexp::T } else { Sexp::Nil }
 }
 
 /// Numeric promotion: if any input is float, output is float.
@@ -622,6 +640,42 @@ fn bi_assoc(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
+fn compare_with_test(test: Option<&Sexp>, left: &Sexp, right: &Sexp) -> bool {
+    match test {
+        Some(Sexp::Symbol(name)) if name == "eq" => sexp_eq(left, right),
+        Some(Sexp::Symbol(name)) if name == "equal" => left == right,
+        Some(Sexp::Symbol(name)) if name == "string=" || name == "string-equal" => {
+            matches!((left, right), (Sexp::Str(a), Sexp::Str(b)) if a == b)
+        }
+        _ => left == right,
+    }
+}
+
+fn bi_alist_get(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("alist-get", args, 2, Some(5))?;
+    let key = &args[0];
+    let default = args.get(2).cloned().unwrap_or(Sexp::Nil);
+    let test = args.get(4);
+    let mut cur = &args[1];
+    loop {
+        match cur {
+            Sexp::Nil => return Ok(default),
+            Sexp::Cons(pair, rest) => {
+                if let Sexp::Cons(k, vtail) = pair.as_ref() {
+                    if compare_with_test(test, k, key) {
+                        return match vtail.as_ref() {
+                            Sexp::Cons(v, _) => Ok((**v).clone()),
+                            other => Ok(other.clone()),
+                        };
+                    }
+                }
+                cur = rest;
+            }
+            _ => return Ok(default),
+        }
+    }
+}
+
 // ---------- predicates ----------
 
 fn bi_null(args: &[Sexp]) -> Result<Sexp, EvalError> {
@@ -795,7 +849,7 @@ fn bi_string_eq(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("string-equal", args, 2, Some(2))?;
     let a = string_value(&args[0])?;
     let b = string_value(&args[1])?;
-    Ok(if a == b { Sexp::T } else { Sexp::Nil })
+    Ok(truthy(a == b))
 }
 
 fn string_value(v: &Sexp) -> Result<String, EvalError> {
@@ -809,6 +863,186 @@ fn string_value(v: &Sexp) -> Result<String, EvalError> {
             got: other.clone(),
         }),
     }
+}
+
+fn bi_string_empty_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("string-empty-p", args, 1, Some(1))?;
+    Ok(truthy(string_value(&args[0])?.is_empty()))
+}
+
+fn bi_string_prefix_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("string-prefix-p", args, 2, Some(3))?;
+    let prefix = string_value(&args[0])?;
+    let string = string_value(&args[1])?;
+    let ignore_case = args.get(2).map(is_truthy).unwrap_or(false);
+    if ignore_case {
+        Ok(truthy(string.to_lowercase().starts_with(&prefix.to_lowercase())))
+    } else {
+        Ok(truthy(string.starts_with(&prefix)))
+    }
+}
+
+fn bi_regexp_quote(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("regexp-quote", args, 1, Some(1))?;
+    let src = string_value(&args[0])?;
+    let mut out = String::with_capacity(src.len());
+    for ch in src.chars() {
+        if matches!(ch, '.' | '*' | '+' | '?' | '[' | ']' | '^' | '$' | '\\' | '(' | ')' | '{' | '}' | '|') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    Ok(Sexp::Str(out))
+}
+
+fn bi_string_match_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("string-match-p", args, 2, Some(2))?;
+    let pat = string_value(&args[0])?;
+    let text = string_value(&args[1])?;
+    let matched = match pat.as_str() {
+        "\\`-?[0-9]+\\(\\.[0-9]+\\)?\\'" => {
+            let s = text.as_str();
+            let s = s.strip_prefix('-').unwrap_or(s);
+            let mut parts = s.split('.');
+            let first = parts.next().unwrap_or("");
+            let second = parts.next();
+            parts.next().is_none()
+                && !first.is_empty()
+                && first.chars().all(|c| c.is_ascii_digit())
+                && second.map_or(true, |tail| !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()))
+        }
+        "\\`{.*}\\'" => text.starts_with('{') && text.ends_with('}'),
+        "\\`[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+\\'" => {
+            let parts: Vec<&str> = text.split('.').collect();
+            parts.len() == 4 && parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+        }
+        "^[[:space:]]*$" | "\\`[[:space:]]*\\'" => text.chars().all(|c| c.is_whitespace()),
+        "^[\u{00A0}]*$" => text.chars().all(|c| c == '\u{00A0}'),
+        "[\n\r]" => text.contains('\n') || text.contains('\r'),
+        _ => {
+            let anchored_start = pat.starts_with("\\`") || pat.starts_with('^');
+            let anchored_end = pat.ends_with("\\'") || pat.ends_with('$');
+            let literal = pat
+                .replace("\\`", "")
+                .replace("\\'", "")
+                .replace('^', "")
+                .replace('$', "")
+                .replace("\\.", ".")
+                .replace("\\\\", "\\");
+            if anchored_start && anchored_end {
+                text == literal
+            } else if anchored_start {
+                text.starts_with(&literal)
+            } else if anchored_end {
+                text.ends_with(&literal)
+            } else {
+                text.contains(&literal)
+            }
+        }
+    };
+    Ok(truthy(matched))
+}
+
+fn plist_pairs(plist: &Sexp) -> Result<Vec<(Sexp, Sexp)>, EvalError> {
+    let elems = list_to_vec(plist)?;
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < elems.len() {
+        let key = elems[i].clone();
+        let value = elems.get(i + 1).cloned().unwrap_or(Sexp::Nil);
+        out.push((key, value));
+        i += 2;
+    }
+    Ok(out)
+}
+
+fn bi_plist_get(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("plist-get", args, 2, Some(2))?;
+    for (key, value) in plist_pairs(&args[0])? {
+        if key == args[1] {
+            return Ok(value);
+        }
+    }
+    Ok(Sexp::Nil)
+}
+
+fn bi_plist_member(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("plist-member", args, 2, Some(2))?;
+    let elems = list_to_vec(&args[0])?;
+    let mut i = 0usize;
+    while i < elems.len() {
+        if elems[i] == args[1] {
+            return Ok(Sexp::list_from(&elems[i..]));
+        }
+        i += 2;
+    }
+    Ok(Sexp::Nil)
+}
+
+fn bi_plist_put(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("plist-put", args, 3, Some(3))?;
+    let elems = list_to_vec(&args[0])?;
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    let mut replaced = false;
+    while i < elems.len() {
+        if !replaced && elems[i] == args[1] {
+            out.push(args[1].clone());
+            out.push(args[2].clone());
+            replaced = true;
+            i += 2;
+            continue;
+        }
+        out.push(elems[i].clone());
+        if let Some(v) = elems.get(i + 1) {
+            out.push(v.clone());
+        }
+        i += 2;
+    }
+    if !replaced {
+        out.push(args[1].clone());
+        out.push(args[2].clone());
+    }
+    Ok(Sexp::list_from(&out))
+}
+
+fn normalize_path(path: &str, base: Option<&str>) -> PathBuf {
+    let p = Path::new(path);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else if let Some(base) = base {
+        Path::new(base).join(p)
+    } else if let Ok(cwd) = std::env::current_dir() {
+        cwd.join(p)
+    } else {
+        p.to_path_buf()
+    }
+}
+
+fn env_default_directory(env: &Env) -> Option<String> {
+    match env.lookup_value("default-directory") {
+        Ok(Sexp::Str(s)) => Some(s),
+        _ => None,
+    }
+}
+
+fn bi_expand_file_name(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("expand-file-name", args, 1, Some(2))?;
+    let path = string_value(&args[0])?;
+    let base = match args.get(1) {
+        Some(v) => Some(string_value(v)?),
+        None => env_default_directory(env),
+    };
+    let full = normalize_path(&path, base.as_deref());
+    Ok(Sexp::Str(full.to_string_lossy().into_owned()))
+}
+
+fn bi_file_truename(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("file-truename", args, 1, Some(1))?;
+    let path = string_value(&args[0])?;
+    let full = normalize_path(&path, env_default_directory(env).as_deref());
+    let resolved = std::fs::canonicalize(&full).unwrap_or(full);
+    Ok(Sexp::Str(resolved.to_string_lossy().into_owned()))
 }
 
 // ---------- symbol / function ----------

@@ -702,3 +702,62 @@ fn eval_with_explicit_env() {
     let form = crate::reader::read_str("(* 6 7)").unwrap();
     assert_eq!(eval(&form, &mut env).unwrap(), Sexp::Int(42));
 }
+
+#[test]
+fn plist_get_returns_value() {
+    assert_eq!(ok("(plist-get '(:a 1 :b 2) ':b)"), Sexp::Int(2));
+}
+
+#[test]
+fn plist_put_replaces_existing_key() {
+    assert_eq!(ok("(plist-put '(:a 1 :b 2) ':b 9)"), crate::reader::read_str("(:a 1 :b 9)").unwrap());
+}
+
+#[test]
+fn plist_member_returns_tail() {
+    assert_eq!(ok("(plist-member '(:a 1 :b 2) ':b)"), crate::reader::read_str("(:b 2)").unwrap());
+}
+
+#[test]
+fn alist_get_honors_string_test() {
+    assert_eq!(
+        ok("(alist-get \"b\" '((\"a\" . 1) (\"b\" . 2)) nil nil 'string=)"),
+        Sexp::Int(2)
+    );
+}
+
+#[test]
+fn string_empty_predicate_works() {
+    assert_eq!(ok("(string-empty-p \"\")"), Sexp::T);
+}
+
+#[test]
+fn string_prefix_p_ignore_case() {
+    assert_eq!(ok("(string-prefix-p \"ab\" \"ABcd\" t)"), Sexp::T);
+}
+
+#[test]
+fn regexp_quote_escapes_metacharacters() {
+    assert_eq!(ok("(regexp-quote \"a+b.c\")"), Sexp::Str("a\\+b\\.c".into()));
+}
+
+#[test]
+fn string_match_p_handles_common_anchored_numeric_pattern() {
+    assert_eq!(ok("(string-match-p \"\\\\`-?[0-9]+\\\\(\\\\.[0-9]+\\\\)?\\\\'\" \"-42.5\")"), Sexp::T);
+}
+
+#[test]
+fn expand_file_name_joins_base_directory() {
+    assert_eq!(
+        ok("(expand-file-name \"child.txt\" \"/tmp/base\")"),
+        Sexp::Str("/tmp/base/child.txt".into())
+    );
+}
+
+#[test]
+fn file_truename_canonicalizes_existing_path() {
+    let path = std::env::current_dir().unwrap().join("Cargo.toml");
+    let path = path.canonicalize().unwrap();
+    let form = format!("(file-truename \"{}\")", path.display());
+    assert_eq!(ok(&form), Sexp::Str(path.to_string_lossy().into_owned()));
+}
