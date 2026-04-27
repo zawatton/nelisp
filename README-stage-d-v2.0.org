@@ -1,0 +1,122 @@
+#+TITLE: anvil — stage-d-v2.0 (Bundled-Emacs Quickstart)
+#+AUTHOR: zawatton
+#+DATE: 2026-04-26
+
+* What changed in stage-d-v2.0?
+
+stage-d-v2.0 ships a *self-contained tarball* — bundled Emacs +
+NeLisp src + nelisp-runtime cdylib all in one archive, ~25 MB.
+
+After install, =bin/anvil= works on a host with *NO system Emacs
+install*.  The launcher detects =$ANVIL_HOME/emacs/bin/emacs= first;
+when bundled emacs is absent the resolution falls through to the
+system =PATH= path that earlier Stage D releases used (= dev checkouts
+keep working unchanged).
+
+| Capability                         | stage-d-v0.x | stage-d-v2.0 |
+|------------------------------------+--------------+--------------|
+| Requires =apt install emacs= ?     | yes          | no           |
+| Tarball size                       | ~127 KB      | ~25 MB       |
+| Backward-compat (= dev checkouts)  | n/a          | yes          |
+| Cross-arch CI matrix               | n/a          | linux-x86_64 |
+
+Doc reference: =docs/design/32-phase7.5-integration.org §3.3=.
+
+* Install (curl | bash, post-v1.0)
+
+The installer does:
+
+1. Detect platform (= linux-x86_64 / macos-arm64 / linux-arm64).
+2. Download the bundled tarball + SHA-256 from the GitHub Release.
+3. Verify SHA-256 (= refuse to install on mismatch).
+4. Extract under =~/.local/share/anvil-stage-d-v2.0/=.
+5. Print the next-step PATH instructions.
+
+#+begin_src shell
+curl -fsSL https://github.com/zawatton/nelisp/releases/download/stage-d-v2.0/install.sh | bash
+#+end_src
+
+For now (= pre-v1.0) use =--from= to point at a locally-built tarball:
+
+#+begin_src shell
+make stage-d-v2-tarball                                          # build under dist/
+./release/stage-d-v2.0/install.sh --from $(pwd)/dist             # install from dist/
+$HOME/.local/share/anvil-stage-d-v2.0/bin/anvil version          # confirm bundled emacs
+#+end_src
+
+Add to your shell rc:
+
+#+begin_src shell
+export PATH="$HOME/.local/share/anvil-stage-d-v2.0/bin:$PATH"
+#+end_src
+
+* Verify the install
+
+=anvil version= surfaces both the launcher version and the *emacs
+source* (= bundled vs system) so you can confirm the right binary is
+in use:
+
+#+begin_src text
+$ anvil version
+anvil stage-d-v0.2-pre
+  os               linux
+  install root     /home/.../anvil-stage-d-v2.0
+  tools registered 25
+  emacs            GNU Emacs 30.1 (bundled)
+  emacs path       /home/.../anvil-stage-d-v2.0/emacs/bin/emacs
+#+end_src
+
+The =(bundled)= marker = stage-d-v2.0 self-contained path.
+=(system)= = dev checkout / fall-through to host PATH.
+
+* Build the bundled tarball locally
+
+Useful when iterating on the bundle layout itself:
+
+#+begin_src shell
+# Pre-req: nelisp-runtime cdylib must exist
+make runtime
+
+# Bundle host emacs + NeLisp + cdylib into dist/anvil-stage-d-v2.0-linux-x86_64.tar.gz
+make stage-d-v2-tarball
+
+# End-to-end smoke (= extract + bin/anvil version + bundled-emacs assertion)
+make stage-d-v2-tarball-verify
+#+end_src
+
+The build script (=tools/build-bundled-tarball.sh=) is host-Emacs
+agnostic — it spawns the *current* =emacs= once to harvest the
+runtime-required =.elc= subset (= what =nelisp-server= +
+=nelisp-tools= actually loads), then assembles a tarball that ships
+only that subset.  Typical sizes (Debian Emacs 30.1):
+
+| Component        | Size  |
+|------------------+-------|
+| =emacs/bin/emacs= (stripped)        | ~11 MB |
+| =emacs/lib/30.1/lisp/= (= subset)   | ~8 MB  |
+| =emacs/lib/30.1/etc/charsets/=      | ~3 MB  |
+| =nelisp-runtime/= (cdylib)          | ~2 MB  |
+| =src/nelisp*.el=                    | <1 MB  |
+| Total (compressed)                  | ~25 MB |
+
+Doc 32 v2 §6.2 informal cap: 50 MB.  We're well under.
+
+* Bundled-Emacs detection (= bin/anvil resolution order)
+
+1. =$EMACS= env override (highest priority — dev environments).
+2. =$ANVIL_HOME/emacs/bin/emacs= (= bundled).
+3. =$ANVIL_HOME/emacs/bin/emacs.exe= (= bundled, msys2 / Windows).
+4. =command -v emacs= (= system PATH).
+5. OS-specific well-known fallbacks (= macOS Cask, MSYS mingw64, ...).
+
+Backward-compat: any earlier Stage D tarball / dev checkout = stages
+1, 4, 5 still work exactly as before.  stage-d-v2.0 only *adds* paths
+2-3.
+
+* Doc references
+
+- =docs/design/18-stage-d-standalone.org= — Stage D charter.
+- =docs/design/32-phase7.5-integration.org §3.3= — stage-d-v2.0 release
+  artifact spec (LOCKED 2026-04-25).
+- =RELEASE_NOTES.md= — release-by-release changelog.
+- =release/stage-d-v2.0/manifest.json= — release manifest schema.

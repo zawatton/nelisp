@@ -28,6 +28,13 @@ ANVIL_BIN_DIR="${ANVIL_BIN_DIR:-$HOME/.local/bin}"
 ANVIL_REPO="${ANVIL_REPO:-zawatton/nelisp}"
 ANVIL_LOCAL_TARBALL="${ANVIL_LOCAL_TARBALL:-}"
 
+# Phase 7.5.3 stage-d-v2.0 — when the tarball ships a bundled emacs
+# under emacs/bin/emacs the host-Emacs requirement is dropped (= the
+# whole point of the bundled artifact).  We auto-detect that layout
+# after extract; this flag forces the bundled-mode skip even when the
+# detect heuristic is unsure.  Default `auto' = sniff after extract.
+ANVIL_BUNDLED_EMACS="${ANVIL_BUNDLED_EMACS:-auto}"
+
 log() { printf "  \033[1;34m==>\033[0m %s\n" "$*"; }
 err() { printf "  \033[1;31merror:\033[0m %s\n" "$*" >&2; }
 
@@ -80,7 +87,16 @@ resolve_tarball() {
 
 main() {
   log "anvil installer (Stage D, $ANVIL_VERSION)"
-  require_emacs >/dev/null
+
+  # Phase 7.5.3 — defer the host-Emacs requirement until after we
+  # extract the tarball so a bundled-emacs artifact can override the
+  # check.  Stage D Phase 6.x tarballs (= no `emacs/' subdir) keep the
+  # original behaviour: Emacs 29+ on PATH is required.
+  local skip_emacs_check=0
+  if [[ "$ANVIL_BUNDLED_EMACS" == "1" || "$ANVIL_BUNDLED_EMACS" == "true" ]]; then
+    skip_emacs_check=1
+    log "ANVIL_BUNDLED_EMACS=1 — skipping host-Emacs probe (= bundled tarball)"
+  fi
 
   mkdir -p "$ANVIL_PREFIX" "$ANVIL_BIN_DIR" || {
     err "cannot create install dirs ($ANVIL_PREFIX / $ANVIL_BIN_DIR)"
@@ -98,6 +114,19 @@ main() {
   if [[ ! -x "$ANVIL_PREFIX/bin/anvil" ]]; then
     err "extracted bundle missing bin/anvil — abort"
     exit 3
+  fi
+
+  # Phase 7.5.3 — auto-detect: if the extracted tarball ships an
+  # `emacs/bin/emacs' the install is bundled-mode.  Otherwise fall
+  # back to the original host-Emacs require_emacs() check.
+  if [[ "$ANVIL_BUNDLED_EMACS" == "auto" ]]; then
+    if [[ -x "$ANVIL_PREFIX/emacs/bin/emacs" || -x "$ANVIL_PREFIX/emacs/bin/emacs.exe" ]]; then
+      skip_emacs_check=1
+      log "bundled emacs detected at $ANVIL_PREFIX/emacs/bin/emacs"
+    fi
+  fi
+  if (( skip_emacs_check == 0 )); then
+    require_emacs >/dev/null
   fi
 
   log "linking $ANVIL_BIN_DIR/anvil → $ANVIL_PREFIX/bin/anvil"
