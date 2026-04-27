@@ -1,14 +1,22 @@
-;;; emacs-redisplay.el --- Phase 3 redisplay engine MVP + face-realize MVP  -*- lexical-binding: t; -*-
+;;; emacs-redisplay.el --- Phase 3 redisplay engine MVP + face-realize + overlay-strings  -*- lexical-binding: t; -*-
 
 ;; Phase 3 module per nelisp-emacs Doc 01 (LOCKED-2026-04-25-v2 §3.3),
 ;; mirroring NeLisp Doc 43 v2 §3.2 Phase 11.B redisplay engine MVP.
-;; Phase 3.B.1 (this file) adds face-realize MVP per Doc 43 v2 §2.4
-;; (face / display attribute system) — = the smallest shippable Phase
-;; 3.B sub-step: face spec → backend-ready normalized SGR attribute
-;; alist (foreground / background / weight / slant / underline /
+;; Phase 3.B.1 adds face-realize MVP per Doc 43 v2 §2.4 (face / display
+;; attribute system) — = the smallest shippable Phase 3.B sub-step:
+;; face spec → backend-ready normalized SGR attribute alist
+;; (foreground / background / weight / slant / underline /
 ;; inverse-video).  Inheritance + cascade are routed to upstream
 ;; `nelisp-face-resolve' when available; otherwise we use a local
 ;; registry + flattening logic so ERTs run in vanilla host Emacs.
+;; Phase 3.B.2 (this file) adds overlay before-string / after-string
+;; emission inside the glyph row build path: when an overlay covers a
+;; buffer position, its `:before-string' is emitted as glyphs *before*
+;; the buffer char at the overlay start, and its `:after-string' is
+;; emitted as glyphs *after* the buffer char at the overlay end (-1 of
+;; exclusive end).  Multiple overlays at the same position are emitted
+;; in priority order (lower priority first → higher priority closest
+;; to the buffer text), matching the Emacs convention.
 ;; Layer: nelisp-emacs (Layer 3 inner = redisplay-driver + glyph-matrix).
 ;; Namespace: `emacs-redisplay-' so loading inside a host Emacs does
 ;; NOT shadow any `redisplay-' / `glyph-' / `display-' symbol.
@@ -795,6 +803,102 @@ control characters return 1."
     (condition-case _err (char-width ch) (error 1)))
    (t 1)))
 
+;;; Phase 3.B.2 — overlay before-string / after-string emission
+
+(defun emacs-redisplay--ovly-priority (overlay)
+  "Return the priority of OVERLAY (= integer, default 0)."
+  (or (emacs-redisplay--ovly-prop overlay 'priority) 0))
+
+(defun emacs-redisplay--overlays-with-before-string-at (overlays pos)
+  "Return OVERLAYS that start exactly at POS and carry a non-empty
+`before-string', sorted by priority ascending so that higher-priority
+strings are emitted last (= closest to the buffer character).  Each
+list element is a cons (OVERLAY . STRING)."
+  (let (result)
+    (dolist (ov overlays)
+      (let ((bounds (emacs-redisplay--ovly-bounds ov))
+            (str (emacs-redisplay--ovly-prop ov 'before-string)))
+        (when (and bounds str (stringp str) (> (length str) 0)
+                   (= (car bounds) pos))
+          (push (cons ov str) result))))
+    (sort result
+          (lambda (a b)
+            (< (emacs-redisplay--ovly-priority (car a))
+               (emacs-redisplay--ovly-priority (car b)))))))
+
+(defun emacs-redisplay--overlays-with-after-string-ending-at (overlays pos)
+  "Return OVERLAYS whose exclusive end equals POS and carry a non-empty
+`after-string', sorted by priority ascending so that higher-priority
+strings are emitted last (= farther from the buffer character on the
+right side, but consistent with Emacs ordering).  Each element is a
+cons (OVERLAY . STRING)."
+  (let (result)
+    (dolist (ov overlays)
+      (let ((bounds (emacs-redisplay--ovly-bounds ov))
+            (str (emacs-redisplay--ovly-prop ov 'after-string)))
+        (when (and bounds str (stringp str) (> (length str) 0)
+                   (= (cdr bounds) pos))
+          (push (cons ov str) result))))
+    (sort result
+          (lambda (a b)
+            (< (emacs-redisplay--ovly-priority (car a))
+               (emacs-redisplay--ovly-priority (car b)))))))
+
+(defun emacs-redisplay--string-face-at (string idx fallback-face)
+  "Return the effective face for STRING char at IDX.
+If STRING has a `face' text-property at IDX, return that; otherwise
+return FALLBACK-FACE (= the overlay's `face' property)."
+  (let ((own (and (> (length string) idx)
+                  (get-text-property idx 'face string))))
+    (or own fallback-face)))
+
+(defun emacs-redisplay--emit-overlay-string (str overlay used col width
+                                                 anchor-pos)
+  "Emit STRING as glyphs into USED starting at COL, clipped to WIDTH.
+Each glyph receives the overlay's face (or the string's own face
+text-property when present), and its `buf-pos' is set to ANCHOR-POS so
+cursor positioning + diff hashing remain stable.  Returns the new COL
+after emission (= COL when WIDTH is exhausted before any char)."
+  (let* ((ov-face (emacs-redisplay--ovly-prop overlay 'face))
+         (n (length str))
+         (i 0)
+         (overflow nil))
+    (while (and (< i n) (not overflow))
+      (let* ((ch (aref str i))
+             (cw (emacs-redisplay--char-width ch))
+             (cw* (max 1 (if (eq cw -1) 1 cw))))
+        (cond
+         ;; Skip embedded newlines / control chars cleanly: render as
+         ;; a single space so the row stays well-formed (= MVP, no
+         ;; multi-row before-string).
+         ((or (eq ch ?\n) (eq cw -1))
+          (when (< col width)
+            (let* ((face (emacs-redisplay--string-face-at str i ov-face))
+                   (g (emacs-redisplay--make-glyph
+                       :char ?\s
+                       :face (emacs-redisplay--resolve-face face)
+                       :realized-face (emacs-redisplay-realize-face face)
+                       :face-id 0 :width 1
+                       :buf-pos anchor-pos)))
+              (aset used col g)
+              (setq col (1+ col)))))
+         (t
+          (cond
+           ((>= (+ col cw*) (1+ width))
+            (setq overflow t))
+           (t
+            (let* ((face (emacs-redisplay--string-face-at str i ov-face))
+                   (g (emacs-redisplay--make-glyph
+                       :char ch
+                       :face (emacs-redisplay--resolve-face face)
+                       :realized-face (emacs-redisplay-realize-face face)
+                       :face-id 0 :width cw*
+                       :buf-pos anchor-pos)))
+              (aset used col g)
+              (setq col (+ col cw*))))))))
+      (setq i (1+ i)))
+    col))
+
 (defun emacs-redisplay--apply-overlay-face (glyph overlays pos)
   "Merge overlay face attributes (highest priority wins) into GLYPH."
   (when overlays
@@ -835,7 +939,17 @@ the maximum number of cells to occupy.  TABs are expanded.  When the
 line exceeds WIDTH and `emacs-redisplay-truncate-lines' is non-nil,
 the line is clipped (= MVP behaviour, no continuation glyph).  Returns
 a cons (USED-VEC . NEXT-POS) where NEXT-POS is the buffer position
-just past the consumed text (excluding any newline)."
+just past the consumed text (excluding any newline).
+
+Phase 3.B.2: overlays whose `:before-string' starts at the current
+buffer position are emitted *before* that position's buffer char;
+overlays whose `:after-string' end equals the next position are
+emitted *after* the buffer char.  Multiple overlays at the same
+position emit in priority order (lower priority first → higher
+priority closest to the buffer text), matching Emacs convention.
+The injected glyphs carry the overlay's `face' (or the string's
+own `face' text-property when present), and their `buf-pos' is
+the overlay anchor position."
   (let* ((tab-width (max 1 emacs-redisplay-default-tab-width))
          (pos buffer-pos)
          (col 0)
@@ -843,56 +957,84 @@ just past the consumed text (excluding any newline)."
          (i 0)
          (n (length line))
          (overflow nil))
-    (while (and (< i n) (not overflow))
-      (let* ((ch (aref line i))
-             (cw (emacs-redisplay--char-width ch)))
-        (cond
-         ;; TAB → expand to next tab stop within window width.
-         ((eq cw -1)
-          (let* ((target (* (1+ (/ col tab-width)) tab-width))
-                 (k (max 1 (- target col))))
-            (dotimes (_ k)
-              (when (< col width)
-                (let ((g (emacs-redisplay--make-glyph
-                          :char ?\s :face nil :face-id 0
-                          :width 1 :buf-pos pos)))
-                  (when overlays
-                    (emacs-redisplay--apply-overlay-face g overlays pos))
-                  (aset used col g)
-                  (setq col (1+ col)))))
-            (setq pos (1+ pos))))
-         ;; Normal character (incl. CJK width 2).
-         (t
-          (let* ((face (emacs-redisplay--text-property-at pos 'face buffer))
-                 (display (emacs-redisplay--text-property-at pos 'display buffer))
-                 (g (emacs-redisplay--make-glyph
-                     :char ch
-                     :face (emacs-redisplay--resolve-face face)
-                     :realized-face (emacs-redisplay-realize-face face)
-                     :face-id 0
-                     :width (max 1 cw)
-                     :composition nil
-                     :display-spec (emacs-redisplay--resolve-display
-                                    display nil)
-                     :buf-pos pos)))
-            (when overlays
-              (emacs-redisplay--apply-overlay-face g overlays pos))
-            (cond
-             ;; Overflow → stop (truncate).
-             ((>= (+ col (max 1 cw)) (1+ width))
-              (if emacs-redisplay-truncate-lines
-                  (setq overflow t)
-                ;; wrap path = post-MVP, treat as truncate too for now.
-                (setq overflow t)))
-             (t
-              (aset used col g)
-              (setq col (+ col (max 1 cw))
-                    pos (1+ pos)))))))
-        (setq i (1+ i))))
-    (cons (let ((trimmed (make-vector col nil)))
-            (dotimes (k col) (aset trimmed k (aref used k)))
-            trimmed)
-          pos)))
+    (cl-flet ((emit-before-strings (p)
+                (when overlays
+                  (dolist (entry (emacs-redisplay--overlays-with-before-string-at
+                                  overlays p))
+                    (setq col (emacs-redisplay--emit-overlay-string
+                               (cdr entry) (car entry)
+                               used col width p)))))
+              (emit-after-strings (p)
+                (when overlays
+                  (dolist (entry (emacs-redisplay--overlays-with-after-string-ending-at
+                                  overlays p))
+                    (setq col (emacs-redisplay--emit-overlay-string
+                               (cdr entry) (car entry)
+                               used col width p))))))
+      ;; Before-strings anchored at the line's first buffer position.
+      (emit-before-strings pos)
+      (while (and (< i n) (not overflow))
+        (let* ((ch (aref line i))
+               (cw (emacs-redisplay--char-width ch)))
+          (cond
+           ;; TAB → expand to next tab stop within window width.
+           ((eq cw -1)
+            (let* ((target (* (1+ (/ col tab-width)) tab-width))
+                   (k (max 1 (- target col))))
+              (dotimes (_ k)
+                (when (< col width)
+                  (let ((g (emacs-redisplay--make-glyph
+                            :char ?\s :face nil :face-id 0
+                            :width 1 :buf-pos pos)))
+                    (when overlays
+                      (emacs-redisplay--apply-overlay-face g overlays pos))
+                    (aset used col g)
+                    (setq col (1+ col)))))
+              (setq pos (1+ pos))
+              ;; After-strings ending at the new pos.
+              (emit-after-strings pos)
+              ;; Before-strings starting at the new pos (= mid-line).
+              (when (< i (1- n)) (emit-before-strings pos))))
+           ;; Normal character (incl. CJK width 2).
+           (t
+            (let* ((face (emacs-redisplay--text-property-at pos 'face buffer))
+                   (display (emacs-redisplay--text-property-at pos 'display buffer))
+                   (g (emacs-redisplay--make-glyph
+                       :char ch
+                       :face (emacs-redisplay--resolve-face face)
+                       :realized-face (emacs-redisplay-realize-face face)
+                       :face-id 0
+                       :width (max 1 cw)
+                       :composition nil
+                       :display-spec (emacs-redisplay--resolve-display
+                                      display nil)
+                       :buf-pos pos)))
+              (when overlays
+                (emacs-redisplay--apply-overlay-face g overlays pos))
+              (cond
+               ;; Overflow → stop (truncate).
+               ((>= (+ col (max 1 cw)) (1+ width))
+                (if emacs-redisplay-truncate-lines
+                    (setq overflow t)
+                  ;; wrap path = post-MVP, treat as truncate too for now.
+                  (setq overflow t)))
+               (t
+                (aset used col g)
+                (setq col (+ col (max 1 cw))
+                      pos (1+ pos))
+                ;; After-strings ending at the new pos.
+                (emit-after-strings pos)
+                ;; Before-strings starting at the new pos (= mid-line).
+                (when (< i (1- n)) (emit-before-strings pos)))))))
+          (setq i (1+ i))))
+      ;; Tail after-strings ending at end-of-line position (= e.g.
+      ;; overlays anchored to the trailing newline).  Already handled
+      ;; inline above for any pos increment, so this is a no-op for the
+      ;; current pos but keeps the contract explicit.
+      (cons (let ((trimmed (make-vector col nil)))
+              (dotimes (k col) (aset trimmed k (aref used k)))
+              trimmed)
+            pos))))
 
 (defun emacs-redisplay--fill-row (row glyph-vec width buffer-pos end-pos)
   "Place GLYPH-VEC into ROW, padding to WIDTH with empty glyphs.
