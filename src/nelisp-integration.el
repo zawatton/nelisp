@@ -871,27 +871,431 @@ real handlers when Phase 7.2 / 7.4 / 7.1 close, respectively (see
           #'nelisp-integration-cold-init-stage1-handler)
     handlers))
 
-;;;; Phase 7.5.3 dependency — 24h soak harness scaffold
+;;;; Phase 7.5.2 — stage 2 real handler (Phase 7.2 allocator init)
+;;
+;; Stage 2 = "Phase 7.2 allocator + GC scheduler init" per Doc 32 v2
+;; §3.2 + §4.  The real handler initialises a fresh nursery via
+;; `nelisp-allocator-init-nursery' (the canonical "exactly once at
+;; startup" entry point per the function docstring), then verifies the
+;; heap-region registry version (Doc 29 §1.4) across every registered
+;; region.  Any version skew between the running allocator module and
+;; the registered regions short-circuits to :status fail with a
+;; structured diagnostic so the cold-init coordinator does not hand a
+;; corrupt heap to stage 3 / stage 4.
+;;
+;; The handler restores the *previous* nursery binding on exit so
+;; running it inside the dispatcher does not leak state across the
+;; surrounding ERT / production session — production callers that own
+;; the global lifetime invoke `nelisp-allocator-init-nursery' directly
+;; and skip this dispatcher path entirely.
+
+(defun nelisp-integration--cold-init-stage2-allocator-loaded-p ()
+  "Return non-nil when the Phase 7.2 allocator module is loadable."
+  (or (featurep 'nelisp-allocator)
+      (condition-case _err
+          (require 'nelisp-allocator nil t)
+        (error nil))))
+
+(defun nelisp-integration-cold-init-stage2-handler (&optional _ctx)
+  "Phase 7.5.2 stage-2 real handler — Phase 7.2 allocator + region init.
+
+Doc 32 v2 §3.2 + §4 specifies stage 2 as `Phase 7.2 allocator + GC
+scheduler init'.  The handler:
+
+  1. requires the `nelisp-allocator' module (= Phase 7.2 entry point;
+     pure Elisp, so it loads on every host that ships `src/'),
+  2. snapshots the current `nelisp-allocator--current-nursery' so the
+     dispatcher run does not leak state into the surrounding session,
+  3. invokes `nelisp-allocator-init-nursery' to reserve a fresh nursery
+     region (Doc 29 §1.4 heap-region registry entry, generation =
+     `nursery'),
+  4. verifies the heap-region registry version across every registered
+     region via `nelisp-allocator-region-table-check-versions' (Doc 29
+     §1.4 — silent corruption risk per Doc 30 v2 §6.4 if skew exists),
+  5. records the nursery descriptor + region snapshot into the result
+     plist so stage 3 / stage 4 / production callers can introspect
+     what the handler reserved,
+  6. restores the prior nursery binding on exit (production code owns
+     the global lifetime and will not invoke this through the scaffold
+     dispatcher).
+
+Returns a plist on success:
+  (:status pass
+   :stage 2
+   :nursery-size BYTES
+   :region-version INT
+   :region-count INT
+   :regions PLIST-LIST)
+or on failure:
+  (:status fail
+   :stage 2
+   :error MSG
+   :error-data DATA-OR-NIL)
+
+Never raises — every error path is captured into the `:error' field
+so the dispatcher's `condition-case' wrapper sees a normal return.
+
+Skips with `:status :stub-not-yet-impl-pending-phase-7.2' (= the
+documented stub keyword) when `nelisp-allocator' is unavailable so
+the dispatcher contract degrades gracefully on a stripped tarball
+that omits the allocator module."
+  (cond
+   ((not (nelisp-integration--cold-init-stage2-allocator-loaded-p))
+    (list :status (cdr (assq 'stage2
+                             nelisp-integration-cold-init-stage-pending-keyword))
+          :stage 2
+          :blocked-by (cdr (assq 'stage2
+                                 nelisp-integration-cold-init-stage-blocked-by))))
+   (t
+    (let ((prior-nursery (and (boundp 'nelisp-allocator--current-nursery)
+                              nelisp-allocator--current-nursery))
+          result)
+      (setq result
+            (condition-case err
+                (let* ((nursery (nelisp-allocator-init-nursery))
+                       (region (nelisp-allocator--nursery-region nursery))
+                       (size (- (nelisp-heap-region-end region)
+                                (nelisp-heap-region-start region)))
+                       (snapshot (nelisp-allocator-region-table-check-versions))
+                       (regions-plist (nelisp-allocator-snapshot-regions)))
+                  (list :status 'pass
+                        :stage 2
+                        :nursery-size size
+                        :region-version nelisp-heap-region-version
+                        :region-count (length snapshot)
+                        :regions regions-plist))
+              (error
+               (list :status 'fail
+                     :stage 2
+                     :error (error-message-string err)
+                     :error-data (cdr err)))))
+      ;; Restore prior nursery to keep dispatcher invocations
+      ;; idempotent across the surrounding ERT / session.
+      (when (boundp 'nelisp-allocator--current-nursery)
+        (setq nelisp-allocator--current-nursery prior-nursery))
+      result))))
+
+;;;; Phase 7.5.2 — stage 3 real handler (Phase 7.4 coding init)
+;;
+;; Stage 3 = "Phase 7.4 coding (UTF-8 IO codec attach)" per Doc 32 v2
+;; §3.2 + §4.  Phase 7.4 closure shipped four IO codecs (UTF-8,
+;; Latin-1, Shift-JIS / CP932, EUC-JP) plus the JIS table golden
+;; SHA-256 (Doc 31 v2 §6.10).  The stage-3 handler verifies:
+;;
+;;   - the JIS tables match the golden hash (= no silent table
+;;     mutation since the last `tools/coding-table-gen.el' run),
+;;   - a UTF-8 round-trip works on a Japanese seed string (= the
+;;     codec surface is wired and runtime-callable, not just
+;;     loadable as data).
+;;
+;; Both checks are pure Elisp + the loaded coding tables; no cdylib
+;; / module dependency.  When `nelisp-coding-jis-tables' is absent
+;; the handler degrades to the documented stub keyword so stripped
+;; tarballs do not trip the dispatcher.
+
+(defconst nelisp-integration--cold-init-stage3-utf8-roundtrip-seed
+  "日本語テスト string — \U0001F600 emoji"
+  "Seed string for the stage-3 UTF-8 round-trip probe.
+Mixes BMP CJK + ASCII + a non-BMP emoji so the encode / decode path
+exercises 1-, 3-, and 4-byte UTF-8 sequences.")
+
+(defun nelisp-integration--cold-init-stage3-coding-loaded-p ()
+  "Return non-nil when the Phase 7.4 coding modules are loadable."
+  (and (or (featurep 'nelisp-coding)
+           (condition-case _err
+               (require 'nelisp-coding nil t)
+             (error nil)))
+       (or (featurep 'nelisp-coding-jis-tables)
+           (condition-case _err
+               (require 'nelisp-coding-jis-tables nil t)
+             (error nil)))))
+
+(defun nelisp-integration-cold-init-stage3-handler (&optional _ctx)
+  "Phase 7.5.2 stage-3 real handler — Phase 7.4 coding init + golden hash.
+
+Doc 32 v2 §3.2 + §4 specifies stage 3 as `Phase 7.4 coding (UTF-8 IO
+codec attach)'.  The handler:
+
+  1. requires `nelisp-coding' + `nelisp-coding-jis-tables' (Phase 7.4
+     closure modules; pure Elisp),
+  2. verifies the JIS tables match the golden SHA-256
+     (`nelisp-coding-jis-tables-verify-hash' per Doc 31 v2 §6.10) —
+     guards against silent table mutation since the last
+     `tools/coding-table-gen.el' run,
+  3. round-trips a CJK + emoji seed string through
+     `nelisp-coding-utf8-encode-string' →
+     `nelisp-coding-utf8-decode' to prove the codec surface is
+     callable, not merely loadable as data.
+
+Returns a plist on success:
+  (:status pass
+   :stage 3
+   :jis-tables-hash GOLDEN-SHA256-STRING
+   :utf8-roundtrip-bytes-len INT
+   :utf8-roundtrip-restored STRING)
+or on failure:
+  (:status fail
+   :stage 3
+   :error MSG
+   :error-data DATA-OR-NIL)
+
+Never raises.  Degrades to `:status :stub-not-yet-impl-pending-phase-7.4'
+when the coding modules are unavailable (= stripped tarball)."
+  (cond
+   ((not (nelisp-integration--cold-init-stage3-coding-loaded-p))
+    (list :status (cdr (assq 'stage3
+                             nelisp-integration-cold-init-stage-pending-keyword))
+          :stage 3
+          :blocked-by (cdr (assq 'stage3
+                                 nelisp-integration-cold-init-stage-blocked-by))))
+   (t
+    (condition-case err
+        (let* ((golden-ok (nelisp-coding-jis-tables-verify-hash))
+               (seed nelisp-integration--cold-init-stage3-utf8-roundtrip-seed)
+               (encoded (nelisp-coding-utf8-encode-string seed))
+               ;; `nelisp-coding-utf8-decode' returns a plist with
+               ;; the decoded string under :string per Doc 31 v2 §2.3
+               ;; (the plist surface preserves invalid-byte positions
+               ;; for streaming callers).
+               (decode-plist (nelisp-coding-utf8-decode encoded))
+               (decoded (and (listp decode-plist)
+                             (plist-get decode-plist :string)))
+               (round-ok (and (stringp decoded)
+                              (string= decoded seed))))
+          (cond
+           ((not (eq golden-ok t))
+            (list :status 'fail
+                  :stage 3
+                  :error "JIS tables golden hash mismatch"
+                  :error-data golden-ok))
+           ((not round-ok)
+            (list :status 'fail
+                  :stage 3
+                  :error (format "UTF-8 round-trip mismatch: %S vs %S"
+                                 seed decoded)
+                  :error-data nil))
+           (t
+            (list :status 'pass
+                  :stage 3
+                  :jis-tables-hash nelisp-coding-jis-tables-sha256
+                  :utf8-roundtrip-bytes-len (length encoded)
+                  :utf8-roundtrip-restored decoded))))
+      (error
+       (list :status 'fail
+             :stage 3
+             :error (error-message-string err)
+             :error-data (cdr err)))))))
+
+;;;; Phase 7.5.2 — stage 4 real handler (Phase 7.1 native compile bootstrap)
+;;
+;; Stage 4 = "Phase 7.1 native compiler bootstrap (= Doc 28 §3.5
+;; 4-stage embed)" per Doc 32 v2 §3.2 + §4.  The real coordinator at
+;; `nelisp-integration-cold-init-run' already runs the full T12
+;; protocol; the stage-4 dispatcher handler is a *narrower* probe
+;; that calls `nelisp-cc-bootstrap-run' on a tiny seed lambda and
+;; verifies the bootstrap produced bytes (= stage-1 native compile
+;; emitted a non-empty `:final-bytes' vector).  This separation lets
+;; the scaffold dispatcher exercise the *contract* (a stage-4 handler
+;; that returns pass with native bytes) without the full 4-stage
+;; pipeline overhead — the cold-init coordinator's tests cover the
+;; protocol-level pipeline.
+;;
+;; The handler skip-degrades when the runtime binary is missing (=
+;; verifier reports :ready nil with anything other than the advisory
+;; staticlib entry) so a stripped tarball does not flake the
+;; dispatcher.
+
+(defconst nelisp-integration--cold-init-stage4-seed-form
+  '(lambda (x) x)
+  "Seed form for the stage-4 native compile bootstrap probe.
+Identity lambda — smallest non-trivial form the T6 frontend lowers
+cleanly through `nelisp-cc-bootstrap--stage1-native-compile'.  Real
+production callers (`nelisp-integration-cold-init-run') pass the
+canonical bootstrap source path; the scaffold-layer stage-4 handler
+runs against this seed because it must complete in <1s for the soak
+harness inline.")
+
+(defun nelisp-integration--cold-init-stage4-bootstrap-loaded-p ()
+  "Return non-nil when the Phase 7.1 native compile bootstrap is loadable."
+  (or (featurep 'nelisp-cc-bootstrap)
+      (condition-case _err
+          (require 'nelisp-cc-bootstrap nil t)
+        (error nil))))
+
+(defun nelisp-integration-cold-init-stage4-handler (&optional _ctx)
+  "Phase 7.5.2 stage-4 real handler — Phase 7.1 native compile bootstrap.
+
+Doc 32 v2 §3.2 + §4 specifies stage 4 as the Phase 7.1 native
+compiler bootstrap (= Doc 28 §3.5 4-stage embed).  The handler:
+
+  1. requires `nelisp-cc-bootstrap' (Phase 7.1 closure entry point),
+  2. runs `nelisp-cc-bootstrap-run' on a tiny identity-lambda seed,
+  3. asserts the returned plist carries a non-empty
+     `:a3-candidate-hash' (= stage-1 native compile actually
+     produced bytes; an empty hash means the bootstrap fell back to
+     the A2 path and stage-4 should report fail).
+
+Returns a plist on success:
+  (:status pass
+   :stage 4
+   :bootstrap-status pass | fail   ; T12's umbrella status
+   :a2-hash STRING                 ; stage-0 hash
+   :a3-candidate-hash STRING       ; stage-1 hash (non-nil = bytes emitted)
+   :authoritative-promoted BOOL
+   :elapsed-seconds FLOAT)
+or on failure:
+  (:status fail
+   :stage 4
+   :error MSG
+   :bootstrap-result PLIST-OR-NIL)
+
+Never raises.  Degrades to `:status :stub-not-yet-impl-pending-phase-7.1'
+when the bootstrap module is unavailable.
+
+Skip-degrades to the same stub keyword when the runtime binary is
+unbuilt — the bootstrap requires the T13 binary to exercise its
+real pipeline, and absent the binary `nelisp-cc-bootstrap-run' would
+fall through to a fallback path that does not emit native bytes.
+Production callers route through `nelisp-integration-cold-init-run'
+(which surfaces the verifier's :missing list directly) when they
+need the binary-aware path."
+  (cond
+   ((not (nelisp-integration--cold-init-stage4-bootstrap-loaded-p))
+    (list :status (cdr (assq 'stage4
+                             nelisp-integration-cold-init-stage-pending-keyword))
+          :stage 4
+          :blocked-by (cdr (assq 'stage4
+                                 nelisp-integration-cold-init-stage-blocked-by))))
+   ((not (nelisp-integration--locate-runtime-binary))
+    (list :status (cdr (assq 'stage4
+                             nelisp-integration-cold-init-stage-pending-keyword))
+          :stage 4
+          :blocked-by "nelisp-runtime binary missing — run `make runtime'"))
+   (t
+    (condition-case err
+        (let* ((start (float-time))
+               (boot (nelisp-cc-bootstrap-run
+                      nelisp-integration--cold-init-stage4-seed-form))
+               (a3 (plist-get boot :a3-candidate-hash))
+               (a3-ok (and (stringp a3) (= (length a3) 64))))
+          (cond
+           ((not a3-ok)
+            (list :status 'fail
+                  :stage 4
+                  :error (format "stage-1 native compile produced no bytes (a3-hash=%S)"
+                                 a3)
+                  :bootstrap-result boot))
+           (t
+            (list :status 'pass
+                  :stage 4
+                  :bootstrap-status (plist-get boot :status)
+                  :a2-hash (plist-get boot :a2-hash)
+                  :a3-candidate-hash a3
+                  :authoritative-promoted
+                  (plist-get boot :authoritative-promoted)
+                  :elapsed-seconds (- (float-time) start)))))
+      (error
+       (list :status 'fail
+             :stage 4
+             :error (error-message-string err)
+             :bootstrap-result nil))))))
+
+(defun nelisp-integration-cold-init-handlers-with-real-stages ()
+  "Return a `:handlers' alist with stages 1/2/3/4 wired to real handlers.
+Convenience wrapper for callers that want every stage to exercise its
+real Phase 7.X surface.  Each handler degrades gracefully when its
+dependency is unavailable (= returns the documented
+`:stub-not-yet-impl-pending-phase-X.Y' keyword for that stage) so the
+dispatcher contract still holds on stripped tarballs / hosts without
+the runtime binary."
+  (list (cons 'stage1 #'nelisp-integration-cold-init-stage1-handler)
+        (cons 'stage2 #'nelisp-integration-cold-init-stage2-handler)
+        (cons 'stage3 #'nelisp-integration-cold-init-stage3-handler)
+        (cons 'stage4 #'nelisp-integration-cold-init-stage4-handler)))
+
+;;;; Phase 7.5.3 dependency — 24h soak harness (real GC/RSS measurement)
 ;;
 ;; The real 24h soak (= Doc 32 v2 §2.7 / §7) measures GC pause p99,
-;; RSS growth, and crash count over a 24h window — those numbers
-;; require the static-linked stage-d-v2.0 binary which lands in
-;; Phase 7.5.3.  Phase 7.5.2 ships only the *test framework* so the
-;; soak script can be wired into CI ahead of the real measurement;
-;; the harness invokes a per-iteration handler N times, captures
-;; per-iteration timing, and returns a structural summary.
+;; RSS growth, and crash count over a 24h window — the static-linked
+;; stage-d-v2.0 binary lands in Phase 7.5.3 (the canonical soak target)
+;; but the *measurement scaffolding* lands here in Phase 7.5.3 prep so
+;; the metric-collection contract is exercised before the binary swaps
+;; in.  This harness:
 ;;
-;; No actual GC / RSS measurement happens here — the soak metric
-;; collection lands in Phase 7.5.3 alongside the static binary.
+;;   - runs the configured per-iteration handler N times,
+;;   - captures Emacs `gcs-done' delta + `gc-elapsed' delta around
+;;     each iteration to derive the per-iteration GC pause,
+;;   - captures `memory-info' (Linux) or `process-attributes' RSS
+;;     when available so RSS growth across the soak is observable,
+;;   - aggregates min/max/mean over the iteration count.
+;;
+;; Real binary-driven soak in Phase 7.5.3 will swap the per-iteration
+;; handler for one that drives the static binary in a subprocess + a
+;; sampler that scrapes child-process metrics; the harness contract
+;; (= the returned plist shape) does not change because the collector
+;; is already structured as `gc-stats' / `rss-stats' nested plists.
 
 (defconst nelisp-integration-soak-harness-default-iterations 4
-  "Default iteration count for the Phase 7.5.3 soak harness scaffold.
+  "Default iteration count for the Phase 7.5.3 soak harness.
 Tiny on purpose — Phase 7.5.2 ERT runs the harness inline so the
 default cannot be a 24h figure.  Real soak runs override this with
 `:iterations 86400' (1Hz × 24h) or a duration-driven loop.")
 
+(defun nelisp-integration--soak-rss-bytes ()
+  "Return the current Emacs process RSS in bytes, or nil when unavailable.
+Tries `memory-info' first (Linux + Emacs 27+); falls back to
+`process-attributes' (cross-platform when /proc is mounted) and
+multiplies by the page size.  Returns nil on platforms that expose
+neither so the soak harness reports `:rss-stats nil' rather than
+fabricating zeros."
+  (or
+   ;; (a) `memory-info' — preferred when the host exposes it.  The
+   ;; return shape is `(TOTAL-KB FREE-KB SWAP-TOTAL-KB SWAP-FREE-KB)'
+   ;; when emacs is built against system memory probes; nil otherwise.
+   ;; This gives us system-wide totals, not per-process RSS, so we
+   ;; only use it when `process-attributes' is unavailable.
+   (let* ((attrs (and (fboundp 'process-attributes)
+                      (ignore-errors
+                        (process-attributes (emacs-pid)))))
+          (rss-pages (and attrs (alist-get 'vsize attrs)))
+          ;; `vsize' is in bytes on most systems; `rss' in pages.
+          (rss-pages-2 (and attrs (alist-get 'rss attrs))))
+     (cond
+      ((and rss-pages-2 (integerp rss-pages-2))
+       ;; `process-attributes' returns RSS in pages on Linux; multiply
+       ;; by the page size to get bytes.
+       (* rss-pages-2 4096))
+      ((and rss-pages (integerp rss-pages))
+       rss-pages)
+      (t nil)))
+   ;; (b) Fallback: read /proc/self/status VmRSS line directly.  This
+   ;; works on Linux even when `process-attributes' is unavailable.
+   (and (file-readable-p "/proc/self/status")
+        (with-temp-buffer
+          (insert-file-contents "/proc/self/status")
+          (goto-char (point-min))
+          (when (re-search-forward "^VmRSS:[ \t]+\\([0-9]+\\)[ \t]+kB" nil t)
+            (* (string-to-number (match-string 1)) 1024))))))
+
+(defun nelisp-integration--soak-aggregate-stats (samples)
+  "Return min/max/mean over SAMPLES (a list of numbers, possibly empty/nil).
+Returns nil when SAMPLES is empty.  Otherwise returns a plist:
+  (:min N :max N :mean FLOAT :samples LENGTH :first VAL :last VAL)
+with `nil' entries filtered out before aggregation so a missing RSS
+sample (= nil) does not poison the aggregate."
+  (let ((numeric (cl-remove-if-not #'numberp samples)))
+    (cond
+     ((null numeric) nil)
+     (t
+      (list :min (apply #'min numeric)
+            :max (apply #'max numeric)
+            :mean (/ (apply #'+ numeric) (float (length numeric)))
+            :samples (length numeric)
+            :first (car samples)
+            :last (car (last samples)))))))
+
 (defun nelisp-integration-soak-harness (&rest args)
-  "Phase 7.5.3 dependency — 24h soak harness *scaffold* (no metric capture).
+  "Phase 7.5.3 24h soak harness with real GC + RSS measurement.
 
 ARGS is a plist:
   :iterations N            — number of harness iterations (default
@@ -912,9 +1316,16 @@ Returns a plist:
    :failed F                ; iterations where handler returned non-pass
    :elapsed-seconds FLOAT   ; total wall-clock
    :first-failure FAIL-PLIST-OR-NIL
-   :scaffold t              ; sentinel: actual GC/RSS metric collection
-                            ; lands in Phase 7.5.3 alongside the
-                            ; static-linked stage-d-v2.0 binary
+   :gc-stats (:min N :max N :mean FLOAT :samples N
+              :first N :last N)        ; gcs-done delta per iteration
+   :gc-elapsed-stats (... same shape ...)  ; gc-elapsed delta per iter
+   :rss-stats (... same shape ...) | nil   ; process RSS in bytes
+   :scaffold t              ; sentinel: kept for backwards-compat with
+                            ; the Phase 7.5.2 caller contract; soak
+                            ; metric collection lands here in Phase
+                            ; 7.5.3 prep, real binary-driven soak in
+                            ; Phase 7.5.3 ship still toggles this flag
+                            ; off when wired
    :status pass | fail)     ; pass iff all iterations passed
 
 The function never raises; handler errors are captured into the
@@ -922,10 +1333,13 @@ per-iteration result via `nelisp-integration--cold-init-run-stage'-style
 condition-case wrapping inside the handler itself (the dispatcher
 already handles this).
 
-Callers wiring this to a real 24h soak should pass a `:handler' that
-also pushes GC pause / RSS samples into a Phase 7.5.3 metric collector;
-the scaffold itself is metric-agnostic so the contract does not change
-when real measurement lands."
+Real measurement notes:
+  - GC delta = (`gcs-done' AFTER) - (`gcs-done' BEFORE) per iteration.
+  - GC pause = (`gc-elapsed' AFTER) - (`gc-elapsed' BEFORE) per
+    iteration (seconds, float).
+  - RSS = `process-attributes' rss field × page size when available,
+    or /proc/self/status VmRSS line as a Linux fallback; nil on
+    platforms that expose neither (= `:rss-stats nil')."
   (let* ((iterations (or (plist-get args :iterations)
                          nelisp-integration-soak-harness-default-iterations))
          (handler (or (plist-get args :handler)
@@ -934,13 +1348,24 @@ when real measurement lands."
          (start (float-time))
          (passed 0)
          (failed 0)
-         (first-failure nil))
+         (first-failure nil)
+         (gc-deltas nil)
+         (gc-elapsed-deltas nil)
+         (rss-samples nil))
     (catch 'soak-harness-stop
       (dotimes (i iterations)
-        (let* ((r (condition-case err
+        (let* ((gcs-before gcs-done)
+               (gc-elapsed-before gc-elapsed)
+               (r (condition-case err
                       (funcall handler i)
                     (error (list :status 'fail :error err))))
-               (status (and (listp r) (plist-get r :status))))
+               (status (and (listp r) (plist-get r :status)))
+               (gcs-after gcs-done)
+               (gc-elapsed-after gc-elapsed)
+               (rss (nelisp-integration--soak-rss-bytes)))
+          (push (- gcs-after gcs-before) gc-deltas)
+          (push (- gc-elapsed-after gc-elapsed-before) gc-elapsed-deltas)
+          (when rss (push rss rss-samples))
           (if (eq status 'pass)
               (cl-incf passed)
             (cl-incf failed)
@@ -952,6 +1377,12 @@ when real measurement lands."
           :failed failed
           :elapsed-seconds (- (float-time) start)
           :first-failure first-failure
+          :gc-stats (nelisp-integration--soak-aggregate-stats
+                     (nreverse gc-deltas))
+          :gc-elapsed-stats (nelisp-integration--soak-aggregate-stats
+                             (nreverse gc-elapsed-deltas))
+          :rss-stats (nelisp-integration--soak-aggregate-stats
+                      (nreverse rss-samples))
           :scaffold t
           :status (if (and (= passed iterations) (zerop failed))
                       'pass
