@@ -86,9 +86,10 @@ host emacs binary symlinked into place so the dummy passes the `[[ -x
           (make-symbolic-link script (expand-file-name "anvil" bin-dst) t)
           (make-symbolic-link host-emacs
                               (expand-file-name "emacs" emacs-bin-dst) t)
-          ;; Copy at least one nelisp src file so cmd_tools_list does
+          ;; Copy at least one nelisp package file so cmd_tools_list does
           ;; not error out before printing the version line.
-          (copy-file (nelisp-bundled-tarball-test--path "src/nelisp-tools.el")
+          (copy-file (nelisp-bundled-tarball-test--path
+                      "packages/nelisp-tools/src/nelisp-tools.el")
                      (expand-file-name "nelisp-tools.el" src-dst)
                      t)
           ;; Run `bin/anvil version' with $ANVIL_HOME pointing at the
@@ -135,7 +136,8 @@ checkouts (= no `emacs/bin/emacs' under $ANVIL_HOME) keep working."
           (make-directory src-dst t)
           (make-directory bin-dst t)
           (make-symbolic-link script (expand-file-name "anvil" bin-dst) t)
-          (copy-file (nelisp-bundled-tarball-test--path "src/nelisp-tools.el")
+          (copy-file (nelisp-bundled-tarball-test--path
+                      "packages/nelisp-tools/src/nelisp-tools.el")
                      (expand-file-name "nelisp-tools.el" src-dst)
                      t)
           (let* ((process-environment

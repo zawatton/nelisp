@@ -162,6 +162,31 @@ bundled_runtime_present() {
   [[ -x "$ANVIL_HOME/bin/anvil-runtime" ]]
 }
 
+nelisp_package_src_dirs() {
+  local d
+  for d in "$ANVIL_HOME"/packages/*/src; do
+    if [[ -d "$d" ]]; then
+      printf '%s\n' "$d"
+    fi
+  done
+}
+
+nelisp_find_module_file() {
+  local module="$1"
+  local src_dir="$ANVIL_HOME/src"
+  local path="$src_dir/$module.el"
+  if [[ -f "$path" ]]; then
+    printf '%s\n' "$path"
+    return 0
+  fi
+  path="$ANVIL_HOME/packages/$module/src/$module.el"
+  if [[ -f "$path" ]]; then
+    printf '%s\n' "$path"
+    return 0
+  fi
+  return 1
+}
+
 runtime_cdylib_path() {
   local cand
   for cand in \
@@ -227,10 +252,10 @@ cmd_doctor() {
     return 1
   fi
   local nelisp_src="$ANVIL_HOME/src"
-  if [[ -f "$nelisp_src/nelisp-server.el" ]]; then
-    echo "  nelisp src      : $nelisp_src (OK)"
+  if nelisp_find_module_file "nelisp-server" >/dev/null; then
+    echo "  nelisp src      : $nelisp_src + packages/*/src (OK)"
   else
-    echo "  nelisp src      : $nelisp_src (MISSING — reinstall required)"
+    echo "  nelisp src      : $nelisp_src + packages/*/src (MISSING — reinstall required)"
     return 1
   fi
   local anvil_dir
@@ -300,9 +325,8 @@ cmd_tools_list() {
   # Phase 6.1 — offline tools list.  Greps deftool macro use without
   # spawning an Emacs subprocess, so CI / smoke / docs can confirm the
   # registered surface in <100ms.
-  local src_dir="$ANVIL_HOME/src"
-  local tools_file="$src_dir/nelisp-tools.el"
-  if [[ ! -f "$tools_file" ]]; then
+  local tools_file
+  if ! tools_file="$(nelisp_find_module_file "nelisp-tools")"; then
     echo "error: $tools_file not found" >&2
     return 1
   fi
@@ -316,9 +340,8 @@ cmd_version() {
   # Phase 7.5.3 — also classifies emacs source as `bundled' (from
   # stage-d-v2.0 tarball) or `system' so a user knows whether they are
   # depending on a host install or the bundled fallback.
-  local src_dir="$ANVIL_HOME/src"
   local tools_count=0
-  if [[ -f "$src_dir/nelisp-tools.el" ]]; then
+  if nelisp_find_module_file "nelisp-tools" >/dev/null; then
     tools_count=$(cmd_tools_list 2>/dev/null | wc -l | tr -d ' ')
   fi
   echo "anvil $ANVIL_VERSION"
@@ -449,6 +472,11 @@ cmd_mcp_serve() {
   local emacs_bin
   emacs_bin="$(detect_emacs)"
   local src_dir="$ANVIL_HOME/src"
+  local package_dir
+  local emacs_load_args=()
+  for package_dir in $(nelisp_package_src_dirs); do
+    emacs_load_args+=(-L "$package_dir")
+  done
 
   # Stage D Phase 6.1 architecture α: prefer anvil.el headless profile
   # when available (anvil-server delegates to nelisp-* internals via
@@ -456,14 +484,15 @@ cmd_mcp_serve() {
   # anvil.el is not bundled / locatable.
   local anvil_dir
   if anvil_dir="$(anvil_lisp_dir)"; then
-    if [[ ! -f "$src_dir/nelisp-server.el" ]]; then
-      echo "error: nelisp-server.el not found under $src_dir" >&2
+    if ! nelisp_find_module_file "nelisp-server" >/dev/null; then
+      echo "error: nelisp-server.el not found under $src_dir or packages/" >&2
       exit 1
     fi
     exec "$emacs_bin" \
       --batch -Q \
       -L "$anvil_dir" \
       -L "$src_dir" \
+      "${emacs_load_args[@]}" \
       --eval "(setq load-prefer-newer t)" \
       --eval "(setenv \"ANVIL_CONFIG_DIR\" \"$ANVIL_CONFIG_DIR\")" \
       --eval "(setenv \"ANVIL_CACHE_DIR\" \"$ANVIL_CACHE_DIR\")" \
@@ -473,13 +502,14 @@ cmd_mcp_serve() {
   fi
 
   # Fallback: nelisp-server only (Stage D Phase 6.0 baseline)
-  if [[ ! -f "$src_dir/nelisp-server.el" ]]; then
-    echo "error: nelisp-server.el not found under $src_dir" >&2
+  if ! nelisp_find_module_file "nelisp-server" >/dev/null; then
+    echo "error: nelisp-server.el not found under $src_dir or packages/" >&2
     exit 1
   fi
   exec "$emacs_bin" \
     --batch -Q \
     -L "$src_dir" \
+    "${emacs_load_args[@]}" \
     --eval "(setq load-prefer-newer t)" \
     --eval "(setenv \"ANVIL_CONFIG_DIR\" \"$ANVIL_CONFIG_DIR\")" \
     --eval "(setenv \"ANVIL_CACHE_DIR\" \"$ANVIL_CACHE_DIR\")" \
