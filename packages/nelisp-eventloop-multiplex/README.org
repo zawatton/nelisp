@@ -1,0 +1,57 @@
+#+TITLE: nelisp-eventloop-multiplex Package
+
+* Summary
+
+=nelisp-eventloop-multiplex= provides the fd polling and callback
+dispatch layer that extends =nelisp-eventloop= with selectable fd
+multiplexing and event-source adapters.
+
+* Layout
+
+#+begin_src text
+packages/nelisp-eventloop-multiplex/
+├── README.org
+├── src/
+│   └── nelisp-eventloop-multiplex.el
+└── test/
+    └── nelisp-eventloop-multiplex-test.el
+#+end_src
+
+* Public API
+
+- =nelisp-eventloop-multiplex-set-backend=
+- =nelisp-eventloop-select-fd=
+- =nelisp-eventloop-multiplex-register-process-fd=
+- =nelisp-eventloop-multiplex-unregister-process-fd=
+- =nelisp-eventloop-multiplex-register-fd=
+- =nelisp-eventloop-multiplex-unregister-fd=
+- =nelisp-eventloop-multiplex-registered-handles=
+- =nelisp-eventloop-multiplex-tick=
+- =nelisp-eventloop-multiplex-run=
+- =nelisp-eventloop-multiplex-stop=
+- =nelisp-eventloop-as-event-source-pull-fn=
+
+* Dependencies
+
+- Runtime dependency: NeLisp core =nelisp= v1.0 load-path environment
+- Elisp dependencies declared by the library: =cl-lib=,
+  =nelisp-eventloop=
+
+* Dependents
+
+- Source dependents: none under =src/=
+- Test dependents: =packages/nelisp-process/test/nelisp-process-test.el=,
+  package-local =test/nelisp-eventloop-multiplex-test.el=
+
+* Status
+
+- Doc 45 draft extraction candidate following the shipped
+  =packages/nelisp-json/= pilot pattern
+- Source moved from =src/nelisp-eventloop-multiplex.el= to
+  =packages/nelisp-eventloop-multiplex/src/nelisp-eventloop-multiplex.el=
+  without code changes
+- ERT suite moved from =test/nelisp-eventloop-multiplex-test.el= to
+  =packages/nelisp-eventloop-multiplex/test/nelisp-eventloop-multiplex-test.el=
+- Existing callers continue to use
+  =(require 'nelisp-eventloop-multiplex)=; root load-path wiring
+  resolves the package directory

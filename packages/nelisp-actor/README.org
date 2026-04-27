@@ -1,0 +1,68 @@
+#+TITLE: nelisp-actor Package
+
+* Summary
+
+=nelisp-actor= provides the Phase 4 actor runtime: actor spawning,
+mailbox delivery, cooperative scheduling, supervision, and channel
+primitives.
+
+* Layout
+
+#+begin_src text
+packages/nelisp-actor/
+├── README.org
+├── src/
+│   └── nelisp-actor.el
+└── test/
+    └── nelisp-actor-test.el
+#+end_src
+
+* Public API
+
+- =nelisp-actor-lambda=
+- =nelisp-spawn=
+- =nelisp-self=
+- =nelisp-send=
+- =nelisp-receive=
+- =nelisp-yield=
+- =nelisp-actor-run-until-idle=
+- =nelisp-actor-start=
+- =nelisp-actor-stop=
+- =nelisp-actor-list=
+- =nelisp-actor-stats=
+- =nelisp-supervise=
+- =nelisp-supervise-children=
+- =nelisp-make-chan=
+- =nelisp-chan-send=
+- =nelisp-chan-recv=
+- =nelisp-chan-close=
+
+* Dependencies
+
+- Runtime dependency: NeLisp core =nelisp= v1.0 load-path environment
+- Elisp dependencies declared by the library: =cl-lib=, =generator=,
+  =nelisp-gc=
+
+* Dependents
+
+- Source dependents: =src/nelisp-process-pool.el=,
+  =src/nelisp-file-notify.el=,
+  =packages/nelisp-process/src/nelisp-process.el=,
+  =packages/nelisp-eventloop/src/nelisp-eventloop.el=,
+  =packages/nelisp-network/src/nelisp-network.el=
+- Test dependents: =test/nelisp-daemon-test.el=,
+  =test/nelisp-editor-test.el=, =test/nelisp-file-notify-test.el=,
+  =packages/nelisp-process/test/nelisp-process-test.el=,
+  =packages/nelisp-eventloop/test/nelisp-eventloop-test.el=,
+  package-local =test/nelisp-actor-test.el=
+
+* Status
+
+- Doc 45 draft extraction candidate following the shipped
+  =packages/nelisp-json/= pilot pattern
+- Source moved from =src/nelisp-actor.el= to
+  =packages/nelisp-actor/src/nelisp-actor.el= without code changes
+- ERT suite moved from =test/nelisp-actor-test.el= to
+  =packages/nelisp-actor/test/nelisp-actor-test.el=
+- Existing callers continue to use =(require 'nelisp-actor)=; root
+  load-path wiring resolves the package directory
