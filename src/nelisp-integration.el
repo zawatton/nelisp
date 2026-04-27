@@ -645,6 +645,232 @@ returned plist."
           :error first-nonpass
           :scaffold t)))
 
+;;;; Phase 7.5.2 — stage 1 real handler (Doc 32 v2 §3.2 / §4)
+;;
+;; Stage 1 = "Phase 7.0 syscall-stub init (mmap arena ready)" per Doc 32
+;; v2 §3.2 + §4 architecture diagram.  The closed Phase 7.0 (= 7df50f8
+;; main + 20ecef4 MAP_JIT update, ~819 LOC Rust) ships:
+;;
+;;   - `libnelisp_runtime.{a,so}'   — cdylib + staticlib with the
+;;                                     `nelisp_syscall_*' surface.
+;;   - `nelisp-runtime' CLI         — `--syscall-smoke' subcommand that
+;;                                     exercises write / mmap / munmap /
+;;                                     getenv / stat through the FFI
+;;                                     symbols (exit 0 = green).
+;;   - `nelisp-runtime-module.so'   — Phase 7.5.4 Emacs module that
+;;                                     dlsyms the cdylib in-process and
+;;                                     exposes `nelisp-runtime-module-
+;;                                     syscall-smoke' (no subprocess hop).
+;;
+;; The stage-1 handler probes both the in-process module path (preferred
+;; ~10 µs) and the subprocess path (fallback ~1 ms), invokes the
+;; available syscall-smoke entry point, and reports the discovered
+;; artifacts on `:status pass'.  The mmap arena itself (= the ~64MB
+;; nursery + ~256MB tenured slot in the §4 diagram) is *advertised* as
+;; ready by Phase 7.0 (the syscall surface is wired) but its actual
+;; reservation lands in stage 2 (= Phase 7.2 allocator init), so the
+;; handler does not pre-allocate — that would conflate stage 1 and
+;; stage 2 ownership boundaries.
+
+(defun nelisp-integration--cold-init-stage1-probe-artifacts ()
+  "Probe Phase 7.0 cdylib artifacts for the stage-1 handler.
+Returns a plist:
+  (:binary PATH-OR-NIL          ; nelisp-runtime CLI binary
+   :module PATH-OR-NIL          ; nelisp-runtime-module.so
+   :staticlib PATH-OR-NIL       ; libnelisp_runtime.a
+   :cdylib PATH-OR-NIL)         ; libnelisp_runtime.so (sibling of module)
+Each value is an absolute path string when the artifact is on disk and
+readable, otherwise nil.  No artifact reachability raises — every
+locator failure short-circuits to nil so the handler can compose a
+single missing-artifacts diagnostic."
+  (let* ((bin (nelisp-integration--locate-runtime-binary))
+         (lib (nelisp-integration--locate-runtime-staticlib))
+         (mod (condition-case _err
+                  (let ((p (nelisp-cc-runtime--locate-runtime-module)))
+                    (and (stringp p) (file-readable-p p) p))
+                (error nil)))
+         (cdy (and mod
+                   (let ((so (expand-file-name "libnelisp_runtime.so"
+                                               (file-name-directory mod))))
+                     (and (file-readable-p so) so)))))
+    (list :binary bin
+          :module mod
+          :staticlib lib
+          :cdylib cdy)))
+
+(defun nelisp-integration--cold-init-stage1-via-module ()
+  "Try to invoke `nelisp-runtime-module-syscall-smoke' in-process.
+Returns one of:
+  (:ok    :exit-code N)        ; module loaded + smoke returned N (0 = green)
+  (:no-module REASON)          ; module unavailable (host lacks dynamic
+                               ; modules, .so missing, or load failed)
+  (:error MSG)                 ; module loaded but smoke raised; MSG is
+                               ; the `error-message-string' payload
+The function never raises — every error path is captured into the
+returned tuple so the stage-1 handler can decide between fallback +
+fail without a `condition-case' around its own dispatcher."
+  (cond
+   ((not (nelisp-cc-runtime--module-supported-p))
+    (list :no-module "host Emacs lacks dynamic-module support"))
+   (t
+    (condition-case err
+        (progn
+          (nelisp-cc-runtime--ensure-module-loaded)
+          (if (fboundp 'nelisp-runtime-module-syscall-smoke)
+              (let ((rc (funcall (intern "nelisp-runtime-module-syscall-smoke"))))
+                (list :ok :exit-code rc))
+            (list :no-module
+                  "module loaded but `nelisp-runtime-module-syscall-smoke' unbound (stale .so?)")))
+      (error
+       ;; Differentiate "module never loaded" (= no-module) from
+       ;; "module loaded but smoke raised" (= error).  The
+       ;; `--ensure-module-loaded' helper signals `nelisp-cc-runtime-
+       ;; module-{missing,unsupported}' for the former, plain `error'
+       ;; for genuine smoke failures.
+       (let* ((sym (car err))
+              (kind (if (memq sym '(nelisp-cc-runtime-module-missing
+                                    nelisp-cc-runtime-module-unsupported))
+                        :no-module
+                      :error))
+              (msg (error-message-string err)))
+         (list kind msg)))))))
+
+(defun nelisp-integration--cold-init-stage1-via-subprocess (binary)
+  "Invoke `BINARY --syscall-smoke' as a subprocess and parse exit code.
+Returns one of:
+  (:ok    :exit-code N)        ; subprocess exited with N (0 = green)
+  (:error MSG)                 ; subprocess could not be started
+BINARY is an absolute path string returned by
+`nelisp-integration--locate-runtime-binary'; callers that pass nil get
+back a `:error' tuple rather than a crash."
+  (cond
+   ((not (and binary (file-executable-p binary)))
+    (list :error
+          (format "nelisp-runtime binary not executable: %S" binary)))
+   (t
+    (condition-case err
+        (with-temp-buffer
+          (let ((exit (call-process binary nil t nil "--syscall-smoke")))
+            (list :ok :exit-code exit)))
+      (error
+       (list :error (error-message-string err)))))))
+
+(defun nelisp-integration-cold-init-stage1-handler (&optional _ctx)
+  "Phase 7.5.2 stage-1 real handler — wires Phase 7.0 syscall-stub init.
+
+Doc 32 v2 §3.2 + §4 specifies stage 1 as `Phase 7.0 syscall-stub init
+\(mmap arena ready)\\='; the closed Phase 7.0 ships the `nelisp-runtime'
+cdylib + CLI + Emacs module that exposes `nelisp_syscall_*' through
+both subprocess (`--syscall-smoke') and in-process module
+\(`nelisp-runtime-module-syscall-smoke') paths.  This handler:
+
+  1. probes for the runtime artifacts (binary / module / staticlib / cdylib),
+  2. runs the syscall-smoke probe through the in-process module path
+     when available (preferred — ~10 µs round-trip),
+  3. falls back to the subprocess path when the module is unreachable
+     (stale build, host without dynamic modules, etc.) — ~1 ms,
+  4. returns the discovered artifacts so callers can introspect which
+     path was used + which dependencies were located.
+
+Returns a plist with the Doc 32 v2 §3.2 stage shape:
+  (:status pass
+   :stage 1
+   :module-loaded BOOL          ; t when in-process module path was used
+   :exec-mode :module | :subprocess
+   :artifacts (:binary PATH :module PATH :staticlib PATH :cdylib PATH)
+   :smoke-exit-code N)
+on success, or
+  (:status fail
+   :stage 1
+   :error MSG
+   :artifacts (:binary PATH ...)
+   :module-result MODULE-TUPLE
+   :subprocess-result SUBPROCESS-TUPLE-OR-NIL)
+on failure.
+
+The handler never raises; every error path is captured into the `:error'
+field so the dispatcher's `condition-case' wrapper sees a normal
+return.  CTX is currently unused (reserved for future stage-state
+threading; the dispatcher already supplies it for forward-compat)."
+  (let* ((artifacts (nelisp-integration--cold-init-stage1-probe-artifacts))
+         (binary (plist-get artifacts :binary))
+         (module-result (nelisp-integration--cold-init-stage1-via-module)))
+    (cond
+     ;; (a) in-process module path returned green (= preferred fast path).
+     ((and (eq (car module-result) :ok)
+           (eq (cadr module-result) :exit-code)
+           (eq (nth 2 module-result) 0))
+      (list :status 'pass
+            :stage 1
+            :module-loaded t
+            :exec-mode :module
+            :artifacts artifacts
+            :smoke-exit-code 0))
+     ;; (b) module reachable but smoke returned non-zero — hard fail
+     ;; (the module path is the most direct probe; non-zero means the
+     ;; FFI surface is broken on this host).
+     ((and (eq (car module-result) :ok)
+           (not (eq (nth 2 module-result) 0)))
+      (list :status 'fail
+            :stage 1
+            :error (format "syscall-smoke (module path) returned non-zero: %s"
+                           (nth 2 module-result))
+            :artifacts artifacts
+            :module-result module-result
+            :subprocess-result nil))
+     ;; (c) module raised — same hard-fail semantics as (b) so a smoke
+     ;; failure cannot silently downgrade to a subprocess-path success.
+     ((eq (car module-result) :error)
+      (list :status 'fail
+            :stage 1
+            :error (format "syscall-smoke (module path) raised: %s"
+                           (cadr module-result))
+            :artifacts artifacts
+            :module-result module-result
+            :subprocess-result nil))
+     ;; (d) module unavailable → try subprocess fallback.
+     (t
+      (let ((sub (nelisp-integration--cold-init-stage1-via-subprocess binary)))
+        (cond
+         ((and (eq (car sub) :ok)
+               (eq (cadr sub) :exit-code)
+               (eq (nth 2 sub) 0))
+          (list :status 'pass
+                :stage 1
+                :module-loaded nil
+                :exec-mode :subprocess
+                :artifacts artifacts
+                :smoke-exit-code 0))
+         ((eq (car sub) :ok)
+          (list :status 'fail
+                :stage 1
+                :error (format "syscall-smoke (subprocess path) exited with %s"
+                               (nth 2 sub))
+                :artifacts artifacts
+                :module-result module-result
+                :subprocess-result sub))
+         (t
+          (list :status 'fail
+                :stage 1
+                :error (format "no usable runtime path: module=%s subprocess=%s"
+                               (cadr module-result) (cadr sub))
+                :artifacts artifacts
+                :module-result module-result
+                :subprocess-result sub))))))))
+
+(defun nelisp-integration-cold-init-handlers-with-stage1-real ()
+  "Return a `:handlers' alist whose stage1 entry is the real handler.
+Convenience wrapper for callers that want stage-1 to actually exercise
+the Phase 7.0 syscall surface while leaving stages 2/3/4 as stubs (=
+`nelisp-integration--cold-init-stub-handler' returning the documented
+`:stub-not-yet-impl-pending-phase-X.Y' keyword).  Stages 2/3/4 lift to
+real handlers when Phase 7.2 / 7.4 / 7.1 close, respectively (see
+`nelisp-integration-cold-init-stage-blocked-by')."
+  (let ((handlers (nelisp-integration--cold-init-default-handlers)))
+    (setf (alist-get 'stage1 handlers)
+          #'nelisp-integration-cold-init-stage1-handler)
+    handlers))
+
 ;;;; Phase 7.5.3 dependency — 24h soak harness scaffold
 ;;
 ;; The real 24h soak (= Doc 32 v2 §2.7 / §7) measures GC pause p99,
