@@ -56,6 +56,12 @@
 
 (ert-deftest nelisp-release-build-script-exists ()
   "tools/build-release-artifact.sh must be present and executable."
+  ;; CI-smoke gate: `file-executable-p' on Windows native Emacs returns
+  ;; nil for `.sh' scripts because Windows uses extension-based exec
+  ;; rather than POSIX permission bits.  The script is a Linux/macOS
+  ;; release artefact; no Windows runner ever invokes it.  Skip the
+  ;; executable assertion on Windows (existence still asserted on POSIX).
+  (skip-unless (memq system-type '(gnu/linux darwin berkeley-unix)))
   (let ((script (nelisp-release-test--path "tools/build-release-artifact.sh")))
     (should (file-exists-p script))
     (should (file-executable-p script))
@@ -67,6 +73,9 @@
 
 (ert-deftest nelisp-release-soak-script-exists ()
   "tools/soak-test.sh must be executable and encode both soak tiers."
+  ;; CI-smoke gate: same Windows `file-executable-p' caveat as the
+  ;; sibling `nelisp-release-build-script-exists'.
+  (skip-unless (memq system-type '(gnu/linux darwin berkeley-unix)))
   (let* ((script (nelisp-release-test--path "tools/soak-test.sh"))
          (body (nelisp-release-test--read-file "tools/soak-test.sh")))
     (should (file-exists-p script))

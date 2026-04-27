@@ -217,6 +217,11 @@ the legacy invariant `last byte = 0xC3 RET' still holds.  The exit
 gc-poll NOP injection however now requires `last byte == RET' as
 the trigger, so we drop the strict `byte[-2] = NOP' assertion in
 favour of just `RET present + entry NOP'."
+  ;; CI-smoke gate: end-to-end allocation needs the Phase 7.5 platform
+  ;; resolver, which raises on Windows (`nelisp-cc-runtime-todo').
+  (skip-unless (condition-case nil
+                   (progn (nelisp-cc-runtime--platform-detect) t)
+                 (nelisp-cc-runtime-todo nil)))
   (let* ((result (nelisp-cc-runtime-compile-and-allocate
                   '(lambda (x) x) 'x86_64))
          (page   (plist-get result :exec-page))

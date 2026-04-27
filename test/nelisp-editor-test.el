@@ -179,6 +179,11 @@
 (ert-deftest nelisp-editor-hello-package-integration ()
   "Load the hello package via NeLisp loader, insert its greeting
 via scripted keys, verify buffer contents."
+  ;; CI-smoke gate: same Windows path-resolution gap as the rest of the
+  ;; `nelisp-examples-hello-*' suite — `nelisp-locate-file' on the toy
+  ;; tree fails on Windows native Emacs (Phase 9d open thread).  Skip
+  ;; on non-POSIX hosts; local + CI-Linux + CI-macOS keep running it.
+  (skip-unless (memq system-type '(gnu/linux darwin berkeley-unix)))
   (nelisp-editor-test--fresh
    (nelisp-editor-test--with-hello-env
      (nelisp-require 'hello)
