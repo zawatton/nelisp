@@ -1,0 +1,58 @@
+#+TITLE: nelisp-org-index Package
+
+* Summary
+
+=nelisp-org-index= provides a persistent SQLite-backed index of Org
+headlines, tags, TODO state, and outline metadata.  It is the
+extracted NeLisp library package for rebuilding and querying Org trees
+without loading =org-mode=.
+
+* Layout
+
+#+begin_src text
+packages/nelisp-org-index/
+├── README.org
+├── src/
+│   └── nelisp-org-index.el
+└── test/
+    └── nelisp-org-index-test.el
+#+end_src
+
+* Public API
+
+- =nelisp-org-index-enable=
+- =nelisp-org-index-disable=
+- =nelisp-org-index-rebuild=
+- =nelisp-org-index-search=
+- =nelisp-org-index-status=
+
+* Dependencies
+
+- Runtime dependency: NeLisp core =nelisp= v1.0 load-path environment
+- Elisp dependencies declared by the library: =cl-lib=, =subr-x=
+- Host capability dependency: built-in Emacs SQLite support with FTS5
+  support used when available
+- Internal NeLisp package dependencies declared by the library: none
+
+* Dependents
+
+- Runtime dependents in =src/=: =nelisp-tools=
+- Test dependents in =test/=: =nelisp-org-index-test.el=,
+  =nelisp-indices-fix-test.el=
+- Existing callers continue using =(require 'nelisp-org-index)=; the
+  root build load-path resolves the extracted package location.
+
+* Status
+
+- Extracted package following the Doc 45 split and the =nelisp-json=
+  pilot layout
+- Source and ERT contents moved without code changes
+- Feature name remains =nelisp-org-index=
+
+* Extraction Notes
+
+- The library source moved from =src/nelisp-org-index.el= to
+  =packages/nelisp-org-index/src/nelisp-org-index.el=.
+- The ERT suite moved from =test/nelisp-org-index-test.el= to
+  =packages/nelisp-org-index/test/nelisp-org-index-test.el=.
+- No Lisp forms were edited as part of the extraction.
