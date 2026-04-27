@@ -191,7 +191,17 @@
 ;;; §D. PATH walk (executable-find)
 ;;; ─────────────────────────────────────────────────────────────────────
 
+;; CI-smoke gating rationale: the success / absolute-path executable-find
+;; assertions chmod the temp file to 0755 and equal-compare the resolved
+;; path with the original.  On Windows native Emacs `set-file-modes' is
+;; effectively a no-op for the executable bit and `nelisp-ec-executable-find'
+;; returns a path with `.exe' / `.cmd' / `.bat' suffix probing applied,
+;; so the equal-comparison can never match.  Skip the two assertions
+;; that depend on POSIX exec-bit semantics; the missing-returns-nil
+;; counterpart stays enabled everywhere.
+
 (ert-deftest nelisp-ec-fileio-executable-find-success ()
+  (skip-unless (memq system-type '(gnu/linux darwin berkeley-unix)))
   (nelisp-ec-fileio-test--with-tmpdir tmp
     (let* ((bin (concat tmp "/myprog"))
            (process-environment (cons (concat "PATH=" tmp) process-environment)))
@@ -204,6 +214,7 @@
     (should-not (nelisp-ec-executable-find "definitely-not-installed-xyz"))))
 
 (ert-deftest nelisp-ec-fileio-executable-find-absolute-path ()
+  (skip-unless (memq system-type '(gnu/linux darwin berkeley-unix)))
   (nelisp-ec-fileio-test--with-tmpfile f
     (set-file-modes f #o755)
     (should (equal f (nelisp-ec-executable-find f)))))

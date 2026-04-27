@@ -23,6 +23,22 @@
 (require 'nelisp-cc-runtime)
 (require 'nelisp-cc-bootstrap)
 
+;; CI-smoke gating rationale:
+;; Stages 1-3 + the full pipeline drive `nelisp-cc-runtime-compile-and-allocate`
+;; which calls `nelisp-cc-runtime--platform-detect`, raising
+;; `nelisp-cc-runtime-todo' on platforms outside the Phase 7.5 tier-1 set
+;; (linux-x86_64 / linux-arm64 / macos-arm64).  CI runs include Windows
+;; (`windows-nt'), where the simulator backend is not yet wired (Phase 7.5
+;; landing).  Skip those tests on unsupported platforms; Stage 0 + the
+;; SHA-256 / compare-bytes helpers + the failback test exercise host-only
+;; code paths and stay enabled everywhere.
+
+(defun nelisp-cc-bootstrap-test--platform-supported-p ()
+  "Non-nil iff the current host is a Phase 7.5 tier-1 simulator target."
+  (condition-case nil
+      (progn (nelisp-cc-runtime--platform-detect) t)
+    (nelisp-cc-runtime-todo nil)))
+
 ;;; (1) stage0 — host bytecode hash --------------------------------
 
 (ert-deftest nelisp-cc-bootstrap-stage0-byte-compiles-and-hashes ()
@@ -51,6 +67,7 @@ across runs (same form ⇒ same hash)."
 (non-empty vector), :gc-metadata (Doc 28 §2.9 plist) and :backend.
 The runtime layer's full result is preserved under :result so
 downstream stages can introspect the simulator page."
+  (skip-unless (nelisp-cc-bootstrap-test--platform-supported-p))
   (let* ((form '(lambda (x) x))
          (r (nelisp-cc-bootstrap--stage1-native-compile form 'x86_64)))
     (should (plist-get r :result))
@@ -68,6 +85,7 @@ downstream stages can introspect the simulator page."
 
 (ert-deftest nelisp-cc-bootstrap-stage2-semantic-diff-equal-passes ()
   "Stage 2 on two identical stage1 results passes with `:diff' nil."
+  (skip-unless (nelisp-cc-bootstrap-test--platform-supported-p))
   (let* ((form '(lambda (x) x))
          (a (nelisp-cc-bootstrap--stage1-native-compile form 'x86_64))
          (b (nelisp-cc-bootstrap--stage1-native-compile form 'x86_64))
@@ -83,6 +101,7 @@ downstream stages can introspect the simulator page."
   "Stage 2 on two stage1 results with different `:final-bytes' fails
 and surfaces a `:diff' plist whose `:first-mismatch' is an integer
 position when the lengths are equal, or nil when one is a prefix."
+  (skip-unless (nelisp-cc-bootstrap-test--platform-supported-p))
   (let* ((a (nelisp-cc-bootstrap--stage1-native-compile
              '(lambda (x) x) 'x86_64))
          ;; Forge a synthetic stage1 result with a mutated byte
@@ -111,6 +130,7 @@ position when the lengths are equal, or nil when one is a prefix."
   "Stage 3 re-running the simulator on the same form produces an
 equal hash (the pipeline is deterministic in the scaffold) and
 returns `:status pass' with `:authoritative-hash' = the original."
+  (skip-unless (nelisp-cc-bootstrap-test--platform-supported-p))
   (let* ((form '(lambda (x) x))
          (s1 (nelisp-cc-bootstrap--stage1-native-compile form 'x86_64))
          (s3 (nelisp-cc-bootstrap--stage3-self-recompile s1 form 'x86_64)))
@@ -127,6 +147,7 @@ stage1 → stage2 → stage3 successfully and returns the briefing's
 status plist with `:status pass', `:stage done',
 `:authoritative-promoted t', `:fallback-active nil', and SHA-256
 hashes in :a2-hash / :a3-candidate-hash."
+  (skip-unless (nelisp-cc-bootstrap-test--platform-supported-p))
   (let* ((form '(lambda (x) x))
          (status (nelisp-cc-bootstrap-run form 'x86_64
                                           (list form))))

@@ -26,6 +26,17 @@
 (require 'nelisp-cc-pipeline)
 (require 'nelisp-cc-runtime)
 
+;; CI-smoke gating rationale: tests below that drive
+;; `nelisp-cc-runtime-compile-and-allocate' rely on a Phase 7.5 tier-1
+;; backend (linux-x86_64 / linux-arm64 / macos-arm64).  Windows raises
+;; `nelisp-cc-runtime-todo' and is skipped via
+;; `nelisp-cc-pipeline-test--platform-supported-p'.
+(defun nelisp-cc-pipeline-test--platform-supported-p ()
+  "Non-nil iff the host is a Phase 7.5 tier-1 simulator target."
+  (condition-case nil
+      (progn (nelisp-cc-runtime--platform-detect) t)
+    (nelisp-cc-runtime-todo nil)))
+
 (ert-deftest nelisp-cc-pipeline-disabled-is-noop ()
   "When `nelisp-cc-enable-7.7-passes' is nil the driver returns zero stats."
   (let* ((nelisp-cc-enable-7.7-passes nil)
@@ -66,6 +77,7 @@
 
 (ert-deftest nelisp-cc-pipeline-runtime-threads-stats ()
   "`nelisp-cc-runtime-compile-and-allocate' surfaces `:pipeline-stats'."
+  (skip-unless (nelisp-cc-pipeline-test--platform-supported-p))
   (let* ((nelisp-cc-runtime-exec-mode 'simulator)
          (result (nelisp-cc-runtime-compile-and-allocate
                   '(lambda (x) x) 'x86_64))
