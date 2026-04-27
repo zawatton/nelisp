@@ -99,7 +99,14 @@ fn eval_inner(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
         Sexp::Nil | Sexp::T | Sexp::Int(_) | Sexp::Float(_) | Sexp::Str(_) | Sexp::Vector(_) => {
             Ok(form.clone())
         }
-        // Symbols evaluate via the value cell.
+        // Symbols.  Per Elisp manual "Constant Variables" §11.2,
+        // a symbol whose name begins with `:' is a keyword: it is
+        // its own value and cannot be bound.  This rule predates
+        // any value-cell lookup.
+        Sexp::Symbol(name) if name.starts_with(':') && name.len() > 1 => {
+            Ok(form.clone())
+        }
+        // Plain symbols evaluate via the value cell.
         Sexp::Symbol(name) => env.lookup_value(name),
         // Cons → function application.
         Sexp::Cons(head, tail) => apply_combiner(head, tail, env),

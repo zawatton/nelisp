@@ -904,3 +904,43 @@ fn eval_str_all_handles_macro_extension_synthetic_snippet() {
         crate::reader::read_str("(ready \"state\" 42 ((x y)))").unwrap()
     );
 }
+
+// ============================================================
+// Keywords (Elisp manual §11.2 "Constant Variables")
+// ============================================================
+
+#[test]
+fn keyword_self_evaluates() {
+    // A bare keyword evaluates to itself, no binding required.
+    assert_eq!(ok(":foo"), Sexp::Symbol(":foo".into()));
+}
+
+#[test]
+fn keyword_self_evaluates_inside_list() {
+    // Plist construction must not raise void-variable for keywords.
+    let v = ok("(list :name :version 1)");
+    let expected = Sexp::list_from(&[
+        Sexp::Symbol(":name".into()),
+        Sexp::Symbol(":version".into()),
+        Sexp::Int(1),
+    ]);
+    assert_eq!(v, expected);
+}
+
+#[test]
+fn keyword_works_with_plist_get() {
+    // Round-trip a plist value through `plist-get'.
+    assert_eq!(
+        ok("(plist-get (list :a 1 :b 2) :b)"),
+        Sexp::Int(2)
+    );
+}
+
+#[test]
+fn bare_colon_symbol_is_not_a_keyword() {
+    // The single character `:' alone is a regular symbol, not a
+    // keyword — Emacs treats it that way for back-compat with old
+    // package quirks.  We follow the same rule (length > 1).
+    let e = err(":");
+    assert!(matches!(e, EvalError::UnboundVariable(_)));
+}
