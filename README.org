@@ -40,6 +40,55 @@ NeLisp v1.0 ships *two standalone deployment paths* as of today:
 
 Two paths.
 
+*** Prerequisites by platform
+
+The build itself (=cargo build --release=) is identical across
+platforms; only the toolchain prereqs vary.  After the build,
+=target/release/nelisp= launches identically.
+
+Tier guarantees (Soak gate, Doc 32 v2 §11):
+- =linux-x86_64= — 1st-class (CI blocker, every release must pass).
+- =macos-arm64= / =linux-arm64= — best-effort, v1.0 time-boxed.
+- =windows-native= — deferred to post-v2.0; use WSL2 or MSYS2 mingw64.
+
+Linux (Debian / Ubuntu):
+
+#+begin_src shell
+sudo apt install build-essential curl pkg-config git
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+. "$HOME/.cargo/env"
+#+end_src
+
+Linux (Fedora / RHEL):
+
+#+begin_src shell
+sudo dnf install gcc curl git
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+. "$HOME/.cargo/env"
+#+end_src
+
+macOS (arm64 or x86_64):
+
+#+begin_src shell
+xcode-select --install              # one-time
+brew install rustup-init && rustup-init
+. "$HOME/.cargo/env"
+#+end_src
+
+Windows — WSL2 (recommended):
+Install a Debian/Ubuntu distro under WSL2 and follow the Linux
+(Debian/Ubuntu) row inside WSL.  =target/release/nelisp= can be
+invoked from PowerShell via =wsl nelisp ...=.
+
+Windows — MSYS2 mingw64:
+
+#+begin_src shell
+# from the MSYS2 mingw64 shell
+pacman -S --needed mingw-w64-x86_64-toolchain mingw-w64-x86_64-rust git curl
+#+end_src
+
+Plain cmd.exe / PowerShell without MSYS2 or WSL is post-v2.0 scope.
+
 *** From source — recommended for hacking and using the Elisp API
 
 #+begin_src shell
