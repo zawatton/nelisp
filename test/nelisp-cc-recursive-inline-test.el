@@ -505,5 +505,39 @@ splice — the pass is a noop and the original call survives."
        (nelisp-cc--rec-inline-splice-self fn entry call fn vmap)
        :type 'nelisp-cc-rec-inline-error))))
 
+;;; (23) rec-inline-deep-unroll-no-orphan-jumps ---------------------
+
+(ert-deftest nelisp-cc-rec-inline-deep-unroll-no-orphan-jumps ()
+  "Phase 7.1 regression: depth>=2 unroll on a fib-like callee must not
+leave any cloned `jump' / `branch' terminator with an empty
+`successors' list.
+
+Pre-fix the driver passed the live (post-splice mutated) source
+blocks into `--clone-blocks' / `--link-cloned-edges'.  At depth>=1
+the original `else'-block had its successor redirected from `merge'
+to a previously-cloned entry, so when the next splice cloned the
+same source block the link pass dropped the edge (target wasn't in
+the new block-map) and the cloned block ended up with `jump'
+without a target — surfacing later as
+`:jump-with-no-successor' in the backend.
+
+The fix snapshots `(INSTRS . SUCCS)` of every pre-pass block in the
+driver and threads it through both helpers."
+  (dolist (depth '(1 2 3))
+    (let* ((fn (nelisp-cc-rec-inline-test--make-fib-like-fn))
+           (escape-info (nelisp-cc-escape-analyze fn))
+           (registry (nelisp-cc-rec-inline-test--registry-of fn))
+           (result (nelisp-cc-rec-inline-pass fn escape-info registry depth)))
+      (should (eq fn (car result)))
+      ;; Walk every block — any with a `jump' or `branch' terminator
+      ;; MUST have at least one successor.
+      (dolist (b (nelisp-cc--ssa-function-blocks fn))
+        (let* ((instrs (nelisp-cc--ssa-block-instrs b))
+               (term (car (last instrs))))
+          (when (and term
+                     (memq (nelisp-cc--ssa-instr-opcode term)
+                           '(jump branch)))
+            (should (nelisp-cc--ssa-block-successors b))))))))
+
 (provide 'nelisp-cc-recursive-inline-test)
 ;;; nelisp-cc-recursive-inline-test.el ends here
