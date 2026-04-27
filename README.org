@@ -36,12 +36,34 @@ NeLisp v1.0 ships *two standalone deployment paths* as of today:
    path without requiring Emacs to be installed at all.  See
    =docs/design/44-phase8.0-rust-elisp-interpreter.org= (LOCKED).
 
-** Quick start
+** Install
 
-Single-line invocation, no Emacs install required:
+Stage-d-v3.0 standalone tarball — no Emacs binary in the archive,
+no Emacs runtime dependency:
 
 #+begin_src shell
-bin/anvil mcp serve --no-emacs
+curl -fsSL https://github.com/zawatton/nelisp/releases/download/stage-d-v3.0/install-v3.sh | bash
+#+end_src
+
+After install, =anvil= is on =$PATH= (default
+=$HOME/.local/share/anvil-stage-d-v3.0/bin/=).  Run =anvil version=
+or =anvil doctor= to confirm.
+
+For local-iteration builds, manual extraction, the
+bundled-vs-runtime resolution order, and platform notes, see
+[[file:README-stage-d-v3.0.org][README-stage-d-v3.0.org]].
+
+Older release lines (kept for reference, not the recommended
+path for new installs):
+- =README-stage-d-v2.0.org= — bundled-Emacs tarball, ~25 MB
+- =README-stage-d.org= — legacy host-Emacs-required path
+
+** Quick start
+
+After =Install= above, single-line invocation:
+
+#+begin_src shell
+anvil mcp serve --no-emacs
 #+end_src
 
 The default =--no-emacs= mode falls back to =emacs --batch= when the
