@@ -1,0 +1,64 @@
+#+TITLE: nelisp-sqlite Package
+
+* Summary
+
+=nelisp-sqlite= provides the NeLisp SQLite substrate with an Emacs
+30-style =sqlite-*= surface backed by the Rust-built Emacs module and
+runtime shared library.  It is the extracted NeLisp package for the
+SQLite FFI bridge.
+
+* Layout
+
+#+begin_src text
+packages/nelisp-sqlite/
+├── README.org
+├── src/
+│   └── nelisp-sqlite.el
+└── test/
+    └── nelisp-sqlite-test.el
+#+end_src
+
+* Public API
+
+- =nelisp-sqlite-available-p=
+- =nelisp-sqlite-open=
+- =nelisp-sqlite-close=
+- =nelisp-sqlite-execute=
+- =nelisp-sqlite-select=
+- =nelisp-sqlitep=
+- =nelisp-sqlite-pragma=
+- =nelisp-sqlite-transaction=
+- =nelisp-sqlite-commit=
+- =nelisp-sqlite-rollback=
+
+* Dependencies
+
+- Runtime dependency: NeLisp core =nelisp= v1.0 load-path environment
+- Elisp dependency declared by the library: =cl-lib=
+- Internal NeLisp package dependency declared by the library:
+  =nelisp-json=
+- Built artifact dependencies:
+  =nelisp-runtime/target/release/libnelisp_runtime.so= and
+  =nelisp-runtime/target/release/nelisp-sqlite-module.so=
+
+* Dependents
+
+- Runtime dependents in =src/=: none found under current =src/=
+- Test dependents in =test/=: =nelisp-sqlite-test.el=
+- Existing callers continue using =(require 'nelisp-sqlite)=; the root
+  build load-path resolves the extracted package location.
+
+* Status
+
+- Extracted package following the Doc 45 split and the =nelisp-json=
+  pilot layout
+- Source and ERT contents moved without code changes
+- Feature name remains =nelisp-sqlite=
+
+* Extraction Notes
+
+- The library source moved from =src/nelisp-sqlite.el= to
+  =packages/nelisp-sqlite/src/nelisp-sqlite.el=.
+- The ERT suite moved from =test/nelisp-sqlite-test.el= to
+  =packages/nelisp-sqlite/test/nelisp-sqlite-test.el=.
+- No Lisp forms were edited as part of the extraction.

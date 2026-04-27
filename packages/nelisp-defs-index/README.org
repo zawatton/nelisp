@@ -1,0 +1,60 @@
+#+TITLE: nelisp-defs-index Package
+
+* Summary
+
+=nelisp-defs-index= provides a persistent SQLite-backed index of Elisp
+definitions, references, signatures, and feature edges.  It is the
+extracted NeLisp library package used to answer definition queries in a
+single indexed lookup instead of a grep walk.
+
+* Layout
+
+#+begin_src text
+packages/nelisp-defs-index/
+├── README.org
+├── src/
+│   └── nelisp-defs-index.el
+└── test/
+    └── nelisp-defs-index-test.el
+#+end_src
+
+* Public API
+
+- =nelisp-defs-index-enable=
+- =nelisp-defs-index-disable=
+- =nelisp-defs-index-rebuild=
+- =nelisp-defs-index-search=
+- =nelisp-defs-index-references=
+- =nelisp-defs-index-signature=
+- =nelisp-defs-index-who-requires=
+- =nelisp-defs-index-status=
+
+* Dependencies
+
+- Runtime dependency: NeLisp core =nelisp= v1.0 load-path environment
+- Elisp dependencies declared by the library: =cl-lib=, =subr-x=
+- Host capability dependency: built-in Emacs SQLite support
+- Internal NeLisp package dependencies declared by the library: none
+
+* Dependents
+
+- Runtime dependents in =src/=: =nelisp-tools=
+- Test dependents in =test/=: =nelisp-defs-index-test.el=,
+  =nelisp-indices-fix-test.el=
+- Existing callers continue using =(require 'nelisp-defs-index)=; the
+  root build load-path resolves the extracted package location.
+
+* Status
+
+- Extracted package following the Doc 45 split and the =nelisp-json=
+  pilot layout
+- Source and ERT contents moved without code changes
+- Feature name remains =nelisp-defs-index=
+
+* Extraction Notes
+
+- The library source moved from =src/nelisp-defs-index.el= to
+  =packages/nelisp-defs-index/src/nelisp-defs-index.el=.
+- The ERT suite moved from =test/nelisp-defs-index-test.el= to
+  =packages/nelisp-defs-index/test/nelisp-defs-index-test.el=.
+- No Lisp forms were edited as part of the extraction.

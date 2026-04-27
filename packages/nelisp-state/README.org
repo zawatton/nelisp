@@ -1,0 +1,60 @@
+#+TITLE: nelisp-state Package
+
+* Summary
+
+=nelisp-state= provides a persistent key-value store on top of Emacs'
+built-in SQLite support.  It is the extracted NeLisp library package
+for cacheable state, namespaces, TTL expiry, and DB lifecycle helpers.
+
+* Layout
+
+#+begin_src text
+packages/nelisp-state/
+├── README.org
+├── src/
+│   └── nelisp-state.el
+└── test/
+    └── nelisp-state-test.el
+#+end_src
+
+* Public API
+
+- =nelisp-state-set=
+- =nelisp-state-get=
+- =nelisp-state-delete=
+- =nelisp-state-delete-ns=
+- =nelisp-state-list-ns=
+- =nelisp-state-list-keys=
+- =nelisp-state-count=
+- =nelisp-state-vacuum=
+- =nelisp-state-enable=
+- =nelisp-state-disable=
+
+* Dependencies
+
+- Runtime dependency: NeLisp core =nelisp= v1.0 load-path environment
+- Elisp dependency declared by the library: =subr-x=
+- Host capability dependency: built-in Emacs SQLite support
+- Internal NeLisp package dependencies declared by the library: none
+
+* Dependents
+
+- Runtime dependents in =src/=: =nelisp-http=, =nelisp-tools=
+- Test dependents in =test/=: =nelisp-state-test.el=
+- Existing callers continue using =(require 'nelisp-state)=; the root
+  build load-path resolves the extracted package location.
+
+* Status
+
+- Extracted package following the Doc 45 split and the =nelisp-json=
+  pilot layout
+- Source and ERT contents moved without code changes
+- Feature name remains =nelisp-state=
+
+* Extraction Notes
+
+- The library source moved from =src/nelisp-state.el= to
+  =packages/nelisp-state/src/nelisp-state.el=.
+- The ERT suite moved from =test/nelisp-state-test.el= to
+  =packages/nelisp-state/test/nelisp-state-test.el=.
+- No Lisp forms were edited as part of the extraction.
