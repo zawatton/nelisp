@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+
+jobs:
+  smoke:
+    # Phase 1 Week 1-2 smoke: byte-compile nelisp.el and run the ERT
+    # smoke suite on 3 OSes x 2 Emacs versions.  Expands as reader /
+    # evaluator modules land in Week 3+.
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        emacs-version: ['29.4', '30.1']
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Emacs (Linux / macOS)
+        if: runner.os != 'Windows'
+        uses: purcell/setup-emacs@v8.0
+        with:
+          version: ${{ matrix.emacs-version }}
+
+      - name: Set up Emacs (Windows)
+        if: runner.os == 'Windows'
+        uses: jcs090218/setup-emacs-windows@master
+        with:
+          version: ${{ matrix.emacs-version }}
+
+      - name: Byte-compile
+        shell: bash
+        run: make compile
+
+      - name: Run smoke tests
+        shell: bash
+        run: make test
