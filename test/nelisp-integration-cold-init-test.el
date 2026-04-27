@@ -396,5 +396,131 @@ non-pass iteration and reports the partial counter."
     (should (eq (plist-get r :status) 'fail))
     (should (plist-get r :first-failure))))
 
+;;;; (B1) stage-1 real handler — happy path -------------------------
+;;
+;; The stage-1 body wires Phase 7.0 syscall-stub init.  When the
+;; nelisp-runtime cdylib is built (= `make runtime' produced
+;; target/release/nelisp-runtime + nelisp-runtime-module.so), the
+;; handler must:
+;;   - return :status pass
+;;   - report :stage 1
+;;   - record the artifacts it discovered (binary / module / cdylib /
+;;     staticlib paths)
+;;   - record :exec-mode (:module or :subprocess) so callers can tell
+;;     which path was taken
+;;   - report :smoke-exit-code 0
+;;   - set :module-loaded based on which path was used
+
+(ert-deftest nelisp-integration-cold-init-stage1-handler-happy-path ()
+  "Stage-1 real handler returns :status pass when Phase 7.0 syscall
+surface is reachable.  The cdylib must be built (= `make runtime');
+this test skips on hosts where the binary is absent so CI without the
+Rust artifact does not flake."
+  (nelisp-integration-cold-init-test--skip-unless-bin)
+  (let* ((r (nelisp-integration-cold-init-stage1-handler nil))
+         (artifacts (plist-get r :artifacts)))
+    (should (eq (plist-get r :status) 'pass))
+    (should (eq (plist-get r :stage) 1))
+    (should (eq (plist-get r :smoke-exit-code) 0))
+    ;; Either the in-process module path or the subprocess path may
+    ;; have been taken — both report a green stage-1.  We only assert
+    ;; the two are mutually exclusive + consistent.
+    (should (memq (plist-get r :exec-mode) '(:module :subprocess)))
+    (cond
+     ((eq (plist-get r :exec-mode) :module)
+      (should (eq (plist-get r :module-loaded) t)))
+     ((eq (plist-get r :exec-mode) :subprocess)
+      (should (eq (plist-get r :module-loaded) nil))))
+    ;; Artifacts plist must include at least the binary (= the path
+    ;; the verifier already validated via the skip-unless gate).
+    (should (stringp (plist-get artifacts :binary)))
+    (should (file-executable-p (plist-get artifacts :binary)))))
+
+;;;; (B2) stage-1 real handler — fail path ---------------------------
+;;
+;; When the cdylib is missing (= the binary locator returns nil and
+;; the module path also fails), the handler must report :status fail
+;; with a non-empty :error string and a fully-populated artifacts
+;; plist (each value = nil) so callers can present an actionable
+;; "missing-artifact-X" diagnostic.
+;;
+;; We can't simply unload the Emacs module (Emacs has no
+;; `module-unload') so this test stubs both probe helpers via
+;; `cl-letf' to deterministically return the missing-everything
+;; shape.  This proves the *handler's failure-shape contract* without
+;; depending on subprocess / module load order across tests in the
+;; same session.
+
+(ert-deftest nelisp-integration-cold-init-stage1-handler-fail-path ()
+  "Stage-1 real handler returns :status fail when no runtime path is
+reachable.  We force the failure deterministically by stubbing the
+two probe helpers + the artifact locator so the handler sees
+\"module unavailable + binary not executable\" — exactly the shape it
+would see on a fresh checkout that never ran `make runtime'."
+  (cl-letf
+      (((symbol-function
+         'nelisp-integration--cold-init-stage1-probe-artifacts)
+        (lambda ()
+          (list :binary nil :module nil :staticlib nil :cdylib nil)))
+       ((symbol-function
+         'nelisp-integration--cold-init-stage1-via-module)
+        (lambda ()
+          (list :no-module "stubbed: module path forced unavailable")))
+       ((symbol-function
+         'nelisp-integration--cold-init-stage1-via-subprocess)
+        (lambda (_binary)
+          (list :error "stubbed: subprocess path forced unreachable"))))
+    (let* ((r (nelisp-integration-cold-init-stage1-handler nil))
+           (artifacts (plist-get r :artifacts)))
+      (should (eq (plist-get r :status) 'fail))
+      (should (eq (plist-get r :stage) 1))
+      (should (stringp (plist-get r :error)))
+      (should (> (length (plist-get r :error)) 0))
+      ;; All artifact slots must be nil under the stubbed probe so the
+      ;; failure diagnostic is structural rather than spurious.
+      (should (eq (plist-get artifacts :binary) nil))
+      (should (eq (plist-get artifacts :module) nil))
+      (should (eq (plist-get artifacts :staticlib) nil))
+      (should (eq (plist-get artifacts :cdylib) nil))
+      ;; module-result + subprocess-result are captured for triage.
+      (should (listp (plist-get r :module-result)))
+      (should (listp (plist-get r :subprocess-result))))))
+
+;;;; (B3) stage-1 real handler — dispatcher integration --------------
+;;
+;; The convenience builder
+;; `nelisp-integration-cold-init-handlers-with-stage1-real' must
+;; substitute the real handler for the stage1 stub while leaving
+;; stages 2/3/4 as their default stubs.  Running the dispatcher with
+;; this handlers-alist on a host with the runtime built must therefore
+;; pass stage 1 (pass count = 1) and surface the documented stub
+;; keywords for stages 2/3/4.
+
+(ert-deftest nelisp-integration-cold-init-dispatch-stage1-real-stub-rest ()
+  "Dispatcher with stage-1 real + stages 2/3/4 stubs reports
+`:status fail :stages-completed 1 :error <stage2-stub-keyword>'."
+  (nelisp-integration-cold-init-test--skip-unless-bin)
+  (let* ((handlers (nelisp-integration-cold-init-handlers-with-stage1-real))
+         (r (nelisp-integration-cold-init-dispatch :handlers handlers))
+         (stages (plist-get r :stages)))
+    (should (eq (plist-get r :scaffold) t))
+    (should (eq (plist-get r :status) 'fail))
+    (should (= (plist-get r :stages-completed) 1))
+    (should (= (length stages) 4))
+    ;; First stage = stage1 = pass (the real handler).
+    (let ((s1 (cl-find-if (lambda (s) (eq (plist-get s :stage) 'stage1))
+                          stages)))
+      (should s1)
+      (should (eq (plist-get s1 :status) 'pass))
+      (let ((res (plist-get s1 :result)))
+        (should (listp res))
+        (should (eq (plist-get res :stage) 1))
+        (should (eq (plist-get res :smoke-exit-code) 0))))
+    ;; First non-pass surfaced into :error must be the stage-2 stub
+    ;; keyword (the dispatcher does NOT stop on stub returns by default).
+    (should (eq (plist-get r :error)
+                (cdr (assq 'stage2
+                           nelisp-integration-cold-init-stage-pending-keyword))))))
+
 (provide 'nelisp-integration-cold-init-test)
 ;;; nelisp-integration-cold-init-test.el ends here
