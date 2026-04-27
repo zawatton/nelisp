@@ -539,5 +539,158 @@ driver and threads it through both helpers."
                            '(jump branch)))
             (should (nelisp-cc--ssa-block-successors b))))))))
 
+;;; (24) rec-inline-fib-depth-1-phi-arms-value-coherent ------------
+
+(defun nelisp-cc-rec-inline-test--phi-arms-coherent-p (fn)
+  "Return non-nil when every `:phi-arms' pred-bid in FN's blocks is in
+that block's actual predecessor id list.
+
+Pure structural value-correctness predicate.  Phase 7.1 follow-up to
+the E1 CFG-link fix: a phi-arm that names a pred-bid which is *not* a
+predecessor of the merge block causes
+`nelisp-cc--phi-resolve-pass' to insert the value-bind `:copy' into
+the wrong predecessor (or fail to insert it at all), which is the
+proximate cause of `fib(n) returns garbage' at depth>=1 even when the
+CFG itself is well-formed (every jump/branch has a successor)."
+  (catch 'incoherent
+    (dolist (b (nelisp-cc--ssa-function-blocks fn))
+      (let ((pred-ids (mapcar #'nelisp-cc--ssa-block-id
+                              (nelisp-cc--ssa-block-predecessors b))))
+        (dolist (instr (nelisp-cc--ssa-block-instrs b))
+          (when (eq (nelisp-cc--ssa-instr-opcode instr) 'phi)
+            (let ((arms (plist-get (nelisp-cc--ssa-instr-meta instr)
+                                   :phi-arms)))
+              (dolist (cell arms)
+                (unless (memq (car cell) pred-ids)
+                  (throw 'incoherent
+                         (list :block-id (nelisp-cc--ssa-block-id b)
+                               :stale-pred-bid (car cell)
+                               :actual-preds pred-ids
+                               :arms arms)))))))))
+    t))
+
+(ert-deftest nelisp-cc-rec-inline-fib-3-depth-1-value ()
+  "Phase 7.1 value-correctness: depth=1 fib unroll keeps every phi-arm's
+pred-bid coherent with the block's actual predecessor list.
+
+Pre-fix the splice rewired bb (call site) → cloned-entry → ... →
+post-blk → bb-merge but left bb-merge's `:phi-arms ((BB-CALL . V))'
+pointing at BB-CALL (= no longer a direct predecessor).  The phi-
+resolve pass then inserted the value-bind `:copy' into BB-CALL — a
+block that now jumps unconditionally into the cloned entry, never
+reaching the merge — so the merge's resolved value carried whatever
+random uninitialised bytes the backend left in the destination
+register (= the `fib(5) → garbage int64' symptom in the rec-inline
+post-mortem).
+
+This ERT pins the fix structurally: after the pass, no phi-arm
+references a stale predecessor."
+  (dolist (depth '(1 2))
+    (let* ((fn (nelisp-cc-rec-inline-test--make-fib-like-fn))
+           (escape-info (nelisp-cc-escape-analyze fn))
+           (registry (nelisp-cc-rec-inline-test--registry-of fn))
+           (_ (nelisp-cc-rec-inline-pass fn escape-info registry depth))
+           (verdict (nelisp-cc-rec-inline-test--phi-arms-coherent-p fn)))
+      (should (eq t verdict)))))
+
+;;; (25) rec-inline-fib-5-depth-2-value -----------------------------
+
+(ert-deftest nelisp-cc-rec-inline-fib-5-depth-2-value ()
+  "Phase 7.1 value-correctness: depth=2 fib unroll keeps every cloned
+merge block's phi-arm pred-bid in sync with the cloned merge's
+predecessors.
+
+The proximate bug at depth>=2 was that the cloner copied each
+original-block's phi META verbatim — but a prior splice's
+`--rewrite-succ-phi-arms' had already mutated the original merge's
+`:phi-arms' to reference a post-blk id (= a block not in the next
+splice's BLOCK-MAP).  The cloned phi then carried the post-blk id
+through, which is *not* a predecessor of the cloned merge → same
+phi-resolve mis-bind → garbage `fib(N) → 1' at depth=2.  Fix is the
+ORIGINAL-INSTR-META snapshot threaded through to the cloner."
+  (let* ((fn (nelisp-cc-rec-inline-test--make-fib-like-fn))
+         (escape-info (nelisp-cc-escape-analyze fn))
+         (registry (nelisp-cc-rec-inline-test--registry-of fn))
+         (_ (nelisp-cc-rec-inline-pass fn escape-info registry 2)))
+    (should (eq t (nelisp-cc-rec-inline-test--phi-arms-coherent-p fn)))
+    ;; And the cloned merge block(s) (= label "fib/merge/inl") each
+    ;; have phi arms whose pred-bids are in the clone's predecessors.
+    ;; This redundant assertion sharpens the failure message when the
+    ;; helper above merely returns nil.
+    (dolist (b (nelisp-cc--ssa-function-blocks fn))
+      (let ((label (nelisp-cc--ssa-block-label b)))
+        (when (and label (string-match-p "merge/inl" label))
+          (let ((pred-ids (mapcar #'nelisp-cc--ssa-block-id
+                                  (nelisp-cc--ssa-block-predecessors b))))
+            (dolist (instr (nelisp-cc--ssa-block-instrs b))
+              (when (eq (nelisp-cc--ssa-instr-opcode instr) 'phi)
+                (let ((arms (plist-get
+                             (nelisp-cc--ssa-instr-meta instr)
+                             :phi-arms)))
+                  (dolist (cell arms)
+                    (should (memq (car cell) pred-ids))))))))))))
+
+;;; (26) rec-inline-fact-iter-depth-1-value -------------------------
+
+(defun nelisp-cc-rec-inline-test--make-fact-iter-fn ()
+  "Build a tail-recursive fact-iter-like SSA function (1 self-call).
+
+Body shape (in pseudo-code):
+  (lambda (n acc) (if (< n 1) acc (self (- n 1) (* acc n))))
+
+The function exercises a *single* self-call (= the tail recursion
+case) with two args, so the splice's arity-mismatch path doesn't
+fire and the post-blk's phi-arm rewrite has only one merge to
+patch."
+  (let* ((fn (nelisp-cc--ssa-make-function 'fact-iter '(int int)))
+         (entry (nelisp-cc--ssa-function-entry fn))
+         (then-blk (nelisp-cc--ssa-make-block fn "fact/then"))
+         (else-blk (nelisp-cc--ssa-make-block fn "fact/else"))
+         (merge-blk (nelisp-cc--ssa-make-block fn "fact/merge"))
+         (n (car (nelisp-cc--ssa-function-params fn)))
+         (acc (cadr (nelisp-cc--ssa-function-params fn)))
+         (cond-val (nelisp-cc--ssa-make-value fn 'bool))
+         (cond-instr
+          (nelisp-cc--ssa-add-instr fn entry 'call (list n) cond-val)))
+    (setf (nelisp-cc--ssa-instr-meta cond-instr)
+          (list :fn '< :unresolved t))
+    (let ((br (nelisp-cc--ssa-add-instr fn entry 'branch
+                                        (list cond-val) nil)))
+      (setf (nelisp-cc--ssa-instr-meta br)
+            (list :then (nelisp-cc--ssa-block-id then-blk)
+                  :else (nelisp-cc--ssa-block-id else-blk))))
+    (nelisp-cc--ssa-link-blocks entry then-blk)
+    (nelisp-cc--ssa-link-blocks entry else-blk)
+    ;; THEN — return acc.
+    (nelisp-cc--ssa-add-instr fn then-blk 'jump nil nil)
+    (nelisp-cc--ssa-link-blocks then-blk merge-blk)
+    ;; ELSE — single self-call (tail position, but we still sink
+    ;; through merge for the test).
+    (let* ((rv (nelisp-cc--ssa-make-value fn 'int))
+           (c (nelisp-cc--ssa-add-instr fn else-blk 'call (list n acc) rv)))
+      (setf (nelisp-cc--ssa-instr-meta c)
+            (list :fn 'fact-iter :unresolved t)))
+    (nelisp-cc--ssa-add-instr fn else-blk 'jump nil nil)
+    (nelisp-cc--ssa-link-blocks else-blk merge-blk)
+    (let ((phi-def (nelisp-cc--emit-phi fn merge-blk
+                                        (list then-blk else-blk)
+                                        (list acc acc)
+                                        'int)))
+      (nelisp-cc--ssa-add-instr fn merge-blk 'return (list phi-def) nil))
+    fn))
+
+(ert-deftest nelisp-cc-rec-inline-fact-iter-depth-1-value ()
+  "Phase 7.1 value-correctness sanity: single-self-call fact-iter
+unroll at depth=1 leaves every phi-arm pred-bid coherent.
+
+This sanity ERT covers the simpler 1-call-per-iteration case so a
+regression that breaks only the 2-call (fib) shape doesn't hide
+under fact-iter's noise."
+  (let* ((fn (nelisp-cc-rec-inline-test--make-fact-iter-fn))
+         (escape-info (nelisp-cc-escape-analyze fn))
+         (registry (nelisp-cc-rec-inline-test--registry-of fn))
+         (_ (nelisp-cc-rec-inline-pass fn escape-info registry 1)))
+    (should (eq t (nelisp-cc-rec-inline-test--phi-arms-coherent-p fn)))))
+
 (provide 'nelisp-cc-recursive-inline-test)
 ;;; nelisp-cc-recursive-inline-test.el ends here
