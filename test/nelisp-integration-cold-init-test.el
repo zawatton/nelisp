@@ -522,5 +522,276 @@ would see on a fresh checkout that never ran `make runtime'."
                 (cdr (assq 'stage2
                            nelisp-integration-cold-init-stage-pending-keyword))))))
 
+;;;; (B4) stage-2 real handler — happy path -------------------------
+;;
+;; Stage 2 = Phase 7.2 allocator init.  The handler initialises a
+;; fresh nursery via `nelisp-allocator-init-nursery', verifies the
+;; heap-region registry version (Doc 29 §1.4) across every region,
+;; then restores the prior nursery binding.  Because the allocator is
+;; pure Elisp, this test runs on every host where the module loads.
+
+(ert-deftest nelisp-integration-cold-init-stage2-handler-happy-path ()
+  "Stage-2 real handler returns :status pass when the allocator
+initialises a fresh nursery + every region passes the version check.
+Pure Elisp dependency — runs on every host."
+  (unless (featurep 'nelisp-allocator)
+    (require 'nelisp-allocator))
+  (let ((prior (and (boundp 'nelisp-allocator--current-nursery)
+                    nelisp-allocator--current-nursery))
+        r)
+    (unwind-protect
+        (progn
+          (setq r (nelisp-integration-cold-init-stage2-handler nil))
+          (should (eq (plist-get r :status) 'pass))
+          (should (eq (plist-get r :stage) 2))
+          (should (integerp (plist-get r :nursery-size)))
+          (should (> (plist-get r :nursery-size) 0))
+          (should (eq (plist-get r :region-version)
+                      nelisp-heap-region-version))
+          (should (>= (plist-get r :region-count) 1))
+          (let ((regions (plist-get r :regions)))
+            (should (listp regions))
+            (should (>= (length regions) 1))
+            ;; Every region carries the keyword-namespace family per
+            ;; Doc 29 §1.4 + the gc-inner snapshot translation.
+            (let ((reg0 (car regions)))
+              (should (plist-get reg0 :region-id))
+              (should (plist-get reg0 :start))
+              (should (plist-get reg0 :end))
+              (should (memq (plist-get reg0 :generation)
+                            '(:nursery :tenured)))
+              (should (keywordp (plist-get reg0 :family))))))
+      ;; Restore prior nursery so the rest of the test session sees a
+      ;; deterministic state.
+      (when (boundp 'nelisp-allocator--current-nursery)
+        (setq nelisp-allocator--current-nursery prior)))))
+
+;;;; (B5) stage-2 real handler — fail path ---------------------------
+;;
+;; Force `nelisp-allocator-init-nursery' to raise, the handler must
+;; capture the error and return :status fail with a non-empty :error
+;; field — never propagate the signal up to the dispatcher.
+
+(ert-deftest nelisp-integration-cold-init-stage2-handler-fail-path ()
+  "Stage-2 handler captures allocator init failures into :status fail
+without propagating the signal."
+  (unless (featurep 'nelisp-allocator)
+    (require 'nelisp-allocator))
+  (let ((prior (and (boundp 'nelisp-allocator--current-nursery)
+                    nelisp-allocator--current-nursery)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'nelisp-allocator-init-nursery)
+                   (lambda (&rest _)
+                     (error "stubbed: stage-2 forced init failure"))))
+          (let ((r (nelisp-integration-cold-init-stage2-handler nil)))
+            (should (eq (plist-get r :status) 'fail))
+            (should (eq (plist-get r :stage) 2))
+            (should (stringp (plist-get r :error)))
+            (should (string-match-p "stubbed" (plist-get r :error)))))
+      (when (boundp 'nelisp-allocator--current-nursery)
+        (setq nelisp-allocator--current-nursery prior)))))
+
+;;;; (B6) stage-3 real handler — happy path -------------------------
+;;
+;; Stage 3 = Phase 7.4 coding init.  Pure Elisp; runs on every host
+;; where `nelisp-coding' + `nelisp-coding-jis-tables' load.
+
+(ert-deftest nelisp-integration-cold-init-stage3-handler-happy-path ()
+  "Stage-3 real handler returns :status pass when the JIS tables match
+the golden hash + UTF-8 round-trip succeeds on a CJK + emoji seed."
+  (unless (featurep 'nelisp-coding)
+    (require 'nelisp-coding))
+  (unless (featurep 'nelisp-coding-jis-tables)
+    (require 'nelisp-coding-jis-tables))
+  (let ((r (nelisp-integration-cold-init-stage3-handler nil)))
+    (should (eq (plist-get r :status) 'pass))
+    (should (eq (plist-get r :stage) 3))
+    (should (stringp (plist-get r :jis-tables-hash)))
+    (should (= (length (plist-get r :jis-tables-hash)) 64))
+    (should (string= (plist-get r :jis-tables-hash)
+                     nelisp-coding-jis-tables-sha256))
+    (should (integerp (plist-get r :utf8-roundtrip-bytes-len)))
+    (should (> (plist-get r :utf8-roundtrip-bytes-len) 0))
+    (should (string= (plist-get r :utf8-roundtrip-restored)
+                     nelisp-integration--cold-init-stage3-utf8-roundtrip-seed))))
+
+;;;; (B7) stage-3 real handler — fail path (golden hash mismatch) ----
+
+(ert-deftest nelisp-integration-cold-init-stage3-handler-fail-path ()
+  "Stage-3 handler returns :status fail when the JIS golden hash
+verifier raises (= simulated table corruption)."
+  (unless (featurep 'nelisp-coding)
+    (require 'nelisp-coding))
+  (unless (featurep 'nelisp-coding-jis-tables)
+    (require 'nelisp-coding-jis-tables))
+  (cl-letf (((symbol-function 'nelisp-coding-jis-tables-verify-hash)
+             (lambda (&rest _)
+               (signal 'nelisp-coding-table-corruption
+                       (list :expected "AAA" :actual "BBB")))))
+    (let ((r (nelisp-integration-cold-init-stage3-handler nil)))
+      (should (eq (plist-get r :status) 'fail))
+      (should (eq (plist-get r :stage) 3))
+      (should (stringp (plist-get r :error))))))
+
+;;;; (B8) stage-4 real handler — happy path -------------------------
+;;
+;; Stage 4 = Phase 7.1 native compile bootstrap.  Requires the T13
+;; binary; skips otherwise.
+
+(ert-deftest nelisp-integration-cold-init-stage4-handler-happy-path ()
+  "Stage-4 real handler returns :status pass when nelisp-cc-bootstrap-run
+emits an A3-candidate hash from the seed lambda."
+  (nelisp-integration-cold-init-test--skip-unless-bin)
+  (let ((r (nelisp-integration-cold-init-stage4-handler nil)))
+    (should (eq (plist-get r :status) 'pass))
+    (should (eq (plist-get r :stage) 4))
+    (should (stringp (plist-get r :a3-candidate-hash)))
+    (should (= (length (plist-get r :a3-candidate-hash)) 64))
+    (should (stringp (plist-get r :a2-hash)))
+    (should (= (length (plist-get r :a2-hash)) 64))
+    (should (numberp (plist-get r :elapsed-seconds)))
+    (should (>= (plist-get r :elapsed-seconds) 0.0))))
+
+;;;; (B9) stage-4 real handler — fail path ---------------------------
+;;
+;; Force `nelisp-cc-bootstrap-run' to return a plist without an
+;; :a3-candidate-hash; the handler must report :status fail (the
+;; bootstrap fell back to A2 / produced no native bytes).
+
+(ert-deftest nelisp-integration-cold-init-stage4-handler-fail-path ()
+  "Stage-4 handler returns :status fail when the bootstrap produces
+no A3 candidate hash (= no native bytes emitted)."
+  (nelisp-integration-cold-init-test--skip-unless-bin)
+  (cl-letf (((symbol-function 'nelisp-cc-bootstrap-run)
+             (lambda (&rest _)
+               (list :status 'fail :stage 'stage1
+                     :a2-hash (make-string 64 ?a)
+                     :a3-candidate-hash nil))))
+    (let ((r (nelisp-integration-cold-init-stage4-handler nil)))
+      (should (eq (plist-get r :status) 'fail))
+      (should (eq (plist-get r :stage) 4))
+      (should (stringp (plist-get r :error)))
+      (should (string-match-p "no bytes" (plist-get r :error))))))
+
+;;;; (B10) stage-4 real handler — bootstrap signal raised ------------
+
+(ert-deftest nelisp-integration-cold-init-stage4-handler-error-path ()
+  "Stage-4 handler captures bootstrap errors into :status fail without
+propagating the signal."
+  (nelisp-integration-cold-init-test--skip-unless-bin)
+  (cl-letf (((symbol-function 'nelisp-cc-bootstrap-run)
+             (lambda (&rest _) (error "stubbed: bootstrap blew up"))))
+    (let ((r (nelisp-integration-cold-init-stage4-handler nil)))
+      (should (eq (plist-get r :status) 'fail))
+      (should (eq (plist-get r :stage) 4))
+      (should (string-match-p "stubbed" (plist-get r :error))))))
+
+;;;; (B11) all-real handlers convenience builder ---------------------
+
+(ert-deftest nelisp-integration-cold-init-handlers-with-real-stages-shape ()
+  "The convenience builder must return a 4-entry alist with each
+stage mapped to its real handler symbol."
+  (let ((handlers (nelisp-integration-cold-init-handlers-with-real-stages)))
+    (should (= (length handlers) 4))
+    (should (eq (cdr (assq 'stage1 handlers))
+                #'nelisp-integration-cold-init-stage1-handler))
+    (should (eq (cdr (assq 'stage2 handlers))
+                #'nelisp-integration-cold-init-stage2-handler))
+    (should (eq (cdr (assq 'stage3 handlers))
+                #'nelisp-integration-cold-init-stage3-handler))
+    (should (eq (cdr (assq 'stage4 handlers))
+                #'nelisp-integration-cold-init-stage4-handler))))
+
+;;;; --- Phase 7.5.3 soak harness real-measurement ERT ---------------
+;;
+;; Tests S1-S8 above exercised the soak harness *contract* (iteration
+;; counter, status aggregation, stop-on-fail, scaffold sentinel).  The
+;; tests below pin the new GC + RSS measurement plumbing.
+
+;;;; (M1) soak harness emits :gc-stats with min/max/mean -------------
+
+(ert-deftest nelisp-integration-soak-harness-gc-stats-shape ()
+  "Soak harness must emit :gc-stats with the documented aggregate
+shape (= min/max/mean/samples) when iterations > 0."
+  (let* ((r (nelisp-integration-soak-harness
+             :iterations 4
+             :handler (lambda (_i) (list :status 'pass))))
+         (gc (plist-get r :gc-stats)))
+    (should (= (plist-get r :iterations) 4))
+    (should (= (plist-get r :passed) 4))
+    (should (eq (plist-get r :status) 'pass))
+    (should gc)
+    (should (numberp (plist-get gc :min)))
+    (should (numberp (plist-get gc :max)))
+    (should (numberp (plist-get gc :mean)))
+    (should (= (plist-get gc :samples) 4))
+    (should (<= (plist-get gc :min) (plist-get gc :max)))
+    (should (<= (plist-get gc :min) (plist-get gc :mean)))
+    (should (<= (plist-get gc :mean) (plist-get gc :max)))))
+
+;;;; (M2) soak harness emits :gc-elapsed-stats -----------------------
+
+(ert-deftest nelisp-integration-soak-harness-gc-elapsed-stats-shape ()
+  "Soak harness must emit :gc-elapsed-stats with the documented
+aggregate shape — `gc-elapsed' is a builtin float counter so deltas
+are non-negative."
+  (let* ((r (nelisp-integration-soak-harness
+             :iterations 3
+             :handler (lambda (_i) (list :status 'pass))))
+         (ge (plist-get r :gc-elapsed-stats)))
+    (should ge)
+    (should (numberp (plist-get ge :min)))
+    (should (>= (plist-get ge :min) 0.0))
+    (should (>= (plist-get ge :max) (plist-get ge :min)))
+    (should (= (plist-get ge :samples) 3))))
+
+;;;; (M3) soak harness :rss-stats either populated or nil ------------
+
+(ert-deftest nelisp-integration-soak-harness-rss-stats-shape ()
+  "Soak harness :rss-stats must be either nil (= host exposes no RSS)
+or a populated aggregate with :min/:max/:mean.  We do not assert RSS
+is nonzero because the test runs on every platform; we only assert
+the aggregate is well-formed when present."
+  (let* ((r (nelisp-integration-soak-harness
+             :iterations 3
+             :handler (lambda (_i) (list :status 'pass))))
+         (rss (plist-get r :rss-stats)))
+    (when rss
+      (should (numberp (plist-get rss :min)))
+      (should (numberp (plist-get rss :max)))
+      (should (numberp (plist-get rss :mean)))
+      (should (>= (plist-get rss :min) 0))
+      (should (>= (plist-get rss :max) (plist-get rss :min)))
+      (should (>= (plist-get rss :samples) 1))
+      (should (<= (plist-get rss :samples) 3)))))
+
+;;;; (M4) soak harness real-measurement smoke ------------------------
+;;
+;; 4-iteration smoke that runs the *default* handler (= scaffold
+;; dispatcher) and verifies the full plist shape — this is the
+;; minimal real-measurement smoke specified in the Phase 7.5.3 brief.
+
+(ert-deftest nelisp-integration-soak-harness-real-measurement-smoke ()
+  "Soak harness 4-iteration smoke (= Phase 7.5.3 brief minimum)
+returns the documented plist with both `gc-stats' + `rss-stats'
+shape — `:status' is fail because the default handler is the all-stub
+dispatcher, but the metric collection still runs."
+  (let* ((r (nelisp-integration-soak-harness :iterations 4))
+         (gc (plist-get r :gc-stats))
+         (ge (plist-get r :gc-elapsed-stats)))
+    (should (= (plist-get r :iterations) 4))
+    ;; Default handler returns fail (all stubs); metric collection
+    ;; runs regardless.
+    (should (eq (plist-get r :status) 'fail))
+    (should (= (plist-get r :failed) 4))
+    ;; GC stats always present (gcs-done / gc-elapsed are core builtins).
+    (should gc)
+    (should ge)
+    (should (= (plist-get gc :samples) 4))
+    (should (= (plist-get ge :samples) 4))
+    ;; Scaffold sentinel preserved for backwards-compat with the
+    ;; Phase 7.5.2 caller contract.
+    (should (eq (plist-get r :scaffold) t))))
+
 (provide 'nelisp-integration-cold-init-test)
 ;;; nelisp-integration-cold-init-test.el ends here
