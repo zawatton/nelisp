@@ -1,0 +1,56 @@
+#+TITLE: nelisp-eventloop Package
+
+* Summary
+
+=nelisp-eventloop= provides the reusable NeLisp event dispatcher layer:
+event structs, key/timer/quit dispatch, synchronous queue helpers, and
+actor-integrated main-loop helpers.
+
+* Layout
+
+#+begin_src text
+packages/nelisp-eventloop/
+├── README.org
+├── src/
+│   └── nelisp-eventloop.el
+└── test/
+    └── nelisp-eventloop-test.el
+#+end_src
+
+* Public API
+
+- =nelisp-make-event=
+- =nelisp-eventloop-bind=
+- =nelisp-eventloop-unbind=
+- =nelisp-eventloop-lookup=
+- =nelisp-eventloop-reset-bindings=
+- =nelisp-eventloop-enqueue=
+- =nelisp-eventloop-step=
+- =nelisp-eventloop-run-scripted=
+- =nelisp-eventloop-spawn-main-actor=
+- =nelisp-eventloop-schedule-timer=
+
+* Dependencies
+
+- Runtime dependency: NeLisp core =nelisp= v1.0 load-path environment
+- Elisp dependencies declared by the library: =cl-lib=, =nelisp-actor=
+
+* Dependents
+
+- Source dependents: =packages/nelisp-eventloop-multiplex/src/nelisp-eventloop-multiplex.el=
+- Test dependents: =test/nelisp-editor-test.el=,
+  =test/nelisp-file-notify-test.el=,
+  =packages/nelisp-process/test/nelisp-process-test.el=,
+  =packages/nelisp-eventloop-multiplex/test/nelisp-eventloop-multiplex-test.el=,
+  package-local =test/nelisp-eventloop-test.el=
+
+* Status
+
+- Doc 45 draft extraction candidate following the shipped
+  =packages/nelisp-json/= pilot pattern
+- Source moved from =src/nelisp-eventloop.el= to
+  =packages/nelisp-eventloop/src/nelisp-eventloop.el= without code changes
+- ERT suite moved from =test/nelisp-eventloop-test.el= to
+  =packages/nelisp-eventloop/test/nelisp-eventloop-test.el=
+- Existing callers continue to use =(require 'nelisp-eventloop)=; root
+  load-path wiring resolves the package directory

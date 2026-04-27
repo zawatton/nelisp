@@ -1,0 +1,58 @@
+#+TITLE: nelisp-process Package
+
+* Summary
+
+=nelisp-process= provides the NeLisp subprocess substrate.  It keeps
+the pre-existing process wrapper layer and the Emacs-compatible process
+API surface used by higher-level worker and pool code.
+
+* Layout
+
+#+begin_src text
+packages/nelisp-process/
+├── README.org
+├── src/
+│   └── nelisp-process.el
+└── test/
+    └── nelisp-process-test.el
+#+end_src
+
+* Public API
+
+- =nelisp-make-process=
+- =nelisp-start-process=
+- =nelisp-process-send-string=
+- =nelisp-accept-process-output=
+- =nelisp-call-process=
+- =nelisp-call-process-region=
+- =nelisp-delete-process=
+- =nelisp-kill-process=
+- =nelisp-process-list=
+- =nelisp-set-process-filter=
+- =nelisp-set-process-sentinel=
+
+* Dependencies
+
+- Runtime dependency: NeLisp core =nelisp= v1.0 load-path environment
+- Elisp dependencies declared by the library: =cl-lib=, =nelisp-eval=,
+  =nelisp-actor=
+- Soft runtime integrations via autoload: =nelisp-eventloop=,
+  =nelisp-eventloop-multiplex=
+
+* Dependents
+
+- Source dependents: =src/nelisp-worker.el=, =src/nelisp-process-pool.el=
+- Test dependents: =test/nelisp-process-pool-test.el=,
+  =test/nelisp-worker-soak-test.el=, package-local
+  =test/nelisp-process-test.el=
+
+* Status
+
+- Doc 45 draft extraction candidate following the shipped
+  =packages/nelisp-json/= pilot pattern
+- Source moved from =src/nelisp-process.el= to
+  =packages/nelisp-process/src/nelisp-process.el= without code changes
+- ERT suite moved from =test/nelisp-process-test.el= to
+  =packages/nelisp-process/test/nelisp-process-test.el=
+- Existing callers continue to use =(require 'nelisp-process)=; root
+  load-path wiring resolves the package directory

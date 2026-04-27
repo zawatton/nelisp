@@ -1,0 +1,44 @@
+#+TITLE: nelisp-tramp Package
+
+* Summary
+
+=nelisp-tramp= provides the explicit-stack trampoline evaluator for
+NeLisp.  It preserves the observable semantics of =nelisp-eval= while
+avoiding host stack growth during deep NeLisp execution.
+
+* Layout
+
+#+begin_src text
+packages/nelisp-tramp/
+├── README.org
+├── src/
+│   └── nelisp-tramp.el
+└── test/
+    └── nelisp-tramp-test.el
+#+end_src
+
+* Public API
+
+- =nelisp-tramp-eval=
+
+* Dependencies
+
+- Runtime dependency: NeLisp core =nelisp= v1.0 load-path environment
+- Elisp dependencies declared by the library: =nelisp-eval=
+- Soft macro dependencies declared via =declare-function=: =nelisp-macro=
+
+* Dependents
+
+- Source dependents: none under =src/=
+- Test dependents: package-local =test/nelisp-tramp-test.el=
+
+* Status
+
+- Doc 45 draft extraction candidate following the shipped
+  =packages/nelisp-json/= pilot pattern
+- Source moved from =src/nelisp-tramp.el= to
+  =packages/nelisp-tramp/src/nelisp-tramp.el= without code changes
+- ERT suite moved from =test/nelisp-tramp-test.el= to
+  =packages/nelisp-tramp/test/nelisp-tramp-test.el=
+- Existing callers continue to use =(require 'nelisp-tramp)=; root
+  load-path wiring resolves the package directory

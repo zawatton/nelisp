@@ -1,0 +1,54 @@
+#+TITLE: nelisp-network Package
+
+* Summary
+
+=nelisp-network= provides the NeLisp network and HTTP substrate:
+network process wrappers, actor/event posting, and small HTTP GET/HEAD
+helpers with cache support.
+
+* Layout
+
+#+begin_src text
+packages/nelisp-network/
+├── README.org
+├── src/
+│   └── nelisp-network.el
+└── test/
+    └── nelisp-network-test.el
+#+end_src
+
+* Public API
+
+- =nelisp-open-network=
+- =nelisp-network-send-string=
+- =nelisp-network-close=
+- =nelisp-network-live-p=
+- =nelisp-network-list=
+- =nelisp-network-get=
+- =nelisp-network-put=
+- =nelisp-http-cache-clear=
+- =nelisp-http-cache-size=
+- =nelisp-http-get=
+- =nelisp-http-head=
+
+* Dependencies
+
+- Runtime dependency: NeLisp core =nelisp= v1.0 load-path environment
+- Elisp dependencies declared by the library: =cl-lib=, =nelisp-eval=,
+  =nelisp-actor=, host Emacs =url=
+
+* Dependents
+
+- Source dependents: =src/nelisp-tools.el=
+- Test dependents: package-local =test/nelisp-network-test.el=
+
+* Status
+
+- Doc 45 draft extraction candidate following the shipped
+  =packages/nelisp-json/= pilot pattern
+- Source moved from =src/nelisp-network.el= to
+  =packages/nelisp-network/src/nelisp-network.el= without code changes
+- ERT suite moved from =test/nelisp-network-test.el= to
+  =packages/nelisp-network/test/nelisp-network-test.el=
+- Existing callers continue to use =(require 'nelisp-network)=; root
+  load-path wiring resolves the package directory
