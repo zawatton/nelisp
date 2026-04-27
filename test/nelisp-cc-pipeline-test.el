@@ -160,6 +160,23 @@ regression surfaces in CI."
     ;; Lambda-lift hoists the outer closure out of the letrec slot.
     (should (>= (nelisp-cc-pipeline-stats-lifted stats) 1))))
 
+;; Phase 7.1 30x-gate default flip (2026-04-27) — verify the two
+;; pipeline-controlling defcustoms keep their newly-shipped defaults
+;; (= flip from nil/2 to t/2 after G1 + T162 made the pipeline ON
+;; path runtime-safe and value-correct).  These tests fail if a
+;; future change accidentally reverts the flip.
+(ert-deftest nelisp-cc-pipeline-defcustom-defaults-flip-2026-04-27 ()
+  "Pipeline ON gate (`nelisp-cc-enable-7.7-passes') defaults to t."
+  (should
+   (eq (eval (car (get 'nelisp-cc-enable-7.7-passes 'standard-value))) t)))
+
+(ert-deftest nelisp-cc-pipeline-rec-inline-depth-default-is-2 ()
+  "Pipeline-effective rec-inline depth default is 2 (sweep maximum)."
+  (should
+   (= (eval (car (get 'nelisp-cc-pipeline-rec-inline-depth-limit
+                      'standard-value)))
+      2)))
+
 (provide 'nelisp-cc-pipeline-test)
 
 ;;; nelisp-cc-pipeline-test.el ends here

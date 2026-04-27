@@ -81,22 +81,29 @@
 
 ;;; Feature flag ---------------------------------------------------
 
-(defcustom nelisp-cc-enable-7.7-passes nil
+(defcustom nelisp-cc-enable-7.7-passes t
   "Enable Phase 7.7 inliner passes in the codegen pipeline.
 When non-nil, `nelisp-cc-runtime-compile-and-allocate' runs the four
 Phase 7.7 passes (escape + simple inline + recursive inline +
 lambda lift) between `nelisp-cc-build-ssa-from-ast' and the linear-
 scan register allocator.
 
-T161 default flip: the SSA-level passes are correct (full ERT
+Phase 7.1 30x-gate default flip (2026-04-27): G1 (commit 7914ff2 +
+T162 backend gap fix) made the pipeline ON path runtime-safe (=
+SIGSEGV-free) and value-correct at depth>=1 (= 832040 for fib(30)).
+Default flipped to t so that the bench harness measures the inlined
+path by default, even though fib timing still falls short of the 30x
+gate (= structural simple-inline / lambda-lift gaps remain).
+Disable by setting nil only for diagnostic A/B baseline runs.
+
+History (T161): the SSA-level passes are correct (full ERT
 coverage) but the lambda-lift pass synthesises `:call :fn
-<CALLER>$lift$N' targets that the current backend's
-`nelisp-cc--link-unresolved-calls' cannot resolve (the synthetic
-name is not in the trampoline table → fixup left at 0 → segfault on
-exec).  Keep this flag nil until the Phase 7.7.5+ backend learns to
-emit + resolve synthetic callee bodies in the same translation unit.
-Tests that need the SSA-level outcome bind the variable locally —
-see `test/nelisp-cc-pipeline-test.el' and
+<CALLER>$lift$N' targets that the backend's
+`nelisp-cc--link-unresolved-calls' could not resolve.  T162 added
+synthetic-callee resolution + `lifted-inners' slot in
+`nelisp-cc--ssa-function' so the trampoline table now binds them.
+Tests that need to override the new default bind the variable
+locally — see `test/nelisp-cc-pipeline-test.el' and
 `test/nelisp-cc-rewrite-test.el'."
   :type 'boolean
   :group 'nelisp-cc)
@@ -106,10 +113,19 @@ see `test/nelisp-cc-pipeline-test.el' and
 Bound around `nelisp-cc-rec-inline-pass' invocations from the pipeline
 driver to avoid the exponential block growth (= snapshot bug — each
 self-call splice clones the *grown* function, not the pre-pass body).
-Default 2 keeps fib-30 unroll at 7 inlined sites / ~700 blocks
-(~10 ms compile latency).  Raise this once
-`nelisp-cc--rec-inline-clone-blocks' learns to snapshot the original
-callee body; for now the depth-limit is the conservative gate."
+
+Phase 7.1 30x-gate sweep (2026-04-27, host x86_64-linux): on a
+fib(30) bench measurement matrix:
+  depth=0 → fib ~11.4x   depth=4 → fib ~10.8x
+  depth=1 → fib ~13.5x   depth=5 → fib ~13.2x
+  depth=2 → fib ~14.5x   depth=6 → fib ~11.7x  (best at depth=2)
+  depth=3 → fib ~14.0x
+
+Default 2 = the local maximum without the depth>=4 I-cache regression
+that dominates once unrolled fib body exceeds ~1.5k SSA insns.
+Raise this when `nelisp-cc--rec-inline-clone-blocks' learns to
+snapshot the original callee body AND the lambda-lift backend gap
+closes; for now depth=2 is the empirically-optimal gate."
   :type 'integer
   :group 'nelisp-cc)
 
