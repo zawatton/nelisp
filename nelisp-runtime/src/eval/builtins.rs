@@ -49,6 +49,7 @@ pub fn install_builtins(env: &mut Env) {
         // symbol / function
         "symbol-value", "symbol-function", "fboundp", "boundp", "funcall", "apply", "eval",
         "signal", "error", "identity", "print", "princ", "prin1-to-string", "message",
+        "provide", "require", "featurep",
     ];
     for n in names {
         let sentinel = Sexp::list_from(&[
@@ -140,6 +141,9 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "print" | "princ" => bi_princ(args),
         "prin1-to-string" => bi_prin1_to_string(args),
         "message" => bi_princ(args),
+        "provide" => bi_provide(args, env),
+        "require" => bi_require(args, env),
+        "featurep" => bi_featurep(args, env),
         _ => Err(EvalError::UnboundFunction(name.to_string())),
     }
 }
@@ -1069,6 +1073,16 @@ fn bi_symbol_function(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     }
 }
 
+fn feature_name_arg(name: &str, arg: &Sexp) -> Result<String, EvalError> {
+    match arg {
+        Sexp::Symbol(s) => Ok(s.clone()),
+        other => Err(EvalError::WrongType {
+            expected: format!("symbolp ({} feature)", name),
+            got: other.clone(),
+        }),
+    }
+}
+
 fn bi_fboundp(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("fboundp", args, 1, Some(1))?;
     match &args[0] {
@@ -1170,6 +1184,28 @@ fn bi_princ(args: &[Sexp]) -> Result<Sexp, EvalError> {
 fn bi_prin1_to_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("prin1-to-string", args, 1, Some(1))?;
     Ok(Sexp::Str(format!("{}", args[0])))
+}
+
+fn bi_provide(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("provide", args, 1, Some(1))?;
+    let feature = feature_name_arg("provide", &args[0])?;
+    env.provide_feature(&feature);
+    Ok(Sexp::Symbol(feature))
+}
+
+fn bi_require(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("require", args, 1, Some(1))?;
+    let feature = feature_name_arg("require", &args[0])?;
+    if !env.has_feature(&feature) {
+        env.provide_feature(&feature);
+    }
+    Ok(Sexp::Symbol(feature))
+}
+
+fn bi_featurep(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("featurep", args, 1, Some(1))?;
+    let feature = feature_name_arg("featurep", &args[0])?;
+    Ok(truthy(env.has_feature(&feature)))
 }
 
 #[allow(dead_code)]

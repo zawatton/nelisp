@@ -24,6 +24,10 @@ fn err(input: &str) -> EvalError {
     eval_str(input).expect_err(&format!("eval_str({:?}) unexpectedly succeeded", input))
 }
 
+fn err_all(input: &str) -> EvalError {
+    eval_str_all(input).expect_err(&format!("eval_str_all({:?}) unexpectedly succeeded", input))
+}
+
 // ============================================================
 // Acceptance demo (Doc 44 §3.3 + prompt acceptance)
 // ============================================================
@@ -212,6 +216,120 @@ fn defconst_marks_constant_signals_on_setq() {
     let _ = r;
     let r2 = eval_str_all("(defconst k 10) (setq k 11)").unwrap_err();
     assert!(matches!(r2, EvalError::SettingConstant(name) if name == "k"));
+}
+
+// ============================================================
+// Built-ins — provide / require / featurep
+// ============================================================
+
+#[test]
+fn provide_marks_feature_present() {
+    assert_eq!(ok_all("(provide 'foo) (featurep 'foo)"), Sexp::T);
+}
+
+#[test]
+fn require_returns_feature_and_is_idempotent() {
+    assert_eq!(ok_all("(require 'foo) (require 'foo)"), Sexp::Symbol("foo".into()));
+    assert_eq!(ok_all("(require 'foo) (featurep 'foo)"), Sexp::T);
+}
+
+#[test]
+fn featurep_wrong_type_errors() {
+    assert!(matches!(err("(featurep 1)"), EvalError::WrongType { .. }));
+}
+
+// ============================================================
+// Special forms — defcustom / defgroup / cl-defun
+// ============================================================
+
+#[test]
+fn defcustom_binds_like_defvar() {
+    assert_eq!(
+        ok_all("(defcustom my-custom 42 \"doc\") my-custom"),
+        Sexp::Int(42)
+    );
+}
+
+#[test]
+fn defcustom_missing_args_errors() {
+    assert!(matches!(
+        err("(defcustom my-custom 42)"),
+        EvalError::WrongNumberOfArguments { .. }
+    ));
+}
+
+#[test]
+fn defgroup_registers_symbol_without_binding_value() {
+    assert_eq!(ok("(defgroup my-group nil \"doc\")"), Sexp::Symbol("my-group".into()));
+    assert_eq!(ok_all("(defgroup my-group nil \"doc\") (boundp 'my-group)"), Sexp::Nil);
+}
+
+#[test]
+fn defgroup_name_must_be_symbol() {
+    assert!(matches!(err("(defgroup 1 nil \"doc\")"), EvalError::WrongType { .. }));
+}
+
+#[test]
+fn cl_defun_supports_optional_arguments() {
+    assert_eq!(
+        ok_all("(cl-defun greet (name &optional greeting) (or greeting \"hi\")) (greet \"Ada\")"),
+        Sexp::Str("hi".into())
+    );
+    assert_eq!(
+        ok_all("(cl-defun greet (name &optional greeting) (or greeting \"hi\")) (greet \"Ada\" \"hey\")"),
+        Sexp::Str("hey".into())
+    );
+}
+
+#[test]
+fn cl_defun_supports_rest_arguments() {
+    assert_eq!(
+        ok_all("(cl-defun gather (head &optional mid &rest tail) (list head mid tail)) (gather 1 2 3 4)"),
+        crate::reader::read_str("(1 2 (3 4))").unwrap()
+    );
+    assert_eq!(
+        ok_all("(cl-defun gather (head &optional mid &rest tail) (list head mid tail)) (gather 1)"),
+        crate::reader::read_str("(1 nil nil)").unwrap()
+    );
+}
+
+#[test]
+fn cl_defun_wrong_type_name_errors() {
+    assert!(matches!(err("(cl-defun 1 () 42)"), EvalError::WrongType { .. }));
+}
+
+// ============================================================
+// Special forms — pcase
+// ============================================================
+
+#[test]
+fn pcase_matches_literal_and_wildcard() {
+    assert_eq!(ok("(pcase 5 (5 'five) (_ 'other))"), Sexp::Symbol("five".into()));
+    assert_eq!(ok("(pcase 7 (5 'five) (_ 'other))"), Sexp::Symbol("other".into()));
+}
+
+#[test]
+fn pcase_binds_symbol_pattern() {
+    assert_eq!(ok("(pcase 42 (value (+ value 1)))"), Sexp::Int(43));
+}
+
+#[test]
+fn pcase_matches_quoted_symbol_and_returns_nil_on_no_match() {
+    assert_eq!(
+        ok("(pcase 'foo ('bar 'nope) ('foo 'yes) (_ 'never))"),
+        Sexp::Symbol("yes".into())
+    );
+    assert_eq!(ok("(pcase 9 (5 'five) (6 'six))"), Sexp::Nil);
+}
+
+#[test]
+fn pcase_malformed_clause_errors() {
+    assert!(matches!(err("(pcase 1 (1))"), EvalError::WrongType { .. }));
+}
+
+#[test]
+fn pcase_unsupported_pattern_errors() {
+    assert!(matches!(err("(pcase '(1 2) ((1 2) 'pair))"), EvalError::WrongType { .. }));
 }
 
 // ============================================================
@@ -635,6 +753,12 @@ fn wrong_arg_count_lambda() {
 }
 
 #[test]
+fn malformed_rest_lambda_list_errors() {
+    let r = err_all("(cl-defun bad (&rest) nil) (bad)");
+    assert!(matches!(r, EvalError::WrongType { .. }));
+}
+
+#[test]
 fn wrong_type_car_on_int() {
     match err("(car 5)") {
         EvalError::WrongType { .. } => (),
@@ -760,4 +884,23 @@ fn file_truename_canonicalizes_existing_path() {
     let path = path.canonicalize().unwrap();
     let form = format!("(file-truename \"{}\")", path.display());
     assert_eq!(ok(&form), Sexp::Str(path.to_string_lossy().into_owned()));
+}
+
+#[test]
+fn eval_str_all_handles_macro_extension_synthetic_snippet() {
+    let input = "
+        (require 'anvil-state)
+        (defgroup anvil nil \"doc\")
+        (defcustom anvil-answer 42 \"doc\")
+        (cl-defun describe-answer (name &optional prefix &rest extras)
+          (pcase prefix
+            (nil (list name anvil-answer extras))
+            (_ (list prefix name anvil-answer extras))))
+        (provide 'anvil)
+        (describe-answer \"state\" 'ready '(x y))
+    ";
+    assert_eq!(
+        ok_all(input),
+        crate::reader::read_str("(ready \"state\" 42 ((x y)))").unwrap()
+    );
 }

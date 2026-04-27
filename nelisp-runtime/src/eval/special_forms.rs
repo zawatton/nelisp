@@ -35,9 +35,12 @@ pub fn apply_special(
         "let*" => sf_let_star(args, env)?,
         "lambda" => sf_lambda(args, env)?,
         "defun" => sf_defun(args, env)?,
+        "cl-defun" => sf_cl_defun(args, env)?,
         "defmacro" => sf_defmacro(args, env)?,
         "defvar" => sf_defvar(args, env)?,
         "defconst" => sf_defconst(args, env)?,
+        "defcustom" => sf_defcustom(args, env)?,
+        "defgroup" => sf_defgroup(args, env)?,
         "setq" => sf_setq(args, env)?,
         "while" => sf_while(args, env)?,
         "dolist" => sf_dolist(args, env)?,
@@ -49,6 +52,7 @@ pub fn apply_special(
         "prog2" => sf_prog2(args, env)?,
         "and" => sf_and(args, env)?,
         "or" => sf_or(args, env)?,
+        "pcase" => sf_pcase(args, env)?,
         "save-excursion" => sf_progn(args, env)?, // no-op stub per Doc 44 §3.3
         "save-restriction" => sf_progn(args, env)?, // no-op stub
         "catch" => sf_catch(args, env)?,
@@ -303,6 +307,23 @@ fn eval_body(body: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     Ok(last)
 }
 
+fn expect_symbol(form: &Sexp) -> Result<String, EvalError> {
+    match form {
+        Sexp::Symbol(s) => Ok(s.clone()),
+        other => Err(EvalError::WrongType {
+            expected: "symbol".into(),
+            got: other.clone(),
+        }),
+    }
+}
+
+fn quote_body(parts: &[Sexp]) -> &[Sexp] {
+    match parts.first() {
+        Some(Sexp::Str(_)) => &parts[1..],
+        _ => parts,
+    }
+}
+
 // ---------- lambda ----------
 
 fn sf_lambda(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
@@ -325,33 +346,37 @@ fn sf_lambda(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
 
 // ---------- defun / defmacro / defvar / defconst ----------
 
-fn sf_defun(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    // (defun NAME ARGS [DOC] BODY...)
-    let parts = args_vec(args)?;
+fn define_named_lambda(
+    function_name: &str,
+    parts: &[Sexp],
+    env: &mut Env,
+) -> Result<Sexp, EvalError> {
     if parts.len() < 2 {
         return Err(EvalError::WrongNumberOfArguments {
-            function: "defun".into(),
+            function: function_name.into(),
             expected: "≥2".into(),
             got: parts.len(),
         });
     }
-    let name = match &parts[0] {
-        Sexp::Symbol(s) => s.clone(),
-        other => {
-            return Err(EvalError::WrongType {
-                expected: "symbol".into(),
-                got: other.clone(),
-            })
-        }
-    };
+    let name = expect_symbol(&parts[0])?;
     let formals = parts[1].clone();
-    // Strip optional doc string (a string immediately after formals).
-    let body: Vec<Sexp> = parts.iter().skip(2).cloned().collect();
+    let body = quote_body(&parts[2..]);
     let mut chain = vec![Sexp::Symbol("lambda".into()), formals];
-    chain.extend(body);
+    chain.extend(body.iter().cloned());
     let lambda = Sexp::list_from(&chain);
     env.set_function(&name, lambda);
     Ok(Sexp::Symbol(name))
+}
+
+fn sf_defun(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
+    // (defun NAME ARGS [DOC] BODY...)
+    let parts = args_vec(args)?;
+    define_named_lambda("defun", &parts, env)
+}
+
+fn sf_cl_defun(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
+    let parts = args_vec(args)?;
+    define_named_lambda("cl-defun", &parts, env)
 }
 
 fn sf_defmacro(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
@@ -364,19 +389,11 @@ fn sf_defmacro(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
             got: parts.len(),
         });
     }
-    let name = match &parts[0] {
-        Sexp::Symbol(s) => s.clone(),
-        other => {
-            return Err(EvalError::WrongType {
-                expected: "symbol".into(),
-                got: other.clone(),
-            })
-        }
-    };
+    let name = expect_symbol(&parts[0])?;
     let formals = parts[1].clone();
-    let body: Vec<Sexp> = parts.iter().skip(2).cloned().collect();
+    let body = quote_body(&parts[2..]);
     let mut lambda_chain = vec![Sexp::Symbol("lambda".into()), formals];
-    lambda_chain.extend(body);
+    lambda_chain.extend(body.iter().cloned());
     let lambda = Sexp::list_from(&lambda_chain);
     let macro_form = Sexp::list_from(&[Sexp::Symbol("macro".into()), lambda]);
     env.set_function(&name, macro_form);
@@ -392,15 +409,7 @@ fn sf_defvar(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
             got: 0,
         });
     }
-    let name = match &parts[0] {
-        Sexp::Symbol(s) => s.clone(),
-        other => {
-            return Err(EvalError::WrongType {
-                expected: "symbol".into(),
-                got: other.clone(),
-            })
-        }
-    };
+    let name = expect_symbol(&parts[0])?;
     let value = if parts.len() >= 2 {
         eval(&parts[1], env)?
     } else {
@@ -419,20 +428,41 @@ fn sf_defconst(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
             got: parts.len(),
         });
     }
-    let name = match &parts[0] {
-        Sexp::Symbol(s) => s.clone(),
-        other => {
-            return Err(EvalError::WrongType {
-                expected: "symbol".into(),
-                got: other.clone(),
-            })
-        }
-    };
+    let name = expect_symbol(&parts[0])?;
     let value = eval(&parts[1], env)?;
     // defconst always overwrites and marks constant.
     let entry = env.globals.entry(name.clone()).or_default();
     entry.value = Some(value);
     entry.constant = true;
+    Ok(Sexp::Symbol(name))
+}
+
+fn sf_defcustom(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
+    let parts = args_vec(args)?;
+    if parts.len() < 3 {
+        return Err(EvalError::WrongNumberOfArguments {
+            function: "defcustom".into(),
+            expected: "≥3".into(),
+            got: parts.len(),
+        });
+    }
+    let name = expect_symbol(&parts[0])?;
+    let value = eval(&parts[1], env)?;
+    env.defvar(&name, value, false);
+    Ok(Sexp::Symbol(name))
+}
+
+fn sf_defgroup(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
+    let parts = args_vec(args)?;
+    if parts.len() < 3 {
+        return Err(EvalError::WrongNumberOfArguments {
+            function: "defgroup".into(),
+            expected: "≥3".into(),
+            got: parts.len(),
+        });
+    }
+    let name = expect_symbol(&parts[0])?;
+    env.globals.entry(name.clone()).or_default();
     Ok(Sexp::Symbol(name))
 }
 
@@ -764,6 +794,64 @@ fn sf_or(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
         }
     }
     Ok(Sexp::Nil)
+}
+
+// ---------- pcase ----------
+
+fn sf_pcase(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
+    let parts = args_vec(args)?;
+    if parts.is_empty() {
+        return Err(EvalError::WrongNumberOfArguments {
+            function: "pcase".into(),
+            expected: "≥1".into(),
+            got: 0,
+        });
+    }
+    let value = eval(&parts[0], env)?;
+    for clause in parts.iter().skip(1) {
+        let clause_parts = list_elements(clause)?;
+        if clause_parts.len() < 2 {
+            return Err(EvalError::WrongType {
+                expected: "(PAT BODY...)".into(),
+                got: clause.clone(),
+            });
+        }
+        if let Some(binding) = pcase_match_binding(&clause_parts[0], &value)? {
+            if let Some(name) = binding {
+                env.push_frame();
+                env.bind_local(&name, value.clone());
+                let result = eval_body(&clause_parts[1..], env);
+                env.pop_frame();
+                return result;
+            }
+            return eval_body(&clause_parts[1..], env);
+        }
+    }
+    Ok(Sexp::Nil)
+}
+
+fn pcase_match_binding(pattern: &Sexp, value: &Sexp) -> Result<Option<Option<String>>, EvalError> {
+    match pattern {
+        Sexp::Int(_) | Sexp::Float(_) | Sexp::Str(_) => Ok((pattern == value).then_some(None)),
+        Sexp::Nil => Ok(matches!(value, Sexp::Nil).then_some(None)),
+        Sexp::T => Ok(matches!(value, Sexp::T).then_some(None)),
+        Sexp::Symbol(name) if name == "_" => Ok(Some(None)),
+        Sexp::Symbol(name) => Ok(Some(Some(name.clone()))),
+        Sexp::Cons(head, _) if matches!(head.as_ref(), Sexp::Symbol(s) if s == "quote") => {
+            let quoted = args_vec(pattern)?;
+            if quoted.len() != 2 {
+                return Err(EvalError::WrongType {
+                    expected: "(quote VALUE)".into(),
+                    got: pattern.clone(),
+                });
+            }
+            Ok((quoted[1] == *value).then_some(None))
+        }
+        other => Err(EvalError::WrongType {
+            expected: "supported pcase pattern".into(),
+            got: other.clone(),
+        }),
+    }
 }
 
 // ---------- catch / throw ----------

@@ -335,6 +335,7 @@ pub(crate) fn bind_formals(
     let mut idx = 0usize;
     let mut required_count = 0usize;
     let mut consumed_rest = false;
+    let mut saw_rest = false;
 
     // First pass: count required arity for diagnostics.
     for n in &names {
@@ -349,10 +350,23 @@ pub(crate) fn bind_formals(
     for n in names {
         match n {
             Sexp::Symbol(s) if s == "&optional" => {
+                if matches!(mode, Mode::Rest) {
+                    return Err(EvalError::WrongType {
+                        expected: "formal parameter after &rest".into(),
+                        got: Sexp::Symbol(s),
+                    });
+                }
                 mode = Mode::Optional;
             }
             Sexp::Symbol(s) if s == "&rest" => {
+                if saw_rest {
+                    return Err(EvalError::WrongType {
+                        expected: "single &rest marker".into(),
+                        got: Sexp::Symbol(s),
+                    });
+                }
                 mode = Mode::Rest;
+                saw_rest = true;
             }
             Sexp::Symbol(name) => match mode {
                 Mode::Required => {
@@ -367,16 +381,26 @@ pub(crate) fn bind_formals(
                     idx += 1;
                 }
                 Mode::Optional => {
-                    let v = args.get(idx).cloned().unwrap_or(Sexp::Nil);
+                    let v = if idx < args.len() {
+                        let value = args[idx].clone();
+                        idx += 1;
+                        value
+                    } else {
+                        Sexp::Nil
+                    };
                     env.bind_local(&name, v);
-                    idx += 1;
                 }
                 Mode::Rest => {
+                    if consumed_rest {
+                        return Err(EvalError::WrongType {
+                            expected: "single symbol after &rest".into(),
+                            got: Sexp::Symbol(name),
+                        });
+                    }
                     let rest = Sexp::list_from(&args[idx..]);
                     env.bind_local(&name, rest);
                     idx = args.len();
                     consumed_rest = true;
-                    break;
                 }
             },
             other => {
@@ -393,6 +417,12 @@ pub(crate) fn bind_formals(
             function: "lambda".into(),
             expected: format!("at most {}", idx),
             got: args.len(),
+        });
+    }
+    if saw_rest && !consumed_rest {
+        return Err(EvalError::WrongType {
+            expected: "symbol after &rest".into(),
+            got: Sexp::Symbol("&rest".into()),
         });
     }
     Ok(())
