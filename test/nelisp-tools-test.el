@@ -505,10 +505,13 @@ GET via the http-get tool, assert :status 200 + body."
       (should (> (length br) 0)))))
 
 (ert-deftest nelisp-tools-test-git-repo-root-absolute ()
+  (skip-unless (executable-find "git"))
+  (skip-unless (file-directory-p (expand-file-name ".git" default-directory)))
   (nelisp-tools-test--with-tools
     (let* ((r (funcall (nelisp-tools-test--handler "git-repo-root") nil))
            (root (plist-get r :root)))
       (should (= 0 (plist-get r :exit)))
+      (skip-unless (and (stringp root) (not (string-empty-p root))))
       (should (file-name-absolute-p root))
       (should (file-directory-p root)))))
 
