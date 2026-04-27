@@ -323,7 +323,7 @@ substituted via the param-arg map populated by the caller."
   (mapcar (lambda (v) (or (gethash v value-map) v)) operands))
 
 (defun nelisp-cc--rec-inline-clone-blocks
-    (caller callee value-map block-map &optional original-snapshot)
+    (caller callee value-map block-map &optional original-snapshot original-state)
   "Allocate fresh blocks in CALLER cloned from CALLEE's blocks.
 
 VALUE-MAP is populated with mappings for every callee def value as
@@ -348,16 +348,39 @@ iteration sees the *grown* caller (= original blocks + previously-cloned
 blocks), and the clone walker re-clones the previous clones →
 exponential growth (block count: 2 → 22 → 766 → ∞ at depths 1/2/3 in the
 original report).  When ORIGINAL-SNAPSHOT is nil, falls back to the live
-blocks list (= original behaviour, OK when CALLEE != CALLER)."
+blocks list (= original behaviour, OK when CALLEE != CALLER).
+
+ORIGINAL-STATE (Phase 7.1 rec-inline CFG fix), when non-nil, is a
+hash-table mapping each pre-pass source block to a cons
+`(INSTRS-SNAPSHOT . SUCCS-SNAPSHOT)' captured by the driver before
+any splice.  This is required at depth>=1 for the self-recursion
+path: prior splices mutate the original blocks' INSTRS list (e.g.
+the `else' block of a fib-like callee gets its self-call sites
+removed and its terminator replaced with `jump' to a previously-
+cloned entry).  Without this snapshot the cloner reads the *post-
+mutation* instrs and the link pass reads the *post-mutation*
+successors, leaving cloned blocks with `jump'/`branch' terminators
+whose successor edges point to blocks that aren't in BLOCK-MAP →
+silently dropped → backend `:jump-with-no-successor' encoding
+error."
   (let ((src-blocks
          (or (and original-snapshot (copy-sequence original-snapshot))
              (copy-sequence (nelisp-cc--ssa-function-blocks callee))))
         (src-instr-snapshots (make-hash-table :test 'eq)))
     ;; Pass 0: snapshot every source block's instr list because the
     ;; clone might mutate CALLER's blocks (callee = caller path).
+    ;; Prefer the driver-supplied ORIGINAL-STATE snapshot (pristine
+    ;; pre-pass instrs) over the live block instrs, because by the
+    ;; time depth>=1 splices run the live instrs may already have
+    ;; been mutated by prior splices in this pass.
     (dolist (b src-blocks)
-      (puthash b (copy-sequence (nelisp-cc--ssa-block-instrs b))
-               src-instr-snapshots))
+      (let ((snap-cell (and original-state (gethash b original-state))))
+        (puthash b
+                 (copy-sequence
+                  (if snap-cell
+                      (car snap-cell)
+                    (nelisp-cc--ssa-block-instrs b)))
+                 src-instr-snapshots)))
     (dolist (b src-blocks)
       (let ((label (nelisp-cc--ssa-block-label b)))
         (puthash b
@@ -483,18 +506,33 @@ through unchanged."
            out)))
       (nreverse out))))
 
-(defun nelisp-cc--rec-inline-link-cloned-edges (_callee block-map)
+(defun nelisp-cc--rec-inline-link-cloned-edges
+    (_callee block-map &optional original-state)
   "After clone, restore predecessor / successor edges between cloned blocks.
 
 Walks BLOCK-MAP entries (= the snapshot of source blocks captured by
 `nelisp-cc--rec-inline-clone-blocks') so the link pass is robust
 against the self-recursion case where CALLEE = CALLER and the
-caller's BLOCKS list now also contains the clones themselves."
+caller's BLOCKS list now also contains the clones themselves.
+
+ORIGINAL-STATE (Phase 7.1 rec-inline CFG fix), when non-nil, is the
+same `(INSTRS . SUCCS)' snapshot hash-table consumed by
+`nelisp-cc--rec-inline-clone-blocks'.  At depth>=1 each prior splice
+mutates the original block's `successors' list in place (= sets it
+to the just-spliced cloned-entry), so reading the live successor
+list here would link the clones to the wrong (or missing) targets.
+With the snapshot the cloner sees the pristine pre-pass CFG and the
+clone-of-X gets edges to clone-of-Y for every original X→Y
+edge (= preserves the callee body's CFG verbatim)."
   (let (src-blocks)
     (maphash (lambda (orig _new) (push orig src-blocks)) block-map)
     (dolist (b src-blocks)
-      (let ((new-from (gethash b block-map)))
-        (dolist (s (nelisp-cc--ssa-block-successors b))
+      (let* ((new-from (gethash b block-map))
+             (snap-cell (and original-state (gethash b original-state)))
+             (succs (if snap-cell
+                        (cdr snap-cell)
+                      (nelisp-cc--ssa-block-successors b))))
+        (dolist (s succs)
           (let ((new-to (gethash s block-map)))
             (when (and new-from new-to)
               (nelisp-cc--ssa-link-blocks new-from new-to))))))))
@@ -589,7 +627,8 @@ construction which is Doc 42 §3.3 follow-up."
     (and (= 1 (length hits)) (car hits))))
 
 (defun nelisp-cc--rec-inline-splice-self
-    (caller block call-instr callee value-map &optional original-snapshot)
+    (caller block call-instr callee value-map
+            &optional original-snapshot original-state)
   "Splice CALLEE's body into CALLER replacing CALL-INSTR.
 
 CALLER is the caller (= self-recursion target).  BLOCK is the
@@ -642,8 +681,8 @@ Returns BLOCK (the rewritten PRE block).  Mutates CALLER in place."
            (call-def (nelisp-cc--ssa-instr-def call-instr)))
       ;; (1) clone the callee body into CALLER.
       (nelisp-cc--rec-inline-clone-blocks
-       caller callee value-map block-map original-snapshot)
-      (nelisp-cc--rec-inline-link-cloned-edges callee block-map)
+       caller callee value-map block-map original-snapshot original-state)
+      (nelisp-cc--rec-inline-link-cloned-edges callee block-map original-state)
       ;; (2) split BLOCK: keep PRE here, move POST to post-blk.
       (let ((cloned-entry
              (gethash (nelisp-cc--ssa-function-entry callee) block-map)))
@@ -780,7 +819,24 @@ when the unroller has substituted a literal into the condition
          ;; This converts the previous exponential growth (2 → 22 → 766
          ;; at depths 1/2/3) into linear depth-bounded growth.
          (original-snapshot
-          (copy-sequence (nelisp-cc--ssa-function-blocks caller))))
+          (copy-sequence (nelisp-cc--ssa-function-blocks caller)))
+         ;; Phase 7.1 rec-inline CFG fix: also snapshot per-block
+         ;; INSTRS and SUCCESSORS lists so that depth>=1 iterations
+         ;; clone the *pristine* pre-pass callee body, not the post-
+         ;; splice mutated form (where the original `else'-block has
+         ;; lost its self-call instrs and its successor has been
+         ;; redirected to a previously-cloned entry block).  Without
+         ;; this snapshot the cloned blocks pick up `jump' opcodes
+         ;; whose successor edges drop in `link-cloned-edges' (the
+         ;; mutated successor isn't in the new block-map), surfacing
+         ;; later as `:jump-with-no-successor' encoding error in the
+         ;; backend.
+         (original-state (make-hash-table :test 'eq)))
+    (dolist (b original-snapshot)
+      (puthash b
+               (cons (copy-sequence (nelisp-cc--ssa-block-instrs b))
+                     (copy-sequence (nelisp-cc--ssa-block-successors b)))
+               original-state))
     (let ((sites (nelisp-cc--rec-inline-list-self-call-sites caller))
           (depth 0))
       (while (and sites
@@ -796,7 +852,8 @@ when the unroller has substituted a literal into the condition
                       (callee (nelisp-cc--rec-inline-status-callee decision))
                       (vmap (make-hash-table :test 'eq)))
                   (nelisp-cc--rec-inline-splice-self
-                   caller blk site callee vmap original-snapshot)
+                   caller blk site callee vmap
+                   original-snapshot original-state)
                   (cl-incf count)
                   (cl-incf iter-count)))
                (t nil))))
