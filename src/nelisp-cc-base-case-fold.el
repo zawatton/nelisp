@@ -215,7 +215,8 @@ REGISTRY is the standard callee alist for inter-callee recursion."
       status)))
 
 (defun nelisp-cc--bcf-eval-block (fn block env registry memo budget-cell visited)
-  "Walk BLOCK's instructions, threading ENV.  Return (:value LIT) | (:abort REASON).
+  "Walk BLOCK's instructions, threading ENV.
+Return (:value LIT) | (:abort REASON).
 
 VISITED is the set of block-ids already visited on this path — used
 for loop detection (we abort with `:cfg-loop' when re-entering, since
@@ -254,7 +255,8 @@ operands defined inline (= not via param-substitution) still resolve."
          (t :unresolved)))))))
 
 (defun nelisp-cc--bcf-eval-instr (fn instr env registry memo budget-cell visited)
-  "Evaluate one INSTR.  Returns nil to continue, or (:value/_ :abort/_) to halt block.
+  "Evaluate one INSTR.
+Returns nil to continue, or (:value/_ :abort/_) to halt block.
 
 ENV is mutated in place (def values bound to literals when evaluable)."
   (let ((op (nelisp-cc--ssa-instr-opcode instr))
