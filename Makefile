@@ -3,7 +3,7 @@
         runtime-staticlib runtime-static runtime-module runtime-module-clean stage-d-v2-bin \
         sqlite-module sqlite-module-clean \
         release-artifact release-checksum soak-blocker soak-post-ship \
-        bench-actual bench-actual-cargo
+        bench-actual bench-actual-cargo bench-allocator bench-allocator-heavy
 
 EMACS ?= emacs
 
@@ -81,6 +81,40 @@ actor-bench: compile
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-actor-bench \
 	  -f nelisp-actor-bench-batch
+
+# Phase 7.2 §5.1 v2 LOCK-close — 3-tier ratio bench (Doc 29).
+# Tier-A gates on the low end of the §5.1 v2 bands (3-5x / 4-6x /
+# 8-12x).  Until Phase 7.5 wires the alloc fast path the harness
+# reports `simulator-only' for every tier — gate-pass evaluates to
+# :skipped (= exit code 0, never blocks) so the harness ships green
+# from day one and flips to "gate verification" with no code change
+# the moment Phase 7.5 lands.  See bench/nelisp-allocator-bench.el
+# commentary for the const-unfoldable construction notes.
+#
+# Deliberately does NOT depend on `compile' — the bench reports its
+# numbers off the source `.el' (matching `bench' / `gc-bench' /
+# `actor-bench' all-source intent: the bench itself is a hot path,
+# not the SUT, so compile-once-per-target is the right tradeoff).
+bench-allocator:
+	$(EMACS) --batch -Q -L src -L bench \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-allocator-bench \
+	  -f nelisp-allocator-bench-batch
+
+# Heavy variant: cons-stress 1M / per-pool 100k / bulk-alloc 1000
+# (= the full Doc 29 §5.1 v2 input sizes).  Gated under
+# NELISP_HEAVY_TESTS=1 per the project's existing convention so the
+# default `bench-allocator' target stays CI-friendly (= ~30 s wall
+# under simulator-only mode).  Once Phase 7.5 wires the native fast
+# path, this is the gate verification target.
+bench-allocator-heavy:
+	$(EMACS) --batch -Q -L src -L bench \
+	  --eval '(setq load-prefer-newer t)' \
+	  --eval '(setq nelisp-allocator-bench-cons-stress-n 1000000)' \
+	  --eval '(setq nelisp-allocator-bench-per-pool-n 100000)' \
+	  --eval '(setq nelisp-allocator-bench-bulk-alloc-n 1000)' \
+	  -l nelisp-allocator-bench \
+	  -f nelisp-allocator-bench-batch
 
 # Phase 5-D.6 worker soak.  Advisory only — not gated.  Exercises the
 # 3-lane worker pool under sustained mixed load (20 read + 5 write +
