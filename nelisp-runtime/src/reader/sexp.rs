@@ -9,12 +9,11 @@
 //!   - list (= (a b c) → (a . (b . (c . nil))))
 //!   - vector (= [a b c])
 //!   - nil + t literals
-//!   - quote (= 'x → (quote x))
+//!   - quote-family prefixes (`'x`, `` `x ``, `,x`, `,@x`, `#'x`)
 //!
-//! Deferred (returns `ReadError::NotYetImplemented`):
-//!   - backquote `(...)` / unquote ,foo / splice ,@foo
-//!   - char literal (?a, ?\C-x, ?\M-a)
-//!   - sharpsign read forms (#'foo, #[...] byte-code, #s structure)
+//! Deferred:
+//!   - meta char literals (?\\M-a, multi-modifier combinations)
+//!   - sharpsign read forms (#[...] byte-code, #s structure)
 //!   - multibyte / non-ASCII string literal handling
 //!
 //! The enum is intentionally NOT a Lisp_Object yet — that is the
@@ -77,6 +76,22 @@ impl Sexp {
         Sexp::list_from(&[Sexp::Symbol("quote".to_string()), inner])
     }
 
+    pub fn backquote(inner: Sexp) -> Sexp {
+        Sexp::list_from(&[Sexp::Symbol("backquote".to_string()), inner])
+    }
+
+    pub fn comma(inner: Sexp) -> Sexp {
+        Sexp::list_from(&[Sexp::Symbol("comma".to_string()), inner])
+    }
+
+    pub fn comma_at(inner: Sexp) -> Sexp {
+        Sexp::list_from(&[Sexp::Symbol("comma-at".to_string()), inner])
+    }
+
+    pub fn function(inner: Sexp) -> Sexp {
+        Sexp::list_from(&[Sexp::Symbol("function".to_string()), inner])
+    }
+
     /// Convenience accessor: is this the `nil` literal (or the empty
     /// list, which is the same thing in Elisp)?
     pub fn is_nil(&self) -> bool {
@@ -103,6 +118,9 @@ impl fmt::Display for Sexp {
 }
 
 fn write_sexp(out: &mut String, s: &Sexp) {
+    if write_reader_macro(out, s) {
+        return;
+    }
     match s {
         Sexp::Nil => out.push_str("nil"),
         Sexp::T => out.push('t'),
@@ -151,6 +169,35 @@ fn write_sexp(out: &mut String, s: &Sexp) {
             }
             out.push(']');
         }
+    }
+}
+
+fn write_reader_macro(out: &mut String, s: &Sexp) -> bool {
+    let Some((head, arg)) = list_tag_and_arg(s) else {
+        return false;
+    };
+    let prefix = match head {
+        "quote" => "'",
+        "backquote" => "`",
+        "comma" => ",",
+        "comma-at" => ",@",
+        "function" => "#'",
+        _ => return false,
+    };
+    out.push_str(prefix);
+    write_sexp(out, arg);
+    true
+}
+
+fn list_tag_and_arg(s: &Sexp) -> Option<(&str, &Sexp)> {
+    match s {
+        Sexp::Cons(car, cdr) => match (&**car, &**cdr) {
+            (Sexp::Symbol(tag), Sexp::Cons(arg, tail)) if matches!(**tail, Sexp::Nil) => {
+                Some((tag.as_str(), arg.as_ref()))
+            }
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -205,7 +252,18 @@ mod tests {
     #[test]
     fn quote_wraps_form() {
         let got = Sexp::quote(Sexp::Symbol("x".into()));
-        assert_eq!(fmt_sexp(&got), "(quote x)");
+        assert_eq!(fmt_sexp(&got), "'x");
+    }
+
+    #[test]
+    fn fmt_reader_macros() {
+        assert_eq!(
+            fmt_sexp(&Sexp::backquote(Sexp::Symbol("x".into()))),
+            "`x"
+        );
+        assert_eq!(fmt_sexp(&Sexp::comma(Sexp::Symbol("x".into()))), ",x");
+        assert_eq!(fmt_sexp(&Sexp::comma_at(Sexp::Symbol("x".into()))), ",@x");
+        assert_eq!(fmt_sexp(&Sexp::function(Sexp::Symbol("x".into()))), "#'x");
     }
 
     #[test]

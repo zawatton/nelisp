@@ -7,17 +7,14 @@
 //!   - [`fmt_sexp`]  — debug pretty-printer (lossy, NOT prin1)
 //!   - [`Sexp`]      — value enum
 //!   - [`ReadError`] — failure type with explicit
-//!     `NotYetImplemented` for deferred features
+//!     `NotYetImplemented` for remaining deferred features
 //!
 //! Layer rule (= prompt constraint): the reader must NOT depend on
 //! the evaluator.  Phase 7.5.4.2 is responsible for taking `Sexp` and
 //! producing `LispObject`; this module stops at the syntactic value.
 //!
-//! Deferred per Doc 44 §3.2 (each surfaces as
-//! `ReadError::NotYetImplemented`, never silently consumed):
-//!   - backquote `(...)` / unquote `,foo` / splice `,@foo`
-//!   - char literal `?a` / `?\C-x` / `?\M-a`
-//!   - `#'foo` function quote
+//! Remaining deferred per Doc 44 §3.2:
+//!   - meta char literal modifiers (`?\M-a`, multi-modifier variants)
 //!   - `#[...]` byte-code literal
 //!   - `#s(...)` structure literal
 //!   - multibyte / non-ASCII string content (currently passed through
@@ -133,6 +130,44 @@ mod tests {
         assert_eq!(got, Sexp::quote(Sexp::Symbol("x".into())));
     }
 
+    /// Backquote / unquote / splice desugar to tagged lists.
+    #[test]
+    fn smoke_backquote_family() {
+        let got = read_str("`(a ,b ,@c)").unwrap();
+        assert_eq!(
+            got,
+            Sexp::backquote(Sexp::list_from(&[
+                Sexp::Symbol("a".into()),
+                Sexp::comma(Sexp::Symbol("b".into())),
+                Sexp::comma_at(Sexp::Symbol("c".into())),
+            ]))
+        );
+    }
+
+    /// Character literals read as integer codepoints.
+    #[test]
+    fn smoke_char_literals() {
+        assert_eq!(read_str("?a").unwrap(), Sexp::Int(97));
+        assert_eq!(read_str("?\\xff").unwrap(), Sexp::Int(255));
+        assert_eq!(read_str("?\\C-a").unwrap(), Sexp::Int(1));
+    }
+
+    /// `#'foo` → `(function foo)`.
+    #[test]
+    fn smoke_function_quote() {
+        let got = read_str("#'foo").unwrap();
+        assert_eq!(got, Sexp::function(Sexp::Symbol("foo".into())));
+    }
+
+    /// Backslash-newline in strings is a line continuation.
+    #[test]
+    fn smoke_string_backslash_newline() {
+        assert_eq!(
+            read_str("\"hi\\\nthere\"").unwrap(),
+            Sexp::Str("hithere".into())
+        );
+    }
+
     /// Comment skip — the `;` line is gone, the int after stands.
     #[test]
     fn smoke_comment_skip() {
@@ -150,7 +185,7 @@ mod tests {
     /// Each deferred feature returns NotYetImplemented (= explicit).
     #[test]
     fn deferred_features_explicit() {
-        for src in &["`(a b)", ",foo", ",@foo", "?a", "#'foo", "#[1 2]", "#s(x)"] {
+        for src in &["?\\M-a", "#[1 2]", "#s(x)"] {
             match read_str(src) {
                 Err(ReadError::NotYetImplemented { .. }) => (),
                 Err(other) => panic!("expected NotYetImplemented for {:?}, got {:?}", src, other),
@@ -215,6 +250,15 @@ mod tests {
         // form Elisp's prin1 would (modulo whitespace normalisation).
         assert_eq!(printed, "(let ((x 1) (y 2)) (+ x y))");
         // And the printed form re-reads to an equivalent value.
+        assert_eq!(read_str(&printed).unwrap(), parsed);
+    }
+
+    #[test]
+    fn fmt_sexp_roundtrip_new_reader_forms() {
+        let src = "(a `(b ,c ,@d) ?x #'foo \"hi\\\nthere\")";
+        let parsed = read_str(src).unwrap();
+        let printed = fmt_sexp(&parsed);
+        assert_eq!(printed, "(a `(b ,c ,@d) 120 #'foo \"hithere\")");
         assert_eq!(read_str(&printed).unwrap(), parsed);
     }
 }

@@ -3,8 +3,8 @@
 //! Design constraints (Doc 44 §3.2 + prompt):
 //!   - no external dep (no `nom`, no `pest`) — hand-roll
 //!   - source location tracking (line:col) for actionable errors
-//!   - explicit `NotYetImplemented` tokens for deferred lex shapes
-//!     (= backquote, char literal, `#'foo`)
+//!   - explicit `NotYetImplemented` tokens for still-deferred lex
+//!     shapes (= `#[...]`, `#s(...)`)
 //!
 //! The lexer produces a stream of `Token`s.  Whitespace and comments
 //! are eaten silently; numeric/symbol disambiguation is handled here
@@ -28,6 +28,16 @@ pub enum Token {
     RBracket,
     /// `'` quote prefix.  The parser desugars to `(quote ...)`.
     Quote,
+    /// `` ` `` quasiquote prefix.  The parser desugars to
+    /// `(backquote ...)`.
+    Backquote,
+    /// `,` unquote prefix.  Valid only within a backquote context.
+    Comma,
+    /// `,@` splice prefix.  Valid only within a backquote context.
+    CommaAt,
+    /// `#'` function quote prefix.  The parser desugars to
+    /// `(function ...)`.
+    FunctionQuote,
     /// `.` (only inside a list, used for dotted pairs).  Outside a
     /// list this would be a number prefix or symbol char; the lexer
     /// keeps the standalone `.` token distinct so the parser can
@@ -165,23 +175,19 @@ impl<'a> Lexer<'a> {
             b'"' => self.read_string(pos)?,
             b'#' => self.read_sharpsign(pos)?,
             b'`' => {
-                return Err(ReadError::not_yet_implemented(
-                    "backquote `(...) is deferred to a later sub-phase",
-                    pos,
-                ));
+                self.bump();
+                Token::Backquote
             }
             b',' => {
-                return Err(ReadError::not_yet_implemented(
-                    "unquote ,foo / splice ,@foo are deferred to a later sub-phase",
-                    pos,
-                ));
+                self.bump();
+                if self.peek() == Some(b'@') {
+                    self.bump();
+                    Token::CommaAt
+                } else {
+                    Token::Comma
+                }
             }
-            b'?' => {
-                return Err(ReadError::not_yet_implemented(
-                    "char literal ?a / ?\\C-x is deferred to a later sub-phase",
-                    pos,
-                ));
-            }
+            b'?' => Token::Int(self.read_char_literal(pos)?),
             _ => self.read_atom(pos)?,
         };
         Ok(Some(PositionedToken { token, pos }))
@@ -213,6 +219,13 @@ impl<'a> Lexer<'a> {
                         ReadError::unexpected_eof("unterminated escape in string", esc_pos)
                     })?;
                     match next {
+                        b'\n' => continue,
+                        b'\r' => {
+                            if self.peek() == Some(b'\n') {
+                                self.bump();
+                            }
+                            continue;
+                        }
                         b'n' => out.push('\n'),
                         b't' => out.push('\t'),
                         b'r' => out.push('\r'),
@@ -280,10 +293,10 @@ impl<'a> Lexer<'a> {
                 let n = self.read_radix_int(2, start)?;
                 Ok(Token::Int(n))
             }
-            Some(b'\'') => Err(ReadError::not_yet_implemented(
-                "function quote #'foo is deferred to a later sub-phase",
-                start,
-            )),
+            Some(b'\'') => {
+                self.bump();
+                Ok(Token::FunctionQuote)
+            }
             Some(b'[') => Err(ReadError::not_yet_implemented(
                 "byte-code literal #[...] is deferred (Doc 44 §3.3 risks)",
                 start,
@@ -377,6 +390,87 @@ impl<'a> Lexer<'a> {
             return Ok(Token::Float(f));
         }
         Ok(Token::Symbol(text))
+    }
+
+    fn read_char_literal(&mut self, start: SourcePos) -> Result<i64, ReadError> {
+        self.bump();
+        let b = self.peek().ok_or_else(|| {
+            ReadError::unexpected_eof("unterminated char literal after `?`", start)
+        })?;
+        if is_atom_terminator(b) {
+            return Err(ReadError::lex("empty char literal after `?`", start));
+        }
+        if b != b'\\' {
+            self.bump();
+            if b.is_ascii() {
+                return Ok(i64::from(b));
+            }
+            return Err(ReadError::not_yet_implemented(
+                "multibyte char literal is deferred",
+                start,
+            ));
+        }
+
+        self.bump();
+        let esc_pos = self.current_pos();
+        let next = self.bump().ok_or_else(|| {
+            ReadError::unexpected_eof("unterminated escape in char literal", esc_pos)
+        })?;
+        match next {
+            b'n' => Ok(10),
+            b't' => Ok(9),
+            b'r' => Ok(13),
+            b'\\' => Ok(92),
+            b'\'' => Ok(39),
+            b'"' => Ok(34),
+            b'x' => {
+                let h1 = self.bump().ok_or_else(|| {
+                    ReadError::unexpected_eof("\\x needs 2 hex digits in char literal", esc_pos)
+                })?;
+                let h2 = self.bump().ok_or_else(|| {
+                    ReadError::unexpected_eof("\\x needs 2 hex digits in char literal", esc_pos)
+                })?;
+                let hi = hex_digit(h1).ok_or_else(|| {
+                    ReadError::lex(
+                        format!("invalid hex digit in char literal: {:?}", h1 as char),
+                        esc_pos,
+                    )
+                })?;
+                let lo = hex_digit(h2).ok_or_else(|| {
+                    ReadError::lex(
+                        format!("invalid hex digit in char literal: {:?}", h2 as char),
+                        esc_pos,
+                    )
+                })?;
+                Ok(((hi << 4) | lo) as i64)
+            }
+            b'C' => {
+                if self.bump() != Some(b'-') {
+                    return Err(ReadError::lex(
+                        "expected `-` after \\C in char literal",
+                        esc_pos,
+                    ));
+                }
+                let ctrl = self.bump().ok_or_else(|| {
+                    ReadError::unexpected_eof("missing control target in char literal", esc_pos)
+                })?;
+                if !ctrl.is_ascii() {
+                    return Err(ReadError::not_yet_implemented(
+                        "multibyte control char literal is deferred",
+                        esc_pos,
+                    ));
+                }
+                Ok(i64::from(ctrl & 0x1f))
+            }
+            b'M' => Err(ReadError::not_yet_implemented(
+                "meta char literal modifier \\M- is deferred",
+                esc_pos,
+            )),
+            other => Err(ReadError::lex(
+                format!("unknown char literal escape: \\{}", other as char),
+                esc_pos,
+            )),
+        }
     }
 }
 
@@ -498,6 +592,30 @@ mod tests {
     }
 
     #[test]
+    fn quasiquote_prefixes() {
+        let toks = lex("`(a ,b ,@c)");
+        assert_eq!(
+            toks,
+            vec![
+                Token::Backquote,
+                Token::LParen,
+                Token::Symbol("a".into()),
+                Token::Comma,
+                Token::Symbol("b".into()),
+                Token::CommaAt,
+                Token::Symbol("c".into()),
+                Token::RParen,
+            ]
+        );
+    }
+
+    #[test]
+    fn function_quote_prefix() {
+        let toks = lex("#'foo");
+        assert_eq!(toks, vec![Token::FunctionQuote, Token::Symbol("foo".into())]);
+    }
+
+    #[test]
     fn dotted_pair_dot_is_token() {
         let toks = lex("(a . b)");
         assert_eq!(
@@ -554,26 +672,50 @@ mod tests {
     }
 
     #[test]
+    fn string_backslash_newline_continues_line() {
+        let toks = lex("\"foo\\\nbar\"");
+        assert_eq!(toks, vec![Token::Str("foobar".into())]);
+    }
+
+    #[test]
     fn unterminated_string_errors() {
         assert!(tokenize("\"oops").is_err());
     }
 
     #[test]
-    fn backquote_is_deferred() {
-        let err = tokenize("`(a b)").unwrap_err();
-        assert!(format!("{}", err).contains("backquote"));
+    fn string_unknown_escape_errors() {
+        let err = tokenize("\"\\q\"").unwrap_err();
+        assert!(format!("{}", err).contains("unknown escape"));
     }
 
     #[test]
-    fn char_literal_is_deferred() {
-        let err = tokenize("?a").unwrap_err();
-        assert!(format!("{}", err).contains("char literal"));
+    fn char_literal_shapes() {
+        assert_eq!(
+            lex("?a ?\\n ?\\t ?\\r ?\\\\ ?\\' ?\\\" ?\\xff ?\\C-a"),
+            vec![
+                Token::Int(97),
+                Token::Int(10),
+                Token::Int(9),
+                Token::Int(13),
+                Token::Int(92),
+                Token::Int(39),
+                Token::Int(34),
+                Token::Int(255),
+                Token::Int(1),
+            ]
+        );
     }
 
     #[test]
-    fn function_quote_is_deferred() {
-        let err = tokenize("#'foo").unwrap_err();
-        assert!(format!("{}", err).contains("function quote"));
+    fn char_literal_meta_is_deferred() {
+        let err = tokenize("?\\M-a").unwrap_err();
+        assert!(matches!(err, ReadError::NotYetImplemented { .. }));
+    }
+
+    #[test]
+    fn char_literal_bad_hex_errors() {
+        let err = tokenize("?\\xfg").unwrap_err();
+        assert!(format!("{}", err).contains("invalid hex digit"));
     }
 
     #[test]

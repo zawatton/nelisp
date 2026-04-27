@@ -11,8 +11,10 @@
 //!     bootstrap working set.
 //!   - `nil` and `t` are recognised here, not in the lexer, so the
 //!     symbol-shape decision lives in one place.
-//!   - Quote (`'x`) is desugared to `(quote x)` at parse time per
-//!     Doc 44 §3.2 spec.
+//!   - Quote-family prefixes are desugared at parse time:
+//!     `'x` -> `(quote x)`, `` `x `` -> `(backquote x)`,
+//!     `,x` -> `(comma x)`, `,@x` -> `(comma-at x)`,
+//!     `#'x` -> `(function x)`.
 
 use super::error::{ReadError, SourcePos};
 use super::lexer::{PositionedToken, Token};
@@ -34,7 +36,7 @@ pub fn parse_one(tokens: &[PositionedToken]) -> Result<(Sexp, usize), ReadError>
         ));
     }
     let mut p = Parser { tokens, pos: 0 };
-    let form = p.parse_form(0)?;
+    let form = p.parse_form(0, 0)?;
     Ok((form, p.pos))
 }
 
@@ -44,7 +46,7 @@ pub fn parse_all(tokens: &[PositionedToken]) -> Result<Vec<Sexp>, ReadError> {
     let mut p = Parser { tokens, pos: 0 };
     let mut out = Vec::new();
     while p.pos < tokens.len() {
-        out.push(p.parse_form(0)?);
+        out.push(p.parse_form(0, 0)?);
     }
     Ok(out)
 }
@@ -69,7 +71,7 @@ impl<'a> Parser<'a> {
 
     /// Parse one form.  `depth` is the current nesting depth so we
     /// can bail before blowing the host stack.
-    fn parse_form(&mut self, depth: usize) -> Result<Sexp, ReadError> {
+    fn parse_form(&mut self, depth: usize, quasiquote_depth: usize) -> Result<Sexp, ReadError> {
         if depth > MAX_DEPTH {
             let pos = self
                 .peek()
@@ -85,11 +87,33 @@ impl<'a> Parser<'a> {
         })?;
 
         match &tok.token {
-            Token::LParen => self.parse_list(tok.pos, depth + 1),
-            Token::LBracket => self.parse_vector(tok.pos, depth + 1),
+            Token::LParen => self.parse_list(tok.pos, depth + 1, quasiquote_depth),
+            Token::LBracket => self.parse_vector(tok.pos, depth + 1, quasiquote_depth),
             Token::Quote => {
-                let inner = self.parse_form(depth + 1)?;
+                let inner = self.parse_form(depth + 1, quasiquote_depth)?;
                 Ok(Sexp::quote(inner))
+            }
+            Token::Backquote => {
+                let inner = self.parse_form(depth + 1, quasiquote_depth + 1)?;
+                Ok(Sexp::backquote(inner))
+            }
+            Token::Comma => {
+                if quasiquote_depth == 0 {
+                    return Err(ReadError::parse("`,` outside backquote context", tok.pos));
+                }
+                let inner = self.parse_form(depth + 1, quasiquote_depth - 1)?;
+                Ok(Sexp::comma(inner))
+            }
+            Token::CommaAt => {
+                if quasiquote_depth == 0 {
+                    return Err(ReadError::parse("`,@` outside backquote context", tok.pos));
+                }
+                let inner = self.parse_form(depth + 1, quasiquote_depth - 1)?;
+                Ok(Sexp::comma_at(inner))
+            }
+            Token::FunctionQuote => {
+                let inner = self.parse_form(depth + 1, quasiquote_depth)?;
+                Ok(Sexp::function(inner))
             }
             Token::Int(n) => Ok(Sexp::Int(*n)),
             Token::Float(f) => Ok(Sexp::Float(*f)),
@@ -120,7 +144,12 @@ impl<'a> Parser<'a> {
     /// branch can take the last element as the tail; this keeps the
     /// hot path (proper list) one allocation cheaper than building
     /// the cons chain incrementally.
-    fn parse_list(&mut self, open_pos: SourcePos, depth: usize) -> Result<Sexp, ReadError> {
+    fn parse_list(
+        &mut self,
+        open_pos: SourcePos,
+        depth: usize,
+        quasiquote_depth: usize,
+    ) -> Result<Sexp, ReadError> {
         let mut items: Vec<Sexp> = Vec::new();
         loop {
             let next = self.peek().ok_or_else(|| {
@@ -140,7 +169,7 @@ impl<'a> Parser<'a> {
                             dot_pos,
                         ));
                     }
-                    let tail = self.parse_form(depth)?;
+                    let tail = self.parse_form(depth, quasiquote_depth)?;
                     let close = self.bump().ok_or_else(|| {
                         ReadError::unexpected_eof(
                             "unbalanced `(` after dotted tail",
@@ -159,14 +188,19 @@ impl<'a> Parser<'a> {
                     return Ok(build_dotted(items, tail));
                 }
                 _ => {
-                    let form = self.parse_form(depth)?;
+                    let form = self.parse_form(depth, quasiquote_depth)?;
                     items.push(form);
                 }
             }
         }
     }
 
-    fn parse_vector(&mut self, open_pos: SourcePos, depth: usize) -> Result<Sexp, ReadError> {
+    fn parse_vector(
+        &mut self,
+        open_pos: SourcePos,
+        depth: usize,
+        quasiquote_depth: usize,
+    ) -> Result<Sexp, ReadError> {
         let mut items = Vec::new();
         loop {
             let next = self.peek().ok_or_else(|| {
@@ -184,7 +218,7 @@ impl<'a> Parser<'a> {
                     ));
                 }
                 _ => {
-                    let form = self.parse_form(depth)?;
+                    let form = self.parse_form(depth, quasiquote_depth)?;
                     items.push(form);
                 }
             }
@@ -261,6 +295,25 @@ mod tests {
     }
 
     #[test]
+    fn parse_backquote_family_desugars() {
+        let got = parse("`(a ,b ,@c)");
+        assert_eq!(
+            got,
+            Sexp::backquote(Sexp::list_from(&[
+                Sexp::Symbol("a".into()),
+                Sexp::comma(Sexp::Symbol("b".into())),
+                Sexp::comma_at(Sexp::Symbol("c".into())),
+            ]))
+        );
+    }
+
+    #[test]
+    fn parse_function_quote_desugars() {
+        let got = parse("#'foo");
+        assert_eq!(got, Sexp::function(Sexp::Symbol("foo".into())));
+    }
+
+    #[test]
     fn parse_vector() {
         let got = parse("[1 2 3]");
         assert_eq!(
@@ -300,6 +353,20 @@ mod tests {
         let toks = tokenize(")").unwrap();
         let err = parse_one(&toks).unwrap_err();
         assert!(format!("{}", err).contains("unexpected `)`"));
+    }
+
+    #[test]
+    fn parse_unquote_outside_backquote_errors() {
+        let toks = tokenize(",foo").unwrap();
+        let err = parse_one(&toks).unwrap_err();
+        assert!(format!("{}", err).contains("outside backquote"));
+    }
+
+    #[test]
+    fn parse_splice_outside_backquote_errors() {
+        let toks = tokenize(",@foo").unwrap();
+        let err = parse_one(&toks).unwrap_err();
+        assert!(format!("{}", err).contains("outside backquote"));
     }
 
     #[test]
