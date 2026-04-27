@@ -26,6 +26,17 @@ crate-type = ["cdylib", "rlib", "staticlib"]
 name = "nelisp-runtime"
 path = "src/main.rs"
 
+# Phase 8.0.4 (Doc 44 §3.5) — MCP stdio demo binary.  Drives
+# `nelisp_runtime::mcp::serve_stdio` with the placeholder registry so
+# the end-to-end JSON-RPC loop (initialize → tools/list → tools/call →
+# shutdown → exit) can be smoke-tested without spawning Emacs and
+# without wiring an evaluator-backed registry.  Will be subsumed by
+# `bin/anvil mcp serve --strict-no-emacs` once Phase 8.0.3 (self-host
+# bridge) lands.
+[[bin]]
+name = "anvil-mcp-demo"
+path = "src/bin/anvil-mcp-demo.rs"
+
 # Phase 7.1 完遂 gate 3-axis bench (Doc 28 v2 §5.1).  This is the
 # *secondary* baseline measuring the FFI bridge overhead in isolation
 # — the primary 3-axis gate (fib(30) 30x / fact-iter 20x / alloc-heavy
@@ -64,6 +75,11 @@ libc = "0.2"
 # (binary +~1.5 MiB on linux-x86_64).
 rusqlite = { version = "0.31", features = ["bundled"] }
 once_cell = "1.19"
+# Phase 8.0.4 (Doc 44 §3.5) — JSON-RPC wire types in `src/mcp/` derive
+# Serialize/Deserialize.  `derive` feature pulls in serde_derive (one
+# extra proc-macro dep, no runtime cost).  `serde_json` already on the
+# dep list reaches in for the dynamic `Value` plumbing.
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 [profile.release]
