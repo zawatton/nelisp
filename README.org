@@ -185,6 +185,12 @@ nelisp/
 ├── BRIEFING.org             # First-session design instructions
 ├── README.org               # This file
 ├── .gitignore
+├── packages/                # Extracted optional libraries
+│   ├── README.org           # Package split convention
+│   └── nelisp-json/         # Pilot extracted library package
+│       ├── README.org
+│       ├── src/
+│       └── test/
 └── docs/
     ├── 00-motivation.org    # Why this, why now, why not Scheme (USER voice)
     ├── 01-related-work.org  # 7 projects audited + paper priorities
@@ -200,6 +206,21 @@ nelisp/
         ├── bolz-2009-meta-tracing.org     # Priority A: JIT for Phase 3-4
         └── maclachlan-1992-python.org     # Priority A: CL-in-CL precedent
 #+end_src
+
+* Optional packages
+
+NeLisp v1.0 now supports an SBCL/Quicklisp-style split between the
+core =src/= tree and individually extractable libraries under
+=packages/*/=.  The =nelisp-json= package is the pilot extraction and
+defines the canonical layout for future package moves:
+
+- =packages/<name>/src/<name>.el=
+- =packages/<name>/test/<name>-test.el=
+- =packages/<name>/README.org=
+
+The build keeps these packages on the Emacs load-path, so existing
+=require= forms continue to work unchanged.  See =packages/README.org=
+and =packages/nelisp-json/README.org=.
 
 * Related work (audited)
 

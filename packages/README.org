@@ -1,0 +1,44 @@
+#+TITLE: NeLisp Packages
+
+* Purpose
+
+The =packages/= tree is the extraction point for optional libraries
+that ship alongside the NeLisp core but live outside the core =src/=
+directory.  This is the package-split pattern intended for the
+post-v1.0 library breakout work.
+
+* Convention
+
+Each package lives at =packages/<name>/= and follows this layout:
+
+#+begin_src text
+packages/<name>/
+├── README.org
+├── src/
+│   └── <name>.el
+└── test/
+    └── <name>-test.el
+#+end_src
+
+Rules:
+
+- Keep the library entry file name aligned with the provided feature.
+  Example: =src/nelisp-json.el= must continue to =(provide 'nelisp-json)=.
+- Keep ERT coverage beside the package in =test/=.
+- Do not rewrite callers when extracting a package.  Existing
+  =(require 'feature)= forms should continue to resolve through the
+  build's load-path.
+- Package-specific dependency and usage notes live in the package
+  =README.org=.
+
+* Build Integration
+
+The root =Makefile= adds =packages/*/src= and =packages/*/test= to the
+Emacs load-path for compile and test targets.  This keeps package
+libraries and their tests discoverable without special-case per-package
+rules.
+
+* Pilot
+
+=packages/nelisp-json/= is the pilot extraction.  Doc 45 can reference
+it as the canonical example for future library moves.
