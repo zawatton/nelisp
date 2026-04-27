@@ -458,16 +458,17 @@ fn parse_formals(formals: &Sexp) -> Vec<FormalArg> {
 
 fn list_elements(list: &Sexp) -> Option<Vec<Sexp>> {
     let mut out = Vec::new();
-    let mut cur = list;
+    let mut cur: Sexp = list.clone();
     loop {
-        match cur {
+        let next = match &cur {
             Sexp::Nil => return Some(out),
             Sexp::Cons(car, cdr) => {
-                out.push((**car).clone());
-                cur = cdr;
+                out.push(car.borrow().clone());
+                cdr.borrow().clone()
             }
             _ => return None,
-        }
+        };
+        cur = next;
     }
 }
 
@@ -792,8 +793,8 @@ fn sexp_to_json(value: &Sexp) -> Value {
                 Value::Array(items.iter().map(sexp_to_json).collect())
             } else {
                 json!({
-                    "car": sexp_to_json(car(value).unwrap()),
-                    "cdr": sexp_to_json(cdr(value).unwrap())
+                    "car": sexp_to_json(&car(value).unwrap()),
+                    "cdr": sexp_to_json(&cdr(value).unwrap())
                 })
             }
         }
@@ -824,14 +825,15 @@ fn alist_to_json_object(value: &Sexp) -> Option<Map<String, Value>> {
     for item in &items {
         match item {
             Sexp::Cons(car, cdr) => {
-                let key = match car.as_ref() {
+                let key = match &*car.borrow() {
                     Sexp::Symbol(name) => name.clone(),
                     Sexp::Str(name) => name.clone(),
                     _ => return None,
                 };
-                match cdr.as_ref() {
-                    Sexp::Cons(val, tail) if matches!(tail.as_ref(), Sexp::Nil) => {
-                        out.insert(key, sexp_to_json(val));
+                let cdr_clone = cdr.borrow().clone();
+                match &cdr_clone {
+                    Sexp::Cons(val, tail) if matches!(&*tail.borrow(), Sexp::Nil) => {
+                        out.insert(key, sexp_to_json(&val.borrow()));
                     }
                     other => {
                         out.insert(key, sexp_to_json(other));
@@ -844,16 +846,16 @@ fn alist_to_json_object(value: &Sexp) -> Option<Map<String, Value>> {
     Some(out)
 }
 
-fn car(value: &Sexp) -> Option<&Sexp> {
+fn car(value: &Sexp) -> Option<Sexp> {
     match value {
-        Sexp::Cons(car, _) => Some(car),
+        Sexp::Cons(car, _) => Some(car.borrow().clone()),
         _ => None,
     }
 }
 
-fn cdr(value: &Sexp) -> Option<&Sexp> {
+fn cdr(value: &Sexp) -> Option<Sexp> {
     match value {
-        Sexp::Cons(_, cdr) => Some(cdr),
+        Sexp::Cons(_, cdr) => Some(cdr.borrow().clone()),
         _ => None,
     }
 }

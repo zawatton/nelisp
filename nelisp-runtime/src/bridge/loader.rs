@@ -201,7 +201,7 @@ fn handle_bridge_form(env: &mut Env, form: &Sexp) -> Result<bool, BridgeError> {
         return Ok(false);
     };
 
-    match head {
+    match head.as_str() {
         "require" | "provide" | "declare-function" | "defgroup" | "defface" => Ok(true),
         "define-error" => Ok(true),
         "nelisp--install-core-macros" => Ok(true),
@@ -236,7 +236,7 @@ fn bridge_bootstrap_value(form: &Sexp) -> Sexp {
         return form.clone();
     };
 
-    match head {
+    match head.as_str() {
         "make-hash-table" => {
             if let Some(label) = args.first() {
                 Sexp::Symbol(format!("__bridge_hash_{}", sanitize_label(label)))
@@ -269,34 +269,39 @@ fn sanitize_label(sexp: &Sexp) -> String {
     }
 }
 
-fn list_head(form: &Sexp) -> Option<(&str, Vec<Sexp>)> {
+fn list_head(form: &Sexp) -> Option<(String, Vec<Sexp>)> {
     match form {
-        Sexp::Cons(head, tail) => match head.as_ref() {
-            Sexp::Symbol(name) => Some((name.as_str(), list_to_vec(tail).ok()?)),
-            _ => None,
-        },
+        Sexp::Cons(head, tail) => {
+            let head_inner = head.borrow().clone();
+            let tail_inner = tail.borrow().clone();
+            match head_inner {
+                Sexp::Symbol(name) => Some((name, list_to_vec(&tail_inner).ok()?)),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
 
 fn list_to_vec(list: &Sexp) -> Result<Vec<Sexp>, ()> {
     let mut out = Vec::new();
-    let mut cur = list;
+    let mut cur: Sexp = list.clone();
     loop {
-        match cur {
+        let next = match &cur {
             Sexp::Nil => return Ok(out),
             Sexp::Cons(car, cdr) => {
-                out.push((**car).clone());
-                cur = cdr;
+                out.push(car.borrow().clone());
+                cdr.borrow().clone()
             }
             _ => return Err(()),
-        }
+        };
+        cur = next;
     }
 }
 
 fn form_context(form: &Sexp) -> String {
     match form {
-        Sexp::Cons(head, _) => match head.as_ref() {
+        Sexp::Cons(head, _) => match &*head.borrow() {
             Sexp::Symbol(name) => format!("top-level `{}`", name),
             _ => format!("form `{}`", reader::fmt_sexp(form)),
         },

@@ -242,7 +242,7 @@ fn symbol_to_sexp(name: &str) -> Sexp {
 fn build_dotted(items: Vec<Sexp>, tail: Sexp) -> Sexp {
     let mut acc = tail;
     for item in items.into_iter().rev() {
-        acc = Sexp::Cons(Box::new(item), Box::new(acc));
+        acc = Sexp::cons(item, acc);
     }
     acc
 }
@@ -281,10 +281,7 @@ mod tests {
         let got = parse("(a . b)");
         assert_eq!(
             got,
-            Sexp::Cons(
-                Box::new(Sexp::Symbol("a".into())),
-                Box::new(Sexp::Symbol("b".into())),
-            )
+            Sexp::cons(Sexp::Symbol("a".into()), Sexp::Symbol("b".into()))
         );
     }
 

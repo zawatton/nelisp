@@ -66,7 +66,7 @@ pub fn apply_special(
 
 fn first_arg(args: &Sexp, op: &str) -> Result<Sexp, EvalError> {
     match args {
-        Sexp::Cons(a, _) => Ok((**a).clone()),
+        Sexp::Cons(a, _) => Ok(a.borrow().clone()),
         _ => Err(EvalError::WrongNumberOfArguments {
             function: op.into(),
             expected: "≥1".into(),
@@ -104,10 +104,10 @@ fn sf_function(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     // returns the symbol (the evaluator will fcell-lookup at funcall).
     let form = first_arg(args, "function")?;
     match &form {
-        Sexp::Cons(head, _) if matches!(head.as_ref(), Sexp::Symbol(s) if s == "lambda") => {
-            sf_lambda(&Sexp::Cons(
-                Box::new(extract_lambda_args(&form)?),
-                Box::new(extract_lambda_body(&form)?),
+        Sexp::Cons(head, _) if matches!(&*head.borrow(), Sexp::Symbol(s) if s == "lambda") => {
+            sf_lambda(&Sexp::cons(
+                extract_lambda_args(&form)?,
+                extract_lambda_body(&form)?,
             ), env)
         }
         _ => Ok(form),
@@ -116,8 +116,8 @@ fn sf_function(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
 
 fn extract_lambda_args(lam: &Sexp) -> Result<Sexp, EvalError> {
     if let Sexp::Cons(_, rest) = lam {
-        if let Sexp::Cons(args, _) = rest.as_ref() {
-            return Ok((**args).clone());
+        if let Sexp::Cons(args, _) = &*rest.borrow() {
+            return Ok(args.borrow().clone());
         }
     }
     Err(EvalError::Internal("lambda has no formals".into()))
@@ -125,8 +125,8 @@ fn extract_lambda_args(lam: &Sexp) -> Result<Sexp, EvalError> {
 
 fn extract_lambda_body(lam: &Sexp) -> Result<Sexp, EvalError> {
     if let Sexp::Cons(_, rest) = lam {
-        if let Sexp::Cons(_, body) = rest.as_ref() {
-            return Ok((**body).clone());
+        if let Sexp::Cons(_, body) = &*rest.borrow() {
+            return Ok(body.borrow().clone());
         }
     }
     Err(EvalError::Internal("lambda has no body".into()))
@@ -837,7 +837,7 @@ fn pcase_match_binding(pattern: &Sexp, value: &Sexp) -> Result<Option<Option<Str
         Sexp::T => Ok(matches!(value, Sexp::T).then_some(None)),
         Sexp::Symbol(name) if name == "_" => Ok(Some(None)),
         Sexp::Symbol(name) => Ok(Some(Some(name.clone()))),
-        Sexp::Cons(head, _) if matches!(head.as_ref(), Sexp::Symbol(s) if s == "quote") => {
+        Sexp::Cons(head, _) if matches!(&*head.borrow(), Sexp::Symbol(s) if s == "quote") => {
             let quoted = args_vec(pattern)?;
             if quoted.len() != 2 {
                 return Err(EvalError::WrongType {

@@ -109,7 +109,7 @@ fn eval_inner(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
         // Plain symbols evaluate via the value cell.
         Sexp::Symbol(name) => env.lookup_value(name),
         // Cons → function application.
-        Sexp::Cons(head, tail) => apply_combiner(head, tail, env),
+        Sexp::Cons(head, tail) => apply_combiner(&head.borrow(), &tail.borrow(), env),
     }
 }
 
@@ -155,13 +155,13 @@ fn apply_combiner(head: &Sexp, tail: &Sexp, env: &mut Env) -> Result<Sexp, EvalE
 /// resulting Vec for argument passing.
 pub(crate) fn eval_arg_list(args: &Sexp, env: &mut Env) -> Result<Vec<Sexp>, EvalError> {
     let mut out = Vec::new();
-    let mut cur = args;
+    let mut cur: Sexp = args.clone();
     loop {
-        match cur {
+        let next = match &cur {
             Sexp::Nil => return Ok(out),
             Sexp::Cons(a, d) => {
-                out.push(eval(a, env)?);
-                cur = d;
+                out.push(eval(&a.borrow(), env)?);
+                d.borrow().clone()
             }
             _ => {
                 return Err(EvalError::WrongType {
@@ -169,7 +169,8 @@ pub(crate) fn eval_arg_list(args: &Sexp, env: &mut Env) -> Result<Vec<Sexp>, Eva
                     got: cur.clone(),
                 })
             }
-        }
+        };
+        cur = next;
     }
 }
 
@@ -178,13 +179,13 @@ pub(crate) fn eval_arg_list(args: &Sexp, env: &mut Env) -> Result<Vec<Sexp>, Eva
 /// (e.g. `quote`, `lambda` formal-parameter lists, `let` bindings).
 pub(crate) fn list_elements(list: &Sexp) -> Result<Vec<Sexp>, EvalError> {
     let mut out = Vec::new();
-    let mut cur = list;
+    let mut cur: Sexp = list.clone();
     loop {
-        match cur {
+        let next = match &cur {
             Sexp::Nil => return Ok(out),
             Sexp::Cons(a, d) => {
-                out.push((**a).clone());
-                cur = d;
+                out.push(a.borrow().clone());
+                d.borrow().clone()
             }
             _ => {
                 return Err(EvalError::WrongType {
@@ -192,7 +193,8 @@ pub(crate) fn list_elements(list: &Sexp) -> Result<Vec<Sexp>, EvalError> {
                     got: cur.clone(),
                 })
             }
-        }
+        };
+        cur = next;
     }
 }
 
@@ -207,7 +209,7 @@ pub(crate) fn list_elements(list: &Sexp) -> Result<Vec<Sexp>, EvalError> {
 ///     missing)
 pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     match func {
-        Sexp::Cons(head, _) => match head.as_ref() {
+        Sexp::Cons(head, _) => match &*head.borrow() {
             Sexp::Symbol(s) if s == "builtin" => apply_builtin(func, args, env),
             Sexp::Symbol(s) if s == "closure" => apply_closure(func, args, env),
             Sexp::Symbol(s) if s == "lambda" => {
@@ -239,8 +241,8 @@ fn apply_builtin(
 ) -> Result<Sexp, EvalError> {
     // `(builtin <NAME>)` — pull the name out, dispatch via the registry.
     let name = match func {
-        Sexp::Cons(_, tail) => match tail.as_ref() {
-            Sexp::Cons(name, _) => match name.as_ref() {
+        Sexp::Cons(_, tail) => match &*tail.borrow() {
+            Sexp::Cons(name, _) => match &*name.borrow() {
                 Sexp::Symbol(s) => s.clone(),
                 Sexp::Str(s) => s.clone(),
                 _ => return Err(EvalError::Internal(
@@ -441,7 +443,7 @@ pub(crate) fn bind_formals(
 fn is_macro(func: &Sexp) -> bool {
     matches!(
         func,
-        Sexp::Cons(head, _) if matches!(head.as_ref(), Sexp::Symbol(s) if s == "macro")
+        Sexp::Cons(head, _) if matches!(&*head.borrow(), Sexp::Symbol(s) if s == "macro")
     )
 }
 

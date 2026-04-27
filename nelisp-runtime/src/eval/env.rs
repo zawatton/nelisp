@@ -285,8 +285,8 @@ impl Env {
         }
         let mut acc = Sexp::Nil;
         for (k, v) in entries.into_iter().rev() {
-            let pair = Sexp::Cons(Box::new(Sexp::Symbol(k)), Box::new(v));
-            acc = Sexp::Cons(Box::new(pair), Box::new(acc));
+            let pair = Sexp::cons(Sexp::Symbol(k), v);
+            acc = Sexp::cons(pair, acc);
         }
         acc
     }
@@ -295,14 +295,15 @@ impl Env {
     /// of [`Env::capture_lexical`]).
     pub fn push_captured(&mut self, alist: &Sexp) -> Result<(), EvalError> {
         let mut frame: Frame = HashMap::new();
-        let mut cur = alist;
+        let mut cur: Sexp = alist.clone();
         loop {
-            match cur {
+            let next = match &cur {
                 Sexp::Nil => break,
                 Sexp::Cons(car, cdr) => {
-                    if let Sexp::Cons(name, value) = car.as_ref() {
-                        if let Sexp::Symbol(s) = name.as_ref() {
-                            frame.insert(s.clone(), (**value).clone());
+                    let car_inner = car.borrow().clone();
+                    if let Sexp::Cons(name, value) = &car_inner {
+                        if let Sexp::Symbol(s) = &*name.borrow() {
+                            frame.insert(s.clone(), value.borrow().clone());
                         } else {
                             return Err(EvalError::Internal(
                                 "closure env entry name not a symbol".into(),
@@ -313,14 +314,15 @@ impl Env {
                             "closure env entry not a cons".into(),
                         ));
                     }
-                    cur = cdr;
+                    cdr.borrow().clone()
                 }
                 _ => {
                     return Err(EvalError::Internal(
                         "closure env not a proper list".into(),
                     ))
                 }
-            }
+            };
+            cur = next;
         }
         self.frames.push(frame);
         Ok(())

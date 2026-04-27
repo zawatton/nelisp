@@ -127,7 +127,7 @@ impl EvalError {
             EvalError::Read(e) => Sexp::list_from(&[Sexp::Str(e.to_string())]),
             EvalError::Internal(msg) => Sexp::list_from(&[Sexp::Str(msg.clone())]),
         };
-        Sexp::Cons(Box::new(tag), Box::new(data))
+        Sexp::cons(tag, data)
     }
 }
 

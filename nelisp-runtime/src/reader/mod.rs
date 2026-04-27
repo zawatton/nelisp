@@ -108,10 +108,7 @@ mod tests {
     #[test]
     fn smoke_dotted_pair() {
         let got = read_str("(a . b)").unwrap();
-        let expected = Sexp::Cons(
-            Box::new(Sexp::Symbol("a".into())),
-            Box::new(Sexp::Symbol("b".into())),
-        );
+        let expected = Sexp::cons(Sexp::Symbol("a".into()), Sexp::Symbol("b".into()));
         assert_eq!(got, expected);
     }
 

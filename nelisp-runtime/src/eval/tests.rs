@@ -122,7 +122,7 @@ fn function_on_lambda_makes_closure() {
     let v = ok("(function (lambda (x) x))");
     // Should be a closure form starting with `closure` symbol.
     if let Sexp::Cons(head, _) = &v {
-        assert_eq!(head.as_ref(), &Sexp::Symbol("closure".into()));
+        assert_eq!(*head.borrow(), Sexp::Symbol("closure".into()));
     } else {
         panic!("expected closure cons, got {:?}", v);
     }
@@ -612,20 +612,14 @@ fn member_uses_equal() {
 #[test]
 fn assq_alist_lookup() {
     let v = ok("(assq 'b '((a . 1) (b . 2) (c . 3)))");
-    let expected = Sexp::Cons(
-        Box::new(Sexp::Symbol("b".into())),
-        Box::new(Sexp::Int(2)),
-    );
+    let expected = Sexp::cons(Sexp::Symbol("b".into()), Sexp::Int(2));
     assert_eq!(v, expected);
 }
 
 #[test]
 fn assoc_uses_equal() {
     let v = ok("(assoc \"k\" '((\"j\" . 1) (\"k\" . 2)))");
-    let expected = Sexp::Cons(
-        Box::new(Sexp::Str("k".into())),
-        Box::new(Sexp::Int(2)),
-    );
+    let expected = Sexp::cons(Sexp::Str("k".into()), Sexp::Int(2));
     assert_eq!(v, expected);
 }
 
@@ -1098,5 +1092,76 @@ fn aset_on_string_errors() {
 #[test]
 fn aset_on_int_errors() {
     let e = err("(aset 42 0 0)");
+    assert!(matches!(e, EvalError::WrongType { .. }));
+}
+
+// ============================================================
+// setcar / setcdr — in-place cons mutation (Rc<RefCell<Sexp>>)
+// ============================================================
+
+#[test]
+fn setcar_returns_assigned_value() {
+    assert_eq!(ok("(setcar (cons 1 2) 99)"), Sexp::Int(99));
+}
+
+#[test]
+fn setcdr_returns_assigned_value() {
+    assert_eq!(ok("(setcdr (cons 1 2) 99)"), Sexp::Int(99));
+}
+
+#[test]
+fn setcar_mutation_visible_through_shared_binding() {
+    // The load-bearing guarantee: setcar on c is visible through d.
+    assert_eq!(
+        ok_all("
+            (setq c (cons 1 2))
+            (setq d c)
+            (setcar c 99)
+            (car d)
+        "),
+        Sexp::Int(99)
+    );
+}
+
+#[test]
+fn setcdr_mutation_visible_through_shared_binding() {
+    assert_eq!(
+        ok_all("
+            (setq c (cons 1 2))
+            (setq d c)
+            (setcdr c 88)
+            (cdr d)
+        "),
+        Sexp::Int(88)
+    );
+}
+
+#[test]
+fn setcar_then_car_returns_new_value() {
+    assert_eq!(
+        ok_all("(setq c (cons 1 2)) (setcar c 42) (car c)"),
+        Sexp::Int(42)
+    );
+}
+
+#[test]
+fn setcdr_chain_mutation() {
+    // Build (1 2 3), mutate cdr of head to nil, get (1).
+    assert_eq!(
+        ok_all("(setq c (list 1 2 3)) (setcdr c nil) (length c)"),
+        Sexp::Int(1)
+    );
+}
+
+#[test]
+fn setcar_on_non_cons_errors() {
+    let e = err("(setcar 42 0)");
+    assert!(matches!(e, EvalError::WrongType { .. }));
+}
+
+#[test]
+fn setcdr_on_nil_errors() {
+    // nil is not a cons cell, even though it terminates lists.
+    let e = err("(setcdr nil 0)");
     assert!(matches!(e, EvalError::WrongType { .. }));
 }

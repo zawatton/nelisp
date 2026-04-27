@@ -36,6 +36,7 @@ pub fn install_builtins(env: &mut Env) {
         "eq", "equal",
         // cons / list
         "car", "cdr", "cons", "list", "nth", "length", "nthcdr", "nreverse", "reverse", "append",
+        "setcar", "setcdr",
         // generic sequence / array accessors
         "aref", "aset", "elt", "arrayp", "sequencep",
         "vector", "make-vector",
@@ -93,6 +94,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nthcdr" => bi_nthcdr(args),
         "nreverse" | "reverse" => bi_reverse(args),
         "append" => bi_append(args),
+        "setcar" => bi_setcar(args),
+        "setcdr" => bi_setcdr(args),
         // ---- generic accessors ----
         "aref" => bi_aref(args),
         "aset" => bi_aset(args),
@@ -121,7 +124,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "integerp" => bi_predicate(args, |v| matches!(v, Sexp::Int(_))),
         "floatp" => bi_predicate(args, |v| matches!(v, Sexp::Float(_))),
         "functionp" => bi_predicate(args, |v| matches!(v,
-            Sexp::Cons(h, _) if matches!(h.as_ref(),
+            Sexp::Cons(h, _) if matches!(&*h.borrow(),
                 Sexp::Symbol(s) if s == "lambda" || s == "closure" || s == "builtin"))),
         // ---- string ----
         "concat" => bi_concat(args),
@@ -371,7 +374,7 @@ fn bi_car(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("car", args, 1, Some(1))?;
     match &args[0] {
         Sexp::Nil => Ok(Sexp::Nil),
-        Sexp::Cons(a, _) => Ok((**a).clone()),
+        Sexp::Cons(a, _) => Ok(a.borrow().clone()),
         other => Err(EvalError::WrongType {
             expected: "listp".into(),
             got: other.clone(),
@@ -383,7 +386,7 @@ fn bi_cdr(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("cdr", args, 1, Some(1))?;
     match &args[0] {
         Sexp::Nil => Ok(Sexp::Nil),
-        Sexp::Cons(_, d) => Ok((**d).clone()),
+        Sexp::Cons(_, d) => Ok(d.borrow().clone()),
         other => Err(EvalError::WrongType {
             expected: "listp".into(),
             got: other.clone(),
@@ -393,10 +396,7 @@ fn bi_cdr(args: &[Sexp]) -> Result<Sexp, EvalError> {
 
 fn bi_cons(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("cons", args, 2, Some(2))?;
-    Ok(Sexp::Cons(
-        Box::new(args[0].clone()),
-        Box::new(args[1].clone()),
-    ))
+    Ok(Sexp::cons(args[0].clone(), args[1].clone()))
 }
 
 fn bi_nth(args: &[Sexp]) -> Result<Sexp, EvalError> {
@@ -406,7 +406,7 @@ fn bi_nth(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let mut i = 0;
     while i < n {
         cur = match cur {
-            Sexp::Cons(_, d) => *d,
+            Sexp::Cons(_, d) => d.borrow().clone(),
             Sexp::Nil => return Ok(Sexp::Nil),
             other => {
                 return Err(EvalError::WrongType {
@@ -418,7 +418,7 @@ fn bi_nth(args: &[Sexp]) -> Result<Sexp, EvalError> {
         i += 1;
     }
     match cur {
-        Sexp::Cons(a, _) => Ok(*a),
+        Sexp::Cons(a, _) => Ok(a.borrow().clone()),
         Sexp::Nil => Ok(Sexp::Nil),
         other => Err(EvalError::WrongType {
             expected: "listp".into(),
@@ -435,13 +435,13 @@ fn bi_length(args: &[Sexp]) -> Result<Sexp, EvalError> {
         Sexp::Vector(v) => Ok(Sexp::Int(v.borrow().len() as i64)),
         Sexp::Cons(_, _) => {
             let mut n = 0i64;
-            let mut cur = &args[0];
+            let mut cur: Sexp = args[0].clone();
             loop {
-                match cur {
+                let next = match &cur {
                     Sexp::Nil => return Ok(Sexp::Int(n)),
                     Sexp::Cons(_, d) => {
                         n += 1;
-                        cur = d;
+                        d.borrow().clone()
                     }
                     other => {
                         return Err(EvalError::WrongType {
@@ -449,7 +449,8 @@ fn bi_length(args: &[Sexp]) -> Result<Sexp, EvalError> {
                             got: other.clone(),
                         })
                     }
-                }
+                };
+                cur = next;
             }
         }
         other => Err(EvalError::WrongType {
@@ -466,7 +467,7 @@ fn bi_nthcdr(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let mut i = 0;
     while i < n {
         cur = match cur {
-            Sexp::Cons(_, d) => *d,
+            Sexp::Cons(_, d) => d.borrow().clone(),
             Sexp::Nil => return Ok(Sexp::Nil),
             other => {
                 return Err(EvalError::WrongType {
@@ -482,14 +483,14 @@ fn bi_nthcdr(args: &[Sexp]) -> Result<Sexp, EvalError> {
 
 fn bi_reverse(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("reverse", args, 1, Some(1))?;
-    let mut cur = &args[0];
+    let mut cur: Sexp = args[0].clone();
     let mut acc = Sexp::Nil;
     loop {
-        match cur {
+        let next = match &cur {
             Sexp::Nil => return Ok(acc),
             Sexp::Cons(a, d) => {
-                acc = Sexp::Cons(Box::new((**a).clone()), Box::new(acc));
-                cur = d;
+                acc = Sexp::cons(a.borrow().clone(), acc);
+                d.borrow().clone()
             }
             other => {
                 return Err(EvalError::WrongType {
@@ -497,7 +498,8 @@ fn bi_reverse(args: &[Sexp]) -> Result<Sexp, EvalError> {
                     got: other.clone(),
                 })
             }
-        }
+        };
+        cur = next;
     }
 }
 
@@ -507,13 +509,13 @@ fn bi_append(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
     let mut all_but_last: Vec<Sexp> = Vec::new();
     for a in &args[..args.len() - 1] {
-        let mut cur = a;
+        let mut cur: Sexp = a.clone();
         loop {
-            match cur {
+            let next = match &cur {
                 Sexp::Nil => break,
                 Sexp::Cons(h, t) => {
-                    all_but_last.push((**h).clone());
-                    cur = t;
+                    all_but_last.push(h.borrow().clone());
+                    t.borrow().clone()
                 }
                 other => {
                     return Err(EvalError::WrongType {
@@ -521,12 +523,13 @@ fn bi_append(args: &[Sexp]) -> Result<Sexp, EvalError> {
                         got: other.clone(),
                     })
                 }
-            }
+            };
+            cur = next;
         }
     }
     let mut acc = args.last().unwrap().clone();
     for item in all_but_last.into_iter().rev() {
-        acc = Sexp::Cons(Box::new(item), Box::new(acc));
+        acc = Sexp::cons(item, acc);
     }
     Ok(acc)
 }
@@ -535,13 +538,13 @@ fn bi_append(args: &[Sexp]) -> Result<Sexp, EvalError> {
 
 fn list_to_vec(v: &Sexp) -> Result<Vec<Sexp>, EvalError> {
     let mut out = Vec::new();
-    let mut cur = v;
+    let mut cur: Sexp = v.clone();
     loop {
-        match cur {
+        let next = match &cur {
             Sexp::Nil => return Ok(out),
             Sexp::Cons(a, d) => {
-                out.push((**a).clone());
-                cur = d;
+                out.push(a.borrow().clone());
+                d.borrow().clone()
             }
             other => {
                 return Err(EvalError::WrongType {
@@ -549,7 +552,8 @@ fn list_to_vec(v: &Sexp) -> Result<Vec<Sexp>, EvalError> {
                     got: other.clone(),
                 })
             }
-        }
+        };
+        cur = next;
     }
 }
 
@@ -576,83 +580,85 @@ fn bi_mapc(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
 
 fn bi_memq(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("memq", args, 2, Some(2))?;
-    let needle = &args[0];
+    let needle = args[0].clone();
     let mut cur = args[1].clone();
     loop {
-        match &cur {
+        let next = match &cur {
             Sexp::Nil => return Ok(Sexp::Nil),
-            Sexp::Cons(a, _) => {
-                if sexp_eq(a, needle) {
+            Sexp::Cons(a, d) => {
+                let a_clone = a.borrow().clone();
+                if sexp_eq(&a_clone, &needle) {
                     return Ok(cur);
                 }
+                d.borrow().clone()
             }
             _ => return Ok(Sexp::Nil),
-        }
-        cur = match cur {
-            Sexp::Cons(_, d) => *d,
-            _ => return Ok(Sexp::Nil),
         };
+        cur = next;
     }
 }
 
 fn bi_member(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("member", args, 2, Some(2))?;
-    let needle = &args[0];
+    let needle = args[0].clone();
     let mut cur = args[1].clone();
     loop {
-        match &cur {
+        let next = match &cur {
             Sexp::Nil => return Ok(Sexp::Nil),
-            Sexp::Cons(a, _) => {
-                if **a == *needle {
+            Sexp::Cons(a, d) => {
+                if *a.borrow() == needle {
                     return Ok(cur);
                 }
+                d.borrow().clone()
             }
             _ => return Ok(Sexp::Nil),
-        }
-        cur = match cur {
-            Sexp::Cons(_, d) => *d,
-            _ => return Ok(Sexp::Nil),
         };
+        cur = next;
     }
 }
 
 fn bi_assq(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("assq", args, 2, Some(2))?;
-    let key = &args[0];
-    let mut cur = &args[1];
+    let key = args[0].clone();
+    let mut cur: Sexp = args[1].clone();
     loop {
-        match cur {
+        let next = match &cur {
             Sexp::Nil => return Ok(Sexp::Nil),
             Sexp::Cons(pair, rest) => {
-                if let Sexp::Cons(k, _) = pair.as_ref() {
-                    if sexp_eq(k, key) {
-                        return Ok((**pair).clone());
+                let pair_clone = pair.borrow().clone();
+                if let Sexp::Cons(k, _) = &pair_clone {
+                    let k_clone = k.borrow().clone();
+                    if sexp_eq(&k_clone, &key) {
+                        return Ok(pair_clone);
                     }
                 }
-                cur = rest;
+                rest.borrow().clone()
             }
             _ => return Ok(Sexp::Nil),
-        }
+        };
+        cur = next;
     }
 }
 
 fn bi_assoc(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("assoc", args, 2, Some(2))?;
-    let key = &args[0];
-    let mut cur = &args[1];
+    let key = args[0].clone();
+    let mut cur: Sexp = args[1].clone();
     loop {
-        match cur {
+        let next = match &cur {
             Sexp::Nil => return Ok(Sexp::Nil),
             Sexp::Cons(pair, rest) => {
-                if let Sexp::Cons(k, _) = pair.as_ref() {
-                    if **k == *key {
-                        return Ok((**pair).clone());
+                let pair_clone = pair.borrow().clone();
+                if let Sexp::Cons(k, _) = &pair_clone {
+                    if *k.borrow() == key {
+                        return Ok(pair_clone);
                     }
                 }
-                cur = rest;
+                rest.borrow().clone()
             }
             _ => return Ok(Sexp::Nil),
-        }
+        };
+        cur = next;
     }
 }
 
@@ -669,26 +675,30 @@ fn compare_with_test(test: Option<&Sexp>, left: &Sexp, right: &Sexp) -> bool {
 
 fn bi_alist_get(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("alist-get", args, 2, Some(5))?;
-    let key = &args[0];
+    let key = args[0].clone();
     let default = args.get(2).cloned().unwrap_or(Sexp::Nil);
-    let test = args.get(4);
-    let mut cur = &args[1];
+    let test = args.get(4).cloned();
+    let mut cur: Sexp = args[1].clone();
     loop {
-        match cur {
+        let next = match &cur {
             Sexp::Nil => return Ok(default),
             Sexp::Cons(pair, rest) => {
-                if let Sexp::Cons(k, vtail) = pair.as_ref() {
-                    if compare_with_test(test, k, key) {
-                        return match vtail.as_ref() {
-                            Sexp::Cons(v, _) => Ok((**v).clone()),
-                            other => Ok(other.clone()),
+                let pair_clone = pair.borrow().clone();
+                if let Sexp::Cons(k, vtail) = &pair_clone {
+                    let k_clone = k.borrow().clone();
+                    if compare_with_test(test.as_ref(), &k_clone, &key) {
+                        let vtail_clone = vtail.borrow().clone();
+                        return match vtail_clone {
+                            Sexp::Cons(v, _) => Ok(v.borrow().clone()),
+                            other => Ok(other),
                         };
                     }
                 }
-                cur = rest;
+                rest.borrow().clone()
             }
             _ => return Ok(default),
-        }
+        };
+        cur = next;
     }
 }
 
@@ -1290,16 +1300,16 @@ fn bi_elt(args: &[Sexp]) -> Result<Sexp, EvalError> {
             index
         ))),
         Sexp::Cons(_, _) => {
-            let mut cur = &args[0];
+            let mut cur: Sexp = args[0].clone();
             let mut remaining = index;
             loop {
-                match cur {
+                let next = match &cur {
                     Sexp::Cons(h, t) => {
                         if remaining == 0 {
-                            return Ok((**h).clone());
+                            return Ok(h.borrow().clone());
                         }
                         remaining -= 1;
-                        cur = t;
+                        t.borrow().clone()
                     }
                     Sexp::Nil => {
                         return Err(EvalError::ArithError(format!(
@@ -1313,7 +1323,8 @@ fn bi_elt(args: &[Sexp]) -> Result<Sexp, EvalError> {
                             got: other.clone(),
                         });
                     }
-                }
+                };
+                cur = next;
             }
         }
         Sexp::Str(_) | Sexp::Vector(_) => bi_aref(args),
@@ -1334,6 +1345,38 @@ fn bi_make_vector(args: &[Sexp]) -> Result<Sexp, EvalError> {
         )));
     }
     Ok(Sexp::vector(vec![args[1].clone(); len as usize]))
+}
+
+fn bi_setcar(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    // (setcar CELL VALUE) — mutate the car of a cons cell in place.
+    // Sharing of the cell across bindings is the load-bearing
+    // guarantee the Sexp::Cons -> Rc<RefCell<Sexp>> migration buys.
+    require_arity("setcar", args, 2, Some(2))?;
+    match &args[0] {
+        Sexp::Cons(h, _) => {
+            *h.borrow_mut() = args[1].clone();
+            // Emacs' setcar returns the new value.
+            Ok(args[1].clone())
+        }
+        other => Err(EvalError::WrongType {
+            expected: "consp".into(),
+            got: other.clone(),
+        }),
+    }
+}
+
+fn bi_setcdr(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("setcdr", args, 2, Some(2))?;
+    match &args[0] {
+        Sexp::Cons(_, t) => {
+            *t.borrow_mut() = args[1].clone();
+            Ok(args[1].clone())
+        }
+        other => Err(EvalError::WrongType {
+            expected: "consp".into(),
+            got: other.clone(),
+        }),
+    }
 }
 
 fn bi_aset(args: &[Sexp]) -> Result<Sexp, EvalError> {

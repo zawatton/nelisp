@@ -57,7 +57,13 @@ pub enum Sexp {
     /// Cons cell.  Lists are encoded as right-leaning `Cons` chains
     /// terminated by `Nil`; dotted pairs (`(a . b)`) leave the cdr as
     /// any non-`Nil` value.
-    Cons(Box<Sexp>, Box<Sexp>),
+    ///
+    /// Phase 8.x: each pointer is `Rc<RefCell<Sexp>>` so `setcar' /
+    /// `setcdr' can mutate in place and the change is visible
+    /// through any aliased binding (the cell itself has identity,
+    /// like Common Lisp / Scheme cons cells).  Clone is two Rc
+    /// bumps — cheap; equality stays structural.
+    Cons(Rc<RefCell<Sexp>>, Rc<RefCell<Sexp>>),
     /// `[a b c]` vector literal.
     ///
     /// Wrapped in `Rc<RefCell<...>>' to support `aset' / in-place
@@ -73,15 +79,39 @@ impl Sexp {
     pub fn list_from(items: &[Sexp]) -> Sexp {
         let mut acc = Sexp::Nil;
         for item in items.iter().rev() {
-            acc = Sexp::Cons(Box::new(item.clone()), Box::new(acc));
+            acc = Sexp::cons(item.clone(), acc);
         }
         acc
+    }
+
+    /// Build a cons cell.  Allocates two Rc<RefCell<Sexp>> wrappers
+    /// so the cell has identity (== same Rc instance through any
+    /// alias) and supports `setcar' / `setcdr' mutation.
+    pub fn cons(car: Sexp, cdr: Sexp) -> Sexp {
+        Sexp::Cons(Rc::new(RefCell::new(car)), Rc::new(RefCell::new(cdr)))
     }
 
     /// Build a vector Sexp from an owned `Vec<Sexp>` without forcing
     /// every call site to spell out `Rc::new(RefCell::new(...))'.
     pub fn vector(items: Vec<Sexp>) -> Sexp {
         Sexp::Vector(Rc::new(RefCell::new(items)))
+    }
+
+    /// Read the car of a cons cell as a fresh `Sexp` clone.  Returns
+    /// `Nil' for non-cons input — same shape as Emacs' `car'.
+    pub fn cons_car(&self) -> Sexp {
+        match self {
+            Sexp::Cons(h, _) => h.borrow().clone(),
+            _ => Sexp::Nil,
+        }
+    }
+
+    /// Read the cdr of a cons cell as a fresh `Sexp` clone.
+    pub fn cons_cdr(&self) -> Sexp {
+        match self {
+            Sexp::Cons(_, t) => t.borrow().clone(),
+            _ => Sexp::Nil,
+        }
     }
 
     /// Wrap a form in `(quote <form>)` (the desugaring of `'x`).
@@ -190,7 +220,7 @@ fn write_reader_macro(out: &mut String, s: &Sexp) -> bool {
     let Some((head, arg)) = list_tag_and_arg(s) else {
         return false;
     };
-    let prefix = match head {
+    let prefix = match head.as_str() {
         "quote" => "'",
         "backquote" => "`",
         "comma" => ",",
@@ -199,18 +229,27 @@ fn write_reader_macro(out: &mut String, s: &Sexp) -> bool {
         _ => return false,
     };
     out.push_str(prefix);
-    write_sexp(out, arg);
+    write_sexp(out, &arg);
     true
 }
 
-fn list_tag_and_arg(s: &Sexp) -> Option<(&str, &Sexp)> {
+/// Recognise a 2-element list `(TAG ARG)' whose head is a symbol and
+/// return `(TAG, ARG)' as cloned values.  Used by the printer to
+/// detect quote-family forms.
+fn list_tag_and_arg(s: &Sexp) -> Option<(String, Sexp)> {
     match s {
-        Sexp::Cons(car, cdr) => match (&**car, &**cdr) {
-            (Sexp::Symbol(tag), Sexp::Cons(arg, tail)) if matches!(**tail, Sexp::Nil) => {
-                Some((tag.as_str(), arg.as_ref()))
+        Sexp::Cons(car_rc, cdr_rc) => {
+            let car = car_rc.borrow();
+            let cdr = cdr_rc.borrow();
+            match (&*car, &*cdr) {
+                (Sexp::Symbol(tag), Sexp::Cons(arg_rc, tail_rc))
+                    if matches!(&*tail_rc.borrow(), Sexp::Nil) =>
+                {
+                    Some((tag.clone(), arg_rc.borrow().clone()))
+                }
+                _ => None,
             }
-            _ => None,
-        },
+        }
         _ => None,
     }
 }
@@ -219,17 +258,17 @@ fn list_tag_and_arg(s: &Sexp) -> Option<(&str, &Sexp)> {
 /// enclosing parens.  A non-`Nil` final cdr is rendered with the
 /// classic ` . tail` notation per Elisp printer.
 fn write_list_body(out: &mut String, s: &Sexp) {
-    let mut cur = s;
+    let mut cur: Sexp = s.clone();
     let mut first = true;
     loop {
-        match cur {
-            Sexp::Cons(car, cdr) => {
+        let next = match &cur {
+            Sexp::Cons(car_rc, cdr_rc) => {
                 if !first {
                     out.push(' ');
                 }
                 first = false;
-                write_sexp(out, car);
-                cur = cdr;
+                write_sexp(out, &car_rc.borrow());
+                cdr_rc.borrow().clone()
             }
             Sexp::Nil => return,
             other => {
@@ -237,7 +276,8 @@ fn write_list_body(out: &mut String, s: &Sexp) {
                 write_sexp(out, other);
                 return;
             }
-        }
+        };
+        cur = next;
     }
 }
 
@@ -253,12 +293,12 @@ mod tests {
     #[test]
     fn list_from_three_elements_chains_right() {
         let got = Sexp::list_from(&[Sexp::Int(1), Sexp::Int(2), Sexp::Int(3)]);
-        let expected = Sexp::Cons(
-            Box::new(Sexp::Int(1)),
-            Box::new(Sexp::Cons(
-                Box::new(Sexp::Int(2)),
-                Box::new(Sexp::Cons(Box::new(Sexp::Int(3)), Box::new(Sexp::Nil))),
-            )),
+        let expected = Sexp::cons(
+            Sexp::Int(1),
+            Sexp::cons(
+                Sexp::Int(2),
+                Sexp::cons(Sexp::Int(3), Sexp::Nil),
+            ),
         );
         assert_eq!(got, expected);
     }
@@ -282,10 +322,7 @@ mod tests {
 
     #[test]
     fn fmt_dotted_pair() {
-        let dotted = Sexp::Cons(
-            Box::new(Sexp::Symbol("a".into())),
-            Box::new(Sexp::Symbol("b".into())),
-        );
+        let dotted = Sexp::cons(Sexp::Symbol("a".into()), Sexp::Symbol("b".into()));
         assert_eq!(fmt_sexp(&dotted), "(a . b)");
     }
 
