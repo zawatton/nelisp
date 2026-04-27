@@ -1,8 +1,23 @@
-#+TITLE: Phase 7.5.4 — Rust-side minimal Elisp interpreter (true no-emacs-spawn anvil binary)
+#+TITLE: Phase 8.0 — Rust-side minimal Elisp interpreter (true no-emacs-spawn anvil binary)
 #+DATE: 2026-04-26
 #+AUTHOR: zawatton + Claude (Opus 4.7 1M scoping session、user vision 2026-04-27)
-#+STATUS: DRAFT
-#+STATUS-NEXT: pending user signoff (review §3 sub-phase 分割 + §4 risks + §6 ship gate)
+#+STATUS: LOCKED-2026-04-27 (= user signoff 2026-04-27、open question 7 件 全 agent 推奨採用)
+#+STATUS-NEXT: Phase 8.0.1 reader + 8.0.4 MCP skeleton 並列 dispatch 開始
+
+* §-1 リナンバー (= LOCK 時)
+
+元 doc は "Phase 7.5.4" を提案、しかし既存 main に Phase 7.5.4 (= T33
+Emacs module in-process FFI bridge、commit 376d620) が既 SHIPPED。
+本 doc は **Phase 8.0** に renumber + sub-phase = 8.0.1/.2/.3/.4/.5。
+
+User signoff (2026-04-27) で確定 7 question 解:
+  #1 番号: Phase 8.0 採用 (= 7.5 系完了 + 真 "no Emacs" 新軸)
+  #2 bootstrap subset LOC ceiling: ~2000 OK
+  #3 reader: backquote / character-literal subset start (= 段階的)
+  #4 takeover: Rust eval state を drop、NeLisp 側に完全 handoff
+  #5 host-Emacs spawn fallback: 3 yr 維持 (= safe path)
+  #6 MCP server: Rust 側実装 (= "0 emacs spawn" 達成)
+  #7 eval performance gate: なし (= bootstrap-only、500ms budget 内)
 
 * §0 要旨 (TL;DR)
 
