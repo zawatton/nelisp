@@ -1,0 +1,48 @@
+{
+  "schema": "stage-d-v2.0-manifest/1",
+  "release_version": "stage-d-v2.0",
+  "doc_ref": "docs/design/32-phase7.5-integration.org §3.3",
+  "blocker_platforms": ["linux-x86_64"],
+  "non_blocker_platforms": ["macos-arm64", "linux-arm64"],
+  "artifacts": [
+    {
+      "platform": "linux-x86_64",
+      "tarball": "stage-d-v2.0-linux-x86_64.tar.gz",
+      "sha256": "stage-d-v2.0-linux-x86_64.tar.gz.sha256",
+      "signature": "stage-d-v2.0-linux-x86_64.tar.gz.sig",
+      "tier": "blocker"
+    },
+    {
+      "platform": "macos-arm64",
+      "tarball": "stage-d-v2.0-macos-arm64.tar.gz",
+      "sha256": "stage-d-v2.0-macos-arm64.tar.gz.sha256",
+      "signature": "stage-d-v2.0-macos-arm64.tar.gz.sig",
+      "tier": "non-blocker-v1.0"
+    },
+    {
+      "platform": "linux-arm64",
+      "tarball": "stage-d-v2.0-linux-arm64.tar.gz",
+      "sha256": "stage-d-v2.0-linux-arm64.tar.gz.sha256",
+      "signature": "stage-d-v2.0-linux-arm64.tar.gz.sig",
+      "tier": "non-blocker-v1.0"
+    }
+  ],
+  "signature_scheme": "ad-hoc-placeholder",
+  "signature_scheme_real_target": "v2.1+ (Doc 32 v2 §2.5 + §8)",
+  "soak_gate": {
+    "blocker_hours": 1,
+    "post_ship_audit_hours": 24,
+    "rss_growth_threshold_mb_per_24h": 10,
+    "gc_pause_p99_threshold_ms": 50
+  },
+  "build_metadata_keys": [
+    "build_timestamp",
+    "git_commit",
+    "rustc_version",
+    "emacs_version"
+  ],
+  "notes": [
+    "Real GitHub Release upload deferred to v1.0 per Doc 32 v2 §11 LOCKED.",
+    "GPG signing scheduled for v2.1+; the .sig file currently holds an ad-hoc payload (= 'ad-hoc-signature <version> <platform> <iso8601>')."
+  ]
+}

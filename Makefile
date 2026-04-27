@@ -1,4 +1,4 @@
-.PHONY: test compile clean all bench gc-bench actor-bench soak smoke stage-d-tarball \
+.PHONY: test compile clean all bench gc-bench actor-bench soak soak-full soak-worker smoke stage-d-tarball \
         runtime runtime-test runtime-clean test-runtime \
         runtime-staticlib runtime-static runtime-module runtime-module-clean stage-d-v2-bin \
         sqlite-module sqlite-module-clean \
@@ -116,10 +116,23 @@ bench-allocator-heavy:
 	  -l nelisp-allocator-bench \
 	  -f nelisp-allocator-bench-batch
 
+# Phase 7.5.3 (Doc 32 v2 §3.3) — integration soak harness wrapper.
+# `soak'      = short smoke (~10 min equivalent: ~600 cold-init iterations).
+# `soak-full' = production 24h run (= --full-24h flag).
+# `soak-worker' preserves the legacy Phase 5-D.6 3-lane worker pool soak
+#               (= the previous default `soak' target) for those who need
+#               cross-lane starvation testing rather than the integration
+#               cold-init/RSS metric collection of Phase 7.5.3.
+soak:
+	@./test/nelisp-soak-test.sh
+
+soak-full:
+	@./test/nelisp-soak-test.sh --full-24h
+
 # Phase 5-D.6 worker soak.  Advisory only — not gated.  Exercises the
 # 3-lane worker pool under sustained mixed load (20 read + 5 write +
 # 1 long-running batch) and proves no cross-lane starvation.
-soak:
+soak-worker:
 	$(EMACS) --batch -Q -L src -L test \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l ert \
