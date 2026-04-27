@@ -217,6 +217,34 @@ cmd_doctor() {
     echo "  anvil.el        : NOT FOUND (set ANVIL_LISP_DIR to enable architecture α)"
     echo "  serve mode      : nelisp-server (fallback, Phase 6.0 baseline)"
   fi
+  # Phase 7.5.1 (Doc 32 v2 LOCKED §3.1) — surface the cdylib +
+  # staticlib build artifacts so a user can confirm whether their
+  # checkout has produced the static-link prerequisites for the
+  # upcoming `--no-emacs` (Phase 7.5.2) / stage-d-v2.0 (Phase 7.5.3)
+  # paths without grepping the Cargo target dir manually.
+  local rt_dir="$ANVIL_HOME/nelisp-runtime/target/release"
+  local rt_cdylib=""
+  for cand in libnelisp_runtime.so libnelisp_runtime.dylib nelisp_runtime.dll; do
+    if [[ -f "$rt_dir/$cand" ]]; then
+      rt_cdylib="$rt_dir/$cand"
+      break
+    fi
+  done
+  if [[ -n "$rt_cdylib" ]]; then
+    local sz
+    sz=$(du -h "$rt_cdylib" 2>/dev/null | cut -f1)
+    echo "  runtime cdylib  : $rt_cdylib ($sz)"
+  else
+    echo "  runtime cdylib  : NOT BUILT — run 'make runtime'"
+  fi
+  local rt_static="$rt_dir/libnelisp_runtime.a"
+  if [[ -f "$rt_static" ]]; then
+    local sz
+    sz=$(du -h "$rt_static" 2>/dev/null | cut -f1)
+    echo "  runtime static  : $rt_static ($sz)"
+  else
+    echo "  runtime static  : NOT BUILT — run 'make runtime-static'"
+  fi
   echo "  status          : ready for 'anvil mcp serve'"
 }
 

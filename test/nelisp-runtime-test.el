@@ -52,6 +52,20 @@
                  "nelisp_runtime.dll")))
   "Candidate paths for the cdylib built alongside the binary.")
 
+;; Phase 7.5.1 (Doc 32 v2 LOCKED §3.1) — staticlib path next to the
+;; cdylib.  Same target dir, single file (Linux/macOS use `.a',
+;; Windows MSVC uses `nelisp_runtime.lib').  We probe both names and
+;; let the test pick the first that exists.
+(defconst nelisp-runtime-test--staticlib-candidates
+  (and nelisp-runtime-test--repo-root
+       (mapcar (lambda (name)
+                 (expand-file-name
+                  (concat "nelisp-runtime/target/release/" name)
+                  nelisp-runtime-test--repo-root))
+               '("libnelisp_runtime.a"
+                 "nelisp_runtime.lib")))
+  "Candidate paths for the staticlib built alongside the cdylib.")
+
 (defun nelisp-runtime-test--skip-unless-built ()
   "Skip the current ERT unless the Rust binary has been built."
   (unless (and nelisp-runtime-test--bin
@@ -140,6 +154,81 @@ so the test stays portable on hosts without binutils."
   (nelisp-runtime-test--skip-unless-built)
   (should (nelisp-runtime-test--cdylib-exports-symbol-p
            "nelisp_syscall_jit_write_protect")))
+
+;; ---------------------------------------------------------------------------
+;; Phase 7.5.1 (Doc 32 v2 LOCKED §3.1) — staticlib build.
+;; cargo build --release with crate-type = ["cdylib", "rlib", "staticlib"]
+;; must produce libnelisp_runtime.a alongside the .so / .dylib.  These
+;; smokes prove the dual-output is intact so the upcoming
+;; `--strict-no-emacs' (Phase 7.5.2) static-link path has its
+;; prerequisite artifact ready.  Each test skips cleanly when the
+;; staticlib is missing (= `make runtime' / `make runtime-static' has
+;; not been run on this checkout) so the green baseline is preserved
+;; on hosts without a Rust toolchain.
+;; ---------------------------------------------------------------------------
+
+(defun nelisp-runtime-test--staticlib ()
+  "Return the first staticlib candidate that exists, or nil."
+  (cl-find-if #'file-exists-p nelisp-runtime-test--staticlib-candidates))
+
+(defun nelisp-runtime-test--skip-unless-staticlib-built ()
+  "Skip the current ERT unless the Rust staticlib has been built."
+  (unless (nelisp-runtime-test--staticlib)
+    (ert-skip
+     (format
+      "staticlib not built — run `make runtime-static' (looked at %s)"
+      (mapconcat #'identity
+                 nelisp-runtime-test--staticlib-candidates ", ")))))
+
+(ert-deftest nelisp-runtime-staticlib-exists ()
+  "cargo must produce a staticlib (.a) alongside the cdylib so the
+Phase 7.5.2 static-link path has its prerequisite artifact.  This
+is the load-bearing acceptance check for the `runtime-static'
+Makefile target."
+  (nelisp-runtime-test--skip-unless-built)
+  (nelisp-runtime-test--skip-unless-staticlib-built)
+  (should (cl-some #'file-exists-p
+                   nelisp-runtime-test--staticlib-candidates)))
+
+(ert-deftest nelisp-runtime-staticlib-and-cdylib-coexist ()
+  "Phase 7.5.1 dual-output build: when *either* artifact is present,
+both should be present.  Mismatched output (e.g. only .so produced
+because Cargo.toml lost `staticlib' from crate-type) is a red flag
+that the `make runtime' / `make runtime-static' pair has drifted
+out of sync with the Cargo.toml `[lib].crate-type' list."
+  (nelisp-runtime-test--skip-unless-built)
+  (let ((cdylib  (nelisp-runtime-test--cdylib))
+        (staticl (nelisp-runtime-test--staticlib)))
+    ;; If neither is built, skip — fresh checkout, no toolchain.
+    (when (and (null cdylib) (null staticl))
+      (ert-skip "neither cdylib nor staticlib built — run `make runtime-static'"))
+    ;; Otherwise both must be present (dual-output build invariant).
+    (should cdylib)
+    (should staticl)))
+
+(ert-deftest nelisp-runtime-staticlib-is-ar-archive ()
+  "The staticlib (.a) must be a real `ar' archive, not a stub.
+Mirrors the `make runtime-static' Makefile smoke check (`file' must
+report `current ar archive') so the assertion is reachable from
+both the ERT layer and the build pipeline."
+  (nelisp-runtime-test--skip-unless-built)
+  (nelisp-runtime-test--skip-unless-staticlib-built)
+  (let ((path (nelisp-runtime-test--staticlib))
+        (file-bin (executable-find "file")))
+    (cond
+     ((null file-bin)
+      (ert-skip "`file' not on PATH — cannot verify ar archive header"))
+     ;; .lib (Windows MSVC) is not a Unix ar archive — skip the magic
+     ;; check on that path, the `file-exists-p' assertion above is the
+     ;; load-bearing one for MSVC builds.
+     ((string-match-p "\\.lib\\'" path)
+      (ert-skip "Windows MSVC .lib is not a Unix ar archive — header check N/A"))
+     (t
+      (with-temp-buffer
+        (let ((rc (call-process file-bin nil t nil path)))
+          (should (eq rc 0))
+          (goto-char (point-min))
+          (should (re-search-forward "ar archive" nil t))))))))
 
 (provide 'nelisp-runtime-test)
 ;;; nelisp-runtime-test.el ends here

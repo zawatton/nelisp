@@ -1,6 +1,6 @@
 .PHONY: test compile clean all bench gc-bench actor-bench soak smoke stage-d-tarball \
         runtime runtime-test runtime-clean test-runtime \
-        runtime-staticlib runtime-module runtime-module-clean stage-d-v2-bin \
+        runtime-staticlib runtime-static runtime-module runtime-module-clean stage-d-v2-bin \
         sqlite-module sqlite-module-clean \
         release-artifact release-checksum soak-blocker soak-post-ship \
         bench-actual bench-actual-cargo
@@ -148,6 +148,28 @@ runtime-staticlib:
 	    printf "  \033[1;33m!\033[0m staticlib NOT produced — check Cargo.toml crate-type contains \"staticlib\"\n"; \
 	    exit 1; \
 	fi
+	@# CI smoke (Doc 32 v2 §3.1 ERT smoke #2 sibling): assert the
+	@# archive header is intact so a corrupted ar(1) artifact never
+	@# slips past the build step into a downstream link rule.  `file'
+	@# is in coreutils on every supported host (Linux/macOS/MSYS).
+	@if command -v file >/dev/null 2>&1; then \
+	    out=$$(file "$(NELISP_RUNTIME_STATICLIB)"); \
+	    case "$$out" in \
+	      *"current ar archive"*|*"ar archive"*) \
+	        printf "  \033[1;32m✓\033[0m staticlib smoke (file): %s\n" "$$out" ;; \
+	      *) \
+	        printf "  \033[1;31m✗\033[0m staticlib smoke FAIL — expected ar archive, got: %s\n" "$$out" >&2; \
+	        exit 1 ;; \
+	    esac; \
+	else \
+	    printf "  \033[1;33m!\033[0m skipping file(1) smoke — file command not on PATH\n"; \
+	fi
+
+# Doc 32 v2 §3.1 task spec naming alias.  Some Phase 7.5.1 callers
+# (briefing, CI scripts, doctor probe) refer to the staticlib build
+# as `runtime-static'; this alias forwards to the canonical
+# `runtime-staticlib' rule so we keep one source of truth.
+runtime-static: runtime-staticlib
 
 # Phase 7.5.4 (Doc 32 v2 §7 / T33) — Emacs module wrapper for in-process
 # FFI.  Built on top of the cdylib (`libnelisp_runtime.so`); the C
