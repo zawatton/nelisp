@@ -464,6 +464,273 @@ is captured."
           :rate (if (zerop n) 0.0 (/ (float passed) n))
           :first-failure first-fail)))
 
+;;;; Phase 7.5.2 — scaffold-layer dispatcher + per-stage stubs
+;;
+;; The real coordinator (`nelisp-integration-cold-init-run' above)
+;; delegates the four bootstrap stages to T12 `nelisp-cc-bootstrap-run',
+;; which in turn requires the T13 `nelisp-runtime' binary to be on
+;; disk.  Hosts without that binary (= release tarballs that ship only
+;; `src/' + `bin/anvil', CI runners that skip `make runtime') cannot
+;; exercise the real path.
+;;
+;; The scaffold-layer dispatcher below offers a strictly structural
+;; alternative: a 4-stage harness that runs each stage through either
+;; the *real* handler (when supplied via `:handlers' override) or a
+;; clearly-marked stub handler that returns
+;;   (:status :stub-not-yet-impl-pending-phase-X.Y :stage STAGE).
+;; Production callers therefore cannot mistake a stub return for a
+;; passing run — every stub status keyword starts with `:stub-' and
+;; the dispatcher refuses to count a stub as completed (the
+;; `:stages-completed' counter only advances on `pass').
+;;
+;; This separation lets Phase 7.5.2 ship the *contract* (= dispatcher
+;; shape, error propagation, timing, soak harness) before Phase
+;; 7.0-7.4 closure unblocks the real 4-stage embed.  The ERT layer
+;; pins the contract so a future Phase 7.0-7.4 close cannot drift the
+;; plist shape silently.
+
+(defconst nelisp-integration-cold-init-stage-order
+  '(stage1 stage2 stage3 stage4)
+  "Ordered list of cold-init stages run by the scaffold-layer dispatcher.
+Doc 32 v2 §3.2 + §4 names four stages:
+  - stage1 = Phase 7.0 syscall-stub init (mmap arena ready)
+  - stage2 = Phase 7.2 allocator + GC scheduler init
+  - stage3 = Phase 7.4 coding (UTF-8 IO codec attach)
+  - stage4 = Phase 7.1 native compiler bootstrap (= Doc 28 §3.5
+             4-stage embed; the scaffold treats the embed as a
+             single stage4 unit because the inner four sub-stages
+             are owned by `nelisp-cc-bootstrap-run' / T12).
+The stage4 inner sub-stages are deliberately not exposed at this
+layer — Phase 7.5.2 contract is at the *outer* 4-stage granularity.")
+
+(defconst nelisp-integration-cold-init-stage-blocked-by
+  '((stage1 . "Phase 7.0 syscall-stub init (= Phase 7.0.x close)")
+    (stage2 . "Phase 7.2 allocator + GC scheduler init (= Phase 7.2.x close)")
+    (stage3 . "Phase 7.4 coding init (= Phase 7.4.x close)")
+    (stage4 . "Phase 7.1 native compiler bootstrap (= Phase 7.1.x close)"))
+  "Per-stage blocker tag returned by the stub handlers.
+The scaffold dispatcher embeds this tag into the stub status keyword
+so callers can grep for the blocking phase without re-reading the
+design doc.  Stub keyword shape:
+  :stub-not-yet-impl-pending-phase-7.0
+  :stub-not-yet-impl-pending-phase-7.1
+  :stub-not-yet-impl-pending-phase-7.2
+  :stub-not-yet-impl-pending-phase-7.4")
+
+(defconst nelisp-integration-cold-init-stage-pending-keyword
+  '((stage1 . :stub-not-yet-impl-pending-phase-7.0)
+    (stage2 . :stub-not-yet-impl-pending-phase-7.2)
+    (stage3 . :stub-not-yet-impl-pending-phase-7.4)
+    (stage4 . :stub-not-yet-impl-pending-phase-7.1))
+  "Per-stage stub-status keyword returned by the default stub handlers.
+The keyword names the phase whose close unblocks the real
+implementation; production callers can `memq' the keyword against
+the value list of this alist to detect a stub return without
+introspecting the symbol name.")
+
+(defun nelisp-integration--cold-init-stub-handler (stage)
+  "Return the default stub handler closure for STAGE.
+The closure ignores its argument and returns a plist with
+`:status :stub-not-yet-impl-pending-phase-X.Y :stage STAGE'."
+  (let ((kw (cdr (assq stage
+                       nelisp-integration-cold-init-stage-pending-keyword))))
+    (lambda (&rest _ignored)
+      (list :status kw
+            :stage stage
+            :blocked-by (cdr (assq stage
+                                   nelisp-integration-cold-init-stage-blocked-by))))))
+
+(defun nelisp-integration--cold-init-default-handlers ()
+  "Build the default `:handlers' alist (every stage = stub).
+Returns ((stage1 . STUB) ... (stage4 . STUB))."
+  (mapcar (lambda (stage)
+            (cons stage
+                  (nelisp-integration--cold-init-stub-handler stage)))
+          nelisp-integration-cold-init-stage-order))
+
+(defun nelisp-integration--cold-init-run-stage (stage handler ctx)
+  "Run HANDLER for STAGE with CTX (an alist), capturing timing + errors.
+Returns a plist:
+  (:stage STAGE
+   :status STATUS
+   :elapsed-seconds FLOAT
+   :error nil | (CONDITION . DATA)
+   :result HANDLER-RETURN-OR-NIL)
+STATUS is `pass' on a real handler that returned without error,
+`fail' when the handler raised, or whatever stub keyword the handler
+returned (`:stub-not-yet-impl-pending-phase-X.Y' for the default)."
+  (let ((start (float-time)))
+    (condition-case err
+        (let* ((ret (funcall handler ctx))
+               (status (or (and (listp ret) (plist-get ret :status))
+                           'pass)))
+          (list :stage stage
+                :status status
+                :elapsed-seconds (- (float-time) start)
+                :error nil
+                :result ret))
+      (error
+       (list :stage stage
+             :status 'fail
+             :elapsed-seconds (- (float-time) start)
+             :error err
+             :result nil)))))
+
+(defun nelisp-integration-cold-init-dispatch (&rest args)
+  "Phase 7.5.2 scaffold-layer 4-stage cold-init dispatcher.
+
+This is the *structural* dispatcher; the *real* coordinator that
+exercises the Doc 28 §3.5 self-host bootstrap lives at
+`nelisp-integration-cold-init-run' and requires the T13 binary.
+
+ARGS is a plist:
+  :handlers ALIST          — per-stage handler override.  Default = every
+                             stage gets the stub handler from
+                             `nelisp-integration--cold-init-stub-handler',
+                             which returns
+                             `:status :stub-not-yet-impl-pending-phase-X.Y'.
+  :ctx ALIST               — opaque handler context, threaded through.
+  :stop-on STATUS-LIST     — stop dispatch as soon as a stage returns a
+                             status in this list (default = (fail), so
+                             stub returns do *not* stop dispatch and the
+                             counter reflects the stages structurally
+                             reached).
+
+Returns a plist matching the Doc 32 v2 §3.2 dispatcher contract:
+  (:status pass | fail
+   :stages-completed N        ; count of stages that returned pass
+   :stages [(:stage S :status S :elapsed-seconds F :error E) ...]
+   :elapsed-seconds FLOAT     ; total wall-clock for the dispatch
+   :error MSG-OR-NIL          ; first non-pass status (for triage)
+   :scaffold t)               ; sentinel: this is the scaffold path,
+                              ; not the real coordinator
+
+`:status pass' is reserved for runs where every stage returned `pass'.
+A run with all four stages returning a stub keyword reports
+`:status fail :error :stub-not-yet-impl-pending-phase-X.Y' so callers
+cannot mistake the scaffold for a real green path.
+
+The function never raises; every error path is captured into the
+returned plist."
+  (let* ((handlers (or (plist-get args :handlers)
+                       (nelisp-integration--cold-init-default-handlers)))
+         (ctx (plist-get args :ctx))
+         (stop-on (or (plist-get args :stop-on) '(fail)))
+         (start (float-time))
+         (stages-completed 0)
+         (stage-results nil)
+         (first-nonpass nil))
+    (catch 'cold-init-dispatch-stop
+      (dolist (stage nelisp-integration-cold-init-stage-order)
+        (let* ((handler (or (cdr (assq stage handlers))
+                            (nelisp-integration--cold-init-stub-handler stage)))
+               (r (nelisp-integration--cold-init-run-stage stage handler ctx))
+               (status (plist-get r :status)))
+          (push r stage-results)
+          (cond
+           ((eq status 'pass)
+            (cl-incf stages-completed))
+           (t
+            (unless first-nonpass (setq first-nonpass status))
+            (when (memq status stop-on)
+              (throw 'cold-init-dispatch-stop nil)))))))
+    (list :status (if (and (= stages-completed
+                              (length nelisp-integration-cold-init-stage-order))
+                           (null first-nonpass))
+                      'pass
+                    'fail)
+          :stages-completed stages-completed
+          :stages (nreverse stage-results)
+          :elapsed-seconds (- (float-time) start)
+          :error first-nonpass
+          :scaffold t)))
+
+;;;; Phase 7.5.3 dependency — 24h soak harness scaffold
+;;
+;; The real 24h soak (= Doc 32 v2 §2.7 / §7) measures GC pause p99,
+;; RSS growth, and crash count over a 24h window — those numbers
+;; require the static-linked stage-d-v2.0 binary which lands in
+;; Phase 7.5.3.  Phase 7.5.2 ships only the *test framework* so the
+;; soak script can be wired into CI ahead of the real measurement;
+;; the harness invokes a per-iteration handler N times, captures
+;; per-iteration timing, and returns a structural summary.
+;;
+;; No actual GC / RSS measurement happens here — the soak metric
+;; collection lands in Phase 7.5.3 alongside the static binary.
+
+(defconst nelisp-integration-soak-harness-default-iterations 4
+  "Default iteration count for the Phase 7.5.3 soak harness scaffold.
+Tiny on purpose — Phase 7.5.2 ERT runs the harness inline so the
+default cannot be a 24h figure.  Real soak runs override this with
+`:iterations 86400' (1Hz × 24h) or a duration-driven loop.")
+
+(defun nelisp-integration-soak-harness (&rest args)
+  "Phase 7.5.3 dependency — 24h soak harness *scaffold* (no metric capture).
+
+ARGS is a plist:
+  :iterations N            — number of harness iterations (default
+                             `nelisp-integration-soak-harness-default-iterations').
+  :handler FN              — called once per iteration with the
+                             iteration index (0-based).  Default =
+                             `nelisp-integration-cold-init-dispatch'
+                             with the scaffold defaults.
+  :stop-on-fail BOOL       — stop the soak as soon as any iteration
+                             returns a non-pass status (default nil so
+                             the harness completes the full iteration
+                             count even when every iteration is a stub
+                             return).
+
+Returns a plist:
+  (:iterations N
+   :passed P                ; iterations where handler returned pass
+   :failed F                ; iterations where handler returned non-pass
+   :elapsed-seconds FLOAT   ; total wall-clock
+   :first-failure FAIL-PLIST-OR-NIL
+   :scaffold t              ; sentinel: actual GC/RSS metric collection
+                            ; lands in Phase 7.5.3 alongside the
+                            ; static-linked stage-d-v2.0 binary
+   :status pass | fail)     ; pass iff all iterations passed
+
+The function never raises; handler errors are captured into the
+per-iteration result via `nelisp-integration--cold-init-run-stage'-style
+condition-case wrapping inside the handler itself (the dispatcher
+already handles this).
+
+Callers wiring this to a real 24h soak should pass a `:handler' that
+also pushes GC pause / RSS samples into a Phase 7.5.3 metric collector;
+the scaffold itself is metric-agnostic so the contract does not change
+when real measurement lands."
+  (let* ((iterations (or (plist-get args :iterations)
+                         nelisp-integration-soak-harness-default-iterations))
+         (handler (or (plist-get args :handler)
+                      (lambda (_i) (nelisp-integration-cold-init-dispatch))))
+         (stop-on-fail (plist-get args :stop-on-fail))
+         (start (float-time))
+         (passed 0)
+         (failed 0)
+         (first-failure nil))
+    (catch 'soak-harness-stop
+      (dotimes (i iterations)
+        (let* ((r (condition-case err
+                      (funcall handler i)
+                    (error (list :status 'fail :error err))))
+               (status (and (listp r) (plist-get r :status))))
+          (if (eq status 'pass)
+              (cl-incf passed)
+            (cl-incf failed)
+            (unless first-failure (setq first-failure r))
+            (when stop-on-fail
+              (throw 'soak-harness-stop nil))))))
+    (list :iterations iterations
+          :passed passed
+          :failed failed
+          :elapsed-seconds (- (float-time) start)
+          :first-failure first-failure
+          :scaffold t
+          :status (if (and (= passed iterations) (zerop failed))
+                      'pass
+                    'fail))))
+
 ;;;; Phase 7.5.3 — release artifact verifier (Doc 32 v2 §3.3 prep)
 
 (defconst nelisp-integration-release-artifact-platforms
