@@ -3,6 +3,7 @@
 ;; Phase 3 module ERT per nelisp-emacs Doc 01 (LOCKED v2 §3.3),
 ;; mirroring NeLisp Doc 43 v2 §3.2 Phase 11.B redisplay engine MVP.
 ;; Phase 3.B.1 (face-realize MVP per Doc 43 §2.4) adds section G below.
+;; Phase 3.B.2 (overlay before/after-string emission) adds section H.
 ;;
 ;; Coverage:
 ;;   A. driver lifecycle  (init / shutdown / handlep + version consts)
@@ -15,6 +16,10 @@
 ;;                         + symbol + cascade resolution, color string
 ;;                         normalization, weight→bold, glyph realized-
 ;;                         face slot, overlay merge realize, SGR emit
+;;   H. overlay strings   (Phase 3.B.2) — before-string / after-string
+;;                         emission, face propagation, nil/empty graceful
+;;                         handling, multi-overlay priority ordering,
+;;                         mid-line anchor, end-of-line after-string
 
 ;;; Code:
 
@@ -528,6 +533,168 @@ form is a backend-ready alist (not the raw plist)."
             ;; SGR 31 = ANSI red foreground (= 30 + 1 from color table).
             (should (string-match-p "\e\\[[^m]*31[^m]*m"
                                     emacs-redisplay-test--captured))))))))
+
+;;; H. overlay before-string / after-string (Phase 3.B.2) — 7 tests
+
+(defmacro emacs-redisplay-test--with-mock-overlays (overlays-spec &rest body)
+  "Run BODY with mocked overlay accessors driven by OVERLAYS-SPEC.
+OVERLAYS-SPEC is a list of plists, one per mock overlay, with keys:
+  :id     SYMBOL  (= the overlay identity returned by the accessors)
+  :start  INT     (= overlay start, inclusive)
+  :end    INT     (= overlay end, exclusive)
+  :face   FACE    (optional)
+  :before STR     (optional)
+  :after  STR     (optional)
+  :prio   INT     (optional, default 0)
+
+The mocks teach `emacs-redisplay--overlays-in' to return every defined
+overlay (Phase 3.B.2 callers filter by start/end internally)."
+  (declare (indent 1) (debug (form body)))
+  (let ((spec (gensym "spec-")))
+    `(let* ((,spec ,overlays-spec))
+       (cl-letf (((symbol-function 'emacs-redisplay--overlays-in)
+                  (lambda (_b _e &optional _buf)
+                    (mapcar (lambda (o) (plist-get o :id)) ,spec)))
+                 ((symbol-function 'emacs-redisplay--ovly-bounds)
+                  (lambda (ov)
+                    (cl-loop for o in ,spec
+                             when (eq (plist-get o :id) ov)
+                             return (cons (plist-get o :start)
+                                          (plist-get o :end)))))
+                 ((symbol-function 'emacs-redisplay--ovly-prop)
+                  (lambda (ov prop)
+                    (cl-loop for o in ,spec
+                             when (eq (plist-get o :id) ov)
+                             return
+                             (cond
+                              ((eq prop 'face)          (plist-get o :face))
+                              ((eq prop 'before-string) (plist-get o :before))
+                              ((eq prop 'after-string)  (plist-get o :after))
+                              ((eq prop 'priority)      (plist-get o :prio))
+                              (t nil))))))
+         ,@body))))
+
+(ert-deftest emacs-redisplay-test-overlay-before-string-emits-glyphs ()
+  "Overlay :before-string is emitted as glyphs *before* the buffer char."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "abc"
+      (emacs-redisplay-test--with-mock-overlays
+          (list (list :id 'ov1 :start 2 :end 3 :before "[X]"))
+        (let* ((h (emacs-redisplay-init))
+               (w (emacs-window-selected-window)))
+          (emacs-window-set-window-buffer w b)
+          (let* ((m (emacs-redisplay-redisplay-window h w))
+                 (row (emacs-redisplay-glyph-row m 0)))
+            ;; Expected painted prefix: "a" + "[X]" + "bc"
+            (should (string-match-p "^a\\[X\\]bc"
+                                    (emacs-redisplay-glyph-row-text row)))
+            (should (>= (emacs-redisplay-glyph-row-used row) 6))))))))
+
+(ert-deftest emacs-redisplay-test-overlay-after-string-emits-glyphs ()
+  "Overlay :after-string is emitted as glyphs *after* the buffer char.
+The overlay's exclusive end is 3 (= just past `b'), so the after-string
+emits between the `b' and the `c'."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "abc"
+      (emacs-redisplay-test--with-mock-overlays
+          (list (list :id 'ov1 :start 2 :end 3 :after ">>"))
+        (let* ((h (emacs-redisplay-init))
+               (w (emacs-window-selected-window)))
+          (emacs-window-set-window-buffer w b)
+          (let* ((m (emacs-redisplay-redisplay-window h w))
+                 (row (emacs-redisplay-glyph-row m 0)))
+            (should (string-match-p "^ab>>c"
+                                    (emacs-redisplay-glyph-row-text row)))))))))
+
+(ert-deftest emacs-redisplay-test-overlay-before-string-face-propagates ()
+  "Overlay :before-string glyphs carry the overlay's `face' property."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "ab"
+      (emacs-redisplay-test--with-mock-overlays
+          (list (list :id 'ov1 :start 1 :end 2
+                      :before "X" :face 'highlight))
+        (let* ((h (emacs-redisplay-init))
+               (w (emacs-window-selected-window)))
+          (emacs-window-set-window-buffer w b)
+          (let* ((m (emacs-redisplay-redisplay-window h w))
+                 (row (emacs-redisplay-glyph-row m 0))
+                 (vec (emacs-redisplay-glyph-row-glyphs row))
+                 ;; Glyph 0 is the injected before-string "X".
+                 (g0 (aref vec 0)))
+            (should (eq ?X (emacs-redisplay-glyph-char g0)))
+            (let ((f (emacs-redisplay-glyph-face g0)))
+              (should (or (eq f 'highlight)
+                          (and (listp f) (memq 'highlight f)))))))))))
+
+(ert-deftest emacs-redisplay-test-overlay-after-string-face-propagates ()
+  "Overlay :after-string glyphs carry the overlay's `face' property."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "ab"
+      (emacs-redisplay-test--with-mock-overlays
+          (list (list :id 'ov1 :start 1 :end 2
+                      :after "Z" :face 'warning))
+        (let* ((h (emacs-redisplay-init))
+               (w (emacs-window-selected-window)))
+          (emacs-window-set-window-buffer w b)
+          (let* ((m (emacs-redisplay-redisplay-window h w))
+                 (row (emacs-redisplay-glyph-row m 0))
+                 (vec (emacs-redisplay-glyph-row-glyphs row))
+                 ;; Layout: "a" (0), "Z" injected at (1), "b" (2).
+                 (g1 (aref vec 1)))
+            (should (eq ?Z (emacs-redisplay-glyph-char g1)))
+            (let ((f (emacs-redisplay-glyph-face g1)))
+              (should (or (eq f 'warning)
+                          (and (listp f) (memq 'warning f)))))))))))
+
+(ert-deftest emacs-redisplay-test-overlay-empty-strings-are-graceful ()
+  "Empty / nil :before-string and :after-string emit no glyphs."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "abc"
+      (emacs-redisplay-test--with-mock-overlays
+          (list (list :id 'ov-empty :start 2 :end 3 :before "" :after "")
+                (list :id 'ov-nil   :start 1 :end 2 :before nil :after nil))
+        (let* ((h (emacs-redisplay-init))
+               (w (emacs-window-selected-window)))
+          (emacs-window-set-window-buffer w b)
+          (let* ((m (emacs-redisplay-redisplay-window h w))
+                 (row (emacs-redisplay-glyph-row m 0)))
+            ;; Painted text equals raw buffer text, no extra glyphs.
+            (should (string= "abc"
+                             (emacs-redisplay-glyph-row-text row)))
+            (should (= 3 (emacs-redisplay-glyph-row-used row)))))))))
+
+(ert-deftest emacs-redisplay-test-overlay-multiple-before-strings-priority ()
+  "Multiple :before-string overlays at the same start emit in priority
+order: lower priority first → higher priority *closest* to the buffer
+char.  So spec [(prio=10 \"H\") (prio=1 \"L\")] anchored at pos 1
+yields painted prefix \"LHabc\"."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "abc"
+      (emacs-redisplay-test--with-mock-overlays
+          (list (list :id 'ov-h :start 1 :end 4 :before "H" :prio 10)
+                (list :id 'ov-l :start 1 :end 4 :before "L" :prio 1))
+        (let* ((h (emacs-redisplay-init))
+               (w (emacs-window-selected-window)))
+          (emacs-window-set-window-buffer w b)
+          (let* ((m (emacs-redisplay-redisplay-window h w))
+                 (row (emacs-redisplay-glyph-row m 0)))
+            (should (string-match-p "^LHabc"
+                                    (emacs-redisplay-glyph-row-text row)))))))))
+
+(ert-deftest emacs-redisplay-test-overlay-before-string-mid-line ()
+  "Overlay :before-string anchored mid-line is emitted right before the
+buffer char at the overlay's start position."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "abcde"
+      (emacs-redisplay-test--with-mock-overlays
+          (list (list :id 'ov1 :start 3 :end 4 :before "[!]"))
+        (let* ((h (emacs-redisplay-init))
+               (w (emacs-window-selected-window)))
+          (emacs-window-set-window-buffer w b)
+          (let* ((m (emacs-redisplay-redisplay-window h w))
+                 (row (emacs-redisplay-glyph-row m 0)))
+            (should (string-match-p "^ab\\[!\\]cde"
+                                    (emacs-redisplay-glyph-row-text row)))))))))
 
 (provide 'emacs-redisplay-test)
 
