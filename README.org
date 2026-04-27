@@ -1,23 +1,129 @@
-#+TITLE: NeLisp — Self-Hosted Emacs Lisp VM in Pure Elisp
+#+TITLE: NeLisp — Self-Hosted Emacs Lisp VM (v1.0)
 #+AUTHOR: zawatton
-#+DATE: 2026-04-22
+#+DATE: 2026-04-27
+
+#+begin_quote
+*Note on language:* I'm a non-native English speaker. The phrasing in
+this README is shaped with help from an LLM, but the design decisions
+and technical claims are mine. If something reads oddly, please ask
+and I'll clarify.
+#+end_quote
 
 * What is NeLisp?
 
-*NeLisp* is a research project to design and implement an Emacs Lisp
-virtual machine written in /pure Emacs Lisp/, with the eventual goal of
-re-implementing the Emacs core in NeLisp rather than C — /the substrate
-Emacs users can rewrite themselves, especially in collaboration with AI/.
+*NeLisp* is a research project to implement Emacs Lisp on a substrate
+other than the existing Emacs C core — modeled after SBCL (Common
+Lisp implemented in itself, on a small non-Lisp runtime) and
+deliberately *not* a Scheme rewrite (Guile-Emacs) or a Rust rewrite
+of the entire Emacs C core (Remacs).
 
-The same construction SBCL used for Common Lisp (CL implemented in CL),
-applied to Emacs Lisp — for the first time.
+* Status — v1.0 (2026-04-27)
 
-Tagline candidate (JA): /Emacs を鍛えて AI のツールとする究極形。Elisp
-自身で Elisp VM を書き直す Emacs Lisp 研究プロジェクト。/
+NeLisp v1.0 ships *two standalone deployment paths* as of today:
 
-* Status (Phase 0, 2026-04-22)
+1. *Stage D v2.0* — bundled-Emacs tarball (~25 MB compressed). =bin/anvil=
+   resolves a stripped Emacs from =$ANVIL_HOME/emacs/bin/emacs= first,
+   so a host without =apt install emacs= can still run NeLisp.  Existing
+   dev checkouts fall through to system PATH unchanged.  See
+   =README-stage-d-v2.0.org= and =RELEASE_NOTES.md=.
 
-Phase 0 (design documents) is effectively complete. Key decisions locked:
+2. *Phase 8.0* — Rust-side Elisp interpreter + MCP stdio server.
+   =bin/anvil mcp serve --no-emacs= starts an MCP JSON-RPC server with
+   *zero Emacs process spawn*: a single =anvil-runtime= Rust binary
+   (~421 KB) implements the reader, evaluator, MCP protocol, and
+   anvil tool registry.  An MCP client (Claude Code, Claude Desktop,
+   any MCP-speaking agent) calls =anvil-host-*= tools through this
+   path without requiring Emacs to be installed at all.  See
+   =docs/design/44-phase8.0-rust-elisp-interpreter.org= (LOCKED).
+
+** Quick start
+
+Single-line invocation, no Emacs install required:
+
+#+begin_src shell
+bin/anvil mcp serve --no-emacs
+#+end_src
+
+The default =--no-emacs= mode falls back to =emacs --batch= when the
+Rust runtime is missing (3-year safety window per Doc 44 §3.6 LOCKED).
+Use =--strict-no-emacs= to refuse the fallback.
+
+** Architecture (5-layer)
+
+#+begin_src text
+  ┌──────────────────────────────────────────────────┐
+  │ MCP client (Claude Code / Claude Desktop / …)    │
+  └─────────────────┬────────────────────────────────┘
+                    │ MCP stdio JSON-RPC
+  ┌─────────────────▼────────────────────────────────┐
+  │ Layer 5: anvil-host registry (Rust)              │  Phase 8.0.5
+  │   nelisp-runtime/src/anvil_host_registry.rs      │
+  ├──────────────────────────────────────────────────┤
+  │ Layer 4: NeLisp self-host bridge (Rust + Elisp)  │  Phase 8.0.3
+  │   nelisp-runtime/src/bridge/                     │
+  ├──────────────────────────────────────────────────┤
+  │ Layer 3: Elisp evaluator (Rust)                  │  Phase 8.0.2
+  │   24 special forms + ~60 builtins                │
+  ├──────────────────────────────────────────────────┤
+  │ Layer 2: Elisp reader (Rust)                     │  Phase 8.0.1
+  │   sexp / lexer / parser                          │
+  ├──────────────────────────────────────────────────┤
+  │ Layer 1: MCP protocol (Rust)                     │  Phase 8.0.4
+  │   stdio JSON-RPC initialize / tools-list / call  │
+  └──────────────────────────────────────────────────┘
+#+end_src
+
+** Soak gate (Doc 32 v2 §2.7)
+
+| Tier             | Duration | RSS growth ceiling | Status (2026-04-27) |
+|------------------+----------+--------------------+---------------------|
+| blocker (CI)     | 1h       | < 5 MB             | PASS (linux-x86_64) |
+| post-ship audit  | 24h      | < 10 MB / 24h      | scheduled, weekly   |
+
+Tier matrix (Doc 32 v2 §11):
+
+| Platform        | v1.0 status                       |
+|-----------------+-----------------------------------|
+| linux-x86_64    | blocker (CI gate, must pass)      |
+| macos-arm64     | best-effort 95%+ (v1.0 時限措置)  |
+| linux-arm64     | best-effort 95%+ (v1.0 時限措置)  |
+| windows-native  | post-v2.0 scope                   |
+
+=v1.0 時限= = explicit time-boxed exception ratified in Doc 32 v2 §11.
+v1.1+ promotes arm64 to *blocker*; the audit grep guard in
+=test/nelisp-release-test.el= retires at that point.
+
+** What is *not* in v1.0
+
+Said plainly so expectations are calibrated:
+
+- Phase 8.0 evaluator is a *minimal subset*: GC bridge, bignum, full
+  backquote semantics, full =save-excursion= are deferred to Phase 8.x
+  follow-up patches.
+- Default =--no-emacs= still falls back to =emacs --batch= for cold-init
+  failures (3-year safety window).
+- macOS arm64 / Linux arm64 = best-effort only (= time-boxed for v1.0).
+- Windows native =--no-emacs= is post-v2.0 scope.
+
+** Test status (HEAD)
+
+=cargo test --lib= = 236 pass / 0 failed.  ERT suite for the bootstrap
++ runtime layer is wired through =make test=.
+
+** Key design documents
+
+| Doc | Topic                                  | Status                |
+|-----+----------------------------------------+-----------------------|
+| 18  | Stage D launcher charter               | LOCKED                |
+| 27  | Phase 7+ self-implemented C runtime    | LOCKED-2026-04-25-v2  |
+| 28  | Phase 7.1 NeLisp native compiler       | LOCKED-2026-04-25-v2  |
+| 32  | Phase 7.5 integration + standalone E2E | LOCKED-2026-04-25-v2  |
+| 44  | Phase 8.0 Rust Elisp interpreter       | LOCKED-2026-04-27     |
+
+* Earlier status (Phase 0 — 2026-04-22) — preserved for reference
+
+Phase 0 (design documents) was completed 2026-04-22.  Key decisions
+locked at that time and still in force:
 
 - *Bootstrap strategy*: Host-Emacs bootstrap (Candidate A), transferring
   SBCL's genesis methodology (Rhodes 2008) to Emacs as the host
@@ -30,8 +136,7 @@ Phase 0 (design documents) is effectively complete. Key decisions locked:
   (display render, primitive utilities) post-v1.0 — Linux kernel / SBCL
   governance model
 
-No code runs yet. Phase 1 (interpreter-in-Elisp PoC) targets mid-2026.
-See =docs/05-roadmap.org=.
+The roadmap is in =docs/05-roadmap.org=.
 
 * Philosophy (short form)
 
