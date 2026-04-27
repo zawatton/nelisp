@@ -1,0 +1,530 @@
+#+TITLE: Doc 45 — NeLisp package split design
+#+DATE: 2026-04-27
+#+AUTHOR: zawatton + Codex
+#+STATUS: DRAFT
+#+DEPENDS_ON: Doc 32 (LOCKED), Doc 38 (LOCKED), Doc 44 (LOCKED), README v1.0 (2026-04-27)
+* §0 要旨 (TL;DR)
+NeLisp v1.0 条件 #4 (= Phase 7.5 + 8.0 SHIPPED) 達成後の次段は、=src/nelisp-*.el= monolith を *runtime core* と *optional libraries* に切ること。2026-04-27 audit では =src/nelisp-*.el= は *68 files / 81 internal dependency edges / direct cycle 0*。現状は pure runtime、utility library、anvil-on-nelisp glue、emacs-compat が同居している。
+本 doc の提案は *SBCL + ASDF + Quicklisp precedent* の軽量移植:
+- =nelisp-core= を最小 runtime package として固定
+- JSON / HTTP / SQLite / state / regex / process / network 等を個別 package 化
+- distribution は *monorepo のまま =packages/= に per-directory split + central index*
+- =(require 'nelisp-json)= 等の既存 feature 名は維持し、shim + resolver で移行
+- pilot は *nelisp-json* を推奨
+cluster totals:
+| cluster | files | LOC rough |
+|---------+-------+-----------|
+| core runtime | 34 | ~49.3k |
+| library candidates | 27 | ~13.5k |
+| emacs-compat | 4 | ~1.9k |
+| glue | 3 | ~3.0k |
+第一推奨:
+1. v1 は *submodule / multi-repo に行かない*
+2. core inclusion rule は "self-host + cold-init + evaluator bootstrap 必須か" で切る
+3. pilot は =nelisp-json=
+4. =nelisp-emacs-compat*= は core へ入れず Layer 2 extension package にする
+5. Rust-side registry は package path / package 名へ直接依存させない
+見積は *±50%* を許容する。package split は algorithm 実装より packaging / CI / migration の不確実性が大きい。
+* §1 Motivation
+** 1.1 user vision (2026-04-27)
+user vision は SBCL + Quicklisp pattern の Elisp 版である:
+- pure Elisp runtime を =core=
+- individual libraries を separate packages
+- post =nelisp-emacs= Phase 5 では nelisp-emacs repo content も package 化
+これは単なる repo 整理ではなく、*NeLisp を substrate として consumable にする* ための設計である。
+** 1.2 precedent
+参照 precedent:
+- *SBCL*: runtime 核と contrib / library を分離
+- *ASDF*: system descriptor で dependency を宣言
+- *Quicklisp*: central index により package を discoverable にする
+NeLisp に必要なのは full clone ではなく、最低限 =descriptor / dependency declaration / central manifest / resolver / compatibility shim= の 5 点である。
+** 1.3 timing
+2026-04-27 は split 開始の良い節目である。
+- Doc 32 / 44 で standalone path が一段落
+- README v1.0 で Rust runtime registry layer の位置が明瞭
+- =src/nelisp-*.el= 各 file の phase role が既にかなり明文化済み
+- 将来 =nelisp-emacs= を package 化する前に boundary を固定できる
+今やらない場合の負債:
+- core が optional util を飲み込み続ける
+- =require= surface が実装都合のまま固定化する
+- CI / release が monolith 前提で固まる
+- Rust registry と Elisp package 名が偶発的に結びつく
+** 1.4 Doc 45 scope
+本 doc は scoping / packaging / migration のみを扱う。対象は inventory、cluster、dependency graph、distribution mechanism、phase plan、compatibility、risks、ship gate、LOCK criteria。source code は触らない。Doc 32 / 44 は LOCK 済のため変更しない。
+* §2 Inventory + clustering
+** 2.1 audit summary
+2026-04-27 audit:
+- target: =src/nelisp-*.el=
+- count: *68 files*
+- internal edges: *81*
+- direct cycle: *0* (= =tsort= success)
+- =src/nelisp.el= は inventory 対象外だが、将来の umbrella / meta entry として重要
+分類原則:
+- *core runtime*: self-host / cold-init / evaluator bootstrap 必須
+- *library candidates*: core の上に乗る optional library
+- *integration / glue*: 複数 library を束ねる top layer
+- *emacs-compat*: =nelisp-emacs-compat*= と bridge
+** 2.2 inventory table
+| file | LOC | cluster | target |
+|------+-----+---------+--------|
+| =nelisp-read.el= | 494 | core | core |
+| =nelisp-reader.el= | 684 | core | core |
+| =nelisp-eval.el= | 925 | core | core |
+| =nelisp-special-forms.el= | 597 | core | core |
+| =nelisp-closure.el= | 480 | core | core |
+| =nelisp-macro.el= | 278 | core | core |
+| =nelisp-macro-ns.el= | 577 | core | core |
+| =nelisp-load.el= | 309 | core | core |
+| =nelisp-bootstrap.el= | 206 | core | core |
+| =nelisp-bytecode.el= | 1845 | core | core |
+| =nelisp-jit.el= | 330 | core | core |
+| =nelisp-tramp.el= | 733 | core | core |
+| =nelisp-heap-types.el= | 168 | core | core |
+| =nelisp-allocator.el= | 1996 | core | core |
+| =nelisp-gc.el= | 305 | core | core |
+| =nelisp-gc-inner.el= | 2941 | core | core |
+| =nelisp-gc-verify.el= | 684 | core | core |
+| =nelisp-gc-verify-hooks.el= | 364 | core | core |
+| =nelisp-coding-jis-tables.el= | 20815 | core | core or coding-jis |
+| =nelisp-coding.el= | 1928 | core | core |
+| =nelisp-cc.el= | 1985 | core | native-compiler |
+| =nelisp-cc-x86_64.el= | 2592 | core | native-compiler |
+| =nelisp-cc-arm64.el= | 1273 | core | native-compiler |
+| =nelisp-cc-runtime.el= | 1341 | core | native-compiler |
+| =nelisp-cc-bootstrap.el= | 524 | core | native-compiler |
+| =nelisp-cc-callees.el= | 786 | core | native-compiler |
+| =nelisp-cc-escape.el= | 383 | core | native-compiler |
+| =nelisp-cc-inline.el= | 521 | core | native-compiler |
+| =nelisp-cc-recursive-inline.el= | 1146 | core | native-compiler |
+| =nelisp-cc-lambda-lift.el= | 660 | core | native-compiler |
+| =nelisp-cc-rewrite.el= | 204 | core | native-compiler |
+| =nelisp-cc-base-case-fold.el= | 495 | core | native-compiler |
+| =nelisp-cc-pipeline.el= | 286 | core | native-compiler |
+| =nelisp-control-flow.el= | 447 | core | core or advise |
+| =nelisp-base64.el= | 184 | lib | nelisp-base64 |
+| =nelisp-secure-hash.el= | 394 | lib | nelisp-secure-hash |
+| =nelisp-json.el= | 687 | lib | nelisp-json |
+| =nelisp-sqlite.el= | 338 | lib | nelisp-sqlite |
+| =nelisp-state.el= | 352 | lib | nelisp-state |
+| =nelisp-regex.el= | 649 | lib | nelisp-regex |
+| =nelisp-buffer.el= | 593 | lib | nelisp-buffer |
+| =nelisp-text-buffer.el= | 483 | lib | nelisp-text-buffer |
+| =nelisp-actor.el= | 681 | lib | nelisp-actor |
+| =nelisp-eventloop.el= | 179 | lib | nelisp-eventloop |
+| =nelisp-eventloop-multiplex.el= | 539 | lib | nelisp-eventloop |
+| =nelisp-network.el= | 286 | lib | nelisp-network |
+| =nelisp-http.el= | 987 | lib | nelisp-http |
+| =nelisp-process.el= | 813 | lib | nelisp-process |
+| =nelisp-process-pool.el= | 183 | lib | nelisp-process |
+| =nelisp-worker.el= | 666 | lib | nelisp-worker |
+| =nelisp-worker-child.el= | 57 | lib | nelisp-worker |
+| =nelisp-file-notify.el= | 162 | lib | nelisp-file-notify |
+| =nelisp-filenotify.el= | 337 | lib | nelisp-filenotify |
+| =nelisp-defs-index.el= | 1110 | lib | nelisp-defs-index |
+| =nelisp-org-index.el= | 862 | lib | nelisp-org-index |
+| =nelisp-redisplay.el= | 119 | lib | nelisp-redisplay |
+| =nelisp-overlay.el= | 807 | lib | nelisp-overlay |
+| =nelisp-textprop-display.el= | 474 | lib | nelisp-textprop-display |
+| =nelisp-textprop-hook.el= | 521 | lib | nelisp-textprop-hook |
+| =nelisp-textprop-keymap.el= | 406 | lib | nelisp-textprop-keymap |
+| =nelisp-dev-audit.el= | 610 | lib | nelisp-dev-audit |
+| =nelisp-emacs-compat.el= | 792 | compat | nelisp-emacs-compat |
+| =nelisp-emacs-compat-fileio.el= | 526 | compat | nelisp-emacs-compat-fileio |
+| =nelisp-emacs-compat-face.el= | 362 | compat | nelisp-emacs-compat-face |
+| =nelisp-ec-bridge.el= | 237 | compat | nelisp-ec-bridge |
+| =nelisp-integration.el= | 1632 | glue | nelisp-integration |
+| =nelisp-server.el= | 351 | glue | nelisp-server |
+| =nelisp-tools.el= | 972 | glue | nelisp-tools |
+** 2.3 immediate decisions
+default clustering:
+- *core*: reader / eval / special-forms / closure / macro / load / allocator / GC / coding / minimal bootstrap
+- *runtime-essential optional*: =nelisp-cc*= stack, =nelisp-coding-jis-tables=
+- *early libraries*: json / base64 / secure-hash / regex / state
+- *middle libraries*: sqlite / http / process / network / actor / eventloop
+- *late libraries*: defs-index / org-index / overlay / textprop / worker / redisplay
+- *Layer 2*: emacs-compat family
+- *top glue*: server / tools / integration
+** 2.4 pilot pick
+pilot は *nelisp-json* を推奨する。
+理由:
+- ~687 LOC で小さく明確
+- internal dep 0
+- pure Lisp
+- downstream utility が高い (= sqlite / server / future runtime path)
+- resolver + shim + central index を現実的に検証できる
+=nelisp-base64= は更に小さいが、pilot としては dependency exercise が弱い。
+* §3 Dependency graph
+** 3.1 current graph summary
+現状 graph はおおむね 4 層に見える。
+#+begin_src text
+Layer 0 foundation:
+  nelisp-read / nelisp-reader / nelisp-special-forms / nelisp-heap-types
+  nelisp-regex / nelisp-text-buffer / nelisp-json / nelisp-state / nelisp-cc
+Layer 1 runtime expansion:
+  nelisp-eval / nelisp-load / nelisp-macro / nelisp-closure
+  nelisp-allocator / nelisp-gc-inner / nelisp-coding / nelisp-cc-*
+Layer 2 libraries:
+  nelisp-http / nelisp-sqlite / nelisp-network / nelisp-process
+  nelisp-actor / eventloop / worker / buffer / overlay / defs-index
+Layer 3 top glue:
+  nelisp-server / nelisp-tools / nelisp-integration / ec-bridge
+#+end_src
+=tsort= success のため、少なくとも direct internal cycle は無い。これは package split にとって良い前提である。
+** 3.2 hotspot nodes
+| node | users | implication |
+|------+-------+-------------|
+| =nelisp-cc= | 12 | compiler package root |
+| =nelisp-eval= | 9 | core root |
+| =nelisp-emacs-compat= | 3 | Layer 2 root |
+| =nelisp-state= | 2 | HTTP/tools base |
+| =nelisp-process= | 2 | worker base |
+| =nelisp-coding= | 2 | hash + fileio base |
+要点:
+- =nelisp-eval= と =nelisp-load= は core に残すのが自然
+- =nelisp-cc= は separate package root にしやすい
+- =nelisp-tools= は top glue として残る
+** 3.3 proposed package layers
+*** Layer A: =nelisp-core= (no package deps)
+含むもの:
+- reader / eval / special forms / closure / macro / load
+- allocator / GC / coding
+- package descriptor reader
+- feature registry / resolver
+含めないもの:
+- JSON / HTTP / SQLite
+- process / network
+- emacs-compat
+- server / tools
+補足:
+- compiler stack は graph 上は =nelisp-native-compiler= として分離推奨
+- =nelisp-coding-jis-tables.el= は将来 =nelisp-coding-jis= 分離余地あり
+*** Layer B: core-only utility libraries
+候補:
+- =nelisp-json=
+- =nelisp-base64=
+- =nelisp-secure-hash=
+- =nelisp-regex=
+- =nelisp-state=
+- =nelisp-buffer= / =nelisp-text-buffer=
+- =nelisp-defs-index=
+- =nelisp-org-index=
+原則: dependency は =nelisp-core= のみ、cross-library dep は最小。
+*** Layer C: substrate / service libraries
+候補:
+- =nelisp-sqlite= -> =nelisp-json=
+- =nelisp-http= -> =nelisp-state=
+- =nelisp-network=
+- =nelisp-process=
+- =nelisp-actor=
+- =nelisp-eventloop=
+- =nelisp-worker=
+- =nelisp-file-notify= / =nelisp-filenotify=
+原則: =core <- utility <- substrate= の方向を守る。
+*** Layer D: extension / compat / glue
+候補:
+- =nelisp-emacs-compat*=
+- =nelisp-ec-bridge=
+- =nelisp-server=
+- =nelisp-tools=
+- =nelisp-integration=
+原則: top-level consumer layer。Rust runtime registry は lower package 名へ直接結び付けない。
+** 3.4 candidate package graph (DRAFT)
+#+begin_src text
+nelisp-core
+├─ nelisp-native-compiler
+├─ nelisp-json
+├─ nelisp-base64
+├─ nelisp-regex
+├─ nelisp-state
+├─ nelisp-text-buffer
+├─ nelisp-buffer
+├─ nelisp-defs-index
+├─ nelisp-org-index
+├─ nelisp-secure-hash         -> nelisp-coding
+├─ nelisp-sqlite              -> nelisp-json
+├─ nelisp-http                -> nelisp-state
+├─ nelisp-actor               -> gc-lite API
+├─ nelisp-eventloop           -> nelisp-actor
+├─ nelisp-network             -> eval + actor
+├─ nelisp-process             -> eval + actor
+├─ nelisp-worker              -> process
+├─ nelisp-overlay
+├─ nelisp-textprop-display
+├─ nelisp-textprop-hook
+├─ nelisp-textprop-keymap
+├─ nelisp-emacs-compat        -> regex + text-buffer
+├─ nelisp-emacs-compat-fileio -> emacs-compat + coding
+├─ nelisp-emacs-compat-face
+├─ nelisp-ec-bridge           -> emacs-compat + fileio
+├─ nelisp-server              -> json
+└─ nelisp-tools               -> server + network + state + http + defs + org
+#+end_src
+** 3.5 circular-dependency watchlist
+現状 cycle は無いが、split 後に生みやすい循環はある。
+1. =state <-> sqlite=: state backend を sqlite 固定にしない。state は abstract KV API に保つ。
+2. =server <-> json=: one-way (=server -> json=) に固定。
+3. =load <-> package-manager=: resolver は core に置く。
+4. =emacs-compat <-> text subsystem=: compat 本体は MVP surface まで。
+5. =tools <-> runtime registry=: registry は provider interface を見る。
+* §4 Packaging mechanism
+** 4.1 considered options
+| option | outline | pros | cons | verdict |
+|--------+---------+------+------+---------|
+| A | monorepo + =packages/= + central index | simple / atomic / CI 1本 | repo は大きい | *推奨* |
+| B | git submodule per package | repo 分離感 | 運用コスト高 | 不採用 |
+| C | multi-repo + manifest | publish 柔軟 | CI / docs / release が重い | v2+ |
+| D | status quo =src/= monolith | 実装ゼロ | goal 未達 | 不採用 |
+** 4.2 recommendation
+*推奨 = option A*。Quicklisp precedent で本質なのは "multiple repos" ではなく *dist index + descriptor + resolver* である。v1 で submodule / multi-repo の coordination cost を払う必要は薄い。
+** 4.3 proposed repository shape
+#+begin_src text
+nelisp/
+├── src/
+│   ├── nelisp.el
+│   ├── nelisp-json.el      ; temporary shim
+│   └── ...
+├── packages/
+│   ├── dist/
+│   │   └── manifest.el
+│   ├── nelisp-core/
+│   │   ├── package.el
+│   │   ├── src/
+│   │   └── test/
+│   ├── nelisp-json/
+│   ├── nelisp-http/
+│   ├── nelisp-sqlite/
+│   └── ...
+└── docs/design/45-nelisp-package-split.org
+#+end_src
+** 4.4 package descriptor shape (ASDF-like, DRAFT)
+最低要件:
+- package name
+- version
+- provided features
+- source files
+- dependency list
+- core version constraint
+- test entry
+例:
+#+begin_src emacs-lisp
+(:name "nelisp-json"
+ :version "0.1.0"
+ :provides (nelisp-json)
+ :files ("src/nelisp-json.el")
+ :depends-on (("nelisp-core" ">=1.0,<2.0"))
+ :test-entry "test/nelisp-json-test.el")
+#+end_src
+** 4.5 central index (Quicklisp-lite)
+repo 内 =packages/dist/manifest.el= を central source of truth とする。役割は installable package 一覧、version / path / checksum、dependency metadata、stable channel pin。v1 は local manifest 1 file で十分で、remote archive / download server は不要。
+** 4.6 require-via-package-system
+推奨 flow:
+1. =(require 'nelisp-json)=
+2. core resolver が feature -> package を引く
+3. 未展開なら manifest を参照して load-path を追加
+4. package descriptor の files を load
+5. feature が =provide= される
+この model なら既存 feature 名を変えずに済む。
+** 4.7 shim policy
+移行中は =src/nelisp-foo.el= を compatibility shim として残す。推奨 life cycle:
+- v1.x: shim default-on
+- v2.x: deprecation warning
+- v3.0: removal candidate
+** 4.8 submodule / multi-repo を推さない理由
+submodule が不利:
+- bootstrap clone が面倒
+- contributor friction が増える
+- cross-package refactor が重い
+multi-repo が早すぎる理由:
+- central CI と docs が先に壊れる
+- version skew control を先に作る必要がある
+- 現段階では governance より boundary definition が本題
+* §5 Phase plan + estimates
+** 5.1 phase overview
+| phase | scope | output | LOC est. | duration est. |
+|-------+-------+--------+----------+---------------|
+| 1 | Doc 45 LOCK | LOCKED doc | ~400-600 doc LOC | 1-2 日 |
+| 2 | pilot extraction | =nelisp-json= | ~200-500 code + tests + packaging | 3-5 日 |
+| 3 | parallel extraction waves | 3-5 packages / wave | ~1.5k-4k / wave | 1-2 週間 / wave |
+| 4 | integration cleanup | shims / CI / docs / registry | ~500-1500 | 1 週間 |
+見積は *±50%*。
+** 5.2 Phase 1 — Doc 45 LOCK
+fix するもの:
+- core boundary
+- packaging mechanism
+- pilot
+- shim policy
+- ship gate / LOCK criteria
+出口条件:
+- open questions 7 件に signoff
+- file-level cluster table に合意
+** 5.3 Phase 2 — pilot extraction (= nelisp-json 推奨)
+作業:
+- =packages/nelisp-json/= 新設
+- descriptor / test entry / manifest registration
+- =src/nelisp-json.el= を shim 化
+- 既存 =(require 'nelisp-json)= tests を green 維持
+期待成果:
+- resolver が実用になる
+- shim pattern が固まる
+- package-local test と umbrella test の切り方が見える
+** 5.4 Phase 3 — parallel extraction waves
+Wave A:
+- =nelisp-base64=
+- =nelisp-secure-hash=
+- =nelisp-regex=
+- =nelisp-state=
+Wave B:
+- =nelisp-sqlite=
+- =nelisp-http=
+- =nelisp-defs-index=
+- =nelisp-org-index=
+Wave C:
+- =nelisp-process=
+- =nelisp-network=
+- =nelisp-actor=
+- =nelisp-eventloop=
+- =nelisp-worker=
+Wave D:
+- =nelisp-text-buffer=
+- =nelisp-buffer=
+- =nelisp-overlay=
+- =nelisp-textprop-display=
+- =nelisp-textprop-hook=
+- =nelisp-textprop-keymap=
+Wave E:
+- =nelisp-emacs-compat=
+- =nelisp-emacs-compat-fileio=
+- =nelisp-emacs-compat-face=
+- =nelisp-ec-bridge=
+compiler stack は別扱いとし、=nelisp-native-compiler= 1 package に寄せる。backend 個別 split は後段でよい。
+** 5.5 Phase 4 — integration cleanup
+内容:
+- =nelisp= / =nelisp-core= / package-local entry の整理
+- shim warning policy 導入
+- CI を package-local / umbrella / runtime-e2e の 3 tier に分離
+- README / install / release note 更新
+- Rust runtime registry から package layout を隠蔽
+** 5.6 rough total estimate
+保守的 estimate:
+- total duration: *3-6 週間*
+- total code churn: *~3k-8k LOC*
+- docs / CI churn: *~500-1500 LOC*
+順序原則は *small + no-dep* から始め、次に core-only library、最後に compat / glue。
+* §6 Compatibility migration
+** 6.1 existing =(require 'nelisp-foo)= call sites
+原則は non-breaking:
+- feature symbol は維持
+- package resolver が load-path を調整
+- 旧 =src/nelisp-foo.el= は shim として残す
+従って user / test / downstream code は当面:
+#+begin_src emacs-lisp
+(require 'nelisp-json)
+#+end_src
+を変えなくてよい。
+** 6.2 meta package
+推奨:
+- =nelisp.el= は umbrella / meta entry として維持
+- =nelisp-core= は explicit minimal runtime package
+- =nelisp= は batteries-included meta package として併存可能
+** 6.3 Rust runtime registry impact
+README 2026-04-27 時点で Rust runtime 側には =anvil_host_registry.rs=、=anvil_tools_registry.rs=、=anvil_data_registry.rs=、=anvil_shell_filter_registry.rs= がある。ここで重要なのは *registry が package path に依存しないこと*。
+推奨 migration:
+- registry は tool provider interface のみを見る
+- package directory / shim file 名は registry に見せない
+- =nelisp-tools= package が provider として 1 層受ける
+** 6.4 user-facing API changes
+原則:
+- v1.x では function 名変更を伴わない
+- split は distribution / installation / upgrade story の変更が主
+変わり得る点:
+- install command
+- package declaration
+- advanced user の explicit load order
+** 6.5 test migration
+test は 3 tier に分けるべき:
+1. package-local tests
+2. umbrella integration tests
+3. runtime / anvil e2e tests
+monolithic ERT target のままでは package split の効用が半減する。
+* §7 Risks
+** 7.1 build complexity
+descriptor / resolver / manifest / per-package tests / release artifact が増える。対策は *v1 は monorepo のまま* とし、package manager を minimal に保つこと。
+** 7.2 distribution overhead
+package 数に比例して release / checksum / install docs / CI が増える。対策は *stable package のみ publish*、repo-local central index を source of truth にすること。
+** 7.3 version skew
+core と library の互換性崩壊 risk。対策は *descriptor に core version constraint*、manifest に tested tuple を記録、"latest wins" ではなく pin を基本にすること。
+** 7.4 migration cost
+shim / docs / CI / tests 書き換えが地味に大きい。対策は *pilot で作業 pattern を固定* してから wave 化すること。
+** 7.5 core boundary drift
+"便利だから core" が続くと split の意味が消える。対策は *core inclusion rule を ship gate 化* すること。
+** 7.6 oversized package
+=nelisp-coding-jis-tables.el= は size hotspot。対策は =nelisp-coding= と =nelisp-coding-jis= の二段 split option を保持すること。
+** 7.7 registry / package coupling
+Rust-side registry が package path や package 名に依存すると split が阻害される。対策は *provider interface only*。
+** 7.8 governance cost
+package が増えると reviewer の mental model も増える。対策は package owner より *layer owner* の発想を先に置き、過剰制度化を避けること。
+* §8 Ship gate
+Doc 45 implementation gate:
+1. pilot package が 1 本 fixed
+2. descriptor format が fixed
+3. central index path が fixed
+4. shim policy が fixed
+5. registry boundary rule が fixed
+pilot ship gate:
+- =nelisp-json= が resolver 経由で load できる
+- 旧 =(require 'nelisp-json)= が green
+- package-local test + umbrella test が green
+- README / install note に package install path が追記される
+wave ship gate:
+- each package が own test target を持つ
+- manifest から install 可能
+- no new dependency cycle
+- umbrella integration regressions 0
+* §9 LOCK criteria
+Doc 45 を LOCK する条件:
+1. core boundary が file list で固定
+2. pilot package が fixed
+3. packaging mechanism (= monorepo + central index) が fixed
+4. v1 で submodule / multi-repo を採らないと fixed
+5. shim policy が fixed
+6. phase order / rough estimate が fixed
+7. open questions 7 件に signoff
+LOCK 文言案:
+#+begin_quote
+Doc 45 全 default 採用:
+core = nelisp-core、distribution = monorepo packages/ + central index、
+pilot = nelisp-json、compat = shim 維持、registry = provider-indirection。
+#+end_quote
+* Open questions (user signoff 7 件)
+** Q1. core に native compiler stack (= =nelisp-cc*=) を含めるか
+A. *推奨*: =nelisp-native-compiler= として core から分離
+B. v1 は core 同梱、descriptor 上だけ別 system
+C. 恒久的に core 扱い
+私は *A* 推奨。
+** Q2. =nelisp-coding-jis-tables.el= を v1 で分離するか
+A. *推奨*: v1 は =nelisp-coding= に同梱
+B. 先に =nelisp-coding-jis= へ分離
+私は *A* 推奨。
+** Q3. pilot を =nelisp-json= で確定するか
+A. *推奨*: =nelisp-json=
+B. =nelisp-base64=
+C. =nelisp-regex=
+私は *A* 推奨。
+** Q4. distribution mechanism を monorepo + central index で固定するか
+A. *推奨*: はい
+B. 初手から submodule
+C. 初手から multi-repo
+私は *A* 推奨。
+** Q5. compatibility shim を何 minor 維持するか
+A. *推奨*: v1.x keep / v2 warn / v3 remove
+B. v1.x keep / v2 remove
+C. 永続維持
+私は *A* 推奨。
+** Q6. =nelisp-emacs-compat*= を core に入れるか別 package にするか
+A. *推奨*: 別 package (= Layer 2 extension)
+B. core に昇格
+私は *A* 推奨。
+** Q7. future =nelisp-emacs= package 化の前提として、"provider interface first" を Doc 45 で LOCK するか
+A. *推奨*: はい
+B. 後で決める
+私は *A* 推奨。
