@@ -1,0 +1,657 @@
+#+TITLE: Phase 7.5.4 — Rust-side minimal Elisp interpreter (true no-emacs-spawn anvil binary)
+#+DATE: 2026-04-26
+#+AUTHOR: zawatton + Claude (Opus 4.7 1M scoping session、user vision 2026-04-27)
+#+STATUS: DRAFT
+#+STATUS-NEXT: pending user signoff (review §3 sub-phase 分割 + §4 risks + §6 ship gate)
+
+* §0 要旨 (TL;DR)
+
+Doc 32 v2 §7.5.1〜7.5.3 で *=bin/anvil --strict-no-emacs= = static link
+binary* path は確立 (cdylib + staticlib + 4-stage cold-init coordinator)。
+ただし *=bin/anvil mcp serve= の現実装は依然 =emacs --batch= subprocess
+を spawn* し、=anvil-server-stage-d-headless-run= に runtime 制御を渡す
+構造である (=bin/anvil= L433-458)。
+
+本 doc は user 2026-04-27 vision = *Emacs を一切 spawn しない単一 Rust
+binary* を実現するための最終 sub-phase = *Phase 7.5.4 Rust-side minimal
+Elisp interpreter* の scoping。
+
+*戦略*: Rust 側に *bootstrap-grade minimal Elisp interpreter* (~2500-3500
+LOC、reader + evaluator + 30-50 builtin) を実装、cold-init で =src/=
+NeLisp source を自己 load → =nelisp-eval= に control を渡す bridge を
+構築する。Phase 5 (=nelisp-emacs= GNU Emacs C 全 port、=years=) ではない、
+*minimal-bootstrap path* (~6-12 週間 target)。
+
+*key insight* (= Doc 32 §1.4 Rhodes 5-stage 拡張): SBCL の =sbcl-mini= や
+SICP の Scheme metacircular evaluator と同 pattern。Rust 側 interpreter
+は *bootstrap stage 0 のみ active*、Phase 7.1 native compiler が takeover
+した時点で minimal interpreter は subgraph reachable から外れる (= "load
+bearing" が cold-init の一瞬のみ)。
+
+*完遂 gate*:
+- =bin/anvil mcp serve --strict-no-emacs= で *Emacs binary 一切 spawn せず*
+  Claude Code との smoke test PASS
+- cold-init time ≤ Doc 32 §5 500ms 維持 (Rust interpreter は subprocess
+  IPC less = むしろ短縮見込み)
+- LOC budget total ≤ 4500 LOC Rust (= reader 1000 + eval 1500 + builtin
+  500 + bridge 500 + MCP 500 + 余裕)
+- Phase 7.5 既存 ERT regression 0
+- 既存 =--no-emacs= host fallback path 維持 (= dual-mode、Doc 32 §2.5)
+
+*ship 条件*: Phase 7.5.1/7.5.2/7.5.3 全 SHIPPED + 本 phase 4 sub-phase
+全 PASS + 24h soak no crash + binary size ≤ 15MB 維持。
+
+*位置づけ*: Doc 32 v2 LOCKED は変更しない (本 doc は Doc 32 §7.5 の
+*successor sub-phase* = 7.5.4 として並列に立てる、Doc 32 §8 out of scope
+の "Phase 7.5 後送り" 項目を本 doc が引き取る)。
+
+* §1 Motivation (user 2026-04-27 vision)
+
+** 1.1 user 確認事項
+
+- *Emacs を使用しないユーザー向け*: 一般 dev / non-Emacs PKM user が
+  =bin/anvil= 単独 binary で MCP server を立てられる体験
+- *bin/anvil 1 process、emacs プロセス一切 spawn しない*: =ps= で
+  emacs / emacsclient が出現しない
+- *Phase 5 nelisp-emacs (= years) ではなく、もっと現実的な path*:
+  GNU Emacs C source 全 port (=feedback_nelisp_announcement_standalone_gate.md=
+  の "6-18 ヶ月" よりさらに短縮した bootstrap-only path)
+
+** 1.2 現状 gap
+
+| 項目                              | Doc 32 §7.5.1-3 SHIPPED | user vision           | gap                              |
+|-----------------------------------+-------------------------+-----------------------+----------------------------------|
+| binary single-file                | ✅ stage-d-v2.0 tarball  | ✅                     | OK                                |
+| =--strict-no-emacs= flag          | ✅ flag dispatch         | ✅                     | OK                                |
+| 4-stage cold-init coordinator     | ✅ =:status pass=        | ✅                     | OK                                |
+| *Emacs spawn 0*                   | ❌ =exec "$emacs_bin"=   | ✅ 必須                | *本 doc が解消*                  |
+| *Rust 側 Elisp eval*              | ❌ 全て host Emacs        | ✅ 必須                | *本 doc が新設*                  |
+| MCP stdio server (Rust)           | ❌ anvil-server (elisp) | △ Rust or Lisp どちら可 | bridge 設計次第                  |
+
+** 1.3 Doc 32 v2 §7.5.4 の現定義 vs 本 doc の新規定義
+
+Doc 32 v2 ソース内 grep:
+- =Cargo.toml= L52-56 ("CRITICAL #3 / Phase 7.5.4 hardening" = =panic = abort=)
+- Doc 32 §3.3 ERT で "Phase 7.5.4" 直接言及なし
+
+= Doc 32 で Phase 7.5.4 番号は *binary hardening 用* に予約されているのみ、
+"Rust-side Elisp interpreter" は未定義。本 doc は *7.5.4* 番号を user
+vision の implementation phase に *再用* する (=panic = abort= は既に
+Cargo.toml で SHIPPED 扱い、Phase 7.5.1 の一部に吸収可能)。
+
+*代案*: 7.5.5 / 7.6 / 7.6.0 / Phase 8 等の番号も検討可、user signoff
+時に決定。本 doc は *暫定 7.5.4* で記述。
+
+** 1.4 "no-emacs" 真 standalone は Doc 32 で言及あるか
+
+Doc 32 §1.3 Stage D Option B: =Host Emacs 不要= だが、これは "Emacs
+install 不要" の意 (= bundled-emacs tarball / static-link cdylib)。
+*Emacs spawn 不要* は Doc 32 §4 architecture の =[ MCP server start
+(anvil-server-run-batch-stdio、headless profile) ]= で *依然 NeLisp 経路を
+host Emacs runtime 上で実行* という前提。
+
+= 本 doc が Doc 32 architecture の *最後の Emacs 依存 (= host runtime)*
+を解消する位置づけ。
+
+* §2 Audit results
+
+** 2.1 nelisp-runtime/ Rust source 構成 (現状、~3208 LOC)
+
+| module                         | LOC | 役割                                     | Phase 7.5.4 での流用                |
+|--------------------------------+-----+------------------------------------------+-------------------------------------|
+| =src/lib.rs=                   |  72 | crate root + FFI re-export               | reader/eval module 追加 entry      |
+| =src/main.rs=                  | 220 | =syscall-smoke= + =exec-bytes= MVP       | =mcp-serve= subcommand 追加        |
+| =src/sqlite.rs=                | 623 | SQLite FFI (rusqlite bundled)            | =nelisp-state= bridge から流用     |
+| =src/syscall/mod.rs=           | 229 | syscall FFI re-export                    | 既存                                |
+| =src/syscall/unix.rs=          | 251 | mmap/read/write/open/close/stat          | reader file load / MCP stdio で必須 |
+| =src/syscall/fileio.rs=        | 598 | mkdir/rename/unlink/opendir/readdir 等   | =load-file= 経路で必須              |
+| =src/syscall/filenotify.rs=    | 281 | inotify wrapper                          | 流用任意                            |
+| =src/syscall/process.rs=       | 883 | fork/execve/posix_spawn/waitpid 等       | MCP server で =Process= 必須        |
+| =src/syscall/error.rs=         |  51 | errno → enum                             | 既存                                |
+
+*合計* 3208 LOC、全て *thin syscall wrapper* + SQLite。*Lisp 関連 0 LOC*。
+
+*Phase 7.0 公開 surface* (=nelisp-runtime::*=):
+- 14 syscall (=nelisp_syscall_*=)
+- 8 file I/O syscall (=nl_syscall_*= = mkdir / opendir / readdir / unlink /
+  rename / stat-ex / access / closedir)
+- 12 process syscall (=nl_syscall_fork=/=execve=/=posix_spawn=/...)
+- 5 filenotify FFI (=nl_filenotify_*=)
+- 5 SQLite FFI (=nl_sqlite_*=)
+- 各種 const (=NELISP_PROT_*= / =NELISP_MAP_*= / =NELISP_O_*= 等)
+
+*Phase 7.1 cdylib FFI*: 現時点 =exec-bytes= (raw machine code 実行) のみ。
+generated code を Lisp value で受け渡す ABI は未実装 (= Phase 7.5 proper)。
+
+*不足する primitive (本 phase で必須)*:
+- *heap allocator* (= cons cell / string / vector の Rust 側 owner)
+- *symbol table* (= intern / unintern、Phase 7.3 GC root register 用)
+- *reader* (= sexp parse、quote/backquote/sharpsign/string escape)
+- *evaluator core* (= apply / eval / let / lambda / setq / quote / if /
+  cond / progn / and / or / while / catch / throw / condition-case)
+- *builtin* (~30-50 = 算術 / list / string / IO / IO 周り)
+- *pretty-print* (= MCP error message でほぼ必須)
+
+** 2.2 bin/anvil current spawn flow
+
+| sub command          | spawn 回数 | 実体                                       |
+|----------------------+------------+--------------------------------------------|
+| =--version=          |          0 | bash echo                                  |
+| =--help=             |          0 | bash here-doc                              |
+| =version=            |          1 | =$emacs_bin --version= (1 line strip)      |
+| =doctor=             |          1 | =$emacs_bin --version=                     |
+| =tools-list=         |          0 | grep =deftool= macro (Lisp source 静的)    |
+| =mcp serve=          |        1-2 | =run_cold_init= (1) + =exec emacs= (1)    |
+| =mcp serve --no-emacs= | 1-2      | 同上 (cold-init coordinator + fallback)    |
+
+*=cmd_mcp_serve= argv 列挙* (=bin/anvil= L433-458):
+
+#+begin_src bash
+exec "$emacs_bin" --batch -Q \
+  -L "$anvil_dir" -L "$src_dir" \
+  --eval "(setq load-prefer-newer t)" \
+  --eval "(setenv \"ANVIL_CONFIG_DIR\" \"$ANVIL_CONFIG_DIR\")" \
+  --eval "(setenv \"ANVIL_CACHE_DIR\" \"$ANVIL_CACHE_DIR\")" \
+  -l anvil-server -l anvil-server-commands \
+  -f anvil-server-stage-d-headless-run
+#+end_src
+
+= *core dependency*: =-L= path resolution + =load-prefer-newer= + env
+inheritance + =-l= sequential require + =-f= function call。Rust 側で
+これら全部の *equivalent* を実装する必要あり。
+
+*Rust 側で実装すべき equivalent*:
+| Emacs feature              | Rust 側 equivalent                                    |
+|----------------------------+-------------------------------------------------------|
+| =--batch=                  | デフォルト挙動 (interactive UI 一切持たない)          |
+| =-Q=                       | デフォルト挙動 (init.el 等読まない)                   |
+| =-L= path                  | =load-path= (Lisp value Vector)                       |
+| =--eval=                   | reader → eval (top-level form)                        |
+| =setenv=                   | Rust 側 =std::env::set_var= → builtin =setenv=        |
+| =-l= require / load        | =load= builtin (= file open + read loop + eval each) |
+| =-f= funcall               | symbol 解決 → funcall                                 |
+
+** 2.3 Doc 32 §7.5.4 audit
+
+#+begin_quote
+/* T68 (CRITICAL #3 / Phase 7.5.4 hardening) — `panic = "abort"` makes
+   Rust panics terminate the *whole* process instead of unwinding
+   across the FFI boundary. */
+#+end_quote
+
+= Doc 32 LOCKED で Phase 7.5.4 は *binary hardening 用 reserve* (=panic
+= abort=)。本 doc では 7.5.4 を "Rust Elisp interpreter" に re-purpose、
+hardening 部は Phase 7.5.1 に retroactively absorb (Cargo.toml 既反映済)。
+
+* §3 Sub-phase decomposition
+
+** 3.1 全体構成
+
+| sub-phase | scope                                                | LOC est.   | 期間 (single dev)  | 並列化   |
+|-----------+------------------------------------------------------+------------+-------------------+----------|
+| 7.5.4.1   | Rust Lisp reader (sexp parser)                       | ~1000      | 1-2 週間           | -        |
+| 7.5.4.2   | Rust Lisp evaluator core + heap + symbol table       | ~1500      | 3-4 週間           | -        |
+| 7.5.4.3   | Self-host bridge (=src/= NeLisp load → =nelisp-eval=) | ~500       | 1 週間             | 7.5.4.4 と並列 |
+| 7.5.4.4   | MCP stdio server in Rust (JSON-RPC)                   | ~500       | 1 週間             | 7.5.4.3 と並列 |
+| 7.5.4.5   | =bin/anvil= bash → Rust binary 切替                   | ~300 + bash 削除 | 3-5 日       | 7.5.4.1-4 完成後 |
+
+*合計 LOC 見積*: ~3800 (=±50%、commit message に明示=) Rust 新規。
+*合計期間*: 6-9 週間 (single dev)、anvil-orchestrator + 並列 session
+leverage で 4-6 週間 target。
+
+*estimates may be off ±50%* — reader/eval は SBCL =sbcl-mini= が ~3500
+LOC、SICP metacircular ~200 LOC が両端の reference。NeLisp の elisp
+方言サイズ + =condition-case= + dynamic binding 込みで中央値想定。
+
+** 3.2 Phase 7.5.4.1 — Rust Lisp reader (~1000 LOC、1-2 週間)
+
+*** scope
+
+- =LispValue= enum 定義 (= Cons / Symbol / Integer / Float / String /
+  Vector / Nil / T、Phase 7.5.4.2 で Lambda / Macro 追加)
+- =Reader::read(&mut self)= → =LispValue= (= top-level form 1 個読む)
+- =read_str= / =read_char= / =read_list= / =read_quote= / =read_sharp=
+- string escape (=\n=, =\t=, =\\=, =\"=, =\xNN=)
+- character literal (=?a=, =?\n=, =?\C-a=、後者は Phase 7.5.4.2 後送り可)
+- comment skip (=;= 行末)
+- Source location tracking (= file:line:col、error message 用)
+
+*** ERT smoke (+5)
+
+- empty string → error
+- =42= / =3.14= / =foo= / ="hello"= / =nil= / =t=
+- =(1 2 3)= → 3-element list
+- =(quote foo)= = ='foo=
+- =(let ((x 1) (y 2)) (+ x y))= の sexp parse まで (eval 不要)
+- nested =(((((1)))))= → 5 nest
+
+*** dependency
+
+- =syscall::unix= (read file content)
+- 標準 Rust =String= (UTF-8、Phase 7.4 NeLisp coding は bootstrap 後で OK)
+
+*** risks
+
+- character literal の Emacs 方言 (=?\C-x=, =?\M-a=) は仕様広い → 本 phase
+  は subset (= ASCII + =?\n=/=?\t= 等 escape のみ) に限定、cold-init で
+  足りる範囲を見極めて段階追加
+- =#x10= (hex) / =#o17= (oct) / =#b1010= (bin) sharpsign は include 必須
+  (=NELISP_O_RDONLY= 等の defconst 評価で出現)
+- =`(...)= / =,foo= / =,@foo= backquote は Phase 7.5.4.2 で先送り可、
+  cold-init bootstrap が backquote 不使用なら本 phase で skip
+
+** 3.3 Phase 7.5.4.2 — Rust Lisp evaluator core (~1500 LOC、3-4 週間)
+
+*** scope
+
+- *heap allocator*: =Box<Cons>= / =Vec<u8>= の Rust naive owner、Phase
+  7.3 NeLisp GC が後で takeover (= 本 phase は =Rc= or =Arena= で OK、
+  Phase 7.5.4.3 で bridge)
+- *symbol table*: =HashMap<String, SymbolEntry>=、=intern=, =boundp=,
+  =fboundp=、=value-cell= + =function-cell= (= elisp 2-cell model)
+- *eval core*:
+  - =eval(form, env) -> Result<LispValue, LispError>=
+  - special forms: =quote=, =if=, =cond=, =progn=, =and=, =or=,
+    =setq=, =let=, =let*=, =lambda=, =defun=, =defvar=, =defconst=,
+    =while=, =catch=, =throw=, =condition-case=, =unwind-protect=,
+    =save-excursion= (no-op stub)
+  - dynamic binding (= elisp default、let 時 =push/pop= で stack)
+  - =funcall= / =apply=
+- *builtin* (~30-50 = bootstrap で必須):
+  - 算術: =+=, =-=, =*=, =/=, =<=, =<==, =>=, =>==, ===, =/==, =mod=
+  - list: =cons=, =car=, =cdr=, =list=, =length=, =append=, =reverse=,
+    =nth=, =nthcdr=, =memq=, =assoc=
+  - string: =concat=, =substring=, =string-length=, =string=, =format=
+    (basic =%s=/=%d= のみ)
+  - symbol: =intern=, =symbol-name=, =symbolp=, =null=, =eq=, =equal=
+  - control: =error=, =message=, =princ=, =prin1-to-string=
+  - file: =load=, =require= (=load=path= scan)、=getenv=, =setenv=
+  - sequence: =mapcar=, =mapc=, =dolist=, =dotimes= (= macro 展開でなく
+    special form として実装)
+- *error handling*: =condition-case= の Rust 側実装 (= =Result=
+  propagate + =LispError= variant per error type)
+
+*** ERT smoke (+12)
+
+- 算術 closed: =(+ 1 2 3)= → 6
+- =let= shadow: =(let ((x 1)) (let ((x 2)) x))= → 2
+- =lambda= apply: =((lambda (x y) (* x y)) 3 4)= → 12
+- =defun= + recursive: =(defun fib (n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))= → fib(10) = 55
+- =mapcar=: =(mapcar '1+ '(1 2 3))= → (2 3 4)
+- =condition-case= catch: =(condition-case e (error "x") (error 'caught))= → caught
+- =catch= / =throw= unwind: 3-level nest
+- =setq= dynamic: =(progn (setq x 1) (let ((x 2)) (incf x)) x)= → 1
+- =load= + =require=: temp file load
+- =format= basic: =(format "%s %d" "n=" 42)= → "n= 42"
+
+*** risks
+
+- *マクロ展開*: elisp =defmacro= の eager expand を Rust 側で実装すると
+  ~500 LOC 追加。本 phase は =defmacro= は *NeLisp 自体の bootstrap*
+  で必要なら最小実装、不要なら bootstrap source から除外 (= macroexpand
+  済 source を embed) で回避
+- *byte-code*: =#[...]= byte-code literal は本 phase は *unsupported*
+  (= source 側 byte-compile 禁止、=load-prefer-newer= で =.el= 強制)
+- *advice*: =advice-add= 等は不要 (= Phase 7.1 native compiler が takeover
+  した後で扱う)
+- *file scope*: =defvar-local= / =buffer-local-variables= 等は no-op stub、
+  bootstrap が要求すれば追加実装
+
+** 3.4 Phase 7.5.4.3 — Self-host bridge (~500 LOC、1 週間、7.5.4.4 と並列可)
+
+*** scope
+
+- =bridge::bootstrap_load(src_dir)= = =src/nelisp.el= → =src/nelisp-eval.el=
+  → =src/nelisp-cc.el= の *Phase 7.0/7.1 stage0 順序* で Rust eval が load
+- 各 file load 後、=fboundp 'nelisp-eval= で takeover 可能性 check
+- takeover 成功時、=control transfer= = 以降の eval は =nelisp-eval=
+  経由 (= Rust 側 eval は subgraph reachable から外れる)
+- takeover 失敗時、Rust 側 eval で続行 (= "minimal interpreter only" mode)
+- =NELISP_FORCE_RUST_EVAL=1= env で takeover 抑止 (= debug + soak test 用)
+
+*** ERT smoke (+5)
+
+- bootstrap load 全 file success (=src/nelisp*.el= 全 file が Rust eval で
+  syntactically valid)
+- =fboundp 'nelisp-eval= = t after =src/nelisp-eval.el= load
+- takeover 後 =(nelisp-eval-string "(+ 1 2)")= → 3
+- =NELISP_FORCE_RUST_EVAL= で Rust eval 続行 (= takeover skipped)
+- 失敗時 fallback (= 中途 file が syntax error なら =:status fail=
+  return、bin/anvil layer で =--strict-no-emacs= 時 exit 1)
+
+*** risks
+
+- *symbol table merge*: Rust 側 intern と =nelisp-eval= 側 intern が
+  別 table になり symbol identity 崩壊 risk → mitigation: takeover 時
+  symbol table を *渡す* (= =nelisp-eval-set-symbol-table=) bridge API
+- *value identity*: Rust 側 =Cons= と NeLisp =Cons= が異 representation
+  → mitigation: 本 phase は *takeover 後 Rust 側 value は到達不能* と
+  contract、cross-boundary value passing 禁止
+- *bootstrap source の Rust eval-only subset 整備*: =src/nelisp-eval.el=
+  自身が要求する builtin が Rust 側に揃わなければ chicken-and-egg →
+  mitigation: bootstrap 用 =src/nelisp-bootstrap-min.el= を別途用意、
+  Rust eval で確実に load できる minimum subset を定義
+
+** 3.5 Phase 7.5.4.4 — MCP stdio server in Rust (~500 LOC、1 週間、7.5.4.3 と並列可)
+
+*** scope
+
+- JSON-RPC 2.0 line-delimited stream parser (=serde_json= 既 dep)
+- =stdin= ← =read_until('\n')= ループ、=stdout= ← =write_all= + flush
+- protocol method: =initialize=, =initialized=, =tools/list=,
+  =tools/call=, =shutdown=, =exit=
+- =tools/call= dispatch:
+  - tool name → =anvil-server-dispatch-tool= 等価の Rust 側 lookup
+    (= 本 phase は =funcall (intern tool_name) args= で Lisp 側 dispatch)
+- error response (= JSON-RPC error code -32600/-32601/-32602/-32700)
+- request id correlation (= async-safe な Mutex<HashMap<id, ...>>)
+
+*** ERT smoke (+5)
+
+- =initialize= → =initialized= ハンドシェイク
+- =tools/list= → JSON array of tool spec
+- =tools/call= → result content
+- malformed JSON → -32700 parse error
+- unknown method → -32601 method not found
+
+*** risks
+
+- *concurrent request*: Claude Code は serialize する (memory
+  =feedback_claude_code_mcp_serial_dispatch.md=) ので本 phase は
+  *single-threaded* で十分、parallel 対応は後送り
+- *backpressure*: stdout が pipe full の時の挙動 → mitigation: blocking
+  write で OK (= MCP client は consumer 専任)
+
+** 3.6 Phase 7.5.4.5 — bin/anvil 切替 (~300 LOC、3-5 日、7.5.4.1-4 完成後)
+
+*** scope
+
+- bash =bin/anvil= を保持しつつ、=cmd_mcp_serve= 内で =--strict-no-emacs=
+  検知時に Rust binary (=$ANVIL_HOME/nelisp-runtime/target/release/nelisp-runtime mcp-serve=)
+  を =exec= に切替
+- 旧 path (host Emacs spawn) は =--no-emacs= 非 strict 時 fallback として
+  維持
+- =bin/anvil= の bash → Rust binary 移行は *Phase 7.5.5 / Phase 8 後送り*、
+  本 phase は launcher = bash + worker = Rust の hybrid に留める
+- =doctor= subcommand に =rust runtime mcp ready= 行追加
+
+*** ERT smoke (+3)
+
+- =bin/anvil mcp serve --strict-no-emacs= で =ps= に emacs/emacsclient 0
+- =bin/anvil mcp serve --no-emacs= (non-strict) で Rust 失敗時 host fallback 動作
+- =bin/anvil mcp serve= (default) で従来通り host Emacs path 維持
+
+** 3.7 Dependency graph
+
+#+begin_src text
+7.5.4.1 reader  ─────┐
+                     ├──→  7.5.4.2 evaluator  ──→  7.5.4.3 bridge ──┐
+                     │                              7.5.4.4 MCP   ──┼──→  7.5.4.5 bin switch
+                     └─→  (= 7.5.4.4 MCP server も reader 依存)    ──┘
+#+end_src
+
+*並列化機会*:
+- 7.5.4.1 完成後、7.5.4.2 と 7.5.4.4 (MCP server skeleton + JSON parse) を並列
+- 7.5.4.2 完成後、7.5.4.3 と 7.5.4.4 残部を並列
+- 7.5.4.5 は最後
+
+*orchestrator 役割分担* (memory =feedback_orchestrator_role_split.md=):
+- Claude (architecture / ranking): 7.5.4.2 special form taxonomy 設計、
+  7.5.4.3 takeover contract critique
+- Codex (coding / refactor): 7.5.4.1 reader + 7.5.4.2 builtin 30-50 個
+  実装 + 7.5.4.4 MCP protocol parser
+
+* §4 Risks + open questions
+
+** 4.1 GC interaction (Phase 7.3 GC は Elisp 側、Rust 側 reader/eval allocate object をどう trace?)
+
+*問題*: Phase 7.5.4.2 で Rust 側 =Box<Cons>= / =Vec<u8>= を allocate するが、
+Phase 7.3 NeLisp GC (=src/nelisp-gc.el=) は NeLisp heap span のみ scan する。
+Rust 側 object は GC root から外れ、takeover 後に *uncollectable + leak* 化
+する risk。
+
+*mitigation 案*:
+1. *bridge 時に full copy* — takeover 時に Rust 側 reachable な全 object を
+   NeLisp heap に copy (= =Cons= → =nelisp-cons-allocate=)。bootstrap が
+   ~MB 級なら現実的、~GB 級だと NG
+2. *Rust 側 own arena drop* — takeover 後 Rust 側 arena 全 drop、symbol
+   table のみ NeLisp 側に移送。bootstrap source が takeover 時点で
+   reachable な runtime value を持たない契約 (= =defun= / =defvar= の
+   identity は symbol-cell 経由なので OK、value side は drop)
+3. *NeLisp GC に Rust root scan を export* — Phase 7.3 GC の =gc-roots=
+   list に Rust 側 stack を含める。Rust 側 ABI 露出が複雑
+
+*推奨*: 案 2 (=arena drop=)。bootstrap 完了後 Rust 側 value は不要、symbol
+identity のみ NeLisp 側に持たせれば済む (= 本 phase 7.5.4.3 contract)。
+
+*open question*: bootstrap 中の =defvar= 値 (= top-level value cell) が
+Rust 側 =Cons= / =String= を指す場合の取扱。user signoff で確定。
+
+** 4.2 Symbol table (host Emacs symbol vs Rust 側 symbol)
+
+*問題*: Rust 側 =HashMap<String, SymbolEntry>= の symbol identity と、
+NeLisp 側 =obarray= の symbol identity を *同一に保つ* 必要がある (=
+=(eq 'foo 'foo)= が cross-boundary で =t= を返す保証)。
+
+*mitigation 案*:
+1. *takeover 時に Rust symbol table を NeLisp obarray に inject* — Rust
+   側 =SymbolEntry= 全 entry を NeLisp =intern= 経由で再 register、Rust
+   側 =SymbolEntry*= → NeLisp =Lisp_Object= の forwarding table を保持
+2. *NeLisp obarray を Rust 側に export* — Phase 7.5.4.2 reader 開始時点で
+   NeLisp obarray が空なら採用可、bootstrap 完成後の =intern= は全 cross-call
+
+*推奨*: 案 1 (=inject=)。bootstrap 中の symbol identity は Rust 内で閉じ、
+takeover 時に bulk transfer。
+
+** 4.3 Error handling (=condition-case= の Rust 側実装)
+
+*問題*: Rust =Result<T, E>= で =LispError= を propagate する設計は自然だが、
+=condition-case= は dynamic catch (= unwind n level) を要求する。
+
+*mitigation*:
+- Rust panic を使う案 = =panic = abort= (Cargo.toml SHIPPED) と矛盾、NG
+- *=Result= + dedicated handler stack* = =eval= 内部で =catch_marker:
+  Vec<HandlerFrame>= を保持、=condition-case= は marker push、=signal=
+  は =Err(SignalThrow { tag, data })= を return、=eval= が marker まで
+  unwind
+
+*推奨*: 後者。SBCL =RESTART-CASE= の素朴版、SICP metacircular の継続
+渡しを Rust =Result= で elision。
+
+** 4.4 Performance baseline (単純 form の eval が Emacs --batch より遅くないか?)
+
+*問題*: Phase 7.5.4.2 evaluator は AST tree-walking interpreter (= byte-code
+VM ではない)、単純 form でも 5-10x 遅い見込み。Doc 32 §5 cold-init 500ms
+gate を violation するか?
+
+*mitigation*:
+- Rust eval は *bootstrap stage 0 のみ active*、通常 MCP serve は Phase
+  7.1 native compiled =nelisp-eval= が処理する (= Rust eval は subgraph
+  外)
+- bootstrap 自身は ~500-1000 form 程度なので 5-10x 遅くても 50-100ms
+  overhead、500ms gate 内
+- post-takeover のホットパスは Phase 7.1 native code 側、Rust eval は
+  invoke されない
+
+*open question*: bootstrap source 行数の予算 (= =src/nelisp-bootstrap-min.el=
+は何 LOC まで膨らむか) を user signoff で確認。~2000 LOC 想定、超過時は
+bootstrap subset 削減。
+
+** 4.5 binary size 影響
+
+Doc 32 §6.2 binary size budget: target 10MB / 許容 15MB。Rust Lisp
+interpreter ~3800 LOC + dependency 0 増 (=serde_json= 既 dep) で見積
+=+1.5-2.0 MB= (LTO + strip 後)。
+
+15MB gate 余裕 (現状 6.2MB stage-d-v2.0) なので OK 範囲、ただし *cdylib
++ binary 二重 link 時 +3-4MB* に膨らむ可能性 → mitigation: =Cargo.toml=
+=[features] minimal-interp= を新設、=cdylib= には含めず =bin= のみに link。
+
+** 4.6 host Emacs fallback path 維持の必然性
+
+Doc 32 §2.5 = dual-mode 維持 (Stage D 経路 + =--no-emacs= 経路)。本 phase
+完遂後も =bin/anvil mcp serve= (no flag) は host Emacs spawn 経路で動作
+するべきか?
+
+*推奨*: *維持*。理由:
+- 既存 user (Emacs power user / Doom Emacs etc) は host Emacs path で
+  完全機能性 (= 全 anvil-* MCP tool ~138 個) を享受している
+- =--no-emacs= path は bootstrap-min subset で起動するため tool 数 28
+  程度に縮退 (= Doc 32 headless profile)
+- dual-mode = 異なる user persona 対応、3 年程度は co-exist させ、v3.0
+  で Emacs path deprecate 判断
+
+** 4.7 open questions for user signoff
+
+| # | question                                                       | recommended default     |
+|---+----------------------------------------------------------------+-------------------------|
+| 1 | sub-phase 番号は 7.5.4 で OK か (既 reserve = panic=abort と衝突) | 7.5.4 を re-purpose、panic=abort は 7.5.1 absorb |
+| 2 | bootstrap subset の最大 LOC 上限                                | ~2000 LOC、超過時 subset 削減 |
+| 3 | Rust 側 reader が backquote / character literal full をいつ覆うか | Phase 7.5.4.1 は subset、bootstrap が要求しない範囲は post-ship |
+| 4 | takeover 後 Rust eval 完全 drop vs reachable 維持               | 推奨 = drop (§4.1 案 2) |
+| 5 | host Emacs spawn fallback path 維持                              | 維持 (3 年 co-exist、v3.0 で deprecate 判断) |
+| 6 | MCP server も Rust 実装 vs takeover 後 NeLisp 側で server 起動    | 推奨 = Rust 側 (cold-init time + Emacs spawn 0 厳守) |
+| 7 | bench gate (eval 性能 floor) を本 phase で設けるか              | 推奨 = 設けない (Rust eval は cold-init 専用、性能 gate は Phase 7.1 既存) |
+
+* §5 Alternatives considered
+
+** 5.1 vendor crate 採用
+
+*** rust-lisp / rustyline / lisp-rs / lispy / emacs-rs (調査時点で agent
+knowledge ベース)
+
+| crate                | scope                              | NeLisp での適合性                  |
+|----------------------+------------------------------------+------------------------------------|
+| =rustyline=          | readline / line editor             | Lisp interpreter ではない、不適合  |
+| =steel= (= Scheme)   | embeddable Scheme interpreter      | elisp 方言 (dynamic binding etc) と差大、port 困難 |
+| =rust_lisp=          | toy Scheme tutorial                | API 不安定、依存 risk              |
+| =lisp-in-rust=       | tutorial blog series               | crate 化されていない                |
+| =rust_emacs= (rsx)   | =emacs=lisp= 互換 attempt            | 開発停滞、incompletetop-level     |
+
+*結論*: vendor 採用は不適合。理由:
+- elisp 方言 (=defvar= dynamic + =setq-default= + =defcustom= +
+  =condition-case= + =unwind-protect= + buffer-local 等) を覆う既存
+  crate なし
+- Scheme crate (=steel=) は static binding + lexical-only、bridge 層が
+  本実装より大きくなる
+- =rust_emacs= 系は GNU Emacs C 全 port を目指す方向、本 doc の
+  bootstrap-only path と思想が合わない (= Phase 5 nelisp-emacs と同じ
+  問題、user 2026-04-27 vision で却下)
+
+** 5.2 SBCL precedent (=sbcl-mini=)
+
+SBCL の cross-build path は host Lisp で =sbcl-mini= (~3500 LOC Common
+Lisp) を build → genesis で target image 構築 → cold-init で hand-off。
+NeLisp Phase 7.5.4 は *Rust 側に sbcl-mini equivalent を立てる* 設計、
+host Lisp なし bootstrap で SBCL pattern を踏襲。
+
+*差分*: SBCL は host Common Lisp が必要 (=ECL/CCL/Clisp 等)、NeLisp は
+*host = Rust = ubiquitous*。bootstrap host の install 摩擦 0 が SBCL
+を超える点。
+
+** 5.3 Phase 5 nelisp-emacs (= GNU Emacs C 全 port)
+
+memory =project_nelisp.md= L1 = "Phase 5 nelisp-emacs (= years)"。GNU Emacs
+C source ~30 万 LOC を Rust に全 port する path。User 2026-04-27 で却下、
+本 doc の minimal-bootstrap path で代替。
+
+*差分*: Phase 5 = ~3-5 年、本 doc = 6-12 週間。trade-off は機能性 (= GUI /
+buffer / window / display engine 等は本 path では unsupported、headless
+MCP serve のみ)。
+
+** 5.4 何もしない (= Doc 32 §7.5.1-3 で完了)
+
+Doc 32 SHIPPED 状態 = bundled-Emacs tarball (18MB) が =$ANVIL_HOME/emacs/=
+に同梱、=bin/anvil= が bundled emacs を spawn する design。これでも "system
+Emacs install 不要" は達成。
+
+*差分*: bundled tarball は 18MB (vs 本 doc 7-8MB target)、起動時
+fork+exec overhead (~50-100ms)、ps 上 emacs プロセス可視。User vision =
+"emacs プロセス一切 spawn しない" は満たさない。
+
+* §6 Ship gate
+
+** 6.1 必須条件
+
+- [ ] =bin/anvil mcp serve --strict-no-emacs= で =ps -ef | grep emacs= が空
+- [ ] Claude Code MCP smoke test (=initialize → tools/list → tools/call (3 tool) → shutdown=) PASS
+- [ ] cold-init time ≤ Doc 32 §5 500ms 維持 (Linux x86_64 reference host、p95、N=100)
+- [ ] binary size ≤ 15MB (Doc 32 §6.2 retention)
+- [ ] Phase 7.5 既存 ERT regression 0 (=cargo test --all= + =make test-all=)
+- [ ] 24h soak no crash + RSS growth < 10MB (Doc 32 §6.3 retention)
+- [ ] dual-mode parity (= host Emacs path で動作する core MCP tool は
+      =--strict-no-emacs= path でも同 result)
+
+** 6.2 sub-phase 単位 gate
+
+| sub-phase | gate ERT delta |
+|-----------+----------------|
+| 7.5.4.1   | +5             |
+| 7.5.4.2   | +12            |
+| 7.5.4.3   | +5             |
+| 7.5.4.4   | +5             |
+| 7.5.4.5   | +3             |
+| *合計*    | *+30 ERT*      |
+
+** 6.3 release-audit
+
+- =anvil-dev release-audit :scope doc 44= 緑
+- Doc 32 v2 LOCKED 維持 (本 doc は Doc 32 §7.5.4 を re-define、Doc 32
+  本文には触れない、整合 note を本 doc §1.3 に明記済)
+- memory =feedback_anvil_master_integration_gate.md= 準拠 (LOCKED →
+  SHIPPED stamp + main =--no-ff= merge)
+
+* §7 LOCK criteria
+
+LOCKED-2026-XX-XX-vN として stamp する条件:
+
+1. user signoff (§4.7 open questions 7 項目全 default 採用 or 個別決定)
+2. orchestrator codex review (= dispatch = anvil-orchestrator、claude
+   architecture critique + codex implementation feasibility check)
+3. LOC 見積 ±50% margin の妥当性 user 確認 (= "estimates may be off
+   ±50%" を user 受容)
+4. dependency graph (§3.7) と並列化 plan の user 受容
+5. Doc 32 §7.5.4 番号 re-purpose の user 受容 (or 別番号採用)
+
+LOCK 後 main merge gate = Phase 7.5.1/7.5.2/7.5.3 全 SHIPPED 維持下で
+本 doc の SHIPPED まで進める (= Doc 32 §7.5 SHIPPED の延長線、Phase 7.5
+の "後送り" として位置付ける)。
+
+* §8 関連 doc
+
+** internal NeLisp design docs
+- Doc 27 (=27-phase7-c-runtime-self-impl.org=、LOCKED) — Phase 7.x sub-phase table
+- Doc 28 (=28-phase7.1-native-compiler.org=、LOCKED v2) — native compiler、
+  本 doc の "takeover 後 native code path"
+- Doc 32 (=32-phase7.5-integration.org=、LOCKED v2) — Phase 7.5
+  integration、本 doc は §7.5.4 successor sub-phase
+- Doc 38 (=38-claude-self-extension-sdk.org=、DRAFT) — extension SDK、
+  Phase 7.5.4 完遂後の API surface に影響
+- Doc 39 (=39-phase9d-process-substrate.org=、SHIPPED) — process syscall
+  substrate、本 doc 7.5.4.4 MCP server で =Process= 流用
+
+** external precedent reference
+- SBCL =sbcl-mini= (~3500 LOC、cross-build host) — §5.2
+- SICP metacircular evaluator (~200 LOC、tutorial) — §3.3 LOC range の lower bound
+- =steel= Scheme crate — §5.1 vendor 候補却下
+- Rhodes 2008 LNCS 5146 §5.3 (5-stage bootstrap) — Doc 32 §1.4 transitive
+
+** 関連 memory
+- =feedback_nelisp_announcement_standalone_gate.md= — 公開告知 gate、本
+  phase で "emacs spawn 0" 達成すれば gate 解除条件 #4 強化
+- =feedback_anvil_uses_nelisp_architecture.md= — anvil-XXX が NeLisp 内部使用、
+  本 phase の self-host bridge と整合
+- =project_nelisp.md= — Phase 7.0-7.5 全体の状態
+- =feedback_orchestrator_role_split.md= — claude/codex 役割分担、§3.7 並列化 plan
+- =feedback_anvil_master_integration_gate.md= — main merge gate
+
+* §9 Sign-off
+
+** v0 → v1 改訂履歴
+- v0 (本 draft、2026-04-26): scoping 初版、user signoff 待ち
+
+** v0 LOCKED 根拠
+- (pending) — user signoff 後 stamp
+
+** main merge gate
+- (pending) — LOCKED stamp 後、Phase 7.5.4.1〜.5 SHIPPED で main merge
