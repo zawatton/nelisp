@@ -1,7 +1,14 @@
-;;; emacs-redisplay.el --- Phase 3 redisplay engine MVP  -*- lexical-binding: t; -*-
+;;; emacs-redisplay.el --- Phase 3 redisplay engine MVP + face-realize MVP  -*- lexical-binding: t; -*-
 
 ;; Phase 3 module per nelisp-emacs Doc 01 (LOCKED-2026-04-25-v2 §3.3),
 ;; mirroring NeLisp Doc 43 v2 §3.2 Phase 11.B redisplay engine MVP.
+;; Phase 3.B.1 (this file) adds face-realize MVP per Doc 43 v2 §2.4
+;; (face / display attribute system) — = the smallest shippable Phase
+;; 3.B sub-step: face spec → backend-ready normalized SGR attribute
+;; alist (foreground / background / weight / slant / underline /
+;; inverse-video).  Inheritance + cascade are routed to upstream
+;; `nelisp-face-resolve' when available; otherwise we use a local
+;; registry + flattening logic so ERTs run in vanilla host Emacs.
 ;; Layer: nelisp-emacs (Layer 3 inner = redisplay-driver + glyph-matrix).
 ;; Namespace: `emacs-redisplay-' so loading inside a host Emacs does
 ;; NOT shadow any `redisplay-' / `glyph-' / `display-' symbol.
@@ -33,7 +40,7 @@
 ;;     module loads + ERTs pass even when the upstream module is not
 ;;     yet installed (= MVP isolation).
 ;;
-;; API surface (~13 public APIs):
+;; API surface (~17 public APIs):
 ;;
 ;;   A. driver lifecycle (3 APIs)
 ;;      emacs-redisplay-init             — return a fresh redisplay handle
@@ -55,6 +62,12 @@
 ;;      emacs-redisplay-text-to-glyphs   — buffer text → vector of glyph
 ;;      emacs-redisplay-glyph-row        — row accessor
 ;;      emacs-redisplay-glyph-row-text   — concatenated row chars (testing)
+;;
+;;   E. face-realize MVP — Phase 3.B.1 / Doc 43 §2.4 (4 APIs)
+;;      emacs-redisplay-realize-face       — face spec → SGR-ready alist
+;;      emacs-redisplay-defface            — register a face spec locally
+;;      emacs-redisplay-face-attributes    — registry lookup
+;;      emacs-redisplay-face-cache-clear   — drop cached realizations
 ;;
 ;; Non-goals (deferred per Doc 43 §3.2 Phase 11.B v2.x):
 ;;   - bidi (双方向 text); MVP is LTR only.
@@ -97,10 +110,23 @@
 Bumped on incompatible change to the per-frame redisplay invariants
 (e.g. dirty-tracking semantics, matrix cache invalidation rules).")
 
-(defconst emacs-redisplay-glyph-matrix-contract-version 1
+(defconst emacs-redisplay-glyph-matrix-contract-version 2
   "GLYPH_MATRIX_CONTRACT_VERSION per Doc 43 v2 §2.3.
 Bumped on incompatible change to the glyph / glyph-row / glyph-matrix
-struct shape exposed via `emacs-redisplay-glyph-matrix'.")
+struct shape exposed via `emacs-redisplay-glyph-matrix'.
+
+History:
+  v1 — Phase 3 MVP (T160): glyph slots = char/face/face-id/width/
+       composition/display-spec/buf-pos.
+  v2 — Phase 3.B.1: glyph slot `realized-face' added (= SGR-ready
+       attribute alist computed via `emacs-redisplay-realize-face').
+       The original `face' slot continues to hold the raw spec for
+       diff / observability / overlay merge intermediate state.")
+
+(defconst emacs-redisplay-face-realize-contract-version 1
+  "FACE_REALIZE_CONTRACT_VERSION per Doc 43 v2 §2.4.
+Bumped on incompatible change to `emacs-redisplay-realize-face'
+output shape (= SGR attribute alist canonical form).")
 
 ;;; defcustom
 
@@ -130,14 +156,20 @@ the window width are clipped, mirroring `truncate-lines = t' in Emacs."
 (cl-defstruct (emacs-redisplay-glyph
                (:constructor emacs-redisplay--make-glyph)
                (:copier      nil))
-  "A single glyph (= one displayed cell) per Doc 43 §2.3."
-  (char         ?\s)        ;; codepoint (integer)
-  (face         nil)        ;; face spec (= nelisp-face-resolve input)
-  (face-id      0)          ;; realized face id (MVP = 0 default)
-  (width        1)          ;; glyph width in cells (1 ASCII / 2 CJK)
-  (composition  nil)        ;; nil or composition reference (deferred)
-  (display-spec nil)        ;; nil or display property override
-  (buf-pos      nil))       ;; source buffer position (for tooltips, etc.)
+  "A single glyph (= one displayed cell) per Doc 43 §2.3 / §2.4.
+The `face' slot stores the raw / merged source face spec (symbol or
+plist or list), preserved for overlay-merge intermediate state and
+test observability.  The `realized-face' slot stores the *normalized*
+SGR-ready attribute alist consumable by `emacs-tui-backend' (= Phase
+3.B.1 face-realize MVP, Doc 43 §2.4)."
+  (char          ?\s)        ;; codepoint (integer)
+  (face          nil)        ;; raw face spec (symbol/plist/list)
+  (realized-face nil)        ;; SGR-ready attribute alist (Phase 3.B.1)
+  (face-id       0)          ;; realized face id (MVP = 0 default)
+  (width         1)          ;; glyph width in cells (1 ASCII / 2 CJK)
+  (composition   nil)        ;; nil or composition reference (deferred)
+  (display-spec  nil)        ;; nil or display property override
+  (buf-pos       nil))       ;; source buffer position (for tooltips, etc.)
 
 (cl-defstruct (emacs-redisplay-glyph-row
                (:constructor emacs-redisplay--make-glyph-row)
@@ -184,6 +216,262 @@ the window width are clipped, mirroring `truncate-lines = t' in Emacs."
   "When logging is enabled, append a formatted line to *Messages*."
   (when emacs-redisplay-log-enabled
     (apply #'message (concat "[emacs-redisplay] " fmt) args)))
+
+;;; Face registry + face-realize (Phase 3.B.1, Doc 43 §2.4 MVP)
+;;
+;; `emacs-redisplay-realize-face' is a SGR-oriented normalizer: it
+;; takes any face spec form (nil / face-symbol / plist / cascade-list)
+;; and returns a flat attribute alist consumable by
+;; `emacs-tui-backend--sgr-from-face'.  Inheritance (= `:inherit') is
+;; expanded; numeric / string color names are mapped to the backend's
+;; symbolic palette (= `red' / `bright-blue' / `default' / nil).
+;;
+;; The cache key is the raw spec value (compared with `equal').  We
+;; intentionally do NOT plug into a global LRU at the MVP stage; the
+;; cache is single-table reset by `emacs-redisplay-face-cache-clear'
+;; (called e.g. on backend swap, per Doc 43 §2.4 invariant 4).
+
+(defvar emacs-redisplay--face-registry (make-hash-table :test 'eq)
+  "Local face-name → attribute-plist registry (= MVP fallback).
+Populated by `emacs-redisplay-defface'.  When upstream
+`nelisp-face-attributes' is available *and* returns a value, we prefer
+that; otherwise we fall back to this table so ERT runs in a vanilla
+host Emacs.")
+
+(defvar emacs-redisplay--face-cache (make-hash-table :test 'equal)
+  "Memoization cache: raw face spec → realized attribute alist.")
+
+(defcustom emacs-redisplay-face-realize-default-foreground nil
+  "Optional default foreground (symbol) when realized face has none."
+  :type '(choice (const nil) symbol)
+  :group 'emacs-redisplay)
+
+(defcustom emacs-redisplay-face-realize-default-background nil
+  "Optional default background (symbol) when realized face has none."
+  :type '(choice (const nil) symbol)
+  :group 'emacs-redisplay)
+
+(defconst emacs-redisplay--face-color-name-map
+  '(("black" . black) ("red" . red) ("green" . green)
+    ("yellow" . yellow) ("blue" . blue) ("magenta" . magenta)
+    ("cyan" . cyan) ("white" . white)
+    ("brightblack" . bright-black) ("brightred" . bright-red)
+    ("brightgreen" . bright-green) ("brightyellow" . bright-yellow)
+    ("brightblue" . bright-blue) ("brightmagenta" . bright-magenta)
+    ("brightcyan" . bright-cyan) ("brightwhite" . bright-white)
+    ("gray" . bright-black) ("grey" . bright-black)
+    ("default" . default) ("none" . default))
+  "Lowercase color-name string → backend palette symbol map (MVP subset).
+Unknown strings are passed through as `default' (= no SGR emitted).")
+
+(defun emacs-redisplay--face-color->symbol (color)
+  "Map COLOR (string / symbol / nil) to the backend palette symbol.
+Returns nil when COLOR resolves to no SGR override (= unspecified)."
+  (cond
+   ((null color) nil)
+   ((eq color 'unspecified) nil)
+   ((symbolp color) color)
+   ((stringp color)
+    (let* ((key (downcase (replace-regexp-in-string "[ \t-]+" ""
+                                                    color))))
+      (or (cdr (assoc key emacs-redisplay--face-color-name-map))
+          ;; Unknown string color — degrade to `default' so the SGR
+          ;; pass simply skips the channel rather than crashing.
+          'default)))
+   (t nil)))
+
+(defun emacs-redisplay--face-weight->bold (weight)
+  "Return non-nil iff WEIGHT (a symbol) means bold-or-bolder."
+  (memq weight '(bold semi-bold extra-bold ultra-bold heavy black)))
+
+(defun emacs-redisplay--face-attributes-from-registry (sym)
+  "Lookup SYM in upstream + local registry; return attribute plist."
+  (or (and (fboundp 'nelisp-face-attributes)
+           (condition-case _err
+               (nelisp-face-attributes sym)
+             (error nil)))
+      (gethash sym emacs-redisplay--face-registry)))
+
+(defun emacs-redisplay--face-resolve-spec (spec depth seen)
+  "Internal recursive resolver of SPEC into a flat attribute plist.
+Mirrors `nelisp-face-resolve' shape so the two stay interchangeable;
+falls back to the local registry when upstream is absent.  DEPTH
+bounds the `:inherit' chain (cap 16); SEEN guards cycles."
+  (cond
+   ((null spec) nil)
+   ((>= depth 16) nil)
+   ((symbolp spec)
+    (cond
+     ((memq spec seen) nil)
+     (t
+      (let ((own (emacs-redisplay--face-attributes-from-registry spec)))
+        (cond
+         ((null own) nil)
+         (t
+          (let ((inherit (plist-get own :inherit))
+                (base (cl-loop for (k v) on own by #'cddr
+                               unless (eq k :inherit)
+                               nconc (list k v))))
+            (if (null inherit)
+                base
+              (emacs-redisplay--face-merge-plists
+               base
+               (emacs-redisplay--face-resolve-spec
+                inherit (1+ depth) (cons spec seen))))))))))
+    )
+   ((and (listp spec) (keywordp (car spec)))
+    ;; Raw plist with possible :inherit
+    (let ((inherit (plist-get spec :inherit))
+          (base (cl-loop for (k v) on spec by #'cddr
+                         unless (eq k :inherit)
+                         nconc (list k v))))
+      (if (null inherit)
+          base
+        (emacs-redisplay--face-merge-plists
+         base
+         (emacs-redisplay--face-resolve-spec
+          inherit (1+ depth) seen)))))
+   ((listp spec)
+    ;; Cascade — left wins.
+    (let (acc)
+      (dolist (entry spec)
+        (let ((piece (emacs-redisplay--face-resolve-spec
+                      entry depth seen)))
+          (when piece
+            (setq acc (emacs-redisplay--face-merge-plists acc piece)))))
+      acc))
+   (t nil)))
+
+(defun emacs-redisplay--face-merge-plists (left right)
+  "Return LEFT overlaid on RIGHT (LEFT wins on key conflict)."
+  (let ((result (copy-sequence left)))
+    (cl-loop for (k v) on right by #'cddr
+             unless (plist-member result k)
+             do (setq result (nconc result (list k v))))
+    result))
+
+(defun emacs-redisplay--face-plist->alist (plist)
+  "Translate Emacs-vocab attribute PLIST to backend SGR alist.
+
+Recognized keys:
+  :foreground / :background  → (:foreground . SYM) / (:background . SYM)
+  :weight (bold-or-bolder)   → (:bold . t)
+  :slant (italic / oblique)  → (:italic . t)  -- not yet emitted by SGR
+  :underline (non-nil)       → (:underline . t)
+  :inverse-video (non-nil)   → (:reverse . t)
+  :reverse (non-nil)         → (:reverse . t)
+  :bold (non-nil)            → (:bold . t)   -- short-hand pass-through
+  :italic (non-nil)          → (:italic . t)
+
+Unknown / `unspecified' values are skipped.  Returns nil when no
+attribute survives normalization."
+  (let ((out nil))
+    (cl-loop for (k v) on plist by #'cddr do
+             (pcase k
+               (:foreground
+                (let ((sym (emacs-redisplay--face-color->symbol v)))
+                  (when sym (push (cons :foreground sym) out))))
+               (:background
+                (let ((sym (emacs-redisplay--face-color->symbol v)))
+                  (when sym (push (cons :background sym) out))))
+               (:weight
+                (when (emacs-redisplay--face-weight->bold v)
+                  (push (cons :bold t) out)))
+               (:bold
+                (when v (push (cons :bold t) out)))
+               (:slant
+                (when (memq v '(italic oblique))
+                  (push (cons :italic t) out)))
+               (:italic
+                (when v (push (cons :italic t) out)))
+               (:underline
+                (when v (push (cons :underline t) out)))
+               (:inverse-video
+                (when v (push (cons :reverse t) out)))
+               (:reverse
+                (when v (push (cons :reverse t) out)))
+               (_ nil)))
+    ;; Apply defaults if no fg / bg survived.
+    (when (and emacs-redisplay-face-realize-default-foreground
+               (not (assq :foreground out)))
+      (push (cons :foreground
+                  emacs-redisplay-face-realize-default-foreground)
+            out))
+    (when (and emacs-redisplay-face-realize-default-background
+               (not (assq :background out)))
+      (push (cons :background
+                  emacs-redisplay-face-realize-default-background)
+            out))
+    (nreverse out)))
+
+(defun emacs-redisplay-realize-face (spec)
+  "Realize face SPEC into a backend-ready SGR attribute alist.
+
+Accepts:
+  nil                       — returns nil (= default face).
+  FACE-SYMBOL               — registry lookup with `:inherit' chain.
+  (:foreground STR ...)     — raw plist; `:inherit' supported.
+  (FACE ...)                — cascade, left-wins merge.
+
+Returns a flat alist consumable by
+`emacs-tui-backend--sgr-from-face' with keys `:foreground' /
+`:background' / `:bold' / `:italic' / `:underline' / `:reverse'.
+Unknown / `unspecified' values are dropped.
+
+Result is memoized in `emacs-redisplay--face-cache'; call
+`emacs-redisplay-face-cache-clear' on backend swap or registry
+mutation to invalidate.
+
+This API is the Phase 3.B.1 face-realize MVP per Doc 43 v2 §2.4."
+  (cond
+   ((null spec) nil)
+   (t
+    (let ((cached (gethash spec emacs-redisplay--face-cache 'miss)))
+      (cond
+       ((not (eq cached 'miss)) cached)
+       (t
+        (let* ((upstream (and (fboundp 'nelisp-face-resolve)
+                              (condition-case _err
+                                  (nelisp-face-resolve spec)
+                                (error nil))))
+               ;; Always merge in the local registry's view as fallback
+               ;; so faces registered via `emacs-redisplay-defface' work
+               ;; even when upstream `nelisp-face-resolve' is loaded but
+               ;; has no entry for the spec (= ERT in vanilla host).
+               (local (emacs-redisplay--face-resolve-spec spec 0 nil))
+               (plist (emacs-redisplay--face-merge-plists
+                       (or upstream nil) (or local nil)))
+               (alist (emacs-redisplay--face-plist->alist plist)))
+          (puthash spec alist emacs-redisplay--face-cache)
+          alist)))))))
+
+(defun emacs-redisplay-defface (name attr-plist)
+  "Register face NAME with ATTR-PLIST in the local face registry.
+The same name registered via upstream `nelisp-face-define' takes
+precedence; this helper is the MVP fallback so ERTs run in a vanilla
+host Emacs.  Returns NAME."
+  (unless (symbolp name)
+    (signal 'wrong-type-argument (list 'symbolp name)))
+  (unless (and (listp attr-plist) (zerop (mod (length attr-plist) 2)))
+    (signal 'wrong-type-argument (list 'plistp attr-plist)))
+  (puthash name attr-plist emacs-redisplay--face-registry)
+  ;; Mutating the registry invalidates the realization cache.
+  (emacs-redisplay-face-cache-clear)
+  name)
+
+(defun emacs-redisplay-face-attributes (name)
+  "Return the registered attribute plist for face NAME, or nil.
+Defers to upstream `nelisp-face-attributes' first; falls back to the
+local registry maintained by `emacs-redisplay-defface'."
+  (emacs-redisplay--face-attributes-from-registry name))
+
+(defun emacs-redisplay-face-cache-clear ()
+  "Drop every cached face realization.  Returns the entry count cleared.
+Call after backend swap (Doc 43 §2.4 invariant 4) or after registry
+mutation."
+  (let ((n (hash-table-count emacs-redisplay--face-cache)))
+    (clrhash emacs-redisplay--face-cache)
+    n))
 
 ;;; Optional NeLisp upstream API bridges (graceful fallback)
 ;;
@@ -298,14 +586,20 @@ returns nil (= MVP face = default, display = no override)."
 ;;; Hash helper for diff propagation
 
 (defun emacs-redisplay--row-hash (row-vec)
-  "Return a stable hash for ROW-VEC (vector of glyphs)."
+  "Return a stable hash for ROW-VEC (vector of glyphs).
+The hash mixes char + the *realized* face alist (Phase 3.B.1) so a
+text-property face change that resolves to a different SGR triggers
+diff redraw even if the raw spec stayed identical (= e.g. registry
+mutation under the same face name)."
   (let ((h 0)
         (i 0)
         (len (length row-vec)))
     (while (< i len)
       (let* ((g (aref row-vec i))
              (c (if g (emacs-redisplay-glyph-char g) 0))
-             (f (if g (emacs-redisplay-glyph-face g) nil)))
+             (f (if g (or (emacs-redisplay-glyph-realized-face g)
+                          (emacs-redisplay-glyph-face g))
+                  nil)))
         ;; Mix char + sxhash of face into a 32-bit mask.
         (setq h (logand #xFFFFFFFF
                         (+ (* h 31)
@@ -471,11 +765,13 @@ in the `buf-pos' slot.  HANDLE may be nil — only used for logging."
     (dotimes (i n)
       (let* ((pos (+ offset i))
              (face (emacs-redisplay--text-property-at pos 'face buffer))
-             (display (emacs-redisplay--text-property-at pos 'display buffer)))
+             (display (emacs-redisplay--text-property-at pos 'display buffer))
+             (resolved (emacs-redisplay--resolve-face face)))
         (aset vec i
               (emacs-redisplay--make-glyph
                :char (aref text i)
-               :face (emacs-redisplay--resolve-face face)
+               :face resolved
+               :realized-face (emacs-redisplay-realize-face face)
                :face-id 0
                :width 1
                :composition nil
@@ -519,13 +815,18 @@ control characters return 1."
                ;; When upstream resolve returns nil (= face not yet
                ;; defined or no match for current backend) fall back to
                ;; the raw spec so the merge stays observable.
-               (eff (or resolved best)))
-          (setf (emacs-redisplay-glyph-face glyph)
-                (if existing
-                    (cond
-                     ((listp existing) (cons eff existing))
-                     (t (list eff existing)))
-                  eff)))))))
+               (eff (or resolved best))
+               (merged (if existing
+                           (cond
+                            ((listp existing) (cons eff existing))
+                            (t (list eff existing)))
+                         eff)))
+          (setf (emacs-redisplay-glyph-face glyph) merged)
+          ;; Phase 3.B.1: re-realize the merged spec into the SGR-
+          ;; ready alist so the backend flush picks up the overlay
+          ;; contribution without an extra realize call per row seg.
+          (setf (emacs-redisplay-glyph-realized-face glyph)
+                (emacs-redisplay-realize-face merged)))))))
 
 (defun emacs-redisplay--lay-out-line (line buffer-pos buffer overlays width)
   "Return a vector of `used' glyphs for LINE starting at BUFFER-POS.
@@ -567,6 +868,7 @@ just past the consumed text (excluding any newline)."
                  (g (emacs-redisplay--make-glyph
                      :char ch
                      :face (emacs-redisplay--resolve-face face)
+                     :realized-face (emacs-redisplay-realize-face face)
                      :face-id 0
                      :width (max 1 cw)
                      :composition nil
@@ -786,27 +1088,35 @@ Returns the number of cache entries cleared."
 
 (defun emacs-redisplay--row-text-segments (row width)
   "Return a list of (COL TEXT FACE) painting segments for ROW.
-Adjacent glyphs sharing the same face are batched into a single
-segment so the backend `canvas-draw-text' call count stays low."
+Adjacent glyphs sharing the same realized face are batched into a
+single segment so the backend `canvas-draw-text' call count stays low.
+The FACE element of each tuple is the *realized* SGR-ready alist (=
+Phase 3.B.1 face-realize MVP output) — not the raw spec — so the
+backend can emit the correct SGR escape directly without a per-segment
+realize call.  When `realized-face' is nil we fall back to the raw
+`face' slot for back-compat with overlays carrying spec the realizer
+does not know how to translate."
   (let* ((vec (emacs-redisplay-glyph-row-glyphs row))
          (n (min width (length vec)))
          (segments nil)
          (col 0))
-    (while (< col n)
-      (let* ((g (aref vec col))
-             (face (and g (emacs-redisplay-glyph-face g)))
-             (start col)
-             (chars (list (if g (emacs-redisplay-glyph-char g) ?\s))))
-        (setq col (1+ col))
-        (while (and (< col n)
-                    (let ((g2 (aref vec col)))
-                      (equal face (and g2
-                                       (emacs-redisplay-glyph-face g2)))))
-          (push (let ((g2 (aref vec col)))
-                  (if g2 (emacs-redisplay-glyph-char g2) ?\s))
-                chars)
-          (setq col (1+ col)))
-        (push (list start (concat (nreverse chars)) face) segments)))
+    (cl-flet ((paint-face (g)
+                (and g (or (emacs-redisplay-glyph-realized-face g)
+                           (emacs-redisplay-glyph-face g)))))
+      (while (< col n)
+        (let* ((g (aref vec col))
+               (face (paint-face g))
+               (start col)
+               (chars (list (if g (emacs-redisplay-glyph-char g) ?\s))))
+          (setq col (1+ col))
+          (while (and (< col n)
+                      (let ((g2 (aref vec col)))
+                        (equal face (paint-face g2))))
+            (push (let ((g2 (aref vec col)))
+                    (if g2 (emacs-redisplay-glyph-char g2) ?\s))
+                  chars)
+            (setq col (1+ col)))
+          (push (list start (concat (nreverse chars)) face) segments))))
     (nreverse segments)))
 
 ;;;###autoload
