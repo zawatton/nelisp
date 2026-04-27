@@ -2,6 +2,7 @@
 
 ;; Phase 3 module ERT per nelisp-emacs Doc 01 (LOCKED v2 §3.3),
 ;; mirroring NeLisp Doc 43 v2 §3.2 Phase 11.B redisplay engine MVP.
+;; Phase 3.B.1 (face-realize MVP per Doc 43 §2.4) adds section G below.
 ;;
 ;; Coverage:
 ;;   A. driver lifecycle  (init / shutdown / handlep + version consts)
@@ -10,6 +11,10 @@
 ;;   D. dirty tracking    (mark-window-dirty / mark-frame-dirty)
 ;;   E. backend wiring    (flush-frame writes to TUI canvas, set-cursor)
 ;;   F. cross-cutting     (handle errors, narrowed visible, overlays)
+;;   G. face-realize MVP  (Phase 3.B.1, Doc 43 §2.4) — registry, plist
+;;                         + symbol + cascade resolution, color string
+;;                         normalization, weight→bold, glyph realized-
+;;                         face slot, overlay merge realize, SGR emit
 
 ;;; Code:
 
@@ -408,6 +413,121 @@ layer (which only accepts raw Emacs buffers, not `nelisp-ec-buffer')."
                   :type 'emacs-redisplay-bad-handle)
     (should-error (emacs-redisplay-text-to-glyphs h "x")
                   :type 'emacs-redisplay-bad-handle)))
+
+;;; G. face-realize MVP (Phase 3.B.1, Doc 43 §2.4) — 10 tests
+
+(defmacro emacs-redisplay-test--with-fresh-face-registry (&rest body)
+  "Reset the local face registry + cache before BODY."
+  (declare (indent 0) (debug (body)))
+  `(let ((emacs-redisplay--face-registry (make-hash-table :test 'eq))
+         (emacs-redisplay--face-cache (make-hash-table :test 'equal)))
+     ,@body))
+
+(ert-deftest emacs-redisplay-test-realize-face-nil-returns-nil ()
+  "Realizing nil yields nil (= default face, no SGR emitted)."
+  (emacs-redisplay-test--with-fresh-face-registry
+    (should-not (emacs-redisplay-realize-face nil))))
+
+(ert-deftest emacs-redisplay-test-realize-face-plist-foreground-string ()
+  "Color string `\"red\"' normalizes to backend symbol `red'."
+  (emacs-redisplay-test--with-fresh-face-registry
+    (let ((alist (emacs-redisplay-realize-face '(:foreground "red"))))
+      (should (consp alist))
+      (should (eq 'red (cdr (assq :foreground alist)))))))
+
+(ert-deftest emacs-redisplay-test-realize-face-plist-bg-and-attrs ()
+  "Background + bold + underline survive normalization."
+  (emacs-redisplay-test--with-fresh-face-registry
+    (let ((a (emacs-redisplay-realize-face
+              '(:background "blue" :weight bold :underline t))))
+      (should (eq 'blue (cdr (assq :background a))))
+      (should (eq t (cdr (assq :bold a))))
+      (should (eq t (cdr (assq :underline a)))))))
+
+(ert-deftest emacs-redisplay-test-realize-face-defface-symbol ()
+  "Symbol face spec resolves through the local registry."
+  (emacs-redisplay-test--with-fresh-face-registry
+    (emacs-redisplay-defface 'rdt-warn '(:foreground "yellow" :weight bold))
+    (let ((a (emacs-redisplay-realize-face 'rdt-warn)))
+      (should (eq 'yellow (cdr (assq :foreground a))))
+      (should (eq t (cdr (assq :bold a)))))))
+
+(ert-deftest emacs-redisplay-test-realize-face-cascade-left-wins ()
+  "Cascade list (FACE PLIST) merges left-wins on conflicting keys."
+  (emacs-redisplay-test--with-fresh-face-registry
+    (emacs-redisplay-defface 'rdt-base '(:foreground "blue"
+                                          :background "white"))
+    (let ((a (emacs-redisplay-realize-face
+              '((:foreground "red") rdt-base))))
+      ;; left-wins: foreground = red, background = white (from base).
+      (should (eq 'red   (cdr (assq :foreground a))))
+      (should (eq 'white (cdr (assq :background a)))))))
+
+(ert-deftest emacs-redisplay-test-realize-face-inherit-chain ()
+  "`:inherit' from a registered face flattens into the result."
+  (emacs-redisplay-test--with-fresh-face-registry
+    (emacs-redisplay-defface 'rdt-parent '(:foreground "green"))
+    (emacs-redisplay-defface 'rdt-child  '(:weight bold :inherit rdt-parent))
+    (let ((a (emacs-redisplay-realize-face 'rdt-child)))
+      (should (eq t (cdr (assq :bold a))))
+      (should (eq 'green (cdr (assq :foreground a)))))))
+
+(ert-deftest emacs-redisplay-test-realize-face-cache-hit ()
+  "Repeated realize calls hit the memo cache (= same eq alist returned)."
+  (emacs-redisplay-test--with-fresh-face-registry
+    (let* ((spec '(:foreground "cyan"))
+           (a1 (emacs-redisplay-realize-face spec))
+           (a2 (emacs-redisplay-realize-face spec)))
+      (should (eq a1 a2)))))
+
+(ert-deftest emacs-redisplay-test-defface-clears-cache ()
+  "Registering a face invalidates the realization cache."
+  (emacs-redisplay-test--with-fresh-face-registry
+    (emacs-redisplay-defface 'rdt-flip '(:foreground "red"))
+    (let ((a1 (emacs-redisplay-realize-face 'rdt-flip)))
+      (should (eq 'red (cdr (assq :foreground a1)))))
+    ;; Re-defface with a different color → cache flushed → new value.
+    (emacs-redisplay-defface 'rdt-flip '(:foreground "green"))
+    (let ((a2 (emacs-redisplay-realize-face 'rdt-flip)))
+      (should (eq 'green (cdr (assq :foreground a2)))))))
+
+(ert-deftest emacs-redisplay-test-glyph-carries-realized-face ()
+  "`emacs-redisplay-redisplay-window' populates glyph realized-face slot.
+We attach a `face' text-property to one cell and verify the realized
+form is a backend-ready alist (not the raw plist)."
+  (emacs-redisplay-test--with-fresh-face-registry
+    (emacs-redisplay-test--with-fresh-world
+      (emacs-redisplay-test--with-buffer b "hello"
+        ;; Mark cell 2 (= "e") with a `face' property.
+        (emacs-buffer-put-text-property 2 3 'face '(:foreground "red") b)
+        (let* ((h (emacs-redisplay-init))
+               (w (emacs-window-selected-window)))
+          (emacs-window-set-window-buffer w b)
+          (let* ((m (emacs-redisplay-redisplay-window h w))
+                 (row (emacs-redisplay-glyph-row m 0))
+                 (vec (emacs-redisplay-glyph-row-glyphs row))
+                 (g1  (aref vec 1)))
+            (let ((realized (emacs-redisplay-glyph-realized-face g1)))
+              (should (consp realized))
+              (should (eq 'red (cdr (assq :foreground realized)))))))))))
+
+(ert-deftest emacs-redisplay-test-flush-emits-sgr-for-realized-face ()
+  "flush-frame routes the realized face into the backend → SGR escape."
+  (emacs-redisplay-test--with-fresh-face-registry
+    (emacs-redisplay-test--with-fresh-world
+      (emacs-redisplay-test--with-buffer b "ab"
+        (emacs-buffer-put-text-property 1 3 'face '(:foreground "red") b)
+        (emacs-redisplay-test--with-capture
+          (let* ((bk (emacs-tui-backend-init))
+                 (fr (emacs-tui-backend-frame-create bk "frm"))
+                 (h  (emacs-redisplay-init (list :backend bk)))
+                 (w  (emacs-window-selected-window)))
+            (emacs-window-set-window-buffer w b)
+            (emacs-redisplay-redisplay-window h w)
+            (emacs-redisplay-flush-frame h fr)
+            ;; SGR 31 = ANSI red foreground (= 30 + 1 from color table).
+            (should (string-match-p "\e\\[[^m]*31[^m]*m"
+                                    emacs-redisplay-test--captured))))))))
 
 (provide 'emacs-redisplay-test)
 
