@@ -696,6 +696,107 @@ buffer char at the overlay's start position."
             (should (string-match-p "^ab\\[!\\]cde"
                                     (emacs-redisplay-glyph-row-text row)))))))))
 
+;;; I. Phase 3.B.3 — color spec parser + realize layer for 256/truecolor
+
+(ert-deftest emacs-redisplay-test-parse-color-spec-nil-and-unspecified ()
+  "Parser returns nil for nil / `unspecified' (= no SGR override)."
+  (should (eq nil (emacs-redisplay--parse-color-spec nil)))
+  (should (eq nil (emacs-redisplay--parse-color-spec 'unspecified))))
+
+(ert-deftest emacs-redisplay-test-parse-color-spec-16-symbol ()
+  "Parser maps a plain symbol to a 16-color descriptor."
+  (let ((p (emacs-redisplay--parse-color-spec 'red)))
+    (should (eq 16 (plist-get p :type)))
+    (should (eq 'red (plist-get p :value)))))
+
+(ert-deftest emacs-redisplay-test-parse-color-spec-hex-string-truecolor ()
+  "Parser maps `#ff0000' to truecolor (255 0 0)."
+  (let ((p (emacs-redisplay--parse-color-spec "#ff0000")))
+    (should (eq 'truecolor (plist-get p :type)))
+    (should (equal '(255 0 0) (plist-get p :value))))
+  (let ((p (emacs-redisplay--parse-color-spec "#01ABcd")))
+    ;; mixed case + non-zero G/B
+    (should (eq 'truecolor (plist-get p :type)))
+    (should (equal '(1 171 205) (plist-get p :value)))))
+
+(ert-deftest emacs-redisplay-test-parse-color-spec-rgb-plist ()
+  "Parser maps `(:r 0 :g 255 :b 128)' to truecolor (0 255 128)."
+  (let ((p (emacs-redisplay--parse-color-spec '(:r 0 :g 255 :b 128))))
+    (should (eq 'truecolor (plist-get p :type)))
+    (should (equal '(0 255 128) (plist-get p :value)))))
+
+(ert-deftest emacs-redisplay-test-parse-color-spec-palette-list ()
+  "Parser maps `(palette 200)' and `(palette . 17)' to 256-color."
+  (let ((p1 (emacs-redisplay--parse-color-spec '(palette 200)))
+        (p2 (emacs-redisplay--parse-color-spec '(palette . 17))))
+    (should (eq 256 (plist-get p1 :type)))
+    (should (= 200 (plist-get p1 :value)))
+    (should (eq 256 (plist-get p2 :type)))
+    (should (= 17 (plist-get p2 :value)))))
+
+(ert-deftest emacs-redisplay-test-parse-color-spec-palette-keyword ()
+  "Parser maps `:palette-42' keyword to 256-color descriptor."
+  (let ((p (emacs-redisplay--parse-color-spec :palette-42)))
+    (should (eq 256 (plist-get p :type)))
+    (should (= 42 (plist-get p :value)))))
+
+(ert-deftest emacs-redisplay-test-parse-color-spec-clamps ()
+  "Parser clamps out-of-range integers to [0,255] (graceful degrade)."
+  (let ((p1 (emacs-redisplay--parse-color-spec '(palette 999)))
+        (p2 (emacs-redisplay--parse-color-spec '(:r 999 :g -1 :b 128))))
+    (should (= 255 (plist-get p1 :value)))
+    (should (equal '(255 0 128) (plist-get p2 :value)))))
+
+(ert-deftest emacs-redisplay-test-parse-color-spec-invalid-shapes ()
+  "Parser returns nil for shapes it cannot interpret (= robust)."
+  (should (eq nil (emacs-redisplay--parse-color-spec "not-a-known-name")))
+  (should (eq nil (emacs-redisplay--parse-color-spec "#zzzz")))
+  (should (eq nil (emacs-redisplay--parse-color-spec '(:r 1 :g 2)))) ;; missing :b
+  (should (eq nil (emacs-redisplay--parse-color-spec 42)))
+  (should (eq nil (emacs-redisplay--parse-color-spec '(rgb 1 2)))))  ;; arity
+
+(ert-deftest emacs-redisplay-test-realize-face-emits-truecolor-descriptor ()
+  "Realize face propagates `#ff0000' as `(:foreground . (rgb 255 0 0))'."
+  (emacs-redisplay-face-cache-clear)
+  (let ((alist (emacs-redisplay-realize-face '(:foreground "#ff0000"))))
+    (should (equal '(rgb 255 0 0) (cdr (assq :foreground alist))))))
+
+(ert-deftest emacs-redisplay-test-realize-face-emits-256-descriptor ()
+  "Realize face propagates `(palette 200)' as `(:foreground . (palette 200))'."
+  (emacs-redisplay-face-cache-clear)
+  (let ((alist (emacs-redisplay-realize-face
+                '(:foreground (palette 200)))))
+    (should (equal '(palette 200) (cdr (assq :foreground alist))))))
+
+(ert-deftest emacs-redisplay-test-realize-face-emits-rgb-plist-descriptor ()
+  "Realize face propagates `(:r 0 :g 255 :b 128)' as `(rgb 0 255 128)'."
+  (emacs-redisplay-face-cache-clear)
+  (let ((alist (emacs-redisplay-realize-face
+                '(:foreground (:r 0 :g 255 :b 128)))))
+    (should (equal '(rgb 0 255 128) (cdr (assq :foreground alist))))))
+
+(ert-deftest emacs-redisplay-test-realize-face-keeps-16-color-symbol ()
+  "Realize face keeps the bare 16-color path unchanged (= regression)."
+  (emacs-redisplay-face-cache-clear)
+  (let ((alist (emacs-redisplay-realize-face '(:foreground "red"))))
+    (should (eq 'red (cdr (assq :foreground alist))))))
+
+(ert-deftest emacs-redisplay-test-realize-face-invalid-color-degrades ()
+  "Invalid color spec degrades to nil / `default' rather than crashing."
+  (emacs-redisplay-face-cache-clear)
+  (let ((alist (emacs-redisplay-realize-face '(:foreground "#zzzz"))))
+    ;; Unknown string degrades to `default', which is filtered out by
+    ;; the SGR layer (= no escape emitted).
+    (should (memq (cdr (assq :foreground alist)) '(nil default))))
+  (emacs-redisplay-face-cache-clear)
+  (let ((alist (emacs-redisplay-realize-face '(:foreground (palette nope)))))
+    ;; Non-integer palette index → drop the foreground attribute.
+    (should (null (assq :foreground alist)))))
+
+(ert-deftest emacs-redisplay-test-face-realize-contract-version-bumped ()
+  "Phase 3.B.3 bumps face-realize contract version 1 → 2."
+  (should (= 2 emacs-redisplay-face-realize-contract-version)))
+
 (provide 'emacs-redisplay-test)
 
 ;;; emacs-redisplay-test.el ends here
