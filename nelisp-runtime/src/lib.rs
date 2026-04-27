@@ -9,6 +9,7 @@
 //! of `NELISP_PROT_*` / `NELISP_MAP_*` / `NELISP_O_*` constants so
 //! NeLisp does not need a per-OS libc clone.
 
+pub mod bridge;
 pub mod eval;
 pub mod mcp;
 pub mod reader;
