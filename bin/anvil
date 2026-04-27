@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-ANVIL_VERSION="stage-d-v0.2-pre"
+ANVIL_VERSION="${ANVIL_VERSION:-stage-d-v3.0}"
 
 # OS / shell detection (Phase 6.4 Windows support)
 ANVIL_OS="linux"
@@ -145,7 +145,63 @@ detect_emacs() {
 }
 
 anvil_runtime_bin() {
-  printf '%s\n' "$ANVIL_HOME/nelisp-runtime/target/release/anvil-runtime"
+  local cand
+  for cand in \
+      "$ANVIL_HOME/bin/anvil-runtime" \
+      "$ANVIL_HOME/nelisp-runtime/target/release/anvil-runtime" \
+  ; do
+    if [[ -x "$cand" ]]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+  printf '%s\n' "$ANVIL_HOME/bin/anvil-runtime"
+}
+
+bundled_runtime_present() {
+  [[ -x "$ANVIL_HOME/bin/anvil-runtime" ]]
+}
+
+runtime_cdylib_path() {
+  local cand
+  for cand in \
+      "$ANVIL_HOME/lib/libnelisp_runtime.so" \
+      "$ANVIL_HOME/lib/libnelisp_runtime.dylib" \
+      "$ANVIL_HOME/lib/nelisp_runtime.dll" \
+      "$ANVIL_HOME/nelisp-runtime/target/release/libnelisp_runtime.so" \
+      "$ANVIL_HOME/nelisp-runtime/target/release/libnelisp_runtime.dylib" \
+      "$ANVIL_HOME/nelisp-runtime/target/release/nelisp_runtime.dll" \
+  ; do
+    if [[ -f "$cand" ]]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+runtime_env_exec() {
+  local runtime_bin="$1"
+  local src_dir="$ANVIL_HOME/src"
+  local anvil_dir="$ANVIL_HOME/anvil-lib"
+  if bundled_runtime_present; then
+    export NELISP_SRC_DIR="$src_dir"
+    export ANVIL_EL_DIR="$anvil_dir"
+    local lib_dir=""
+    lib_dir="$(dirname "$(runtime_cdylib_path 2>/dev/null || echo "$ANVIL_HOME/lib/libnelisp_runtime.so")")"
+    case "$ANVIL_OS" in
+      macos)
+        export DYLD_LIBRARY_PATH="${lib_dir}${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+        ;;
+      windows-msys)
+        export PATH="${lib_dir}${PATH:+:$PATH}"
+        ;;
+      *)
+        export LD_LIBRARY_PATH="${lib_dir}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        ;;
+    esac
+  fi
+  exec "$runtime_bin" mcp serve
 }
 
 cmd_doctor() {
@@ -155,7 +211,10 @@ cmd_doctor() {
   echo "  ANVIL_HOME      : $ANVIL_HOME"
   echo "  config dir      : $ANVIL_CONFIG_DIR $( [[ -d "$ANVIL_CONFIG_DIR" ]] && echo "(exists)" || echo "(not yet)" )"
   echo "  cache dir       : $ANVIL_CACHE_DIR $( [[ -d "$ANVIL_CACHE_DIR" ]] && echo "(exists)" || echo "(not yet)" )"
-  if emacs_bin="$(detect_emacs)"; then
+  if bundled_runtime_present; then
+    echo "  mode            : v3.0 standalone (= no emacs)"
+    echo "  emacs           : NOT NEEDED (v3.0 standalone)"
+  elif emacs_bin="$(detect_emacs 2>/dev/null)"; then
     local emacs_source="system"
     case "$emacs_bin" in
       "$ANVIL_HOME/emacs/bin/emacs"|"$ANVIL_HOME/emacs/bin/emacs.exe")
@@ -175,45 +234,62 @@ cmd_doctor() {
     return 1
   fi
   local anvil_dir
-  if anvil_dir="$(anvil_lisp_dir)"; then
+  if bundled_runtime_present && [[ -f "$ANVIL_HOME/anvil-lib/anvil-host.el" ]]; then
+    echo "  anvil.el        : $ANVIL_HOME/anvil-lib (bundled runtime subset)"
+    echo "  serve mode      : Rust runtime + bundled anvil-host subset"
+  elif anvil_dir="$(anvil_lisp_dir)"; then
     echo "  anvil.el        : $anvil_dir (architecture α active)"
     echo "  serve mode      : anvil headless profile (server-id emacs-eval-headless)"
   else
-    echo "  anvil.el        : NOT FOUND (set ANVIL_LISP_DIR to enable architecture α)"
-    echo "  serve mode      : nelisp-server (fallback, Phase 6.0 baseline)"
-  fi
-  # Phase 7.5.1 (Doc 32 v2 LOCKED §3.1) — surface the cdylib +
-  # staticlib build artifacts so a user can confirm whether their
-  # checkout has produced the static-link prerequisites for the
-  # upcoming `--no-emacs` (Phase 7.5.2) / stage-d-v2.0 (Phase 7.5.3)
-  # paths without grepping the Cargo target dir manually.
-  local rt_dir="$ANVIL_HOME/nelisp-runtime/target/release"
-  local rt_cdylib=""
-  for cand in libnelisp_runtime.so libnelisp_runtime.dylib nelisp_runtime.dll; do
-    if [[ -f "$rt_dir/$cand" ]]; then
-      rt_cdylib="$rt_dir/$cand"
-      break
+    if bundled_runtime_present; then
+      echo "  anvil.el        : NOT FOUND (standalone bundle incomplete)"
+      return 1
+    else
+      echo "  anvil.el        : NOT FOUND (set ANVIL_LISP_DIR to enable architecture α)"
+      echo "  serve mode      : nelisp-server (fallback, Phase 6.0 baseline)"
     fi
-  done
-  if [[ -n "$rt_cdylib" ]]; then
-    local sz
-    sz=$(du -h "$rt_cdylib" 2>/dev/null | cut -f1)
-    echo "  runtime cdylib  : $rt_cdylib ($sz)"
-  else
-    echo "  runtime cdylib  : NOT BUILT — run 'make runtime'"
   fi
-  local rt_static="$rt_dir/libnelisp_runtime.a"
-  if [[ -f "$rt_static" ]]; then
-    local sz
-    sz=$(du -h "$rt_static" 2>/dev/null | cut -f1)
-    echo "  runtime static  : $rt_static ($sz)"
-  else
-    echo "  runtime static  : NOT BUILT — run 'make runtime-static'"
+  if ! bundled_runtime_present; then
+    # Phase 7.5.1 (Doc 32 v2 LOCKED §3.1) — surface the cdylib +
+    # staticlib build artifacts so a user can confirm whether their
+    # checkout has produced the static-link prerequisites for the
+    # upcoming `--no-emacs` (Phase 7.5.2) / stage-d-v2.0 (Phase 7.5.3)
+    # paths without grepping the Cargo target dir manually.
+    local rt_dir="$ANVIL_HOME/nelisp-runtime/target/release"
+    local rt_cdylib=""
+    for cand in libnelisp_runtime.so libnelisp_runtime.dylib nelisp_runtime.dll; do
+      if [[ -f "$rt_dir/$cand" ]]; then
+        rt_cdylib="$rt_dir/$cand"
+        break
+      fi
+    done
+    if [[ -n "$rt_cdylib" ]]; then
+      local sz
+      sz=$(du -h "$rt_cdylib" 2>/dev/null | cut -f1)
+      echo "  runtime cdylib  : $rt_cdylib ($sz)"
+    else
+      echo "  runtime cdylib  : NOT BUILT — run 'make runtime'"
+    fi
+    local rt_static="$rt_dir/libnelisp_runtime.a"
+    if [[ -f "$rt_static" ]]; then
+      local sz
+      sz=$(du -h "$rt_static" 2>/dev/null | cut -f1)
+      echo "  runtime static  : $rt_static ($sz)"
+    else
+      echo "  runtime static  : NOT BUILT — run 'make runtime-static'"
+    fi
   fi
   local runtime_bin
   runtime_bin="$(anvil_runtime_bin)"
   if [[ -x "$runtime_bin" ]]; then
     echo "  rust runtime    : $runtime_bin [present]"
+    if bundled_runtime_present; then
+      local rt_cdylib
+      if rt_cdylib="$(runtime_cdylib_path 2>/dev/null)"; then
+        echo "  runtime cdylib  : $rt_cdylib ($(du -h "$rt_cdylib" 2>/dev/null | cut -f1))"
+      fi
+      echo "  startup path    : default = Rust runtime (no emacs subprocess)"
+    fi
   else
     echo "  rust runtime    : $runtime_bin [absent]"
   fi
@@ -249,7 +325,10 @@ cmd_version() {
   echo "  os               $ANVIL_OS"
   echo "  install root     $ANVIL_HOME"
   echo "  tools registered $tools_count"
-  if emacs_bin="$(detect_emacs 2>/dev/null)"; then
+  if bundled_runtime_present; then
+    echo "  mode             v3.0 standalone (= no emacs)"
+    echo "  emacs            NOT NEEDED (v3.0 standalone)"
+  elif emacs_bin="$(detect_emacs 2>/dev/null)"; then
     local emacs_ver emacs_source="system"
     emacs_ver=$("$emacs_bin" --version 2>/dev/null | head -1)
     case "$emacs_bin" in
@@ -265,6 +344,9 @@ cmd_version() {
   runtime_bin="$(anvil_runtime_bin)"
   if [[ -x "$runtime_bin" ]]; then
     echo "  rust runtime     $runtime_bin [present]"
+    if bundled_runtime_present; then
+      echo "  runtime path     $runtime_bin"
+    fi
   else
     echo "  rust runtime     $runtime_bin [absent]"
   fi
@@ -347,6 +429,9 @@ cmd_mcp_serve() {
   mkdir -p "$ANVIL_CACHE_DIR"
   local runtime_bin
   runtime_bin="$(anvil_runtime_bin)"
+  if [[ $no_emacs -eq 0 ]] && bundled_runtime_present && [[ -x "$runtime_bin" ]]; then
+    runtime_env_exec "$runtime_bin"
+  fi
   if [[ $no_emacs -eq 1 ]]; then
     if [[ -x "$runtime_bin" ]]; then
       if [[ $strict_no_emacs -eq 1 ]]; then
@@ -354,7 +439,7 @@ cmd_mcp_serve() {
       else
         echo "anvil: --no-emacs requested; dispatching to Rust runtime" >&2
       fi
-      exec "$runtime_bin" mcp serve
+      runtime_env_exec "$runtime_bin"
     fi
     echo "error: rust runtime binary missing: $runtime_bin" >&2
     echo "  build with: make runtime-static && cargo build --release --bin anvil-runtime" >&2

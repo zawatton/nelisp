@@ -4,7 +4,8 @@
         sqlite-module sqlite-module-clean \
         release-artifact release-checksum soak-blocker soak-post-ship \
         bench-actual bench-actual-cargo bench-allocator bench-allocator-heavy \
-        stage-d-v2-tarball stage-d-v2-tarball-verify
+        stage-d-v2-tarball stage-d-v2-tarball-verify \
+        stage-d-v3-tarball stage-d-v3-tarball-verify
 
 EMACS ?= emacs
 
@@ -412,3 +413,19 @@ stage-d-v2-tarball: runtime
 stage-d-v2-tarball-verify:
 	@./tools/verify-bundled-tarball.sh \
 	    $(STAGE_D_V2_VERSION) $(STAGE_D_V2_PLATFORM)
+
+# Phase 8.1 — stage-d-v3.0 true standalone tarball.  Bundles only the
+# bash launcher, Rust runtime binary, runtime cdylib, NeLisp src, and
+# the minimal anvil.el subset needed by the runtime-side anvil-host /
+# shell-filter / data helpers.  No bundled Emacs is shipped.
+STAGE_D_V3_VERSION  ?= stage-d-v3.0
+STAGE_D_V3_PLATFORM ?= linux-x86_64
+STAGE_D_V3_TARBALL  := dist/anvil-$(STAGE_D_V3_VERSION)-$(STAGE_D_V3_PLATFORM).tar.gz
+
+stage-d-v3-tarball: runtime-staticlib
+	@./tools/build-standalone-tarball.sh \
+	    $(STAGE_D_V3_VERSION) $(STAGE_D_V3_PLATFORM)
+
+stage-d-v3-tarball-verify:
+	@./tools/verify-standalone-tarball.sh \
+	    $(STAGE_D_V3_VERSION) $(STAGE_D_V3_PLATFORM)

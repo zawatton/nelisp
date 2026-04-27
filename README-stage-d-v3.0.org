@@ -1,0 +1,71 @@
+#+TITLE: anvil — stage-d-v3.0 (True Standalone Quickstart)
+#+AUTHOR: zawatton
+#+DATE: 2026-04-27
+
+* What changed in stage-d-v3.0?
+
+stage-d-v3.0 ships a *true standalone tarball*: Rust =anvil-runtime=
++ bundled =anvil.el= runtime subset + NeLisp src + =nelisp-runtime=
+cdylib, with *no Emacs binary in the archive* and *no Emacs runtime
+dependency*.
+
+| Capability                         | stage-d-v2.0 | stage-d-v3.0 |
+|------------------------------------+--------------+--------------|
+| Bundled Emacs binary               | yes          | no           |
+| Emacs required at runtime          | no           | no           |
+| Default =bin/anvil mcp serve= path | bundled emacs| Rust runtime |
+| Target tarball size                | ~25 MB       | ~5-10 MB     |
+
+* Install
+
+#+begin_src shell
+curl -fsSL https://github.com/zawatton/nelisp/releases/download/stage-d-v3.0/install-v3.sh | bash
+#+end_src
+
+For local iteration:
+
+#+begin_src shell
+make stage-d-v3-tarball
+./release/stage-d-v3.0/install-v3.sh --from $(pwd)/dist
+$HOME/.local/share/anvil-stage-d-v3.0/bin/anvil version
+#+end_src
+
+* Verify the install
+
+#+begin_src text
+$ anvil version
+anvil stage-d-v3.0
+  mode             v3.0 standalone (= no emacs)
+  runtime path     /home/.../anvil-stage-d-v3.0/bin/anvil-runtime
+#+end_src
+
+=anvil doctor= reports the same standalone marker.  =bin/anvil mcp serve=
+defaults to the Rust runtime when the bundled =bin/anvil-runtime= is
+present, and exports bundled =NELISP_SRC_DIR= + =ANVIL_EL_DIR=
+automatically so =ANVIL_HOME= does not need to be set manually.
+
+* Build locally
+
+#+begin_src shell
+make stage-d-v3-tarball
+make stage-d-v3-tarball-verify
+#+end_src
+
+The standalone bundle contains:
+
+- =bin/anvil=
+- =bin/anvil-runtime=
+- =lib/libnelisp_runtime.so= (platform variant on non-Linux)
+- =src/nelisp*.el=
+- =anvil-lib/= minimal runtime subset:
+  =anvil-host.el=, =anvil-shell-filter.el=, =anvil-data.el= and their
+  direct dependencies.
+
+* Notes
+
+- Tarball cap: < 15 MB compressed.
+- No Emacs subprocess should appear anywhere in the =mcp serve= path.
+- Backward-compat is retained for dev checkouts and earlier tarballs:
+  when the bundled runtime is absent, =bin/anvil= keeps the prior Emacs
+  resolution behavior.
+
