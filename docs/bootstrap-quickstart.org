@@ -1,0 +1,91 @@
+#+TITLE: NeLisp Bootstrap Quickstart
+#+AUTHOR: zawatton
+#+OPTIONS: toc:2 num:nil
+
+* Overview
+
+=nelisp-bootstrap.el= is the convenience entry point that loads the
+NeLisp self-host into the current Emacs session.  Without it, callers
+would have to replicate the dependency-ordered file load + the
+deep-stack wrapper that =test/nelisp-self-host-test.el= uses.
+
+* Public API
+
+| Symbol                              | Kind     | Purpose                                                |
+|-------------------------------------+----------+--------------------------------------------------------|
+| =nelisp-bootstrap-init=             | function | Idempotent self-host load. Returns =t= on success.     |
+| =nelisp-bootstrap-bootstrapped-p=   | function | Predicate, =t= once init has finished.                 |
+| =nelisp-bootstrap-eval=             | function | Wraps =nelisp-eval= with lazy init + raised stack.     |
+
+=nelisp-bootstrap-init= takes one optional =FORCE= flag for re-running
+the load even when already bootstrapped (useful after =nelisp--reset=
+in test fixtures).
+
+* Quickstart
+
+#+begin_src emacs-lisp
+(require 'nelisp-bootstrap)
+(nelisp-bootstrap-init)
+
+;; Anything that needs `funcall' / `lambda' / `mapcar' now works:
+(nelisp-eval '(funcall (lambda (n) (* n n)) 7))   ;; => 49
+(nelisp-eval '(mapcar (lambda (x) (* x x)) '(1 2 3 4 5)))  ;; => (1 4 9 16 25)
+
+;; Or use the lazy wrapper (init on first call):
+(nelisp-bootstrap-eval '(+ 1 2 3))   ;; => 6
+#+end_src
+
+* What gets loaded
+
+=nelisp-bootstrap-init= loads five core files in dependency order
+through the NeLisp evaluator itself:
+
+1. =nelisp-read.el=  — reader
+2. =nelisp-eval.el=  — evaluator
+3. =nelisp-macro.el= — macro system
+4. =nelisp-load.el=  — loader / =require= / =provide=
+5. =nelisp.el=       — package entry point + core macros
+
+After the load, the NeLisp environment carries closure copies of every
+=defun= / =defmacro= / =defvar= in those files.  =nelisp-bootstrap-init=
+then prunes the evaluator's *own* closure copies (= =nelisp-eval-form=,
+=nelisp--apply=, =nelisp--builtin-funcall=, =nelisp--builtin-mapcar=,
+…) and re-runs =nelisp--install-primitives=, so host-side
+=nelisp-eval= dispatch keeps using the host primitives — without this
+prune, the host evaluator would resolve =funcall= / =mapcar= through
+the installed closures and recurse into the NeLisp evaluator, which
+faults with =nelisp-void-function= on the very first call.
+
+User-level =defun= installations (= the application code you wrote on
+top of NeLisp) stay in =nelisp--functions= and dispatch normally —
+only the evaluator's *own* internals are pruned.
+
+* Stack budget
+
+The self-host walk consumes deep host C / Emacs Lisp frames.  Stock
+=emacs --batch -Q= starts with =max-lisp-eval-depth=1600= which trips
+during the install loop.  =nelisp-bootstrap-init= internally raises
+both =max-lisp-eval-depth= and =max-specpdl-size= to =13000= for the
+duration of the load.  =nelisp-bootstrap-eval= keeps the same raised
+budget for the wrapped =nelisp-eval= call so deep recursion through
+installed closures stays clear of the depth ceiling.
+
+* Tests
+
+ERT lives in =test/nelisp-bootstrap-test.el= and gates on
+=NELISP_SELF_HOST_TESTS=1= — same convention as the self-host probe.
+Run with:
+
+#+begin_src sh
+NELISP_SELF_HOST_TESTS=1 make test
+#+end_src
+
+CI smoke runners default-skip cleanly via the in-test =skip-unless=.
+
+* Relationship to =test/nelisp-self-host-test.el=
+
+The bootstrap module duplicates the file-list constant + eval-file
+helper from the self-host probe so it can be required without pulling
+the test tree.  The file lists are kept in sync manually — should the
+self-host file list ever grow, both =nelisp-bootstrap--files= and
+=nelisp-self-host-test--files= must be updated.
