@@ -389,6 +389,7 @@ baseline of 1191 bytes (= 14 dead loads × 10 bytes each = ~140-byte
 reduction).  Direct measurement: with elision the fib JIT page is
 ≤1100 bytes; without it (= the broken predicate that this commit
 fixes) it was 1191 bytes."
+  (skip-unless (memq system-type '(gnu/linux darwin berkeley-unix)))
   (let* ((nelisp-cc-enable-7.7-passes t)
          (nelisp-cc-pipeline-rec-inline-depth-limit 2)
          (form '(lambda ()

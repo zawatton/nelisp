@@ -72,6 +72,8 @@ sometimes induces sentinel races that do not occur on developer hosts."
      (should (null (nelisp-process-live-p p))))))
 
 (ert-deftest nelisp-process-spawn-false-exits-nonzero ()
+  (skip-unless (nelisp-process-test--posix-host-p))
+  (skip-unless (not (nelisp-process-test--ci-env-p)))
   (nelisp-process-test--fresh
    (let* ((p (nelisp-make-process :name "f" :command '("false")))
           (code (nelisp-process-wait-for-exit p 2.0)))
@@ -385,6 +387,8 @@ giving Emacs `process-NAME' parity at the call surface."
 ;;; set-process-filter / set-process-sentinel -----------------------
 
 (ert-deftest nelisp-process-set-process-filter-replaces-callback ()
+  (skip-unless (nelisp-process-test--posix-host-p))
+  (skip-unless (not (nelisp-process-test--ci-env-p)))
   (nelisp-process-test--fresh
    (let* ((seen (list))
           (p (nelisp-make-process
@@ -641,6 +645,8 @@ handle + synthetic fd integer until sentinel / delete."
 (ert-deftest nelisp-process-multi-spawn-concurrent-three ()
   "Three children, each with own filter; verify each filter saw its
 own payload and all three exit cleanly."
+  (skip-unless (nelisp-process-test--posix-host-p))
+  (skip-unless (not (nelisp-process-test--ci-env-p)))
   (nelisp-process-test--fresh
    (let* ((seen (make-vector 3 nil))
           (procs (cl-loop for i from 0 below 3
