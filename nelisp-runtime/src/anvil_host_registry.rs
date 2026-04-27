@@ -782,7 +782,7 @@ fn sexp_to_json(value: &Sexp) -> Value {
         Sexp::Float(x) => json!(x),
         Sexp::Str(s) => json!(s),
         Sexp::Symbol(s) => json!(s),
-        Sexp::Vector(items) => Value::Array(items.iter().map(sexp_to_json).collect()),
+        Sexp::Vector(items) => Value::Array(items.borrow().iter().map(sexp_to_json).collect()),
         Sexp::Cons(_, _) => {
             if let Some(object) = plist_to_json_object(value) {
                 Value::Object(object)

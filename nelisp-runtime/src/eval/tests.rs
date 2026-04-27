@@ -1017,22 +1017,86 @@ fn sequencep_predicate() {
 fn vector_constructor() {
     assert_eq!(
         ok("(vector 1 2 3)"),
-        Sexp::Vector(vec![Sexp::Int(1), Sexp::Int(2), Sexp::Int(3)])
+        Sexp::vector(vec![Sexp::Int(1), Sexp::Int(2), Sexp::Int(3)])
     );
-    assert_eq!(ok("(vector)"), Sexp::Vector(vec![]));
+    assert_eq!(ok("(vector)"), Sexp::vector(vec![]));
 }
 
 #[test]
 fn make_vector_fills() {
     assert_eq!(
         ok("(make-vector 3 0)"),
-        Sexp::Vector(vec![Sexp::Int(0), Sexp::Int(0), Sexp::Int(0)])
+        Sexp::vector(vec![Sexp::Int(0), Sexp::Int(0), Sexp::Int(0)])
     );
-    assert_eq!(ok("(make-vector 0 t)"), Sexp::Vector(vec![]));
+    assert_eq!(ok("(make-vector 0 t)"), Sexp::vector(vec![]));
 }
 
 #[test]
 fn make_vector_negative_errors() {
     let e = err("(make-vector -1 0)");
     assert!(matches!(e, EvalError::ArithError(_)));
+}
+
+// ============================================================
+// aset — in-place vector mutation (Rc<RefCell<Vec<Sexp>>>)
+// ============================================================
+
+#[test]
+fn aset_returns_assigned_value() {
+    // Emacs' aset returns the new value, not the array.
+    assert_eq!(ok("(aset (vector 1 2 3) 1 99)"), Sexp::Int(99));
+}
+
+#[test]
+fn aset_mutation_visible_through_shared_binding() {
+    // The whole point of switching to Rc<RefCell<Vec<Sexp>>> —
+    // when two bindings share the same vector, aset on one is
+    // visible through the other.
+    assert_eq!(
+        ok_all("
+            (setq v (vector 1 2 3))
+            (setq w v)
+            (aset v 0 99)
+            (aref w 0)
+        "),
+        Sexp::Int(99)
+    );
+}
+
+#[test]
+fn aset_followed_by_aref_returns_new_value() {
+    assert_eq!(
+        ok_all("
+            (setq v (vector 1 2 3))
+            (aset v 1 42)
+            (aref v 1)
+        "),
+        Sexp::Int(42)
+    );
+}
+
+#[test]
+fn aset_out_of_range_errors() {
+    let e = err("(aset (vector 1 2 3) 5 0)");
+    assert!(matches!(e, EvalError::ArithError(_)));
+}
+
+#[test]
+fn aset_negative_index_errors() {
+    let e = err("(aset (vector 1 2 3) -1 0)");
+    assert!(matches!(e, EvalError::ArithError(_)));
+}
+
+#[test]
+fn aset_on_string_errors() {
+    // Strings are immutable in the current Sexp representation;
+    // aset on a string raises wrong-type-argument.
+    let e = err("(aset \"abc\" 0 65)");
+    assert!(matches!(e, EvalError::WrongType { .. }));
+}
+
+#[test]
+fn aset_on_int_errors() {
+    let e = err("(aset 42 0 0)");
+    assert!(matches!(e, EvalError::WrongType { .. }));
 }

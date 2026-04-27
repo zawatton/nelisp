@@ -119,7 +119,7 @@ mod tests {
     #[test]
     fn smoke_vector() {
         let got = read_str("[1 2 3]").unwrap();
-        let expected = Sexp::Vector(vec![Sexp::Int(1), Sexp::Int(2), Sexp::Int(3)]);
+        let expected = Sexp::vector(vec![Sexp::Int(1), Sexp::Int(2), Sexp::Int(3)]);
         assert_eq!(got, expected);
     }
 

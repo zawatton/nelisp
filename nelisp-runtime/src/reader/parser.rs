@@ -209,7 +209,7 @@ impl<'a> Parser<'a> {
             match &next.token {
                 Token::RBracket => {
                     self.bump();
-                    return Ok(Sexp::Vector(items));
+                    return Ok(Sexp::vector(items));
                 }
                 Token::Dot => {
                     return Err(ReadError::parse(
@@ -318,7 +318,7 @@ mod tests {
         let got = parse("[1 2 3]");
         assert_eq!(
             got,
-            Sexp::Vector(vec![Sexp::Int(1), Sexp::Int(2), Sexp::Int(3)])
+            Sexp::vector(vec![Sexp::Int(1), Sexp::Int(2), Sexp::Int(3)])
         );
     }
 

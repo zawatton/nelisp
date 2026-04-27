@@ -37,7 +37,7 @@ pub fn install_builtins(env: &mut Env) {
         // cons / list
         "car", "cdr", "cons", "list", "nth", "length", "nthcdr", "nreverse", "reverse", "append",
         // generic sequence / array accessors
-        "aref", "elt", "arrayp", "sequencep",
+        "aref", "aset", "elt", "arrayp", "sequencep",
         "vector", "make-vector",
         // higher-order
         "mapcar", "mapc", "memq", "member", "assq", "assoc", "alist-get",
@@ -95,11 +95,12 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "append" => bi_append(args),
         // ---- generic accessors ----
         "aref" => bi_aref(args),
+        "aset" => bi_aset(args),
         "elt" => bi_elt(args),
         "arrayp" => bi_predicate(args, |v| matches!(v, Sexp::Str(_) | Sexp::Vector(_))),
         "sequencep" => bi_predicate(args, |v| matches!(v,
             Sexp::Nil | Sexp::Cons(_, _) | Sexp::Str(_) | Sexp::Vector(_))),
-        "vector" => Ok(Sexp::Vector(args.to_vec())),
+        "vector" => Ok(Sexp::vector(args.to_vec())),
         "make-vector" => bi_make_vector(args),
         // ---- higher-order ----
         "mapcar" => bi_mapcar(args, env),
@@ -431,7 +432,7 @@ fn bi_length(args: &[Sexp]) -> Result<Sexp, EvalError> {
     match &args[0] {
         Sexp::Nil => Ok(Sexp::Int(0)),
         Sexp::Str(s) => Ok(Sexp::Int(s.chars().count() as i64)),
-        Sexp::Vector(v) => Ok(Sexp::Int(v.len() as i64)),
+        Sexp::Vector(v) => Ok(Sexp::Int(v.borrow().len() as i64)),
         Sexp::Cons(_, _) => {
             let mut n = 0i64;
             let mut cur = &args[0];
@@ -1254,16 +1255,19 @@ fn bi_aref(args: &[Sexp]) -> Result<Sexp, EvalError> {
                     ))
                 })
         }
-        Sexp::Vector(v) => v
-            .get(index as usize)
-            .cloned()
-            .ok_or_else(|| {
-                EvalError::ArithError(format!(
-                    "aref: index {} out of range for vector of length {}",
-                    index,
-                    v.len()
-                ))
-            }),
+        Sexp::Vector(v) => {
+            let borrowed = v.borrow();
+            borrowed
+                .get(index as usize)
+                .cloned()
+                .ok_or_else(|| {
+                    EvalError::ArithError(format!(
+                        "aref: index {} out of range for vector of length {}",
+                        index,
+                        borrowed.len()
+                    ))
+                })
+        }
         other => Err(EvalError::WrongType {
             expected: "arrayp".into(),
             got: other.clone(),
@@ -1329,5 +1333,42 @@ fn bi_make_vector(args: &[Sexp]) -> Result<Sexp, EvalError> {
             len
         )));
     }
-    Ok(Sexp::Vector(vec![args[1].clone(); len as usize]))
+    Ok(Sexp::vector(vec![args[1].clone(); len as usize]))
+}
+
+fn bi_aset(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    // (aset ARRAY INDEX VALUE) — mutates ARRAY in place.
+    // Phase 8.x supports vectors; strings are immutable in our
+    // current Sexp::Str representation (no `aset' on strings yet).
+    require_arity("aset", args, 3, Some(3))?;
+    let index = as_int("aset", &args[1])?;
+    if index < 0 {
+        return Err(EvalError::ArithError(format!(
+            "aset: negative index {}",
+            index
+        )));
+    }
+    match &args[0] {
+        Sexp::Vector(v) => {
+            let mut borrowed = v.borrow_mut();
+            let len = borrowed.len();
+            if (index as usize) >= len {
+                return Err(EvalError::ArithError(format!(
+                    "aset: index {} out of range for vector of length {}",
+                    index, len
+                )));
+            }
+            borrowed[index as usize] = args[2].clone();
+            // Emacs' `aset' returns the assigned value.
+            Ok(args[2].clone())
+        }
+        Sexp::Str(_) => Err(EvalError::WrongType {
+            expected: "mutable-array".into(),
+            got: args[0].clone(),
+        }),
+        other => Err(EvalError::WrongType {
+            expected: "arrayp".into(),
+            got: other.clone(),
+        }),
+    }
 }

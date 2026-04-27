@@ -21,7 +21,9 @@
 //! must NOT depend on the evaluator (= layer separation, see prompt
 //! constraints).
 
+use std::cell::RefCell;
 use std::fmt;
+use std::rc::Rc;
 
 /// A parsed s-expression.  The variants form the minimal value
 /// universe that the Phase 7.5.4.1 reader can produce; the evaluator
@@ -57,7 +59,12 @@ pub enum Sexp {
     /// any non-`Nil` value.
     Cons(Box<Sexp>, Box<Sexp>),
     /// `[a b c]` vector literal.
-    Vector(Vec<Sexp>),
+    ///
+    /// Wrapped in `Rc<RefCell<...>>' to support `aset' / in-place
+    /// mutation while keeping `Sexp: Clone` cheap (Rc bump only).
+    /// Identity comparison goes through `Rc::ptr_eq'; structural
+    /// equality (the derived `PartialEq') unwraps the inner `Vec'.
+    Vector(Rc<RefCell<Vec<Sexp>>>),
 }
 
 impl Sexp {
@@ -69,6 +76,12 @@ impl Sexp {
             acc = Sexp::Cons(Box::new(item.clone()), Box::new(acc));
         }
         acc
+    }
+
+    /// Build a vector Sexp from an owned `Vec<Sexp>` without forcing
+    /// every call site to spell out `Rc::new(RefCell::new(...))'.
+    pub fn vector(items: Vec<Sexp>) -> Sexp {
+        Sexp::Vector(Rc::new(RefCell::new(items)))
     }
 
     /// Wrap a form in `(quote <form>)` (the desugaring of `'x`).
@@ -161,7 +174,8 @@ fn write_sexp(out: &mut String, s: &Sexp) {
         }
         Sexp::Vector(items) => {
             out.push('[');
-            for (i, item) in items.iter().enumerate() {
+            let borrowed = items.borrow();
+            for (i, item) in borrowed.iter().enumerate() {
                 if i > 0 {
                     out.push(' ');
                 }
