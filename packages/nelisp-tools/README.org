@@ -1,0 +1,46 @@
+#+TITLE: nelisp-tools Package
+
+* Summary
+
+=nelisp-tools= is an extracted NeLisp package per Doc 45. It provides
+the initial MCP tool set layered on =nelisp-server=, including file,
+git, HTTP, state, defs-index, and org-index backed handlers.
+
+* Layout
+
+#+begin_src text
+packages/nelisp-tools/
+├── README.org
+├── src/
+│   └── nelisp-tools.el
+└── test/
+    └── nelisp-tools-test.el
+#+end_src
+
+* Public API
+
+- =nelisp-tools-register-all=
+- =nelisp-tools-reset-data-store=
+- registered tool entrypoints exposed via =nelisp-deftool=
+
+* Dependencies
+
+- Runtime dependency: NeLisp core =nelisp= v1.0 load-path environment
+- Elisp dependency declared by the library: =cl-lib=
+- Internal NeLisp dependencies: =nelisp-server=, =nelisp-network=,
+  =nelisp-state=, =nelisp-http=, =nelisp-defs-index=, =nelisp-org-index=
+
+* Dependents
+
+- Direct source dependents: runtime launcher =bin/anvil=
+- Test dependents: =packages/nelisp-tools/test/nelisp-tools-test.el=,
+  =test/nelisp-bundled-tarball-test.el=
+
+* Status
+
+- Extraction status: moved from =src/nelisp-tools.el= to
+  =packages/nelisp-tools/src/nelisp-tools.el= without code changes
+- Test status: moved from =test/nelisp-tools-test.el= to
+  =packages/nelisp-tools/test/nelisp-tools-test.el=
+- Compatibility: existing callers continue using
+  =(require 'nelisp-tools)= via root load-path wiring

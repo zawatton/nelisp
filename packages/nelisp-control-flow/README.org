@@ -1,0 +1,48 @@
+#+TITLE: nelisp-control-flow Package
+
+* Summary
+
+=nelisp-control-flow= is an extracted NeLisp package per Doc 45. It
+provides Phase 7+E control-flow special forms plus the advice subsystem
+on top of the NeLisp evaluator.
+
+* Layout
+
+#+begin_src text
+packages/nelisp-control-flow/
+├── README.org
+├── src/
+│   └── nelisp-control-flow.el
+└── test/
+    └── nelisp-control-flow-test.el
+#+end_src
+
+* Public API
+
+- =nelisp-advice-add=
+- =nelisp-advice-remove=
+- =nelisp-advice-mapc=
+- =nelisp-advice-member-p=
+- =nelisp-advice-clear-all=
+- =nelisp-cf-signal=
+
+* Dependencies
+
+- Runtime dependency: NeLisp core =nelisp= v1.0 load-path environment
+- Elisp dependency declared by the library: =cl-lib=
+- Internal NeLisp dependency: =nelisp-special-forms=
+
+* Dependents
+
+- Direct source dependents: none under =src/=
+- Test dependents: =packages/nelisp-control-flow/test/nelisp-control-flow-test.el=
+
+* Status
+
+- Extraction status: moved from =src/nelisp-control-flow.el= to
+  =packages/nelisp-control-flow/src/nelisp-control-flow.el= without
+  code changes
+- Test status: moved from =test/nelisp-control-flow-test.el= to
+  =packages/nelisp-control-flow/test/nelisp-control-flow-test.el=
+- Compatibility: existing callers continue using
+  =(require 'nelisp-control-flow)= via root load-path wiring

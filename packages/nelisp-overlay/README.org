@@ -1,0 +1,67 @@
+#+TITLE: nelisp-overlay Package
+
+* Summary
+
+=nelisp-overlay= is an extracted NeLisp library package per Doc 45. It
+provides overlay storage, querying, mutation, and Emacs-compat overlay
+APIs for the Phase 9c text-property stack.
+
+* Layout
+
+#+begin_src text
+packages/nelisp-overlay/
+├── README.org
+├── src/
+│   └── nelisp-overlay.el
+└── test/
+    └── nelisp-overlay-test.el
+#+end_src
+
+* Public API
+
+- =nelisp-ovly-make=
+- =nelisp-ovly-overlayp=
+- =nelisp-ovly-copy=
+- =nelisp-ovly-start=
+- =nelisp-ovly-end=
+- =nelisp-ovly-buffer=
+- =nelisp-ovly-move=
+- =nelisp-ovly-delete=
+- =nelisp-ovly-delete-all=
+- =nelisp-ovly-properties=
+- =nelisp-ovly-put=
+- =nelisp-ovly-get=
+- =nelisp-ovly-lists=
+- =nelisp-ovly-overlays-at=
+- =nelisp-ovly-overlays-in=
+- =nelisp-ovly-remove-many=
+- =nelisp-ovly-next-change=
+- =nelisp-ovly-previous-change=
+- =nelisp-ovly-get-char-property=
+- =nelisp-ovly-keymap-provider=
+- =nelisp-ovly-display-provider=
+- =nelisp-ovly-recenter=
+- =nelisp-ovly-shift-on-insert=
+- =nelisp-ovly-shift-on-delete=
+- =nelisp-ovly-contract-version=
+
+* Dependencies
+
+- Runtime dependency: NeLisp core =nelisp= v1.0 load-path environment
+- Elisp dependency declared by the library: =cl-lib=
+- Internal NeLisp dependencies loaded dynamically: =nelisp-textprop-keymap=
+
+* Dependents
+
+- Direct source dependents: none under =src/=
+- Test dependents: =packages/nelisp-overlay/test/nelisp-overlay-test.el=,
+  =packages/nelisp-textprop-keymap/test/nelisp-textprop-keymap-test.el=
+
+* Status
+
+- Extraction status: moved from =src/nelisp-overlay.el= to
+  =packages/nelisp-overlay/src/nelisp-overlay.el= without code changes
+- Test status: moved from =test/nelisp-overlay-test.el= to
+  =packages/nelisp-overlay/test/nelisp-overlay-test.el=
+- Compatibility: existing callers continue using
+  =(require 'nelisp-overlay)= via root load-path wiring

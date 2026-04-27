@@ -1,0 +1,48 @@
+#+TITLE: nelisp-redisplay Package
+
+* Summary
+
+=nelisp-redisplay= is an extracted NeLisp library package per Doc 45. It
+provides terminal redisplay, dirty-row tracking, and window helpers on
+top of =nelisp-buffer=.
+
+* Layout
+
+#+begin_src text
+packages/nelisp-redisplay/
+├── README.org
+├── src/
+│   └── nelisp-redisplay.el
+└── test/
+    └── nelisp-redisplay-test.el
+#+end_src
+
+* Public API
+
+- =nelisp-window=
+- =nelisp-redisplay-clear-screen=
+- =nelisp-make-window=
+- =nelisp-window-mark-dirty=
+- =nelisp-window-mark-all-dirty=
+- =nelisp-window-clear-dirty=
+- =nelisp-window-render=
+
+* Dependencies
+
+- Runtime dependency: NeLisp core =nelisp= v1.0 load-path environment
+- Elisp dependency declared by the library: =cl-lib=
+- Internal NeLisp dependency: =nelisp-buffer=
+
+* Dependents
+
+- Direct source dependents: =test/nelisp-editor-test.el=
+- Test dependents: =packages/nelisp-redisplay/test/nelisp-redisplay-test.el=
+
+* Status
+
+- Extraction status: moved from =src/nelisp-redisplay.el= to
+  =packages/nelisp-redisplay/src/nelisp-redisplay.el= without code changes
+- Test status: moved from =test/nelisp-redisplay-test.el= to
+  =packages/nelisp-redisplay/test/nelisp-redisplay-test.el=
+- Compatibility: existing callers continue using
+  =(require 'nelisp-redisplay)= via root load-path wiring
