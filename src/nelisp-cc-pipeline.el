@@ -78,6 +78,7 @@
 (require 'nelisp-cc-recursive-inline)
 (require 'nelisp-cc-lambda-lift)
 (require 'nelisp-cc-rewrite)
+(require 'nelisp-cc-base-case-fold)
 
 ;;; Feature flag ---------------------------------------------------
 
@@ -150,7 +151,8 @@ nested `:closure' instructions."
   (rec-inlined 0)
   (lifted 0)
   (rewrote-call-indirect 0)
-  (registry-size 0))
+  (registry-size 0)
+  (base-case-folded 0))
 
 ;;; Registry construction ------------------------------------------
 
@@ -220,7 +222,17 @@ Returns FN."
              (after-lift (car lift-result))
              (lift-count (cdr lift-result)))
         (cl-incf (nelisp-cc-pipeline-stats-lifted stats) lift-count)
-        after-lift))))
+        ;; (5) Phase 7.1.2 — base-case fold via const-eval (J1
+        ;; bottleneck #2 from docs/bench-results/3-axis-actual-2026-04-27-T163.md
+        ;; §"What would close the gap" item 2).  Replaces residual
+        ;; `:call :fn FN (CONST_ARG)' sites with `:const' literals when
+        ;; FN(CONST_ARG) const-evaluates within budget.  No-op when
+        ;; `nelisp-cc-base-case-fold-enable' is nil.
+        (let* ((bcf-result (nelisp-cc-base-case-fold-pass after-lift registry))
+               (bcf-count (cdr bcf-result)))
+          (cl-incf (nelisp-cc-pipeline-stats-base-case-folded stats)
+                   bcf-count)
+          after-lift)))))
 
 ;;; Top-level entry ------------------------------------------------
 
