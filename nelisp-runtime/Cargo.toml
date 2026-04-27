@@ -45,6 +45,10 @@ path = "src/bin/anvil-mcp-demo.rs"
 name = "anvil-runtime"
 path = "src/bin/anvil-runtime.rs"
 
+[[bin]]
+name = "nelisp"
+path = "src/bin/nelisp.rs"
+
 # Phase 7.1 完遂 gate 3-axis bench (Doc 28 v2 §5.1).  This is the
 # *secondary* baseline measuring the FFI bridge overhead in isolation
 # — the primary 3-axis gate (fib(30) 30x / fact-iter 20x / alloc-heavy

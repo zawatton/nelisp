@@ -74,10 +74,33 @@ Older release lines, for reference only:
 - =README-stage-d-v2.0.org= — bundled-Emacs tarball, ~25 MB
 - =README-stage-d.org= — legacy host-Emacs-required path
 
+** Launch
+
+The pre-built tarball ships a tiny =nelisp= CLI that wraps the
+Rust evaluator.  No host Emacs needed:
+
+#+begin_src shell
+nelisp --version                       # nelisp 0.1.0
+nelisp eval "(+ 1 2 3)"                # => 6
+nelisp eval "(mapcar (function (lambda (n) (* n n))) '(1 2 3 4))"
+                                       # => (1 4 9 16)
+
+# load + run a file (last form's value is printed)
+nelisp -l ~/nelisp/examples/hello/hello.el
+
+# pipe Elisp through stdin
+echo '(defun sq (x) (* x x)) (sq 7)' | nelisp -
+                                       # => 49
+#+end_src
+
+If you built from source, the CLI lives at
+=nelisp-runtime/target/release/nelisp=; the install tarball puts
+it on =$PATH=.
+
 ** Quick start
 
-NeLisp's evaluator is reachable three ways; pick the one that
-matches your context.
+For larger workflows the evaluator is reachable three ways;
+pick the one that matches your context.
 
 *** From Emacs Lisp — REPL straight into NeLisp's own evaluator
 
@@ -168,11 +191,11 @@ Tier matrix (Doc 32 v2 §11):
 | Platform        | v1.0 status                       |
 |-----------------+-----------------------------------|
 | linux-x86_64    | blocker (CI gate, must pass)      |
-| macos-arm64     | best-effort 95%+ (v1.0 時限措置)  |
-| linux-arm64     | best-effort 95%+ (v1.0 時限措置)  |
+| macos-arm64     | best-effort 95%+ (v1.0 time-boxed) |
+| linux-arm64     | best-effort 95%+ (v1.0 time-boxed) |
 | windows-native  | post-v2.0 scope                   |
 
-=v1.0 時限= = explicit time-boxed exception ratified in Doc 32 v2 §11.
+=v1.0 time-boxed= = explicit time-boxed exception ratified in Doc 32 v2 §11.
 v1.1+ promotes arm64 to *blocker*; the audit grep guard in
 =test/nelisp-release-test.el= retires at that point.
 
