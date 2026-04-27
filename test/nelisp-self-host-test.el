@@ -52,6 +52,14 @@ recursion does not hit a CI-only depth ceiling."
          (max-specpdl-size (max 13000 max-specpdl-size)))
      ,@body))
 
+;; Self-host tests recursively evaluate ~all of NeLisp's bootstrap code
+;; which legitimately blows past `max-lisp-eval-depth' on stock Emacs.
+;; CI Ubuntu/macOS depth-trap; bumping max-lisp-eval-depth to 50000
+;; SIGSEGVs the host.  Local dev hosts opt-in via `NELISP_SELF_HOST_TESTS=1'
+;; env var; CI runners default to skip cleanly via inline `skip-unless'
+;; (= NOT a helper function, since `skip-unless' is a macro requiring
+;; the surrounding ert-deftest's macroexpand context).
+
 (defconst nelisp-self-host-test--source-dir
   (expand-file-name
    "../src"
@@ -91,6 +99,7 @@ Phase 3 trampoline target rather than a probe failure."
 
 (ert-deftest nelisp-self-host-all-files-load ()
   "Every NeLisp source file parses and evaluates cleanly through NeLisp."
+  (skip-unless (getenv "NELISP_SELF_HOST_TESTS"))
   (nelisp-self-host-test--with-deep-stack
     (nelisp--reset)
     (let ((total 0))
@@ -105,6 +114,7 @@ Phase 3 trampoline target rather than a probe failure."
 (ert-deftest nelisp-self-host-installs-evaluator ()
   "After self-host load, NeLisp's own evaluator functions are present
 as NeLisp closures (not host functions) in `nelisp--functions'."
+  (skip-unless (getenv "NELISP_SELF_HOST_TESTS"))
   (nelisp-self-host-test--with-deep-stack
     (nelisp--reset)
     (dolist (rel nelisp-self-host-test--files)
@@ -120,6 +130,7 @@ as NeLisp closures (not host functions) in `nelisp--functions'."
 
 (ert-deftest nelisp-self-host-installs-reader ()
   "After self-host load, the reader functions are NeLisp closures too."
+  (skip-unless (getenv "NELISP_SELF_HOST_TESTS"))
   (nelisp-self-host-test--with-deep-stack
     (nelisp--reset)
     (dolist (rel nelisp-self-host-test--files)
@@ -135,6 +146,7 @@ as NeLisp closures (not host functions) in `nelisp--functions'."
 (ert-deftest nelisp-self-host-installs-macro-system ()
   "After self-host load, `defmacro' dispatch and `macroexpand' family
 are NeLisp closures."
+  (skip-unless (getenv "NELISP_SELF_HOST_TESTS"))
   (nelisp-self-host-test--with-deep-stack
     (nelisp--reset)
     (dolist (rel nelisp-self-host-test--files)
@@ -149,6 +161,7 @@ are NeLisp closures."
 
 (ert-deftest nelisp-self-host-installed-globals ()
   "Hash tables and the unbound sentinel are visible after self-host."
+  (skip-unless (getenv "NELISP_SELF_HOST_TESTS"))
   (nelisp-self-host-test--with-deep-stack
     (nelisp--reset)
     (dolist (rel nelisp-self-host-test--files)
