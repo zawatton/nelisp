@@ -669,7 +669,7 @@ default cannot be a 24h figure.  Real soak runs override this with
 
 ARGS is a plist:
   :iterations N            — number of harness iterations (default
-                             `nelisp-integration-soak-harness-default-iterations').
+                             `--soak-harness-default-iterations').
   :handler FN              — called once per iteration with the
                              iteration index (0-based).  Default =
                              `nelisp-integration-cold-init-dispatch'
