@@ -1,0 +1,45 @@
+#+TITLE: nelisp-base64 Package
+
+* Summary
+
+=nelisp-base64= is an extracted utility library package for the NeLisp
+package split.  It provides a pure Elisp RFC 4648 base64
+encoder/decoder for the standalone path without depending on host
+Emacs base64 primitives.
+
+* Layout
+
+#+begin_src text
+packages/nelisp-base64/
+├── README.org
+├── src/
+│   └── nelisp-base64.el
+└── test/
+    └── nelisp-base64-test.el
+#+end_src
+
+* Public API
+
+- =nelisp-b64-encode-bytes=
+- =nelisp-b64-encode-string=
+- =nelisp-b64-decode-to-bytes=
+- =nelisp-b64-decode-string=
+
+* Dependencies
+
+- Runtime dependency: NeLisp core =nelisp= v1.0 load-path environment
+- Elisp dependency declared by the library: =cl-lib=
+- Internal NeLisp package dependencies: none
+
+* Dependents
+
+- Current in-repo =require= dependents under =src/=, =test/=, and
+  =packages/=: none found as of 2026-04-27
+
+* Status
+
+- Extracted from the monolithic =src/= / =test/= tree per Doc 45
+- Source move: =src/nelisp-base64.el= -> =packages/nelisp-base64/src/nelisp-base64.el=
+- Test move: =test/nelisp-base64-test.el= -> =packages/nelisp-base64/test/nelisp-base64-test.el=
+- Existing callers continue using =(require 'nelisp-base64)=; root
+  load-path wiring resolves the package
