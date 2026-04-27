@@ -1,4 +1,4 @@
-;;; emacs-redisplay.el --- Phase 3 redisplay engine MVP + face-realize + overlay-strings  -*- lexical-binding: t; -*-
+;;; emacs-redisplay.el --- Phase 3 redisplay engine MVP + face-realize + overlay-strings + 256/truecolor  -*- lexical-binding: t; -*-
 
 ;; Phase 3 module per nelisp-emacs Doc 01 (LOCKED-2026-04-25-v2 §3.3),
 ;; mirroring NeLisp Doc 43 v2 §3.2 Phase 11.B redisplay engine MVP.
@@ -17,6 +17,19 @@
 ;; exclusive end).  Multiple overlays at the same position are emitted
 ;; in priority order (lower priority first → higher priority closest
 ;; to the buffer text), matching the Emacs convention.
+;; Phase 3.B.3 (this file) extends the color value vocabulary recognized
+;; by the realize layer + the SGR emit layer to include 256-color and
+;; truecolor (24-bit) descriptors:
+;;   - "#rrggbb" hex strings                → truecolor
+;;   - (:r N :g N :b N) plist values        → truecolor
+;;   - (palette N) / (palette . N) lists    → 256-color (N = 0..255)
+;;   - :palette-N keyword                   → 256-color
+;;   - existing 16-color symbols / names    → unchanged (regression-safe)
+;; The new descriptors propagate as normalized cons / list values inside
+;; the realized SGR alist (= `(palette N)' / `(rgb R G B)') and are
+;; emitted by `emacs-tui-backend--sgr-from-face' as `\\e[38;5;Nm' /
+;; `\\e[48;5;Nm' (256-color) or `\\e[38;2;R;G;Bm' / `\\e[48;2;R;G;Bm'
+;; (truecolor) escape sequences per ECMA-48 / xterm conventions.
 ;; Layer: nelisp-emacs (Layer 3 inner = redisplay-driver + glyph-matrix).
 ;; Namespace: `emacs-redisplay-' so loading inside a host Emacs does
 ;; NOT shadow any `redisplay-' / `glyph-' / `display-' symbol.
@@ -71,11 +84,13 @@
 ;;      emacs-redisplay-glyph-row        — row accessor
 ;;      emacs-redisplay-glyph-row-text   — concatenated row chars (testing)
 ;;
-;;   E. face-realize MVP — Phase 3.B.1 / Doc 43 §2.4 (4 APIs)
+;;   E. face-realize MVP — Phase 3.B.1 / Doc 43 §2.4 (5 APIs)
 ;;      emacs-redisplay-realize-face       — face spec → SGR-ready alist
 ;;      emacs-redisplay-defface            — register a face spec locally
 ;;      emacs-redisplay-face-attributes    — registry lookup
 ;;      emacs-redisplay-face-cache-clear   — drop cached realizations
+;;      emacs-redisplay--parse-color-spec  — Phase 3.B.3 color descriptor
+;;                                            parser (16/256/truecolor)
 ;;
 ;; Non-goals (deferred per Doc 43 §3.2 Phase 11.B v2.x):
 ;;   - bidi (双方向 text); MVP is LTR only.
@@ -131,10 +146,18 @@ History:
        The original `face' slot continues to hold the raw spec for
        diff / observability / overlay merge intermediate state.")
 
-(defconst emacs-redisplay-face-realize-contract-version 1
+(defconst emacs-redisplay-face-realize-contract-version 2
   "FACE_REALIZE_CONTRACT_VERSION per Doc 43 v2 §2.4.
 Bumped on incompatible change to `emacs-redisplay-realize-face'
-output shape (= SGR attribute alist canonical form).")
+output shape (= SGR attribute alist canonical form).
+
+History:
+  v1 — Phase 3.B.1: alist values are 16-color palette symbols
+       (`red', `bright-blue', `default', ...) plus boolean flags.
+  v2 — Phase 3.B.3: alist values may additionally be 256-color
+       descriptor `(palette N)' (cons-list, N = 0..255) or truecolor
+       descriptor `(rgb R G B)' (cons-list, R/G/B = 0..255).  Existing
+       symbol values continue to mean 16-color (backward-compatible).")
 
 ;;; defcustom
 
@@ -272,21 +295,116 @@ host Emacs.")
   "Lowercase color-name string → backend palette symbol map (MVP subset).
 Unknown strings are passed through as `default' (= no SGR emitted).")
 
+(defun emacs-redisplay--parse-color-spec (spec)
+  "Parse SPEC into a normalized color descriptor.
+
+Returns a plist `(:type TYPE :value V)' where TYPE is one of:
+  16        — V is a backend palette symbol (`red', `bright-blue', ...)
+  256       — V is an integer 0..255 (xterm 256-color palette)
+  truecolor — V is a list `(R G B)' with each component 0..255
+
+Returns nil for SPEC = nil / `unspecified' / unrecognized shapes
+(callers degrade to `default' = no SGR emitted for that channel).
+
+Recognized SPEC shapes (Phase 3.B.3, Doc 43 §2.4 v2):
+  nil / `unspecified'                       → nil
+  symbol like `red' / `bright-blue'         → 16-color (registry lookup)
+  symbol like `:palette-N' (keyword)        → 256-color (N = 0..255)
+  string \"#rrggbb\" or \"#RRGGBB\"           → truecolor
+  string \"red\" (lowercase color name)     → 16-color (registry lookup)
+  list (palette N) / cons (palette . N)     → 256-color
+  list (rgb R G B) / cons (rgb R G B)       → truecolor (already normal)
+  plist (:r R :g G :b B)                    → truecolor
+
+Out-of-range integers (negative / >255) are clamped silently to keep
+the SGR pipeline robust against bad face data (= MVP graceful
+degrade).  This contract is consumed by
+`emacs-redisplay--face-color->symbol' (= realize layer) and by
+`emacs-tui-backend--color-code' (= SGR emit layer)."
+  (cl-flet ((clamp (n) (cond ((< n 0) 0) ((> n 255) 255) (t n))))
+    (cond
+     ;; nil / unspecified
+     ((null spec) nil)
+     ((eq spec 'unspecified) nil)
+     ;; Keyword `:palette-N'
+     ((and (symbolp spec)
+           (let ((name (symbol-name spec)))
+             (string-match-p "\\`:palette-[0-9]+\\'" name)))
+      (let* ((name (symbol-name spec))
+             (n (string-to-number (substring name (length ":palette-")))))
+        (list :type 256 :value (clamp n))))
+     ;; Plain symbol = 16-color registry symbol (validated downstream)
+     ((symbolp spec)
+      (list :type 16 :value spec))
+     ;; "#rrggbb" hex string
+     ((and (stringp spec)
+           (string-match "\\`#\\([0-9a-fA-F]\\{6\\}\\)\\'" spec))
+      (let* ((hex (match-string 1 spec))
+             (r (string-to-number (substring hex 0 2) 16))
+             (g (string-to-number (substring hex 2 4) 16))
+             (b (string-to-number (substring hex 4 6) 16)))
+        (list :type 'truecolor :value (list r g b))))
+     ;; "red" / lowercase color name
+     ((stringp spec)
+      (let* ((key (downcase (replace-regexp-in-string "[ \t-]+" ""
+                                                      spec)))
+             (sym (cdr (assoc key emacs-redisplay--face-color-name-map))))
+        (when sym
+          (list :type 16 :value sym))))
+     ;; Plist (:r R :g G :b B)
+     ((and (listp spec)
+           (keywordp (car spec))
+           (plist-member spec :r)
+           (plist-member spec :g)
+           (plist-member spec :b))
+      (let ((r (plist-get spec :r))
+            (g (plist-get spec :g))
+            (b (plist-get spec :b)))
+        (when (and (integerp r) (integerp g) (integerp b))
+          (list :type 'truecolor
+                :value (list (clamp r) (clamp g) (clamp b))))))
+     ;; (palette N) or (palette . N)
+     ((and (consp spec) (eq (car spec) 'palette))
+      (let ((n (if (consp (cdr spec)) (cadr spec) (cdr spec))))
+        (when (integerp n)
+          (list :type 256 :value (clamp n)))))
+     ;; (rgb R G B) or (rgb R G B)
+     ((and (consp spec) (eq (car spec) 'rgb)
+           (= (length spec) 4)
+           (cl-every #'integerp (cdr spec)))
+      (list :type 'truecolor
+            :value (mapcar #'clamp (cdr spec))))
+     (t nil))))
+
 (defun emacs-redisplay--face-color->symbol (color)
-  "Map COLOR (string / symbol / nil) to the backend palette symbol.
-Returns nil when COLOR resolves to no SGR override (= unspecified)."
-  (cond
-   ((null color) nil)
-   ((eq color 'unspecified) nil)
-   ((symbolp color) color)
-   ((stringp color)
-    (let* ((key (downcase (replace-regexp-in-string "[ \t-]+" ""
-                                                    color))))
-      (or (cdr (assoc key emacs-redisplay--face-color-name-map))
-          ;; Unknown string color — degrade to `default' so the SGR
-          ;; pass simply skips the channel rather than crashing.
-          'default)))
-   (t nil)))
+  "Map COLOR to a backend-ready color descriptor or palette symbol.
+
+Returns nil when COLOR resolves to no SGR override (= unspecified).
+
+For 16-color (= legacy MVP) inputs, returns a plain palette *symbol*
+(`red', `bright-blue', `default', ...) so existing alist consumers
+(downstream `emacs-tui-backend--sgr-from-face') stay compatible.
+
+For 256-color / truecolor inputs (Phase 3.B.3, Doc 43 §2.4 v2),
+returns a normalized cons / list descriptor:
+  256-color  → (palette N)        (N = 0..255)
+  truecolor  → (rgb R G B)        (R/G/B = 0..255)
+
+The backend SGR layer dispatches on the descriptor shape."
+  (let ((parsed (emacs-redisplay--parse-color-spec color)))
+    (cond
+     ((null parsed)
+      ;; Unknown / unspecified — for legacy strings degrade to
+      ;; `default' so the SGR pass simply skips the channel; for
+      ;; everything else nil.
+      (cond
+       ((stringp color) 'default)
+       (t nil)))
+     (t
+      (pcase (plist-get parsed :type)
+        (16        (plist-get parsed :value))
+        (256       (list 'palette (plist-get parsed :value)))
+        ('truecolor (cons 'rgb (plist-get parsed :value))))))))
 
 (defun emacs-redisplay--face-weight->bold (weight)
   "Return non-nil iff WEIGHT (a symbol) means bold-or-bolder."

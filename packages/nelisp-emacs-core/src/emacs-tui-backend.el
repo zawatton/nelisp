@@ -73,12 +73,21 @@
 ;; Non-goals (deferred per Doc 43 §3.1 Phase 11.A scope):
 ;;   - redisplay engine glyph matrix (= Phase 11.B / Doc 01 Phase 3).
 ;;   - font shaping (= Phase 11.B v2.x, declared `font-shaping' = -).
-;;   - mouse / 256-color / truecolor / image / IME (= TUI v2.x or GUI).
+;;   - mouse / image / IME (= TUI v2.x or GUI).
 ;;   - terminfo capability detection (= `emacs-tui-terminfo.el',
 ;;     separate Phase 2 module).
 ;;   - stdin parser + SIGWINCH installer (= `emacs-tui-event.el',
 ;;     separate Phase 2 module — this backend exposes the API surface
 ;;     and consumes events through `event-inject').
+;;
+;; Phase 3.B.3 (= the SGR emit half of Doc 43 §2.4 v2 color extension):
+;; this file's `--sgr-from-face' now accepts 256-color descriptor
+;; `(palette N)' and truecolor descriptor `(rgb R G B)' as alist
+;; values, producing `\\e[38;5;Nm' / `\\e[48;5;Nm' (256-color) and
+;; `\\e[38;2;R;G;Bm' / `\\e[48;2;R;G;Bm' (truecolor) escapes per
+;; ECMA-48 / xterm conventions.  The parsing of user-facing color
+;; spec forms (`\"#rrggbb\"', `(:r N :g N :b N)', `:palette-N', etc.)
+;; lives in `emacs-redisplay--parse-color-spec'.
 
 ;;; Code:
 
@@ -218,7 +227,11 @@ escape, which we represent by accepting `bright-NAME' symbols.")
 (defun emacs-tui-backend--color-code (color)
   "Resolve COLOR (a symbol) to an (OFFSET . BRIGHT-P) pair, or nil.
 COLOR may be `red', `bright-red', `default', or nil.  Returns nil
-for nil / `default' (= caller emits no SGR for that channel)."
+for nil / `default' (= caller emits no SGR for that channel).
+
+This is the 16-color (= legacy MVP) path.  256-color and truecolor
+descriptors (cons-list shapes) are handled by
+`emacs-tui-backend--color->sgr-tokens' (Phase 3.B.3)."
   (cond
    ((null color) nil)
    ((eq color 'default) nil)
@@ -230,30 +243,86 @@ for nil / `default' (= caller emits no SGR for that channel)."
       (and cell (cons (cdr cell) bright-p))))
    (t nil)))
 
+(defun emacs-tui-backend--color->sgr-tokens (color is-bg-p)
+  "Return the SGR token list for COLOR rendered as fg or bg.
+
+COLOR may be:
+  nil / `default'         → nil (= no SGR for this channel)
+  symbol (`red' / ...)    → 16-color, e.g. (\"31\") fg / (\"41\") bg
+  (palette N)             → 256-color (\"38;5;N\" fg / \"48;5;N\" bg)
+  (rgb R G B)             → truecolor (\"38;2;R;G;B\" fg / \"48;2;R;G;B\")
+
+IS-BG-P is non-nil to render background, nil for foreground.
+Returns a (possibly-empty) list of *string* tokens to be joined by
+`;' inside a single `\\e[...m' SGR escape.
+
+Phase 3.B.3 (Doc 43 §2.4 v2): 256-color + truecolor descriptors are
+emitted per ECMA-48 / xterm.  Out-of-range integers are clamped to
+[0,255] for robustness against bad face data (= MVP graceful
+degrade)."
+  (cl-flet ((clamp (n) (cond ((not (integerp n)) 0)
+                             ((< n 0) 0) ((> n 255) 255) (t n))))
+    (cond
+     ;; nil / default — no token.
+     ((null color) nil)
+     ((eq color 'default) nil)
+     ;; (palette N) — 256-color descriptor.
+     ((and (consp color) (eq (car color) 'palette))
+      (let* ((raw (if (consp (cdr color)) (cadr color) (cdr color)))
+             (n (clamp raw)))
+        (list (if is-bg-p "48;5;" "38;5;")
+              (number-to-string n))))
+     ;; (rgb R G B) — truecolor descriptor.
+     ((and (consp color) (eq (car color) 'rgb))
+      (let* ((rgb (cdr color))
+             (r (clamp (nth 0 rgb)))
+             (g (clamp (nth 1 rgb)))
+             (b (clamp (nth 2 rgb))))
+        (list (if is-bg-p "48;2;" "38;2;")
+              (format "%d;%d;%d" r g b))))
+     ;; Symbol — 16-color path via existing helper.
+     ((symbolp color)
+      (let ((cell (emacs-tui-backend--color-code color)))
+        (when cell
+          (list (number-to-string
+                 (+ (car cell)
+                    (cond ((and is-bg-p (cdr cell)) 100)
+                          (is-bg-p emacs-tui-backend--ansi-bg-base)
+                          ((cdr cell) 90)
+                          (t emacs-tui-backend--ansi-fg-base))))))))
+     ;; Anything else — silent ignore (= robust against bad data).
+     (t nil))))
+
 (defun emacs-tui-backend--sgr-from-face (face)
   "Build the SGR escape string corresponding to FACE.
 FACE is an alist with keys `:foreground' / `:background' / `:bold' /
-`:underline' / `:reverse' (subset; unknown keys are ignored).  Color
-values are symbols accepted by `emacs-tui-backend--color-code'.
+`:underline' / `:reverse' (subset; unknown keys are ignored).
+
+Color values may be (Phase 3.B.3 extension):
+  16-color  : a symbol (`red', `bright-blue', `default', ...)
+  256-color : a list `(palette N)' with N = 0..255
+  truecolor : a list `(rgb R G B)' with R/G/B = 0..255
 
 Returns a possibly-empty string (= no escape if FACE is nil or empty)."
   (if (null face)
       ""
     (let ((parts nil))
       ;; Foreground
-      (let ((fg (emacs-tui-backend--color-code (cdr (assq :foreground face)))))
-        (when fg
-          (push (number-to-string
-                 (+ (car fg)
-                    (if (cdr fg) 90 emacs-tui-backend--ansi-fg-base)))
-                parts)))
+      (let ((toks (emacs-tui-backend--color->sgr-tokens
+                   (cdr (assq :foreground face)) nil)))
+        (when toks
+          ;; Splice the (one or two) tokens contiguously — we then
+          ;; rely on `;' joining via mapconcat to produce e.g.
+          ;; "38;5;200" within a single SGR.  The two-element form
+          ;; "38;5;" + "N" already encodes its own internal ';' so we
+          ;; concat them with no separator before pushing as a single
+          ;; logical part.
+          (push (mapconcat #'identity toks "") parts)))
       ;; Background
-      (let ((bg (emacs-tui-backend--color-code (cdr (assq :background face)))))
-        (when bg
-          (push (number-to-string
-                 (+ (car bg)
-                    (if (cdr bg) 100 emacs-tui-backend--ansi-bg-base)))
-                parts)))
+      (let ((toks (emacs-tui-backend--color->sgr-tokens
+                   (cdr (assq :background face)) t)))
+        (when toks
+          (push (mapconcat #'identity toks "") parts)))
       ;; Attributes
       (when (cdr (assq :bold face))      (push "1" parts))
       (when (cdr (assq :underline face)) (push "4" parts))

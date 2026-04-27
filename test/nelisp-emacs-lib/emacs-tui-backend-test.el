@@ -469,6 +469,80 @@ positioned at the run start (1-based)."
   (should (= 80 emacs-tui-backend-frame-default-width))
   (should (= 24 emacs-tui-backend-frame-default-height)))
 
+;;; F. Phase 3.B.3 — 256-color / truecolor SGR escape support
+;;
+;; The emit-layer assertions cover the four new escape forms emitted
+;; by `--sgr-from-face' when the face alist value is a 256/truecolor
+;; descriptor (= cons-list `(palette N)' / `(rgb R G B)').  Spec
+;; parsing (= "#rrggbb" / plist / `:palette-N') is asserted in the
+;; redisplay test file (= layer-of-origin); here we only validate
+;; the SGR escape shape.
+
+(ert-deftest emacs-tui-backend-test-sgr-256-foreground ()
+  "256-color foreground descriptor `(palette 200)' emits `\\e[38;5;200m'."
+  (let ((sgr (emacs-tui-backend--sgr-from-face
+              '((:foreground . (palette 200))))))
+    (should (string= sgr "\e[38;5;200m"))))
+
+(ert-deftest emacs-tui-backend-test-sgr-256-background ()
+  "256-color background descriptor `(palette 17)' emits `\\e[48;5;17m'."
+  (let ((sgr (emacs-tui-backend--sgr-from-face
+              '((:background . (palette 17))))))
+    (should (string= sgr "\e[48;5;17m"))))
+
+(ert-deftest emacs-tui-backend-test-sgr-truecolor-foreground ()
+  "Truecolor descriptor `(rgb 255 0 0)' emits `\\e[38;2;255;0;0m'."
+  (let ((sgr (emacs-tui-backend--sgr-from-face
+              '((:foreground . (rgb 255 0 0))))))
+    (should (string= sgr "\e[38;2;255;0;0m"))))
+
+(ert-deftest emacs-tui-backend-test-sgr-truecolor-background ()
+  "Truecolor background `(rgb 0 255 128)' emits `\\e[48;2;0;255;128m'."
+  (let ((sgr (emacs-tui-backend--sgr-from-face
+              '((:background . (rgb 0 255 128))))))
+    (should (string= sgr "\e[48;2;0;255;128m"))))
+
+(ert-deftest emacs-tui-backend-test-sgr-256-and-truecolor-combined ()
+  "FG `(palette 12)' + BG `(rgb 1 2 3)' merge into one SGR escape."
+  (let ((sgr (emacs-tui-backend--sgr-from-face
+              '((:foreground . (palette 12))
+                (:background . (rgb 1 2 3))))))
+    (should (string= sgr "\e[38;5;12;48;2;1;2;3m"))))
+
+(ert-deftest emacs-tui-backend-test-sgr-truecolor-with-bold ()
+  "Truecolor + bold attribute combine in one SGR (= `\\e[38;2;...;1m')."
+  (let ((sgr (emacs-tui-backend--sgr-from-face
+              '((:foreground . (rgb 10 20 30))
+                (:bold        . t)))))
+    (should (string= sgr "\e[38;2;10;20;30;1m"))))
+
+(ert-deftest emacs-tui-backend-test-sgr-256-clamps-out-of-range ()
+  "Out-of-range 256-color index is clamped to [0,255] silently."
+  (let ((sgr-hi (emacs-tui-backend--sgr-from-face
+                 '((:foreground . (palette 999)))))
+        (sgr-lo (emacs-tui-backend--sgr-from-face
+                 '((:foreground . (palette -5))))))
+    (should (string= sgr-hi "\e[38;5;255m"))
+    (should (string= sgr-lo "\e[38;5;0m"))))
+
+(ert-deftest emacs-tui-backend-test-sgr-truecolor-clamps-out-of-range ()
+  "Truecolor RGB components out of [0,255] are clamped per channel."
+  (let ((sgr (emacs-tui-backend--sgr-from-face
+              '((:foreground . (rgb 999 -1 128))))))
+    (should (string= sgr "\e[38;2;255;0;128m"))))
+
+(ert-deftest emacs-tui-backend-test-sgr-16-color-regression ()
+  "Phase 3.B.3 refactor preserves the 16-color SGR escape (= regression)."
+  (should (string= (emacs-tui-backend--sgr-from-face
+                    '((:foreground . red)))
+                   "\e[31m"))
+  (should (string= (emacs-tui-backend--sgr-from-face
+                    '((:background . bright-blue)))
+                   "\e[104m"))
+  (should (string= (emacs-tui-backend--sgr-from-face
+                    '((:foreground . green) (:bold . t)))
+                   "\e[32;1m")))
+
 (provide 'emacs-tui-backend-test)
 
 ;;; emacs-tui-backend-test.el ends here
