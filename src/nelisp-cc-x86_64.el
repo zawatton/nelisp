@@ -1013,19 +1013,34 @@ into the scratch register and then stored to its slot via
     (nelisp-cc-x86_64--writeback-def cg def dst)))
 
 (defun nelisp-cc-x86_64--load-var-elidable-p (cg instr)
-  "T96 Phase 7.1.5 — return non-nil when LOAD-VAR INSTR's def is
-consumed only by `:call-indirect' instructions that the backend will
-lower as a JMP / direct CALL (not as an indirect call), i.e. those
-marked `:tail-call-self' or `:self-direct-call' that target the
-current function's letrec name.
+  "T96 Phase 7.1.5 + Phase 7.1.1 direct-call elision (2026-04-27) —
+return non-nil when LOAD-VAR INSTR's def is dead at the byte level,
+either because:
 
-When all uses meet this condition the load-var emit can be skipped
+  A. (T96) every use is a `:call-indirect' instruction marked
+     `:tail-call-self' / `:self-direct-call' for the current letrec
+     name (the backend lowers those as JMP / direct CALL rel32 and
+     never reads the loaded value).
+
+  B. (Phase 7.1.1) every use is a `:call' with `:fn LETREC-NAME'
+     meta (= post-T161 rewrite shape — the call's callee target
+     comes from the `callee:LETREC-NAME' rel32 fixup, NOT from any
+     operand register).  The load-var def is never read at runtime;
+     after the T161 rewrite even the SSA use-list edge is dropped,
+     so the def's `use-list' typically falls to nil for these sites.
+
+  C. (Phase 7.1.1, conservative orphan path) the def has NO uses at
+     all AND META :name matches the current letrec name.  This catches
+     the common shape produced by T161 + rec-inline depth>=1 unroll
+     — every cloned `:load-var fib' becomes orphan after the rewrite
+     re-points each `:call-indirect' to direct `:call :fn fib' and
+     drops the load-var from the use-list.  Eliding saves ~7 bytes
+     of MOV from `cell:fib' + 1 cycle of L1 read per dead site.
+
+When all uses meet a condition the load-var emit can be skipped
 entirely — its def is never read at run time even though the SSA
-form retains it as a placeholder operand.
-
-The load-var still needs to allocate a stack slot (= the linear-scan
-gave it one) but the backend can leave it uninitialised since no
-real read ever happens.
+form retains it as a placeholder.  The slot stays allocated (linear-
+scan does not run again) but its bytes never execute.
 
 CG carries the current letrec-name + tco-self-idx via its
 `letrec-name' / `tco-self-idx' fields (set by
@@ -1039,20 +1054,33 @@ the inner-self bound."
          def
          (eq (plist-get meta :name) cg-letrec)
          (let ((uses (nelisp-cc--ssa-value-use-list def)))
-           (and uses
-                (cl-every
-                 (lambda (use-instr)
-                   (and (eq (nelisp-cc--ssa-instr-opcode use-instr)
-                            'call-indirect)
-                        (or (eq (plist-get
-                                 (nelisp-cc--ssa-instr-meta use-instr)
-                                 :tail-call-self)
+           (cond
+            ;; Path C — orphan dead load-var.  Safe because no later
+            ;; instruction can read the def's slot (every consumer
+            ;; was unhooked from the use-list when its instruction
+            ;; was rewritten / removed).
+            ((null uses) t)
+            ;; Paths A + B — every use is a direct-call sink that
+            ;; doesn't consult the loaded value at runtime.
+            (t
+             (cl-every
+              (lambda (use-instr)
+                (let ((u-op (nelisp-cc--ssa-instr-opcode use-instr))
+                      (u-meta (nelisp-cc--ssa-instr-meta use-instr)))
+                  (or
+                   ;; A — T96 self-direct call-indirect.
+                   (and (eq u-op 'call-indirect)
+                        (or (eq (plist-get u-meta :tail-call-self)
                                 cg-letrec)
-                            (eq (plist-get
-                                 (nelisp-cc--ssa-instr-meta use-instr)
-                                 :self-direct-call)
-                                cg-letrec))))
-                 uses))))))
+                            (eq (plist-get u-meta :self-direct-call)
+                                cg-letrec)))
+                   ;; B — Phase 7.1.1 post-T161 direct-call shape.
+                   ;; The :call's `:fn' meta names the letrec, and
+                   ;; the call lowering uses the rel32 fixup against
+                   ;; `callee:LETREC-NAME' so the load is dead.
+                   (and (eq u-op 'call)
+                        (eq (plist-get u-meta :fn) cg-letrec)))))
+              uses)))))))
 
 (defun nelisp-cc-x86_64--lower-load-var (cg instr)
   "Lower an SSA :load-var INSTR — placeholder MOV r64, 0 *unless* the
@@ -2349,13 +2377,27 @@ legacy entry."
     ;; the pattern (call-indirect → phi → return) is still legible.
     ;; The mark sets META :tail-call-self LETREC-NAME so the backend
     ;; lowerer emits a JMP to `inner:IDX:body' instead of a CALL+RET.
+    ;;
+    ;; Phase 7.1.1 (2026-04-27) — fall back to FUNCTION's own `:name'
+    ;; slot when the outer-level `:closure' instruction is no longer
+    ;; reachable via index lookup.  Lambda-lift drops the `:closure'
+    ;; from the outer body once it lifts the inner to a top-level
+    ;; entry, so for lifted-inners `find-closure-instr-for-inner'
+    ;; returns nil — but lift-pass stamps `nelisp-cc--ssa-function-name'
+    ;; with the original letrec name, which is exactly the symbol the
+    ;; T161 rewrite uses for `:fn' meta on direct `:call' sites.  This
+    ;; lets `--load-var-elidable-p' Path B + C fire on the unrolled fib
+    ;; body (= 14 dead `:load-var fib' instructions per Phase 7.1.1
+    ;; analysis)."
     (let* ((outer-fn (nelisp-cc-x86_64--codegen-function outer-cg))
            (closure-instr
             (nelisp-cc-x86_64--find-closure-instr-for-inner outer-fn idx))
            (letrec-name
-            (and closure-instr
-                 (plist-get (nelisp-cc--ssa-instr-meta closure-instr)
-                            :letrec-name))))
+            (or (and closure-instr
+                     (plist-get (nelisp-cc--ssa-instr-meta closure-instr)
+                                :letrec-name))
+                ;; Phase 7.1.1 lifted-inner fallback.
+                (nelisp-cc--ssa-function-name function))))
       (when letrec-name
         (nelisp-cc-callees--mark-tail-self-calls function letrec-name)
         (setf (nelisp-cc-x86_64--codegen-letrec-name cg) letrec-name)

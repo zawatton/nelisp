@@ -276,5 +276,137 @@ fixup list does *not* include `+'."
     ;; RET still terminates the function.
     (should (= #xC3 (aref vec (1- (length vec)))))))
 
+;;; (9-12) Phase 7.1.1 direct-call elision ------------------------
+;;
+;; The Phase 7.1.1 fix to `--load-var-elidable-p' adds two new
+;; eligibility paths so that the post-T161 rewrite shape (= dead
+;; `:load-var fib' instructions whose only consumers were
+;; `:call-indirect' rewritten to `:call :fn fib') no longer emits
+;; the 7-byte MOV from `cell:fib'.  These tests fabricate a minimal
+;; SSA shape per path and assert the elidable predicate fires.
+
+(require 'nelisp-cc-pipeline)
+(require 'nelisp-cc-runtime)
+
+(defun nelisp-cc-x86_64-test--make-codegen-with-letrec (letrec-name)
+  "Return a freshly-made codegen whose `letrec-name' is LETREC-NAME."
+  (let* ((fn (nelisp-cc-build-ssa-from-ast '(lambda () nil)))
+         (alloc (nelisp-cc--linear-scan fn))
+         (slots-pair (nelisp-cc--allocate-stack-slots alloc))
+         (cg (nelisp-cc-x86_64--codegen-make
+              :function fn
+              :alloc-state alloc
+              :buffer (nelisp-cc-x86_64--buffer-make)
+              :slot-alist (car slots-pair)
+              :frame-size (cdr slots-pair)
+              :cell-symbols nil)))
+    (setf (nelisp-cc-x86_64--codegen-letrec-name cg) letrec-name)
+    cg))
+
+(ert-deftest nelisp-cc-x86_64-load-var-elidable-orphan-path-c ()
+  "Phase 7.1.1 Path C: a `:load-var fib' whose def has empty
+USE-LIST and whose META :name matches the codegen's `letrec-name'
+is elidable.  This is the post-rewrite shape produced by the T161
+`:call-indirect' → `:call' rewrite when the rewrite drops the
+load-var def from each call site's USE-LIST edge."
+  (let* ((cg (nelisp-cc-x86_64-test--make-codegen-with-letrec 'fib))
+         (def (nelisp-cc--ssa-value-make
+               :id 0 :use-list nil))
+         (instr (nelisp-cc--ssa-instr-make
+                 :opcode 'load-var
+                 :def def
+                 :operands nil
+                 :meta '(:name fib))))
+    (should (nelisp-cc-x86_64--load-var-elidable-p cg instr))))
+
+(ert-deftest nelisp-cc-x86_64-load-var-elidable-direct-call-path-b ()
+  "Phase 7.1.1 Path B: a `:load-var fib' whose only use is a
+`:call' instruction with `:fn fib' meta is elidable.  This shape
+arises whenever the T161 rewrite stamps `(:fn fib :unresolved t)'
+on a call site without dropping the load-var-def edge — the
+backend still skips emitting the load because the call lowers via
+`callee:fib' rel32 fixup, never reading the def's slot."
+  (let* ((cg (nelisp-cc-x86_64-test--make-codegen-with-letrec 'fib))
+         (def (nelisp-cc--ssa-value-make
+               :id 0 :use-list nil))
+         (call-instr (nelisp-cc--ssa-instr-make
+                      :opcode 'call
+                      :def nil
+                      :operands nil
+                      :meta '(:fn fib :unresolved t)))
+         (instr (nelisp-cc--ssa-instr-make
+                 :opcode 'load-var
+                 :def def
+                 :operands nil
+                 :meta '(:name fib))))
+    (push call-instr (nelisp-cc--ssa-value-use-list def))
+    (should (nelisp-cc-x86_64--load-var-elidable-p cg instr))))
+
+(ert-deftest nelisp-cc-x86_64-load-var-elidable-mismatched-name-not-elidable ()
+  "A `:load-var foo' with no uses but META :name = `foo' (NOT the
+codegen's `letrec-name' = `fib') is NOT elidable — Path C requires
+the name to match the letrec self.  Otherwise an unrelated free
+variable load could be silently dropped."
+  (let* ((cg (nelisp-cc-x86_64-test--make-codegen-with-letrec 'fib))
+         (def (nelisp-cc--ssa-value-make
+               :id 0 :use-list nil))
+         (instr (nelisp-cc--ssa-instr-make
+                 :opcode 'load-var
+                 :def def
+                 :operands nil
+                 :meta '(:name foo))))
+    (should-not (nelisp-cc-x86_64--load-var-elidable-p cg instr))))
+
+(ert-deftest nelisp-cc-x86_64-load-var-elidable-non-self-call-not-elidable ()
+  "A `:load-var fib' whose use is a `:call' targeting a *different*
+function (`:fn other-fn') is NOT elidable — Path B requires the
+call's `:fn' meta to equal the codegen's letrec-name.  Otherwise
+the load might genuinely be needed for the indirect lookup."
+  (let* ((cg (nelisp-cc-x86_64-test--make-codegen-with-letrec 'fib))
+         (def (nelisp-cc--ssa-value-make
+               :id 0 :use-list nil))
+         (call-instr (nelisp-cc--ssa-instr-make
+                      :opcode 'call
+                      :def nil
+                      :operands nil
+                      :meta '(:fn other-fn :unresolved t)))
+         (instr (nelisp-cc--ssa-instr-make
+                 :opcode 'load-var
+                 :def def
+                 :operands nil
+                 :meta '(:name fib))))
+    (push call-instr (nelisp-cc--ssa-value-use-list def))
+    (should-not (nelisp-cc-x86_64--load-var-elidable-p cg instr))))
+
+;;; (13) Phase 7.1.1 end-to-end byte-size shrink ------------------
+
+(ert-deftest nelisp-cc-x86_64-fib-pipeline-on-elides-orphan-load-vars ()
+  "End-to-end: when the Phase 7.7 pipeline runs on the bench-form
+fib (= depth=2 unroll), the dead `:load-var fib' instructions
+produced by the T161 rewrite are now elided at codegen time.  We
+assert the raw-bytes length shrinks below the pre-Phase-7.1.1
+baseline of 1191 bytes (= 14 dead loads × 10 bytes each = ~140-byte
+reduction).  Direct measurement: with elision the fib JIT page is
+≤1100 bytes; without it (= the broken predicate that this commit
+fixes) it was 1191 bytes."
+  (let* ((nelisp-cc-enable-7.7-passes t)
+         (nelisp-cc-pipeline-rec-inline-depth-limit 2)
+         (form '(lambda ()
+                  (letrec ((fib (lambda (n)
+                                  (if (< n 2) n
+                                    (+ (funcall fib (- n 1))
+                                       (funcall fib (- n 2)))))))
+                    (funcall fib 30))))
+         (res (nelisp-cc-runtime-compile-and-allocate form 'x86_64))
+         (bytes (plist-get res :raw-bytes)))
+    ;; Sanity — pipeline actually fired.
+    (should (> (nelisp-cc-pipeline-stats-rewrote-call-indirect
+                (plist-get res :pipeline-stats))
+               0))
+    ;; Phase 7.1.1 elision target — strictly less than the pre-fix
+    ;; baseline of 1191 bytes.  Use 1150 as the gate so flakey
+    ;; ≤10-byte allocator drift does not trip the test.
+    (should (<= (length bytes) 1150))))
+
 (provide 'nelisp-cc-x86_64-test)
 ;;; nelisp-cc-x86_64-test.el ends here
