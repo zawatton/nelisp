@@ -49,14 +49,20 @@ usage() {
 nelisp-soak-test.sh — Phase 7.5.3 24h soak wrapper (Doc 32 v2 §3.3 + Doc 30 §5.2)
 
 Usage:
-  nelisp-soak-test.sh [--full-24h] [--iterations N] [--output FILE] [--help]
+  nelisp-soak-test.sh [--full-24h | --1h-soak] [--iterations N] [--pace SEC]
+                      [--output FILE] [--handler MODE] [--help]
 
 Options:
-  --full-24h         Run the production 24h soak (~86400 iterations).
-                     Default = short smoke (~600 iterations / ~10 min).
-  --iterations N     Override iteration count (mutually exclusive with --full-24h).
+  --full-24h         Run the production 24h soak (~86400 iter @ 1Hz).
+                     Forces --pace 1 + --handler default for real work.
+  --1h-soak          1h soak compromise (= 3600 iter @ 1Hz, ~1h wall).
+                     Forces --pace 1 + --handler default.
+                     Practical middle ground vs full 24h.
+  --iterations N     Override iteration count.
+  --pace SEC         Sleep N seconds between iterations (default 0 = as fast as possible).
+                     Use --pace 1 for 1Hz pacing (= real wall-clock soak).
   --output FILE      JSON report path (default: /tmp/anvil-soak-result.json).
-  --handler MODE     Handler mode: pass (default) | default.
+  --handler MODE     Handler mode: pass (default for smoke) | default (real cold-init).
                      pass    = synthetic always-pass; exercises the
                                harness measurement plumbing without
                                depending on Phase 7.5.4+ stage realness.
@@ -82,20 +88,37 @@ USAGE
 }
 
 # --- argv parse ----------------------------------------------------------
+PACE_SEC=0
+ONE_H_SOAK=0
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --help|-h) usage; exit 0 ;;
     --full-24h) FULL_24H=1; shift ;;
+    --1h-soak) ONE_H_SOAK=1; shift ;;
     --iterations) ITERATIONS="${2:?--iterations requires an arg}"; shift 2 ;;
     --output) OUTPUT="${2:?--output requires an arg}"; shift 2 ;;
     --handler) HANDLER_MODE="${2:?--handler requires an arg}"; shift 2 ;;
+    --pace) PACE_SEC="${2:?--pace requires an arg}"; shift 2 ;;
     *) printf 'nelisp-soak-test.sh: unknown arg: %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
 done
 
 if [ "$FULL_24H" -eq 1 ]; then
-  # 24h × 3600 sec / iter ≈ 86400 (= 1 sec per cold-init dispatch).
+  # 24h × 3600 sec / iter ≈ 86400 (= 1 iter per second).
+  # Doc 32 §7 spec: leak / pause measurement, NOT stage-correctness
+  # check. handler=pass keeps harness exit code clean while pacing
+  # ensures real wall-clock measurement.  --handler default to triage
+  # stage stub return drift if needed.
   ITERATIONS=86400
+  PACE_SEC=1
+fi
+
+if [ "$ONE_H_SOAK" -eq 1 ]; then
+  # 1h × 3600 sec / iter = 3600 (= practical compromise vs full 24h).
+  # Same Doc 32 §7 leak/pause measurement purpose as --full-24h.
+  ITERATIONS=3600
+  PACE_SEC=1
 fi
 
 # --- repo locator --------------------------------------------------------
@@ -115,7 +138,13 @@ if [ ! -d "$OUT_DIR" ] || [ ! -w "$OUT_DIR" ]; then
   exit 2
 fi
 
-MODE_TAG=$([ "$FULL_24H" -eq 1 ] && echo "full-24h" || echo "smoke")
+if [ "$FULL_24H" -eq 1 ]; then
+  MODE_TAG="full-24h"
+elif [ "$ONE_H_SOAK" -eq 1 ]; then
+  MODE_TAG="1h-soak"
+else
+  MODE_TAG="smoke"
+fi
 
 case "$HANDLER_MODE" in
   pass|default) ;;
@@ -125,6 +154,7 @@ esac
 echo "Phase 7.5.3 nelisp soak test"
 echo "  mode        : ${MODE_TAG}"
 echo "  iterations  : ${ITERATIONS}"
+echo "  pace (sec)  : ${PACE_SEC}"
 echo "  handler     : ${HANDLER_MODE}"
 echo "  output      : ${OUTPUT}"
 echo "  emacs       : ${EMACS}"
@@ -147,16 +177,25 @@ cd "$REPO_ROOT"
 (let* ((iters ${ITERATIONS})
        (mode-tag \"${MODE_TAG}\")
        (handler-mode (intern \"${HANDLER_MODE}\"))
+       (pace-sec ${PACE_SEC})
        (output \"${OUTPUT}\")
        (start-rss (or (let ((bytes (and (fboundp 'nelisp-integration--soak-rss-bytes)
                                         (nelisp-integration--soak-rss-bytes))))
                        (and bytes (/ bytes 1024)))
                       0))
-       (handler (cond
-                 ((eq handler-mode 'pass) (lambda (_i) (list :status 'pass)))
-                 (t nil)))
-       (r (if handler
-              (nelisp-integration-soak-harness :iterations iters :handler handler)
+       (base-handler (cond
+                      ((eq handler-mode 'pass) (lambda (_i) (list :status 'pass)))
+                      (t nil)))
+       (paced-handler (cond
+                       ((and (> pace-sec 0) base-handler)
+                        (lambda (i) (prog1 (funcall base-handler i)
+                                      (sleep-for pace-sec))))
+                       ((> pace-sec 0)
+                        (lambda (_i) (prog1 (nelisp-integration-cold-init-dispatch)
+                                       (sleep-for pace-sec))))
+                       (t base-handler)))
+       (r (if paced-handler
+              (nelisp-integration-soak-harness :iterations iters :handler paced-handler)
             (nelisp-integration-soak-harness :iterations iters)))
        (end-rss (or (let ((bytes (and (fboundp 'nelisp-integration--soak-rss-bytes)
                                       (nelisp-integration--soak-rss-bytes))))

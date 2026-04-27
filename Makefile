@@ -1,4 +1,4 @@
-.PHONY: test compile clean all bench gc-bench actor-bench soak soak-full soak-worker smoke stage-d-tarball \
+.PHONY: test compile clean all bench gc-bench actor-bench soak soak-1h soak-full soak-worker smoke stage-d-tarball \
         runtime runtime-test runtime-clean test-runtime \
         runtime-staticlib runtime-static runtime-module runtime-module-clean stage-d-v2-bin \
         sqlite-module sqlite-module-clean \
@@ -126,6 +126,9 @@ bench-allocator-heavy:
 #               cold-init/RSS metric collection of Phase 7.5.3.
 soak:
 	@./test/nelisp-soak-test.sh
+
+soak-1h:
+	@./test/nelisp-soak-test.sh --1h-soak
 
 soak-full:
 	@./test/nelisp-soak-test.sh --full-24h
