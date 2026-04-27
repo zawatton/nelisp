@@ -126,11 +126,41 @@ Stage D Phase 6.0 scaffold — Phase 6.1 で mcp serve 実装完成予定。
 EOF
 }
 
+## detect_emacs [internal]
+##   Resolution order (Phase 7.5.3 stage-d-v2.0 + earlier fallbacks):
+##     1. $EMACS env override (highest priority — dev environments)
+##     2. $ANVIL_HOME/emacs/bin/emacs   (bundled emacs from
+##        stage-d-v2.0 tarball — preferred when present so
+##        `bin/anvil` works on hosts without a system Emacs install)
+##     3. Bundled `.exe` variant on Windows (msys2 layout under the
+##        tarball)
+##     4. command -v emacs (system PATH)
+##     5. OS-specific well-known fallbacks (Phase 6.4 retained)
+##
+##   Backward-compatible: when the bundled binary is absent (= dev
+##   checkout, Stage D Phase 6.x tarball without bundled emacs) the
+##   resolution falls through to the system-PATH path that has worked
+##   since Phase 6.0 — no behaviour change for existing users.
 detect_emacs() {
   if [[ -n "${EMACS:-}" ]] && [[ -x "$EMACS" ]]; then
     echo "$EMACS"
     return 0
   fi
+  # Phase 7.5.3 stage-d-v2.0 — bundled-emacs preference.  The tarball
+  # produced by `make stage-d-v2-tarball` ships a stripped Emacs under
+  # `$ANVIL_HOME/emacs/bin/emacs` (POSIX) or
+  # `$ANVIL_HOME/emacs/bin/emacs.exe` (msys2 / native Windows).  Prefer
+  # it over the system Emacs so a user without `apt install emacs` can
+  # still run `bin/anvil`.
+  for cand in \
+      "$ANVIL_HOME/emacs/bin/emacs" \
+      "$ANVIL_HOME/emacs/bin/emacs.exe" \
+  ; do
+    if [[ -x "$cand" ]]; then
+      echo "$cand"
+      return 0
+    fi
+  done
   if command -v emacs >/dev/null 2>&1; then
     command -v emacs
     return 0
@@ -196,7 +226,12 @@ cmd_doctor() {
   echo "  config dir      : $ANVIL_CONFIG_DIR $( [[ -d "$ANVIL_CONFIG_DIR" ]] && echo "(exists)" || echo "(not yet)" )"
   echo "  cache dir       : $ANVIL_CACHE_DIR $( [[ -d "$ANVIL_CACHE_DIR" ]] && echo "(exists)" || echo "(not yet)" )"
   if emacs_bin="$(detect_emacs)"; then
-    echo "  emacs           : $emacs_bin"
+    local emacs_source="system"
+    case "$emacs_bin" in
+      "$ANVIL_HOME/emacs/bin/emacs"|"$ANVIL_HOME/emacs/bin/emacs.exe")
+        emacs_source="bundled (stage-d-v2.0)" ;;
+    esac
+    echo "  emacs           : $emacs_bin [$emacs_source]"
     "$emacs_bin" --version | head -1 | sed 's/^/                    /'
   else
     echo "  emacs           : NOT FOUND"
@@ -265,6 +300,9 @@ cmd_tools_list() {
 cmd_version() {
   # Phase 6.1 — rich version subcommand (vs `--version' bare line).
   # Reports launcher version + tools count + install root + emacs ver.
+  # Phase 7.5.3 — also classifies emacs source as `bundled' (from
+  # stage-d-v2.0 tarball) or `system' so a user knows whether they are
+  # depending on a host install or the bundled fallback.
   local src_dir="$ANVIL_HOME/src"
   local tools_count=0
   if [[ -f "$src_dir/nelisp-tools.el" ]]; then
@@ -275,9 +313,14 @@ cmd_version() {
   echo "  install root     $ANVIL_HOME"
   echo "  tools registered $tools_count"
   if emacs_bin="$(detect_emacs 2>/dev/null)"; then
-    local emacs_ver
+    local emacs_ver emacs_source="system"
     emacs_ver=$("$emacs_bin" --version 2>/dev/null | head -1)
-    echo "  emacs            $emacs_ver"
+    case "$emacs_bin" in
+      "$ANVIL_HOME/emacs/bin/emacs"|"$ANVIL_HOME/emacs/bin/emacs.exe")
+        emacs_source="bundled" ;;
+    esac
+    echo "  emacs            $emacs_ver ($emacs_source)"
+    echo "  emacs path       $emacs_bin"
   else
     echo "  emacs            NOT FOUND (anvil mcp serve will fail)"
   fi

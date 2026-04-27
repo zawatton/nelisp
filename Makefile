@@ -3,7 +3,8 @@
         runtime-staticlib runtime-static runtime-module runtime-module-clean stage-d-v2-bin \
         sqlite-module sqlite-module-clean \
         release-artifact release-checksum soak-blocker soak-post-ship \
-        bench-actual bench-actual-cargo bench-allocator bench-allocator-heavy
+        bench-actual bench-actual-cargo bench-allocator bench-allocator-heavy \
+        stage-d-v2-tarball stage-d-v2-tarball-verify
 
 EMACS ?= emacs
 
@@ -364,3 +365,34 @@ bench-actual: runtime-module
 # round-trip cost in isolation so the §5.2 report can subtract it.
 bench-actual-cargo:
 	cd $(NELISP_RUNTIME_DIR) && $(CARGO) bench --bench nelisp_cc_bench
+
+# Phase 7.5.3 (Doc 32 v2 LOCKED §3.3) — stage-d-v2.0 bundled-Emacs
+# release tarball.  Self-contained artifact: bundles the host Emacs
+# binary + the runtime-required `.elc' subset + nelisp-runtime cdylib +
+# NeLisp src so a user can run `bin/anvil' on a host with NO system
+# Emacs install.  Backward-compatible: when the bundled `emacs/bin/emacs'
+# is absent the launcher falls through to the system PATH (= dev
+# checkout / Stage D Phase 6.x tarball).
+#
+# Depends on `runtime' (cdylib must exist before bundling).  Defaults to
+# stage-d-v2.0 / linux-x86_64; override with VERSION / PLATFORM env.
+#
+#   make stage-d-v2-tarball
+#   make stage-d-v2-tarball VERSION=stage-d-v2.0 PLATFORM=linux-x86_64
+#
+# Output: dist/anvil-<VERSION>-<PLATFORM>.tar.gz + .sha256
+STAGE_D_V2_VERSION  ?= stage-d-v2.0
+STAGE_D_V2_PLATFORM ?= linux-x86_64
+STAGE_D_V2_TARBALL  := dist/anvil-$(STAGE_D_V2_VERSION)-$(STAGE_D_V2_PLATFORM).tar.gz
+
+stage-d-v2-tarball: runtime
+	@./tools/build-bundled-tarball.sh \
+	    $(STAGE_D_V2_VERSION) $(STAGE_D_V2_PLATFORM)
+
+# Phase 7.5.3 — end-to-end smoke verifier.  Extracts the tarball into a
+# fresh /tmp/test-anvil-$$ dir and asserts `bin/anvil version' reports
+# the bundled emacs (= regression catch for bundled-emacs detection
+# logic in `bin/anvil').
+stage-d-v2-tarball-verify:
+	@./tools/verify-bundled-tarball.sh \
+	    $(STAGE_D_V2_VERSION) $(STAGE_D_V2_PLATFORM)
