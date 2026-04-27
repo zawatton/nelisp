@@ -36,6 +36,9 @@ pub fn install_builtins(env: &mut Env) {
         "eq", "equal",
         // cons / list
         "car", "cdr", "cons", "list", "nth", "length", "nthcdr", "nreverse", "reverse", "append",
+        // generic sequence / array accessors
+        "aref", "elt", "arrayp", "sequencep",
+        "vector", "make-vector",
         // higher-order
         "mapcar", "mapc", "memq", "member", "assq", "assoc", "alist-get",
         // predicates
@@ -90,6 +93,14 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nthcdr" => bi_nthcdr(args),
         "nreverse" | "reverse" => bi_reverse(args),
         "append" => bi_append(args),
+        // ---- generic accessors ----
+        "aref" => bi_aref(args),
+        "elt" => bi_elt(args),
+        "arrayp" => bi_predicate(args, |v| matches!(v, Sexp::Str(_) | Sexp::Vector(_))),
+        "sequencep" => bi_predicate(args, |v| matches!(v,
+            Sexp::Nil | Sexp::Cons(_, _) | Sexp::Str(_) | Sexp::Vector(_))),
+        "vector" => Ok(Sexp::Vector(args.to_vec())),
+        "make-vector" => bi_make_vector(args),
         // ---- higher-order ----
         "mapcar" => bi_mapcar(args, env),
         "mapc" => bi_mapc(args, env),
@@ -1211,4 +1222,112 @@ fn bi_featurep(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
 #[allow(dead_code)]
 fn _unused_truthy(v: &Sexp) -> bool {
     is_truthy(v)
+}
+
+// ===== Generic accessors (Phase 8.x core completion) =====================
+//
+// `aref' / `elt' are language-level operations (Elisp manual §6.6
+// "Sequences, Arrays, and Vectors") that anvil-pkg-compat and most
+// real-world Elisp packages assume the runtime ships.  Boundary
+// policy: language rule -> NeLisp core; Emacs/OS API -> Layer 2.
+
+fn bi_aref(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("aref", args, 2, Some(2))?;
+    let index = as_int("aref", &args[1])?;
+    if index < 0 {
+        return Err(EvalError::ArithError(format!(
+            "aref: negative index {}",
+            index
+        )));
+    }
+    match &args[0] {
+        Sexp::Str(s) => {
+            let chars: Vec<char> = s.chars().collect();
+            chars
+                .get(index as usize)
+                .map(|c| Sexp::Int(*c as i64))
+                .ok_or_else(|| {
+                    EvalError::ArithError(format!(
+                        "aref: index {} out of range for string of length {}",
+                        index,
+                        chars.len()
+                    ))
+                })
+        }
+        Sexp::Vector(v) => v
+            .get(index as usize)
+            .cloned()
+            .ok_or_else(|| {
+                EvalError::ArithError(format!(
+                    "aref: index {} out of range for vector of length {}",
+                    index,
+                    v.len()
+                ))
+            }),
+        other => Err(EvalError::WrongType {
+            expected: "arrayp".into(),
+            got: other.clone(),
+        }),
+    }
+}
+
+fn bi_elt(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("elt", args, 2, Some(2))?;
+    let index = as_int("elt", &args[1])?;
+    if index < 0 {
+        return Err(EvalError::ArithError(format!(
+            "elt: negative index {}",
+            index
+        )));
+    }
+    match &args[0] {
+        Sexp::Nil => Err(EvalError::ArithError(format!(
+            "elt: index {} out of range for empty sequence",
+            index
+        ))),
+        Sexp::Cons(_, _) => {
+            let mut cur = &args[0];
+            let mut remaining = index;
+            loop {
+                match cur {
+                    Sexp::Cons(h, t) => {
+                        if remaining == 0 {
+                            return Ok((**h).clone());
+                        }
+                        remaining -= 1;
+                        cur = t;
+                    }
+                    Sexp::Nil => {
+                        return Err(EvalError::ArithError(format!(
+                            "elt: index {} out of range for list",
+                            index
+                        )));
+                    }
+                    other => {
+                        return Err(EvalError::WrongType {
+                            expected: "sequencep".into(),
+                            got: other.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        Sexp::Str(_) | Sexp::Vector(_) => bi_aref(args),
+        other => Err(EvalError::WrongType {
+            expected: "sequencep".into(),
+            got: other.clone(),
+        }),
+    }
+}
+
+fn bi_make_vector(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("make-vector", args, 2, Some(2))?;
+    let len = as_int("make-vector", &args[0])?;
+    if len < 0 {
+        return Err(EvalError::ArithError(format!(
+            "make-vector: negative length {}",
+            len
+        )));
+    }
+    Ok(Sexp::Vector(vec![args[1].clone(); len as usize]))
 }

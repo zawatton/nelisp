@@ -944,3 +944,95 @@ fn bare_colon_symbol_is_not_a_keyword() {
     let e = err(":");
     assert!(matches!(e, EvalError::UnboundVariable(_)));
 }
+
+// ============================================================
+// Generic accessors (aref / elt / arrayp / sequencep)
+// Elisp manual §6.6 "Sequences, Arrays, and Vectors"
+// ============================================================
+
+#[test]
+fn aref_string_returns_codepoint() {
+    // 'h' is U+0068 = 104.
+    assert_eq!(ok("(aref \"hello\" 0)"), Sexp::Int(104));
+    assert_eq!(ok("(aref \"hello\" 4)"), Sexp::Int(111)); // 'o'
+}
+
+#[test]
+fn aref_vector_returns_element() {
+    assert_eq!(ok("(aref [10 20 30] 1)"), Sexp::Int(20));
+}
+
+#[test]
+fn aref_out_of_range_errors() {
+    let e = err("(aref \"abc\" 5)");
+    assert!(matches!(e, EvalError::ArithError(_)));
+}
+
+#[test]
+fn aref_negative_index_errors() {
+    let e = err("(aref \"abc\" -1)");
+    assert!(matches!(e, EvalError::ArithError(_)));
+}
+
+#[test]
+fn aref_wrong_type_on_int_errors() {
+    let e = err("(aref 42 0)");
+    assert!(matches!(e, EvalError::WrongType { .. }));
+}
+
+#[test]
+fn elt_list_traversal() {
+    assert_eq!(ok("(elt '(a b c d) 2)"), Sexp::Symbol("c".into()));
+}
+
+#[test]
+fn elt_string_delegates_to_aref() {
+    assert_eq!(ok("(elt \"abc\" 1)"), Sexp::Int(98)); // 'b'
+}
+
+#[test]
+fn elt_out_of_range_for_list_errors() {
+    let e = err("(elt '(a b) 5)");
+    assert!(matches!(e, EvalError::ArithError(_)));
+}
+
+#[test]
+fn arrayp_predicate() {
+    assert_eq!(ok("(arrayp \"abc\")"), Sexp::T);
+    assert_eq!(ok("(arrayp [1 2 3])"), Sexp::T);
+    assert_eq!(ok("(arrayp '(1 2 3))"), Sexp::Nil);
+    assert_eq!(ok("(arrayp 42)"), Sexp::Nil);
+}
+
+#[test]
+fn sequencep_predicate() {
+    assert_eq!(ok("(sequencep \"abc\")"), Sexp::T);
+    assert_eq!(ok("(sequencep [1 2 3])"), Sexp::T);
+    assert_eq!(ok("(sequencep '(1 2 3))"), Sexp::T);
+    assert_eq!(ok("(sequencep nil)"), Sexp::T);
+    assert_eq!(ok("(sequencep 42)"), Sexp::Nil);
+}
+
+#[test]
+fn vector_constructor() {
+    assert_eq!(
+        ok("(vector 1 2 3)"),
+        Sexp::Vector(vec![Sexp::Int(1), Sexp::Int(2), Sexp::Int(3)])
+    );
+    assert_eq!(ok("(vector)"), Sexp::Vector(vec![]));
+}
+
+#[test]
+fn make_vector_fills() {
+    assert_eq!(
+        ok("(make-vector 3 0)"),
+        Sexp::Vector(vec![Sexp::Int(0), Sexp::Int(0), Sexp::Int(0)])
+    );
+    assert_eq!(ok("(make-vector 0 t)"), Sexp::Vector(vec![]));
+}
+
+#[test]
+fn make_vector_negative_errors() {
+    let e = err("(make-vector -1 0)");
+    assert!(matches!(e, EvalError::ArithError(_)));
+}
