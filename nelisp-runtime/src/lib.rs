@@ -9,7 +9,10 @@
 //! of `NELISP_PROT_*` / `NELISP_MAP_*` / `NELISP_O_*` constants so
 //! NeLisp does not need a per-OS libc clone.
 
+pub mod anvil_data_registry;
 pub mod anvil_host_registry;
+pub mod anvil_shell_filter_registry;
+pub mod anvil_tools_registry;
 pub mod bridge;
 pub mod eval;
 pub mod mcp;
