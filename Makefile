@@ -20,12 +20,18 @@ export TMP    ?= /tmp
 # requires the former at byte-compile time).  Glob pattern matches both
 # `nelisp.el' and `nelisp-FOO.el'.
 SRCS  := $(sort $(wildcard src/nelisp*.el))
+PACKAGE_SRC_DIRS := $(sort $(wildcard packages/*/src))
+PACKAGE_TEST_DIRS := $(sort $(wildcard packages/*/test))
+PACKAGE_SRCS := $(sort $(wildcard packages/*/src/nelisp*.el))
 # Soak test (Phase 5-D.6) is advisory only and deliberately excluded
 # from the gated TESTS glob — it runs long-lived `sleep-for' jobs and
 # is invoked explicitly via `make soak'.
 TESTS := $(sort $(filter-out test/nelisp-worker-soak-test.el, \
-                  $(wildcard test/nelisp*-test.el)))
+                  $(wildcard test/nelisp*-test.el) \
+                  $(wildcard packages/*/test/nelisp*-test.el)))
 TEST_LOADS := $(addprefix -l ,$(TESTS))
+PACKAGE_SRC_LOADS := $(addprefix -L ,$(PACKAGE_SRC_DIRS))
+PACKAGE_TEST_LOADS := $(addprefix -L ,$(PACKAGE_TEST_DIRS))
 
 # `all' deliberately runs only the test target — the self-host
 # probes (`test/nelisp-self-host-test.el') evaluate `nelisp-eval.el'
@@ -39,6 +45,8 @@ all: test
 
 test: clean
 	$(EMACS) --batch -Q -L src -L test -L bench \
+	  $(PACKAGE_SRC_LOADS) \
+	  $(PACKAGE_TEST_LOADS) \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l ert \
 	  $(TEST_LOADS) \
@@ -46,8 +54,9 @@ test: clean
 
 compile:
 	$(EMACS) --batch -Q -L src \
+	  $(PACKAGE_SRC_LOADS) \
 	  --eval '(setq byte-compile-error-on-warn t)' \
-	  -f batch-byte-compile $(SRCS)
+	  -f batch-byte-compile $(SRCS) $(PACKAGE_SRCS)
 
 clean:
 	find . -name '*.elc' -type f -delete
