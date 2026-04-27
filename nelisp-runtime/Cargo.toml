@@ -37,6 +37,14 @@ path = "src/main.rs"
 name = "anvil-mcp-demo"
 path = "src/bin/anvil-mcp-demo.rs"
 
+# Phase 8.0.5 (Doc 44 §3.6) — production launcher target for
+# `bin/anvil mcp serve --no-emacs`.  Keeps the Phase 8.0.4 demo bin for
+# smoke/backward-compat while exposing a stable binary name the bash
+# launcher can dispatch to directly from target/release/.
+[[bin]]
+name = "anvil-runtime"
+path = "src/bin/anvil-runtime.rs"
+
 # Phase 7.1 完遂 gate 3-axis bench (Doc 28 v2 §5.1).  This is the
 # *secondary* baseline measuring the FFI bridge overhead in isolation
 # — the primary 3-axis gate (fib(30) 30x / fact-iter 20x / alloc-heavy
