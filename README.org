@@ -9,6 +9,16 @@ and technical claims are mine. If something reads oddly, please ask
 and I'll clarify.
 #+end_quote
 
+* TL;DR
+
+NeLisp is a from-scratch Emacs Lisp runtime where the language layer
+(JIT, allocator, GC, coding-system, evaluator, bytecode interp) is
+written in Elisp itself, plus a small Rust binary (~15k LoC) with
+syscall wrappers and a minimal evaluator so it boots without Emacs.
+v1.0 ships those four C-runtime equivalents and a 624 KB standalone
+tarball.  Use cases: running Elisp on machines without Emacs, and as
+a substrate for Lisp Machine / new-dialect experiments.
+
 * What is NeLisp?
 
 *NeLisp* is a research project to implement Emacs Lisp on a substrate
@@ -16,6 +26,57 @@ other than the existing Emacs C core — modeled after SBCL (Common
 Lisp implemented in itself, on a small non-Lisp runtime) and
 deliberately *not* a Scheme rewrite (Guile-Emacs) or a Rust rewrite
 of the entire Emacs C core (Remacs).
+
+* What NeLisp is
+
+Two layers.  The language runtime is implemented in Elisp itself.
+Rust is a thin shell that provides syscalls and a separate minimal
+evaluator so the runtime can boot without Emacs.
+
+LoC split: ~54k Elisp vs ~15k Rust.  Lisp natively compiles its own
+runtime; Rust only handles the headless entry point.
+
+** Elisp — the language runtime (45 files, 54,511 LoC)
+
+| Subsystem | Files | LoC | Phase |
+|-----------+-------+-----+-------|
+| *JIT compiler* (SSA + linear-scan, x86_64 + arm64; written in Elisp itself) | 13 | 12,196 | 7.1 |
+| Memory management (allocator + GC) | 5 | 6,290 | 7.2--7.3 |
+| Lisp evaluator (reader, eval, special forms, closures, macros) | 7 | 4,035 | -- |
+| Module loading and bootstrap | 3 | 2,147 | 7.5 |
+| Coding-system (logic) | 1 | 1,928 | 7.4 |
+| Bytecode interpreter | 1 | 1,845 | -- |
+| Emacs compatibility shims | 3 | 1,680 | -- |
+| *Multi-threading / parallel worker pool* (process-level concurrency, file-notify) | 5 | 1,405 | -- |
+| Buffer model | 2 | 1,076 | -- |
+| Other infrastructure (dev-audit, heap-types, EC bridge, entry point) | 4 | 1,094 | -- |
+| Character tables (JIS, data) | 1 | 20,815 | -- |
+
+** Rust — the no-Emacs path (36 files, 15,273 LoC)
+
+| Subsystem | Files | LoC | Phase |
+|-----------+-------+-----+-------|
+| Standalone Elisp evaluator (25 special forms + 75 builtins) | 15 | 6,877 | 8.0.1--8.0.2 |
+| Anvil tool surface (registries + binaries + entry points) | 10 | 4,506 | -- |
+| Syscall thin wrappers | 6 | 2,293 | 7.0 |
+| MCP server | 4 | 974 | 8.0.4 |
+| SQLite FFI | 1 | 623 | -- |
+
+v1.0 ships the four cores Emacs's C core normally gives you — native
+compile, allocator, GC, coding-system — all written in Elisp itself.
+
+** Two things Emacs proper doesn't ship in the same form
+
+- *A JIT compiler written in Elisp itself.*  Emacs 28+ has
+  native-comp, but it depends on libgccjit (an external C library)
+  and is used as AOT in practice.  NeLisp's JIT is ~12k LoC of Elisp
+  source you can read end-to-end and modify, with runtime codegen via
+  =mmap= + =PROT_EXEC=.
+- *Real parallel execution.*  Emacs's =make-thread= is cooperative —
+  one Lisp thread runs at a time.  NeLisp's worker pool gives
+  process-level concurrency under the same Lisp runtime, which is
+  what made the orchestrator and the long-running MCP handler design
+  tractable.
 
 * Status — v1.0 (2026-04-27)
 
@@ -95,7 +156,7 @@ Plain cmd.exe / PowerShell without MSYS2 or WSL is post-v2.0 scope.
 git clone https://github.com/zawatton/nelisp ~/nelisp
 cd ~/nelisp/nelisp-runtime
 cargo build --release        # ~30 s on a warm cache
-cargo test --lib              # 281 unit tests, all PASS
+cargo test --lib              # 291 unit tests, all PASS
 #+end_src
 
 Build outputs land under =target/release/=:
@@ -218,7 +279,7 @@ self-contained.
   │   nelisp-runtime/src/bridge/                     │
   ├──────────────────────────────────────────────────┤
   │ Layer 3: Elisp evaluator (Rust)                  │  Phase 8.0.2
-  │   24 special forms + ~60 builtins                │
+  │   25 special forms + 75 builtins                 │
   ├──────────────────────────────────────────────────┤
   │ Layer 2: Elisp reader (Rust)                     │  Phase 8.0.1
   │   sexp / lexer / parser                          │
@@ -252,18 +313,28 @@ v1.1+ promotes arm64 to *blocker*; the audit grep guard in
 
 Said plainly so expectations are calibrated:
 
-- Phase 8.0 evaluator is a *minimal subset*: GC bridge, bignum, full
-  backquote semantics, full =save-excursion= are deferred to Phase 8.x
-  follow-up patches.
+- *No buffer / marker / window primitives.* NeLisp is the language
+  runtime, not the editor.  =emacs-nox= is the closest existing
+  comparison if scripting is all you need; what's different here is
+  the 624 KB standalone tarball and a runtime small enough to read
+  end-to-end.
+- Phase 8.0 evaluator is a *minimal subset* (25 special forms + 75
+  builtins): GC bridge, bignum, full backquote semantics, full
+  =save-excursion= are deferred to Phase 8.x follow-up patches.
 - Default =--no-emacs= still falls back to =emacs --batch= for cold-init
   failures (3-year safety window).
 - macOS arm64 / Linux arm64 = best-effort only (= time-boxed for v1.0).
 - Windows native =--no-emacs= is post-v2.0 scope.
 
-** Test status (HEAD)
+** Test status (HEAD, 2026-04-29)
 
-=cargo test --lib= = 236 pass / 0 failed.  ERT suite for the bootstrap
-+ runtime layer is wired through =make test=.
+- Rust runtime side: =cargo test --lib= = *291 pass / 0 failed*
+  (Linux x86_64 measured 2026-04-29).
+- Elisp side (ERT): =make test= = *2452 tests / 2409 passed /
+  0 unexpected / 43 skipped*.  The 43 skipped are platform-gated
+  SQLite cases on the Linux x86_64 run.
+- 3-platform 1-hour soak (Linux x86_64 / macOS M1 / Windows MSYS2)
+  passed end-to-end, 3600 iter @ 1 Hz.
 
 ** Key design documents
 
