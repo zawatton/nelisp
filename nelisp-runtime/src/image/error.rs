@@ -37,17 +37,29 @@ pub enum ImageError {
     /// `format::HeaderError` so the loader can return a single error
     /// type while preserving the original cause.
     Header { path: PathBuf, source: HeaderError },
+
+    /// Image's `code_size` is zero.  Stage 3 boot path requires a
+    /// non-empty native code arena — header-only images mint cleanly
+    /// (Stage 2 path) but cannot be booted.
+    NoCodeSegment { path: PathBuf },
+
+    /// Build target lacks a hand-written native asset.  Surfaced by
+    /// `mint-skeleton-image` on architectures that are neither
+    /// x86_64 nor aarch64.
+    UnsupportedTarget { reason: &'static str },
 }
 
 impl ImageError {
     /// Path the failure refers to — every variant carries one.  Lets
     /// CLI surface print `nelisp-runtime: <op> <path>: <reason>`
     /// without a separate match.
-    pub fn path(&self) -> &PathBuf {
+    pub fn path(&self) -> Option<&PathBuf> {
         match self {
-            ImageError::Io { path, .. } => path,
-            ImageError::Truncated { path, .. } => path,
-            ImageError::Header { path, .. } => path,
+            ImageError::Io { path, .. } => Some(path),
+            ImageError::Truncated { path, .. } => Some(path),
+            ImageError::Header { path, .. } => Some(path),
+            ImageError::NoCodeSegment { path } => Some(path),
+            ImageError::UnsupportedTarget { .. } => None,
         }
     }
 }
@@ -72,6 +84,14 @@ impl fmt::Display for ImageError {
             ImageError::Header { path, source } => {
                 write!(f, "header invalid in {}: {:?}", path.display(), source)
             }
+            ImageError::NoCodeSegment { path } => write!(
+                f,
+                "image at {} has no code segment (Stage 3 boot requires a non-empty native arena)",
+                path.display()
+            ),
+            ImageError::UnsupportedTarget { reason } => {
+                write!(f, "unsupported target: {}", reason)
+            }
         }
     }
 }
@@ -82,6 +102,8 @@ impl std::error::Error for ImageError {
             ImageError::Io { source, .. } => Some(source),
             ImageError::Truncated { .. } => None,
             ImageError::Header { .. } => None,
+            ImageError::NoCodeSegment { .. } => None,
+            ImageError::UnsupportedTarget { .. } => None,
         }
     }
 }

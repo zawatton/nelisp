@@ -215,6 +215,58 @@ fn mint_empty_image(path: &str) -> i32 {
     }
 }
 
+/// Doc 47 Stage 3: write a NlImage v1 file whose code segment is the
+/// canned `NATIVE_RETURN_42' asset for the host architecture.  Used by
+/// the walking-skeleton boot smoke (mint → boot → exit 42).
+fn mint_skeleton_image(path: &str) -> i32 {
+    if !nelisp_runtime::image::HAS_NATIVE_RETURN_42 {
+        eprintln!(
+            "nelisp-runtime: mint-skeleton-image: \
+             no canned native asset for this target arch"
+        );
+        return 9;
+    }
+    match nelisp_runtime::image::write_image_with_native_entry(
+        path,
+        nelisp_runtime::image::NATIVE_RETURN_42,
+    ) {
+        Ok(()) => {
+            println!(
+                "minted skeleton NlImage v{} at {} (code_size={} entry_offset=0)",
+                nelisp_runtime::image::NL_IMAGE_ABI_VERSION,
+                path,
+                nelisp_runtime::image::NATIVE_RETURN_42.len()
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("nelisp-runtime: mint-skeleton-image: {}", e);
+            9
+        }
+    }
+}
+
+/// Doc 47 Stage 3: read the image at `path', map its code segment
+/// into an executable JIT page, jump to the entry, return whatever
+/// `i32' the entry produced as this process's exit code.
+fn boot_from_image(path: &str) -> i32 {
+    // SAFETY: we trust the image at `path' (typically minted by the
+    // companion `mint-skeleton-image' subcommand).  Stage 4 will add
+    // signal-handler protection so a malformed image faults cleanly.
+    match unsafe { nelisp_runtime::image::boot_from_image(path) } {
+        Ok(rc) => {
+            // Mirror the existing `exec-bytes' subcommand's stdout
+            // shape so smoke tests can grep for the same prefix.
+            println!("RESULT: {}", rc);
+            rc
+        }
+        Err(e) => {
+            eprintln!("nelisp-runtime: boot-from-image: {}", e);
+            10
+        }
+    }
+}
+
 /// Doc 47 Stage 2: read the header from a NlImage on disk and run
 /// `verify_magic_and_version`.  Used as the smoke check that the
 /// dumper's bytes are accepted by the loader before Stage 3 wires
@@ -264,12 +316,28 @@ fn main() {
                 1
             }
         },
+        Some("mint-skeleton-image") => match args.get(2).map(|s| s.as_str()) {
+            Some(path) => mint_skeleton_image(path),
+            None => {
+                eprintln!("usage: nelisp-runtime mint-skeleton-image <out-path>");
+                1
+            }
+        },
+        Some("boot-from-image") => match args.get(2).map(|s| s.as_str()) {
+            Some(path) => boot_from_image(path),
+            None => {
+                eprintln!("usage: nelisp-runtime boot-from-image <image-path>");
+                1
+            }
+        },
         _ => {
             eprintln!("usage: nelisp-runtime --syscall-smoke");
             eprintln!("       nelisp-runtime --version");
             eprintln!("       nelisp-runtime exec-bytes <bytes-file>");
             eprintln!("       nelisp-runtime mint-empty-image <out-path>");
+            eprintln!("       nelisp-runtime mint-skeleton-image <out-path>");
             eprintln!("       nelisp-runtime verify-image <image-path>");
+            eprintln!("       nelisp-runtime boot-from-image <image-path>");
             2
         }
     };

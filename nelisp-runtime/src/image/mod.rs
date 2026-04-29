@@ -13,11 +13,15 @@
 //! Re-exports below are the public surface that Stage 2 will extend
 //! without breaking the Stage 1 import paths.
 
+pub mod boot;
 pub mod dumper;
 pub mod error;
 pub mod format;
 pub mod loader;
+pub mod native_assets;
 
+pub use boot::boot_from_image;
+pub use dumper::{write_empty_image, write_image_with_native_entry};
 pub use error::ImageError;
 pub use format::{
     HeaderError, NlImageHeader, NL_IMAGE_ABI_VERSION, NL_IMAGE_ABI_VERSION_MAX,
@@ -25,4 +29,4 @@ pub use format::{
     NL_IMAGE_HEADER_SIZE, NL_IMAGE_MAGIC, NL_IMAGE_PAGE_SIZE,
 };
 pub use loader::read_header;
-pub use dumper::write_empty_image;
+pub use native_assets::{NlImageEntry, HAS_NATIVE_RETURN_42, NATIVE_RETURN_42};
