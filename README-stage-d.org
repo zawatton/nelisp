@@ -233,12 +233,14 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc  # or ~/.zshrc
 * Architecture (one-paragraph)
 
 =bin/anvil= is a bash launcher that =exec=s Emacs in =--batch= mode
-loading =src/nelisp-server.el= + =src/nelisp-tools.el= and entering
-the JSON-RPC stdio loop on stdout.  No Emacs UI is shown.  The MCP
-tools are pure Emacs Lisp implementations (no =anvil.el=
-dependency); SQLite primitives use Emacs 29's built-in sqlite-* API.
-See =docs/design/18-stage-d-standalone.org= for the full Stage D
-design.
+loading =anvil.el='s headless profile (=anvil-server-stage-d-headless-run=)
+and entering the JSON-RPC stdio loop on stdout.  No Emacs UI is shown.
+SQLite primitives use Emacs 29's built-in sqlite-* API.  Architecture α
+(Doc 46 LOCKED 2026-04-29) keeps NeLisp side anvil-free — anvil.el is
+the sole MCP surface; this repo only ships the launcher + bundled
+runtime substrate.  See =docs/design/18-stage-d-standalone.org= for
+the full Stage D design and =docs/design/46-architecture-alpha-final.org=
+for the boundary.
 
 * License
 

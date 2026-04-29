@@ -86,8 +86,9 @@ make stage-d-v2-tarball-verify
 
 The build script (=tools/build-bundled-tarball.sh=) is host-Emacs
 agnostic — it spawns the *current* =emacs= once to harvest the
-runtime-required =.elc= subset (= what =nelisp-server= +
-=nelisp-tools= actually loads), then assembles a tarball that ships
+runtime-required =.elc= subset (= the standard libs anvil.el's
+headless profile transitively loads — `cl-lib' / `json' / `ert'
+baseline), then assembles a tarball that ships
 only that subset.  Typical sizes (Debian Emacs 30.1):
 
 | Component        | Size  |
