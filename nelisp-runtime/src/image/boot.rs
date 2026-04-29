@@ -41,6 +41,11 @@ pub unsafe fn boot_from_image<P: AsRef<Path>>(path: P) -> Result<i32, ImageError
     let path = path.as_ref();
     let header = read_header(path)?;
 
+    // Stage 4c — install signal handlers so a malformed image
+    // faults cleanly with a known exit code instead of leaving the
+    // OS to ship a default crash dump.
+    crate::image::signal::install_signal_handlers()?;
+
     if header.code_size == 0 {
         return Err(ImageError::NoCodeSegment {
             path: path.to_path_buf(),

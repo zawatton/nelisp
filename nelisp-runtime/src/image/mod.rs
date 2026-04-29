@@ -19,6 +19,7 @@ pub mod error;
 pub mod format;
 pub mod loader;
 pub mod native_assets;
+pub mod signal;
 
 pub use boot::boot_from_image;
 pub use dumper::{
@@ -32,6 +33,8 @@ pub use format::{
 };
 pub use loader::read_header;
 pub use native_assets::{
-    NlImageEntry, HAS_NATIVE_LOAD_HEAP_BYTE0, HAS_NATIVE_RETURN_42, NATIVE_LOAD_HEAP_BYTE0,
+    NlImageEntry, HAS_NATIVE_DELIBERATE_NULL_DEREF, HAS_NATIVE_LOAD_HEAP_BYTE0,
+    HAS_NATIVE_RETURN_42, NATIVE_DELIBERATE_NULL_DEREF, NATIVE_LOAD_HEAP_BYTE0,
     NATIVE_RETURN_42,
 };
+pub use signal::{install_signal_handlers, NL_IMAGE_FAULT_EXIT_CODE};

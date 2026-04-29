@@ -86,3 +86,27 @@ pub const NATIVE_LOAD_HEAP_BYTE0: &[u8] = &[];
 /// mint on unsupported hosts before writing the file.
 pub const HAS_NATIVE_LOAD_HEAP_BYTE0: bool =
     cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
+
+/// Stage 4c — deliberately dereference null to trigger SIGSEGV.
+/// Used by `mint-fault-skeleton-image` to smoke-test the
+/// signal-handler skeleton: with handlers installed the seed
+/// exits cleanly with `NL_IMAGE_FAULT_EXIT_CODE` (= 130).
+#[cfg(target_arch = "x86_64")]
+pub const NATIVE_DELIBERATE_NULL_DEREF: &[u8] = &[
+    0x48, 0x31, 0xc0, // xor rax, rax
+    0x0f, 0xb6, 0x00, // movzx eax, byte [rax]
+    0xc3,             // ret (unreachable)
+];
+
+#[cfg(target_arch = "aarch64")]
+pub const NATIVE_DELIBERATE_NULL_DEREF: &[u8] = &[
+    0x00, 0x00, 0x80, 0xd2, // movz x0, #0
+    0x00, 0x00, 0x40, 0x39, // ldrb w0, [x0]
+    0xc0, 0x03, 0x5f, 0xd6, // ret (unreachable)
+];
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+pub const NATIVE_DELIBERATE_NULL_DEREF: &[u8] = &[];
+
+pub const HAS_NATIVE_DELIBERATE_NULL_DEREF: bool =
+    cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
