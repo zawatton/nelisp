@@ -39,7 +39,7 @@ packages/nelisp-state/
 
 * Dependents
 
-- Runtime dependents in =src/=: =nelisp-http=, =nelisp-tools=
+- Runtime dependents in =src/=: =nelisp-http=; downstream consumer = anvil.el's =anvil-state= via fboundp delegation (architecture α; Wave 1 deleted =nelisp-tools=)
 - Test dependents in =test/=: =nelisp-state-test.el=
 - Existing callers continue using =(require 'nelisp-state)=; the root
   build load-path resolves the extracted package location.

@@ -39,7 +39,7 @@ packages/nelisp-network/
 
 * Dependents
 
-- Source dependents: =src/nelisp-tools.el=
+- Source dependents: anvil.el modules via fboundp delegation (architecture α; NeLisp side has no consumers — Wave 1 deleted =nelisp-tools=)
 - Test dependents: package-local =test/nelisp-network-test.el=
 
 * Status

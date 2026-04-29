@@ -38,7 +38,7 @@ packages/nelisp-defs-index/
 
 * Dependents
 
-- Runtime dependents in =src/=: =nelisp-tools=
+- Runtime dependents in =src/=: anvil.el's =anvil-defs= module via fboundp delegation (architecture α; NeLisp side has no consumers — Wave 1 deleted =nelisp-tools=)
 - Test dependents in =test/=: =nelisp-defs-index-test.el=,
   =nelisp-indices-fix-test.el=
 - Existing callers continue using =(require 'nelisp-defs-index)=; the
