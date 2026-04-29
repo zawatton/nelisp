@@ -619,8 +619,8 @@ Returns plist (:headlines N)."
 ;;;###autoload
 (defun nelisp-org-index-enable ()
   "Open the backing SQLite DB.  Idempotent.
-Phase 6.6.1 registers no MCP tools here — `nelisp-tools.el' calls
-the API directly via deftool handlers."
+Phase 6.6.1 registers no MCP tools here — anvil.el's `anvil-org-index'
+module calls the API directly via fboundp delegation (architecture α)."
   (interactive)
   (nelisp-org-index--open)
   nil)

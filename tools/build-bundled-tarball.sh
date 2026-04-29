@@ -20,9 +20,10 @@
 # when the bundled `emacs/bin/emacs` is absent).
 #
 # Doc 32 v2 §6.2 size-budget reality: a stripped Emacs 30 binary is
-# ~11 MB on Debian; the *runtime-required* `.elc' subset (loaded by
-# `nelisp-server' + `nelisp-tools') totals ~8 MB; `etc/charsets' ~3 MB.
-# Total ~22-25 MB compressed, well under the §3.3 informal 50 MB cap.
+# ~11 MB on Debian; the *runtime-required* `.elc' subset (= cl-lib +
+# json + a few core libs that anvil.el's headless profile ends up
+# loading) totals ~8 MB; `etc/charsets' ~3 MB.  Total ~22-25 MB
+# compressed, well under the §3.3 informal 50 MB cap.
 #
 # Usage:
 #   tools/build-bundled-tarball.sh [VERSION] [PLATFORM]
@@ -114,15 +115,17 @@ RUNTIME_STATICLIB="$RUNTIME_DIR/libnelisp_runtime.a"
 log "cdylib   : $RUNTIME_CDYLIB"
 [[ -f "$RUNTIME_STATICLIB" ]] && log "staticlib: $RUNTIME_STATICLIB"
 
-# 3. Probe the .elc subset that NeLisp actually loads at runtime.  We
-#    spawn emacs once with the full nelisp-server + nelisp-tools load
-#    chain and harvest `load-history' so the bundle ships only the
-#    files truly needed (~8 MB) rather than the full ~92 MB lisp tree.
+# 3. Probe the .elc subset that anvil.el's headless profile actually
+#    loads at runtime.  We spawn emacs once with the standard lib deps
+#    that anvil-server / anvil-server-commands transitively require
+#    (cl-lib + json + ert is the historical baseline) and harvest
+#    `load-history' so the bundle ships only the files truly needed
+#    (~8 MB) rather than the full ~92 MB lisp tree.
 log "probing runtime-required .elc subset (emacs --batch)"
 LISP_LIST=$(mktemp)
 trap 'rm -f "$LISP_LIST"' EXIT
 "$HOST_EMACS" --batch -Q -L src \
-  -l ert -l nelisp-server -l nelisp-tools \
+  --eval "(progn (require 'cl-lib) (require 'json) (require 'ert))" \
   --eval "(let ((seen nil))
             (dolist (f load-history)
               (when (and (car f) (stringp (car f))
@@ -177,11 +180,11 @@ while IFS= read -r src_path; do
   cp "$src_path" "$dst"
 done < "$LISP_LIST"
 
-# Preloaded files (loaded before nelisp-server gets a chance to run)
-# also live under /usr/share/emacs/<ver>/lisp/.  Walk the load-history
-# again with NO -L to harvest the bare emacs --batch preload chain so
-# the bundled emacs can boot at all.  We dedupe with the runtime list
-# above implicitly via cp -n.
+# Preloaded files (loaded by emacs --batch itself before any user
+# library) also live under /usr/share/emacs/<ver>/lisp/.  Walk the
+# load-history again with NO -L to harvest the bare emacs --batch
+# preload chain so the bundled emacs can boot at all.  We dedupe
+# with the runtime list above implicitly via cp -n.
 PRELOAD_LIST=$(mktemp)
 "$HOST_EMACS" --batch -Q --eval \
   "(dolist (f load-history)
