@@ -194,6 +194,47 @@ fn exec_bytes(path: &str) -> i32 {
     0
 }
 
+/// Doc 47 Stage 2: write a minimal valid NlImage v1 file (header
+/// only, every segment empty) so a follow-up `verify-image` /
+/// `boot-from-image` invocation can round-trip the wire format.
+fn mint_empty_image(path: &str) -> i32 {
+    match nelisp_runtime::image::write_empty_image(path) {
+        Ok(()) => {
+            println!(
+                "minted empty NlImage v{} at {} ({} bytes)",
+                nelisp_runtime::image::NL_IMAGE_ABI_VERSION,
+                path,
+                nelisp_runtime::image::NL_IMAGE_HEADER_SIZE
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("nelisp-runtime: mint-empty-image: {}", e);
+            7
+        }
+    }
+}
+
+/// Doc 47 Stage 2: read the header from a NlImage on disk and run
+/// `verify_magic_and_version`.  Used as the smoke check that the
+/// dumper's bytes are accepted by the loader before Stage 3 wires
+/// `--boot-from-image`.
+fn verify_image(path: &str) -> i32 {
+    match nelisp_runtime::image::read_header(path) {
+        Ok(hdr) => {
+            println!(
+                "verify-image OK: {} (abi={} compression={} payload_len={})",
+                path, hdr.abi_version, hdr.compression, hdr.payload_len
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("nelisp-runtime: verify-image: {}", e);
+            8
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let code = match args.get(1).map(|s| s.as_str()) {
@@ -209,10 +250,26 @@ fn main() {
                 1
             }
         },
+        Some("mint-empty-image") => match args.get(2).map(|s| s.as_str()) {
+            Some(path) => mint_empty_image(path),
+            None => {
+                eprintln!("usage: nelisp-runtime mint-empty-image <out-path>");
+                1
+            }
+        },
+        Some("verify-image") => match args.get(2).map(|s| s.as_str()) {
+            Some(path) => verify_image(path),
+            None => {
+                eprintln!("usage: nelisp-runtime verify-image <image-path>");
+                1
+            }
+        },
         _ => {
             eprintln!("usage: nelisp-runtime --syscall-smoke");
             eprintln!("       nelisp-runtime --version");
             eprintln!("       nelisp-runtime exec-bytes <bytes-file>");
+            eprintln!("       nelisp-runtime mint-empty-image <out-path>");
+            eprintln!("       nelisp-runtime verify-image <image-path>");
             2
         }
     };

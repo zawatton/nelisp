@@ -13,10 +13,16 @@
 //! Re-exports below are the public surface that Stage 2 will extend
 //! without breaking the Stage 1 import paths.
 
+pub mod dumper;
+pub mod error;
 pub mod format;
+pub mod loader;
 
+pub use error::ImageError;
 pub use format::{
     HeaderError, NlImageHeader, NL_IMAGE_ABI_VERSION, NL_IMAGE_ABI_VERSION_MAX,
     NL_IMAGE_COMPRESSION_LZ4, NL_IMAGE_COMPRESSION_NONE, NL_IMAGE_COMPRESSION_ZSTD,
     NL_IMAGE_HEADER_SIZE, NL_IMAGE_MAGIC, NL_IMAGE_PAGE_SIZE,
 };
+pub use loader::read_header;
+pub use dumper::write_empty_image;

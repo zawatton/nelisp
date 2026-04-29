@@ -180,6 +180,25 @@ impl NlImageHeader {
         Some(hdr)
     }
 
+    /// Serialise the header to its 104-byte on-disk form.  Pairs with
+    /// `from_bytes` for round-trip; the byte layout is exactly the
+    /// `#[repr(C)]` memory layout because the v1 ABI is little-endian
+    /// only.  Build-tool dumpers and runtime tests use this to render
+    /// a header without going through `unsafe` directly.
+    pub fn to_bytes(&self) -> [u8; NL_IMAGE_HEADER_SIZE] {
+        // SAFETY: NlImageHeader is `#[repr(C)]` POD; the const guard
+        // below the struct definition asserts the size matches.
+        unsafe {
+            let mut out = [0u8; NL_IMAGE_HEADER_SIZE];
+            core::ptr::copy_nonoverlapping(
+                self as *const NlImageHeader as *const u8,
+                out.as_mut_ptr(),
+                NL_IMAGE_HEADER_SIZE,
+            );
+            out
+        }
+    }
+
     /// Reject malformed or version-incompatible images.  Stage 1
     /// checks magic + ABI version + compression.  Stage 2 will extend
     /// with page-alignment and bounds checks against `payload_len`.
