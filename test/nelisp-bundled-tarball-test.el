@@ -86,12 +86,6 @@ host emacs binary symlinked into place so the dummy passes the `[[ -x
           (make-symbolic-link script (expand-file-name "anvil" bin-dst) t)
           (make-symbolic-link host-emacs
                               (expand-file-name "emacs" emacs-bin-dst) t)
-          ;; Copy at least one nelisp package file so cmd_tools_list does
-          ;; not error out before printing the version line.
-          (copy-file (nelisp-bundled-tarball-test--path
-                      "packages/nelisp-tools/src/nelisp-tools.el")
-                     (expand-file-name "nelisp-tools.el" src-dst)
-                     t)
           ;; Run `bin/anvil version' with $ANVIL_HOME pointing at the
           ;; synthesized bundle and confirm the bundled-emacs flag.
           ;; `bin/anvil' echoes the resolved bundled emacs as
@@ -136,10 +130,6 @@ checkouts (= no `emacs/bin/emacs' under $ANVIL_HOME) keep working."
           (make-directory src-dst t)
           (make-directory bin-dst t)
           (make-symbolic-link script (expand-file-name "anvil" bin-dst) t)
-          (copy-file (nelisp-bundled-tarball-test--path
-                      "packages/nelisp-tools/src/nelisp-tools.el")
-                     (expand-file-name "nelisp-tools.el" src-dst)
-                     t)
           (let* ((process-environment
                   (append (list (concat "ANVIL_HOME=" anvil-home)
                                 "EMACS=")
@@ -251,7 +241,7 @@ takes ~30 s to build on a warm host)."
          ((string-match-p "/emacs/bin/emacs$" e)        (setq found-emacs t))
          ((string-match-p "/nelisp-runtime/target/release/libnelisp_runtime\\." e)
           (setq found-runtime t))
-         ((string-match-p "/src/nelisp-server\\.el$" e) (setq found-src t))))
+         ((string-match-p "/src/nelisp\\(-[a-z][a-z0-9-]*\\)?\\.el$" e) (setq found-src t))))
       (should found-bin)
       (should found-emacs)
       (should found-runtime)

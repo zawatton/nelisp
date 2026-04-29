@@ -1,4 +1,4 @@
-.PHONY: test compile clean all bench gc-bench actor-bench soak soak-1h soak-full soak-worker smoke stage-d-tarball \
+.PHONY: test compile clean all bench gc-bench actor-bench soak soak-1h soak-full soak-worker stage-d-tarball \
         runtime runtime-test runtime-clean test-runtime \
         runtime-staticlib runtime-static runtime-module runtime-module-clean stage-d-v2-bin \
         sqlite-module sqlite-module-clean \
@@ -153,14 +153,6 @@ soak-worker:
 	  -l test/nelisp-worker-soak-test.el \
 	  -f ert-run-tests-batch-and-exit
 
-# Phase 5-E.4 MCP stdio smoke.  Runs the `nelisp-anvil' MCP server
-# in a subprocess and pipes a scripted dialog through it, asserting
-# on the JSON-RPC reply shape.  Proves the end-to-end stdio path
-# (emacs --batch + -l nelisp-server + -l nelisp-tools + -f
-# nelisp-server-run-stdio) is wired correctly for Claude Code.
-smoke:
-	./test/nelisp-server-smoke.sh
-
 # Phase 7.0 (Doc 27 §3 7.0) Rust syscall stub.  `nelisp-runtime/` is a
 # self-contained Cargo crate (cdylib + bin) that ships ~10 OS syscall
 # thin wrappers under the `nelisp_syscall_*` C ABI prefix.  Phase 7.5
@@ -314,8 +306,9 @@ STAGE_D_TAR   := dist/$(STAGE_D_NAME).tar.gz
 # Phase 6.1 architecture α: bundle anvil.el for the architecture α
 # delegate chain (anvil-XXX → nelisp-XXX via fboundp guard + fallback).
 # ANVIL_EL_SOURCE points at an anvil.el checkout.  Missing / empty =>
-# tarball ships without anvil-lib/ and bin/anvil falls back to
-# nelisp-server (Phase 6.0 baseline).
+# tarball ships without anvil-lib/ and bin/anvil exits early at install
+# time with a clear "anvil.el required" error (legacy nelisp-server
+# fallback was removed once architecture α stabilised).
 ANVIL_EL_SOURCE ?= $(HOME)/Notes/dev/anvil.el
 
 stage-d-tarball:

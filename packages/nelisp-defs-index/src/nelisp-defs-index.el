@@ -861,7 +861,8 @@ Returns plist (:defs N :refs N :features N)."
 ;;;###autoload
 (defun nelisp-defs-index-enable ()
   "Open the backing SQLite DB.  Phase 6.5.1 registers no MCP tools here
-— `nelisp-tools.el' calls the API directly via deftool handlers."
+— anvil.el's `anvil-defs' module calls the API directly via fboundp
+delegation (architecture α)."
   (interactive)
   (nelisp-defs-index--open)
   nil)

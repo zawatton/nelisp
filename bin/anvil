@@ -252,12 +252,7 @@ cmd_doctor() {
     return 1
   fi
   local nelisp_src="$ANVIL_HOME/src"
-  if nelisp_find_module_file "nelisp-server" >/dev/null; then
-    echo "  nelisp src      : $nelisp_src + packages/*/src (OK)"
-  else
-    echo "  nelisp src      : $nelisp_src + packages/*/src (MISSING — reinstall required)"
-    return 1
-  fi
+  echo "  nelisp src      : $nelisp_src + packages/*/src"
   local anvil_dir
   if bundled_runtime_present && [[ -f "$ANVIL_HOME/anvil-lib/anvil-host.el" ]]; then
     echo "  anvil.el        : $ANVIL_HOME/anvil-lib (bundled runtime subset)"
@@ -266,13 +261,9 @@ cmd_doctor() {
     echo "  anvil.el        : $anvil_dir (architecture α active)"
     echo "  serve mode      : anvil headless profile (server-id emacs-eval-headless)"
   else
-    if bundled_runtime_present; then
-      echo "  anvil.el        : NOT FOUND (standalone bundle incomplete)"
-      return 1
-    else
-      echo "  anvil.el        : NOT FOUND (set ANVIL_LISP_DIR to enable architecture α)"
-      echo "  serve mode      : nelisp-server (fallback, Phase 6.0 baseline)"
-    fi
+    echo "  anvil.el        : NOT FOUND (set ANVIL_LISP_DIR or install anvil.el)"
+    echo "  serve mode      : unavailable — anvil.el required"
+    return 1
   fi
   if ! bundled_runtime_present; then
     # Phase 7.5.1 (Doc 32 v2 LOCKED §3.1) — surface the cdylib +
@@ -322,16 +313,16 @@ cmd_doctor() {
 }
 
 cmd_tools_list() {
-  # Phase 6.1 — offline tools list.  Greps deftool macro use without
-  # spawning an Emacs subprocess, so CI / smoke / docs can confirm the
-  # registered surface in <100ms.
-  local tools_file
-  if ! tools_file="$(nelisp_find_module_file "nelisp-tools")"; then
-    echo "error: $tools_file not found" >&2
+  # Architecture α offline tools list.  Greps `:id "..."' from
+  # `anvil-server-register-tool' calls in anvil.el so CI / smoke /
+  # docs can confirm the registered surface without spawning Emacs.
+  local anvil_dir
+  if ! anvil_dir="$(anvil_lisp_dir)"; then
+    echo "error: anvil.el not found (set ANVIL_LISP_DIR)" >&2
     return 1
   fi
-  grep -oE '^\s*\(nelisp-deftool [a-z][a-z0-9-]+' "$tools_file" \
-    | awk '{print $2}' | sort -u
+  grep -hE '^\s*:id\s+"[a-z][a-z0-9-]+"' "$anvil_dir"/anvil*.el 2>/dev/null \
+    | sed -E 's/^\s*:id\s+"([^"]+)".*/\1/' | sort -u
 }
 
 cmd_version() {
@@ -341,7 +332,7 @@ cmd_version() {
   # stage-d-v2.0 tarball) or `system' so a user knows whether they are
   # depending on a host install or the bundled fallback.
   local tools_count=0
-  if nelisp_find_module_file "nelisp-tools" >/dev/null; then
+  if anvil_lisp_dir >/dev/null 2>&1; then
     tools_count=$(cmd_tools_list 2>/dev/null | wc -l | tr -d ' ')
   fi
   echo "anvil $ANVIL_VERSION"
@@ -478,44 +469,28 @@ cmd_mcp_serve() {
     emacs_load_args+=(-L "$package_dir")
   done
 
-  # Stage D Phase 6.1 architecture α: prefer anvil.el headless profile
-  # when available (anvil-server delegates to nelisp-* internals via
-  # fboundp guard + fallback).  Falls back to nelisp-server only when
-  # anvil.el is not bundled / locatable.
+  # Stage D Phase 6.1 architecture α: anvil.el headless profile is the
+  # sole serve mode.  anvil-server delegates to nelisp-* internals via
+  # fboundp guard + fallback; the legacy nelisp-server fallback path
+  # was removed once architecture α stabilised (anvil functionality
+  # lives only on the anvil.el side, NeLisp packages stay pure
+  # substrate libraries).
   local anvil_dir
-  if anvil_dir="$(anvil_lisp_dir)"; then
-    if ! nelisp_find_module_file "nelisp-server" >/dev/null; then
-      echo "error: nelisp-server.el not found under $src_dir or packages/" >&2
-      exit 1
-    fi
-    exec "$emacs_bin" \
-      --batch -Q \
-      -L "$anvil_dir" \
-      -L "$src_dir" \
-      "${emacs_load_args[@]}" \
-      --eval "(setq load-prefer-newer t)" \
-      --eval "(setenv \"ANVIL_CONFIG_DIR\" \"$ANVIL_CONFIG_DIR\")" \
-      --eval "(setenv \"ANVIL_CACHE_DIR\" \"$ANVIL_CACHE_DIR\")" \
-      -l anvil-server \
-      -l anvil-server-commands \
-      -f anvil-server-stage-d-headless-run
-  fi
-
-  # Fallback: nelisp-server only (Stage D Phase 6.0 baseline)
-  if ! nelisp_find_module_file "nelisp-server" >/dev/null; then
-    echo "error: nelisp-server.el not found under $src_dir or packages/" >&2
+  if ! anvil_dir="$(anvil_lisp_dir)"; then
+    echo "error: anvil.el not found — set ANVIL_LISP_DIR or install anvil.el" >&2
     exit 1
   fi
   exec "$emacs_bin" \
     --batch -Q \
+    -L "$anvil_dir" \
     -L "$src_dir" \
     "${emacs_load_args[@]}" \
     --eval "(setq load-prefer-newer t)" \
     --eval "(setenv \"ANVIL_CONFIG_DIR\" \"$ANVIL_CONFIG_DIR\")" \
     --eval "(setenv \"ANVIL_CACHE_DIR\" \"$ANVIL_CACHE_DIR\")" \
-    -l nelisp-server \
-    -l nelisp-tools \
-    -f nelisp-server-run-stdio
+    -l anvil-server \
+    -l anvil-server-commands \
+    -f anvil-server-stage-d-headless-run
 }
 
 main() {
