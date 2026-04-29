@@ -19,15 +19,13 @@ v1.0 ships those four C-runtime equivalents and a 624 KB standalone
 tarball.  Use cases: running Elisp on machines without Emacs, and as
 a substrate for Lisp Machine / new-dialect experiments.
 
-* What is NeLisp?
-
-*NeLisp* is a research project to implement Emacs Lisp on a substrate
-other than the existing Emacs C core — modeled after SBCL (Common
-Lisp implemented in itself, on a small non-Lisp runtime) and
-deliberately *not* a Scheme rewrite (Guile-Emacs) or a Rust rewrite
-of the entire Emacs C core (Remacs).
-
 * What NeLisp is
+
+A research project to implement Emacs Lisp on a substrate other than
+the existing Emacs C core — modeled after SBCL (Common Lisp
+implemented in itself, on a small non-Lisp runtime) and deliberately
+*not* a Scheme rewrite (Guile-Emacs) or a Rust rewrite of the entire
+Emacs C core (Remacs).
 
 Two layers.  The language runtime is implemented in Elisp itself.
 Rust is a thin shell that provides syscalls and a separate minimal
