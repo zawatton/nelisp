@@ -165,14 +165,24 @@ NELISP_RUNTIME_BIN := $(NELISP_RUNTIME_DIR)/target/release/nelisp-runtime
 # finds the toolchain without forcing the user to source `~/.cargo/env'.
 CARGO ?= $(shell command -v cargo 2>/dev/null || echo $(HOME)/.cargo/bin/cargo)
 
+# Architecture α Wave 3 (2026-04-29) — `anvil-runtime/' is a sibling
+# crate that holds the MCP server spine + anvil_*_registry +
+# `bin/anvil-{runtime,mcp-demo}' binaries.  `runtime' builds both so a
+# single make target produces the full release artifact set
+# (nelisp-runtime cdylib/staticlib + anvil-runtime binaries).
+ANVIL_RUNTIME_DIR := anvil-runtime
+
 runtime:
 	cd $(NELISP_RUNTIME_DIR) && $(CARGO) build --release
+	cd $(ANVIL_RUNTIME_DIR) && $(CARGO) build --release
 
 runtime-test:
 	cd $(NELISP_RUNTIME_DIR) && $(CARGO) test --release
+	cd $(ANVIL_RUNTIME_DIR) && $(CARGO) test --release
 
 runtime-clean:
 	cd $(NELISP_RUNTIME_DIR) && $(CARGO) clean
+	cd $(ANVIL_RUNTIME_DIR) && $(CARGO) clean
 
 # `test-runtime' depends on `runtime' so a fresh checkout that runs
 # only this target still proves the ERT + cargo + binary chain.  The

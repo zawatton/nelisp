@@ -44,8 +44,16 @@ log "  version : $VERSION"
 log "  platform: $PLATFORM"
 log "  source  : $ANVIL_EL_SOURCE"
 
+# Architecture α Wave 3 (2026-04-29) — `anvil-runtime' binary now lives
+# in its own crate (`anvil-runtime/target/release/anvil-runtime'); the
+# nelisp-runtime crate keeps the cdylib + staticlib + nelisp interpreter
+# binary only.  See `../anvil-runtime/Cargo.toml' / `../bin/anvil
+# anvil_runtime_bin' for the layered fallback (bundled > anvil-runtime
+# crate target > legacy nelisp-runtime target).
 RUNTIME_DIR="nelisp-runtime/target/release"
-RUNTIME_BIN="$RUNTIME_DIR/anvil-runtime"
+ANVIL_RUNTIME_DIR="anvil-runtime/target/release"
+RUNTIME_BIN="$ANVIL_RUNTIME_DIR/anvil-runtime"
+[[ -x "$RUNTIME_BIN" ]] || RUNTIME_BIN="$RUNTIME_DIR/anvil-runtime"
 RUNTIME_CDYLIB=""
 for cand in "$RUNTIME_DIR/libnelisp_runtime.so" \
             "$RUNTIME_DIR/libnelisp_runtime.dylib" \

@@ -9,17 +9,18 @@
 //! of `NELISP_PROT_*` / `NELISP_MAP_*` / `NELISP_O_*` constants so
 //! NeLisp does not need a per-OS libc clone.
 
-pub mod anvil_data_registry;
-pub mod anvil_file_registry;
-pub mod anvil_host_registry;
-pub mod anvil_shell_filter_registry;
-pub mod anvil_tools_registry;
 pub mod bridge;
 pub mod eval;
-pub mod mcp;
 pub mod reader;
 pub mod sqlite;
 pub mod syscall;
+
+// Architecture α (Wave 3, 2026-04-29) — anvil_*_registry + mcp + the
+// `anvil-runtime' / `anvil-mcp-demo' binaries moved to the sibling
+// `anvil-runtime' crate so this crate stays a pure NeLisp interpreter.
+// External consumers should depend on `anvil-runtime' for those
+// surfaces; the path dependency in `anvil-runtime/Cargo.toml' delegates
+// the evaluator-facing types (bridge / eval / reader) back here.
 
 // Re-export the FFI surface at the crate root for `cargo test` and
 // `main.rs` so callers can write `nelisp_runtime::nelisp_syscall_write`
