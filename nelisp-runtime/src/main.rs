@@ -322,6 +322,41 @@ fn mint_reloc_skeleton_image(path: &str) -> i32 {
     }
 }
 
+/// Doc 47 Stage 4c: write a NlImage v1 file whose code segment
+/// is the canned `NATIVE_DELIBERATE_NULL_DEREF` asset.  Booting
+/// it must SIGSEGV on the null load and the seed's signal
+/// handler must catch it, write the diagnostic to stderr, and
+/// exit with `NL_IMAGE_FAULT_EXIT_CODE` (= 130).
+fn mint_fault_skeleton_image(path: &str) -> i32 {
+    if !nelisp_runtime::image::HAS_NATIVE_DELIBERATE_NULL_DEREF {
+        eprintln!(
+            "nelisp-runtime: mint-fault-skeleton-image: \
+             no canned null-deref asset for this target arch"
+        );
+        return 13;
+    }
+    match nelisp_runtime::image::write_image_with_native_entry(
+        path,
+        nelisp_runtime::image::NATIVE_DELIBERATE_NULL_DEREF,
+    ) {
+        Ok(()) => {
+            println!(
+                "minted fault-skeleton NlImage v{} at {} \
+                 (code_size={} expected_exit={})",
+                nelisp_runtime::image::NL_IMAGE_ABI_VERSION,
+                path,
+                nelisp_runtime::image::NATIVE_DELIBERATE_NULL_DEREF.len(),
+                nelisp_runtime::image::NL_IMAGE_FAULT_EXIT_CODE
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("nelisp-runtime: mint-fault-skeleton-image: {}", e);
+            13
+        }
+    }
+}
+
 /// Doc 47 Stage 3: read the image at `path', map its code segment
 /// into an executable JIT page, jump to the entry, return whatever
 /// `i32' the entry produced as this process's exit code.
@@ -428,6 +463,13 @@ fn main() {
                 1
             }
         },
+        Some("mint-fault-skeleton-image") => match args.get(2).map(|s| s.as_str()) {
+            Some(path) => mint_fault_skeleton_image(path),
+            None => {
+                eprintln!("usage: nelisp-runtime mint-fault-skeleton-image <out-path>");
+                1
+            }
+        },
         Some("boot-from-image") => match args.get(2).map(|s| s.as_str()) {
             Some(path) => boot_from_image(path),
             None => {
@@ -445,6 +487,7 @@ fn main() {
                 "       nelisp-runtime mint-heap-skeleton-image <out-path> [<heap-byte>]"
             );
             eprintln!("       nelisp-runtime mint-reloc-skeleton-image <out-path>");
+            eprintln!("       nelisp-runtime mint-fault-skeleton-image <out-path>");
             eprintln!("       nelisp-runtime verify-image <image-path>");
             eprintln!("       nelisp-runtime boot-from-image <image-path>");
             2

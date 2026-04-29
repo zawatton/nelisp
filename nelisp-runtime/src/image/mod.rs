@@ -20,6 +20,7 @@ pub mod format;
 pub mod loader;
 pub mod native_assets;
 pub mod reloc;
+pub mod signal;
 
 pub use boot::boot_from_image;
 pub use dumper::{
@@ -34,11 +35,12 @@ pub use format::{
 };
 pub use loader::read_header;
 pub use native_assets::{
-    NlImageEntry, HAS_NATIVE_LOAD_HEAP_BYTE0, HAS_NATIVE_LOAD_HEAP_THROUGH_PTR,
-    HAS_NATIVE_RETURN_42, NATIVE_LOAD_HEAP_BYTE0, NATIVE_LOAD_HEAP_THROUGH_PTR,
-    NATIVE_RETURN_42,
+    NlImageEntry, HAS_NATIVE_DELIBERATE_NULL_DEREF, HAS_NATIVE_LOAD_HEAP_BYTE0,
+    HAS_NATIVE_LOAD_HEAP_THROUGH_PTR, HAS_NATIVE_RETURN_42, NATIVE_DELIBERATE_NULL_DEREF,
+    NATIVE_LOAD_HEAP_BYTE0, NATIVE_LOAD_HEAP_THROUGH_PTR, NATIVE_RETURN_42,
 };
 pub use reloc::{
     apply_relocations, relocs_from_bytes, relocs_to_bytes, ImageReloc, RelocError,
     NL_RELOC_KIND_HEAP_BASE_PLUS_OFFSET, NL_RELOC_RECORD_SIZE,
 };
+pub use signal::{install_signal_handlers, NL_IMAGE_FAULT_EXIT_CODE};
