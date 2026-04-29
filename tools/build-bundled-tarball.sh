@@ -94,9 +94,14 @@ log "host emacs $EMACS_VERSION ($HOST_EMACS_REAL)"
 log "  lisp dir: $EMACS_LISP_DIR"
 log "  etc dir : $EMACS_ETC_DIR"
 
-# 2. Check Rust runtime artifacts.  cdylib is required for stage-d-v2.0
-#    (`(module-load ...)` path); staticlib is optional reference.
+# 2. Check Rust runtime artifacts.  cdylib + staticlib live in the
+#    nelisp-runtime crate (Emacs `(module-load ...)' path); the
+#    `anvil-runtime' binary lives in the sibling anvil-runtime crate
+#    (architecture α Wave 3, 2026-04-29).  Both must be present so the
+#    bundled tarball supports both serve modes — Emacs path (default)
+#    and `--no-emacs' Rust path.
 RUNTIME_DIR="nelisp-runtime/target/release"
+ANVIL_RUNTIME_DIR="anvil-runtime/target/release"
 RUNTIME_CDYLIB=""
 for cand in "$RUNTIME_DIR/libnelisp_runtime.so" \
             "$RUNTIME_DIR/libnelisp_runtime.dylib" \
@@ -112,8 +117,26 @@ if [[ -z "$RUNTIME_CDYLIB" ]]; then
 fi
 RUNTIME_STATICLIB="$RUNTIME_DIR/libnelisp_runtime.a"
 
-log "cdylib   : $RUNTIME_CDYLIB"
-[[ -f "$RUNTIME_STATICLIB" ]] && log "staticlib: $RUNTIME_STATICLIB"
+# `anvil-runtime' Rust binary backs `bin/anvil mcp serve --no-emacs'.
+# Falls back to the legacy pre-Wave-3 location so a tree that has not
+# yet been rebuilt against the split crates still produces a working
+# bundle.
+ANVIL_RUNTIME_BIN=""
+for cand in "$ANVIL_RUNTIME_DIR/anvil-runtime" \
+            "$RUNTIME_DIR/anvil-runtime" ; do
+  if [[ -x "$cand" ]]; then
+    ANVIL_RUNTIME_BIN="$cand"
+    break
+  fi
+done
+if [[ -z "$ANVIL_RUNTIME_BIN" ]]; then
+  err "anvil-runtime binary missing under $ANVIL_RUNTIME_DIR / $RUNTIME_DIR — run 'make runtime' first."
+  exit 1
+fi
+
+log "cdylib       : $RUNTIME_CDYLIB"
+log "anvil-runtime: $ANVIL_RUNTIME_BIN"
+[[ -f "$RUNTIME_STATICLIB" ]] && log "staticlib    : $RUNTIME_STATICLIB"
 
 # 3. Probe the .elc subset that anvil.el's headless profile actually
 #    loads at runtime.  We spawn emacs once with the standard lib deps
@@ -154,10 +177,18 @@ mkdir -p "$STAGE_DIR/bin" \
          "$STAGE_DIR/emacs/share/emacs/$EMACS_VERSION_TAG/etc" \
          "$STAGE_DIR/nelisp-runtime/target/release"
 
-# 4a. bin/anvil launcher.
+# 4a. bin/anvil launcher + bundled anvil-runtime binary (Rust path).
+#     bin/anvil's `bundled_runtime_present' / `anvil_runtime_bin' helpers
+#     look for `$ANVIL_HOME/bin/anvil-runtime' first, so dropping the
+#     binary here lights up `anvil mcp serve --no-emacs' on a host that
+#     has only extracted the tarball (no system Emacs / no cargo build).
 cp bin/anvil "$STAGE_DIR/bin/"
 [[ -f bin/anvil.cmd ]] && cp bin/anvil.cmd "$STAGE_DIR/bin/" || true
-chmod +x "$STAGE_DIR/bin/anvil"
+cp "$ANVIL_RUNTIME_BIN" "$STAGE_DIR/bin/anvil-runtime"
+chmod +x "$STAGE_DIR/bin/anvil" "$STAGE_DIR/bin/anvil-runtime"
+if command -v strip >/dev/null 2>&1; then
+  strip --strip-unneeded "$STAGE_DIR/bin/anvil-runtime" 2>/dev/null || true
+fi
 
 # 4b. nelisp src.
 cp src/nelisp*.el "$STAGE_DIR/src/"
