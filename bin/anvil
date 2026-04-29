@@ -38,14 +38,20 @@ USAGE:
   anvil version                Detailed version (os / install root / tools count / emacs).
   anvil doctor                 Diagnose environment (emacs / nelisp / dirs).
   anvil tools-list             List registered MCP tool names (offline, no emacs spawn).
-  anvil mcp serve [--no-emacs|--strict-no-emacs]
+  anvil mcp serve [--no-emacs|--strict-no-emacs] [--profile=NAME]
                                Start MCP stdio server (Claude Code 接続用).
+                               --profile selects manifest profile (default: headless).
+                               Available: headless / core / nav / edit / agent / ultra.
+                               agent / ultra additionally load orchestrator /
+                               session / browser optional modules.
 
 ENV:
   ANVIL_HOME       Install root (default: auto-detect, $ANVIL_HOME).
   ANVIL_CONFIG_DIR User config dir (default: \$XDG_CONFIG_HOME/anvil).
   ANVIL_CACHE_DIR  State cache dir (default: \$XDG_CACHE_HOME/nelisp).
   EMACS            Emacs binary path (default: auto-detect via PATH).
+  ANVIL_PROFILE    Manifest profile selector (default: headless).
+                   Equivalent to --profile=NAME on the \`mcp serve' line.
 
 Stage D Phase 6.0 scaffold — Phase 6.1 で mcp serve 実装完成予定。
 詳細: docs/design/18-stage-d-standalone.org
@@ -429,6 +435,7 @@ anvil_lisp_dir() {
 cmd_mcp_serve() {
   local no_emacs=0
   local strict_no_emacs=0
+  local profile=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --no-emacs)
@@ -440,13 +447,31 @@ cmd_mcp_serve() {
         no_emacs=1
         shift
         ;;
+      --profile=*)
+        profile="${1#--profile=}"
+        shift
+        ;;
+      --profile)
+        if [[ $# -lt 2 ]]; then
+          echo "error: --profile requires an argument" >&2
+          exit 2
+        fi
+        profile="$2"
+        shift 2
+        ;;
       *)
         echo "error: unknown argument for 'anvil mcp serve': $1" >&2
-        echo "  supported flags: --no-emacs, --strict-no-emacs" >&2
+        echo "  supported flags: --no-emacs, --strict-no-emacs, --profile=NAME" >&2
         exit 2
         ;;
     esac
   done
+
+  # Profile selection: --profile flag wins, else inherit from env,
+  # else the elisp side defaults to "headless".  Stage D Phase 6.1
+  # introduced this knob (Doc 34 Phase B); valid names are headless
+  # / core / nav / edit / agent / ultra.
+  local effective_profile="${profile:-${ANVIL_PROFILE:-headless}}"
 
   mkdir -p "$ANVIL_CACHE_DIR"
   local runtime_bin
@@ -496,6 +521,7 @@ cmd_mcp_serve() {
     --eval "(setq load-prefer-newer t)" \
     --eval "(setenv \"ANVIL_CONFIG_DIR\" \"$ANVIL_CONFIG_DIR\")" \
     --eval "(setenv \"ANVIL_CACHE_DIR\" \"$ANVIL_CACHE_DIR\")" \
+    --eval "(setenv \"ANVIL_PROFILE\" \"$effective_profile\")" \
     -l anvil-server \
     -l anvil-server-commands \
     -f anvil-server-stage-d-headless-run
