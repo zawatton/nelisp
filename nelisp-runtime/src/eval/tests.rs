@@ -883,14 +883,14 @@ fn file_truename_canonicalizes_existing_path() {
 #[test]
 fn eval_str_all_handles_macro_extension_synthetic_snippet() {
     let input = "
-        (require 'anvil-state)
-        (defgroup anvil nil \"doc\")
-        (defcustom anvil-answer 42 \"doc\")
+        (require 'pkg-state)
+        (defgroup pkg nil \"doc\")
+        (defcustom pkg-answer 42 \"doc\")
         (cl-defun describe-answer (name &optional prefix &rest extras)
           (pcase prefix
-            (nil (list name anvil-answer extras))
-            (_ (list prefix name anvil-answer extras))))
-        (provide 'anvil)
+            (nil (list name pkg-answer extras))
+            (_ (list prefix name pkg-answer extras))))
+        (provide 'pkg)
         (describe-answer \"state\" 'ready '(x y))
     ";
     assert_eq!(

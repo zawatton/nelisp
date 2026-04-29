@@ -45,7 +45,7 @@ packages/nelisp-http/
 
 * Dependents
 
-- Source dependent: =src/nelisp-tools.el=
+- Source dependent: anvil.el's =anvil-http= module via fboundp delegation (architecture α; NeLisp side has no consumers — Wave 1 deleted =nelisp-tools=)
 - Test dependent: =packages/nelisp-http/test/nelisp-http-test.el=
 - Existing callers continue using =(require 'nelisp-http)=; load-path
   wiring in the root build resolves the package path
