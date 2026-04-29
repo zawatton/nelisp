@@ -1,6 +1,6 @@
 //! Phase 8.0.4 demo binary — `anvil-mcp-demo`.
 //!
-//! Runs [`nelisp_runtime::mcp::serve_stdio`] with the placeholder
+//! Runs [`anvil_runtime::mcp::serve_stdio`] with the placeholder
 //! registry so the end-to-end MCP loop (initialize → tools/list →
 //! tools/call → shutdown → exit) can be smoke-tested without spawning
 //! Emacs and without wiring an evaluator-backed registry.  Doc 44 §3.5
@@ -10,7 +10,7 @@
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    match nelisp_runtime::mcp::serve_stdio() {
+    match anvil_runtime::mcp::serve_stdio() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("anvil-mcp-demo: {}", e);

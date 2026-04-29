@@ -26,24 +26,11 @@ crate-type = ["cdylib", "rlib", "staticlib"]
 name = "nelisp-runtime"
 path = "src/main.rs"
 
-# Phase 8.0.4 (Doc 44 §3.5) — MCP stdio demo binary.  Drives
-# `nelisp_runtime::mcp::serve_stdio` with the placeholder registry so
-# the end-to-end JSON-RPC loop (initialize → tools/list → tools/call →
-# shutdown → exit) can be smoke-tested without spawning Emacs and
-# without wiring an evaluator-backed registry.  Will be subsumed by
-# `bin/anvil mcp serve --strict-no-emacs` once Phase 8.0.3 (self-host
-# bridge) lands.
-[[bin]]
-name = "anvil-mcp-demo"
-path = "src/bin/anvil-mcp-demo.rs"
-
-# Phase 8.0.5 (Doc 44 §3.6) — production launcher target for
-# `bin/anvil mcp serve --no-emacs`.  Keeps the Phase 8.0.4 demo bin for
-# smoke/backward-compat while exposing a stable binary name the bash
-# launcher can dispatch to directly from target/release/.
-[[bin]]
-name = "anvil-runtime"
-path = "src/bin/anvil-runtime.rs"
+# Architecture α Wave 3 (2026-04-29) — `anvil-mcp-demo` and
+# `anvil-runtime' binaries (and the `mcp::*' / `anvil_*_registry'
+# modules they depend on) moved to the sibling `anvil-runtime' crate
+# so this crate stays a pure NeLisp interpreter.  See
+# `../anvil-runtime/Cargo.toml' for the relocated bin targets.
 
 [[bin]]
 name = "nelisp"

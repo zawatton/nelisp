@@ -145,9 +145,17 @@ detect_emacs() {
 }
 
 anvil_runtime_bin() {
+  # Architecture α Wave 3 (2026-04-29) — `anvil-runtime' lives in its
+  # own crate now (= `anvil-runtime/target/release/anvil-runtime') so
+  # `nelisp-runtime/' stays a pure NeLisp interpreter.  The bundled
+  # tarball still ships the binary at the canonical `bin/anvil-runtime'
+  # path; dev checkouts pick it up from the new crate's target tree
+  # first and fall back to the pre-Wave-3 `nelisp-runtime/target/'
+  # location for backward compatibility with un-rebuilt trees.
   local cand
   for cand in \
       "$ANVIL_HOME/bin/anvil-runtime" \
+      "$ANVIL_HOME/anvil-runtime/target/release/anvil-runtime" \
       "$ANVIL_HOME/nelisp-runtime/target/release/anvil-runtime" \
   ; do
     if [[ -x "$cand" ]]; then
@@ -456,7 +464,7 @@ cmd_mcp_serve() {
       runtime_env_exec "$runtime_bin"
     fi
     echo "error: rust runtime binary missing: $runtime_bin" >&2
-    echo "  build with: make runtime-static && cargo build --release --bin anvil-runtime" >&2
+    echo "  build with: make runtime-static && (cd anvil-runtime && cargo build --release)" >&2
     exit 1
   fi
 

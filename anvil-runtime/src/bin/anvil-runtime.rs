@@ -9,8 +9,8 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use nelisp_runtime::anvil_tools_registry::AnvilToolsRegistry;
-use nelisp_runtime::mcp::{serve_with, PlaceholderRegistry};
+use anvil_runtime::anvil_tools_registry::AnvilToolsRegistry;
+use anvil_runtime::mcp::{serve_with, PlaceholderRegistry};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Command {

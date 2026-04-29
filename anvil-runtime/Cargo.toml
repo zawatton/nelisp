@@ -1,0 +1,54 @@
+[package]
+name = "anvil-runtime"
+version = "0.1.0"
+edition = "2021"
+description = "anvil MCP runtime — emacs-less anvil tool surface, decoupled from NeLisp's pure interpreter"
+license = "GPL-3.0-or-later"
+
+# Architecture α (handoff `architecture_correction_anvil_uses_nelisp_2026-04-25.org'
+# §1.2 LOCKED) declares anvil and NeLisp belong to different layers:
+#
+#   anvil-runtime  = MCP server + anvil-* tool registries + emacs-less launcher
+#   nelisp-runtime = pure Elisp interpreter + bridge / eval / reader / syscall
+#
+# Wave 1 (2026-04-29) deleted the Elisp-side `nelisp-server' / `nelisp-tools'
+# duplicates.  Wave 3 (this crate) extracts the Rust-side anvil_*_registry +
+# mcp + bin/anvil-runtime / bin/anvil-mcp-demo so `nelisp-runtime/' truly
+# stays a pure NeLisp interpreter.  See Doc 45 §6.3 for the registry-vs-package
+# decoupling rule.
+
+[lib]
+name = "anvil_runtime"
+path = "src/lib.rs"
+
+# Phase 8.0.5 production launcher — `bin/anvil mcp serve --no-emacs' resolves to
+# this binary.  Stays at the historical `anvil-runtime' name so existing
+# tooling keeps working after the crate split.
+[[bin]]
+name = "anvil-runtime"
+path = "src/bin/anvil-runtime.rs"
+
+# Phase 8.0.4 demo — drives `anvil_runtime::mcp::serve_stdio' with the
+# placeholder registry for end-to-end JSON-RPC smoke without touching the
+# evaluator-backed registry.
+[[bin]]
+name = "anvil-mcp-demo"
+path = "src/bin/anvil-mcp-demo.rs"
+
+[dependencies]
+# Architecture α: anvil-runtime delegates evaluator + bridge primitives back
+# into the NeLisp Rust runtime via path dependency.  `default-features = false'
+# would be ideal once nelisp-runtime grows feature flags; for now the full
+# crate is pulled in.
+nelisp-runtime = { path = "../nelisp-runtime" }
+once_cell = "1.19"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+# Match nelisp-runtime — panics terminate the process rather than unwinding
+# across FFI / C boundaries.
+panic = "abort"
