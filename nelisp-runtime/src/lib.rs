@@ -11,6 +11,7 @@
 
 pub mod bridge;
 pub mod eval;
+pub mod image;
 pub mod reader;
 pub mod sqlite;
 pub mod syscall;
