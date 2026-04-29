@@ -1,0 +1,535 @@
+#+TITLE: Doc 47 — Rust seed image ABI (interpreter を build-time に降格)
+#+DATE: 2026-04-30
+#+AUTHOR: zawatton + Claude (Opus 4.7 1M scoping session)
+#+STATUS: DRAFT
+#+DEPENDS_ON: Doc 27 / 28 / 32 / 33 / 38 / 44 / 46
+#+SUPERSEDES_ASPECTS_OF: Doc 44 (= Phase 8.0 Rust-side minimal interpreter は build-tool に降格)
+
+* §0 要旨 (TL;DR)
+
+Doc 46 architecture α Wave 3 で =anvil-runtime/= 切出しが完了し、
+=nelisp-runtime/= の責務は「NeLisp 言語 runtime」に純化された。本 doc
+は次の極小化軸 = =nelisp-runtime/= 内 Rust LOC を **「Elisp 処理系」から
+「seed (image loader + syscall + executable memory + entrypoint)」へ
+降格** することの設計仕様。
+
+  *Before* (= main 現状、post Wave 3、2026-04-30 計測)
+    Rust LOC = 10,325 (eval 4,018 + reader 1,816 + syscall 2,042
+                     + sqlite 623 + bridge 563 + main/lib/bin 1,263)
+    起動経路 = =main()= → reader → eval → 30〜50 builtin で
+              =src/*.el= を bootstrap
+
+  *After* (= Doc 47 ship 後、target)
+    Rust LOC = 2,500〜4,000
+    起動経路 = =main()= → mmap(=nelisp.image=) → entry に jump
+    runtime 中 Rust に戻るのは syscall trap / signal / GC barrier のみ
+
+key insight: Rust が =.el= を読むから reader が要る。Rust が
+=.image= (= 事前 mint された heap snapshot) を読むなら **reader も
+evaluator も builtin も runtime には不要**。SBCL =sbcl-mini= →
+=core.lisp-obj=、Squeak Smalltalk VM、Open Genera と同 pattern。
+build-time の Rust evaluator (= 現 Doc 44 で LOCKED) は **image を mint
+する build tool として残す**、ship バイナリからは消える。
+
+*ship 条件*:
+- =bin/anvil-runtime --no-emacs= が =nelisp-runtime= から evaluator /
+  reader / builtins を *削除した状態で* MCP server として起動する
+- runtime crate Rust LOC ≤ 4,000
+- =nelisp.image= 作成は =build-tool/= crate (新設) または既存
+  =nelisp-runtime= の =--mint-image= フラグで実行
+- cold-init 時間 ≤ 500ms (Doc 32 §5 維持)
+- Phase 7 native cc で AOT 済 native code arena が image に同梱される
+
+*non-goals*:
+- Rust 0 LOC は目指さない (OS syscall / signal handler / mmap は Rust 必須)
+- Phase 5 =nelisp-emacs= 全 port (= Open Genera 級) ではない
+- 既存 Emacs path (= =bin/anvil mcp serve= default) の変更は最小
+
+* §1 Motivation
+
+** 1.1 Doc 44 との関係 (重要)
+
+Doc 44 (Phase 8.0、LOCKED 2026-04-27) は「Rust 側に bootstrap-grade
+minimal Elisp interpreter (~2500-3500 LOC) を実装、cold-init で
+=src/= NeLisp source を自己 load → =nelisp-eval= に control を渡す」
+方針。これは Doc 44 の言葉では「load bearing が cold-init の一瞬のみ」
+とされているが、**ship バイナリには interpreter が残る**。
+
+Doc 47 は Doc 44 の自然な拡張で、interpreter を **build-time のみ**
+に降格する。違いは:
+
+| 項目                    | Doc 44 (LOCKED)                  | Doc 47 (本 doc)                              |
+|-------------------------+----------------------------------+----------------------------------------------|
+| Rust runtime interpreter | 残る (~2500-3500 LOC、cold-init で takeover) | 削除 (= image loader のみ)                   |
+| =.el= source の location | runtime が読む (=src/*.el=)          | build-time が読み image に焼く                |
+| reader の location       | runtime にあり                    | build-tool にあり                             |
+| ship binary Rust LOC    | ~14,000 (= 現状 + Doc 44 増分)    | ~2,500〜4,000                                  |
+| Phase 7 native cc       | runtime takeover 後 active       | build-time に AOT、image に native arena 同梱  |
+| user vision との整合     | 部分的                            | 完全 (= "Rust = seed, NeLisp = everything")    |
+
+Doc 44 を取り消すのではなく、**Doc 44 を本 doc の precondition として位置づける**:
+Doc 44 で reader+eval+builtin が Rust 内に自己完結すれば、それを
+build-time に切り出せる boundary が初めて見える。Doc 44 完了 → Doc 47
+着手という直列 dependency。
+
+** 1.2 ChatGPT 議論 (2026-04-30 zawatton scoping session) の合意点
+
+zawatton + ChatGPT scoping (2026-04-30) で合意した core 主張:
+
+1. *Rust core should not be an Elisp interpreter*
+2. *Rust core should be: image loader + syscall shim + executable
+   memory provider + process entry point*
+3. *Everything else should be NeLisp*
+
+これを Doc 47 の北極星として固定する。
+
+** 1.3 現状診断 (post Wave 3 cleanup)
+
+#+begin_src text :tangle no
+nelisp-runtime/src/   (= 10,325 LOC、main 2026-04-30)
+├── eval/             4,018 LOC  ← § 削除候補 (build-tool へ移送)
+│   ├── builtins.rs       1,472
+│   ├── tests.rs          1,167
+│   ├── special_forms.rs   915
+│   ├── mod.rs             464
+│   ├── env.rs             330
+│   ├── error.rs           197
+│   └── sexp.rs            ?
+├── reader/           1,816 LOC  ← § 削除候補 (build-tool へ移送)
+│   ├── lexer.rs           732
+│   ├── parser.rs          375
+│   ├── sexp.rs            342
+│   ├── mod.rs             261
+│   └── error.rs           106
+├── syscall/          2,042 LOC  ← ★ 残す (OS 境界)
+│   ├── process.rs         883
+│   ├── fileio.rs          598
+│   ├── filenotify.rs      281
+│   ├── unix.rs            251
+│   ├── mod.rs             229  ← API surface
+│   └── error.rs            51
+├── bridge/             563 LOC  ← § 大半削除、image entry trampoline のみ残す
+│   ├── loader.rs          310
+│   ├── mod.rs             217
+│   └── takeover.rs         36
+├── sqlite.rs           623 LOC  ← △ optional crate へ降格 (極小主義)
+├── main.rs             220 LOC  ← § 書き換え (image boot path)
+├── bin/nelisp.rs       175 LOC  ← § 書き換え or 削除
+├── lib.rs               82 LOC  ← § FFI surface 削減
+└── (Cargo / tests)
+#+end_src
+
+§ = Doc 47 で消える / 大幅縮小、★ = 残す、△ = optional 化。
+
+* §2 Architecture
+
+** 2.1 二重 crate 構造
+
+#+begin_src text :tangle no
+nelisp/
+├── nelisp-runtime/         ← ship される極小 Rust (target ≤4,000 LOC)
+│   ├── src/
+│   │   ├── main.rs         ← argv / image load / entry jump
+│   │   ├── lib.rs          ← FFI surface (image loader 公開)
+│   │   ├── image/          ← § 新設
+│   │   │   ├── mod.rs       (header / loader / relocator)
+│   │   │   ├── format.rs    (NlImageHeader, ABI version, magic)
+│   │   │   └── reloc.rs     (ASLR / address fixup)
+│   │   ├── syscall/        ← 既存維持
+│   │   ├── exec_mem/       ← § 新設 (mmap RWX allocator)
+│   │   │   └── mod.rs       (mprotect dance, JIT page lifecycle)
+│   │   ├── signal/         ← § 新設
+│   │   │   └── mod.rs       (SIGSEGV/SIGBUS/SIGFPE/SIGILL handlers)
+│   │   └── trap.rs         ← panic / abort / unwind
+│   └── Cargo.toml
+│
+├── build-tool/             ← § 新設、ship されない
+│   ├── src/
+│   │   ├── main.rs         ← `nelisp-mint-image' CLI
+│   │   ├── reader/         ← Doc 44 reader をここへ移送
+│   │   ├── eval/           ← Doc 44 evaluator をここへ移送
+│   │   ├── builtins/       ← Doc 44 builtin をここへ移送
+│   │   └── dumper.rs       ← heap → NlImage 形式 serializer
+│   └── Cargo.toml
+│
+├── src/                    ← Elisp side (image にコンパイルされる)
+│   ├── nelisp-bootstrap.el  ← image entry function
+│   ├── nelisp-eval.el       ← Phase 7 native cc で native 化される
+│   ├── nelisp-reader.el
+│   ├── nelisp-mcp.el        ← MCP dispatch (Wave 1 で Elisp 側へ)
+│   └── ...
+│
+└── nelisp-emacs-runtime/   ← Emacs path (既存維持、影響なし)
+#+end_src
+
+build-tool は cargo workspace member として `nelisp-runtime` と並列、
+ただし `nelisp-runtime` の Cargo.toml の dependencies からは引かない
+(= ship バイナリに混入しない)。
+
+** 2.2 Image format (NlImage v1 — DRAFT)
+
+#+begin_src rust :tangle no
+// nelisp-runtime/src/image/format.rs
+#[repr(C)]
+pub struct NlImageHeader {
+    /// magic = b"NLIMAGE\0" (8 bytes)
+    pub magic: [u8; 8],
+
+    /// ABI version (= seed が認識する image format 世代).
+    /// seed と image の version 不一致 → load 失敗 + abort.
+    pub abi_version: u32,
+
+    /// 0 = none, 1 = zstd, 2 = lz4 (extension point)
+    pub compression: u32,
+
+    /// image 本体のバイト長 (header 直後から)
+    pub payload_len: u64,
+
+    /// heap segment offset / size (= mmap PROT_READ|PROT_WRITE)
+    pub heap_offset: u64,
+    pub heap_size: u64,
+
+    /// native code arena offset / size (= mmap PROT_READ|PROT_EXEC).
+    /// Phase 7 cc が build-time に AOT 出力した native bytes.
+    /// 空 (size = 0) なら native arena 無し = pure bytecode image.
+    pub code_offset: u64,
+    pub code_size: u64,
+
+    /// relocation table offset / size (= image 内 absolute pointer の
+    /// fixup table。ASLR / image base 変動対策)
+    pub reloc_offset: u64,
+    pub reloc_count: u64,
+
+    /// entry point (= image 内 native code arena 内 offset).
+    /// seed は heap_base = mmap(heap_offset)、code_base = mmap(code_offset)
+    /// を確定後、(code_base + entry_offset) に jump する.
+    pub entry_offset: u64,
+
+    /// signal vector (= NeLisp が signal handler から呼んでほしい
+    /// elisp 関数の image 内 entry table、今は最小: GC barrier 1 件のみ).
+    pub signal_vector_offset: u64,
+    pub signal_vector_count: u32,
+
+    /// minimum syscall ABI version that the image expects.
+    /// seed の syscall set がこれ未満なら refuse to load.
+    pub required_syscall_abi: u32,
+
+    /// reserved (8 bytes、将来用、0 fill)
+    pub _reserved: [u8; 8],
+}
+
+const NL_IMAGE_MAGIC: [u8; 8] = *b"NLIMAGE\0";
+const NL_IMAGE_ABI_VERSION: u32 = 1;
+#+end_src
+
+レイアウト不変条件:
+- =heap_offset= / =code_offset= / =reloc_offset= は **page-aligned** (4 KiB)
+- relocation table のエントリは =u64 image_offset= (= heap 内 absolute
+  pointer が書かれた位置、seed が =heap_base + image_offset= に actual
+  address を書き戻す)
+- entry function ABI は =extern "C" fn(argc: i32, argv: *const *const u8) -> i32=
+- 全 multi-byte integer は **little-endian** (cross-arch portability は
+  initial scope 外、x86_64 + arm64 LE 前提)
+
+** 2.3 Boot sequence (cold-init 詳細)
+
+#+begin_src rust :tangle no
+// nelisp-runtime/src/main.rs (target shape)
+fn main() -> ! {
+    // 1. arg parse (極小、--image PATH のみ)
+    let cfg = parse_args();
+
+    // 2. install signal handlers FIRST (= image load 中の SEGV を捕まえる)
+    signal::install_handlers();
+
+    // 3. read image header
+    let header = image::read_header(&cfg.image_path)
+        .expect("image header read failed");
+    image::verify_magic_and_version(&header)
+        .expect("image abi mismatch");
+
+    // 4. mmap heap segment (RW)
+    let heap_base = exec_mem::mmap_rw(header.heap_size);
+    image::load_segment(&cfg.image_path, header.heap_offset,
+                        header.heap_size, heap_base);
+
+    // 5. mmap native code arena (RX after write)
+    let code_base = exec_mem::mmap_rwx_then_rx(
+        &cfg.image_path, header.code_offset, header.code_size);
+
+    // 6. relocate
+    image::apply_relocations(heap_base, code_base, &header,
+                             &cfg.image_path);
+
+    // 7. jump to entry
+    let entry: extern "C" fn(i32, *const *const u8) -> i32 = unsafe {
+        std::mem::transmute(code_base.add(header.entry_offset as usize))
+    };
+    let argv_ptrs: Vec<*const u8> = std::env::args_os()
+        .map(|s| s.as_bytes().as_ptr())
+        .collect();
+    let rc = entry(argv_ptrs.len() as i32, argv_ptrs.as_ptr());
+    std::process::exit(rc);
+}
+#+end_src
+
+この main.rs 全体で **~150 LOC**。これが極小化の到達点。
+
+** 2.4 Build-time pipeline
+
+#+begin_src text :tangle no
+[src/*.el  (Elisp source)]
+        ↓ build-tool/src (= Doc 44 reader + eval を移送)
+[evaluated heap state in build-tool process]
+        ↓ Phase 7 nelisp-cc (= NeLisp 自身、build-tool 内から呼ぶ)
+[heap snapshot + native code arena]
+        ↓ build-tool/src/dumper.rs
+[nelisp.image  (NlImage v1 binary)]
+
+ship に含まれるもの:
+  - bin/anvil-runtime  (= nelisp-runtime crate、Rust ≤4,000 LOC)
+  - share/nelisp.image (= 数 MB 〜 数十 MB の image binary)
+
+ship に含まれないもの:
+  - build-tool crate
+  - src/*.el (= image に焼かれた後は不要)
+#+end_src
+
+** 2.5 Self-rebuild loop (= build-tool 自体の自立)
+
+最終 Phase で build-tool すら NeLisp 自身で書く path がある:
+
+#+begin_src text :tangle no
+Stage A (Doc 47 ship 直後):
+  build-tool は Rust 製 (= Doc 44 reader/eval 移送)
+  → image を mint
+  → ship binary は seed のみ
+
+Stage B (= Doc 47 後継、別 doc 想定):
+  Elisp 側に `(nelisp-dump-image PATH)' を実装
+  → 動いている NeLisp が自分の heap を image に焼く
+  → build-tool Rust crate を退役、Stage A image の self-perpetuation のみで rebuild
+#+end_src
+
+Stage B は Doc 47 の non-goal だが、本 doc の image format を将来
+Stage B で再利用するため =nelisp-dump-image= (Elisp) と =build-tool/src/dumper.rs=
+(Rust) は **同じ NlImage v1 を出力する** ように仕様化する。
+
+* §3 移行 phase 順 (= 実装ロードマップ)
+
+** 3.1 着手順序 (= chicken-and-egg を解く順)
+
+| # | 名前                      | 期間  | 内容                                                                                |
+|---+---------------------------+-------+-------------------------------------------------------------------------------------|
+| 0 | (precondition) Doc 44     | 既 LOCKED | Rust 側に minimal interpreter (reader + eval + ~30 builtin) を完備                     |
+| 1 | image format spec freeze  | 1 wk   | 本 doc §2.2 を =nelisp-runtime/src/image/format.rs= に Rust struct で stub 実装、ABI v1 固定 |
+| 2 | dumper MVP                | 2 wk   | Doc 44 evaluator が動いた heap を NlImage v1 に dump できる =--mint-image= flag を runtime に追加。Phase 7 native arena は空でも OK (= bytecode-only image) |
+| 3 | seed loader MVP           | 2 wk   | =main.rs= に image load + jump 経路を追加、ただし interpreter も同居 (= dual-mode、--boot-from-image / --boot-from-source flag で切替可能) |
+| 4 | bootstrap.el on image     | 1 wk   | =src/nelisp-bootstrap.el= entry function を image に焼いて =--boot-from-image= で立ち上がることを E2E 検証 (smoke + ERT regression 0) |
+| 5 | MCP server on image       | 2 wk   | =bin/anvil-runtime --no-emacs --boot-from-image= で MCP server smoke PASS (Doc 44 ship 条件と同等) |
+| 6 | build-tool crate 切出し   | 2 wk   | =nelisp-runtime/src/{eval,reader,bridge}/= を =build-tool/src/= へ git mv、=nelisp-runtime= の依存から外す。同時に runtime の =bin/nelisp.rs= を =build-tool= 側に移送 |
+| 7 | Phase 7 native arena 同梱 | 3 wk   | =nelisp-cc= が build-time に native code arena を生成 → image に焼く → seed が PROT_EXEC で jump して走らせる、を E2E |
+| 8 | runtime crate prune       | 1 wk   | =nelisp-runtime= から evaluator/reader 残骸を削除、Cargo.toml 整理、LOC ≤4,000 を確認 |
+| 9 | SQLite optional 化        | 1 wk   | =sqlite.rs= を =nelisp-sqlite-rs= optional dyn module crate に分離 (極小主義 §2.5) |
+
+総工数 target: **15 weeks** (= ~3.5 ヶ月、Doc 44 完了後)。
+
+** 3.2 Phase 7 native arena との合流点 (= phase 7)
+
+Doc 28/29/30/31 の Phase 7 は =nelisp-cc= が NeLisp source を native code
+にコンパイルする path。Doc 47 は **Phase 7 の出力先を image に変える**。
+
+#+begin_src text :tangle no
+従来 (Doc 28-31)            Doc 47 後
+─────────────────           ─────────────────
+nelisp-cc → mmap arena      nelisp-cc → image native arena
+(runtime allocate)          (build-time bake)
+
+cold-init で JIT compile     image load 直後から native 実行
+(数十 ms)                    (jump only、~0 ms)
+#+end_src
+
+Phase 7 自体の設計は変えない。差分は「allocate 先が runtime mmap か
+build-time image arena か」だけ。
+
+* §4 残す Rust の正確な spec (TCB freeze)
+
+** 4.1 syscall ABI (=syscall/= 既存)
+
+Doc 47 後も維持される syscall (= Elisp 側 nelisp-syscall.el が dlsym
+する FFI symbol):
+
+| symbol                       | 用途                                | LOC |
+|------------------------------+-------------------------------------+-----|
+| nelisp_syscall_read          | fd read                              | (unix.rs) |
+| nelisp_syscall_write         | fd write                             | (unix.rs) |
+| nelisp_syscall_open / close  | file lifecycle                       | (fileio.rs) |
+| nelisp_syscall_mmap / munmap | virtual memory                       | (unix.rs) |
+| nelisp_syscall_mprotect      | RW ↔ RX flip (Phase 7 JIT)            | (unix.rs) |
+| nelisp_syscall_getenv        | env access                           | (unix.rs) |
+| nelisp_syscall_clock_gettime | time                                 | (unix.rs) |
+| nelisp_syscall_stat          | metadata                             | (fileio.rs) |
+| nelisp_syscall_exec*         | process spawn (= subprocess module)   | (process.rs) |
+| nelisp_syscall_filenotify    | fs watch                             | (filenotify.rs) |
+| nelisp_syscall_exit          | process exit                         | (mod.rs) |
+
+これは Doc 47 後も =syscall/= ディレクトリ ~2,042 LOC のまま。
+ChatGPT 議論で「これ以上は基本的に Elisp 側でよい」とした boundary。
+
+** 4.2 image loader (=image/= 新設)
+
+#+begin_src text :tangle no
+src/image/
+├── mod.rs        ~150 LOC  (load_header, verify, load_segment, dispatch)
+├── format.rs     ~100 LOC  (NlImageHeader struct + constants)
+├── reloc.rs      ~250 LOC  (apply_relocations、ASLR fixup)
+└── error.rs       ~50 LOC  (ImageError enum)
+                  ─────
+                  ~550 LOC
+#+end_src
+
+** 4.3 exec memory (=exec_mem/= 新設)
+
+#+begin_src text :tangle no
+src/exec_mem/
+├── mod.rs        ~200 LOC  (mmap_rw, mmap_rwx_then_rx, free)
+└── (platform 差分は内部 cfg!)
+                  ─────
+                  ~200 LOC
+#+end_src
+
+macOS Apple Silicon の =pthread_jit_write_protect_np= dance、Linux の
+シンプルな =mprotect= の差分はここに閉じる (= 既存 main.rs L1-26 で
+言及されているノウハウ)。
+
+** 4.4 signal (=signal/= 新設)
+
+#+begin_src text :tangle no
+src/signal/
+├── mod.rs        ~250 LOC  (sigaction install, dispatch to elisp signal_vector)
+├── unwind.rs     ~150 LOC  (non-local exit support、setjmp/longjmp wrap)
+└── error.rs       ~30 LOC
+                  ─────
+                  ~430 LOC
+#+end_src
+
+これが ChatGPT 議論で抜けていた項目。GC barrier (SIGSEGV write fault)、
+non-local exit (=throw= / =signal= / =condition-case= の unwind)、SIGFPE
+(divide by zero) 等を Elisp 側 =nelisp-signal.el= に dispatch する。
+
+** 4.5 main / lib (= entry + FFI surface)
+
+#+begin_src text :tangle no
+src/main.rs       ~150 LOC  (argv parse、image boot、entry jump)
+src/lib.rs        ~100 LOC  (cdylib FFI surface = syscall + image_load)
+src/trap.rs        ~80 LOC  (panic, abort handlers)
+                  ─────
+                  ~330 LOC
+#+end_src
+
+** 4.6 合計
+
+#+begin_src text :tangle no
+syscall/   2,042
+image/       550
+exec_mem/    200
+signal/      430
+main+lib+trap 330
+─────────────────
+            3,552 LOC  (Doc 47 後 nelisp-runtime crate target)
+#+end_src
+
+15,273 (元) → 10,325 (post Wave 3) → **3,552** (Doc 47 後)、約 4.3x の
+削減。target 上限 4,000 LOC に余裕 ~450 LOC。
+
+* §5 Open questions
+
+** 5.1 Q1 — Doc 44 完了を待つか並列にするか
+
+Doc 44 は LOCKED で進行中。Doc 47 を Doc 44 完了後の sequential phase
+にするか、Doc 44 の reader/eval を初めから =build-tool/= 配下に書く
+parallel phase にするか。
+
+  *推奨*: Doc 44 を =nelisp-runtime/= に着地させてから =git mv= で
+  =build-tool/= に移す sequential。理由は Doc 44 単体での E2E 検証
+  (= bin/anvil-runtime --strict-no-emacs MCP server PASS) が image
+  format 設計の正解 set を絞り込むため。並列化すると image format
+  が untested abstraction として腐る。
+
+** 5.2 Q2 — image format versioning policy
+
+NlImage v1 を ABI として固定したあと、v2 への移行 path をどう設計するか。
+
+  *推奨*: seed が認識する =NL_IMAGE_ABI_VERSION_MAX= を build-time const
+  にし、それ未満を accept、より上は reject (= forward-compat なし、
+  backward-compat あり)。image 側に v2-only 機能を入れたら v2 seed が
+  必要、v1 image は v2 seed でも load 可。SBCL の =SLOT-ACCESS-VERSION=
+  と同 pattern。
+
+** 5.3 Q3 — relocation 戦略 (PIC vs reloc table)
+
+native code arena を position-independent code (PIC) で生成すれば
+relocation table は heap の絶対 pointer 分だけで済む。=nelisp-cc= が
+PIC を出せるか未確認。
+
+  *推奨*: Phase 7 cc PIC 対応の有無を Phase 1 (image format spec freeze)
+  で確認、出せなければ reloc table を native arena 内 absolute call
+  / load にも拡張。worst case 数 KB 程度の table size なので問題ない
+  はず。
+
+** 5.4 Q4 — sqlite を runtime に残すか optional crate に降格するか
+
+現 =sqlite.rs= 623 LOC は runtime crate 内。極小主義の貫徹なら
+=nelisp-sqlite-rs= dyn module に分離。ただし Doc 27/28 で sqlite を
+=anvil-state= の primary backing store にした経緯があり、image boot
+直後から sqlite が無いと state restore が動かない可能性あり。
+
+  *推奨*: phase 9 (= 最後) で計測、cold-init path で sqlite 必須なら
+  runtime に残し LOC budget を 4,500 に上方修正。dynamic load で
+  間に合うなら optional 化。
+
+** 5.5 Q5 — Windows path
+
+Doc 47 は Linux + macOS 前提で書いた。Windows ConPTY / mmap セマンティクス /
+=VirtualAlloc= の違いを image format level でどう吸収するか。
+
+  *推奨*: Stage D Phase 6.4 (= Doc 18 §10.5) と合流、Windows 対応は
+  =image/format.rs= の =target_os= field を追加して image 自体を
+  platform-specific binary とする。クロスプラットフォーム image は
+  non-goal。
+
+** 5.6 Q6 — debug experience の劣化
+
+Rust evaluator を消すと =RUST_LOG= / =cargo test= で eval を inspect
+できなくなる。代替手段は?
+
+  *推奨*: Elisp 側 =nelisp-debug-eval= MCP tool を Phase 7 で expose、
+  build-tool crate 側にも =nelisp-mint-image --eval-trace= で image 焼き
+  時の eval を log できるようにする。ship runtime には debug hook を
+  入れない (= 極小化方針優先)。
+
+* §6 関連 doc / memory
+
+- Doc 27 — Phase 7 C runtime self-impl (= AOT native cc 系)
+- Doc 28 — Phase 7.1 native compiler (= image native arena 生成元)
+- Doc 32 — stage-d 全体 (= bin/anvil 起動経路)
+- Doc 33 — NeLisp v1.x architecture (= 北極星)
+- Doc 38 — Claude self-extension SDK
+- Doc 44 — Phase 8.0 Rust-side minimal interpreter (= 本 doc precondition)
+- Doc 46 — architecture α boundary final (= 本 doc 着手 enabling)
+
+memory:
+- =feedback_nelisp_core_vs_layer2_boundary.md= — 言語 rule vs OS API 軸
+- =feedback_nelisp_perf_not_elisp_interpreter.md= — Phase 7+ native cc 前提
+- =feedback_anvil_uses_nelisp_architecture.md= — architecture α delegate chain
+- =project_stage_d_standalone.md= — Stage D 配布 track
+
+* §7 LOCK 条件
+
+本 doc は **DRAFT**。LOCK 移行条件:
+1. zawatton sign-off で Q1〜Q6 の推奨を採用 / 修正 / 留保のいずれかに確定
+2. =nelisp-runtime/src/image/format.rs= に NlImageHeader を struct stub で commit (= Doc 47 §2.2 の binary fix)
+3. =build-tool/Cargo.toml= の skeleton を新設、cargo workspace に追加
+4. README.org の roadmap §X に「Phase 8.1 = Doc 47 ship」を追記
+
+LOCK 後、§3.1 Phase 1 (image format spec freeze) から sequential 着手。
