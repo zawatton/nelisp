@@ -1,0 +1,295 @@
+#+TITLE: Doc 46 — architecture α boundary final (3-wave cleanup record)
+#+DATE: 2026-04-29
+#+AUTHOR: zawatton + Claude
+#+STATUS: LOCKED-2026-04-29
+#+DEPENDS_ON: handoff `architecture_correction_anvil_uses_nelisp_2026-04-25.org' (LOCKED), Doc 16/17/18/19/20/24/25/26/45 (archived / superseded)
+
+* §0 要旨 (TL;DR)
+
+architecture α (handoff 2026-04-25 LOCKED) を 1 セッション内 3 wave で
+完成させた記録。
+
+  Wave 1 — `packages/nelisp-server/' / `packages/nelisp-tools/' (Elisp) 削除
+  Wave 2 — anvil-eval に NeLisp interpreter backend (`nelisp-eval' MCP tool) 追加
+  Wave 3 — Rust `anvil_*_registry' / `mcp/' / 2 binary を `anvil-runtime/' 別 crate に切出し
+
+最終 boundary:
+
+#+begin_example
+[Claude Code MCP client]
+   ↓ stdio
+[bin/anvil mcp serve]                                  bash launcher
+   ├── Emacs path (default)        emacs --batch -L anvil-lib -L src ...
+   │                                  -l anvil-server -l anvil-server-commands
+   │                                  -f anvil-server-stage-d-headless-run
+   │                                ↓ (require) / fboundp guard
+   │                                [anvil-XXX module] → [nelisp-XXX library]
+   │                                                       ↓ Emacs module load
+   │                                                     [nelisp-runtime cdylib]
+   │
+   └── --no-emacs path             $ANVIL_HOME/bin/anvil-runtime
+                                     │ (anvil-runtime crate)
+                                     ↓ path dep
+                                   [nelisp-runtime crate]   bridge / eval / reader / sqlite / syscall
+                                                              + nelisp interpreter binary
+#+end_example
+
+NeLisp 側に anvil 名前空間ゼロ、anvil 側に MCP 責務集約。両者は path
+dependency / subprocess 経由でだけ握手する。
+
+* §1 Motivation
+
+** 1.1 何が問題だったか
+
+2026-04-24 〜 25 の Phase 5-E (Doc 16) / 5-F.1-2 (Doc 17/19) / 6.5/6.6
+(Doc 25/26) で *NeLisp 側に anvil 機能を生やす* 方向で進めていた:
+
+- =packages/nelisp-server/= = MCP server scaffold (351 LOC)
+- =packages/nelisp-tools/= = 13 deftool re-impl (972 LOC)
+- =nelisp-runtime/src/anvil_*_registry.rs= = 5 file / 3837 LOC
+- =nelisp-runtime/src/mcp/= = MCP protocol / dispatch / tool
+- =bin/anvil-runtime= / =bin/anvil-mcp-demo= = 2 binary in nelisp-runtime crate
+
+handoff =architecture_correction_anvil_uses_nelisp_2026-04-25.org=
+§1.2 (LOCKED 2026-04-25) で方向転換:
+
+#+begin_quote
+anvil-org-index を nelisp-XXX のように clone port するのをやめてほしい。
+あくまで anvil-org-index を NeLisp を使用するように置き換えていって
+ほしい。anvil 側の機能として残したい。でないと anvil の良さがなくなる。
+#+end_quote
+
+しかし方向転換以降も *removal は手付かず* で、3 ヶ月分の負債が残った。
+
+** 1.2 Wave 戦略
+
+「Phase 9a (= anvil.el を NeLisp interpreter 上で起動) で nelisp-emacs-compat
+を MVP 拡張する」path は誤解だった (1-3 週間規模)。
+
+正しい手 = 「NeLisp 側に居る anvil 機能を anvil 側に *戻す*」(2-4h 規模):
+
+- Wave 1: anvil.el がすでに完全カバー済の Elisp 重複は単純削除
+- Wave 2: anvil 側から NeLisp interpreter を呼ぶ (subprocess 1 tool)
+- Wave 3: Rust 側を sibling crate に切出し path dep に
+
+* §2 Wave 1 — Elisp 削除 (nelisp main 3a0f18a)
+
+** 2.1 削除
+
+| path | LOC | 機能 |
+|------+-----+------|
+| =packages/nelisp-server/src/nelisp-server.el= | 351 | MCP 2024-11-05 + JSON-RPC server spine |
+| =packages/nelisp-tools/src/nelisp-tools.el= | 972 | 13 deftool (file/git/data/state ops) |
+| =test/nelisp-server-smoke.sh= | — | `make smoke' driver |
+| =test/nelisp-deftool-test.el= | — | depends on nelisp-server |
+| =docs/design/16-forecast/nelisp-server-sketch.el= | — | Phase 5-E sketch |
+
+** 2.2 配線整理
+
+- =bin/anvil cmd_mcp_serve=: dead nelisp-server fallback exec path 削除 → anvil.el headless が唯一の serve mode
+- =bin/anvil cmd_doctor= / =cmd_tools_list= / =cmd_version=: anvil.el surface に re-target
+- =Makefile=: =smoke= target / =.PHONY= entry 削除
+- =tools/build-bundled-tarball.sh=: =-l nelisp-server -l nelisp-tools= probe を =(require 'cl-lib) (require 'json) (require 'ert)= baseline に
+- =test/nelisp-bundled-tarball-test.el=: nelisp-tools.el copy 不要化、tarball src-presence assertion 一般化
+- =packages/nelisp-{defs,org}-index/=: enable docstring を architecture α delegation 文言に refresh
+
+** 2.3 検証
+
+- =make test= 2380 / 2257 pass / 0 unexpected / 123 skipped
+- =make compile= 0 warning (=byte-compile-error-on-warn t=)
+- =bin/anvil mcp serve= smoke 41 tools / nelisp- prefix ゼロ
+- =bin/anvil version= / =tools-list= 250 tools enumerated offline (anvil.el surface)
+
+* §3 Wave 2 — anvil-eval に NeLisp backend (anvil.el develop bf0baff)
+
+** 3.1 surface
+
+新 MCP tool =nelisp-eval= (intent eval, layer dev):
+
+#+begin_src elisp
+(defun anvil-eval--nelisp (expression)
+  ;; Spawn `nelisp eval EXPR' subprocess, capture stdout/stderr
+  ;; separately, surface non-zero exit as `error', append stderr as
+  ;; `;; stderr:' suffix on warnings.
+  ...)
+#+end_src
+
+新 customisable:
+
+- =anvil-eval-nelisp-binary= — explicit override path
+- =anvil-eval-nelisp-timeout= — sync timeout (default 30s)
+
+helper:
+
+- =anvil-eval--locate-nelisp-binary= — 解決順 = override > =$NELISP_BIN= > =executable-find= > known dev/install paths、daemon lifetime cache
+
+** 3.2 用途
+
+- *portability validation*: 同じ form を NeLisp の pure Elisp runtime で評価して挙動一致を確認
+- *sandbox eval*: anvil-* / Emacs buffer / customisation 一切から isolated
+- *NeLisp-only delegate path 検証*: anvil-XXX が fboundp guard で nelisp-XXX を呼ぶ経路の health check
+
+** 3.3 ERT (8 tests)
+
+- resolver 3: explicit override / $NELISP_BIN / cache
+- round-trip 3: =(+ 1 2)= → =3=、=:foo= → =:foo=、=(length "hello")= → =5=
+- error 1: missing binary
+- registration 1: enable/disable
+
+binary 不在環境では graceful skip。
+
+* §4 Wave 3 — Rust crate split (nelisp main e94f662)
+
+** 4.1 移動
+
+| from | to | LOC |
+|------+----+-----|
+| =nelisp-runtime/src/anvil_data_registry.rs= | =anvil-runtime/src/anvil_data_registry.rs= | 508 |
+| =nelisp-runtime/src/anvil_file_registry.rs= | =anvil-runtime/src/anvil_file_registry.rs= | 657 |
+| =nelisp-runtime/src/anvil_host_registry.rs= | =anvil-runtime/src/anvil_host_registry.rs= | 1727 |
+| =nelisp-runtime/src/anvil_shell_filter_registry.rs= | =anvil-runtime/src/anvil_shell_filter_registry.rs= | 656 |
+| =nelisp-runtime/src/anvil_tools_registry.rs= | =anvil-runtime/src/anvil_tools_registry.rs= | 289 |
+| =nelisp-runtime/src/mcp/= (4 file) | =anvil-runtime/src/mcp/= (4 file) | — |
+| =nelisp-runtime/src/bin/anvil-runtime.rs= | =anvil-runtime/src/bin/anvil-runtime.rs= | — |
+| =nelisp-runtime/src/bin/anvil-mcp-demo.rs= | =anvil-runtime/src/bin/anvil-mcp-demo.rs= | — |
+
+** 4.2 cross-crate import 書換 (3 箇所)
+
+- =anvil_host_registry.rs=: =use crate::{bridge,eval,reader}= → =use nelisp_runtime::{...}=
+- =bin/anvil-runtime.rs=: =nelisp_runtime::{anvil_tools_registry,mcp}= → =anvil_runtime::{...}=
+- =bin/anvil-mcp-demo.rs=: =nelisp_runtime::mcp::serve_stdio= → =anvil_runtime::mcp::serve_stdio=
+
+** 4.3 Cargo
+
+- 新 =anvil-runtime/Cargo.toml=: =[lib]= + =[[bin]] anvil-runtime= + =[[bin]] anvil-mcp-demo=、=nelisp-runtime = { path = "../nelisp-runtime" }= 依存
+- 旧 =nelisp-runtime/Cargo.toml=: 上記 2 binary entry 削除、ポインタコメント追加
+- =nelisp-runtime/src/lib.rs=: =pub mod anvil_*= / =pub mod mcp= 削除
+- =anvil-runtime/.gitignore=: =/target/=
+
+** 4.4 配線
+
+- =bin/anvil anvil_runtime_bin=: layered fallback (=bundled bin/anvil-runtime= > =anvil-runtime/target/release/= > 旧 =nelisp-runtime/target/release/=)
+- =Makefile=: =runtime= / =runtime-test= / =runtime-clean= 両 crate iterate、新 =ANVIL_RUNTIME_DIR := anvil-runtime=
+- =tools/build-standalone-tarball.sh=: 新 crate target を優先、旧 location fallback
+- =tools/build-bundled-tarball.sh=: anvil-runtime binary を =$STAGE_DIR/bin/anvil-runtime= に copy + strip (Wave 3 完了後の bundle gap fix、commit 421e29b)
+
+** 4.5 検証
+
+- =make test= 2380 / 2257 pass / 0 unexpected (Wave 1 と同じ baseline)
+- =make runtime= 両 crate clean build (nelisp-runtime + anvil-runtime)
+- =bin/anvil mcp serve= (Emacs path) 41 tools 維持
+- =bin/anvil mcp serve --strict-no-emacs= (Rust path) MCP initialise OK
+- =nelisp eval "(+ 1 2)"= → =3= 不変
+
+* §5 最終 boundary 図
+
+** 5.1 Source layout
+
+#+begin_example
+nelisp/
+├── nelisp-runtime/                 = pure NeLisp interpreter (Rust)
+│   ├── Cargo.toml                  [lib + bin/nelisp + bin/nelisp-runtime]
+│   ├── src/
+│   │   ├── bridge.rs               (Elisp ↔ NeLisp bridge)
+│   │   ├── eval.rs                 (NeLisp eval engine)
+│   │   ├── reader.rs               (S-expr reader)
+│   │   ├── sqlite.rs               (FFI binding)
+│   │   ├── syscall/                (10 OS thin wrappers)
+│   │   ├── lib.rs                  (no anvil_* / no mcp module)
+│   │   ├── main.rs                 (nelisp-runtime --syscall-smoke)
+│   │   └── bin/nelisp.rs           (nelisp interpreter CLI)
+│   └── c-bindings/...
+├── anvil-runtime/                  = anvil MCP server in Rust
+│   ├── Cargo.toml                  [lib + bin/anvil-runtime + bin/anvil-mcp-demo]
+│   ├── src/
+│   │   ├── anvil_data_registry.rs
+│   │   ├── anvil_file_registry.rs
+│   │   ├── anvil_host_registry.rs   ← uses nelisp_runtime::{bridge,eval,reader}
+│   │   ├── anvil_shell_filter_registry.rs
+│   │   ├── anvil_tools_registry.rs
+│   │   ├── mcp/                     (4 file)
+│   │   ├── lib.rs                   (anvil_runtime crate root)
+│   │   └── bin/{anvil-runtime,anvil-mcp-demo}.rs
+│   └── .gitignore                  (/target/)
+├── packages/                       = NeLisp Elisp libraries
+│   ├── nelisp-{actor,base64,...}   (Layer B / C / D, no nelisp-server / nelisp-tools)
+│   └── ...
+├── src/                            = NeLisp Elisp core
+│   ├── nelisp-{eval,read,reader,...}.el
+│   └── nelisp-emacs-compat*.el     (Phase 9a MVP — anvil.el on NeLisp は scope 外)
+├── bin/anvil                       = bash launcher
+└── tools/build-{bundled,standalone}-tarball.sh
+#+end_example
+
+** 5.2 anvil.el side
+
+#+begin_example
+anvil.el/
+├── anvil-server.el                 = MCP server core
+├── anvil-server-commands.el        = stage-d-headless-run + manifest
+├── anvil-{file,git,data,state,...}.el  = anvil-XXX module (50+)
+│                                     ↓ fboundp delegate
+│                                   [nelisp-XXX library on Emacs]
+├── anvil-eval.el                   = emacs-eval × 4 + nelisp-eval × 1
+└── tests/anvil-eval-test.el        = 8 ERT for nelisp backend
+#+end_example
+
+** 5.3 launcher 経路
+
+| client request | bin/anvil dispatch | spawn target | tool surface |
+|----------------+---------------------+--------------+--------------|
+| =mcp serve= (default) | Emacs path | =emacs --batch + anvil.el= | 41 tools (headless profile) |
+| =mcp serve --strict-no-emacs= | Rust path | =anvil-runtime= binary | tools registered in Rust |
+| =mcp serve --no-emacs= (bundled present) | Rust path | =$ANVIL_HOME/bin/anvil-runtime= | 同上 |
+
+** 5.4 path dep / subprocess の握手
+
+  - anvil-runtime crate → nelisp-runtime crate: =[dependencies] nelisp-runtime = { path = "../nelisp-runtime" }=
+  - anvil.el (Emacs) → nelisp-XXX libraries: =(require 'nelisp-XXX nil 'noerror)= + fboundp guard
+  - anvil.el (Emacs) → NeLisp interpreter: =anvil-eval--nelisp= が =nelisp eval EXPR= subprocess を spawn
+
+NeLisp は Rust crate level でも Elisp library level でも *anvil の知識を持たない*。
+
+* §6 後ろ倒し / non-goals
+
+** 6.1 Phase 9a (anvil.el on NeLisp interpreter)
+
+anvil.el の interpreter を Emacs から NeLisp に置き換えるのは別 phase で
+=nelisp-emacs-compat= MVP 拡張が必要 (=load-path= 配線 / 各 anvil-XXX
+module が引く Emacs API surface fill)。本 doc の scope 外。Wave 2 で
+anvil 側から *NeLisp interpreter を subprocess として使う* 経路は確立済み
+(=anvil-eval--nelisp=)、これが Phase 9a の前段に活用できる。
+
+** 6.2 Doc 45 §3.3 Layer D 更新
+
+Doc 45 §3.3 (DRAFT 2026-04-27) は v1.0 後の package split 設計で =nelisp-server=
+/ =nelisp-tools= を Layer D (extension/glue) に分類していたが、Wave 1 で
+両方 *removed* になった。Doc 45 LOCK 時に該当エントリを削除すること。
+
+** 6.3 旧 design doc archive ステータス化
+
+以下は Wave 1-3 で superseded、archive ステータスへ:
+
+- Doc 16 (Phase 5-E anvil port) — nelisp-server scaffold
+- Doc 17 (Phase 5-F state port) — Layer D 配線
+- Doc 19 (Phase 5-F.2 tool port) — nelisp-tools 13 deftool
+- Doc 20 (Phase 5-F.3 audit) — same
+- Doc 24 (Phase 6.2 anvil-http) — clone port pre-handoff
+- Doc 25 (Phase 6.5 nelisp-defs-index) — same
+- Doc 26 (Phase 6.6 nelisp-org-index) — same
+
+これらは LOCKED のまま archive 化、参照は本 doc が引き継ぐ。
+
+* §7 LOCK criteria (already met)
+
+- [X] Wave 1: nelisp main 3a0f18a SHIPPED + push
+- [X] Wave 2: anvil.el develop bf0baff SHIPPED + push
+- [X] Wave 3: nelisp main e94f662 SHIPPED + push
+- [X] bundle fix: nelisp main 421e29b SHIPPED + push
+- [X] make test 2380 / 0 unexpected (3 wave 全段で baseline 維持)
+- [X] make runtime 両 crate clean build
+- [X] bin/anvil mcp serve (Emacs path) 41 tools
+- [X] bin/anvil mcp serve --strict-no-emacs (Rust path) MCP initialise OK
+- [X] anvil.el side: anvil-eval-test.el 8 ERT pass
+
+LOCK status set to =LOCKED-2026-04-29=.
