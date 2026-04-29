@@ -13,9 +13,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nelisp_runtime::image::{
-    read_header, write_empty_image, write_image_with_heap_and_native_entry, ImageError,
-    NlImageHeader, NL_IMAGE_ABI_VERSION, NL_IMAGE_COMPRESSION_NONE, NL_IMAGE_HEADER_SIZE,
-    NL_IMAGE_MAGIC, NL_IMAGE_PAGE_SIZE,
+    read_header, relocs_from_bytes, write_empty_image, write_image_with_heap_and_native_entry,
+    write_image_with_heap_code_and_relocs, ImageError, ImageReloc, NlImageHeader,
+    NL_IMAGE_ABI_VERSION, NL_IMAGE_COMPRESSION_NONE, NL_IMAGE_HEADER_SIZE, NL_IMAGE_MAGIC,
+    NL_IMAGE_PAGE_SIZE, NL_RELOC_KIND_HEAP_BASE_PLUS_OFFSET, NL_RELOC_RECORD_SIZE,
 };
 
 static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -141,6 +142,44 @@ fn heap_image_round_trips_through_disk() {
     let bytes = fs::read(&path).expect("re-read failed");
     let p = NL_IMAGE_PAGE_SIZE as usize;
     assert_eq!(&bytes[p..p + heap.len()], heap.as_slice());
+
+    let _ = fs::remove_file(&path);
+}
+
+#[test]
+fn reloc_image_round_trips_through_disk() {
+    let path = fresh_temp_path("reloc-rt");
+    let native = vec![0xc3u8];
+    let heap = {
+        let mut heap = vec![0u8; 16];
+        heap[8] = 0x42;
+        heap
+    };
+    let relocs = [ImageReloc {
+        kind: NL_RELOC_KIND_HEAP_BASE_PLUS_OFFSET,
+        _pad: 0,
+        write_at: 0,
+        addend: 8,
+    }];
+
+    write_image_with_heap_code_and_relocs(&path, &native, &heap, &relocs)
+        .expect("dumper failed");
+
+    let hdr = read_header(&path).expect("loader rejected reloc image");
+    assert_eq!(hdr.heap_offset, NL_IMAGE_PAGE_SIZE);
+    assert_eq!(hdr.heap_size, heap.len() as u64);
+    assert_eq!(hdr.code_offset, 2 * NL_IMAGE_PAGE_SIZE);
+    assert_eq!(hdr.code_size, native.len() as u64);
+    assert_eq!(hdr.reloc_offset, 3 * NL_IMAGE_PAGE_SIZE);
+    assert_eq!(hdr.reloc_count, 1);
+
+    let bytes = fs::read(&path).expect("re-read failed");
+    let reloc_start = hdr.reloc_offset as usize;
+    let reloc_end = reloc_start + NL_RELOC_RECORD_SIZE;
+    assert_eq!(
+        relocs_from_bytes(&bytes[reloc_start..reloc_end], relocs.len()).unwrap(),
+        relocs
+    );
 
     let _ = fs::remove_file(&path);
 }

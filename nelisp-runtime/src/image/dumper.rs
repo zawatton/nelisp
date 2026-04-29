@@ -19,6 +19,7 @@ use std::path::Path;
 
 use super::error::ImageError;
 use super::format::{NlImageHeader, NL_IMAGE_HEADER_SIZE, NL_IMAGE_PAGE_SIZE};
+use super::reloc::{relocs_to_bytes, ImageReloc};
 
 /// Write a Stage 2 "empty" image: a freshly initialised `NlImageHeader`
 /// (magic = `NLIMAGE\0`, abi = 1, all sizes / offsets = 0) and nothing
@@ -172,10 +173,72 @@ pub fn write_image_with_heap_and_native_entry<P: AsRef<Path>>(
     Ok(())
 }
 
+pub fn write_image_with_heap_code_and_relocs<P: AsRef<Path>>(
+    path: P,
+    native_bytes: &[u8],
+    heap_bytes: &[u8],
+    relocs: &[ImageReloc],
+) -> Result<(), ImageError> {
+    if native_bytes.is_empty() {
+        return Err(ImageError::UnsupportedTarget {
+            reason: "native_bytes empty (no asset for this target)",
+        });
+    }
+
+    let path = path.as_ref();
+    let page = NL_IMAGE_PAGE_SIZE;
+    let heap_offset = page;
+    let heap_size = heap_bytes.len() as u64;
+    let heap_padded = ((heap_size + page - 1) / page) * page;
+    let code_offset = heap_offset + heap_padded;
+    let code_size = native_bytes.len() as u64;
+    let code_padded = ((code_size + page - 1) / page) * page;
+
+    let reloc_bytes = relocs_to_bytes(relocs);
+    let (reloc_offset, reloc_count, file_total_size) = if relocs.is_empty() {
+        (0, 0, code_offset + code_size)
+    } else {
+        let reloc_offset = code_offset + code_padded;
+        (
+            reloc_offset,
+            relocs.len() as u64,
+            reloc_offset + reloc_bytes.len() as u64,
+        )
+    };
+
+    let mut header = NlImageHeader::new_v1();
+    header.payload_len = file_total_size - NL_IMAGE_HEADER_SIZE as u64;
+    header.heap_offset = heap_offset;
+    header.heap_size = heap_size;
+    header.code_offset = code_offset;
+    header.code_size = code_size;
+    header.reloc_offset = reloc_offset;
+    header.reloc_count = reloc_count;
+    header.entry_offset = 0;
+
+    let mut buf = Vec::with_capacity(file_total_size as usize);
+    buf.extend_from_slice(&header.to_bytes());
+    buf.resize(heap_offset as usize, 0);
+    buf.extend_from_slice(heap_bytes);
+    buf.resize(code_offset as usize, 0);
+    buf.extend_from_slice(native_bytes);
+    if !relocs.is_empty() {
+        buf.resize((code_offset + code_padded) as usize, 0);
+        buf.extend_from_slice(&reloc_bytes);
+    }
+
+    fs::write(path, &buf).map_err(|source| ImageError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::image::loader::read_header;
+    use crate::image::reloc::{relocs_from_bytes, NL_RELOC_RECORD_SIZE};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -297,5 +360,61 @@ mod tests {
             other => panic!("expected UnsupportedTarget, got {:?}", other),
         }
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn reloc_layout_is_correct() {
+        let native = vec![0xc3u8];
+        let heap = vec![0u8; 16];
+        let relocs = [ImageReloc {
+            kind: 1,
+            _pad: 0,
+            write_at: 0,
+            addend: 8,
+        }];
+        let path = temp_path("reloc_layout");
+
+        write_image_with_heap_code_and_relocs(&path, &native, &heap, &relocs)
+            .expect("dumper failed");
+
+        let bytes = std::fs::read(&path).unwrap();
+        let hdr = read_header(&path).expect("loader rejected dumper output");
+        let page = NL_IMAGE_PAGE_SIZE as usize;
+
+        assert_eq!(bytes.len(), 3 * page + (relocs.len() * NL_RELOC_RECORD_SIZE));
+        assert_eq!(hdr.heap_offset, page as u64);
+        assert_eq!(hdr.heap_size, heap.len() as u64);
+        assert_eq!(hdr.code_offset, 2 * page as u64);
+        assert_eq!(hdr.code_size, native.len() as u64);
+        assert_eq!(hdr.reloc_offset, 3 * page as u64);
+        assert_eq!(hdr.reloc_count, 1);
+
+        let reloc_disk = &bytes[hdr.reloc_offset as usize
+            ..hdr.reloc_offset as usize + NL_RELOC_RECORD_SIZE];
+        assert_eq!(relocs_from_bytes(reloc_disk, 1).unwrap(), relocs);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn empty_relocs_match_stage4a_layout() {
+        let native = vec![0x90u8, 0xc3];
+        let heap = vec![1u8, 2, 3];
+        let path_a = temp_path("reloc_empty_a");
+        let path_b = temp_path("reloc_empty_b");
+
+        write_image_with_heap_and_native_entry(&path_a, &native, &heap).unwrap();
+        write_image_with_heap_code_and_relocs(&path_b, &native, &heap, &[]).unwrap();
+
+        let bytes_a = std::fs::read(&path_a).unwrap();
+        let bytes_b = std::fs::read(&path_b).unwrap();
+        assert_eq!(bytes_a, bytes_b);
+
+        let hdr = read_header(&path_b).unwrap();
+        assert_eq!(hdr.reloc_offset, 0);
+        assert_eq!(hdr.reloc_count, 0);
+
+        let _ = std::fs::remove_file(&path_a);
+        let _ = std::fs::remove_file(&path_b);
     }
 }

@@ -281,6 +281,47 @@ fn mint_heap_skeleton_image(path: &str, heap_byte: u8) -> i32 {
     }
 }
 
+/// Doc 47 Stage 4b: write a NlImage v1 file whose heap carries a
+/// placeholder pointer that the loader patches via the relocation
+/// table.  The native code then dereferences it for byte 0x42.
+fn mint_reloc_skeleton_image(path: &str) -> i32 {
+    if !nelisp_runtime::image::HAS_NATIVE_LOAD_HEAP_THROUGH_PTR {
+        eprintln!(
+            "nelisp-runtime: mint-reloc-skeleton-image: \
+             no canned native heap-through-ptr asset for this target arch"
+        );
+        return 12;
+    }
+    let mut heap = vec![0u8; 16];
+    heap[8] = 0x42;
+    let relocs = [nelisp_runtime::image::ImageReloc {
+        kind: nelisp_runtime::image::NL_RELOC_KIND_HEAP_BASE_PLUS_OFFSET,
+        _pad: 0,
+        write_at: 0,
+        addend: 8,
+    }];
+    match nelisp_runtime::image::write_image_with_heap_code_and_relocs(
+        path,
+        nelisp_runtime::image::NATIVE_LOAD_HEAP_THROUGH_PTR,
+        &heap,
+        &relocs,
+    ) {
+        Ok(()) => {
+            println!(
+                "minted reloc-skeleton NlImage v{} at {} \
+                 (heap_size=16 reloc_count=1 expected_exit=66)",
+                nelisp_runtime::image::NL_IMAGE_ABI_VERSION,
+                path
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("nelisp-runtime: mint-reloc-skeleton-image: {}", e);
+            12
+        }
+    }
+}
+
 /// Doc 47 Stage 3: read the image at `path', map its code segment
 /// into an executable JIT page, jump to the entry, return whatever
 /// `i32' the entry produced as this process's exit code.
@@ -380,6 +421,13 @@ fn main() {
                 }
             }
         }
+        Some("mint-reloc-skeleton-image") => match args.get(2).map(|s| s.as_str()) {
+            Some(path) => mint_reloc_skeleton_image(path),
+            None => {
+                eprintln!("usage: nelisp-runtime mint-reloc-skeleton-image <out-path>");
+                1
+            }
+        },
         Some("boot-from-image") => match args.get(2).map(|s| s.as_str()) {
             Some(path) => boot_from_image(path),
             None => {
@@ -396,6 +444,7 @@ fn main() {
             eprintln!(
                 "       nelisp-runtime mint-heap-skeleton-image <out-path> [<heap-byte>]"
             );
+            eprintln!("       nelisp-runtime mint-reloc-skeleton-image <out-path>");
             eprintln!("       nelisp-runtime verify-image <image-path>");
             eprintln!("       nelisp-runtime boot-from-image <image-path>");
             2

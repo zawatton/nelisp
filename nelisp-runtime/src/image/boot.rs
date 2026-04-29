@@ -27,6 +27,7 @@ use super::error::ImageError;
 use super::format::NL_IMAGE_PAGE_SIZE;
 use super::loader::read_header;
 use super::native_assets::NlImageEntry;
+use super::reloc::{apply_relocations, relocs_from_bytes, NL_RELOC_RECORD_SIZE};
 
 /// Boot the image at `path`: read header, materialise the code
 /// segment into an executable JIT page, jump to entry, return the
@@ -165,6 +166,53 @@ pub unsafe fn boot_from_image<P: AsRef<Path>>(path: P) -> Result<i32, ImageError
         }
         None => None,
     };
+
+    if header.reloc_count > 0 {
+        let mut file = File::open(path).map_err(|source| ImageError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        file.seek(SeekFrom::Start(header.reloc_offset))
+            .map_err(|source| ImageError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        let reloc_bytes_len = (header.reloc_count as usize)
+            .checked_mul(NL_RELOC_RECORD_SIZE)
+            .ok_or_else(|| ImageError::Io {
+                path: path.to_path_buf(),
+                source: std::io::Error::other("reloc table malformed"),
+            })?;
+        let mut reloc_bytes = vec![0u8; reloc_bytes_len];
+        file.read_exact(&mut reloc_bytes).map_err(|source| ImageError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let relocs = relocs_from_bytes(&reloc_bytes, header.reloc_count as usize).ok_or_else(
+            || ImageError::Io {
+                path: path.to_path_buf(),
+                source: std::io::Error::other("reloc table malformed"),
+            },
+        )?;
+        let (heap_base, heap_mapped_size) = match heap_mapping {
+            Some((hp, sz)) => (hp, sz),
+            None => {
+                let _ = crate::nelisp_syscall_munmap(p, mapped_size);
+                return Err(ImageError::Io {
+                    path: path.to_path_buf(),
+                    source: std::io::Error::other("relocation apply failed: OutOfBounds { write_at: 0, heap_size: 0 }"),
+                });
+            }
+        };
+        if let Err(err) = unsafe { apply_relocations(heap_base, header.heap_size as usize, &relocs) } {
+            let _ = crate::nelisp_syscall_munmap(heap_base, heap_mapped_size);
+            let _ = crate::nelisp_syscall_munmap(p, mapped_size);
+            return Err(ImageError::Io {
+                path: path.to_path_buf(),
+                source: std::io::Error::other(format!("relocation apply failed: {:?}", err)),
+            });
+        }
+    }
 
     // Hand the page off to the CPU.
     let entry: NlImageEntry = std::mem::transmute(p.add(header.entry_offset as usize));
