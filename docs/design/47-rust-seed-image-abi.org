@@ -121,6 +121,25 @@ nelisp-runtime/src/   (= 10,325 LOC、main 2026-04-30)
 
 § = Doc 47 で消える / 大幅縮小、★ = 残す、△ = optional 化。
 
+** 1.3.1 Note: 並行ブランチ =feat/lexer-escape-extensions= の取り込み
+
+2026-04-30 朝、elisp-lsp NeLisp port (Phase 4) の都合で =reader/lexer.rs=
+に Elisp 標準 escape (=\a \b \d \e \f \s \v=) + useless-escape passthrough
++ punctuation char literal (=?,= =?(=) を緊急追加 (commit =574f424=、
++33 LOC、main 未 merge、project_elisp_lsp_nelisp_port.md 参照)。
+
+これは Doc 47 で **runtime に残す対象ではない**:
+- =reader/= 配下の変更 → §1.3 表で =§ 削除候補= に分類済
+- §3.1 Phase 6 (build-tool crate 切出し) で =git mv reader/ → build-tool/src/reader/=
+  と一緒に build-tool 側に移送される
+- 緊急処置として Rust 側で実装した経緯を尊重し、Doc 47 では「build-tool
+  crate に持っていく対象として記録」だけ行う、Rust 内では touch しない
+
+LOC への影響: post-Stage-2 (本 doc commit + image module 追加) +
+lexer-escape-extensions merge 想定で nelisp-runtime crate は約 10,719
++ 33 = ~10,752 LOC。Doc 47 §1.3 表の reader = 1,816 LOC は将来 +33 LOC
+として build-tool に移送、=runtime/= 側 ~3,552 LOC target は影響なし。
+
 * §2 Architecture
 
 ** 2.1 二重 crate 構造
