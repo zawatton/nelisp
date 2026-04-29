@@ -246,6 +246,41 @@ fn mint_skeleton_image(path: &str) -> i32 {
     }
 }
 
+/// Doc 47 Stage 4a: write a NlImage v1 file whose code segment is the
+/// canned `NATIVE_LOAD_HEAP_BYTE0' asset and whose heap segment is a
+/// single byte = `heap_byte`.  When booted, the entry returns that
+/// byte as the process exit code.  Walking-skeleton confirmation that
+/// the heap mmap + argv plumbing is correct end-to-end.
+fn mint_heap_skeleton_image(path: &str, heap_byte: u8) -> i32 {
+    if !nelisp_runtime::image::HAS_NATIVE_LOAD_HEAP_BYTE0 {
+        eprintln!(
+            "nelisp-runtime: mint-heap-skeleton-image: \
+             no canned native heap-load asset for this target arch"
+        );
+        return 11;
+    }
+    let heap_bytes = vec![heap_byte];
+    match nelisp_runtime::image::write_image_with_heap_and_native_entry(
+        path,
+        nelisp_runtime::image::NATIVE_LOAD_HEAP_BYTE0,
+        &heap_bytes,
+    ) {
+        Ok(()) => {
+            println!(
+                "minted heap-skeleton NlImage v{} at {} (heap_size=1 heap_byte={})",
+                nelisp_runtime::image::NL_IMAGE_ABI_VERSION,
+                path,
+                heap_byte
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("nelisp-runtime: mint-heap-skeleton-image: {}", e);
+            11
+        }
+    }
+}
+
 /// Doc 47 Stage 3: read the image at `path', map its code segment
 /// into an executable JIT page, jump to the entry, return whatever
 /// `i32' the entry produced as this process's exit code.
@@ -323,6 +358,28 @@ fn main() {
                 1
             }
         },
+        Some("mint-heap-skeleton-image") => {
+            match (args.get(2).map(|s| s.as_str()), args.get(3).map(|s| s.as_str())) {
+                (Some(path), Some(byte_str)) => match byte_str.parse::<u8>() {
+                    Ok(b) => mint_heap_skeleton_image(path, b),
+                    Err(_) => {
+                        eprintln!(
+                            "usage: nelisp-runtime mint-heap-skeleton-image \
+                             <out-path> [<heap-byte 0..255>]"
+                        );
+                        1
+                    }
+                },
+                (Some(path), None) => mint_heap_skeleton_image(path, 0x37),
+                _ => {
+                    eprintln!(
+                        "usage: nelisp-runtime mint-heap-skeleton-image \
+                         <out-path> [<heap-byte 0..255>]"
+                    );
+                    1
+                }
+            }
+        }
         Some("boot-from-image") => match args.get(2).map(|s| s.as_str()) {
             Some(path) => boot_from_image(path),
             None => {
@@ -336,6 +393,9 @@ fn main() {
             eprintln!("       nelisp-runtime exec-bytes <bytes-file>");
             eprintln!("       nelisp-runtime mint-empty-image <out-path>");
             eprintln!("       nelisp-runtime mint-skeleton-image <out-path>");
+            eprintln!(
+                "       nelisp-runtime mint-heap-skeleton-image <out-path> [<heap-byte>]"
+            );
             eprintln!("       nelisp-runtime verify-image <image-path>");
             eprintln!("       nelisp-runtime boot-from-image <image-path>");
             2

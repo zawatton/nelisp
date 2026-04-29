@@ -13,8 +13,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nelisp_runtime::image::{
-    read_header, write_empty_image, NlImageHeader, ImageError,
-    NL_IMAGE_ABI_VERSION, NL_IMAGE_COMPRESSION_NONE, NL_IMAGE_HEADER_SIZE, NL_IMAGE_MAGIC,
+    read_header, write_empty_image, write_image_with_heap_and_native_entry, ImageError,
+    NlImageHeader, NL_IMAGE_ABI_VERSION, NL_IMAGE_COMPRESSION_NONE, NL_IMAGE_HEADER_SIZE,
+    NL_IMAGE_MAGIC, NL_IMAGE_PAGE_SIZE,
 };
 
 static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -111,4 +112,35 @@ fn loader_rejects_missing_file() {
         Err(ImageError::Io { .. }) => {} // expected — ENOENT
         other => panic!("expected Io(ENOENT), got {:?}", other),
     }
+}
+
+#[test]
+fn heap_image_round_trips_through_disk() {
+    // Stage 4a: dumper writes a 2-page (header+heap, code) file, the
+    // loader is happy with the heap_offset / heap_size / code_offset
+    // it reads back from disk, and the actual heap byte the dumper
+    // wrote is at exactly `heap_offset` on the file.
+    let path = fresh_temp_path("heap-rt");
+    let native = vec![0xc3u8]; // ret — meaningless on this path, dumper doesn't execute
+    let heap = vec![0x55u8, 0x66, 0x77];
+
+    write_image_with_heap_and_native_entry(&path, &native, &heap)
+        .expect("dumper failed");
+
+    let hdr = read_header(&path).expect("loader rejected heap-skeleton image");
+    assert_eq!(hdr.heap_offset, NL_IMAGE_PAGE_SIZE);
+    assert_eq!(hdr.heap_size, heap.len() as u64);
+    assert_eq!(hdr.code_offset, 2 * NL_IMAGE_PAGE_SIZE);
+    assert_eq!(hdr.code_size, native.len() as u64);
+    assert_eq!(hdr.entry_offset, 0);
+    assert_eq!(hdr.reloc_count, 0);
+
+    // Re-read the file and verify the heap bytes landed at the right
+    // disk offset — guards against an off-by-one / wrong-page bug
+    // sneaking into the layout.
+    let bytes = fs::read(&path).expect("re-read failed");
+    let p = NL_IMAGE_PAGE_SIZE as usize;
+    assert_eq!(&bytes[p..p + heap.len()], heap.as_slice());
+
+    let _ = fs::remove_file(&path);
 }

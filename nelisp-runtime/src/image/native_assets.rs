@@ -46,3 +46,43 @@ pub type NlImageEntry = unsafe extern "C" fn(argc: i32, argv: *const *const u8) 
 /// of writing an empty code segment that boot-from-image would refuse.
 pub const HAS_NATIVE_RETURN_42: bool =
     cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
+
+/// Doc 47 Stage 4a — load byte 0 of `argv[0]` and return it as `i32`.
+/// Used to prove the heap mmap + argv plumbing end-to-end: the seed
+/// mmaps the heap segment RW, builds a one-element argv whose only
+/// element is the heap base pointer, and the canned code reads the
+/// first byte from that pointer.  If the heap is filled with byte
+/// `0x37`, the process exits with code `55`.
+///
+/// Per-architecture encodings (verified against System V AMD64 / AAPCS64):
+///   x86_64:
+///     48 8b 06            mov rax, [rsi]      (rsi = argv, [rsi] = argv[0] = heap_ptr)
+///     0f b6 00            movzx eax, byte [rax]
+///     c3                  ret
+///   aarch64:
+///     20 00 40 f9         ldr x0, [x1]        (x1 = argv, [x1] = argv[0] = heap_ptr)
+///     00 00 40 39         ldrb w0, [x0]
+///     c0 03 5f d6         ret
+#[cfg(target_arch = "x86_64")]
+pub const NATIVE_LOAD_HEAP_BYTE0: &[u8] = &[
+    0x48, 0x8b, 0x06, // mov rax, [rsi]
+    0x0f, 0xb6, 0x00, // movzx eax, byte [rax]
+    0xc3,             // ret
+];
+
+#[cfg(target_arch = "aarch64")]
+pub const NATIVE_LOAD_HEAP_BYTE0: &[u8] = &[
+    0x20, 0x00, 0x40, 0xf9, // ldr x0, [x1]
+    0x00, 0x00, 0x40, 0x39, // ldrb w0, [x0]
+    0xc0, 0x03, 0x5f, 0xd6, // ret
+];
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+pub const NATIVE_LOAD_HEAP_BYTE0: &[u8] = &[];
+
+/// Whether the current build targets an architecture for which
+/// `NATIVE_LOAD_HEAP_BYTE0' contains real machine code.  Mirrors the
+/// `HAS_NATIVE_RETURN_42' flag for Stage 3 so the CLI can refuse to
+/// mint on unsupported hosts before writing the file.
+pub const HAS_NATIVE_LOAD_HEAP_BYTE0: bool =
+    cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));

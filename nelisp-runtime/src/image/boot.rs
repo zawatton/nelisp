@@ -1,17 +1,21 @@
-//! Doc 47 Stage 3 — boot from a NlImage v1 file.
+//! Doc 47 Stage 3+4a — boot from a NlImage v1 file.
 //!
 //! Walking-skeleton path: read header, mmap the code segment into a
-//! JIT-capable page, jump to `entry_offset'.  No heap segment, no
-//! relocation, no signal handlers — that all lands in Stage 4 once
-//! this proves the loader / dumper / mmap / jit-write-protect /
-//! clear-icache / transmute chain works on real hardware.
+//! JIT-capable page, optionally mmap the heap segment as RW, jump to
+//! `entry_offset'.  When the image declares a heap (`header.heap_size
+//! > 0`), the seed builds a one-element argv array carrying the heap
+//! base pointer and calls `entry(1, &argv[0])` — the Stage 4a canned
+//! `NATIVE_LOAD_HEAP_BYTE0' asset reads `*argv[0]` to verify the
+//! plumbing.  No relocation, no signal handlers — those land in
+//! Stages 4b and 4c.
 //!
 //! See `image/native_assets.rs' for the canned x86_64 / aarch64
-//! "return 42" payload that exercises this path without dragging in
-//! the Rust evaluator.
+//! "return 42" / "return *argv[0]" payloads that exercise this path
+//! without dragging in the Rust evaluator.
 //!
-//! TODO(stage-4-heap): mmap heap segment + apply relocations.
-//! TODO(stage-4-signal): install sigaction handlers before jumping.
+//! TODO(stage-4b-reloc): apply relocations against the heap mapping
+//!     before calling entry.
+//! TODO(stage-4c-signal): install sigaction handlers before jumping.
 //! TODO(stage-3-seed-syscall): swap `File::open` for `nelisp_syscall_open`
 //!     once the seed crate is being carved out (per Doc 47 §4.1).
 
@@ -61,6 +65,25 @@ pub unsafe fn boot_from_image<P: AsRef<Path>>(path: P) -> Result<i32, ImageError
         path: path.to_path_buf(),
         source,
     })?;
+
+    // Stage 4a — pull the heap segment off disk too, while the file is
+    // still open.  An empty heap (`heap_size == 0`) is the Stage 3
+    // layout and skips this read entirely.
+    let heap_data: Option<Vec<u8>> = if header.heap_size > 0 {
+        file.seek(SeekFrom::Start(header.heap_offset))
+            .map_err(|source| ImageError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        let mut buf = vec![0u8; header.heap_size as usize];
+        file.read_exact(&mut buf).map_err(|source| ImageError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        Some(buf)
+    } else {
+        None
+    };
     drop(file);
 
     // mmap a page-aligned RWX region — same JIT dance the existing
@@ -106,10 +129,59 @@ pub unsafe fn boot_from_image<P: AsRef<Path>>(path: P) -> Result<i32, ImageError
     // `__clear_cache' only invalidates what changed.
     let _ = crate::nelisp_syscall_clear_icache(p, p.add(code.len()));
 
+    // Stage 4a heap mapping.  When the image carries a heap segment we
+    // mmap a fresh anonymous RW page, copy the bytes in, and pass the
+    // base pointer to the entry through `argv[0]`.  Cleanup is done
+    // *after* the entry returns; on any failure here we also unmap the
+    // already-installed code page so the caller sees a clean slate.
+    let heap_mapping: Option<(*mut u8, usize)> = match heap_data {
+        Some(heap_bytes) => {
+            let heap_mapped_size =
+                ((heap_bytes.len() + page - 1) / page) * page;
+            let hp = crate::nelisp_syscall_mmap(
+                std::ptr::null_mut(),
+                heap_mapped_size,
+                crate::NELISP_PROT_READ | crate::NELISP_PROT_WRITE,
+                crate::NELISP_MAP_PRIVATE | crate::NELISP_MAP_ANONYMOUS,
+                -1,
+                0,
+            );
+            if hp.is_null() || hp as isize == -1 {
+                let _ = crate::nelisp_syscall_munmap(p, mapped_size);
+                return Err(ImageError::Io {
+                    path: path.to_path_buf(),
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "mmap (heap) failed",
+                    ),
+                });
+            }
+            std::ptr::copy_nonoverlapping(
+                heap_bytes.as_ptr(),
+                hp,
+                heap_bytes.len(),
+            );
+            Some((hp, heap_mapped_size))
+        }
+        None => None,
+    };
+
     // Hand the page off to the CPU.
     let entry: NlImageEntry = std::mem::transmute(p.add(header.entry_offset as usize));
-    let result = entry(0, std::ptr::null());
+    let result = match heap_mapping {
+        Some((hp, _)) => {
+            // One-element argv whose only entry is the heap base
+            // pointer.  Lives on the stack; the entry function must
+            // not stash it past the call (Stage 4a contract).
+            let argv_storage: [*const u8; 1] = [hp as *const u8];
+            entry(1, argv_storage.as_ptr())
+        }
+        None => entry(0, std::ptr::null()),
+    };
 
+    if let Some((hp, sz)) = heap_mapping {
+        let _ = crate::nelisp_syscall_munmap(hp, sz);
+    }
     let _ = crate::nelisp_syscall_munmap(p, mapped_size);
     Ok(result)
 }
