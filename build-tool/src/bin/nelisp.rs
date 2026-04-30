@@ -599,6 +599,22 @@ fn predict_chain_value(heap_int: i64, ops: &[ChainOp]) -> i64 {
             ChainOp::MulImm(n) => acc = acc.wrapping_mul(*n as i64),
             ChainOp::Neg => acc = acc.wrapping_neg(),
             ChainOp::Ret => break,
+            ChainOp::IfLtImm {
+                threshold,
+                then_chain,
+                else_chain,
+            } => {
+                // Mirror emit_if_lt_imm: prologue compares the heap
+                // value (= reloaded fresh, not the running acc) against
+                // threshold and dispatches.  Each branch begins with
+                // its own LoadHeapHead per Stage 9f convention.
+                let chosen = if heap_int < *threshold as i64 {
+                    then_chain
+                } else {
+                    else_chain
+                };
+                acc = predict_chain_value(heap_int, chosen);
+            }
         }
     }
     acc
