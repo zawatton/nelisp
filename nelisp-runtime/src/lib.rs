@@ -17,6 +17,11 @@
 // `nelisp_build_tool::{...}`.
 
 pub mod image;
+// Doc 47 Stage 10 (2026-04-30) — sqlite FFI made optional.  Without
+// the `sqlite-ffi' feature the module + rusqlite dep + libsqlite3
+// link disappear from the build entirely (drops ~623 LOC + ~1.5
+// MiB).
+#[cfg(feature = "sqlite-ffi")]
 pub mod sqlite;
 pub mod syscall;
 
@@ -58,7 +63,9 @@ pub use syscall::{
 
 // Phase 9d.A4 (T82) file-notify FFI surface.  Re-exported at crate
 // root so cargo-side tests in `tests/filenotify_test.rs` can call the
-// symbols without spelling `::syscall::filenotify::` each time.
+// symbols without spelling `::syscall::filenotify::` each time.  Doc
+// 47 Stage 11: gated behind `filenotify-syscalls' (default ON).
+#[cfg(feature = "filenotify-syscalls")]
 pub use syscall::{
     nl_filenotify_add_watch, nl_filenotify_close, nl_filenotify_init, nl_filenotify_read,
     nl_filenotify_rm_watch, NL_IN_ATTRIB, NL_IN_CREATE, NL_IN_DELETE, NL_IN_MODIFY,
@@ -81,7 +88,8 @@ pub use syscall::{
 // T77 (Wave 1 agent C) — SQLite FFI surface.  Five public symbols for
 // the Emacs 30 `sqlite-*' compat layer in `src/nelisp-sqlite.el', plus
 // a `nl_sqlite_alive' liveness probe used by the `nelisp-sqlitep'
-// predicate.
+// predicate.  Doc 47 Stage 10: gated behind `sqlite-ffi' (default ON).
+#[cfg(feature = "sqlite-ffi")]
 pub use sqlite::{
     nl_sqlite_alive, nl_sqlite_close, nl_sqlite_execute, nl_sqlite_open, nl_sqlite_query,
 };
