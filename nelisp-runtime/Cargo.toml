@@ -81,15 +81,8 @@ once_cell = "1.19"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
-[profile.release]
-opt-level = 3
-lto = true
-strip = true
-# T68 (CRITICAL #3 / Phase 7.5.4 hardening) — `panic = "abort"` makes
-# Rust panics terminate the *whole* process instead of unwinding
-# across the FFI boundary.  Unwinding through `extern "C"` is UB
-# (https://doc.rust-lang.org/nomicon/ffi.html#ffi-and-unwinding) and
-# our cdylib is dlopen'd from C wrappers (nelisp-runtime-module.c),
-# so we deliberately give up the option to catch panics in exchange
-# for never letting a stray panic walk back into Emacs's stack.
-panic = "abort"
+# Doc 47 §3.1 phase 6 / Stage 5a — `[profile.release]` hoisted to the
+# workspace root `../Cargo.toml` so cargo applies one canonical policy
+# (lto / panic=abort / strip) across `nelisp-runtime`, `anvil-runtime`,
+# and the new `build-tool` member.  Member-level `[profile.*]` keys are
+# ignored when run from the workspace anyway and emit a warning.

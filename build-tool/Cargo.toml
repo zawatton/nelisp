@@ -1,0 +1,26 @@
+[package]
+name = "nelisp-build-tool"
+version = "0.1.0"
+edition = "2021"
+description = "NeLisp seed-image build-time tool — Doc 47 §3.1 phase 6 carve-out skeleton"
+license = "GPL-3.0-or-later"
+
+# Stage 5a (this commit): empty crate stub.  Proves the workspace
+# layout end-to-end before any code moves.
+#
+# Stage 5b: absorb `nelisp-runtime/src/bin/nelisp.rs` (the small
+# `--eval` / `--read` driver) — the smallest evaluator-using consumer
+# in the workspace, used as a sanity check that path-dep delegation
+# back into `nelisp-runtime::{eval,reader}` still resolves once the
+# binary lives in this crate.
+#
+# Stage 5c (separate session): `git mv nelisp-runtime/src/{eval,
+# reader,bridge}/` into `build-tool/src/` and strip them from
+# `nelisp-runtime`'s public surface.  Requires anvil-runtime to be
+# re-pointed at the new location (or, long-term, refactored to use
+# the NeLisp substrate instead of the Rust evaluator).
+[lib]
+name = "nelisp_build_tool"
+path = "src/lib.rs"
+
+[dependencies]

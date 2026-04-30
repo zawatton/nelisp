@@ -1,0 +1,26 @@
+[workspace]
+members = [
+    "anvil-runtime",
+    "build-tool",
+    "nelisp-runtime",
+]
+resolver = "2"
+
+# Doc 47 §3.1 phase 6 (Stage 5a) — workspace introduced so the carve-out
+# of `eval/`, `reader/`, `bridge/` from `nelisp-runtime` into a sibling
+# `build-tool` crate is a single `git mv` rather than a fork.  Members
+# stay loosely coupled via path deps; no shared workspace-level
+# dependencies are declared yet (Stage 5c may add them once the
+# `nelisp-build-tool` crate has actual content).
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+# Both child crates already set `panic = "abort"` for the FFI safety
+# rationale documented in `nelisp-runtime/Cargo.toml` (T68 / Phase
+# 7.5.4): Rust panics terminate the whole process instead of
+# unwinding across the C ABI boundary.  Hoisting it here makes the
+# policy workspace-wide and silences the cargo warning about member
+# crates setting `[profile.*]` keys.
+panic = "abort"
