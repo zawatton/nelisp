@@ -188,7 +188,7 @@ The pre-built tarball ships a tiny =nelisp= CLI that wraps the
 Rust evaluator.  No host Emacs needed:
 
 #+begin_src shell
-nelisp --version                       # nelisp 0.1.0
+nelisp --version                       # nelisp 0.5.0
 nelisp eval "(+ 1 2 3)"                # => 6
 nelisp eval "(mapcar (function (lambda (n) (* n n))) '(1 2 3 4))"
                                        # => (1 4 9 16)
@@ -262,7 +262,7 @@ standalone tarball.  That layer is optional; the runtime above is
 self-contained.
 #+end_quote
 
-** Architecture (5-layer)
+** Architecture
 
 #+begin_src text
   ┌──────────────────────────────────────────────────┐
@@ -270,22 +270,50 @@ self-contained.
   └─────────────────┬────────────────────────────────┘
                     │ MCP stdio JSON-RPC
   ┌─────────────────▼────────────────────────────────┐
-  │ Layer 5: anvil-host registry (Rust)              │  Phase 8.0.5
-  │   nelisp-runtime/src/anvil_host_registry.rs      │
+  │ anvil-runtime crate                              │  Phase 8.0.4-8.0.5
+  │   mcp/ + anvil_*_registry.rs + bin/anvil-runtime │
   ├──────────────────────────────────────────────────┤
-  │ Layer 4: NeLisp self-host bridge (Rust + Elisp)  │  Phase 8.0.3
-  │   nelisp-runtime/src/bridge/                     │
+  │ Native-compiled Elisp seed                       │  Doc 49 §2 (target)
+  │   reader / evaluator / macro / compiler / loader │
   ├──────────────────────────────────────────────────┤
-  │ Layer 3: Elisp evaluator (Rust)                  │  Phase 8.0.2
-  │   25 special forms + 75 builtins                 │
-  ├──────────────────────────────────────────────────┤
-  │ Layer 2: Elisp reader (Rust)                     │  Phase 8.0.1
-  │   sexp / lexer / parser                          │
-  ├──────────────────────────────────────────────────┤
-  │ Layer 1: MCP protocol (Rust)                     │  Phase 8.0.4
-  │   stdio JSON-RPC initialize / tools-list / call  │
+  │ nelisp-runtime crate (Rust-min core)             │  Doc 49 §1 D2
+  │   syscall + mmap/mprotect + icache + seed loader │
+  ├────────────┬─────────────────────┬───────────────┤
+  │ extension  │ extension           │ dev bridge    │
+  │ crates     │ crates              │ crate         │
+  │ ┌────────┐ │ ┌─────────────────┐ │ ┌───────────┐ │
+  │ │sqlite- │ │ │syscall-fileio   │ │ │runtime-cli│ │
+  │ │  rs    │ │ │syscall-filenoty│ │ │ exec-bytes│ │
+  │ │        │ │ │syscall-process  │ │ │ (JIT smoke│ │
+  │ └────────┘ │ │syscall-types    │ │ │  bridge)  │ │
+  │            │ └─────────────────┘ │ └───────────┘ │
+  ├────────────┴─────────────────────┴───────────────┤
+  │ OS substrate (libc / Linux / macOS)              │  Phase 7.0 / 9d
   └──────────────────────────────────────────────────┘
 #+end_src
+
+Two boundaries are pinned:
+
+- *Doc 46* (=architecture α boundary final=) — =nelisp-runtime= owns
+  no =anvil_*= or =mcp= modules.  The optional MCP front end lives in
+  the sibling =anvil-runtime= crate and calls into =nelisp-runtime=
+  through a path dependency.
+- *Doc 49* (=Rust-min core / self-host=) — =nelisp-runtime= owns no
+  Elisp interpreter.  Rust handles only OS ABI (raw syscalls,
+  mmap/mprotect/munmap, icache flush) plus a NLSEED v1 seed image
+  loader.  Reader / evaluator / macro / compiler / stdlib loader live
+  in native-compiled Elisp seed.  Optional surfaces (=sqlite= /
+  =fileio= / =filenotify= / =process=) are extension crates pulled
+  through default-ON compatibility features; turning them off
+  (=cargo build --no-default-features -p nelisp-runtime= / =make
+  runtime-core-min=) gives the canonical Rust-min build.  The
+  =nelisp-runtime-cli= bin (=nelisp-exec-bytes=) is a dev bridge for
+  raw native-code smoke and is *not* part of runtime core.
+
+The Rust bootstrap reader / evaluator that previously lived inside
+=nelisp-runtime= is being migrated out under Doc 49.  Until the seed
+seam ships end-to-end the bootstrap reader/evaluator stays in
+=build-tool/= as a build-time-only escape hatch.
 
 ** Soak gate (Doc 32 v2 §2.7)
 

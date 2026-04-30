@@ -1,5 +1,5 @@
 .PHONY: test compile clean all bench gc-bench actor-bench soak soak-1h soak-full soak-worker stage-d-tarball \
-        runtime runtime-test runtime-clean test-runtime \
+        runtime runtime-test runtime-cli runtime-core-min runtime-core-min-test runtime-clean test-runtime \
         runtime-staticlib runtime-static runtime-module runtime-module-clean stage-d-v2-bin \
         sqlite-module sqlite-module-clean \
         release-artifact release-checksum soak-blocker soak-post-ship \
@@ -171,17 +171,58 @@ CARGO ?= $(shell command -v cargo 2>/dev/null || echo $(HOME)/.cargo/bin/cargo)
 # single make target produces the full release artifact set
 # (nelisp-runtime cdylib/staticlib + anvil-runtime binaries).
 ANVIL_RUNTIME_DIR := anvil-runtime
+# Doc 49 Phase 49.2 — `exec-bytes` developer bridge moved out of the
+# Rust-min `nelisp-runtime` core into a sibling CLI crate.
+NELISP_RUNTIME_CLI_DIR := nelisp-runtime-cli
+# Doc 49 Phase 49.3 — optional FFI surfaces (sqlite + 3 syscall sets)
+# extracted from the Rust-min runtime core into sibling extension
+# crates.  `nelisp-runtime` keeps the original `*-syscalls` /
+# `sqlite-ffi` features as default-ON compatibility shims that
+# re-export the symbols, but the implementation now lives here.
+NELISP_SQLITE_RS_DIR := nelisp-sqlite-rs
+NELISP_SYSCALL_FILEIO_DIR := nelisp-syscall-fileio
+NELISP_SYSCALL_FILENOTIFY_DIR := nelisp-syscall-filenotify
+NELISP_SYSCALL_PROCESS_DIR := nelisp-syscall-process
 
 runtime:
 	cd $(NELISP_RUNTIME_DIR) && $(CARGO) build --release
+	cd $(NELISP_RUNTIME_CLI_DIR) && $(CARGO) build --release
+	cd $(NELISP_SQLITE_RS_DIR) && $(CARGO) build --release
+	cd $(NELISP_SYSCALL_FILEIO_DIR) && $(CARGO) build --release
+	cd $(NELISP_SYSCALL_FILENOTIFY_DIR) && $(CARGO) build --release
+	cd $(NELISP_SYSCALL_PROCESS_DIR) && $(CARGO) build --release
 	cd $(ANVIL_RUNTIME_DIR) && $(CARGO) build --release
 
 runtime-test:
 	cd $(NELISP_RUNTIME_DIR) && $(CARGO) test --release
+	cd $(NELISP_RUNTIME_CLI_DIR) && $(CARGO) test --release
+	cd $(NELISP_SQLITE_RS_DIR) && $(CARGO) test --release
+	cd $(NELISP_SYSCALL_FILEIO_DIR) && $(CARGO) test --release
+	cd $(NELISP_SYSCALL_FILENOTIFY_DIR) && $(CARGO) test --release
+	cd $(NELISP_SYSCALL_PROCESS_DIR) && $(CARGO) test --release
 	cd $(ANVIL_RUNTIME_DIR) && $(CARGO) test --release
+
+runtime-cli:
+	cd $(NELISP_RUNTIME_CLI_DIR) && $(CARGO) build --release
+
+# Doc 49 Phase 49.1 — Rust-min core gate.  This is the canonical
+# "Rust only does OS ABI + executable-memory substrate" build: no
+# sqlite, no process substrate, no file-notify, no high-level file I/O.
+# Build/test this target whenever feature-gated code moves so optional
+# packages cannot silently become runtime-core dependencies.
+runtime-core-min:
+	$(CARGO) build --release --no-default-features -p nelisp-runtime
+
+runtime-core-min-test:
+	$(CARGO) test --no-default-features -p nelisp-runtime
 
 runtime-clean:
 	cd $(NELISP_RUNTIME_DIR) && $(CARGO) clean
+	cd $(NELISP_RUNTIME_CLI_DIR) && $(CARGO) clean
+	cd $(NELISP_SQLITE_RS_DIR) && $(CARGO) clean
+	cd $(NELISP_SYSCALL_FILEIO_DIR) && $(CARGO) clean
+	cd $(NELISP_SYSCALL_FILENOTIFY_DIR) && $(CARGO) clean
+	cd $(NELISP_SYSCALL_PROCESS_DIR) && $(CARGO) clean
 	cd $(ANVIL_RUNTIME_DIR) && $(CARGO) clean
 
 # `test-runtime' depends on `runtime' so a fresh checkout that runs

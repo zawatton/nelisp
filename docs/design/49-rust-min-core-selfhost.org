@@ -1,0 +1,222 @@
+#+TITLE: Doc 49 — Rust-min core / self-hosted Elisp native bootstrap
+#+AUTHOR: zawatton + Codex
+#+DATE: 2026-04-30
+#+STATE: LOCKED-2026-04-30
+#+STATUS: Rust は OS ABI + executable-memory launcher に限定し、reader /
+#+STATUS: evaluator / macro / compiler / stdlib loader は native-compiled
+#+STATUS: Elisp seed が担当する。Phase 49.1 core-min gate と Phase 49.2
+#+STATUS: =exec-bytes= dev bridge extraction は実行済み。
+
+* §0 TL;DR
+
+NeLisp の最終形は「Rust VM」ではない。Rust は Elisp を解釈しない。
+Rust runtime は OS が Lisp へ直接渡せない境界だけを持つ。
+
+#+begin_src
+[build/install time]
+  lisp/*.el + src/nelisp-cc*.el
+      -> AOT native bytes / seed image
+
+[runtime]
+  Rust min core
+      -> mmap seed
+      -> mprotect RX / clear icache
+      -> jump into native-compiled Elisp
+
+[after bootstrap]
+  native-compiled Elisp
+      -> read / macroexpand / eval / compile / load more Elisp
+#+end_src
+
+この doc の方針:
+
+| layer | owner | allowed contents |
+|-------+-------+------------------|
+| Rust min core | Rust | syscall shim, mmap/mprotect/munmap, JIT icache, process entry, seed loader |
+| Build tool | Rust, temporary | seed generation only; reader/evaluator may exist but runtime dependencyにしない |
+| Elisp seed | native Elisp | reader, evaluator, macro, compiler, loader, stdlib |
+| Packages | Elisp/native extension | sqlite, filenotify, high-level process/file APIs, MCP/anvil |
+
+* §1 Locked Decisions
+
+** D1. Rust runtime は Elisp interpreter にならない
+
+Rust runtime が Elisp AST / special form / macro semantics を理解し始めると、
+Rust core は増殖する。よって runtime crate に evaluator / reader / compiler
+を戻さない。これらは =build-tool= か native-compiled Elisp seed 側に置く。
+
+** D2. runtime に残す Rust は「Elisp 不可能部分」のみ
+
+残すもの:
+
+- process entry (=main=)
+- raw file descriptor syscall minimum (=read/write/open/close/stat/getenv/setenv=)
+- executable memory (=mmap/mprotect/munmap/MAP_JIT=)
+- instruction cache flush
+- seed image loader
+- panic/errno boundary
+
+外すもの:
+
+- SQLite
+- filenotify
+- high-level process helpers
+- directory/file convenience API
+- MCP/anvil registries
+- Rust evaluator / reader / builtin stdlib
+- dev-only =exec-bytes= bridge
+
+** D3. =--no-default-features= が Rust min core gate
+
+=nelisp-runtime --no-default-features= を「core-min」と定義する。default build
+は互換性のため拡張 syscall を含んでよいが、core-min が壊れたら Rust core
+最小化の regression と扱う。
+
+** D4. =exec-bytes= は runtime core ではなく dev bridge
+
+Doc 48 Phase 7.5.4 の =exec-bytes [ARG1..ARG6]= は native compiler の実機
+smoke として必要。ただし final runtime core の責務ではない。次段階で
+=nelisp-runtime-cli= か =build-tool= へ移す。
+
+* §2 Current LOC Snapshot
+
+2026-04-30 時点の =nelisp-runtime/src= source LOC:
+
+| component | LOC | core-min? |
+|-----------+-----+-----------|
+| =syscall/unix.rs= | 251 | yes |
+| =syscall/error.rs= | 51 | yes |
+| =syscall/mod.rs= | 234 | yes, but re-export surface can shrink |
+| =lib.rs= | 99 | yes |
+| =main.rs= | 285 | dev bridge mixed in |
+| =sqlite.rs= | 623 | no |
+| =syscall/process.rs= | 883 | no |
+| =syscall/fileio.rs= | 598 | no |
+| =syscall/filenotify.rs= | 281 | no |
+| *total* | *3305* | |
+
+Core-min target:
+
+- short term: ~900 LOC (=--no-default-features=)
+- after moving =exec-bytes= out: ~600-700 LOC
+- after seed loader lands: expected healthy floor ~800-1200 LOC
+
+* §3 Execution Plan
+
+** Phase 49.1 — core-min gate (this doc execution)
+
+Add explicit make targets:
+
+- =make runtime-core-min=
+- =make runtime-core-min-test=
+
+Acceptance:
+
+- =cargo build --release --no-default-features -p nelisp-runtime= passes
+- =cargo test --no-default-features -p nelisp-runtime= passes
+- optional-feature integration tests compile only when their feature exists
+
+** Phase 49.2 — dev bridge extraction
+
+Move =exec-bytes= and its tests from =nelisp-runtime/src/main.rs= to either:
+
+- =nelisp-runtime-cli= crate, or
+- =build-tool= binary subcommand.
+
+Runtime library keeps only reusable JIT page helpers needed by seed loader.
+
+*SHIPPED-2026-04-30*: =nelisp-runtime-cli= crate を追加し、binary
+=nelisp-exec-bytes= へ raw native-code subprocess bridge を移動した。
+=nelisp-runtime= binary は =--syscall-smoke= / =--version= のみに戻した。
+=nelisp-cc-runtime--exec-real= は
+=nelisp-cc-runtime--locate-exec-bytes-bin= 経由で新 bridge を呼ぶ。
+
+** Phase 49.3 — extension syscall extraction
+
+Move optional surfaces out of core crate:
+
+- =nelisp-syscall-fileio=
+- =nelisp-syscall-process=
+- =nelisp-syscall-filenotify=
+- =nelisp-sqlite-rs=
+
+The current feature gates remain as compatibility shims until packages switch.
+
+*IN-PROGRESS-2026-04-30*:
+- SQLite FFI moved to sibling crate =nelisp-sqlite-rs=.
+- =nelisp-runtime= keeps the =sqlite-ffi= feature as a default-ON
+  compatibility shim and re-exports =nl_sqlite_*= from the extension
+  crate.
+- =runtime-core-min= remains independent of SQLite because
+  =nelisp-sqlite-rs= is only pulled by the optional =sqlite-ffi=
+  feature.
+- Shared syscall ABI type =NelispStat= moved to =nelisp-syscall-types=.
+- File I/O FFI moved to sibling crate =nelisp-syscall-fileio=.
+  =nelisp-runtime= keeps the =fileio-syscalls= feature as a default-ON
+  compatibility shim and re-exports =nl_syscall_*= from the extension
+  crate.
+- File-notify FFI moved to sibling crate =nelisp-syscall-filenotify=.
+  =nelisp-runtime= keeps the =filenotify-syscalls= feature as a
+  default-ON compatibility shim and re-exports =nl_filenotify_*= from
+  the extension crate.
+- Process/subprocess FFI moved to sibling crate
+  =nelisp-syscall-process=.  =nelisp-runtime= keeps the
+  =process-syscalls= feature as a default-ON compatibility shim and
+  re-exports fork/exec/pipe/wait/rlimit/select wrappers from the
+  extension crate.
+
+** Phase 49.4 — seed loader
+
+Add the small image/native seed launcher to Rust min core:
+
+- validate seed header/hash
+- mmap native code/data pages
+- apply minimal relocations if still needed
+- clear icache
+- call seed entry with syscall table pointer
+
+The seed entry is native-compiled Elisp. It owns reader/eval/compiler/load.
+
+*SHIPPED-2026-04-30*: =nelisp-runtime/src/seed.rs= を追加し、
+=NLSEED\0\x01= native seed ABI v1 を固定した。loader は header /
+syscall ABI / payload hash を検証し、heap/code segment を mmap、code を
+RX 化、relocation table を適用、icache clear 後に seed entry へ jump
+する。entry ABI は
+=extern "C" fn(argc, argv, syscall_table) -> int=。Rust 側は Elisp を
+parse/eval しない。
+
+=nelisp-runtime --seed-image IMAGE [ARGS...]= も追加した。unit test は
+header/hash validation に加え、x86_64 で実際に mmap した native code
+(=return 42=) に jump する smoke を含む。
+
+* §4 Non-goals
+
+- Rewriting Elisp evaluator in Rust
+- Adding more Rust builtins
+- Moving package logic into Rust for speed
+- Making Rust parse =.el= files at runtime
+
+* §5 Risk Controls
+
+| risk | control |
+|------|---------|
+| optional features silently become core dependencies | =runtime-core-min-test= gate |
+| dev bridge mistaken for runtime ABI | Phase 49.2 extraction |
+| seed loader grows into VM | loader can validate/map/jump only |
+| packages need process/sqlite/notify | extension crates, not core |
+| bootstrap cannot self-host yet | build-tool remains build-time-only escape hatch |
+
+* §6 Done Criteria
+
+Doc 49 is considered started, not complete, when:
+
+- this design doc exists
+- core-min make targets exist
+- =cargo test --no-default-features -p nelisp-runtime= passes
+
+Doc 49 is complete when:
+
+- runtime Rust core has no reader/evaluator/compiler
+- runtime Rust core has no sqlite/process/filenotify/high-level file API
+- runtime starts from native-compiled Elisp seed
+- Elisp seed can evaluate/compile/load additional Elisp

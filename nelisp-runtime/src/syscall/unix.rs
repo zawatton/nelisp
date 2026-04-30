@@ -9,6 +9,7 @@
 //! call into these functions through the NeLisp FFI boundary.
 
 use libc::{c_char, c_int, c_void, mode_t, off_t, size_t, ssize_t};
+pub use nelisp_syscall_types::NelispStat;
 
 // ---------------------------------------------------------------------------
 // MAP_JIT — macOS Apple Silicon JIT page flag (sys/mman.h: 0x800).
@@ -160,27 +161,6 @@ pub unsafe fn setenv(name: *const c_char, value: *const c_char, overwrite: c_int
     libc::setenv(name, value, overwrite)
 }
 
-/// Phase 7.0 stat snapshot.
-///
-/// `#[repr(C)]` so NeLisp can later cast a Rust pointer through the
-/// FFI boundary with a fixed layout regardless of the host
-/// `struct stat` width on Linux vs macOS.  We deliberately copy only
-/// the fields NeLisp file APIs need; full `struct stat` exposure is
-/// Phase 7.4 (coding) territory.
-#[repr(C)]
-#[derive(Debug, Default, Clone, Copy)]
-pub struct NelispStat {
-    pub st_dev: u64,
-    pub st_ino: u64,
-    pub st_mode: u32,
-    pub st_nlink: u64,
-    pub st_uid: u32,
-    pub st_gid: u32,
-    pub st_size: i64,
-    pub st_mtime_sec: i64,
-    pub st_mtime_nsec: i64,
-}
-
 pub unsafe fn stat(path: *const c_char, out: *mut NelispStat) -> c_int {
     let mut buf: libc::stat = std::mem::zeroed();
     let r = libc::stat(path, &mut buf as *mut libc::stat);
@@ -235,17 +215,4 @@ unsafe fn copy_stat(_buf: &libc::stat, out: &mut NelispStat) {
     // Phase 7.5 will fill this for *BSD / Solaris.  Until then we
     // leave the struct zeroed so callers can detect the gap.
     *out = NelispStat::default();
-}
-
-/// Phase 9d.A1 re-export of `copy_stat` for the `fileio` module.
-///
-/// `copy_stat` itself stays private (per-OS cfg variants live next to
-/// each other).  `fileio.rs` lives in a sibling module so it can't
-/// reach the private helper directly; this thin wrapper delegates to
-/// whichever `copy_stat` the host cfg gates picked.  Only compiled
-/// when the `fileio-syscalls` feature is on, otherwise the function
-/// trips dead-code warnings on the mini build.
-#[cfg(feature = "fileio-syscalls")]
-pub(crate) unsafe fn copy_stat_for_ex(buf: &libc::stat, out: &mut NelispStat) {
-    copy_stat(buf, out)
 }

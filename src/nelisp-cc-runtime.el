@@ -170,7 +170,7 @@ that differs between the two encodings).")
 ;;
 ;; The simulator path (T11 SHIPPED) records the W^X protocol without
 ;; ever calling mmap; the *real* path (this MVP) hands the bytes to
-;; the `nelisp-runtime' Rust binary's `exec-bytes' subcommand which
+;; the `nelisp-exec-bytes' subprocess bridge which
 ;; mmaps PROT_EXEC, jumps in, and writes `RESULT: <i64>' to stdout.
 ;;
 ;; Phase 7.5 proper will replace the subprocess hop with an in-process
@@ -192,7 +192,7 @@ that differs between the two encodings).")
 introspection.  Bytes are *not* executed.  Safe on any host.
 
 `real' — Phase 7.5.1 MVP.  Writes the produced bytes to a temp file
-and shells out to `nelisp-runtime exec-bytes <file>', which mmaps
+and shells out to `nelisp-exec-bytes <file>', which mmaps
 PROT_EXEC, calls the bytes as `extern \"C\" fn() -> i64', and prints
 the i64 return value.  Requires the Rust binary to have been built
 (`make runtime').
@@ -235,6 +235,16 @@ Bypasses the auto-discovery in `nelisp-cc-runtime--locate-runtime-bin'
 and is mostly useful for tests / out-of-tree builds.  When nil the
 locator walks up from the loading file looking for `Cargo.toml' and
 expects `nelisp-runtime/target/release/nelisp-runtime' below that."
+  :type '(choice (const :tag "Auto-discover" nil)
+                 (file  :tag "Explicit path"))
+  :group 'nelisp-cc-runtime)
+
+(defcustom nelisp-cc-runtime-exec-bytes-binary-override nil
+  "When non-nil, an absolute path to the `nelisp-exec-bytes' binary.
+
+Doc 49 moves the raw native-code subprocess bridge out of the
+Rust-min `nelisp-runtime' core.  This override bypasses
+`nelisp-cc-runtime--locate-exec-bytes-bin' auto-discovery."
   :type '(choice (const :tag "Auto-discover" nil)
                  (file  :tag "Explicit path"))
   :group 'nelisp-cc-runtime)
@@ -971,7 +981,7 @@ omission via `--insert-safe-points' `:pc-offset' = -1)."
 ;; The MVP path is a three-step shell-out:
 ;;
 ;;   1. Write a flat byte stream (unibyte string) to a temp file.
-;;   2. `call-process' the `nelisp-runtime' binary with `exec-bytes
+;;   2. `call-process' the `nelisp-exec-bytes' binary
 ;;      <tmp>'.  The subprocess mmaps PROT_EXEC, runs the bytes,
 ;;      prints `RESULT: <i64>' on success.
 ;;   3. Parse the stdout `RESULT:' line and return the integer; or
@@ -1035,6 +1045,47 @@ executable so callers can present an actionable error (typically:
               (list :looked-at bin
                     :hint "run `make runtime' from the NeLisp worktree root"))))))
 
+(defun nelisp-cc-runtime--locate-exec-bytes-bin ()
+  "Locate the `nelisp-exec-bytes' subprocess bridge.
+
+Doc 49 Phase 49.2 keeps the raw native-code execution bridge out of
+the Rust-min `nelisp-runtime' binary.  Resolution checks the explicit
+override first, then both workspace-level and member-local Cargo
+target directories so it works with normal workspace builds and older
+member-local artifacts."
+  (let* ((override nelisp-cc-runtime-exec-bytes-binary-override)
+         (env-root (getenv "NELISP_REPO_ROOT"))
+         (predicate (lambda (dir)
+                      (and (file-exists-p (expand-file-name "Makefile" dir))
+                           (file-directory-p
+                            (expand-file-name "nelisp-runtime-cli" dir)))))
+         (start-dirs (delq nil
+                           (list (and nelisp-cc-runtime--this-file
+                                      (file-name-directory
+                                       nelisp-cc-runtime--this-file))
+                                 default-directory)))
+         (root (or (and env-root (file-name-as-directory env-root))
+                   (cl-some (lambda (d) (locate-dominating-file d predicate))
+                            start-dirs)))
+         (candidates (delq
+                      nil
+                      (list
+                       override
+                       (and root
+                            (expand-file-name
+                             "target/release/nelisp-exec-bytes" root))
+                       (and root
+                            (expand-file-name
+                             "nelisp-runtime-cli/target/release/nelisp-exec-bytes"
+                             root)))))
+         (bin (cl-find-if #'file-executable-p candidates)))
+    (cond
+     (bin bin)
+     (t
+      (signal 'nelisp-cc-runtime-binary-missing
+              (list :looked-at candidates
+                    :hint "run `make runtime-cli' from the NeLisp worktree root"))))))
+
 (defun nelisp-cc-runtime--bytes-to-unibyte-string (bytes)
   "Coerce BYTES (a list / vector of small ints 0..255) to a unibyte string.
 Used to write the machine code stream to disk verbatim — every
@@ -1044,13 +1095,18 @@ mangling."
          (str (apply #'unibyte-string lst)))
     str))
 
-(defun nelisp-cc-runtime--exec-real (bytes)
-  "Execute BYTES via the `nelisp-runtime exec-bytes' subprocess.
+(defun nelisp-cc-runtime--exec-real (bytes &optional args)
+  "Execute BYTES via the `nelisp-exec-bytes' subprocess.
 
 BYTES is a vector / list of small ints (0..255) representing a
 ready-to-run machine code stream that follows the System V AMD64 /
-AAPCS64 `extern \"C\" fn() -> i64' calling convention (no args, i64
-return in rax / x0).
+AAPCS64 `extern \"C\" fn(i64, i64, i64, i64, i64, i64) -> i64'
+calling convention (i64 return in rax / x0).
+
+ARGS is a list of up to six integer arguments.  Missing arguments
+are zero-filled by the Rust bridge.  Passing nil preserves the old
+zero-argument behavior; payloads that ignore arguments remain ABI
+compatible.
 
 Returns one of:
 
@@ -1065,7 +1121,7 @@ The function is *side-effect free with respect to the worktree*: the
 temp file is created in `temporary-file-directory' and unconditionally
 deleted via `unwind-protect'."
   (let ((tmp-file (make-temp-file "nelisp-cc-bytes-" nil ".bin"))
-        (bin (nelisp-cc-runtime--locate-runtime-bin)))
+        (bin (nelisp-cc-runtime--locate-exec-bytes-bin)))
     (unwind-protect
         (progn
           ;; 1. Write bytes verbatim — no coding-system conversion.
@@ -1076,7 +1132,16 @@ deleted via `unwind-protect'."
                           nil tmp-file nil 'silent))
           ;; 2. Subprocess.
           (with-temp-buffer
-            (let* ((exit (call-process bin nil t nil "exec-bytes" tmp-file))
+            (when (> (length args) 6)
+              (signal 'nelisp-cc-runtime-error
+                      (list :too-many-exec-args (length args)
+                            :max 6)))
+            (dolist (arg args)
+              (unless (integerp arg)
+                (signal 'nelisp-cc-runtime-error
+                        (list :non-integer-exec-arg arg))))
+            (let* ((argv (cons tmp-file (mapcar #'number-to-string args)))
+                   (exit (apply #'call-process bin nil t nil argv))
                    (output (buffer-substring-no-properties
                             (point-min) (point-max))))
               (cond
@@ -1268,7 +1333,7 @@ ERT golden tests that pin specific byte sequences."
     (_ (signal 'nelisp-cc-runtime-error
                (list :unknown-backend backend)))))
 
-(defun nelisp-cc-runtime-compile-and-allocate (lambda-form &optional backend)
+(defun nelisp-cc-runtime-compile-and-allocate (lambda-form &optional backend exec-args)
   "Run the full Phase 7.1.4 pipeline on LAMBDA-FORM.
 
 Steps:
@@ -1280,10 +1345,12 @@ Steps:
   6. safe-point stub injection (`--inject-safepoint-stubs')
   7. exec-page allocation + W^X transition (`--alloc-exec-page')
   8. (when `nelisp-cc-runtime-exec-mode' = `real') subprocess
-     `nelisp-runtime exec-bytes' to actually execute the bytes;
+     `nelisp-exec-bytes' to actually execute the bytes;
      the parsed integer return value is added under `:exec-result'.
 
-BACKEND is `x86_64' / `arm64' (default = host inference).  Returns:
+BACKEND is `x86_64' / `arm64' (default = host inference).  EXEC-ARGS
+is forwarded to `nelisp-cc-runtime--exec-real' when MODE is `real';
+nil preserves the old zero-argument behavior.  Returns:
 
   (:exec-page PAGE         ; `nelisp-cc-runtime--exec-page' simulator
    :gc-metadata META       ; plist from `--insert-safe-points'
@@ -1321,7 +1388,7 @@ not have to slice the page buffer manually."
          (mode nelisp-cc-runtime-exec-mode)
          (exec-result (cond
                        ((eq mode 'real)
-                        (nelisp-cc-runtime--exec-real final))
+                        (nelisp-cc-runtime--exec-real final exec-args))
                        ((eq mode 'in-process)
                         (nelisp-cc-runtime--exec-in-process final))
                        (t nil))))

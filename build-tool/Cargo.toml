@@ -1,6 +1,6 @@
 [package]
 name = "nelisp-build-tool"
-version = "0.1.0"
+version = "0.5.0"
 edition = "2021"
 description = "NeLisp build-time tool — Doc 47 §3.1 phase 6 carve-out (reader + minimal evaluator + Elisp self-host bridge)"
 license = "GPL-3.0-or-later"

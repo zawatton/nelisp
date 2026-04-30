@@ -3,6 +3,12 @@ members = [
     "anvil-runtime",
     "build-tool",
     "nelisp-runtime",
+    "nelisp-runtime-cli",
+    "nelisp-sqlite-rs",
+    "nelisp-syscall-fileio",
+    "nelisp-syscall-filenotify",
+    "nelisp-syscall-process",
+    "nelisp-syscall-types",
 ]
 resolver = "2"
 

@@ -1,0 +1,10 @@
+[package]
+name = "nelisp-syscall-types"
+version = "0.5.0"
+edition = "2021"
+description = "Shared syscall ABI types for NeLisp Rust extension crates"
+license = "GPL-3.0-or-later"
+
+[lib]
+name = "nelisp_syscall_types"
+path = "src/lib.rs"

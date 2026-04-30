@@ -38,7 +38,7 @@
 use libc::{c_char, c_int, mode_t, DIR};
 use std::ptr::NonNull;
 
-use super::unix::NelispStat;
+use nelisp_syscall_types::NelispStat;
 
 /// Maximum path length we accept on the FFI boundary.  POSIX guarantees
 /// `PATH_MAX >= 256`; 4096 matches the Linux kernel limit and is enough
@@ -93,7 +93,7 @@ unsafe fn negate_errno(r: c_int) -> i64 {
     if r == 0 {
         0
     } else {
-        -(super::error::SyscallError::last_os_error().raw() as i64)
+        -(last_errno() as i64)
     }
 }
 
@@ -117,7 +117,7 @@ pub unsafe extern "C" fn nl_syscall_opendir(path: *const u8, len: usize) -> i64 
     };
     let dirp = libc::opendir(pb.as_c_ptr());
     if dirp.is_null() {
-        -(super::error::SyscallError::last_os_error().raw() as i64)
+        -(last_errno() as i64)
     } else {
         dirp as i64
     }
@@ -154,7 +154,7 @@ pub unsafe extern "C" fn nl_syscall_readdir(
     *libc_errno_mut() = 0;
     let ent = libc::readdir(dirp);
     if ent.is_null() {
-        let e = super::error::SyscallError::last_os_error().raw();
+        let e = last_errno();
         if e == 0 {
             // True end of stream.
             return 0;
@@ -274,10 +274,50 @@ pub unsafe extern "C" fn nl_syscall_stat_ex(
     let mut buf: libc::stat = std::mem::zeroed();
     let r = libc::stat(pb.as_c_ptr(), &mut buf as *mut libc::stat);
     if r != 0 {
-        return -(super::error::SyscallError::last_os_error().raw() as i64);
+        return -(last_errno() as i64);
     }
-    super::unix::copy_stat_for_ex(&buf, &mut *out);
+    copy_stat(&buf, &mut *out);
     0
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+unsafe fn copy_stat(buf: &libc::stat, out: &mut NelispStat) {
+    out.st_dev = buf.st_dev;
+    out.st_ino = buf.st_ino;
+    out.st_mode = buf.st_mode;
+    out.st_nlink = buf.st_nlink as u64;
+    out.st_uid = buf.st_uid;
+    out.st_gid = buf.st_gid;
+    out.st_size = buf.st_size as i64;
+    out.st_mtime_sec = buf.st_mtime as i64;
+    out.st_mtime_nsec = buf.st_mtime_nsec as i64;
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+unsafe fn copy_stat(buf: &libc::stat, out: &mut NelispStat) {
+    out.st_dev = buf.st_dev as u64;
+    out.st_ino = buf.st_ino as u64;
+    out.st_mode = buf.st_mode as u32;
+    out.st_nlink = buf.st_nlink as u64;
+    out.st_uid = buf.st_uid;
+    out.st_gid = buf.st_gid;
+    out.st_size = buf.st_size as i64;
+    out.st_mtime_sec = buf.st_mtime as i64;
+    out.st_mtime_nsec = buf.st_mtime_nsec as i64;
+}
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "ios"
+)))]
+unsafe fn copy_stat(_buf: &libc::stat, out: &mut NelispStat) {
+    *out = NelispStat::default();
+}
+
+unsafe fn last_errno() -> i32 {
+    *libc_errno_mut()
 }
 
 // ---------------------------------------------------------------------------
@@ -308,11 +348,10 @@ unsafe fn libc_errno_mut() -> *mut i32 {
 }
 
 // ---------------------------------------------------------------------------
-// Tests — gated behind `#[cfg(test)]` and the `fileio-syscalls` feature
-// so a future "mini build" without file I/O still compiles cleanly.
+// Tests for the standalone extension crate.
 // ---------------------------------------------------------------------------
 
-#[cfg(all(test, feature = "fileio-syscalls"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::ffi::CString;

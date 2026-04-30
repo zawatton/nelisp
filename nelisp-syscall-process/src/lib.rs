@@ -87,11 +87,43 @@ type NlRlimitResource = c_int;
 use std::mem::MaybeUninit;
 use std::ptr;
 
-use super::error::SyscallError;
-
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SyscallError(i32);
+
+impl SyscallError {
+    unsafe fn last_os_error() -> Self {
+        Self(*libc_errno_location())
+    }
+
+    fn raw(self) -> i32 {
+        self.0
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+unsafe fn libc_errno_location() -> *mut i32 {
+    libc::__errno_location()
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+unsafe fn libc_errno_location() -> *mut i32 {
+    libc::__error()
+}
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "ios"
+)))]
+unsafe fn libc_errno_location() -> *mut i32 {
+    static mut DUMMY_ERRNO: i32 = 0;
+    &raw mut DUMMY_ERRNO
+}
 
 /// Convert a `0 / -1` libc return into the `0 | -errno` contract.
 unsafe fn negate_errno(r: c_int) -> i64 {
@@ -451,16 +483,16 @@ pub unsafe extern "C" fn nl_syscall_select(
 }
 
 // ---------------------------------------------------------------------------
-// Tests — gated behind `#[cfg(test)]` and the `process-syscalls`
-// feature so a future "mini build" without subprocess support still
-// compiles cleanly.
+// Tests — gated behind `#[cfg(test)]`.  The runtime crate gates this
+// whole package behind its `process-syscalls` feature, so the package
+// can test its own subprocess surface directly.
 //
 // All tests run under `cargo test --release` and must finish in
 // well under a second each.  They exercise the FFI symbols directly
 // (no NeLisp side, no eventloop, no shell interpreter).
 // ---------------------------------------------------------------------------
 
-#[cfg(all(test, feature = "process-syscalls"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::ffi::CString;

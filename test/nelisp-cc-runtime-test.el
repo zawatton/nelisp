@@ -283,8 +283,8 @@ silently corrupting the simulator state."
 ;; bytes for the host and removes the gate.
 
 (defun nelisp-cc-runtime-test--runtime-bin ()
-  "Return the resolved `nelisp-runtime' binary path, or nil on miss."
-  (ignore-errors (nelisp-cc-runtime--locate-runtime-bin)))
+  "Return the resolved `nelisp-exec-bytes' binary path, or nil on miss."
+  (ignore-errors (nelisp-cc-runtime--locate-exec-bytes-bin)))
 
 (defun nelisp-cc-runtime-test--host-x86_64-p ()
   "Return non-nil when the running Emacs is on an x86_64 host.
@@ -300,7 +300,7 @@ adds per-arch byte selection and removes this gate."
 (defun nelisp-cc-runtime-test--skip-unless-real-exec-available ()
   "Skip the current ERT unless `exec-bytes' can run on this host."
   (unless (nelisp-cc-runtime-test--runtime-bin)
-    (ert-skip "nelisp-runtime binary not built — run `make runtime'"))
+    (ert-skip "nelisp-exec-bytes binary not built — run `make runtime-cli'"))
   (unless (nelisp-cc-runtime-test--host-x86_64-p)
     (ert-skip
      "Phase 7.5.1 MVP byte streams are x86_64-only; host is non-x86_64")))
@@ -461,8 +461,8 @@ in-process path accidentally re-spawns the subprocess.
 
 Skips when either prerequisite (module + binary) is missing."
   (nelisp-cc-runtime-test--skip-unless-module-built)
-  (unless (ignore-errors (nelisp-cc-runtime--locate-runtime-bin))
-    (ert-skip "nelisp-runtime binary missing — run `make runtime'"))
+  (unless (ignore-errors (nelisp-cc-runtime--locate-exec-bytes-bin))
+    (ert-skip "nelisp-exec-bytes binary missing — run `make runtime-cli'"))
   (let* ((bytes (vector #xB8 #x2A #x00 #x00 #x00 #xC3))
          (n 5)
          ;; In-process: warm the module load before timing.
