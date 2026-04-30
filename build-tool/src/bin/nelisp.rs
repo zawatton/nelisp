@@ -12,6 +12,7 @@ use std::io::{self, Read};
 use std::path::Path;
 use std::process::ExitCode;
 
+use nelisp_build_tool::ast_translate::{translate_lambda, HAS_AST_TRANSLATE};
 use nelisp_build_tool::eval::{eval_str, eval_str_all, eval_str_all_at_path};
 use nelisp_build_tool::image_lowering::lower_to_heap;
 use nelisp_build_tool::native_emit::{
@@ -41,7 +42,8 @@ const USAGE: &str = "usage: nelisp --version
        nelisp mint-int-as-code SRC OUT         # Stage 9a: evaluate SRC (must be Int), emit native return-i32 code
        nelisp mint-int-via-emitted-load SRC OUT # Stage 9b: evaluate SRC, lower Int to heap, emit load-heap asm (vs pre-baked asset)
        nelisp mint-int-plus-imm SRC IMM OUT     # Stage 9c: chain load+add asm; boot exits (eval-of-SRC) + IMM
-       nelisp mint-chain SRC OPS OUT            # Stage 9d: SRC -> heap; OPS = ChainOp spec ('add:5 mul:2 neg' etc)";
+       nelisp mint-chain SRC OPS OUT            # Stage 9d: SRC -> heap; OPS = ChainOp spec ('add:5 mul:2 neg' etc)
+       nelisp mint-from-ast LAMBDA HEAP-SRC OUT # Stage 9e: walk LAMBDA `(lambda (n) BODY)` AST, emit ChainOps, HEAP-SRC -> heap";
 
 #[derive(Debug)]
 enum Command {
@@ -122,6 +124,18 @@ enum Command {
         ops: String,
         out: String,
     },
+    /// Doc 47 Stage 9e — AST-driven chain mint.  Reads LAMBDA as a
+    /// `(lambda (PARAM) BODY)' Sexp, walks BODY via the AST → ChainOp
+    /// translator, and emits the composed function body.  HEAP-SRC is
+    /// evaluated separately to an integer that becomes the heap word
+    /// (= the value of PARAM at boot time).  Bridges Stage 9d's textual
+    /// op spec to a real Elisp surface — drivers no longer have to
+    /// describe the chain shape manually.
+    MintFromAst {
+        lambda: String,
+        heap_src: String,
+        out: String,
+    },
 }
 
 fn parse_args<I, S>(args: I) -> Result<Command, String>
@@ -188,6 +202,13 @@ where
             Ok(Command::MintChain {
                 src: src.clone(),
                 ops: ops.clone(),
+                out: out.clone(),
+            })
+        }
+        [_, mode, lambda, heap_src, out] if mode == "mint-from-ast" => {
+            Ok(Command::MintFromAst {
+                lambda: lambda.clone(),
+                heap_src: heap_src.clone(),
                 out: out.clone(),
             })
         }
@@ -270,6 +291,81 @@ fn main() -> ExitCode {
             run_mint_int_plus_imm(&src, &imm, &out)
         }
         Command::MintChain { src, ops, out } => run_mint_chain(&src, &ops, &out),
+        Command::MintFromAst { lambda, heap_src, out } => {
+            run_mint_from_ast(&lambda, &heap_src, &out)
+        }
+    }
+}
+
+fn run_mint_from_ast(lambda_src: &str, heap_src: &str, out: &str) -> ExitCode {
+    if !HAS_AST_TRANSLATE {
+        eprintln!("nelisp: mint-from-ast: native_emit unavailable on this arch");
+        return ExitCode::from(14);
+    }
+    // Parse the lambda source — read-only, no eval (the lambda's body
+    // is symbolic input to the translator, not something we run).
+    let lambda = match read_str(lambda_src) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("nelisp: mint-from-ast: read error on LAMBDA: {}", e);
+            return ExitCode::from(2);
+        }
+    };
+    let ops = match translate_lambda(&lambda) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("nelisp: mint-from-ast: translate error: {}", e);
+            return ExitCode::from(3);
+        }
+    };
+
+    // Evaluate HEAP-SRC to an integer; becomes argv[0]'s heap word.
+    let heap_value = match eval_str(heap_src) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("nelisp: mint-from-ast: HEAP-SRC eval error: {}", e);
+            return ExitCode::from(2);
+        }
+    };
+    let heap_int = match heap_value {
+        Sexp::Int(n) => n,
+        other => {
+            eprintln!(
+                "nelisp: mint-from-ast: HEAP-SRC evaluated to {:?}, want Int",
+                fmt_sexp(&other)
+            );
+            return ExitCode::from(3);
+        }
+    };
+
+    let (heap, relocs) = match lower_to_heap(&Sexp::Int(heap_int)) {
+        Ok(pair) => pair,
+        Err(e) => {
+            eprintln!("nelisp: mint-from-ast: lowering failed: {}", e);
+            return ExitCode::from(3);
+        }
+    };
+    let code = compose(&ops);
+    let predicted = predict_chain_value(heap_int, &ops);
+    match write_image_with_heap_code_and_relocs(out, &code, &heap, &relocs) {
+        Ok(()) => {
+            println!(
+                "minted from-ast NlImage at {} (lambda={:?}, heap_int={}, ops={:?}, predicted={}, code_size={}, heap_size={}, reloc_count={})",
+                out,
+                lambda_src,
+                heap_int,
+                ops,
+                predicted,
+                code.len(),
+                heap.len(),
+                relocs.len()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("nelisp: image write error: {}", e);
+            ExitCode::from(4)
+        }
     }
 }
 
@@ -883,6 +979,30 @@ mod tests {
                 assert_eq!(src, "(+ 1 2)");
                 assert_eq!(imm, "10");
                 assert_eq!(out, "/tmp/e.bin");
+            }
+            other => panic!("unexpected: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_mint_from_ast() {
+        match parse_args([
+            "nelisp",
+            "mint-from-ast",
+            "(lambda (n) (+ n 5))",
+            "10",
+            "/tmp/g.bin",
+        ])
+        .unwrap()
+        {
+            Command::MintFromAst {
+                lambda,
+                heap_src,
+                out,
+            } => {
+                assert_eq!(lambda, "(lambda (n) (+ n 5))");
+                assert_eq!(heap_src, "10");
+                assert_eq!(out, "/tmp/g.bin");
             }
             other => panic!("unexpected: {:?}", other),
         }
