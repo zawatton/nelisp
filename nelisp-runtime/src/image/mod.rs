@@ -50,8 +50,8 @@ pub use reloc::{
 };
 pub use signal::{install_signal_handlers, NL_IMAGE_FAULT_EXIT_CODE};
 pub use value::{
-    is_cons, is_int, is_nil, is_string, is_symbol, tag_cons, tag_int, tag_string, tag_symbol,
-    untag_cons, untag_int, untag_string, untag_symbol, NL_VALUE_TAG_BITS, NL_VALUE_TAG_CONS,
-    NL_VALUE_TAG_INT, NL_VALUE_TAG_MASK, NL_VALUE_TAG_NIL, NL_VALUE_TAG_STRING,
-    NL_VALUE_TAG_SYMBOL,
+    is_cons, is_int, is_nil, is_string, is_symbol, is_t, tag_cons, tag_int, tag_string,
+    tag_symbol, untag_cons, untag_int, untag_string, untag_symbol, NL_IMMEDIATE_T,
+    NL_VALUE_TAG_BITS, NL_VALUE_TAG_CONS, NL_VALUE_TAG_INT, NL_VALUE_TAG_MASK, NL_VALUE_TAG_NIL,
+    NL_VALUE_TAG_STRING, NL_VALUE_TAG_SYMBOL,
 };

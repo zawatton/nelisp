@@ -178,10 +178,14 @@ fn pick_asset_for_eval_result(
     result: &Sexp,
 ) -> Result<(&'static [u8], bool, &'static str), String> {
     match result {
-        Sexp::Int(_) => Ok((
+        // Sexp::T joins Sexp::Int on NATIVE_LOAD_HEAP_INT_UNTAG: T is
+        // encoded as `(1 << 3) | NIL_TAG' = 11, so `sar 3' produces
+        // 1 (= boolean true exit code).  NIL → list_length still
+        // returns 0 (boolean false exit code).
+        Sexp::Int(_) | Sexp::T => Ok((
             NATIVE_LOAD_HEAP_INT_UNTAG,
             HAS_NATIVE_LOAD_HEAP_INT_UNTAG,
-            "int",
+            "int-or-t",
         )),
         Sexp::Nil | Sexp::Cons(_, _) => {
             Ok((NATIVE_LIST_LENGTH, HAS_NATIVE_LIST_LENGTH, "list"))
@@ -196,9 +200,8 @@ fn pick_asset_for_eval_result(
             HAS_NATIVE_LOAD_HEAP_SYMBOL_NAME_LEN,
             "symbol",
         )),
-        Sexp::T => Err("Stage 7a does not yet boot a `t' result".into()),
-        Sexp::Float(_) => Err("Stage 7a does not yet boot a Float result".into()),
-        Sexp::Vector(_) => Err("Stage 7a does not yet boot a Vector result".into()),
+        Sexp::Float(_) => Err("Stage 7b-1 does not yet boot a Float result".into()),
+        Sexp::Vector(_) => Err("Stage 7b-1 does not yet boot a Vector result".into()),
     }
 }
 
@@ -402,7 +405,12 @@ mod tests {
 
         assert_eq!(
             pick_asset_for_eval_result(&Sexp::Int(7)).unwrap().2,
-            "int"
+            "int-or-t"
+        );
+        assert_eq!(
+            pick_asset_for_eval_result(&Sexp::T).unwrap().2,
+            "int-or-t",
+            "Stage 7b-1 wires T through the same INT_UNTAG asset"
         );
         assert_eq!(
             pick_asset_for_eval_result(&Sexp::Nil).unwrap().2,
@@ -428,8 +436,8 @@ mod tests {
         use nelisp_build_tool::reader::Sexp;
 
         for (sexp, marker) in [
-            (Sexp::T, "t"),
             (Sexp::Float(3.14), "Float"),
+            (Sexp::Vector(std::rc::Rc::new(std::cell::RefCell::new(vec![]))), "Vector"),
         ] {
             let err = pick_asset_for_eval_result(&sexp).unwrap_err();
             assert!(

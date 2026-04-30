@@ -56,6 +56,15 @@ pub const NL_VALUE_TAG_STRING: u64 = 0b100;
 ///   `[ 8.. 16]`  tagged value slot (NIL when the symbol is unbound)
 pub const NL_VALUE_TAG_SYMBOL: u64 = 0b101;
 
+/// Immediate `t' sentinel (Stage 7b-1).  Encoded as `(1 << 3) |
+/// NIL_TAG` (= 11) so that a SAR-3 untag yields 1 (boolean true) and
+/// a NIL → SAR-3 yields 0 (boolean false).  The tag bits collide
+/// with `NL_VALUE_TAG_NIL' on purpose: NIL and T share the
+/// "immediate" tag class (`0b011`), distinguished only by the
+/// payload bit.  Future immediates (eof, unbound, ...) follow the
+/// same `(payload << 3) | 0b011' pattern.
+pub const NL_IMMEDIATE_T: u64 = (1u64 << NL_VALUE_TAG_BITS) | NL_VALUE_TAG_NIL;
+
 /// Build the on-image word for the tagged-int representing `n`.
 ///
 /// The asm side expects the same arithmetic — see
@@ -103,6 +112,12 @@ pub fn is_cons(v: u64) -> bool {
 /// `NL_VALUE_TAG_NIL` — there is only one nil value, no payload.
 pub fn is_nil(v: u64) -> bool {
     v == NL_VALUE_TAG_NIL
+}
+
+/// Whether the value is the immediate `t' sentinel.  Single legal
+/// value (`NL_IMMEDIATE_T' = 11), no payload.
+pub fn is_t(v: u64) -> bool {
+    v == NL_IMMEDIATE_T
 }
 
 /// Tag a heap-aligned address as a length-prefixed string pointer.
@@ -212,6 +227,30 @@ mod tests {
         assert!(!is_nil(NL_VALUE_TAG_INT));
         assert!(!is_nil(tag_int(0))); // tag_int(0) = 0b001, not 0b011
         assert!(!is_nil(tag_cons(0))); // tag_cons(0) = 0b010
+        assert!(!is_nil(NL_IMMEDIATE_T));
+    }
+
+    #[test]
+    fn t_immediate_layout() {
+        // T is `(1 << 3) | NIL_TAG' = 11.
+        assert_eq!(NL_IMMEDIATE_T, 11);
+        assert!(is_t(NL_IMMEDIATE_T));
+        assert!(!is_t(NL_VALUE_TAG_NIL));
+        assert!(!is_t(0));
+        assert!(!is_t(tag_int(1)));
+        // Critical SAR property exploited by the seed: NL_IMMEDIATE_T
+        // and NL_VALUE_TAG_NIL share `NATIVE_LOAD_HEAP_INT_UNTAG'.
+        // After SAR-3 they become 1 and 0 respectively — exactly the
+        // boolean exit codes Stage 7b-1 wants to demonstrate.
+        assert_eq!((NL_IMMEDIATE_T as i64) >> NL_VALUE_TAG_BITS, 1);
+        assert_eq!((NL_VALUE_TAG_NIL as i64) >> NL_VALUE_TAG_BITS, 0);
+    }
+
+    #[test]
+    fn t_and_nil_share_immediate_tag_class() {
+        // Both end in `0b011' — they live in the same "immediate"
+        // tag family, distinguished only by the upper-payload bit.
+        assert_eq!(NL_IMMEDIATE_T & NL_VALUE_TAG_MASK, NL_VALUE_TAG_NIL);
     }
 
     #[test]

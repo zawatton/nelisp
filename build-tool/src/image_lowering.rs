@@ -31,8 +31,8 @@ use std::fmt;
 use std::rc::Rc;
 
 use nelisp_runtime::image::{
-    tag_int, ImageReloc, NL_RELOC_KIND_HEAP_BASE_PLUS_OFFSET, NL_VALUE_TAG_CONS,
-    NL_VALUE_TAG_NIL, NL_VALUE_TAG_STRING, NL_VALUE_TAG_SYMBOL,
+    tag_int, ImageReloc, NL_IMMEDIATE_T, NL_RELOC_KIND_HEAP_BASE_PLUS_OFFSET,
+    NL_VALUE_TAG_CONS, NL_VALUE_TAG_NIL, NL_VALUE_TAG_STRING, NL_VALUE_TAG_SYMBOL,
 };
 
 use crate::reader::Sexp;
@@ -206,7 +206,9 @@ impl Lowerer {
                     addend: sym_offset | NL_VALUE_TAG_SYMBOL,
                 });
             }
-            Sexp::T => return Err(unsupported("T")),
+            Sexp::T => {
+                self.write_word(slot_offset, NL_IMMEDIATE_T);
+            }
             Sexp::Float(_) => return Err(unsupported("Float")),
             Sexp::Vector(_) => return Err(unsupported("Vector")),
         }
@@ -289,15 +291,13 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_variant_blames_correctly() {
-        // Reader produces `T` for `t' literal — Stage 6e supports
-        // Nil/Int/Cons/Str/Symbol but not the standalone `t' (waits
-        // on a future immediate-T tag).
+    fn t_lowers_to_immediate() {
+        // Stage 7b-1 — `t' is an immediate at heap[0..8] = 11.
         let sexp = read_str("t").expect("reader rejected `t'");
-        let err = lower_to_heap(&sexp).unwrap_err();
-        match err {
-            LowerError::Unsupported { variant } => assert_eq!(variant, "T"),
-        }
+        let (heap, relocs) = lower_to_heap(&sexp).unwrap();
+        assert_eq!(heap.len(), 8);
+        assert_eq!(read_word(&heap, 0), NL_IMMEDIATE_T);
+        assert!(relocs.is_empty());
     }
 
     #[test]
