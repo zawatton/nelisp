@@ -1,9 +1,26 @@
 #+TITLE: Doc 47 — Rust seed image ABI (interpreter を build-time に降格)
 #+DATE: 2026-04-30
 #+AUTHOR: zawatton + Claude (Opus 4.7 1M scoping session)
-#+STATUS: DRAFT
+#+STATUS: DRAFT — Phase 4 walking skeleton SHIPPED (Sweep 6, 2026-04-30)
 #+DEPENDS_ON: Doc 27 / 28 / 32 / 33 / 38 / 44 / 46
 #+SUPERSEDES_ASPECTS_OF: Doc 44 (= Phase 8.0 Rust-side minimal interpreter は build-tool に降格)
+
+#+begin_quote
+*Sweep 6 (2026-04-30) status update*: Phase 4 (= bootstrap.el on
+image) は本 doc の §3.1 元案 (= NlImage v1 native-code-in-image,
+~2,420 LOC =nelisp_runtime::image= subsystem) ではなく、より小さな
+walking skeleton (=nelisp_build_tool::image=, 314 LOC, =NELIMG\0\x01=
+magic) として ship された。新方式は real =Sexp= value を serialize
+し、既存 =nelisp_build_tool::eval= でそのまま評価する — 第二の
+object model を持たない。Sub-decomposition 6a-6e は build-tool の
+=src/image.rs= unit tests =phase4_6a..6e= で覆われている。
+
+旧 native-code subsystem は同 sweep で削除 (= principle 「Rust core
+最小化」准拠)。本 doc 残部の §3.X (native asset / reloc / boot) は
+将来の phase 5+ (= "real native code in image" にスケールアップする
+場合) の参照設計として保存。*phase 4 単独の生きた仕様は
+=docs/handoff-image-abi-bootstrap-2026-04-30.md=*。
+#+end_quote
 
 * §0 要旨 (TL;DR)
 
