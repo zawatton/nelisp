@@ -14,7 +14,10 @@ use std::process::ExitCode;
 
 use nelisp_build_tool::eval::{eval_str, eval_str_all, eval_str_all_at_path};
 use nelisp_build_tool::image_lowering::lower_to_heap;
-use nelisp_build_tool::native_emit::{emit_return_i32, HAS_EMIT_RETURN_I32};
+use nelisp_build_tool::native_emit::{
+    emit_load_heap_int_untag, emit_return_i32, HAS_EMIT_LOAD_HEAP_INT_UNTAG,
+    HAS_EMIT_RETURN_I32,
+};
 use nelisp_build_tool::reader::{fmt_sexp, read_str, Sexp};
 use nelisp_runtime::image::{
     write_image_with_heap_code_and_relocs, write_image_with_native_entry, HAS_NATIVE_LIST_LENGTH,
@@ -34,7 +37,8 @@ const USAGE: &str = "usage: nelisp --version
        nelisp mint-symbol-from-source SRC OUT  # Stage 6e: SRC must read as a symbol
        nelisp mint-eval-result SRC OUT         # Stage 7a: evaluate SRC, lower result, auto-pick asset
        nelisp mint-eval-file SRC-FILE OUT      # Stage 8: read FILE as a sequence of forms, evaluate, lower last value
-       nelisp mint-int-as-code SRC OUT         # Stage 9a: evaluate SRC (must be Int), emit native return-i32 code";
+       nelisp mint-int-as-code SRC OUT         # Stage 9a: evaluate SRC (must be Int), emit native return-i32 code
+       nelisp mint-int-via-emitted-load SRC OUT # Stage 9b: evaluate SRC, lower Int to heap, emit load-heap asm (vs pre-baked asset)";
 
 #[derive(Debug)]
 enum Command {
@@ -78,6 +82,16 @@ enum Command {
     /// program lives in the code segment as a few bytes of asm.
     /// First step toward Doc 47 §3.1 phase 7 (Phase 7 native arena).
     MintIntAsCode { src: String, out: String },
+    /// Doc 47 Stage 9b — evaluate SRC (must reduce to an integer),
+    /// lower the value to a tagged-int heap word (= Stage 7a path),
+    /// and write an image whose code segment is the
+    /// `emit_load_heap_int_untag' bytes the build-tool itself
+    /// produces, *not* the runtime's pre-baked
+    /// `NATIVE_LOAD_HEAP_INT_UNTAG' constant.  Both paths must produce
+    /// byte-identical code segments and exit with the same int — that
+    /// equivalence is the walking-skeleton parity gate for Stage 9c
+    /// (closure body compilation).
+    MintIntViaEmittedLoad { src: String, out: String },
 }
 
 fn parse_args<I, S>(args: I) -> Result<Command, String>
@@ -123,6 +137,12 @@ where
         }
         [_, mode, src, out] if mode == "mint-int-as-code" => {
             Ok(Command::MintIntAsCode {
+                src: src.clone(),
+                out: out.clone(),
+            })
+        }
+        [_, mode, src, out] if mode == "mint-int-via-emitted-load" => {
+            Ok(Command::MintIntViaEmittedLoad {
                 src: src.clone(),
                 out: out.clone(),
             })
@@ -199,6 +219,9 @@ fn main() -> ExitCode {
             }
         }
         Command::MintIntAsCode { src, out } => run_mint_int_as_code(&src, &out),
+        Command::MintIntViaEmittedLoad { src, out } => {
+            run_mint_int_via_emitted_load(&src, &out)
+        }
     }
 }
 
@@ -236,6 +259,72 @@ fn run_mint_int_as_code(src: &str, out: &str) -> ExitCode {
                 n,
                 value,
                 code.len()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("nelisp: image write error: {}", e);
+            ExitCode::from(4)
+        }
+    }
+}
+
+fn run_mint_int_via_emitted_load(src: &str, out: &str) -> ExitCode {
+    if !HAS_EMIT_LOAD_HEAP_INT_UNTAG {
+        eprintln!(
+            "nelisp: mint-int-via-emitted-load: native_emit unavailable on this arch"
+        );
+        return ExitCode::from(14);
+    }
+    let result = match eval_str(src) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("nelisp: eval error: {}", e);
+            return ExitCode::from(2);
+        }
+    };
+    if !matches!(result, Sexp::Int(_)) {
+        eprintln!(
+            "nelisp: mint-int-via-emitted-load: expression evaluated to {:?}, want Int",
+            fmt_sexp(&result)
+        );
+        return ExitCode::from(3);
+    }
+    // Lower the int the same way Stage 7a does — produces an 8-byte
+    // heap word + zero relocs (the int's tagged form is written
+    // directly into slot 0 with no pointer fixup).
+    let (heap, relocs) = match lower_to_heap(&result) {
+        Ok(pair) => pair,
+        Err(e) => {
+            eprintln!("nelisp: lowering failed: {}", e);
+            return ExitCode::from(3);
+        }
+    };
+    // Emit the load-heap-int-untag function body from the build-tool.
+    // The bytes must be byte-identical with the runtime's pre-baked
+    // NATIVE_LOAD_HEAP_INT_UNTAG (asserted by unit test in
+    // `native_emit::tests'); we *also* assert the equality here at
+    // mint time so a regression at runtime/build-tool boundary is
+    // caught before the image is written rather than at boot.
+    let code = emit_load_heap_int_untag();
+    if HAS_NATIVE_LOAD_HEAP_INT_UNTAG && code.as_slice() != NATIVE_LOAD_HEAP_INT_UNTAG {
+        eprintln!(
+            "nelisp: mint-int-via-emitted-load: emitted code differs from \
+             runtime asset (emitted={} bytes, asset={} bytes)",
+            code.len(),
+            NATIVE_LOAD_HEAP_INT_UNTAG.len()
+        );
+        return ExitCode::from(5);
+    }
+    match write_image_with_heap_code_and_relocs(out, &code, &heap, &relocs) {
+        Ok(()) => {
+            println!(
+                "minted int-via-emitted-load NlImage at {} (eval={}, code_size={}, heap_size={}, reloc_count={})",
+                out,
+                fmt_sexp(&result),
+                code.len(),
+                heap.len(),
+                relocs.len()
             );
             ExitCode::SUCCESS
         }
@@ -534,6 +623,19 @@ mod tests {
             Command::MintIntAsCode { src, out } => {
                 assert_eq!(src, "(+ 1 2)");
                 assert_eq!(out, "/tmp/c.bin");
+            }
+            other => panic!("unexpected: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_mint_int_via_emitted_load() {
+        match parse_args(["nelisp", "mint-int-via-emitted-load", "(+ 1 2)", "/tmp/d.bin"])
+            .unwrap()
+        {
+            Command::MintIntViaEmittedLoad { src, out } => {
+                assert_eq!(src, "(+ 1 2)");
+                assert_eq!(out, "/tmp/d.bin");
             }
             other => panic!("unexpected: {:?}", other),
         }
