@@ -32,7 +32,8 @@ use std::rc::Rc;
 
 use nelisp_runtime::image::{
     tag_int, ImageReloc, NL_IMMEDIATE_T, NL_RELOC_KIND_HEAP_BASE_PLUS_OFFSET,
-    NL_VALUE_TAG_CONS, NL_VALUE_TAG_NIL, NL_VALUE_TAG_STRING, NL_VALUE_TAG_SYMBOL,
+    NL_VALUE_TAG_CONS, NL_VALUE_TAG_FLOAT, NL_VALUE_TAG_NIL, NL_VALUE_TAG_STRING,
+    NL_VALUE_TAG_SYMBOL,
 };
 
 use crate::reader::Sexp;
@@ -116,6 +117,17 @@ impl Lowerer {
         let off = self.heap.len();
         self.heap.resize(off + SYMBOL_SIZE, 0);
         off as u64
+    }
+
+    /// Reserve and write an 8-byte aligned f64 struct.  No length
+    /// prefix or type header — the heap pointer that points at this
+    /// struct carries `NL_VALUE_TAG_FLOAT' which pins the type.
+    fn alloc_float(&mut self, f: f64) -> u64 {
+        let off = self.heap.len() as u64;
+        self.heap.resize(self.heap.len() + SLOT_SIZE, 0);
+        self.heap[off as usize..(off as usize + SLOT_SIZE)]
+            .copy_from_slice(&f.to_bits().to_le_bytes());
+        off
     }
 
     /// Lay out a length-prefixed string struct in the heap and return
@@ -209,7 +221,15 @@ impl Lowerer {
             Sexp::T => {
                 self.write_word(slot_offset, NL_IMMEDIATE_T);
             }
-            Sexp::Float(_) => return Err(unsupported("Float")),
+            Sexp::Float(f) => {
+                let f64_offset = self.alloc_float(*f);
+                self.relocs.push(ImageReloc {
+                    kind: NL_RELOC_KIND_HEAP_BASE_PLUS_OFFSET,
+                    _pad: 0,
+                    write_at: slot_offset,
+                    addend: f64_offset | NL_VALUE_TAG_FLOAT,
+                });
+            }
             Sexp::Vector(_) => return Err(unsupported("Vector")),
         }
         Ok(())
@@ -298,6 +318,22 @@ mod tests {
         assert_eq!(heap.len(), 8);
         assert_eq!(read_word(&heap, 0), NL_IMMEDIATE_T);
         assert!(relocs.is_empty());
+    }
+
+    #[test]
+    fn float_lowers_to_struct_plus_reloc() {
+        // Stage 7b-2 — heap[0..8] reloc placeholder, heap[8..16] f64.
+        let sexp = Sexp::Float(3.14);
+        let (heap, relocs) = lower_to_heap(&sexp).unwrap();
+        assert_eq!(heap.len(), 16);
+        assert_eq!(relocs.len(), 1);
+        // f64 at offset 8.
+        let bits = u64::from_le_bytes(heap[8..16].try_into().unwrap());
+        assert_eq!(f64::from_bits(bits), 3.14);
+        // Head reloc.
+        let r = &relocs[0];
+        assert_eq!(r.write_at, 0);
+        assert_eq!(r.addend, 8 | NL_VALUE_TAG_FLOAT);
     }
 
     #[test]
@@ -391,10 +427,10 @@ mod tests {
     }
 
     #[test]
-    fn float_still_unsupported() {
-        let sexp = read_str("3.14").expect("reader rejected 3.14");
+    fn vector_still_unsupported() {
+        let sexp = read_str("[1 2 3]").expect("reader rejected vector literal");
         match lower_to_heap(&sexp).unwrap_err() {
-            LowerError::Unsupported { variant } => assert_eq!(variant, "Float"),
+            LowerError::Unsupported { variant } => assert_eq!(variant, "Vector"),
         }
     }
 }

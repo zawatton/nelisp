@@ -65,6 +65,15 @@ pub const NL_VALUE_TAG_SYMBOL: u64 = 0b101;
 /// same `(payload << 3) | 0b011' pattern.
 pub const NL_IMMEDIATE_T: u64 = (1u64 << NL_VALUE_TAG_BITS) | NL_VALUE_TAG_NIL;
 
+/// Heap-pointer tag for IEEE-754 doubles (Stage 7b-2).
+///
+/// Float layout (single 8-byte aligned word):
+///   `[ 0..  8]`  raw f64 bit pattern (little-endian)
+///
+/// The f64 is unboxed bits — no length prefix or type header,
+/// because the tag carried by the pointer already pins the type.
+pub const NL_VALUE_TAG_FLOAT: u64 = 0b110;
+
 /// Build the on-image word for the tagged-int representing `n`.
 ///
 /// The asm side expects the same arithmetic — see
@@ -118,6 +127,24 @@ pub fn is_nil(v: u64) -> bool {
 /// value (`NL_IMMEDIATE_T' = 11), no payload.
 pub fn is_t(v: u64) -> bool {
     v == NL_IMMEDIATE_T
+}
+
+/// Tag a heap-aligned address as an unboxed f64 pointer (Stage 7b-2).
+pub fn tag_float(addr: u64) -> u64 {
+    debug_assert_eq!(
+        addr & NL_VALUE_TAG_MASK,
+        0,
+        "float struct address must be 8-byte aligned"
+    );
+    addr | NL_VALUE_TAG_FLOAT
+}
+
+pub fn untag_float(v: u64) -> u64 {
+    v & !NL_VALUE_TAG_MASK
+}
+
+pub fn is_float(v: u64) -> bool {
+    (v & NL_VALUE_TAG_MASK) == NL_VALUE_TAG_FLOAT
 }
 
 /// Tag a heap-aligned address as a length-prefixed string pointer.
@@ -280,6 +307,21 @@ mod tests {
     }
 
     #[test]
+    fn float_round_trip() {
+        for addr in [0x0u64, 0x8, 0x1000, 0x7f_0000_0000u64, u64::MAX & !NL_VALUE_TAG_MASK] {
+            let tagged = tag_float(addr);
+            assert!(is_float(tagged));
+            assert!(!is_int(tagged));
+            assert!(!is_cons(tagged));
+            assert!(!is_string(tagged));
+            assert!(!is_symbol(tagged));
+            assert!(!is_nil(tagged));
+            assert!(!is_t(tagged));
+            assert_eq!(untag_float(tagged), addr);
+        }
+    }
+
+    #[test]
     fn all_tags_are_distinct() {
         let tags = [
             NL_VALUE_TAG_INT,
@@ -287,6 +329,7 @@ mod tests {
             NL_VALUE_TAG_NIL,
             NL_VALUE_TAG_STRING,
             NL_VALUE_TAG_SYMBOL,
+            NL_VALUE_TAG_FLOAT,
         ];
         for (i, a) in tags.iter().enumerate() {
             for (j, b) in tags.iter().enumerate() {

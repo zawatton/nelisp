@@ -17,9 +17,10 @@ use nelisp_build_tool::image_lowering::lower_to_heap;
 use nelisp_build_tool::reader::{fmt_sexp, read_str, Sexp};
 use nelisp_runtime::image::{
     write_image_with_heap_code_and_relocs, HAS_NATIVE_LIST_LENGTH,
-    HAS_NATIVE_LOAD_HEAP_INT_UNTAG, HAS_NATIVE_LOAD_HEAP_STRING_LEN,
-    HAS_NATIVE_LOAD_HEAP_SYMBOL_NAME_LEN, NATIVE_LIST_LENGTH, NATIVE_LOAD_HEAP_INT_UNTAG,
-    NATIVE_LOAD_HEAP_STRING_LEN, NATIVE_LOAD_HEAP_SYMBOL_NAME_LEN,
+    HAS_NATIVE_LOAD_HEAP_FLOAT_INT_TRUNC, HAS_NATIVE_LOAD_HEAP_INT_UNTAG,
+    HAS_NATIVE_LOAD_HEAP_STRING_LEN, HAS_NATIVE_LOAD_HEAP_SYMBOL_NAME_LEN, NATIVE_LIST_LENGTH,
+    NATIVE_LOAD_HEAP_FLOAT_INT_TRUNC, NATIVE_LOAD_HEAP_INT_UNTAG, NATIVE_LOAD_HEAP_STRING_LEN,
+    NATIVE_LOAD_HEAP_SYMBOL_NAME_LEN,
 };
 
 const USAGE: &str = "usage: nelisp --version
@@ -200,8 +201,12 @@ fn pick_asset_for_eval_result(
             HAS_NATIVE_LOAD_HEAP_SYMBOL_NAME_LEN,
             "symbol",
         )),
-        Sexp::Float(_) => Err("Stage 7b-1 does not yet boot a Float result".into()),
-        Sexp::Vector(_) => Err("Stage 7b-1 does not yet boot a Vector result".into()),
+        Sexp::Float(_) => Ok((
+            NATIVE_LOAD_HEAP_FLOAT_INT_TRUNC,
+            HAS_NATIVE_LOAD_HEAP_FLOAT_INT_TRUNC,
+            "float-trunc",
+        )),
+        Sexp::Vector(_) => Err("Stage 7b-2 does not yet boot a Vector result".into()),
     }
 }
 
@@ -431,21 +436,26 @@ mod tests {
     }
 
     #[test]
-    fn pick_asset_rejects_unsupported_shapes_with_clear_message() {
+    fn pick_asset_includes_float() {
+        use super::pick_asset_for_eval_result;
+        use nelisp_build_tool::reader::Sexp;
+        assert_eq!(
+            pick_asset_for_eval_result(&Sexp::Float(3.14)).unwrap().2,
+            "float-trunc"
+        );
+    }
+
+    #[test]
+    fn pick_asset_rejects_vector_with_clear_message() {
         use super::pick_asset_for_eval_result;
         use nelisp_build_tool::reader::Sexp;
 
-        for (sexp, marker) in [
-            (Sexp::Float(3.14), "Float"),
-            (Sexp::Vector(std::rc::Rc::new(std::cell::RefCell::new(vec![]))), "Vector"),
-        ] {
-            let err = pick_asset_for_eval_result(&sexp).unwrap_err();
-            assert!(
-                err.contains(marker),
-                "error message {:?} should mention {:?}",
-                err,
-                marker
-            );
-        }
+        let v = Sexp::Vector(std::rc::Rc::new(std::cell::RefCell::new(vec![])));
+        let err = pick_asset_for_eval_result(&v).unwrap_err();
+        assert!(
+            err.contains("Vector"),
+            "error {:?} should mention Vector",
+            err
+        );
     }
 }
