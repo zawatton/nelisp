@@ -496,4 +496,66 @@ mod tests {
         let (_, relocs) = lower_to_heap(&sexp).unwrap();
         assert_eq!(relocs.len(), 3);
     }
+
+    // Stage 7c — closure / defun support.  Lowering a `(lambda ...)'
+    // or `(defun ...)' value needs *no* new image-format machinery:
+    // the build-tool evaluator returns lambdas as `(closure nil
+    // (params) body)` cons lists, defuns return symbols, and a
+    // fully-applied `(progn (defun ...) (call ...))' returns a
+    // primitive value.  All three already round-trip via Stages
+    // 6 + 7b.  These tests lock the contract as regression cases.
+
+    #[test]
+    fn lambda_lowers_via_cons_list_path() {
+        let result = crate::eval::eval_str("(lambda (x) (* x 2))").unwrap();
+        // The evaluator returns the closure as a cons-list literal
+        // `(closure nil (x) (* x 2))' — same shape Stage 6c handles.
+        match &result {
+            Sexp::Cons(_, _) => {}
+            other => panic!("expected closure as cons, got {:?}", other),
+        }
+        let (heap, relocs) = lower_to_heap(&result).unwrap();
+        // We don't assert exact byte counts here — the closure has
+        // nested cons / symbol / etc., so the heap shape is
+        // implementation-defined.  Lowering must merely succeed and
+        // produce *some* relocs (the head ptr at minimum).
+        assert!(!heap.is_empty());
+        assert!(!relocs.is_empty());
+    }
+
+    #[test]
+    fn defun_returns_symbol_lowers_cleanly() {
+        // `(defun NAME ARGS BODY)' returns the function name as a
+        // symbol — Stage 6e's symbol path handles it directly.
+        let result = crate::eval::eval_str("(defun greet () (concat \"hi\"))").unwrap();
+        match &result {
+            Sexp::Symbol(name) => assert_eq!(name, "greet"),
+            other => panic!("expected defun → symbol, got {:?}", other),
+        }
+        let (_, relocs) = lower_to_heap(&result).unwrap();
+        // Symbol lowering = head ptr reloc + name reloc = 2 relocs.
+        assert_eq!(relocs.len(), 2);
+    }
+
+    #[test]
+    fn defun_call_evaluates_at_build_time() {
+        // The flagship Stage 7 promise: a recursive defun + call is
+        // evaluated entirely by the build-tool, the image carries
+        // only the primitive result.
+        let result = crate::eval::eval_str(
+            "(progn (defun fib (n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (fib 10))",
+        )
+        .unwrap();
+        assert_eq!(result, Sexp::Int(55));
+        let (heap, relocs) = lower_to_heap(&result).unwrap();
+        // Pure Int → 8-byte single-slot heap, no relocs.
+        assert_eq!(heap.len(), 8);
+        assert!(relocs.is_empty());
+    }
+
+    #[test]
+    fn lambda_funcall_evaluates_at_build_time() {
+        let result = crate::eval::eval_str("(funcall (lambda (x y) (* x y)) 6 7)").unwrap();
+        assert_eq!(result, Sexp::Int(42));
+    }
 }
