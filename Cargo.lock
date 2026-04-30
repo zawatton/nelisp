@@ -120,10 +120,54 @@ name = "nelisp-runtime"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "nelisp-sqlite-rs",
+ "nelisp-syscall-fileio",
+ "nelisp-syscall-filenotify",
+ "nelisp-syscall-process",
+ "nelisp-syscall-types",
+]
+
+[[package]]
+name = "nelisp-runtime-cli"
+version = "0.1.0"
+dependencies = [
+ "nelisp-runtime",
+]
+
+[[package]]
+name = "nelisp-sqlite-rs"
+version = "0.1.0"
+dependencies = [
  "once_cell",
  "rusqlite",
  "serde_json",
 ]
+
+[[package]]
+name = "nelisp-syscall-fileio"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "nelisp-syscall-types",
+]
+
+[[package]]
+name = "nelisp-syscall-filenotify"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "nelisp-syscall-process"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "nelisp-syscall-types"
+version = "0.1.0"
 
 [[package]]
 name = "once_cell"

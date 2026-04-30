@@ -21,12 +21,12 @@
 // favour of the simpler walking-skeleton image format that lives in
 // `nelisp_build_tool::image` (= sexp serialization evaluated by the
 // existing eval/).  `nelisp-runtime` now hosts no image surface at all.
-// Doc 47 Stage 10 (2026-04-30) — sqlite FFI made optional.  Without
-// the `sqlite-ffi' feature the module + rusqlite dep + libsqlite3
-// link disappear from the build entirely (drops ~623 LOC + ~1.5
-// MiB).
-#[cfg(feature = "sqlite-ffi")]
-pub mod sqlite;
+// Doc 49 Phase 49.3 (2026-04-30) — sqlite FFI extracted to the
+// sibling `nelisp-sqlite-rs` crate.  The `sqlite-ffi' feature stays
+// default-ON as a compatibility shim and re-exports the same five
+// `nl_sqlite_*' symbols, so existing callers keep linking through
+// `nelisp_runtime::nl_sqlite_*'.  Without the feature the path-dep
+// disappears entirely (drops ~623 LOC + libsqlite3 static link).
 pub mod syscall;
 
 // Architecture α (Wave 3, 2026-04-29) — anvil_*_registry + mcp + the
@@ -78,10 +78,10 @@ pub use syscall::{
 
 // Phase 9d.J (T100 / Doc 39 LOCKED-2026-04-25-v2 §3.J) subprocess FFI
 // surface.  Twelve `nl_syscall_*` symbols wired at the crate root so
-// callers can write `nelisp_runtime::nl_syscall_fork` without spelling
-// `::syscall::process::` each time.  Gated behind the
-// `process-syscalls` feature (default ON) per Doc 39 §3.J — a future
-// "mini build" without subprocess support still compiles cleanly.
+// callers can write `nelisp_runtime::nl_syscall_fork`.  Gated behind
+// the `process-syscalls` feature (default ON) per Doc 39 §3.J — a
+// future "mini build" without subprocess support still compiles
+// cleanly.
 #[cfg(feature = "process-syscalls")]
 pub use syscall::{
     nl_syscall_dup2, nl_syscall_execve, nl_syscall_fork, nl_syscall_getrlimit,
@@ -94,6 +94,6 @@ pub use syscall::{
 // a `nl_sqlite_alive' liveness probe used by the `nelisp-sqlitep'
 // predicate.  Doc 47 Stage 10: gated behind `sqlite-ffi' (default ON).
 #[cfg(feature = "sqlite-ffi")]
-pub use sqlite::{
+pub use nelisp_sqlite_rs::{
     nl_sqlite_alive, nl_sqlite_close, nl_sqlite_execute, nl_sqlite_open, nl_sqlite_query,
 };

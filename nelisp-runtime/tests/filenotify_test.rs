@@ -1,4 +1,5 @@
 //! Phase 9d.A4 cargo-side tests for `nl_filenotify_*` FFI surface.
+#![cfg(feature = "filenotify-syscalls")]
 //!
 //! Each test exercises the `extern "C"` symbols at the same dlsym
 //! boundary NeLisp will hit, so a regression in linkage / signature /
@@ -98,7 +99,7 @@ fn linux_watch_create_event_round_trip() {
                 let mut off = 0usize;
                 while off + 16 <= n as usize {
                     let (_w, m, _c, name_len, total) =
-                        nelisp_runtime::syscall::filenotify::parse_inotify_event_header(
+                        nelisp_syscall_filenotify::parse_inotify_event_header(
                             &buf[off..n as usize],
                         )
                         .expect("inotify_event header parse");
@@ -193,7 +194,7 @@ fn linux_watch_delete_event_round_trip() {
                 let mut off = 0usize;
                 while off + 16 <= n as usize {
                     let (_w, m, _c, name_len, total) =
-                        nelisp_runtime::syscall::filenotify::parse_inotify_event_header(
+                        nelisp_syscall_filenotify::parse_inotify_event_header(
                             &buf[off..n as usize],
                         )
                         .expect("inotify_event header parse");
