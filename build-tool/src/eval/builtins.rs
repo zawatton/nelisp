@@ -59,6 +59,9 @@ pub fn install_builtins(env: &mut Env) {
         "symbol-value", "symbol-function", "fboundp", "boundp", "funcall", "apply", "eval",
         "signal", "error", "identity", "print", "princ", "prin1-to-string", "message",
         "provide", "require", "featurep",
+        // self-process stdio (Phase 9 minimal — needed by stand-alone Lisp servers
+        // such as elisp-lsp running on the `nelisp` binary)
+        "read-stdin-bytes",
     ];
     for n in names {
         let sentinel = Sexp::list_from(&[
@@ -168,6 +171,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "print" | "princ" => bi_princ(args),
         "prin1-to-string" => bi_prin1_to_string(args),
         "message" => bi_princ(args),
+        "read-stdin-bytes" => bi_read_stdin_bytes(args),
         "provide" => bi_provide(args, env),
         "require" => bi_require(args, env),
         "featurep" => bi_featurep(args, env),
@@ -1440,10 +1444,61 @@ fn bi_identity(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 fn bi_princ(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    use std::io::Write;
     if args.is_empty() {
         return Ok(Sexp::Nil);
     }
+    // Emacs `princ' writes string contents *without* quoting/escaping;
+    // non-strings render through their normal Display so `(princ 42)'
+    // emits `42' just like `(format "%s" 42)' would.
+    let bytes: Vec<u8> = match &args[0] {
+        Sexp::Str(s) => s.as_bytes().to_vec(),
+        other => format!("{}", other).into_bytes(),
+    };
+    let mut out = std::io::stdout().lock();
+    out.write_all(&bytes)
+        .and_then(|_| out.flush())
+        .map_err(|e| EvalError::Internal(format!("princ: {}", e)))?;
     Ok(args[0].clone())
+}
+
+/// (read-stdin-bytes LIMIT) — block-read up to LIMIT bytes from fd 0.
+///
+/// Returns:
+/// - `Sexp::Str` of 1..=LIMIT bytes when data is available.
+/// - `Sexp::Nil` on EOF (peer closed stdin).
+///
+/// LIMIT must be a positive integer; otherwise signals `wrong-type-argument`.
+/// I/O errors propagate as `EvalError::Internal` (= `error' tag at the
+/// `condition-case' boundary).
+///
+/// Bytes are stored as a UTF-8 `String' (the Sexp string variant).  LSP
+/// wire bytes are UTF-8 by spec so this is lossless for that consumer.
+/// Pathological stdin containing non-UTF-8 bytes passes through
+/// `from_utf8_lossy`, substituting U+FFFD; strict binary stdio is left
+/// to a later dedicated primitive.
+fn bi_read_stdin_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    use std::io::Read;
+    require_arity("read-stdin-bytes", args, 1, Some(1))?;
+    let limit = match &args[0] {
+        Sexp::Int(n) if *n > 0 => *n as usize,
+        other => {
+            return Err(EvalError::WrongType {
+                expected: "positive integer".into(),
+                got: other.clone(),
+            });
+        }
+    };
+    let mut buf = vec![0u8; limit];
+    let mut handle = std::io::stdin().lock();
+    match handle.read(&mut buf) {
+        Ok(0) => Ok(Sexp::Nil),
+        Ok(n) => {
+            buf.truncate(n);
+            Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned()))
+        }
+        Err(e) => Err(EvalError::Internal(format!("read-stdin-bytes: {}", e))),
+    }
 }
 
 fn bi_prin1_to_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
