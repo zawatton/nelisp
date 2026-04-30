@@ -8,17 +8,18 @@
 //! Categories (per prompt §6):
 //!   - Arithmetic  : + - * / mod < > <= >= = /=
 //!   - Equality    : eq equal
-//!   - Cons / list : car cdr cons list nth length nthcdr nreverse
-//!                   reverse append
-//!   - Higher-order: mapcar mapc memq member assq assoc
+//!   - Cons / list : car cdr cons list length append
+//!   - Higher-order: alist-get
 //!   - Predicates  : consp listp atom symbolp stringp numberp
 //!                   integerp floatp
-//!   - String      : concat format substring length intern symbol-name
+//!   - String      : concat format substring intern symbol-name
 //!   - Symbol/func : symbol-value symbol-function fboundp boundp
 //!                   funcall apply eval signal error
 //!
-//! Total registered: ~60 (counts above + a handful of glue helpers
-//! such as `print`, `princ`, `message`).
+//! Sweep 9 migrated to Elisp (lisp/nelisp-stdlib*.el):
+//!   identity null not 1+ 1- nth nthcdr reverse nreverse
+//!   mapcar mapc memq member assq assoc
+//!   plist-get plist-put plist-member string-empty-p
 
 use super::env::Env;
 use super::error::EvalError;
@@ -35,20 +36,20 @@ pub fn install_builtins(env: &mut Env) {
         // equality
         "eq", "equal",
         // cons / list
-        "car", "cdr", "cons", "list", "nth", "length", "nthcdr", "nreverse", "reverse", "append",
+        "car", "cdr", "cons", "list", "length", "append",
         "setcar", "setcdr",
         // generic sequence / array accessors
         "aref", "aset", "elt", "arrayp", "sequencep",
         "vector", "make-vector",
         // higher-order
-        "mapcar", "mapc", "memq", "member", "assq", "assoc", "alist-get",
+        "alist-get",
         // predicates
         "consp", "listp", "atom", "symbolp", "stringp", "numberp", "integerp", "floatp", "functionp",
         // string
         "concat", "format", "substring", "intern", "symbol-name", "string-equal", "string=",
-        "string-empty-p", "string-prefix-p", "string-match-p", "regexp-quote",
-        // plist / file helpers
-        "plist-get", "plist-put", "plist-member", "expand-file-name", "file-truename",
+        "string-prefix-p", "string-match-p", "regexp-quote",
+        // file helpers
+        "expand-file-name", "file-truename",
         // file I/O (Doc 47 Stage 8b — multi-file load chain)
         "file-name-directory", "file-name-nondirectory", "file-exists-p",
         "file-readable-p", "load",
@@ -94,10 +95,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "cdr" => bi_cdr(args),
         "cons" => bi_cons(args),
         "list" => Ok(Sexp::list_from(args)),
-        "nth" => bi_nth(args),
         "length" => bi_length(args),
-        "nthcdr" => bi_nthcdr(args),
-        "nreverse" | "reverse" => bi_reverse(args),
         "append" => bi_append(args),
         "setcar" => bi_setcar(args),
         "setcdr" => bi_setcdr(args),
@@ -111,12 +109,6 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "vector" => Ok(Sexp::vector(args.to_vec())),
         "make-vector" => bi_make_vector(args),
         // ---- higher-order ----
-        "mapcar" => bi_mapcar(args, env),
-        "mapc" => bi_mapc(args, env),
-        "memq" => bi_memq(args),
-        "member" => bi_member(args),
-        "assq" => bi_assq(args),
-        "assoc" => bi_assoc(args),
         "alist-get" => bi_alist_get(args),
         // ---- predicates ----
         "consp" => bi_predicate(args, |v| matches!(v, Sexp::Cons(_, _))),
@@ -137,13 +129,9 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "intern" => bi_intern(args),
         "symbol-name" => bi_symbol_name(args),
         "string-equal" | "string=" => bi_string_eq(args),
-        "string-empty-p" => bi_string_empty_p(args),
         "string-prefix-p" => bi_string_prefix_p(args),
         "string-match-p" => bi_string_match_p(args),
         "regexp-quote" => bi_regexp_quote(args),
-        "plist-get" => bi_plist_get(args),
-        "plist-put" => bi_plist_put(args),
-        "plist-member" => bi_plist_member(args),
         "expand-file-name" => bi_expand_file_name(args, env),
         "file-truename" => bi_file_truename(args, env),
         // Doc 47 Stage 8b — file I/O for multi-file load chains
@@ -386,34 +374,6 @@ fn bi_cons(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::cons(args[0].clone(), args[1].clone()))
 }
 
-fn bi_nth(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nth", args, 2, Some(2))?;
-    let n = as_int("nth", &args[0])?;
-    let mut cur = args[1].clone();
-    let mut i = 0;
-    while i < n {
-        cur = match cur {
-            Sexp::Cons(_, d) => d.borrow().clone(),
-            Sexp::Nil => return Ok(Sexp::Nil),
-            other => {
-                return Err(EvalError::WrongType {
-                    expected: "listp".into(),
-                    got: other,
-                })
-            }
-        };
-        i += 1;
-    }
-    match cur {
-        Sexp::Cons(a, _) => Ok(a.borrow().clone()),
-        Sexp::Nil => Ok(Sexp::Nil),
-        other => Err(EvalError::WrongType {
-            expected: "listp".into(),
-            got: other,
-        }),
-    }
-}
-
 fn bi_length(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("length", args, 1, Some(1))?;
     match &args[0] {
@@ -444,49 +404,6 @@ fn bi_length(args: &[Sexp]) -> Result<Sexp, EvalError> {
             expected: "sequence".into(),
             got: other.clone(),
         }),
-    }
-}
-
-fn bi_nthcdr(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nthcdr", args, 2, Some(2))?;
-    let n = as_int("nthcdr", &args[0])?;
-    let mut cur = args[1].clone();
-    let mut i = 0;
-    while i < n {
-        cur = match cur {
-            Sexp::Cons(_, d) => d.borrow().clone(),
-            Sexp::Nil => return Ok(Sexp::Nil),
-            other => {
-                return Err(EvalError::WrongType {
-                    expected: "listp".into(),
-                    got: other,
-                })
-            }
-        };
-        i += 1;
-    }
-    Ok(cur)
-}
-
-fn bi_reverse(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("reverse", args, 1, Some(1))?;
-    let mut cur: Sexp = args[0].clone();
-    let mut acc = Sexp::Nil;
-    loop {
-        let next = match &cur {
-            Sexp::Nil => return Ok(acc),
-            Sexp::Cons(a, d) => {
-                acc = Sexp::cons(a.borrow().clone(), acc);
-                d.borrow().clone()
-            }
-            other => {
-                return Err(EvalError::WrongType {
-                    expected: "listp".into(),
-                    got: other.clone(),
-                })
-            }
-        };
-        cur = next;
     }
 }
 
@@ -539,111 +456,6 @@ fn list_to_vec(v: &Sexp) -> Result<Vec<Sexp>, EvalError> {
                     got: other.clone(),
                 })
             }
-        };
-        cur = next;
-    }
-}
-
-fn bi_mapcar(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("mapcar", args, 2, Some(2))?;
-    let func = resolve_callable(&args[0], env)?;
-    let items = list_to_vec(&args[1])?;
-    let mut out = Vec::with_capacity(items.len());
-    for it in items {
-        out.push(super::apply_function(&func, &[it], env)?);
-    }
-    Ok(Sexp::list_from(&out))
-}
-
-fn bi_mapc(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("mapc", args, 2, Some(2))?;
-    let func = resolve_callable(&args[0], env)?;
-    let items = list_to_vec(&args[1])?;
-    for it in &items {
-        super::apply_function(&func, &[it.clone()], env)?;
-    }
-    Ok(args[1].clone())
-}
-
-fn bi_memq(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("memq", args, 2, Some(2))?;
-    let needle = args[0].clone();
-    let mut cur = args[1].clone();
-    loop {
-        let next = match &cur {
-            Sexp::Nil => return Ok(Sexp::Nil),
-            Sexp::Cons(a, d) => {
-                let a_clone = a.borrow().clone();
-                if sexp_eq(&a_clone, &needle) {
-                    return Ok(cur);
-                }
-                d.borrow().clone()
-            }
-            _ => return Ok(Sexp::Nil),
-        };
-        cur = next;
-    }
-}
-
-fn bi_member(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("member", args, 2, Some(2))?;
-    let needle = args[0].clone();
-    let mut cur = args[1].clone();
-    loop {
-        let next = match &cur {
-            Sexp::Nil => return Ok(Sexp::Nil),
-            Sexp::Cons(a, d) => {
-                if *a.borrow() == needle {
-                    return Ok(cur);
-                }
-                d.borrow().clone()
-            }
-            _ => return Ok(Sexp::Nil),
-        };
-        cur = next;
-    }
-}
-
-fn bi_assq(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("assq", args, 2, Some(2))?;
-    let key = args[0].clone();
-    let mut cur: Sexp = args[1].clone();
-    loop {
-        let next = match &cur {
-            Sexp::Nil => return Ok(Sexp::Nil),
-            Sexp::Cons(pair, rest) => {
-                let pair_clone = pair.borrow().clone();
-                if let Sexp::Cons(k, _) = &pair_clone {
-                    let k_clone = k.borrow().clone();
-                    if sexp_eq(&k_clone, &key) {
-                        return Ok(pair_clone);
-                    }
-                }
-                rest.borrow().clone()
-            }
-            _ => return Ok(Sexp::Nil),
-        };
-        cur = next;
-    }
-}
-
-fn bi_assoc(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("assoc", args, 2, Some(2))?;
-    let key = args[0].clone();
-    let mut cur: Sexp = args[1].clone();
-    loop {
-        let next = match &cur {
-            Sexp::Nil => return Ok(Sexp::Nil),
-            Sexp::Cons(pair, rest) => {
-                let pair_clone = pair.borrow().clone();
-                if let Sexp::Cons(k, _) = &pair_clone {
-                    if *k.borrow() == key {
-                        return Ok(pair_clone);
-                    }
-                }
-                rest.borrow().clone()
-            }
-            _ => return Ok(Sexp::Nil),
         };
         cur = next;
     }
@@ -869,11 +681,6 @@ fn string_value(v: &Sexp) -> Result<String, EvalError> {
     }
 }
 
-fn bi_string_empty_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("string-empty-p", args, 1, Some(1))?;
-    Ok(truthy(string_value(&args[0])?.is_empty()))
-}
-
 fn bi_string_prefix_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("string-prefix-p", args, 2, Some(3))?;
     let prefix = string_value(&args[0])?;
@@ -945,69 +752,6 @@ fn bi_string_match_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
         }
     };
     Ok(truthy(matched))
-}
-
-fn plist_pairs(plist: &Sexp) -> Result<Vec<(Sexp, Sexp)>, EvalError> {
-    let elems = list_to_vec(plist)?;
-    let mut out = Vec::new();
-    let mut i = 0usize;
-    while i < elems.len() {
-        let key = elems[i].clone();
-        let value = elems.get(i + 1).cloned().unwrap_or(Sexp::Nil);
-        out.push((key, value));
-        i += 2;
-    }
-    Ok(out)
-}
-
-fn bi_plist_get(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("plist-get", args, 2, Some(2))?;
-    for (key, value) in plist_pairs(&args[0])? {
-        if key == args[1] {
-            return Ok(value);
-        }
-    }
-    Ok(Sexp::Nil)
-}
-
-fn bi_plist_member(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("plist-member", args, 2, Some(2))?;
-    let elems = list_to_vec(&args[0])?;
-    let mut i = 0usize;
-    while i < elems.len() {
-        if elems[i] == args[1] {
-            return Ok(Sexp::list_from(&elems[i..]));
-        }
-        i += 2;
-    }
-    Ok(Sexp::Nil)
-}
-
-fn bi_plist_put(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("plist-put", args, 3, Some(3))?;
-    let elems = list_to_vec(&args[0])?;
-    let mut out = Vec::new();
-    let mut i = 0usize;
-    let mut replaced = false;
-    while i < elems.len() {
-        if !replaced && elems[i] == args[1] {
-            out.push(args[1].clone());
-            out.push(args[2].clone());
-            replaced = true;
-            i += 2;
-            continue;
-        }
-        out.push(elems[i].clone());
-        if let Some(v) = elems.get(i + 1) {
-            out.push(v.clone());
-        }
-        i += 2;
-    }
-    if !replaced {
-        out.push(args[1].clone());
-        out.push(args[2].clone());
-    }
-    Ok(Sexp::list_from(&out))
 }
 
 fn normalize_path(path: &str, base: Option<&str>) -> PathBuf {
