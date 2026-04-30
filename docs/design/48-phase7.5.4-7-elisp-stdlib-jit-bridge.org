@@ -1,0 +1,623 @@
+#+TITLE: Doc 48 — Phase 7.5.4-7 : Elisp stdlib (Sweep 9/10) → JIT bridge
+#+AUTHOR: zawatton + Claude
+#+DATE: 2026-04-30
+#+STATE: DRAFT-2026-04-30
+#+STATUS: Sweep 9/10 で elispize 済 23 builtin (lisp/nelisp-stdlib*.el) を Phase 7.1 native compiler の AOT 出力で実行する bridge 設計。Phase 7.5.4 (i64 argv) → 7.5.5 (Sexp marshaling) → 7.5.6 (Cons/heap interop) → 7.5.7 (full builtin AOT integration) の 4 sub-phase 分割。
+
+* §0 要旨 (TL;DR)
+
+Sweep 9 + Sweep 10 (commits =9fffe19=..=aadcc6c=) で 23 個の Rust builtin
+を =lisp/nelisp-stdlib*.el= 配下の Elisp 定義へ移行済。現状はそれら
+Elisp 定義を Rust evaluator (=build-tool/src/eval/=) が **解釈** している。
+Phase 7.1 (=src/nelisp-cc*.el= 12,196 LOC) の native compiler で AOT
+compile すれば C 速度で動作可能だが、二つの世界を繋ぐ bridge が未完。
+
+本 Doc は **Sweep 9/10 builtin が JIT で動く最終形** に至る 4 sub-phase
+を define する：
+
+| sub-phase    | scope                                                  | 主な未実装             | 工数概算 |
+|--------------+--------------------------------------------------------+------------------------+----------|
+| Phase 7.5.4  | =nelisp-runtime exec-bytes= に i64 argv 引数受付追加   | Rust ~30 LOC + ERT     | ~半日    |
+| Phase 7.5.5  | Sexp ↔ tagged-i64 marshaling 層                        | Sexp encoding 仕様     | ~1 週間  |
+| Phase 7.5.6  | Cons cell / heap allocation interop (Phase 7.2 連動)   | GC barrier API、heap shared | ~2 週間  |
+| Phase 7.5.7  | install-time AOT pipeline + runtime hand-off + bench   | install.sh、Makefile   | ~1 週間  |
+
+完遂時の効果 (期待):
+- Sweep 9/10 の 23 builtin が C 速度で動作
+- Phase 7.4 §7.2 tier-A throughput gate (現在 warning mode、UTF-8 5x /
+  SJIS 3x / EUC-JP 3x 未達) が実 PASS 可能になる土台
+- NeLisp standalone tarball (stage-d-v2.0) の startup latency 改善
+
+LOC budget 合計 (本 phase 4 sub-phase): Rust ~150-200 LOC 追加 + Elisp
+~300-500 LOC + design doc ~600 LOC + ERT ~50 件。
+
+ただし v1.0 公開告知 gate (= Doc 27 condition #4) には *直接*
+は寄与しない (= Phase 7 SBCL 4 核とは独立)。本 phase は user 体験
+向上 + Phase 7.4 close を主目的とする。
+
+* §1 背景
+
+** 1.1 critical path 上の位置
+
+#+begin_src
+[Sweep 9 + 10 SHIPPED]    [Phase 7.1 SHIPPED]    [Phase 7.5.1-3 SHIPPED]
+   23 elisp builtins      x86_64/arm64 native       --no-emacs binary
+       ↓ 解釈                  ↓ 0-arg lambda             ↓ stage-d-v2.0
+       └──────── ❌ bridge 不在 ────────┘                     │
+                                                              ▼
+                                                  本 Doc 48 = bridge 構築
+                                                              ↓
+                                                  Sweep 9/10 builtin が
+                                                  C 速度で動作
+#+end_src
+
+** 1.2 既存資産 (本 phase 着手時の前提)
+
+| 資産                                       | 出典         | LOC    | status |
+|--------------------------------------------+--------------+--------+--------|
+| =build-tool/src/eval/builtins.rs= (Rust)   | Sweep 9+10   | 1,381  | SHIPPED |
+| =lisp/nelisp-stdlib*.el= (Elisp builtins)  | Sweep 9+10   | 152    | SHIPPED |
+| =src/nelisp-cc*.el= (native compiler)      | Phase 7.1    | 12,196 | SHIPPED |
+| =nelisp-runtime exec-bytes= (Rust binary)  | Phase 7.5.1  | ~70    | SHIPPED |
+| =Env::new_global= bootstrap (include_str!) | Sweep 9 S0   | ~30    | SHIPPED |
+
+** 1.3 今日の smoke 結果 (本 Doc 起草の根拠データ)
+
+実証済 (=2026-04-30=、本 design 起草前の確認):
+
+#+begin_src bash
+$ emacs --batch -Q -L src -l nelisp-cc-runtime \
+    --eval '(setq nelisp-cc-runtime-exec-mode (quote real))' \
+    --eval '(setq nelisp-cc-runtime-binary-override "...nelisp-runtime")' \
+    --eval '(... (nelisp-cc-runtime-compile-and-allocate (quote (lambda () 42))))'
+mode=real bytes-len=18 exec-result=(:result 0 42)
+#+end_src
+
+→ =(lambda () 42)= を 18 bytes x86_64 native に AOT compile、
+=nelisp-runtime exec-bytes= が mmap PROT_EXEC + 実 CPU 実行 + 戻り値 42
+取得まで end-to-end 動作。
+
+未確認 (本 phase で扱う):
+- N-arg lambda 実行: =nelisp-runtime exec-bytes= の signature が
+  =extern "C" fn() -> i64= 固定で argv 経由の引数渡しがない
+- Sexp 値: native code は raw =i64= しか扱えず、=Sexp::Cons= 等は不可
+- heap interop: =cons= / =list= 操作は Phase 7.2 allocator 連動が必要
+
+** 1.4 ROI 検討
+
+なぜ Sweep 9/10 を JIT 化するか:
+
+| 動機                                  | 強度 |
+|---------------------------------------+------|
+| Phase 7.4 tier-A gate close           | 高   |
+| user 提案の direct response           | 高   |
+| NeLisp purity mission (= 100% Lisp)   | 中   |
+| 実用 perf: 23 builtin の hot path 改善 | 中   |
+| Doc 27 condition #4 (公開 gate)       | 低   |
+
+直接的な公開 gate (Doc 27) には寄与しない (= 公開 gate は 4 核 NeLisp
+化、本 phase はその上に立つ user 体験層) が、tier-A gate は実 PASS
+させたい所で本 phase が前提条件。
+
+** 1.5 SBCL precedent
+
+SBCL の =sb-fasl= (FASLOAD: pre-compiled .fasl loading) と equivalent。
+SBCL は startup 時に core image を mmap、関数を直接 callable。本 phase
+の install-time AOT + runtime mmap は同 idiom。
+
+* §2 LOCKED decisions (default = 第一推奨、user signoff 待ち)
+
+** 2.1 sub-phase 分割粒度 [推奨 = A]
+
+| 案 | 案 概要                                          | pros                       | cons                       |
+|----+--------------------------------------------------+----------------------------+----------------------------|
+| A  | 7.5.4 / 7.5.5 / 7.5.6 / 7.5.7 の 4 sub          | 各 sub 独立 ship 可、検証粒度小 | replan gate 増             |
+| B  | 7.5.4 (i64 argv) と 7.5.5+6+7 一括              | replan gate 1 個           | 失敗時 rollback 範囲大     |
+| C  | 全部一気                                         | 単純                       | risk 高、blast radius 大   |
+
+*推奨 A*: design doc 標準粒度 (Doc 28 と同じ 5 sub-phase 分割)、各 sub
+独立 SHIPPED 可で main =--no-ff= merge ladder 形成可能。
+
+** 2.2 i64 argv signature [推奨 = A]
+
+=nelisp-runtime exec-bytes= の N-arg 拡張方式：
+
+| 案 | signature                                                          | pros                  | cons                     |
+|----+--------------------------------------------------------------------+-----------------------+--------------------------|
+| A  | =exec-bytes <bytes-file> [ARG1 ARG2 ... ARG6]= argv 文字列 i64 parse | 最小、SystemV 6 arg まで  | 7+ arg は不可 (用途無し) |
+| B  | =exec-bytes <bytes-file> --args-file=<json>= JSON で多 arg / type   | 拡張性                | i64 のみで充分なら過剰   |
+| C  | stdin 経由 binary protocol                                         | 任意長                | 複雑、debug しづらい     |
+
+*推奨 A*: SystemV AMD64 / AAPCS64 共に第 1-6 引数は register 渡し、6 arg
+で実用充分。Sweep 9/10 builtin の最大 arity = 5 (=alist-get= の
+=KEY ALIST DEFAULT REMOVE TESTFN=)。argv 文字列 → i64 parse は ~10 LOC。
+
+** 2.3 Sexp ↔ native 値表現 [推奨 = B (tagged i64)]
+
+native code が扱える値表現:
+
+| 案 | 表現                                                  | pros                     | cons                         |
+|----+-------------------------------------------------------+--------------------------+------------------------------|
+| A  | raw i64 (= int 限定)                                  | 最も単純                 | float / cons / str 不可      |
+| B  | tagged i64 (= NaN-boxing or low-bit tag)              | float / cons / str 統一   | encode/decode コスト         |
+| C  | Sexp Rust enum をそのまま native に渡す (=*const Sexp=) | 既存 Rust 表現直接使える  | native 側で Rust 内部触る → ABI 不安定 |
+
+*推奨 B*: NaN-boxing は SBCL / Lua / V8 が採用、業界標準パターン。
+Phase 7.1 native compiler は **既に** tagged i64 前提の codegen を
+する (=nelisp-cc-x86_64.el= の =--encode-int= / =--decode-int= 関連)。
+Sexp ↔ tagged-i64 conversion 層が Phase 7.5.5 で必要。
+
+具体 tag scheme (Doc 28 §4 から推定、要検証):
+- bit 0 = 0 → fixnum (62-bit signed)
+- bit 0 = 1 → pointer (heap object: cons / vector / string / float box)
+- =Nil= = 0x0, =T= = 0x1 (immediate sentinel)
+
+** 2.4 install-time AOT 配線箇所 [推奨 = A]
+
+| 案 | 配線箇所                                       | pros                    | cons                     |
+|----+------------------------------------------------+-------------------------+--------------------------|
+| A  | =install.sh= が AOT script を呼ぶ              | install 動作明示       | dev sandbox install 不要 |
+| B  | =Makefile= =build-tool= target に組込         | =make= で勝手に compile | install と build の境界曖昧 |
+| C  | =cargo build --release= の =build.rs= で実行   | 完全自動                | build 時間大幅増         |
+
+*推奨 A*: install.sh で明示的に AOT step を call。dev では skip 可
+(=NELISP_SKIP_AOT=1= で gate)、release tarball には .nelisp-cache/
+として bundle。
+
+** 2.5 cache 配置 [推奨 = A]
+
+AOT 結果の persist 場所:
+
+| 案 | 配置                                              | pros                | cons                     |
+|----+---------------------------------------------------+---------------------+--------------------------|
+| A  | =share/nelisp/cache/<hash>.bytes= + manifest.json  | XDG 風、検証容易    | 複数 PC で別々 (= 想定通り) |
+| B  | =build-tool/= 内の Rust =include_bytes!= で baked | Rust 側 single binary | 再 compile 必須          |
+| C  | =~/.cache/nelisp/= ユーザー XDG                   | 共通 cache          | install 時に書込 root 権限要 |
+
+*推奨 A*: install prefix 配下 (例 =/usr/local/share/nelisp/cache/=) 配置、
+manifest.json で =builtin-name → bytes-file + sha256= map。tarball 経由
+distribute 可能、install.sh が build 後 mv。
+
+** 2.6 dispatch fallback [推奨 = A]
+
+Rust evaluator が builtin call 時の挙動:
+
+| 案 | dispatch                                          | pros                | cons              |
+|----+---------------------------------------------------+---------------------+-------------------|
+| A  | JIT 版あれば call、無ければ既存 interpret fallback | 安全、漸進 enable   | 分岐コスト ns/呼出 |
+| B  | install 時 AOT 失敗 → install fail                | 一貫性             | 厳しい            |
+| C  | always interpret + JIT は opt-in (env var)        | 最保守的            | 速度効果 0 default  |
+
+*推奨 A*: =Env::new_global= で AOT cache 探索、見つかれば function cell
+に =(jit <ptr>)= sentinel を install (現状 =(builtin <name>)= 同様)。
+dispatch で =jit= sentinel 見つけたら native call、見つからなければ
+=(builtin ...)= fallback。
+
+** 2.7 ABI 安定性保証 [推奨 = A]
+
+Phase 7.1 backend の AST → native bytes が release 跨いで bit-for-bit
+再現する保証:
+
+| 案 | 保証                                              | pros               | cons              |
+|----+---------------------------------------------------+--------------------+-------------------|
+| A  | sha256(=nelisp-cc.el=) を AOT cache key に含める  | 自動 invalidate    | nelisp-cc 更新で全 cache miss |
+| B  | 手動 version bump                                 | 細粒度制御         | 忘れ事故         |
+| C  | 保証しない                                        | 単純               | stale cache fall through |
+
+*推奨 A*: =nelisp-cc-bootstrap-run= の Doc 28 §3.5 stage 2 (semantic diff
+via golden hash) と整合、SHA-256 hash chain が自然な cache invalidate。
+
+** 2.8 LOC budget [推奨 = A]
+
+| sub-phase  | Rust       | Elisp      | ERT  |
+|------------+------------+------------+------|
+| 7.5.4      | +30        | +0         | +5   |
+| 7.5.5      | +50        | +200       | +15  |
+| 7.5.6      | +30        | +200       | +15  |
+| 7.5.7      | +20 (cli)  | +100       | +10  |
+| *合計*     | *+130*     | *+500*     | *+45* |
+
+許容: ±30%。超過時 W1 replan gate (= Doc 32 と同じ pattern)。
+
+** 2.9 stats / instrumentation [推奨 = A]
+
+builtin 別 JIT-vs-interpret 呼出回数 + 経過時間:
+
+#+begin_src
+NELISP_STATS=1 nelisp eval '(load "...")'
+# stats summary on exit:
+# builtin            jit-calls  interp-calls  jit-ns/call  interp-ns/call
+# 1+                 1234567    0             8.3          145.2
+# nthcdr             34000      0             45.1         890.5
+#+end_src
+
+* §3 Sub-phase 7.5.4〜7.5.7 詳細
+
+各 sub-phase は独立 SHIPPED 可能、main へ feat branch =--no-ff= merge。
+LOCK 化は user signoff 後、SHIPPED は impl + ERT + bench gate 通過後。
+
+** 3.1 Phase 7.5.4 — =exec-bytes= に i64 argv 受付追加 (~半日)
+
+*目標*: =nelisp-runtime exec-bytes <file> [ARG1..6]= で 6 まで i64 引数
+渡せるようにし、=(lambda (x) (+ x 1))= を arg=5 で実行 → 6 取得。
+
+*Rust 変更* (=nelisp-runtime/src/main.rs=、+30 LOC):
+
+#+begin_src rust
+// 旧: extern "C" fn() -> i64
+// 新:
+extern "C" fn(i64, i64, i64, i64, i64, i64) -> i64
+// argv[2..] を i64 parse (str::parse) → 不足分は 0 padding
+let args: [i64; 6] = parse_args_or_zeros(&argv[2..]);
+let f: extern "C" fn(i64, i64, i64, i64, i64, i64) -> i64 =
+    unsafe { std::mem::transmute(page_ptr) };
+let result = f(args[0], args[1], args[2], args[3], args[4], args[5]);
+println!("RESULT: {}", result);
+#+end_src
+
+SystemV AMD64 と AAPCS64 共に第 1-6 引数は register 渡しなので、native
+code 側は使う数だけ受け取ればよい (使わない arg は ignore)。
+
+*Elisp 変更* (=nelisp-cc-runtime--exec-real=、+10 LOC):
+
+#+begin_src elisp
+(defun nelisp-cc-runtime--exec-real (bytes &optional args)
+  "Execute BYTES via 'nelisp-runtime exec-bytes'.
+ARGS is a list of up to 6 integers (default nil = 0-arg)."
+  ...
+  (let* ((argv (append (list "exec-bytes" tmp-file)
+                       (mapcar #'number-to-string (or args '()))))
+         (exit (apply #'call-process bin nil t nil argv))) ...))
+#+end_src
+
+*ERT* (=test/nelisp-cc-runtime-args-test.el= 新規、+5):
+
+| test                                       | input                            | expected |
+|--------------------------------------------+----------------------------------+----------|
+| zero-arg                                   | =(lambda () 42)= []              | 42       |
+| one-arg-inc                                | =(lambda (x) (+ x 1))= [5]       | 6        |
+| two-arg-add                                | =(lambda (x y) (+ x y))= [3 4]   | 7        |
+| three-arg-fma                              | =(lambda (x y z) (+ (* x y) z))= [2 3 4] | 10 |
+| six-arg-sum                                | =(lambda (a b c d e f) (+ a b c d e f))= [1 2 3 4 5 6] | 21 |
+
+*完遂条件*:
+- =cargo test --workspace= 緑
+- =make test= 緑 (新 5 ERT 含む)
+- =bin/nelisp-runtime exec-bytes <file> 5= が 6 を出す smoke OK
+
+** 3.2 Phase 7.5.5 — Sexp ↔ tagged-i64 marshaling (~1 週間)
+
+*目標*: Phase 7.5.4 で raw i64 が渡せるようになった所に、tagged-i64
+encoding 層を被せて Int / Nil / T を transparent に渡せるようにする。
+Float / Cons / Str は Phase 7.5.6 で扱う。
+
+*Sexp encoding 仕様* (Doc 28 §4 と整合、要検証):
+
+#+begin_src
+fixnum:   value << 1 | 0    (62-bit signed range)
+nil:      0x0
+t:        0x1 << 1 | 0 ... (placeholder, see below)
+heap ptr: ptr | 1            (low bit set)
+#+end_src
+
+*Rust 側* (=build-tool/src/eval/jit.rs= 新規、+50 LOC):
+
+#+begin_src rust
+fn sexp_to_tagged_i64(s: &Sexp) -> Option<i64> {
+    match s {
+        Sexp::Int(n) => Some(n << 1),
+        Sexp::Nil => Some(0),
+        Sexp::T => Some(/* sentinel */ 2),
+        _ => None, // Phase 7.5.6 で対応
+    }
+}
+fn tagged_i64_to_sexp(t: i64) -> Sexp { ... }
+#+end_src
+
+*Elisp 側* (=src/nelisp-cc-marshal.el= 新規、+200 LOC):
+- =nelisp-cc-marshal-encode-sexp=
+- =nelisp-cc-marshal-decode-i64=
+- =nelisp-cc-runtime--exec-real-with-sexp= (Phase 7.5.4 wrapper)
+
+*ERT* (+15):
+- Int round-trip (positive / negative / 0)
+- Nil round-trip / T round-trip
+- Sexp::Cons / Float passing → 明示的 unsupported error
+- (lambda (x) (+ x 1)) sexp-arg=Sexp::Int(5) → Sexp::Int(6)
+- (lambda (x) (if x 1 2)) sexp-arg=Sexp::Nil → Sexp::Int(2)
+- (lambda (x) (if x 1 2)) sexp-arg=Sexp::T → Sexp::Int(1)
+
+*完遂条件*:
+- Int / Nil / T 引数の builtin が Sexp で渡せて Sexp で返る
+- Float / Cons は graceful error (現状 fallback to interpret)
+- bench (=cargo bench=) で =1+= JIT 版が interpret 比 5x 以上速い
+
+*Sweep 9/10 builtin の対応状況* (Phase 7.5.5 完遂時):
+
+| builtin     | int-only? | Phase 7.5.5 で動く? |
+|-------------+-----------+---------------------|
+| =1+= =1-=   | yes       | ✓                   |
+| =null= =not= | nil/t check | ✓ (sentinel 比較) |
+| =identity=  | any       | ⚠ int のみ          |
+| 残り 18 個  | cons/list  | ✗ → Phase 7.5.6 待ち |
+
+** 3.3 Phase 7.5.6 — Cons / heap allocation interop (~2 週間)
+
+*目標*: =cons= / =car= / =cdr= が native code 内から触れるようにし、
+=mapcar= / =nth= / =memq= 等の Sweep 9 G1-G4 builtin を JIT 化。
+
+*要件*:
+- native code から =cons= cell allocate 可能 (Phase 7.2 allocator
+  fast-path 経由)
+- read barrier / write barrier (Phase 7.3 GC inner と整合)
+- Sexp::Cons の表現を tagged ptr に統一
+
+*Rust 側 (~30 LOC)*:
+- =cons_alloc=, =cons_car=, =cons_cdr= を C ABI で export
+- native code から syscall stub 経由で呼べる
+
+*Elisp 側 (~200 LOC)*:
+- =nelisp-cc-marshal-encode-cons= / decode
+- =nelisp-cc-x86_64= に =cons-call= opcode 追加 (現状 SSA で =call
+  cons-alloc= 出てるはずだが要確認)
+
+*ERT (+15)*:
+- (lambda (x) (cons x nil)) → 1-element list
+- mapcar (lambda (n) (* n 2)) '(1 2 3) → '(2 4 6)
+- nth 1 '(a b c) → 'b
+- ...
+
+*完遂条件*:
+- Sweep 9 G1-G4 + S0 全 19 builtin が JIT で動作
+- bench で interpret 比 10-30x speedup
+- 24h soak (Phase 7.5.3 既存 harness) で GC pause spike 検出無し
+
+** 3.4 Phase 7.5.7 — install-time AOT pipeline + runtime hand-off (~1 週間)
+
+*目標*: install 時に =lisp/nelisp-stdlib*.el= を AOT compile し
+=share/nelisp/cache/<hash>.bytes= に persist。runtime は load 時に
+cache から native code を mmap PROT_EXEC、function cell を =(jit <ptr>)=
+sentinel に置換。fallback で interpret。
+
+*install.sh 変更 (~20 LOC + Elisp ~100 LOC)*:
+
+#+begin_src bash
+nelisp_aot_compile_stdlib() {
+  local cache_dir="$1/share/nelisp/cache"
+  mkdir -p "$cache_dir"
+  emacs --batch -Q -L src \
+    --eval "(setq nelisp-cc-runtime-exec-mode 'simulator)" \
+    -l nelisp-cc-runtime \
+    -l "$cache_dir/../scripts/aot-compile-stdlib.el" \
+    --eval "(nelisp-aot-compile-all (quote (\"$cache_dir\")))"
+}
+#+end_src
+
+=scripts/aot-compile-stdlib.el= 新規 (~100 LOC):
+- =lisp/nelisp-stdlib*.el= を全 read
+- 各 =(defun NAME ARGS BODY)= → =(lambda ARGS BODY)= 抽出
+- =nelisp-cc-runtime-compile-and-allocate= で AOT
+- =:final-bytes= を =<cache-dir>/<sha256>.bytes= に write
+- manifest.json (=builtin-name → sha256= map) update
+
+*Rust runtime hand-off* (~20 LOC):
+- =Env::new_global= で =share/nelisp/cache/manifest.json= 読込
+- 各 builtin 名について cache hit すれば bytes mmap PROT_EXEC + 関数 cell
+  に =(jit <ptr>)= 設定
+- =dispatch= に =jit= 分岐追加 (= unsafe transmute + call)
+
+*ERT (+10)*:
+- install 経由 AOT cache 生成 → cache file 存在確認
+- runtime load → function cell が =(jit ...)= になる
+- =(1+ 5)= → Sexp::Int(6) (JIT path)
+- cache 削除して再 load → fallback interpret OK
+- nelisp-cc.el の hash 変更で cache invalidate
+
+*完遂条件*:
+- =install.sh= 経由で AOT cache 生成
+- =bin/nelisp eval '(1+ 5)'= → "6" + stats で JIT path 経由が観測できる
+- Phase 7.4 tier-A bench 実 PASS (warning mode → green)
+- 24h soak regression-free
+
+* §4 Architecture (= JIT 経路統合)
+
+#+begin_src
+[install.sh]
+   ↓ emacs --batch + nelisp-cc
+[lisp/nelisp-stdlib*.el] → [nelisp-cc-runtime-compile-and-allocate]
+                              ↓ x86_64/arm64 native bytes
+                          [share/nelisp/cache/<hash>.bytes + manifest.json]
+                              ↓ install 完了
+
+[runtime: bin/nelisp]
+   ↓ 起動
+[Env::new_global]
+   ↓ install_builtins (sentinel set)
+   ↓ load_aot_cache (manifest.json scan)
+   ↓ for each builtin in manifest:
+       mmap bytes PROT_READ|PROT_EXEC → fn ptr
+       function cell 上書き (jit <ptr>)
+   ↓ load STDLIB_SOURCES (Sweep 9 bootstrap)
+   ↓ defun が function cell 走査 → 既に (jit ptr) ならそのまま
+   ↓ (もし AOT 不在ならここで Elisp closure に置換 = interpret fallback)
+
+[runtime: builtin call]
+   dispatch(name, args)
+   ↓ env.lookup_function(name) = (jit <ptr>)
+   ↓ args → tagged_i64 (Phase 7.5.5/6)
+   ↓ unsafe transmute + call native fn
+   ↓ tagged_i64 → Sexp
+#+end_src
+
+* §5 ERT smoke + bench plan
+
+** ERT delta +45 (本 Phase 合計)
+
+- =test/nelisp-cc-runtime-args-test.el=          +5  (Phase 7.5.4)
+- =test/nelisp-cc-marshal-test.el=               +15 (Phase 7.5.5)
+- =test/nelisp-cc-cons-interop-test.el=          +15 (Phase 7.5.6)
+- =test/nelisp-aot-pipeline-test.el=             +10 (Phase 7.5.7)
+
+** bench gate
+
+| metric                              | baseline (interpret) | target (JIT) |
+|-------------------------------------+----------------------+--------------|
+| =1+= 100M ops                       | 1.0x                 | ≥10x         |
+| =nthcdr 5 '(...)= 1M ops            | 1.0x                 | ≥10x         |
+| =mapcar 1+ '(...100...)= 100K ops  | 1.0x                 | ≥5x          |
+| install AOT step time              | n/a                  | ≤30s         |
+| startup latency (load AOT)          | baseline             | ≤+10ms       |
+
+Phase 7.4 tier-A gate (UTF-8 5x / SJIS 3x / EUC-JP 3x、現 warning mode)
+は本 phase の indirect target — coding ops が JIT 化されることで
+実 PASS 可能。
+
+* §6 Risks (8 項目)
+
+** 6.1 Phase 7.1 backend の subset 制約
+
+*risk*: =nelisp-cc-x86_64.el= が Sweep 9/10 で使われる構文 (=&rest=,
+=while=, =setq=, =cond=, recursion) を全て support しているか不明。
+
+*mitigation*: Phase 7.5.4 着手前に =nelisp-cc-build-ssa-from-ast= を
+=lisp/nelisp-stdlib*.el= 全 23 form について試走、unsupported は
+Phase 7.5.4 scope 外 + interpret fallback 維持 (= Doc 32 §2.6 と同じ
+fallback 思想)。
+
+** 6.2 ABI mismatch
+
+*risk*: Phase 7.1 の native code が想定する calling convention と Rust
+側 =extern "C"= の解釈で divergence。
+
+*mitigation*: Phase 7.5.4 ERT で 1-6 arg 全パターン smoke。発見即
+=nelisp-cc-x86_64.el= 側 fix。
+
+** 6.3 GC barrier 不整合 (Phase 7.5.6)
+
+*risk*: native code が Sexp::Cons cell を直接触る時、Phase 7.3 GC が
+mark phase で in-flight pointer を見失う。
+
+*mitigation*: Phase 7.5.6 で safe-point + write barrier を =nelisp-cc=
+側に強制 (既 Phase 7.1.4 で injected の前提)。Phase 7.5.6 ERT に
+GC stress 含める。
+
+** 6.4 install 時間超過
+
+*risk*: 23 builtin AOT compile が install.sh 内で 30s 超過。
+
+*mitigation*: 23 form を =&rest= で並列 compile (Emacs subprocess は
+並列困難なので serial)、measured で 30s 超なら =NELISP_LAZY_AOT=1=
+runtime defer mode 追加 (= 初回 call 時 JIT = startup lazy)。
+
+** 6.5 cache integrity
+
+*risk*: install 後に =lisp/nelisp-stdlib*.el= 編集 → cache stale →
+古い JIT 版実行 → bug。
+
+*mitigation*: manifest.json に =source-sha256= 記録、=Env::new_global=
+load 時に source SHA と manifest を照合、不一致は cache 無効化 +
+warning log。
+
+** 6.6 platform divergence
+
+*risk*: x86_64 で AOT、arm64 で run → 動かない。
+
+*mitigation*: cache file name に =<arch>= 含める (=<hash>.x86_64.bytes=
+等)、不一致は invalid + interpret fallback。release tarball は両 arch
+分 bundle (Phase 7.5.3 cross-arch CI が前提)。
+
+** 6.7 dispatch overhead
+
+*risk*: function cell が =(jit ptr)= か =(builtin name)= か =(closure
+...)= の判別 cost が hot path で目立つ。
+
+*mitigation*: Phase 7.5.7 ERT で =1+= 100M call の per-call ns を計測、
+≥50 ns なら dispatch を unsafe enum tag check に最適化。
+
+** 6.8 user-defined defun が JIT cache を override
+
+*risk*: user code が =(defun 1+ ...)= で再定義した場合、JIT cache の
+=(jit ptr)= sentinel が上書かれて以後 interpret になる (これは正しい挙
+動だが) — 観測しづらく "なんで遅いの" になる。
+
+*mitigation*: Phase 7.5.7 stats UI で "interp-calls > 0 for builtin X"
+が見えれば原因 diagnosable、=NELISP_STATS=1= 起動 hint をエラーメッセ
+ージに含める。
+
+* §7 完遂 gate (LOCKED 化条件)
+
+** 各 sub-phase 7.5.4-7 SHIPPED 条件
+
+各 sub-phase の SHIPPED 条件:
+1. impl + ERT 全緑 (本 sub-phase の delta ERT pass)
+2. byte-compile 0 warning
+3. main =--no-ff= merge 完了
+4. design doc 該当 sub-phase に SHIPPED stamp
+
+** Doc 48 LOCKED 化 + main merge gate
+
+Phase 7.5.4〜7.5.7 全 SHIPPED + 以下:
+1. 本 Doc を =LOCKED-2026-XX-XX= に昇格
+2. Phase 7.4 tier-A gate が実 PASS (現 warning mode → green)
+3. Sweep 9 (19 builtin) 全 JIT 動作確認 (Sweep 10 の 4 builtin はうち
+   3 個が non-int で Phase 7.5.6+ 対応、=1+ 1- identity= 含む int 系は
+   Phase 7.5.5 で完)
+4. 24h soak regression-free
+5. =bin/nelisp= startup latency ≤+10ms regression
+6. release announcement gate (Doc 27 と integrate 議論)
+
+** 3 大 milestone trigger
+
+1. Phase 7.5.4 SHIPPED → user signoff "Phase 7.5.5 着手 OK?"
+2. Phase 7.5.5 SHIPPED → bench gate (interpret 比 ≥5x for int builtin)
+3. Phase 7.5.6 SHIPPED → bench gate + Phase 7.4 tier-A 実 PASS 試行
+
+* §8 Out of scope
+
+- *Float JIT*: Phase 7.5.5 は Int / Nil / T のみ。Float は Phase 7.5.6
+  に rolled in (heap-boxed Float が Cons と同 pattern)。
+- *Format / regexp-quote* 系: string-builder primitive 不在で AOT
+  対象外、interpret 維持。
+- *special_forms.rs Elisp 化 + JIT*: Doc 27 condition #4 の核心、別 phase。
+- *lexer.rs Elisp 化 + JIT*: 同上、Phase 7.4+ の coding NeLisp 化と整合
+  すべき別 doc。
+- *user code AOT*: 本 phase は =lisp/nelisp-stdlib*.el= だけが対象。
+  user の任意 .el を AOT は Phase 8+ 別 doc。
+
+* §9 Next action / open questions
+
+** Next action
+
+1. user signoff → STATE: =DRAFT-2026-04-30= → =LOCKED-2026-04-XX=
+2. Phase 7.5.4 着手判断 (=feat/phase7.5.4-i64-argv= branch、~半日工数)
+3. Phase 7.1 backend coverage 確認 (Risk 6.1) を Phase 7.5.4 内 prep
+   step として行う
+
+** Open questions
+
+1. Phase 7.1 backend (=nelisp-cc-x86_64.el=) の =&rest= support 状況
+2. Phase 7.5.5 tagged-i64 scheme は Phase 7.1 既存 codegen と一致するか
+   要 cross-check (=nelisp-cc-x86_64= の =--encode-int= 周辺コード)
+3. install-time AOT が cargo build 内に組込まれるべきか (推奨 = 否、
+   §2.4 A 通り install.sh 配線)
+
+* §10 関連 doc
+
+- *Doc 27* — Phase 7+ self-implemented C runtime (parent context、SBCL
+  precedent + 4 核 NeLisp 化 vision)
+- *Doc 28* — Phase 7.1 native compiler (前提、SHIPPED)
+- *Doc 32* — Phase 7.5 integration (Phase 7.5.1-3、SHIPPED)
+- *Doc 31* — Phase 7.4 coding (tier-A gate、本 phase で実 PASS 期待)
+- *Sweep 9 + 10 commits* — =9fffe19=..=aadcc6c= (本 phase の対象)
+
+* §11 Sign-off
+
+- [ ] user 設計レビュー
+- [ ] LOCKED 化判断 (Phase 7.5.4 着手前 gate)
+- [ ] Phase 7.5.4 → 7.5.5 → 7.5.6 → 7.5.7 ladder 確認
+
+#+begin_quote
+2026-04-30 Claude (Opus 4.7、本 session)起草。
+今日のセッションは Sweep 9 + Sweep 10 の 23 builtin Elisp 化 + 本 Doc
+draft で終了。Phase 7.5.4 着手は次 session 以降。
+#+end_quote
