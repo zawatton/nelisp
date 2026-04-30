@@ -28,11 +28,17 @@ implemented in itself, on a small non-Lisp runtime) and deliberately
 Emacs C core (Remacs).
 
 Two layers.  The language runtime is implemented in Elisp itself.
-Rust is a thin shell that provides syscalls and a separate minimal
-evaluator so the runtime can boot without Emacs.
+Rust is a thin shell that provides OS ABI primitives + a NLSEED v1
+seed image loader so the runtime can boot without Emacs.  A
+build-time-only Elisp bootstrap evaluator lives in =build-tool/= as
+an escape hatch until the native-compiled Elisp seed seam (Doc 49)
+ships end-to-end.
 
-LoC split: ~54k Elisp vs ~15k Rust.  Lisp natively compiles its own
-runtime; Rust only handles the headless entry point.
+LoC split: ~54k Elisp vs ~19k Rust.  Lisp natively compiles its own
+runtime; Rust handles the headless entry point and the OS substrate
+optional surfaces (sqlite / fileio / filenotify / process) live in
+sibling extension crates so a =--no-default-features= "Rust-min
+core" build keeps shrinking.
 
 ** Elisp — the language runtime (45 files, 54,511 LoC)
 
@@ -50,15 +56,16 @@ runtime; Rust only handles the headless entry point.
 | Other infrastructure (dev-audit, heap-types, EC bridge, entry point) | 4 | 1,094 | -- |
 | Character tables (JIS, data) | 1 | 20,815 | -- |
 
-** Rust — the no-Emacs path (36 files, 15,273 LoC)
+** Rust — the no-Emacs path (47 files, 18,909 LoC across 9 crates)
 
-| Subsystem | Files | LoC | Phase |
-|-----------+-------+-----+-------|
-| Standalone Elisp evaluator (25 special forms + 75 builtins) | 15 | 6,877 | 8.0.1--8.0.2 |
-| Anvil tool surface (registries + binaries + entry points) | 10 | 4,506 | -- |
-| Syscall thin wrappers | 6 | 2,293 | 7.0 |
-| MCP server | 4 | 974 | 8.0.4 |
-| SQLite FFI | 1 | 623 | -- |
+| Subsystem | Crate | Files | LoC | Phase |
+|-----------+-------+-------+-----+-------|
+| Bootstrap Elisp evaluator (25 special forms + 75 builtins; build-time escape hatch per Doc 49 §6) | =build-tool= | 18 | 8,037 | 8.0.1--8.0.2 |
+| Anvil tool surface (MCP server + =anvil_*_registry= + binaries) | =anvil-runtime= | 12 | 5,063 | 8.0.4--8.0.5 |
+| *Rust-min runtime core* (syscall thin wrappers + mmap/mprotect + icache + NLSEED v1 seed loader) | =nelisp-runtime= | 11 | 3,188 | 7.0 / 49 |
+| Syscall extension crates (=types= / =fileio= / =filenotify= / =process=; default-ON, opt-out via =--no-default-features=) | =nelisp-syscall-*= | 4 | 1,852 | 49.3 |
+| SQLite FFI extension (default-ON compatibility shim) | =nelisp-sqlite-rs= | 1 | 623 | 49.3 |
+| =exec-bytes= dev bridge (raw native-code JIT smoke; not part of runtime core) | =nelisp-runtime-cli= | 1 | 146 | 49.2 |
 
 v1.0 ships the four cores Emacs's C core normally gives you — native
 compile, allocator, GC, coding-system — all written in Elisp itself.
