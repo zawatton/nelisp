@@ -1329,3 +1329,55 @@ fn elisp_stdlib_dec() {
 fn elisp_stdlib_inc_in_let() {
     assert_eq!(ok("(let ((x 10)) (1+ x))"), Sexp::Int(11));
 }
+
+// ==== sweep-9 G1 list tests ====
+
+#[test]
+fn elisp_g1_nthcdr_basic() {
+    assert_eq!(ok("(nthcdr 2 (list 'a 'b 'c 'd))"), ok("(list 'c 'd)"));
+}
+
+#[test]
+fn elisp_g1_nthcdr_zero() {
+    assert_eq!(ok("(nthcdr 0 (list 1 2 3))"), ok("(list 1 2 3)"));
+}
+
+#[test]
+fn elisp_g1_nthcdr_overflow() {
+    assert_eq!(ok("(nthcdr 5 (list 1 2))"), Sexp::Nil);
+}
+
+#[test]
+fn elisp_g1_nth_basic() {
+    assert_eq!(ok("(nth 1 (list 'a 'b 'c))"), ok("'b"));
+}
+
+#[test]
+fn elisp_g1_nth_zero() {
+    assert_eq!(ok("(nth 0 (list 10 20 30))"), Sexp::Int(10));
+}
+
+#[test]
+fn elisp_g1_nth_overflow() {
+    assert_eq!(ok("(nth 5 (list 1 2))"), Sexp::Nil);
+}
+
+#[test]
+fn elisp_g1_reverse() {
+    assert_eq!(ok("(reverse (list 1 2 3))"), ok("(list 3 2 1)"));
+}
+
+#[test]
+fn elisp_g1_reverse_empty() {
+    assert_eq!(ok("(reverse nil)"), Sexp::Nil);
+}
+
+#[test]
+fn elisp_g1_nreverse() {
+    assert_eq!(ok("(nreverse (list 'a 'b 'c))"), ok("(list 'c 'b 'a)"));
+}
+
+#[test]
+fn elisp_g1_nth_in_let() {
+    assert_eq!(ok("(let ((xs (list 'x 'y 'z))) (nth 1 xs))"), ok("'y"));
+}
