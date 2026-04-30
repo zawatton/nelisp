@@ -378,11 +378,22 @@ pub fn emit_neg_rax() -> Vec<u8> {
 /// owned `Vec<ChainOp>' sub-chains, so the enum no longer fits in a
 /// fixed-size register-passing payload.  All callers that previously
 /// relied on copy-by-value now use cheap `Clone' (= Vec bumps).
+///
+/// Stage 9g extends the surface to multi-parameter lambdas.  The heap
+/// becomes an array of N tagged-int words at consecutive offsets;
+/// `LoadHeapIndex(i)' fetches word i.  A single secondary register
+/// (r10 on x86_64, x10 on aarch64) absorbs one `Save' at a time so a
+/// binary op `(OP a b)' can run as `Save b; Load a; OP-Saved'.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChainOp {
     /// Load the tagged int from the heap (= `argv[0]` is a pointer to
     /// the heap word) and arithmetic-shift the tag bits off.  Leaves
     /// the untagged i64 in the accumulator.
+    ///
+    /// Equivalent to `LoadHeapIndex(0)' in semantics; kept as a
+    /// distinct variant so the byte output remains identical to the
+    /// runtime's pre-baked `NATIVE_LOAD_HEAP_INT_UNTAG' asset (=
+    /// Stage 9b parity gate).
     LoadHeapHead,
     /// `accumulator += imm` (sign-extended).
     AddImm(i32),
@@ -395,29 +406,49 @@ pub enum ChainOp {
     /// Return from the function with the current accumulator value.
     /// Must be the last op in the chain.
     Ret,
-    /// Stage 9f — structured branch with `(< heap_int threshold)` guard.
+    /// Stage 9f — structured branch with `(< heap[param_index] threshold)` guard.
     ///
     /// Compiles to a self-contained block that
-    ///   1. (re)loads the heap-int into the accumulator
+    ///   1. (re)loads `heap[param_index]' into the accumulator
     ///   2. compares it against `threshold`
     ///   3. if `<` is true, runs `then_chain` — otherwise `else_chain`
     ///   4. control falls through past the block with the chosen
     ///      branch's final accumulator value.
     ///
-    /// Both sub-chains start fresh from the prologue: by convention each
-    /// branch begins with `LoadHeapHead' so the param value is in the
-    /// accumulator regardless of which branch was taken.  Branches must
-    /// NOT contain `Ret' — termination is the outer caller's
-    /// responsibility (`translate_lambda' appends `Ret' once after the
-    /// whole body chain).
+    /// Both sub-chains start fresh from the prologue: each branch
+    /// begins with its own LoadHeapIndex so the chosen value is in
+    /// the accumulator regardless of which branch was taken.
+    /// Branches must NOT contain `Ret' — termination is the outer
+    /// caller's responsibility (`translate_lambda' appends `Ret'
+    /// once after the whole body chain).
     ///
-    /// First ChainOp variant that owns sub-chain payload, so `compose'
-    /// is naturally recursive from this point on.
+    /// Stage 9g adds `param_index' to support multi-param lambdas;
+    /// Stage 9f-era code uses `param_index: 0`.
     IfLtImm {
+        param_index: usize,
         threshold: i32,
         then_chain: Vec<ChainOp>,
         else_chain: Vec<ChainOp>,
     },
+    /// Stage 9g — load `heap[index]' into the accumulator.  Heap is
+    /// laid out as N consecutive 8-byte tagged-int words; `argv[0]'
+    /// points at heap[0].  `LoadHeapIndex(0)' is byte-equivalent to
+    /// `LoadHeapHead' on both target archs, so the single-param
+    /// chains continue to share the existing emit primitives.
+    LoadHeapIndex(usize),
+    /// Stage 9g — copy the integer accumulator to the secondary
+    /// register (r10 on x86_64, x10 on aarch64).  Used as the
+    /// 2-operand binary-op stash: `Save Y; Load X; OP-Saved' computes
+    /// `X OP Y' without touching the call frame.  At most one Save
+    /// may be live at a time — Stage 9g rejects bodies that would
+    /// require a second concurrent stash.
+    Save,
+    /// Stage 9g — `accumulator += saved` (= `acc + r10` / `x0 + x10`).
+    AddSaved,
+    /// Stage 9g — `accumulator -= saved` (= `acc - r10` / `x0 - x10`).
+    SubSaved,
+    /// Stage 9g — `accumulator *= saved` (= `acc * r10` / `x0 * x10`).
+    MulSaved,
 }
 
 /// Compose a slice of [`ChainOp`] into a single function body.
@@ -436,10 +467,23 @@ pub fn compose(ops: &[ChainOp]) -> Vec<u8> {
             ChainOp::Neg => out.extend_from_slice(&emit_neg_rax()),
             ChainOp::Ret => out.extend_from_slice(&emit_ret()),
             ChainOp::IfLtImm {
+                param_index,
                 threshold,
                 then_chain,
                 else_chain,
-            } => out.extend_from_slice(&emit_if_lt_imm(*threshold, then_chain, else_chain)),
+            } => out.extend_from_slice(&emit_if_lt_imm(
+                *param_index,
+                *threshold,
+                then_chain,
+                else_chain,
+            )),
+            ChainOp::LoadHeapIndex(i) => {
+                out.extend_from_slice(&emit_load_heap_int_untag_at_index(*i))
+            }
+            ChainOp::Save => out.extend_from_slice(&emit_save_to_secondary()),
+            ChainOp::AddSaved => out.extend_from_slice(&emit_add_saved()),
+            ChainOp::SubSaved => out.extend_from_slice(&emit_sub_saved()),
+            ChainOp::MulSaved => out.extend_from_slice(&emit_mul_saved()),
         }
     }
     out
@@ -478,6 +522,7 @@ pub const HAS_CHAIN_OP_COMPOSE: bool = HAS_CHAIN_EMIT_PRIMITIVES;
 
 #[cfg(target_arch = "x86_64")]
 pub fn emit_if_lt_imm(
+    param_index: usize,
     threshold: i32,
     then_chain: &[ChainOp],
     else_chain: &[ChainOp],
@@ -493,8 +538,9 @@ pub fn emit_if_lt_imm(
     // jmp offset = bytes from end-of-jmp to past-else (= 0 + else_bytes)
     let jmp_offset: i32 = else_bytes.len() as i32;
 
+    let prologue_load = emit_load_heap_int_untag_at_index(param_index);
     let mut out = Vec::new();
-    out.extend_from_slice(&emit_load_heap_int_untag_head()); // 10 bytes — rax = n
+    out.extend_from_slice(&prologue_load);
     // cmp rax, imm32 — 48 3D ii ii ii ii
     out.push(0x48);
     out.push(0x3d);
@@ -513,6 +559,7 @@ pub fn emit_if_lt_imm(
 
 #[cfg(target_arch = "aarch64")]
 pub fn emit_if_lt_imm(
+    param_index: usize,
     threshold: i32,
     then_chain: &[ChainOp],
     else_chain: &[ChainOp],
@@ -555,8 +602,9 @@ pub fn emit_if_lt_imm(
     let imm26_b: u32 = 1 + else_inst;
     let b_uncond: u32 = 0x14000000 | imm26_b;
 
+    let prologue_load = emit_load_heap_int_untag_at_index(param_index);
     let mut out = Vec::new();
-    out.extend_from_slice(&emit_load_heap_int_untag_head()); // 12 bytes
+    out.extend_from_slice(&prologue_load);
     out.extend_from_slice(&movz.to_le_bytes());
     out.extend_from_slice(&movk.to_le_bytes());
     out.extend_from_slice(&sxtw.to_le_bytes());
@@ -570,6 +618,7 @@ pub fn emit_if_lt_imm(
 
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub fn emit_if_lt_imm(
+    _param_index: usize,
     _threshold: i32,
     _then_chain: &[ChainOp],
     _else_chain: &[ChainOp],
@@ -578,6 +627,189 @@ pub fn emit_if_lt_imm(
 }
 
 pub const HAS_IF_LT_IMM: bool = HAS_CHAIN_EMIT_PRIMITIVES;
+
+// ---------------------------------------------------------------------------
+// Doc 47 Stage 9g — multi-parameter heap access + secondary register save.
+//
+// `argv[0]' points to a heap that is laid out as N consecutive 8-byte
+// tagged-int words (param 0 at offset 0, param 1 at offset 8, …).  The
+// `LoadHeapIndex(i)' op fetches word i; for i=0 the encoding collapses
+// to byte parity with `emit_load_heap_int_untag_head' so single-param
+// chains continue to ride the existing prologue surface.
+//
+// `Save' / `AddSaved' / `SubSaved' / `MulSaved' use a single secondary
+// register (r10 on x86_64, x10 on aarch64) as a 1-deep stash so a
+// 2-operand binary op `(OP X Y)' can run as `Save Y; Load X; OP-Saved'.
+// Stage 9g rejects bodies that would require a second concurrent stash
+// (= 3+ symbolic operands per call); deeper expression nesting waits
+// for a real spill stack in a later stage.
+// ---------------------------------------------------------------------------
+
+/// `LoadHeapIndex(i)' — emit `mov rax, [rsi]; mov rax, [rax + 8*i]; sar rax, 3`
+/// on x86_64 (or the aarch64 ldr equivalent).  For `i = 0` the bytes
+/// match `emit_load_heap_int_untag_head' exactly.
+#[cfg(target_arch = "x86_64")]
+pub fn emit_load_heap_int_untag_at_index(index: usize) -> Vec<u8> {
+    if index == 0 {
+        return emit_load_heap_int_untag_head();
+    }
+    // Offset is bytes from heap-base.  Stage 9g currently only emits
+    // small indices; assert into the disp8 range so the encoding stays
+    // a fixed 11 bytes.  Lifting this requires a disp32 form which
+    // we'll add when first needed.
+    let offset = index
+        .checked_mul(8)
+        .expect("LoadHeapIndex offset overflow");
+    assert!(
+        offset <= 0x7F,
+        "Stage 9g: LoadHeapIndex({}) offset {} exceeds disp8 range",
+        index, offset
+    );
+    let mut out = Vec::with_capacity(11);
+    out.push(0x48); // REX.W
+    out.push(0x8b); // MOV r64, r/m64
+    out.push(0x06); // ModR/M: rax <- [rsi]
+    out.push(0x48); // REX.W
+    out.push(0x8b); // MOV r64, r/m64
+    out.push(0x40); // ModR/M: rax <- [rax + disp8]
+    out.push(offset as u8);
+    out.push(0x48); // SAR rax, 3
+    out.push(0xc1);
+    out.push(0xf8);
+    out.push(0x03);
+    out
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn emit_load_heap_int_untag_at_index(index: usize) -> Vec<u8> {
+    // ldr x0, [x0, #imm12] uses imm12 scaled by 8 for 64-bit loads;
+    // imm12 max = 4095 (= 32760 byte offset, 4095 params).
+    assert!(
+        index <= 4095,
+        "Stage 9g: LoadHeapIndex({}) exceeds aarch64 imm12 range",
+        index
+    );
+    let imm12 = index as u32;
+    // ldr x0, [x1]: 0xF9400020
+    let ldr_arg_ptr: u32 = 0xF9400020;
+    // ldr x0, [x0, #8*index] (imm12 is the unsigned scaled offset).
+    //   base 0xF9400000 | (imm12 << 10) | (Rn<<5) | Rd
+    //   Rn=0, Rd=0
+    let ldr_indexed: u32 = 0xF9400000 | (imm12 << 10);
+    // asr x0, x0, #3: same encoding as in emit_load_heap_int_untag_head.
+    let asr: u32 = u32::from_le_bytes([0x00, 0xfc, 0x43, 0x93]);
+    let mut out = Vec::with_capacity(12);
+    out.extend_from_slice(&ldr_arg_ptr.to_le_bytes());
+    out.extend_from_slice(&ldr_indexed.to_le_bytes());
+    out.extend_from_slice(&asr.to_le_bytes());
+    out
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+pub fn emit_load_heap_int_untag_at_index(_index: usize) -> Vec<u8> {
+    Vec::new()
+}
+
+/// `Save' — copy the integer accumulator to the secondary register.
+///
+/// x86_64 (3 bytes):  49 89 c2   mov r10, rax
+/// aarch64 (4 bytes): EA 03 00 AA   mov x10, x0  (ORR x10, xzr, x0)
+#[cfg(target_arch = "x86_64")]
+pub fn emit_save_to_secondary() -> Vec<u8> {
+    vec![0x49, 0x89, 0xc2]
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn emit_save_to_secondary() -> Vec<u8> {
+    // MOV x10, x0  (= ORR x10, xzr, x0)
+    //   0xAA000000 | (Rm<<16) | (Rn=31<<5) | Rd
+    //   Rm=0, Rn=31, Rd=10 → 0xAA0003EA
+    let mov_x10_x0: u32 = 0xAA0003EA;
+    mov_x10_x0.to_le_bytes().to_vec()
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+pub fn emit_save_to_secondary() -> Vec<u8> {
+    Vec::new()
+}
+
+/// `AddSaved' — `accumulator += saved'.
+/// x86_64 (3 bytes):  4C 01 D0   add rax, r10
+/// aarch64 (4 bytes): ADD x0, x0, x10
+#[cfg(target_arch = "x86_64")]
+pub fn emit_add_saved() -> Vec<u8> {
+    vec![0x4c, 0x01, 0xd0]
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn emit_add_saved() -> Vec<u8> {
+    // ADD x0, x0, x10 (shifted register, 64-bit, no shift):
+    //   0x8B000000 | (Rm<<16) | (Rn<<5) | Rd
+    //   Rm=10, Rn=0, Rd=0 → 0x8B0A0000
+    let add: u32 = 0x8B0A0000;
+    add.to_le_bytes().to_vec()
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+pub fn emit_add_saved() -> Vec<u8> {
+    Vec::new()
+}
+
+/// `SubSaved' — `accumulator -= saved'.
+/// x86_64 (3 bytes):  4C 29 D0   sub rax, r10
+/// aarch64 (4 bytes): SUB x0, x0, x10
+#[cfg(target_arch = "x86_64")]
+pub fn emit_sub_saved() -> Vec<u8> {
+    vec![0x4c, 0x29, 0xd0]
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn emit_sub_saved() -> Vec<u8> {
+    // SUB x0, x0, x10:
+    //   0xCB000000 | (Rm<<16) | (Rn<<5) | Rd
+    //   Rm=10, Rn=0, Rd=0 → 0xCB0A0000
+    let sub: u32 = 0xCB0A0000;
+    sub.to_le_bytes().to_vec()
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+pub fn emit_sub_saved() -> Vec<u8> {
+    Vec::new()
+}
+
+/// `MulSaved' — `accumulator *= saved'.
+///
+/// x86_64 (4 bytes): IMUL r64, r/m64 = `4C 0F AF D0` ... wait, need REX.R.
+///   Actually x86_64 "imul reg64, r/m64" with reg=rax (000), rm=r10 (010
+///   with B-extension) is REX.WR? — hmm rax dst is reg field which doesn't
+///   need extension; r10 source is rm field which does need REX.B.
+///   Encoding: REX.WB (0x4C? no, that's WR) — let me redo.
+///     REX = 0100 W R X B; W=1, R=0 (rax in reg field, no extension),
+///     X=0, B=1 (r10 in rm field, extension needed) → 0100 1001 = 0x49.
+///   IMUL r64, r/m64 opcode: 0F AF.
+///   ModR/M: mod=11, reg=000 (rax), rm=010 (r10) → 11 000 010 = 0xC2.
+///   Full: 49 0F AF C2 (4 bytes).
+/// aarch64 (4 bytes): MUL x0, x0, x10
+#[cfg(target_arch = "x86_64")]
+pub fn emit_mul_saved() -> Vec<u8> {
+    vec![0x49, 0x0f, 0xaf, 0xc2]
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn emit_mul_saved() -> Vec<u8> {
+    // MUL x0, x0, x10 (= MADD x0, x0, x10, xzr):
+    //   0x9B000000 | (Rm<<16) | (Ra<<10) | (Rn<<5) | Rd
+    //   Rm=10, Ra=31, Rn=0, Rd=0 → 0x9B0A7C00
+    let mul: u32 = 0x9B0A7C00;
+    mul.to_le_bytes().to_vec()
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+pub fn emit_mul_saved() -> Vec<u8> {
+    Vec::new()
+}
+
+pub const HAS_MULTI_PARAM_PRIMITIVES: bool = HAS_CHAIN_EMIT_PRIMITIVES;
 
 #[cfg(test)]
 mod tests {
