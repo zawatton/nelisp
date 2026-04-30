@@ -58,7 +58,7 @@ harness = false
 # code surgery.  Default ON: the standalone anvil bootstrap path Doc
 # 27/32 calls out as Phase 9d depends on these primitives.
 [features]
-default = ["fileio-syscalls", "process-syscalls"]
+default = ["fileio-syscalls", "process-syscalls", "sqlite-ffi"]
 fileio-syscalls = []
 # Phase 9d.J (T100 / Doc 39 LOCKED-2026-04-25-v2 §3.J) — subprocess
 # syscall extension (~12 new `nl_syscall_*` symbols: fork / execve /
@@ -67,14 +67,26 @@ fileio-syscalls = []
 # milestone (= host-Emacs-free `bin/anvil --no-emacs`) requires them,
 # but a future "mini build" can opt out without code surgery.
 process-syscalls = []
+# Doc 47 §3.1 phase 9 (Stage 10, 2026-04-30) — SQLite FFI surface
+# made optional so a "mini build" of the runtime can skip rusqlite
+# entirely (drops ~623 LOC + libsqlite3 static link, ~1.5 MiB on
+# x86_64-linux).  Default ON to preserve cdylib symbol stability for
+# the Emacs `nelisp-sqlite.el' shim that consumes
+# `nl_sqlite_open' / `nl_sqlite_close' / `nl_sqlite_execute' /
+# `nl_sqlite_query' / `nl_sqlite_alive'.  A future Doc 47 §3.1 phase
+# 9 follow-up may extract this feature into its own
+# `nelisp-sqlite-rs' crate; for now feature-gating buys the
+# opt-out without the workspace surgery.
+sqlite-ffi = ["dep:rusqlite"]
 
 [dependencies]
 libc = "0.2"
-# T77 (Wave 1 agent C, T54 substrate) — SQLite FFI binding for the
-# anvil-XXX architecture α delegate chain.  `bundled` statically links
-# libsqlite3 so a fresh checkout never picks up a system version skew
-# (binary +~1.5 MiB on linux-x86_64).
-rusqlite = { version = "0.31", features = ["bundled"] }
+# T77 (Wave 1 agent C, T54 substrate) — SQLite FFI binding.
+# Optional behind `sqlite-ffi' (default ON, Doc 47 phase 9 first
+# cut).  `bundled' statically links libsqlite3 so a fresh checkout
+# never picks up a system version skew (binary +~1.5 MiB on
+# x86_64-linux when enabled, 0 when opted out).
+rusqlite = { version = "0.31", features = ["bundled"], optional = true }
 once_cell = "1.19"
 # Phase 8.0.4 (Doc 44 §3.5) — JSON-RPC wire types in `src/mcp/` derive
 # Serialize/Deserialize.  `derive` feature pulls in serde_derive (one

@@ -17,6 +17,11 @@
 // `nelisp_build_tool::{...}`.
 
 pub mod image;
+// Doc 47 Stage 10 (2026-04-30) — sqlite FFI made optional.  Without
+// the `sqlite-ffi' feature the module + rusqlite dep + libsqlite3
+// link disappear from the build entirely (drops ~623 LOC + ~1.5
+// MiB).
+#[cfg(feature = "sqlite-ffi")]
 pub mod sqlite;
 pub mod syscall;
 
@@ -81,7 +86,8 @@ pub use syscall::{
 // T77 (Wave 1 agent C) — SQLite FFI surface.  Five public symbols for
 // the Emacs 30 `sqlite-*' compat layer in `src/nelisp-sqlite.el', plus
 // a `nl_sqlite_alive' liveness probe used by the `nelisp-sqlitep'
-// predicate.
+// predicate.  Doc 47 Stage 10: gated behind `sqlite-ffi' (default ON).
+#[cfg(feature = "sqlite-ffi")]
 pub use sqlite::{
     nl_sqlite_alive, nl_sqlite_close, nl_sqlite_execute, nl_sqlite_open, nl_sqlite_query,
 };
