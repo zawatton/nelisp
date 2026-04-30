@@ -58,8 +58,13 @@ harness = false
 # code surgery.  Default ON: the standalone anvil bootstrap path Doc
 # 27/32 calls out as Phase 9d depends on these primitives.
 [features]
-default = ["fileio-syscalls", "process-syscalls", "sqlite-ffi"]
+default = ["fileio-syscalls", "filenotify-syscalls", "process-syscalls", "sqlite-ffi"]
 fileio-syscalls = []
+# Doc 47 §3.1 phase 8 (Stage 11, 2026-04-30) — file-notify FFI made
+# optional so the no-default-features mini build hits the LOC target
+# (≤4000 LOC).  Default ON to keep existing cdylib symbol stability
+# for `nl_filenotify_*' consumers (anvil-watch / similar Elisp).
+filenotify-syscalls = []
 # Phase 9d.J (T100 / Doc 39 LOCKED-2026-04-25-v2 §3.J) — subprocess
 # syscall extension (~12 new `nl_syscall_*` symbols: fork / execve /
 # posix_spawn / pipe2 / waitpid / kill / dup2 / setsid / getrlimit /

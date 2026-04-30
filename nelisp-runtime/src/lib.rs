@@ -63,7 +63,9 @@ pub use syscall::{
 
 // Phase 9d.A4 (T82) file-notify FFI surface.  Re-exported at crate
 // root so cargo-side tests in `tests/filenotify_test.rs` can call the
-// symbols without spelling `::syscall::filenotify::` each time.
+// symbols without spelling `::syscall::filenotify::` each time.  Doc
+// 47 Stage 11: gated behind `filenotify-syscalls' (default ON).
+#[cfg(feature = "filenotify-syscalls")]
 pub use syscall::{
     nl_filenotify_add_watch, nl_filenotify_close, nl_filenotify_init, nl_filenotify_read,
     nl_filenotify_rm_watch, NL_IN_ATTRIB, NL_IN_CREATE, NL_IN_DELETE, NL_IN_MODIFY,
