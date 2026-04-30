@@ -20,4 +20,5 @@
 
 pub mod bridge;
 pub mod eval;
+pub mod image;
 pub mod reader;

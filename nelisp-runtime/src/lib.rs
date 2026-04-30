@@ -15,8 +15,12 @@
 // sqlite + image boot).  External consumers that previously wrote
 // `nelisp_runtime::{bridge,eval,reader}` should switch to
 // `nelisp_build_tool::{...}`.
-
-pub mod image;
+//
+// Sweep 6 (2026-04-30): the older `image/` subsystem (~2,420 LOC of
+// native-code-in-image / reloc / heap / boot machinery) was deleted in
+// favour of the simpler walking-skeleton image format that lives in
+// `nelisp_build_tool::image` (= sexp serialization evaluated by the
+// existing eval/).  `nelisp-runtime` now hosts no image surface at all.
 // Doc 47 Stage 10 (2026-04-30) — sqlite FFI made optional.  Without
 // the `sqlite-ffi' feature the module + rusqlite dep + libsqlite3
 // link disappear from the build entirely (drops ~623 LOC + ~1.5
