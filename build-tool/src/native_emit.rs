@@ -373,7 +373,12 @@ pub fn emit_neg_rax() -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 /// One primitive operation against the integer accumulator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Stage 9f drops the `Copy` derive: the `IfLtImm` variant carries
+/// owned `Vec<ChainOp>' sub-chains, so the enum no longer fits in a
+/// fixed-size register-passing payload.  All callers that previously
+/// relied on copy-by-value now use cheap `Clone' (= Vec bumps).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChainOp {
     /// Load the tagged int from the heap (= `argv[0]` is a pointer to
     /// the heap word) and arithmetic-shift the tag bits off.  Leaves
@@ -390,12 +395,36 @@ pub enum ChainOp {
     /// Return from the function with the current accumulator value.
     /// Must be the last op in the chain.
     Ret,
+    /// Stage 9f — structured branch with `(< heap_int threshold)` guard.
+    ///
+    /// Compiles to a self-contained block that
+    ///   1. (re)loads the heap-int into the accumulator
+    ///   2. compares it against `threshold`
+    ///   3. if `<` is true, runs `then_chain` — otherwise `else_chain`
+    ///   4. control falls through past the block with the chosen
+    ///      branch's final accumulator value.
+    ///
+    /// Both sub-chains start fresh from the prologue: by convention each
+    /// branch begins with `LoadHeapHead' so the param value is in the
+    /// accumulator regardless of which branch was taken.  Branches must
+    /// NOT contain `Ret' — termination is the outer caller's
+    /// responsibility (`translate_lambda' appends `Ret' once after the
+    /// whole body chain).
+    ///
+    /// First ChainOp variant that owns sub-chain payload, so `compose'
+    /// is naturally recursive from this point on.
+    IfLtImm {
+        threshold: i32,
+        then_chain: Vec<ChainOp>,
+        else_chain: Vec<ChainOp>,
+    },
 }
 
 /// Compose a slice of [`ChainOp`] into a single function body.
 /// Always emits in order — no peephole / constant-fold optimisation;
 /// the build-tool's evaluator already folds constants away before a
-/// chain even reaches this point.
+/// chain even reaches this point.  Recurses into [`IfLtImm`] sub-chains
+/// via [`emit_if_lt_imm`].
 pub fn compose(ops: &[ChainOp]) -> Vec<u8> {
     let mut out = Vec::new();
     for op in ops {
@@ -406,12 +435,149 @@ pub fn compose(ops: &[ChainOp]) -> Vec<u8> {
             ChainOp::MulImm(n) => out.extend_from_slice(&emit_imul_rax_imm32(*n)),
             ChainOp::Neg => out.extend_from_slice(&emit_neg_rax()),
             ChainOp::Ret => out.extend_from_slice(&emit_ret()),
+            ChainOp::IfLtImm {
+                threshold,
+                then_chain,
+                else_chain,
+            } => out.extend_from_slice(&emit_if_lt_imm(*threshold, then_chain, else_chain)),
         }
     }
     out
 }
 
 pub const HAS_CHAIN_OP_COMPOSE: bool = HAS_CHAIN_EMIT_PRIMITIVES;
+
+// ---------------------------------------------------------------------------
+// Doc 47 Stage 9f — structured if-lt-imm composer.
+//
+// Encodes a self-contained if-branch block: head + cmp + jcc + then +
+// jmp + else.  Each branch is itself an arbitrary ChainOp chain, so
+// nested ifs work transparently (recursive `compose').
+//
+// Per-architecture layout:
+//
+// x86_64 (head=10 + cmp=6 + jge=6 = 22 prologue):
+//     <emit_load_heap_int_untag_head>      ; 10 bytes — rax = heap_int
+//     48 3D ii ii ii ii                    ; 6 bytes — cmp rax, threshold
+//     0F 8D ii ii ii ii                    ; 6 bytes — jge <else>
+//     <then_bytes>                         ; T bytes — branch result -> rax
+//     E9 ii ii ii ii                       ; 5 bytes — jmp <past else>
+//     <else_bytes>                         ; E bytes — branch result -> rax
+//
+// aarch64 (head=12 + cmp=16 + b.ge=4 = 32 prologue):
+//     <emit_load_heap_int_untag_head>      ; 12 bytes — x0 = heap_int
+//     MOVZ w9, #lo16(threshold)            ; 4 bytes
+//     MOVK w9, #hi16(threshold), lsl #16   ; 4 bytes
+//     SXTW x9, w9                          ; 4 bytes
+//     CMP x0, x9                           ; 4 bytes (= SUBS XZR, X0, X9)
+//     B.GE <else>                          ; 4 bytes — imm19 = 2 + T/4
+//     <then_bytes>                         ; T bytes (multiple of 4)
+//     B <after-else>                       ; 4 bytes — imm26 = 1 + E/4
+//     <else_bytes>                         ; E bytes (multiple of 4)
+// ---------------------------------------------------------------------------
+
+#[cfg(target_arch = "x86_64")]
+pub fn emit_if_lt_imm(
+    threshold: i32,
+    then_chain: &[ChainOp],
+    else_chain: &[ChainOp],
+) -> Vec<u8> {
+    let then_bytes = compose(then_chain);
+    let else_bytes = compose(else_chain);
+    let jmp_size: i32 = 5;
+    // jge offset = bytes from end-of-jge to start-of-else
+    //            = then_bytes.len() + jmp_size
+    let jge_offset: i32 = (then_bytes.len() as i32)
+        .checked_add(jmp_size)
+        .expect("then_chain too large for i32 jump offset");
+    // jmp offset = bytes from end-of-jmp to past-else (= 0 + else_bytes)
+    let jmp_offset: i32 = else_bytes.len() as i32;
+
+    let mut out = Vec::new();
+    out.extend_from_slice(&emit_load_heap_int_untag_head()); // 10 bytes — rax = n
+    // cmp rax, imm32 — 48 3D ii ii ii ii
+    out.push(0x48);
+    out.push(0x3d);
+    out.extend_from_slice(&threshold.to_le_bytes());
+    // jge rel32 — 0F 8D ii ii ii ii
+    out.push(0x0f);
+    out.push(0x8d);
+    out.extend_from_slice(&jge_offset.to_le_bytes());
+    out.extend_from_slice(&then_bytes);
+    // jmp rel32 — E9 ii ii ii ii
+    out.push(0xe9);
+    out.extend_from_slice(&jmp_offset.to_le_bytes());
+    out.extend_from_slice(&else_bytes);
+    out
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn emit_if_lt_imm(
+    threshold: i32,
+    then_chain: &[ChainOp],
+    else_chain: &[ChainOp],
+) -> Vec<u8> {
+    let then_bytes = compose(then_chain);
+    let else_bytes = compose(else_chain);
+    debug_assert!(
+        then_bytes.len() % 4 == 0,
+        "aarch64 IfLtImm: then_bytes must be 4-byte aligned (got {})",
+        then_bytes.len()
+    );
+    debug_assert!(
+        else_bytes.len() % 4 == 0,
+        "aarch64 IfLtImm: else_bytes must be 4-byte aligned (got {})",
+        else_bytes.len()
+    );
+
+    // Build the threshold in w9 then sign-extend to x9 (matches the
+    // pattern used by emit_add_rax_imm32 for arbitrary i32 imms).
+    let v = threshold as u32;
+    let lo16 = v & 0xFFFF;
+    let hi16 = (v >> 16) & 0xFFFF;
+    let movz: u32 = 0x52800000 | (lo16 << 5) | 9;
+    let movk: u32 = 0x72A00000 | (hi16 << 5) | 9;
+    let sxtw: u32 = 0x93407D29;
+    // CMP X0, X9 (= SUBS XZR, X0, X9, shifted register, no shift):
+    //   0xEB000000 base | (Rm<<16) | (Rn<<5) | Rd=31
+    //   Rm=9, Rn=0 → 0xEB09001F
+    let cmp_x0_x9: u32 = 0xEB09001F;
+    // imm19 for B.GE: skip past B.GE (1 inst) + then_bytes + B
+    // (1 inst) and land at start of else_bytes.
+    //   target_pc = bge_pc + 4 + then_bytes.len() + 4
+    //   imm19 = (target_pc - bge_pc) / 4 = 2 + then_bytes.len()/4
+    let then_inst = (then_bytes.len() / 4) as u32;
+    let imm19_bge: u32 = 2 + then_inst;
+    let bge: u32 = 0x5400000A | (imm19_bge << 5);
+    // imm26 for unconditional B: skip past B (1 inst) + else_bytes.
+    //   imm26 = 1 + else_bytes.len()/4
+    let else_inst = (else_bytes.len() / 4) as u32;
+    let imm26_b: u32 = 1 + else_inst;
+    let b_uncond: u32 = 0x14000000 | imm26_b;
+
+    let mut out = Vec::new();
+    out.extend_from_slice(&emit_load_heap_int_untag_head()); // 12 bytes
+    out.extend_from_slice(&movz.to_le_bytes());
+    out.extend_from_slice(&movk.to_le_bytes());
+    out.extend_from_slice(&sxtw.to_le_bytes());
+    out.extend_from_slice(&cmp_x0_x9.to_le_bytes());
+    out.extend_from_slice(&bge.to_le_bytes());
+    out.extend_from_slice(&then_bytes);
+    out.extend_from_slice(&b_uncond.to_le_bytes());
+    out.extend_from_slice(&else_bytes);
+    out
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+pub fn emit_if_lt_imm(
+    _threshold: i32,
+    _then_chain: &[ChainOp],
+    _else_chain: &[ChainOp],
+) -> Vec<u8> {
+    Vec::new()
+}
+
+pub const HAS_IF_LT_IMM: bool = HAS_CHAIN_EMIT_PRIMITIVES;
 
 #[cfg(test)]
 mod tests {

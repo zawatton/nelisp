@@ -96,8 +96,9 @@ fn translate_expr(expr: &Sexp, param: &str) -> Result<Vec<ChainOp>, String> {
     }
 }
 
-/// Translate a `(OP arg1 arg2 ...)' call form.  Only `+` / `-` / `*`
-/// are recognised; arity rules vary by operator.
+/// Translate a `(OP arg1 arg2 ...)' call form.  Recognised heads:
+///   `+` / `-` / `*`     — arithmetic chain ops (Stage 9e)
+///   `if`                — Stage 9f structured branch with `(< PARAM IMM)' guard
 fn translate_call(call: &Sexp, param: &str) -> Result<Vec<ChainOp>, String> {
     let head = call.cons_car();
     let op_name = match head {
@@ -107,6 +108,10 @@ fn translate_call(call: &Sexp, param: &str) -> Result<Vec<ChainOp>, String> {
     let args_form = call.cons_cdr();
     let args = collect_proper_list(&args_form)
         .map_err(|e| format!("call args malformed: {}", e))?;
+
+    if op_name == "if" {
+        return translate_if(&args, param);
+    }
 
     match op_name.as_str() {
         "+" | "-" | "*" => {}
@@ -173,6 +178,66 @@ fn translate_call(call: &Sexp, param: &str) -> Result<Vec<ChainOp>, String> {
         });
     }
     Ok(chain)
+}
+
+/// Stage 9f — translate `(if (< PARAM IMM) THEN ELSE)`.  Walking-skeleton
+/// guard form is exactly `< PARAM IMM`; THEN and ELSE are themselves
+/// arbitrary Stage 9e/9f chains over PARAM, so nested ifs work via
+/// recursion.  Both branches must be non-empty (= reference PARAM at
+/// least via a `LoadHeapHead' from a leaf or sub-chain).
+fn translate_if(args: &[Sexp], param: &str) -> Result<Vec<ChainOp>, String> {
+    if args.len() != 3 {
+        return Err(format!(
+            "if: expected 3 args (cond, then, else), got {}",
+            args.len()
+        ));
+    }
+    let cond = &args[0];
+    let then_form = &args[1];
+    let else_form = &args[2];
+
+    let threshold = match cond {
+        Sexp::Cons(_, _) => {
+            let chead = cond.cons_car();
+            let cargs = collect_proper_list(&cond.cons_cdr())
+                .map_err(|e| format!("if cond args malformed: {}", e))?;
+            match (chead, cargs.as_slice()) {
+                (Sexp::Symbol(ref s), [lhs, rhs]) if s == "<" => {
+                    match lhs {
+                        Sexp::Symbol(p) if p == param => {}
+                        other => {
+                            return Err(format!(
+                                "if cond: lhs of `<` must be param `{}` in Stage 9f \
+                                 (got {:?})",
+                                param, other
+                            ))
+                        }
+                    }
+                    expect_i32(rhs)?
+                }
+                _ => {
+                    return Err(
+                        "if: cond must be `(< PARAM IMM)` in Stage 9f \
+                         (other predicates / orderings are reserved for later stages)"
+                            .into(),
+                    )
+                }
+            }
+        }
+        _ => {
+            return Err(
+                "if: cond must be a `(< PARAM IMM)` form in Stage 9f".into(),
+            )
+        }
+    };
+
+    let then_chain = translate_expr(then_form, param)?;
+    let else_chain = translate_expr(else_form, param)?;
+    Ok(vec![ChainOp::IfLtImm {
+        threshold,
+        then_chain,
+        else_chain,
+    }])
 }
 
 /// Walk a Sexp list (any depth) checking whether `param` is referenced
@@ -456,6 +521,122 @@ mod tests {
                 ChainOp::Ret
             ]
         );
+    }
+
+    // ============================================================
+    // Stage 9f — if-branch translation
+    // ============================================================
+
+    #[test]
+    fn if_lt_basic_doubles_else() {
+        let ops = translate("(lambda (n) (if (< n 2) n (* n 2)))").unwrap();
+        assert_eq!(
+            ops,
+            vec![
+                ChainOp::IfLtImm {
+                    threshold: 2,
+                    then_chain: vec![ChainOp::LoadHeapHead],
+                    else_chain: vec![ChainOp::LoadHeapHead, ChainOp::MulImm(2)],
+                },
+                ChainOp::Ret,
+            ]
+        );
+    }
+
+    #[test]
+    fn if_lt_abs_value_via_negate() {
+        // (lambda (n) (if (< n 0) (- n) n))
+        let ops = translate("(lambda (n) (if (< n 0) (- n) n))").unwrap();
+        assert_eq!(
+            ops,
+            vec![
+                ChainOp::IfLtImm {
+                    threshold: 0,
+                    then_chain: vec![ChainOp::LoadHeapHead, ChainOp::Neg],
+                    else_chain: vec![ChainOp::LoadHeapHead],
+                },
+                ChainOp::Ret,
+            ]
+        );
+    }
+
+    #[test]
+    fn if_lt_nested_else_branch() {
+        // (lambda (n) (if (< n 2) n (if (< n 5) (* n 2) (* n 3))))
+        let ops = translate("(lambda (n) (if (< n 2) n (if (< n 5) (* n 2) (* n 3))))")
+            .unwrap();
+        assert_eq!(
+            ops,
+            vec![
+                ChainOp::IfLtImm {
+                    threshold: 2,
+                    then_chain: vec![ChainOp::LoadHeapHead],
+                    else_chain: vec![ChainOp::IfLtImm {
+                        threshold: 5,
+                        then_chain: vec![ChainOp::LoadHeapHead, ChainOp::MulImm(2)],
+                        else_chain: vec![ChainOp::LoadHeapHead, ChainOp::MulImm(3)],
+                    }],
+                },
+                ChainOp::Ret,
+            ]
+        );
+    }
+
+    #[test]
+    fn if_with_arithmetic_then_branch() {
+        // (lambda (n) (if (< n 10) (+ n 100) (- n 50)))
+        let ops = translate("(lambda (n) (if (< n 10) (+ n 100) (- n 50)))").unwrap();
+        assert_eq!(
+            ops,
+            vec![
+                ChainOp::IfLtImm {
+                    threshold: 10,
+                    then_chain: vec![ChainOp::LoadHeapHead, ChainOp::AddImm(100)],
+                    else_chain: vec![ChainOp::LoadHeapHead, ChainOp::SubImm(50)],
+                },
+                ChainOp::Ret,
+            ]
+        );
+    }
+
+    #[test]
+    fn if_with_negative_threshold() {
+        let ops = translate("(lambda (n) (if (< n -3) (- n) n))").unwrap();
+        assert_eq!(
+            ops,
+            vec![
+                ChainOp::IfLtImm {
+                    threshold: -3,
+                    then_chain: vec![ChainOp::LoadHeapHead, ChainOp::Neg],
+                    else_chain: vec![ChainOp::LoadHeapHead],
+                },
+                ChainOp::Ret,
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_if_with_non_param_lhs() {
+        let err = translate("(lambda (n) (if (< 5 n) n n))").unwrap_err();
+        assert!(err.contains("lhs of `<` must be param"), "err: {}", err);
+    }
+
+    #[test]
+    fn rejects_if_with_unsupported_predicate() {
+        let err = translate("(lambda (n) (if (= n 0) n (* n 2)))").unwrap_err();
+        assert!(err.contains("(< PARAM IMM)"), "err: {}", err);
+    }
+
+    #[test]
+    fn rejects_if_with_wrong_arity() {
+        let err = translate("(lambda (n) (if (< n 5) n))").unwrap_err();
+        assert!(err.contains("3 args"), "err: {}", err);
+    }
+
+    #[test]
+    fn rejects_if_with_non_int_threshold() {
+        let err = translate("(lambda (n) (if (< n 1.5) n (* n 2)))").unwrap_err();
+        assert!(err.contains("integer literal"), "err: {}", err);
     }
 
     #[test]
