@@ -262,7 +262,7 @@ standalone tarball.  That layer is optional; the runtime above is
 self-contained.
 #+end_quote
 
-** Architecture (5-layer)
+** Architecture
 
 #+begin_src text
   ┌──────────────────────────────────────────────────┐
@@ -270,22 +270,27 @@ self-contained.
   └─────────────────┬────────────────────────────────┘
                     │ MCP stdio JSON-RPC
   ┌─────────────────▼────────────────────────────────┐
-  │ Layer 5: anvil-host registry (Rust)              │  Phase 8.0.5
-  │   nelisp-runtime/src/anvil_host_registry.rs      │
+  │ anvil-runtime crate                              │  Phase 8.0.4-8.0.5
+  │   mcp/ + anvil_*_registry.rs + bin/anvil-runtime │
   ├──────────────────────────────────────────────────┤
-  │ Layer 4: NeLisp self-host bridge (Rust + Elisp)  │  Phase 8.0.3
-  │   nelisp-runtime/src/bridge/                     │
+  │ nelisp-runtime crate                             │  pure NeLisp runtime
+  │   bridge/ + eval/ + reader/ + sqlite + syscall   │
   ├──────────────────────────────────────────────────┤
-  │ Layer 3: Elisp evaluator (Rust)                  │  Phase 8.0.2
+  │ Elisp evaluator (Rust bootstrap layer)           │  Phase 8.0.2
   │   25 special forms + 75 builtins                 │
   ├──────────────────────────────────────────────────┤
-  │ Layer 2: Elisp reader (Rust)                     │  Phase 8.0.1
+  │ Elisp reader (Rust bootstrap layer)              │  Phase 8.0.1
   │   sexp / lexer / parser                          │
   ├──────────────────────────────────────────────────┤
-  │ Layer 1: MCP protocol (Rust)                     │  Phase 8.0.4
-  │   stdio JSON-RPC initialize / tools-list / call  │
+  │ OS substrate                                     │  Phase 7.0 / 9d
+  │   syscall wrappers; allocator/GC/coding in Lisp  │
   └──────────────────────────────────────────────────┘
 #+end_src
+
+Doc 46 (=architecture α boundary final=) is the current boundary:
+NeLisp owns no =anvil_*= or =mcp= modules.  The optional MCP front end
+lives in the sibling =anvil-runtime= crate and calls into
+=nelisp-runtime= through a path dependency.
 
 ** Soak gate (Doc 32 v2 §2.7)
 
