@@ -1,6 +1,6 @@
 [package]
 name = "nelisp-runtime"
-version = "0.1.0"
+version = "0.5.0"
 edition = "2021"
 description = "NeLisp Phase 7.0 OS syscall stub (Rust thin wrapper, ~300-500 LOC)"
 license = "GPL-3.0-or-later"

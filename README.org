@@ -188,7 +188,7 @@ The pre-built tarball ships a tiny =nelisp= CLI that wraps the
 Rust evaluator.  No host Emacs needed:
 
 #+begin_src shell
-nelisp --version                       # nelisp 0.1.0
+nelisp --version                       # nelisp 0.5.0
 nelisp eval "(+ 1 2 3)"                # => 6
 nelisp eval "(mapcar (function (lambda (n) (* n n))) '(1 2 3 4))"
                                        # => (1 4 9 16)
