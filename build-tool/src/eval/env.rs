@@ -21,6 +21,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::reader;
+
 use super::error::EvalError;
 use super::sexp::Sexp;
 
@@ -86,6 +88,7 @@ impl Env {
     /// Construct a globals-only environment with all built-ins
     /// installed.  Equivalent to GNU Emacs' empty-buffer top-level.
     pub fn new_global() -> Self {
+        const STDLIB_SRC: &str = include_str!("../../../lisp/nelisp-stdlib.el");
         let mut env = Env {
             globals: HashMap::new(),
             frames: Vec::new(),
@@ -98,6 +101,15 @@ impl Env {
         env.intern_constant("nil", Sexp::Nil);
         env.intern_constant("t", Sexp::T);
         super::builtins::install_builtins(&mut env);
+        let forms = match reader::read_all(STDLIB_SRC) {
+            Ok(forms) => forms,
+            Err(e) => panic!("nelisp-stdlib bootstrap failed: {}", e),
+        };
+        for form in &forms {
+            if let Err(e) = super::eval(form, &mut env) {
+                panic!("nelisp-stdlib bootstrap failed: {}", e);
+            }
+        }
         env
     }
 

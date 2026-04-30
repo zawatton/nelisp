@@ -6,19 +6,19 @@
 //! [`dispatch`].
 //!
 //! Categories (per prompt §6):
-//!   - Arithmetic  : + - * / mod 1+ 1- < > <= >= = /=
+//!   - Arithmetic  : + - * / mod < > <= >= = /=
 //!   - Equality    : eq equal
 //!   - Cons / list : car cdr cons list nth length nthcdr nreverse
 //!                   reverse append
 //!   - Higher-order: mapcar mapc memq member assq assoc
-//!   - Predicates  : null consp listp atom symbolp stringp numberp
-//!                   integerp floatp not
+//!   - Predicates  : consp listp atom symbolp stringp numberp
+//!                   integerp floatp
 //!   - String      : concat format substring length intern symbol-name
 //!   - Symbol/func : symbol-value symbol-function fboundp boundp
 //!                   funcall apply eval signal error
 //!
 //! Total registered: ~60 (counts above + a handful of glue helpers
-//! such as `print`, `princ`, `message`, `identity`).
+//! such as `print`, `princ`, `message`).
 
 use super::env::Env;
 use super::error::EvalError;
@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 pub fn install_builtins(env: &mut Env) {
     let names: &[&str] = &[
         // arithmetic
-        "+", "-", "*", "/", "mod", "1+", "1-", "<", ">", "<=", ">=", "=", "/=",
+        "+", "-", "*", "/", "mod", "<", ">", "<=", ">=", "=", "/=",
         // equality
         "eq", "equal",
         // cons / list
@@ -43,8 +43,7 @@ pub fn install_builtins(env: &mut Env) {
         // higher-order
         "mapcar", "mapc", "memq", "member", "assq", "assoc", "alist-get",
         // predicates
-        "null", "consp", "listp", "atom", "symbolp", "stringp", "numberp", "integerp", "floatp",
-        "not", "functionp",
+        "consp", "listp", "atom", "symbolp", "stringp", "numberp", "integerp", "floatp", "functionp",
         // string
         "concat", "format", "substring", "intern", "symbol-name", "string-equal", "string=",
         "string-empty-p", "string-prefix-p", "string-match-p", "regexp-quote",
@@ -57,7 +56,7 @@ pub fn install_builtins(env: &mut Env) {
         "number-to-string",
         // symbol / function
         "symbol-value", "symbol-function", "fboundp", "boundp", "funcall", "apply", "eval",
-        "signal", "error", "identity", "print", "princ", "prin1-to-string", "message",
+        "signal", "error", "print", "princ", "prin1-to-string", "message",
         "provide", "require", "featurep",
         // self-process stdio (Phase 9 minimal — needed by stand-alone Lisp servers
         // such as elisp-lsp running on the `nelisp` binary)
@@ -81,8 +80,6 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "*" => bi_mul(args),
         "/" => bi_div(args),
         "mod" => bi_mod(args),
-        "1+" => bi_inc(args),
-        "1-" => bi_dec(args),
         "<" => bi_lt(args),
         ">" => bi_gt(args),
         "<=" => bi_le(args),
@@ -122,7 +119,6 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "assoc" => bi_assoc(args),
         "alist-get" => bi_alist_get(args),
         // ---- predicates ----
-        "null" | "not" => bi_null(args),
         "consp" => bi_predicate(args, |v| matches!(v, Sexp::Cons(_, _))),
         "listp" => bi_predicate(args, |v| matches!(v, Sexp::Cons(_, _) | Sexp::Nil)),
         "atom" => bi_predicate(args, |v| !matches!(v, Sexp::Cons(_, _))),
@@ -167,7 +163,6 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "eval" => bi_eval(args, env),
         "signal" => bi_signal(args),
         "error" => bi_error(args),
-        "identity" => bi_identity(args),
         "print" | "princ" => bi_princ(args),
         "prin1-to-string" => bi_prin1_to_string(args),
         "message" => bi_princ(args),
@@ -306,30 +301,6 @@ fn bi_mod(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let r = a.rem_euclid(b.abs());
     let signed = if b < 0 { -r } else { r };
     Ok(Sexp::Int(signed))
-}
-
-fn bi_inc(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("1+", args, 1, Some(1))?;
-    match &args[0] {
-        Sexp::Int(n) => Ok(Sexp::Int(n + 1)),
-        Sexp::Float(x) => Ok(Sexp::Float(x + 1.0)),
-        other => Err(EvalError::WrongType {
-            expected: "number".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
-fn bi_dec(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("1-", args, 1, Some(1))?;
-    match &args[0] {
-        Sexp::Int(n) => Ok(Sexp::Int(n - 1)),
-        Sexp::Float(x) => Ok(Sexp::Float(x - 1.0)),
-        other => Err(EvalError::WrongType {
-            expected: "number".into(),
-            got: other.clone(),
-        }),
-    }
 }
 
 fn cmp_vararg(name: &str, args: &[Sexp], cmp: fn(f64, f64) -> bool) -> Result<Sexp, EvalError> {
@@ -719,15 +690,6 @@ fn bi_alist_get(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 // ---------- predicates ----------
-
-fn bi_null(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("null", args, 1, Some(1))?;
-    Ok(if matches!(args[0], Sexp::Nil) {
-        Sexp::T
-    } else {
-        Sexp::Nil
-    })
-}
 
 fn bi_predicate(args: &[Sexp], pred: fn(&Sexp) -> bool) -> Result<Sexp, EvalError> {
     require_arity("predicate", args, 1, Some(1))?;
@@ -1436,11 +1398,6 @@ fn bi_error(args: &[Sexp]) -> Result<Sexp, EvalError> {
         tag: "error".into(),
         data: Sexp::list_from(&[Sexp::Str(msg)]),
     })
-}
-
-fn bi_identity(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("identity", args, 1, Some(1))?;
-    Ok(args[0].clone())
 }
 
 fn bi_princ(args: &[Sexp]) -> Result<Sexp, EvalError> {
