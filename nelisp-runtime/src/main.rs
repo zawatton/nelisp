@@ -357,6 +357,46 @@ fn mint_fault_skeleton_image(path: &str) -> i32 {
     }
 }
 
+/// Doc 47 Stage 6a: mint a NlImage v1 whose 8-byte heap holds the
+/// tagged Elisp integer `(n << 3) | NL_VALUE_TAG_INT` and whose
+/// code segment SAR-untags it on boot.  The seed therefore exits
+/// with `n` (modulo 256, since process exit codes truncate to u8)
+/// — proving the image format can carry a real Elisp value, not
+/// just a raw byte.
+fn mint_int_skeleton_image(path: &str, n: i64) -> i32 {
+    if !nelisp_runtime::image::HAS_NATIVE_LOAD_HEAP_INT_UNTAG {
+        eprintln!(
+            "nelisp-runtime: mint-int-skeleton-image: \
+             no canned tagged-int asset for this target arch"
+        );
+        return 14;
+    }
+    let tagged = nelisp_runtime::image::tag_int(n);
+    let heap_bytes = tagged.to_le_bytes();
+    match nelisp_runtime::image::write_image_with_heap_and_native_entry(
+        path,
+        nelisp_runtime::image::NATIVE_LOAD_HEAP_INT_UNTAG,
+        &heap_bytes,
+    ) {
+        Ok(()) => {
+            println!(
+                "minted int-skeleton NlImage v{} at {} \
+                 (heap_size=8 n={} tagged=0x{:x} expected_exit={})",
+                nelisp_runtime::image::NL_IMAGE_ABI_VERSION,
+                path,
+                n,
+                tagged,
+                (n as i32) & 0xff,
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("nelisp-runtime: mint-int-skeleton-image: {}", e);
+            14
+        }
+    }
+}
+
 /// Doc 47 Stage 3: read the image at `path', map its code segment
 /// into an executable JIT page, jump to the entry, return whatever
 /// `i32' the entry produced as this process's exit code.
@@ -470,6 +510,28 @@ fn main() {
                 1
             }
         },
+        Some("mint-int-skeleton-image") => {
+            match (args.get(2).map(|s| s.as_str()), args.get(3).map(|s| s.as_str())) {
+                (Some(path), Some(n_str)) => match n_str.parse::<i64>() {
+                    Ok(n) => mint_int_skeleton_image(path, n),
+                    Err(_) => {
+                        eprintln!(
+                            "usage: nelisp-runtime mint-int-skeleton-image \
+                             <out-path> [<i64-value>]"
+                        );
+                        1
+                    }
+                },
+                (Some(path), None) => mint_int_skeleton_image(path, 7),
+                _ => {
+                    eprintln!(
+                        "usage: nelisp-runtime mint-int-skeleton-image \
+                         <out-path> [<i64-value>]"
+                    );
+                    1
+                }
+            }
+        }
         Some("boot-from-image") => match args.get(2).map(|s| s.as_str()) {
             Some(path) => boot_from_image(path),
             None => {
@@ -488,6 +550,9 @@ fn main() {
             );
             eprintln!("       nelisp-runtime mint-reloc-skeleton-image <out-path>");
             eprintln!("       nelisp-runtime mint-fault-skeleton-image <out-path>");
+            eprintln!(
+                "       nelisp-runtime mint-int-skeleton-image <out-path> [<i64-value>]"
+            );
             eprintln!("       nelisp-runtime verify-image <image-path>");
             eprintln!("       nelisp-runtime boot-from-image <image-path>");
             2

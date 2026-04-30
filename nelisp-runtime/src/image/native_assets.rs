@@ -132,3 +132,40 @@ pub const NATIVE_DELIBERATE_NULL_DEREF: &[u8] = &[];
 
 pub const HAS_NATIVE_DELIBERATE_NULL_DEREF: bool =
     cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
+
+/// Stage 6a — load a tagged Elisp integer from `*argv[0]` and return
+/// the untagged i64 (truncated to i32 by the entry signature).  The
+/// SAR / ASR by 3 matches `image::value::NL_VALUE_TAG_BITS`.
+///
+/// Per-architecture encodings:
+///   x86_64 (11 bytes):
+///     48 8b 06            mov rax, [rsi]      ; rsi = argv
+///     48 8b 00            mov rax, [rax]      ; *argv[0] = tagged int
+///     48 c1 f8 03         sar rax, 3          ; arithmetic shift right
+///     c3                  ret
+///   aarch64 (16 bytes):
+///     20 00 40 f9         ldr  x0, [x1]       ; x1 = argv
+///     00 00 40 f9         ldr  x0, [x0]       ; *argv[0]
+///     00 fc 43 93         asr  x0, x0, #3     ; SBFM xd, xn, #3, #63
+///     c0 03 5f d6         ret
+#[cfg(target_arch = "x86_64")]
+pub const NATIVE_LOAD_HEAP_INT_UNTAG: &[u8] = &[
+    0x48, 0x8b, 0x06,             // mov rax, [rsi]
+    0x48, 0x8b, 0x00,             // mov rax, [rax]
+    0x48, 0xc1, 0xf8, 0x03,       // sar rax, 3
+    0xc3,                         // ret
+];
+
+#[cfg(target_arch = "aarch64")]
+pub const NATIVE_LOAD_HEAP_INT_UNTAG: &[u8] = &[
+    0x20, 0x00, 0x40, 0xf9, // ldr  x0, [x1]
+    0x00, 0x00, 0x40, 0xf9, // ldr  x0, [x0]
+    0x00, 0xfc, 0x43, 0x93, // asr  x0, x0, #3
+    0xc0, 0x03, 0x5f, 0xd6, // ret
+];
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+pub const NATIVE_LOAD_HEAP_INT_UNTAG: &[u8] = &[];
+
+pub const HAS_NATIVE_LOAD_HEAP_INT_UNTAG: bool =
+    cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
