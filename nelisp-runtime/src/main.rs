@@ -458,6 +458,85 @@ fn mint_cons_skeleton_image(path: &str) -> i32 {
     }
 }
 
+/// Doc 47 Stage 6c: mint a NlImage v1 whose heap holds the
+/// 3-element list `(1 2 3)` terminated by NL_VALUE_TAG_NIL, and
+/// whose code segment walks the cdr chain counting cells.  Boot
+/// must exit with the list length (= 3).
+///
+/// Heap layout (56 bytes, 3 cells + head pointer + NIL tail):
+///   `[ 0.. 8]`  head ptr     ← reloc #1: tagged ptr to cell A
+///   `[ 8..16]`  cell A.car   = tag_int(1)
+///   `[16..24]`  cell A.cdr   ← reloc #2: tagged ptr to cell B
+///   `[24..32]`  cell B.car   = tag_int(2)
+///   `[32..40]`  cell B.cdr   ← reloc #3: tagged ptr to cell C
+///   `[40..48]`  cell C.car   = tag_int(3)
+///   `[48..56]`  cell C.cdr   = NL_VALUE_TAG_NIL  (immediate)
+fn mint_list_skeleton_image(path: &str) -> i32 {
+    if !nelisp_runtime::image::HAS_NATIVE_LIST_LENGTH {
+        eprintln!(
+            "nelisp-runtime: mint-list-skeleton-image: \
+             no canned list-length asset for this target arch"
+        );
+        return 16;
+    }
+    let mut heap = vec![0u8; 56];
+
+    // Cars: tag_int(1) at cell A, tag_int(2) at cell B, tag_int(3) at C.
+    for (offset, n) in [(8usize, 1i64), (24, 2), (40, 3)] {
+        let tagged = nelisp_runtime::image::tag_int(n);
+        heap[offset..offset + 8].copy_from_slice(&tagged.to_le_bytes());
+    }
+    // Cell C.cdr = NIL immediate.
+    heap[48..56]
+        .copy_from_slice(&nelisp_runtime::image::NL_VALUE_TAG_NIL.to_le_bytes());
+
+    // Head ptr + cell A.cdr + cell B.cdr — three relocs that ride the
+    // Stage 4b kind by stuffing TAG_CONS into addend's low bits.
+    let cons_tag = nelisp_runtime::image::NL_VALUE_TAG_CONS;
+    let kind = nelisp_runtime::image::NL_RELOC_KIND_HEAP_BASE_PLUS_OFFSET;
+    let relocs = [
+        nelisp_runtime::image::ImageReloc {
+            kind,
+            _pad: 0,
+            write_at: 0,
+            addend: 8 | cons_tag,  // → cell A
+        },
+        nelisp_runtime::image::ImageReloc {
+            kind,
+            _pad: 0,
+            write_at: 16,
+            addend: 24 | cons_tag, // → cell B
+        },
+        nelisp_runtime::image::ImageReloc {
+            kind,
+            _pad: 0,
+            write_at: 32,
+            addend: 40 | cons_tag, // → cell C
+        },
+    ];
+
+    match nelisp_runtime::image::write_image_with_heap_code_and_relocs(
+        path,
+        nelisp_runtime::image::NATIVE_LIST_LENGTH,
+        &heap,
+        &relocs,
+    ) {
+        Ok(()) => {
+            println!(
+                "minted list-skeleton NlImage v{} at {} \
+                 (heap_size=56 reloc_count=3 list=(1 2 3) expected_exit=3)",
+                nelisp_runtime::image::NL_IMAGE_ABI_VERSION,
+                path
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("nelisp-runtime: mint-list-skeleton-image: {}", e);
+            16
+        }
+    }
+}
+
 /// Doc 47 Stage 3: read the image at `path', map its code segment
 /// into an executable JIT page, jump to the entry, return whatever
 /// `i32' the entry produced as this process's exit code.
@@ -578,6 +657,13 @@ fn main() {
                 1
             }
         },
+        Some("mint-list-skeleton-image") => match args.get(2).map(|s| s.as_str()) {
+            Some(path) => mint_list_skeleton_image(path),
+            None => {
+                eprintln!("usage: nelisp-runtime mint-list-skeleton-image <out-path>");
+                1
+            }
+        },
         Some("mint-int-skeleton-image") => {
             match (args.get(2).map(|s| s.as_str()), args.get(3).map(|s| s.as_str())) {
                 (Some(path), Some(n_str)) => match n_str.parse::<i64>() {
@@ -622,6 +708,7 @@ fn main() {
                 "       nelisp-runtime mint-int-skeleton-image <out-path> [<i64-value>]"
             );
             eprintln!("       nelisp-runtime mint-cons-skeleton-image <out-path>");
+            eprintln!("       nelisp-runtime mint-list-skeleton-image <out-path>");
             eprintln!("       nelisp-runtime verify-image <image-path>");
             eprintln!("       nelisp-runtime boot-from-image <image-path>");
             2

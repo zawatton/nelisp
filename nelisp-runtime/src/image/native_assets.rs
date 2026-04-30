@@ -220,3 +220,83 @@ pub const NATIVE_LOAD_CAR_INT_UNTAG: &[u8] = &[];
 
 pub const HAS_NATIVE_LOAD_CAR_INT_UNTAG: bool =
     cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
+
+/// Stage 6c — walk a NIL-terminated tagged-cons list and return its
+/// length.  `argv[0]` is the heap_base; `*argv[0]` (= heap[0..8]) is
+/// the head: either a cons pointer (low 3 bits = NL_VALUE_TAG_CONS)
+/// or the all-bits `NL_VALUE_TAG_NIL` immediate.  At each cell the
+/// asm advances to the cdr (offset +8 from the untagged cell pointer)
+/// and bumps the count register; on NIL the loop exits and returns
+/// the count.
+///
+/// Note the *two* heap dereferences before the loop.  Stage 4a / 6a
+/// also load `*argv[0]` once to read the leaf value; Stage 6b loads
+/// twice (heap_base → tagged head → cell content).  This routine
+/// matches the Stage 6b dereference depth to land on the head ptr.
+///
+/// Per-architecture encodings:
+///   x86_64 (27 bytes):
+///     31 c0                xor eax, eax            ; count = 0
+///     48 8b 0e             mov rcx, [rsi]          ; rcx = heap_base
+///     48 8b 09             mov rcx, [rcx]          ; rcx = *heap_base = head
+///     ; .loop:
+///     48 83 f9 03          cmp rcx, 3              ; NL_VALUE_TAG_NIL
+///     74 0c                je  .end (+12)
+///     ff c0                inc eax                  ; count++
+///     48 83 e1 f8          and rcx, ~7             ; cell ptr
+///     48 8b 49 08          mov rcx, [rcx + 8]      ; cdr
+///     eb ee                jmp .loop (-18)
+///     ; .end:
+///     c3                   ret
+///   aarch64 (44 bytes):
+///     00 00 80 52          mov  w0, #0
+///     21 00 40 f9          ldr  x1, [x1]           ; x1 = heap_base
+///     21 00 40 f9          ldr  x1, [x1]           ; x1 = *heap_base = head
+///     ; .loop:
+///     3f 0c 00 f1          cmp  x1, #3             ; NL_VALUE_TAG_NIL
+///     c0 00 00 54          b.eq .end (+24)
+///     00 04 00 11          add  w0, w0, #1          ; count++
+///     21 fc 43 d3          lsr  x1, x1, #3
+///     21 f0 7d d3          lsl  x1, x1, #3          ; clear tag bits
+///     21 04 40 f9          ldr  x1, [x1, #8]        ; cdr
+///     fa ff ff 17          b    .loop (-24)
+///     ; .end:
+///     c0 03 5f d6          ret
+#[cfg(target_arch = "x86_64")]
+pub const NATIVE_LIST_LENGTH: &[u8] = &[
+    0x31, 0xc0,                   // xor eax, eax
+    0x48, 0x8b, 0x0e,             // mov rcx, [rsi]
+    0x48, 0x8b, 0x09,             // mov rcx, [rcx]
+    // .loop:
+    0x48, 0x83, 0xf9, 0x03,       // cmp rcx, 3
+    0x74, 0x0c,                   // je .end
+    0xff, 0xc0,                   // inc eax
+    0x48, 0x83, 0xe1, 0xf8,       // and rcx, ~7
+    0x48, 0x8b, 0x49, 0x08,       // mov rcx, [rcx+8]
+    0xeb, 0xee,                   // jmp .loop
+    // .end:
+    0xc3,                         // ret
+];
+
+#[cfg(target_arch = "aarch64")]
+pub const NATIVE_LIST_LENGTH: &[u8] = &[
+    0x00, 0x00, 0x80, 0x52, // mov  w0, #0
+    0x21, 0x00, 0x40, 0xf9, // ldr  x1, [x1]
+    0x21, 0x00, 0x40, 0xf9, // ldr  x1, [x1]
+    // .loop:
+    0x3f, 0x0c, 0x00, 0xf1, // cmp  x1, #3
+    0xc0, 0x00, 0x00, 0x54, // b.eq .end
+    0x00, 0x04, 0x00, 0x11, // add  w0, w0, #1
+    0x21, 0xfc, 0x43, 0xd3, // lsr  x1, x1, #3
+    0x21, 0xf0, 0x7d, 0xd3, // lsl  x1, x1, #3
+    0x21, 0x04, 0x40, 0xf9, // ldr  x1, [x1, #8]
+    0xfa, 0xff, 0xff, 0x17, // b    .loop
+    // .end:
+    0xc0, 0x03, 0x5f, 0xd6, // ret
+];
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+pub const NATIVE_LIST_LENGTH: &[u8] = &[];
+
+pub const HAS_NATIVE_LIST_LENGTH: bool =
+    cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
