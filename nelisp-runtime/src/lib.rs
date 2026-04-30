@@ -27,6 +27,13 @@
 // `nl_sqlite_*' symbols, so existing callers keep linking through
 // `nelisp_runtime::nl_sqlite_*'.  Without the feature the path-dep
 // disappears entirely (drops ~623 LOC + libsqlite3 static link).
+//
+// Doc 49 Phase 49.4 (2026-04-30) — seed image loader.  Rust-min core
+// validates a NLSEED-formatted native image, mmaps the heap + code
+// segments, applies relocations, flips the code segment to RX,
+// flushes icache, and jumps into the native-compiled Elisp seed.
+// Rust never parses or evaluates the Elisp source itself.
+pub mod seed;
 pub mod syscall;
 
 // Architecture α (Wave 3, 2026-04-29) — anvil_*_registry + mcp + the
@@ -46,6 +53,11 @@ pub use syscall::{
     nelisp_syscall_munmap, nelisp_syscall_open, nelisp_syscall_read,
     nelisp_syscall_setenv, nelisp_syscall_stat, nelisp_syscall_write, NelispStat,
     SyscallError,
+};
+pub use seed::{
+    nelisp_seed_load_and_run, parse_header as nelisp_seed_parse_header, payload_hash as nelisp_seed_payload_hash,
+    SeedError, SeedHeader, SeedSyscallTable, SEED_ABI_VERSION, SEED_HEADER_LEN, SEED_MAGIC,
+    SYSCALL_ABI_VERSION,
 };
 pub use syscall::{
     NELISP_MAP_ANONYMOUS, NELISP_MAP_JIT, NELISP_MAP_PRIVATE, NELISP_O_APPEND, NELISP_O_CREAT,

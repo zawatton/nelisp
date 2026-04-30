@@ -6,8 +6,8 @@
 //! Phase 7.0 to a fully working Elisp ↔ Rust FFI bridge (that lands
 //! in Phase 7.5).
 //!
-//! Doc 49 Phase 49.2 keeps the raw native-code `exec-bytes` developer
-//! bridge out of this Rust-min runtime core.  Use the sibling
+//! Doc 49 keeps the raw native-code `exec-bytes` developer bridge out
+//! of this Rust-min runtime core.  Use the sibling
 //! `nelisp-exec-bytes` binary from `nelisp-runtime-cli` for that path.
 //!
 //! Exit codes:
@@ -17,6 +17,7 @@
 //!   3 — mmap / munmap probe failed
 //!   4 — getenv probe failed
 //!   5 — stat probe failed
+//!   6 — seed image load/run failed
 
 use std::env;
 use std::ffi::CString;
@@ -88,12 +89,26 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let code = match args.get(1).map(|s| s.as_str()) {
         Some("--syscall-smoke") => syscall_smoke(),
+        Some("--seed-image") => match args.get(2) {
+            Some(path) => match run_seed(path, &args[3..]) {
+                Ok(rc) => rc,
+                Err(e) => {
+                    eprintln!("nelisp-runtime: seed image failed: {e}");
+                    6
+                }
+            },
+            None => {
+                eprintln!("usage: nelisp-runtime --seed-image IMAGE [ARGS...]");
+                2
+            }
+        },
         Some("--version") => {
             println!("nelisp-runtime {}", env!("CARGO_PKG_VERSION"));
             0
         }
         _ => {
             eprintln!("usage: nelisp-runtime --syscall-smoke");
+            eprintln!("       nelisp-runtime --seed-image IMAGE [ARGS...]");
             eprintln!("       nelisp-runtime --version");
             eprintln!("");
             eprintln!("note: image format commands moved to nelisp-build-tool;");
@@ -103,4 +118,13 @@ fn main() {
         }
     };
     std::process::exit(code);
+}
+
+fn run_seed(path: &str, args: &[String]) -> Result<i32, nelisp_runtime::SeedError> {
+    let cargs: Vec<CString> = args
+        .iter()
+        .map(|s| CString::new(s.as_bytes()).unwrap_or_else(|_| CString::new("").unwrap()))
+        .collect();
+    let argv: Vec<*const libc::c_char> = cargs.iter().map(|s| s.as_ptr()).collect();
+    unsafe { nelisp_runtime::seed::load_and_run(path, &argv) }
 }

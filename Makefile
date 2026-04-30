@@ -1,5 +1,5 @@
 .PHONY: test compile clean all bench gc-bench actor-bench soak soak-1h soak-full soak-worker stage-d-tarball \
-        runtime runtime-test runtime-cli runtime-clean test-runtime \
+        runtime runtime-test runtime-cli runtime-core-min runtime-core-min-test runtime-clean test-runtime \
         runtime-staticlib runtime-static runtime-module runtime-module-clean stage-d-v2-bin \
         sqlite-module sqlite-module-clean \
         release-artifact release-checksum soak-blocker soak-post-ship \
@@ -204,6 +204,17 @@ runtime-test:
 
 runtime-cli:
 	cd $(NELISP_RUNTIME_CLI_DIR) && $(CARGO) build --release
+
+# Doc 49 Phase 49.1 — Rust-min core gate.  This is the canonical
+# "Rust only does OS ABI + executable-memory substrate" build: no
+# sqlite, no process substrate, no file-notify, no high-level file I/O.
+# Build/test this target whenever feature-gated code moves so optional
+# packages cannot silently become runtime-core dependencies.
+runtime-core-min:
+	$(CARGO) build --release --no-default-features -p nelisp-runtime
+
+runtime-core-min-test:
+	$(CARGO) test --no-default-features -p nelisp-runtime
 
 runtime-clean:
 	cd $(NELISP_RUNTIME_DIR) && $(CARGO) clean
