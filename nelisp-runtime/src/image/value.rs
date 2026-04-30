@@ -74,6 +74,17 @@ pub const NL_IMMEDIATE_T: u64 = (1u64 << NL_VALUE_TAG_BITS) | NL_VALUE_TAG_NIL;
 /// because the tag carried by the pointer already pins the type.
 pub const NL_VALUE_TAG_FLOAT: u64 = 0b110;
 
+/// Heap-pointer tag for vectors (Stage 7b-3).
+///
+/// Vector layout (8-byte aligned, variable size):
+///   `[ 0..  8]`  u64 element count (N)
+///   `[ 8..  8+N*8]`  N tagged-value element slots
+///
+/// Each element slot is a regular 64-bit tagged word, lowered
+/// recursively by the same `write_value_at' rule used for cons
+/// car/cdr — so a vector can hold any value the lowering supports.
+pub const NL_VALUE_TAG_VECTOR: u64 = 0b111;
+
 /// Build the on-image word for the tagged-int representing `n`.
 ///
 /// The asm side expects the same arithmetic — see
@@ -145,6 +156,24 @@ pub fn untag_float(v: u64) -> u64 {
 
 pub fn is_float(v: u64) -> bool {
     (v & NL_VALUE_TAG_MASK) == NL_VALUE_TAG_FLOAT
+}
+
+/// Tag a heap-aligned address as a vector pointer (Stage 7b-3).
+pub fn tag_vector(addr: u64) -> u64 {
+    debug_assert_eq!(
+        addr & NL_VALUE_TAG_MASK,
+        0,
+        "vector struct address must be 8-byte aligned"
+    );
+    addr | NL_VALUE_TAG_VECTOR
+}
+
+pub fn untag_vector(v: u64) -> u64 {
+    v & !NL_VALUE_TAG_MASK
+}
+
+pub fn is_vector(v: u64) -> bool {
+    (v & NL_VALUE_TAG_MASK) == NL_VALUE_TAG_VECTOR
 }
 
 /// Tag a heap-aligned address as a length-prefixed string pointer.
@@ -307,6 +336,21 @@ mod tests {
     }
 
     #[test]
+    fn vector_round_trip() {
+        for addr in [0x0u64, 0x8, 0x1000, 0x7f_0000_0000u64, u64::MAX & !NL_VALUE_TAG_MASK] {
+            let tagged = tag_vector(addr);
+            assert!(is_vector(tagged));
+            assert!(!is_int(tagged));
+            assert!(!is_cons(tagged));
+            assert!(!is_string(tagged));
+            assert!(!is_symbol(tagged));
+            assert!(!is_float(tagged));
+            assert!(!is_nil(tagged));
+            assert_eq!(untag_vector(tagged), addr);
+        }
+    }
+
+    #[test]
     fn float_round_trip() {
         for addr in [0x0u64, 0x8, 0x1000, 0x7f_0000_0000u64, u64::MAX & !NL_VALUE_TAG_MASK] {
             let tagged = tag_float(addr);
@@ -330,6 +374,7 @@ mod tests {
             NL_VALUE_TAG_STRING,
             NL_VALUE_TAG_SYMBOL,
             NL_VALUE_TAG_FLOAT,
+            NL_VALUE_TAG_VECTOR,
         ];
         for (i, a) in tags.iter().enumerate() {
             for (j, b) in tags.iter().enumerate() {

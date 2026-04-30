@@ -446,3 +446,15 @@ pub const NATIVE_LOAD_HEAP_FLOAT_INT_TRUNC: &[u8] = &[];
 
 pub const HAS_NATIVE_LOAD_HEAP_FLOAT_INT_TRUNC: bool =
     cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
+
+/// Stage 7b-3 — return the length field of a tagged vector struct.
+/// The asm shape is identical to NATIVE_LOAD_HEAP_STRING_LEN
+/// (chase tagged ptr → AND ~7 → load first u64), since both string
+/// and vector structs share the `[u64 length, ...]' header.  We
+/// expose the alias as a separate symbol so callers can pick the
+/// asset by intent rather than by accidental sharing — and so a
+/// future Stage 7c+ can swap in a vector-specific asset (e.g., one
+/// that picks an element by index) without breaking the existing
+/// string callers.
+pub const NATIVE_LOAD_HEAP_VECTOR_LEN: &[u8] = NATIVE_LOAD_HEAP_STRING_LEN;
+pub const HAS_NATIVE_LOAD_HEAP_VECTOR_LEN: bool = HAS_NATIVE_LOAD_HEAP_STRING_LEN;
