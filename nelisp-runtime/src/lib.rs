@@ -9,9 +9,14 @@
 //! of `NELISP_PROT_*` / `NELISP_MAP_*` / `NELISP_O_*` constants so
 //! NeLisp does not need a per-OS libc clone.
 
-pub mod bridge;
-pub mod eval;
-pub mod reader;
+// Doc 47 §3.1 phase 6 / Stage 5c (2026-04-30) — `bridge`, `eval`, and
+// `reader` carved out into the sibling `nelisp-build-tool` crate so
+// `nelisp-runtime` stays image-only (seed loader + syscall stubs +
+// sqlite + image boot).  External consumers that previously wrote
+// `nelisp_runtime::{bridge,eval,reader}` should switch to
+// `nelisp_build_tool::{...}`.
+
+pub mod image;
 pub mod sqlite;
 pub mod syscall;
 

@@ -145,7 +145,7 @@ mod tests {
         resolve_anvil_shell_filter_file, resolve_self_host_src_dir, resolve_sibling_module_file,
         Command,
     };
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn parses_mcp_serve() {

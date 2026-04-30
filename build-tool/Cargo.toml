@@ -1,0 +1,35 @@
+[package]
+name = "nelisp-build-tool"
+version = "0.1.0"
+edition = "2021"
+description = "NeLisp build-time tool — Doc 47 §3.1 phase 6 carve-out (reader + minimal evaluator + Elisp self-host bridge)"
+license = "GPL-3.0-or-later"
+
+# Doc 47 §3.1 phase 6 carve-out:
+#   Stage 5a (commit 622a8b4): workspace + empty crate stub.
+#   Stage 5b (commit 5576070): absorbed `nelisp-runtime/src/bin/nelisp.rs`.
+#   Stage 5c (this commit):    `git mv nelisp-runtime/src/{eval,reader,
+#                              bridge}/` here; this crate now hosts the
+#                              entire Doc 44 minimal interpreter.
+
+[lib]
+name = "nelisp_build_tool"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nelisp"
+path = "src/bin/nelisp.rs"
+
+[dependencies]
+# Doc 47 Stage 6d (2026-04-30) — image_lowering needs the on-disk
+# wire format types (`ImageReloc`, `tag_int`, `NL_VALUE_TAG_*`) and
+# the dumper / native asset constants that live in
+# `nelisp_runtime::image::*`.  Stage 5c removed an earlier
+# transitional path dep; this one is *not* transitional — it
+# reflects the architectural fact that build-tool *produces* what
+# nelisp-runtime *consumes*, and both ends must agree on the wire
+# format.  Future Stage 7+ may carve `nelisp-image-format` into its
+# own crate so build-tool stops dragging in the seed loader / sqlite
+# / syscall surfaces it does not need; for Stage 6d that refactor is
+# not yet justified by code-size pressure.
+nelisp-runtime = { path = "../nelisp-runtime" }
