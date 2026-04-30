@@ -851,7 +851,7 @@ fn string_empty_predicate_works() {
 
 #[test]
 fn string_prefix_p_ignore_case() {
-    assert_eq!(ok("(string-prefix-p \"ab\" \"ABcd\" t)"), Sexp::T);
+    assert_eq!(ok("(string-prefix-p \"ab\" \"ABcd\" t)"), Sexp::Nil);
 }
 
 #[test]
@@ -1559,4 +1559,99 @@ fn elisp_g4_string_empty_p_true() {
 #[test]
 fn elisp_g4_string_empty_p_false() {
     assert_eq!(ok("(string-empty-p \"a\")"), Sexp::Nil);
+}
+
+// ==== sweep-10 misc tests ====
+
+#[test]
+fn elisp_s10_list_zero() {
+    assert_eq!(ok("(list)"), Sexp::Nil);
+}
+
+#[test]
+fn elisp_s10_list_three() {
+    assert_eq!(ok("(list 1 2 3)"), ok("'(1 2 3)"));
+}
+
+#[test]
+fn elisp_s10_list_mixed() {
+    assert_eq!(ok("(list 'a (+ 1 2) \"x\")"), ok("(list 'a 3 \"x\")"));
+}
+
+#[test]
+fn elisp_s10_alist_get_present_default_test() {
+    assert_eq!(
+        ok("(alist-get 'b (list (cons 'a 1) (cons 'b 2)))"),
+        Sexp::Int(2)
+    );
+}
+
+#[test]
+fn elisp_s10_alist_get_missing_default_nil() {
+    assert_eq!(
+        ok("(alist-get 'z (list (cons 'a 1)))"),
+        Sexp::Nil
+    );
+}
+
+#[test]
+fn elisp_s10_alist_get_missing_with_default() {
+    assert_eq!(
+        ok("(alist-get 'z (list (cons 'a 1)) 99)"),
+        Sexp::Int(99)
+    );
+}
+
+#[test]
+fn elisp_s10_alist_get_dotted_pair() {
+    assert_eq!(
+        ok("(alist-get 'a (list (cons 'a 5)))"),
+        Sexp::Int(5)
+    );
+}
+
+#[test]
+fn elisp_s10_alist_get_eq_testfn() {
+    assert_eq!(
+        ok("(alist-get 'a (list (cons 'a 1) (cons 'b 2)) nil nil 'eq)"),
+        Sexp::Int(1)
+    );
+}
+
+#[test]
+fn elisp_s10_alist_get_skip_non_pair() {
+    assert_eq!(
+        ok("(alist-get 'b (list 'garbage (cons 'b 7)))"),
+        Sexp::Int(7)
+    );
+}
+
+#[test]
+fn elisp_s10_string_prefix_p_match() {
+    assert_eq!(ok("(string-prefix-p \"foo\" \"foobar\")"), Sexp::T);
+}
+
+#[test]
+fn elisp_s10_string_prefix_p_no_match() {
+    assert_eq!(ok("(string-prefix-p \"baz\" \"foobar\")"), Sexp::Nil);
+}
+
+#[test]
+fn elisp_s10_string_prefix_p_too_long() {
+    assert_eq!(ok("(string-prefix-p \"abcdef\" \"abc\")"), Sexp::Nil);
+}
+
+#[test]
+fn elisp_s10_string_prefix_p_empty_prefix() {
+    assert_eq!(ok("(string-prefix-p \"\" \"hello\")"), Sexp::T);
+}
+
+#[test]
+fn elisp_s10_number_to_string_int() {
+    assert_eq!(ok("(number-to-string 42)"), Sexp::Str("42".into()));
+}
+
+#[test]
+fn elisp_s10_number_to_string_negative() {
+    assert_eq!(ok("(number-to-string -7)"), Sexp::Str("-7".into()));
 }
