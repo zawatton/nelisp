@@ -222,17 +222,196 @@ pub const HAS_CHAIN_EMIT_PRIMITIVES: bool =
 
 /// Stage 9c walking-skeleton: emit a function body that loads a
 /// tagged-int heap word, untags it, adds `imm` (sign-extended), and
-/// returns.  Composed from `emit_load_heap_int_untag_head' +
-/// `emit_add_rax_imm32' + `emit_ret' so any byte-for-byte change to
-/// the building blocks is reflected here automatically.
+/// returns.  Re-implemented at Stage 9d in terms of the `ChainOp' IR
+/// (see [`compose`]) so the same op stream that drives the generic
+/// chain composer also drives this convenience entry point.
 pub fn emit_int_plus_imm(imm: i32) -> Vec<u8> {
-    let mut out = emit_load_heap_int_untag_head();
-    out.extend_from_slice(&emit_add_rax_imm32(imm));
-    out.extend_from_slice(&emit_ret());
-    out
+    compose(&[ChainOp::LoadHeapHead, ChainOp::AddImm(imm), ChainOp::Ret])
 }
 
 pub const HAS_EMIT_INT_PLUS_IMM: bool = HAS_CHAIN_EMIT_PRIMITIVES;
+
+// ---------------------------------------------------------------------------
+// Doc 47 Stage 9d — extended primitive set.
+//
+// Stage 9c's three-op chain (head + add_imm + ret) demonstrated
+// composition.  Stage 9d widens the primitive vocabulary so the chain
+// can compute richer integer expressions (= subtraction, negation,
+// multiplication by an immediate) and exposes a small ChainOp IR so
+// drivers / future AST passes can describe the op stream as data
+// instead of imperative `extend_from_slice' calls.
+//
+// Calling convention is unchanged: every primitive consumes and
+// produces the integer accumulator (rax on x86_64, x0 on aarch64),
+// no side effects on other registers visible to the caller.
+// ---------------------------------------------------------------------------
+
+/// `sub accumulator, sign-extended-imm32`.
+///
+/// x86_64 (6 bytes, REX.W + opcode 2D):
+///     48 2d II II II II   sub rax, imm32   ; sign-extends to 64 bits
+///
+/// aarch64 (12 bytes, MOVZ + MOVK + SUB-extended):
+///     MOVZ w9, #lo16(imm)
+///     MOVK w9, #hi16(imm), lsl #16
+///     SUB  x0, x0, w9, SXTW
+#[cfg(target_arch = "x86_64")]
+pub fn emit_sub_rax_imm32(imm: i32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(6);
+    out.push(0x48); // REX.W
+    out.push(0x2d); // opcode for sub rAX, imm32
+    out.extend_from_slice(&imm.to_le_bytes());
+    out
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn emit_sub_rax_imm32(imm: i32) -> Vec<u8> {
+    let v = imm as u32;
+    let low16 = v & 0xFFFF;
+    let high16 = (v >> 16) & 0xFFFF;
+    let movz: u32 = 0x52800000 | (low16 << 5) | 9;
+    let movk: u32 = 0x72A00000 | (high16 << 5) | 9;
+    // SUB (extended register), 64-bit, X0 = X0 - SXTW(W9):
+    //   sf=1 op=1 S=0 0b01011 001 Rm=9 option=110 imm3=0 Rn=0 Rd=0
+    //   = 0xCB20C000 base | (Rm<<16) | (option<<13) | (imm3<<10) | (Rn<<5) | Rd
+    let sub_ext: u32 = 0xCB20C000 | (9u32 << 16) | (0b110u32 << 13);
+    let mut out = Vec::with_capacity(12);
+    out.extend_from_slice(&movz.to_le_bytes());
+    out.extend_from_slice(&movk.to_le_bytes());
+    out.extend_from_slice(&sub_ext.to_le_bytes());
+    out
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+pub fn emit_sub_rax_imm32(_imm: i32) -> Vec<u8> {
+    Vec::new()
+}
+
+/// `imul accumulator, accumulator, sign-extended-imm32`.  64-bit
+/// signed multiply with the imm32 sign-extended to the operand size;
+/// the low 64 bits of the product land in the accumulator (= the same
+/// behaviour callers get from `(* n IMM)` in Elisp at the value sizes
+/// the walking-skeleton cares about).
+///
+/// x86_64 (7 bytes, REX.W + opcode 69 + ModR/M c0):
+///     48 69 c0 II II II II   imul rax, rax, imm32
+///
+/// aarch64 (16 bytes, MOVZ + MOVK + SXTW-to-X9 + MUL):
+///     MOVZ w9, #lo16(imm)
+///     MOVK w9, #hi16(imm), lsl #16
+///     SXTW x9, w9              ; sign-extend the imm to 64 bits
+///     MUL  x0, x0, x9
+#[cfg(target_arch = "x86_64")]
+pub fn emit_imul_rax_imm32(imm: i32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(7);
+    out.push(0x48); // REX.W
+    out.push(0x69); // opcode for imul r64, r/m64, imm32
+    out.push(0xc0); // ModR/M = 11 000 000 (rax, rax)
+    out.extend_from_slice(&imm.to_le_bytes());
+    out
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn emit_imul_rax_imm32(imm: i32) -> Vec<u8> {
+    let v = imm as u32;
+    let low16 = v & 0xFFFF;
+    let high16 = (v >> 16) & 0xFFFF;
+    let movz: u32 = 0x52800000 | (low16 << 5) | 9;
+    let movk: u32 = 0x72A00000 | (high16 << 5) | 9;
+    // SXTW x9, w9: SBFM xd, xn, #0, #31 = 0x93407D29 (sf=1, immr=0,
+    // imms=31, Rn=9, Rd=9).  Concretely: 0x93400000 | (0<<16) |
+    // (31<<10) | (9<<5) | 9 = 0x93407D29.
+    let sxtw: u32 = 0x93407D29;
+    // MUL x0, x0, x9 = MADD x0, x0, x9, xzr (Ra=31).
+    //   sf=1 0b0011011 000 Rm=9 0 Ra=31 Rn=0 Rd=0
+    //   = 0x9B000000 | (Rm<<16) | (0<<15) | (Ra<<10) | (Rn<<5) | Rd
+    //   = 0x9B000000 | (9<<16) | (31<<10) = 0x9B097C00.
+    let mul: u32 = 0x9B097C00;
+    let mut out = Vec::with_capacity(16);
+    out.extend_from_slice(&movz.to_le_bytes());
+    out.extend_from_slice(&movk.to_le_bytes());
+    out.extend_from_slice(&sxtw.to_le_bytes());
+    out.extend_from_slice(&mul.to_le_bytes());
+    out
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+pub fn emit_imul_rax_imm32(_imm: i32) -> Vec<u8> {
+    Vec::new()
+}
+
+/// `neg accumulator` — two's-complement negate.
+///
+/// x86_64 (3 bytes):  48 f7 d8   neg rax
+/// aarch64 (4 bytes): NEG x0, x0 = SUB x0, XZR, x0  (alias)
+///   sf=1 op=1 S=0 0b01011 shift=00 Rm=0 imm6=0 Rn=31 Rd=0
+///   = 0xCB0003E0
+#[cfg(target_arch = "x86_64")]
+pub fn emit_neg_rax() -> Vec<u8> {
+    vec![0x48, 0xf7, 0xd8]
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn emit_neg_rax() -> Vec<u8> {
+    let neg: u32 = 0xCB0003E0;
+    neg.to_le_bytes().to_vec()
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+pub fn emit_neg_rax() -> Vec<u8> {
+    Vec::new()
+}
+
+// ---------------------------------------------------------------------------
+// Doc 47 Stage 9d — ChainOp IR + composer.
+//
+// Drivers describe the function body as a slice of [`ChainOp`] and
+// hand that to [`compose`]; primitives chain over the integer
+// accumulator (rax / x0).  This is the smallest surface that lets a
+// future AST → IR pass plug in without touching any of the per-arch
+// byte tables.
+// ---------------------------------------------------------------------------
+
+/// One primitive operation against the integer accumulator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChainOp {
+    /// Load the tagged int from the heap (= `argv[0]` is a pointer to
+    /// the heap word) and arithmetic-shift the tag bits off.  Leaves
+    /// the untagged i64 in the accumulator.
+    LoadHeapHead,
+    /// `accumulator += imm` (sign-extended).
+    AddImm(i32),
+    /// `accumulator -= imm` (sign-extended).
+    SubImm(i32),
+    /// `accumulator *= imm` (signed).
+    MulImm(i32),
+    /// `accumulator = -accumulator`.
+    Neg,
+    /// Return from the function with the current accumulator value.
+    /// Must be the last op in the chain.
+    Ret,
+}
+
+/// Compose a slice of [`ChainOp`] into a single function body.
+/// Always emits in order — no peephole / constant-fold optimisation;
+/// the build-tool's evaluator already folds constants away before a
+/// chain even reaches this point.
+pub fn compose(ops: &[ChainOp]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for op in ops {
+        match op {
+            ChainOp::LoadHeapHead => out.extend_from_slice(&emit_load_heap_int_untag_head()),
+            ChainOp::AddImm(n) => out.extend_from_slice(&emit_add_rax_imm32(*n)),
+            ChainOp::SubImm(n) => out.extend_from_slice(&emit_sub_rax_imm32(*n)),
+            ChainOp::MulImm(n) => out.extend_from_slice(&emit_imul_rax_imm32(*n)),
+            ChainOp::Neg => out.extend_from_slice(&emit_neg_rax()),
+            ChainOp::Ret => out.extend_from_slice(&emit_ret()),
+        }
+    }
+    out
+}
+
+pub const HAS_CHAIN_OP_COMPOSE: bool = HAS_CHAIN_EMIT_PRIMITIVES;
 
 #[cfg(test)]
 mod tests {
@@ -507,5 +686,142 @@ mod tests {
         let head = emit_load_heap_int_untag_head();
         assert_eq!(&plus_zero[..head.len()], &head[..]);
         assert_eq!(&load_only[..head.len()], &head[..]);
+    }
+
+    // ============================================================
+    // Doc 47 Stage 9d — extended primitives + ChainOp IR
+    // ============================================================
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn x86_64_emit_sub_rax_imm32() {
+        // sub rax, 5 = 48 2d 05 00 00 00
+        assert_eq!(
+            emit_sub_rax_imm32(5),
+            vec![0x48, 0x2d, 0x05, 0x00, 0x00, 0x00]
+        );
+        // sub rax, -1 (sign-extends) = 48 2d ff ff ff ff
+        assert_eq!(
+            emit_sub_rax_imm32(-1),
+            vec![0x48, 0x2d, 0xff, 0xff, 0xff, 0xff]
+        );
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn x86_64_emit_imul_rax_imm32() {
+        // imul rax, rax, 3 = 48 69 c0 03 00 00 00
+        assert_eq!(
+            emit_imul_rax_imm32(3),
+            vec![0x48, 0x69, 0xc0, 0x03, 0x00, 0x00, 0x00]
+        );
+        // imul rax, rax, -2 = 48 69 c0 fe ff ff ff
+        assert_eq!(
+            emit_imul_rax_imm32(-2),
+            vec![0x48, 0x69, 0xc0, 0xfe, 0xff, 0xff, 0xff]
+        );
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn x86_64_emit_neg_rax() {
+        assert_eq!(emit_neg_rax(), vec![0x48, 0xf7, 0xd8]);
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn aarch64_emit_sub_rax_imm32_zero() {
+        // imm = 0:
+        //   MOVZ w9, #0       0x52800009
+        //   MOVK w9, #0,lsl16 0x72A00009
+        //   SUB x0,x0,w9,SXTW 0xCB29C000
+        let bytes = emit_sub_rax_imm32(0);
+        assert_eq!(bytes.len(), 12);
+        let movz = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        let movk = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+        let sub_ext = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+        assert_eq!(movz, 0x52800009);
+        assert_eq!(movk, 0x72A00009);
+        assert_eq!(sub_ext, 0xCB29C000);
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn aarch64_emit_imul_rax_imm32_basic() {
+        let bytes = emit_imul_rax_imm32(7);
+        assert_eq!(bytes.len(), 16);
+        // SXTW x9, w9 + MUL x0, x0, x9 are the trailing two
+        // instructions and are imm-independent.
+        let sxtw = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+        let mul = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
+        assert_eq!(sxtw, 0x93407D29);
+        assert_eq!(mul, 0x9B097C00);
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn aarch64_emit_neg_rax() {
+        let bytes = emit_neg_rax();
+        assert_eq!(bytes.len(), 4);
+        let neg = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        assert_eq!(neg, 0xCB0003E0);
+    }
+
+    #[test]
+    fn compose_empty_yields_empty_bytes() {
+        let bytes = compose(&[]);
+        assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn compose_load_ret_equals_load_asset() {
+        let composed = compose(&[ChainOp::LoadHeapHead, ChainOp::Ret]);
+        assert_eq!(composed, emit_load_heap_int_untag());
+    }
+
+    #[test]
+    fn compose_load_add_ret_equals_int_plus_imm() {
+        // The Stage 9c convenience function must remain a special
+        // case of the chain composer.
+        let composed = compose(&[
+            ChainOp::LoadHeapHead,
+            ChainOp::AddImm(42),
+            ChainOp::Ret,
+        ]);
+        assert_eq!(composed, emit_int_plus_imm(42));
+    }
+
+    #[test]
+    fn compose_arith_chain_concatenates_primitives() {
+        // load + sub(3) + mul(2) + neg + ret
+        let ops = [
+            ChainOp::LoadHeapHead,
+            ChainOp::SubImm(3),
+            ChainOp::MulImm(2),
+            ChainOp::Neg,
+            ChainOp::Ret,
+        ];
+        let composed = compose(&ops);
+        // The composed bytes should equal the manual concatenation.
+        let mut manual = emit_load_heap_int_untag_head();
+        manual.extend_from_slice(&emit_sub_rax_imm32(3));
+        manual.extend_from_slice(&emit_imul_rax_imm32(2));
+        manual.extend_from_slice(&emit_neg_rax());
+        manual.extend_from_slice(&emit_ret());
+        assert_eq!(composed, manual);
+    }
+
+    #[test]
+    fn compose_handles_all_op_variants() {
+        // Smoke that the match is exhaustive — adding a new variant
+        // would force a compile error here, catching missed wires.
+        let _ = compose(&[
+            ChainOp::LoadHeapHead,
+            ChainOp::AddImm(1),
+            ChainOp::SubImm(2),
+            ChainOp::MulImm(3),
+            ChainOp::Neg,
+            ChainOp::Ret,
+        ]);
     }
 }
