@@ -15,8 +15,8 @@ use std::process::ExitCode;
 use nelisp_build_tool::eval::{eval_str, eval_str_all, eval_str_all_at_path};
 use nelisp_build_tool::image_lowering::lower_to_heap;
 use nelisp_build_tool::native_emit::{
-    emit_load_heap_int_untag, emit_return_i32, HAS_EMIT_LOAD_HEAP_INT_UNTAG,
-    HAS_EMIT_RETURN_I32,
+    emit_int_plus_imm, emit_load_heap_int_untag, emit_return_i32,
+    HAS_EMIT_INT_PLUS_IMM, HAS_EMIT_LOAD_HEAP_INT_UNTAG, HAS_EMIT_RETURN_I32,
 };
 use nelisp_build_tool::reader::{fmt_sexp, read_str, Sexp};
 use nelisp_runtime::image::{
@@ -38,7 +38,8 @@ const USAGE: &str = "usage: nelisp --version
        nelisp mint-eval-result SRC OUT         # Stage 7a: evaluate SRC, lower result, auto-pick asset
        nelisp mint-eval-file SRC-FILE OUT      # Stage 8: read FILE as a sequence of forms, evaluate, lower last value
        nelisp mint-int-as-code SRC OUT         # Stage 9a: evaluate SRC (must be Int), emit native return-i32 code
-       nelisp mint-int-via-emitted-load SRC OUT # Stage 9b: evaluate SRC, lower Int to heap, emit load-heap asm (vs pre-baked asset)";
+       nelisp mint-int-via-emitted-load SRC OUT # Stage 9b: evaluate SRC, lower Int to heap, emit load-heap asm (vs pre-baked asset)
+       nelisp mint-int-plus-imm SRC IMM OUT     # Stage 9c: chain load+add asm; boot exits (eval-of-SRC) + IMM";
 
 #[derive(Debug)]
 enum Command {
@@ -92,6 +93,19 @@ enum Command {
     /// equivalence is the walking-skeleton parity gate for Stage 9c
     /// (closure body compilation).
     MintIntViaEmittedLoad { src: String, out: String },
+    /// Doc 47 Stage 9c — chain composition demo.  Evaluates SRC to an
+    /// integer (becomes the heap word the boot reads), parses IMM as
+    /// a literal i32 (gets baked into the asm immediate), then emits
+    /// `emit_load_heap_int_untag_head' + `emit_add_rax_imm32(IMM)' +
+    /// `emit_ret' chained into a single function body.  Boot exits
+    /// with `eval(SRC) + IMM' — the smallest closure-body shape that
+    /// proves the build-tool composes asm building blocks rather than
+    /// just emitting one canned shape.
+    MintIntPlusImm {
+        src: String,
+        imm: String,
+        out: String,
+    },
 }
 
 fn parse_args<I, S>(args: I) -> Result<Command, String>
@@ -144,6 +158,13 @@ where
         [_, mode, src, out] if mode == "mint-int-via-emitted-load" => {
             Ok(Command::MintIntViaEmittedLoad {
                 src: src.clone(),
+                out: out.clone(),
+            })
+        }
+        [_, mode, src, imm, out] if mode == "mint-int-plus-imm" => {
+            Ok(Command::MintIntPlusImm {
+                src: src.clone(),
+                imm: imm.clone(),
                 out: out.clone(),
             })
         }
@@ -221,6 +242,9 @@ fn main() -> ExitCode {
         Command::MintIntAsCode { src, out } => run_mint_int_as_code(&src, &out),
         Command::MintIntViaEmittedLoad { src, out } => {
             run_mint_int_via_emitted_load(&src, &out)
+        }
+        Command::MintIntPlusImm { src, imm, out } => {
+            run_mint_int_plus_imm(&src, &imm, &out)
         }
     }
 }
@@ -322,6 +346,81 @@ fn run_mint_int_via_emitted_load(src: &str, out: &str) -> ExitCode {
                 "minted int-via-emitted-load NlImage at {} (eval={}, code_size={}, heap_size={}, reloc_count={})",
                 out,
                 fmt_sexp(&result),
+                code.len(),
+                heap.len(),
+                relocs.len()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("nelisp: image write error: {}", e);
+            ExitCode::from(4)
+        }
+    }
+}
+
+fn run_mint_int_plus_imm(src: &str, imm_str: &str, out: &str) -> ExitCode {
+    if !HAS_EMIT_INT_PLUS_IMM {
+        eprintln!("nelisp: mint-int-plus-imm: native_emit unavailable on this arch");
+        return ExitCode::from(14);
+    }
+    // Parse IMM as a signed integer.  Accepts decimal with optional
+    // leading minus; outside the i32 range is a hard error since the
+    // x86_64 `add rax, imm32' encoding sign-extends a 32-bit value.
+    let imm: i32 = match imm_str.parse::<i64>() {
+        Ok(n) if n >= i32::MIN as i64 && n <= i32::MAX as i64 => n as i32,
+        Ok(n) => {
+            eprintln!(
+                "nelisp: mint-int-plus-imm: IMM {} out of i32 range",
+                n
+            );
+            return ExitCode::from(2);
+        }
+        Err(e) => {
+            eprintln!("nelisp: mint-int-plus-imm: cannot parse IMM {:?}: {}", imm_str, e);
+            return ExitCode::from(2);
+        }
+    };
+    // Evaluate SRC; result must reduce to an integer.
+    let result = match eval_str(src) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("nelisp: eval error: {}", e);
+            return ExitCode::from(2);
+        }
+    };
+    let heap_int = match result {
+        Sexp::Int(n) => n,
+        other => {
+            eprintln!(
+                "nelisp: mint-int-plus-imm: SRC evaluated to {:?}, want Int",
+                fmt_sexp(&other)
+            );
+            return ExitCode::from(3);
+        }
+    };
+    // Lower the integer to an 8-byte tagged-int heap word.  The asm
+    // chain expects argv[0] to point at this word.
+    let (heap, relocs) = match lower_to_heap(&Sexp::Int(heap_int)) {
+        Ok(pair) => pair,
+        Err(e) => {
+            eprintln!("nelisp: lowering failed: {}", e);
+            return ExitCode::from(3);
+        }
+    };
+    // Compose the chain: head + add(imm) + ret.
+    let code = emit_int_plus_imm(imm);
+    match write_image_with_heap_code_and_relocs(out, &code, &heap, &relocs) {
+        Ok(()) => {
+            // i64 + i32 → i64; downstream exit-code semantics will
+            // truncate to i32 when boot returns it.
+            let predicted = (heap_int as i64).wrapping_add(imm as i64);
+            println!(
+                "minted int-plus-imm NlImage at {} (heap_int={}, imm={}, predicted={}, code_size={}, heap_size={}, reloc_count={})",
+                out,
+                heap_int,
+                imm,
+                predicted,
                 code.len(),
                 heap.len(),
                 relocs.len()
@@ -636,6 +735,20 @@ mod tests {
             Command::MintIntViaEmittedLoad { src, out } => {
                 assert_eq!(src, "(+ 1 2)");
                 assert_eq!(out, "/tmp/d.bin");
+            }
+            other => panic!("unexpected: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_mint_int_plus_imm() {
+        match parse_args(["nelisp", "mint-int-plus-imm", "(+ 1 2)", "10", "/tmp/e.bin"])
+            .unwrap()
+        {
+            Command::MintIntPlusImm { src, imm, out } => {
+                assert_eq!(src, "(+ 1 2)");
+                assert_eq!(imm, "10");
+                assert_eq!(out, "/tmp/e.bin");
             }
             other => panic!("unexpected: {:?}", other),
         }
