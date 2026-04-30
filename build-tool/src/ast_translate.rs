@@ -1,4 +1,4 @@
-//! Doc 47 Stage 9e — AST → ChainOp translator.
+//! Doc 47 Stage 9e/f/g — AST → ChainOp translator.
 //!
 //! Stage 9d let drivers describe a function body as a `ChainOp` slice
 //! (= textual `OPS' spec).  Stage 9e lifts the build-tool one rung
@@ -43,63 +43,83 @@ pub fn translate_lambda(form: &Sexp) -> Result<Vec<ChainOp>, String> {
     let params_form = rest.cons_car();
     let body_list = rest.cons_cdr();
 
-    // (PARAM) — exactly one symbol, then nil.
-    let params = collect_proper_list(&params_form)
+    let params_sexps = collect_proper_list(&params_form)
         .map_err(|e| format!("translate_lambda: param list malformed: {}", e))?;
-    if params.len() != 1 {
-        return Err(format!(
-            "translate_lambda: only single-arg lambdas are supported in Stage 9e (got {} params)",
-            params.len()
-        ));
+    if params_sexps.is_empty() {
+        return Err(
+            "translate_lambda: zero-param lambda not supported in Stage 9g \
+             (need at least one heap-int param)"
+                .into(),
+        );
     }
-    let param = match &params[0] {
-        Sexp::Symbol(s) => s.clone(),
-        other => {
-            return Err(format!(
-                "translate_lambda: parameter must be a symbol, got {:?}",
-                other
-            ))
+    let mut params: Vec<String> = Vec::with_capacity(params_sexps.len());
+    for p in &params_sexps {
+        match p {
+            Sexp::Symbol(s) => params.push(s.clone()),
+            other => {
+                return Err(format!(
+                    "translate_lambda: parameter must be a symbol, got {:?}",
+                    other
+                ))
+            }
         }
-    };
+    }
+    // Detect duplicate param names — Stage 9g uses positional indices,
+    // so duplicates would silently bind the second name to the first
+    // index and confuse the user.
+    for i in 0..params.len() {
+        if params[..i].contains(&params[i]) {
+            return Err(format!(
+                "translate_lambda: duplicate parameter name {:?}",
+                params[i]
+            ));
+        }
+    }
 
     // Body must be exactly one form for the walking-skeleton.
     let body_forms = collect_proper_list(&body_list)
         .map_err(|e| format!("translate_lambda: body list malformed: {}", e))?;
     if body_forms.len() != 1 {
         return Err(format!(
-            "translate_lambda: exactly one body form supported in Stage 9e (got {} forms)",
+            "translate_lambda: exactly one body form supported in Stage 9e/g (got {} forms)",
             body_forms.len()
         ));
     }
 
-    let mut chain = translate_expr(&body_forms[0], &param)?;
+    let mut chain = translate_expr(&body_forms[0], &params)?;
     chain.push(ChainOp::Ret);
     Ok(chain)
 }
 
-/// Walk one expression `EXPR` against the bound `param` symbol.  The
-/// returned chain produces EXPR's value in the accumulator; if EXPR
-/// references `param` it begins with a `LoadHeapHead' op (emitted by
-/// the leaf case below).
-fn translate_expr(expr: &Sexp, param: &str) -> Result<Vec<ChainOp>, String> {
+/// Walk one expression `EXPR` against the bound `params` slice.
+/// Returns a chain that produces EXPR's value in the accumulator.
+///
+/// For a single-param lambda the leaf emits `LoadHeapHead' (= byte
+/// parity with the runtime asset).  For multi-param the leaf emits
+/// `LoadHeapIndex(i)' for the i-th param's heap slot.
+fn translate_expr(expr: &Sexp, params: &[String]) -> Result<Vec<ChainOp>, String> {
     match expr {
-        Sexp::Symbol(s) if s == param => Ok(vec![ChainOp::LoadHeapHead]),
-        Sexp::Symbol(s) => Err(format!(
-            "unknown symbol {:?} (only param {:?} is bound in Stage 9e)",
-            s, param
-        )),
+        Sexp::Symbol(s) => match params.iter().position(|p| p == s) {
+            Some(0) if params.len() == 1 => Ok(vec![ChainOp::LoadHeapHead]),
+            Some(i) => Ok(vec![ChainOp::LoadHeapIndex(i)]),
+            None => Err(format!(
+                "unknown symbol {:?} (bound params: {:?})",
+                s, params
+            )),
+        },
         Sexp::Int(_) => Err(
-            "constant body without parameter reference unsupported in Stage 9e".into(),
+            "constant body without parameter reference unsupported in Stage 9e/g".into(),
         ),
-        Sexp::Cons(_, _) => translate_call(expr, param),
+        Sexp::Cons(_, _) => translate_call(expr, params),
         other => Err(format!("unsupported expression shape: {:?}", other)),
     }
 }
 
 /// Translate a `(OP arg1 arg2 ...)' call form.  Recognised heads:
-///   `+` / `-` / `*`     — arithmetic chain ops (Stage 9e)
+///   `+` / `-` / `*`     — arithmetic chain ops (Stage 9e single-param,
+///                         Stage 9g multi-param via Save/OpSaved)
 ///   `if`                — Stage 9f structured branch with `(< PARAM IMM)' guard
-fn translate_call(call: &Sexp, param: &str) -> Result<Vec<ChainOp>, String> {
+fn translate_call(call: &Sexp, params: &[String]) -> Result<Vec<ChainOp>, String> {
     let head = call.cons_car();
     let op_name = match head {
         Sexp::Symbol(s) => s,
@@ -110,7 +130,7 @@ fn translate_call(call: &Sexp, param: &str) -> Result<Vec<ChainOp>, String> {
         .map_err(|e| format!("call args malformed: {}", e))?;
 
     if op_name == "if" {
-        return translate_if(&args, param);
+        return translate_if(&args, params);
     }
 
     match op_name.as_str() {
@@ -120,27 +140,65 @@ fn translate_call(call: &Sexp, param: &str) -> Result<Vec<ChainOp>, String> {
 
     // Unary `(- EXPR)' = negate.
     if op_name == "-" && args.len() == 1 {
-        let mut chain = translate_expr(&args[0], param)?;
+        let mut chain = translate_expr(&args[0], params)?;
         chain.push(ChainOp::Neg);
         return Ok(chain);
     }
 
     if args.is_empty() {
-        return Err(format!("zero-arg `{}` not supported in Stage 9e", op_name));
+        return Err(format!("zero-arg `{}` not supported in Stage 9e/g", op_name));
+    }
+
+    // Stage 9g — binary op with both operands referencing params: emit
+    // `Save Y; Load X; OP-Saved`.  This is the only call-shape that
+    // uses the secondary-register stash; multi-arg variadic + nested
+    // expressions stay in the existing single-chain-root path below.
+    if args.len() == 2 {
+        let a_refs = any_expr_contains_param_in(&args[0], params);
+        let b_refs = any_expr_contains_param_in(&args[1], params);
+        if a_refs && b_refs {
+            // Reject shapes that would need two concurrent stashes.
+            // For the walking-skeleton, both X and Y must be single-
+            // step `LoadHeapIndex` chains (= bare param symbols) so
+            // the inner translate_expr never emits its own Save.
+            if !is_bare_param_symbol(&args[0], params)
+                || !is_bare_param_symbol(&args[1], params)
+            {
+                return Err(format!(
+                    "operator `{}`: 2-symbolic-operand bodies in Stage 9g must use \
+                     bare param symbols on both sides (= no nested arithmetic on \
+                     either operand); the limitation lifts once a save stack is \
+                     introduced",
+                    op_name
+                ));
+            }
+            // Emit: Save second, Load first, OP-Saved.
+            let mut chain = translate_expr(&args[1], params)?;
+            chain.push(ChainOp::Save);
+            chain.extend(translate_expr(&args[0], params)?);
+            chain.push(match op_name.as_str() {
+                "+" => ChainOp::AddSaved,
+                "-" => ChainOp::SubSaved,
+                "*" => ChainOp::MulSaved,
+                _ => unreachable!("operator filter above"),
+            });
+            return Ok(chain);
+        }
     }
 
     // Locate the chain-bearing operand.  Exactly one operand may
-    // reference `param` (the chain root); the rest must be integer
+    // reference any param (the chain root); the rest must be integer
     // literals (used as immediates for AddImm/SubImm/MulImm).  For non-
     // commutative `-' the chain operand must be first.
     let mut chain_idx: Option<usize> = None;
     for (i, a) in args.iter().enumerate() {
-        if expr_contains_param(a, param) {
+        if any_expr_contains_param_in(a, params) {
             if chain_idx.is_some() {
                 return Err(format!(
-                    "operator `{}` references param {:?} more than once \
-                     (Stage 9e supports at most one chain root per call)",
-                    op_name, param
+                    "operator `{}` references params {:?} more than once \
+                     (Stage 9e/g supports at most one chain root per call \
+                     except for binary 2-symbolic-operand bodies)",
+                    op_name, params
                 ));
             }
             chain_idx = Some(i);
@@ -150,21 +208,21 @@ fn translate_call(call: &Sexp, param: &str) -> Result<Vec<ChainOp>, String> {
         Some(i) => i,
         None => {
             return Err(format!(
-                "operator `{}` has no reference to param {:?} \
-                 — body must be a chain on the lambda parameter",
-                op_name, param
+                "operator `{}` has no reference to any param {:?} \
+                 — body must be a chain on at least one lambda parameter",
+                op_name, params
             ))
         }
     };
     if op_name == "-" && chain_idx != 0 {
         return Err(
             "non-commutative `-` requires the chain operand to be first \
-             (Stage 9e refuses to constant-fold arg reorderings)"
+             (Stage 9e/g refuses to constant-fold arg reorderings)"
                 .into(),
         );
     }
 
-    let mut chain = translate_expr(&args[chain_idx], param)?;
+    let mut chain = translate_expr(&args[chain_idx], params)?;
     for (i, a) in args.iter().enumerate() {
         if i == chain_idx {
             continue;
@@ -180,12 +238,11 @@ fn translate_call(call: &Sexp, param: &str) -> Result<Vec<ChainOp>, String> {
     Ok(chain)
 }
 
-/// Stage 9f — translate `(if (< PARAM IMM) THEN ELSE)`.  Walking-skeleton
-/// guard form is exactly `< PARAM IMM`; THEN and ELSE are themselves
-/// arbitrary Stage 9e/9f chains over PARAM, so nested ifs work via
-/// recursion.  Both branches must be non-empty (= reference PARAM at
-/// least via a `LoadHeapHead' from a leaf or sub-chain).
-fn translate_if(args: &[Sexp], param: &str) -> Result<Vec<ChainOp>, String> {
+/// Stage 9f/g — translate `(if (< PARAM IMM) THEN ELSE)`.  Cond shape
+/// is `(< PARAM IMM)' where PARAM is one of the lambda's parameters
+/// (Stage 9g supports any of N params; Stage 9f restricted this to the
+/// single bound param).  THEN and ELSE are themselves arbitrary chains.
+fn translate_if(args: &[Sexp], params: &[String]) -> Result<Vec<ChainOp>, String> {
     if args.len() != 3 {
         return Err(format!(
             "if: expected 3 args (cond, then, else), got {}",
@@ -196,28 +253,37 @@ fn translate_if(args: &[Sexp], param: &str) -> Result<Vec<ChainOp>, String> {
     let then_form = &args[1];
     let else_form = &args[2];
 
-    let threshold = match cond {
+    let (param_index, threshold) = match cond {
         Sexp::Cons(_, _) => {
             let chead = cond.cons_car();
             let cargs = collect_proper_list(&cond.cons_cdr())
                 .map_err(|e| format!("if cond args malformed: {}", e))?;
             match (chead, cargs.as_slice()) {
                 (Sexp::Symbol(ref s), [lhs, rhs]) if s == "<" => {
-                    match lhs {
-                        Sexp::Symbol(p) if p == param => {}
+                    let idx = match lhs {
+                        Sexp::Symbol(p) => match params.iter().position(|q| q == p) {
+                            Some(i) => i,
+                            None => {
+                                return Err(format!(
+                                    "if cond: lhs of `<` must be one of params {:?} \
+                                     (got unbound symbol {:?})",
+                                    params, p
+                                ))
+                            }
+                        },
                         other => {
                             return Err(format!(
-                                "if cond: lhs of `<` must be param `{}` in Stage 9f \
+                                "if cond: lhs of `<` must be a bound param symbol \
                                  (got {:?})",
-                                param, other
+                                other
                             ))
                         }
-                    }
-                    expect_i32(rhs)?
+                    };
+                    (idx, expect_i32(rhs)?)
                 }
                 _ => {
                     return Err(
-                        "if: cond must be `(< PARAM IMM)` in Stage 9f \
+                        "if: cond must be `(< PARAM IMM)` in Stage 9f/g \
                          (other predicates / orderings are reserved for later stages)"
                             .into(),
                     )
@@ -226,44 +292,56 @@ fn translate_if(args: &[Sexp], param: &str) -> Result<Vec<ChainOp>, String> {
         }
         _ => {
             return Err(
-                "if: cond must be a `(< PARAM IMM)` form in Stage 9f".into(),
+                "if: cond must be a `(< PARAM IMM)` form in Stage 9f/g".into(),
             )
         }
     };
 
-    let then_chain = translate_expr(then_form, param)?;
-    let else_chain = translate_expr(else_form, param)?;
+    let then_chain = translate_expr(then_form, params)?;
+    let else_chain = translate_expr(else_form, params)?;
     Ok(vec![ChainOp::IfLtImm {
+        param_index,
         threshold,
         then_chain,
         else_chain,
     }])
 }
 
-/// Walk a Sexp list (any depth) checking whether `param` is referenced
-/// anywhere inside.  Used to decide which call argument is the chain
-/// root in [`translate_call`].
-fn expr_contains_param(expr: &Sexp, param: &str) -> bool {
+/// Walk a Sexp list (any depth) checking whether any of `params' is
+/// referenced anywhere inside.  Used to decide which call argument is
+/// the chain root in [`translate_call`].  Stage 9g lifts the original
+/// single-param check (`expr_contains_param`) to a slice variant.
+fn any_expr_contains_param_in(expr: &Sexp, params: &[String]) -> bool {
     match expr {
-        Sexp::Symbol(s) => s == param,
+        Sexp::Symbol(s) => params.iter().any(|p| p == s),
         Sexp::Cons(_, _) => {
             let mut cur = expr.clone();
             loop {
                 match cur {
                     Sexp::Nil => return false,
                     Sexp::Cons(_, _) => {
-                        if expr_contains_param(&cur.cons_car(), param) {
+                        if any_expr_contains_param_in(&cur.cons_car(), params) {
                             return true;
                         }
                         cur = cur.cons_cdr();
                     }
-                    // Improper list tail — treat as leaf and check it.
-                    other => return matches!(other, Sexp::Symbol(ref s) if s == param),
+                    // Improper list tail — treat as leaf.
+                    other => {
+                        return matches!(other, Sexp::Symbol(ref s) if params.iter().any(|p| p == s))
+                    }
                 }
             }
         }
         _ => false,
     }
+}
+
+/// True iff `expr' is exactly a bound param-symbol leaf (= no nested
+/// arithmetic).  Stage 9g uses this gate to admit binary `(OP a b)'
+/// shapes where Save/OpSaved suffices and reject `(OP (foo a) (bar b))`
+/// shapes that would need a save stack.
+fn is_bare_param_symbol(expr: &Sexp, params: &[String]) -> bool {
+    matches!(expr, Sexp::Symbol(s) if params.iter().any(|p| p == s))
 }
 
 /// Materialise a proper Lisp list as a `Vec<Sexp>'.  Errors on dotted /
@@ -448,9 +526,26 @@ mod tests {
     }
 
     #[test]
-    fn rejects_two_param_lambda() {
-        let err = translate("(lambda (a b) (+ a b))").unwrap_err();
-        assert!(err.contains("single-arg"), "err: {}", err);
+    fn accepts_two_param_lambda_binary_add() {
+        // Stage 9g: 2-param lambda body that combines both params via
+        // a single binary op now translates via Save / OpSaved.
+        let ops = translate("(lambda (a b) (+ a b))").unwrap();
+        assert_eq!(
+            ops,
+            vec![
+                ChainOp::LoadHeapIndex(1), // load b
+                ChainOp::Save,             // saved = b
+                ChainOp::LoadHeapIndex(0), // acc = a
+                ChainOp::AddSaved,         // acc = a + b
+                ChainOp::Ret,
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_zero_param_lambda() {
+        let err = translate("(lambda () 42)").unwrap_err();
+        assert!(err.contains("zero-param"), "err: {}", err);
     }
 
     #[test]
@@ -500,11 +595,33 @@ mod tests {
     }
 
     #[test]
-    fn rejects_double_param_reference() {
-        // `(+ n n)' uses n twice — Stage 9e refuses; would need
-        // accumulator save/restore which we don't have.
-        let err = translate("(lambda (n) (+ n n))").unwrap_err();
-        assert!(err.contains("more than once"), "err: {}", err);
+    fn accepts_self_double_via_save() {
+        // `(+ n n)' uses the lone param twice — Stage 9g compiles it
+        // as Save+Load+AddSaved (= 2n at boot).  Single-param leaf
+        // emits LoadHeapHead for byte parity with the runtime asset.
+        let ops = translate("(lambda (n) (+ n n))").unwrap();
+        assert_eq!(
+            ops,
+            vec![
+                ChainOp::LoadHeapHead,
+                ChainOp::Save,
+                ChainOp::LoadHeapHead,
+                ChainOp::AddSaved,
+                ChainOp::Ret,
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_nested_two_symbolic_operands() {
+        // `(+ (* n 2) n)' would need save stack since one operand is
+        // not a bare param symbol — Stage 9g refuses.
+        let err = translate("(lambda (n) (+ (* n 2) n))").unwrap_err();
+        assert!(
+            err.contains("bare param symbols on both sides"),
+            "err: {}",
+            err
+        );
     }
 
     #[test]
@@ -534,6 +651,7 @@ mod tests {
             ops,
             vec![
                 ChainOp::IfLtImm {
+                    param_index: 0,
                     threshold: 2,
                     then_chain: vec![ChainOp::LoadHeapHead],
                     else_chain: vec![ChainOp::LoadHeapHead, ChainOp::MulImm(2)],
@@ -551,6 +669,7 @@ mod tests {
             ops,
             vec![
                 ChainOp::IfLtImm {
+                    param_index: 0,
                     threshold: 0,
                     then_chain: vec![ChainOp::LoadHeapHead, ChainOp::Neg],
                     else_chain: vec![ChainOp::LoadHeapHead],
@@ -569,9 +688,11 @@ mod tests {
             ops,
             vec![
                 ChainOp::IfLtImm {
+                    param_index: 0,
                     threshold: 2,
                     then_chain: vec![ChainOp::LoadHeapHead],
                     else_chain: vec![ChainOp::IfLtImm {
+                        param_index: 0,
                         threshold: 5,
                         then_chain: vec![ChainOp::LoadHeapHead, ChainOp::MulImm(2)],
                         else_chain: vec![ChainOp::LoadHeapHead, ChainOp::MulImm(3)],
@@ -590,6 +711,7 @@ mod tests {
             ops,
             vec![
                 ChainOp::IfLtImm {
+                    param_index: 0,
                     threshold: 10,
                     then_chain: vec![ChainOp::LoadHeapHead, ChainOp::AddImm(100)],
                     else_chain: vec![ChainOp::LoadHeapHead, ChainOp::SubImm(50)],
@@ -606,6 +728,7 @@ mod tests {
             ops,
             vec![
                 ChainOp::IfLtImm {
+                    param_index: 0,
                     threshold: -3,
                     then_chain: vec![ChainOp::LoadHeapHead, ChainOp::Neg],
                     else_chain: vec![ChainOp::LoadHeapHead],
@@ -617,8 +740,9 @@ mod tests {
 
     #[test]
     fn rejects_if_with_non_param_lhs() {
+        // (if (< 5 n) ...) — lhs is integer 5, not a bound symbol.
         let err = translate("(lambda (n) (if (< 5 n) n n))").unwrap_err();
-        assert!(err.contains("lhs of `<` must be param"), "err: {}", err);
+        assert!(err.contains("bound param symbol"), "err: {}", err);
     }
 
     #[test]

@@ -22,8 +22,8 @@ use nelisp_build_tool::native_emit::{
 };
 use nelisp_build_tool::reader::{fmt_sexp, read_str, Sexp};
 use nelisp_runtime::image::{
-    write_image_with_heap_code_and_relocs, write_image_with_native_entry, HAS_NATIVE_LIST_LENGTH,
-    HAS_NATIVE_LOAD_HEAP_FLOAT_INT_TRUNC, HAS_NATIVE_LOAD_HEAP_INT_UNTAG,
+    tag_int, write_image_with_heap_code_and_relocs, write_image_with_native_entry,
+    HAS_NATIVE_LIST_LENGTH, HAS_NATIVE_LOAD_HEAP_FLOAT_INT_TRUNC, HAS_NATIVE_LOAD_HEAP_INT_UNTAG,
     HAS_NATIVE_LOAD_HEAP_STRING_LEN, HAS_NATIVE_LOAD_HEAP_SYMBOL_NAME_LEN,
     HAS_NATIVE_LOAD_HEAP_VECTOR_LEN, NATIVE_LIST_LENGTH, NATIVE_LOAD_HEAP_FLOAT_INT_TRUNC,
     NATIVE_LOAD_HEAP_INT_UNTAG, NATIVE_LOAD_HEAP_STRING_LEN, NATIVE_LOAD_HEAP_SYMBOL_NAME_LEN,
@@ -319,7 +319,11 @@ fn run_mint_from_ast(lambda_src: &str, heap_src: &str, out: &str) -> ExitCode {
         }
     };
 
-    // Evaluate HEAP-SRC to an integer; becomes argv[0]'s heap word.
+    // Evaluate HEAP-SRC.  Stage 9e/f single-param case: heap_src is an
+    // integer expression; the result is wrapped as a 1-element slice.
+    // Stage 9g multi-param case: heap_src evaluates to a proper list of
+    // integers, one per lambda param.  We accept either shape so the
+    // single CLI surface covers both eras transparently.
     let heap_value = match eval_str(heap_src) {
         Ok(v) => v,
         Err(e) => {
@@ -327,33 +331,25 @@ fn run_mint_from_ast(lambda_src: &str, heap_src: &str, out: &str) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let heap_int = match heap_value {
-        Sexp::Int(n) => n,
-        other => {
-            eprintln!(
-                "nelisp: mint-from-ast: HEAP-SRC evaluated to {:?}, want Int",
-                fmt_sexp(&other)
-            );
+    let heap_ints: Vec<i64> = match collect_heap_ints(&heap_value) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("nelisp: mint-from-ast: HEAP-SRC: {}", e);
             return ExitCode::from(3);
         }
     };
 
-    let (heap, relocs) = match lower_to_heap(&Sexp::Int(heap_int)) {
-        Ok(pair) => pair,
-        Err(e) => {
-            eprintln!("nelisp: mint-from-ast: lowering failed: {}", e);
-            return ExitCode::from(3);
-        }
-    };
+    let heap = lower_int_array_heap(&heap_ints);
+    let relocs: Vec<_> = Vec::new();
     let code = compose(&ops);
-    let predicted = predict_chain_value(heap_int, &ops);
+    let predicted = predict_chain_value(&heap_ints, &ops);
     match write_image_with_heap_code_and_relocs(out, &code, &heap, &relocs) {
         Ok(()) => {
             println!(
-                "minted from-ast NlImage at {} (lambda={:?}, heap_int={}, ops={:?}, predicted={}, code_size={}, heap_size={}, reloc_count={})",
+                "minted from-ast NlImage at {} (lambda={:?}, heap_ints={:?}, ops={:?}, predicted={}, code_size={}, heap_size={}, reloc_count={})",
                 out,
                 lambda_src,
-                heap_int,
+                heap_ints,
                 ops,
                 predicted,
                 code.len(),
@@ -367,6 +363,60 @@ fn run_mint_from_ast(lambda_src: &str, heap_src: &str, out: &str) -> ExitCode {
             ExitCode::from(4)
         }
     }
+}
+
+/// Coerce HEAP-SRC's eval result to a `Vec<i64>'.  Accepts either a
+/// bare `Sexp::Int(_)` (= single param, Stage 9e/f) or a proper list of
+/// `Sexp::Int(_)' (= Stage 9g multi-param).  All other shapes error.
+fn collect_heap_ints(value: &Sexp) -> Result<Vec<i64>, String> {
+    match value {
+        Sexp::Int(n) => Ok(vec![*n]),
+        Sexp::Cons(_, _) | Sexp::Nil => {
+            let mut out = Vec::new();
+            let mut cur = value.clone();
+            loop {
+                match cur {
+                    Sexp::Nil => return Ok(out),
+                    Sexp::Cons(_, _) => {
+                        let car = cur.cons_car();
+                        match car {
+                            Sexp::Int(n) => out.push(n),
+                            other => {
+                                return Err(format!(
+                                    "list element is not Int: {:?}",
+                                    fmt_sexp(&other)
+                                ))
+                            }
+                        }
+                        cur = cur.cons_cdr();
+                    }
+                    other => {
+                        return Err(format!(
+                            "expected proper list of Int, found dotted tail {:?}",
+                            fmt_sexp(&other)
+                        ))
+                    }
+                }
+            }
+        }
+        other => Err(format!(
+            "expected Int or list of Int, got {:?}",
+            fmt_sexp(other)
+        )),
+    }
+}
+
+/// Lay out `values' as N consecutive tagged-int 8-byte words.  Mirrors
+/// the single-int lowering Stage 7a uses (= same `tag_int' format from
+/// nelisp_runtime) but extends to an array of slots so
+/// `LoadHeapIndex(i)' fetches word i.  Returns the heap bytes; no
+/// relocs are needed for a pure-int heap.
+fn lower_int_array_heap(values: &[i64]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(values.len() * 8);
+    for n in values {
+        out.extend_from_slice(&tag_int(*n).to_le_bytes());
+    }
+    out
 }
 
 fn run_mint_int_as_code(src: &str, out: &str) -> ExitCode {
@@ -589,31 +639,41 @@ fn parse_chain_ops(spec: &str) -> Result<Vec<ChainOp>, String> {
 /// the value the boot is expected to exit with — used in the driver
 /// log line so the user sees the predicted result alongside the
 /// actual asm bytes.
-fn predict_chain_value(heap_int: i64, ops: &[ChainOp]) -> i64 {
+fn predict_chain_value(heap_ints: &[i64], ops: &[ChainOp]) -> i64 {
     let mut acc: i64 = 0;
+    let mut saved: i64 = 0;
     for op in ops {
         match op {
-            ChainOp::LoadHeapHead => acc = heap_int,
+            ChainOp::LoadHeapHead => acc = heap_ints[0],
+            ChainOp::LoadHeapIndex(i) => acc = heap_ints[*i],
             ChainOp::AddImm(n) => acc = acc.wrapping_add(*n as i64),
             ChainOp::SubImm(n) => acc = acc.wrapping_sub(*n as i64),
             ChainOp::MulImm(n) => acc = acc.wrapping_mul(*n as i64),
             ChainOp::Neg => acc = acc.wrapping_neg(),
+            ChainOp::Save => saved = acc,
+            ChainOp::AddSaved => acc = acc.wrapping_add(saved),
+            ChainOp::SubSaved => acc = acc.wrapping_sub(saved),
+            ChainOp::MulSaved => acc = acc.wrapping_mul(saved),
             ChainOp::Ret => break,
             ChainOp::IfLtImm {
+                param_index,
                 threshold,
                 then_chain,
                 else_chain,
             } => {
-                // Mirror emit_if_lt_imm: prologue compares the heap
-                // value (= reloaded fresh, not the running acc) against
-                // threshold and dispatches.  Each branch begins with
-                // its own LoadHeapHead per Stage 9f convention.
-                let chosen = if heap_int < *threshold as i64 {
+                // Mirror emit_if_lt_imm: prologue compares the param's
+                // heap value (= reloaded fresh, not the running acc)
+                // against threshold and dispatches.  Each branch starts
+                // fresh; the recursive call resets `saved' to 0 which
+                // matches the asm — a branch that needs Save emits its
+                // own Save before any OP-Saved op.
+                let probe = heap_ints[*param_index];
+                let chosen = if probe < *threshold as i64 {
                     then_chain
                 } else {
                     else_chain
                 };
-                acc = predict_chain_value(heap_int, chosen);
+                acc = predict_chain_value(heap_ints, chosen);
             }
         }
     }
@@ -657,7 +717,7 @@ fn run_mint_chain(src: &str, ops_spec: &str, out: &str) -> ExitCode {
         }
     };
     let code = compose(&ops);
-    let predicted = predict_chain_value(heap_int, &ops);
+    let predicted = predict_chain_value(&[heap_int], &ops);
     match write_image_with_heap_code_and_relocs(out, &code, &heap, &relocs) {
         Ok(()) => {
             println!(
@@ -1080,7 +1140,7 @@ mod tests {
         use super::predict_chain_value;
         // Heap = 5, chain: add 3 -> 8, mul 2 -> 16, neg -> -16.
         let val = predict_chain_value(
-            5,
+            &[5],
             &[
                 ChainOp::LoadHeapHead,
                 ChainOp::AddImm(3),
@@ -1090,6 +1150,41 @@ mod tests {
             ],
         );
         assert_eq!(val, -16);
+    }
+
+    #[test]
+    fn predict_chain_value_save_and_op_saved() {
+        use super::predict_chain_value;
+        // Stage 9g — load_idx(1) → save → load_idx(0) → add_saved.
+        // heap_ints = [10, 7] should yield 10 + 7 = 17.
+        let val = predict_chain_value(
+            &[10, 7],
+            &[
+                ChainOp::LoadHeapIndex(1),
+                ChainOp::Save,
+                ChainOp::LoadHeapIndex(0),
+                ChainOp::AddSaved,
+                ChainOp::Ret,
+            ],
+        );
+        assert_eq!(val, 17);
+    }
+
+    #[test]
+    fn predict_if_lt_imm_with_param_index() {
+        use super::predict_chain_value;
+        // (lambda (a b) (if (< b 5) a (- a))) with b=3 (< 5) → a=11
+        let chain = ChainOp::IfLtImm {
+            param_index: 1,
+            threshold: 5,
+            then_chain: vec![ChainOp::LoadHeapIndex(0)],
+            else_chain: vec![ChainOp::LoadHeapIndex(0), ChainOp::Neg],
+        };
+        let val = predict_chain_value(&[11, 3], &[chain.clone(), ChainOp::Ret]);
+        assert_eq!(val, 11);
+        // b=10 (>= 5) → -a = -11
+        let val2 = predict_chain_value(&[11, 10], &[chain, ChainOp::Ret]);
+        assert_eq!(val2, -11);
     }
 
     #[test]
