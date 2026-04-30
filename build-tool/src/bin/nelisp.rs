@@ -14,11 +14,14 @@ use std::process::ExitCode;
 
 use nelisp_build_tool::eval::{eval_str, eval_str_all};
 use nelisp_build_tool::image_lowering::lower_to_heap;
-use nelisp_build_tool::reader::{fmt_sexp, read_str};
+use nelisp_build_tool::reader::{fmt_sexp, read_str, Sexp};
 use nelisp_runtime::image::{
     write_image_with_heap_code_and_relocs, HAS_NATIVE_LIST_LENGTH,
-    HAS_NATIVE_LOAD_HEAP_STRING_LEN, HAS_NATIVE_LOAD_HEAP_SYMBOL_NAME_LEN, NATIVE_LIST_LENGTH,
-    NATIVE_LOAD_HEAP_STRING_LEN, NATIVE_LOAD_HEAP_SYMBOL_NAME_LEN,
+    HAS_NATIVE_LOAD_HEAP_FLOAT_INT_TRUNC, HAS_NATIVE_LOAD_HEAP_INT_UNTAG,
+    HAS_NATIVE_LOAD_HEAP_STRING_LEN, HAS_NATIVE_LOAD_HEAP_SYMBOL_NAME_LEN,
+    HAS_NATIVE_LOAD_HEAP_VECTOR_LEN, NATIVE_LIST_LENGTH, NATIVE_LOAD_HEAP_FLOAT_INT_TRUNC,
+    NATIVE_LOAD_HEAP_INT_UNTAG, NATIVE_LOAD_HEAP_STRING_LEN, NATIVE_LOAD_HEAP_SYMBOL_NAME_LEN,
+    NATIVE_LOAD_HEAP_VECTOR_LEN,
 };
 
 const USAGE: &str = "usage: nelisp --version
@@ -27,7 +30,9 @@ const USAGE: &str = "usage: nelisp --version
        nelisp -                 # read from stdin and print the last result
        nelisp mint-list-from-source SRC OUT    # Stage 6d: read SRC, lower to image at OUT
        nelisp mint-string-from-source SRC OUT  # Stage 6e: SRC must read as a string literal
-       nelisp mint-symbol-from-source SRC OUT  # Stage 6e: SRC must read as a symbol";
+       nelisp mint-symbol-from-source SRC OUT  # Stage 6e: SRC must read as a symbol
+       nelisp mint-eval-result SRC OUT         # Stage 7a: evaluate SRC, lower result, auto-pick asset
+       nelisp mint-eval-file SRC-FILE OUT      # Stage 8: read FILE as a sequence of forms, evaluate, lower last value";
 
 #[derive(Debug)]
 enum Command {
@@ -48,6 +53,22 @@ enum Command {
     /// `NATIVE_LOAD_HEAP_SYMBOL_NAME_LEN' so boot exits with the
     /// symbol name's byte length.
     MintSymbolFromSource { src: String, out: String },
+    /// Doc 47 Stage 7a — read + *evaluate* SRC via the build-tool
+    /// minimal interpreter, lower the resulting `Sexp' value to a
+    /// NlImage v1 heap + reloc table, and pick the appropriate
+    /// per-shape native asset (Int → load_heap_int_untag, Cons/Nil
+    /// → list_length, Str → load_heap_string_len, Symbol →
+    /// load_heap_symbol_name_len) so the seed boots with no
+    /// evaluator linked in.  This is the first surface where
+    /// build-tool's evaluator output flows into a Doc 47-spec
+    /// binary image.
+    MintEvalResult { src: String, out: String },
+    /// Doc 47 Stage 8 — like `mint-eval-result' but reads SRC-FILE
+    /// as a *sequence* of top-level forms (= `progn` semantics) and
+    /// lowers the *last* form's value.  Used to bake real `.el'
+    /// fixtures end-to-end.  Fails with the evaluator's normal
+    /// error if any form throws.
+    MintEvalFile { src_file: String, out: String },
 }
 
 fn parse_args<I, S>(args: I) -> Result<Command, String>
@@ -76,6 +97,18 @@ where
         [_, mode, src, out] if mode == "mint-symbol-from-source" => {
             Ok(Command::MintSymbolFromSource {
                 src: src.clone(),
+                out: out.clone(),
+            })
+        }
+        [_, mode, src, out] if mode == "mint-eval-result" => {
+            Ok(Command::MintEvalResult {
+                src: src.clone(),
+                out: out.clone(),
+            })
+        }
+        [_, mode, src_file, out] if mode == "mint-eval-file" => {
+            Ok(Command::MintEvalFile {
+                src_file: src_file.clone(),
                 out: out.clone(),
             })
         }
@@ -139,6 +172,134 @@ fn main() -> ExitCode {
                 NATIVE_LOAD_HEAP_SYMBOL_NAME_LEN,
                 HAS_NATIVE_LOAD_HEAP_SYMBOL_NAME_LEN,
             )
+        }
+        Command::MintEvalResult { src, out } => run_mint_eval_result(&src, &out),
+        Command::MintEvalFile { src_file, out } => {
+            match fs::read_to_string(Path::new(&src_file)) {
+                Ok(s) => run_mint_eval_all(&s, &out, &src_file),
+                Err(e) => {
+                    eprintln!("nelisp: cannot read {}: {}", src_file, e);
+                    ExitCode::from(1)
+                }
+            }
+        }
+    }
+}
+
+/// Pick the matching seed-side native asset for a Sexp result.  Each
+/// asset assumes a specific heap shape that the lowering produces:
+///
+///   `Sexp::Int(_)`     → 8-byte heap with `tag_int(n)` immediate
+///   `Sexp::Nil`        → 8-byte heap with NL_VALUE_TAG_NIL immediate
+///   `Sexp::Cons(_, _)` → head ptr + cell chain terminated by NIL
+///   `Sexp::Str(_)`     → head ptr + length-prefixed string struct
+///   `Sexp::Symbol(_)`  → head ptr + symbol struct + name string
+///
+/// Returns `(asset_bytes, has_asset_flag, human_label)' or a
+/// String error pinpointing which Sexp variant Stage 7a does not
+/// know how to boot yet.
+fn pick_asset_for_eval_result(
+    result: &Sexp,
+) -> Result<(&'static [u8], bool, &'static str), String> {
+    match result {
+        // Sexp::T joins Sexp::Int on NATIVE_LOAD_HEAP_INT_UNTAG: T is
+        // encoded as `(1 << 3) | NIL_TAG' = 11, so `sar 3' produces
+        // 1 (= boolean true exit code).  NIL → list_length still
+        // returns 0 (boolean false exit code).
+        Sexp::Int(_) | Sexp::T => Ok((
+            NATIVE_LOAD_HEAP_INT_UNTAG,
+            HAS_NATIVE_LOAD_HEAP_INT_UNTAG,
+            "int-or-t",
+        )),
+        Sexp::Nil | Sexp::Cons(_, _) => {
+            Ok((NATIVE_LIST_LENGTH, HAS_NATIVE_LIST_LENGTH, "list"))
+        }
+        Sexp::Str(_) => Ok((
+            NATIVE_LOAD_HEAP_STRING_LEN,
+            HAS_NATIVE_LOAD_HEAP_STRING_LEN,
+            "string",
+        )),
+        Sexp::Symbol(_) => Ok((
+            NATIVE_LOAD_HEAP_SYMBOL_NAME_LEN,
+            HAS_NATIVE_LOAD_HEAP_SYMBOL_NAME_LEN,
+            "symbol",
+        )),
+        Sexp::Float(_) => Ok((
+            NATIVE_LOAD_HEAP_FLOAT_INT_TRUNC,
+            HAS_NATIVE_LOAD_HEAP_FLOAT_INT_TRUNC,
+            "float-trunc",
+        )),
+        Sexp::Vector(_) => Ok((
+            NATIVE_LOAD_HEAP_VECTOR_LEN,
+            HAS_NATIVE_LOAD_HEAP_VECTOR_LEN,
+            "vector-len",
+        )),
+    }
+}
+
+fn run_mint_eval_all(src: &str, out: &str, label_for_log: &str) -> ExitCode {
+    match eval_str_all(src) {
+        Ok(value) => mint_eval_result(value, out, &format!("eval-file({})", label_for_log)),
+        Err(e) => {
+            eprintln!("nelisp: eval error: {}", e);
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn run_mint_eval_result(src: &str, out: &str) -> ExitCode {
+    let result = match eval_str(src) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("nelisp: eval error: {}", e);
+            return ExitCode::from(2);
+        }
+    };
+    mint_eval_result(result, out, "eval-result")
+}
+
+/// Shared finisher: take an evaluator result, pick the matching
+/// native asset, lower the value to (heap, relocs), and write the
+/// image at OUT.  Used by both `mint-eval-result' (single-form
+/// inline source) and `mint-eval-file' (whole-file `progn').
+fn mint_eval_result(result: Sexp, out: &str, mint_label: &str) -> ExitCode {
+    let (asset, has_asset, asset_label) = match pick_asset_for_eval_result(&result) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("nelisp: {}", e);
+            return ExitCode::from(3);
+        }
+    };
+    if !has_asset {
+        eprintln!(
+            "nelisp: {}: {} asset unavailable on this arch",
+            mint_label, asset_label
+        );
+        return ExitCode::from(14);
+    }
+    let (heap, relocs) = match lower_to_heap(&result) {
+        Ok(pair) => pair,
+        Err(e) => {
+            eprintln!("nelisp: lowering failed for {}: {}", mint_label, e);
+            return ExitCode::from(3);
+        }
+    };
+    match write_image_with_heap_code_and_relocs(out, asset, &heap, &relocs) {
+        Ok(()) => {
+            println!(
+                "minted {} NlImage at {} (eval={}, asset={}, heap_size={}, reloc_count={})",
+                mint_label,
+                out,
+                fmt_sexp(&result),
+                asset_label,
+                heap.len(),
+                relocs.len()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("nelisp: image write error: {}", e);
+            ExitCode::from(4)
         }
     }
 }
@@ -275,5 +436,77 @@ mod tests {
             }
             other => panic!("unexpected: {:?}", other),
         }
+    }
+
+    #[test]
+    fn parses_mint_eval_result() {
+        match parse_args(["nelisp", "mint-eval-result", "(+ 1 2)", "/tmp/r.bin"]).unwrap() {
+            Command::MintEvalResult { src, out } => {
+                assert_eq!(src, "(+ 1 2)");
+                assert_eq!(out, "/tmp/r.bin");
+            }
+            other => panic!("unexpected: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_mint_eval_file() {
+        match parse_args(["nelisp", "mint-eval-file", "boot.el", "/tmp/b.bin"]).unwrap() {
+            Command::MintEvalFile { src_file, out } => {
+                assert_eq!(src_file, "boot.el");
+                assert_eq!(out, "/tmp/b.bin");
+            }
+            other => panic!("unexpected: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn pick_asset_classifies_each_supported_shape() {
+        use super::pick_asset_for_eval_result;
+        use nelisp_build_tool::reader::Sexp;
+
+        assert_eq!(
+            pick_asset_for_eval_result(&Sexp::Int(7)).unwrap().2,
+            "int-or-t"
+        );
+        assert_eq!(
+            pick_asset_for_eval_result(&Sexp::T).unwrap().2,
+            "int-or-t",
+            "Stage 7b-1 wires T through the same INT_UNTAG asset"
+        );
+        assert_eq!(
+            pick_asset_for_eval_result(&Sexp::Nil).unwrap().2,
+            "list"
+        );
+        assert_eq!(
+            pick_asset_for_eval_result(&Sexp::cons(Sexp::Int(1), Sexp::Nil)).unwrap().2,
+            "list"
+        );
+        assert_eq!(
+            pick_asset_for_eval_result(&Sexp::Str("hi".into())).unwrap().2,
+            "string"
+        );
+        assert_eq!(
+            pick_asset_for_eval_result(&Sexp::Symbol("foo".into())).unwrap().2,
+            "symbol"
+        );
+    }
+
+    #[test]
+    fn pick_asset_includes_float() {
+        use super::pick_asset_for_eval_result;
+        use nelisp_build_tool::reader::Sexp;
+        assert_eq!(
+            pick_asset_for_eval_result(&Sexp::Float(3.14)).unwrap().2,
+            "float-trunc"
+        );
+    }
+
+    #[test]
+    fn pick_asset_includes_vector() {
+        use super::pick_asset_for_eval_result;
+        use nelisp_build_tool::reader::Sexp;
+        let v = Sexp::Vector(std::rc::Rc::new(std::cell::RefCell::new(vec![])));
+        assert_eq!(pick_asset_for_eval_result(&v).unwrap().2, "vector-len");
     }
 }

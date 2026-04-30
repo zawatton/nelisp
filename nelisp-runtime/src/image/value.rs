@@ -56,6 +56,35 @@ pub const NL_VALUE_TAG_STRING: u64 = 0b100;
 ///   `[ 8.. 16]`  tagged value slot (NIL when the symbol is unbound)
 pub const NL_VALUE_TAG_SYMBOL: u64 = 0b101;
 
+/// Immediate `t' sentinel (Stage 7b-1).  Encoded as `(1 << 3) |
+/// NIL_TAG` (= 11) so that a SAR-3 untag yields 1 (boolean true) and
+/// a NIL → SAR-3 yields 0 (boolean false).  The tag bits collide
+/// with `NL_VALUE_TAG_NIL' on purpose: NIL and T share the
+/// "immediate" tag class (`0b011`), distinguished only by the
+/// payload bit.  Future immediates (eof, unbound, ...) follow the
+/// same `(payload << 3) | 0b011' pattern.
+pub const NL_IMMEDIATE_T: u64 = (1u64 << NL_VALUE_TAG_BITS) | NL_VALUE_TAG_NIL;
+
+/// Heap-pointer tag for IEEE-754 doubles (Stage 7b-2).
+///
+/// Float layout (single 8-byte aligned word):
+///   `[ 0..  8]`  raw f64 bit pattern (little-endian)
+///
+/// The f64 is unboxed bits — no length prefix or type header,
+/// because the tag carried by the pointer already pins the type.
+pub const NL_VALUE_TAG_FLOAT: u64 = 0b110;
+
+/// Heap-pointer tag for vectors (Stage 7b-3).
+///
+/// Vector layout (8-byte aligned, variable size):
+///   `[ 0..  8]`  u64 element count (N)
+///   `[ 8..  8+N*8]`  N tagged-value element slots
+///
+/// Each element slot is a regular 64-bit tagged word, lowered
+/// recursively by the same `write_value_at' rule used for cons
+/// car/cdr — so a vector can hold any value the lowering supports.
+pub const NL_VALUE_TAG_VECTOR: u64 = 0b111;
+
 /// Build the on-image word for the tagged-int representing `n`.
 ///
 /// The asm side expects the same arithmetic — see
@@ -103,6 +132,48 @@ pub fn is_cons(v: u64) -> bool {
 /// `NL_VALUE_TAG_NIL` — there is only one nil value, no payload.
 pub fn is_nil(v: u64) -> bool {
     v == NL_VALUE_TAG_NIL
+}
+
+/// Whether the value is the immediate `t' sentinel.  Single legal
+/// value (`NL_IMMEDIATE_T' = 11), no payload.
+pub fn is_t(v: u64) -> bool {
+    v == NL_IMMEDIATE_T
+}
+
+/// Tag a heap-aligned address as an unboxed f64 pointer (Stage 7b-2).
+pub fn tag_float(addr: u64) -> u64 {
+    debug_assert_eq!(
+        addr & NL_VALUE_TAG_MASK,
+        0,
+        "float struct address must be 8-byte aligned"
+    );
+    addr | NL_VALUE_TAG_FLOAT
+}
+
+pub fn untag_float(v: u64) -> u64 {
+    v & !NL_VALUE_TAG_MASK
+}
+
+pub fn is_float(v: u64) -> bool {
+    (v & NL_VALUE_TAG_MASK) == NL_VALUE_TAG_FLOAT
+}
+
+/// Tag a heap-aligned address as a vector pointer (Stage 7b-3).
+pub fn tag_vector(addr: u64) -> u64 {
+    debug_assert_eq!(
+        addr & NL_VALUE_TAG_MASK,
+        0,
+        "vector struct address must be 8-byte aligned"
+    );
+    addr | NL_VALUE_TAG_VECTOR
+}
+
+pub fn untag_vector(v: u64) -> u64 {
+    v & !NL_VALUE_TAG_MASK
+}
+
+pub fn is_vector(v: u64) -> bool {
+    (v & NL_VALUE_TAG_MASK) == NL_VALUE_TAG_VECTOR
 }
 
 /// Tag a heap-aligned address as a length-prefixed string pointer.
@@ -212,6 +283,30 @@ mod tests {
         assert!(!is_nil(NL_VALUE_TAG_INT));
         assert!(!is_nil(tag_int(0))); // tag_int(0) = 0b001, not 0b011
         assert!(!is_nil(tag_cons(0))); // tag_cons(0) = 0b010
+        assert!(!is_nil(NL_IMMEDIATE_T));
+    }
+
+    #[test]
+    fn t_immediate_layout() {
+        // T is `(1 << 3) | NIL_TAG' = 11.
+        assert_eq!(NL_IMMEDIATE_T, 11);
+        assert!(is_t(NL_IMMEDIATE_T));
+        assert!(!is_t(NL_VALUE_TAG_NIL));
+        assert!(!is_t(0));
+        assert!(!is_t(tag_int(1)));
+        // Critical SAR property exploited by the seed: NL_IMMEDIATE_T
+        // and NL_VALUE_TAG_NIL share `NATIVE_LOAD_HEAP_INT_UNTAG'.
+        // After SAR-3 they become 1 and 0 respectively — exactly the
+        // boolean exit codes Stage 7b-1 wants to demonstrate.
+        assert_eq!((NL_IMMEDIATE_T as i64) >> NL_VALUE_TAG_BITS, 1);
+        assert_eq!((NL_VALUE_TAG_NIL as i64) >> NL_VALUE_TAG_BITS, 0);
+    }
+
+    #[test]
+    fn t_and_nil_share_immediate_tag_class() {
+        // Both end in `0b011' — they live in the same "immediate"
+        // tag family, distinguished only by the upper-payload bit.
+        assert_eq!(NL_IMMEDIATE_T & NL_VALUE_TAG_MASK, NL_VALUE_TAG_NIL);
     }
 
     #[test]
@@ -241,6 +336,36 @@ mod tests {
     }
 
     #[test]
+    fn vector_round_trip() {
+        for addr in [0x0u64, 0x8, 0x1000, 0x7f_0000_0000u64, u64::MAX & !NL_VALUE_TAG_MASK] {
+            let tagged = tag_vector(addr);
+            assert!(is_vector(tagged));
+            assert!(!is_int(tagged));
+            assert!(!is_cons(tagged));
+            assert!(!is_string(tagged));
+            assert!(!is_symbol(tagged));
+            assert!(!is_float(tagged));
+            assert!(!is_nil(tagged));
+            assert_eq!(untag_vector(tagged), addr);
+        }
+    }
+
+    #[test]
+    fn float_round_trip() {
+        for addr in [0x0u64, 0x8, 0x1000, 0x7f_0000_0000u64, u64::MAX & !NL_VALUE_TAG_MASK] {
+            let tagged = tag_float(addr);
+            assert!(is_float(tagged));
+            assert!(!is_int(tagged));
+            assert!(!is_cons(tagged));
+            assert!(!is_string(tagged));
+            assert!(!is_symbol(tagged));
+            assert!(!is_nil(tagged));
+            assert!(!is_t(tagged));
+            assert_eq!(untag_float(tagged), addr);
+        }
+    }
+
+    #[test]
     fn all_tags_are_distinct() {
         let tags = [
             NL_VALUE_TAG_INT,
@@ -248,6 +373,8 @@ mod tests {
             NL_VALUE_TAG_NIL,
             NL_VALUE_TAG_STRING,
             NL_VALUE_TAG_SYMBOL,
+            NL_VALUE_TAG_FLOAT,
+            NL_VALUE_TAG_VECTOR,
         ];
         for (i, a) in tags.iter().enumerate() {
             for (j, b) in tags.iter().enumerate() {

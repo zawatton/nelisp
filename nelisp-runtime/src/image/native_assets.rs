@@ -398,3 +398,63 @@ pub const NATIVE_LOAD_HEAP_SYMBOL_NAME_LEN: &[u8] = &[];
 
 pub const HAS_NATIVE_LOAD_HEAP_SYMBOL_NAME_LEN: bool =
     cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
+
+/// Stage 7b-2 — chase a tagged f64 pointer, load the unboxed double,
+/// truncate to i64 and return.  Heap layout: `[f64-bits]' (single
+/// 8-byte word).  Asm:
+///   *argv[0] -> tagged float ptr -> AND ~7 -> struct addr ->
+///   movsd xmm0, [addr] -> cvttsd2si rax, xmm0 -> ret
+///
+///   x86_64 (20 bytes):
+///     48 8b 06            mov rax, [rsi]
+///     48 8b 00            mov rax, [rax]      ; tagged float ptr
+///     48 83 e0 f8         and rax, ~7         ; struct addr
+///     f2 0f 10 00         movsd xmm0, [rax]
+///     f2 48 0f 2c c0      cvttsd2si rax, xmm0
+///     c3                  ret
+///   aarch64 (28 bytes):
+///     20 00 40 f9         ldr  x0, [x1]
+///     00 00 40 f9         ldr  x0, [x0]
+///     00 fc 43 d3         lsr  x0, x0, #3
+///     00 f0 7d d3         lsl  x0, x0, #3
+///     00 00 40 fd         ldr  d0, [x0]
+///     00 00 78 9e         fcvtzs x0, d0
+///     c0 03 5f d6         ret
+#[cfg(target_arch = "x86_64")]
+pub const NATIVE_LOAD_HEAP_FLOAT_INT_TRUNC: &[u8] = &[
+    0x48, 0x8b, 0x06,                   // mov rax, [rsi]
+    0x48, 0x8b, 0x00,                   // mov rax, [rax]
+    0x48, 0x83, 0xe0, 0xf8,             // and rax, ~7
+    0xf2, 0x0f, 0x10, 0x00,             // movsd xmm0, [rax]
+    0xf2, 0x48, 0x0f, 0x2c, 0xc0,       // cvttsd2si rax, xmm0
+    0xc3,                               // ret
+];
+
+#[cfg(target_arch = "aarch64")]
+pub const NATIVE_LOAD_HEAP_FLOAT_INT_TRUNC: &[u8] = &[
+    0x20, 0x00, 0x40, 0xf9, // ldr  x0, [x1]
+    0x00, 0x00, 0x40, 0xf9, // ldr  x0, [x0]
+    0x00, 0xfc, 0x43, 0xd3, // lsr  x0, x0, #3
+    0x00, 0xf0, 0x7d, 0xd3, // lsl  x0, x0, #3
+    0x00, 0x00, 0x40, 0xfd, // ldr  d0, [x0]
+    0x00, 0x00, 0x78, 0x9e, // fcvtzs x0, d0
+    0xc0, 0x03, 0x5f, 0xd6, // ret
+];
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+pub const NATIVE_LOAD_HEAP_FLOAT_INT_TRUNC: &[u8] = &[];
+
+pub const HAS_NATIVE_LOAD_HEAP_FLOAT_INT_TRUNC: bool =
+    cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
+
+/// Stage 7b-3 — return the length field of a tagged vector struct.
+/// The asm shape is identical to NATIVE_LOAD_HEAP_STRING_LEN
+/// (chase tagged ptr → AND ~7 → load first u64), since both string
+/// and vector structs share the `[u64 length, ...]' header.  We
+/// expose the alias as a separate symbol so callers can pick the
+/// asset by intent rather than by accidental sharing — and so a
+/// future Stage 7c+ can swap in a vector-specific asset (e.g., one
+/// that picks an element by index) without breaking the existing
+/// string callers.
+pub const NATIVE_LOAD_HEAP_VECTOR_LEN: &[u8] = NATIVE_LOAD_HEAP_STRING_LEN;
+pub const HAS_NATIVE_LOAD_HEAP_VECTOR_LEN: bool = HAS_NATIVE_LOAD_HEAP_STRING_LEN;
