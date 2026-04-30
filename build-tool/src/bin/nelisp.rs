@@ -13,12 +13,17 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use nelisp_build_tool::eval::{eval_str, eval_str_all};
-use nelisp_build_tool::reader::fmt_sexp;
+use nelisp_build_tool::image_lowering::lower_to_heap;
+use nelisp_build_tool::reader::{fmt_sexp, read_str};
+use nelisp_runtime::image::{
+    write_image_with_heap_code_and_relocs, HAS_NATIVE_LIST_LENGTH, NATIVE_LIST_LENGTH,
+};
 
 const USAGE: &str = "usage: nelisp --version
        nelisp eval EXPR        # evaluate EXPR and print the result
        nelisp -l FILE          # load FILE and print the last result
-       nelisp -                 # read from stdin and print the last result";
+       nelisp -                 # read from stdin and print the last result
+       nelisp mint-list-from-source SRC OUT  # Stage 6d: read SRC, lower to image at OUT";
 
 #[derive(Debug)]
 enum Command {
@@ -26,6 +31,11 @@ enum Command {
     Eval(String),
     LoadFile(String),
     LoadStdin,
+    /// Doc 47 Stage 6d — read SRC with the build-tool reader, lower
+    /// the resulting Sexp to a NlImage v1 heap + reloc table, write
+    /// the image at OUT alongside the canned `NATIVE_LIST_LENGTH`
+    /// asset.  Boot exits with the list length.
+    MintListFromSource { src: String, out: String },
 }
 
 fn parse_args<I, S>(args: I) -> Result<Command, String>
@@ -39,6 +49,12 @@ where
         [_, mode, expr] if mode == "eval" => Ok(Command::Eval(expr.clone())),
         [_, flag, path] if flag == "-l" || flag == "--load" => Ok(Command::LoadFile(path.clone())),
         [_, flag] if flag == "-" => Ok(Command::LoadStdin),
+        [_, mode, src, out] if mode == "mint-list-from-source" => {
+            Ok(Command::MintListFromSource {
+                src: src.clone(),
+                out: out.clone(),
+            })
+        }
         _ => Err(USAGE.to_string()),
     }
 }
@@ -72,6 +88,44 @@ fn main() -> ExitCode {
                 return ExitCode::from(1);
             }
             run_eval_all(&buf)
+        }
+        Command::MintListFromSource { src, out } => run_mint_list_from_source(&src, &out),
+    }
+}
+
+fn run_mint_list_from_source(src: &str, out: &str) -> ExitCode {
+    if !HAS_NATIVE_LIST_LENGTH {
+        eprintln!("nelisp: mint-list-from-source: NATIVE_LIST_LENGTH unavailable on this arch");
+        return ExitCode::from(14);
+    }
+    let sexp = match read_str(src) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("nelisp: read error: {}", e);
+            return ExitCode::from(2);
+        }
+    };
+    let (heap, relocs) = match lower_to_heap(&sexp) {
+        Ok(pair) => pair,
+        Err(e) => {
+            eprintln!("nelisp: {}", e);
+            return ExitCode::from(3);
+        }
+    };
+    match write_image_with_heap_code_and_relocs(out, NATIVE_LIST_LENGTH, &heap, &relocs) {
+        Ok(()) => {
+            println!(
+                "minted list-from-source NlImage at {} \
+                 (heap_size={} reloc_count={})",
+                out,
+                heap.len(),
+                relocs.len()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("nelisp: image write error: {}", e);
+            ExitCode::from(4)
         }
     }
 }
@@ -136,5 +190,16 @@ mod tests {
     #[test]
     fn rejects_unknown() {
         assert!(parse_args(["nelisp", "frobnicate"]).is_err());
+    }
+
+    #[test]
+    fn parses_mint_list_from_source() {
+        match parse_args(["nelisp", "mint-list-from-source", "(1 2 3)", "/tmp/x.bin"]).unwrap() {
+            Command::MintListFromSource { src, out } => {
+                assert_eq!(src, "(1 2 3)");
+                assert_eq!(out, "/tmp/x.bin");
+            }
+            other => panic!("unexpected: {:?}", other),
+        }
     }
 }

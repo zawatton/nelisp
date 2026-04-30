@@ -21,8 +21,15 @@ name = "nelisp"
 path = "src/bin/nelisp.rs"
 
 [dependencies]
-# Stage 5c removed the temporary path dep on `nelisp-runtime` — the
-# `eval` / `reader` modules now live in this crate, so the bin and lib
-# paths resolve in-crate.  No external crate dependency at all yet;
-# eval / reader / bridge are pure-std code (verified by `grep` over the
-# moving sources before the move).
+# Doc 47 Stage 6d (2026-04-30) — image_lowering needs the on-disk
+# wire format types (`ImageReloc`, `tag_int`, `NL_VALUE_TAG_*`) and
+# the dumper / native asset constants that live in
+# `nelisp_runtime::image::*`.  Stage 5c removed an earlier
+# transitional path dep; this one is *not* transitional — it
+# reflects the architectural fact that build-tool *produces* what
+# nelisp-runtime *consumes*, and both ends must agree on the wire
+# format.  Future Stage 7+ may carve `nelisp-image-format` into its
+# own crate so build-tool stops dragging in the seed loader / sqlite
+# / syscall surfaces it does not need; for Stage 6d that refactor is
+# not yet justified by code-size pressure.
+nelisp-runtime = { path = "../nelisp-runtime" }
