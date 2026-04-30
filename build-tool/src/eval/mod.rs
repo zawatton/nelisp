@@ -65,6 +65,53 @@ pub fn eval_str_all(input: &str) -> Result<Sexp, EvalError> {
     Ok(last)
 }
 
+/// Doc 47 Stage 8b — like [`eval_str_all`] but seeds the global env
+/// with `default-directory' / `load-file-name' / `load-path' derived
+/// from `src_path' so the source file can do `(load "sibling.el")` /
+/// `(require 'feature)` and have the file I/O builtins resolve paths
+/// relative to the file being evaluated.
+///
+/// `src_path' is taken as-given; callers should pass the same string
+/// that was used to read the source so log messages are consistent.
+pub fn eval_str_all_at_path(input: &str, src_path: &str) -> Result<Sexp, EvalError> {
+    let mut env = Env::new_global();
+    let path_buf = std::path::PathBuf::from(src_path);
+    let parent_dir = path_buf
+        .parent()
+        .map(|p| {
+            let mut s = p.to_string_lossy().into_owned();
+            if s.is_empty() {
+                s.push('.');
+            }
+            if !s.ends_with('/') {
+                s.push('/');
+            }
+            s
+        })
+        .unwrap_or_else(|| "./".into());
+    env.set_value(
+        "default-directory",
+        Sexp::Str(parent_dir.clone()),
+    )?;
+    env.set_value(
+        "load-file-name",
+        Sexp::Str(src_path.to_string()),
+    )?;
+    // Single-element `load-path' = the source file's directory.  Users
+    // who want extra search roots can `(setq load-path (cons "..."
+    // load-path))' inside the source.
+    env.set_value(
+        "load-path",
+        Sexp::cons(Sexp::Str(parent_dir), Sexp::Nil),
+    )?;
+    let forms = reader::read_all(input)?;
+    let mut last = Sexp::Nil;
+    for f in &forms {
+        last = eval(f, &mut env)?;
+    }
+    Ok(last)
+}
+
 /// Evaluate `form` in `env`.  This is the canonical recursive
 /// entry point and is what [`eval_str`] / [`eval_str_all`] / built-ins
 /// like `funcall` / `apply` / `eval` route through.
