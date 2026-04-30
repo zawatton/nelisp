@@ -1289,3 +1289,43 @@ fn require_silent_marker_without_load_path() {
     let result = ok_all("(require 'no-such-feature) (featurep 'no-such-feature)");
     assert_eq!(result, Sexp::T);
 }
+
+#[test]
+fn elisp_stdlib_identity() {
+    assert_eq!(ok("(identity 42)"), Sexp::Int(42));
+}
+
+#[test]
+fn elisp_stdlib_null_true() {
+    assert_eq!(ok("(null nil)"), Sexp::T);
+}
+
+#[test]
+fn elisp_stdlib_null_false() {
+    assert_eq!(ok("(null 42)"), Sexp::Nil);
+}
+
+#[test]
+fn elisp_stdlib_not_true() {
+    assert_eq!(ok("(not nil)"), Sexp::T);
+}
+
+#[test]
+fn elisp_stdlib_not_false() {
+    assert_eq!(ok("(not 42)"), Sexp::Nil);
+}
+
+#[test]
+fn elisp_stdlib_inc() {
+    assert_eq!(ok("(1+ 5)"), Sexp::Int(6));
+}
+
+#[test]
+fn elisp_stdlib_dec() {
+    assert_eq!(ok("(1- 5)"), Sexp::Int(4));
+}
+
+#[test]
+fn elisp_stdlib_inc_in_let() {
+    assert_eq!(ok("(let ((x 10)) (1+ x))"), Sexp::Int(11));
+}
