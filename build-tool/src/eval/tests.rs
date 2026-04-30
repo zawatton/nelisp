@@ -1329,3 +1329,75 @@ fn elisp_stdlib_dec() {
 fn elisp_stdlib_inc_in_let() {
     assert_eq!(ok("(let ((x 10)) (1+ x))"), Sexp::Int(11));
 }
+
+// ==== sweep-9 G3 search tests ====
+
+#[test]
+fn elisp_g3_memq_hit() {
+    assert_eq!(ok("(memq 'b (list 'a 'b 'c))"), ok("(list 'b 'c)"));
+}
+
+#[test]
+fn elisp_g3_memq_miss() {
+    assert_eq!(ok("(memq 'z (list 'a 'b 'c))"), Sexp::Nil);
+}
+
+#[test]
+fn elisp_g3_memq_empty() {
+    assert_eq!(ok("(memq 'a nil)"), Sexp::Nil);
+}
+
+#[test]
+fn elisp_g3_member_hit() {
+    assert_eq!(ok("(member 2 (list 1 2 3))"), ok("(list 2 3)"));
+}
+
+#[test]
+fn elisp_g3_member_string() {
+    assert_eq!(
+        ok("(member \"x\" (list \"a\" \"x\" \"b\"))"),
+        ok("(list \"x\" \"b\")")
+    );
+}
+
+#[test]
+fn elisp_g3_member_miss() {
+    assert_eq!(ok("(member 99 (list 1 2 3))"), Sexp::Nil);
+}
+
+#[test]
+fn elisp_g3_assq_hit() {
+    assert_eq!(
+        ok("(assq 'b (list (cons 'a 1) (cons 'b 2) (cons 'c 3)))"),
+        ok("(cons 'b 2)")
+    );
+}
+
+#[test]
+fn elisp_g3_assq_miss() {
+    assert_eq!(
+        ok("(assq 'z (list (cons 'a 1) (cons 'b 2)))"),
+        Sexp::Nil
+    );
+}
+
+#[test]
+fn elisp_g3_assoc_hit_string_key() {
+    assert_eq!(
+        ok("(assoc \"k\" (list (cons \"j\" 1) (cons \"k\" 2)))"),
+        ok("(cons \"k\" 2)")
+    );
+}
+
+#[test]
+fn elisp_g3_assoc_miss() {
+    assert_eq!(ok("(assoc 1 (list (cons 2 'b)))"), Sexp::Nil);
+}
+
+#[test]
+fn elisp_g3_assq_skips_non_pair() {
+    assert_eq!(
+        ok("(assq 'a (list 'garbage (cons 'a 99)))"),
+        ok("(cons 'a 99)")
+    );
+}
