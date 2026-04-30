@@ -273,24 +273,47 @@ self-contained.
   │ anvil-runtime crate                              │  Phase 8.0.4-8.0.5
   │   mcp/ + anvil_*_registry.rs + bin/anvil-runtime │
   ├──────────────────────────────────────────────────┤
-  │ nelisp-runtime crate                             │  pure NeLisp runtime
-  │   bridge/ + eval/ + reader/ + sqlite + syscall   │
+  │ Native-compiled Elisp seed                       │  Doc 49 §2 (target)
+  │   reader / evaluator / macro / compiler / loader │
   ├──────────────────────────────────────────────────┤
-  │ Elisp evaluator (Rust bootstrap layer)           │  Phase 8.0.2
-  │   25 special forms + 75 builtins                 │
-  ├──────────────────────────────────────────────────┤
-  │ Elisp reader (Rust bootstrap layer)              │  Phase 8.0.1
-  │   sexp / lexer / parser                          │
-  ├──────────────────────────────────────────────────┤
-  │ OS substrate                                     │  Phase 7.0 / 9d
-  │   syscall wrappers; allocator/GC/coding in Lisp  │
+  │ nelisp-runtime crate (Rust-min core)             │  Doc 49 §1 D2
+  │   syscall + mmap/mprotect + icache + seed loader │
+  ├────────────┬─────────────────────┬───────────────┤
+  │ extension  │ extension           │ dev bridge    │
+  │ crates     │ crates              │ crate         │
+  │ ┌────────┐ │ ┌─────────────────┐ │ ┌───────────┐ │
+  │ │sqlite- │ │ │syscall-fileio   │ │ │runtime-cli│ │
+  │ │  rs    │ │ │syscall-filenoty│ │ │ exec-bytes│ │
+  │ │        │ │ │syscall-process  │ │ │ (JIT smoke│ │
+  │ └────────┘ │ │syscall-types    │ │ │  bridge)  │ │
+  │            │ └─────────────────┘ │ └───────────┘ │
+  ├────────────┴─────────────────────┴───────────────┤
+  │ OS substrate (libc / Linux / macOS)              │  Phase 7.0 / 9d
   └──────────────────────────────────────────────────┘
 #+end_src
 
-Doc 46 (=architecture α boundary final=) is the current boundary:
-NeLisp owns no =anvil_*= or =mcp= modules.  The optional MCP front end
-lives in the sibling =anvil-runtime= crate and calls into
-=nelisp-runtime= through a path dependency.
+Two boundaries are pinned:
+
+- *Doc 46* (=architecture α boundary final=) — =nelisp-runtime= owns
+  no =anvil_*= or =mcp= modules.  The optional MCP front end lives in
+  the sibling =anvil-runtime= crate and calls into =nelisp-runtime=
+  through a path dependency.
+- *Doc 49* (=Rust-min core / self-host=) — =nelisp-runtime= owns no
+  Elisp interpreter.  Rust handles only OS ABI (raw syscalls,
+  mmap/mprotect/munmap, icache flush) plus a NLSEED v1 seed image
+  loader.  Reader / evaluator / macro / compiler / stdlib loader live
+  in native-compiled Elisp seed.  Optional surfaces (=sqlite= /
+  =fileio= / =filenotify= / =process=) are extension crates pulled
+  through default-ON compatibility features; turning them off
+  (=cargo build --no-default-features -p nelisp-runtime= / =make
+  runtime-core-min=) gives the canonical Rust-min build.  The
+  =nelisp-runtime-cli= bin (=nelisp-exec-bytes=) is a dev bridge for
+  raw native-code smoke and is *not* part of runtime core.
+
+The Rust bootstrap reader / evaluator that previously lived inside
+=nelisp-runtime= is being migrated out under Doc 49.  Until the seed
+seam ships end-to-end the bootstrap reader/evaluator stays in
+=build-tool/= as a build-time-only escape hatch.
 
 ** Soak gate (Doc 32 v2 §2.7)
 
