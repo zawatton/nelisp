@@ -33,3 +33,8 @@
 # Secrets / env
 .env
 .env.local
+
+# Local agent worktrees (Claude Code agent / per-task git worktrees).
+# Developer-local workspaces; not part of the published tree.
+/.claude/
+/.worktrees/
