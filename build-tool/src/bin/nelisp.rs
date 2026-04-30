@@ -15,8 +15,9 @@ use std::process::ExitCode;
 use nelisp_build_tool::eval::{eval_str, eval_str_all, eval_str_all_at_path};
 use nelisp_build_tool::image_lowering::lower_to_heap;
 use nelisp_build_tool::native_emit::{
-    emit_int_plus_imm, emit_load_heap_int_untag, emit_return_i32,
-    HAS_EMIT_INT_PLUS_IMM, HAS_EMIT_LOAD_HEAP_INT_UNTAG, HAS_EMIT_RETURN_I32,
+    compose, emit_int_plus_imm, emit_load_heap_int_untag, emit_return_i32, ChainOp,
+    HAS_CHAIN_OP_COMPOSE, HAS_EMIT_INT_PLUS_IMM, HAS_EMIT_LOAD_HEAP_INT_UNTAG,
+    HAS_EMIT_RETURN_I32,
 };
 use nelisp_build_tool::reader::{fmt_sexp, read_str, Sexp};
 use nelisp_runtime::image::{
@@ -39,7 +40,8 @@ const USAGE: &str = "usage: nelisp --version
        nelisp mint-eval-file SRC-FILE OUT      # Stage 8: read FILE as a sequence of forms, evaluate, lower last value
        nelisp mint-int-as-code SRC OUT         # Stage 9a: evaluate SRC (must be Int), emit native return-i32 code
        nelisp mint-int-via-emitted-load SRC OUT # Stage 9b: evaluate SRC, lower Int to heap, emit load-heap asm (vs pre-baked asset)
-       nelisp mint-int-plus-imm SRC IMM OUT     # Stage 9c: chain load+add asm; boot exits (eval-of-SRC) + IMM";
+       nelisp mint-int-plus-imm SRC IMM OUT     # Stage 9c: chain load+add asm; boot exits (eval-of-SRC) + IMM
+       nelisp mint-chain SRC OPS OUT            # Stage 9d: SRC -> heap; OPS = ChainOp spec ('add:5 mul:2 neg' etc)";
 
 #[derive(Debug)]
 enum Command {
@@ -106,6 +108,20 @@ enum Command {
         imm: String,
         out: String,
     },
+    /// Doc 47 Stage 9d — generic chain composer.  Evaluates SRC to an
+    /// integer (heap word), parses OPS as a whitespace-separated spec
+    /// of `ChainOp' values, and emits the composed function body via
+    /// [`native_emit::compose`].  Op spec grammar:
+    ///   add:N | sub:N | mul:N    (N = signed decimal i32)
+    ///   neg
+    /// `LoadHeapHead' is implicit at the start; `Ret' is implicit at
+    /// the end.  The driver appends them so the spec only describes
+    /// the transformation chain.
+    MintChain {
+        src: String,
+        ops: String,
+        out: String,
+    },
 }
 
 fn parse_args<I, S>(args: I) -> Result<Command, String>
@@ -165,6 +181,13 @@ where
             Ok(Command::MintIntPlusImm {
                 src: src.clone(),
                 imm: imm.clone(),
+                out: out.clone(),
+            })
+        }
+        [_, mode, src, ops, out] if mode == "mint-chain" => {
+            Ok(Command::MintChain {
+                src: src.clone(),
+                ops: ops.clone(),
                 out: out.clone(),
             })
         }
@@ -246,6 +269,7 @@ fn main() -> ExitCode {
         Command::MintIntPlusImm { src, imm, out } => {
             run_mint_int_plus_imm(&src, &imm, &out)
         }
+        Command::MintChain { src, ops, out } => run_mint_chain(&src, &ops, &out),
     }
 }
 
@@ -420,6 +444,115 @@ fn run_mint_int_plus_imm(src: &str, imm_str: &str, out: &str) -> ExitCode {
                 out,
                 heap_int,
                 imm,
+                predicted,
+                code.len(),
+                heap.len(),
+                relocs.len()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("nelisp: image write error: {}", e);
+            ExitCode::from(4)
+        }
+    }
+}
+
+/// Parse a Stage 9d op spec like "add:5 mul:2 neg" into a `ChainOp'
+/// vector wrapped between `LoadHeapHead' and `Ret'.  Returns an error
+/// string with the offending token on bad input.
+fn parse_chain_ops(spec: &str) -> Result<Vec<ChainOp>, String> {
+    let mut ops = vec![ChainOp::LoadHeapHead];
+    for token in spec.split_whitespace() {
+        let lower = token.to_ascii_lowercase();
+        let parsed = if let Some(rest) = lower.strip_prefix("add:") {
+            ChainOp::AddImm(rest.parse::<i32>().map_err(|e| {
+                format!("bad imm in {:?}: {}", token, e)
+            })?)
+        } else if let Some(rest) = lower.strip_prefix("sub:") {
+            ChainOp::SubImm(rest.parse::<i32>().map_err(|e| {
+                format!("bad imm in {:?}: {}", token, e)
+            })?)
+        } else if let Some(rest) = lower.strip_prefix("mul:") {
+            ChainOp::MulImm(rest.parse::<i32>().map_err(|e| {
+                format!("bad imm in {:?}: {}", token, e)
+            })?)
+        } else if lower == "neg" {
+            ChainOp::Neg
+        } else {
+            return Err(format!("unknown op {:?}", token));
+        };
+        ops.push(parsed);
+    }
+    ops.push(ChainOp::Ret);
+    Ok(ops)
+}
+
+/// Symbolically apply a [`ChainOp`] sequence to an i64 accumulator
+/// (matches the asm semantics: load → arithmetic → ret).  Returns
+/// the value the boot is expected to exit with — used in the driver
+/// log line so the user sees the predicted result alongside the
+/// actual asm bytes.
+fn predict_chain_value(heap_int: i64, ops: &[ChainOp]) -> i64 {
+    let mut acc: i64 = 0;
+    for op in ops {
+        match op {
+            ChainOp::LoadHeapHead => acc = heap_int,
+            ChainOp::AddImm(n) => acc = acc.wrapping_add(*n as i64),
+            ChainOp::SubImm(n) => acc = acc.wrapping_sub(*n as i64),
+            ChainOp::MulImm(n) => acc = acc.wrapping_mul(*n as i64),
+            ChainOp::Neg => acc = acc.wrapping_neg(),
+            ChainOp::Ret => break,
+        }
+    }
+    acc
+}
+
+fn run_mint_chain(src: &str, ops_spec: &str, out: &str) -> ExitCode {
+    if !HAS_CHAIN_OP_COMPOSE {
+        eprintln!("nelisp: mint-chain: native_emit unavailable on this arch");
+        return ExitCode::from(14);
+    }
+    let ops = match parse_chain_ops(ops_spec) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("nelisp: mint-chain: {}", e);
+            return ExitCode::from(2);
+        }
+    };
+    let result = match eval_str(src) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("nelisp: eval error: {}", e);
+            return ExitCode::from(2);
+        }
+    };
+    let heap_int = match result {
+        Sexp::Int(n) => n,
+        other => {
+            eprintln!(
+                "nelisp: mint-chain: SRC evaluated to {:?}, want Int",
+                fmt_sexp(&other)
+            );
+            return ExitCode::from(3);
+        }
+    };
+    let (heap, relocs) = match lower_to_heap(&Sexp::Int(heap_int)) {
+        Ok(pair) => pair,
+        Err(e) => {
+            eprintln!("nelisp: lowering failed: {}", e);
+            return ExitCode::from(3);
+        }
+    };
+    let code = compose(&ops);
+    let predicted = predict_chain_value(heap_int, &ops);
+    match write_image_with_heap_code_and_relocs(out, &code, &heap, &relocs) {
+        Ok(()) => {
+            println!(
+                "minted chain NlImage at {} (heap_int={}, ops={:?}, predicted={}, code_size={}, heap_size={}, reloc_count={})",
+                out,
+                heap_int,
+                ops_spec,
                 predicted,
                 code.len(),
                 heap.len(),
@@ -632,6 +765,7 @@ fn run_eval_all(input: &str) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::{parse_args, Command};
+    use nelisp_build_tool::native_emit::ChainOp;
 
     #[test]
     fn parses_version() {
@@ -752,6 +886,74 @@ mod tests {
             }
             other => panic!("unexpected: {:?}", other),
         }
+    }
+
+    #[test]
+    fn parses_mint_chain() {
+        match parse_args([
+            "nelisp",
+            "mint-chain",
+            "5",
+            "add:3 mul:2",
+            "/tmp/f.bin",
+        ])
+        .unwrap()
+        {
+            Command::MintChain { src, ops, out } => {
+                assert_eq!(src, "5");
+                assert_eq!(ops, "add:3 mul:2");
+                assert_eq!(out, "/tmp/f.bin");
+            }
+            other => panic!("unexpected: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_chain_ops_basic() {
+        use super::parse_chain_ops;
+        let ops = parse_chain_ops("add:5 sub:3 mul:2 neg").unwrap();
+        assert_eq!(
+            ops,
+            vec![
+                ChainOp::LoadHeapHead,
+                ChainOp::AddImm(5),
+                ChainOp::SubImm(3),
+                ChainOp::MulImm(2),
+                ChainOp::Neg,
+                ChainOp::Ret,
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_chain_ops_empty_yields_load_then_ret() {
+        use super::parse_chain_ops;
+        let ops = parse_chain_ops("").unwrap();
+        assert_eq!(ops, vec![ChainOp::LoadHeapHead, ChainOp::Ret]);
+    }
+
+    #[test]
+    fn parse_chain_ops_rejects_unknown() {
+        use super::parse_chain_ops;
+        assert!(parse_chain_ops("add:5 wibble").is_err());
+        assert!(parse_chain_ops("add:not-a-number").is_err());
+    }
+
+    #[test]
+    fn predict_chain_value_arithmetic() {
+        use super::predict_chain_value;
+        // Heap = 5, chain: add 3 -> 8, mul 2 -> 16, neg -> -16.
+        let val = predict_chain_value(
+            5,
+            &[
+                ChainOp::LoadHeapHead,
+                ChainOp::AddImm(3),
+                ChainOp::MulImm(2),
+                ChainOp::Neg,
+                ChainOp::Ret,
+            ],
+        );
+        assert_eq!(val, -16);
     }
 
     #[test]
