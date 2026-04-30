@@ -300,3 +300,101 @@ pub const NATIVE_LIST_LENGTH: &[u8] = &[];
 
 pub const HAS_NATIVE_LIST_LENGTH: bool =
     cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
+
+/// Stage 6e — load the byte length of a tagged string at heap[0..8].
+/// String layout: `[u64 len][bytes..][pad]'.  Asm chases:
+///   *argv[0] → tagged string ptr → AND ~7 → struct addr →
+///   *(struct + 0) → u64 len → ret.
+///
+///   x86_64 (14 bytes):
+///     48 8b 06            mov rax, [rsi]      ; rsi = argv
+///     48 8b 00            mov rax, [rax]      ; tagged string ptr
+///     48 83 e0 f8         and rax, ~7         ; struct addr
+///     48 8b 00            mov rax, [rax]      ; u64 length
+///     c3                  ret
+///   aarch64 (24 bytes):
+///     20 00 40 f9         ldr  x0, [x1]
+///     00 00 40 f9         ldr  x0, [x0]
+///     00 fc 43 d3         lsr  x0, x0, #3
+///     00 f0 7d d3         lsl  x0, x0, #3
+///     00 00 40 f9         ldr  x0, [x0]
+///     c0 03 5f d6         ret
+#[cfg(target_arch = "x86_64")]
+pub const NATIVE_LOAD_HEAP_STRING_LEN: &[u8] = &[
+    0x48, 0x8b, 0x06,                   // mov rax, [rsi]
+    0x48, 0x8b, 0x00,                   // mov rax, [rax]
+    0x48, 0x83, 0xe0, 0xf8,             // and rax, ~7
+    0x48, 0x8b, 0x00,                   // mov rax, [rax]
+    0xc3,                               // ret
+];
+
+#[cfg(target_arch = "aarch64")]
+pub const NATIVE_LOAD_HEAP_STRING_LEN: &[u8] = &[
+    0x20, 0x00, 0x40, 0xf9, // ldr  x0, [x1]
+    0x00, 0x00, 0x40, 0xf9, // ldr  x0, [x0]
+    0x00, 0xfc, 0x43, 0xd3, // lsr  x0, x0, #3
+    0x00, 0xf0, 0x7d, 0xd3, // lsl  x0, x0, #3
+    0x00, 0x00, 0x40, 0xf9, // ldr  x0, [x0]
+    0xc0, 0x03, 0x5f, 0xd6, // ret
+];
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+pub const NATIVE_LOAD_HEAP_STRING_LEN: &[u8] = &[];
+
+pub const HAS_NATIVE_LOAD_HEAP_STRING_LEN: bool =
+    cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
+
+/// Stage 6e — chase a tagged symbol → its name string struct → name's
+/// byte length.  Symbol layout: `[ptr-to-name][value-slot]'.  Two
+/// untag-and-deref steps before the final length load:
+///   *argv[0] → tagged symbol → AND ~7 → symbol struct →
+///   *(struct + 0) → tagged string ptr → AND ~7 → string struct →
+///   *(struct + 0) → u64 length → ret.
+///
+///   x86_64 (21 bytes):
+///     48 8b 06            mov rax, [rsi]
+///     48 8b 00            mov rax, [rax]      ; tagged sym ptr
+///     48 83 e0 f8         and rax, ~7         ; sym struct
+///     48 8b 00            mov rax, [rax]      ; tagged name ptr
+///     48 83 e0 f8         and rax, ~7         ; name string struct
+///     48 8b 00            mov rax, [rax]      ; u64 length
+///     c3                  ret
+///   aarch64 (36 bytes):
+///     20 00 40 f9         ldr  x0, [x1]
+///     00 00 40 f9         ldr  x0, [x0]       ; tagged sym ptr
+///     00 fc 43 d3         lsr  x0, x0, #3
+///     00 f0 7d d3         lsl  x0, x0, #3     ; sym struct
+///     00 00 40 f9         ldr  x0, [x0]       ; tagged name ptr
+///     00 fc 43 d3         lsr  x0, x0, #3
+///     00 f0 7d d3         lsl  x0, x0, #3     ; name struct
+///     00 00 40 f9         ldr  x0, [x0]       ; u64 length
+///     c0 03 5f d6         ret
+#[cfg(target_arch = "x86_64")]
+pub const NATIVE_LOAD_HEAP_SYMBOL_NAME_LEN: &[u8] = &[
+    0x48, 0x8b, 0x06,                   // mov rax, [rsi]
+    0x48, 0x8b, 0x00,                   // mov rax, [rax]
+    0x48, 0x83, 0xe0, 0xf8,             // and rax, ~7
+    0x48, 0x8b, 0x00,                   // mov rax, [rax]
+    0x48, 0x83, 0xe0, 0xf8,             // and rax, ~7
+    0x48, 0x8b, 0x00,                   // mov rax, [rax]
+    0xc3,                               // ret
+];
+
+#[cfg(target_arch = "aarch64")]
+pub const NATIVE_LOAD_HEAP_SYMBOL_NAME_LEN: &[u8] = &[
+    0x20, 0x00, 0x40, 0xf9, // ldr  x0, [x1]
+    0x00, 0x00, 0x40, 0xf9, // ldr  x0, [x0]
+    0x00, 0xfc, 0x43, 0xd3, // lsr  x0, x0, #3
+    0x00, 0xf0, 0x7d, 0xd3, // lsl  x0, x0, #3
+    0x00, 0x00, 0x40, 0xf9, // ldr  x0, [x0]
+    0x00, 0xfc, 0x43, 0xd3, // lsr  x0, x0, #3
+    0x00, 0xf0, 0x7d, 0xd3, // lsl  x0, x0, #3
+    0x00, 0x00, 0x40, 0xf9, // ldr  x0, [x0]
+    0xc0, 0x03, 0x5f, 0xd6, // ret
+];
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+pub const NATIVE_LOAD_HEAP_SYMBOL_NAME_LEN: &[u8] = &[];
+
+pub const HAS_NATIVE_LOAD_HEAP_SYMBOL_NAME_LEN: bool =
+    cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));

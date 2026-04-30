@@ -32,7 +32,7 @@ use std::rc::Rc;
 
 use nelisp_runtime::image::{
     tag_int, ImageReloc, NL_RELOC_KIND_HEAP_BASE_PLUS_OFFSET, NL_VALUE_TAG_CONS,
-    NL_VALUE_TAG_NIL,
+    NL_VALUE_TAG_NIL, NL_VALUE_TAG_STRING, NL_VALUE_TAG_SYMBOL,
 };
 
 use crate::reader::Sexp;
@@ -42,6 +42,10 @@ use crate::reader::Sexp;
 const SLOT_SIZE: usize = 8;
 /// Bytes per cons cell (car + cdr).
 const CELL_SIZE: usize = 16;
+/// Bytes per symbol struct (`[name-ptr][value]`).  Name is a tagged
+/// string pointer; value is currently NIL but reserves the slot for
+/// Stage 6f when symbol bindings get a real value.
+const SYMBOL_SIZE: usize = 16;
 
 #[derive(Debug)]
 pub enum LowerError {
@@ -107,6 +111,34 @@ impl Lowerer {
         off as u64
     }
 
+    /// Reserve a 16-byte symbol struct (`[name-ptr][value]`).
+    fn alloc_symbol(&mut self) -> u64 {
+        let off = self.heap.len();
+        self.heap.resize(off + SYMBOL_SIZE, 0);
+        off as u64
+    }
+
+    /// Lay out a length-prefixed string struct in the heap and return
+    /// its base offset.  Layout (8-byte aligned):
+    ///   `[ 0..  8]`  u64 byte length
+    ///   `[ 8..  8+n]` n bytes of content
+    ///   `[8+n..  8+pad(n,8)]`  zero pad
+    fn alloc_string(&mut self, bytes: &[u8]) -> u64 {
+        let off = self.heap.len() as u64;
+        let n = bytes.len();
+        let padded = n.next_multiple_of(SLOT_SIZE);
+        let total = SLOT_SIZE + padded;
+        self.heap.resize(self.heap.len() + total, 0);
+        // Length field at offset 0 of the struct.
+        self.heap[off as usize..(off as usize + SLOT_SIZE)]
+            .copy_from_slice(&(n as u64).to_le_bytes());
+        // Content bytes immediately after, padding stays zero from
+        // the resize above.
+        let content_start = off as usize + SLOT_SIZE;
+        self.heap[content_start..content_start + n].copy_from_slice(bytes);
+        off
+    }
+
     /// Place an 8-byte little-endian word at `slot_offset`.
     fn write_word(&mut self, slot_offset: u64, word: u64) {
         let s = slot_offset as usize;
@@ -138,10 +170,44 @@ impl Lowerer {
                 self.write_value_at(cell_offset, &borrow_clone(car_rc))?;
                 self.write_value_at(cell_offset + 8, &borrow_clone(cdr_rc))?;
             }
+            Sexp::Str(s) => {
+                let str_offset = self.alloc_string(s.as_bytes());
+                self.relocs.push(ImageReloc {
+                    kind: NL_RELOC_KIND_HEAP_BASE_PLUS_OFFSET,
+                    _pad: 0,
+                    write_at: slot_offset,
+                    addend: str_offset | NL_VALUE_TAG_STRING,
+                });
+            }
+            Sexp::Symbol(name) => {
+                // Order matters: emit the name string first so the
+                // symbol struct can carry a tagged pointer at its
+                // offset 0.  Name padding keeps the symbol struct
+                // 8-byte aligned automatically.
+                let str_offset = self.alloc_string(name.as_bytes());
+                let sym_offset = self.alloc_symbol();
+                // Symbol's name slot → tagged string ptr.
+                self.relocs.push(ImageReloc {
+                    kind: NL_RELOC_KIND_HEAP_BASE_PLUS_OFFSET,
+                    _pad: 0,
+                    write_at: sym_offset,
+                    addend: str_offset | NL_VALUE_TAG_STRING,
+                });
+                // Symbol's value slot — Stage 6e leaves it NIL.  The
+                // 8-byte slot at sym_offset+8 already starts zero
+                // from `alloc_symbol`'s resize, so write the NIL
+                // immediate explicitly.
+                self.write_word(sym_offset + 8, NL_VALUE_TAG_NIL);
+                // Caller's slot → tagged symbol ptr.
+                self.relocs.push(ImageReloc {
+                    kind: NL_RELOC_KIND_HEAP_BASE_PLUS_OFFSET,
+                    _pad: 0,
+                    write_at: slot_offset,
+                    addend: sym_offset | NL_VALUE_TAG_SYMBOL,
+                });
+            }
             Sexp::T => return Err(unsupported("T")),
             Sexp::Float(_) => return Err(unsupported("Float")),
-            Sexp::Symbol(_) => return Err(unsupported("Symbol")),
-            Sexp::Str(_) => return Err(unsupported("Str")),
             Sexp::Vector(_) => return Err(unsupported("Vector")),
         }
         Ok(())
@@ -224,12 +290,13 @@ mod tests {
 
     #[test]
     fn unsupported_variant_blames_correctly() {
-        // Reader produces a Symbol for `foo'; lowering must reject
-        // it with a name the user can act on.
-        let sexp = read_str("foo").expect("reader rejected `foo'");
+        // Reader produces `T` for `t' literal — Stage 6e supports
+        // Nil/Int/Cons/Str/Symbol but not the standalone `t' (waits
+        // on a future immediate-T tag).
+        let sexp = read_str("t").expect("reader rejected `t'");
         let err = lower_to_heap(&sexp).unwrap_err();
         match err {
-            LowerError::Unsupported { variant } => assert_eq!(variant, "Symbol"),
+            LowerError::Unsupported { variant } => assert_eq!(variant, "T"),
         }
     }
 
@@ -242,5 +309,92 @@ mod tests {
         assert_eq!(relocs.len(), 1);
         assert_eq!(read_word(&heap, 8), tag_int(1));
         assert_eq!(read_word(&heap, 16), tag_int(2));
+    }
+
+    #[test]
+    fn string_lowers_to_struct_plus_reloc() {
+        // "hello" → heap[0..8] (head reloc) + heap[8..16] (length=5)
+        // + heap[16..24] ("hello\0\0\0").
+        let sexp = read_str("\"hello\"").expect("reader rejected \"hello\"");
+        let (heap, relocs) = lower_to_heap(&sexp).unwrap();
+        assert_eq!(heap.len(), 24, "8 head + 8 len + 8 (5 bytes + 3 pad)");
+        assert_eq!(relocs.len(), 1);
+        assert_eq!(read_word(&heap, 0), 0, "head slot is reloc placeholder");
+        assert_eq!(read_word(&heap, 8), 5, "length field = byte count");
+        assert_eq!(&heap[16..21], b"hello");
+        assert_eq!(&heap[21..24], &[0u8; 3], "remaining bytes are zero pad");
+
+        let r = &relocs[0];
+        assert_eq!(r.kind, NL_RELOC_KIND_HEAP_BASE_PLUS_OFFSET);
+        assert_eq!(r.write_at, 0);
+        assert_eq!(r.addend, 8 | NL_VALUE_TAG_STRING);
+    }
+
+    #[test]
+    fn empty_string_uses_only_length_word() {
+        let sexp = read_str("\"\"").expect("reader rejected \"\"");
+        let (heap, relocs) = lower_to_heap(&sexp).unwrap();
+        assert_eq!(heap.len(), 16, "8 head + 8 length-only struct");
+        assert_eq!(read_word(&heap, 8), 0, "empty string length = 0");
+        assert_eq!(relocs.len(), 1);
+    }
+
+    #[test]
+    fn string_byte_length_uses_str_len_directly() {
+        // Construct the Sexp directly to keep the test about lowering
+        // (rather than the reader's byte-stream → Latin-1 → UTF-8
+        // re-encoding behavior, which is a separate concern).  The
+        // length we write into the image is `str::len()` — i.e., the
+        // UTF-8 byte count of the input string.
+        for content in ["", "a", "hello", "abcdefghi", "\u{3042}"] {
+            let sexp = Sexp::Str(content.to_string());
+            let (heap, _) = lower_to_heap(&sexp).unwrap();
+            assert_eq!(
+                read_word(&heap, 8),
+                content.len() as u64,
+                "length field for {:?}",
+                content
+            );
+            // Content bytes follow at offset 16, padded to 8.
+            let n = content.len();
+            assert_eq!(&heap[16..16 + n], content.as_bytes());
+        }
+    }
+
+    #[test]
+    fn symbol_lowers_to_name_struct_plus_symbol_struct() {
+        // `foo' → heap layout:
+        //   [0..8]   head reloc placeholder → tagged symbol ptr
+        //   [8..16]  name string length = 3
+        //   [16..24] "foo\0\0\0\0\0"
+        //   [24..32] symbol.name reloc placeholder → tagged string ptr
+        //   [32..40] symbol.value = NIL
+        let sexp = read_str("foo").expect("reader rejected `foo'");
+        let (heap, relocs) = lower_to_heap(&sexp).unwrap();
+        assert_eq!(heap.len(), 40);
+        assert_eq!(relocs.len(), 2);
+
+        // Name string struct.
+        assert_eq!(read_word(&heap, 8), 3);
+        assert_eq!(&heap[16..19], b"foo");
+        // Symbol value slot is NIL.
+        assert_eq!(read_word(&heap, 32), NL_VALUE_TAG_NIL);
+
+        // Reloc 1: symbol's name slot at offset 24 → tagged string at offset 8.
+        let r1 = &relocs[0];
+        assert_eq!(r1.write_at, 24);
+        assert_eq!(r1.addend, 8 | NL_VALUE_TAG_STRING);
+        // Reloc 2: head slot at offset 0 → tagged symbol at offset 24.
+        let r2 = &relocs[1];
+        assert_eq!(r2.write_at, 0);
+        assert_eq!(r2.addend, 24 | NL_VALUE_TAG_SYMBOL);
+    }
+
+    #[test]
+    fn float_still_unsupported() {
+        let sexp = read_str("3.14").expect("reader rejected 3.14");
+        match lower_to_heap(&sexp).unwrap_err() {
+            LowerError::Unsupported { variant } => assert_eq!(variant, "Float"),
+        }
     }
 }

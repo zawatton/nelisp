@@ -41,6 +41,21 @@ pub const NL_VALUE_TAG_CONS: u64 = 0b010;
 /// bits = 0b001).  Cdr-of-last-cell uses this to terminate lists.
 pub const NL_VALUE_TAG_NIL: u64 = 0b011;
 
+/// Heap-pointer tag for length-prefixed byte strings (Stage 6e).
+///
+/// String layout in heap (8-byte aligned):
+///   `[ 0..  8]`  u64 byte length
+///   `[ 8..  8+n]` n bytes of UTF-8 content
+///   `[8+n..  8+(n.next_multiple_of(8))]`  zero pad to next word
+pub const NL_VALUE_TAG_STRING: u64 = 0b100;
+
+/// Heap-pointer tag for symbol cells (Stage 6e).
+///
+/// Symbol layout in heap (16 bytes):
+///   `[ 0..  8]`  tagged string pointer to the symbol's name
+///   `[ 8.. 16]`  tagged value slot (NIL when the symbol is unbound)
+pub const NL_VALUE_TAG_SYMBOL: u64 = 0b101;
+
 /// Build the on-image word for the tagged-int representing `n`.
 ///
 /// The asm side expects the same arithmetic — see
@@ -88,6 +103,42 @@ pub fn is_cons(v: u64) -> bool {
 /// `NL_VALUE_TAG_NIL` — there is only one nil value, no payload.
 pub fn is_nil(v: u64) -> bool {
     v == NL_VALUE_TAG_NIL
+}
+
+/// Tag a heap-aligned address as a length-prefixed string pointer.
+pub fn tag_string(addr: u64) -> u64 {
+    debug_assert_eq!(
+        addr & NL_VALUE_TAG_MASK,
+        0,
+        "string struct address must be 8-byte aligned"
+    );
+    addr | NL_VALUE_TAG_STRING
+}
+
+pub fn untag_string(v: u64) -> u64 {
+    v & !NL_VALUE_TAG_MASK
+}
+
+pub fn is_string(v: u64) -> bool {
+    (v & NL_VALUE_TAG_MASK) == NL_VALUE_TAG_STRING
+}
+
+/// Tag a heap-aligned address as a symbol-cell pointer.
+pub fn tag_symbol(addr: u64) -> u64 {
+    debug_assert_eq!(
+        addr & NL_VALUE_TAG_MASK,
+        0,
+        "symbol struct address must be 8-byte aligned"
+    );
+    addr | NL_VALUE_TAG_SYMBOL
+}
+
+pub fn untag_symbol(v: u64) -> u64 {
+    v & !NL_VALUE_TAG_MASK
+}
+
+pub fn is_symbol(v: u64) -> bool {
+    (v & NL_VALUE_TAG_MASK) == NL_VALUE_TAG_SYMBOL
 }
 
 #[cfg(test)]
@@ -161,6 +212,51 @@ mod tests {
         assert!(!is_nil(NL_VALUE_TAG_INT));
         assert!(!is_nil(tag_int(0))); // tag_int(0) = 0b001, not 0b011
         assert!(!is_nil(tag_cons(0))); // tag_cons(0) = 0b010
+    }
+
+    #[test]
+    fn string_round_trip() {
+        for addr in [0x0u64, 0x8, 0x1000, 0x7f_0000_0000u64, u64::MAX & !NL_VALUE_TAG_MASK] {
+            let tagged = tag_string(addr);
+            assert!(is_string(tagged));
+            assert!(!is_cons(tagged));
+            assert!(!is_int(tagged));
+            assert!(!is_symbol(tagged));
+            assert!(!is_nil(tagged));
+            assert_eq!(untag_string(tagged), addr);
+        }
+    }
+
+    #[test]
+    fn symbol_round_trip() {
+        for addr in [0x0u64, 0x8, 0x1000, 0x7f_0000_0000u64, u64::MAX & !NL_VALUE_TAG_MASK] {
+            let tagged = tag_symbol(addr);
+            assert!(is_symbol(tagged));
+            assert!(!is_cons(tagged));
+            assert!(!is_int(tagged));
+            assert!(!is_string(tagged));
+            assert!(!is_nil(tagged));
+            assert_eq!(untag_symbol(tagged), addr);
+        }
+    }
+
+    #[test]
+    fn all_tags_are_distinct() {
+        let tags = [
+            NL_VALUE_TAG_INT,
+            NL_VALUE_TAG_CONS,
+            NL_VALUE_TAG_NIL,
+            NL_VALUE_TAG_STRING,
+            NL_VALUE_TAG_SYMBOL,
+        ];
+        for (i, a) in tags.iter().enumerate() {
+            for (j, b) in tags.iter().enumerate() {
+                if i != j {
+                    assert_ne!(a, b, "tags at idx {} and {} collided: {:#b}", i, j, a);
+                }
+                assert!(*a <= NL_VALUE_TAG_MASK, "tag {:#b} exceeds 3-bit mask", a);
+            }
+        }
     }
 
     #[test]

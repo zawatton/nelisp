@@ -38,9 +38,11 @@ pub use loader::read_header;
 pub use native_assets::{
     NlImageEntry, HAS_NATIVE_DELIBERATE_NULL_DEREF, HAS_NATIVE_LIST_LENGTH,
     HAS_NATIVE_LOAD_CAR_INT_UNTAG, HAS_NATIVE_LOAD_HEAP_BYTE0, HAS_NATIVE_LOAD_HEAP_INT_UNTAG,
+    HAS_NATIVE_LOAD_HEAP_STRING_LEN, HAS_NATIVE_LOAD_HEAP_SYMBOL_NAME_LEN,
     HAS_NATIVE_LOAD_HEAP_THROUGH_PTR, HAS_NATIVE_RETURN_42, NATIVE_DELIBERATE_NULL_DEREF,
     NATIVE_LIST_LENGTH, NATIVE_LOAD_CAR_INT_UNTAG, NATIVE_LOAD_HEAP_BYTE0,
-    NATIVE_LOAD_HEAP_INT_UNTAG, NATIVE_LOAD_HEAP_THROUGH_PTR, NATIVE_RETURN_42,
+    NATIVE_LOAD_HEAP_INT_UNTAG, NATIVE_LOAD_HEAP_STRING_LEN, NATIVE_LOAD_HEAP_SYMBOL_NAME_LEN,
+    NATIVE_LOAD_HEAP_THROUGH_PTR, NATIVE_RETURN_42,
 };
 pub use reloc::{
     apply_relocations, relocs_from_bytes, relocs_to_bytes, ImageReloc, RelocError,
@@ -48,6 +50,8 @@ pub use reloc::{
 };
 pub use signal::{install_signal_handlers, NL_IMAGE_FAULT_EXIT_CODE};
 pub use value::{
-    is_cons, is_int, is_nil, tag_cons, tag_int, untag_cons, untag_int, NL_VALUE_TAG_BITS,
-    NL_VALUE_TAG_CONS, NL_VALUE_TAG_INT, NL_VALUE_TAG_MASK, NL_VALUE_TAG_NIL,
+    is_cons, is_int, is_nil, is_string, is_symbol, tag_cons, tag_int, tag_string, tag_symbol,
+    untag_cons, untag_int, untag_string, untag_symbol, NL_VALUE_TAG_BITS, NL_VALUE_TAG_CONS,
+    NL_VALUE_TAG_INT, NL_VALUE_TAG_MASK, NL_VALUE_TAG_NIL, NL_VALUE_TAG_STRING,
+    NL_VALUE_TAG_SYMBOL,
 };
