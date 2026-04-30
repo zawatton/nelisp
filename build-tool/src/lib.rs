@@ -21,4 +21,5 @@
 pub mod bridge;
 pub mod eval;
 pub mod image_lowering;
+pub mod native_emit;
 pub mod reader;

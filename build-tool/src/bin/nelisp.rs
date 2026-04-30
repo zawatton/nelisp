@@ -14,9 +14,10 @@ use std::process::ExitCode;
 
 use nelisp_build_tool::eval::{eval_str, eval_str_all};
 use nelisp_build_tool::image_lowering::lower_to_heap;
+use nelisp_build_tool::native_emit::{emit_return_i32, HAS_EMIT_RETURN_I32};
 use nelisp_build_tool::reader::{fmt_sexp, read_str, Sexp};
 use nelisp_runtime::image::{
-    write_image_with_heap_code_and_relocs, HAS_NATIVE_LIST_LENGTH,
+    write_image_with_heap_code_and_relocs, write_image_with_native_entry, HAS_NATIVE_LIST_LENGTH,
     HAS_NATIVE_LOAD_HEAP_FLOAT_INT_TRUNC, HAS_NATIVE_LOAD_HEAP_INT_UNTAG,
     HAS_NATIVE_LOAD_HEAP_STRING_LEN, HAS_NATIVE_LOAD_HEAP_SYMBOL_NAME_LEN,
     HAS_NATIVE_LOAD_HEAP_VECTOR_LEN, NATIVE_LIST_LENGTH, NATIVE_LOAD_HEAP_FLOAT_INT_TRUNC,
@@ -32,7 +33,8 @@ const USAGE: &str = "usage: nelisp --version
        nelisp mint-string-from-source SRC OUT  # Stage 6e: SRC must read as a string literal
        nelisp mint-symbol-from-source SRC OUT  # Stage 6e: SRC must read as a symbol
        nelisp mint-eval-result SRC OUT         # Stage 7a: evaluate SRC, lower result, auto-pick asset
-       nelisp mint-eval-file SRC-FILE OUT      # Stage 8: read FILE as a sequence of forms, evaluate, lower last value";
+       nelisp mint-eval-file SRC-FILE OUT      # Stage 8: read FILE as a sequence of forms, evaluate, lower last value
+       nelisp mint-int-as-code SRC OUT         # Stage 9a: evaluate SRC (must be Int), emit native return-i32 code";
 
 #[derive(Debug)]
 enum Command {
@@ -69,6 +71,13 @@ enum Command {
     /// fixtures end-to-end.  Fails with the evaluator's normal
     /// error if any form throws.
     MintEvalFile { src_file: String, out: String },
+    /// Doc 47 Stage 9a — evaluate SRC (must reduce to an integer
+    /// value), then emit a native return-i32 function body via
+    /// `native_emit::emit_return_i32' and write an image whose code
+    /// segment IS that body.  No heap, no relocs — the entire
+    /// program lives in the code segment as a few bytes of asm.
+    /// First step toward Doc 47 §3.1 phase 7 (Phase 7 native arena).
+    MintIntAsCode { src: String, out: String },
 }
 
 fn parse_args<I, S>(args: I) -> Result<Command, String>
@@ -109,6 +118,12 @@ where
         [_, mode, src_file, out] if mode == "mint-eval-file" => {
             Ok(Command::MintEvalFile {
                 src_file: src_file.clone(),
+                out: out.clone(),
+            })
+        }
+        [_, mode, src, out] if mode == "mint-int-as-code" => {
+            Ok(Command::MintIntAsCode {
+                src: src.clone(),
                 out: out.clone(),
             })
         }
@@ -182,6 +197,51 @@ fn main() -> ExitCode {
                     ExitCode::from(1)
                 }
             }
+        }
+        Command::MintIntAsCode { src, out } => run_mint_int_as_code(&src, &out),
+    }
+}
+
+fn run_mint_int_as_code(src: &str, out: &str) -> ExitCode {
+    if !HAS_EMIT_RETURN_I32 {
+        eprintln!("nelisp: mint-int-as-code: native_emit unavailable on this arch");
+        return ExitCode::from(14);
+    }
+    let result = match eval_str(src) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("nelisp: eval error: {}", e);
+            return ExitCode::from(2);
+        }
+    };
+    let n = match result {
+        Sexp::Int(n) => n,
+        other => {
+            eprintln!(
+                "nelisp: mint-int-as-code: expression evaluated to {:?}, want Int",
+                fmt_sexp(&other)
+            );
+            return ExitCode::from(3);
+        }
+    };
+    // i64 → i32 truncation; users picking values outside i32 range
+    // see the modular wrap (matches the seed's exit-code semantics).
+    let value = n as i32;
+    let code = emit_return_i32(value);
+    match write_image_with_native_entry(out, &code) {
+        Ok(()) => {
+            println!(
+                "minted int-as-code NlImage at {} (eval={}, value_i32={}, code_size={})",
+                out,
+                n,
+                value,
+                code.len()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("nelisp: image write error: {}", e);
+            ExitCode::from(4)
         }
     }
 }
@@ -455,6 +515,17 @@ mod tests {
             Command::MintEvalFile { src_file, out } => {
                 assert_eq!(src_file, "boot.el");
                 assert_eq!(out, "/tmp/b.bin");
+            }
+            other => panic!("unexpected: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_mint_int_as_code() {
+        match parse_args(["nelisp", "mint-int-as-code", "(+ 1 2)", "/tmp/c.bin"]).unwrap() {
+            Command::MintIntAsCode { src, out } => {
+                assert_eq!(src, "(+ 1 2)");
+                assert_eq!(out, "/tmp/c.bin");
             }
             other => panic!("unexpected: {:?}", other),
         }
