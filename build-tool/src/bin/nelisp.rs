@@ -61,6 +61,7 @@ use nelisp_build_tool::reader::fmt_sexp;
 const USAGE: &str = "usage: nelisp --version
        nelisp eval EXPR                 # evaluate EXPR and print the result
        nelisp -l FILE                   # load FILE and print the last result
+       nelisp exec FILE                 # load FILE silently (no final-value print)
        nelisp -                         # read from stdin and print the last result
        nelisp compile-image SRC IMG     # Doc 47 phase 4 walking skeleton
        nelisp eval-image IMG            # decode IMG and evaluate, print result
@@ -78,6 +79,10 @@ enum Command {
     Version,
     Eval(String),
     LoadFile(String),
+    /// Like LoadFile but suppresses the final-value `println!`.  Required
+    /// for stdio servers (e.g. elisp-lsp) where any byte after the last
+    /// reply corrupts the wire.  Errors still go to stderr and set exit 1.
+    ExecFile(String),
     LoadStdin,
     CompileImage { src: String, image: String },
     EvalImage(String),
@@ -93,6 +98,7 @@ where
         [_, flag] if flag == "--version" || flag == "-V" => Ok(Command::Version),
         [_, mode, expr] if mode == "eval" => Ok(Command::Eval(expr.clone())),
         [_, flag, path] if flag == "-l" || flag == "--load" => Ok(Command::LoadFile(path.clone())),
+        [_, mode, path] if mode == "exec" => Ok(Command::ExecFile(path.clone())),
         [_, flag] if flag == "-" => Ok(Command::LoadStdin),
         [_, mode, src, image] if mode == "compile-image" => Ok(Command::CompileImage {
             src: src.clone(),
@@ -120,6 +126,13 @@ fn main() -> ExitCode {
         Command::Eval(expr) => run_eval(&expr),
         Command::LoadFile(path) => match fs::read_to_string(Path::new(&path)) {
             Ok(s) => run_eval_all(&s),
+            Err(e) => {
+                eprintln!("nelisp: cannot read {}: {}", path, e);
+                ExitCode::from(1)
+            }
+        },
+        Command::ExecFile(path) => match fs::read_to_string(Path::new(&path)) {
+            Ok(s) => exec_eval_all(&s),
             Err(e) => {
                 eprintln!("nelisp: cannot read {}: {}", path, e);
                 ExitCode::from(1)
@@ -206,6 +219,20 @@ fn run_eval_all(input: &str) -> ExitCode {
     }
 }
 
+/// Same as `run_eval_all' but suppresses the final-value print.
+/// Used by `nelisp exec FILE' for stdio-protocol servers (elisp-lsp,
+/// future REPLs over stdio) where any byte after the last protocol
+/// reply corrupts the wire.  Errors still flow to stderr / exit 1.
+fn exec_eval_all(input: &str) -> ExitCode {
+    match eval_str_all(input) {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("nelisp: eval error: {}", e);
+            ExitCode::from(1)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{parse_args, Command};
@@ -228,6 +255,14 @@ mod tests {
     fn parses_load_file() {
         match parse_args(["nelisp", "-l", "foo.el"]).unwrap() {
             Command::LoadFile(s) => assert_eq!(s, "foo.el"),
+            other => panic!("unexpected: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_exec_file() {
+        match parse_args(["nelisp", "exec", "server.el"]).unwrap() {
+            Command::ExecFile(s) => assert_eq!(s, "server.el"),
             other => panic!("unexpected: {:?}", other),
         }
     }
