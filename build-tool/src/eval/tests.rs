@@ -1329,3 +1329,64 @@ fn elisp_stdlib_dec() {
 fn elisp_stdlib_inc_in_let() {
     assert_eq!(ok("(let ((x 10)) (1+ x))"), Sexp::Int(11));
 }
+
+// ==== sweep-9 G4 plist-str tests ====
+
+#[test]
+fn elisp_g4_plist_get_present() {
+    assert_eq!(ok("(plist-get (list :a 1 :b 2 :c 3) :b)"), Sexp::Int(2));
+}
+
+#[test]
+fn elisp_g4_plist_get_missing() {
+    assert_eq!(ok("(plist-get (list :a 1 :b 2) :z)"), Sexp::Nil);
+}
+
+#[test]
+fn elisp_g4_plist_get_empty() {
+    assert_eq!(ok("(plist-get nil :a)"), Sexp::Nil);
+}
+
+#[test]
+fn elisp_g4_plist_member_present() {
+    assert_eq!(
+        ok("(plist-member (list :a 1 :b 2) :b)"),
+        ok("(list :b 2)")
+    );
+}
+
+#[test]
+fn elisp_g4_plist_member_missing() {
+    assert_eq!(ok("(plist-member (list :a 1) :z)"), Sexp::Nil);
+}
+
+#[test]
+fn elisp_g4_plist_put_replace() {
+    assert_eq!(
+        ok("(plist-put (list :a 1 :b 2) :a 99)"),
+        ok("(list :a 99 :b 2)")
+    );
+}
+
+#[test]
+fn elisp_g4_plist_put_append() {
+    assert_eq!(
+        ok("(plist-put (list :a 1) :b 2)"),
+        ok("(list :a 1 :b 2)")
+    );
+}
+
+#[test]
+fn elisp_g4_plist_put_empty() {
+    assert_eq!(ok("(plist-put nil :x 7)"), ok("(list :x 7)"));
+}
+
+#[test]
+fn elisp_g4_string_empty_p_true() {
+    assert_eq!(ok("(string-empty-p \"\")"), Sexp::T);
+}
+
+#[test]
+fn elisp_g4_string_empty_p_false() {
+    assert_eq!(ok("(string-empty-p \"a\")"), Sexp::Nil);
+}
