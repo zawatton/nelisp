@@ -93,33 +93,146 @@ pub const HAS_EMIT_RETURN_I32: bool =
 ///     00 00 40 f9         ldr  x0, [x0]       ; *argv[0]
 ///     00 fc 43 93         asr  x0, x0, #3
 ///     c0 03 5f d6         ret
-#[cfg(target_arch = "x86_64")]
+/// Stage 9b emit, refactored at Stage 9c to compose from the chain
+/// primitives.  The output is identical to the hand-written byte
+/// sequence (asserted by the byte-equality unit tests below) — the
+/// composition is purely structural so future chain primitives can
+/// participate in the same regression gate without duplicating the
+/// per-arch byte tables.
 pub fn emit_load_heap_int_untag() -> Vec<u8> {
-    vec![
-        0x48, 0x8b, 0x06, // mov rax, [rsi]
-        0x48, 0x8b, 0x00, // mov rax, [rax]
-        0x48, 0xc1, 0xf8, 0x03, // sar rax, 3
-        0xc3, // ret
-    ]
-}
-
-#[cfg(target_arch = "aarch64")]
-pub fn emit_load_heap_int_untag() -> Vec<u8> {
-    vec![
-        0x20, 0x00, 0x40, 0xf9, // ldr  x0, [x1]
-        0x00, 0x00, 0x40, 0xf9, // ldr  x0, [x0]
-        0x00, 0xfc, 0x43, 0x93, // asr  x0, x0, #3
-        0xc0, 0x03, 0x5f, 0xd6, // ret
-    ]
-}
-
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-pub fn emit_load_heap_int_untag() -> Vec<u8> {
-    Vec::new()
+    let mut out = emit_load_heap_int_untag_head();
+    out.extend_from_slice(&emit_ret());
+    out
 }
 
 pub const HAS_EMIT_LOAD_HEAP_INT_UNTAG: bool =
     cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
+
+// ---------------------------------------------------------------------------
+// Doc 47 Stage 9c — chain-emit primitives.
+//
+// Closure body compile = chain of small asm building blocks against a
+// single accumulator register (rax on x86_64, x0 on aarch64).  Stage
+// 9c walking-skeleton extracts the head of `emit_load_heap_int_untag'
+// (load heap → untag, leaves value in accumulator) and the `ret'
+// trailer as separate emitters, then composes them with a new
+// `emit_add_imm32' middle to demonstrate the build-tool can produce
+// the same shape from primitive blocks.
+//
+// Future stages widen the primitive set (sub_imm, mul_imm, branch,
+// call) but the composition contract — single accumulator, no ABI
+// shuffling between blocks — stays the same.
+// ---------------------------------------------------------------------------
+
+/// Head of `emit_load_heap_int_untag` minus the `ret`.  Leaves the
+/// untagged i64 in the accumulator (rax / x0) so a chain emitter can
+/// keep operating on it.
+#[cfg(target_arch = "x86_64")]
+pub fn emit_load_heap_int_untag_head() -> Vec<u8> {
+    vec![
+        0x48, 0x8b, 0x06, // mov rax, [rsi]
+        0x48, 0x8b, 0x00, // mov rax, [rax]
+        0x48, 0xc1, 0xf8, 0x03, // sar rax, 3
+    ]
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn emit_load_heap_int_untag_head() -> Vec<u8> {
+    vec![
+        0x20, 0x00, 0x40, 0xf9, // ldr  x0, [x1]
+        0x00, 0x00, 0x40, 0xf9, // ldr  x0, [x0]
+        0x00, 0xfc, 0x43, 0x93, // asr  x0, x0, #3
+    ]
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+pub fn emit_load_heap_int_untag_head() -> Vec<u8> {
+    Vec::new()
+}
+
+/// `ret`/`RET` instruction byte(s).  Closes a chain.
+#[cfg(target_arch = "x86_64")]
+pub fn emit_ret() -> Vec<u8> {
+    vec![0xc3]
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn emit_ret() -> Vec<u8> {
+    vec![0xc0, 0x03, 0x5f, 0xd6] // RET
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+pub fn emit_ret() -> Vec<u8> {
+    Vec::new()
+}
+
+/// `add accumulator, sign-extended-imm32` — folds `imm` into the
+/// running accumulator and leaves the result there.
+///
+/// x86_64 (7 bytes, REX.W + opcode 05):
+///     48 05 II II II II   add rax, imm32   ; sign-extends to 64 bits
+///
+/// aarch64 (12 bytes, MOVZ + MOVK + ADD-extended):
+///     d28000a9 + f2a00009  ; MOVZ + MOVK build imm32 in w9
+///     8b294000             ; ADD x0, x0, w9, SXTW
+/// (instruction encodings vary by imm; the constructor below builds
+/// each MOVZ/MOVK from the `imm` half-words directly.)
+#[cfg(target_arch = "x86_64")]
+pub fn emit_add_rax_imm32(imm: i32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(7);
+    out.push(0x48); // REX.W
+    out.push(0x05); // opcode for add rAX, imm32
+    out.extend_from_slice(&imm.to_le_bytes());
+    out
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn emit_add_rax_imm32(imm: i32) -> Vec<u8> {
+    // Build imm32 in w9 (X9 lower half) via MOVZ + MOVK, then add it
+    // to x0 with sign-extension from w9.
+    let v = imm as u32;
+    let low16 = v & 0xFFFF;
+    let high16 = (v >> 16) & 0xFFFF;
+    // MOVZ w9, #low16             0x52800000 | (low16 << 5) | rd=9
+    let movz: u32 = 0x52800000 | (low16 << 5) | 9;
+    // MOVK w9, #high16, lsl #16   0x72A00000 (hw=01) | (high16 << 5) | rd=9
+    let movk: u32 = 0x72A00000 | (high16 << 5) | 9;
+    // ADD (extended register) X0, X0, W9, SXTW
+    //   sf=1 op=0 S=0 0b01011 001 Rm=9 option=110 (SXTW) imm3=0 Rn=0 Rd=0
+    //   Encoding: 0x8B29C000 | (option<<13) | (imm3<<10) | (Rn<<5) | Rd
+    //   For our params (Rm=9, option=SXTW=0b110, imm3=0, Rn=0, Rd=0):
+    //   = 0x8B000000 | (1<<21) | (Rm<<16) | (0b110<<13) | (0<<10) | (Rn<<5) | Rd
+    //   = 0x8B200000 | (9 << 16) | (0b110 << 13)
+    //   = 0x8B2CC000 | (9 << 16) = 0x8B29C000.
+    let add_ext: u32 = 0x8B20C000 | (9u32 << 16) | (0b110u32 << 13);
+    let mut out = Vec::with_capacity(12);
+    out.extend_from_slice(&movz.to_le_bytes());
+    out.extend_from_slice(&movk.to_le_bytes());
+    out.extend_from_slice(&add_ext.to_le_bytes());
+    out
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+pub fn emit_add_rax_imm32(_imm: i32) -> Vec<u8> {
+    Vec::new()
+}
+
+pub const HAS_CHAIN_EMIT_PRIMITIVES: bool =
+    cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
+
+/// Stage 9c walking-skeleton: emit a function body that loads a
+/// tagged-int heap word, untags it, adds `imm` (sign-extended), and
+/// returns.  Composed from `emit_load_heap_int_untag_head' +
+/// `emit_add_rax_imm32' + `emit_ret' so any byte-for-byte change to
+/// the building blocks is reflected here automatically.
+pub fn emit_int_plus_imm(imm: i32) -> Vec<u8> {
+    let mut out = emit_load_heap_int_untag_head();
+    out.extend_from_slice(&emit_add_rax_imm32(imm));
+    out.extend_from_slice(&emit_ret());
+    out
+}
+
+pub const HAS_EMIT_INT_PLUS_IMM: bool = HAS_CHAIN_EMIT_PRIMITIVES;
 
 #[cfg(test)]
 mod tests {
@@ -257,5 +370,142 @@ mod tests {
         } else {
             assert!(bytes.is_empty(), "unsupported arch must emit empty");
         }
+    }
+
+    // ============================================================
+    // Doc 47 Stage 9c — chain emit primitives + composition
+    // ============================================================
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn x86_64_emit_load_heap_head_no_ret() {
+        // Same as the full asset minus the trailing 0xc3 (ret).
+        assert_eq!(
+            emit_load_heap_int_untag_head(),
+            vec![
+                0x48, 0x8b, 0x06, //
+                0x48, 0x8b, 0x00, //
+                0x48, 0xc1, 0xf8, 0x03,
+            ]
+        );
+        assert_eq!(emit_load_heap_int_untag_head().len(), 10);
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn x86_64_emit_ret_is_c3() {
+        assert_eq!(emit_ret(), vec![0xc3]);
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn aarch64_emit_ret() {
+        assert_eq!(emit_ret(), vec![0xc0, 0x03, 0x5f, 0xd6]);
+    }
+
+    #[test]
+    fn load_head_plus_ret_equals_full_asset() {
+        // Composition gate: the refactored full-asset emitter must
+        // remain byte-identical with the hand-rolled head+ret chain.
+        let mut composed = emit_load_heap_int_untag_head();
+        composed.extend_from_slice(&emit_ret());
+        assert_eq!(composed, emit_load_heap_int_untag());
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn x86_64_emit_add_rax_imm32_positive() {
+        // add rax, 10 = 48 05 0a 00 00 00 (REX.W + opcode + imm32)
+        assert_eq!(
+            emit_add_rax_imm32(10),
+            vec![0x48, 0x05, 0x0a, 0x00, 0x00, 0x00]
+        );
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn x86_64_emit_add_rax_imm32_negative() {
+        // add rax, -1 = 48 05 ff ff ff ff (sign-extended)
+        assert_eq!(
+            emit_add_rax_imm32(-1),
+            vec![0x48, 0x05, 0xff, 0xff, 0xff, 0xff]
+        );
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn x86_64_emit_int_plus_imm_full_chain() {
+        // load head (10) + add imm32 (6) + ret (1) = 17 bytes
+        let bytes = emit_int_plus_imm(10);
+        assert_eq!(bytes.len(), 17);
+        // Head matches load_heap_int_untag without the trailing ret.
+        assert_eq!(
+            &bytes[..10],
+            &[0x48, 0x8b, 0x06, 0x48, 0x8b, 0x00, 0x48, 0xc1, 0xf8, 0x03][..]
+        );
+        // Add rax, 10
+        assert_eq!(
+            &bytes[10..16],
+            &[0x48, 0x05, 0x0a, 0x00, 0x00, 0x00][..]
+        );
+        // Trailing ret
+        assert_eq!(bytes[16], 0xc3);
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn aarch64_emit_add_rax_imm32_zero() {
+        // imm = 0:
+        //   MOVZ w9, #0       0x52800009 (rd=9, low16=0)
+        //   MOVK w9, #0,lsl16 0x72A00009
+        //   ADD x0,x0,w9,SXTW 0x8B29C000
+        let bytes = emit_add_rax_imm32(0);
+        assert_eq!(bytes.len(), 12);
+        // little-endian u32 reads
+        let movz = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        let movk = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+        let add_ext = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+        assert_eq!(movz, 0x52800009);
+        assert_eq!(movk, 0x72A00009);
+        assert_eq!(add_ext, 0x8B29C000);
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn aarch64_emit_int_plus_imm_full_chain() {
+        // 12 (head) + 12 (add) + 4 (ret) = 28 bytes
+        let bytes = emit_int_plus_imm(0);
+        assert_eq!(bytes.len(), 28);
+        // First 12 = head
+        assert_eq!(&bytes[..12], &emit_load_heap_int_untag_head()[..]);
+        // Last 4 = ret
+        assert_eq!(&bytes[24..28], &emit_ret()[..]);
+    }
+
+    #[test]
+    fn int_plus_imm_arch_flag_matches_output() {
+        let bytes = emit_int_plus_imm(0);
+        if HAS_EMIT_INT_PLUS_IMM {
+            assert!(!bytes.is_empty(), "supported arch must emit non-empty");
+        } else {
+            assert!(bytes.is_empty(), "unsupported arch must emit empty");
+        }
+    }
+
+    #[test]
+    fn int_plus_imm_zero_equals_load_asset() {
+        // Special case: adding 0 should still compute correctly.
+        // The bytes differ from emit_load_heap_int_untag() because
+        // we still emit the add-imm middle (== explicit composition,
+        // even when redundant), but the boot exit code must match.
+        // This test only asserts the byte length sanity since the
+        // E2E parity is covered by the smoke script.
+        let plus_zero = emit_int_plus_imm(0);
+        let load_only = emit_load_heap_int_untag();
+        assert!(plus_zero.len() > load_only.len());
+        // Head bytes share prefix.
+        let head = emit_load_heap_int_untag_head();
+        assert_eq!(&plus_zero[..head.len()], &head[..]);
+        assert_eq!(&load_only[..head.len()], &head[..]);
     }
 }
