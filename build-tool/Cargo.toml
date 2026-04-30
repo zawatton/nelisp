@@ -2,38 +2,27 @@
 name = "nelisp-build-tool"
 version = "0.1.0"
 edition = "2021"
-description = "NeLisp seed-image build-time tool — Doc 47 §3.1 phase 6 carve-out skeleton"
+description = "NeLisp build-time tool — Doc 47 §3.1 phase 6 carve-out (reader + minimal evaluator + Elisp self-host bridge)"
 license = "GPL-3.0-or-later"
 
-# Stage 5a (this commit): empty crate stub.  Proves the workspace
-# layout end-to-end before any code moves.
-#
-# Stage 5b: absorb `nelisp-runtime/src/bin/nelisp.rs` (the small
-# `--eval` / `--read` driver) — the smallest evaluator-using consumer
-# in the workspace, used as a sanity check that path-dep delegation
-# back into `nelisp-runtime::{eval,reader}` still resolves once the
-# binary lives in this crate.
-#
-# Stage 5c (separate session): `git mv nelisp-runtime/src/{eval,
-# reader,bridge}/` into `build-tool/src/` and strip them from
-# `nelisp-runtime`'s public surface.  Requires anvil-runtime to be
-# re-pointed at the new location (or, long-term, refactored to use
-# the NeLisp substrate instead of the Rust evaluator).
+# Doc 47 §3.1 phase 6 carve-out:
+#   Stage 5a (commit 622a8b4): workspace + empty crate stub.
+#   Stage 5b (commit 5576070): absorbed `nelisp-runtime/src/bin/nelisp.rs`.
+#   Stage 5c (this commit):    `git mv nelisp-runtime/src/{eval,reader,
+#                              bridge}/` here; this crate now hosts the
+#                              entire Doc 44 minimal interpreter.
+
 [lib]
 name = "nelisp_build_tool"
 path = "src/lib.rs"
 
-# Doc 47 §3.1 phase 6 / Stage 5b (2026-04-30) — the `nelisp` driver
-# binary (small `--eval` / `--read` REPL-ish entry point) lives here.
-# Currently delegates to `nelisp_runtime::{eval, reader}`; once Stage 5c
-# moves those modules into this crate the path dep below collapses to a
-# single-crate `use crate::{eval, reader}'.
 [[bin]]
 name = "nelisp"
 path = "src/bin/nelisp.rs"
 
 [dependencies]
-# Stage 5b: temporary path dep so the moved binary can keep calling
-# `eval_str` / `fmt_sexp` from `nelisp-runtime` until Stage 5c migrates
-# the modules across.  After 5c this line goes away.
-nelisp-runtime = { path = "../nelisp-runtime" }
+# Stage 5c removed the temporary path dep on `nelisp-runtime` — the
+# `eval` / `reader` modules now live in this crate, so the bin and lib
+# paths resolve in-crate.  No external crate dependency at all yet;
+# eval / reader / bridge are pure-std code (verified by `grep` over the
+# moving sources before the move).

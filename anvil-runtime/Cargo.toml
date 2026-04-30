@@ -36,11 +36,12 @@ name = "anvil-mcp-demo"
 path = "src/bin/anvil-mcp-demo.rs"
 
 [dependencies]
-# Architecture α: anvil-runtime delegates evaluator + bridge primitives back
-# into the NeLisp Rust runtime via path dependency.  `default-features = false'
-# would be ideal once nelisp-runtime grows feature flags; for now the full
-# crate is pulled in.
-nelisp-runtime = { path = "../nelisp-runtime" }
+# Doc 47 §3.1 phase 6 / Stage 5c (2026-04-30) — `eval` / `reader` /
+# `bridge` carved out of `nelisp-runtime` into the sibling
+# `nelisp-build-tool` crate.  anvil_host_registry talks to those
+# modules directly; the seed-only `nelisp-runtime` (syscall + sqlite +
+# image boot) is no longer in the dependency closure of this crate.
+nelisp-build-tool = { path = "../build-tool" }
 once_cell = "1.19"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

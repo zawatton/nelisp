@@ -6,11 +6,11 @@ use std::sync::Mutex;
 
 use serde_json::{json, Map, Value};
 
-use nelisp_runtime::bridge::{bootstrap_self_host, eval_via_self_host, BridgeError};
-use nelisp_runtime::eval::{self, Env, Sexp};
+use nelisp_build_tool::bridge::{bootstrap_self_host, eval_via_self_host, BridgeError};
+use nelisp_build_tool::eval::{self, Env, Sexp};
 use crate::mcp::protocol::{JsonRpcError, ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND};
 use crate::mcp::tool::{internal_tool_error, ToolRegistry, ToolSpec};
-use nelisp_runtime::reader::read_all;
+use nelisp_build_tool::reader::read_all;
 
 const DEFAULT_CATEGORIES: &[&str] = &["os", "cpu", "ram", "disk", "gpu", "network", "uptime", "emacs"];
 

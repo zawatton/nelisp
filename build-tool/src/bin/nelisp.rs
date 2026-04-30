@@ -12,8 +12,8 @@ use std::io::{self, Read};
 use std::path::Path;
 use std::process::ExitCode;
 
-use nelisp_runtime::eval::{eval_str, eval_str_all};
-use nelisp_runtime::reader::fmt_sexp;
+use nelisp_build_tool::eval::{eval_str, eval_str_all};
+use nelisp_build_tool::reader::fmt_sexp;
 
 const USAGE: &str = "usage: nelisp --version
        nelisp eval EXPR        # evaluate EXPR and print the result
