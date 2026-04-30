@@ -88,7 +88,13 @@ impl Env {
     /// Construct a globals-only environment with all built-ins
     /// installed.  Equivalent to GNU Emacs' empty-buffer top-level.
     pub fn new_global() -> Self {
-        const STDLIB_SRC: &str = include_str!("../../../lisp/nelisp-stdlib.el");
+        const STDLIB_SOURCES: &[(&str, &str)] = &[
+            ("nelisp-stdlib.el", include_str!("../../../lisp/nelisp-stdlib.el")),
+            ("nelisp-stdlib-list.el", include_str!("../../../lisp/nelisp-stdlib-list.el")),
+            ("nelisp-stdlib-hof.el", include_str!("../../../lisp/nelisp-stdlib-hof.el")),
+            ("nelisp-stdlib-search.el", include_str!("../../../lisp/nelisp-stdlib-search.el")),
+            ("nelisp-stdlib-plist-str.el", include_str!("../../../lisp/nelisp-stdlib-plist-str.el")),
+        ];
         let mut env = Env {
             globals: HashMap::new(),
             frames: Vec::new(),
@@ -101,13 +107,15 @@ impl Env {
         env.intern_constant("nil", Sexp::Nil);
         env.intern_constant("t", Sexp::T);
         super::builtins::install_builtins(&mut env);
-        let forms = match reader::read_all(STDLIB_SRC) {
-            Ok(forms) => forms,
-            Err(e) => panic!("nelisp-stdlib bootstrap failed: {}", e),
-        };
-        for form in &forms {
-            if let Err(e) = super::eval(form, &mut env) {
-                panic!("nelisp-stdlib bootstrap failed: {}", e);
+        for (name, src) in STDLIB_SOURCES {
+            let forms = match reader::read_all(src) {
+                Ok(forms) => forms,
+                Err(e) => panic!("{} bootstrap failed: {}", name, e),
+            };
+            for form in &forms {
+                if let Err(e) = super::eval(form, &mut env) {
+                    panic!("{} bootstrap failed: {}", name, e);
+                }
             }
         }
         env
