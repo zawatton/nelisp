@@ -18,9 +18,7 @@
 //! crate instead.  Future Stage 6+ will add the dumper that bakes a
 //! heap evaluated by these modules into a `nelisp.image` v1 file.
 
-pub mod ast_translate;
 pub mod bridge;
 pub mod eval;
 pub mod image_lowering;
-pub mod native_emit;
 pub mod reader;
