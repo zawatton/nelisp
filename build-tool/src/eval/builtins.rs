@@ -8,8 +8,7 @@
 //! Categories (per prompt §6):
 //!   - Arithmetic  : + - * / mod < > <= >= = /=
 //!   - Equality    : eq equal
-//!   - Cons / list : car cdr cons list length append
-//!   - Higher-order: alist-get
+//!   - Cons / list : car cdr cons length append
 //!   - Predicates  : consp listp atom symbolp stringp numberp
 //!                   integerp floatp
 //!   - String      : concat format substring intern symbol-name
@@ -20,6 +19,9 @@
 //!   identity null not 1+ 1- nth nthcdr reverse nreverse
 //!   mapcar mapc memq member assq assoc
 //!   plist-get plist-put plist-member string-empty-p
+//!
+//! Sweep 10 migrated to Elisp (lisp/nelisp-stdlib-misc.el):
+//!   list alist-get string-prefix-p number-to-string
 
 use super::env::Env;
 use super::error::EvalError;
@@ -36,25 +38,21 @@ pub fn install_builtins(env: &mut Env) {
         // equality
         "eq", "equal",
         // cons / list
-        "car", "cdr", "cons", "list", "length", "append",
+        "car", "cdr", "cons", "length", "append",
         "setcar", "setcdr",
         // generic sequence / array accessors
         "aref", "aset", "elt", "arrayp", "sequencep",
         "vector", "make-vector",
-        // higher-order
-        "alist-get",
         // predicates
         "consp", "listp", "atom", "symbolp", "stringp", "numberp", "integerp", "floatp", "functionp",
         // string
         "concat", "format", "substring", "intern", "symbol-name", "string-equal", "string=",
-        "string-prefix-p", "string-match-p", "regexp-quote",
+        "string-match-p", "regexp-quote",
         // file helpers
         "expand-file-name", "file-truename",
         // file I/O (Doc 47 Stage 8b — multi-file load chain)
         "file-name-directory", "file-name-nondirectory", "file-exists-p",
         "file-readable-p", "load",
-        // number / string convenience
-        "number-to-string",
         // symbol / function
         "symbol-value", "symbol-function", "fboundp", "boundp", "funcall", "apply", "eval",
         "signal", "error", "print", "princ", "prin1-to-string", "message",
@@ -94,7 +92,6 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "car" => bi_car(args),
         "cdr" => bi_cdr(args),
         "cons" => bi_cons(args),
-        "list" => Ok(Sexp::list_from(args)),
         "length" => bi_length(args),
         "append" => bi_append(args),
         "setcar" => bi_setcar(args),
@@ -108,8 +105,6 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
             Sexp::Nil | Sexp::Cons(_, _) | Sexp::Str(_) | Sexp::Vector(_))),
         "vector" => Ok(Sexp::vector(args.to_vec())),
         "make-vector" => bi_make_vector(args),
-        // ---- higher-order ----
-        "alist-get" => bi_alist_get(args),
         // ---- predicates ----
         "consp" => bi_predicate(args, |v| matches!(v, Sexp::Cons(_, _))),
         "listp" => bi_predicate(args, |v| matches!(v, Sexp::Cons(_, _) | Sexp::Nil)),
@@ -129,7 +124,6 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "intern" => bi_intern(args),
         "symbol-name" => bi_symbol_name(args),
         "string-equal" | "string=" => bi_string_eq(args),
-        "string-prefix-p" => bi_string_prefix_p(args),
         "string-match-p" => bi_string_match_p(args),
         "regexp-quote" => bi_regexp_quote(args),
         "expand-file-name" => bi_expand_file_name(args, env),
@@ -140,7 +134,6 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "file-exists-p" => bi_file_exists_p(args, env),
         "file-readable-p" => bi_file_readable_p(args, env),
         "load" => bi_load(args, env),
-        "number-to-string" => bi_number_to_string(args),
         // ---- symbol / function ----
         "symbol-value" => bi_symbol_value(args, env),
         "symbol-function" => bi_symbol_function(args, env),
@@ -461,46 +454,6 @@ fn list_to_vec(v: &Sexp) -> Result<Vec<Sexp>, EvalError> {
     }
 }
 
-fn compare_with_test(test: Option<&Sexp>, left: &Sexp, right: &Sexp) -> bool {
-    match test {
-        Some(Sexp::Symbol(name)) if name == "eq" => sexp_eq(left, right),
-        Some(Sexp::Symbol(name)) if name == "equal" => left == right,
-        Some(Sexp::Symbol(name)) if name == "string=" || name == "string-equal" => {
-            matches!((left, right), (Sexp::Str(a), Sexp::Str(b)) if a == b)
-        }
-        _ => left == right,
-    }
-}
-
-fn bi_alist_get(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("alist-get", args, 2, Some(5))?;
-    let key = args[0].clone();
-    let default = args.get(2).cloned().unwrap_or(Sexp::Nil);
-    let test = args.get(4).cloned();
-    let mut cur: Sexp = args[1].clone();
-    loop {
-        let next = match &cur {
-            Sexp::Nil => return Ok(default),
-            Sexp::Cons(pair, rest) => {
-                let pair_clone = pair.borrow().clone();
-                if let Sexp::Cons(k, vtail) = &pair_clone {
-                    let k_clone = k.borrow().clone();
-                    if compare_with_test(test.as_ref(), &k_clone, &key) {
-                        let vtail_clone = vtail.borrow().clone();
-                        return match vtail_clone {
-                            Sexp::Cons(v, _) => Ok(v.borrow().clone()),
-                            other => Ok(other),
-                        };
-                    }
-                }
-                rest.borrow().clone()
-            }
-            _ => return Ok(default),
-        };
-        cur = next;
-    }
-}
-
 // ---------- predicates ----------
 
 fn bi_predicate(args: &[Sexp], pred: fn(&Sexp) -> bool) -> Result<Sexp, EvalError> {
@@ -678,18 +631,6 @@ fn string_value(v: &Sexp) -> Result<String, EvalError> {
             expected: "stringp or symbolp".into(),
             got: other.clone(),
         }),
-    }
-}
-
-fn bi_string_prefix_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("string-prefix-p", args, 2, Some(3))?;
-    let prefix = string_value(&args[0])?;
-    let string = string_value(&args[1])?;
-    let ignore_case = args.get(2).map(is_truthy).unwrap_or(false);
-    if ignore_case {
-        Ok(truthy(string.to_lowercase().starts_with(&prefix.to_lowercase())))
-    } else {
-        Ok(truthy(string.starts_with(&prefix)))
     }
 }
 
@@ -1010,18 +951,6 @@ fn bi_load(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     }
     let _ = last;
     Ok(Sexp::T)
-}
-
-fn bi_number_to_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("number-to-string", args, 1, Some(1))?;
-    match &args[0] {
-        Sexp::Int(n) => Ok(Sexp::Str(n.to_string())),
-        Sexp::Float(f) => Ok(Sexp::Str(format!("{}", f))),
-        other => Err(EvalError::WrongType {
-            expected: "number".into(),
-            got: other.clone(),
-        }),
-    }
 }
 
 // ---------- symbol / function ----------

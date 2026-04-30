@@ -94,6 +94,7 @@ impl Env {
             ("nelisp-stdlib-hof.el", include_str!("../../../lisp/nelisp-stdlib-hof.el")),
             ("nelisp-stdlib-search.el", include_str!("../../../lisp/nelisp-stdlib-search.el")),
             ("nelisp-stdlib-plist-str.el", include_str!("../../../lisp/nelisp-stdlib-plist-str.el")),
+            ("nelisp-stdlib-misc.el", include_str!("../../../lisp/nelisp-stdlib-misc.el")),
         ];
         let mut env = Env {
             globals: HashMap::new(),
