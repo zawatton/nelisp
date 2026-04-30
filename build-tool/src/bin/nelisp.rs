@@ -31,7 +31,8 @@ const USAGE: &str = "usage: nelisp --version
        nelisp mint-list-from-source SRC OUT    # Stage 6d: read SRC, lower to image at OUT
        nelisp mint-string-from-source SRC OUT  # Stage 6e: SRC must read as a string literal
        nelisp mint-symbol-from-source SRC OUT  # Stage 6e: SRC must read as a symbol
-       nelisp mint-eval-result SRC OUT         # Stage 7a: evaluate SRC, lower result, auto-pick asset";
+       nelisp mint-eval-result SRC OUT         # Stage 7a: evaluate SRC, lower result, auto-pick asset
+       nelisp mint-eval-file SRC-FILE OUT      # Stage 8: read FILE as a sequence of forms, evaluate, lower last value";
 
 #[derive(Debug)]
 enum Command {
@@ -62,6 +63,12 @@ enum Command {
     /// build-tool's evaluator output flows into a Doc 47-spec
     /// binary image.
     MintEvalResult { src: String, out: String },
+    /// Doc 47 Stage 8 — like `mint-eval-result' but reads SRC-FILE
+    /// as a *sequence* of top-level forms (= `progn` semantics) and
+    /// lowers the *last* form's value.  Used to bake real `.el'
+    /// fixtures end-to-end.  Fails with the evaluator's normal
+    /// error if any form throws.
+    MintEvalFile { src_file: String, out: String },
 }
 
 fn parse_args<I, S>(args: I) -> Result<Command, String>
@@ -96,6 +103,12 @@ where
         [_, mode, src, out] if mode == "mint-eval-result" => {
             Ok(Command::MintEvalResult {
                 src: src.clone(),
+                out: out.clone(),
+            })
+        }
+        [_, mode, src_file, out] if mode == "mint-eval-file" => {
+            Ok(Command::MintEvalFile {
+                src_file: src_file.clone(),
                 out: out.clone(),
             })
         }
@@ -161,6 +174,15 @@ fn main() -> ExitCode {
             )
         }
         Command::MintEvalResult { src, out } => run_mint_eval_result(&src, &out),
+        Command::MintEvalFile { src_file, out } => {
+            match fs::read_to_string(Path::new(&src_file)) {
+                Ok(s) => run_mint_eval_all(&s, &out, &src_file),
+                Err(e) => {
+                    eprintln!("nelisp: cannot read {}: {}", src_file, e);
+                    ExitCode::from(1)
+                }
+            }
+        }
     }
 }
 
@@ -215,6 +237,16 @@ fn pick_asset_for_eval_result(
     }
 }
 
+fn run_mint_eval_all(src: &str, out: &str, label_for_log: &str) -> ExitCode {
+    match eval_str_all(src) {
+        Ok(value) => mint_eval_result(value, out, &format!("eval-file({})", label_for_log)),
+        Err(e) => {
+            eprintln!("nelisp: eval error: {}", e);
+            ExitCode::from(2)
+        }
+    }
+}
+
 fn run_mint_eval_result(src: &str, out: &str) -> ExitCode {
     let result = match eval_str(src) {
         Ok(s) => s,
@@ -223,7 +255,15 @@ fn run_mint_eval_result(src: &str, out: &str) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let (asset, has_asset, label) = match pick_asset_for_eval_result(&result) {
+    mint_eval_result(result, out, "eval-result")
+}
+
+/// Shared finisher: take an evaluator result, pick the matching
+/// native asset, lower the value to (heap, relocs), and write the
+/// image at OUT.  Used by both `mint-eval-result' (single-form
+/// inline source) and `mint-eval-file' (whole-file `progn').
+fn mint_eval_result(result: Sexp, out: &str, mint_label: &str) -> ExitCode {
+    let (asset, has_asset, asset_label) = match pick_asset_for_eval_result(&result) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("nelisp: {}", e);
@@ -232,25 +272,26 @@ fn run_mint_eval_result(src: &str, out: &str) -> ExitCode {
     };
     if !has_asset {
         eprintln!(
-            "nelisp: mint-eval-result: {} asset unavailable on this arch",
-            label
+            "nelisp: {}: {} asset unavailable on this arch",
+            mint_label, asset_label
         );
         return ExitCode::from(14);
     }
     let (heap, relocs) = match lower_to_heap(&result) {
         Ok(pair) => pair,
         Err(e) => {
-            eprintln!("nelisp: lowering failed for eval result: {}", e);
+            eprintln!("nelisp: lowering failed for {}: {}", mint_label, e);
             return ExitCode::from(3);
         }
     };
     match write_image_with_heap_code_and_relocs(out, asset, &heap, &relocs) {
         Ok(()) => {
             println!(
-                "minted eval-result NlImage at {} (eval={}, asset={}, heap_size={}, reloc_count={})",
+                "minted {} NlImage at {} (eval={}, asset={}, heap_size={}, reloc_count={})",
+                mint_label,
                 out,
                 fmt_sexp(&result),
-                label,
+                asset_label,
                 heap.len(),
                 relocs.len()
             );
@@ -403,6 +444,17 @@ mod tests {
             Command::MintEvalResult { src, out } => {
                 assert_eq!(src, "(+ 1 2)");
                 assert_eq!(out, "/tmp/r.bin");
+            }
+            other => panic!("unexpected: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_mint_eval_file() {
+        match parse_args(["nelisp", "mint-eval-file", "boot.el", "/tmp/b.bin"]).unwrap() {
+            Command::MintEvalFile { src_file, out } => {
+                assert_eq!(src_file, "boot.el");
+                assert_eq!(out, "/tmp/b.bin");
             }
             other => panic!("unexpected: {:?}", other),
         }
