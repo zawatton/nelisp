@@ -71,6 +71,56 @@ pub fn emit_return_i32(_value: i32) -> Vec<u8> {
 pub const HAS_EMIT_RETURN_I32: bool =
     cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
 
+/// Doc 47 Stage 9b — emit the canonical "load tagged-int from heap
+/// and shift off the 3 tag bits" function body.  Functionally
+/// identical to the runtime's pre-baked `NATIVE_LOAD_HEAP_INT_UNTAG'
+/// asset; emitting it from the build-tool proves the code generator
+/// can produce the same shapes the runtime ships pre-baked, which is
+/// the prerequisite for Stage 9c (lambda body compilation).
+///
+/// Calling convention matches the seed image entry: `argv` arrives in
+/// the second System V argument register on x86_64 (`rsi`) and on
+/// aarch64 (`x1`) per `nelisp-runtime/src/image/boot.rs`.
+///
+/// Per-architecture encodings (= identical to the runtime asset):
+///   x86_64 (11 bytes):
+///     48 8b 06            mov rax, [rsi]      ; rsi = argv
+///     48 8b 00            mov rax, [rax]      ; *argv[0] = tagged int
+///     48 c1 f8 03         sar rax, 3          ; arithmetic shift right
+///     c3                  ret
+///   aarch64 (16 bytes):
+///     20 00 40 f9         ldr  x0, [x1]       ; x1 = argv
+///     00 00 40 f9         ldr  x0, [x0]       ; *argv[0]
+///     00 fc 43 93         asr  x0, x0, #3
+///     c0 03 5f d6         ret
+#[cfg(target_arch = "x86_64")]
+pub fn emit_load_heap_int_untag() -> Vec<u8> {
+    vec![
+        0x48, 0x8b, 0x06, // mov rax, [rsi]
+        0x48, 0x8b, 0x00, // mov rax, [rax]
+        0x48, 0xc1, 0xf8, 0x03, // sar rax, 3
+        0xc3, // ret
+    ]
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn emit_load_heap_int_untag() -> Vec<u8> {
+    vec![
+        0x20, 0x00, 0x40, 0xf9, // ldr  x0, [x1]
+        0x00, 0x00, 0x40, 0xf9, // ldr  x0, [x0]
+        0x00, 0xfc, 0x43, 0x93, // asr  x0, x0, #3
+        0xc0, 0x03, 0x5f, 0xd6, // ret
+    ]
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+pub fn emit_load_heap_int_untag() -> Vec<u8> {
+    Vec::new()
+}
+
+pub const HAS_EMIT_LOAD_HEAP_INT_UNTAG: bool =
+    cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,6 +206,53 @@ mod tests {
     fn arch_flag_matches_emitter_output() {
         let bytes = emit_return_i32(0);
         if HAS_EMIT_RETURN_I32 {
+            assert!(!bytes.is_empty(), "supported arch must emit non-empty");
+        } else {
+            assert!(bytes.is_empty(), "unsupported arch must emit empty");
+        }
+    }
+
+    // ============================================================
+    // Doc 47 Stage 9b — emit_load_heap_int_untag byte equality
+    // ============================================================
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn x86_64_emit_load_heap_int_untag_byte_for_byte() {
+        // The build-tool emit must produce exactly the runtime's
+        // pre-baked NATIVE_LOAD_HEAP_INT_UNTAG bytes — that is the
+        // walking-skeleton parity gate for Stage 9c (lambda compile).
+        assert_eq!(
+            emit_load_heap_int_untag(),
+            vec![
+                0x48, 0x8b, 0x06, // mov rax, [rsi]
+                0x48, 0x8b, 0x00, // mov rax, [rax]
+                0x48, 0xc1, 0xf8, 0x03, // sar rax, 3
+                0xc3, // ret
+            ]
+        );
+        assert_eq!(emit_load_heap_int_untag().len(), 11);
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn aarch64_emit_load_heap_int_untag_byte_for_byte() {
+        assert_eq!(
+            emit_load_heap_int_untag(),
+            vec![
+                0x20, 0x00, 0x40, 0xf9, // ldr  x0, [x1]
+                0x00, 0x00, 0x40, 0xf9, // ldr  x0, [x0]
+                0x00, 0xfc, 0x43, 0x93, // asr  x0, x0, #3
+                0xc0, 0x03, 0x5f, 0xd6, // ret
+            ]
+        );
+        assert_eq!(emit_load_heap_int_untag().len(), 16);
+    }
+
+    #[test]
+    fn load_heap_int_untag_arch_flag_matches_output() {
+        let bytes = emit_load_heap_int_untag();
+        if HAS_EMIT_LOAD_HEAP_INT_UNTAG {
             assert!(!bytes.is_empty(), "supported arch must emit non-empty");
         } else {
             assert!(bytes.is_empty(), "unsupported arch must emit empty");
