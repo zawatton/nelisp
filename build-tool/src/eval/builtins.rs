@@ -50,6 +50,11 @@ pub fn install_builtins(env: &mut Env) {
         "string-empty-p", "string-prefix-p", "string-match-p", "regexp-quote",
         // plist / file helpers
         "plist-get", "plist-put", "plist-member", "expand-file-name", "file-truename",
+        // file I/O (Doc 47 Stage 8b — multi-file load chain)
+        "file-name-directory", "file-name-nondirectory", "file-exists-p",
+        "file-readable-p", "load",
+        // number / string convenience
+        "number-to-string",
         // symbol / function
         "symbol-value", "symbol-function", "fboundp", "boundp", "funcall", "apply", "eval",
         "signal", "error", "identity", "print", "princ", "prin1-to-string", "message",
@@ -142,6 +147,13 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "plist-member" => bi_plist_member(args),
         "expand-file-name" => bi_expand_file_name(args, env),
         "file-truename" => bi_file_truename(args, env),
+        // Doc 47 Stage 8b — file I/O for multi-file load chains
+        "file-name-directory" => bi_file_name_directory(args),
+        "file-name-nondirectory" => bi_file_name_nondirectory(args),
+        "file-exists-p" => bi_file_exists_p(args, env),
+        "file-readable-p" => bi_file_readable_p(args, env),
+        "load" => bi_load(args, env),
+        "number-to-string" => bi_number_to_string(args),
         // ---- symbol / function ----
         "symbol-value" => bi_symbol_value(args, env),
         "symbol-function" => bi_symbol_function(args, env),
@@ -1071,6 +1083,237 @@ fn bi_file_truename(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     Ok(Sexp::Str(resolved.to_string_lossy().into_owned()))
 }
 
+// ---------- Doc 47 Stage 8b — file I/O for multi-file load chains ----------
+
+fn bi_file_name_directory(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("file-name-directory", args, 1, Some(1))?;
+    let path = string_value(&args[0])?;
+    match path.rfind('/') {
+        Some(idx) => Ok(Sexp::Str(path[..=idx].to_string())),
+        None => Ok(Sexp::Nil),
+    }
+}
+
+fn bi_file_name_nondirectory(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("file-name-nondirectory", args, 1, Some(1))?;
+    let path = string_value(&args[0])?;
+    match path.rfind('/') {
+        Some(idx) => Ok(Sexp::Str(path[idx + 1..].to_string())),
+        None => Ok(Sexp::Str(path)),
+    }
+}
+
+fn resolve_existing_path(arg: &Sexp, env: &Env) -> Result<PathBuf, EvalError> {
+    let path = string_value(arg)?;
+    let base = env_default_directory(env);
+    Ok(normalize_path(&path, base.as_deref()))
+}
+
+fn bi_file_exists_p(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("file-exists-p", args, 1, Some(1))?;
+    let p = resolve_existing_path(&args[0], env)?;
+    Ok(if p.exists() { Sexp::T } else { Sexp::Nil })
+}
+
+fn bi_file_readable_p(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("file-readable-p", args, 1, Some(1))?;
+    let p = resolve_existing_path(&args[0], env)?;
+    Ok(if std::fs::metadata(&p).map(|m| m.is_file()).unwrap_or(false) {
+        Sexp::T
+    } else {
+        Sexp::Nil
+    })
+}
+
+/// Resolve a path argument against `load-path` if relative, returning
+/// the first existing match.  Tries the path as-given, then with `.el`
+/// suffix appended (per Elisp `load` SUFFIX search).  Returns the
+/// fully expanded path on hit, or `Err` if nothing matched.
+fn locate_load_target(name: &str, env: &Env) -> Result<PathBuf, EvalError> {
+    let with_suffixes = |base: &Path| -> Option<PathBuf> {
+        let p = base.to_path_buf();
+        if p.is_file() {
+            return Some(p);
+        }
+        if !name.ends_with(".el") {
+            let mut alt = base.to_path_buf();
+            alt.set_extension({
+                let cur = base.extension().map(|e| e.to_string_lossy().into_owned());
+                match cur {
+                    Some(ext) if ext.is_empty() => "el".to_string(),
+                    Some(_) => format!(
+                        "{}.el",
+                        base.extension().unwrap().to_string_lossy()
+                    ),
+                    None => "el".to_string(),
+                }
+            });
+            if alt.is_file() {
+                return Some(alt);
+            }
+            // Append rather than replace extension when name has none.
+            let alt2 = base.with_file_name(format!(
+                "{}.el",
+                base.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default()
+            ));
+            if alt2.is_file() {
+                return Some(alt2);
+            }
+        }
+        None
+    };
+    let p = Path::new(name);
+    if p.is_absolute() {
+        if let Some(hit) = with_suffixes(p) {
+            return Ok(hit);
+        }
+        return Err(EvalError::UserError {
+            tag: "file-error".into(),
+            data: Sexp::list_from(&[
+                Sexp::Str("Cannot open load file".into()),
+                Sexp::Str(name.to_string()),
+            ]),
+        });
+    }
+    // Relative: try `default-directory` first (mimics Emacs current-buffer behaviour),
+    // then walk `load-path`.
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Some(d) = env_default_directory(env) {
+        roots.push(PathBuf::from(d));
+    }
+    if let Ok(load_path) = env.lookup_value("load-path") {
+        let mut cur = load_path;
+        loop {
+            match cur {
+                Sexp::Nil => break,
+                Sexp::Cons(car, cdr) => {
+                    if let Sexp::Str(s) = &*car.borrow() {
+                        roots.push(PathBuf::from(s));
+                    }
+                    cur = cdr.borrow().clone();
+                }
+                _ => break,
+            }
+        }
+    }
+    for root in &roots {
+        let candidate = root.join(p);
+        if let Some(hit) = with_suffixes(&candidate) {
+            return Ok(hit);
+        }
+    }
+    Err(EvalError::UserError {
+        tag: "file-error".into(),
+        data: Sexp::list_from(&[
+            Sexp::Str("Cannot open load file".into()),
+            Sexp::Str(name.to_string()),
+        ]),
+    })
+}
+
+fn bi_load(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("load", args, 1, Some(4))?;
+    let name = string_value(&args[0])?;
+    let noerror = args.get(1).map(is_truthy).unwrap_or(false);
+    let resolved = match locate_load_target(&name, env) {
+        Ok(p) => p,
+        Err(e) => {
+            if noerror {
+                return Ok(Sexp::Nil);
+            }
+            return Err(e);
+        }
+    };
+    let source = match std::fs::read_to_string(&resolved) {
+        Ok(s) => s,
+        Err(io) => {
+            if noerror {
+                return Ok(Sexp::Nil);
+            }
+            return Err(EvalError::UserError {
+                tag: "file-error".into(),
+                data: Sexp::list_from(&[
+                    Sexp::Str(format!("read error: {}", io)),
+                    Sexp::Str(resolved.to_string_lossy().into_owned()),
+                ]),
+            });
+        }
+    };
+    let forms = match crate::reader::read_all(&source) {
+        Ok(fs) => fs,
+        Err(re) => {
+            if noerror {
+                return Ok(Sexp::Nil);
+            }
+            return Err(EvalError::Internal(format!(
+                "load: read error in {}: {}",
+                resolved.display(),
+                re
+            )));
+        }
+    };
+    // Bind `load-file-name' / `default-directory' for the duration of
+    // the load so nested `expand-file-name' / `load' calls resolve
+    // siblings of the file currently being loaded.
+    let prior_load_file_name = env.lookup_value("load-file-name").ok();
+    let prior_default_directory = env.lookup_value("default-directory").ok();
+    let parent_dir = resolved
+        .parent()
+        .map(|p| {
+            let mut s = p.to_string_lossy().into_owned();
+            if !s.ends_with('/') {
+                s.push('/');
+            }
+            s
+        })
+        .unwrap_or_else(|| "./".into());
+    env.set_value("load-file-name", Sexp::Str(resolved.to_string_lossy().into_owned()))?;
+    env.set_value("default-directory", Sexp::Str(parent_dir))?;
+    let mut last = Sexp::Nil;
+    let mut load_err: Option<EvalError> = None;
+    for f in &forms {
+        match super::eval(f, env) {
+            Ok(v) => last = v,
+            Err(e) => {
+                load_err = Some(e);
+                break;
+            }
+        }
+    }
+    // Restore prior bindings whether or not load_err is set.
+    match prior_load_file_name {
+        Some(v) => {
+            env.set_value("load-file-name", v).ok();
+        }
+        None => {
+            env.set_value("load-file-name", Sexp::Nil).ok();
+        }
+    }
+    if let Some(v) = prior_default_directory {
+        env.set_value("default-directory", v).ok();
+    }
+    if let Some(e) = load_err {
+        if noerror {
+            return Ok(Sexp::Nil);
+        }
+        return Err(e);
+    }
+    let _ = last;
+    Ok(Sexp::T)
+}
+
+fn bi_number_to_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("number-to-string", args, 1, Some(1))?;
+    match &args[0] {
+        Sexp::Int(n) => Ok(Sexp::Str(n.to_string())),
+        Sexp::Float(f) => Ok(Sexp::Str(format!("{}", f))),
+        other => Err(EvalError::WrongType {
+            expected: "number".into(),
+            got: other.clone(),
+        }),
+    }
+}
+
 // ---------- symbol / function ----------
 
 fn bi_symbol_value(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
@@ -1216,10 +1459,46 @@ fn bi_provide(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
 }
 
 fn bi_require(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("require", args, 1, Some(1))?;
+    require_arity("require", args, 1, Some(3))?;
     let feature = feature_name_arg("require", &args[0])?;
-    if !env.has_feature(&feature) {
+    if env.has_feature(&feature) {
+        return Ok(Sexp::Symbol(feature));
+    }
+    // Doc 47 Stage 8b — actually try `load' on the feature name when
+    // not yet provided AND a `load-path' is configured.  Without
+    // `load-path' set, fall back to the pre-Stage-8b marker behaviour
+    // (silently provide the feature) so callers driving the evaluator
+    // without file context (= `eval_str_all', most cargo tests) keep
+    // working.  The multi-file driver `eval_str_all_at_path' seeds
+    // `load-path' so this branch fires there.
+    let filename = match args.get(1) {
+        Some(Sexp::Str(s)) => Some(s.clone()),
+        _ => None,
+    };
+    let noerror = args.get(2).map(is_truthy).unwrap_or(false);
+    let load_path_configured = env.lookup_value("load-path").is_ok();
+    if !load_path_configured && filename.is_none() {
         env.provide_feature(&feature);
+        return Ok(Sexp::Symbol(feature));
+    }
+    let target = filename.unwrap_or_else(|| feature.clone());
+    let load_args = vec![Sexp::Str(target), if noerror { Sexp::T } else { Sexp::Nil }];
+    match bi_load(&load_args, env) {
+        Ok(_) => {}
+        Err(_) if noerror => return Ok(Sexp::Nil),
+        Err(e) => return Err(e),
+    }
+    if !env.has_feature(&feature) {
+        if !noerror {
+            return Err(EvalError::UserError {
+                tag: "error".into(),
+                data: Sexp::list_from(&[Sexp::Str(format!(
+                    "Required feature `{}' was not provided",
+                    feature
+                ))]),
+            });
+        }
+        return Ok(Sexp::Nil);
     }
     Ok(Sexp::Symbol(feature))
 }

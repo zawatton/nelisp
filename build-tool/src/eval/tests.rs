@@ -1165,3 +1165,127 @@ fn setcdr_on_nil_errors() {
     let e = err("(setcdr nil 0)");
     assert!(matches!(e, EvalError::WrongType { .. }));
 }
+
+// ============================================================
+// Doc 47 Stage 8b — file I/O builtins + load chain
+// ============================================================
+
+#[test]
+fn file_name_directory_returns_dir_with_slash() {
+    assert_eq!(
+        ok(r#"(file-name-directory "/tmp/foo/bar.el")"#),
+        Sexp::Str("/tmp/foo/".into())
+    );
+}
+
+#[test]
+fn file_name_directory_nil_when_no_slash() {
+    assert_eq!(ok(r#"(file-name-directory "bar.el")"#), Sexp::Nil);
+}
+
+#[test]
+fn file_name_nondirectory_returns_basename() {
+    assert_eq!(
+        ok(r#"(file-name-nondirectory "/tmp/foo/bar.el")"#),
+        Sexp::Str("bar.el".into())
+    );
+}
+
+#[test]
+fn file_name_nondirectory_returns_path_when_no_slash() {
+    assert_eq!(
+        ok(r#"(file-name-nondirectory "bar.el")"#),
+        Sexp::Str("bar.el".into())
+    );
+}
+
+#[test]
+fn file_exists_p_t_for_self_cargo_toml() {
+    // CARGO_MANIFEST_DIR points at build-tool/, so Cargo.toml exists.
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let cargo_toml = format!("{}/Cargo.toml", manifest_dir);
+    let expr = format!("(file-exists-p {:?})", cargo_toml);
+    assert_eq!(ok(&expr), Sexp::T);
+}
+
+#[test]
+fn file_exists_p_nil_for_nonexistent() {
+    assert_eq!(
+        ok(r#"(file-exists-p "/nonexistent/path/that/should-never-be-there.el")"#),
+        Sexp::Nil
+    );
+}
+
+#[test]
+fn number_to_string_int() {
+    assert_eq!(ok("(number-to-string 42)"), Sexp::Str("42".into()));
+}
+
+#[test]
+fn number_to_string_neg() {
+    assert_eq!(ok("(number-to-string -7)"), Sexp::Str("-7".into()));
+}
+
+#[test]
+fn load_evaluates_file_contents() {
+    use std::io::Write;
+    let mut tmp = std::env::temp_dir();
+    tmp.push("doc-47-stage8b-load-test.el");
+    {
+        let mut f = std::fs::File::create(&tmp).unwrap();
+        writeln!(f, "(defun doc47-stage8b-tag () 99)").unwrap();
+    }
+    let path_str = tmp.to_string_lossy();
+    // Quote the path string literal for embedding in the source.
+    let source = format!(r#"(load "{}") (doc47-stage8b-tag)"#, path_str);
+    let result = eval_str_all(&source).unwrap();
+    assert_eq!(result, Sexp::Int(99));
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
+fn load_signals_when_missing_and_not_noerror() {
+    let e = err_all(r#"(load "/no/such/file/here.el")"#);
+    match e {
+        EvalError::UserError { tag, .. } => assert_eq!(tag, "file-error"),
+        other => panic!("expected file-error, got {:?}", other),
+    }
+}
+
+#[test]
+fn load_returns_nil_with_noerror_when_missing() {
+    assert_eq!(
+        ok_all(r#"(load "/no/such/file/here.el" t)"#),
+        Sexp::Nil
+    );
+}
+
+#[test]
+fn require_loads_file_via_load_path() {
+    // Materialise a fixture pair on disk: feature-foo.el provides
+    // 'foo and defines a function; main calls require + that function.
+    use std::io::Write;
+    let dir = std::env::temp_dir().join("doc-47-stage8b-require-test");
+    let _ = std::fs::create_dir_all(&dir);
+    {
+        let mut f = std::fs::File::create(dir.join("foo.el")).unwrap();
+        writeln!(f, "(defun foo-answer () 7)").unwrap();
+        writeln!(f, "(provide 'foo)").unwrap();
+    }
+    // Drive through `eval_str_all_at_path' so load-path = dir/.
+    let source = "(require 'foo) (foo-answer)";
+    let dummy_main = dir.join("main.el");
+    let result =
+        eval_str_all_at_path(source, dummy_main.to_str().unwrap()).unwrap();
+    assert_eq!(result, Sexp::Int(7));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn require_silent_marker_without_load_path() {
+    // Without load-path configured (= plain eval_str_all), a require
+    // for a never-provided feature should silently mark the feature as
+    // provided (preserves pre-Stage-8b cargo-test ergonomics).
+    let result = ok_all("(require 'no-such-feature) (featurep 'no-such-feature)");
+    assert_eq!(result, Sexp::T);
+}

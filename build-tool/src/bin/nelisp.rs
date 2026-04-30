@@ -12,7 +12,7 @@ use std::io::{self, Read};
 use std::path::Path;
 use std::process::ExitCode;
 
-use nelisp_build_tool::eval::{eval_str, eval_str_all};
+use nelisp_build_tool::eval::{eval_str, eval_str_all, eval_str_all_at_path};
 use nelisp_build_tool::image_lowering::lower_to_heap;
 use nelisp_build_tool::native_emit::{emit_return_i32, HAS_EMIT_RETURN_I32};
 use nelisp_build_tool::reader::{fmt_sexp, read_str, Sexp};
@@ -298,7 +298,15 @@ fn pick_asset_for_eval_result(
 }
 
 fn run_mint_eval_all(src: &str, out: &str, label_for_log: &str) -> ExitCode {
-    match eval_str_all(src) {
+    // Doc 47 Stage 8b — when label_for_log is the source file path
+    // (= `mint-eval-file' callers), seed `default-directory' /
+    // `load-path' so `(require 'sibling)' resolves siblings.
+    let result = if label_for_log.is_empty() {
+        eval_str_all(src)
+    } else {
+        eval_str_all_at_path(src, label_for_log)
+    };
+    match result {
         Ok(value) => mint_eval_result(value, out, &format!("eval-file({})", label_for_log)),
         Err(e) => {
             eprintln!("nelisp: eval error: {}", e);
