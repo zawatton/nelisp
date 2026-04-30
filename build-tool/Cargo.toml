@@ -23,4 +23,17 @@ license = "GPL-3.0-or-later"
 name = "nelisp_build_tool"
 path = "src/lib.rs"
 
+# Doc 47 §3.1 phase 6 / Stage 5b (2026-04-30) — the `nelisp` driver
+# binary (small `--eval` / `--read` REPL-ish entry point) lives here.
+# Currently delegates to `nelisp_runtime::{eval, reader}`; once Stage 5c
+# moves those modules into this crate the path dep below collapses to a
+# single-crate `use crate::{eval, reader}'.
+[[bin]]
+name = "nelisp"
+path = "src/bin/nelisp.rs"
+
 [dependencies]
+# Stage 5b: temporary path dep so the moved binary can keep calling
+# `eval_str` / `fmt_sexp` from `nelisp-runtime` until Stage 5c migrates
+# the modules across.  After 5c this line goes away.
+nelisp-runtime = { path = "../nelisp-runtime" }

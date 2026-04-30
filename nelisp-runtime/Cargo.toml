@@ -32,10 +32,12 @@ path = "src/main.rs"
 # so this crate stays a pure NeLisp interpreter.  See
 # `../anvil-runtime/Cargo.toml' for the relocated bin targets.
 
-[[bin]]
-name = "nelisp"
-path = "src/bin/nelisp.rs"
-
+# Doc 47 §3.1 phase 6 / Stage 5b (2026-04-30) — the small `nelisp`
+# `--eval` / `--read` driver moved to `../build-tool/src/bin/nelisp.rs`.
+# It depended on `eval::eval_str` + `reader::fmt_sexp`, both of which
+# Stage 5c will pull out of `nelisp-runtime` entirely; co-locating the
+# binary with the modules it needs is the smallest first step.
+#
 # Phase 7.1 完遂 gate 3-axis bench (Doc 28 v2 §5.1).  This is the
 # *secondary* baseline measuring the FFI bridge overhead in isolation
 # — the primary 3-axis gate (fib(30) 30x / fact-iter 20x / alloc-heavy
