@@ -169,3 +169,54 @@ pub const NATIVE_LOAD_HEAP_INT_UNTAG: &[u8] = &[];
 
 pub const HAS_NATIVE_LOAD_HEAP_INT_UNTAG: bool =
     cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));
+
+/// Stage 6b — dereference a cons-cell pointer and return the car's
+/// untagged i64.  Heap layout: `*argv[0]' is a tagged cons pointer
+/// (low 3 bits = NL_VALUE_TAG_CONS = 0b010), the cell at the cleared
+/// address holds (car, cdr) as 16 consecutive bytes, the car is a
+/// tagged int.  Loader applies a reloc with addend = `8 | TAG_CONS`
+/// so the OR-tag falls out of `heap_base + addend` arithmetic
+/// (see `image::value' tests for the alignment-based identity).
+///
+/// Per-architecture encodings:
+///   x86_64 (18 bytes):
+///     48 8b 06            mov rax, [rsi]      ; rsi = argv
+///     48 8b 08            mov rcx, [rax]      ; rcx = tagged cons ptr
+///     48 83 e1 f8         and rcx, ~7         ; clear low-3-bit tag
+///     48 8b 01            mov rax, [rcx]      ; rax = car (tagged int)
+///     48 c1 f8 03         sar rax, 3          ; untag int
+///     c3                  ret
+///   aarch64 (28 bytes):
+///     20 00 40 f9         ldr  x0, [x1]       ; x1 = argv
+///     01 00 40 f9         ldr  x1, [x0]       ; x1 = tagged cons ptr
+///     21 fc 43 d3         lsr  x1, x1, #3     ; shift out tag bits
+///     21 f0 7d d3         lsl  x1, x1, #3     ; restore alignment
+///     20 00 40 f9         ldr  x0, [x1]       ; x0 = car
+///     00 fc 43 93         asr  x0, x0, #3     ; untag int
+///     c0 03 5f d6         ret
+#[cfg(target_arch = "x86_64")]
+pub const NATIVE_LOAD_CAR_INT_UNTAG: &[u8] = &[
+    0x48, 0x8b, 0x06,                   // mov rax, [rsi]
+    0x48, 0x8b, 0x08,                   // mov rcx, [rax]
+    0x48, 0x83, 0xe1, 0xf8,             // and rcx, ~7
+    0x48, 0x8b, 0x01,                   // mov rax, [rcx]
+    0x48, 0xc1, 0xf8, 0x03,             // sar rax, 3
+    0xc3,                               // ret
+];
+
+#[cfg(target_arch = "aarch64")]
+pub const NATIVE_LOAD_CAR_INT_UNTAG: &[u8] = &[
+    0x20, 0x00, 0x40, 0xf9, // ldr  x0, [x1]
+    0x01, 0x00, 0x40, 0xf9, // ldr  x1, [x0]
+    0x21, 0xfc, 0x43, 0xd3, // lsr  x1, x1, #3
+    0x21, 0xf0, 0x7d, 0xd3, // lsl  x1, x1, #3
+    0x20, 0x00, 0x40, 0xf9, // ldr  x0, [x1]
+    0x00, 0xfc, 0x43, 0x93, // asr  x0, x0, #3
+    0xc0, 0x03, 0x5f, 0xd6, // ret
+];
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+pub const NATIVE_LOAD_CAR_INT_UNTAG: &[u8] = &[];
+
+pub const HAS_NATIVE_LOAD_CAR_INT_UNTAG: bool =
+    cfg!(any(target_arch = "x86_64", target_arch = "aarch64"));

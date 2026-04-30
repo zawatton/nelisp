@@ -397,6 +397,67 @@ fn mint_int_skeleton_image(path: &str, n: i64) -> i32 {
     }
 }
 
+/// Doc 47 Stage 6b: mint a NlImage v1 whose heap holds a tagged cons
+/// pointer + the cell it points at + a cdr int.  The seed dereferences
+/// the cons, untags it, loads the car, untags it, and returns 7.
+///
+/// Heap layout (24 bytes):
+///   `[0..8]`   placeholder for tagged cons ptr → patched by reloc
+///              with `addend = 8 | NL_VALUE_TAG_CONS = 10` so the
+///              loader's `heap_base + addend` arithmetic produces
+///              `(heap_base + 8) | NL_VALUE_TAG_CONS' (heap_base is
+///              page-aligned so the OR-from-add identity holds).
+///   `[8..16]`  tag_int(7)   ← the CAR
+///   `[16..24]` tag_int(42)  ← the CDR (unread by Stage 6b asm)
+fn mint_cons_skeleton_image(path: &str) -> i32 {
+    if !nelisp_runtime::image::HAS_NATIVE_LOAD_CAR_INT_UNTAG {
+        eprintln!(
+            "nelisp-runtime: mint-cons-skeleton-image: \
+             no canned cons-load asset for this target arch"
+        );
+        return 15;
+    }
+    let mut heap = vec![0u8; 24];
+    // [0..8] is left zero — the reloc overwrites it with the tagged
+    // cons pointer.  The Stage 4b reloc kind happily accepts an
+    // addend whose low bits encode tag, because heap_base is
+    // 8-byte aligned at runtime (mmap is page-aligned).
+    let car = nelisp_runtime::image::tag_int(7);
+    let cdr = nelisp_runtime::image::tag_int(42);
+    heap[8..16].copy_from_slice(&car.to_le_bytes());
+    heap[16..24].copy_from_slice(&cdr.to_le_bytes());
+
+    let cell_offset: u64 = 8;
+    let relocs = [nelisp_runtime::image::ImageReloc {
+        kind: nelisp_runtime::image::NL_RELOC_KIND_HEAP_BASE_PLUS_OFFSET,
+        _pad: 0,
+        write_at: 0,
+        addend: cell_offset | nelisp_runtime::image::NL_VALUE_TAG_CONS,
+    }];
+
+    match nelisp_runtime::image::write_image_with_heap_code_and_relocs(
+        path,
+        nelisp_runtime::image::NATIVE_LOAD_CAR_INT_UNTAG,
+        &heap,
+        &relocs,
+    ) {
+        Ok(()) => {
+            println!(
+                "minted cons-skeleton NlImage v{} at {} \
+                 (heap_size=24 reloc_count=1 car=tag_int(7) \
+                 cdr=tag_int(42) expected_exit=7)",
+                nelisp_runtime::image::NL_IMAGE_ABI_VERSION,
+                path
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("nelisp-runtime: mint-cons-skeleton-image: {}", e);
+            15
+        }
+    }
+}
+
 /// Doc 47 Stage 3: read the image at `path', map its code segment
 /// into an executable JIT page, jump to the entry, return whatever
 /// `i32' the entry produced as this process's exit code.
@@ -510,6 +571,13 @@ fn main() {
                 1
             }
         },
+        Some("mint-cons-skeleton-image") => match args.get(2).map(|s| s.as_str()) {
+            Some(path) => mint_cons_skeleton_image(path),
+            None => {
+                eprintln!("usage: nelisp-runtime mint-cons-skeleton-image <out-path>");
+                1
+            }
+        },
         Some("mint-int-skeleton-image") => {
             match (args.get(2).map(|s| s.as_str()), args.get(3).map(|s| s.as_str())) {
                 (Some(path), Some(n_str)) => match n_str.parse::<i64>() {
@@ -553,6 +621,7 @@ fn main() {
             eprintln!(
                 "       nelisp-runtime mint-int-skeleton-image <out-path> [<i64-value>]"
             );
+            eprintln!("       nelisp-runtime mint-cons-skeleton-image <out-path>");
             eprintln!("       nelisp-runtime verify-image <image-path>");
             eprintln!("       nelisp-runtime boot-from-image <image-path>");
             2
