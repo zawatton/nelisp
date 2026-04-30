@@ -1329,3 +1329,49 @@ fn elisp_stdlib_dec() {
 fn elisp_stdlib_inc_in_let() {
     assert_eq!(ok("(let ((x 10)) (1+ x))"), Sexp::Int(11));
 }
+
+// ==== sweep-9 G2 hof tests ====
+
+#[test]
+fn elisp_g2_mapcar_inc() {
+    assert_eq!(ok("(mapcar (lambda (x) (1+ x)) (list 1 2 3))"), ok("(list 2 3 4)"));
+}
+
+#[test]
+fn elisp_g2_mapcar_empty() {
+    assert_eq!(ok("(mapcar (lambda (x) x) nil)"), Sexp::Nil);
+}
+
+#[test]
+fn elisp_g2_mapcar_identity() {
+    assert_eq!(ok("(mapcar (lambda (x) x) (list 'a 'b 'c))"), ok("(list 'a 'b 'c)"));
+}
+
+#[test]
+fn elisp_g2_mapcar_order() {
+    assert_eq!(
+        ok("(mapcar (lambda (n) (* n 10)) (list 1 2 3 4))"),
+        ok("(list 10 20 30 40)")
+    );
+}
+
+#[test]
+fn elisp_g2_mapc_returns_input() {
+    assert_eq!(ok("(mapc (lambda (x) x) (list 'a 'b 'c))"), ok("(list 'a 'b 'c)"));
+}
+
+#[test]
+fn elisp_g2_mapc_side_effect_count() {
+    assert_eq!(
+        ok_all("(setq acc 0) (mapc (lambda (x) (setq acc (+ acc x))) (list 1 2 3 4)) acc"),
+        Sexp::Int(10)
+    );
+}
+
+#[test]
+fn elisp_g2_mapcar_nested() {
+    assert_eq!(
+        ok("(mapcar (lambda (xs) (car xs)) (list (list 1 2) (list 3 4) (list 5 6)))"),
+        ok("(list 1 3 5)")
+    );
+}
