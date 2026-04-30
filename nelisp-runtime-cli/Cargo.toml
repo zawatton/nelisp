@@ -1,0 +1,13 @@
+[package]
+name = "nelisp-runtime-cli"
+version = "0.1.0"
+edition = "2021"
+description = "NeLisp developer/runtime CLI bridge kept outside the Rust-min core"
+license = "GPL-3.0-or-later"
+
+[[bin]]
+name = "nelisp-exec-bytes"
+path = "src/main.rs"
+
+[dependencies]
+nelisp-runtime = { path = "../nelisp-runtime", default-features = false }

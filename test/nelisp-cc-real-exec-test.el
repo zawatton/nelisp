@@ -60,8 +60,8 @@
 ;;; Helpers ---------------------------------------------------------
 
 (defun nelisp-cc-real-exec-test--has-runtime-bin-p ()
-  "Return non-nil when the `nelisp-runtime' binary is on disk."
-  (ignore-errors (nelisp-cc-runtime--locate-runtime-bin)))
+  "Return non-nil when the `nelisp-exec-bytes' bridge is on disk."
+  (ignore-errors (nelisp-cc-runtime--locate-exec-bytes-bin)))
 
 (defun nelisp-cc-real-exec-test--host-x86_64-p ()
   "Return non-nil on x86_64 hosts (matches the FFI MVP gate)."
@@ -74,7 +74,7 @@
 (defun nelisp-cc-real-exec-test--skip-unless-real ()
   "Skip the surrounding ERT unless real x86_64 exec is available."
   (unless (nelisp-cc-real-exec-test--has-runtime-bin-p)
-    (ert-skip "nelisp-runtime binary missing — run `make runtime'"))
+    (ert-skip "nelisp-exec-bytes binary missing — run `make runtime-cli'"))
   (unless (nelisp-cc-real-exec-test--host-x86_64-p)
     (ert-skip "T15 real-exec smoke is x86_64-only on the MVP path")))
 

@@ -3,6 +3,7 @@ members = [
     "anvil-runtime",
     "build-tool",
     "nelisp-runtime",
+    "nelisp-runtime-cli",
 ]
 resolver = "2"
 
