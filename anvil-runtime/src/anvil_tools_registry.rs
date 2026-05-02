@@ -5,6 +5,9 @@ use serde_json::Value;
 use crate::anvil_data_registry::AnvilDataRegistry;
 use crate::anvil_file_registry::AnvilFileRegistry;
 use crate::anvil_host_registry::{AnvilHostRegistry, AnvilHostRegistryError};
+use crate::anvil_module_registry::{
+    bootstrap_self_host_env, AnvilModuleRegistry,
+};
 use crate::anvil_shell_filter_registry::AnvilShellFilterRegistry;
 use crate::mcp::protocol::{JsonRpcError, ERR_METHOD_NOT_FOUND};
 use crate::mcp::tool::{ToolRegistry, ToolSpec};
@@ -29,6 +32,12 @@ pub struct AnvilToolsRegistry {
     shell: Option<AnvilShellFilterRegistry>,
     data: Option<AnvilDataRegistry>,
     file: AnvilFileRegistry,
+    /// Doc 51 — Pattern C generic module registry.  Loads any `.el' module
+    /// listed in the `ANVIL_MODULE_FILES' env var (colon-separated absolute
+    /// paths), then drains `anvil-nelisp-shims--collected-specs' to expose
+    /// each accumulated tool via MCP.  Optional — absence does not affect
+    /// the host / shell / data / file paths.
+    module: Option<AnvilModuleRegistry>,
 }
 
 impl AnvilToolsRegistry {
@@ -55,7 +64,8 @@ impl AnvilToolsRegistry {
             }
         };
         let file = AnvilFileRegistry::new();
-        Ok(Self { host, shell, data, file })
+        let module = build_module_registry(self_host_src_dir);
+        Ok(Self { host, shell, data, file, module })
     }
 
     pub fn default_self_host_src_dir() -> PathBuf {
@@ -81,6 +91,9 @@ impl ToolRegistry for AnvilToolsRegistry {
             out.extend(data.list());
         }
         out.extend(self.file.list());
+        if let Some(module) = &self.module {
+            out.extend(module.list());
+        }
         out.sort_by(|a, b| a.name.cmp(&b.name));
         out
     }
@@ -110,10 +123,65 @@ impl ToolRegistry for AnvilToolsRegistry {
         if name.starts_with("file-") || name == "directory-list" {
             return self.file.call(name, args);
         }
+        // Doc 51 Pattern C — fall through to module registry for any tool
+        // name not claimed by a fixed-prefix registry above.
+        if let Some(module) = &self.module {
+            if module.tool_names().iter().any(|n| n == name) {
+                return module.call(name, args);
+            }
+        }
         Err(JsonRpcError::new(
             ERR_METHOD_NOT_FOUND,
             format!("unknown tool: {}", name),
         ))
+    }
+}
+
+/// Build the optional Pattern C module registry from the
+/// `ANVIL_MODULE_FILES' env var.  Empty / unset = `None' (silent).  Build
+/// failure = `None' + warning printed (so the rest of the MCP server still
+/// boots cleanly).
+fn build_module_registry(self_host_src_dir: &Path) -> Option<AnvilModuleRegistry> {
+    let raw = std::env::var_os("ANVIL_MODULE_FILES")?;
+    let raw_str = raw.to_string_lossy().to_string();
+    if raw_str.trim().is_empty() {
+        return None;
+    }
+    let paths: Vec<PathBuf> = raw_str
+        .split(':')
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    if paths.is_empty() {
+        return None;
+    }
+    let env = match bootstrap_self_host_env(self_host_src_dir) {
+        Ok(env) => env,
+        Err(err) => {
+            eprintln!(
+                "anvil-runtime: warning: anvil-module bootstrap failed: {}",
+                err
+            );
+            return None;
+        }
+    };
+    match AnvilModuleRegistry::new(env, &paths) {
+        Ok(registry) => {
+            let count = registry.tool_names().len();
+            eprintln!(
+                "anvil-runtime: anvil-module loaded {} tool(s) from {} module file(s)",
+                count,
+                paths.len()
+            );
+            Some(registry)
+        }
+        Err(err) => {
+            eprintln!(
+                "anvil-runtime: warning: anvil-module load failed: {}",
+                err
+            );
+            None
+        }
     }
 }
 

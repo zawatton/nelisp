@@ -197,7 +197,7 @@ impl AnvilHostRegistry {
     }
 }
 
-fn bootstrap_with_fallback(env: &mut Env, self_host_src_dir: &Path) -> Result<(), AnvilHostRegistryError> {
+pub fn bootstrap_with_fallback(env: &mut Env, self_host_src_dir: &Path) -> Result<(), AnvilHostRegistryError> {
     match bootstrap_self_host(env, self_host_src_dir) {
         Ok(_) => Ok(()),
         Err(primary) => {
@@ -252,7 +252,7 @@ impl ToolRegistry for AnvilHostRegistry {
     }
 }
 
-fn seed_host_constants(env: &mut Env) {
+pub fn seed_host_constants(env: &mut Env) {
     env.defvar("system-type", current_system_type(), true);
     let cwd = std::env::current_dir()
         .unwrap_or_else(|_| PathBuf::from("."))
@@ -756,7 +756,7 @@ fn shell_opts_schema() -> Value {
     })
 }
 
-fn sexp_tool_result(value: Sexp) -> Value {
+pub fn sexp_tool_result(value: Sexp) -> Value {
     json_tool_result(sexp_to_json(&value))
 }
 
