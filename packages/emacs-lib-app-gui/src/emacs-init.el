@@ -20,9 +20,15 @@
 
 ;;; Code:
 
+;; Order matters: emacs-eval (defalias) before emacs-list (uses defalias);
+;; emacs-fns (plist-get) before emacs-symbol (uses plist-get + plist-put);
+;; emacs-list (nreverse, copy-sequence) before emacs-hash (uses both).
 (require 'emacs-fns)
-(require 'emacs-callproc)
 (require 'emacs-eval)
+(require 'emacs-list)
+(require 'emacs-hash)
+(require 'emacs-symbol)
+(require 'emacs-callproc)
 (require 'emacs-vars)
 (require 'emacs-sqlite)
 (require 'emacs-backquote)
