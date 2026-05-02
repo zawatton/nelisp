@@ -193,6 +193,290 @@ only useful for `keymapp' / `eq' identity checks."
   (defun font-lock-fontify-buffer () nil))
 
 
+;;;; --- bytecomp / runtime metadata ---------------------------------------
+
+(unless (fboundp 'set-advertised-calling-convention)
+  (defun set-advertised-calling-convention (function arglist when)
+    "Stub: drop the metadata."
+    (ignore function arglist when) nil))
+
+(unless (fboundp 'byte-code-function-p)
+  (defun byte-code-function-p (object) (ignore object) nil))
+
+(unless (fboundp 'compiled-function-p)
+  (defun compiled-function-p (object) (ignore object) nil))
+
+(unless (fboundp 'subrp)
+  (defun subrp (object) (ignore object) nil))
+
+(unless (fboundp 'special-form-p)
+  (defun special-form-p (object) (ignore object) nil))
+
+(unless (fboundp 'macrop)
+  (defun macrop (object) (ignore object) nil))
+
+(unless (fboundp 'symbol-value)
+  (defun symbol-value (symbol)
+    (if (boundp symbol)
+        (eval symbol)
+      (signal 'void-variable (list symbol)))))
+
+(unless (fboundp 'default-value)
+  (defalias 'default-value 'symbol-value))
+
+(unless (fboundp 'default-boundp)
+  (defalias 'default-boundp 'boundp))
+
+(unless (fboundp 'set-default)
+  (defun set-default (symbol value)
+    (set symbol value)))
+
+(unless (fboundp 'make-variable-buffer-local)
+  (defun make-variable-buffer-local (variable)
+    "Stub: no-op (NeLisp standalone has no buffer-local subsystem)."
+    (ignore variable) nil))
+
+(unless (fboundp 'make-local-variable)
+  (defun make-local-variable (variable) (ignore variable) nil))
+
+(unless (fboundp 'local-variable-p)
+  (defun local-variable-p (variable &optional buffer) (ignore variable buffer) nil))
+
+(unless (fboundp 'kill-local-variable)
+  (defun kill-local-variable (variable) (ignore variable) nil))
+
+;; condition-case variants used by subr.el
+(unless (fboundp 'condition-case-unless-debug)
+  (defmacro condition-case-unless-debug (var bodyform &rest handlers)
+    "Stub: route through plain condition-case (= NeLisp has no debug-on-error toggle)."
+    (cons 'condition-case (cons var (cons bodyform handlers)))))
+
+;; Quoting helpers
+(unless (fboundp 'kbd)
+  (defun kbd (keys) (ignore) keys))
+
+(unless (fboundp 'defvaralias)
+  (defun defvaralias (new-alias base-variable &optional docstring)
+    "Stub: copy current value (no live aliasing)."
+    (ignore docstring)
+    (when (boundp base-variable)
+      (set new-alias (symbol-value base-variable)))
+    new-alias))
+
+(unless (fboundp 'make-symbol)
+  (defun make-symbol (name) (intern name)))
+
+(unless (fboundp 'gensym)
+  (let ((counter 0))
+    (defun gensym (&optional prefix)
+      (setq counter (+ counter 1))
+      (intern (format "%s%d" (or prefix "g") counter)))))
+
+(unless (fboundp 'cl-gensym)
+  (defalias 'cl-gensym 'gensym))
+
+(unless (fboundp 'consing-uses-no-pure-list)
+  (defvar consing-uses-no-pure-list nil))
+
+(unless (boundp 'inhibit-changing-match-data)
+  (defvar inhibit-changing-match-data nil))
+
+(unless (boundp 'noninteractive)
+  (defvar noninteractive t))
+
+(unless (boundp 'inhibit-debugger)
+  (defvar inhibit-debugger t))
+
+;; defvar-local = defvar + make-variable-buffer-local
+(unless (fboundp 'defvar-local)
+  (defmacro defvar-local (var val &optional docstring)
+    `(progn (defvar ,var ,val ,docstring)
+            (make-variable-buffer-local ',var))))
+
+;; Buffer search primitives — all stubs (= no real buffer text in standalone)
+(unless (fboundp 're-search-forward)
+  (defun re-search-forward (regexp &optional bound noerror count)
+    (ignore regexp bound noerror count) nil))
+
+(unless (fboundp 're-search-backward)
+  (defun re-search-backward (regexp &optional bound noerror count)
+    (ignore regexp bound noerror count) nil))
+
+(unless (fboundp 'search-forward)
+  (defun search-forward (string &optional bound noerror count)
+    (ignore string bound noerror count) nil))
+
+(unless (fboundp 'search-backward)
+  (defun search-backward (string &optional bound noerror count)
+    (ignore string bound noerror count) nil))
+
+(unless (fboundp 'match-string)
+  (defun match-string (num &optional string) (ignore num string) nil))
+
+(unless (fboundp 'match-string-no-properties)
+  (defalias 'match-string-no-properties 'match-string))
+
+(unless (fboundp 'match-beginning)
+  (defun match-beginning (subexp) (ignore subexp) nil))
+
+(unless (fboundp 'match-end)
+  (defun match-end (subexp) (ignore subexp) nil))
+
+(unless (fboundp 'match-data)
+  (defun match-data (&optional integers reuse reseat) (ignore integers reuse reseat) nil))
+
+(unless (fboundp 'set-match-data)
+  (defun set-match-data (list &optional reseat) (ignore list reseat) nil))
+
+(unless (fboundp 'string-match)
+  (defun string-match (regexp string &optional start) (ignore regexp string start) nil))
+
+(unless (fboundp 'replace-regexp-in-string)
+  (defun replace-regexp-in-string (regexp rep string &rest _)
+    (ignore regexp rep) string))
+
+(unless (fboundp 'replace-match)
+  (defun replace-match (newtext &optional fixedcase literal string subexp)
+    (ignore newtext fixedcase literal subexp) string))
+
+(unless (fboundp 'looking-at)
+  (defun looking-at (regexp) (ignore regexp) nil))
+
+(unless (fboundp 'looking-back)
+  (defun looking-back (regexp &optional limit greedy) (ignore regexp limit greedy) nil))
+
+;; Buffer cursor / point primitives — stubs returning sentinels
+(unless (fboundp 'point)
+  (defun point () 1))
+
+(unless (fboundp 'point-min)
+  (defun point-min () 1))
+
+(unless (fboundp 'point-max)
+  (defun point-max () 1))
+
+(unless (fboundp 'goto-char)
+  (defun goto-char (position) (ignore position) nil))
+
+(unless (fboundp 'forward-char)
+  (defun forward-char (&optional n) (ignore n) nil))
+
+(unless (fboundp 'backward-char)
+  (defun backward-char (&optional n) (ignore n) nil))
+
+(unless (fboundp 'forward-line)
+  (defun forward-line (&optional n) (ignore n) 0))
+
+(unless (fboundp 'beginning-of-line)
+  (defun beginning-of-line (&optional n) (ignore n) nil))
+
+(unless (fboundp 'end-of-line)
+  (defun end-of-line (&optional n) (ignore n) nil))
+
+(unless (fboundp 'line-beginning-position)
+  (defun line-beginning-position (&optional n) (ignore n) 1))
+
+(unless (fboundp 'line-end-position)
+  (defun line-end-position (&optional n) (ignore n) 1))
+
+(unless (fboundp 'line-number-at-pos)
+  (defun line-number-at-pos (&optional pos absolute) (ignore pos absolute) 1))
+
+(unless (fboundp 'eobp)
+  (defun eobp () t))
+
+(unless (fboundp 'bobp)
+  (defun bobp () t))
+
+(unless (fboundp 'eolp)
+  (defun eolp () t))
+
+(unless (fboundp 'bolp)
+  (defun bolp () t))
+
+;; Buffer text manipulation
+(unless (fboundp 'insert)
+  (defun insert (&rest args) (ignore args) nil))
+
+(unless (fboundp 'delete-region)
+  (defun delete-region (start end) (ignore start end) nil))
+
+(unless (fboundp 'delete-char)
+  (defun delete-char (n &optional killflag) (ignore n killflag) nil))
+
+(unless (fboundp 'erase-buffer)
+  (defun erase-buffer () nil))
+
+(unless (fboundp 'buffer-substring)
+  (defun buffer-substring (start end) (ignore start end) ""))
+
+(unless (fboundp 'buffer-substring-no-properties)
+  (defalias 'buffer-substring-no-properties 'buffer-substring))
+
+(unless (fboundp 'buffer-string)
+  (defun buffer-string () ""))
+
+(unless (fboundp 'buffer-size)
+  (defun buffer-size (&optional buffer) (ignore buffer) 0))
+
+;; Save markers / regions
+(unless (fboundp 'save-excursion)
+  (defmacro save-excursion (&rest body) (cons 'progn body)))
+
+(unless (fboundp 'save-restriction)
+  (defmacro save-restriction (&rest body) (cons 'progn body)))
+
+(unless (fboundp 'save-match-data)
+  (defmacro save-match-data (&rest body) (cons 'progn body)))
+
+(unless (fboundp 'with-current-buffer)
+  (defmacro with-current-buffer (buffer &rest body)
+    `(let ((--saved-buf-- (current-buffer)))
+       (unwind-protect (progn ,@body) nil))))
+
+(unless (fboundp 'with-temp-buffer)
+  (defmacro with-temp-buffer (&rest body) (cons 'progn body)))
+
+(unless (fboundp 'narrow-to-region)
+  (defun narrow-to-region (start end) (ignore start end) nil))
+
+(unless (fboundp 'widen)
+  (defun widen () nil))
+
+;; Syntax tables
+(unless (fboundp 'standard-syntax-table)
+  (defun standard-syntax-table () nil))
+
+(unless (fboundp 'syntax-table)
+  (defun syntax-table () nil))
+
+(unless (fboundp 'set-syntax-table)
+  (defun set-syntax-table (table) (ignore table) nil))
+
+(unless (fboundp 'modify-syntax-entry)
+  (defun modify-syntax-entry (char newentry &optional table) (ignore char newentry table) nil))
+
+;; `set' is a special form in NeLisp bootstrap but appears as void-function
+;; in some funcall contexts.  Polyfill by routing through `eval' + `setq'.
+(unless (fboundp 'set)
+  (defun set (symbol newval)
+    "Polyfill: dynamic indirect setq via `eval'."
+    (eval (list 'setq symbol (list 'quote newval)))
+    newval))
+
+(unless (fboundp 'eq)
+  (defalias 'eq 'equal))  ;; conservative — bootstrap should have eq, but harmless
+
+(unless (fboundp 'memql)
+  (defun memql (element list)
+    "Stub: like memq but uses eql."
+    (let ((c list) (found nil))
+      (while (and c (not found))
+        (if (or (eq (car c) element) (equal (car c) element))
+            (setq found c)
+          (setq c (cdr c))))
+      found)))
+
 ;;;; --- format / message helpers ----------------------------------------
 
 (unless (fboundp 'format-message)
