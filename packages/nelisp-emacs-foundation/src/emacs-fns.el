@@ -44,6 +44,21 @@
     "Polyfill: return ARG unchanged."
     arg))
 
+(unless (fboundp 'null)
+  (defun null (object)
+    "Polyfill: return t iff OBJECT is nil."
+    (eq object nil)))
+
+;; Some NeLisp eval paths look up function symbols as values too;
+;; defvar them as nil so `symbol-value' / bare-symbol-eval succeed.
+(defvar null nil
+  "Polyfill alias of nil — works around NeLisp eval paths that fall
+back to `symbol-value' lookup for symbols whose function cell is
+bound but value cell is unbound.")
+
+(unless (fboundp 'numberp)
+  (defun numberp (obj) (or (integerp obj) (floatp obj))))
+
 
 ;;;; --- list iteration -----------------------------------------------------
 

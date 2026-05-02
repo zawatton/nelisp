@@ -31,12 +31,13 @@
 ;; look.  Phase 2 will lobby NeLisp to expose true `fset' as a builtin.
 (unless (fboundp 'fset)
   (defun fset (symbol function)
-    "Polyfill: forward calls to SYMBOL through FUNCTION via `apply'."
-    ;; Use a lambda that captures FUNCTION.  Bootstrap eval supports
-    ;; lambda + apply.  defalias-via-defun would also work; lambda is
-    ;; one less indirection.
+    "Polyfill: forward calls to SYMBOL through FUNCTION.
+Quote FUNCTION when splicing into the forwarder body so the reader
+does not later evaluate it as a bare variable reference (= avoids
+`void-variable: null' style failures when FUNCTION is a symbol whose
+value cell is unbound but function cell is fine)."
     (eval (list 'defun symbol '(&rest args)
-                (list 'apply function 'args)))
+                (list 'apply (list 'quote function) 'args)))
     function))
 
 (unless (fboundp 'defalias)
