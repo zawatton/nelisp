@@ -1,0 +1,48 @@
+;;; emacs-eval-test.el --- Tests for emacs-eval  -*- lexical-binding: t; -*-
+
+;;; Commentary:
+
+;; Tests for the `defalias' / `fset' / `declare-function' polyfills.
+;;
+;; Each Emacs-side `unless (fboundp ...)' guard means the host Emacs
+;; uses its real C primitives and the polyfill stays inert.  The
+;; assertions below still exercise the symbols so any unintended
+;; divergence between the polyfill and Emacs surfaces under host
+;; Emacs ERT runs.
+
+;;; Code:
+
+(require 'ert)
+(require 'emacs-eval)
+
+;;;; --- fset / defalias ----------------------------------------------------
+
+(ert-deftest emacs-eval-test/fset-installs-callable ()
+  (defun emacs-eval-test--src (x) (* x 2))
+  (let ((sym (make-symbol "emacs-eval-test--dst")))
+    (fset sym #'emacs-eval-test--src)
+    (should (= (funcall sym 21) 42))))
+
+(ert-deftest emacs-eval-test/defalias-creates-working-alias ()
+  (defun emacs-eval-test--add (a b) (+ a b))
+  (let ((sym (make-symbol "emacs-eval-test--alias")))
+    (defalias sym #'emacs-eval-test--add)
+    (should (= (funcall sym 3 4) 7))))
+
+(ert-deftest emacs-eval-test/defalias-returns-symbol ()
+  (defun emacs-eval-test--id (x) x)
+  (let ((sym (make-symbol "emacs-eval-test--ret")))
+    (should (eq (defalias sym #'emacs-eval-test--id) sym))))
+
+
+;;;; --- declare-function ---------------------------------------------------
+
+(ert-deftest emacs-eval-test/declare-function-is-noop ()
+  ;; Should expand to nil and produce no error / no side effect.
+  (should (null (declare-function nonexistent-fn "imaginary-file" (a b))))
+  (should (null (declare-function another-fn "wherever"))))
+
+
+(provide 'emacs-eval-test)
+
+;;; emacs-eval-test.el ends here
