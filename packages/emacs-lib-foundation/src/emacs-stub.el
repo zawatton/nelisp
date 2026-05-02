@@ -738,11 +738,54 @@ only useful for `keymapp' / `eq' identity checks."
 ;;;; --- pcase placeholder (avoid loading vendor pcase.el which uses old `\,' symbol escape) ---
 
 (unless (fboundp 'pcase)
-  (defmacro pcase (expr &rest _cases)
-    "Stub: evaluates EXPR but ignores all CASES (= no pattern matching).
-Real pcase needs pcase.el load which fails on NeLisp lexer's strict
-handling of `\\,' symbol escapes.  Phase 4+ task."
-    (list 'progn expr nil)))
+  (defun emacs-stub--pcase-test (pattern value-sym)
+    "Build a test form matching PATTERN against VALUE-SYM.  Returns
+an elisp form that evaluates to non-nil when PATTERN matches.
+Supports the subset anvil-memory uses:
+  * `_'                          → catch-all (= t)
+  * INTEGER / STRING literal     → `equal' test
+  * `(quote SYM)' / `'SYM'       → `eq' test against quoted symbol
+  * SYMBOL (= bare, non-quote)   → catch-all (binding handled by builder)
+Returns a (TEST-FORM . BINDINGS) cons where BINDINGS is a list of
+(SYMBOL VALUE) pairs to let-bind in the case body."
+    (cond
+     ((eq pattern '_) (cons t nil))
+     ((symbolp pattern)
+      ;; Bare symbol → bind it to value, always match.
+      (cons t (list (list pattern value-sym))))
+     ((or (integerp pattern) (stringp pattern))
+      (cons (list 'equal value-sym pattern) nil))
+     ((and (consp pattern) (eq (car pattern) 'quote))
+      (cons (list 'eq value-sym (list 'quote (car (cdr pattern)))) nil))
+     (t
+      ;; Unknown pattern shape — treat as catch-all (= permissive).
+      (cons t nil))))
+
+  (defmacro pcase (expr &rest cases)
+    "Phase 4 minimal pcase: dispatch EXPR through each CASE.
+Supports the patterns used by anvil-memory (= quote / int / string
+/ bare symbol bind / `_' wildcard).  Other patterns degrade to
+catch-all (= permissive)."
+    (let ((value-sym (make-symbol "--pcase-value--"))
+          (cond-clauses nil))
+      (dolist (case cases)
+        (let* ((pat (car case))
+               (body (cdr case))
+               (built (emacs-stub--pcase-test pat value-sym))
+               (test (car built))
+               (bindings (cdr built)))
+          (push (list test
+                      (if bindings
+                          (cons 'let (cons bindings body))
+                        (cons 'progn body)))
+                cond-clauses)))
+      ;; Reverse cond-clauses to preserve case order.
+      (let ((forward nil))
+        (while cond-clauses
+          (setq forward (cons (car cond-clauses) forward))
+          (setq cond-clauses (cdr cond-clauses)))
+        (list 'let (list (list value-sym expr))
+              (cons 'cond forward))))))
 
 (unless (fboundp 'pcase-let)
   (defmacro pcase-let (bindings &rest body)
