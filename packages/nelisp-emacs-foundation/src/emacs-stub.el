@@ -734,3 +734,29 @@ only useful for `keymapp' / `eq' identity checks."
 
 ;; Provide gv as a feature so cl-lib's `(require 'gv)' (if any) succeeds.
 (unless (featurep 'gv) (provide 'gv))
+
+;;;; --- pcase placeholder (avoid loading vendor pcase.el which uses old `\,' symbol escape) ---
+
+(unless (fboundp 'pcase)
+  (defmacro pcase (expr &rest _cases)
+    "Stub: evaluates EXPR but ignores all CASES (= no pattern matching).
+Real pcase needs pcase.el load which fails on NeLisp lexer's strict
+handling of `\\,' symbol escapes.  Phase 4+ task."
+    (list 'progn expr nil)))
+
+(unless (fboundp 'pcase-let)
+  (defmacro pcase-let (bindings &rest body)
+    "Stub: equivalent to plain `let'."
+    (cons 'let (cons bindings body))))
+
+(unless (fboundp 'pcase-let*)
+  (defmacro pcase-let* (bindings &rest body)
+    "Stub: equivalent to plain `let*'."
+    (cons 'let* (cons bindings body))))
+
+(unless (fboundp 'pcase-dolist)
+  (defmacro pcase-dolist (spec &rest body)
+    "Stub: equivalent to plain `dolist'."
+    (cons 'dolist (cons spec body))))
+
+(unless (featurep 'pcase) (provide 'pcase))
