@@ -97,18 +97,21 @@ impl<'a> Parser<'a> {
                 let inner = self.parse_form(depth + 1, quasiquote_depth + 1)?;
                 Ok(Sexp::backquote(inner))
             }
+            // Doc 51 Phase 3-A''-3 — Emacs reader compat: `,X` and `,@X`
+            // outside an explicit backquote are still legal at parse time
+            // because user macros (e.g. `inline-quote' in vendor json.el)
+            // build their own backquote-shaped inputs.  Whether the comma
+            // is meaningful is a SEMANTIC concern resolved during macro
+            // expansion, not a syntactic one.  Always produce the
+            // `(comma X)' / `(comma-at X)' Sexp; let downstream handle.
             Token::Comma => {
-                if quasiquote_depth == 0 {
-                    return Err(ReadError::parse("`,` outside backquote context", tok.pos));
-                }
-                let inner = self.parse_form(depth + 1, quasiquote_depth - 1)?;
+                let next_depth = if quasiquote_depth > 0 { quasiquote_depth - 1 } else { 0 };
+                let inner = self.parse_form(depth + 1, next_depth)?;
                 Ok(Sexp::comma(inner))
             }
             Token::CommaAt => {
-                if quasiquote_depth == 0 {
-                    return Err(ReadError::parse("`,@` outside backquote context", tok.pos));
-                }
-                let inner = self.parse_form(depth + 1, quasiquote_depth - 1)?;
+                let next_depth = if quasiquote_depth > 0 { quasiquote_depth - 1 } else { 0 };
+                let inner = self.parse_form(depth + 1, next_depth)?;
                 Ok(Sexp::comma_at(inner))
             }
             Token::FunctionQuote => {

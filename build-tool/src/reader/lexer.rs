@@ -187,7 +187,20 @@ impl<'a> Lexer<'a> {
                     Token::Comma
                 }
             }
-            b'?' => Token::Int(self.read_char_literal(pos)?),
+            // Doc 51 Phase 3-A''-3 — Emacs reader compat: bare `?` (= `?'
+            // followed by whitespace OR end-of-input) is a symbol named `?'.
+            // Used in DSLs like `rx' (`(? ?-)' = "optional `-'").  Other
+            // followers like `(' / `,' / `)' are still char-literal targets
+            // — `?,' / `?(' / `?)' are valid Emacs char literals (= 44 / 40
+            // / 41 respectively).  Only whitespace / EOF disambiguates.
+            b'?' => {
+                let next = self.src.get(self.pos + 1).copied();
+                match next {
+                    Some(b) if is_whitespace(b) => self.read_atom(pos)?,
+                    None => self.read_atom(pos)?,
+                    _ => Token::Int(self.read_char_literal(pos)?),
+                }
+            }
             _ => self.read_atom(pos)?,
         };
         Ok(Some(PositionedToken { token, pos }))
@@ -401,9 +414,13 @@ impl<'a> Lexer<'a> {
         let b = self.peek().ok_or_else(|| {
             ReadError::unexpected_eof("unterminated char literal after `?`", start)
         })?;
-        if is_atom_terminator(b) {
-            return Err(ReadError::lex("empty char literal after `?`", start));
-        }
+        // Doc 51 Phase 3-A''-3 — Emacs reader compat: char literals after
+        // `?' accept ANY single char including `(' / `)' / `,' / `\"' /
+        // `;'.  The decision "should this be a symbol or a char literal"
+        // already happened at the dispatch site (= bare `?' followed by
+        // whitespace becomes the symbol `?', everything else is a char
+        // literal).  Whitespace alone still terminates as before — `?  '
+        // would have been routed to read_atom by the dispatcher.
         if b != b'\\' {
             self.bump();
             if b.is_ascii() {
