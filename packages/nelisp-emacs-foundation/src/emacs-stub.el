@@ -691,3 +691,46 @@ only useful for `keymapp' / `eq' identity checks."
 (provide 'emacs-stub)
 
 ;;; emacs-stub.el ends here
+
+;;;; --- gv.el placeholder (avoid the NeLisp-eval scoping bug in real gv.el) ---
+
+(unless (fboundp 'gv-define-expander)
+  (defmacro gv-define-expander (name handler)
+    "Stub: no-op (NeLisp standalone has no setf customization)."
+    (ignore name handler) nil))
+
+(unless (fboundp 'gv-define-setter)
+  (defmacro gv-define-setter (name arglist &rest body)
+    "Stub: no-op."
+    (ignore name arglist body) nil))
+
+(unless (fboundp 'gv-define-simple-setter)
+  (defmacro gv-define-simple-setter (name setter &optional fix)
+    "Stub: no-op."
+    (ignore name setter fix) nil))
+
+(unless (fboundp 'gv-letplace)
+  (defmacro gv-letplace (vars place &rest body)
+    "Stub: just eval BODY (= no real getter/setter binding)."
+    (ignore vars place) (cons 'progn body)))
+
+(unless (fboundp 'gv-get)
+  (defun gv-get (place do)
+    "Stub: invoke DO with PLACE as both getter and trivial setter."
+    (funcall do place (lambda (v) (list 'setq place v)))))
+
+(unless (fboundp 'gv-setter)
+  (defun gv-setter (name)
+    "Stub: synthesize setf-name symbol."
+    (intern (format "(setf %s)" name))))
+
+(unless (fboundp 'gv-ref)
+  (defun gv-ref (place) place))
+
+(unless (boundp 'defun-declarations-alist)
+  (defvar defun-declarations-alist nil))
+(unless (boundp 'macro-declarations-alist)
+  (defvar macro-declarations-alist nil))
+
+;; Provide gv as a feature so cl-lib's `(require 'gv)' (if any) succeeds.
+(unless (featurep 'gv) (provide 'gv))
