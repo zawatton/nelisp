@@ -68,6 +68,17 @@ DOCSTRING is accepted for arglist parity and currently ignored
     "Polyfill: no-op for NeLisp standalone (no interactive call surface)."
     nil))
 
+;; `autoload' — Emacs's lazy-loading hint.  NeLisp standalone has no
+;; autoload mechanism (= every module is loaded eagerly via the
+;; AnvilModuleRegistry chain), so the polyfill is a no-op.  Callers
+;; that walk `autoload-file-name' / `commandp' may need follow-up
+;; polyfills.
+(unless (fboundp 'autoload)
+  (defun autoload (function file &optional docstring interactive type)
+    "Polyfill: no-op for NeLisp standalone."
+    (ignore function file docstring interactive type)
+    nil))
+
 
 (provide 'emacs-eval)
 
