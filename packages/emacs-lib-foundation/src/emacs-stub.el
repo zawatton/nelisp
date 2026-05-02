@@ -1112,8 +1112,20 @@ For patterns this stub does not recognise, returns nil."
 
 (unless (fboundp 'cl-defmethod)
   (defmacro cl-defmethod (name arglist &rest body)
-    "Stub: defmethod → defun (= last-defined wins, no specializer dispatch)."
-    (cons 'defun (cons name (cons (mapcar (lambda (a) (if (consp a) (car a) a)) arglist) body)))))
+    "Stub: defmethod → defun (= last-defined wins, no specializer dispatch).
+When NAME is a setf-method list `(setf X)', intern the printed form
+`\"(setf X)\"' as a symbol so `defun' has a usable target.  Strips
+specializer cons-cells from arglist (e.g. `(SEQUENCE array)' → `SEQUENCE')."
+    (let ((real-name
+           (cond
+            ((symbolp name) name)
+            ((and (consp name) (eq (car name) 'setf))
+             (intern (format "(setf %s)" (car (cdr name)))))
+            (t (intern (format "%S" name))))))
+      (cons 'defun
+            (cons real-name
+                  (cons (mapcar (lambda (a) (if (consp a) (car a) a)) arglist)
+                        body))))))
 
 (unless (fboundp 'cl-defstruct)
   (defmacro cl-defstruct (name &rest slots)
@@ -1211,3 +1223,136 @@ For patterns this stub does not recognise, returns nil."
 (unless (featurep 'cl-seq) (provide 'cl-seq))
 (unless (featurep 'cl-extra) (provide 'cl-extra))
 (unless (featurep 'cl-generic) (provide 'cl-generic))
+
+;;;; --- standard error symbols ---------------------------------------------
+;; Common Emacs error symbols that subr / cl-lib / vendor code signals;
+;; bootstrap eval may not have them pre-installed.
+
+(when (fboundp 'define-error)
+  (define-error 'end-of-file "End of file during parsing")
+  (define-error 'end-of-buffer "End of buffer")
+  (define-error 'beginning-of-buffer "Beginning of buffer")
+  (define-error 'wrong-number-of-arguments "Wrong number of arguments")
+  (define-error 'invalid-function "Invalid function")
+  (define-error 'no-catch "No catch for tag")
+  (define-error 'arith-error "Arithmetic error")
+  (define-error 'range-error "Arithmetic range error")
+  (define-error 'overflow-error "Arithmetic overflow error")
+  (define-error 'cyclic-list "List contains a loop")
+  (define-error 'circular-list "List contains a loop")
+  (define-error 'permission-denied "Permission denied")
+  (define-error 'file-error "File error")
+  (define-error 'file-missing "File missing")
+  (define-error 'file-already-exists "File already exists")
+  (define-error 'json-error "JSON error")
+  (define-error 'json-readtable-error "JSON readtable error")
+  (define-error 'json-parse-error "JSON parse error")
+  (define-error 'search-failed "Search failed")
+  (define-error 'invalid-read-syntax "Invalid read syntax")
+  (define-error 'user-error "User error")
+  (define-error 'quit "Quit"))
+
+;;;; --- rx.el placeholder (= regex DSL not used by anvil dispatch) ---
+
+(unless (fboundp 'rx-define)
+  (defmacro rx-define (name &rest body)
+    "Stub: no-op (= NeLisp standalone uses raw regex strings)."
+    (ignore name body) nil))
+
+(unless (fboundp 'rx-let)
+  (defmacro rx-let (bindings &rest body)
+    "Stub: drop BINDINGS, eval BODY."
+    (ignore bindings) (cons 'progn body)))
+
+(unless (fboundp 'rx-let-eval)
+  (defmacro rx-let-eval (bindings &rest body)
+    (ignore bindings) (cons 'progn body)))
+
+(unless (fboundp 'rx)
+  (defmacro rx (&rest forms)
+    "Stub: return empty regex string (= placeholder, never matches)."
+    (ignore forms) ""))
+
+(unless (fboundp 'rx-to-string)
+  (defun rx-to-string (form &optional no-group)
+    (ignore form no-group) ""))
+
+(unless (featurep 'rx) (provide 'rx))
+
+;;;; --- url stack pre-provide (= avoid url-vars `(append "STR" nil)` choke) ---
+;; nelisp-eval requires url-parse only for cl-defstruct accessor names
+;; (url-host/url-port/url-filename/url-type) when running URL retrievals.
+;; FFI standalone path doesn't issue URL retrievals, so we satisfy the
+;; (require 'url-parse) by pre-providing it + defining empty accessors.
+
+(unless (fboundp 'url-host)
+  (defun url-host (&rest _) nil)
+  (defun url-port (&rest _) nil)
+  (defun url-filename (&rest _) nil)
+  (defun url-type (&rest _) nil)
+  (defun url-user (&rest _) nil)
+  (defun url-password (&rest _) nil)
+  (defun url-target (&rest _) nil)
+  (defun url-attributes (&rest _) nil)
+  (defun url-fullness (&rest _) nil)
+  (defun url-generic-parse-url (&rest _) nil)
+  (defun url-encode-url (&rest _) nil)
+  (defun url-hexify-string (&rest _) nil)
+  (defun url-unhex-string (&rest _) nil)
+  (defun url-retrieve-synchronously (&rest _) nil))
+
+(unless (boundp 'url-request-method) (defvar url-request-method nil))
+(unless (boundp 'url-request-extra-headers) (defvar url-request-extra-headers nil))
+(unless (boundp 'url-request-data) (defvar url-request-data nil))
+(unless (boundp 'url-mime-separator-chars) (defvar url-mime-separator-chars nil))
+(unless (boundp 'url-bad-port-list) (defvar url-bad-port-list nil))
+
+(unless (featurep 'url-vars) (provide 'url-vars))
+(unless (featurep 'url-parse) (provide 'url-parse))
+(unless (featurep 'url) (provide 'url))
+
+;;;; --- char-or-string-p (= simple type predicate combo) ---
+
+(unless (fboundp 'char-or-string-p)
+  (defun char-or-string-p (obj)
+    "Return t if OBJ is a character (= integer) or string."
+    (or (integerp obj) (stringp obj))))
+
+;;;; --- terminal/IO no-op stubs (= avoid void-function during process load) ---
+
+(unless (fboundp 'send-string-to-terminal)
+  (defun send-string-to-terminal (s &optional terminal)
+    (ignore terminal)
+    (when (stringp s) (princ s)) nil))
+(unless (fboundp 'discard-input) (defun discard-input () nil))
+(unless (fboundp 'open-termscript) (defun open-termscript (&rest _) nil))
+(unless (fboundp 'set-input-method) (defun set-input-method (&rest _) nil))
+
+;;;; --- timers no-op stubs (= no scheduler in NeLisp standalone yet) ---
+
+(unless (fboundp 'run-at-time)
+  (defun run-at-time (&rest _) nil))
+(unless (fboundp 'run-with-timer)
+  (defun run-with-timer (&rest _) nil))
+(unless (fboundp 'run-with-idle-timer)
+  (defun run-with-idle-timer (&rest _) nil))
+(unless (fboundp 'cancel-timer)
+  (defun cancel-timer (&rest _) nil))
+(unless (fboundp 'cancel-function-timers)
+  (defun cancel-function-timers (&rest _) nil))
+(unless (fboundp 'timerp)
+  (defun timerp (_) nil))
+(unless (fboundp 'timer-create)
+  (defun timer-create (&rest _) nil))
+(unless (fboundp 'timer-set-time)
+  (defun timer-set-time (&rest _) nil))
+(unless (fboundp 'timer-set-function)
+  (defun timer-set-function (&rest _) nil))
+(unless (fboundp 'timer-activate)
+  (defun timer-activate (&rest _) nil))
+(unless (fboundp 'sit-for)
+  (defun sit-for (&rest _) nil))
+(unless (fboundp 'sleep-for)
+  (defun sleep-for (&rest _) nil))
+(unless (boundp 'timer-list) (defvar timer-list nil))
+(unless (boundp 'timer-idle-list) (defvar timer-idle-list nil))
