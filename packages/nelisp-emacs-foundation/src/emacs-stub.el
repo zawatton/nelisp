@@ -922,12 +922,117 @@ See `emacs-stub--pcase-test' for supported pattern shapes."
 ;; Bypass loading vendor cl-macs.el (= which fails on deep pcase patterns).
 ;; Provide just the cl-* surface anvil-memory uses, mapped to plain elisp.
 
+(defun emacs-stub--split-cl-arglist (arglist)
+  "Split ARGLIST into (POSITIONAL OPTIONALS RESTSYM KEYS).
+KEYS = list of (KEYWORD-NAME PARAM-SYM DEFAULT-FORM) triples."
+  (let ((positional nil)
+        (optionals nil)
+        (restsym nil)
+        (keys nil)
+        (mode 'positional)
+        (cur arglist))
+    (while cur
+      (let ((tok (car cur)))
+        (cond
+         ((eq tok '&optional) (setq mode 'optional))
+         ((eq tok '&rest)     (setq mode 'rest))
+         ((eq tok '&key)      (setq mode 'key))
+         ((eq tok '&aux)      (setq mode 'aux))
+         (t
+          (cond
+           ((eq mode 'positional) (setq positional (cons tok positional)))
+           ((eq mode 'optional)
+            (setq optionals (cons tok optionals)))
+           ((eq mode 'rest)
+            (setq restsym tok))
+           ((eq mode 'key)
+            (let* ((sym (if (consp tok) (car tok) tok))
+                   (default (if (consp tok) (car (cdr tok)) nil))
+                   (kwname (intern
+                            (concat ":"
+                                    (symbol-name sym)))))
+              (setq keys (cons (list kwname sym default) keys))))
+           ;; &aux: drop (= local lets, rarely critical for stubs)
+           ((eq mode 'aux) nil)))))
+      (setq cur (cdr cur)))
+    (let ((rev-positional nil) (rev-optionals nil) (rev-keys nil)
+          (p positional) (o optionals) (k keys))
+      (while p (setq rev-positional (cons (car p) rev-positional)) (setq p (cdr p)))
+      (while o (setq rev-optionals (cons (car o) rev-optionals)) (setq o (cdr o)))
+      (while k (setq rev-keys (cons (car k) rev-keys)) (setq k (cdr k)))
+      (list rev-positional rev-optionals restsym rev-keys))))
+
+(defun emacs-stub--cl-key-bindings (keys restsym)
+  "Build let-bindings for KEYS by scanning RESTSYM (= the &rest var).
+Each binding is (PARAM (or (cadr (memq KW RESTSYM)) DEFAULT))."
+  (let ((out nil)
+        (cur keys))
+    (while cur
+      (let* ((entry (car cur))
+             (kw (car entry))
+             (sym (car (cdr entry)))
+             (def (car (cdr (cdr entry)))))
+        (setq out (cons (list sym
+                              (list 'or
+                                    (list 'car
+                                          (list 'cdr
+                                                (list 'memq (list 'quote kw) restsym)))
+                                    def))
+                        out)))
+      (setq cur (cdr cur)))
+    (let ((rev nil) (c out))
+      (while c (setq rev (cons (car c) rev)) (setq c (cdr c)))
+      rev)))
+
 (unless (fboundp 'cl-defun)
-  ;; Simplified cl-defun = defun.  No &key / &aux / docstring-after-decl
-  ;; support — adequate for anvil-memory's straightforward arglists.
+  ;; cl-defun supporting &optional, &rest, &key (= adequate for
+  ;; anvil-memory / anvil-state arglists).
+  ;;
+  ;; Strategy: expand (cl-defun NAME (POS &optional O &key K1 K2) BODY) to
+  ;; (defun NAME (POS &optional O &rest --cl-keys)
+  ;;   (let ((K1 (or (cadr (memq :K1 --cl-keys)) DEFAULT))
+  ;;         (K2 (or (cadr (memq :K2 --cl-keys)) DEFAULT)))
+  ;;     BODY))
+  ;; If &rest is present in the original arglist, reuse that name instead
+  ;; of synthesizing --cl-keys.
+  (defvar emacs-stub--cl-defun-call-count 0
+    "Bumped each time the cl-defun macro stub expands a form.")
   (defmacro cl-defun (name arglist &rest body)
-    "Stub: cl-defun → plain defun."
-    (cons 'defun (cons name (cons arglist body)))))
+    "Stub: cl-defun with &optional / &rest / &key support."
+    (setq emacs-stub--cl-defun-call-count
+          (+ 1 emacs-stub--cl-defun-call-count))
+    (let* ((parts (emacs-stub--split-cl-arglist arglist))
+           (positional (car parts))
+           (optionals (car (cdr parts)))
+           (restsym (car (cdr (cdr parts))))
+           (keys (car (cdr (cdr (cdr parts))))))
+      (cond
+       ;; No &key — emit plain defun with original layout (preserve &rest).
+       ((null keys)
+        (let ((out positional))
+          (when optionals
+            (let ((tail (cons '&optional nil))
+                  (o optionals))
+              (while o (setq tail (append tail (list (car o)))) (setq o (cdr o)))
+              (let ((all out) (t2 tail))
+                (while t2 (setq all (append all (list (car t2)))) (setq t2 (cdr t2)))
+                (setq out all))))
+          (when restsym
+            (setq out (append out (list '&rest restsym))))
+          (cons 'defun (cons name (cons out body)))))
+       (t
+        ;; &key present — synthesize &rest --cl-keys, scan it for kw values.
+        (let* ((rest-name (or restsym '--cl-keys))
+               (real-arglist positional))
+          (when optionals
+            (let ((tail (cons '&optional nil))
+                  (o optionals))
+              (while o (setq tail (append tail (list (car o)))) (setq o (cdr o)))
+              (setq real-arglist (append real-arglist tail))))
+          (setq real-arglist (append real-arglist (list '&rest rest-name)))
+          (let* ((bindings (emacs-stub--cl-key-bindings keys rest-name))
+                 (real-body (list (cons 'let* (cons bindings body)))))
+            (cons 'defun (cons name (cons real-arglist real-body))))))))))
 
 (unless (fboundp 'cl-incf)
   (defmacro cl-incf (place &optional delta)
