@@ -738,34 +738,148 @@ only useful for `keymapp' / `eq' identity checks."
 ;;;; --- pcase placeholder (avoid loading vendor pcase.el which uses old `\,' symbol escape) ---
 
 (unless (fboundp 'pcase)
-  (defun emacs-stub--pcase-test (pattern value-sym)
-    "Build a test form matching PATTERN against VALUE-SYM.  Returns
-an elisp form that evaluates to non-nil when PATTERN matches.
-Supports the subset anvil-memory uses:
-  * `_'                          → catch-all (= t)
-  * INTEGER / STRING literal     → `equal' test
-  * `(quote SYM)' / `'SYM'       → `eq' test against quoted symbol
-  * SYMBOL (= bare, non-quote)   → catch-all (binding handled by builder)
-Returns a (TEST-FORM . BINDINGS) cons where BINDINGS is a list of
-(SYMBOL VALUE) pairs to let-bind in the case body."
+  ;; Phase 4 batch 2 — pcase with backquote / pred / and / or patterns.
+  ;; Implements the pattern subset cl-macs / cl-loop / cl-some etc.
+  ;; expand into.  Pure elisp on top of bootstrap eval primitives.
+  ;;
+  ;; Pattern syntax supported:
+  ;;   `_'                — catch-all
+  ;;   INTEGER / STRING   — `equal' test
+  ;;   `(quote X)' / `'X' — `eq' test
+  ;;   SYMBOL (bare)      — bind to value, always match
+  ;;   `(pred FN)'        — call (FN value), match if non-nil
+  ;;   `(and P1 P2 ...)'  — match if every P matches (binds ALL)
+  ;;   `(or P1 P2 ...)'   — match if any P matches (no bindings)
+  ;;   `(guard EXPR)'     — match if EXPR true
+  ;;   `(let PAT EXPR)'   — bind PAT to result of EXPR (always match)
+  ;;   `(backquote PAT)'  — destructure PAT.  Inside PAT:
+  ;;     - `(comma SYM)'  → bind SYM to value-at-position
+  ;;     - literal cons   → recursive shape match
+  ;;     - literal atom   → equality test
+  ;;
+  ;; Backquote-pattern is the critical one — cl-macs uses it heavily
+  ;; for destructuring.  E.g. `\`(,a ,b)' matches a 2-elem cons; binds
+  ;; a=(car val), b=(cadr val).
+
+  (defun emacs-stub--pcase-test (pattern value-form)
+    "Build (TEST-FORM . BINDINGS) for matching PATTERN against VALUE-FORM.
+VALUE-FORM is an elisp expression that evaluates to the value being
+tested.  TEST-FORM is an elisp expression that evaluates to non-nil
+when the pattern matches.  BINDINGS is a list of (SYMBOL FORM) pairs
+to let-bind in the case body when matched."
     (cond
+     ;; `_' wildcard.
      ((eq pattern '_) (cons t nil))
+     ;; Bare symbol: bind to value, always match.
      ((symbolp pattern)
-      ;; Bare symbol → bind it to value, always match.
-      (cons t (list (list pattern value-sym))))
+      (cons t (list (list pattern value-form))))
+     ;; Number / string literal.
      ((or (integerp pattern) (stringp pattern))
-      (cons (list 'equal value-sym pattern) nil))
-     ((and (consp pattern) (eq (car pattern) 'quote))
-      (cons (list 'eq value-sym (list 'quote (car (cdr pattern)))) nil))
+      (cons (list 'equal value-form pattern) nil))
+     ;; Cons cell — examine head for pattern type.
+     ((consp pattern)
+      (let ((head (car pattern))
+            (rest (cdr pattern)))
+        (cond
+         ;; (quote X)
+         ((eq head 'quote)
+          (cons (list 'eq value-form (list 'quote (car rest))) nil))
+         ;; (pred FN)
+         ((eq head 'pred)
+          (let ((fn (car rest)))
+            (cons (list 'funcall (list 'function fn) value-form) nil)))
+         ;; (guard EXPR)
+         ((eq head 'guard)
+          (cons (car rest) nil))
+         ;; (let PAT EXPR)
+         ((eq head 'let)
+          (let* ((sub-pat (car rest))
+                 (sub-expr (car (cdr rest)))
+                 (built (emacs-stub--pcase-test sub-pat sub-expr)))
+            (cons (car built) (cdr built))))
+         ;; (and P1 P2 ...)
+         ((eq head 'and)
+          (emacs-stub--pcase-and rest value-form))
+         ;; (or P1 P2 ...)
+         ((eq head 'or)
+          (emacs-stub--pcase-or rest value-form))
+         ;; (backquote ...) - destructure cons / atom shape
+         ((eq head 'backquote)
+          (emacs-stub--pcase-backquote (car rest) value-form))
+         ;; Unknown — treat as opaque catch-all (= permissive).
+         (t (cons t nil)))))
+     ;; Other atom (symbol via symbolp above; vector etc.)
+     (t (cons (list 'equal value-form (list 'quote pattern)) nil))))
+
+  (defun emacs-stub--pcase-and (patterns value-form)
+    "Build (TEST . BINDINGS) for an `and' pattern (= all PATTERNS match)."
+    (let ((tests nil)
+          (bindings nil)
+          (cur patterns))
+      (while cur
+        (let* ((built (emacs-stub--pcase-test (car cur) value-form))
+               (t1 (car built))
+               (b1 (cdr built)))
+          (setq tests (cons t1 tests))
+          (setq bindings (append bindings b1)))
+        (setq cur (cdr cur)))
+      (cons (cons 'and (let ((rev nil))
+                         (while tests (setq rev (cons (car tests) rev)) (setq tests (cdr tests)))
+                         rev))
+            bindings)))
+
+  (defun emacs-stub--pcase-or (patterns value-form)
+    "Build (TEST . BINDINGS) for an `or' pattern.  No bindings (= ambiguous)."
+    (let ((tests nil)
+          (cur patterns))
+      (while cur
+        (let* ((built (emacs-stub--pcase-test (car cur) value-form))
+               (t1 (car built)))
+          (setq tests (cons t1 tests)))
+        (setq cur (cdr cur)))
+      (cons (cons 'or (let ((rev nil))
+                        (while tests (setq rev (cons (car tests) rev)) (setq tests (cdr tests)))
+                        rev))
+            nil)))
+
+  (defun emacs-stub--pcase-backquote (pat value-form)
+    "Build (TEST . BINDINGS) for a backquote-pattern.
+Walks PAT recursively; `(comma SYM)' binds SYM to corresponding
+position; literal cons recurses with `car'/`cdr' index forms; atom
+does `equal' check."
+    (cond
+     ;; (comma SYM) — bind SYM to value-form, always match.
+     ((and (consp pat) (eq (car pat) 'comma))
+      (let ((sym (car (cdr pat))))
+        (cond
+         ((eq sym '_) (cons t nil))
+         ((symbolp sym) (cons t (list (list sym value-form))))
+         (t (emacs-stub--pcase-test sym value-form)))))
+     ;; (comma-at SYM) — bind SYM to remaining list (= value-form is tail).
+     ((and (consp pat) (eq (car pat) 'comma-at))
+      (let ((sym (car (cdr pat))))
+        (cons t (list (list sym value-form)))))
+     ;; Cons cell — recursively destructure car / cdr.
+     ((consp pat)
+      (let* ((head-build (emacs-stub--pcase-backquote
+                          (car pat) (list 'car value-form)))
+             (tail-build (emacs-stub--pcase-backquote
+                          (cdr pat) (list 'cdr value-form))))
+        (cons (list 'and
+                    (list 'consp value-form)
+                    (car head-build)
+                    (car tail-build))
+              (append (cdr head-build) (cdr tail-build)))))
+     ;; nil at end of list — match nil tail.
+     ((null pat)
+      (cons (list 'null value-form) nil))
+     ;; Other atom — equality test.
      (t
-      ;; Unknown pattern shape — treat as catch-all (= permissive).
-      (cons t nil))))
+      (cons (list 'equal value-form (list 'quote pat)) nil))))
 
   (defmacro pcase (expr &rest cases)
-    "Phase 4 minimal pcase: dispatch EXPR through each CASE.
-Supports the patterns used by anvil-memory (= quote / int / string
-/ bare symbol bind / `_' wildcard).  Other patterns degrade to
-catch-all (= permissive)."
+    "Phase 4 batch 2 pcase: dispatch EXPR through CASES.
+See `emacs-stub--pcase-test' for supported pattern shapes."
     (let ((value-sym (make-symbol "--pcase-value--"))
           (cond-clauses nil))
       (dolist (case cases)
@@ -779,7 +893,6 @@ catch-all (= permissive)."
                           (cons 'let (cons bindings body))
                         (cons 'progn body)))
                 cond-clauses)))
-      ;; Reverse cond-clauses to preserve case order.
       (let ((forward nil))
         (while cond-clauses
           (setq forward (cons (car cond-clauses) forward))
@@ -803,3 +916,298 @@ catch-all (= permissive)."
     (cons 'dolist (cons spec body))))
 
 (unless (featurep 'pcase) (provide 'pcase))
+
+;;;; --- cl-* macros / fns (Phase 4 batch 3 — minimal cl-lib subset) ---
+;;
+;; Bypass loading vendor cl-macs.el (= which fails on deep pcase patterns).
+;; Provide just the cl-* surface anvil-memory uses, mapped to plain elisp.
+
+(unless (fboundp 'cl-defun)
+  ;; Simplified cl-defun = defun.  No &key / &aux / docstring-after-decl
+  ;; support — adequate for anvil-memory's straightforward arglists.
+  (defmacro cl-defun (name arglist &rest body)
+    "Stub: cl-defun → plain defun."
+    (cons 'defun (cons name (cons arglist body)))))
+
+(unless (fboundp 'cl-incf)
+  (defmacro cl-incf (place &optional delta)
+    "Stub: (setq PLACE (+ PLACE (or DELTA 1)))."
+    (list 'setq place (list '+ place (or delta 1)))))
+
+(unless (fboundp 'cl-decf)
+  (defmacro cl-decf (place &optional delta)
+    (list 'setq place (list '- place (or delta 1)))))
+
+(unless (fboundp 'cl-some)
+  (defun cl-some (predicate sequence &rest more)
+    "Stub: return first non-nil PREDICATE result over SEQUENCE.
+Ignores MORE (= multi-list version)."
+    (ignore more)
+    (let ((cur sequence)
+          (result nil))
+      (while (and cur (not result))
+        (setq result (funcall predicate (car cur)))
+        (setq cur (cdr cur)))
+      result)))
+
+(unless (fboundp 'cl-every)
+  (defun cl-every (predicate sequence &rest more)
+    (ignore more)
+    (let ((cur sequence)
+          (ok t))
+      (while (and cur ok)
+        (unless (funcall predicate (car cur)) (setq ok nil))
+        (setq cur (cdr cur)))
+      ok)))
+
+(unless (fboundp 'cl-position)
+  (defun cl-position (item sequence &rest _keys)
+    "Stub: return index of ITEM in SEQUENCE (= eql), or nil."
+    (let ((cur sequence) (idx 0) (found nil))
+      (while (and cur (not found))
+        (when (or (eq (car cur) item) (equal (car cur) item))
+          (setq found idx))
+        (setq cur (cdr cur)) (setq idx (+ idx 1)))
+      found)))
+
+(unless (fboundp 'cl-find)
+  (defun cl-find (item sequence &rest _keys)
+    (let ((cur sequence) (found nil))
+      (while (and cur (not found))
+        (when (or (eq (car cur) item) (equal (car cur) item))
+          (setq found (car cur)))
+        (setq cur (cdr cur)))
+      found)))
+
+(unless (fboundp 'cl-remove-if-not)
+  (defun cl-remove-if-not (predicate sequence &rest _keys)
+    (let ((acc nil) (cur sequence))
+      (while cur
+        (when (funcall predicate (car cur))
+          (setq acc (cons (car cur) acc)))
+        (setq cur (cdr cur)))
+      (nreverse acc))))
+
+(unless (fboundp 'cl-remove-if)
+  (defun cl-remove-if (predicate sequence &rest _keys)
+    (let ((acc nil) (cur sequence))
+      (while cur
+        (unless (funcall predicate (car cur))
+          (setq acc (cons (car cur) acc)))
+        (setq cur (cdr cur)))
+      (nreverse acc))))
+
+(unless (fboundp 'cl-delete-if)
+  (defalias 'cl-delete-if 'cl-remove-if))
+
+(unless (fboundp 'cl-delete-duplicates)
+  (defun cl-delete-duplicates (sequence &rest _keys)
+    (let ((acc nil) (cur sequence))
+      (while cur
+        (unless (member (car cur) acc)
+          (setq acc (cons (car cur) acc)))
+        (setq cur (cdr cur)))
+      (nreverse acc))))
+
+(unless (fboundp 'cl-union)
+  (defun cl-union (list1 list2 &rest _keys)
+    (let ((acc list1) (cur list2))
+      (while cur
+        (unless (member (car cur) acc)
+          (setq acc (cons (car cur) acc)))
+        (setq cur (cdr cur)))
+      acc)))
+
+(unless (fboundp 'cl-intersection)
+  (defun cl-intersection (list1 list2 &rest _keys)
+    (let ((acc nil) (cur list1))
+      (while cur
+        (when (member (car cur) list2)
+          (setq acc (cons (car cur) acc)))
+        (setq cur (cdr cur)))
+      (nreverse acc))))
+
+(unless (fboundp 'cl-sort)
+  (defun cl-sort (sequence predicate &rest _keys)
+    (sort sequence predicate)))
+
+(unless (fboundp 'cl-loop)
+  ;; cl-loop is incredibly complex; provide a minimal version that
+  ;; handles the patterns anvil-memory uses (= for X in LIST do/collect).
+  (defmacro cl-loop (&rest clauses)
+    "Stub: minimal cl-loop supporting `for VAR in LIST do/collect/sum/count/...'.
+For patterns this stub does not recognise, returns nil."
+    (emacs-stub--cl-loop-build clauses)))
+
+(unless (fboundp 'emacs-stub--cl-loop-build)
+  (defun emacs-stub--cl-loop-build (clauses)
+    "Build expansion for cl-loop CLAUSES.  Recognises `for VAR in LIST'
+    + `do FORM' / `collect FORM' / `sum FORM' / `count FORM' / `with VAR = VAL'.
+    Returns a `let'/`while' form, or nil for unrecognised shapes."
+    (let ((var nil) (list-form nil) (do-forms nil) (collect-form nil)
+          (sum-form nil) (count-form nil) (with-bindings nil)
+          (cur clauses) (recognised t))
+      (while (and cur recognised)
+        (let ((kw (car cur)))
+          (cond
+           ((eq kw 'for)
+            (setq var (car (cdr cur)))
+            (when (eq (car (cdr (cdr cur))) 'in)
+              (setq list-form (car (cdr (cdr (cdr cur)))))
+              (setq cur (cdr (cdr (cdr (cdr cur)))))))
+           ((eq kw 'do)
+            (setq do-forms (cons (car (cdr cur)) do-forms))
+            (setq cur (cdr (cdr cur))))
+           ((eq kw 'collect)
+            (setq collect-form (car (cdr cur)))
+            (setq cur (cdr (cdr cur))))
+           ((eq kw 'sum)
+            (setq sum-form (car (cdr cur)))
+            (setq cur (cdr (cdr cur))))
+           ((eq kw 'count)
+            (setq count-form (car (cdr cur)))
+            (setq cur (cdr (cdr cur))))
+           ((eq kw 'with)
+            (let ((wname (car (cdr cur))))
+              (when (eq (car (cdr (cdr cur))) '=)
+                (setq with-bindings
+                      (append with-bindings
+                              (list (list wname (car (cdr (cdr (cdr cur))))))))
+                (setq cur (cdr (cdr (cdr (cdr cur))))))))
+           (t (setq recognised nil)))))
+      (cond
+       ((not recognised) nil)
+       (collect-form
+        (let ((acc-sym (make-symbol "--loop-acc--")))
+          (list 'let (cons (list acc-sym nil) with-bindings)
+                (list 'dolist (list var list-form)
+                      (list 'setq acc-sym (list 'cons collect-form acc-sym)))
+                (list 'nreverse acc-sym))))
+       (sum-form
+        (let ((acc-sym (make-symbol "--loop-sum--")))
+          (list 'let (cons (list acc-sym 0) with-bindings)
+                (list 'dolist (list var list-form)
+                      (list 'setq acc-sym (list '+ acc-sym sum-form)))
+                acc-sym)))
+       (count-form
+        (let ((acc-sym (make-symbol "--loop-count--")))
+          (list 'let (cons (list acc-sym 0) with-bindings)
+                (list 'dolist (list var list-form)
+                      (list 'when count-form
+                            (list 'setq acc-sym (list '+ acc-sym 1))))
+                acc-sym)))
+       (do-forms
+        (let ((rev nil))
+          (while do-forms (setq rev (cons (car do-forms) rev)) (setq do-forms (cdr do-forms)))
+          (list 'let with-bindings
+                (cons 'dolist (cons (list var list-form) rev)))))
+       (t (list 'let with-bindings nil))))))
+
+;; Provide cl-macs / cl-seq as features so vendor (require ...) chains succeed
+;; without actually loading the heavyweight files.
+(unless (fboundp 'cl-defgeneric)
+  (defmacro cl-defgeneric (name arglist &rest body)
+    "Stub: defgeneric → defun (= no real generic dispatch)."
+    (cons 'defun (cons name (cons arglist body)))))
+
+(unless (fboundp 'cl-defmethod)
+  (defmacro cl-defmethod (name arglist &rest body)
+    "Stub: defmethod → defun (= last-defined wins, no specializer dispatch)."
+    (cons 'defun (cons name (cons (mapcar (lambda (a) (if (consp a) (car a) a)) arglist) body)))))
+
+(unless (fboundp 'cl-defstruct)
+  (defmacro cl-defstruct (name &rest slots)
+    "Stub: defstruct → minimal alist-backed accessors."
+    (let ((sname (if (consp name) (car name) name))
+          (slot-names (mapcar (lambda (s) (if (consp s) (car s) s)) slots)))
+      (let ((forms nil))
+        ;; make-NAME constructor → returns alist of slots.
+        (push (list 'defun (intern (concat "make-" (symbol-name sname)))
+                    '(&rest args)
+                    '(let ((alist nil)
+                           (cur args))
+                       (while cur
+                         (setq alist (cons (cons (car cur) (car (cdr cur))) alist))
+                         (setq cur (cdr (cdr cur))))
+                       (cons (quote ,sname) alist)))
+              forms)
+        ;; NAME-p predicate.
+        (push (list 'defun (intern (concat (symbol-name sname) "-p"))
+                    '(obj)
+                    (list 'and '(consp obj) (list 'eq '(car obj) (list 'quote sname))))
+              forms)
+        ;; NAME-SLOT accessor for each slot.
+        (dolist (slot slot-names)
+          (let ((kw (intern (concat ":" (symbol-name slot)))))
+            (push (list 'defun (intern (concat (symbol-name sname) "-" (symbol-name slot)))
+                        '(obj)
+                        (list 'cdr (list 'assoc kw '(cdr obj))))
+                  forms)))
+        (cons 'progn (nreverse forms))))))
+
+(unless (fboundp 'cl-case)
+  (defmacro cl-case (expr &rest cases)
+    "Stub: cl-case → equivalent to cond with eql tests."
+    (let ((value-sym (make-symbol "--cl-case--"))
+          (clauses nil))
+      (dolist (c cases)
+        (let ((key (car c)) (body (cdr c)))
+          (cond
+           ((or (eq key 't) (eq key 'otherwise))
+            (push (cons t body) clauses))
+           ((listp key)
+            (push (cons (list 'memql value-sym (list 'quote key)) body) clauses))
+           (t (push (cons (list 'eql value-sym (list 'quote key)) body) clauses)))))
+      (let ((rev nil))
+        (while clauses (setq rev (cons (car clauses) rev)) (setq clauses (cdr clauses)))
+        (list 'let (list (list value-sym expr))
+              (cons 'cond rev))))))
+
+(unless (fboundp 'cl-pushnew)
+  (defmacro cl-pushnew (item place &rest _keys)
+    (list 'unless (list 'member item place)
+          (list 'setq place (list 'cons item place)))))
+
+(unless (fboundp 'cl-letf)
+  (defmacro cl-letf (bindings &rest body)
+    "Stub: cl-letf → simple let* (= no place mutation tracking)."
+    (cons 'let* (cons bindings body))))
+
+(unless (fboundp 'cl-letf*)
+  (defalias 'cl-letf* 'cl-letf))
+
+(unless (fboundp 'cl-flet)
+  (defmacro cl-flet (bindings &rest body)
+    "Stub: cl-flet → cl-letf with function-cell binding (= simplified)."
+    (cons 'let (cons bindings body))))
+
+(unless (fboundp 'cl-labels)
+  (defalias 'cl-labels 'cl-flet))
+
+(unless (fboundp 'cl-block)
+  (defmacro cl-block (_name &rest body)
+    "Stub: cl-block → progn (= no return-from support)."
+    (cons 'progn body)))
+
+(unless (fboundp 'cl-return-from)
+  (defmacro cl-return-from (_name &optional _val)
+    "Stub: cl-return-from → no-op."
+    nil))
+
+(unless (fboundp 'cl-return)
+  (defalias 'cl-return 'cl-return-from))
+
+(unless (fboundp 'cl-getf)
+  (defalias 'cl-getf 'plist-get))
+
+(unless (fboundp 'cl-first)
+  (defalias 'cl-first 'car))
+(unless (fboundp 'cl-second)
+  (defun cl-second (l) (car (cdr l))))
+(unless (fboundp 'cl-third)
+  (defun cl-third (l) (car (cdr (cdr l)))))
+
+(unless (featurep 'cl-macs) (provide 'cl-macs))
+(unless (featurep 'cl-seq) (provide 'cl-seq))
+(unless (featurep 'cl-extra) (provide 'cl-extra))
+(unless (featurep 'cl-generic) (provide 'cl-generic))
