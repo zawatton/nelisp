@@ -32,6 +32,19 @@
 
 ;;; Code:
 
+;;;; --- trivial primitives -----------------------------------------------
+
+(unless (fboundp 'ignore)
+  (defun ignore (&rest _ignore-args)
+    "Polyfill: do nothing, return nil regardless of arguments."
+    nil))
+
+(unless (fboundp 'identity)
+  (defun identity (arg)
+    "Polyfill: return ARG unchanged."
+    arg))
+
+
 ;;;; --- list iteration -----------------------------------------------------
 
 (unless (fboundp 'mapcar)

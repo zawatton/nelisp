@@ -58,6 +58,16 @@ DOCSTRING is accepted for arglist parity and currently ignored
     (ignore fn file arglist fileonly)
     nil))
 
+;; `interactive' — Emacs special form marking a defun as interactively
+;; callable + parsing arg-spec for `M-x'.  Under NeLisp standalone there
+;; is no interactive call surface; the form serves only as a load-time
+;; marker that `defun' has already consumed.  Polyfill as a no-op fn so
+;; `(interactive ...)' inside a defun body evaluates to nil harmlessly.
+(unless (fboundp 'interactive)
+  (defun interactive (&rest _args)
+    "Polyfill: no-op for NeLisp standalone (no interactive call surface)."
+    nil))
+
 
 (provide 'emacs-eval)
 

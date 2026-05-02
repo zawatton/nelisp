@@ -25,6 +25,9 @@
 (require 'emacs-eval)
 (require 'emacs-vars)
 (require 'emacs-sqlite)
+(require 'emacs-backquote)
+(require 'emacs-error)
+(require 'emacs-string)
 
 (provide 'emacs-init)
 
