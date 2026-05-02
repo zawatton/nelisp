@@ -79,6 +79,72 @@ DOCSTRING is accepted for arglist parity and currently ignored
     (ignore function file docstring interactive type)
     nil))
 
+;; Obsoletion-tracking aliases.  In Emacs these record metadata for
+;; deprecation warnings; under NeLisp standalone we just install the
+;; alias and skip the bookkeeping.
+(unless (fboundp 'define-obsolete-function-alias)
+  (defun define-obsolete-function-alias
+      (obsolete-name current-name &optional when docstring)
+    "Polyfill: route through `defalias', drop deprecation metadata."
+    (ignore when docstring)
+    (defalias obsolete-name current-name)))
+
+(unless (fboundp 'define-obsolete-variable-alias)
+  (defun define-obsolete-variable-alias
+      (obsolete-name current-name &optional when docstring)
+    "Polyfill: route through `defvaralias' (= defalias for vars).
+NeLisp may not have `defvaralias' yet either; in that case we just
+set OBSOLETE-NAME's value cell to track CURRENT-NAME's value at this
+moment.  Live aliasing of subsequent assignments is Phase 4."
+    (ignore when docstring)
+    (when (boundp current-name)
+      (set obsolete-name (symbol-value current-name)))
+    obsolete-name))
+
+(unless (fboundp 'make-obsolete)
+  (defun make-obsolete (obsolete-name current-name &optional when)
+    "Polyfill: no-op deprecation hint."
+    (ignore obsolete-name current-name when)
+    nil))
+
+(unless (fboundp 'make-obsolete-variable)
+  (defun make-obsolete-variable (obsolete-name current-name &optional when access-type)
+    "Polyfill: no-op deprecation hint."
+    (ignore obsolete-name current-name when access-type)
+    nil))
+
+;; `defsubst' — Emacs special form for an inline-hinted function.  The
+;; inlining is a byte compiler optimisation; semantically identical to
+;; `defun' under interpreted Elisp.
+(unless (fboundp 'defsubst)
+  (defmacro defsubst (name arglist &rest body)
+    "Polyfill: defsubst as plain defun (no inline hint)."
+    (cons 'defun (cons name (cons arglist body)))))
+
+;; Compile-time eval markers.  Under interpreted Elisp these reduce
+;; to the same body; the byte-compiler distinction does not matter.
+(unless (fboundp 'eval-when-compile)
+  (defmacro eval-when-compile (&rest body) (cons 'progn body)))
+
+(unless (fboundp 'eval-and-compile)
+  (defmacro eval-and-compile (&rest body) (cons 'progn body)))
+
+;; Misc Emacs metadata declarations that are no-ops at run-time.
+(unless (fboundp 'declare)
+  (defmacro declare (&rest _decls)
+    "Polyfill: no-op (compile-time hint surface)."
+    nil))
+
+(unless (fboundp 'with-no-warnings)
+  (defmacro with-no-warnings (&rest body)
+    "Polyfill: just eval BODY; no compiler around."
+    (cons 'progn body)))
+
+(unless (fboundp 'with-suppressed-warnings)
+  (defmacro with-suppressed-warnings (_warnings &rest body)
+    "Polyfill: ignore WARNINGS, eval BODY."
+    (cons 'progn body)))
+
 
 (provide 'emacs-eval)
 
