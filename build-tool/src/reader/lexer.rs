@@ -257,11 +257,15 @@ impl<'a> Lexer<'a> {
                                 })?;
                             out.push(v as u8 as char);
                         }
+                        // Doc 51 Phase 3-A''-1 — Emacs reader compatibility:
+                        // any unknown `\X' inside a string literal is treated
+                        // as the literal character `X' (the leading backslash
+                        // is dropped).  This matches Emacs's behaviour and is
+                        // required to parse the standard `\(fn ARGLIST)'
+                        // docstring marker that appears throughout the
+                        // vendored Emacs source tree.
                         other => {
-                            return Err(ReadError::lex(
-                                format!("unknown escape: \\{}", other as char),
-                                esc_pos,
-                            ));
+                            out.push(other as char);
                         }
                     }
                 }
@@ -462,14 +466,62 @@ impl<'a> Lexer<'a> {
                 }
                 Ok(i64::from(ctrl & 0x1f))
             }
-            b'M' => Err(ReadError::not_yet_implemented(
-                "meta char literal modifier \\M- is deferred",
-                esc_pos,
-            )),
-            other => Err(ReadError::lex(
-                format!("unknown char literal escape: \\{}", other as char),
-                esc_pos,
-            )),
+            // Doc 51 Phase 3-A''-2 — Emacs Meta-modifier char literal.
+            // `?\M-X' encodes the base char X with bit 27 (0x8000000) set
+            // so keybinding tables can store key sequences as raw integers.
+            // Handles a single level of nested escape (e.g. `?\M-\C-x') for
+            // the common cases that appear in vendored Emacs sources.
+            b'M' => {
+                if self.bump() != Some(b'-') {
+                    return Err(ReadError::lex(
+                        "expected `-' after \\M in char literal",
+                        esc_pos,
+                    ));
+                }
+                let nb = self.bump().ok_or_else(|| {
+                    ReadError::unexpected_eof(
+                        "missing meta target in char literal",
+                        esc_pos,
+                    )
+                })?;
+                let base: i64 = if nb == b'\\' {
+                    let inner = self.bump().ok_or_else(|| {
+                        ReadError::unexpected_eof(
+                            "unterminated nested escape after \\M-\\",
+                            esc_pos,
+                        )
+                    })?;
+                    match inner {
+                        b'C' => {
+                            if self.bump() != Some(b'-') {
+                                return Err(ReadError::lex(
+                                    "expected `-' after nested \\C",
+                                    esc_pos,
+                                ));
+                            }
+                            let c = self.bump().ok_or_else(|| {
+                                ReadError::unexpected_eof(
+                                    "missing control target after \\M-\\C-",
+                                    esc_pos,
+                                )
+                            })?;
+                            i64::from(c & 0x1f)
+                        }
+                        b'n' => 10,
+                        b't' => 9,
+                        b'r' => 13,
+                        other => i64::from(other),
+                    }
+                } else {
+                    i64::from(nb)
+                };
+                Ok(base | 0x8000000)
+            }
+            // Doc 51 Phase 3-A''-1 — Emacs reader compatibility: any
+            // unknown `?\X' falls through as the literal char `X', matching
+            // Emacs's char-reader behaviour.  This unblocks `?\(' / `?\)' /
+            // `?\,' which appear in vendored Emacs sources (= e.g. subr.el).
+            other => Ok(i64::from(other)),
         }
     }
 }
