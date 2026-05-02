@@ -257,11 +257,15 @@ impl<'a> Lexer<'a> {
                                 })?;
                             out.push(v as u8 as char);
                         }
+                        // Doc 51 Phase 3-A''-1 — Emacs reader compatibility:
+                        // any unknown `\X' inside a string literal is treated
+                        // as the literal character `X' (the leading backslash
+                        // is dropped).  This matches Emacs's behaviour and is
+                        // required to parse the standard `\(fn ARGLIST)'
+                        // docstring marker that appears throughout the
+                        // vendored Emacs source tree.
                         other => {
-                            return Err(ReadError::lex(
-                                format!("unknown escape: \\{}", other as char),
-                                esc_pos,
-                            ));
+                            out.push(other as char);
                         }
                     }
                 }
