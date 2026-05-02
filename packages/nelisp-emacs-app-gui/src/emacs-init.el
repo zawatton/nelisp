@@ -20,9 +20,33 @@
 
 ;;; Code:
 
+;; Doc 51 Phase 3-A' — wire the vendored Emacs lisp/ tree into
+;; load-path so `(require 'cl-lib)' / `subr.el' / `seq' / etc. resolve
+;; against upstream Emacs sources rather than per-feature L2 polyfills.
+;; Caller must set `nelisp-emacs-vendor-root' before loading this file
+;; (= the directory containing `vendor/emacs-lisp/'); we prepend the
+;; standard subdirectories that the Emacs build adds to load-path.
+(when (and (boundp 'nelisp-emacs-vendor-root) nelisp-emacs-vendor-root)
+  (let ((root (concat nelisp-emacs-vendor-root "/emacs-lisp")))
+    (dolist (sub '("" "/emacs-lisp" "/international" "/textmodes"
+                   "/progmodes" "/net" "/url" "/vc" "/calc"
+                   "/calendar" "/eshell" "/mail" "/cedet"
+                   "/leim" "/term" "/erc" "/org" "/gnus"))
+      (let ((path (concat root sub)))
+        (when (file-directory-p path)
+          (unless (and (boundp 'load-path) (member path load-path))
+            (setq load-path (cons path (and (boundp 'load-path) load-path)))))))))
+
 ;; Order matters: emacs-eval (defalias) before emacs-list (uses defalias);
 ;; emacs-fns (plist-get) before emacs-symbol (uses plist-get + plist-put);
 ;; emacs-list (nreverse, copy-sequence) before emacs-hash (uses both).
+;; Order matters: emacs-eval (defalias) before emacs-list (uses defalias);
+;; emacs-fns (plist-get) before emacs-symbol (uses plist-get + plist-put);
+;; emacs-list (nreverse, copy-sequence) before emacs-hash (uses both).
+;; emacs-sqlite-ffi requires nelisp-ffi to be on load-path; it is OPT-IN
+;; (= caller adds it to ANVIL_MODULE_FILES) so this loader does not
+;; force-require it.  emacs-sqlite stays as the default forwarder layer
+;; for the host-Emacs path.
 (require 'emacs-fns)
 (require 'emacs-eval)
 (require 'emacs-list)
