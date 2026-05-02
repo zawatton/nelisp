@@ -34,6 +34,7 @@
 pub mod builtins;
 pub mod env;
 pub mod error;
+pub mod ffi;
 pub mod sexp;
 pub mod special_forms;
 

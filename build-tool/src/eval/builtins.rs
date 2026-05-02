@@ -60,6 +60,10 @@ pub fn install_builtins(env: &mut Env) {
         // self-process stdio (Phase 9 minimal — needed by stand-alone Lisp servers
         // such as elisp-lsp running on the `nelisp` binary)
         "read-stdin-bytes",
+        // Doc 51 Phase 5: single generic FFI primitive (libffi-backed).
+        // Bridges any cdylib (sqlite + syscall + future seed crates) to
+        // pure-Elisp wrapper packages without per-function dispatch glue.
+        "nl-ffi-call",
     ];
     for n in names {
         let sentinel = Sexp::list_from(&[
@@ -148,6 +152,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "prin1-to-string" => bi_prin1_to_string(args),
         "message" => bi_princ(args),
         "read-stdin-bytes" => bi_read_stdin_bytes(args),
+        "nl-ffi-call" => super::ffi::nl_ffi_call(args),
         "provide" => bi_provide(args, env),
         "require" => bi_require(args, env),
         "featurep" => bi_featurep(args, env),

@@ -30,3 +30,10 @@ path = "src/bin/nelisp.rs"
 # the existing `eval/' to evaluate them — no wire types from sibling
 # crate, no native asset constants, no seed loader / sqlite / syscall
 # pull-in.  build-tool now has zero internal-crate deps.
+#
+# Doc 51 Phase 5 (2026-05-03): single generic FFI primitive `nl-ffi-call'
+# added to expose any cdylib (= sqlite + syscall + future seed crates) to
+# Elisp without per-function dispatch glue.  External crates only — keeps
+# the "zero internal-crate deps" Sweep-6 invariant intact.
+libloading = "0.8"
+libffi = "3"
