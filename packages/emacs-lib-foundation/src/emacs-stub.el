@@ -237,42 +237,11 @@
 (unless (fboundp 'looking-back)
   (defun looking-back (regexp &optional limit greedy) (ignore regexp limit greedy) nil))
 
-;; Line / column primitives.  Phase 11.A' (2026-05-03) deleted the
-;; redundant `point' / `point-min' / `point-max' / `goto-char' /
-;; `forward-char' / `backward-char' nil-stubs that were shadowing
-;; `emacs-buffer-builtins.el's bridges to `nelisp-ec-*' under standalone
-;; NeLisp.  The line-grain stubs below remain as no-ops (= no L1.5
-;; line-iterator yet).
-
-(unless (fboundp 'forward-line)
-  (defun forward-line (&optional n) (ignore n) 0))
-
-(unless (fboundp 'beginning-of-line)
-  (defun beginning-of-line (&optional n) (ignore n) nil))
-
-(unless (fboundp 'end-of-line)
-  (defun end-of-line (&optional n) (ignore n) nil))
-
-(unless (fboundp 'line-beginning-position)
-  (defun line-beginning-position (&optional n) (ignore n) 1))
-
-(unless (fboundp 'line-end-position)
-  (defun line-end-position (&optional n) (ignore n) 1))
-
-(unless (fboundp 'line-number-at-pos)
-  (defun line-number-at-pos (&optional pos absolute) (ignore pos absolute) 1))
-
-(unless (fboundp 'eobp)
-  (defun eobp () t))
-
-(unless (fboundp 'bobp)
-  (defun bobp () t))
-
-(unless (fboundp 'eolp)
-  (defun eolp () t))
-
-(unless (fboundp 'bolp)
-  (defun bolp () t))
+;; Line / column primitives.  Phase J (2026-05-03) replaced the no-op
+;; stubs that lived here with real L2 derivations on top of
+;; `nelisp-ec-buffer-substring' (= scan for `\n' bytes inside L2),
+;; promoted into `emacs-line-builtins.el'.  See that file's commentary
+;; for the strategy.
 
 ;; save-match-data — regex-related, only stub left after Phase 11.A'.
 ;; The buffer-text and save-excursion/save-restriction/with-current-buffer
