@@ -58,6 +58,10 @@
 (require 'emacs-backquote)
 (require 'emacs-error)
 (require 'emacs-string)
+;; Phase 9 — real-buffer wrappers around `nelisp-emacs-compat' (T39).
+;; Replaces the Phase 8 string-accumulator stubs that were inside
+;; `emacs-stub.el' for `with-temp-buffer' / `insert' / `buffer-string'.
+(require 'emacs-buffer-builtins)
 
 (provide 'emacs-init)
 
