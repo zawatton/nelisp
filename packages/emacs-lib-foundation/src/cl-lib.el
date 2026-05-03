@@ -110,6 +110,137 @@ this for sibling-list immutability)."
             (setq i (1+ i))))))
       nil)))
 
+;;;; --- generalized place setter (setf) ---------------------------------
+;;
+;; nelisp driver では vendor/emacs-lisp/emacs-lisp/gv.el が reader 不
+;; 整合で読めないため、setf を最小限ここで polyfill する。host driver
+;; では gv.el の `setf' が先に勝つので、`(unless (fboundp 'setf) ...)'
+;; gate で安全に共存。
+
+(unless (fboundp 'setf)
+  (defmacro setf (&rest pairs)
+    "Minimal setf — handles common places.
+Supported PLACE forms:
+  symbol             → setq
+  (car X)            → setcar
+  (cdr X)            → setcdr
+  (nth N L)          → setcar of nthcdr
+  (aref V I)         → aset
+  (gethash K H)      → puthash
+  (struct-slot OBJ)  → uses property `cl-struct-setter` on slot symbol
+
+For unrecognised places, signals an error at expansion time."
+    (when (= (mod (length pairs) 2) 1)
+      (error "setf: odd number of arguments"))
+    (let ((forms nil))
+      (while pairs
+        (let ((place (pop pairs))
+              (value (pop pairs)))
+          (push
+           (cond
+            ((symbolp place) (list 'setq place value))
+            ((not (consp place))
+             (error "setf: invalid place: %S" place))
+            (t
+             (let ((fn (car place))
+                   (args (cdr place)))
+               (cond
+                ((eq fn 'car)     (list 'setcar (car args) value))
+                ((eq fn 'cdr)     (list 'setcdr (car args) value))
+                ((eq fn 'aref)    (list 'aset (car args) (cadr args) value))
+                ((eq fn 'gethash) (list 'puthash (car args) value (cadr args)))
+                ((eq fn 'nth)
+                 (list 'setcar
+                       (list 'nthcdr (car args) (cadr args))
+                       value))
+                ((eq fn 'plist-get)
+                 (list 'plist-put (car args) (cadr args) value))
+                ((and (symbolp fn) (get fn 'cl-struct-setter))
+                 (list 'funcall (list 'get (list 'quote fn)
+                                      (list 'quote 'cl-struct-setter))
+                       (car args) value))
+                (t (error "setf: unsupported place form: %S" place))))))
+           forms)))
+      (cons 'progn (nreverse forms)))))
+
+;;;; --- list / alist polyfills ------------------------------------------
+
+(unless (fboundp 'assoc-delete-all)
+  (defun assoc-delete-all (key alist &optional test)
+    "Return ALIST with all entries whose car matches KEY removed.
+TEST defaults to `equal'."
+    (unless test (setq test (function equal)))
+    (let (out)
+      (dolist (cell alist)
+        (unless (and (consp cell) (funcall test (car cell) key))
+          (push cell out)))
+      (nreverse out))))
+
+(unless (fboundp 'plist-put)
+  (defun plist-put (plist prop val)
+    "Change PLIST so PROP maps to VAL.  In-place when possible."
+    (let ((cur plist))
+      (catch 'done
+        (while cur
+          (when (eq (car cur) prop)
+            (setcar (cdr cur) val)
+            (throw 'done plist))
+          (setq cur (cddr cur)))
+        (append plist (list prop val))))))
+
+;;;; --- error / control-flow macros -------------------------------------
+
+(unless (fboundp 'ignore-errors)
+  (defmacro ignore-errors (&rest body)
+    "Execute BODY; on error return nil instead of raising."
+    (list 'condition-case nil
+          (cons 'progn body)
+          (list 'error nil))))
+
+(unless (fboundp 'with-no-warnings)
+  (defmacro with-no-warnings (&rest body)
+    "Like `progn', no compiler-warning suppression in this stub."
+    (cons 'progn body)))
+
+(unless (fboundp 'when-let)
+  (defmacro when-let (spec &rest body)
+    "Evaluate SPEC bindings; if all values are non-nil, execute BODY.
+SPEC is either ((VAR EXPR) ...) or (VAR EXPR) for a single binding."
+    (let ((bindings (if (and (consp spec)
+                             (symbolp (car spec))
+                             (not (consp (car-safe (cdr spec)))))
+                        (list spec)
+                      spec))
+          (vars nil)
+          (let-bindings nil))
+      (dolist (b bindings)
+        (push (car b) vars)
+        (push b let-bindings))
+      (list 'let* (nreverse let-bindings)
+            (list 'when (cons 'and (nreverse vars))
+                  (cons 'progn body))))))
+
+(unless (fboundp 'if-let)
+  (defmacro if-let (spec then &rest else)
+    "Evaluate SPEC bindings; on all-non-nil run THEN, else ELSE."
+    (let ((bindings (if (and (consp spec)
+                             (symbolp (car spec))
+                             (not (consp (car-safe (cdr spec)))))
+                        (list spec)
+                      spec))
+          (vars nil)
+          (let-bindings nil))
+      (dolist (b bindings)
+        (push (car b) vars)
+        (push b let-bindings))
+      (list 'let* (nreverse let-bindings)
+            (list 'if (cons 'and (nreverse vars))
+                  then
+                  (cons 'progn else))))))
+
+(unless (fboundp 'when-let*) (defalias 'when-let* 'when-let))
+(unless (fboundp 'if-let*)   (defalias 'if-let* 'if-let))
+
 ;;;; --- introspection -------------------------------------------------
 
 (defconst cl-lib-version "1.0-nemacs-shim"
