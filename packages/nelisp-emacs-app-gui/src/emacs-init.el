@@ -140,6 +140,17 @@
 ;; process-send-eof / delete-process / shell-command /
 ;; shell-command-to-string + shell-file-name / shell-command-switch.
 (require 'emacs-process-builtins)
+;; Track G (2026-05-03) — Doc 43 redisplay close-gate trigger
+;; bridges.  Wires `force-mode-line-update' / `redraw-display' /
+;; `redraw-frame' / `redisplay' to the existing
+;; `emacs-redisplay.el' substrate via a current-handle slot.
+;; Optional require: only loads when emacs-redisplay's deps
+;; (= emacs-buffer / emacs-window / emacs-tui-backend) are
+;; available; missing-feature returns nil instead of erroring out.
+(when (and (locate-library "emacs-buffer")
+           (locate-library "emacs-window")
+           (locate-library "emacs-tui-backend"))
+  (require 'emacs-redisplay-builtins))
 
 (provide 'emacs-init)
 
