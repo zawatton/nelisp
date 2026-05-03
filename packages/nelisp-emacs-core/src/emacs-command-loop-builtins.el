@@ -35,6 +35,8 @@
 ;; B.4 (2026-05-03) added: command-loop-1 / top-level / recursive-edit /
 ;;                          recursion-depth / pre-command-hook /
 ;;                          post-command-hook.
+;; B.5 (2026-05-03) added: execute-extended-command / universal-argument /
+;;                          digit-argument / negative-argument.
 ;;
 ;; Deferred to subsequent phases:
 ;;   B.4: command-loop-1 / top-level
@@ -104,6 +106,19 @@
 
 (unless (fboundp 'recursion-depth)
   (defalias 'recursion-depth #'emacs-command-loop-recursion-depth))
+
+(unless (fboundp 'execute-extended-command)
+  (defalias 'execute-extended-command
+    #'emacs-command-loop-execute-extended-command))
+
+(unless (fboundp 'universal-argument)
+  (defalias 'universal-argument #'emacs-command-loop-universal-argument))
+
+(unless (fboundp 'digit-argument)
+  (defalias 'digit-argument #'emacs-command-loop-digit-argument))
+
+(unless (fboundp 'negative-argument)
+  (defalias 'negative-argument #'emacs-command-loop-negative-argument))
 
 ;;;; --- variable bridges ----------------------------------------------
 

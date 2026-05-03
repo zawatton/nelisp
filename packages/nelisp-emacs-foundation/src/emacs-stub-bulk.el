@@ -210,7 +210,7 @@
 (unless (fboundp 'describe-key) (defun describe-key (&rest _) nil))
 (unless (fboundp 'describe-symbol) (defun describe-symbol (&rest _) nil))
 (unless (fboundp 'describe-variable) (defun describe-variable (&rest _) nil))
-(unless (fboundp 'digit-argument) (defun digit-argument (&rest _) nil))
+;; digit-argument moved to emacs-command-loop-builtins (Phase B.5).
 (unless (fboundp 'ding) (defun ding (&rest _) nil))
 (unless (fboundp 'directory-file-name) (defun directory-file-name (&rest _) nil))
 (unless (fboundp 'discard-input) (defun discard-input (&rest _) nil))
@@ -245,7 +245,7 @@
 (unless (fboundp 'eval-when-compile) (defmacro eval-when-compile (&rest _) nil))
 (unless (fboundp 'event-convert-list) (defun event-convert-list (&rest _) nil))
 (unless (fboundp 'exec-path) (defun exec-path (&rest _) nil))
-(unless (fboundp 'execute-extended-command) (defun execute-extended-command (&rest _) nil))
+;; execute-extended-command moved to emacs-command-loop-builtins (Phase B.5).
 (unless (fboundp 'execute-extended-command-for-buffer) (defun execute-extended-command-for-buffer (&rest _) nil))
 (unless (boundp 'executing-kbd-macro) (defvar executing-kbd-macro nil))
 (unless (fboundp 'exit-minibuffer) (defun exit-minibuffer (&rest _) nil))
@@ -550,7 +550,7 @@
 (unless (fboundp 'natnump) (defun natnump (&rest _) nil))
 (unless (fboundp 'nconc) (defun nconc (&rest _) nil))
 (unless (boundp 'needed) (defvar needed nil))
-(unless (fboundp 'negative-argument) (defun negative-argument (&rest _) nil))
+;; negative-argument moved to emacs-command-loop-builtins (Phase B.5).
 (unless (fboundp 'newline) (defun newline (&rest _) nil))
 (unless (fboundp 'next-frame) (defun next-frame (&rest _) nil))
 (unless (fboundp 'next-property-change) (defun next-property-change (&rest _) nil))
