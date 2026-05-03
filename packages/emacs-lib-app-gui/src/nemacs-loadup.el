@@ -28,15 +28,18 @@
 ;; via `nemacs-uninit'.
 ;;
 ;; Out of scope for this MVP:
-;;   - real dump file generation (= future, after NeLisp gains
-;;     dump support)
 ;;   - command-line option parsing (= --eval / --load / -l etc.)
 ;;   - terminal init (= the TUI backend wakes up via
 ;;     `emacs-tui-event-init', driven separately)
+;;
+;; Track L (2026-05-03): dump file save/load is wired here as
+;; `nemacs-save-dump' / `nemacs-load-dump' helpers; the underlying
+;; engine lives in `emacs-dump.el'.
 
 ;;; Code:
 
 (require 'emacs-init)
+(require 'emacs-dump)
 
 ;;;; --- version + hook surface ----------------------------------------
 
@@ -131,6 +134,23 @@ Useful for smoke-testing the boot order from elisp."
         :major-mode     (and (fboundp 'emacs-mode-major-mode)
                              (emacs-mode-major-mode))
         :feature-count  (and (boundp 'features) (length features))))
+
+;;;; --- dump helpers (Track L wiring) ---------------------------------
+
+(defun nemacs-save-dump (path)
+  "Write a lisp-image dump of the running session to PATH.
+Returns the image plist that was written."
+  (emacs-dump-save path))
+
+(defun nemacs-load-dump (path &optional restore-buffers)
+  "Load a lisp-image dump from PATH and re-establish bindings.
+When RESTORE-BUFFERS is non-nil, also recreates the persisted
+buffers' contents.  Returns the loaded image plist."
+  (emacs-dump-load path restore-buffers))
+
+(defun nemacs-dump-info (path)
+  "Return a summary plist of the dump at PATH (without applying it)."
+  (emacs-dump-image-info path))
 
 (provide 'nemacs-loadup)
 
