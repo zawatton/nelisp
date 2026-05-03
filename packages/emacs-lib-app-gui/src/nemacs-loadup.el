@@ -91,6 +91,11 @@ Steps:
 Returns the symbol `ready' on success."
   (when nemacs-initialized
     (signal 'nemacs-already-initialized nil))
+  ;; Step 0 — initialise the standalone-mode dispatch scaffold so
+  ;; `emacs-standalone-active-p' returns a stable value for the rest
+  ;; of bootstrap.
+  (when (fboundp 'emacs-standalone-init)
+    (emacs-standalone-init))
   ;; Step 1.
   (let ((buf (nemacs--ensure-scratch-buffer)))
     (when (and buf (fboundp 'nelisp-ec-set-buffer))
@@ -113,6 +118,8 @@ Returns the symbol `ready' on success."
 Test-only helper.  Returns nil."
   (setq nemacs-initialized nil
         nemacs--initial-buffer nil)
+  (when (fboundp 'emacs-standalone-uninit)
+    (emacs-standalone-uninit))
   nil)
 
 ;;;; --- introspection -------------------------------------------------
