@@ -29,8 +29,9 @@
 ;;     unread-command-events / quit-flag / inhibit-quit /
 ;;     throw-on-input
 ;;
+;; B.2 (2026-05-03) added: read-key-sequence / read-key-sequence-vector.
+;;
 ;; Deferred to subsequent phases:
-;;   B.2: read-key-sequence / read-key-sequence-vector
 ;;   B.3: call-interactively / funcall-interactively / command-execute
 ;;   B.4: command-loop-1 / top-level
 ;;   B.5: execute-extended-command / prefix-arg / current-prefix-arg
@@ -70,6 +71,14 @@
 (unless (fboundp 'clear-this-command-keys)
   (defalias 'clear-this-command-keys
     #'emacs-command-loop-clear-this-command-keys))
+
+(unless (fboundp 'read-key-sequence)
+  (defalias 'read-key-sequence
+    #'emacs-command-loop-read-key-sequence))
+
+(unless (fboundp 'read-key-sequence-vector)
+  (defalias 'read-key-sequence-vector
+    #'emacs-command-loop-read-key-sequence-vector))
 
 ;;;; --- variable bridges ----------------------------------------------
 

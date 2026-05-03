@@ -243,6 +243,84 @@ Called by `command-loop-1' (B.4) at the end of each iteration."
         emacs-command-loop--real-this-command nil)
   (emacs-command-loop-clear-this-command-keys))
 
+;;;; --- read-key-sequence (Phase B.2) ---------------------------------
+
+(defun emacs-command-loop--keys-stringable-p (vec)
+  "Return non-nil when every element of VEC is a plain ASCII char.
+Used to decide whether `read-key-sequence' returns a string or a
+vector — matches Emacs' contract that a sequence of unmodified
+chars folds to a string."
+  (let ((i 0) (n (length vec)) (ok t))
+    (while (and ok (< i n))
+      (let ((e (aref vec i)))
+        (unless (and (integerp e)
+                     (>= e 0)
+                     (< e #x80))
+          (setq ok nil)))
+      (setq i (1+ i)))
+    ok))
+
+(defun emacs-command-loop--vec->string (vec)
+  "Concatenate VEC of chars into a string."
+  (let* ((n (length vec))
+         (s (make-string n 0))
+         (i 0))
+    (while (< i n)
+      (aset s i (aref vec i))
+      (setq i (1+ i)))
+    s))
+
+(defun emacs-command-loop--read-keys-vec (prompt)
+  "Read one complete key sequence as a vector of events.
+Walks the active keymap chain (= via `emacs-keymap-key-binding')
+after each event; if the lookup returns a keymap the sequence is a
+prefix and we keep reading; on a non-keymap binding (function /
+symbol / lambda / cons / nil) we stop and return the accumulated
+vector."
+  (let ((vec [])
+        (done nil))
+    (while (not done)
+      (let* ((ev (emacs-command-loop-read-event prompt))
+             (next (vconcat vec (vector ev)))
+             (binding (cond
+                       ((fboundp 'emacs-keymap-key-binding)
+                        (emacs-keymap-key-binding next))
+                       ((fboundp 'key-binding) (key-binding next))
+                       (t nil))))
+        (setq vec next)
+        (emacs-command-loop-record-key ev)
+        (cond
+         ;; Prefix: a keymap binding means more events expected.
+         ((and binding
+               (or (and (fboundp 'emacs-keymap-keymapp)
+                        (emacs-keymap-keymapp binding))
+                   (and (fboundp 'keymapp) (keymapp binding))))
+          nil)
+         (t
+          (setq done t)))))
+    vec))
+
+(defun emacs-command-loop-read-key-sequence (&optional prompt _continue
+                                                       _dont-downcase
+                                                       _can-return-switch
+                                                       _cmd-loop)
+  "Read one complete key sequence; return a string or a vector.
+Returns a string when every event in the sequence is an unmodified
+ASCII char, else a vector.  PROMPT and the four optional arguments
+are accepted for API parity but ignored in the MVP."
+  (let ((vec (emacs-command-loop--read-keys-vec prompt)))
+    (if (emacs-command-loop--keys-stringable-p vec)
+        (emacs-command-loop--vec->string vec)
+      vec)))
+
+(defun emacs-command-loop-read-key-sequence-vector (&optional prompt
+                                                              _continue
+                                                              _dont-downcase
+                                                              _can-return-switch
+                                                              _cmd-loop)
+  "Like `emacs-command-loop-read-key-sequence' but always vector."
+  (emacs-command-loop--read-keys-vec prompt))
+
 (provide 'emacs-command-loop)
 
 ;;; emacs-command-loop.el ends here
