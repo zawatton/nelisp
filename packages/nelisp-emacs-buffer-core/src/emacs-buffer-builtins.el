@@ -76,6 +76,56 @@
       (nelisp-ec-buffer-name buffer))
      (t nil))))
 
+;;;; --- registry lookup (Phase L1, 2026-05-03) --------------------------
+
+(unless (fboundp 'get-buffer)
+  (defun get-buffer (buffer-or-name)
+    "Phase L1 polyfill: look BUFFER-OR-NAME up in the `nelisp-ec' registry.
+When BUFFER-OR-NAME is a buffer object, return it if live else nil.
+When it is a string, return the matching buffer record or nil."
+    (cond
+     ((null buffer-or-name) nil)
+     ((nelisp-ec-buffer-p buffer-or-name)
+      (if (nelisp-ec-buffer-killed-p buffer-or-name)
+          nil
+        buffer-or-name))
+     ((stringp buffer-or-name)
+      (cdr (assoc buffer-or-name nelisp-ec--buffers)))
+     (t nil))))
+
+(unless (fboundp 'get-buffer-create)
+  (defun get-buffer-create (buffer-or-name &optional inhibit-buffer-hooks)
+    "Phase L1 polyfill: get an existing buffer or create a fresh one.
+INHIBIT-BUFFER-HOOKS is accepted for API parity but no buffer-hook
+subsystem exists yet to honor it."
+    (ignore inhibit-buffer-hooks)
+    (or (get-buffer buffer-or-name)
+        (nelisp-ec-generate-new-buffer
+         (cond
+          ((stringp buffer-or-name) buffer-or-name)
+          ((nelisp-ec-buffer-p buffer-or-name)
+           (nelisp-ec-buffer-name buffer-or-name))
+          (t " *unnamed*"))))))
+
+(unless (fboundp 'buffer-list)
+  (defun buffer-list (&optional frame)
+    "Phase L1 polyfill: return a list of every live buffer in the registry.
+FRAME is accepted for API parity (host filters by frame) but the
+prefixed substrate has no per-frame buffer affinity, so all live
+buffers are returned regardless."
+    (ignore frame)
+    (let ((acc nil))
+      (dolist (cell nelisp-ec--buffers)
+        (let ((buf (cdr cell)))
+          (when (and buf (not (nelisp-ec-buffer-killed-p buf)))
+            (setq acc (cons buf acc)))))
+      ;; Reverse for registry-insertion order (= push above prepended).
+      (let ((rev nil))
+        (while acc
+          (setq rev (cons (car acc) rev))
+          (setq acc (cdr acc)))
+        rev))))
+
 ;;;; --- current buffer ---------------------------------------------------
 
 (unless (fboundp 'current-buffer)

@@ -338,22 +338,10 @@
   (defun force-mode-line-update (&optional all) (ignore all) nil))
 
 
-;;;; --- buffer.c (minimal subset; nelisp-ec-* covers the rest) ------------
-
-
-
-
-(unless (fboundp 'get-buffer)
-  (defun get-buffer (buffer-or-name) (ignore buffer-or-name) nil))
-
-(unless (fboundp 'get-buffer-create)
-  (defun get-buffer-create (buffer-or-name &optional inhibit-buffer-hooks)
-    (ignore buffer-or-name inhibit-buffer-hooks)
-    (cons 'buffer nil)))
-
-
-(unless (fboundp 'buffer-list)
-  (defun buffer-list (&optional frame) (ignore frame) nil))
+;;;; --- buffer.c (= covered by nelisp-ec-* + emacs-buffer-builtins) -------
+;; Phase L1 (2026-05-03) — `get-buffer' / `get-buffer-create' /
+;; `buffer-list' moved into `emacs-buffer-builtins.el' as derivations
+;; over the `nelisp-ec--buffers' registry.
 
 
 ;;;; --- minor-mode helpers -------------------------------------------------
