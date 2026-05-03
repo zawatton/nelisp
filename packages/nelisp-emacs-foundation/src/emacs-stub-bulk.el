@@ -252,10 +252,10 @@
 ;; exit-recursive-edit moved to emacs-command-loop-builtins (Phase B.6).
 (unless (fboundp 'exp) (defun exp (&rest _) nil))
 (unless (fboundp 'expand-file-name) (defun expand-file-name (&rest _) nil))
-(unless (fboundp 'face-background) (defun face-background (&rest _) nil))
+;; face-background moved to emacs-faces-builtins (Track F).
 (unless (fboundp 'face-background-pixmap) (defun face-background-pixmap (&rest _) nil))
 (unless (fboundp 'face-font) (defun face-font (&rest _) nil))
-(unless (fboundp 'face-foreground) (defun face-foreground (&rest _) nil))
+;; face-foreground moved to emacs-faces-builtins (Track F).
 (unless (fboundp 'face-stipple) (defun face-stipple (&rest _) nil))
 (unless (fboundp 'face-underline-p) (defun face-underline-p (&rest _) nil))
 (unless (fboundp 'fboundp) (defun fboundp (&rest _) nil))
@@ -725,9 +725,9 @@
 (unless (fboundp 'set-default-file-modes) (defun set-default-file-modes (&rest _) nil))
 (unless (fboundp 'setenv) (defun setenv (&rest _) nil))
 (unless (fboundp 'setf) (defmacro setf (&rest _) nil))
-(unless (fboundp 'set-face-background) (defun set-face-background (&rest _) nil))
+;; set-face-background moved to emacs-faces-builtins (Track F).
 (unless (fboundp 'set-face-font) (defun set-face-font (&rest _) nil))
-(unless (fboundp 'set-face-foreground) (defun set-face-foreground (&rest _) nil))
+;; set-face-foreground moved to emacs-faces-builtins (Track F).
 (unless (fboundp 'set-face-stipple) (defun set-face-stipple (&rest _) nil))
 (unless (fboundp 'set-face-underline) (defun set-face-underline (&rest _) nil))
 (unless (fboundp 'set-file-modes) (defun set-file-modes (&rest _) nil))

@@ -120,6 +120,11 @@
 (require 'emacs-keymap-builtins)
 (require 'emacs-frame-builtins)
 (require 'emacs-window-builtins)
+;; Track F (2026-05-03) — face attribute API.  Sits on top of
+;; `emacs-redisplay's existing face registry; bridges defface
+;; (macro) / make-face / face-attribute / set-face-attribute /
+;; face-{foreground,background,list,p}.
+(require 'emacs-faces-builtins)
 
 (provide 'emacs-init)
 
