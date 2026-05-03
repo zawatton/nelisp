@@ -1379,11 +1379,51 @@ does not know how to translate."
           (push (list start (concat (nreverse chars)) face) segments))))
     (nreverse segments)))
 
+;;; Flush row-hash cache (Phase 3 close-gate diff redraw)
+;;
+;; A weak-keyed hash-table maps each glyph-matrix to a vector of
+;; row hashes representing what was last *successfully painted* via
+;; flush-frame.  In flush-frame we compare the current row hash
+;; against the cached hash; when they match (= row content is
+;; byte-identical to what was last emitted) we skip the
+;; canvas-draw-text + emit cycle entirely while still clearing the
+;; dirty bit.  This implements the "row hash equal → backend draw
+;; call skip" semantic from Doc 43 §3.2 close gate.
+
+(defvar emacs-redisplay--flush-hash-cache
+  (make-hash-table :test 'eq :weakness 'key)
+  "Maps glyph-matrix → vector of last-flushed row hashes.
+Weak keys: the entry is dropped automatically when the matrix is
+garbage-collected (= e.g. after `mark-frame-dirty' replaces it).")
+
+(defun emacs-redisplay--get-flush-hashes (matrix)
+  "Return the vector of last-flushed hashes for MATRIX, allocating
+one filled with -1 (= sentinel guaranteed not to equal any
+real hash) on first lookup."
+  (or (gethash matrix emacs-redisplay--flush-hash-cache)
+      (puthash matrix
+               (make-vector (emacs-redisplay-glyph-matrix-height matrix) -1)
+               emacs-redisplay--flush-hash-cache)))
+
+;;;###autoload
+(defun emacs-redisplay-flush-hash-clear (&optional matrix)
+  "Drop the per-MATRIX flush-hash cache so the next flush repaints.
+With MATRIX nil, clears the cache for every matrix.  Returns nil."
+  (cond
+   (matrix (remhash matrix emacs-redisplay--flush-hash-cache))
+   (t (clrhash emacs-redisplay--flush-hash-cache)))
+  nil)
+
 ;;;###autoload
 (defun emacs-redisplay-flush-frame (handle frame)
   "Push every dirty cached row onto FRAME via the bound backend.
 HANDLE must have been initialised with a backend; otherwise the call
-is a no-op returning 0.  Returns the total segment count emitted."
+is a no-op returning 0.  Returns the total segment count emitted.
+
+Phase 3 close-gate diff redraw: when a dirty row's hash matches the
+last value we successfully emitted for that matrix slot, we skip
+the backend draw entirely (= row content unchanged) and merely
+clear the dirty bit.  See `emacs-redisplay--flush-hash-cache'."
   (emacs-redisplay--check-handle handle)
   (let ((backend (emacs-redisplay-handle-backend handle))
         (emitted 0))
@@ -1407,24 +1447,33 @@ is a no-op returning 0.  Returns the total segment count emitted."
                      (h    (emacs-redisplay-glyph-matrix-height m))
                      (width (emacs-redisplay-glyph-matrix-width  m))
                      (rows  (emacs-redisplay-glyph-matrix-rows   m))
-                     (dirty (emacs-redisplay-glyph-matrix-dirty-set m)))
+                     (dirty (emacs-redisplay-glyph-matrix-dirty-set m))
+                     (flushed (emacs-redisplay--get-flush-hashes m)))
                 (dotimes (r h)
                   (when (aref dirty r)
-                    (let ((row (aref rows r)))
-                      ;; Paint a clearing space band first to ensure
-                      ;; trailing area is wiped (= MVP full repaint).
-                      (emacs-tui-backend-canvas-draw-text
-                       backend frame (+ top r) left
-                       (make-string width ?\s) nil)
-                      (dolist (seg (emacs-redisplay--row-text-segments
-                                    row width))
-                        (let ((c (nth 0 seg))
-                              (txt (nth 1 seg))
-                              (face (nth 2 seg)))
-                          (emacs-tui-backend-canvas-draw-text
-                           backend frame (+ top r) (+ left c) txt face)
-                          (setq emitted (1+ emitted))))
-                      (aset dirty r nil))))))))
+                    (let* ((row (aref rows r))
+                           (rhash (emacs-redisplay-glyph-row-hash row)))
+                      (cond
+                       ;; Hash matches last successful flush → skip emit.
+                       ((eql rhash (aref flushed r))
+                        (aset dirty r nil))
+                       (t
+                        ;; Paint a clearing space band first to ensure
+                        ;; trailing area is wiped (= MVP full repaint).
+                        (emacs-tui-backend-canvas-draw-text
+                         backend frame (+ top r) left
+                         (make-string width ?\s) nil)
+                        (dolist (seg (emacs-redisplay--row-text-segments
+                                      row width))
+                          (let ((c (nth 0 seg))
+                                (txt (nth 1 seg))
+                                (face (nth 2 seg)))
+                            (emacs-tui-backend-canvas-draw-text
+                             backend frame (+ top r) (+ left c) txt face)
+                            (setq emitted (1+ emitted))))
+                        ;; Record this row's hash as last-flushed.
+                        (aset flushed r rhash)
+                        (aset dirty r nil))))))))))
         ;; Drive the backend's own batching pass.
         (emacs-tui-backend-canvas-flush backend frame))
       emitted))))

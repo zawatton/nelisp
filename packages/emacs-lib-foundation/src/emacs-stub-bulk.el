@@ -286,7 +286,7 @@
 (unless (fboundp 'floor) (defun floor (&rest _) nil))
 (unless (fboundp 'fmakunbound) (defun fmakunbound (&rest _) nil))
 (unless (boundp 'font-lock-defaults) (defvar font-lock-defaults nil))
-(unless (fboundp 'force-mode-line-update) (defun force-mode-line-update (&rest _) nil))
+;; force-mode-line-update moved to emacs-redisplay-builtins (Track G).
 (unless (fboundp 'format) (defun format (&rest _) nil))
 (unless (fboundp 'format-message) (defun format-message (&rest _) nil))
 (unless (fboundp 'format-prompt) (defun format-prompt (&rest _) nil))
@@ -660,7 +660,7 @@
 (unless (fboundp 'record) (defun record (&rest _) nil))
 (unless (fboundp 'recordp) (defun recordp (&rest _) nil))
 (unless (fboundp 'redirect-frame-focus) (defun redirect-frame-focus (&rest _) nil))
-(unless (fboundp 'redisplay) (defun redisplay (&rest _) nil))
+;; redisplay moved to emacs-redisplay-builtins (Track G).
 (unless (boundp 'redisplay-dont-pause) (defvar redisplay-dont-pause nil))
 (unless (fboundp 'regexp-opt) (defun regexp-opt (&rest _) nil))
 (unless (fboundp 'regexp-quote) (defun regexp-quote (&rest _) nil))
