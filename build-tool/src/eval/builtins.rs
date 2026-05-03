@@ -49,6 +49,10 @@ pub fn install_builtins(env: &mut Env) {
         "concat", "format", "substring", "intern", "intern-soft", "symbol-name",
         "string-equal", "string=",
         "string-match-p", "regexp-quote", "mapconcat",
+        "make-string", "char-to-string", "string-to-char",
+        "string-to-number", "upcase", "downcase", "capitalize",
+        "split-string", "string-trim", "string-trim-left", "string-trim-right",
+        "string-prefix-p", "string-suffix-p", "string-search",
         // symbols / sequences
         "make-symbol", "gensym", "copy-sequence", "delete-dups",
         // file helpers
@@ -65,6 +69,8 @@ pub fn install_builtins(env: &mut Env) {
         // self-process stdio (Phase 9 minimal — needed by stand-alone Lisp servers
         // such as elisp-lsp running on the `nelisp` binary)
         "read-stdin-bytes",
+        // reader exposed as elisp callable (Track O' Phase 2)
+        "read", "read-from-string",
     ];
     for n in names {
         let sentinel = Sexp::list_from(&[
@@ -158,6 +164,20 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "copy-sequence" => bi_copy_sequence(args),
         "mapconcat" => bi_mapconcat(args, env),
         "delete-dups" => bi_delete_dups(args),
+        "make-string" => bi_make_string(args),
+        "char-to-string" => bi_char_to_string(args),
+        "string-to-char" => bi_string_to_char(args),
+        "string-to-number" => bi_string_to_number(args),
+        "upcase" => bi_upcase(args),
+        "downcase" => bi_downcase(args),
+        "capitalize" => bi_capitalize(args),
+        "split-string" => bi_split_string(args),
+        "string-trim" => bi_string_trim(args),
+        "string-trim-left" => bi_string_trim_left(args),
+        "string-trim-right" => bi_string_trim_right(args),
+        "string-prefix-p" => bi_string_prefix_p(args),
+        "string-suffix-p" => bi_string_suffix_p(args),
+        "string-search" => bi_string_search(args),
         "funcall" => bi_funcall(args, env),
         "apply" => bi_apply(args, env),
         "eval" => bi_eval(args, env),
@@ -167,6 +187,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "prin1-to-string" => bi_prin1_to_string(args),
         "message" => bi_princ(args),
         "read-stdin-bytes" => bi_read_stdin_bytes(args),
+        "read" => bi_read(args),
+        "read-from-string" => bi_read_from_string(args),
         "provide" => bi_provide(args, env),
         "require" => bi_require(args, env),
         "featurep" => bi_featurep(args, env),
@@ -719,6 +741,280 @@ fn bi_mapconcat(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
 /// `(delete-dups LIST)' — return LIST with duplicates removed
 /// (`equal' test).  Modifies LIST destructively in host Emacs; here
 /// we return a fresh list since our Sexp lacks shared mutability.
+fn bi_make_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("make-string", args, 2, Some(3))?;
+    let n = match &args[0] {
+        Sexp::Int(n) if *n >= 0 => *n as usize,
+        other => return Err(EvalError::WrongType {
+            expected: "non-negative integer".into(),
+            got: other.clone(),
+        }),
+    };
+    let c = match &args[1] {
+        Sexp::Int(c) if (0..=0x10FFFF).contains(c) => {
+            char::from_u32(*c as u32).unwrap_or(' ')
+        }
+        other => return Err(EvalError::WrongType {
+            expected: "character (integer)".into(),
+            got: other.clone(),
+        }),
+    };
+    Ok(Sexp::Str(c.to_string().repeat(n)))
+}
+
+fn bi_char_to_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("char-to-string", args, 1, Some(1))?;
+    let c = match &args[0] {
+        Sexp::Int(c) => char::from_u32(*c as u32).ok_or_else(|| EvalError::WrongType {
+            expected: "valid character codepoint".into(),
+            got: args[0].clone(),
+        })?,
+        other => return Err(EvalError::WrongType {
+            expected: "character (integer)".into(),
+            got: other.clone(),
+        }),
+    };
+    Ok(Sexp::Str(c.to_string()))
+}
+
+fn bi_string_to_char(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("string-to-char", args, 1, Some(1))?;
+    match &args[0] {
+        Sexp::Str(s) => match s.chars().next() {
+            Some(c) => Ok(Sexp::Int(c as i64)),
+            None => Ok(Sexp::Int(0)),
+        },
+        other => Err(EvalError::WrongType {
+            expected: "stringp".into(),
+            got: other.clone(),
+        }),
+    }
+}
+
+fn bi_string_to_number(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("string-to-number", args, 1, Some(2))?;
+    let s = match &args[0] {
+        Sexp::Str(s) => s.trim_start().to_string(),
+        other => return Err(EvalError::WrongType {
+            expected: "stringp".into(),
+            got: other.clone(),
+        }),
+    };
+    let radix = match args.get(1) {
+        Some(Sexp::Int(r)) => *r as u32,
+        Some(Sexp::Nil) | None => 10,
+        Some(other) => return Err(EvalError::WrongType {
+            expected: "integer radix".into(),
+            got: other.clone(),
+        }),
+    };
+    if radix == 10 {
+        if let Ok(i) = s.parse::<i64>() {
+            return Ok(Sexp::Int(i));
+        }
+        if let Ok(f) = s.parse::<f64>() {
+            return Ok(Sexp::Float(f));
+        }
+        Ok(Sexp::Int(0))
+    } else {
+        match i64::from_str_radix(&s, radix) {
+            Ok(n) => Ok(Sexp::Int(n)),
+            Err(_) => Ok(Sexp::Int(0)),
+        }
+    }
+}
+
+fn bi_upcase(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("upcase", args, 1, Some(1))?;
+    match &args[0] {
+        Sexp::Str(s) => Ok(Sexp::Str(s.to_uppercase())),
+        Sexp::Int(c) => Ok(Sexp::Int(
+            char::from_u32(*c as u32)
+                .map(|ch| ch.to_uppercase().next().unwrap_or(ch))
+                .map(|ch| ch as i64)
+                .unwrap_or(*c),
+        )),
+        other => Err(EvalError::WrongType {
+            expected: "stringp / characterp".into(),
+            got: other.clone(),
+        }),
+    }
+}
+
+fn bi_downcase(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("downcase", args, 1, Some(1))?;
+    match &args[0] {
+        Sexp::Str(s) => Ok(Sexp::Str(s.to_lowercase())),
+        Sexp::Int(c) => Ok(Sexp::Int(
+            char::from_u32(*c as u32)
+                .map(|ch| ch.to_lowercase().next().unwrap_or(ch))
+                .map(|ch| ch as i64)
+                .unwrap_or(*c),
+        )),
+        other => Err(EvalError::WrongType {
+            expected: "stringp / characterp".into(),
+            got: other.clone(),
+        }),
+    }
+}
+
+fn bi_capitalize(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("capitalize", args, 1, Some(1))?;
+    match &args[0] {
+        Sexp::Str(s) => {
+            let mut out = String::new();
+            let mut at_word_start = true;
+            for c in s.chars() {
+                if c.is_alphabetic() {
+                    if at_word_start {
+                        out.extend(c.to_uppercase());
+                        at_word_start = false;
+                    } else {
+                        out.extend(c.to_lowercase());
+                    }
+                } else {
+                    out.push(c);
+                    at_word_start = true;
+                }
+            }
+            Ok(Sexp::Str(out))
+        }
+        other => Err(EvalError::WrongType {
+            expected: "stringp".into(),
+            got: other.clone(),
+        }),
+    }
+}
+
+fn bi_split_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("split-string", args, 1, Some(4))?;
+    let s = match &args[0] {
+        Sexp::Str(s) => s.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "stringp".into(),
+            got: other.clone(),
+        }),
+    };
+    // SEPARATORS arg: regexp or default whitespace.  We accept a
+    // literal-string regex (no backslash specials).  Falls back to
+    // whitespace when nil/missing.
+    let parts: Vec<String> = match args.get(1) {
+        Some(Sexp::Str(sep)) if !sep.is_empty() => {
+            s.split(sep.as_str()).map(|p| p.to_string()).collect()
+        }
+        _ => s.split_whitespace().map(|p| p.to_string()).collect(),
+    };
+    let mut out = Sexp::Nil;
+    for part in parts.into_iter().rev() {
+        out = Sexp::cons(Sexp::Str(part), out);
+    }
+    Ok(out)
+}
+
+fn bi_string_trim(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("string-trim", args, 1, Some(3))?;
+    match &args[0] {
+        Sexp::Str(s) => Ok(Sexp::Str(s.trim().to_string())),
+        other => Err(EvalError::WrongType {
+            expected: "stringp".into(),
+            got: other.clone(),
+        }),
+    }
+}
+
+fn bi_string_trim_left(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("string-trim-left", args, 1, Some(2))?;
+    match &args[0] {
+        Sexp::Str(s) => Ok(Sexp::Str(s.trim_start().to_string())),
+        other => Err(EvalError::WrongType {
+            expected: "stringp".into(),
+            got: other.clone(),
+        }),
+    }
+}
+
+fn bi_string_trim_right(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("string-trim-right", args, 1, Some(2))?;
+    match &args[0] {
+        Sexp::Str(s) => Ok(Sexp::Str(s.trim_end().to_string())),
+        other => Err(EvalError::WrongType {
+            expected: "stringp".into(),
+            got: other.clone(),
+        }),
+    }
+}
+
+fn bi_string_prefix_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("string-prefix-p", args, 2, Some(3))?;
+    let prefix = match &args[0] {
+        Sexp::Str(s) => s.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "stringp".into(),
+            got: other.clone(),
+        }),
+    };
+    let s = match &args[1] {
+        Sexp::Str(s) => s.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "stringp".into(),
+            got: other.clone(),
+        }),
+    };
+    Ok(if s.starts_with(&prefix) { Sexp::T } else { Sexp::Nil })
+}
+
+fn bi_string_suffix_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("string-suffix-p", args, 2, Some(3))?;
+    let suffix = match &args[0] {
+        Sexp::Str(s) => s.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "stringp".into(),
+            got: other.clone(),
+        }),
+    };
+    let s = match &args[1] {
+        Sexp::Str(s) => s.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "stringp".into(),
+            got: other.clone(),
+        }),
+    };
+    Ok(if s.ends_with(&suffix) { Sexp::T } else { Sexp::Nil })
+}
+
+fn bi_string_search(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("string-search", args, 2, Some(3))?;
+    let needle = match &args[0] {
+        Sexp::Str(s) => s.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "stringp".into(),
+            got: other.clone(),
+        }),
+    };
+    let haystack = match &args[1] {
+        Sexp::Str(s) => s.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "stringp".into(),
+            got: other.clone(),
+        }),
+    };
+    let from = match args.get(2) {
+        Some(Sexp::Int(n)) if *n >= 0 => *n as usize,
+        Some(Sexp::Nil) | None => 0,
+        Some(other) => return Err(EvalError::WrongType {
+            expected: "non-negative integer".into(),
+            got: other.clone(),
+        }),
+    };
+    if from > haystack.len() {
+        return Ok(Sexp::Nil);
+    }
+    match haystack[from..].find(&needle) {
+        Some(i) => Ok(Sexp::Int((from + i) as i64)),
+        None => Ok(Sexp::Nil),
+    }
+}
+
 fn bi_delete_dups(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("delete-dups", args, 1, Some(1))?;
     let elts = super::list_elements(&args[0])?;
@@ -1403,6 +1699,43 @@ fn bi_read_stdin_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
 fn bi_prin1_to_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("prin1-to-string", args, 1, Some(1))?;
     Ok(Sexp::Str(format!("{}", args[0])))
+}
+
+/// `(read &optional STREAM)' — parse one elisp form.  STREAM may be
+/// a string (= read from it), a marker / buffer / function (= NYI),
+/// or absent (= NYI: would read from stdin).  We accept the string
+/// case used by callers like `bin/nemacs's `--eval' splice (=
+/// `(read "...")').
+fn bi_read(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("read", args, 0, Some(1))?;
+    match args.get(0) {
+        Some(Sexp::Str(s)) => super::super::reader::read_str(s)
+            .map_err(|e| EvalError::Internal(format!("read: {}", e))),
+        Some(other) => Err(EvalError::NotImplemented(format!(
+            "read STREAM type: {:?}",
+            other
+        ))),
+        None => Err(EvalError::NotImplemented(
+            "read from stdin (= no STREAM arg) is deferred".into(),
+        )),
+    }
+}
+
+/// `(read-from-string STRING &optional START END)' — return a cons
+/// `(FORM . NEW-INDEX)'.  We currently ignore the optional bounds and
+/// always return `(FORM . (length STRING))' on success.
+fn bi_read_from_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("read-from-string", args, 1, Some(3))?;
+    let s = match &args[0] {
+        Sexp::Str(s) => s.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "stringp".into(),
+            got: other.clone(),
+        }),
+    };
+    let form = super::super::reader::read_str(&s)
+        .map_err(|e| EvalError::Internal(format!("read-from-string: {}", e)))?;
+    Ok(Sexp::cons(form, Sexp::Int(s.len() as i64)))
 }
 
 fn bi_provide(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
