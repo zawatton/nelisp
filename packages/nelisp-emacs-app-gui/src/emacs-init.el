@@ -130,6 +130,11 @@
 ;; / `emacs-lisp-mode' / `run-mode-hooks' / `auto-mode-alist' /
 ;; `set-auto-mode' / `kill-all-local-variables'.
 (require 'emacs-mode-builtins)
+;; Track M (2026-05-03) — standalone NeLisp dispatch scaffold.
+;; Loads BEFORE Track I so `emacs-process--delegate' can `require'
+;; the registry from a populated load path.  Real NeLisp primitive
+;; wiring happens on the runtime side (= no-op here under host).
+(require 'emacs-standalone)
 ;; Track I (2026-05-03) — process / subprocess MVP.  Two-mode
 ;; substrate: under host Emacs delegates to the host C primitives;
 ;; under standalone NeLisp signals `emacs-process-not-implemented'

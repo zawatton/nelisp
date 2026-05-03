@@ -45,6 +45,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'emacs-standalone)
 
 (define-error 'emacs-process-error "Process error")
 (define-error 'emacs-process-not-implemented
@@ -66,10 +67,23 @@ unprefixed name to one of our substrate functions."
                       (indirect-function our-prefixed)))))))
 
 (defun emacs-process--delegate (sym args)
-  "Apply SYM to ARGS through the host binding, or signal if absent."
-  (if (emacs-process--delegate-p sym)
-      (apply (indirect-function sym) args)
-    (signal 'emacs-process-not-implemented (list sym))))
+  "Apply SYM to ARGS through the host binding or standalone primitive.
+
+Lookup order:
+  1. host-mode + host has a non-shadow binding → apply host.
+  2. a standalone primitive is registered for SYM → dispatch.
+  3. otherwise signal `emacs-process-not-implemented'.
+
+Step 2 is what lets a future NeLisp primitive (= via
+`emacs-standalone-register-primitive') replace the signal without
+touching this file."
+  (cond
+   ((and (not (emacs-standalone-mode-p))
+         (emacs-process--delegate-p sym))
+    (apply (indirect-function sym) args))
+   ((emacs-standalone-has-primitive-p sym)
+    (emacs-standalone-call-primitive sym args))
+   (t (signal 'emacs-process-not-implemented (list sym)))))
 
 ;;;; --- synchronous: call-process / call-process-region --------------
 
