@@ -43,6 +43,9 @@ pub fn apply_special(
         "defcustom" => sf_defcustom(args, env)?,
         "defgroup" => sf_defgroup(args, env)?,
         "setq" => sf_setq(args, env)?,
+        // No buffer-local concept here — the global value IS the
+        // default, so setq-default ≡ setq.
+        "setq-default" => sf_setq(args, env)?,
         "while" => sf_while(args, env)?,
         "dolist" => sf_dolist(args, env)?,
         "dotimes" => sf_dotimes(args, env)?,

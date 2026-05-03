@@ -548,6 +548,86 @@ fn bi_concat(args: &[Sexp]) -> Result<Sexp, EvalError> {
 
 /// Tiny `format` implementation — enough for the bootstrap (= `%s`,
 /// `%d`, `%S`, `%%`).  Doc 44 §3.3 keeps this scope minimal.
+#[derive(Default, Debug, Clone)]
+struct FormatSpec {
+    left_align: bool,
+    zero_pad: bool,
+    plus: bool,
+    space: bool,
+    sharp: bool,
+    width: Option<usize>,
+    precision: Option<usize>,
+    conv: char,
+}
+
+fn pad_field(body: String, spec: &FormatSpec) -> String {
+    let Some(w) = spec.width else { return body };
+    let blen = body.chars().count();
+    if blen >= w {
+        return body;
+    }
+    let pad_n = w - blen;
+    let pad_ch = if spec.zero_pad && !spec.left_align {
+        '0'
+    } else {
+        ' '
+    };
+    let pad: String = std::iter::repeat(pad_ch).take(pad_n).collect();
+    if spec.left_align {
+        format!("{}{}", body, pad)
+    } else if spec.zero_pad
+        && (body.starts_with('-') || body.starts_with('+'))
+    {
+        // keep sign at the front of the field, pad after it.
+        let sign = &body[..1];
+        let rest = &body[1..];
+        format!("{}{}{}", sign, pad, rest)
+    } else {
+        format!("{}{}", pad, body)
+    }
+}
+
+fn fmt_int_with_sign(n: i64, spec: &FormatSpec) -> String {
+    if n < 0 {
+        format!("-{}", -(n as i128))
+    } else if spec.plus {
+        format!("+{}", n)
+    } else if spec.space {
+        format!(" {}", n)
+    } else {
+        n.to_string()
+    }
+}
+
+fn fmt_float_default(x: f64, spec: &FormatSpec) -> String {
+    let prec = spec.precision.unwrap_or(6);
+    let body = match spec.conv {
+        'f' | 'F' => format!("{:.*}", prec, x.abs()),
+        'e' => format!("{:.*e}", prec, x.abs()),
+        'E' => format!("{:.*E}", prec, x.abs()),
+        'g' | 'G' => {
+            // Use shortest of %e / %f.
+            let f = format!("{:.*}", prec, x.abs());
+            let e = format!("{:.*e}", prec, x.abs());
+            if f.len() <= e.len() {
+                f
+            } else {
+                e
+            }
+        }
+        _ => format!("{}", x.abs()),
+    };
+    if x.is_sign_negative() {
+        format!("-{}", body)
+    } else if spec.plus {
+        format!("+{}", body)
+    } else if spec.space {
+        format!(" {}", body)
+    } else {
+        body
+    }
+}
+
 fn bi_format(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("format", args, 1, None)?;
     let template = match &args[0] {
@@ -567,45 +647,174 @@ fn bi_format(args: &[Sexp]) -> Result<Sexp, EvalError> {
             out.push(c);
             continue;
         }
-        match chars.next() {
-            Some('%') => out.push('%'),
-            Some('s') => {
-                if let Some(arg) = args.get(arg_idx) {
-                    arg_idx += 1;
-                    match arg {
-                        Sexp::Str(s) => out.push_str(s),
-                        other => out.push_str(&format!("{}", other)),
+        // Parse a format spec: flags, width, .precision, conv
+        let mut spec = FormatSpec::default();
+        // Flags loop.
+        while let Some(&pc) = chars.peek() {
+            match pc {
+                '-' => spec.left_align = true,
+                '0' => spec.zero_pad = true,
+                '+' => spec.plus = true,
+                ' ' => spec.space = true,
+                '#' => spec.sharp = true,
+                _ => break,
+            }
+            chars.next();
+        }
+        // Width.
+        let mut width = String::new();
+        while let Some(&pc) = chars.peek() {
+            if pc.is_ascii_digit() {
+                width.push(pc);
+                chars.next();
+            } else {
+                break;
+            }
+        }
+        if !width.is_empty() {
+            spec.width = Some(width.parse().unwrap_or(0));
+        }
+        // Precision.
+        if matches!(chars.peek(), Some(&'.')) {
+            chars.next();
+            let mut prec = String::new();
+            while let Some(&pc) = chars.peek() {
+                if pc.is_ascii_digit() {
+                    prec.push(pc);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            spec.precision = Some(prec.parse().unwrap_or(0));
+        }
+        // Conversion char.
+        let conv = match chars.next() {
+            Some(c) => c,
+            None => {
+                out.push('%');
+                continue;
+            }
+        };
+        spec.conv = conv;
+        match conv {
+            '%' => out.push('%'),
+            's' => {
+                let body = match args.get(arg_idx) {
+                    Some(Sexp::Str(s)) => s.clone(),
+                    Some(other) => format!("{}", other),
+                    None => String::new(),
+                };
+                arg_idx += 1;
+                let body = if let Some(p) = spec.precision {
+                    body.chars().take(p).collect()
+                } else {
+                    body
+                };
+                out.push_str(&pad_field(body, &spec));
+            }
+            'S' => {
+                let body = match args.get(arg_idx) {
+                    Some(arg) => format!("{}", arg),
+                    None => String::new(),
+                };
+                arg_idx += 1;
+                out.push_str(&pad_field(body, &spec));
+            }
+            'd' | 'i' => {
+                let n = match args.get(arg_idx) {
+                    Some(Sexp::Int(n)) => *n,
+                    Some(Sexp::Float(x)) => *x as i64,
+                    Some(other) => {
+                        return Err(EvalError::WrongType {
+                            expected: "integerp".into(),
+                            got: other.clone(),
+                        })
                     }
-                }
+                    None => 0,
+                };
+                arg_idx += 1;
+                let body = fmt_int_with_sign(n, &spec);
+                out.push_str(&pad_field(body, &spec));
             }
-            Some('d') | Some('i') => {
-                if let Some(arg) = args.get(arg_idx) {
-                    arg_idx += 1;
-                    match arg {
-                        Sexp::Int(n) => out.push_str(&n.to_string()),
-                        Sexp::Float(x) => out.push_str(&((*x) as i64).to_string()),
-                        other => {
-                            return Err(EvalError::WrongType {
-                                expected: "integerp".into(),
-                                got: other.clone(),
-                            })
-                        }
+            'x' | 'X' | 'o' | 'b' => {
+                let n = match args.get(arg_idx) {
+                    Some(Sexp::Int(n)) => *n,
+                    Some(Sexp::Float(x)) => *x as i64,
+                    Some(other) => {
+                        return Err(EvalError::WrongType {
+                            expected: "integerp".into(),
+                            got: other.clone(),
+                        })
                     }
-                }
+                    None => 0,
+                };
+                arg_idx += 1;
+                // Negative numbers in Emacs %x render as a hex of the
+                // mathematical value (not two's-complement).  We follow
+                // that convention.
+                let abs_part = match conv {
+                    'x' => format!("{:x}", n.unsigned_abs()),
+                    'X' => format!("{:X}", n.unsigned_abs()),
+                    'o' => format!("{:o}", n.unsigned_abs()),
+                    'b' => format!("{:b}", n.unsigned_abs()),
+                    _ => unreachable!(),
+                };
+                let prefix = if spec.sharp {
+                    match conv {
+                        'x' => "0x",
+                        'X' => "0X",
+                        'o' => "0o",
+                        'b' => "0b",
+                        _ => "",
+                    }
+                } else {
+                    ""
+                };
+                let body = if n < 0 {
+                    format!("-{}{}", prefix, abs_part)
+                } else {
+                    format!("{}{}", prefix, abs_part)
+                };
+                out.push_str(&pad_field(body, &spec));
             }
-            Some('S') | Some('o') => {
-                if let Some(arg) = args.get(arg_idx) {
-                    arg_idx += 1;
-                    out.push_str(&format!("{}", arg));
-                }
+            'c' => {
+                let n = match args.get(arg_idx) {
+                    Some(Sexp::Int(n)) => *n,
+                    Some(other) => {
+                        return Err(EvalError::WrongType {
+                            expected: "characterp".into(),
+                            got: other.clone(),
+                        })
+                    }
+                    None => 0,
+                };
+                arg_idx += 1;
+                let ch = char::from_u32(n as u32).unwrap_or('?');
+                out.push_str(&pad_field(ch.to_string(), &spec));
             }
-            Some(other) => {
+            'f' | 'F' | 'e' | 'E' | 'g' | 'G' => {
+                let x = match args.get(arg_idx) {
+                    Some(Sexp::Float(x)) => *x,
+                    Some(Sexp::Int(n)) => *n as f64,
+                    Some(other) => {
+                        return Err(EvalError::WrongType {
+                            expected: "numberp".into(),
+                            got: other.clone(),
+                        })
+                    }
+                    None => 0.0,
+                };
+                arg_idx += 1;
+                let body = fmt_float_default(x, &spec);
+                out.push_str(&pad_field(body, &spec));
+            }
+            other => {
                 return Err(EvalError::Internal(format!(
                     "format: unsupported conversion %{}",
                     other
                 )))
             }
-            None => out.push('%'),
         }
     }
     Ok(Sexp::Str(out))
