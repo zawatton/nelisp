@@ -143,7 +143,8 @@ fn eval_inner(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     match form {
         // Self-evaluating atoms (Elisp manual: "Most kinds of objects
         // evaluate to themselves").
-        Sexp::Nil | Sexp::T | Sexp::Int(_) | Sexp::Float(_) | Sexp::Str(_) | Sexp::Vector(_) => {
+        Sexp::Nil | Sexp::T | Sexp::Int(_) | Sexp::Float(_) | Sexp::Str(_)
+            | Sexp::Vector(_) | Sexp::HashTable(_) => {
             Ok(form.clone())
         }
         // Symbols.  Per Elisp manual "Constant Variables" §11.2,

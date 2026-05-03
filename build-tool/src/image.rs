@@ -149,6 +149,15 @@ fn encode_value(out: &mut Vec<u8>, value: &Sexp) -> Result<(), ImageError> {
                 encode_value(out, item)?;
             }
         }
+        Sexp::HashTable(_) => {
+            // Hash-tables are runtime-only objects in our minimal
+            // image format (= they cannot survive `compile-image' /
+            // `eval-image' round-trips).  Surface as the closest
+            // existing variant so users see a clear failure.
+            return Err(ImageError::Eval(EvalError::NotImplemented(
+                "hash-table values are not yet supported by image encoding".into(),
+            )));
+        }
     }
     Ok(())
 }

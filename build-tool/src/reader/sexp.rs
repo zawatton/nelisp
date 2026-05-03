@@ -71,6 +71,27 @@ pub enum Sexp {
     /// Identity comparison goes through `Rc::ptr_eq'; structural
     /// equality (the derived `PartialEq') unwraps the inner `Vec'.
     Vector(Rc<RefCell<Vec<Sexp>>>),
+    /// Hash-table (Track O'' minimum impl): a list of `(KEY . VALUE)'
+    /// pairs with an associated equality test.  Backed by `Vec' for
+    /// O(n) lookup so we keep the impl compact; substrate use cases
+    /// have ≤ 100 entries per table.  The `test' field stores the
+    /// Symbol name of the equality predicate (`eq' / `eql' / `equal').
+    /// Identity goes through `Rc::ptr_eq', structural equality (the
+    /// derived `PartialEq') compares the inner `HashTableInner'.
+    HashTable(Rc<RefCell<HashTableInner>>),
+}
+
+/// Inner storage for [`Sexp::HashTable`].  Linear-scan vector keeps
+/// the layer simple; substrate hash-tables hold tens of entries at
+/// most.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HashTableInner {
+    /// `eq' / `eql' / `equal' / `string-equal' — selects the key
+    /// comparison rule.  For now we accept anything and route equal-
+    /// behaviour through `Sexp's derived `PartialEq' (= structural).
+    pub test: String,
+    /// Slot list.  Entries are pushed; lookup is linear.
+    pub entries: Vec<(Sexp, Sexp)>,
 }
 
 impl Sexp {
@@ -95,6 +116,16 @@ impl Sexp {
     /// every call site to spell out `Rc::new(RefCell::new(...))'.
     pub fn vector(items: Vec<Sexp>) -> Sexp {
         Sexp::Vector(Rc::new(RefCell::new(items)))
+    }
+
+    /// Build an empty hash-table with the given equality TEST name.
+    /// Pass `"equal"' / `"eq"' / `"eql"' (= matches host Emacs's
+    /// `make-hash-table :test ...' values).
+    pub fn hash_table(test: &str) -> Sexp {
+        Sexp::HashTable(Rc::new(RefCell::new(HashTableInner {
+            test: test.to_string(),
+            entries: Vec::new(),
+        })))
     }
 
     /// Read the car of a cons cell as a fresh `Sexp` clone.  Returns
@@ -212,6 +243,23 @@ fn write_sexp(out: &mut String, s: &Sexp) {
                 write_sexp(out, item);
             }
             out.push(']');
+        }
+        Sexp::HashTable(inner) => {
+            // Emacs printer uses `#s(hash-table test TEST data (K1 V1 ...))'
+            // shape; we emit a simplified compatible form.
+            let inner = inner.borrow();
+            out.push_str("#s(hash-table test ");
+            out.push_str(&inner.test);
+            out.push_str(" data (");
+            for (i, (k, v)) in inner.entries.iter().enumerate() {
+                if i > 0 {
+                    out.push(' ');
+                }
+                write_sexp(out, k);
+                out.push(' ');
+                write_sexp(out, v);
+            }
+            out.push_str("))");
         }
     }
 }

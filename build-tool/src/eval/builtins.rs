@@ -55,6 +55,10 @@ pub fn install_builtins(env: &mut Env) {
         "string-prefix-p", "string-suffix-p", "string-search",
         // symbols / sequences
         "make-symbol", "gensym", "copy-sequence", "delete-dups",
+        // hash-tables (Track O'')
+        "make-hash-table", "hash-table-p", "hash-table-count",
+        "puthash", "gethash", "remhash", "clrhash", "maphash",
+        "hash-table-keys", "hash-table-values",
         // file helpers
         "expand-file-name", "file-truename",
         // file I/O (Doc 47 Stage 8b — multi-file load chain)
@@ -178,6 +182,16 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "string-prefix-p" => bi_string_prefix_p(args),
         "string-suffix-p" => bi_string_suffix_p(args),
         "string-search" => bi_string_search(args),
+        "make-hash-table" => bi_make_hash_table(args),
+        "hash-table-p" => bi_hash_table_p(args),
+        "hash-table-count" => bi_hash_table_count(args),
+        "puthash" => bi_puthash(args),
+        "gethash" => bi_gethash(args),
+        "remhash" => bi_remhash(args),
+        "clrhash" => bi_clrhash(args),
+        "maphash" => bi_maphash(args, env),
+        "hash-table-keys" => bi_hash_table_keys(args),
+        "hash-table-values" => bi_hash_table_values(args),
         "funcall" => bi_funcall(args, env),
         "apply" => bi_apply(args, env),
         "eval" => bi_eval(args, env),
@@ -185,7 +199,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "error" => bi_error(args),
         "print" | "princ" => bi_princ(args),
         "prin1-to-string" => bi_prin1_to_string(args),
-        "message" => bi_princ(args),
+        "message" => bi_message(args),
         "read-stdin-bytes" => bi_read_stdin_bytes(args),
         "read" => bi_read(args),
         "read-from-string" => bi_read_from_string(args),
@@ -1015,6 +1029,211 @@ fn bi_string_search(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
+/// `(make-hash-table &rest KEYWORD-ARGS)' — accepts `:test TEST'
+/// (default `eql' per host Emacs); other keywords (`:size',
+/// `:rehash-size', `:rehash-threshold', `:weakness') are accepted
+/// for parity but ignored by the linear-scan storage.
+fn bi_make_hash_table(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let mut test = String::from("eql");
+    let mut i = 0;
+    while i + 1 < args.len() {
+        if let Sexp::Symbol(kw) = &args[i] {
+            if kw == ":test" {
+                test = match &args[i + 1] {
+                    Sexp::Symbol(s) => s.clone(),
+                    Sexp::Str(s) => s.clone(),
+                    Sexp::Cons(h, _) => match &*h.borrow() {
+                        // (quote eq) shape from the reader.
+                        Sexp::Symbol(s) if s == "quote" => {
+                            // Walk past `quote' to the inner symbol.
+                            match &args[i + 1] {
+                                Sexp::Cons(_, t) => match &*t.borrow() {
+                                    Sexp::Cons(h2, _) => match &*h2.borrow() {
+                                        Sexp::Symbol(s) => s.clone(),
+                                        _ => "eql".into(),
+                                    },
+                                    _ => "eql".into(),
+                                },
+                                _ => "eql".into(),
+                            }
+                        }
+                        _ => "eql".into(),
+                    },
+                    _ => "eql".into(),
+                };
+            }
+        }
+        i += 2;
+    }
+    Ok(Sexp::hash_table(&test))
+}
+
+fn bi_hash_table_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("hash-table-p", args, 1, Some(1))?;
+    Ok(if matches!(&args[0], Sexp::HashTable(_)) {
+        Sexp::T
+    } else {
+        Sexp::Nil
+    })
+}
+
+fn bi_hash_table_count(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("hash-table-count", args, 1, Some(1))?;
+    match &args[0] {
+        Sexp::HashTable(inner) => {
+            Ok(Sexp::Int(inner.borrow().entries.len() as i64))
+        }
+        other => Err(EvalError::WrongType {
+            expected: "hash-table-p".into(),
+            got: other.clone(),
+        }),
+    }
+}
+
+/// `(puthash KEY VALUE TABLE)' — set TABLE[KEY] = VALUE.  Returns VALUE.
+fn bi_puthash(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("puthash", args, 3, Some(3))?;
+    let key = args[0].clone();
+    let value = args[1].clone();
+    let table = match &args[2] {
+        Sexp::HashTable(inner) => inner.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "hash-table-p".into(),
+            got: other.clone(),
+        }),
+    };
+    let mut inner = table.borrow_mut();
+    let mut found = false;
+    for (k, v) in inner.entries.iter_mut() {
+        if hash_test_eq(&inner_test_for(k, &key), k, &key) {
+            *v = value.clone();
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        inner.entries.push((key, value.clone()));
+    }
+    Ok(value)
+}
+
+/// `(gethash KEY TABLE &optional DEFAULT)' — lookup, returns DEFAULT
+/// when missing.
+fn bi_gethash(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("gethash", args, 2, Some(3))?;
+    let key = args[0].clone();
+    let default = args.get(2).cloned().unwrap_or(Sexp::Nil);
+    let table = match &args[1] {
+        Sexp::HashTable(inner) => inner.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "hash-table-p".into(),
+            got: other.clone(),
+        }),
+    };
+    let inner = table.borrow();
+    for (k, v) in inner.entries.iter() {
+        if hash_test_eq(&inner.test, k, &key) {
+            return Ok(v.clone());
+        }
+    }
+    Ok(default)
+}
+
+fn bi_remhash(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("remhash", args, 2, Some(2))?;
+    let key = args[0].clone();
+    let table = match &args[1] {
+        Sexp::HashTable(inner) => inner.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "hash-table-p".into(),
+            got: other.clone(),
+        }),
+    };
+    let mut inner = table.borrow_mut();
+    let test = inner.test.clone();
+    let before = inner.entries.len();
+    inner.entries.retain(|(k, _)| !hash_test_eq(&test, k, &key));
+    Ok(if inner.entries.len() < before { Sexp::T } else { Sexp::Nil })
+}
+
+fn bi_clrhash(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("clrhash", args, 1, Some(1))?;
+    let table = match &args[0] {
+        Sexp::HashTable(inner) => inner.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "hash-table-p".into(),
+            got: other.clone(),
+        }),
+    };
+    table.borrow_mut().entries.clear();
+    Ok(args[0].clone())
+}
+
+fn bi_maphash(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("maphash", args, 2, Some(2))?;
+    let func = resolve_callable(&args[0], env)?;
+    let snapshot: Vec<(Sexp, Sexp)> = match &args[1] {
+        Sexp::HashTable(inner) => inner.borrow().entries.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "hash-table-p".into(),
+            got: other.clone(),
+        }),
+    };
+    for (k, v) in snapshot {
+        super::apply_function(&func, &[k, v], env)?;
+    }
+    Ok(Sexp::Nil)
+}
+
+fn bi_hash_table_keys(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("hash-table-keys", args, 1, Some(1))?;
+    let inner = match &args[0] {
+        Sexp::HashTable(inner) => inner.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "hash-table-p".into(),
+            got: other.clone(),
+        }),
+    };
+    let mut out = Sexp::Nil;
+    for (k, _) in inner.borrow().entries.iter().rev() {
+        out = Sexp::cons(k.clone(), out);
+    }
+    Ok(out)
+}
+
+fn bi_hash_table_values(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("hash-table-values", args, 1, Some(1))?;
+    let inner = match &args[0] {
+        Sexp::HashTable(inner) => inner.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "hash-table-p".into(),
+            got: other.clone(),
+        }),
+    };
+    let mut out = Sexp::Nil;
+    for (_, v) in inner.borrow().entries.iter().rev() {
+        out = Sexp::cons(v.clone(), out);
+    }
+    Ok(out)
+}
+
+/// Compare two hash-table keys per TEST.  Currently structural for
+/// `equal' / `eql'; `eq' falls through to structural for atoms (= host
+/// Emacs eq on symbols and small ints is structural anyway), but does
+/// not honour pointer identity for cons / vector / hash-table cells
+/// (= our Sexp clones share Rc but we have no Rc-aware test here).
+fn hash_test_eq(test: &str, a: &Sexp, b: &Sexp) -> bool {
+    let _ = test; // accepted for API parity, treated uniformly for now.
+    a == b
+}
+
+/// Pick the test to use when the table-side `test' isn't accessible
+/// (= during in-place mutation borrow).  Falls through to structural
+/// equality.  Currently a stub kept for symmetry with `hash_test_eq'.
+fn inner_test_for(_a: &Sexp, _b: &Sexp) -> String {
+    "equal".into()
+}
+
 fn bi_delete_dups(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("delete-dups", args, 1, Some(1))?;
     let elts = super::list_elements(&args[0])?;
@@ -1657,6 +1876,34 @@ fn bi_princ(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(args[0].clone())
 }
 
+/// `(message FORMAT-STRING &rest ARGS)' — host Emacs treats the
+/// first arg as a format string and substitutes via `format'.  We
+/// route through `bi_format' so `%s' / `%d' / `%S' / `%%' all work
+/// with the trailing args, then write the result to *stderr* (=
+/// host Emacs writes messages to the echo area; in batch mode that
+/// surfaces on stderr, which we mirror here so `princ' on stdout
+/// stays cleanly user-payload-only).
+fn bi_message(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    use std::io::Write;
+    if args.is_empty() {
+        return Ok(Sexp::Nil);
+    }
+    // `(message nil ...)' clears the echo area in Emacs.  Mirror by
+    // returning nil without writing.
+    if matches!(&args[0], Sexp::Nil) {
+        return Ok(Sexp::Nil);
+    }
+    let formatted = bi_format(args)?;
+    let s = match &formatted {
+        Sexp::Str(s) => s.clone(),
+        other => format!("{}", other),
+    };
+    let mut err = std::io::stderr().lock();
+    let _ = writeln!(err, "{}", s);
+    let _ = err.flush();
+    Ok(formatted)
+}
+
 /// (read-stdin-bytes LIMIT) — block-read up to LIMIT bytes from fd 0.
 ///
 /// Returns:
@@ -1742,6 +1989,27 @@ fn bi_provide(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("provide", args, 1, Some(1))?;
     let feature = feature_name_arg("provide", &args[0])?;
     env.provide_feature(&feature);
+    // Also mirror the feature symbol onto the `features' dynamic
+    // var so introspection from elisp works (= matches host Emacs
+    // contract; nemacs-status / package-loaded-p style code reads
+    // `features' directly).
+    let cur = env.lookup_value("features").unwrap_or(Sexp::Nil);
+    let already = {
+        let mut found = false;
+        let mut node = cur.clone();
+        while let Sexp::Cons(h, t) = node {
+            let head = h.borrow().clone();
+            if let Sexp::Symbol(s) = &head {
+                if s == &feature { found = true; break; }
+            }
+            node = t.borrow().clone();
+        }
+        found
+    };
+    if !already {
+        let new_features = Sexp::cons(Sexp::Symbol(feature.clone()), cur);
+        let _ = env.set_value("features", new_features);
+    }
     Ok(Sexp::Symbol(feature))
 }
 
