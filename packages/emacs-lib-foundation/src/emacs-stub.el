@@ -574,27 +574,25 @@
 ;; breaks anvil-memory--fallback-display-name when handed a basename
 ;; without an extension.  Real impl: strip last `.EXT' suffix, return
 ;; original string when no `.' present in the basename.
-(defun file-name-sans-extension (filename)
-  "Return FILENAME with its extension (the last `.EXT' suffix) removed.
+(unless (fboundp 'file-name-sans-extension)
+  (defun file-name-sans-extension (filename)
+    "Return FILENAME with its extension (the last `.EXT' suffix) removed.
 Returns FILENAME unchanged when no extension is present."
-  (cond
-   ((null filename) nil)
-   (t
-    ;; Use string-match to find the last `.' after the last `/'.  Walk
-    ;; backwards: scan from the end looking for `.', stop at `/' or
-    ;; start.
-    (let* ((n (length filename))
-           (i (- n 1))
-           (dot-pos nil))
-      (while (and (>= i 0) (null dot-pos))
-        (let ((c (aref filename i)))
-          (cond
-           ((eq c ?/) (setq i -1))            ; passed last directory sep
-           ((eq c ?.) (setq dot-pos i) (setq i -1))
-           (t (setq i (- i 1))))))
-      (if dot-pos
-          (substring filename 0 dot-pos)
-        filename)))))
+    (cond
+     ((null filename) nil)
+     (t
+      (let* ((n (length filename))
+             (i (- n 1))
+             (dot-pos nil))
+        (while (and (>= i 0) (null dot-pos))
+          (let ((c (aref filename i)))
+            (cond
+             ((eq c ?/) (setq i -1))
+             ((eq c ?.) (setq dot-pos i) (setq i -1))
+             (t (setq i (- i 1))))))
+        (if dot-pos
+            (substring filename 0 dot-pos)
+          filename))))))
 
 
 
@@ -610,40 +608,42 @@ Returns FILENAME unchanged when no extension is present."
 ;; `nelisp-ec-generate-new-buffer' + `nelisp-ec-with-current-buffer' +
 ;; `nelisp-ec-kill-buffer' inside an `unwind-protect'.
 
-(defun make-directory (dir &optional parents)
-  "Create DIR (recursive when PARENTS non-nil)."
-  (ignore parents)
-  (when (fboundp 'nl-make-directory)
-    (nl-make-directory dir t)))
+(unless (fboundp 'make-directory)
+  (defun make-directory (dir &optional parents)
+    "Create DIR (recursive when PARENTS non-nil)."
+    (ignore parents)
+    (when (fboundp 'nl-make-directory)
+      (nl-make-directory dir t))))
 
 
-(defun downcase (string-or-char)
-  "Phase 8 polyfill: lowercase via nl-downcase Rust builtin."
-  (cond
-   ((null string-or-char) nil)
-   ((stringp string-or-char)
-    (if (fboundp 'nl-downcase) (nl-downcase string-or-char) string-or-char))
-   ((integerp string-or-char)
-    ;; Naive ASCII-only char downcase (= sufficient for tokenizer use cases
-    ;; that go through string downcase first).
-    (if (and (>= string-or-char ?A) (<= string-or-char ?Z))
-        (+ string-or-char (- ?a ?A))
-      string-or-char))
-   (t string-or-char)))
+(unless (fboundp 'downcase)
+  (defun downcase (string-or-char)
+    "Phase 8 polyfill: lowercase via nl-downcase Rust builtin."
+    (cond
+     ((null string-or-char) nil)
+     ((stringp string-or-char)
+      (if (fboundp 'nl-downcase) (nl-downcase string-or-char) string-or-char))
+     ((integerp string-or-char)
+      (if (and (>= string-or-char ?A) (<= string-or-char ?Z))
+          (+ string-or-char (- ?a ?A))
+        string-or-char))
+     (t string-or-char))))
 
-(defun upcase (string-or-char)
-  "Phase 8 polyfill: uppercase via nl-upcase."
-  (cond
-   ((null string-or-char) nil)
-   ((stringp string-or-char)
-    (if (fboundp 'nl-upcase) (nl-upcase string-or-char) string-or-char))
-   ((integerp string-or-char)
-    (if (and (>= string-or-char ?a) (<= string-or-char ?z))
-        (- string-or-char (- ?a ?A))
-      string-or-char))
-   (t string-or-char)))
+(unless (fboundp 'upcase)
+  (defun upcase (string-or-char)
+    "Phase 8 polyfill: uppercase via nl-upcase."
+    (cond
+     ((null string-or-char) nil)
+     ((stringp string-or-char)
+      (if (fboundp 'nl-upcase) (nl-upcase string-or-char) string-or-char))
+     ((integerp string-or-char)
+      (if (and (>= string-or-char ?a) (<= string-or-char ?z))
+          (- string-or-char (- ?a ?A))
+        string-or-char))
+     (t string-or-char))))
 
-(defun split-string (string &optional separators omit-nulls trim)
+(unless (fboundp 'split-string)
+ (defun split-string (string &optional separators omit-nulls trim)
   "Phase 8 polyfill: split STRING by SEPARATORS regexp.
 Supports the common `[^[:alnum:]]+' / `[ \\t\\n]+' / nil regexp shapes
 via specialized fast paths.  TRIM is accepted for API compat but only
@@ -702,9 +702,10 @@ applied when whitespace separator is given."
           rev))))
    (t
     ;; Unknown regex — fall back to single string return (= no split).
-    (list string))))
+    (list string)))))
 
-(defun string-to-number (string &optional base)
+(unless (fboundp 'string-to-number)
+ (defun string-to-number (string &optional base)
   "Phase 6 polyfill: parse STRING as decimal integer.
 BASE optional (default 10).  Negative strings supported.  Returns 0
 for unparseable input (= matches Emacs semantics).  Float parsing is
@@ -730,25 +731,28 @@ limited to integer truncation when no `.' is present."
         (setq acc (+ (* acc 10) (- (aref string i) ?0)))
         (setq saw-digit t)
         (setq i (+ i 1)))
-      (if saw-digit (* sign acc) 0)))))
+      (if saw-digit (* sign acc) 0))))))
 
-(defun system-name ()
+(unless (fboundp 'system-name)
+ (defun system-name ()
   "Phase 6 polyfill: return host name.
 Falls back to `localhost' when neither `nl-system-name' (= future
 builtin) nor the HOSTNAME env var is available.  worklog-add uses
 this to scope per-host log files."
   (or (and (fboundp 'nl-system-name) (nl-system-name))
       (and (fboundp 'getenv) (getenv "HOSTNAME"))
-      "localhost"))
+      "localhost")))
 
-(defun system-type ()
+(unless (fboundp 'system-type)
+ (defun system-type ()
   "Phase 6 polyfill: return system-type symbol.
 Reads the `system-type' variable seeded by anvil-runtime's
 `seed_host_constants' (= gnu/linux on Linux, darwin on macOS,
 windows-nt on Windows)."
-  (if (boundp 'system-type) system-type 'gnu/linux))
+  (if (boundp 'system-type) system-type 'gnu/linux)))
 
-(defun format-time-string (format-string &optional time zone)
+(unless (fboundp 'format-time-string)
+ (defun format-time-string (format-string &optional time zone)
   "Phase 6 polyfill: format Unix epoch via nl-format-unix-time.
 TIME may be nil (= current time), an integer (= unix epoch), or a list
 whose `car' is a Unix epoch integer (= the Phase 6 simplified
@@ -764,9 +768,10 @@ within a single day for our purposes)."
                 (t (float-time)))))
     (if (fboundp 'nl-format-unix-time)
         (nl-format-unix-time format-string epoch)
-      (number-to-string epoch))))
+      (number-to-string epoch)))))
 
-(defun secure-hash (algorithm object &optional start end binary)
+(unless (fboundp 'secure-hash)
+ (defun secure-hash (algorithm object &optional start end binary)
   "Compute the hash of OBJECT under ALGORITHM symbol.
 START / END / BINARY are accepted for API compat but only the
 (algo string) two-argument shape is wired up."
@@ -776,7 +781,7 @@ START / END / BINARY are accepted for API compat but only the
     (error "secure-hash: nl-secure-hash builtin not available"))
    ((not (stringp object))
     (error "secure-hash: OBJECT must be a string (Phase 6 limitation)"))
-   (t (nl-secure-hash algorithm object))))
+   (t (nl-secure-hash algorithm object)))))
 
 
 ;;;; --- terminal/IO no-op stubs (= avoid void-function during process load) ---
