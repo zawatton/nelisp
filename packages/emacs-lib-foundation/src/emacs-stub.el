@@ -1516,6 +1516,68 @@ NUMBER may be int or float; DIVISOR optional (= NUMBER / DIVISOR)."
           (* sign i))))
      (t 0))))
 
+(defun string-to-number (string &optional base)
+  "Phase 6 polyfill: parse STRING as decimal integer.
+BASE optional (default 10).  Negative strings supported.  Returns 0
+for unparseable input (= matches Emacs semantics).  Float parsing is
+limited to integer truncation when no `.' is present."
+  (ignore base)
+  (cond
+   ((not (stringp string)) 0)
+   ((= 0 (length string)) 0)
+   (t
+    (let ((sign 1)
+          (i 0)
+          (n (length string))
+          (acc 0)
+          (saw-digit nil))
+      (when (and (> n 0) (eq (aref string 0) ?-))
+        (setq sign -1)
+        (setq i 1))
+      (when (and (> n i) (eq (aref string i) ?+))
+        (setq i (+ i 1)))
+      (while (and (< i n)
+                  (let ((c (aref string i)))
+                    (and (>= c ?0) (<= c ?9))))
+        (setq acc (+ (* acc 10) (- (aref string i) ?0)))
+        (setq saw-digit t)
+        (setq i (+ i 1)))
+      (if saw-digit (* sign acc) 0)))))
+
+(defun system-name ()
+  "Phase 6 polyfill: return host name.
+Falls back to `localhost' when neither `nl-system-name' (= future
+builtin) nor the HOSTNAME env var is available.  worklog-add uses
+this to scope per-host log files."
+  (or (and (fboundp 'nl-system-name) (nl-system-name))
+      (and (fboundp 'getenv) (getenv "HOSTNAME"))
+      "localhost"))
+
+(defun system-type ()
+  "Phase 6 polyfill: return system-type symbol.
+Reads the `system-type' variable seeded by anvil-runtime's
+`seed_host_constants' (= gnu/linux on Linux, darwin on macOS,
+windows-nt on Windows)."
+  (if (boundp 'system-type) system-type 'gnu/linux))
+
+(defun format-time-string (format-string &optional time zone)
+  "Phase 6 polyfill: format Unix epoch via nl-format-unix-time.
+TIME may be nil (= current time), an integer (= unix epoch), or a list
+whose `car' is a Unix epoch integer (= the Phase 6 simplified
+`current-time' shape).  ZONE is accepted for API compat but ignored
+(= always UTC; anvil callsites use %Y-%m-%d which is timezone-stable
+within a single day for our purposes)."
+  (ignore zone)
+  (let ((epoch (cond
+                ((null time) (float-time))
+                ((integerp time) time)
+                ((floatp time) (truncate time))
+                ((listp time) (or (car time) (float-time)))
+                (t (float-time)))))
+    (if (fboundp 'nl-format-unix-time)
+        (nl-format-unix-time format-string epoch)
+      (number-to-string epoch))))
+
 (defun secure-hash (algorithm object &optional start end binary)
   "Compute the hash of OBJECT under ALGORITHM symbol.
 START / END / BINARY are accepted for API compat but only the
