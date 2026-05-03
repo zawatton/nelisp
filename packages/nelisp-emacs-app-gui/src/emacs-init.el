@@ -33,7 +33,11 @@
                    "/calendar" "/eshell" "/mail" "/cedet"
                    "/leim" "/term" "/erc" "/org" "/gnus"))
       (let ((path (concat root sub)))
-        (when (file-directory-p path)
+        ;; nelisp does not yet provide `file-directory-p'; if missing we
+        ;; just accept the path and let later `require' calls error if
+        ;; anything is genuinely absent.
+        (when (or (not (fboundp 'file-directory-p))
+                  (file-directory-p path))
           (unless (and (boundp 'load-path) (member path load-path))
             (setq load-path (cons path (and (boundp 'load-path) load-path)))))))))
 

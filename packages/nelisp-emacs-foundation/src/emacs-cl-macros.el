@@ -396,14 +396,16 @@ specializer cons-cells from arglist (e.g. `(SEQUENCE array)' → `SEQUENCE')."
           (slot-names (mapcar (lambda (s) (if (consp s) (car s) s)) slots)))
       (let ((forms nil))
         ;; make-NAME constructor → returns alist of slots.
+        ;; Built with `list' so the inner `sname' splice is explicit
+        ;; (= nelisp's reader rejects `,X' outside a backquote, so we
+        ;; cannot use the convenient backtick form here).
         (push (list 'defun (intern (concat "make-" (symbol-name sname)))
                     '(&rest args)
-                    '(let ((alist nil)
-                           (cur args))
-                       (while cur
-                         (setq alist (cons (cons (car cur) (car (cdr cur))) alist))
-                         (setq cur (cdr (cdr cur))))
-                       (cons (quote ,sname) alist)))
+                    (list 'let '((alist nil) (cur args))
+                          '(while cur
+                             (setq alist (cons (cons (car cur) (car (cdr cur))) alist))
+                             (setq cur (cdr (cdr cur))))
+                          (list 'cons (list 'quote sname) 'alist)))
               forms)
         ;; NAME-p predicate.
         (push (list 'defun (intern (concat (symbol-name sname) "-p"))
