@@ -87,6 +87,11 @@
 ;; `emacs-buffer-builtins' (= depends on `current-buffer' /
 ;; `set-buffer' / `generate-new-buffer').
 (require 'emacs-fileio-builtins)
+;; Track E.2 (2026-05-03) — undo subsystem.  Loads BEFORE
+;; `emacs-edit-builtins' so the editing commands' record-on-mutate
+;; guards (`(when (fboundp 'emacs-undo-record-insert) ...)') see
+;; the prefixed helpers as bound when they fire.
+(require 'emacs-undo-builtins)
 ;; Track E (2026-05-03) — editing commands + kill-ring (= self-insert
 ;; / newline / delete-backward-char / kill-region / kill-line / yank
 ;; / forward-word / backward-word).  Loads after `emacs-line-builtins'

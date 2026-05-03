@@ -59,7 +59,7 @@
 (unless (fboundp 'buffer-string) (defun buffer-string (&rest _) nil))
 (unless (fboundp 'buffer-substring) (defun buffer-substring (&rest _) nil))
 (unless (fboundp 'buffer-substring-no-properties) (defun buffer-substring-no-properties (&rest _) nil))
-(unless (boundp 'buffer-undo-list) (defvar buffer-undo-list nil))
+;; buffer-undo-list moved to emacs-undo-builtins (Track E.2).
 (unless (fboundp 'byte-code) (defun byte-code (&rest _) nil))
 (unless (fboundp 'byte-code-function-p) (defun byte-code-function-p (&rest _) nil))
 (unless (fboundp 'byte-compile) (defun byte-compile (&rest _) nil))
@@ -613,7 +613,7 @@
 ;; pre-command-hook moved to emacs-command-loop-builtins (Phase B.4).
 ;; prefix-arg moved to emacs-command-loop-builtins (Phase B.3).
 (unless (fboundp 'prefix-numeric-value) (defun prefix-numeric-value (&rest _) nil))
-(unless (fboundp 'primitive-undo) (defun primitive-undo (&rest _) nil))
+;; primitive-undo moved to emacs-undo-builtins (Track E.2).
 (unless (fboundp 'prin1) (defun prin1 (&rest _) nil))
 (unless (fboundp 'prin1-to-string) (defun prin1-to-string (&rest _) nil))
 (unless (fboundp 'princ) (defun princ (&rest _) nil))
@@ -836,10 +836,10 @@
 (unless (fboundp 'truncate) (defun truncate (&rest _) nil))
 (unless (fboundp 'tty-top-frame) (defun tty-top-frame (&rest _) nil))
 (unless (fboundp 'type-of) (defun type-of (&rest _) nil))
-(unless (fboundp 'undo) (defun undo (&rest _) nil))
+;; undo moved to emacs-undo-builtins (Track E.2).
 (unless (fboundp 'undo-amalgamate-change-group) (defun undo-amalgamate-change-group (&rest _) nil))
 (unless (fboundp 'undo-auto-amalgamate) (defun undo-auto-amalgamate (&rest _) nil))
-(unless (fboundp 'undo-boundary) (defun undo-boundary (&rest _) nil))
+;; undo-boundary moved to emacs-undo-builtins (Track E.2).
 (unless (boundp 'undo-in-progress) (defvar undo-in-progress nil))
 (unless (boundp 'undo-limit) (defvar undo-limit nil))
 (unless (fboundp 'undo-more) (defun undo-more (&rest _) nil))
