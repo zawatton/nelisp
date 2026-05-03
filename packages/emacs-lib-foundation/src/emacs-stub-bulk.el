@@ -68,7 +68,7 @@
 (unless (fboundp 'byte-compile-warning-enabled-p) (defun byte-compile-warning-enabled-p (&rest _) nil))
 (unless (fboundp 'byte-compile-warn-obsolete) (defun byte-compile-warn-obsolete (&rest _) nil))
 (unless (fboundp 'byte-run--set-speed) (defun byte-run--set-speed (&rest _) nil))
-(unless (fboundp 'call-interactively) (defun call-interactively (&rest _) nil))
+;; call-interactively moved to emacs-command-loop-builtins (Phase B.3).
 (unless (fboundp 'call-process) (defun call-process (&rest _) nil))
 (unless (fboundp 'call-process-region) (defun call-process-region (&rest _) nil))
 (unless (fboundp 'cancel-timer) (defun cancel-timer (&rest _) nil))
@@ -168,7 +168,7 @@
 (unless (boundp 'current-load-list) (defvar current-load-list nil))
 (unless (fboundp 'current-local-map) (defun current-local-map (&rest _) nil))
 (unless (fboundp 'current-message) (defun current-message (&rest _) nil))
-(unless (boundp 'current-prefix-arg) (defvar current-prefix-arg nil))
+;; current-prefix-arg moved to emacs-command-loop-builtins (Phase B.3).
 (unless (fboundp 'current-window-configuration) (defun current-window-configuration (&rest _) nil))
 (unless (boundp 'cursor-in-echo-area) (defvar cursor-in-echo-area nil))
 (unless (fboundp 'cursor-intangible-mode) (defun cursor-intangible-mode (&rest _) nil))
@@ -309,7 +309,7 @@
 (unless (fboundp 'frame-width) (defun frame-width (&rest _) nil))
 (unless (fboundp 'fset) (defun fset (&rest _) nil))
 (unless (fboundp 'funcall) (defun funcall (&rest _) nil))
-(unless (fboundp 'funcall-interactively) (defun funcall-interactively (&rest _) nil))
+;; funcall-interactively moved to emacs-command-loop-builtins (Phase B.3).
 (unless (fboundp 'funcall-with-delayed-message) (defun funcall-with-delayed-message (&rest _) nil))
 (unless (fboundp 'function-documentation) (defun function-documentation (&rest _) nil))
 (unless (boundp 'function-key-map) (defvar function-key-map nil))
@@ -611,7 +611,7 @@
 (unless (boundp 'post-command-hook) (defvar post-command-hook nil))
 (unless (boundp 'post-self-insert-hook) (defvar post-self-insert-hook nil))
 (unless (boundp 'pre-command-hook) (defvar pre-command-hook nil))
-(unless (boundp 'prefix-arg) (defvar prefix-arg nil))
+;; prefix-arg moved to emacs-command-loop-builtins (Phase B.3).
 (unless (fboundp 'prefix-numeric-value) (defun prefix-numeric-value (&rest _) nil))
 (unless (fboundp 'primitive-undo) (defun primitive-undo (&rest _) nil))
 (unless (fboundp 'prin1) (defun prin1 (&rest _) nil))

@@ -321,6 +321,151 @@ are accepted for API parity but ignored in the MVP."
   "Like `emacs-command-loop-read-key-sequence' but always vector."
   (emacs-command-loop--read-keys-vec prompt))
 
+;;;; --- prefix-arg state (Phase B.3 placeholder, B.5 driver) ----------
+
+(defvar emacs-command-loop--prefix-arg nil
+  "Pending prefix arg to be consumed by the next `call-interactively'.
+Set by `universal-argument' / `digit-argument' (= B.5).")
+
+(defvar emacs-command-loop--current-prefix-arg nil
+  "The prefix arg in effect for the command currently being executed.
+Bound by `call-interactively' from `prefix-arg' before it dispatches.")
+
+;;;; --- call-interactively (Phase B.3) --------------------------------
+
+(defun emacs-command-loop--prefix-numeric-value (arg)
+  "Replicate `prefix-numeric-value' for the supported prefix-arg shapes.
+- nil → 1
+- `-' → -1
+- (N) (= a list with one int from `\\[universal-argument]') → N
+- integer N → N
+- everything else → 1"
+  (cond
+   ((null arg) 1)
+   ((eq arg '-) -1)
+   ((integerp arg) arg)
+   ((consp arg) (or (car arg) 1))
+   (t 1)))
+
+(defun emacs-command-loop--build-args (spec)
+  "Build an args list from an interactive SPEC.
+
+SPEC is the body of `(interactive ...)':
+- nil           → no args
+- string        → parse a small subset of interactive codes:
+                  P (raw prefix), p (numeric prefix), N (number),
+                  s (string via read-string), n (number via
+                  read-number).  Other codes signal.
+- list / form   → eval and return its result as the args list."
+  (cond
+   ((null spec) nil)
+   ((stringp spec)
+    (let ((args nil)
+          (lines (split-string spec "\n")))
+      (dolist (line lines)
+        (when (> (length line) 0)
+          (let ((code (aref line 0))
+                (prompt (substring line 1)))
+            (cond
+             ((eq code ?P)
+              (push emacs-command-loop--current-prefix-arg args))
+             ((eq code ?p)
+              (push (emacs-command-loop--prefix-numeric-value
+                     emacs-command-loop--current-prefix-arg)
+                    args))
+             ((eq code ?N)
+              (push (or emacs-command-loop--current-prefix-arg
+                        (if (fboundp 'read-number)
+                            (read-number prompt 0)
+                          0))
+                    args))
+             ((eq code ?n)
+              (push (if (fboundp 'read-number)
+                        (read-number prompt 0)
+                      0)
+                    args))
+             ((eq code ?s)
+              (push (if (fboundp 'read-string)
+                        (read-string prompt)
+                      "")
+                    args))
+             (t (signal 'emacs-command-loop-error
+                        (list 'unsupported-interactive-code code)))))))
+      (nreverse args)))
+   ((or (consp spec) (functionp spec))
+    (eval spec t))
+   (t nil)))
+
+(defun emacs-command-loop-call-interactively (function &optional record-flag keys)
+  "Phase B.3 MVP: invoke FUNCTION as if interactively from the keyboard.
+RECORD-FLAG / KEYS are accepted for API parity.
+
+Reads FUNCTION's interactive form, builds an arg list from the spec,
+binds `current-prefix-arg' from the pending `prefix-arg', dispatches
+the call, then promotes `this-command' to `last-command'."
+  (ignore record-flag keys)
+  (unless (or (and (symbolp function) (fboundp function))
+              (functionp function))
+    (signal 'wrong-type-argument (list 'commandp function)))
+  (let* ((form (cond
+                ((symbolp function)
+                 (or (and (fboundp 'interactive-form)
+                          (interactive-form function))
+                     ;; Fallback: peek at the lambda's body.
+                     (let ((def (and (fboundp function)
+                                     (symbol-function function))))
+                       (and (consp def)
+                            (let ((b (cond
+                                      ((eq (car def) 'lambda) (cddr def))
+                                      ((eq (car def) 'closure) (cdddr def))
+                                      (t nil))))
+                              (and b (consp (car b))
+                                   (eq (caar b) 'interactive)
+                                   (car b)))))))
+                ((and (fboundp 'interactive-form)
+                      (interactive-form function)))
+                (t nil)))
+         (spec (and (consp form) (cadr form)))
+         (emacs-command-loop--current-prefix-arg
+          emacs-command-loop--prefix-arg)
+         (args (emacs-command-loop--build-args spec)))
+    (setq emacs-command-loop--prefix-arg nil)
+    (emacs-command-loop-set-this-command function)
+    (let ((result (apply function args)))
+      (emacs-command-loop-mark-command-finished)
+      result)))
+
+(defun emacs-command-loop-funcall-interactively (function &rest args)
+  "Like `funcall' but signal that the call is interactive.
+MVP: this is plain `apply' — `called-interactively-p' tracking is
+deferred until we have a richer call-stack inspection layer."
+  (apply function args))
+
+(defun emacs-command-loop-command-execute (cmd &optional record-flag keys special)
+  "Phase B.3 MVP: dispatch CMD as a command.
+
+CMD may be:
+- a symbol whose function-slot is a command → call-interactively'd
+- a lambda / closure with an interactive form → call-interactively'd
+- a string or vector keyboard macro → events re-fed into the queue
+- anything else → wrong-type-argument
+
+RECORD-FLAG / KEYS / SPECIAL are accepted for API parity."
+  (ignore special)
+  (cond
+   ((or (stringp cmd) (vectorp cmd))
+    (let ((i 0) (n (length cmd)))
+      (while (< i n)
+        (setq emacs-command-loop--unread-events
+              (append emacs-command-loop--unread-events
+                      (list (aref cmd i))))
+        (setq i (1+ i)))
+      nil))
+   ((or (and (symbolp cmd) (fboundp cmd))
+        (functionp cmd))
+    (emacs-command-loop-call-interactively cmd record-flag keys))
+   (t (signal 'wrong-type-argument (list 'commandp cmd)))))
+
 (provide 'emacs-command-loop)
 
 ;;; emacs-command-loop.el ends here

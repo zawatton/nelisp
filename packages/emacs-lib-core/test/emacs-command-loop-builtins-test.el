@@ -248,6 +248,95 @@
     (emacs-command-loop-read-key-sequence)
     (should (equal "a" (emacs-command-loop-this-command-keys)))))
 
+;;;; N. Phase B.3 — call-interactively / command-execute
+
+(defun emacs-command-loop-builtins-test--noop ()
+  "Test fixture: takes no args, no interactive form."
+  'noop-result)
+
+(defun emacs-command-loop-builtins-test--noop-i ()
+  "Test fixture: empty interactive form."
+  (interactive)
+  'noop-i-result)
+
+(defun emacs-command-loop-builtins-test--accept-P (arg)
+  "Test fixture: receives raw prefix arg."
+  (interactive "P")
+  arg)
+
+(defun emacs-command-loop-builtins-test--accept-p (arg)
+  "Test fixture: receives numeric prefix arg."
+  (interactive "p")
+  arg)
+
+(defun emacs-command-loop-builtins-test--accept-list-spec (a b)
+  "Test fixture: interactive form is a lisp form returning a list."
+  (interactive (list 1 2))
+  (cons a b))
+
+(ert-deftest emacs-command-loop-builtins-test/call-interactively-no-spec ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (let ((r (emacs-command-loop-call-interactively
+              'emacs-command-loop-builtins-test--noop-i)))
+      (should (eq 'noop-i-result r))
+      ;; this-command was promoted to last-command
+      (should (eq 'emacs-command-loop-builtins-test--noop-i
+                  emacs-command-loop--last-command))
+      (should (null emacs-command-loop--this-command)))))
+
+(ert-deftest emacs-command-loop-builtins-test/call-interactively-P-passes-raw ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (setq emacs-command-loop--prefix-arg '(4))
+    (let ((r (emacs-command-loop-call-interactively
+              'emacs-command-loop-builtins-test--accept-P)))
+      (should (equal '(4) r))
+      (should (null emacs-command-loop--prefix-arg)))))
+
+(ert-deftest emacs-command-loop-builtins-test/call-interactively-p-numeric ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (setq emacs-command-loop--prefix-arg '(4))
+    (let ((r (emacs-command-loop-call-interactively
+              'emacs-command-loop-builtins-test--accept-p)))
+      (should (= 4 r))))
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (setq emacs-command-loop--prefix-arg nil)
+    (let ((r (emacs-command-loop-call-interactively
+              'emacs-command-loop-builtins-test--accept-p)))
+      (should (= 1 r)))))
+
+(ert-deftest emacs-command-loop-builtins-test/call-interactively-list-spec ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (let ((r (emacs-command-loop-call-interactively
+              'emacs-command-loop-builtins-test--accept-list-spec)))
+      (should (equal (cons 1 2) r)))))
+
+(ert-deftest emacs-command-loop-builtins-test/call-interactively-rejects-non-function ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (should-error (emacs-command-loop-call-interactively 42)
+                  :type 'wrong-type-argument)))
+
+(ert-deftest emacs-command-loop-builtins-test/funcall-interactively-passes-args ()
+  (let ((r (emacs-command-loop-funcall-interactively #'+ 2 3)))
+    (should (= 5 r))))
+
+(ert-deftest emacs-command-loop-builtins-test/command-execute-on-symbol ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (let ((r (emacs-command-loop-command-execute
+              'emacs-command-loop-builtins-test--noop-i)))
+      (should (eq 'noop-i-result r)))))
+
+(ert-deftest emacs-command-loop-builtins-test/command-execute-on-keyboard-macro-string ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (emacs-command-loop-command-execute "abc")
+    (should (= ?a (emacs-command-loop-read-event)))
+    (should (= ?b (emacs-command-loop-read-event)))
+    (should (= ?c (emacs-command-loop-read-event)))))
+
+(ert-deftest emacs-command-loop-builtins-test/command-execute-rejects-other ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (should-error (emacs-command-loop-command-execute 42)
+                  :type 'wrong-type-argument)))
+
 (provide 'emacs-command-loop-builtins-test)
 
 ;;; emacs-command-loop-builtins-test.el ends here

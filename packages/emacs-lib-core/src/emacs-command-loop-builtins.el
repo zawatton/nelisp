@@ -30,9 +30,10 @@
 ;;     throw-on-input
 ;;
 ;; B.2 (2026-05-03) added: read-key-sequence / read-key-sequence-vector.
+;; B.3 (2026-05-03) added: call-interactively / funcall-interactively /
+;;                          command-execute / prefix-arg / current-prefix-arg.
 ;;
 ;; Deferred to subsequent phases:
-;;   B.3: call-interactively / funcall-interactively / command-execute
 ;;   B.4: command-loop-1 / top-level
 ;;   B.5: execute-extended-command / prefix-arg / current-prefix-arg
 ;;   B.6: keyboard-quit / recursive-edit / abort-recursive-edit
@@ -80,6 +81,15 @@
   (defalias 'read-key-sequence-vector
     #'emacs-command-loop-read-key-sequence-vector))
 
+(unless (fboundp 'call-interactively)
+  (defalias 'call-interactively #'emacs-command-loop-call-interactively))
+
+(unless (fboundp 'funcall-interactively)
+  (defalias 'funcall-interactively #'emacs-command-loop-funcall-interactively))
+
+(unless (fboundp 'command-execute)
+  (defalias 'command-execute #'emacs-command-loop-command-execute))
+
 ;;;; --- variable bridges ----------------------------------------------
 
 (unless (boundp 'this-command)
@@ -125,6 +135,14 @@ secondary source after `emacs-command-loop--unread-events' is empty."))
 (unless (boundp 'throw-on-input)
   (defvar throw-on-input nil
     "Phase B.1 bridge: tag to `throw' to on next input read."))
+
+(unless (boundp 'prefix-arg)
+  (defvar prefix-arg nil
+    "Phase B.3 bridge: prefix arg pending for the next `call-interactively'."))
+
+(unless (boundp 'current-prefix-arg)
+  (defvar current-prefix-arg nil
+    "Phase B.3 bridge: prefix arg of the command currently executing."))
 
 (provide 'emacs-command-loop-builtins)
 
