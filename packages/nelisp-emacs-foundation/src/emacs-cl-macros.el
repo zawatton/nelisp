@@ -394,10 +394,25 @@ specializer cons-cells from arglist (e.g. `(SEQUENCE array)' → `SEQUENCE')."
     "Stub: defstruct → minimal alist-backed accessors.
 
 Skips a leading docstring among SLOTS (= host `cl-defstruct'
-accepts an optional docstring before the slot list); the option
-list `(NAME (:constructor X) (:copier nil) ...)' shape is
-collapsed to bare NAME."
+accepts an optional docstring before the slot list).  For the
+NAME-options shape `(NAME (:constructor X) (:copier nil) ...)'
+extracts X as the constructor name when supplied (otherwise
+defaults to `make-NAME')."
     (let* ((sname (if (consp name) (car name) name))
+           ;; Walk NAME's option list (= cdr when name is a cons)
+           ;; and pick out (:constructor X) — earliest wins.
+           (ctor-from-opts
+            (and (consp name)
+                 (let ((opts (cdr name)) found)
+                   (while (and opts (not found))
+                     (let ((o (car opts)))
+                       (when (and (consp o) (eq (car o) :constructor)
+                                  (consp (cdr o)) (symbolp (cadr o)))
+                         (setq found (cadr o))))
+                     (setq opts (cdr opts)))
+                   found)))
+           (ctor-name (or ctor-from-opts
+                          (intern (concat "make-" (symbol-name sname)))))
            ;; If the first element of SLOTS is a string, treat it as
            ;; the struct's docstring and drop it before slot-name
            ;; extraction.
@@ -406,11 +421,11 @@ collapsed to bare NAME."
                         slots))
            (slot-names (mapcar (lambda (s) (if (consp s) (car s) s)) slot-list)))
       (let ((forms nil))
-        ;; make-NAME constructor → returns alist of slots.
+        ;; CTOR constructor → returns alist of slots.
         ;; Built with `list' so the inner `sname' splice is explicit
         ;; (= nelisp's reader rejects `,X' outside a backquote, so we
         ;; cannot use the convenient backtick form here).
-        (push (list 'defun (intern (concat "make-" (symbol-name sname)))
+        (push (list 'defun ctor-name
                     '(&rest args)
                     (list 'let '((alist nil) (cur args))
                           '(while cur
