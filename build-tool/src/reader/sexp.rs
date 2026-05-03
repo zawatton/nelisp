@@ -53,7 +53,25 @@ pub enum Sexp {
     Symbol(String),
     /// String literal.  Stored as a Rust `String` for now; multibyte
     /// handling is deferred (Phase 7.5.4.2 + Phase 7.4 NeLisp coding).
+    ///
+    /// Immutable in the sense that `aset' refuses to mutate it; the
+    /// reader produces this variant for `"text"' literals.  Functions
+    /// that need to return mutable strings (e.g. `make-string',
+    /// `copy-sequence' on a mutable string) yield [`Sexp::MutStr`]
+    /// instead.
     Str(String),
+    /// Mutable string buffer.  Returned by `make-string' so substrate
+    /// code (= `nelisp-text-buffer''s gap-buffer mgmt) can do
+    /// `(aset BYTES I N)' to fill in raw bytes.  Equivalent to a
+    /// `String' under `Rc<RefCell<...>>' — clone is a cheap Rc bump,
+    /// mutation through any alias is shared.  Identity comparison
+    /// goes through `Rc::ptr_eq'; structural equality (the derived
+    /// `PartialEq') unwraps the inner `String'.
+    ///
+    /// Predicates such as `stringp' / `arrayp' treat `MutStr' the
+    /// same as `Str'; printers, equality, and format conversions all
+    /// share the helper [`Sexp::as_string_owned`].
+    MutStr(Rc<RefCell<String>>),
     /// Cons cell.  Lists are encoded as right-leaning `Cons` chains
     /// terminated by `Nil`; dotted pairs (`(a . b)`) leave the cdr as
     /// any non-`Nil` value.
@@ -116,6 +134,31 @@ impl Sexp {
     /// every call site to spell out `Rc::new(RefCell::new(...))'.
     pub fn vector(items: Vec<Sexp>) -> Sexp {
         Sexp::Vector(Rc::new(RefCell::new(items)))
+    }
+
+    /// Build a mutable string Sexp from a `String` (or `&str`).  Used
+    /// by `make-string' / similar constructors that need `aset'-able
+    /// content.
+    pub fn mut_str(s: impl Into<String>) -> Sexp {
+        Sexp::MutStr(Rc::new(RefCell::new(s.into())))
+    }
+
+    /// Return the string content of any string-like variant as an
+    /// owned `String', or `None' for non-string values.  Cheap-clones
+    /// for `Str(String)`; for `MutStr` it borrows + clones the inner
+    /// `String'.
+    pub fn as_string_owned(&self) -> Option<String> {
+        match self {
+            Sexp::Str(s) => Some(s.clone()),
+            Sexp::MutStr(s) => Some(s.borrow().clone()),
+            _ => None,
+        }
+    }
+
+    /// Return `true' for both `Str' and `MutStr'.  Use in patterns
+    /// where you only care that a value is *some* string.
+    pub fn is_string(&self) -> bool {
+        matches!(self, Sexp::Str(_) | Sexp::MutStr(_))
     }
 
     /// Build an empty hash-table with the given equality TEST name.
@@ -215,6 +258,21 @@ fn write_sexp(out: &mut String, s: &Sexp) {
         }
         Sexp::Symbol(name) => out.push_str(name),
         Sexp::Str(text) => {
+            out.push('"');
+            for ch in text.chars() {
+                match ch {
+                    '"' => out.push_str("\\\""),
+                    '\\' => out.push_str("\\\\"),
+                    '\n' => out.push_str("\\n"),
+                    '\t' => out.push_str("\\t"),
+                    '\r' => out.push_str("\\r"),
+                    c => out.push(c),
+                }
+            }
+            out.push('"');
+        }
+        Sexp::MutStr(rc) => {
+            let text = rc.borrow();
             out.push('"');
             for ch in text.chars() {
                 match ch {

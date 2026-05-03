@@ -136,6 +136,16 @@ fn encode_value(out: &mut Vec<u8>, value: &Sexp) -> Result<(), ImageError> {
             out.push(TAG_STRING);
             write_string(out, text)?;
         }
+        Sexp::MutStr(rc) => {
+            // Image format flattens MutStr into the same TAG_STRING
+            // payload — round-trip drops the mutable identity but keeps
+            // the textual content.  Substrate use cases for
+            // `compile-image' / `eval-image' do not depend on
+            // post-load aset behavior.
+            out.push(TAG_STRING);
+            let text = rc.borrow();
+            write_string(out, &text)?;
+        }
         Sexp::Cons(car, cdr) => {
             out.push(TAG_CONS);
             encode_value(out, &car.borrow())?;
