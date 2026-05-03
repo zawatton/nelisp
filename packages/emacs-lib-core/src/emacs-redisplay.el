@@ -68,9 +68,11 @@
 ;;      emacs-redisplay-shutdown         — tear down a handle
 ;;      emacs-redisplay-handlep          — predicate
 ;;
-;;   B. redisplay drivers (4 APIs)
+;;   B. redisplay drivers (6 APIs)
 ;;      emacs-redisplay-redisplay        — full-frame redisplay pass
 ;;      emacs-redisplay-redisplay-window — single-window redisplay pass
+;;      emacs-redisplay-redraw-display   — full-frame dirty + redisplay
+;;      emacs-redisplay-force-mode-line-update — mode-line dirty trigger
 ;;      emacs-redisplay-flush-frame      — flush via backend after redisplay
 ;;      emacs-redisplay-set-cursor       — park cursor at window-point
 ;;
@@ -180,6 +182,13 @@ the window width are clipped, mirroring `truncate-lines = t' in Emacs."
 (defcustom emacs-redisplay-default-tab-width 8
   "Tab width used when expanding TAB characters into spaces."
   :type 'integer
+  :group 'emacs-redisplay)
+
+(defcustom emacs-redisplay-default-mode-line-format " %b "
+  "Fallback MVP mode-line format used when BUFFER has no local value.
+Supported percent escapes are intentionally small in Phase 3 MVP:
+`%b' expands to the buffer name and `%%' expands to a literal percent."
+  :type 'string
   :group 'emacs-redisplay)
 
 ;;; Glyph / glyph-row / glyph-matrix struct (Doc 43 §2.3)
@@ -709,6 +718,23 @@ returns nil (= MVP face = default, display = no override)."
       (error nil)))
    (t nil)))
 
+(defun emacs-redisplay--invisible-at-p (pos buffer &optional overlays)
+  "Return non-nil when POS should be suppressed by `invisible'.
+This covers the Phase 3 MVP `invisible' text property, and also
+honors overlay `invisible' when overlay accessors are available.  The
+MVP treats any non-nil value as invisible; selective-display list
+semantics are deferred to a later compatibility pass."
+  (or (emacs-redisplay--text-property-at pos 'invisible buffer)
+      (catch 'hidden
+        (dolist (ov overlays)
+          (let ((bounds (emacs-redisplay--ovly-bounds ov)))
+            (when (and bounds
+                       (<= (car bounds) pos)
+                       (< pos (cdr bounds))
+                       (emacs-redisplay--ovly-prop ov 'invisible))
+              (throw 'hidden t))))
+        nil)))
+
 ;;; Hash helper for diff propagation
 
 (defun emacs-redisplay--row-hash (row-vec)
@@ -887,23 +913,24 @@ in the `buf-pos' slot.  HANDLE may be nil — only used for logging."
                    (emacs-redisplay--buffer-substring buffer s e)))))
          (offset (or start 1))
          (n (length text))
-         (vec (make-vector n nil)))
+         glyphs)
     (dotimes (i n)
       (let* ((pos (+ offset i))
              (face (emacs-redisplay--text-property-at pos 'face buffer))
              (display (emacs-redisplay--text-property-at pos 'display buffer))
              (resolved (emacs-redisplay--resolve-face face)))
-        (aset vec i
-              (emacs-redisplay--make-glyph
-               :char (aref text i)
-               :face resolved
-               :realized-face (emacs-redisplay-realize-face face)
-               :face-id 0
-               :width 1
-               :composition nil
-               :display-spec (emacs-redisplay--resolve-display display nil)
-               :buf-pos pos))))
-    vec))
+        (unless (emacs-redisplay--invisible-at-p pos buffer)
+          (push (emacs-redisplay--make-glyph
+                 :char (aref text i)
+                 :face resolved
+                 :realized-face (emacs-redisplay-realize-face face)
+                 :face-id 0
+                 :width 1
+                 :composition nil
+                 :display-spec (emacs-redisplay--resolve-display display nil)
+                 :buf-pos pos)
+                glyphs))))
+    (vconcat (nreverse glyphs))))
 
 ;;; Line layout (= xdisp.c try_window_id MVP equivalent)
 
@@ -920,6 +947,70 @@ control characters return 1."
          (integerp ch))
     (condition-case _err (char-width ch) (error 1)))
    (t 1)))
+
+(defun emacs-redisplay--buffer-name (buffer)
+  "Return BUFFER's display name for the MVP mode-line."
+  (cond
+   ((and buffer (nelisp-ec-buffer-p buffer))
+    (nelisp-ec-buffer-name buffer))
+   ((stringp buffer) "*string*")
+   (t "")))
+
+(defun emacs-redisplay--mode-line-format (buffer)
+  "Return BUFFER's mode-line format or the Phase 3 MVP fallback."
+  (cond
+   ((and buffer (nelisp-ec-buffer-p buffer))
+    (condition-case nil
+        (emacs-buffer-buffer-local-value 'mode-line-format buffer)
+      (void-variable emacs-redisplay-default-mode-line-format)))
+   (t emacs-redisplay-default-mode-line-format)))
+
+(defun emacs-redisplay--mode-line-format-to-string (format buffer)
+  "Render MVP mode-line FORMAT for BUFFER."
+  (cond
+   ((stringp format)
+    (let ((out "")
+          (i 0)
+          (n (length format)))
+      (while (< i n)
+        (let ((ch (aref format i)))
+          (if (and (eq ch ?%) (< (1+ i) n))
+              (let ((esc (aref format (1+ i))))
+                (setq out
+                      (concat out
+                              (cond
+                               ((eq esc ?b)
+                                (emacs-redisplay--buffer-name buffer))
+                               ((eq esc ?%) "%")
+                               (t (string ?% esc)))))
+                (setq i (+ i 2)))
+            (setq out (concat out (string ch)))
+            (setq i (1+ i)))))
+      out))
+   ((symbolp format) (symbol-name format))
+   ((listp format)
+    (mapconcat (lambda (part)
+                 (emacs-redisplay--mode-line-format-to-string part buffer))
+               format ""))
+   (t (format "%s" format))))
+
+(defun emacs-redisplay--mode-line-glyphs (buffer width)
+  "Return a glyph vector for BUFFER's mode-line, clipped to WIDTH."
+  (let* ((format (emacs-redisplay--mode-line-format buffer))
+         (text (emacs-redisplay--mode-line-format-to-string format buffer))
+         (face '(:inverse-video t))
+         (realized (emacs-redisplay-realize-face face))
+         (n (min width (length text)))
+         (vec (make-vector n nil)))
+    (dotimes (i n)
+      (aset vec i
+            (emacs-redisplay--make-glyph
+             :char (aref text i)
+             :face face
+             :realized-face realized
+             :width 1
+             :buf-pos nil)))
+    vec))
 
 ;;; Phase 3.B.2 — overlay before-string / after-string emission
 
@@ -1017,6 +1108,26 @@ after emission (= COL when WIDTH is exhausted before any char)."
       (setq i (1+ i)))
     col))
 
+(defun emacs-redisplay--emit-before-strings (overlays pos used col width)
+  "Emit all overlay before-strings at POS and return the new COL."
+  (let ((out col))
+    (when overlays
+      (dolist (entry (emacs-redisplay--overlays-with-before-string-at
+                      overlays pos))
+        (setq out (emacs-redisplay--emit-overlay-string
+                   (cdr entry) (car entry) used out width pos))))
+    out))
+
+(defun emacs-redisplay--emit-after-strings (overlays pos used col width)
+  "Emit all overlay after-strings ending at POS and return the new COL."
+  (let ((out col))
+    (when overlays
+      (dolist (entry (emacs-redisplay--overlays-with-after-string-ending-at
+                      overlays pos))
+        (setq out (emacs-redisplay--emit-overlay-string
+                   (cdr entry) (car entry) used out width pos))))
+    out))
+
 (defun emacs-redisplay--apply-overlay-face (glyph overlays pos)
   "Merge overlay face attributes (highest priority wins) into GLYPH."
   (when overlays
@@ -1075,28 +1186,16 @@ the overlay anchor position."
          (i 0)
          (n (length line))
          (overflow nil))
-    (cl-flet ((emit-before-strings (p)
-                (when overlays
-                  (dolist (entry (emacs-redisplay--overlays-with-before-string-at
-                                  overlays p))
-                    (setq col (emacs-redisplay--emit-overlay-string
-                               (cdr entry) (car entry)
-                               used col width p)))))
-              (emit-after-strings (p)
-                (when overlays
-                  (dolist (entry (emacs-redisplay--overlays-with-after-string-ending-at
-                                  overlays p))
-                    (setq col (emacs-redisplay--emit-overlay-string
-                               (cdr entry) (car entry)
-                               used col width p))))))
-      ;; Before-strings anchored at the line's first buffer position.
-      (emit-before-strings pos)
-      (while (and (< i n) (not overflow))
-        (let* ((ch (aref line i))
-               (cw (emacs-redisplay--char-width ch)))
-          (cond
-           ;; TAB → expand to next tab stop within window width.
-           ((eq cw -1)
+    ;; Before-strings anchored at the line's first buffer position.
+    (setq col (emacs-redisplay--emit-before-strings
+               overlays pos used col width))
+    (while (and (< i n) (not overflow))
+      (let* ((ch (aref line i))
+             (cw (emacs-redisplay--char-width ch)))
+        (cond
+         ;; TAB → expand to next tab stop within window width.
+         ((eq cw -1)
+          (unless (emacs-redisplay--invisible-at-p pos buffer overlays)
             (let* ((target (* (1+ (/ col tab-width)) tab-width))
                    (k (max 1 (- target col))))
               (dotimes (_ k)
@@ -1107,52 +1206,53 @@ the overlay anchor position."
                     (when overlays
                       (emacs-redisplay--apply-overlay-face g overlays pos))
                     (aset used col g)
-                    (setq col (1+ col)))))
-              (setq pos (1+ pos))
-              ;; After-strings ending at the new pos.
-              (emit-after-strings pos)
-              ;; Before-strings starting at the new pos (= mid-line).
-              (when (< i (1- n)) (emit-before-strings pos))))
-           ;; Normal character (incl. CJK width 2).
-           (t
-            (let* ((face (emacs-redisplay--text-property-at pos 'face buffer))
-                   (display (emacs-redisplay--text-property-at pos 'display buffer))
-                   (g (emacs-redisplay--make-glyph
-                       :char ch
-                       :face (emacs-redisplay--resolve-face face)
-                       :realized-face (emacs-redisplay-realize-face face)
-                       :face-id 0
-                       :width (max 1 cw)
-                       :composition nil
-                       :display-spec (emacs-redisplay--resolve-display
-                                      display nil)
-                       :buf-pos pos)))
-              (when overlays
-                (emacs-redisplay--apply-overlay-face g overlays pos))
-              (cond
-               ;; Overflow → stop (truncate).
-               ((>= (+ col (max 1 cw)) (1+ width))
-                (if emacs-redisplay-truncate-lines
-                    (setq overflow t)
-                  ;; wrap path = post-MVP, treat as truncate too for now.
-                  (setq overflow t)))
-               (t
-                (aset used col g)
-                (setq col (+ col (max 1 cw))
-                      pos (1+ pos))
-                ;; After-strings ending at the new pos.
-                (emit-after-strings pos)
-                ;; Before-strings starting at the new pos (= mid-line).
-                (when (< i (1- n)) (emit-before-strings pos)))))))
-          (setq i (1+ i))))
-      ;; Tail after-strings ending at end-of-line position (= e.g.
-      ;; overlays anchored to the trailing newline).  Already handled
-      ;; inline above for any pos increment, so this is a no-op for the
-      ;; current pos but keeps the contract explicit.
-      (cons (let ((trimmed (make-vector col nil)))
-              (dotimes (k col) (aset trimmed k (aref used k)))
-              trimmed)
-            pos))))
+                    (setq col (1+ col)))))))
+          (setq pos (1+ pos))
+          (setq col (emacs-redisplay--emit-after-strings
+                     overlays pos used col width))
+          (when (< i (1- n))
+            (setq col (emacs-redisplay--emit-before-strings
+                       overlays pos used col width))))
+         ;; Normal character (incl. CJK width 2).
+         ((emacs-redisplay--invisible-at-p pos buffer overlays)
+          (setq pos (1+ pos))
+          (setq col (emacs-redisplay--emit-after-strings
+                     overlays pos used col width))
+          (when (< i (1- n))
+            (setq col (emacs-redisplay--emit-before-strings
+                       overlays pos used col width))))
+         (t
+          (let* ((face (emacs-redisplay--text-property-at pos 'face buffer))
+                 (display (emacs-redisplay--text-property-at pos 'display buffer))
+                 (g (emacs-redisplay--make-glyph
+                     :char ch
+                     :face (emacs-redisplay--resolve-face face)
+                     :realized-face (emacs-redisplay-realize-face face)
+                     :face-id 0
+                     :width (max 1 cw)
+                     :composition nil
+                     :display-spec (emacs-redisplay--resolve-display
+                                    display nil)
+                     :buf-pos pos)))
+            (when overlays
+              (emacs-redisplay--apply-overlay-face g overlays pos))
+            (cond
+             ((>= (+ col (max 1 cw)) (1+ width))
+              (setq overflow t))
+             (t
+              (aset used col g)
+              (setq col (+ col (max 1 cw))
+                    pos (1+ pos))
+              (setq col (emacs-redisplay--emit-after-strings
+                         overlays pos used col width))
+              (when (< i (1- n))
+                (setq col (emacs-redisplay--emit-before-strings
+                           overlays pos used col width))))))))
+        (setq i (1+ i))))
+    (cons (let ((trimmed (make-vector col nil)))
+            (dotimes (k col) (aset trimmed k (aref used k)))
+            trimmed)
+          pos)))
 
 (defun emacs-redisplay--fill-row (row glyph-vec width buffer-pos end-pos)
   "Place GLYPH-VEC into ROW, padding to WIDTH with empty glyphs.
@@ -1219,7 +1319,17 @@ backend — call `emacs-redisplay-flush-frame' for the actual emit."
     (signal 'wrong-type-argument (list 'emacs-window-p window)))
   (let* ((width  (emacs-window-window-width  window))
          (height (emacs-window-window-height window))
+         (old-matrix (emacs-redisplay--get-matrix handle window))
          (matrix (emacs-redisplay--ensure-matrix handle window))
+         (fresh-matrix-p (null old-matrix))
+         (old-hashes
+          (and (not fresh-matrix-p)
+               (let* ((old-rows (emacs-redisplay-glyph-matrix-rows matrix))
+                      (v (make-vector height 0)))
+                 (dotimes (r height)
+                   (aset v r (emacs-redisplay-glyph-row-hash
+                              (aref old-rows r))))
+                 v)))
          (buffer (emacs-window-buffer window))
          (start  (or (emacs-window-start window) 1))
          (text   (cond
@@ -1241,13 +1351,14 @@ backend — call `emacs-redisplay-flush-frame' for the actual emit."
          (pos start)
          (row-idx 0)
          (rows (emacs-redisplay-glyph-matrix-rows matrix))
+         (content-height (if (> height 1) (1- height) height))
          (dirty (emacs-redisplay-glyph-matrix-dirty-set matrix)))
     ;; Reset every cached row before re-fill (MVP = full per-window
     ;; redraw; diff happens at the backend canvas level via row hash).
     (dotimes (r height)
       (emacs-redisplay--clear-row (aref rows r)))
     ;; Walk the lines, laying each one into a row.
-    (while (and (< row-idx height) lines)
+    (while (and (< row-idx content-height) lines)
       (let* ((entry (pop lines))
              (line  (car entry))
              (nl-consumed (cdr entry))
@@ -1259,9 +1370,19 @@ backend — call `emacs-redisplay-flush-frame' for the actual emit."
                                    pos next-pos)
         (setq pos next-pos
               row-idx (1+ row-idx))))
-    ;; Mark every row dirty so backend flush repaints exactly once.
+    (when (> height 1)
+      (emacs-redisplay--fill-row
+       (aref rows (1- height))
+       (emacs-redisplay--mode-line-glyphs buffer width)
+       width nil nil))
+    ;; Mark only changed rows dirty.  A fresh matrix starts fully dirty;
+    ;; subsequent redisplay passes use the row hash as the MVP diff key.
     (dotimes (r height)
-      (aset dirty r t))
+      (aset dirty r
+            (or fresh-matrix-p
+                (/= (aref old-hashes r)
+                    (emacs-redisplay-glyph-row-hash
+                     (aref rows r))))))
     ;; Compute cursor (window-point relative to window-start).
     (let* ((point (or (emacs-window-point window) start))
            (cursor (emacs-redisplay--cursor-for-point matrix point)))
@@ -1312,6 +1433,30 @@ frame) and currently ignored.  Returns the count of windows redisplayed."
     (emacs-redisplay--log "redisplay handle=%S windows=%d"
                           (emacs-redisplay-handle-id handle) count)
     count))
+
+;;;###autoload
+(defun emacs-redisplay-redraw-display (handle &optional frame)
+  "Force a full-display redraw under HANDLE.
+FRAME is accepted for API compatibility and passed through to
+`emacs-redisplay-redisplay'.  Returns the count of windows redisplayed."
+  (emacs-redisplay--check-handle handle)
+  (emacs-redisplay-mark-frame-dirty handle frame)
+  (emacs-redisplay-redisplay handle frame))
+
+;;;###autoload
+(defun emacs-redisplay-force-mode-line-update (handle &optional all window)
+  "Invalidate mode-line display state under HANDLE.
+When ALL is non-nil, invalidate every cached window matrix.  Otherwise
+invalidate WINDOW, defaulting to the selected window.  The Phase 3 MVP
+stores the mode-line as the final row of the window matrix, so cache
+invalidation is enough to force the next redisplay+flush to repaint it."
+  (emacs-redisplay--check-handle handle)
+  (cond
+   (all
+    (emacs-redisplay-mark-frame-dirty handle))
+   (t
+    (emacs-redisplay-mark-window-dirty
+     handle (or window (emacs-window-selected-window))))))
 
 ;;; C. dirty tracking
 

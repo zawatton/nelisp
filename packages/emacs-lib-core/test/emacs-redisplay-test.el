@@ -9,9 +9,11 @@
 ;;   A. driver lifecycle  (init / shutdown / handlep + version consts)
 ;;   B. text → glyph      (text-to-glyphs, char/face/buf-pos preservation)
 ;;   C. matrix building   (empty / multi-line / window-narrow / TAB)
-;;   D. dirty tracking    (mark-window-dirty / mark-frame-dirty)
+;;   D. dirty tracking    (mark-window-dirty / mark-frame-dirty,
+;;                         force-mode-line-update / redraw-display)
 ;;   E. backend wiring    (flush-frame writes to TUI canvas, set-cursor)
 ;;   F. cross-cutting     (handle errors, narrowed visible, overlays)
+;;                         + invisible text/overlay suppression
 ;;   G. face-realize MVP  (Phase 3.B.1, Doc 43 §2.4) — registry, plist
 ;;                         + symbol + cascade resolution, color string
 ;;                         normalization, weight→bold, glyph realized-
@@ -260,7 +262,7 @@
           (should (= 1 (car cur)))
           (should (= 1 (cdr cur))))))))
 
-;;; D. dirty tracking (3 tests)
+;;; D. dirty tracking / diff redraw / trigger handlers (7 tests)
 
 (ert-deftest emacs-redisplay-test-mark-window-dirty-drops-cache ()
   "mark-window-dirty drops only the targeted matrix; nil if uncached."
@@ -300,6 +302,81 @@
             (should (string= "alpha"
                              (emacs-redisplay-glyph-row-text
                               (emacs-redisplay-glyph-row m2 0))))))))))
+
+(ert-deftest emacs-redisplay-test-redisplay-unchanged-row-skips-flush ()
+  "A second identical redisplay leaves row dirty bits clear."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "stable"
+      (emacs-redisplay-test--with-capture
+        (let* ((bk (emacs-tui-backend-init))
+               (fr (emacs-tui-backend-frame-create bk "frm"))
+               (h  (emacs-redisplay-init (list :backend bk)))
+               (w  (emacs-window-selected-window)))
+          (emacs-window-set-window-buffer w b)
+          (emacs-redisplay-redisplay-window h w)
+          (should (> (emacs-redisplay-flush-frame h fr) 0))
+          (emacs-redisplay-redisplay-window h w)
+          (should (= 0 (emacs-redisplay-flush-frame h fr))))))))
+
+(ert-deftest emacs-redisplay-test-redisplay-changed-row-flushes-again ()
+  "A changed row hash is marked dirty on the next redisplay pass."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "before"
+      (emacs-redisplay-test--with-capture
+        (let* ((bk (emacs-tui-backend-init))
+               (fr (emacs-tui-backend-frame-create bk "frm"))
+               (h  (emacs-redisplay-init (list :backend bk)))
+               (w  (emacs-window-selected-window)))
+          (emacs-window-set-window-buffer w b)
+          (emacs-redisplay-redisplay-window h w)
+          (emacs-redisplay-flush-frame h fr)
+          (let ((nelisp-ec--current-buffer b))
+            (nelisp-ec-delete-region 1 (1+ (length "before")))
+            (nelisp-ec-insert "after"))
+          (emacs-redisplay-redisplay-window h w)
+          (should (> (emacs-redisplay-flush-frame h fr) 0))
+          (let* ((canvas (emacs-tui-backend-frame-canvas fr))
+                 (row (aref canvas 0)))
+            (should (eq ?a (car (aref row 0))))))))))
+
+(ert-deftest emacs-redisplay-test-force-mode-line-update-redraws-mode-line ()
+  "force-mode-line-update makes an unchanged mode-line row flush again."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "body"
+      (emacs-buffer-set-buffer-local-value 'mode-line-format b " ML:%b ")
+      (emacs-redisplay-test--with-capture
+        (let* ((bk (emacs-tui-backend-init))
+               (fr (emacs-tui-backend-frame-create bk "frm"))
+               (h  (emacs-redisplay-init (list :backend bk)))
+               (w  (emacs-window-selected-window)))
+          (setf (emacs-window-total-lines w) 3)
+          (emacs-window-set-window-buffer w b)
+          (emacs-redisplay-redisplay-window h w)
+          (should (> (emacs-redisplay-flush-frame h fr) 0))
+          (emacs-redisplay-redisplay-window h w)
+          (should (= 0 (emacs-redisplay-flush-frame h fr)))
+          (should (eq t (emacs-redisplay-force-mode-line-update h nil w)))
+          (emacs-redisplay-redisplay-window h w)
+          (should (> (emacs-redisplay-flush-frame h fr) 0))
+          (let* ((canvas (emacs-tui-backend-frame-canvas fr))
+                 (row (aref canvas 2))
+                 (text (apply #'string
+                              (cl-loop for i below 7
+                                       collect (car (aref row i))))))
+            (should (string= " ML:rd-" text))))))))
+
+(ert-deftest emacs-redisplay-test-redraw-display-invalidates-all-windows ()
+  "redraw-display drops cached matrices and runs a full redisplay pass."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "abc"
+      (let* ((h (emacs-redisplay-init))
+             (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let ((m1 (emacs-redisplay-redisplay-window h w)))
+          (should (= 1 (emacs-redisplay-redraw-display h)))
+          (let ((m2 (emacs-redisplay-glyph-matrix h w)))
+            (should (emacs-redisplay-glyph-matrix-p m2))
+            (should-not (eq m1 m2))))))))
 
 ;;; E. backend wiring + cursor (4 tests)
 
@@ -406,6 +483,32 @@ layer (which only accepts raw Emacs buffers, not `nelisp-ec-buffer')."
               (should (let ((f (emacs-redisplay-glyph-face (aref vec 2))))
                         (or (eq f 'highlight)
                             (and (listp f) (memq 'highlight f))))))))))))
+
+(ert-deftest emacs-redisplay-test-text-to-glyphs-skips-invisible-property ()
+  "The Phase 3 MVP `invisible' text property suppresses glyph output."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "abcd"
+      (emacs-buffer-put-text-property 2 4 'invisible t b)
+      (let* ((h (emacs-redisplay-init))
+             (g (emacs-redisplay-text-to-glyphs h b)))
+        (should (= 2 (length g)))
+        (should (eq ?a (emacs-redisplay-glyph-char (aref g 0))))
+        (should (eq 1  (emacs-redisplay-glyph-buf-pos (aref g 0))))
+        (should (eq ?d (emacs-redisplay-glyph-char (aref g 1))))
+        (should (eq 4  (emacs-redisplay-glyph-buf-pos (aref g 1))))))))
+
+(ert-deftest emacs-redisplay-test-redisplay-skips-invisible-property ()
+  "redisplay-window omits characters with non-nil `invisible'."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "abcde"
+      (emacs-buffer-put-text-property 2 5 'invisible t b)
+      (let* ((h (emacs-redisplay-init))
+             (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let* ((m (emacs-redisplay-redisplay-window h w))
+               (row (emacs-redisplay-glyph-row m 0)))
+          (should (string= "ae" (emacs-redisplay-glyph-row-text row)))
+          (should (= 2 (emacs-redisplay-glyph-row-used row))))))))
 
 (ert-deftest emacs-redisplay-test-handle-bad-after-shutdown ()
   "Multiple post-shutdown ops all raise emacs-redisplay-bad-handle."
@@ -545,6 +648,7 @@ OVERLAYS-SPEC is a list of plists, one per mock overlay, with keys:
   :face   FACE    (optional)
   :before STR     (optional)
   :after  STR     (optional)
+  :invisible VAL  (optional)
   :prio   INT     (optional, default 0)
 
 The mocks teach `emacs-redisplay--overlays-in' to return every defined
@@ -570,6 +674,7 @@ overlay (Phase 3.B.2 callers filter by start/end internally)."
                               ((eq prop 'face)          (plist-get o :face))
                               ((eq prop 'before-string) (plist-get o :before))
                               ((eq prop 'after-string)  (plist-get o :after))
+                              ((eq prop 'invisible)     (plist-get o :invisible))
                               ((eq prop 'priority)      (plist-get o :prio))
                               (t nil))))))
          ,@body))))
@@ -662,6 +767,20 @@ emits between the `b' and the `c'."
             (should (string= "abc"
                              (emacs-redisplay-glyph-row-text row)))
             (should (= 3 (emacs-redisplay-glyph-row-used row)))))))))
+
+(ert-deftest emacs-redisplay-test-overlay-invisible-suppresses-covered-text ()
+  "Overlay `invisible' suppresses covered buffer glyphs."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "abcd"
+      (emacs-redisplay-test--with-mock-overlays
+          '((:id ov-hide :start 2 :end 4 :invisible t))
+        (let* ((h (emacs-redisplay-init))
+               (w (emacs-window-selected-window)))
+          (emacs-window-set-window-buffer w b)
+          (let* ((m (emacs-redisplay-redisplay-window h w))
+                 (row (emacs-redisplay-glyph-row m 0)))
+            (should (string= "ad" (emacs-redisplay-glyph-row-text row)))
+            (should (= 2 (emacs-redisplay-glyph-row-used row)))))))))
 
 (ert-deftest emacs-redisplay-test-overlay-multiple-before-strings-priority ()
   "Multiple :before-string overlays at the same start emit in priority
