@@ -257,12 +257,13 @@ impl<'a> Lexer<'a> {
                                 })?;
                             out.push(v as u8 as char);
                         }
-                        other => {
-                            return Err(ReadError::lex(
-                                format!("unknown escape: \\{}", other as char),
-                                esc_pos,
-                            ));
-                        }
+                        // Emacs convention: any other byte after `\'
+                        // inside a string literal is the literal byte
+                        // (= the backslash is silently dropped).  This
+                        // matches host Emacs's reader, where e.g.
+                        // `"\(fn FOO)"' (= the docstring arglist hint
+                        // upstream cl-lib uses) reads as `"(fn FOO)"'.
+                        other => out.push(other as char),
                     }
                 }
                 _ => {
@@ -466,8 +467,19 @@ impl<'a> Lexer<'a> {
                 "meta char literal modifier \\M- is deferred",
                 esc_pos,
             )),
-            other => Err(ReadError::lex(
-                format!("unknown char literal escape: \\{}", other as char),
+            // Emacs convention: any other char after `\' in a char
+            // literal is the literal char itself (= the backslash is
+            // silently dropped).  Examples that hit this path: `?\(',
+            // `?\)', `?\|', `?\[', `?\]', `?\{', `?\}'.  Without this
+            // fall-through, vendored elisp like `nelisp-regex.el' that
+            // uses `?\)' to disambiguate `)' inside list contexts is
+            // unreadable here.
+            other if other.is_ascii() => Ok(i64::from(other)),
+            other => Err(ReadError::not_yet_implemented(
+                format!(
+                    "non-ASCII char literal escape: \\{}",
+                    other as char
+                ),
                 esc_pos,
             )),
         }
@@ -683,9 +695,20 @@ mod tests {
     }
 
     #[test]
-    fn string_unknown_escape_errors() {
-        let err = tokenize("\"\\q\"").unwrap_err();
-        assert!(format!("{}", err).contains("unknown escape"));
+    fn string_unknown_escape_drops_backslash() {
+        // Emacs convention: `"\q"' reads as the 1-char string "q".
+        // This used to error; the lexer now follows host Emacs and
+        // silently drops the backslash for any non-special escape.
+        let toks = lex("\"\\q\"");
+        assert_eq!(toks, vec![Token::Str("q".into())]);
+    }
+
+    #[test]
+    fn string_paren_escapes_drop_backslash() {
+        // Concrete examples from upstream cl-lib's docstring arglist
+        // hints — used to error, now read as the literal chars.
+        let toks = lex("\"\\(fn FOO)\"");
+        assert_eq!(toks, vec![Token::Str("(fn FOO)".into())]);
     }
 
     #[test]
@@ -702,6 +725,24 @@ mod tests {
                 Token::Int(34),
                 Token::Int(255),
                 Token::Int(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn char_literal_paren_escapes_pass_through() {
+        // `?\(' / `?\)' / `?\|' etc. — the backslash is dropped, the
+        // following char is the literal value.  Required to load
+        // upstream `nelisp-regex.el' (= line 121 uses `?\)' inside a
+        // memq list context to disambiguate `)' from a list close).
+        assert_eq!(
+            lex("?\\( ?\\) ?\\| ?\\[ ?\\]"),
+            vec![
+                Token::Int(40),
+                Token::Int(41),
+                Token::Int(124),
+                Token::Int(91),
+                Token::Int(93),
             ]
         );
     }

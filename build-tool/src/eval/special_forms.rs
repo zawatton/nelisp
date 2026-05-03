@@ -38,6 +38,7 @@ pub fn apply_special(
         "cl-defun" => sf_cl_defun(args, env)?,
         "defmacro" => sf_defmacro(args, env)?,
         "defvar" => sf_defvar(args, env)?,
+        "defvar-local" => sf_defvar(args, env)?,
         "defconst" => sf_defconst(args, env)?,
         "defcustom" => sf_defcustom(args, env)?,
         "defgroup" => sf_defgroup(args, env)?,
@@ -57,6 +58,8 @@ pub fn apply_special(
         "save-restriction" => sf_progn(args, env)?, // no-op stub
         "catch" => sf_catch(args, env)?,
         "throw" => sf_throw(args, env)?,
+        "push" => sf_push(args, env)?,
+        "pop" => sf_pop(args, env)?,
         _ => return Ok(None),
     };
     Ok(Some(result))
@@ -893,6 +896,67 @@ fn sf_throw(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     let tag = eval(&parts[0], env)?;
     let value = eval(&parts[1], env)?;
     Err(EvalError::UncaughtThrow { tag, value })
+}
+
+/// `(push X PLACE)` — minimal-form macro: when PLACE is a symbol,
+/// expands to `(setq PLACE (cons X PLACE))'.  Generalised places
+/// (= `setf'-style accessors) are deferred — Layer 2 callers we have
+/// audited only push onto symbol-bound lists.
+fn sf_push(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
+    let parts = args_vec(args)?;
+    if parts.len() != 2 {
+        return Err(EvalError::WrongNumberOfArguments {
+            function: "push".into(),
+            expected: "2".into(),
+            got: parts.len(),
+        });
+    }
+    let new_head = eval(&parts[0], env)?;
+    let place_sym = match &parts[1] {
+        Sexp::Symbol(s) => s.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "symbol (generalised places NYI)".into(),
+            got: other.clone(),
+        }),
+    };
+    let cur = env.lookup_value(&place_sym).unwrap_or(Sexp::Nil);
+    let new_list = Sexp::cons(new_head, cur);
+    env.set_value(&place_sym, new_list.clone())?;
+    Ok(new_list)
+}
+
+/// `(pop PLACE)` — minimal-form macro: when PLACE is a symbol,
+/// returns its car and rebinds it to the cdr.
+fn sf_pop(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
+    let parts = args_vec(args)?;
+    if parts.len() != 1 {
+        return Err(EvalError::WrongNumberOfArguments {
+            function: "pop".into(),
+            expected: "1".into(),
+            got: parts.len(),
+        });
+    }
+    let place_sym = match &parts[0] {
+        Sexp::Symbol(s) => s.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "symbol (generalised places NYI)".into(),
+            got: other.clone(),
+        }),
+    };
+    let cur = env.lookup_value(&place_sym).unwrap_or(Sexp::Nil);
+    match &cur {
+        Sexp::Cons(head, tail) => {
+            let head = head.borrow().clone();
+            let tail = tail.borrow().clone();
+            env.set_value(&place_sym, tail)?;
+            Ok(head)
+        }
+        Sexp::Nil => Ok(Sexp::Nil),
+        other => Err(EvalError::WrongType {
+            expected: "list".into(),
+            got: other.clone(),
+        }),
+    }
 }
 
 /// `eq` semantics for `Sexp`.  Symbols match by name, integers by

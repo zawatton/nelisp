@@ -46,15 +46,20 @@ pub fn install_builtins(env: &mut Env) {
         // predicates
         "consp", "listp", "atom", "symbolp", "stringp", "numberp", "integerp", "floatp", "functionp",
         // string
-        "concat", "format", "substring", "intern", "symbol-name", "string-equal", "string=",
-        "string-match-p", "regexp-quote",
+        "concat", "format", "substring", "intern", "intern-soft", "symbol-name",
+        "string-equal", "string=",
+        "string-match-p", "regexp-quote", "mapconcat",
+        // symbols / sequences
+        "make-symbol", "gensym", "copy-sequence", "delete-dups",
         // file helpers
         "expand-file-name", "file-truename",
         // file I/O (Doc 47 Stage 8b — multi-file load chain)
         "file-name-directory", "file-name-nondirectory", "file-exists-p",
-        "file-readable-p", "load",
+        "file-readable-p", "load", "locate-library",
+        "file-name-as-directory", "directory-file-name", "file-directory-p",
         // symbol / function
         "symbol-value", "symbol-function", "fboundp", "boundp", "funcall", "apply", "eval",
+        "defalias", "fset", "fmakunbound", "makunbound",
         "signal", "error", "print", "princ", "prin1-to-string", "message",
         "provide", "require", "featurep",
         // self-process stdio (Phase 9 minimal — needed by stand-alone Lisp servers
@@ -134,11 +139,25 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "file-exists-p" => bi_file_exists_p(args, env),
         "file-readable-p" => bi_file_readable_p(args, env),
         "load" => bi_load(args, env),
+        "locate-library" => bi_locate_library(args, env),
+        "file-name-as-directory" => bi_file_name_as_directory(args),
+        "directory-file-name" => bi_directory_file_name(args),
+        "file-directory-p" => bi_file_directory_p(args),
         // ---- symbol / function ----
         "symbol-value" => bi_symbol_value(args, env),
         "symbol-function" => bi_symbol_function(args, env),
         "fboundp" => bi_fboundp(args, env),
         "boundp" => bi_boundp(args, env),
+        "defalias" => bi_defalias(args, env),
+        "fset" => bi_fset(args, env),
+        "fmakunbound" => bi_fmakunbound(args, env),
+        "makunbound" => bi_makunbound(args, env),
+        "intern-soft" => bi_intern_soft(args),
+        "make-symbol" => bi_make_symbol(args),
+        "gensym" => bi_gensym(args),
+        "copy-sequence" => bi_copy_sequence(args),
+        "mapconcat" => bi_mapconcat(args, env),
+        "delete-dups" => bi_delete_dups(args),
         "funcall" => bi_funcall(args, env),
         "apply" => bi_apply(args, env),
         "eval" => bi_eval(args, env),
@@ -601,6 +620,121 @@ fn bi_intern(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
+fn bi_intern_soft(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("intern-soft", args, 1, Some(2))?;
+    let name = match &args[0] {
+        Sexp::Str(s) => s.clone(),
+        Sexp::Symbol(s) => s.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "stringp / symbolp".into(),
+            got: other.clone(),
+        }),
+    };
+    Ok(Sexp::Symbol(name))
+}
+
+/// `(make-symbol NAME)` — return a *fresh* uninterned symbol whose
+/// print-name is NAME.  Our Sexp::Symbol is a wrapper around a String,
+/// so freshness is achieved by appending a per-process counter to the
+/// name (= matching the printable shape of host Emacs's
+/// `make-symbol' output for `prin1' purposes; full uninterned-vs-
+/// interned distinction is deferred until we have a proper obarray).
+fn bi_make_symbol(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    require_arity("make-symbol", args, 1, Some(1))?;
+    let name = match &args[0] {
+        Sexp::Str(s) => s.clone(),
+        Sexp::Symbol(s) => s.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "stringp".into(),
+            got: other.clone(),
+        }),
+    };
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    Ok(Sexp::Symbol(format!("{}__nelisp-uninterned-{}", name, n)))
+}
+
+/// `(gensym &optional PREFIX)` — host Emacs returns a fresh
+/// uninterned symbol with a numeric suffix.  We delegate to
+/// `make-symbol' with a derived name.
+fn bi_gensym(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("gensym", args, 0, Some(1))?;
+    let prefix = match args.get(0) {
+        Some(Sexp::Str(s)) => s.clone(),
+        Some(Sexp::Symbol(s)) => s.clone(),
+        _ => "g".to_string(),
+    };
+    bi_make_symbol(&[Sexp::Str(prefix)])
+}
+
+/// `(copy-sequence SEQUENCE)` — return a shallow copy.
+fn bi_copy_sequence(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("copy-sequence", args, 1, Some(1))?;
+    match &args[0] {
+        Sexp::Nil => Ok(Sexp::Nil),
+        Sexp::Cons(_, _) => {
+            let elts = super::list_elements(&args[0])?;
+            let mut out = Sexp::Nil;
+            for e in elts.into_iter().rev() {
+                out = Sexp::cons(e, out);
+            }
+            Ok(out)
+        }
+        Sexp::Str(s) => Ok(Sexp::Str(s.clone())),
+        other => Ok(other.clone()),
+    }
+}
+
+/// `(mapconcat FUNCTION SEQUENCE &optional SEPARATOR)' — apply
+/// FUNCTION to each element of SEQUENCE, concatenate the results
+/// joined by SEPARATOR (= empty string default).
+fn bi_mapconcat(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("mapconcat", args, 2, Some(3))?;
+    let func = resolve_callable(&args[0], env)?;
+    let sep: String = match args.get(2) {
+        Some(Sexp::Str(s)) => s.clone(),
+        Some(Sexp::Nil) | None => String::new(),
+        Some(other) => return Err(EvalError::WrongType {
+            expected: "stringp".into(),
+            got: other.clone(),
+        }),
+    };
+    let elts = super::list_elements(&args[1])?;
+    let mut parts: Vec<String> = Vec::new();
+    for elt in elts {
+        let r = super::apply_function(&func, &[elt], env)?;
+        if let Sexp::Str(s) = r {
+            parts.push(s);
+        } else {
+            return Err(EvalError::WrongType {
+                expected: "function returning string".into(),
+                got: r,
+            });
+        }
+    }
+    Ok(Sexp::Str(parts.join(&sep)))
+}
+
+/// `(delete-dups LIST)' — return LIST with duplicates removed
+/// (`equal' test).  Modifies LIST destructively in host Emacs; here
+/// we return a fresh list since our Sexp lacks shared mutability.
+fn bi_delete_dups(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("delete-dups", args, 1, Some(1))?;
+    let elts = super::list_elements(&args[0])?;
+    let mut seen: Vec<Sexp> = Vec::new();
+    for elt in elts {
+        if !seen.iter().any(|s| sexp_eq(s, &elt) || s == &elt) {
+            seen.push(elt);
+        }
+    }
+    let mut out = Sexp::Nil;
+    for e in seen.into_iter().rev() {
+        out = Sexp::cons(e, out);
+    }
+    Ok(out)
+}
+
 fn bi_symbol_name(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("symbol-name", args, 1, Some(1))?;
     match &args[0] {
@@ -774,6 +908,69 @@ fn bi_file_readable_p(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     } else {
         Sexp::Nil
     })
+}
+
+/// `(file-directory-p PATH)' — t when PATH is an existing directory.
+fn bi_file_directory_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("file-directory-p", args, 1, Some(1))?;
+    let p = match &args[0] {
+        Sexp::Str(s) => PathBuf::from(s),
+        other => return Err(EvalError::WrongType {
+            expected: "stringp".into(),
+            got: other.clone(),
+        }),
+    };
+    Ok(if p.is_dir() { Sexp::T } else { Sexp::Nil })
+}
+
+/// `(locate-library NAME)' — search `load-path' for a file named NAME
+/// (with `.el' / `.elc' suffix).  Returns the absolute path string on
+/// hit, or nil.
+fn bi_locate_library(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("locate-library", args, 1, Some(4))?;
+    let name = match &args[0] {
+        Sexp::Str(s) => s.clone(),
+        Sexp::Symbol(s) => s.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "stringp".into(),
+            got: other.clone(),
+        }),
+    };
+    match locate_load_target(&name, env) {
+        Ok(p) => Ok(Sexp::Str(p.to_string_lossy().into_owned())),
+        Err(_) => Ok(Sexp::Nil),
+    }
+}
+
+/// `(file-name-as-directory PATH)' — append `/' if not already there.
+fn bi_file_name_as_directory(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("file-name-as-directory", args, 1, Some(1))?;
+    let s = match &args[0] {
+        Sexp::Str(s) => s.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "stringp".into(),
+            got: other.clone(),
+        }),
+    };
+    Ok(Sexp::Str(if s.ends_with('/') { s } else { format!("{}/", s) }))
+}
+
+/// `(directory-file-name PATH)' — strip trailing `/' if any (but
+/// preserve the root `/').
+fn bi_directory_file_name(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("directory-file-name", args, 1, Some(1))?;
+    let s = match &args[0] {
+        Sexp::Str(s) => s.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "stringp".into(),
+            got: other.clone(),
+        }),
+    };
+    if s.len() > 1 && s.ends_with('/') {
+        Ok(Sexp::Str(s.trim_end_matches('/').to_string()))
+    } else {
+        Ok(Sexp::Str(s))
+    }
 }
 
 /// Resolve a path argument against `load-path` if relative, returning
@@ -1001,6 +1198,78 @@ fn bi_boundp(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
         Sexp::Symbol(s) => Ok(if env.is_bound(s) { Sexp::T } else { Sexp::Nil }),
         _ => Ok(Sexp::Nil),
     }
+}
+
+/// `(defalias SYMBOL DEFINITION &optional DOCSTRING)` — set the
+/// function cell of SYMBOL to DEFINITION.  Mirrors `fset' in current
+/// nelisp; the optional DOCSTRING argument is accepted for API parity
+/// with host Emacs but discarded (= we have no doc-cell yet).
+fn bi_defalias(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("defalias", args, 2, Some(3))?;
+    let name = match &args[0] {
+        Sexp::Symbol(s) => s.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "symbol".into(),
+            got: other.clone(),
+        }),
+    };
+    // If DEFINITION is a symbol, follow the function-cell chain so
+    // the alias resolves to a callable form.  If it's a lambda /
+    // closure / builtin sentinel, store as-is.
+    let def = match &args[1] {
+        Sexp::Symbol(s) => env.lookup_function(s)?,
+        other => other.clone(),
+    };
+    env.set_function(&name, def);
+    Ok(args[0].clone())
+}
+
+/// `(fset SYMBOL DEFINITION)` — same as `defalias' but without the
+/// optional docstring slot.  Returns DEFINITION (= host Emacs
+/// contract).
+fn bi_fset(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("fset", args, 2, Some(2))?;
+    let name = match &args[0] {
+        Sexp::Symbol(s) => s.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "symbol".into(),
+            got: other.clone(),
+        }),
+    };
+    let def = match &args[1] {
+        Sexp::Symbol(s) => env.lookup_function(s)?,
+        other => other.clone(),
+    };
+    env.set_function(&name, def.clone());
+    Ok(def)
+}
+
+/// `(fmakunbound SYMBOL)` — clear the function cell of SYMBOL.
+fn bi_fmakunbound(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("fmakunbound", args, 1, Some(1))?;
+    let name = match &args[0] {
+        Sexp::Symbol(s) => s.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "symbol".into(),
+            got: other.clone(),
+        }),
+    };
+    env.clear_function(&name);
+    Ok(args[0].clone())
+}
+
+/// `(makunbound SYMBOL)` — clear the value cell of SYMBOL.
+fn bi_makunbound(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("makunbound", args, 1, Some(1))?;
+    let name = match &args[0] {
+        Sexp::Symbol(s) => s.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "symbol".into(),
+            got: other.clone(),
+        }),
+    };
+    env.clear_value(&name);
+    Ok(args[0].clone())
 }
 
 /// Resolve `arg` to a callable: a symbol points to its function cell,

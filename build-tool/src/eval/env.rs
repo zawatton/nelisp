@@ -206,6 +206,21 @@ impl Env {
         entry.function = Some(func);
     }
 
+    /// `fmakunbound' semantics — drop the function cell.
+    pub fn clear_function(&mut self, name: &str) {
+        if let Some(entry) = self.globals.get_mut(name) {
+            entry.function = None;
+        }
+    }
+
+    /// `makunbound' semantics — drop the value cell.  The constant
+    /// flag is preserved so re-binding via `defconst' still errors.
+    pub fn clear_value(&mut self, name: &str) {
+        if let Some(entry) = self.globals.get_mut(name) {
+            entry.value = None;
+        }
+    }
+
     /// `defvar`/`defconst` semantics — install a value but only if the
     /// symbol is not already bound (per Elisp `defvar` idempotence).
     /// `is_constant=true` is `defconst`.
