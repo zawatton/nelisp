@@ -68,6 +68,10 @@
 ;; Replaces the Phase 8 string-accumulator stubs that were inside
 ;; `emacs-stub.el' for `with-temp-buffer' / `insert' / `buffer-string'.
 (require 'emacs-buffer-builtins)
+;; Phase 11.B' — regex / search bridges (re-search-forward / looking-at /
+;; match-data / match-string family).  Loads after `emacs-buffer-builtins'
+;; because `match-string' uses `buffer-substring' from there.
+(require 'emacs-search-builtins)
 
 (provide 'emacs-init)
 
