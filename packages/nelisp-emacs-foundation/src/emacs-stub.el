@@ -1535,59 +1535,23 @@ NUMBER may be int or float; DIVISOR optional (= NUMBER / DIVISOR)."
           (* sign i))))
      (t 0))))
 
-;;;; --- file IO + with-temp-file (Phase 8 write path) -------------------
+;;;; --- file IO (= with-temp-buffer / -file family superseded by Phase 9) -
 
-(defvar emacs-stub--current-temp-buffer nil
-  "Active write-buffer for `with-temp-file' / `with-temp-buffer'.
-Bound by the macro; mutated by `insert' / `princ' inside the body.")
+;; Phase 9 (= `emacs-buffer-builtins.el') replaced the Phase 8 string-
+;; accumulator approximations of `with-temp-buffer' / `with-temp-file' /
+;; `insert' / `erase-buffer' / `buffer-string' with real `nelisp-ec'
+;; buffer wrappers.  The accumulator could only host ONE active buffer
+;; at a time, which broke `anvil-worklog-export-org' (= multi-buffer
+;; pattern: `(generate-new-buffer ...)' inside `(with-temp-file ...)').
+;; The new module honors the full upstream Emacs contract via
+;; `nelisp-ec-generate-new-buffer' + `nelisp-ec-with-current-buffer' +
+;; `nelisp-ec-kill-buffer' inside an `unwind-protect'.
 
 (defun make-directory (dir &optional parents)
   "Create DIR (recursive when PARENTS non-nil)."
   (ignore parents)
   (when (fboundp 'nl-make-directory)
     (nl-make-directory dir t)))
-
-(defmacro with-temp-file (path &rest body)
-  "Phase 8 polyfill: capture string output of BODY into PATH.
-Inside BODY, calls to `insert' append to a hidden accumulator;
-on exit the accumulator is written via `nl-write-file'."
-  (list 'let (list (list 'emacs-stub--current-temp-buffer ""))
-        (cons 'progn body)
-        (list 'when (list 'fboundp (list 'quote 'nl-write-file))
-              (list 'nl-write-file path 'emacs-stub--current-temp-buffer))))
-
-(defmacro with-temp-buffer (&rest body)
-  "Phase 8 polyfill: same as `with-temp-file' but discards output."
-  (list 'let (list (list 'emacs-stub--current-temp-buffer ""))
-        (cons 'progn body)))
-
-(defun insert (&rest strings)
-  "Phase 8 polyfill: append STRINGS to the active temp-buffer string."
-  (when (and (boundp 'emacs-stub--current-temp-buffer)
-             (stringp emacs-stub--current-temp-buffer))
-    (let ((acc emacs-stub--current-temp-buffer)
-          (cur strings))
-      (while cur
-        (let ((s (car cur)))
-          (when (stringp s)
-            (setq acc (concat acc s)))
-          (when (integerp s)
-            ;; ASCII char insert.
-            (setq acc (concat acc (substring "0123456789abcdefghijklmnopqrstuvwxyz" 0 1)))))
-        (setq cur (cdr cur)))
-      (setq emacs-stub--current-temp-buffer acc))))
-
-(defun erase-buffer ()
-  "Phase 8 polyfill: clear the active temp-buffer."
-  (when (boundp 'emacs-stub--current-temp-buffer)
-    (setq emacs-stub--current-temp-buffer "")))
-
-(defun buffer-string ()
-  "Phase 8 polyfill: return the active temp-buffer contents."
-  (if (and (boundp 'emacs-stub--current-temp-buffer)
-           (stringp emacs-stub--current-temp-buffer))
-      emacs-stub--current-temp-buffer
-    ""))
 
 
 (defun downcase (string-or-char)
