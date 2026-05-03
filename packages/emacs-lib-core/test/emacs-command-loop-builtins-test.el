@@ -183,6 +183,71 @@
     (should (eq before-read    (symbol-function 'read-event)))
     (should (eq before-keys-fn (symbol-function 'this-command-keys)))))
 
+;;;; M. Phase B.2 — read-key-sequence
+
+(require 'emacs-keymap)
+
+(defmacro emacs-command-loop-builtins-test--with-fresh-keymaps (&rest body)
+  "Run BODY with a fresh global map / chain to exercise read-key-sequence."
+  (declare (indent 0) (debug (body)))
+  `(let ((emacs-keymap-global-map (emacs-keymap-make-sparse-keymap))
+         (emacs-keymap-local-map nil)
+         (emacs-keymap-overriding-local-map nil)
+         (emacs-keymap-overriding-terminal-local-map nil)
+         (emacs-keymap-minor-mode-map-alist nil)
+         (emacs-keymap-emulation-mode-map-alists nil)
+         (emacs-keymap-chain-with-textprop nil))
+     (emacs-command-loop-reset)
+     (unwind-protect
+         (progn ,@body)
+       (emacs-command-loop-reset))))
+
+(ert-deftest emacs-command-loop-builtins-test/read-key-sequence-single-bound ()
+  (emacs-command-loop-builtins-test--with-fresh-keymaps
+    (emacs-keymap-define-key emacs-keymap-global-map "a" 'self-insert-command)
+    (emacs-command-loop-feed-events ?a)
+    (let ((result (emacs-command-loop-read-key-sequence "go: ")))
+      (should (equal "a" result)))))
+
+(ert-deftest emacs-command-loop-builtins-test/read-key-sequence-undefined-stops ()
+  (emacs-command-loop-builtins-test--with-fresh-keymaps
+    ;; No bindings at all.
+    (emacs-command-loop-feed-events ?z)
+    (let ((result (emacs-command-loop-read-key-sequence)))
+      (should (equal "z" result)))))
+
+(ert-deftest emacs-command-loop-builtins-test/read-key-sequence-prefix-then-leaf ()
+  (emacs-command-loop-builtins-test--with-fresh-keymaps
+    ;; Bind C-x f (= ?\C-x ?f) to a function; C-x prefix should
+    ;; auto-create a sub-keymap inside the global map.
+    (let ((cx (emacs-keymap-make-sparse-keymap)))
+      (emacs-keymap-define-key emacs-keymap-global-map (vector ?\C-x) cx)
+      (emacs-keymap-define-key cx "f" 'find-file))
+    (emacs-command-loop-feed-events ?\C-x ?f)
+    (let ((result (emacs-command-loop-read-key-sequence-vector)))
+      (should (vectorp result))
+      (should (= 2 (length result)))
+      (should (= ?\C-x (aref result 0)))
+      (should (= ?f    (aref result 1))))))
+
+(ert-deftest emacs-command-loop-builtins-test/read-key-sequence-symbol-event-returns-vector ()
+  (emacs-command-loop-builtins-test--with-fresh-keymaps
+    ;; A symbol event (= e.g. function key) forces vector return,
+    ;; since stringable-p rejects non-integer events.
+    (emacs-keymap-define-key emacs-keymap-global-map (vector 'return)
+                             'newline)
+    (emacs-command-loop-feed-events 'return)
+    (let ((result (emacs-command-loop-read-key-sequence)))
+      (should (vectorp result))
+      (should (eq 'return (aref result 0))))))
+
+(ert-deftest emacs-command-loop-builtins-test/read-key-sequence-records-keys ()
+  (emacs-command-loop-builtins-test--with-fresh-keymaps
+    (emacs-command-loop-feed-events ?a ?b)
+    (emacs-keymap-define-key emacs-keymap-global-map "a" 'self-insert-command)
+    (emacs-command-loop-read-key-sequence)
+    (should (equal "a" (emacs-command-loop-this-command-keys)))))
+
 (provide 'emacs-command-loop-builtins-test)
 
 ;;; emacs-command-loop-builtins-test.el ends here

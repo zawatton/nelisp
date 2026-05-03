@@ -652,8 +652,7 @@
 (unless (fboundp 'read-from-minibuffer) (defun read-from-minibuffer (&rest _) nil))
 (unless (fboundp 'read-from-string) (defun read-from-string (&rest _) nil))
 (unless (fboundp 'read-kbd-macro) (defun read-kbd-macro (&rest _) nil))
-(unless (fboundp 'read-key-sequence) (defun read-key-sequence (&rest _) nil))
-(unless (fboundp 'read-key-sequence-vector) (defun read-key-sequence-vector (&rest _) nil))
+;; read-key-sequence{,-vector} moved to emacs-command-loop-builtins (Phase B.2).
 (unless (fboundp 'read-library-name) (defun read-library-name (&rest _) nil))
 (unless (fboundp 'read-string) (defun read-string (&rest _) nil))
 ;; real-this-command moved to emacs-command-loop-builtins (Phase B.1).
