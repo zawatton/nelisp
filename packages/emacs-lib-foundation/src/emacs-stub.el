@@ -362,24 +362,12 @@ only useful for `keymapp' / `eq' identity checks."
 (unless (fboundp 'looking-back)
   (defun looking-back (regexp &optional limit greedy) (ignore regexp limit greedy) nil))
 
-;; Buffer cursor / point primitives — stubs returning sentinels
-(unless (fboundp 'point)
-  (defun point () 1))
-
-(unless (fboundp 'point-min)
-  (defun point-min () 1))
-
-(unless (fboundp 'point-max)
-  (defun point-max () 1))
-
-(unless (fboundp 'goto-char)
-  (defun goto-char (position) (ignore position) nil))
-
-(unless (fboundp 'forward-char)
-  (defun forward-char (&optional n) (ignore n) nil))
-
-(unless (fboundp 'backward-char)
-  (defun backward-char (&optional n) (ignore n) nil))
+;; Line / column primitives.  Phase 11.A' (2026-05-03) deleted the
+;; redundant `point' / `point-min' / `point-max' / `goto-char' /
+;; `forward-char' / `backward-char' nil-stubs that were shadowing
+;; `emacs-buffer-builtins.el's bridges to `nelisp-ec-*' under standalone
+;; NeLisp.  The line-grain stubs below remain as no-ops (= no L1.5
+;; line-iterator yet).
 
 (unless (fboundp 'forward-line)
   (defun forward-line (&optional n) (ignore n) 0))
@@ -411,54 +399,17 @@ only useful for `keymapp' / `eq' identity checks."
 (unless (fboundp 'bolp)
   (defun bolp () t))
 
-;; Buffer text manipulation
-(unless (fboundp 'insert)
-  (defun insert (&rest args) (ignore args) nil))
-
-(unless (fboundp 'delete-region)
-  (defun delete-region (start end) (ignore start end) nil))
-
-(unless (fboundp 'delete-char)
-  (defun delete-char (n &optional killflag) (ignore n killflag) nil))
-
-(unless (fboundp 'erase-buffer)
-  (defun erase-buffer () nil))
-
-(unless (fboundp 'buffer-substring)
-  (defun buffer-substring (start end) (ignore start end) ""))
-
-(unless (fboundp 'buffer-substring-no-properties)
-  (defalias 'buffer-substring-no-properties 'buffer-substring))
-
-(unless (fboundp 'buffer-string)
-  (defun buffer-string () ""))
-
-(unless (fboundp 'buffer-size)
-  (defun buffer-size (&optional buffer) (ignore buffer) 0))
-
-;; Save markers / regions
-(unless (fboundp 'save-excursion)
-  (defmacro save-excursion (&rest body) (cons 'progn body)))
-
-(unless (fboundp 'save-restriction)
-  (defmacro save-restriction (&rest body) (cons 'progn body)))
+;; save-match-data — regex-related, only stub left after Phase 11.A'.
+;; The buffer-text and save-excursion/save-restriction/with-current-buffer
+;; / with-temp-buffer / narrow-to-region / widen forms moved into
+;; `emacs-buffer-builtins.el' (Phase 9) and are deleted here.
 
 (unless (fboundp 'save-match-data)
   (defmacro save-match-data (&rest body) (cons 'progn body)))
 
-(unless (fboundp 'with-current-buffer)
-  (defmacro with-current-buffer (buffer &rest body)
-    `(let ((--saved-buf-- (current-buffer)))
-       (unwind-protect (progn ,@body) nil))))
 
-(unless (fboundp 'with-temp-buffer)
-  (defmacro with-temp-buffer (&rest body) (cons 'progn body)))
 
-(unless (fboundp 'narrow-to-region)
-  (defun narrow-to-region (start end) (ignore start end) nil))
 
-(unless (fboundp 'widen)
-  (defun widen () nil))
 
 ;; Syntax tables
 (unless (fboundp 'standard-syntax-table)
@@ -641,16 +592,8 @@ only useful for `keymapp' / `eq' identity checks."
 
 ;;;; --- buffer.c (minimal subset; nelisp-ec-* covers the rest) ------------
 
-(unless (fboundp 'current-buffer)
-  (defun current-buffer ()
-    "Stub: synthetic placeholder.  Real impl needs nelisp-ec-current-buffer alias."
-    (cons 'buffer nil)))
 
-(unless (fboundp 'bufferp)
-  (defun bufferp (object) (and (consp object) (eq (car object) 'buffer))))
 
-(unless (fboundp 'buffer-live-p)
-  (defun buffer-live-p (buffer) (bufferp buffer)))
 
 (unless (fboundp 'get-buffer)
   (defun get-buffer (buffer-or-name) (ignore buffer-or-name) nil))
@@ -660,8 +603,6 @@ only useful for `keymapp' / `eq' identity checks."
     (ignore buffer-or-name inhibit-buffer-hooks)
     (cons 'buffer nil)))
 
-(unless (fboundp 'buffer-name)
-  (defun buffer-name (&optional buffer) (ignore buffer) ""))
 
 (unless (fboundp 'buffer-list)
   (defun buffer-list (&optional frame) (ignore frame) nil))
