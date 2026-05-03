@@ -87,6 +87,11 @@
 ;; `emacs-buffer-builtins' (= depends on `current-buffer' /
 ;; `set-buffer' / `generate-new-buffer').
 (require 'emacs-fileio-builtins)
+;; Track E (2026-05-03) — editing commands + kill-ring (= self-insert
+;; / newline / delete-backward-char / kill-region / kill-line / yank
+;; / forward-word / backward-word).  Loads after `emacs-line-builtins'
+;; (= depends on `emacs-line--eol-pos' for `kill-line').
+(require 'emacs-edit-builtins)
 ;; Phase 11.C'' — keymap.c / frame.c / window.c bridges to the
 ;; existing `emacs-keymap.el' / `emacs-frame.el' / `emacs-window.el'
 ;; prefixed implementations.  Each transitively pulls its prefixed
