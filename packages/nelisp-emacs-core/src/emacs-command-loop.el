@@ -466,6 +466,92 @@ RECORD-FLAG / KEYS / SPECIAL are accepted for API parity."
     (emacs-command-loop-call-interactively cmd record-flag keys))
    (t (signal 'wrong-type-argument (list 'commandp cmd)))))
 
+;;;; --- command-loop-1 driver (Phase B.4) -----------------------------
+
+(defvar emacs-command-loop--pre-command-hook nil
+  "Substrate-internal mirror of `pre-command-hook'.  When the bridge
+is loaded, the unprefixed defvar is the canonical place — this
+slot is currently unused (= reserved for the standalone path).")
+
+(defvar emacs-command-loop--post-command-hook nil
+  "Substrate-internal mirror of `post-command-hook'.  Same notes as
+the pre slot.")
+
+(defvar emacs-command-loop--undefined-key-handler nil
+  "If non-nil, called with one arg (= the unbound key vector) when
+`emacs-command-loop-step' encounters a sequence with no binding.
+nil = silently skip and continue.")
+
+(defun emacs-command-loop--lookup-command (key-seq)
+  "Look up KEY-SEQ in the active keymap chain, return the binding."
+  (cond
+   ((fboundp 'emacs-keymap-key-binding)
+    (emacs-keymap-key-binding key-seq))
+   ((fboundp 'key-binding) (key-binding key-seq))
+   (t nil)))
+
+(defun emacs-command-loop-step ()
+  "Run one command-loop iteration:
+1. read-key-sequence to consume events from the queue,
+2. look up the resulting binding,
+3. run `pre-command-hook',
+4. dispatch via `command-execute' (= which calls `call-interactively'),
+5. run `post-command-hook'.
+Returns the binding (= function or nil)."
+  (let* ((vec (emacs-command-loop--read-keys-vec nil))
+         (binding (emacs-command-loop--lookup-command vec)))
+    (cond
+     ((or (and (fboundp 'emacs-keymap-keymapp)
+               (emacs-keymap-keymapp binding))
+          (and (fboundp 'keymapp) (keymapp binding)))
+      ;; Should not happen — read-keys-vec stops on non-keymap.
+      nil)
+     ((null binding)
+      (when emacs-command-loop--undefined-key-handler
+        (funcall emacs-command-loop--undefined-key-handler vec))
+      nil)
+     (t
+      (when (boundp 'pre-command-hook)
+        (run-hooks 'pre-command-hook))
+      (prog1 (emacs-command-loop-command-execute binding)
+        (when (boundp 'post-command-hook)
+          (run-hooks 'post-command-hook)))))))
+
+(defun emacs-command-loop-drain ()
+  "Run `emacs-command-loop-step' until the unread queue is empty.
+Returns the number of commands executed."
+  (let ((n 0))
+    (while (emacs-command-loop-pending-p)
+      (emacs-command-loop-step)
+      (setq n (1+ n)))
+    n))
+
+(defun emacs-command-loop-1 ()
+  "Phase B.4 MVP: drain the unread queue.
+
+Real Emacs' `command-loop-1' loops forever until throw-to-top-level;
+under standalone NeLisp the equivalent live-driver will be
+`top-level' (= B.6).  For tests / scripted dispatch, the
+queue-drain semantics are sufficient and well-defined."
+  (emacs-command-loop-drain))
+
+(defun emacs-command-loop-top-level ()
+  "Phase B.4 placeholder for `top-level'.
+
+Currently equivalent to `emacs-command-loop-1' (= drain semantics).
+B.6 will turn this into a real loop with quit handling and
+recursive-edit support."
+  (emacs-command-loop-1))
+
+(defun emacs-command-loop-recursive-edit ()
+  "Phase B.4 stub — runs one drain pass.  B.6 turns this into a
+proper nested loop with recursion-depth tracking + abort."
+  (emacs-command-loop-1))
+
+(defun emacs-command-loop-recursion-depth ()
+  "Phase B.4 stub: always 0.  B.6 will track real depth."
+  0)
+
 (provide 'emacs-command-loop)
 
 ;;; emacs-command-loop.el ends here
