@@ -37,6 +37,11 @@
 ;;                          post-command-hook.
 ;; B.5 (2026-05-03) added: execute-extended-command / universal-argument /
 ;;                          digit-argument / negative-argument.
+;; B.6 (2026-05-03) added: keyboard-quit / exit-recursive-edit + real
+;;                          recursive-edit / top-level / recursion-depth.
+;;                          `command-loop-1' wraps each step in a
+;;                          quit-catch so C-g aborts the command,
+;;                          not the loop.
 ;;
 ;; Deferred to subsequent phases:
 ;;   B.4: command-loop-1 / top-level
@@ -119,6 +124,19 @@
 
 (unless (fboundp 'negative-argument)
   (defalias 'negative-argument #'emacs-command-loop-negative-argument))
+
+(unless (fboundp 'keyboard-quit)
+  (defalias 'keyboard-quit #'emacs-command-loop-keyboard-quit))
+
+(unless (fboundp 'exit-recursive-edit)
+  (defalias 'exit-recursive-edit
+    #'emacs-command-loop-exit-recursive-edit))
+
+;; Real Emacs binds `recursive-edit' / `abort-recursive-edit' as C
+;; primitives — same gating pattern.  Track C already aliased
+;; `abort-recursive-edit' to the minibuffer cancel routine; the
+;; minibuffer's quit-signal will still propagate through the
+;; command-loop's condition-case so this is consistent.
 
 ;;;; --- variable bridges ----------------------------------------------
 

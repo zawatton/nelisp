@@ -249,7 +249,7 @@
 (unless (fboundp 'execute-extended-command-for-buffer) (defun execute-extended-command-for-buffer (&rest _) nil))
 (unless (boundp 'executing-kbd-macro) (defvar executing-kbd-macro nil))
 (unless (fboundp 'exit-minibuffer) (defun exit-minibuffer (&rest _) nil))
-(unless (fboundp 'exit-recursive-edit) (defun exit-recursive-edit (&rest _) nil))
+;; exit-recursive-edit moved to emacs-command-loop-builtins (Phase B.6).
 (unless (fboundp 'exp) (defun exp (&rest _) nil))
 (unless (fboundp 'expand-file-name) (defun expand-file-name (&rest _) nil))
 (unless (fboundp 'face-background) (defun face-background (&rest _) nil))
@@ -386,7 +386,7 @@
 (unless (boundp 'jka-compr-load-suffixes) (defvar jka-compr-load-suffixes nil))
 (unless (fboundp 'key-binding) (defun key-binding (&rest _) nil))
 (unless (fboundp 'keyboard-coding-system) (defun keyboard-coding-system (&rest _) nil))
-(unless (fboundp 'keyboard-quit) (defun keyboard-quit (&rest _) nil))
+;; keyboard-quit moved to emacs-command-loop-builtins (Phase B.6).
 (unless (boundp 'keyboard-translate-table) (defvar keyboard-translate-table nil))
 (unless (fboundp 'key-description) (defun key-description (&rest _) nil))
 (unless (fboundp 'keymap-global-lookup) (defun keymap-global-lookup (&rest _) nil))

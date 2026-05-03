@@ -525,6 +525,8 @@ Returns the binding (= function or nil)."
 
 (defun emacs-command-loop-drain ()
   "Run `emacs-command-loop-step' until the unread queue is empty.
+Pure drain — does NOT catch quit signals.  Use
+`emacs-command-loop-1' for the quit-aware variant.
 Returns the number of commands executed."
   (let ((n 0))
     (while (emacs-command-loop-pending-p)
@@ -533,30 +535,82 @@ Returns the number of commands executed."
     n))
 
 (defun emacs-command-loop-1 ()
-  "Phase B.4 MVP: drain the unread queue.
+  "Phase B.4 + B.6: drain the unread queue, swallowing `quit' so the
+loop continues across user `keyboard-quit' / `C-g' presses.
+Each `quit' clears the substrate `quit-flag' and counts as one
+iteration.  Returns the iteration count."
+  (let ((n 0))
+    (while (emacs-command-loop-pending-p)
+      (condition-case _err
+          (progn (emacs-command-loop-step)
+                 (setq n (1+ n)))
+        (quit
+         (setq emacs-command-loop--quit-flag nil
+               n (1+ n)))
+        (emacs-command-loop-quit
+         (setq emacs-command-loop--quit-flag nil
+               n (1+ n)))))
+    n))
 
-Real Emacs' `command-loop-1' loops forever until throw-to-top-level;
-under standalone NeLisp the equivalent live-driver will be
-`top-level' (= B.6).  For tests / scripted dispatch, the
-queue-drain semantics are sufficient and well-defined."
-  (emacs-command-loop-drain))
+;;;; --- recursive-edit / quit (Phase B.6) -----------------------------
 
-(defun emacs-command-loop-top-level ()
-  "Phase B.4 placeholder for `top-level'.
+(defvar emacs-command-loop--recursion-depth 0
+  "Number of `recursive-edit' frames currently on the stack.")
 
-Currently equivalent to `emacs-command-loop-1' (= drain semantics).
-B.6 will turn this into a real loop with quit handling and
-recursive-edit support."
-  (emacs-command-loop-1))
+(defun emacs-command-loop-keyboard-quit ()
+  "Phase B.6: signal `quit'.
+
+When dispatched from inside `command-loop-1' the signal unwinds
+back to the loop's `condition-case', which sets `quit-flag = nil'
+and continues.  When dispatched from inside `recursive-edit' the
+signal unwinds the same way without exiting the recursive-edit
+frame (= matches Emacs behaviour: C-g aborts the command, not the
+edit session)."
+  (interactive)
+  (signal 'quit nil))
 
 (defun emacs-command-loop-recursive-edit ()
-  "Phase B.4 stub — runs one drain pass.  B.6 turns this into a
-proper nested loop with recursion-depth tracking + abort."
+  "Phase B.6: enter a nested command-loop.
+
+Increments `recursion-depth' for the duration, runs the loop
+until the queue empties or `exit-recursive-edit' / `abort-
+recursive-edit' throws out.  Returns nil on normal exit, the
+abort sentinel (= 'aborted) on abort."
+  (interactive)
+  (let ((emacs-command-loop--recursion-depth
+         (1+ emacs-command-loop--recursion-depth)))
+    (catch 'emacs-command-loop-exit
+      (emacs-command-loop-1)
+      nil)))
+
+(defun emacs-command-loop-exit-recursive-edit ()
+  "Phase B.6: throw out of the most recent `recursive-edit' frame."
+  (interactive)
+  (if (zerop emacs-command-loop--recursion-depth)
+      (signal 'emacs-command-loop-error
+              '(no-recursive-edit-active))
+    (throw 'emacs-command-loop-exit nil)))
+
+(defun emacs-command-loop-abort-recursive-edit ()
+  "Phase B.6: throw out with the `aborted' sentinel.
+If no recursive-edit is active, signal `quit' instead."
+  (interactive)
+  (if (zerop emacs-command-loop--recursion-depth)
+      (signal 'quit nil)
+    (throw 'emacs-command-loop-exit 'aborted)))
+
+(defun emacs-command-loop-top-level ()
+  "Phase B.6: drain at the top-level.
+Resets state first, then runs `command-loop-1'.  Real Emacs'
+top-level throws to a tag set by the C `Frecursive_edit', but
+under our drain semantics a reset+drain captures the intent."
+  (interactive)
+  (emacs-command-loop-reset)
   (emacs-command-loop-1))
 
 (defun emacs-command-loop-recursion-depth ()
-  "Phase B.4 stub: always 0.  B.6 will track real depth."
-  0)
+  "Return the current `recursive-edit' nesting depth."
+  emacs-command-loop--recursion-depth)
 
 ;;;; --- prefix-arg setters (Phase B.5) ---------------------------------
 
