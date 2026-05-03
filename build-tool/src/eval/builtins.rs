@@ -52,7 +52,9 @@ pub fn install_builtins(env: &mut Env) {
         "expand-file-name", "file-truename",
         // file I/O (Doc 47 Stage 8b — multi-file load chain)
         "file-name-directory", "file-name-nondirectory", "file-exists-p",
-        "file-readable-p", "load",
+        "file-readable-p", "file-directory-p", "file-regular-p",
+        "file-name-as-directory", "file-name-extension", "directory-files",
+        "load",
         // symbol / function
         "symbol-value", "symbol-function", "fboundp", "boundp", "funcall", "apply", "eval",
         "signal", "error", "print", "princ", "prin1-to-string", "message",
@@ -73,6 +75,15 @@ pub fn install_builtins(env: &mut Env) {
         // — pure-elisp implementations are impractical (SHA-1 in elisp =
         // ~100 LoC slow; current time has no Lisp-level source).
         "nl-current-unix-time", "nl-secure-hash", "nl-format-unix-time",
+        // Doc 51 Phase 8: string + Unicode primitives needed by anvil-memory's
+        // tokenizer / save-check / FTS query builder.  Real Emacs implements
+        // these in C; Rust stdlib gives us correct UTF-8 case folding for free.
+        "nl-downcase", "nl-upcase", "nl-split-by-non-alnum",
+        // Doc 51 Phase 8: math primitives needed by anvil-memory's decay
+        // formula (exp/log/min/max/float coercion).
+        "min", "max", "float", "exp", "log", "abs", "floor", "ceiling", "round",
+        // Doc 51 Phase 8: file write + mkdir for worklog-export-org write path.
+        "nl-write-file", "nl-make-directory",
     ];
     for n in names {
         let sentinel = Sexp::list_from(&[
@@ -146,6 +157,11 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "file-name-nondirectory" => bi_file_name_nondirectory(args),
         "file-exists-p" => bi_file_exists_p(args, env),
         "file-readable-p" => bi_file_readable_p(args, env),
+        "file-directory-p" => bi_file_directory_p(args, env),
+        "file-regular-p" => bi_file_regular_p(args, env),
+        "file-name-as-directory" => bi_file_name_as_directory(args),
+        "file-name-extension" => bi_file_name_extension(args),
+        "directory-files" => bi_directory_files(args, env),
         "load" => bi_load(args, env),
         // ---- symbol / function ----
         "symbol-value" => bi_symbol_value(args, env),
@@ -168,6 +184,20 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-current-unix-time" => bi_nl_current_unix_time(args),
         "nl-secure-hash" => bi_nl_secure_hash(args),
         "nl-format-unix-time" => bi_nl_format_unix_time(args),
+        "nl-downcase" => bi_nl_downcase(args),
+        "nl-upcase" => bi_nl_upcase(args),
+        "nl-split-by-non-alnum" => bi_nl_split_by_non_alnum(args),
+        "min" => bi_min(args),
+        "max" => bi_max(args),
+        "float" => bi_float(args),
+        "exp" => bi_exp(args),
+        "log" => bi_log(args),
+        "abs" => bi_abs(args),
+        "floor" => bi_floor(args),
+        "ceiling" => bi_ceiling(args),
+        "round" => bi_round(args),
+        "nl-write-file" => bi_nl_write_file(args),
+        "nl-make-directory" => bi_nl_make_directory(args),
         "provide" => bi_provide(args, env),
         "require" => bi_require(args, env),
         "featurep" => bi_featurep(args, env),
@@ -796,6 +826,83 @@ fn bi_file_readable_p(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     })
 }
 
+fn bi_file_directory_p(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("file-directory-p", args, 1, Some(1))?;
+    let p = resolve_existing_path(&args[0], env)?;
+    Ok(if std::fs::metadata(&p).map(|m| m.is_dir()).unwrap_or(false) {
+        Sexp::T
+    } else {
+        Sexp::Nil
+    })
+}
+
+fn bi_file_regular_p(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("file-regular-p", args, 1, Some(1))?;
+    let p = resolve_existing_path(&args[0], env)?;
+    Ok(if std::fs::metadata(&p).map(|m| m.is_file()).unwrap_or(false) {
+        Sexp::T
+    } else {
+        Sexp::Nil
+    })
+}
+
+fn bi_file_name_as_directory(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("file-name-as-directory", args, 1, Some(1))?;
+    let s = string_value(&args[0])?;
+    Ok(Sexp::Str(if s.ends_with('/') { s } else { format!("{}/", s) }))
+}
+
+fn bi_file_name_extension(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("file-name-extension", args, 1, Some(2))?;
+    let s = string_value(&args[0])?;
+    // Trim directory prefix.
+    let base = s.rsplit('/').next().unwrap_or(&s);
+    match base.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => Ok(Sexp::Str(ext.to_string())),
+        _ => Ok(Sexp::Nil),
+    }
+}
+
+/// `(directory-files DIR &optional FULL MATCH NOSORT COUNT)` — return
+/// the list of file names in DIR.  FULL non-nil prepends DIR to each
+/// name.  MATCH (regexp) and NOSORT / COUNT are accepted for API
+/// compat but only NOSORT is honored (= we always emit sorted unless
+/// NOSORT is t; MATCH is simple substring matching for now).
+fn bi_directory_files(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("directory-files", args, 1, Some(5))?;
+    let dir = resolve_existing_path(&args[0], env)?;
+    let full = args.get(1).map(|v| !matches!(v, Sexp::Nil)).unwrap_or(false);
+    let match_pat = match args.get(2) {
+        Some(Sexp::Str(s)) => Some(s.clone()),
+        _ => None,
+    };
+    let nosort = args.get(3).map(|v| !matches!(v, Sexp::Nil)).unwrap_or(false);
+    let mut entries: Vec<String> = match std::fs::read_dir(&dir) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect(),
+        Err(_) => return Ok(Sexp::Nil),
+    };
+    if let Some(pat) = match_pat {
+        // Crude substring-only match (= sufficient for `\\.el\\'` style
+        // suffix tests after we strip backslash escapes).
+        let pat = pat.trim_start_matches("\\`").trim_end_matches("\\'").to_string();
+        entries.retain(|n| n.contains(&pat));
+    }
+    if !nosort {
+        entries.sort();
+    }
+    let items: Vec<Sexp> = entries.into_iter().map(|n| {
+        if full {
+            Sexp::Str(format!("{}/{}", dir.display(), n))
+        } else {
+            Sexp::Str(n)
+        }
+    }).collect();
+    Ok(Sexp::list_from(&items))
+}
+
 /// Resolve a path argument against `load-path` if relative, returning
 /// the first existing match.  Tries the path as-given, then with `.el`
 /// suffix appended (per Elisp `load` SUFFIX search).  Returns the
@@ -1214,6 +1321,161 @@ fn bi_nl_format_unix_time(args: &[Sexp]) -> Result<Sexp, EvalError> {
         EvalError::Internal(format!("nl-format-unix-time: invalid epoch {}", epoch))
     })?;
     Ok(Sexp::Str(dt.format(&fmt).to_string()))
+}
+
+fn bi_nl_downcase(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nl-downcase", args, 1, Some(1))?;
+    let s = string_value(&args[0])?;
+    Ok(Sexp::Str(s.to_lowercase()))
+}
+
+fn bi_nl_upcase(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nl-upcase", args, 1, Some(1))?;
+    let s = string_value(&args[0])?;
+    Ok(Sexp::Str(s.to_uppercase()))
+}
+
+/// `(nl-split-by-non-alnum STRING &optional OMIT-EMPTY)` — split STRING
+/// on runs of non-alphanumeric characters.  When OMIT-EMPTY is non-nil
+/// (default behavior of Elisp `split-string ... t`), drops empty
+/// fragments.  This is the common-case shortcut for Elisp's
+/// `(split-string s "[^[:alnum:]]+" t)' idiom that anvil-memory's
+/// tokenizer reaches for.
+fn bi_nl_split_by_non_alnum(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nl-split-by-non-alnum", args, 1, Some(2))?;
+    let s = string_value(&args[0])?;
+    let omit_empty = args.get(1).map(|v| !matches!(v, Sexp::Nil)).unwrap_or(true);
+    let parts: Vec<Sexp> = s
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|p| if omit_empty { !p.is_empty() } else { true })
+        .map(|p| Sexp::Str(p.to_string()))
+        .collect();
+    Ok(Sexp::list_from(&parts))
+}
+
+/// Coerce arg to f64 for math ops.  Accepts int / float / nil (= 0.0).
+fn to_f64(arg: &Sexp) -> Result<f64, EvalError> {
+    match arg {
+        Sexp::Int(i) => Ok(*i as f64),
+        Sexp::Float(f) => Ok(*f),
+        Sexp::Nil => Ok(0.0),
+        other => Err(EvalError::WrongType {
+            expected: "number".into(),
+            got: other.clone(),
+        }),
+    }
+}
+
+fn bi_min(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    if args.is_empty() {
+        return Err(EvalError::WrongNumberOfArguments {
+            function: "min".into(), expected: "≥1".into(), got: 0,
+        });
+    }
+    let mut all_int = true;
+    for a in args { if matches!(a, Sexp::Float(_)) { all_int = false; } }
+    if all_int {
+        let vals: Result<Vec<i64>, _> = args.iter().map(|a| match a {
+            Sexp::Int(i) => Ok(*i),
+            other => Err(EvalError::WrongType { expected: "number".into(), got: other.clone() }),
+        }).collect();
+        Ok(Sexp::Int(*vals?.iter().min().unwrap()))
+    } else {
+        let vals: Result<Vec<f64>, _> = args.iter().map(to_f64).collect();
+        let v = vals?;
+        let m = v.iter().cloned().fold(f64::INFINITY, f64::min);
+        Ok(Sexp::Float(m))
+    }
+}
+
+fn bi_max(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    if args.is_empty() {
+        return Err(EvalError::WrongNumberOfArguments {
+            function: "max".into(), expected: "≥1".into(), got: 0,
+        });
+    }
+    let mut all_int = true;
+    for a in args { if matches!(a, Sexp::Float(_)) { all_int = false; } }
+    if all_int {
+        let vals: Result<Vec<i64>, _> = args.iter().map(|a| match a {
+            Sexp::Int(i) => Ok(*i),
+            other => Err(EvalError::WrongType { expected: "number".into(), got: other.clone() }),
+        }).collect();
+        Ok(Sexp::Int(*vals?.iter().max().unwrap()))
+    } else {
+        let vals: Result<Vec<f64>, _> = args.iter().map(to_f64).collect();
+        let v = vals?;
+        let m = v.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        Ok(Sexp::Float(m))
+    }
+}
+
+fn bi_float(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("float", args, 1, Some(1))?;
+    Ok(Sexp::Float(to_f64(&args[0])?))
+}
+
+fn bi_exp(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("exp", args, 1, Some(1))?;
+    Ok(Sexp::Float(to_f64(&args[0])?.exp()))
+}
+
+fn bi_log(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("log", args, 1, Some(2))?;
+    let x = to_f64(&args[0])?;
+    let base = match args.get(1) {
+        Some(b) => to_f64(b)?,
+        None => std::f64::consts::E,
+    };
+    Ok(Sexp::Float(x.log(base)))
+}
+
+fn bi_abs(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("abs", args, 1, Some(1))?;
+    match &args[0] {
+        Sexp::Int(i) => Ok(Sexp::Int(i.abs())),
+        Sexp::Float(f) => Ok(Sexp::Float(f.abs())),
+        Sexp::Nil => Ok(Sexp::Int(0)),
+        other => Err(EvalError::WrongType { expected: "number".into(), got: other.clone() }),
+    }
+}
+
+fn bi_floor(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("floor", args, 1, Some(2))?;
+    let x = to_f64(&args[0])?;
+    let div = match args.get(1) { Some(d) => to_f64(d)?, None => 1.0 };
+    Ok(Sexp::Int((x / div).floor() as i64))
+}
+
+fn bi_ceiling(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("ceiling", args, 1, Some(2))?;
+    let x = to_f64(&args[0])?;
+    let div = match args.get(1) { Some(d) => to_f64(d)?, None => 1.0 };
+    Ok(Sexp::Int((x / div).ceil() as i64))
+}
+
+fn bi_nl_write_file(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nl-write-file", args, 2, Some(2))?;
+    let path = string_value(&args[0])?;
+    let content = string_value(&args[1])?;
+    std::fs::write(&path, content)
+        .map_err(|e| EvalError::Internal(format!("nl-write-file: {}: {}", path, e)))?;
+    Ok(Sexp::T)
+}
+
+fn bi_nl_make_directory(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nl-make-directory", args, 1, Some(2))?;
+    let path = string_value(&args[0])?;
+    std::fs::create_dir_all(&path)
+        .map_err(|e| EvalError::Internal(format!("nl-make-directory: {}: {}", path, e)))?;
+    Ok(Sexp::T)
+}
+
+fn bi_round(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("round", args, 1, Some(2))?;
+    let x = to_f64(&args[0])?;
+    let div = match args.get(1) { Some(d) => to_f64(d)?, None => 1.0 };
+    Ok(Sexp::Int((x / div).round() as i64))
 }
 
 fn hex_lower(bytes: &[u8]) -> String {
