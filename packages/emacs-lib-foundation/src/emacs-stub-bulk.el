@@ -69,8 +69,7 @@
 (unless (fboundp 'byte-compile-warn-obsolete) (defun byte-compile-warn-obsolete (&rest _) nil))
 (unless (fboundp 'byte-run--set-speed) (defun byte-run--set-speed (&rest _) nil))
 ;; call-interactively moved to emacs-command-loop-builtins (Phase B.3).
-(unless (fboundp 'call-process) (defun call-process (&rest _) nil))
-(unless (fboundp 'call-process-region) (defun call-process-region (&rest _) nil))
+;; call-process / call-process-region moved to emacs-process-builtins (Track I).
 (unless (fboundp 'cancel-timer) (defun cancel-timer (&rest _) nil))
 (unless (fboundp 'capitalize-word) (defun capitalize-word (&rest _) nil))
 (unless (fboundp 'car) (defun car (&rest _) nil))
@@ -476,7 +475,7 @@
 (unless (fboundp 'make-obsolete) (defun make-obsolete (&rest _) nil))
 (unless (fboundp 'make-obsolete-variable) (defun make-obsolete-variable (&rest _) nil))
 (unless (fboundp 'make-overlay) (defun make-overlay (&rest _) nil))
-(unless (fboundp 'make-process) (defun make-process (&rest _) nil))
+;; make-process moved to emacs-process-builtins (Track I).
 (unless (fboundp 'make-sparse-keymap) (defun make-sparse-keymap (&rest _) nil))
 (unless (fboundp 'make-string) (defun make-string (&rest _) nil))
 (unless (fboundp 'make-symbol) (defun make-symbol (&rest _) nil))
@@ -623,16 +622,16 @@
 (unless (boundp 'print-quoted) (defvar print-quoted nil))
 (unless (boundp 'print-unreadable-function) (defvar print-unreadable-function nil))
 (unless (fboundp 'process-attributes) (defun process-attributes (&rest _) nil))
-(unless (fboundp 'process-buffer) (defun process-buffer (&rest _) nil))
+;; process-buffer moved to emacs-process-builtins (Track I).
 (unless (fboundp 'process-file) (defun process-file (&rest _) nil))
 (unless (fboundp 'process-filter) (defun process-filter (&rest _) nil))
-(unless (fboundp 'processp) (defun processp (&rest _) nil))
+;; processp moved to emacs-process-builtins (Track I).
 (unless (fboundp 'process-plist) (defun process-plist (&rest _) nil))
 (unless (fboundp 'process-query-on-exit-flag) (defun process-query-on-exit-flag (&rest _) nil))
 (unless (fboundp 'process-send-region) (defun process-send-region (&rest _) nil))
-(unless (fboundp 'process-send-string) (defun process-send-string (&rest _) nil))
+;; process-send-string moved to emacs-process-builtins (Track I).
 (unless (fboundp 'process-sentinel) (defun process-sentinel (&rest _) nil))
-(unless (fboundp 'process-status) (defun process-status (&rest _) nil))
+;; process-status moved to emacs-process-builtins (Track I).
 (unless (fboundp 'progress-reporter-make) (defun progress-reporter-make (&rest _) nil))
 (unless (fboundp 'proper-list-p) (defun proper-list-p (&rest _) nil))
 (unless (fboundp 'propertize) (defun propertize (&rest _) nil))
@@ -765,7 +764,7 @@
 (unless (fboundp 'set-window-point) (defun set-window-point (&rest _) nil))
 (unless (fboundp 'set-window-start) (defun set-window-start (&rest _) nil))
 (unless (fboundp 'shell) (defun shell (&rest _) nil))
-(unless (boundp 'shell-command-switch) (defvar shell-command-switch nil))
+;; shell-command-switch moved to emacs-process-builtins (Track I).
 (unless (boundp 'shell-file-name) (defvar shell-file-name nil))
 (unless (fboundp 'signal) (defun signal (&rest _) nil))
 (unless (fboundp 'single-key-description) (defun single-key-description (&rest _) nil))
