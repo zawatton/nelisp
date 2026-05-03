@@ -252,6 +252,89 @@ The buffer is set as current via `nelisp-ec--current-buffer'."
     (emacs-font-lock-fontify-region 1 4)
     (should t)))
 
+;;;; J. Track D hardening (Doc 51, 2026-05-04)
+
+(ert-deftest emacs-font-lock-builtins-test/compile-eval-keyword-form ()
+  "An (eval . FORM) keyword should round-trip through `compile-keyword'
+as the sentinel `(:eval . FORM)' so it can be evaluated lazily."
+  (let* ((kw '(eval . (list "abc" 0 'font-lock-string-face)))
+         (compiled (emacs-font-lock--compile-keyword kw)))
+    (should (eq :eval (car compiled)))
+    (should (equal '(list "abc" 0 'font-lock-string-face)
+                   (cdr compiled)))))
+
+(ert-deftest emacs-font-lock-builtins-test/eval-keyword-fontifies ()
+  "An (eval . FORM) keyword should fontify after the FORM is materialised."
+  (emacs-font-lock-builtins-test--with-buffer
+      "fld-eval-kw" "abc xyz abc"
+    (emacs-font-lock-add-keywords
+     nil '((eval . (cons "abc" 'font-lock-string-face)))
+     'set)
+    (emacs-font-lock-fontify-region 1 12)
+    (should (eq 'font-lock-string-face
+                (emacs-buffer-get-text-property 1 'face b)))
+    (should (eq 'font-lock-string-face
+                (emacs-buffer-get-text-property 9 'face b)))))
+
+(ert-deftest emacs-font-lock-builtins-test/case-fold-honoured ()
+  "When `font-lock-defaults' slot 3 is non-nil, search is case-insensitive."
+  (emacs-font-lock-builtins-test--with-buffer
+      "fld-case" "Hello WORLD"
+    (let ((font-lock-defaults '(("hello") nil t)))
+      (emacs-font-lock-set-defaults b)
+      (emacs-font-lock-fontify-region 1 12)
+      (should (eq 'font-lock-keyword-face
+                  (emacs-buffer-get-text-property 1 'face b))))))
+
+(ert-deftest emacs-font-lock-builtins-test/case-sensitive-default ()
+  "Without slot-3 case-fold, search is case-sensitive (= no match)."
+  (emacs-font-lock-builtins-test--with-buffer
+      "fld-case-sens" "Hello WORLD"
+    (let ((font-lock-defaults '(("hello"))))
+      (emacs-font-lock-set-defaults b)
+      (emacs-font-lock-fontify-region 1 12)
+      (should-not (emacs-buffer-get-text-property 1 'face b)))))
+
+(ert-deftest emacs-font-lock-builtins-test/override-keep-skips-existing ()
+  "`keep' override keeps the existing face property."
+  (emacs-font-lock-builtins-test--with-buffer
+      "fld-keep" "abc"
+    (emacs-buffer-put-text-property 1 4 'face 'font-lock-comment-face b)
+    (emacs-font-lock-add-keywords
+     nil '(("abc" (0 font-lock-keyword-face keep)))
+     'set)
+    (emacs-font-lock-fontify-region 1 4)
+    (should (eq 'font-lock-comment-face
+                (emacs-buffer-get-text-property 1 'face b)))))
+
+(ert-deftest emacs-font-lock-builtins-test/override-prepend-merges ()
+  "`prepend' override builds a face list with NEW at the head."
+  (emacs-font-lock-builtins-test--with-buffer
+      "fld-prepend" "abc"
+    (emacs-buffer-put-text-property 1 4 'face 'font-lock-comment-face b)
+    (emacs-font-lock-add-keywords
+     nil '(("abc" (0 font-lock-keyword-face prepend)))
+     'set)
+    (emacs-font-lock-fontify-region 1 4)
+    (let ((cur (emacs-buffer-get-text-property 1 'face b)))
+      (should (listp cur))
+      (should (memq 'font-lock-keyword-face cur))
+      (should (memq 'font-lock-comment-face cur))
+      (should (eq 'font-lock-keyword-face (car cur))))))
+
+(ert-deftest emacs-font-lock-builtins-test/override-append-merges ()
+  "`append' override builds a face list with NEW at the tail."
+  (emacs-font-lock-builtins-test--with-buffer
+      "fld-append" "abc"
+    (emacs-buffer-put-text-property 1 4 'face 'font-lock-comment-face b)
+    (emacs-font-lock-add-keywords
+     nil '(("abc" (0 font-lock-keyword-face append)))
+     'set)
+    (emacs-font-lock-fontify-region 1 4)
+    (let ((cur (emacs-buffer-get-text-property 1 'face b)))
+      (should (listp cur))
+      (should (eq 'font-lock-comment-face (car cur))))))
+
 (provide 'emacs-font-lock-builtins-test)
 
 ;;; emacs-font-lock-builtins-test.el ends here

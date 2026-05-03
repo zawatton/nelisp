@@ -97,8 +97,21 @@ Value is a plist with keys
 (defun emacs-font-lock--compile-keyword (kw)
   "Normalise a font-lock KEYWORD to canonical form.
 Returns a list of (REGEXP HIGHLIGHTS...) where each HIGHLIGHT is a
-4-list (SUBEXP FACE OVERRIDE LAXMATCH)."
+4-list (SUBEXP FACE OVERRIDE LAXMATCH).
+
+`(eval . FORM)' is evaluated lazily — we wrap it in a sentinel
+`(:eval . FORM)' so `--fontify-one-keyword' can call `eval' the
+first time it runs (caching the materialised keyword in the
+sentinel cdr after expansion).  This matches upstream Emacs's
+`font-lock-keywords' semantics where the FORM is evaluated once
+per buffer when fontification first runs."
   (cond
+   ;; (eval . FORM) — defer materialisation to fontify-time.
+   ;; Use `cons' (not `list') to keep the FORM dotted onto the cdr;
+   ;; that way `--materialise-eval-cell' can do `(eval (cdr cell) t)'
+   ;; without unwrapping an extra list level.
+   ((and (consp kw) (eq (car kw) 'eval))
+    (cons :eval (cdr kw)))
    ((stringp kw)
     (list kw (list 0 'font-lock-keyword-face nil nil)))
    ((and (consp kw) (stringp (car kw)) (symbolp (cdr kw)))
@@ -121,6 +134,59 @@ Returns a list of (REGEXP HIGHLIGHTS...) where each HIGHLIGHT is a
    (t
     (list ".\\`" (list 0 'font-lock-keyword-face nil nil)))))
 
+(defun emacs-font-lock--case-insensitive-regexp (regexp)
+  "Convert REGEXP into a case-insensitive equivalent.
+Replaces each ASCII letter with a `[Xx]' character class.  Skips
+`\\\\' escape sequences and `[...]' character classes (= they are
+copied through).  Used because `nelisp-regex' does not honour any
+external `case-fold-search' switch."
+  (let ((i 0)
+        (n (length regexp))
+        (out (make-string 0 0)))
+    (while (< i n)
+      (let ((c (aref regexp i)))
+        (cond
+         ;; Pass-through escape sequence.
+         ((eq c ?\\)
+          (setq out (concat out (substring regexp i (min n (+ i 2))))
+                i (+ i 2)))
+         ;; Pass-through char class.
+         ((eq c ?\[)
+          (let ((end (1+ i)))
+            (while (and (< end n) (not (eq (aref regexp end) ?\])))
+              (when (eq (aref regexp end) ?\\) (setq end (1+ end)))
+              (setq end (1+ end)))
+            (setq out (concat out (substring regexp i (min n (1+ end))))
+                  i (1+ end))))
+         ;; ASCII letter → [Xx]
+         ((or (and (>= c ?a) (<= c ?z))
+              (and (>= c ?A) (<= c ?Z)))
+          (let ((lower (downcase c))
+                (upper (upcase c)))
+            (setq out (concat out (string ?\[ upper lower ?\]))
+                  i (1+ i))))
+         (t
+          (setq out (concat out (string c))
+                i (1+ i))))))
+    out))
+
+(defun emacs-font-lock--materialise-eval-cell (cell)
+  "If CELL is an `(:eval . FORM)' sentinel, eval FORM and recompile.
+Returns the materialised cell (a regular `(REGEXP HIGHLIGHTS...)' list)
+or CELL itself when no expansion is needed.
+
+The cell shape is `(:eval . FORM)' (= dotted cons), so `(cdr cell)'
+yields the FORM directly without an extra list-level unwrap."
+  (cond
+   ((and (consp cell) (eq (car cell) :eval))
+    (let ((form (cdr cell)))
+      (condition-case _
+          (let ((expanded (eval form t)))
+            (when expanded
+              (emacs-font-lock--compile-keyword expanded)))
+        (error nil))))
+   (t cell)))
+
 (defun emacs-font-lock--compile-keywords (keywords)
   (mapcar #'emacs-font-lock--compile-keyword keywords))
 
@@ -129,23 +195,34 @@ Returns a list of (REGEXP HIGHLIGHTS...) where each HIGHLIGHT is a
 (defun emacs-font-lock-set-defaults (&optional buf)
   "Initialise font-lock state from `font-lock-defaults' for BUF.
 Defaults to the current buffer.  If `font-lock-defaults' is nil
-or unbound, leaves :keywords as nil."
+or unbound, leaves :keywords as nil.
+
+Slots honoured (Doc 51 Track D hardening):
+  1. KEYWORDS         — keyword list (or symbol → variable lookup)
+  2. KEYWORDS-ONLY    — when t, syntactic fontification is skipped.
+                        Our MVP does not do syntactic fontification
+                        anyway, so this slot is recorded but a no-op.
+  3. CASE-FOLD        — when non-nil, regex matching is case-insensitive.
+                        Captured into :case-fold and consulted in
+                        `--fontify-one-keyword'.
+Slots 4 (SYNTAX-ALIST) and 5+ (OTHER) are still deferred."
   (let* ((b (or buf (emacs-font-lock--current-buffer)))
          (defaults (and (boundp 'font-lock-defaults) font-lock-defaults))
+         (slot0 (and (listp defaults) (car defaults)))
          (kw (cond
               ((null defaults) nil)
-              ((listp defaults)
-               (let ((spec (car defaults)))
-                 (cond
-                  ((symbolp spec)
-                   (and (boundp spec) (symbol-value spec)))
-                  ((listp spec) spec)
-                  (t nil))))
-              (t nil))))
+              ((symbolp slot0)
+               (and (boundp slot0) (symbol-value slot0)))
+              ((listp slot0) slot0)
+              (t nil)))
+         (case-fold (and (listp defaults)
+                         (cdr (cdr defaults))
+                         (nth 2 defaults))))
     (when b
       (emacs-font-lock--state-set b :defaults defaults)
       (emacs-font-lock--state-set b :keywords
-                                  (emacs-font-lock--compile-keywords kw)))
+                                  (emacs-font-lock--compile-keywords kw))
+      (emacs-font-lock--state-set b :case-fold case-fold))
     kw))
 
 (defun emacs-font-lock-add-keywords (mode keywords &optional how)
@@ -198,8 +275,33 @@ MODE is accepted for API parity and ignored."
         (when (> e 1)
           (emacs-font-lock-unfontify-region 1 e b))))))
 
+(defun emacs-font-lock--merge-face (existing new strategy)
+  "Combine EXISTING and NEW face values per STRATEGY.
+STRATEGY is one of `prepend' / `append' (= cons-into-list) or nil
+(= replace).  EXISTING may be nil, a face symbol, or a list of
+faces.  NEW is a face symbol / list / face-spec.  Returns a value
+suitable for the `face' text-property."
+  (cond
+   ((null strategy) new)
+   ((null existing) new)
+   (t
+    (let* ((ex-list (if (listp existing) existing (list existing)))
+           (new-list (if (listp new) new (list new))))
+      (cond
+       ((eq strategy 'prepend) (append new-list ex-list))
+       ((eq strategy 'append)  (append ex-list new-list))
+       (t new))))))
+
 (defun emacs-font-lock--apply-highlight (highlight buf)
-  "Apply one HIGHLIGHT (SUBEXP FACE OVERRIDE LAXMATCH) to current match in BUF."
+  "Apply one HIGHLIGHT (SUBEXP FACE OVERRIDE LAXMATCH) to current match in BUF.
+
+OVERRIDE semantics (Doc 51 Track D — full upstream parity):
+  t          replace any existing face property
+  `keep'     only set when no face is currently set
+  `prepend'  cons NEW onto the front of the existing face list
+  `append'   cons NEW onto the back of the existing face list
+  nil        replace (= same as t in MVP — upstream uses this for
+             non-overlapping keywords; our matcher already rewinds)"
   (let* ((subexp (nth 0 highlight))
          (face (nth 1 highlight))
          (override (nth 2 highlight))
@@ -212,19 +314,21 @@ MODE is accepted for API parity and ignored."
                     (t face))))
     (cond
      ((and m-beg m-end (< m-beg m-end))
-      (cond
-       ((eq override 'prepend)
-        ;; prepend: only set if not already set
-        (let ((cur (emacs-buffer-get-text-property m-beg 'face buf)))
+      (let ((cur (emacs-buffer-get-text-property m-beg 'face buf)))
+        (cond
+         ((eq override 'keep)
           (unless cur
-            (emacs-buffer-put-text-property m-beg m-end 'face face-val buf))))
-       ((eq override 'append)
-        ;; same as prepend in MVP (no list-merge)
-        (let ((cur (emacs-buffer-get-text-property m-beg 'face buf)))
-          (unless cur
-            (emacs-buffer-put-text-property m-beg m-end 'face face-val buf))))
-       (t
-        (emacs-buffer-put-text-property m-beg m-end 'face face-val buf))))
+            (emacs-buffer-put-text-property m-beg m-end 'face face-val buf)))
+         ((eq override 'prepend)
+          (emacs-buffer-put-text-property
+           m-beg m-end 'face
+           (emacs-font-lock--merge-face cur face-val 'prepend) buf))
+         ((eq override 'append)
+          (emacs-buffer-put-text-property
+           m-beg m-end 'face
+           (emacs-font-lock--merge-face cur face-val 'append) buf))
+         (t
+          (emacs-buffer-put-text-property m-beg m-end 'face face-val buf)))))
      ((not laxmatch)
       ;; subexp didn't match and laxmatch=nil → would error in upstream; we ignore.
       nil))))
@@ -234,22 +338,41 @@ MODE is accepted for API parity and ignored."
 
 Uses the prefixed `nelisp-ec-re-search-forward' substrate directly
 so the search runs against BUF rather than whatever `current-buffer'
-the host Emacs would otherwise see."
-  (let ((regexp (car cell))
-        (highlights (cdr cell))
-        (nelisp-ec--current-buffer buf))
-    (nelisp-ec-goto-char start)
-    (while (and (< (nelisp-ec-point) end)
-                (nelisp-ec-re-search-forward regexp end t))
-      (let ((mb (nelisp-ec-match-beginning 0))
-            (me (nelisp-ec-match-end 0)))
-        (dolist (h highlights)
-          (emacs-font-lock--apply-highlight h buf))
-        ;; Advance past zero-width matches to prevent infinite loop.
-        (when (and mb me (= mb me))
-          (if (< (nelisp-ec-point) end)
-              (nelisp-ec-forward-char 1)
-            (nelisp-ec-goto-char end)))))))
+the host Emacs would otherwise see.
+
+Honours the per-buffer `:case-fold' state captured in
+`emacs-font-lock-set-defaults' (slot 3 of `font-lock-defaults');
+when non-nil the regex is wrapped with `(?i)' equivalent by
+binding `case-fold-search' for the duration of the search.
+
+`(:eval . FORM)' sentinel cells are materialised lazily on first
+fontification: `--materialise-eval-cell' calls `eval' on the FORM
+and the produced regular `(REGEXP HIGHLIGHTS...)' cell is used
+for the rest of the call.  Failed evaluation returns nil and the
+cell is skipped silently (= same behaviour as upstream)."
+  (let ((real-cell (emacs-font-lock--materialise-eval-cell cell)))
+    (when (and real-cell (consp real-cell)
+               (not (eq (car real-cell) :eval)))
+      (let* ((raw-regexp (car real-cell))
+             (case-fold (emacs-font-lock--state-get buf :case-fold))
+             (regexp (if case-fold
+                         (emacs-font-lock--case-insensitive-regexp raw-regexp)
+                       raw-regexp))
+             (highlights (cdr real-cell))
+             (nelisp-ec--current-buffer buf)
+             (case-fold-search case-fold))
+        (nelisp-ec-goto-char start)
+        (while (and (< (nelisp-ec-point) end)
+                    (nelisp-ec-re-search-forward regexp end t))
+          (let ((mb (nelisp-ec-match-beginning 0))
+                (me (nelisp-ec-match-end 0)))
+            (dolist (h highlights)
+              (emacs-font-lock--apply-highlight h buf))
+            ;; Advance past zero-width matches to prevent infinite loop.
+            (when (and mb me (= mb me))
+              (if (< (nelisp-ec-point) end)
+                  (nelisp-ec-forward-char 1)
+                (nelisp-ec-goto-char end)))))))))
 
 (defun emacs-font-lock-default-fontify-region (start end &optional _loudly buf)
   "Fontify [START, END) in BUF using the buffer's compiled keywords."
