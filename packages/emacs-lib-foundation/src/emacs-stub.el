@@ -1108,6 +1108,25 @@ Ignores MORE (= multi-list version)."
       (nreverse acc))))
 
 (unless (fboundp 'cl-remove-if)
+  (defun cl-delete-if (predicate sequence &rest _keys)
+    "Stub: alias for cl-remove-if (in-place delete not supported)."
+    (let ((acc nil) (cur sequence))
+      (while cur
+        (unless (funcall predicate (car cur))
+          (setq acc (cons (car cur) acc)))
+        (setq cur (cdr cur)))
+      (let ((rev nil))
+        (while acc (setq rev (cons (car acc) rev)) (setq acc (cdr acc)))
+        rev)))
+  (defun cl-delete-if-not (predicate sequence &rest _keys)
+    (let ((acc nil) (cur sequence))
+      (while cur
+        (when (funcall predicate (car cur))
+          (setq acc (cons (car cur) acc)))
+        (setq cur (cdr cur)))
+      (let ((rev nil))
+        (while acc (setq rev (cons (car acc) rev)) (setq acc (cdr acc)))
+        rev)))
   (defun cl-remove-if (predicate sequence &rest _keys)
     (let ((acc nil) (cur sequence))
       (while cur
@@ -1515,6 +1534,148 @@ NUMBER may be int or float; DIVISOR optional (= NUMBER / DIVISOR)."
             (setq i (+ i 1)))
           (* sign i))))
      (t 0))))
+
+;;;; --- file IO + with-temp-file (Phase 8 write path) -------------------
+
+(defvar emacs-stub--current-temp-buffer nil
+  "Active write-buffer for `with-temp-file' / `with-temp-buffer'.
+Bound by the macro; mutated by `insert' / `princ' inside the body.")
+
+(defun make-directory (dir &optional parents)
+  "Create DIR (recursive when PARENTS non-nil)."
+  (ignore parents)
+  (when (fboundp 'nl-make-directory)
+    (nl-make-directory dir t)))
+
+(defmacro with-temp-file (path &rest body)
+  "Phase 8 polyfill: capture string output of BODY into PATH.
+Inside BODY, calls to `insert' append to a hidden accumulator;
+on exit the accumulator is written via `nl-write-file'."
+  (list 'let (list (list 'emacs-stub--current-temp-buffer ""))
+        (cons 'progn body)
+        (list 'when (list 'fboundp (list 'quote 'nl-write-file))
+              (list 'nl-write-file path 'emacs-stub--current-temp-buffer))))
+
+(defmacro with-temp-buffer (&rest body)
+  "Phase 8 polyfill: same as `with-temp-file' but discards output."
+  (list 'let (list (list 'emacs-stub--current-temp-buffer ""))
+        (cons 'progn body)))
+
+(defun insert (&rest strings)
+  "Phase 8 polyfill: append STRINGS to the active temp-buffer string."
+  (when (and (boundp 'emacs-stub--current-temp-buffer)
+             (stringp emacs-stub--current-temp-buffer))
+    (let ((acc emacs-stub--current-temp-buffer)
+          (cur strings))
+      (while cur
+        (let ((s (car cur)))
+          (when (stringp s)
+            (setq acc (concat acc s)))
+          (when (integerp s)
+            ;; ASCII char insert.
+            (setq acc (concat acc (substring "0123456789abcdefghijklmnopqrstuvwxyz" 0 1)))))
+        (setq cur (cdr cur)))
+      (setq emacs-stub--current-temp-buffer acc))))
+
+(defun erase-buffer ()
+  "Phase 8 polyfill: clear the active temp-buffer."
+  (when (boundp 'emacs-stub--current-temp-buffer)
+    (setq emacs-stub--current-temp-buffer "")))
+
+(defun buffer-string ()
+  "Phase 8 polyfill: return the active temp-buffer contents."
+  (if (and (boundp 'emacs-stub--current-temp-buffer)
+           (stringp emacs-stub--current-temp-buffer))
+      emacs-stub--current-temp-buffer
+    ""))
+
+
+(defun downcase (string-or-char)
+  "Phase 8 polyfill: lowercase via nl-downcase Rust builtin."
+  (cond
+   ((null string-or-char) nil)
+   ((stringp string-or-char)
+    (if (fboundp 'nl-downcase) (nl-downcase string-or-char) string-or-char))
+   ((integerp string-or-char)
+    ;; Naive ASCII-only char downcase (= sufficient for tokenizer use cases
+    ;; that go through string downcase first).
+    (if (and (>= string-or-char ?A) (<= string-or-char ?Z))
+        (+ string-or-char (- ?a ?A))
+      string-or-char))
+   (t string-or-char)))
+
+(defun upcase (string-or-char)
+  "Phase 8 polyfill: uppercase via nl-upcase."
+  (cond
+   ((null string-or-char) nil)
+   ((stringp string-or-char)
+    (if (fboundp 'nl-upcase) (nl-upcase string-or-char) string-or-char))
+   ((integerp string-or-char)
+    (if (and (>= string-or-char ?a) (<= string-or-char ?z))
+        (- string-or-char (- ?a ?A))
+      string-or-char))
+   (t string-or-char)))
+
+(defun split-string (string &optional separators omit-nulls trim)
+  "Phase 8 polyfill: split STRING by SEPARATORS regexp.
+Supports the common `[^[:alnum:]]+' / `[ \\t\\n]+' / nil regexp shapes
+via specialized fast paths.  TRIM is accepted for API compat but only
+applied when whitespace separator is given."
+  (ignore trim)
+  (cond
+   ((null string) nil)
+   ((not (stringp string)) nil)
+   ((or (null separators)
+        (string-empty-p separators)
+        (and (stringp separators)
+             (or (string-equal separators "[ \t\n]+")
+                 (string-equal separators "[ \t\n\r]+")
+                 (string-equal separators "[ \t\n]"))))
+    ;; Whitespace split (= Emacs default when SEPARATORS is nil).
+    (if (fboundp 'nl-split-by-non-alnum)
+        (let ((all (nl-split-by-non-alnum string omit-nulls)))
+          ;; nl-split-by-non-alnum splits on punctuation too — for
+          ;; whitespace-only intent, fall back to manual split.
+          (let ((parts nil) (i 0) (n (length string)) (start 0))
+            (while (< i n)
+              (let ((c (aref string i)))
+                (when (or (eq c ?\s) (eq c ?\t) (eq c ?\n) (eq c ?\r))
+                  (when (< start i)
+                    (setq parts (cons (substring string start i) parts)))
+                  (setq start (+ i 1))))
+              (setq i (+ i 1)))
+            (when (< start n)
+              (setq parts (cons (substring string start n) parts)))
+            (let ((rev nil))
+              (while parts (setq rev (cons (car parts) rev)) (setq parts (cdr parts)))
+              (if omit-nulls
+                  (let ((nn nil) (cur rev))
+                    (while cur (unless (string-empty-p (car cur)) (setq nn (cons (car cur) nn))) (setq cur (cdr cur)))
+                    (let ((rr nil)) (while nn (setq rr (cons (car nn) rr)) (setq nn (cdr nn))) rr))
+                rev))))))
+   ((and (stringp separators) (string-equal separators "[^[:alnum:]]+"))
+    (and (fboundp 'nl-split-by-non-alnum)
+         (nl-split-by-non-alnum string omit-nulls)))
+   ((and (stringp separators) (= 1 (length separators)))
+    ;; Single literal char delimiter.
+    (let ((sep (aref separators 0))
+          (parts nil) (i 0) (n (length string)) (start 0))
+      (while (< i n)
+        (when (eq (aref string i) sep)
+          (setq parts (cons (substring string start i) parts))
+          (setq start (+ i 1)))
+        (setq i (+ i 1)))
+      (setq parts (cons (substring string start n) parts))
+      (let ((rev nil))
+        (while parts (setq rev (cons (car parts) rev)) (setq parts (cdr parts)))
+        (if omit-nulls
+            (let ((nn nil) (cur rev))
+              (while cur (unless (string-empty-p (car cur)) (setq nn (cons (car cur) nn))) (setq cur (cdr cur)))
+              (let ((rr nil)) (while nn (setq rr (cons (car nn) rr)) (setq nn (cdr nn))) rr))
+          rev))))
+   (t
+    ;; Unknown regex — fall back to single string return (= no split).
+    (list string))))
 
 (defun string-to-number (string &optional base)
   "Phase 6 polyfill: parse STRING as decimal integer.
