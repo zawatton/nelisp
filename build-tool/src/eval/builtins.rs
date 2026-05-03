@@ -72,7 +72,7 @@ pub fn install_builtins(env: &mut Env) {
         // body digest).  Both are inherently OS / native-lib dependent
         // — pure-elisp implementations are impractical (SHA-1 in elisp =
         // ~100 LoC slow; current time has no Lisp-level source).
-        "nl-current-unix-time", "nl-secure-hash",
+        "nl-current-unix-time", "nl-secure-hash", "nl-format-unix-time",
     ];
     for n in names {
         let sentinel = Sexp::list_from(&[
@@ -167,6 +167,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-ffi-free" => super::ffi::nl_ffi_free(args),
         "nl-current-unix-time" => bi_nl_current_unix_time(args),
         "nl-secure-hash" => bi_nl_secure_hash(args),
+        "nl-format-unix-time" => bi_nl_format_unix_time(args),
         "provide" => bi_provide(args, env),
         "require" => bi_require(args, env),
         "featurep" => bi_featurep(args, env),
@@ -1192,6 +1193,27 @@ fn bi_nl_secure_hash(args: &[Sexp]) -> Result<Sexp, EvalError> {
         ))),
     };
     Ok(Sexp::Str(hex))
+}
+
+/// `(nl-format-unix-time FORMAT EPOCH-INT)` → string formatted via
+/// chrono::DateTime<Utc>.format() with strftime-style FORMAT.
+/// EPOCH-INT is seconds since the Unix epoch.  Returns Sexp::Str.
+fn bi_nl_format_unix_time(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nl-format-unix-time", args, 2, Some(2))?;
+    let fmt = string_value(&args[0])?;
+    let epoch = match &args[1] {
+        Sexp::Int(i) => *i,
+        Sexp::Float(f) => *f as i64,
+        other => return Err(EvalError::WrongType {
+            expected: "integer (unix epoch)".into(),
+            got: other.clone(),
+        }),
+    };
+    use chrono::{TimeZone, Utc};
+    let dt = Utc.timestamp_opt(epoch, 0).single().ok_or_else(|| {
+        EvalError::Internal(format!("nl-format-unix-time: invalid epoch {}", epoch))
+    })?;
+    Ok(Sexp::Str(dt.format(&fmt).to_string()))
 }
 
 fn hex_lower(bytes: &[u8]) -> String {

@@ -40,3 +40,4 @@ libffi = "3"
 sha1 = "0.10"
 sha2 = "0.10"
 md5 = "0.7"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
