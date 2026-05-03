@@ -47,8 +47,6 @@ nemacs paths:
   NEMACS_NELISP    = $NEMACS_NELISP
   src/             = $NEMACS_HOME/src
   vendor/          = $NEMACS_HOME/vendor
-  nelisp src/      = $NELISP_HOME/src
-  nelisp regex/    = $NELISP_HOME/packages/nelisp-regex/src
 EOF
 }
 
@@ -120,8 +118,6 @@ BOOT_FORM="$(cat <<EOF
   (setq nelisp-emacs-vendor-root "$(shell_quote "$NEMACS_HOME/vendor")")
   (setq load-path
         (append (list "$(shell_quote "$NEMACS_HOME/src")"
-                      "$(shell_quote "$NELISP_HOME/src")"
-                      "$(shell_quote "$NELISP_HOME/packages/nelisp-regex/src")"
                       "$(shell_quote "$NEMACS_HOME/vendor/emacs-lisp")"
                       "$(shell_quote "$NEMACS_HOME/vendor/emacs-lisp/emacs-lisp")")
                 (and (boundp 'load-path) load-path)))

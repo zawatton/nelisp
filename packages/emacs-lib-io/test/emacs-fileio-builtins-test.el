@@ -12,9 +12,7 @@
 ;;; Code:
 
 (require 'ert)
-(let ((load-path (cons "/home/madblack-21/Notes/dev/nelisp/packages/nelisp-regex/src"
-                       load-path)))
-  (require 'emacs-fileio-builtins))
+(require 'emacs-fileio-builtins)
 (require 'cl-lib)
 
 (defvar emacs-fileio-builtins-test--tmp-counter 0)

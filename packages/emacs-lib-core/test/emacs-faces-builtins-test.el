@@ -11,9 +11,7 @@
 ;;; Code:
 
 (require 'ert)
-(let ((load-path (cons "/home/madblack-21/Notes/dev/nelisp/packages/nelisp-regex/src"
-                       load-path)))
-  (require 'emacs-faces-builtins))
+(require 'emacs-faces-builtins)
 (require 'cl-lib)
 
 (defmacro emacs-faces-builtins-test--with-fresh-registry (&rest body)

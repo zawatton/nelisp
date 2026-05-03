@@ -7,11 +7,11 @@ TEST_FILES = $(wildcard test/*.el)
 .PHONY: compile test clean
 
 compile:
-	$(EMACS) -L src -L $(HOME)/Notes/dev/nelisp/src \
+	$(EMACS) -L src \
 		-f batch-byte-compile $(SRC_FILES)
 
 test:
-	$(EMACS) -L src -L test -L $(HOME)/Notes/dev/nelisp/src \
+	$(EMACS) -L src -L test \
 		$(foreach t,$(TEST_FILES),-l $(t)) \
 		-f ert-run-tests-batch-and-exit
 

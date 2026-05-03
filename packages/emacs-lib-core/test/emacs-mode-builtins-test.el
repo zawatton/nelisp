@@ -12,9 +12,7 @@
 ;;; Code:
 
 (require 'ert)
-(let ((load-path (cons "/home/madblack-21/Notes/dev/nelisp/packages/nelisp-regex/src"
-                       load-path)))
-  (require 'emacs-mode-builtins))
+(require 'emacs-mode-builtins)
 (require 'cl-lib)
 
 (defmacro emacs-mode-builtins-test--with-fresh-mode (&rest body)

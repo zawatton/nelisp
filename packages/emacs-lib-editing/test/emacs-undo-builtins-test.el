@@ -12,9 +12,7 @@
 ;;; Code:
 
 (require 'ert)
-(let ((load-path (cons "/home/madblack-21/Notes/dev/nelisp/packages/nelisp-regex/src"
-                       load-path)))
-  (require 'emacs-undo-builtins))
+(require 'emacs-undo-builtins)
 (require 'emacs-edit-builtins)
 (require 'cl-lib)
 

@@ -9,9 +9,7 @@
 ;;; Code:
 
 (require 'ert)
-(let ((load-path (cons "/home/madblack-21/Notes/dev/nelisp/packages/nelisp-regex/src"
-                       load-path)))
-  (require 'nemacs-loadup))
+(require 'nemacs-loadup)
 (require 'cl-lib)
 
 (defmacro nemacs-loadup-test--with-fresh-bootstrap (&rest body)
