@@ -27,7 +27,7 @@
 (unless (fboundp 'auto-fill-mode) (defun auto-fill-mode (&rest _) nil))
 (unless (fboundp 'autoload) (defun autoload (&rest _) nil))
 (unless (fboundp 'autoload-do-load) (defun autoload-do-load (&rest _) nil))
-(unless (boundp 'auto-mode-alist) (defvar auto-mode-alist nil))
+;; auto-mode-alist moved to emacs-mode-builtins (Track H).
 (unless (fboundp 'auto-save-mode) (defun auto-save-mode (&rest _) nil))
 (unless (fboundp 'backtrace) (defun backtrace (&rest _) nil))
 (unless (fboundp 'backtrace-frame--internal) (defun backtrace-frame--internal (&rest _) nil))
@@ -185,7 +185,7 @@
 (unless (fboundp 'default-file-modes) (defun default-file-modes (&rest _) nil))
 (unless (fboundp 'default-value) (defun default-value (&rest _) nil))
 (unless (fboundp 'define-button-type) (defun define-button-type (&rest _) nil))
-(unless (fboundp 'define-derived-mode) (defmacro define-derived-mode (&rest _) nil))
+;; define-derived-mode moved to emacs-mode-builtins (Track H).
 (unless (fboundp 'define-inline) (defmacro define-inline (&rest _) nil))
 (unless (fboundp 'define-key) (defun define-key (&rest _) nil))
 (unless (fboundp 'define-minor-mode) (defmacro define-minor-mode (&rest _) nil))
@@ -315,7 +315,7 @@
 (unless (boundp 'function-key-map) (defvar function-key-map nil))
 (unless (fboundp 'functionp) (defun functionp (&rest _) nil))
 (unless (fboundp 'function-put) (defun function-put (&rest _) nil))
-(unless (fboundp 'fundamental-mode) (defun fundamental-mode (&rest _) nil))
+;; fundamental-mode moved to emacs-mode-builtins (Track H).
 (unless (fboundp 'garbage-collect) (defun garbage-collect (&rest _) nil))
 (unless (fboundp 'generate-new-buffer-name) (defun generate-new-buffer-name (&rest _) nil))
 (unless (fboundp 'get) (defun get (&rest _) nil))
@@ -403,7 +403,7 @@
 (unless (fboundp 'key-parse) (defun key-parse (&rest _) nil))
 (unless (fboundp 'key-translate) (defun key-translate (&rest _) nil))
 (unless (fboundp 'keywordp) (defun keywordp (&rest _) nil))
-(unless (fboundp 'kill-all-local-variables) (defun kill-all-local-variables (&rest _) nil))
+;; kill-all-local-variables moved to emacs-mode-builtins (Track H).
 (unless (fboundp 'kill-buffer) (defun kill-buffer (&rest _) nil))
 (unless (boundp 'kill-buffer-hook) (defvar kill-buffer-hook nil))
 (unless (boundp 'kill-buffer-query-functions) (defvar kill-buffer-query-functions nil))
@@ -462,7 +462,7 @@
 (unless (boundp 'magic-fallback-mode-alist) (defvar magic-fallback-mode-alist nil))
 (unless (fboundp 'mail) (defun mail (&rest _) nil))
 (unless (boundp 'mail-user-agent) (defvar mail-user-agent nil))
-(unless (boundp 'major-mode) (defvar major-mode nil))
+;; major-mode moved to emacs-mode-builtins (Track H).
 (unless (boundp 'major-mode--suspended) (defvar major-mode--suspended nil))
 (unless (fboundp 'make-char-table) (defun make-char-table (&rest _) nil))
 (unless (fboundp 'make-directory) (defun make-directory (&rest _) nil))
@@ -529,7 +529,7 @@
 (unless (fboundp 'mkdir) (defun mkdir (&rest _) nil))
 (unless (fboundp 'mod) (defun mod (&rest _) nil))
 (unless (boundp 'mode-line-mode-menu) (defvar mode-line-mode-menu nil))
-(unless (boundp 'mode-name) (defvar mode-name nil))
+;; mode-name moved to emacs-mode-builtins (Track H).
 (unless (fboundp 'modify-frame-parameters) (defun modify-frame-parameters (&rest _) nil))
 (unless (boundp 'most-negative-fixnum) (defvar most-negative-fixnum nil))
 (unless (boundp 'most-positive-fixnum) (defvar most-positive-fixnum nil))

@@ -1,0 +1,171 @@
+;;; emacs-mode-builtins-test.el --- ERT for emacs-mode  -*- lexical-binding: t; -*-
+
+;;; Commentary:
+
+;; Tests for the Layer 2 major-mode framework (Track H).  Under
+;; host Emacs the unprefixed bridges (fundamental-mode etc.) are
+;; gated off (= host's simple.el / files.el wins), so behavioural
+;; assertions exercise the prefixed `emacs-mode-*' API directly
+;; against the substrate state.  Featurep / fboundp / boundp parity
+;; is checked separately.
+
+;;; Code:
+
+(require 'ert)
+(let ((load-path (cons "/home/madblack-21/Notes/dev/nelisp/packages/nelisp-regex/src"
+                       load-path)))
+  (require 'emacs-mode-builtins))
+(require 'cl-lib)
+
+(defmacro emacs-mode-builtins-test--with-fresh-mode (&rest body)
+  "Run BODY with a clean substrate mode state."
+  (declare (indent 0) (debug (body)))
+  `(let ((emacs-mode--current-major-mode 'fundamental-mode)
+         (emacs-mode--current-mode-name  "Fundamental")
+         (emacs-mode--registered nil)
+         (emacs-mode--auto-mode-alist nil))
+     (emacs-mode-reset)
+     (unwind-protect
+         (progn ,@body)
+       (emacs-mode-reset))))
+
+;;;; A. Load cleanly + fboundp / boundp parity
+
+(ert-deftest emacs-mode-builtins-test/require-loads-cleanly ()
+  (should (featurep 'emacs-mode-builtins))
+  (should (featurep 'emacs-mode))
+  (dolist (sym '(fundamental-mode text-mode emacs-lisp-mode
+                 run-mode-hooks kill-all-local-variables
+                 set-auto-mode))
+    (should (fboundp sym)))
+  (dolist (sym '(major-mode mode-name auto-mode-alist
+                 fundamental-mode-hook text-mode-hook
+                 emacs-lisp-mode-hook
+                 change-major-mode-after-body-hook
+                 after-change-major-mode-hook))
+    (should (boundp sym))))
+
+;;;; B. fundamental-mode
+
+(ert-deftest emacs-mode-builtins-test/fundamental-mode-sets-vars ()
+  (emacs-mode-builtins-test--with-fresh-mode
+    (emacs-mode-fundamental-mode)
+    (should (eq 'fundamental-mode (emacs-mode-major-mode)))
+    (should (equal "Fundamental" (emacs-mode-mode-name)))))
+
+;;;; C. text-mode
+
+(ert-deftest emacs-mode-builtins-test/text-mode-sets-vars ()
+  (emacs-mode-builtins-test--with-fresh-mode
+    (emacs-mode-text-mode)
+    (should (eq 'text-mode (emacs-mode-major-mode)))
+    (should (equal "Text" (emacs-mode-mode-name)))))
+
+;;;; D. emacs-lisp-mode
+
+(ert-deftest emacs-mode-builtins-test/emacs-lisp-mode-sets-vars ()
+  (emacs-mode-builtins-test--with-fresh-mode
+    (emacs-mode-emacs-lisp-mode)
+    (should (eq 'emacs-lisp-mode (emacs-mode-major-mode)))
+    (should (equal "Emacs-Lisp" (emacs-mode-mode-name)))))
+
+;;;; E. mode hooks fire
+
+(ert-deftest emacs-mode-builtins-test/text-mode-hook-fires ()
+  (emacs-mode-builtins-test--with-fresh-mode
+    (let ((fired 0))
+      (let ((emacs-mode-text-mode-hook
+             (list (lambda () (setq fired (1+ fired))))))
+        (emacs-mode-text-mode)
+        (should (= 1 fired))))))
+
+;;;; F. define-derived-mode (the macro)
+
+(emacs-mode-define-derived-mode my-test-derived-mode emacs-mode-text-mode
+  "MyDerived"
+  "Test-only derived mode for ERT."
+  ;; body: nothing.
+  )
+
+(ert-deftest emacs-mode-builtins-test/define-derived-mode-registers ()
+  (emacs-mode-builtins-test--with-fresh-mode
+    ;; Activate the test-defined derived mode.
+    (my-test-derived-mode)
+    (should (eq 'my-test-derived-mode (emacs-mode-major-mode)))
+    (should (equal "MyDerived" (emacs-mode-mode-name)))))
+
+(ert-deftest emacs-mode-builtins-test/define-derived-mode-creates-hook-var ()
+  ;; The hook defvar must exist after macro expansion.
+  (should (boundp 'my-test-derived-mode-hook))
+  (should (boundp 'emacs-mode-my-test-derived-mode-hook)))
+
+(ert-deftest emacs-mode-builtins-test/define-derived-mode-runs-parent ()
+  (emacs-mode-builtins-test--with-fresh-mode
+    (let ((parent-fired 0))
+      (let ((emacs-mode-text-mode-hook
+             (list (lambda () (setq parent-fired (1+ parent-fired))))))
+        (my-test-derived-mode)
+        ;; Parent's hook fired (= because parent ran before body).
+        (should (= 1 parent-fired))))))
+
+;;;; G. run-mode-hooks
+
+(ert-deftest emacs-mode-builtins-test/run-mode-hooks-fires-each ()
+  (emacs-mode-builtins-test--with-fresh-mode
+    (let* ((a-fired 0)
+           (b-fired 0)
+           (hook-a (list (lambda () (setq a-fired (1+ a-fired)))))
+           (hook-b (list (lambda () (setq b-fired (1+ b-fired))))))
+      (let ((my-hook-a hook-a)
+            (my-hook-b hook-b))
+        (defvar my-hook-a)
+        (defvar my-hook-b)
+        (set 'my-hook-a hook-a)
+        (set 'my-hook-b hook-b)
+        (emacs-mode-run-mode-hooks 'my-hook-a 'my-hook-b)
+        (should (= 1 a-fired))
+        (should (= 1 b-fired))))))
+
+;;;; H. kill-all-local-variables resets to fundamental
+
+(ert-deftest emacs-mode-builtins-test/kill-all-local-variables-resets ()
+  (emacs-mode-builtins-test--with-fresh-mode
+    (emacs-mode-text-mode)
+    (should (eq 'text-mode (emacs-mode-major-mode)))
+    (emacs-mode-kill-all-local-variables)
+    (should (eq 'fundamental-mode (emacs-mode-major-mode)))))
+
+;;;; I. auto-mode-alist + set-auto-mode
+
+(ert-deftest emacs-mode-builtins-test/set-auto-mode-matches-extension ()
+  (emacs-mode-builtins-test--with-fresh-mode
+    (emacs-mode-set-auto-mode-alist
+     '(("\\.txt\\'" . emacs-mode-text-mode)
+       ("\\.el\\'"  . emacs-mode-emacs-lisp-mode)))
+    (let ((m1 (emacs-mode-set-auto-mode "/tmp/x.txt")))
+      (should (eq 'emacs-mode-text-mode m1))
+      (should (eq 'text-mode (emacs-mode-major-mode))))
+    (let ((m2 (emacs-mode-set-auto-mode "/tmp/y.el")))
+      (should (eq 'emacs-mode-emacs-lisp-mode m2))
+      (should (eq 'emacs-lisp-mode (emacs-mode-major-mode))))))
+
+(ert-deftest emacs-mode-builtins-test/set-auto-mode-no-match-returns-nil ()
+  (emacs-mode-builtins-test--with-fresh-mode
+    (emacs-mode-set-auto-mode-alist '(("\\.txt\\'" . emacs-mode-text-mode)))
+    (let ((r (emacs-mode-set-auto-mode "/tmp/x.html")))
+      (should (null r)))))
+
+;;;; J. Idempotent require
+
+(ert-deftest emacs-mode-builtins-test/require-is-idempotent ()
+  (let ((before-fund (symbol-function 'fundamental-mode))
+        (before-text (symbol-function 'text-mode))
+        (before-rmh  (symbol-function 'run-mode-hooks)))
+    (require 'emacs-mode-builtins)
+    (should (eq before-fund (symbol-function 'fundamental-mode)))
+    (should (eq before-text (symbol-function 'text-mode)))
+    (should (eq before-rmh  (symbol-function 'run-mode-hooks)))))
+
+(provide 'emacs-mode-builtins-test)
+
+;;; emacs-mode-builtins-test.el ends here
