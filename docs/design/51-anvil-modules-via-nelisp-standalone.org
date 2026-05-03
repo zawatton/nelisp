@@ -1,0 +1,170 @@
+#+TITLE: Doc 51 — anvil modules via NeLisp standalone (Pattern C)
+#+AUTHOR: zawatton + Claude
+#+DATE: 2026-05-03
+#+OPTIONS: num:nil toc:t
+
+* Goal
+
+Run anvil module tools (=anvil-memory= / =anvil-worklog= / future =anvil-shell-filter=)
+under NeLisp standalone — the =anvil-runtime mcp serve= binary — without depending on a
+host Emacs runtime.  Final shape: =tools/call memory-add= / =memory-list= / =memory-search= /
+=worklog-add= / =worklog-list= / =worklog-search= dispatched end-to-end through the chain
+=anvil-runtime → build-tool eval → anvil-memory.el (pure elisp) → emacs-sqlite-ffi.el (pure
+elisp) → in-process libffi → libnelisp_runtime.so:nl_sqlite_* → real SQLite DB=.
+
+* Design directives (user, 2026-05-03)
+
+1. *Rust 核は最小化* — no per-feature Rust glue; only generic primitives + bridges.
+2. *elispで実装可能なものは elispで* — every higher-level layer (sqlite-* / cl-defun
+   handling / anvil-memory logic) stays in pure elisp, even when slower / longer.
+3. *SQLite は必須* — no in-memory fallback; the read AND write paths must persist
+   to the canonical =Notes/.anvil-{memory,worklog}/*.db= stores.
+4. *PR は不要* (zawatton/* repos = personal) — commits + push only, no PR creation.
+5. =nelisp-ffi= リポジトリ使用 (= =zawatton/nelisp-ffi= elisp-ffi fork).
+
+* Architecture (Pattern C)
+
+#+begin_example
+MCP request {tools/call memory-list ...}
+  ↓
+anvil-runtime (Rust binary)
+  ↓ AnvilModuleRegistry::call
+  ↓   - introspect handler formals
+  ↓   - map JSON args by formal name (-/_ aliasing)
+  ↓   - emit (handler POS... :K1 V1 ...)
+build-tool eval (`<self-host-fallback>` path)
+  ↓   - sf_cl_defun expanded &key into &rest --cl-keys + let* wrapper
+  ↓   - the let* binds K via (or (car (cdr (memq :K --cl-keys))) DEFAULT)
+anvil-memory--tool-list  (anvil-memory.el, pure elisp)
+  ↓
+anvil-memory-list  (cl-defun, pure elisp)
+  ↓
+sqlite-select  (emacs-sqlite-ffi.el polyfill, pure elisp)
+  ↓
+nl-ffi-call PATH FUNC SIG ARGS...  (build-tool/eval/ffi.rs, libffi-rs)
+  ↓
+nl_sqlite_query (libnelisp_runtime.so, rusqlite)
+  ↓
+real DB at /home/.../anvil-memory-index.db
+#+end_example
+
+** Why this shape
+
+- =build-tool= keeps its Sweep-6 *zero-internal-crate-deps* invariant.  Only
+  *external* crates (libffi, libloading, sha1, sha2, md5, chrono) get pulled in.
+- =sqlite-* / nelisp-syscall-* / cl-* / pcase= live in elisp where each can
+  evolve without touching Rust.
+- =libnelisp_runtime.so= already contains rusqlite — no Rust *functionality*
+  added, only a generic FFI bridge to call into it.
+
+* Phase ordering
+
+| Phase | Date       | Scope                                                                                       | Result                                                                |
+|-------+------------+---------------------------------------------------------------------------------------------+-----------------------------------------------------------------------|
+| 0     | 2026-05-02 | nelisp-emacs vendor 1654 .el files (full Emacs 30.1 lisp tree, 74 MB)                       | =require= chains satisfied                                            |
+| 1-3   | 2026-05-02 | L2 polyfills (emacs-fns / -eval / -list / -hash / -error / -string / -stub-bulk)            | subr.el / cl-lib.el load                                              |
+| 4     | 2026-05-03 | Phase 4 batch 1-3: pcase pattern subset, gv stubs, define-error, rx stub, url pre-provide   | anvil-memory.el LOAD (commit fcbe589)                                 |
+| 5     | 2026-05-03 | =nl-ffi-call= + buffer ops (libffi-rs), emacs-sqlite-ffi.el routes to in-process FFI         | =memory-list= dispatch with post-load shim (commit 81d2541 + 842476d) |
+| 6     | 2026-05-03 | =sf_cl_defun= &key root-cause fix, AnvilModuleRegistry::call Phase 2 arg dispatch,           | =memory-list= / =memory-search= / =memory-add= no shim (8890370)      |
+|       |            | =nl-current-unix-time= / =nl-secure-hash= builtins, time + crypto polyfills                  | (b3a2e68 + c69b626 + 643fd4a)                                         |
+| 7     | 2026-05-03 | =nl-format-unix-time= (chrono), =format-time-string= / =system-name= / =string-to-number=    | =worklog-list= / =worklog-search= / =worklog-add= dispatch            |
+|       |            | polyfills                                                                                   | (1058b3d + ca5edd9)                                                   |
+
+* Rust additions (cumulative)
+
+** =nelisp/.worktrees/module-registry/build-tool=
+
+| Symbol                  | LoC | Rationale                                                                |
+|-------------------------+-----+--------------------------------------------------------------------------|
+| =nl-ffi-call=           |  ~250 | single generic libffi bridge; type kw-set =:uint{8,16,32,64} :sint{8,16,32,64} :float :double :pointer :string :void= |
+| =nl-ffi-malloc=         |  ~30  | OnceLock-tracked buffer alloc (= for nl_sqlite_query NeedMore protocol) |
+| =nl-ffi-read-bytes=     |  ~20  | read N bytes from raw pointer into Lisp string                           |
+| =nl-ffi-free=           |  ~20  | reverse-lookup table-tracked Box::from_raw                              |
+| =nl-current-unix-time=  |  ~10  | SystemTime::now → secs as i64                                           |
+| =nl-secure-hash=        |  ~80  | sha1 / sha2 / md5 crates → lowercase hex                                 |
+| =nl-format-unix-time=   |  ~20  | chrono::Utc.timestamp + .format()                                        |
+| =sf_cl_defun=           | ~80  | rewrite =&key= to =&rest --cl-keys= + let* lifting                       |
+
+** =nelisp/.worktrees/module-registry/anvil-runtime=
+
+| Function                          | LoC | Rationale                                                                          |
+|-----------------------------------+-----+------------------------------------------------------------------------------------|
+| =build_module_call_form=          | ~120 | introspect handler formals + map JSON args by name (-/_ aliasing) + emit kw pairs |
+| =extract_lambda_formals=          |  ~10 | unwrap =(lambda (FORMAL...) BODY...)= function-cell shape                          |
+| =json_to_quoted_sexp= / =json_to_sexp= |  ~30 | JSON Value → Sexp (with cons quoting for safety)                            |
+
+* Elisp additions (cumulative)
+
+** =nelisp-emacs/.worktrees/emacs-builtins-port/src/=
+
+| File                  | Purpose                                                                                     |
+|-----------------------+---------------------------------------------------------------------------------------------|
+| =emacs-fns.el=        | core Emacs Lisp builtins (mapcar / ignore / identity / assq / member / nth / ...)            |
+| =emacs-eval.el=       | eval-related: defalias / fset / autoload / eval-when-compile                                |
+| =emacs-list.el=       | list ops (reverse / nreverse / cdr-safe / first / rest / etc.)                              |
+| =emacs-hash.el=       | hash-table ops (make-hash-table / puthash / gethash / hash-table-keys / etc.)               |
+| =emacs-symbol.el=     | symbol predicates (keywordp / boundp / fboundp / get / put / etc.)                          |
+| =emacs-callproc.el=   | call-process stubs (no-op for standalone)                                                   |
+| =emacs-vars.el=       | global vars (default-directory / load-path / etc.)                                          |
+| =emacs-backquote.el=  | backquote macro stack                                                                       |
+| =emacs-error.el=      | define-error + 20 standard error symbols                                                    |
+| =emacs-string.el=     | string-empty-p / string-trim-* / string-prefix-p / string-suffix-p                          |
+| =emacs-stub.el=       | manual stubs incl. *cl-defun* (= legacy elisp path, now bypassed by Rust sf_cl_defun)        |
+| =emacs-stub-bulk.el=  | ~900 lines auto-generated from vendor pre-scan (= no-op fallbacks)                          |
+| =emacs-sqlite-ffi.el= | sqlite-* polyfill via =nl-ffi-call= → libnelisp_runtime.so:nl_sqlite_*                       |
+
+** =anvil.el/.worktrees/anvil-config-loader/=
+
+| File                       | Purpose                                                                              |
+|----------------------------+--------------------------------------------------------------------------------------|
+| =anvil-config.el=          | =$ANVIL_CONFIG_DIR/config.el= loader for standalone path                              |
+| =anvil-nelisp-shims.el=    | shim layer: =anvil-server-register-tools= accumulator + =-drain= + spec normalization |
+
+* Verified end-to-end (2026-05-03)
+
+#+begin_example
+$ tools/call memory-list   {}                                          → real DB rows ✅
+$ tools/call memory-search {query: "phase5"}                           → FTS5 + snippet + rank ✅
+$ tools/call memory-add    {name, type, body}                          → INSERT + SHA1 + epoch ✅
+$ tools/call worklog-list  {limit: 2}                                  → real worklog rows ✅
+$ tools/call worklog-search {query: "phase6"}                          → FTS5 hits ✅
+$ tools/call worklog-add   {title, body}                               → INSERT with date + machine ✅
+#+end_example
+
+* Known limitations / Phase 8+ candidates
+
+- =cl-defun &key= now expanded by Rust =sf_cl_defun=, but cl-defmethod (= &dispatch on
+  type) still routes through elisp =cl-defmethod= stub — works for simple specializers
+  via intern hack but not full multi-method dispatch.
+- =rx= macro (= regex DSL) currently stubbed as no-op.  All anvil callsites use raw
+  regex strings so this is harmless today, but blocks any module that builds regexes
+  via =(rx ...)= constructor.
+- =nelisp-eval-form= takeover path is the *minimal* fallback (= =(defun
+  nelisp-eval-form (form env) (eval form))=).  The FULL =nelisp-eval.el= /
+  =nelisp-macro.el= load fails during =bootstrap_self_host=; we get away with the
+  minimal because build-tool's eval is sufficient for the anvil module load
+  surface.  Future Phase 8: fix the FULL bootstrap so macros use =nelisp--macros=
+  hashtable consistently.
+- =anvil-memory-list= / =-search= row-shape is currently *list of plists* (= Emacs 30
+  default) but anvil-host's MCP serializer renders the plist KEYS as JSON object
+  property names paired oddly with the LIST values.  The data is correct; the
+  presentation needs an =anvil-server-encode-result= polyfill that emits proper
+  JSON arrays of objects.
+- =anvil-shell-filter= tools (= =shell-filter= / =shell-run= / =shell-tee-grep=) work
+  via the *Rust-side* compat registry already; not yet routed via Pattern C
+  (= they don't need to be — the Rust path is faster).
+
+* Commit map
+
+| Phase | Repo                              | Branch                       | SHA      | Description                                                |
+|-------+-----------------------------------+------------------------------+----------+------------------------------------------------------------|
+| 4     | =nelisp-emacs/.worktrees/...=     | =feat/doc-51-emacs-builtins= | fcbe589  | Phase 4 batch 3: anvil-memory.el LOAD                      |
+| 5     | =nelisp/.worktrees/module-registry= | =feat/anvil-module-registry= | 81d2541  | nl-ffi-call generic FFI primitive                          |
+| 5     | =nelisp-emacs/.worktrees/...=     | =feat/doc-51-emacs-builtins= | 842476d  | sqlite-* via nl-ffi-call + cl-defun &key elisp stub        |
+| 5     | =anvil.el/.worktrees/...=         | =feat/anvil-config-loader=   | c8be254  | shim spec normalization (handler-first → plist)            |
+| 6     | =nelisp/.worktrees/module-registry= | =feat/anvil-module-registry= | 8890370  | sf_cl_defun &key + Phase 2 arg dispatch                    |
+| 6     | =nelisp/.worktrees/module-registry= | =feat/anvil-module-registry= | b3a2e68  | nl-current-unix-time + nl-secure-hash builtins             |
+| 6     | =nelisp-emacs/.worktrees/...=     | =feat/doc-51-emacs-builtins= | c69b626  | string-match 4-arg + sqlite-select list-shape              |
+| 6     | =nelisp-emacs/.worktrees/...=     | =feat/doc-51-emacs-builtins= | 643fd4a  | file-name-sans-extension + time/crypto polyfills           |
+| 7     | =nelisp/.worktrees/module-registry= | =feat/anvil-module-registry= | 1058b3d  | nl-format-unix-time builtin (chrono)                       |
+| 7     | =nelisp-emacs/.worktrees/...=     | =feat/doc-51-emacs-builtins= | ca5edd9  | format-time-string + system-name + string-to-number        |
