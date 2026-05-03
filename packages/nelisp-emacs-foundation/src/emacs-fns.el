@@ -218,6 +218,47 @@ on identity should re-bind the variable holding PLIST."
                 out))))))))
 
 
+;;;; --- coding-system polyfill (Doc 51 Track B Phase 2) ----------------
+;;
+;; Under host Emacs `encode-coding-string' / `decode-coding-string' /
+;; `multibyte-string-p' are C builtins.  Under the nelisp driver the
+;; `Sexp::Str' is internally a Rust `String' = always valid UTF-8, so
+;; for `'utf-8' / `'utf-8-emacs' / `nil' (= no conversion) the encode/
+;; decode operations are identity.  We provide minimal polyfills here
+;; because `nelisp-text-buffer.el' calls them at runtime and we are
+;; loaded before that file's functions are first invoked.
+
+(unless (fboundp 'encode-coding-string)
+  (defun encode-coding-string (string _coding-system &optional _nocopy &rest _)
+    (if (stringp string) string "")))
+
+(unless (fboundp 'decode-coding-string)
+  (defun decode-coding-string (string _coding-system &optional _nocopy &rest _)
+    (if (stringp string) string "")))
+
+(unless (fboundp 'multibyte-string-p)
+  (defun multibyte-string-p (string)
+    (when (stringp string)
+      (let ((i 0) (n (length string)) found)
+        (while (and (not found) (< i n))
+          (when (>= (aref string i) 128) (setq found t))
+          (setq i (1+ i)))
+        found))))
+
+(unless (fboundp 'string-as-multibyte)
+  (defun string-as-multibyte (string)
+    (if (stringp string) string "")))
+
+(unless (fboundp 'string-as-unibyte)
+  (defun string-as-unibyte (string)
+    (if (stringp string) string "")))
+
+(unless (fboundp 'string-make-multibyte)
+  (defalias 'string-make-multibyte 'string-as-multibyte))
+
+(unless (fboundp 'string-make-unibyte)
+  (defalias 'string-make-unibyte 'string-as-unibyte))
+
 (provide 'emacs-fns)
 
 ;;; emacs-fns.el ends here

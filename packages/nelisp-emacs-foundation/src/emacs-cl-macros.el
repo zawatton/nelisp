@@ -438,12 +438,36 @@ defaults to `make-NAME')."
                     '(obj)
                     (list 'and '(consp obj) (list 'eq '(car obj) (list 'quote sname))))
               forms)
-        ;; NAME-SLOT accessor for each slot.
+        ;; NAME-SLOT accessor + setter for each slot.
+        ;;
+        ;; The accessor returns (cdr (assoc :slot (cdr obj))).
+        ;; The setter mutates the cell when present, otherwise pushes a
+        ;; fresh (cons :slot value) onto (cdr obj).  Setter is bound on
+        ;; both `name-slot--setter` (callable) and on the accessor's
+        ;; symbol `cl-struct-setter` property so that our minimal `setf`
+        ;; macro can find it via `(get accessor 'cl-struct-setter)`.
         (dolist (slot slot-names)
-          (let ((kw (intern (concat ":" (symbol-name slot)))))
-            (push (list 'defun (intern (concat (symbol-name sname) "-" (symbol-name slot)))
+          (let* ((kw (intern (concat ":" (symbol-name slot))))
+                 (acc (intern (concat (symbol-name sname) "-" (symbol-name slot))))
+                 (setter (intern (concat (symbol-name sname) "-" (symbol-name slot) "--setter"))))
+            (push (list 'defun acc
                         '(obj)
                         (list 'cdr (list 'assoc kw '(cdr obj))))
+                  forms)
+            (push (list 'defun setter
+                        '(obj val)
+                        (list 'let
+                              (list (list 'cell (list 'assoc kw '(cdr obj))))
+                              (list 'if 'cell
+                                    '(progn (setcdr cell val) val)
+                                    (list 'progn
+                                          (list 'setcdr 'obj
+                                                (list 'cons (list 'cons kw 'val) '(cdr obj)))
+                                          'val))))
+                  forms)
+            (push (list 'put (list 'quote acc)
+                        (list 'quote 'cl-struct-setter)
+                        (list 'quote setter))
                   forms)))
         (cons 'progn (nreverse forms))))))
 

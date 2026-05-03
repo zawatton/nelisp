@@ -177,7 +177,12 @@
 (unless (boundp 'debugger) (defvar debugger nil))
 (unless (boundp 'debug-ignored-errors) (defvar debug-ignored-errors nil))
 (unless (boundp 'debug-on-error) (defvar debug-on-error nil))
-(unless (fboundp 'decode-coding-string) (defun decode-coding-string (&rest _) nil))
+(unless (fboundp 'decode-coding-string)
+  ;; NeLisp の Sexp::Str = Rust String = UTF-8 内部表現なので、UTF-8
+  ;; の encode/decode は identity で十分。他の coding system は未対応
+  ;; (= encoded-coding-system 引数は無視)。
+  (defun decode-coding-string (string _coding-system &optional _nocopy &rest _)
+    (if (stringp string) string "")))
 (unless (fboundp 'defalias) (defun defalias (&rest _) nil))
 (unless (fboundp 'default-boundp) (defun default-boundp (&rest _) nil))
 (unless (boundp 'default-directory) (defvar default-directory nil))
@@ -229,7 +234,9 @@
 (unless (boundp 'emacs-startup-hook) (defvar emacs-startup-hook nil))
 (unless (fboundp 'emacs-version) (defun emacs-version (&rest _) nil))
 (unless (boundp 'enable-recursive-minibuffers) (defvar enable-recursive-minibuffers nil))
-(unless (fboundp 'encode-coding-string) (defun encode-coding-string (&rest _) nil))
+(unless (fboundp 'encode-coding-string)
+  (defun encode-coding-string (string _coding-system &optional _nocopy &rest _)
+    (if (stringp string) string "")))
 (unless (fboundp 'end-of-line) (defun end-of-line (&rest _) nil))
 (unless (fboundp 'enlarge-window) (defun enlarge-window (&rest _) nil))
 (unless (fboundp 'eobp) (defun eobp (&rest _) nil))
@@ -536,7 +543,16 @@
 (unless (fboundp 'move-marker) (defun move-marker (&rest _) nil))
 (unless (fboundp 'move-overlay) (defun move-overlay (&rest _) nil))
 (unless (fboundp 'move-to-column) (defun move-to-column (&rest _) nil))
-(unless (fboundp 'multibyte-string-p) (defun multibyte-string-p (&rest _) nil))
+(unless (fboundp 'multibyte-string-p)
+  ;; NeLisp の Sexp::Str は内部 UTF-8 — 上位 ASCII bit を含む文字が
+  ;; あれば multibyte 扱い。pure-ASCII なら nil を返す。
+  (defun multibyte-string-p (string)
+    (when (stringp string)
+      (let ((i 0) (n (length string)) found)
+        (while (and (not found) (< i n))
+          (when (>= (aref string i) 128) (setq found t))
+          (setq i (1+ i)))
+        found))))
 (unless (fboundp 'mutex-lock) (defun mutex-lock (&rest _) nil))
 (unless (fboundp 'mutex-unlock) (defun mutex-unlock (&rest _) nil))
 (unless (fboundp 'narrow-to-region) (defun narrow-to-region (&rest _) nil))
