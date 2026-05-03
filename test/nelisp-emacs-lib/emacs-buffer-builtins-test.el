@@ -10,9 +10,7 @@
 ;;; Code:
 
 (require 'ert)
-(let ((load-path (cons "/home/madblack-21/Notes/dev/nelisp/packages/nelisp-regex/src"
-                       load-path)))
-  (require 'emacs-buffer-builtins))
+(require 'emacs-buffer-builtins)
 (require 'cl-lib)
 
 (defmacro emacs-buffer-builtins-test--with-fresh-world (&rest body)

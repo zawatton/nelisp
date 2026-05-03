@@ -14,9 +14,7 @@
 ;;; Code:
 
 (require 'ert)
-(let ((load-path (cons "/home/madblack-21/Notes/dev/nelisp/packages/nelisp-regex/src"
-                       load-path)))
-  (require 'emacs-process-builtins))
+(require 'emacs-process-builtins)
 (require 'cl-lib)
 
 (defmacro emacs-process-builtins-test--skip-unless-shell (&rest body)

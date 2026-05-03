@@ -12,9 +12,7 @@
 ;;; Code:
 
 (require 'ert)
-(let ((load-path (cons "/home/madblack-21/Notes/dev/nelisp/packages/nelisp-regex/src"
-                       load-path)))
-  (require 'emacs-minibuffer-builtins))
+(require 'emacs-minibuffer-builtins)
 (require 'cl-lib)
 
 (defmacro emacs-minibuffer-builtins-test--with-fresh-world (&rest body)

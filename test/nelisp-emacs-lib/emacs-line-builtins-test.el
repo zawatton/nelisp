@@ -19,9 +19,7 @@
 ;;; Code:
 
 (require 'ert)
-(let ((load-path (cons "/home/madblack-21/Notes/dev/nelisp/packages/nelisp-regex/src"
-                       load-path)))
-  (require 'emacs-line-builtins))
+(require 'emacs-line-builtins)
 (require 'cl-lib)
 
 (defmacro emacs-line-builtins-test--with-fresh-buffer (text &rest body)
