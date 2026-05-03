@@ -390,6 +390,90 @@
 (ert-deftest emacs-command-loop-builtins-test/recursion-depth-stub-zero ()
   (should (= 0 (emacs-command-loop-recursion-depth))))
 
+;;;; P. Phase B.5 — universal-argument / digit-argument / M-x
+
+(ert-deftest emacs-command-loop-builtins-test/b5-fbound-parity ()
+  (dolist (sym '(execute-extended-command universal-argument
+                 digit-argument negative-argument))
+    (should (fboundp sym))))
+
+(ert-deftest emacs-command-loop-builtins-test/universal-argument-basic ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (emacs-command-loop-call-interactively
+     'emacs-command-loop-universal-argument)
+    (should (equal '(4) emacs-command-loop--prefix-arg))))
+
+(ert-deftest emacs-command-loop-builtins-test/universal-argument-stacks ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    ;; First C-u: nil → '(4)
+    (emacs-command-loop-call-interactively
+     'emacs-command-loop-universal-argument)
+    ;; Second C-u: '(4) → '(16)
+    (emacs-command-loop-call-interactively
+     'emacs-command-loop-universal-argument)
+    (should (equal '(16) emacs-command-loop--prefix-arg))))
+
+(ert-deftest emacs-command-loop-builtins-test/digit-argument-first-digit ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    ;; C-u sets prefix-arg=(4); now press 5.
+    (setq emacs-command-loop--prefix-arg '(4)
+          emacs-command-loop--last-command-event ?5)
+    (emacs-command-loop-call-interactively
+     'emacs-command-loop-digit-argument)
+    (should (= 5 emacs-command-loop--prefix-arg))))
+
+(ert-deftest emacs-command-loop-builtins-test/digit-argument-continuation ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    ;; prefix-arg=5; press 3 → expect 53
+    (setq emacs-command-loop--prefix-arg 5
+          emacs-command-loop--last-command-event ?3)
+    (emacs-command-loop-call-interactively
+     'emacs-command-loop-digit-argument)
+    (should (= 53 emacs-command-loop--prefix-arg))))
+
+(ert-deftest emacs-command-loop-builtins-test/negative-argument-toggles ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (emacs-command-loop-call-interactively
+     'emacs-command-loop-negative-argument)
+    (should (eq '- emacs-command-loop--prefix-arg))
+    ;; Apply on integer 5 → -5.
+    (setq emacs-command-loop--prefix-arg 5)
+    (emacs-command-loop-call-interactively
+     'emacs-command-loop-negative-argument)
+    (should (= -5 emacs-command-loop--prefix-arg))))
+
+(defun emacs-command-loop-builtins-test--echo-prefix (arg)
+  "Test fixture: returns the raw incoming prefix arg."
+  (interactive "P")
+  arg)
+
+(ert-deftest emacs-command-loop-builtins-test/execute-extended-command-direct ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    ;; Pass the command name in directly (= bypass minibuffer).
+    (let ((r (emacs-command-loop-execute-extended-command
+              nil 'emacs-command-loop-builtins-test--echo-prefix)))
+      (should (null r)))))
+
+(ert-deftest emacs-command-loop-builtins-test/execute-extended-command-passes-prefix ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (let ((r (emacs-command-loop-execute-extended-command
+              '(4) 'emacs-command-loop-builtins-test--echo-prefix)))
+      (should (equal '(4) r)))))
+
+(ert-deftest emacs-command-loop-builtins-test/c-u-then-digit-then-cmd-end-to-end ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    ;; Simulate the C-u 5 cmd sequence by direct calls.
+    (emacs-command-loop-call-interactively
+     'emacs-command-loop-universal-argument)
+    (should (equal '(4) emacs-command-loop--prefix-arg))
+    (setq emacs-command-loop--last-command-event ?5)
+    (emacs-command-loop-call-interactively
+     'emacs-command-loop-digit-argument)
+    (should (= 5 emacs-command-loop--prefix-arg))
+    (let ((r (emacs-command-loop-call-interactively
+              'emacs-command-loop-builtins-test--echo-prefix)))
+      (should (= 5 r)))))
+
 (provide 'emacs-command-loop-builtins-test)
 
 ;;; emacs-command-loop-builtins-test.el ends here

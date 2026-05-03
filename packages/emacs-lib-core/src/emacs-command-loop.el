@@ -91,7 +91,13 @@ Cleared on every fresh read-key-sequence iteration.")
         emacs-command-loop--last-nonmenu-event  nil
         emacs-command-loop--quit-flag           nil
         emacs-command-loop--inhibit-quit        nil
-        emacs-command-loop--throw-on-input      nil))
+        emacs-command-loop--throw-on-input      nil)
+  ;; Phase B.5 additions — declared below this defun, so guarded
+  ;; (= avoids a forward-reference void-variable).
+  (when (boundp 'emacs-command-loop--prefix-arg)
+    (setq emacs-command-loop--prefix-arg nil))
+  (when (boundp 'emacs-command-loop--current-prefix-arg)
+    (setq emacs-command-loop--current-prefix-arg nil)))
 
 ;;;; --- feed helpers ---------------------------------------------------
 
@@ -551,6 +557,94 @@ proper nested loop with recursion-depth tracking + abort."
 (defun emacs-command-loop-recursion-depth ()
   "Phase B.4 stub: always 0.  B.6 will track real depth."
   0)
+
+;;;; --- prefix-arg setters (Phase B.5) ---------------------------------
+
+(defun emacs-command-loop-universal-argument ()
+  "Phase B.5: bind a transient prefix-arg.
+
+- prefix-arg nil  → '(4)
+- prefix-arg '-   → '(-4)
+- prefix-arg (N)  → list of (* 4 N)   (= C-u C-u multiplies)
+- otherwise       → '(4)
+
+Reads `emacs-command-loop--current-prefix-arg' (= the incoming
+prefix arg captured by `call-interactively') and writes back to
+`emacs-command-loop--prefix-arg' so the next command sees it."
+  (interactive)
+  (let ((prev emacs-command-loop--current-prefix-arg))
+    (setq emacs-command-loop--prefix-arg
+          (cond
+           ((null prev) '(4))
+           ((eq prev '-) '(-4))
+           ((and (consp prev) (integerp (car prev)))
+            (list (* 4 (car prev))))
+           (t '(4))))))
+
+(defun emacs-command-loop-digit-argument (arg)
+  "Phase B.5: append a decimal digit to the prefix-arg.
+
+ARG comes from the interactive `P' spec (= the incoming prefix);
+the digit value is derived from `last-command-event' (= masked to
+the low 7 bits to drop modifiers, then the digit char value)."
+  (interactive "P")
+  (let* ((event (or emacs-command-loop--last-command-event 0))
+         (digit (when (integerp event)
+                  (- (logand event #x7f) ?0))))
+    (when (and digit (<= 0 digit) (<= digit 9))
+      (setq emacs-command-loop--prefix-arg
+            (cond
+             ((integerp arg)
+              (if (>= arg 0)
+                  (+ (* 10 arg) digit)
+                (- (* 10 arg) digit)))
+             ((eq arg '-)
+              (if (zerop digit) '- (- digit)))
+             ((consp arg)
+              ;; (4) etc. — first digit replaces the universal-arg list.
+              digit)
+             (t digit))))))
+
+(defun emacs-command-loop-negative-argument (arg)
+  "Phase B.5: flip the sign of the pending prefix-arg."
+  (interactive "P")
+  (setq emacs-command-loop--prefix-arg
+        (cond
+         ((integerp arg) (- arg))
+         ((eq arg '-) nil)
+         (t '-))))
+
+;;;; --- M-x (execute-extended-command, Phase B.5) ----------------------
+
+(defun emacs-command-loop-execute-extended-command
+    (prefix-arg-incoming &optional command-name _typed)
+  "Phase B.5 MVP: read a command name and dispatch it.
+
+PREFIX-ARG-INCOMING (= the M-x command's own prefix arg) is
+restored into `emacs-command-loop--prefix-arg' before the inner
+`call-interactively' so the dispatched command sees it.
+COMMAND-NAME may be supplied directly (= for tests / scripted
+calls) to skip the minibuffer reader."
+  (interactive "P")
+  (let* ((cmd-name
+          (or command-name
+              (cond
+               ((fboundp 'emacs-minibuffer-completing-read)
+                (emacs-minibuffer-completing-read
+                 "M-x " obarray 'commandp t nil
+                 'extended-command-history))
+               ((fboundp 'completing-read)
+                (completing-read "M-x " obarray 'commandp t nil
+                                 'extended-command-history))
+               (t (signal 'emacs-command-loop-error
+                          (list 'no-completing-read))))))
+         (cmd (cond
+               ((symbolp cmd-name) cmd-name)
+               ((stringp cmd-name) (intern cmd-name))
+               (t (signal 'wrong-type-argument
+                          (list 'string-or-symbol cmd-name))))))
+    (let ((emacs-command-loop--prefix-arg prefix-arg-incoming))
+      (emacs-command-loop-call-interactively cmd))))
 
 (provide 'emacs-command-loop)
 
