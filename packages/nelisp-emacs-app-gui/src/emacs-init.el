@@ -58,6 +58,12 @@
 (require 'emacs-backquote)
 (require 'emacs-error)
 (require 'emacs-string)
+;; Phase 10 — emacs-stub.el split: pcase / cl-macs subset / time
+;; polyfills are now in dedicated modules.  emacs-pcase first (= cl-macs
+;; expansions reference pcase patterns).  emacs-time has no L2 deps.
+(require 'emacs-pcase)
+(require 'emacs-cl-macros)
+(require 'emacs-time)
 ;; Phase 9 — real-buffer wrappers around `nelisp-emacs-compat' (T39).
 ;; Replaces the Phase 8 string-accumulator stubs that were inside
 ;; `emacs-stub.el' for `with-temp-buffer' / `insert' / `buffer-string'.

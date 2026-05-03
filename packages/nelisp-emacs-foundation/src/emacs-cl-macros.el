@@ -1,0 +1,501 @@
+;;; emacs-cl-macros.el --- Minimal cl-lib subset for NeLisp standalone  -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 zawatton + Claude
+
+;; This file is part of nelisp-emacs.
+
+;;; Commentary:
+
+;; Doc 51 Phase 10 — extracted from `emacs-stub.el' (= the Phase 4
+;; batch 3 placeholder).  Vendor `cl-macs.el' / `cl-seq.el' fail to
+;; load under NeLisp standalone because of deep pcase patterns we
+;; do not yet support; this file ships *just the surface* the anvil
+;; modules + Phase 9 buffer code use, mapped to plain elisp on top
+;; of bootstrap eval primitives.
+;;
+;; Public surface (each gated on `unless (fboundp ...)' so loading
+;; under host Emacs is a cheap no-op):
+;;
+;;   - macros: cl-defun, cl-incf, cl-decf, cl-loop, cl-defstruct,
+;;             cl-case, cl-pushnew, cl-letf, cl-letf*, cl-flet,
+;;             cl-labels, cl-block, cl-return-from, cl-return,
+;;             cl-defgeneric, cl-defmethod
+;;   - fns:    cl-some, cl-every, cl-find, cl-position,
+;;             cl-remove-if(-not), cl-delete-if(-not),
+;;             cl-delete-duplicates, cl-union, cl-intersection,
+;;             cl-sort, cl-getf, cl-first/second/third
+;;
+;; Feature provides: cl-macs / cl-seq / cl-extra / cl-generic so
+;; that vendor `(require ...)' chains short-circuit without actually
+;; loading the heavyweight files.
+;;
+;; Internal helpers were renamed `emacs-stub--cl-*' →
+;; `emacs-cl-macros--*' as part of Phase 10's emacs-stub split.
+;;
+;; Depends on: `pcase' (= emacs-pcase.el).  Make sure that loads first
+;; if you want full pattern support inside cl-* expansions.
+
+;;; Code:
+
+;;;; --- arglist parsing helpers ------------------------------------------
+
+(defun emacs-cl-macros--split-arglist (arglist)
+  "Split ARGLIST into (POSITIONAL OPTIONALS RESTSYM KEYS).
+KEYS = list of (KEYWORD-NAME PARAM-SYM DEFAULT-FORM) triples."
+  (let ((positional nil)
+        (optionals nil)
+        (restsym nil)
+        (keys nil)
+        (mode 'positional)
+        (cur arglist))
+    (while cur
+      (let ((tok (car cur)))
+        (cond
+         ((eq tok '&optional) (setq mode 'optional))
+         ((eq tok '&rest)     (setq mode 'rest))
+         ((eq tok '&key)      (setq mode 'key))
+         ((eq tok '&aux)      (setq mode 'aux))
+         (t
+          (cond
+           ((eq mode 'positional) (setq positional (cons tok positional)))
+           ((eq mode 'optional)
+            (setq optionals (cons tok optionals)))
+           ((eq mode 'rest)
+            (setq restsym tok))
+           ((eq mode 'key)
+            (let* ((sym (if (consp tok) (car tok) tok))
+                   (default (if (consp tok) (car (cdr tok)) nil))
+                   (kwname (intern
+                            (concat ":"
+                                    (symbol-name sym)))))
+              (setq keys (cons (list kwname sym default) keys))))
+           ;; &aux: drop (= local lets, rarely critical for stubs)
+           ((eq mode 'aux) nil)))))
+      (setq cur (cdr cur)))
+    (let ((rev-positional nil) (rev-optionals nil) (rev-keys nil)
+          (p positional) (o optionals) (k keys))
+      (while p (setq rev-positional (cons (car p) rev-positional)) (setq p (cdr p)))
+      (while o (setq rev-optionals (cons (car o) rev-optionals)) (setq o (cdr o)))
+      (while k (setq rev-keys (cons (car k) rev-keys)) (setq k (cdr k)))
+      (list rev-positional rev-optionals restsym rev-keys))))
+
+(defun emacs-cl-macros--key-bindings (keys restsym)
+  "Build let-bindings for KEYS by scanning RESTSYM (= the &rest var).
+Each binding is (PARAM (or (cadr (memq KW RESTSYM)) DEFAULT))."
+  (let ((out nil)
+        (cur keys))
+    (while cur
+      (let* ((entry (car cur))
+             (kw (car entry))
+             (sym (car (cdr entry)))
+             (def (car (cdr (cdr entry)))))
+        (setq out (cons (list sym
+                              (list 'or
+                                    (list 'car
+                                          (list 'cdr
+                                                (list 'memq (list 'quote kw) restsym)))
+                                    def))
+                        out)))
+      (setq cur (cdr cur)))
+    (let ((rev nil) (c out))
+      (while c (setq rev (cons (car c) rev)) (setq c (cdr c)))
+      rev)))
+
+;;;; --- cl-defun ---------------------------------------------------------
+
+(unless (fboundp 'cl-defun)
+  ;; cl-defun supporting &optional, &rest, &key (= adequate for
+  ;; anvil-memory / anvil-state arglists).
+  ;;
+  ;; Strategy: expand (cl-defun NAME (POS &optional O &key K1 K2) BODY) to
+  ;; (defun NAME (POS &optional O &rest --cl-keys)
+  ;;   (let ((K1 (or (cadr (memq :K1 --cl-keys)) DEFAULT))
+  ;;         (K2 (or (cadr (memq :K2 --cl-keys)) DEFAULT)))
+  ;;     BODY))
+  ;; If &rest is present in the original arglist, reuse that name instead
+  ;; of synthesizing --cl-keys.
+  (defvar emacs-cl-macros--defun-call-count 0
+    "Bumped each time the cl-defun macro stub expands a form.")
+  ;; Two registration paths needed:
+  ;;   1. build-tool/eval recognizes the (macro lambda ...) function cell
+  ;;      → use plain `defmacro' (writes to env.set_function)
+  ;;   2. nelisp-eval-form (the FULL self-host evaluator) consults
+  ;;      `nelisp--macros' hashtable, NOT the function cell → also
+  ;;      puthash into nelisp--macros so the takeover path expands too
+  ;;
+  ;; Path (2) registration happens at the bottom of this `unless'
+  ;; clause via `(when (boundp 'nelisp--macros) ...)' guard.
+  (defmacro cl-defun (name arglist &rest body)
+    "Stub: cl-defun with &optional / &rest / &key support."
+    (setq emacs-cl-macros--defun-call-count
+          (+ 1 emacs-cl-macros--defun-call-count))
+    (let* ((parts (emacs-cl-macros--split-arglist arglist))
+           (positional (car parts))
+           (optionals (car (cdr parts)))
+           (restsym (car (cdr (cdr parts))))
+           (keys (car (cdr (cdr (cdr parts))))))
+      (cond
+       ;; No &key — emit plain defun with original layout (preserve &rest).
+       ((null keys)
+        (let ((out positional))
+          (when optionals
+            (let ((tail (cons '&optional nil))
+                  (o optionals))
+              (while o (setq tail (append tail (list (car o)))) (setq o (cdr o)))
+              (let ((all out) (t2 tail))
+                (while t2 (setq all (append all (list (car t2)))) (setq t2 (cdr t2)))
+                (setq out all))))
+          (when restsym
+            (setq out (append out (list '&rest restsym))))
+          (cons 'defun (cons name (cons out body)))))
+       (t
+        ;; &key present — synthesize &rest --cl-keys, scan it for kw values.
+        (let* ((rest-name (or restsym '--cl-keys))
+               (real-arglist positional))
+          (when optionals
+            (let ((tail (cons '&optional nil))
+                  (o optionals))
+              (while o (setq tail (append tail (list (car o)))) (setq o (cdr o)))
+              (setq real-arglist (append real-arglist tail))))
+          (setq real-arglist (append real-arglist (list '&rest rest-name)))
+          (let* ((bindings (emacs-cl-macros--key-bindings keys rest-name))
+                 (real-body (list (cons 'let* (cons bindings body)))))
+            (cons 'defun (cons name (cons real-arglist real-body))))))))))
+
+;;;; --- cl-incf / cl-decf ------------------------------------------------
+
+(unless (fboundp 'cl-incf)
+  (defmacro cl-incf (place &optional delta)
+    "Stub: (setq PLACE (+ PLACE (or DELTA 1)))."
+    (list 'setq place (list '+ place (or delta 1)))))
+
+(unless (fboundp 'cl-decf)
+  (defmacro cl-decf (place &optional delta)
+    (list 'setq place (list '- place (or delta 1)))))
+
+;;;; --- cl-some / cl-every / cl-position / cl-find ---------------------
+
+(unless (fboundp 'cl-some)
+  (defun cl-some (predicate sequence &rest more)
+    "Stub: return first non-nil PREDICATE result over SEQUENCE.
+Ignores MORE (= multi-list version)."
+    (ignore more)
+    (let ((cur sequence)
+          (result nil))
+      (while (and cur (not result))
+        (setq result (funcall predicate (car cur)))
+        (setq cur (cdr cur)))
+      result)))
+
+(unless (fboundp 'cl-every)
+  (defun cl-every (predicate sequence &rest more)
+    (ignore more)
+    (let ((cur sequence)
+          (ok t))
+      (while (and cur ok)
+        (unless (funcall predicate (car cur)) (setq ok nil))
+        (setq cur (cdr cur)))
+      ok)))
+
+(unless (fboundp 'cl-position)
+  (defun cl-position (item sequence &rest _keys)
+    "Stub: return index of ITEM in SEQUENCE (= eql), or nil."
+    (let ((cur sequence) (idx 0) (found nil))
+      (while (and cur (not found))
+        (when (or (eq (car cur) item) (equal (car cur) item))
+          (setq found idx))
+        (setq cur (cdr cur)) (setq idx (+ idx 1)))
+      found)))
+
+(unless (fboundp 'cl-find)
+  (defun cl-find (item sequence &rest _keys)
+    (let ((cur sequence) (found nil))
+      (while (and cur (not found))
+        (when (or (eq (car cur) item) (equal (car cur) item))
+          (setq found (car cur)))
+        (setq cur (cdr cur)))
+      found)))
+
+;;;; --- cl-remove-if(-not) / cl-delete-if(-not) -----------------------
+
+(unless (fboundp 'cl-remove-if-not)
+  (defun cl-remove-if-not (predicate sequence &rest _keys)
+    (let ((acc nil) (cur sequence))
+      (while cur
+        (when (funcall predicate (car cur))
+          (setq acc (cons (car cur) acc)))
+        (setq cur (cdr cur)))
+      (nreverse acc))))
+
+(unless (fboundp 'cl-remove-if)
+  (defun cl-delete-if (predicate sequence &rest _keys)
+    "Stub: alias for cl-remove-if (in-place delete not supported)."
+    (let ((acc nil) (cur sequence))
+      (while cur
+        (unless (funcall predicate (car cur))
+          (setq acc (cons (car cur) acc)))
+        (setq cur (cdr cur)))
+      (let ((rev nil))
+        (while acc (setq rev (cons (car acc) rev)) (setq acc (cdr acc)))
+        rev)))
+  (defun cl-delete-if-not (predicate sequence &rest _keys)
+    (let ((acc nil) (cur sequence))
+      (while cur
+        (when (funcall predicate (car cur))
+          (setq acc (cons (car cur) acc)))
+        (setq cur (cdr cur)))
+      (let ((rev nil))
+        (while acc (setq rev (cons (car acc) rev)) (setq acc (cdr acc)))
+        rev)))
+  (defun cl-remove-if (predicate sequence &rest _keys)
+    (let ((acc nil) (cur sequence))
+      (while cur
+        (unless (funcall predicate (car cur))
+          (setq acc (cons (car cur) acc)))
+        (setq cur (cdr cur)))
+      (nreverse acc))))
+
+(unless (fboundp 'cl-delete-if)
+  (defalias 'cl-delete-if 'cl-remove-if))
+
+;;;; --- cl-delete-duplicates / cl-union / cl-intersection / cl-sort ---
+
+(unless (fboundp 'cl-delete-duplicates)
+  (defun cl-delete-duplicates (sequence &rest _keys)
+    (let ((acc nil) (cur sequence))
+      (while cur
+        (unless (member (car cur) acc)
+          (setq acc (cons (car cur) acc)))
+        (setq cur (cdr cur)))
+      (nreverse acc))))
+
+(unless (fboundp 'cl-union)
+  (defun cl-union (list1 list2 &rest _keys)
+    (let ((acc list1) (cur list2))
+      (while cur
+        (unless (member (car cur) acc)
+          (setq acc (cons (car cur) acc)))
+        (setq cur (cdr cur)))
+      acc)))
+
+(unless (fboundp 'cl-intersection)
+  (defun cl-intersection (list1 list2 &rest _keys)
+    (let ((acc nil) (cur list1))
+      (while cur
+        (when (member (car cur) list2)
+          (setq acc (cons (car cur) acc)))
+        (setq cur (cdr cur)))
+      (nreverse acc))))
+
+(unless (fboundp 'cl-sort)
+  (defun cl-sort (sequence predicate &rest _keys)
+    (sort sequence predicate)))
+
+;;;; --- cl-loop ----------------------------------------------------------
+
+(unless (fboundp 'cl-loop)
+  ;; cl-loop is incredibly complex; provide a minimal version that
+  ;; handles the patterns anvil-memory uses (= for X in LIST do/collect).
+  (defmacro cl-loop (&rest clauses)
+    "Stub: minimal cl-loop supporting `for VAR in LIST do/collect/sum/count/...'.
+For patterns this stub does not recognise, returns nil."
+    (emacs-cl-macros--loop-build clauses)))
+
+(unless (fboundp 'emacs-cl-macros--loop-build)
+  (defun emacs-cl-macros--loop-build (clauses)
+    "Build expansion for cl-loop CLAUSES.  Recognises `for VAR in LIST'
+    + `do FORM' / `collect FORM' / `sum FORM' / `count FORM' / `with VAR = VAL'.
+    Returns a `let'/`while' form, or nil for unrecognised shapes."
+    (let ((var nil) (list-form nil) (do-forms nil) (collect-form nil)
+          (sum-form nil) (count-form nil) (with-bindings nil)
+          (cur clauses) (recognised t))
+      (while (and cur recognised)
+        (let ((kw (car cur)))
+          (cond
+           ((eq kw 'for)
+            (setq var (car (cdr cur)))
+            (when (eq (car (cdr (cdr cur))) 'in)
+              (setq list-form (car (cdr (cdr (cdr cur)))))
+              (setq cur (cdr (cdr (cdr (cdr cur)))))))
+           ((eq kw 'do)
+            (setq do-forms (cons (car (cdr cur)) do-forms))
+            (setq cur (cdr (cdr cur))))
+           ((eq kw 'collect)
+            (setq collect-form (car (cdr cur)))
+            (setq cur (cdr (cdr cur))))
+           ((eq kw 'sum)
+            (setq sum-form (car (cdr cur)))
+            (setq cur (cdr (cdr cur))))
+           ((eq kw 'count)
+            (setq count-form (car (cdr cur)))
+            (setq cur (cdr (cdr cur))))
+           ((eq kw 'with)
+            (let ((wname (car (cdr cur))))
+              (when (eq (car (cdr (cdr cur))) '=)
+                (setq with-bindings
+                      (append with-bindings
+                              (list (list wname (car (cdr (cdr (cdr cur))))))))
+                (setq cur (cdr (cdr (cdr (cdr cur))))))))
+           (t (setq recognised nil)))))
+      (cond
+       ((not recognised) nil)
+       (collect-form
+        (let ((acc-sym (make-symbol "--loop-acc--")))
+          (list 'let (cons (list acc-sym nil) with-bindings)
+                (list 'dolist (list var list-form)
+                      (list 'setq acc-sym (list 'cons collect-form acc-sym)))
+                (list 'nreverse acc-sym))))
+       (sum-form
+        (let ((acc-sym (make-symbol "--loop-sum--")))
+          (list 'let (cons (list acc-sym 0) with-bindings)
+                (list 'dolist (list var list-form)
+                      (list 'setq acc-sym (list '+ acc-sym sum-form)))
+                acc-sym)))
+       (count-form
+        (let ((acc-sym (make-symbol "--loop-count--")))
+          (list 'let (cons (list acc-sym 0) with-bindings)
+                (list 'dolist (list var list-form)
+                      (list 'when count-form
+                            (list 'setq acc-sym (list '+ acc-sym 1))))
+                acc-sym)))
+       (do-forms
+        (let ((rev nil))
+          (while do-forms (setq rev (cons (car do-forms) rev)) (setq do-forms (cdr do-forms)))
+          (list 'let with-bindings
+                (cons 'dolist (cons (list var list-form) rev)))))
+       (t (list 'let with-bindings nil))))))
+
+;;;; --- cl-defgeneric / cl-defmethod / cl-defstruct -------------------
+
+(unless (fboundp 'cl-defgeneric)
+  (defmacro cl-defgeneric (name arglist &rest body)
+    "Stub: defgeneric → defun (= no real generic dispatch)."
+    (cons 'defun (cons name (cons arglist body)))))
+
+(unless (fboundp 'cl-defmethod)
+  (defmacro cl-defmethod (name arglist &rest body)
+    "Stub: defmethod → defun (= last-defined wins, no specializer dispatch).
+When NAME is a setf-method list `(setf X)', intern the printed form
+`\"(setf X)\"' as a symbol so `defun' has a usable target.  Strips
+specializer cons-cells from arglist (e.g. `(SEQUENCE array)' → `SEQUENCE')."
+    (let ((real-name
+           (cond
+            ((symbolp name) name)
+            ((and (consp name) (eq (car name) 'setf))
+             (intern (format "(setf %s)" (car (cdr name)))))
+            (t (intern (format "%S" name))))))
+      (cons 'defun
+            (cons real-name
+                  (cons (mapcar (lambda (a) (if (consp a) (car a) a)) arglist)
+                        body))))))
+
+(unless (fboundp 'cl-defstruct)
+  (defmacro cl-defstruct (name &rest slots)
+    "Stub: defstruct → minimal alist-backed accessors."
+    (let ((sname (if (consp name) (car name) name))
+          (slot-names (mapcar (lambda (s) (if (consp s) (car s) s)) slots)))
+      (let ((forms nil))
+        ;; make-NAME constructor → returns alist of slots.
+        (push (list 'defun (intern (concat "make-" (symbol-name sname)))
+                    '(&rest args)
+                    '(let ((alist nil)
+                           (cur args))
+                       (while cur
+                         (setq alist (cons (cons (car cur) (car (cdr cur))) alist))
+                         (setq cur (cdr (cdr cur))))
+                       (cons (quote ,sname) alist)))
+              forms)
+        ;; NAME-p predicate.
+        (push (list 'defun (intern (concat (symbol-name sname) "-p"))
+                    '(obj)
+                    (list 'and '(consp obj) (list 'eq '(car obj) (list 'quote sname))))
+              forms)
+        ;; NAME-SLOT accessor for each slot.
+        (dolist (slot slot-names)
+          (let ((kw (intern (concat ":" (symbol-name slot)))))
+            (push (list 'defun (intern (concat (symbol-name sname) "-" (symbol-name slot)))
+                        '(obj)
+                        (list 'cdr (list 'assoc kw '(cdr obj))))
+                  forms)))
+        (cons 'progn (nreverse forms))))))
+
+;;;; --- cl-case / cl-pushnew --------------------------------------------
+
+(unless (fboundp 'cl-case)
+  (defmacro cl-case (expr &rest cases)
+    "Stub: cl-case → equivalent to cond with eql tests."
+    (let ((value-sym (make-symbol "--cl-case--"))
+          (clauses nil))
+      (dolist (c cases)
+        (let ((key (car c)) (body (cdr c)))
+          (cond
+           ((or (eq key 't) (eq key 'otherwise))
+            (push (cons t body) clauses))
+           ((listp key)
+            (push (cons (list 'memql value-sym (list 'quote key)) body) clauses))
+           (t (push (cons (list 'eql value-sym (list 'quote key)) body) clauses)))))
+      (let ((rev nil))
+        (while clauses (setq rev (cons (car clauses) rev)) (setq clauses (cdr clauses)))
+        (list 'let (list (list value-sym expr))
+              (cons 'cond rev))))))
+
+(unless (fboundp 'cl-pushnew)
+  (defmacro cl-pushnew (item place &rest _keys)
+    (list 'unless (list 'member item place)
+          (list 'setq place (list 'cons item place)))))
+
+;;;; --- cl-letf / cl-flet / cl-block -----------------------------------
+
+(unless (fboundp 'cl-letf)
+  (defmacro cl-letf (bindings &rest body)
+    "Stub: cl-letf → simple let* (= no place mutation tracking)."
+    (cons 'let* (cons bindings body))))
+
+(unless (fboundp 'cl-letf*)
+  (defalias 'cl-letf* 'cl-letf))
+
+(unless (fboundp 'cl-flet)
+  (defmacro cl-flet (bindings &rest body)
+    "Stub: cl-flet → cl-letf with function-cell binding (= simplified)."
+    (cons 'let (cons bindings body))))
+
+(unless (fboundp 'cl-labels)
+  (defalias 'cl-labels 'cl-flet))
+
+(unless (fboundp 'cl-block)
+  (defmacro cl-block (_name &rest body)
+    "Stub: cl-block → progn (= no return-from support)."
+    (cons 'progn body)))
+
+(unless (fboundp 'cl-return-from)
+  (defmacro cl-return-from (_name &optional _val)
+    "Stub: cl-return-from → no-op."
+    nil))
+
+(unless (fboundp 'cl-return)
+  (defalias 'cl-return 'cl-return-from))
+
+;;;; --- cl-getf / cl-first/second/third --------------------------------
+
+(unless (fboundp 'cl-getf)
+  (defalias 'cl-getf 'plist-get))
+
+(unless (fboundp 'cl-first)
+  (defalias 'cl-first 'car))
+(unless (fboundp 'cl-second)
+  (defun cl-second (l) (car (cdr l))))
+(unless (fboundp 'cl-third)
+  (defun cl-third (l) (car (cdr (cdr l)))))
+
+;;;; --- feature provides ------------------------------------------------
+
+;; Provide cl-macs / cl-seq as features so vendor (require ...) chains
+;; succeed without actually loading the heavyweight files.
+(unless (featurep 'cl-macs) (provide 'cl-macs))
+(unless (featurep 'cl-seq) (provide 'cl-seq))
+(unless (featurep 'cl-extra) (provide 'cl-extra))
+(unless (featurep 'cl-generic) (provide 'cl-generic))
+
+(provide 'emacs-cl-macros)
+
+;;; emacs-cl-macros.el ends here
