@@ -67,6 +67,12 @@ pub fn install_builtins(env: &mut Env) {
         // Companion buffer-management primitives for "fill caller-provided
         // buffer" C APIs (= nl_sqlite_query, getline-style readers, etc.).
         "nl-ffi-malloc", "nl-ffi-read-bytes", "nl-ffi-free",
+        // Doc 51 Phase 6 write-path: time + cryptographic hash primitives.
+        // Needed by anvil-memory-add etc. (= NOT NULL `created' column +
+        // body digest).  Both are inherently OS / native-lib dependent
+        // — pure-elisp implementations are impractical (SHA-1 in elisp =
+        // ~100 LoC slow; current time has no Lisp-level source).
+        "nl-current-unix-time", "nl-secure-hash",
     ];
     for n in names {
         let sentinel = Sexp::list_from(&[
@@ -159,6 +165,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-ffi-malloc" => super::ffi::nl_ffi_malloc(args),
         "nl-ffi-read-bytes" => super::ffi::nl_ffi_read_bytes(args),
         "nl-ffi-free" => super::ffi::nl_ffi_free(args),
+        "nl-current-unix-time" => bi_nl_current_unix_time(args),
+        "nl-secure-hash" => bi_nl_secure_hash(args),
         "provide" => bi_provide(args, env),
         "require" => bi_require(args, env),
         "featurep" => bi_featurep(args, env),
@@ -1118,6 +1126,82 @@ fn bi_princ(args: &[Sexp]) -> Result<Sexp, EvalError> {
 /// Pathological stdin containing non-UTF-8 bytes passes through
 /// `from_utf8_lossy`, substituting U+FFFD; strict binary stdio is left
 /// to a later dedicated primitive.
+fn bi_nl_current_unix_time(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nl-current-unix-time", args, 0, Some(0))?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    Ok(Sexp::Int(now))
+}
+
+/// `(nl-secure-hash ALGO STRING)` — return the lowercase hex digest of
+/// STRING under ALGO (= 'sha1, 'sha256, 'md5, 'sha224, 'sha384,
+/// 'sha512).  Mirrors the host Emacs `secure-hash' API surface anvil-
+/// memory-add reaches for.  Implemented in pure Rust via the `sha1' /
+/// `sha2' / `md5' crates so build-tool stays self-contained.
+fn bi_nl_secure_hash(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nl-secure-hash", args, 2, Some(2))?;
+    let algo = match &args[0] {
+        Sexp::Symbol(s) => s.clone(),
+        Sexp::Str(s) => s.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "symbol or string (algo)".into(),
+            got: other.clone(),
+        }),
+    };
+    let text = string_value(&args[1])?;
+    let bytes = text.as_bytes();
+    let hex = match algo.as_str() {
+        "sha1" => {
+            use sha1::{Digest, Sha1};
+            let mut h = Sha1::new();
+            h.update(bytes);
+            hex_lower(&h.finalize())
+        }
+        "sha256" => {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(bytes);
+            hex_lower(&h.finalize())
+        }
+        "sha224" => {
+            use sha2::{Digest, Sha224};
+            let mut h = Sha224::new();
+            h.update(bytes);
+            hex_lower(&h.finalize())
+        }
+        "sha384" => {
+            use sha2::{Digest, Sha384};
+            let mut h = Sha384::new();
+            h.update(bytes);
+            hex_lower(&h.finalize())
+        }
+        "sha512" => {
+            use sha2::{Digest, Sha512};
+            let mut h = Sha512::new();
+            h.update(bytes);
+            hex_lower(&h.finalize())
+        }
+        "md5" => {
+            let digest = md5::compute(bytes);
+            hex_lower(&digest.0)
+        }
+        other => return Err(EvalError::Internal(format!(
+            "nl-secure-hash: unsupported algo {:?}", other
+        ))),
+    };
+    Ok(Sexp::Str(hex))
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push_str(&format!("{:02x}", b));
+    }
+    out
+}
+
 fn bi_read_stdin_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
     use std::io::Read;
     require_arity("read-stdin-bytes", args, 1, Some(1))?;

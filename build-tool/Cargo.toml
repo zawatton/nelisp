@@ -37,3 +37,6 @@ path = "src/bin/nelisp.rs"
 # the "zero internal-crate deps" Sweep-6 invariant intact.
 libloading = "0.8"
 libffi = "3"
+sha1 = "0.10"
+sha2 = "0.10"
+md5 = "0.7"
