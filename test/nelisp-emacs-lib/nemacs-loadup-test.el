@@ -128,7 +128,8 @@
                     emacs-command-loop-builtins
                     emacs-undo-builtins
                     emacs-faces-builtins
-                    emacs-mode-builtins))
+                    emacs-mode-builtins
+                    emacs-process-builtins))
       (should (featurep feat)))))
 
 (provide 'nemacs-loadup-test)
