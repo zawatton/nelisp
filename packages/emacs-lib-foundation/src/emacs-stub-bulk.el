@@ -365,7 +365,7 @@
 (unless (boundp 'inhibit-nul-byte-detection) (defvar inhibit-nul-byte-detection nil))
 (unless (boundp 'inhibit-null-byte-detection) (defvar inhibit-null-byte-detection nil))
 (unless (boundp 'inhibit-point-motion-hooks) (defvar inhibit-point-motion-hooks nil))
-(unless (boundp 'inhibit-quit) (defvar inhibit-quit nil))
+;; inhibit-quit moved to emacs-command-loop-builtins (Phase B.1).
 (unless (boundp 'inhibit-read-only) (defvar inhibit-read-only nil))
 (unless (boundp 'input-decode-map) (defvar input-decode-map nil))
 (unless (boundp 'input-method-function) (defvar input-method-function nil))
@@ -410,9 +410,8 @@
 (unless (fboundp 'kill-emacs) (defun kill-emacs (&rest _) nil))
 (unless (fboundp 'kill-local-variable) (defun kill-local-variable (&rest _) nil))
 (unless (fboundp 'kmacro-end-macro) (defun kmacro-end-macro (&rest _) nil))
-(unless (boundp 'last-command-event) (defvar last-command-event nil))
-(unless (boundp 'last-input-event) (defvar last-input-event nil))
-(unless (boundp 'last-nonmenu-event) (defvar last-nonmenu-event nil))
+;; last-command-event / last-input-event / last-nonmenu-event moved to
+;; emacs-command-loop-builtins (Phase B.1).
 (unless (fboundp 'length) (defun length (&rest _) nil))
 (unless (boundp 'lexical-binding) (defvar lexical-binding nil))
 (unless (fboundp 'libxml-parse-html-region) (defun libxml-parse-html-region (&rest _) nil))
@@ -643,14 +642,13 @@
 (unless (fboundp 'puthash) (defun puthash (&rest _) nil))
 (unless (fboundp 'put-text-property) (defun put-text-property (&rest _) nil))
 (unless (boundp 'query-replace-map) (defvar query-replace-map nil))
-(unless (boundp 'quit-flag) (defvar quit-flag nil))
+;; quit-flag moved to emacs-command-loop-builtins (Phase B.1).
 (unless (fboundp 'raise-frame) (defun raise-frame (&rest _) nil))
 (unless (fboundp 'random) (defun random (&rest _) nil))
 (unless (fboundp 'rassq) (defun rassq (&rest _) nil))
 (unless (fboundp 'read) (defun read (&rest _) nil))
-(unless (fboundp 'read-char) (defun read-char (&rest _) nil))
-(unless (fboundp 'read-command) (defun read-command (&rest _) nil))
-(unless (fboundp 'read-event) (defun read-event (&rest _) nil))
+;; read-char / read-command / read-event moved to
+;; emacs-command-loop-builtins (Phase B.1).
 (unless (fboundp 'read-from-minibuffer) (defun read-from-minibuffer (&rest _) nil))
 (unless (fboundp 'read-from-string) (defun read-from-string (&rest _) nil))
 (unless (fboundp 'read-kbd-macro) (defun read-kbd-macro (&rest _) nil))
@@ -658,7 +656,7 @@
 (unless (fboundp 'read-key-sequence-vector) (defun read-key-sequence-vector (&rest _) nil))
 (unless (fboundp 'read-library-name) (defun read-library-name (&rest _) nil))
 (unless (fboundp 'read-string) (defun read-string (&rest _) nil))
-(unless (boundp 'real-this-command) (defvar real-this-command nil))
+;; real-this-command moved to emacs-command-loop-builtins (Phase B.1).
 (unless (fboundp 'recenter) (defun recenter (&rest _) nil))
 (unless (fboundp 'recenter-top-bottom) (defun recenter-top-bottom (&rest _) nil))
 (unless (fboundp 'record) (defun record (&rest _) nil))
@@ -830,12 +828,8 @@
 (unless (fboundp 'terpri) (defun terpri (&rest _) nil))
 (unless (boundp 'text-conversion-style) (defvar text-conversion-style nil))
 (unless (fboundp 'text-properties-at) (defun text-properties-at (&rest _) nil))
-(unless (boundp 'this-command) (defvar this-command nil))
-(unless (fboundp 'this-command-keys) (defun this-command-keys (&rest _) nil))
-(unless (fboundp 'this-command-keys-vector) (defun this-command-keys-vector (&rest _) nil))
-(unless (fboundp 'this-single-command-keys) (defun this-single-command-keys (&rest _) nil))
-(unless (fboundp 'this-single-command-raw-keys) (defun this-single-command-raw-keys (&rest _) nil))
-(unless (boundp 'throw-on-input) (defvar throw-on-input nil))
+;; this-command / this-command-keys family / throw-on-input moved to
+;; emacs-command-loop-builtins (Phase B.1).
 (unless (fboundp 'time-convert) (defun time-convert (&rest _) nil))
 (unless (fboundp 'time-less-p) (defun time-less-p (&rest _) nil))
 (unless (fboundp 'top-level) (defun top-level (&rest _) nil))
@@ -854,7 +848,7 @@
 (unless (boundp 'undo-strong-limit) (defvar undo-strong-limit nil))
 (unless (fboundp 'unhandled-file-name-directory) (defun unhandled-file-name-directory (&rest _) nil))
 (unless (fboundp 'unintern) (defun unintern (&rest _) nil))
-(unless (boundp 'unread-command-events) (defvar unread-command-events nil))
+;; unread-command-events moved to emacs-command-loop-builtins (Phase B.1).
 (unless (fboundp 'upcase) (defun upcase (&rest _) nil))
 (unless (fboundp 'upcase-region) (defun upcase-region (&rest _) nil))
 (unless (fboundp 'upcase-word) (defun upcase-word (&rest _) nil))

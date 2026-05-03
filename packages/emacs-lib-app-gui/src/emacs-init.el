@@ -97,6 +97,15 @@
 ;; `emacs-edit-builtins' (= the minibuffer's internal buffer also
 ;; uses the editing-command surface for line edit).
 (require 'emacs-minibuffer-builtins)
+;; Track B Phase B.1 (2026-05-03) — command-loop foundation.
+;; Provides `read-event' / `read-char' / `read-command' /
+;; `this-command-keys' family, plus `this-command' / `last-command' /
+;; `unread-command-events' / `quit-flag' / `inhibit-quit' state.
+;; Higher-level pieces (`read-key-sequence', `call-interactively',
+;; `command-loop-1', `execute-extended-command', keyboard-quit) are
+;; layered on top in B.2-B.6.  Loads after `emacs-minibuffer-builtins'
+;; because `read-command' delegates to `completing-read'.
+(require 'emacs-command-loop-builtins)
 ;; Phase 11.C'' — keymap.c / frame.c / window.c bridges to the
 ;; existing `emacs-keymap.el' / `emacs-frame.el' / `emacs-window.el'
 ;; prefixed implementations.  Each transitively pulls its prefixed
