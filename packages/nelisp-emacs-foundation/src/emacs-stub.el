@@ -340,108 +340,12 @@
     "Stub: signal `error' with formatted message."
     (signal 'error (list (apply #'format format-string args)))))
 
-;;;; --- numeric primitives -------------------------------------------------
-
-(unless (fboundp 'min)
-  (defun min (&rest numbers)
-    (let ((acc (car numbers)))
-      (setq numbers (cdr numbers))
-      (while numbers
-        (when (< (car numbers) acc) (setq acc (car numbers)))
-        (setq numbers (cdr numbers)))
-      acc)))
-
-(unless (fboundp 'max)
-  (defun max (&rest numbers)
-    (let ((acc (car numbers)))
-      (setq numbers (cdr numbers))
-      (while numbers
-        (when (> (car numbers) acc) (setq acc (car numbers)))
-        (setq numbers (cdr numbers)))
-      acc)))
-
-(unless (fboundp 'abs)
-  (defun abs (n) (if (< n 0) (- n) n)))
-
-(unless (fboundp 'zerop)
-  (defun zerop (n) (= n 0)))
-
-(unless (fboundp 'plusp)
-  (defun plusp (n) (> n 0)))
-
-(unless (fboundp 'minusp)
-  (defun minusp (n) (< n 0)))
-
-(unless (fboundp 'oddp)
-  (defun oddp (n) (= 1 (mod n 2))))
-
-(unless (fboundp 'evenp)
-  (defun evenp (n) (= 0 (mod n 2))))
-
-(unless (fboundp 'natnump)
-  (defun natnump (n) (and (integerp n) (>= n 0))))
-
-(unless (fboundp '1+)
-  (defun 1+ (n) (+ n 1)))
-
-(unless (fboundp '1-)
-  (defun 1- (n) (- n 1)))
-
-
-;;;; --- bitwise ops --------------------------------------------------------
-
-(unless (fboundp 'logior)
-  (defun logior (&rest ints)
-    "Stub: bitwise OR of all INTS."
-    (let ((acc 0))
-      (while ints
-        (setq acc (+ acc (- (car ints) (logand acc (car ints)))))
-        (setq ints (cdr ints)))
-      acc)))
-
-(unless (fboundp 'logand)
-  (defun logand (&rest ints)
-    "Stub: bitwise AND of all INTS.  Approximation via min for non-negative."
-    (if (null ints)
-        -1
-      (let ((acc (car ints)))
-        (setq ints (cdr ints))
-        (while ints
-          ;; Conservative: use min as a lower bound; not strictly correct
-          ;; but adequate for the bit-flag use cases in subr.el load path.
-          (setq acc (min acc (car ints)))
-          (setq ints (cdr ints)))
-        acc))))
-
-(unless (fboundp 'logxor)
-  (defun logxor (&rest ints)
-    "Stub: bitwise XOR (= using +/- proxy for non-overlapping flags)."
-    (let ((acc 0))
-      (while ints
-        (setq acc (+ acc (car ints)))
-        (setq ints (cdr ints)))
-      acc)))
-
-(unless (fboundp 'lognot)
-  (defun lognot (int)
-    "Stub: bitwise NOT."
-    (- (- int) 1)))
-
-(unless (fboundp 'ash)
-  (defun ash (value count)
-    "Stub: arithmetic shift (positive COUNT = left, negative = right)."
-    (cond
-     ((= count 0) value)
-     ((> count 0)
-      (let ((acc value))
-        (while (> count 0) (setq acc (* acc 2)) (setq count (- count 1)))
-        acc))
-     (t
-      (let ((acc value))
-        (while (< count 0) (setq acc (/ acc 2)) (setq count (+ count 1)))
-        acc)))))
-
-(unless (fboundp 'lsh) (defalias 'lsh 'ash))
+;;;; --- numeric primitives + bitwise ops -----------------------------------
+;; Phase E (2026-05-03) extracted the `min' / `max' / `abs' / `zerop' /
+;; `plusp' / `minusp' / `oddp' / `evenp' / `natnump' / `1+' / `1-'
+;; numeric polyfills and the `logior' / `logand' / `logxor' / `lognot' /
+;; `ash' / `lsh' bitwise polyfills into `emacs-numeric.el'.  Same
+;; semantics, just promoted out of this file.
 
 
 ;;;; --- char.c / fns.c -----------------------------------------------------
