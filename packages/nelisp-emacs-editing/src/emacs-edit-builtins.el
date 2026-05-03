@@ -50,7 +50,10 @@
   (defun self-insert-command (&optional n char)
     "Phase E polyfill: insert CHAR (or `last-command-event') N times.
 N defaults to 1.  CHAR may be an integer or a single-char string;
-when nil, falls back to `last-command-event'."
+when nil, falls back to `last-command-event'.
+
+Track E.2: when the undo subsystem is loaded, records the
+inserted span on `buffer-undo-list'."
     (let* ((c (or char last-command-event))
            (count (or n 1))
            (s (cond
@@ -62,17 +65,24 @@ when nil, falls back to `last-command-event'."
                           (list 'character-or-string c))))))
       (let ((i 0))
         (while (< i count)
-          (nelisp-ec-insert s)
+          (let ((beg (nelisp-ec-point)))
+            (nelisp-ec-insert s)
+            (when (fboundp 'emacs-undo-record-insert)
+              (emacs-undo-record-insert beg (nelisp-ec-point))))
           (setq i (+ i 1))))
       nil)))
 
 (unless (fboundp 'newline)
   (defun newline (&optional n interactive)
-    "Phase E polyfill: insert N newlines (default 1)."
+    "Phase E polyfill: insert N newlines (default 1).
+Track E.2: records the inserted span on `buffer-undo-list'."
     (ignore interactive)
     (let ((c (or n 1)) (i 0))
       (while (< i c)
-        (nelisp-ec-insert "\n")
+        (let ((beg (nelisp-ec-point)))
+          (nelisp-ec-insert "\n")
+          (when (fboundp 'emacs-undo-record-insert)
+            (emacs-undo-record-insert beg (nelisp-ec-point))))
         (setq i (+ i 1))))
     nil))
 
@@ -80,9 +90,20 @@ when nil, falls back to `last-command-event'."
   (defun delete-backward-char (n &optional killflag)
     "Phase E polyfill: delete N characters backward.
 KILLFLAG (= prefix-arg-driven `kill-region' route) is accepted for
-API parity but ignored in MVP."
+API parity but ignored in MVP.
+
+Track E.2: captures the deleted text and records it on
+`buffer-undo-list' so `undo' can re-insert it."
     (ignore killflag)
-    (nelisp-ec-delete-char (- n))))
+    (let* ((p (nelisp-ec-point))
+           (start (max (nelisp-ec-point-min) (- p n)))
+           (end p)
+           (text (when (and (fboundp 'emacs-undo-record-delete)
+                            (> end start))
+                   (nelisp-ec-buffer-substring start end))))
+      (nelisp-ec-delete-char (- n))
+      (when text
+        (emacs-undo-record-delete text start)))))
 
 ;;;; --- kill ring -----------------------------------------------------
 
@@ -132,12 +153,16 @@ With REPLACE non-nil, mutate the head entry instead of pushing."
 
 (unless (fboundp 'kill-region)
   (defun kill-region (start end &optional region)
-    "Phase E polyfill: push the START..END region to `kill-ring' AND delete it."
+    "Phase E polyfill: push the START..END region to `kill-ring' AND delete it.
+Track E.2: records the deleted text on `buffer-undo-list'."
     (ignore region)
-    (let ((s (min start end))
-          (e (max start end)))
-      (kill-new (nelisp-ec-buffer-substring s e))
-      (nelisp-ec-delete-region s e))
+    (let* ((s (min start end))
+           (e (max start end))
+           (text (nelisp-ec-buffer-substring s e)))
+      (kill-new text)
+      (nelisp-ec-delete-region s e)
+      (when (fboundp 'emacs-undo-record-delete)
+        (emacs-undo-record-delete text s)))
     nil))
 
 (unless (fboundp 'kill-line)
@@ -163,7 +188,9 @@ the cursor toward EOB.  ARG (= multi-line variant) deferred."
     "Phase E polyfill: insert the most recent kill at point.
 ARG selects which kill-ring entry: 1 (default) = head; N>1 = N-th
 older entry; `-' = `yank-pop'-style (deferred).  Negative / `-'
-arg currently coerced to head-yank."
+arg currently coerced to head-yank.
+
+Track E.2: records the inserted span on `buffer-undo-list'."
     (let ((idx (cond
                 ((null arg) 0)
                 ((integerp arg) (max 0 (- arg 1)))
@@ -176,7 +203,10 @@ arg currently coerced to head-yank."
         (setq entry (and c (car c)))
         (setq kill-ring-yank-pointer (or c kill-ring)))
       (when entry
-        (nelisp-ec-insert entry))
+        (let ((beg (nelisp-ec-point)))
+          (nelisp-ec-insert entry)
+          (when (fboundp 'emacs-undo-record-insert)
+            (emacs-undo-record-insert beg (nelisp-ec-point)))))
       nil)))
 
 ;;;; --- word motion (ASCII alnum) -------------------------------------
