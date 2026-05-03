@@ -391,9 +391,20 @@ specializer cons-cells from arglist (e.g. `(SEQUENCE array)' → `SEQUENCE')."
 
 (unless (fboundp 'cl-defstruct)
   (defmacro cl-defstruct (name &rest slots)
-    "Stub: defstruct → minimal alist-backed accessors."
-    (let ((sname (if (consp name) (car name) name))
-          (slot-names (mapcar (lambda (s) (if (consp s) (car s) s)) slots)))
+    "Stub: defstruct → minimal alist-backed accessors.
+
+Skips a leading docstring among SLOTS (= host `cl-defstruct'
+accepts an optional docstring before the slot list); the option
+list `(NAME (:constructor X) (:copier nil) ...)' shape is
+collapsed to bare NAME."
+    (let* ((sname (if (consp name) (car name) name))
+           ;; If the first element of SLOTS is a string, treat it as
+           ;; the struct's docstring and drop it before slot-name
+           ;; extraction.
+           (slot-list (if (and (consp slots) (stringp (car slots)))
+                          (cdr slots)
+                        slots))
+           (slot-names (mapcar (lambda (s) (if (consp s) (car s) s)) slot-list)))
       (let ((forms nil))
         ;; make-NAME constructor → returns alist of slots.
         ;; Built with `list' so the inner `sname' splice is explicit
