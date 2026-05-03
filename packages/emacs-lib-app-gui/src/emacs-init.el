@@ -92,6 +92,11 @@
 ;; / forward-word / backward-word).  Loads after `emacs-line-builtins'
 ;; (= depends on `emacs-line--eol-pos' for `kill-line').
 (require 'emacs-edit-builtins)
+;; Track C (2026-05-03) — minibuffer + completion bridges to the
+;; existing `emacs-minibuffer.el' prefixed module.  Loads after
+;; `emacs-edit-builtins' (= the minibuffer's internal buffer also
+;; uses the editing-command surface for line edit).
+(require 'emacs-minibuffer-builtins)
 ;; Phase 11.C'' — keymap.c / frame.c / window.c bridges to the
 ;; existing `emacs-keymap.el' / `emacs-frame.el' / `emacs-window.el'
 ;; prefixed implementations.  Each transitively pulls its prefixed
