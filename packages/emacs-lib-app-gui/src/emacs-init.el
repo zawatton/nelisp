@@ -82,6 +82,11 @@
 ;; `emacs-buffer-builtins' because it uses `save-excursion' and
 ;; `nelisp-ec-buffer-substring' from there.
 (require 'emacs-line-builtins)
+;; Track D Phase D (2026-05-03) — file I/O bridges + find-file /
+;; save-buffer / write-file / revert-buffer derivations.  Loads after
+;; `emacs-buffer-builtins' (= depends on `current-buffer' /
+;; `set-buffer' / `generate-new-buffer').
+(require 'emacs-fileio-builtins)
 ;; Phase 11.C'' — keymap.c / frame.c / window.c bridges to the
 ;; existing `emacs-keymap.el' / `emacs-frame.el' / `emacs-window.el'
 ;; prefixed implementations.  Each transitively pulls its prefixed
