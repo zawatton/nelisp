@@ -230,6 +230,63 @@
                                  "(princ (format \"BATCH=%S\\n\" t))")))))
       (should (string-match-p "BATCH=t" out)))))
 
+;;;; G. Track C — keymap + interactive entry
+
+(ert-deftest nemacs-main-test/init-keymap-binds-quit ()
+  "`nemacs-main--init-keymap' should produce a keymap with C-x C-c
+bound to `nemacs-main-kill'."
+  (let ((nemacs-main--global-keymap nil))
+    (let ((m (nemacs-main--init-keymap)))
+      (should (keymapp m))
+      (should (eq 'nemacs-main-kill
+                  (lookup-key m (kbd "C-x C-c"))))
+      (should (eq 'nemacs-main-kill
+                  (lookup-key m (kbd "C-c C-q")))))))
+
+(ert-deftest nemacs-main-test/init-keymap-idempotent ()
+  "Re-calling `nemacs-main--init-keymap' should return the same map."
+  (let ((nemacs-main--global-keymap nil))
+    (let ((m1 (nemacs-main--init-keymap))
+          (m2 (nemacs-main--init-keymap)))
+      (should (eq m1 m2)))))
+
+(ert-deftest nemacs-main-test/install-keymap-host-sets-overriding ()
+  "Under interactive Emacs the host install should set
+`overriding-terminal-local-map' to our map."
+  ;; ERT runs under noninteractive, so simulate the interactive
+  ;; case by binding `noninteractive' to nil locally.
+  (let ((noninteractive nil)
+        (overriding-terminal-local-map nil)
+        (nemacs-main--global-keymap nil))
+    (nemacs-main--install-keymap-host)
+    (should overriding-terminal-local-map)
+    (should (keymapp overriding-terminal-local-map))
+    (should (eq 'nemacs-main-kill
+                (lookup-key overriding-terminal-local-map
+                            (kbd "C-x C-c"))))
+    (nemacs-main--uninstall-keymap-host)
+    (should-not overriding-terminal-local-map)))
+
+(ert-deftest nemacs-main-test/install-keymap-host-skips-batch ()
+  "Under noninteractive Emacs (= --batch) the install is a no-op."
+  (let ((noninteractive t)
+        (overriding-terminal-local-map nil)
+        (nemacs-main--global-keymap nil))
+    (nemacs-main--install-keymap-host)
+    (should-not overriding-terminal-local-map)))
+
+(ert-deftest nemacs-main-test/kill-sets-quit-flag-without-emacs-exit ()
+  "`nemacs-main-kill' should at minimum mark the quit flag.
+We cannot let it call `kill-emacs' here (= would tear down the
+test runner), so flet around it."
+  (cl-letf* ((kill-called nil)
+             ((symbol-function 'kill-emacs)
+              (lambda (&rest _) (setq kill-called t))))
+    (let ((nemacs-main--quit-flag nil))
+      (nemacs-main-kill 0)
+      (should nemacs-main--quit-flag)
+      (should kill-called))))
+
 (provide 'nemacs-main-test)
 
 ;;; nemacs-main-test.el ends here

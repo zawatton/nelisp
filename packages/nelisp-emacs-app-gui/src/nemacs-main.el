@@ -125,6 +125,76 @@ abort the boot."
      (when (fboundp 'message)
        (message "nemacs: initial paint failed: %S" err)))))
 
+;;;; --- keymap (Doc 51 Track C) ------------------------------------------
+;;
+;; nemacs's own command keymap.  Bound here so consumer code can
+;; rebind cleanly without touching the host Emacs global map and so
+;; the nelisp driver path has a single place to look.  Track C MVP:
+;;
+;;   C-x C-c     nemacs-kill           — graceful exit
+;;   C-c C-q     nemacs-kill           — short-form alternative
+;;   C-g         keyboard-quit         — abort current key sequence
+;;
+;; Under host driver this map is installed as
+;; `overriding-terminal-local-map' so it takes precedence over any
+;; mode map that happens to be active.  Under nelisp driver the
+;; `nemacs-main--event-loop' threads raw keys through it directly.
+
+(defvar nemacs-main--global-keymap nil
+  "Top-level nemacs keymap.  See `nemacs-main--init-keymap'.")
+
+(defun nemacs-main-kill (&optional exit-code)
+  "Quit nemacs gracefully.
+Under host Emacs this calls `kill-emacs'; under the nelisp driver it
+sets `nemacs-main--quit-flag' so the event loop unwinds normally.
+EXIT-CODE defaults to 0."
+  (interactive)
+  (setq nemacs-main--quit-flag t)
+  (cond
+   ((fboundp 'kill-emacs)
+    (kill-emacs (or exit-code 0)))
+   (t
+    (when (fboundp 'message)
+      (message "nemacs: quit (exit %S)" (or exit-code 0))))))
+
+(defun nemacs-main--init-keymap ()
+  "Construct `nemacs-main--global-keymap' if not yet built.
+Idempotent — safe to call multiple times.  Returns the keymap."
+  (unless nemacs-main--global-keymap
+    (let ((m (cond
+              ((fboundp 'make-sparse-keymap) (make-sparse-keymap))
+              ((fboundp 'emacs-keymap-make-keymap)
+               (emacs-keymap-make-keymap))
+              (t (list 'keymap)))))
+      (when (fboundp 'define-key)
+        (define-key m (kbd "C-x C-c") 'nemacs-main-kill)
+        (define-key m (kbd "C-c C-q") 'nemacs-main-kill)
+        (when (fboundp 'keyboard-quit)
+          (define-key m (kbd "C-g") 'keyboard-quit)))
+      (setq nemacs-main--global-keymap m)))
+  nemacs-main--global-keymap)
+
+(defun nemacs-main--install-keymap-host ()
+  "Install `nemacs-main--global-keymap' as the host Emacs override.
+On host driver (= interactive Emacs) this lets us own `C-x C-c'
+without disturbing the user's global map.  The override is bound
+via `overriding-terminal-local-map' so it persists across mode
+switches; callers should clear it from `nemacs-main--shutdown-tui'."
+  (when (and (not noninteractive)
+             (boundp 'overriding-terminal-local-map))
+    (let ((m (nemacs-main--init-keymap)))
+      ;; Inherit from the existing terminal map so vanilla bindings
+      ;; (cursor motion, self-insert) still work.
+      (when (and (fboundp 'set-keymap-parent)
+                 (fboundp 'current-global-map))
+        (set-keymap-parent m (current-global-map)))
+      (set 'overriding-terminal-local-map m))))
+
+(defun nemacs-main--uninstall-keymap-host ()
+  "Reverse of `nemacs-main--install-keymap-host'."
+  (when (boundp 'overriding-terminal-local-map)
+    (set 'overriding-terminal-local-map nil)))
+
 ;;;; --- event loop ---------------------------------------------------
 
 (defvar nemacs-main--quit-flag nil
@@ -230,7 +300,14 @@ Returns the exit-code symbol (= `ok' on success)."
 
 Boots the substrate, brings up the TUI, paints the initial frame,
 then runs the event loop.  Returns the exit-code symbol when the
-loop exits cleanly."
+loop exits cleanly.
+
+Under host Emacs (= interactive driver) this installs
+`nemacs-main--global-keymap' as `overriding-terminal-local-map'
+so `C-x C-c' / `C-c C-q' route to `nemacs-kill', and then defers
+the read loop to host Emacs's command loop (= no nested loop).
+Under nelisp driver the substrate's own `nemacs-main--event-loop'
+takes over and dispatches TUI events directly."
   (cond
    ((nemacs-main-option :batch)
     (nemacs-batch-main))
@@ -238,19 +315,42 @@ loop exits cleanly."
     (unless nemacs-initialized
       (nemacs-init))
     (nemacs-main--apply-options)
-    (let ((tui-ok (nemacs-main--realise-tui)))
+    (nemacs-main--init-keymap)
+    (let ((tui-ok (nemacs-main--realise-tui))
+          (driver (or (nemacs-main-option :driver) 'host)))
       (unwind-protect
           (cond
            (tui-ok
             (nemacs-main--initial-paint)
-            (nemacs-main--event-loop)
-            'ok)
+            ;; Banner before yielding control.
+            (unless (nemacs-main-option :no-banner)
+              (when (fboundp 'message)
+                (message "%s" (nemacs-main-status-banner))))
+            (cond
+             ;; Host driver + interactive: install keymap + return,
+             ;; let host Emacs's main loop drive.  Don't enter our
+             ;; own event loop (= would nest two read-event drains).
+             ((and (eq driver 'host)
+                   (boundp 'noninteractive)
+                   (not noninteractive))
+              (nemacs-main--install-keymap-host)
+              'ok)
+             (t
+              ;; nelisp driver / non-interactive: drive our own loop.
+              (nemacs-main--event-loop)
+              'ok)))
            (t
             ;; TUI unavailable → fall through to batch semantics.
             (when (fboundp 'message)
               (message "nemacs: TUI not available, running batch-style"))
             (nemacs-batch-main)))
-        (nemacs-main--shutdown-tui))))))
+        ;; Clean up only the per-process state that we installed.
+        ;; Note: under interactive host driver we do NOT shutdown TUI
+        ;; here, because shutdown happens when the user runs C-x C-c
+        ;; → nemacs-kill → kill-emacs → at-exit hooks.
+        (when (or (nemacs-main-option :batch)
+                  (and (boundp 'noninteractive) noninteractive))
+          (nemacs-main--shutdown-tui)))))))
 
 (provide 'nemacs-main)
 
