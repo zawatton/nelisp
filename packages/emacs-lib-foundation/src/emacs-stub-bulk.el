@@ -608,9 +608,9 @@
 (unless (fboundp 'pos-bol) (defun pos-bol (&rest _) nil))
 (unless (fboundp 'pos-eol) (defun pos-eol (&rest _) nil))
 (unless (fboundp 'posn-at-point) (defun posn-at-point (&rest _) nil))
-(unless (boundp 'post-command-hook) (defvar post-command-hook nil))
+;; post-command-hook moved to emacs-command-loop-builtins (Phase B.4).
 (unless (boundp 'post-self-insert-hook) (defvar post-self-insert-hook nil))
-(unless (boundp 'pre-command-hook) (defvar pre-command-hook nil))
+;; pre-command-hook moved to emacs-command-loop-builtins (Phase B.4).
 ;; prefix-arg moved to emacs-command-loop-builtins (Phase B.3).
 (unless (fboundp 'prefix-numeric-value) (defun prefix-numeric-value (&rest _) nil))
 (unless (fboundp 'primitive-undo) (defun primitive-undo (&rest _) nil))
@@ -831,7 +831,7 @@
 ;; emacs-command-loop-builtins (Phase B.1).
 (unless (fboundp 'time-convert) (defun time-convert (&rest _) nil))
 (unless (fboundp 'time-less-p) (defun time-less-p (&rest _) nil))
-(unless (fboundp 'top-level) (defun top-level (&rest _) nil))
+;; top-level moved to emacs-command-loop-builtins (Phase B.4).
 (unless (boundp 'translation-table-for-input) (defvar translation-table-for-input nil))
 (unless (fboundp 'truncate) (defun truncate (&rest _) nil))
 (unless (fboundp 'tty-top-frame) (defun tty-top-frame (&rest _) nil))

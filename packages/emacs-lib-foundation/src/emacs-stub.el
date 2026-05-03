@@ -357,10 +357,34 @@
     (ignore hook function local) nil))
 
 (unless (fboundp 'run-hooks)
-  (defun run-hooks (&rest hooks) (ignore hooks) nil))
+  (defun run-hooks (&rest hooks)
+    "Run each hook in HOOKS.  Each hook should be a symbol whose value
+is a function or a list of functions; each is called with no args.
+Phase B.4 (2026-05-03): upgraded from previous no-op stub."
+    (dolist (hook hooks)
+      (when (and (symbolp hook) (boundp hook))
+        (let ((val (symbol-value hook)))
+          (cond
+           ((null val) nil)
+           ((functionp val) (funcall val))
+           ((listp val)
+            (dolist (fn val)
+              (when (functionp fn)
+                (funcall fn))))))))))
 
 (unless (fboundp 'run-hook-with-args)
-  (defun run-hook-with-args (hook &rest args) (ignore hook args) nil))
+  (defun run-hook-with-args (hook &rest args)
+    "Run each function on HOOK with ARGS.
+Phase B.4 (2026-05-03): upgraded from previous no-op stub."
+    (when (and (symbolp hook) (boundp hook))
+      (let ((val (symbol-value hook)))
+        (cond
+         ((null val) nil)
+         ((functionp val) (apply val args))
+         ((listp val)
+          (dolist (fn val)
+            (when (functionp fn)
+              (apply fn args)))))))))
 
 
 ;;;; --- list helpers ------------------------------------------------------

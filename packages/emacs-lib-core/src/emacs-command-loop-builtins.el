@@ -32,6 +32,9 @@
 ;; B.2 (2026-05-03) added: read-key-sequence / read-key-sequence-vector.
 ;; B.3 (2026-05-03) added: call-interactively / funcall-interactively /
 ;;                          command-execute / prefix-arg / current-prefix-arg.
+;; B.4 (2026-05-03) added: command-loop-1 / top-level / recursive-edit /
+;;                          recursion-depth / pre-command-hook /
+;;                          post-command-hook.
 ;;
 ;; Deferred to subsequent phases:
 ;;   B.4: command-loop-1 / top-level
@@ -90,6 +93,18 @@
 (unless (fboundp 'command-execute)
   (defalias 'command-execute #'emacs-command-loop-command-execute))
 
+(unless (fboundp 'command-loop-1)
+  (defalias 'command-loop-1 #'emacs-command-loop-1))
+
+(unless (fboundp 'top-level)
+  (defalias 'top-level #'emacs-command-loop-top-level))
+
+(unless (fboundp 'recursive-edit)
+  (defalias 'recursive-edit #'emacs-command-loop-recursive-edit))
+
+(unless (fboundp 'recursion-depth)
+  (defalias 'recursion-depth #'emacs-command-loop-recursion-depth))
+
 ;;;; --- variable bridges ----------------------------------------------
 
 (unless (boundp 'this-command)
@@ -143,6 +158,14 @@ secondary source after `emacs-command-loop--unread-events' is empty."))
 (unless (boundp 'current-prefix-arg)
   (defvar current-prefix-arg nil
     "Phase B.3 bridge: prefix arg of the command currently executing."))
+
+(unless (boundp 'pre-command-hook)
+  (defvar pre-command-hook nil
+    "Phase B.4 bridge: hook run before each command-loop dispatch."))
+
+(unless (boundp 'post-command-hook)
+  (defvar post-command-hook nil
+    "Phase B.4 bridge: hook run after each command-loop dispatch."))
 
 (provide 'emacs-command-loop-builtins)
 

@@ -337,6 +337,59 @@
     (should-error (emacs-command-loop-command-execute 42)
                   :type 'wrong-type-argument)))
 
+;;;; O. Phase B.4 — command-loop-1 driver
+
+(defvar emacs-command-loop-builtins-test--counter 0)
+
+(defun emacs-command-loop-builtins-test--bump ()
+  (interactive)
+  (setq emacs-command-loop-builtins-test--counter
+        (1+ emacs-command-loop-builtins-test--counter)))
+
+(ert-deftest emacs-command-loop-builtins-test/command-loop-1-drains ()
+  (emacs-command-loop-builtins-test--with-fresh-keymaps
+    (emacs-keymap-define-key emacs-keymap-global-map "a"
+                             'emacs-command-loop-builtins-test--bump)
+    (setq emacs-command-loop-builtins-test--counter 0)
+    (emacs-command-loop-feed-events ?a ?a ?a)
+    (let ((n (emacs-command-loop-1)))
+      (should (= 3 n))
+      (should (= 3 emacs-command-loop-builtins-test--counter)))))
+
+(ert-deftest emacs-command-loop-builtins-test/command-loop-1-empty-is-noop ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (should (= 0 (emacs-command-loop-1)))))
+
+(ert-deftest emacs-command-loop-builtins-test/pre-and-post-command-hook-fire ()
+  (emacs-command-loop-builtins-test--with-fresh-keymaps
+    (emacs-keymap-define-key emacs-keymap-global-map "a"
+                             'emacs-command-loop-builtins-test--bump)
+    (let* ((pre-fired 0)
+           (post-fired 0)
+           (pre-command-hook
+            (list (lambda () (setq pre-fired (1+ pre-fired)))))
+           (post-command-hook
+            (list (lambda () (setq post-fired (1+ post-fired))))))
+      (setq emacs-command-loop-builtins-test--counter 0)
+      (emacs-command-loop-feed-events ?a ?a)
+      (emacs-command-loop-1)
+      (should (= 2 pre-fired))
+      (should (= 2 post-fired))
+      (should (= 2 emacs-command-loop-builtins-test--counter)))))
+
+(ert-deftest emacs-command-loop-builtins-test/undefined-key-handler-fires ()
+  (emacs-command-loop-builtins-test--with-fresh-keymaps
+    (let* ((seen nil)
+           (emacs-command-loop--undefined-key-handler
+            (lambda (vec) (push (aref vec 0) seen))))
+      (emacs-command-loop-feed-events ?z ?y)
+      (emacs-command-loop-1)
+      ;; seen is accumulated via push (= LIFO); reverse to get feed order.
+      (should (equal (list ?z ?y) (reverse seen))))))
+
+(ert-deftest emacs-command-loop-builtins-test/recursion-depth-stub-zero ()
+  (should (= 0 (emacs-command-loop-recursion-depth))))
+
 (provide 'emacs-command-loop-builtins-test)
 
 ;;; emacs-command-loop-builtins-test.el ends here
