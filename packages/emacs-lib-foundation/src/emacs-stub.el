@@ -305,37 +305,14 @@ only useful for `keymapp' / `eq' identity checks."
     `(progn (defvar ,var ,val ,docstring)
             (make-variable-buffer-local ',var))))
 
-;; Buffer search primitives — all stubs (= no real buffer text in standalone)
-(unless (fboundp 're-search-forward)
-  (defun re-search-forward (regexp &optional bound noerror count)
-    (ignore regexp bound noerror count) nil))
-
-(unless (fboundp 're-search-backward)
-  (defun re-search-backward (regexp &optional bound noerror count)
-    (ignore regexp bound noerror count) nil))
-
-(unless (fboundp 'search-forward)
-  (defun search-forward (string &optional bound noerror count)
-    (ignore string bound noerror count) nil))
-
-(unless (fboundp 'search-backward)
-  (defun search-backward (string &optional bound noerror count)
-    (ignore string bound noerror count) nil))
-
-(unless (fboundp 'match-string)
-  (defun match-string (num &optional string) (ignore num string) nil))
-
-(unless (fboundp 'match-string-no-properties)
-  (defalias 'match-string-no-properties 'match-string))
-
-(unless (fboundp 'match-beginning)
-  (defun match-beginning (subexp) (ignore subexp) nil))
-
-(unless (fboundp 'match-end)
-  (defun match-end (subexp) (ignore subexp) nil))
-
-(unless (fboundp 'match-data)
-  (defun match-data (&optional integers reuse reseat) (ignore integers reuse reseat) nil))
+;; Buffer search primitives.  Phase 11.B' (2026-05-03) extracted the
+;; bridgeable subset (= re-search-forward / re-search-backward /
+;; search-forward / search-backward / looking-at / match-data /
+;; match-beginning / match-end / match-string + -no-properties) into
+;; `emacs-search-builtins.el', wired to `nelisp-ec-*' substrate.  The
+;; stubs that remain below cover the surface that has no L1.5 impl yet
+;; (= string-match returns plist not int, replace-* needs a buffer
+;; mutator, looking-back needs reverse scan).
 
 (unless (fboundp 'set-match-data)
   (defun set-match-data (list &optional reseat) (ignore list reseat) nil))
@@ -355,9 +332,6 @@ only useful for `keymapp' / `eq' identity checks."
 (unless (fboundp 'replace-match)
   (defun replace-match (newtext &optional fixedcase literal string subexp)
     (ignore newtext fixedcase literal subexp) string))
-
-(unless (fboundp 'looking-at)
-  (defun looking-at (regexp) (ignore regexp) nil))
 
 (unless (fboundp 'looking-back)
   (defun looking-back (regexp &optional limit greedy) (ignore regexp limit greedy) nil))
