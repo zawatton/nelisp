@@ -1437,6 +1437,98 @@ specializer cons-cells from arglist (e.g. `(SEQUENCE array)' → `SEQUENCE')."
     "Return t if OBJ is a character (= integer) or string."
     (or (integerp obj) (stringp obj))))
 
+;;;; --- file path utility polyfills --------------------------------------
+
+;; The bulk auto-stub returns nil for file-name-sans-extension, which
+;; breaks anvil-memory--fallback-display-name when handed a basename
+;; without an extension.  Real impl: strip last `.EXT' suffix, return
+;; original string when no `.' present in the basename.
+(defun file-name-sans-extension (filename)
+  "Return FILENAME with its extension (the last `.EXT' suffix) removed.
+Returns FILENAME unchanged when no extension is present."
+  (cond
+   ((null filename) nil)
+   (t
+    ;; Use string-match to find the last `.' after the last `/'.  Walk
+    ;; backwards: scan from the end looking for `.', stop at `/' or
+    ;; start.
+    (let* ((n (length filename))
+           (i (- n 1))
+           (dot-pos nil))
+      (while (and (>= i 0) (null dot-pos))
+        (let ((c (aref filename i)))
+          (cond
+           ((eq c ?/) (setq i -1))            ; passed last directory sep
+           ((eq c ?.) (setq dot-pos i) (setq i -1))
+           (t (setq i (- i 1))))))
+      (if dot-pos
+          (substring filename 0 dot-pos)
+        filename)))))
+
+
+;;;; --- time + crypto polyfills (Phase 6 write path) ---------------------
+;;
+;; Wraps the build-tool builtins `nl-current-unix-time' / `nl-secure-hash'
+;; (= bi_nl_current_unix_time / bi_nl_secure_hash in
+;; build-tool/eval/builtins.rs).  Real `current-time' returns a HIGH/LOW/
+;; MICRO list — anvil callsites only pull (truncate (float-time)) so we
+;; expose that path directly without bothering with the legacy list shape.
+
+(defun float-time (&optional time-value)
+  "Return seconds since the Unix epoch.
+TIME-VALUE is accepted for API compatibility but only a nil value
+is supported (= read current time)."
+  (ignore time-value)
+  (if (fboundp 'nl-current-unix-time)
+      (nl-current-unix-time)
+    0))
+
+(defun current-time ()
+  "Return current time as (HIGH LOW USEC PSEC) — Phase 6 simplified
+shape that returns (T 0 0 0) where T is the Unix epoch as a single
+integer.  anvil-memory only ever feeds this back into `truncate' /
+`float-time' so the legacy 3-cell shape is unnecessary here."
+  (list (float-time) 0 0 0))
+
+(unless (and (fboundp 'truncate)
+             ;; If truncate is the no-op bulk stub, override with real impl.
+             (let ((t1 (truncate 3.7)))
+               (and (integerp t1) (= t1 3))))
+  (defun truncate (number &optional divisor)
+    "Phase 6 polyfill: integer truncation toward zero.
+NUMBER may be int or float; DIVISOR optional (= NUMBER / DIVISOR)."
+    (cond
+     ((null number) 0)
+     (divisor
+      (truncate (/ number divisor)))
+     ((integerp number) number)
+     ((floatp number)
+      (let ((n (if (>= number 0)
+                   (- number 0.0)
+                 (- 0.0 number)))
+            (sign (if (>= number 0) 1 -1)))
+        ;; floor-by-subtraction (no `floor' builtin available).  Adequate
+        ;; for the timestamp range we care about (< 2^53 seconds).
+        (let ((i 0))
+          (while (>= n 1.0)
+            (setq n (- n 1.0))
+            (setq i (+ i 1)))
+          (* sign i))))
+     (t 0))))
+
+(defun secure-hash (algorithm object &optional start end binary)
+  "Compute the hash of OBJECT under ALGORITHM symbol.
+START / END / BINARY are accepted for API compat but only the
+(algo string) two-argument shape is wired up."
+  (ignore start end binary)
+  (cond
+   ((not (fboundp 'nl-secure-hash))
+    (error "secure-hash: nl-secure-hash builtin not available"))
+   ((not (stringp object))
+    (error "secure-hash: OBJECT must be a string (Phase 6 limitation)"))
+   (t (nl-secure-hash algorithm object))))
+
+
 ;;;; --- terminal/IO no-op stubs (= avoid void-function during process load) ---
 
 (unless (fboundp 'send-string-to-terminal)
