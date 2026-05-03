@@ -125,6 +125,11 @@
 ;; (macro) / make-face / face-attribute / set-face-attribute /
 ;; face-{foreground,background,list,p}.
 (require 'emacs-faces-builtins)
+;; Track H (2026-05-03) — major-mode framework MVP.  Bridges
+;; `define-derived-mode' (macro) / `fundamental-mode' / `text-mode'
+;; / `emacs-lisp-mode' / `run-mode-hooks' / `auto-mode-alist' /
+;; `set-auto-mode' / `kill-all-local-variables'.
+(require 'emacs-mode-builtins)
 
 (provide 'emacs-init)
 
