@@ -208,6 +208,81 @@
         (should (equal "outer" (nelisp-ec-buffer-string)))
         (should (eq outer (nelisp-ec-current-buffer)))))))
 
+;;;; M. Phase L1 — get-buffer / get-buffer-create / buffer-list
+
+(defun emacs-buffer-builtins-test--get-buffer (buffer-or-name)
+  "Polyfill body of `get-buffer' (= verbatim from emacs-buffer-builtins)."
+  (cond
+   ((null buffer-or-name) nil)
+   ((nelisp-ec-buffer-p buffer-or-name)
+    (if (nelisp-ec-buffer-killed-p buffer-or-name)
+        nil
+      buffer-or-name))
+   ((stringp buffer-or-name)
+    (cdr (assoc buffer-or-name nelisp-ec--buffers)))
+   (t nil)))
+
+(defun emacs-buffer-builtins-test--get-buffer-create (buffer-or-name)
+  (or (emacs-buffer-builtins-test--get-buffer buffer-or-name)
+      (nelisp-ec-generate-new-buffer
+       (cond
+        ((stringp buffer-or-name) buffer-or-name)
+        ((nelisp-ec-buffer-p buffer-or-name)
+         (nelisp-ec-buffer-name buffer-or-name))
+        (t " *unnamed*")))))
+
+(defun emacs-buffer-builtins-test--buffer-list ()
+  (let ((acc nil))
+    (dolist (cell nelisp-ec--buffers)
+      (let ((buf (cdr cell)))
+        (when (and buf (not (nelisp-ec-buffer-killed-p buf)))
+          (setq acc (cons buf acc)))))
+    (let ((rev nil))
+      (while acc (setq rev (cons (car acc) rev)) (setq acc (cdr acc)))
+      rev)))
+
+(ert-deftest emacs-buffer-builtins-test/L1-get-buffer-by-string ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "alpha")))
+      (should (eq b (emacs-buffer-builtins-test--get-buffer "alpha")))
+      (should (null (emacs-buffer-builtins-test--get-buffer "beta"))))))
+
+(ert-deftest emacs-buffer-builtins-test/L1-get-buffer-by-buffer-passes-live-rejects-killed ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "live")))
+      (should (eq b (emacs-buffer-builtins-test--get-buffer b)))
+      (nelisp-ec-kill-buffer b)
+      (should (null (emacs-buffer-builtins-test--get-buffer b))))))
+
+(ert-deftest emacs-buffer-builtins-test/L1-get-buffer-create-returns-existing-or-creates ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((b1 (emacs-buffer-builtins-test--get-buffer-create "x")))
+      (should (nelisp-ec-buffer-p b1))
+      ;; Second call returns the same existing buffer.
+      (should (eq b1 (emacs-buffer-builtins-test--get-buffer-create "x")))
+      ;; Different name creates a fresh buffer.
+      (let ((b2 (emacs-buffer-builtins-test--get-buffer-create "y")))
+        (should (not (eq b1 b2)))
+        (should (nelisp-ec-buffer-p b2))))))
+
+(ert-deftest emacs-buffer-builtins-test/L1-buffer-list-returns-live-only ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((a (nelisp-ec-generate-new-buffer "a"))
+          (b (nelisp-ec-generate-new-buffer "b"))
+          (c (nelisp-ec-generate-new-buffer "c")))
+      (should (equal 3 (length (emacs-buffer-builtins-test--buffer-list))))
+      (nelisp-ec-kill-buffer b)
+      (let ((live (emacs-buffer-builtins-test--buffer-list)))
+        (should (equal 2 (length live)))
+        (should (memq a live))
+        (should (memq c live))
+        (should-not (memq b live))))))
+
+(ert-deftest emacs-buffer-builtins-test/L1-fboundp-parity ()
+  (should (fboundp 'get-buffer))
+  (should (fboundp 'get-buffer-create))
+  (should (fboundp 'buffer-list)))
+
 (provide 'emacs-buffer-builtins-test)
 
 ;;; emacs-buffer-builtins-test.el ends here
