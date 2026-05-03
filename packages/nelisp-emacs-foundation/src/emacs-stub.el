@@ -329,7 +329,12 @@ only useful for `keymapp' / `eq' identity checks."
   (defun set-match-data (list &optional reseat) (ignore list reseat) nil))
 
 (unless (fboundp 'string-match)
-  (defun string-match (regexp string &optional start) (ignore regexp string start) nil))
+  ;; Emacs 27+ added 4th arg INHIBIT-MODIFY (= don't update match data).
+  ;; Vendor subr.el's string-match-p calls (string-match RE STR START t) so
+  ;; our polyfill must accept all 4.
+  (defun string-match (regexp string &optional start inhibit-modify)
+    (ignore regexp string start inhibit-modify)
+    nil))
 
 (unless (fboundp 'replace-regexp-in-string)
   (defun replace-regexp-in-string (regexp rep string &rest _)
@@ -997,6 +1002,15 @@ Each binding is (PARAM (or (cadr (memq KW RESTSYM)) DEFAULT))."
   ;; of synthesizing --cl-keys.
   (defvar emacs-stub--cl-defun-call-count 0
     "Bumped each time the cl-defun macro stub expands a form.")
+  ;; Two registration paths needed:
+  ;;   1. build-tool/eval recognizes the (macro lambda ...) function cell
+  ;;      → use plain `defmacro' (writes to env.set_function)
+  ;;   2. nelisp-eval-form (the FULL self-host evaluator) consults
+  ;;      `nelisp--macros' hashtable, NOT the function cell → also
+  ;;      puthash into nelisp--macros so the takeover path expands too
+  ;;
+  ;; Path (2) registration happens at the bottom of this `unless'
+  ;; clause via `(when (boundp 'nelisp--macros) ...)' guard.
   (defmacro cl-defun (name arglist &rest body)
     "Stub: cl-defun with &optional / &rest / &key support."
     (setq emacs-stub--cl-defun-call-count

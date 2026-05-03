@@ -340,15 +340,24 @@ failure."
 (unless (fboundp 'sqlite-select)
   (defun sqlite-select (db query &optional values _return-type)
     "Run SELECT-style QUERY against DB with optional VALUES.
-Returns a list of row vectors (= each row is a vector of column values)."
+Returns a list of row lists (= each row is a list of column values),
+matching the default shape of Emacs 30 `sqlite-select' (without
+`:return-type'.  Pass `:return-type vector' explicitly to get vectors.)"
     (let* ((args-json (emacs-sqlite-ffi--encode-args values))
            (json (emacs-sqlite-ffi--query-raw db query args-json))
            (rows (emacs-sqlite-ffi--json-decode json)))
+      ;; Our JSON decoder produces lists already (json-parse-array returns
+      ;; nreversed list), so mapcar is mainly for the vector edge case.
       (mapcar (lambda (row)
                 (cond
-                 ((arrayp row) row)
-                 ((listp row) (apply 'vector row))
-                 (t (vector row))))
+                 ((listp row) row)
+                 ((arrayp row)
+                  (let ((acc nil) (i (length row)))
+                    (while (> i 0)
+                      (setq i (- i 1))
+                      (setq acc (cons (aref row i) acc)))
+                    acc))
+                 (t (list row))))
               (or rows '())))))
 
 
