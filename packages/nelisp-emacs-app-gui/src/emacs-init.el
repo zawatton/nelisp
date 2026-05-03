@@ -75,6 +75,13 @@
 ;; match-data / match-string family).  Loads after `emacs-buffer-builtins'
 ;; because `match-string' uses `buffer-substring' from there.
 (require 'emacs-search-builtins)
+;; Phase J (Track A, 2026-05-03) — line / column primitives derived
+;; on top of `nelisp-ec-buffer-substring' (= bobp / eobp / bolp / eolp
+;; / line-beginning-position / line-end-position / beginning-of-line /
+;; end-of-line / forward-line / line-number-at-pos).  Loads after
+;; `emacs-buffer-builtins' because it uses `save-excursion' and
+;; `nelisp-ec-buffer-substring' from there.
+(require 'emacs-line-builtins)
 ;; Phase 11.C'' — keymap.c / frame.c / window.c bridges to the
 ;; existing `emacs-keymap.el' / `emacs-frame.el' / `emacs-window.el'
 ;; prefixed implementations.  Each transitively pulls its prefixed
