@@ -64,6 +64,9 @@ pub fn install_builtins(env: &mut Env) {
         // Bridges any cdylib (sqlite + syscall + future seed crates) to
         // pure-Elisp wrapper packages without per-function dispatch glue.
         "nl-ffi-call",
+        // Companion buffer-management primitives for "fill caller-provided
+        // buffer" C APIs (= nl_sqlite_query, getline-style readers, etc.).
+        "nl-ffi-malloc", "nl-ffi-read-bytes", "nl-ffi-free",
     ];
     for n in names {
         let sentinel = Sexp::list_from(&[
@@ -153,6 +156,9 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "message" => bi_princ(args),
         "read-stdin-bytes" => bi_read_stdin_bytes(args),
         "nl-ffi-call" => super::ffi::nl_ffi_call(args),
+        "nl-ffi-malloc" => super::ffi::nl_ffi_malloc(args),
+        "nl-ffi-read-bytes" => super::ffi::nl_ffi_read_bytes(args),
+        "nl-ffi-free" => super::ffi::nl_ffi_free(args),
         "provide" => bi_provide(args, env),
         "require" => bi_require(args, env),
         "featurep" => bi_featurep(args, env),

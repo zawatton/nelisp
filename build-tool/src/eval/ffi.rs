@@ -279,3 +279,80 @@ pub fn nl_ffi_call(args: &[Sexp]) -> Result<Sexp, EvalError> {
     drop(slots);
     Ok(result)
 }
+
+// ---- Generic out-buffer helpers --------------------------------------------
+//
+// nl_sqlite_query and similar "fill caller-provided buffer" C APIs need the
+// Elisp side to allocate a buffer, pass its address as a :pointer arg, and
+// then read N bytes back into a Lisp string.  Three small primitives keep
+// this fully composable without per-function dispatch glue.
+
+/// `(nl-ffi-malloc N)` → integer raw pointer (zeroed).
+pub fn nl_ffi_malloc(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    if args.len() != 1 {
+        return Err(ffi_err(format!(
+            "nl-ffi-malloc: expected 1 arg (size), got {}",
+            args.len()
+        )));
+    }
+    let n = coerce_int(&args[0])?;
+    if n < 0 {
+        return Err(ffi_err(format!("nl-ffi-malloc: negative size {}", n)));
+    }
+    let n = n as usize;
+    let mut v: Vec<u8> = vec![0u8; n];
+    let ptr = v.as_mut_ptr() as i64;
+    // Leak the Vec so the buffer survives until nl-ffi-free.  Track in a
+    // global so free() can reconstruct the Box for proper deallocation.
+    let len = v.len();
+    let _cap = v.capacity();
+    let leaked: *mut u8 = Box::leak(v.into_boxed_slice()).as_mut_ptr();
+    alloc_table().lock().unwrap().insert(leaked as i64, len);
+    Ok(Sexp::Int(leaked as i64))
+}
+
+/// `(nl-ffi-read-bytes PTR N)` → string of N bytes copied from PTR.
+pub fn nl_ffi_read_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    if args.len() != 2 {
+        return Err(ffi_err(format!(
+            "nl-ffi-read-bytes: expected 2 args (ptr len), got {}",
+            args.len()
+        )));
+    }
+    let p = coerce_int(&args[0])? as *const u8;
+    let n = coerce_int(&args[1])?;
+    if n < 0 {
+        return Err(ffi_err(format!("nl-ffi-read-bytes: negative length {}", n)));
+    }
+    if p.is_null() {
+        return Err(ffi_err("nl-ffi-read-bytes: NULL pointer".into()));
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(p, n as usize) };
+    Ok(Sexp::Str(String::from_utf8_lossy(bytes).into_owned()))
+}
+
+/// `(nl-ffi-free PTR)` → t on success, signals on bad/double-free.
+pub fn nl_ffi_free(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    if args.len() != 1 {
+        return Err(ffi_err(format!(
+            "nl-ffi-free: expected 1 arg (ptr), got {}",
+            args.len()
+        )));
+    }
+    let p = coerce_int(&args[0])?;
+    let len = alloc_table()
+        .lock()
+        .unwrap()
+        .remove(&p)
+        .ok_or_else(|| ffi_err(format!("nl-ffi-free: pointer {} not from nl-ffi-malloc", p)))?;
+    unsafe {
+        let slice = std::slice::from_raw_parts_mut(p as *mut u8, len);
+        let _ = Box::from_raw(slice as *mut [u8]);
+    }
+    Ok(Sexp::T)
+}
+
+fn alloc_table() -> &'static Mutex<HashMap<i64, usize>> {
+    static T: OnceLock<Mutex<HashMap<i64, usize>>> = OnceLock::new();
+    T.get_or_init(|| Mutex::new(HashMap::new()))
+}

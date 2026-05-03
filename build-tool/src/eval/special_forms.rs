@@ -375,8 +375,116 @@ fn sf_defun(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
 }
 
 fn sf_cl_defun(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
+    // (cl-defun NAME (POS... &optional O... &rest R &key (K1 D1) (K2 D2) ...) BODY...)
+    //
+    // Doc 51 Phase 6 (2026-05-03): proper &key expansion.  Previously
+    // cl-defun routed straight through `define_named_lambda' which
+    // treats `&key' as a plain identifier — anvil-memory-list defined
+    // with `(&optional type &key with-decay sort)` then mis-arity'd at
+    // runtime because callers passing `:with-decay X :sort Y' overflow
+    // the 4-slot positional view.
+    //
+    // Rewrite the formals into `(POS... &optional O... &rest --cl-keys)`
+    // + wrap the body in a let* that lifts each &key parameter from
+    // --cl-keys via `(memq :NAME --cl-keys)' lookup.
     let parts = args_vec(args)?;
-    define_named_lambda("cl-defun", &parts, env)
+    if parts.len() < 2 {
+        return Err(EvalError::WrongNumberOfArguments {
+            function: "cl-defun".into(),
+            expected: "≥2".into(),
+            got: parts.len(),
+        });
+    }
+    let formals = list_elements(&parts[1])?;
+    let mut positional: Vec<Sexp> = Vec::new();
+    let mut optionals: Vec<Sexp> = Vec::new();
+    let mut rest_sym: Option<String> = None;
+    let mut keys: Vec<(String, String, Sexp)> = Vec::new(); // (kw-symbol, param-name, default-form)
+    enum Mode { Pos, Opt, Rest, Key, Aux }
+    let mut mode = Mode::Pos;
+    for f in &formals {
+        match f {
+            Sexp::Symbol(s) if s == "&optional" => mode = Mode::Opt,
+            Sexp::Symbol(s) if s == "&rest" => mode = Mode::Rest,
+            Sexp::Symbol(s) if s == "&key" => mode = Mode::Key,
+            Sexp::Symbol(s) if s == "&aux" => mode = Mode::Aux,
+            other => match mode {
+                Mode::Pos => positional.push(other.clone()),
+                Mode::Opt => optionals.push(other.clone()),
+                Mode::Rest => {
+                    if let Sexp::Symbol(s) = other {
+                        rest_sym = Some(s.clone());
+                    }
+                }
+                Mode::Key => {
+                    let (sym, default) = match other {
+                        Sexp::Symbol(s) => (s.clone(), Sexp::Nil),
+                        Sexp::Cons(_, _) => {
+                            let kparts = list_elements(other)?;
+                            let sym = match kparts.get(0) {
+                                Some(Sexp::Symbol(s)) => s.clone(),
+                                _ => continue,
+                            };
+                            let default = kparts.get(1).cloned().unwrap_or(Sexp::Nil);
+                            (sym, default)
+                        }
+                        _ => continue,
+                    };
+                    let kw = format!(":{}", sym);
+                    keys.push((kw, sym, default));
+                }
+                Mode::Aux => { /* ignore */ }
+            },
+        }
+    }
+
+    // No &key: pass through to define_named_lambda (= plain defun shape).
+    if keys.is_empty() {
+        return define_named_lambda("cl-defun", &parts, env);
+    }
+
+    // Build new formals: positional + &optional + optionals + &rest --cl-keys
+    let rest_name = rest_sym.unwrap_or_else(|| "--cl-keys".to_string());
+    let mut new_formals: Vec<Sexp> = positional;
+    if !optionals.is_empty() {
+        new_formals.push(Sexp::Symbol("&optional".into()));
+        new_formals.extend(optionals);
+    }
+    new_formals.push(Sexp::Symbol("&rest".into()));
+    new_formals.push(Sexp::Symbol(rest_name.clone()));
+
+    // Build let* bindings: for each (:KW PARAM DEFAULT)
+    //   (PARAM (or (car (cdr (memq ':KW' rest-name))) DEFAULT))
+    let rest_var = Sexp::Symbol(rest_name);
+    let mut bindings: Vec<Sexp> = Vec::new();
+    for (kw, param, default) in &keys {
+        let memq = Sexp::list_from(&[
+            Sexp::Symbol("memq".into()),
+            Sexp::list_from(&[Sexp::Symbol("quote".into()), Sexp::Symbol(kw.clone())]),
+            rest_var.clone(),
+        ]);
+        let cdr = Sexp::list_from(&[Sexp::Symbol("cdr".into()), memq]);
+        let car = Sexp::list_from(&[Sexp::Symbol("car".into()), cdr]);
+        let or_form = Sexp::list_from(&[Sexp::Symbol("or".into()), car, default.clone()]);
+        bindings.push(Sexp::list_from(&[Sexp::Symbol(param.clone()), or_form]));
+    }
+
+    // Wrap body in let*: (let* BINDINGS BODY...)
+    let body = &parts[2..];
+    let mut let_star = vec![
+        Sexp::Symbol("let*".into()),
+        Sexp::list_from(&bindings),
+    ];
+    let_star.extend(body.iter().cloned());
+    let wrapped_body = Sexp::list_from(&let_star);
+
+    // Synthesize new defun parts: (NAME NEW-FORMALS WRAPPED-BODY)
+    let new_parts = vec![
+        parts[0].clone(),
+        Sexp::list_from(&new_formals),
+        wrapped_body,
+    ];
+    define_named_lambda("cl-defun", &new_parts, env)
 }
 
 fn sf_defmacro(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {

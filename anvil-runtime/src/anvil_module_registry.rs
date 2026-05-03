@@ -177,7 +177,7 @@ impl ToolRegistry for AnvilModuleRegistry {
             .collect()
     }
 
-    fn call(&self, name: &str, _args: Value) -> Result<Value, JsonRpcError> {
+    fn call(&self, name: &str, args: Value) -> Result<Value, JsonRpcError> {
         let tool = self
             .tools
             .iter()
@@ -187,13 +187,16 @@ impl ToolRegistry for AnvilModuleRegistry {
             })?
             .clone();
 
-        // Phase 1: zero-arg dispatch only — ignore args, build (HANDLER).
-        // Phase 2 will introspect the handler's formals and map args.
+        // Phase 2: introspect the handler's formals at call time, map JSON
+        // args by formal-name lookup (with -/_ aliasing per the host
+        // registry convention).  Required positional args missing from
+        // the JSON object signal `invalid-params'; missing optionals are
+        // skipped (= the handler's &optional default takes over).
         let mut env = self
             .env
             .lock()
             .map_err(|_| internal_tool_error("anvil-module env lock poisoned"))?;
-        let form = Sexp::list_from(&[Sexp::Symbol(tool.handler.clone())]);
+        let form = build_module_call_form(&tool, &args, &mut env)?;
         let out = eval_via_self_host(&form, &mut env).map_err(|err| {
             internal_tool_error(format!(
                 "anvil-module eval failed for {}: {}",
@@ -281,6 +284,174 @@ fn list_elements(list: &Sexp) -> Option<Vec<Sexp>> {
             _ => return None,
         };
         cur = next;
+    }
+}
+
+/// Build the call form for a module tool by introspecting the handler
+/// lambda's formals and mapping JSON arguments by name.
+///
+/// Handler shape: `env.lookup_function(handler)` returns `(lambda
+/// (FORMAL ...) BODY...)` (= what `defun' / `cl-defun' produce).  We
+/// walk the formals list, switching mode on `&optional' / `&rest' /
+/// `&key', and pull the matching JSON value via `json-key-aliasing'
+/// (= `-` ↔ `_`).  Required positionals must be present; missing
+/// optionals default to `nil`.
+///
+/// `&key` parameters are passed as `:key VALUE` after a positional /
+/// optional run — matching what `cl-defun` (`sf_cl_defun' in
+/// `build-tool/eval/special_forms.rs`) expects in the auto-generated
+/// `&rest --cl-keys` tail.
+fn build_module_call_form(
+    tool: &ToolEntry,
+    args: &Value,
+    env: &mut Env,
+) -> Result<Sexp, JsonRpcError> {
+    use crate::mcp::protocol::ERR_INVALID_PARAMS;
+
+    let object = match args {
+        Value::Object(map) => map.clone(),
+        Value::Null => serde_json::Map::new(),
+        _ => return Err(JsonRpcError::new(
+            ERR_INVALID_PARAMS,
+            "tool arguments must be a JSON object",
+        )),
+    };
+
+    // Get handler lambda from env (= `(lambda FORMALS BODY...)').
+    let func = match env.lookup_function(&tool.handler) {
+        Ok(f) => f,
+        Err(_) => {
+            // Handler not found — fall back to zero-arg dispatch.
+            return Ok(Sexp::list_from(&[Sexp::Symbol(tool.handler.clone())]));
+        }
+    };
+    let formals_list = extract_lambda_formals(&func).unwrap_or_default();
+
+    // Walk formals, classify each by mode.
+    let mut positional: Vec<String> = Vec::new();
+    let mut optionals: Vec<String> = Vec::new();
+    let mut rest: Option<String> = None;
+    let mut keys: Vec<String> = Vec::new();
+    enum Mode { Pos, Opt, Rest, Key }
+    let mut mode = Mode::Pos;
+    for f in &formals_list {
+        match f {
+            Sexp::Symbol(s) if s == "&optional" => mode = Mode::Opt,
+            Sexp::Symbol(s) if s == "&rest" => mode = Mode::Rest,
+            Sexp::Symbol(s) if s == "&key" => mode = Mode::Key,
+            Sexp::Symbol(s) => match mode {
+                Mode::Pos => positional.push(s.clone()),
+                Mode::Opt => optionals.push(s.clone()),
+                Mode::Rest => rest = Some(s.clone()),
+                Mode::Key => keys.push(s.clone()),
+            },
+            Sexp::Cons(_, _) => {
+                // (NAME DEFAULT) — treat as optional / key by mode.
+                if let Some(parts) = list_elements(f) {
+                    if let Some(Sexp::Symbol(name)) = parts.first() {
+                        match mode {
+                            Mode::Opt => optionals.push(name.clone()),
+                            Mode::Key => keys.push(name.clone()),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Build call: (handler POS... OPT... [:K1 V1 :K2 V2 ...])
+    let mut items: Vec<Sexp> = vec![Sexp::Symbol(tool.handler.clone())];
+
+    for name in &positional {
+        match lookup_json_value(&object, name) {
+            Some(v) => items.push(json_to_quoted_sexp(v)),
+            None => return Err(JsonRpcError::new(
+                ERR_INVALID_PARAMS,
+                format!("missing required argument: {}", name),
+            )),
+        }
+    }
+
+    // Optionals + rest: only emit positional values up to the last present one.
+    let mut opt_values: Vec<Option<Sexp>> = optionals
+        .iter()
+        .map(|n| lookup_json_value(&object, n).map(json_to_quoted_sexp))
+        .collect();
+    // Trim trailing None so we don't pad with nil unnecessarily, EXCEPT
+    // when there are subsequent &key args we need to keep slots aligned for.
+    if keys.is_empty() && rest.is_none() {
+        while let Some(None) = opt_values.last() {
+            opt_values.pop();
+        }
+    }
+    for v in opt_values {
+        items.push(v.unwrap_or(Sexp::Nil));
+    }
+
+    // &key args: emit as :NAME VALUE pairs after positional/optional
+    // (= these go into the &rest --cl-keys tail synthesized by
+    // sf_cl_defun in build-tool/eval/special_forms.rs).
+    for name in &keys {
+        if let Some(v) = lookup_json_value(&object, name) {
+            items.push(Sexp::Symbol(format!(":{}", name)));
+            items.push(json_to_quoted_sexp(v));
+        }
+    }
+
+    // &rest tail (when no &key): splice extra JSON object members in by
+    // alphabetical order so callers can pass through arbitrary kwargs.
+    // Skip for now — anvil tools we ship today never combine &rest with
+    // JSON-object dispatch, so stay minimal.
+
+    Ok(Sexp::list_from(&items))
+}
+
+fn extract_lambda_formals(func: &Sexp) -> Option<Vec<Sexp>> {
+    // Function cell shape: (lambda (FORMAL...) BODY...)
+    let parts = list_elements(func)?;
+    if parts.len() < 2 {
+        return None;
+    }
+    // parts[0] = symbol 'lambda; parts[1] = formals list.
+    list_elements(&parts[1])
+}
+
+fn lookup_json_value<'a>(args: &'a serde_json::Map<String, Value>, formal: &str) -> Option<&'a Value> {
+    args.get(formal)
+        .or_else(|| args.get(&formal.replace('-', "_")))
+        .or_else(|| args.get(&formal.replace('_', "-")))
+}
+
+fn json_to_quoted_sexp(value: &Value) -> Sexp {
+    let raw = json_to_sexp(value);
+    match raw {
+        Sexp::Cons(_, _) => Sexp::quote(raw),
+        other => other,
+    }
+}
+
+fn json_to_sexp(value: &Value) -> Sexp {
+    match value {
+        Value::Null => Sexp::Nil,
+        Value::Bool(true) => Sexp::T,
+        Value::Bool(false) => Sexp::Nil,
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Sexp::Int(i)
+            } else if let Some(f) = n.as_f64() {
+                Sexp::Float(f)
+            } else {
+                Sexp::Nil
+            }
+        }
+        Value::String(s) => Sexp::Str(s.clone()),
+        Value::Array(items) => {
+            let elems: Vec<Sexp> = items.iter().map(json_to_sexp).collect();
+            Sexp::list_from(&elems)
+        }
+        Value::Object(_) => Sexp::Nil, // anvil module tools don't accept nested objects yet
     }
 }
 
