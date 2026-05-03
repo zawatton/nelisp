@@ -140,6 +140,14 @@
 ;; process-send-eof / delete-process / shell-command /
 ;; shell-command-to-string + shell-file-name / shell-command-switch.
 (require 'emacs-process-builtins)
+;; Track K (2026-05-03) — font-lock MVP.  Bridges
+;; `font-lock-mode' / `font-lock-fontify-region' /
+;; `font-lock-fontify-buffer' / `font-lock-add-keywords' /
+;; `font-lock-remove-keywords' / `font-lock-set-defaults' on top
+;; of the text-property store in `emacs-buffer.el'.  Also
+;; registers the standard face symbols (font-lock-keyword-face
+;; etc) via the Track F face registry.
+(require 'emacs-font-lock-builtins)
 ;; Track G (2026-05-03) — Doc 43 redisplay close-gate trigger
 ;; bridges.  Wires `force-mode-line-update' / `redraw-display' /
 ;; `redraw-frame' / `redisplay' to the existing
