@@ -474,6 +474,81 @@
               'emacs-command-loop-builtins-test--echo-prefix)))
       (should (= 5 r)))))
 
+;;;; Q. Phase B.6 — keyboard-quit / recursive-edit
+
+(ert-deftest emacs-command-loop-builtins-test/b6-fbound-parity ()
+  (dolist (sym '(keyboard-quit exit-recursive-edit))
+    (should (fboundp sym))))
+
+(ert-deftest emacs-command-loop-builtins-test/keyboard-quit-signals-quit ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (should-error (emacs-command-loop-keyboard-quit) :type 'quit)))
+
+(ert-deftest emacs-command-loop-builtins-test/command-loop-1-swallows-quit ()
+  (emacs-command-loop-builtins-test--with-fresh-keymaps
+    (emacs-keymap-define-key emacs-keymap-global-map "q"
+                             'emacs-command-loop-keyboard-quit)
+    (emacs-keymap-define-key emacs-keymap-global-map "a"
+                             'emacs-command-loop-builtins-test--bump)
+    (setq emacs-command-loop-builtins-test--counter 0)
+    ;; Sequence: q (= signal quit, swallowed) then a (= bump).
+    (emacs-command-loop-feed-events ?q ?a)
+    (let ((n (emacs-command-loop-1)))
+      (should (= 2 n))
+      (should (= 1 emacs-command-loop-builtins-test--counter)))))
+
+(ert-deftest emacs-command-loop-builtins-test/recursive-edit-tracks-depth ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (should (= 0 (emacs-command-loop-recursion-depth)))
+    ;; Empty queue → recursive-edit returns immediately.
+    (let ((r (emacs-command-loop-recursive-edit)))
+      (should (null r)))
+    (should (= 0 (emacs-command-loop-recursion-depth)))))
+
+(ert-deftest emacs-command-loop-builtins-test/recursive-edit-depth-during ()
+  (emacs-command-loop-builtins-test--with-fresh-keymaps
+    ;; A command that records the depth IT sees.
+    (let* ((seen-depth nil)
+           (probe (lambda ()
+                    (interactive)
+                    (setq seen-depth
+                          (emacs-command-loop-recursion-depth)))))
+      (emacs-keymap-define-key emacs-keymap-global-map "a" probe)
+      (emacs-command-loop-feed-events ?a)
+      (emacs-command-loop-recursive-edit)
+      (should (= 1 seen-depth))
+      (should (= 0 (emacs-command-loop-recursion-depth))))))
+
+(ert-deftest emacs-command-loop-builtins-test/exit-recursive-edit-throws ()
+  (emacs-command-loop-builtins-test--with-fresh-keymaps
+    ;; Inner command that exits the recursive-edit.
+    (emacs-keymap-define-key emacs-keymap-global-map "x"
+                             'emacs-command-loop-exit-recursive-edit)
+    (emacs-keymap-define-key emacs-keymap-global-map "a"
+                             'emacs-command-loop-builtins-test--bump)
+    (setq emacs-command-loop-builtins-test--counter 0)
+    ;; Feed: a x a — the third 'a' should NOT execute because 'x' threw out.
+    (emacs-command-loop-feed-events ?a ?x ?a)
+    (emacs-command-loop-recursive-edit)
+    (should (= 1 emacs-command-loop-builtins-test--counter))))
+
+(ert-deftest emacs-command-loop-builtins-test/exit-recursive-edit-without-frame-errors ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (should-error (emacs-command-loop-exit-recursive-edit)
+                  :type 'emacs-command-loop-error)))
+
+(ert-deftest emacs-command-loop-builtins-test/abort-recursive-edit-without-frame-quits ()
+  (emacs-command-loop-builtins-test--with-fresh-state
+    (should-error (emacs-command-loop-abort-recursive-edit) :type 'quit)))
+
+(ert-deftest emacs-command-loop-builtins-test/abort-recursive-edit-throws-aborted ()
+  (emacs-command-loop-builtins-test--with-fresh-keymaps
+    (emacs-keymap-define-key emacs-keymap-global-map "x"
+                             'emacs-command-loop-abort-recursive-edit)
+    (emacs-command-loop-feed-events ?x)
+    (let ((r (emacs-command-loop-recursive-edit)))
+      (should (eq 'aborted r)))))
+
 (provide 'emacs-command-loop-builtins-test)
 
 ;;; emacs-command-loop-builtins-test.el ends here
