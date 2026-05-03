@@ -72,6 +72,15 @@
 ;; match-data / match-string family).  Loads after `emacs-buffer-builtins'
 ;; because `match-string' uses `buffer-substring' from there.
 (require 'emacs-search-builtins)
+;; Phase 11.C'' — keymap.c / frame.c / window.c bridges to the
+;; existing `emacs-keymap.el' / `emacs-frame.el' / `emacs-window.el'
+;; prefixed implementations.  Each transitively pulls its prefixed
+;; module via `(require ...)' so callers using the unprefixed names
+;; (= make-keymap / make-frame / selected-window / ...) see real
+;; behaviour instead of the previous nil-stub sentinels.
+(require 'emacs-keymap-builtins)
+(require 'emacs-frame-builtins)
+(require 'emacs-window-builtins)
 
 (provide 'emacs-init)
 

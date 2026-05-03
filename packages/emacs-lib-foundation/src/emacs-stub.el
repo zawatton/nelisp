@@ -42,31 +42,14 @@
 ;;; Code:
 
 ;;;; --- keymap.c -----------------------------------------------------------
-
-(unless (fboundp 'make-keymap)
-  (defun make-keymap (&optional string)
-    "Stub: returns a synthetic keymap sentinel cons.
-NeLisp standalone has no keybinding subsystem; the returned object is
-only useful for `keymapp' / `eq' identity checks."
-    (ignore string)
-    (cons 'keymap nil)))
-
-(unless (fboundp 'make-sparse-keymap)
-  (defun make-sparse-keymap (&optional string)
-    "Stub: same shape as `make-keymap'."
-    (ignore string)
-    (cons 'keymap nil)))
-
-(unless (fboundp 'keymapp)
-  (defun keymapp (object)
-    "Stub: recognise the `make-keymap' sentinel."
-    (and (consp object) (eq (car object) 'keymap))))
-
-(unless (fboundp 'define-key)
-  (defun define-key (keymap key def &optional remove)
-    "Stub: no-op; returns DEF."
-    (ignore keymap key remove)
-    def))
+;; Phase 11.C'' (2026-05-03) deleted the redundant make-keymap /
+;; make-sparse-keymap / keymapp / define-key / lookup-key / key-binding
+;; / set-keymap-parent / keymap-parent / current-global-map /
+;; current-local-map / use-global-map / use-local-map /
+;; where-is-internal nil-stubs that were shadowing
+;; `emacs-keymap-builtins.el's bridges to `emacs-keymap-*' under
+;; standalone NeLisp.  `define-key-after' has no prefixed equivalent
+;; yet, so its no-op stub stays.
 
 (unless (fboundp 'define-key-after)
   (defun define-key-after (keymap key definition &optional after)
@@ -74,86 +57,14 @@ only useful for `keymapp' / `eq' identity checks."
     (ignore keymap key after)
     definition))
 
-(unless (fboundp 'lookup-key)
-  (defun lookup-key (keymap key &optional accept-default)
-    "Stub: always returns nil (= no binding)."
-    (ignore keymap key accept-default)
-    nil))
-
-(unless (fboundp 'key-binding)
-  (defun key-binding (key &optional accept-default no-remap position)
-    "Stub: always returns nil."
-    (ignore key accept-default no-remap position)
-    nil))
-
-(unless (fboundp 'set-keymap-parent)
-  (defun set-keymap-parent (keymap parent)
-    "Stub: no-op; returns PARENT."
-    (ignore keymap)
-    parent))
-
-(unless (fboundp 'keymap-parent)
-  (defun keymap-parent (keymap) (ignore keymap) nil))
-
-(unless (fboundp 'current-global-map)
-  (defun current-global-map () (cons 'keymap nil)))
-
-(unless (fboundp 'current-local-map)
-  (defun current-local-map () nil))
-
-(unless (fboundp 'use-global-map)
-  (defun use-global-map (keymap) (ignore keymap) nil))
-
-(unless (fboundp 'use-local-map)
-  (defun use-local-map (keymap) (ignore keymap) nil))
-
-(unless (fboundp 'where-is-internal)
-  (defun where-is-internal (definition &optional keymap firstonly noindirect no-remap)
-    "Stub: returns nil (= no key bound)."
-    (ignore definition keymap firstonly noindirect no-remap)
-    nil))
-
 
 ;;;; --- frame.c ------------------------------------------------------------
-
-(unless (fboundp 'make-frame)
-  (defun make-frame (&optional parameters)
-    "Stub: returns a synthetic frame sentinel."
-    (ignore parameters)
-    (cons 'frame nil)))
-
-(unless (fboundp 'framep)
-  (defun framep (object)
-    (and (consp object) (eq (car object) 'frame))))
-
-(unless (fboundp 'frame-live-p)
-  (defun frame-live-p (frame) (framep frame)))
-
-(unless (fboundp 'frame-list)
-  (defun frame-list () nil))
-
-(unless (fboundp 'selected-frame)
-  (defun selected-frame () (cons 'frame nil)))
-
-(unless (fboundp 'frame-parameter)
-  (defun frame-parameter (frame parameter)
-    (ignore frame parameter)
-    nil))
-
-(unless (fboundp 'frame-parameters)
-  (defun frame-parameters (&optional frame) (ignore frame) nil))
-
-(unless (fboundp 'set-frame-parameter)
-  (defun set-frame-parameter (frame parameter value)
-    (ignore frame parameter)
-    value))
-
-(unless (fboundp 'modify-frame-parameters)
-  (defun modify-frame-parameters (frame alist)
-    (ignore frame alist) nil))
-
-(unless (fboundp 'delete-frame)
-  (defun delete-frame (&optional frame force) (ignore frame force) nil))
+;; Phase 11.C'' (2026-05-03) deleted the redundant make-frame / framep
+;; / frame-live-p / frame-list / selected-frame / frame-parameter /
+;; frame-parameters / set-frame-parameter / modify-frame-parameters /
+;; delete-frame nil-stubs — `emacs-frame-builtins.el' bridges them to
+;; `emacs-frame-*'.  display-* probes have no prefixed substrate yet
+;; (= would need a display capability map), so their no-op stubs stay.
 
 (unless (fboundp 'display-graphic-p)
   (defun display-graphic-p (&optional display) (ignore display) nil))
@@ -166,28 +77,18 @@ only useful for `keymapp' / `eq' identity checks."
 
 
 ;;;; --- window.c -----------------------------------------------------------
-
-(unless (fboundp 'selected-window)
-  (defun selected-window () (cons 'window nil)))
-
-(unless (fboundp 'windowp)
-  (defun windowp (object) (and (consp object) (eq (car object) 'window))))
+;; Phase 11.C'' (2026-05-03) deleted the redundant selected-window /
+;; windowp / window-list / window-buffer / set-window-buffer nil-stubs
+;; — `emacs-window-builtins.el' bridges them to `emacs-window-*'.
+;; window-live-p and frame-selected-window have no prefixed substrate
+;; yet (= no live-flag tracking / no per-frame selected-window slot in
+;; the prefixed model), so their no-op stubs stay.
 
 (unless (fboundp 'window-live-p)
   (defun window-live-p (window) (windowp window)))
 
-(unless (fboundp 'window-list)
-  (defun window-list (&optional frame minibuf window) (ignore frame minibuf window) nil))
-
 (unless (fboundp 'frame-selected-window)
   (defun frame-selected-window (&optional frame) (ignore frame) (selected-window)))
-
-(unless (fboundp 'set-window-buffer)
-  (defun set-window-buffer (window buffer-or-name &optional keep-margins)
-    (ignore window buffer-or-name keep-margins) nil))
-
-(unless (fboundp 'window-buffer)
-  (defun window-buffer (&optional window) (ignore window) nil))
 
 
 ;;;; --- font-lock ----------------------------------------------------------
