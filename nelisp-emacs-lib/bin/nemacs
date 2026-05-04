@@ -18,7 +18,8 @@
 #
 # Environment overrides:
 #   NEMACS_HOME      directory containing src/ (default: this script's parent)
-#   NELISP_HOME      Notes/dev/nelisp checkout (default: ~/Notes/dev/nelisp)
+#   NELISP_HOME      nelisp checkout (default: $NEMACS_HOME/vendor/nelisp)
+#                    — vendored inside this repo; populated by `bin/build-nelisp'
 #   NEMACS_DRIVER    `host' (default) or `nelisp'
 #   NEMACS_EMACS     emacs binary path (default: emacs)
 #   NEMACS_NELISP    nelisp binary path (default: $NELISP_HOME/target/release/nelisp)
@@ -27,7 +28,25 @@ set -euo pipefail
 
 SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)"
 NEMACS_HOME="${NEMACS_HOME:-$(cd "$SCRIPT_PATH/.." && pwd)}"
-NELISP_HOME="${NELISP_HOME:-$HOME/Notes/dev/nelisp}"
+
+# Layer-2 self-containment (2026-05-04): nelisp source/build lives
+# under $NEMACS_HOME/vendor/nelisp by default — populated by
+# `bin/build-nelisp' (= clone + cargo build --release).  Legacy
+# fallback to $HOME/Notes/dev/nelisp is preserved when (a) NELISP_HOME
+# is explicitly exported by the user, or (b) the vendored path does
+# not exist *and* the legacy path does.  Pure source-of-truth for new
+# checkouts: the vendored copy.
+DEFAULT_VENDOR_NELISP="$NEMACS_HOME/vendor/nelisp"
+DEFAULT_LEGACY_NELISP="$HOME/Notes/dev/nelisp"
+if [[ -z "${NELISP_HOME:-}" ]]; then
+  if [[ -d "$DEFAULT_VENDOR_NELISP/target/release" ]]; then
+    NELISP_HOME="$DEFAULT_VENDOR_NELISP"
+  elif [[ -d "$DEFAULT_LEGACY_NELISP/target/release" ]]; then
+    NELISP_HOME="$DEFAULT_LEGACY_NELISP"
+  else
+    NELISP_HOME="$DEFAULT_VENDOR_NELISP"
+  fi
+fi
 NEMACS_DRIVER="${NEMACS_DRIVER:-host}"
 NEMACS_EMACS="${NEMACS_EMACS:-emacs}"
 NEMACS_NELISP="${NEMACS_NELISP:-$NELISP_HOME/target/release/nelisp}"
