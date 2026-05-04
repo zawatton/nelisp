@@ -53,6 +53,8 @@ pub fn install_builtins(env: &mut Env) {
         // predicates
         "consp", "listp", "atom", "symbolp", "stringp", "numberp", "integerp", "floatp", "functionp",
         "vectorp", "keywordp", "null", "booleanp",
+        // list ops
+        "sort", "copy-sequence", "copy-tree", "reverse", "nreverse",
         // bitwise — required by keymap / event-encoding code
         "logior", "logand", "logxor", "lognot", "ash", "lsh",
         // hashing — used by hash-table key derivation in user code
@@ -61,7 +63,7 @@ pub fn install_builtins(env: &mut Env) {
         "concat", "format", "substring", "intern", "intern-soft", "symbol-name",
         "string-equal", "string=",
         "string-match-p", "regexp-quote", "mapconcat",
-        "make-string", "char-to-string", "string-to-char", "string",
+        "make-string", "char-to-string", "string-to-char", "string", "unibyte-string",
         "string-to-number", "upcase", "downcase", "capitalize",
         "split-string", "string-trim", "string-trim-left", "string-trim-right",
         "string-prefix-p", "string-suffix-p", "string-search",
@@ -159,6 +161,11 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "cadddr" => bi_car(&[bi_cdr(&[bi_cdr(&[bi_cdr(args)?])?])?]),
         "cons" => bi_cons(args),
         "length" => bi_length(args),
+        "reverse" => bi_reverse(args),
+        "nreverse" => bi_reverse(args),  // = same impl, MVP doesn't share storage anyway
+        "copy-sequence" => bi_copy_sequence(args),
+        "copy-tree" => bi_copy_sequence(args),  // MVP — shallow copy is fine for caller patterns
+        "sort" => bi_sort(args, env),
         "append" => bi_append(args),
         "setcar" => bi_setcar(args),
         "setcdr" => bi_setcdr(args),
@@ -246,6 +253,11 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "make-string" => bi_make_string(args),
         "char-to-string" => bi_char_to_string(args),
         "string" => bi_string_from_chars(args),
+        // `unibyte-string' is the byte-level analog of `string': args
+        // are interpreted as raw bytes (= 0..255) rather than
+        // codepoints.  For pure ASCII the result is identical so we
+        // alias to the same impl in MVP.
+        "unibyte-string" => bi_string_from_chars(args),
         "string-to-char" => bi_string_to_char(args),
         "string-to-number" => bi_string_to_number(args),
         "upcase" => bi_upcase(args),
@@ -665,6 +677,106 @@ fn bi_length(args: &[Sexp]) -> Result<Sexp, EvalError> {
                 };
                 cur = next;
             }
+        }
+        other => Err(EvalError::WrongType {
+            expected: "sequence".into(),
+            got: other.clone(),
+        }),
+    }
+}
+
+fn vec_to_list(items: Vec<Sexp>) -> Sexp {
+    let mut acc = Sexp::Nil;
+    for it in items.into_iter().rev() {
+        acc = Sexp::cons(it, acc);
+    }
+    acc
+}
+
+fn bi_reverse(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("reverse", args, 1, Some(1))?;
+    match &args[0] {
+        Sexp::Nil => Ok(Sexp::Nil),
+        Sexp::Cons(_, _) => {
+            let mut v = list_to_vec(&args[0])?;
+            v.reverse();
+            Ok(vec_to_list(v))
+        }
+        Sexp::Vector(rc) => {
+            let mut v = rc.borrow().clone();
+            v.reverse();
+            Ok(Sexp::vector(v))
+        }
+        Sexp::Str(s) => {
+            Ok(Sexp::Str(s.chars().rev().collect()))
+        }
+        other => Err(EvalError::WrongType {
+            expected: "sequence".into(),
+            got: other.clone(),
+        }),
+    }
+}
+
+/// `(sort SEQ PRED)' — stable sort.  PRED is `(LESS-THAN A B)'.
+fn bi_sort(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("sort", args, 2, Some(2))?;
+    let pred = args[1].clone();
+    match &args[0] {
+        Sexp::Nil => Ok(Sexp::Nil),
+        Sexp::Cons(_, _) => {
+            let mut v = list_to_vec(&args[0])?;
+            // Stable sort using funcall on PRED.  We can't return
+            // EvalError from sort_by, so collect first failure into
+            // an Option.
+            let mut err: Option<EvalError> = None;
+            v.sort_by(|a, b| {
+                if err.is_some() {
+                    return std::cmp::Ordering::Equal;
+                }
+                let r = crate::eval::apply_function(
+                    &pred,
+                    &[a.clone(), b.clone()],
+                    env,
+                );
+                match r {
+                    Ok(v) if matches!(v, Sexp::Nil) => std::cmp::Ordering::Greater,
+                    Ok(_) => std::cmp::Ordering::Less,
+                    Err(e) => {
+                        err = Some(e);
+                        std::cmp::Ordering::Equal
+                    }
+                }
+            });
+            if let Some(e) = err {
+                return Err(e);
+            }
+            Ok(vec_to_list(v))
+        }
+        Sexp::Vector(rc) => {
+            let mut v = rc.borrow().clone();
+            let mut err: Option<EvalError> = None;
+            v.sort_by(|a, b| {
+                if err.is_some() {
+                    return std::cmp::Ordering::Equal;
+                }
+                let r = crate::eval::apply_function(
+                    &pred,
+                    &[a.clone(), b.clone()],
+                    env,
+                );
+                match r {
+                    Ok(v) if matches!(v, Sexp::Nil) => std::cmp::Ordering::Greater,
+                    Ok(_) => std::cmp::Ordering::Less,
+                    Err(e) => {
+                        err = Some(e);
+                        std::cmp::Ordering::Equal
+                    }
+                }
+            });
+            if let Some(e) = err {
+                return Err(e);
+            }
+            Ok(Sexp::vector(v))
         }
         other => Err(EvalError::WrongType {
             expected: "sequence".into(),
@@ -2814,7 +2926,17 @@ mod tty_raw {
     }
 
     pub fn stdin_byte_available(timeout_ms: i32) -> Result<Option<u8>, EvalError> {
-        let fd = std::io::stdin().lock().as_raw_fd();
+        // Doc 51 (2026-05-04) — read via libc::read on fd 0 directly,
+        // NOT via `std::io::stdin().lock().read()`.  The Rust stdin
+        // is internally buffered; reading 1 byte through it pulls
+        // many bytes from the kernel into the user-space buffer,
+        // and the next `poll()` then sees no data on the fd —
+        // POLLHUP without POLLIN — so we incorrectly report EOF
+        // while the buffered reader still has the rest queued.
+        //
+        // Going around the buffered reader keeps poll() and read()
+        // looking at the same kernel-side state.
+        let fd: i32 = 0; // STDIN
         let mut pfd = libc::pollfd {
             fd,
             events: libc::POLLIN,
@@ -2830,19 +2952,36 @@ mod tty_raw {
         if r == 0 {
             return Ok(None);
         }
-        if pfd.revents & libc::POLLIN == 0 {
+        // Some platforms set POLLHUP alongside POLLIN; some only
+        // POLLHUP after the writer closed and the kernel buffer
+        // drained.  Try to read either way — if no data is left,
+        // read() returns 0 (EOF) and we map that to None.
+        if pfd.revents & (libc::POLLIN | libc::POLLHUP) == 0 {
             return Ok(None);
         }
-        // Data is available — read exactly 1 byte.
-        use std::io::Read;
         let mut buf = [0u8; 1];
-        match std::io::stdin().lock().read(&mut buf) {
-            Ok(0) => Ok(None), // EOF
-            Ok(_) => Ok(Some(buf[0])),
-            Err(e) => Err(EvalError::Internal(format!(
-                "read-stdin-byte-available: read failed: {}",
-                e
-            ))),
+        let n = unsafe {
+            libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, 1)
+        };
+        match n {
+            0 => Ok(None), // EOF
+            n if n > 0 => Ok(Some(buf[0])),
+            _ => {
+                let errno = std::io::Error::last_os_error();
+                // EAGAIN / EWOULDBLOCK can happen between poll and
+                // read on a non-blocking fd; treat as no-byte.
+                if matches!(
+                    errno.raw_os_error(),
+                    Some(libc::EAGAIN) | Some(libc::EWOULDBLOCK)
+                ) {
+                    Ok(None)
+                } else {
+                    Err(EvalError::Internal(format!(
+                        "read-stdin-byte-available: read failed: {}",
+                        errno
+                    )))
+                }
+            }
         }
     }
 }
