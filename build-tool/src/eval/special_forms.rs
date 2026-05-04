@@ -665,6 +665,49 @@ fn sf_condition_case(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     let handlers: Vec<Sexp> = parts.iter().skip(2).cloned().collect();
     match eval(protected, env) {
         Ok(v) => Ok(v),
+        // `throw' is a control-flow primitive, not an error — let it
+        // pass through `condition-case' so the matching `catch'
+        // upstream can handle it.  Real Emacs has the same rule:
+        // `condition-case' only catches conditions in `error-conditions',
+        // and `no-catch' (= an unhandled `throw') is NOT a subtype of
+        // `error' unless the handler clause explicitly names it.
+        Err(EvalError::UncaughtThrow { tag, value }) => {
+            // Allow an explicit `(no-catch ...)' clause to catch it,
+            // matching Emacs' parity.  Otherwise re-raise.
+            for handler in &handlers {
+                let h_parts = list_elements(handler)?;
+                if h_parts.is_empty() {
+                    continue;
+                }
+                let claims_no_catch = match &h_parts[0] {
+                    Sexp::Symbol(s) => s == "no-catch",
+                    Sexp::Cons(_, _) => {
+                        let tag_list = list_elements(&h_parts[0])?;
+                        tag_list.iter().any(|t| {
+                            matches!(t, Sexp::Symbol(s) if s == "no-catch")
+                        })
+                    }
+                    _ => false,
+                };
+                if claims_no_catch {
+                    env.push_frame();
+                    if let Some(name) = &var {
+                        env.bind_local(
+                            name,
+                            Sexp::cons(
+                                Sexp::Symbol("no-catch".into()),
+                                Sexp::cons(tag.clone(), Sexp::cons(value.clone(), Sexp::Nil)),
+                            ),
+                        );
+                    }
+                    let body: Vec<Sexp> = h_parts.iter().skip(1).cloned().collect();
+                    let r = eval_body(&body, env);
+                    env.pop_frame();
+                    return r;
+                }
+            }
+            Err(EvalError::UncaughtThrow { tag, value })
+        }
         Err(e) => {
             let actual_tag = e.error_tag().to_string();
             for handler in &handlers {
@@ -721,13 +764,14 @@ fn sf_unwind_protect(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
             }
         }
     }
-    body_result.or_else(|e| Err(e)).and_then(|v| {
-        if let Some(e) = cleanup_err {
-            Err(e)
-        } else {
-            Ok(v)
-        }
-    })
+    // Real Emacs: a cleanup-form failure (= newer error / throw) takes
+    // precedence over the body's failure, because it reflects the most
+    // recent control-flow state.  When cleanups all succeed, the body's
+    // own outcome (= success or original error) is returned unchanged.
+    match cleanup_err {
+        Some(ce) => Err(ce),
+        None => body_result,
+    }
 }
 
 // ---------- progn / prog1 / prog2 ----------

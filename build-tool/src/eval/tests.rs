@@ -1655,3 +1655,80 @@ fn elisp_s10_number_to_string_int() {
 fn elisp_s10_number_to_string_negative() {
     assert_eq!(ok("(number-to-string -7)"), Sexp::Str("-7".into()));
 }
+
+// ---- Doc 51 Track H: control-flow regressions ------------------------
+
+#[test]
+fn track_h_throw_bypasses_condition_case() {
+    // condition-case must NOT catch a `throw' — that's a control-flow
+    // primitive, not an error.  The catch upstream should receive it.
+    assert_eq!(
+        ok_all("(catch 'tag (condition-case _ (throw 'tag 99) (error 'handled)))"),
+        Sexp::Int(99)
+    );
+}
+
+#[test]
+fn track_h_no_catch_clause_handles_uncaught_throw() {
+    // If the user explicitly names `no-catch' the condition-case
+    // clause should claim the bare throw.  Use `(car (cdr e))' since
+    // `cadr' is not a NeLisp Rust builtin (= it lives in the elisp
+    // library layer).
+    assert_eq!(
+        ok_all("(condition-case e (throw 'unknown 1) (no-catch (car (cdr e))))"),
+        Sexp::Symbol("unknown".into())
+    );
+}
+
+#[test]
+fn track_h_uw_runs_on_throw() {
+    // unwind-protect cleanup must fire when the body throws.
+    assert_eq!(
+        ok_all(
+            "(let ((cleanup nil)) (catch 'tag (unwind-protect (throw 'tag 1) (setq cleanup t))) cleanup)"
+        ),
+        Sexp::T
+    );
+}
+
+#[test]
+fn track_h_uw_runs_on_error() {
+    // unwind-protect cleanup must fire when the body errors.
+    assert_eq!(
+        ok_all(
+            "(let ((cleanup nil)) (condition-case _ (unwind-protect (error \"boom\") (setq cleanup t)) (error nil)) cleanup)"
+        ),
+        Sexp::T
+    );
+}
+
+#[test]
+fn track_h_throw_from_uw_cleanup_overrides() {
+    // A throw raised inside the cleanup block should override the body's
+    // result (= matches Emacs semantics).
+    assert_eq!(
+        ok_all(
+            "(catch 'a (unwind-protect (throw 'a 1) (throw 'a 2)))"
+        ),
+        Sexp::Int(2)
+    );
+}
+
+#[test]
+fn track_h_nested_catch() {
+    // Inner throw escapes to outer catch when tag matches outer.
+    assert_eq!(
+        ok_all("(catch 'outer (catch 'inner (throw 'outer 'escape)))"),
+        Sexp::Symbol("escape".into())
+    );
+}
+
+#[test]
+fn track_h_condition_case_still_catches_real_errors() {
+    // Regression: the no-catch carve-out should NOT break ordinary
+    // error catching.
+    assert_eq!(
+        ok_all("(condition-case e (error \"boom\") (error (cdr e)))"),
+        Sexp::list_from(&[Sexp::Str("boom".into())])
+    );
+}
