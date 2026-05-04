@@ -157,16 +157,40 @@ buffers are returned regardless."
 (unless (fboundp 'forward-char)
   (defun forward-char (&optional n)
     "Phase 9 polyfill: move point N (default 1) characters forward.
-Forwards to `nelisp-ec-forward-char'.  Bound to C-f / <right>."
+Bound to C-f / <right>.
+
+Matches the real Emacs C `forward-char' end-of-buffer semantics: when
+the target lies past the accessible end, point is clamped to point-max
+and `end-of-buffer' is signaled (not `nelisp-ec-args-out-of-range' from
+the underlying primitive).  The command loop catches the signal as a
+soft non-fatal end-of-buffer message; non-loop callers can wrap in
+`condition-case' against `end-of-buffer'."
     (interactive "p")
-    (nelisp-ec-forward-char (or n 1))))
+    (let* ((n (or n 1))
+           (p (nelisp-ec-point))
+           (lo (nelisp-ec-point-min))
+           (hi (nelisp-ec-point-max))
+           (target (+ p n)))
+      (cond
+       ((< target lo)
+        (nelisp-ec-goto-char lo)
+        (signal 'beginning-of-buffer nil))
+       ((> target hi)
+        (nelisp-ec-goto-char hi)
+        (signal 'end-of-buffer nil))
+       (t
+        (nelisp-ec-goto-char target)
+        t)))))
 
 (unless (fboundp 'backward-char)
   (defun backward-char (&optional n)
     "Phase 9 polyfill: move point N (default 1) characters backward.
-Forwards to `nelisp-ec-backward-char'.  Bound to C-b / <left>."
+Bound to C-b / <left>.
+
+Symmetric to `forward-char' for `beginning-of-buffer' / `end-of-buffer'
+clamp + signal semantics."
     (interactive "p")
-    (nelisp-ec-backward-char (or n 1))))
+    (forward-char (- (or n 1)))))
 
 (unless (fboundp 'buffer-size)
   (defalias 'buffer-size #'nelisp-ec-buffer-size))
