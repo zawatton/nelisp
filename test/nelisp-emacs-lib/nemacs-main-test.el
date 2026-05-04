@@ -401,6 +401,46 @@ this test skips the body."
   (clear-quit-flag)
   (should (eq nil (quit-flag-pending-p))))
 
+;;;; K. Doc 51 Track P/Q — SIGWINCH / SIGTSTP / SIGCONT wiring
+
+(ert-deftest nemacs-main-test/track-p-handle-winsize-no-frame-is-noop ()
+  "When the frame has not been realised, `--handle-winsize' must
+not error — it is called from the event loop's first iteration
+where the frame may still be nil."
+  (let ((nemacs-main--frame nil))
+    (should (eq nil (nemacs-main--handle-winsize)))))
+
+(ert-deftest nemacs-main-test/track-p-handle-winsize-callable ()
+  "The helper must be defined and call without error in any
+combination of fboundp builtins (= host driver: builtins absent;
+nelisp driver: builtins present).  We do not assert on the
+side-effect because that depends on whether a real tty is attached."
+  (should (fboundp 'nemacs-main--handle-winsize))
+  (let ((nemacs-main--frame nil))
+    (should-not (nemacs-main--handle-winsize))))
+
+(ert-deftest nemacs-main-test/track-q-handle-sigcont-callable ()
+  "Same shape as track-p — verifies the helper is defined and
+no-op-safe under the host driver where the builtins are absent."
+  (should (fboundp 'nemacs-main--handle-sigcont))
+  (let ((nemacs-main--frame nil))
+    (should-not (nemacs-main--handle-sigcont))))
+
+(ert-deftest nemacs-main-test/track-pq-builtin-roundtrip-when-bound ()
+  "When the NeLisp builtins are available (= nelisp driver), the
+install + take builtins must be callable end-to-end."
+  (skip-unless (and (fboundp 'install-winsize-handler)
+                    (fboundp 'install-jobctrl-handlers)
+                    (fboundp 'terminal-take-winsize-changed)
+                    (fboundp 'terminal-take-sigcont)))
+  (should (eq t (install-winsize-handler)))
+  (should (eq t (install-jobctrl-handlers)))
+  ;; Drain twice — second call must be nil (= no real signal arrived).
+  (terminal-take-winsize-changed)
+  (should (eq nil (terminal-take-winsize-changed)))
+  (terminal-take-sigcont)
+  (should (eq nil (terminal-take-sigcont))))
+
 (ert-deftest nemacs-main-test/track-m-dispatch-quit-sets-loop-flag ()
   "When a key-bound command signals `quit', the dispatch handler
 catches it via its `(quit ...)' condition-case clause and routes

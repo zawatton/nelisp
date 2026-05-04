@@ -318,6 +318,48 @@ in `nemacs-main--global-keymap', and:
      (t
       (setq nemacs-main--prefix-keys [])))))
 
+(defun nemacs-main--handle-winsize ()
+  "Doc 51 Track P — react to a pending SIGWINCH.
+If the resize-pending flag is set, query the controlling tty's
+current size, propagate to the frame, and force a redraw.  Safe
+to call when the builtins are not bound (= host driver) — returns
+nil silently."
+  (when (and (fboundp 'terminal-take-winsize-changed)
+             (terminal-take-winsize-changed))
+    (when (fboundp 'terminal-current-winsize)
+      (let ((sz (terminal-current-winsize)))
+        (when (and sz (consp sz)
+                   (integerp (car sz)) (integerp (cdr sz))
+                   (fboundp 'emacs-frame-set-frame-size)
+                   nemacs-main--frame)
+          (condition-case err
+              (emacs-frame-set-frame-size nemacs-main--frame
+                                          (car sz) (cdr sz))
+            (error
+             (when (fboundp 'message)
+               (message "nemacs: SIGWINCH resize failed: %S" err)))))))))
+
+(defun nemacs-main--handle-sigcont ()
+  "Doc 51 Track Q — react to a SIGCONT (= just-resumed-from-suspend).
+The TSTP handler dropped raw mode before suspending; on resume we
+re-enter raw mode + force a full redraw.  Safe under host driver."
+  (when (and (fboundp 'terminal-take-sigcont)
+             (terminal-take-sigcont))
+    (when (fboundp 'nemacs-main--enable-tty-raw-input)
+      (nemacs-main--enable-tty-raw-input))
+    ;; Treat resume as an implicit resize too — terminal geometry
+    ;; could have changed while we were suspended.
+    (when (and (fboundp 'terminal-current-winsize)
+               (fboundp 'emacs-frame-set-frame-size)
+               nemacs-main--frame)
+      (let ((sz (terminal-current-winsize)))
+        (when (and sz (consp sz)
+                   (integerp (car sz)) (integerp (cdr sz)))
+          (condition-case _
+              (emacs-frame-set-frame-size nemacs-main--frame
+                                          (car sz) (cdr sz))
+            (error nil)))))))
+
 (defun nemacs-main--drain-once (timeout-ms)
   "Pull one event and dispatch it.  Returns t when an event ran, nil
 on idle.  Honours TIMEOUT-MS (= caller's poll budget)."
@@ -366,6 +408,11 @@ pre-set it to t (= early-out before the first poll)."
    (t
     (let ((budget-ms 50))
       (while (not nemacs-main--quit-flag)
+        ;; Doc 51 Track P/Q — pick up signal-handler flags BEFORE
+        ;; polling for input.  Resize first so the upcoming poll
+        ;; uses the new geometry.
+        (nemacs-main--handle-sigcont)
+        (nemacs-main--handle-winsize)
         (nemacs-main--drain-once budget-ms)
         ;; Refresh the painted state after every dispatched event.
         (when (and nemacs-main--redisplay nemacs-main--frame
@@ -439,6 +486,13 @@ takes over and dispatches TUI events directly."
   ;; idempotent, so guarding by `fboundp' is the only condition.
   (when (fboundp 'install-sigint-handler)
     (install-sigint-handler))
+  ;; Doc 51 Track P/Q (2026-05-04) — install SIGWINCH and
+  ;; SIGTSTP/SIGCONT handlers.  All three are no-op on non-Unix
+  ;; and idempotent.  The event loop polls the resulting flags.
+  (when (fboundp 'install-winsize-handler)
+    (install-winsize-handler))
+  (when (fboundp 'install-jobctrl-handlers)
+    (install-jobctrl-handlers))
   (cond
    ((nemacs-main-option :batch)
     (nemacs-batch-main))
