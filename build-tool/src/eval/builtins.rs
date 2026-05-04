@@ -403,7 +403,25 @@ fn pack_number(any_float: bool, x: f64) -> Sexp {
 
 // ---------- arithmetic implementations ----------
 
+/// Doc 51 (2026-05-04) — fast path detection: are all args
+/// integers?  Critical for arithmetic ops that would otherwise
+/// promote to f64 and lose precision above 2^53 (= row-hash
+/// computation in `emacs-redisplay' was producing collisions
+/// for any large `sxhash-equal' result).
+fn all_integer(args: &[Sexp]) -> bool {
+    args.iter().all(|a| matches!(a, Sexp::Int(_)))
+}
+
 fn bi_add(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    if all_integer(args) {
+        let mut s: i64 = 0;
+        for a in args {
+            if let Sexp::Int(n) = a {
+                s = s.wrapping_add(*n);
+            }
+        }
+        return Ok(Sexp::Int(s));
+    }
     let (af, vs) = numeric_promote(args)?;
     let s = vs.iter().sum();
     Ok(pack_number(af, s))
@@ -412,6 +430,21 @@ fn bi_add(args: &[Sexp]) -> Result<Sexp, EvalError> {
 fn bi_sub(args: &[Sexp]) -> Result<Sexp, EvalError> {
     if args.is_empty() {
         return Ok(Sexp::Int(0));
+    }
+    if all_integer(args) {
+        let mut iter = args.iter().filter_map(|a| match a {
+            Sexp::Int(n) => Some(*n),
+            _ => None,
+        });
+        let first = iter.next().unwrap();
+        if args.len() == 1 {
+            return Ok(Sexp::Int(0i64.wrapping_sub(first)));
+        }
+        let mut acc = first;
+        for v in iter {
+            acc = acc.wrapping_sub(v);
+        }
+        return Ok(Sexp::Int(acc));
     }
     let (af, vs) = numeric_promote(args)?;
     if vs.len() == 1 {
@@ -425,6 +458,15 @@ fn bi_sub(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 fn bi_mul(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    if all_integer(args) {
+        let mut p: i64 = 1;
+        for a in args {
+            if let Sexp::Int(n) = a {
+                p = p.wrapping_mul(*n);
+            }
+        }
+        return Ok(Sexp::Int(p));
+    }
     let (af, vs) = numeric_promote(args)?;
     let p = vs.iter().product();
     Ok(pack_number(af, p))
