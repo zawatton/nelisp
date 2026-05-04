@@ -68,7 +68,10 @@ inserted span on `buffer-undo-list'."
           (let ((beg (nelisp-ec-point)))
             (nelisp-ec-insert s)
             (when (fboundp 'emacs-undo-record-insert)
-              (emacs-undo-record-insert beg (nelisp-ec-point))))
+              (emacs-undo-record-insert beg (nelisp-ec-point)))
+            ;; Doc 51 Track S — mark dirty for next jit-lock flush.
+            (when (fboundp 'emacs-font-lock-mark-dirty-region)
+              (emacs-font-lock-mark-dirty-region beg (nelisp-ec-point))))
           (setq i (+ i 1))))
       nil)))
 
@@ -82,7 +85,10 @@ Track E.2: records the inserted span on `buffer-undo-list'."
         (let ((beg (nelisp-ec-point)))
           (nelisp-ec-insert "\n")
           (when (fboundp 'emacs-undo-record-insert)
-            (emacs-undo-record-insert beg (nelisp-ec-point))))
+            (emacs-undo-record-insert beg (nelisp-ec-point)))
+          ;; Doc 51 Track S — mark dirty for jit-lock.
+          (when (fboundp 'emacs-font-lock-mark-dirty-region)
+            (emacs-font-lock-mark-dirty-region beg (nelisp-ec-point))))
         (setq i (+ i 1))))
     nil))
 
@@ -103,7 +109,12 @@ Track E.2: captures the deleted text and records it on
                    (nelisp-ec-buffer-substring start end))))
       (nelisp-ec-delete-char (- n))
       (when text
-        (emacs-undo-record-delete text start)))))
+        (emacs-undo-record-delete text start))
+      ;; Doc 51 Track S — mark dirty for jit-lock.  After a delete,
+      ;; the surviving region around START needs re-syntax-state-walk;
+      ;; we mark a single-char interval at START to keep it minimal.
+      (when (fboundp 'emacs-font-lock-mark-dirty-region)
+        (emacs-font-lock-mark-dirty-region start (1+ start))))))
 
 ;;;; --- kill ring -----------------------------------------------------
 

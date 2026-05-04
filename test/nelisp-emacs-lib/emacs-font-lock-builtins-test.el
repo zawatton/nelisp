@@ -409,6 +409,75 @@ inner search to that bound (= won't fontify past it)."
     (should-not (emacs-buffer-get-text-property 1 'face b))
     (should-not (emacs-buffer-get-text-property 5 'face b))))
 
+;;;; L. Track S — jit-lock primitives (Doc 51, 2026-05-04)
+
+(ert-deftest emacs-font-lock-builtins-test/track-s-mark-dirty-region-stores ()
+  (emacs-font-lock-builtins-test--with-buffer
+      "fld-mark-dirty" "abcdef"
+    (emacs-font-lock-mark-dirty-region 2 5 b)
+    (let ((d (emacs-font-lock-pending-dirty-region b)))
+      (should (equal '(2 . 5) d)))))
+
+(ert-deftest emacs-font-lock-builtins-test/track-s-mark-dirty-coalesces ()
+  "Multiple `mark-dirty' calls union into one (min-start . max-end)
+interval, NOT a list."
+  (emacs-font-lock-builtins-test--with-buffer
+      "fld-coalesce" "abcdef"
+    (emacs-font-lock-mark-dirty-region 3 5 b)
+    (emacs-font-lock-mark-dirty-region 1 4 b)
+    (let ((d (emacs-font-lock-pending-dirty-region b)))
+      (should (equal '(1 . 5) d)))))
+
+(ert-deftest emacs-font-lock-builtins-test/track-s-flush-pending-clears-marker ()
+  "After flush, the pending interval is nil regardless of whether
+font-lock-mode was enabled (= the marker must not leak)."
+  (emacs-font-lock-builtins-test--with-buffer
+      "fld-flush" "abcdef"
+    (emacs-font-lock-mark-dirty-region 2 4 b)
+    (emacs-font-lock-flush-pending b)
+    (should-not (emacs-font-lock-pending-dirty-region b))))
+
+(ert-deftest emacs-font-lock-builtins-test/track-s-flush-fontifies-only-dirty ()
+  "Flush re-fontifies the dirty interval only — positions outside
+the interval keep whatever face they had before."
+  (emacs-font-lock-builtins-test--with-buffer
+      "fld-only-dirty" "foo bar"
+    (emacs-font-lock-add-keywords
+     nil
+     '(("foo" (0 font-lock-keyword-face))
+       ("bar" (0 font-lock-keyword-face)))
+     'set)
+    (emacs-font-lock-mode 1)
+    ;; mode-on triggered an initial whole-buffer fontify; both faces present.
+    (should (eq 'font-lock-keyword-face
+                (emacs-buffer-get-text-property 1 'face b)))
+    (should (eq 'font-lock-keyword-face
+                (emacs-buffer-get-text-property 5 'face b)))
+    ;; Mark only positions 5-7 dirty (= "bar"); flush.
+    (emacs-buffer-put-text-property 1 4 'face nil b)
+    (emacs-buffer-put-text-property 5 8 'face nil b)
+    (emacs-font-lock-mark-dirty-region 5 8 b)
+    (emacs-font-lock-flush-pending b)
+    ;; "bar" is re-fontified; "foo" stays nil (= we cleared it and
+    ;; didn't include it in the dirty interval).
+    (should-not (emacs-buffer-get-text-property 1 'face b))
+    (should (eq 'font-lock-keyword-face
+                (emacs-buffer-get-text-property 5 'face b)))))
+
+(ert-deftest emacs-font-lock-builtins-test/track-s-flush-no-dirty-returns-nil ()
+  (emacs-font-lock-builtins-test--with-buffer
+      "fld-noop" "abc"
+    (should-not (emacs-font-lock-flush-pending b))))
+
+(ert-deftest emacs-font-lock-builtins-test/track-s-after-change-handler-marks ()
+  "The canonical hook-shape handler (BEG END LEN) routes through to
+`emacs-font-lock-mark-dirty-region'."
+  (emacs-font-lock-builtins-test--with-buffer
+      "fld-hook-shape" "xxxxxxx"
+    (emacs-font-lock-after-change-handler 2 6 0 b)
+    (let ((d (emacs-font-lock-pending-dirty-region b)))
+      (should (equal '(2 . 6) d)))))
+
 (provide 'emacs-font-lock-builtins-test)
 
 ;;; emacs-font-lock-builtins-test.el ends here

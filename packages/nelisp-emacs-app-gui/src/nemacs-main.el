@@ -414,6 +414,11 @@ pre-set it to t (= early-out before the first poll)."
         (nemacs-main--handle-sigcont)
         (nemacs-main--handle-winsize)
         (nemacs-main--drain-once budget-ms)
+        ;; Doc 51 Track S — re-fontify any dirty interval that the
+        ;; just-dispatched edit recorded.  Cheap when nothing is
+        ;; dirty (= early-exit on nil).
+        (when (fboundp 'emacs-font-lock-flush-pending)
+          (condition-case _ (emacs-font-lock-flush-pending) (error nil)))
         ;; Refresh the painted state after every dispatched event.
         (when (and nemacs-main--redisplay nemacs-main--frame
                    (fboundp 'emacs-redisplay-flush-frame))
