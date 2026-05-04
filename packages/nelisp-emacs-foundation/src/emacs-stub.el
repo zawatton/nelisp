@@ -166,7 +166,61 @@
 
 ;; Quoting helpers
 (unless (fboundp 'kbd)
-  (defun kbd (keys) (ignore) keys))
+  (defun kbd (keys)
+    "Doc 51 (2026-05-04) MVP `kbd' for the nelisp driver.
+
+Parses a tiny subset of the upstream syntax — enough to feed
+`define-key' from substrate code (= what `nemacs-main--init-keymap'
+needs).  Supported tokens (separated by whitespace):
+
+  C-X          — Ctrl + X     (encoded as `(logior X (ash 1 26))')
+  X            — bare ASCII char
+  RET / TAB / ESC / SPC / DEL / NUL  — named single-byte controls
+
+Returns a vector of integer key codes ready for `define-key'.
+Unsupported tokens fall through to a literal char vector — the
+caller then gets the same shape it would have under host emacs
+even if the encoding is approximate."
+    (let* ((n (length keys))
+           (i 0)
+           (out []))
+      (while (< i n)
+        ;; Skip leading whitespace.
+        (while (and (< i n) (= (aref keys i) ?\s))
+          (setq i (1+ i)))
+        (when (< i n)
+          ;; Read one token (= up to next space or end).
+          (let ((start i))
+            (while (and (< i n) (/= (aref keys i) ?\s))
+              (setq i (1+ i)))
+            (let* ((tok (substring keys start i))
+                   (tlen (length tok))
+                   (key
+                    (cond
+                     ;; "RET" / "TAB" / "ESC" / "SPC" / "DEL" / "NUL"
+                     ((string-equal tok "RET") 13)
+                     ((string-equal tok "TAB")  9)
+                     ((string-equal tok "ESC") 27)
+                     ((string-equal tok "SPC") 32)
+                     ((string-equal tok "DEL") 127)
+                     ((string-equal tok "NUL")  0)
+                     ;; "C-X" with control modifier.
+                     ((and (>= tlen 3)
+                           (= (aref tok 0) ?C)
+                           (= (aref tok 1) ?-))
+                      (let ((ch (aref tok 2)))
+                        ;; Lowercase A..Z so C-x = C-X.
+                        (when (and (>= ch ?A) (<= ch ?Z))
+                          (setq ch (+ ch 32)))
+                        (logior ch (ash 1 26))))
+                     ;; Bare single char.
+                     ((= tlen 1) (aref tok 0))
+                     ;; Multi-char token we don't understand — fall back
+                     ;; to the literal first char so we at least don't
+                     ;; signal at load time.
+                     (t (aref tok 0)))))
+              (setq out (vconcat out (vector key)))))))
+      out)))
 
 (unless (fboundp 'defvaralias)
   (defun defvaralias (new-alias base-variable &optional docstring)

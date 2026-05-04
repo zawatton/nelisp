@@ -413,6 +413,20 @@ defaults to `make-NAME')."
                    found)))
            (ctor-name (or ctor-from-opts
                           (intern (concat "make-" (symbol-name sname)))))
+           ;; (:predicate X) → use X as the predicate name instead of
+           ;; the default `NAME-p'.
+           (pred-from-opts
+            (and (consp name)
+                 (let ((opts (cdr name)) found)
+                   (while (and opts (not found))
+                     (let ((o (car opts)))
+                       (when (and (consp o) (eq (car o) :predicate)
+                                  (consp (cdr o)) (symbolp (cadr o)))
+                         (setq found (cadr o))))
+                     (setq opts (cdr opts)))
+                   found)))
+           (pred-name (or pred-from-opts
+                          (intern (concat (symbol-name sname) "-p"))))
            ;; If the first element of SLOTS is a string, treat it as
            ;; the struct's docstring and drop it before slot-name
            ;; extraction.
@@ -433,8 +447,8 @@ defaults to `make-NAME')."
                              (setq cur (cdr (cdr cur))))
                           (list 'cons (list 'quote sname) 'alist)))
               forms)
-        ;; NAME-p predicate.
-        (push (list 'defun (intern (concat (symbol-name sname) "-p"))
+        ;; NAME-p predicate (or whatever (:predicate X) renamed it to).
+        (push (list 'defun pred-name
                     '(obj)
                     (list 'and '(consp obj) (list 'eq '(car obj) (list 'quote sname))))
               forms)
