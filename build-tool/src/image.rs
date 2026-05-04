@@ -7,11 +7,14 @@
 //! a second object model.
 
 use crate::eval::{self, Env, EvalError};
+use crate::reader::sexp::CharTableInner;
 use crate::reader::{self, ReadError, Sexp};
+use std::cell::RefCell;
 use std::fmt;
+use std::rc::Rc;
 
-pub const IMAGE_MAGIC: &[u8; 8] = b"NELIMG\0\x01";
-pub const IMAGE_ABI_VERSION: u32 = 1;
+pub const IMAGE_MAGIC: &[u8; 8] = b"NELIMG\0\x02";
+pub const IMAGE_ABI_VERSION: u32 = 2;
 
 const TAG_NIL: u8 = 0x00;
 const TAG_T: u8 = 0x01;
@@ -21,6 +24,11 @@ const TAG_SYMBOL: u8 = 0x04;
 const TAG_STRING: u8 = 0x05;
 const TAG_CONS: u8 = 0x06;
 const TAG_VECTOR: u8 = 0x07;
+// Doc 51 Track L (2026-05-04) — char-table + bool-vector tags.
+// ABI bumped to v2 to invalidate stale v1 images that lacked
+// these.  Old v1 images now fail with `UnsupportedVersion(1)`.
+const TAG_CHAR_TABLE: u8 = 0x08;
+const TAG_BOOL_VECTOR: u8 = 0x09;
 
 #[derive(Debug)]
 pub enum ImageError {
@@ -168,15 +176,19 @@ fn encode_value(out: &mut Vec<u8>, value: &Sexp) -> Result<(), ImageError> {
                 "hash-table values are not yet supported by image encoding".into(),
             )));
         }
-        Sexp::CharTable(_) => {
-            return Err(ImageError::Eval(EvalError::NotImplemented(
-                "char-table values are not yet supported by image encoding".into(),
-            )));
+        Sexp::CharTable(rc) => {
+            out.push(TAG_CHAR_TABLE);
+            encode_char_table(out, &rc.borrow())?;
         }
-        Sexp::BoolVector(_) => {
-            return Err(ImageError::Eval(EvalError::NotImplemented(
-                "bool-vector values are not yet supported by image encoding".into(),
-            )));
+        Sexp::BoolVector(rc) => {
+            out.push(TAG_BOOL_VECTOR);
+            let bits = rc.borrow();
+            write_len(out, bits.len())?;
+            // One byte per element (= 0 / 1).  Simpler than bit-packing
+            // and the image format is not space-critical.
+            for &b in bits.iter() {
+                out.push(if b { 1 } else { 0 });
+            }
         }
     }
     Ok(())
@@ -204,8 +216,73 @@ fn decode_value(rd: &mut Reader<'_>) -> Result<Sexp, ImageError> {
             }
             Ok(Sexp::vector(items))
         }
+        TAG_CHAR_TABLE => {
+            let inner = decode_char_table(rd)?;
+            Ok(Sexp::CharTable(Rc::new(RefCell::new(inner))))
+        }
+        TAG_BOOL_VECTOR => {
+            let len = rd.read_u32("bool-vector length")? as usize;
+            let mut bits = Vec::with_capacity(len);
+            for _ in 0..len {
+                let byte = rd.read_u8("bool-vector bit")?;
+                bits.push(byte != 0);
+            }
+            Ok(Sexp::BoolVector(Rc::new(RefCell::new(bits))))
+        }
         other => Err(ImageError::UnknownTag(other)),
     }
+}
+
+fn encode_char_table(out: &mut Vec<u8>, ct: &CharTableInner) -> Result<(), ImageError> {
+    encode_value(out, &ct.subtype)?;
+    encode_value(out, &ct.default_val)?;
+    write_len(out, ct.entries.len())?;
+    for (k, v) in &ct.entries {
+        out.extend_from_slice(&k.to_le_bytes());
+        encode_value(out, v)?;
+    }
+    match &ct.parent {
+        Some(p) => {
+            out.push(1);
+            encode_char_table(out, &p.borrow())?;
+        }
+        None => out.push(0),
+    }
+    write_len(out, ct.extra.len())?;
+    for x in &ct.extra {
+        encode_value(out, x)?;
+    }
+    Ok(())
+}
+
+fn decode_char_table(rd: &mut Reader<'_>) -> Result<CharTableInner, ImageError> {
+    let subtype = decode_value(rd)?;
+    let default_val = decode_value(rd)?;
+    let nentries = rd.read_u32("char-table entry count")? as usize;
+    let mut entries = Vec::with_capacity(nentries);
+    for _ in 0..nentries {
+        let k = rd.read_i64("char-table entry key")?;
+        let v = decode_value(rd)?;
+        entries.push((k, v));
+    }
+    let has_parent = rd.read_u8("char-table parent flag")? != 0;
+    let parent = if has_parent {
+        Some(Rc::new(RefCell::new(decode_char_table(rd)?)))
+    } else {
+        None
+    };
+    let nextra = rd.read_u32("char-table extra slots")? as usize;
+    let mut extra = Vec::with_capacity(nextra);
+    for _ in 0..nextra {
+        extra.push(decode_value(rd)?);
+    }
+    Ok(CharTableInner {
+        subtype,
+        default_val,
+        entries,
+        parent,
+        extra,
+    })
 }
 
 fn write_string(out: &mut Vec<u8>, value: &str) -> Result<(), ImageError> {
@@ -339,5 +416,119 @@ mod tests {
         let forms = decode_image(&image).unwrap();
         assert_eq!(fmt_sexp(&forms[0]), "'(1 . [2 3])");
         assert_eq!(fmt_sexp(&eval_forms(&forms).unwrap()), "(1 . [2 3])");
+    }
+
+    // ---- Doc 51 Track L (2026-05-04) — char-table + bool-vector round-trip ----
+
+    #[test]
+    fn track_l_bool_vector_round_trips() {
+        let bits = vec![true, false, true, true, false];
+        let bv = Sexp::bool_vector(bits.len(), false);
+        if let Sexp::BoolVector(rc) = &bv {
+            *rc.borrow_mut() = bits.clone();
+        }
+        let image = encode_image(&[bv.clone()]).unwrap();
+        let loaded = decode_image(&image).unwrap();
+        assert_eq!(loaded.len(), 1);
+        match &loaded[0] {
+            Sexp::BoolVector(rc) => {
+                assert_eq!(*rc.borrow(), bits);
+            }
+            other => panic!("expected BoolVector, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn track_l_empty_bool_vector_round_trips() {
+        let bv = Sexp::bool_vector(0, false);
+        let image = encode_image(&[bv]).unwrap();
+        let loaded = decode_image(&image).unwrap();
+        match &loaded[0] {
+            Sexp::BoolVector(rc) => assert!(rc.borrow().is_empty()),
+            other => panic!("expected BoolVector, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn track_l_char_table_minimal_round_trips() {
+        let ct = Sexp::char_table(Sexp::Symbol("display".into()), Sexp::Nil);
+        if let Sexp::CharTable(rc) = &ct {
+            rc.borrow_mut().entries.push((65, Sexp::Int(1))); // 'A' -> 1
+            rc.borrow_mut().entries.push((97, Sexp::Int(2))); // 'a' -> 2
+        }
+        let image = encode_image(&[ct]).unwrap();
+        let loaded = decode_image(&image).unwrap();
+        match &loaded[0] {
+            Sexp::CharTable(rc) => {
+                let inner = rc.borrow();
+                assert_eq!(inner.subtype, Sexp::Symbol("display".into()));
+                assert_eq!(inner.default_val, Sexp::Nil);
+                assert_eq!(inner.entries, vec![
+                    (65, Sexp::Int(1)),
+                    (97, Sexp::Int(2)),
+                ]);
+                assert!(inner.parent.is_none());
+                assert!(inner.extra.is_empty());
+            }
+            other => panic!("expected CharTable, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn track_l_char_table_with_parent_round_trips() {
+        // Parent chain: child -> parent.  After round-trip, the parent
+        // chain must be preserved with the same default fallback.
+        let parent = Sexp::char_table(Sexp::Symbol("syntax".into()), Sexp::Int(99));
+        let child = Sexp::char_table(Sexp::Symbol("syntax".into()), Sexp::Nil);
+        if let (Sexp::CharTable(prc), Sexp::CharTable(crc)) = (&parent, &child) {
+            crc.borrow_mut().parent = Some(Rc::clone(prc));
+            crc.borrow_mut().entries.push((65, Sexp::Int(7)));
+        }
+        let image = encode_image(&[child]).unwrap();
+        let loaded = decode_image(&image).unwrap();
+        match &loaded[0] {
+            Sexp::CharTable(rc) => {
+                let inner = rc.borrow();
+                assert_eq!(inner.entries, vec![(65, Sexp::Int(7))]);
+                let pinner = inner.parent.as_ref().expect("parent dropped").borrow();
+                assert_eq!(pinner.default_val, Sexp::Int(99));
+            }
+            other => panic!("expected CharTable, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn track_l_char_table_with_extra_slots_round_trips() {
+        let ct = Sexp::char_table(Sexp::Symbol("case-table".into()), Sexp::Nil);
+        if let Sexp::CharTable(rc) = &ct {
+            rc.borrow_mut().extra =
+                vec![Sexp::Str("up".into()), Sexp::Str("down".into())];
+        }
+        let image = encode_image(&[ct]).unwrap();
+        let loaded = decode_image(&image).unwrap();
+        match &loaded[0] {
+            Sexp::CharTable(rc) => {
+                let inner = rc.borrow();
+                assert_eq!(inner.extra.len(), 2);
+                assert_eq!(inner.extra[0], Sexp::Str("up".into()));
+                assert_eq!(inner.extra[1], Sexp::Str("down".into()));
+            }
+            other => panic!("expected CharTable, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn track_l_image_abi_v1_now_rejected() {
+        // The image format went from v1 (without char-table/bool-vector)
+        // to v2 (with).  An old-shaped header must be rejected so users
+        // do not silently ingest a stale image as if it were valid.
+        let mut bytes = encode_image(&[Sexp::Nil]).unwrap();
+        bytes[8..12].copy_from_slice(&1u32.to_le_bytes()); // forge version=1
+        // Patch the magic too so the version check is what fires.
+        bytes[..8].copy_from_slice(b"NELIMG\0\x01");
+        match decode_image(&bytes) {
+            Err(ImageError::BadMagic) | Err(ImageError::UnsupportedVersion(1)) => {}
+            other => panic!("expected v1 image to be rejected, got {:?}", other),
+        }
     }
 }
