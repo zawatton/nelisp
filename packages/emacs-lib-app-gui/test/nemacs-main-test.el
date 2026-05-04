@@ -441,6 +441,39 @@ install + take builtins must be callable end-to-end."
   (terminal-take-sigcont)
   (should (eq nil (terminal-take-sigcont))))
 
+;;;; L. Doc 51 Track A — self-insert + canvas render
+
+(ert-deftest nemacs-main-test/track-a-init-keymap-binds-printable ()
+  "After `nemacs-main--init-keymap', ASCII printable chars should
+resolve to `self-insert-command' through `lookup-key'."
+  (skip-unless (fboundp 'self-insert-command))
+  ;; Force a fresh keymap so we don't see leftover state.
+  (setq nemacs-main--global-keymap nil)
+  (nemacs-main--init-keymap)
+  (should (eq 'self-insert-command
+              (lookup-key nemacs-main--global-keymap (vector ?a))))
+  (should (eq 'self-insert-command
+              (lookup-key nemacs-main--global-keymap (vector ?Z))))
+  (should (eq 'self-insert-command
+              (lookup-key nemacs-main--global-keymap (vector ?\s)))))
+
+(ert-deftest nemacs-main-test/track-a-init-keymap-binds-ret ()
+  (skip-unless (fboundp 'newline))
+  (setq nemacs-main--global-keymap nil)
+  (nemacs-main--init-keymap)
+  (should (eq 'newline
+              (lookup-key nemacs-main--global-keymap (vector 13)))))
+
+(ert-deftest nemacs-main-test/track-a-init-keymap-keeps-kill-keys ()
+  "Track A binds printable chars but the existing kill / quit
+bindings must still resolve."
+  (setq nemacs-main--global-keymap nil)
+  (nemacs-main--init-keymap)
+  ;; C-x C-c = vector with control bit on x and c.
+  (let ((vec (kbd "C-x C-c")))
+    (should (eq 'nemacs-main-kill
+                (lookup-key nemacs-main--global-keymap vec)))))
+
 (ert-deftest nemacs-main-test/track-m-dispatch-quit-sets-loop-flag ()
   "When a key-bound command signals `quit', the dispatch handler
 catches it via its `(quit ...)' condition-case clause and routes

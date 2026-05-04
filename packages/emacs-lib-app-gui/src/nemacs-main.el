@@ -159,7 +159,12 @@ EXIT-CODE defaults to 0."
 
 (defun nemacs-main--init-keymap ()
   "Construct `nemacs-main--global-keymap' if not yet built.
-Idempotent — safe to call multiple times.  Returns the keymap."
+Idempotent — safe to call multiple times.  Returns the keymap.
+
+Doc 51 Track A (2026-05-04): bind ASCII printable + RET to
+self-insert-command / newline so a freshly booted nemacs is
+typeable.  C-x C-c / C-c C-q / C-g remain the kill / quit
+keys."
   (unless nemacs-main--global-keymap
     (let ((m (cond
               ((fboundp 'make-sparse-keymap) (make-sparse-keymap))
@@ -167,10 +172,23 @@ Idempotent — safe to call multiple times.  Returns the keymap."
                (emacs-keymap-make-keymap))
               (t (list 'keymap)))))
       (when (fboundp 'define-key)
+        ;; Top-level commands.
         (define-key m (kbd "C-x C-c") 'nemacs-main-kill)
         (define-key m (kbd "C-c C-q") 'nemacs-main-kill)
         (when (fboundp 'keyboard-quit)
-          (define-key m (kbd "C-g") 'keyboard-quit)))
+          (define-key m (kbd "C-g") 'keyboard-quit))
+        ;; ASCII printable → self-insert-command.  We bind the
+        ;; integer key directly (= what nemacs-main--key-event->key
+        ;; produces for a bare ASCII char with no modifier).
+        ;; Range 32..126 = SPC..~  inclusive.
+        (when (fboundp 'self-insert-command)
+          (let ((c 32))
+            (while (<= c 126)
+              (define-key m (vector c) 'self-insert-command)
+              (setq c (1+ c)))))
+        ;; Newline (= byte 13 = RET in raw mode).
+        (when (fboundp 'newline)
+          (define-key m (vector 13) 'newline)))
       (setq nemacs-main--global-keymap m)))
   nemacs-main--global-keymap)
 
@@ -311,6 +329,12 @@ in `nemacs-main--global-keymap', and:
      ;; Bound command — execute + reset.
      ((and binding (fboundp 'command-execute))
       (setq nemacs-main--prefix-keys [])
+      ;; Doc 51 Track A — `self-insert-command' looks at
+      ;; `last-command-event' to know which char to insert.
+      ;; Set it from the key event we just dispatched on.
+      (let ((char (and (consp ev) (plist-get ev :char))))
+        (when (and char (boundp 'last-command-event))
+          (setq last-command-event char)))
       (condition-case _
           (command-execute binding)
         (quit (nemacs-main--quit))))
@@ -426,6 +450,19 @@ pre-set it to t (= early-out before the first poll)."
         ;; dirty (= early-exit on nil).
         (when (fboundp 'emacs-font-lock-flush-pending)
           (condition-case _ (emacs-font-lock-flush-pending) (error nil)))
+        ;; Doc 51 Track A — re-paint the canvas from buffer state
+        ;; AFTER input dispatch, so `self-insert-command' /
+        ;; `delete-backward-char' / etc. show up on the next flush.
+        ;; The flush below pushes the canvas to the terminal.
+        (when (and nemacs-main--redisplay nemacs-main--frame
+                   (fboundp 'emacs-redisplay-redisplay-window))
+          (let ((w (and (fboundp 'emacs-window-selected-window)
+                        (emacs-window-selected-window))))
+            (when w
+              (condition-case _
+                  (emacs-redisplay-redisplay-window
+                   nemacs-main--redisplay w)
+                (error nil)))))
         ;; Refresh the painted state after every dispatched event.
         (when (and nemacs-main--redisplay nemacs-main--frame
                    (fboundp 'emacs-redisplay-flush-frame))
