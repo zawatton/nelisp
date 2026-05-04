@@ -538,7 +538,14 @@ Returns the number of commands executed."
   "Phase B.4 + B.6: drain the unread queue, swallowing `quit' so the
 loop continues across user `keyboard-quit' / `C-g' presses.
 Each `quit' clears the substrate `quit-flag' and counts as one
-iteration.  Returns the iteration count."
+iteration.  Returns the iteration count.
+
+Track X (2026-05-04): also swallows `end-of-buffer' /
+`beginning-of-buffer' (= signaled by `forward-char' / `backward-char'
+when point is at the edge), surfacing them as a soft echo-area message
+instead of letting them propagate to the Layer-1 eval-error printer
+(= what produced the user-visible \"nelisp: eval error:
+args-out-of-range\" before)."
   (let ((n 0))
     (while (emacs-command-loop-pending-p)
       (condition-case _err
@@ -549,7 +556,15 @@ iteration.  Returns the iteration count."
                n (1+ n)))
         (emacs-command-loop-quit
          (setq emacs-command-loop--quit-flag nil
-               n (1+ n)))))
+               n (1+ n)))
+        (end-of-buffer
+         (when (fboundp 'message)
+           (message "End of buffer"))
+         (setq n (1+ n)))
+        (beginning-of-buffer
+         (when (fboundp 'message)
+           (message "Beginning of buffer"))
+         (setq n (1+ n)))))
     n))
 
 ;;;; --- recursive-edit / quit (Phase B.6) -----------------------------

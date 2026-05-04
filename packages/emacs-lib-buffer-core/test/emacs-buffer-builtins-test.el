@@ -318,19 +318,67 @@ needs the wrapper's `(interactive \"p\")' so `C-u 4 C-f' actually moves
       (should s)
       (should (string-match-p "forward-char (&optional n)" s))
       (should (string-match-p "(interactive \"p\")" s))
-      (should (string-match-p "nelisp-ec-forward-char" s)))
+      ;; Track X EOB-handling: clamps + signals end-of-buffer /
+      ;; beginning-of-buffer rather than leaking the underlying
+      ;; primitive's `nelisp-ec-args-out-of-range'.
+      (should (string-match-p "end-of-buffer" s))
+      (should (string-match-p "beginning-of-buffer" s)))
     (let ((s (emacs-buffer-builtins-test--read-defun
               file "(unless (fboundp 'backward-char)")))
       (should s)
       (should (string-match-p "backward-char (&optional n)" s))
       (should (string-match-p "(interactive \"p\")" s))
-      (should (string-match-p "nelisp-ec-backward-char" s)))
+      ;; Forwarder to forward-char with negated count.
+      (should (string-match-p "forward-char" s)))
     (let ((s (emacs-buffer-builtins-test--read-defun
               file "(unless (fboundp 'delete-char)")))
       (should s)
       (should (string-match-p "delete-char (n &optional killflag)" s))
       (should (string-match-p "(interactive \"p\")" s))
       (should (string-match-p "nelisp-ec-delete-char" s)))))
+
+;;;; N. Doc 51 Track X — forward-char / backward-char EOB / BOB semantics
+
+(ert-deftest emacs-buffer-builtins-test/forward-char-source-handles-eob ()
+  "Track X (2026-05-04) regression for the user-reported visible
+\"nelisp: eval error: args-out-of-range (29 1 28)\" when pressing
+<right> at end-of-buffer.
+
+Real Emacs's C `forward-char' clamps to ZV and signals `end-of-buffer'
+when target > ZV.  Our polyfill must match — leaking the underlying
+`nelisp-ec-args-out-of-range' would bubble into the Layer-1 nelisp
+eval-error printer and surface as a noisy console line.
+
+Source-shape test (rather than fboundp dispatch) so the polyfill body
+is verified even under host driver where the upstream C `forward-char'
+shadows our defun."
+  (let* ((file (locate-library "emacs-buffer-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (concat (substring file 0 (- (length file) 1)))
+                 file))
+         (s (emacs-buffer-builtins-test--read-defun
+             file "(unless (fboundp 'forward-char)"))
+         (bs (emacs-buffer-builtins-test--read-defun
+              file "(unless (fboundp 'backward-char)"))
+         (cf (locate-library "emacs-command-loop"))
+         (cf (if (and cf (string-match-p "\\.elc\\'" cf))
+                 (concat (substring cf 0 (- (length cf) 1)))
+               cf))
+         (cl (emacs-buffer-builtins-test--read-defun
+              cf "(defun emacs-command-loop-1")))
+    (should s) (should bs) (should cl)
+    ;; forward-char clamps + signals.
+    (should (string-match-p "(signal 'end-of-buffer" s))
+    (should (string-match-p "(signal 'beginning-of-buffer" s))
+    (should (string-match-p "(nelisp-ec-goto-char hi)" s))
+    (should (string-match-p "(nelisp-ec-goto-char lo)" s))
+    ;; backward-char delegates to forward-char with negated arg.
+    (should (string-match-p "(forward-char (- (or n 1)))" bs))
+    ;; command-loop-1 catches both signals.
+    (should (string-match-p "(end-of-buffer" cl))
+    (should (string-match-p "(beginning-of-buffer" cl))
+    (should (string-match-p "\"End of buffer\"" cl))
+    (should (string-match-p "\"Beginning of buffer\"" cl))))
 
 (provide 'emacs-buffer-builtins-test)
 
