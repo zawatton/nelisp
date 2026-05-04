@@ -1798,3 +1798,152 @@ fn track_k_hooks_installed_p_callable() {
     let r = ok_all("(_raw-mode-hooks-installed-p)");
     assert!(matches!(r, Sexp::Nil | Sexp::T));
 }
+
+// ----- Doc 51 Track M — quit / C-g via EvalError::Quit --------------------
+//
+// `EvalError::Quit` is the dedicated control-flow variant for `quit'.
+// Per the Elisp manual, `condition-case`'s universal `error` clause
+// must NOT catch a quit — only an explicit `quit` clause (or `t`) does.
+// The flag is process-global; tests clean up with `(clear-quit-flag)`
+// at the end of each scenario to keep cargo's parallel runner happy.
+
+#[test]
+fn track_m_signal_quit_raises_quit_variant() {
+    let e = err("(signal 'quit nil)");
+    assert!(matches!(e, EvalError::Quit), "expected Quit, got {:?}", e);
+}
+
+#[test]
+fn track_m_signal_quit_not_caught_by_error_clause() {
+    // The handler must re-raise: `error' is not a parent of `quit'.
+    let e = err_all(
+        "(condition-case _ (signal 'quit nil) (error 'wrongly-caught))"
+    );
+    assert!(matches!(e, EvalError::Quit), "expected Quit, got {:?}", e);
+}
+
+#[test]
+fn track_m_signal_quit_caught_by_quit_clause() {
+    assert_eq!(
+        ok_all("(condition-case _ (signal 'quit nil) (quit 'caught))"),
+        Sexp::Symbol("caught".into())
+    );
+}
+
+#[test]
+fn track_m_signal_quit_caught_by_t_clause() {
+    // `t' clause is the universal catch-all and DOES catch quit
+    // (Elisp manual: "if the condition name is t, all conditions are
+    // caught, including quit").
+    assert_eq!(
+        ok_all("(condition-case _ (signal 'quit nil) (t 'caught-by-t))"),
+        Sexp::Symbol("caught-by-t".into())
+    );
+}
+
+#[test]
+fn track_m_set_quit_flag_raises_at_next_eval() {
+    // (set-quit-flag) returns t but does not itself raise.  The next
+    // eval boundary (= the next form, here `'reached') triggers the
+    // conversion to EvalError::Quit.  We use a `quit` clause to absorb
+    // it so the test ends cleanly without polluting the global flag.
+    assert_eq!(
+        ok_all(
+            "(condition-case _ (progn (set-quit-flag) 'reached) (quit 'after-quit))"
+        ),
+        Sexp::Symbol("after-quit".into())
+    );
+    // Sanity: the flag was consumed by the eval-time `take`, not left set.
+    assert_eq!(ok_all("(quit-flag-pending-p)"), Sexp::Nil);
+}
+
+#[test]
+fn track_m_clear_quit_flag_via_rust_api() {
+    // From Lisp, `(set-quit-flag)' followed by anything else is
+    // intercepted by eval()'s flag check before the next form runs
+    // — that is the whole *point* of the flag.  But the Rust quit::
+    // module is callable directly (e.g. from a signal handler before
+    // any eval boundary), and clearing there must work.
+    super::quit::set_quit_flag();
+    super::quit::clear_quit_flag();
+    assert_eq!(ok_all("'survived"), Sexp::Symbol("survived".into()));
+    assert!(!super::quit::is_quit_pending());
+}
+
+#[test]
+fn track_m_unwind_protect_runs_on_quit() {
+    // unwind-protect cleanup must fire on a quit just like on any
+    // other error.  We shadow with a (quit ...) clause to absorb the
+    // re-raise at the outer level so the test asserts on `cleanup'.
+    assert_eq!(
+        ok_all(
+            "(let ((cleanup nil))
+               (condition-case _
+                 (unwind-protect (signal 'quit nil) (setq cleanup t))
+                 (quit nil))
+               cleanup)"
+        ),
+        Sexp::T
+    );
+}
+
+#[test]
+fn track_m_quit_flag_pending_p_is_non_destructive() {
+    // From Rust: `is_quit_pending` must NOT consume the flag.  Only
+    // `take_quit_flag` (used by eval() at safe-poll boundaries) does.
+    super::quit::clear_quit_flag(); // start clean
+    super::quit::set_quit_flag();
+    assert!(super::quit::is_quit_pending());
+    assert!(super::quit::is_quit_pending(), "peek must be idempotent");
+    // take consumes
+    assert!(super::quit::take_quit_flag());
+    assert!(!super::quit::is_quit_pending());
+}
+
+#[test]
+fn track_m_quit_flag_pending_p_lisp_returns_nil_when_clear() {
+    // Lisp-side observability of the cleared state.  When invoked,
+    // eval() takes the flag first; if it was unset, the builtin runs
+    // and reports nil.  The builtin always sees the just-cleared
+    // state because eval()'s take ran moments before.
+    assert_eq!(ok_all("(quit-flag-pending-p)"), Sexp::Nil);
+}
+
+#[test]
+fn track_m_error_tag_for_quit() {
+    // The `error_tag` accessor must return "quit" (= what
+    // `condition-case` clause-matching keys on).
+    assert_eq!(EvalError::Quit.error_tag(), "quit");
+}
+
+#[test]
+fn track_m_signal_data_for_quit_is_nil_payload() {
+    // `(signal-data quit) => (quit . nil)` matches Emacs convention.
+    let sd = EvalError::Quit.signal_data();
+    assert_eq!(
+        sd,
+        Sexp::cons(Sexp::Symbol("quit".into()), Sexp::Nil)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn track_m_install_sigint_handler_is_idempotent() {
+    // Calling install-sigint-handler more than once must be safe —
+    // the underlying impl uses a `Once` gate.  Side effect: the
+    // handler stays installed for the rest of this test binary's
+    // lifetime; other tests don't depend on the system-default
+    // SIGINT disposition, so this is benign.
+    assert_eq!(ok_all("(install-sigint-handler)"), Sexp::T);
+    assert_eq!(ok_all("(install-sigint-handler)"), Sexp::T);
+    assert_eq!(ok_all("(_sigint-handler-installed-p)"), Sexp::T);
+}
+
+// Note: a `raise(SIGINT)` end-to-end test would be the natural
+// complement to track_m_install_sigint_handler_is_idempotent, but
+// SIGINT is delivered to the *whole process*.  Under `cargo test`
+// (= parallel test threads, shared process), the signal hits an
+// arbitrary thread mid-eval and arbitrary parallel tests see a
+// spurious Quit.  We rely on the by-construction simplicity of the
+// handler body (= one `AtomicBool::store(true)`) plus the API tests
+// above instead.

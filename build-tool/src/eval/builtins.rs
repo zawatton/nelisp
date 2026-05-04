@@ -25,6 +25,7 @@
 
 use super::env::Env;
 use super::error::EvalError;
+use super::quit;
 use super::sexp::Sexp;
 use crate::reader::sexp::CharTableInner;
 use std::cell::RefCell;
@@ -87,6 +88,9 @@ pub fn install_builtins(env: &mut Env) {
         "read-stdin-byte-available",
         // Doc 51 Track K — test/debug helpers for the atexit/signal hook
         "_termios-saved-p", "_raw-mode-hooks-installed-p",
+        // Doc 51 Track M — process-wide quit-flag plumbing
+        "set-quit-flag", "clear-quit-flag", "quit-flag-pending-p",
+        "install-sigint-handler", "_sigint-handler-installed-p",
         // reader exposed as elisp callable (Track O' Phase 2)
         "read", "read-from-string",
     ];
@@ -235,6 +239,11 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "read-stdin-byte-available" => bi_read_stdin_byte_available(args),
         "_termios-saved-p" => bi_termios_saved_p(args),
         "_raw-mode-hooks-installed-p" => bi_raw_mode_hooks_installed_p(args),
+        "set-quit-flag" => bi_set_quit_flag(args),
+        "clear-quit-flag" => bi_clear_quit_flag(args),
+        "quit-flag-pending-p" => bi_quit_flag_pending_p(args),
+        "install-sigint-handler" => bi_install_sigint_handler(args),
+        "_sigint-handler-installed-p" => bi_sigint_handler_installed_p(args),
         "read" => bi_read(args),
         "read-from-string" => bi_read_from_string(args),
         "provide" => bi_provide(args, env),
@@ -2297,6 +2306,13 @@ fn bi_signal(args: &[Sexp]) -> Result<Sexp, EvalError> {
             })
         }
     };
+    // Doc 51 Track M — `(signal 'quit ...)' must surface as the
+    // dedicated `EvalError::Quit` so that `condition-case`'s `error`
+    // clause does NOT catch it (per Elisp manual).  The data list
+    // is discarded — quit carries no payload in Emacs.
+    if tag == "quit" {
+        return Err(EvalError::Quit);
+    }
     // Per Elisp, the second arg is the *data list*.
     Err(EvalError::UserError {
         tag,
@@ -2492,7 +2508,12 @@ mod tty_raw {
             sa.sa_sigaction = sig_handler as *const () as usize;
             libc::sigemptyset(&mut sa.sa_mask);
             sa.sa_flags = 0;
-            for sig in &[libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] {
+            // SIGINT is intentionally NOT in this list — Doc 51
+            // Track M owns SIGINT (= sets the quit flag instead of
+            // terminating).  These three are the "real shutdown"
+            // signals where restoring termios + re-raising the
+            // default is the correct response.
+            for sig in &[libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] {
                 libc::sigaction(*sig, &sa, std::ptr::null_mut());
             }
         });
@@ -2692,6 +2713,51 @@ fn bi_raw_mode_hooks_installed_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     {
         Ok(Sexp::Nil)
     }
+}
+
+/// Doc 51 Track M — `(set-quit-flag)' marks the process-wide quit
+/// flag.  The next call to [`crate::eval::eval`] will convert the
+/// flag into `EvalError::Quit`.  Used by the C-g key dispatch and
+/// any external interrupt source that wants to stop the evaluator
+/// at the next safe point instead of immediately.
+fn bi_set_quit_flag(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("set-quit-flag", args, 0, Some(0))?;
+    quit::set_quit_flag();
+    Ok(Sexp::T)
+}
+
+/// Doc 51 Track M — `(clear-quit-flag)' resets the flag without
+/// raising.  Useful in tests and for flushing a stale flag after
+/// the user dismisses an unrelated condition.
+fn bi_clear_quit_flag(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("clear-quit-flag", args, 0, Some(0))?;
+    quit::clear_quit_flag();
+    Ok(Sexp::T)
+}
+
+/// Doc 51 Track M — `(quit-flag-pending-p)' returns t if the flag
+/// is currently set, nil otherwise.  Read-only — does NOT clear.
+fn bi_quit_flag_pending_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("quit-flag-pending-p", args, 0, Some(0))?;
+    Ok(if quit::is_quit_pending() { Sexp::T } else { Sexp::Nil })
+}
+
+/// Doc 51 Track M — install a SIGINT handler that flips the
+/// process-wide quit flag instead of terminating.  Idempotent;
+/// repeated calls are a no-op.  Returns t.  No-op (returns t) on
+/// non-Unix.
+fn bi_install_sigint_handler(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("install-sigint-handler", args, 0, Some(0))?;
+    quit::install_sigint_handler();
+    Ok(Sexp::T)
+}
+
+/// Doc 51 Track M — test/diagnostic helper.  Returns t once a
+/// SIGINT → quit-flag handler has been installed.  Always nil on
+/// non-Unix.
+fn bi_sigint_handler_installed_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("_sigint-handler-installed-p", args, 0, Some(0))?;
+    Ok(if quit::sigint_handler_installed_p() { Sexp::T } else { Sexp::Nil })
 }
 
 fn bi_prin1_to_string(args: &[Sexp]) -> Result<Sexp, EvalError> {

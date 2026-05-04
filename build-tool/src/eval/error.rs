@@ -68,6 +68,11 @@ pub enum EvalError {
     NotImplemented(String),
     /// Underlying read error surfaced through [`From<ReadError>`].
     Read(ReadError),
+    /// `C-g` / `(signal 'quit nil)` — control-flow interrupt that is
+    /// distinct from `error`.  Per the Elisp manual, the universal
+    /// `error` clause does **not** catch `quit`; only an explicit
+    /// `quit` clause (or `t`) does.  Doc 51 Track M (2026-05-04).
+    Quit,
     /// Catch-all for evaluator bugs that should never fire on valid
     /// user input (we still keep it as `Result::Err`, never `panic!`).
     Internal(String),
@@ -89,6 +94,7 @@ impl EvalError {
             EvalError::SettingConstant(_) => "setting-constant",
             EvalError::NotImplemented(_) => "error",
             EvalError::Read(_) => "invalid-read-syntax",
+            EvalError::Quit => "quit",
             EvalError::Internal(_) => "error",
         }
     }
@@ -125,6 +131,7 @@ impl EvalError {
             }
             EvalError::NotImplemented(msg) => Sexp::list_from(&[Sexp::Str(msg.clone())]),
             EvalError::Read(e) => Sexp::list_from(&[Sexp::Str(e.to_string())]),
+            EvalError::Quit => Sexp::Nil,
             EvalError::Internal(msg) => Sexp::list_from(&[Sexp::Str(msg.clone())]),
         };
         Sexp::cons(tag, data)
@@ -183,6 +190,7 @@ impl fmt::Display for EvalError {
             }
             EvalError::NotImplemented(msg) => write!(f, "not-implemented: {}", msg),
             EvalError::Read(e) => write!(f, "{}", e),
+            EvalError::Quit => write!(f, "quit"),
             EvalError::Internal(msg) => write!(f, "internal: {}", msg),
         }
     }

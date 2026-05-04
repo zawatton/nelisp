@@ -34,6 +34,7 @@
 pub mod builtins;
 pub mod env;
 pub mod error;
+pub mod quit;
 pub mod sexp;
 pub mod special_forms;
 
@@ -125,6 +126,16 @@ pub fn eval_str_all_at_path(input: &str, src_path: &str) -> Result<Sexp, EvalErr
 ///        - lambda / sym  → evaluate arguments, [`apply_function`]
 ///   4. anything else → internal error
 pub fn eval(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
+    // Doc 51 Track M (2026-05-04) — process-wide quit poll.  Any
+    // code path that flipped `quit::QUIT_FLAG` (signal handler,
+    // C-g key dispatch, sibling thread) gets converted into a
+    // proper `EvalError::Quit` here, which then unwinds through
+    // `condition-case`'s `quit` clause and `unwind-protect`.
+    // `take_quit_flag` is a single atomic swap, so the conversion
+    // is exactly-once even under racing setters.
+    if quit::take_quit_flag() {
+        return Err(EvalError::Quit);
+    }
     // Recursion guard so a `(defun loop () (loop))` returns an error
     // instead of overflowing the Rust stack.
     if env.current_recursion >= env.max_recursion {
