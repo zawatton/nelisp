@@ -357,15 +357,15 @@ the `(:anchored REGEX PRE POST (CANONICAL-INNERS))' sentinel."
   "Anchored matcher should fontify text matching the inner regex
 after each outer match.  Test text: `func arg1 arg2' — outer
 matches `func' (= keyword), anchored matches the args (= variable).
-Note: nelisp-regex does not support word-boundary `\\<' / `\\>',
-so we use `[a-z]+[0-9]+' which is sufficient here."
+After Doc 51 Track J, word-boundary anchors `\\<' / `\\>' are
+supported and used here for realistic font-lock-keywords parity."
   (emacs-font-lock-builtins-test--with-buffer
       "fld-anchored" "func arg1 arg2"
     (emacs-font-lock-add-keywords
      nil
      '(("func"
         (0 font-lock-keyword-face)
-        ("\\([a-z]+[0-9]+\\)" nil nil (1 font-lock-variable-name-face))))
+        ("\\<\\([a-z]+[0-9]+\\)\\>" nil nil (1 font-lock-variable-name-face))))
      'set)
     (emacs-font-lock-fontify-region 1 (1+ (length "func arg1 arg2")))
     (should (eq 'font-lock-keyword-face

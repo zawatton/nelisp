@@ -169,6 +169,13 @@ Signal `nelisp-rx-syntax-error' on malformed input."
                         (list "stray \\| outside alternation")))
      ((eq c ?b) (nelisp-rx--advance) (list :wb))
      ((eq c ?B) (nelisp-rx--advance) (list :nwb))
+     ;; Doc 51 Track J (2026-05-04) — directional word boundaries.
+     ;; `\<' matches the START of a word: previous char is non-word
+     ;; (or BOS) AND the current char is a word constituent.
+     ;; `\>' matches the END of a word: previous char is a word
+     ;; constituent AND the current char is non-word (or EOS).
+     ((eq c ?<) (nelisp-rx--advance) (list :wbs))
+     ((eq c ?>) (nelisp-rx--advance) (list :wbe))
      ((eq c ?w) (nelisp-rx--advance)
       (nelisp-rx--make-class t (list :word)))
      ((eq c ?W) (nelisp-rx--advance)
@@ -310,6 +317,12 @@ where SLOT is 1 or 2 indicating which transition slot is dangling."
        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
     (:nwb
      (let ((s (nelisp-rx--add-state :nwb nil nil nil)))
+       (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+    (:wbs
+     (let ((s (nelisp-rx--add-state :wbs nil nil nil)))
+       (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+    (:wbe
+     (let ((s (nelisp-rx--add-state :wbe nil nil nil)))
        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
     (:class
      (let* ((positive (nth 1 ast))
@@ -520,6 +533,22 @@ backtracking semantics."
                       (after  (and (< pos slen)
                                    (nelisp-rx--word-char-p (char-at pos)))))
                  (and (eq before after)
+                      (walk (aref s 1) pos))))
+              ;; Doc 51 Track J — `\<' matches at word start.
+              (:wbs
+               (let* ((before (and (> pos 0)
+                                   (nelisp-rx--word-char-p (prev-char pos))))
+                      (after  (and (< pos slen)
+                                   (nelisp-rx--word-char-p (char-at pos)))))
+                 (and (not before) after
+                      (walk (aref s 1) pos))))
+              ;; Doc 51 Track J — `\>' matches at word end.
+              (:wbe
+               (let* ((before (and (> pos 0)
+                                   (nelisp-rx--word-char-p (prev-char pos))))
+                      (after  (and (< pos slen)
+                                   (nelisp-rx--word-char-p (char-at pos)))))
+                 (and before (not after)
                       (walk (aref s 1) pos))))
               (:split
                (or (walk (aref s 1) pos)
