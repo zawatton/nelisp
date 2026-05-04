@@ -335,6 +335,80 @@ as the sentinel `(:eval . FORM)' so it can be evaluated lazily."
       (should (listp cur))
       (should (eq 'font-lock-comment-face (car cur))))))
 
+;;;; K. Track G — anchored matcher (Doc 51, 2026-05-04)
+
+(ert-deftest emacs-font-lock-builtins-test/compile-anchored-matcher ()
+  "Anchored entries (REGEX PRE POST INNER...) should compile to
+the `(:anchored REGEX PRE POST (CANONICAL-INNERS))' sentinel."
+  (let* ((kw '("foo"
+               ("bar" nil nil (0 font-lock-string-face))))
+         (compiled (emacs-font-lock--compile-keyword kw)))
+    (should (equal "foo" (car compiled)))
+    (let ((anc (cadr compiled)))
+      (should (eq :anchored (car anc)))
+      (should (equal "bar" (nth 1 anc)))
+      (should-not (nth 2 anc))   ; PRE-FORM = nil
+      (should-not (nth 3 anc))   ; POST-FORM = nil
+      ;; HIGHLIGHTS canonicalised.
+      (should (equal '((0 font-lock-string-face nil nil))
+                     (nth 4 anc))))))
+
+(ert-deftest emacs-font-lock-builtins-test/anchored-fontifies-after-outer ()
+  "Anchored matcher should fontify text matching the inner regex
+after each outer match.  Test text: `func arg1 arg2' — outer
+matches `func' (= keyword), anchored matches the args (= variable).
+Note: nelisp-regex does not support word-boundary `\\<' / `\\>',
+so we use `[a-z]+[0-9]+' which is sufficient here."
+  (emacs-font-lock-builtins-test--with-buffer
+      "fld-anchored" "func arg1 arg2"
+    (emacs-font-lock-add-keywords
+     nil
+     '(("func"
+        (0 font-lock-keyword-face)
+        ("\\([a-z]+[0-9]+\\)" nil nil (1 font-lock-variable-name-face))))
+     'set)
+    (emacs-font-lock-fontify-region 1 (1+ (length "func arg1 arg2")))
+    (should (eq 'font-lock-keyword-face
+                (emacs-buffer-get-text-property 1 'face b)))
+    (should (eq 'font-lock-variable-name-face
+                (emacs-buffer-get-text-property 6 'face b)))
+    (should (eq 'font-lock-variable-name-face
+                (emacs-buffer-get-text-property 11 'face b)))))
+
+(ert-deftest emacs-font-lock-builtins-test/anchored-pre-form-bounds-search ()
+  "PRE-FORM evaluating to an integer bound should constrain the
+inner search to that bound (= won't fontify past it)."
+  (emacs-font-lock-builtins-test--with-buffer
+      "fld-anchored-bound" "func a1 a2 a3"
+    (emacs-font-lock-add-keywords
+     nil
+     ;; Limit anchored search to position 9 — only catches `a1', not later.
+     '(("func"
+        (0 font-lock-keyword-face)
+        ("\\([a-z][0-9]\\)" 9 nil (1 font-lock-variable-name-face))))
+     'set)
+    (emacs-font-lock-fontify-region 1 (1+ (length "func a1 a2 a3")))
+    (should (eq 'font-lock-variable-name-face
+                (emacs-buffer-get-text-property 6 'face b)))
+    ;; Position 9-10 = `a2'.  Bound was 9 so a2 should NOT be matched.
+    (should-not (eq 'font-lock-variable-name-face
+                    (emacs-buffer-get-text-property 9 'face b)))))
+
+(ert-deftest emacs-font-lock-builtins-test/anchored-no-outer-no-inner ()
+  "If the outer regex has no match, the anchored block must not run."
+  (emacs-font-lock-builtins-test--with-buffer
+      "fld-anchored-empty" "abc def"
+    (emacs-font-lock-add-keywords
+     nil
+     '(("zzzz"
+        (0 font-lock-keyword-face)
+        ("[a-z]+" nil nil (0 font-lock-variable-name-face))))
+     'set)
+    (emacs-font-lock-fontify-region 1 (1+ (length "abc def")))
+    ;; No outer match, so nothing should be fontified.
+    (should-not (emacs-buffer-get-text-property 1 'face b))
+    (should-not (emacs-buffer-get-text-property 5 'face b))))
+
 (provide 'emacs-font-lock-builtins-test)
 
 ;;; emacs-font-lock-builtins-test.el ends here
