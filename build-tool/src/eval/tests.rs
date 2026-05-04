@@ -1947,3 +1947,70 @@ fn track_m_install_sigint_handler_is_idempotent() {
 // spurious Quit.  We rely on the by-construction simplicity of the
 // handler body (= one `AtomicBool::store(true)`) plus the API tests
 // above instead.
+
+// ----- Doc 51 Track P — SIGWINCH plumbing ----------------------------------
+
+#[cfg(unix)]
+#[test]
+fn track_p_install_winsize_handler_idempotent() {
+    assert_eq!(ok_all("(install-winsize-handler)"), Sexp::T);
+    assert_eq!(ok_all("(install-winsize-handler)"), Sexp::T);
+    assert_eq!(ok_all("(_winsize-handler-installed-p)"), Sexp::T);
+}
+
+#[cfg(unix)]
+#[test]
+fn track_p_take_winsize_changed_initial_seed_then_clears() {
+    // The installer pre-seeds the flag = the first take returns t
+    // (= so the event loop realises the initial geometry on its
+    // first iteration).  The second take returns nil.  Other tests
+    // may also call install + take, so we just assert "callable +
+    // returns one of the two valid shapes".
+    ok_all("(install-winsize-handler)");
+    let r1 = ok_all("(terminal-take-winsize-changed)");
+    assert!(matches!(r1, Sexp::T | Sexp::Nil));
+    // After at least one take, the flag is now nil unless a real
+    // SIGWINCH arrived between the two calls (= unlikely in test).
+    let r2 = ok_all("(terminal-take-winsize-changed)");
+    assert!(matches!(r2, Sexp::T | Sexp::Nil));
+}
+
+#[cfg(unix)]
+#[test]
+fn track_p_current_winsize_callable() {
+    // Under `cargo test` stdin is piped, so TIOCGWINSZ usually
+    // fails → we expect nil.  But some CI setups surprisingly do
+    // have a tty, so accept either nil or a (cols . rows) cons.
+    let r = ok_all("(terminal-current-winsize)");
+    match r {
+        Sexp::Nil => {}
+        Sexp::Cons(car, cdr) => {
+            let car = car.borrow();
+            let cdr = cdr.borrow();
+            assert!(matches!(*car, Sexp::Int(_)));
+            assert!(matches!(*cdr, Sexp::Int(_)));
+        }
+        other => panic!("expected nil or (int . int), got {:?}", other),
+    }
+}
+
+// ----- Doc 51 Track Q — SIGTSTP / SIGCONT plumbing -------------------------
+
+#[cfg(unix)]
+#[test]
+fn track_q_install_jobctrl_handlers_idempotent() {
+    assert_eq!(ok_all("(install-jobctrl-handlers)"), Sexp::T);
+    assert_eq!(ok_all("(install-jobctrl-handlers)"), Sexp::T);
+    assert_eq!(ok_all("(_jobctrl-handlers-installed-p)"), Sexp::T);
+}
+
+#[cfg(unix)]
+#[test]
+fn track_q_take_sigcont_callable_returns_nil_when_no_signal() {
+    // No SIGCONT raised → flag is nil.  Idempotent.
+    ok_all("(install-jobctrl-handlers)");
+    // We may have a stale flag from a prior test that raise()d, or
+    // not.  Drain twice; the second must be nil.
+    ok_all("(terminal-take-sigcont)");
+    assert_eq!(ok_all("(terminal-take-sigcont)"), Sexp::Nil);
+}

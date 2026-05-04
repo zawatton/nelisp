@@ -91,6 +91,12 @@ pub fn install_builtins(env: &mut Env) {
         // Doc 51 Track M — process-wide quit-flag plumbing
         "set-quit-flag", "clear-quit-flag", "quit-flag-pending-p",
         "install-sigint-handler", "_sigint-handler-installed-p",
+        // Doc 51 Track P — SIGWINCH (terminal resize) plumbing
+        "install-winsize-handler", "_winsize-handler-installed-p",
+        "terminal-take-winsize-changed", "terminal-current-winsize",
+        // Doc 51 Track Q — SIGTSTP / SIGCONT (Ctrl+Z / fg)
+        "install-jobctrl-handlers", "_jobctrl-handlers-installed-p",
+        "terminal-take-sigcont",
         // reader exposed as elisp callable (Track O' Phase 2)
         "read", "read-from-string",
     ];
@@ -244,6 +250,13 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "quit-flag-pending-p" => bi_quit_flag_pending_p(args),
         "install-sigint-handler" => bi_install_sigint_handler(args),
         "_sigint-handler-installed-p" => bi_sigint_handler_installed_p(args),
+        "install-winsize-handler" => bi_install_winsize_handler(args),
+        "_winsize-handler-installed-p" => bi_winsize_handler_installed_p(args),
+        "terminal-take-winsize-changed" => bi_terminal_take_winsize_changed(args),
+        "terminal-current-winsize" => bi_terminal_current_winsize(args),
+        "install-jobctrl-handlers" => bi_install_jobctrl_handlers(args),
+        "_jobctrl-handlers-installed-p" => bi_jobctrl_handlers_installed_p(args),
+        "terminal-take-sigcont" => bi_terminal_take_sigcont(args),
         "read" => bi_read(args),
         "read-from-string" => bi_read_from_string(args),
         "provide" => bi_provide(args, env),
@@ -2627,6 +2640,162 @@ mod tty_raw {
     }
 }
 
+// Doc 51 Track P (2026-05-04) — SIGWINCH (terminal resize) plumbing.
+//
+// The handler is the simplest possible: flip an `AtomicBool` and
+// return.  All real work (= ioctl(TIOCGWINSZ), frame-resize, redisplay
+// flush) happens in the event loop on the next iteration.  This is
+// the canonical async-signal-safe pattern — same shape as the
+// quit-flag in `eval::quit`.
+//
+// `terminal-current-winsize` is exposed unconditionally (= can be
+// queried from non-raw-mode contexts too, e.g. a host-driver
+// startup).  The flag query (`terminal-take-winsize-changed`) is
+// only meaningful after `install-winsize-handler` runs.
+
+#[cfg(unix)]
+mod tty_winsize {
+    use std::os::unix::io::AsRawFd;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Once;
+
+    static WINSIZE_CHANGED: AtomicBool = AtomicBool::new(true);
+    static HANDLER_INSTALLED: Once = Once::new();
+
+    extern "C" fn handler(_signum: libc::c_int) {
+        // AtomicBool::store is async-signal-safe.  No allocation,
+        // no Mutex, no formatting — just flip the flag.
+        WINSIZE_CHANGED.store(true, Ordering::SeqCst);
+    }
+
+    pub fn install_handler() {
+        HANDLER_INSTALLED.call_once(|| unsafe {
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = handler as *const () as usize;
+            libc::sigemptyset(&mut sa.sa_mask);
+            // SA_RESTART so an in-flight `read`/`poll` on stdin
+            // restarts after the handler runs.
+            sa.sa_flags = libc::SA_RESTART;
+            libc::sigaction(libc::SIGWINCH, &sa, std::ptr::null_mut());
+            // Pre-seed the flag (already true) — first event-loop
+            // iteration picks up the initial size for matrix realise.
+            WINSIZE_CHANGED.store(true, Ordering::SeqCst);
+        });
+    }
+
+    pub fn handler_installed_p() -> bool {
+        HANDLER_INSTALLED.is_completed()
+    }
+
+    /// Race-free claim: returns whether the flag was set, and resets
+    /// it.  The event loop calls this once per iteration and acts
+    /// only when the return is true.
+    pub fn take_changed() -> bool {
+        WINSIZE_CHANGED.swap(false, Ordering::SeqCst)
+    }
+
+    pub fn current_size() -> Option<(u16, u16)> {
+        let fd = std::io::stdin().lock().as_raw_fd();
+        let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+        if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) } == 0 {
+            Some((ws.ws_col, ws.ws_row))
+        } else {
+            None
+        }
+    }
+}
+
+// Doc 51 Track Q (2026-05-04) — SIGTSTP / SIGCONT (Ctrl+Z / fg).
+//
+// Pressing Ctrl+Z while the terminal is in raw mode is a multi-step
+// dance:
+//   1. SIGTSTP is delivered.  The handler must restore termios
+//      to "cooked" so the parent shell does not inherit raw mode,
+//      then re-raise SIGTSTP with the default disposition (= the
+//      kernel actually suspends the process).
+//   2. The user types `fg`.  SIGCONT arrives.  The handler must
+//      flip a flag so the event loop knows to re-enter raw mode
+//      and trigger a full redraw.
+//
+// This re-uses Track K's `tty_raw` storage for the saved termios
+// (= the same termios we'd use for a clean shutdown).  The handler
+// pair below extends that contract.
+
+#[cfg(unix)]
+mod tty_jobctrl {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Once;
+
+    static SIGCONT_ARRIVED: AtomicBool = AtomicBool::new(false);
+    static HANDLER_INSTALLED: Once = Once::new();
+
+    extern "C" fn tstp_handler(signum: libc::c_int) {
+        // Restore cooked termios before suspending — the user's
+        // shell must not inherit a raw tty.  Track K's
+        // `restore_termios_signal_safe` is the right primitive, but
+        // it *clears* the saved-state flag.  We need the saved
+        // termios to STAY available so SIGCONT can re-apply raw
+        // mode.  Trick: read the termios via tcgetattr from the
+        // current state (cooked target = whatever we saved before
+        // raw-enter, which lives in tty_raw::SAVED_TERMIOS) by
+        // calling tty_raw::raw_mode_leave-equivalent inline.
+        //
+        // For simplicity and because TSTP is rare, we just call
+        // tty_raw::raw_mode_leave().  The CONT handler re-enters
+        // raw mode through the normal Lisp path, which re-saves
+        // the (now cooked) termios.
+        let _ = super::tty_raw::raw_mode_leave();
+        unsafe {
+            // Reset to default + unblock + re-raise so the kernel
+            // actually stops us.
+            libc::signal(signum, libc::SIG_DFL);
+            let mut mask: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut mask);
+            libc::sigaddset(&mut mask, signum);
+            libc::sigprocmask(libc::SIG_UNBLOCK, &mask, std::ptr::null_mut());
+            libc::raise(signum);
+            // After we resume (= SIGCONT delivered + this handler
+            // returns), re-install ourselves (libc::signal reset
+            // SIG_DFL in some impls).  Best-effort.
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = tstp_handler as *const () as usize;
+            libc::sigemptyset(&mut sa.sa_mask);
+            sa.sa_flags = libc::SA_RESTART;
+            libc::sigaction(libc::SIGTSTP, &sa, std::ptr::null_mut());
+        }
+    }
+
+    extern "C" fn cont_handler(_signum: libc::c_int) {
+        // Just flip the flag; the event loop picks it up and
+        // re-enters raw mode on the Lisp side.
+        SIGCONT_ARRIVED.store(true, Ordering::SeqCst);
+    }
+
+    pub fn install_handlers() {
+        HANDLER_INSTALLED.call_once(|| unsafe {
+            let mut sa_tstp: libc::sigaction = std::mem::zeroed();
+            sa_tstp.sa_sigaction = tstp_handler as *const () as usize;
+            libc::sigemptyset(&mut sa_tstp.sa_mask);
+            sa_tstp.sa_flags = libc::SA_RESTART;
+            libc::sigaction(libc::SIGTSTP, &sa_tstp, std::ptr::null_mut());
+
+            let mut sa_cont: libc::sigaction = std::mem::zeroed();
+            sa_cont.sa_sigaction = cont_handler as *const () as usize;
+            libc::sigemptyset(&mut sa_cont.sa_mask);
+            sa_cont.sa_flags = libc::SA_RESTART;
+            libc::sigaction(libc::SIGCONT, &sa_cont, std::ptr::null_mut());
+        });
+    }
+
+    pub fn handlers_installed_p() -> bool {
+        HANDLER_INSTALLED.is_completed()
+    }
+
+    pub fn take_cont() -> bool {
+        SIGCONT_ARRIVED.swap(false, Ordering::SeqCst)
+    }
+}
+
 fn bi_terminal_raw_mode_enter(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("terminal-raw-mode-enter", args, 0, Some(0))?;
     #[cfg(unix)]
@@ -2758,6 +2927,110 @@ fn bi_install_sigint_handler(args: &[Sexp]) -> Result<Sexp, EvalError> {
 fn bi_sigint_handler_installed_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("_sigint-handler-installed-p", args, 0, Some(0))?;
     Ok(if quit::sigint_handler_installed_p() { Sexp::T } else { Sexp::Nil })
+}
+
+/// Doc 51 Track P — install a SIGWINCH handler that flips the
+/// resize-pending flag.  Idempotent; pre-seeds the flag so the
+/// first event-loop iteration realises the initial geometry.
+fn bi_install_winsize_handler(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("install-winsize-handler", args, 0, Some(0))?;
+    #[cfg(unix)]
+    {
+        tty_winsize::install_handler();
+        return Ok(Sexp::T);
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(Sexp::Nil)
+    }
+}
+
+fn bi_winsize_handler_installed_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("_winsize-handler-installed-p", args, 0, Some(0))?;
+    #[cfg(unix)]
+    {
+        return Ok(if tty_winsize::handler_installed_p() { Sexp::T } else { Sexp::Nil });
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(Sexp::Nil)
+    }
+}
+
+/// Doc 51 Track P — race-free claim of the resize-pending flag.
+/// Returns t if a SIGWINCH (or initial-startup seed) is pending,
+/// nil otherwise.  Clears the flag in the same step.
+fn bi_terminal_take_winsize_changed(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("terminal-take-winsize-changed", args, 0, Some(0))?;
+    #[cfg(unix)]
+    {
+        return Ok(if tty_winsize::take_changed() { Sexp::T } else { Sexp::Nil });
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(Sexp::Nil)
+    }
+}
+
+/// Doc 51 Track P — return the controlling tty's current size as
+/// `(COLS . ROWS)' (= integers), or nil if `ioctl(TIOCGWINSZ)`
+/// fails (e.g. stdin is not a tty).
+fn bi_terminal_current_winsize(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("terminal-current-winsize", args, 0, Some(0))?;
+    #[cfg(unix)]
+    {
+        return Ok(match tty_winsize::current_size() {
+            Some((c, r)) => Sexp::cons(Sexp::Int(c as i64), Sexp::Int(r as i64)),
+            None => Sexp::Nil,
+        });
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(Sexp::Nil)
+    }
+}
+
+/// Doc 51 Track Q — install SIGTSTP / SIGCONT handlers so Ctrl+Z
+/// suspends cleanly (= termios restored before suspend) and `fg`
+/// triggers re-enter of raw mode + redraw.  Idempotent.
+fn bi_install_jobctrl_handlers(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("install-jobctrl-handlers", args, 0, Some(0))?;
+    #[cfg(unix)]
+    {
+        tty_jobctrl::install_handlers();
+        return Ok(Sexp::T);
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(Sexp::Nil)
+    }
+}
+
+fn bi_jobctrl_handlers_installed_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("_jobctrl-handlers-installed-p", args, 0, Some(0))?;
+    #[cfg(unix)]
+    {
+        return Ok(if tty_jobctrl::handlers_installed_p() { Sexp::T } else { Sexp::Nil });
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(Sexp::Nil)
+    }
+}
+
+/// Doc 51 Track Q — race-free claim of the SIGCONT-arrived flag.
+/// Returns t if SIGCONT was received since the last claim (= we
+/// just resumed from suspension), nil otherwise.
+fn bi_terminal_take_sigcont(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("terminal-take-sigcont", args, 0, Some(0))?;
+    #[cfg(unix)]
+    {
+        return Ok(if tty_jobctrl::take_cont() { Sexp::T } else { Sexp::Nil });
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(Sexp::Nil)
+    }
 }
 
 fn bi_prin1_to_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
