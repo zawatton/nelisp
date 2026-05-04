@@ -424,6 +424,19 @@ impl<'a> Lexer<'a> {
             b'\\' => Ok(92),
             b'\'' => Ok(39),
             b'"' => Ok(34),
+            // Doc 51 (2026-05-04) — additional named char escapes that
+            // GNU Emacs's reader recognises in `?\X' literals.  Without
+            // these, e.g. `?\s' was returning 115 (= literal `s')
+            // instead of 32 (= space), breaking `kbd' parsing of any
+            // multi-key sequence.
+            b's' => Ok(32),  // space
+            b'e' => Ok(27),  // escape
+            b'b' => Ok(8),   // backspace
+            b'd' => Ok(127), // delete
+            b'a' => Ok(7),   // bell
+            b'f' => Ok(12),  // form feed
+            b'v' => Ok(11),  // vertical tab
+            b'0' => Ok(0),   // NUL
             b'x' => {
                 let h1 = self.bump().ok_or_else(|| {
                     ReadError::unexpected_eof("\\x needs 2 hex digits in char literal", esc_pos)
