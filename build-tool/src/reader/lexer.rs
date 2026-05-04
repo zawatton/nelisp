@@ -232,6 +232,20 @@ impl<'a> Lexer<'a> {
                         b'\\' => out.push('\\'),
                         b'"' => out.push('"'),
                         b'0' => out.push('\0'),
+                        // Named char escapes — must mirror what the
+                        // char-literal lexer (= `?\e' / `?\s' / etc.)
+                        // recognises, otherwise string constants
+                        // built with `"\e[..."' silently drop the
+                        // backslash and the runtime emits literal
+                        // `e[...]' instead of the ESC-prefixed
+                        // ANSI sequence the caller meant.
+                        b'e' => out.push('\u{1b}'),  // ESC
+                        b's' => out.push(' '),       // space
+                        b'b' => out.push('\u{08}'),  // backspace
+                        b'd' => out.push('\u{7f}'),  // delete
+                        b'a' => out.push('\u{07}'),  // bell
+                        b'f' => out.push('\u{0c}'),  // form feed
+                        b'v' => out.push('\u{0b}'),  // vertical tab
                         // `\xNN` hex byte escape — useful for the
                         // bootstrap form `(string ?\xff)` style; Doc
                         // 44 §3.2 lists \xNN as deferred but only
