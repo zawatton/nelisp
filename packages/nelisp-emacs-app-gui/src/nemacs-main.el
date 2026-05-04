@@ -623,14 +623,18 @@ pre-set it to t (= early-out before the first poll)."
         ;; Doc 51 Track P/Q — pick up signal-handler flags BEFORE
         ;; polling for input.  Resize first so the upcoming poll
         ;; uses the new geometry.
-        (nemacs-main--handle-sigcont)
-        (nemacs-main--handle-winsize)
-        (nemacs-main--drain-once budget-ms)
+        (condition-case e1 (nemacs-main--handle-sigcont)
+          (error (message "loop: sigcont err: %S" e1)))
+        (condition-case e2 (nemacs-main--handle-winsize)
+          (error (message "loop: winsize err: %S" e2)))
+        (condition-case e3 (nemacs-main--drain-once budget-ms)
+          (error (message "loop: drain err: %S" e3)))
         ;; Doc 51 Track S — re-fontify any dirty interval that the
         ;; just-dispatched edit recorded.  Cheap when nothing is
         ;; dirty (= early-exit on nil).
         (when (fboundp 'emacs-font-lock-flush-pending)
-          (condition-case _ (emacs-font-lock-flush-pending) (error nil)))
+          (condition-case e4 (emacs-font-lock-flush-pending)
+            (error (message "loop: flush-pending err: %S" e4))))
         ;; Doc 51 Track A — re-paint the canvas from buffer state
         ;; AFTER input dispatch, so `self-insert-command' /
         ;; `delete-backward-char' / etc. show up on the next flush.
@@ -640,17 +644,17 @@ pre-set it to t (= early-out before the first poll)."
           (let ((w (and (fboundp 'emacs-window-selected-window)
                         (emacs-window-selected-window))))
             (when w
-              (condition-case _
+              (condition-case e5
                   (emacs-redisplay-redisplay-window
                    nemacs-main--redisplay w)
-                (error nil)))))
+                (error (message "loop: redisplay err: %S" e5))))))
         ;; Refresh the painted state after every dispatched event.
         (when (and nemacs-main--redisplay nemacs-main--frame
                    (fboundp 'emacs-redisplay-flush-frame))
-          (condition-case _
+          (condition-case e6
               (emacs-redisplay-flush-frame nemacs-main--redisplay
                                            nemacs-main--frame)
-            (error nil))))))))
+            (error (message "loop: flush err: %S" e6)))))))))
 
 ;;;; --- option-driven preload ----------------------------------------
 
