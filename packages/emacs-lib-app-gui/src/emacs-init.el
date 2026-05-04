@@ -186,6 +186,12 @@
            (locate-library "emacs-window")
            (locate-library "emacs-tui-backend"))
   (require 'emacs-redisplay-builtins))
+;; (2026-05-04) — `emacs-tui-event' provides the byte-stream → key
+;; event parser that nemacs-main's event loop drains under the
+;; nelisp driver.  Without this require, `emacs-tui-event-init' is
+;; void-function and stdin input is silently discarded.
+(when (locate-library "emacs-tui-event")
+  (require 'emacs-tui-event))
 
 (provide 'emacs-init)
 
