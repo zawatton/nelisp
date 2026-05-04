@@ -82,6 +82,9 @@ pub fn install_builtins(env: &mut Env) {
         // self-process stdio (Phase 9 minimal — needed by stand-alone Lisp servers
         // such as elisp-lsp running on the `nelisp` binary)
         "read-stdin-bytes",
+        // Doc 51 Track E — interactive TTY input (Unix only; no-ops elsewhere)
+        "terminal-raw-mode-enter", "terminal-raw-mode-leave",
+        "read-stdin-byte-available",
         // reader exposed as elisp callable (Track O' Phase 2)
         "read", "read-from-string",
     ];
@@ -225,6 +228,9 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "prin1-to-string" => bi_prin1_to_string(args),
         "message" => bi_message(args),
         "read-stdin-bytes" => bi_read_stdin_bytes(args),
+        "terminal-raw-mode-enter" => bi_terminal_raw_mode_enter(args),
+        "terminal-raw-mode-leave" => bi_terminal_raw_mode_leave(args),
+        "read-stdin-byte-available" => bi_read_stdin_byte_available(args),
         "read" => bi_read(args),
         "read-from-string" => bi_read_from_string(args),
         "provide" => bi_provide(args, env),
@@ -2399,6 +2405,150 @@ fn bi_read_stdin_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
             Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned()))
         }
         Err(e) => Err(EvalError::Internal(format!("read-stdin-bytes: {}", e))),
+    }
+}
+
+// Doc 51 Track E (2026-05-04) — TTY raw-mode + non-blocking byte reader.
+// Unix-only.  On non-Unix the corresponding builtins are no-ops returning
+// nil so substrate code can run on Windows host without errors.
+
+#[cfg(unix)]
+mod tty_raw {
+    use super::*;
+    use std::os::unix::io::AsRawFd;
+    use std::sync::Mutex;
+
+    static SAVED_TERMIOS: Mutex<Option<libc::termios>> = Mutex::new(None);
+
+    pub fn raw_mode_enter() -> Result<(), EvalError> {
+        let fd = std::io::stdin().lock().as_raw_fd();
+        let mut term: libc::termios = unsafe { std::mem::zeroed() };
+        if unsafe { libc::tcgetattr(fd, &mut term) } != 0 {
+            return Err(EvalError::Internal(format!(
+                "terminal-raw-mode-enter: tcgetattr failed: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        // Save the original termios for `terminal-raw-mode-leave'.
+        *SAVED_TERMIOS.lock().unwrap() = Some(term);
+        // cfmakeraw is the standard setup: -ICANON, -ECHO, etc.
+        unsafe { libc::cfmakeraw(&mut term) };
+        // VMIN=1 / VTIME=0: block until at least one byte is available.
+        term.c_cc[libc::VMIN] = 1;
+        term.c_cc[libc::VTIME] = 0;
+        if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &term) } != 0 {
+            return Err(EvalError::Internal(format!(
+                "terminal-raw-mode-enter: tcsetattr failed: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn raw_mode_leave() -> Result<(), EvalError> {
+        let fd = std::io::stdin().lock().as_raw_fd();
+        let mut guard = SAVED_TERMIOS.lock().unwrap();
+        if let Some(term) = *guard {
+            if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &term) } != 0 {
+                return Err(EvalError::Internal(format!(
+                    "terminal-raw-mode-leave: tcsetattr failed: {}",
+                    std::io::Error::last_os_error()
+                )));
+            }
+            *guard = None;
+        }
+        // Idempotent — calling without a prior enter is a no-op.
+        Ok(())
+    }
+
+    pub fn stdin_byte_available(timeout_ms: i32) -> Result<Option<u8>, EvalError> {
+        let fd = std::io::stdin().lock().as_raw_fd();
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let r = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
+        if r < 0 {
+            return Err(EvalError::Internal(format!(
+                "read-stdin-byte-available: poll failed: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        if r == 0 {
+            return Ok(None);
+        }
+        if pfd.revents & libc::POLLIN == 0 {
+            return Ok(None);
+        }
+        // Data is available — read exactly 1 byte.
+        use std::io::Read;
+        let mut buf = [0u8; 1];
+        match std::io::stdin().lock().read(&mut buf) {
+            Ok(0) => Ok(None), // EOF
+            Ok(_) => Ok(Some(buf[0])),
+            Err(e) => Err(EvalError::Internal(format!(
+                "read-stdin-byte-available: read failed: {}",
+                e
+            ))),
+        }
+    }
+}
+
+fn bi_terminal_raw_mode_enter(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("terminal-raw-mode-enter", args, 0, Some(0))?;
+    #[cfg(unix)]
+    {
+        tty_raw::raw_mode_enter()?;
+        return Ok(Sexp::T);
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(Sexp::Nil)
+    }
+}
+
+fn bi_terminal_raw_mode_leave(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("terminal-raw-mode-leave", args, 0, Some(0))?;
+    #[cfg(unix)]
+    {
+        tty_raw::raw_mode_leave()?;
+        return Ok(Sexp::T);
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(Sexp::Nil)
+    }
+}
+
+/// `(read-stdin-byte-available &optional TIMEOUT-MS)' — non-blocking
+/// 1-byte read with optional timeout.  Returns:
+///   - integer 0..255 when a byte is available
+///   - nil when no input arrived within TIMEOUT-MS (default 0)
+/// On EOF returns nil (= same as timeout, indistinguishable in MVP).
+fn bi_read_stdin_byte_available(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("read-stdin-byte-available", args, 0, Some(1))?;
+    let timeout_ms = match args.get(0) {
+        None | Some(Sexp::Nil) => 0,
+        Some(Sexp::Int(n)) => *n as i32,
+        Some(other) => {
+            return Err(EvalError::WrongType {
+                expected: "integer (timeout-ms)".into(),
+                got: other.clone(),
+            });
+        }
+    };
+    #[cfg(unix)]
+    {
+        match tty_raw::stdin_byte_available(timeout_ms)? {
+            Some(b) => Ok(Sexp::Int(b as i64)),
+            None => Ok(Sexp::Nil),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = timeout_ms;
+        Ok(Sexp::Nil)
     }
 }
 

@@ -30,3 +30,10 @@ path = "src/bin/nelisp.rs"
 # the existing `eval/' to evaluate them — no wire types from sibling
 # crate, no native asset constants, no seed loader / sqlite / syscall
 # pull-in.  build-tool now has zero internal-crate deps.
+
+# Doc 51 Track E (2026-05-04): libc for termios raw-mode + poll() to
+# enable interactive TTY input wiring under the nelisp driver.  Used
+# only by `terminal-raw-mode-enter' / `-leave' / `read-stdin-byte' /
+# `read-stdin-byte-available' builtins.  Not pulled in for batch use.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
