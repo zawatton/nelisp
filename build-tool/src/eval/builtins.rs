@@ -40,7 +40,7 @@ pub fn install_builtins(env: &mut Env) {
         // arithmetic
         "+", "-", "*", "/", "mod", "<", ">", "<=", ">=", "=", "/=",
         // equality
-        "eq", "equal",
+        "eq", "equal", "eql", "equal-including-properties",
         // cons / list
         "car", "cdr", "cons", "length", "append",
         "caar", "cadr", "cdar", "cddr",
@@ -55,6 +55,8 @@ pub fn install_builtins(env: &mut Env) {
         "vectorp", "keywordp", "null", "booleanp",
         // bitwise — required by keymap / event-encoding code
         "logior", "logand", "logxor", "lognot", "ash", "lsh",
+        // hashing — used by hash-table key derivation in user code
+        "sxhash", "sxhash-equal", "sxhash-eq", "sxhash-eql",
         // string
         "concat", "format", "substring", "intern", "intern-soft", "symbol-name",
         "string-equal", "string=",
@@ -132,7 +134,12 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "/=" => bi_neq_num(args),
         // ---- equality ----
         "eq" => bi_eq(args),
-        "equal" => bi_equal(args),
+        "equal" | "equal-including-properties" => bi_equal(args),
+        // `eql' is `equal' for numbers and `eq' for everything else,
+        // but for our MVP `equal' is a strict superset of both, so we
+        // alias `eql' to `equal' (= produces the same boolean result
+        // on every input shape we care about).
+        "eql" => bi_equal(args),
         // ---- cons / list ----
         "car" => bi_car(args),
         "cdr" => bi_cdr(args),
@@ -198,6 +205,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "logxor" => bi_logxor(args),
         "lognot" => bi_lognot(args),
         "ash" | "lsh" => bi_ash(args),
+        "sxhash" | "sxhash-equal" | "sxhash-eq" | "sxhash-eql"
+            => bi_sxhash(args),
         // ---- string ----
         "concat" => bi_concat(args),
         "format" => bi_format(args),
@@ -497,6 +506,52 @@ fn bi_ash(args: &[Sexp]) -> Result<Sexp, EvalError> {
         if abs >= 63 { if n < 0 { -1 } else { 0 } } else { n >> abs }
     };
     Ok(Sexp::Int(r))
+}
+
+/// `(sxhash OBJECT)' / `sxhash-{equal,eq,eql}' — fold OBJECT into
+/// an i64 hash.  All four flavours share the same impl here; that
+/// is fine for the substrate's use-cases (= deriving a stable
+/// integer key for hashing).  Real Emacs distinguishes the four
+/// based on equality predicate — we accept the imprecision since
+/// caller code that needs equality-class-stable hashing will go
+/// through the hash-table API directly.
+fn bi_sxhash(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("sxhash", args, 1, Some(1))?;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    sxhash_into(&args[0], &mut h);
+    // Mask to a positive Emacs-fixnum-friendly range.
+    let raw = h.finish();
+    Ok(Sexp::Int((raw & 0x3FFF_FFFF_FFFF_FFFFu64) as i64))
+}
+
+fn sxhash_into<H: std::hash::Hasher>(v: &Sexp, h: &mut H) {
+    use std::hash::Hash;
+    match v {
+        Sexp::Nil => 0u8.hash(h),
+        Sexp::T => 1u8.hash(h),
+        Sexp::Int(n) => { 2u8.hash(h); n.hash(h); }
+        Sexp::Float(x) => { 3u8.hash(h); x.to_bits().hash(h); }
+        Sexp::Symbol(s) => { 4u8.hash(h); s.hash(h); }
+        Sexp::Str(s) => { 5u8.hash(h); s.hash(h); }
+        Sexp::MutStr(rc) => { 5u8.hash(h); rc.borrow().hash(h); }
+        Sexp::Cons(car, cdr) => {
+            6u8.hash(h);
+            sxhash_into(&car.borrow(), h);
+            sxhash_into(&cdr.borrow(), h);
+        }
+        Sexp::Vector(rc) => {
+            7u8.hash(h);
+            for it in rc.borrow().iter() { sxhash_into(it, h); }
+        }
+        Sexp::HashTable(_) => 8u8.hash(h),
+        Sexp::CharTable(_) => 9u8.hash(h),
+        Sexp::BoolVector(rc) => {
+            10u8.hash(h);
+            for &b in rc.borrow().iter() { (b as u8).hash(h); }
+        }
+    }
 }
 
 fn cmp_vararg(name: &str, args: &[Sexp], cmp: fn(f64, f64) -> bool) -> Result<Sexp, EvalError> {
