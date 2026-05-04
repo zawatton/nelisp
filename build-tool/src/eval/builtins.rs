@@ -61,7 +61,7 @@ pub fn install_builtins(env: &mut Env) {
         "concat", "format", "substring", "intern", "intern-soft", "symbol-name",
         "string-equal", "string=",
         "string-match-p", "regexp-quote", "mapconcat",
-        "make-string", "char-to-string", "string-to-char",
+        "make-string", "char-to-string", "string-to-char", "string",
         "string-to-number", "upcase", "downcase", "capitalize",
         "split-string", "string-trim", "string-trim-left", "string-trim-right",
         "string-prefix-p", "string-suffix-p", "string-search",
@@ -245,6 +245,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "delete-dups" => bi_delete_dups(args),
         "make-string" => bi_make_string(args),
         "char-to-string" => bi_char_to_string(args),
+        "string" => bi_string_from_chars(args),
         "string-to-char" => bi_string_to_char(args),
         "string-to-number" => bi_string_to_number(args),
         "upcase" => bi_upcase(args),
@@ -1246,6 +1247,33 @@ fn bi_char_to_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
         }),
     };
     Ok(Sexp::Str(c.to_string()))
+}
+
+/// `(string &rest CHARS)' — build a string from integer character
+/// codepoints.  Used by `self-insert-command' (= `(string CHAR)' to
+/// turn an int into a 1-char string for `insert').
+fn bi_string_from_chars(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let mut out = String::with_capacity(args.len());
+    for a in args {
+        match a {
+            Sexp::Int(c) => {
+                let ch = char::from_u32(*c as u32).ok_or_else(|| {
+                    EvalError::WrongType {
+                        expected: "valid character codepoint".into(),
+                        got: a.clone(),
+                    }
+                })?;
+                out.push(ch);
+            }
+            other => {
+                return Err(EvalError::WrongType {
+                    expected: "character (integer)".into(),
+                    got: other.clone(),
+                })
+            }
+        }
+    }
+    Ok(Sexp::Str(out))
 }
 
 fn bi_string_to_char(args: &[Sexp]) -> Result<Sexp, EvalError> {
