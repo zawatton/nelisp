@@ -110,8 +110,46 @@ fallback path runs nemacs read-eval batch-style)."
          (message "nemacs: TUI realise failed: %S" err))
        nil))))
 
+(defun nemacs-main--enter-fullscreen ()
+  "Doc 51 Track X (2026-05-04) — take over the user's TTY.
+Resizes the frame to the actual terminal size (= so the very first
+paint matches what the user sees, not the 80x24 default), then flips
+into the alternate screen buffer so the post-quit shell scrollback
+is preserved.  No-op when the backend / `terminal-current-winsize'
+isn't available (= test fixtures, host driver in batch mode)."
+  (when (and nemacs-main--backend nemacs-main--frame
+             (fboundp 'emacs-tui-backend-frame-resize))
+    (condition-case _
+        (when (fboundp 'terminal-current-winsize)
+          (let ((sz (terminal-current-winsize)))
+            (when (and sz (consp sz)
+                       (integerp (car sz)) (integerp (cdr sz))
+                       (> (car sz) 0) (> (cdr sz) 0))
+              (emacs-tui-backend-frame-resize nemacs-main--backend
+                                              nemacs-main--frame
+                                              (car sz) (cdr sz)))))
+      (error nil)))
+  (when (and nemacs-main--backend
+             (fboundp 'emacs-tui-backend-enter-alt-screen))
+    (condition-case _
+        (emacs-tui-backend-enter-alt-screen nemacs-main--backend)
+      (error nil))))
+
+(defun nemacs-main--leave-fullscreen ()
+  "Doc 51 Track X (2026-05-04) — flip back to the user's normal screen.
+Called from `nemacs-main--shutdown-tui' before the backend is torn
+down, so the alt-screen-off escape lands while the handle is still
+alive.  No-op when alt-screen wasn't entered (= idempotent on the
+backend side)."
+  (when (and nemacs-main--backend
+             (fboundp 'emacs-tui-backend-leave-alt-screen))
+    (condition-case _
+        (emacs-tui-backend-leave-alt-screen nemacs-main--backend)
+      (error nil))))
+
 (defun nemacs-main--shutdown-tui ()
   "Tear down the TUI subsystem realised by `nemacs-main--realise-tui'."
+  (nemacs-main--leave-fullscreen)
   (when (and nemacs-main--event-handle
              (fboundp 'emacs-tui-event-shutdown))
     (condition-case _
@@ -795,6 +833,14 @@ takes over and dispatches TUI events directly."
               ;; loop running on whatever the backend's event-queue
               ;; injected (= test mode, no real TTY needed).
               (nemacs-main--enable-tty-raw-input)
+              ;; Doc 51 Track X (2026-05-04) — alt-screen takeover +
+              ;; resize-to-actual-TTY happens AFTER raw-mode-enter so
+              ;; the size query lands on a valid termios state.  Re-do
+              ;; the initial paint at the new dimensions so the user
+              ;; sees full-canvas content from frame zero (= no 80x24
+              ;; corner before the first SIGWINCH catches up).
+              (nemacs-main--enter-fullscreen)
+              (nemacs-main--initial-paint)
               (nemacs-main--event-loop)
               'ok)))
            (t
