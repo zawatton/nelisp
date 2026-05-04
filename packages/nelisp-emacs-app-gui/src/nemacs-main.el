@@ -195,6 +195,64 @@ switches; callers should clear it from `nemacs-main--shutdown-tui'."
   (when (boundp 'overriding-terminal-local-map)
     (set 'overriding-terminal-local-map nil)))
 
+;;;; --- nelisp driver TTY wiring (Track E) ----------------------------
+;;
+;; Under the nelisp driver `bin/nemacs' (no args) needs raw TTY input
+;; or every keypress is line-buffered by the kernel.  We expose three
+;; NeLisp builtins (Track E, 2026-05-04):
+;;
+;;   (terminal-raw-mode-enter)     -> t / nil
+;;   (terminal-raw-mode-leave)     -> t / nil
+;;   (read-stdin-byte-available
+;;        &optional TIMEOUT-MS)    -> integer / nil
+;;
+;; and plumb them through `emacs-tui-event-input-fn'.  Under host
+;; driver these builtins are not bound — nemacs-main--install-keymap-host
+;; is the active path and stdin is owned by host Emacs's command loop.
+;; So everything below is gated on `(fboundp 'terminal-raw-mode-enter)'
+;; or runs only under the nelisp driver branch.
+
+(defvar nemacs-main--tty-raw-active nil
+  "Non-nil when `terminal-raw-mode-enter' has been called from us.
+Used by `nemacs-main--shutdown-tui' to decide whether to leave raw
+mode (= we don't restore termios we didn't put into raw)." )
+
+(defun nemacs-main--stdin-byte-fn ()
+  "Input-fn for `emacs-tui-event-input-fn' (Track E).
+Returns the next available byte (integer 0..255) or nil when no
+input is queued.  TIMEOUT-MS=0 = pure non-blocking; the outer
+event-poll's TIMEOUT-MS handles wait-for-input on idle."
+  (when (fboundp 'read-stdin-byte-available)
+    (read-stdin-byte-available 0)))
+
+(defun nemacs-main--enable-tty-raw-input ()
+  "Install raw-mode + the stdin reader under the nelisp driver.
+Returns t on success, nil if the builtins are unavailable."
+  (when (and (fboundp 'terminal-raw-mode-enter)
+             (fboundp 'read-stdin-byte-available)
+             (boundp 'emacs-tui-event-input-fn))
+    (condition-case err
+        (progn
+          (terminal-raw-mode-enter)
+          (setq nemacs-main--tty-raw-active t)
+          (setq emacs-tui-event-input-fn 'nemacs-main--stdin-byte-fn)
+          t)
+      (error
+       (when (fboundp 'message)
+         (message "nemacs: TTY raw setup failed: %S" err))
+       nil))))
+
+(defun nemacs-main--disable-tty-raw-input ()
+  "Reverse of `nemacs-main--enable-tty-raw-input'."
+  (when (and nemacs-main--tty-raw-active
+             (fboundp 'terminal-raw-mode-leave))
+    (condition-case _
+        (terminal-raw-mode-leave)
+      (error nil))
+    (setq nemacs-main--tty-raw-active nil))
+  (when (boundp 'emacs-tui-event-input-fn)
+    (setq emacs-tui-event-input-fn nil)))
+
 ;;;; --- event loop ---------------------------------------------------
 
 (defvar nemacs-main--quit-flag nil
@@ -203,6 +261,62 @@ switches; callers should clear it from `nemacs-main--shutdown-tui'."
 (defun nemacs-main--quit ()
   "Mark the event loop for termination.  Returns t."
   (setq nemacs-main--quit-flag t))
+
+(defvar nemacs-main--prefix-keys []
+  "Accumulated key prefix for multi-key sequences (= e.g. C-x C-c).
+A vector of integer keys cleared after every successful keymap
+lookup.  Single-key bindings clear it on each press; prefix-key
+bindings keep it growing.")
+
+(defun nemacs-main--key-event->key (ev)
+  "Translate a tui-event-key plist EV into an integer key code.
+The return shape matches what `nemacs-main--global-keymap' expects
+via `lookup-key' (= integer for plain ASCII, integer with control-bit
+mask 0x4000000 for C- chord, otherwise the underlying key plist
+itself for non-ASCII / function keys)."
+  (let* ((char (plist-get ev :char))
+         (mods (plist-get ev :mods)))
+    (cond
+     ((and char (memq 'control mods))
+      ;; control bit per upstream Emacs ASCII C- chord encoding.
+      (logior char (lsh 1 26)))
+     (char char)
+     (t ev))))
+
+(defun nemacs-main--lookup-key-vec (vec)
+  "Look up VEC in `nemacs-main--global-keymap'.
+Returns the binding (= a command symbol / keymap / nil)."
+  (when (and nemacs-main--global-keymap
+             (fboundp 'lookup-key))
+    (lookup-key nemacs-main--global-keymap vec)))
+
+(defun nemacs-main--dispatch-key-event (ev)
+  "Process a single key EV (= tui-event-poll plist) through the keymap.
+Accumulates EV into `nemacs-main--prefix-keys', looks the result up
+in `nemacs-main--global-keymap', and:
+  - Runs the command via `command-execute' on a non-keymap binding,
+    then clears the prefix.
+  - Keeps the prefix growing on a keymap binding (= prefix key).
+  - Clears the prefix on an unbound sequence (= give up gracefully)."
+  (let* ((key (nemacs-main--key-event->key ev))
+         (next-vec (vconcat nemacs-main--prefix-keys (vector key)))
+         (binding (nemacs-main--lookup-key-vec next-vec)))
+    (cond
+     ;; Prefix key — keep accumulating.
+     ((and binding
+           (or (and (fboundp 'keymapp) (keymapp binding))
+               (and (fboundp 'emacs-keymap-keymapp)
+                    (emacs-keymap-keymapp binding))))
+      (setq nemacs-main--prefix-keys next-vec))
+     ;; Bound command — execute + reset.
+     ((and binding (fboundp 'command-execute))
+      (setq nemacs-main--prefix-keys [])
+      (condition-case _
+          (command-execute binding)
+        (quit (nemacs-main--quit))))
+     ;; No binding — reset and ignore (= upstream "<key> is undefined").
+     (t
+      (setq nemacs-main--prefix-keys [])))))
 
 (defun nemacs-main--drain-once (timeout-ms)
   "Pull one event and dispatch it.  Returns t when an event ran, nil
@@ -213,6 +327,11 @@ on idle.  Honours TIMEOUT-MS (= caller's poll budget)."
                                             timeout-ms)))
       (cond
        ((null ev) nil)
+       ;; tui-event key plist (= raw stdin byte translated to a key).
+       ;; Route through the keymap dispatcher.
+       ((and (consp ev) (eq (plist-get ev :type) 'key))
+        (nemacs-main--dispatch-key-event ev)
+        t)
        ;; Convention: event vector / list whose head matches a
        ;; bound-symbol command runs through `command-execute'.
        ((and (or (vectorp ev) (consp ev))
@@ -337,6 +456,11 @@ takes over and dispatches TUI events directly."
               'ok)
              (t
               ;; nelisp driver / non-interactive: drive our own loop.
+              ;; Try to enable raw TTY input when the builtins are
+              ;; available (= nelisp driver).  Failure leaves the
+              ;; loop running on whatever the backend's event-queue
+              ;; injected (= test mode, no real TTY needed).
+              (nemacs-main--enable-tty-raw-input)
               (nemacs-main--event-loop)
               'ok)))
            (t
@@ -348,6 +472,7 @@ takes over and dispatches TUI events directly."
         ;; Note: under interactive host driver we do NOT shutdown TUI
         ;; here, because shutdown happens when the user runs C-x C-c
         ;; → nemacs-kill → kill-emacs → at-exit hooks.
+        (nemacs-main--disable-tty-raw-input)
         (when (or (nemacs-main-option :batch)
                   (and (boundp 'noninteractive) noninteractive))
           (nemacs-main--shutdown-tui)))))))

@@ -287,6 +287,85 @@ test runner), so flet around it."
       (should nemacs-main--quit-flag)
       (should kill-called))))
 
+;;;; H. Track E — nelisp driver TTY wiring
+
+(ert-deftest nemacs-main-test/enable-tty-skips-when-builtins-absent ()
+  "When `terminal-raw-mode-enter' is unbound, the enable call should
+just return nil and not raise — host driver path leaves TTY alone."
+  (cl-letf (((symbol-function 'fboundp)
+             (lambda (sym)
+               (if (memq sym '(terminal-raw-mode-enter
+                               read-stdin-byte-available))
+                   nil
+                 (let ((real (intern-soft (symbol-name sym))))
+                   (and real (functionp real)))))))
+    (let ((nemacs-main--tty-raw-active nil)
+          (emacs-tui-event-input-fn nil))
+      (should-not (nemacs-main--enable-tty-raw-input))
+      (should-not nemacs-main--tty-raw-active)
+      (should-not emacs-tui-event-input-fn))))
+
+(ert-deftest nemacs-main-test/disable-tty-restores-state ()
+  "Disable should clear raw-active flag and unset input-fn."
+  (let ((nemacs-main--tty-raw-active t)
+        (emacs-tui-event-input-fn 'placeholder))
+    (cl-letf* ((leave-called nil)
+               ((symbol-function 'terminal-raw-mode-leave)
+                (lambda () (setq leave-called t))))
+      (nemacs-main--disable-tty-raw-input)
+      (should-not nemacs-main--tty-raw-active)
+      (should-not emacs-tui-event-input-fn)
+      (should leave-called))))
+
+(ert-deftest nemacs-main-test/key-event-translation-control ()
+  "A key plist with `control' modifier should fold the bit per
+upstream Emacs' C- chord encoding."
+  (let* ((ev (list :type 'key :char ?c :mods '(control)))
+         (k (nemacs-main--key-event->key ev)))
+    (should (= k (logior ?c (lsh 1 26))))))
+
+(ert-deftest nemacs-main-test/key-event-translation-plain-char ()
+  "A key plist with no modifiers and an ASCII char returns the char."
+  (let* ((ev (list :type 'key :char ?a :mods nil))
+         (k (nemacs-main--key-event->key ev)))
+    (should (= k ?a))))
+
+(ert-deftest nemacs-main-test/dispatch-key-event-runs-bound-cmd ()
+  "Dispatching a key event whose translated key is bound in the
+keymap should run the command and clear the prefix."
+  (let* ((nemacs-main--global-keymap (make-sparse-keymap))
+         (nemacs-main--prefix-keys [])
+         (ran-cmd nil))
+    (defun nemacs-main-test--dummy-cmd ()
+      (interactive)
+      (setq ran-cmd t))
+    (define-key nemacs-main--global-keymap (vector ?a)
+                'nemacs-main-test--dummy-cmd)
+    (nemacs-main--dispatch-key-event (list :type 'key :char ?a :mods nil))
+    (should ran-cmd)
+    (should (equal [] nemacs-main--prefix-keys))))
+
+(ert-deftest nemacs-main-test/dispatch-key-event-prefix-chain ()
+  "Dispatching a prefix key followed by its continuation runs the
+nested command and resets the prefix vector at the end."
+  (let* ((nemacs-main--global-keymap (make-sparse-keymap))
+         (sub (make-sparse-keymap))
+         (nemacs-main--prefix-keys [])
+         (ran-cmd nil))
+    (defun nemacs-main-test--prefix-cmd ()
+      (interactive)
+      (setq ran-cmd t))
+    (define-key sub (vector ?b) 'nemacs-main-test--prefix-cmd)
+    (define-key nemacs-main--global-keymap (vector ?a) sub)
+    ;; First press: prefix.
+    (nemacs-main--dispatch-key-event (list :type 'key :char ?a :mods nil))
+    (should-not ran-cmd)
+    (should (equal (vector ?a) nemacs-main--prefix-keys))
+    ;; Second press: completion.
+    (nemacs-main--dispatch-key-event (list :type 'key :char ?b :mods nil))
+    (should ran-cmd)
+    (should (equal [] nemacs-main--prefix-keys))))
+
 (provide 'nemacs-main-test)
 
 ;;; nemacs-main-test.el ends here
