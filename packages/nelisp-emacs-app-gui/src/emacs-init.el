@@ -157,6 +157,10 @@
 ;; registers the standard face symbols (font-lock-keyword-face
 ;; etc) via the Track F face registry.
 (require 'emacs-font-lock-builtins)
+;; Track R (2026-05-04) — minimal syntax-table for font-lock's
+;; string / line-comment pre-pass.  Loaded *after*
+;; emacs-font-lock-builtins so the standard faces are defined.
+(require 'emacs-syntax-table)
 ;; Track G (2026-05-03) — Doc 43 redisplay close-gate trigger
 ;; bridges.  Wires `force-mode-line-update' / `redraw-display' /
 ;; `redraw-frame' / `redisplay' to the existing

@@ -44,6 +44,7 @@
 (require 'cl-lib)
 (require 'emacs-buffer)
 (require 'emacs-faces)
+(require 'emacs-syntax-table)
 
 ;;;; --- standard faces ------------------------------------------------
 
@@ -468,14 +469,26 @@ is the overall fontify region's end (= upper search ceiling)."
     (ignore outer-mb)))
 
 (defun emacs-font-lock-default-fontify-region (start end &optional _loudly buf)
-  "Fontify [START, END) in BUF using the buffer's compiled keywords."
+  "Fontify [START, END) in BUF using the buffer's compiled keywords.
+
+Doc 51 Track R (2026-05-04): after the keyword pass we do a
+syntactic pre-pass via `emacs-syntax-apply-faces-region' that
+overwrites string + line-comment ranges with the dedicated
+`font-lock-string-face' / `font-lock-comment-face'.  Running it
+after the keyword loop means syntactic faces always win over a
+keyword that happened to fire inside a string / comment — which
+is the upstream Emacs convention."
   (let* ((b (or buf (emacs-font-lock--current-buffer)))
          (kws (and b (emacs-font-lock--state-get b :keywords))))
-    (when (and b kws (< start end))
+    (when (and b (< start end))
       (let ((saved-point (let ((nelisp-ec--current-buffer b)) (nelisp-ec-point))))
         (unwind-protect
-            (dolist (cell kws)
-              (emacs-font-lock--fontify-one-keyword cell start end b))
+            (progn
+              (when kws
+                (dolist (cell kws)
+                  (emacs-font-lock--fontify-one-keyword cell start end b)))
+              ;; Syntactic post-pass — strings / comments win.
+              (emacs-syntax-apply-faces-region start end b))
           (let ((nelisp-ec--current-buffer b))
             (nelisp-ec-goto-char saved-point)))
         t))))
