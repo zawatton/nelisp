@@ -211,7 +211,10 @@ keys."
           ;; `backspace' through `emacs-tui-event--control-char-name'.
           (define-key m (vector 'backspace) 'delete-backward-char)
           ;; Bare byte 127 in case the symbol mapping is bypassed.
-          (define-key m (vector 127) 'delete-backward-char)))
+          (define-key m (vector 127) 'delete-backward-char))
+        ;; Doc 51 Track C — file open / save.
+        (define-key m (kbd "C-x C-f") 'nemacs-main-find-file-interactive)
+        (define-key m (kbd "C-x C-s") 'nemacs-main-save-buffer-interactive))
       (setq nemacs-main--global-keymap m)))
   nemacs-main--global-keymap)
 
@@ -426,6 +429,100 @@ re-enter raw mode + force a full redraw.  Safe under host driver."
                                               nemacs-main--frame
                                               (car sz) (cdr sz))
             (error nil)))))))
+
+;;;; --- minibuffer-style line read (Doc 51 Track C) ----------------------
+
+(defun nemacs-main--read-line-blocking (prompt)
+  "Doc 51 Track C (2026-05-04) — block-read a line via TUI canvas.
+
+Paints PROMPT at the bottom row of `nemacs-main--frame', echoes
+each key as the user types, supports backspace, and returns the
+typed string on RET (= byte 13).  Returns nil on C-g (= byte 7).
+Blocks the event loop while reading — no other commands fire.
+
+This is intentionally a minimal `read-from-minibuffer'-replacement
+(= the full minibuffer machinery is too heavy for the boot path).
+Used by `nemacs-main-find-file-interactive'."
+  (let* ((h nemacs-main--backend)
+         (f nemacs-main--frame)
+         (height (and f (fboundp 'emacs-tui-backend-frame-height)
+                      (emacs-tui-backend-frame-height f)))
+         (width  (and f (fboundp 'emacs-tui-backend-frame-width)
+                      (emacs-tui-backend-frame-width f)))
+         (row    (and height (1- height)))
+         (input  "")
+         (done   nil)
+         (cancel nil))
+    (cl-flet ((repaint
+               ()
+               (when (and h f row width
+                          (fboundp 'emacs-tui-backend-canvas-draw-text))
+                 (let* ((line (concat prompt input))
+                        (clipped (if (> (length line) width)
+                                     (substring line 0 width)
+                                   line))
+                        ;; Pad with spaces to clear stale chars.
+                        (pad-len (- width (length clipped)))
+                        (full (concat clipped
+                                      (if (> pad-len 0)
+                                          (make-string pad-len ?\s)
+                                        ""))))
+                   (emacs-tui-backend-canvas-draw-text h f row 0 full)
+                   (when (fboundp 'emacs-redisplay-flush-frame)
+                     (emacs-redisplay-flush-frame nemacs-main--redisplay f))))))
+      (repaint)
+      (while (not done)
+        (let ((b (and (fboundp 'read-stdin-byte-available)
+                      (read-stdin-byte-available 100))))
+          (when b
+            (cond
+             ((= b 13) (setq done t))                             ; RET
+             ((= b 7)  (setq cancel t done t))                    ; C-g
+             ((or (= b 127) (= b 8))                              ; BS / DEL
+              (when (> (length input) 0)
+                (setq input (substring input 0 (1- (length input))))
+                (repaint)))
+             ((and (>= b 32) (<= b 126))
+              (setq input (concat input (string b)))
+              (repaint))))))
+      (if cancel nil input))))
+
+(defun nemacs-main-find-file-interactive ()
+  "Doc 51 Track C — prompt for a path and visit it via `find-file'."
+  (interactive)
+  (let ((path (nemacs-main--read-line-blocking "Find file: ")))
+    (when (and path (> (length path) 0)
+               (fboundp 'find-file))
+      (condition-case err
+          (find-file path)
+        (error
+         (when (fboundp 'message)
+           (message "find-file failed: %S" err)))))))
+
+(defun nemacs-main-save-buffer-interactive ()
+  "Doc 51 Track C — save the current buffer via `save-buffer'.
+If the buffer has no associated file, prompt for one via
+`write-file' instead."
+  (interactive)
+  (let* ((b (and (fboundp 'nelisp-ec-current-buffer)
+                 (nelisp-ec-current-buffer)))
+         (f (and b (fboundp 'buffer-file-name) (buffer-file-name b))))
+    (cond
+     (f
+      (condition-case err
+          (when (fboundp 'save-buffer) (save-buffer))
+        (error
+         (when (fboundp 'message)
+           (message "save-buffer failed: %S" err)))))
+     (t
+      (let ((path (nemacs-main--read-line-blocking "Write file: ")))
+        (when (and path (> (length path) 0)
+                   (fboundp 'write-file))
+          (condition-case err
+              (write-file path)
+            (error
+             (when (fboundp 'message)
+               (message "write-file failed: %S" err))))))))))
 
 (defun nemacs-main--drain-once (timeout-ms)
   "Pull one event and dispatch it.  Returns t when an event ran, nil

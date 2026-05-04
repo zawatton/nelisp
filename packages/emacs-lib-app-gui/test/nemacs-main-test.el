@@ -523,6 +523,29 @@ encoding regardless of which property name held the char."
              (nemacs-main--key-event->key
               (list :type 'key :char ?x :mods '(control))))))
 
+;;;; N. Doc 51 Track C — find-file / save-buffer
+
+(ert-deftest nemacs-main-test/track-c-cx-prefix-keys-bound ()
+  "C-x C-c / C-x C-f / C-x C-s all resolve to distinct commands.
+Regression check: an earlier `?\\s' lex bug made `kbd' produce
+single-element vectors, collapsing all three onto whatever was
+last defined."
+  (setq nemacs-main--global-keymap nil)
+  (nemacs-main--init-keymap)
+  (should (eq 'nemacs-main-kill
+              (lookup-key nemacs-main--global-keymap (kbd "C-x C-c"))))
+  (should (eq 'nemacs-main-find-file-interactive
+              (lookup-key nemacs-main--global-keymap (kbd "C-x C-f"))))
+  (should (eq 'nemacs-main-save-buffer-interactive
+              (lookup-key nemacs-main--global-keymap (kbd "C-x C-s")))))
+
+(ert-deftest nemacs-main-test/track-c-find-file-interactive-defined ()
+  (should (fboundp 'nemacs-main-find-file-interactive))
+  (should (fboundp 'nemacs-main-save-buffer-interactive)))
+
+(ert-deftest nemacs-main-test/track-c-read-line-blocking-defined ()
+  (should (fboundp 'nemacs-main--read-line-blocking)))
+
 (ert-deftest nemacs-main-test/track-m-dispatch-quit-sets-loop-flag ()
   "When a key-bound command signals `quit', the dispatch handler
 catches it via its `(quit ...)' condition-case clause and routes
