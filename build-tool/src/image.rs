@@ -168,6 +168,16 @@ fn encode_value(out: &mut Vec<u8>, value: &Sexp) -> Result<(), ImageError> {
                 "hash-table values are not yet supported by image encoding".into(),
             )));
         }
+        Sexp::CharTable(_) => {
+            return Err(ImageError::Eval(EvalError::NotImplemented(
+                "char-table values are not yet supported by image encoding".into(),
+            )));
+        }
+        Sexp::BoolVector(_) => {
+            return Err(ImageError::Eval(EvalError::NotImplemented(
+                "bool-vector values are not yet supported by image encoding".into(),
+            )));
+        }
     }
     Ok(())
 }

@@ -97,6 +97,18 @@ pub enum Sexp {
     /// Identity goes through `Rc::ptr_eq', structural equality (the
     /// derived `PartialEq') compares the inner `HashTableInner'.
     HashTable(Rc<RefCell<HashTableInner>>),
+    /// Char-table (Track F minimum impl): maps integer codepoints
+    /// to arbitrary Sexp values.  Used by Emacs syntax-table /
+    /// category-table / case-table / display-table substrates.
+    /// Sparse linear-scan storage; substrate use cases hold tens
+    /// of entries (= ASCII coverage), occasional whole-range fills
+    /// via `set-char-table-range'.
+    CharTable(Rc<RefCell<CharTableInner>>),
+    /// Bool-vector (Track F minimum impl): packed boolean array.
+    /// Used by Emacs syntax classes / region-mark bookkeeping.
+    /// `aref' returns t / nil; `aset' takes any Sexp and stores
+    /// truthy/falsy.  `length' returns the bit count.
+    BoolVector(Rc<RefCell<Vec<bool>>>),
 }
 
 /// Inner storage for [`Sexp::HashTable`].  Linear-scan vector keeps
@@ -110,6 +122,29 @@ pub struct HashTableInner {
     pub test: String,
     /// Slot list.  Entries are pushed; lookup is linear.
     pub entries: Vec<(Sexp, Sexp)>,
+}
+
+/// Inner storage for [`Sexp::CharTable`].  Sparse linear-scan; for
+/// substrate use cases (= syntax-table, category-table, case-table)
+/// the typical entry count is < 256 (ASCII range).  Future scaling
+/// to full Unicode would replace this with a paged table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CharTableInner {
+    /// Subtype symbol (e.g., `syntax-table', `display-table',
+    /// `category-table').  Stored verbatim; we do not interpret it.
+    pub subtype: Sexp,
+    /// Default value returned for chars not in `entries`.
+    pub default_val: Sexp,
+    /// Sparse char → value map.  Linear scan on lookup.
+    pub entries: Vec<(i64, Sexp)>,
+    /// Optional parent char-table.  When set, lookups that miss the
+    /// local `entries' fall through to the parent.  Used by syntax
+    /// tables that derive from a base.
+    pub parent: Option<Rc<RefCell<CharTableInner>>>,
+    /// Per-table extra slots (= upstream `char-table-extra-slot').
+    /// Allocated lazily by `set-char-table-extra-slot'.  We keep this
+    /// minimal — most substrate consumers only touch slots 0-3.
+    pub extra: Vec<Sexp>,
 }
 
 impl Sexp {
@@ -141,6 +176,24 @@ impl Sexp {
     /// content.
     pub fn mut_str(s: impl Into<String>) -> Sexp {
         Sexp::MutStr(Rc::new(RefCell::new(s.into())))
+    }
+
+    /// Build an empty char-table with the given SUBTYPE and INIT
+    /// (= default value for unset chars).  Used by `make-char-table'.
+    pub fn char_table(subtype: Sexp, init: Sexp) -> Sexp {
+        Sexp::CharTable(Rc::new(RefCell::new(CharTableInner {
+            subtype,
+            default_val: init,
+            entries: Vec::new(),
+            parent: None,
+            extra: Vec::new(),
+        })))
+    }
+
+    /// Build a bool-vector of LEN bits all initialised to INIT.  Used
+    /// by `make-bool-vector'.
+    pub fn bool_vector(len: usize, init: bool) -> Sexp {
+        Sexp::BoolVector(Rc::new(RefCell::new(vec![init; len])))
     }
 
     /// Return the string content of any string-like variant as an
@@ -318,6 +371,47 @@ fn write_sexp(out: &mut String, s: &Sexp) {
                 write_sexp(out, v);
             }
             out.push_str("))");
+        }
+        Sexp::CharTable(inner) => {
+            // Compact printer — substrate use cases never need the
+            // upstream `#^[...]' faithful shape.  We dump the populated
+            // entries and the default in a self-describing form.
+            let inner = inner.borrow();
+            out.push_str("#<char-table");
+            if !matches!(inner.subtype, Sexp::Nil) {
+                out.push(' ');
+                write_sexp(out, &inner.subtype);
+            }
+            out.push_str(" default=");
+            write_sexp(out, &inner.default_val);
+            out.push_str(" entries=");
+            out.push_str(&inner.entries.len().to_string());
+            out.push('>');
+        }
+        Sexp::BoolVector(rc) => {
+            let v = rc.borrow();
+            out.push_str("#&");
+            out.push_str(&v.len().to_string());
+            out.push('"');
+            // Pack 8 bits per char (= upstream's bool-vector printer
+            // shape).  We approximate the per-char encoding without
+            // matching the exact bit-order; substrate use cases do
+            // not round-trip-print bool-vectors, so this is for
+            // human inspection only.
+            for chunk in v.chunks(8) {
+                let mut byte = 0u8;
+                for (i, &b) in chunk.iter().enumerate() {
+                    if b {
+                        byte |= 1 << i;
+                    }
+                }
+                if byte == b'"' || byte == b'\\' || byte < 0x20 || byte >= 0x7F {
+                    out.push_str(&format!("\\{:03o}", byte));
+                } else {
+                    out.push(byte as char);
+                }
+            }
+            out.push('"');
         }
     }
 }
