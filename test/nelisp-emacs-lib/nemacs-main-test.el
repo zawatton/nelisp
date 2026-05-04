@@ -474,6 +474,55 @@ bindings must still resolve."
     (should (eq 'nemacs-main-kill
                 (lookup-key nemacs-main--global-keymap vec)))))
 
+;;;; M. Doc 51 Track B — motion + delete commands
+
+(ert-deftest nemacs-main-test/track-b-motion-bindings ()
+  "C-f / C-b / C-n / C-p / C-a / C-e all map to their canonical
+substrate commands after init-keymap."
+  (skip-unless (fboundp 'forward-char))
+  (setq nemacs-main--global-keymap nil)
+  (nemacs-main--init-keymap)
+  (should (eq 'forward-char       (lookup-key nemacs-main--global-keymap (kbd "C-f"))))
+  (should (eq 'backward-char      (lookup-key nemacs-main--global-keymap (kbd "C-b"))))
+  (should (eq 'next-line          (lookup-key nemacs-main--global-keymap (kbd "C-n"))))
+  (should (eq 'previous-line      (lookup-key nemacs-main--global-keymap (kbd "C-p"))))
+  (should (eq 'beginning-of-line  (lookup-key nemacs-main--global-keymap (kbd "C-a"))))
+  (should (eq 'end-of-line        (lookup-key nemacs-main--global-keymap (kbd "C-e")))))
+
+(ert-deftest nemacs-main-test/track-b-delete-bindings ()
+  (skip-unless (fboundp 'delete-char))
+  (setq nemacs-main--global-keymap nil)
+  (nemacs-main--init-keymap)
+  (should (eq 'delete-char           (lookup-key nemacs-main--global-keymap (kbd "C-d"))))
+  (should (eq 'kill-line             (lookup-key nemacs-main--global-keymap (kbd "C-k"))))
+  (should (eq 'delete-backward-char  (lookup-key nemacs-main--global-keymap (vector 'backspace))))
+  (should (eq 'delete-backward-char  (lookup-key nemacs-main--global-keymap (vector 127)))))
+
+(ert-deftest nemacs-main-test/track-b-key-event-name-int ()
+  "When :name is the integer key code (= the real-event shape from
+emacs-tui-event), `--key-event->key' must accept it the same as
+the test fixtures' :char shape."
+  (should (= ?x (nemacs-main--key-event->key
+                 (list :type 'key :name ?x :modifiers nil)))))
+
+(ert-deftest nemacs-main-test/track-b-key-event-name-symbol ()
+  "Function keys come back as symbols (= 'backspace, 'up, 'f1).
+`--key-event->key' must return the symbol so the keymap can bind
+on it."
+  (should (eq 'backspace
+              (nemacs-main--key-event->key
+               (list :type 'key :name 'backspace :modifiers nil)))))
+
+(ert-deftest nemacs-main-test/track-b-key-event-control-modifier ()
+  "Control-modified events use the standard `(logior CHAR (ash 1 26))'
+encoding regardless of which property name held the char."
+  (should (= (logior ?x (ash 1 26))
+             (nemacs-main--key-event->key
+              (list :type 'key :name ?x :modifiers '(control)))))
+  (should (= (logior ?x (ash 1 26))
+             (nemacs-main--key-event->key
+              (list :type 'key :char ?x :mods '(control))))))
+
 (ert-deftest nemacs-main-test/track-m-dispatch-quit-sets-loop-flag ()
   "When a key-bound command signals `quit', the dispatch handler
 catches it via its `(quit ...)' condition-case clause and routes

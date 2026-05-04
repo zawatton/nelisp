@@ -31,7 +31,12 @@
 (unless (fboundp 'auto-save-mode) (defun auto-save-mode (&rest _) nil))
 (unless (fboundp 'backtrace) (defun backtrace (&rest _) nil))
 (unless (fboundp 'backtrace-frame--internal) (defun backtrace-frame--internal (&rest _) nil))
-(unless (fboundp 'backward-char) (defun backward-char (&rest _) nil))
+(unless (fboundp 'backward-char)
+  (defun backward-char (&optional n)
+    "Doc 51 Track B (2026-05-04) MVP `backward-char'.
+Forwarder to `forward-char' with negated count."
+    (when (fboundp 'forward-char)
+      (forward-char (- (or n 1))))))
 (unless (fboundp 'backward-delete-char) (defun backward-delete-char (&rest _) nil))
 (unless (fboundp 'backward-sexp) (defun backward-sexp (&rest _) nil))
 (unless (fboundp 'backward-word) (defun backward-word (&rest _) nil))

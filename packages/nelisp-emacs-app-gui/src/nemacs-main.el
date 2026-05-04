@@ -188,7 +188,30 @@ keys."
               (setq c (1+ c)))))
         ;; Newline (= byte 13 = RET in raw mode).
         (when (fboundp 'newline)
-          (define-key m (vector 13) 'newline)))
+          (define-key m (vector 13) 'newline))
+        ;; Doc 51 Track B (2026-05-04) — motion + delete.
+        (when (fboundp 'forward-char)
+          (define-key m (kbd "C-f") 'forward-char))
+        (when (fboundp 'backward-char)
+          (define-key m (kbd "C-b") 'backward-char))
+        (when (fboundp 'next-line)
+          (define-key m (kbd "C-n") 'next-line))
+        (when (fboundp 'previous-line)
+          (define-key m (kbd "C-p") 'previous-line))
+        (when (fboundp 'beginning-of-line)
+          (define-key m (kbd "C-a") 'beginning-of-line))
+        (when (fboundp 'end-of-line)
+          (define-key m (kbd "C-e") 'end-of-line))
+        (when (fboundp 'delete-char)
+          (define-key m (kbd "C-d") 'delete-char))
+        (when (fboundp 'kill-line)
+          (define-key m (kbd "C-k") 'kill-line))
+        (when (fboundp 'delete-backward-char)
+          ;; DEL (= byte 127) and Ctrl+H both surface as the symbol
+          ;; `backspace' through `emacs-tui-event--control-char-name'.
+          (define-key m (vector 'backspace) 'delete-backward-char)
+          ;; Bare byte 127 in case the symbol mapping is bypassed.
+          (define-key m (vector 127) 'delete-backward-char)))
       (setq nemacs-main--global-keymap m)))
   nemacs-main--global-keymap)
 
@@ -287,18 +310,31 @@ lookup.  Single-key bindings clear it on each press; prefix-key
 bindings keep it growing.")
 
 (defun nemacs-main--key-event->key (ev)
-  "Translate a tui-event-key plist EV into an integer key code.
-The return shape matches what `nemacs-main--global-keymap' expects
-via `lookup-key' (= integer for plain ASCII, integer with control-bit
-mask 0x4000000 for C- chord, otherwise the underlying key plist
-itself for non-ASCII / function keys)."
-  (let* ((char (plist-get ev :char))
-         (mods (plist-get ev :mods)))
+  "Translate a tui-event-key plist EV into a keymap-lookup key.
+
+Returns one of:
+  - integer        plain ASCII char or symbol-as-int from :name
+  - integer + bit  C-X chord (= `(logior CHAR (ash 1 26))')
+  - symbol         function key (= `up', `backspace', `f1', …)
+  - the plist itself  fallback for shapes we don't recognise
+
+The plist shape from `emacs-tui-event' uses `:name' / `:modifiers'
+(= `:name' is integer for ASCII, symbol for function keys).  The
+test fixtures use the older `:char' / `:mods' aliases.  Both are
+accepted."
+  (let* ((char (or (plist-get ev :char)
+                   (let ((n (plist-get ev :name)))
+                     (and (integerp n) n))))
+         (sym  (let ((n (plist-get ev :name)))
+                 (and (symbolp n) (not (null n)) n)))
+         (mods (or (plist-get ev :mods)
+                   (plist-get ev :modifiers))))
     (cond
      ((and char (memq 'control mods))
       ;; control bit per upstream Emacs ASCII C- chord encoding.
       (logior char (lsh 1 26)))
      (char char)
+     (sym sym)
      (t ev))))
 
 (defun nemacs-main--lookup-key-vec (vec)

@@ -208,6 +208,28 @@ no narrowing-aware absolute-vs-relative distinction."
             (setq i (+ i 1)))
           count)))))
 
+;;;; --- next-line / previous-line (Doc 51 Track B) ---------------------------
+
+(unless (fboundp 'next-line)
+  (defun next-line (&optional n _try-vscroll)
+    "Doc 51 Track B (2026-05-04) MVP `next-line'.
+Move point N lines down, preserving the current column where
+possible (= clamps to end-of-line on shorter targets).  N
+defaults to 1; negative N moves up."
+    (let* ((n (or n 1))
+           (col (- (nelisp-ec-point) (emacs-line--bol-pos))))
+      (forward-line n)
+      (let* ((bol (emacs-line--bol-pos))
+             (eol (emacs-line--eol-pos))
+             (target (+ bol col)))
+        (nelisp-ec-goto-char (min target eol))))))
+
+(unless (fboundp 'previous-line)
+  (defun previous-line (&optional n _try-vscroll)
+    "Doc 51 Track B (2026-05-04) MVP `previous-line'.
+Forwarder to `next-line' with negated count."
+    (next-line (- (or n 1)))))
+
 (provide 'emacs-line-builtins)
 
 ;;; emacs-line-builtins.el ends here
