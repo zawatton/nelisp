@@ -509,6 +509,22 @@ must dispatch to the canonical motion commands after init-keymap."
   (should (eq 'forward-char   (lookup-key nemacs-main--global-keymap (vector 'right))))
   (should (eq 'backward-char  (lookup-key nemacs-main--global-keymap (vector 'left)))))
 
+(ert-deftest nemacs-main-test/track-v-window-bindings ()
+  "C-x 0/1/2/3/o map to the canonical window commands after init-keymap."
+  (skip-unless (fboundp 'split-window-below))
+  (setq nemacs-main--global-keymap nil)
+  (nemacs-main--init-keymap)
+  (should (eq 'split-window-below
+              (lookup-key nemacs-main--global-keymap (kbd "C-x 2"))))
+  (should (eq 'split-window-right
+              (lookup-key nemacs-main--global-keymap (kbd "C-x 3"))))
+  (should (eq 'delete-window
+              (lookup-key nemacs-main--global-keymap (kbd "C-x 0"))))
+  (should (eq 'delete-other-windows
+              (lookup-key nemacs-main--global-keymap (kbd "C-x 1"))))
+  (should (eq 'other-window
+              (lookup-key nemacs-main--global-keymap (kbd "C-x o")))))
+
 (ert-deftest nemacs-main-test/track-b-key-event-name-int ()
   "When :name is the integer key code (= the real-event shape from
 emacs-tui-event), `--key-event->key' must accept it the same as

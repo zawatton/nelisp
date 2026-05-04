@@ -250,7 +250,18 @@ keys."
           (define-key m (vector 'left) 'backward-char))
         ;; Doc 51 Track C — file open / save.
         (define-key m (kbd "C-x C-f") 'nemacs-main-find-file-interactive)
-        (define-key m (kbd "C-x C-s") 'nemacs-main-save-buffer-interactive))
+        (define-key m (kbd "C-x C-s") 'nemacs-main-save-buffer-interactive)
+        ;; Doc 51 Track V (2026-05-04) — window split / select / delete.
+        (when (fboundp 'split-window-below)
+          (define-key m (kbd "C-x 2") 'split-window-below))
+        (when (fboundp 'split-window-right)
+          (define-key m (kbd "C-x 3") 'split-window-right))
+        (when (fboundp 'delete-window)
+          (define-key m (kbd "C-x 0") 'delete-window))
+        (when (fboundp 'delete-other-windows)
+          (define-key m (kbd "C-x 1") 'delete-other-windows))
+        (when (fboundp 'other-window)
+          (define-key m (kbd "C-x o") 'other-window)))
       (setq nemacs-main--global-keymap m)))
   nemacs-main--global-keymap)
 
@@ -650,15 +661,27 @@ pre-set it to t (= early-out before the first poll)."
         ;; AFTER input dispatch, so `self-insert-command' /
         ;; `delete-backward-char' / etc. show up on the next flush.
         ;; The flush below pushes the canvas to the terminal.
-        (when (and nemacs-main--redisplay nemacs-main--frame
-                   (fboundp 'emacs-redisplay-redisplay-window))
-          (let ((w (and (fboundp 'emacs-window-selected-window)
-                        (emacs-window-selected-window))))
-            (when w
-              (condition-case _
-                  (emacs-redisplay-redisplay-window
-                   nemacs-main--redisplay w)
-                (error nil)))))
+        ;;
+        ;; Track V (2026-05-04): walk every leaf via
+        ;; `emacs-redisplay-redisplay' so a fresh `split-window' /
+        ;; `delete-window' / `other-window' immediately re-paints all
+        ;; visible windows (= not just the selected one).  Falls back
+        ;; to the per-window call when `redisplay' isn't available
+        ;; (= early bootstrap).
+        (when (and nemacs-main--redisplay nemacs-main--frame)
+          (cond
+           ((fboundp 'emacs-redisplay-redisplay)
+            (condition-case _
+                (emacs-redisplay-redisplay nemacs-main--redisplay)
+              (error nil)))
+           ((fboundp 'emacs-redisplay-redisplay-window)
+            (let ((w (and (fboundp 'emacs-window-selected-window)
+                          (emacs-window-selected-window))))
+              (when w
+                (condition-case _
+                    (emacs-redisplay-redisplay-window
+                     nemacs-main--redisplay w)
+                  (error nil)))))))
         ;; Refresh the painted state after every dispatched event.
         (when (and nemacs-main--redisplay nemacs-main--frame
                    (fboundp 'emacs-redisplay-flush-frame))
