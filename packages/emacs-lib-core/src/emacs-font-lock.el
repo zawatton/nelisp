@@ -544,6 +544,80 @@ With ARG > 0 enables; ARG ≤ 0 disables; nil toggles."
   (let ((b (or buf (emacs-font-lock--current-buffer))))
     (and b (emacs-font-lock--state-get b :keywords))))
 
+;;;; --- jit-lock primitives (Doc 51 Track S) -------------------------------
+
+;; Doc 51 Track S (2026-05-04) — incremental fontification surface.
+;;
+;; The model is intentionally simple: each buffer carries a single
+;; *dirty-interval* (a cons (BEG . END) on the font-lock state plist).
+;; Edit ops (= self-insert-command / newline / delete-region / load /
+;; etc.) call `emacs-font-lock-mark-dirty-region' which UNIONS the
+;; new range into the existing one — multiple dirty marks coalesce
+;; into one interval.
+;;
+;; `emacs-font-lock-flush-pending' clears the marker and re-fontifies
+;; just that interval (= the whole-buffer pass at the end of every
+;; redisplay flush is O(n) on every keystroke without this, which
+;; gets unusable past a few hundred lines).
+;;
+;; `emacs-font-lock-after-change-handler' is the canonical hook
+;; handler shape (BEG END LEN → mark dirty).  Edit primitives plug
+;; this directly into their post-edit recordings.
+;;
+;; Caveat: a multi-line string / comment that spans the dirty
+;; boundary is NOT auto-expanded — we take the dirty interval as-is
+;; and rely on the syntactic post-pass walking from the interval
+;; start.  Editing the interior of a triple-quoted string can leave
+;; stale faces above the cursor until a wider region is fontified
+;; (= e.g. by `emacs-font-lock-fontify-buffer').  Acceptable MVP
+;; trade-off; expansion can land as a follow-up once
+;; `emacs-syntax-state-at' grows a "find-enclosing-string-start"
+;; helper.
+
+(defun emacs-font-lock-mark-dirty-region (start end &optional buf)
+  "Record [START, END) as needing re-fontification on the next flush.
+Multiple calls union into a single interval — minimum-START to
+maximum-END.  No-op when font-lock state is unavailable for BUF.
+Returns the new (BEG . END) interval."
+  (let* ((b (or buf (emacs-font-lock--current-buffer))))
+    (when b
+      (let* ((existing (emacs-font-lock--state-get b :dirty))
+             (new-start (if existing (min (car existing) start) start))
+             (new-end   (if existing (max (cdr existing) end)   end))
+             (interval  (cons new-start new-end)))
+        (emacs-font-lock--state-set b :dirty interval)
+        interval))))
+
+(defun emacs-font-lock-pending-dirty-region (&optional buf)
+  "Return the pending dirty (BEG . END) interval for BUF, or nil.
+Read-only — does NOT clear the marker."
+  (let ((b (or buf (emacs-font-lock--current-buffer))))
+    (and b (emacs-font-lock--state-get b :dirty))))
+
+(defun emacs-font-lock-flush-pending (&optional buf)
+  "Re-fontify the dirty interval recorded for BUF and clear it.
+Returns the (BEG . END) interval that was fontified, or nil if
+nothing was pending.  Skipped when font-lock-mode is off for BUF
+(= the dirty marker is still cleared so it doesn't leak)."
+  (let* ((b (or buf (emacs-font-lock--current-buffer)))
+         (dirty (and b (emacs-font-lock--state-get b :dirty))))
+    (when dirty
+      (emacs-font-lock--state-set b :dirty nil)
+      (when (emacs-font-lock-mode-enabled-p b)
+        (emacs-font-lock-default-fontify-region (car dirty) (cdr dirty)
+                                                nil b))
+      dirty)))
+
+(defun emacs-font-lock-after-change-handler (beg end _len &optional buf)
+  "After-change-functions-shaped handler: mark [BEG, END) dirty.
+LEN (= the length of the deleted text) is currently ignored — we
+only care about the *post-change* interval that needs re-fontify.
+Suitable for direct registration on `after-change-functions' once
+the substrate fires that hook, or for explicit invocation by the
+edit primitive (= the existing pattern for
+`emacs-buffer-record-insertion')."
+  (emacs-font-lock-mark-dirty-region beg end buf))
+
 (provide 'emacs-font-lock)
 
 ;;; emacs-font-lock.el ends here
