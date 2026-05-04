@@ -161,6 +161,12 @@
 ;; string / line-comment pre-pass.  Loaded *after*
 ;; emacs-font-lock-builtins so the standard faces are defined.
 (require 'emacs-syntax-table)
+;; Track T (2026-05-04) — emacs-lisp-mode font-lock keyword set.
+;; Loaded *after* the syntax-table so the syntactic post-pass is
+;; available, and *after* emacs-mode (= the hook variable exists).
+(when (locate-library "emacs-mode")
+  (require 'emacs-mode))
+(require 'emacs-elisp-mode)
 ;; Track G (2026-05-03) — Doc 43 redisplay close-gate trigger
 ;; bridges.  Wires `force-mode-line-update' / `redraw-display' /
 ;; `redraw-frame' / `redisplay' to the existing
