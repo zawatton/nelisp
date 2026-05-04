@@ -66,6 +66,16 @@
     (emacs-command-loop-read-event)
     (should (= ?y emacs-command-loop--last-input-event))))
 
+;; NB: pinning the public-defvar mirror (Track X follow-up 2026-05-05 —
+;; `read-event' / `record-key' also publish their event into the
+;; canonical unprefixed `last-input-event' / `last-command-event' so
+;; `self-insert-command' etc. dispatched via `emacs-command-loop-step'
+;; can read it) is done at the GUI driver level — under host Emacs
+;; those defvars are C-owned and `(set ...)' does not round-trip
+;; through the reader's accessor, so a Layer 2 ERT cannot observe the
+;; mirror.  See nelisp-emacs-gtk `command_loop_dispatch_self_insert_*'
+;; tests, which exercise the same path against a standalone Session.
+
 ;;;; E. read-char rejects non-integer events
 
 (ert-deftest emacs-command-loop-builtins-test/read-char-rejects-non-integer ()
