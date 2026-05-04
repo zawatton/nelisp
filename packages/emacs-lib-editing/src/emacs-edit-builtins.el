@@ -93,15 +93,17 @@ Track E.2: records the inserted span on `buffer-undo-list'."
     nil))
 
 (unless (fboundp 'delete-backward-char)
-  (defun delete-backward-char (n &optional killflag)
-    "Phase E polyfill: delete N characters backward.
+  (defun delete-backward-char (&optional n killflag)
+    "Phase E polyfill: delete N characters backward (default 1).
 KILLFLAG (= prefix-arg-driven `kill-region' route) is accepted for
 API parity but ignored in MVP.
 
 Track E.2: captures the deleted text and records it on
 `buffer-undo-list' so `undo' can re-insert it."
+    (interactive "p")
     (ignore killflag)
-    (let* ((p (nelisp-ec-point))
+    (let* ((n (or n 1))
+           (p (nelisp-ec-point))
            (start (max (nelisp-ec-point-min) (- p n)))
            (end p)
            (text (when (and (fboundp 'emacs-undo-record-delete)
