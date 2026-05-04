@@ -85,6 +85,8 @@ pub fn install_builtins(env: &mut Env) {
         // Doc 51 Track E — interactive TTY input (Unix only; no-ops elsewhere)
         "terminal-raw-mode-enter", "terminal-raw-mode-leave",
         "read-stdin-byte-available",
+        // Doc 51 Track K — test/debug helpers for the atexit/signal hook
+        "_termios-saved-p", "_raw-mode-hooks-installed-p",
         // reader exposed as elisp callable (Track O' Phase 2)
         "read", "read-from-string",
     ];
@@ -231,6 +233,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "terminal-raw-mode-enter" => bi_terminal_raw_mode_enter(args),
         "terminal-raw-mode-leave" => bi_terminal_raw_mode_leave(args),
         "read-stdin-byte-available" => bi_read_stdin_byte_available(args),
+        "_termios-saved-p" => bi_termios_saved_p(args),
+        "_raw-mode-hooks-installed-p" => bi_raw_mode_hooks_installed_p(args),
         "read" => bi_read(args),
         "read-from-string" => bi_read_from_string(args),
         "provide" => bi_provide(args, env),
@@ -2409,16 +2413,90 @@ fn bi_read_stdin_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 // Doc 51 Track E (2026-05-04) — TTY raw-mode + non-blocking byte reader.
+// Doc 51 Track K (2026-05-04) — atexit + SIGINT/SIGTERM/SIGHUP/SIGQUIT
+// hook so that `Ctrl+C` / `kill` / panic / unwind never leaves the user's
+// terminal in raw mode.  Storage is intentionally async-signal-safe
+// (atomic flag + raw static) — `Mutex` is *not* async-signal-safe per
+// POSIX.  `tcsetattr` *is* on the POSIX async-signal-safe list, which is
+// why this works in a signal handler.
+//
 // Unix-only.  On non-Unix the corresponding builtins are no-ops returning
 // nil so substrate code can run on Windows host without errors.
 
 #[cfg(unix)]
 mod tty_raw {
     use super::*;
+    use std::mem::MaybeUninit;
     use std::os::unix::io::AsRawFd;
-    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+    use std::sync::Once;
 
-    static SAVED_TERMIOS: Mutex<Option<libc::termios>> = Mutex::new(None);
+    // ---- Async-signal-safe state ------------------------------------------------
+    // The flag tells us whether SAVED_TERMIOS is initialised + the tty is
+    // currently in raw mode.  `swap` provides the "claim and clear"
+    // primitive both the explicit leave and the signal/atexit hook use.
+    static TERMIOS_SAVED: AtomicBool = AtomicBool::new(false);
+    static TTY_FD: AtomicI32 = AtomicI32::new(-1);
+    // SAFETY contract: only written while TERMIOS_SAVED is false (which
+    // implies no signal handler can race on it — handlers early-return on
+    // a false flag).  Read only after TERMIOS_SAVED.swap(false) returns
+    // true, which transfers ownership to the reader.
+    static mut SAVED_TERMIOS: MaybeUninit<libc::termios> = MaybeUninit::uninit();
+    static HOOKS_INSTALLED: Once = Once::new();
+
+    // Restore the saved termios.  Called from BOTH the explicit
+    // `terminal-raw-mode-leave` path AND the signal/atexit hook, so it
+    // must be async-signal-safe — no allocation, no Mutex, no Rust
+    // formatting.  `tcsetattr` is async-signal-safe per POSIX.
+    fn restore_termios_signal_safe() {
+        if TERMIOS_SAVED.swap(false, Ordering::SeqCst) {
+            let fd = TTY_FD.load(Ordering::SeqCst);
+            if fd >= 0 {
+                unsafe {
+                    let term_ptr = (*std::ptr::addr_of!(SAVED_TERMIOS)).as_ptr();
+                    // Ignore the return code — we are best-effort in signal
+                    // context; nothing actionable we can do on failure.
+                    libc::tcsetattr(fd, libc::TCSANOW, term_ptr);
+                }
+            }
+        }
+    }
+
+    extern "C" fn atexit_hook() {
+        restore_termios_signal_safe();
+    }
+
+    extern "C" fn sig_handler(signum: libc::c_int) {
+        restore_termios_signal_safe();
+        // Reset to the system default and re-raise so the canonical
+        // disposition (terminate / dump core / etc.) actually runs.
+        unsafe {
+            libc::signal(signum, libc::SIG_DFL);
+            // Unblock the signal in case sigaction's default mask blocked
+            // it while we were in this handler.
+            let mut mask: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut mask);
+            libc::sigaddset(&mut mask, signum);
+            libc::sigprocmask(libc::SIG_UNBLOCK, &mask, std::ptr::null_mut());
+            libc::raise(signum);
+        }
+    }
+
+    fn install_hooks_once() {
+        HOOKS_INSTALLED.call_once(|| unsafe {
+            // atexit cleans up the orderly `exit(N)` / `return from main`
+            // path.  Returns 0 on success; we ignore failure (best-effort).
+            libc::atexit(atexit_hook);
+
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = sig_handler as *const () as usize;
+            libc::sigemptyset(&mut sa.sa_mask);
+            sa.sa_flags = 0;
+            for sig in &[libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] {
+                libc::sigaction(*sig, &sa, std::ptr::null_mut());
+            }
+        });
+    }
 
     pub fn raw_mode_enter() -> Result<(), EvalError> {
         let fd = std::io::stdin().lock().as_raw_fd();
@@ -2429,14 +2507,30 @@ mod tty_raw {
                 std::io::Error::last_os_error()
             )));
         }
-        // Save the original termios for `terminal-raw-mode-leave'.
-        *SAVED_TERMIOS.lock().unwrap() = Some(term);
+
+        // Stash the original termios in the signal-safe slot BEFORE
+        // flipping the flag — the handler reads through the flag, so any
+        // write that happens-before the flag is visible by the handler.
+        unsafe {
+            std::ptr::write(
+                std::ptr::addr_of_mut!(SAVED_TERMIOS) as *mut libc::termios,
+                term,
+            );
+        }
+        TTY_FD.store(fd, Ordering::SeqCst);
+        TERMIOS_SAVED.store(true, Ordering::SeqCst);
+
+        install_hooks_once();
+
         // cfmakeraw is the standard setup: -ICANON, -ECHO, etc.
         unsafe { libc::cfmakeraw(&mut term) };
         // VMIN=1 / VTIME=0: block until at least one byte is available.
         term.c_cc[libc::VMIN] = 1;
         term.c_cc[libc::VTIME] = 0;
         if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &term) } != 0 {
+            // Roll back the saved-state flag so a leave at unwind-time
+            // does not try to restore a half-applied raw mode.
+            TERMIOS_SAVED.store(false, Ordering::SeqCst);
             return Err(EvalError::Internal(format!(
                 "terminal-raw-mode-enter: tcsetattr failed: {}",
                 std::io::Error::last_os_error()
@@ -2446,19 +2540,36 @@ mod tty_raw {
     }
 
     pub fn raw_mode_leave() -> Result<(), EvalError> {
-        let fd = std::io::stdin().lock().as_raw_fd();
-        let mut guard = SAVED_TERMIOS.lock().unwrap();
-        if let Some(term) = *guard {
-            if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &term) } != 0 {
-                return Err(EvalError::Internal(format!(
-                    "terminal-raw-mode-leave: tcsetattr failed: {}",
-                    std::io::Error::last_os_error()
-                )));
+        // Race-free claim of the saved state — same primitive the signal
+        // handler uses, so explicit leave and signal-driven leave cannot
+        // both restore.
+        if TERMIOS_SAVED.swap(false, Ordering::SeqCst) {
+            let fd = TTY_FD.load(Ordering::SeqCst);
+            if fd >= 0 {
+                let term =
+                    unsafe { (*std::ptr::addr_of!(SAVED_TERMIOS)).assume_init() };
+                if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &term) } != 0 {
+                    return Err(EvalError::Internal(format!(
+                        "terminal-raw-mode-leave: tcsetattr failed: {}",
+                        std::io::Error::last_os_error()
+                    )));
+                }
             }
-            *guard = None;
         }
         // Idempotent — calling without a prior enter is a no-op.
         Ok(())
+    }
+
+    // Test helper: report whether the raw-mode flag is currently held.
+    pub fn termios_saved_p() -> bool {
+        TERMIOS_SAVED.load(Ordering::SeqCst)
+    }
+
+    // Test helper: report whether atexit/signal hooks have been installed.
+    // The hooks are install-once and cannot be uninstalled, so this is
+    // monotonic: false until the first enter, true forever after.
+    pub fn hooks_installed_p() -> bool {
+        HOOKS_INSTALLED.is_completed()
     }
 
     pub fn stdin_byte_available(timeout_ms: i32) -> Result<Option<u8>, EvalError> {
@@ -2548,6 +2659,37 @@ fn bi_read_stdin_byte_available(args: &[Sexp]) -> Result<Sexp, EvalError> {
     #[cfg(not(unix))]
     {
         let _ = timeout_ms;
+        Ok(Sexp::Nil)
+    }
+}
+
+/// Doc 51 Track K — test helper.  Returns t if the raw-mode flag is
+/// currently held (= a `terminal-raw-mode-enter` is pending a leave).
+/// Always nil on non-Unix.
+fn bi_termios_saved_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("_termios-saved-p", args, 0, Some(0))?;
+    #[cfg(unix)]
+    {
+        return Ok(if tty_raw::termios_saved_p() { Sexp::T } else { Sexp::Nil });
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(Sexp::Nil)
+    }
+}
+
+/// Doc 51 Track K — test helper.  Returns t once the atexit + signal
+/// hooks have been installed (= after the first `terminal-raw-mode-enter`
+/// in this process).  Hooks are install-once per process and cannot be
+/// uninstalled, so this is monotonic.
+fn bi_raw_mode_hooks_installed_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("_raw-mode-hooks-installed-p", args, 0, Some(0))?;
+    #[cfg(unix)]
+    {
+        return Ok(if tty_raw::hooks_installed_p() { Sexp::T } else { Sexp::Nil });
+    }
+    #[cfg(not(unix))]
+    {
         Ok(Sexp::Nil)
     }
 }

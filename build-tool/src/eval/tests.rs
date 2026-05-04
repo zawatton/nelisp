@@ -1732,3 +1732,69 @@ fn track_h_condition_case_still_catches_real_errors() {
         Sexp::list_from(&[Sexp::Str("boom".into())])
     );
 }
+
+// ----- Doc 51 Track K — atexit + signal hooks for raw mode ----------------
+//
+// `terminal-raw-mode-enter` requires a real TTY on the inherited stdin
+// fd; cargo test pipes its child's stdin so `tcgetattr` reliably fails.
+// That gives us a deterministic environment to verify:
+//   - the helpers exist and report the initial-state invariants
+//   - `terminal-raw-mode-leave` is a true no-op when nothing was entered
+//   - a failed enter does not leave the saved-state flag set, so a
+//     subsequent leave (e.g. via unwind-protect) does not try to restore
+//     half-initialised termios
+//
+// The actual signal handler / atexit / re-raise behaviour is exercised
+// by the integration script under `tests/track_k_signal.sh` (manual,
+// requires a real PTY) — pure cargo-test runs cannot fork a pty.
+
+#[cfg(unix)]
+#[test]
+fn track_k_termios_saved_p_initial_nil() {
+    // No `terminal-raw-mode-enter` has run in this binary's lifetime
+    // yet (or any prior enter failed because cargo test's stdin is
+    // piped, not a TTY).  The flag must read nil.
+    assert_eq!(ok_all("(_termios-saved-p)"), Sexp::Nil);
+}
+
+#[cfg(unix)]
+#[test]
+fn track_k_leave_without_enter_idempotent() {
+    // `terminal-raw-mode-leave' must return t and not error when no
+    // prior enter has happened — unwind-protect cleanup paths rely on
+    // that idempotency.
+    assert_eq!(ok_all("(terminal-raw-mode-leave)"), Sexp::T);
+    // …and the flag stays nil afterwards.
+    assert_eq!(ok_all("(_termios-saved-p)"), Sexp::Nil);
+}
+
+#[cfg(unix)]
+#[test]
+fn track_k_enter_on_non_tty_errors_cleanly() {
+    // cargo test pipes stdin → tcgetattr returns ENOTTY → enter must
+    // surface a wrong-type-ish internal error AND must not flip the
+    // saved-state flag (otherwise unwind would tcsetattr garbage).
+    let res = err_all("(terminal-raw-mode-enter)");
+    match res {
+        EvalError::Internal(msg) => {
+            assert!(
+                msg.contains("tcgetattr") || msg.contains("tcsetattr"),
+                "expected tcgetattr/tcsetattr in error message, got: {}",
+                msg
+            );
+        }
+        other => panic!("expected Internal, got {:?}", other),
+    }
+    assert_eq!(ok_all("(_termios-saved-p)"), Sexp::Nil);
+}
+
+#[cfg(unix)]
+#[test]
+fn track_k_hooks_installed_p_callable() {
+    // The helper must always be dispatchable (= no UnboundFunction).
+    // The boolean it returns depends on whether a successful enter has
+    // run in this process; under cargo test that never happens, so it
+    // is nil — but the assertion we care about is "no error".
+    let r = ok_all("(_raw-mode-hooks-installed-p)");
+    assert!(matches!(r, Sexp::Nil | Sexp::T));
+}
