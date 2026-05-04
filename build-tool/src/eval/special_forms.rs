@@ -958,18 +958,45 @@ fn sf_push(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
             got: parts.len(),
         });
     }
-    let new_head = eval(&parts[0], env)?;
-    let place_sym = match &parts[1] {
-        Sexp::Symbol(s) => s.clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "symbol (generalised places NYI)".into(),
+    match &parts[1] {
+        // Symbol place — fast path (no setf bounce).
+        Sexp::Symbol(name) => {
+            let new_head = eval(&parts[0], env)?;
+            let cur = env.lookup_value(name).unwrap_or(Sexp::Nil);
+            let new_list = Sexp::cons(new_head, cur);
+            env.set_value(name, new_list.clone())?;
+            Ok(new_list)
+        }
+        // Generalised place (= cons form, e.g. an accessor call).
+        // Expand to `(setf PLACE (cons NEW PLACE))' and evaluate it,
+        // routing through whatever `setf' macro the substrate has
+        // installed (= our cl-lib polyfill knows about
+        // `cl-struct-setter').  Note: `parts[0]' (= the new value
+        // expression) is interpolated *unevaluated* into the cons
+        // form, so it ends up evaluated exactly once.  PLACE is
+        // evaluated twice — once by the cons read, once by the
+        // setf write — which matches GNU Emacs's MVP `push' macro
+        // expansion (= upstream uses `gensym' to avoid this; we
+        // accept the double-eval cost for substrate accessors,
+        // which are side-effect-free).
+        place_form @ Sexp::Cons(_, _) => {
+            let cons_form = Sexp::list_from(&[
+                Sexp::Symbol("cons".into()),
+                parts[0].clone(),
+                place_form.clone(),
+            ]);
+            let setf_form = Sexp::list_from(&[
+                Sexp::Symbol("setf".into()),
+                place_form.clone(),
+                cons_form,
+            ]);
+            eval(&setf_form, env)
+        }
+        other => Err(EvalError::WrongType {
+            expected: "symbol or generalised place (cons form)".into(),
             got: other.clone(),
         }),
-    };
-    let cur = env.lookup_value(&place_sym).unwrap_or(Sexp::Nil);
-    let new_list = Sexp::cons(new_head, cur);
-    env.set_value(&place_sym, new_list.clone())?;
-    Ok(new_list)
+    }
 }
 
 /// `(pop PLACE)` — minimal-form macro: when PLACE is a symbol,

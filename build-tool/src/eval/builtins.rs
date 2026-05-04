@@ -43,12 +43,18 @@ pub fn install_builtins(env: &mut Env) {
         "eq", "equal",
         // cons / list
         "car", "cdr", "cons", "length", "append",
+        "caar", "cadr", "cdar", "cddr",
+        "caaar", "caadr", "cadar", "caddr",
+        "cdaar", "cdadr", "cddar", "cdddr", "cadddr",
         "setcar", "setcdr",
         // generic sequence / array accessors
         "aref", "aset", "elt", "arrayp", "sequencep",
-        "vector", "make-vector",
+        "vector", "make-vector", "vconcat",
         // predicates
         "consp", "listp", "atom", "symbolp", "stringp", "numberp", "integerp", "floatp", "functionp",
+        "vectorp", "keywordp", "null", "booleanp",
+        // bitwise — required by keymap / event-encoding code
+        "logior", "logand", "logxor", "lognot", "ash", "lsh",
         // string
         "concat", "format", "substring", "intern", "intern-soft", "symbol-name",
         "string-equal", "string=",
@@ -130,6 +136,20 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // ---- cons / list ----
         "car" => bi_car(args),
         "cdr" => bi_cdr(args),
+        // Common compositions — substrate code uses these everywhere.
+        "caar"   => bi_car(&[bi_car(args)?]),
+        "cadr"   => bi_car(&[bi_cdr(args)?]),
+        "cdar"   => bi_cdr(&[bi_car(args)?]),
+        "cddr"   => bi_cdr(&[bi_cdr(args)?]),
+        "caaar"  => bi_car(&[bi_car(&[bi_car(args)?])?]),
+        "caadr"  => bi_car(&[bi_car(&[bi_cdr(args)?])?]),
+        "cadar"  => bi_car(&[bi_cdr(&[bi_car(args)?])?]),
+        "caddr"  => bi_car(&[bi_cdr(&[bi_cdr(args)?])?]),
+        "cdaar"  => bi_cdr(&[bi_car(&[bi_car(args)?])?]),
+        "cdadr"  => bi_cdr(&[bi_car(&[bi_cdr(args)?])?]),
+        "cddar"  => bi_cdr(&[bi_cdr(&[bi_car(args)?])?]),
+        "cdddr"  => bi_cdr(&[bi_cdr(&[bi_cdr(args)?])?]),
+        "cadddr" => bi_car(&[bi_cdr(&[bi_cdr(&[bi_cdr(args)?])?])?]),
         "cons" => bi_cons(args),
         "length" => bi_length(args),
         "append" => bi_append(args),
@@ -147,6 +167,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
             | Sexp::Vector(_) | Sexp::CharTable(_) | Sexp::BoolVector(_))),
         "vector" => Ok(Sexp::vector(args.to_vec())),
         "make-vector" => bi_make_vector(args),
+        "vconcat" => bi_vconcat(args),
         // ---- predicates ----
         "consp" => bi_predicate(args, |v| matches!(v, Sexp::Cons(_, _))),
         "listp" => bi_predicate(args, |v| matches!(v, Sexp::Cons(_, _) | Sexp::Nil)),
@@ -159,6 +180,24 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "functionp" => bi_predicate(args, |v| matches!(v,
             Sexp::Cons(h, _) if matches!(&*h.borrow(),
                 Sexp::Symbol(s) if s == "lambda" || s == "closure" || s == "builtin"))),
+        "vectorp" => bi_predicate(args, |v| matches!(v, Sexp::Vector(_))),
+        // `null' is the alias for `nil-p' — `(null nil)' = t, anything
+        // else = nil.  Distinct from `not' which has identical semantics
+        // but is meant to be read as boolean negation in source.
+        "null" => bi_predicate(args, |v| matches!(v, Sexp::Nil)),
+        // `booleanp' = t when value is exactly `t' or `nil'.  Doc 51
+        // Track P/Q etc rely on this for fboundp-style guards.
+        "booleanp" => bi_predicate(args, |v| matches!(v, Sexp::Nil | Sexp::T)),
+        // `keywordp' = symbol whose printed name starts with `:'.
+        // Implemented as a string-prefix check on the symbol name.
+        "keywordp" => bi_predicate(args, |v| matches!(v,
+            Sexp::Symbol(s) if s.starts_with(':') && s.len() > 1)),
+        // ---- bitwise (essential for keymap / event encoding) ----
+        "logior" => bi_logior(args),
+        "logand" => bi_logand(args),
+        "logxor" => bi_logxor(args),
+        "lognot" => bi_lognot(args),
+        "ash" | "lsh" => bi_ash(args),
         // ---- string ----
         "concat" => bi_concat(args),
         "format" => bi_format(args),
@@ -406,6 +445,60 @@ fn bi_mod(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::Int(signed))
 }
 
+// ---------- bitwise -----------------------------------------------------
+//
+// Required by keymap / event-encoding code (= `(logior char (lsh 1 26))'
+// for the Emacs Ctrl-bit chord encoding) plus general numeric utilities
+// on which the substrate's polyfills lean.
+
+fn bi_logior(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let mut acc: i64 = 0;
+    for a in args {
+        acc |= as_int("logior", a)?;
+    }
+    Ok(Sexp::Int(acc))
+}
+
+fn bi_logand(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let mut acc: i64 = -1; // all bits set
+    for a in args {
+        acc &= as_int("logand", a)?;
+    }
+    Ok(Sexp::Int(acc))
+}
+
+fn bi_logxor(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let mut acc: i64 = 0;
+    for a in args {
+        acc ^= as_int("logxor", a)?;
+    }
+    Ok(Sexp::Int(acc))
+}
+
+fn bi_lognot(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("lognot", args, 1, Some(1))?;
+    Ok(Sexp::Int(!as_int("lognot", &args[0])?))
+}
+
+/// `(ash N COUNT)' / `(lsh N COUNT)' — arithmetic shift by COUNT bits.
+/// Positive COUNT is left shift, negative is right shift.  We treat
+/// `lsh` as an alias of `ash` per recent Emacs conventions (= the
+/// MVP doesn't distinguish logical vs arithmetic for the use-cases
+/// that matter, key-event encoding being the main one).
+fn bi_ash(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("ash", args, 2, Some(2))?;
+    let n = as_int("ash", &args[0])?;
+    let count = as_int("ash", &args[1])?;
+    let r = if count >= 0 {
+        // Left shift; clamp obscene shifts to avoid Rust panic.
+        if count >= 63 { 0 } else { n.wrapping_shl(count as u32) }
+    } else {
+        let abs = (-count) as u32;
+        if abs >= 63 { if n < 0 { -1 } else { 0 } } else { n >> abs }
+    };
+    Ok(Sexp::Int(r))
+}
+
 fn cmp_vararg(name: &str, args: &[Sexp], cmp: fn(f64, f64) -> bool) -> Result<Sexp, EvalError> {
     require_arity(name, args, 2, None)?;
     let (_, vs) = numeric_promote(args)?;
@@ -530,22 +623,53 @@ fn bi_append(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
     let mut all_but_last: Vec<Sexp> = Vec::new();
     for a in &args[..args.len() - 1] {
-        let mut cur: Sexp = a.clone();
-        loop {
-            let next = match &cur {
-                Sexp::Nil => break,
-                Sexp::Cons(h, t) => {
-                    all_but_last.push(h.borrow().clone());
-                    t.borrow().clone()
+        match a {
+            // Vectors / strings / nil are flattened into the cons chain
+            // (= matches GNU Emacs `append' which accepts any sequence
+            // type as a non-final argument).
+            Sexp::Nil => {}
+            Sexp::Vector(rc) => {
+                for it in rc.borrow().iter() {
+                    all_but_last.push(it.clone());
                 }
-                other => {
-                    return Err(EvalError::WrongType {
-                        expected: "listp".into(),
-                        got: other.clone(),
-                    })
+            }
+            Sexp::Str(s) => {
+                for ch in s.chars() {
+                    all_but_last.push(Sexp::Int(ch as i64));
                 }
-            };
-            cur = next;
+            }
+            Sexp::MutStr(rc) => {
+                let s = rc.borrow();
+                for ch in s.chars() {
+                    all_but_last.push(Sexp::Int(ch as i64));
+                }
+            }
+            // Cons walks a proper-list spine.
+            Sexp::Cons(_, _) => {
+                let mut cur: Sexp = a.clone();
+                loop {
+                    let next = match &cur {
+                        Sexp::Nil => break,
+                        Sexp::Cons(h, t) => {
+                            all_but_last.push(h.borrow().clone());
+                            t.borrow().clone()
+                        }
+                        other => {
+                            return Err(EvalError::WrongType {
+                                expected: "listp".into(),
+                                got: other.clone(),
+                            })
+                        }
+                    };
+                    cur = next;
+                }
+            }
+            other => {
+                return Err(EvalError::WrongType {
+                    expected: "sequencep".into(),
+                    got: other.clone(),
+                });
+            }
         }
     }
     let mut acc = args.last().unwrap().clone();
@@ -3302,6 +3426,58 @@ fn bi_make_vector(args: &[Sexp]) -> Result<Sexp, EvalError> {
         )));
     }
     Ok(Sexp::vector(vec![args[1].clone(); len as usize]))
+}
+
+/// `(vconcat &rest SEQS)' — concatenate any mix of vectors / lists /
+/// strings into a single vector.  Strings expand to integer chars.
+fn bi_vconcat(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let mut out: Vec<Sexp> = Vec::new();
+    for a in args {
+        match a {
+            Sexp::Nil => {}
+            Sexp::Vector(rc) => {
+                for it in rc.borrow().iter() {
+                    out.push(it.clone());
+                }
+            }
+            Sexp::Str(_) | Sexp::MutStr(_) => {
+                let s = match a {
+                    Sexp::Str(s) => s.clone(),
+                    Sexp::MutStr(rc) => rc.borrow().clone(),
+                    _ => unreachable!(),
+                };
+                for ch in s.chars() {
+                    out.push(Sexp::Int(ch as i64));
+                }
+            }
+            Sexp::Cons(_, _) => {
+                // Walk a proper list.
+                let mut cur = a.clone();
+                loop {
+                    match cur {
+                        Sexp::Nil => break,
+                        Sexp::Cons(h, t) => {
+                            out.push(h.borrow().clone());
+                            cur = t.borrow().clone();
+                        }
+                        other => {
+                            return Err(EvalError::WrongType {
+                                expected: "proper list".into(),
+                                got: other,
+                            });
+                        }
+                    }
+                }
+            }
+            other => {
+                return Err(EvalError::WrongType {
+                    expected: "vector / list / string / nil".into(),
+                    got: other.clone(),
+                });
+            }
+        }
+    }
+    Ok(Sexp::vector(out))
 }
 
 fn bi_setcar(args: &[Sexp]) -> Result<Sexp, EvalError> {
