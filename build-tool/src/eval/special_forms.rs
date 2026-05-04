@@ -11,6 +11,8 @@
 //! the dispatcher falls through to function/macro lookup), and
 //! `Err(EvalError)` on invalid syntax / sub-form failure.
 
+use std::rc::Rc;
+
 use super::env::Env;
 use super::error::{is_error_subtype, EvalError};
 use super::sexp::Sexp;
@@ -1050,6 +1052,27 @@ pub fn sexp_eq(a: &Sexp, b: &Sexp) -> bool {
         (Sexp::Nil, Sexp::Nil) | (Sexp::T, Sexp::T) => true,
         (Sexp::Int(x), Sexp::Int(y)) => x == y,
         (Sexp::Symbol(x), Sexp::Symbol(y)) => x == y,
+        // Heap types: identity = Rc::ptr_eq (= same allocation).  Per
+        // the type docs on Sexp, every `Rc<RefCell<...>>'-backed
+        // variant has cell identity so `(eq x x)' / `(memq w list)' /
+        // `(assq k alist)' / cl-defstruct slot equality work as
+        // they do in host Emacs.  Without this, walking a tree of
+        // shared cons cells (e.g. window parent/children pointers)
+        // would compare structurally — which on a cyclic graph
+        // recurses forever.
+        (Sexp::Cons(a1, a2), Sexp::Cons(b1, b2)) => {
+            Rc::ptr_eq(a1, b1) && Rc::ptr_eq(a2, b2)
+        }
+        (Sexp::MutStr(a), Sexp::MutStr(b)) => Rc::ptr_eq(a, b),
+        (Sexp::Vector(a), Sexp::Vector(b)) => Rc::ptr_eq(a, b),
+        (Sexp::HashTable(a), Sexp::HashTable(b)) => Rc::ptr_eq(a, b),
+        (Sexp::CharTable(a), Sexp::CharTable(b)) => Rc::ptr_eq(a, b),
+        (Sexp::BoolVector(a), Sexp::BoolVector(b)) => Rc::ptr_eq(a, b),
+        // Strings + floats: bootstrap subset uses structural eq
+        // (close enough — Emacs treats short interned strings + small
+        // fixnums similarly; full impl would need an interner).
+        (Sexp::Str(x), Sexp::Str(y)) => x == y,
+        (Sexp::Float(x), Sexp::Float(y)) => x.to_bits() == y.to_bits(),
         _ => false,
     }
 }

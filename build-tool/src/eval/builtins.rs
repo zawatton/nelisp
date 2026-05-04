@@ -1757,9 +1757,10 @@ fn bi_puthash(args: &[Sexp]) -> Result<Sexp, EvalError> {
         }),
     };
     let mut inner = table.borrow_mut();
+    let test = inner.test.clone();
     let mut found = false;
     for (k, v) in inner.entries.iter_mut() {
-        if hash_test_eq(&inner_test_for(k, &key), k, &key) {
+        if hash_test_eq(&test, k, &key) {
             *v = value.clone();
             found = true;
             break;
@@ -2070,8 +2071,14 @@ fn bi_bool_vector(args: &[Sexp]) -> Result<Sexp, EvalError> {
 /// not honour pointer identity for cons / vector / hash-table cells
 /// (= our Sexp clones share Rc but we have no Rc-aware test here).
 fn hash_test_eq(test: &str, a: &Sexp, b: &Sexp) -> bool {
-    let _ = test; // accepted for API parity, treated uniformly for now.
-    a == b
+    // For `eq' / `eql' tests we honour cell identity (= Rc::ptr_eq for
+    // heap types) via `sexp_eq'.  Structural `==' would recurse on
+    // cyclic graphs (e.g. cl-defstruct values with parent <-> children
+    // pointers), causing a stack overflow.
+    match test {
+        "eq" | "eql" => sexp_eq(a, b),
+        _ => a == b,
+    }
 }
 
 /// Pick the test to use when the table-side `test' isn't accessible
