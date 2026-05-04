@@ -886,6 +886,14 @@ fn pcase_match_binding(pattern: &Sexp, value: &Sexp) -> Result<Option<Option<Str
         Sexp::Nil => Ok(matches!(value, Sexp::Nil).then_some(None)),
         Sexp::T => Ok(matches!(value, Sexp::T).then_some(None)),
         Sexp::Symbol(name) if name == "_" => Ok(Some(None)),
+        // Keyword symbols (= name starts with `:') are self-evaluating
+        // literals in Elisp, so a keyword pattern matches by equality
+        // against VALUE, not as a variable to bind.  Without this guard
+        // every keyword case in `pcase' would match unconditionally
+        // (= the first branch always wins).
+        Sexp::Symbol(name) if name.starts_with(':') => {
+            Ok((pattern == value).then_some(None))
+        }
         Sexp::Symbol(name) => Ok(Some(Some(name.clone()))),
         Sexp::Cons(head, _) if matches!(&*head.borrow(), Sexp::Symbol(s) if s == "quote") => {
             let quoted = args_vec(pattern)?;
