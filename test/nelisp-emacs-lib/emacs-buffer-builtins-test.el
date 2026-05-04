@@ -281,6 +281,57 @@
   (should (fboundp 'get-buffer-create))
   (should (fboundp 'buffer-list)))
 
+;;;; M. Doc 51 Track X audit — keymap-bound polyfills carry interactive form
+
+(defun emacs-buffer-builtins-test--read-defun (file marker)
+  "Return the source of the form starting at MARKER (a regexp) in FILE."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (goto-char (point-min))
+    (when (re-search-forward marker nil t)
+      (let* ((form-start (match-beginning 0))
+             (form-end (save-excursion
+                         (goto-char form-start)
+                         (forward-sexp)
+                         (point))))
+        (buffer-substring form-start form-end)))))
+
+(ert-deftest emacs-buffer-builtins-test/keymap-bound-cmd-shape-audit ()
+  "Doc 51 Track X (2026-05-04) regression: `forward-char' /
+`backward-char' / `delete-char' must be wrapper polyfills (= not
+plain `defalias' to `nelisp-ec-*') with `(interactive \"p\")', because
+the inner `nelisp-ec-delete-char' has a REQUIRED N parameter that
+would crash on a no-prefix-arg keymap dispatch (= same lambda-arity
+mismatch that bit `delete-backward-char' before its 2026-05-04 fix).
+
+`nelisp-ec-forward-char' / `nelisp-ec-backward-char' have all-optional
+arglists, so a plain alias would work today — but the prefix-arg path
+needs the wrapper's `(interactive \"p\")' so `C-u 4 C-f' actually moves
+4 chars instead of dropping the prefix."
+  (let* ((file (locate-library "emacs-buffer-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (concat (substring file 0 (- (length file) 1)))
+                 file)))
+    (should (and file (file-exists-p file)))
+    (let ((s (emacs-buffer-builtins-test--read-defun
+              file "(unless (fboundp 'forward-char)")))
+      (should s)
+      (should (string-match-p "forward-char (&optional n)" s))
+      (should (string-match-p "(interactive \"p\")" s))
+      (should (string-match-p "nelisp-ec-forward-char" s)))
+    (let ((s (emacs-buffer-builtins-test--read-defun
+              file "(unless (fboundp 'backward-char)")))
+      (should s)
+      (should (string-match-p "backward-char (&optional n)" s))
+      (should (string-match-p "(interactive \"p\")" s))
+      (should (string-match-p "nelisp-ec-backward-char" s)))
+    (let ((s (emacs-buffer-builtins-test--read-defun
+              file "(unless (fboundp 'delete-char)")))
+      (should s)
+      (should (string-match-p "delete-char (n &optional killflag)" s))
+      (should (string-match-p "(interactive \"p\")" s))
+      (should (string-match-p "nelisp-ec-delete-char" s)))))
+
 (provide 'emacs-buffer-builtins-test)
 
 ;;; emacs-buffer-builtins-test.el ends here

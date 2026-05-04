@@ -117,6 +117,50 @@ host driver the upstream `delete-backward-char' wins via
         (should (string-match-p
                  "(interactive \"p\")" source))))))
 
+(defun emacs-edit-builtins-test--read-defun (file marker)
+  "Read FILE and return the source of the form starting at MARKER (a regexp)."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (goto-char (point-min))
+    (when (re-search-forward marker nil t)
+      (let* ((form-start (match-beginning 0))
+             (form-end (save-excursion
+                         (goto-char form-start)
+                         (forward-sexp)
+                         (point))))
+        (buffer-substring form-start form-end)))))
+
+(ert-deftest emacs-edit-builtins-test/keymap-bound-cmd-shape-audit ()
+  "Doc 51 Track X (2026-05-04) audit regression: every command bound
+in `nemacs-main-keymap' must carry an `(interactive ...)' form so
+`call-interactively' supplies a non-empty arg list, and must accept
+0 required args so the lambda dispatch never raises
+`wrong-number-of-arguments' under no-prefix-arg keymap routing.
+
+This audit covers the polyfills shipped from `emacs-edit-builtins.el'
+(self-insert-command / newline / kill-line; delete-backward-char is
+checked by its dedicated shape test above)."
+  (let* ((file (locate-library "emacs-edit-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (concat (substring file 0 (- (length file) 1)))
+                 file)))
+    (should (and file (file-exists-p file)))
+    (let ((s (emacs-edit-builtins-test--read-defun
+              file "(unless (fboundp 'self-insert-command)")))
+      (should s)
+      (should (string-match-p "self-insert-command (&optional n char)" s))
+      (should (string-match-p "(interactive \"p\")" s)))
+    (let ((s (emacs-edit-builtins-test--read-defun
+              file "(unless (fboundp 'newline)")))
+      (should s)
+      (should (string-match-p "newline (&optional n interactive)" s))
+      (should (string-match-p "(interactive \"p\")" s)))
+    (let ((s (emacs-edit-builtins-test--read-defun
+              file "(unless (fboundp 'kill-line)")))
+      (should s)
+      (should (string-match-p "kill-line (&optional arg)" s))
+      (should (string-match-p "(interactive \"P\")" s)))))
+
 ;;;; E. kill-new pushes onto kill-ring
 
 (ert-deftest emacs-edit-builtins-test/kill-new-pushes-and-trims ()

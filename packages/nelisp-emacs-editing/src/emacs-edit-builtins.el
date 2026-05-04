@@ -53,7 +53,12 @@ N defaults to 1.  CHAR may be an integer or a single-char string;
 when nil, falls back to `last-command-event'.
 
 Track E.2: when the undo subsystem is loaded, records the
-inserted span on `buffer-undo-list'."
+inserted span on `buffer-undo-list'.
+
+Bound to printable chars in `nemacs-main-keymap'.  The `(interactive
+\"p\")' form supplies N from the prefix-arg so `call-interactively'
+gets a fully-formed arg list."
+    (interactive "p")
     (let* ((c (or char last-command-event))
            (count (or n 1))
            (s (cond
@@ -78,7 +83,9 @@ inserted span on `buffer-undo-list'."
 (unless (fboundp 'newline)
   (defun newline (&optional n interactive)
     "Phase E polyfill: insert N newlines (default 1).
-Track E.2: records the inserted span on `buffer-undo-list'."
+Track E.2: records the inserted span on `buffer-undo-list'.
+Bound to RET (= byte 13) in `nemacs-main-keymap'."
+    (interactive "p")
     (ignore interactive)
     (let ((c (or n 1)) (i 0))
       (while (< i c)
@@ -183,7 +190,9 @@ Track E.2: records the deleted text on `buffer-undo-list'."
     "Phase E polyfill: kill from point to end of line.
 At EOL (= no chars to kill on the current line) and not at EOB,
 kills the trailing `\\n' so successive `kill-line' calls collapse
-the cursor toward EOB.  ARG (= multi-line variant) deferred."
+the cursor toward EOB.  ARG (= multi-line variant) deferred.
+Bound to C-k in `nemacs-main-keymap'."
+    (interactive "P")
     (ignore arg)
     (let* ((start (nelisp-ec-point))
            (em (nelisp-ec-point-max))

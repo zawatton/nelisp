@@ -148,6 +148,54 @@
     (should (eq (emacs-window-selected-window)
                 (car (emacs-window--all-leaves))))))
 
+;;;; Doc 51 Track X audit — keymap-bound window cmds have interactive form
+
+(defun emacs-window-builtins-test--read-defun (file marker)
+  "Return the source of the form starting at MARKER (a regexp) in FILE."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (goto-char (point-min))
+    (when (re-search-forward marker nil t)
+      (let* ((form-start (match-beginning 0))
+             (form-end (save-excursion
+                         (goto-char form-start)
+                         (forward-sexp)
+                         (point))))
+        (buffer-substring form-start form-end)))))
+
+(ert-deftest emacs-window-builtins-test/keymap-bound-cmd-shape-audit ()
+  "Doc 51 Track X (2026-05-04) audit: window commands bound in
+`nemacs-main-keymap' (= split-window-below / split-window-right /
+delete-window / delete-other-windows) must be wrapper polyfills with
+`(interactive ...)' so `call-interactively' produces a well-formed
+arg list under keymap dispatch.
+
+The previous `(defalias FOO #'emacs-window-FOO)' shape inherited
+no interactive form from the underlying `emacs-window-*' helper, so
+prefix-arg paths (`C-u 10 C-x 2' etc) silently dropped their arg."
+  (let* ((file (locate-library "emacs-window-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (concat (substring file 0 (- (length file) 1)))
+                 file)))
+    (should (and file (file-exists-p file)))
+    (dolist (spec '(("(unless (fboundp 'split-window-below)"
+                     "split-window-below (&optional size)" "P")
+                    ("(unless (fboundp 'split-window-right)"
+                     "split-window-right (&optional size)" "P")
+                    ("(unless (fboundp 'delete-window)"
+                     "delete-window (&optional window)" "")
+                    ("(unless (fboundp 'delete-other-windows)"
+                     "delete-other-windows (&optional window)" "")))
+      (let ((s (emacs-window-builtins-test--read-defun file (nth 0 spec))))
+        (should s)
+        (should (string-match-p (regexp-quote (nth 1 spec)) s))
+        (should (string-match-p
+                 (concat "(interactive"
+                         (if (equal (nth 2 spec) "")
+                             ")"
+                           (concat " \"" (nth 2 spec) "\")")))
+                 s))))))
+
 (provide 'emacs-window-builtins-test)
 
 ;;; emacs-window-builtins-test.el ends here

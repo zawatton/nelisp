@@ -155,10 +155,18 @@ buffers are returned regardless."
   (defalias 'goto-char #'nelisp-ec-goto-char))
 
 (unless (fboundp 'forward-char)
-  (defalias 'forward-char #'nelisp-ec-forward-char))
+  (defun forward-char (&optional n)
+    "Phase 9 polyfill: move point N (default 1) characters forward.
+Forwards to `nelisp-ec-forward-char'.  Bound to C-f / <right>."
+    (interactive "p")
+    (nelisp-ec-forward-char (or n 1))))
 
 (unless (fboundp 'backward-char)
-  (defalias 'backward-char #'nelisp-ec-backward-char))
+  (defun backward-char (&optional n)
+    "Phase 9 polyfill: move point N (default 1) characters backward.
+Forwards to `nelisp-ec-backward-char'.  Bound to C-b / <left>."
+    (interactive "p")
+    (nelisp-ec-backward-char (or n 1))))
 
 (unless (fboundp 'buffer-size)
   (defalias 'buffer-size #'nelisp-ec-buffer-size))
@@ -175,7 +183,19 @@ buffers are returned regardless."
   (defalias 'delete-region #'nelisp-ec-delete-region))
 
 (unless (fboundp 'delete-char)
-  (defalias 'delete-char #'nelisp-ec-delete-char))
+  (defun delete-char (n &optional killflag)
+    "Phase 9 polyfill: delete N characters forward (negative = backward).
+KILLFLAG accepted for host API parity but ignored in MVP.
+Forwards to `nelisp-ec-delete-char'.  Bound to C-d.
+
+The `(interactive \"p\")' form supplies N from the prefix-arg, so a
+keymap dispatch with no prefix passes N=1.  Without this form,
+`call-interactively' would build an empty arg list and crash on the
+required N parameter (= the same lambda-arity-mismatch that bit
+`delete-backward-char' before its 2026-05-04 fix)."
+    (interactive "p")
+    (ignore killflag)
+    (nelisp-ec-delete-char n)))
 
 (unless (fboundp 'buffer-string)
   (defalias 'buffer-string #'nelisp-ec-buffer-string))

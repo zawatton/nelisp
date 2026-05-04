@@ -200,6 +200,49 @@
     (should (eq before-bol (symbol-function 'emacs-line--bol-pos)))
     (should (eq before-eol (symbol-function 'emacs-line--eol-pos)))))
 
+;;;; J. Doc 51 Track X audit — every keymap-bound cmd has interactive form
+
+(defun emacs-line-builtins-test--read-defun (file marker)
+  "Return the source of the form starting at MARKER (a regexp) in FILE."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (goto-char (point-min))
+    (when (re-search-forward marker nil t)
+      (let* ((form-start (match-beginning 0))
+             (form-end (save-excursion
+                         (goto-char form-start)
+                         (forward-sexp)
+                         (point))))
+        (buffer-substring form-start form-end)))))
+
+(ert-deftest emacs-line-builtins-test/keymap-bound-cmd-shape-audit ()
+  "Doc 51 Track X (2026-05-04) audit: motion commands bound in
+`nemacs-main-keymap' (= beginning-of-line / end-of-line / next-line /
+previous-line) must carry `(interactive \"p\")' so prefix-arg flows
+through and `call-interactively' produces a well-formed arg list.
+
+Without the form, dispatch builds 0 args; the polyfills already accept
+all-optional arglists so a no-arg call works, but the prefix-arg path
+silently drops arguments, breaking `C-u 4 C-n' style motion."
+  (let* ((file (locate-library "emacs-line-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (concat (substring file 0 (- (length file) 1)))
+                 file)))
+    (should (and file (file-exists-p file)))
+    (dolist (spec '(("(unless (fboundp 'beginning-of-line)"
+                     "beginning-of-line (&optional n)" "p")
+                    ("(unless (fboundp 'end-of-line)"
+                     "end-of-line (&optional n)" "p")
+                    ("(unless (fboundp 'next-line)"
+                     "next-line (&optional n _try-vscroll)" "p")
+                    ("(unless (fboundp 'previous-line)"
+                     "previous-line (&optional n _try-vscroll)" "p")))
+      (let ((s (emacs-line-builtins-test--read-defun file (nth 0 spec))))
+        (should s)
+        (should (string-match-p (regexp-quote (nth 1 spec)) s))
+        (should (string-match-p
+                 (concat "(interactive \"" (nth 2 spec) "\")") s))))))
+
 (provide 'emacs-line-builtins-test)
 
 ;;; emacs-line-builtins-test.el ends here
