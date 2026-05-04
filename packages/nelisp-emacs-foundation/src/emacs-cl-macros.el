@@ -303,11 +303,23 @@ For patterns this stub does not recognise, returns nil."
 
 (unless (fboundp 'emacs-cl-macros--loop-build)
   (defun emacs-cl-macros--loop-build (clauses)
-    "Build expansion for cl-loop CLAUSES.  Recognises `for VAR in LIST'
-    + `do FORM' / `collect FORM' / `sum FORM' / `count FORM' / `with VAR = VAL'.
-    Returns a `let'/`while' form, or nil for unrecognised shapes."
+    "Build expansion for cl-loop CLAUSES.
+
+Recognised shapes:
+  for VAR in LIST                      iterator
+  with VAR = VAL                       binding
+  do FORM …                            unconditional side-effect
+  collect FORM                         accumulate into list
+  sum FORM                             accumulate sum
+  count FORM                           count truthy
+  when COND return FORM                early-exit with FORM
+  when COND do FORM                    conditional side-effect
+
+Unrecognised shapes return nil (= caller gets a no-op expansion)."
     (let ((var nil) (list-form nil) (do-forms nil) (collect-form nil)
           (sum-form nil) (count-form nil) (with-bindings nil)
+          (when-return-cond nil) (when-return-form nil)
+          (when-do-cond nil) (when-do-forms nil)
           (cur clauses) (recognised t))
       (while (and cur recognised)
         (let ((kw (car cur)))
@@ -336,9 +348,37 @@ For patterns this stub does not recognise, returns nil."
                       (append with-bindings
                               (list (list wname (car (cdr (cdr (cdr cur))))))))
                 (setq cur (cdr (cdr (cdr (cdr cur))))))))
+           ;; `when COND return FORM' — early exit with FORM.
+           ;; `when COND do FORM' — conditional side-effect.
+           ((eq kw 'when)
+            (let ((cond-form (car (cdr cur)))
+                  (next-kw (car (cdr (cdr cur))))
+                  (next-form (car (cdr (cdr (cdr cur))))))
+              (cond
+               ((eq next-kw 'return)
+                (setq when-return-cond cond-form
+                      when-return-form next-form
+                      cur (cdr (cdr (cdr (cdr cur))))))
+               ((eq next-kw 'do)
+                (setq when-do-cond cond-form
+                      when-do-forms (cons next-form when-do-forms)
+                      cur (cdr (cdr (cdr (cdr cur))))))
+               (t (setq recognised nil)))))
            (t (setq recognised nil)))))
       (cond
        ((not recognised) nil)
+       ;; `when COND return FORM' — wrap iteration in a catch and
+       ;; throw on first hit.  Result of cl-loop = FORM (or nil).
+       (when-return-cond
+        (let ((tag-sym (make-symbol "--loop-tag--"))
+              (result-sym (make-symbol "--loop-r--")))
+          (list 'let (cons (list result-sym nil) with-bindings)
+                (list 'catch (list 'quote tag-sym)
+                      (list 'dolist (list var list-form)
+                            (list 'when when-return-cond
+                                  (list 'setq result-sym when-return-form)
+                                  (list 'throw (list 'quote tag-sym) nil))))
+                result-sym)))
        (collect-form
         (let ((acc-sym (make-symbol "--loop-acc--")))
           (list 'let (cons (list acc-sym nil) with-bindings)
@@ -358,6 +398,15 @@ For patterns this stub does not recognise, returns nil."
                       (list 'when count-form
                             (list 'setq acc-sym (list '+ acc-sym 1))))
                 acc-sym)))
+       (when-do-cond
+        ;; `when COND do FORMS …'
+        (let ((rev nil))
+          (while when-do-forms
+            (setq rev (cons (car when-do-forms) rev))
+            (setq when-do-forms (cdr when-do-forms)))
+          (list 'let with-bindings
+                (list 'dolist (list var list-form)
+                      (cons 'when (cons when-do-cond rev))))))
        (do-forms
         (let ((rev nil))
           (while do-forms (setq rev (cons (car do-forms) rev)) (setq do-forms (cdr do-forms)))
