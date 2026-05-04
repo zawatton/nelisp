@@ -21,13 +21,19 @@
 ;;   (REGEXP . NUMBER)           ; numeric subexp -> font-lock-keyword-face
 ;;   (REGEXP (SUBEXP FACE [OVERRIDE [LAXMATCH]]) ...)   ; multi-highlight
 ;;
-;; Out of scope (= deferred to Track K' / γ+):
+;; Shipped (Track D, 2026-05-04):
 ;;   - (eval . FORM) keyword form
-;;   - anchored multi-line highlights
-;;   - syntactic-keywords / syntax-table fontification
+;;   - font-lock-defaults slot 3 = CASE-FOLD honoured
+;;   - override = `keep' / `prepend' / `append' with real list-merge
+;; Shipped (Track G, 2026-05-04):
+;;   - anchored matcher  (REGEX PRE POST HIGHLIGHTS...)
+;;   - PRE-FORM evaluated as bound for the inner search
+;;   - POST-FORM evaluated for state-restore (result ignored)
+;;
+;; Still deferred:
+;;   - syntactic-keywords / syntax-table fontification (= Track F char-table dep)
 ;;   - jit-lock incremental fontification (= we do whole-region only)
 ;;   - font-lock-extend-region-functions hook
-;;   - font-lock-defaults beyond the KEYWORDS slot
 ;;
 ;; Standard faces (`font-lock-keyword-face' etc) are defined in this
 ;; module so callers / modes can reference them at load-time without
@@ -120,17 +126,43 @@ per buffer when fontification first runs."
     (list (car kw) (list (cdr kw) 'font-lock-keyword-face nil nil)))
    ((and (consp kw) (stringp (car kw)) (listp (cdr kw)))
     (cons (car kw)
-          (mapcar (lambda (h)
-                    (cond
-                     ((symbolp h) (list 0 h nil nil))
-                     ((and (consp h) (numberp (car h)))
-                      (let ((subexp (car h))
-                            (face (cadr h))
-                            (override (and (cddr h) (nth 2 h)))
-                            (laxmatch (and (nthcdr 3 h) (nth 3 h))))
-                        (list subexp face override laxmatch)))
-                     (t (list 0 'font-lock-keyword-face nil nil))))
-                  (cdr kw))))
+          (mapcar
+           (lambda (h)
+             (cond
+              ;; Plain face symbol → (0 SYMBOL nil nil)
+              ((symbolp h) (list 0 h nil nil))
+              ;; SUBEXP-HIGHLIGHT (= numeric subexp + face/spec)
+              ((and (consp h) (numberp (car h)))
+               (let ((subexp (car h))
+                     (face (cadr h))
+                     (override (and (cddr h) (nth 2 h)))
+                     (laxmatch (and (nthcdr 3 h) (nth 3 h))))
+                 (list subexp face override laxmatch)))
+              ;; ANCHORED-MATCHER:  (REGEXP PRE-FORM POST-FORM HIGHLIGHTS...)
+              ;; Recognise by `stringp (car h)' — the inner regex.
+              ((and (consp h) (stringp (car h)))
+               (let* ((inner-regex (car h))
+                      (pre-form    (and (cdr h) (nth 1 h)))
+                      (post-form   (and (cddr h) (nth 2 h)))
+                      (inner-highs (nthcdr 3 h))
+                      ;; Normalise inner highlights via the same
+                      ;; SUBEXP-HIGHLIGHT canonicalisation we use
+                      ;; above (= recursive on each anchored sub).
+                      (inner-canon
+                       (mapcar
+                        (lambda (ih)
+                          (cond
+                           ((symbolp ih) (list 0 ih nil nil))
+                           ((and (consp ih) (numberp (car ih)))
+                            (list (car ih)
+                                  (cadr ih)
+                                  (and (cddr ih) (nth 2 ih))
+                                  (and (nthcdr 3 ih) (nth 3 ih))))
+                           (t (list 0 'font-lock-keyword-face nil nil))))
+                        inner-highs)))
+                 (list :anchored inner-regex pre-form post-form inner-canon)))
+              (t (list 0 'font-lock-keyword-face nil nil))))
+           (cdr kw))))
    (t
     (list ".\\`" (list 0 'font-lock-keyword-face nil nil)))))
 
@@ -367,12 +399,73 @@ cell is skipped silently (= same behaviour as upstream)."
           (let ((mb (nelisp-ec-match-beginning 0))
                 (me (nelisp-ec-match-end 0)))
             (dolist (h highlights)
-              (emacs-font-lock--apply-highlight h buf))
+              (cond
+               ;; Anchored matcher: nested search after the outer match.
+               ((and (consp h) (eq (car h) :anchored))
+                (emacs-font-lock--apply-anchored h buf mb me end))
+               ;; Plain SUBEXP-HIGHLIGHT.
+               (t
+                (emacs-font-lock--apply-highlight h buf))))
             ;; Advance past zero-width matches to prevent infinite loop.
             (when (and mb me (= mb me))
               (if (< (nelisp-ec-point) end)
                   (nelisp-ec-forward-char 1)
                 (nelisp-ec-goto-char end)))))))))
+
+(defun emacs-font-lock--eval-bound-form (form default-bound)
+  "Evaluate FORM as an anchored-matcher PRE/POST sentinel.
+Returns an integer BOUND for the inner search.  When FORM is nil we
+return DEFAULT-BOUND.  When evaluation fails we silently fall back
+to DEFAULT-BOUND so a buggy mode definition cannot crash fontify."
+  (cond
+   ((null form) default-bound)
+   ((integerp form) form)
+   (t
+    (condition-case _
+        (let ((v (eval form t)))
+          (if (integerp v) v default-bound))
+      (error default-bound)))))
+
+(defun emacs-font-lock--apply-anchored (cell buf outer-mb outer-me region-end)
+  "Run the anchored-matcher CELL after the outer match in BUF.
+CELL is `(:anchored INNER-REGEX PRE-FORM POST-FORM HIGHLIGHTS-LIST)'.
+OUTER-MB / OUTER-ME bound the just-matched outer range; REGION-END
+is the overall fontify region's end (= upper search ceiling)."
+  (let* ((inner-regex (nth 1 cell))
+         (pre-form    (nth 2 cell))
+         (post-form   (nth 3 cell))
+         (highs       (nth 4 cell))
+         (case-fold   (emacs-font-lock--state-get buf :case-fold))
+         (inner-rx    (if case-fold
+                          (emacs-font-lock--case-insensitive-regexp inner-regex)
+                        inner-regex))
+         ;; PRE-FORM result = bound for the inner search.  Default
+         ;; to REGION-END so a nil pre-form still has a real ceiling.
+         (bound       (let ((nelisp-ec--current-buffer buf))
+                        (nelisp-ec-goto-char outer-me)
+                        (emacs-font-lock--eval-bound-form pre-form region-end)))
+         ;; Clamp bound into the outer fontify region.
+         (effective-bound (min bound region-end)))
+    (let ((nelisp-ec--current-buffer buf)
+          (case-fold-search case-fold))
+      (nelisp-ec-goto-char outer-me)
+      (while (and (< (nelisp-ec-point) effective-bound)
+                  (nelisp-ec-re-search-forward inner-rx effective-bound t))
+        (let ((mb (nelisp-ec-match-beginning 0))
+              (me (nelisp-ec-match-end 0)))
+          (dolist (h highs)
+            (emacs-font-lock--apply-highlight h buf))
+          (when (and mb me (= mb me))
+            (if (< (nelisp-ec-point) effective-bound)
+                (nelisp-ec-forward-char 1)
+              (nelisp-ec-goto-char effective-bound)))))
+      ;; POST-FORM: opportunity to restore state.  Result is ignored.
+      (when post-form
+        (condition-case _
+            (eval post-form t)
+          (error nil))))
+    ;; Suppress unused-variable warning under byte-compile.
+    (ignore outer-mb)))
 
 (defun emacs-font-lock-default-fontify-region (start end &optional _loudly buf)
   "Fontify [START, END) in BUF using the buffer's compiled keywords."
