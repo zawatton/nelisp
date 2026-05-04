@@ -152,6 +152,16 @@ non-menu mirror)."
   (let ((ev (emacs-command-loop--pop-event)))
     (setq emacs-command-loop--last-input-event   ev
           emacs-command-loop--last-nonmenu-event ev)
+    ;; Track X follow-up (2026-05-05): also publish the event to the
+    ;; canonical unprefixed defvars (= what `self-insert-command' /
+    ;; `digit-argument' / etc. read).  Without this mirror the public
+    ;; `last-input-event' / `last-nonmenu-event' stay nil, and any
+    ;; command dispatched via `emacs-command-loop-step' that consults
+    ;; them sees a stale nil even though the prefixed slot was set.
+    (when (boundp 'last-input-event)
+      (set 'last-input-event ev))
+    (when (boundp 'last-nonmenu-event)
+      (set 'last-nonmenu-event ev))
     ev))
 
 (defun emacs-command-loop-read-char (&optional prompt _ihib seconds)
@@ -216,6 +226,12 @@ appended as their `format'-printed representation (= MVP)."
     (setq emacs-command-loop--this-command-keys
           (concat emacs-command-loop--this-command-keys s))
     (setq emacs-command-loop--last-command-event event)
+    ;; Track X follow-up (2026-05-05): mirror to the public unprefixed
+    ;; `last-command-event' so `self-insert-command' (= reads it for the
+    ;; char to insert) and other interactive commands see the value the
+    ;; command-loop just consumed.  Same rationale as `read-event'.
+    (when (boundp 'last-command-event)
+      (set 'last-command-event event))
     s))
 
 (defun emacs-command-loop-this-command-keys ()
