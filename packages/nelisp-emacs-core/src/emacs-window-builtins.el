@@ -26,8 +26,15 @@
 ;; Bridgeable today (= covered by `emacs-window.el'):
 ;;
 ;;   - `selected-window' / `windowp'
-;;   - `window-list'
+;;   - `window-list' / `window-list-1' / `next-window' / `previous-window'
 ;;   - `window-buffer' / `set-window-buffer'
+;;   - `select-window'
+;;   - `split-window' / `split-window-below' / `split-window-right'
+;;     + legacy `split-window-vertically' / `split-window-horizontally'
+;;   - `delete-window' / `delete-other-windows' / `delete-windows-on'
+;;   - `one-window-p' / `balance-windows'
+;;   - `get-buffer-window' / `get-buffer-window-list'
+;;   - `other-window' (polyfilled — `emacs-window.el' has no direct equivalent)
 ;;
 ;; Deferred (= keep `emacs-stub.el' nil-stubs):
 ;;
@@ -54,13 +61,91 @@
 (unless (fboundp 'window-list)
   (defalias 'window-list #'emacs-window-window-list))
 
+(unless (fboundp 'window-list-1)
+  (defalias 'window-list-1 #'emacs-window-window-list-1))
+
+(unless (fboundp 'next-window)
+  (defalias 'next-window #'emacs-window-next-window))
+
+(unless (fboundp 'previous-window)
+  (defalias 'previous-window #'emacs-window-previous-window))
+
 (unless (fboundp 'window-buffer)
   (defalias 'window-buffer #'emacs-window-window-buffer))
+
+(unless (fboundp 'one-window-p)
+  (defalias 'one-window-p #'emacs-window-one-window-p))
+
+(unless (fboundp 'get-buffer-window)
+  (defalias 'get-buffer-window #'emacs-window-get-buffer-window))
+
+(unless (fboundp 'get-buffer-window-list)
+  (defalias 'get-buffer-window-list #'emacs-window-get-buffer-window-list))
 
 ;;;; --- mutation --------------------------------------------------------
 
 (unless (fboundp 'set-window-buffer)
   (defalias 'set-window-buffer #'emacs-window-set-window-buffer))
+
+(unless (fboundp 'select-window)
+  (defalias 'select-window #'emacs-window-select-window))
+
+;;;; --- split / delete (Track V, 2026-05-04) ----------------------------
+
+(unless (fboundp 'split-window)
+  (defalias 'split-window #'emacs-window-split-window))
+
+(unless (fboundp 'split-window-below)
+  (defalias 'split-window-below #'emacs-window-split-window-vertically))
+
+(unless (fboundp 'split-window-right)
+  (defalias 'split-window-right #'emacs-window-split-window-horizontally))
+
+(unless (fboundp 'split-window-vertically)
+  (defalias 'split-window-vertically #'emacs-window-split-window-vertically))
+
+(unless (fboundp 'split-window-horizontally)
+  (defalias 'split-window-horizontally #'emacs-window-split-window-horizontally))
+
+(unless (fboundp 'delete-window)
+  (defalias 'delete-window #'emacs-window-delete-window))
+
+(unless (fboundp 'delete-other-windows)
+  (defalias 'delete-other-windows #'emacs-window-delete-other-windows))
+
+(unless (fboundp 'delete-windows-on)
+  (defalias 'delete-windows-on #'emacs-window-delete-windows-on))
+
+(unless (fboundp 'balance-windows)
+  (defalias 'balance-windows #'emacs-window-balance-windows))
+
+;;;; --- other-window (Track V) -----------------------------------------
+;;
+;; `emacs-window.el' has no direct `emacs-window-other-window'; we
+;; build it from `next-window' + `select-window'.  COUNT is the number
+;; of windows to skip (default 1, can be negative for backwards).
+;; Wraps around at the ends.  ALL-FRAMES is accepted for API parity.
+
+(defun emacs-window-other-window-impl (&optional count all-frames)
+  "Bridge implementation of `other-window'.
+COUNT defaults to 1; negative values walk backwards.  ALL-FRAMES is
+accepted for API parity and ignored (= single-frame Phase 1)."
+  (interactive "p")
+  (let* ((n   (or count 1))
+         (cur (emacs-window-selected-window))
+         (forward-fn (lambda (w) (emacs-window-next-window w nil all-frames)))
+         (back-fn    (lambda (w) (emacs-window-previous-window w nil all-frames)))
+         (step (if (>= n 0) forward-fn back-fn))
+         (steps (abs n))
+         (target cur))
+    (dotimes (_ steps)
+      (setq target (funcall step target)))
+    (when target
+      (emacs-window-select-window target))
+    target))
+
+(unless (fboundp 'other-window)
+  (defalias 'other-window #'emacs-window-other-window-impl))
 
 (provide 'emacs-window-builtins)
 

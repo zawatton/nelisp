@@ -91,6 +91,63 @@
     (should (eq before-windowp         (symbol-function 'windowp)))
     (should (eq before-window-buffer   (symbol-function 'window-buffer)))))
 
+;;;; H. Track V (2026-05-04) — split / select / delete bridges + other-window
+
+(ert-deftest emacs-window-builtins-test/track-v-prefixed-fboundp ()
+  "All prefixed implementations Track V relies on are present."
+  (dolist (sym '(emacs-window-split-window
+                 emacs-window-split-window-vertically
+                 emacs-window-split-window-horizontally
+                 emacs-window-delete-window
+                 emacs-window-delete-other-windows
+                 emacs-window-one-window-p
+                 emacs-window-balance-windows
+                 emacs-window-select-window
+                 emacs-window-next-window
+                 emacs-window-previous-window
+                 emacs-window-other-window-impl))
+    (should (fboundp sym))))
+
+(ert-deftest emacs-window-builtins-test/track-v-other-window-rotates-selection ()
+  "`other-window-impl' rotates the selected window through every leaf."
+  (emacs-window-builtins-test--with-fresh-world
+    ;; Two-pane vertical split → 2 leaves.
+    (emacs-window-split-window-vertically)
+    (let* ((leaves (emacs-window--all-leaves))
+           (n      (length leaves)))
+      (should (= 2 n))
+      (let ((start (emacs-window-selected-window)))
+        ;; one step → different leaf
+        (emacs-window-other-window-impl 1)
+        (should-not (eq start (emacs-window-selected-window)))
+        ;; one more step (wrap) → back to start
+        (emacs-window-other-window-impl 1)
+        (should (eq start (emacs-window-selected-window)))))))
+
+(ert-deftest emacs-window-builtins-test/track-v-other-window-negative-walks-back ()
+  "Negative COUNT walks `previous-window'."
+  (emacs-window-builtins-test--with-fresh-world
+    (emacs-window-split-window-vertically)
+    (emacs-window-split-window-horizontally) ; now 3 leaves
+    (let ((start (emacs-window-selected-window)))
+      (emacs-window-other-window-impl -1)
+      (let ((prev (emacs-window-selected-window)))
+        (should-not (eq start prev))
+        ;; +1 step from prev should land back on start.
+        (emacs-window-other-window-impl 1)
+        (should (eq start (emacs-window-selected-window)))))))
+
+(ert-deftest emacs-window-builtins-test/track-v-split-then-delete-restores-singleton ()
+  "After split + delete-other-windows the tree is a single leaf again."
+  (emacs-window-builtins-test--with-fresh-world
+    (emacs-window-split-window-vertically)
+    (emacs-window-split-window-horizontally)
+    (should (>= (length (emacs-window--all-leaves)) 3))
+    (emacs-window-delete-other-windows)
+    (should (= 1 (length (emacs-window--all-leaves))))
+    (should (eq (emacs-window-selected-window)
+                (car (emacs-window--all-leaves))))))
+
 (provide 'emacs-window-builtins-test)
 
 ;;; emacs-window-builtins-test.el ends here
