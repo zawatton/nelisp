@@ -1210,6 +1210,94 @@ the segment, 0 if at end-of-text."
 ;;; B. redisplay drivers
 
 ;;;###autoload
+;;; Mode-line painting (Doc 51 Track U)
+;;
+;; A defvar-gated bottom-row reservation: when
+;; `emacs-redisplay-paint-mode-line-p' is non-nil the redisplay pass
+;; reserves the bottom row of every leaf window for mode-line text.
+;; Default nil so existing tests keep their full text height; the
+;; nemacs runtime flips it on after `emacs-redisplay-init'.
+
+(defvar emacs-redisplay-paint-mode-line-p nil
+  "When non-nil, reserve the bottom row of each leaf window for mode-line.
+The reserved row is filled by `emacs-redisplay--paint-mode-line-row'
+with text formatted via `emacs-redisplay--format-mode-line', applying
+the `mode-line' face.  When nil (= default) the entire window-height
+is available for buffer text, matching pre-Track-U behaviour.")
+
+(defun emacs-redisplay--mode-line-buffer-name (buffer)
+  "Best-effort buffer-name for BUFFER (= string accepted as-is)."
+  (cond
+   ((null buffer) "")
+   ((stringp buffer) buffer)
+   ((fboundp 'buffer-name)
+    (condition-case _ (or (buffer-name buffer) "") (error "")))
+   ((fboundp 'nelisp-ec-buffer-name)
+    (condition-case _ (or (nelisp-ec-buffer-name buffer) "") (error "")))
+   (t "")))
+
+(defun emacs-redisplay--mode-line-modified-p (buffer)
+  "Return non-nil when BUFFER has unsaved changes."
+  (cond
+   ((or (null buffer) (stringp buffer)) nil)
+   ((fboundp 'buffer-modified-p)
+    (condition-case _ (buffer-modified-p buffer) (error nil)))
+   ((fboundp 'nelisp-ec-buffer-modified-p)
+    (condition-case _ (nelisp-ec-buffer-modified-p buffer) (error nil)))
+   (t nil)))
+
+(defun emacs-redisplay--mode-line-mode-name ()
+  "Best-effort current mode-name string (= falls back to \"Fundamental\")."
+  (cond
+   ((and (boundp 'mode-name) (stringp mode-name)) mode-name)
+   ((fboundp 'emacs-mode-mode-name)
+    (condition-case _ (emacs-mode-mode-name) (error "Fundamental")))
+   (t "Fundamental")))
+
+(defun emacs-redisplay--format-mode-line (window)
+  "Return the unclipped mode-line text for WINDOW.
+
+Phase 1 layout (= no `mode-line-format' interpretation yet):
+  -<MOD>- <buffer>   (<mode>)   pos=<point>
+where MOD = `**' (modified) / `--' (unmodified) / `%%' (read-only,
+deferred).  Width clipping happens in
+`emacs-redisplay--paint-mode-line-row'."
+  (let* ((buf   (emacs-window-buffer window))
+         (name  (emacs-redisplay--mode-line-buffer-name buf))
+         (mod-p (emacs-redisplay--mode-line-modified-p buf))
+         (mode  (emacs-redisplay--mode-line-mode-name))
+         (point (or (and (fboundp 'emacs-window-point)
+                         (emacs-window-point window))
+                    1)))
+    (format "-%s- %s   (%s)   pos=%d "
+            (if mod-p "**" "--") name mode point)))
+
+(defun emacs-redisplay--paint-mode-line-row (row width window)
+  "Fill ROW (= bottom row of WINDOW) with mode-line glyphs.
+Truncates the formatted text to WIDTH; pads with spaces when the
+text is shorter.  Applies the `mode-line' face on every cell so the
+backend emits inverse-video SGR for the whole row."
+  (let* ((text (emacs-redisplay--format-mode-line window))
+         (vec  (emacs-redisplay-glyph-row-glyphs row))
+         (real (emacs-redisplay-realize-face 'mode-line))
+         (n    (length text))
+         (i    0))
+    (while (< i width)
+      (aset vec i
+            (emacs-redisplay--make-glyph
+             :char (if (< i n) (aref text i) ?\s)
+             :face 'mode-line
+             :realized-face real
+             :face-id 0
+             :width 1))
+      (setq i (1+ i)))
+    (setf (emacs-redisplay-glyph-row-used row) (min n width)
+          (emacs-redisplay-glyph-row-start-pos row) nil
+          (emacs-redisplay-glyph-row-end-pos row) nil
+          (emacs-redisplay-glyph-row-hash row)
+          (emacs-redisplay--row-hash vec)))
+  row)
+
 (defun emacs-redisplay-redisplay-window (handle window)
   "Run a redisplay pass on WINDOW under HANDLE.
 Returns the (possibly newly built) glyph-matrix.  Does NOT flush to
@@ -1241,13 +1329,20 @@ backend — call `emacs-redisplay-flush-frame' for the actual emit."
          (pos start)
          (row-idx 0)
          (rows (emacs-redisplay-glyph-matrix-rows matrix))
-         (dirty (emacs-redisplay-glyph-matrix-dirty-set matrix)))
+         (dirty (emacs-redisplay-glyph-matrix-dirty-set matrix))
+         ;; Track U: reserve the bottom row for mode-line when enabled
+         ;; and the window has at least 2 rows (= one for text + one
+         ;; for the mode-line).
+         (mode-line-on (and emacs-redisplay-paint-mode-line-p
+                            (>= height 2)))
+         (text-height (if mode-line-on (1- height) height)))
     ;; Reset every cached row before re-fill (MVP = full per-window
     ;; redraw; diff happens at the backend canvas level via row hash).
     (dotimes (r height)
       (emacs-redisplay--clear-row (aref rows r)))
-    ;; Walk the lines, laying each one into a row.
-    (while (and (< row-idx height) lines)
+    ;; Walk the lines, laying each one into a row.  Bottom row stays
+    ;; untouched here when `mode-line-on'; it is filled below.
+    (while (and (< row-idx text-height) lines)
       (let* ((entry (pop lines))
              (line  (car entry))
              (nl-consumed (cdr entry))
@@ -1259,6 +1354,10 @@ backend — call `emacs-redisplay-flush-frame' for the actual emit."
                                    pos next-pos)
         (setq pos next-pos
               row-idx (1+ row-idx))))
+    ;; Track U: paint mode-line into the reserved bottom row.
+    (when mode-line-on
+      (emacs-redisplay--paint-mode-line-row
+       (aref rows (1- height)) width window))
     ;; Mark every row dirty so backend flush repaints exactly once.
     (dotimes (r height)
       (aset dirty r t))
@@ -1266,10 +1365,11 @@ backend — call `emacs-redisplay-flush-frame' for the actual emit."
     (let* ((point (or (emacs-window-point window) start))
            (cursor (emacs-redisplay--cursor-for-point matrix point)))
       (setf (emacs-redisplay-glyph-matrix-cursor matrix) cursor))
-    (emacs-redisplay--log "redisplay-window handle=%S w=%S %dx%d rows-painted=%d"
+    (emacs-redisplay--log "redisplay-window handle=%S w=%S %dx%d rows-painted=%d mode-line=%s"
                           (emacs-redisplay-handle-id handle)
                           (emacs-redisplay--cache-key window)
-                          width height row-idx)
+                          width height row-idx
+                          (if mode-line-on "on" "off"))
     matrix))
 
 (defun emacs-redisplay--cursor-for-point (matrix point)
@@ -1497,6 +1597,16 @@ nil if no backend is bound."
              (r (+ top (or (and cursor (car cursor)) 0)))
              (c (+ left (or (and cursor (cdr cursor)) 0))))
         (emacs-tui-backend-cursor-show backend frame r c)))))
+
+;;; Standard face registrations (= used by built-in painters)
+;;
+;; `mode-line' is consumed by `emacs-redisplay--paint-mode-line-row'.
+;; We default to inverse-video so the row stands out on any backend
+;; without requiring a colour-spec.  Callers can override via
+;; `emacs-faces-set-attribute' / `defface' (= the user's init may
+;; redefine it during start-up).
+(emacs-redisplay-defface 'mode-line '(:inverse-video t))
+(emacs-redisplay-defface 'mode-line-inactive '(:inverse-video t))
 
 (provide 'emacs-redisplay)
 

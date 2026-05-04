@@ -797,6 +797,106 @@ buffer char at the overlay's start position."
   "Phase 3.B.3 bumps face-realize contract version 1 → 2."
   (should (= 2 emacs-redisplay-face-realize-contract-version)))
 
+;;; I. mode-line painting (Track U)
+
+(ert-deftest emacs-redisplay-test-track-u-mode-line-default-off ()
+  "By default `paint-mode-line-p' is nil and the bottom row stays empty."
+  (let ((emacs-redisplay-paint-mode-line-p nil))
+    (emacs-redisplay-test--with-fresh-world
+      (emacs-redisplay-test--with-buffer b "hi"
+        (let* ((h (emacs-redisplay-init))
+               (w (emacs-window-selected-window))
+               (height (emacs-window-window-height w)))
+          (emacs-window-set-window-buffer w b)
+          (let* ((m (emacs-redisplay-redisplay-window h w))
+                 (last (emacs-redisplay-glyph-row m (1- height))))
+            (should (= 0 (emacs-redisplay-glyph-row-used last)))
+            (should (string= ""
+                             (emacs-redisplay-glyph-row-text last)))))))))
+
+(ert-deftest emacs-redisplay-test-track-u-mode-line-fills-bottom-row ()
+  "When enabled the bottom row carries mode-line text + face."
+  (let ((emacs-redisplay-paint-mode-line-p t))
+    (emacs-redisplay-test--with-fresh-world
+      (emacs-redisplay-test--with-buffer b "hi"
+        (let* ((h (emacs-redisplay-init))
+               (w (emacs-window-selected-window))
+               (height (emacs-window-window-height w))
+               (width  (emacs-window-window-width  w)))
+          (emacs-window-set-window-buffer w b)
+          (let* ((m (emacs-redisplay-redisplay-window h w))
+                 (last (emacs-redisplay-glyph-row m (1- height)))
+                 (vec (emacs-redisplay-glyph-row-glyphs last)))
+            ;; Used count > 0 — actual mode-line text was emitted.
+            (should (> (emacs-redisplay-glyph-row-used last) 0))
+            ;; Every glyph in the row carries the mode-line face.
+            (dotimes (i width)
+              (let ((g (aref vec i)))
+                (should (eq 'mode-line (emacs-redisplay-glyph-face g)))))))))))
+
+(ert-deftest emacs-redisplay-test-track-u-mode-line-text-shape ()
+  "Mode-line text starts with `--' (unmodified) and contains the buffer name."
+  (let ((emacs-redisplay-paint-mode-line-p t))
+    (emacs-redisplay-test--with-fresh-world
+      (emacs-redisplay-test--with-buffer b "ok"
+        (let* ((h (emacs-redisplay-init))
+               (w (emacs-window-selected-window))
+               (height (emacs-window-window-height w)))
+          (emacs-window-set-window-buffer w b)
+          (let* ((m (emacs-redisplay-redisplay-window h w))
+                 (text (emacs-redisplay-glyph-row-text
+                        (emacs-redisplay-glyph-row m (1- height)))))
+            ;; Layout marker.
+            (should (string-match-p "^---- " text))
+            ;; Mode tag in parens.
+            (should (string-match-p "(.+)" text))))))))
+
+(ert-deftest emacs-redisplay-test-track-u-mode-line-buffer-text-not-clobbered ()
+  "When mode-line is on, buffer text occupies rows 0..(height-2) only."
+  (let ((emacs-redisplay-paint-mode-line-p t))
+    (emacs-redisplay-test--with-fresh-world
+      ;; Buffer with one line per window row + one extra so a naive
+      ;; impl would paint into the bottom row.
+      (emacs-redisplay-test--with-buffer b "L1\nL2\nL3\nL4"
+        (let* ((h (emacs-redisplay-init))
+               (w (emacs-window-selected-window))
+               (height (emacs-window-window-height w)))
+          (emacs-window-set-window-buffer w b)
+          (let ((m (emacs-redisplay-redisplay-window h w)))
+            ;; Bottom row must NOT contain "L4" (= it's the mode-line).
+            (should-not
+             (string-match-p
+              "^L4"
+              (emacs-redisplay-glyph-row-text
+               (emacs-redisplay-glyph-row m (1- height)))))
+            ;; Row 0 still has "L1".
+            (should (string=
+                     "L1"
+                     (emacs-redisplay-glyph-row-text
+                      (emacs-redisplay-glyph-row m 0))))))))))
+
+(ert-deftest emacs-redisplay-test-track-u-mode-line-face-registered ()
+  "The `mode-line' face is registered on file load (= reverse video MVP)."
+  (should (memq :inverse-video
+                (or (emacs-redisplay-face-attributes 'mode-line)
+                    nil)))
+  (let ((alist (emacs-redisplay-realize-face 'mode-line)))
+    (should (eq t (cdr (assq :reverse alist))))))
+
+(ert-deftest emacs-redisplay-test-track-u-mode-line-skipped-when-height-1 ()
+  "Single-row windows do not get a mode-line (= no buffer surface left)."
+  (let ((emacs-redisplay-paint-mode-line-p t))
+    (emacs-redisplay-test--with-fresh-world
+      (emacs-redisplay-test--with-buffer b "hi"
+        (let* ((h (emacs-redisplay-init))
+               (w (emacs-window-selected-window)))
+          (setf (emacs-window-total-lines w) 1)
+          (emacs-window-set-window-buffer w b)
+          (let* ((m (emacs-redisplay-redisplay-window h w))
+                 (row (emacs-redisplay-glyph-row m 0)))
+            ;; Row 0 still gets the buffer text — mode-line skipped.
+            (should (string= "hi" (emacs-redisplay-glyph-row-text row)))))))))
+
 (provide 'emacs-redisplay-test)
 
 ;;; emacs-redisplay-test.el ends here
