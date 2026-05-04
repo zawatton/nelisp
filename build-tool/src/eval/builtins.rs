@@ -658,7 +658,56 @@ fn bi_eq(args: &[Sexp]) -> Result<Sexp, EvalError> {
 
 fn bi_equal(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("equal", args, 2, Some(2))?;
-    Ok(if args[0] == args[1] { Sexp::T } else { Sexp::Nil })
+    Ok(if sexp_equal_safe(&args[0], &args[1], 0) {
+        Sexp::T
+    } else {
+        Sexp::Nil
+    })
+}
+
+/// Cycle-safe structural equality.  For heap-backed variants (Cons,
+/// Vector, MutStr, etc.) we first short-circuit via `Rc::ptr_eq': two
+/// references to the same allocation are trivially equal, AND this
+/// breaks the recursion when a cyclic graph reaches the same node
+/// from two paths (e.g. cl-defstruct parent <-> children).  A bounded
+/// recursion depth is a backstop against pathological non-shared
+/// graphs that we have not encountered in practice.
+const SEXP_EQUAL_DEPTH_LIMIT: u32 = 4096;
+
+fn sexp_equal_safe(a: &Sexp, b: &Sexp, depth: u32) -> bool {
+    if depth > SEXP_EQUAL_DEPTH_LIMIT {
+        return sexp_eq(a, b);
+    }
+    match (a, b) {
+        (Sexp::Cons(a1, a2), Sexp::Cons(b1, b2)) => {
+            if std::rc::Rc::ptr_eq(a1, b1) && std::rc::Rc::ptr_eq(a2, b2) {
+                return true;
+            }
+            sexp_equal_safe(&a1.borrow(), &b1.borrow(), depth + 1)
+                && sexp_equal_safe(&a2.borrow(), &b2.borrow(), depth + 1)
+        }
+        (Sexp::Vector(a), Sexp::Vector(b)) => {
+            if std::rc::Rc::ptr_eq(a, b) {
+                return true;
+            }
+            let av = a.borrow();
+            let bv = b.borrow();
+            av.len() == bv.len()
+                && av
+                    .iter()
+                    .zip(bv.iter())
+                    .all(|(x, y)| sexp_equal_safe(x, y, depth + 1))
+        }
+        (Sexp::MutStr(a), Sexp::MutStr(b)) => {
+            std::rc::Rc::ptr_eq(a, b) || *a.borrow() == *b.borrow()
+        }
+        (Sexp::HashTable(a), Sexp::HashTable(b)) => std::rc::Rc::ptr_eq(a, b) || a == b,
+        (Sexp::CharTable(a), Sexp::CharTable(b)) => std::rc::Rc::ptr_eq(a, b) || a == b,
+        (Sexp::BoolVector(a), Sexp::BoolVector(b)) => std::rc::Rc::ptr_eq(a, b) || a == b,
+        // For the trivial leaf variants the derived PartialEq has no
+        // cycles to chase; fall through to the existing impl.
+        _ => a == b,
+    }
 }
 
 // ---------- cons / list ----------
