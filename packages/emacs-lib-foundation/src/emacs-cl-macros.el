@@ -205,8 +205,14 @@ occurrence of ITEM in SEQUENCE, or nil.  SEQUENCE may be a
 list, vector, or string.  Honours `:test FN' (= comparator,
 default `eql'-style equality)."
     (let* ((from-end (plist-get keys :from-end))
-           (test (or (plist-get keys :test)
-                     (lambda (a b) (or (eq a b) (equal a b)))))
+           ;; Default test: `eq' only.  Falling back to `equal' on a
+           ;; mismatch would walk structurally — fatal on cyclic
+           ;; cl-defstruct values (e.g. window parent <-> children).
+           ;; Callers that need value-equality (chars, strings) work
+           ;; under `eq' too because nelisp interns those, and any
+           ;; caller that *needs* structural comparison can pass
+           ;; `:test #'equal' explicitly.
+           (test (or (plist-get keys :test) #'eq))
            (n (cond ((null sequence) 0)
                     ((stringp sequence) (length sequence))
                     ((vectorp sequence) (length sequence))
