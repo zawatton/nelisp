@@ -93,6 +93,10 @@ fallback path runs nemacs read-eval batch-style)."
             (setq nemacs-main--event-handle (emacs-tui-event-init)))
           (when (fboundp 'emacs-redisplay-set-current-handle)
             (emacs-redisplay-set-current-handle h))
+          ;; Doc 51 Track U (2026-05-04) — turn on bottom-row mode-line
+          ;; reservation so every leaf window paints a status row.
+          (when (boundp 'emacs-redisplay-paint-mode-line-p)
+            (setq emacs-redisplay-paint-mode-line-p t))
           ;; Bind scratch into the selected window so the first
           ;; redisplay pass has something to paint.
           (let ((w (and (fboundp 'emacs-window-selected-window)
@@ -233,6 +237,17 @@ keys."
           (define-key m (vector 'backspace) 'delete-backward-char)
           ;; Bare byte 127 in case the symbol mapping is bypassed.
           (define-key m (vector 127) 'delete-backward-char))
+        ;; Doc 51 Track U (2026-05-04) — arrow keys.  These come from
+        ;; `emacs-tui-event--csi-final-table' as the bare symbols
+        ;; `up' / `down' / `right' / `left' on raw stdin ESC seqs.
+        (when (fboundp 'previous-line)
+          (define-key m (vector 'up) 'previous-line))
+        (when (fboundp 'next-line)
+          (define-key m (vector 'down) 'next-line))
+        (when (fboundp 'forward-char)
+          (define-key m (vector 'right) 'forward-char))
+        (when (fboundp 'backward-char)
+          (define-key m (vector 'left) 'backward-char))
         ;; Doc 51 Track C — file open / save.
         (define-key m (kbd "C-x C-f") 'nemacs-main-find-file-interactive)
         (define-key m (kbd "C-x C-s") 'nemacs-main-save-buffer-interactive))

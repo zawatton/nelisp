@@ -498,6 +498,17 @@ substrate commands after init-keymap."
   (should (eq 'delete-backward-char  (lookup-key nemacs-main--global-keymap (vector 'backspace))))
   (should (eq 'delete-backward-char  (lookup-key nemacs-main--global-keymap (vector 127)))))
 
+(ert-deftest nemacs-main-test/track-u-arrow-key-bindings ()
+  "Arrow-key symbols (= what `emacs-tui-event' decodes ESC[A..D into)
+must dispatch to the canonical motion commands after init-keymap."
+  (skip-unless (fboundp 'forward-char))
+  (setq nemacs-main--global-keymap nil)
+  (nemacs-main--init-keymap)
+  (should (eq 'previous-line  (lookup-key nemacs-main--global-keymap (vector 'up))))
+  (should (eq 'next-line      (lookup-key nemacs-main--global-keymap (vector 'down))))
+  (should (eq 'forward-char   (lookup-key nemacs-main--global-keymap (vector 'right))))
+  (should (eq 'backward-char  (lookup-key nemacs-main--global-keymap (vector 'left)))))
+
 (ert-deftest nemacs-main-test/track-b-key-event-name-int ()
   "When :name is the integer key code (= the real-event shape from
 emacs-tui-event), `--key-event->key' must accept it the same as
