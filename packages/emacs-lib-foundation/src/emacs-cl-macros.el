@@ -522,8 +522,43 @@ defaults to `make-NAME')."
 
 (unless (fboundp 'cl-flet)
   (defmacro cl-flet (bindings &rest body)
-    "Stub: cl-flet → cl-letf with function-cell binding (= simplified)."
-    (cons 'let (cons bindings body))))
+    "Doc 51 (2026-05-04) MVP `cl-flet'.
+
+Each BINDINGS entry is `(NAME ARGS . BODY-FORMS)' — install
+each NAME globally as a function while BODY runs, restore the
+previous binding (or unbind) on exit via `unwind-protect'.
+Less hygienic than upstream's code-walker (= the names are
+visible globally during BODY), but matches every Layer 2
+caller we have audited (e.g. `cl-flet' in `emacs-redisplay'
+defining `emit-before-strings' / `emit-after-strings')."
+    (let* ((names (mapcar #'car bindings))
+           (saves nil)
+           (installs nil)
+           (restores nil))
+      (dolist (b bindings)
+        (let* ((name (car b))
+               (args (cadr b))
+               (body-forms (cddr b))
+               (sym-saved (intern (concat "--cl-flet-saved-"
+                                          (symbol-name name)))))
+          (push (list sym-saved
+                      (list 'and (list 'fboundp (list 'quote name))
+                            (list 'symbol-function (list 'quote name))))
+                saves)
+          (push (list 'defalias (list 'quote name)
+                      (cons 'lambda (cons args body-forms)))
+                installs)
+          (push (list 'if sym-saved
+                      (list 'defalias (list 'quote name) sym-saved)
+                      (list 'fmakunbound (list 'quote name)))
+                restores)))
+      (ignore names)
+      (list 'let (nreverse saves)
+            (cons 'unwind-protect
+                  (cons (cons 'progn
+                              (append (nreverse installs)
+                                      body))
+                        (nreverse restores)))))))
 
 (unless (fboundp 'cl-labels)
   (defalias 'cl-labels 'cl-flet))
