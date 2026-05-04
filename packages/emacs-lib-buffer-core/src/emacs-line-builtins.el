@@ -133,13 +133,15 @@ N = 1 (default) = current line.  Does not move point."
 (unless (fboundp 'beginning-of-line)
   (defun beginning-of-line (&optional n)
     "Phase J polyfill: move point to start of (current + N - 1)-th line.
-Returns the new point."
+Returns the new point.  Bound to C-a."
+    (interactive "p")
     (nelisp-ec-goto-char (line-beginning-position n))))
 
 (unless (fboundp 'end-of-line)
   (defun end-of-line (&optional n)
     "Phase J polyfill: move point to end of (current + N - 1)-th line.
-Returns the new point."
+Returns the new point.  Bound to C-e."
+    (interactive "p")
     (nelisp-ec-goto-char (line-end-position n))))
 
 ;;;; --- forward-line ----------------------------------------------------
@@ -215,7 +217,8 @@ no narrowing-aware absolute-vs-relative distinction."
     "Doc 51 Track B (2026-05-04) MVP `next-line'.
 Move point N lines down, preserving the current column where
 possible (= clamps to end-of-line on shorter targets).  N
-defaults to 1; negative N moves up."
+defaults to 1; negative N moves up.  Bound to C-n / <down>."
+    (interactive "p")
     (let* ((n (or n 1))
            (col (- (nelisp-ec-point) (emacs-line--bol-pos))))
       (forward-line n)
@@ -227,7 +230,8 @@ defaults to 1; negative N moves up."
 (unless (fboundp 'previous-line)
   (defun previous-line (&optional n _try-vscroll)
     "Doc 51 Track B (2026-05-04) MVP `previous-line'.
-Forwarder to `next-line' with negated count."
+Forwarder to `next-line' with negated count.  Bound to C-p / <up>."
+    (interactive "p")
     (next-line (- (or n 1)))))
 
 (provide 'emacs-line-builtins)

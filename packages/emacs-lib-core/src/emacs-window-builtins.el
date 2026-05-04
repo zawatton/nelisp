@@ -96,10 +96,18 @@
   (defalias 'split-window #'emacs-window-split-window))
 
 (unless (fboundp 'split-window-below)
-  (defalias 'split-window-below #'emacs-window-split-window-vertically))
+  (defun split-window-below (&optional size)
+    "Phase 11 polyfill: split selected window into two stacked windows.
+Bound to C-x 2 in `nemacs-main-keymap'."
+    (interactive "P")
+    (emacs-window-split-window-vertically size)))
 
 (unless (fboundp 'split-window-right)
-  (defalias 'split-window-right #'emacs-window-split-window-horizontally))
+  (defun split-window-right (&optional size)
+    "Phase 11 polyfill: split selected window into two side-by-side windows.
+Bound to C-x 3 in `nemacs-main-keymap'."
+    (interactive "P")
+    (emacs-window-split-window-horizontally size)))
 
 (unless (fboundp 'split-window-vertically)
   (defalias 'split-window-vertically #'emacs-window-split-window-vertically))
@@ -108,10 +116,18 @@
   (defalias 'split-window-horizontally #'emacs-window-split-window-horizontally))
 
 (unless (fboundp 'delete-window)
-  (defalias 'delete-window #'emacs-window-delete-window))
+  (defun delete-window (&optional window)
+    "Phase 11 polyfill: delete WINDOW (default = selected).
+Bound to C-x 0 in `nemacs-main-keymap'."
+    (interactive)
+    (emacs-window-delete-window window)))
 
 (unless (fboundp 'delete-other-windows)
-  (defalias 'delete-other-windows #'emacs-window-delete-other-windows))
+  (defun delete-other-windows (&optional window)
+    "Phase 11 polyfill: delete every window except WINDOW (default = selected).
+Bound to C-x 1 in `nemacs-main-keymap'."
+    (interactive)
+    (emacs-window-delete-other-windows window)))
 
 (unless (fboundp 'delete-windows-on)
   (defalias 'delete-windows-on #'emacs-window-delete-windows-on))
