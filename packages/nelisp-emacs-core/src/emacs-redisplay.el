@@ -435,9 +435,7 @@ bounds the `:inherit' chain (cap 16); SEEN guards cycles."
          ((null own) nil)
          (t
           (let ((inherit (plist-get own :inherit))
-                (base (cl-loop for (k v) on own by #'cddr
-                               unless (eq k :inherit)
-                               nconc (list k v))))
+                (base (emacs-redisplay--plist-without-key own :inherit)))
             (if (null inherit)
                 base
               (emacs-redisplay--face-merge-plists
@@ -448,9 +446,7 @@ bounds the `:inherit' chain (cap 16); SEEN guards cycles."
    ((and (listp spec) (keywordp (car spec)))
     ;; Raw plist with possible :inherit
     (let ((inherit (plist-get spec :inherit))
-          (base (cl-loop for (k v) on spec by #'cddr
-                         unless (eq k :inherit)
-                         nconc (list k v))))
+          (base (emacs-redisplay--plist-without-key spec :inherit)))
       (if (null inherit)
           base
         (emacs-redisplay--face-merge-plists
@@ -468,12 +464,35 @@ bounds the `:inherit' chain (cap 16); SEEN guards cycles."
       acc))
    (t nil)))
 
+(defun emacs-redisplay--plist-without-key (plist drop-key)
+  "Return a fresh plist that copies PLIST minus pairs whose key is DROP-KEY.
+Keys are compared with `eq'.  Walks plist by 2 (= cdr ; cdr) so it
+does not depend on cl-loop destructuring (= the polyfill in
+`emacs-cl-macros.el' does not support `for (k v) on LIST by #'cddr')."
+  (let ((acc nil)
+        (cur plist))
+    (while cur
+      (let ((k (car cur))
+            (v (car (cdr cur))))
+        (unless (eq k drop-key)
+          (setq acc (cons v (cons k acc))))
+        (setq cur (cdr (cdr cur)))))
+    (nreverse acc)))
+
 (defun emacs-redisplay--face-merge-plists (left right)
   "Return LEFT overlaid on RIGHT (LEFT wins on key conflict)."
-  (let ((result (copy-sequence left)))
-    (cl-loop for (k v) on right by #'cddr
-             unless (plist-member result k)
-             do (setq result (nconc result (list k v))))
+  (let ((result (copy-sequence left))
+        (cur right))
+    ;; Plain plist walk — see `emacs-redisplay--plist-without-key' for
+    ;; why we avoid cl-loop here.  Uses `append' (= produces a fresh
+    ;; cons chain) instead of `nconc' so the code is portable to
+    ;; nelisp, where `nconc' is not yet a primitive.
+    (while cur
+      (let ((k (car cur))
+            (v (car (cdr cur))))
+        (unless (plist-member result k)
+          (setq result (append result (list k v))))
+        (setq cur (cdr (cdr cur)))))
     result))
 
 (defun emacs-redisplay--face-plist->alist (plist)
@@ -491,32 +510,41 @@ Recognized keys:
 
 Unknown / `unspecified' values are skipped.  Returns nil when no
 attribute survives normalization."
-  (let ((out nil))
-    (cl-loop for (k v) on plist by #'cddr do
-             (pcase k
-               (:foreground
-                (let ((sym (emacs-redisplay--face-color->symbol v)))
-                  (when sym (push (cons :foreground sym) out))))
-               (:background
-                (let ((sym (emacs-redisplay--face-color->symbol v)))
-                  (when sym (push (cons :background sym) out))))
-               (:weight
-                (when (emacs-redisplay--face-weight->bold v)
-                  (push (cons :bold t) out)))
-               (:bold
-                (when v (push (cons :bold t) out)))
-               (:slant
-                (when (memq v '(italic oblique))
-                  (push (cons :italic t) out)))
-               (:italic
-                (when v (push (cons :italic t) out)))
-               (:underline
-                (when v (push (cons :underline t) out)))
-               (:inverse-video
-                (when v (push (cons :reverse t) out)))
-               (:reverse
-                (when v (push (cons :reverse t) out)))
-               (_ nil)))
+  (let ((out nil)
+        (cur plist))
+    ;; Plain plist walk — see `emacs-redisplay--plist-without-key' for
+    ;; why we avoid `cl-loop' here.  Uses an explicit `cond' instead
+    ;; of `pcase' because the polyfill in `emacs-pcase.el' (= what
+    ;; ships with the nelisp driver) does not always honour keyword
+    ;; literal patterns at expansion time; an honest `cond' is
+    ;; portable to both drivers.
+    (while cur
+      (let ((k (car cur))
+            (v (car (cdr cur))))
+        (cond
+         ((eq k :foreground)
+          (let ((sym (emacs-redisplay--face-color->symbol v)))
+            (when sym (push (cons :foreground sym) out))))
+         ((eq k :background)
+          (let ((sym (emacs-redisplay--face-color->symbol v)))
+            (when sym (push (cons :background sym) out))))
+         ((eq k :weight)
+          (when (emacs-redisplay--face-weight->bold v)
+            (push (cons :bold t) out)))
+         ((eq k :bold)
+          (when v (push (cons :bold t) out)))
+         ((eq k :slant)
+          (when (memq v '(italic oblique))
+            (push (cons :italic t) out)))
+         ((eq k :italic)
+          (when v (push (cons :italic t) out)))
+         ((eq k :underline)
+          (when v (push (cons :underline t) out)))
+         ((eq k :inverse-video)
+          (when v (push (cons :reverse t) out)))
+         ((eq k :reverse)
+          (when v (push (cons :reverse t) out))))
+        (setq cur (cdr (cdr cur)))))
     ;; Apply defaults if no fg / bg survived.
     (when (and emacs-redisplay-face-realize-default-foreground
                (not (assq :foreground out)))

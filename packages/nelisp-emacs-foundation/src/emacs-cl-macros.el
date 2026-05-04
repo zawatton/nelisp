@@ -355,9 +355,17 @@ Unrecognised shapes return nil (= caller gets a no-op expansion)."
           (cond
            ((eq kw 'for)
             (setq var (car (cdr cur)))
-            (when (eq (car (cdr (cdr cur))) 'in)
+            (cond
+             ((eq (car (cdr (cdr cur))) 'in)
               (setq list-form (car (cdr (cdr (cdr cur)))))
-              (setq cur (cdr (cdr (cdr (cdr cur)))))))
+              (setq cur (cdr (cdr (cdr (cdr cur))))))
+             (t
+              ;; Unsupported `for' form (= `on LIST', `from N', etc.).
+              ;; Mark unrecognised so the outer while bails — without
+              ;; this guard `cur' never advances and we hang.  Callers
+              ;; needing the unsupported shapes must pre-rewrite into
+              ;; a plain `while' / `dolist' loop.
+              (setq recognised nil))))
            ((eq kw 'do)
             (setq do-forms (cons (car (cdr cur)) do-forms))
             (setq cur (cdr (cdr cur))))
