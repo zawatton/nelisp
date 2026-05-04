@@ -105,12 +105,18 @@ pattern)."
 ;; caller having to remember to invoke setup explicitly.  Both
 ;; the prefixed `emacs-mode-emacs-lisp-mode-hook' and the
 ;; unprefixed `emacs-lisp-mode-hook' are populated for parity.
-(when (boundp 'emacs-mode-emacs-lisp-mode-hook)
-  (add-hook 'emacs-mode-emacs-lisp-mode-hook
-            #'emacs-elisp-mode-setup-font-lock))
-(when (boundp 'emacs-lisp-mode-hook)
-  (add-hook 'emacs-lisp-mode-hook
-            #'emacs-elisp-mode-setup-font-lock))
+;;
+;; Guard by `(fboundp 'add-hook)` because under the nelisp driver
+;; the substrate's polyfill chain may not have loaded `add-hook'
+;; yet at this load-time call site (= host emacs has it built-in;
+;; nelisp does not until `emacs-stub' is required).
+(when (fboundp 'add-hook)
+  (when (boundp 'emacs-mode-emacs-lisp-mode-hook)
+    (add-hook 'emacs-mode-emacs-lisp-mode-hook
+              #'emacs-elisp-mode-setup-font-lock))
+  (when (boundp 'emacs-lisp-mode-hook)
+    (add-hook 'emacs-lisp-mode-hook
+              #'emacs-elisp-mode-setup-font-lock)))
 
 (provide 'emacs-elisp-mode)
 
