@@ -406,6 +406,11 @@ pre-set it to t (= early-out before the first poll)."
 (defun nemacs-batch-main ()
   "--batch entry: bootstrap, run -l / --eval, exit.
 Returns the exit-code symbol (= `ok' on success)."
+  ;; Doc 51 Track M (2026-05-04) — install SIGINT → quit-flag handler
+  ;; so a long batch eval can be interrupted with Ctrl+C without
+  ;; killing the process abruptly.  Idempotent + no-op on non-Unix.
+  (when (fboundp 'install-sigint-handler)
+    (install-sigint-handler))
   (unless nemacs-initialized
     (nemacs-init t))
   (nemacs-main--apply-options)
@@ -427,6 +432,13 @@ so `C-x C-c' / `C-c C-q' route to `nemacs-kill', and then defers
 the read loop to host Emacs's command loop (= no nested loop).
 Under nelisp driver the substrate's own `nemacs-main--event-loop'
 takes over and dispatches TUI events directly."
+  ;; Doc 51 Track M (2026-05-04) — install SIGINT → quit-flag handler
+  ;; before we enter any long-running eval (= batch or interactive).
+  ;; This is what makes Ctrl+C interrupt the evaluator instead of
+  ;; killing the process.  The builtin is a no-op on non-Unix and
+  ;; idempotent, so guarding by `fboundp' is the only condition.
+  (when (fboundp 'install-sigint-handler)
+    (install-sigint-handler))
   (cond
    ((nemacs-main-option :batch)
     (nemacs-batch-main))

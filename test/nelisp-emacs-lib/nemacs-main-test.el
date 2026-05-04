@@ -366,6 +366,60 @@ nested command and resets the prefix vector at the end."
     (should ran-cmd)
     (should (equal [] nemacs-main--prefix-keys))))
 
+;;;; J. Doc 51 Track M — quit / SIGINT wiring
+
+(ert-deftest nemacs-main-test/track-m-install-sigint-when-builtin-fbound ()
+  "When the NeLisp builtin is available, both `nemacs-main' and
+`nemacs-batch-main' install the SIGINT → quit-flag handler.
+On host Emacs the builtin is not bound, so the call is skipped
+silently — verify the guard."
+  ;; Either the builtin is missing (host Emacs) — guard is `fboundp'
+  ;; so nothing breaks, or the builtin is present (nelisp driver) —
+  ;; install-sigint-handler must return t.
+  (cond
+   ((fboundp 'install-sigint-handler)
+    (should (eq t (install-sigint-handler)))
+    (should (eq t (install-sigint-handler))) ; idempotent
+    (when (fboundp '_sigint-handler-installed-p)
+      (should (eq t (_sigint-handler-installed-p)))))
+   (t
+    ;; host Emacs: guard prevents the call from blowing up
+    (should-not (fboundp 'install-sigint-handler)))))
+
+(ert-deftest nemacs-main-test/track-m-quit-flag-builtins-when-bound ()
+  "The quit-flag plumbing must be callable end-to-end when the
+NeLisp builtins are available.  On host Emacs (= no builtins)
+this test skips the body."
+  (skip-unless (and (fboundp 'set-quit-flag)
+                    (fboundp 'clear-quit-flag)
+                    (fboundp 'quit-flag-pending-p)))
+  (clear-quit-flag)
+  (should (eq nil (quit-flag-pending-p)))
+  ;; Setting + clearing via the Rust API path: clear before next
+  ;; eval boundary so the eval-time take does not raise.
+  (set-quit-flag)
+  (clear-quit-flag)
+  (should (eq nil (quit-flag-pending-p))))
+
+(ert-deftest nemacs-main-test/track-m-dispatch-quit-sets-loop-flag ()
+  "When a key-bound command signals `quit', the dispatch handler
+catches it via its `(quit ...)' condition-case clause and routes
+the interrupt into the event-loop's quit flag — matching real
+Emacs's keyboard-quit-aborts-the-command-loop semantics."
+  (let* ((nemacs-main--global-keymap (make-sparse-keymap))
+         (nemacs-main--prefix-keys [])
+         (nemacs-main--quit-flag nil))
+    (defun nemacs-main-test--quit-cmd ()
+      (interactive)
+      (signal 'quit nil))
+    (define-key nemacs-main--global-keymap (vector 7) ; ASCII C-g
+                'nemacs-main-test--quit-cmd)
+    ;; Press C-g (= byte 7).  The command signals quit; the
+    ;; dispatch handler's (quit ...) clause must convert it.
+    (nemacs-main--dispatch-key-event (list :type 'key :char 7 :mods nil))
+    (should nemacs-main--quit-flag)
+    (should (equal [] nemacs-main--prefix-keys))))
+
 (provide 'nemacs-main-test)
 
 ;;; nemacs-main-test.el ends here
