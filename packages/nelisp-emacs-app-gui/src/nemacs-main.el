@@ -323,18 +323,24 @@ in `nemacs-main--global-keymap', and:
 If the resize-pending flag is set, query the controlling tty's
 current size, propagate to the frame, and force a redraw.  Safe
 to call when the builtins are not bound (= host driver) — returns
-nil silently."
+nil silently.
+
+`nemacs-main--frame' is an `emacs-tui-backend-frame', so we route
+through `emacs-tui-backend-frame-resize' (= the TUI-side resize)
+not `emacs-frame-set-frame-size' (= the higher-level frame
+abstraction's resize, which expects an `emacs-frame')."
   (when (and (fboundp 'terminal-take-winsize-changed)
              (terminal-take-winsize-changed))
     (when (fboundp 'terminal-current-winsize)
       (let ((sz (terminal-current-winsize)))
         (when (and sz (consp sz)
                    (integerp (car sz)) (integerp (cdr sz))
-                   (fboundp 'emacs-frame-set-frame-size)
-                   nemacs-main--frame)
+                   nemacs-main--frame nemacs-main--backend
+                   (fboundp 'emacs-tui-backend-frame-resize))
           (condition-case err
-              (emacs-frame-set-frame-size nemacs-main--frame
-                                          (car sz) (cdr sz))
+              (emacs-tui-backend-frame-resize nemacs-main--backend
+                                              nemacs-main--frame
+                                              (car sz) (cdr sz))
             (error
              (when (fboundp 'message)
                (message "nemacs: SIGWINCH resize failed: %S" err)))))))))
@@ -350,14 +356,15 @@ re-enter raw mode + force a full redraw.  Safe under host driver."
     ;; Treat resume as an implicit resize too — terminal geometry
     ;; could have changed while we were suspended.
     (when (and (fboundp 'terminal-current-winsize)
-               (fboundp 'emacs-frame-set-frame-size)
-               nemacs-main--frame)
+               (fboundp 'emacs-tui-backend-frame-resize)
+               nemacs-main--frame nemacs-main--backend)
       (let ((sz (terminal-current-winsize)))
         (when (and sz (consp sz)
                    (integerp (car sz)) (integerp (cdr sz)))
           (condition-case _
-              (emacs-frame-set-frame-size nemacs-main--frame
-                                          (car sz) (cdr sz))
+              (emacs-tui-backend-frame-resize nemacs-main--backend
+                                              nemacs-main--frame
+                                              (car sz) (cdr sz))
             (error nil)))))))
 
 (defun nemacs-main--drain-once (timeout-ms)
