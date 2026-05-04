@@ -48,6 +48,15 @@ to let-bind in the case body when matched."
     (cond
      ;; `_' wildcard.
      ((eq pattern '_) (cons t nil))
+     ;; Self-evaluating keyword (= `:foo'): match by `eq'.  Without
+     ;; this guard the bare-symbol clause below would bind the
+     ;; keyword as a variable, making every keyword `pcase' branch
+     ;; match the first case unconditionally.
+     ((keywordp pattern)
+      (cons (list 'eq value-form pattern) nil))
+     ;; `nil' / `t' literals — treat as eq-test, not as bind pattern.
+     ((or (null pattern) (eq pattern t))
+      (cons (list 'eq value-form (list 'quote pattern)) nil))
      ;; Bare symbol: bind to value, always match.
      ((symbolp pattern)
       (cons t (list (list pattern value-form))))
