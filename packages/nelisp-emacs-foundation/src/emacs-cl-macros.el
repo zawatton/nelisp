@@ -198,23 +198,52 @@ Ignores MORE (= multi-list version)."
       ok)))
 
 (unless (fboundp 'cl-position)
-  (defun cl-position (item sequence &rest _keys)
-    "Stub: return index of ITEM in SEQUENCE (= eql), or nil."
-    (let ((cur sequence) (idx 0) (found nil))
-      (while (and cur (not found))
-        (when (or (eq (car cur) item) (equal (car cur) item))
-          (setq found idx))
-        (setq cur (cdr cur)) (setq idx (+ idx 1)))
-      found)))
+  (defun cl-position (item sequence &rest keys)
+    "Doc 51 (2026-05-04) MVP `cl-position'.
+Return integer index of first (or last with `:from-end t')
+occurrence of ITEM in SEQUENCE, or nil.  SEQUENCE may be a
+list, vector, or string.  Honours `:test FN' (= comparator,
+default `eql'-style equality)."
+    (let* ((from-end (plist-get keys :from-end))
+           (test (or (plist-get keys :test)
+                     (lambda (a b) (or (eq a b) (equal a b)))))
+           (n (cond ((null sequence) 0)
+                    ((stringp sequence) (length sequence))
+                    ((vectorp sequence) (length sequence))
+                    (t (length sequence))))
+           (get-elt (cond ((null sequence) (lambda (_i) nil))
+                          ((stringp sequence)
+                           (lambda (i) (aref sequence i)))
+                          ((vectorp sequence)
+                           (lambda (i) (aref sequence i)))
+                          (t (lambda (i) (nth i sequence))))))
+      (cond
+       (from-end
+        (let ((i (1- n)) (found nil))
+          (while (and (>= i 0) (not found))
+            (when (funcall test item (funcall get-elt i))
+              (setq found i))
+            (setq i (1- i)))
+          found))
+       (t
+        (let ((i 0) (found nil))
+          (while (and (< i n) (not found))
+            (when (funcall test item (funcall get-elt i))
+              (setq found i))
+            (setq i (1+ i)))
+          found))))))
 
 (unless (fboundp 'cl-find)
-  (defun cl-find (item sequence &rest _keys)
-    (let ((cur sequence) (found nil))
-      (while (and cur (not found))
-        (when (or (eq (car cur) item) (equal (car cur) item))
-          (setq found (car cur)))
-        (setq cur (cdr cur)))
-      found)))
+  (defun cl-find (item sequence &rest keys)
+    "Doc 51 MVP `cl-find'.
+Return the first element of SEQUENCE matching ITEM (= via
+`:test' or `eql'), or nil.  Accepts list, vector, or string."
+    (let ((idx (apply #'cl-position item sequence keys)))
+      (cond
+       ((null idx) nil)
+       ((stringp sequence) (aref sequence idx))
+       ((vectorp sequence) (aref sequence idx))
+       (t (nth idx sequence))))))
 
 ;;;; --- cl-remove-if(-not) / cl-delete-if(-not) -----------------------
 
