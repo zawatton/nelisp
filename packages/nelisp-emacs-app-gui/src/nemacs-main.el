@@ -58,6 +58,13 @@ this file.  Recognised keys:
   "The current TUI frame object.")
 (defvar nemacs-main--redisplay nil
   "The current emacs-redisplay handle.")
+(defvar nemacs-main--event-handle nil
+  "Doc 51 (2026-05-04) — the `emacs-tui-event' source handle.
+Separate from `nemacs-main--backend' (= the canvas backend);
+this one owns the stdin-byte-stream → key-event parser.  The
+event loop drains it via `emacs-tui-event-poll', which in turn
+pumps `emacs-tui-event-input-fn' (= our
+`nemacs-main--stdin-byte-fn').")
 
 (defun nemacs-main--realise-tui ()
   "Bring up the TUI backend + redisplay engine for interactive use.
@@ -76,6 +83,14 @@ fallback path runs nemacs read-eval batch-style)."
           (setq nemacs-main--backend bk
                 nemacs-main--frame fr
                 nemacs-main--redisplay h)
+          ;; Doc 51 (2026-05-04) — bring up the parallel
+          ;; emacs-tui-event handle.  Its job: drain
+          ;; `emacs-tui-event-input-fn' (= our stdin reader) and
+          ;; turn raw bytes into key events.  Without this the
+          ;; backend's event-poll only sees in-process injections
+          ;; (= no actual keyboard input under the nelisp driver).
+          (when (fboundp 'emacs-tui-event-init)
+            (setq nemacs-main--event-handle (emacs-tui-event-init)))
           (when (fboundp 'emacs-redisplay-set-current-handle)
             (emacs-redisplay-set-current-handle h))
           ;; Bind scratch into the selected window so the first
@@ -93,6 +108,11 @@ fallback path runs nemacs read-eval batch-style)."
 
 (defun nemacs-main--shutdown-tui ()
   "Tear down the TUI subsystem realised by `nemacs-main--realise-tui'."
+  (when (and nemacs-main--event-handle
+             (fboundp 'emacs-tui-event-shutdown))
+    (condition-case _
+        (emacs-tui-event-shutdown nemacs-main--event-handle)
+      (error nil)))
   (when (and nemacs-main--backend
              (fboundp 'emacs-tui-backend-shutdown))
     (condition-case _
@@ -100,7 +120,8 @@ fallback path runs nemacs read-eval batch-style)."
       (error nil)))
   (setq nemacs-main--backend nil
         nemacs-main--frame nil
-        nemacs-main--redisplay nil)
+        nemacs-main--redisplay nil
+        nemacs-main--event-handle nil)
   (when (fboundp 'emacs-redisplay-set-current-handle)
     (emacs-redisplay-set-current-handle nil))
   nil)
@@ -370,10 +391,14 @@ in `nemacs-main--global-keymap', and:
       (setq nemacs-main--prefix-keys [])
       ;; Doc 51 Track A — `self-insert-command' looks at
       ;; `last-command-event' to know which char to insert.
-      ;; Set it from the key event we just dispatched on.
-      (let ((char (and (consp ev) (plist-get ev :char))))
-        (when (and char (boundp 'last-command-event))
-          (setq last-command-event char)))
+      ;; Set it from the key event we just dispatched on.  Real
+      ;; tui-event puts the char in :name as an integer; the test
+      ;; fixtures use :char.  Accept both shapes.
+      (let* ((c (or (and (consp ev) (plist-get ev :char))
+                    (let ((n (and (consp ev) (plist-get ev :name))))
+                      (and (integerp n) n)))))
+        (when (and c (boundp 'last-command-event))
+          (setq last-command-event c)))
       (condition-case _
           (command-execute binding)
         (quit (nemacs-main--quit))))
@@ -526,38 +551,52 @@ If the buffer has no associated file, prompt for one via
 
 (defun nemacs-main--drain-once (timeout-ms)
   "Pull one event and dispatch it.  Returns t when an event ran, nil
-on idle.  Honours TIMEOUT-MS (= caller's poll budget)."
-  (when (and nemacs-main--backend
-             (fboundp 'emacs-tui-backend-event-poll))
-    (let ((ev (emacs-tui-backend-event-poll nemacs-main--backend
-                                            timeout-ms)))
-      (cond
-       ((null ev) nil)
-       ;; tui-event key plist (= raw stdin byte translated to a key).
-       ;; Route through the keymap dispatcher.
-       ((and (consp ev) (eq (plist-get ev :type) 'key))
-        (nemacs-main--dispatch-key-event ev)
-        t)
-       ;; Convention: event vector / list whose head matches a
-       ;; bound-symbol command runs through `command-execute'.
-       ((and (or (vectorp ev) (consp ev))
-             (fboundp 'command-execute))
-        (condition-case _
-            (cond
-             ((vectorp ev)
-              (let ((cmd (aref ev 0)))
-                (when (and (symbolp cmd) (commandp cmd))
-                  (command-execute cmd))))
-             ((symbolp (car ev))
-              (let ((cmd (car ev)))
-                (when (commandp cmd) (command-execute cmd)))))
-          (quit (nemacs-main--quit)))
-        t)
-       (t
-        ;; Unknown event shape: log + continue.
-        (when (fboundp 'message)
-          (message "nemacs: ignoring event %S" ev))
-        t)))))
+on idle.  Honours TIMEOUT-MS (= caller's poll budget).
+
+Doc 51 (2026-05-04): polls the `emacs-tui-event' handle FIRST
+(= drains stdin → key events) and falls back to the backend's
+in-process queue for any test-injected events.  Without this,
+stdin under the nelisp driver was never consumed — bytes piled
+up in the kernel buffer until program exit."
+  (let ((ev nil))
+    ;; 1) stdin → key events via the tui-event handle.
+    (when (and nemacs-main--event-handle
+               (fboundp 'emacs-tui-event-poll))
+      (setq ev (emacs-tui-event-poll nemacs-main--event-handle timeout-ms)))
+    ;; 2) Fallback: in-process backend queue (= test injection).
+    (when (and (null ev)
+               nemacs-main--backend
+               (fboundp 'emacs-tui-backend-event-poll))
+      ;; Use 0 timeout so we don't double-wait — the tui-event poll
+      ;; above already waited the budget when its queue was empty.
+      (setq ev (emacs-tui-backend-event-poll nemacs-main--backend 0)))
+    (cond
+     ((null ev) nil)
+     ;; tui-event key plist (= raw stdin byte translated to a key).
+     ;; Route through the keymap dispatcher.
+     ((and (consp ev) (eq (plist-get ev :type) 'key))
+      (nemacs-main--dispatch-key-event ev)
+      t)
+     ;; Convention: event vector / list whose head matches a
+     ;; bound-symbol command runs through `command-execute'.
+     ((and (or (vectorp ev) (consp ev))
+           (fboundp 'command-execute))
+      (condition-case _
+          (cond
+           ((vectorp ev)
+            (let ((cmd (aref ev 0)))
+              (when (and (symbolp cmd) (commandp cmd))
+                (command-execute cmd))))
+           ((symbolp (car ev))
+            (let ((cmd (car ev)))
+              (when (commandp cmd) (command-execute cmd)))))
+        (quit (nemacs-main--quit)))
+      t)
+     (t
+      ;; Unknown event shape: log + continue.
+      (when (fboundp 'message)
+        (message "nemacs: ignoring event %S" ev))
+      t))))
 
 (defun nemacs-main--event-loop ()
   "Run the interactive event loop until the quit flag fires.
@@ -570,6 +609,15 @@ pre-set it to t (= early-out before the first poll)."
   (cond
    ((null nemacs-main--backend) nil)
    (t
+    ;; Doc 51 (2026-05-04) — point `emacs-tui-event-input-fn' at our
+    ;; stdin reader IF raw mode is active (= the Track E install
+    ;; path).  Without an active `--enable-tty-raw-input', the
+    ;; tui-event handle has nothing to drain; the backend's
+    ;; in-process queue still works for test injection.
+    (when (and (fboundp 'nemacs-main--stdin-byte-fn)
+               (boundp 'emacs-tui-event-input-fn)
+               (null emacs-tui-event-input-fn))
+      (setq emacs-tui-event-input-fn 'nemacs-main--stdin-byte-fn))
     (let ((budget-ms 50))
       (while (not nemacs-main--quit-flag)
         ;; Doc 51 Track P/Q — pick up signal-handler flags BEFORE
