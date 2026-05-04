@@ -85,6 +85,38 @@ Also resets kill-ring + kill-ring-yank-pointer."
     (nelisp-ec-delete-char -2)
     (should (equal "hel" (nelisp-ec-buffer-string)))))
 
+(ert-deftest emacs-edit-builtins-test/delete-backward-char-polyfill-shape ()
+  "Track X (2026-05-04) regression for the user-reported
+`wrong-number-of-arguments: lambda (expected 1, got 0)' on
+Backspace: the nelisp-driver polyfill must (a) make N optional
+with a default of 1 so `call-interactively' supplies 0 args
+without erroring, and (b) carry `(interactive \"p\")' so a
+prefix arg actually flows through.  Read the source form
+directly instead of `fboundp'-trampolining since under the
+host driver the upstream `delete-backward-char' wins via
+`(unless (fboundp ...))'."
+  (let* ((file (locate-library "emacs-edit-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (concat (substring file 0 (- (length file) 1)))
+                 file)))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-min))
+      (should (re-search-forward
+               "(unless (fboundp 'delete-backward-char)" nil t))
+      (let* ((form-start (match-beginning 0))
+             (form-end (save-excursion
+                         (goto-char form-start)
+                         (forward-sexp)
+                         (point)))
+             (source (buffer-substring form-start form-end)))
+        (should (string-match-p
+                 "delete-backward-char (&optional n killflag)"
+                 source))
+        (should (string-match-p
+                 "(interactive \"p\")" source))))))
+
 ;;;; E. kill-new pushes onto kill-ring
 
 (ert-deftest emacs-edit-builtins-test/kill-new-pushes-and-trims ()
