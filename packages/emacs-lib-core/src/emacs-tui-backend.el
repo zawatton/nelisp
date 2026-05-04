@@ -465,6 +465,44 @@ After shutdown, calling any operation other than
         (emacs-tui-backend-handle-resize-cb handle) nil)
   t)
 
+;;;###autoload
+(defun emacs-tui-backend-enter-alt-screen (handle)
+  "Switch HANDLE's terminal into the alternate screen buffer.
+Emits `\\e[?1049h' + clear-screen + cursor-home so the next paint
+takes over the full TTY without leaving the user's shell scrollback
+in the middle of the canvas.  Idempotent: a second call is a no-op
+when alt-screen is already active.  Returns t when the toggle was
+emitted, nil when it was already on."
+  (emacs-tui-backend--check-handle handle)
+  (cond
+   ((emacs-tui-backend-handle-alt-screen-p handle) nil)
+   (t
+    (emacs-tui-backend--emit emacs-tui-backend--alt-screen-on)
+    (emacs-tui-backend--emit emacs-tui-backend--clear-screen)
+    (emacs-tui-backend--emit (emacs-tui-backend--cup 0 0))
+    (setf (emacs-tui-backend-handle-alt-screen-p handle) t)
+    (emacs-tui-backend--log "enter-alt-screen handle=%S"
+                            (emacs-tui-backend-handle-id handle))
+    t)))
+
+;;;###autoload
+(defun emacs-tui-backend-leave-alt-screen (handle)
+  "Reverse `emacs-tui-backend-enter-alt-screen'.  Emits cursor-show +
+SGR reset before flipping back to the normal screen so the shell
+prompt re-appears without leftover attribute state.  Idempotent:
+returns nil when alt-screen is already off."
+  (emacs-tui-backend--check-handle handle)
+  (cond
+   ((not (emacs-tui-backend-handle-alt-screen-p handle)) nil)
+   (t
+    (emacs-tui-backend--emit emacs-tui-backend--cursor-show)
+    (emacs-tui-backend--emit emacs-tui-backend--reset)
+    (emacs-tui-backend--emit emacs-tui-backend--alt-screen-off)
+    (setf (emacs-tui-backend-handle-alt-screen-p handle) nil)
+    (emacs-tui-backend--log "leave-alt-screen handle=%S"
+                            (emacs-tui-backend-handle-id handle))
+    t)))
+
 (defun emacs-tui-backend--check-handle (handle)
   "Signal `emacs-tui-backend-bad-handle' unless HANDLE is alive."
   (unless (emacs-tui-backend-handlep handle)

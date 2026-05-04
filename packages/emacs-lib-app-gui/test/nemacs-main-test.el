@@ -592,6 +592,33 @@ Emacs's keyboard-quit-aborts-the-command-loop semantics."
     (should nemacs-main--quit-flag)
     (should (equal [] nemacs-main--prefix-keys))))
 
+(ert-deftest nemacs-main-test/track-x-fullscreen-helpers-defined ()
+  "Track X (2026-05-04): alt-screen entry / exit helpers exist."
+  (should (fboundp 'nemacs-main--enter-fullscreen))
+  (should (fboundp 'nemacs-main--leave-fullscreen)))
+
+(ert-deftest nemacs-main-test/track-x-enter-fullscreen-uses-backend ()
+  "Track X — `--enter-fullscreen' calls the backend's
+`enter-alt-screen' (= flips alt-screen-p) when a backend + frame are
+realised, and tolerates the absence of `terminal-current-winsize'."
+  (let ((bk (emacs-tui-backend-init)))
+    (let* ((nemacs-main--backend bk)
+           (nemacs-main--frame
+            (emacs-tui-backend-frame-create bk "test"))
+           (emacs-tui-backend-output-fn
+            (lambda (_s) nil))) ;; swallow emits
+      (nemacs-main--enter-fullscreen)
+      (should (eq t (emacs-tui-backend-handle-alt-screen-p bk)))
+      (nemacs-main--leave-fullscreen)
+      (should (eq nil (emacs-tui-backend-handle-alt-screen-p bk))))))
+
+(ert-deftest nemacs-main-test/track-x-fullscreen-noop-without-backend ()
+  "Track X — helpers do not error when no backend is set."
+  (let ((nemacs-main--backend nil)
+        (nemacs-main--frame nil))
+    (should-not (nemacs-main--enter-fullscreen))
+    (should-not (nemacs-main--leave-fullscreen))))
+
 (provide 'nemacs-main-test)
 
 ;;; nemacs-main-test.el ends here
