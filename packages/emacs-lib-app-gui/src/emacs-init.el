@@ -62,6 +62,14 @@
 (require 'emacs-backquote)
 (require 'emacs-error)
 (require 'emacs-string)
+;; (2026-05-04) — `emacs-stub' provides ~97 `unless-fboundp'-guarded
+;; polyfills (= kbd / add-hook / set-syntax-table / standard-syntax-table
+;; / etc.) for the long tail of host-Emacs C primitives that downstream
+;; modules call at load-time.  Under host Emacs every guard is a no-op
+;; (= the C function is already defined); under the nelisp driver this
+;; is the source of truth.  Required early so later modules can use
+;; them at their own load-time.
+(require 'emacs-stub)
 ;; Phase 10 — emacs-stub.el split: pcase / cl-macs subset / time
 ;; polyfills are now in dedicated modules.  emacs-pcase first (= cl-macs
 ;; expansions reference pcase patterns).  emacs-time has no L2 deps.
