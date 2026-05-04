@@ -219,6 +219,39 @@ TESTFN, when supplied, is called as (TESTFN KEY CAR)."
       n)))
 
 
+;;;; --- alist deletion --------------------------------------------------------
+
+(unless (fboundp 'assq-delete-all)
+  (defun assq-delete-all (key alist)
+    "Return ALIST with all entries whose car is `eq' to KEY removed.
+Non-cons elements are preserved.  The returned list shares
+structure with the tail of ALIST after the last removed cell."
+    (let (out)
+      (dolist (cell alist)
+        (unless (and (consp cell) (eq (car cell) key))
+          (push cell out)))
+      (nreverse out))))
+
+(unless (fboundp 'assoc-delete-all)
+  (defun assoc-delete-all (key alist &optional test)
+    "Return ALIST with all entries whose car matches KEY removed.
+TEST defaults to `equal'."
+    (unless test (setq test #'equal))
+    (let (out)
+      (dolist (cell alist)
+        (unless (and (consp cell) (funcall test (car cell) key))
+          (push cell out)))
+      (nreverse out))))
+
+(unless (fboundp 'rassoc-delete-all)
+  (defun rassoc-delete-all (value alist)
+    "Return ALIST with all entries whose cdr is `equal' to VALUE removed."
+    (let (out)
+      (dolist (cell alist)
+        (unless (and (consp cell) (equal (cdr cell) value))
+          (push cell out)))
+      (nreverse out))))
+
 (provide 'emacs-list)
 
 ;;; emacs-list.el ends here
