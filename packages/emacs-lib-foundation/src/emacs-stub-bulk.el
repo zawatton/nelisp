@@ -905,7 +905,9 @@ Forwarder to `forward-char' with negated count."
 (unless (fboundp 'window-parameter) (defun window-parameter (&rest _) nil))
 (unless (fboundp 'window-point) (defun window-point (&rest _) nil))
 (unless (fboundp 'window-start) (defun window-start (&rest _) nil))
-(unless (fboundp 'window-system) (defun window-system (&rest _) nil))
+;; `window-system' moved to emacs-stub.el's display capability map
+;; (Phase 1.E 2026-05-05) — it now consults `emacs-display-system'
+;; instead of always returning nil.
 (unless (fboundp 'window-width) (defun window-width (&rest _) nil))
 (unless (fboundp 'with-connection-local-variables) (defmacro with-connection-local-variables (&rest _) nil))
 (unless (fboundp 'with-help-window) (defmacro with-help-window (&rest _) nil))
