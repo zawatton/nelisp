@@ -282,13 +282,62 @@ Refuses to kill *welcome* itself (= it's the boot fallback the
       (setq nemacs-gtk--last-key-text
             (format "Killed: %s" bn))))))
 
+(defun nemacs-gtk--unsaved-file-buffers ()
+  "Return the list of live file-visiting buffers that are currently
+modified.  Used by `nemacs-gtk-save-buffers-kill-emacs' to decide
+whether to prompt before quitting."
+  (let ((acc '()))
+    (dolist (b (and (fboundp 'buffer-list) (buffer-list)))
+      (let ((f (and (fboundp 'buffer-file-name) (buffer-file-name b))))
+        (when (and f (nemacs-gtk--buffer-modified-p b))
+          (push b acc))))
+    (nreverse acc)))
+
+(defun nemacs-gtk--save-all-dirty-and-quit (bufs)
+  "Save each buffer in BUFS via `save-buffer' and arm the quit flag.
+Per-buffer errors are caught + echoed but don't abort the loop —
+the user already chose `y' (= save all), losing one save shouldn't
+strand them in a half-quit state."
+  (let ((saved 0)
+        (failed 0))
+    (dolist (b bufs)
+      (condition-case _err
+          (with-current-buffer b
+            (save-buffer)
+            (setq saved (1+ saved)))
+        (error (setq failed (1+ failed)))))
+    (setq nemacs-gtk--quit-requested t)
+    (setq nemacs-gtk--last-key-text
+          (cond
+           ((zerop failed) (format "Saved %d buffer(s) — quit" saved))
+           (t (format "Saved %d, %d failed — quit anyway" saved failed))))))
+
 (defun nemacs-gtk-save-buffers-kill-emacs ()
-  "Bound to `C-x C-c' — set the quit flag the main loop watches.
-The main loop will tear down GTK + return.  No save-prompt yet
-(= deferred until `(buffer-modified-p)' tracking is wired)."
+  "Bound to `C-x C-c' — quit the GUI.  When at least one
+file-visiting buffer is modified, prompt via the minibuffer:
+  - `y' / `Y' → save all dirty file-visiting buffers + quit.
+  - `n' / `N' → quit without saving.
+  - anything else (= empty / `c') → cancel the quit.
+With no dirty buffers, sets the quit flag immediately."
   (interactive)
-  (setq nemacs-gtk--quit-requested t)
-  (setq nemacs-gtk--last-key-text "C-x C-c → quit"))
+  (let ((dirty (nemacs-gtk--unsaved-file-buffers)))
+    (cond
+     ((null dirty)
+      (setq nemacs-gtk--quit-requested t)
+      (setq nemacs-gtk--last-key-text "C-x C-c → quit"))
+     (t
+      (nemacs-gtk--enter-minibuffer
+       (format "%d modified buffer(s).  Save? (y/n/c): " (length dirty))
+       (lambda (input)
+         (let ((c (and (stringp input) (> (length input) 0)
+                       (downcase (substring input 0 1)))))
+           (cond
+            ((equal c "y") (nemacs-gtk--save-all-dirty-and-quit dirty))
+            ((equal c "n")
+             (setq nemacs-gtk--quit-requested t)
+             (setq nemacs-gtk--last-key-text "Quit (unsaved)"))
+            (t
+             (setq nemacs-gtk--last-key-text "Quit cancelled"))))))))))
 
 (defun nemacs-gtk-page-up ()
   "Bound to PageUp — scroll the viewport up by `(buffer-area-end - 2)'
@@ -707,18 +756,32 @@ NN%.  Computed against `--scroll-offset' + `--buffer-area-end'
       (let ((denom (max 1 (- line-count visible-rows))))
         (format "%d%%" (/ (* 100 offset) denom)))))))
 
+(defun nemacs-gtk--buffer-modified-p (buf)
+  "Return non-nil when BUF has unsaved changes.  Tries the public
+`buffer-modified-p' first, falls back to the substrate-level
+`nelisp-ec-buffer-modified-p' accessor.  Returns nil when neither
+is available (= safe default — assume clean)."
+  (cond
+   ((fboundp 'buffer-modified-p)
+    (condition-case _ (buffer-modified-p buf) (error nil)))
+   ((fboundp 'nelisp-ec-buffer-modified-p)
+    (condition-case _ (nelisp-ec-buffer-modified-p buf) (error nil)))
+   (t nil)))
+
 (defun nemacs-gtk--mode-line-text ()
   "Compose the mode-line for the active buffer.  Includes:
-buffer-name, current line number, viewport scroll-position label
-(= Top/All/Bot/NN%), and the major-mode name."
+modified-flag (= `**' / `--'), buffer-name, current line number,
+viewport scroll-position label (= Top/All/Bot/NN%), major-mode name."
   (with-current-buffer (nemacs-gtk--active-buffer)
     (let* ((name (buffer-name))
            (line (line-number-at-pos))
            (mode (symbol-name (if (boundp 'major-mode) major-mode
                                 'fundamental-mode)))
            (pos  (nemacs-gtk--scroll-position-label))
-           (body (format "-U:---  %s    L%d   %s   (%s) "
-                         name line pos mode))
+           (mod-flag (if (nemacs-gtk--buffer-modified-p (current-buffer))
+                         "**" "--"))
+           (body (format "-U:%s-  %s    L%d   %s   (%s) "
+                         mod-flag name line pos mode))
            (pad (- nemacs-gtk--cols (length body))))
       (if (> pad 0)
           (concat body (make-string pad ?-))
