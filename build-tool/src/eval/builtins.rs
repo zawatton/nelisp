@@ -323,7 +323,18 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "provide" => bi_provide(args, env),
         "require" => bi_require(args, env),
         "featurep" => bi_featurep(args, env),
-        _ => Err(EvalError::UnboundFunction(name.to_string())),
+        _ => {
+            // Externally-registered builtin (= `Env::register_extern_builtin')
+            // — host crates like nelisp-emacs-gtk install GTK4 / SDL2 /
+            // future backend primitives this way.  Clone the Rc out
+            // first so the borrow on `env.extern_builtins' drops before
+            // we re-borrow `env' through the closure (= eval re-entry
+            // safe).
+            if let Some(f) = env.extern_builtins.get(name).cloned() {
+                return f(args, env);
+            }
+            Err(EvalError::UnboundFunction(name.to_string()))
+        }
     }
 }
 

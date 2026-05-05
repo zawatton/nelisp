@@ -2014,3 +2014,68 @@ fn track_q_take_sigcont_callable_returns_nil_when_no_signal() {
     ok_all("(terminal-take-sigcont)");
     assert_eq!(ok_all("(terminal-take-sigcont)"), Sexp::Nil);
 }
+
+// ----- register_extern_builtin (host crate extension point) ----------------
+
+#[test]
+fn extern_builtin_basic_dispatch() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    let mut env = Env::new_global();
+    let calls = Rc::new(Cell::new(0usize));
+    let calls_inner = calls.clone();
+    env.register_extern_builtin("test-extern-add", move |args, _env| {
+        calls_inner.set(calls_inner.get() + 1);
+        match (args.get(0), args.get(1)) {
+            (Some(Sexp::Int(a)), Some(Sexp::Int(b))) => Ok(Sexp::Int(a + b)),
+            _ => Err(EvalError::ArithError("test-extern-add: bad args".into())),
+        }
+    });
+    let form = crate::reader::read_str("(test-extern-add 3 4)").unwrap();
+    let result = super::eval(&form, &mut env).unwrap();
+    assert_eq!(result, Sexp::Int(7));
+    assert_eq!(calls.get(), 1);
+    // Second call hits the same closure.
+    let form2 = crate::reader::read_str("(test-extern-add 100 200)").unwrap();
+    assert_eq!(super::eval(&form2, &mut env).unwrap(), Sexp::Int(300));
+    assert_eq!(calls.get(), 2);
+}
+
+#[test]
+fn extern_builtin_overrides_previous_registration() {
+    let mut env = Env::new_global();
+    env.register_extern_builtin("test-extern-x", |_, _| Ok(Sexp::Int(1)));
+    let form = crate::reader::read_str("(test-extern-x)").unwrap();
+    assert_eq!(super::eval(&form, &mut env).unwrap(), Sexp::Int(1));
+    // Re-register same name → new closure wins.
+    env.register_extern_builtin("test-extern-x", |_, _| Ok(Sexp::Int(2)));
+    assert_eq!(super::eval(&form, &mut env).unwrap(), Sexp::Int(2));
+}
+
+#[test]
+fn extern_builtin_can_call_eval_recursively() {
+    // A registered builtin re-enters the evaluator (= e.g. to invoke
+    // an elisp callback like `(funcall HANDLER ARG)`).  This exercises
+    // the dispatch fallback's `Rc::clone' so the closure can borrow
+    // `env' mutably without aliasing the registry's borrow.
+    let mut env = Env::new_global();
+    env.register_extern_builtin("test-extern-callback", |_args, env| {
+        let form = crate::reader::read_str("(+ 10 20)").unwrap();
+        super::eval(&form, env)
+    });
+    let form = crate::reader::read_str("(test-extern-callback)").unwrap();
+    assert_eq!(super::eval(&form, &mut env).unwrap(), Sexp::Int(30));
+}
+
+#[test]
+fn extern_builtin_unregistered_signals_unbound_function() {
+    let mut env = Env::new_global();
+    let form = crate::reader::read_str("(no-such-extern-builtin 1 2)").unwrap();
+    let err = super::eval(&form, &mut env).unwrap_err();
+    match err {
+        EvalError::UnboundFunction(name) => {
+            assert_eq!(name, "no-such-extern-builtin");
+        }
+        other => panic!("expected UnboundFunction, got {:?}", other),
+    }
+}

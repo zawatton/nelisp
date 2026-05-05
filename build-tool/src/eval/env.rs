@@ -20,11 +20,22 @@
 //! `equal` semantics.
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use crate::reader;
 
 use super::error::EvalError;
 use super::sexp::Sexp;
+
+/// Extension-point alias for builtin closures registered from outside
+/// `nelisp-build-tool` (= host crates like `nelisp-emacs-gtk' that
+/// expose GTK / SDL / native-OS primitives as elisp callables).
+///
+/// The signature mirrors the internal `bi_*' helpers' shape so the
+/// dispatch fallback can call either uniformly.  `Rc` is used (not
+/// `Arc`) because the `Env' is single-threaded; the closure itself
+/// must be `'static' so the registry outlives any caller's borrow.
+pub type ExternBuiltin = Rc<dyn Fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError>>;
 
 /// A symbol's two cells per Elisp's value/function dichotomy.
 ///
@@ -82,6 +93,13 @@ pub struct Env {
     /// `featurep`.  Phase 8.0.2 keeps this in-memory only; file-based
     /// loading is deferred to the bridge in Phase 8.0.3.
     pub features: HashSet<String>,
+    /// External builtin registry — host crates (= `nelisp-emacs-gtk'
+    /// for GTK4 GUI ops, future SDL2 / Win32 backends) register Rust
+    /// closures here via [`Env::register_extern_builtin`] which then
+    /// become callable from elisp under the registered name.  The
+    /// `builtins::dispatch' fallback consults this map before
+    /// surfacing `EvalError::UnboundFunction`.
+    pub extern_builtins: HashMap<String, ExternBuiltin>,
 }
 
 impl Env {
@@ -102,6 +120,7 @@ impl Env {
             max_recursion: 256,
             current_recursion: 0,
             features: HashSet::new(),
+            extern_builtins: HashMap::new(),
         };
         // `nil` and `t` self-evaluate; mark them constant so that
         // (setq nil 1) is a hard error per Elisp.
@@ -132,7 +151,39 @@ impl Env {
             max_recursion: 256,
             current_recursion: 0,
             features: HashSet::new(),
+            extern_builtins: HashMap::new(),
         }
+    }
+
+    /// Register `f' as an externally-supplied builtin under `name'.
+    /// After this call, evaluating `(NAME ARG...)` in elisp invokes
+    /// `f(args, env)` — the same dispatch path the internal `bi_*'
+    /// helpers go through, just with the body lifted out of
+    /// `eval/builtins.rs'.
+    ///
+    /// Used by host crates that need to expose Rust APIs as elisp
+    /// callables without forking the upstream interpreter:
+    ///
+    ///   - `nelisp-emacs-gtk' registers GTK4 GUI ops
+    ///     (`nelisp-gtk-grid-put' / `nelisp-gtk-redraw' / …).
+    ///   - Future SDL2 / Win32 / native-macOS backends will register
+    ///     their own primitives the same way.
+    ///
+    /// Re-registering an existing name overwrites the previous closure.
+    /// As a side effect, the symbol's function-cell is set to the
+    /// `(builtin NAME)' sentinel so it's immediately callable from
+    /// elisp `(funcall NAME ...)` / `(NAME ...)` forms.
+    pub fn register_extern_builtin<F>(&mut self, name: &str, f: F)
+    where
+        F: Fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError> + 'static,
+    {
+        self.extern_builtins
+            .insert(name.to_string(), Rc::new(f));
+        let sentinel = Sexp::list_from(&[
+            Sexp::Symbol("builtin".into()),
+            Sexp::Symbol(name.into()),
+        ]);
+        self.set_function(name, sentinel);
     }
 
     /// Mark `name` as a self-evaluating constant bound to `value`.
