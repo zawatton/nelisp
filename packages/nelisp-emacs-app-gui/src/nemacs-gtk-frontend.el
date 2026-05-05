@@ -568,21 +568,96 @@ the echo prompt from `I-search:' to `I-search (failing):'.")
   "Function called with the minibuffer's accumulated INPUT when
 the user presses `Return'.  Set by `nemacs-gtk--enter-minibuffer'.")
 
-(defun nemacs-gtk--enter-minibuffer (prompt on-confirm)
+(defvar nemacs-gtk--minibuffer-completion-fn nil
+  "Optional function (INPUT) → list of completion candidates for the
+active minibuffer (Phase 2.T).  When non-nil:
+  - candidates are recomputed after each keystroke and surfaced
+    after the input in the echo area
+  - Tab completes to the longest common prefix; if a single match
+    is left, the input is replaced with the full match
+nil disables completion (= prompts that take free-form text).")
+
+(defvar nemacs-gtk--minibuffer-candidates nil
+  "Cached completion candidates for the current `--minibuffer-input'.
+Recomputed by `--minibuffer-recompute-candidates' on every input
+change so the echo-area painter doesn't re-run the completion fn.")
+
+(defun nemacs-gtk--enter-minibuffer (prompt on-confirm &optional completion-fn)
   "Activate minibuffer mode.  PROMPT shows on the echo-area row
 ahead of the live input; ON-CONFIRM is called with the accumulated
 input string when the user presses Return.  C-g / Escape cancels
-without calling ON-CONFIRM."
-  (setq nemacs-gtk--minibuffer-active    t)
-  (setq nemacs-gtk--minibuffer-prompt    prompt)
-  (setq nemacs-gtk--minibuffer-input     "")
-  (setq nemacs-gtk--minibuffer-on-confirm on-confirm))
+without calling ON-CONFIRM.
+
+Optional COMPLETION-FN (Phase 2.T) is a function (INPUT) → list of
+candidate strings.  When supplied, candidates are surfaced after
+the input in the echo area and Tab completes to the longest common
+prefix; nil disables completion."
+  (setq nemacs-gtk--minibuffer-active        t)
+  (setq nemacs-gtk--minibuffer-prompt        prompt)
+  (setq nemacs-gtk--minibuffer-input         "")
+  (setq nemacs-gtk--minibuffer-on-confirm    on-confirm)
+  (setq nemacs-gtk--minibuffer-completion-fn completion-fn)
+  (nemacs-gtk--minibuffer-recompute-candidates))
 
 (defun nemacs-gtk--exit-minibuffer ()
-  (setq nemacs-gtk--minibuffer-active    nil)
-  (setq nemacs-gtk--minibuffer-prompt    "")
-  (setq nemacs-gtk--minibuffer-input     "")
-  (setq nemacs-gtk--minibuffer-on-confirm nil))
+  (setq nemacs-gtk--minibuffer-active        nil)
+  (setq nemacs-gtk--minibuffer-prompt        "")
+  (setq nemacs-gtk--minibuffer-input         "")
+  (setq nemacs-gtk--minibuffer-on-confirm    nil)
+  (setq nemacs-gtk--minibuffer-completion-fn nil)
+  (setq nemacs-gtk--minibuffer-candidates    nil))
+
+(defun nemacs-gtk--minibuffer-recompute-candidates ()
+  "Refresh `--minibuffer-candidates' against the current input.
+No-op when no completion fn is installed."
+  (setq nemacs-gtk--minibuffer-candidates
+        (when nemacs-gtk--minibuffer-completion-fn
+          (condition-case _err
+              (funcall nemacs-gtk--minibuffer-completion-fn
+                       nemacs-gtk--minibuffer-input)
+            (error nil)))))
+
+(defun nemacs-gtk--longest-common-prefix (strs)
+  "Return the longest string that is a prefix of every entry in STRS.
+Empty list → empty string; single entry → that string."
+  (cond
+   ((null strs) "")
+   ((null (cdr strs)) (car strs))
+   (t
+    (let ((p (car strs))
+          (rest (cdr strs)))
+      (while (and rest (> (length p) 0))
+        (let* ((s     (car rest))
+               (limit (min (length p) (length s)))
+               (i     0))
+          (while (and (< i limit) (eq (aref p i) (aref s i)))
+            (setq i (1+ i)))
+          (setq p (substring p 0 i)))
+        (setq rest (cdr rest)))
+      p))))
+
+(defun nemacs-gtk--minibuffer-tab-complete ()
+  "Tab handler for the minibuffer.  Replaces the current input with
+the longest common prefix of `--minibuffer-candidates'; if there's
+only one candidate, replaces with the full match; if no progress
+can be made, echoes the candidate count."
+  (let ((cands nemacs-gtk--minibuffer-candidates))
+    (cond
+     ((null cands)
+      (setq nemacs-gtk--last-key-text "No match"))
+     ((null (cdr cands))
+      (setq nemacs-gtk--minibuffer-input (car cands))
+      (nemacs-gtk--minibuffer-recompute-candidates))
+     (t
+      (let ((lcp (nemacs-gtk--longest-common-prefix cands)))
+        (cond
+         ((and (stringp lcp)
+               (> (length lcp) (length nemacs-gtk--minibuffer-input)))
+          (setq nemacs-gtk--minibuffer-input lcp)
+          (nemacs-gtk--minibuffer-recompute-candidates))
+         (t
+          (setq nemacs-gtk--last-key-text
+                (format "%d candidates" (length cands))))))))))
 
 (defun nemacs-gtk--minibuffer-handle-key (event)
   "Consume one event while in minibuffer mode.  Returns t when
@@ -603,16 +678,24 @@ the event was handled (= caller should not run normal dispatch)."
     (nemacs-gtk--exit-minibuffer)
     (setq nemacs-gtk--last-key-text "Quit")
     t)
+   ;; Tab — completion (Phase 2.T).  No-op when no completion fn is
+   ;; installed, otherwise advance to longest common prefix.
+   ((eq event 'tab)
+    (when nemacs-gtk--minibuffer-completion-fn
+      (nemacs-gtk--minibuffer-tab-complete))
+    t)
    ((eq event 'backspace)
     (when (> (length nemacs-gtk--minibuffer-input) 0)
       (setq nemacs-gtk--minibuffer-input
             (substring nemacs-gtk--minibuffer-input 0
-                       (1- (length nemacs-gtk--minibuffer-input)))))
+                       (1- (length nemacs-gtk--minibuffer-input))))
+      (nemacs-gtk--minibuffer-recompute-candidates))
     t)
    ((and (integerp event) (>= event 32) (< event 127))
     (setq nemacs-gtk--minibuffer-input
           (concat nemacs-gtk--minibuffer-input
                   (char-to-string event)))
+    (nemacs-gtk--minibuffer-recompute-candidates)
     t)
    ;; Anything else (= arrow keys, mouse-1, function keys) is
    ;; ignored while minibuffer-active so the user doesn't
@@ -698,6 +781,65 @@ Updates `--isearch-failing' on success / failure."
    (t t)))
 
 
+(defconst nemacs-gtk--m-x-commands
+  '("backward-char"
+    "backward-word"
+    "beginning-of-line"
+    "copy-region"
+    "delete-backward-char"
+    "delete-char"
+    "end-of-line"
+    "execute-extended-command"
+    "find-file"
+    "forward-char"
+    "forward-word"
+    "isearch-forward"
+    "kill-buffer"
+    "kill-line"
+    "kill-region"
+    "keyboard-quit"
+    "mark-whole-buffer"
+    "newline"
+    "nemacs-gtk-copy-region"
+    "nemacs-gtk-isearch-forward"
+    "nemacs-gtk-keyboard-find-file"
+    "nemacs-gtk-keyboard-quit"
+    "nemacs-gtk-keyboard-save"
+    "nemacs-gtk-kill-buffer"
+    "nemacs-gtk-kill-region"
+    "nemacs-gtk-mark-whole-buffer"
+    "nemacs-gtk-meta-beginning-of-buffer"
+    "nemacs-gtk-meta-end-of-buffer"
+    "nemacs-gtk-meta-kill-word"
+    "nemacs-gtk-mouse-set-point"
+    "nemacs-gtk-mouse-yank-primary"
+    "nemacs-gtk-page-down"
+    "nemacs-gtk-page-up"
+    "nemacs-gtk-save-buffers-kill-emacs"
+    "nemacs-gtk-set-mark-command"
+    "nemacs-gtk-switch-to-buffer"
+    "next-line"
+    "previous-line"
+    "save-buffer"
+    "save-buffers-kill-emacs"
+    "self-insert-command"
+    "set-mark-command"
+    "switch-to-buffer"
+    "yank")
+  "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
+`mapatoms' / `commandp' return nil stubs (= we can't enumerate the
+obarray to find interactive commands), so this is the trusted seed
+for completion.  Extend when new GUI-facing commands ship.")
+
+(defun nemacs-gtk--m-x-completion-fn (input)
+  "Completion fn for execute-extended-command — return the
+sub-list of `--m-x-commands' whose name has INPUT as a prefix."
+  (let ((acc '()))
+    (dolist (name nemacs-gtk--m-x-commands)
+      (when (string-prefix-p input name)
+        (push name acc)))
+    (sort acc #'string<)))
+
 (defun execute-extended-command (&optional _prefix-arg
                                             _command-name
                                             _typed)
@@ -707,7 +849,9 @@ PREFIXARG / COMMAND-NAME / TYPED accepted for API parity with
 real Emacs (= our MVP ignores them; minibuffer-typed input is
 the only source).  Bound to `Esc x' (= [27 120]) in the GUI's
 global keymap.  Type a name, press Return — we intern it, verify
-it's fboundp, and `call-interactively' it."
+it's fboundp, and `call-interactively' it.
+
+Tab in the prompt completes against `--m-x-commands' (Phase 2.T)."
   (interactive)
   (nemacs-gtk--enter-minibuffer
    "M-x "
@@ -725,7 +869,8 @@ it's fboundp, and `call-interactively' it."
            (with-current-buffer (nemacs-gtk--active-buffer)
              (call-interactively sym))
            (setq nemacs-gtk--last-key-text
-                 (format "M-x %s ✓" input))))))))))
+                 (format "M-x %s ✓" input))))))))
+   #'nemacs-gtk--m-x-completion-fn))
 
 (defun nemacs-gtk--prepare-welcome-buffer ()
   "Create / reset the `*welcome*' buffer + drop the cursor at end."
@@ -911,6 +1056,17 @@ buffer-area-end - 1)."
   (nelisp-gtk-grid-put-row nemacs-gtk--mode-line-row
                            (nemacs-gtk--mode-line-text)))
 
+(defun nemacs-gtk--minibuffer-candidate-suffix ()
+  "Compose a `{cand1 cand2 ...}' suffix listing the current
+completion candidates for the echo area, or empty when none."
+  (let ((cands nemacs-gtk--minibuffer-candidates))
+    (cond
+     ((null nemacs-gtk--minibuffer-completion-fn) "")
+     ((null cands) "  {no match}")
+     ((null (cdr cands)) (format "  {%s}" (car cands)))
+     (t
+      (format "  {%s}" (mapconcat #'identity cands " "))))))
+
 (defun nemacs-gtk--paint-echo-area ()
   (let ((text (cond
                (nemacs-gtk--minibuffer-active
@@ -918,7 +1074,8 @@ buffer-area-end - 1)."
                         nemacs-gtk--minibuffer-input
                         ;; trailing block-cursor-ish marker so the
                         ;; user knows the prompt is awaiting input.
-                        "_"))
+                        "_"
+                        (nemacs-gtk--minibuffer-candidate-suffix)))
                (nemacs-gtk--isearch-active
                 (format "I-search%s: %s_"
                         (if nemacs-gtk--isearch-failing
@@ -1012,6 +1169,7 @@ returns nil instead of a row outside the viewport."
 (defconst nemacs-gtk--keysym-next      #xff56) ; PageDown
 (defconst nemacs-gtk--keysym-end       #xff57)
 (defconst nemacs-gtk--keysym-kp-enter  #xff8d)
+(defconst nemacs-gtk--keysym-tab       #xff09)
 
 ;; GDK modifier defconsts hoisted above (= near `--shift-region' defvar)
 ;; so shift-select pre-dispatch can reference `--gdk-shift-mask'.
@@ -1035,6 +1193,7 @@ a separate event-prefix system."
           (= keysym nemacs-gtk--keysym-kp-enter))
       'return)
      ((= keysym nemacs-gtk--keysym-escape) 27)
+     ((= keysym nemacs-gtk--keysym-tab)     'tab)
      ((= keysym nemacs-gtk--keysym-left)  'left)
      ((= keysym nemacs-gtk--keysym-right) 'right)
      ((= keysym nemacs-gtk--keysym-up)    'up)
