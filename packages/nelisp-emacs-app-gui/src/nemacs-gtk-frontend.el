@@ -264,6 +264,8 @@ Idempotent — re-calling replaces the global map with a fresh one."
     (define-key ctl-x-map (vector ?\() 'nemacs-gtk-start-kbd-macro)
     (define-key ctl-x-map (vector ?\)) 'nemacs-gtk-end-kbd-macro)
     (define-key ctl-x-map (vector ?e)  'nemacs-gtk-call-last-kbd-macro)
+    ;; Phase 2.AQ — `C-x C-q' = toggle-read-only.
+    (define-key ctl-x-map (vector ?\C-q) 'nemacs-gtk-toggle-read-only)
     (define-key m (vector ?\C-x) ctl-x-map)
     ;; Mouse-2 (= middle click) → set point + yank, mirroring real
     ;; Emacs's `mouse-yank-primary' / Linux X-clipboard convention.
@@ -878,6 +880,47 @@ macro by feeding its events back through the command loop."
     (setq nemacs-gtk--last-key-text
           (format "Replayed macro (%d events)"
                   (length nemacs-gtk--kbd-macro-last))))))
+
+(defun nemacs-gtk-toggle-read-only ()
+  "Bound to `C-x C-q' — toggle the active buffer's `buffer-read-only'
+flag.  The mode-line `--' / `**' marker is replaced by `%%' when
+read-only is on (= matches Emacs convention).  Edit-class commands
+honor the flag via the dispatcher's read-only guard."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (setq buffer-read-only (not buffer-read-only))
+    (setq nemacs-gtk--last-key-text
+          (format "buffer-read-only: %s"
+                  (if buffer-read-only "on" "off")))))
+
+(defun nemacs-gtk-sort-lines ()
+  "M-x command — sort the lines of the active region alphabetically.
+Without an active region, reports an error on echo area."
+  (interactive)
+  (let ((bounds (nemacs-gtk--region-bounds)))
+    (cond
+     ((null bounds)
+      (setq nemacs-gtk--last-key-text "sort-lines: no active region"))
+     (t
+      (let* ((beg (car bounds))
+             (end (cdr bounds))
+             (text (with-current-buffer (nemacs-gtk--active-buffer)
+                     (nelisp-ec-buffer-substring beg end)))
+             (trailing-nl (and (> (length text) 0)
+                               (eq (aref text (1- (length text))) ?\n)))
+             (chunk (cond
+                     (trailing-nl (substring text 0 (1- (length text))))
+                     (t text)))
+             (lines (split-string chunk "\n"))
+             (sorted (sort lines #'string<))
+             (rejoined (concat (mapconcat #'identity sorted "\n")
+                               (if trailing-nl "\n" ""))))
+        (with-current-buffer (nemacs-gtk--active-buffer)
+          (kill-region beg end)
+          (nelisp-ec-goto-char beg)
+          (nelisp-ec-insert rejoined))
+        (setq nemacs-gtk--last-key-text
+              (format "sort-lines: %d lines" (length sorted))))))))
 
 (defun nemacs-gtk-write-file ()
   "Bound to `C-x C-w' — prompt for a new path and write the active
@@ -2099,8 +2142,10 @@ success / failure."
     "nemacs-gtk-quoted-insert"
     "nemacs-gtk-recenter"
     "nemacs-gtk-save-some-buffers"
+    "nemacs-gtk-sort-lines"
     "nemacs-gtk-start-kbd-macro"
     "nemacs-gtk-tab-to-tab-stop"
+    "nemacs-gtk-toggle-read-only"
     "nemacs-gtk-undo"
     "nemacs-gtk-write-file"
     "nemacs-gtk-save-buffers-kill-emacs"
@@ -2141,7 +2186,9 @@ success / failure."
     "dabbrev-expand"
     "start-kbd-macro"
     "end-kbd-macro"
-    "call-last-kbd-macro")
+    "call-last-kbd-macro"
+    "toggle-read-only"
+    "sort-lines")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
@@ -2265,8 +2312,12 @@ viewport scroll-position label (= Top/All/Bot/NN%), major-mode name."
            (mode (symbol-name (if (boundp 'major-mode) major-mode
                                 'fundamental-mode)))
            (pos  (nemacs-gtk--scroll-position-label))
-           (mod-flag (if (nemacs-gtk--buffer-modified-p (current-buffer))
-                         "**" "--"))
+           (mod-flag (cond
+                      ((and (boundp 'buffer-read-only) buffer-read-only)
+                       "%%")
+                      ((nemacs-gtk--buffer-modified-p (current-buffer))
+                       "**")
+                      (t "--")))
            (body (format "-U:%s-  %s    L%d   %s   (%s) "
                          mod-flag name line pos mode))
            (pad (- nemacs-gtk--cols (length body))))
@@ -2586,6 +2637,39 @@ itself a keymap (= a prefix mid-sequence)."
       (setq i (1+ i)))
     (mapconcat 'identity (nreverse parts) " ")))
 
+(defconst nemacs-gtk--read-only-blocked-commands
+  '(self-insert-command
+    newline
+    yank
+    nemacs-gtk-yank-pop
+    kill-line
+    nemacs-gtk-kill-region
+    nemacs-gtk-meta-kill-word
+    nemacs-gtk-just-one-space
+    nemacs-gtk-delete-horizontal-space
+    nemacs-gtk-kill-whole-line
+    nemacs-gtk-transpose-chars
+    nemacs-gtk-zap-to-char
+    nemacs-gtk-comment-dwim
+    nemacs-gtk-fill-paragraph
+    nemacs-gtk-delete-indentation
+    nemacs-gtk-tab-to-tab-stop
+    nemacs-gtk-quoted-insert
+    nemacs-gtk-undo
+    nemacs-gtk-overwrite-mode
+    nemacs-gtk-upcase-word
+    nemacs-gtk-downcase-word
+    nemacs-gtk-capitalize-word
+    nemacs-gtk-dabbrev-expand
+    nemacs-gtk-query-replace
+    nemacs-gtk-call-last-kbd-macro
+    nemacs-gtk-sort-lines
+    delete-char
+    delete-backward-char)
+  "Phase 2.AQ: command symbols the dispatcher refuses to run when
+the active buffer's `buffer-read-only' is set.  Cursor motion,
+search, mode-flags, frame ops and the like flow through normally.")
+
 (defun nemacs-gtk--dispatch-key (keysym mods unicode)
   "Translate a GDK key event + run one dispatch step against the
 active buffer.  When the minibuffer is active, route through
@@ -2686,6 +2770,17 @@ viewport."
                   (format "%s-" (nemacs-gtk--describe-key-vec accumulated))))
            (t
             (setq nemacs-gtk--pending-prefix nil)
+            ;; Phase 2.AQ — read-only guard.  When the active buffer
+            ;; has `buffer-read-only' set, edit-class commands report
+            ;; "Buffer is read-only" instead of running.  Motion /
+            ;; search / mode toggles flow through normally.
+            (cond
+             ((and (memq binding nemacs-gtk--read-only-blocked-commands)
+                   (with-current-buffer (nemacs-gtk--active-buffer)
+                     (and (boundp 'buffer-read-only)
+                          buffer-read-only)))
+              (setq nemacs-gtk--last-key-text "Buffer is read-only"))
+             (t
             ;; Phase 2.AP — record the resolved key sequence on the
             ;; active macro recording (= the whole `accumulated' vec
             ;; including any prefix events, so replay reproduces the
@@ -2713,7 +2808,7 @@ viewport."
                                   'self-insert-command))
                          (fboundp 'undo-boundary))
                 (undo-boundary)))
-            (nemacs-gtk--ensure-cursor-visible)))))))))
+            (nemacs-gtk--ensure-cursor-visible))))))))))
 
 
 ;;;; --- clipboard glue ------------------------------------------------------
