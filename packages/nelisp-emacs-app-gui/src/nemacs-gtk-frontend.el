@@ -218,6 +218,7 @@ Idempotent — re-calling replaces the global map with a fresh one."
     (define-key m (vector ?\C-d) 'delete-char)
     (define-key m (vector ?\C-k) 'kill-line)
     (define-key m (vector ?\C-y) 'yank)
+    (define-key m (vector ?\C-t) 'nemacs-gtk-transpose-chars)
     (define-key m (vector ?\C-s) 'nemacs-gtk-isearch-forward)
     (define-key m (vector ?\C-r) 'nemacs-gtk-isearch-backward)
     (define-key m (vector ?\C-w) 'nemacs-gtk-kill-region)
@@ -247,6 +248,12 @@ Idempotent — re-calling replaces the global map with a fresh one."
       (define-key esc-map (vector ?w) 'nemacs-gtk-copy-region)
       (define-key esc-map (vector ?<) 'nemacs-gtk-meta-beginning-of-buffer)
       (define-key esc-map (vector ?>) 'nemacs-gtk-meta-end-of-buffer)
+      ;; Phase 2.Y — case-change words + paragraph navigation.
+      (define-key esc-map (vector ?u) 'nemacs-gtk-upcase-word)
+      (define-key esc-map (vector ?l) 'nemacs-gtk-downcase-word)
+      (define-key esc-map (vector ?c) 'nemacs-gtk-capitalize-word)
+      (define-key esc-map (vector ?{) 'nemacs-gtk-backward-paragraph)
+      (define-key esc-map (vector ?}) 'nemacs-gtk-forward-paragraph)
       ;; Phase 2.X — `M-g g' = goto-line, `M-g M-g' aliased to same.
       (define-key meta-g-map (vector ?g)    'nemacs-gtk-goto-line)
       (define-key meta-g-map (vector ?\C-g) 'nemacs-gtk-goto-line)
@@ -575,6 +582,93 @@ in the echo for readability)."
       (setq nemacs-gtk--last-key-text
             (format "Line %d/%d" line total)))))
 
+(defun nemacs-gtk--case-change-word (case-fn)
+  "Helper for upcase-word / downcase-word / capitalize-word.  Apply
+the string transformer CASE-FN to the next word from point + replace
+it in-place.  No-op when point is at EOB or there's only whitespace
+ahead."
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let ((start (nelisp-ec-point)))
+      (forward-word 1)
+      (let ((end (nelisp-ec-point)))
+        (when (> end start)
+          (let ((text (buffer-substring start end)))
+            (nelisp-ec-delete-region start end)
+            (nelisp-ec-insert (funcall case-fn text))))))))
+
+(defun nemacs-gtk-upcase-word ()
+  "Bound to `M-u' / `Esc u' (Phase 2.Y).  UPPERCASE the next word
+from point.  Point ends at the word's end."
+  (interactive)
+  (nemacs-gtk--case-change-word #'upcase))
+
+(defun nemacs-gtk-downcase-word ()
+  "Bound to `M-l' / `Esc l' (Phase 2.Y).  Lowercase the next word
+from point."
+  (interactive)
+  (nemacs-gtk--case-change-word #'downcase))
+
+(defun nemacs-gtk-capitalize-word ()
+  "Bound to `M-c' / `Esc c' (Phase 2.Y).  Capitalize the next word
+(= first letter upper, rest lower)."
+  (interactive)
+  (nemacs-gtk--case-change-word
+   (lambda (s)
+     (if (string-empty-p s) s
+       (concat (upcase   (substring s 0 1))
+               (downcase (substring s 1)))))))
+
+(defun nemacs-gtk-transpose-chars ()
+  "Bound to `C-t' (Phase 2.Y).  Swap the chars before and after
+point + advance point by one.  At BOB does nothing.  At EOB swaps
+the two preceding chars (= mirrors real Emacs's `transpose-chars')."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let ((p    (nelisp-ec-point))
+          (pmin (nelisp-ec-point-min))
+          (pmax (nelisp-ec-point-max)))
+      (when (>= p (+ pmin 2))
+        ;; At EOB: drop point one back so we swap the last two chars.
+        (when (= p pmax) (setq p (1- p)))
+        (let ((c1 (buffer-substring (- p 1) p))
+              (c2 (buffer-substring p (+ p 1))))
+          (nelisp-ec-delete-region (- p 1) (+ p 1))
+          (nelisp-ec-insert (concat c2 c1))
+          (nelisp-ec-goto-char (+ p 1)))))))
+
+(defun nemacs-gtk--blank-line-p ()
+  "Return non-nil when point is on an empty (= zero-width) line."
+  (= (line-beginning-position) (line-end-position)))
+
+(defun nemacs-gtk-forward-paragraph ()
+  "Bound to `M-}' / `Esc }' (Phase 2.Y).  Move point past the
+current paragraph (= skip blank lines we may be in, then advance
+through non-blank lines until the next blank line or EOB)."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let ((max (nelisp-ec-point-max)))
+      (while (and (< (nelisp-ec-point) max)
+                  (nemacs-gtk--blank-line-p))
+        (forward-line 1))
+      (while (and (< (nelisp-ec-point) max)
+                  (not (nemacs-gtk--blank-line-p)))
+        (forward-line 1)))))
+
+(defun nemacs-gtk-backward-paragraph ()
+  "Bound to `M-{' / `Esc {' (Phase 2.Y).  Move point back to the
+beginning of the current paragraph (= step up through non-blank
+lines, then through blank lines until BOB or content)."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let ((min (nelisp-ec-point-min)))
+      (forward-line -1)
+      (while (and (> (nelisp-ec-point) min)
+                  (nemacs-gtk--blank-line-p))
+        (forward-line -1))
+      (while (and (> (nelisp-ec-point) min)
+                  (not (nemacs-gtk--blank-line-p)))
+        (forward-line -1)))))
+
 (defun nemacs-gtk-meta-kill-word ()
   "Bound to `M-d' / `Esc d' — kill chars from point to end of next
 word.  Wraps `forward-word' + `kill-region' so the deletion sits
@@ -894,17 +988,21 @@ success / failure."
 
 (defconst nemacs-gtk--m-x-commands
   '("backward-char"
+    "backward-paragraph"
     "backward-word"
     "beginning-of-line"
+    "capitalize-word"
     "copy-region"
     "delete-backward-char"
     "delete-char"
+    "downcase-word"
     "end-of-line"
     "execute-extended-command"
     "find-file"
-    "goto-line"
     "forward-char"
+    "forward-paragraph"
     "forward-word"
+    "goto-line"
     "isearch-backward"
     "isearch-forward"
     "kill-buffer"
@@ -913,7 +1011,11 @@ success / failure."
     "keyboard-quit"
     "mark-whole-buffer"
     "newline"
+    "nemacs-gtk-backward-paragraph"
+    "nemacs-gtk-capitalize-word"
     "nemacs-gtk-copy-region"
+    "nemacs-gtk-downcase-word"
+    "nemacs-gtk-forward-paragraph"
     "nemacs-gtk-goto-line"
     "nemacs-gtk-isearch-backward"
     "nemacs-gtk-isearch-forward"
@@ -933,6 +1035,8 @@ success / failure."
     "nemacs-gtk-save-buffers-kill-emacs"
     "nemacs-gtk-set-mark-command"
     "nemacs-gtk-switch-to-buffer"
+    "nemacs-gtk-transpose-chars"
+    "nemacs-gtk-upcase-word"
     "next-line"
     "previous-line"
     "save-buffer"
@@ -940,6 +1044,8 @@ success / failure."
     "self-insert-command"
     "set-mark-command"
     "switch-to-buffer"
+    "transpose-chars"
+    "upcase-word"
     "what-line"
     "yank")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
