@@ -46,6 +46,13 @@
 
 ;;;; --- character insertion --------------------------------------------
 
+(unless (boundp 'overwrite-mode)
+  (defvar overwrite-mode nil
+    "Phase 2.AI placeholder: non-nil = `self-insert-command' replaces
+the char at point instead of inserting (= mirrors `overwrite-mode'
+minor-mode in real Emacs).  Set to t / nil; richer values like
+`overwrite-mode-binary' are deferred."))
+
 (unless (fboundp 'self-insert-command)
   (defun self-insert-command (&optional n char)
     "Phase E polyfill: insert CHAR (or `last-command-event') N times.
@@ -54,6 +61,10 @@ when nil, falls back to `last-command-event'.
 
 Track E.2: when the undo subsystem is loaded, records the
 inserted span on `buffer-undo-list'.
+
+Phase 2.AI: when `overwrite-mode' is non-nil and point is not at
+EOB or end-of-line, the char at point is deleted before each insert
+(= one-char-out, one-char-in, point advances by 1 not by 2).
 
 Bound to printable chars in `nemacs-main-keymap'.  The `(interactive
 \"p\")' form supplies N from the prefix-arg so `call-interactively'
@@ -71,6 +82,19 @@ gets a fully-formed arg list."
       (let ((i 0))
         (while (< i count)
           (let ((beg (nelisp-ec-point)))
+            ;; Phase 2.AI overwrite: delete the char at point first
+            ;; (unless at EOB or just before a `\n', so we don't eat
+            ;; the line terminator).
+            (when (and overwrite-mode
+                       (< beg (nelisp-ec-point-max))
+                       (not (eq (let ((sub (nelisp-ec-buffer-substring
+                                            beg (1+ beg))))
+                                  (and (> (length sub) 0) (aref sub 0)))
+                                ?\n)))
+              (let ((deleted (nelisp-ec-buffer-substring beg (1+ beg))))
+                (nelisp-ec-delete-region beg (1+ beg))
+                (when (fboundp 'emacs-undo-record-delete)
+                  (emacs-undo-record-delete deleted beg))))
             (nelisp-ec-insert s)
             (when (fboundp 'emacs-undo-record-insert)
               (emacs-undo-record-insert beg (nelisp-ec-point)))
