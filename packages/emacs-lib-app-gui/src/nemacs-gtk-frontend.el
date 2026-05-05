@@ -56,6 +56,19 @@ visits a new file.  All paint / mode-line / cursor / dispatch
 helpers query this rather than hardcoding `*welcome*' so subsequent
 phases can swap buffers freely.")
 
+(defvar nemacs-gtk--quit-requested nil
+  "Non-nil when an elisp-side handler (= File > Quit menu, C-x C-c)
+wants the main loop to exit.  Checked alongside
+`(nelisp-gtk-should-quit)' which covers the GTK window-close path.")
+
+(defvar nemacs-gtk--last-mouse-event nil
+  "Most-recent mouse-press tuple for the bound mouse commands
+(= `nemacs-gtk-mouse-set-point' / `nemacs-gtk-mouse-yank-primary')
+to consume.  Format mirrors what `(nelisp-gtk-poll-mouse)' returns:
+(KIND BUTTON ROW COL MODS).  Set by `nemacs-gtk--handle-mouse-event'
+just before feeding the synthetic `mouse-N' event into
+`emacs-command-loop'.")
+
 (defvar nemacs-gtk--scroll-offset 0
   "First buffer line (= 0-based row index in the active buffer's
 text) that maps to grid row 0.  `nemacs-gtk--paint-buffer-area'
@@ -136,11 +149,17 @@ Idempotent — re-calling replaces the global map with a fresh one."
     (define-key m (vector ?\C-d) 'delete-char)
     (define-key m (vector ?\C-k) 'kill-line)
     (define-key m (vector ?\C-y) 'yank)
-    ;; C-x prefix map — Save / Open round-trip via the same handlers
-    ;; the menu uses.
+    ;; C-x prefix map — common substrate-level commands behind the
+    ;; same handlers the menu uses.
     (define-key ctl-x-map (vector ?\C-s) 'nemacs-gtk-keyboard-save)
     (define-key ctl-x-map (vector ?\C-f) 'nemacs-gtk-keyboard-find-file)
+    (define-key ctl-x-map (vector ?b)   'nemacs-gtk-switch-to-buffer)
+    (define-key ctl-x-map (vector ?k)   'nemacs-gtk-kill-buffer)
+    (define-key ctl-x-map (vector ?\C-c) 'nemacs-gtk-save-buffers-kill-emacs)
     (define-key m (vector ?\C-x) ctl-x-map)
+    ;; Mouse-2 (= middle click) → set point + yank, mirroring real
+    ;; Emacs's `mouse-yank-primary' / Linux X-clipboard convention.
+    (define-key m (vector 'mouse-2) 'nemacs-gtk-mouse-yank-primary)
     ;; Esc-prefix → M-x (= execute-extended-command).  Pressing Esc
     ;; then x mirrors real Emacs's old terminal-style meta-prefix.
     ;; Keysym 27 is the `Escape' key per `key-event->command-loop-event'.
@@ -162,6 +181,68 @@ Idempotent — re-calling replaces the global map with a fresh one."
   "Bound to `C-x C-f' — wraps the same menu handler as File > Open."
   (interactive)
   (nemacs-gtk--menu-open-file))
+
+(defun nemacs-gtk-switch-to-buffer ()
+  "Bound to `C-x b' — prompt for a buffer name and switch the
+active GUI buffer to it (= flips `nemacs-gtk--active-buffer-name'
++ resets scroll-offset)."
+  (interactive)
+  (nemacs-gtk--enter-minibuffer
+   "Switch to buffer: "
+   (lambda (input)
+     (cond
+      ((string-empty-p input)
+       (setq nemacs-gtk--last-key-text "switch-to-buffer: empty"))
+      ((not (get-buffer input))
+       (setq nemacs-gtk--last-key-text
+             (format "No buffer: %s" input)))
+      (t
+       (setq nemacs-gtk--active-buffer-name input)
+       (setq nemacs-gtk--scroll-offset 0)
+       (setq nemacs-gtk--last-key-text
+             (format "Switched: %s" input)))))))
+
+(defun nemacs-gtk-kill-buffer ()
+  "Bound to `C-x k' — kill the active buffer + revert to *welcome*.
+Refuses to kill *welcome* itself (= it's the boot fallback the
+`nemacs-gtk--active-buffer' helper falls back to)."
+  (interactive)
+  (let ((bn nemacs-gtk--active-buffer-name))
+    (cond
+     ((string= bn "*welcome*")
+      (setq nemacs-gtk--last-key-text "kill-buffer: refusing *welcome*"))
+     (t
+      (let ((buf (get-buffer bn)))
+        (when buf (kill-buffer buf)))
+      (setq nemacs-gtk--active-buffer-name "*welcome*")
+      (setq nemacs-gtk--scroll-offset 0)
+      (setq nemacs-gtk--last-key-text
+            (format "Killed: %s" bn))))))
+
+(defun nemacs-gtk-save-buffers-kill-emacs ()
+  "Bound to `C-x C-c' — set the quit flag the main loop watches.
+The main loop will tear down GTK + return.  No save-prompt yet
+(= deferred until `(buffer-modified-p)' tracking is wired)."
+  (interactive)
+  (setq nemacs-gtk--quit-requested t)
+  (setq nemacs-gtk--last-key-text "C-x C-c → quit"))
+
+(defun nemacs-gtk-mouse-yank-primary ()
+  "Bound to `mouse-2' — move point to the click location, then
+`yank' (= clipboard via the installed `interprogram-paste-function').
+Mirrors `mouse-yank-primary' from real Emacs / the Linux middle-
+click paste convention."
+  (interactive)
+  (let* ((ev nemacs-gtk--last-mouse-event)
+         (row (nth 2 ev))
+         (col (nth 3 ev)))
+    (when ev
+      (let ((p (nemacs-gtk--cell-to-point row col)))
+        (with-current-buffer (nemacs-gtk--active-buffer)
+          (nelisp-ec-goto-char p)
+          (yank))
+        (setq nemacs-gtk--last-key-text
+              (format "mouse-2 yank @ point %d" p))))))
 
 
 ;;;; --- minibuffer mode (Phase 2.J — M-x execute-extended-command) ----------
@@ -657,11 +738,6 @@ Idempotent — re-installing replaces the same two function slots."
 
 ;;;; --- menu dispatch -------------------------------------------------------
 
-(defvar nemacs-gtk--quit-requested nil
-  "Non-nil when an elisp-side handler (= File > Quit menu) wants the
-main loop to exit.  Checked alongside `(nelisp-gtk-should-quit)'
-which covers the GTK window-close path.")
-
 (defun nemacs-gtk--current-line-bounds ()
   "Return (BEG . END) for the current line in `*welcome*' (= nelisp-ec
 point coords, both inclusive of `line-beginning-position', exclusive
@@ -770,13 +846,6 @@ clipboard bridge handles cross-app sync via the installed
 
 ;;;; --- mouse dispatch ------------------------------------------------------
 
-(defvar nemacs-gtk--last-mouse-event nil
-  "Most-recent mouse-press tuple for the bound mouse command to
-consume.  Format mirrors what `(nelisp-gtk-poll-mouse)' returns:
-(KIND BUTTON ROW COL MODS).  Set by `nemacs-gtk--handle-mouse-event'
-just before feeding the synthetic `mouse-1' event into
-`emacs-command-loop', read by `nemacs-gtk-mouse-set-point'.")
-
 (defun nemacs-gtk-mouse-set-point ()
   "Bound to `mouse-1' in the GUI's global keymap.  Move point in the
 active buffer to the cell stored on `nemacs-gtk--last-mouse-event'.
@@ -824,7 +893,16 @@ Release is intentionally silent so click events don't double-fire."
       (setq nemacs-gtk--last-mouse-event ev)
       (with-current-buffer (nemacs-gtk--active-buffer)
         (emacs-command-loop-feed-events 'mouse-1)
-        (emacs-command-loop-step)))
+        (emacs-command-loop-step))
+      (nemacs-gtk--ensure-cursor-visible))
+     ((and (eq kind 'press)
+           (= button 2)
+           (< row nemacs-gtk--buffer-area-end))
+      (setq nemacs-gtk--last-mouse-event ev)
+      (with-current-buffer (nemacs-gtk--active-buffer)
+        (emacs-command-loop-feed-events 'mouse-2)
+        (emacs-command-loop-step))
+      (nemacs-gtk--ensure-cursor-visible))
      ((eq kind 'press)
       (setq nemacs-gtk--last-key-text
             (format "mouse-%d press @ (%d,%d)" button row col)))
