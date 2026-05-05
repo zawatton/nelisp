@@ -218,6 +218,8 @@ Idempotent — re-calling replaces the global map with a fresh one."
     (define-key m (vector ?\C-d) 'delete-char)
     (define-key m (vector ?\C-k) 'kill-line)
     (define-key m (vector ?\C-y) 'yank)
+    ;; Phase 2.AB — C-v = PageDown (= scroll-up-command).
+    (define-key m (vector ?\C-v) 'nemacs-gtk-page-down)
     (define-key m (vector ?\C-t) 'nemacs-gtk-transpose-chars)
     (define-key m (vector ?\C-s) 'nemacs-gtk-isearch-forward)
     (define-key m (vector ?\C-r) 'nemacs-gtk-isearch-backward)
@@ -259,6 +261,8 @@ Idempotent — re-calling replaces the global map with a fresh one."
       (define-key esc-map (vector ?\\) 'nemacs-gtk-delete-horizontal-space)
       ;; Phase 2.AA — M-y = yank-pop after C-y (cycle kill-ring).
       (define-key esc-map (vector ?y) 'nemacs-gtk-yank-pop)
+      ;; Phase 2.AB — M-v = PageUp (= scroll-down-command).
+      (define-key esc-map (vector ?v) 'nemacs-gtk-page-up)
       ;; Phase 2.X — `M-g g' = goto-line, `M-g M-g' aliased to same.
       (define-key meta-g-map (vector ?g)    'nemacs-gtk-goto-line)
       (define-key meta-g-map (vector ?\C-g) 'nemacs-gtk-goto-line)
