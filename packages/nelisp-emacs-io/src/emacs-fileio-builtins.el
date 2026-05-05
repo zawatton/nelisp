@@ -182,7 +182,10 @@ NOWARN / RAWFILE / WILDCARDS are accepted for API parity but ignored
   (defun save-buffer (&optional arg)
     "Phase D polyfill: write the current buffer to its visited file.
 ARG is accepted for API parity but ignored — the host's prefix-arg
-disambiguation (= multiple backup levels) has no MVP equivalent."
+disambiguation (= multiple backup levels) has no MVP equivalent.
+
+Clears `(buffer-modified-p)' on success so the GUI mode-line `**'
+indicator drops back to `--' after a save."
     (ignore arg)
     (let* ((b (nelisp-ec-current-buffer))
            (f (and b (buffer-file-name b))))
@@ -191,17 +194,24 @@ disambiguation (= multiple backup levels) has no MVP equivalent."
         (signal 'error '("save-buffer: buffer is not visiting a file")))
        (t
         (write-region (nelisp-ec-point-min) (nelisp-ec-point-max) f)
+        (when (fboundp 'set-buffer-modified-p)
+          (set-buffer-modified-p nil))
         f)))))
 
 (unless (fboundp 'write-file)
   (defun write-file (filename &optional confirm)
     "Phase D polyfill: write the current buffer to FILENAME and visit it.
 CONFIRM is accepted for API parity but ignored (= no interactive
-confirmation prompt in MVP)."
+confirmation prompt in MVP).
+
+Clears `(buffer-modified-p)' on success — `set-visited-file-name'
+takes the buffer's contents to be in-sync with the new path."
     (ignore confirm)
     (let ((abs (nelisp-ec-expand-file-name filename)))
       (write-region (nelisp-ec-point-min) (nelisp-ec-point-max) abs)
       (set-visited-file-name abs)
+      (when (fboundp 'set-buffer-modified-p)
+        (set-buffer-modified-p nil))
       abs)))
 
 (unless (fboundp 'revert-buffer)
