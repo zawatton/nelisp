@@ -238,7 +238,8 @@ Idempotent — re-calling replaces the global map with a fresh one."
     ;; Esc-prefix → meta commands.  Reached either by pressing Esc
     ;; explicitly (= old terminal style) or by Alt+KEY which the
     ;; dispatch-key Alt-folding rewrites to the same 2-event vec.
-    (let ((esc-map (make-sparse-keymap)))
+    (let ((esc-map  (make-sparse-keymap))
+          (meta-g-map (make-sparse-keymap)))
       (define-key esc-map (vector ?x) 'execute-extended-command)
       (define-key esc-map (vector ?f) 'forward-word)
       (define-key esc-map (vector ?b) 'backward-word)
@@ -246,6 +247,10 @@ Idempotent — re-calling replaces the global map with a fresh one."
       (define-key esc-map (vector ?w) 'nemacs-gtk-copy-region)
       (define-key esc-map (vector ?<) 'nemacs-gtk-meta-beginning-of-buffer)
       (define-key esc-map (vector ?>) 'nemacs-gtk-meta-end-of-buffer)
+      ;; Phase 2.X — `M-g g' = goto-line, `M-g M-g' aliased to same.
+      (define-key meta-g-map (vector ?g)    'nemacs-gtk-goto-line)
+      (define-key meta-g-map (vector ?\C-g) 'nemacs-gtk-goto-line)
+      (define-key esc-map (vector ?g) meta-g-map)
       (define-key m (vector 27) esc-map))
     ;; Mouse: left click inside buffer area routes through
     ;; `emacs-command-loop' as a `mouse-1' event bound to
@@ -526,6 +531,49 @@ copy/cut handlers then operate on the whole buffer."
   (interactive)
   (with-current-buffer (nemacs-gtk--active-buffer)
     (nelisp-ec-goto-char (nelisp-ec-point-max))))
+
+(defun nemacs-gtk-goto-line ()
+  "Bound to `M-g g' / `M-g M-g' / `M-x goto-line' (Phase 2.X).
+Prompt for a 1-based line number in the minibuffer + move point
+to that line's beginning.  Out-of-range numbers clamp to first /
+last line.  Empty input is a no-op."
+  (interactive)
+  (nemacs-gtk--enter-minibuffer
+   "Goto line: "
+   (lambda (input)
+     (cond
+      ((or (null input) (string-empty-p input))
+       (setq nemacs-gtk--last-key-text "goto-line: empty"))
+      (t
+       (let ((n (condition-case _err
+                    (string-to-number input)
+                  (error 0))))
+         (cond
+          ((<= n 0)
+           (setq nemacs-gtk--last-key-text
+                 (format "goto-line: bad number %s" input)))
+          (t
+           (with-current-buffer (nemacs-gtk--active-buffer)
+             (let* ((total  (nemacs-gtk--buffer-line-count))
+                    (target (min n total)))
+               (nelisp-ec-goto-char (nelisp-ec-point-min))
+               (forward-line (- target 1))
+               (setq nemacs-gtk--last-key-text
+                     (format "Line %d/%d" target total))))
+           (nemacs-gtk--ensure-cursor-visible))))))))) ; cursor-on-screen
+
+(defun what-line ()
+  "Echo the current line number / total line count of the active
+buffer (Phase 2.X).  Bound nowhere directly — accessible via
+`M-x what-line'.  Mirrors real Emacs's `what-line' contract
+(= numbers only, no \"Line N\" prefix on the user side; we add one
+in the echo for readability)."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let* ((line  (line-number-at-pos))
+           (total (nemacs-gtk--buffer-line-count)))
+      (setq nemacs-gtk--last-key-text
+            (format "Line %d/%d" line total)))))
 
 (defun nemacs-gtk-meta-kill-word ()
   "Bound to `M-d' / `Esc d' — kill chars from point to end of next
@@ -854,6 +902,7 @@ success / failure."
     "end-of-line"
     "execute-extended-command"
     "find-file"
+    "goto-line"
     "forward-char"
     "forward-word"
     "isearch-backward"
@@ -865,6 +914,7 @@ success / failure."
     "mark-whole-buffer"
     "newline"
     "nemacs-gtk-copy-region"
+    "nemacs-gtk-goto-line"
     "nemacs-gtk-isearch-backward"
     "nemacs-gtk-isearch-forward"
     "nemacs-gtk-keyboard-find-file"
@@ -890,6 +940,7 @@ success / failure."
     "self-insert-command"
     "set-mark-command"
     "switch-to-buffer"
+    "what-line"
     "yank")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
