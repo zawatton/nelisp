@@ -90,6 +90,23 @@ to another buffer (= `C-x b' / open file) the mark becomes
 inactive — `nemacs-gtk--region-bounds' refuses to return bounds
 unless the active buffer matches this slot.")
 
+(defvar nemacs-gtk--shift-region nil
+  "Non-nil when the active mark was activated via Shift+motion (=
+shift-select).  A subsequent plain (= non-shifted) motion will
+deactivate the mark, mirroring real Emacs's `shift-select-mode'.
+Cleared by `nemacs-gtk--deactivate-mark'.
+
+Distinct from `--mark-pos' so that an explicit `C-SPC' followed
+by motion keeps the mark alive (= manual marks are sticky), only
+auto-set marks are auto-deactivated.")
+
+;; GDK ModifierType bit positions (= `gdk_modifier_type' in libgdk-4).
+;; Hoisted here so shift-select can reference `--gdk-shift-mask' before
+;; the key-event translator block defines them all together.
+(defconst nemacs-gtk--gdk-shift-mask    1)
+(defconst nemacs-gtk--gdk-control-mask  4)
+(defconst nemacs-gtk--gdk-alt-mask      8)
+
 (defvar nemacs-gtk--last-mouse-event nil
   "Most-recent mouse-press tuple for the bound mouse commands
 (= `nemacs-gtk-mouse-set-point' / `nemacs-gtk-mouse-yank-primary')
@@ -323,8 +340,48 @@ buffer, else nil.  Active means: `--mark-pos' is non-nil AND
          (t       (cons p m)))))))
 
 (defun nemacs-gtk--deactivate-mark ()
-  (setq nemacs-gtk--mark-pos    nil)
-  (setq nemacs-gtk--mark-buffer nil))
+  (setq nemacs-gtk--mark-pos     nil)
+  (setq nemacs-gtk--mark-buffer  nil)
+  (setq nemacs-gtk--shift-region nil))
+
+(defconst nemacs-gtk--shift-motion-events
+  '(left right up down home end prior next)
+  "Event symbols that participate in shift-select.  When any of these
+fire with the Shift modifier held + no active region in the current
+buffer, `nemacs-gtk--shift-arrow-pre-dispatch' auto-sets the mark.")
+
+(defun nemacs-gtk--shift-arrow-pre-dispatch (event mods)
+  "Maintain the shift-select region in front of EVENT/MODS dispatch.
+
+When EVENT is a motion (= a member of `nemacs-gtk--shift-motion-events')
+and the Shift bit is set in MODS:
+  - if no active region exists in the current buffer, set the mark at
+    point + flag the region as shift-selected so a later non-shifted
+    motion can auto-deactivate it.
+
+When EVENT is a motion and Shift is NOT held + a shift-selected region
+is currently active:
+  - deactivate the mark (= mirrors real Emacs `shift-select-mode' where
+    a non-shifted motion drops the region).
+
+A region set by an explicit `C-SPC' (= `--shift-region' is nil) is
+sticky — plain motions don't deactivate it.  Returns nil; side-effects
+only."
+  (when (memq event nemacs-gtk--shift-motion-events)
+    (let* ((shift-p (= (logand mods nemacs-gtk--gdk-shift-mask)
+                       nemacs-gtk--gdk-shift-mask))
+           (bn nemacs-gtk--active-buffer-name)
+           (active-here (and nemacs-gtk--mark-pos
+                             (equal nemacs-gtk--mark-buffer bn))))
+      (cond
+       ((and shift-p (not active-here))
+        (with-current-buffer (nemacs-gtk--active-buffer)
+          (setq nemacs-gtk--mark-pos     (nelisp-ec-point))
+          (setq nemacs-gtk--mark-buffer  bn)
+          (setq nemacs-gtk--shift-region t))
+        (setq nemacs-gtk--last-key-text "Mark activated"))
+       ((and (not shift-p) nemacs-gtk--shift-region)
+        (nemacs-gtk--deactivate-mark))))))
 
 (defun nemacs-gtk-keyboard-quit ()
   "Bound to `C-g' — generic abort.  Deactivates the mark + clears
@@ -867,10 +924,8 @@ returns nil instead of a row outside the viewport."
 (defconst nemacs-gtk--keysym-end       #xff57)
 (defconst nemacs-gtk--keysym-kp-enter  #xff8d)
 
-;; GDK ModifierType bit positions (= `gdk_modifier_type' in libgdk-4):
-(defconst nemacs-gtk--gdk-shift-mask    1)
-(defconst nemacs-gtk--gdk-control-mask  4)
-(defconst nemacs-gtk--gdk-alt-mask      8)
+;; GDK modifier defconsts hoisted above (= near `--shift-region' defvar)
+;; so shift-select pre-dispatch can reference `--gdk-shift-mask'.
 
 (defun nemacs-gtk--key-event->command-loop-event (keysym mods unicode)
   "Map a GDK key event to the event symbol / integer
@@ -1008,6 +1063,13 @@ viewport."
         (nemacs-gtk--isearch-handle-key event)
         (nemacs-gtk--ensure-cursor-visible))
        (t
+        ;; Phase 2.Q shift-select: only at top-level (= no pending
+        ;; prefix), let Shift+motion auto-set the mark and a plain
+        ;; motion auto-deactivate it.  Inside a `C-x'-style prefix
+        ;; this is skipped because the user is mid-command and we
+        ;; don't want to mutate the region from incomplete input.
+        (when (null nemacs-gtk--pending-prefix)
+          (nemacs-gtk--shift-arrow-pre-dispatch event mods))
         (let* ((accumulated (vconcat (or nemacs-gtk--pending-prefix [])
                                      event-vec))
                (binding (nemacs-gtk--lookup-key-vec accumulated)))
