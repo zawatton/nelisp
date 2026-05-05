@@ -256,6 +256,10 @@ Idempotent — re-calling replaces the global map with a fresh one."
     (define-key ctl-x-map (vector ?u)   'nemacs-gtk-undo)
     ;; Phase 2.AN — `C-x C-x' = exchange-point-and-mark.
     (define-key ctl-x-map (vector ?\C-x) 'nemacs-gtk-exchange-point-and-mark)
+    ;; Phase 2.AO — `C-x C-w' = write-file (save-as).
+    (define-key ctl-x-map (vector ?\C-w) 'nemacs-gtk-write-file)
+    ;; Phase 2.AO — `C-x s' = save-some-buffers (= save all dirty).
+    (define-key ctl-x-map (vector ?s)    'nemacs-gtk-save-some-buffers)
     (define-key m (vector ?\C-x) ctl-x-map)
     ;; Mouse-2 (= middle click) → set point + yank, mirroring real
     ;; Emacs's `mouse-yank-primary' / Linux X-clipboard convention.
@@ -299,6 +303,8 @@ Idempotent — re-calling replaces the global map with a fresh one."
       (define-key esc-map (vector ?i) 'nemacs-gtk-tab-to-tab-stop)
       (define-key esc-map (vector ?q) 'nemacs-gtk-fill-paragraph)
       (define-key esc-map (vector ?^) 'nemacs-gtk-delete-indentation)
+      ;; Phase 2.AO — `M-/' = dabbrev-expand.
+      (define-key esc-map (vector ?/) 'nemacs-gtk-dabbrev-expand)
       ;; Phase 2.X — `M-g g' = goto-line, `M-g M-g' aliased to same.
       (define-key meta-g-map (vector ?g)    'nemacs-gtk-goto-line)
       (define-key meta-g-map (vector ?\C-g) 'nemacs-gtk-goto-line)
@@ -802,6 +808,183 @@ through non-blank lines until the next blank line or EOB)."
       (while (and (< (nelisp-ec-point) max)
                   (not (nemacs-gtk--blank-line-p)))
         (forward-line 1)))))
+
+(defun nemacs-gtk-write-file ()
+  "Bound to `C-x C-w' — prompt for a new path and write the active
+buffer there (= `write-file').  Updates the buffer's visited filename
+on success."
+  (interactive)
+  (nemacs-gtk--enter-minibuffer
+   "Write file: "
+   (lambda (path)
+     (cond
+      ((or (null path) (string-empty-p path))
+       (setq nemacs-gtk--last-key-text "write-file: empty path"))
+      (t
+       (with-current-buffer (nemacs-gtk--active-buffer)
+         (condition-case err
+             (let ((abs (write-file path)))
+               (nemacs-gtk--sync-window-title)
+               (setq nemacs-gtk--last-key-text
+                     (format "Wrote: %s" abs)))
+           (error
+            (setq nemacs-gtk--last-key-text
+                  (format "write-file: %s" (cadr err)))))))))))
+
+(defun nemacs-gtk-save-some-buffers ()
+  "Bound to `C-x s' — save every modified file-visiting buffer
+without prompting per-buffer.  Mirrors `(save-some-buffers t)' from
+real Emacs (= the no-confirm variant most users alias to C-x s)."
+  (interactive)
+  (let ((dirty (nemacs-gtk--unsaved-file-buffers))
+        (saved 0)
+        (failed 0))
+    (cond
+     ((null dirty)
+      (setq nemacs-gtk--last-key-text "save-some-buffers: nothing to save"))
+     (t
+      (dolist (b dirty)
+        (condition-case _err
+            (with-current-buffer b
+              (save-buffer)
+              (setq saved (1+ saved)))
+          (error (setq failed (1+ failed)))))
+      (setq nemacs-gtk--last-key-text
+            (cond
+             ((zerop failed) (format "Saved %d buffer(s)" saved))
+             (t (format "Saved %d, %d failed" saved failed))))))))
+
+(defvar nemacs-gtk--dabbrev-state nil
+  "Phase 2.AO: tracks an in-progress `M-/' chain.
+List `(PREFIX REPLACED-BEG REPLACED-END SCAN-FROM CYCLED)' where
+PREFIX is the original word fragment, REPLACED-BEG..END is the
+buffer span we're currently substituting at, SCAN-FROM is where the
+*next* backward search starts, and CYCLED is the list of completions
+already shown so we never repeat one in a single session.")
+
+(defun nemacs-gtk--dabbrev-word-at-point-prefix ()
+  "Return (BEG . PREFIX) where BEG is BOW of the word ending at point
+and PREFIX is the substring (= chars up to point).  Returns nil
+when point is not adjacent to a word."
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let ((p (nelisp-ec-point))
+          (min (nelisp-ec-point-min)))
+      (let ((q p))
+        (while (and (> q min)
+                    (emacs-edit--word-char-p
+                     (emacs-edit--char-at (- q 1))))
+          (setq q (1- q)))
+        (cond
+         ((= q p) nil)
+         (t (cons q (nelisp-ec-buffer-substring q p))))))))
+
+(defun nemacs-gtk--dabbrev-find-completion (prefix scan-from cycled)
+  "Walk the active buffer backward from SCAN-FROM looking for a word
+that starts with PREFIX (case-sensitive) AND isn't yet in CYCLED.
+Return (BEG END WORD NEW-SCAN-FROM) on hit, nil on miss."
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let ((p scan-from)
+          (min (nelisp-ec-point-min))
+          (plen (length prefix))
+          (hit nil))
+      (while (and (> p min) (not hit))
+        ;; step back one char
+        (setq p (1- p))
+        (when (emacs-edit--word-char-p (emacs-edit--char-at p))
+          ;; walk back to BOW
+          (let ((bow p))
+            (while (and (> bow min)
+                        (emacs-edit--word-char-p
+                         (emacs-edit--char-at (- bow 1))))
+              (setq bow (1- bow)))
+            ;; walk forward to EOW
+            (let ((eow p))
+              (while (and (< eow (nelisp-ec-point-max))
+                          (emacs-edit--word-char-p
+                           (emacs-edit--char-at eow)))
+                (setq eow (1+ eow)))
+              (let ((word (nelisp-ec-buffer-substring bow eow)))
+                (when (and (> (length word) plen)
+                           (string= prefix (substring word 0 plen))
+                           (not (member word cycled)))
+                  (setq hit (list bow eow word bow)))))
+            (setq p bow))))
+      hit)))
+
+(defun nemacs-gtk-dabbrev-expand ()
+  "Bound to `M-/' / `Esc /' — expand the word fragment before point
+to a longer word that occurs earlier in the buffer.  Repeated `M-/'
+cycles through alternative completions."
+  (interactive)
+  (let* ((reuse (and nemacs-gtk--dabbrev-state
+                     (let* ((st nemacs-gtk--dabbrev-state)
+                            (rb (nth 1 st))
+                            (re (nth 2 st)))
+                       (and (= (with-current-buffer
+                                   (nemacs-gtk--active-buffer)
+                                 (nelisp-ec-point))
+                               re)
+                            ;; the spelling at REPLACED-BEG..END must still
+                            ;; equal whatever we previously substituted
+                            t))))
+         (st (cond
+              (reuse nemacs-gtk--dabbrev-state)
+              (t nil))))
+    (cond
+     (st
+      (let* ((prefix (nth 0 st))
+             (rb (nth 1 st))
+             (re (nth 2 st))
+             (scan (nth 3 st))
+             (cycled (nth 4 st))
+             (hit (nemacs-gtk--dabbrev-find-completion
+                   prefix scan cycled)))
+        (cond
+         ((null hit)
+          (setq nemacs-gtk--dabbrev-state nil)
+          (setq nemacs-gtk--last-key-text
+                (format "dabbrev-expand: no more matches for %s" prefix)))
+         (t
+          (with-current-buffer (nemacs-gtk--active-buffer)
+            (kill-region rb re)
+            (nelisp-ec-goto-char rb)
+            (nelisp-ec-insert (nth 2 hit)))
+          (setq nemacs-gtk--dabbrev-state
+                (list prefix rb (+ rb (length (nth 2 hit)))
+                      (nth 3 hit) (cons (nth 2 hit) cycled)))
+          (setq nemacs-gtk--last-key-text
+                (format "dabbrev-expand: %s" (nth 2 hit)))))))
+     (t
+      ;; fresh M-/ — read prefix at point.
+      (let ((bp (nemacs-gtk--dabbrev-word-at-point-prefix)))
+        (cond
+         ((null bp)
+          (setq nemacs-gtk--last-key-text
+                "dabbrev-expand: no word fragment before point"))
+         (t
+          (let* ((prefix (cdr bp))
+                 (beg (car bp))
+                 (end (with-current-buffer (nemacs-gtk--active-buffer)
+                        (nelisp-ec-point)))
+                 (hit (nemacs-gtk--dabbrev-find-completion
+                       prefix beg (list prefix))))
+            (cond
+             ((null hit)
+              (setq nemacs-gtk--last-key-text
+                    (format "dabbrev-expand: no match for %s" prefix)))
+             (t
+              (with-current-buffer (nemacs-gtk--active-buffer)
+                (kill-region beg end)
+                (nelisp-ec-goto-char beg)
+                (nelisp-ec-insert (nth 2 hit)))
+              (setq nemacs-gtk--dabbrev-state
+                    (list prefix beg (+ beg (length (nth 2 hit)))
+                          (nth 3 hit) (list prefix (nth 2 hit))))
+              (setq nemacs-gtk--last-key-text
+                    (format "dabbrev-expand: %s" (nth 2 hit))))))))))))
+  ;; Clear state when next M-/ won't be in the same place.
+  ;; (= state lifetime is a bit pessimistic but accurate enough.)
+  )
 
 (defun nemacs-gtk-exchange-point-and-mark ()
   "Bound to `C-x C-x' — swap point and mark in the active buffer.
@@ -1832,6 +2015,7 @@ success / failure."
     "nemacs-gtk-page-down"
     "nemacs-gtk-page-up"
     "nemacs-gtk-comment-dwim"
+    "nemacs-gtk-dabbrev-expand"
     "nemacs-gtk-delete-indentation"
     "nemacs-gtk-describe-bindings"
     "nemacs-gtk-describe-key"
@@ -1842,8 +2026,10 @@ success / failure."
     "nemacs-gtk-query-replace"
     "nemacs-gtk-quoted-insert"
     "nemacs-gtk-recenter"
+    "nemacs-gtk-save-some-buffers"
     "nemacs-gtk-tab-to-tab-stop"
     "nemacs-gtk-undo"
+    "nemacs-gtk-write-file"
     "nemacs-gtk-save-buffers-kill-emacs"
     "nemacs-gtk-set-mark-command"
     "nemacs-gtk-switch-to-buffer"
@@ -1876,7 +2062,10 @@ success / failure."
     "exchange-point-and-mark"
     "tab-to-tab-stop"
     "fill-paragraph"
-    "delete-indentation")
+    "delete-indentation"
+    "write-file"
+    "save-some-buffers"
+    "dabbrev-expand")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
