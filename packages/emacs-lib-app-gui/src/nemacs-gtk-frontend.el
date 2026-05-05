@@ -39,6 +39,21 @@
 (defvar nemacs-gtk--last-key-text ""
   "Most recent key event description (= what the echo area shows).")
 
+(defconst nemacs-gtk--menu-spec
+  '(("File"
+     ("Save" . "save")
+     ("Quit" . "quit"))
+    ("Edit"
+     ("Cut"   . "cut")
+     ("Copy"  . "copy")
+     ("Paste" . "paste"))
+    ("Help"
+     ("About" . "about")))
+  "Menu structure handed to `(nelisp-gtk-set-menu-bar ...)' at boot.
+Each entry is `(LABEL . SUBENTRY-LIST)' for a submenu, or
+`(LABEL . ACTION-NAME-STRING)' for a leaf.  When a leaf is clicked
+the ACTION-NAME-STRING surfaces via `(nelisp-gtk-poll-menu-event)'.")
+
 
 ;;;; --- bootstrap helpers ----------------------------------------------------
 
@@ -241,6 +256,37 @@ dispatch step against the `*welcome*' buffer."
         (emacs-command-loop-step)))))
 
 
+;;;; --- menu dispatch -------------------------------------------------------
+
+(defvar nemacs-gtk--quit-requested nil
+  "Non-nil when an elisp-side handler (= File > Quit menu) wants the
+main loop to exit.  Checked alongside `(nelisp-gtk-should-quit)'
+which covers the GTK window-close path.")
+
+(defun nemacs-gtk--handle-menu-action (action)
+  "Dispatch a menu click — ACTION is the leaf's name-string from
+`nemacs-gtk--menu-spec'.  Most actions are still placeholders pending
+later phases; the echo area surfaces what was clicked."
+  (cond
+   ((string= action "quit")
+    ;; Synthesize the same close path the WM-X button takes.  Layer 3
+    ;; sets `nemacs-gtk--quit-requested' which the main loop checks.
+    (setq nemacs-gtk--last-key-text "menu: Quit")
+    (setq nemacs-gtk--quit-requested t))
+   ((string= action "save")
+    (setq nemacs-gtk--last-key-text "menu: Save (Phase 2.B planned)"))
+   ((string= action "cut")
+    (setq nemacs-gtk--last-key-text "menu: Cut (Phase 2.C clipboard planned)"))
+   ((string= action "copy")
+    (setq nemacs-gtk--last-key-text "menu: Copy (Phase 2.C clipboard planned)"))
+   ((string= action "paste")
+    (setq nemacs-gtk--last-key-text "menu: Paste (Phase 2.C clipboard planned)"))
+   ((string= action "about")
+    (setq nemacs-gtk--last-key-text "nemacs-gtk Phase 2 — elisp-driven"))
+   (t
+    (setq nemacs-gtk--last-key-text (format "menu: %s (unhandled)" action)))))
+
+
 ;;;; --- main entry -----------------------------------------------------------
 
 ;;;###autoload
@@ -251,23 +297,33 @@ is closed."
   ;; 1. GTK init.
   (nelisp-gtk-init nemacs-gtk--rows nemacs-gtk--cols)
   (nelisp-gtk-set-mode-line-row nemacs-gtk--mode-line-row)
-  ;; 2. Layer 2 keymap + welcome buffer.
+  ;; 2. Native menu bar (= Phase 2.A re-add, now elisp-driven).
+  (nelisp-gtk-set-menu-bar nemacs-gtk--menu-spec)
+  ;; 3. Layer 2 keymap + welcome buffer.
   (nemacs-gtk--init-keymap)
   (nemacs-gtk--prepare-welcome-buffer)
-  ;; 3. First paint.
+  ;; 4. First paint.
   (nemacs-gtk--repaint)
-  ;; 4. Main loop.
-  (while (not (nelisp-gtk-should-quit))
+  ;; 5. Main loop — drains both the key queue and the menu queue
+  ;; per iteration so a single `iterate(t)' wake handles whichever
+  ;; channel fired.
+  (setq nemacs-gtk--quit-requested nil)
+  (while (and (not (nelisp-gtk-should-quit))
+              (not nemacs-gtk--quit-requested))
     (nelisp-gtk-iterate t)
-    (let ((ev (nelisp-gtk-poll-key)))
-      (when ev
-        (let ((keysym (car ev))
-              (mods   (cadr ev))
-              (uni    (car (cddr ev))))
+    (let ((kv (nelisp-gtk-poll-key)))
+      (when kv
+        (let ((keysym (car kv))
+              (mods   (cadr kv))
+              (uni    (car (cddr kv))))
           (setq nemacs-gtk--last-key-text
                 (nemacs-gtk--describe-key keysym mods uni))
           (nemacs-gtk--dispatch-key keysym mods uni)
-          (nemacs-gtk--repaint)))))
+          (nemacs-gtk--repaint))))
+    (let ((m (nelisp-gtk-poll-menu-event)))
+      (when m
+        (nemacs-gtk--handle-menu-action m)
+        (nemacs-gtk--repaint))))
   'done)
 
 (provide 'nemacs-gtk-frontend)
