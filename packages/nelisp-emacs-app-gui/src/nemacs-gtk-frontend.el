@@ -51,6 +51,16 @@ visits a new file.  All paint / mode-line / cursor / dispatch
 helpers query this rather than hardcoding `*welcome*' so subsequent
 phases can swap buffers freely.")
 
+(defvar nemacs-gtk--scroll-offset 0
+  "First buffer line (= 0-based row index in the active buffer's
+text) that maps to grid row 0.  `nemacs-gtk--paint-buffer-area'
+uses this to slide a window of `nemacs-gtk--buffer-area-end' lines
+across the buffer.  Adjusted by mouse-wheel scroll +
+auto-scroll-when-cursor-leaves-viewport in `dispatch-key'.")
+
+(defconst nemacs-gtk--scroll-step 3
+  "Number of buffer lines moved per mouse-wheel notch.")
+
 (defun nemacs-gtk--active-buffer ()
   "Return the buffer object currently displayed in the GTK grid,
 falling back to the welcome buffer when the named one has been
@@ -161,16 +171,71 @@ index using `length' + `aref' instead — same shape, fewer deps."
         (substring body 0 nemacs-gtk--cols)))))
 
 (defun nemacs-gtk--paint-buffer-area ()
-  "Stamp `*welcome*' content into rows 0..MODE_LINE_ROW of the grid."
+  "Stamp the active buffer's content into rows 0..MODE_LINE_ROW of
+the grid, starting from buffer line `nemacs-gtk--scroll-offset'.
+Lines past EOB stamp blanks so a vertically-too-short buffer
+doesn't leak the previous repaint's tail."
   (let* ((content
           (with-current-buffer (nemacs-gtk--active-buffer) (buffer-string)))
          (lines (split-string content "\n"))
          (max-rows nemacs-gtk--buffer-area-end)
          (i 0))
     (while (< i max-rows)
-      (let ((line (or (nth i lines) "")))
+      (let ((line (or (nth (+ i nemacs-gtk--scroll-offset) lines) "")))
         (nelisp-gtk-grid-put-row i (nemacs-gtk--truncate line nemacs-gtk--cols)))
       (setq i (1+ i)))))
+
+(defun nemacs-gtk--buffer-line-count ()
+  "Return the number of lines in the active buffer (= 1 + number
+of newlines, counting the trailing-no-newline line)."
+  (let* ((content
+          (with-current-buffer (nemacs-gtk--active-buffer) (buffer-string))))
+    (length (split-string content "\n"))))
+
+(defun nemacs-gtk--clamp-scroll-offset ()
+  "Clamp `nemacs-gtk--scroll-offset' to [0, line-count - 1] so the
+viewport never slides past the buffer's end."
+  (let* ((line-count (nemacs-gtk--buffer-line-count))
+         (max-off (max 0 (- line-count 1))))
+    (when (< nemacs-gtk--scroll-offset 0)
+      (setq nemacs-gtk--scroll-offset 0))
+    (when (> nemacs-gtk--scroll-offset max-off)
+      (setq nemacs-gtk--scroll-offset max-off))))
+
+(defun nemacs-gtk--scroll-by (delta)
+  "Slide the buffer view by DELTA buffer-lines (= negative scrolls
+up / shows earlier lines, positive scrolls down)."
+  (setq nemacs-gtk--scroll-offset
+        (+ nemacs-gtk--scroll-offset delta))
+  (nemacs-gtk--clamp-scroll-offset))
+
+(defun nemacs-gtk--point-to-buf-row ()
+  "Return the buffer-row (= 0-based) at which point sits in the
+active buffer."
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let* ((p (point))
+           (target (1- p))
+           (text (buffer-string))
+           (buf-row 0) (i 0))
+      (while (< i target)
+        (when (eq (aref text i) ?\n)
+          (setq buf-row (1+ buf-row)))
+        (setq i (1+ i)))
+      buf-row)))
+
+(defun nemacs-gtk--ensure-cursor-visible ()
+  "Adjust `nemacs-gtk--scroll-offset' so point's buffer-row is
+within the viewport (= rows scroll-offset .. scroll-offset +
+buffer-area-end - 1)."
+  (let ((buf-row (nemacs-gtk--point-to-buf-row)))
+    (cond
+     ((< buf-row nemacs-gtk--scroll-offset)
+      (setq nemacs-gtk--scroll-offset buf-row))
+     ((>= buf-row (+ nemacs-gtk--scroll-offset
+                     nemacs-gtk--buffer-area-end))
+      (setq nemacs-gtk--scroll-offset
+            (1+ (- buf-row nemacs-gtk--buffer-area-end)))))
+    (nemacs-gtk--clamp-scroll-offset)))
 
 (defun nemacs-gtk--paint-mode-line ()
   (nelisp-gtk-grid-put-row nemacs-gtk--mode-line-row
@@ -185,19 +250,22 @@ index using `length' + `aref' instead — same shape, fewer deps."
 
 (defun nemacs-gtk--cell-to-point (row col)
   "Inverse of `nemacs-gtk--cursor-row-col': map a grid cell (ROW, COL)
-back to a buffer position in the active buffer.
+back to a buffer position in the active buffer.  ROW is the
+on-screen row — `nemacs-gtk--scroll-offset' is added so the
+buffer-row walked is the absolute one.
 
 When the target cell is past EOB / past the line's length, the
 result clamps to the last reachable position in the buffer text
 (= mouse-1 on the empty area below content puts point at EOB,
 which is what users expect).  Always returns a 1-based point."
   (with-current-buffer (nemacs-gtk--active-buffer)
-    (let* ((text (buffer-string))
+    (let* ((target-row (+ row nemacs-gtk--scroll-offset))
+           (text (buffer-string))
            (len  (length text))
            (i 0)
            (cur-row 0))
-      ;; Walk forward to the start of ROW.  Stop early at EOB.
-      (while (and (< i len) (< cur-row row))
+      ;; Walk forward to the start of TARGET-ROW.  Stop early at EOB.
+      (while (and (< i len) (< cur-row target-row))
         (when (eq (aref text i) ?\n)
           (setq cur-row (1+ cur-row)))
         (setq i (1+ i)))
@@ -210,24 +278,27 @@ which is what users expect).  Always returns a 1-based point."
       (1+ i))))
 
 (defun nemacs-gtk--cursor-row-col ()
-  "Compute the screen (row . col) of point in `*welcome*', or nil
-when point is outside the visible buffer area."
+  "Compute the on-screen (row . col) of point in the active buffer,
+subtracting `nemacs-gtk--scroll-offset' so a scrolled-out cursor
+returns nil instead of a row outside the viewport."
   (with-current-buffer (nemacs-gtk--active-buffer)
     (let* ((p (point))
            (target (1- p))
-           (row 0) (col 0)
+           (buf-row 0) (col 0)
            (i 0)
            (text (buffer-string)))
       (while (< i target)
         (let ((c (aref text i)))
           (if (eq c ?\n)
-              (setq row (1+ row) col 0)
+              (setq buf-row (1+ buf-row) col 0)
             (setq col (1+ col))))
         (setq i (1+ i)))
-      (if (and (< row nemacs-gtk--buffer-area-end)
-               (<= col nemacs-gtk--cols))
-          (cons row col)
-        nil))))
+      (let ((screen-row (- buf-row nemacs-gtk--scroll-offset)))
+        (if (and (>= screen-row 0)
+                 (< screen-row nemacs-gtk--buffer-area-end)
+                 (<= col nemacs-gtk--cols))
+            (cons screen-row col)
+          nil)))))
 
 (defun nemacs-gtk--repaint ()
   "One full redraw cycle: buffer, mode line, echo, cursor, queue draw."
@@ -291,13 +362,17 @@ binding) so the caller can drop it."
 
 (defun nemacs-gtk--dispatch-key (keysym mods unicode)
   "Translate a GDK key event into a command-loop event + run one
-dispatch step against the `*welcome*' buffer."
+dispatch step against the active buffer.  After the command runs,
+ensure the cursor stays inside the viewport (= auto-scroll when
+arrow keys / `next-line' / `previous-line' walk the cursor off
+the visible area)."
   (let ((event (nemacs-gtk--key-event->command-loop-event
                 keysym mods unicode)))
     (when event
       (with-current-buffer (nemacs-gtk--active-buffer)
         (emacs-command-loop-feed-events event)
-        (emacs-command-loop-step)))))
+        (emacs-command-loop-step))
+      (nemacs-gtk--ensure-cursor-visible))))
 
 
 ;;;; --- clipboard glue ------------------------------------------------------
@@ -389,6 +464,7 @@ dialogs leave the current buffer in place."
                 (format "Open failed: %s" path)))
          (t
           (setq nemacs-gtk--active-buffer-name (buffer-name buf))
+          (setq nemacs-gtk--scroll-offset 0)
           (setq nemacs-gtk--last-key-text
                 (format "Opened: %s" path)))))))))
 
@@ -501,9 +577,13 @@ Release is intentionally silent so click events don't double-fire."
       (setq nemacs-gtk--last-key-text
             (format "mouse-%d press @ (%d,%d)" button row col)))
      ((eq kind 'scroll-up)
-      (setq nemacs-gtk--last-key-text "scroll up"))
+      (nemacs-gtk--scroll-by (- nemacs-gtk--scroll-step))
+      (setq nemacs-gtk--last-key-text
+            (format "scroll up → offset %d" nemacs-gtk--scroll-offset)))
      ((eq kind 'scroll-down)
-      (setq nemacs-gtk--last-key-text "scroll down"))
+      (nemacs-gtk--scroll-by nemacs-gtk--scroll-step)
+      (setq nemacs-gtk--last-key-text
+            (format "scroll down → offset %d" nemacs-gtk--scroll-offset)))
      ;; release: silent (covered by the press echo).
      (t nil))))
 
