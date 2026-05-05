@@ -139,6 +139,10 @@ Idempotent — re-calling replaces the global map with a fresh one."
     (define-key m (vector 'right) 'forward-char)
     (define-key m (vector 'up) 'previous-line)
     (define-key m (vector 'down) 'next-line)
+    (define-key m (vector 'home)  'beginning-of-line)
+    (define-key m (vector 'end)   'end-of-line)
+    (define-key m (vector 'prior) 'nemacs-gtk-page-up)
+    (define-key m (vector 'next)  'nemacs-gtk-page-down)
     ;; Single-chord control bindings (= byte 1..26 = C-a..C-z).
     (define-key m (vector ?\C-a) 'beginning-of-line)
     (define-key m (vector ?\C-e) 'end-of-line)
@@ -232,6 +236,26 @@ The main loop will tear down GTK + return.  No save-prompt yet
   (interactive)
   (setq nemacs-gtk--quit-requested t)
   (setq nemacs-gtk--last-key-text "C-x C-c → quit"))
+
+(defun nemacs-gtk-page-up ()
+  "Bound to PageUp — scroll the viewport up by `(buffer-area-end - 2)'
+lines and move point along so it stays in the visible region."
+  (interactive)
+  (let ((delta (max 1 (- nemacs-gtk--buffer-area-end 2))))
+    (with-current-buffer (nemacs-gtk--active-buffer)
+      (forward-line (- delta)))
+    (nemacs-gtk--scroll-by (- delta))
+    (nemacs-gtk--ensure-cursor-visible)))
+
+(defun nemacs-gtk-page-down ()
+  "Bound to PageDown — scroll the viewport down by `(buffer-area-end - 2)'
+lines and move point along so it stays in the visible region."
+  (interactive)
+  (let ((delta (max 1 (- nemacs-gtk--buffer-area-end 2))))
+    (with-current-buffer (nemacs-gtk--active-buffer)
+      (forward-line delta))
+    (nemacs-gtk--scroll-by delta)
+    (nemacs-gtk--ensure-cursor-visible)))
 
 (defun nemacs-gtk-meta-beginning-of-buffer ()
   "Bound to `M-<' / `Esc <' — point ← (point-min) of active buffer."
@@ -599,10 +623,14 @@ returns nil instead of a row outside the viewport."
 (defconst nemacs-gtk--keysym-backspace #xff08)
 (defconst nemacs-gtk--keysym-return    #xff0d)
 (defconst nemacs-gtk--keysym-escape    #xff1b)
+(defconst nemacs-gtk--keysym-home      #xff50)
 (defconst nemacs-gtk--keysym-left      #xff51)
 (defconst nemacs-gtk--keysym-up        #xff52)
 (defconst nemacs-gtk--keysym-right     #xff53)
 (defconst nemacs-gtk--keysym-down      #xff54)
+(defconst nemacs-gtk--keysym-prior     #xff55) ; PageUp
+(defconst nemacs-gtk--keysym-next      #xff56) ; PageDown
+(defconst nemacs-gtk--keysym-end       #xff57)
 (defconst nemacs-gtk--keysym-kp-enter  #xff8d)
 
 ;; GDK ModifierType bit positions (= `gdk_modifier_type' in libgdk-4):
@@ -633,6 +661,10 @@ a separate event-prefix system."
      ((= keysym nemacs-gtk--keysym-right) 'right)
      ((= keysym nemacs-gtk--keysym-up)    'up)
      ((= keysym nemacs-gtk--keysym-down)  'down)
+     ((= keysym nemacs-gtk--keysym-home)  'home)
+     ((= keysym nemacs-gtk--keysym-end)   'end)
+     ((= keysym nemacs-gtk--keysym-prior) 'prior)
+     ((= keysym nemacs-gtk--keysym-next)  'next)
      ;; Ctrl + ASCII letter → control byte.  Try unicode first
      ;; (= what GDK delivers when the key produces a printable),
      ;; fall back to keysym for the Ctrl-only case where unicode
