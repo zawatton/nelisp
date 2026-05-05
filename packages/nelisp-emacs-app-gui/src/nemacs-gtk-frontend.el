@@ -281,6 +281,31 @@ later phases; the echo area surfaces what was clicked."
     (setq nemacs-gtk--last-key-text (format "menu: %s (unhandled)" action)))))
 
 
+;;;; --- mouse dispatch ------------------------------------------------------
+
+(defun nemacs-gtk--handle-mouse-event (ev)
+  "Dispatch a mouse event surfaced by `(nelisp-gtk-poll-mouse)'.  EV is
+the (KIND BUTTON ROW COL MODS) tuple — KIND is `'press' / `'release' /
+`'scroll-up' / `'scroll-down'.  MVP: press echoes button + cell, scroll
+echoes direction; release is intentionally ignored so click events
+don't double-fire.  Future phases will route presses through
+`emacs-command-loop' as `mouse-1' / `mouse-2' / `mouse-3' events."
+  (let ((kind   (nth 0 ev))
+        (button (nth 1 ev))
+        (row    (nth 2 ev))
+        (col    (nth 3 ev)))
+    (cond
+     ((eq kind 'press)
+      (setq nemacs-gtk--last-key-text
+            (format "mouse-%d press @ (%d,%d)" button row col)))
+     ((eq kind 'scroll-up)
+      (setq nemacs-gtk--last-key-text "scroll up"))
+     ((eq kind 'scroll-down)
+      (setq nemacs-gtk--last-key-text "scroll down"))
+     ;; release: silent (covered by the press echo).
+     (t nil))))
+
+
 ;;;; --- main entry -----------------------------------------------------------
 
 ;;;###autoload
@@ -317,6 +342,10 @@ is closed."
     (let ((m (nelisp-gtk-poll-menu-event)))
       (when m
         (nemacs-gtk--handle-menu-action m)
+        (nemacs-gtk--repaint)))
+    (let ((mev (nelisp-gtk-poll-mouse)))
+      (when mev
+        (nemacs-gtk--handle-mouse-event mev)
         (nemacs-gtk--repaint))))
   'done)
 
