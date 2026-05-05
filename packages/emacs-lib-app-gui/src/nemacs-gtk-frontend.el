@@ -232,6 +232,8 @@ Idempotent — re-calling replaces the global map with a fresh one."
     (define-key ctl-x-map (vector ?\C-s) 'nemacs-gtk-keyboard-save)
     (define-key ctl-x-map (vector ?\C-f) 'nemacs-gtk-keyboard-find-file)
     (define-key ctl-x-map (vector ?b)   'nemacs-gtk-switch-to-buffer)
+    ;; Phase 2.AC — `C-x C-b' = popup buffer-menu (= context-menu).
+    (define-key ctl-x-map (vector ?\C-b) 'nemacs-gtk-buffer-menu)
     (define-key ctl-x-map (vector ?k)   'nemacs-gtk-kill-buffer)
     (define-key ctl-x-map (vector ?\C-c) 'nemacs-gtk-save-buffers-kill-emacs)
     (define-key m (vector ?\C-x) ctl-x-map)
@@ -310,6 +312,45 @@ active GUI buffer to it (= flips `nemacs-gtk--active-buffer-name'
        (nemacs-gtk--sync-window-title)
        (setq nemacs-gtk--last-key-text
              (format "Switched: %s" input)))))))
+
+(defun nemacs-gtk--buffer-menu-spec ()
+  "Build the popup spec list for `nemacs-gtk-buffer-menu' — one entry
+per live buffer.  Each entry is `(LABEL . \"switch-to-buffer:NAME\")'.
+Hidden buffers (= names starting with space) are filtered out."
+  (let ((acc '()))
+    (dolist (b (and (fboundp 'buffer-list) (buffer-list)))
+      (let* ((name (and (fboundp 'buffer-name) (buffer-name b)))
+             (file (and name (fboundp 'buffer-file-name)
+                        (buffer-file-name b)))
+             (modp (and name (nemacs-gtk--buffer-modified-p b))))
+        (when (and (stringp name)
+                   (> (length name) 0)
+                   (not (eq (aref name 0) ?\s)))
+          (let ((label (cond
+                        (file (format "%s%s  (%s)"
+                                      (if modp "* " "  ") name file))
+                        (t (format "%s%s" (if modp "* " "  ") name)))))
+            (push (cons label (concat "switch-to-buffer:" name)) acc)))))
+    (nreverse acc)))
+
+(defun nemacs-gtk-buffer-menu ()
+  "Bound to `C-x C-b' — show a popup of all live buffers; clicking
+one switches to it.  Implemented via `nelisp-gtk-show-context-menu'
+so dispatch reuses `--handle-menu-action'.  Falls back to inline
+echo when GTK isn't initialised (= TUI smoke / batch tests)."
+  (interactive)
+  (let ((spec (nemacs-gtk--buffer-menu-spec)))
+    (cond
+     ((null spec)
+      (setq nemacs-gtk--last-key-text "buffer-menu: empty"))
+     ((not (fboundp 'nelisp-gtk-show-context-menu))
+      (setq nemacs-gtk--last-key-text
+            (format "buffer-menu: %d buffers (no popup backend)"
+                    (length spec))))
+     (t
+      (nelisp-gtk-show-context-menu spec 1 0)
+      (setq nemacs-gtk--last-key-text
+            (format "buffer-menu: %d buffers" (length spec)))))))
 
 (defun nemacs-gtk-kill-buffer ()
   "Bound to `C-x k' — kill the active buffer + revert to *welcome*.
@@ -1104,6 +1145,7 @@ success / failure."
     "mark-whole-buffer"
     "newline"
     "nemacs-gtk-backward-paragraph"
+    "nemacs-gtk-buffer-menu"
     "nemacs-gtk-capitalize-word"
     "nemacs-gtk-copy-region"
     "nemacs-gtk-delete-horizontal-space"
@@ -1791,6 +1833,20 @@ clipboard bridge handles cross-app sync via the installed
    ((string= action "select-all")  (nemacs-gtk-mark-whole-buffer))
    ((string= action "about")
     (setq nemacs-gtk--last-key-text "nemacs-gtk Phase 2 — elisp-driven"))
+   ;; Phase 2.AC — buffer-menu leaves emit "switch-to-buffer:NAME".
+   ((and (>= (length action) 17)
+         (string= (substring action 0 17) "switch-to-buffer:"))
+    (let ((name (substring action 17)))
+      (cond
+       ((not (get-buffer name))
+        (setq nemacs-gtk--last-key-text
+              (format "buffer-menu: %s gone" name)))
+       (t
+        (setq nemacs-gtk--active-buffer-name name)
+        (setq nemacs-gtk--scroll-offset 0)
+        (nemacs-gtk--sync-window-title)
+        (setq nemacs-gtk--last-key-text
+              (format "Switched: %s" name))))))
    (t
     (setq nemacs-gtk--last-key-text (format "menu: %s (unhandled)" action)))))
 
