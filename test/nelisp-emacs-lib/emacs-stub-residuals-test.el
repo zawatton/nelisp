@@ -40,8 +40,13 @@
   (should (featurep 'emacs-stub))
   (dolist (sym '(define-key-after
                   display-graphic-p display-color-p display-multi-frame-p
+                  window-system
+                  emacs-display-window-system emacs-display-graphic-p
+                  emacs-display-color-p emacs-display-multi-frame-p
                   window-live-p frame-selected-window))
-    (should (fboundp sym))))
+    (should (fboundp sym)))
+  (should (boundp 'emacs-display-system))
+  (should (boundp 'initial-window-system)))
 
 ;;;; B. Polyfill body — define-key-after returns DEFINITION (= 3rd arg)
 
@@ -52,13 +57,41 @@
     (should (eq 'cmd (funcall stub 'KM 'KEY 'cmd nil)))
     (should (eq 'cmd (funcall stub 'KM 'KEY 'cmd 'someprior)))))
 
-;;;; C. Polyfill body — display-* probes return nil
+;;;; C. display-* / window-system dispatch against emacs-display-system
+;;
+;; Phase 1.E (2026-05-05) — the display probes left stub-land in this
+;; phase: they now consult `emacs-display-system' so display backends
+;; (= nelisp-emacs-gtk) can flip the values that init.el branches on.
+;; These tests pin the dispatch matrix against the documented values.
 
-(ert-deftest emacs-stub-residuals-test/display-probes-return-nil ()
-  (let ((stub (lambda (&optional display) (ignore display) nil)))
-    (should-not (funcall stub))
-    (should-not (funcall stub 'tty))
-    (should-not (funcall stub "DISPLAY-spec"))))
+(ert-deftest emacs-stub-residuals-test/display-probes-default-nil ()
+  ;; With no backend set, all probes return nil — the same behaviour
+  ;; the old hard-coded stubs had, preserved as the default path.
+  (let ((emacs-display-system nil))
+    (should-not (emacs-display-window-system))
+    (should-not (emacs-display-graphic-p))
+    (should-not (emacs-display-color-p))
+    (should-not (emacs-display-multi-frame-p))))
+
+(ert-deftest emacs-stub-residuals-test/display-probes-graphic-backend ()
+  ;; A graphic backend (= 'gtk / 'x / 'pgtk / 'w32 / 'ns) flips
+  ;; window-system + display-graphic-p + display-color-p +
+  ;; display-multi-frame-p all to truthy.
+  (let ((emacs-display-system 'gtk))
+    (should (eq 'gtk (emacs-display-window-system)))
+    (should (emacs-display-graphic-p))
+    (should (emacs-display-color-p))
+    (should (emacs-display-multi-frame-p))))
+
+(ert-deftest emacs-stub-residuals-test/display-probes-tui-backend ()
+  ;; A TUI backend (= 'tui) sets window-system + display-multi-frame-p
+  ;; non-nil but display-graphic-p stays nil — that's how callers
+  ;; distinguish "have a display" from "have a graphical display".
+  (let ((emacs-display-system 'tui))
+    (should (eq 'tui (emacs-display-window-system)))
+    (should-not (emacs-display-graphic-p))
+    (should-not (emacs-display-color-p))
+    (should (emacs-display-multi-frame-p))))
 
 ;;;; D. Polyfill body — window-live-p delegates to windowp
 

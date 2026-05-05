@@ -58,22 +58,74 @@
     definition))
 
 
-;;;; --- frame.c ------------------------------------------------------------
-;; Phase 11.C'' (2026-05-03) deleted the redundant make-frame / framep
-;; / frame-live-p / frame-list / selected-frame / frame-parameter /
-;; frame-parameters / set-frame-parameter / modify-frame-parameters /
-;; delete-frame nil-stubs — `emacs-frame-builtins.el' bridges them to
-;; `emacs-frame-*'.  display-* probes have no prefixed substrate yet
-;; (= would need a display capability map), so their no-op stubs stay.
+;;;; --- frame.c / display capability map -----------------------------------
+;; Phase 1.E (2026-05-05) — display-* / `window-system' now consult a
+;; central `emacs-display-system' defvar instead of returning a hard-
+;; coded nil.  Display backends (= nelisp-emacs-gtk, the future curses
+;; TUI) `setq' that defvar at bootstrap so init.el / startup code that
+;; branches on `(display-graphic-p)' / `(window-system)' picks the
+;; right path.  Default `nil' = batch / headless / pre-bootstrap so
+;; existing stubbed-out call sites keep their previous behaviour.
+;;
+;; Earlier comment: "display-* probes have no prefixed substrate yet
+;; (= would need a display capability map), so their no-op stubs stay."
+;; The map landed here.
+
+(unless (boundp 'emacs-display-system)
+  (defvar emacs-display-system nil
+    "Symbol naming the active display backend, or nil for batch / no
+display.  Display backends (= nelisp-emacs-gtk, the future curses TUI,
+…) set this at bootstrap time before any code that branches on
+`(window-system)' / `(display-graphic-p)' runs.
+
+Recognised values (list grows as backends ship):
+  nil    — no display (= batch, headless, or pre-bootstrap)
+  'gtk   — nelisp-emacs-gtk (GTK4 GUI)
+  'tui   — emacs-tui-backend (curses-style TUI)"))
+
+(unless (boundp 'initial-window-system)
+  (defvar initial-window-system nil
+    "Mirror of `emacs-display-system' captured at frame-realise time.
+Provided for parity with the canonical Emacs name (= startup code
+reads it to detect GUI mode without round-tripping `(window-system)')."))
+
+(defun emacs-display-window-system (&optional frame)
+  "Return the active window-system symbol (= `emacs-display-system'),
+ignoring FRAME (= future per-frame override slot)."
+  (ignore frame)
+  emacs-display-system)
+
+(defun emacs-display-graphic-p (&optional display)
+  "Return non-nil when `emacs-display-system' is a graphic backend.
+'tui is treated as non-graphic; nil means no display at all.  DISPLAY
+is accepted for API parity but ignored."
+  (ignore display)
+  (and emacs-display-system
+       (not (eq emacs-display-system 'tui))))
+
+(defun emacs-display-color-p (&optional display)
+  "MVP: any graphic backend implies colour.  Future capability bits
+(= mono / grayscale displays, terminal palette depth) will refine
+this; for now we follow `display-graphic-p'."
+  (emacs-display-graphic-p display))
+
+(defun emacs-display-multi-frame-p (&optional display)
+  "MVP: any non-nil backend can host multiple frames.  Refined when
+single-frame backends (= some bare-minimum TUIs) ship."
+  (ignore display)
+  (not (null emacs-display-system)))
+
+(unless (fboundp 'window-system)
+  (defalias 'window-system #'emacs-display-window-system))
 
 (unless (fboundp 'display-graphic-p)
-  (defun display-graphic-p (&optional display) (ignore display) nil))
+  (defalias 'display-graphic-p #'emacs-display-graphic-p))
 
 (unless (fboundp 'display-color-p)
-  (defun display-color-p (&optional display) (ignore display) nil))
+  (defalias 'display-color-p #'emacs-display-color-p))
 
 (unless (fboundp 'display-multi-frame-p)
-  (defun display-multi-frame-p (&optional display) (ignore display) nil))
+  (defalias 'display-multi-frame-p #'emacs-display-multi-frame-p))
 
 
 ;;;; --- window.c -----------------------------------------------------------
