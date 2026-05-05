@@ -392,6 +392,31 @@ dialogs leave the current buffer in place."
           (setq nemacs-gtk--last-key-text
                 (format "Opened: %s" path)))))))))
 
+(defun nemacs-gtk--menu-save-file ()
+  "Save the active buffer.  When it visits a file, call `save-buffer'
+directly.  Otherwise pop the GTK save-file dialog seeded with the
+buffer name, then `write-file' the buffer to the chosen path (=
+sets visited-file-name + writes contents)."
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let* ((bn (buffer-name))
+           (visited (and (fboundp 'buffer-file-name) (buffer-file-name))))
+      (cond
+       (visited
+        (save-buffer)
+        (setq nemacs-gtk--last-key-text (format "Saved: %s" visited)))
+       (t
+        (let ((path (nelisp-gtk-show-save-dialog "Save As..." bn)))
+          (cond
+           ((null path)
+            (setq nemacs-gtk--last-key-text "Save: cancelled"))
+           (t
+            (write-file path)
+            ;; `write-file' updated the buffer's visited file; refresh
+            ;; the active-buffer-name in case the buffer was renamed.
+            (setq nemacs-gtk--active-buffer-name (buffer-name))
+            (setq nemacs-gtk--last-key-text
+                  (format "Saved as: %s" path))))))))))
+
 (defun nemacs-gtk--handle-menu-action (action)
   "Dispatch a menu click — ACTION is the leaf's name-string from
 `nemacs-gtk--menu-spec'.  Cut/Copy/Paste operate on the current line
@@ -405,8 +430,7 @@ clipboard bridge handles cross-app sync via the installed
     (setq nemacs-gtk--last-key-text "menu: Quit")
     (setq nemacs-gtk--quit-requested t))
    ((string= action "open")   (nemacs-gtk--menu-open-file))
-   ((string= action "save")
-    (setq nemacs-gtk--last-key-text "menu: Save (Phase 2.B Save deferred)"))
+   ((string= action "save")   (nemacs-gtk--menu-save-file))
    ((string= action "cut")    (nemacs-gtk--menu-cut-current-line))
    ((string= action "copy")   (nemacs-gtk--menu-copy-current-line))
    ((string= action "paste")  (nemacs-gtk--menu-paste))
