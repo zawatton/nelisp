@@ -44,10 +44,25 @@
 function.  Used by the paste function to suppress duplicate pulls
 when nothing newer has shown up on the clipboard.")
 
+(defvar nemacs-gtk--active-buffer-name "*welcome*"
+  "Name of the buffer currently rendered into the GTK grid.  Updated
+by `nemacs-gtk--menu-open-file' (= File > Open...) when the user
+visits a new file.  All paint / mode-line / cursor / dispatch
+helpers query this rather than hardcoding `*welcome*' so subsequent
+phases can swap buffers freely.")
+
+(defun nemacs-gtk--active-buffer ()
+  "Return the buffer object currently displayed in the GTK grid,
+falling back to the welcome buffer when the named one has been
+killed (= defensive — should not normally happen)."
+  (or (get-buffer nemacs-gtk--active-buffer-name)
+      (get-buffer "*welcome*")))
+
 (defconst nemacs-gtk--menu-spec
   '(("File"
-     ("Save" . "save")
-     ("Quit" . "quit"))
+     ("Open..." . "open")
+     ("Save"    . "save")
+     ("Quit"    . "quit"))
     ("Edit"
      ("Cut"   . "cut")
      ("Copy"  . "copy")
@@ -129,7 +144,7 @@ index using `length' + `aref' instead — same shape, fewer deps."
 
 (defun nemacs-gtk--mode-line-text ()
   "Compose the mode-line for the current `*welcome*' buffer state."
-  (with-current-buffer (get-buffer "*welcome*")
+  (with-current-buffer (nemacs-gtk--active-buffer)
     (let* ((name (buffer-name))
            (line (line-number-at-pos))
            (mode (symbol-name (if (boundp 'major-mode) major-mode
@@ -144,7 +159,7 @@ index using `length' + `aref' instead — same shape, fewer deps."
 (defun nemacs-gtk--paint-buffer-area ()
   "Stamp `*welcome*' content into rows 0..MODE_LINE_ROW of the grid."
   (let* ((content
-          (with-current-buffer (get-buffer "*welcome*") (buffer-string)))
+          (with-current-buffer (nemacs-gtk--active-buffer) (buffer-string)))
          (lines (split-string content "\n"))
          (max-rows nemacs-gtk--buffer-area-end)
          (i 0))
@@ -167,7 +182,7 @@ index using `length' + `aref' instead — same shape, fewer deps."
 (defun nemacs-gtk--cursor-row-col ()
   "Compute the screen (row . col) of point in `*welcome*', or nil
 when point is outside the visible buffer area."
-  (with-current-buffer (get-buffer "*welcome*")
+  (with-current-buffer (nemacs-gtk--active-buffer)
     (let* ((p (point))
            (target (1- p))
            (row 0) (col 0)
@@ -250,7 +265,7 @@ dispatch step against the `*welcome*' buffer."
   (let ((event (nemacs-gtk--key-event->command-loop-event
                 keysym mods unicode)))
     (when event
-      (with-current-buffer (get-buffer "*welcome*")
+      (with-current-buffer (nemacs-gtk--active-buffer)
         (emacs-command-loop-feed-events event)
         (emacs-command-loop-step)))))
 
@@ -294,13 +309,13 @@ which covers the GTK window-close path.")
   "Return (BEG . END) for the current line in `*welcome*' (= nelisp-ec
 point coords, both inclusive of `line-beginning-position', exclusive
 of `line-end-position'+1)."
-  (with-current-buffer (get-buffer "*welcome*")
+  (with-current-buffer (nemacs-gtk--active-buffer)
     (cons (line-beginning-position) (line-end-position))))
 
 (defun nemacs-gtk--menu-copy-current-line ()
   "Copy the current line of `*welcome*' onto kill-ring (and via the
 installed cut hook, the system clipboard)."
-  (with-current-buffer (get-buffer "*welcome*")
+  (with-current-buffer (nemacs-gtk--active-buffer)
     (let* ((b (line-beginning-position))
            (e (line-end-position)))
       (if (= b e)
@@ -311,7 +326,7 @@ installed cut hook, the system clipboard)."
 
 (defun nemacs-gtk--menu-cut-current-line ()
   "Cut the current line of `*welcome*' (= push to kill-ring + delete)."
-  (with-current-buffer (get-buffer "*welcome*")
+  (with-current-buffer (nemacs-gtk--active-buffer)
     (let* ((b (line-beginning-position))
            (e (line-end-position)))
       (if (= b e)
@@ -323,9 +338,29 @@ installed cut hook, the system clipboard)."
 (defun nemacs-gtk--menu-paste ()
   "Paste from kill-ring (= clipboard via `interprogram-paste-function')
 into `*welcome*' at point."
-  (with-current-buffer (get-buffer "*welcome*")
+  (with-current-buffer (nemacs-gtk--active-buffer)
     (yank)
     (setq nemacs-gtk--last-key-text "Pasted from clipboard")))
+
+(defun nemacs-gtk--menu-open-file ()
+  "Pop the GTK4 native open-file dialog (= `(nelisp-gtk-show-open-dialog)'),
+load the chosen file via `find-file-noselect', and switch the active
+buffer to the loaded one so the next repaint shows it.  Cancelled
+dialogs leave the current buffer in place."
+  (let ((path (nelisp-gtk-show-open-dialog "Open File")))
+    (cond
+     ((null path)
+      (setq nemacs-gtk--last-key-text "Open: cancelled"))
+     (t
+      (let ((buf (find-file-noselect path)))
+        (cond
+         ((null buf)
+          (setq nemacs-gtk--last-key-text
+                (format "Open failed: %s" path)))
+         (t
+          (setq nemacs-gtk--active-buffer-name (buffer-name buf))
+          (setq nemacs-gtk--last-key-text
+                (format "Opened: %s" path)))))))))
 
 (defun nemacs-gtk--handle-menu-action (action)
   "Dispatch a menu click — ACTION is the leaf's name-string from
@@ -339,8 +374,9 @@ clipboard bridge handles cross-app sync via the installed
     ;; sets `nemacs-gtk--quit-requested' which the main loop checks.
     (setq nemacs-gtk--last-key-text "menu: Quit")
     (setq nemacs-gtk--quit-requested t))
+   ((string= action "open")   (nemacs-gtk--menu-open-file))
    ((string= action "save")
-    (setq nemacs-gtk--last-key-text "menu: Save (Phase 2.B planned)"))
+    (setq nemacs-gtk--last-key-text "menu: Save (Phase 2.B Save deferred)"))
    ((string= action "cut")    (nemacs-gtk--menu-cut-current-line))
    ((string= action "copy")   (nemacs-gtk--menu-copy-current-line))
    ((string= action "paste")  (nemacs-gtk--menu-paste))
