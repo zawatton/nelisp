@@ -30,11 +30,16 @@
 
 (require 'emacs-buffer-builtins)
 
-(defconst nemacs-gtk--rows 24)
-(defconst nemacs-gtk--cols 80)
-(defconst nemacs-gtk--mode-line-row (- nemacs-gtk--rows 2))
-(defconst nemacs-gtk--echo-area-row (- nemacs-gtk--rows 1))
-(defconst nemacs-gtk--buffer-area-end nemacs-gtk--mode-line-row) ; exclusive
+;; Grid dimensions are now mutable defvars (Phase 2.I) — the GTK
+;; window is resizable and `nelisp-gtk-poll-resize' surfaces the
+;; new (rows, cols) tuple per drag.  Boot defaults match the old
+;; defconst values; `nemacs-gtk--apply-grid-size' refreshes them
+;; coherently on each resize event.
+(defvar nemacs-gtk--rows 24)
+(defvar nemacs-gtk--cols 80)
+(defvar nemacs-gtk--mode-line-row (- nemacs-gtk--rows 2))
+(defvar nemacs-gtk--echo-area-row (- nemacs-gtk--rows 1))
+(defvar nemacs-gtk--buffer-area-end nemacs-gtk--mode-line-row) ; exclusive
 
 (defvar nemacs-gtk--last-key-text ""
   "Most recent key event description (= what the echo area shows).")
@@ -236,6 +241,25 @@ viewport never slides past the buffer's end."
       (setq nemacs-gtk--scroll-offset 0))
     (when (> nemacs-gtk--scroll-offset max-off)
       (setq nemacs-gtk--scroll-offset max-off))))
+
+(defun nemacs-gtk--apply-grid-size (new-rows new-cols)
+  "Refresh the grid-dimension defvars and the dependent layout
+constants when the GTK area gets resized.  Re-pushes the
+`mode-line-row' to the Rust side so the painted bar follows the
+new bottom, and re-clamps `scroll-offset' so a viewport that was
+hugging EOB doesn't fall past it."
+  (when (and (integerp new-rows) (integerp new-cols)
+             (>= new-rows 5) (>= new-cols 20)
+             (or (/= new-rows nemacs-gtk--rows)
+                 (/= new-cols nemacs-gtk--cols)))
+    (setq nemacs-gtk--rows           new-rows)
+    (setq nemacs-gtk--cols           new-cols)
+    (setq nemacs-gtk--mode-line-row  (- new-rows 2))
+    (setq nemacs-gtk--echo-area-row  (- new-rows 1))
+    (setq nemacs-gtk--buffer-area-end nemacs-gtk--mode-line-row)
+    (nelisp-gtk-set-mode-line-row nemacs-gtk--mode-line-row)
+    (nemacs-gtk--clamp-scroll-offset)
+    (nemacs-gtk--ensure-cursor-visible)))
 
 (defun nemacs-gtk--scroll-by (delta)
   "Slide the buffer view by DELTA buffer-lines (= negative scrolls
@@ -747,6 +771,10 @@ is closed."
     (let ((mev (nelisp-gtk-poll-mouse)))
       (when mev
         (nemacs-gtk--handle-mouse-event mev)
+        (nemacs-gtk--repaint)))
+    (let ((rs (nelisp-gtk-poll-resize)))
+      (when rs
+        (nemacs-gtk--apply-grid-size (nth 0 rs) (nth 1 rs))
         (nemacs-gtk--repaint))))
   'done)
 
