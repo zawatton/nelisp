@@ -225,6 +225,8 @@ Idempotent — re-calling replaces the global map with a fresh one."
     (define-key m (vector ?\C-r) 'nemacs-gtk-isearch-backward)
     (define-key m (vector ?\C-w) 'nemacs-gtk-kill-region)
     (define-key m (vector ?\C-g) 'nemacs-gtk-keyboard-quit)
+    ;; Phase 2.AF — C-q = quoted-insert (= insert next char literal).
+    (define-key m (vector ?\C-q) 'nemacs-gtk-quoted-insert)
     ;; C-SPC = ?\C-@ = byte 0
     (define-key m (vector 0) 'nemacs-gtk-set-mark-command)
     ;; C-x prefix map — common substrate-level commands behind the
@@ -265,6 +267,10 @@ Idempotent — re-calling replaces the global map with a fresh one."
       (define-key esc-map (vector ?y) 'nemacs-gtk-yank-pop)
       ;; Phase 2.AB — M-v = PageUp (= scroll-down-command).
       (define-key esc-map (vector ?v) 'nemacs-gtk-page-up)
+      ;; Phase 2.AD — M-= = count-words-region.
+      (define-key esc-map (vector ?=) 'nemacs-gtk-count-words-region)
+      ;; Phase 2.AE — M-z = zap-to-char.
+      (define-key esc-map (vector ?z) 'nemacs-gtk-zap-to-char)
       ;; Phase 2.X — `M-g g' = goto-line, `M-g M-g' aliased to same.
       (define-key meta-g-map (vector ?g)    'nemacs-gtk-goto-line)
       (define-key meta-g-map (vector ?\C-g) 'nemacs-gtk-goto-line)
@@ -769,6 +775,107 @@ through non-blank lines until the next blank line or EOB)."
                   (not (nemacs-gtk--blank-line-p)))
         (forward-line 1)))))
 
+(defun nemacs-gtk--count-words-in-range (beg end)
+  "Return word count in BEG..END of the current substrate buffer.
+A word is a maximal run of `emacs-edit--word-char-p'-true chars."
+  (let ((p beg) (in-word nil) (n 0))
+    (while (< p end)
+      (let ((ch (emacs-edit--char-at p)))
+        (cond
+         ((emacs-edit--word-char-p ch)
+          (unless in-word (setq n (1+ n) in-word t)))
+         (t (setq in-word nil))))
+      (setq p (1+ p)))
+    n))
+
+(defun nemacs-gtk--count-lines-in-range (beg end)
+  "Return line count in BEG..END (= newlines + 1 if non-empty range
+not ending in newline)."
+  (let ((p beg) (n 0))
+    (while (< p end)
+      (let ((ch (emacs-edit--char-at p)))
+        (when (eq ch ?\n) (setq n (1+ n))))
+      (setq p (1+ p)))
+    (cond
+     ((= beg end) 0)
+     ((eq (emacs-edit--char-at (1- end)) ?\n) n)
+     (t (1+ n)))))
+
+(defun nemacs-gtk-count-words-region ()
+  "Bound to `M-=' / `Esc =' — report lines / words / chars in the
+active region (= mark .. point) or, when no region is active, in
+the whole buffer.  Result lands on the echo-area row."
+  (interactive)
+  (let* ((bn nemacs-gtk--active-buffer-name)
+         (bounds (nemacs-gtk--region-bounds))
+         (beg-end
+          (cond
+           (bounds bounds)
+           (t (with-current-buffer (nemacs-gtk--active-buffer)
+                (cons (nelisp-ec-point-min) (nelisp-ec-point-max))))))
+         (beg (car beg-end))
+         (end (cdr beg-end)))
+    (with-current-buffer (nemacs-gtk--active-buffer)
+      (let ((words (nemacs-gtk--count-words-in-range beg end))
+            (lines (nemacs-gtk--count-lines-in-range beg end))
+            (chars (- end beg)))
+        (setq nemacs-gtk--last-key-text
+              (format "%s %s: %d lines, %d words, %d chars"
+                      (if bounds "Region" "Buffer")
+                      bn lines words chars))))))
+
+(defun nemacs-gtk--scan-forward-to-char (ch limit)
+  "Scan from point in the current substrate buffer forward for
+CH, stopping at LIMIT.  Return position one past CH, or nil if
+CH not found in [point, LIMIT)."
+  (let ((p (nelisp-ec-point))
+        (found nil))
+    (while (and (< p limit) (not found))
+      (when (eq (emacs-edit--char-at p) ch)
+        (setq found (1+ p)))
+      (setq p (1+ p)))
+    found))
+
+(defun nemacs-gtk-zap-to-char ()
+  "Bound to `M-z' / `Esc z' — kill from point to (and including)
+the next occurrence of a CHAR read from a mini-prompt.  No-op +
+echo when CHAR isn't found before EOB."
+  (interactive)
+  (nemacs-gtk--enter-minibuffer
+   "Zap to char: "
+   (lambda (input)
+     (cond
+      ((or (null input) (= (length input) 0))
+       (setq nemacs-gtk--last-key-text "zap-to-char: empty"))
+      (t
+       (let ((ch (aref input 0)))
+         (with-current-buffer (nemacs-gtk--active-buffer)
+           (let* ((start (nelisp-ec-point))
+                  (max (nelisp-ec-point-max))
+                  (found (nemacs-gtk--scan-forward-to-char ch max)))
+             (cond
+              ((null found)
+               (setq nemacs-gtk--last-key-text
+                     (format "zap-to-char: %c not found" ch)))
+              (t
+               (kill-region start found)
+               (setq nemacs-gtk--last-key-text
+                     (format "zap-to-char: %c" ch))))))))))))
+
+(defvar nemacs-gtk--quoted-insert-pending nil
+  "Phase 2.AF: t while waiting for the next key event after C-q.
+The dispatch loop checks this before keymap lookup and inserts the
+event verbatim instead of running its bound command.")
+
+(defun nemacs-gtk-quoted-insert ()
+  "Bound to `C-q' — read the next key event raw and insert it as a
+literal char.  Sets `--quoted-insert-pending' so the next key event
+the dispatch loop sees gets stuffed into the buffer rather than
+keymap-resolved."
+  (interactive)
+  (setq nemacs-gtk--quoted-insert-pending t)
+  (setq nemacs-gtk--last-key-text "C-q (quoted-insert) — next key inserted literal"))
+
 (defun nemacs-gtk-backward-paragraph ()
   "Bound to `M-{' / `Esc {' (Phase 2.Y).  Move point back to the
 beginning of the current paragraph (= step up through non-blank
@@ -1137,6 +1244,7 @@ success / failure."
     "isearch-backward"
     "isearch-forward"
     "just-one-space"
+    "count-words-region"
     "kill-buffer"
     "kill-line"
     "kill-region"
@@ -1148,6 +1256,7 @@ success / failure."
     "nemacs-gtk-buffer-menu"
     "nemacs-gtk-capitalize-word"
     "nemacs-gtk-copy-region"
+    "nemacs-gtk-count-words-region"
     "nemacs-gtk-delete-horizontal-space"
     "nemacs-gtk-downcase-word"
     "nemacs-gtk-forward-paragraph"
@@ -1168,13 +1277,15 @@ success / failure."
     "nemacs-gtk-mouse-set-point"
     "nemacs-gtk-mouse-yank-primary"
     "nemacs-gtk-page-down"
-    "nemacs-gtk-yank-pop"
     "nemacs-gtk-page-up"
+    "nemacs-gtk-quoted-insert"
     "nemacs-gtk-save-buffers-kill-emacs"
     "nemacs-gtk-set-mark-command"
     "nemacs-gtk-switch-to-buffer"
     "nemacs-gtk-transpose-chars"
     "nemacs-gtk-upcase-word"
+    "nemacs-gtk-yank-pop"
+    "nemacs-gtk-zap-to-char"
     "next-line"
     "previous-line"
     "save-buffer"
@@ -1186,7 +1297,9 @@ success / failure."
     "upcase-word"
     "what-line"
     "yank"
-    "yank-pop")
+    "yank-pop"
+    "zap-to-char"
+    "quoted-insert")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
@@ -1673,6 +1786,27 @@ viewport."
         ;; landed on so the cursor stays visible.
         (nemacs-gtk--isearch-handle-key event)
         (nemacs-gtk--ensure-cursor-visible))
+       (nemacs-gtk--quoted-insert-pending
+        ;; Phase 2.AF: a `C-q' just fired — the next event is
+        ;; consumed verbatim regardless of its keymap binding.
+        ;; Tab / RET / printable chars all become literal inserts.
+        (setq nemacs-gtk--quoted-insert-pending nil)
+        (let ((ch (cond
+                   ((and (integerp event) (>= event 0) (< event #x110000))
+                    event)
+                   ((eq event 'return) ?\n)
+                   ((eq event 'tab)    ?\t)
+                   (t nil))))
+          (cond
+           ((null ch)
+            (setq nemacs-gtk--last-key-text
+                  "quoted-insert: non-char event, ignored"))
+           (t
+            (with-current-buffer (nemacs-gtk--active-buffer)
+              (nelisp-ec-insert (string ch)))
+            (setq nemacs-gtk--last-key-text
+                  (format "quoted-insert: %c (#%d)" ch ch))
+            (nemacs-gtk--ensure-cursor-visible)))))
        (t
         ;; Phase 2.Q shift-select: only at top-level (= no pending
         ;; prefix), let Shift+motion auto-set the mark and a plain
