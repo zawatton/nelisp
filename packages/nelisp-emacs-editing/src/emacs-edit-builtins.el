@@ -140,6 +140,12 @@ Track E.2: captures the deleted text and records it on
     "Phase E placeholder: cdr-pointer into `kill-ring' for `yank-pop'.
 Set to `kill-ring' on each fresh kill."))
 
+(defvar emacs-edit--last-yank-bounds nil
+  "Track D Phase 2.AA: cons cell (START . END) of the most recent
+`yank' / `yank-pop' insertion in the current buffer.  `yank-pop'
+uses this to know what range to delete + replace.  Set to nil when
+no recent yank, or when the buffer changed underneath.")
+
 (unless (boundp 'interprogram-cut-function)
   (defvar interprogram-cut-function nil
     "Function called by `kill-new' to mirror a kill onto an external
@@ -263,8 +269,59 @@ Track E.2: records the inserted span on `buffer-undo-list'."
       (when entry
         (let ((beg (nelisp-ec-point)))
           (nelisp-ec-insert entry)
+          (setq emacs-edit--last-yank-bounds (cons beg (nelisp-ec-point)))
           (when (fboundp 'emacs-undo-record-insert)
             (emacs-undo-record-insert beg (nelisp-ec-point)))))
+      nil)))
+
+(unless (fboundp 'yank-pop)
+  (defun yank-pop (&optional arg)
+    "Phase 2.AA polyfill: replace the just-yanked text with an older
+kill-ring entry.  Bound to `M-y' in the GUI; only meaningful right
+after `yank' / `yank-pop' (= the previous command must have left
+the inserted bounds in `emacs-edit--last-yank-bounds' AND point at
+the end of that insertion).
+
+ARG (= step count, default 1) advances the yank pointer that many
+entries.  Negative ARG steps backward.  Wraps around at the end.
+
+Records the replacement on `buffer-undo-list' (= one delete + one
+insert) so a subsequent `undo' restores the buffer."
+    (interactive "p")
+    (let* ((bounds emacs-edit--last-yank-bounds)
+           (n (or arg 1)))
+      (cond
+       ((null bounds)
+        (signal 'error '("Previous command was not a yank")))
+       ((not (= (nelisp-ec-point) (cdr bounds)))
+        (signal 'error '("Previous command was not a yank")))
+       ((null kill-ring)
+        (signal 'error '("Kill ring is empty")))
+       (t
+        (let* ((ring kill-ring)
+               (len (length ring))
+               (cur (or kill-ring-yank-pointer ring))
+               (cur-idx (let ((i 0) (c ring))
+                          (while (and c (not (eq c cur)))
+                            (setq c (cdr c) i (1+ i)))
+                          (if c i 0)))
+               (new-idx (mod (+ cur-idx n) len))
+               (new-cell (nthcdr new-idx ring))
+               (entry (and new-cell (car new-cell)))
+               (start (car bounds))
+               (end (cdr bounds)))
+          (when entry
+            (let ((deleted (nelisp-ec-buffer-substring start end)))
+              (nelisp-ec-delete-region start end)
+              (when (fboundp 'emacs-undo-record-delete)
+                (emacs-undo-record-delete deleted start)))
+            (nelisp-ec-goto-char start)
+            (nelisp-ec-insert entry)
+            (setq emacs-edit--last-yank-bounds
+                  (cons start (nelisp-ec-point)))
+            (when (fboundp 'emacs-undo-record-insert)
+              (emacs-undo-record-insert start (nelisp-ec-point)))
+            (setq kill-ring-yank-pointer new-cell)))))
       nil)))
 
 ;;;; --- word motion (ASCII alnum) -------------------------------------

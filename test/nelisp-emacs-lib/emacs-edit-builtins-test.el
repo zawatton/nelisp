@@ -233,6 +233,39 @@ checked by its dedicated shape test above)."
       (nelisp-ec-insert (car kill-ring))
       (should (equal "ABXYZ" (nelisp-ec-buffer-string))))))
 
+;; Phase 2.AA — yank-pop replaces last yank with older entry.
+;; Only assertable against our polyfill (host's C yank/yank-pop drive the
+;; host buffer not the substrate); skip when fboundp gates picked the C
+;; implementation.
+(ert-deftest emacs-edit-builtins-test/yank-pop-cycles-kill-ring ()
+  (skip-unless (and (eq 'emacs-edit-builtins
+                        (cdr (find-function-library 'yank)))
+                    (eq 'emacs-edit-builtins
+                        (cdr (find-function-library 'yank-pop)))))
+  (emacs-edit-builtins-test--with-fresh-buffer ""
+    (let ((kill-ring '("alpha" "beta" "gamma"))
+          (kill-ring-yank-pointer nil)
+          (emacs-edit--last-yank-bounds nil)
+          (interprogram-paste-function nil))
+      (yank)
+      (should (equal "alpha" (nelisp-ec-buffer-string)))
+      (yank-pop 1)
+      (should (equal "beta" (nelisp-ec-buffer-string)))
+      (yank-pop 1)
+      (should (equal "gamma" (nelisp-ec-buffer-string)))
+      ;; wraps around modulo length
+      (yank-pop 1)
+      (should (equal "alpha" (nelisp-ec-buffer-string))))))
+
+;; Phase 2.AA — yank-pop signals when last command wasn't a yank.
+(ert-deftest emacs-edit-builtins-test/yank-pop-rejects-without-yank ()
+  (skip-unless (eq 'emacs-edit-builtins
+                   (cdr (find-function-library 'yank-pop))))
+  (emacs-edit-builtins-test--with-fresh-buffer "abc"
+    (let ((kill-ring '("X"))
+          (emacs-edit--last-yank-bounds nil))
+      (should-error (yank-pop 1) :type 'error))))
+
 ;;;; I. forward-word polyfill body (= ASCII alnum boundary on substrate)
 ;; Under host Emacs the public `forward-word' uses host's syntax-table-
 ;; based C builtin and walks the host buffer rather than nelisp-ec
