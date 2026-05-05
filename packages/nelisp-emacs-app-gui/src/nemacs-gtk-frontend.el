@@ -219,6 +219,7 @@ Idempotent — re-calling replaces the global map with a fresh one."
     (define-key m (vector ?\C-k) 'kill-line)
     (define-key m (vector ?\C-y) 'yank)
     (define-key m (vector ?\C-s) 'nemacs-gtk-isearch-forward)
+    (define-key m (vector ?\C-r) 'nemacs-gtk-isearch-backward)
     (define-key m (vector ?\C-w) 'nemacs-gtk-kill-region)
     (define-key m (vector ?\C-g) 'nemacs-gtk-keyboard-quit)
     ;; C-SPC = ?\C-@ = byte 0
@@ -577,6 +578,12 @@ C-g cancel.")
   "Non-nil when the current `--isearch-query' has no match — flips
 the echo prompt from `I-search:' to `I-search (failing):'.")
 
+(defvar nemacs-gtk--isearch-direction 'forward
+  "Direction of the active isearch: `forward' (= C-s) or
+`backward' (= C-r).  Toggled mid-search by hitting the opposite
+direction's key.  Drives the echo prompt + which substrate
+search primitive `--isearch-search-from-start' calls.")
+
 (defvar nemacs-gtk--minibuffer-prompt "")
 (defvar nemacs-gtk--minibuffer-input "")
 (defvar nemacs-gtk--minibuffer-on-confirm nil
@@ -724,18 +731,34 @@ the event was handled (= caller should not run normal dispatch)."
 the current point on `--isearch-start-pos' so C-g can restore it.
 While active, every printable key extends the query and re-searches
 from the saved start; another C-s jumps to the next match starting
-after the current point; backspace shrinks the query; Return /
-Escape exit at the current match; C-g cancels and restores point."
+after the current point; C-r toggles to backward search; backspace
+shrinks the query; Return / Escape exit at the current match; C-g
+cancels and restores point."
   (interactive)
   (with-current-buffer (nemacs-gtk--active-buffer)
     (setq nemacs-gtk--isearch-start-pos (nelisp-ec-point)))
-  (setq nemacs-gtk--isearch-active   t)
-  (setq nemacs-gtk--isearch-query    "")
-  (setq nemacs-gtk--isearch-failing  nil))
+  (setq nemacs-gtk--isearch-active    t)
+  (setq nemacs-gtk--isearch-query     "")
+  (setq nemacs-gtk--isearch-failing   nil)
+  (setq nemacs-gtk--isearch-direction 'forward))
+
+(defun nemacs-gtk-isearch-backward ()
+  "Bound to `C-r' — start an incremental backward search.  Symmetric
+counterpart to `nemacs-gtk-isearch-forward' (Phase 2.W).  Inside an
+already-active forward isearch, C-r toggles direction instead of
+starting fresh."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (setq nemacs-gtk--isearch-start-pos (nelisp-ec-point)))
+  (setq nemacs-gtk--isearch-active    t)
+  (setq nemacs-gtk--isearch-query     "")
+  (setq nemacs-gtk--isearch-failing   nil)
+  (setq nemacs-gtk--isearch-direction 'backward))
 
 (defun nemacs-gtk--isearch-search-from-start ()
-  "Reset point to start-pos + search forward for the current query.
-Updates `--isearch-failing' on success / failure."
+  "Reset point to start-pos + search for the current query in the
+direction `--isearch-direction'.  Updates `--isearch-failing' on
+success / failure."
   (with-current-buffer (nemacs-gtk--active-buffer)
     (let ((q nemacs-gtk--isearch-query))
       (cond
@@ -744,9 +767,13 @@ Updates `--isearch-failing' on success / failure."
         (setq nemacs-gtk--isearch-failing nil))
        (t
         (nelisp-ec-goto-char nemacs-gtk--isearch-start-pos)
-        (let ((found (condition-case nil
-                         (search-forward q nil t)
-                       (error nil))))
+        (let ((found
+               (condition-case nil
+                   (cond
+                    ((eq nemacs-gtk--isearch-direction 'backward)
+                     (search-backward q nil t))
+                    (t (search-forward q nil t)))
+                 (error nil))))
           (setq nemacs-gtk--isearch-failing (not found))
           (unless found
             (nelisp-ec-goto-char nemacs-gtk--isearch-start-pos))))))))
@@ -770,15 +797,36 @@ Updates `--isearch-failing' on success / failure."
     (setq nemacs-gtk--isearch-active nil)
     (setq nemacs-gtk--last-key-text "isearch ended")
     t)
-   ;; C-s (= byte 19) during isearch → jump to next match starting
-   ;; after the current point.  No-op when query is empty.
+   ;; C-s (= byte 19) during isearch:
+   ;;   - if currently forward → jump to NEXT forward match
+   ;;   - if currently backward → flip to forward + search-from-start
+   ;;     (= "switch direction" gesture)
    ((eq event 19)
-    (when (> (length nemacs-gtk--isearch-query) 0)
-      (with-current-buffer (nemacs-gtk--active-buffer)
-        (let ((found (condition-case nil
-                         (search-forward nemacs-gtk--isearch-query nil t)
-                       (error nil))))
-          (setq nemacs-gtk--isearch-failing (not found)))))
+    (cond
+     ((eq nemacs-gtk--isearch-direction 'backward)
+      (setq nemacs-gtk--isearch-direction 'forward)
+      (nemacs-gtk--isearch-search-from-start))
+     (t
+      (when (> (length nemacs-gtk--isearch-query) 0)
+        (with-current-buffer (nemacs-gtk--active-buffer)
+          (let ((found (condition-case nil
+                           (search-forward nemacs-gtk--isearch-query nil t)
+                         (error nil))))
+            (setq nemacs-gtk--isearch-failing (not found)))))))
+    t)
+   ;; C-r (= byte 18) during isearch — symmetric to C-s.
+   ((eq event 18)
+    (cond
+     ((eq nemacs-gtk--isearch-direction 'forward)
+      (setq nemacs-gtk--isearch-direction 'backward)
+      (nemacs-gtk--isearch-search-from-start))
+     (t
+      (when (> (length nemacs-gtk--isearch-query) 0)
+        (with-current-buffer (nemacs-gtk--active-buffer)
+          (let ((found (condition-case nil
+                           (search-backward nemacs-gtk--isearch-query nil t)
+                         (error nil))))
+            (setq nemacs-gtk--isearch-failing (not found)))))))
     t)
    ((eq event 'backspace)
     (when (> (length nemacs-gtk--isearch-query) 0)
@@ -808,6 +856,7 @@ Updates `--isearch-failing' on success / failure."
     "find-file"
     "forward-char"
     "forward-word"
+    "isearch-backward"
     "isearch-forward"
     "kill-buffer"
     "kill-line"
@@ -816,6 +865,7 @@ Updates `--isearch-failing' on success / failure."
     "mark-whole-buffer"
     "newline"
     "nemacs-gtk-copy-region"
+    "nemacs-gtk-isearch-backward"
     "nemacs-gtk-isearch-forward"
     "nemacs-gtk-keyboard-find-file"
     "nemacs-gtk-keyboard-quit"
@@ -1092,7 +1142,9 @@ completion candidates for the echo area, or empty when none."
                         "_"
                         (nemacs-gtk--minibuffer-candidate-suffix)))
                (nemacs-gtk--isearch-active
-                (format "I-search%s: %s_"
+                (format "I-search%s%s: %s_"
+                        (if (eq nemacs-gtk--isearch-direction 'backward)
+                            " backward" "")
                         (if nemacs-gtk--isearch-failing
                             " (failing)" "")
                         nemacs-gtk--isearch-query))
