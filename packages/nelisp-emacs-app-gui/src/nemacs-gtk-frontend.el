@@ -227,6 +227,10 @@ Idempotent — re-calling replaces the global map with a fresh one."
     (define-key m (vector ?\C-g) 'nemacs-gtk-keyboard-quit)
     ;; Phase 2.AF — C-q = quoted-insert (= insert next char literal).
     (define-key m (vector ?\C-q) 'nemacs-gtk-quoted-insert)
+    ;; Phase 2.AG — C-/ + C-_ = undo.  Both keysyms surface as the
+    ;; same (control + slash/underscore) chord depending on locale.
+    (define-key m (vector ?\C-/) 'nemacs-gtk-undo)
+    (define-key m (vector ?\C-_) 'nemacs-gtk-undo)
     ;; C-SPC = ?\C-@ = byte 0
     (define-key m (vector 0) 'nemacs-gtk-set-mark-command)
     ;; C-x prefix map — common substrate-level commands behind the
@@ -238,6 +242,8 @@ Idempotent — re-calling replaces the global map with a fresh one."
     (define-key ctl-x-map (vector ?\C-b) 'nemacs-gtk-buffer-menu)
     (define-key ctl-x-map (vector ?k)   'nemacs-gtk-kill-buffer)
     (define-key ctl-x-map (vector ?\C-c) 'nemacs-gtk-save-buffers-kill-emacs)
+    ;; Phase 2.AG — `C-x u' = undo (alternative chord).
+    (define-key ctl-x-map (vector ?u)   'nemacs-gtk-undo)
     (define-key m (vector ?\C-x) ctl-x-map)
     ;; Mouse-2 (= middle click) → set point + yank, mirroring real
     ;; Emacs's `mouse-yank-primary' / Linux X-clipboard convention.
@@ -867,6 +873,29 @@ echo when CHAR isn't found before EOB."
 The dispatch loop checks this before keymap lookup and inserts the
 event verbatim instead of running its bound command.")
 
+(defun nemacs-gtk-undo ()
+  "Bound to `C-/' / `C-_' / `C-x u' — undo one group from the
+active buffer's `buffer-undo-list'.  Wraps the substrate's
+`undo' polyfill with a `condition-case' so the
+`no-further-undo-information' / `buffer-undo-list-disabled'
+signals report on the echo-area row instead of bubbling."
+  (interactive)
+  (cond
+   ((not (fboundp 'undo))
+    (setq nemacs-gtk--last-key-text "undo: substrate not loaded"))
+   (t
+    (with-current-buffer (nemacs-gtk--active-buffer)
+      (condition-case err
+          (progn
+            (undo)
+            (setq nemacs-gtk--last-key-text "undo"))
+        (emacs-undo-error
+         (setq nemacs-gtk--last-key-text
+               (format "undo: %s" (cadr err))))
+        (error
+         (setq nemacs-gtk--last-key-text
+               (format "undo: %s" (cadr err)))))))))
+
 (defun nemacs-gtk-quoted-insert ()
   "Bound to `C-q' — read the next key event raw and insert it as a
 literal char.  Sets `--quoted-insert-pending' so the next key event
@@ -1279,6 +1308,7 @@ success / failure."
     "nemacs-gtk-page-down"
     "nemacs-gtk-page-up"
     "nemacs-gtk-quoted-insert"
+    "nemacs-gtk-undo"
     "nemacs-gtk-save-buffers-kill-emacs"
     "nemacs-gtk-set-mark-command"
     "nemacs-gtk-switch-to-buffer"
@@ -1299,7 +1329,8 @@ success / failure."
     "yank"
     "yank-pop"
     "zap-to-char"
-    "quoted-insert")
+    "quoted-insert"
+    "undo")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
@@ -1828,7 +1859,18 @@ viewport."
             (with-current-buffer (nemacs-gtk--active-buffer)
               (apply #'emacs-command-loop-feed-events
                      (append accumulated nil))
-              (emacs-command-loop-step))
+              (emacs-command-loop-step)
+              ;; Phase 2.AG — close one undo group per command, except
+              ;; consecutive `self-insert-command' which collapse into
+              ;; one group (= matches Emacs' typing-cluster semantics).
+              ;; `emacs-command-loop--last-command' was just promoted
+              ;; from `this-command' inside the step.
+              (when (and (boundp 'emacs-command-loop--last-command)
+                         emacs-command-loop--last-command
+                         (not (eq emacs-command-loop--last-command
+                                  'self-insert-command))
+                         (fboundp 'undo-boundary))
+                (undo-boundary)))
             (nemacs-gtk--ensure-cursor-visible)))))))))
 
 
