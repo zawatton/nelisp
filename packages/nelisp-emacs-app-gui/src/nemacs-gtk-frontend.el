@@ -141,6 +141,12 @@ Idempotent — re-calling replaces the global map with a fresh one."
     (define-key ctl-x-map (vector ?\C-s) 'nemacs-gtk-keyboard-save)
     (define-key ctl-x-map (vector ?\C-f) 'nemacs-gtk-keyboard-find-file)
     (define-key m (vector ?\C-x) ctl-x-map)
+    ;; Esc-prefix → M-x (= execute-extended-command).  Pressing Esc
+    ;; then x mirrors real Emacs's old terminal-style meta-prefix.
+    ;; Keysym 27 is the `Escape' key per `key-event->command-loop-event'.
+    (let ((esc-map (make-sparse-keymap)))
+      (define-key esc-map (vector ?x) 'execute-extended-command)
+      (define-key m (vector 27) esc-map))
     ;; Mouse: left click inside buffer area routes through
     ;; `emacs-command-loop' as a `mouse-1' event bound to
     ;; `nemacs-gtk-mouse-set-point' (= grid → goto-char).
@@ -156,6 +162,101 @@ Idempotent — re-calling replaces the global map with a fresh one."
   "Bound to `C-x C-f' — wraps the same menu handler as File > Open."
   (interactive)
   (nemacs-gtk--menu-open-file))
+
+
+;;;; --- minibuffer mode (Phase 2.J — M-x execute-extended-command) ----------
+
+(defvar nemacs-gtk--minibuffer-active nil
+  "Non-nil when the GUI is in inline-minibuffer mode (= M-x prompt
+on the echo-area row).  All key dispatch routes through
+`nemacs-gtk--minibuffer-handle-key' instead of the normal command
+loop while this is true.")
+
+(defvar nemacs-gtk--minibuffer-prompt "")
+(defvar nemacs-gtk--minibuffer-input "")
+(defvar nemacs-gtk--minibuffer-on-confirm nil
+  "Function called with the minibuffer's accumulated INPUT when
+the user presses `Return'.  Set by `nemacs-gtk--enter-minibuffer'.")
+
+(defun nemacs-gtk--enter-minibuffer (prompt on-confirm)
+  "Activate minibuffer mode.  PROMPT shows on the echo-area row
+ahead of the live input; ON-CONFIRM is called with the accumulated
+input string when the user presses Return.  C-g / Escape cancels
+without calling ON-CONFIRM."
+  (setq nemacs-gtk--minibuffer-active    t)
+  (setq nemacs-gtk--minibuffer-prompt    prompt)
+  (setq nemacs-gtk--minibuffer-input     "")
+  (setq nemacs-gtk--minibuffer-on-confirm on-confirm))
+
+(defun nemacs-gtk--exit-minibuffer ()
+  (setq nemacs-gtk--minibuffer-active    nil)
+  (setq nemacs-gtk--minibuffer-prompt    "")
+  (setq nemacs-gtk--minibuffer-input     "")
+  (setq nemacs-gtk--minibuffer-on-confirm nil))
+
+(defun nemacs-gtk--minibuffer-handle-key (event)
+  "Consume one event while in minibuffer mode.  Returns t when
+the event was handled (= caller should not run normal dispatch)."
+  (cond
+   ((eq event 'return)
+    (let ((input nemacs-gtk--minibuffer-input)
+          (cb    nemacs-gtk--minibuffer-on-confirm))
+      (nemacs-gtk--exit-minibuffer)
+      (when cb
+        (condition-case err
+            (funcall cb input)
+          (error (setq nemacs-gtk--last-key-text
+                       (format "minibuffer error: %S" err))))))
+    t)
+   ;; Cancel: C-g (= byte 7) or Escape.
+   ((or (eq event 7) (eq event 27))
+    (nemacs-gtk--exit-minibuffer)
+    (setq nemacs-gtk--last-key-text "Quit")
+    t)
+   ((eq event 'backspace)
+    (when (> (length nemacs-gtk--minibuffer-input) 0)
+      (setq nemacs-gtk--minibuffer-input
+            (substring nemacs-gtk--minibuffer-input 0
+                       (1- (length nemacs-gtk--minibuffer-input)))))
+    t)
+   ((and (integerp event) (>= event 32) (< event 127))
+    (setq nemacs-gtk--minibuffer-input
+          (concat nemacs-gtk--minibuffer-input
+                  (char-to-string event)))
+    t)
+   ;; Anything else (= arrow keys, mouse-1, function keys) is
+   ;; ignored while minibuffer-active so the user doesn't
+   ;; accidentally walk the cursor.
+   (t t)))
+
+(defun execute-extended-command (&optional _prefix-arg
+                                            _command-name
+                                            _typed)
+  "M-x — read a command name from the minibuffer + run it.
+
+PREFIXARG / COMMAND-NAME / TYPED accepted for API parity with
+real Emacs (= our MVP ignores them; minibuffer-typed input is
+the only source).  Bound to `Esc x' (= [27 120]) in the GUI's
+global keymap.  Type a name, press Return — we intern it, verify
+it's fboundp, and `call-interactively' it."
+  (interactive)
+  (nemacs-gtk--enter-minibuffer
+   "M-x "
+   (lambda (input)
+     (cond
+      ((string-empty-p input)
+       (setq nemacs-gtk--last-key-text "M-x: empty"))
+      (t
+       (let ((sym (intern input)))
+         (cond
+          ((not (fboundp sym))
+           (setq nemacs-gtk--last-key-text
+                 (format "M-x: %s — unbound" input)))
+          (t
+           (with-current-buffer (nemacs-gtk--active-buffer)
+             (call-interactively sym))
+           (setq nemacs-gtk--last-key-text
+                 (format "M-x %s ✓" input))))))))))
 
 (defun nemacs-gtk--prepare-welcome-buffer ()
   "Create / reset the `*welcome*' buffer + drop the cursor at end."
@@ -301,9 +402,16 @@ buffer-area-end - 1)."
                            (nemacs-gtk--mode-line-text)))
 
 (defun nemacs-gtk--paint-echo-area ()
-  (let ((text (if (string-empty-p nemacs-gtk--last-key-text)
-                  "(press any key)"
-                (format "Last key: %s" nemacs-gtk--last-key-text))))
+  (let ((text (cond
+               (nemacs-gtk--minibuffer-active
+                (concat nemacs-gtk--minibuffer-prompt
+                        nemacs-gtk--minibuffer-input
+                        ;; trailing block-cursor-ish marker so the
+                        ;; user knows the prompt is awaiting input.
+                        "_"))
+               ((string-empty-p nemacs-gtk--last-key-text)
+                "(press any key)")
+               (t (format "Last key: %s" nemacs-gtk--last-key-text)))))
     (nelisp-gtk-grid-put-row nemacs-gtk--echo-area-row
                              (nemacs-gtk--truncate text nemacs-gtk--cols))))
 
@@ -379,6 +487,7 @@ returns nil instead of a row outside the viewport."
 ;; gtk4-rs `gdk::Key::name()' inverse — the ones we care about.
 (defconst nemacs-gtk--keysym-backspace #xff08)
 (defconst nemacs-gtk--keysym-return    #xff0d)
+(defconst nemacs-gtk--keysym-escape    #xff1b)
 (defconst nemacs-gtk--keysym-left      #xff51)
 (defconst nemacs-gtk--keysym-up        #xff52)
 (defconst nemacs-gtk--keysym-right     #xff53)
@@ -407,6 +516,7 @@ a separate event-prefix system."
      ((or (= keysym nemacs-gtk--keysym-return)
           (= keysym nemacs-gtk--keysym-kp-enter))
       'return)
+     ((= keysym nemacs-gtk--keysym-escape) 27)
      ((= keysym nemacs-gtk--keysym-left)  'left)
      ((= keysym nemacs-gtk--keysym-right) 'right)
      ((= keysym nemacs-gtk--keysym-up)    'up)
@@ -488,30 +598,33 @@ itself a keymap (= a prefix mid-sequence)."
 
 (defun nemacs-gtk--dispatch-key (keysym mods unicode)
   "Translate a GDK key event + run one dispatch step against the
-active buffer.  Handles prefix keys (= C-x prefix → wait for next
-event before stepping) by accumulating onto
-`nemacs-gtk--pending-prefix'.  After the command runs, ensure the
-cursor stays inside the viewport."
+active buffer.  When the minibuffer is active, route every key
+through `nemacs-gtk--minibuffer-handle-key' instead of the keymap.
+Otherwise handle prefix keys (= C-x prefix → wait for next event)
+by accumulating onto `nemacs-gtk--pending-prefix'.  After the
+command runs, ensure the cursor stays inside the viewport."
   (let ((event (nemacs-gtk--key-event->command-loop-event
                 keysym mods unicode)))
     (when event
-      (let* ((accumulated (vconcat (or nemacs-gtk--pending-prefix [])
-                                   (vector event)))
-             (binding (nemacs-gtk--lookup-key-vec accumulated)))
-        (cond
-         ((nemacs-gtk--keymap-binding-p binding)
-          ;; More events expected — stage prefix + echo "C-x -" style.
-          (setq nemacs-gtk--pending-prefix accumulated)
-          (setq nemacs-gtk--last-key-text
-                (format "%s-" (nemacs-gtk--describe-key-vec accumulated))))
-         (t
-          ;; Either a real binding or unbound key — flush + step.
-          (setq nemacs-gtk--pending-prefix nil)
-          (with-current-buffer (nemacs-gtk--active-buffer)
-            (apply #'emacs-command-loop-feed-events
-                   (append accumulated nil))
-            (emacs-command-loop-step))
-          (nemacs-gtk--ensure-cursor-visible)))))))
+      (cond
+       (nemacs-gtk--minibuffer-active
+        (nemacs-gtk--minibuffer-handle-key event))
+       (t
+        (let* ((accumulated (vconcat (or nemacs-gtk--pending-prefix [])
+                                     (vector event)))
+               (binding (nemacs-gtk--lookup-key-vec accumulated)))
+          (cond
+           ((nemacs-gtk--keymap-binding-p binding)
+            (setq nemacs-gtk--pending-prefix accumulated)
+            (setq nemacs-gtk--last-key-text
+                  (format "%s-" (nemacs-gtk--describe-key-vec accumulated))))
+           (t
+            (setq nemacs-gtk--pending-prefix nil)
+            (with-current-buffer (nemacs-gtk--active-buffer)
+              (apply #'emacs-command-loop-feed-events
+                     (append accumulated nil))
+              (emacs-command-loop-step))
+            (nemacs-gtk--ensure-cursor-visible)))))))))
 
 
 ;;;; --- clipboard glue ------------------------------------------------------
