@@ -307,6 +307,111 @@ checked by its dedicated shape test above)."
   (should-not (emacs-edit--word-char-p ?\n))
   (should-not (emacs-edit--word-char-p nil)))
 
+;;;; K2. interprogram-cut-function: kill-new mirrors to external clipboard
+;;
+;; Use module-level dynamic vars (= dynamic, not lexical) so the
+;; lambdas we install on `interprogram-cut-function' / `-paste-function'
+;; can mutate them via plain `setq' from inside `kill-new' / `yank'.
+;; A let-bound lexical binds outside the lambda's closure capture under
+;; host Emacs's compiled C path, so we can't use that here.
+
+(defvar emacs-edit-builtins-test--cut-captured nil)
+(defvar emacs-edit-builtins-test--cut-call-count 0)
+
+(defun emacs-edit-builtins-test--cut-fn (s)
+  (setq emacs-edit-builtins-test--cut-captured
+        (cons s emacs-edit-builtins-test--cut-captured))
+  (setq emacs-edit-builtins-test--cut-call-count
+        (1+ emacs-edit-builtins-test--cut-call-count)))
+
+(ert-deftest emacs-edit-builtins-test/kill-new-fires-interprogram-cut-function ()
+  "When `interprogram-cut-function' is set, `kill-new' must call it
+with the killed string so GUI display backends can mirror onto the
+system clipboard."
+  (setq emacs-edit-builtins-test--cut-captured nil)
+  (let ((kill-ring nil)
+        (kill-ring-yank-pointer nil)
+        (interprogram-cut-function #'emacs-edit-builtins-test--cut-fn))
+    (kill-new "hello")
+    (kill-new "world")
+    (should (equal '("world" "hello") emacs-edit-builtins-test--cut-captured))
+    (should (equal '("world" "hello") kill-ring))))
+
+(ert-deftest emacs-edit-builtins-test/kill-new-skips-cut-fn-on-empty ()
+  "Polyfill-only: empty strings should not trigger the cut hook
+(= avoid clobbering the system clipboard with stray empty kills).
+Host Emacs's C `kill-new' DOES forward empty strings, hence the
+skip-unless gate."
+  (skip-unless (eq 'emacs-edit-builtins
+                   (cdr (find-function-library 'kill-new))))
+  (setq emacs-edit-builtins-test--cut-call-count 0)
+  (let ((kill-ring nil)
+        (kill-ring-yank-pointer nil)
+        (interprogram-cut-function #'emacs-edit-builtins-test--cut-fn))
+    (kill-new "")
+    (should (= 0 emacs-edit-builtins-test--cut-call-count))
+    (kill-new "x")
+    (should (= 1 emacs-edit-builtins-test--cut-call-count))))
+
+;;;; K3. interprogram-paste-function: yank pulls clipboard
+
+(defvar emacs-edit-builtins-test--paste-return nil)
+(defvar emacs-edit-builtins-test--paste-call-count 0)
+
+(defun emacs-edit-builtins-test--paste-fn ()
+  (setq emacs-edit-builtins-test--paste-call-count
+        (1+ emacs-edit-builtins-test--paste-call-count))
+  emacs-edit-builtins-test--paste-return)
+
+(ert-deftest emacs-edit-builtins-test/yank-prepends-interprogram-paste ()
+  "When `interprogram-paste-function' returns a string different from
+the head of `kill-ring', `yank' must push it onto kill-ring before
+inserting (= GUI clipboard wins, matching Emacs `current-kill').
+
+Only assertable against our polyfill (= host Emacs's C `yank' has
+its own clipboard plumbing); skip when fboundp gates picked the C
+implementation."
+  (skip-unless (eq 'emacs-edit-builtins
+                   (cdr (find-function-library 'yank))))
+  (emacs-edit-builtins-test--with-fresh-buffer ""
+    (setq emacs-edit-builtins-test--paste-return "from-clipboard")
+    (let ((kill-ring '("local-head"))
+          (kill-ring-yank-pointer '("local-head"))
+          (interprogram-paste-function #'emacs-edit-builtins-test--paste-fn))
+      (yank)
+      (should (equal "from-clipboard" (car kill-ring)))
+      (should (equal "from-clipboard" (nelisp-ec-buffer-string))))))
+
+(ert-deftest emacs-edit-builtins-test/yank-skips-duplicate-clipboard ()
+  "When `interprogram-paste-function' returns a string equal to the
+head of `kill-ring', the duplicate must be dropped (= avoid pushing
+our own just-cut text twice)."
+  (skip-unless (eq 'emacs-edit-builtins
+                   (cdr (find-function-library 'yank))))
+  (emacs-edit-builtins-test--with-fresh-buffer ""
+    (setq emacs-edit-builtins-test--paste-return "same")
+    (let ((kill-ring '("same"))
+          (kill-ring-yank-pointer '("same"))
+          (interprogram-paste-function #'emacs-edit-builtins-test--paste-fn))
+      (yank)
+      (should (= 1 (length kill-ring)))
+      (should (equal "same" (nelisp-ec-buffer-string))))))
+
+(ert-deftest emacs-edit-builtins-test/yank-ignores-paste-fn-with-arg ()
+  "Non-default `yank' ARG (= older entry) must NOT consult the
+clipboard — `arg' explicitly chose a kill-ring entry."
+  (skip-unless (eq 'emacs-edit-builtins
+                   (cdr (find-function-library 'yank))))
+  (emacs-edit-builtins-test--with-fresh-buffer ""
+    (setq emacs-edit-builtins-test--paste-call-count 0)
+    (setq emacs-edit-builtins-test--paste-return "should-not-appear")
+    (let ((kill-ring '("head" "older"))
+          (kill-ring-yank-pointer '("head" "older"))
+          (interprogram-paste-function #'emacs-edit-builtins-test--paste-fn))
+      (yank 2)
+      (should (= 0 emacs-edit-builtins-test--paste-call-count))
+      (should (equal "older" (nelisp-ec-buffer-string))))))
+
 ;;;; L. Idempotence
 
 (ert-deftest emacs-edit-builtins-test/require-is-idempotent ()

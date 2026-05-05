@@ -39,6 +39,11 @@
 (defvar nemacs-gtk--last-key-text ""
   "Most recent key event description (= what the echo area shows).")
 
+(defvar nemacs-gtk--clipboard-cache nil
+  "Last text we pushed onto the GTK system clipboard via our cut
+function.  Used by the paste function to suppress duplicate pulls
+when nothing newer has shown up on the clipboard.")
+
 (defconst nemacs-gtk--menu-spec
   '(("File"
      ("Save" . "save")
@@ -250,6 +255,34 @@ dispatch step against the `*welcome*' buffer."
         (emacs-command-loop-step)))))
 
 
+;;;; --- clipboard glue ------------------------------------------------------
+
+(defun nemacs-gtk--clipboard-cut-fn (text)
+  "Push TEXT onto the GTK system clipboard.  Wired into
+`interprogram-cut-function' so any `kill-new' (= `copy-region-as-kill',
+`kill-region', `kill-line') automatically mirrors onto the clipboard."
+  (when (and (stringp text) (> (length text) 0))
+    (nelisp-gtk-clipboard-set text)
+    (setq nemacs-gtk--clipboard-cache text)))
+
+(defun nemacs-gtk--clipboard-paste-fn ()
+  "Return the current GTK clipboard text, or nil when it matches our
+last cut (= nothing newer to surface for `yank').  Wired into
+`interprogram-paste-function'."
+  (let ((text (nelisp-gtk-clipboard-get)))
+    (cond
+     ((null text) nil)
+     ((equal text nemacs-gtk--clipboard-cache) nil)
+     (t text))))
+
+(defun nemacs-gtk--install-clipboard-glue ()
+  "Install the GTK clipboard ↔ kill-ring bridge by setting
+`interprogram-cut-function' and `interprogram-paste-function'.
+Idempotent — re-installing replaces the same two function slots."
+  (setq interprogram-cut-function   #'nemacs-gtk--clipboard-cut-fn)
+  (setq interprogram-paste-function #'nemacs-gtk--clipboard-paste-fn))
+
+
 ;;;; --- menu dispatch -------------------------------------------------------
 
 (defvar nemacs-gtk--quit-requested nil
@@ -257,10 +290,49 @@ dispatch step against the `*welcome*' buffer."
 main loop to exit.  Checked alongside `(nelisp-gtk-should-quit)'
 which covers the GTK window-close path.")
 
+(defun nemacs-gtk--current-line-bounds ()
+  "Return (BEG . END) for the current line in `*welcome*' (= nelisp-ec
+point coords, both inclusive of `line-beginning-position', exclusive
+of `line-end-position'+1)."
+  (with-current-buffer (get-buffer "*welcome*")
+    (cons (line-beginning-position) (line-end-position))))
+
+(defun nemacs-gtk--menu-copy-current-line ()
+  "Copy the current line of `*welcome*' onto kill-ring (and via the
+installed cut hook, the system clipboard)."
+  (with-current-buffer (get-buffer "*welcome*")
+    (let* ((b (line-beginning-position))
+           (e (line-end-position)))
+      (if (= b e)
+          (setq nemacs-gtk--last-key-text "Copy: line is empty")
+        (copy-region-as-kill b e)
+        (setq nemacs-gtk--last-key-text
+              (format "Copied %d chars" (- e b)))))))
+
+(defun nemacs-gtk--menu-cut-current-line ()
+  "Cut the current line of `*welcome*' (= push to kill-ring + delete)."
+  (with-current-buffer (get-buffer "*welcome*")
+    (let* ((b (line-beginning-position))
+           (e (line-end-position)))
+      (if (= b e)
+          (setq nemacs-gtk--last-key-text "Cut: line is empty")
+        (kill-region b e)
+        (setq nemacs-gtk--last-key-text
+              (format "Cut %d chars" (- e b)))))))
+
+(defun nemacs-gtk--menu-paste ()
+  "Paste from kill-ring (= clipboard via `interprogram-paste-function')
+into `*welcome*' at point."
+  (with-current-buffer (get-buffer "*welcome*")
+    (yank)
+    (setq nemacs-gtk--last-key-text "Pasted from clipboard")))
+
 (defun nemacs-gtk--handle-menu-action (action)
   "Dispatch a menu click — ACTION is the leaf's name-string from
-`nemacs-gtk--menu-spec'.  Most actions are still placeholders pending
-later phases; the echo area surfaces what was clicked."
+`nemacs-gtk--menu-spec'.  Cut/Copy/Paste operate on the current line
+of `*welcome*' (= region/mark API not yet wired in this MVP); the
+clipboard bridge handles cross-app sync via the installed
+`interprogram-cut-function' / `-paste-function'."
   (cond
    ((string= action "quit")
     ;; Synthesize the same close path the WM-X button takes.  Layer 3
@@ -269,12 +341,9 @@ later phases; the echo area surfaces what was clicked."
     (setq nemacs-gtk--quit-requested t))
    ((string= action "save")
     (setq nemacs-gtk--last-key-text "menu: Save (Phase 2.B planned)"))
-   ((string= action "cut")
-    (setq nemacs-gtk--last-key-text "menu: Cut (Phase 2.C clipboard planned)"))
-   ((string= action "copy")
-    (setq nemacs-gtk--last-key-text "menu: Copy (Phase 2.C clipboard planned)"))
-   ((string= action "paste")
-    (setq nemacs-gtk--last-key-text "menu: Paste (Phase 2.C clipboard planned)"))
+   ((string= action "cut")    (nemacs-gtk--menu-cut-current-line))
+   ((string= action "copy")   (nemacs-gtk--menu-copy-current-line))
+   ((string= action "paste")  (nemacs-gtk--menu-paste))
    ((string= action "about")
     (setq nemacs-gtk--last-key-text "nemacs-gtk Phase 2 — elisp-driven"))
    (t
@@ -318,7 +387,11 @@ is closed."
   (nelisp-gtk-set-mode-line-row nemacs-gtk--mode-line-row)
   ;; 2. Native menu bar (= Phase 2.A re-add, now elisp-driven).
   (nelisp-gtk-set-menu-bar nemacs-gtk--menu-spec)
-  ;; 3. Layer 2 keymap + welcome buffer.
+  ;; 3. System clipboard bridge — kill-ring ↔ GTK clipboard
+  ;; (Phase 2.C, lives behind the substrate's `interprogram-*'
+  ;; hook points so `kill-new' / `yank' transparently sync).
+  (nemacs-gtk--install-clipboard-glue)
+  ;; 4. Layer 2 keymap + welcome buffer.
   (nemacs-gtk--init-keymap)
   (nemacs-gtk--prepare-welcome-buffer)
   ;; 4. First paint.
