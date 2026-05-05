@@ -253,6 +253,9 @@ Idempotent — re-calling replaces the global map with a fresh one."
     ;; Phase 2.U: drag (= motion while button-1 held) extends the
     ;; region between the click position and the current cell.
     (define-key m (vector 'mouse-drag-1) 'nemacs-gtk-mouse-drag-region)
+    ;; Phase 2.V: double / triple click select word / line at point.
+    (define-key m (vector 'mouse-double-1) 'nemacs-gtk-mouse-select-word)
+    (define-key m (vector 'mouse-triple-1) 'nemacs-gtk-mouse-select-line)
     (use-global-map m)))
 
 (defun nemacs-gtk-keyboard-save ()
@@ -1545,10 +1548,92 @@ without a preceding press, defensive)."
         (setq nemacs-gtk--last-key-text
               (format "drag → %d..%d" nemacs-gtk--mark-pos p))))))
 
+(defun nemacs-gtk--word-char-p (c)
+  "Return non-nil when integer C (= a single-byte character) is a
+word constituent for the click-to-select-word feature.  Conservative
+ASCII-only set: alphanumeric + underscore — matches the substrate's
+default word syntax for the MVP."
+  (or (and (>= c ?a) (<= c ?z))
+      (and (>= c ?A) (<= c ?Z))
+      (and (>= c ?0) (<= c ?9))
+      (eq c ?_)))
+
+(defun nemacs-gtk--word-bounds-at (p)
+  "Return (BEG . END) of the word containing point P, or nil when P
+is not on a word constituent.  BEG / END are 1-based buffer positions
+in the active buffer.  Phase 2.V helper for `select-word'."
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let* ((s    (buffer-string))
+           (pmin (nelisp-ec-point-min))
+           (idx  (- p pmin))
+           (len  (length s)))
+      (cond
+       ((or (< idx 0) (>= idx len)) nil)
+       ((not (nemacs-gtk--word-char-p (aref s idx))) nil)
+       (t
+        (let ((b idx))
+          (while (and (> b 0)
+                      (nemacs-gtk--word-char-p (aref s (1- b))))
+            (setq b (1- b)))
+          (let ((e idx))
+            (while (and (< e len)
+                        (nemacs-gtk--word-char-p (aref s e)))
+              (setq e (1+ e)))
+            (cons (+ pmin b) (+ pmin e)))))))))
+
+(defun nemacs-gtk-mouse-select-word ()
+  "Bound to `mouse-double-1' (Phase 2.V).  Select the word at the
+click position.  Sets the mark at the word's start, point at its
+end.  Echoes when the click lands on whitespace."
+  (interactive)
+  (let* ((ev nemacs-gtk--last-mouse-event)
+         (row (nth 2 ev))
+         (col (nth 3 ev)))
+    (when ev
+      (let* ((p      (nemacs-gtk--cell-to-point row col))
+             (bounds (nemacs-gtk--word-bounds-at p))
+             (bn     nemacs-gtk--active-buffer-name))
+        (cond
+         (bounds
+          (with-current-buffer (nemacs-gtk--active-buffer)
+            (nelisp-ec-goto-char (cdr bounds)))
+          (setq nemacs-gtk--mark-pos     (car bounds))
+          (setq nemacs-gtk--mark-buffer  bn)
+          (setq nemacs-gtk--shift-region nil)
+          (setq nemacs-gtk--last-key-text
+                (format "Selected word (%d chars)"
+                        (- (cdr bounds) (car bounds)))))
+         (t
+          (setq nemacs-gtk--last-key-text "double-click: no word at point")))))))
+
+(defun nemacs-gtk-mouse-select-line ()
+  "Bound to `mouse-triple-1' (Phase 2.V).  Select the line at the
+click position.  Mark at line-beginning-position, point at
+line-end-position."
+  (interactive)
+  (let* ((ev nemacs-gtk--last-mouse-event)
+         (row (nth 2 ev))
+         (col (nth 3 ev)))
+    (when ev
+      (let* ((p  (nemacs-gtk--cell-to-point row col))
+             (bn nemacs-gtk--active-buffer-name))
+        (with-current-buffer (nemacs-gtk--active-buffer)
+          (nelisp-ec-goto-char p)
+          (let* ((b (line-beginning-position))
+                 (e (line-end-position)))
+            (nelisp-ec-goto-char e)
+            (setq nemacs-gtk--mark-pos     b)
+            (setq nemacs-gtk--mark-buffer  bn)
+            (setq nemacs-gtk--shift-region nil)
+            (setq nemacs-gtk--last-key-text
+                  (format "Selected line (%d chars)" (- e b)))))))))
+
 (defun nemacs-gtk--handle-mouse-event (ev)
   "Dispatch a mouse event surfaced by `(nelisp-gtk-poll-mouse)'.  EV is
-the (KIND BUTTON ROW COL MODS) tuple — KIND is `'press' / `'release' /
-`'scroll-up' / `'scroll-down'.
+the (KIND BUTTON ROW COL MODS N-PRESS) tuple — KIND is `'press' /
+`'release' / `'motion' / `'scroll-up' / `'scroll-down'.  N-PRESS is
+the GestureClick click-count (1 / 2 / 3+) — used to dispatch
+single / double / triple click events.
 
 Left-button (= button 1) press inside the buffer area routes through
 `emacs-command-loop' as a synthetic `mouse-1' event so the keymap
@@ -1569,10 +1654,21 @@ Release is intentionally silent so click events don't double-fire."
      ((and (eq kind 'press)
            (= button 1)
            (< row nemacs-gtk--buffer-area-end))
-      (setq nemacs-gtk--last-mouse-event ev)
-      (with-current-buffer (nemacs-gtk--active-buffer)
-        (emacs-command-loop-feed-events 'mouse-1)
-        (emacs-command-loop-step))
+      ;; Phase 2.V: dispatch click count → single / double / triple
+      ;; mouse-1 events.  GestureClick reports n_press as the running
+      ;; count (= 1, 2, 3, 4, ...), so an n_press >= 3 maps to triple-1
+      ;; (= line select, no further escalation).
+      (let ((n-press (or (nth 5 ev) 1))
+            (event   nil))
+        (setq nemacs-gtk--last-mouse-event ev)
+        (setq event
+              (cond
+               ((<= n-press 1) 'mouse-1)
+               ((= n-press 2)  'mouse-double-1)
+               (t              'mouse-triple-1)))
+        (with-current-buffer (nemacs-gtk--active-buffer)
+          (emacs-command-loop-feed-events event)
+          (emacs-command-loop-step)))
       (nemacs-gtk--ensure-cursor-visible))
      ;; Phase 2.U: motion with button-1 held = drag region.  Routes
      ;; through `mouse-drag-1' so the keymap binding decides the
