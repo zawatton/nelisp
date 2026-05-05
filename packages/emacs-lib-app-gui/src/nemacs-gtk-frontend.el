@@ -115,6 +115,15 @@ to consume.  Format mirrors what `(nelisp-gtk-poll-mouse)' returns:
 just before feeding the synthetic `mouse-N' event into
 `emacs-command-loop'.")
 
+(defvar nemacs-gtk--press-point nil
+  "Buffer point at the most-recent mouse-1 press.  The drag handler
+reads this to set the mark on the first drag motion since the
+press, anchoring the region at the click position even though the
+substrate doesn't have a hidden anchor concept.
+
+Cleared by every fresh mouse-1 press (= reset before the next
+drag) and on `--deactivate-mark'.")
+
 (defvar nemacs-gtk--scroll-offset 0
   "First buffer line (= 0-based row index in the active buffer's
 text) that maps to grid row 0.  `nemacs-gtk--paint-buffer-area'
@@ -241,6 +250,9 @@ Idempotent — re-calling replaces the global map with a fresh one."
     ;; `emacs-command-loop' as a `mouse-1' event bound to
     ;; `nemacs-gtk-mouse-set-point' (= grid → goto-char).
     (define-key m (vector 'mouse-1) 'nemacs-gtk-mouse-set-point)
+    ;; Phase 2.U: drag (= motion while button-1 held) extends the
+    ;; region between the click position and the current cell.
+    (define-key m (vector 'mouse-drag-1) 'nemacs-gtk-mouse-drag-region)
     (use-global-map m)))
 
 (defun nemacs-gtk-keyboard-save ()
@@ -1484,7 +1496,12 @@ Mirrors Emacs' `mouse-set-point' contract — the GUI emits a synthetic
 `mouse-1' event into the command loop; the handler stages the event
 on a defvar and the command consumes it.  This keeps the keymap
 binding ordinary (= no `(interactive \"e\")' event-arg plumbing) and
-matches how the keyboard dispatch already works."
+matches how the keyboard dispatch already works.
+
+Phase 2.U: also clears any active region (= mouse-1 click without a
+drag should drop a stale shift-select region) and stashes the click
+position on `--press-point' so the first drag motion can anchor the
+mark there."
   (interactive)
   (let* ((ev nemacs-gtk--last-mouse-event)
          (row (nth 2 ev))
@@ -1493,8 +1510,40 @@ matches how the keyboard dispatch already works."
       (let ((p (nemacs-gtk--cell-to-point row col)))
         (with-current-buffer (nemacs-gtk--active-buffer)
           (nelisp-ec-goto-char p))
+        (nemacs-gtk--deactivate-mark)
+        (setq nemacs-gtk--press-point p)
         (setq nemacs-gtk--last-key-text
               (format "mouse-1 → point %d (cell %d,%d)" p row col))))))
+
+(defun nemacs-gtk-mouse-drag-region ()
+  "Bound to `mouse-drag-1' (= mouse-1 motion while held).  Extend the
+region between `--press-point' and the current drag cell.
+
+First drag motion since the press: stamps the mark at `--press-point'
+so the region is anchored at the click.  Subsequent motions only
+update point — the mark stays put, region grows/shrinks naturally.
+
+No-op when there's no remembered press point (= drag arrived
+without a preceding press, defensive)."
+  (interactive)
+  (let* ((ev nemacs-gtk--last-mouse-event)
+         (row (nth 2 ev))
+         (col (nth 3 ev)))
+    (when (and ev nemacs-gtk--press-point)
+      (let ((p (nemacs-gtk--cell-to-point row col))
+            (bn nemacs-gtk--active-buffer-name))
+        ;; Mark gets anchored at the press position the first time we
+        ;; drag — stamping `--shift-region' nil keeps it sticky (=
+        ;; user-driven, not auto-deactivated by a plain motion key).
+        (unless (and nemacs-gtk--mark-pos
+                     (equal nemacs-gtk--mark-buffer bn))
+          (setq nemacs-gtk--mark-pos     nemacs-gtk--press-point)
+          (setq nemacs-gtk--mark-buffer  bn)
+          (setq nemacs-gtk--shift-region nil))
+        (with-current-buffer (nemacs-gtk--active-buffer)
+          (nelisp-ec-goto-char p))
+        (setq nemacs-gtk--last-key-text
+              (format "drag → %d..%d" nemacs-gtk--mark-pos p))))))
 
 (defun nemacs-gtk--handle-mouse-event (ev)
   "Dispatch a mouse event surfaced by `(nelisp-gtk-poll-mouse)'.  EV is
@@ -1523,6 +1572,18 @@ Release is intentionally silent so click events don't double-fire."
       (setq nemacs-gtk--last-mouse-event ev)
       (with-current-buffer (nemacs-gtk--active-buffer)
         (emacs-command-loop-feed-events 'mouse-1)
+        (emacs-command-loop-step))
+      (nemacs-gtk--ensure-cursor-visible))
+     ;; Phase 2.U: motion with button-1 held = drag region.  Routes
+     ;; through `mouse-drag-1' so the keymap binding decides the
+     ;; behavior.  Confined to the buffer area so dragging onto the
+     ;; mode-line / echo area stops extending.
+     ((and (eq kind 'motion)
+           (= button 1)
+           (< row nemacs-gtk--buffer-area-end))
+      (setq nemacs-gtk--last-mouse-event ev)
+      (with-current-buffer (nemacs-gtk--active-buffer)
+        (emacs-command-loop-feed-events 'mouse-drag-1)
         (emacs-command-loop-step))
       (nemacs-gtk--ensure-cursor-visible))
      ((and (eq kind 'press)
