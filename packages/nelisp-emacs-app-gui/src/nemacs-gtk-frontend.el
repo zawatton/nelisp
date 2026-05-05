@@ -210,6 +210,7 @@ active GUI buffer to it (= flips `nemacs-gtk--active-buffer-name'
       (t
        (setq nemacs-gtk--active-buffer-name input)
        (setq nemacs-gtk--scroll-offset 0)
+       (nemacs-gtk--sync-window-title)
        (setq nemacs-gtk--last-key-text
              (format "Switched: %s" input)))))))
 
@@ -227,6 +228,7 @@ Refuses to kill *welcome* itself (= it's the boot fallback the
         (when buf (kill-buffer buf)))
       (setq nemacs-gtk--active-buffer-name "*welcome*")
       (setq nemacs-gtk--scroll-offset 0)
+      (nemacs-gtk--sync-window-title)
       (setq nemacs-gtk--last-key-text
             (format "Killed: %s" bn))))))
 
@@ -525,15 +527,34 @@ index using `length' + `aref' instead — same shape, fewer deps."
       (concat s (make-string (- n len) ?\s)))
      (t (substring s 0 n)))))
 
+(defun nemacs-gtk--scroll-position-label ()
+  "Emacs-style position label for the mode-line: Top / All / Bot /
+NN%.  Computed against `--scroll-offset' + `--buffer-area-end'
++ buffer line count."
+  (let* ((line-count    (nemacs-gtk--buffer-line-count))
+         (visible-rows  nemacs-gtk--buffer-area-end)
+         (offset        nemacs-gtk--scroll-offset)
+         (last-visible-buf-row (+ offset (- visible-rows 1))))
+    (cond
+     ((<= line-count visible-rows) "All")
+     ((= offset 0)                 "Top")
+     ((>= last-visible-buf-row (- line-count 1)) "Bot")
+     (t
+      (let ((denom (max 1 (- line-count visible-rows))))
+        (format "%d%%" (/ (* 100 offset) denom)))))))
+
 (defun nemacs-gtk--mode-line-text ()
-  "Compose the mode-line for the current `*welcome*' buffer state."
+  "Compose the mode-line for the active buffer.  Includes:
+buffer-name, current line number, viewport scroll-position label
+(= Top/All/Bot/NN%), and the major-mode name."
   (with-current-buffer (nemacs-gtk--active-buffer)
     (let* ((name (buffer-name))
            (line (line-number-at-pos))
            (mode (symbol-name (if (boundp 'major-mode) major-mode
                                 'fundamental-mode)))
-           (body (format "-U:---  %s    L%d   All   (%s) "
-                         name line mode))
+           (pos  (nemacs-gtk--scroll-position-label))
+           (body (format "-U:---  %s    L%d   %s   (%s) "
+                         name line pos mode))
            (pad (- nemacs-gtk--cols (length body))))
       (if (> pad 0)
           (concat body (make-string pad ?-))
@@ -570,6 +591,14 @@ viewport never slides past the buffer's end."
       (setq nemacs-gtk--scroll-offset 0))
     (when (> nemacs-gtk--scroll-offset max-off)
       (setq nemacs-gtk--scroll-offset max-off))))
+
+(defun nemacs-gtk--sync-window-title ()
+  "Push the current active-buffer-name to the OS window titlebar
+via `(nelisp-gtk-set-window-title ...)'.  Called whenever the
+active buffer changes (= File > Open / C-x b / kill-buffer)."
+  (when (fboundp 'nelisp-gtk-set-window-title)
+    (nelisp-gtk-set-window-title
+     (format "nemacs-gtk — %s" nemacs-gtk--active-buffer-name))))
 
 (defun nemacs-gtk--apply-grid-size (new-rows new-cols)
   "Refresh the grid-dimension defvars and the dependent layout
@@ -983,6 +1012,7 @@ dialogs leave the current buffer in place."
          (t
           (setq nemacs-gtk--active-buffer-name (buffer-name buf))
           (setq nemacs-gtk--scroll-offset 0)
+          (nemacs-gtk--sync-window-title)
           (setq nemacs-gtk--last-key-text
                 (format "Opened: %s" path)))))))))
 
@@ -1008,6 +1038,7 @@ sets visited-file-name + writes contents)."
             ;; `write-file' updated the buffer's visited file; refresh
             ;; the active-buffer-name in case the buffer was renamed.
             (setq nemacs-gtk--active-buffer-name (buffer-name))
+            (nemacs-gtk--sync-window-title)
             (setq nemacs-gtk--last-key-text
                   (format "Saved as: %s" path))))))))))
 
@@ -1127,6 +1158,7 @@ is closed."
   ;; 4. Layer 2 keymap + welcome buffer.
   (nemacs-gtk--init-keymap)
   (nemacs-gtk--prepare-welcome-buffer)
+  (nemacs-gtk--sync-window-title)
   ;; 4. First paint.
   (nemacs-gtk--repaint)
   ;; 5. Main loop — drains both the key queue and the menu queue
