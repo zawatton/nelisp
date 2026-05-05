@@ -89,16 +89,26 @@ the ACTION-NAME-STRING surfaces via `(nelisp-gtk-poll-menu-event)'.")
 
 (defun nemacs-gtk--init-keymap ()
   "Install the GUI's global keymap.  Mirrors the subset
-`nemacs-main--init-keymap' (`nemacs-main.el') wires for the TUI:
+`nemacs-main--init-keymap' (`nemacs-main.el') wires for the TUI,
+plus a few common Ctrl-prefix chords for keyboard parity with
+real Emacs.
 
-  ASCII 32..126 → `self-insert-command'
-  byte 13 / `'return'  → `newline'
+  ASCII 32..126           → `self-insert-command'
+  byte 13 / `'return'     → `newline'
   byte 127 / `'backspace' → `delete-backward-char'
-  `'left' / `'right'   → `backward-char' / `forward-char'
-  `'up'   / `'down'    → `previous-line' / `next-line'
+  `'left' / `'right'      → `backward-char' / `forward-char'
+  `'up'   / `'down'       → `previous-line' / `next-line'
+  C-a / C-e               → beginning-of-line / end-of-line
+  C-f / C-b               → forward-char / backward-char
+  C-n / C-p               → next-line / previous-line
+  C-d                     → delete-char
+  C-k                     → kill-line
+  C-y                     → yank
+  C-x C-s / C-x C-f       → save / find-file (= our menu handlers)
 
 Idempotent — re-calling replaces the global map with a fresh one."
-  (let ((m (make-sparse-keymap)))
+  (let ((m (make-sparse-keymap))
+        (ctl-x-map (make-sparse-keymap)))
     (let ((c 32))
       (while (<= c 126)
         (define-key m (vector c) 'self-insert-command)
@@ -111,11 +121,36 @@ Idempotent — re-calling replaces the global map with a fresh one."
     (define-key m (vector 'right) 'forward-char)
     (define-key m (vector 'up) 'previous-line)
     (define-key m (vector 'down) 'next-line)
+    ;; Single-chord control bindings (= byte 1..26 = C-a..C-z).
+    (define-key m (vector ?\C-a) 'beginning-of-line)
+    (define-key m (vector ?\C-e) 'end-of-line)
+    (define-key m (vector ?\C-f) 'forward-char)
+    (define-key m (vector ?\C-b) 'backward-char)
+    (define-key m (vector ?\C-n) 'next-line)
+    (define-key m (vector ?\C-p) 'previous-line)
+    (define-key m (vector ?\C-d) 'delete-char)
+    (define-key m (vector ?\C-k) 'kill-line)
+    (define-key m (vector ?\C-y) 'yank)
+    ;; C-x prefix map — Save / Open round-trip via the same handlers
+    ;; the menu uses.
+    (define-key ctl-x-map (vector ?\C-s) 'nemacs-gtk-keyboard-save)
+    (define-key ctl-x-map (vector ?\C-f) 'nemacs-gtk-keyboard-find-file)
+    (define-key m (vector ?\C-x) ctl-x-map)
     ;; Mouse: left click inside buffer area routes through
     ;; `emacs-command-loop' as a `mouse-1' event bound to
     ;; `nemacs-gtk-mouse-set-point' (= grid → goto-char).
     (define-key m (vector 'mouse-1) 'nemacs-gtk-mouse-set-point)
     (use-global-map m)))
+
+(defun nemacs-gtk-keyboard-save ()
+  "Bound to `C-x C-s' — wraps the same menu handler as File > Save."
+  (interactive)
+  (nemacs-gtk--menu-save-file))
+
+(defun nemacs-gtk-keyboard-find-file ()
+  "Bound to `C-x C-f' — wraps the same menu handler as File > Open."
+  (interactive)
+  (nemacs-gtk--menu-open-file))
 
 (defun nemacs-gtk--prepare-welcome-buffer ()
   "Create / reset the `*welcome*' buffer + drop the cursor at end."
@@ -326,25 +361,49 @@ returns nil instead of a row outside the viewport."
 (defconst nemacs-gtk--keysym-down      #xff54)
 (defconst nemacs-gtk--keysym-kp-enter  #xff8d)
 
-(defun nemacs-gtk--key-event->command-loop-event (keysym _mods unicode)
+;; GDK ModifierType bit positions (= `gdk_modifier_type' in libgdk-4):
+(defconst nemacs-gtk--gdk-shift-mask    1)
+(defconst nemacs-gtk--gdk-control-mask  4)
+
+(defun nemacs-gtk--key-event->command-loop-event (keysym mods unicode)
   "Map a GDK key event to the event symbol / integer
 `emacs-command-loop' expects in its unread queue.  Returns nil if the
 key has no handled mapping (= modifier-only, function key without a
-binding) so the caller can drop it."
-  (cond
-   ((= keysym nemacs-gtk--keysym-backspace) 'backspace)
-   ((or (= keysym nemacs-gtk--keysym-return)
-        (= keysym nemacs-gtk--keysym-kp-enter))
-    'return)
-   ((= keysym nemacs-gtk--keysym-left)  'left)
-   ((= keysym nemacs-gtk--keysym-right) 'right)
-   ((= keysym nemacs-gtk--keysym-up)    'up)
-   ((= keysym nemacs-gtk--keysym-down)  'down)
-   ((and (> unicode 0)
-         (>= unicode 32)
-         (< unicode 127))
-    unicode)
-   (t nil)))
+binding) so the caller can drop it.
+
+Control-modifier handling: when ControlMask is set + the unicode is
+an ASCII letter, fold to the canonical control byte (= C-a → 1,
+C-x → 24, etc., matching `?\\C-x' literals in the keymap).  This
+makes `(define-key m [?\\C-x] ...)' style bindings just work without
+a separate event-prefix system."
+  (let ((ctrl (= (logand mods nemacs-gtk--gdk-control-mask)
+                 nemacs-gtk--gdk-control-mask)))
+    (cond
+     ((= keysym nemacs-gtk--keysym-backspace) 'backspace)
+     ((or (= keysym nemacs-gtk--keysym-return)
+          (= keysym nemacs-gtk--keysym-kp-enter))
+      'return)
+     ((= keysym nemacs-gtk--keysym-left)  'left)
+     ((= keysym nemacs-gtk--keysym-right) 'right)
+     ((= keysym nemacs-gtk--keysym-up)    'up)
+     ((= keysym nemacs-gtk--keysym-down)  'down)
+     ;; Ctrl + ASCII letter → control byte.  Try unicode first
+     ;; (= what GDK delivers when the key produces a printable),
+     ;; fall back to keysym for the Ctrl-only case where unicode
+     ;; comes through as 0.
+     (ctrl
+      (let ((ch (cond
+                 ((and (>= unicode ?a) (<= unicode ?z)) (- unicode (1- ?a)))
+                 ((and (>= unicode ?A) (<= unicode ?Z)) (- unicode (1- ?A)))
+                 ((and (>= keysym  ?a) (<= keysym  ?z)) (- keysym  (1- ?a)))
+                 ((and (>= keysym  ?A) (<= keysym  ?Z)) (- keysym  (1- ?A)))
+                 (t nil))))
+        ch))
+     ((and (> unicode 0)
+           (>= unicode 32)
+           (< unicode 127))
+      unicode)
+     (t nil))))
 
 (defun nemacs-gtk--describe-key (keysym mods unicode)
   "Human-readable summary for the echo area."
@@ -360,19 +419,75 @@ binding) so the caller can drop it."
                   (format " '%c'" unicode) "")))
     (format "%s mods=%d%s" named mods uni)))
 
+(defvar nemacs-gtk--pending-prefix nil
+  "Vector of accumulated events when the previous keypresses formed
+a keymap prefix (= e.g. `[24]' after C-x).  Reset to nil once a
+non-keymap binding is reached.
+
+Accumulating in elisp lets us hand the FULL key sequence to
+`emacs-command-loop-feed-events' in a single call so
+`emacs-command-loop-step's `read-keys-vec' can consume it without
+running out of events mid-prefix (= `read-event' on an empty
+queue would otherwise raise `emacs-command-loop-no-input').")
+
+(defun nemacs-gtk--lookup-key-vec (vec)
+  "Look up VEC against the active keymap chain, preferring
+`emacs-keymap-key-binding' (= our substrate's keymap walker)."
+  (cond
+   ((fboundp 'emacs-keymap-key-binding) (emacs-keymap-key-binding vec))
+   ((fboundp 'key-binding) (key-binding vec))
+   (t nil)))
+
+(defun nemacs-gtk--keymap-binding-p (binding)
+  "Return non-nil when BINDING (= the result of a keymap lookup) is
+itself a keymap (= a prefix mid-sequence)."
+  (or (and (fboundp 'emacs-keymap-keymapp) (emacs-keymap-keymapp binding))
+      (and (fboundp 'keymapp) (keymapp binding))))
+
+(defun nemacs-gtk--describe-key-vec (vec)
+  "Return a human-readable echo string for the prefix VEC."
+  (let ((parts '())
+        (i 0)
+        (n (length vec)))
+    (while (< i n)
+      (let ((ev (aref vec i)))
+        (push
+         (cond
+          ((symbolp ev) (symbol-name ev))
+          ((and (integerp ev) (> ev 0) (< ev 27))
+           (format "C-%c" (+ ev (1- ?a))))
+          ((integerp ev) (format "%c" ev))
+          (t (format "%S" ev)))
+         parts))
+      (setq i (1+ i)))
+    (mapconcat 'identity (nreverse parts) " ")))
+
 (defun nemacs-gtk--dispatch-key (keysym mods unicode)
-  "Translate a GDK key event into a command-loop event + run one
-dispatch step against the active buffer.  After the command runs,
-ensure the cursor stays inside the viewport (= auto-scroll when
-arrow keys / `next-line' / `previous-line' walk the cursor off
-the visible area)."
+  "Translate a GDK key event + run one dispatch step against the
+active buffer.  Handles prefix keys (= C-x prefix → wait for next
+event before stepping) by accumulating onto
+`nemacs-gtk--pending-prefix'.  After the command runs, ensure the
+cursor stays inside the viewport."
   (let ((event (nemacs-gtk--key-event->command-loop-event
                 keysym mods unicode)))
     (when event
-      (with-current-buffer (nemacs-gtk--active-buffer)
-        (emacs-command-loop-feed-events event)
-        (emacs-command-loop-step))
-      (nemacs-gtk--ensure-cursor-visible))))
+      (let* ((accumulated (vconcat (or nemacs-gtk--pending-prefix [])
+                                   (vector event)))
+             (binding (nemacs-gtk--lookup-key-vec accumulated)))
+        (cond
+         ((nemacs-gtk--keymap-binding-p binding)
+          ;; More events expected — stage prefix + echo "C-x -" style.
+          (setq nemacs-gtk--pending-prefix accumulated)
+          (setq nemacs-gtk--last-key-text
+                (format "%s-" (nemacs-gtk--describe-key-vec accumulated))))
+         (t
+          ;; Either a real binding or unbound key — flush + step.
+          (setq nemacs-gtk--pending-prefix nil)
+          (with-current-buffer (nemacs-gtk--active-buffer)
+            (apply #'emacs-command-loop-feed-events
+                   (append accumulated nil))
+            (emacs-command-loop-step))
+          (nemacs-gtk--ensure-cursor-visible)))))))
 
 
 ;;;; --- clipboard glue ------------------------------------------------------
