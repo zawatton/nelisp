@@ -160,11 +160,17 @@ Idempotent — re-calling replaces the global map with a fresh one."
     ;; Mouse-2 (= middle click) → set point + yank, mirroring real
     ;; Emacs's `mouse-yank-primary' / Linux X-clipboard convention.
     (define-key m (vector 'mouse-2) 'nemacs-gtk-mouse-yank-primary)
-    ;; Esc-prefix → M-x (= execute-extended-command).  Pressing Esc
-    ;; then x mirrors real Emacs's old terminal-style meta-prefix.
-    ;; Keysym 27 is the `Escape' key per `key-event->command-loop-event'.
+    ;; Esc-prefix → meta commands.  Reached either by pressing Esc
+    ;; explicitly (= old terminal style) or by Alt+KEY which the
+    ;; dispatch-key Alt-folding rewrites to the same 2-event vec.
     (let ((esc-map (make-sparse-keymap)))
       (define-key esc-map (vector ?x) 'execute-extended-command)
+      (define-key esc-map (vector ?f) 'forward-word)
+      (define-key esc-map (vector ?b) 'backward-word)
+      (define-key esc-map (vector ?d) 'nemacs-gtk-meta-kill-word)
+      (define-key esc-map (vector ?w) 'copy-region-as-kill)
+      (define-key esc-map (vector ?<) 'nemacs-gtk-meta-beginning-of-buffer)
+      (define-key esc-map (vector ?>) 'nemacs-gtk-meta-end-of-buffer)
       (define-key m (vector 27) esc-map))
     ;; Mouse: left click inside buffer area routes through
     ;; `emacs-command-loop' as a `mouse-1' event bound to
@@ -226,6 +232,30 @@ The main loop will tear down GTK + return.  No save-prompt yet
   (interactive)
   (setq nemacs-gtk--quit-requested t)
   (setq nemacs-gtk--last-key-text "C-x C-c → quit"))
+
+(defun nemacs-gtk-meta-beginning-of-buffer ()
+  "Bound to `M-<' / `Esc <' — point ← (point-min) of active buffer."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (nelisp-ec-goto-char (nelisp-ec-point-min))))
+
+(defun nemacs-gtk-meta-end-of-buffer ()
+  "Bound to `M->' / `Esc >' — point ← (point-max) of active buffer."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (nelisp-ec-goto-char (nelisp-ec-point-max))))
+
+(defun nemacs-gtk-meta-kill-word ()
+  "Bound to `M-d' / `Esc d' — kill chars from point to end of next
+word.  Wraps `forward-word' + `kill-region' so the deletion sits
+on `kill-ring' (= clipboard via the installed cut hook)."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let ((start (nelisp-ec-point)))
+      (forward-word 1)
+      (let ((end (nelisp-ec-point)))
+        (when (> end start)
+          (kill-region start end))))))
 
 (defun nemacs-gtk-mouse-yank-primary ()
   "Bound to `mouse-2' — move point to the click location, then
@@ -578,6 +608,7 @@ returns nil instead of a row outside the viewport."
 ;; GDK ModifierType bit positions (= `gdk_modifier_type' in libgdk-4):
 (defconst nemacs-gtk--gdk-shift-mask    1)
 (defconst nemacs-gtk--gdk-control-mask  4)
+(defconst nemacs-gtk--gdk-alt-mask      8)
 
 (defun nemacs-gtk--key-event->command-loop-event (keysym mods unicode)
   "Map a GDK key event to the event symbol / integer
@@ -679,20 +710,42 @@ itself a keymap (= a prefix mid-sequence)."
 
 (defun nemacs-gtk--dispatch-key (keysym mods unicode)
   "Translate a GDK key event + run one dispatch step against the
-active buffer.  When the minibuffer is active, route every key
-through `nemacs-gtk--minibuffer-handle-key' instead of the keymap.
-Otherwise handle prefix keys (= C-x prefix → wait for next event)
-by accumulating onto `nemacs-gtk--pending-prefix'.  After the
-command runs, ensure the cursor stays inside the viewport."
-  (let ((event (nemacs-gtk--key-event->command-loop-event
-                keysym mods unicode)))
-    (when event
+active buffer.  When the minibuffer is active, route through
+`nemacs-gtk--minibuffer-handle-key' instead of the keymap.
+
+Alt modifier folding: when GDK reports Alt+KEY (= ALT_MASK bit
+set + a translated event), prepend 27 (= Esc) to the event so
+the same Esc-prefix sub-keymap that `Esc x' targets is reached.
+This is the canonical terminal-style Meta fallback — a single
+`Alt+x' produces the [27 ?x] sequence which already binds to
+`execute-extended-command'.
+
+Prefix-key accumulation: when a partial sequence resolves to a
+keymap (= `C-x' / `Esc' partial), stage it on
+`nemacs-gtk--pending-prefix' and wait for the next event.
+
+After the command runs, ensure the cursor stays inside the
+viewport."
+  (let* ((alt-p (= (logand mods nemacs-gtk--gdk-alt-mask)
+                   nemacs-gtk--gdk-alt-mask))
+         (event (nemacs-gtk--key-event->command-loop-event
+                 keysym mods unicode))
+         ;; Alt-prefix folds to a 2-event vec; bare keys to a 1-event vec.
+         (event-vec (cond
+                     ((null event) nil)
+                     (alt-p        (vector 27 event))
+                     (t            (vector event)))))
+    (when event-vec
       (cond
        (nemacs-gtk--minibuffer-active
+        ;; Minibuffer eats events one at a time.  Alt+KEY in
+        ;; minibuffer-mode degenerates to KEY (= drop the Esc
+        ;; prefix); the user pressing Alt while typing into a
+        ;; prompt almost certainly means the bare letter.
         (nemacs-gtk--minibuffer-handle-key event))
        (t
         (let* ((accumulated (vconcat (or nemacs-gtk--pending-prefix [])
-                                     (vector event)))
+                                     event-vec))
                (binding (nemacs-gtk--lookup-key-vec accumulated)))
           (cond
            ((nemacs-gtk--keymap-binding-p binding)
