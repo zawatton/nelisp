@@ -101,6 +101,10 @@ Idempotent — re-calling replaces the global map with a fresh one."
     (define-key m (vector 'right) 'forward-char)
     (define-key m (vector 'up) 'previous-line)
     (define-key m (vector 'down) 'next-line)
+    ;; Mouse: left click inside buffer area routes through
+    ;; `emacs-command-loop' as a `mouse-1' event bound to
+    ;; `nemacs-gtk-mouse-set-point' (= grid → goto-char).
+    (define-key m (vector 'mouse-1) 'nemacs-gtk-mouse-set-point)
     (use-global-map m)))
 
 (defun nemacs-gtk--prepare-welcome-buffer ()
@@ -178,6 +182,32 @@ index using `length' + `aref' instead — same shape, fewer deps."
                 (format "Last key: %s" nemacs-gtk--last-key-text))))
     (nelisp-gtk-grid-put-row nemacs-gtk--echo-area-row
                              (nemacs-gtk--truncate text nemacs-gtk--cols))))
+
+(defun nemacs-gtk--cell-to-point (row col)
+  "Inverse of `nemacs-gtk--cursor-row-col': map a grid cell (ROW, COL)
+back to a buffer position in the active buffer.
+
+When the target cell is past EOB / past the line's length, the
+result clamps to the last reachable position in the buffer text
+(= mouse-1 on the empty area below content puts point at EOB,
+which is what users expect).  Always returns a 1-based point."
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let* ((text (buffer-string))
+           (len  (length text))
+           (i 0)
+           (cur-row 0))
+      ;; Walk forward to the start of ROW.  Stop early at EOB.
+      (while (and (< i len) (< cur-row row))
+        (when (eq (aref text i) ?\n)
+          (setq cur-row (1+ cur-row)))
+        (setq i (1+ i)))
+      ;; Walk forward COL chars within the row, stopping at newline / EOB.
+      (let ((col-i 0))
+        (while (and (< i len) (< col-i col)
+                    (not (eq (aref text i) ?\n)))
+          (setq i (1+ i))
+          (setq col-i (1+ col-i))))
+      (1+ i))))
 
 (defun nemacs-gtk--cursor-row-col ()
   "Compute the screen (row . col) of point in `*welcome*', or nil
@@ -388,18 +418,61 @@ clipboard bridge handles cross-app sync via the installed
 
 ;;;; --- mouse dispatch ------------------------------------------------------
 
+(defvar nemacs-gtk--last-mouse-event nil
+  "Most-recent mouse-press tuple for the bound mouse command to
+consume.  Format mirrors what `(nelisp-gtk-poll-mouse)' returns:
+(KIND BUTTON ROW COL MODS).  Set by `nemacs-gtk--handle-mouse-event'
+just before feeding the synthetic `mouse-1' event into
+`emacs-command-loop', read by `nemacs-gtk-mouse-set-point'.")
+
+(defun nemacs-gtk-mouse-set-point ()
+  "Bound to `mouse-1' in the GUI's global keymap.  Move point in the
+active buffer to the cell stored on `nemacs-gtk--last-mouse-event'.
+
+Mirrors Emacs' `mouse-set-point' contract — the GUI emits a synthetic
+`mouse-1' event into the command loop; the handler stages the event
+on a defvar and the command consumes it.  This keeps the keymap
+binding ordinary (= no `(interactive \"e\")' event-arg plumbing) and
+matches how the keyboard dispatch already works."
+  (interactive)
+  (let* ((ev nemacs-gtk--last-mouse-event)
+         (row (nth 2 ev))
+         (col (nth 3 ev)))
+    (when ev
+      (let ((p (nemacs-gtk--cell-to-point row col)))
+        (with-current-buffer (nemacs-gtk--active-buffer)
+          (nelisp-ec-goto-char p))
+        (setq nemacs-gtk--last-key-text
+              (format "mouse-1 → point %d (cell %d,%d)" p row col))))))
+
 (defun nemacs-gtk--handle-mouse-event (ev)
   "Dispatch a mouse event surfaced by `(nelisp-gtk-poll-mouse)'.  EV is
 the (KIND BUTTON ROW COL MODS) tuple — KIND is `'press' / `'release' /
-`'scroll-up' / `'scroll-down'.  MVP: press echoes button + cell, scroll
-echoes direction; release is intentionally ignored so click events
-don't double-fire.  Future phases will route presses through
-`emacs-command-loop' as `mouse-1' / `mouse-2' / `mouse-3' events."
+`'scroll-up' / `'scroll-down'.
+
+Left-button (= button 1) press inside the buffer area routes through
+`emacs-command-loop' as a synthetic `mouse-1' event so the keymap
+binding (= `nemacs-gtk-mouse-set-point') decides what to do.  This
+makes mouse-1 a real Emacs command — `M-x global-set-key
+mouse-1 ...' would just work.
+
+Other cases (button 2/3 press, scroll wheel, clicks on mode-line /
+echo area) still echo placeholder strings — the command-loop
+routing is incremental and lands here as `mouse-2' / `mouse-3' /
+`wheel-up' / `wheel-down' bindings get added in later phases.
+Release is intentionally silent so click events don't double-fire."
   (let ((kind   (nth 0 ev))
         (button (nth 1 ev))
         (row    (nth 2 ev))
         (col    (nth 3 ev)))
     (cond
+     ((and (eq kind 'press)
+           (= button 1)
+           (< row nemacs-gtk--buffer-area-end))
+      (setq nemacs-gtk--last-mouse-event ev)
+      (with-current-buffer (nemacs-gtk--active-buffer)
+        (emacs-command-loop-feed-events 'mouse-1)
+        (emacs-command-loop-step)))
      ((eq kind 'press)
       (setq nemacs-gtk--last-key-text
             (format "mouse-%d press @ (%d,%d)" button row col)))
