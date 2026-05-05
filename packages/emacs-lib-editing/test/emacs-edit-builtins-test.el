@@ -233,6 +233,31 @@ checked by its dedicated shape test above)."
       (nelisp-ec-insert (car kill-ring))
       (should (equal "ABXYZ" (nelisp-ec-buffer-string))))))
 
+;; Phase 2.AI — overwrite-mode toggles self-insert from insert→replace.
+(ert-deftest emacs-edit-builtins-test/overwrite-mode-replaces ()
+  (skip-unless (eq 'emacs-edit-builtins
+                   (cdr (find-function-library 'self-insert-command))))
+  (emacs-edit-builtins-test--with-fresh-buffer "ABCDE"
+    (let ((overwrite-mode t)
+          (last-command-event ?X))
+      (nelisp-ec-goto-char 2)            ; before B
+      (self-insert-command 1)
+      ;; B is replaced by X, point lands after X
+      (should (equal "AXCDE" (nelisp-ec-buffer-string)))
+      (should (= 3 (nelisp-ec-point))))))
+
+;; Phase 2.AI — overwrite-mode does NOT eat the line terminator.
+(ert-deftest emacs-edit-builtins-test/overwrite-mode-skips-newline ()
+  (skip-unless (eq 'emacs-edit-builtins
+                   (cdr (find-function-library 'self-insert-command))))
+  (emacs-edit-builtins-test--with-fresh-buffer "AB\nCD"
+    (let ((overwrite-mode t)
+          (last-command-event ?X))
+      (nelisp-ec-goto-char 3)            ; on the \n
+      (self-insert-command 1)
+      ;; \n preserved; X inserted before it
+      (should (equal "ABX\nCD" (nelisp-ec-buffer-string))))))
+
 ;; Phase 2.AA — yank-pop replaces last yank with older entry.
 ;; Only assertable against our polyfill (host's C yank/yank-pop drive the
 ;; host buffer not the substrate); skip when fboundp gates picked the C

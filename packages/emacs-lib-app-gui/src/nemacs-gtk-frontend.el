@@ -231,6 +231,10 @@ Idempotent — re-calling replaces the global map with a fresh one."
     ;; same (control + slash/underscore) chord depending on locale.
     (define-key m (vector ?\C-/) 'nemacs-gtk-undo)
     (define-key m (vector ?\C-_) 'nemacs-gtk-undo)
+    ;; Phase 2.AH — C-l = recenter (point's row → middle of viewport).
+    (define-key m (vector ?\C-l) 'nemacs-gtk-recenter)
+    ;; Phase 2.AI — Insert key toggles overwrite-mode.
+    (define-key m (vector 'insert) 'nemacs-gtk-overwrite-mode)
     ;; C-SPC = ?\C-@ = byte 0
     (define-key m (vector 0) 'nemacs-gtk-set-mark-command)
     ;; C-x prefix map — common substrate-level commands behind the
@@ -873,6 +877,30 @@ echo when CHAR isn't found before EOB."
 The dispatch loop checks this before keymap lookup and inserts the
 event verbatim instead of running its bound command.")
 
+(defun nemacs-gtk-recenter ()
+  "Bound to `C-l' — re-position `--scroll-offset' so point's row
+sits in the middle of the viewport.  MVP: single-shot center;
+real Emacs cycles through middle / top / bottom on repeat presses."
+  (interactive)
+  (let* ((row (nemacs-gtk--point-to-buf-row))
+         (height nemacs-gtk--buffer-area-end)
+         (target (- row (/ height 2))))
+    (setq nemacs-gtk--scroll-offset (max 0 target))
+    (nemacs-gtk--clamp-scroll-offset)
+    (setq nemacs-gtk--last-key-text "recenter")))
+
+(defun nemacs-gtk-overwrite-mode ()
+  "Bound to `Insert' — toggle `overwrite-mode' (= substrate defvar
+honoured by `self-insert-command')."
+  (interactive)
+  (cond
+   ((not (boundp 'overwrite-mode))
+    (setq nemacs-gtk--last-key-text "overwrite-mode: substrate missing"))
+   (t
+    (setq overwrite-mode (not overwrite-mode))
+    (setq nemacs-gtk--last-key-text
+          (format "overwrite-mode: %s" (if overwrite-mode "on" "off"))))))
+
 (defun nemacs-gtk-undo ()
   "Bound to `C-/' / `C-_' / `C-x u' — undo one group from the
 active buffer's `buffer-undo-list'.  Wraps the substrate's
@@ -1307,7 +1335,9 @@ success / failure."
     "nemacs-gtk-mouse-yank-primary"
     "nemacs-gtk-page-down"
     "nemacs-gtk-page-up"
+    "nemacs-gtk-overwrite-mode"
     "nemacs-gtk-quoted-insert"
+    "nemacs-gtk-recenter"
     "nemacs-gtk-undo"
     "nemacs-gtk-save-buffers-kill-emacs"
     "nemacs-gtk-set-mark-command"
@@ -1330,7 +1360,9 @@ success / failure."
     "yank-pop"
     "zap-to-char"
     "quoted-insert"
-    "undo")
+    "undo"
+    "recenter"
+    "overwrite-mode")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
