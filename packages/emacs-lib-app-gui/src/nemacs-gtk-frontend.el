@@ -112,21 +112,15 @@ Idempotent — re-calling replaces the global map with a fresh one."
 ;;;; --- redraw composition ---------------------------------------------------
 
 (defun nemacs-gtk--truncate (s n)
-  "Truncate S to at most N chars, padding with spaces if shorter."
-  (let* ((chars (string-to-list s))
-         (len (length chars)))
+  "Truncate S to at most N chars, padding with spaces if shorter.
+NeLisp standalone lacks `string-to-list', so we walk the string by
+index using `length' + `aref' instead — same shape, fewer deps."
+  (let ((len (length s)))
     (cond
      ((= len n) s)
      ((< len n)
       (concat s (make-string (- n len) ?\s)))
-     (t
-      (let ((out (make-string n ?\s))
-            (i 0))
-        (dolist (c chars)
-          (when (< i n)
-            (aset out i c)
-            (setq i (1+ i))))
-        out)))))
+     (t (substring s 0 n)))))
 
 (defun nemacs-gtk--mode-line-text ()
   "Compose the mode-line for the current `*welcome*' buffer state."
