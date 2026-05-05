@@ -61,6 +61,35 @@ phases can swap buffers freely.")
 wants the main loop to exit.  Checked alongside
 `(nelisp-gtk-should-quit)' which covers the GTK window-close path.")
 
+(defvar nemacs-gtk--pending-prefix nil
+  "Vector of accumulated events when the previous keypresses formed
+a keymap prefix (= e.g. `[24]' after C-x).  Reset to nil once a
+non-keymap binding is reached.
+
+Accumulating in elisp lets us hand the FULL key sequence to
+`emacs-command-loop-feed-events' in a single call so
+`emacs-command-loop-step's `read-keys-vec' can consume it without
+running out of events mid-prefix (= `read-event' on an empty
+queue would otherwise raise `emacs-command-loop-no-input').")
+
+(defvar nemacs-gtk--mark-pos nil
+  "Active mark position (= absolute buffer point) for region ops.
+nil when no mark.  Set by `nemacs-gtk-set-mark-command' (= C-SPC),
+read by `nemacs-gtk--region-bounds' / `nemacs-gtk-copy-region' /
+`nemacs-gtk-kill-region', cleared by `keyboard-quit' / a fresh
+C-SPC / a successful copy/kill.
+
+Lives in the frontend instead of the substrate (= Layer 2 still
+ships only a `set-mark' stub returning nil — implementing real
+mark tracking would require buffer-struct surgery; this is the
+MVP shortcut).")
+
+(defvar nemacs-gtk--mark-buffer nil
+  "Name of the buffer the mark was set in.  When the user switches
+to another buffer (= `C-x b' / open file) the mark becomes
+inactive — `nemacs-gtk--region-bounds' refuses to return bounds
+unless the active buffer matches this slot.")
+
 (defvar nemacs-gtk--last-mouse-event nil
   "Most-recent mouse-press tuple for the bound mouse commands
 (= `nemacs-gtk-mouse-set-point' / `nemacs-gtk-mouse-yank-primary')
@@ -154,6 +183,10 @@ Idempotent — re-calling replaces the global map with a fresh one."
     (define-key m (vector ?\C-k) 'kill-line)
     (define-key m (vector ?\C-y) 'yank)
     (define-key m (vector ?\C-s) 'nemacs-gtk-isearch-forward)
+    (define-key m (vector ?\C-w) 'nemacs-gtk-kill-region)
+    (define-key m (vector ?\C-g) 'nemacs-gtk-keyboard-quit)
+    ;; C-SPC = ?\C-@ = byte 0
+    (define-key m (vector 0) 'nemacs-gtk-set-mark-command)
     ;; C-x prefix map — common substrate-level commands behind the
     ;; same handlers the menu uses.
     (define-key ctl-x-map (vector ?\C-s) 'nemacs-gtk-keyboard-save)
@@ -173,7 +206,7 @@ Idempotent — re-calling replaces the global map with a fresh one."
       (define-key esc-map (vector ?f) 'forward-word)
       (define-key esc-map (vector ?b) 'backward-word)
       (define-key esc-map (vector ?d) 'nemacs-gtk-meta-kill-word)
-      (define-key esc-map (vector ?w) 'copy-region-as-kill)
+      (define-key esc-map (vector ?w) 'nemacs-gtk-copy-region)
       (define-key esc-map (vector ?<) 'nemacs-gtk-meta-beginning-of-buffer)
       (define-key esc-map (vector ?>) 'nemacs-gtk-meta-end-of-buffer)
       (define-key m (vector 27) esc-map))
@@ -259,6 +292,80 @@ lines and move point along so it stays in the visible region."
       (forward-line delta))
     (nemacs-gtk--scroll-by delta)
     (nemacs-gtk--ensure-cursor-visible)))
+
+;;;; --- region/mark (Phase 2.P — frontend-side mark tracking) -------------
+
+(defun nemacs-gtk-set-mark-command ()
+  "Bound to `C-SPC' (= byte 0).  Set the mark to the current point
+in the active buffer + remember which buffer we're in.  Sets
+`nemacs-gtk--mark-pos' / `--mark-buffer'.  A second `C-SPC'
+overwrites the mark; `keyboard-quit' (= C-g) deactivates."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (setq nemacs-gtk--mark-pos    (nelisp-ec-point))
+    (setq nemacs-gtk--mark-buffer nemacs-gtk--active-buffer-name)
+    (setq nemacs-gtk--last-key-text
+          (format "Mark set @ %d" nemacs-gtk--mark-pos))))
+
+(defun nemacs-gtk--region-bounds ()
+  "Return (BEG . END) when an active region exists in the active
+buffer, else nil.  Active means: `--mark-pos' is non-nil AND
+`--mark-buffer' equals the active-buffer-name AND mark != point."
+  (when (and nemacs-gtk--mark-pos
+             (string= nemacs-gtk--mark-buffer
+                      nemacs-gtk--active-buffer-name))
+    (with-current-buffer (nemacs-gtk--active-buffer)
+      (let* ((p (nelisp-ec-point))
+             (m nemacs-gtk--mark-pos))
+        (cond
+         ((= p m) nil)
+         ((< m p) (cons m p))
+         (t       (cons p m)))))))
+
+(defun nemacs-gtk--deactivate-mark ()
+  (setq nemacs-gtk--mark-pos    nil)
+  (setq nemacs-gtk--mark-buffer nil))
+
+(defun nemacs-gtk-keyboard-quit ()
+  "Bound to `C-g' — generic abort.  Deactivates the mark + clears
+any pending key prefix + drops the user back to a clean state.
+Echoes `Quit'."
+  (interactive)
+  (nemacs-gtk--deactivate-mark)
+  (setq nemacs-gtk--pending-prefix nil)
+  (setq nemacs-gtk--last-key-text "Quit"))
+
+(defun nemacs-gtk-copy-region ()
+  "Bound to `M-w' / Edit > Copy.  When a region is active, copy
+the (mark .. point) range to kill-ring + mirror onto the system
+clipboard via `interprogram-cut-function'.  Falls back to current-
+line copy otherwise."
+  (interactive)
+  (let ((rg (nemacs-gtk--region-bounds)))
+    (cond
+     (rg (with-current-buffer (nemacs-gtk--active-buffer)
+           (copy-region-as-kill (car rg) (cdr rg)))
+         (nemacs-gtk--deactivate-mark)
+         (setq nemacs-gtk--last-key-text
+               (format "Region copied (%d chars)"
+                       (- (cdr rg) (car rg)))))
+     (t (nemacs-gtk--menu-copy-current-line)))))
+
+(defun nemacs-gtk-kill-region ()
+  "Bound to `C-w' / Edit > Cut.  When a region is active, cut the
+(mark .. point) range to kill-ring + delete it.  Falls back to
+current-line cut otherwise."
+  (interactive)
+  (let ((rg (nemacs-gtk--region-bounds)))
+    (cond
+     (rg (with-current-buffer (nemacs-gtk--active-buffer)
+           (kill-region (car rg) (cdr rg)))
+         (nemacs-gtk--deactivate-mark)
+         (setq nemacs-gtk--last-key-text
+               (format "Region killed (%d chars)"
+                       (- (cdr rg) (car rg)))))
+     (t (nemacs-gtk--menu-cut-current-line)))))
+
 
 (defun nemacs-gtk-meta-beginning-of-buffer ()
   "Bound to `M-<' / `Esc <' — point ← (point-min) of active buffer."
@@ -798,6 +905,8 @@ a separate event-prefix system."
      ;; comes through as 0.
      (ctrl
       (let ((ch (cond
+                 ;; Ctrl+Space → ?\C-@ = 0 (= set-mark-command).
+                 ((or (= unicode ?\s) (= keysym ?\s)) 0)
                  ((and (>= unicode ?a) (<= unicode ?z)) (- unicode (1- ?a)))
                  ((and (>= unicode ?A) (<= unicode ?Z)) (- unicode (1- ?A)))
                  ((and (>= keysym  ?a) (<= keysym  ?z)) (- keysym  (1- ?a)))
@@ -823,17 +932,6 @@ a separate event-prefix system."
          (uni (if (and (> unicode 31) (< unicode 127))
                   (format " '%c'" unicode) "")))
     (format "%s mods=%d%s" named mods uni)))
-
-(defvar nemacs-gtk--pending-prefix nil
-  "Vector of accumulated events when the previous keypresses formed
-a keymap prefix (= e.g. `[24]' after C-x).  Reset to nil once a
-non-keymap binding is reached.
-
-Accumulating in elisp lets us hand the FULL key sequence to
-`emacs-command-loop-feed-events' in a single call so
-`emacs-command-loop-step's `read-keys-vec' can consume it without
-running out of events mid-prefix (= `read-event' on an empty
-queue would otherwise raise `emacs-command-loop-no-input').")
 
 (defun nemacs-gtk--lookup-key-vec (vec)
   "Look up VEC against the active keymap chain, preferring
@@ -1056,8 +1154,8 @@ clipboard bridge handles cross-app sync via the installed
     (setq nemacs-gtk--quit-requested t))
    ((string= action "open")   (nemacs-gtk--menu-open-file))
    ((string= action "save")   (nemacs-gtk--menu-save-file))
-   ((string= action "cut")    (nemacs-gtk--menu-cut-current-line))
-   ((string= action "copy")   (nemacs-gtk--menu-copy-current-line))
+   ((string= action "cut")    (nemacs-gtk-kill-region))
+   ((string= action "copy")   (nemacs-gtk-copy-region))
    ((string= action "paste")  (nemacs-gtk--menu-paste))
    ((string= action "about")
     (setq nemacs-gtk--last-key-text "nemacs-gtk Phase 2 — elisp-driven"))
