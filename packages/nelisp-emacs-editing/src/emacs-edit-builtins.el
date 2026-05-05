@@ -140,6 +140,20 @@ Track E.2: captures the deleted text and records it on
     "Phase E placeholder: cdr-pointer into `kill-ring' for `yank-pop'.
 Set to `kill-ring' on each fresh kill."))
 
+(unless (boundp 'interprogram-cut-function)
+  (defvar interprogram-cut-function nil
+    "Function called by `kill-new' to mirror a kill onto an external
+clipboard.  The function is called with one argument STRING — the
+text just pushed onto `kill-ring'.  Set by display backends
+(= GTK / X11 / etc.) at boot; nil under TUI / batch."))
+
+(unless (boundp 'interprogram-paste-function)
+  (defvar interprogram-paste-function nil
+    "Function called to fetch text from an external clipboard for
+`yank'.  The function is called with no arguments and should return
+either a string (= clipboard text) or nil (= nothing newer than the
+head of `kill-ring').  Set by display backends at boot."))
+
 (defun emacs-edit--trim-kill-ring ()
   "Truncate `kill-ring' to `kill-ring-max' entries."
   (let ((c kill-ring) (i 1))
@@ -151,7 +165,10 @@ Set to `kill-ring' on each fresh kill."))
 (unless (fboundp 'kill-new)
   (defun kill-new (string &optional replace)
     "Phase E polyfill: prepend STRING to `kill-ring'.
-With REPLACE non-nil, mutate the head entry instead of pushing."
+With REPLACE non-nil, mutate the head entry instead of pushing.
+When `interprogram-cut-function' is set, also mirror STRING onto the
+external clipboard (= GUI display backends bridge to GtkClipboard /
+X selection here)."
     (when (and (stringp string) (> (length string) 0))
       (cond
        ((and replace kill-ring)
@@ -159,7 +176,10 @@ With REPLACE non-nil, mutate the head entry instead of pushing."
        (t
         (setq kill-ring (cons string kill-ring))
         (emacs-edit--trim-kill-ring)))
-      (setq kill-ring-yank-pointer kill-ring))
+      (setq kill-ring-yank-pointer kill-ring)
+      (when (and interprogram-cut-function
+                 (functionp interprogram-cut-function))
+        (funcall interprogram-cut-function string)))
     string))
 
 (unless (fboundp 'copy-region-as-kill)
@@ -212,7 +232,23 @@ ARG selects which kill-ring entry: 1 (default) = head; N>1 = N-th
 older entry; `-' = `yank-pop'-style (deferred).  Negative / `-'
 arg currently coerced to head-yank.
 
+When ARG is nil (= head yank) and `interprogram-paste-function'
+returns a non-nil string, that string is pushed onto `kill-ring'
+first so the GUI clipboard wins over the local kill-ring head
+(= matches Emacs' `current-kill' behaviour).
+
 Track E.2: records the inserted span on `buffer-undo-list'."
+    (when (and (null arg)
+               interprogram-paste-function
+               (functionp interprogram-paste-function))
+      (let ((external (funcall interprogram-paste-function)))
+        (when (and (stringp external) (> (length external) 0)
+                   ;; Avoid duplicates when our own cut just pushed
+                   ;; this same text onto the clipboard.
+                   (not (equal external (car-safe kill-ring))))
+          (setq kill-ring (cons external kill-ring))
+          (emacs-edit--trim-kill-ring)
+          (setq kill-ring-yank-pointer kill-ring))))
     (let ((idx (cond
                 ((null arg) 0)
                 ((integerp arg) (max 0 (- arg 1)))
