@@ -235,6 +235,12 @@ Idempotent — re-calling replaces the global map with a fresh one."
     (define-key m (vector ?\C-l) 'nemacs-gtk-recenter)
     ;; Phase 2.AI — Insert key toggles overwrite-mode.
     (define-key m (vector 'insert) 'nemacs-gtk-overwrite-mode)
+    ;; Phase 2.AJ — C-h prefix.  C-h k = describe-key (= consume next key
+    ;; raw + report binding).  Other C-h chords reserved for future help.
+    (let ((help-map (make-sparse-keymap)))
+      (define-key help-map (vector ?k) 'nemacs-gtk-describe-key)
+      (define-key help-map (vector ?b) 'nemacs-gtk-describe-bindings)
+      (define-key m (vector ?\C-h) help-map))
     ;; C-SPC = ?\C-@ = byte 0
     (define-key m (vector 0) 'nemacs-gtk-set-mark-command)
     ;; C-x prefix map — common substrate-level commands behind the
@@ -281,6 +287,12 @@ Idempotent — re-calling replaces the global map with a fresh one."
       (define-key esc-map (vector ?=) 'nemacs-gtk-count-words-region)
       ;; Phase 2.AE — M-z = zap-to-char.
       (define-key esc-map (vector ?z) 'nemacs-gtk-zap-to-char)
+      ;; Phase 2.AK — M-% = query-replace.
+      (define-key esc-map (vector ?%) 'nemacs-gtk-query-replace)
+      ;; Phase 2.AL — M-h = mark-paragraph.
+      (define-key esc-map (vector ?h) 'nemacs-gtk-mark-paragraph)
+      ;; Phase 2.AM — M-; = comment-dwim.
+      (define-key esc-map (vector ?\;) 'nemacs-gtk-comment-dwim)
       ;; Phase 2.X — `M-g g' = goto-line, `M-g M-g' aliased to same.
       (define-key meta-g-map (vector ?g)    'nemacs-gtk-goto-line)
       (define-key meta-g-map (vector ?\C-g) 'nemacs-gtk-goto-line)
@@ -785,6 +797,36 @@ through non-blank lines until the next blank line or EOB)."
                   (not (nemacs-gtk--blank-line-p)))
         (forward-line 1)))))
 
+(defun nemacs-gtk-mark-paragraph ()
+  "Bound to `M-h' / `Esc h' — set mark at the beginning of the
+current paragraph and move point to its end (= activates the
+region around the paragraph)."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    ;; backward-paragraph from current point
+    (let ((min (nelisp-ec-point-min)))
+      (while (and (> (nelisp-ec-point) min)
+                  (nemacs-gtk--blank-line-p))
+        (forward-line -1))
+      (while (and (> (nelisp-ec-point) min)
+                  (not (nemacs-gtk--blank-line-p)))
+        (forward-line -1))
+      (when (nemacs-gtk--blank-line-p)
+        (forward-line 1))))
+  ;; mark @ current point
+  (setq nemacs-gtk--mark-pos    (with-current-buffer
+                                    (nemacs-gtk--active-buffer)
+                                  (nelisp-ec-point)))
+  (setq nemacs-gtk--mark-buffer nemacs-gtk--active-buffer-name)
+  (setq nemacs-gtk--shift-region nil)
+  ;; forward-paragraph from there
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let ((max (nelisp-ec-point-max)))
+      (while (and (< (nelisp-ec-point) max)
+                  (not (nemacs-gtk--blank-line-p)))
+        (forward-line 1))))
+  (setq nemacs-gtk--last-key-text "Mark paragraph"))
+
 (defun nemacs-gtk--count-words-in-range (beg end)
   "Return word count in BEG..END of the current substrate buffer.
 A word is a maximal run of `emacs-edit--word-char-p'-true chars."
@@ -871,6 +913,270 @@ echo when CHAR isn't found before EOB."
                (kill-region start found)
                (setq nemacs-gtk--last-key-text
                      (format "zap-to-char: %c" ch))))))))))))
+
+(defvar nemacs-gtk--query-replace-state nil
+  "Phase 2.AK: list `(FROM TO POS COUNT)' tracking an in-progress
+query-replace.  Set when M-% reads both arguments; cleared when the
+loop hits a `q' answer or runs out of matches.  POS = where to
+resume the next forward-search; COUNT = number of replacements
+done so far.")
+
+(defvar nemacs-gtk--query-replace-pending-key nil
+  "Phase 2.AK: t while waiting for the user's y/n/!/q answer.  The
+dispatch loop checks this and routes the next event into
+`--query-replace-handle-key' instead of the normal keymap.")
+
+(defun nemacs-gtk--query-replace-find-next ()
+  "Advance to the next occurrence of FROM starting at POS in the
+active buffer.  Returns the cons (BEG . END) of the match, or nil
+when no more matches exist before point-max.  Mutates POS to the
+match end on hit."
+  (let* ((st nemacs-gtk--query-replace-state)
+         (from (nth 0 st))
+         (pos  (nth 2 st)))
+    (with-current-buffer (nemacs-gtk--active-buffer)
+      (let* ((max (nelisp-ec-point-max))
+             (haystack (nelisp-ec-buffer-substring pos max))
+             (idx (and (> (length from) 0)
+                       (string-match (regexp-quote from) haystack))))
+        (cond
+         ((null idx) nil)
+         (t
+          (let* ((beg (+ pos idx))
+                 (end (+ beg (length from))))
+            (setcar (nthcdr 2 nemacs-gtk--query-replace-state) end)
+            (cons beg end))))))))
+
+(defun nemacs-gtk--query-replace-prompt ()
+  "Set the echo-area prompt for the current pending match."
+  (let* ((st nemacs-gtk--query-replace-state)
+         (from (nth 0 st))
+         (to   (nth 1 st)))
+    (setq nemacs-gtk--last-key-text
+          (format "Replace %s with %s? (y/n/!/q)" from to))))
+
+(defun nemacs-gtk--query-replace-step ()
+  "Advance to the next match in the current state and either prompt
+or finalize the loop."
+  (let ((m (nemacs-gtk--query-replace-find-next)))
+    (cond
+     ((null m)
+      (let ((count (nth 3 nemacs-gtk--query-replace-state)))
+        (setq nemacs-gtk--query-replace-state nil)
+        (setq nemacs-gtk--query-replace-pending-key nil)
+        (setq nemacs-gtk--last-key-text
+              (format "Replaced %d occurrence%s"
+                      count (if (= count 1) "" "s")))))
+     (t
+      (with-current-buffer (nemacs-gtk--active-buffer)
+        (nelisp-ec-goto-char (car m)))
+      (setq nemacs-gtk--query-replace-pending-key t)
+      (nemacs-gtk--query-replace-prompt)))))
+
+(defun nemacs-gtk--query-replace-do-replace (beg end)
+  "Replace BEG..END with the TO from `--query-replace-state'."
+  (let* ((to (nth 1 nemacs-gtk--query-replace-state)))
+    (with-current-buffer (nemacs-gtk--active-buffer)
+      (kill-region beg end)
+      (nelisp-ec-insert to)
+      (setcar (nthcdr 2 nemacs-gtk--query-replace-state)
+              (nelisp-ec-point))
+      (setcar (nthcdr 3 nemacs-gtk--query-replace-state)
+              (1+ (nth 3 nemacs-gtk--query-replace-state))))))
+
+(defun nemacs-gtk--query-replace-handle-key (event)
+  "Dispatch one y/n/!/q answer EVENT for the in-progress
+query-replace.  Returns t when consumed."
+  (let* ((st nemacs-gtk--query-replace-state)
+         (from (nth 0 st))
+         (pos-end (nth 2 st))
+         (beg (- pos-end (length from))))
+    (cond
+     ((or (eq event ?y) (eq event ?\s))
+      (nemacs-gtk--query-replace-do-replace beg pos-end)
+      (nemacs-gtk--query-replace-step))
+     ((or (eq event ?n) (eq event 127) (eq event 'backspace))
+      ;; skip — leave POS at end of match (set by find-next).
+      (nemacs-gtk--query-replace-step))
+     ((eq event ?!)
+      ;; replace all remaining without further prompts.
+      (nemacs-gtk--query-replace-do-replace beg pos-end)
+      (let ((more t))
+        (while more
+          (let ((m (nemacs-gtk--query-replace-find-next)))
+            (cond
+             ((null m) (setq more nil))
+             (t (nemacs-gtk--query-replace-do-replace (car m) (cdr m)))))))
+      (let ((count (nth 3 nemacs-gtk--query-replace-state)))
+        (setq nemacs-gtk--query-replace-state nil)
+        (setq nemacs-gtk--query-replace-pending-key nil)
+        (setq nemacs-gtk--last-key-text
+              (format "Replaced %d (! all)" count))))
+     ((or (eq event ?q) (eq event 7) (eq event 'escape))
+      (let ((count (nth 3 nemacs-gtk--query-replace-state)))
+        (setq nemacs-gtk--query-replace-state nil)
+        (setq nemacs-gtk--query-replace-pending-key nil)
+        (setq nemacs-gtk--last-key-text
+              (format "query-replace: quit (%d done)" count))))
+     (t
+      ;; unknown answer — re-prompt.
+      (nemacs-gtk--query-replace-prompt))))
+  t)
+
+(defun nemacs-gtk-query-replace ()
+  "Bound to `M-%' / `Esc %' — interactive search-and-replace.
+Reads FROM, then TO, via two minibuffer prompts.  After both are
+captured, the dispatcher routes y/n/!/q answers through
+`--query-replace-handle-key'."
+  (interactive)
+  (nemacs-gtk--enter-minibuffer
+   "Query replace: "
+   (lambda (from)
+     (cond
+      ((or (null from) (string-empty-p from))
+       (setq nemacs-gtk--last-key-text "query-replace: empty FROM"))
+      (t
+       (nemacs-gtk--enter-minibuffer
+        (format "Query replace %s with: " from)
+        (lambda (to)
+          (let ((start (with-current-buffer (nemacs-gtk--active-buffer)
+                         (nelisp-ec-point))))
+            (setq nemacs-gtk--query-replace-state
+                  (list from (or to "") start 0))
+            (nemacs-gtk--query-replace-step)))))))))
+
+(defun nemacs-gtk--line-bounds-around-point ()
+  "Return (BOL . EOL) for the line point is on in the active buffer."
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let ((p (nelisp-ec-point)))
+      (cons
+       ;; BOL
+       (let ((q p) (min (nelisp-ec-point-min)))
+         (while (and (> q min)
+                     (let ((s (nelisp-ec-buffer-substring (- q 1) q)))
+                       (not (and (> (length s) 0) (eq (aref s 0) ?\n)))))
+           (setq q (1- q)))
+         q)
+       ;; EOL
+       (let ((q p) (max (nelisp-ec-point-max)))
+         (while (and (< q max)
+                     (let ((s (nelisp-ec-buffer-substring q (1+ q))))
+                       (not (and (> (length s) 0) (eq (aref s 0) ?\n)))))
+           (setq q (1+ q)))
+         q)))))
+
+(defun nemacs-gtk--line-already-commented-p (bol eol)
+  "Return non-nil when line BOL..EOL starts with `;; ' (after any
+leading whitespace)."
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let ((s (nelisp-ec-buffer-substring bol eol))
+          (i 0))
+      (while (and (< i (length s))
+                  (or (eq (aref s i) ?\s) (eq (aref s i) ?\t)))
+        (setq i (1+ i)))
+      (and (<= (+ i 2) (length s))
+           (eq (aref s i) ?\;)
+           (eq (aref s (1+ i)) ?\;)))))
+
+(defun nemacs-gtk--toggle-line-comment (bol eol)
+  "Flip the line at BOL..EOL between commented (`;; ' prefix) and
+uncommented (= remove leading `;; ' if present, after whitespace)."
+  (cond
+   ((nemacs-gtk--line-already-commented-p bol eol)
+    ;; uncomment: find the ;; ; remove it (and optional trailing space).
+    (with-current-buffer (nemacs-gtk--active-buffer)
+      (let* ((s (nelisp-ec-buffer-substring bol eol))
+             (i 0))
+        (while (and (< i (length s))
+                    (or (eq (aref s i) ?\s) (eq (aref s i) ?\t)))
+          (setq i (1+ i)))
+        ;; i now at ;
+        (let ((cut-end (cond
+                        ((and (< (+ i 2) (length s))
+                              (eq (aref s (+ i 2)) ?\s))
+                         (+ i 3))
+                        (t (+ i 2)))))
+          (kill-region (+ bol i) (+ bol cut-end))))))
+   (t
+    ;; comment: insert `;; ' at BOL.
+    (with-current-buffer (nemacs-gtk--active-buffer)
+      (nelisp-ec-goto-char bol)
+      (nelisp-ec-insert ";; ")))))
+
+(defun nemacs-gtk-comment-dwim ()
+  "Bound to `M-;' / `Esc ;' — toggle line comment using `;;' prefix.
+With an active region, toggle every line in the region.  Without a
+region, toggle the line containing point."
+  (interactive)
+  (let ((bounds (nemacs-gtk--region-bounds)))
+    (cond
+     (bounds
+      (let* ((beg (car bounds))
+             (end (cdr bounds))
+             (orig-end-len (- end beg)))
+        (ignore orig-end-len)
+        (with-current-buffer (nemacs-gtk--active-buffer)
+          (nelisp-ec-goto-char beg)
+          ;; collect line BOLs in range up front so insert/delete don't
+          ;; shift the iterator.
+          (let ((bols '())
+                (p beg)
+                (max end))
+            (while (< p max)
+              (let ((b (car (let ((nelisp-ec--current-buffer
+                                   nelisp-ec--current-buffer))
+                              (nelisp-ec-goto-char p)
+                              (nemacs-gtk--line-bounds-around-point)))))
+                (push b bols)
+                ;; advance to next line
+                (let ((eol (cdr (progn
+                                  (nelisp-ec-goto-char b)
+                                  (nemacs-gtk--line-bounds-around-point)))))
+                  (setq p (min max (1+ eol))))))
+            (setq bols (nreverse (delete-dups bols)))
+            ;; toggle each line — since the lines are listed in order
+            ;; and we mutate in order, BOLs after the first shift; do
+            ;; backwards instead.
+            (dolist (b (nreverse bols))
+              (nelisp-ec-goto-char b)
+              (let ((line-bounds (nemacs-gtk--line-bounds-around-point)))
+                (nemacs-gtk--toggle-line-comment
+                 (car line-bounds) (cdr line-bounds))))))
+        (setq nemacs-gtk--last-key-text "comment-dwim region")))
+     (t
+      (let ((b (nemacs-gtk--line-bounds-around-point)))
+        (nemacs-gtk--toggle-line-comment (car b) (cdr b)))
+      (setq nemacs-gtk--last-key-text "comment-dwim line")))))
+
+(defvar nemacs-gtk--describe-key-pending nil
+  "Phase 2.AJ: t while waiting for the next key event after C-h k.
+The dispatch loop checks this and reports the binding instead of
+running it.")
+
+(defun nemacs-gtk-describe-key ()
+  "Bound to `C-h k' — read the next key event and report its
+binding (= command symbol or `unbound') on the echo-area row."
+  (interactive)
+  (setq nemacs-gtk--describe-key-pending t)
+  (setq nemacs-gtk--last-key-text "Describe key (press a key)..."))
+
+(defun nemacs-gtk-describe-bindings ()
+  "Bound to `C-h b' — render the global keymap into a `*Bindings*'
+buffer and switch to it.  MVP: lists only the curated `--m-x-commands'
+plus their key chord (the GTK keymap walker doesn't expose a
+flat enumeration — substrate-level work)."
+  (interactive)
+  (let ((buf (get-buffer-create "*Bindings*")))
+    (with-current-buffer buf
+      (when (fboundp 'erase-buffer)
+        (erase-buffer))
+      (nelisp-ec-insert "Curated command list (M-x candidates):\n\n")
+      (dolist (name nemacs-gtk--m-x-commands)
+        (nelisp-ec-insert (format "  M-x %s\n" name))))
+    (setq nemacs-gtk--active-buffer-name "*Bindings*")
+    (setq nemacs-gtk--scroll-offset 0)
+    (nemacs-gtk--sync-window-title)
+    (setq nemacs-gtk--last-key-text "describe-bindings")))
 
 (defvar nemacs-gtk--quoted-insert-pending nil
   "Phase 2.AF: t while waiting for the next key event after C-q.
@@ -1335,7 +1641,12 @@ success / failure."
     "nemacs-gtk-mouse-yank-primary"
     "nemacs-gtk-page-down"
     "nemacs-gtk-page-up"
+    "nemacs-gtk-comment-dwim"
+    "nemacs-gtk-describe-bindings"
+    "nemacs-gtk-describe-key"
+    "nemacs-gtk-mark-paragraph"
     "nemacs-gtk-overwrite-mode"
+    "nemacs-gtk-query-replace"
     "nemacs-gtk-quoted-insert"
     "nemacs-gtk-recenter"
     "nemacs-gtk-undo"
@@ -1362,7 +1673,12 @@ success / failure."
     "quoted-insert"
     "undo"
     "recenter"
-    "overwrite-mode")
+    "overwrite-mode"
+    "describe-key"
+    "describe-bindings"
+    "mark-paragraph"
+    "query-replace"
+    "comment-dwim")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
@@ -1849,6 +2165,25 @@ viewport."
         ;; landed on so the cursor stays visible.
         (nemacs-gtk--isearch-handle-key event)
         (nemacs-gtk--ensure-cursor-visible))
+       (nemacs-gtk--query-replace-pending-key
+        ;; Phase 2.AK: y/n/!/q answer for the active query-replace.
+        (setq nemacs-gtk--query-replace-pending-key nil)
+        (nemacs-gtk--query-replace-handle-key event)
+        (nemacs-gtk--ensure-cursor-visible))
+       (nemacs-gtk--describe-key-pending
+        ;; Phase 2.AJ: `C-h k' just fired — the next event is
+        ;; consumed and resolved against the keymap, the binding
+        ;; is reported instead of being run.
+        (setq nemacs-gtk--describe-key-pending nil)
+        (let* ((b (nemacs-gtk--lookup-key-vec event-vec))
+               (label (nemacs-gtk--describe-key-vec event-vec)))
+          (setq nemacs-gtk--last-key-text
+                (cond
+                 ((null b) (format "%s is unbound" label))
+                 ((symbolp b) (format "%s runs %s" label (symbol-name b)))
+                 ((nemacs-gtk--keymap-binding-p b)
+                  (format "%s (prefix)" label))
+                 (t (format "%s runs %S" label b))))))
        (nemacs-gtk--quoted-insert-pending
         ;; Phase 2.AF: a `C-q' just fired — the next event is
         ;; consumed verbatim regardless of its keymap binding.
