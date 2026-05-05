@@ -260,6 +260,10 @@ Idempotent — re-calling replaces the global map with a fresh one."
     (define-key ctl-x-map (vector ?\C-w) 'nemacs-gtk-write-file)
     ;; Phase 2.AO — `C-x s' = save-some-buffers (= save all dirty).
     (define-key ctl-x-map (vector ?s)    'nemacs-gtk-save-some-buffers)
+    ;; Phase 2.AP — kbd-macro recording.
+    (define-key ctl-x-map (vector ?\() 'nemacs-gtk-start-kbd-macro)
+    (define-key ctl-x-map (vector ?\)) 'nemacs-gtk-end-kbd-macro)
+    (define-key ctl-x-map (vector ?e)  'nemacs-gtk-call-last-kbd-macro)
     (define-key m (vector ?\C-x) ctl-x-map)
     ;; Mouse-2 (= middle click) → set point + yank, mirroring real
     ;; Emacs's `mouse-yank-primary' / Linux X-clipboard convention.
@@ -808,6 +812,72 @@ through non-blank lines until the next blank line or EOB)."
       (while (and (< (nelisp-ec-point) max)
                   (not (nemacs-gtk--blank-line-p)))
         (forward-line 1)))))
+
+(defvar nemacs-gtk--kbd-macro-recording nil
+  "Phase 2.AP: t while between `C-x (' and `C-x )'.  When set, the
+dispatch loop appends each event-vec it processes to
+`--kbd-macro-current'.")
+
+(defvar nemacs-gtk--kbd-macro-current nil
+  "Phase 2.AP: list of event-vecs being accumulated for the active
+recording.  Reversed at `end-kbd-macro' time and stored on
+`--kbd-macro-last' for replay.")
+
+(defvar nemacs-gtk--kbd-macro-last nil
+  "Phase 2.AP: vector of events from the most recently completed
+recording.  Replayed by `C-x e'.")
+
+(defun nemacs-gtk-start-kbd-macro ()
+  "Bound to `C-x (' — begin recording a keyboard macro.  The
+dispatcher captures every subsequent event into
+`--kbd-macro-current' until `C-x )'."
+  (interactive)
+  (cond
+   (nemacs-gtk--kbd-macro-recording
+    (setq nemacs-gtk--last-key-text "kbd-macro: already recording"))
+   (t
+    (setq nemacs-gtk--kbd-macro-recording t)
+    (setq nemacs-gtk--kbd-macro-current nil)
+    (setq nemacs-gtk--last-key-text "Defining kbd macro..."))))
+
+(defun nemacs-gtk-end-kbd-macro ()
+  "Bound to `C-x )' — finish recording the keyboard macro and
+publish it on `--kbd-macro-last'.  No-op + echo when not currently
+recording."
+  (interactive)
+  (cond
+   ((not nemacs-gtk--kbd-macro-recording)
+    (setq nemacs-gtk--last-key-text "kbd-macro: not recording"))
+   (t
+    (setq nemacs-gtk--kbd-macro-recording nil)
+    (setq nemacs-gtk--kbd-macro-last
+          (apply #'vconcat (nreverse nemacs-gtk--kbd-macro-current)))
+    (let ((n (length nemacs-gtk--kbd-macro-last)))
+      (setq nemacs-gtk--kbd-macro-current nil)
+      (setq nemacs-gtk--last-key-text
+            (format "Macro defined (%d events)" n))))))
+
+(defun nemacs-gtk-call-last-kbd-macro ()
+  "Bound to `C-x e' — replay the most recently recorded keyboard
+macro by feeding its events back through the command loop."
+  (interactive)
+  (cond
+   ((or (null nemacs-gtk--kbd-macro-last)
+        (= 0 (length nemacs-gtk--kbd-macro-last)))
+    (setq nemacs-gtk--last-key-text "kbd-macro: no macro to replay"))
+   (t
+    (let ((vec nemacs-gtk--kbd-macro-last))
+      (with-current-buffer (nemacs-gtk--active-buffer)
+        (apply #'emacs-command-loop-feed-events (append vec nil))
+        ;; Run as many command-loop steps as we have events; each
+        ;; emacs-command-loop-step consumes one keymap-resolved unit.
+        (let ((i 0) (n (length vec)))
+          (while (< i n)
+            (emacs-command-loop-step)
+            (setq i (1+ i))))))
+    (setq nemacs-gtk--last-key-text
+          (format "Replayed macro (%d events)"
+                  (length nemacs-gtk--kbd-macro-last))))))
 
 (defun nemacs-gtk-write-file ()
   "Bound to `C-x C-w' — prompt for a new path and write the active
@@ -1990,6 +2060,7 @@ success / failure."
     "newline"
     "nemacs-gtk-backward-paragraph"
     "nemacs-gtk-buffer-menu"
+    "nemacs-gtk-call-last-kbd-macro"
     "nemacs-gtk-capitalize-word"
     "nemacs-gtk-copy-region"
     "nemacs-gtk-count-words-region"
@@ -2019,6 +2090,7 @@ success / failure."
     "nemacs-gtk-delete-indentation"
     "nemacs-gtk-describe-bindings"
     "nemacs-gtk-describe-key"
+    "nemacs-gtk-end-kbd-macro"
     "nemacs-gtk-exchange-point-and-mark"
     "nemacs-gtk-fill-paragraph"
     "nemacs-gtk-mark-paragraph"
@@ -2027,6 +2099,7 @@ success / failure."
     "nemacs-gtk-quoted-insert"
     "nemacs-gtk-recenter"
     "nemacs-gtk-save-some-buffers"
+    "nemacs-gtk-start-kbd-macro"
     "nemacs-gtk-tab-to-tab-stop"
     "nemacs-gtk-undo"
     "nemacs-gtk-write-file"
@@ -2065,7 +2138,10 @@ success / failure."
     "delete-indentation"
     "write-file"
     "save-some-buffers"
-    "dabbrev-expand")
+    "dabbrev-expand"
+    "start-kbd-macro"
+    "end-kbd-macro"
+    "call-last-kbd-macro")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
@@ -2610,6 +2686,18 @@ viewport."
                   (format "%s-" (nemacs-gtk--describe-key-vec accumulated))))
            (t
             (setq nemacs-gtk--pending-prefix nil)
+            ;; Phase 2.AP — record the resolved key sequence on the
+            ;; active macro recording (= the whole `accumulated' vec
+            ;; including any prefix events, so replay reproduces the
+            ;; exact dispatch path).  Don't record macro start/end
+            ;; meta-keys themselves — that would trap the user in an
+            ;; infinite recursion when replaying.
+            (when (and nemacs-gtk--kbd-macro-recording
+                       (not (memq binding
+                                  '(nemacs-gtk-start-kbd-macro
+                                    nemacs-gtk-end-kbd-macro
+                                    nemacs-gtk-call-last-kbd-macro))))
+              (push accumulated nemacs-gtk--kbd-macro-current))
             (with-current-buffer (nemacs-gtk--active-buffer)
               (apply #'emacs-command-loop-feed-events
                      (append accumulated nil))
