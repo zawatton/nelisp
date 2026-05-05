@@ -257,6 +257,8 @@ Idempotent — re-calling replaces the global map with a fresh one."
       ;; Phase 2.Z — whitespace ops (= M-SPC / M-\\).
       (define-key esc-map (vector ?\s) 'nemacs-gtk-just-one-space)
       (define-key esc-map (vector ?\\) 'nemacs-gtk-delete-horizontal-space)
+      ;; Phase 2.AA — M-y = yank-pop after C-y (cycle kill-ring).
+      (define-key esc-map (vector ?y) 'nemacs-gtk-yank-pop)
       ;; Phase 2.X — `M-g g' = goto-line, `M-g M-g' aliased to same.
       (define-key meta-g-map (vector ?g)    'nemacs-gtk-goto-line)
       (define-key meta-g-map (vector ?\C-g) 'nemacs-gtk-goto-line)
@@ -749,6 +751,21 @@ on `kill-ring' (= clipboard via the installed cut hook)."
         (when (> end start)
           (kill-region start end))))))
 
+(defun nemacs-gtk-yank-pop ()
+  "Bound to `M-y' — replace the most recently yanked text with the
+next entry from `kill-ring' (= `yank-pop').  Only meaningful right
+after `C-y' or another `M-y'; otherwise reports the failure on the
+echo-area row instead of letting the substrate signal."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (condition-case err
+        (progn
+          (yank-pop 1)
+          (setq nemacs-gtk--last-key-text "yank-pop"))
+      (error
+       (setq nemacs-gtk--last-key-text
+             (format "yank-pop: %s" (cadr err)))))))
+
 (defun nemacs-gtk-mouse-yank-primary ()
   "Bound to `mouse-2' — move point to the click location, then
 `yank' (= clipboard via the installed `interprogram-paste-function').
@@ -1105,6 +1122,7 @@ success / failure."
     "nemacs-gtk-mouse-set-point"
     "nemacs-gtk-mouse-yank-primary"
     "nemacs-gtk-page-down"
+    "nemacs-gtk-yank-pop"
     "nemacs-gtk-page-up"
     "nemacs-gtk-save-buffers-kill-emacs"
     "nemacs-gtk-set-mark-command"
@@ -1121,7 +1139,8 @@ success / failure."
     "transpose-chars"
     "upcase-word"
     "what-line"
-    "yank")
+    "yank"
+    "yank-pop")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
