@@ -254,6 +254,8 @@ Idempotent — re-calling replaces the global map with a fresh one."
     (define-key ctl-x-map (vector ?\C-c) 'nemacs-gtk-save-buffers-kill-emacs)
     ;; Phase 2.AG — `C-x u' = undo (alternative chord).
     (define-key ctl-x-map (vector ?u)   'nemacs-gtk-undo)
+    ;; Phase 2.AN — `C-x C-x' = exchange-point-and-mark.
+    (define-key ctl-x-map (vector ?\C-x) 'nemacs-gtk-exchange-point-and-mark)
     (define-key m (vector ?\C-x) ctl-x-map)
     ;; Mouse-2 (= middle click) → set point + yank, mirroring real
     ;; Emacs's `mouse-yank-primary' / Linux X-clipboard convention.
@@ -293,6 +295,10 @@ Idempotent — re-calling replaces the global map with a fresh one."
       (define-key esc-map (vector ?h) 'nemacs-gtk-mark-paragraph)
       ;; Phase 2.AM — M-; = comment-dwim.
       (define-key esc-map (vector ?\;) 'nemacs-gtk-comment-dwim)
+      ;; Phase 2.AN — bundle.
+      (define-key esc-map (vector ?i) 'nemacs-gtk-tab-to-tab-stop)
+      (define-key esc-map (vector ?q) 'nemacs-gtk-fill-paragraph)
+      (define-key esc-map (vector ?^) 'nemacs-gtk-delete-indentation)
       ;; Phase 2.X — `M-g g' = goto-line, `M-g M-g' aliased to same.
       (define-key meta-g-map (vector ?g)    'nemacs-gtk-goto-line)
       (define-key meta-g-map (vector ?\C-g) 'nemacs-gtk-goto-line)
@@ -796,6 +802,190 @@ through non-blank lines until the next blank line or EOB)."
       (while (and (< (nelisp-ec-point) max)
                   (not (nemacs-gtk--blank-line-p)))
         (forward-line 1)))))
+
+(defun nemacs-gtk-exchange-point-and-mark ()
+  "Bound to `C-x C-x' — swap point and mark in the active buffer.
+Reactivates the region as side-effect (= `--shift-region' cleared
+since this is an explicit command, not a shift-select drift)."
+  (interactive)
+  (cond
+   ((or (null nemacs-gtk--mark-pos)
+        (not (string= nemacs-gtk--mark-buffer
+                      nemacs-gtk--active-buffer-name)))
+    (setq nemacs-gtk--last-key-text "exchange-point-and-mark: no mark"))
+   (t
+    (with-current-buffer (nemacs-gtk--active-buffer)
+      (let* ((p (nelisp-ec-point))
+             (m nemacs-gtk--mark-pos))
+        (setq nemacs-gtk--mark-pos p)
+        (nelisp-ec-goto-char m)))
+    (setq nemacs-gtk--shift-region nil)
+    (setq nemacs-gtk--last-key-text "Exchange point and mark"))))
+
+(defconst nemacs-gtk--tab-stop-width 4
+  "Phase 2.AN: column width of a tab-stop column for `M-i'
+(= insert spaces up to the next multiple of this width).")
+
+(defun nemacs-gtk--current-column-in-line ()
+  "Return point's column index (= chars since BOL of the current line)."
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let* ((p (nelisp-ec-point))
+           (q p) (min (nelisp-ec-point-min)))
+      (while (and (> q min)
+                  (let ((s (nelisp-ec-buffer-substring (- q 1) q)))
+                    (not (and (> (length s) 0) (eq (aref s 0) ?\n)))))
+        (setq q (1- q)))
+      (- p q))))
+
+(defun nemacs-gtk-tab-to-tab-stop ()
+  "Bound to `M-i' / `Esc i' — insert spaces from point up to the
+next column that's a multiple of `--tab-stop-width' (= 4).
+Inserts at least one space."
+  (interactive)
+  (let* ((col (nemacs-gtk--current-column-in-line))
+         (stop nemacs-gtk--tab-stop-width)
+         (delta (- stop (mod col stop)))
+         (n (if (= delta 0) stop delta)))
+    (with-current-buffer (nemacs-gtk--active-buffer)
+      (let ((i 0))
+        (while (< i n)
+          (nelisp-ec-insert " ")
+          (setq i (1+ i)))))
+    (setq nemacs-gtk--last-key-text
+          (format "tab-to-tab-stop: +%d cols → %d" n (+ col n)))))
+
+(defconst nemacs-gtk--fill-column 70
+  "Phase 2.AN: target column for `M-q' wrap.")
+
+(defun nemacs-gtk-fill-paragraph ()
+  "Bound to `M-q' / `Esc q' — re-wrap the current paragraph so no
+line exceeds `--fill-column' (= 70).  MVP: detects paragraph by
+walking to the surrounding blank lines, joins all internal lines
+with single spaces, then re-breaks at word boundaries."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    ;; Step 1: locate the paragraph bounds.
+    (let* ((min (nelisp-ec-point-min))
+           (max (nelisp-ec-point-max))
+           ;; back to paragraph start
+           (start
+            (save-excursion
+              (when (nemacs-gtk--blank-line-p)
+                (forward-line 1))
+              (while (and (> (nelisp-ec-point) min)
+                          (not (nemacs-gtk--blank-line-p)))
+                (forward-line -1))
+              (when (nemacs-gtk--blank-line-p)
+                (forward-line 1))
+              (nelisp-ec-point)))
+           ;; forward to paragraph end
+           (end
+            (save-excursion
+              (nelisp-ec-goto-char start)
+              (while (and (< (nelisp-ec-point) max)
+                          (not (nemacs-gtk--blank-line-p)))
+                (forward-line 1))
+              (nelisp-ec-point))))
+      (cond
+       ((>= start end)
+        (setq nemacs-gtk--last-key-text "fill-paragraph: empty"))
+       (t
+        ;; Step 2: extract + canonicalise (collapse all whitespace runs to one space).
+        (let* ((text (nelisp-ec-buffer-substring start end))
+               (i 0) (n (length text)) (canon "") (last-ws nil))
+          (while (< i n)
+            (let ((ch (aref text i)))
+              (cond
+               ((or (eq ch ?\s) (eq ch ?\t) (eq ch ?\n))
+                (unless last-ws
+                  (setq canon (concat canon " "))
+                  (setq last-ws t)))
+               (t
+                (setq canon (concat canon (string ch)))
+                (setq last-ws nil))))
+            (setq i (1+ i)))
+          ;; trim trailing space
+          (when (and (> (length canon) 0)
+                     (eq (aref canon (1- (length canon))) ?\s))
+            (setq canon (substring canon 0 (1- (length canon)))))
+          ;; Step 3: greedy break at fill-column.
+          (let ((parts '())
+                (col 0)
+                (j 0)
+                (m (length canon)))
+            (while (< j m)
+              ;; find next word
+              (while (and (< j m) (eq (aref canon j) ?\s))
+                (setq j (1+ j)))
+              (let ((wstart j))
+                (while (and (< j m) (not (eq (aref canon j) ?\s)))
+                  (setq j (1+ j)))
+                (let* ((word (substring canon wstart j))
+                       (wlen (length word))
+                       (sep (if (= col 0) "" " ")))
+                  (cond
+                   ((= col 0)
+                    (push word parts)
+                    (setq col wlen))
+                   ((<= (+ col 1 wlen) nemacs-gtk--fill-column)
+                    (push sep parts)
+                    (push word parts)
+                    (setq col (+ col 1 wlen)))
+                   (t
+                    (push "\n" parts)
+                    (push word parts)
+                    (setq col wlen))))))
+            (let ((rebuilt (apply #'concat (nreverse parts))))
+              (kill-region start end)
+              (nelisp-ec-goto-char start)
+              (nelisp-ec-insert rebuilt)
+              (setq nemacs-gtk--last-key-text
+                    (format "fill-paragraph: %d→%d chars"
+                            (length text) (length rebuilt)))))))))))
+
+(defun nemacs-gtk-delete-indentation ()
+  "Bound to `M-^' / `Esc ^' — join the current line with the previous
+one (= `delete-indentation').  Removes the preceding newline plus
+any leading whitespace on the current line, leaving exactly one
+space between the joined text (or none when the first line ends
+in whitespace already)."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let* ((p (nelisp-ec-point))
+           (min (nelisp-ec-point-min)))
+      ;; move to BOL of current line
+      (let ((q p))
+        (while (and (> q min)
+                    (let ((s (nelisp-ec-buffer-substring (- q 1) q)))
+                      (not (and (> (length s) 0) (eq (aref s 0) ?\n)))))
+          (setq q (1- q)))
+        (cond
+         ((<= q min)
+          (setq nemacs-gtk--last-key-text "delete-indentation: at BOB"))
+         (t
+          (let* ((bol q)
+                 ;; the \n separator is at (bol-1)
+                 (sep-pos (- bol 1))
+                 ;; locate end of leading whitespace on this line
+                 (skip bol)
+                 (max (nelisp-ec-point-max)))
+            (while (and (< skip max)
+                        (let ((s (nelisp-ec-buffer-substring skip (1+ skip))))
+                          (or (and (> (length s) 0) (eq (aref s 0) ?\s))
+                              (and (> (length s) 0) (eq (aref s 0) ?\t)))))
+              (setq skip (1+ skip)))
+            (kill-region sep-pos skip)
+            (nelisp-ec-goto-char sep-pos)
+            ;; insert one space if previous char isn't whitespace AND we're
+            ;; not at BOB now
+            (when (> sep-pos min)
+              (let ((prev (nelisp-ec-buffer-substring (- sep-pos 1) sep-pos)))
+                (unless (or (and (> (length prev) 0)
+                                 (eq (aref prev 0) ?\s))
+                            (and (> (length prev) 0)
+                                 (eq (aref prev 0) ?\t)))
+                  (nelisp-ec-insert " "))))
+            (setq nemacs-gtk--last-key-text "delete-indentation"))))))))
 
 (defun nemacs-gtk-mark-paragraph ()
   "Bound to `M-h' / `Esc h' — set mark at the beginning of the
@@ -1642,13 +1832,17 @@ success / failure."
     "nemacs-gtk-page-down"
     "nemacs-gtk-page-up"
     "nemacs-gtk-comment-dwim"
+    "nemacs-gtk-delete-indentation"
     "nemacs-gtk-describe-bindings"
     "nemacs-gtk-describe-key"
+    "nemacs-gtk-exchange-point-and-mark"
+    "nemacs-gtk-fill-paragraph"
     "nemacs-gtk-mark-paragraph"
     "nemacs-gtk-overwrite-mode"
     "nemacs-gtk-query-replace"
     "nemacs-gtk-quoted-insert"
     "nemacs-gtk-recenter"
+    "nemacs-gtk-tab-to-tab-stop"
     "nemacs-gtk-undo"
     "nemacs-gtk-save-buffers-kill-emacs"
     "nemacs-gtk-set-mark-command"
@@ -1678,7 +1872,11 @@ success / failure."
     "describe-bindings"
     "mark-paragraph"
     "query-replace"
-    "comment-dwim")
+    "comment-dwim"
+    "exchange-point-and-mark"
+    "tab-to-tab-stop"
+    "fill-paragraph"
+    "delete-indentation")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
