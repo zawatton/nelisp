@@ -254,6 +254,9 @@ Idempotent — re-calling replaces the global map with a fresh one."
       (define-key esc-map (vector ?c) 'nemacs-gtk-capitalize-word)
       (define-key esc-map (vector ?{) 'nemacs-gtk-backward-paragraph)
       (define-key esc-map (vector ?}) 'nemacs-gtk-forward-paragraph)
+      ;; Phase 2.Z — whitespace ops (= M-SPC / M-\\).
+      (define-key esc-map (vector ?\s) 'nemacs-gtk-just-one-space)
+      (define-key esc-map (vector ?\\) 'nemacs-gtk-delete-horizontal-space)
       ;; Phase 2.X — `M-g g' = goto-line, `M-g M-g' aliased to same.
       (define-key meta-g-map (vector ?g)    'nemacs-gtk-goto-line)
       (define-key meta-g-map (vector ?\C-g) 'nemacs-gtk-goto-line)
@@ -636,6 +639,71 @@ the two preceding chars (= mirrors real Emacs's `transpose-chars')."
           (nelisp-ec-insert (concat c2 c1))
           (nelisp-ec-goto-char (+ p 1)))))))
 
+(defun nemacs-gtk--horizontal-whitespace-bounds-around (p)
+  "Return (BEG . END) of the run of horizontal whitespace
+(= space + tab) that touches point P, or nil when P is not adjacent
+to any whitespace.  BEG / END are 1-based buffer positions."
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let* ((s    (buffer-string))
+           (pmin (nelisp-ec-point-min))
+           (idx  (- p pmin))
+           (len  (length s))
+           (ws-p (lambda (c) (or (eq c ?\s) (eq c ?\t)))))
+      (let ((b idx)
+            (e idx))
+        (while (and (> b 0) (funcall ws-p (aref s (1- b))))
+          (setq b (1- b)))
+        (while (and (< e len) (funcall ws-p (aref s e)))
+          (setq e (1+ e)))
+        (cond
+         ((= b e) nil)
+         (t (cons (+ pmin b) (+ pmin e))))))))
+
+(defun nemacs-gtk-just-one-space ()
+  "Bound to `M-SPC' (= byte 32 under Esc-prefix) (Phase 2.Z).  Collapse
+the run of horizontal whitespace touching point to a single space.
+No-op when point is not adjacent to any whitespace."
+  (interactive)
+  (let ((bounds (nemacs-gtk--horizontal-whitespace-bounds-around
+                 (with-current-buffer (nemacs-gtk--active-buffer)
+                   (nelisp-ec-point)))))
+    (when bounds
+      (with-current-buffer (nemacs-gtk--active-buffer)
+        (nelisp-ec-delete-region (car bounds) (cdr bounds))
+        (nelisp-ec-insert " ")))))
+
+(defun nemacs-gtk-delete-horizontal-space ()
+  "Bound to `M-\\' (= Esc \\) (Phase 2.Z).  Delete all horizontal
+whitespace touching point.  No-op when point is not adjacent to
+any whitespace."
+  (interactive)
+  (let ((bounds (nemacs-gtk--horizontal-whitespace-bounds-around
+                 (with-current-buffer (nemacs-gtk--active-buffer)
+                   (nelisp-ec-point)))))
+    (when bounds
+      (with-current-buffer (nemacs-gtk--active-buffer)
+        (nelisp-ec-delete-region (car bounds) (cdr bounds))))))
+
+(defun nemacs-gtk-kill-whole-line ()
+  "Bound to `M-x' / context (Phase 2.Z).  Kill the entire current
+line including its trailing newline + push to kill-ring (= clipboard
+via the cut hook).  Same shape as real Emacs's `kill-whole-line':
+cursor stays at the line's column on the next line."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let* ((b    (line-beginning-position))
+           (e    (line-end-position))
+           (pmax (nelisp-ec-point-max)))
+      (cond
+       ((= b e pmax)
+        (setq nemacs-gtk--last-key-text "kill-whole-line: empty buffer"))
+       ((>= e pmax)
+        (kill-region b e)
+        (setq nemacs-gtk--last-key-text "Killed last line"))
+       (t
+        (kill-region b (1+ e))
+        (setq nemacs-gtk--last-key-text "Killed whole line"))))))
+
 (defun nemacs-gtk--blank-line-p ()
   "Return non-nil when point is on an empty (= zero-width) line."
   (= (line-beginning-position) (line-end-position)))
@@ -995,6 +1063,7 @@ success / failure."
     "copy-region"
     "delete-backward-char"
     "delete-char"
+    "delete-horizontal-space"
     "downcase-word"
     "end-of-line"
     "execute-extended-command"
@@ -1005,25 +1074,30 @@ success / failure."
     "goto-line"
     "isearch-backward"
     "isearch-forward"
+    "just-one-space"
     "kill-buffer"
     "kill-line"
     "kill-region"
+    "kill-whole-line"
     "keyboard-quit"
     "mark-whole-buffer"
     "newline"
     "nemacs-gtk-backward-paragraph"
     "nemacs-gtk-capitalize-word"
     "nemacs-gtk-copy-region"
+    "nemacs-gtk-delete-horizontal-space"
     "nemacs-gtk-downcase-word"
     "nemacs-gtk-forward-paragraph"
     "nemacs-gtk-goto-line"
     "nemacs-gtk-isearch-backward"
     "nemacs-gtk-isearch-forward"
+    "nemacs-gtk-just-one-space"
     "nemacs-gtk-keyboard-find-file"
     "nemacs-gtk-keyboard-quit"
     "nemacs-gtk-keyboard-save"
     "nemacs-gtk-kill-buffer"
     "nemacs-gtk-kill-region"
+    "nemacs-gtk-kill-whole-line"
     "nemacs-gtk-mark-whole-buffer"
     "nemacs-gtk-meta-beginning-of-buffer"
     "nemacs-gtk-meta-end-of-buffer"
