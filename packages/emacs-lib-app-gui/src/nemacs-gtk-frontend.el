@@ -148,6 +148,16 @@ Each entry is `(LABEL . SUBENTRY-LIST)' for a submenu, or
 `(LABEL . ACTION-NAME-STRING)' for a leaf.  When a leaf is clicked
 the ACTION-NAME-STRING surfaces via `(nelisp-gtk-poll-menu-event)'.")
 
+(defconst nemacs-gtk--context-menu-spec
+  '(("Cut"        . "cut")
+    ("Copy"       . "copy")
+    ("Paste"      . "paste")
+    ("Select All" . "select-all"))
+  "Flat list of `(LABEL . ACTION-NAME-STRING)' leaves the right-click
+context menu offers (Phase 2.S).  Reuses the same action-name pool
+as `--menu-spec' so `--handle-menu-action' dispatches both with the
+same cond chain.")
+
 
 ;;;; --- bootstrap helpers ----------------------------------------------------
 
@@ -472,6 +482,22 @@ current-line cut otherwise."
                        (- (cdr rg) (car rg)))))
      (t (nemacs-gtk--menu-cut-current-line)))))
 
+
+(defun nemacs-gtk-mark-whole-buffer ()
+  "Bound to `Select All' in the right-click context menu (Phase 2.S).
+Sets the mark at point-min, moves point to point-max — region-aware
+copy/cut handlers then operate on the whole buffer."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let ((b (nelisp-ec-point-min))
+          (e (nelisp-ec-point-max)))
+      (nelisp-ec-goto-char e)
+      (setq nemacs-gtk--mark-pos     b)
+      (setq nemacs-gtk--mark-buffer  nemacs-gtk--active-buffer-name)
+      (setq nemacs-gtk--shift-region nil))
+    (setq nemacs-gtk--last-key-text
+          (format "Selected whole buffer (%d chars)"
+                  (- (nelisp-ec-point-max) (nelisp-ec-point-min))))))
 
 (defun nemacs-gtk-meta-beginning-of-buffer ()
   "Bound to `M-<' / `Esc <' — point ← (point-min) of active buffer."
@@ -1277,11 +1303,12 @@ clipboard bridge handles cross-app sync via the installed
     ;; sets `nemacs-gtk--quit-requested' which the main loop checks.
     (setq nemacs-gtk--last-key-text "menu: Quit")
     (setq nemacs-gtk--quit-requested t))
-   ((string= action "open")   (nemacs-gtk--menu-open-file))
-   ((string= action "save")   (nemacs-gtk--menu-save-file))
-   ((string= action "cut")    (nemacs-gtk-kill-region))
-   ((string= action "copy")   (nemacs-gtk-copy-region))
-   ((string= action "paste")  (nemacs-gtk--menu-paste))
+   ((string= action "open")        (nemacs-gtk--menu-open-file))
+   ((string= action "save")        (nemacs-gtk--menu-save-file))
+   ((string= action "cut")         (nemacs-gtk-kill-region))
+   ((string= action "copy")        (nemacs-gtk-copy-region))
+   ((string= action "paste")       (nemacs-gtk--menu-paste))
+   ((string= action "select-all")  (nemacs-gtk-mark-whole-buffer))
    ((string= action "about")
     (setq nemacs-gtk--last-key-text "nemacs-gtk Phase 2 — elisp-driven"))
    (t
@@ -1347,6 +1374,16 @@ Release is intentionally silent so click events don't double-fire."
         (emacs-command-loop-feed-events 'mouse-2)
         (emacs-command-loop-step))
       (nemacs-gtk--ensure-cursor-visible))
+     ;; Right-click (= button 3): pop the context menu at the click
+     ;; cell.  Phase 2.S — reuses the menu_event_queue so existing
+     ;; `--handle-menu-action' dispatches Cut/Copy/Paste/Select All.
+     ((and (eq kind 'press)
+           (= button 3)
+           (< row nemacs-gtk--buffer-area-end))
+      (when (fboundp 'nelisp-gtk-show-context-menu)
+        (nelisp-gtk-show-context-menu nemacs-gtk--context-menu-spec row col))
+      (setq nemacs-gtk--last-key-text
+            (format "Context menu @ (%d,%d)" row col)))
      ((eq kind 'press)
       (setq nemacs-gtk--last-key-text
             (format "mouse-%d press @ (%d,%d)" button row col)))
