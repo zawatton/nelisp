@@ -153,6 +153,7 @@ Idempotent — re-calling replaces the global map with a fresh one."
     (define-key m (vector ?\C-d) 'delete-char)
     (define-key m (vector ?\C-k) 'kill-line)
     (define-key m (vector ?\C-y) 'yank)
+    (define-key m (vector ?\C-s) 'nemacs-gtk-isearch-forward)
     ;; C-x prefix map — common substrate-level commands behind the
     ;; same handlers the menu uses.
     (define-key ctl-x-map (vector ?\C-s) 'nemacs-gtk-keyboard-save)
@@ -307,6 +308,19 @@ on the echo-area row).  All key dispatch routes through
 `nemacs-gtk--minibuffer-handle-key' instead of the normal command
 loop while this is true.")
 
+(defvar nemacs-gtk--isearch-active nil
+  "Non-nil during incremental search (= C-s).  Routes key dispatch
+through `nemacs-gtk--isearch-handle-key' instead of the normal
+keymap so query characters extend the search rather than
+self-insert.")
+(defvar nemacs-gtk--isearch-query "" "Live isearch query string.")
+(defvar nemacs-gtk--isearch-start-pos 0
+  "Point position at the moment isearch was entered, restored on
+C-g cancel.")
+(defvar nemacs-gtk--isearch-failing nil
+  "Non-nil when the current `--isearch-query' has no match — flips
+the echo prompt from `I-search:' to `I-search (failing):'.")
+
 (defvar nemacs-gtk--minibuffer-prompt "")
 (defvar nemacs-gtk--minibuffer-input "")
 (defvar nemacs-gtk--minibuffer-on-confirm nil
@@ -363,6 +377,85 @@ the event was handled (= caller should not run normal dispatch)."
    ;; ignored while minibuffer-active so the user doesn't
    ;; accidentally walk the cursor.
    (t t)))
+
+;;;; --- isearch (Phase 2.N — C-s incremental forward search) ----------------
+
+(defun nemacs-gtk-isearch-forward ()
+  "Bound to `C-s' — start an incremental forward search.  Saves
+the current point on `--isearch-start-pos' so C-g can restore it.
+While active, every printable key extends the query and re-searches
+from the saved start; another C-s jumps to the next match starting
+after the current point; backspace shrinks the query; Return /
+Escape exit at the current match; C-g cancels and restores point."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (setq nemacs-gtk--isearch-start-pos (nelisp-ec-point)))
+  (setq nemacs-gtk--isearch-active   t)
+  (setq nemacs-gtk--isearch-query    "")
+  (setq nemacs-gtk--isearch-failing  nil))
+
+(defun nemacs-gtk--isearch-search-from-start ()
+  "Reset point to start-pos + search forward for the current query.
+Updates `--isearch-failing' on success / failure."
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let ((q nemacs-gtk--isearch-query))
+      (cond
+       ((string-empty-p q)
+        (nelisp-ec-goto-char nemacs-gtk--isearch-start-pos)
+        (setq nemacs-gtk--isearch-failing nil))
+       (t
+        (nelisp-ec-goto-char nemacs-gtk--isearch-start-pos)
+        (let ((found (condition-case nil
+                         (search-forward q nil t)
+                       (error nil))))
+          (setq nemacs-gtk--isearch-failing (not found))
+          (unless found
+            (nelisp-ec-goto-char nemacs-gtk--isearch-start-pos))))))))
+
+(defun nemacs-gtk--isearch-handle-key (event)
+  "Consume one event during isearch.  Returns t when handled."
+  (cond
+   ((eq event 'return)
+    (setq nemacs-gtk--isearch-active nil)
+    (setq nemacs-gtk--last-key-text
+          (format "isearch: %s" nemacs-gtk--isearch-query))
+    t)
+   ;; C-g (= byte 7) — cancel + restore point.
+   ((eq event 7)
+    (with-current-buffer (nemacs-gtk--active-buffer)
+      (nelisp-ec-goto-char nemacs-gtk--isearch-start-pos))
+    (setq nemacs-gtk--isearch-active nil)
+    (setq nemacs-gtk--last-key-text "isearch cancelled")
+    t)
+   ((eq event 27) ; Escape — accept at current match.
+    (setq nemacs-gtk--isearch-active nil)
+    (setq nemacs-gtk--last-key-text "isearch ended")
+    t)
+   ;; C-s (= byte 19) during isearch → jump to next match starting
+   ;; after the current point.  No-op when query is empty.
+   ((eq event 19)
+    (when (> (length nemacs-gtk--isearch-query) 0)
+      (with-current-buffer (nemacs-gtk--active-buffer)
+        (let ((found (condition-case nil
+                         (search-forward nemacs-gtk--isearch-query nil t)
+                       (error nil))))
+          (setq nemacs-gtk--isearch-failing (not found)))))
+    t)
+   ((eq event 'backspace)
+    (when (> (length nemacs-gtk--isearch-query) 0)
+      (setq nemacs-gtk--isearch-query
+            (substring nemacs-gtk--isearch-query 0
+                       (1- (length nemacs-gtk--isearch-query))))
+      (nemacs-gtk--isearch-search-from-start))
+    t)
+   ((and (integerp event) (>= event 32) (< event 127))
+    (setq nemacs-gtk--isearch-query
+          (concat nemacs-gtk--isearch-query (char-to-string event)))
+    (nemacs-gtk--isearch-search-from-start)
+    t)
+   ;; Anything else (= arrows, mouse, function keys) ignored.
+   (t t)))
+
 
 (defun execute-extended-command (&optional _prefix-arg
                                             _command-name
@@ -544,6 +637,11 @@ buffer-area-end - 1)."
                         ;; trailing block-cursor-ish marker so the
                         ;; user knows the prompt is awaiting input.
                         "_"))
+               (nemacs-gtk--isearch-active
+                (format "I-search%s: %s_"
+                        (if nemacs-gtk--isearch-failing
+                            " (failing)" "")
+                        nemacs-gtk--isearch-query))
                ((string-empty-p nemacs-gtk--last-key-text)
                 "(press any key)")
                (t (format "Last key: %s" nemacs-gtk--last-key-text)))))
@@ -775,6 +873,13 @@ viewport."
         ;; prefix); the user pressing Alt while typing into a
         ;; prompt almost certainly means the bare letter.
         (nemacs-gtk--minibuffer-handle-key event))
+       (nemacs-gtk--isearch-active
+        ;; Same: isearch eats one event at a time, Alt-prefix
+        ;; dropped (= a literal letter is what the user wants
+        ;; mid-search).  Auto-scroll to whatever match-row point
+        ;; landed on so the cursor stays visible.
+        (nemacs-gtk--isearch-handle-key event)
+        (nemacs-gtk--ensure-cursor-visible))
        (t
         (let* ((accumulated (vconcat (or nemacs-gtk--pending-prefix [])
                                      event-vec))
