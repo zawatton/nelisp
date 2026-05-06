@@ -186,7 +186,10 @@
                             (emacs-redisplay-glyph-row m 2)))))))))
 
 (ert-deftest emacs-redisplay-test-redisplay-truncates-long-line ()
-  "Lines wider than the window width are clipped (truncate-lines = t)."
+  "Lines wider than the window width are clipped (truncate-lines = t).
+Phase 3.B.5 step 1: the rightmost cell carries
+`emacs-redisplay-truncation-glyph' (= `$' by default) so the user
+sees that the line was cut."
   (emacs-redisplay-test--with-fresh-world
     (emacs-redisplay-test--with-buffer b (make-string 200 ?x)
       (let* ((h (emacs-redisplay-init))
@@ -194,10 +197,10 @@
              (width (emacs-window-window-width w)))
         (emacs-window-set-window-buffer w b)
         (let* ((m (emacs-redisplay-redisplay-window h w))
-               (row (emacs-redisplay-glyph-row m 0)))
+               (row (emacs-redisplay-glyph-row m 0))
+               (text (emacs-redisplay-glyph-row-text row)))
           (should (<= (emacs-redisplay-glyph-row-used row) width))
-          (should (string-match-p "^x+\\'"
-                                  (emacs-redisplay-glyph-row-text row))))))))
+          (should (string-match-p "^x+\\$\\'" text)))))))
 
 (ert-deftest emacs-redisplay-test-redisplay-tab-expands ()
   "TAB is expanded to spaces up to the next tab stop."
@@ -215,7 +218,9 @@
           (should (string-match-p "^a +b$" text)))))))
 
 (ert-deftest emacs-redisplay-test-redisplay-window-narrow-region ()
-  "Smaller window width forces narrower row (truncation)."
+  "Smaller window width forces narrower row (truncation).
+Phase 3.B.5 step 1: rightmost cell shows `$' to flag truncation,
+so the visible row text is `abc$' (= 3 chars of buffer + marker)."
   (emacs-redisplay-test--with-fresh-world
     (emacs-redisplay-test--with-buffer b "abcdef"
       (let* ((h (emacs-redisplay-init))
@@ -227,7 +232,7 @@
                (row (emacs-redisplay-glyph-row m 0)))
           (should (= 4 (emacs-redisplay-glyph-matrix-width m)))
           (should (<= (emacs-redisplay-glyph-row-used row) 4))
-          (should (string= "abcd"
+          (should (string= "abc$"
                            (emacs-redisplay-glyph-row-text row))))))))
 
 (ert-deftest emacs-redisplay-test-redisplay-window-start-offsets-display ()
@@ -1127,6 +1132,77 @@ the raw underlying buffer char per Doc 43 §2.5a)."
   (should (null (emacs-redisplay-display-spec-glyphs '(space :width 0) nil)))
   (should (null (emacs-redisplay-display-spec-glyphs '(space :width -1) nil)))
   (should (null (emacs-redisplay-display-spec-glyphs '(space) nil))))
+
+;;;; K. Truncation / continuation marker (Phase 3.B.5 step 1)
+
+(ert-deftest emacs-redisplay-test-truncation-marker-default ()
+  "Phase 3.B.5 step 1: with `truncate-lines' = t, overflow row's
+rightmost cell is the configured truncation glyph (= `$' by default)."
+  (let ((emacs-redisplay-truncate-lines t)
+        (emacs-redisplay-truncation-glyph ?$))
+    (emacs-redisplay-test--with-fresh-world
+      (emacs-redisplay-test--with-buffer b "0123456789"
+        (let* ((h (emacs-redisplay-init))
+               (w (emacs-window-selected-window)))
+          (setf (emacs-window-total-cols  w) 5)
+          (setf (emacs-window-total-lines w) 2)
+          (emacs-window-set-window-buffer w b)
+          (let* ((m (emacs-redisplay-redisplay-window h w))
+                 (row (emacs-redisplay-glyph-row m 0))
+                 (text (emacs-redisplay-glyph-row-text row)))
+            (should (= 5 (length text)))
+            (should (eq ?$ (aref text 4)))))))))
+
+(ert-deftest emacs-redisplay-test-continuation-marker-when-truncate-nil ()
+  "Phase 3.B.5 step 1: with `truncate-lines' = nil (= future wrap mode),
+overflow row uses `emacs-redisplay-continuation-glyph' (= `\\') in the
+last cell.  Multi-row layout is step-2 follow-up; step-1 still ends
+the line at row boundary but signals continuation."
+  (let ((emacs-redisplay-truncate-lines nil)
+        (emacs-redisplay-continuation-glyph ?\\))
+    (emacs-redisplay-test--with-fresh-world
+      (emacs-redisplay-test--with-buffer b "0123456789"
+        (let* ((h (emacs-redisplay-init))
+               (w (emacs-window-selected-window)))
+          (setf (emacs-window-total-cols  w) 5)
+          (setf (emacs-window-total-lines w) 2)
+          (emacs-window-set-window-buffer w b)
+          (let* ((m (emacs-redisplay-redisplay-window h w))
+                 (row (emacs-redisplay-glyph-row m 0))
+                 (text (emacs-redisplay-glyph-row-text row)))
+            (should (= 5 (length text)))
+            (should (eq ?\\ (aref text 4)))))))))
+
+(ert-deftest emacs-redisplay-test-truncation-marker-disabled-when-nil ()
+  "Phase 3.B.5 step 1: setting the marker var to nil restores MVP-style
+silent clipping (= no marker glyph)."
+  (let ((emacs-redisplay-truncate-lines t)
+        (emacs-redisplay-truncation-glyph nil))
+    (emacs-redisplay-test--with-fresh-world
+      (emacs-redisplay-test--with-buffer b "0123456789"
+        (let* ((h (emacs-redisplay-init))
+               (w (emacs-window-selected-window)))
+          (setf (emacs-window-total-cols  w) 5)
+          (setf (emacs-window-total-lines w) 2)
+          (emacs-window-set-window-buffer w b)
+          (let* ((m (emacs-redisplay-redisplay-window h w))
+                 (row (emacs-redisplay-glyph-row m 0))
+                 (text (emacs-redisplay-glyph-row-text row)))
+            (should (string= "01234" text))))))))
+
+(ert-deftest emacs-redisplay-test-truncation-marker-not-emitted-when-fits ()
+  "Phase 3.B.5 step 1: short lines that fit must not gain a marker."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "ok"
+      (let* ((h (emacs-redisplay-init))
+             (w (emacs-window-selected-window)))
+        (setf (emacs-window-total-cols  w) 10)
+        (setf (emacs-window-total-lines w) 2)
+        (emacs-window-set-window-buffer w b)
+        (let* ((m (emacs-redisplay-redisplay-window h w))
+               (row (emacs-redisplay-glyph-row m 0)))
+          ;; The visible text portion is just "ok" (the rest is padding).
+          (should (string= "ok" (emacs-redisplay-glyph-row-text row))))))))
 
 (provide 'emacs-redisplay-test)
 

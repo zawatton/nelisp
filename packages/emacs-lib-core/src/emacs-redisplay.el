@@ -173,9 +173,30 @@ History:
 
 (defcustom emacs-redisplay-truncate-lines t
   "If non-nil, lines longer than the window width are truncated.
-MVP behaviour: no continuation glyph / line wrap.  Lines longer than
-the window width are clipped, mirroring `truncate-lines = t' in Emacs."
+Phase 3.B.5 step 1: when truncating, the rightmost cell of the row
+holds `emacs-redisplay-truncation-glyph' so the user can tell that
+text was cut.  Multi-row wrap (= `truncate-lines' nil with continuation
+glyph + line continued onto subsequent rows) is the Phase 3.B.5 step 2
+follow-up; for now `nil' still falls into the truncate path and emits
+`emacs-redisplay-continuation-glyph' instead."
   :type 'boolean
+  :group 'emacs-redisplay)
+
+(defcustom emacs-redisplay-truncation-glyph ?$
+  "Character placed at the right edge when a row is truncated.
+Phase 3.B.5 step 1: matches host Emacs' default truncation indicator
+(= `$').  Set to nil to suppress the marker and keep MVP-style
+silent clipping."
+  :type '(choice (const nil) character)
+  :group 'emacs-redisplay)
+
+(defcustom emacs-redisplay-continuation-glyph ?\\
+  "Character placed at the right edge when a row continues to the next.
+Phase 3.B.5 step 1: matches host Emacs' default continuation indicator
+(= `\\').  Used when `emacs-redisplay-truncate-lines' is nil and the
+caller supports multi-row layout (= step 2 follow-up).  Set to nil
+to suppress the marker."
+  :type '(choice (const nil) character)
   :group 'emacs-redisplay)
 
 (defcustom emacs-redisplay-log-enabled nil
@@ -1382,12 +1403,20 @@ the overlay anchor position."
               (when overlays
                 (emacs-redisplay--apply-overlay-face g overlays pos))
               (cond
-               ;; Overflow → stop (truncate).
+               ;; Overflow → stop (truncate or wrap-as-truncate).
+               ;; Phase 3.B.5 step 1: place marker glyph in rightmost cell.
                ((>= (+ col (max 1 cw)) (1+ width))
-                (if emacs-redisplay-truncate-lines
-                    (setq overflow t)
-                  ;; wrap path = post-MVP, treat as truncate too for now.
-                  (setq overflow t)))
+                (let ((marker (if emacs-redisplay-truncate-lines
+                                  emacs-redisplay-truncation-glyph
+                                emacs-redisplay-continuation-glyph)))
+                  (when (and marker (> width 0))
+                    (aset used (1- width)
+                          (emacs-redisplay--make-glyph
+                           :char marker
+                           :face nil :face-id 0 :width 1
+                           :buf-pos pos))
+                    (when (< col width) (setq col (max col (1- width))))))
+                (setq overflow t))
                (t
                 (aset used col g)
                 (setq col (+ col (max 1 cw))
