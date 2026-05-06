@@ -234,8 +234,13 @@ fn require_returns_feature_and_is_idempotent() {
 }
 
 #[test]
-fn featurep_wrong_type_errors() {
-    assert!(matches!(err("(featurep 1)"), EvalError::WrongType { .. }));
+fn featurep_non_symbol_returns_nil() {
+    // After Rust-min batch 7i (Doc 50 stage 2) `featurep' is a 1-line
+    // elisp `memq' — non-symbol inputs simply miss the lookup and
+    // return nil (= host Emacs behaviour), they do NOT signal
+    // wrong-type-argument like the previous Rust impl did.
+    assert_eq!(ok("(featurep 1)"), Sexp::Nil);
+    assert_eq!(ok("(featurep \"foo\")"), Sexp::Nil);
 }
 
 // ============================================================

@@ -19,7 +19,7 @@
 //! so that the closure stays a plain [`Sexp`] and survives `eq` /
 //! `equal` semantics.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::reader;
@@ -97,10 +97,6 @@ pub struct Env {
     /// can bump it for testing.
     pub max_recursion: u32,
     pub current_recursion: u32,
-    /// Global feature registry used by `provide` / `require` /
-    /// `featurep`.  Phase 8.0.2 keeps this in-memory only; file-based
-    /// loading is deferred to the bridge in Phase 8.0.3.
-    pub features: HashSet<String>,
     /// External builtin registry — host crates (= `nelisp-emacs-gtk'
     /// for GTK4 GUI ops, future SDL2 / Win32 backends) register Rust
     /// closures here via [`Env::register_extern_builtin`] which then
@@ -137,7 +133,6 @@ impl Env {
             frames: Vec::new(),
             max_recursion: 256,
             current_recursion: 0,
-            features: HashSet::new(),
             extern_builtins: HashMap::new(),
         };
         // `nil` and `t` self-evaluate; mark them constant so that
@@ -168,7 +163,6 @@ impl Env {
             frames: Vec::new(),
             max_recursion: 256,
             current_recursion: 0,
-            features: HashSet::new(),
             extern_builtins: HashMap::new(),
         }
     }
@@ -368,17 +362,6 @@ impl Env {
                 ..
             })
         )
-    }
-
-    /// Register a provided/required feature in the global feature
-    /// table.
-    pub fn provide_feature(&mut self, name: &str) {
-        self.features.insert(name.to_string());
-    }
-
-    /// `featurep` — true iff the feature has been recorded globally.
-    pub fn has_feature(&self, name: &str) -> bool {
-        self.features.contains(name)
     }
 
     /// Capture the current lexical frames as a flat alist so a

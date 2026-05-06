@@ -106,6 +106,30 @@
 (defun abs (x)
   (if (nelisp--num-lt2 x 0) (nelisp--sub2 0 x) x))
 
+;; Rust-min batch 7h (2026-05-07): `floor' / `ceiling' / `round'
+;; migrated from Rust to elisp.  The shared f64-division-and-truncate
+;; kernel is the new `nelisp--f64-trunc MODE X DIV' primitive (Rust);
+;; everything above it — arity (1..=2), DIV defaulting to 1, and the
+;; integer 1-arg fast-path that bypasses f64 entirely so large
+;; magnitudes keep their precision — lives here.  Mirrors the host
+;; Emacs contract `(floor 5)' = 5 (integer passthrough), `(floor 5.7)'
+;; = 5, `(floor 5 2)' = 2, `(floor -5 2)' = -3.
+
+(defun floor (x &optional div)
+  (cond
+   ((and (null div) (integerp x)) x)
+   (t (nelisp--f64-trunc 'floor x (or div 1)))))
+
+(defun ceiling (x &optional div)
+  (cond
+   ((and (null div) (integerp x)) x)
+   (t (nelisp--f64-trunc 'ceiling x (or div 1)))))
+
+(defun round (x &optional div)
+  (cond
+   ((and (null div) (integerp x)) x)
+   (t (nelisp--f64-trunc 'round x (or div 1)))))
+
 ;; Rust-min batch 6q (2026-05-06): `atom' / `arrayp' / `sequencep'
 ;; migrated from Rust to elisp.  Each was a 1-line `bi_predicate'
 ;; dispatch entry composing already-existing primitives — the elisp
