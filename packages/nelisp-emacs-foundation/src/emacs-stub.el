@@ -324,17 +324,13 @@ even if the encoding is approximate."
 (unless (fboundp 'set-match-data)
   (defun set-match-data (list &optional reseat) (ignore list reseat) nil))
 
-(unless (fboundp 'string-match)
-  ;; Emacs 27+ added 4th arg INHIBIT-MODIFY (= don't update match data).
-  ;; Vendor subr.el's string-match-p calls (string-match RE STR START t) so
-  ;; our polyfill must accept all 4.
-  (defun string-match (regexp string &optional start inhibit-modify)
-    (ignore regexp string start inhibit-modify)
-    nil))
-
-(unless (fboundp 'replace-regexp-in-string)
-  (defun replace-regexp-in-string (regexp rep string &rest _)
-    (ignore regexp rep) string))
+;; Phase 4 B (2026-05-06): real `string-match' / `string-match-p' /
+;; `replace-regexp-in-string' moved to `emacs-search-builtins.el' so
+;; they actually scan via `nelisp-rx-*'.  The void stubs that lived
+;; here would shadow the real impl under load order
+;; `emacs-stub' → `emacs-search-builtins' (= the stub gets defined
+;; first, then the real impl skips because of `unless fboundp').
+;; Removing the stubs lets the real bridge land instead.
 
 (unless (fboundp 'replace-match)
   (defun replace-match (newtext &optional fixedcase literal string subexp)

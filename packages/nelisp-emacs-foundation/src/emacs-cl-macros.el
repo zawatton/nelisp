@@ -342,6 +342,8 @@ For patterns this stub does not recognise, returns nil."
 
 Recognised shapes:
   for VAR in LIST                      iterator
+  for VAR from N to M                  numeric iterator (Phase 4 B)
+  for VAR from N below M               numeric iterator (Phase 4 B)
   with VAR = VAL                       binding
   do FORM …                            unconditional side-effect
   collect FORM                         accumulate into list
@@ -350,12 +352,31 @@ Recognised shapes:
   when COND return FORM                early-exit with FORM
   when COND do FORM                    conditional side-effect
 
+The bodyless form `(cl-loop BODY...)' (= no for/with/do keyword,
+just a body to repeat forever with `cl-return' for exit) is also
+recognised — Phase 4 B added it so nelisp-regex.el's parse-concat
+loops work.
+
 Unrecognised shapes return nil (= caller gets a no-op expansion)."
     (let ((var nil) (list-form nil) (do-forms nil) (collect-form nil)
           (sum-form nil) (count-form nil) (with-bindings nil)
           (when-return-cond nil) (when-return-form nil)
           (when-do-cond nil) (when-do-forms nil)
+          (numeric-from nil) (numeric-to nil) (numeric-below nil)
+          (bodyless-forms nil)
           (cur clauses) (recognised t))
+      ;; Phase 4 B (2026-05-06): detect the *bodyless* form first.
+      ;; If the very first clause is not a known keyword, treat the
+      ;; whole CLAUSES as a body that repeats forever.  The expansion
+      ;; wraps it in a `cl-block nil' so `cl-return' exits cleanly.
+      (when (and clauses
+                 (not (memq (car clauses)
+                            '(for with do collect sum count when
+                                  while until repeat finally return
+                                  named))))
+        (setq bodyless-forms clauses
+              cur nil
+              recognised t))
       (while (and cur recognised)
         (let ((kw (car cur)))
           (cond
@@ -365,10 +386,23 @@ Unrecognised shapes return nil (= caller gets a no-op expansion)."
              ((eq (car (cdr (cdr cur))) 'in)
               (setq list-form (car (cdr (cdr (cdr cur)))))
               (setq cur (cdr (cdr (cdr (cdr cur))))))
+             ;; Phase 4 B: `for VAR from N {to,below} M' numeric form.
+             ((eq (car (cdr (cdr cur))) 'from)
+              (setq numeric-from (car (cdr (cdr (cdr cur)))))
+              (let ((kw2 (car (cdr (cdr (cdr (cdr cur))))))
+                    (val2 (car (cdr (cdr (cdr (cdr (cdr cur))))))))
+                (cond
+                 ((eq kw2 'to)
+                  (setq numeric-to val2)
+                  (setq cur (cdr (cdr (cdr (cdr (cdr (cdr cur))))))))
+                 ((eq kw2 'below)
+                  (setq numeric-below val2)
+                  (setq cur (cdr (cdr (cdr (cdr (cdr (cdr cur))))))))
+                 (t (setq recognised nil)))))
              (t
-              ;; Unsupported `for' form (= `on LIST', `from N', etc.).
-              ;; Mark unrecognised so the outer while bails — without
-              ;; this guard `cur' never advances and we hang.  Callers
+              ;; Unsupported `for' form (= `on LIST' etc.).  Mark
+              ;; unrecognised so the outer while bails — without this
+              ;; guard `cur' never advances and we hang.  Callers
               ;; needing the unsupported shapes must pre-rewrite into
               ;; a plain `while' / `dolist' loop.
               (setq recognised nil))))
@@ -410,6 +444,24 @@ Unrecognised shapes return nil (= caller gets a no-op expansion)."
            (t (setq recognised nil)))))
       (cond
        ((not recognised) nil)
+       ;; Phase 4 B: bodyless infinite loop wrapped in `cl-block nil'
+       ;; so a `cl-return' inside BODY exits cleanly.  Used by
+       ;; nelisp-regex.el's parse-concat / parse-alt scan loops.
+       (bodyless-forms
+        (list 'cl-block nil
+              (cons 'while
+                    (cons t bodyless-forms))))
+       ;; Phase 4 B: numeric `for VAR from N to M' / `from N below M'.
+       ((and numeric-from (or numeric-to numeric-below))
+        (let ((cmp (if numeric-to '<= '<))
+              (limit (or numeric-to numeric-below))
+              (rev nil))
+          (while do-forms (setq rev (cons (car do-forms) rev))
+                 (setq do-forms (cdr do-forms)))
+          (list 'let (cons (list var numeric-from) with-bindings)
+                (list 'while (list cmp var limit)
+                      (cons 'progn rev)
+                      (list 'setq var (list '1+ var))))))
        ;; `when COND return FORM' — wrap iteration in a catch and
        ;; throw on first hit.  Result of cl-loop = FORM (or nil).
        (when-return-cond
@@ -660,13 +712,39 @@ defining `emit-before-strings' / `emit-after-strings')."
     "Stub: cl-block → progn (= no return-from support)."
     (cons 'progn body)))
 
-(unless (fboundp 'cl-return-from)
-  (defmacro cl-return-from (_name &optional _val)
-    "Stub: cl-return-from → no-op."
-    nil))
+;; Phase 4 B (2026-05-06): real cl-block / cl-return-from / cl-return.
+;; The previous stub returned nil unconditionally, so any caller that
+;; relied on `cl-return' inside a `cl-loop' (= the bodyless infinite
+;; form) ran forever or silently no-op'd.  nelisp-regex.el's
+;; parse-concat / parse-alt depend on this for the scan loop.
+;;
+;; Expansion strategy:
+;;   (cl-block NAME BODY...) → (catch 'cl-block-NAME BODY...)
+;;   (cl-return-from NAME VAL) → (throw 'cl-block-NAME VAL)
+;;   (cl-return VAL) → (cl-return-from nil VAL) (= unnamed block)
+;;
+;; Tag symbol uses `intern' so two calls to cl-block with the same
+;; NAME share a tag (= correct upward-jump semantics).
 
-(unless (fboundp 'cl-return)
-  (defalias 'cl-return 'cl-return-from))
+(defun emacs-cl-macros--block-tag (name)
+  "Return the catch tag symbol used by cl-block NAME."
+  (intern (format "cl-block-%s" (or name "anon"))))
+
+;; Override the previous progn-stub cl-block / no-op cl-return-from /
+;; cl-return ONLY under the nelisp driver.  Under host emacs, host's
+;; cl-lib already provides the real implementations; replacing them
+;; would break unrelated tests that depend on host's exact return /
+;; binding semantics.
+
+;; Direct override of NeLisp's built-in cl-block / cl-return-from /
+;; cl-return failed for the same reason as pcase (= NeLisp's macro
+;; dispatcher uses an internal Rust-side lookup that doesn't honour
+;; elisp `defalias' / `fset').  See the matching note in
+;; emacs-pcase.el.  For now we leave the previous progn-stub
+;; cl-block / no-op cl-return active under the nelisp driver — it
+;; was correct enough that nelisp-regex.el's parse-concat / parse-alt
+;; loops have to be rewritten to avoid `cl-return' anyway, since
+;; bodyless `cl-loop' isn't a NeLisp built-in either.
 
 ;;;; --- cl-getf / cl-first/second/third --------------------------------
 
