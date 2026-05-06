@@ -1314,16 +1314,17 @@ the segment, 0 if at end-of-text."
   "Cheap fingerprint of inputs that affect WINDOW's glyph-matrix output.
 Two consecutive redisplays with `equal' fingerprints can reuse the
 cached matrix and skip the rebuild (= Phase 3.B.5 short-circuit).
-Captures: buffer identity + size + point + narrow bounds, plus
-window start/point/width/height.  Does NOT cover overlay set,
-text-property mutations, or face-registry changes — callers that
-mutate those must invoke `emacs-redisplay-mark-window-dirty' (or
-the family of force-* helpers) so the matrix is dropped and a fresh
-rebuild is forced."
+Captures: buffer identity + size + point + narrow bounds + chars-
+modified-tick (Phase 3.C.1 = covers text-property face change),
+plus window start/point/width/height.  Does NOT cover overlay set
+or face-registry mutations — callers that mutate those must invoke
+`emacs-redisplay-mark-window-dirty' (or the family of force-*
+helpers) so the matrix is dropped and a fresh rebuild is forced."
   (let ((buf-size 0)
         (buf-point 0)
         (buf-narrow-start nil)
-        (buf-narrow-end nil))
+        (buf-narrow-end nil)
+        (buf-tick 0))
     (cond
      ((null buffer))
      ((stringp buffer)
@@ -1332,8 +1333,10 @@ rebuild is forced."
       (setq buf-size  (nelisp-ec-buffer-size  buffer)
             buf-point (nelisp-ec-buffer-point buffer)
             buf-narrow-start (nelisp-ec-buffer-narrow-start buffer)
-            buf-narrow-end   (nelisp-ec-buffer-narrow-end   buffer))))
+            buf-narrow-end   (nelisp-ec-buffer-narrow-end   buffer)
+            buf-tick (or (emacs-buffer-buffer-chars-modified-tick buffer) 0))))
     (vector buffer buf-size buf-point buf-narrow-start buf-narrow-end
+            buf-tick
             (or (emacs-window-start window) 1)
             (or (emacs-window-point window) buf-point)
             width height)))
