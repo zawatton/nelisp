@@ -323,13 +323,48 @@ fn pcase_matches_quoted_symbol_and_returns_nil_on_no_match() {
 }
 
 #[test]
-fn pcase_malformed_clause_errors() {
-    assert!(matches!(err("(pcase 1 (1))"), EvalError::WrongType { .. }));
+fn pcase_empty_clause_body_returns_nil() {
+    // Rust-min migration 2026-05-06: pcase moved to elisp; an empty
+    // clause body (= `(1)' with no forms after the pattern) expands
+    // to `(progn)' which is `nil', not an error.  The previous
+    // Rust strict-grammar enforced WrongType here.
+    assert_eq!(ok("(pcase 1 (1))"), Sexp::Nil);
 }
 
 #[test]
-fn pcase_unsupported_pattern_errors() {
-    assert!(matches!(err("(pcase '(1 2) ((1 2) 'pair))"), EvalError::WrongType { .. }));
+fn pcase_or_pattern_matches_any() {
+    // Rust-min migration: elisp pcase grammar now supports `(or P1 P2 …)'
+    // — historically the Rust impl rejected this with WrongType.
+    assert_eq!(
+        ok("(pcase 5 ((or 1 5 9) 'hit) (_ 'miss))"),
+        Sexp::Symbol("hit".into())
+    );
+    assert_eq!(
+        ok("(pcase 7 ((or 1 5 9) 'hit) (_ 'miss))"),
+        Sexp::Symbol("miss".into())
+    );
+}
+
+#[test]
+fn pcase_pred_pattern_calls_predicate() {
+    // Rust-min migration: elisp pcase grammar now supports `(pred FN)'.
+    assert_eq!(
+        ok("(pcase 5 ((pred integerp) 'int) (_ 'other))"),
+        Sexp::Symbol("int".into())
+    );
+}
+
+#[test]
+fn pcase_guard_pattern_filters_value() {
+    // Rust-min migration: standalone `(guard EXPR)' inside a cond-style
+    // pcase clause runs EXPR as the test.  The richer `(and SYM (guard
+    // EXPR))' form (= bind-then-validate) requires a more elaborate
+    // expansion than the current minimal polyfill emits and is tracked
+    // as a follow-up; see lisp/nelisp-pcase.el commentary.
+    assert_eq!(
+        ok("(pcase 7 ((guard (> 7 5)) 'big) (_ 'small))"),
+        Sexp::Symbol("big".into())
+    );
 }
 
 // ============================================================

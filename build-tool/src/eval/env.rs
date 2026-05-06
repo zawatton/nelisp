@@ -113,6 +113,10 @@ impl Env {
             ("nelisp-stdlib-search.el", include_str!("../../../lisp/nelisp-stdlib-search.el")),
             ("nelisp-stdlib-plist-str.el", include_str!("../../../lisp/nelisp-stdlib-plist-str.el")),
             ("nelisp-stdlib-misc.el", include_str!("../../../lisp/nelisp-stdlib-misc.el")),
+            // Rust-min migration (2026-05-06): pcase moved out of
+            // special_forms.rs into elisp; loaded here so it's
+            // available before any subsequent elisp file uses it.
+            ("nelisp-pcase.el", include_str!("../../../lisp/nelisp-pcase.el")),
         ];
         let mut env = Env {
             globals: HashMap::new(),

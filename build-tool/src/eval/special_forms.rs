@@ -58,7 +58,11 @@ pub fn apply_special(
         "prog2" => sf_prog2(args, env)?,
         "and" => sf_and(args, env)?,
         "or" => sf_or(args, env)?,
-        "pcase" => sf_pcase(args, env)?,
+        // Rust-min migration (2026-05-06): pcase moved to elisp
+        // (= lisp/nelisp-pcase.el); load order ensures the macro is
+        // defined before any caller.  Removing the special-form
+        // dispatch here lets `apply_combiner' fall through to the
+        // macro expander.
         "save-excursion" => sf_progn(args, env)?, // no-op stub per Doc 44 §3.3
         "save-restriction" => sf_progn(args, env)?, // no-op stub
         "catch" => sf_catch(args, env)?,
@@ -848,71 +852,15 @@ fn sf_or(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     Ok(Sexp::Nil)
 }
 
-// ---------- pcase ----------
-
-fn sf_pcase(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let parts = args_vec(args)?;
-    if parts.is_empty() {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "pcase".into(),
-            expected: "≥1".into(),
-            got: 0,
-        });
-    }
-    let value = eval(&parts[0], env)?;
-    for clause in parts.iter().skip(1) {
-        let clause_parts = list_elements(clause)?;
-        if clause_parts.len() < 2 {
-            return Err(EvalError::WrongType {
-                expected: "(PAT BODY...)".into(),
-                got: clause.clone(),
-            });
-        }
-        if let Some(binding) = pcase_match_binding(&clause_parts[0], &value)? {
-            if let Some(name) = binding {
-                env.push_frame();
-                env.bind_local(&name, value.clone());
-                let result = eval_body(&clause_parts[1..], env);
-                env.pop_frame();
-                return result;
-            }
-            return eval_body(&clause_parts[1..], env);
-        }
-    }
-    Ok(Sexp::Nil)
-}
-
-fn pcase_match_binding(pattern: &Sexp, value: &Sexp) -> Result<Option<Option<String>>, EvalError> {
-    match pattern {
-        Sexp::Int(_) | Sexp::Float(_) | Sexp::Str(_) => Ok((pattern == value).then_some(None)),
-        Sexp::Nil => Ok(matches!(value, Sexp::Nil).then_some(None)),
-        Sexp::T => Ok(matches!(value, Sexp::T).then_some(None)),
-        Sexp::Symbol(name) if name == "_" => Ok(Some(None)),
-        // Keyword symbols (= name starts with `:') are self-evaluating
-        // literals in Elisp, so a keyword pattern matches by equality
-        // against VALUE, not as a variable to bind.  Without this guard
-        // every keyword case in `pcase' would match unconditionally
-        // (= the first branch always wins).
-        Sexp::Symbol(name) if name.starts_with(':') => {
-            Ok((pattern == value).then_some(None))
-        }
-        Sexp::Symbol(name) => Ok(Some(Some(name.clone()))),
-        Sexp::Cons(head, _) if matches!(&*head.borrow(), Sexp::Symbol(s) if s == "quote") => {
-            let quoted = args_vec(pattern)?;
-            if quoted.len() != 2 {
-                return Err(EvalError::WrongType {
-                    expected: "(quote VALUE)".into(),
-                    got: pattern.clone(),
-                });
-            }
-            Ok((quoted[1] == *value).then_some(None))
-        }
-        other => Err(EvalError::WrongType {
-            expected: "supported pcase pattern".into(),
-            got: other.clone(),
-        }),
-    }
-}
+// ---------- pcase removed: see lisp/nelisp-pcase.el ----------
+//
+// Rust-min migration 2026-05-06: pcase was historically a special
+// form here (`sf_pcase' + `pcase_match_binding') with a restricted
+// pattern grammar (literal / quote / cons / keyword).  Moving it to
+// elisp unlocks the richer Emacs grammar (or / and / pred / guard /
+// backquote / let) without growing the Rust core.  The elisp
+// implementation is loaded as part of `Env::new_global'
+// `STDLIB_SOURCES' so it's defined before any consumer parses.
 
 // ---------- catch / throw ----------
 
