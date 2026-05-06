@@ -62,4 +62,67 @@
      ((< len1 len2) (- (1+ n)))
      (t (1+ n)))))
 
+;; Rust-min (2026-05-06): regexp-quote — pure char-by-char escape of
+;; the GNU Emacs regex meta-charset.  Migrated from build-tool/src/
+;; eval/builtins.rs `bi_regexp_quote'.
+(defun regexp-quote (s)
+  (let ((out nil)
+        (i 0)
+        (n (length s)))
+    (while (< i n)
+      (let ((ch (aref s i)))
+        (when (or (eq ch ?.) (eq ch ?*) (eq ch ?+) (eq ch ??)
+                  (eq ch ?\[) (eq ch ?\]) (eq ch ?^) (eq ch ?$)
+                  (eq ch ?\\) (eq ch ?\() (eq ch ?\))
+                  (eq ch ?\{) (eq ch ?\}) (eq ch ?|))
+          (setq out (cons ?\\ out)))
+        (setq out (cons ch out)))
+      (setq i (1+ i)))
+    (concat (nreverse out))))
+
+;; Rust-min (2026-05-06): file-name-* — pure path string slicing.
+;; Migrated from build-tool/src/eval/builtins.rs `bi_file_name_*'.
+
+(defun file-name-directory (path)
+  "Return the directory part of PATH, or nil if PATH has no slash.
+Result keeps the trailing slash."
+  (let ((idx -1)
+        (i 0)
+        (n (length path)))
+    (while (< i n)
+      (when (eq (aref path i) ?/)
+        (setq idx i))
+      (setq i (1+ i)))
+    (if (< idx 0)
+        nil
+      (substring path 0 (1+ idx)))))
+
+(defun file-name-nondirectory (path)
+  "Return the non-directory part of PATH (= last `/'-delimited component)."
+  (let ((idx -1)
+        (i 0)
+        (n (length path)))
+    (while (< i n)
+      (when (eq (aref path i) ?/)
+        (setq idx i))
+      (setq i (1+ i)))
+    (if (< idx 0)
+        path
+      (substring path (1+ idx)))))
+
+(defun file-name-as-directory (path)
+  "Return PATH with a trailing `/' appended if not already present."
+  (cond
+   ((zerop (length path)) "/")
+   ((eq (aref path (1- (length path))) ?/) path)
+   (t (concat path "/"))))
+
+(defun directory-file-name (path)
+  "Return PATH with a single trailing `/' stripped (= keeps `/' for root)."
+  (let ((n (length path)))
+    (cond
+     ((<= n 1) path)
+     ((eq (aref path (1- n)) ?/) (substring path 0 (1- n)))
+     (t path))))
+
 ;; nelisp-stdlib-plist-str.el ends here

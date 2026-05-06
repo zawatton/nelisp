@@ -62,7 +62,9 @@ pub fn install_builtins(env: &mut Env) {
         // string
         "concat", "format", "substring", "intern", "intern-soft", "symbol-name",
         "string-equal", "string=",
-        "string-match-p", "regexp-quote", "mapconcat",
+        "string-match-p", "mapconcat",
+        // Rust-min (2026-05-06): `regexp-quote' migrated to elisp
+        // (see lisp/nelisp-stdlib-plist-str.el).
         "make-string", "char-to-string", "string-to-char", "string", "unibyte-string",
         "string-to-number", "upcase", "downcase", "capitalize",
         "split-string", "string-trim", "string-trim-left", "string-trim-right",
@@ -82,9 +84,13 @@ pub fn install_builtins(env: &mut Env) {
         // file helpers
         "expand-file-name", "file-truename",
         // file I/O (Doc 47 Stage 8b — multi-file load chain)
-        "file-name-directory", "file-name-nondirectory", "file-exists-p",
+        "file-exists-p",
         "file-readable-p", "load", "locate-library",
-        "file-name-as-directory", "directory-file-name", "file-directory-p",
+        "file-directory-p",
+        // Rust-min (2026-05-06): `file-name-directory' /
+        // `file-name-nondirectory' / `file-name-as-directory' /
+        // `directory-file-name' migrated to elisp (see
+        // lisp/nelisp-stdlib-plist-str.el).
         // symbol / function
         "symbol-value", "symbol-function", "fboundp", "boundp", "funcall", "apply", "eval",
         "defalias", "fset", "fmakunbound", "makunbound",
@@ -222,18 +228,16 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "symbol-name" => bi_symbol_name(args),
         "string-equal" | "string=" => bi_string_eq(args),
         "string-match-p" => bi_string_match_p(args),
-        "regexp-quote" => bi_regexp_quote(args),
+        // "regexp-quote" — migrated to elisp (Rust-min 2026-05-06)
         "expand-file-name" => bi_expand_file_name(args, env),
         "file-truename" => bi_file_truename(args, env),
-        // Doc 47 Stage 8b — file I/O for multi-file load chains
-        "file-name-directory" => bi_file_name_directory(args),
-        "file-name-nondirectory" => bi_file_name_nondirectory(args),
+        // Doc 47 Stage 8b — file I/O for multi-file load chains.
+        // file-name-* path slicers migrated to elisp (Rust-min 2026-05-06,
+        // see lisp/nelisp-stdlib-plist-str.el).
         "file-exists-p" => bi_file_exists_p(args, env),
         "file-readable-p" => bi_file_readable_p(args, env),
         "load" => bi_load(args, env),
         "locate-library" => bi_locate_library(args, env),
-        "file-name-as-directory" => bi_file_name_as_directory(args),
-        "directory-file-name" => bi_directory_file_name(args),
         "file-directory-p" => bi_file_directory_p(args),
         // ---- symbol / function ----
         "symbol-value" => bi_symbol_value(args, env),
@@ -2201,18 +2205,8 @@ fn string_value(v: &Sexp) -> Result<String, EvalError> {
     }
 }
 
-fn bi_regexp_quote(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("regexp-quote", args, 1, Some(1))?;
-    let src = string_value(&args[0])?;
-    let mut out = String::with_capacity(src.len());
-    for ch in src.chars() {
-        if matches!(ch, '.' | '*' | '+' | '?' | '[' | ']' | '^' | '$' | '\\' | '(' | ')' | '{' | '}' | '|') {
-            out.push('\\');
-        }
-        out.push(ch);
-    }
-    Ok(Sexp::Str(out))
-}
+// bi_regexp_quote removed — see lisp/nelisp-stdlib-plist-str.el
+// (Rust-min 2026-05-06).
 
 fn bi_string_match_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("string-match-p", args, 2, Some(2))?;
@@ -2302,24 +2296,12 @@ fn bi_file_truename(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
 }
 
 // ---------- Doc 47 Stage 8b — file I/O for multi-file load chains ----------
-
-fn bi_file_name_directory(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("file-name-directory", args, 1, Some(1))?;
-    let path = string_value(&args[0])?;
-    match path.rfind('/') {
-        Some(idx) => Ok(Sexp::Str(path[..=idx].to_string())),
-        None => Ok(Sexp::Nil),
-    }
-}
-
-fn bi_file_name_nondirectory(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("file-name-nondirectory", args, 1, Some(1))?;
-    let path = string_value(&args[0])?;
-    match path.rfind('/') {
-        Some(idx) => Ok(Sexp::Str(path[idx + 1..].to_string())),
-        None => Ok(Sexp::Str(path)),
-    }
-}
+//
+// Pure-string path slicers (`file-name-directory' /
+// `file-name-nondirectory' / `file-name-as-directory' /
+// `directory-file-name') were migrated to elisp on 2026-05-06 — see
+// lisp/nelisp-stdlib-plist-str.el.  The remaining file I/O primitives
+// below still need filesystem access and stay Rust-side.
 
 fn resolve_existing_path(arg: &Sexp, env: &Env) -> Result<PathBuf, EvalError> {
     let path = string_value(arg)?;
@@ -2376,38 +2358,8 @@ fn bi_locate_library(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     }
 }
 
-/// `(file-name-as-directory PATH)' — append `/' if not already there.
-fn bi_file_name_as_directory(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("file-name-as-directory", args, 1, Some(1))?;
-    let s = match &args[0] {
-        Sexp::Str(s) => s.clone(),
-        Sexp::MutStr(rc) => rc.borrow().clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "stringp".into(),
-            got: other.clone(),
-        }),
-    };
-    Ok(Sexp::Str(if s.ends_with('/') { s } else { format!("{}/", s) }))
-}
-
-/// `(directory-file-name PATH)' — strip trailing `/' if any (but
-/// preserve the root `/').
-fn bi_directory_file_name(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("directory-file-name", args, 1, Some(1))?;
-    let s = match &args[0] {
-        Sexp::Str(s) => s.clone(),
-        Sexp::MutStr(rc) => rc.borrow().clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "stringp".into(),
-            got: other.clone(),
-        }),
-    };
-    if s.len() > 1 && s.ends_with('/') {
-        Ok(Sexp::Str(s.trim_end_matches('/').to_string()))
-    } else {
-        Ok(Sexp::Str(s))
-    }
-}
+// bi_file_name_as_directory / bi_directory_file_name removed — see
+// lisp/nelisp-stdlib-plist-str.el (Rust-min 2026-05-06).
 
 /// Resolve a path argument against `load-path` if relative, returning
 /// the first existing match.  Tries the path as-given, then with `.el`
