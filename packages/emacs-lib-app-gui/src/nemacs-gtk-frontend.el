@@ -326,6 +326,9 @@ Idempotent — re-calling replaces the global map with a fresh one."
       (define-key c-x-n-map (vector ?w) 'nemacs-gtk-widen)
       (define-key c-x-n-map (vector ?d) 'nemacs-gtk-narrow-to-defun)
       (define-key ctl-x-map (vector ?n) c-x-n-map))
+    ;; Phase 2.BE — `C-x DEL' = backward-kill-sentence, `C-x z' = repeat.
+    (define-key ctl-x-map (vector 127) 'nemacs-gtk-backward-kill-sentence)
+    (define-key ctl-x-map (vector ?z)  'nemacs-gtk-repeat)
     ;; Phase 2.AX/AZ — `C-x r' prefix → registers + bookmarks.
     (let ((c-x-r-map (make-sparse-keymap)))
       (define-key c-x-r-map (vector ?s)  'nemacs-gtk-copy-to-register)
@@ -397,6 +400,9 @@ Idempotent — re-calling replaces the global map with a fresh one."
       (define-key esc-map (vector ?\C-h) 'nemacs-gtk-mark-defun)
       ;; Phase 2.BB — M-k = kill-sentence.
       (define-key esc-map (vector ?k)    'nemacs-gtk-kill-sentence)
+      ;; Phase 2.BE — C-M-SPC = mark-sexp, M-r = move-to-window-line.
+      (define-key esc-map (vector 0)     'nemacs-gtk-mark-sexp)
+      (define-key esc-map (vector ?r)    'nemacs-gtk-move-to-window-line-top-bottom)
       ;; Phase 2.X — `M-g g' = goto-line, `M-g M-g' aliased to same.
       (define-key meta-g-map (vector ?g)    'nemacs-gtk-goto-line)
       (define-key meta-g-map (vector ?\C-g) 'nemacs-gtk-goto-line)
@@ -3291,6 +3297,124 @@ into an `*Apropos*' buffer + switch to it."
                        (length matches) input))))))))
 
 
+;;;; --- bundle Phase 2.BE (mark-sexp, M-r cycle, C-x DEL, C-x z repeat) -----
+
+(defun nemacs-gtk-mark-sexp ()
+  "Bound to `C-M-SPC' (= [27 0]) — extend the active region by one
+sexp.  When no mark is set, set mark at point first; then advance
+point across the next sexp using the Phase 2.AY scanner.  Repeated
+calls extend the region one sexp at a time."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (when (null nemacs-gtk--mark-pos)
+      (setq nemacs-gtk--mark-pos (nelisp-ec-point))
+      (setq nemacs-gtk--mark-buffer (nemacs-gtk--active-buffer)))
+    (let ((pmax (nelisp-ec-point-max)))
+      (nemacs-gtk--sexp-skip-forward-ws pmax)
+      (let ((res (nemacs-gtk--scan-sexp-forward pmax)))
+        (cond
+         ((null res)
+          (setq nemacs-gtk--last-key-text "mark-sexp: scan-error"))
+         (t
+          (nemacs-gtk--ensure-cursor-visible)
+          (setq nemacs-gtk--last-key-text
+                (format "mark-sexp -> %d" res))))))))
+
+(defvar nemacs-gtk--m-r-state 0
+  "Phase 2.BE — M-r cycle counter (0=top, 1=middle, 2=bottom).
+Bumped each time `move-to-window-line-top-bottom' runs; reset to
+0 by any other command via the dispatcher post-step hook.")
+
+(defun nemacs-gtk-move-to-window-line-top-bottom ()
+  "Bound to `M-r' — move point to the top, middle, or bottom of the
+viewport on a 3-cycle.  First press = top, second = middle,
+third = bottom; subsequent press wraps back to top.  Cycle resets
+when any non-M-r command runs in between."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let* ((scroll nemacs-gtk--scroll-offset)
+           (rows nemacs-gtk--buffer-area-end)
+           (target-row (cond
+                        ((= nemacs-gtk--m-r-state 0) scroll)
+                        ((= nemacs-gtk--m-r-state 1)
+                         (+ scroll (/ rows 2)))
+                        (t (+ scroll (max 0 (- rows 1))))))
+           (label (cond
+                   ((= nemacs-gtk--m-r-state 0) "top")
+                   ((= nemacs-gtk--m-r-state 1) "middle")
+                   (t "bottom")))
+           (pmin (nelisp-ec-point-min))
+           (pmax (nelisp-ec-point-max))
+           (p pmin)
+           (cur 0))
+      (while (and (< p pmax) (< cur target-row))
+        (when (eq (emacs-edit--char-at p) ?\n)
+          (setq cur (1+ cur)))
+        (setq p (1+ p)))
+      (nelisp-ec-goto-char p)
+      (setq nemacs-gtk--m-r-state (mod (1+ nemacs-gtk--m-r-state) 3))
+      (setq nemacs-gtk--last-key-text
+            (format "move-to-window-line: %s" label)))))
+
+(defun nemacs-gtk-backward-kill-sentence ()
+  "Bound to `C-x DEL' — kill from the start of the current sentence
+to point (= the inverse of M-k).  Composes the backward-sentence
+scanner with `kill-region' so the deletion lands on `kill-ring'."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let* ((end (nelisp-ec-point))
+           (pmin (nelisp-ec-point-min))
+           (p end)
+           (found nil))
+      (when (and (> p pmin)
+                 (memq (emacs-edit--char-at (1- p)) '(?\s ?\t ?\n)))
+        (while (and (> p pmin)
+                    (memq (emacs-edit--char-at (1- p)) '(?\s ?\t ?\n)))
+          (setq p (1- p))))
+      (catch 'done
+        (while (> p pmin)
+          (setq p (1- p))
+          (when (nemacs-gtk--sentence-end-char-p (emacs-edit--char-at p))
+            (setq found (1+ p))
+            (while (and (< found end)
+                        (memq (emacs-edit--char-at found)
+                              '(?\s ?\t ?\n ?\" ?\) ?\] ?\} ?\')))
+              (setq found (1+ found)))
+            (throw 'done nil))))
+      (let ((start (or found pmin)))
+        (cond
+         ((= start end)
+          (setq nemacs-gtk--last-key-text "backward-kill-sentence: empty"))
+         (t
+          (kill-region start end)
+          (nemacs-gtk--ensure-cursor-visible)
+          (setq nemacs-gtk--last-key-text
+                (format "backward-kill-sentence: %d chars" (- end start)))))))))
+
+(defun nemacs-gtk-repeat ()
+  "Bound to `C-x z' — re-run the most recent command tracked by
+`emacs-command-loop--last-command' (= the substrate's `this-command'
+promotion slot, set after each successful dispatch).  Echoes a
+diagnostic + does nothing when the slot is unset / the command
+isn't fboundp."
+  (interactive)
+  (cond
+   ((not (boundp 'emacs-command-loop--last-command))
+    (setq nemacs-gtk--last-key-text "repeat: substrate slot missing"))
+   ((or (null emacs-command-loop--last-command)
+        (eq emacs-command-loop--last-command 'nemacs-gtk-repeat))
+    (setq nemacs-gtk--last-key-text "repeat: nothing to repeat"))
+   ((not (fboundp emacs-command-loop--last-command))
+    (setq nemacs-gtk--last-key-text
+          (format "repeat: %s not fboundp"
+                  emacs-command-loop--last-command)))
+   (t
+    (let ((cmd emacs-command-loop--last-command))
+      (call-interactively cmd)
+      (setq nemacs-gtk--last-key-text
+            (format "repeat: %s" cmd))))))
+
+
 ;;;; --- minibuffer mode (Phase 2.J — M-x execute-extended-command) ----------
 
 (defvar nemacs-gtk--minibuffer-active nil
@@ -3760,7 +3884,15 @@ success / failure."
     "nemacs-gtk-apropos"
     "describe-function"
     "describe-variable"
-    "apropos")
+    "apropos"
+    "nemacs-gtk-mark-sexp"
+    "nemacs-gtk-move-to-window-line-top-bottom"
+    "nemacs-gtk-backward-kill-sentence"
+    "nemacs-gtk-repeat"
+    "mark-sexp"
+    "move-to-window-line-top-bottom"
+    "backward-kill-sentence"
+    "repeat")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
@@ -4387,6 +4519,7 @@ itself a keymap (= a prefix mid-sequence)."
     nemacs-gtk-insert-register
     nemacs-gtk-delete-blank-lines
     nemacs-gtk-kill-sentence
+    nemacs-gtk-backward-kill-sentence
     delete-char
     delete-backward-char)
   "Phase 2.AQ: command symbols the dispatcher refuses to run when
@@ -4547,7 +4680,13 @@ viewport."
                          (not (eq emacs-command-loop--last-command
                                   'self-insert-command))
                          (fboundp 'undo-boundary))
-                (undo-boundary)))
+                (undo-boundary))
+              ;; Phase 2.BE — reset M-r cycle when a non-M-r command runs.
+              (when (and (boundp 'emacs-command-loop--last-command)
+                         emacs-command-loop--last-command
+                         (not (eq emacs-command-loop--last-command
+                                  'nemacs-gtk-move-to-window-line-top-bottom)))
+                (setq nemacs-gtk--m-r-state 0)))
             (nemacs-gtk--ensure-cursor-visible)))))))))))
 
 
