@@ -56,10 +56,11 @@ pub fn install_builtins(env: &mut Env) {
         "vector", "make-vector",
         // predicates
         "consp", "listp", "atom", "symbolp", "stringp", "numberp", "integerp", "floatp", "functionp",
-        // Rust-min (2026-05-06 batch 6d): `null' shadowed by elisp
-        // (lisp/nelisp-stdlib.el `(defun null ...)') — Rust dispatch
-        // arm was dead from the moment the elisp def landed.
-        "vectorp", "keywordp", "booleanp",
+        // Rust-min (2026-05-06 batch 6d): `null' shadowed by elisp.
+        // Rust-min (2026-05-06 batch 6f): `booleanp' / `keywordp'
+        // expressible from `eq' / `symbolp' + `symbol-name' + `aref'
+        // — moved to elisp (lisp/nelisp-stdlib-misc.el).
+        "vectorp",
         // list ops
         // Rust-min (2026-05-06 batch 6d): `reverse' / `nreverse'
         // shadowed by elisp (lisp/nelisp-stdlib-list.el).  The elisp
@@ -79,7 +80,9 @@ pub fn install_builtins(env: &mut Env) {
         // string
         // Rust-min (2026-05-06 batch 6b): substring migrated to elisp
         // (lisp/nelisp-stdlib-plist-str.el).
-        "concat", "format", "intern", "intern-soft", "symbol-name",
+        // Rust-min (2026-05-06 batch 6f): `intern-soft' migrated to
+        // elisp (lisp/nelisp-stdlib-misc.el).
+        "concat", "format", "intern", "symbol-name",
         // Rust-min (2026-05-06 batch 6e): `string=' moved to elisp
         // defalias of `string-equal'.
         "string-equal",
@@ -242,13 +245,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // but is meant to be read as boolean negation in source.
         // null migrated to elisp (Rust-min 2026-05-06 batch 6d, see
         // lisp/nelisp-stdlib.el).
-        // `booleanp' = t when value is exactly `t' or `nil'.  Doc 51
-        // Track P/Q etc rely on this for fboundp-style guards.
-        "booleanp" => bi_predicate(args, |v| matches!(v, Sexp::Nil | Sexp::T)),
-        // `keywordp' = symbol whose printed name starts with `:'.
-        // Implemented as a string-prefix check on the symbol name.
-        "keywordp" => bi_predicate(args, |v| matches!(v,
-            Sexp::Symbol(s) if s.starts_with(':') && s.len() > 1)),
+        // booleanp / keywordp migrated to elisp (Rust-min 2026-05-06
+        // batch 6f, see lisp/nelisp-stdlib-misc.el).
         // ---- bitwise (essential for keymap / event encoding) ----
         "logior" => bi_logior(args),
         "logand" => bi_logand(args),
@@ -287,7 +285,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "fset" => bi_fset(args, env),
         "fmakunbound" => bi_fmakunbound(args, env),
         "makunbound" => bi_makunbound(args, env),
-        "intern-soft" => bi_intern_soft(args),
+        // intern-soft migrated to elisp (Rust-min 2026-05-06 batch 6f,
+        // see lisp/nelisp-stdlib-misc.el).
         "make-symbol" => bi_make_symbol(args),
         "make-string" => bi_make_string(args),
         // char-to-string / string / unibyte-string / string-to-char
@@ -1239,19 +1238,11 @@ fn bi_intern(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-fn bi_intern_soft(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("intern-soft", args, 1, Some(2))?;
-    let name = match &args[0] {
-        Sexp::Str(s) => s.clone(),
-        Sexp::MutStr(rc) => rc.borrow().clone(),
-        Sexp::Symbol(s) => s.clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "stringp / symbolp".into(),
-            got: other.clone(),
-        }),
-    };
-    Ok(Sexp::Symbol(name))
-}
+// bi_intern_soft removed — see lisp/nelisp-stdlib-misc.el (Rust-min
+// 2026-05-06 batch 6f).  Without an obarray the MVP could not
+// implement true soft-fail lookup; the elisp version preserves the
+// previous "always returns the symbol" semantics by routing through
+// `intern' for stringp input and identity for symbolp input.
 
 /// `(make-symbol NAME)` — return a *fresh* uninterned symbol whose
 /// print-name is NAME.  Our Sexp::Symbol is a wrapper around a String,

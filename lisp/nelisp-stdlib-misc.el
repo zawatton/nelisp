@@ -41,6 +41,27 @@
          ((symbolp prefix) (if prefix (symbol-name prefix) "g"))
          (t "g"))))
 
+;; Rust-min batch 6f (2026-05-06): leaf predicates / intern-soft
+;; expressible without self-reference.  `booleanp' uses only `eq';
+;; `keywordp' is a `symbolp' + first-char check; `intern-soft' is a
+;; type dispatch on stringp / symbolp.  Each was a thin wrapper in
+;; Rust (`bi_predicate' + `matches!' / `bi_intern_soft') with no
+;; Sexp-internal logic.
+(defun booleanp (x)
+  (or (eq x t) (eq x nil)))
+
+(defun keywordp (x)
+  (and (symbolp x)
+       (let ((n (symbol-name x)))
+         (and (> (length n) 1) (eq (aref n 0) ?:)))))
+
+(defun intern-soft (name &optional _obarray)
+  ;; NeLisp MVP has no obarray, so name-as-symbol is identity and
+  ;; name-as-string is the same as `intern' (= no soft-fail path).
+  (cond ((symbolp name) name)
+        ((stringp name) (intern name))
+        (t (signal 'wrong-type-argument (list 'stringp name)))))
+
 ;; Rust-min batch 6e (2026-05-06): alias-only dispatch arms reduced
 ;; to `defalias'.  Each pair below previously routed through a
 ;; single Rust impl via `"foo" | "bar" => bi_<...>(args)' — the
