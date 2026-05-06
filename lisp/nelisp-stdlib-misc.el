@@ -355,6 +355,72 @@ the load-path override + interactive message machinery aren't wired."
           (setq roots (cdr roots)))
         hit)))))
 
+;; Rust-min batch 7f (2026-05-07, Doc 50 stage 2): `load' migrated
+;; from Rust to elisp on top of two new I/O / reader primitives:
+;;   - `nelisp--syscall-read-file'      = `std::fs::read_to_string'
+;;   - `nelisp--read-all-from-string'   = `reader::read_all'
+;; combined with the elisp `locate-library' (batch 7e) and
+;; `file-name-directory' (Rust-min 2026-05-06).
+;;
+;; Behaviour matches the prior `bi_load' contract:
+;;   1. Resolve FILE through `locate-library'; if not found and
+;;      NOERROR is nil, signal `file-error' "Cannot open load file".
+;;   2. Slurp file via `nelisp--syscall-read-file'; if it returns nil
+;;      and NOERROR is nil, signal `file-error' "read error".
+;;   3. Parse all top-level forms via `nelisp--read-all-from-string'.
+;;   4. Dynamically rebind `load-file-name' / `default-directory' to
+;;      the resolved file + its parent directory; eval each form in
+;;      order.
+;;   5. Restore the prior bindings unconditionally (= `unwind-
+;;      protect') so an error mid-load doesn't leak the load context.
+;;   6. Return t on success, nil if NOERROR caught a failure.
+;;
+;; The NOMESSAGE / NOSUFFIX / MUST-SUFFIX optional args are accepted
+;; for host-Emacs source compatibility but ignored — the prior Rust
+;; `bi_load' ignored them too (NeLisp doesn't byte-compile so there's
+;; no `.elc' suffix fork to worry about).
+;;
+;; `bi_require' (Rust-side) now dispatches into this elisp `load'
+;; through the function cell, so a user-level `(defalias 'load ...)'
+;; redefinition is honoured for `require' as well.
+
+(defun load (file &optional noerror _nomessage _nosuffix _must-suffix)
+  "Execute the elisp file FILE.  See `nelisp-stdlib-misc.el' top-of-
+section comment for the full contract."
+  (let ((resolved (locate-library file)))
+    (cond
+     ((null resolved)
+      (if noerror nil
+        (signal 'file-error (list "Cannot open load file" file))))
+     (t
+      (let ((source (nelisp--syscall-read-file resolved)))
+        (cond
+         ((null source)
+          (if noerror nil
+            (signal 'file-error (list "read error" resolved))))
+         (t
+          (let* ((forms (nelisp--read-all-from-string source))
+                 (parent (or (file-name-directory resolved) "./"))
+                 (prior-lfn (and (boundp 'load-file-name)
+                                 load-file-name))
+                 (prior-dd (and (boundp 'default-directory)
+                                default-directory))
+                 (err-obj nil))
+            (setq load-file-name resolved)
+            (setq default-directory parent)
+            (condition-case e
+                (let ((cur forms))
+                  (while cur
+                    (eval (car cur))
+                    (setq cur (cdr cur))))
+              (error (setq err-obj e)))
+            (setq load-file-name prior-lfn)
+            (setq default-directory prior-dd)
+            (cond
+             ((null err-obj) t)
+             (noerror nil)
+             (t (signal (car err-obj) (cdr err-obj))))))))))))
+
 ;; Rust-min batch 6e (2026-05-06): alias-only dispatch arms reduced
 ;; to `defalias'.  Each pair below previously routed through a
 ;; single Rust impl via `"foo" | "bar" => bi_<...>(args)' — the

@@ -207,10 +207,15 @@ pub fn install_builtins(env: &mut Env) {
         "nelisp--syscall-readdir",
         // Rust-min batch 7e (2026-05-07, Doc 50 stage 2): `locate-library'
         // migrated to elisp (load-path walk + suffix probe via
-        // `nelisp--syscall-stat'; `bi_load' keeps the private
-        // `locate_load_target' helper for now).  See
-        // lisp/nelisp-stdlib-misc.el.
-        "load",
+        // `nelisp--syscall-stat').  See lisp/nelisp-stdlib-misc.el.
+        // Rust-min batch 7f (2026-05-07, Doc 50 stage 2): `load' itself
+        // migrated to elisp on top of two new primitives below
+        // (`nelisp--syscall-read-file' = file slurp; `nelisp--read-all-
+        // from-string' = reader-loop).  `bi_require' now dispatches to
+        // the elisp `load' through the function-cell to honour any
+        // user-level redefinition.
+        "nelisp--syscall-read-file",
+        "nelisp--read-all-from-string",
         // Rust-min (2026-05-06): `file-name-directory' /
         // `file-name-nondirectory' / `file-name-as-directory' /
         // `directory-file-name' migrated to elisp (see
@@ -410,7 +415,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // (sort + match-filter + full-path formatting move to elisp;
         // only the read_dir syscall stays Rust).
         "nelisp--syscall-readdir" => bi_syscall_readdir(args, env),
-        "load" => bi_load(args, env),
+        "nelisp--syscall-read-file" => bi_syscall_read_file(args, env),
+        "nelisp--read-all-from-string" => bi_read_all_from_string(args),
         // ---- symbol / function ----
         "symbol-value" => bi_symbol_value(args, env),
         "symbol-function" => bi_symbol_function(args, env),
@@ -1590,6 +1596,51 @@ fn bi_syscall_canonicalize(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalErr
     }
 }
 
+/// `(nelisp--syscall-read-file PATH)' — Rust-min batch 7f (Doc 50
+/// stage 2): thin wrapper over `std::fs::read_to_string'.  Returns
+/// the file contents as a string on success, or nil on any I/O error
+/// (= file missing, permission denied, invalid UTF-8, etc).
+///
+/// Used by elisp `load' (lisp/nelisp-stdlib-misc.el) for the file-
+/// content slurp step.  The error → nil flatten lets elisp drive its
+/// own error-message formatting / `noerror' branch, mirroring the
+/// shape used for `nelisp--syscall-canonicalize' (batch 7d).
+fn bi_syscall_read_file(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--syscall-read-file", args, 1, Some(1))?;
+    let p = resolve_existing_path(&args[0], env)?;
+    match std::fs::read_to_string(&p) {
+        Ok(s) => Ok(Sexp::Str(s)),
+        Err(_) => Ok(Sexp::Nil),
+    }
+}
+
+/// `(nelisp--read-all-from-string STR)' — Rust-min batch 7f (Doc 50
+/// stage 2): wrap `reader::read_all', returning every top-level form
+/// in STR as a list.  Empty / whitespace-only input → nil.
+///
+/// Used by elisp `load' to walk a freshly-slurped source file form by
+/// form.  The host `read-from-string' primitive returns only the
+/// first form (and a buggy NEW-INDEX pinned to `(length STR)') so
+/// can't drive a multi-form loop from elisp directly.
+fn bi_read_all_from_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--read-all-from-string", args, 1, Some(1))?;
+    let s = match &args[0] {
+        Sexp::Str(s) => s.clone(),
+        Sexp::MutStr(rc) => rc.borrow().clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "stringp".into(),
+            got: other.clone(),
+        }),
+    };
+    let forms = super::super::reader::read_all(&s)
+        .map_err(|e| EvalError::Internal(format!("nelisp--read-all-from-string: {}", e)))?;
+    let mut out = Sexp::Nil;
+    for f in forms.into_iter().rev() {
+        out = Sexp::cons(f, out);
+    }
+    Ok(out)
+}
+
 // ---------- Doc 47 Stage 8b — file I/O for multi-file load chains ----------
 //
 // Pure-string path slicers (`file-name-directory' /
@@ -1673,192 +1724,20 @@ fn bi_syscall_readdir(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
 // `bi_locate_library' removed — Rust-min batch 7e (2026-05-07, Doc 50
 // stage 2): migrated to elisp `(defun locate-library ...)' on top of
 // existing `expand-file-name' + `nelisp--syscall-stat' primitives.
-// See lisp/nelisp-stdlib-misc.el.  `bi_load' below still uses the
-// private `locate_load_target' helper for its own load-path probe; we
-// keep that helper rather than dispatching back into elisp from
-// inside `load' to avoid a re-entrancy hazard while `load' itself is
-// still Rust-side.
+// See lisp/nelisp-stdlib-misc.el.
 
 // bi_file_name_as_directory / bi_directory_file_name removed — see
 // lisp/nelisp-stdlib-plist-str.el (Rust-min 2026-05-06).
 
-
-/// Resolve a path argument against `load-path` if relative, returning
-/// the first existing match.  Tries the path as-given, then with `.el`
-/// suffix appended (per Elisp `load` SUFFIX search).  Returns the
-/// fully expanded path on hit, or `Err` if nothing matched.
-fn locate_load_target(name: &str, env: &Env) -> Result<PathBuf, EvalError> {
-    let with_suffixes = |base: &Path| -> Option<PathBuf> {
-        let p = base.to_path_buf();
-        if p.is_file() {
-            return Some(p);
-        }
-        if !name.ends_with(".el") {
-            let mut alt = base.to_path_buf();
-            alt.set_extension({
-                let cur = base.extension().map(|e| e.to_string_lossy().into_owned());
-                match cur {
-                    Some(ext) if ext.is_empty() => "el".to_string(),
-                    Some(_) => format!(
-                        "{}.el",
-                        base.extension().unwrap().to_string_lossy()
-                    ),
-                    None => "el".to_string(),
-                }
-            });
-            if alt.is_file() {
-                return Some(alt);
-            }
-            // Append rather than replace extension when name has none.
-            let alt2 = base.with_file_name(format!(
-                "{}.el",
-                base.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default()
-            ));
-            if alt2.is_file() {
-                return Some(alt2);
-            }
-        }
-        None
-    };
-    let p = Path::new(name);
-    if p.is_absolute() {
-        if let Some(hit) = with_suffixes(p) {
-            return Ok(hit);
-        }
-        return Err(EvalError::UserError {
-            tag: "file-error".into(),
-            data: Sexp::list_from(&[
-                Sexp::Str("Cannot open load file".into()),
-                Sexp::Str(name.to_string()),
-            ]),
-        });
-    }
-    // Relative: try `default-directory` first (mimics Emacs current-buffer behaviour),
-    // then walk `load-path`.
-    let mut roots: Vec<PathBuf> = Vec::new();
-    if let Some(d) = env_default_directory(env) {
-        roots.push(PathBuf::from(d));
-    }
-    if let Ok(load_path) = env.lookup_value("load-path") {
-        let mut cur = load_path;
-        loop {
-            match cur {
-                Sexp::Nil => break,
-                Sexp::Cons(car, cdr) => {
-                    if let Sexp::Str(s) = &*car.borrow() {
-                        roots.push(PathBuf::from(s));
-                    }
-                    cur = cdr.borrow().clone();
-                }
-                _ => break,
-            }
-        }
-    }
-    for root in &roots {
-        let candidate = root.join(p);
-        if let Some(hit) = with_suffixes(&candidate) {
-            return Ok(hit);
-        }
-    }
-    Err(EvalError::UserError {
-        tag: "file-error".into(),
-        data: Sexp::list_from(&[
-            Sexp::Str("Cannot open load file".into()),
-            Sexp::Str(name.to_string()),
-        ]),
-    })
-}
-
-fn bi_load(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("load", args, 1, Some(4))?;
-    let name = string_value(&args[0])?;
-    let noerror = args.get(1).map(is_truthy).unwrap_or(false);
-    let resolved = match locate_load_target(&name, env) {
-        Ok(p) => p,
-        Err(e) => {
-            if noerror {
-                return Ok(Sexp::Nil);
-            }
-            return Err(e);
-        }
-    };
-    let source = match std::fs::read_to_string(&resolved) {
-        Ok(s) => s,
-        Err(io) => {
-            if noerror {
-                return Ok(Sexp::Nil);
-            }
-            return Err(EvalError::UserError {
-                tag: "file-error".into(),
-                data: Sexp::list_from(&[
-                    Sexp::Str(format!("read error: {}", io)),
-                    Sexp::Str(resolved.to_string_lossy().into_owned()),
-                ]),
-            });
-        }
-    };
-    let forms = match crate::reader::read_all(&source) {
-        Ok(fs) => fs,
-        Err(re) => {
-            if noerror {
-                return Ok(Sexp::Nil);
-            }
-            return Err(EvalError::Internal(format!(
-                "load: read error in {}: {}",
-                resolved.display(),
-                re
-            )));
-        }
-    };
-    // Bind `load-file-name' / `default-directory' for the duration of
-    // the load so nested `expand-file-name' / `load' calls resolve
-    // siblings of the file currently being loaded.
-    let prior_load_file_name = env.lookup_value("load-file-name").ok();
-    let prior_default_directory = env.lookup_value("default-directory").ok();
-    let parent_dir = resolved
-        .parent()
-        .map(|p| {
-            let mut s = p.to_string_lossy().into_owned();
-            if !s.ends_with('/') {
-                s.push('/');
-            }
-            s
-        })
-        .unwrap_or_else(|| "./".into());
-    env.set_value("load-file-name", Sexp::Str(resolved.to_string_lossy().into_owned()))?;
-    env.set_value("default-directory", Sexp::Str(parent_dir))?;
-    let mut last = Sexp::Nil;
-    let mut load_err: Option<EvalError> = None;
-    for f in &forms {
-        match super::eval(f, env) {
-            Ok(v) => last = v,
-            Err(e) => {
-                load_err = Some(e);
-                break;
-            }
-        }
-    }
-    // Restore prior bindings whether or not load_err is set.
-    match prior_load_file_name {
-        Some(v) => {
-            env.set_value("load-file-name", v).ok();
-        }
-        None => {
-            env.set_value("load-file-name", Sexp::Nil).ok();
-        }
-    }
-    if let Some(v) = prior_default_directory {
-        env.set_value("default-directory", v).ok();
-    }
-    if let Some(e) = load_err {
-        if noerror {
-            return Ok(Sexp::Nil);
-        }
-        return Err(e);
-    }
-    let _ = last;
-    Ok(Sexp::T)
-}
+// `locate_load_target' / `bi_load' removed — Rust-min batch 7f
+// (2026-05-07, Doc 50 stage 2): both migrated to elisp `(defun load
+// ...)' on top of new primitives `nelisp--syscall-read-file' and
+// `nelisp--read-all-from-string', composed with the elisp
+// `locate-library' from batch 7e.  `bi_require' below now dispatches
+// to the elisp `load' through the function cell so user-level
+// `(defalias 'load ...)' redefinitions are honoured (not possible
+// with the prior direct `bi_load(...)' call).  See
+// lisp/nelisp-stdlib-misc.el.
 
 // ---------- symbol / function ----------
 
@@ -3189,7 +3068,11 @@ fn bi_require(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     }
     let target = filename.unwrap_or_else(|| feature.clone());
     let load_args = vec![Sexp::Str(target), if noerror { Sexp::T } else { Sexp::Nil }];
-    match bi_load(&load_args, env) {
+    // Rust-min batch 7f: dispatch to elisp `load' through the function
+    // cell so user-level `(defalias 'load ...)' redefinitions are
+    // honoured (the prior direct-call shape couldn't see them).
+    let load_fn = env.lookup_function("load")?;
+    match super::apply_function(&load_fn, &load_args, env) {
         Ok(_) => {}
         Err(_) if noerror => return Ok(Sexp::Nil),
         Err(e) => return Err(e),
