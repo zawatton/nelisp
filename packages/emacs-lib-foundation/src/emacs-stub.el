@@ -509,6 +509,13 @@ Phase B.4 (2026-05-03): upgraded from previous no-op stub."
     (ignore order)
     (add-to-list list-var element)))
 
+;; Load the auto-generated bulk stubs last so emacs-stub.el's specific
+;; (= more accurate) implementations above take precedence — bulk fills
+;; only the remaining `(unless (fboundp X) ...)' gaps.  Without this
+;; require the bulk file is an orphan and `macroexp-warn-and-return' /
+;; other vendored-Emacs prerequisites stay void at standalone load
+;; time, breaking `(require 'json)' / cl-lib / friends.
+(require 'emacs-stub-bulk)
 
 (provide 'emacs-stub)
 
