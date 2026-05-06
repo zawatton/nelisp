@@ -749,6 +749,29 @@ escalate。本 repo §9.5 OQ で同期 stamp。
   =cursor-after-shift= (cursor placement on shifted row)
 - redisplay 83/83、全体 441/441 PASS、make compile / make bench 通過
 
+*Phase 3.B.7 buffer-string cache + text-content-tick (SHIPPED 2026-05-06)*:
+- 目的: rebuild slow path で毎回再構築される =--buffer-string= (~2.6ms /
+  iter on 24-line buffer) を cache 化
+- 追加: =emacs-buffer--ext= に =text-tick= slot (= text-content tick、
+  text-property tick とは別軸)、=emacs-buffer-buffer-text-tick= 公開関数、
+  =nelisp-ec-insert= / =nelisp-ec-delete-region= / =nelisp-ec-erase-buffer=
+  に =:after= advice で tick 自動 bump
+- =emacs-redisplay-handle= に =text-cache= slot (= 2-entry LRU)、
+  =--cached-buffer-string handle buffer= で (buffer + text-tick) を key
+  にキャッシュ参照、miss 時に compute + store。head-promote で LRU 維持
+- redisplay-window-rebuild は =--cached-buffer-string= 経由
+- 実測 (bench iters=1000):
+  - scroll  total 1.01x → 1.02x、scroll 絶対時間 39.672s → 29.248s (~26%
+    改善)、scroll p99 48.929ms → 36.302ms ← buffer 不変 + window-start
+    変化のため text-tick stable で cache hit
+  - edit total 2.33x → 2.35x (= 殆ど改善せず)。edit case は text-tick が
+    iter 毎に bump され key が一致しない。完全 5x 化には content-based
+    finger printing (sxhash 等) や multi-state matrix LRU が必要、別 phase 検討
+  - static / 全 throughput / p99 close gate 維持
+- ERT +4: =text-tick-bumps-on-insert= / =text-tick-unchanged-by-text-property=
+  / =buffer-string-cache-hits-on-stable-tick= / =buffer-string-cache-misses-after-edit=
+- redisplay 87/87、全体 445/445 PASS
+
 *Phase 3.C close gate audit (2026-05-06、Doc 43 §3.2 + 本 §3.3 全 8 項目)*:
 
 | # | カテゴリ        | 項目                                                                | 状態     | 根拠 / Gap                                                                                                                                                                                                                  |
