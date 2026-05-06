@@ -313,6 +313,9 @@ Idempotent — re-calling replaces the global map with a fresh one."
     (define-key ctl-x-map (vector ?o)    'nemacs-gtk-other-window)
     ;; Phase 2.AV — `C-x ^' = enlarge-window (= +1 row from next).
     (define-key ctl-x-map (vector ?^)    'nemacs-gtk-enlarge-window)
+    ;; Phase 2.BB — `C-x C-o' = delete-blank-lines, `C-x f' = set-fill-column.
+    (define-key ctl-x-map (vector ?\C-o) 'nemacs-gtk-delete-blank-lines)
+    (define-key ctl-x-map (vector ?f)    'nemacs-gtk-set-fill-column)
     ;; Phase 2.AX/AZ — `C-x r' prefix → registers + bookmarks.
     (let ((c-x-r-map (make-sparse-keymap)))
       (define-key c-x-r-map (vector ?s)  'nemacs-gtk-copy-to-register)
@@ -382,6 +385,8 @@ Idempotent — re-calling replaces the global map with a fresh one."
       (define-key esc-map (vector ?a)    'nemacs-gtk-backward-sentence)
       (define-key esc-map (vector ?e)    'nemacs-gtk-forward-sentence)
       (define-key esc-map (vector ?\C-h) 'nemacs-gtk-mark-defun)
+      ;; Phase 2.BB — M-k = kill-sentence.
+      (define-key esc-map (vector ?k)    'nemacs-gtk-kill-sentence)
       ;; Phase 2.X — `M-g g' = goto-line, `M-g M-g' aliased to same.
       (define-key meta-g-map (vector ?g)    'nemacs-gtk-goto-line)
       (define-key meta-g-map (vector ?\C-g) 'nemacs-gtk-goto-line)
@@ -1714,8 +1719,9 @@ Inserts at least one space."
     (setq nemacs-gtk--last-key-text
           (format "tab-to-tab-stop: +%d cols → %d" n (+ col n)))))
 
-(defconst nemacs-gtk--fill-column 70
-  "Phase 2.AN: target column for `M-q' wrap.")
+(defvar nemacs-gtk--fill-column 70
+  "Phase 2.AN: target column for `M-q' wrap.  Made user-mutable in
+Phase 2.BB so `C-x f' / `set-fill-column' can rewire it.")
 
 (defun nemacs-gtk-fill-paragraph ()
   "Bound to `M-q' / `Esc q' — re-wrap the current paragraph so no
@@ -2916,6 +2922,177 @@ No-op + echo when no enclosing top-level form is found before BOB."
                   (format "mark-defun: %d..%d" start end))))))))))
 
 
+;;;; --- bundle Phase 2.BB (C-x C-o, M-k, C-x f) ----------------------------
+
+(defun nemacs-gtk--blank-line-at-p (pos)
+  "Phase 2.BB — t when POS is on a logical blank line (= line content
+between its bol/eol contains only whitespace)."
+  (save-current-buffer
+    (set-buffer (nemacs-gtk--active-buffer))
+    (let ((pmin (nelisp-ec-point-min))
+          (pmax (nelisp-ec-point-max))
+          (bol pos)
+          (eol pos)
+          (blank t))
+      (while (and (> bol pmin)
+                  (not (eq (emacs-edit--char-at (1- bol)) ?\n)))
+        (setq bol (1- bol)))
+      (while (and (< eol pmax)
+                  (not (eq (emacs-edit--char-at eol) ?\n)))
+        (setq eol (1+ eol)))
+      (let ((p bol))
+        (while (and blank (< p eol))
+          (unless (memq (emacs-edit--char-at p) '(?\s ?\t))
+            (setq blank nil))
+          (setq p (1+ p))))
+      blank)))
+
+(defun nemacs-gtk-delete-blank-lines ()
+  "Bound to `C-x C-o' — delete the run of blank lines around point.
+On a non-blank line, delete the blank lines that follow.  Leaves a
+single blank line when the run was multi-line; deletes the lone
+blank when only one was present.  No-op + echo when the buffer has
+no blanks adjacent to point."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let* ((pmin (nelisp-ec-point-min))
+           (pmax (nelisp-ec-point-max))
+           (p (nelisp-ec-point))
+           (bol p))
+      (while (and (> bol pmin)
+                  (not (eq (emacs-edit--char-at (1- bol)) ?\n)))
+        (setq bol (1- bol)))
+      (cond
+       ((nemacs-gtk--blank-line-at-p p)
+        ;; on blank: scan up + down for run, keep one blank line.
+        (let ((run-start bol)
+              (run-end-bol bol))
+          ;; walk up over blank lines
+          (while (and (> run-start pmin)
+                      (let ((prev-bol (1- run-start)))
+                        (while (and (> prev-bol pmin)
+                                    (not (eq (emacs-edit--char-at
+                                              (1- prev-bol)) ?\n)))
+                          (setq prev-bol (1- prev-bol)))
+                        (and (nemacs-gtk--blank-line-at-p prev-bol)
+                             (setq run-start prev-bol)))))
+          ;; walk down over blank lines (advance bol past each \n)
+          (let ((next-bol bol))
+            (catch 'done
+              (while (< next-bol pmax)
+                (let ((eol next-bol))
+                  (while (and (< eol pmax)
+                              (not (eq (emacs-edit--char-at eol) ?\n)))
+                    (setq eol (1+ eol)))
+                  (when (and (< eol pmax)
+                             (eq (emacs-edit--char-at eol) ?\n))
+                    (setq next-bol (1+ eol))
+                    (cond
+                     ((and (< next-bol pmax)
+                           (nemacs-gtk--blank-line-at-p next-bol))
+                      (setq run-end-bol next-bol))
+                     (t (throw 'done nil))))
+                  (when (= eol pmax) (throw 'done nil))))))
+          ;; find eol after run-end-bol — that's where the run's last
+          ;; line's `\n' lives.  We keep one blank line: keep
+          ;; [run-start, run-start+1) (= the leading `\n' that closes
+          ;; the previous non-blank line) and delete from there to
+          ;; the end of the run.
+          (let ((run-end run-end-bol))
+            (while (and (< run-end pmax)
+                        (not (eq (emacs-edit--char-at run-end) ?\n)))
+              (setq run-end (1+ run-end)))
+            (when (and (< run-end pmax)
+                       (eq (emacs-edit--char-at run-end) ?\n))
+              (setq run-end (1+ run-end)))
+            (let ((keep-end (min run-end (1+ run-start))))
+              (cond
+               ((>= keep-end run-end)
+                (setq nemacs-gtk--last-key-text
+                      "delete-blank-lines: nothing to remove"))
+               (t
+                (nelisp-ec-delete-region keep-end run-end)
+                (nelisp-ec-goto-char run-start)
+                (setq nemacs-gtk--last-key-text "delete-blank-lines")))))))
+       (t
+        ;; not on blank: delete blank lines that follow current line.
+        (let ((next-bol bol))
+          (while (and (< next-bol pmax)
+                      (not (eq (emacs-edit--char-at next-bol) ?\n)))
+            (setq next-bol (1+ next-bol)))
+          (when (and (< next-bol pmax)
+                     (eq (emacs-edit--char-at next-bol) ?\n))
+            (setq next-bol (1+ next-bol)))
+          (let ((scan next-bol))
+            (while (and (< scan pmax)
+                        (nemacs-gtk--blank-line-at-p scan))
+              (let ((eol scan))
+                (while (and (< eol pmax)
+                            (not (eq (emacs-edit--char-at eol) ?\n)))
+                  (setq eol (1+ eol)))
+                (when (and (< eol pmax)
+                           (eq (emacs-edit--char-at eol) ?\n))
+                  (setq scan (1+ eol)))
+                (when (= eol pmax) (setq scan pmax))))
+            (cond
+             ((> scan next-bol)
+              (nelisp-ec-delete-region next-bol scan)
+              (setq nemacs-gtk--last-key-text "delete-blank-lines"))
+             (t
+              (setq nemacs-gtk--last-key-text "delete-blank-lines: none to delete"))))))))))
+
+(defun nemacs-gtk-kill-sentence ()
+  "Bound to `M-k' — kill from point to the end of the current sentence
+(= composes `forward-sentence' + `kill-region' so the deletion
+lands on `kill-ring')."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let* ((start (nelisp-ec-point))
+           (pmax (nelisp-ec-point-max))
+           (p start)
+           (found nil))
+      (catch 'done
+        (while (< p pmax)
+          (let ((ch (emacs-edit--char-at p)))
+            (when (nemacs-gtk--sentence-end-char-p ch)
+              (setq p (1+ p))
+              (while (and (< p pmax)
+                          (memq (emacs-edit--char-at p)
+                                '(?\" ?\) ?\] ?\} ?\')))
+                (setq p (1+ p)))
+              (setq found p)
+              (throw 'done nil)))
+          (setq p (1+ p))))
+      (let ((end (or found pmax)))
+        (cond
+         ((= end start)
+          (setq nemacs-gtk--last-key-text "kill-sentence: empty"))
+         (t
+          (kill-region start end)
+          (nemacs-gtk--ensure-cursor-visible)
+          (setq nemacs-gtk--last-key-text
+                (format "kill-sentence: %d chars" (- end start)))))))))
+
+(defun nemacs-gtk-set-fill-column ()
+  "Bound to `C-x f' — minibuffer-prompt for an integer + set the
+substrate's `--fill-column' (= the column `M-q' / `fill-paragraph'
+wraps at).  Rejects non-numeric input + values < 1."
+  (interactive)
+  (nemacs-gtk--enter-minibuffer
+   (format "Set fill-column (current %d): " nemacs-gtk--fill-column)
+   (lambda (input)
+     (let ((n (and input (> (length input) 0)
+                   (string-to-number input))))
+       (cond
+        ((or (null n) (< n 1))
+         (setq nemacs-gtk--last-key-text
+               "set-fill-column: invalid input"))
+        (t
+         (setq nemacs-gtk--fill-column n)
+         (setq nemacs-gtk--last-key-text
+               (format "set-fill-column: %d" n))))))))
+
+
 ;;;; --- minibuffer mode (Phase 2.J — M-x execute-extended-command) ----------
 
 (defvar nemacs-gtk--minibuffer-active nil
@@ -3367,7 +3544,13 @@ success / failure."
     "nemacs-gtk-mark-defun"
     "forward-sentence"
     "backward-sentence"
-    "mark-defun")
+    "mark-defun"
+    "nemacs-gtk-delete-blank-lines"
+    "nemacs-gtk-kill-sentence"
+    "nemacs-gtk-set-fill-column"
+    "delete-blank-lines"
+    "kill-sentence"
+    "set-fill-column")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
@@ -3992,6 +4175,8 @@ itself a keymap (= a prefix mid-sequence)."
     nemacs-gtk-sort-lines
     nemacs-gtk-kill-sexp
     nemacs-gtk-insert-register
+    nemacs-gtk-delete-blank-lines
+    nemacs-gtk-kill-sentence
     delete-char
     delete-backward-char)
   "Phase 2.AQ: command symbols the dispatcher refuses to run when
