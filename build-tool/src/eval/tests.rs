@@ -2118,3 +2118,73 @@ fn extern_builtin_unregistered_signals_unbound_function() {
         other => panic!("expected UnboundFunction, got {:?}", other),
     }
 }
+
+// ============================================================
+// Doc 50 stage 4c — record primitives
+// ============================================================
+
+#[test]
+fn record_make_and_predicate() {
+    assert_eq!(
+        ok("(nelisp--make-record 'point 3 4)"),
+        Sexp::record(Sexp::Symbol("point".into()), vec![Sexp::Int(3), Sexp::Int(4)]),
+    );
+    assert_eq!(ok("(recordp (nelisp--make-record 'p))"), Sexp::T);
+    assert_eq!(ok("(recordp 42)"), Sexp::Nil);
+    assert_eq!(ok("(recordp '(a b c))"), Sexp::Nil);
+}
+
+#[test]
+fn record_type_of_returns_user_tag() {
+    // Doc 52 §2.2 — type-of of a record returns its type_tag verbatim,
+    // not the literal symbol `record'.
+    assert_eq!(
+        ok("(type-of (nelisp--make-record 'point 3 4))"),
+        Sexp::Symbol("point".into()),
+    );
+    assert_eq!(
+        ok("(nelisp--record-type (nelisp--make-record 'point 3 4))"),
+        Sexp::Symbol("point".into()),
+    );
+}
+
+#[test]
+fn record_ref_set_round_trip() {
+    // -ref reads slot 0 / 1, -set overwrites in place and is observable
+    // through subsequent -ref.
+    assert_eq!(
+        ok("(let ((r (nelisp--make-record 'pt 10 20))) (nelisp--record-ref r 0))"),
+        Sexp::Int(10),
+    );
+    assert_eq!(
+        ok("(let ((r (nelisp--make-record 'pt 10 20))) (nelisp--record-ref r 1))"),
+        Sexp::Int(20),
+    );
+    assert_eq!(
+        ok("(let ((r (nelisp--make-record 'pt 10 20)))
+              (nelisp--record-set r 0 99)
+              (nelisp--record-ref r 0))"),
+        Sexp::Int(99),
+    );
+}
+
+#[test]
+fn record_length_excludes_type_tag() {
+    assert_eq!(ok("(nelisp--record-length (nelisp--make-record 'p))"), Sexp::Int(0));
+    assert_eq!(
+        ok("(nelisp--record-length (nelisp--make-record 'p 1 2 3))"),
+        Sexp::Int(3),
+    );
+}
+
+#[test]
+fn record_ref_out_of_range_errors() {
+    let e = err("(nelisp--record-ref (nelisp--make-record 'p 1) 5)");
+    assert!(format!("{:?}", e).contains("out-of-range"));
+}
+
+#[test]
+fn record_make_rejects_non_symbol_tag() {
+    let e = err("(nelisp--make-record 42 'a)");
+    assert!(matches!(e, EvalError::WrongType { .. }));
+}
