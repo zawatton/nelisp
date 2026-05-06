@@ -41,12 +41,21 @@
 ;;   - vector literal syntax: [] / [1 2 3] / nested
 ;;   - nested backquote: ` `(a ,b) works for depth >= 2
 ;;
+;; Phase 3b (2026-05-06) adds:
+;;
+;;   - chord modifier escapes: ?\\C-a / ?\\M-x / ?\\S-A / ?\\A-? / ?\\H-/
+;;     ?\\s- (super), with arbitrary nesting (?\\C-\\M-x).  Bits match
+;;     Emacs's `event-modifiers' convention (meta=2^27, ctrl=2^26,
+;;     shift=2^25, hyper=2^24, super=2^23, alt=2^22).  Control on ASCII
+;;     letters / `?@' / `?\\s' / shift-row punctuation collapses to the
+;;     canonical control code (?\\C-a = 1, ?\\C-? = 127, ?\\C-@ = 0).
+;;
 ;; Still deferred:
 ;;
 ;;   - bignums, #NrXX radix syntax
 ;;   - hash tables, records, bool-vector syntax
 ;;   - circular / shared structure syntax (#N=, #N#)
-;;   - character escapes like ?\\C-a / ?\\M-b / hex char escapes
+;;   - hex char escapes (?\\xNN / ?\\uNNNN)
 ;;
 ;; The implementation is pure string-walking so it can port to NeLisp
 ;; itself in Phase 2 without relying on buffer primitives.
@@ -299,12 +308,48 @@ reader error rather than a silent miscompilation."
       (signal 'nelisp-read-error
               (list "unsupported `#' syntax" c pos))))))
 
-(defun nelisp-read--char-literal (str pos len)
-  "Read the char literal payload in STR at POS (one past `?').
-Return (INTEGER . NEW-POS).  Supports a short set of backslash
-escapes plus any single literal character."
+;; Chord-modifier bits per Emacs char modifier convention
+;; (see lisp/keymap.el / lisp/subr.el / src/keyboard.c — these
+;; values are the bit positions Emacs uses for `event-modifiers').
+(defconst nelisp-read--meta-bit  134217728 "Meta modifier bit (2^27).")
+(defconst nelisp-read--ctrl-bit   67108864 "Control modifier bit (2^26).")
+(defconst nelisp-read--shift-bit  33554432 "Shift modifier bit (2^25).")
+(defconst nelisp-read--hyper-bit  16777216 "Hyper modifier bit (2^24).")
+(defconst nelisp-read--super-bit   8388608 "Super modifier bit (2^23).")
+(defconst nelisp-read--alt-bit     4194304 "Alt modifier bit (2^22).")
+
+(defun nelisp-read--apply-ctrl (c)
+  "Apply the control modifier to C per Emacs char-literal convention.
+ASCII letters and the shift-row punctuation collapse to their canonical
+control codes (`?\\C-a' = 1, `?\\C-?' = 127); everything else gets the
+generic `nelisp-read--ctrl-bit' OR'd in.  Multi-modifier chains can
+still wrap this result with meta / shift / etc."
+  (cond
+   ((and (>= c ?A) (<= c ?Z)) (1+ (- c ?A)))
+   ((and (>= c ?a) (<= c ?z)) (1+ (- c ?a)))
+   ((eq c ??)  127)            ; ?\C-? = DEL
+   ((eq c ?@)  0)              ; ?\C-@ = NUL
+   ((eq c ?\s) 0)              ; ?\C-<space> = NUL
+   ((and (>= c ?\[) (<= c ?_)) (- c (- ?\[ 27))) ; ?\C-[=27 .. ?\C-_=31
+   (t (logior c nelisp-read--ctrl-bit))))
+
+(defun nelisp-read--char-modifier-bits (e)
+  "Return the modifier bit for backslash-letter E, or nil if E is not
+a chord modifier letter (= one of C M S A H s)."
+  (pcase e
+    (?C nelisp-read--ctrl-bit)
+    (?M nelisp-read--meta-bit)
+    (?S nelisp-read--shift-bit)
+    (?A nelisp-read--alt-bit)
+    (?H nelisp-read--hyper-bit)
+    (?s nelisp-read--super-bit)))
+
+(defun nelisp-read--char-base (str pos len)
+  "Read the *base* char of a char literal at POS (= no chord modifier
+prefix on this segment).  Returns (INTEGER . NEW-POS).  Handles both
+plain literal chars and the legacy backslash escape set."
   (when (>= pos len)
-    (signal 'nelisp-read-error (list "char literal at EOF" pos)))
+    (signal 'nelisp-read-error (list "char escape at EOF" pos)))
   (let ((c (aref str pos)))
     (cond
      ((eq c ?\\)
@@ -321,6 +366,53 @@ escapes plus any single literal character."
               (+ pos 2))))
      (t
       (cons c (1+ pos))))))
+
+(defun nelisp-read--char-after-modifier (str pos len)
+  "Read the char literal payload in STR at POS, including any leading
+chord modifier escapes (`\\C-' / `\\M-' / `\\S-' / `\\A-' / `\\H-' /
+`\\s-').  Returns (INTEGER . NEW-POS).
+
+Modifiers are collected first, then the base char is read, and only
+afterwards is the control modifier collapsed onto the base — matching
+Emacs's reader so e.g. `?\\C-\\M-x' yields meta-bit OR ASCII-24, not
+meta-bit OR ctrl-bit OR 120."
+  (let ((have-ctrl nil)
+        (mods 0))
+    (catch 'collected
+      (while t
+        (when (>= pos len)
+          (signal 'nelisp-read-error (list "char escape at EOF" pos)))
+        (let ((c (aref str pos)))
+          (cond
+           ((and (eq c ?\\)
+                 (< (1+ pos) len)
+                 (let ((e (aref str (1+ pos))))
+                   (and (nelisp-read--char-modifier-bits e)
+                        (< (+ pos 2) len)
+                        (eq (aref str (+ pos 2)) ?-))))
+            (let* ((e   (aref str (1+ pos)))
+                   (bit (nelisp-read--char-modifier-bits e)))
+              (if (eq bit nelisp-read--ctrl-bit)
+                  (setq have-ctrl t)
+                (setq mods (logior mods bit)))
+              (setq pos (+ pos 3))))
+           (t
+            (throw 'collected nil))))))
+    (let* ((base (nelisp-read--char-base str pos len))
+           (code (car base))
+           (np   (cdr base)))
+      (when have-ctrl
+        (setq code (nelisp-read--apply-ctrl code)))
+      (cons (logior code mods) np))))
+
+(defun nelisp-read--char-literal (str pos len)
+  "Read the char literal payload in STR at POS (one past `?').
+Returns (INTEGER . NEW-POS).  Supports plain chars (incl. space-after-
+`?'), the legacy backslash escape set, and chord modifier escapes
+\\C-/\\M-/\\S-/\\A-/\\H-/\\s- with arbitrary nesting."
+  (when (>= pos len)
+    (signal 'nelisp-read-error (list "char literal at EOF" pos)))
+  (nelisp-read--char-after-modifier str pos len))
 
 (defun nelisp-read--backquote (str pos)
   "Read a backquote (STR at POS = one past the backtick).

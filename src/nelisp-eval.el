@@ -808,6 +808,10 @@ closures, NeLisp-only defuns, and our own hash tables stay visible."
   (puthash 'symbol-value #'nelisp--builtin-symbol-value nelisp--functions)
   (puthash 'require      #'nelisp--builtin-require      nelisp--functions)
   (puthash 'provide      #'nelisp--builtin-provide      nelisp--functions)
+  (when (fboundp 'nelisp--builtin-load-file)
+    (puthash 'load-file   #'nelisp--builtin-load-file   nelisp--functions))
+  (when (fboundp 'nelisp--builtin-load)
+    (puthash 'load        #'nelisp--builtin-load        nelisp--functions))
   ;; Doc 12 §3.4: re-register the NeLisp macroexpand family if
   ;; `nelisp-macro.el' is loaded.  fboundp guard keeps this safe during
   ;; the bootstrap of `nelisp-eval.el' itself.
