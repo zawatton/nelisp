@@ -564,6 +564,57 @@
             ;; Effective position must reflect the +1 shift.
             (should (= (1+ orig-bp) eff-bp))))))))
 
+(ert-deftest emacs-redisplay-test-text-tick-bumps-on-insert ()
+  "Phase 3.B.7: nelisp-ec-insert advice bumps emacs-buffer text-tick."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "abc"
+      (let ((tick0 (emacs-buffer-buffer-text-tick b)))
+        (let ((nelisp-ec--current-buffer b))
+          (nelisp-ec-goto-char 4)
+          (nelisp-ec-insert "d"))
+        (should (> (emacs-buffer-buffer-text-tick b) tick0))))))
+
+(ert-deftest emacs-redisplay-test-text-tick-unchanged-by-text-property ()
+  "Phase 3.B.7: text-property mutation does NOT bump text-tick."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "abcd"
+      (let ((tick0 (emacs-buffer-buffer-text-tick b)))
+        (emacs-buffer-put-text-property 2 3 'face '(:foreground "red") b)
+        (should (= (emacs-buffer-buffer-text-tick b) tick0))))))
+
+(ert-deftest emacs-redisplay-test-buffer-string-cache-hits-on-stable-tick ()
+  "Phase 3.B.7: cached buffer-string is reused when text-tick is stable."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "alpha"
+      (let* ((h (emacs-redisplay-init))
+             (n-bs 0))
+        (advice-add 'emacs-redisplay--buffer-string :before
+                    (lambda (&rest _) (cl-incf n-bs)))
+        (unwind-protect
+            (progn
+              (emacs-redisplay--cached-buffer-string h b)
+              (should (= 1 n-bs))
+              ;; Same buffer + same tick → reuse cached.
+              (emacs-redisplay--cached-buffer-string h b)
+              (should (= 1 n-bs))
+              (emacs-redisplay--cached-buffer-string h b)
+              (should (= 1 n-bs)))
+          (advice-remove 'emacs-redisplay--buffer-string
+                         (lambda (&rest _) (cl-incf n-bs))))))))
+
+(ert-deftest emacs-redisplay-test-buffer-string-cache-misses-after-edit ()
+  "Phase 3.B.7: cache key includes text-tick; edit invalidates it."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "alpha"
+      (let* ((h (emacs-redisplay-init))
+             (s1 (emacs-redisplay--cached-buffer-string h b)))
+        (let ((nelisp-ec--current-buffer b))
+          (nelisp-ec-goto-char 6)
+          (nelisp-ec-insert "X"))
+        (let ((s2 (emacs-redisplay--cached-buffer-string h b)))
+          (should-not (string= s1 s2))
+          (should (string= "alphaX" s2)))))))
+
 (ert-deftest emacs-redisplay-test-row-incremental-cursor-after-shift ()
   "cursor-for-point lands correctly even after a skip-path row shift."
   (emacs-redisplay-test--with-fresh-world
