@@ -4661,6 +4661,16 @@ Tab in the prompt completes against `--m-x-commands' (Phase 2.T)."
           (t
            (with-current-buffer (nemacs-gtk--active-buffer)
              (call-interactively sym))
+           ;; Phase 3.O — M-x bypasses the dispatch-path funcall
+           ;; heuristic that invalidates the Rust buffer cache for
+           ;; non-motion commands.  Conservatively invalidate here
+           ;; too: any M-x command can have rewritten the active
+           ;; buffer (= e.g. `cheat-sheet' rebuilds `*welcome*'
+           ;; in place), and the cache is keyed only by buffer
+           ;; name so a same-name rewrite would otherwise paint
+           ;; with stale content.
+           (nemacs-gtk--invalidate-buffer-cache)
+           (nemacs-gtk--invalidate-line-count-cache)
            (setq nemacs-gtk--last-key-text
                  (format "M-x %s ✓" input))))))))
    #'nemacs-gtk--m-x-completion-fn))
