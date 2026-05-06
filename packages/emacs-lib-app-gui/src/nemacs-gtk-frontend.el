@@ -3857,6 +3857,18 @@ needs a glyph-color path the Rust paint pipeline doesn't yet have."
         (format "font-lock-mode: %s"
                 (if nemacs-gtk--font-lock-mode "on" "off"))))
 
+(defun nemacs-gtk-column-marker-mode ()
+  "M-x column-marker-mode — toggle a pink vertical ruler at column
+`--fill-column' (default 70).  Useful for visualising the wrap
+column while writing; pairs naturally with `M-q' / fill-paragraph."
+  (interactive)
+  (setq nemacs-gtk--column-marker-mode
+        (not nemacs-gtk--column-marker-mode))
+  (setq nemacs-gtk--last-key-text
+        (format "column-marker-mode: %s @ col %d"
+                (if nemacs-gtk--column-marker-mode "on" "off")
+                nemacs-gtk--fill-column)))
+
 (defun nemacs-gtk-delete-trailing-whitespace ()
   "M-x delete-trailing-whitespace — strip all `\\s' / `\\t' chars
 that immediately precede a `\\n' (or EOB) in the active buffer.
@@ -4411,9 +4423,11 @@ success / failure."
     "nemacs-gtk-show-trailing-whitespace"
     "nemacs-gtk-delete-trailing-whitespace"
     "nemacs-gtk-font-lock-mode"
+    "nemacs-gtk-column-marker-mode"
     "show-trailing-whitespace"
     "delete-trailing-whitespace"
-    "font-lock-mode")
+    "font-lock-mode"
+    "column-marker-mode")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
@@ -5072,6 +5086,11 @@ keywords / numbers are deferred — Cairo's per-cell rectangles can
 only tint the background, so a deeper font-lock would need a
 glyph-color extension to the Rust paint pipeline.")
 
+(defvar nemacs-gtk--column-marker-mode nil
+  "Phase 2.BO — when t, `--paint-highlights' draws a vertical
+ruler at column `--fill-column' across the buffer area.  Toggle
+via M-x column-marker-mode.")
+
 (defun nemacs-gtk--collect-trailing-whitespace-highlights ()
   "Phase 2.BM — return a list of `(SR SC ER EC R G B A)' entries for
 each line's trailing whitespace span (= the maximal run of `\\s'/`\\t'
@@ -5153,20 +5172,33 @@ alpha).  Backslash-escapes inside strings are honoured."
              (t (setq i (1+ i))))))
         (nreverse acc)))))
 
+(defun nemacs-gtk--collect-column-marker-highlights ()
+  "Phase 2.BO — return a 1-element highlight for the column ruler
+when `--column-marker-mode' is on.  Renders as a thin pink line
+(rgb 220 120 200) at 60% alpha spanning the buffer area's height
+at column `--fill-column'."
+  (when nemacs-gtk--column-marker-mode
+    (let* ((col nemacs-gtk--fill-column)
+           (top 0)
+           (bot nemacs-gtk--buffer-area-end))
+      (list (list top col bot (1+ col) 220 120 200 153)))))
+
 (defun nemacs-gtk--paint-highlights ()
-  "Phase 2.BL+BM+BN — combine isearch matches, paren-match, trailing
-whitespace, and font-lock spans into a single highlight list and
-push to the Rust side.  No-op when the extern isn't loaded."
+  "Phase 2.BL+BM+BN+BO — combine isearch matches, paren-match,
+trailing whitespace, font-lock spans, and column ruler into a
+single highlight list and push to the Rust side.  No-op when the
+extern isn't loaded."
   (when (fboundp 'nelisp-gtk-set-highlights)
-    (let ((isearch-hl  (nemacs-gtk--collect-isearch-highlights))
-          (paren-hl    (nemacs-gtk--collect-paren-highlight))
-          (ws-hl       (nemacs-gtk--collect-trailing-whitespace-highlights))
-          (font-lock-hl (nemacs-gtk--collect-font-lock-highlights)))
+    (let ((isearch-hl   (nemacs-gtk--collect-isearch-highlights))
+          (paren-hl     (nemacs-gtk--collect-paren-highlight))
+          (ws-hl        (nemacs-gtk--collect-trailing-whitespace-highlights))
+          (font-lock-hl (nemacs-gtk--collect-font-lock-highlights))
+          (col-hl       (nemacs-gtk--collect-column-marker-highlights)))
       (nelisp-gtk-set-highlights
        ;; font-lock first (= least-priority background tint), then
-       ;; whitespace, then paren-match, then isearch, then anything
-       ;; on top.  Later entries paint over earlier ones.
-       (append font-lock-hl ws-hl paren-hl isearch-hl)))))
+       ;; column ruler, then whitespace, then paren-match, then
+       ;; isearch on top.  Later entries paint over earlier ones.
+       (append font-lock-hl col-hl ws-hl paren-hl isearch-hl)))))
 
 (defun nemacs-gtk--repaint ()
   "One full redraw cycle: buffer, mode line, echo, cursor, queue draw."
