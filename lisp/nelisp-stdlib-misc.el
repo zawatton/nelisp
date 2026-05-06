@@ -78,6 +78,24 @@
       (nreverse acc)))
    (t seq)))
 
+;; Rust-min batch 6h (2026-05-06): `message' migrated from Rust to
+;; elisp.  The previous `bi_message' was just a 4-step pipeline:
+;;   (1) nil-arg guard (return nil for empty / leading-nil args)
+;;   (2) `bi_format' to substitute %s / %d / %S
+;;   (3) writeln-to-stderr + flush
+;;   (4) return the formatted string
+;; Steps (1) (2) (4) are pure elisp; only (3) needs an I/O
+;; primitive, which is now `nelisp--write-stderr-line'.
+(defun message (&rest args)
+  (cond
+   ((null args) nil)
+   ;; (message nil ...) clears the echo area in host Emacs — mirror
+   ;; that by returning nil without writing.
+   ((null (car args)) nil)
+   (t (let ((s (apply (function format) args)))
+        (nelisp--write-stderr-line s)
+        s))))
+
 (defun intern-soft (name &optional _obarray)
   ;; NeLisp MVP has no obarray, so name-as-symbol is identity and
   ;; name-as-string is the same as `intern' (= no soft-fail path).

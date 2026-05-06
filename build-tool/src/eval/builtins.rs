@@ -137,7 +137,11 @@ pub fn install_builtins(env: &mut Env) {
         "defalias", "fset", "fmakunbound", "makunbound",
         // Rust-min (2026-05-06 batch 6e): `print' moved to elisp
         // defalias of `princ'.
-        "signal", "error", "princ", "prin1-to-string", "message",
+        // Rust-min (2026-05-06 batch 6h): `message' moved to elisp
+        // (lisp/nelisp-stdlib-misc.el); only the writeln-to-stderr
+        // sliver remains as `nelisp--write-stderr-line'.
+        "signal", "error", "princ", "prin1-to-string",
+        "nelisp--write-stderr-line",
         "provide", "require", "featurep",
         // self-process stdio (Phase 9 minimal — needed by stand-alone Lisp servers
         // such as elisp-lsp running on the `nelisp` binary)
@@ -328,7 +332,10 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // duplication visible.
         "princ" => bi_princ(args),
         "prin1-to-string" => bi_prin1_to_string(args),
-        "message" => bi_message(args),
+        // message migrated to elisp (Rust-min 2026-05-06 batch 6h,
+        // see lisp/nelisp-stdlib-misc.el).  The writeln-to-stderr
+        // primitive is `nelisp--write-stderr-line'.
+        "nelisp--write-stderr-line" => bi_write_stderr_line(args),
         "read-stdin-bytes" => bi_read_stdin_bytes(args),
         "terminal-raw-mode-enter" => bi_terminal_raw_mode_enter(args),
         "terminal-raw-mode-leave" => bi_terminal_raw_mode_leave(args),
@@ -2247,34 +2254,29 @@ fn bi_princ(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(args[0].clone())
 }
 
-/// `(message FORMAT-STRING &rest ARGS)' — host Emacs treats the
-/// first arg as a format string and substitutes via `format'.  We
-/// route through `bi_format' so `%s' / `%d' / `%S' / `%%' all work
-/// with the trailing args, then write the result to *stderr* (=
-/// host Emacs writes messages to the echo area; in batch mode that
-/// surfaces on stderr, which we mirror here so `princ' on stdout
-/// stays cleanly user-payload-only).
-fn bi_message(args: &[Sexp]) -> Result<Sexp, EvalError> {
+/// `(nelisp--write-stderr-line STR)' — write STR followed by a
+/// newline to stderr and flush.  Returns STR unchanged.  Building
+/// block for the elisp `message' (Rust-min 2026-05-06 batch 6h);
+/// the previous `bi_message' was just `bi_format' + this writeln,
+/// and moving the dispatch to elisp means the few-line I/O sliver
+/// is the only piece that genuinely needs Rust.
+fn bi_write_stderr_line(args: &[Sexp]) -> Result<Sexp, EvalError> {
     use std::io::Write;
-    if args.is_empty() {
-        return Ok(Sexp::Nil);
-    }
-    // `(message nil ...)' clears the echo area in Emacs.  Mirror by
-    // returning nil without writing.
-    if matches!(&args[0], Sexp::Nil) {
-        return Ok(Sexp::Nil);
-    }
-    let formatted = bi_format(args)?;
-    let s = match &formatted {
-        Sexp::Str(s) => s.clone(),
-        Sexp::MutStr(rc) => rc.borrow().clone(),
-        other => format!("{}", other),
-    };
+    require_arity("nelisp--write-stderr-line", args, 1, Some(1))?;
+    let s = args[0].as_string_owned().ok_or_else(|| EvalError::WrongType {
+        expected: "stringp".into(),
+        got: args[0].clone(),
+    })?;
     let mut err = std::io::stderr().lock();
     let _ = writeln!(err, "{}", s);
     let _ = err.flush();
-    Ok(formatted)
+    Ok(args[0].clone())
 }
+
+// bi_message removed — see lisp/nelisp-stdlib-misc.el (Rust-min
+// 2026-05-06 batch 6h).  The nil-guard + format + writeln logic is
+// fully expressible in elisp once `nelisp--write-stderr-line'
+// exists as a primitive (just above).
 
 /// (read-stdin-bytes LIMIT) — block-read up to LIMIT bytes from fd 0.
 ///
