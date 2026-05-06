@@ -453,6 +453,7 @@ overwritten on this range; other properties are preserved."
     (setf (emacs-buffer--ext-text-props ext)
           (emacs-buffer--tp-add (emacs-buffer--ext-text-props ext)
                                 start end (list prop value)))
+    (cl-incf (emacs-buffer--ext-modified-tick ext))
     nil))
 
 ;;;###autoload
@@ -486,6 +487,7 @@ Properties not in PLIST are preserved on the affected range."
     (setf (emacs-buffer--ext-text-props ext)
           (emacs-buffer--tp-add (emacs-buffer--ext-text-props ext)
                                 start end plist))
+    (cl-incf (emacs-buffer--ext-modified-tick ext))
     nil))
 
 ;;;###autoload
@@ -504,7 +506,8 @@ a (PROP nil ...) list)."
       (let ((kk (emacs-buffer--keys-from-arg keys)))
         (setf (emacs-buffer--ext-text-props ext)
               (emacs-buffer--tp-remove (emacs-buffer--ext-text-props ext)
-                                       start end kk))))
+                                       start end kk)))
+      (cl-incf (emacs-buffer--ext-modified-tick ext)))
     nil))
 
 (defun emacs-buffer--keys-from-arg (arg)
