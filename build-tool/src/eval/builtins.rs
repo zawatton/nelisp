@@ -110,7 +110,9 @@ pub fn install_builtins(env: &mut Env) {
         // / string / unibyte-string migrated to elisp
         // (lisp/nelisp-stdlib-plist-str.el).
         "make-string",
-        "upcase", "downcase", "capitalize",
+        // Rust-min (2026-05-06 batch 6p): upcase / downcase /
+        // capitalize migrated to elisp (ASCII-only case mapping —
+        // see lisp/nelisp-stdlib-plist-str.el).
         // Rust-min (2026-05-06 batch 5a): string-to-number migrated
         // to elisp (lisp/nelisp-stdlib-plist-str.el).
         "split-string",
@@ -332,9 +334,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // migrated to elisp (Rust-min 2026-05-06 batch 6c, see
         // lisp/nelisp-stdlib-plist-str.el).
         // string-to-number migrated to elisp (Rust-min 2026-05-06 batch 5a).
-        "upcase" => bi_upcase(args),
-        "downcase" => bi_downcase(args),
-        "capitalize" => bi_capitalize(args),
+        // upcase / downcase / capitalize migrated to elisp (Rust-min
+        // 2026-05-06 batch 6p, see lisp/nelisp-stdlib-plist-str.el).
         "split-string" => bi_split_string(args),
         // string-trim family + string-prefix-p / string-suffix-p
         // migrated to elisp (Rust-min 2026-05-06, see
@@ -1029,71 +1030,12 @@ fn bi_make_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
 
 // bi_string_to_number migrated to elisp (Rust-min 2026-05-06 batch 5a).
 
-fn bi_upcase(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("upcase", args, 1, Some(1))?;
-    if let Some(s) = args[0].as_string_owned() {
-        return Ok(Sexp::Str(s.to_uppercase()));
-    }
-    match &args[0] {
-        Sexp::Int(c) => Ok(Sexp::Int(
-            char::from_u32(*c as u32)
-                .map(|ch| ch.to_uppercase().next().unwrap_or(ch))
-                .map(|ch| ch as i64)
-                .unwrap_or(*c),
-        )),
-        other => Err(EvalError::WrongType {
-            expected: "stringp / characterp".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
-fn bi_downcase(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("downcase", args, 1, Some(1))?;
-    if let Some(s) = args[0].as_string_owned() {
-        return Ok(Sexp::Str(s.to_lowercase()));
-    }
-    match &args[0] {
-        Sexp::Int(c) => Ok(Sexp::Int(
-            char::from_u32(*c as u32)
-                .map(|ch| ch.to_lowercase().next().unwrap_or(ch))
-                .map(|ch| ch as i64)
-                .unwrap_or(*c),
-        )),
-        other => Err(EvalError::WrongType {
-            expected: "stringp / characterp".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
-fn bi_capitalize(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("capitalize", args, 1, Some(1))?;
-    match &args[0] {
-        Sexp::Str(s) => {
-            let mut out = String::new();
-            let mut at_word_start = true;
-            for c in s.chars() {
-                if c.is_alphabetic() {
-                    if at_word_start {
-                        out.extend(c.to_uppercase());
-                        at_word_start = false;
-                    } else {
-                        out.extend(c.to_lowercase());
-                    }
-                } else {
-                    out.push(c);
-                    at_word_start = true;
-                }
-            }
-            Ok(Sexp::Str(out))
-        }
-        other => Err(EvalError::WrongType {
-            expected: "stringp".into(),
-            got: other.clone(),
-        }),
-    }
-}
+// bi_upcase / bi_downcase / bi_capitalize removed — see
+// lisp/nelisp-stdlib-plist-str.el (Rust-min 2026-05-06 batch 6p).
+// ASCII-only case mapping in elisp; non-ASCII bytes pass through
+// unchanged (= functionally equivalent to the previous Rust behaviour
+// on NeLisp's byte-as-char string repr, which never delivered
+// meaningful Unicode case mapping for multi-byte input anyway).
 
 fn bi_split_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("split-string", args, 1, Some(4))?;

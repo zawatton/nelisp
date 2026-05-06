@@ -580,6 +580,85 @@ Matches the Rust `str::split_whitespace' contract."
    (t
     (nelisp--split-on-whitespace s))))
 
+;; Rust-min batch 6p (2026-05-06): `upcase' / `downcase' / `capitalize'
+;; migrated from Rust to elisp.  The previous Rust impls used
+;; `char::to_uppercase' / `to_lowercase' / `is_alphabetic' (= full
+;; Unicode case mapping), but NeLisp strings are stored byte-as-char
+;; (= each UTF-8 byte becomes its own Latin-1 codepoint), so
+;; "Unicode case mapping" was already broken for multi-byte input —
+;; only ASCII case mapping was meaningful.  The elisp versions below
+;; restrict to ASCII explicitly, which is functionally identical to
+;; the previous Rust behaviour on the inputs callers actually pass.
+;; Non-ASCII bytes pass through unchanged.
+
+(defun nelisp--ascii-upcase-char (ch)
+  "Return the ASCII upper-case form of CH (= int char), or CH itself
+when CH is not an ASCII letter."
+  (if (and (>= ch ?a) (<= ch ?z)) (- ch 32) ch))
+
+(defun nelisp--ascii-downcase-char (ch)
+  "Return the ASCII lower-case form of CH (= int char), or CH itself
+when CH is not an ASCII letter."
+  (if (and (>= ch ?A) (<= ch ?Z)) (+ ch 32) ch))
+
+(defun nelisp--ascii-letter-p (ch)
+  "Return non-nil when CH is an ASCII letter (A–Z or a–z)."
+  (or (and (>= ch ?A) (<= ch ?Z))
+      (and (>= ch ?a) (<= ch ?z))))
+
+(defun nelisp--map-string (s fn)
+  "Apply FN to each char of S, return the resulting string."
+  (let ((out nil)
+        (i 0)
+        (n (length s)))
+    (while (< i n)
+      (setq out (cons (funcall fn (aref s i)) out))
+      (setq i (1+ i)))
+    (concat (nreverse out))))
+
+(defun upcase (obj)
+  "Convert OBJ to upper case.  OBJ may be a string (each ASCII letter
+upcased) or an int char (single-char upcase).  Non-ASCII bytes pass
+through unchanged."
+  (cond
+   ((stringp obj) (nelisp--map-string obj (function nelisp--ascii-upcase-char)))
+   ((integerp obj) (nelisp--ascii-upcase-char obj))
+   (t (signal 'wrong-type-argument (list 'stringp-or-characterp obj)))))
+
+(defun downcase (obj)
+  "Convert OBJ to lower case.  OBJ may be a string or an int char.
+Non-ASCII bytes pass through unchanged."
+  (cond
+   ((stringp obj) (nelisp--map-string obj (function nelisp--ascii-downcase-char)))
+   ((integerp obj) (nelisp--ascii-downcase-char obj))
+   (t (signal 'wrong-type-argument (list 'stringp-or-characterp obj)))))
+
+(defun capitalize (s)
+  "Title-case S: upcase every word-initial ASCII letter, downcase the
+rest of each word.  Word boundary = transition non-letter → letter.
+Non-letter chars pass through unchanged."
+  (cond
+   ((not (stringp s))
+    (signal 'wrong-type-argument (list 'stringp s)))
+   (t
+    (let ((out nil)
+          (i 0)
+          (n (length s))
+          (at-word-start t))
+      (while (< i n)
+        (let ((ch (aref s i)))
+          (cond
+           ((not (nelisp--ascii-letter-p ch))
+            (setq out (cons ch out))
+            (setq at-word-start t))
+           (at-word-start
+            (setq out (cons (nelisp--ascii-upcase-char ch) out))
+            (setq at-word-start nil))
+           (t
+            (setq out (cons (nelisp--ascii-downcase-char ch) out)))))
+        (setq i (1+ i)))
+      (concat (nreverse out))))))
+
 ;; Rust-min (2026-05-06 batch 5b): bool-vector / char-table.
 ;;
 ;; bool-vector: prior Rust impl had a dedicated `Sexp::BoolVector'
