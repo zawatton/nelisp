@@ -332,9 +332,11 @@ even if the encoding is approximate."
 ;; first, then the real impl skips because of `unless fboundp').
 ;; Removing the stubs lets the real bridge land instead.
 
-(unless (fboundp 'replace-match)
-  (defun replace-match (newtext &optional fixedcase literal string subexp)
-    (ignore newtext fixedcase literal subexp) string))
+;; Phase 4 B (2026-05-06): real `replace-match' moved to
+;; `emacs-search-builtins.el' so it actually substitutes the matched
+;; range based on the global match-data registry; the void stub that
+;; lived here would shadow the real impl under the load order
+;; `emacs-stub' → `emacs-search-builtins'.
 
 (unless (fboundp 'looking-back)
   (defun looking-back (regexp &optional limit greedy) (ignore regexp limit greedy) nil))
