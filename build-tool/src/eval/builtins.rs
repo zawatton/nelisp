@@ -102,8 +102,13 @@ pub fn install_builtins(env: &mut Env) {
         // float→string sliver remains as `nelisp--format-float-body';
         // `truncate' is also added so the elisp dispatcher can
         // coerce float→int for `%d/%i' without a privileged cast.
-        "concat", "intern", "symbol-name",
+        // Rust-min (2026-05-06 batch 6r): `concat' migrated to elisp
+        // (lisp/nelisp-stdlib-plist-str.el).  Only the
+        // "build-Sexp::Str-from-int-list" sliver remains as
+        // `nelisp--concat-ints'.
+        "intern", "symbol-name",
         "nelisp--format-float-body", "truncate",
+        "nelisp--concat-ints",
         // Rust-min (2026-05-06 batch 6e): `string=' moved to elisp
         // defalias of `string-equal'.
         "string-equal",
@@ -295,7 +300,9 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "ash" => bi_ash(args),
         "sxhash" => bi_sxhash(args),
         // ---- string ----
-        "concat" => bi_concat(args),
+        // concat migrated to elisp (Rust-min 2026-05-06 batch 6r,
+        // see lisp/nelisp-stdlib-plist-str.el).
+        "nelisp--concat-ints" => bi_concat_ints(args),
         // format migrated to elisp (Rust-min 2026-05-06 batch 6m,
         // see lisp/nelisp-stdlib-plist-str.el).  Only the IEEE-754
         // body sliver remains as `nelisp--format-float-body'.
@@ -900,29 +907,53 @@ fn bi_predicate(args: &[Sexp], pred: fn(&Sexp) -> bool) -> Result<Sexp, EvalErro
 
 // ---------- string ----------
 
-fn bi_concat(args: &[Sexp]) -> Result<Sexp, EvalError> {
+// bi_concat removed — see lisp/nelisp-stdlib-plist-str.el (Rust-min
+// 2026-05-06 batch 6r).  The user-facing dispatch (string / nil /
+// list-of-ints type-walk + char-codepoint accumulator) is fully
+// expressible in elisp; only the irreducible "construct-a-Sexp::Str-
+// from-a-flat-int-list" sliver remains here as
+// `nelisp--concat-ints' (just below).
+
+/// `(nelisp--concat-ints LIST-OF-INTS)' — return a fresh string
+/// whose chars are the codepoints in LIST-OF-INTS.  Nil = empty
+/// string.  Each list element must be an integer (= a Unicode
+/// codepoint); non-integer signals `wrong-type-argument'.  Improper
+/// list signals `listp' wrong-type-argument once the spine exits.
+///
+/// Sole "build a string" primitive after the batch 6r migration of
+/// `concat' to elisp.  The elisp `concat' dispatcher in
+/// `lisp/nelisp-stdlib-plist-str.el' walks variadic args (= mixed
+/// strings + lists + nil), accumulates a flat int-list, and calls
+/// this primitive once at the end.
+fn bi_concat_ints(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--concat-ints", args, 1, Some(1))?;
     let mut out = String::new();
-    for a in args {
-        match a {
-            Sexp::Str(s) => out.push_str(s),
-            Sexp::MutStr(rc) => out.push_str(&rc.borrow()),
-            Sexp::Nil => {}
-            Sexp::Cons(_, _) => {
-                // list of integers (chars) → string
-                let chars = list_to_vec(a)?;
-                for c in chars {
-                    if let Sexp::Int(n) = c {
-                        if let Some(ch) = char::from_u32(n as u32) {
+    let mut cur = args[0].clone();
+    loop {
+        match cur {
+            Sexp::Nil => break,
+            Sexp::Cons(h, t) => {
+                let v = h.borrow().clone();
+                match &v {
+                    Sexp::Int(n) => {
+                        if let Some(ch) = char::from_u32(*n as u32) {
                             out.push(ch);
                         }
                     }
+                    _ => {
+                        return Err(EvalError::WrongType {
+                            expected: "integerp".into(),
+                            got: v,
+                        });
+                    }
                 }
+                cur = t.borrow().clone();
             }
             other => {
                 return Err(EvalError::WrongType {
-                    expected: "string or sequence".into(),
-                    got: other.clone(),
-                })
+                    expected: "listp".into(),
+                    got: other,
+                });
             }
         }
     }

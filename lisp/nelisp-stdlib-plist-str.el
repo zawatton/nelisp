@@ -28,6 +28,51 @@
 (defun string-empty-p (s)
   (= (length s) 0))
 
+;; Rust-min batch 6r (2026-05-06): `concat' migrated from Rust to
+;; elisp.  The previous `bi_concat' (~28 LOC) walked args, expanding
+;; strings → chars + lists-of-ints, and appended into a Rust String.
+;; Migration requires ONE new tiny primitive — `nelisp--concat-ints'
+;; — that builds a `Sexp::Str' from a flat list of int chars
+;; (= the irreducible "construct-a-string" sliver, since `concat'
+;; itself was the previous primitive).
+;;
+;; The elisp dispatcher walks args, type-dispatches each (= stringp /
+;; null / consp / else), accumulates the flat int-list, and calls
+;; the primitive once at the end.  Bug-for-bug compat with the Rust
+;; impl: nil args skipped, integerp char-codepoints accepted, lists
+;; of ints accepted (= dotted tail signals listp), `make-string'-style
+;; MutStr coerces via `aref' (= same as Sexp::MutStr branch in Rust).
+
+(defun concat (&rest args)
+  "Concatenate ARGS into a fresh string.  Each ARG may be a string
+(chars copied), nil (skipped), or a list of int chars (each char
+appended).  Other types signal `wrong-type-argument'."
+  (let ((flat nil)
+        (cur args))
+    (while cur
+      (let ((a (car cur)))
+        (cond
+         ((null a) nil)
+         ((stringp a)
+          (let ((i 0)
+                (n (length a)))
+            (while (< i n)
+              (setq flat (cons (aref a i) flat))
+              (setq i (1+ i)))))
+         ((consp a)
+          (let ((walker a))
+            (while (consp walker)
+              (let ((v (car walker)))
+                (unless (integerp v)
+                  (signal 'wrong-type-argument (list 'integerp v)))
+                (setq flat (cons v flat))
+                (setq walker (cdr walker))))
+            (when walker
+              (signal 'wrong-type-argument (list 'listp a)))))
+         (t (signal 'wrong-type-argument (list 'sequencep a)))))
+      (setq cur (cdr cur)))
+    (nelisp--concat-ints (nreverse flat))))
+
 ;; Rust-min batch 6m (2026-05-06): `format' migrated from Rust to
 ;; elisp.  The previous `bi_format' (~200 LOC) + helpers (FormatSpec
 ;; struct, pad_field, fmt_int_with_sign, fmt_float_default) handled
