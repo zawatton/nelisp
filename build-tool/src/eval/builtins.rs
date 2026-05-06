@@ -63,7 +63,12 @@ pub fn install_builtins(env: &mut Env) {
         // predicates
         // Rust-min (2026-05-06 batch 6q): `atom' migrated to elisp
         // (lisp/nelisp-stdlib.el) as `(not (consp x))'.
-        "consp", "listp", "symbolp", "stringp", "numberp", "integerp", "floatp", "functionp",
+        // Rust-min (2026-05-06 batch 6u): consp / listp / symbolp /
+        // stringp / numberp / integerp / floatp / vectorp migrated to
+        // elisp (lisp/nelisp-stdlib.el) as `(eq (type-of x) 'TAG)' on
+        // top of the new `type-of' primitive.  `functionp' kept in
+        // Rust (HOF dispatch hot path).
+        "type-of", "functionp",
         // Rust-min (2026-05-06 batch 6d): `null' shadowed by elisp.
         // Rust-min (2026-05-06 batch 6f): `booleanp' / `keywordp'
         // expressible from `eq' / `symbolp' + `symbol-name' + `aref'
@@ -275,19 +280,14 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "vector" => Ok(Sexp::vector(args.to_vec())),
         "make-vector" => bi_make_vector(args),
         // ---- predicates ----
-        "consp" => bi_predicate(args, |v| matches!(v, Sexp::Cons(_, _))),
-        "listp" => bi_predicate(args, |v| matches!(v, Sexp::Cons(_, _) | Sexp::Nil)),
-        // atom migrated to elisp (Rust-min 2026-05-06 batch 6q,
-        // see lisp/nelisp-stdlib.el).
-        "symbolp" => bi_predicate(args, |v| matches!(v, Sexp::Symbol(_) | Sexp::Nil | Sexp::T)),
-        "stringp" => bi_predicate(args, |v| matches!(v, Sexp::Str(_) | Sexp::MutStr(_))),
-        "numberp" => bi_predicate(args, |v| matches!(v, Sexp::Int(_) | Sexp::Float(_))),
-        "integerp" => bi_predicate(args, |v| matches!(v, Sexp::Int(_))),
-        "floatp" => bi_predicate(args, |v| matches!(v, Sexp::Float(_))),
+        // consp / listp / symbolp / stringp / numberp / integerp /
+        // floatp / vectorp migrated to elisp (Rust-min 2026-05-06
+        // batch 6u, see lisp/nelisp-stdlib.el) on top of the new
+        // `type-of' primitive.  atom migrated separately in batch 6q.
+        "type-of" => bi_type_of(args),
         "functionp" => bi_predicate(args, |v| matches!(v,
             Sexp::Cons(h, _) if matches!(&*h.borrow(),
                 Sexp::Symbol(s) if s == "lambda" || s == "closure" || s == "builtin"))),
-        "vectorp" => bi_predicate(args, |v| matches!(v, Sexp::Vector(_))),
         // `null' is the alias for `nil-p' — `(null nil)' = t, anything
         // else = nil.  Distinct from `not' which has identical semantics
         // but is meant to be read as boolean negation in source.
@@ -914,6 +914,38 @@ fn list_to_vec(v: &Sexp) -> Result<Vec<Sexp>, EvalError> {
 fn bi_predicate(args: &[Sexp], pred: fn(&Sexp) -> bool) -> Result<Sexp, EvalError> {
     require_arity("predicate", args, 1, Some(1))?;
     Ok(if pred(&args[0]) { Sexp::T } else { Sexp::Nil })
+}
+
+/// `(type-of OBJECT)' — return a symbol naming the runtime type of
+/// OBJECT.  Used by the Rust-min batch 6u predicate elisp ports
+/// (consp / listp / symbolp / stringp / numberp / integerp / floatp
+/// / vectorp) — each becomes a 1-line `(eq (type-of x) 'TAG)' on
+/// top of this primitive.  Tags follow host Emacs conventions where
+/// possible: `cons' / `symbol' / `string' / `integer' / `float' /
+/// `vector' / `hash-table' / `char-table' / `bool-vector'.  `nil'
+/// and `t' both report as `symbol' (= they ARE symbols in Lisp).
+fn bi_type_of(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("type-of", args, 1, Some(1))?;
+    // Unwrap closure write-through Cells so the user-visible type
+    // matches what was captured (= identity of the inner Sexp).
+    let mut v: Sexp = args[0].clone();
+    while let Sexp::Cell(rc) = v {
+        let inner = rc.borrow().clone();
+        v = inner;
+    }
+    let tag = match v {
+        Sexp::Cons(_, _) => "cons",
+        Sexp::Nil | Sexp::T | Sexp::Symbol(_) => "symbol",
+        Sexp::Int(_) => "integer",
+        Sexp::Float(_) => "float",
+        Sexp::Str(_) | Sexp::MutStr(_) => "string",
+        Sexp::Vector(_) => "vector",
+        Sexp::HashTable(_) => "hash-table",
+        Sexp::CharTable(_) => "char-table",
+        Sexp::BoolVector(_) => "bool-vector",
+        Sexp::Cell(_) => unreachable!(),
+    };
+    Ok(Sexp::Symbol(tag.into()))
 }
 
 // ---------- string ----------

@@ -16,6 +16,32 @@
 ;; the elisp `bool-vector' constructor (also batch 5b), so
 ;; `(vectorp v)' covers both.
 
+;; Rust-min batch 6u (2026-05-06): predicate bundle migrated from
+;; Rust to elisp on top of a new `type-of' primitive (see
+;; build-tool/src/eval/builtins.rs `bi_type_of').  Each previous
+;; `bi_predicate' dispatch arm collapses to a 1-line `(eq (type-of
+;; x) 'TAG)' form below.  `eq' / `equal' / `functionp' kept in Rust:
+;; eq + equal need cycle-safe Sexp internals, functionp is on the
+;; HOF dispatch hot path.  `atom' / `arrayp' / `sequencep' (= batch
+;; 6q) compose these primitives further.
+
+(defun consp (x)    (eq (type-of x) 'cons))
+(defun symbolp (x)  (eq (type-of x) 'symbol))
+(defun stringp (x)  (eq (type-of x) 'string))
+(defun integerp (x) (eq (type-of x) 'integer))
+(defun floatp (x)   (eq (type-of x) 'float))
+(defun vectorp (x)  (eq (type-of x) 'vector))
+
+(defun listp (x)
+  "Return t if X is a list (= nil or a cons cell)."
+  (let ((tag (type-of x)))
+    (or (eq tag 'cons) (eq x nil))))
+
+(defun numberp (x)
+  "Return t if X is a number (= integer or float)."
+  (let ((tag (type-of x)))
+    (or (eq tag 'integer) (eq tag 'float))))
+
 (defun atom (x)
   "Return t if X is not a cons cell."
   (not (consp x)))
