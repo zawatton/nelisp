@@ -184,8 +184,14 @@ pub fn install_builtins(env: &mut Env) {
         // file helpers
         "expand-file-name", "file-truename",
         // file I/O (Doc 47 Stage 8b — multi-file load chain)
-        "file-exists-p", "file-readable-p", "file-directory-p",
-        "file-regular-p", "file-name-extension", "directory-files",
+        // Rust-min batch 7b (2026-05-07, Doc 50 stage 2 first slice):
+        // `file-exists-p' / `file-readable-p' / `file-directory-p' /
+        // `file-regular-p' migrated to elisp on top of the new
+        // `nelisp--syscall-stat' primitive (see
+        // lisp/nelisp-stdlib-misc.el).  Same 1+N collapse pattern as
+        // batch 7a (hash-table iter).
+        "nelisp--syscall-stat",
+        "file-name-extension", "directory-files",
         "load", "locate-library",
         // Rust-min (2026-05-06): `file-name-directory' /
         // `file-name-nondirectory' / `file-name-as-directory' /
@@ -372,10 +378,11 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // Doc 47 Stage 8b — file I/O for multi-file load chains.
         // file-name-* path slicers migrated to elisp (Rust-min 2026-05-06,
         // see lisp/nelisp-stdlib-plist-str.el).
-        "file-exists-p" => bi_file_exists_p(args, env),
-        "file-readable-p" => bi_file_readable_p(args, env),
-        "file-directory-p" => bi_file_directory_p(args, env),
-        "file-regular-p" => bi_file_regular_p(args, env),
+        // Rust-min batch 7b (2026-05-07, Doc 50 stage 2 first slice):
+        // `file-exists-p' / `file-readable-p' / `file-directory-p' /
+        // `file-regular-p' migrated to elisp on top of 1 syscall
+        // primitive — see lisp/nelisp-stdlib-misc.el.
+        "nelisp--syscall-stat" => bi_syscall_stat(args, env),
         "file-name-extension" => bi_file_name_extension(args),
         "directory-files" => bi_directory_files(args, env),
         "load" => bi_load(args, env),
@@ -1567,40 +1574,39 @@ fn resolve_existing_path(arg: &Sexp, env: &Env) -> Result<PathBuf, EvalError> {
     Ok(normalize_path(&path, base.as_deref()))
 }
 
-fn bi_file_exists_p(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("file-exists-p", args, 1, Some(1))?;
+/// `(nelisp--syscall-stat PATH)' — Rust-min batch 7b (Doc 50 stage 2
+/// first slice).  Resolves PATH against `default-directory' just like
+/// the previous `bi_file_exists_p' family did, then returns one of:
+///
+///   * `'absent'    — path does not exist, no permissions, or any
+///                    `metadata' error.  Note: dangling symlinks land
+///                    here too because `metadata()' follows symlinks
+///                    and errors out at the missing target (= same
+///                    behaviour the prior `is_file()' / `is_dir()'
+///                    `unwrap_or(false)' produced for the 4 wrappers).
+///   * `'file'      — resolves to a regular file.
+///   * `'directory' — resolves to a directory.
+///
+/// 4 elisp wrappers (= `file-exists-p' / `file-readable-p' /
+/// `file-directory-p' / `file-regular-p') ride this 1 primitive — see
+/// lisp/nelisp-stdlib-misc.el.  Doc 50 §3.2 unlock-strategy "POSIX
+/// syscall layer" applied via the same shape as batch 7a (= 1 iter
+/// primitive + N elisp wrappers).
+fn bi_syscall_stat(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--syscall-stat", args, 1, Some(1))?;
     let p = resolve_existing_path(&args[0], env)?;
-    Ok(if p.exists() { Sexp::T } else { Sexp::Nil })
-}
-
-fn bi_file_readable_p(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("file-readable-p", args, 1, Some(1))?;
-    let p = resolve_existing_path(&args[0], env)?;
-    Ok(if std::fs::metadata(&p).map(|m| m.is_file()).unwrap_or(false) {
-        Sexp::T
-    } else {
-        Sexp::Nil
-    })
-}
-
-fn bi_file_directory_p(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("file-directory-p", args, 1, Some(1))?;
-    let p = resolve_existing_path(&args[0], env)?;
-    Ok(if std::fs::metadata(&p).map(|m| m.is_dir()).unwrap_or(false) {
-        Sexp::T
-    } else {
-        Sexp::Nil
-    })
-}
-
-fn bi_file_regular_p(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("file-regular-p", args, 1, Some(1))?;
-    let p = resolve_existing_path(&args[0], env)?;
-    Ok(if std::fs::metadata(&p).map(|m| m.is_file()).unwrap_or(false) {
-        Sexp::T
-    } else {
-        Sexp::Nil
-    })
+    let tag = match std::fs::metadata(&p) {
+        Ok(m) if m.is_dir()  => "directory",
+        Ok(m) if m.is_file() => "file",
+        // Exotic file types (sockets / fifos / block-dev / char-dev)
+        // are reported `'absent' to mirror the prior behaviour where
+        // both `is_file()' and `is_dir()' returned false → all 4
+        // wrappers returned nil.  A future refinement could split
+        // these out, but no current call site distinguishes.
+        Ok(_)                => "absent",
+        Err(_)               => "absent",
+    };
+    Ok(Sexp::Symbol(tag.into()))
 }
 
 fn bi_file_name_extension(args: &[Sexp]) -> Result<Sexp, EvalError> {

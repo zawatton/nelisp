@@ -173,6 +173,36 @@ call time, so it is safe for FN to mutate TABLE during the walk
     (nelisp--write-stdout-bytes s)
     object))
 
+;; Rust-min batch 7b (2026-05-07, Doc 50 stage 2 first slice): file
+;; existence / type predicates migrated from Rust to elisp on top of a
+;; new POSIX syscall primitive `nelisp--syscall-stat' (see
+;; build-tool/src/eval/builtins.rs `bi_syscall_stat').  4 builtins
+;; collapse into 1 Rust primitive + 4 short elisp wrappers, mirroring
+;; the batch 7a hash-table iter pattern (Doc 50 §4 stage 1+2).
+;;
+;;   `nelisp--syscall-stat PATH' → `'absent' / `'file' / `'directory'
+;;
+;; The primitive does the same `default-directory'-relative path
+;; normalization that `bi_file_exists_p' & friends used; elisp side is
+;; pure tag dispatch.  `file-readable-p' currently returns nil for
+;; directories — same as the prior Rust impl (= `metadata().is_file()'
+;; only).  Host emacs returns t for readable directories; that
+;; refinement is left to a follow-up batch (would need a separate
+;; `nelisp--syscall-access' primitive for the `R_OK' bit).
+
+(defun file-exists-p (path)
+  (let ((s (nelisp--syscall-stat path)))
+    (or (eq s 'file) (eq s 'directory))))
+
+(defun file-readable-p (path)
+  (eq (nelisp--syscall-stat path) 'file))
+
+(defun file-directory-p (path)
+  (eq (nelisp--syscall-stat path) 'directory))
+
+(defun file-regular-p (path)
+  (eq (nelisp--syscall-stat path) 'file))
+
 ;; Rust-min batch 6e (2026-05-06): alias-only dispatch arms reduced
 ;; to `defalias'.  Each pair below previously routed through a
 ;; single Rust impl via `"foo" | "bar" => bi_<...>(args)' — the
