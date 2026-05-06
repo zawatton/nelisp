@@ -152,6 +152,19 @@ column `:left-col' for `:cols' chars.")
   "Phase 2.AU — index of the current window into `--windows'.  Only
 meaningful when `--windows' is non-nil.")
 
+(defvar nemacs-gtk--registers nil
+  "Phase 2.AX — alist of `(CHAR . VALUE)' register entries.  VALUE is
+either a string (= `copy-to-register' / `insert-register') or a
+list `(:point BUFFER-NAME POS)' (= `point-to-register' /
+`jump-to-register').  CHAR is the register name = the key the user
+typed after the `C-x r' prefix.")
+
+(defvar nemacs-gtk--register-pending-op nil
+  "Phase 2.AX — operation symbol waiting for its register-name char.
+nil = no pending register op; otherwise one of `copy' / `insert' /
+`point' / `jump'.  The dispatcher consumes the next event as the
+register name when this is non-nil.")
+
 (defun nemacs-gtk--active-buffer ()
   "Return the buffer object currently displayed in the GTK grid,
 falling back to the welcome buffer when the named one has been
@@ -294,6 +307,13 @@ Idempotent — re-calling replaces the global map with a fresh one."
     (define-key ctl-x-map (vector ?o)    'nemacs-gtk-other-window)
     ;; Phase 2.AV — `C-x ^' = enlarge-window (= +1 row from next).
     (define-key ctl-x-map (vector ?^)    'nemacs-gtk-enlarge-window)
+    ;; Phase 2.AX — `C-x r' prefix → registers.
+    (let ((c-x-r-map (make-sparse-keymap)))
+      (define-key c-x-r-map (vector ?s)  'nemacs-gtk-copy-to-register)
+      (define-key c-x-r-map (vector ?i)  'nemacs-gtk-insert-register)
+      (define-key c-x-r-map (vector ?\s) 'nemacs-gtk-point-to-register)
+      (define-key c-x-r-map (vector ?j)  'nemacs-gtk-jump-to-register)
+      (define-key ctl-x-map (vector ?r) c-x-r-map))
     (define-key m (vector ?\C-x) ctl-x-map)
     ;; Mouse-2 (= middle click) → set point + yank, mirroring real
     ;; Emacs's `mouse-yank-primary' / Linux X-clipboard convention.
@@ -2310,6 +2330,121 @@ click paste convention."
         (setq nemacs-gtk--last-key-text
               (format "mouse-2 yank @ point %d" p))))))
 
+;;;; --- registers (Phase 2.AX — C-x r s/i/SPC/j) ---------------------------
+
+(defun nemacs-gtk-copy-to-register ()
+  "Bound to `C-x r s' — set `--register-pending-op' to `copy' so the
+next key consumed becomes the register name; the active region is
+saved into the register as a string.  Reports `no mark' on the
+echo-area row when the active buffer has no mark set."
+  (interactive)
+  (setq nemacs-gtk--register-pending-op 'copy)
+  (setq nemacs-gtk--last-key-text "copy-to-register: register name?"))
+
+(defun nemacs-gtk-insert-register ()
+  "Bound to `C-x r i' — set `--register-pending-op' to `insert' so the
+next key consumed becomes the register name; the stored string is
+inserted at point.  No-op + echo when the named register is empty
+or holds a position record."
+  (interactive)
+  (setq nemacs-gtk--register-pending-op 'insert)
+  (setq nemacs-gtk--last-key-text "insert-register: register name?"))
+
+(defun nemacs-gtk-point-to-register ()
+  "Bound to `C-x r SPC' — set `--register-pending-op' to `point' so the
+next key consumed becomes the register name; the current buffer
+name + point position are saved as a `(:point BUF POS)' record."
+  (interactive)
+  (setq nemacs-gtk--register-pending-op 'point)
+  (setq nemacs-gtk--last-key-text "point-to-register: register name?"))
+
+(defun nemacs-gtk-jump-to-register ()
+  "Bound to `C-x r j' — set `--register-pending-op' to `jump' so the
+next key consumed becomes the register name; if the register holds
+a `(:point BUF POS)' record, switch to BUF and `goto-char' POS.
+No-op + echo for empty / string-only registers + dead buffers."
+  (interactive)
+  (setq nemacs-gtk--register-pending-op 'jump)
+  (setq nemacs-gtk--last-key-text "jump-to-register: register name?"))
+
+(defun nemacs-gtk--register-perform (op ch)
+  "Phase 2.AX dispatcher tail — apply OP (= `copy' / `insert' / `point'
+/ `jump') with the user-typed register name CH.  All paths set
+`--last-key-text' so the user gets a status string back; mutating
+ops update `--registers' before returning."
+  (cond
+   ((eq op 'copy)
+    (with-current-buffer (nemacs-gtk--active-buffer)
+      (cond
+       ((null nemacs-gtk--mark-pos)
+        (setq nemacs-gtk--last-key-text "copy-to-register: no mark set"))
+       (t
+        (let* ((s (min (nelisp-ec-point) nemacs-gtk--mark-pos))
+               (e (max (nelisp-ec-point) nemacs-gtk--mark-pos))
+               (text (nelisp-ec-buffer-substring s e)))
+          (setq nemacs-gtk--registers
+                (cons (cons ch text)
+                      (assq-delete-all ch nemacs-gtk--registers)))
+          (setq nemacs-gtk--last-key-text
+                (format "copy-to-register: %d chars -> %c"
+                        (length text) ch)))))))
+   ((eq op 'insert)
+    (let ((cell (assq ch nemacs-gtk--registers)))
+      (cond
+       ((null cell)
+        (setq nemacs-gtk--last-key-text
+              (format "insert-register: %c is empty" ch)))
+       ((stringp (cdr cell))
+        (with-current-buffer (nemacs-gtk--active-buffer)
+          (nelisp-ec-insert (cdr cell)))
+        (nemacs-gtk--ensure-cursor-visible)
+        (setq nemacs-gtk--last-key-text
+              (format "insert-register: %d chars from %c"
+                      (length (cdr cell)) ch)))
+       (t
+        (setq nemacs-gtk--last-key-text
+              (format "insert-register: %c is a position (use C-x r j)"
+                      ch))))))
+   ((eq op 'point)
+    (let ((bn nemacs-gtk--active-buffer-name)
+          (pos (with-current-buffer (nemacs-gtk--active-buffer)
+                 (nelisp-ec-point))))
+      (setq nemacs-gtk--registers
+            (cons (cons ch (list :point bn pos))
+                  (assq-delete-all ch nemacs-gtk--registers)))
+      (setq nemacs-gtk--last-key-text
+            (format "point-to-register: %s:%d -> %c" bn pos ch))))
+   ((eq op 'jump)
+    (let ((cell (assq ch nemacs-gtk--registers)))
+      (cond
+       ((null cell)
+        (setq nemacs-gtk--last-key-text
+              (format "jump-to-register: %c is empty" ch)))
+       ((and (consp (cdr cell)) (eq (car (cdr cell)) :point))
+        (let* ((bn (nth 1 (cdr cell)))
+               (pos (nth 2 (cdr cell)))
+               (buf (get-buffer bn)))
+          (cond
+           ((null buf)
+            (setq nemacs-gtk--last-key-text
+                  (format "jump-to-register: buffer %s gone" bn)))
+           (t
+            (setq nemacs-gtk--active-buffer-name bn)
+            (with-current-buffer buf
+              (let ((clamped (max (nelisp-ec-point-min)
+                                  (min pos (nelisp-ec-point-max)))))
+                (nelisp-ec-goto-char clamped)))
+            (nemacs-gtk--ensure-cursor-visible)
+            (setq nemacs-gtk--last-key-text
+                  (format "jump-to-register: %c -> %s:%d" ch bn pos))))))
+       (t
+        (setq nemacs-gtk--last-key-text
+              (format "jump-to-register: %c is a string (use C-x r i)"
+                      ch))))))
+   (t
+    (setq nemacs-gtk--last-key-text
+          (format "register: unknown op %S" op)))))
+
 
 ;;;; --- minibuffer mode (Phase 2.J — M-x execute-extended-command) ----------
 
@@ -2736,7 +2871,15 @@ success / failure."
     "delete-other-windows"
     "other-window"
     "enlarge-window"
-    "shrink-window")
+    "shrink-window"
+    "nemacs-gtk-copy-to-register"
+    "nemacs-gtk-insert-register"
+    "nemacs-gtk-point-to-register"
+    "nemacs-gtk-jump-to-register"
+    "copy-to-register"
+    "insert-register"
+    "point-to-register"
+    "jump-to-register")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
@@ -3426,6 +3569,23 @@ viewport."
                  ((nemacs-gtk--keymap-binding-p b)
                   (format "%s (prefix)" label))
                  (t (format "%s runs %S" label b))))))
+       (nemacs-gtk--register-pending-op
+        ;; Phase 2.AX: a `C-x r s/i/SPC/j' just fired — the next
+        ;; event is consumed as the register name (= a single char).
+        (let ((op nemacs-gtk--register-pending-op))
+          (setq nemacs-gtk--register-pending-op nil)
+          (let ((ch (cond
+                     ((and (integerp event) (>= event 0) (< event #x110000))
+                      event)
+                     ((eq event 'return) ?\n)
+                     ((eq event 'tab)    ?\t)
+                     (t nil))))
+            (cond
+             ((null ch)
+              (setq nemacs-gtk--last-key-text
+                    "register: non-char event, cancelled"))
+             (t
+              (nemacs-gtk--register-perform op ch))))))
        (nemacs-gtk--quoted-insert-pending
         ;; Phase 2.AF: a `C-q' just fired — the next event is
         ;; consumed verbatim regardless of its keymap binding.
