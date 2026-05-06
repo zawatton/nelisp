@@ -3915,6 +3915,82 @@ Iterates from the end so positions stay valid mid-walk."
                         count (length deletes)))))))))
 
 
+;;;; --- init file loading (Phase 3.C — ~/.emacs.d/init.el / ~/.emacs) ----
+
+(defvar nemacs-gtk--init-file-loaded nil
+  "Phase 3.C — non-nil after `--load-user-init-file' has either
+loaded a user init file successfully or determined that no such
+file exists.  Prevents accidental double-load.")
+
+(defvar nemacs-gtk--init-file-error nil
+  "Phase 3.C — when an error occurred loading the user init file,
+this is the (FILE . ERROR-STRING) pair.  Otherwise nil.  Surfaced
+on the echo-area row + appended to `*Messages*' so the user can
+diagnose without leaving the GUI.")
+
+(defun nemacs-gtk--candidate-init-files ()
+  "Return the list of paths the GUI checks for a user init file,
+in priority order.  Mirrors real Emacs's `user-init-file' search
+(= `~/.emacs.d/init.el', then `~/.emacs.el', then `~/.emacs')."
+  (let ((home (or (and (fboundp 'getenv) (getenv "HOME")) "~")))
+    (list (concat home "/.emacs.d/init.el")
+          (concat home "/.emacs.el")
+          (concat home "/.emacs"))))
+
+(defun nemacs-gtk--load-user-init-file ()
+  "Phase 3.C — find + load the user's init file.  Errors are caught
++ recorded on `--init-file-error' so a broken init doesn't kill
+the boot; the GUI still comes up at the welcome buffer with an
+echo-line diagnostic.  No-op when `--init-file-loaded' is already t."
+  (cond
+   (nemacs-gtk--init-file-loaded
+    (setq nemacs-gtk--last-key-text "init: already loaded"))
+   (t
+    (let ((found nil))
+      (catch 'done
+        (dolist (path (nemacs-gtk--candidate-init-files))
+          (when (and (fboundp 'file-exists-p) (file-exists-p path))
+            (setq found path)
+            (throw 'done t))))
+      (cond
+       ((null found)
+        (setq nemacs-gtk--init-file-loaded t)
+        (setq nemacs-gtk--last-key-text "init: no user init file found"))
+       (t
+        (condition-case err
+            (progn
+              (load found)
+              (setq nemacs-gtk--init-file-loaded t)
+              (setq nemacs-gtk--last-key-text
+                    (format "Loaded %s" found)))
+          (error
+           (setq nemacs-gtk--init-file-loaded t)
+           (setq nemacs-gtk--init-file-error
+                 (cons found (error-message-string err)))
+           (setq nemacs-gtk--last-key-text
+                 (format "init error: %s — %s"
+                         found (error-message-string err)))
+           ;; Mirror to *Messages* so the user can pull it back later.
+           (when (fboundp 'get-buffer-create)
+             (with-current-buffer (get-buffer-create "*Messages*")
+               (when (fboundp 'goto-char)
+                 (goto-char (or (and (fboundp 'point-max) (point-max)) 0)))
+               (when (fboundp 'insert)
+                 (insert (format "init error: %s — %s\n"
+                                 found
+                                 (error-message-string err)))))))))))
+    nemacs-gtk--init-file-loaded)))
+
+(defun nemacs-gtk-load-user-init-file ()
+  "M-x load-user-init-file — re-run init file loading.  Useful for
+testing init.el changes without restarting; the variable
+`--init-file-loaded' is reset first so the search re-runs."
+  (interactive)
+  (setq nemacs-gtk--init-file-loaded nil)
+  (setq nemacs-gtk--init-file-error nil)
+  (nemacs-gtk--load-user-init-file))
+
+
 ;;;; --- major-mode plumbing (Phase 3.A — per-buffer mode tracking) -------
 
 (defvar nemacs-gtk--buffer-modes nil
@@ -4537,7 +4613,9 @@ success / failure."
     "set-major-mode"
     "fundamental-mode"
     "text-mode"
-    "emacs-lisp-mode")
+    "emacs-lisp-mode"
+    "nemacs-gtk-load-user-init-file"
+    "load-user-init-file")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
@@ -6188,6 +6266,10 @@ is closed."
   (nemacs-gtk--init-keymap)
   ;; Phase 3.A — seed auto-mode-alist before any file open.
   (nemacs-gtk--seed-auto-mode-alist)
+  ;; Phase 3.C — load user init file (~/.emacs.d/init.el or ~/.emacs)
+  ;; before painting so any `setq` of GUI defvars / `electric-pair-mode'
+  ;; calls / etc. take effect on the first frame.
+  (nemacs-gtk--load-user-init-file)
   (nemacs-gtk--prepare-welcome-buffer)
   (nemacs-gtk--sync-window-title)
   ;; 4. First paint.
