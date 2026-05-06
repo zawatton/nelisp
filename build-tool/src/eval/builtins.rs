@@ -46,7 +46,14 @@ pub fn install_builtins(env: &mut Env) {
         // semantics (= step-wise fold would lose precision when
         // later args are float, e.g. (/ 10 3 2.0) = 1.666 vs 1.5).
         "nelisp--add2", "nelisp--sub2", "nelisp--mul2",
-        "/", "<", ">", "<=", ">=", "=", "/=",
+        "/",
+        // Rust-min (2026-05-06 batch 6w): chained-pairwise variadic
+        // < / > / <= / >= / = / /= migrated to elisp
+        // (lisp/nelisp-stdlib.el).  Float-tolerance epsilon moved
+        // into the `nelisp--num-eq2' primitive.
+        "nelisp--num-lt2", "nelisp--num-gt2",
+        "nelisp--num-le2", "nelisp--num-ge2",
+        "nelisp--num-eq2",
         // equality
         // Rust-min (2026-05-06 batch 6e): `eql' / `equal-including-properties'
         // moved to elisp defalias of `equal'.
@@ -237,12 +244,13 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "/" => bi_div(args),
         // mod migrated to elisp (Rust-min 2026-05-06 batch 6l, see
         // lisp/nelisp-stdlib.el).
-        "<" => bi_lt(args),
-        ">" => bi_gt(args),
-        "<=" => bi_le(args),
-        ">=" => bi_ge(args),
-        "=" => bi_eq_num(args),
-        "/=" => bi_neq_num(args),
+        // < / > / <= / >= / = / /= migrated to elisp (Rust-min
+        // 2026-05-06 batch 6w, see lisp/nelisp-stdlib.el).
+        "nelisp--num-lt2" => bi_num_lt2(args),
+        "nelisp--num-gt2" => bi_num_gt2(args),
+        "nelisp--num-le2" => bi_num_le2(args),
+        "nelisp--num-ge2" => bi_num_ge2(args),
+        "nelisp--num-eq2" => bi_num_eq2(args),
         // ---- equality ----
         // Rust-min (2026-05-06 batch 6e): `equal-including-properties'
         // / `eql' moved to elisp defalias of `equal'.  The MVP impl
@@ -724,40 +732,33 @@ fn sxhash_into<H: std::hash::Hasher>(v: &Sexp, h: &mut H) {
     }
 }
 
-fn cmp_vararg(name: &str, args: &[Sexp], cmp: fn(f64, f64) -> bool) -> Result<Sexp, EvalError> {
-    require_arity(name, args, 2, None)?;
+// bi_lt / bi_gt / bi_le / bi_ge / bi_eq_num / bi_neq_num removed —
+// see lisp/nelisp-stdlib.el (Rust-min 2026-05-06 batch 6w).
+// Variadic chained-pairwise comparisons (`(< a b c)' = `(and (< a b)
+// (< b c))') collapse to elisp folds over new 2-arg primitives.
+// Float-tolerance `=' uses `1e-15' epsilon — moved to the
+// `nelisp--num-eq2' primitive.  `/=' is just `(not (= a b))'.
+
+fn cmp2_helper(args: &[Sexp], name: &str, cmp: fn(f64, f64) -> bool) -> Result<Sexp, EvalError> {
+    require_arity(name, args, 2, Some(2))?;
     let (_, vs) = numeric_promote(args)?;
-    for w in vs.windows(2) {
-        if !cmp(w[0], w[1]) {
-            return Ok(Sexp::Nil);
-        }
-    }
-    Ok(Sexp::T)
+    Ok(if cmp(vs[0], vs[1]) { Sexp::T } else { Sexp::Nil })
 }
 
-fn bi_lt(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    cmp_vararg("<", args, |a, b| a < b)
+fn bi_num_lt2(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    cmp2_helper(args, "nelisp--num-lt2", |a, b| a < b)
 }
-fn bi_gt(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    cmp_vararg(">", args, |a, b| a > b)
+fn bi_num_gt2(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    cmp2_helper(args, "nelisp--num-gt2", |a, b| a > b)
 }
-fn bi_le(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    cmp_vararg("<=", args, |a, b| a <= b)
+fn bi_num_le2(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    cmp2_helper(args, "nelisp--num-le2", |a, b| a <= b)
 }
-fn bi_ge(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    cmp_vararg(">=", args, |a, b| a >= b)
+fn bi_num_ge2(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    cmp2_helper(args, "nelisp--num-ge2", |a, b| a >= b)
 }
-fn bi_eq_num(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    cmp_vararg("=", args, |a, b| (a - b).abs() < 1e-15)
-}
-fn bi_neq_num(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("/=", args, 2, Some(2))?;
-    let (_, vs) = numeric_promote(args)?;
-    Ok(if (vs[0] - vs[1]).abs() < 1e-15 {
-        Sexp::Nil
-    } else {
-        Sexp::T
-    })
+fn bi_num_eq2(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    cmp2_helper(args, "nelisp--num-eq2", |a, b| (a - b).abs() < 1e-15)
 }
 
 // ---------- equality ----------

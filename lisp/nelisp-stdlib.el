@@ -45,6 +45,36 @@
 (defun 1+ (x) (nelisp--add2 x 1))
 (defun 1- (x) (nelisp--sub2 x 1))
 
+;; Rust-min batch 6w (2026-05-06): chained-pairwise variadic
+;; comparisons `<' / `>' / `<=' / `>=' / `=' / `/=' migrated from
+;; Rust to elisp folds over new 2-arg primitives `nelisp--num-lt2'
+;; / `-num-gt2' / `-num-le2' / `-num-ge2' / `-num-eq2'.  Float
+;; tolerance (= 1e-15) is in the `=' primitive.  `/=' is just
+;; `(not (= a b))' for strict 2-arg.
+;;
+;; Chained-pairwise semantics: (< a b c) = (and (< a b) (< b c)).
+;; With 1 arg returns t (= trivially-true single-element chain).
+
+(defun nelisp--cmp-chain (args cmp2-fn)
+  (cond
+   ((null args) (signal 'wrong-number-of-arguments (list cmp2-fn 0)))
+   ((null (cdr args)) t)
+   (t
+    (let ((ok t) (a (car args)) (rest (cdr args)))
+      (while (and ok rest)
+        (let ((b (car rest)))
+          (unless (funcall cmp2-fn a b) (setq ok nil))
+          (setq a b)
+          (setq rest (cdr rest))))
+      ok))))
+
+(defun < (&rest args)  (nelisp--cmp-chain args (function nelisp--num-lt2)))
+(defun > (&rest args)  (nelisp--cmp-chain args (function nelisp--num-gt2)))
+(defun <= (&rest args) (nelisp--cmp-chain args (function nelisp--num-le2)))
+(defun >= (&rest args) (nelisp--cmp-chain args (function nelisp--num-ge2)))
+(defun = (&rest args)  (nelisp--cmp-chain args (function nelisp--num-eq2)))
+(defun /= (a b)        (not (nelisp--num-eq2 a b)))
+
 ;; Rust-min batch 6q (2026-05-06): `atom' / `arrayp' / `sequencep'
 ;; migrated from Rust to elisp.  Each was a 1-line `bi_predicate'
 ;; dispatch entry composing already-existing primitives — the elisp
