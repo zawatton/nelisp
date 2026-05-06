@@ -500,6 +500,86 @@ NEEDLE longer than HAYSTACK returns nil."
               (setq i (1+ i)))))
         found)))))
 
+;; Rust-min batch 6n (2026-05-06): `string-equal' migrated from Rust
+;; to elisp.  The previous `bi_string_eq' was a 4-line wrapper:
+;;   (1) coerce both args via `string_value' (= Str/MutStr → string,
+;;       Symbol → name, Nil → "nil", T → "t", else wrong-type)
+;;   (2) `==' compare the two strings
+;; All steps are pure elisp once we have `symbol-name' (= Rust
+;; primitive that already coerces nil/t to "nil"/"t") and `equal'
+;; (= structural compare, which on two strings reduces to char-by-
+;; char).  The defalias `string=' → `string-equal' from batch 6e
+;; (lisp/nelisp-stdlib-misc.el) survives unchanged.
+(defun string-equal (a b)
+  (let ((sa (cond ((stringp a) a)
+                  ((symbolp a) (symbol-name a))
+                  (t (signal 'wrong-type-argument (list 'stringp a)))))
+        (sb (cond ((stringp b) b)
+                  ((symbolp b) (symbol-name b))
+                  (t (signal 'wrong-type-argument (list 'stringp b))))))
+    (equal sa sb)))
+
+;; Rust-min batch 6n (2026-05-06): `split-string' migrated from Rust
+;; to elisp.  The previous `bi_split_string' (~25 LOC) implemented
+;; the literal-separator subset of host Emacs's contract — when
+;; SEPARATORS is a non-empty string, split on each non-overlapping
+;; occurrence; otherwise split on runs of whitespace and drop
+;; leading/trailing empties (matching Rust's `str::split_whitespace').
+;; The OMIT-NULLS / TRIM args are accepted for API parity but
+;; *ignored* by the Rust impl too — preserved here for behavioural
+;; bug-for-bug compatibility (= callers that pass `t' for omit-nulls
+;; have always silently retained empty fields on NeLisp; raising the
+;; coverage to "real" omit-nulls is a separate batch).
+;;
+;; Whitespace classification uses `nelisp-stdlib--whitespace-p'
+;; (ASCII space/tab/newline/CR/FF/VT) — slightly narrower than
+;; Rust's `char::is_whitespace' which covers Unicode whitespace.
+;; In practice all extant NeLisp / nelisp-emacs callers split on
+;; ASCII separators so the diff is invisible.
+(defun nelisp--split-on-literal (s sep)
+  "Split S on each non-overlapping literal occurrence of SEP.
+Returns a list of strings.  SEP must be non-empty."
+  (let ((acc nil)
+        (start 0)
+        (slen (length s))
+        (seplen (length sep))
+        (continue t))
+    (while continue
+      (let ((idx (string-search sep s start)))
+        (cond
+         (idx
+          (setq acc (cons (substring s start idx) acc))
+          (setq start (+ idx seplen)))
+         (t
+          (setq acc (cons (substring s start slen) acc))
+          (setq continue nil)))))
+    (nreverse acc)))
+
+(defun nelisp--split-on-whitespace (s)
+  "Split S on runs of whitespace; drop leading/trailing empties.
+Matches the Rust `str::split_whitespace' contract."
+  (let ((acc nil)
+        (i 0)
+        (n (length s)))
+    (while (< i n)
+      (while (and (< i n) (nelisp-stdlib--whitespace-p (aref s i)))
+        (setq i (1+ i)))
+      (let ((start i))
+        (while (and (< i n) (not (nelisp-stdlib--whitespace-p (aref s i))))
+          (setq i (1+ i)))
+        (when (> i start)
+          (setq acc (cons (substring s start i) acc)))))
+    (nreverse acc)))
+
+(defun split-string (s &optional separators _omit-nulls _trim)
+  (cond
+   ((not (stringp s))
+    (signal 'wrong-type-argument (list 'stringp s)))
+   ((and (stringp separators) (> (length separators) 0))
+    (nelisp--split-on-literal s separators))
+   (t
+    (nelisp--split-on-whitespace s))))
+
 ;; Rust-min (2026-05-06 batch 5b): bool-vector / char-table.
 ;;
 ;; bool-vector: prior Rust impl had a dedicated `Sexp::BoolVector'

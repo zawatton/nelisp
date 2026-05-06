@@ -100,7 +100,9 @@ pub fn install_builtins(env: &mut Env) {
         "nelisp--format-float-body", "truncate",
         // Rust-min (2026-05-06 batch 6e): `string=' moved to elisp
         // defalias of `string-equal'.
-        "string-equal",
+        // Rust-min (2026-05-06 batch 6n): `string-equal' moved to
+        // elisp (lisp/nelisp-stdlib-plist-str.el) — symbol-name
+        // coercion + `equal' on two strings.
         "string-match-p",
         // Rust-min (2026-05-06): `regexp-quote' migrated to elisp
         // (see lisp/nelisp-stdlib-plist-str.el).
@@ -111,7 +113,8 @@ pub fn install_builtins(env: &mut Env) {
         "upcase", "downcase", "capitalize",
         // Rust-min (2026-05-06 batch 5a): string-to-number migrated
         // to elisp (lisp/nelisp-stdlib-plist-str.el).
-        "split-string",
+        // Rust-min (2026-05-06 batch 6n): `split-string' migrated to
+        // elisp (lisp/nelisp-stdlib-plist-str.el).
         // Rust-min (2026-05-06): string-trim family +
         // string-prefix-p / string-suffix-p migrated to elisp
         // (lisp/nelisp-stdlib-plist-str.el).
@@ -299,7 +302,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "symbol-name" => bi_symbol_name(args),
         // Rust-min (2026-05-06 batch 6e): `string=' moved to elisp
         // defalias of `string-equal'.
-        "string-equal" => bi_string_eq(args),
+        // string-equal migrated to elisp (Rust-min 2026-05-06 batch 6n,
+        // see lisp/nelisp-stdlib-plist-str.el).
         "string-match-p" => bi_string_match_p(args),
         // "regexp-quote" — migrated to elisp (Rust-min 2026-05-06)
         "expand-file-name" => bi_expand_file_name(args, env),
@@ -332,7 +336,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "upcase" => bi_upcase(args),
         "downcase" => bi_downcase(args),
         "capitalize" => bi_capitalize(args),
-        "split-string" => bi_split_string(args),
+        // split-string migrated to elisp (Rust-min 2026-05-06 batch 6n,
+        // see lisp/nelisp-stdlib-plist-str.el).
         // string-trim family + string-prefix-p / string-suffix-p
         // migrated to elisp (Rust-min 2026-05-06, see
         // lisp/nelisp-stdlib-plist-str.el).
@@ -1149,31 +1154,10 @@ fn bi_capitalize(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-fn bi_split_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("split-string", args, 1, Some(4))?;
-    let s = match &args[0] {
-        Sexp::Str(s) => s.clone(),
-        Sexp::MutStr(rc) => rc.borrow().clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "stringp".into(),
-            got: other.clone(),
-        }),
-    };
-    // SEPARATORS arg: regexp or default whitespace.  We accept a
-    // literal-string regex (no backslash specials).  Falls back to
-    // whitespace when nil/missing.
-    let parts: Vec<String> = match args.get(1) {
-        Some(Sexp::Str(sep)) if !sep.is_empty() => {
-            s.split(sep.as_str()).map(|p| p.to_string()).collect()
-        }
-        _ => s.split_whitespace().map(|p| p.to_string()).collect(),
-    };
-    let mut out = Sexp::Nil;
-    for part in parts.into_iter().rev() {
-        out = Sexp::cons(Sexp::Str(part), out);
-    }
-    Ok(out)
-}
+// bi_split_string removed — see lisp/nelisp-stdlib-plist-str.el
+// (Rust-min 2026-05-06 batch 6n).  Literal-string split + whitespace
+// fallback is fully expressible in elisp once `string-search' /
+// `substring' / `nelisp-stdlib--whitespace-p' exist as stdlib defs.
 
 // bi_string_trim / bi_string_trim_left / bi_string_trim_right /
 // bi_string_prefix_p / bi_string_suffix_p removed — see
@@ -1416,12 +1400,9 @@ fn bi_symbol_name(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-fn bi_string_eq(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("string-equal", args, 2, Some(2))?;
-    let a = string_value(&args[0])?;
-    let b = string_value(&args[1])?;
-    Ok(truthy(a == b))
-}
+// bi_string_eq removed — see lisp/nelisp-stdlib-plist-str.el
+// (Rust-min 2026-05-06 batch 6n).  Symbol-name coercion + `equal'
+// on two strings is fully expressible in elisp.
 
 fn string_value(v: &Sexp) -> Result<String, EvalError> {
     match v {
