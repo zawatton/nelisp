@@ -733,7 +733,7 @@ escalate。本 repo §9.5 OQ で同期 stamp。
 | 5 | ERT smoke       | xdisp ERT ~45 test                                                  | SHIPPED  | =test/emacs-redisplay-test.el= = 67 ERT (~49% 上回り)、Doc 43 §3.2 +45 entry を充足                                                                                                                                            |
 | 6 | ERT smoke       | integration smoke ~20 cases (TUI + xdisp visual output)             | PARTIAL  | =frame-canvas= 直接 assert する ERT は 4 件 (=flush-frame-writes-to-canvas= / =redisplay-changed-row-flushes-again= / =force-mode-line-update-redraws-mode-line= / =redraw-display-invalidates-all-windows=)。+ =frame-tui-wire-test= 14 件で wire-up 経路 covered。Gap: ~6-12 件の dedicated visual smoke ERT が不足 |
 | 7 | post-ship audit | 1h soak / 10MB scroll / leak 0 / RSS growth < 5MB                   | NOT-RUN  | post-ship audit 項目 (= close blocker ではない)。Gap: soak harness 無し、RSS instrument 無し                                                                                                                                  |
-| 8 | post-ship audit | redisplay per-frame p99 < 100ms (xterm-256color)                    | NOT-MEASURED | post-ship audit 項目。bench から導出可: edit case 6.193s/1000 iter ≈ 6.2ms 平均、p99 は未計測。Gap: bench に p50/p99/p99.9 集計 + iter 単位 sample buffer 追加                                                                |
+| 8 | post-ship audit | redisplay per-frame p99 < 100ms (xterm-256color)                    | SHIPPED  | Phase 3.C.2 で =bench/bench-redisplay.el= に per-iter sample + p50/p99/p99.9/max 集計 + gate verdict 追加 (2026-05-06)。実測 (iters=1000、Linux dev box、no-op sink): static p99 0.010ms / edit p99 15.169ms / scroll p99 21.337ms — gate 100ms に対し最大 ~4.7x headroom |
 
 *Phase 3 close 判定*:
 - *blocker 4 項目* (gate #1-#4): #3 / #4 = SHIPPED、#1 / #2 = PARTIAL (機能は動くが
@@ -750,9 +750,10 @@ escalate。本 repo §9.5 OQ で同期 stamp。
    - scroll-after-redisplay re-fill (gate #2)
    - integration visual smoke ~6-12 件 (gate #6)
    - 規模見積: ~20 ERT 追加、~半日
-2. *Phase 3.C.2 — bench p99 instrumentation* (gate #8 part):
-   - iter 単位 latency sample 蓄積 + p50/p99/p99.9 算出
-   - 規模見積: bench harness +~50 LOC、~1 時間
+2. *Phase 3.C.2 — bench p99 instrumentation* (gate #8 part) — *SHIPPED 2026-05-06*:
+   - per-iter sample vector + p50/p99/p99.9/max + gate verdict 追加済
+   - 実測 (iters=1000): static p99 0.010ms / edit 15.169ms / scroll 21.337ms、
+     gate 100ms に対し全 PASS、~4.7-10000x headroom
 3. *Phase 3.C.3 — soak harness* (gate #7、optional):
    - large-buffer (10MB) scroll loop + RSS sampler
    - 規模見積: ~100 LOC、CI には組み込まず手動 release pre-flight check 用、~半日
