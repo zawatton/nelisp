@@ -231,7 +231,8 @@ SGR-ready attribute alist consumable by `emacs-tui-backend' (= Phase
   (height    0)             ;; row count
   (window    nil)           ;; owning emacs-window leaf
   (dirty-set nil)           ;; bool-vector of dirty row indices
-  (cursor    nil))          ;; cons (ROW . COL) or nil
+  (cursor    nil)           ;; cons (ROW . COL) or nil
+  (fingerprint nil))        ;; Phase 3.B.5 rebuild short-circuit key
 
 ;;; Driver handle
 
@@ -1309,11 +1310,48 @@ the segment, 0 if at end-of-text."
 
 ;;; B. redisplay drivers
 
+(defun emacs-redisplay--snapshot-fingerprint (window buffer width height)
+  "Cheap fingerprint of inputs that affect WINDOW's glyph-matrix output.
+Two consecutive redisplays with `equal' fingerprints can reuse the
+cached matrix and skip the rebuild (= Phase 3.B.5 short-circuit).
+Captures: buffer identity + size + point + narrow bounds, plus
+window start/point/width/height.  Does NOT cover overlay set,
+text-property mutations, or face-registry changes — callers that
+mutate those must invoke `emacs-redisplay-mark-window-dirty' (or
+the family of force-* helpers) so the matrix is dropped and a fresh
+rebuild is forced."
+  (let ((buf-size 0)
+        (buf-point 0)
+        (buf-narrow-start nil)
+        (buf-narrow-end nil))
+    (cond
+     ((null buffer))
+     ((stringp buffer)
+      (setq buf-size (length buffer)))
+     (t
+      (setq buf-size  (nelisp-ec-buffer-size  buffer)
+            buf-point (nelisp-ec-buffer-point buffer)
+            buf-narrow-start (nelisp-ec-buffer-narrow-start buffer)
+            buf-narrow-end   (nelisp-ec-buffer-narrow-end   buffer))))
+    (vector buffer buf-size buf-point buf-narrow-start buf-narrow-end
+            (or (emacs-window-start window) 1)
+            (or (emacs-window-point window) buf-point)
+            width height)))
+
 ;;;###autoload
 (defun emacs-redisplay-redisplay-window (handle window)
   "Run a redisplay pass on WINDOW under HANDLE.
 Returns the (possibly newly built) glyph-matrix.  Does NOT flush to
-backend — call `emacs-redisplay-flush-frame' for the actual emit."
+backend — call `emacs-redisplay-flush-frame' for the actual emit.
+
+Phase 3.B.5 short-circuit: when a cached matrix already exists and
+its `fingerprint' (buffer size/point/narrow + window start/point/
+dim) is `equal' to the current snapshot, the rebuild is skipped and
+the cached matrix is returned with its current dirty bits intact.
+Callers that mutate state outside the fingerprint (overlays /
+text-properties / face registry) must invoke
+`emacs-redisplay-mark-window-dirty' or
+`emacs-redisplay-force-mode-line-update' to drop the cache."
   (emacs-redisplay--check-handle handle)
   (unless (emacs-window-p window)
     (signal 'wrong-type-argument (list 'emacs-window-p window)))
@@ -1322,7 +1360,30 @@ backend — call `emacs-redisplay-flush-frame' for the actual emit."
          (old-matrix (emacs-redisplay--get-matrix handle window))
          (matrix (emacs-redisplay--ensure-matrix handle window))
          (fresh-matrix-p (null old-matrix))
-         (old-hashes
+         (buffer (emacs-window-buffer window))
+         (new-fp (emacs-redisplay--snapshot-fingerprint
+                  window buffer width height))
+         (short-circuit-p
+          (and (not fresh-matrix-p)
+               (eq matrix old-matrix)
+               (let ((old-fp (emacs-redisplay-glyph-matrix-fingerprint
+                              matrix)))
+                 (and old-fp (equal old-fp new-fp))))))
+    (cond
+     (short-circuit-p
+      (emacs-redisplay--log "redisplay-window handle=%S w=%S short-circuit"
+                            (emacs-redisplay-handle-id handle)
+                            (emacs-redisplay--cache-key window))
+      matrix)
+     (t
+      (emacs-redisplay--redisplay-window-rebuild
+       handle window matrix old-matrix fresh-matrix-p
+       buffer width height new-fp)))))
+
+(defun emacs-redisplay--redisplay-window-rebuild
+    (handle window matrix _old-matrix fresh-matrix-p buffer width height new-fp)
+  "Rebuild path of `emacs-redisplay-redisplay-window' (slow path)."
+  (let* ((old-hashes
           (and (not fresh-matrix-p)
                (let* ((old-rows (emacs-redisplay-glyph-matrix-rows matrix))
                       (v (make-vector height 0)))
@@ -1330,7 +1391,6 @@ backend — call `emacs-redisplay-flush-frame' for the actual emit."
                    (aset v r (emacs-redisplay-glyph-row-hash
                               (aref old-rows r))))
                  v)))
-         (buffer (emacs-window-buffer window))
          (start  (or (emacs-window-start window) 1))
          (text   (cond
                   ((null buffer) "")
@@ -1387,6 +1447,8 @@ backend — call `emacs-redisplay-flush-frame' for the actual emit."
     (let* ((point (or (emacs-window-point window) start))
            (cursor (emacs-redisplay--cursor-for-point matrix point)))
       (setf (emacs-redisplay-glyph-matrix-cursor matrix) cursor))
+    ;; Stamp fingerprint so the next call can short-circuit.
+    (setf (emacs-redisplay-glyph-matrix-fingerprint matrix) new-fp)
     (emacs-redisplay--log "redisplay-window handle=%S w=%S %dx%d rows-painted=%d"
                           (emacs-redisplay-handle-id handle)
                           (emacs-redisplay--cache-key window)

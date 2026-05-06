@@ -318,6 +318,55 @@
           (emacs-redisplay-redisplay-window h w)
           (should (= 0 (emacs-redisplay-flush-frame h fr))))))))
 
+(ert-deftest emacs-redisplay-test-redisplay-fingerprint-stamps-matrix ()
+  "After redisplay, the matrix carries a non-nil fingerprint slot."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "fp"
+      (let* ((h (emacs-redisplay-init))
+             (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let ((m (emacs-redisplay-redisplay-window h w)))
+          (should (emacs-redisplay-glyph-matrix-fingerprint m)))))))
+
+(ert-deftest emacs-redisplay-test-redisplay-short-circuits-on-equal-fingerprint ()
+  "When inputs are unchanged, redisplay skips rebuild — every row stays nil."
+  ;; Setup: redisplay once, flush (clears dirty bits), record cursor identity,
+  ;; redisplay again on the unchanged buffer.  The second call must NOT raise
+  ;; any dirty bit because it short-circuits.
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "short-circuit"
+      (emacs-redisplay-test--with-capture
+        (let* ((bk (emacs-tui-backend-init))
+               (fr (emacs-tui-backend-frame-create bk "frm"))
+               (h  (emacs-redisplay-init (list :backend bk)))
+               (w  (emacs-window-selected-window)))
+          (emacs-window-set-window-buffer w b)
+          (emacs-redisplay-redisplay-window h w)
+          (emacs-redisplay-flush-frame h fr)
+          (let* ((m (emacs-redisplay-redisplay-window h w))
+                 (dirty (emacs-redisplay-glyph-matrix-dirty-set m)))
+            (dotimes (r (length dirty))
+              (should-not (aref dirty r)))))))))
+
+(ert-deftest emacs-redisplay-test-redisplay-rebuilds-when-buffer-grows ()
+  "Buffer-size change invalidates the fingerprint and forces rebuild."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "ab"
+      (emacs-redisplay-test--with-capture
+        (let* ((bk (emacs-tui-backend-init))
+               (fr (emacs-tui-backend-frame-create bk "frm"))
+               (h  (emacs-redisplay-init (list :backend bk)))
+               (w  (emacs-window-selected-window)))
+          (emacs-window-set-window-buffer w b)
+          (emacs-redisplay-redisplay-window h w)
+          (emacs-redisplay-flush-frame h fr)
+          (let ((nelisp-ec--current-buffer b))
+            (nelisp-ec-goto-char 3)
+            (nelisp-ec-insert "c"))
+          (emacs-redisplay-redisplay-window h w)
+          ;; Some row must be dirty (= row containing the change).
+          (should (> (emacs-redisplay-flush-frame h fr) 0)))))))
+
 (ert-deftest emacs-redisplay-test-redisplay-changed-row-flushes-again ()
   "A changed row hash is marked dirty on the next redisplay pass."
   (emacs-redisplay-test--with-fresh-world
