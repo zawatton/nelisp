@@ -5243,16 +5243,117 @@ ending at `\\n' or EOB).  Red tint (rgb 240 80 80) at 40% alpha."
 modes need an explicit `M-x font-lock-mode' toggle to enable
 the comment/string tinting.")
 
-(defun nemacs-gtk--collect-font-lock-highlights ()
-  "Phase 2.BN+3.A — return a highlight list tagging elisp comments
-+ string literals.  Activates when `--font-lock-mode' is forced on
-OR when the active buffer's major mode is in `--font-locked-modes'.
-Comments → gray tint (rgb 180 180 180, 25% alpha); strings → green
-tint (rgb 140 220 140, 25% alpha).  Backslash-escapes inside
+(defun nemacs-gtk--font-lock-active-p ()
+  "Phase 3.B — t when font-lock should fire on the active buffer:
+either `--font-lock-mode' is forced on, or the buffer's major
+mode is in `--font-locked-modes'."
+  (or nemacs-gtk--font-lock-mode
+      (memq (nemacs-gtk--buffer-mode)
+            nemacs-gtk--font-locked-modes)))
+
+(defconst nemacs-gtk--lisp-keywords
+  '("defun" "defmacro" "defvar" "defconst" "defcustom" "defalias"
+    "defsubst" "let" "let*" "letrec" "lambda" "function"
+    "if" "cond" "when" "unless" "while" "and" "or" "not"
+    "progn" "prog1" "prog2" "setq" "setq-default" "setq-local" "set"
+    "save-excursion" "save-restriction" "save-match-data"
+    "with-current-buffer" "with-temp-buffer" "with-output-to-string"
+    "catch" "throw" "condition-case" "unwind-protect" "ignore-errors"
+    "dolist" "dotimes" "mapcar" "mapc" "require" "provide"
+    "interactive" "declare" "use-package")
+  "Phase 3.B — set of elisp form names that get a blue color span
+when font-lock-mode is active and they appear after `(' / `(['.")
+
+(defun nemacs-gtk--collect-font-lock-color-spans ()
+  "Phase 3.B — return color spans for elisp syntax:
+comments  → gray  (rgb 130 130 130) for the entire `;…\\n' region;
+strings   → green (rgb 50 130 50) for `\"…\"' content;
+keywords  → blue  (rgb 60 80 200) for known special forms when they
+            appear immediately after `('.  Backslash escapes inside
 strings are honoured."
-  (when (or nemacs-gtk--font-lock-mode
-            (memq (nemacs-gtk--buffer-mode)
-                  nemacs-gtk--font-locked-modes))
+  (when (nemacs-gtk--font-lock-active-p)
+    (with-current-buffer (nemacs-gtk--active-buffer)
+      (let* ((text (buffer-string))
+             (tlen (length text))
+             (i 0)
+             (acc '())
+             (kw-set nemacs-gtk--lisp-keywords))
+        (while (< i tlen)
+          (let ((c (aref text i)))
+            (cond
+             ;; Comment: `;' through `\n' or EOB → gray.
+             ((eq c ?\;)
+              (let ((s i))
+                (while (and (< i tlen)
+                            (not (eq (aref text i) ?\n)))
+                  (setq i (1+ i)))
+                (let* ((rc-s (nemacs-gtk--pos-to-row-col (1+ s)))
+                       (rc-e (nemacs-gtk--pos-to-row-col (1+ i))))
+                  (when (and rc-s rc-e)
+                    (push (list (car rc-s) (cdr rc-s)
+                                (car rc-e) (cdr rc-e)
+                                130 130 130)
+                          acc)))))
+             ;; String: `"' through matching `"' → dark green.
+             ((eq c ?\")
+              (let ((s i))
+                (setq i (1+ i))
+                (while (and (< i tlen) (not (eq (aref text i) ?\")))
+                  (when (eq (aref text i) ?\\)
+                    (setq i (1+ i)))
+                  (setq i (1+ i)))
+                (when (< i tlen) (setq i (1+ i)))
+                (let* ((rc-s (nemacs-gtk--pos-to-row-col (1+ s)))
+                       (rc-e (nemacs-gtk--pos-to-row-col (1+ i))))
+                  (when (and rc-s rc-e)
+                    (push (list (car rc-s) (cdr rc-s)
+                                (car rc-e) (cdr rc-e)
+                                50 130 50)
+                          acc)))))
+             ;; Keyword: `(WORD' where WORD ∈ kw-set → blue.
+             ((eq c ?\()
+              (let ((s (1+ i))
+                    (k (1+ i)))
+                (while (and (< k tlen)
+                            (let ((ch (aref text k)))
+                              (or (and (>= ch ?a) (<= ch ?z))
+                                  (and (>= ch ?A) (<= ch ?Z))
+                                  (and (>= ch ?0) (<= ch ?9))
+                                  (memq ch '(?- ?_ ?* ?:)))))
+                  (setq k (1+ k)))
+                (when (and (> k s)
+                           (member (substring text s k) kw-set))
+                  (let* ((rc-s (nemacs-gtk--pos-to-row-col (1+ s)))
+                         (rc-e (nemacs-gtk--pos-to-row-col (1+ k))))
+                    (when (and rc-s rc-e)
+                      (push (list (car rc-s) (cdr rc-s)
+                                  (car rc-e) (cdr rc-e)
+                                  60 80 200)
+                            acc))))
+                (setq i k))
+              (setq i (1+ i)))
+             (t (setq i (1+ i))))))
+        (nreverse acc)))))
+
+(defun nemacs-gtk--paint-color-spans ()
+  "Phase 3.B — push the active buffer's font-lock color spans to the
+Rust side via `nelisp-gtk-set-color-spans', or an empty list to
+clear when font-lock isn't active.  No-op when the extern isn't
+loaded (= substrate-only boot)."
+  (when (fboundp 'nelisp-gtk-set-color-spans)
+    (nelisp-gtk-set-color-spans
+     (or (nemacs-gtk--collect-font-lock-color-spans) nil))))
+
+;; The legacy background-tint version — kept for users running on
+;; older Rust backends that lack `set-color-spans'.  It's a no-op
+;; when the new color-span path is active (= same trigger condition
+;; turns it off below).
+(defun nemacs-gtk--collect-font-lock-highlights ()
+  "Phase 2.BN — legacy background-tint font-lock.  Suppressed when
+the Rust side has the new `set-color-spans' extern (= Phase 3.B);
+otherwise still emits gray + green tints for comments + strings."
+  (when (and (not (fboundp 'nelisp-gtk-set-color-spans))
+             (nemacs-gtk--font-lock-active-p))
     (with-current-buffer (nemacs-gtk--active-buffer)
       (let* ((text (buffer-string))
              (tlen (length text))
@@ -5329,6 +5430,7 @@ extern isn't loaded."
   (nemacs-gtk--paint-echo-area)
   (nemacs-gtk--paint-region-overlay)
   (nemacs-gtk--paint-highlights)
+  (nemacs-gtk--paint-color-spans)
   (let ((rc (nemacs-gtk--cursor-row-col)))
     (if rc
         (nelisp-gtk-set-cursor (car rc) (cdr rc))
