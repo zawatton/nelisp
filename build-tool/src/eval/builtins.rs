@@ -617,6 +617,9 @@ fn sxhash_into<H: std::hash::Hasher>(v: &Sexp, h: &mut H) {
             10u8.hash(h);
             for &b in rc.borrow().iter() { (b as u8).hash(h); }
         }
+        // Lexical-binding storage cell — hash through to inner value
+        // (= cells should be invisible to user-facing sxhash).
+        Sexp::Cell(rc) => sxhash_into(&rc.borrow(), h),
     }
 }
 

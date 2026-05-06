@@ -109,6 +109,14 @@ pub enum Sexp {
     /// `aref' returns t / nil; `aset' takes any Sexp and stores
     /// truthy/falsy.  `length' returns the bit count.
     BoolVector(Rc<RefCell<Vec<bool>>>),
+    /// Mutable cell (= write-through reference) used to back let-
+    /// binding storage so `setq' inside a closure mutates the
+    /// captured slot, not a copy.  The reader does NOT produce this
+    /// variant — it appears only inside captured-environment alists
+    /// emitted by `Env::capture_lexical' (build-tool/src/eval/env.rs).
+    /// Identity goes through `Rc::ptr_eq'; structural equality
+    /// unwraps the inner Sexp.
+    Cell(Rc<RefCell<Sexp>>),
 }
 
 /// Inner storage for [`Sexp::HashTable`].  Linear-scan vector keeps
@@ -413,6 +421,9 @@ fn write_sexp(out: &mut String, s: &Sexp) {
             }
             out.push('"');
         }
+        // Lexical-binding cell — print the inner value transparently
+        // so user-facing prints never reveal the storage wrapper.
+        Sexp::Cell(rc) => write_sexp(out, &rc.borrow()),
     }
 }
 

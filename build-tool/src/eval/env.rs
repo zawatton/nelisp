@@ -62,7 +62,15 @@ impl SymbolEntry {
 
 /// One lexical frame.  A `let`, `let*`, or lambda body push one
 /// frame; `setq` against a name in a frame mutates the frame slot.
-pub type Frame = HashMap<String, Sexp>;
+///
+/// Each slot is `Rc<RefCell<Sexp>>' (= a write-through cell) so a
+/// closure that captures the frame can `setq' through the cell and
+/// have the change visible at the originating let-binding's view.
+/// Without the cell layer, `Env::capture_lexical' would have to
+/// copy-by-value into the closure's captured-env alist and `setq'
+/// would silently mutate only the copy (= bug fixed 2026-05-06).
+pub type FrameCell = std::rc::Rc<std::cell::RefCell<Sexp>>;
+pub type Frame = HashMap<String, FrameCell>;
 
 /// The evaluator's runtime environment.
 ///
@@ -210,8 +218,8 @@ impl Env {
     /// global value cell.  Used by symbol evaluation.
     pub fn lookup_value(&self, name: &str) -> Result<Sexp, EvalError> {
         for frame in self.frames.iter().rev() {
-            if let Some(v) = frame.get(name) {
-                return Ok(v.clone());
+            if let Some(cell) = frame.get(name) {
+                return Ok(cell.borrow().clone());
             }
         }
         match self.globals.get(name) {
@@ -225,16 +233,17 @@ impl Env {
     /// `setq`/`set` semantics: mutate the **innermost** lexical frame
     /// that already binds `name`; otherwise update the global value
     /// cell (creating the symbol entry if needed).  Constants are
-    /// rejected.
+    /// rejected.  Lexical writes go through the FrameCell so any
+    /// closure that captured the same cell sees the new value.
     pub fn set_value(&mut self, name: &str, value: Sexp) -> Result<Sexp, EvalError> {
         if let Some(entry) = self.globals.get(name) {
             if entry.constant {
                 return Err(EvalError::SettingConstant(name.to_string()));
             }
         }
-        for frame in self.frames.iter_mut().rev() {
-            if frame.contains_key(name) {
-                frame.insert(name.to_string(), value.clone());
+        for frame in self.frames.iter().rev() {
+            if let Some(cell) = frame.get(name) {
+                *cell.borrow_mut() = value.clone();
                 return Ok(value);
             }
         }
@@ -316,9 +325,14 @@ impl Env {
     /// `let*`, and lambda parameter binding.  If no frame exists, the
     /// binding falls through to the global slot — this is intentional
     /// so top-level `(setq x 1)` works without an outer `(let)`.
+    /// Each binding is wrapped in a fresh FrameCell so a closure
+    /// capturing this name shares the cell (= setq write-through).
     pub fn bind_local(&mut self, name: &str, value: Sexp) {
         if let Some(frame) = self.frames.last_mut() {
-            frame.insert(name.to_string(), value);
+            frame.insert(
+                name.to_string(),
+                std::rc::Rc::new(std::cell::RefCell::new(value)),
+            );
         } else {
             let entry = self
                 .globals
@@ -370,26 +384,35 @@ impl Env {
     /// Capture the current lexical frames as a flat alist so a
     /// `lambda` can keep its closure environment as plain [`Sexp`]
     /// data.  Inner frames take precedence over outer.
+    ///
+    /// Each captured slot is wrapped in `Sexp::Cell` carrying the
+    /// **same** `Rc<RefCell<Sexp>>` as the original frame entry, so
+    /// `setq' inside the closure mutates the cell visible at the
+    /// originating let-binding (= write-through closures, fixed
+    /// 2026-05-06).
     pub fn capture_lexical(&self) -> Sexp {
         let mut seen = std::collections::HashSet::new();
-        let mut entries: Vec<(String, Sexp)> = Vec::new();
+        let mut entries: Vec<(String, FrameCell)> = Vec::new();
         for frame in self.frames.iter().rev() {
-            for (k, v) in frame {
+            for (k, cell) in frame {
                 if seen.insert(k.clone()) {
-                    entries.push((k.clone(), v.clone()));
+                    entries.push((k.clone(), cell.clone()));
                 }
             }
         }
         let mut acc = Sexp::Nil;
-        for (k, v) in entries.into_iter().rev() {
-            let pair = Sexp::cons(Sexp::Symbol(k), v);
+        for (k, cell) in entries.into_iter().rev() {
+            let pair = Sexp::cons(Sexp::Symbol(k), Sexp::Cell(cell));
             acc = Sexp::cons(pair, acc);
         }
         acc
     }
 
     /// Push a frame populated from a captured-env alist (the inverse
-    /// of [`Env::capture_lexical`]).
+    /// of [`Env::capture_lexical`]).  When a captured value is wrapped
+    /// in `Sexp::Cell`, the same `Rc` is reinstalled so mutation is
+    /// shared with the original frame; otherwise the value is wrapped
+    /// in a fresh cell (= legacy alist input still works).
     pub fn push_captured(&mut self, alist: &Sexp) -> Result<(), EvalError> {
         let mut frame: Frame = HashMap::new();
         let mut cur: Sexp = alist.clone();
@@ -400,7 +423,16 @@ impl Env {
                     let car_inner = car.borrow().clone();
                     if let Sexp::Cons(name, value) = &car_inner {
                         if let Sexp::Symbol(s) = &*name.borrow() {
-                            frame.insert(s.clone(), value.borrow().clone());
+                            // Closure write-through: when value is a
+                            // `Sexp::Cell`, install the SAME Rc so the
+                            // closure shares the originating frame's
+                            // slot; otherwise wrap in a fresh cell.
+                            let value_inner = value.borrow().clone();
+                            let cell = match value_inner {
+                                Sexp::Cell(rc) => rc,
+                                v => std::rc::Rc::new(std::cell::RefCell::new(v)),
+                            };
+                            frame.insert(s.clone(), cell);
                         } else {
                             return Err(EvalError::Internal(
                                 "closure env entry name not a symbol".into(),
