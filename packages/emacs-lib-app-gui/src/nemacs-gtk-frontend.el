@@ -4661,9 +4661,21 @@ Tab in the prompt completes against `--m-x-commands' (Phase 2.T)."
       ((string-empty-p input)
        (setq nemacs-gtk--last-key-text "M-x: empty"))
       (t
-       (let ((sym (intern input)))
+       ;; Resolve INPUT to a callable symbol.  Many entries in
+       ;; `--m-x-commands' are short names (= "cheat-sheet",
+       ;; "kill-this-buffer", "iconify-frame") whose actual
+       ;; implementation lives under the `nemacs-gtk-' prefix.
+       ;; Substrate stubs (= no-op `iconify-frame' from
+       ;; emacs-stub-bulk) shadow the real binding under the
+       ;; bare name, so prefer the prefixed form when it exists.
+       (let* ((short (intern input))
+              (long (intern (concat "nemacs-gtk-" input)))
+              (sym (cond
+                    ((fboundp long) long)
+                    ((fboundp short) short)
+                    (t nil))))
          (cond
-          ((not (fboundp sym))
+          ((null sym)
            (setq nemacs-gtk--last-key-text
                  (format "M-x: %s — unbound" input)))
           (t
