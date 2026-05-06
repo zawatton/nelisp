@@ -228,6 +228,113 @@ NEEDLE longer than HAYSTACK returns nil."
               (setq i (1+ i)))))
         found)))))
 
+;; Rust-min (2026-05-06 batch 5a): string-to-number — pure-elisp parse
+;; (= no new Rust primitives required, since NeLisp's mixed-mode
+;; arithmetic already promotes int op float → float).
+
+(defun nelisp-stdlib--digit-value (ch radix)
+  "Return integer 0..RADIX-1 encoded by CH, or nil if CH is not a digit
+in the given RADIX (= 2..36).  Accepts both upper- and lowercase
+letters for RADIX > 10."
+  (let ((v (cond
+            ((and (>= ch ?0) (<= ch ?9)) (- ch ?0))
+            ((and (>= ch ?a) (<= ch ?z)) (+ 10 (- ch ?a)))
+            ((and (>= ch ?A) (<= ch ?Z)) (+ 10 (- ch ?A)))
+            (t nil))))
+    (if (and v (< v radix)) v nil)))
+
+(defun string-to-number (s &optional radix)
+  "Parse a number from the leading portion of S.
+RADIX (default 10) selects the integer base.  Float syntax (`.',
+`e' / `E') is recognised only when RADIX is 10 or nil — otherwise
+only the integer prefix is accepted (matching the host Emacs
+contract).  Returns 0 when no leading digit is found.
+
+Pure-elisp impl: int parse drives a digit loop; float branch uses
+`(/ frac 1.0 ...)' for promote-on-mixed semantics and a multiply
+loop for the exponent (= no `expt' / `float' primitive needed)."
+  (let* ((r (or radix 10))
+         (n (length s))
+         (i 0))
+    ;; Skip leading whitespace.
+    (while (and (< i n) (nelisp-stdlib--whitespace-p (aref s i)))
+      (setq i (1+ i)))
+    (let ((sign 1))
+      (cond
+       ((and (< i n) (eq (aref s i) ?-))
+        (setq sign -1)
+        (setq i (1+ i)))
+       ((and (< i n) (eq (aref s i) ?+))
+        (setq i (1+ i))))
+      (let ((int-part 0)
+            (int-digits 0))
+        ;; Integer-digit loop.
+        (let ((continue t))
+          (while (and continue (< i n))
+            (let ((d (nelisp-stdlib--digit-value (aref s i) r)))
+              (cond
+               (d
+                (setq int-part (+ (* int-part r) d))
+                (setq i (1+ i))
+                (setq int-digits (1+ int-digits)))
+               (t (setq continue nil))))))
+        (cond
+         ;; Float branch (only when radix = 10 and we hit `.' / `e' / `E').
+         ((and (= r 10)
+               (< i n)
+               (or (eq (aref s i) ?.)
+                   (eq (aref s i) ?e)
+                   (eq (aref s i) ?E)))
+          (let ((frac-num 0)
+                (frac-denom 1)
+                (exp-sign 1)
+                (exp-val 0)
+                (has-exp nil))
+            ;; Optional fractional part.
+            (when (and (< i n) (eq (aref s i) ?.))
+              (setq i (1+ i))
+              (let ((continue t))
+                (while (and continue (< i n))
+                  (let ((d (nelisp-stdlib--digit-value (aref s i) 10)))
+                    (cond
+                     (d
+                      (setq frac-num (+ (* frac-num 10) d))
+                      (setq frac-denom (* frac-denom 10))
+                      (setq i (1+ i)))
+                     (t (setq continue nil)))))))
+            ;; Optional exponent.
+            (when (and (< i n)
+                       (or (eq (aref s i) ?e) (eq (aref s i) ?E)))
+              (setq i (1+ i))
+              (cond
+               ((and (< i n) (eq (aref s i) ?-))
+                (setq exp-sign -1)
+                (setq i (1+ i)))
+               ((and (< i n) (eq (aref s i) ?+))
+                (setq i (1+ i))))
+              (let ((continue t))
+                (while (and continue (< i n))
+                  (let ((d (nelisp-stdlib--digit-value (aref s i) 10)))
+                    (cond
+                     (d
+                      (setq exp-val (+ (* exp-val 10) d))
+                      (setq i (1+ i))
+                      (setq has-exp t))
+                     (t (setq continue nil)))))))
+            ;; Compute value: (sign * (int-part + frac-num/frac-denom)) * 10^exp.
+            (let* ((mag (+ int-part (/ frac-num (* frac-denom 1.0))))
+                   (val (* sign mag)))
+              (when has-exp
+                (let ((mul (if (>= exp-sign 0) 10.0 0.1))
+                      (k exp-val))
+                  (while (> k 0)
+                    (setq val (* val mul))
+                    (setq k (1- k)))))
+              val)))
+         ;; Pure integer.
+         ((> int-digits 0) (* sign int-part))
+         (t 0))))))
+
 ;; Rust-min (2026-05-06 batch 4): copy-tree + sort.
 
 (defun copy-tree (tree &optional vecp)

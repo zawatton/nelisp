@@ -68,7 +68,9 @@ pub fn install_builtins(env: &mut Env) {
         // Rust-min (2026-05-06): `regexp-quote' migrated to elisp
         // (see lisp/nelisp-stdlib-plist-str.el).
         "make-string", "char-to-string", "string-to-char", "string", "unibyte-string",
-        "string-to-number", "upcase", "downcase", "capitalize",
+        "upcase", "downcase", "capitalize",
+        // Rust-min (2026-05-06 batch 5a): string-to-number migrated
+        // to elisp (lisp/nelisp-stdlib-plist-str.el).
         "split-string",
         // Rust-min (2026-05-06): string-trim family +
         // string-prefix-p / string-suffix-p migrated to elisp
@@ -266,7 +268,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // alias to the same impl in MVP.
         "unibyte-string" => bi_string_from_chars(args),
         "string-to-char" => bi_string_to_char(args),
-        "string-to-number" => bi_string_to_number(args),
+        // string-to-number migrated to elisp (Rust-min 2026-05-06 batch 5a).
         "upcase" => bi_upcase(args),
         "downcase" => bi_downcase(args),
         "capitalize" => bi_capitalize(args),
@@ -1418,38 +1420,7 @@ fn bi_string_to_char(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-fn bi_string_to_number(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("string-to-number", args, 1, Some(2))?;
-    let s = match &args[0] {
-        Sexp::Str(s) => s.trim_start().to_string(),
-        other => return Err(EvalError::WrongType {
-            expected: "stringp".into(),
-            got: other.clone(),
-        }),
-    };
-    let radix = match args.get(1) {
-        Some(Sexp::Int(r)) => *r as u32,
-        Some(Sexp::Nil) | None => 10,
-        Some(other) => return Err(EvalError::WrongType {
-            expected: "integer radix".into(),
-            got: other.clone(),
-        }),
-    };
-    if radix == 10 {
-        if let Ok(i) = s.parse::<i64>() {
-            return Ok(Sexp::Int(i));
-        }
-        if let Ok(f) = s.parse::<f64>() {
-            return Ok(Sexp::Float(f));
-        }
-        Ok(Sexp::Int(0))
-    } else {
-        match i64::from_str_radix(&s, radix) {
-            Ok(n) => Ok(Sexp::Int(n)),
-            Err(_) => Ok(Sexp::Int(0)),
-        }
-    }
-}
+// bi_string_to_number migrated to elisp (Rust-min 2026-05-06 batch 5a).
 
 fn bi_upcase(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("upcase", args, 1, Some(1))?;
