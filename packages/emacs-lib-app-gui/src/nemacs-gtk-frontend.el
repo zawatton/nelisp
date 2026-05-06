@@ -5500,20 +5500,48 @@ extern isn't loaded."
        ;; isearch on top.  Later entries paint over earlier ones.
        (append font-lock-hl col-hl ws-hl paren-hl isearch-hl)))))
 
+(defmacro nemacs-gtk--guard (label &rest body)
+  "Phase 3.D — run BODY catching any error + reporting to the
+echo-area row + `*Messages*' buffer.  LABEL is a short tag added
+to the diagnostic so the user can tell which sub-paint failed.
+Returns nil on error so the rest of the redraw can proceed."
+  (declare (indent 1))
+  `(condition-case err
+       (progn ,@body)
+     (error
+      (let ((msg (format "[%s] %s" ,label
+                         (condition-case _ (error-message-string err)
+                           (error (format "%S" err))))))
+        (setq nemacs-gtk--last-key-text msg)
+        (when (and (fboundp 'get-buffer-create) (fboundp 'with-current-buffer))
+          (condition-case _
+              (with-current-buffer (get-buffer-create "*Messages*")
+                (when (fboundp 'goto-char)
+                  (goto-char (or (and (fboundp 'point-max) (point-max)) 1)))
+                (when (fboundp 'insert)
+                  (insert msg "\n")))
+            (error nil)))
+        nil))))
+
 (defun nemacs-gtk--repaint ()
-  "One full redraw cycle: buffer, mode line, echo, cursor, queue draw."
-  (nelisp-gtk-grid-clear)
-  (nemacs-gtk--paint-buffer-area)
-  (nemacs-gtk--paint-mode-line)
-  (nemacs-gtk--paint-echo-area)
-  (nemacs-gtk--paint-region-overlay)
-  (nemacs-gtk--paint-highlights)
-  (nemacs-gtk--paint-color-spans)
-  (let ((rc (nemacs-gtk--cursor-row-col)))
-    (if rc
-        (nelisp-gtk-set-cursor (car rc) (cdr rc))
-      (nelisp-gtk-set-cursor nil nil)))
-  (nelisp-gtk-redraw))
+  "One full redraw cycle: buffer, mode line, echo, cursor, queue draw.
+Phase 3.D: each sub-step is guarded by `--guard' so a single
+broken pass logs to *Messages* + the echo-area without aborting
+the whole redraw — the user sees something usable instead of
+the boot-time hard fail."
+  (nemacs-gtk--guard "grid-clear"   (nelisp-gtk-grid-clear))
+  (nemacs-gtk--guard "buffer-area"  (nemacs-gtk--paint-buffer-area))
+  (nemacs-gtk--guard "mode-line"    (nemacs-gtk--paint-mode-line))
+  (nemacs-gtk--guard "echo-area"    (nemacs-gtk--paint-echo-area))
+  (nemacs-gtk--guard "region"       (nemacs-gtk--paint-region-overlay))
+  (nemacs-gtk--guard "highlights"   (nemacs-gtk--paint-highlights))
+  (nemacs-gtk--guard "color-spans"  (nemacs-gtk--paint-color-spans))
+  (nemacs-gtk--guard "cursor"
+    (let ((rc (nemacs-gtk--cursor-row-col)))
+      (if rc
+          (nelisp-gtk-set-cursor (car rc) (cdr rc))
+        (nelisp-gtk-set-cursor nil nil))))
+  (nemacs-gtk--guard "redraw"       (nelisp-gtk-redraw)))
 
 
 ;;;; --- key event translation ------------------------------------------------
