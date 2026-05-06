@@ -159,7 +159,11 @@ soak-worker:
 # wires NeLisp's FFI to those symbols; Phase 7.0 only proves the
 # binary builds, links, and runs `--syscall-smoke' green.
 NELISP_RUNTIME_DIR := nelisp-runtime
-NELISP_RUNTIME_BIN := $(NELISP_RUNTIME_DIR)/target/release/nelisp-runtime
+# Doc 47 Stage 5a — Cargo workspace at repo root.  `cargo build' from any
+# member dir writes artifacts to `<workspace>/target/`, not to the member's
+# own `target/`.  All release artifact paths reference this workspace dir.
+WORKSPACE_TARGET_DIR := target
+NELISP_RUNTIME_BIN := $(WORKSPACE_TARGET_DIR)/release/nelisp-runtime
 # Pick the first cargo on $PATH, fall back to a rustup default install
 # path so a non-login shell (e.g. `make' invoked from a daemon) still
 # finds the toolchain without forcing the user to source `~/.cargo/env'.
@@ -242,7 +246,7 @@ test-runtime: runtime
 # `cargo build --release' produces all three artifacts; this target
 # exists primarily so the Makefile names the staticlib path and the
 # Phase 7.5.2 `stage-d-v2-bin' rule has a clean dependency edge.
-NELISP_RUNTIME_STATICLIB := $(NELISP_RUNTIME_DIR)/target/release/libnelisp_runtime.a
+NELISP_RUNTIME_STATICLIB := $(WORKSPACE_TARGET_DIR)/release/libnelisp_runtime.a
 
 runtime-staticlib:
 	cd $(NELISP_RUNTIME_DIR) && $(CARGO) build --release
@@ -283,13 +287,13 @@ runtime-static: runtime-staticlib
 # call vs ~1 ms for the subprocess path — Doc 32 v2 §7 bench gate
 # (≥100 tool calls/sec) reachable without per-call subprocess budget.
 NELISP_RUNTIME_MODULE_SRC := $(NELISP_RUNTIME_DIR)/c-bindings/nelisp-runtime-module.c
-NELISP_RUNTIME_MODULE     := $(NELISP_RUNTIME_DIR)/target/release/nelisp-runtime-module.so
+NELISP_RUNTIME_MODULE     := $(WORKSPACE_TARGET_DIR)/release/nelisp-runtime-module.so
 EMACS_MODULE_INC ?= $(shell pkg-config --cflags emacs-module 2>/dev/null || echo "-I/usr/include")
 
 runtime-module: runtime
 	cc -shared -fPIC -Wall -Wextra \
 	  $(EMACS_MODULE_INC) \
-	  -L $(NELISP_RUNTIME_DIR)/target/release \
+	  -L $(WORKSPACE_TARGET_DIR)/release \
 	  -o $(NELISP_RUNTIME_MODULE) \
 	  $(NELISP_RUNTIME_MODULE_SRC) \
 	  -ldl
@@ -309,12 +313,12 @@ runtime-module-clean:
 # `nelisp-sqlite.el' so the Emacs 30 `sqlite-*' compat layer can
 # dlsym the `nl_sqlite_*' Rust symbols.
 NELISP_SQLITE_MODULE_SRC := $(NELISP_RUNTIME_DIR)/c-bindings/nelisp-sqlite-module.c
-NELISP_SQLITE_MODULE     := $(NELISP_RUNTIME_DIR)/target/release/nelisp-sqlite-module.so
+NELISP_SQLITE_MODULE     := $(WORKSPACE_TARGET_DIR)/release/nelisp-sqlite-module.so
 
 sqlite-module: runtime
 	cc -shared -fPIC -Wall -Wextra \
 	  $(EMACS_MODULE_INC) \
-	  -L $(NELISP_RUNTIME_DIR)/target/release \
+	  -L $(WORKSPACE_TARGET_DIR)/release \
 	  -o $(NELISP_SQLITE_MODULE) \
 	  $(NELISP_SQLITE_MODULE_SRC) \
 	  -ldl
@@ -475,7 +479,7 @@ STAGE_D_V3_VERSION  ?= stage-d-v3.0
 STAGE_D_V3_PLATFORM ?= linux-x86_64
 STAGE_D_V3_TARBALL  := dist/anvil-$(STAGE_D_V3_VERSION)-$(STAGE_D_V3_PLATFORM).tar.gz
 
-stage-d-v3-tarball: runtime-staticlib
+stage-d-v3-tarball: runtime runtime-staticlib
 	@./tools/build-standalone-tarball.sh \
 	    $(STAGE_D_V3_VERSION) $(STAGE_D_V3_PLATFORM)
 

@@ -44,26 +44,31 @@ log "  version : $VERSION"
 log "  platform: $PLATFORM"
 log "  source  : $ANVIL_EL_SOURCE"
 
-# Architecture α Wave 3 (2026-04-29) — `anvil-runtime' binary now lives
-# in its own crate (`anvil-runtime/target/release/anvil-runtime'); the
-# nelisp-runtime crate keeps the cdylib + staticlib + nelisp interpreter
-# binary only.  See `../anvil-runtime/Cargo.toml' / `../bin/anvil
-# anvil_runtime_bin' for the layered fallback (bundled > anvil-runtime
-# crate target > legacy nelisp-runtime target).
-RUNTIME_DIR="nelisp-runtime/target/release"
-ANVIL_RUNTIME_DIR="anvil-runtime/target/release"
-RUNTIME_BIN="$ANVIL_RUNTIME_DIR/anvil-runtime"
-[[ -x "$RUNTIME_BIN" ]] || RUNTIME_BIN="$RUNTIME_DIR/anvil-runtime"
+# Architecture α Wave 3 (2026-04-29) — `anvil-runtime' binary lives in its
+# own crate, but Doc 47 Stage 5a moved both crates under a single Cargo
+# workspace, so `cargo build' from any member dir writes artifacts to
+# `<workspace>/target/release/' rather than a per-member `target/'.
+# Probe the workspace dir first; fall back to the legacy per-member paths
+# so pre-workspace dev checkouts still build.
+RUNTIME_DIR="target/release"
+LEGACY_RUNTIME_DIR="nelisp-runtime/target/release"
+LEGACY_ANVIL_RUNTIME_DIR="anvil-runtime/target/release"
+RUNTIME_BIN="$RUNTIME_DIR/anvil-runtime"
+[[ -x "$RUNTIME_BIN" ]] || RUNTIME_BIN="$LEGACY_ANVIL_RUNTIME_DIR/anvil-runtime"
+[[ -x "$RUNTIME_BIN" ]] || RUNTIME_BIN="$LEGACY_RUNTIME_DIR/anvil-runtime"
 RUNTIME_CDYLIB=""
-for cand in "$RUNTIME_DIR/libnelisp_runtime.so" \
-            "$RUNTIME_DIR/libnelisp_runtime.dylib" \
-            "$RUNTIME_DIR/nelisp_runtime.dll"; do
-  if [[ -f "$cand" ]]; then
-    RUNTIME_CDYLIB="$cand"
-    break
-  fi
+for dir in "$RUNTIME_DIR" "$LEGACY_RUNTIME_DIR"; do
+  for cand in "$dir/libnelisp_runtime.so" \
+              "$dir/libnelisp_runtime.dylib" \
+              "$dir/nelisp_runtime.dll"; do
+    if [[ -f "$cand" ]]; then
+      RUNTIME_CDYLIB="$cand"
+      break 2
+    fi
+  done
 done
 RUNTIME_STATICLIB="$RUNTIME_DIR/libnelisp_runtime.a"
+[[ -f "$RUNTIME_STATICLIB" ]] || RUNTIME_STATICLIB="$LEGACY_RUNTIME_DIR/libnelisp_runtime.a"
 
 [[ -x "$RUNTIME_BIN" ]] || { err "runtime binary missing: $RUNTIME_BIN"; exit 1; }
 [[ -n "$RUNTIME_CDYLIB" ]] || { err "runtime cdylib missing under $RUNTIME_DIR"; exit 1; }

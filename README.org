@@ -176,7 +176,7 @@ For users who want NeLisp + the bundled Rust runtime without
 cloning / building.  No Emacs install required at runtime:
 
 #+begin_src shell
-curl -fsSL https://github.com/zawatton/nelisp/releases/download/stage-d-v3.0/install-v3.sh | bash
+curl -fsSL https://github.com/zawatton/nelisp/releases/latest/download/install-v3.sh | bash
 #+end_src
 
 Default install root: =$HOME/.local/share/anvil-stage-d-v3.0/=.

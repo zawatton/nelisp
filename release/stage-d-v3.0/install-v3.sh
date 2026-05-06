@@ -5,7 +5,11 @@ set -euo pipefail
 
 RELEASE_VERSION="${RELEASE_VERSION:-stage-d-v3.0}"
 ANVIL_PREFIX="${ANVIL_PREFIX:-$HOME/.local/share/anvil-${RELEASE_VERSION}}"
-RELEASE_BASE_URL="${RELEASE_BASE_URL:-https://github.com/zawatton/nelisp/releases/download/${RELEASE_VERSION}}"
+# Default to GitHub's `releases/latest' redirect so the install URL keeps
+# resolving through future patch releases (v0.5.1, v0.5.2, ...) without
+# the script needing to bump a hard-coded tag.  Override RELEASE_BASE_URL
+# for installs pinned to an older release.
+RELEASE_BASE_URL="${RELEASE_BASE_URL:-https://github.com/zawatton/nelisp/releases/latest/download}"
 FROM_DIR=""
 
 usage() {
