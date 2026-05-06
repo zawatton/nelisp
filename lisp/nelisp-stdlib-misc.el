@@ -29,4 +29,16 @@
 (defun number-to-string (n)
   (if (integerp n) (format "%d" n) (format "%g" n)))
 
+;; Rust-min batch 6a (2026-05-06): `gensym' migrated from Rust to
+;; elisp.  `make-symbol' stays in Rust because uninterned-symbol
+;; construction needs a Sexp::Symbol primitive that bypasses any
+;; obarray; `gensym' is just a thin wrapper that defaults the
+;; prefix to "g" and routes to `make-symbol' (which already adds a
+;; per-process counter suffix to guarantee freshness).
+(defun gensym (&optional prefix)
+  (make-symbol
+   (cond ((stringp prefix) prefix)
+         ((symbolp prefix) (if prefix (symbol-name prefix) "g"))
+         (t "g"))))
+
 ;; nelisp-stdlib-misc.el ends here

@@ -78,7 +78,9 @@ pub fn install_builtins(env: &mut Env) {
         // Rust-min (2026-05-06 batch 3): mapconcat / string-search /
         // delete-dups migrated to elisp (lisp/nelisp-stdlib-plist-str.el).
         // symbols / sequences
-        "make-symbol", "gensym", "copy-sequence",
+        // Rust-min (2026-05-06 batch 6a): gensym migrated to elisp
+        // (lisp/nelisp-stdlib-misc.el).
+        "make-symbol", "copy-sequence",
         // hash-tables (Track O'')
         "make-hash-table", "hash-table-p", "hash-table-count",
         "puthash", "gethash", "remhash", "clrhash", "maphash",
@@ -261,7 +263,6 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "makunbound" => bi_makunbound(args, env),
         "intern-soft" => bi_intern_soft(args),
         "make-symbol" => bi_make_symbol(args),
-        "gensym" => bi_gensym(args),
         "make-string" => bi_make_string(args),
         "char-to-string" => bi_char_to_string(args),
         "string" => bi_string_from_chars(args),
@@ -1299,18 +1300,11 @@ fn bi_make_symbol(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::Symbol(format!("{}__nelisp-uninterned-{}", name, n)))
 }
 
-/// `(gensym &optional PREFIX)` — host Emacs returns a fresh
-/// uninterned symbol with a numeric suffix.  We delegate to
-/// `make-symbol' with a derived name.
-fn bi_gensym(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("gensym", args, 0, Some(1))?;
-    let prefix = match args.get(0) {
-        Some(Sexp::Str(s)) => s.clone(),
-        Some(Sexp::Symbol(s)) => s.clone(),
-        _ => "g".to_string(),
-    };
-    bi_make_symbol(&[Sexp::Str(prefix)])
-}
+// bi_gensym removed — see lisp/nelisp-stdlib-misc.el
+// (Rust-min 2026-05-06 batch 6a).  `make-symbol' stays here because
+// it must construct a fresh `Sexp::Symbol' that bypasses any
+// obarray; once that primitive exists, `gensym' is a 4-line elisp
+// wrapper.
 
 /// `(copy-sequence SEQUENCE)` — return a shallow copy.
 fn bi_copy_sequence(args: &[Sexp]) -> Result<Sexp, EvalError> {
