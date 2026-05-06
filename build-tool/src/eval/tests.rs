@@ -2188,3 +2188,68 @@ fn record_make_rejects_non_symbol_tag() {
     let e = err("(nelisp--make-record 42 'a)");
     assert!(matches!(e, EvalError::WrongType { .. }));
 }
+
+// ============================================================
+// Doc 50 stage 4e — cl-defstruct macro (lisp/nelisp-cl-macros.el)
+// ============================================================
+
+#[test]
+fn defstruct_predicate_and_constructor() {
+    // After defining `point' with two slots, the predicate distinguishes
+    // it from non-records and from records with a different tag.
+    let v = ok_all(
+        "(cl-defstruct point x y)
+         (point-p (make-point :x 3 :y 4))",
+    );
+    assert_eq!(v, Sexp::T);
+
+    // Distinct struct types are mutually exclusive: a `circle' is not
+    // a `point' and vice versa, even though both are records.
+    let v = ok_all(
+        "(cl-defstruct point x y)
+         (cl-defstruct circle r)
+         (point-p (make-circle :r 7))",
+    );
+    assert_eq!(v, Sexp::Nil);
+}
+
+#[test]
+fn defstruct_accessors_round_trip() {
+    let v = ok_all(
+        "(cl-defstruct point x y)
+         (let ((p (make-point :x 11 :y 22)))
+           (list (point-x p) (point-y p)))",
+    );
+    assert_eq!(v, Sexp::list_from(&[Sexp::Int(11), Sexp::Int(22)]));
+}
+
+#[test]
+fn defstruct_type_of_returns_struct_name() {
+    // Doc 52 §2.2 — type-of of a struct value returns the struct name
+    // (via the record's type_tag).
+    let v = ok_all(
+        "(cl-defstruct widget kind)
+         (type-of (make-widget :kind 'button))",
+    );
+    assert_eq!(v, Sexp::Symbol("widget".into()));
+}
+
+#[test]
+fn defstruct_unspecified_slot_uses_default_nil() {
+    let v = ok_all(
+        "(cl-defstruct pair fst snd)
+         (let ((p (make-pair :fst 1)))
+           (list (pair-fst p) (pair-snd p)))",
+    );
+    assert_eq!(v, Sexp::list_from(&[Sexp::Int(1), Sexp::Nil]));
+}
+
+#[test]
+fn defstruct_slot_with_default() {
+    // `(NAME DEFAULT)` slot-spec form supplies a default expression.
+    let v = ok_all(
+        "(cl-defstruct counter (n 0))
+         (counter-n (make-counter))",
+    );
+    assert_eq!(v, Sexp::Int(0));
+}

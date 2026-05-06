@@ -235,4 +235,119 @@ Patterns this stub does not recognise expand to nil."
   (declare (debug (&rest sexp)))
   (nelisp-cl-macros--loop-build clauses))
 
+;;;; --- defstruct ---------------------------------------------------------
+;;
+;; Doc 50 stage 4e — `cl-defstruct' macro built on the Stage 4c
+;; record primitives (`nelisp--make-record' / -ref / -set / -length /
+;; -type / `recordp').  Minimal CL surface: positional + keyword
+;; constructor, predicate, accessors.  Intentionally does NOT yet
+;; implement: `:include' / `:type' / `:print-function' / `:copier'
+;; auto-name / setf integration.  Those land alongside Stage 4d
+;; (equality / setf gv) in a follow-up.
+;;
+;; Expansion shape for `(cl-defstruct point x y)':
+;;   (progn
+;;     (defun point-p (obj)
+;;       (and (recordp obj) (eq (nelisp--record-type obj) 'point)))
+;;     (defun make-point (&rest cl-defstruct--args)
+;;       (apply 'nelisp--make-record 'point
+;;              (list (nelisp-cl-macros--struct-arg :x cl-defstruct--args nil)
+;;                    (nelisp-cl-macros--struct-arg :y cl-defstruct--args nil))))
+;;     (defun point-x (cl-defstruct--rec) (nelisp--record-ref cl-defstruct--rec 0))
+;;     (defun point-y (cl-defstruct--rec) (nelisp--record-ref cl-defstruct--rec 1))
+;;     'point)
+;;
+;; The slot-spec helper `nelisp-cl-macros--struct-arg' is plain elisp
+;; so it can be byte-compiled and reused; the macro itself just
+;; assembles `defun' forms.
+
+(defun nelisp-cl-macros--struct-arg (kw args default)
+  "Look up KW (a keyword like :x) in plist ARGS, returning DEFAULT
+when absent.  Used by the constructor expanded from `cl-defstruct'."
+  (let ((cell (memq kw args)))
+    (if cell (car (cdr cell)) default)))
+
+(defun nelisp-cl-macros--struct-slot-name (slot-spec)
+  "Return the slot symbol for SLOT-SPEC (a symbol or `(NAME DEFAULT)')."
+  (if (consp slot-spec) (car slot-spec) slot-spec))
+
+(defun nelisp-cl-macros--struct-slot-default (slot-spec)
+  "Return the default-value form for SLOT-SPEC (nil if symbol-only)."
+  (if (consp slot-spec) (car (cdr slot-spec)) nil))
+
+(defun nelisp-cl-macros--struct-name-or-options (head)
+  "Return the type symbol from HEAD (a symbol or `(NAME OPTION ...)').
+OPTIONS are accepted but currently ignored (= no `:include' /
+`:print-function' support yet).  Returning the symbol is enough for
+predicate / constructor / accessor name synthesis."
+  (if (consp head) (car head) head))
+
+(defmacro cl-defstruct (name-or-options &rest slots)
+  "Define a record type and its predicate / constructor / accessors.
+
+NAME-OR-OPTIONS is either NAME (symbol) or `(NAME OPTION ...)'.
+Each SLOT is `SLOT-NAME' or `(SLOT-NAME DEFAULT)'.  Generated:
+  - `NAME-p OBJECT'        predicate
+  - `make-NAME &rest ARGS' constructor (keyword form: `:slot value')
+  - `NAME-SLOT REC'        accessor (one per slot)
+
+Slot index assignment: positional, in declaration order.  The
+record's `type_tag' is NAME (a symbol); accessors call
+`nelisp--record-ref' which is 0-based and excludes the tag — the
+type tag is reachable via `nelisp--record-type'.
+
+Limitations (Doc 50 stage 4e MVP): no `:include', no `:type',
+no `:copier', no `setf' integration, no docstring slot form.
+
+Note: `(declare ...)' metadata is intentionally omitted because the
+NeLisp Rust evaluator does not yet strip declare forms from macro
+bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
+`defmacro' grows declare-handling parity with host Emacs."
+  (let* ((name (nelisp-cl-macros--struct-name-or-options name-or-options))
+         (slot-names (mapcar #'nelisp-cl-macros--struct-slot-name slots))
+         (slot-defaults (mapcar #'nelisp-cl-macros--struct-slot-default slots))
+         (predicate (intern (format "%s-p" name)))
+         (constructor (intern (format "make-%s" name))))
+    (let ((forms nil)
+          (args-sym (make-symbol "cl-defstruct--args"))
+          (rec-sym (make-symbol "cl-defstruct--rec"))
+          (slot-arg-forms nil)
+          (i 0))
+      ;; Build slot value-extraction forms for the constructor.
+      (dolist (s slot-names)
+        (let ((kw (intern (format ":%s" s)))
+              (def (nth i slot-defaults)))
+          (push (list 'nelisp-cl-macros--struct-arg
+                      (list 'quote kw) args-sym def)
+                slot-arg-forms))
+        (setq i (1+ i)))
+      (setq slot-arg-forms (nreverse slot-arg-forms))
+      ;; Predicate form.
+      (push (list 'defun predicate (list 'obj)
+                  (list 'and
+                        (list 'recordp 'obj)
+                        (list 'eq
+                              (list 'nelisp--record-type 'obj)
+                              (list 'quote name))))
+            forms)
+      ;; Constructor form (keyword-args via &rest).
+      (push (list 'defun constructor (list '&rest args-sym)
+                  (cons 'apply
+                        (cons (list 'quote 'nelisp--make-record)
+                              (cons (list 'quote name)
+                                    (list (cons 'list slot-arg-forms))))))
+            forms)
+      ;; Accessor forms — one per slot, indexed positionally.
+      (setq i 0)
+      (dolist (s slot-names)
+        (let ((acc (intern (format "%s-%s" name s))))
+          (push (list 'defun acc (list rec-sym)
+                      (list 'nelisp--record-ref rec-sym i))
+                forms))
+        (setq i (1+ i)))
+      ;; Result form: (progn DEFUN ... 'NAME).
+      (cons 'progn
+            (append (nreverse forms)
+                    (list (list 'quote name)))))))
+
 ;; nelisp-cl-macros.el ends here
