@@ -29,6 +29,7 @@
 ;;; Code:
 
 (require 'emacs-buffer-builtins)
+(require 'emacs-mode-builtins)
 (require 'cl-lib)
 
 ;; Grid dimensions are now mutable defvars (Phase 2.I) — the GTK
@@ -458,6 +459,12 @@ active GUI buffer to it (= flips `nemacs-gtk--active-buffer-name'
       (t
        (setq nemacs-gtk--active-buffer-name input)
        (setq nemacs-gtk--scroll-offset 0)
+       ;; Phase 3.A — re-mirror this buffer's recorded mode to the
+       ;; substrate's `major-mode' so the mode-line + introspection
+       ;; reflect the switch.  We don't re-run the mode fn (= side
+       ;; effects); just promote the symbol so display reads it.
+       (let ((m (nemacs-gtk--buffer-mode input)))
+         (when (boundp 'major-mode) (setq major-mode m)))
        (nemacs-gtk--sync-window-title)
        (setq nemacs-gtk--last-key-text
              (format "Switched: %s" input)))))))
@@ -3908,6 +3915,104 @@ Iterates from the end so positions stay valid mid-walk."
                         count (length deletes)))))))))
 
 
+;;;; --- major-mode plumbing (Phase 3.A — per-buffer mode tracking) -------
+
+(defvar nemacs-gtk--buffer-modes nil
+  "Phase 3.A — alist `(BUFFER-NAME . MODE-SYMBOL)' tracking each
+buffer's major mode in the GTK GUI.  Substrate's `major-mode' defvar
+is global (= one slot for all buffers); this side-table gives us
+per-buffer dispatch without rewriting the substrate.")
+
+(defun nemacs-gtk--buffer-mode (&optional bn)
+  "Return the major-mode symbol for buffer BN (default = active),
+falling back to `fundamental-mode' when no entry is recorded."
+  (or (cdr (assoc (or bn nemacs-gtk--active-buffer-name)
+                  nemacs-gtk--buffer-modes))
+      'fundamental-mode))
+
+(defun nemacs-gtk--set-buffer-mode (bn mode)
+  "Record buffer BN's major-mode as MODE in `--buffer-modes'.
+Mirrors to the substrate's `major-mode' defvar when BN is the
+active buffer.  The substrate's mode functions (= `fundamental-mode',
+`text-mode', `emacs-lisp-mode') already set `mode-name' themselves
+so we don't duplicate that here."
+  (setq nemacs-gtk--buffer-modes
+        (cons (cons bn mode)
+              (assoc-delete-all bn nemacs-gtk--buffer-modes)))
+  (when (string= bn nemacs-gtk--active-buffer-name)
+    (when (boundp 'major-mode) (setq major-mode mode))))
+
+(defun nemacs-gtk--mode-for-path (path)
+  "Walk `auto-mode-alist' for PATH and return the matching mode
+symbol or nil.  Honors first-match-wins ordering."
+  (when (and path (boundp 'auto-mode-alist))
+    (catch 'found
+      (dolist (cell auto-mode-alist)
+        (when (and (consp cell) (stringp (car cell))
+                   (string-match (car cell) path))
+          (throw 'found (cdr cell))))
+      nil)))
+
+(defun nemacs-gtk--apply-mode-for-buffer (bn)
+  "Invoke `set-auto-mode' on BN — pick a mode from `auto-mode-alist'
+based on its visited filename + activate it.  No-op when BN has no
+visited file or no rule matches."
+  (let* ((buf (get-buffer bn))
+         (path (and buf (fboundp 'buffer-file-name)
+                    (with-current-buffer buf (buffer-file-name))))
+         (mode (and path (nemacs-gtk--mode-for-path path))))
+    (when (and mode (fboundp mode))
+      (funcall mode)
+      (nemacs-gtk--set-buffer-mode bn mode))))
+
+(defun nemacs-gtk--seed-auto-mode-alist ()
+  "Phase 3.A — seed `auto-mode-alist' with a sensible default set
+of (REGEX . MODE-SYMBOL) entries.  Idempotent — already-present
+entries don't get duplicated."
+  (when (boundp 'auto-mode-alist)
+    (dolist (entry '(("\\.el\\'"        . emacs-lisp-mode)
+                     ("\\.txt\\'"       . text-mode)
+                     ("\\.org\\'"       . text-mode)
+                     ("\\.md\\'"        . text-mode)
+                     ("\\.markdown\\'"  . text-mode)
+                     ("\\.lisp\\'"      . emacs-lisp-mode)
+                     ("\\.scm\\'"       . emacs-lisp-mode)))
+      (unless (assoc (car entry) auto-mode-alist)
+        (push entry auto-mode-alist)))))
+
+(defun nemacs-gtk-set-major-mode-prompt ()
+  "M-x set-major-mode — prompt for a mode symbol + activate it on
+the current buffer.  Useful for buffers without a visited file
+(= `*scratch*' starts in fundamental-mode but the user wants
+emacs-lisp-mode for elisp evaluation)."
+  (interactive)
+  (nemacs-gtk--enter-minibuffer
+   (format "Set major-mode (current %s): "
+           (symbol-name (nemacs-gtk--buffer-mode)))
+   (lambda (input)
+     (cond
+      ((or (null input) (= (length input) 0))
+       (setq nemacs-gtk--last-key-text "set-major-mode: empty"))
+      (t
+       (let ((sym (intern input)))
+         (cond
+          ((not (fboundp sym))
+           (setq nemacs-gtk--last-key-text
+                 (format "set-major-mode: %s not fboundp" input)))
+          (t
+           (funcall sym)
+           (nemacs-gtk--set-buffer-mode
+            nemacs-gtk--active-buffer-name sym)
+           (setq nemacs-gtk--last-key-text
+                 (format "Mode: %s" input))))))))
+   (lambda (input)
+     (let ((acc '()))
+       (dolist (cand '("fundamental-mode" "text-mode" "emacs-lisp-mode"))
+         (when (string-prefix-p input cand)
+           (push cand acc)))
+       (sort acc #'string<)))))
+
+
 ;;;; --- minibuffer mode (Phase 2.J — M-x execute-extended-command) ----------
 
 (defvar nemacs-gtk--minibuffer-active nil
@@ -4427,7 +4532,12 @@ success / failure."
     "show-trailing-whitespace"
     "delete-trailing-whitespace"
     "font-lock-mode"
-    "column-marker-mode")
+    "column-marker-mode"
+    "nemacs-gtk-set-major-mode-prompt"
+    "set-major-mode"
+    "fundamental-mode"
+    "text-mode"
+    "emacs-lisp-mode")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
@@ -4581,8 +4691,10 @@ viewport scroll-position label (= Top/All/Bot/NN%), major-mode name."
   (with-current-buffer (nemacs-gtk--active-buffer)
     (let* ((name (buffer-name))
            (line (line-number-at-pos))
-           (mode (symbol-name (if (boundp 'major-mode) major-mode
-                                'fundamental-mode)))
+           ;; Phase 3.A — read the GUI's per-buffer mode table first;
+           ;; substrate's `major-mode' is global and only reflects the
+           ;; LATEST mode change, not the active-buffer's mode.
+           (mode (symbol-name (nemacs-gtk--buffer-mode)))
            (pos  (nemacs-gtk--scroll-position-label))
            (mod-flag (cond
                       ((and (boundp 'buffer-read-only) buffer-read-only)
@@ -5125,13 +5237,22 @@ ending at `\\n' or EOB).  Red tint (rgb 240 80 80) at 40% alpha."
           (setq i (1+ i)))
         (nreverse acc)))))
 
+(defconst nemacs-gtk--font-locked-modes
+  '(emacs-lisp-mode lisp-interaction-mode lisp-mode)
+  "Phase 3.A — modes for which font-lock auto-activates.  Other
+modes need an explicit `M-x font-lock-mode' toggle to enable
+the comment/string tinting.")
+
 (defun nemacs-gtk--collect-font-lock-highlights ()
-  "Phase 2.BN — return a highlight list tagging elisp comments + string
-literals in the active buffer.  Comments span from `;' to EOL with a
-gray tint (rgb 180 180 180, 25% alpha); strings span from opening
-to matching closing `\"' with a green tint (rgb 140 220 140, 25%
-alpha).  Backslash-escapes inside strings are honoured."
-  (when nemacs-gtk--font-lock-mode
+  "Phase 2.BN+3.A — return a highlight list tagging elisp comments
++ string literals.  Activates when `--font-lock-mode' is forced on
+OR when the active buffer's major mode is in `--font-locked-modes'.
+Comments → gray tint (rgb 180 180 180, 25% alpha); strings → green
+tint (rgb 140 220 140, 25% alpha).  Backslash-escapes inside
+strings are honoured."
+  (when (or nemacs-gtk--font-lock-mode
+            (memq (nemacs-gtk--buffer-mode)
+                  nemacs-gtk--font-locked-modes))
     (with-current-buffer (nemacs-gtk--active-buffer)
       (let* ((text (buffer-string))
              (tlen (length text))
@@ -5621,7 +5742,11 @@ into `*welcome*' at point."
   "Pop the GTK4 native open-file dialog (= `(nelisp-gtk-show-open-dialog)'),
 load the chosen file via `find-file-noselect', and switch the active
 buffer to the loaded one so the next repaint shows it.  Cancelled
-dialogs leave the current buffer in place."
+dialogs leave the current buffer in place.
+
+Phase 3.A: after the load succeeds, `set-auto-mode' picks a
+major-mode based on `auto-mode-alist' so e.g. opening a `.el' file
+auto-activates `emacs-lisp-mode'."
   (let ((path (nelisp-gtk-show-open-dialog "Open File")))
     (cond
      ((null path)
@@ -5633,11 +5758,15 @@ dialogs leave the current buffer in place."
           (setq nemacs-gtk--last-key-text
                 (format "Open failed: %s" path)))
          (t
-          (setq nemacs-gtk--active-buffer-name (buffer-name buf))
-          (setq nemacs-gtk--scroll-offset 0)
-          (nemacs-gtk--sync-window-title)
-          (setq nemacs-gtk--last-key-text
-                (format "Opened: %s" path)))))))))
+          (let ((bn (buffer-name buf)))
+            (setq nemacs-gtk--active-buffer-name bn)
+            (setq nemacs-gtk--scroll-offset 0)
+            (nemacs-gtk--apply-mode-for-buffer bn)
+            (nemacs-gtk--sync-window-title)
+            (setq nemacs-gtk--last-key-text
+                  (format "Opened: %s [%s]" path
+                          (symbol-name
+                           (nemacs-gtk--buffer-mode bn))))))))))))
 
 (defun nemacs-gtk--menu-save-file ()
   "Save the active buffer.  When it visits a file, call `save-buffer'
@@ -5955,6 +6084,8 @@ is closed."
   (nemacs-gtk--install-clipboard-glue)
   ;; 4. Layer 2 keymap + welcome buffer.
   (nemacs-gtk--init-keymap)
+  ;; Phase 3.A — seed auto-mode-alist before any file open.
+  (nemacs-gtk--seed-auto-mode-alist)
   (nemacs-gtk--prepare-welcome-buffer)
   (nemacs-gtk--sync-window-title)
   ;; 4. First paint.
