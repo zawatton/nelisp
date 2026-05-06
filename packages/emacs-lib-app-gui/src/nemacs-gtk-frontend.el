@@ -5500,27 +5500,40 @@ extern isn't loaded."
        ;; isearch on top.  Later entries paint over earlier ones.
        (append font-lock-hl col-hl ws-hl paren-hl isearch-hl)))))
 
+(defvar nemacs-gtk--guard-seen nil
+  "Phase 3.D — alist `(LABEL . MSG)' of guard errors already logged
+this session.  Used to deduplicate `--guard' diagnostics so a
+permanently-broken sub-paint doesn't spam `*Messages*' on every
+frame; the echo-area still updates each time so the user sees
+something is wrong.")
+
 (defmacro nemacs-gtk--guard (label &rest body)
   "Phase 3.D — run BODY catching any error + reporting to the
-echo-area row + `*Messages*' buffer.  LABEL is a short tag added
-to the diagnostic so the user can tell which sub-paint failed.
-Returns nil on error so the rest of the redraw can proceed."
+echo-area row + `*Messages*' buffer (= once per LABEL+MSG pair,
+to keep the log + frame rate bounded).  Returns nil on error so
+the rest of the redraw can proceed."
   (declare (indent 1))
   `(condition-case err
        (progn ,@body)
      (error
-      (let ((msg (format "[%s] %s" ,label
-                         (condition-case _ (error-message-string err)
-                           (error (format "%S" err))))))
+      (let* ((emsg (condition-case _ (error-message-string err)
+                     (error (format "%S" err))))
+             (msg  (format "[%s] %s" ,label emsg))
+             (key  (cons ,label emsg))
+             (new  (not (member key nemacs-gtk--guard-seen))))
         (setq nemacs-gtk--last-key-text msg)
-        (when (and (fboundp 'get-buffer-create) (fboundp 'with-current-buffer))
-          (condition-case _
-              (with-current-buffer (get-buffer-create "*Messages*")
-                (when (fboundp 'goto-char)
-                  (goto-char (or (and (fboundp 'point-max) (point-max)) 1)))
-                (when (fboundp 'insert)
-                  (insert msg "\n")))
-            (error nil)))
+        (when new
+          (push key nemacs-gtk--guard-seen)
+          (when (and (fboundp 'get-buffer-create)
+                     (fboundp 'with-current-buffer))
+            (condition-case _
+                (with-current-buffer (get-buffer-create "*Messages*")
+                  (when (fboundp 'goto-char)
+                    (goto-char
+                     (or (and (fboundp 'point-max) (point-max)) 1)))
+                  (when (fboundp 'insert)
+                    (insert msg "\n")))
+              (error nil))))
         nil))))
 
 (defun nemacs-gtk--repaint ()
