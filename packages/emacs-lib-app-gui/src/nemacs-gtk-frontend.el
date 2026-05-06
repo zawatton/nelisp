@@ -316,6 +316,12 @@ Idempotent — re-calling replaces the global map with a fresh one."
     ;; Phase 2.BB — `C-x C-o' = delete-blank-lines, `C-x f' = set-fill-column.
     (define-key ctl-x-map (vector ?\C-o) 'nemacs-gtk-delete-blank-lines)
     (define-key ctl-x-map (vector ?f)    'nemacs-gtk-set-fill-column)
+    ;; Phase 2.BC — `C-x n' prefix → narrowing.
+    (let ((c-x-n-map (make-sparse-keymap)))
+      (define-key c-x-n-map (vector ?n) 'nemacs-gtk-narrow-to-region)
+      (define-key c-x-n-map (vector ?w) 'nemacs-gtk-widen)
+      (define-key c-x-n-map (vector ?d) 'nemacs-gtk-narrow-to-defun)
+      (define-key ctl-x-map (vector ?n) c-x-n-map))
     ;; Phase 2.AX/AZ — `C-x r' prefix → registers + bookmarks.
     (let ((c-x-r-map (make-sparse-keymap)))
       (define-key c-x-r-map (vector ?s)  'nemacs-gtk-copy-to-register)
@@ -3093,6 +3099,55 @@ wraps at).  Rejects non-numeric input + values < 1."
                (format "set-fill-column: %d" n))))))))
 
 
+;;;; --- narrowing (Phase 2.BC — C-x n n / C-x n w / C-x n d) ---------------
+
+(defun nemacs-gtk-narrow-to-region ()
+  "Bound to `C-x n n' — restrict the active buffer's point-min / -max
+to the current region (= [mark .. point]).  All buffer ops + paint
+honour the narrowed window since the substrate's point-min /
+point-max accessors are what they all read."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (cond
+     ((null nemacs-gtk--mark-pos)
+      (setq nemacs-gtk--last-key-text "narrow-to-region: no mark"))
+     (t
+      (let* ((s (min (nelisp-ec-point) nemacs-gtk--mark-pos))
+             (e (max (nelisp-ec-point) nemacs-gtk--mark-pos)))
+        (narrow-to-region s e)
+        (setq nemacs-gtk--last-key-text
+              (format "narrow-to-region: %d..%d" s e)))))))
+
+(defun nemacs-gtk-widen ()
+  "Bound to `C-x n w' — drop any narrowing restriction on the active
+buffer (= the buffer's `point-min'/`point-max' accessors revert to
+its absolute bounds)."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (widen)
+    (setq nemacs-gtk--last-key-text "widen")))
+
+(defun nemacs-gtk-narrow-to-defun ()
+  "Bound to `C-x n d' — narrow the active buffer to the enclosing
+top-level `(' form (= what `mark-defun' would mark).  No-op + echo
+when no enclosing form is found."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let ((start (nemacs-gtk--beginning-of-defun)))
+      (cond
+       ((not (eq (emacs-edit--char-at start) ?\())
+        (setq nemacs-gtk--last-key-text "narrow-to-defun: no top-level form"))
+       (t
+        (let ((end (nemacs-gtk--scan-sexp-forward (nelisp-ec-point-max))))
+          (cond
+           ((null end)
+            (setq nemacs-gtk--last-key-text "narrow-to-defun: scan-error"))
+           (t
+            (narrow-to-region start end)
+            (setq nemacs-gtk--last-key-text
+                  (format "narrow-to-defun: %d..%d" start end))))))))))
+
+
 ;;;; --- minibuffer mode (Phase 2.J — M-x execute-extended-command) ----------
 
 (defvar nemacs-gtk--minibuffer-active nil
@@ -3550,7 +3605,13 @@ success / failure."
     "nemacs-gtk-set-fill-column"
     "delete-blank-lines"
     "kill-sentence"
-    "set-fill-column")
+    "set-fill-column"
+    "nemacs-gtk-narrow-to-region"
+    "nemacs-gtk-narrow-to-defun"
+    "nemacs-gtk-widen"
+    "narrow-to-region"
+    "narrow-to-defun"
+    "widen")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
