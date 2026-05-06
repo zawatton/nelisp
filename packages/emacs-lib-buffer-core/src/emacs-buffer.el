@@ -88,8 +88,14 @@ Slots:
                    START / END are 1-based, half-open [START, END).
                    MVP only; Doc 41 will add full interval-tree.
 - MODIFIED-TICK  : monotonically increasing counter incremented on
-                   every text mutation.  Read by
-                   `buffer-chars-modified-tick'.
+                   every text-property mutation (= read by
+                   `buffer-chars-modified-tick').  Phase 3.C.1 includes
+                   `face' / `display' / `invisible' propagation.
+- TEXT-TICK      : Phase 3.B.7 monotonically increasing counter
+                   incremented on every TEXT CONTENT mutation
+                   (= insert / delete via `nelisp-ec-insert' /
+                   `nelisp-ec-delete-region').  Used as a buffer-string
+                   cache key — text-property changes do NOT bump it.
 - BASE-BUFFER    : non-nil = this buffer is an indirect clone of the
                    given `nelisp-ec-buffer'."
   (locals        nil)
@@ -97,6 +103,7 @@ Slots:
   (undo-list     nil)
   (text-props    nil)
   (modified-tick 0)
+  (text-tick     0)
   (base-buffer   nil))
 
 (defvar emacs-buffer--state (make-hash-table :test 'eq :weakness nil)
@@ -668,6 +675,32 @@ after each text mutation (MVP cannot auto-instrument nelisp-ec-*)."
   (let* ((b (or buf (emacs-buffer--current)))
          (ext (emacs-buffer--ensure-ext b)))
     (emacs-buffer--ext-modified-tick ext)))
+
+;;;###autoload
+(defun emacs-buffer-buffer-text-tick (&optional buf)
+  "Return BUF's TEXT-CONTENT modification tick (Phase 3.B.7).
+Distinct from the chars-modified-tick: this counter is bumped only
+when the buffer's text bytes change (= insert / delete via
+`nelisp-ec-insert' / `nelisp-ec-delete-region'), not when text-
+properties or overlays change.  Useful as a cache key for the
+buffer's textual snapshot (= `emacs-redisplay--buffer-string')."
+  (let* ((b (or buf (emacs-buffer--current)))
+         (ext (and b (gethash b emacs-buffer--state))))
+    (if ext (emacs-buffer--ext-text-tick ext) 0)))
+
+(defun emacs-buffer--bump-text-tick-advice (&rest _args)
+  "After-advice for nelisp-ec-insert / -delete-region: bump text-tick
+on the current buffer's ext (= so `emacs-buffer-buffer-text-tick'
+reflects every text-content mutation)."
+  (let* ((b (and (boundp 'nelisp-ec--current-buffer)
+                 nelisp-ec--current-buffer))
+         (ext (and b (emacs-buffer--ensure-ext b))))
+    (when ext
+      (cl-incf (emacs-buffer--ext-text-tick ext)))))
+
+(advice-add 'nelisp-ec-insert        :after #'emacs-buffer--bump-text-tick-advice)
+(advice-add 'nelisp-ec-delete-region :after #'emacs-buffer--bump-text-tick-advice)
+(advice-add 'nelisp-ec-erase-buffer  :after #'emacs-buffer--bump-text-tick-advice)
 
 ;;;###autoload
 (defun emacs-buffer-bump-modified-tick (&optional buf)

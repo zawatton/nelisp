@@ -246,7 +246,8 @@ SGR-ready attribute alist consumable by `emacs-tui-backend' (= Phase
   (id          nil :read-only t)   ;; gensym-style id
   (alive-p     t)                  ;; nil after shutdown
   (backend     nil)                ;; emacs-tui-backend handle (nil OK)
-  (window-cache nil))              ;; alist (window-id . glyph-matrix)
+  (window-cache nil)               ;; alist (window-id . glyph-matrix)
+  (text-cache  nil))               ;; Phase 3.B.7 buffer-string LRU
 
 ;;; Module-private id counter
 
@@ -692,6 +693,45 @@ empty string when no text is reachable (= safe MVP default)."
       (error "")))
    ((stringp buffer) buffer)  ;; test convenience
    (t "")))
+
+(defconst emacs-redisplay--text-cache-size 2
+  "Max LRU entries in `emacs-redisplay-handle-text-cache'.")
+
+(defun emacs-redisplay--cached-buffer-string (handle buffer)
+  "Return BUFFER's text via HANDLE's text-cache (Phase 3.B.7).
+Cache key = (BUFFER + TEXT-TICK).  When BUFFER is a string or nil,
+falls back to the uncached path because there is no tick to gate on.
+Cache holds at most `emacs-redisplay--text-cache-size' entries with
+LRU ordering — the head is most-recent."
+  (cond
+   ((or (null buffer) (stringp buffer))
+    (emacs-redisplay--buffer-string buffer))
+   (t
+    (let* ((tick (and (fboundp 'emacs-buffer-buffer-text-tick)
+                      (emacs-buffer-buffer-text-tick buffer)))
+           (cache (emacs-redisplay-handle-text-cache handle))
+           (hit (and tick
+                     (cl-loop for entry in cache
+                              when (and (eq (car entry) buffer)
+                                        (equal (cadr entry) tick))
+                              return entry))))
+      (cond
+       (hit
+        (unless (eq (car cache) hit)
+          (setf (emacs-redisplay-handle-text-cache handle)
+                (cons hit (delq hit cache))))
+        (cddr hit))
+       (t
+        (let* ((text (emacs-redisplay--buffer-string buffer))
+               (new-entry (cons buffer (cons (or tick 0) text)))
+               (trimmed (if (> (length cache)
+                               (1- emacs-redisplay--text-cache-size))
+                            (cl-subseq cache 0
+                                       (1- emacs-redisplay--text-cache-size))
+                          cache)))
+          (setf (emacs-redisplay-handle-text-cache handle)
+                (cons new-entry trimmed))
+          text)))))))
 
 (defun emacs-redisplay--buffer-substring (buffer start end)
   "Return BUFFER text in 1-based [START, END), with safe fallbacks."
@@ -1482,7 +1522,7 @@ rows, each entry a cons (LINE-STRING . OVERLAY-FP) or nil."
          (text   (cond
                   ((null buffer) "")
                   ((stringp buffer) buffer)
-                  (t (emacs-redisplay--buffer-string buffer))))
+                  (t (emacs-redisplay--cached-buffer-string handle buffer))))
          (visible
           (cond
            ((stringp text)
