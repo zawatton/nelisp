@@ -74,7 +74,12 @@ pub fn install_builtins(env: &mut Env) {
         // bitwise — required by keymap / event-encoding code
         // Rust-min (2026-05-06 batch 6e): `lsh' moved to elisp
         // defalias of `ash'.
-        "logior", "logand", "logxor", "lognot", "ash",
+        // Rust-min (2026-05-06 batch 6j): variadic logior / logand /
+        // logxor moved to elisp (lisp/nelisp-stdlib.el) folding over
+        // the 2-arg primitives `nelisp--logior2' / -logand2 /
+        // -logxor2.  `lognot' (unary) and `ash' (binary) stay native.
+        "lognot", "ash",
+        "nelisp--logior2", "nelisp--logand2", "nelisp--logxor2",
         // hashing — used by hash-table key derivation in user code
         // Rust-min (2026-05-06 batch 6e): `sxhash-{equal,eq,eql}'
         // moved to elisp defalias of `sxhash'.
@@ -259,9 +264,11 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // booleanp / keywordp migrated to elisp (Rust-min 2026-05-06
         // batch 6f, see lisp/nelisp-stdlib-misc.el).
         // ---- bitwise (essential for keymap / event encoding) ----
-        "logior" => bi_logior(args),
-        "logand" => bi_logand(args),
-        "logxor" => bi_logxor(args),
+        // logior / logand / logxor variadic moved to elisp
+        // (Rust-min 2026-05-06 batch 6j, see lisp/nelisp-stdlib.el).
+        "nelisp--logior2" => bi_logior2(args),
+        "nelisp--logand2" => bi_logand2(args),
+        "nelisp--logxor2" => bi_logxor2(args),
         "lognot" => bi_lognot(args),
         // Rust-min (2026-05-06 batch 6e): `lsh' / `sxhash-{equal,eq,eql}'
         // moved to elisp defalias of `ash' / `sxhash'.
@@ -564,28 +571,29 @@ fn bi_mod(args: &[Sexp]) -> Result<Sexp, EvalError> {
 // for the Emacs Ctrl-bit chord encoding) plus general numeric utilities
 // on which the substrate's polyfills lean.
 
-fn bi_logior(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let mut acc: i64 = 0;
-    for a in args {
-        acc |= as_int("logior", a)?;
-    }
-    Ok(Sexp::Int(acc))
+// bi_logior / bi_logand / bi_logxor variadic dispatch removed — see
+// lisp/nelisp-stdlib.el (Rust-min 2026-05-06 batch 6j).  Replaced
+// by 3 thin 2-arg primitives (just below) which the elisp version
+// folds over.  Codebase grep for `(log{ior,and,xor} ARG ARG ...)'
+// found 54 callers — all exactly 2-arg, so the variadic feature
+// was unused in practice and the elisp fold has no real cost.
+
+fn bi_logior2(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--logior2", args, 2, Some(2))?;
+    Ok(Sexp::Int(as_int("nelisp--logior2", &args[0])?
+                 | as_int("nelisp--logior2", &args[1])?))
 }
 
-fn bi_logand(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let mut acc: i64 = -1; // all bits set
-    for a in args {
-        acc &= as_int("logand", a)?;
-    }
-    Ok(Sexp::Int(acc))
+fn bi_logand2(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--logand2", args, 2, Some(2))?;
+    Ok(Sexp::Int(as_int("nelisp--logand2", &args[0])?
+                 & as_int("nelisp--logand2", &args[1])?))
 }
 
-fn bi_logxor(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let mut acc: i64 = 0;
-    for a in args {
-        acc ^= as_int("logxor", a)?;
-    }
-    Ok(Sexp::Int(acc))
+fn bi_logxor2(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--logxor2", args, 2, Some(2))?;
+    Ok(Sexp::Int(as_int("nelisp--logxor2", &args[0])?
+                 ^ as_int("nelisp--logxor2", &args[1])?))
 }
 
 fn bi_lognot(args: &[Sexp]) -> Result<Sexp, EvalError> {
