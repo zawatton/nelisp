@@ -83,12 +83,16 @@ pub fn install_builtins(env: &mut Env) {
         "make-hash-table", "hash-table-p", "hash-table-count",
         "puthash", "gethash", "remhash", "clrhash", "maphash",
         "hash-table-keys", "hash-table-values",
-        // char-table / bool-vector (Track F)
-        "make-char-table", "char-table-p", "char-table-subtype",
-        "char-table-parent", "set-char-table-parent",
-        "set-char-table-range", "char-table-extra-slot",
-        "set-char-table-extra-slot",
-        "make-bool-vector", "bool-vector-p", "bool-vector",
+        // Rust-min (2026-05-06 batch 5b): char-table family was
+        // unused in NeLisp lisp/ + test/, so the user-facing
+        // builtins (make-char-table, char-table-p, char-table-
+        // subtype, char-table-parent, set-char-table-parent,
+        // set-char-table-range, char-table-extra-slot, set-char-
+        // table-extra-slot) were retired wholesale.  bool-vector /
+        // bool-vector-p / make-bool-vector migrated to elisp
+        // (lisp/nelisp-stdlib-plist-str.el) using plain vectors;
+        // the `Sexp::BoolVector' variant is kept alive only for
+        // legacy image-format decode.
         // file helpers
         "expand-file-name", "file-truename",
         // file I/O (Doc 47 Stage 8b — multi-file load chain)
@@ -258,7 +262,6 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "intern-soft" => bi_intern_soft(args),
         "make-symbol" => bi_make_symbol(args),
         "gensym" => bi_gensym(args),
-        "copy-sequence" => bi_copy_sequence(args),
         "make-string" => bi_make_string(args),
         "char-to-string" => bi_char_to_string(args),
         "string" => bi_string_from_chars(args),
@@ -288,18 +291,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "maphash" => bi_maphash(args, env),
         "hash-table-keys" => bi_hash_table_keys(args),
         "hash-table-values" => bi_hash_table_values(args),
-        // ---- char-table / bool-vector (Track F) ----
-        "make-char-table" => bi_make_char_table(args),
-        "char-table-p" => bi_predicate(args, |v| matches!(v, Sexp::CharTable(_))),
-        "char-table-subtype" => bi_char_table_subtype(args),
-        "char-table-parent" => bi_char_table_parent(args),
-        "set-char-table-parent" => bi_set_char_table_parent(args),
-        "set-char-table-range" => bi_set_char_table_range(args),
-        "char-table-extra-slot" => bi_char_table_extra_slot(args),
-        "set-char-table-extra-slot" => bi_set_char_table_extra_slot(args),
-        "make-bool-vector" => bi_make_bool_vector(args),
-        "bool-vector-p" => bi_predicate(args, |v| matches!(v, Sexp::BoolVector(_))),
-        "bool-vector" => bi_bool_vector(args),
+        // char-table / bool-vector dispatch retired (Rust-min
+        // 2026-05-06 batch 5b).  See file-top commentary.
         "funcall" => bi_funcall(args, env),
         "apply" => bi_apply(args, env),
         "eval" => bi_eval(args, env),
@@ -1711,121 +1704,14 @@ fn bi_hash_table_values(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(out)
 }
 
-// ---------- char-table / bool-vector (Track F) -----------------------
+// char-table / bool-vector user-facing builtins retired (Rust-min
+// 2026-05-06 batch 5b).  See file-top commentary; surface migrated
+// to elisp.  `Sexp::CharTable' / `Sexp::BoolVector' variants kept
+// alive for image-format backward-compat decode only — the helpers
+// below let `bi_aref' / `bi_aset' continue to read/write any
+// legacy-decoded instances even though no new ones are minted.
 
-fn bi_make_char_table(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("make-char-table", args, 1, Some(2))?;
-    let subtype = args[0].clone();
-    let init = args.get(1).cloned().unwrap_or(Sexp::Nil);
-    Ok(Sexp::char_table(subtype, init))
-}
-
-fn bi_char_table_subtype(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("char-table-subtype", args, 1, Some(1))?;
-    match &args[0] {
-        Sexp::CharTable(rc) => Ok(rc.borrow().subtype.clone()),
-        other => Err(EvalError::WrongType {
-            expected: "char-table-p".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
-fn bi_char_table_parent(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("char-table-parent", args, 1, Some(1))?;
-    match &args[0] {
-        Sexp::CharTable(rc) => Ok(match &rc.borrow().parent {
-            Some(p) => Sexp::CharTable(p.clone()),
-            None => Sexp::Nil,
-        }),
-        other => Err(EvalError::WrongType {
-            expected: "char-table-p".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
-fn bi_set_char_table_parent(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("set-char-table-parent", args, 2, Some(2))?;
-    let parent_rc = match &args[1] {
-        Sexp::Nil => None,
-        Sexp::CharTable(rc) => Some(rc.clone()),
-        other => return Err(EvalError::WrongType {
-            expected: "char-table-p / nil".into(),
-            got: other.clone(),
-        }),
-    };
-    match &args[0] {
-        Sexp::CharTable(rc) => {
-            rc.borrow_mut().parent = parent_rc;
-            Ok(args[1].clone())
-        }
-        other => Err(EvalError::WrongType {
-            expected: "char-table-p".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
-fn bi_set_char_table_range(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    // (set-char-table-range TABLE RANGE VALUE)
-    //   RANGE: integer (single char), (FROM . TO) cons (inclusive),
-    //          or t (apply to default-val).
-    require_arity("set-char-table-range", args, 3, Some(3))?;
-    let val = args[2].clone();
-    let rc = match &args[0] {
-        Sexp::CharTable(rc) => rc.clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "char-table-p".into(),
-            got: other.clone(),
-        }),
-    };
-    match &args[1] {
-        Sexp::T => {
-            rc.borrow_mut().default_val = val;
-        }
-        Sexp::Int(c) => {
-            let mut inner = rc.borrow_mut();
-            char_table_set_one(&mut inner, *c, val);
-        }
-        Sexp::Cons(car_rc, cdr_rc) => {
-            let from = match &*car_rc.borrow() {
-                Sexp::Int(n) => *n,
-                other => return Err(EvalError::WrongType {
-                    expected: "integer (range from)".into(),
-                    got: other.clone(),
-                }),
-            };
-            let to = match &*cdr_rc.borrow() {
-                Sexp::Int(n) => *n,
-                other => return Err(EvalError::WrongType {
-                    expected: "integer (range to)".into(),
-                    got: other.clone(),
-                }),
-            };
-            // Cap range size to avoid runaway allocation; substrate
-            // syntax-tables operate on ASCII / latin-1 ranges.
-            const MAX_RANGE: i64 = 4096;
-            if to - from > MAX_RANGE {
-                return Err(EvalError::Internal(format!(
-                    "set-char-table-range: range too large ({} chars)",
-                    to - from + 1
-                )));
-            }
-            let mut inner = rc.borrow_mut();
-            for c in from..=to {
-                char_table_set_one(&mut inner, c, val.clone());
-            }
-        }
-        other => return Err(EvalError::WrongType {
-            expected: "integer / (FROM . TO) cons / t".into(),
-            got: other.clone(),
-        }),
-    }
-    Ok(args[2].clone())
-}
-
-fn char_table_set_one(inner: &mut CharTableInner, c: i64, v: Sexp) {
+fn char_table_set_one(inner: &mut crate::reader::sexp::CharTableInner, c: i64, v: Sexp) {
     for entry in inner.entries.iter_mut() {
         if entry.0 == c {
             entry.1 = v;
@@ -1835,10 +1721,7 @@ fn char_table_set_one(inner: &mut CharTableInner, c: i64, v: Sexp) {
     inner.entries.push((c, v));
 }
 
-/// Look up CHAR in a char-table, walking the parent chain on miss.
-/// Returns the default value (which may itself fall through to the
-/// parent's default) if no slot matches.
-fn char_table_get(inner: &Rc<RefCell<CharTableInner>>, c: i64) -> Sexp {
+fn char_table_get(inner: &Rc<RefCell<crate::reader::sexp::CharTableInner>>, c: i64) -> Sexp {
     let borrowed = inner.borrow();
     for (k, v) in borrowed.entries.iter() {
         if *k == c {
@@ -1849,59 +1732,6 @@ fn char_table_get(inner: &Rc<RefCell<CharTableInner>>, c: i64) -> Sexp {
         return char_table_get(parent, c);
     }
     borrowed.default_val.clone()
-}
-
-fn bi_char_table_extra_slot(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("char-table-extra-slot", args, 2, Some(2))?;
-    let slot = as_int("char-table-extra-slot", &args[1])? as usize;
-    match &args[0] {
-        Sexp::CharTable(rc) => {
-            let inner = rc.borrow();
-            Ok(inner.extra.get(slot).cloned().unwrap_or(Sexp::Nil))
-        }
-        other => Err(EvalError::WrongType {
-            expected: "char-table-p".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
-fn bi_set_char_table_extra_slot(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("set-char-table-extra-slot", args, 3, Some(3))?;
-    let slot = as_int("set-char-table-extra-slot", &args[1])? as usize;
-    match &args[0] {
-        Sexp::CharTable(rc) => {
-            let mut inner = rc.borrow_mut();
-            while inner.extra.len() <= slot {
-                inner.extra.push(Sexp::Nil);
-            }
-            inner.extra[slot] = args[2].clone();
-            Ok(args[2].clone())
-        }
-        other => Err(EvalError::WrongType {
-            expected: "char-table-p".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
-fn bi_make_bool_vector(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("make-bool-vector", args, 2, Some(2))?;
-    let len = as_int("make-bool-vector", &args[0])?;
-    if len < 0 {
-        return Err(EvalError::ArithError(format!(
-            "make-bool-vector: negative length {}",
-            len
-        )));
-    }
-    let init = is_truthy(&args[1]);
-    Ok(Sexp::bool_vector(len as usize, init))
-}
-
-fn bi_bool_vector(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    // (bool-vector &rest ARGS) — variadic constructor.
-    let bits: Vec<bool> = args.iter().map(is_truthy).collect();
-    Ok(Sexp::BoolVector(Rc::new(RefCell::new(bits))))
 }
 
 /// Compare two hash-table keys per TEST.  Currently structural for

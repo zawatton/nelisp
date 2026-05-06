@@ -228,6 +228,59 @@ NEEDLE longer than HAYSTACK returns nil."
               (setq i (1+ i)))))
         found)))))
 
+;; Rust-min (2026-05-06 batch 5b): bool-vector / char-table.
+;;
+;; bool-vector: prior Rust impl had a dedicated `Sexp::BoolVector'
+;; variant backing.  The user-facing surface (`bool-vector-p',
+;; constructors) is migrated to plain elisp using regular vectors
+;; with t/nil entries.  The internal Rust variant is kept ALIVE
+;; only for image-format backward-compat (= legacy v2 images
+;; carrying TAG_BOOL_VECTOR still decode); the elisp surface no
+;; longer creates new instances of it, so practical usage routes
+;; entirely through `Sexp::Vector'.
+;;
+;; char-table: was unused throughout NeLisp's lisp/ + test/ corpus
+;; and in nelisp-emacs's elisp side.  The Rust dispatch +
+;; implementations were retired wholesale.  When a future caller
+;; needs char-table semantics, it can be added back as an elisp
+;; tagged-plist representation; until then the symbols are
+;; void-function so callers fail fast instead of silently no-op.
+
+(defun make-bool-vector (length init)
+  "Return a vector of LENGTH bool entries initialised to (and INIT t).
+Implementation note: bool-vector is a regular vector here; see the
+file commentary for migration history.  Pre-converts INIT to a
+proper t/nil so that downstream `bool-vector-p' checks pass."
+  (make-vector length (and init t)))
+
+(defun bool-vector (&rest args)
+  "Variadic constructor: each ARG is coerced to t/nil and stored in a
+fresh vector."
+  (let* ((n (length args))
+         (out (make-vector n nil))
+         (i 0)
+         (tail args))
+    (while tail
+      (aset out i (and (car tail) t))
+      (setq i (1+ i))
+      (setq tail (cdr tail)))
+    out))
+
+(defun bool-vector-p (object)
+  "Return non-nil when OBJECT is a vector all of whose elements are
+t or nil (= bool-vector contract).  An empty vector counts as a
+bool-vector."
+  (and (vectorp object)
+       (let ((i 0)
+             (n (length object))
+             (ok t))
+         (while (and ok (< i n))
+           (let ((v (aref object i)))
+             (unless (or (eq v t) (null v))
+               (setq ok nil)))
+           (setq i (1+ i)))
+         ok)))
+
 ;; Rust-min (2026-05-06 batch 5a): string-to-number — pure-elisp parse
 ;; (= no new Rust primitives required, since NeLisp's mixed-mode
 ;; arithmetic already promotes int op float → float).
