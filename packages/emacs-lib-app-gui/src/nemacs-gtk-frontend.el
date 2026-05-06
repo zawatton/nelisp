@@ -4890,12 +4890,45 @@ frame's `--paint-mode-line')."
                (nemacs-gtk--inline-mode-line-text bn cols))))))
         (setq i (1+ i)))))))
 
+(defvar nemacs-gtk--line-count-cache nil
+  "Phase 3.J — `(BUFFER-NAME LEN COUNT)' cache for
+`--buffer-line-count'.  LEN = `(length (buffer-string))' at cache
+time; mismatch on next read forces a fresh walk.  Lets us skip
+re-walking the buffer per repaint without tracking every mutation.")
+
+(defun nemacs-gtk--invalidate-line-count-cache ()
+  "Phase 3.J — drop the cached line count.  Optional fast-path call;
+the natural buffer-length check in `--buffer-line-count' also
+forces a refresh whenever the buffer grew/shrank."
+  (setq nemacs-gtk--line-count-cache nil))
+
 (defun nemacs-gtk--buffer-line-count ()
   "Return the number of lines in the active buffer (= 1 + number
-of newlines, counting the trailing-no-newline line)."
-  (let* ((content
-          (with-current-buffer (nemacs-gtk--active-buffer) (buffer-string))))
-    (length (split-string content "\n"))))
+of newlines).  Phase 3.J: cached, with `(point-max)' acting as
+the validity key — when an edit shifts point-max the cache
+auto-invalidates on next access.  Crucially this avoids calling
+`(buffer-string)' on cache-hit (= the previous version did, which
+was the whole point-max walks-the-buffer cost we wanted to skip)."
+  (let* ((bn nemacs-gtk--active-buffer-name)
+         (pmax (with-current-buffer (nemacs-gtk--active-buffer)
+                 (nelisp-ec-point-max)))
+         (cached nemacs-gtk--line-count-cache))
+    (cond
+     ((and (consp cached)
+           (string= bn (nth 0 cached))
+           (= pmax (nth 1 cached)))
+      (nth 2 cached))
+     (t
+      (let* ((content (with-current-buffer (nemacs-gtk--active-buffer)
+                        (buffer-string)))
+             (len (length content))
+             (n 1) (i 0))
+        (while (< i len)
+          (when (eq (aref content i) ?\n)
+            (setq n (1+ n)))
+          (setq i (1+ i)))
+        (setq nemacs-gtk--line-count-cache (list bn pmax n))
+        n)))))
 
 (defun nemacs-gtk--clamp-scroll-offset ()
   "Clamp `nemacs-gtk--scroll-offset' to [0, line-count - 1] so the
@@ -5973,6 +6006,13 @@ viewport."
                   (nelisp-ec-insert (string event)))
                  (t
                   (nelisp-ec-insert (string event)))))
+              ;; Phase 3.J: invalidate line-count cache; skip
+              ;; ensure-cursor-visible on the common case (= no
+              ;; newline) since point only advances 1 column on the
+              ;; same row, so scroll cannot change.  When the user
+              ;; types `\n' the post-step `--ensure-cursor-visible'
+              ;; below covers it.
+              (nemacs-gtk--invalidate-line-count-cache)
               (when (boundp 'emacs-command-loop--last-command)
                 (setq emacs-command-loop--last-command
                       'self-insert-command)))
@@ -6016,7 +6056,15 @@ viewport."
                          (not (eq emacs-command-loop--last-command
                                   'nemacs-gtk-move-to-window-line-top-bottom)))
                 (setq nemacs-gtk--m-r-state 0)))
-            (nemacs-gtk--ensure-cursor-visible)))))))))))
+            ;; Phase 3.J — skip ensure-cursor-visible on the common
+            ;; case of self-inserting a non-newline char: point only
+            ;; advances 1 column on the same row, so scroll-offset
+            ;; cannot change.  Calling ensure-cursor-visible here
+            ;; would walk the whole buffer-string twice for nothing.
+            (unless (and (eq binding 'self-insert-command)
+                         (integerp event)
+                         (not (eq event ?\n)))
+              (nemacs-gtk--ensure-cursor-visible))))))))))))
 
 
 ;;;; --- clipboard glue ------------------------------------------------------
