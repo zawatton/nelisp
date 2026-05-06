@@ -5612,49 +5612,75 @@ to keep frame rate sane."
         (format "paint-extras-mode: %s"
                 (if nemacs-gtk--paint-extras-enabled "on" "off"))))
 
+(defvar nemacs-gtk--cache-synced-buffer nil
+  "Phase 3.N — name of the buffer whose content is currently mirrored
+in the Rust-side cache via `nelisp-gtk-buffer-set'.  When this
+matches the active buffer + the cache hasn't been invalidated, the
+cached paint path can run without re-sending the buffer text.")
+
+(defun nemacs-gtk--invalidate-buffer-cache ()
+  "Phase 3.N — drop the Rust-side cache marker so the next paint
+re-sends the full buffer content.  Called when we can't reliably
+emit an incremental edit (= multi-char yank, narrow toggle, mode
+switch with side effects, etc.)."
+  (setq nemacs-gtk--cache-synced-buffer nil))
+
 (defun nemacs-gtk--repaint-fast-eligible-p ()
-  "Phase 3.F — t when the fast-path Rust extern can serve this paint:
-single-window mode, extras off, and the extern is loaded.  Multi-
-window splits or extras-on fall back to the per-step elisp path."
-  (and (fboundp 'nelisp-gtk-paint-frame-simple)
+  "Phase 3.F+N — t when the fast cached-paint path can serve this
+paint: single-window mode, extras off, and the cached extern is
+loaded.  Multi-window splits or extras-on fall back to the per-
+step elisp path."
+  (and (fboundp 'nelisp-gtk-paint-frame-cached)
+       (fboundp 'nelisp-gtk-buffer-set)
        (null nemacs-gtk--windows)
        (not nemacs-gtk--paint-extras-enabled)))
 
+(defun nemacs-gtk--echo-area-text ()
+  "Phase 3.N — compute the echo-area text for the current paint."
+  (cond
+   (nemacs-gtk--minibuffer-active
+    (concat nemacs-gtk--minibuffer-prompt
+            nemacs-gtk--minibuffer-input
+            "_"
+            (nemacs-gtk--minibuffer-candidate-suffix)))
+   (nemacs-gtk--isearch-active
+    (format "I-search%s%s: %s_"
+            (if (eq nemacs-gtk--isearch-direction 'backward)
+                " backward" "")
+            (if nemacs-gtk--isearch-failing " (failing)" "")
+            nemacs-gtk--isearch-query))
+   ((string-empty-p nemacs-gtk--last-key-text)
+    "(press any key)")
+   (t (format "Last key: %s" nemacs-gtk--last-key-text))))
+
+(defun nemacs-gtk--sync-buffer-cache-if-needed ()
+  "Phase 3.N — if the Rust-side cache isn't in sync with the active
+buffer (= different buffer name or marker dropped by an explicit
+invalidation), refresh it via `nelisp-gtk-buffer-set'.  Otherwise
+no-op (= the cache is already current via incremental edits)."
+  (let ((bn nemacs-gtk--active-buffer-name))
+    (unless (and (stringp nemacs-gtk--cache-synced-buffer)
+                 (string= bn nemacs-gtk--cache-synced-buffer))
+      (let ((content (with-current-buffer (nemacs-gtk--active-buffer)
+                       (buffer-string))))
+        (nelisp-gtk-buffer-set content)
+        (setq nemacs-gtk--cache-synced-buffer bn)))))
+
 (defun nemacs-gtk--repaint-fast ()
-  "Phase 3.F+L — one-shot Rust paint.  Phase 3.L: Rust now also
-auto-adjusts scroll-offset to keep the cursor visible + returns the
-adjusted value, so the elisp side can drop `--ensure-cursor-visible'
-(= which walked the buffer per keystroke) from the dispatch path."
+  "Phase 3.F+L+N — one-shot Rust paint using the Rust-side buffer
+cache.  Refreshes the cache only when the active buffer changed;
+otherwise paints from the cache, which incremental edit calls
+keep in sync.  Eliminates the per-keystroke buffer-string copy."
+  (nemacs-gtk--sync-buffer-cache-if-needed)
   (let* ((buf (nemacs-gtk--active-buffer))
-         (content (with-current-buffer buf (buffer-string)))
          (point (with-current-buffer buf (nelisp-ec-point)))
          (mode-line (nemacs-gtk--mode-line-text))
-         (echo (cond
-                (nemacs-gtk--minibuffer-active
-                 (concat nemacs-gtk--minibuffer-prompt
-                         nemacs-gtk--minibuffer-input
-                         "_"
-                         (nemacs-gtk--minibuffer-candidate-suffix)))
-                (nemacs-gtk--isearch-active
-                 (format "I-search%s%s: %s_"
-                         (if (eq nemacs-gtk--isearch-direction 'backward)
-                             " backward" "")
-                         (if nemacs-gtk--isearch-failing
-                             " (failing)" "")
-                         nemacs-gtk--isearch-query))
-                ((string-empty-p nemacs-gtk--last-key-text)
-                 "(press any key)")
-                (t (format "Last key: %s" nemacs-gtk--last-key-text))))
-         (new-scroll
-          (nelisp-gtk-paint-frame-simple
-           nemacs-gtk--rows
-           nemacs-gtk--cols
-           nemacs-gtk--buffer-area-end
-           nemacs-gtk--scroll-offset
-           content
-           point
-           mode-line
-           echo)))
+         (echo (nemacs-gtk--echo-area-text))
+         (new-scroll (nelisp-gtk-paint-frame-cached
+                      nemacs-gtk--scroll-offset
+                      point
+                      mode-line
+                      echo)))
     (when (integerp new-scroll)
       (setq nemacs-gtk--scroll-offset new-scroll))))
 
@@ -6015,27 +6041,51 @@ viewport."
              ((and (eq binding 'self-insert-command)
                    (integerp event)
                    (>= event 32) (< event #x110000))
-              (with-current-buffer (nemacs-gtk--active-buffer)
-                (cond
-                 ((and (boundp 'overwrite-mode) overwrite-mode
-                       (< (nelisp-ec-point) (nelisp-ec-point-max))
-                       (not (eq (emacs-edit--char-at
-                                 (nelisp-ec-point)) ?\n)))
-                  (nelisp-ec-delete-region
-                   (nelisp-ec-point) (1+ (nelisp-ec-point)))
-                  (nelisp-ec-insert (string event)))
-                 (t
-                  (nelisp-ec-insert (string event)))))
-              ;; Phase 3.J: invalidate line-count cache; skip
-              ;; ensure-cursor-visible on the common case (= no
-              ;; newline) since point only advances 1 column on the
-              ;; same row, so scroll cannot change.  When the user
-              ;; types `\n' the post-step `--ensure-cursor-visible'
-              ;; below covers it.
+              (let ((p-before
+                     (with-current-buffer (nemacs-gtk--active-buffer)
+                       (nelisp-ec-point))))
+                (with-current-buffer (nemacs-gtk--active-buffer)
+                  (cond
+                   ((and (boundp 'overwrite-mode) overwrite-mode
+                         (< (nelisp-ec-point) (nelisp-ec-point-max))
+                         (not (eq (emacs-edit--char-at
+                                   (nelisp-ec-point)) ?\n)))
+                    (nelisp-ec-delete-region
+                     (nelisp-ec-point) (1+ (nelisp-ec-point)))
+                    (nelisp-ec-insert (string event)))
+                   (t
+                    (nelisp-ec-insert (string event)))))
+                ;; Phase 3.N — emit incremental edit to the Rust
+                ;; cache so paint-frame-cached doesn't need to
+                ;; re-receive the whole buffer.
+                (when (and nemacs-gtk--cache-synced-buffer
+                           (fboundp 'nelisp-gtk-buffer-edit))
+                  (cond
+                   ((and (boundp 'overwrite-mode) overwrite-mode)
+                    ;; overwrite replaces 1 char with 1 char.
+                    (nelisp-gtk-buffer-edit p-before 1 (string event)))
+                   (t
+                    (nelisp-gtk-buffer-edit p-before 0 (string event))))))
               (nemacs-gtk--invalidate-line-count-cache)
               (when (boundp 'emacs-command-loop--last-command)
                 (setq emacs-command-loop--last-command
                       'self-insert-command)))
+             ;; --- inline delete-backward-char ---
+             ((eq binding 'delete-backward-char)
+              (let* ((p-before (with-current-buffer (nemacs-gtk--active-buffer)
+                                 (nelisp-ec-point)))
+                     (pmin (with-current-buffer (nemacs-gtk--active-buffer)
+                             (nelisp-ec-point-min))))
+                (when (> p-before pmin)
+                  (with-current-buffer (nemacs-gtk--active-buffer)
+                    (nelisp-ec-delete-region (1- p-before) p-before))
+                  (when (and nemacs-gtk--cache-synced-buffer
+                             (fboundp 'nelisp-gtk-buffer-edit))
+                    (nelisp-gtk-buffer-edit (1- p-before) 1 ""))))
+              (nemacs-gtk--invalidate-line-count-cache)
+              (when (boundp 'emacs-command-loop--last-command)
+                (setq emacs-command-loop--last-command
+                      'delete-backward-char)))
              ;; --- direct funcall for any fboundp command ---
              ((and (symbolp binding) (fboundp binding))
               (with-current-buffer (nemacs-gtk--active-buffer)
@@ -6047,6 +6097,23 @@ viewport."
                                  (condition-case _
                                      (error-message-string err)
                                    (error (format "%S" err))))))))
+              ;; Phase 3.N — funcall might or might not have changed
+              ;; the buffer.  Cheap heuristic: invalidate the cache
+              ;; for ANY non-motion command so the next paint refreshes.
+              (unless (memq binding '(forward-char backward-char
+                                      forward-word backward-word
+                                      next-line previous-line
+                                      beginning-of-line end-of-line
+                                      beginning-of-buffer end-of-buffer
+                                      nemacs-gtk-page-up nemacs-gtk-page-down
+                                      nemacs-gtk-meta-beginning-of-buffer
+                                      nemacs-gtk-meta-end-of-buffer
+                                      nemacs-gtk-set-mark-command
+                                      nemacs-gtk-recenter
+                                      keyboard-quit
+                                      nemacs-gtk-keyboard-quit))
+                (nemacs-gtk--invalidate-buffer-cache))
+              (nemacs-gtk--invalidate-line-count-cache)
               (when (boundp 'emacs-command-loop--last-command)
                 (setq emacs-command-loop--last-command binding)))
              ;; --- fallback: substrate command-loop (= rare) ---
@@ -6054,7 +6121,10 @@ viewport."
               (with-current-buffer (nemacs-gtk--active-buffer)
                 (apply #'emacs-command-loop-feed-events
                        (append accumulated nil))
-                (emacs-command-loop-step))))
+                (emacs-command-loop-step))
+              ;; Phase 3.N — substrate command-loop may have done
+              ;; anything; conservatively invalidate the cache.
+              (nemacs-gtk--invalidate-buffer-cache)))
             ;; The original `with-current-buffer' wrapped both the
             ;; feed+step + the post-step bookkeeping; we now run the
             ;; bookkeeping unconditionally on whichever path fired.
