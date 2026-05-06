@@ -218,6 +218,7 @@ SGR-ready attribute alist consumable by `emacs-tui-backend' (= Phase
   (glyphs    nil)           ;; vector of emacs-redisplay-glyph
   (used      0)             ;; integer = active glyph count
   (hash      0)             ;; row hash for diff propagation
+  (pos-delta 0)             ;; Phase 3.B.6 lazy buf-pos shift (skip path)
   (start-pos nil)           ;; buffer position at row start
   (end-pos   nil)           ;; buffer position at row end (exclusive)
   (continuation-p nil))     ;; non-nil if this row continues the previous
@@ -232,7 +233,8 @@ SGR-ready attribute alist consumable by `emacs-tui-backend' (= Phase
   (window    nil)           ;; owning emacs-window leaf
   (dirty-set nil)           ;; bool-vector of dirty row indices
   (cursor    nil)           ;; cons (ROW . COL) or nil
-  (fingerprint nil))        ;; Phase 3.B.5 rebuild short-circuit key
+  (fingerprint nil)         ;; Phase 3.B.5 rebuild short-circuit key
+  (line-cache nil))         ;; Phase 3.B.6 per-row (LINE . OVLY-FP) input cache
 
 ;;; Driver handle
 
@@ -782,7 +784,8 @@ mutation under the same face name)."
      :rows rows :width width :height height
      :window window
      :dirty-set (make-bool-vector height t)
-     :cursor nil)))
+     :cursor nil
+     :line-cache (make-vector height nil))))
 
 ;;; A. driver lifecycle
 
@@ -1257,7 +1260,7 @@ the overlay anchor position."
 
 (defun emacs-redisplay--fill-row (row glyph-vec width buffer-pos end-pos)
   "Place GLYPH-VEC into ROW, padding to WIDTH with empty glyphs.
-Updates ROW's used / hash / start-pos / end-pos accordingly."
+Updates ROW's used / hash / start-pos / end-pos and resets pos-delta."
   (let* ((vec (emacs-redisplay-glyph-row-glyphs row))
          (n (length glyph-vec)))
     (dotimes (i width)
@@ -1269,6 +1272,7 @@ Updates ROW's used / hash / start-pos / end-pos accordingly."
     (setf (emacs-redisplay-glyph-row-used row) n
           (emacs-redisplay-glyph-row-start-pos row) buffer-pos
           (emacs-redisplay-glyph-row-end-pos row) end-pos
+          (emacs-redisplay-glyph-row-pos-delta row) 0
           (emacs-redisplay-glyph-row-hash row)
           (emacs-redisplay--row-hash vec))))
 
@@ -1281,6 +1285,7 @@ Updates ROW's used / hash / start-pos / end-pos accordingly."
     (setf (emacs-redisplay-glyph-row-used row) 0
           (emacs-redisplay-glyph-row-start-pos row) nil
           (emacs-redisplay-glyph-row-end-pos row) nil
+          (emacs-redisplay-glyph-row-pos-delta row) 0
           (emacs-redisplay-glyph-row-hash row) 0)))
 
 (defun emacs-redisplay--split-into-lines (text)
@@ -1383,9 +1388,88 @@ text-properties / face registry) must invoke
        handle window matrix old-matrix fresh-matrix-p
        buffer width height new-fp)))))
 
+(defun emacs-redisplay--overlays-in-row-range (overlays row-pos row-end)
+  "Filter OVERLAYS to those whose range intersects [ROW-POS, ROW-END)."
+  (when overlays
+    (cl-loop for ov in overlays
+             for bounds = (emacs-redisplay--ovly-bounds ov)
+             when (and bounds
+                       (< (car bounds) row-end)
+                       (> (cdr bounds) row-pos))
+             collect ov)))
+
+(defun emacs-redisplay--overlay-row-fingerprint (overlays row-pos row-end)
+  "Return a stable fingerprint of overlays affecting [ROW-POS, ROW-END).
+Returns nil when no overlay intersects the range."
+  (let ((subset (emacs-redisplay--overlays-in-row-range
+                 overlays row-pos row-end)))
+    (when subset
+      (mapcar (lambda (ov)
+                (list ov
+                      (emacs-redisplay--ovly-bounds ov)
+                      (emacs-redisplay--ovly-prop ov 'face)
+                      (emacs-redisplay--ovly-prop ov 'before-string)
+                      (emacs-redisplay--ovly-prop ov 'after-string)
+                      (emacs-redisplay--ovly-prop ov 'invisible)
+                      (emacs-redisplay--ovly-prop ov 'priority)))
+              subset))))
+
+(defun emacs-redisplay--textprop-row-fingerprint (buffer row-pos row-end)
+  "Return a stable fingerprint of rendering-relevant text-props in
+[ROW-POS, ROW-END).  Captures only `face' / `display' / `invisible'
+intervals (= the props that affect glyph layout).  Uses ROW-POS-relative
+offsets so position-shift edits don't invalidate unrelated rows.
+Returns nil when no relevant interval intersects the range."
+  (when (and buffer (not (stringp buffer))
+             (boundp 'emacs-buffer--state))
+    (let ((ext (gethash buffer emacs-buffer--state))
+          (out nil))
+      (when ext
+        (dolist (cell (emacs-buffer--ext-text-props ext))
+          (let ((s (emacs-buffer--tp-start cell))
+                (e (emacs-buffer--tp-end cell))
+                (p (emacs-buffer--tp-plist cell)))
+            (when (and (< s row-end) (> e row-pos)
+                       (or (plist-member p 'face)
+                           (plist-member p 'display)
+                           (plist-member p 'invisible)))
+              (push (list (- (max s row-pos) row-pos)
+                          (- (min e row-end) row-pos)
+                          (plist-get p 'face)
+                          (plist-get p 'display)
+                          (plist-get p 'invisible))
+                    out)))))
+      out)))
+
+(defun emacs-redisplay--shift-row-positions (row delta new-start new-end)
+  "Reuse ROW's glyph contents but update its position bookkeeping.
+Sets `start-pos' / `end-pos' to NEW-START / NEW-END.  DELTA is added
+to ROW's `pos-delta' slot — glyphs' `:buf-pos' values stay numerically
+stale but are read via the `effective-buf-pos' helper that re-applies
+the row's accumulated delta lazily.  This is O(1) per row instead of
+O(used cells)."
+  (setf (emacs-redisplay-glyph-row-start-pos row) new-start
+        (emacs-redisplay-glyph-row-end-pos   row) new-end)
+  (unless (zerop delta)
+    (cl-incf (emacs-redisplay-glyph-row-pos-delta row) delta)))
+
+(defun emacs-redisplay--effective-buf-pos (row glyph)
+  "Return GLYPH's effective buffer position within ROW.
+Adds ROW's `pos-delta' to the glyph's stored `:buf-pos'.  Returns nil
+when the glyph carries no buffer position (e.g., overlay-string fill
+or padding glyphs)."
+  (let ((bp (emacs-redisplay-glyph-buf-pos glyph)))
+    (and bp (+ bp (emacs-redisplay-glyph-row-pos-delta row)))))
+
 (defun emacs-redisplay--redisplay-window-rebuild
     (handle window matrix _old-matrix fresh-matrix-p buffer width height new-fp)
-  "Rebuild path of `emacs-redisplay-redisplay-window' (slow path)."
+  "Rebuild path of `emacs-redisplay-redisplay-window' (slow path).
+
+Phase 3.B.6 row-incremental: walks the line list and per-row decides
+whether to reuse the cached glyphs (= line content + overlay
+fingerprint match) or to do a full layout.  The cache lives in
+`emacs-redisplay-glyph-matrix-line-cache' as a vector parallel to
+rows, each entry a cons (LINE-STRING . OVERLAY-FP) or nil."
   (let* ((old-hashes
           (and (not fresh-matrix-p)
                (let* ((old-rows (emacs-redisplay-glyph-matrix-rows matrix))
@@ -1399,14 +1483,12 @@ text-properties / face registry) must invoke
                   ((null buffer) "")
                   ((stringp buffer) buffer)
                   (t (emacs-redisplay--buffer-string buffer))))
-         ;; Compute the substring beginning at window-start (1-based).
          (visible
           (cond
            ((stringp text)
             (substring text (min (max 0 (1- start)) (length text))))
            (t "")))
          (lines (emacs-redisplay--split-into-lines visible))
-         ;; Overlay scan for the visible region (when buffer-backed).
          (visible-end (+ start (length visible)))
          (overlays (and (not (stringp buffer))
                         (emacs-redisplay--overlays-in
@@ -1415,42 +1497,85 @@ text-properties / face registry) must invoke
          (row-idx 0)
          (rows (emacs-redisplay-glyph-matrix-rows matrix))
          (content-height (if (> height 1) (1- height) height))
-         (dirty (emacs-redisplay-glyph-matrix-dirty-set matrix)))
-    ;; Reset every cached row before re-fill (MVP = full per-window
-    ;; redraw; diff happens at the backend canvas level via row hash).
-    (dotimes (r height)
-      (emacs-redisplay--clear-row (aref rows r)))
-    ;; Walk the lines, laying each one into a row.
+         (dirty (emacs-redisplay-glyph-matrix-dirty-set matrix))
+         (cache (or (emacs-redisplay-glyph-matrix-line-cache matrix)
+                    (let ((v (make-vector height nil)))
+                      (setf (emacs-redisplay-glyph-matrix-line-cache matrix) v)
+                      v))))
+    ;; Walk lines per-row.  Skip lay-out + fill when (line, ovly-fp,
+    ;; tp-fp) all match the cached input.  Otherwise clear + lay-out
+    ;; + fill the row and refresh the cache entry.
     (while (and (< row-idx content-height) lines)
       (let* ((entry (pop lines))
              (line  (car entry))
              (nl-consumed (cdr entry))
-             (laid (emacs-redisplay--lay-out-line
-                    line pos buffer overlays width))
-             (gvec (car laid))
-             (next-pos (+ (cdr laid) nl-consumed)))
-        (emacs-redisplay--fill-row (aref rows row-idx) gvec width
-                                   pos next-pos)
-        (setq pos next-pos
+             (line-len (length line))
+             (line-end-pos (+ pos line-len))
+             (next-pos-est (+ line-end-pos nl-consumed))
+             (ovly-fp (emacs-redisplay--overlay-row-fingerprint
+                       overlays pos line-end-pos))
+             (tp-fp (emacs-redisplay--textprop-row-fingerprint
+                     buffer pos line-end-pos))
+             (cached (aref cache row-idx))
+             (row (aref rows row-idx)))
+        (cond
+         ((and (not fresh-matrix-p)
+               cached
+               (equal (car cached) line)
+               (equal (cadr cached) ovly-fp)
+               (equal (cddr cached) tp-fp))
+          (let* ((old-start (or (emacs-redisplay-glyph-row-start-pos row) pos))
+                 (delta (- pos old-start)))
+            (emacs-redisplay--shift-row-positions
+             row delta pos next-pos-est)))
+         (t
+          (emacs-redisplay--clear-row row)
+          (let* ((laid (emacs-redisplay--lay-out-line
+                        line pos buffer overlays width))
+                 (gvec (car laid))
+                 (next-pos (+ (cdr laid) nl-consumed)))
+            (emacs-redisplay--fill-row row gvec width pos next-pos)
+            (aset cache row-idx (cons line (cons ovly-fp tp-fp))))))
+        (setq pos next-pos-est
               row-idx (1+ row-idx))))
+    ;; Pad remaining content rows (= buffer shorter than window).
+    (while (< row-idx content-height)
+      (let ((row (aref rows row-idx)))
+        (unless (and (zerop (emacs-redisplay-glyph-row-used row))
+                     (null (aref cache row-idx)))
+          (emacs-redisplay--clear-row row)
+          (aset cache row-idx nil)))
+      (setq row-idx (1+ row-idx)))
+    ;; Mode-line row (Phase 3.B.6 cache: cons (TEXT . nil)).
     (when (> height 1)
-      (emacs-redisplay--fill-row
-       (aref rows (1- height))
-       (emacs-redisplay--mode-line-glyphs buffer width)
-       width nil nil))
-    ;; Mark only changed rows dirty.  A fresh matrix starts fully dirty;
-    ;; subsequent redisplay passes use the row hash as the MVP diff key.
+      (let* ((row (aref rows (1- height)))
+             (format (and buffer (not (stringp buffer))
+                          (emacs-redisplay--mode-line-format buffer)))
+             (text (and buffer (not (stringp buffer))
+                        (emacs-redisplay--mode-line-format-to-string
+                         format buffer)))
+             (cached (aref cache (1- height))))
+        (cond
+         ((and (not fresh-matrix-p) cached
+               (equal (car cached) text)
+               (null (cdr cached)))
+          ;; Skip — mode-line text unchanged.
+          nil)
+         (t
+          (emacs-redisplay--clear-row row)
+          (emacs-redisplay--fill-row
+           row (emacs-redisplay--mode-line-glyphs buffer width)
+           width nil nil)
+          (aset cache (1- height) (cons text nil))))))
+    ;; Diff dirty bits against captured old hashes.
     (dotimes (r height)
       (aset dirty r
             (or fresh-matrix-p
                 (/= (aref old-hashes r)
-                    (emacs-redisplay-glyph-row-hash
-                     (aref rows r))))))
-    ;; Compute cursor (window-point relative to window-start).
+                    (emacs-redisplay-glyph-row-hash (aref rows r))))))
     (let* ((point (or (emacs-window-point window) start))
            (cursor (emacs-redisplay--cursor-for-point matrix point)))
       (setf (emacs-redisplay-glyph-matrix-cursor matrix) cursor))
-    ;; Stamp fingerprint so the next call can short-circuit.
     (setf (emacs-redisplay-glyph-matrix-fingerprint matrix) new-fp)
     (emacs-redisplay--log "redisplay-window handle=%S w=%S %dx%d rows-painted=%d"
                           (emacs-redisplay-handle-id handle)
@@ -1475,7 +1600,8 @@ text-properties / face registry) must invoke
               (catch 'col-done
                 (dotimes (i used)
                   (let* ((g (aref vec i))
-                         (bp (and g (emacs-redisplay-glyph-buf-pos g))))
+                         (bp (and g (emacs-redisplay--effective-buf-pos
+                                     row g))))
                     (when (and bp (>= bp point))
                       (setq col i)
                       (throw 'col-done nil))
