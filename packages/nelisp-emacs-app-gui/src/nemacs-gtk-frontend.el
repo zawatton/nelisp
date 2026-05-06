@@ -364,6 +364,10 @@ Idempotent — re-calling replaces the global map with a fresh one."
       ;; Phase 2.AS — M-! = shell-command, M-| = shell-command-on-region.
       (define-key esc-map (vector ?!) 'nemacs-gtk-shell-command)
       (define-key esc-map (vector ?|) 'nemacs-gtk-shell-command-on-region)
+      ;; Phase 2.AY — sexp navigation (C-M-f/b/k = [27 C-f/C-b/C-k]).
+      (define-key esc-map (vector ?\C-f) 'nemacs-gtk-forward-sexp)
+      (define-key esc-map (vector ?\C-b) 'nemacs-gtk-backward-sexp)
+      (define-key esc-map (vector ?\C-k) 'nemacs-gtk-kill-sexp)
       ;; Phase 2.X — `M-g g' = goto-line, `M-g M-g' aliased to same.
       (define-key meta-g-map (vector ?g)    'nemacs-gtk-goto-line)
       (define-key meta-g-map (vector ?\C-g) 'nemacs-gtk-goto-line)
@@ -2446,6 +2450,216 @@ ops update `--registers' before returning."
           (format "register: unknown op %S" op)))))
 
 
+;;;; --- sexp navigation (Phase 2.AY — C-M-f / C-M-b / C-M-k) --------------
+
+(defun nemacs-gtk--sexp-symbol-char-p (ch)
+  "Phase 2.AY — t when CH is part of a Lisp-style symbol token (=
+alnum + the standard symbol-constituent punctuation set)."
+  (or (and (>= ch ?a) (<= ch ?z))
+      (and (>= ch ?A) (<= ch ?Z))
+      (and (>= ch ?0) (<= ch ?9))
+      (memq ch '(?- ?_ ?: ?+ ?* ?/ ?< ?> ?= ?? ?! ?& ?~ ?@ ?. ?$ ?%))))
+
+(defun nemacs-gtk--sexp-skip-forward-ws (pmax)
+  "Advance point past whitespace + `;'-line-comments up to PMAX.
+Returns the new point (= the position of the next non-trivia char,
+or PMAX if EOB reached)."
+  (let ((p (nelisp-ec-point)))
+    (catch 'done
+      (while (< p pmax)
+        (let ((ch (emacs-edit--char-at p)))
+          (cond
+           ((memq ch '(?\s ?\t ?\n)) (setq p (1+ p)))
+           ((eq ch ?\;)
+            (while (and (< p pmax)
+                        (not (eq (emacs-edit--char-at p) ?\n)))
+              (setq p (1+ p))))
+           (t (throw 'done nil))))))
+    (nelisp-ec-goto-char (min p pmax))
+    (nelisp-ec-point)))
+
+(defun nemacs-gtk--sexp-skip-backward-ws (pmin)
+  "Step point backward over plain whitespace down to PMIN.  Comments
+are not skipped — backward comment recognition needs a line-walk
+the MVP scan doesn't justify."
+  (let ((p (nelisp-ec-point)))
+    (while (and (> p pmin)
+                (memq (emacs-edit--char-at (1- p)) '(?\s ?\t ?\n)))
+      (setq p (1- p)))
+    (nelisp-ec-goto-char (max p pmin))
+    (nelisp-ec-point)))
+
+(defun nemacs-gtk--scan-sexp-forward (pmax)
+  "Phase 2.AY — parse one balanced sexp forward from point, leaving
+point at its end + returning that position.  Returns nil + leaves
+point unchanged when the scan fails (= unmatched delimiter / EOB
+mid-string).  Recognises (), [], {}, \"...\" with backslash escapes,
+and bare symbol tokens.  Inside brackets, nested ()/[]/{} bump the
+depth count and \"...\" / `;'-comments are skipped over."
+  (let* ((start (nelisp-ec-point))
+         (ch (and (< start pmax) (emacs-edit--char-at start))))
+    (cond
+     ((null ch) nil)
+     ((memq ch '(?\( ?\[ ?\{))
+      (let* ((close (cdr (assq ch '((?\( . ?\)) (?\[ . ?\]) (?\{ . ?\})))))
+             (depth 1)
+             (p (1+ start))
+             (found nil))
+        (catch 'done
+          (while (< p pmax)
+            (let ((c (emacs-edit--char-at p)))
+              (cond
+               ((eq c ch) (setq depth (1+ depth)))
+               ((eq c close)
+                (setq depth (1- depth))
+                (when (zerop depth)
+                  (setq found (1+ p))
+                  (throw 'done nil)))
+               ((eq c ?\")
+                (setq p (1+ p))
+                (while (and (< p pmax)
+                            (not (eq (emacs-edit--char-at p) ?\")))
+                  (when (eq (emacs-edit--char-at p) ?\\)
+                    (setq p (1+ p)))
+                  (setq p (1+ p))))
+               ((eq c ?\;)
+                (while (and (< p pmax)
+                            (not (eq (emacs-edit--char-at p) ?\n)))
+                  (setq p (1+ p))))))
+            (setq p (1+ p))))
+        (cond
+         (found (nelisp-ec-goto-char found) found)
+         (t nil))))
+     ((eq ch ?\")
+      (let ((p (1+ start)) (found nil))
+        (catch 'done
+          (while (< p pmax)
+            (let ((c (emacs-edit--char-at p)))
+              (cond
+               ((eq c ?\\) (setq p (+ p 2)))
+               ((eq c ?\") (setq found (1+ p)) (throw 'done nil))
+               (t (setq p (1+ p)))))))
+        (cond
+         (found (nelisp-ec-goto-char found) found)
+         (t nil))))
+     ((nemacs-gtk--sexp-symbol-char-p ch)
+      (let ((p start))
+        (while (and (< p pmax)
+                    (nemacs-gtk--sexp-symbol-char-p
+                     (emacs-edit--char-at p)))
+          (setq p (1+ p)))
+        (nelisp-ec-goto-char p) p))
+     (t
+      ;; quote / unquote / sharp / etc. — step past 1 char so the next
+      ;; sexp starts on the form being prefixed.
+      (nelisp-ec-goto-char (1+ start)) (1+ start)))))
+
+(defun nemacs-gtk--scan-sexp-backward (pmin)
+  "Phase 2.AY — parse one balanced sexp backward from point, leaving
+point at its start + returning that position.  Returns nil on
+unmatched-delimiter scan failure.  Recognises ()/[]/{}, \"...\" and
+symbol tokens.  Comments / nested strings are not detected on the
+reverse pass — the MVP cost/value trade favours simplicity."
+  (let* ((end (nelisp-ec-point))
+         (ch (and (> end pmin) (emacs-edit--char-at (1- end)))))
+    (cond
+     ((null ch) nil)
+     ((memq ch '(?\) ?\] ?\}))
+      (let* ((open (cdr (assq ch '((?\) . ?\() (?\] . ?\[) (?\} . ?\{)))))
+             (depth 1)
+             (p (1- end))
+             (found nil))
+        (catch 'done
+          (while (> p pmin)
+            (setq p (1- p))
+            (let ((c (emacs-edit--char-at p)))
+              (cond
+               ((eq c ch) (setq depth (1+ depth)))
+               ((eq c open)
+                (setq depth (1- depth))
+                (when (zerop depth)
+                  (setq found p)
+                  (throw 'done nil)))))))
+        (cond
+         (found (nelisp-ec-goto-char found) found)
+         (t nil))))
+     ((eq ch ?\")
+      (let ((p (- end 2)) (found nil))
+        (catch 'done
+          (while (>= p pmin)
+            (let ((c (emacs-edit--char-at p)))
+              (cond
+               ((eq c ?\") (setq found p) (throw 'done nil))
+               (t (setq p (1- p)))))))
+        (cond
+         (found (nelisp-ec-goto-char found) found)
+         (t nil))))
+     ((nemacs-gtk--sexp-symbol-char-p ch)
+      (let ((p (1- end)))
+        (while (and (> p pmin)
+                    (nemacs-gtk--sexp-symbol-char-p
+                     (emacs-edit--char-at (1- p))))
+          (setq p (1- p)))
+        (nelisp-ec-goto-char p) p))
+     (t
+      (nelisp-ec-goto-char (1- end))
+      (1- end)))))
+
+(defun nemacs-gtk-forward-sexp ()
+  "Bound to `C-M-f' (= [27 ?\\C-f]) — move point forward across one
+balanced sexp, skipping leading whitespace + line comments."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let ((pmax (nelisp-ec-point-max)))
+      (nemacs-gtk--sexp-skip-forward-ws pmax)
+      (let ((res (nemacs-gtk--scan-sexp-forward pmax)))
+        (cond
+         ((null res)
+          (setq nemacs-gtk--last-key-text "forward-sexp: scan-error"))
+         (t
+          (nemacs-gtk--ensure-cursor-visible)
+          (setq nemacs-gtk--last-key-text
+                (format "forward-sexp -> %d" res))))))))
+
+(defun nemacs-gtk-backward-sexp ()
+  "Bound to `C-M-b' (= [27 ?\\C-b]) — move point backward across one
+balanced sexp, skipping trailing whitespace.  Comments are not
+recognised on the reverse pass (MVP)."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let ((pmin (nelisp-ec-point-min)))
+      (nemacs-gtk--sexp-skip-backward-ws pmin)
+      (let ((res (nemacs-gtk--scan-sexp-backward pmin)))
+        (cond
+         ((null res)
+          (setq nemacs-gtk--last-key-text "backward-sexp: scan-error"))
+         (t
+          (nemacs-gtk--ensure-cursor-visible)
+          (setq nemacs-gtk--last-key-text
+                (format "backward-sexp -> %d" res))))))))
+
+(defun nemacs-gtk-kill-sexp ()
+  "Bound to `C-M-k' (= [27 ?\\C-k]) — kill the sexp following point.
+Composes `forward-sexp' + `kill-region' so the deletion lands on
+the kill-ring (= clipboard via the installed cut hook)."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let* ((pmax (nelisp-ec-point-max))
+           (start (nelisp-ec-point)))
+      (nemacs-gtk--sexp-skip-forward-ws pmax)
+      (let* ((scan-start (nelisp-ec-point))
+             (res (nemacs-gtk--scan-sexp-forward pmax)))
+        (cond
+         ((null res)
+          (nelisp-ec-goto-char start)
+          (setq nemacs-gtk--last-key-text "kill-sexp: scan-error"))
+         (t
+          (kill-region scan-start res)
+          (nemacs-gtk--ensure-cursor-visible)
+          (setq nemacs-gtk--last-key-text
+                (format "kill-sexp: %d chars" (- res scan-start)))))))))
+
+
 ;;;; --- minibuffer mode (Phase 2.J — M-x execute-extended-command) ----------
 
 (defvar nemacs-gtk--minibuffer-active nil
@@ -2879,7 +3093,13 @@ success / failure."
     "copy-to-register"
     "insert-register"
     "point-to-register"
-    "jump-to-register")
+    "jump-to-register"
+    "nemacs-gtk-forward-sexp"
+    "nemacs-gtk-backward-sexp"
+    "nemacs-gtk-kill-sexp"
+    "forward-sexp"
+    "backward-sexp"
+    "kill-sexp")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
@@ -3502,6 +3722,8 @@ itself a keymap (= a prefix mid-sequence)."
     nemacs-gtk-query-replace
     nemacs-gtk-call-last-kbd-macro
     nemacs-gtk-sort-lines
+    nemacs-gtk-kill-sexp
+    nemacs-gtk-insert-register
     delete-char
     delete-backward-char)
   "Phase 2.AQ: command symbols the dispatcher refuses to run when
