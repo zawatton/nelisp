@@ -196,6 +196,16 @@ fn encode_value(out: &mut Vec<u8>, value: &Sexp) -> Result<(), ImageError> {
         Sexp::Cell(rc) => {
             encode_value(out, &rc.borrow())?;
         }
+        Sexp::Record { .. } => {
+            // Records (Doc 52 Stage 4) are not yet covered by the
+            // image format — same policy as `HashTable' above.
+            // Image-format support is a follow-up (extends the binary
+            // schema with TAG_RECORD); for now reject explicitly so
+            // callers see a clear failure.
+            return Err(ImageError::Eval(EvalError::NotImplemented(
+                "record values are not yet supported by image encoding".into(),
+            )));
+        }
     }
     Ok(())
 }

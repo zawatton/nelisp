@@ -117,6 +117,22 @@ pub enum Sexp {
     /// Identity goes through `Rc::ptr_eq'; structural equality
     /// unwraps the inner Sexp.
     Cell(Rc<RefCell<Sexp>>),
+    /// Record (= host emacs `record' / pvec subtype).  Underlies
+    /// `cl-defstruct' user types — the first slot (`type_tag') names
+    /// the struct type so `type-of' can return that symbol verbatim
+    /// instead of `record'.  Remaining slots are user-visible and
+    /// `aset'-able.  Doc 52 §2.1 (Doc 50 Stage 4).
+    ///
+    /// Identity goes through `Rc::ptr_eq' on `slots'; structural
+    /// equality (the derived `PartialEq') compares both `type_tag'
+    /// and inner slot vector.  Printer round-trips as
+    /// `#s(TYPE V0 V1 ...)' (positional shape — keyword forms are
+    /// desugared by the `cl-defstruct' macro before reaching the
+    /// reader).
+    Record {
+        type_tag: Box<Sexp>,
+        slots: Rc<RefCell<Vec<Sexp>>>,
+    },
 }
 
 /// Inner storage for [`Sexp::HashTable`].  Linear-scan vector keeps
@@ -230,6 +246,17 @@ impl Sexp {
             test: test.to_string(),
             entries: Vec::new(),
         })))
+    }
+
+    /// Build a record with TYPE_TAG (= type symbol) and INIT slot
+    /// vector.  Doc 52 §2.1 — used by `cl-defstruct' constructor
+    /// macros after the user-side keyword args are shuffled into
+    /// positional order.
+    pub fn record(type_tag: Sexp, init: Vec<Sexp>) -> Sexp {
+        Sexp::Record {
+            type_tag: Box::new(type_tag),
+            slots: Rc::new(RefCell::new(init)),
+        }
     }
 
     /// Read the car of a cons cell as a fresh `Sexp` clone.  Returns
@@ -424,6 +451,19 @@ fn write_sexp(out: &mut String, s: &Sexp) {
         // Lexical-binding cell — print the inner value transparently
         // so user-facing prints never reveal the storage wrapper.
         Sexp::Cell(rc) => write_sexp(out, &rc.borrow()),
+        Sexp::Record { type_tag, slots } => {
+            // Round-trippable positional shape: `#s(TYPE V0 V1 ...)'.
+            // The reader (lexer.rs) accepts the same form; the
+            // `cl-defstruct' macro handles keyword desugaring before
+            // values reach here.
+            out.push_str("#s(");
+            write_sexp(out, type_tag);
+            for v in slots.borrow().iter() {
+                out.push(' ');
+                write_sexp(out, v);
+            }
+            out.push(')');
+        }
     }
 }
 

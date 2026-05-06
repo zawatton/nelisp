@@ -157,7 +157,8 @@ fn eval_inner(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
         // evaluate to themselves").
         Sexp::Nil | Sexp::T | Sexp::Int(_) | Sexp::Float(_) | Sexp::Str(_)
             | Sexp::MutStr(_) | Sexp::Vector(_) | Sexp::HashTable(_)
-            | Sexp::CharTable(_) | Sexp::BoolVector(_) => {
+            | Sexp::CharTable(_) | Sexp::BoolVector(_)
+            | Sexp::Record { .. } => {
             Ok(form.clone())
         }
         // `Sexp::Cell' wraps a let-binding slot for closure write-

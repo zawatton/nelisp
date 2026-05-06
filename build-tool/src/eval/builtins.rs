@@ -823,6 +823,13 @@ fn sxhash_into<H: std::hash::Hasher>(v: &Sexp, h: &mut H) {
         // Lexical-binding storage cell — hash through to inner value
         // (= cells should be invisible to user-facing sxhash).
         Sexp::Cell(rc) => sxhash_into(&rc.borrow(), h),
+        Sexp::Record { type_tag, slots } => {
+            11u8.hash(h);
+            sxhash_into(type_tag, h);
+            for s in slots.borrow().iter() {
+                sxhash_into(s, h);
+            }
+        }
     }
 }
 
@@ -1049,6 +1056,20 @@ fn bi_type_of(args: &[Sexp]) -> Result<Sexp, EvalError> {
         let inner = rc.borrow().clone();
         v = inner;
     }
+    // Doc 52 §2.2: `record' is the only variant whose `type-of'
+    // does NOT return a fixed builtin tag.  When the first slot
+    // (`type_tag') is a symbol, return that symbol verbatim — this
+    // is what `cl-defstruct' relies on so user-defined types behave
+    // like first-class types under `type-of' / `cl-typep' / dispatch.
+    if let Sexp::Record { ref type_tag, .. } = v {
+        if let Sexp::Symbol(_) = **type_tag {
+            return Ok((**type_tag).clone());
+        }
+        // Defensive fallback: a record with a non-symbol type_tag
+        // shouldn't be constructible via `record', but if it sneaks
+        // in (e.g. through image decode), report `record' explicitly.
+        return Ok(Sexp::Symbol("record".into()));
+    }
     let tag = match v {
         Sexp::Cons(_, _) => "cons",
         Sexp::Nil | Sexp::T | Sexp::Symbol(_) => "symbol",
@@ -1059,7 +1080,7 @@ fn bi_type_of(args: &[Sexp]) -> Result<Sexp, EvalError> {
         Sexp::HashTable(_) => "hash-table",
         Sexp::CharTable(_) => "char-table",
         Sexp::BoolVector(_) => "bool-vector",
-        Sexp::Cell(_) => unreachable!(),
+        Sexp::Cell(_) | Sexp::Record { .. } => unreachable!(),
     };
     Ok(Sexp::Symbol(tag.into()))
 }

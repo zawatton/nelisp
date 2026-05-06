@@ -801,10 +801,15 @@ fn sexp_to_json(value: &Sexp) -> Value {
                 })
             }
         }
-        // HashTable / CharTable: opaque at MCP boundary; emit debug repr
-        // so tool outputs at least don't panic.  Should not normally appear
-        // at JSON-encode time (anvil tool returns are alists/plists/strings).
-        Sexp::HashTable(_) | Sexp::CharTable(_) => json!(format!("{:?}", value)),
+        // HashTable / CharTable / Record: opaque at MCP boundary; emit
+        // debug repr so tool outputs at least don't panic.  Should not
+        // normally appear at JSON-encode time (anvil tool returns are
+        // alists/plists/strings).  Doc 52 Stage 4 added Record alongside
+        // the existing two; if a `cl-defstruct' value reaches here we
+        // dump the variant repr without panicking.
+        Sexp::HashTable(_) | Sexp::CharTable(_) | Sexp::Record { .. } => {
+            json!(format!("{:?}", value))
+        }
     }
 }
 
