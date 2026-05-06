@@ -165,6 +165,12 @@ nil = no pending register op; otherwise one of `copy' / `insert' /
 `point' / `jump'.  The dispatcher consumes the next event as the
 register name when this is non-nil.")
 
+(defvar nemacs-gtk--bookmarks nil
+  "Phase 2.AZ — alist of `(NAME . (:buffer BUFFER-NAME :pos POS))'
+bookmark entries.  Unlike registers, bookmark names are strings
+(= read via the minibuffer) so users can hand them meaningful
+labels.  In-memory only — not persisted to disk in MVP.")
+
 (defun nemacs-gtk--active-buffer ()
   "Return the buffer object currently displayed in the GTK grid,
 falling back to the welcome buffer when the named one has been
@@ -307,12 +313,16 @@ Idempotent — re-calling replaces the global map with a fresh one."
     (define-key ctl-x-map (vector ?o)    'nemacs-gtk-other-window)
     ;; Phase 2.AV — `C-x ^' = enlarge-window (= +1 row from next).
     (define-key ctl-x-map (vector ?^)    'nemacs-gtk-enlarge-window)
-    ;; Phase 2.AX — `C-x r' prefix → registers.
+    ;; Phase 2.AX/AZ — `C-x r' prefix → registers + bookmarks.
     (let ((c-x-r-map (make-sparse-keymap)))
       (define-key c-x-r-map (vector ?s)  'nemacs-gtk-copy-to-register)
       (define-key c-x-r-map (vector ?i)  'nemacs-gtk-insert-register)
       (define-key c-x-r-map (vector ?\s) 'nemacs-gtk-point-to-register)
       (define-key c-x-r-map (vector ?j)  'nemacs-gtk-jump-to-register)
+      ;; Phase 2.AZ — bookmarks.
+      (define-key c-x-r-map (vector ?m)  'nemacs-gtk-bookmark-set)
+      (define-key c-x-r-map (vector ?b)  'nemacs-gtk-bookmark-jump)
+      (define-key c-x-r-map (vector ?l)  'nemacs-gtk-bookmark-list)
       (define-key ctl-x-map (vector ?r) c-x-r-map))
     (define-key m (vector ?\C-x) ctl-x-map)
     ;; Mouse-2 (= middle click) → set point + yank, mirroring real
@@ -2450,6 +2460,104 @@ ops update `--registers' before returning."
           (format "register: unknown op %S" op)))))
 
 
+;;;; --- bookmarks (Phase 2.AZ — C-x r m / b / l) --------------------------
+
+(defun nemacs-gtk--bookmark-completion (input)
+  "Return the bookmark names whose string starts with INPUT (= sorted)."
+  (let ((acc '()))
+    (dolist (cell nemacs-gtk--bookmarks)
+      (when (string-prefix-p input (car cell))
+        (push (car cell) acc)))
+    (sort acc #'string<)))
+
+(defun nemacs-gtk-bookmark-set ()
+  "Bound to `C-x r m' — prompt for a bookmark NAME + save the active
+buffer's current `(buffer-name, point)' under NAME.  Replaces any
+existing bookmark with the same NAME."
+  (interactive)
+  (let ((bn nemacs-gtk--active-buffer-name)
+        (pos (with-current-buffer (nemacs-gtk--active-buffer)
+               (nelisp-ec-point))))
+    (nemacs-gtk--enter-minibuffer
+     (format "Set bookmark (%s:%d): " bn pos)
+     (lambda (input)
+       (cond
+        ((or (null input) (= (length input) 0))
+         (setq nemacs-gtk--last-key-text "bookmark-set: empty name, cancelled"))
+        (t
+         (setq nemacs-gtk--bookmarks
+               (cons (cons input (list :buffer bn :pos pos))
+                     (assoc-delete-all input nemacs-gtk--bookmarks)))
+         (setq nemacs-gtk--last-key-text
+               (format "bookmark-set: %s -> %s:%d" input bn pos))))))))
+
+(defun nemacs-gtk-bookmark-jump ()
+  "Bound to `C-x r b' — prompt for a bookmark NAME (with completion
+across `--bookmarks') and jump to its saved buffer + position.
+Tab completes to the longest common prefix.  Reports `not found' on
+unknown names + `buffer gone' when the saved buffer was killed."
+  (interactive)
+  (cond
+   ((null nemacs-gtk--bookmarks)
+    (setq nemacs-gtk--last-key-text "bookmark-jump: no bookmarks"))
+   (t
+    (nemacs-gtk--enter-minibuffer
+     "Jump to bookmark: "
+     (lambda (input)
+       (let ((cell (assoc input nemacs-gtk--bookmarks)))
+         (cond
+          ((null cell)
+           (setq nemacs-gtk--last-key-text
+                 (format "bookmark-jump: %s not found" input)))
+          (t
+           (let* ((rec (cdr cell))
+                  (bn (plist-get rec :buffer))
+                  (pos (plist-get rec :pos))
+                  (buf (get-buffer bn)))
+             (cond
+              ((null buf)
+               (setq nemacs-gtk--last-key-text
+                     (format "bookmark-jump: buffer %s gone" bn)))
+              (t
+               (setq nemacs-gtk--active-buffer-name bn)
+               (with-current-buffer buf
+                 (let ((clamped (max (nelisp-ec-point-min)
+                                     (min pos (nelisp-ec-point-max)))))
+                   (nelisp-ec-goto-char clamped)))
+               (nemacs-gtk--ensure-cursor-visible)
+               (setq nemacs-gtk--last-key-text
+                     (format "bookmark-jump: %s -> %s:%d" input bn pos)))))))))
+     #'nemacs-gtk--bookmark-completion))))
+
+(defun nemacs-gtk-bookmark-list ()
+  "Bound to `C-x r l' — render `--bookmarks' into a `*Bookmarks*'
+buffer + switch to it.  Output is one line per bookmark in the
+form `NAME -> BUFFER:POS', sorted alphabetically by NAME."
+  (interactive)
+  (let* ((buf (get-buffer-create "*Bookmarks*"))
+         (sorted (sort (copy-sequence nemacs-gtk--bookmarks)
+                       (lambda (a b) (string< (car a) (car b))))))
+    (with-current-buffer buf
+      (when (fboundp 'erase-buffer)
+        (erase-buffer))
+      (cond
+       ((null sorted)
+        (nelisp-ec-insert "No bookmarks set.\n"))
+       (t
+        (nelisp-ec-insert "Bookmarks:\n\n")
+        (dolist (cell sorted)
+          (let ((name (car cell))
+                (bn (plist-get (cdr cell) :buffer))
+                (pos (plist-get (cdr cell) :pos)))
+            (nelisp-ec-insert
+             (format "  %-30s -> %s:%d\n" name bn pos)))))))
+    (setq nemacs-gtk--active-buffer-name "*Bookmarks*")
+    (setq nemacs-gtk--scroll-offset 0)
+    (nemacs-gtk--sync-window-title)
+    (setq nemacs-gtk--last-key-text
+          (format "bookmark-list: %d entries" (length sorted)))))
+
+
 ;;;; --- sexp navigation (Phase 2.AY — C-M-f / C-M-b / C-M-k) --------------
 
 (defun nemacs-gtk--sexp-symbol-char-p (ch)
@@ -3099,7 +3207,13 @@ success / failure."
     "nemacs-gtk-kill-sexp"
     "forward-sexp"
     "backward-sexp"
-    "kill-sexp")
+    "kill-sexp"
+    "nemacs-gtk-bookmark-set"
+    "nemacs-gtk-bookmark-jump"
+    "nemacs-gtk-bookmark-list"
+    "bookmark-set"
+    "bookmark-jump"
+    "bookmark-list")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
