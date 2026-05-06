@@ -111,18 +111,22 @@ Signal `nelisp-rx-syntax-error' on malformed input."
         (cl-reduce (lambda (a b) (list :alt a b)) rev)))))
 
 (defun nelisp-rx--parse-concat ()
-  "Parse a concatenation of atoms+quantifiers."
-  (let (nodes)
-    (cl-loop
-     (let ((c (nelisp-rx--peek)))
-       (cond
-        ((null c) (cl-return))
-        ;; End-of-alternation / end-of-group sentinels.
-        ((and (eq c ?\\) (memq (nelisp-rx--peek2) '(?| ?\))))
-         (cl-return))
-        (t
-         (let ((atom (nelisp-rx--parse-atom)))
-           (push (nelisp-rx--parse-quant atom) nodes))))))
+  "Parse a concatenation of atoms+quantifiers.
+Phase 4 B (2026-05-06): rewrote from bodyless `cl-loop' / `cl-return'
+to plain `while' so the function loads under NeLisp's restricted
+cl-lib (= bodyless cl-loop / cl-return are not built-ins)."
+  (let ((nodes nil)
+        (done nil))
+    (while (not done)
+      (let ((c (nelisp-rx--peek)))
+        (cond
+         ((null c) (setq done t))
+         ;; End-of-alternation / end-of-group sentinels.
+         ((and (eq c ?\\) (memq (nelisp-rx--peek2) '(?| ?\))))
+          (setq done t))
+         (t
+          (let ((atom (nelisp-rx--parse-atom)))
+            (push (nelisp-rx--parse-quant atom) nodes))))))
     (let ((rev (nreverse nodes)))
       (cond ((null rev) (list :concat))
             ((null (cdr rev)) (car rev))
@@ -176,6 +180,16 @@ Signal `nelisp-rx-syntax-error' on malformed input."
      ;; constituent AND the current char is non-word (or EOS).
      ((eq c ?<) (nelisp-rx--advance) (list :wbs))
      ((eq c ?>) (nelisp-rx--advance) (list :wbe))
+     ;; Phase 4 B (2026-05-06) — string-start / string-end anchors.
+     ;; backtick (= 96) matches position 0 of the input string;
+     ;; apostrophe (= 39) matches the very end (= position slen).
+     ;; Distinct from `^' / `$' which are line-relative.  s.el's
+     ;; s-trim-left / s-trim-right rely on these to anchor the trim.
+     ;; We use numeric literals here because the NeLisp reader trips
+     ;; on `?\`' / `?\'' escape sequences (the backtick is a reader
+     ;; macro under NeLisp's source-only mode).
+     ((eq c 96) (nelisp-rx--advance) (list :bos))
+     ((eq c 39) (nelisp-rx--advance) (list :eos))
      ((eq c ?w) (nelisp-rx--advance)
       (nelisp-rx--make-class t (list :word)))
      ((eq c ?W) (nelisp-rx--advance)
@@ -213,24 +227,25 @@ Signal `nelisp-rx-syntax-error' on malformed input."
     (when (eq (nelisp-rx--peek) ?\])
       (push (cons ?\] ?\]) ranges)
       (nelisp-rx--advance))
-    (cl-loop
-     (let ((c (nelisp-rx--peek)))
-       (cond
-        ((null c)
-         (signal 'nelisp-rx-syntax-error '("unterminated character class")))
-        ((eq c ?\]) (nelisp-rx--advance) (cl-return))
-        (t
-         (let ((lo (nelisp-rx--class-char)))
-           (if (and (eq (nelisp-rx--peek) ?-)
-                    (not (eq (nelisp-rx--peek2) ?\])))
-               (progn
-                 (nelisp-rx--advance)            ; consume `-'
-                 (let ((hi (nelisp-rx--class-char)))
-                   (when (> lo hi)
-                     (signal 'nelisp-rx-syntax-error
-                             (list (format "inverted range %c-%c" lo hi))))
-                   (push (cons lo hi) ranges)))
-             (push (cons lo lo) ranges)))))))
+    (let ((done nil))
+      (while (not done)
+        (let ((c (nelisp-rx--peek)))
+          (cond
+           ((null c)
+            (signal 'nelisp-rx-syntax-error '("unterminated character class")))
+           ((eq c ?\]) (nelisp-rx--advance) (setq done t))
+           (t
+            (let ((lo (nelisp-rx--class-char)))
+              (if (and (eq (nelisp-rx--peek) ?-)
+                       (not (eq (nelisp-rx--peek2) ?\])))
+                  (progn
+                    (nelisp-rx--advance)            ; consume `-'
+                    (let ((hi (nelisp-rx--class-char)))
+                      (when (> lo hi)
+                        (signal 'nelisp-rx-syntax-error
+                                (list (format "inverted range %c-%c" lo hi))))
+                      (push (cons lo hi) ranges)))
+                (push (cons lo lo) ranges))))))))
     (nelisp-rx--make-class positive (nreverse ranges))))
 
 (defun nelisp-rx--class-char ()
@@ -324,6 +339,12 @@ where SLOT is 1 or 2 indicating which transition slot is dangling."
     (:wbe
      (let ((s (nelisp-rx--add-state :wbe nil nil nil)))
        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+    (:bos
+     (let ((s (nelisp-rx--add-state :bos nil nil nil)))
+       (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+    (:eos
+     (let ((s (nelisp-rx--add-state :eos nil nil nil)))
+       (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
     (:class
      (let* ((positive (nth 1 ast))
             (ranges   (nth 2 ast))
@@ -406,16 +427,23 @@ Returns plist: (:states VEC :start INT :match INT :groups INT)."
             :groups (1- (nelisp-rx--collect-max-group ast))))))
 
 (defun nelisp-rx--collect-max-group (ast)
-  "Return one-past-largest group index in AST (>=1)."
-  (pcase (car ast)
-    (:group (max (1+ (nth 1 ast))
-                 (nelisp-rx--collect-max-group (nth 2 ast))))
-    (:concat (apply #'max 1 (mapcar #'nelisp-rx--collect-max-group (cdr ast))))
-    (:alt   (max (nelisp-rx--collect-max-group (nth 1 ast))
-                 (nelisp-rx--collect-max-group (nth 2 ast))))
-    ((or :star :plus :opt)
-     (nelisp-rx--collect-max-group (nth 1 ast)))
-    (_ 1)))
+  "Return one-past-largest group index in AST (>=1).
+Phase 4 B (2026-05-06): rewritten from `pcase' with `(or :star
+:plus :opt)' to plain `cond' / `memq' so the body parses under
+NeLisp's restricted built-in pcase grammar."
+  (let ((tag (car ast)))
+    (cond
+     ((eq tag :group)
+      (max (1+ (nth 1 ast))
+           (nelisp-rx--collect-max-group (nth 2 ast))))
+     ((eq tag :concat)
+      (apply #'max 1 (mapcar #'nelisp-rx--collect-max-group (cdr ast))))
+     ((eq tag :alt)
+      (max (nelisp-rx--collect-max-group (nth 1 ast))
+           (nelisp-rx--collect-max-group (nth 2 ast))))
+     ((memq tag '(:star :plus :opt))
+      (nelisp-rx--collect-max-group (nth 1 ast)))
+     (t 1))))
 
 ;;; --------------------------------------------------------------------------
 ;;; Compiled-pattern object
@@ -520,6 +548,12 @@ backtracking semantics."
                (and (or (= pos slen)
                         (eq (char-at pos) ?\n))
                     (walk (aref s 1) pos)))
+              (:bos
+               (and (= pos 0)
+                    (walk (aref s 1) pos)))
+              (:eos
+               (and (= pos slen)
+                    (walk (aref s 1) pos)))
               (:wb
                (let* ((before (and (> pos 0)
                                    (nelisp-rx--word-char-p (prev-char pos))))
@@ -591,17 +625,22 @@ ANCHOR is the start position where the match was found."
 ;;; --------------------------------------------------------------------------
 
 (defun nelisp-rx--make-match-data (anchor end groups)
-  "Build the public match-data plist returned to callers."
+  "Build the public match-data plist returned to callers.
+Phase 4 B (2026-05-06): rewrote `cl-loop' to plain `while' so the
+function loads under NeLisp's restricted cl-lib (= numeric `for VAR
+from N below M' isn't a NeLisp built-in)."
   (let ((lst nil))
     (when groups
       ;; groups is a vector indexed 1..ngrp; slot 0 is unused.
-      (cl-loop
-       for i from 1 below (length groups)
-       do (let ((cell (aref groups i)))
+      (let ((i 1)
+            (n (length groups)))
+        (while (< i n)
+          (let ((cell (aref groups i)))
             (push (if (and cell (cdr cell))
                       (list :index i :start (car cell) :end (cdr cell))
                     (list :index i :start nil :end nil))
-                  lst))))
+                  lst))
+          (setq i (1+ i)))))
     (list :start anchor :end end :groups (nreverse lst))))
 
 ;;;###autoload

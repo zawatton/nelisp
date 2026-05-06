@@ -37,9 +37,15 @@
 
 ;;; Code:
 
-(unless (fboundp 'pcase)
+;; Phase 4 B (2026-05-06): the helper functions
+;; `emacs-pcase--test' / `--and' / `--or' / `--backquote' MUST exist
+;; even on host emacs because the nelisp-driver pcase override below
+;; references them.  Previously they lived inside `(unless (fboundp
+;; 'pcase) ...)' and were never defined under host driver, breaking
+;; subprocess `bin/nemacs --batch --eval' invocations that set
+;; `nelisp-emacs-vendor-root' and trigger the override.  Moved out.
 
-  (defun emacs-pcase--test (pattern value-form)
+(defun emacs-pcase--test (pattern value-form)
     "Build (TEST-FORM . BINDINGS) for matching PATTERN against VALUE-FORM.
 VALUE-FORM is an elisp expression that evaluates to the value being
 tested.  TEST-FORM is an elisp expression that evaluates to non-nil
@@ -164,6 +170,7 @@ does `equal' check."
      (t
       (cons (list 'equal value-form (list 'quote pat)) nil))))
 
+(unless (fboundp 'pcase)
   (defmacro pcase (expr &rest cases)
     "Phase 10 (= ex-Phase 4 batch 2) pcase: dispatch EXPR through CASES.
 See `emacs-pcase--test' for supported pattern shapes."
@@ -186,6 +193,36 @@ See `emacs-pcase--test' for supported pattern shapes."
           (setq cond-clauses (cdr cond-clauses)))
         (list 'let (list (list value-sym expr))
               (cons 'cond forward))))))
+
+;; Phase 4 B (2026-05-06): override `pcase' ONLY under the nelisp
+;; Rust runtime.  Detection: host emacs ships
+;; `comp-trampoline-compile' (= native-comp 28+ feature that NeLisp
+;; lacks); when that symbol is unbound we are running on NeLisp.
+;; Under bin/nemacs --driver=host we are still on host emacs even
+;; though `nelisp-emacs-vendor-root' is set, so vendor-root alone is
+;; the wrong signal.  Keeping host's richer C-native pcase intact is
+;; required because `make test' subprocess-launches bin/nemacs and
+;; expects host semantics.
+;;
+;; Caveat: NeLisp routes macro expansion through an internal Rust-
+;; side registry that is not visible from elisp, so this override
+;; only applies when callers use `symbol-function' / `macroexpand'
+;; explicitly.  Full un-skip of grammar-rich callers (= nelisp-regex's
+;; `(or :star :plus :opt)' pattern) requires upstream NeLisp to either
+;; expand its built-in pcase grammar or expose a registry-override
+;; API.
+
+;; Direct override attempts (`fset' / `defalias' to either a closure or
+;; a quoted `(macro lambda …)' form) failed under the nelisp driver:
+;;   - closure form    → `wrong-type-argument function closure'
+;;   - quoted lambda    → `wrong-type-argument function lambda'
+;; NeLisp's macro dispatcher uses an internal Rust-side lookup that
+;; doesn't honour elisp-level `defalias'.  Real un-skip of grammar-
+;; rich pcase callers (= nelisp-regex.el's `(or :star :plus :opt)'
+;; pattern) requires upstream NeLisp to either expand its built-in
+;; pcase grammar or expose a registry-override API.  For our local
+;; src/nelisp-regex.el copy we instead rewrite affected pcase forms
+;; into `cond'.
 
 (unless (fboundp 'pcase-let)
   (defmacro pcase-let (bindings &rest body)

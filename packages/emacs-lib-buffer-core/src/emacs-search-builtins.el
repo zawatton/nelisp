@@ -36,16 +36,20 @@
 ;;     `nelisp-ec', or directly from STRING when the optional STRING
 ;;     argument is supplied — matching Emacs' contract).
 ;;
-;; Deferred (= keep the `emacs-stub.el' nil-stubs for now):
+;; Phase 4 B (2026-05-06) — un-stub `string-match' /
+;; `string-match-p' / `replace-regexp-in-string' so MELPA real
+;; packages (= s.el's s-trim, s-replace, etc.) work end-to-end
+;; under the nelisp driver.  Strategy: route into `nelisp-rx-*'
+;; (= the real regex engine in `nelisp-regex.el') and bridge the
+;; plist match-data shape to the integer-list shape Emacs expects
+;; via `nelisp-ec--rx-match-data-to-ec' (= Phase 9 helper, base = 0
+;; for string matches).  See `string-match' below.
 ;;
-;;   - `string-match' / `string-match-p': substrate is
-;;     `nelisp-rx-string-match' but it returns a plist instead of the
-;;     integer `match-start' Emacs callers expect, AND does not bump
-;;     the global match-data registry the way the unprefixed builtin
-;;     does.  Bridging cleanly needs an adapter layer.
-;;   - `replace-match' / `replace-regexp-in-string': no `nelisp-ec-*'
-;;     impl yet; depend on a buffer-modifying replace primitive that
-;;     hasn't been ported.
+;; Deferred (= still keep the `emacs-stub.el' nil-stubs for now):
+;;
+;;   - `replace-match': depends on a buffer-modifying replace
+;;     primitive that hasn't been ported (= the string variant is
+;;     covered by `replace-regexp-in-string').
 ;;   - `looking-back': no `nelisp-ec-*' impl (= would need bounded
 ;;     reverse scan).
 ;;   - `set-match-data' (public form): the L1.5 helper
@@ -58,6 +62,96 @@
 ;;; Code:
 
 (require 'nelisp-emacs-compat)
+(require 'nelisp-regex)
+
+;;;; --- string-match family (Phase 4 B, 2026-05-06) ---------------------
+
+;; Bridge `nelisp-rx-string-match' (= plist return) to the standard
+;; `string-match' contract (= integer return + global match-data side
+;; effect).  Without this bridge, `s-trim' / `s-replace' / countless
+;; MELPA packages silently no-op under the nelisp driver because the
+;; pre-existing `emacs-stub.el' polyfill returns nil unconditionally.
+
+(unless (fboundp 'string-match)
+  (defun string-match (regexp string &optional start inhibit-modify)
+    "Phase 4 B polyfill: substrate-backed `string-match'.
+Calls `nelisp-rx-string-match' for the actual scan.  On match,
+returns the integer match-start AND populates the global
+match-data registry via `nelisp-ec--rx-match-data-to-ec' so that
+subsequent `match-beginning' / `match-end' / `match-string'
+calls observe the right boundaries.  When INHIBIT-MODIFY is
+non-nil the global match-data is left untouched (Emacs 27+
+contract that `string-match-p' relies on)."
+    (let* ((s (or start 0))
+           (m (nelisp-rx-string-match regexp string s)))
+      (cond
+       ((null m) nil)
+       (t
+        (unless inhibit-modify
+          (nelisp-ec--rx-match-data-to-ec 0 m))
+        (plist-get m :start))))))
+
+(unless (fboundp 'string-match-p)
+  (defun string-match-p (regexp string &optional start)
+    "Phase 4 B polyfill: predicate variant of `string-match'.
+Returns t / nil and does NOT bump the global match-data registry."
+    (and (string-match regexp string start t) t)))
+
+(unless (fboundp 'replace-regexp-in-string)
+  (defun replace-regexp-in-string
+      (regexp rep string &optional fixedcase literal subexp start)
+    "Phase 4 B polyfill: substrate-backed `replace-regexp-in-string'.
+REGEXP is matched repeatedly in STRING from START (default = 0).
+REP can be a string (used as the replacement directly) or a
+function (called once per match with the matched substring;
+its return value becomes the replacement).  FIXEDCASE / LITERAL /
+SUBEXP are accepted for API parity but applied minimally:
+
+  - LITERAL non-nil  → backref substitution is skipped (default).
+  - SUBEXP non-nil   → only the SUBEXP-th group is replaced.
+  - FIXEDCASE        → ignored (= no case-fold matching layer yet).
+
+Backref expansion (`\\1' etc) is NOT performed in MVP — that
+lands with Phase 9c backref groups."
+    (ignore fixedcase)
+    (let* ((from (or start 0))
+           (head (substring string 0 from))
+           (tail (substring string from)))
+      (cond
+       ;; SUBEXP form is rare; punt to the literal-only path for MVP
+       ;; and signal cleanly when caller actually exercises it.
+       (subexp
+        (signal 'error
+                (list "replace-regexp-in-string SUBEXP form not yet supported"
+                      regexp subexp)))
+       ((functionp rep)
+        ;; Iteratively scan + replace one match at a time so REP sees
+        ;; the matched substring.  Each iteration advances past the
+        ;; replaced region (or by 1 char if zero-length match).
+        (let ((acc head)
+              (cursor 0))
+          (while
+              (let ((m (nelisp-rx-string-match regexp tail cursor)))
+                (cond
+                 ((null m)
+                  (setq acc (concat acc (substring tail cursor)))
+                  nil)
+                 (t
+                  (let* ((s (plist-get m :start))
+                         (e (plist-get m :end))
+                         (matched (substring tail s e)))
+                    (setq acc (concat acc
+                                      (substring tail cursor s)
+                                      (funcall rep matched)))
+                    (setq cursor (if (= s e) (1+ e) e))
+                    t)))))
+          acc))
+       (t
+        ;; Literal replacement.  When LITERAL is nil we still treat REP
+        ;; literally in MVP (= backref substitution deferred to 9c).
+        (concat head
+                (nelisp-rx-replace-all regexp tail
+                                       (if literal rep rep))))))))
 
 ;;;; --- regex / string-side search ---------------------------------------
 
