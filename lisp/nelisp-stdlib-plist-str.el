@@ -228,6 +228,99 @@ NEEDLE longer than HAYSTACK returns nil."
               (setq i (1+ i)))))
         found)))))
 
+;; Rust-min (2026-05-06 batch 4): copy-tree + sort.
+
+(defun copy-tree (tree &optional vecp)
+  "Return a deep copy of TREE.  Conses are recursively copied; non-
+cons leaves are returned unchanged.  When VECP is non-nil, vectors
+inside TREE are also copied recursively (= matches the host Emacs
+contract)."
+  (cond
+   ((consp tree)
+    (cons (copy-tree (car tree) vecp)
+          (copy-tree (cdr tree) vecp)))
+   ((and vecp (vectorp tree))
+    (let* ((n (length tree))
+           (out (make-vector n nil))
+           (i 0))
+      (while (< i n)
+        (aset out i (copy-tree (aref tree i) vecp))
+        (setq i (1+ i)))
+      out))
+   (t tree)))
+
+(defun nelisp-stdlib--sort-merge (a b pred)
+  "Stable merge of two sorted lists A and B under PRED."
+  (let ((acc nil))
+    (while (and a b)
+      (cond
+       ((funcall pred (car a) (car b))
+        (setq acc (cons (car a) acc))
+        (setq a (cdr a)))
+       (t
+        (setq acc (cons (car b) acc))
+        (setq b (cdr b)))))
+    (while a (setq acc (cons (car a) acc)) (setq a (cdr a)))
+    (while b (setq acc (cons (car b) acc)) (setq b (cdr b)))
+    (nreverse acc)))
+
+(defun nelisp-stdlib--sort-split (list)
+  "Split LIST into two roughly equal halves; return (FIRST . SECOND)."
+  (let ((slow list)
+        (fast (cdr list)))
+    (while (and fast (cdr fast))
+      (setq slow (cdr slow))
+      (setq fast (cdr (cdr fast))))
+    (let ((second (cdr slow)))
+      (setcdr slow nil)
+      (cons list second))))
+
+(defun nelisp-stdlib--sort-list (list pred)
+  "Recursive merge-sort of LIST under PRED.  Mutates LIST's spine via
+`setcdr' inside `--sort-split'; callers should ensure LIST is owned."
+  (cond
+   ((null list) nil)
+   ((null (cdr list)) list)
+   (t
+    (let ((halves (nelisp-stdlib--sort-split list)))
+      (nelisp-stdlib--sort-merge
+       (nelisp-stdlib--sort-list (car halves) pred)
+       (nelisp-stdlib--sort-list (cdr halves) pred)
+       pred)))))
+
+(defun sort (seq pred)
+  "Sort SEQ (= list or vector) by PRED.  Returns the sorted sequence
+of the same shape as SEQ.  Stable for equal elements (= merge sort).
+
+Note: in host Emacs `sort' destructively rearranges LIST; here we
+use `setcdr' in the merge-split helper, so the caller's list spine
+may be modified.  Callers depending on input identity should
+`copy-sequence' first."
+  (cond
+   ((null seq) nil)
+   ((consp seq)
+    ;; Copy the spine first so the input list's identity is preserved.
+    (let ((work (copy-sequence seq)))
+      (nelisp-stdlib--sort-list work pred)))
+   ((vectorp seq)
+    (let* ((n (length seq))
+           (lst nil)
+           (i (1- n)))
+      (while (>= i 0)
+        (setq lst (cons (aref seq i) lst))
+        (setq i (1- i)))
+      (let* ((sorted (nelisp-stdlib--sort-list lst pred))
+             (out (make-vector n nil))
+             (j 0)
+             (cur sorted))
+        (while cur
+          (aset out j (car cur))
+          (setq j (1+ j))
+          (setq cur (cdr cur)))
+        out)))
+   (t
+    (signal 'wrong-type-argument (list 'sequencep seq)))))
+
 (defun mapconcat (fn seq &optional sep)
   "Apply FN to each element of SEQ; concat the resulting strings,
 joined by SEP (default empty string).  SEQ is iterated as a list

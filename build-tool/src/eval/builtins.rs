@@ -54,7 +54,9 @@ pub fn install_builtins(env: &mut Env) {
         "consp", "listp", "atom", "symbolp", "stringp", "numberp", "integerp", "floatp", "functionp",
         "vectorp", "keywordp", "null", "booleanp",
         // list ops
-        "sort", "copy-sequence", "copy-tree", "reverse", "nreverse",
+        "copy-sequence", "reverse", "nreverse",
+        // Rust-min (2026-05-06 batch 4): sort + copy-tree migrated
+        // to elisp (lisp/nelisp-stdlib-plist-str.el).
         // bitwise — required by keymap / event-encoding code
         "logior", "logand", "logxor", "lognot", "ash", "lsh",
         // hashing — used by hash-table key derivation in user code
@@ -174,8 +176,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "reverse" => bi_reverse(args),
         "nreverse" => bi_reverse(args),  // = same impl, MVP doesn't share storage anyway
         "copy-sequence" => bi_copy_sequence(args),
-        "copy-tree" => bi_copy_sequence(args),  // MVP — shallow copy is fine for caller patterns
-        "sort" => bi_sort(args, env),
+        // copy-tree / sort migrated to elisp (Rust-min 2026-05-06 batch 4).
         "append" => bi_append(args),
         "setcar" => bi_setcar(args),
         "setcdr" => bi_setcdr(args),
@@ -827,73 +828,8 @@ fn bi_reverse(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-/// `(sort SEQ PRED)' — stable sort.  PRED is `(LESS-THAN A B)'.
-fn bi_sort(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("sort", args, 2, Some(2))?;
-    let pred = args[1].clone();
-    match &args[0] {
-        Sexp::Nil => Ok(Sexp::Nil),
-        Sexp::Cons(_, _) => {
-            let mut v = list_to_vec(&args[0])?;
-            // Stable sort using funcall on PRED.  We can't return
-            // EvalError from sort_by, so collect first failure into
-            // an Option.
-            let mut err: Option<EvalError> = None;
-            v.sort_by(|a, b| {
-                if err.is_some() {
-                    return std::cmp::Ordering::Equal;
-                }
-                let r = crate::eval::apply_function(
-                    &pred,
-                    &[a.clone(), b.clone()],
-                    env,
-                );
-                match r {
-                    Ok(v) if matches!(v, Sexp::Nil) => std::cmp::Ordering::Greater,
-                    Ok(_) => std::cmp::Ordering::Less,
-                    Err(e) => {
-                        err = Some(e);
-                        std::cmp::Ordering::Equal
-                    }
-                }
-            });
-            if let Some(e) = err {
-                return Err(e);
-            }
-            Ok(vec_to_list(v))
-        }
-        Sexp::Vector(rc) => {
-            let mut v = rc.borrow().clone();
-            let mut err: Option<EvalError> = None;
-            v.sort_by(|a, b| {
-                if err.is_some() {
-                    return std::cmp::Ordering::Equal;
-                }
-                let r = crate::eval::apply_function(
-                    &pred,
-                    &[a.clone(), b.clone()],
-                    env,
-                );
-                match r {
-                    Ok(v) if matches!(v, Sexp::Nil) => std::cmp::Ordering::Greater,
-                    Ok(_) => std::cmp::Ordering::Less,
-                    Err(e) => {
-                        err = Some(e);
-                        std::cmp::Ordering::Equal
-                    }
-                }
-            });
-            if let Some(e) = err {
-                return Err(e);
-            }
-            Ok(Sexp::vector(v))
-        }
-        other => Err(EvalError::WrongType {
-            expected: "sequence".into(),
-            got: other.clone(),
-        }),
-    }
-}
+// bi_sort migrated to elisp (Rust-min 2026-05-06 batch 4) — see
+// lisp/nelisp-stdlib-plist-str.el `sort'.
 
 fn bi_append(args: &[Sexp]) -> Result<Sexp, EvalError> {
     if args.is_empty() {
