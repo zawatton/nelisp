@@ -54,9 +54,16 @@ pub fn install_builtins(env: &mut Env) {
         "vector", "make-vector",
         // predicates
         "consp", "listp", "atom", "symbolp", "stringp", "numberp", "integerp", "floatp", "functionp",
-        "vectorp", "keywordp", "null", "booleanp",
+        // Rust-min (2026-05-06 batch 6d): `null' shadowed by elisp
+        // (lisp/nelisp-stdlib.el `(defun null ...)') — Rust dispatch
+        // arm was dead from the moment the elisp def landed.
+        "vectorp", "keywordp", "booleanp",
         // list ops
-        "copy-sequence", "reverse", "nreverse",
+        // Rust-min (2026-05-06 batch 6d): `reverse' / `nreverse'
+        // shadowed by elisp (lisp/nelisp-stdlib-list.el).  The elisp
+        // versions are list-only — vector / string `reverse' was
+        // never actually reachable from elisp.
+        "copy-sequence",
         // Rust-min (2026-05-06 batch 4): sort + copy-tree migrated
         // to elisp (lisp/nelisp-stdlib-plist-str.el).
         // bitwise — required by keymap / event-encoding code
@@ -188,8 +195,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "cadddr" => bi_car(&[bi_cdr(&[bi_cdr(&[bi_cdr(args)?])?])?]),
         "cons" => bi_cons(args),
         "length" => bi_length(args),
-        "reverse" => bi_reverse(args),
-        "nreverse" => bi_reverse(args),  // = same impl, MVP doesn't share storage anyway
+        // reverse / nreverse migrated to elisp (Rust-min 2026-05-06
+        // batch 6d, see lisp/nelisp-stdlib-list.el).
         "copy-sequence" => bi_copy_sequence(args),
         // copy-tree / sort migrated to elisp (Rust-min 2026-05-06 batch 4).
         "append" => bi_append(args),
@@ -223,7 +230,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // `null' is the alias for `nil-p' — `(null nil)' = t, anything
         // else = nil.  Distinct from `not' which has identical semantics
         // but is meant to be read as boolean negation in source.
-        "null" => bi_predicate(args, |v| matches!(v, Sexp::Nil)),
+        // null migrated to elisp (Rust-min 2026-05-06 batch 6d, see
+        // lisp/nelisp-stdlib.el).
         // `booleanp' = t when value is exactly `t' or `nil'.  Doc 51
         // Track P/Q etc rely on this for fboundp-style guards.
         "booleanp" => bi_predicate(args, |v| matches!(v, Sexp::Nil | Sexp::T)),
@@ -787,37 +795,13 @@ fn bi_length(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-fn vec_to_list(items: Vec<Sexp>) -> Sexp {
-    let mut acc = Sexp::Nil;
-    for it in items.into_iter().rev() {
-        acc = Sexp::cons(it, acc);
-    }
-    acc
-}
+// `vec_to_list' helper removed — its only caller was `bi_reverse'
+// (Rust-min 2026-05-06 batch 6d).
 
-fn bi_reverse(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("reverse", args, 1, Some(1))?;
-    match &args[0] {
-        Sexp::Nil => Ok(Sexp::Nil),
-        Sexp::Cons(_, _) => {
-            let mut v = list_to_vec(&args[0])?;
-            v.reverse();
-            Ok(vec_to_list(v))
-        }
-        Sexp::Vector(rc) => {
-            let mut v = rc.borrow().clone();
-            v.reverse();
-            Ok(Sexp::vector(v))
-        }
-        Sexp::Str(s) => {
-            Ok(Sexp::Str(s.chars().rev().collect()))
-        }
-        other => Err(EvalError::WrongType {
-            expected: "sequence".into(),
-            got: other.clone(),
-        }),
-    }
-}
+// bi_reverse removed — see lisp/nelisp-stdlib-list.el (Rust-min
+// 2026-05-06 batch 6d).  The elisp version was already shadowing
+// the Rust path since stdlib first loaded; this commit removes the
+// orphan code.
 
 // bi_sort migrated to elisp (Rust-min 2026-05-06 batch 4) — see
 // lisp/nelisp-stdlib-plist-str.el `sort'.
