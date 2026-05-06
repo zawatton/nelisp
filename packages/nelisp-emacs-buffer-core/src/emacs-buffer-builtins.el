@@ -76,6 +76,18 @@
       (nelisp-ec-buffer-name buffer))
      (t nil))))
 
+;; NeLisp strings are always Unicode internally — there is no parallel
+;; unibyte representation, so the multibyte flag is a no-op.  We honour
+;; the API surface (= return FLAG so callers that read the result still
+;; see something sensible) without otherwise altering buffer state.
+(unless (fboundp 'set-buffer-multibyte)
+  (defun set-buffer-multibyte (flag)
+    flag))
+
+(unless (fboundp 'multibyte-string-p)
+  (defun multibyte-string-p (object)
+    (stringp object)))
+
 ;;;; --- registry lookup (Phase L1, 2026-05-03) --------------------------
 
 (unless (fboundp 'get-buffer)
