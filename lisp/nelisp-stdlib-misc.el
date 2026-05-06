@@ -203,6 +203,48 @@ call time, so it is safe for FN to mutate TABLE during the walk
 (defun file-regular-p (path)
   (eq (nelisp--syscall-stat path) 'file))
 
+;; Rust-min batch 7d (2026-05-07, Doc 50 stage 2): `expand-file-name'
+;; and `file-truename' migrated from Rust to elisp.  expand-file-name
+;; is pure path arithmetic + a `default-directory' lookup; it needs
+;; ZERO new primitives (= file-name-as-directory + concat + aref are
+;; all elisp-side).  file-truename adds 1 syscall primitive
+;; (`nelisp--syscall-canonicalize' = std::fs::canonicalize wrapper)
+;; for the symlink-resolve sliver, with elisp fall-back-on-error
+;; matching the prior Rust `unwrap_or(full)' behaviour.
+;;
+;; The Rust impl had a `current_dir()' fallback for the case where
+;; both BASE arg and `default-directory' were nil; NeLisp always
+;; sets `default-directory' at startup so that fallback never fired
+;; in practice and is dropped here.
+
+(defun expand-file-name (path &optional base)
+  "Convert PATH to absolute, anchoring against BASE (or `default-directory').
+Already-absolute paths (starting with `/') are returned unchanged."
+  (cond
+   ;; Empty path: return as-is (= mirrors Rust `Path::new(\"\").to_path_buf()').
+   ((or (null path) (= (length path) 0)) path)
+   ;; Already absolute.
+   ((eq (aref path 0) ?/) path)
+   ;; Relative: join with BASE (or `default-directory').
+   (t
+    (let ((b (or base (and (boundp 'default-directory) default-directory))))
+      (if (and (stringp b) (> (length b) 0))
+          (concat (file-name-as-directory b) path)
+        ;; No base anchor available — return PATH as-is.  Prior Rust
+        ;; tried `current_dir()' as last resort but NeLisp's startup
+        ;; always sets `default-directory' so this branch is unreachable
+        ;; in practice.
+        path)))))
+
+(defun file-truename (path)
+  "Return PATH after symlink resolution and absolutification.
+Falls back to `expand-file-name' result when the path doesn't exist
+or canonicalize fails — same as the prior Rust impl which used
+`std::fs::canonicalize(p).unwrap_or(p)'."
+  (let* ((full (expand-file-name path))
+         (canon (nelisp--syscall-canonicalize full)))
+    (or canon full)))
+
 ;; Rust-min batch 7c (2026-05-07, Doc 50 stage 2): `directory-files'
 ;; migrated from Rust to elisp on top of the new readdir syscall
 ;; primitive `nelisp--syscall-readdir' (see

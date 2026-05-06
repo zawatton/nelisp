@@ -182,7 +182,14 @@ pub fn install_builtins(env: &mut Env) {
         // the `Sexp::BoolVector' variant is kept alive only for
         // legacy image-format decode.
         // file helpers
-        "expand-file-name", "file-truename",
+        // Rust-min batch 7d (2026-05-07, Doc 50 stage 2): expand-
+        // file-name migrated to elisp (pure path arithmetic, no new
+        // primitive); file-truename migrated to elisp on top of the
+        // new `nelisp--syscall-canonicalize' primitive (= POSIX
+        // realpath syscall, returns nil on error so the elisp
+        // wrapper can fall back to expand-file-name).  See
+        // lisp/nelisp-stdlib-misc.el.
+        "nelisp--syscall-canonicalize",
         // file I/O (Doc 47 Stage 8b — multi-file load chain)
         // Rust-min batch 7b (2026-05-07, Doc 50 stage 2 first slice):
         // `file-exists-p' / `file-readable-p' / `file-directory-p' /
@@ -379,8 +386,9 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // see lisp/nelisp-stdlib-plist-str.el; dead body removed in 6t).
         "string-match-p" => bi_string_match_p(args),
         // "regexp-quote" — migrated to elisp (Rust-min 2026-05-06)
-        "expand-file-name" => bi_expand_file_name(args, env),
-        "file-truename" => bi_file_truename(args, env),
+        // expand-file-name / file-truename migrated to elisp (Rust-min
+        // batch 7d, 2026-05-07; see lisp/nelisp-stdlib-misc.el).
+        "nelisp--syscall-canonicalize" => bi_syscall_canonicalize(args, env),
         // Doc 47 Stage 8b — file I/O for multi-file load chains.
         // file-name-* path slicers migrated to elisp (Rust-min 2026-05-06,
         // see lisp/nelisp-stdlib-plist-str.el).
@@ -1553,23 +1561,29 @@ fn env_default_directory(env: &Env) -> Option<String> {
     }
 }
 
-fn bi_expand_file_name(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("expand-file-name", args, 1, Some(2))?;
-    let path = string_value(&args[0])?;
-    let base = match args.get(1) {
-        Some(v) => Some(string_value(v)?),
-        None => env_default_directory(env),
-    };
-    let full = normalize_path(&path, base.as_deref());
-    Ok(Sexp::Str(full.to_string_lossy().into_owned()))
-}
+// bi_expand_file_name retired in Rust-min batch 7d (Doc 50 stage 2,
+// 2026-05-07).  The function was pure path arithmetic + a
+// `default-directory' lookup — both expressible in elisp.  See
+// lisp/nelisp-stdlib-misc.el.
+//
+// bi_file_truename retired in same batch.  The `std::fs::canonicalize'
+// syscall sliver is now `nelisp--syscall-canonicalize' below; the
+// expand-file-name wrap and fallback-on-error are elisp side.
 
-fn bi_file_truename(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("file-truename", args, 1, Some(1))?;
-    let path = string_value(&args[0])?;
-    let full = normalize_path(&path, env_default_directory(env).as_deref());
-    let resolved = std::fs::canonicalize(&full).unwrap_or(full);
-    Ok(Sexp::Str(resolved.to_string_lossy().into_owned()))
+/// `(nelisp--syscall-canonicalize PATH)' — Rust-min batch 7d (Doc 50
+/// stage 2).  Wraps `std::fs::canonicalize' (= follows all symlinks
+/// in PATH and returns the absolute resolved real path).  Returns
+/// nil for any error (= path doesn't exist, broken symlink, etc) so
+/// the elisp `file-truename' wrapper can fall back to the un-resolved
+/// expand-file-name result, mirroring the prior `bi_file_truename'
+/// `unwrap_or(full)' behaviour exactly.
+fn bi_syscall_canonicalize(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--syscall-canonicalize", args, 1, Some(1))?;
+    let p = resolve_existing_path(&args[0], env)?;
+    match std::fs::canonicalize(&p) {
+        Ok(resolved) => Ok(Sexp::Str(resolved.to_string_lossy().into_owned())),
+        Err(_) => Ok(Sexp::Nil),
+    }
 }
 
 // ---------- Doc 47 Stage 8b — file I/O for multi-file load chains ----------
