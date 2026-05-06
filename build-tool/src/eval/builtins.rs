@@ -66,7 +66,9 @@ pub fn install_builtins(env: &mut Env) {
         // shadowed by elisp (lisp/nelisp-stdlib-list.el).  The elisp
         // versions are list-only — vector / string `reverse' was
         // never actually reachable from elisp.
-        "copy-sequence",
+        // Rust-min (2026-05-06 batch 6g): `copy-sequence' partial
+        // migration — cons / nil paths in elisp
+        // (lisp/nelisp-stdlib-misc.el).
         // Rust-min (2026-05-06 batch 4): sort + copy-tree migrated
         // to elisp (lisp/nelisp-stdlib-plist-str.el).
         // bitwise — required by keymap / event-encoding code
@@ -105,7 +107,7 @@ pub fn install_builtins(env: &mut Env) {
         // symbols / sequences
         // Rust-min (2026-05-06 batch 6a): gensym migrated to elisp
         // (lisp/nelisp-stdlib-misc.el).
-        "make-symbol", "copy-sequence",
+        "make-symbol",
         // hash-tables (Track O'')
         "make-hash-table", "hash-table-p", "hash-table-count",
         "puthash", "gethash", "remhash", "clrhash", "maphash",
@@ -210,7 +212,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "length" => bi_length(args),
         // reverse / nreverse migrated to elisp (Rust-min 2026-05-06
         // batch 6d, see lisp/nelisp-stdlib-list.el).
-        "copy-sequence" => bi_copy_sequence(args),
+        // copy-sequence migrated to elisp (Rust-min 2026-05-06
+        // batch 6g, see lisp/nelisp-stdlib-misc.el).
         // copy-tree / sort migrated to elisp (Rust-min 2026-05-06 batch 4).
         "append" => bi_append(args),
         "setcar" => bi_setcar(args),
@@ -1273,24 +1276,13 @@ fn bi_make_symbol(args: &[Sexp]) -> Result<Sexp, EvalError> {
 // obarray; once that primitive exists, `gensym' is a 4-line elisp
 // wrapper.
 
-/// `(copy-sequence SEQUENCE)` — return a shallow copy.
-fn bi_copy_sequence(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("copy-sequence", args, 1, Some(1))?;
-    match &args[0] {
-        Sexp::Nil => Ok(Sexp::Nil),
-        Sexp::Cons(_, _) => {
-            let elts = super::list_elements(&args[0])?;
-            let mut out = Sexp::Nil;
-            for e in elts.into_iter().rev() {
-                out = Sexp::cons(e, out);
-            }
-            Ok(out)
-        }
-        Sexp::Str(s) => Ok(Sexp::Str(s.clone())),
-        Sexp::MutStr(rc) => Ok(Sexp::mut_str(rc.borrow().clone())),
-        other => Ok(other.clone()),
-    }
-}
+// bi_copy_sequence removed — see lisp/nelisp-stdlib-misc.el
+// (Rust-min 2026-05-06 batch 6g).  cons / nil paths in elisp; other
+// types (str / mutstr / vector / atoms) return identity since the
+// previous Rust impl's clone-the-Sexp gave the same observed
+// semantics for everything except Str / MutStr — and a codebase
+// grep for `(aset (copy-sequence ...))' confirmed no caller relies
+// on the fresh-cell behaviour we're dropping for those two.
 
 // Rust-min (2026-05-06 batch 3): `mapconcat' migrated to elisp
 // (lisp/nelisp-stdlib-plist-str.el).

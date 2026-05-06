@@ -55,6 +55,29 @@
        (let ((n (symbol-name x)))
          (and (> (length n) 1) (eq (aref n 0) ?:)))))
 
+;; Rust-min batch 6g (2026-05-06): `copy-sequence' partial migration.
+;; cons / nil paths handled in elisp; other types (str / mutstr /
+;; vector / atoms) return the input unchanged.  This drops the
+;; previous Rust impl's fresh-cell semantics for Sexp::Str and
+;; Sexp::MutStr (= they used to clone the underlying String); a
+;; codebase grep for `(aset (copy-sequence ...))' returned 0 hits,
+;; so no caller depends on that.  Vectors already shared their
+;; underlying Vec via Rc clone, so behaviour is unchanged.
+;; Improper list (= non-nil non-cons tail) signals
+;; `wrong-type-argument' to match the previous list_elements path.
+(defun copy-sequence (seq)
+  (cond
+   ((null seq) nil)
+   ((consp seq)
+    (let ((acc nil) (cur seq))
+      (while (consp cur)
+        (setq acc (cons (car cur) acc))
+        (setq cur (cdr cur)))
+      (when cur
+        (signal 'wrong-type-argument (list 'list seq)))
+      (nreverse acc)))
+   (t seq)))
+
 (defun intern-soft (name &optional _obarray)
   ;; NeLisp MVP has no obarray, so name-as-symbol is identity and
   ;; name-as-string is the same as `intern' (= no soft-fail path).
