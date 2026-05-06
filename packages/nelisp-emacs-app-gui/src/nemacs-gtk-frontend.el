@@ -5562,6 +5562,49 @@ to keep frame rate sane."
         (format "paint-extras-mode: %s"
                 (if nemacs-gtk--paint-extras-enabled "on" "off"))))
 
+(defun nemacs-gtk--repaint-fast-eligible-p ()
+  "Phase 3.F — t when the fast-path Rust extern can serve this paint:
+single-window mode, extras off, and the extern is loaded.  Multi-
+window splits or extras-on fall back to the per-step elisp path."
+  (and (fboundp 'nelisp-gtk-paint-frame-simple)
+       (null nemacs-gtk--windows)
+       (not nemacs-gtk--paint-extras-enabled)))
+
+(defun nemacs-gtk--repaint-fast ()
+  "Phase 3.F — one-shot Rust paint that bundles grid-clear + buffer
+area + mode-line + echo + cursor + redraw into a single extern
+call.  Skips ~50 elisp→Rust round-trips per frame, the
+responsiveness fix for resource-constrained VMs."
+  (let* ((buf (nemacs-gtk--active-buffer))
+         (content (with-current-buffer buf (buffer-string)))
+         (point (with-current-buffer buf (nelisp-ec-point)))
+         (mode-line (nemacs-gtk--mode-line-text))
+         (echo (cond
+                (nemacs-gtk--minibuffer-active
+                 (concat nemacs-gtk--minibuffer-prompt
+                         nemacs-gtk--minibuffer-input
+                         "_"
+                         (nemacs-gtk--minibuffer-candidate-suffix)))
+                (nemacs-gtk--isearch-active
+                 (format "I-search%s%s: %s_"
+                         (if (eq nemacs-gtk--isearch-direction 'backward)
+                             " backward" "")
+                         (if nemacs-gtk--isearch-failing
+                             " (failing)" "")
+                         nemacs-gtk--isearch-query))
+                ((string-empty-p nemacs-gtk--last-key-text)
+                 "(press any key)")
+                (t (format "Last key: %s" nemacs-gtk--last-key-text)))))
+    (nelisp-gtk-paint-frame-simple
+     nemacs-gtk--rows
+     nemacs-gtk--cols
+     nemacs-gtk--buffer-area-end
+     nemacs-gtk--scroll-offset
+     content
+     point
+     mode-line
+     echo)))
+
 (defun nemacs-gtk--repaint ()
   "One full redraw cycle: buffer, mode line, echo, cursor, queue draw.
 Phase 3.D: each sub-step is guarded by `--guard' so a single
@@ -5570,21 +5613,27 @@ the whole redraw.  Phase 3.E: heavy extras (= region overlay /
 isearch all-match / paren-match / font-lock color spans /
 trailing-whitespace / column ruler) are gated on
 `--paint-extras-enabled' so the default boot stays fast on
-resource-constrained VMs."
-  (nemacs-gtk--guard "grid-clear"  (nelisp-gtk-grid-clear))
-  (nemacs-gtk--guard "buffer-area" (nemacs-gtk--paint-buffer-area))
-  (nemacs-gtk--guard "mode-line"   (nemacs-gtk--paint-mode-line))
-  (nemacs-gtk--guard "echo-area"   (nemacs-gtk--paint-echo-area))
-  (when nemacs-gtk--paint-extras-enabled
-    (nemacs-gtk--guard "region"      (nemacs-gtk--paint-region-overlay))
-    (nemacs-gtk--guard "highlights"  (nemacs-gtk--paint-highlights))
-    (nemacs-gtk--guard "color-spans" (nemacs-gtk--paint-color-spans)))
-  (nemacs-gtk--guard "cursor"
-    (let ((rc (nemacs-gtk--cursor-row-col)))
-      (if rc
-          (nelisp-gtk-set-cursor (car rc) (cdr rc))
-        (nelisp-gtk-set-cursor nil nil))))
-  (nemacs-gtk--guard "redraw"      (nelisp-gtk-redraw)))
+resource-constrained VMs.  Phase 3.F: when extras are off + we're
+single-window, take the all-in-one Rust fast path; the slow
+elisp-loop path stays around for multi-window + extras-on."
+  (cond
+   ((nemacs-gtk--repaint-fast-eligible-p)
+    (nemacs-gtk--guard "fast-paint" (nemacs-gtk--repaint-fast)))
+   (t
+    (nemacs-gtk--guard "grid-clear"  (nelisp-gtk-grid-clear))
+    (nemacs-gtk--guard "buffer-area" (nemacs-gtk--paint-buffer-area))
+    (nemacs-gtk--guard "mode-line"   (nemacs-gtk--paint-mode-line))
+    (nemacs-gtk--guard "echo-area"   (nemacs-gtk--paint-echo-area))
+    (when nemacs-gtk--paint-extras-enabled
+      (nemacs-gtk--guard "region"      (nemacs-gtk--paint-region-overlay))
+      (nemacs-gtk--guard "highlights"  (nemacs-gtk--paint-highlights))
+      (nemacs-gtk--guard "color-spans" (nemacs-gtk--paint-color-spans)))
+    (nemacs-gtk--guard "cursor"
+      (let ((rc (nemacs-gtk--cursor-row-col)))
+        (if rc
+            (nelisp-gtk-set-cursor (car rc) (cdr rc))
+          (nelisp-gtk-set-cursor nil nil))))
+    (nemacs-gtk--guard "redraw"      (nelisp-gtk-redraw)))))
 
 
 ;;;; --- key event translation ------------------------------------------------
