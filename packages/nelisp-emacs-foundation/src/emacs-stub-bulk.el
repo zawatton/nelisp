@@ -285,8 +285,11 @@ Forwarder to `forward-char' with negated count."
 (unless (fboundp 'file-relative-name) (defun file-relative-name (&rest _) nil))
 (unless (fboundp 'file-truename) (defun file-truename (&rest _) nil))
 (unless (fboundp 'fillarray) (defun fillarray (&rest _) nil))
-(unless (boundp 'fill-column) (defvar fill-column nil))
-(unless (fboundp 'fill-region) (defun fill-region (&rest _) nil))
+;; fill-column / fill-region moved to emacs-textmodes-stub.el (Phase
+;; 4 'C', 2026-05-06): the previous no-op `fill-region' broke MELPA
+;; packages routing word-wrap through `with-temp-buffer' + `fill-
+;; region' (= s.el's `s-word-wrap' canonical example).  The new
+;; module provides a real greedy word-wrap polyfill.
 (unless (fboundp 'find-function-search-for-symbol) (defun find-function-search-for-symbol (&rest _) nil))
 (unless (fboundp 'find-lisp-object-file-name) (defun find-lisp-object-file-name (&rest _) nil))
 (unless (boundp 'find-tag-default-function) (defvar find-tag-default-function nil))
