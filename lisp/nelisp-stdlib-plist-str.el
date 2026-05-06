@@ -28,6 +28,30 @@
 (defun string-empty-p (s)
   (= (length s) 0))
 
+;; Rust-min batch 6s (2026-05-06): `make-string' migrated from Rust
+;; to elisp.  The previous `bi_make_string' (~22 LOC) was mostly
+;; argument validation (non-negative LEN, valid char codepoint)
+;; wrapped around a 1-line `Sexp::mut_str(c.to_string().repeat(n))'.
+;; Migration moves the validation + arity dispatch to elisp; the
+;; "build a fresh `Sexp::MutStr' of N copies of CH" sliver remains
+;; in Rust as `nelisp--make-mut-string' so that callers like
+;; `emacs-redisplay.el' which `aset' into the result keep their
+;; mutable-string contract.
+(defun make-string (n ch &optional _multibyte)
+  "Return a fresh string of N chars all set to CH (= int codepoint).
+Result is mutable so callers may `aset' into it.  MULTIBYTE arg
+accepted for API parity but ignored — NeLisp strings are always
+the byte-as-char repr."
+  (cond
+   ((not (integerp n))
+    (signal 'wrong-type-argument (list 'integerp n)))
+   ((< n 0)
+    (signal 'wrong-type-argument (list 'natnump n)))
+   ((not (integerp ch))
+    (signal 'wrong-type-argument (list 'characterp ch)))
+   (t
+    (nelisp--make-mut-string n ch))))
+
 ;; Rust-min batch 6r (2026-05-06): `concat' migrated from Rust to
 ;; elisp.  The previous `bi_concat' (~28 LOC) walked args, expanding
 ;; strings → chars + lists-of-ints, and appended into a Rust String.

@@ -118,13 +118,18 @@ pub fn install_builtins(env: &mut Env) {
         // Rust-min (2026-05-06 batch 6c): char-to-string / string-to-char
         // / string / unibyte-string migrated to elisp
         // (lisp/nelisp-stdlib-plist-str.el).
-        "make-string",
+        // Rust-min (2026-05-06 batch 6s): `make-string' migrated to
+        // elisp (lisp/nelisp-stdlib-plist-str.el).  Only the
+        // build-a-Sexp::MutStr sliver remains as
+        // `nelisp--make-mut-string'.
+        "nelisp--make-mut-string",
         // Rust-min (2026-05-06 batch 6p): upcase / downcase /
         // capitalize migrated to elisp (ASCII-only case mapping —
         // see lisp/nelisp-stdlib-plist-str.el).
         // Rust-min (2026-05-06 batch 5a): string-to-number migrated
         // to elisp (lisp/nelisp-stdlib-plist-str.el).
-        "split-string",
+        // Rust-min (2026-05-06 batch 6n): split-string migrated to
+        // elisp (lisp/nelisp-stdlib-plist-str.el).
         // Rust-min (2026-05-06): string-trim family +
         // string-prefix-p / string-suffix-p migrated to elisp
         // (lisp/nelisp-stdlib-plist-str.el).
@@ -337,14 +342,17 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // intern-soft migrated to elisp (Rust-min 2026-05-06 batch 6f,
         // see lisp/nelisp-stdlib-misc.el).
         "make-symbol" => bi_make_symbol(args),
-        "make-string" => bi_make_string(args),
+        // make-string migrated to elisp (Rust-min 2026-05-06 batch 6s,
+        // see lisp/nelisp-stdlib-plist-str.el).  Build sliver:
+        "nelisp--make-mut-string" => bi_make_mut_string(args),
         // char-to-string / string / unibyte-string / string-to-char
         // migrated to elisp (Rust-min 2026-05-06 batch 6c, see
         // lisp/nelisp-stdlib-plist-str.el).
         // string-to-number migrated to elisp (Rust-min 2026-05-06 batch 5a).
         // upcase / downcase / capitalize migrated to elisp (Rust-min
         // 2026-05-06 batch 6p, see lisp/nelisp-stdlib-plist-str.el).
-        "split-string" => bi_split_string(args),
+        // split-string migrated to elisp (Rust-min 2026-05-06 batch 6n,
+        // see lisp/nelisp-stdlib-plist-str.el; dead body removed in 6s).
         // string-trim family + string-prefix-p / string-suffix-p
         // migrated to elisp (Rust-min 2026-05-06, see
         // lisp/nelisp-stdlib-plist-str.el).
@@ -1032,8 +1040,21 @@ fn bi_make_symbol(args: &[Sexp]) -> Result<Sexp, EvalError> {
 // Rust-min (2026-05-06 batch 3): `mapconcat' migrated to elisp
 // (lisp/nelisp-stdlib-plist-str.el).
 
-fn bi_make_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("make-string", args, 2, Some(3))?;
+// bi_make_string removed — see lisp/nelisp-stdlib-plist-str.el
+// (Rust-min 2026-05-06 batch 6s).  The argument-validation +
+// arity dispatch is fully expressible in elisp; only the
+// "build-a-fresh-Sexp::MutStr" sliver remains here as
+// `nelisp--make-mut-string' (just below).  The MutStr return type
+// is preserved so that callers (e.g. `emacs-redisplay.el') which
+// `aset' into the result keep their mutable-string contract.
+
+/// `(nelisp--make-mut-string LEN CH)' — return a fresh mutable
+/// string of LEN copies of CH (= int codepoint).  Validation of
+/// LEN being non-negative + CH being a valid codepoint is done by
+/// the elisp `make-string' wrapper, so this primitive trusts
+/// its inputs.  Sole "build-a-MutStr" sliver after batch 6s.
+fn bi_make_mut_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--make-mut-string", args, 2, Some(2))?;
     let n = match &args[0] {
         Sexp::Int(n) if *n >= 0 => *n as usize,
         other => return Err(EvalError::WrongType {
@@ -1050,8 +1071,6 @@ fn bi_make_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
             got: other.clone(),
         }),
     };
-    // make-string is the canonical mutable-string constructor — return
-    // MutStr so callers can `aset' into it (= gap-buffer fill, etc.).
     Ok(Sexp::mut_str(c.to_string().repeat(n)))
 }
 
@@ -1069,31 +1088,11 @@ fn bi_make_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
 // on NeLisp's byte-as-char string repr, which never delivered
 // meaningful Unicode case mapping for multi-byte input anyway).
 
-fn bi_split_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("split-string", args, 1, Some(4))?;
-    let s = match &args[0] {
-        Sexp::Str(s) => s.clone(),
-        Sexp::MutStr(rc) => rc.borrow().clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "stringp".into(),
-            got: other.clone(),
-        }),
-    };
-    // SEPARATORS arg: regexp or default whitespace.  We accept a
-    // literal-string regex (no backslash specials).  Falls back to
-    // whitespace when nil/missing.
-    let parts: Vec<String> = match args.get(1) {
-        Some(Sexp::Str(sep)) if !sep.is_empty() => {
-            s.split(sep.as_str()).map(|p| p.to_string()).collect()
-        }
-        _ => s.split_whitespace().map(|p| p.to_string()).collect(),
-    };
-    let mut out = Sexp::Nil;
-    for part in parts.into_iter().rev() {
-        out = Sexp::cons(Sexp::Str(part), out);
-    }
-    Ok(out)
-}
+// bi_split_string removed (Rust-min batch 6n / re-cleanup batch 6s).
+// The literal-string split + whitespace fallback lives in elisp at
+// lisp/nelisp-stdlib-plist-str.el.  This dead function body
+// resurfaced briefly via a stash-merge artefact during batch 6o
+// branch surgery and is now wholesale removed.
 
 // bi_string_trim / bi_string_trim_left / bi_string_trim_right /
 // bi_string_prefix_p / bi_string_suffix_p removed — see
