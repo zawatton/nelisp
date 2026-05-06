@@ -3832,6 +3832,59 @@ log we mirror onto `*Messages*' via the existing `message' wiring)."
   (setq nemacs-gtk--last-key-text "messages-buffer"))
 
 
+;;;; --- bundle Phase 2.BM (whitespace tools) -------------------------------
+
+(defun nemacs-gtk-show-trailing-whitespace ()
+  "M-x show-trailing-whitespace — toggle red overlay for trailing
+whitespace at line ends in the active buffer.  Works with the
+Phase 2.BL highlight infrastructure: each affected span gets a
+red translucent rectangle on the next paint cycle."
+  (interactive)
+  (setq nemacs-gtk--show-trailing-whitespace
+        (not nemacs-gtk--show-trailing-whitespace))
+  (setq nemacs-gtk--last-key-text
+        (format "show-trailing-whitespace: %s"
+                (if nemacs-gtk--show-trailing-whitespace "on" "off"))))
+
+(defun nemacs-gtk-delete-trailing-whitespace ()
+  "M-x delete-trailing-whitespace — strip all `\\s' / `\\t' chars
+that immediately precede a `\\n' (or EOB) in the active buffer.
+Iterates from the end so positions stay valid mid-walk."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let* ((text (buffer-string))
+           (tlen (length text))
+           (i 0)
+           (line-start 0)
+           (deletes '()))
+      (while (< i tlen)
+        (let ((c (aref text i)))
+          (when (or (eq c ?\n) (= i (1- tlen)))
+            (let ((eol (cond ((eq c ?\n) i)
+                             (t (1+ i)))))
+              (let ((j eol))
+                (while (and (> j line-start)
+                            (memq (aref text (1- j)) '(?\s ?\t)))
+                  (setq j (1- j)))
+                (when (< j eol)
+                  (push (cons (1+ j) (1+ eol)) deletes)))
+              (setq line-start (1+ i)))))
+        (setq i (1+ i)))
+      (cond
+       ((null deletes)
+        (setq nemacs-gtk--last-key-text
+              "delete-trailing-whitespace: nothing to delete"))
+       (t
+        (let ((count 0))
+          (dolist (d deletes)
+            (let ((s (car d)) (e (cdr d)))
+              (nelisp-ec-delete-region s e)
+              (setq count (+ count (- e s)))))
+          (setq nemacs-gtk--last-key-text
+                (format "delete-trailing-whitespace: %d chars / %d lines"
+                        count (length deletes)))))))))
+
+
 ;;;; --- minibuffer mode (Phase 2.J — M-x execute-extended-command) ----------
 
 (defvar nemacs-gtk--minibuffer-active nil
@@ -4343,7 +4396,11 @@ success / failure."
     "nemacs-gtk-messages-buffer"
     "cheat-sheet"
     "scratch-buffer"
-    "messages-buffer")
+    "messages-buffer"
+    "nemacs-gtk-show-trailing-whitespace"
+    "nemacs-gtk-delete-trailing-whitespace"
+    "show-trailing-whitespace"
+    "delete-trailing-whitespace")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
@@ -4989,14 +5046,55 @@ Green tint (rgb 80 220 120) at 50% alpha."
                       (car rc-e) (cdr rc-e)
                       80 220 120 128)))))))
 
+(defvar nemacs-gtk--show-trailing-whitespace nil
+  "Phase 2.BM — when t, `--paint-highlights' adds red overlays for
+trailing whitespace at the end of each line in the active buffer.
+Toggle via M-x show-trailing-whitespace.")
+
+(defun nemacs-gtk--collect-trailing-whitespace-highlights ()
+  "Phase 2.BM — return a list of `(SR SC ER EC R G B A)' entries for
+each line's trailing whitespace span (= the maximal run of `\\s'/`\\t'
+ending at `\\n' or EOB).  Red tint (rgb 240 80 80) at 40% alpha."
+  (when nemacs-gtk--show-trailing-whitespace
+    (with-current-buffer (nemacs-gtk--active-buffer)
+      (let* ((text (buffer-string))
+             (tlen (length text))
+             (i 0)
+             (line-start 0)
+             (acc '()))
+        (while (< i tlen)
+          (let ((c (aref text i)))
+            (when (or (eq c ?\n) (= i (1- tlen)))
+              ;; line ends at i (= newline) or i+1 (= EOB)
+              (let ((eol (cond ((eq c ?\n) i)
+                               (t (1+ i)))))
+                ;; Walk back from eol over whitespace
+                (let ((j eol))
+                  (while (and (> j line-start)
+                              (memq (aref text (1- j)) '(?\s ?\t)))
+                    (setq j (1- j)))
+                  (when (< j eol)
+                    (let* ((rc-s (nemacs-gtk--pos-to-row-col (1+ j)))
+                           (rc-e (nemacs-gtk--pos-to-row-col (1+ eol))))
+                      (when (and rc-s rc-e)
+                        (push (list (car rc-s) (cdr rc-s)
+                                    (car rc-e) (cdr rc-e)
+                                    240 80 80 102)
+                              acc)))))
+                (setq line-start (1+ i)))))
+          (setq i (1+ i)))
+        (nreverse acc)))))
+
 (defun nemacs-gtk--paint-highlights ()
-  "Phase 2.BL — combine isearch matches + paren-match into a single
-highlight list and push to the Rust side.  No-op when the extern
-isn't loaded (= substrate-only boot)."
+  "Phase 2.BL+BM — combine isearch matches, paren-match, and trailing
+whitespace into a single highlight list and push to the Rust side.
+No-op when the extern isn't loaded (= substrate-only boot)."
   (when (fboundp 'nelisp-gtk-set-highlights)
     (let ((isearch-hl (nemacs-gtk--collect-isearch-highlights))
-          (paren-hl   (nemacs-gtk--collect-paren-highlight)))
-      (nelisp-gtk-set-highlights (append isearch-hl paren-hl)))))
+          (paren-hl   (nemacs-gtk--collect-paren-highlight))
+          (ws-hl      (nemacs-gtk--collect-trailing-whitespace-highlights)))
+      (nelisp-gtk-set-highlights
+       (append isearch-hl paren-hl ws-hl)))))
 
 (defun nemacs-gtk--repaint ()
   "One full redraw cycle: buffer, mode line, echo, cursor, queue draw."
@@ -5164,6 +5262,7 @@ itself a keymap (= a prefix mid-sequence)."
     nemacs-gtk-upcase-region
     nemacs-gtk-downcase-region
     nemacs-gtk-capitalize-region
+    nemacs-gtk-delete-trailing-whitespace
     delete-char
     delete-backward-char)
   "Phase 2.AQ: command symbols the dispatcher refuses to run when
