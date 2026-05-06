@@ -40,7 +40,9 @@ pub fn install_builtins(env: &mut Env) {
         // arithmetic
         "+", "-", "*", "/", "mod", "<", ">", "<=", ">=", "=", "/=",
         // equality
-        "eq", "equal", "eql", "equal-including-properties",
+        // Rust-min (2026-05-06 batch 6e): `eql' / `equal-including-properties'
+        // moved to elisp defalias of `equal'.
+        "eq", "equal",
         // cons / list
         "car", "cdr", "cons", "length", "append",
         "caar", "cadr", "cdar", "cddr",
@@ -67,14 +69,20 @@ pub fn install_builtins(env: &mut Env) {
         // Rust-min (2026-05-06 batch 4): sort + copy-tree migrated
         // to elisp (lisp/nelisp-stdlib-plist-str.el).
         // bitwise — required by keymap / event-encoding code
-        "logior", "logand", "logxor", "lognot", "ash", "lsh",
+        // Rust-min (2026-05-06 batch 6e): `lsh' moved to elisp
+        // defalias of `ash'.
+        "logior", "logand", "logxor", "lognot", "ash",
         // hashing — used by hash-table key derivation in user code
-        "sxhash", "sxhash-equal", "sxhash-eq", "sxhash-eql",
+        // Rust-min (2026-05-06 batch 6e): `sxhash-{equal,eq,eql}'
+        // moved to elisp defalias of `sxhash'.
+        "sxhash",
         // string
         // Rust-min (2026-05-06 batch 6b): substring migrated to elisp
         // (lisp/nelisp-stdlib-plist-str.el).
         "concat", "format", "intern", "intern-soft", "symbol-name",
-        "string-equal", "string=",
+        // Rust-min (2026-05-06 batch 6e): `string=' moved to elisp
+        // defalias of `string-equal'.
+        "string-equal",
         "string-match-p",
         // Rust-min (2026-05-06): `regexp-quote' migrated to elisp
         // (see lisp/nelisp-stdlib-plist-str.el).
@@ -122,7 +130,9 @@ pub fn install_builtins(env: &mut Env) {
         // symbol / function
         "symbol-value", "symbol-function", "fboundp", "boundp", "funcall", "apply", "eval",
         "defalias", "fset", "fmakunbound", "makunbound",
-        "signal", "error", "print", "princ", "prin1-to-string", "message",
+        // Rust-min (2026-05-06 batch 6e): `print' moved to elisp
+        // defalias of `princ'.
+        "signal", "error", "princ", "prin1-to-string", "message",
         "provide", "require", "featurep",
         // self-process stdio (Phase 9 minimal — needed by stand-alone Lisp servers
         // such as elisp-lsp running on the `nelisp` binary)
@@ -169,13 +179,13 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "=" => bi_eq_num(args),
         "/=" => bi_neq_num(args),
         // ---- equality ----
+        // Rust-min (2026-05-06 batch 6e): `equal-including-properties'
+        // / `eql' moved to elisp defalias of `equal'.  The MVP impl
+        // collapses both into the strict structural-equality path, so
+        // the dispatch fanout was a typing burden with no runtime
+        // distinction.
         "eq" => bi_eq(args),
-        "equal" | "equal-including-properties" => bi_equal(args),
-        // `eql' is `equal' for numbers and `eq' for everything else,
-        // but for our MVP `equal' is a strict superset of both, so we
-        // alias `eql' to `equal' (= produces the same boolean result
-        // on every input shape we care about).
-        "eql" => bi_equal(args),
+        "equal" => bi_equal(args),
         // ---- cons / list ----
         "car" => bi_car(args),
         "cdr" => bi_cdr(args),
@@ -244,15 +254,18 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "logand" => bi_logand(args),
         "logxor" => bi_logxor(args),
         "lognot" => bi_lognot(args),
-        "ash" | "lsh" => bi_ash(args),
-        "sxhash" | "sxhash-equal" | "sxhash-eq" | "sxhash-eql"
-            => bi_sxhash(args),
+        // Rust-min (2026-05-06 batch 6e): `lsh' / `sxhash-{equal,eq,eql}'
+        // moved to elisp defalias of `ash' / `sxhash'.
+        "ash" => bi_ash(args),
+        "sxhash" => bi_sxhash(args),
         // ---- string ----
         "concat" => bi_concat(args),
         "format" => bi_format(args),
         "intern" => bi_intern(args),
         "symbol-name" => bi_symbol_name(args),
-        "string-equal" | "string=" => bi_string_eq(args),
+        // Rust-min (2026-05-06 batch 6e): `string=' moved to elisp
+        // defalias of `string-equal'.
+        "string-equal" => bi_string_eq(args),
         "string-match-p" => bi_string_match_p(args),
         // "regexp-quote" — migrated to elisp (Rust-min 2026-05-06)
         "expand-file-name" => bi_expand_file_name(args, env),
@@ -307,7 +320,11 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "eval" => bi_eval(args, env),
         "signal" => bi_signal(args),
         "error" => bi_error(args),
-        "print" | "princ" => bi_princ(args),
+        // Rust-min (2026-05-06 batch 6e): `print' moved to elisp
+        // defalias of `princ'.  In MVP both have the no-quoting
+        // behaviour of `princ'; promoting to defalias makes the
+        // duplication visible.
+        "princ" => bi_princ(args),
         "prin1-to-string" => bi_prin1_to_string(args),
         "message" => bi_message(args),
         "read-stdin-bytes" => bi_read_stdin_bytes(args),

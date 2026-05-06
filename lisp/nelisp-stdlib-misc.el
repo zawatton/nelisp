@@ -41,4 +41,21 @@
          ((symbolp prefix) (if prefix (symbol-name prefix) "g"))
          (t "g"))))
 
+;; Rust-min batch 6e (2026-05-06): alias-only dispatch arms reduced
+;; to `defalias'.  Each pair below previously routed through a
+;; single Rust impl via `"foo" | "bar" => bi_<...>(args)' — the
+;; aliasing was implementation-private and invisible to the
+;; consumer.  Promoting it to a proper `defalias' shrinks the
+;; dispatch + registered-name list and exposes the alias structure
+;; (= `(symbol-function 'string=)' now returns `string-equal' so
+;; callers can distinguish the canonical name).
+(defalias 'equal-including-properties 'equal)
+(defalias 'eql 'equal)
+(defalias 'lsh 'ash)
+(defalias 'sxhash-equal 'sxhash)
+(defalias 'sxhash-eq 'sxhash)
+(defalias 'sxhash-eql 'sxhash)
+(defalias 'string= 'string-equal)
+(defalias 'print 'princ)
+
 ;; nelisp-stdlib-misc.el ends here
