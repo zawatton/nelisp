@@ -119,6 +119,24 @@
         ((stringp name) (intern name))
         (t (signal 'wrong-type-argument (list 'stringp name)))))
 
+;; Rust-min batch 6m (2026-05-06): `error' migrated from Rust to
+;; elisp.  The previous `bi_error' was a 3-step pipeline:
+;;   (1) build msg = `bi_format'(format-string, &args[1..]) when
+;;       args[0] is a string, else prin1-to-string(args[0]),
+;;       else "" for empty args
+;;   (2) signal 'error with `(list MSG)' as the data list
+;; All steps are pure elisp once `format' is in elisp (see
+;; lisp/nelisp-stdlib-plist-str.el — Rust-min batch 6m above).
+;; Migrating `error' too lets us delete `bi_format' + the format
+;; helpers (FormatSpec / pad_field / fmt_int_with_sign /
+;; fmt_float_default) wholesale from Rust.
+(defun error (&rest args)
+  (let ((msg (cond
+              ((null args) "")
+              ((stringp (car args)) (apply (function format) args))
+              (t (prin1-to-string (car args))))))
+    (signal 'error (list msg))))
+
 ;; Rust-min batch 6i (2026-05-06): `princ' migrated from Rust to
 ;; elisp.  The previous `bi_princ' was just a stringp / Display
 ;; dispatch wrapped around a stdout writeln:

@@ -91,7 +91,13 @@ pub fn install_builtins(env: &mut Env) {
         // (lisp/nelisp-stdlib-plist-str.el).
         // Rust-min (2026-05-06 batch 6f): `intern-soft' migrated to
         // elisp (lisp/nelisp-stdlib-misc.el).
-        "concat", "format", "intern", "symbol-name",
+        // Rust-min (2026-05-06 batch 6m): `format' migrated to elisp
+        // (lisp/nelisp-stdlib-plist-str.el).  Only the IEEE-754
+        // float→string sliver remains as `nelisp--format-float-body';
+        // `truncate' is also added so the elisp dispatcher can
+        // coerce float→int for `%d/%i' without a privileged cast.
+        "concat", "intern", "symbol-name",
+        "nelisp--format-float-body", "truncate",
         // Rust-min (2026-05-06 batch 6e): `string=' moved to elisp
         // defalias of `string-equal'.
         "string-equal",
@@ -152,7 +158,10 @@ pub fn install_builtins(env: &mut Env) {
         // Rust-min (2026-05-06 batch 6i): `princ' moved to elisp
         // (lisp/nelisp-stdlib-misc.el); only the byte-write-to-stdout
         // sliver remains as `nelisp--write-stdout-bytes'.
-        "signal", "error", "prin1-to-string",
+        // Rust-min (2026-05-06 batch 6m): `error' moved to elisp
+        // (lisp/nelisp-stdlib-misc.el) — uses elisp `format' +
+        // `signal' so no Rust wrapper is needed any more.
+        "signal", "prin1-to-string",
         "nelisp--write-stderr-line",
         "nelisp--write-stdout-bytes",
         "provide", "require", "featurep",
@@ -281,7 +290,11 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "sxhash" => bi_sxhash(args),
         // ---- string ----
         "concat" => bi_concat(args),
-        "format" => bi_format(args),
+        // format migrated to elisp (Rust-min 2026-05-06 batch 6m,
+        // see lisp/nelisp-stdlib-plist-str.el).  Only the IEEE-754
+        // body sliver remains as `nelisp--format-float-body'.
+        "nelisp--format-float-body" => bi_format_float_body(args),
+        "truncate" => bi_truncate(args),
         "intern" => bi_intern(args),
         "symbol-name" => bi_symbol_name(args),
         // Rust-min (2026-05-06 batch 6e): `string=' moved to elisp
@@ -341,7 +354,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "apply" => bi_apply(args, env),
         "eval" => bi_eval(args, env),
         "signal" => bi_signal(args),
-        "error" => bi_error(args),
+        // error migrated to elisp (Rust-min 2026-05-06 batch 6m,
+        // see lisp/nelisp-stdlib-misc.el).
         // Rust-min (2026-05-06 batch 6e): `print' moved to elisp
         // defalias of `princ'.  In MVP both have the no-quoting
         // behaviour of `princ'; promoting to defalias makes the
@@ -967,280 +981,13 @@ fn bi_concat(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::Str(out))
 }
 
-/// Tiny `format` implementation — enough for the bootstrap (= `%s`,
-/// `%d`, `%S`, `%%`).  Doc 44 §3.3 keeps this scope minimal.
-#[derive(Default, Debug, Clone)]
-struct FormatSpec {
-    left_align: bool,
-    zero_pad: bool,
-    plus: bool,
-    space: bool,
-    sharp: bool,
-    width: Option<usize>,
-    precision: Option<usize>,
-    conv: char,
-}
-
-fn pad_field(body: String, spec: &FormatSpec) -> String {
-    let Some(w) = spec.width else { return body };
-    let blen = body.chars().count();
-    if blen >= w {
-        return body;
-    }
-    let pad_n = w - blen;
-    let pad_ch = if spec.zero_pad && !spec.left_align {
-        '0'
-    } else {
-        ' '
-    };
-    let pad: String = std::iter::repeat(pad_ch).take(pad_n).collect();
-    if spec.left_align {
-        format!("{}{}", body, pad)
-    } else if spec.zero_pad
-        && (body.starts_with('-') || body.starts_with('+'))
-    {
-        // keep sign at the front of the field, pad after it.
-        let sign = &body[..1];
-        let rest = &body[1..];
-        format!("{}{}{}", sign, pad, rest)
-    } else {
-        format!("{}{}", pad, body)
-    }
-}
-
-fn fmt_int_with_sign(n: i64, spec: &FormatSpec) -> String {
-    if n < 0 {
-        format!("-{}", -(n as i128))
-    } else if spec.plus {
-        format!("+{}", n)
-    } else if spec.space {
-        format!(" {}", n)
-    } else {
-        n.to_string()
-    }
-}
-
-fn fmt_float_default(x: f64, spec: &FormatSpec) -> String {
-    let prec = spec.precision.unwrap_or(6);
-    let body = match spec.conv {
-        'f' | 'F' => format!("{:.*}", prec, x.abs()),
-        'e' => format!("{:.*e}", prec, x.abs()),
-        'E' => format!("{:.*E}", prec, x.abs()),
-        'g' | 'G' => {
-            // Use shortest of %e / %f.
-            let f = format!("{:.*}", prec, x.abs());
-            let e = format!("{:.*e}", prec, x.abs());
-            if f.len() <= e.len() {
-                f
-            } else {
-                e
-            }
-        }
-        _ => format!("{}", x.abs()),
-    };
-    if x.is_sign_negative() {
-        format!("-{}", body)
-    } else if spec.plus {
-        format!("+{}", body)
-    } else if spec.space {
-        format!(" {}", body)
-    } else {
-        body
-    }
-}
-
-fn bi_format(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("format", args, 1, None)?;
-    let template = match &args[0] {
-        Sexp::Str(s) => s.clone(),
-        Sexp::MutStr(rc) => rc.borrow().clone(),
-        other => {
-            return Err(EvalError::WrongType {
-                expected: "stringp".into(),
-                got: other.clone(),
-            })
-        }
-    };
-    let mut chars = template.chars().peekable();
-    let mut out = String::new();
-    let mut arg_idx = 1usize;
-    while let Some(c) = chars.next() {
-        if c != '%' {
-            out.push(c);
-            continue;
-        }
-        // Parse a format spec: flags, width, .precision, conv
-        let mut spec = FormatSpec::default();
-        // Flags loop.
-        while let Some(&pc) = chars.peek() {
-            match pc {
-                '-' => spec.left_align = true,
-                '0' => spec.zero_pad = true,
-                '+' => spec.plus = true,
-                ' ' => spec.space = true,
-                '#' => spec.sharp = true,
-                _ => break,
-            }
-            chars.next();
-        }
-        // Width.
-        let mut width = String::new();
-        while let Some(&pc) = chars.peek() {
-            if pc.is_ascii_digit() {
-                width.push(pc);
-                chars.next();
-            } else {
-                break;
-            }
-        }
-        if !width.is_empty() {
-            spec.width = Some(width.parse().unwrap_or(0));
-        }
-        // Precision.
-        if matches!(chars.peek(), Some(&'.')) {
-            chars.next();
-            let mut prec = String::new();
-            while let Some(&pc) = chars.peek() {
-                if pc.is_ascii_digit() {
-                    prec.push(pc);
-                    chars.next();
-                } else {
-                    break;
-                }
-            }
-            spec.precision = Some(prec.parse().unwrap_or(0));
-        }
-        // Conversion char.
-        let conv = match chars.next() {
-            Some(c) => c,
-            None => {
-                out.push('%');
-                continue;
-            }
-        };
-        spec.conv = conv;
-        match conv {
-            '%' => out.push('%'),
-            's' => {
-                let body = match args.get(arg_idx) {
-                    Some(Sexp::Str(s)) => s.clone(),
-                    Some(other) => format!("{}", other),
-                    None => String::new(),
-                };
-                arg_idx += 1;
-                let body = if let Some(p) = spec.precision {
-                    body.chars().take(p).collect()
-                } else {
-                    body
-                };
-                out.push_str(&pad_field(body, &spec));
-            }
-            'S' => {
-                let body = match args.get(arg_idx) {
-                    Some(arg) => format!("{}", arg),
-                    None => String::new(),
-                };
-                arg_idx += 1;
-                out.push_str(&pad_field(body, &spec));
-            }
-            'd' | 'i' => {
-                let n = match args.get(arg_idx) {
-                    Some(Sexp::Int(n)) => *n,
-                    Some(Sexp::Float(x)) => *x as i64,
-                    Some(other) => {
-                        return Err(EvalError::WrongType {
-                            expected: "integerp".into(),
-                            got: other.clone(),
-                        })
-                    }
-                    None => 0,
-                };
-                arg_idx += 1;
-                let body = fmt_int_with_sign(n, &spec);
-                out.push_str(&pad_field(body, &spec));
-            }
-            'x' | 'X' | 'o' | 'b' => {
-                let n = match args.get(arg_idx) {
-                    Some(Sexp::Int(n)) => *n,
-                    Some(Sexp::Float(x)) => *x as i64,
-                    Some(other) => {
-                        return Err(EvalError::WrongType {
-                            expected: "integerp".into(),
-                            got: other.clone(),
-                        })
-                    }
-                    None => 0,
-                };
-                arg_idx += 1;
-                // Negative numbers in Emacs %x render as a hex of the
-                // mathematical value (not two's-complement).  We follow
-                // that convention.
-                let abs_part = match conv {
-                    'x' => format!("{:x}", n.unsigned_abs()),
-                    'X' => format!("{:X}", n.unsigned_abs()),
-                    'o' => format!("{:o}", n.unsigned_abs()),
-                    'b' => format!("{:b}", n.unsigned_abs()),
-                    _ => unreachable!(),
-                };
-                let prefix = if spec.sharp {
-                    match conv {
-                        'x' => "0x",
-                        'X' => "0X",
-                        'o' => "0o",
-                        'b' => "0b",
-                        _ => "",
-                    }
-                } else {
-                    ""
-                };
-                let body = if n < 0 {
-                    format!("-{}{}", prefix, abs_part)
-                } else {
-                    format!("{}{}", prefix, abs_part)
-                };
-                out.push_str(&pad_field(body, &spec));
-            }
-            'c' => {
-                let n = match args.get(arg_idx) {
-                    Some(Sexp::Int(n)) => *n,
-                    Some(other) => {
-                        return Err(EvalError::WrongType {
-                            expected: "characterp".into(),
-                            got: other.clone(),
-                        })
-                    }
-                    None => 0,
-                };
-                arg_idx += 1;
-                let ch = char::from_u32(n as u32).unwrap_or('?');
-                out.push_str(&pad_field(ch.to_string(), &spec));
-            }
-            'f' | 'F' | 'e' | 'E' | 'g' | 'G' => {
-                let x = match args.get(arg_idx) {
-                    Some(Sexp::Float(x)) => *x,
-                    Some(Sexp::Int(n)) => *n as f64,
-                    Some(other) => {
-                        return Err(EvalError::WrongType {
-                            expected: "numberp".into(),
-                            got: other.clone(),
-                        })
-                    }
-                    None => 0.0,
-                };
-                arg_idx += 1;
-                let body = fmt_float_default(x, &spec);
-                out.push_str(&pad_field(body, &spec));
-            }
-            other => {
-                return Err(EvalError::Internal(format!(
-                    "format: unsupported conversion %{}",
-                    other
-                )))
-            }
-        }
-    }
-    Ok(Sexp::Str(out))
-}
+// Rust-min batch 6m (2026-05-06): `format` migrated from Rust to elisp.
+// The previous `bi_format` (~200 LOC) + helpers FormatSpec /
+// pad_field / fmt_int_with_sign / fmt_float_default lived here;
+// see lisp/nelisp-stdlib-plist-str.el for the new pure-elisp
+// dispatcher.  Only the IEEE-754 float-body sliver remains as a
+// Rust primitive — `bi_format_float_body` (further down in this
+// file).
 
 // bi_substring removed — see lisp/nelisp-stdlib-plist-str.el
 // (Rust-min 2026-05-06 batch 6b).  Vector substring is not in scope
@@ -2201,26 +1948,10 @@ fn bi_signal(args: &[Sexp]) -> Result<Sexp, EvalError> {
     })
 }
 
-fn bi_error(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let msg = if args.is_empty() {
-        String::new()
-    } else if let Sexp::Str(s) = &args[0] {
-        // Substitute %s / %d as `format` would.
-        let sub_args: Vec<Sexp> = std::iter::once(Sexp::Str(s.clone()))
-            .chain(args.iter().skip(1).cloned())
-            .collect();
-        match bi_format(&sub_args)? {
-            Sexp::Str(s) => s,
-            _ => s.clone(),
-        }
-    } else {
-        format!("{}", args[0])
-    };
-    Err(EvalError::UserError {
-        tag: "error".into(),
-        data: Sexp::list_from(&[Sexp::Str(msg)]),
-    })
-}
+// bi_error removed — see lisp/nelisp-stdlib-misc.el (Rust-min
+// 2026-05-06 batch 6m).  The 3-step (format, build msg, signal)
+// pipeline is fully expressible in elisp once `format' is in elisp;
+// `signal' (still Rust) does the actual stack-unwind.
 
 /// `(nelisp--write-stdout-bytes STR)' — write STR's bytes to stdout
 /// and flush.  No newline added.  Returns STR unchanged.  Building
@@ -2271,6 +2002,92 @@ fn bi_write_stderr_line(args: &[Sexp]) -> Result<Sexp, EvalError> {
 // 2026-05-06 batch 6h).  The nil-guard + format + writeln logic is
 // fully expressible in elisp once `nelisp--write-stderr-line'
 // exists as a primitive (just above).
+
+/// `(nelisp--format-float-body CONV PREC X)' — return the unsigned,
+/// unpadded body string for a `format' float-conversion (CONV one of
+/// ?f ?F ?e ?E ?g ?G).  PREC is the precision (>= 0); X is the
+/// magnitude (the elisp dispatcher already took the absolute value
+/// and will prepend the sign + apply width / padding itself).
+///
+/// Sole survivor of the Rust-min batch 6m migration of `format' to
+/// elisp: the IEEE-754 round-to-nearest-decimal logic is provided by
+/// Rust's `{:.*}' / `{:.*e}' / `{:.*E}' format machinery, which is
+/// not feasibly re-implementable in pure elisp without ~1000 LOC of
+/// Grisu / dragon4.  Everything else (= spec parser, padding, sign,
+/// integer→radix-string, %s / %S / %c / %% / %d / %i / %x / %X /
+/// %o / %b) lives in lisp/nelisp-stdlib-plist-str.el.
+fn bi_format_float_body(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--format-float-body", args, 3, Some(3))?;
+    let conv = match &args[0] {
+        Sexp::Int(n) => char::from_u32(*n as u32).ok_or_else(|| {
+            EvalError::Internal(format!("nelisp--format-float-body: bad conv code {}", n))
+        })?,
+        other => {
+            return Err(EvalError::WrongType {
+                expected: "integerp".into(),
+                got: other.clone(),
+            })
+        }
+    };
+    let prec = match &args[1] {
+        Sexp::Int(n) if *n >= 0 => *n as usize,
+        other => {
+            return Err(EvalError::WrongType {
+                expected: "non-negative integerp".into(),
+                got: other.clone(),
+            })
+        }
+    };
+    let x = match &args[2] {
+        Sexp::Float(x) => *x,
+        Sexp::Int(n) => *n as f64,
+        other => {
+            return Err(EvalError::WrongType {
+                expected: "numberp".into(),
+                got: other.clone(),
+            })
+        }
+    };
+    let body = match conv {
+        'f' | 'F' => format!("{:.*}", prec, x),
+        'e' => format!("{:.*e}", prec, x),
+        'E' => format!("{:.*E}", prec, x),
+        'g' | 'G' => {
+            let f = format!("{:.*}", prec, x);
+            let e = format!("{:.*e}", prec, x);
+            if f.len() <= e.len() {
+                f
+            } else {
+                e
+            }
+        }
+        other => {
+            return Err(EvalError::Internal(format!(
+                "nelisp--format-float-body: unsupported conv %{}",
+                other
+            )))
+        }
+    };
+    Ok(Sexp::Str(body))
+}
+
+/// `(truncate X)' — return X truncated toward zero as an integer.
+/// For a Float argument we cast via `as i64' (= the same trunc-toward-
+/// zero semantics the previous `bi_format' used inline for `%d FLOAT').
+/// For an Int argument we return it unchanged.  Added in Rust-min
+/// batch 6m so the elisp `format' dispatcher can coerce float→int
+/// for `%d/%i/%x/%X/%o/%b' without needing a privileged float-cast.
+fn bi_truncate(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("truncate", args, 1, Some(1))?;
+    match &args[0] {
+        Sexp::Int(n) => Ok(Sexp::Int(*n)),
+        Sexp::Float(x) => Ok(Sexp::Int(*x as i64)),
+        other => Err(EvalError::WrongType {
+            expected: "numberp".into(),
+            got: other.clone(),
+        }),
+    }
+}
 
 /// (read-stdin-bytes LIMIT) — block-read up to LIMIT bytes from fd 0.
 ///

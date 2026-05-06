@@ -28,6 +28,236 @@
 (defun string-empty-p (s)
   (= (length s) 0))
 
+;; Rust-min batch 6m (2026-05-06): `format' migrated from Rust to
+;; elisp.  The previous `bi_format' (~200 LOC) + helpers (FormatSpec
+;; struct, pad_field, fmt_int_with_sign, fmt_float_default) handled
+;; spec parsing, flags/width/precision parsing, %s/%S/%c/%%/%d/%i/
+;; %x/%X/%o/%b/%f/%F/%e/%E/%g/%G dispatch, sign + padding.  Of those,
+;; ONLY the IEEE-754 float→string conversion genuinely needs Rust
+;; (= the `{:.*}' / `{:.*e}' / `{:.*E}' format machinery is Grisu /
+;; round-to-nearest, not reproducible in pure elisp without a 1000+
+;; LOC dragon4 polyfill).  Everything else (= parser, padding, sign,
+;; integer→radix-string via repeated `mod' / `/') is pure elisp.
+;;
+;; The Rust-side surface left after this batch:
+;;   (nelisp--format-float-body CONV PREC X)
+;;     CONV  — char codepoint integer (?f/?F/?e/?E/?g/?G)
+;;     PREC  — non-negative integer (precision)
+;;     X     — float OR integer (the magnitude — sign is added in elisp)
+;;     => unsigned, unpadded body string
+;;
+;; Plus `truncate' (new tiny primitive) so `%d' on a float behaves
+;; the same as before (= `as i64' = trunc-toward-zero).
+
+(defun nelisp--format-int-abs-decimal (n)
+  "Return the unsigned decimal digit-string of |N|.  N is an integer."
+  (cond
+   ((= n 0) "0")
+   (t
+    (let ((m (if (< n 0) (- n) n))
+          (acc nil))
+      (while (> m 0)
+        (setq acc (cons (+ ?0 (mod m 10)) acc))
+        (setq m (/ m 10)))
+      (concat acc)))))
+
+(defun nelisp--format-int-abs-radix (n base upcase)
+  "Return the unsigned digit-string of |N| in BASE.
+UPCASE non-nil → use A-Z for digits >= 10."
+  (cond
+   ((= n 0) "0")
+   (t
+    (let ((m (if (< n 0) (- n) n))
+          (acc nil))
+      (while (> m 0)
+        (let ((d (mod m base)))
+          (setq acc (cons (cond
+                           ((< d 10) (+ ?0 d))
+                           (upcase   (+ ?A (- d 10)))
+                           (t        (+ ?a (- d 10))))
+                          acc))
+          (setq m (/ m base))))
+      (concat acc)))))
+
+(defun nelisp--format-pad (body width left-align zero-pad)
+  "Pad BODY to WIDTH chars.  LEFT-ALIGN non-nil → pad on the right
+with spaces.  ZERO-PAD non-nil → pad on the left with `0' (= and
+keep any sign char at the front, padding after it)."
+  (cond
+   ((null width) body)
+   (t
+    (let ((blen (length body)))
+      (cond
+       ((>= blen width) body)
+       (t
+        (let* ((n (- width blen))
+               (ch (if (and zero-pad (not left-align)) ?0 ?\s))
+               (pad (make-string n ch)))
+          (cond
+           (left-align (concat body pad))
+           ((and zero-pad
+                 (> blen 0)
+                 (or (eq (aref body 0) ?-) (eq (aref body 0) ?+)))
+            (concat (substring body 0 1) pad (substring body 1)))
+           (t (concat pad body))))))))))
+
+(defun nelisp--format-int-with-sign (n plus space)
+  "Return decimal string for integer N with sign prefix (`-'/`+'/` ').
+PLUS / SPACE govern the non-negative case."
+  (let ((abs-part (nelisp--format-int-abs-decimal n)))
+    (cond
+     ((< n 0) (concat "-" abs-part))
+     (plus    (concat "+" abs-part))
+     (space   (concat " " abs-part))
+     (t       abs-part))))
+
+(defun nelisp--format-int-radix (n conv sharp)
+  "Format integer N in radix per CONV (= ?x / ?X / ?o / ?b).
+SHARP non-nil → prepend the C-style 0x / 0X / 0o / 0b prefix.
+Negative N renders as a minus sign + abs (= mathematical value,
+not two's-complement) — matches the host Emacs / previous Rust
+contract."
+  (let* ((upcase (eq conv ?X))
+         (base (cond ((or (eq conv ?x) (eq conv ?X)) 16)
+                     ((eq conv ?o) 8)
+                     ((eq conv ?b) 2)))
+         (abs-part (nelisp--format-int-abs-radix n base upcase))
+         (prefix (if sharp
+                     (cond ((eq conv ?x) "0x")
+                           ((eq conv ?X) "0X")
+                           ((eq conv ?o) "0o")
+                           ((eq conv ?b) "0b"))
+                   "")))
+    (if (< n 0)
+        (concat "-" prefix abs-part)
+      (concat prefix abs-part))))
+
+(defun nelisp--format-coerce-int (arg)
+  "Coerce ARG to an integer for %d/%i/%x/%X/%o/%b.  Float → trunc
+toward zero; integer → identity; else signal `wrong-type-argument'."
+  (cond
+   ((integerp arg) arg)
+   ((floatp arg) (truncate arg))
+   (t (signal 'wrong-type-argument (list 'integerp arg)))))
+
+(defun nelisp--format-coerce-num (arg)
+  "Coerce ARG to a number for %f/%F/%e/%E/%g/%G.  Float / int →
+identity; else signal `wrong-type-argument'."
+  (cond
+   ((floatp arg) arg)
+   ((integerp arg) arg)
+   (t (signal 'wrong-type-argument (list 'numberp arg)))))
+
+(defun format (template &rest args)
+  "Format TEMPLATE with ARGS.  Supports %s/%S/%c/%%/%d/%i/%x/%X/%o/
+%b/%f/%F/%e/%E/%g/%G with flags `-+ 0#', optional WIDTH and
+.PRECISION.  Pure-elisp dispatcher; only IEEE-754 float→string
+goes through `nelisp--format-float-body' (Rust)."
+  (let ((i 0)
+        (n (length template))
+        (out nil)
+        (arg-i 0))
+    (while (< i n)
+      (let ((c (aref template i)))
+        (cond
+         ((not (eq c ?%))
+          (setq out (cons (string c) out))
+          (setq i (1+ i)))
+         (t
+          (setq i (1+ i))
+          (let ((left-align nil) (zero-pad nil) (plus nil)
+                (space nil) (sharp nil) (width nil) (precision nil))
+            ;; flags
+            (let ((flag-cont t))
+              (while (and flag-cont (< i n))
+                (let ((pc (aref template i)))
+                  (cond
+                   ((eq pc ?-) (setq left-align t) (setq i (1+ i)))
+                   ((eq pc ?0) (setq zero-pad t) (setq i (1+ i)))
+                   ((eq pc ?+) (setq plus t) (setq i (1+ i)))
+                   ((eq pc ?\s) (setq space t) (setq i (1+ i)))
+                   ((eq pc ?#) (setq sharp t) (setq i (1+ i)))
+                   (t (setq flag-cont nil))))))
+            ;; width
+            (let ((w 0) (any nil) (w-cont t))
+              (while (and w-cont (< i n))
+                (let ((d (aref template i)))
+                  (cond
+                   ((and (>= d ?0) (<= d ?9))
+                    (setq w (+ (* w 10) (- d ?0)))
+                    (setq any t)
+                    (setq i (1+ i)))
+                   (t (setq w-cont nil)))))
+              (when any (setq width w)))
+            ;; precision
+            (when (and (< i n) (eq (aref template i) ?.))
+              (setq i (1+ i))
+              (let ((p 0) (p-cont t))
+                (while (and p-cont (< i n))
+                  (let ((d (aref template i)))
+                    (cond
+                     ((and (>= d ?0) (<= d ?9))
+                      (setq p (+ (* p 10) (- d ?0)))
+                      (setq i (1+ i)))
+                     (t (setq p-cont nil)))))
+                (setq precision p)))
+            ;; conversion
+            (cond
+             ((>= i n) (setq out (cons "%" out)))
+             (t
+              (let ((conv (aref template i)))
+                (setq i (1+ i))
+                (cond
+                 ((eq conv ?%) (setq out (cons "%" out)))
+                 ((eq conv ?s)
+                  (let* ((arg (nth arg-i args))
+                         (b (if (stringp arg) arg (prin1-to-string arg))))
+                    (setq arg-i (1+ arg-i))
+                    (when precision
+                      (setq b (substring b 0 (if (< precision (length b))
+                                                 precision (length b)))))
+                    (setq out (cons (nelisp--format-pad b width left-align zero-pad) out))))
+                 ((eq conv ?S)
+                  (let* ((arg (nth arg-i args))
+                         (b (prin1-to-string arg)))
+                    (setq arg-i (1+ arg-i))
+                    (setq out (cons (nelisp--format-pad b width left-align zero-pad) out))))
+                 ((or (eq conv ?d) (eq conv ?i))
+                  (let* ((arg (nth arg-i args))
+                         (m (nelisp--format-coerce-int arg))
+                         (b (nelisp--format-int-with-sign m plus space)))
+                    (setq arg-i (1+ arg-i))
+                    (setq out (cons (nelisp--format-pad b width left-align zero-pad) out))))
+                 ((or (eq conv ?x) (eq conv ?X) (eq conv ?o) (eq conv ?b))
+                  (let* ((arg (nth arg-i args))
+                         (m (nelisp--format-coerce-int arg))
+                         (b (nelisp--format-int-radix m conv sharp)))
+                    (setq arg-i (1+ arg-i))
+                    (setq out (cons (nelisp--format-pad b width left-align zero-pad) out))))
+                 ((eq conv ?c)
+                  (let* ((arg (nth arg-i args))
+                         (b (string arg)))
+                    (setq arg-i (1+ arg-i))
+                    (setq out (cons (nelisp--format-pad b width left-align zero-pad) out))))
+                 ((or (eq conv ?f) (eq conv ?F)
+                      (eq conv ?e) (eq conv ?E)
+                      (eq conv ?g) (eq conv ?G))
+                  (let* ((arg (nth arg-i args))
+                         (x (nelisp--format-coerce-num arg))
+                         (mag (if (< x 0) (- x) x))
+                         (abs-body (nelisp--format-float-body
+                                    conv (or precision 6) mag))
+                         (b (cond
+                             ((< x 0) (concat "-" abs-body))
+                             (plus    (concat "+" abs-body))
+                             (space   (concat " " abs-body))
+                             (t       abs-body))))
+                    (setq arg-i (1+ arg-i))
+                    (setq out (cons (nelisp--format-pad b width left-align zero-pad) out))))
+                 (t (signal 'error (list (concat "format: unsupported conversion %"
+                                                  (string conv))))))))))))))
+    (apply (function concat) (nreverse out))))
+
 ;; Rust-min (2026-05-06 batch 6c): leaf string/sequence builtins that
 ;; compose trivially over `concat' / `apply' / `vector' / `append'.
 ;; All 5 below were thin wrappers in `bi_*' with no Sexp-internal
