@@ -5947,10 +5947,58 @@ viewport."
                                     nemacs-gtk-end-kbd-macro
                                     nemacs-gtk-call-last-kbd-macro))))
               (push accumulated nemacs-gtk--kbd-macro-current))
+            ;; Phase 3.H — fast dispatch.  The substrate's
+            ;; `emacs-command-loop-step' runs hundreds of Sexp evals
+            ;; per keystroke through the NeLisp tree-walking
+            ;; interpreter, which freezes the GUI on resource-
+            ;; constrained VMs.  For the common cases (= self-insert
+            ;; + every interactive defun) we bypass it:
+            ;;   - self-insert: inline `nelisp-ec-insert' with
+            ;;     overwrite-mode honoured.
+            ;;   - any fboundp symbol: direct `funcall'.
+            ;;   - anything else: fall back to the substrate loop.
+            (cond
+             ;; --- inline self-insert ---
+             ((and (eq binding 'self-insert-command)
+                   (integerp event)
+                   (>= event 32) (< event #x110000))
+              (with-current-buffer (nemacs-gtk--active-buffer)
+                (cond
+                 ((and (boundp 'overwrite-mode) overwrite-mode
+                       (< (nelisp-ec-point) (nelisp-ec-point-max))
+                       (not (eq (emacs-edit--char-at
+                                 (nelisp-ec-point)) ?\n)))
+                  (nelisp-ec-delete-region
+                   (nelisp-ec-point) (1+ (nelisp-ec-point)))
+                  (nelisp-ec-insert (string event)))
+                 (t
+                  (nelisp-ec-insert (string event)))))
+              (when (boundp 'emacs-command-loop--last-command)
+                (setq emacs-command-loop--last-command
+                      'self-insert-command)))
+             ;; --- direct funcall for any fboundp command ---
+             ((and (symbolp binding) (fboundp binding))
+              (with-current-buffer (nemacs-gtk--active-buffer)
+                (condition-case err
+                    (funcall binding)
+                  (error
+                   (setq nemacs-gtk--last-key-text
+                         (format "%s: %s" binding
+                                 (condition-case _
+                                     (error-message-string err)
+                                   (error (format "%S" err))))))))
+              (when (boundp 'emacs-command-loop--last-command)
+                (setq emacs-command-loop--last-command binding)))
+             ;; --- fallback: substrate command-loop (= rare) ---
+             (t
+              (with-current-buffer (nemacs-gtk--active-buffer)
+                (apply #'emacs-command-loop-feed-events
+                       (append accumulated nil))
+                (emacs-command-loop-step))))
+            ;; The original `with-current-buffer' wrapped both the
+            ;; feed+step + the post-step bookkeeping; we now run the
+            ;; bookkeeping unconditionally on whichever path fired.
             (with-current-buffer (nemacs-gtk--active-buffer)
-              (apply #'emacs-command-loop-feed-events
-                     (append accumulated nil))
-              (emacs-command-loop-step)
               ;; Phase 2.AG — close one undo group per command, except
               ;; consecutive `self-insert-command' which collapse into
               ;; one group (= matches Emacs' typing-cluster semantics).
