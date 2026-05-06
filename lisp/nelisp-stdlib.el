@@ -6,6 +6,28 @@
 (defun 1+ (x) (+ x 1))
 (defun 1- (x) (- x 1))
 
+;; Rust-min batch 6q (2026-05-06): `atom' / `arrayp' / `sequencep'
+;; migrated from Rust to elisp.  Each was a 1-line `bi_predicate'
+;; dispatch entry composing already-existing primitives — the elisp
+;; versions are direct transliterations.  CharTable / BoolVector
+;; legacy variants are folded out of the array/sequence union: the
+;; CharTable variant has no live constructors (Rust-min batch 5b),
+;; and BoolVector instances surface as plain `Sexp::Vector' through
+;; the elisp `bool-vector' constructor (also batch 5b), so
+;; `(vectorp v)' covers both.
+
+(defun atom (x)
+  "Return t if X is not a cons cell."
+  (not (consp x)))
+
+(defun arrayp (x)
+  "Return t if X is an array (= string or vector)."
+  (or (stringp x) (vectorp x)))
+
+(defun sequencep (x)
+  "Return t if X is a sequence (= nil, cons, string, or vector)."
+  (or (null x) (consp x) (stringp x) (vectorp x)))
+
 ;; Rust-min batch 6l (2026-05-06): `mod' migrated from Rust to
 ;; elisp.  Reproduces the previous `bi_mod' contract exactly:
 ;;   r = euclidean_mod(a, |b|)   (always >= 0)

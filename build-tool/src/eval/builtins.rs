@@ -54,12 +54,16 @@ pub fn install_builtins(env: &mut Env) {
         "cdaar", "cdadr", "cddar", "cdddr", "cadddr",
         "setcar", "setcdr",
         // generic sequence / array accessors
-        "aref", "aset", "elt", "arrayp", "sequencep",
+        // Rust-min (2026-05-06 batch 6q): `arrayp' / `sequencep'
+        // migrated to elisp (lisp/nelisp-stdlib.el).
+        "aref", "aset", "elt",
         // Rust-min (2026-05-06 batch 6c): vconcat migrated to elisp
         // (lisp/nelisp-stdlib-plist-str.el).
         "vector", "make-vector",
         // predicates
-        "consp", "listp", "atom", "symbolp", "stringp", "numberp", "integerp", "floatp", "functionp",
+        // Rust-min (2026-05-06 batch 6q): `atom' migrated to elisp
+        // (lisp/nelisp-stdlib.el) as `(not (consp x))'.
+        "consp", "listp", "symbolp", "stringp", "numberp", "integerp", "floatp", "functionp",
         // Rust-min (2026-05-06 batch 6d): `null' shadowed by elisp.
         // Rust-min (2026-05-06 batch 6f): `booleanp' / `keywordp'
         // expressible from `eq' / `symbolp' + `symbol-name' + `aref'
@@ -254,18 +258,15 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "aref" => bi_aref(args),
         "aset" => bi_aset(args),
         "elt" => bi_elt(args),
-        "arrayp" => bi_predicate(args, |v| matches!(v,
-            Sexp::Str(_) | Sexp::MutStr(_) | Sexp::Vector(_)
-            | Sexp::CharTable(_) | Sexp::BoolVector(_))),
-        "sequencep" => bi_predicate(args, |v| matches!(v,
-            Sexp::Nil | Sexp::Cons(_, _) | Sexp::Str(_) | Sexp::MutStr(_)
-            | Sexp::Vector(_) | Sexp::CharTable(_) | Sexp::BoolVector(_))),
+        // arrayp / sequencep migrated to elisp (Rust-min 2026-05-06
+        // batch 6q, see lisp/nelisp-stdlib.el).
         "vector" => Ok(Sexp::vector(args.to_vec())),
         "make-vector" => bi_make_vector(args),
         // ---- predicates ----
         "consp" => bi_predicate(args, |v| matches!(v, Sexp::Cons(_, _))),
         "listp" => bi_predicate(args, |v| matches!(v, Sexp::Cons(_, _) | Sexp::Nil)),
-        "atom" => bi_predicate(args, |v| !matches!(v, Sexp::Cons(_, _))),
+        // atom migrated to elisp (Rust-min 2026-05-06 batch 6q,
+        // see lisp/nelisp-stdlib.el).
         "symbolp" => bi_predicate(args, |v| matches!(v, Sexp::Symbol(_) | Sexp::Nil | Sexp::T)),
         "stringp" => bi_predicate(args, |v| matches!(v, Sexp::Str(_) | Sexp::MutStr(_))),
         "numberp" => bi_predicate(args, |v| matches!(v, Sexp::Int(_) | Sexp::Float(_))),
