@@ -5604,10 +5604,10 @@ window splits or extras-on fall back to the per-step elisp path."
        (not nemacs-gtk--paint-extras-enabled)))
 
 (defun nemacs-gtk--repaint-fast ()
-  "Phase 3.F — one-shot Rust paint that bundles grid-clear + buffer
-area + mode-line + echo + cursor + redraw into a single extern
-call.  Skips ~50 elisp→Rust round-trips per frame, the
-responsiveness fix for resource-constrained VMs."
+  "Phase 3.F+L — one-shot Rust paint.  Phase 3.L: Rust now also
+auto-adjusts scroll-offset to keep the cursor visible + returns the
+adjusted value, so the elisp side can drop `--ensure-cursor-visible'
+(= which walked the buffer per keystroke) from the dispatch path."
   (let* ((buf (nemacs-gtk--active-buffer))
          (content (with-current-buffer buf (buffer-string)))
          (point (with-current-buffer buf (nelisp-ec-point)))
@@ -5627,16 +5627,19 @@ responsiveness fix for resource-constrained VMs."
                          nemacs-gtk--isearch-query))
                 ((string-empty-p nemacs-gtk--last-key-text)
                  "(press any key)")
-                (t (format "Last key: %s" nemacs-gtk--last-key-text)))))
-    (nelisp-gtk-paint-frame-simple
-     nemacs-gtk--rows
-     nemacs-gtk--cols
-     nemacs-gtk--buffer-area-end
-     nemacs-gtk--scroll-offset
-     content
-     point
-     mode-line
-     echo)))
+                (t (format "Last key: %s" nemacs-gtk--last-key-text))))
+         (new-scroll
+          (nelisp-gtk-paint-frame-simple
+           nemacs-gtk--rows
+           nemacs-gtk--cols
+           nemacs-gtk--buffer-area-end
+           nemacs-gtk--scroll-offset
+           content
+           point
+           mode-line
+           echo)))
+    (when (integerp new-scroll)
+      (setq nemacs-gtk--scroll-offset new-scroll))))
 
 (defun nemacs-gtk--repaint ()
   "One full redraw cycle: buffer, mode line, echo, cursor, queue draw.
@@ -6056,14 +6059,20 @@ viewport."
                          (not (eq emacs-command-loop--last-command
                                   'nemacs-gtk-move-to-window-line-top-bottom)))
                 (setq nemacs-gtk--m-r-state 0)))
-            ;; Phase 3.J — skip ensure-cursor-visible on the common
-            ;; case of self-inserting a non-newline char: point only
-            ;; advances 1 column on the same row, so scroll-offset
-            ;; cannot change.  Calling ensure-cursor-visible here
-            ;; would walk the whole buffer-string twice for nothing.
-            (unless (and (eq binding 'self-insert-command)
-                         (integerp event)
-                         (not (eq event ?\n)))
+            ;; Phase 3.L — `--ensure-cursor-visible' is no longer
+            ;; needed in the dispatch tail when the fast-paint Rust
+            ;; extern is loaded: that extern computes + applies the
+            ;; new scroll-offset itself.  Fall back to the elisp
+            ;; helper only when the extern isn't loaded (= substrate-
+            ;; only boot, or paint-extras forcing the slow path).
+            (unless (or (and (fboundp 'nelisp-gtk-paint-frame-simple)
+                             (null nemacs-gtk--windows)
+                             (not nemacs-gtk--paint-extras-enabled))
+                        ;; Even on the slow path, skip on
+                        ;; non-newline self-insert (= same row).
+                        (and (eq binding 'self-insert-command)
+                             (integerp event)
+                             (not (eq event ?\n))))
               (nemacs-gtk--ensure-cursor-visible))))))))))))
 
 
