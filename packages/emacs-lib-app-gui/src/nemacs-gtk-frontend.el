@@ -6394,33 +6394,68 @@ is closed."
   (nemacs-gtk--sync-window-title)
   ;; 4. First paint.
   (nemacs-gtk--repaint)
-  ;; 5. Main loop — drains both the key queue and the menu queue
-  ;; per iteration so a single `iterate(t)' wake handles whichever
-  ;; channel fired.
+  ;; 5. Main loop.  Phase 3.G change: drain ALL queued events of every
+  ;; channel per iteration + repaint at most ONCE at the end (= the
+  ;; `dirty' flag).  Previously each event triggered its own paint;
+  ;; on weak rendering paths (= VMware software Cairo) that meant a
+  ;; mouse-motion stream could outpace the paint thread + freeze the
+  ;; GUI.  Motion events also dropped in favour of just-the-last so
+  ;; the user doesn't pay paint cost for every pixel of drag.
   (setq nemacs-gtk--quit-requested nil)
   (while (and (not (nelisp-gtk-should-quit))
               (not nemacs-gtk--quit-requested))
     (nelisp-gtk-iterate t)
-    (let ((kv (nelisp-gtk-poll-key)))
-      (when kv
-        (let ((keysym (car kv))
-              (mods   (cadr kv))
-              (uni    (car (cddr kv))))
-          (setq nemacs-gtk--last-key-text
-                (nemacs-gtk--describe-key keysym mods uni))
-          (nemacs-gtk--dispatch-key keysym mods uni)
-          (nemacs-gtk--repaint))))
-    (let ((m (nelisp-gtk-poll-menu-event)))
-      (when m
-        (nemacs-gtk--handle-menu-action m)
-        (nemacs-gtk--repaint)))
-    (let ((mev (nelisp-gtk-poll-mouse)))
-      (when mev
-        (nemacs-gtk--handle-mouse-event mev)
-        (nemacs-gtk--repaint)))
-    (let ((rs (nelisp-gtk-poll-resize)))
-      (when rs
-        (nemacs-gtk--apply-grid-size (nth 0 rs) (nth 1 rs))
+    (let ((dirty nil)
+          (last-motion nil))
+      ;; Drain key queue.
+      (let ((kv (nelisp-gtk-poll-key)))
+        (while kv
+          (let ((keysym (car kv))
+                (mods   (cadr kv))
+                (uni    (car (cddr kv))))
+            (setq nemacs-gtk--last-key-text
+                  (nemacs-gtk--describe-key keysym mods uni))
+            (nemacs-gtk--dispatch-key keysym mods uni)
+            (setq dirty t))
+          (setq kv (nelisp-gtk-poll-key))))
+      ;; Drain menu queue.
+      (let ((m (nelisp-gtk-poll-menu-event)))
+        (while m
+          (nemacs-gtk--handle-menu-action m)
+          (setq dirty t)
+          (setq m (nelisp-gtk-poll-menu-event))))
+      ;; Drain mouse queue.  Motion events get coalesced (= only the
+      ;; last motion is processed; press / release / scroll are
+      ;; processed individually so click count + scroll deltas don't
+      ;; get lost).
+      (let ((mev (nelisp-gtk-poll-mouse)))
+        (while mev
+          (let ((kind (nth 0 mev)))
+            (cond
+             ((eq kind 'motion)
+              (setq last-motion mev))
+             (t
+              (when last-motion
+                (nemacs-gtk--handle-mouse-event last-motion)
+                (setq last-motion nil))
+              (nemacs-gtk--handle-mouse-event mev)
+              (setq dirty t))))
+          (setq mev (nelisp-gtk-poll-mouse)))
+        (when last-motion
+          (nemacs-gtk--handle-mouse-event last-motion)
+          (setq dirty t)))
+      ;; Drain resize queue (= use the LAST one; coalescing works
+      ;; because each carries an absolute (rows cols), not a delta).
+      (let ((rs (nelisp-gtk-poll-resize))
+            (last-rs nil))
+        (while rs
+          (setq last-rs rs)
+          (setq rs (nelisp-gtk-poll-resize)))
+        (when last-rs
+          (nemacs-gtk--apply-grid-size (nth 0 last-rs) (nth 1 last-rs))
+          (setq dirty t)))
+      ;; One repaint per main-loop iteration if anything changed.
+      (when dirty
         (nemacs-gtk--repaint))))
   'done)
 
