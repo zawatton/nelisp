@@ -96,6 +96,22 @@
         (nelisp--write-stderr-line s)
         s))))
 
+;; Rust-min batch 6k (2026-05-06): `hash-table-keys' /
+;; `hash-table-values' migrated from Rust to elisp.  Both fold over
+;; `maphash' to collect K/V into an accumulator, then `nreverse' to
+;; restore insertion order.  Routes through NeLisp's closure-setq
+;; write-through (FrameCell, NeLisp commits eb89f73 / c08d0db /
+;; f1fc1f5) so the lambda's `setq acc' lands back on the let-binding.
+(defun hash-table-keys (table)
+  (let ((acc nil))
+    (maphash (function (lambda (k _v) (setq acc (cons k acc)))) table)
+    (nreverse acc)))
+
+(defun hash-table-values (table)
+  (let ((acc nil))
+    (maphash (function (lambda (_k v) (setq acc (cons v acc)))) table)
+    (nreverse acc)))
+
 (defun intern-soft (name &optional _obarray)
   ;; NeLisp MVP has no obarray, so name-as-symbol is identity and
   ;; name-as-string is the same as `intern' (= no soft-fail path).

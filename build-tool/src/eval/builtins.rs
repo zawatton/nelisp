@@ -114,9 +114,11 @@ pub fn install_builtins(env: &mut Env) {
         // (lisp/nelisp-stdlib-misc.el).
         "make-symbol",
         // hash-tables (Track O'')
+        // Rust-min (2026-05-06 batch 6k): `hash-table-keys' /
+        // `hash-table-values' migrated to elisp via `maphash' fold
+        // (lisp/nelisp-stdlib-misc.el).
         "make-hash-table", "hash-table-p", "hash-table-count",
         "puthash", "gethash", "remhash", "clrhash", "maphash",
-        "hash-table-keys", "hash-table-values",
         // Rust-min (2026-05-06 batch 5b): char-table family was
         // unused in NeLisp lisp/ + test/, so the user-facing
         // builtins (make-char-table, char-table-p, char-table-
@@ -328,8 +330,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "remhash" => bi_remhash(args),
         "clrhash" => bi_clrhash(args),
         "maphash" => bi_maphash(args, env),
-        "hash-table-keys" => bi_hash_table_keys(args),
-        "hash-table-values" => bi_hash_table_values(args),
+        // hash-table-keys / hash-table-values migrated to elisp
+        // (Rust-min 2026-05-06 batch 6k, see lisp/nelisp-stdlib-misc.el).
         // char-table / bool-vector dispatch retired (Rust-min
         // 2026-05-06 batch 5b).  See file-top commentary.
         "funcall" => bi_funcall(args, env),
@@ -1596,37 +1598,12 @@ fn bi_maphash(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     Ok(Sexp::Nil)
 }
 
-fn bi_hash_table_keys(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("hash-table-keys", args, 1, Some(1))?;
-    let inner = match &args[0] {
-        Sexp::HashTable(inner) => inner.clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "hash-table-p".into(),
-            got: other.clone(),
-        }),
-    };
-    let mut out = Sexp::Nil;
-    for (k, _) in inner.borrow().entries.iter().rev() {
-        out = Sexp::cons(k.clone(), out);
-    }
-    Ok(out)
-}
-
-fn bi_hash_table_values(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("hash-table-values", args, 1, Some(1))?;
-    let inner = match &args[0] {
-        Sexp::HashTable(inner) => inner.clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "hash-table-p".into(),
-            got: other.clone(),
-        }),
-    };
-    let mut out = Sexp::Nil;
-    for (_, v) in inner.borrow().entries.iter().rev() {
-        out = Sexp::cons(v.clone(), out);
-    }
-    Ok(out)
-}
+// bi_hash_table_keys / bi_hash_table_values removed — see
+// lisp/nelisp-stdlib-misc.el (Rust-min 2026-05-06 batch 6k).
+// Both reduced cleanly to `maphash' folds with `cons'+`nreverse',
+// which work because NeLisp's closure-setq write-through (=
+// FrameCell pattern from commits eb89f73 / c08d0db / f1fc1f5)
+// allows the lambda to mutate the let-bound accumulator.
 
 // char-table / bool-vector user-facing builtins retired (Rust-min
 // 2026-05-06 batch 5b).  See file-top commentary; surface migrated
