@@ -4919,6 +4919,21 @@ the natural buffer-length check in `--buffer-line-count' also
 forces a refresh whenever the buffer grew/shrank."
   (setq nemacs-gtk--line-count-cache nil))
 
+(defun nemacs-gtk--bump-line-count-cache (delta)
+  "Phase 3.O — when a single non-newline edit shifts point-max by
+DELTA (= +N for insert, -N for delete), update the cached LEN slot
+in-place keeping the line count unchanged.  This lets the next
+repaint hit the cache without walking the whole buffer (= the
+default `--buffer-line-count' cache-miss path calls
+`(buffer-string)', which is the dominant per-keystroke cost on
+large buffers).  Skips silently when there is no cache or the
+buffer name shifted."
+  (let* ((cached nemacs-gtk--line-count-cache)
+         (bn nemacs-gtk--active-buffer-name))
+    (when (and (consp cached) (string= bn (nth 0 cached)))
+      (setq nemacs-gtk--line-count-cache
+            (list bn (+ (nth 1 cached) delta) (nth 2 cached))))))
+
 (defun nemacs-gtk--buffer-line-count ()
   "Return the number of lines in the active buffer (= 1 + number
 of newlines).  Phase 3.J: cached, with `(point-max)' acting as
@@ -5618,6 +5633,17 @@ in the Rust-side cache via `nelisp-gtk-buffer-set'.  When this
 matches the active buffer + the cache hasn't been invalidated, the
 cached paint path can run without re-sending the buffer text.")
 
+(defvar nemacs-gtk-fast-self-insert-bypass t
+  "Phase 3.O — when t, bypass `emacs-keymap-key-binding' for printable
+ASCII events at top level (= no pending prefix, no Alt-fold) and
+substitute `self-insert-command' directly.  Saves the per-keystroke
+keymap-chain walk through the NeLisp interpreter, which is the
+dominant cost on software-Cairo / VMware-VRAM-4MB environments.
+
+Set to nil if you bind printable chars to non-self-insert commands
+in your active map (= dired-style mode); the lookup will then run
+on every keystroke.")
+
 (defun nemacs-gtk--invalidate-buffer-cache ()
   "Phase 3.N — drop the Rust-side cache marker so the next paint
 re-sends the full buffer content.  Called when we can't reliably
@@ -5995,7 +6021,25 @@ viewport."
           (nemacs-gtk--shift-arrow-pre-dispatch event mods))
         (let* ((accumulated (vconcat (or nemacs-gtk--pending-prefix [])
                                      event-vec))
-               (binding (nemacs-gtk--lookup-key-vec accumulated)))
+               ;; Phase 3.O — fast self-insert bypass.  When the
+               ;; accumulated vec is a single printable-ASCII event,
+               ;; no prefix is pending, and no Alt-fold prepended an
+               ;; Esc, substitute `self-insert-command' without
+               ;; walking the keymap chain.  The walk would have
+               ;; resolved to the global-map default-binding slot
+               ;; (= self-insert) anyway, but each walk runs hundreds
+               ;; of NeLisp Sexps; skipping it is the largest
+               ;; remaining per-keystroke saving on software Cairo.
+               (binding (cond
+                         ((and nemacs-gtk-fast-self-insert-bypass
+                               (null nemacs-gtk--pending-prefix)
+                               (not alt-p)
+                               (= (length accumulated) 1)
+                               (let ((e (aref accumulated 0)))
+                                 (and (integerp e)
+                                      (>= e 32) (< e 127))))
+                          'self-insert-command)
+                         (t (nemacs-gtk--lookup-key-vec accumulated)))))
           (cond
            ((nemacs-gtk--keymap-binding-p binding)
             (setq nemacs-gtk--pending-prefix accumulated)
@@ -6041,9 +6085,10 @@ viewport."
              ((and (eq binding 'self-insert-command)
                    (integerp event)
                    (>= event 32) (< event #x110000))
-              (let ((p-before
-                     (with-current-buffer (nemacs-gtk--active-buffer)
-                       (nelisp-ec-point))))
+              (let* ((p-before
+                      (with-current-buffer (nemacs-gtk--active-buffer)
+                        (nelisp-ec-point)))
+                     (overwrote nil))
                 (with-current-buffer (nemacs-gtk--active-buffer)
                   (cond
                    ((and (boundp 'overwrite-mode) overwrite-mode
@@ -6052,7 +6097,8 @@ viewport."
                                    (nelisp-ec-point)) ?\n)))
                     (nelisp-ec-delete-region
                      (nelisp-ec-point) (1+ (nelisp-ec-point)))
-                    (nelisp-ec-insert (string event)))
+                    (nelisp-ec-insert (string event))
+                    (setq overwrote t))
                    (t
                     (nelisp-ec-insert (string event)))))
                 ;; Phase 3.N — emit incremental edit to the Rust
@@ -6061,12 +6107,18 @@ viewport."
                 (when (and nemacs-gtk--cache-synced-buffer
                            (fboundp 'nelisp-gtk-buffer-edit))
                   (cond
-                   ((and (boundp 'overwrite-mode) overwrite-mode)
+                   (overwrote
                     ;; overwrite replaces 1 char with 1 char.
                     (nelisp-gtk-buffer-edit p-before 1 (string event)))
                    (t
-                    (nelisp-gtk-buffer-edit p-before 0 (string event))))))
-              (nemacs-gtk--invalidate-line-count-cache)
+                    (nelisp-gtk-buffer-edit p-before 0 (string event)))))
+                ;; Phase 3.O — line count is unchanged (= event is
+                ;; 32..127, no \n).  Bump pmax in the cache so the
+                ;; next repaint's mode-line `Lx/N' read hits the
+                ;; cache without re-walking the buffer.  Overwrite
+                ;; replaces 1 char with 1 char so delta = 0; bump
+                ;; by 0 is a no-op in effect (= matched pmax).
+                (nemacs-gtk--bump-line-count-cache (if overwrote 0 1)))
               (when (boundp 'emacs-command-loop--last-command)
                 (setq emacs-command-loop--last-command
                       'self-insert-command)))
@@ -6075,14 +6127,26 @@ viewport."
               (let* ((p-before (with-current-buffer (nemacs-gtk--active-buffer)
                                  (nelisp-ec-point)))
                      (pmin (with-current-buffer (nemacs-gtk--active-buffer)
-                             (nelisp-ec-point-min))))
+                             (nelisp-ec-point-min)))
+                     (deleted-newline nil))
                 (when (> p-before pmin)
+                  ;; Phase 3.O — peek at the char we're about to
+                  ;; delete so we can decide whether the line-count
+                  ;; cache can be bumped (= non-newline) or must be
+                  ;; invalidated (= deleted a `\\n').
+                  (setq deleted-newline
+                        (with-current-buffer (nemacs-gtk--active-buffer)
+                          (eq (emacs-edit--char-at (1- p-before)) ?\n)))
                   (with-current-buffer (nemacs-gtk--active-buffer)
                     (nelisp-ec-delete-region (1- p-before) p-before))
                   (when (and nemacs-gtk--cache-synced-buffer
                              (fboundp 'nelisp-gtk-buffer-edit))
-                    (nelisp-gtk-buffer-edit (1- p-before) 1 ""))))
-              (nemacs-gtk--invalidate-line-count-cache)
+                    (nelisp-gtk-buffer-edit (1- p-before) 1 ""))
+                  (cond
+                   (deleted-newline
+                    (nemacs-gtk--invalidate-line-count-cache))
+                   (t
+                    (nemacs-gtk--bump-line-count-cache -1)))))
               (when (boundp 'emacs-command-loop--last-command)
                 (setq emacs-command-loop--last-command
                       'delete-backward-char)))
