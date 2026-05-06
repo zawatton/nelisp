@@ -1,0 +1,563 @@
+#+TITLE: Doc 52 — Doc 50 Stage 4: Sexp::Record + cl-defstruct 設計
+#+AUTHOR: zawatton + Claude
+#+DATE: 2026-05-07
+#+STATE: PROPOSAL
+#+STATUS: Doc 50 §3.1 戦略 B (= cl-defstruct / record 型を露出) の
+#+STATUS: design pass。Stage 1-3 が unblock した API surface の次層を
+#+STATUS: 開ける鍵。具体的な variant 配置 / reader / printer / equality
+#+STATUS: / cl-defstruct macro / HashTable elisp 再実装の射影までを
+#+STATUS: 一気通貫で扱う。実装は段階分割、本 doc は設計のみ。
+
+* §0 TL;DR
+
+NeLisp に host emacs 互換の =record= 型を入れる。中心は:
+
+1. =Sexp::Record { type_tag, slots }= variant 追加
+2. Reader =#s(TYPE V0 V1 ...)= 受入
+3. Printer 同 shape の round-trippable 出力
+4. =type-of= は record の type_tag (= ユーザ定義 symbol) を返す
+5. Rust primitive 6 本 (= make / ref / set / length / type / predicate)
+6. =cl-defstruct= macro の elisp 実装 (= macro expansion で primitive を呼ぶ)
+7. HashTable / CharTable / BoolVector を elisp 側で reimpl して Rust 撤去
+
+通算 LOC 想定: 4a-4d で Rust +200、4f (HashTable elisp 化 + Rust 撤去)
+で Rust −220。**net 約 −50〜−100 LOC**。但し elisp +150 程度は許容。
+
+最大の収穫は LOC ではなく **「elisp で型を定義できる」表現力** —
+ここから先のすべての container 追加が elisp 側で完結する。
+
+* §1 動機 (= Stage 1-3 の到達点と限界)
+
+Doc 49 + Doc 50 Stage 1-3 (= batch 6a-7g) で 17 builtins が elisp 化
+された。だが残った Rust 側には共通 pattern がある:
+
+** §1.1 残 90 dispatch arms の構造分析
+
+| 制約        | 例                                  | Stage |
+|-------------+-------------------------------------+-------|
+| variant 内部 | =puthash= / =gethash= / =remhash=    | 4 ★   |
+| variant 内部 | char-table parent / extra slot 操作  | 4 ★   |
+| OS interop  | =file-readable-p= 等残 file I/O     | 2 続  |
+| Hot path    | =eq= / =equal= / =functionp=         | 3     |
+| Cycle safe  | =equal= visited-set                 | 5     |
+
+★ = 本 doc の対象。Stage 4 は他 stage と直交する rust enum 拡張軸。
+
+** §1.2 Stage 1 だけでは届かない理由
+
+Stage 1 (=nelisp--hash-pairs= iter primitive) で =hash-table-keys= /
+=-values= / =-count= / =maphash= の **read-only 4 件** を elisp 化済。
+
+しかし =puthash= / =gethash= / =remhash= / =clrhash= は **mutation を
+伴うため iter primitive 1 本では足りない**。さらに =make-hash-table=
+の =:test= 引数解釈、HashTableInner struct 自体の存在も Rust 側に
+残る。
+
+ここを開けるには「型そのものを elisp 側で持つ」しかない。それが
+record 型の役割。
+
+** §1.3 副次効果: pcase / cl-* の互換性
+
+Host emacs は =record= を pvec subtype の一つとして持ち、=cl-defstruct=
+は内部で =record= を構築する。pcase の =(cl-struct ...)= matcher も
+=record= を前提とする。
+
+NeLisp に record を入れることで、host emacs パッケージの大きな
+クラス (= cl-* / pcase / map / seq の defstruct 依存層) が動き始める。
+これは LOC 削減を超えた **互換性勝利**。
+
+* §2 設計
+
+** §2.1 Sexp::Record variant layout
+
+=build-tool/src/reader/sexp.rs= の =Sexp= enum に追加:
+
+#+begin_src rust
+/// User-defined structured value (Doc 50 Stage 4).  Backs both
+/// `cl-defstruct'-derived types and direct `record' / `make-record'
+/// calls.  Identity goes through `Rc::ptr_eq' (slots wrapper);
+/// structural equality compares (type_tag, slots) pairwise.
+///
+/// `type_tag' is a `Sexp::Symbol' naming the user-defined type
+/// (e.g. 'point, 'nelisp--ht).  `type-of' returns this symbol
+/// directly — record values do NOT report 'record from `type-of',
+/// matching host Emacs's cl-defstruct contract.
+Record {
+    type_tag: Box<Sexp>,
+    slots: Rc<RefCell<Vec<Sexp>>>,
+},
+#+end_src
+
+設計判断:
+- =type_tag: Box<Sexp>= で =Symbol= 以外も将来許容 (= cl-defstruct
+  hierarchy で親型 symbol list 等)。MVP では Symbol のみ使用。
+- =slots: Rc<RefCell<Vec<Sexp>>>= で identity を保ち、=record-set= が
+  in-place mutation できる (= host emacs と同じ semantic)。
+- =Cell= / =Vector= / =HashTable= と完全に並行な構造 — 既存の Rc 規約
+  を壊さない。
+
+** §2.2 Reader: =#s(...)= 拡張
+
+=build-tool/src/reader/lexer.rs:336= の "structure literal #s(...) is
+deferred" を解除する。
+
+*** §2.2.1 Token shape
+
+新トークン =Token::Sharpsign-S= は不要。=#s= は parser 側で
+=Token::SharpsignS= ではなく **list-prefix** として扱う。具体的には:
+
+#+begin_src rust
+// lexer.rs read_sharpsign:
+Some(b's') => {
+    self.bump();
+    // Expect immediately following `(`.
+    Ok(Token::SharpS)  // 新トークン
+}
+#+end_src
+
+そして parser で =Token::SharpS= を見たら次が =LParen= であることを確認、
+=parse_record_body= に分岐。
+
+*** §2.2.2 構文選択 (positional vs keyword)
+
+候補 A: host emacs 互換 keyword
+#+begin_src elisp
+#s(point :x 1 :y 2)
+#+end_src
+
+候補 B: positional (MVP 推奨)
+#+begin_src elisp
+#s(point 1 2)
+#+end_src
+
+候補 C: hybrid (cl-defstruct macro 側で展開)
+#+begin_src elisp
+;; ユーザ書く
+(make-point :x 1 :y 2)
+;; macro が展開
+(nelisp--make-record 'point (list 1 2))
+#+end_src
+
+**判断**: B + C の組合せ。reader は positional の =#s(TYPE V0 V1 ...)=
+だけ受け取り、keyword 形は cl-defstruct macro が elisp 内で
+positional に desugar する。
+
+利点:
+- reader が単純 (= list parser に type-tag prefix を付けるだけ)
+- keyword parser を Rust に持ち込まない (= Rust-min 原則)
+- =cl-defstruct= の =:initform= / =:type= 等の option も elisp 側で
+  完結
+
+*** §2.2.3 parse_record_body 仕様
+
+#+begin_src rust
+fn parse_record_body(&mut self, ...) -> Result<Sexp, ReadError> {
+    // SharpS already consumed.  Expect `(`.
+    self.expect(Token::LParen)?;
+    // First form is the type-tag (must be a symbol).
+    let type_tag = self.parse_form(...)?;
+    if !matches!(type_tag, Sexp::Symbol(_)) {
+        return Err(ReadError::parse(
+            "first element of #s(...) must be a symbol",
+            ...,
+        ));
+    }
+    // Remaining forms are slot values.
+    let mut slots = Vec::new();
+    loop {
+        match self.peek() {
+            Some(t) if matches!(t.token, Token::RParen) => {
+                self.bump();
+                break;
+            }
+            None => return Err(ReadError::unexpected_eof(...)),
+            _ => slots.push(self.parse_form(...)?),
+        }
+    }
+    Ok(Sexp::Record {
+        type_tag: Box::new(type_tag),
+        slots: Rc::new(RefCell::new(slots)),
+    })
+}
+#+end_src
+
+** §2.3 Printer: write_sexp 拡張
+
+=build-tool/src/reader/sexp.rs:298 fn write_sexp= に分岐追加:
+
+#+begin_src rust
+Sexp::Record { type_tag, slots } => {
+    out.push_str("#s(");
+    write_sexp(out, type_tag);
+    let borrowed = slots.borrow();
+    for slot in borrowed.iter() {
+        out.push(' ');
+        write_sexp(out, slot);
+    }
+    out.push(')');
+}
+#+end_src
+
+既存 =Sexp::HashTable= 用 printer (= =#s(hash-table test ... data
+(...))=) は **HashTable を elisp で再実装した時点で削除** (Stage
+4f)。それまでは両者が同 =#s(...)= prefix を使うが、reader は最初の
+symbol を見て分岐するので衝突しない:
+- =#s(hash-table ...)= → 既存 HashTable 動作
+- =#s(point 1 2)= → Record 動作 (= type-tag がリテラル symbol)
+
+実は record reader が先に動けば =hash-table= も Record として扱われ、
+elisp 側 hash-table-impl で展開される。これが Stage 4f の動線。
+
+** §2.4 Equality
+
+*** §2.4.1 =bi_eq=
+
+#+begin_src rust
+Sexp::Record { slots: a, .. }, Sexp::Record { slots: b, .. } => {
+    Rc::ptr_eq(a, b)
+}
+#+end_src
+
+=type_tag= は =Box= なので ptr_eq の対象外。slots Rc が同じなら同
+record。
+
+*** §2.4.2 =bi_equal=
+
+#+begin_src rust
+(Sexp::Record { type_tag: ta, slots: sa },
+ Sexp::Record { type_tag: tb, slots: sb }) => {
+    if !sexp_equal(ta, tb) { return Ok(Sexp::Nil); }
+    let sa = sa.borrow();
+    let sb = sb.borrow();
+    if sa.len() != sb.len() { return Ok(Sexp::Nil); }
+    for (a, b) in sa.iter().zip(sb.iter()) {
+        if !sexp_equal(a, b) { return Ok(Sexp::Nil); }
+    }
+    Ok(Sexp::T)
+}
+#+end_src
+
+Cycle 検出は Stage 5 (= cycle-safe equality) で別途。MVP では cycle
+を入れた record で stack overflow する仕様 (= 既存の =Cons= /
+=Vector= と同じ振る舞い)。
+
+** §2.5 type-of の例外則
+
+現在 =bi_type_of= (=builtins.rs:1044=) は 13 variants → 9 symbols
+(=cons / symbol / integer / float / string / vector / hash-table /
+char-table / bool-vector=) の固定マッピング。
+
+Record 追加で:
+
+#+begin_src rust
+let tag = match v {
+    ...
+    Sexp::Record { type_tag, .. } => {
+        // Return the user-defined type symbol verbatim — record
+        // values report their cl-defstruct type, not the literal
+        // 'record symbol.
+        return Ok((*type_tag).clone());
+    }
+    ...
+};
+Ok(Sexp::Symbol(tag.into()))
+#+end_src
+
+これにより =(type-of (make-point :x 1 :y 2)) → 'point= が成立。
+=cl-defstruct= の predicate (= =point-p=) は
+=(eq (type-of o) 'point)= で書ける。
+
+** §2.6 必要な Rust primitive 6 本
+
+| primitive               | 引数               | 戻り             | LOC |
+|-------------------------+--------------------+------------------+-----|
+| =nelisp--make-record=    | TYPE-SYM SLOTS-LIST | Record          | ~15 |
+| =nelisp--record-ref=     | RECORD INDEX       | slot value       | ~10 |
+| =nelisp--record-set=     | RECORD INDEX VAL   | VAL              | ~12 |
+| =nelisp--record-length=  | RECORD             | slot count int   | ~8  |
+| =nelisp--record-type=    | RECORD             | type-tag symbol  | ~8  |
+| =recordp=                | OBJ                | t / nil          | ~6  |
+
+合計 ~60 LOC。Type validation + arity check 込みで ~80 LOC を見込む。
+
+* §3 elisp 側 (Stage 4e-4f)
+
+** §3.1 cl-defstruct macro
+
+=lisp/nelisp-cl-macros.el= に追加。最小実装:
+
+#+begin_src elisp
+(defmacro cl-defstruct (name &rest slots)
+  "Define a record type NAME with positional slot list SLOTS.
+Generates: predicate NAME-p, constructor make-NAME, accessor
+NAME-SLOT for each slot."
+  (let* ((name-str (symbol-name name))
+         (pred (intern (concat name-str "-p")))
+         (ctor (intern (concat "make-" name-str)))
+         (n (length slots))
+         (ctor-args (mapcar (lambda (s) (intern (concat ":" (symbol-name s))))
+                            slots))
+         (accessors
+          (let ((i 0) (acc nil))
+            (dolist (s slots (nreverse acc))
+              (push `(defun ,(intern (concat name-str "-" (symbol-name s))) (o)
+                       (nelisp--record-ref o ,i))
+                    acc)
+              (setq i (1+ i))))))
+    `(progn
+       (defun ,pred (o)
+         (and (recordp o) (eq (nelisp--record-type o) ',name)))
+       (defun ,ctor (&rest args)
+         (let ((vec (make-vector ,n nil))
+               (i 0))
+           (dolist (slot ',slots)
+             (let ((kw (intern (concat ":" (symbol-name slot)))))
+               (let ((found (memq kw args)))
+                 (when found
+                   (aset vec i (cadr found)))))
+             (setq i (1+ i)))
+           (nelisp--make-record ',name (append vec nil))))
+       ,@accessors
+       ',name)))
+#+end_src
+
+これで:
+
+#+begin_src elisp
+(cl-defstruct point x y)
+;; =>
+;; (defun point-p (o) ...)
+;; (defun make-point (&rest args) ...)
+;; (defun point-x (o) (nelisp--record-ref o 0))
+;; (defun point-y (o) (nelisp--record-ref o 1))
+
+(make-point :x 1 :y 2)  ; => Sexp::Record { type_tag: 'point, slots: [1, 2] }
+(point-x p)             ; => 1
+(type-of p)             ; => 'point
+(point-p p)             ; => t
+#+end_src
+
+option (= =:constructor= / =:predicate= / =:include= / =:initform=)
+は将来拡張。MVP では positional + keyword arg construction のみ。
+
+** §3.2 HashTable elisp 再実装 (Stage 4f, 最大 ROI)
+
+#+begin_src elisp
+(cl-defstruct nelisp--ht test entries)
+
+(defun make-hash-table (&rest args)
+  (let ((test 'eql)
+        (rest args))
+    (while rest
+      (when (eq (car rest) :test)
+        (setq test (cadr rest)))
+      (setq rest (cddr rest)))
+    (make-nelisp--ht :test test :entries nil)))
+
+(defun hash-table-p (o) (nelisp--ht-p o))
+
+(defun gethash (key table &optional default)
+  (let* ((test (nelisp--ht-test table))
+         (entries (nelisp--ht-entries table))
+         (cell (assoc-by-test key entries test)))
+    (if cell (cdr cell) default)))
+
+(defun puthash (key value table)
+  (let* ((test (nelisp--ht-test table))
+         (entries (nelisp--ht-entries table))
+         (cell (assoc-by-test key entries test)))
+    (if cell
+        (setcdr cell value)
+      (nelisp--record-set table 1 (cons (cons key value) entries))))
+  value)
+
+;; remhash / clrhash / hash-table-count / maphash / hash-table-keys /
+;; hash-table-values も同パターン。assoc-by-test は eq/eql/equal/
+;; string= の dispatcher。
+#+end_src
+
+Rust 側削減:
+- =bi_make_hash_table= (~70 LOC)
+- =bi_puthash= (~30)
+- =bi_gethash= (~30)
+- =bi_remhash= (~25)
+- =bi_clrhash= (~15)
+- =bi_hash_pairs= (~25) — Stage 1 で追加した primitive、撤去
+- =bi_hash_table_p= (~10)
+- =Sexp::HashTable= variant + =HashTableInner= struct (~30)
+- HashTable 用 printer 分岐 (~25)
+- =fn hash_test_eq= helper (~30)
+
+**合計 −290 LOC** (= record 6 primitive +80 を引いて Stage 4 net
+−210 LOC)。さらに elisp 側 +120 程度。
+
+** §3.3 CharTable / BoolVector の同様撤去 (将来)
+
+CharTable は parent linkage / extra slots / sparse map を =cl-defstruct=
+1 個で表現可能 (= 4 スロット)。BoolVector は内部 Vec<bool> を Vec<i64>
+の bitmap で持つだけ。Stage 4 で record が動けば、両方 elisp 化への
+道が開ける。
+
+但し Stage 4 本体には含めない (= 別 PR、別 design pass)。
+
+* §4 段階的 implementation plan
+
+| 段階 | 作業                                       | Rust 増減  | elisp 増減 |
+|------+--------------------------------------------+------------+-----------|
+| 4a   | =Sexp::Record= variant + Display + Eq      | +30        | 0         |
+| 4b   | Reader =#s(...)= + Printer 配線             | +60        | 0         |
+| 4c   | 6 primitive (make/ref/set/length/type/p)   | +80        | 0         |
+| 4d   | =type-of= 例外 + =bi_equal= / =bi_eq= 分岐 | +30        | 0         |
+| 4e   | =cl-defstruct= macro                        | 0          | +50       |
+| 4f   | HashTable elisp 再実装 + Rust 撤去          | −290 (+0)  | +120      |
+| ---  | ---                                         | ---        | ---       |
+| 計    |                                             | **−90**    | **+170**  |
+
+各段階で =make test-all= / byte-compile zero-warning を維持。Rust net
+減は 4f に集中するが、4a-4e がそこに到達する前提工事。
+
+** §4.1 commit 粒度
+
+- 4a + 4b で 1 commit: =feat(reader): Sexp::Record variant + #s(...)
+  reader/printer (Doc 50 Stage 4a-4b)=
+- 4c + 4d で 1 commit: =feat(eval): record primitives + type-of/equal
+  dispatch (Doc 50 Stage 4c-4d)=
+- 4e で 1 commit: =feat(stdlib): cl-defstruct macro (Doc 50 Stage 4e)=
+- 4f で 1 commit: =feat(stdlib): batch 7h Rust→elisp migrate (Doc 50
+  Stage 4f, hash-table self-host)=
+
+各 commit は Doc 49 batch 6m〜6w / Doc 50 batch 7a〜7g の commit
+shape を踏襲。
+
+* §5 互換性とリスク
+
+** §5.1 host emacs cl-defstruct との差異
+
+| 機能                                | host emacs | NeLisp 4e | NeLisp 将来 |
+|-------------------------------------+------------+-----------+-------------|
+| positional + keyword constructor    | ✓          | ✓         | ✓           |
+| default value (=:initform=)         | ✓          | ✗         | ✓           |
+| type predicate                      | ✓          | ✓         | ✓           |
+| accessor mutator (=setf= 一体)      | ✓          | ✗         | ✓           |
+| =:include= 継承                      | ✓          | ✗         | ✓           |
+| =:type 'list= / =:type 'vector=      | ✓          | ✗         | ?           |
+| =cl-print-object= dispatch          | ✓          | ✗         | ?           |
+| =pcase= =(cl-struct ...)= matcher    | ✓          | ✗         | ✓ (別 PR)   |
+
+MVP (= Stage 4e) は 3 行 (predicate / constructor / accessor) のみ。
+defstruct option full-set は別 design pass。
+
+** §5.2 reader の =#s(hash-table ...)= 後方互換
+
+Stage 4b 時点では:
+- =#s(hash-table ...)= は Record として読まれる
+- Stage 4f 前は HashTableInner との結線がないので =hash-table-p=
+  関数は false 返す → 既存 hash-table 関数群が壊れる
+
+→ Stage 4b 〜 4f を **同一 commit** にする必要は無いが、
+Stage 4f は Stage 4e の直後に走らせる。間に他 batch を挟むと
+hash-table API が壊れた状態が main に残る。
+
+実装順:
+1. 4a+4b commit (= reader/printer 拡張、=Record= 自体は誰も使わない)
+2. 4c+4d commit (= primitive + type-of)
+3. 4e commit (= cl-defstruct macro)
+4. **4f commit (= HashTable 移行と Rust 撤去を一気に)**
+
+または 4f を 2 段に:
+- 4f-1: elisp で =nelisp--ht= を defstruct、新 API を =nelisp--= 接頭辞で実装
+- 4f-2: =make-hash-table= / =puthash= / =gethash= 等を Rust → elisp 切替
+
+4f-1 + 4f-2 を別 commit にすれば、4f-2 が atomic。
+
+** §5.3 cycle-safe equality (= 制約 5) との順序
+
+Doc 50 §3.5 で扱った cycle-safe equality は visited-set を使う。
+visited-set は内部で hash-table を使うのが自然 → hash-table が
+elisp 化されると、equal も elisp 化された hash-table を呼ぶ循環。
+
+解: =equal= は Stage 3 (= JIT inline) か Stage 5 (= cycle-safe
+equality) で別実装。Stage 4f で =gethash= / =puthash= を elisp 化
+する時点で、HashTable internal lookup は **eq-test only** に固定し、
+=equal= 依存をしない。=:test 'equal= の hash-table は遅い fall-back
+path で alist linear scan する。
+
+これが実用上 OK か: 現在の bi_make_hash_table impl も =:test= は
+=eq= / =eql= / =equal= の 3 種、=equal= が呼ばれるのは稀。lisp/
+配下の使用はほぼ =eq= / =eql=。
+
+** §5.4 image lowering との結線 (将来)
+
+Doc 47 image ABI で record をどう表現するか。Box<Sexp> + Rc<RefCell<
+Vec<Sexp>>> の 2 ヒープ参照を image に焼くと、コア dump 後の
+unmap で識別子の張替えが必要 → Doc 47 §3.x 参照。Stage 4 本体には
+含めず、image 化時点で別 design。
+
+* §6 Open questions
+
+** §6.1 record の =setf= 統合
+
+Host emacs では =(setf (point-x p) 5)= が動く。NeLisp は =setf=
+generic dispatch をまだ持たない。MVP は accessor を **read-only** と
+して定義し、mutation は =(nelisp--record-set p 0 5)= 直接呼出のみ。
+
+将来 =setf-expander= をまるごと elisp 化したら、record accessor も
+自動的に setf 対応化できる (= cl-defstruct macro が自動で
+setf-expander 登録)。Stage 4 では deferred。
+
+** §6.2 record と vector の境界
+
+Host emacs の record は Lisp_Vectorlike subtype の一つ。NeLisp で
+=Sexp::Record= を独立 variant にするか、=Sexp::Vector= に type-tag
+slot を足す形にするか。
+
+選択 A (本 doc): 独立 variant。=type-of= で record vs vector を
+区別、HashTable 等を record で再実装するときに stable。
+
+選択 B: =Vector + type-tag slot=。LOC は減るが、=vectorp= が record
+にも true 返すなど semantic 混乱の risk。
+
+→ A 推奨。
+
+** §6.3 record literal の eval semantic
+
+=#s(point 1 2)= を read してから eval すると何が起こるか?
+- Host emacs: literal は self-evaluating (= record リテラルは値として
+  そのまま返る)
+- NeLisp 4a-4d: 同様に self-evaluating として evaluator に追加分岐
+  入れる必要 (= =builtins.rs eval_form= で =Sexp::Record= を
+  identity 返り)
+
+→ 4d で実装。1 行追加。
+
+** §6.4 cl-defstruct と protocol-style dispatch
+
+=cl-defmethod= や =cl-defgeneric= はそれぞれ独自 dispatch が必要。
+Stage 4 本体は struct のみ。method dispatch は別 design。
+
+** §6.5 backwards compat
+
+Stage 4 投入で =Sexp::HashTable= variant を撤去する場合、anvil-runtime
+crate (= /home/madblack-21/Cowork/Notes/dev/nelisp/anvil-runtime/) の
+=sexp_to_json= が =HashTable= match arm を持っている (= recent commit
+=ee26cb6= で fix した箇所)。Stage 4f で同時に =Record= 対応 + HashTable
+arm 撤去が必要。
+
+→ Stage 4f checklist に明記。
+
+* §7 References
+
+- Doc 50 (=50-rust-min-irreducible-unlock.org=) §3.1 戦略 B (本 doc の親)
+- Doc 49 (=49-rust-min-core-selfhost.org=) — Rust-min 基本方針
+- Doc 47 (=47-image-abi.org=) — record の image lowering 将来検討
+- =build-tool/src/reader/sexp.rs:38= — Sexp enum 定義
+- =build-tool/src/reader/lexer.rs:336= — 既存 =#s(...)= deferred ガード
+- =build-tool/src/eval/builtins.rs:1044= — type-of impl
+- =build-tool/src/eval/builtins.rs:1259-1410= — 現 hash-table builtins
+- =lisp/nelisp-cl-macros.el= — 既存 cl-* macro 群、=cl-defstruct=
+  追加先
+- =lisp/nelisp-stdlib-misc.el:115-128= — Stage 1 で elisp 化済の
+  hash-table iter wrapper
+- host emacs =lisp/emacs-lisp/cl-macs.el cl-defstruct= 元実装
+
+;;; Doc 52 ends here
