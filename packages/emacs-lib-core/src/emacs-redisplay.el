@@ -133,7 +133,7 @@
 Bumped on incompatible change to the per-frame redisplay invariants
 (e.g. dirty-tracking semantics, matrix cache invalidation rules).")
 
-(defconst emacs-redisplay-glyph-matrix-contract-version 2
+(defconst emacs-redisplay-glyph-matrix-contract-version 3
   "GLYPH_MATRIX_CONTRACT_VERSION per Doc 43 v2 §2.3.
 Bumped on incompatible change to the glyph / glyph-row / glyph-matrix
 struct shape exposed via `emacs-redisplay-glyph-matrix'.
@@ -144,7 +144,13 @@ History:
   v2 — Phase 3.B.1: glyph slot `realized-face' added (= SGR-ready
        attribute alist computed via `emacs-redisplay-realize-face').
        The original `face' slot continues to hold the raw spec for
-       diff / observability / overlay merge intermediate state.")
+       diff / observability / overlay merge intermediate state.
+  v3 — Phase 3.B.4: glyph slot `face-id' is now populated from the
+       face-id pool (`emacs-redisplay--face-pool') for non-nil faces.
+       Identical realized-face alists collapse to a single integer id,
+       enabling O(1) integer comparison during row-hash / diff and
+       freeing the backend from re-deriving SGR per-glyph.  The pool
+       resets via `emacs-redisplay-face-cache-clear' (= invariant 4).")
 
 (defconst emacs-redisplay-face-realize-contract-version 2
   "FACE_REALIZE_CONTRACT_VERSION per Doc 43 v2 §2.4.
@@ -622,10 +628,117 @@ local registry maintained by `emacs-redisplay-defface'."
 (defun emacs-redisplay-face-cache-clear ()
   "Drop every cached face realization.  Returns the entry count cleared.
 Call after backend swap (Doc 43 §2.4 invariant 4) or after registry
-mutation."
+mutation.  Also drops the Phase 3.B.4 face-id pool — a realized-face
+alist that is reproduced after the clear receives a fresh id, so
+downstream glyph-matrix consumers must invalidate any cached id-keyed
+state when this fires."
   (let ((n (hash-table-count emacs-redisplay--face-cache)))
     (clrhash emacs-redisplay--face-cache)
+    (emacs-redisplay-face-pool-clear)
     n))
+
+;;; Face-id pool (Phase 3.B.4, Doc 43 §2.4 + §3.2 close gate)
+;;
+;; The pool interns realized-face alists (= the output of
+;; `emacs-redisplay-realize-face') into stable integer ids.  Glyphs
+;; store the id in their `face-id' slot, which lets diff /
+;; row-hash compare faces with O(1) integer eql instead of
+;; O(N) alist `equal'.  This is the key enabler for the Phase 3
+;; close-gate "5x throughput" target per Doc 43 §3.2: hot redisplay
+;; paths (= row hash, dirty propagation, overlay merge re-realize)
+;; collapse to integer compare on identical-face spans.
+;;
+;; Pool invariants:
+;;   1. id 0 is reserved for nil (= default face, no SGR).
+;;   2. ids are dense integers starting at 1, monotonically allocated.
+;;   3. Two `equal' realized-face alists collapse to the same id.
+;;   4. The pool is cleared when the realization cache is cleared
+;;      (= Doc 43 §2.4 invariant 4: backend swap / registry mutation).
+;;   5. Reverse lookup (= id → realized-face) is O(1) via a vector.
+
+(defvar emacs-redisplay--face-pool (make-hash-table :test 'equal)
+  "Memoization: realized-face alist → face-id integer (Phase 3.B.4).
+Key = `equal' of the alist returned by `emacs-redisplay-realize-face'.
+id 0 is reserved for nil.  Cleared by `emacs-redisplay-face-pool-clear'.")
+
+(defvar emacs-redisplay--face-pool-attrs
+  (let ((v (make-vector 16 nil)))
+    (aset v 0 nil)   ;; reserved: id 0 = nil = default face
+    v)
+  "Reverse lookup vector: face-id → realized-face alist.
+Index 0 is reserved for nil.  The vector grows in powers of two via
+`emacs-redisplay--face-pool-grow-attrs'.")
+
+(defvar emacs-redisplay--face-pool-counter 1
+  "Next face-id to allocate.  Starts at 1 (= 0 reserved for nil).")
+
+(defun emacs-redisplay--face-pool-grow-attrs (target)
+  "Grow `emacs-redisplay--face-pool-attrs' so index TARGET is in range."
+  (let* ((cap (length emacs-redisplay--face-pool-attrs))
+         (need (1+ target)))
+    (when (> need cap)
+      (let ((new-cap (max need (* cap 2)))
+            (new-vec nil)
+            (i 0))
+        (setq new-vec (make-vector new-cap nil))
+        (while (< i cap)
+          (aset new-vec i (aref emacs-redisplay--face-pool-attrs i))
+          (setq i (1+ i)))
+        (setq emacs-redisplay--face-pool-attrs new-vec)))))
+
+(defun emacs-redisplay-face-pool-intern (realized)
+  "Return the face-id for REALIZED (= a realized-face alist or nil).
+Allocates a fresh id on first sight, otherwise returns the cached id.
+nil REALIZED collapses to the reserved id 0 (= default / no SGR)."
+  (cond
+   ((null realized) 0)
+   (t
+    (let ((cached (gethash realized emacs-redisplay--face-pool)))
+      (cond
+       ((integerp cached) cached)
+       (t
+        (let ((id emacs-redisplay--face-pool-counter))
+          (emacs-redisplay--face-pool-grow-attrs id)
+          (aset emacs-redisplay--face-pool-attrs id realized)
+          (puthash realized id emacs-redisplay--face-pool)
+          (setq emacs-redisplay--face-pool-counter (1+ id))
+          id)))))))
+
+(defun emacs-redisplay-face-pool-lookup (id)
+  "Return the realized-face alist that maps to face-id ID, or nil.
+nil is returned for id 0 (= default), for ids past the live counter,
+and for ids freed by a pool-clear that have not been re-interned yet."
+  (cond
+   ((not (integerp id)) nil)
+   ((zerop id) nil)
+   ((>= id emacs-redisplay--face-pool-counter) nil)
+   ((>= id (length emacs-redisplay--face-pool-attrs)) nil)
+   (t (aref emacs-redisplay--face-pool-attrs id))))
+
+(defun emacs-redisplay-face-pool-size ()
+  "Return the number of *non-default* faces interned in the pool."
+  (1- emacs-redisplay--face-pool-counter))
+
+(defun emacs-redisplay-face-pool-clear ()
+  "Drop every interned face-id back to the reserved 0.
+Returns the count of entries dropped (= ids freed)."
+  (let ((n (1- emacs-redisplay--face-pool-counter)))
+    (clrhash emacs-redisplay--face-pool)
+    (let ((cap (length emacs-redisplay--face-pool-attrs))
+          (i 1))
+      (while (< i cap)
+        (aset emacs-redisplay--face-pool-attrs i nil)
+        (setq i (1+ i))))
+    (setq emacs-redisplay--face-pool-counter 1)
+    n))
+
+(defun emacs-redisplay--realize-and-intern (face)
+  "Realize FACE and intern the result; return (REALIZED . FACE-ID).
+Compound helper for glyph-emission sites: lets a single call populate
+both glyph slots without re-doing the cache lookup."
+  (let* ((realized (emacs-redisplay-realize-face face))
+         (id (emacs-redisplay-face-pool-intern realized)))
+    (cons realized id)))
 
 ;;; Optional NeLisp upstream API bridges (graceful fallback)
 ;;
@@ -661,6 +774,107 @@ still inspect the unresolved value."
         (or (nelisp-display-resolve spec frame) spec)
       (error spec)))
    (t spec)))
+
+;;; Display-property handler MVP (Phase 3.B.4, Doc 43 §2.4 + §2.5a)
+;;
+;; The handler maps a `display' text-property (or overlay property)
+;; to a transformation on the glyph row.  Phase 3.B.4 ships the two
+;; shapes that move the redisplay engine past "raw character grid"
+;; into "structured layout primitive" territory:
+;;
+;;   (space :width N)     pad N cells of blank glyphs in place of the
+;;                        underlying buffer character.
+;;   (image ...)          capability-gated; under TUI we declare
+;;                        unsupported per Doc 43 §2.5a degrade contract.
+;;
+;; Out of scope (= deferred to v2.x per Doc 43):
+;;   - (space-width N)     /  full Emacs `space-width' semantics
+;;   - (slice X Y W H)     glyph slicing for image fragments
+;;   - 3D-list display specs / property cascades
+;;
+;; Capability declaration: Layer-3 backends list which display shapes
+;; they handle in their `:capability' set (= per Doc 43 §2.5).  When
+;; a backend lacks `image', the resolver below signals
+;; `display-spec-unsupported' with the spec + unsupported flag so the
+;; redisplay-driver can fall back to the raw character (= invariant 4
+;; per §2.5a: "cache invalidation on capability change").
+
+(defconst emacs-redisplay-display-property-supported-shapes
+  '(space)
+  "Display-property shapes the redisplay engine handles inline.
+The list is the union supported by *every* backend; a specific backend
+may additionally declare `image' / `slice' / etc. via its
+`:capability' set, but the engine consults the backend before emitting
+those.  Phase 3.B.4: `space' only.")
+
+(define-error 'emacs-redisplay-display-spec-unsupported
+  "Display spec not supported by current backend"
+  'emacs-redisplay-error)
+
+(defun emacs-redisplay-display-spec-shape (spec)
+  "Return the leading symbol of display-property SPEC, or nil.
+Recognized shapes: `space', `image', `slice'.  Unknown shapes return
+nil so the caller can keep the raw spec verbatim."
+  (cond
+   ((null spec) nil)
+   ((and (consp spec) (symbolp (car spec))) (car spec))
+   ((symbolp spec) spec)
+   (t nil)))
+
+(defun emacs-redisplay-display-spec-supported-p (spec &optional backend)
+  "Return non-nil if SPEC is renderable by BACKEND (= currently engine).
+BACKEND is reserved for the per-backend capability lookup once
+`emacs-tui-backend-capability-p' / equivalent is wired (= future
+work).  In the MVP we delegate to
+`emacs-redisplay-display-property-supported-shapes'."
+  (ignore backend)
+  (let ((shape (emacs-redisplay-display-spec-shape spec)))
+    (and shape (memq shape emacs-redisplay-display-property-supported-shapes))))
+
+(defun emacs-redisplay-display-spec-space-width (spec)
+  "Return the cell width declared by a `(space :width N)' SPEC.
+Accepts both keyword form `(:width N)' and the bare-list shape
+`(space N)' that Emacs documents under `display' property.  Non-`space'
+specs return nil."
+  (cond
+   ((not (consp spec)) nil)
+   ((not (eq (car spec) 'space)) nil)
+   (t
+    (let* ((rest (cdr spec))
+           (kw   (memq :width rest)))
+      (cond
+       ((and kw (integerp (cadr kw))) (cadr kw))
+       ((and (integerp (car-safe rest)) (null (cdr-safe rest))) (car rest))
+       (t nil))))))
+
+(defun emacs-redisplay-display-spec-glyphs (spec face)
+  "Materialise display SPEC into a vector of glyphs styled with FACE.
+Returns nil when SPEC is unsupported (= `image' under TUI), in which
+case the caller falls back to rendering the underlying buffer char."
+  (let ((shape (emacs-redisplay-display-spec-shape spec)))
+    (cond
+     ((eq shape 'space)
+      (let ((w (emacs-redisplay-display-spec-space-width spec)))
+        (cond
+         ((and (integerp w) (> w 0))
+          (let* ((vec (make-vector w nil))
+                 (ri  (emacs-redisplay--realize-and-intern face))
+                 (i 0))
+            (while (< i w)
+              (aset vec i
+                    (emacs-redisplay--make-glyph
+                     :char ?\s
+                     :face (emacs-redisplay--resolve-face face)
+                     :realized-face (car ri)
+                     :face-id (cdr ri)
+                     :width 1
+                     :composition nil
+                     :display-spec spec
+                     :buf-pos nil))
+              (setq i (1+ i)))
+            vec))
+         (t nil))))
+     (t nil))))
 
 (defun emacs-redisplay--overlays-in (beg end &optional buffer)
   "Return overlays touching [BEG, END) in BUFFER, or nil if API absent."
@@ -920,13 +1134,14 @@ in the `buf-pos' slot.  HANDLE may be nil — only used for logging."
       (let* ((pos (+ offset i))
              (face (emacs-redisplay--text-property-at pos 'face buffer))
              (display (emacs-redisplay--text-property-at pos 'display buffer))
-             (resolved (emacs-redisplay--resolve-face face)))
+             (resolved (emacs-redisplay--resolve-face face))
+             (realized.id (emacs-redisplay--realize-and-intern face)))
         (aset vec i
               (emacs-redisplay--make-glyph
                :char (aref text i)
                :face resolved
-               :realized-face (emacs-redisplay-realize-face face)
-               :face-id 0
+               :realized-face (car realized.id)
+               :face-id (cdr realized.id)
                :width 1
                :composition nil
                :display-spec (emacs-redisplay--resolve-display display nil)
@@ -1020,11 +1235,13 @@ after emission (= COL when WIDTH is exhausted before any char)."
          ((or (eq ch ?\n) (eq cw -1))
           (when (< col width)
             (let* ((face (emacs-redisplay--string-face-at str i ov-face))
+                   (ri (emacs-redisplay--realize-and-intern face))
                    (g (emacs-redisplay--make-glyph
                        :char ?\s
                        :face (emacs-redisplay--resolve-face face)
-                       :realized-face (emacs-redisplay-realize-face face)
-                       :face-id 0 :width 1
+                       :realized-face (car ri)
+                       :face-id (cdr ri)
+                       :width 1
                        :buf-pos anchor-pos)))
               (aset used col g)
               (setq col (1+ col)))))
@@ -1034,11 +1251,13 @@ after emission (= COL when WIDTH is exhausted before any char)."
             (setq overflow t))
            (t
             (let* ((face (emacs-redisplay--string-face-at str i ov-face))
+                   (ri (emacs-redisplay--realize-and-intern face))
                    (g (emacs-redisplay--make-glyph
                        :char ch
                        :face (emacs-redisplay--resolve-face face)
-                       :realized-face (emacs-redisplay-realize-face face)
-                       :face-id 0 :width cw*
+                       :realized-face (car ri)
+                       :face-id (cdr ri)
+                       :width cw*
                        :buf-pos anchor-pos)))
               (aset used col g)
               (setq col (+ col cw*))))))))
@@ -1075,8 +1294,12 @@ after emission (= COL when WIDTH is exhausted before any char)."
           ;; Phase 3.B.1: re-realize the merged spec into the SGR-
           ;; ready alist so the backend flush picks up the overlay
           ;; contribution without an extra realize call per row seg.
-          (setf (emacs-redisplay-glyph-realized-face glyph)
-                (emacs-redisplay-realize-face merged)))))))
+          ;; Phase 3.B.4: also re-intern into the face-id pool so the
+          ;; updated id propagates to row hash + diff.
+          (let ((re (emacs-redisplay-realize-face merged)))
+            (setf (emacs-redisplay-glyph-realized-face glyph) re)
+            (setf (emacs-redisplay-glyph-face-id glyph)
+                  (emacs-redisplay-face-pool-intern re))))))))
 
 (defun emacs-redisplay--lay-out-line (line buffer-pos buffer overlays width)
   "Return a vector of `used' glyphs for LINE starting at BUFFER-POS.
@@ -1145,11 +1368,12 @@ the overlay anchor position."
            (t
             (let* ((face (emacs-redisplay--text-property-at pos 'face buffer))
                    (display (emacs-redisplay--text-property-at pos 'display buffer))
+                   (ri (emacs-redisplay--realize-and-intern face))
                    (g (emacs-redisplay--make-glyph
                        :char ch
                        :face (emacs-redisplay--resolve-face face)
-                       :realized-face (emacs-redisplay-realize-face face)
-                       :face-id 0
+                       :realized-face (car ri)
+                       :face-id (cdr ri)
                        :width (max 1 cw)
                        :composition nil
                        :display-spec (emacs-redisplay--resolve-display
@@ -1308,6 +1532,7 @@ backend emits inverse-video SGR for the whole row."
   (let* ((text (emacs-redisplay--format-mode-line window))
          (vec  (emacs-redisplay-glyph-row-glyphs row))
          (real (emacs-redisplay-realize-face 'mode-line))
+         (id   (emacs-redisplay-face-pool-intern real))
          (n    (length text))
          (i    0))
     (while (< i width)
@@ -1316,7 +1541,7 @@ backend emits inverse-video SGR for the whole row."
              :char (if (< i n) (aref text i) ?\s)
              :face 'mode-line
              :realized-face real
-             :face-id 0
+             :face-id id
              :width 1))
       (setq i (1+ i)))
     (setf (emacs-redisplay-glyph-row-used row) (min n width)
