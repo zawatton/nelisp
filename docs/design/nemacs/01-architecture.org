@@ -726,39 +726,42 @@ escalate。本 repo §9.5 OQ で同期 stamp。
 
 | # | カテゴリ        | 項目                                                                | 状態     | 根拠 / Gap                                                                                                                                                                                                                  |
 |---+-----------------+---------------------------------------------------------------------+----------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| 1 | blocker         | text-property face change → glyph-matrix dirty propagation          | PARTIAL  | =emacs-redisplay--row-hash= が face を mix-in、=glyph-carries-realized-face= / =flush-emits-sgr-for-realized-face= で realized 経路 covered。Gap: 「redisplay #1 後に face change → redisplay #2 で当該 row dirty 再 set」専用 ERT が無い |
-| 2 | blocker         | window scroll → glyph-matrix re-fill                                | PARTIAL  | =redisplay-window-start-offsets-display= で初期 scroll covered、bench scroll シナリオ (segs 22977 vs 25000) で実用挙動 OK。Gap: 「redisplay 後に window-start 変更 → 内容シフト」を 1 行ずつ assert する dedicated ERT が無い |
+| 1 | blocker         | text-property face change → glyph-matrix dirty propagation          | SHIPPED  | Phase 3.C.1 で =emacs-buffer-put-text-property= / =add-text-properties= / =remove-text-properties= が =modified-tick= を bump、redisplay fingerprint に同 tick を含めて検出。ERT +3: =face-change-after-redisplay-marks-row-dirty= / =-flushes-new-sgr= / =remove-text-property-also-marks-row-dirty=                |
+| 2 | blocker         | window scroll → glyph-matrix re-fill                                | SHIPPED  | =redisplay-window-start-offsets-display= 初期 scroll + Phase 3.C.1 で +3 ERT (=scroll-after-redisplay-shifts-row-content= / =scroll-back-restores-row-content= / =scroll-after-redisplay-marks-rows-dirty=)、bench scroll シナリオ (segs 22977 vs 25000) でも実用挙動確認済                                                                                  |
 | 3 | blocker         | =force-mode-line-update= → mode-line redraw                         | SHIPPED  | =emacs-redisplay-test-force-mode-line-update-redraws-mode-line= (Phase 3.B.4 で追加)、最終 row に =:inverse-video= で =%b= 描画確認済                                                                                          |
-| 4 | blocker         | 差分 redraw 5x throughput bench                                     | SHIPPED  | =bench/bench-redisplay.el= + =make bench=、static 112.96x (対 5x)、Phase 3.B.5 で close                                                                                                                                       |
-| 5 | ERT smoke       | xdisp ERT ~45 test                                                  | SHIPPED  | =test/emacs-redisplay-test.el= = 67 ERT (~49% 上回り)、Doc 43 §3.2 +45 entry を充足                                                                                                                                            |
-| 6 | ERT smoke       | integration smoke ~20 cases (TUI + xdisp visual output)             | PARTIAL  | =frame-canvas= 直接 assert する ERT は 4 件 (=flush-frame-writes-to-canvas= / =redisplay-changed-row-flushes-again= / =force-mode-line-update-redraws-mode-line= / =redraw-display-invalidates-all-windows=)。+ =frame-tui-wire-test= 14 件で wire-up 経路 covered。Gap: ~6-12 件の dedicated visual smoke ERT が不足 |
+| 4 | blocker         | 差分 redraw 5x throughput bench                                     | SHIPPED  | =bench/bench-redisplay.el= + =make bench=、static 101.64x (対 5x)、Phase 3.B.5 で close                                                                                                                                       |
+| 5 | ERT smoke       | xdisp ERT ~45 test                                                  | SHIPPED  | =test/emacs-redisplay-test.el= = 80 ERT (=49% + Phase 3.C.1 +13 で 78% 上回り)、Doc 43 §3.2 +45 entry を充足                                                                                                                  |
+| 6 | ERT smoke       | integration smoke ~20 cases (TUI + xdisp visual output)             | SHIPPED  | Phase 3.C.1 で section J = +7 dedicated visual smoke ERT (=multi-line / empty / tab / invisible / edit-cycle / scroll / face-change=)、既存 4 件 (=flush-frame-writes-to-canvas= 等) + =frame-tui-wire-test= 14 件と合わせて 25 件、ship gate ~20 を充足                                                                                                       |
 | 7 | post-ship audit | 1h soak / 10MB scroll / leak 0 / RSS growth < 5MB                   | NOT-RUN  | post-ship audit 項目 (= close blocker ではない)。Gap: soak harness 無し、RSS instrument 無し                                                                                                                                  |
 | 8 | post-ship audit | redisplay per-frame p99 < 100ms (xterm-256color)                    | SHIPPED  | Phase 3.C.2 で =bench/bench-redisplay.el= に per-iter sample + p50/p99/p99.9/max 集計 + gate verdict 追加 (2026-05-06)。実測 (iters=1000、Linux dev box、no-op sink): static p99 0.010ms / edit p99 15.169ms / scroll p99 21.337ms — gate 100ms に対し最大 ~4.7x headroom |
 
-*Phase 3 close 判定*:
-- *blocker 4 項目* (gate #1-#4): #3 / #4 = SHIPPED、#1 / #2 = PARTIAL (機能は動くが
-  dedicated ERT 不足)。「機能の動作」基準なら全 SHIPPED、「ERT-by-ERT 充足」基準なら
-  #1 / #2 に専用 test 追加が必要
-- *ERT smoke 2 項目* (gate #5-#6): #5 = SHIPPED、#6 = PARTIAL。integration smoke の
-  ~6-12 件追加で close 可
-- *post-ship audit 2 項目* (gate #7-#8): blocker ではないため Phase 3 close を
-  阻まない。但し ship gate audit の正式 close には soak + p99 計測 harness 構築要
+*Phase 3 close 判定 (2026-05-06 update)*:
+- *blocker 4 項目* (gate #1-#4): 全 SHIPPED (Phase 3.C.1 で gate #1 の
+  modified-tick fingerprint 拡張 + 専用 ERT、gate #2 の専用 ERT を追加)
+- *ERT smoke 2 項目* (gate #5-#6): 全 SHIPPED (Phase 3.C.1 で section J
+  = 7 件 visual smoke ERT 追加)
+- *post-ship audit 2 項目* (gate #7-#8): #8 = SHIPPED (Phase 3.C.2 で bench に
+  p99 計測追加)、#7 = NOT-RUN だが close blocker でなく optional
+- *結論*: Phase 3 *close gate 全項目 SHIPPED*。Phase 3 close 宣言可
+  (#7 soak harness は release pre-flight 用に Phase 3.C.3 で別途構築)
 
-*推奨 closing sequence*:
-1. *Phase 3.C.1 — Gap-fill ERT bundle* (blocker dedicated tests):
-   - face-change-after-redisplay propagation (gate #1)
-   - scroll-after-redisplay re-fill (gate #2)
-   - integration visual smoke ~6-12 件 (gate #6)
-   - 規模見積: ~20 ERT 追加、~半日
-2. *Phase 3.C.2 — bench p99 instrumentation* (gate #8 part) — *SHIPPED 2026-05-06*:
+*Closing sequence 進捗*:
+1. *Phase 3.C.1 — Gap-fill ERT bundle* — *SHIPPED 2026-05-06*:
+   - gate #1: =emacs-buffer-put/add/remove-text-properties= に
+     =modified-tick= bump 追加、redisplay fingerprint に取り込み、専用 ERT +3
+   - gate #2: scroll-after-redisplay 系 ERT +3
+   - gate #6: section J visual smoke ERT +7
+   - 計 +13 ERT、redisplay 80/80・全体 438/438 PASS
+2. *Phase 3.C.2 — bench p99 instrumentation* (gate #8) — *SHIPPED 2026-05-06*:
    - per-iter sample vector + p50/p99/p99.9/max + gate verdict 追加済
-   - 実測 (iters=1000): static p99 0.010ms / edit 15.169ms / scroll 21.337ms、
-     gate 100ms に対し全 PASS、~4.7-10000x headroom
+   - 実測 (iters=1000): static p99 0.063ms / edit 28.985ms / scroll 49.327ms、
+     gate 100ms に対し全 PASS、~2-1500x headroom
 3. *Phase 3.C.3 — soak harness* (gate #7、optional):
    - large-buffer (10MB) scroll loop + RSS sampler
    - 規模見積: ~100 LOC、CI には組み込まず手動 release pre-flight check 用、~半日
-4. これで *Phase 3 close* 宣言可 (blocker + ERT smoke 全 SHIPPED、post-ship audit
-   harness 揃う)
+   - Phase 3 close blocker ではない、release 前に着手
+4. *Phase 3 close 宣言条件達成* (blocker + ERT smoke 全 SHIPPED、post-ship
+   audit gate #8 SHIPPED、gate #7 のみ optional 残)
 
 *Phase 3.C audit 後の Phase 3.B.x backlog* (close 後の future work):
 - *3.B.6 row-incremental rebuild* — edit-case total speedup を 1.1x → 5x+ へ。
