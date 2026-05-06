@@ -284,6 +284,8 @@ Idempotent — re-calling replaces the global map with a fresh one."
       (define-key m (vector ?\C-h) help-map))
     ;; C-SPC = ?\C-@ = byte 0
     (define-key m (vector 0) 'nemacs-gtk-set-mark-command)
+    ;; Phase 2.BI — C-z = iconify-frame (= minimize the GTK window).
+    (define-key m (vector ?\C-z) 'nemacs-gtk-iconify-frame)
     ;; C-x prefix map — common substrate-level commands behind the
     ;; same handlers the menu uses.
     (define-key ctl-x-map (vector ?\C-s) 'nemacs-gtk-keyboard-save)
@@ -3578,6 +3580,103 @@ echo-area row.  Read-only diagnostic; safe to call any time."
                 nemacs-gtk--font-size)))
 
 
+;;;; --- bundle Phase 2.BI (electric-pair, transient-mark, iconify) ---------
+
+(defvar nemacs-gtk--electric-pair-mode nil
+  "Phase 2.BI — t when typing an opener (= `(' / `[' / `{' / `\"')
+auto-inserts the matching close after point, and typing a closer
+that already sits at point steps over it instead of inserting a
+duplicate.  Off by default — toggle via M-x electric-pair-mode.")
+
+(defvar nemacs-gtk--transient-mark-mode t
+  "Phase 2.BI — t when the [mark .. point] region renders as a
+translucent overlay (= what Phase 2.BH paints).  Off when the user
+prefers Emacs's traditional always-active mark semantics + no
+visible region.  Default = on, matching modern Emacs.")
+
+(defun nemacs-gtk-electric-pair-mode ()
+  "Toggle `--electric-pair-mode'.  When enabled, opener / closer
+chars dispatch through `--electric-pair-handle' before the normal
+self-insert path; when disabled, they self-insert as usual."
+  (interactive)
+  (setq nemacs-gtk--electric-pair-mode
+        (not nemacs-gtk--electric-pair-mode))
+  (setq nemacs-gtk--last-key-text
+        (format "electric-pair-mode: %s"
+                (if nemacs-gtk--electric-pair-mode "on" "off"))))
+
+(defun nemacs-gtk-transient-mark-mode ()
+  "Toggle `--transient-mark-mode'.  When off, `--paint-region-overlay'
+clears any active region highlight on the next paint cycle (= the
+mark is still set, but the GTK overlay isn't drawn).  Useful for
+users who want the canonical Emacs `(setq mark-active nil)' feel."
+  (interactive)
+  (setq nemacs-gtk--transient-mark-mode
+        (not nemacs-gtk--transient-mark-mode))
+  (setq nemacs-gtk--last-key-text
+        (format "transient-mark-mode: %s"
+                (if nemacs-gtk--transient-mark-mode "on" "off"))))
+
+(defun nemacs-gtk-iconify-frame ()
+  "Bound to `C-z' — ask the GTK side to minimize the application
+window via `nelisp-gtk-iconify-frame'.  No-op + echo when the
+extern isn't loaded."
+  (interactive)
+  (cond
+   ((not (fboundp 'nelisp-gtk-iconify-frame))
+    (setq nemacs-gtk--last-key-text "iconify-frame: extern not loaded"))
+   (t
+    (nelisp-gtk-iconify-frame)
+    (setq nemacs-gtk--last-key-text "iconify-frame"))))
+
+(defconst nemacs-gtk--electric-open-pairs
+  '((?\( . ?\)) (?\[ . ?\]) (?\{ . ?\}) (?\" . ?\"))
+  "Phase 2.BI — alist mapping an electric opener char to its closer.
+Note: the apostrophe `\\'' is intentionally omitted — its overload
+as a quote prefix in lisp + as a contraction marker in prose makes
+auto-pairing it net-negative.")
+
+(defconst nemacs-gtk--electric-close-set
+  '(?\) ?\] ?\} ?\")
+  "Phase 2.BI — set of closer chars electric-pair-mode treats as
+`step-past' candidates when the next char at point already
+matches.")
+
+(defun nemacs-gtk--electric-pair-handle (ch)
+  "Phase 2.BI dispatcher tail — apply electric-pair logic for CH:
+
+  - opener: insert OPEN+CLOSE, leave point between
+  - closer at next-char: just step past (= `eat')
+  - unmatched closer: self-insert as usual
+
+CH is the bare integer event the dispatcher would otherwise feed
+through `self-insert-command'."
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let* ((p (nelisp-ec-point))
+           (pmax (nelisp-ec-point-max))
+           (next (and (< p pmax) (emacs-edit--char-at p)))
+           (open-pair (assq ch nemacs-gtk--electric-open-pairs)))
+      (cond
+       ;; Closer + next char is the same → step past
+       ((and (memq ch nemacs-gtk--electric-close-set)
+             (eq next ch))
+        (nelisp-ec-goto-char (1+ p))
+        (setq nemacs-gtk--last-key-text
+              (format "electric-pair: skip %c" ch)))
+       ;; Opener → insert OPEN+CLOSE, point between
+       (open-pair
+        (let ((close (cdr open-pair)))
+          (nelisp-ec-insert (string ch close))
+          (nelisp-ec-goto-char (1+ p))
+          (setq nemacs-gtk--last-key-text
+                (format "electric-pair: %c%c" ch close))))
+       ;; Plain closer with no match → just self-insert
+       (t
+        (nelisp-ec-insert (string ch))
+        (setq nemacs-gtk--last-key-text
+              (format "electric-pair: %c (no match)" ch)))))))
+
+
 ;;;; --- minibuffer mode (Phase 2.J — M-x execute-extended-command) ----------
 
 (defvar nemacs-gtk--minibuffer-active nil
@@ -4067,7 +4166,13 @@ success / failure."
     "nemacs-gtk-version"
     "list-directory"
     "find-alternate-file"
-    "version")
+    "version"
+    "nemacs-gtk-electric-pair-mode"
+    "nemacs-gtk-transient-mark-mode"
+    "nemacs-gtk-iconify-frame"
+    "electric-pair-mode"
+    "transient-mark-mode"
+    "iconify-frame")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
@@ -4583,10 +4688,13 @@ region overlay can resolve mark + point on the same frame."
 (defun nemacs-gtk--paint-region-overlay ()
   "Phase 2.BH — push the [mark .. point] cell range to the Rust side
 via `nelisp-gtk-set-region', or 0/0/0/0 to clear when no mark is
-active.  No-op when the extern isn't loaded (= substrate-only
-boot)."
+active.  Phase 2.BI: also honors `--transient-mark-mode' — when
+off, always clears the overlay regardless of mark state.  No-op
+when the extern isn't loaded (= substrate-only boot)."
   (when (fboundp 'nelisp-gtk-set-region)
     (cond
+     ((not nemacs-gtk--transient-mark-mode)
+      (nelisp-gtk-set-region 0 0 0 0))
      ((or (null nemacs-gtk--mark-pos)
           (null nemacs-gtk--mark-buffer)
           (not (eq nemacs-gtk--mark-buffer (nemacs-gtk--active-buffer))))
@@ -4876,6 +4984,19 @@ viewport."
             (setq nemacs-gtk--last-key-text
                   (format "quoted-insert: %c (#%d)" ch ch))
             (nemacs-gtk--ensure-cursor-visible)))))
+       ((and nemacs-gtk--electric-pair-mode
+             (null nemacs-gtk--pending-prefix)
+             (integerp event)
+             (or (assq event nemacs-gtk--electric-open-pairs)
+                 (memq event nemacs-gtk--electric-close-set))
+             (with-current-buffer (nemacs-gtk--active-buffer)
+               (not (and (boundp 'buffer-read-only) buffer-read-only))))
+        ;; Phase 2.BI — electric-pair: opener inserts pair, closer
+        ;; at-point steps past, unmatched closer self-inserts.
+        ;; Skipped under any prefix (= the user is mid-`C-x'-style
+        ;; chord and the bare `(' is part of a sequence, not text).
+        (nemacs-gtk--electric-pair-handle event)
+        (nemacs-gtk--ensure-cursor-visible))
        (t
         ;; Phase 2.Q shift-select: only at top-level (= no pending
         ;; prefix), let Shift+motion auto-set the mark and a plain
