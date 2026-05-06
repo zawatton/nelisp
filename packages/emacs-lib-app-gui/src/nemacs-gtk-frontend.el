@@ -3803,6 +3803,14 @@ cost only when they actively want the reference."
   (interactive)
   (nemacs-gtk--prepare-cheat-sheet-buffer)
   (setq nemacs-gtk--active-buffer-name "*welcome*")
+  ;; Phase 3.O — `prepare-cheat-sheet-buffer' leaves point at the
+  ;; end of the inserted text (= ~last \n).  `paint-frame-cached'
+  ;; auto-scrolls to keep point visible, which would land the user
+  ;; at the BOTTOM of the cheat sheet (= showing the trailing few
+  ;; lines, not the title).  Move point to BOB so the auto-scroll
+  ;; computes scroll-offset = 0 and renders from the top.
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (nelisp-ec-goto-char (nelisp-ec-point-min)))
   (setq nemacs-gtk--scroll-offset 0)
   (nemacs-gtk--sync-window-title)
   (setq nemacs-gtk--last-key-text "cheat-sheet"))
