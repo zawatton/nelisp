@@ -3796,11 +3796,12 @@ where the user wants to keep the content but stop displaying it."
 ;;;; --- bundle Phase 2.BK (cheat-sheet + scratch + messages) --------------
 
 (defun nemacs-gtk-cheat-sheet ()
-  "M-x cheat-sheet — refresh + display the welcome buffer.  Same
-content the GUI shows on boot, useful when the user has switched
-away + wants the keybinding reference back."
+  "M-x cheat-sheet — render the FULL key-binding cheat-sheet into the
+welcome buffer.  Phase 3.M: separated from the boot-time welcome
+(= which is now ~100 chars) so users opt into the heavier paint
+cost only when they actively want the reference."
   (interactive)
-  (nemacs-gtk--prepare-welcome-buffer)
+  (nemacs-gtk--prepare-cheat-sheet-buffer)
   (setq nemacs-gtk--active-buffer-name "*welcome*")
   (setq nemacs-gtk--scroll-offset 0)
   (nemacs-gtk--sync-window-title)
@@ -4666,8 +4667,24 @@ Tab in the prompt completes against `--m-x-commands' (Phase 2.T)."
 
 (defun nemacs-gtk--prepare-welcome-buffer ()
   "Create / reset the `*welcome*' buffer + drop the cursor at end.
-Phase 2.BK: doubles as the cheat-sheet renderer — `M-x cheat-sheet'
-re-runs this fn to refresh the content with the latest key bindings."
+Phase 3.M: minimal welcome (= ~100 chars) to keep boot paint cost
+low.  The full keybinding cheat-sheet is reachable via
+`M-x cheat-sheet' which re-renders into this same buffer on demand."
+  (let ((buf (or (get-buffer "*welcome*")
+                 (generate-new-buffer "*welcome*"))))
+    (with-current-buffer buf
+      (erase-buffer)
+      (insert "Welcome to nemacs-gtk.\n\n")
+      (insert "M-x cheat-sheet  for the full key reference.\n")
+      (insert "M-x scratch-buffer  for an elisp scratch.\n")
+      (insert "C-x C-f  to open a file.\n"))
+    (buffer-name buf)))
+
+(defun nemacs-gtk--prepare-cheat-sheet-buffer ()
+  "Phase 3.M — render the long-form cheat sheet into `*welcome*' on
+demand (= via `M-x cheat-sheet').  Kept separate from the small
+boot-time welcome so users on resource-constrained VMs aren't
+paying a 2400-char paint cost from the moment the GUI opens."
   (let ((buf (or (get-buffer "*welcome*")
                  (generate-new-buffer "*welcome*"))))
     (with-current-buffer buf
