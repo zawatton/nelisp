@@ -27,7 +27,6 @@ use super::env::Env;
 use super::error::EvalError;
 use super::quit;
 use super::sexp::Sexp;
-use crate::reader::sexp::CharTableInner;
 use std::cell::RefCell;
 use std::rc::Rc;
 use super::special_forms::{is_truthy, sexp_eq};
@@ -474,7 +473,6 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "terminal-take-sigcont" => bi_terminal_take_sigcont(args),
         "read" => bi_read(args),
         "read-from-string" => bi_read_from_string(args),
-        "locate-library" => bi_locate_library(args, env),
         "provide" => bi_provide(args, env),
         "require" => bi_require(args, env),
         "featurep" => bi_featurep(args, env),
@@ -740,7 +738,7 @@ fn bi_ash(args: &[Sexp]) -> Result<Sexp, EvalError> {
 fn bi_sxhash(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("sxhash", args, 1, Some(1))?;
     use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
+    use std::hash::Hasher;
     let mut h = DefaultHasher::new();
     sxhash_into(&args[0], &mut h);
     // Mask to a positive Emacs-fixnum-friendly range.
@@ -1419,12 +1417,11 @@ fn hash_test_eq(test: &str, a: &Sexp, b: &Sexp) -> bool {
 /// Pick the test to use when the table-side `test' isn't accessible
 /// (= during in-place mutation borrow).  Falls through to structural
 /// equality.  Currently a stub kept for symmetry with `hash_test_eq'.
-fn inner_test_for(_a: &Sexp, _b: &Sexp) -> String {
-    "equal".into()
-}
-
 // bi_delete_dups removed — see lisp/nelisp-stdlib-plist-str.el
 // (Rust-min 2026-05-06 batch 3).
+// inner_test_for helper removed (Rust-min cleanup, 2026-05-07): was
+// used by bi_delete_dups before its elisp migration; orphan after
+// batch 3.
 
 fn bi_symbol_name(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("symbol-name", args, 1, Some(1))?;
@@ -2670,7 +2667,11 @@ mod tty_raw {
             _ => {
                 let errno = std::io::Error::last_os_error();
                 // EAGAIN / EWOULDBLOCK can happen between poll and
-                // read on a non-blocking fd; treat as no-byte.
+                // read on a non-blocking fd; treat as no-byte.  On Linux
+                // these constants share a value so the second arm is
+                // unreachable — keep both written for portability to
+                // BSDs where they differ; allow the lint here.
+                #[allow(unreachable_patterns)]
                 if matches!(
                     errno.raw_os_error(),
                     Some(libc::EAGAIN) | Some(libc::EWOULDBLOCK)

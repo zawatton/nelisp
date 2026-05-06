@@ -301,7 +301,7 @@ pub fn nl_ffi_malloc(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
     let n = n as usize;
     let mut v: Vec<u8> = vec![0u8; n];
-    let ptr = v.as_mut_ptr() as i64;
+    let _ptr = v.as_mut_ptr() as i64;
     // Leak the Vec so the buffer survives until nl-ffi-free.  Track in a
     // global so free() can reconstruct the Box for proper deallocation.
     let len = v.len();
