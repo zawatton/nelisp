@@ -782,8 +782,11 @@ fn sexp_to_json(value: &Sexp) -> Value {
         Sexp::Int(n) => json!(n),
         Sexp::Float(x) => json!(x),
         Sexp::Str(s) => json!(s),
+        Sexp::MutStr(rc) => json!(rc.borrow().clone()),
         Sexp::Symbol(s) => json!(s),
         Sexp::Vector(items) => Value::Array(items.borrow().iter().map(sexp_to_json).collect()),
+        Sexp::BoolVector(rc) => Value::Array(rc.borrow().iter().map(|&b| Value::Bool(b)).collect()),
+        Sexp::Cell(rc) => sexp_to_json(&rc.borrow()),
         Sexp::Cons(_, _) => {
             if let Some(object) = plist_to_json_object(value) {
                 Value::Object(object)
@@ -798,6 +801,10 @@ fn sexp_to_json(value: &Sexp) -> Value {
                 })
             }
         }
+        // HashTable / CharTable: opaque at MCP boundary; emit debug repr
+        // so tool outputs at least don't panic.  Should not normally appear
+        // at JSON-encode time (anvil tool returns are alists/plists/strings).
+        Sexp::HashTable(_) | Sexp::CharTable(_) => json!(format!("{:?}", value)),
     }
 }
 
