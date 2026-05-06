@@ -28,6 +28,27 @@
 (defun string-empty-p (s)
   (= (length s) 0))
 
+;; Rust-min (2026-05-06 batch 6b): substring as elisp.  Walks chars
+;; via `aref' (= O(N) per access in the current Sexp::Str repr) and
+;; rebuilds via `concat' of an int-list — same hot-loop pattern as
+;; existing `regexp-quote' / `string-trim*' / `string-search'
+;; migrations.  Vector substring stays in Rust because the elisp
+;; path here is string-only by design (= scope-matched to the
+;; previous `bi_substring' which only accepted strings).
+(defun substring (str from &optional to)
+  (let* ((len (length str))
+         (from (if (< from 0) (+ len from) from))
+         (to (cond ((null to) len)
+                   ((< to 0) (+ len to))
+                   (t to))))
+    (when (or (< from 0) (< to from) (> to len))
+      (error "Args out of range"))
+    (let ((chars nil) (i to))
+      (while (> i from)
+        (setq i (1- i))
+        (setq chars (cons (aref str i) chars)))
+      (concat chars))))
+
 ;; Rust-min (2026-05-06): compare-strings as elisp.  Emacs primitive
 ;; signature: (compare-strings STR1 START1 END1 STR2 START2 END2
 ;; &optional IGNORE-CASE).  Returns:

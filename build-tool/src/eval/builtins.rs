@@ -62,7 +62,9 @@ pub fn install_builtins(env: &mut Env) {
         // hashing — used by hash-table key derivation in user code
         "sxhash", "sxhash-equal", "sxhash-eq", "sxhash-eql",
         // string
-        "concat", "format", "substring", "intern", "intern-soft", "symbol-name",
+        // Rust-min (2026-05-06 batch 6b): substring migrated to elisp
+        // (lisp/nelisp-stdlib-plist-str.el).
+        "concat", "format", "intern", "intern-soft", "symbol-name",
         "string-equal", "string=",
         "string-match-p",
         // Rust-min (2026-05-06): `regexp-quote' migrated to elisp
@@ -236,7 +238,6 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // ---- string ----
         "concat" => bi_concat(args),
         "format" => bi_format(args),
-        "substring" => bi_substring(args),
         "intern" => bi_intern(args),
         "symbol-name" => bi_symbol_name(args),
         "string-equal" | "string=" => bi_string_eq(args),
@@ -369,16 +370,11 @@ fn as_int(name: &str, v: &Sexp) -> Result<i64, EvalError> {
     }
 }
 
-/// Extract the textual content of any string-like Sexp (`Str' or
-/// `MutStr').  Used by builtins that accept both immutable string
-/// literals and mutable `make-string'-style buffers.  Returns the
-/// owned `String' (cheap clone for `Str', borrow+clone for `MutStr').
-fn as_string(name: &str, v: &Sexp) -> Result<String, EvalError> {
-    v.as_string_owned().ok_or_else(|| EvalError::WrongType {
-        expected: format!("stringp ({} arg)", name),
-        got: v.clone(),
-    })
-}
+// `as_string' helper removed (Rust-min 2026-05-06 batch 6b): its
+// only caller was `bi_substring', which moved to elisp.  Remaining
+// builtins that accept string-or-mutstr call `as_string_owned'
+// directly on `Sexp' since they already have idiomatic
+// `Option<String>' handling.
 
 fn truthy(value: bool) -> Sexp {
     if value { Sexp::T } else { Sexp::Nil }
@@ -1225,31 +1221,11 @@ fn bi_format(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::Str(out))
 }
 
-fn bi_substring(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("substring", args, 2, Some(3))?;
-    let s = as_string("substring", &args[0])?;
-    let chars: Vec<char> = s.chars().collect();
-    let len = chars.len() as i64;
-    let from = normalise_index(as_int("substring", &args[1])?, len);
-    let to = if args.len() == 3 && !matches!(args[2], Sexp::Nil) {
-        normalise_index(as_int("substring", &args[2])?, len)
-    } else {
-        len
-    };
-    if from < 0 || to < from || to > len {
-        return Err(EvalError::ArithError("substring out of range".into()));
-    }
-    let slice: String = chars[from as usize..to as usize].iter().collect();
-    Ok(Sexp::Str(slice))
-}
-
-fn normalise_index(i: i64, len: i64) -> i64 {
-    if i < 0 {
-        len + i
-    } else {
-        i
-    }
-}
+// bi_substring removed — see lisp/nelisp-stdlib-plist-str.el
+// (Rust-min 2026-05-06 batch 6b).  Vector substring is not in scope
+// because the previous `bi_substring' was string-only as well.
+// `normalise_index' was a private helper used only by `bi_substring',
+// so dropped along with it.
 
 fn bi_intern(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("intern", args, 1, Some(1))?;
