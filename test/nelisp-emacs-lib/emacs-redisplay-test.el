@@ -897,6 +897,237 @@ buffer char at the overlay's start position."
             ;; Row 0 still gets the buffer text — mode-line skipped.
             (should (string= "hi" (emacs-redisplay-glyph-row-text row)))))))))
 
+;;;; I. Face-id pool (Phase 3.B.4, Doc 43 §2.4 + §3.2 close gate)
+
+(defmacro emacs-redisplay-test--with-fresh-pool (&rest body)
+  "Reset the face-id pool + cache around BODY so ids start at 1."
+  (declare (indent 0) (debug t))
+  `(progn
+     (emacs-redisplay-face-cache-clear)
+     (unwind-protect (progn ,@body)
+       (emacs-redisplay-face-cache-clear))))
+
+(ert-deftest emacs-redisplay-test-face-pool-nil-collapses-to-zero ()
+  "Phase 3.B.4: nil realized-face must always intern to id 0 (= reserved
+default).  No allocation should fire; the pool size stays 0."
+  (emacs-redisplay-test--with-fresh-pool
+    (should (eq 0 (emacs-redisplay-face-pool-intern nil)))
+    (should (zerop (emacs-redisplay-face-pool-size)))
+    (should (null (emacs-redisplay-face-pool-lookup 0)))))
+
+(ert-deftest emacs-redisplay-test-face-pool-interns-distinct-specs ()
+  "Phase 3.B.4: distinct realized-face alists get distinct integer ids
+allocated densely from 1."
+  (emacs-redisplay-test--with-fresh-pool
+    (let* ((red  (emacs-redisplay-realize-face '(:foreground "red")))
+           (blue (emacs-redisplay-realize-face '(:foreground "blue")))
+           (id-r (emacs-redisplay-face-pool-intern red))
+           (id-b (emacs-redisplay-face-pool-intern blue)))
+      (should (integerp id-r))
+      (should (integerp id-b))
+      (should (>= id-r 1))
+      (should (>= id-b 1))
+      (should (/= id-r id-b))
+      (should (eq red  (emacs-redisplay-face-pool-lookup id-r)))
+      (should (eq blue (emacs-redisplay-face-pool-lookup id-b)))
+      (should (= 2 (emacs-redisplay-face-pool-size))))))
+
+(ert-deftest emacs-redisplay-test-face-pool-collapses-equal-specs ()
+  "Phase 3.B.4: realizing the same face spec twice yields the same id —
+this is the key enabler for O(1) face compare in row-hash diff."
+  (emacs-redisplay-test--with-fresh-pool
+    (let* ((spec '(:foreground "magenta" :bold t))
+           (r1 (emacs-redisplay-realize-face spec))
+           (r2 (emacs-redisplay-realize-face spec))
+           (id1 (emacs-redisplay-face-pool-intern r1))
+           (id2 (emacs-redisplay-face-pool-intern r2)))
+      ;; r1 / r2 are equal alists (= memoized cache hit).
+      (should (equal r1 r2))
+      ;; And both share the pool id.
+      (should (= id1 id2))
+      (should (= 1 (emacs-redisplay-face-pool-size))))))
+
+(ert-deftest emacs-redisplay-test-face-pool-equal-alists-share-id ()
+  "Phase 3.B.4: two specs that realize to `equal' (but not `eq') alists
+must share the pool id.  This is the test that catches a regression
+where the pool keys on object identity instead of equality."
+  (emacs-redisplay-test--with-fresh-pool
+    (let* ((alist-a '((:foreground . red) (:bold . t)))
+           (alist-b (copy-sequence
+                    '((:foreground . red) (:bold . t))))
+           (id-a (emacs-redisplay-face-pool-intern alist-a))
+           (id-b (emacs-redisplay-face-pool-intern alist-b)))
+      (should (equal alist-a alist-b))
+      (should-not (eq alist-a alist-b))
+      (should (= id-a id-b)))))
+
+(ert-deftest emacs-redisplay-test-face-pool-clear-frees-everything ()
+  "Phase 3.B.4: pool-clear drops every id back to 0.  Subsequent intern
+calls re-allocate from 1 (= dense reuse, no leak)."
+  (emacs-redisplay-test--with-fresh-pool
+    (emacs-redisplay-face-pool-intern
+     (emacs-redisplay-realize-face '(:foreground "red")))
+    (emacs-redisplay-face-pool-intern
+     (emacs-redisplay-realize-face '(:foreground "blue")))
+    (should (= 2 (emacs-redisplay-face-pool-size)))
+    (let ((dropped (emacs-redisplay-face-pool-clear)))
+      (should (= 2 dropped))
+      (should (zerop (emacs-redisplay-face-pool-size)))
+      (let ((id (emacs-redisplay-face-pool-intern
+                 (emacs-redisplay-realize-face '(:foreground "green")))))
+        (should (= 1 id))))))
+
+(ert-deftest emacs-redisplay-test-face-pool-cache-clear-also-clears-pool ()
+  "Phase 3.B.4: `emacs-redisplay-face-cache-clear' must also reset the
+pool (= invariant 4 per Doc 43 §2.4: backend swap or registry mutation
+invalidates both caches together)."
+  (emacs-redisplay-face-pool-clear)
+  (emacs-redisplay-face-pool-intern
+   (emacs-redisplay-realize-face '(:foreground "red")))
+  (should (>= (emacs-redisplay-face-pool-size) 1))
+  (emacs-redisplay-face-cache-clear)
+  (should (zerop (emacs-redisplay-face-pool-size))))
+
+(ert-deftest emacs-redisplay-test-face-pool-grows-past-initial-cap ()
+  "Phase 3.B.4: the reverse-lookup vector grows past its initial 16-slot
+capacity without losing any earlier ids (= power-of-two doubling)."
+  (emacs-redisplay-test--with-fresh-pool
+    (let ((ids nil))
+      (dotimes (i 32)
+        (push
+         (emacs-redisplay-face-pool-intern
+          (emacs-redisplay-realize-face
+           (list :foreground (intern (format "color%d" i)))))
+         ids))
+      (setq ids (nreverse ids))
+      (should (= 32 (length ids)))
+      (should (apply #'= 1 (cl-loop for id in ids
+                                    for k from 1
+                                    collect (- id k -1))))
+      ;; Reverse lookup still works for the very first id.
+      (should (consp (emacs-redisplay-face-pool-lookup 1)))
+      (should (consp (emacs-redisplay-face-pool-lookup 32))))))
+
+(ert-deftest emacs-redisplay-test-glyph-emission-populates-face-id ()
+  "Phase 3.B.4: glyphs emitted from `emacs-redisplay-text-to-glyphs'
+carry a non-zero face-id when their face is non-nil, and the id round-
+trips through the pool to the same realized-face alist as the glyph's
+own `realized-face' slot."
+  (emacs-redisplay-test--with-fresh-pool
+    (emacs-redisplay-test--with-buffer b "colored"
+      (emacs-buffer-put-text-property 1 8 'face '(:foreground "red") b)
+      (let* ((h (emacs-redisplay-init))
+             (vec (emacs-redisplay-text-to-glyphs h b 1 8))
+             (g (aref vec 0)))
+        (should (> (emacs-redisplay-glyph-face-id g) 0))
+        (should (equal (emacs-redisplay-glyph-realized-face g)
+                       (emacs-redisplay-face-pool-lookup
+                        (emacs-redisplay-glyph-face-id g))))))))
+
+(ert-deftest emacs-redisplay-test-glyph-emission-equal-faces-same-id ()
+  "Phase 3.B.4: two glyphs with the same face spec receive the same
+face-id — this is the row-hash speedup pre-condition."
+  (emacs-redisplay-test--with-fresh-pool
+    (emacs-redisplay-test--with-buffer b "ab"
+      (emacs-buffer-put-text-property 1 3 'face '(:foreground "blue") b)
+      (let* ((h (emacs-redisplay-init))
+             (vec (emacs-redisplay-text-to-glyphs h b 1 3))
+             (g1 (aref vec 0))
+             (g2 (aref vec 1)))
+        (ignore h)
+        (should (= (emacs-redisplay-glyph-face-id g1)
+                   (emacs-redisplay-glyph-face-id g2)))
+        (should (> (emacs-redisplay-glyph-face-id g1) 0))))))
+
+(ert-deftest emacs-redisplay-test-glyph-emission-blank-keeps-id-zero ()
+  "Phase 3.B.4: glyphs with no face stay at the reserved id 0 (= no
+unnecessary pool growth from default-coloured spans)."
+  (emacs-redisplay-test--with-fresh-pool
+    (emacs-redisplay-test--with-buffer b "plain"
+      (let* ((h (emacs-redisplay-init))
+             (vec (emacs-redisplay-text-to-glyphs h b 1 6)))
+        (ignore h)
+        (dotimes (i (length vec))
+          (should (zerop (emacs-redisplay-glyph-face-id (aref vec i)))))
+        (should (zerop (emacs-redisplay-face-pool-size)))))))
+
+(ert-deftest emacs-redisplay-test-contract-version-bumped-to-3 ()
+  "Phase 3.B.4 bumps GLYPH_MATRIX_CONTRACT_VERSION to v3 (face-id pool
+semantics changed: id is now non-zero for non-nil faces)."
+  (should (= 3 emacs-redisplay-glyph-matrix-contract-version)))
+
+;;;; J. Display-property handler MVP (Phase 3.B.4, Doc 43 §2.4 + §2.5a)
+
+(ert-deftest emacs-redisplay-test-display-spec-shape-extraction ()
+  "Phase 3.B.4: `display-spec-shape' extracts the leading symbol."
+  (should (eq 'space (emacs-redisplay-display-spec-shape '(space :width 4))))
+  (should (eq 'image (emacs-redisplay-display-spec-shape '(image :file "foo.png"))))
+  (should (eq 'slice (emacs-redisplay-display-spec-shape '(slice 0 0 16 16))))
+  (should (null (emacs-redisplay-display-spec-shape nil)))
+  (should (null (emacs-redisplay-display-spec-shape "raw string")))
+  (should (null (emacs-redisplay-display-spec-shape 42))))
+
+(ert-deftest emacs-redisplay-test-display-spec-supported ()
+  "Phase 3.B.4: `space' is supported, `image' / `slice' are not in MVP."
+  (should (emacs-redisplay-display-spec-supported-p '(space :width 4)))
+  (should-not (emacs-redisplay-display-spec-supported-p '(image :file "x")))
+  (should-not (emacs-redisplay-display-spec-supported-p '(slice 0 0 1 1)))
+  (should-not (emacs-redisplay-display-spec-supported-p nil)))
+
+(ert-deftest emacs-redisplay-test-display-spec-space-keyword-form ()
+  "Phase 3.B.4: `(space :width N)' parses to N."
+  (should (= 4 (emacs-redisplay-display-spec-space-width '(space :width 4))))
+  (should (= 1 (emacs-redisplay-display-spec-space-width '(space :width 1))))
+  (should (= 8 (emacs-redisplay-display-spec-space-width
+                '(space :width 8 :height 2)))))
+
+(ert-deftest emacs-redisplay-test-display-spec-space-bare-form ()
+  "Phase 3.B.4: `(space N)' is also accepted."
+  (should (= 5 (emacs-redisplay-display-spec-space-width '(space 5)))))
+
+(ert-deftest emacs-redisplay-test-display-spec-space-rejects-non-space ()
+  "Phase 3.B.4: non-`space' shapes return nil from space-width."
+  (should-not (emacs-redisplay-display-spec-space-width '(image :file "x")))
+  (should-not (emacs-redisplay-display-spec-space-width nil))
+  (should-not (emacs-redisplay-display-spec-space-width 42)))
+
+(ert-deftest emacs-redisplay-test-display-spec-glyphs-space-emits-blanks ()
+  "Phase 3.B.4: `(space :width 3)' materialises into 3 blank glyphs that
+carry the spec on each glyph (= overlay/diff observability)."
+  (let* ((spec '(space :width 3))
+         (vec (emacs-redisplay-display-spec-glyphs spec nil)))
+    (should (vectorp vec))
+    (should (= 3 (length vec)))
+    (dotimes (i 3)
+      (let ((g (aref vec i)))
+        (should (eq ?\s (emacs-redisplay-glyph-char g)))
+        (should (eq spec (emacs-redisplay-glyph-display-spec g)))
+        (should (= 1 (emacs-redisplay-glyph-width g)))))))
+
+(ert-deftest emacs-redisplay-test-display-spec-glyphs-space-with-face ()
+  "Phase 3.B.4: space glyphs styled with a face land in the pool too."
+  (emacs-redisplay-test--with-fresh-pool
+    (let* ((vec (emacs-redisplay-display-spec-glyphs
+                 '(space :width 2) '(:foreground "red")))
+           (g (aref vec 0)))
+      (should (> (emacs-redisplay-glyph-face-id g) 0))
+      (should (eq 'red (cdr (assq :foreground
+                                  (emacs-redisplay-glyph-realized-face g))))))))
+
+(ert-deftest emacs-redisplay-test-display-spec-glyphs-image-returns-nil ()
+  "Phase 3.B.4: image specs return nil under TUI (= caller falls back to
+the raw underlying buffer char per Doc 43 §2.5a)."
+  (should (null (emacs-redisplay-display-spec-glyphs
+                 '(image :file "/x.png") nil)))
+  (should (null (emacs-redisplay-display-spec-glyphs
+                 '(slice 0 0 1 1) nil))))
+
+(ert-deftest emacs-redisplay-test-display-spec-glyphs-rejects-bad-width ()
+  "Phase 3.B.4: zero / negative / missing width yields no glyphs."
+  (should (null (emacs-redisplay-display-spec-glyphs '(space :width 0) nil)))
+  (should (null (emacs-redisplay-display-spec-glyphs '(space :width -1) nil)))
+  (should (null (emacs-redisplay-display-spec-glyphs '(space) nil))))
+
 (provide 'emacs-redisplay-test)
 
 ;;; emacs-redisplay-test.el ends here
