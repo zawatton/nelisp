@@ -262,10 +262,13 @@ pub fn install_builtins(env: &mut Env) {
         // formula (exp/log/float coercion + rounding).  Rust-min batch 7g
         // (2026-05-07): `min' / `max' / `abs' migrated to elisp on top of
         // existing chained-pairwise `<' / `>' (= batch 6w 2-arg primitives)
-        // — see lisp/nelisp-stdlib.el.  `float' / `floor' / `ceiling' /
-        // `round' / `exp' / `log' kept Rust because they require direct
-        // f64 ops with no elisp building block of equivalent precision.
-        "float", "exp", "log", "floor", "ceiling", "round",
+        // — see lisp/nelisp-stdlib.el.  Rust-min batch 7h (2026-05-07):
+        // `floor' / `ceiling' / `round' migrated to elisp on top of the
+        // unified `nelisp--f64-trunc MODE X DIV' kernel — see
+        // lisp/nelisp-stdlib.el.  `float' / `exp' / `log' kept Rust
+        // because they require direct f64 ops with no elisp building
+        // block of equivalent precision.
+        "float", "exp", "log", "nelisp--f64-trunc",
         // Doc 51 Phase 8: file write + mkdir for worklog-export-org write path.
         "nl-write-file", "nl-make-directory",
         // Doc 51 Track E — interactive TTY input (Unix only; no-ops elsewhere)
@@ -498,9 +501,10 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "float" => bi_float(args),
         "exp" => bi_exp(args),
         "log" => bi_log(args),
-        "floor" => bi_floor(args),
-        "ceiling" => bi_ceiling(args),
-        "round" => bi_round(args),
+        // floor / ceiling / round migrated to elisp (Rust-min batch 7h,
+        // 2026-05-07; see lisp/nelisp-stdlib.el).  The shared f64 div +
+        // truncate-mode kernel stays in Rust as a single primitive.
+        "nelisp--f64-trunc" => bi_f64_trunc(args),
         "nl-write-file" => bi_nl_write_file(args),
         "nl-make-directory" => bi_nl_make_directory(args),
         "terminal-raw-mode-enter" => bi_terminal_raw_mode_enter(args),
@@ -2238,18 +2242,39 @@ fn bi_log(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::Float(x.log(base)))
 }
 
-fn bi_floor(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("floor", args, 1, Some(2))?;
-    let x = to_f64(&args[0])?;
-    let div = match args.get(1) { Some(d) => to_f64(d)?, None => 1.0 };
-    Ok(Sexp::Int((x / div).floor() as i64))
-}
-
-fn bi_ceiling(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("ceiling", args, 1, Some(2))?;
-    let x = to_f64(&args[0])?;
-    let div = match args.get(1) { Some(d) => to_f64(d)?, None => 1.0 };
-    Ok(Sexp::Int((x / div).ceil() as i64))
+// `bi_floor' / `bi_ceiling' / `bi_round' removed — Rust-min batch 7h
+// (2026-05-07): all three migrated to elisp wrappers (see
+// lisp/nelisp-stdlib.el).  The float-division kernel stays in Rust as
+// the unified `nelisp--f64-trunc' primitive below — symbol-dispatched
+// over the four trunc modes that f64 exposes.  Integer 1-arg cases
+// short-circuit on the elisp side without entering this primitive.
+fn bi_f64_trunc(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--f64-trunc", args, 3, Some(3))?;
+    let mode = match &args[0] {
+        Sexp::Symbol(s) => s.clone(),
+        other => {
+            return Err(EvalError::WrongType {
+                expected: "symbol".into(),
+                got: other.clone(),
+            });
+        }
+    };
+    let x = to_f64(&args[1])?;
+    let div = to_f64(&args[2])?;
+    let q = x / div;
+    let r = match mode.as_str() {
+        "floor" => q.floor(),
+        "ceiling" => q.ceil(),
+        "round" => q.round(),
+        "truncate" => q.trunc(),
+        _ => {
+            return Err(EvalError::Internal(format!(
+                "nelisp--f64-trunc: unknown mode `{}'",
+                mode
+            )));
+        }
+    };
+    Ok(Sexp::Int(r as i64))
 }
 
 fn bi_nl_write_file(args: &[Sexp]) -> Result<Sexp, EvalError> {
@@ -2267,13 +2292,6 @@ fn bi_nl_make_directory(args: &[Sexp]) -> Result<Sexp, EvalError> {
     std::fs::create_dir_all(&path)
         .map_err(|e| EvalError::Internal(format!("nl-make-directory: {}: {}", path, e)))?;
     Ok(Sexp::T)
-}
-
-fn bi_round(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("round", args, 1, Some(2))?;
-    let x = to_f64(&args[0])?;
-    let div = match args.get(1) { Some(d) => to_f64(d)?, None => 1.0 };
-    Ok(Sexp::Int((x / div).round() as i64))
 }
 
 fn hex_lower(bytes: &[u8]) -> String {
