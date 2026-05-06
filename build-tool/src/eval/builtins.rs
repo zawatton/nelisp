@@ -38,7 +38,9 @@ use std::path::{Path, PathBuf};
 pub fn install_builtins(env: &mut Env) {
     let names: &[&str] = &[
         // arithmetic
-        "+", "-", "*", "/", "mod", "<", ">", "<=", ">=", "=", "/=",
+        // Rust-min (2026-05-06 batch 6l): `mod' migrated to elisp
+        // (lisp/nelisp-stdlib.el).
+        "+", "-", "*", "/", "<", ">", "<=", ">=", "=", "/=",
         // equality
         // Rust-min (2026-05-06 batch 6e): `eql' / `equal-including-properties'
         // moved to elisp defalias of `equal'.
@@ -191,7 +193,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "-" => bi_sub(args),
         "*" => bi_mul(args),
         "/" => bi_div(args),
-        "mod" => bi_mod(args),
+        // mod migrated to elisp (Rust-min 2026-05-06 batch 6l, see
+        // lisp/nelisp-stdlib.el).
         "<" => bi_lt(args),
         ">" => bi_gt(args),
         "<=" => bi_le(args),
@@ -554,18 +557,10 @@ fn bi_div(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-fn bi_mod(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("mod", args, 2, Some(2))?;
-    let a = as_int("mod", &args[0])?;
-    let b = as_int("mod", &args[1])?;
-    if b == 0 {
-        return Err(EvalError::ArithError("mod by zero".into()));
-    }
-    // Elisp `mod` is floor-mod (result has sign of divisor).
-    let r = a.rem_euclid(b.abs());
-    let signed = if b < 0 { -r } else { r };
-    Ok(Sexp::Int(signed))
-}
+// bi_mod removed — see lisp/nelisp-stdlib.el (Rust-min 2026-05-06
+// batch 6l).  Built from `/' (int trunc-div) plus a sign-adjust
+// step that reproduces the previous `rem_euclid' + sign(b) result
+// shape exactly.
 
 // ---------- bitwise -----------------------------------------------------
 //
