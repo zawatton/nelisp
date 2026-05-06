@@ -113,7 +113,7 @@ Result keeps the trailing slash."
 (defun file-name-as-directory (path)
   "Return PATH with a trailing `/' appended if not already present."
   (cond
-   ((zerop (length path)) "/")
+   ((= (length path) 0) "/")
    ((eq (aref path (1- (length path))) ?/) path)
    (t (concat path "/"))))
 
@@ -143,7 +143,7 @@ when a custom pattern is needed."
         (n (length s)))
     (while (and (< i n) (nelisp-stdlib--whitespace-p (aref s i)))
       (setq i (1+ i)))
-    (if (zerop i) s (substring s i))))
+    (if (= i 0) s (substring s i))))
 
 (defun string-trim-right (s &optional _regexp)
   "Strip trailing whitespace from S."
@@ -175,5 +175,80 @@ IGNORE-CASE non-nil → case-insensitive comparison."
     (if (< start 0)
         nil
       (eq t (compare-strings suffix 0 suflen s start slen ignore-case)))))
+
+;; Rust-min (2026-05-06 batch 3): delete-dups / string-search /
+;; mapconcat — pure-elisp implementations.  Migrated from
+;; build-tool/src/eval/builtins.rs `bi_delete_dups' / `bi_string_search'
+;; / `bi_mapconcat'.
+
+(defun delete-dups (list)
+  "Return LIST with duplicate elements removed (`equal' test).
+First occurrence is kept; subsequent duplicates are dropped.  Pure
+(= does NOT mutate LIST destructively, unlike host Emacs)."
+  (let ((acc nil)
+        (cur list))
+    (while cur
+      (let ((elt (car cur))
+            (found nil)
+            (a acc))
+        (while (and a (not found))
+          (when (equal (car a) elt) (setq found t))
+          (setq a (cdr a)))
+        (unless found
+          (setq acc (cons elt acc))))
+      (setq cur (cdr cur)))
+    (nreverse acc)))
+
+(defun string-search (needle haystack &optional from)
+  "Return the index of the first occurrence of NEEDLE in HAYSTACK at
+or after FROM (default 0), or nil if there is no match.
+
+Empty NEEDLE returns FROM (matching host Emacs / Rust `str::find').
+NEEDLE longer than HAYSTACK returns nil."
+  (let* ((nlen (length needle))
+         (hlen (length haystack))
+         (start (or from 0)))
+    (cond
+     ((> start hlen) nil)
+     ((= nlen 0) start)
+     ((> nlen hlen) nil)
+     (t
+      (let ((i start)
+            (found nil)
+            (limit (- hlen nlen)))
+        (while (and (not found) (<= i limit))
+          (let ((j 0)
+                (match t))
+            (while (and match (< j nlen))
+              (if (eq (aref needle j) (aref haystack (+ i j)))
+                  (setq j (1+ j))
+                (setq match nil)))
+            (if match
+                (setq found i)
+              (setq i (1+ i)))))
+        found)))))
+
+(defun mapconcat (fn seq &optional sep)
+  "Apply FN to each element of SEQ; concat the resulting strings,
+joined by SEP (default empty string).  SEQ is iterated as a list
+(matching the Rust builtin's MVP contract — vector / string SEQ
+forms are out of scope)."
+  (let ((parts nil)
+        (tail seq))
+    (while tail
+      (setq parts (cons (funcall fn (car tail)) parts))
+      (setq tail (cdr tail)))
+    (let ((rev (nreverse parts))
+          (joiner (or sep "")))
+      (cond
+       ((null rev) "")
+       ((null (cdr rev)) (car rev))
+       (t
+        (let ((acc (car rev))
+              (cur (cdr rev)))
+          (while cur
+            (setq acc (concat acc joiner (car cur)))
+            (setq cur (cdr cur)))
+          acc))))))
 
 ;; nelisp-stdlib-plist-str.el ends here

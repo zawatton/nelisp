@@ -62,17 +62,19 @@ pub fn install_builtins(env: &mut Env) {
         // string
         "concat", "format", "substring", "intern", "intern-soft", "symbol-name",
         "string-equal", "string=",
-        "string-match-p", "mapconcat",
+        "string-match-p",
         // Rust-min (2026-05-06): `regexp-quote' migrated to elisp
         // (see lisp/nelisp-stdlib-plist-str.el).
         "make-string", "char-to-string", "string-to-char", "string", "unibyte-string",
         "string-to-number", "upcase", "downcase", "capitalize",
-        "split-string", "string-search",
+        "split-string",
         // Rust-min (2026-05-06): string-trim family +
         // string-prefix-p / string-suffix-p migrated to elisp
         // (lisp/nelisp-stdlib-plist-str.el).
+        // Rust-min (2026-05-06 batch 3): mapconcat / string-search /
+        // delete-dups migrated to elisp (lisp/nelisp-stdlib-plist-str.el).
         // symbols / sequences
-        "make-symbol", "gensym", "copy-sequence", "delete-dups",
+        "make-symbol", "gensym", "copy-sequence",
         // hash-tables (Track O'')
         "make-hash-table", "hash-table-p", "hash-table-count",
         "puthash", "gethash", "remhash", "clrhash", "maphash",
@@ -254,8 +256,6 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "make-symbol" => bi_make_symbol(args),
         "gensym" => bi_gensym(args),
         "copy-sequence" => bi_copy_sequence(args),
-        "mapconcat" => bi_mapconcat(args, env),
-        "delete-dups" => bi_delete_dups(args),
         "make-string" => bi_make_string(args),
         "char-to-string" => bi_char_to_string(args),
         "string" => bi_string_from_chars(args),
@@ -273,7 +273,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // string-trim family + string-prefix-p / string-suffix-p
         // migrated to elisp (Rust-min 2026-05-06, see
         // lisp/nelisp-stdlib-plist-str.el).
-        "string-search" => bi_string_search(args),
+        // string-search / mapconcat / delete-dups also migrated to
+        // elisp (Rust-min 2026-05-06 batch 3).
         "make-hash-table" => bi_make_hash_table(args),
         "hash-table-p" => bi_hash_table_p(args),
         "hash-table-count" => bi_hash_table_count(args),
@@ -1399,39 +1400,9 @@ fn bi_copy_sequence(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-/// `(mapconcat FUNCTION SEQUENCE &optional SEPARATOR)' — apply
-/// FUNCTION to each element of SEQUENCE, concatenate the results
-/// joined by SEPARATOR (= empty string default).
-fn bi_mapconcat(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("mapconcat", args, 2, Some(3))?;
-    let func = resolve_callable(&args[0], env)?;
-    let sep: String = match args.get(2) {
-        Some(Sexp::Str(s)) => s.clone(),
-        Some(Sexp::Nil) | None => String::new(),
-        Some(other) => return Err(EvalError::WrongType {
-            expected: "stringp".into(),
-            got: other.clone(),
-        }),
-    };
-    let elts = super::list_elements(&args[1])?;
-    let mut parts: Vec<String> = Vec::new();
-    for elt in elts {
-        let r = super::apply_function(&func, &[elt], env)?;
-        if let Sexp::Str(s) = r {
-            parts.push(s);
-        } else {
-            return Err(EvalError::WrongType {
-                expected: "function returning string".into(),
-                got: r,
-            });
-        }
-    }
-    Ok(Sexp::Str(parts.join(&sep)))
-}
+// Rust-min (2026-05-06 batch 3): `mapconcat' migrated to elisp
+// (lisp/nelisp-stdlib-plist-str.el).
 
-/// `(delete-dups LIST)' — return LIST with duplicates removed
-/// (`equal' test).  Modifies LIST destructively in host Emacs; here
-/// we return a fresh list since our Sexp lacks shared mutability.
 fn bi_make_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("make-string", args, 2, Some(3))?;
     let n = match &args[0] {
@@ -1640,40 +1611,8 @@ fn bi_split_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
 // bi_string_prefix_p / bi_string_suffix_p removed — see
 // lisp/nelisp-stdlib-plist-str.el (Rust-min 2026-05-06).
 
-fn bi_string_search(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("string-search", args, 2, Some(3))?;
-    let needle = match &args[0] {
-        Sexp::Str(s) => s.clone(),
-        Sexp::MutStr(rc) => rc.borrow().clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "stringp".into(),
-            got: other.clone(),
-        }),
-    };
-    let haystack = match &args[1] {
-        Sexp::Str(s) => s.clone(),
-        Sexp::MutStr(rc) => rc.borrow().clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "stringp".into(),
-            got: other.clone(),
-        }),
-    };
-    let from = match args.get(2) {
-        Some(Sexp::Int(n)) if *n >= 0 => *n as usize,
-        Some(Sexp::Nil) | None => 0,
-        Some(other) => return Err(EvalError::WrongType {
-            expected: "non-negative integer".into(),
-            got: other.clone(),
-        }),
-    };
-    if from > haystack.len() {
-        return Ok(Sexp::Nil);
-    }
-    match haystack[from..].find(&needle) {
-        Some(i) => Ok(Sexp::Int((from + i) as i64)),
-        None => Ok(Sexp::Nil),
-    }
-}
+// bi_string_search removed — see lisp/nelisp-stdlib-plist-str.el
+// (Rust-min 2026-05-06 batch 3).
 
 /// `(make-hash-table &rest KEYWORD-ARGS)' — accepts `:test TEST'
 /// (default `eql' per host Emacs); other keywords (`:size',
@@ -2081,21 +2020,8 @@ fn inner_test_for(_a: &Sexp, _b: &Sexp) -> String {
     "equal".into()
 }
 
-fn bi_delete_dups(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("delete-dups", args, 1, Some(1))?;
-    let elts = super::list_elements(&args[0])?;
-    let mut seen: Vec<Sexp> = Vec::new();
-    for elt in elts {
-        if !seen.iter().any(|s| sexp_eq(s, &elt) || s == &elt) {
-            seen.push(elt);
-        }
-    }
-    let mut out = Sexp::Nil;
-    for e in seen.into_iter().rev() {
-        out = Sexp::cons(e, out);
-    }
-    Ok(out)
-}
+// bi_delete_dups removed — see lisp/nelisp-stdlib-plist-str.el
+// (Rust-min 2026-05-06 batch 3).
 
 fn bi_symbol_name(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("symbol-name", args, 1, Some(1))?;
