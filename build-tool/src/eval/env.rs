@@ -117,6 +117,12 @@ impl Env {
             // special_forms.rs into elisp; loaded here so it's
             // available before any subsequent elisp file uses it.
             ("nelisp-pcase.el", include_str!("../../../lisp/nelisp-pcase.el")),
+            // Rust-min migration (2026-05-06 #2): cl-loop / cl-block /
+            // cl-return-from / cl-return as elisp.  Previously each
+            // consumer (= nelisp-emacs / nelisp-cc) shipped its own
+            // minimal stub; now NeLisp stdlib carries the richer
+            // implementation so all consumers share a single source.
+            ("nelisp-cl-macros.el", include_str!("../../../lisp/nelisp-cl-macros.el")),
         ];
         let mut env = Env {
             globals: HashMap::new(),
