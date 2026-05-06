@@ -125,4 +125,55 @@ Result keeps the trailing slash."
      ((eq (aref path (1- n)) ?/) (substring path 0 (1- n)))
      (t path))))
 
+;; Rust-min (2026-05-06): string-trim family + string-prefix-p /
+;; string-suffix-p — pure string slicing.  Migrated from
+;; build-tool/src/eval/builtins.rs.
+
+(defun nelisp-stdlib--whitespace-p (ch)
+  "Return non-nil when CH (= integer codepoint) is ASCII whitespace.
+Matches the Emacs default whitespace class for `string-trim'."
+  (or (eq ch ?\s) (eq ch ?\t) (eq ch ?\n) (eq ch ?\r)
+      (eq ch ?\f) (eq ch 11)))                ; 11 = ?\v
+
+(defun string-trim-left (s &optional _regexp)
+  "Strip leading whitespace from S.  REGEXP arg accepted for API
+parity but ignored — use the polyfill in `replace-regexp-in-string'
+when a custom pattern is needed."
+  (let ((i 0)
+        (n (length s)))
+    (while (and (< i n) (nelisp-stdlib--whitespace-p (aref s i)))
+      (setq i (1+ i)))
+    (if (zerop i) s (substring s i))))
+
+(defun string-trim-right (s &optional _regexp)
+  "Strip trailing whitespace from S."
+  (let ((n (length s))
+        (i (length s)))
+    (while (and (> i 0) (nelisp-stdlib--whitespace-p (aref s (1- i))))
+      (setq i (1- i)))
+    (if (= i n) s (substring s 0 i))))
+
+(defun string-trim (s &optional _trim-left _trim-right)
+  "Strip leading and trailing whitespace from S."
+  (string-trim-left (string-trim-right s)))
+
+(defun string-prefix-p (prefix s &optional ignore-case)
+  "Return non-nil when S starts with PREFIX.
+IGNORE-CASE non-nil → case-insensitive comparison."
+  (let ((plen (length prefix))
+        (slen (length s)))
+    (if (> plen slen)
+        nil
+      (eq t (compare-strings prefix 0 plen s 0 plen ignore-case)))))
+
+(defun string-suffix-p (suffix s &optional ignore-case)
+  "Return non-nil when S ends with SUFFIX.
+IGNORE-CASE non-nil → case-insensitive comparison."
+  (let* ((suflen (length suffix))
+         (slen (length s))
+         (start (- slen suflen)))
+    (if (< start 0)
+        nil
+      (eq t (compare-strings suffix 0 suflen s start slen ignore-case)))))
+
 ;; nelisp-stdlib-plist-str.el ends here

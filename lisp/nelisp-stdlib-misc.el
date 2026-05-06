@@ -21,11 +21,10 @@
          (t (setq cur (cdr cur))))))
     result))
 
-(defun string-prefix-p (prefix string &optional _ignore-case)
-  (let ((plen (length prefix)) (slen (length string)))
-    (if (> plen slen)
-        nil
-      (string= prefix (substring string 0 plen)))))
+;; string-prefix-p moved to nelisp-stdlib-plist-str.el (Rust-min
+;; 2026-05-06): the old impl ignored the IGNORE-CASE arg; the new
+;; one routes through `compare-strings' for proper case-fold
+;; comparison.
 
 (defun number-to-string (n)
   (if (integerp n) (format "%d" n) (format "%g" n)))

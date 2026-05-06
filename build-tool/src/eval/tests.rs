@@ -886,7 +886,11 @@ fn string_empty_predicate_works() {
 
 #[test]
 fn string_prefix_p_ignore_case() {
-    assert_eq!(ok("(string-prefix-p \"ab\" \"ABcd\" t)"), Sexp::Nil);
+    // Rust-min 2026-05-06: string-prefix-p was migrated to elisp;
+    // the new impl honours IGNORE-CASE (= the old Rust impl's
+    // `_ignore-case` arg was a documented stub).  Result flipped
+    // from Nil to T to reflect correct semantics.
+    assert_eq!(ok("(string-prefix-p \"ab\" \"ABcd\" t)"), Sexp::T);
 }
 
 #[test]

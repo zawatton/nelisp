@@ -67,8 +67,10 @@ pub fn install_builtins(env: &mut Env) {
         // (see lisp/nelisp-stdlib-plist-str.el).
         "make-string", "char-to-string", "string-to-char", "string", "unibyte-string",
         "string-to-number", "upcase", "downcase", "capitalize",
-        "split-string", "string-trim", "string-trim-left", "string-trim-right",
-        "string-prefix-p", "string-suffix-p", "string-search",
+        "split-string", "string-search",
+        // Rust-min (2026-05-06): string-trim family +
+        // string-prefix-p / string-suffix-p migrated to elisp
+        // (lisp/nelisp-stdlib-plist-str.el).
         // symbols / sequences
         "make-symbol", "gensym", "copy-sequence", "delete-dups",
         // hash-tables (Track O'')
@@ -268,11 +270,9 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "downcase" => bi_downcase(args),
         "capitalize" => bi_capitalize(args),
         "split-string" => bi_split_string(args),
-        "string-trim" => bi_string_trim(args),
-        "string-trim-left" => bi_string_trim_left(args),
-        "string-trim-right" => bi_string_trim_right(args),
-        "string-prefix-p" => bi_string_prefix_p(args),
-        "string-suffix-p" => bi_string_suffix_p(args),
+        // string-trim family + string-prefix-p / string-suffix-p
+        // migrated to elisp (Rust-min 2026-05-06, see
+        // lisp/nelisp-stdlib-plist-str.el).
         "string-search" => bi_string_search(args),
         "make-hash-table" => bi_make_hash_table(args),
         "hash-table-p" => bi_hash_table_p(args),
@@ -1636,83 +1636,9 @@ fn bi_split_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(out)
 }
 
-fn bi_string_trim(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("string-trim", args, 1, Some(3))?;
-    match &args[0] {
-        Sexp::Str(s) => Ok(Sexp::Str(s.trim().to_string())),
-        Sexp::MutStr(rc) => Ok(Sexp::Str(rc.borrow().trim().to_string())),
-        other => Err(EvalError::WrongType {
-            expected: "stringp".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
-fn bi_string_trim_left(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("string-trim-left", args, 1, Some(2))?;
-    match &args[0] {
-        Sexp::Str(s) => Ok(Sexp::Str(s.trim_start().to_string())),
-        Sexp::MutStr(rc) => Ok(Sexp::Str(rc.borrow().trim_start().to_string())),
-        other => Err(EvalError::WrongType {
-            expected: "stringp".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
-fn bi_string_trim_right(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("string-trim-right", args, 1, Some(2))?;
-    match &args[0] {
-        Sexp::Str(s) => Ok(Sexp::Str(s.trim_end().to_string())),
-        Sexp::MutStr(rc) => Ok(Sexp::Str(rc.borrow().trim_end().to_string())),
-        other => Err(EvalError::WrongType {
-            expected: "stringp".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
-fn bi_string_prefix_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("string-prefix-p", args, 2, Some(3))?;
-    let prefix = match &args[0] {
-        Sexp::Str(s) => s.clone(),
-        Sexp::MutStr(rc) => rc.borrow().clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "stringp".into(),
-            got: other.clone(),
-        }),
-    };
-    let s = match &args[1] {
-        Sexp::Str(s) => s.clone(),
-        Sexp::MutStr(rc) => rc.borrow().clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "stringp".into(),
-            got: other.clone(),
-        }),
-    };
-    Ok(if s.starts_with(&prefix) { Sexp::T } else { Sexp::Nil })
-}
-
-fn bi_string_suffix_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("string-suffix-p", args, 2, Some(3))?;
-    let suffix = match &args[0] {
-        Sexp::Str(s) => s.clone(),
-        Sexp::MutStr(rc) => rc.borrow().clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "stringp".into(),
-            got: other.clone(),
-        }),
-    };
-    let s = match &args[1] {
-        Sexp::Str(s) => s.clone(),
-        Sexp::MutStr(rc) => rc.borrow().clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "stringp".into(),
-            got: other.clone(),
-        }),
-    };
-    Ok(if s.ends_with(&suffix) { Sexp::T } else { Sexp::Nil })
-}
+// bi_string_trim / bi_string_trim_left / bi_string_trim_right /
+// bi_string_prefix_p / bi_string_suffix_p removed — see
+// lisp/nelisp-stdlib-plist-str.el (Rust-min 2026-05-06).
 
 fn bi_string_search(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("string-search", args, 2, Some(3))?;
