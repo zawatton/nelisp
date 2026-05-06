@@ -3846,6 +3846,17 @@ red translucent rectangle on the next paint cycle."
         (format "show-trailing-whitespace: %s"
                 (if nemacs-gtk--show-trailing-whitespace "on" "off"))))
 
+(defun nemacs-gtk-font-lock-mode ()
+  "M-x font-lock-mode — toggle elisp syntax tinting (= comments gray,
+strings green).  MVP scope (Phase 2.BN); deeper highlighting
+needs a glyph-color path the Rust paint pipeline doesn't yet have."
+  (interactive)
+  (setq nemacs-gtk--font-lock-mode
+        (not nemacs-gtk--font-lock-mode))
+  (setq nemacs-gtk--last-key-text
+        (format "font-lock-mode: %s"
+                (if nemacs-gtk--font-lock-mode "on" "off"))))
+
 (defun nemacs-gtk-delete-trailing-whitespace ()
   "M-x delete-trailing-whitespace — strip all `\\s' / `\\t' chars
 that immediately precede a `\\n' (or EOB) in the active buffer.
@@ -4399,8 +4410,10 @@ success / failure."
     "messages-buffer"
     "nemacs-gtk-show-trailing-whitespace"
     "nemacs-gtk-delete-trailing-whitespace"
+    "nemacs-gtk-font-lock-mode"
     "show-trailing-whitespace"
-    "delete-trailing-whitespace")
+    "delete-trailing-whitespace"
+    "font-lock-mode")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
@@ -5051,6 +5064,14 @@ Green tint (rgb 80 220 120) at 50% alpha."
 trailing whitespace at the end of each line in the active buffer.
 Toggle via M-x show-trailing-whitespace.")
 
+(defvar nemacs-gtk--font-lock-mode nil
+  "Phase 2.BN — when t, `--paint-highlights' adds tint overlays for
+elisp syntax: `;'-comments get a gray tint, `\"..\"'-strings get a
+green tint.  MVP scope (comments + strings); function names /
+keywords / numbers are deferred — Cairo's per-cell rectangles can
+only tint the background, so a deeper font-lock would need a
+glyph-color extension to the Rust paint pipeline.")
+
 (defun nemacs-gtk--collect-trailing-whitespace-highlights ()
   "Phase 2.BM — return a list of `(SR SC ER EC R G B A)' entries for
 each line's trailing whitespace span (= the maximal run of `\\s'/`\\t'
@@ -5085,16 +5106,67 @@ ending at `\\n' or EOB).  Red tint (rgb 240 80 80) at 40% alpha."
           (setq i (1+ i)))
         (nreverse acc)))))
 
+(defun nemacs-gtk--collect-font-lock-highlights ()
+  "Phase 2.BN — return a highlight list tagging elisp comments + string
+literals in the active buffer.  Comments span from `;' to EOL with a
+gray tint (rgb 180 180 180, 25% alpha); strings span from opening
+to matching closing `\"' with a green tint (rgb 140 220 140, 25%
+alpha).  Backslash-escapes inside strings are honoured."
+  (when nemacs-gtk--font-lock-mode
+    (with-current-buffer (nemacs-gtk--active-buffer)
+      (let* ((text (buffer-string))
+             (tlen (length text))
+             (i 0)
+             (acc '()))
+        (while (< i tlen)
+          (let ((c (aref text i)))
+            (cond
+             ;; Comment: `;' through `\n' or EOB.
+             ((eq c ?\;)
+              (let ((s i))
+                (while (and (< i tlen)
+                            (not (eq (aref text i) ?\n)))
+                  (setq i (1+ i)))
+                (let* ((rc-s (nemacs-gtk--pos-to-row-col (1+ s)))
+                       (rc-e (nemacs-gtk--pos-to-row-col (1+ i))))
+                  (when (and rc-s rc-e)
+                    (push (list (car rc-s) (cdr rc-s)
+                                (car rc-e) (cdr rc-e)
+                                180 180 180 64)
+                          acc)))))
+             ;; String: `"' through matching `"'.  Honor `\\' escapes.
+             ((eq c ?\")
+              (let ((s i))
+                (setq i (1+ i))
+                (while (and (< i tlen) (not (eq (aref text i) ?\")))
+                  (when (eq (aref text i) ?\\)
+                    (setq i (1+ i)))
+                  (setq i (1+ i)))
+                (when (< i tlen) (setq i (1+ i)))
+                (let* ((rc-s (nemacs-gtk--pos-to-row-col (1+ s)))
+                       (rc-e (nemacs-gtk--pos-to-row-col (1+ i))))
+                  (when (and rc-s rc-e)
+                    (push (list (car rc-s) (cdr rc-s)
+                                (car rc-e) (cdr rc-e)
+                                140 220 140 64)
+                          acc)))))
+             (t (setq i (1+ i))))))
+        (nreverse acc)))))
+
 (defun nemacs-gtk--paint-highlights ()
-  "Phase 2.BL+BM — combine isearch matches, paren-match, and trailing
-whitespace into a single highlight list and push to the Rust side.
-No-op when the extern isn't loaded (= substrate-only boot)."
+  "Phase 2.BL+BM+BN — combine isearch matches, paren-match, trailing
+whitespace, and font-lock spans into a single highlight list and
+push to the Rust side.  No-op when the extern isn't loaded."
   (when (fboundp 'nelisp-gtk-set-highlights)
-    (let ((isearch-hl (nemacs-gtk--collect-isearch-highlights))
-          (paren-hl   (nemacs-gtk--collect-paren-highlight))
-          (ws-hl      (nemacs-gtk--collect-trailing-whitespace-highlights)))
+    (let ((isearch-hl  (nemacs-gtk--collect-isearch-highlights))
+          (paren-hl    (nemacs-gtk--collect-paren-highlight))
+          (ws-hl       (nemacs-gtk--collect-trailing-whitespace-highlights))
+          (font-lock-hl (nemacs-gtk--collect-font-lock-highlights)))
       (nelisp-gtk-set-highlights
-       (append isearch-hl paren-hl ws-hl)))))
+       ;; font-lock first (= least-priority background tint), then
+       ;; whitespace, then paren-match, then isearch, then anything
+       ;; on top.  Later entries paint over earlier ones.
+       (append font-lock-hl ws-hl paren-hl isearch-hl)))))
 
 (defun nemacs-gtk--repaint ()
   "One full redraw cycle: buffer, mode line, echo, cursor, queue draw."
