@@ -259,8 +259,13 @@ pub fn install_builtins(env: &mut Env) {
         // these in C; Rust stdlib gives us correct UTF-8 case folding for free.
         "nl-downcase", "nl-upcase", "nl-split-by-non-alnum",
         // Doc 51 Phase 8: math primitives needed by anvil-memory's decay
-        // formula (exp/log/min/max/float coercion).
-        "min", "max", "float", "exp", "log", "abs", "floor", "ceiling", "round",
+        // formula (exp/log/float coercion + rounding).  Rust-min batch 7g
+        // (2026-05-07): `min' / `max' / `abs' migrated to elisp on top of
+        // existing chained-pairwise `<' / `>' (= batch 6w 2-arg primitives)
+        // — see lisp/nelisp-stdlib.el.  `float' / `floor' / `ceiling' /
+        // `round' / `exp' / `log' kept Rust because they require direct
+        // f64 ops with no elisp building block of equivalent precision.
+        "float", "exp", "log", "floor", "ceiling", "round",
         // Doc 51 Phase 8: file write + mkdir for worklog-export-org write path.
         "nl-write-file", "nl-make-directory",
         // Doc 51 Track E — interactive TTY input (Unix only; no-ops elsewhere)
@@ -488,12 +493,11 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-downcase" => bi_nl_downcase(args),
         "nl-upcase" => bi_nl_upcase(args),
         "nl-split-by-non-alnum" => bi_nl_split_by_non_alnum(args),
-        "min" => bi_min(args),
-        "max" => bi_max(args),
+        // min / max / abs migrated to elisp (Rust-min batch 7g, see
+        // lisp/nelisp-stdlib.el) — simple folds over `<' / `>'.
         "float" => bi_float(args),
         "exp" => bi_exp(args),
         "log" => bi_log(args),
-        "abs" => bi_abs(args),
         "floor" => bi_floor(args),
         "ceiling" => bi_ceiling(args),
         "round" => bi_round(args),
@@ -2205,49 +2209,14 @@ fn to_f64(arg: &Sexp) -> Result<f64, EvalError> {
     }
 }
 
-fn bi_min(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    if args.is_empty() {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "min".into(), expected: "≥1".into(), got: 0,
-        });
-    }
-    let mut all_int = true;
-    for a in args { if matches!(a, Sexp::Float(_)) { all_int = false; } }
-    if all_int {
-        let vals: Result<Vec<i64>, _> = args.iter().map(|a| match a {
-            Sexp::Int(i) => Ok(*i),
-            other => Err(EvalError::WrongType { expected: "number".into(), got: other.clone() }),
-        }).collect();
-        Ok(Sexp::Int(*vals?.iter().min().unwrap()))
-    } else {
-        let vals: Result<Vec<f64>, _> = args.iter().map(to_f64).collect();
-        let v = vals?;
-        let m = v.iter().cloned().fold(f64::INFINITY, f64::min);
-        Ok(Sexp::Float(m))
-    }
-}
-
-fn bi_max(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    if args.is_empty() {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "max".into(), expected: "≥1".into(), got: 0,
-        });
-    }
-    let mut all_int = true;
-    for a in args { if matches!(a, Sexp::Float(_)) { all_int = false; } }
-    if all_int {
-        let vals: Result<Vec<i64>, _> = args.iter().map(|a| match a {
-            Sexp::Int(i) => Ok(*i),
-            other => Err(EvalError::WrongType { expected: "number".into(), got: other.clone() }),
-        }).collect();
-        Ok(Sexp::Int(*vals?.iter().max().unwrap()))
-    } else {
-        let vals: Result<Vec<f64>, _> = args.iter().map(to_f64).collect();
-        let v = vals?;
-        let m = v.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        Ok(Sexp::Float(m))
-    }
-}
+// `bi_min' / `bi_max' / `bi_abs' removed — Rust-min batch 7g
+// (2026-05-07): all three migrated to elisp folds over the existing
+// 2-arg `<' / `>' / `nelisp--sub2' primitives.  See
+// lisp/nelisp-stdlib.el.  Result type now matches the winning arg's
+// type (= host Emacs contract: `(min 1 2.5)' returns 1, not 1.0)
+// where the prior Rust impl always coerced to float when any arg
+// was a float; tree-internal callers were all-int so no behavioural
+// surprise.
 
 fn bi_float(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("float", args, 1, Some(1))?;
@@ -2267,16 +2236,6 @@ fn bi_log(args: &[Sexp]) -> Result<Sexp, EvalError> {
         None => std::f64::consts::E,
     };
     Ok(Sexp::Float(x.log(base)))
-}
-
-fn bi_abs(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("abs", args, 1, Some(1))?;
-    match &args[0] {
-        Sexp::Int(i) => Ok(Sexp::Int(i.abs())),
-        Sexp::Float(f) => Ok(Sexp::Float(f.abs())),
-        Sexp::Nil => Ok(Sexp::Int(0)),
-        other => Err(EvalError::WrongType { expected: "number".into(), got: other.clone() }),
-    }
 }
 
 fn bi_floor(args: &[Sexp]) -> Result<Sexp, EvalError> {

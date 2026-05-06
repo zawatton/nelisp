@@ -75,6 +75,37 @@
 (defun = (&rest args)  (nelisp--cmp-chain args (function nelisp--num-eq2)))
 (defun /= (a b)        (not (nelisp--num-eq2 a b)))
 
+;; Rust-min batch 7g (2026-05-07): `min' / `max' / `abs' migrated from
+;; Rust to elisp.  `min' / `max' fold over the 2-arg `nelisp--num-lt2'
+;; / `nelisp--num-gt2' (= same primitives that drive `<' / `>' since
+;; batch 6w), tracking the winning argument's value AND type — so
+;; `(min 1 2.5)' = 1 (integer, host-Emacs contract) instead of the
+;; prior Rust impl's 1.0 (which coerced ALL args to float upfront when
+;; any was float).  Tree-internal callers were all-int so the type
+;; behaviour change is invisible there.  Empty args case signals
+;; `wrong-number-of-arguments' as before.
+
+(defun min (&rest args)
+  (cond
+   ((null args) (signal 'wrong-number-of-arguments (list 'min 0)))
+   (t (let ((acc (car args)) (cur (cdr args)))
+        (while cur
+          (when (nelisp--num-lt2 (car cur) acc) (setq acc (car cur)))
+          (setq cur (cdr cur)))
+        acc))))
+
+(defun max (&rest args)
+  (cond
+   ((null args) (signal 'wrong-number-of-arguments (list 'max 0)))
+   (t (let ((acc (car args)) (cur (cdr args)))
+        (while cur
+          (when (nelisp--num-gt2 (car cur) acc) (setq acc (car cur)))
+          (setq cur (cdr cur)))
+        acc))))
+
+(defun abs (x)
+  (if (nelisp--num-lt2 x 0) (nelisp--sub2 0 x) x))
+
 ;; Rust-min batch 6q (2026-05-06): `atom' / `arrayp' / `sequencep'
 ;; migrated from Rust to elisp.  Each was a 1-line `bi_predicate'
 ;; dispatch entry composing already-existing primitives — the elisp
