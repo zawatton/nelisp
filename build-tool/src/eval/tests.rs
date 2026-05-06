@@ -323,13 +323,48 @@ fn pcase_matches_quoted_symbol_and_returns_nil_on_no_match() {
 }
 
 #[test]
-fn pcase_malformed_clause_errors() {
-    assert!(matches!(err("(pcase 1 (1))"), EvalError::WrongType { .. }));
+fn pcase_empty_clause_body_returns_nil() {
+    // Rust-min migration 2026-05-06: pcase moved to elisp; an empty
+    // clause body (= `(1)' with no forms after the pattern) expands
+    // to `(progn)' which is `nil', not an error.  The previous
+    // Rust strict-grammar enforced WrongType here.
+    assert_eq!(ok("(pcase 1 (1))"), Sexp::Nil);
 }
 
 #[test]
-fn pcase_unsupported_pattern_errors() {
-    assert!(matches!(err("(pcase '(1 2) ((1 2) 'pair))"), EvalError::WrongType { .. }));
+fn pcase_or_pattern_matches_any() {
+    // Rust-min migration: elisp pcase grammar now supports `(or P1 P2 …)'
+    // — historically the Rust impl rejected this with WrongType.
+    assert_eq!(
+        ok("(pcase 5 ((or 1 5 9) 'hit) (_ 'miss))"),
+        Sexp::Symbol("hit".into())
+    );
+    assert_eq!(
+        ok("(pcase 7 ((or 1 5 9) 'hit) (_ 'miss))"),
+        Sexp::Symbol("miss".into())
+    );
+}
+
+#[test]
+fn pcase_pred_pattern_calls_predicate() {
+    // Rust-min migration: elisp pcase grammar now supports `(pred FN)'.
+    assert_eq!(
+        ok("(pcase 5 ((pred integerp) 'int) (_ 'other))"),
+        Sexp::Symbol("int".into())
+    );
+}
+
+#[test]
+fn pcase_guard_pattern_filters_value() {
+    // Rust-min migration: standalone `(guard EXPR)' inside a cond-style
+    // pcase clause runs EXPR as the test.  The richer `(and SYM (guard
+    // EXPR))' form (= bind-then-validate) requires a more elaborate
+    // expansion than the current minimal polyfill emits and is tracked
+    // as a follow-up; see lisp/nelisp-pcase.el commentary.
+    assert_eq!(
+        ok("(pcase 7 ((guard (> 7 5)) 'big) (_ 'small))"),
+        Sexp::Symbol("big".into())
+    );
 }
 
 // ============================================================
@@ -851,7 +886,11 @@ fn string_empty_predicate_works() {
 
 #[test]
 fn string_prefix_p_ignore_case() {
-    assert_eq!(ok("(string-prefix-p \"ab\" \"ABcd\" t)"), Sexp::Nil);
+    // Rust-min 2026-05-06: string-prefix-p was migrated to elisp;
+    // the new impl honours IGNORE-CASE (= the old Rust impl's
+    // `_ignore-case` arg was a documented stub).  Result flipped
+    // from Nil to T to reflect correct semantics.
+    assert_eq!(ok("(string-prefix-p \"ab\" \"ABcd\" t)"), Sexp::T);
 }
 
 #[test]
@@ -1654,4 +1693,428 @@ fn elisp_s10_number_to_string_int() {
 #[test]
 fn elisp_s10_number_to_string_negative() {
     assert_eq!(ok("(number-to-string -7)"), Sexp::Str("-7".into()));
+}
+
+// ---- Doc 51 Track H: control-flow regressions ------------------------
+
+#[test]
+fn track_h_throw_bypasses_condition_case() {
+    // condition-case must NOT catch a `throw' — that's a control-flow
+    // primitive, not an error.  The catch upstream should receive it.
+    assert_eq!(
+        ok_all("(catch 'tag (condition-case _ (throw 'tag 99) (error 'handled)))"),
+        Sexp::Int(99)
+    );
+}
+
+#[test]
+fn track_h_no_catch_clause_handles_uncaught_throw() {
+    // If the user explicitly names `no-catch' the condition-case
+    // clause should claim the bare throw.  Use `(car (cdr e))' since
+    // `cadr' is not a NeLisp Rust builtin (= it lives in the elisp
+    // library layer).
+    assert_eq!(
+        ok_all("(condition-case e (throw 'unknown 1) (no-catch (car (cdr e))))"),
+        Sexp::Symbol("unknown".into())
+    );
+}
+
+#[test]
+fn track_h_uw_runs_on_throw() {
+    // unwind-protect cleanup must fire when the body throws.
+    assert_eq!(
+        ok_all(
+            "(let ((cleanup nil)) (catch 'tag (unwind-protect (throw 'tag 1) (setq cleanup t))) cleanup)"
+        ),
+        Sexp::T
+    );
+}
+
+#[test]
+fn track_h_uw_runs_on_error() {
+    // unwind-protect cleanup must fire when the body errors.
+    assert_eq!(
+        ok_all(
+            "(let ((cleanup nil)) (condition-case _ (unwind-protect (error \"boom\") (setq cleanup t)) (error nil)) cleanup)"
+        ),
+        Sexp::T
+    );
+}
+
+#[test]
+fn track_h_throw_from_uw_cleanup_overrides() {
+    // A throw raised inside the cleanup block should override the body's
+    // result (= matches Emacs semantics).
+    assert_eq!(
+        ok_all(
+            "(catch 'a (unwind-protect (throw 'a 1) (throw 'a 2)))"
+        ),
+        Sexp::Int(2)
+    );
+}
+
+#[test]
+fn track_h_nested_catch() {
+    // Inner throw escapes to outer catch when tag matches outer.
+    assert_eq!(
+        ok_all("(catch 'outer (catch 'inner (throw 'outer 'escape)))"),
+        Sexp::Symbol("escape".into())
+    );
+}
+
+#[test]
+fn track_h_condition_case_still_catches_real_errors() {
+    // Regression: the no-catch carve-out should NOT break ordinary
+    // error catching.
+    assert_eq!(
+        ok_all("(condition-case e (error \"boom\") (error (cdr e)))"),
+        Sexp::list_from(&[Sexp::Str("boom".into())])
+    );
+}
+
+// ----- Doc 51 Track K — atexit + signal hooks for raw mode ----------------
+//
+// `terminal-raw-mode-enter` requires a real TTY on the inherited stdin
+// fd; cargo test pipes its child's stdin so `tcgetattr` reliably fails.
+// That gives us a deterministic environment to verify:
+//   - the helpers exist and report the initial-state invariants
+//   - `terminal-raw-mode-leave` is a true no-op when nothing was entered
+//   - a failed enter does not leave the saved-state flag set, so a
+//     subsequent leave (e.g. via unwind-protect) does not try to restore
+//     half-initialised termios
+//
+// The actual signal handler / atexit / re-raise behaviour is exercised
+// by the integration script under `tests/track_k_signal.sh` (manual,
+// requires a real PTY) — pure cargo-test runs cannot fork a pty.
+
+#[cfg(unix)]
+#[test]
+fn track_k_termios_saved_p_initial_nil() {
+    // No `terminal-raw-mode-enter` has run in this binary's lifetime
+    // yet (or any prior enter failed because cargo test's stdin is
+    // piped, not a TTY).  The flag must read nil.
+    assert_eq!(ok_all("(_termios-saved-p)"), Sexp::Nil);
+}
+
+#[cfg(unix)]
+#[test]
+fn track_k_leave_without_enter_idempotent() {
+    // `terminal-raw-mode-leave' must return t and not error when no
+    // prior enter has happened — unwind-protect cleanup paths rely on
+    // that idempotency.
+    assert_eq!(ok_all("(terminal-raw-mode-leave)"), Sexp::T);
+    // …and the flag stays nil afterwards.
+    assert_eq!(ok_all("(_termios-saved-p)"), Sexp::Nil);
+}
+
+#[cfg(unix)]
+#[test]
+fn track_k_enter_on_non_tty_errors_cleanly() {
+    // cargo test pipes stdin → tcgetattr returns ENOTTY → enter must
+    // surface a wrong-type-ish internal error AND must not flip the
+    // saved-state flag (otherwise unwind would tcsetattr garbage).
+    let res = err_all("(terminal-raw-mode-enter)");
+    match res {
+        EvalError::Internal(msg) => {
+            assert!(
+                msg.contains("tcgetattr") || msg.contains("tcsetattr"),
+                "expected tcgetattr/tcsetattr in error message, got: {}",
+                msg
+            );
+        }
+        other => panic!("expected Internal, got {:?}", other),
+    }
+    assert_eq!(ok_all("(_termios-saved-p)"), Sexp::Nil);
+}
+
+#[cfg(unix)]
+#[test]
+fn track_k_hooks_installed_p_callable() {
+    // The helper must always be dispatchable (= no UnboundFunction).
+    // The boolean it returns depends on whether a successful enter has
+    // run in this process; under cargo test that never happens, so it
+    // is nil — but the assertion we care about is "no error".
+    let r = ok_all("(_raw-mode-hooks-installed-p)");
+    assert!(matches!(r, Sexp::Nil | Sexp::T));
+}
+
+// ----- Doc 51 Track M — quit / C-g via EvalError::Quit --------------------
+//
+// `EvalError::Quit` is the dedicated control-flow variant for `quit'.
+// Per the Elisp manual, `condition-case`'s universal `error` clause
+// must NOT catch a quit — only an explicit `quit` clause (or `t`) does.
+// The flag is process-global; tests clean up with `(clear-quit-flag)`
+// at the end of each scenario to keep cargo's parallel runner happy.
+
+#[test]
+fn track_m_signal_quit_raises_quit_variant() {
+    let e = err("(signal 'quit nil)");
+    assert!(matches!(e, EvalError::Quit), "expected Quit, got {:?}", e);
+}
+
+#[test]
+fn track_m_signal_quit_not_caught_by_error_clause() {
+    // The handler must re-raise: `error' is not a parent of `quit'.
+    let e = err_all(
+        "(condition-case _ (signal 'quit nil) (error 'wrongly-caught))"
+    );
+    assert!(matches!(e, EvalError::Quit), "expected Quit, got {:?}", e);
+}
+
+#[test]
+fn track_m_signal_quit_caught_by_quit_clause() {
+    assert_eq!(
+        ok_all("(condition-case _ (signal 'quit nil) (quit 'caught))"),
+        Sexp::Symbol("caught".into())
+    );
+}
+
+#[test]
+fn track_m_signal_quit_caught_by_t_clause() {
+    // `t' clause is the universal catch-all and DOES catch quit
+    // (Elisp manual: "if the condition name is t, all conditions are
+    // caught, including quit").
+    assert_eq!(
+        ok_all("(condition-case _ (signal 'quit nil) (t 'caught-by-t))"),
+        Sexp::Symbol("caught-by-t".into())
+    );
+}
+
+#[test]
+fn track_m_set_quit_flag_raises_at_next_eval() {
+    // (set-quit-flag) returns t but does not itself raise.  The next
+    // eval boundary (= the next form, here `'reached') triggers the
+    // conversion to EvalError::Quit.  We use a `quit` clause to absorb
+    // it so the test ends cleanly without polluting the global flag.
+    assert_eq!(
+        ok_all(
+            "(condition-case _ (progn (set-quit-flag) 'reached) (quit 'after-quit))"
+        ),
+        Sexp::Symbol("after-quit".into())
+    );
+    // Sanity: the flag was consumed by the eval-time `take`, not left set.
+    assert_eq!(ok_all("(quit-flag-pending-p)"), Sexp::Nil);
+}
+
+#[test]
+fn track_m_clear_quit_flag_via_rust_api() {
+    // From Lisp, `(set-quit-flag)' followed by anything else is
+    // intercepted by eval()'s flag check before the next form runs
+    // — that is the whole *point* of the flag.  But the Rust quit::
+    // module is callable directly (e.g. from a signal handler before
+    // any eval boundary), and clearing there must work.
+    super::quit::set_quit_flag();
+    super::quit::clear_quit_flag();
+    assert_eq!(ok_all("'survived"), Sexp::Symbol("survived".into()));
+    assert!(!super::quit::is_quit_pending());
+}
+
+#[test]
+fn track_m_unwind_protect_runs_on_quit() {
+    // unwind-protect cleanup must fire on a quit just like on any
+    // other error.  We shadow with a (quit ...) clause to absorb the
+    // re-raise at the outer level so the test asserts on `cleanup'.
+    assert_eq!(
+        ok_all(
+            "(let ((cleanup nil))
+               (condition-case _
+                 (unwind-protect (signal 'quit nil) (setq cleanup t))
+                 (quit nil))
+               cleanup)"
+        ),
+        Sexp::T
+    );
+}
+
+#[test]
+fn track_m_quit_flag_pending_p_is_non_destructive() {
+    // From Rust: `is_quit_pending` must NOT consume the flag.  Only
+    // `take_quit_flag` (used by eval() at safe-poll boundaries) does.
+    super::quit::clear_quit_flag(); // start clean
+    super::quit::set_quit_flag();
+    assert!(super::quit::is_quit_pending());
+    assert!(super::quit::is_quit_pending(), "peek must be idempotent");
+    // take consumes
+    assert!(super::quit::take_quit_flag());
+    assert!(!super::quit::is_quit_pending());
+}
+
+#[test]
+fn track_m_quit_flag_pending_p_lisp_returns_nil_when_clear() {
+    // Lisp-side observability of the cleared state.  When invoked,
+    // eval() takes the flag first; if it was unset, the builtin runs
+    // and reports nil.  The builtin always sees the just-cleared
+    // state because eval()'s take ran moments before.
+    assert_eq!(ok_all("(quit-flag-pending-p)"), Sexp::Nil);
+}
+
+#[test]
+fn track_m_error_tag_for_quit() {
+    // The `error_tag` accessor must return "quit" (= what
+    // `condition-case` clause-matching keys on).
+    assert_eq!(EvalError::Quit.error_tag(), "quit");
+}
+
+#[test]
+fn track_m_signal_data_for_quit_is_nil_payload() {
+    // `(signal-data quit) => (quit . nil)` matches Emacs convention.
+    let sd = EvalError::Quit.signal_data();
+    assert_eq!(
+        sd,
+        Sexp::cons(Sexp::Symbol("quit".into()), Sexp::Nil)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn track_m_install_sigint_handler_is_idempotent() {
+    // Calling install-sigint-handler more than once must be safe —
+    // the underlying impl uses a `Once` gate.  Side effect: the
+    // handler stays installed for the rest of this test binary's
+    // lifetime; other tests don't depend on the system-default
+    // SIGINT disposition, so this is benign.
+    assert_eq!(ok_all("(install-sigint-handler)"), Sexp::T);
+    assert_eq!(ok_all("(install-sigint-handler)"), Sexp::T);
+    assert_eq!(ok_all("(_sigint-handler-installed-p)"), Sexp::T);
+}
+
+// Note: a `raise(SIGINT)` end-to-end test would be the natural
+// complement to track_m_install_sigint_handler_is_idempotent, but
+// SIGINT is delivered to the *whole process*.  Under `cargo test`
+// (= parallel test threads, shared process), the signal hits an
+// arbitrary thread mid-eval and arbitrary parallel tests see a
+// spurious Quit.  We rely on the by-construction simplicity of the
+// handler body (= one `AtomicBool::store(true)`) plus the API tests
+// above instead.
+
+// ----- Doc 51 Track P — SIGWINCH plumbing ----------------------------------
+
+#[cfg(unix)]
+#[test]
+fn track_p_install_winsize_handler_idempotent() {
+    assert_eq!(ok_all("(install-winsize-handler)"), Sexp::T);
+    assert_eq!(ok_all("(install-winsize-handler)"), Sexp::T);
+    assert_eq!(ok_all("(_winsize-handler-installed-p)"), Sexp::T);
+}
+
+#[cfg(unix)]
+#[test]
+fn track_p_take_winsize_changed_initial_seed_then_clears() {
+    // The installer pre-seeds the flag = the first take returns t
+    // (= so the event loop realises the initial geometry on its
+    // first iteration).  The second take returns nil.  Other tests
+    // may also call install + take, so we just assert "callable +
+    // returns one of the two valid shapes".
+    ok_all("(install-winsize-handler)");
+    let r1 = ok_all("(terminal-take-winsize-changed)");
+    assert!(matches!(r1, Sexp::T | Sexp::Nil));
+    // After at least one take, the flag is now nil unless a real
+    // SIGWINCH arrived between the two calls (= unlikely in test).
+    let r2 = ok_all("(terminal-take-winsize-changed)");
+    assert!(matches!(r2, Sexp::T | Sexp::Nil));
+}
+
+#[cfg(unix)]
+#[test]
+fn track_p_current_winsize_callable() {
+    // Under `cargo test` stdin is piped, so TIOCGWINSZ usually
+    // fails → we expect nil.  But some CI setups surprisingly do
+    // have a tty, so accept either nil or a (cols . rows) cons.
+    let r = ok_all("(terminal-current-winsize)");
+    match r {
+        Sexp::Nil => {}
+        Sexp::Cons(car, cdr) => {
+            let car = car.borrow();
+            let cdr = cdr.borrow();
+            assert!(matches!(*car, Sexp::Int(_)));
+            assert!(matches!(*cdr, Sexp::Int(_)));
+        }
+        other => panic!("expected nil or (int . int), got {:?}", other),
+    }
+}
+
+// ----- Doc 51 Track Q — SIGTSTP / SIGCONT plumbing -------------------------
+
+#[cfg(unix)]
+#[test]
+fn track_q_install_jobctrl_handlers_idempotent() {
+    assert_eq!(ok_all("(install-jobctrl-handlers)"), Sexp::T);
+    assert_eq!(ok_all("(install-jobctrl-handlers)"), Sexp::T);
+    assert_eq!(ok_all("(_jobctrl-handlers-installed-p)"), Sexp::T);
+}
+
+#[cfg(unix)]
+#[test]
+fn track_q_take_sigcont_callable_returns_nil_when_no_signal() {
+    // No SIGCONT raised → flag is nil.  Idempotent.
+    ok_all("(install-jobctrl-handlers)");
+    // We may have a stale flag from a prior test that raise()d, or
+    // not.  Drain twice; the second must be nil.
+    ok_all("(terminal-take-sigcont)");
+    assert_eq!(ok_all("(terminal-take-sigcont)"), Sexp::Nil);
+}
+
+// ----- register_extern_builtin (host crate extension point) ----------------
+
+#[test]
+fn extern_builtin_basic_dispatch() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    let mut env = Env::new_global();
+    let calls = Rc::new(Cell::new(0usize));
+    let calls_inner = calls.clone();
+    env.register_extern_builtin("test-extern-add", move |args, _env| {
+        calls_inner.set(calls_inner.get() + 1);
+        match (args.get(0), args.get(1)) {
+            (Some(Sexp::Int(a)), Some(Sexp::Int(b))) => Ok(Sexp::Int(a + b)),
+            _ => Err(EvalError::ArithError("test-extern-add: bad args".into())),
+        }
+    });
+    let form = crate::reader::read_str("(test-extern-add 3 4)").unwrap();
+    let result = super::eval(&form, &mut env).unwrap();
+    assert_eq!(result, Sexp::Int(7));
+    assert_eq!(calls.get(), 1);
+    // Second call hits the same closure.
+    let form2 = crate::reader::read_str("(test-extern-add 100 200)").unwrap();
+    assert_eq!(super::eval(&form2, &mut env).unwrap(), Sexp::Int(300));
+    assert_eq!(calls.get(), 2);
+}
+
+#[test]
+fn extern_builtin_overrides_previous_registration() {
+    let mut env = Env::new_global();
+    env.register_extern_builtin("test-extern-x", |_, _| Ok(Sexp::Int(1)));
+    let form = crate::reader::read_str("(test-extern-x)").unwrap();
+    assert_eq!(super::eval(&form, &mut env).unwrap(), Sexp::Int(1));
+    // Re-register same name → new closure wins.
+    env.register_extern_builtin("test-extern-x", |_, _| Ok(Sexp::Int(2)));
+    assert_eq!(super::eval(&form, &mut env).unwrap(), Sexp::Int(2));
+}
+
+#[test]
+fn extern_builtin_can_call_eval_recursively() {
+    // A registered builtin re-enters the evaluator (= e.g. to invoke
+    // an elisp callback like `(funcall HANDLER ARG)`).  This exercises
+    // the dispatch fallback's `Rc::clone' so the closure can borrow
+    // `env' mutably without aliasing the registry's borrow.
+    let mut env = Env::new_global();
+    env.register_extern_builtin("test-extern-callback", |_args, env| {
+        let form = crate::reader::read_str("(+ 10 20)").unwrap();
+        super::eval(&form, env)
+    });
+    let form = crate::reader::read_str("(test-extern-callback)").unwrap();
+    assert_eq!(super::eval(&form, &mut env).unwrap(), Sexp::Int(30));
+}
+
+#[test]
+fn extern_builtin_unregistered_signals_unbound_function() {
+    let mut env = Env::new_global();
+    let form = crate::reader::read_str("(no-such-extern-builtin 1 2)").unwrap();
+    let err = super::eval(&form, &mut env).unwrap_err();
+    match err {
+        EvalError::UnboundFunction(name) => {
+            assert_eq!(name, "no-such-extern-builtin");
+        }
+        other => panic!("expected UnboundFunction, got {:?}", other),
+    }
 }

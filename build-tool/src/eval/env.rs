@@ -20,11 +20,22 @@
 //! `equal` semantics.
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use crate::reader;
 
 use super::error::EvalError;
 use super::sexp::Sexp;
+
+/// Extension-point alias for builtin closures registered from outside
+/// `nelisp-build-tool` (= host crates like `nelisp-emacs-gtk' that
+/// expose GTK / SDL / native-OS primitives as elisp callables).
+///
+/// The signature mirrors the internal `bi_*' helpers' shape so the
+/// dispatch fallback can call either uniformly.  `Rc` is used (not
+/// `Arc`) because the `Env' is single-threaded; the closure itself
+/// must be `'static' so the registry outlives any caller's borrow.
+pub type ExternBuiltin = Rc<dyn Fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError>>;
 
 /// A symbol's two cells per Elisp's value/function dichotomy.
 ///
@@ -51,7 +62,15 @@ impl SymbolEntry {
 
 /// One lexical frame.  A `let`, `let*`, or lambda body push one
 /// frame; `setq` against a name in a frame mutates the frame slot.
-pub type Frame = HashMap<String, Sexp>;
+///
+/// Each slot is `Rc<RefCell<Sexp>>' (= a write-through cell) so a
+/// closure that captures the frame can `setq' through the cell and
+/// have the change visible at the originating let-binding's view.
+/// Without the cell layer, `Env::capture_lexical' would have to
+/// copy-by-value into the closure's captured-env alist and `setq'
+/// would silently mutate only the copy (= bug fixed 2026-05-06).
+pub type FrameCell = std::rc::Rc<std::cell::RefCell<Sexp>>;
+pub type Frame = HashMap<String, FrameCell>;
 
 /// The evaluator's runtime environment.
 ///
@@ -82,6 +101,13 @@ pub struct Env {
     /// `featurep`.  Phase 8.0.2 keeps this in-memory only; file-based
     /// loading is deferred to the bridge in Phase 8.0.3.
     pub features: HashSet<String>,
+    /// External builtin registry — host crates (= `nelisp-emacs-gtk'
+    /// for GTK4 GUI ops, future SDL2 / Win32 backends) register Rust
+    /// closures here via [`Env::register_extern_builtin`] which then
+    /// become callable from elisp under the registered name.  The
+    /// `builtins::dispatch' fallback consults this map before
+    /// surfacing `EvalError::UnboundFunction`.
+    pub extern_builtins: HashMap<String, ExternBuiltin>,
 }
 
 impl Env {
@@ -95,6 +121,16 @@ impl Env {
             ("nelisp-stdlib-search.el", include_str!("../../../lisp/nelisp-stdlib-search.el")),
             ("nelisp-stdlib-plist-str.el", include_str!("../../../lisp/nelisp-stdlib-plist-str.el")),
             ("nelisp-stdlib-misc.el", include_str!("../../../lisp/nelisp-stdlib-misc.el")),
+            // Rust-min migration (2026-05-06): pcase moved out of
+            // special_forms.rs into elisp; loaded here so it's
+            // available before any subsequent elisp file uses it.
+            ("nelisp-pcase.el", include_str!("../../../lisp/nelisp-pcase.el")),
+            // Rust-min migration (2026-05-06 #2): cl-loop / cl-block /
+            // cl-return-from / cl-return as elisp.  Previously each
+            // consumer (= nelisp-emacs / nelisp-cc) shipped its own
+            // minimal stub; now NeLisp stdlib carries the richer
+            // implementation so all consumers share a single source.
+            ("nelisp-cl-macros.el", include_str!("../../../lisp/nelisp-cl-macros.el")),
         ];
         let mut env = Env {
             globals: HashMap::new(),
@@ -102,6 +138,7 @@ impl Env {
             max_recursion: 256,
             current_recursion: 0,
             features: HashSet::new(),
+            extern_builtins: HashMap::new(),
         };
         // `nil` and `t` self-evaluate; mark them constant so that
         // (setq nil 1) is a hard error per Elisp.
@@ -132,7 +169,39 @@ impl Env {
             max_recursion: 256,
             current_recursion: 0,
             features: HashSet::new(),
+            extern_builtins: HashMap::new(),
         }
+    }
+
+    /// Register `f' as an externally-supplied builtin under `name'.
+    /// After this call, evaluating `(NAME ARG...)` in elisp invokes
+    /// `f(args, env)` — the same dispatch path the internal `bi_*'
+    /// helpers go through, just with the body lifted out of
+    /// `eval/builtins.rs'.
+    ///
+    /// Used by host crates that need to expose Rust APIs as elisp
+    /// callables without forking the upstream interpreter:
+    ///
+    ///   - `nelisp-emacs-gtk' registers GTK4 GUI ops
+    ///     (`nelisp-gtk-grid-put' / `nelisp-gtk-redraw' / …).
+    ///   - Future SDL2 / Win32 / native-macOS backends will register
+    ///     their own primitives the same way.
+    ///
+    /// Re-registering an existing name overwrites the previous closure.
+    /// As a side effect, the symbol's function-cell is set to the
+    /// `(builtin NAME)' sentinel so it's immediately callable from
+    /// elisp `(funcall NAME ...)` / `(NAME ...)` forms.
+    pub fn register_extern_builtin<F>(&mut self, name: &str, f: F)
+    where
+        F: Fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError> + 'static,
+    {
+        self.extern_builtins
+            .insert(name.to_string(), Rc::new(f));
+        let sentinel = Sexp::list_from(&[
+            Sexp::Symbol("builtin".into()),
+            Sexp::Symbol(name.into()),
+        ]);
+        self.set_function(name, sentinel);
     }
 
     /// Mark `name` as a self-evaluating constant bound to `value`.
@@ -149,8 +218,8 @@ impl Env {
     /// global value cell.  Used by symbol evaluation.
     pub fn lookup_value(&self, name: &str) -> Result<Sexp, EvalError> {
         for frame in self.frames.iter().rev() {
-            if let Some(v) = frame.get(name) {
-                return Ok(v.clone());
+            if let Some(cell) = frame.get(name) {
+                return Ok(cell.borrow().clone());
             }
         }
         match self.globals.get(name) {
@@ -164,16 +233,17 @@ impl Env {
     /// `setq`/`set` semantics: mutate the **innermost** lexical frame
     /// that already binds `name`; otherwise update the global value
     /// cell (creating the symbol entry if needed).  Constants are
-    /// rejected.
+    /// rejected.  Lexical writes go through the FrameCell so any
+    /// closure that captured the same cell sees the new value.
     pub fn set_value(&mut self, name: &str, value: Sexp) -> Result<Sexp, EvalError> {
         if let Some(entry) = self.globals.get(name) {
             if entry.constant {
                 return Err(EvalError::SettingConstant(name.to_string()));
             }
         }
-        for frame in self.frames.iter_mut().rev() {
-            if frame.contains_key(name) {
-                frame.insert(name.to_string(), value.clone());
+        for frame in self.frames.iter().rev() {
+            if let Some(cell) = frame.get(name) {
+                *cell.borrow_mut() = value.clone();
                 return Ok(value);
             }
         }
@@ -204,6 +274,21 @@ impl Env {
             .entry(name.to_string())
             .or_insert_with(SymbolEntry::new);
         entry.function = Some(func);
+    }
+
+    /// `fmakunbound' semantics — drop the function cell.
+    pub fn clear_function(&mut self, name: &str) {
+        if let Some(entry) = self.globals.get_mut(name) {
+            entry.function = None;
+        }
+    }
+
+    /// `makunbound' semantics — drop the value cell.  The constant
+    /// flag is preserved so re-binding via `defconst' still errors.
+    pub fn clear_value(&mut self, name: &str) {
+        if let Some(entry) = self.globals.get_mut(name) {
+            entry.value = None;
+        }
     }
 
     /// `defvar`/`defconst` semantics — install a value but only if the
@@ -240,9 +325,14 @@ impl Env {
     /// `let*`, and lambda parameter binding.  If no frame exists, the
     /// binding falls through to the global slot — this is intentional
     /// so top-level `(setq x 1)` works without an outer `(let)`.
+    /// Each binding is wrapped in a fresh FrameCell so a closure
+    /// capturing this name shares the cell (= setq write-through).
     pub fn bind_local(&mut self, name: &str, value: Sexp) {
         if let Some(frame) = self.frames.last_mut() {
-            frame.insert(name.to_string(), value);
+            frame.insert(
+                name.to_string(),
+                std::rc::Rc::new(std::cell::RefCell::new(value)),
+            );
         } else {
             let entry = self
                 .globals
@@ -294,26 +384,35 @@ impl Env {
     /// Capture the current lexical frames as a flat alist so a
     /// `lambda` can keep its closure environment as plain [`Sexp`]
     /// data.  Inner frames take precedence over outer.
+    ///
+    /// Each captured slot is wrapped in `Sexp::Cell` carrying the
+    /// **same** `Rc<RefCell<Sexp>>` as the original frame entry, so
+    /// `setq' inside the closure mutates the cell visible at the
+    /// originating let-binding (= write-through closures, fixed
+    /// 2026-05-06).
     pub fn capture_lexical(&self) -> Sexp {
         let mut seen = std::collections::HashSet::new();
-        let mut entries: Vec<(String, Sexp)> = Vec::new();
+        let mut entries: Vec<(String, FrameCell)> = Vec::new();
         for frame in self.frames.iter().rev() {
-            for (k, v) in frame {
+            for (k, cell) in frame {
                 if seen.insert(k.clone()) {
-                    entries.push((k.clone(), v.clone()));
+                    entries.push((k.clone(), cell.clone()));
                 }
             }
         }
         let mut acc = Sexp::Nil;
-        for (k, v) in entries.into_iter().rev() {
-            let pair = Sexp::cons(Sexp::Symbol(k), v);
+        for (k, cell) in entries.into_iter().rev() {
+            let pair = Sexp::cons(Sexp::Symbol(k), Sexp::Cell(cell));
             acc = Sexp::cons(pair, acc);
         }
         acc
     }
 
     /// Push a frame populated from a captured-env alist (the inverse
-    /// of [`Env::capture_lexical`]).
+    /// of [`Env::capture_lexical`]).  When a captured value is wrapped
+    /// in `Sexp::Cell`, the same `Rc` is reinstalled so mutation is
+    /// shared with the original frame; otherwise the value is wrapped
+    /// in a fresh cell (= legacy alist input still works).
     pub fn push_captured(&mut self, alist: &Sexp) -> Result<(), EvalError> {
         let mut frame: Frame = HashMap::new();
         let mut cur: Sexp = alist.clone();
@@ -324,7 +423,16 @@ impl Env {
                     let car_inner = car.borrow().clone();
                     if let Sexp::Cons(name, value) = &car_inner {
                         if let Sexp::Symbol(s) = &*name.borrow() {
-                            frame.insert(s.clone(), value.borrow().clone());
+                            // Closure write-through: when value is a
+                            // `Sexp::Cell`, install the SAME Rc so the
+                            // closure shares the originating frame's
+                            // slot; otherwise wrap in a fresh cell.
+                            let value_inner = value.borrow().clone();
+                            let cell = match value_inner {
+                                Sexp::Cell(rc) => rc,
+                                v => std::rc::Rc::new(std::cell::RefCell::new(v)),
+                            };
+                            frame.insert(s.clone(), cell);
                         } else {
                             return Err(EvalError::Internal(
                                 "closure env entry name not a symbol".into(),

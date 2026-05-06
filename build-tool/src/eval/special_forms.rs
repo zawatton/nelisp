@@ -11,6 +11,8 @@
 //! the dispatcher falls through to function/macro lookup), and
 //! `Err(EvalError)` on invalid syntax / sub-form failure.
 
+use std::rc::Rc;
+
 use super::env::Env;
 use super::error::{is_error_subtype, EvalError};
 use super::sexp::Sexp;
@@ -38,10 +40,14 @@ pub fn apply_special(
         "cl-defun" => sf_cl_defun(args, env)?,
         "defmacro" => sf_defmacro(args, env)?,
         "defvar" => sf_defvar(args, env)?,
+        "defvar-local" => sf_defvar(args, env)?,
         "defconst" => sf_defconst(args, env)?,
         "defcustom" => sf_defcustom(args, env)?,
         "defgroup" => sf_defgroup(args, env)?,
         "setq" => sf_setq(args, env)?,
+        // No buffer-local concept here — the global value IS the
+        // default, so setq-default ≡ setq.
+        "setq-default" => sf_setq(args, env)?,
         "while" => sf_while(args, env)?,
         "dolist" => sf_dolist(args, env)?,
         "dotimes" => sf_dotimes(args, env)?,
@@ -52,11 +58,17 @@ pub fn apply_special(
         "prog2" => sf_prog2(args, env)?,
         "and" => sf_and(args, env)?,
         "or" => sf_or(args, env)?,
-        "pcase" => sf_pcase(args, env)?,
+        // Rust-min migration (2026-05-06): pcase moved to elisp
+        // (= lisp/nelisp-pcase.el); load order ensures the macro is
+        // defined before any caller.  Removing the special-form
+        // dispatch here lets `apply_combiner' fall through to the
+        // macro expander.
         "save-excursion" => sf_progn(args, env)?, // no-op stub per Doc 44 §3.3
         "save-restriction" => sf_progn(args, env)?, // no-op stub
         "catch" => sf_catch(args, env)?,
         "throw" => sf_throw(args, env)?,
+        "push" => sf_push(args, env)?,
+        "pop" => sf_pop(args, env)?,
         _ => return Ok(None),
     };
     Ok(Some(result))
@@ -767,6 +779,49 @@ fn sf_condition_case(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     let handlers: Vec<Sexp> = parts.iter().skip(2).cloned().collect();
     match eval(protected, env) {
         Ok(v) => Ok(v),
+        // `throw' is a control-flow primitive, not an error — let it
+        // pass through `condition-case' so the matching `catch'
+        // upstream can handle it.  Real Emacs has the same rule:
+        // `condition-case' only catches conditions in `error-conditions',
+        // and `no-catch' (= an unhandled `throw') is NOT a subtype of
+        // `error' unless the handler clause explicitly names it.
+        Err(EvalError::UncaughtThrow { tag, value }) => {
+            // Allow an explicit `(no-catch ...)' clause to catch it,
+            // matching Emacs' parity.  Otherwise re-raise.
+            for handler in &handlers {
+                let h_parts = list_elements(handler)?;
+                if h_parts.is_empty() {
+                    continue;
+                }
+                let claims_no_catch = match &h_parts[0] {
+                    Sexp::Symbol(s) => s == "no-catch",
+                    Sexp::Cons(_, _) => {
+                        let tag_list = list_elements(&h_parts[0])?;
+                        tag_list.iter().any(|t| {
+                            matches!(t, Sexp::Symbol(s) if s == "no-catch")
+                        })
+                    }
+                    _ => false,
+                };
+                if claims_no_catch {
+                    env.push_frame();
+                    if let Some(name) = &var {
+                        env.bind_local(
+                            name,
+                            Sexp::cons(
+                                Sexp::Symbol("no-catch".into()),
+                                Sexp::cons(tag.clone(), Sexp::cons(value.clone(), Sexp::Nil)),
+                            ),
+                        );
+                    }
+                    let body: Vec<Sexp> = h_parts.iter().skip(1).cloned().collect();
+                    let r = eval_body(&body, env);
+                    env.pop_frame();
+                    return r;
+                }
+            }
+            Err(EvalError::UncaughtThrow { tag, value })
+        }
         Err(e) => {
             let actual_tag = e.error_tag().to_string();
             for handler in &handlers {
@@ -823,13 +878,14 @@ fn sf_unwind_protect(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
             }
         }
     }
-    body_result.or_else(|e| Err(e)).and_then(|v| {
-        if let Some(e) = cleanup_err {
-            Err(e)
-        } else {
-            Ok(v)
-        }
-    })
+    // Real Emacs: a cleanup-form failure (= newer error / throw) takes
+    // precedence over the body's failure, because it reflects the most
+    // recent control-flow state.  When cleanups all succeed, the body's
+    // own outcome (= success or original error) is returned unchanged.
+    match cleanup_err {
+        Some(ce) => Err(ce),
+        None => body_result,
+    }
 }
 
 // ---------- progn / prog1 / prog2 ----------
@@ -904,63 +960,15 @@ fn sf_or(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     Ok(Sexp::Nil)
 }
 
-// ---------- pcase ----------
-
-fn sf_pcase(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let parts = args_vec(args)?;
-    if parts.is_empty() {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "pcase".into(),
-            expected: "≥1".into(),
-            got: 0,
-        });
-    }
-    let value = eval(&parts[0], env)?;
-    for clause in parts.iter().skip(1) {
-        let clause_parts = list_elements(clause)?;
-        if clause_parts.len() < 2 {
-            return Err(EvalError::WrongType {
-                expected: "(PAT BODY...)".into(),
-                got: clause.clone(),
-            });
-        }
-        if let Some(binding) = pcase_match_binding(&clause_parts[0], &value)? {
-            if let Some(name) = binding {
-                env.push_frame();
-                env.bind_local(&name, value.clone());
-                let result = eval_body(&clause_parts[1..], env);
-                env.pop_frame();
-                return result;
-            }
-            return eval_body(&clause_parts[1..], env);
-        }
-    }
-    Ok(Sexp::Nil)
-}
-
-fn pcase_match_binding(pattern: &Sexp, value: &Sexp) -> Result<Option<Option<String>>, EvalError> {
-    match pattern {
-        Sexp::Int(_) | Sexp::Float(_) | Sexp::Str(_) => Ok((pattern == value).then_some(None)),
-        Sexp::Nil => Ok(matches!(value, Sexp::Nil).then_some(None)),
-        Sexp::T => Ok(matches!(value, Sexp::T).then_some(None)),
-        Sexp::Symbol(name) if name == "_" => Ok(Some(None)),
-        Sexp::Symbol(name) => Ok(Some(Some(name.clone()))),
-        Sexp::Cons(head, _) if matches!(&*head.borrow(), Sexp::Symbol(s) if s == "quote") => {
-            let quoted = args_vec(pattern)?;
-            if quoted.len() != 2 {
-                return Err(EvalError::WrongType {
-                    expected: "(quote VALUE)".into(),
-                    got: pattern.clone(),
-                });
-            }
-            Ok((quoted[1] == *value).then_some(None))
-        }
-        other => Err(EvalError::WrongType {
-            expected: "supported pcase pattern".into(),
-            got: other.clone(),
-        }),
-    }
-}
+// ---------- pcase removed: see lisp/nelisp-pcase.el ----------
+//
+// Rust-min migration 2026-05-06: pcase was historically a special
+// form here (`sf_pcase' + `pcase_match_binding') with a restricted
+// pattern grammar (literal / quote / cons / keyword).  Moving it to
+// elisp unlocks the richer Emacs grammar (or / and / pred / guard /
+// backquote / let) without growing the Rust core.  The elisp
+// implementation is loaded as part of `Env::new_global'
+// `STDLIB_SOURCES' so it's defined before any consumer parses.
 
 // ---------- catch / throw ----------
 
@@ -1003,6 +1011,94 @@ fn sf_throw(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     Err(EvalError::UncaughtThrow { tag, value })
 }
 
+/// `(push X PLACE)` — minimal-form macro: when PLACE is a symbol,
+/// expands to `(setq PLACE (cons X PLACE))'.  Generalised places
+/// (= `setf'-style accessors) are deferred — Layer 2 callers we have
+/// audited only push onto symbol-bound lists.
+fn sf_push(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
+    let parts = args_vec(args)?;
+    if parts.len() != 2 {
+        return Err(EvalError::WrongNumberOfArguments {
+            function: "push".into(),
+            expected: "2".into(),
+            got: parts.len(),
+        });
+    }
+    match &parts[1] {
+        // Symbol place — fast path (no setf bounce).
+        Sexp::Symbol(name) => {
+            let new_head = eval(&parts[0], env)?;
+            let cur = env.lookup_value(name).unwrap_or(Sexp::Nil);
+            let new_list = Sexp::cons(new_head, cur);
+            env.set_value(name, new_list.clone())?;
+            Ok(new_list)
+        }
+        // Generalised place (= cons form, e.g. an accessor call).
+        // Expand to `(setf PLACE (cons NEW PLACE))' and evaluate it,
+        // routing through whatever `setf' macro the substrate has
+        // installed (= our cl-lib polyfill knows about
+        // `cl-struct-setter').  Note: `parts[0]' (= the new value
+        // expression) is interpolated *unevaluated* into the cons
+        // form, so it ends up evaluated exactly once.  PLACE is
+        // evaluated twice — once by the cons read, once by the
+        // setf write — which matches GNU Emacs's MVP `push' macro
+        // expansion (= upstream uses `gensym' to avoid this; we
+        // accept the double-eval cost for substrate accessors,
+        // which are side-effect-free).
+        place_form @ Sexp::Cons(_, _) => {
+            let cons_form = Sexp::list_from(&[
+                Sexp::Symbol("cons".into()),
+                parts[0].clone(),
+                place_form.clone(),
+            ]);
+            let setf_form = Sexp::list_from(&[
+                Sexp::Symbol("setf".into()),
+                place_form.clone(),
+                cons_form,
+            ]);
+            eval(&setf_form, env)
+        }
+        other => Err(EvalError::WrongType {
+            expected: "symbol or generalised place (cons form)".into(),
+            got: other.clone(),
+        }),
+    }
+}
+
+/// `(pop PLACE)` — minimal-form macro: when PLACE is a symbol,
+/// returns its car and rebinds it to the cdr.
+fn sf_pop(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
+    let parts = args_vec(args)?;
+    if parts.len() != 1 {
+        return Err(EvalError::WrongNumberOfArguments {
+            function: "pop".into(),
+            expected: "1".into(),
+            got: parts.len(),
+        });
+    }
+    let place_sym = match &parts[0] {
+        Sexp::Symbol(s) => s.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "symbol (generalised places NYI)".into(),
+            got: other.clone(),
+        }),
+    };
+    let cur = env.lookup_value(&place_sym).unwrap_or(Sexp::Nil);
+    match &cur {
+        Sexp::Cons(head, tail) => {
+            let head = head.borrow().clone();
+            let tail = tail.borrow().clone();
+            env.set_value(&place_sym, tail)?;
+            Ok(head)
+        }
+        Sexp::Nil => Ok(Sexp::Nil),
+        other => Err(EvalError::WrongType {
+            expected: "list".into(),
+            got: other.clone(),
+        }),
+    }
+}
+
 /// `eq` semantics for `Sexp`.  Symbols match by name, integers by
 /// value, `nil`/`t` by identity, everything else by structural
 /// equality (close enough for the bootstrap; full pointer-eq would
@@ -1012,6 +1108,27 @@ pub fn sexp_eq(a: &Sexp, b: &Sexp) -> bool {
         (Sexp::Nil, Sexp::Nil) | (Sexp::T, Sexp::T) => true,
         (Sexp::Int(x), Sexp::Int(y)) => x == y,
         (Sexp::Symbol(x), Sexp::Symbol(y)) => x == y,
+        // Heap types: identity = Rc::ptr_eq (= same allocation).  Per
+        // the type docs on Sexp, every `Rc<RefCell<...>>'-backed
+        // variant has cell identity so `(eq x x)' / `(memq w list)' /
+        // `(assq k alist)' / cl-defstruct slot equality work as
+        // they do in host Emacs.  Without this, walking a tree of
+        // shared cons cells (e.g. window parent/children pointers)
+        // would compare structurally — which on a cyclic graph
+        // recurses forever.
+        (Sexp::Cons(a1, a2), Sexp::Cons(b1, b2)) => {
+            Rc::ptr_eq(a1, b1) && Rc::ptr_eq(a2, b2)
+        }
+        (Sexp::MutStr(a), Sexp::MutStr(b)) => Rc::ptr_eq(a, b),
+        (Sexp::Vector(a), Sexp::Vector(b)) => Rc::ptr_eq(a, b),
+        (Sexp::HashTable(a), Sexp::HashTable(b)) => Rc::ptr_eq(a, b),
+        (Sexp::CharTable(a), Sexp::CharTable(b)) => Rc::ptr_eq(a, b),
+        (Sexp::BoolVector(a), Sexp::BoolVector(b)) => Rc::ptr_eq(a, b),
+        // Strings + floats: bootstrap subset uses structural eq
+        // (close enough — Emacs treats short interned strings + small
+        // fixnums similarly; full impl would need an interner).
+        (Sexp::Str(x), Sexp::Str(y)) => x == y,
+        (Sexp::Float(x), Sexp::Float(y)) => x.to_bits() == y.to_bits(),
         _ => false,
     }
 }
