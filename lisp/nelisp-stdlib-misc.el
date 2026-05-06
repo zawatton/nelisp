@@ -103,6 +103,20 @@
         ((stringp name) (intern name))
         (t (signal 'wrong-type-argument (list 'stringp name)))))
 
+;; Rust-min batch 6i (2026-05-06): `princ' migrated from Rust to
+;; elisp.  The previous `bi_princ' was just a stringp / Display
+;; dispatch wrapped around a stdout writeln:
+;;   stringp arg → write the string bytes verbatim
+;;   else        → write `format!("{}", arg)' (= `prin1-to-string')
+;; Only the byte-write needs Rust now (`nelisp--write-stdout-bytes').
+;;
+;; NOTE: must come before the batch-6e `(defalias 'print 'princ)' so
+;; the eager symbol-resolution in `bi_defalias' sees the elisp def.
+(defun princ (object)
+  (let ((s (if (stringp object) object (prin1-to-string object))))
+    (nelisp--write-stdout-bytes s)
+    object))
+
 ;; Rust-min batch 6e (2026-05-06): alias-only dispatch arms reduced
 ;; to `defalias'.  Each pair below previously routed through a
 ;; single Rust impl via `"foo" | "bar" => bi_<...>(args)' — the

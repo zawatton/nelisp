@@ -140,8 +140,12 @@ pub fn install_builtins(env: &mut Env) {
         // Rust-min (2026-05-06 batch 6h): `message' moved to elisp
         // (lisp/nelisp-stdlib-misc.el); only the writeln-to-stderr
         // sliver remains as `nelisp--write-stderr-line'.
-        "signal", "error", "princ", "prin1-to-string",
+        // Rust-min (2026-05-06 batch 6i): `princ' moved to elisp
+        // (lisp/nelisp-stdlib-misc.el); only the byte-write-to-stdout
+        // sliver remains as `nelisp--write-stdout-bytes'.
+        "signal", "error", "prin1-to-string",
         "nelisp--write-stderr-line",
+        "nelisp--write-stdout-bytes",
         "provide", "require", "featurep",
         // self-process stdio (Phase 9 minimal — needed by stand-alone Lisp servers
         // such as elisp-lsp running on the `nelisp` binary)
@@ -330,7 +334,10 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // defalias of `princ'.  In MVP both have the no-quoting
         // behaviour of `princ'; promoting to defalias makes the
         // duplication visible.
-        "princ" => bi_princ(args),
+        // princ migrated to elisp (Rust-min 2026-05-06 batch 6i,
+        // see lisp/nelisp-stdlib-misc.el).  The byte-write-to-stdout
+        // primitive is `nelisp--write-stdout-bytes'.
+        "nelisp--write-stdout-bytes" => bi_write_stdout_bytes(args),
         "prin1-to-string" => bi_prin1_to_string(args),
         // message migrated to elisp (Rust-min 2026-05-06 batch 6h,
         // see lisp/nelisp-stdlib-misc.el).  The writeln-to-stderr
@@ -2235,24 +2242,31 @@ fn bi_error(args: &[Sexp]) -> Result<Sexp, EvalError> {
     })
 }
 
-fn bi_princ(args: &[Sexp]) -> Result<Sexp, EvalError> {
+/// `(nelisp--write-stdout-bytes STR)' — write STR's bytes to stdout
+/// and flush.  No newline added.  Returns STR unchanged.  Building
+/// block for the elisp `princ' (Rust-min 2026-05-06 batch 6i); the
+/// previous `bi_princ' was just a stringp/Display dispatch wrapped
+/// around this writeln, and moving the dispatch to elisp keeps the
+/// I/O sliver as the only Rust-only piece.
+fn bi_write_stdout_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
     use std::io::Write;
-    if args.is_empty() {
-        return Ok(Sexp::Nil);
-    }
-    // Emacs `princ' writes string contents *without* quoting/escaping;
-    // non-strings render through their normal Display so `(princ 42)'
-    // emits `42' just like `(format "%s" 42)' would.
-    let bytes: Vec<u8> = match &args[0] {
-        Sexp::Str(s) => s.as_bytes().to_vec(),
-        other => format!("{}", other).into_bytes(),
-    };
+    require_arity("nelisp--write-stdout-bytes", args, 1, Some(1))?;
+    let s = args[0].as_string_owned().ok_or_else(|| EvalError::WrongType {
+        expected: "stringp".into(),
+        got: args[0].clone(),
+    })?;
     let mut out = std::io::stdout().lock();
-    out.write_all(&bytes)
+    out.write_all(s.as_bytes())
         .and_then(|_| out.flush())
-        .map_err(|e| EvalError::Internal(format!("princ: {}", e)))?;
+        .map_err(|e| EvalError::Internal(format!("nelisp--write-stdout-bytes: {}", e)))?;
     Ok(args[0].clone())
 }
+
+// bi_princ removed — see lisp/nelisp-stdlib-misc.el (Rust-min
+// 2026-05-06 batch 6i).  The stringp/Display dispatch is fully
+// expressible in elisp once `nelisp--write-stdout-bytes' exists as
+// a primitive (just above) — and `prin1-to-string' produces the
+// Display-format output for non-string inputs.
 
 /// `(nelisp--write-stderr-line STR)' — write STR followed by a
 /// newline to stderr and flush.  Returns STR unchanged.  Building
