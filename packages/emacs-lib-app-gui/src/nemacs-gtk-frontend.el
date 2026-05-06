@@ -4615,7 +4615,9 @@ success / failure."
     "text-mode"
     "emacs-lisp-mode"
     "nemacs-gtk-load-user-init-file"
-    "load-user-init-file")
+    "load-user-init-file"
+    "nemacs-gtk-paint-extras-mode"
+    "paint-extras-mode")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
@@ -5536,25 +5538,53 @@ the rest of the redraw can proceed."
               (error nil))))
         nil))))
 
+(defvar nemacs-gtk--paint-extras-enabled nil
+  "Phase 3.E — when t, `--repaint' runs the heavier extras (= region
+overlay, all-match isearch highlights, paren-match, font-lock
+color spans, trailing-whitespace, column ruler).  Default = nil
+(= core paint only) because on resource-constrained VMs / VMware
+Wayland sessions the extras can OOM the process.
+
+Toggle via `M-x paint-extras-mode' to opt-in once the user is
+sure the GUI is responsive enough for the extra work.")
+
+(defun nemacs-gtk-paint-extras-mode ()
+  "M-x paint-extras-mode — toggle `--paint-extras-enabled'.  When
+on, isearch all-match / paren-match / font-lock color / trailing-
+whitespace / column-ruler overlays render on each repaint.  When
+off (= default), only the core grid + mode-line + echo-area + cursor
+paint.  The latter is what the GUI runs in low-resource environments
+to keep frame rate sane."
+  (interactive)
+  (setq nemacs-gtk--paint-extras-enabled
+        (not nemacs-gtk--paint-extras-enabled))
+  (setq nemacs-gtk--last-key-text
+        (format "paint-extras-mode: %s"
+                (if nemacs-gtk--paint-extras-enabled "on" "off"))))
+
 (defun nemacs-gtk--repaint ()
   "One full redraw cycle: buffer, mode line, echo, cursor, queue draw.
 Phase 3.D: each sub-step is guarded by `--guard' so a single
 broken pass logs to *Messages* + the echo-area without aborting
-the whole redraw — the user sees something usable instead of
-the boot-time hard fail."
-  (nemacs-gtk--guard "grid-clear"   (nelisp-gtk-grid-clear))
-  (nemacs-gtk--guard "buffer-area"  (nemacs-gtk--paint-buffer-area))
-  (nemacs-gtk--guard "mode-line"    (nemacs-gtk--paint-mode-line))
-  (nemacs-gtk--guard "echo-area"    (nemacs-gtk--paint-echo-area))
-  (nemacs-gtk--guard "region"       (nemacs-gtk--paint-region-overlay))
-  (nemacs-gtk--guard "highlights"   (nemacs-gtk--paint-highlights))
-  (nemacs-gtk--guard "color-spans"  (nemacs-gtk--paint-color-spans))
+the whole redraw.  Phase 3.E: heavy extras (= region overlay /
+isearch all-match / paren-match / font-lock color spans /
+trailing-whitespace / column ruler) are gated on
+`--paint-extras-enabled' so the default boot stays fast on
+resource-constrained VMs."
+  (nemacs-gtk--guard "grid-clear"  (nelisp-gtk-grid-clear))
+  (nemacs-gtk--guard "buffer-area" (nemacs-gtk--paint-buffer-area))
+  (nemacs-gtk--guard "mode-line"   (nemacs-gtk--paint-mode-line))
+  (nemacs-gtk--guard "echo-area"   (nemacs-gtk--paint-echo-area))
+  (when nemacs-gtk--paint-extras-enabled
+    (nemacs-gtk--guard "region"      (nemacs-gtk--paint-region-overlay))
+    (nemacs-gtk--guard "highlights"  (nemacs-gtk--paint-highlights))
+    (nemacs-gtk--guard "color-spans" (nemacs-gtk--paint-color-spans)))
   (nemacs-gtk--guard "cursor"
     (let ((rc (nemacs-gtk--cursor-row-col)))
       (if rc
           (nelisp-gtk-set-cursor (car rc) (cdr rc))
         (nelisp-gtk-set-cursor nil nil))))
-  (nemacs-gtk--guard "redraw"       (nelisp-gtk-redraw)))
+  (nemacs-gtk--guard "redraw"      (nelisp-gtk-redraw)))
 
 
 ;;;; --- key event translation ------------------------------------------------
