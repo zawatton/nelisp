@@ -162,8 +162,15 @@ pub fn install_builtins(env: &mut Env) {
         // Rust-min (2026-05-06 batch 6k): `hash-table-keys' /
         // `hash-table-values' migrated to elisp via `maphash' fold
         // (lisp/nelisp-stdlib-misc.el).
-        "make-hash-table", "hash-table-p", "hash-table-count",
-        "puthash", "gethash", "remhash", "clrhash", "maphash",
+        // Rust-min (2026-05-07 batch 7a, Doc 50 stage 1): `maphash' +
+        // `hash-table-count' migrated to elisp on top of a new low-
+        // level iter primitive `nelisp--hash-pairs' (= snapshot of
+        // ((K . V) ...) in insertion order).  -keys / -values rewired
+        // to ride that primitive too (was: maphash fold).  4 builtins
+        // collapse into 1 + ~4 elisp wrappers (~10 LOC each).
+        "make-hash-table", "hash-table-p",
+        "puthash", "gethash", "remhash", "clrhash",
+        "nelisp--hash-pairs",
         // Rust-min (2026-05-06 batch 5b): char-table family was
         // unused in NeLisp lisp/ + test/, so the user-facing
         // builtins (make-char-table, char-table-p, char-table-
@@ -403,14 +410,15 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // elisp (Rust-min 2026-05-06 batch 3).
         "make-hash-table" => bi_make_hash_table(args),
         "hash-table-p" => bi_hash_table_p(args),
-        "hash-table-count" => bi_hash_table_count(args),
         "puthash" => bi_puthash(args),
         "gethash" => bi_gethash(args),
         "remhash" => bi_remhash(args),
         "clrhash" => bi_clrhash(args),
-        "maphash" => bi_maphash(args, env),
-        // hash-table-keys / hash-table-values migrated to elisp
-        // (Rust-min 2026-05-06 batch 6k, see lisp/nelisp-stdlib-misc.el).
+        // Rust-min batch 7a (Doc 50 stage 1, 2026-05-07):
+        // `hash-table-count' / `maphash' / -keys / -values are now
+        // elisp folds over `nelisp--hash-pairs' (see
+        // lisp/nelisp-stdlib-misc.el).
+        "nelisp--hash-pairs" => bi_hash_pairs(args),
         // char-table / bool-vector dispatch retired (Rust-min
         // 2026-05-06 batch 5b).  See file-top commentary.
         "funcall" => bi_funcall(args, env),
@@ -1252,17 +1260,27 @@ fn bi_hash_table_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
     })
 }
 
-fn bi_hash_table_count(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("hash-table-count", args, 1, Some(1))?;
-    match &args[0] {
-        Sexp::HashTable(inner) => {
-            Ok(Sexp::Int(inner.borrow().entries.len() as i64))
-        }
-        other => Err(EvalError::WrongType {
+/// `(nelisp--hash-pairs TABLE)' — Rust-min batch 7a (Doc 50 stage 1).
+/// Returns a fresh proper list `((K . V) ...)' of TABLE's entries in
+/// insertion order.  This is the lone Rust-side iter primitive used by
+/// elisp wrappers `hash-table-count' / `maphash' / `hash-table-keys' /
+/// `hash-table-values' (see lisp/nelisp-stdlib-misc.el).  Each cons
+/// pair is fresh, so the caller may mutate the spine freely; the K/V
+/// values themselves are cloned (= cheap for `Rc'-shared variants).
+fn bi_hash_pairs(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--hash-pairs", args, 1, Some(1))?;
+    let table = match &args[0] {
+        Sexp::HashTable(inner) => inner.clone(),
+        other => return Err(EvalError::WrongType {
             expected: "hash-table-p".into(),
             got: other.clone(),
         }),
+    };
+    let mut out = Sexp::Nil;
+    for (k, v) in table.borrow().entries.iter().rev() {
+        out = Sexp::cons(Sexp::cons(k.clone(), v.clone()), out);
     }
+    Ok(out)
 }
 
 /// `(puthash KEY VALUE TABLE)' — set TABLE[KEY] = VALUE.  Returns VALUE.
@@ -1345,28 +1363,17 @@ fn bi_clrhash(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(args[0].clone())
 }
 
-fn bi_maphash(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("maphash", args, 2, Some(2))?;
-    let func = resolve_callable(&args[0], env)?;
-    let snapshot: Vec<(Sexp, Sexp)> = match &args[1] {
-        Sexp::HashTable(inner) => inner.borrow().entries.clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "hash-table-p".into(),
-            got: other.clone(),
-        }),
-    };
-    for (k, v) in snapshot {
-        super::apply_function(&func, &[k, v], env)?;
-    }
-    Ok(Sexp::Nil)
-}
-
-// bi_hash_table_keys / bi_hash_table_values removed — see
-// lisp/nelisp-stdlib-misc.el (Rust-min 2026-05-06 batch 6k).
-// Both reduced cleanly to `maphash' folds with `cons'+`nreverse',
-// which work because NeLisp's closure-setq write-through (=
-// FrameCell pattern from commits eb89f73 / c08d0db / f1fc1f5)
-// allows the lambda to mutate the let-bound accumulator.
+// bi_hash_table_count / bi_maphash / bi_hash_table_keys /
+// bi_hash_table_values all retired in Rust-min batch 7a (Doc 50 stage
+// 1, 2026-05-07).  All four collapse into elisp folds on top of the
+// lone iter primitive `nelisp--hash-pairs' above — see
+// lisp/nelisp-stdlib-misc.el.  The previous bi_maphash had to take
+// `&mut Env' so it could `apply_function'; the new arrangement keeps
+// `apply' / `funcall' as the only Rust-side dispatch routes.
+//
+// 6k earlier note: -keys / -values used `maphash' fold +
+// `cons'+`nreverse' (= O(n)); the rewire to `nelisp--hash-pairs' +
+// `mapcar' is the same complexity but skips the closure write-through.
 
 // char-table / bool-vector user-facing builtins retired (Rust-min
 // 2026-05-06 batch 5b).  See file-top commentary; surface migrated

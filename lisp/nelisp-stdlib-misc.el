@@ -96,21 +96,43 @@
         (nelisp--write-stderr-line s)
         s))))
 
-;; Rust-min batch 6k (2026-05-06): `hash-table-keys' /
-;; `hash-table-values' migrated from Rust to elisp.  Both fold over
-;; `maphash' to collect K/V into an accumulator, then `nreverse' to
-;; restore insertion order.  Routes through NeLisp's closure-setq
-;; write-through (FrameCell, NeLisp commits eb89f73 / c08d0db /
-;; f1fc1f5) so the lambda's `setq acc' lands back on the let-binding.
+;; Rust-min batch 7a (2026-05-07, Doc 50 stage 1): hash-table API
+;; surface migrated from Rust to elisp on top of the new low-level
+;; iter primitive `nelisp--hash-pairs' (see
+;; build-tool/src/eval/builtins.rs `bi_hash_pairs').  4 builtins
+;; collapse into 1 Rust primitive + 4 short elisp wrappers.
+;;
+;;   `nelisp--hash-pairs h' → ((K1 . V1) (K2 . V2) ...) in insertion
+;;   order, with FRESH cons cells (= callers may mutate spine; key/
+;;   value Sexp are clone'd, cheap for Rc-shared variants).
+;;
+;; Pre-7a (= batch 6k) had `hash-table-keys' / `-values' fold
+;; `maphash' through closure-setq write-through.  7a rewires both to
+;; `mapcar' over `nelisp--hash-pairs' — same O(n), no FrameCell
+;; round-trip, plus simpler call shape.  `maphash' / `hash-table-count'
+;; gain elisp definitions for the first time.
+
 (defun hash-table-keys (table)
-  (let ((acc nil))
-    (maphash (function (lambda (k _v) (setq acc (cons k acc)))) table)
-    (nreverse acc)))
+  (mapcar (function car) (nelisp--hash-pairs table)))
 
 (defun hash-table-values (table)
-  (let ((acc nil))
-    (maphash (function (lambda (_k v) (setq acc (cons v acc)))) table)
-    (nreverse acc)))
+  (mapcar (function cdr) (nelisp--hash-pairs table)))
+
+(defun hash-table-count (table)
+  (length (nelisp--hash-pairs table)))
+
+(defun maphash (fn table)
+  "Call FN with each KEY / VALUE pair in TABLE.  Return nil.
+The pairs are visited in insertion order using a snapshot taken at
+call time, so it is safe for FN to mutate TABLE during the walk
+(= same semantic as the previous `bi_maphash' which cloned
+`entries' upfront)."
+  (let ((cur (nelisp--hash-pairs table)))
+    (while cur
+      (let ((p (car cur)))
+        (funcall fn (car p) (cdr p)))
+      (setq cur (cdr cur))))
+  nil)
 
 (defun intern-soft (name &optional _obarray)
   ;; NeLisp MVP has no obarray, so name-as-symbol is identity and
