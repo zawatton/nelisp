@@ -245,6 +245,20 @@ impl<'a> Lexer<'a> {
                         b'\\' => out.push('\\'),
                         b'"' => out.push('"'),
                         b'0' => out.push('\0'),
+                        // Named char escapes — must mirror what the
+                        // char-literal lexer (= `?\e' / `?\s' / etc.)
+                        // recognises, otherwise string constants
+                        // built with `"\e[..."' silently drop the
+                        // backslash and the runtime emits literal
+                        // `e[...]' instead of the ESC-prefixed
+                        // ANSI sequence the caller meant.
+                        b'e' => out.push('\u{1b}'),  // ESC
+                        b's' => out.push(' '),       // space
+                        b'b' => out.push('\u{08}'),  // backspace
+                        b'd' => out.push('\u{7f}'),  // delete
+                        b'a' => out.push('\u{07}'),  // bell
+                        b'f' => out.push('\u{0c}'),  // form feed
+                        b'v' => out.push('\u{0b}'),  // vertical tab
                         // `\xNN` hex byte escape — useful for the
                         // bootstrap form `(string ?\xff)` style; Doc
                         // 44 §3.2 lists \xNN as deferred but only
@@ -444,6 +458,19 @@ impl<'a> Lexer<'a> {
             b'\\' => Ok(92),
             b'\'' => Ok(39),
             b'"' => Ok(34),
+            // Doc 51 (2026-05-04) — additional named char escapes that
+            // GNU Emacs's reader recognises in `?\X' literals.  Without
+            // these, e.g. `?\s' was returning 115 (= literal `s')
+            // instead of 32 (= space), breaking `kbd' parsing of any
+            // multi-key sequence.
+            b's' => Ok(32),  // space
+            b'e' => Ok(27),  // escape
+            b'b' => Ok(8),   // backspace
+            b'd' => Ok(127), // delete
+            b'a' => Ok(7),   // bell
+            b'f' => Ok(12),  // form feed
+            b'v' => Ok(11),  // vertical tab
+            b'0' => Ok(0),   // NUL
             b'x' => {
                 let h1 = self.bump().ok_or_else(|| {
                     ReadError::unexpected_eof("\\x needs 2 hex digits in char literal", esc_pos)
@@ -752,9 +779,20 @@ mod tests {
     }
 
     #[test]
-    fn string_unknown_escape_errors() {
-        let err = tokenize("\"\\q\"").unwrap_err();
-        assert!(format!("{}", err).contains("unknown escape"));
+    fn string_unknown_escape_drops_backslash() {
+        // Emacs convention: `"\q"' reads as the 1-char string "q".
+        // This used to error; the lexer now follows host Emacs and
+        // silently drops the backslash for any non-special escape.
+        let toks = lex("\"\\q\"");
+        assert_eq!(toks, vec![Token::Str("q".into())]);
+    }
+
+    #[test]
+    fn string_paren_escapes_drop_backslash() {
+        // Concrete examples from upstream cl-lib's docstring arglist
+        // hints — used to error, now read as the literal chars.
+        let toks = lex("\"\\(fn FOO)\"");
+        assert_eq!(toks, vec![Token::Str("(fn FOO)".into())]);
     }
 
     #[test]
@@ -771,6 +809,24 @@ mod tests {
                 Token::Int(34),
                 Token::Int(255),
                 Token::Int(1),
+            ]
+        );
+    }
+
+    #[test]
+    fn char_literal_paren_escapes_pass_through() {
+        // `?\(' / `?\)' / `?\|' etc. — the backslash is dropped, the
+        // following char is the literal value.  Required to load
+        // upstream `nelisp-regex.el' (= line 121 uses `?\)' inside a
+        // memq list context to disambiguate `)' from a list close).
+        assert_eq!(
+            lex("?\\( ?\\) ?\\| ?\\[ ?\\]"),
+            vec![
+                Token::Int(40),
+                Token::Int(41),
+                Token::Int(124),
+                Token::Int(91),
+                Token::Int(93),
             ]
         );
     }

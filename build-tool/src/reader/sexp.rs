@@ -53,7 +53,25 @@ pub enum Sexp {
     Symbol(String),
     /// String literal.  Stored as a Rust `String` for now; multibyte
     /// handling is deferred (Phase 7.5.4.2 + Phase 7.4 NeLisp coding).
+    ///
+    /// Immutable in the sense that `aset' refuses to mutate it; the
+    /// reader produces this variant for `"text"' literals.  Functions
+    /// that need to return mutable strings (e.g. `make-string',
+    /// `copy-sequence' on a mutable string) yield [`Sexp::MutStr`]
+    /// instead.
     Str(String),
+    /// Mutable string buffer.  Returned by `make-string' so substrate
+    /// code (= `nelisp-text-buffer''s gap-buffer mgmt) can do
+    /// `(aset BYTES I N)' to fill in raw bytes.  Equivalent to a
+    /// `String' under `Rc<RefCell<...>>' — clone is a cheap Rc bump,
+    /// mutation through any alias is shared.  Identity comparison
+    /// goes through `Rc::ptr_eq'; structural equality (the derived
+    /// `PartialEq') unwraps the inner `String'.
+    ///
+    /// Predicates such as `stringp' / `arrayp' treat `MutStr' the
+    /// same as `Str'; printers, equality, and format conversions all
+    /// share the helper [`Sexp::as_string_owned`].
+    MutStr(Rc<RefCell<String>>),
     /// Cons cell.  Lists are encoded as right-leaning `Cons` chains
     /// terminated by `Nil`; dotted pairs (`(a . b)`) leave the cdr as
     /// any non-`Nil` value.
@@ -71,6 +89,70 @@ pub enum Sexp {
     /// Identity comparison goes through `Rc::ptr_eq'; structural
     /// equality (the derived `PartialEq') unwraps the inner `Vec'.
     Vector(Rc<RefCell<Vec<Sexp>>>),
+    /// Hash-table (Track O'' minimum impl): a list of `(KEY . VALUE)'
+    /// pairs with an associated equality test.  Backed by `Vec' for
+    /// O(n) lookup so we keep the impl compact; substrate use cases
+    /// have ≤ 100 entries per table.  The `test' field stores the
+    /// Symbol name of the equality predicate (`eq' / `eql' / `equal').
+    /// Identity goes through `Rc::ptr_eq', structural equality (the
+    /// derived `PartialEq') compares the inner `HashTableInner'.
+    HashTable(Rc<RefCell<HashTableInner>>),
+    /// Char-table (Track F minimum impl): maps integer codepoints
+    /// to arbitrary Sexp values.  Used by Emacs syntax-table /
+    /// category-table / case-table / display-table substrates.
+    /// Sparse linear-scan storage; substrate use cases hold tens
+    /// of entries (= ASCII coverage), occasional whole-range fills
+    /// via `set-char-table-range'.
+    CharTable(Rc<RefCell<CharTableInner>>),
+    /// Bool-vector (Track F minimum impl): packed boolean array.
+    /// Used by Emacs syntax classes / region-mark bookkeeping.
+    /// `aref' returns t / nil; `aset' takes any Sexp and stores
+    /// truthy/falsy.  `length' returns the bit count.
+    BoolVector(Rc<RefCell<Vec<bool>>>),
+    /// Mutable cell (= write-through reference) used to back let-
+    /// binding storage so `setq' inside a closure mutates the
+    /// captured slot, not a copy.  The reader does NOT produce this
+    /// variant — it appears only inside captured-environment alists
+    /// emitted by `Env::capture_lexical' (build-tool/src/eval/env.rs).
+    /// Identity goes through `Rc::ptr_eq'; structural equality
+    /// unwraps the inner Sexp.
+    Cell(Rc<RefCell<Sexp>>),
+}
+
+/// Inner storage for [`Sexp::HashTable`].  Linear-scan vector keeps
+/// the layer simple; substrate hash-tables hold tens of entries at
+/// most.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HashTableInner {
+    /// `eq' / `eql' / `equal' / `string-equal' — selects the key
+    /// comparison rule.  For now we accept anything and route equal-
+    /// behaviour through `Sexp's derived `PartialEq' (= structural).
+    pub test: String,
+    /// Slot list.  Entries are pushed; lookup is linear.
+    pub entries: Vec<(Sexp, Sexp)>,
+}
+
+/// Inner storage for [`Sexp::CharTable`].  Sparse linear-scan; for
+/// substrate use cases (= syntax-table, category-table, case-table)
+/// the typical entry count is < 256 (ASCII range).  Future scaling
+/// to full Unicode would replace this with a paged table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CharTableInner {
+    /// Subtype symbol (e.g., `syntax-table', `display-table',
+    /// `category-table').  Stored verbatim; we do not interpret it.
+    pub subtype: Sexp,
+    /// Default value returned for chars not in `entries`.
+    pub default_val: Sexp,
+    /// Sparse char → value map.  Linear scan on lookup.
+    pub entries: Vec<(i64, Sexp)>,
+    /// Optional parent char-table.  When set, lookups that miss the
+    /// local `entries' fall through to the parent.  Used by syntax
+    /// tables that derive from a base.
+    pub parent: Option<Rc<RefCell<CharTableInner>>>,
+    /// Per-table extra slots (= upstream `char-table-extra-slot').
+    /// Allocated lazily by `set-char-table-extra-slot'.  We keep this
+    /// minimal — most substrate consumers only touch slots 0-3.
+    pub extra: Vec<Sexp>,
 }
 
 impl Sexp {
@@ -95,6 +177,59 @@ impl Sexp {
     /// every call site to spell out `Rc::new(RefCell::new(...))'.
     pub fn vector(items: Vec<Sexp>) -> Sexp {
         Sexp::Vector(Rc::new(RefCell::new(items)))
+    }
+
+    /// Build a mutable string Sexp from a `String` (or `&str`).  Used
+    /// by `make-string' / similar constructors that need `aset'-able
+    /// content.
+    pub fn mut_str(s: impl Into<String>) -> Sexp {
+        Sexp::MutStr(Rc::new(RefCell::new(s.into())))
+    }
+
+    /// Build an empty char-table with the given SUBTYPE and INIT
+    /// (= default value for unset chars).  Used by `make-char-table'.
+    pub fn char_table(subtype: Sexp, init: Sexp) -> Sexp {
+        Sexp::CharTable(Rc::new(RefCell::new(CharTableInner {
+            subtype,
+            default_val: init,
+            entries: Vec::new(),
+            parent: None,
+            extra: Vec::new(),
+        })))
+    }
+
+    /// Build a bool-vector of LEN bits all initialised to INIT.  Used
+    /// by `make-bool-vector'.
+    pub fn bool_vector(len: usize, init: bool) -> Sexp {
+        Sexp::BoolVector(Rc::new(RefCell::new(vec![init; len])))
+    }
+
+    /// Return the string content of any string-like variant as an
+    /// owned `String', or `None' for non-string values.  Cheap-clones
+    /// for `Str(String)`; for `MutStr` it borrows + clones the inner
+    /// `String'.
+    pub fn as_string_owned(&self) -> Option<String> {
+        match self {
+            Sexp::Str(s) => Some(s.clone()),
+            Sexp::MutStr(s) => Some(s.borrow().clone()),
+            _ => None,
+        }
+    }
+
+    /// Return `true' for both `Str' and `MutStr'.  Use in patterns
+    /// where you only care that a value is *some* string.
+    pub fn is_string(&self) -> bool {
+        matches!(self, Sexp::Str(_) | Sexp::MutStr(_))
+    }
+
+    /// Build an empty hash-table with the given equality TEST name.
+    /// Pass `"equal"' / `"eq"' / `"eql"' (= matches host Emacs's
+    /// `make-hash-table :test ...' values).
+    pub fn hash_table(test: &str) -> Sexp {
+        Sexp::HashTable(Rc::new(RefCell::new(HashTableInner {
+            test: test.to_string(),
+            entries: Vec::new(),
+        })))
     }
 
     /// Read the car of a cons cell as a fresh `Sexp` clone.  Returns
@@ -197,6 +332,21 @@ fn write_sexp(out: &mut String, s: &Sexp) {
             }
             out.push('"');
         }
+        Sexp::MutStr(rc) => {
+            let text = rc.borrow();
+            out.push('"');
+            for ch in text.chars() {
+                match ch {
+                    '"' => out.push_str("\\\""),
+                    '\\' => out.push_str("\\\\"),
+                    '\n' => out.push_str("\\n"),
+                    '\t' => out.push_str("\\t"),
+                    '\r' => out.push_str("\\r"),
+                    c => out.push(c),
+                }
+            }
+            out.push('"');
+        }
         Sexp::Cons(_, _) => {
             out.push('(');
             write_list_body(out, s);
@@ -213,6 +363,67 @@ fn write_sexp(out: &mut String, s: &Sexp) {
             }
             out.push(']');
         }
+        Sexp::HashTable(inner) => {
+            // Emacs printer uses `#s(hash-table test TEST data (K1 V1 ...))'
+            // shape; we emit a simplified compatible form.
+            let inner = inner.borrow();
+            out.push_str("#s(hash-table test ");
+            out.push_str(&inner.test);
+            out.push_str(" data (");
+            for (i, (k, v)) in inner.entries.iter().enumerate() {
+                if i > 0 {
+                    out.push(' ');
+                }
+                write_sexp(out, k);
+                out.push(' ');
+                write_sexp(out, v);
+            }
+            out.push_str("))");
+        }
+        Sexp::CharTable(inner) => {
+            // Compact printer — substrate use cases never need the
+            // upstream `#^[...]' faithful shape.  We dump the populated
+            // entries and the default in a self-describing form.
+            let inner = inner.borrow();
+            out.push_str("#<char-table");
+            if !matches!(inner.subtype, Sexp::Nil) {
+                out.push(' ');
+                write_sexp(out, &inner.subtype);
+            }
+            out.push_str(" default=");
+            write_sexp(out, &inner.default_val);
+            out.push_str(" entries=");
+            out.push_str(&inner.entries.len().to_string());
+            out.push('>');
+        }
+        Sexp::BoolVector(rc) => {
+            let v = rc.borrow();
+            out.push_str("#&");
+            out.push_str(&v.len().to_string());
+            out.push('"');
+            // Pack 8 bits per char (= upstream's bool-vector printer
+            // shape).  We approximate the per-char encoding without
+            // matching the exact bit-order; substrate use cases do
+            // not round-trip-print bool-vectors, so this is for
+            // human inspection only.
+            for chunk in v.chunks(8) {
+                let mut byte = 0u8;
+                for (i, &b) in chunk.iter().enumerate() {
+                    if b {
+                        byte |= 1 << i;
+                    }
+                }
+                if byte == b'"' || byte == b'\\' || byte < 0x20 || byte >= 0x7F {
+                    out.push_str(&format!("\\{:03o}", byte));
+                } else {
+                    out.push(byte as char);
+                }
+            }
+            out.push('"');
+        }
+        // Lexical-binding cell — print the inner value transparently
+        // so user-facing prints never reveal the storage wrapper.
+        Sexp::Cell(rc) => write_sexp(out, &rc.borrow()),
     }
 }
 

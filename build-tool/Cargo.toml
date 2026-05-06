@@ -41,3 +41,10 @@ sha1 = "0.10"
 sha2 = "0.10"
 md5 = "0.7"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+# Doc 51 Track E (2026-05-04): libc for termios raw-mode + poll() to
+# enable interactive TTY input wiring under the nelisp driver.  Used
+# only by `terminal-raw-mode-enter' / `-leave' / `read-stdin-byte' /
+# `read-stdin-byte-available' builtins.  Not pulled in for batch use.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

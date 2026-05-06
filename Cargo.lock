@@ -303,6 +303,7 @@ name = "nelisp-build-tool"
 version = "0.5.0"
 dependencies = [
  "chrono",
+ "libc",
  "libffi",
  "libloading",
  "md5",

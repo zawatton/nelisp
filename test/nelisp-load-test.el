@@ -445,6 +445,42 @@ installed after the load."
   (should (= (nelisp-eval '(guard-fib 10)) 55))
   (should (= (nelisp-eval '(guard-fib -5)) 0)))
 
+;;; Phase 6 load-file dispatch -----------------------------------------
+
+(ert-deftest nelisp-load-file-dispatch-symbol ()
+  "After --reset, the `load-file' / `load' symbols are bound to NeLisp's
+elisp loader (= goes through `nelisp-read--sexp')."
+  (nelisp--reset)
+  (should (eq (gethash 'load-file nelisp--functions)
+              #'nelisp--builtin-load-file))
+  (should (eq (gethash 'load nelisp--functions)
+              #'nelisp--builtin-load)))
+
+(ert-deftest nelisp-load-file-via-eval-dispatch ()
+  "(load-file PATH) evaluated through `nelisp-eval' loads via the
+elisp reader and runs the file's top-level forms."
+  (nelisp--reset)
+  (let ((path (nelisp-load-test--fixture "fib.nl")))
+    (nelisp-eval `(load-file ,path)))
+  (should (= 55 (nelisp-eval '(fib 10)))))
+
+(ert-deftest nelisp-load-file-handles-chord-modifier-literal ()
+  "A fixture that contains `?\\C-a' / `?\\M-x' loads cleanly through
+the elisp reader path (= regression for Phase 3b extension)."
+  (nelisp--reset)
+  (let ((tmp (make-temp-file "nelisp-load-mod-" nil ".nl")))
+    (unwind-protect
+        (progn
+          (with-temp-file tmp
+            (insert "(defun nelisp-mod-ctrl-a () ?\\C-a)\n")
+            (insert "(defun nelisp-mod-meta-x () ?\\M-x)\n")
+            (insert "(defun nelisp-mod-multi  () ?\\C-\\M-x)\n"))
+          (nelisp-load-file tmp)
+          (should (= 1         (nelisp-eval '(nelisp-mod-ctrl-a))))
+          (should (= 134217848 (nelisp-eval '(nelisp-mod-meta-x))))
+          (should (= 134217752 (nelisp-eval '(nelisp-mod-multi)))))
+      (when (file-exists-p tmp) (delete-file tmp)))))
+
 (provide 'nelisp-load-test)
 
 ;;; nelisp-load-test.el ends here

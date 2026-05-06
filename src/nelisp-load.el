@@ -297,12 +297,31 @@ is accepted for host-parity but not yet honoured."
   "Host-facing alias of NeLisp `provide'."
   (nelisp--builtin-provide feature subfeatures))
 
+;;;###autoload
+(defun nelisp--builtin-load-file (path)
+  "Phase 6 NeLisp `load-file' — read PATH and eval each top-level sexp.
+Pure elisp loader (= goes through `nelisp-read--sexp' so all reader
+extensions, incl. chord-modifier char literals, apply).  Signals
+`file-error' when PATH is unreadable."
+  (nelisp-load-file path))
+
+;;;###autoload
+(defun nelisp--builtin-load (path &optional _noerror _nomessage _nosuffix _must-suffix)
+  "Phase 6 NeLisp `load'.  PATH is treated as an absolute file path
+when the optional suffix-search args are nil (= the only mode the
+NeLisp driver currently exercises — load-path resolution lives in
+`nelisp-require').  Other arg slots accept the standard Emacs
+arguments for shape parity but are ignored at this layer."
+  (nelisp-load-file path))
+
 ;;; Refresh the primitive dispatch table so the Phase 5-A.3 bodies
 ;;; are live before any test calls `nelisp--reset' (which would
 ;;; otherwise pick up the stubs defined in `nelisp-eval.el').
 (when (hash-table-p nelisp--functions)
-  (puthash 'require #'nelisp--builtin-require nelisp--functions)
-  (puthash 'provide #'nelisp--builtin-provide nelisp--functions))
+  (puthash 'require   #'nelisp--builtin-require   nelisp--functions)
+  (puthash 'provide   #'nelisp--builtin-provide   nelisp--functions)
+  (puthash 'load-file #'nelisp--builtin-load-file nelisp--functions)
+  (puthash 'load      #'nelisp--builtin-load      nelisp--functions))
 
 (provide 'nelisp-load)
 
