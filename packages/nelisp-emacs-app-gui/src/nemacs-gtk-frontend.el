@@ -332,6 +332,9 @@ Idempotent — re-calling replaces the global map with a fresh one."
     ;; Phase 2.BF — `C-x +' / `C-x -' = font zoom in / out.
     (define-key ctl-x-map (vector ?+) 'nemacs-gtk-text-scale-increase)
     (define-key ctl-x-map (vector ?-) 'nemacs-gtk-text-scale-decrease)
+    ;; Phase 2.BG — `C-x C-d' / `C-x C-v' = list-dir / find-alternate.
+    (define-key ctl-x-map (vector ?\C-d) 'nemacs-gtk-list-directory)
+    (define-key ctl-x-map (vector ?\C-v) 'nemacs-gtk-find-alternate-file)
     ;; Phase 2.AX/AZ — `C-x r' prefix → registers + bookmarks.
     (let ((c-x-r-map (make-sparse-keymap)))
       (define-key c-x-r-map (vector ?s)  'nemacs-gtk-copy-to-register)
@@ -3491,6 +3494,90 @@ binding by default; reachable via `M-x'.  Useful when iterative
   (nemacs-gtk--apply-font-size))
 
 
+;;;; --- bundle Phase 2.BG (C-x C-d list-dir, C-x C-v alternate, version) ---
+
+(defun nemacs-gtk-list-directory ()
+  "Bound to `C-x C-d' — minibuffer-prompt for a directory path; list
+its contents into a `*Directory*' buffer.  Each entry shows a file
+type indicator (`d' / `-') + the filename.  Errors from
+`directory-files' (= path doesn't exist / not readable) are caught
+and reported on the echo-area row."
+  (interactive)
+  (nemacs-gtk--enter-minibuffer
+   (format "List directory (%s): "
+           (or (and (boundp 'default-directory) default-directory) "."))
+   (lambda (input)
+     (let ((dir (if (or (null input) (= (length input) 0))
+                    (or (and (boundp 'default-directory) default-directory)
+                        ".")
+                  input)))
+       (condition-case err
+           (let* ((abs (expand-file-name dir))
+                  (files (sort (directory-files abs) #'string<))
+                  (buf (get-buffer-create "*Directory*")))
+             (with-current-buffer buf
+               (when (fboundp 'erase-buffer) (erase-buffer))
+               (nelisp-ec-insert (format "Directory: %s\n\n" abs))
+               (dolist (f files)
+                 (let* ((full (expand-file-name f abs))
+                        (kind (cond
+                               ((file-directory-p full) "d")
+                               ((file-exists-p full) "-")
+                               (t "?"))))
+                   (nelisp-ec-insert (format "  %s  %s\n" kind f)))))
+             (setq nemacs-gtk--active-buffer-name "*Directory*")
+             (setq nemacs-gtk--scroll-offset 0)
+             (nemacs-gtk--sync-window-title)
+             (setq nemacs-gtk--last-key-text
+                   (format "list-directory: %d entries in %s"
+                           (length files) abs)))
+         (error
+          (setq nemacs-gtk--last-key-text
+                (format "list-directory: %s"
+                        (error-message-string err)))))))))
+
+(defun nemacs-gtk-find-alternate-file ()
+  "Bound to `C-x C-v' — replace the active buffer's contents with the
+contents of a different file (= the user-supplied path).  In real
+Emacs this also disposes the current buffer; our MVP keeps it
+around but rewires its visited filename + content via
+`set-visited-file-name' + `revert-buffer'-style reload."
+  (interactive)
+  (nemacs-gtk--enter-minibuffer
+   (format "Find alternate file (current %s): "
+           (or (and (fboundp 'buffer-file-name) (buffer-file-name)) "<none>"))
+   (lambda (input)
+     (cond
+      ((or (null input) (= (length input) 0))
+       (setq nemacs-gtk--last-key-text "find-alternate-file: empty"))
+      (t
+       (condition-case err
+           (let ((abs (expand-file-name input)))
+             (with-current-buffer (nemacs-gtk--active-buffer)
+               (when (fboundp 'erase-buffer) (erase-buffer))
+               (when (file-exists-p abs)
+                 (insert-file-contents abs))
+               (when (fboundp 'set-visited-file-name)
+                 (set-visited-file-name abs))
+               (when (fboundp 'set-buffer-modified-p)
+                 (set-buffer-modified-p nil)))
+             (nemacs-gtk--ensure-cursor-visible)
+             (setq nemacs-gtk--last-key-text
+                   (format "find-alternate-file: %s" abs)))
+         (error
+          (setq nemacs-gtk--last-key-text
+                (format "find-alternate-file: %s"
+                        (error-message-string err))))))))))
+
+(defun nemacs-gtk-version ()
+  "M-x version — echo a one-line nelisp-emacs build identifier on the
+echo-area row.  Read-only diagnostic; safe to call any time."
+  (interactive)
+  (setq nemacs-gtk--last-key-text
+        (format "nelisp-emacs (Doc 51 Track D + GTK Layer 3, Phase 2 / font %dpt)"
+                nemacs-gtk--font-size)))
+
+
 ;;;; --- minibuffer mode (Phase 2.J — M-x execute-extended-command) ----------
 
 (defvar nemacs-gtk--minibuffer-active nil
@@ -3974,7 +4061,13 @@ success / failure."
     "nemacs-gtk-text-scale-reset"
     "text-scale-increase"
     "text-scale-decrease"
-    "text-scale-reset")
+    "text-scale-reset"
+    "nemacs-gtk-list-directory"
+    "nemacs-gtk-find-alternate-file"
+    "nemacs-gtk-version"
+    "list-directory"
+    "find-alternate-file"
+    "version")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
