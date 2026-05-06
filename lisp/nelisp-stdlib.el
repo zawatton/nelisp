@@ -3,8 +3,47 @@
 (defun identity (x) x)
 (defun null (x) (eq x nil))
 (defun not (x) (eq x nil))
-(defun 1+ (x) (+ x 1))
-(defun 1- (x) (- x 1))
+
+;; Rust-min batch 6v (2026-05-06): variadic `+' / `-' / `*' migrated
+;; from Rust to elisp, folding over new 2-arg primitives
+;; `nelisp--add2' / `nelisp--sub2' / `nelisp--mul2'.  Same pattern
+;; as batch 6j (= bitwise variadic fold over `nelisp--logior2'
+;; etc.).  `/' kept in Rust because its variadic semantics promote
+;; ALL args to f64 upfront, then trunc only at end IF originally
+;; all-int — a step-wise fold would lose precision for mixed
+;; int/float input (e.g. (/ 10 3 2.0) = 1.666 upfront vs 1.5
+;; step-wise).
+;;
+;; Identity elements: (+) = 0, (-) = 0, (*) = 1.  Unary cases:
+;; (- x) = (nelisp--sub2 0 x) = -x; (+ x) and (* x) return x.
+
+(defun + (&rest args)
+  (let ((acc 0) (cur args))
+    (while cur
+      (setq acc (nelisp--add2 acc (car cur)))
+      (setq cur (cdr cur)))
+    acc))
+
+(defun - (&rest args)
+  (cond
+   ((null args) 0)
+   ((null (cdr args)) (nelisp--sub2 0 (car args)))
+   (t
+    (let ((acc (car args)) (cur (cdr args)))
+      (while cur
+        (setq acc (nelisp--sub2 acc (car cur)))
+        (setq cur (cdr cur)))
+      acc))))
+
+(defun * (&rest args)
+  (let ((acc 1) (cur args))
+    (while cur
+      (setq acc (nelisp--mul2 acc (car cur)))
+      (setq cur (cdr cur)))
+    acc))
+
+(defun 1+ (x) (nelisp--add2 x 1))
+(defun 1- (x) (nelisp--sub2 x 1))
 
 ;; Rust-min batch 6q (2026-05-06): `atom' / `arrayp' / `sequencep'
 ;; migrated from Rust to elisp.  Each was a 1-line `bi_predicate'

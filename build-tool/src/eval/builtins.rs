@@ -40,7 +40,13 @@ pub fn install_builtins(env: &mut Env) {
         // arithmetic
         // Rust-min (2026-05-06 batch 6l): `mod' migrated to elisp
         // (lisp/nelisp-stdlib.el).
-        "+", "-", "*", "/", "<", ">", "<=", ">=", "=", "/=",
+        // Rust-min (2026-05-06 batch 6v): variadic + / - / *
+        // migrated to elisp (lisp/nelisp-stdlib.el) on top of new
+        // 2-arg primitives.  / kept in Rust due to upfront-promote
+        // semantics (= step-wise fold would lose precision when
+        // later args are float, e.g. (/ 10 3 2.0) = 1.666 vs 1.5).
+        "nelisp--add2", "nelisp--sub2", "nelisp--mul2",
+        "/", "<", ">", "<=", ">=", "=", "/=",
         // equality
         // Rust-min (2026-05-06 batch 6e): `eql' / `equal-including-properties'
         // moved to elisp defalias of `equal'.
@@ -223,9 +229,11 @@ pub fn install_builtins(env: &mut Env) {
 pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     match name {
         // ---- arithmetic ----
-        "+" => bi_add(args),
-        "-" => bi_sub(args),
-        "*" => bi_mul(args),
+        // + / - / * migrated to elisp (Rust-min 2026-05-06 batch 6v,
+        // see lisp/nelisp-stdlib.el).  2-arg primitives:
+        "nelisp--add2" => bi_add2(args),
+        "nelisp--sub2" => bi_sub2(args),
+        "nelisp--mul2" => bi_mul2(args),
         "/" => bi_div(args),
         // mod migrated to elisp (Rust-min 2026-05-06 batch 6l, see
         // lisp/nelisp-stdlib.el).
@@ -500,75 +508,16 @@ fn pack_number(any_float: bool, x: f64) -> Sexp {
 }
 
 // ---------- arithmetic implementations ----------
-
-/// Doc 51 (2026-05-04) — fast path detection: are all args
-/// integers?  Critical for arithmetic ops that would otherwise
-/// promote to f64 and lose precision above 2^53 (= row-hash
-/// computation in `emacs-redisplay' was producing collisions
-/// for any large `sxhash-equal' result).
-fn all_integer(args: &[Sexp]) -> bool {
-    args.iter().all(|a| matches!(a, Sexp::Int(_)))
-}
-
-fn bi_add(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    if all_integer(args) {
-        let mut s: i64 = 0;
-        for a in args {
-            if let Sexp::Int(n) = a {
-                s = s.wrapping_add(*n);
-            }
-        }
-        return Ok(Sexp::Int(s));
-    }
-    let (af, vs) = numeric_promote(args)?;
-    let s = vs.iter().sum();
-    Ok(pack_number(af, s))
-}
-
-fn bi_sub(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    if args.is_empty() {
-        return Ok(Sexp::Int(0));
-    }
-    if all_integer(args) {
-        let mut iter = args.iter().filter_map(|a| match a {
-            Sexp::Int(n) => Some(*n),
-            _ => None,
-        });
-        let first = iter.next().unwrap();
-        if args.len() == 1 {
-            return Ok(Sexp::Int(0i64.wrapping_sub(first)));
-        }
-        let mut acc = first;
-        for v in iter {
-            acc = acc.wrapping_sub(v);
-        }
-        return Ok(Sexp::Int(acc));
-    }
-    let (af, vs) = numeric_promote(args)?;
-    if vs.len() == 1 {
-        return Ok(pack_number(af, -vs[0]));
-    }
-    let mut acc = vs[0];
-    for v in vs.iter().skip(1) {
-        acc -= v;
-    }
-    Ok(pack_number(af, acc))
-}
-
-fn bi_mul(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    if all_integer(args) {
-        let mut p: i64 = 1;
-        for a in args {
-            if let Sexp::Int(n) = a {
-                p = p.wrapping_mul(*n);
-            }
-        }
-        return Ok(Sexp::Int(p));
-    }
-    let (af, vs) = numeric_promote(args)?;
-    let p = vs.iter().product();
-    Ok(pack_number(af, p))
-}
+//
+// `all_integer' fast-path helper removed in batch 6v — its sole
+// remaining callers (bi_add / bi_sub / bi_mul) are gone, and bi_div
+// always uses `numeric_promote'.  Doc 51's row-hash precision
+// concern (= sxhash-equal collision above 2^53) is handled at the
+// `nelisp--add2' / `nelisp--mul2' boundary: int+int stays int with
+// wrapping arithmetic, so no precision loss when both args are
+// integer (the only path that mattered for that bug).
+//
+// bi_add / bi_sub / bi_mul removed — see top of this section.
 
 fn bi_div(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("/", args, 1, None)?;
@@ -598,6 +547,78 @@ fn bi_div(args: &[Sexp]) -> Result<Sexp, EvalError> {
 // batch 6l).  Built from `/' (int trunc-div) plus a sign-adjust
 // step that reproduces the previous `rem_euclid' + sign(b) result
 // shape exactly.
+//
+// bi_add / bi_sub / bi_mul removed — see lisp/nelisp-stdlib.el
+// (Rust-min 2026-05-06 batch 6v).  Variadic + / - / * collapse to
+// elisp folds over the new 2-arg primitives `nelisp--add2' /
+// `nelisp--sub2' / `nelisp--mul2' (just below).  bi_div retained
+// because its variadic semantics promote ALL args to f64 upfront
+// (= float division throughout, trunc only at end IF originally
+// all-int) — a step-wise fold would lose precision when later args
+// are float (e.g. `(/ 10 3 2.0)' = 1.666 upfront vs 1.5 step-wise).
+
+fn num_pair(args: &[Sexp], name: &str) -> Result<(f64, f64, bool), EvalError> {
+    require_arity(name, args, 2, Some(2))?;
+    let af = matches!(args[0], Sexp::Float(_)) || matches!(args[1], Sexp::Float(_));
+    let to_f64 = |v: &Sexp| -> Result<f64, EvalError> {
+        match v {
+            Sexp::Int(n) => Ok(*n as f64),
+            Sexp::Float(x) => Ok(*x),
+            other => Err(EvalError::WrongType {
+                expected: "numberp".into(),
+                got: other.clone(),
+            }),
+        }
+    };
+    Ok((to_f64(&args[0])?, to_f64(&args[1])?, af))
+}
+
+fn int_pair_or<F>(args: &[Sexp], name: &str, mixed: F) -> Result<Sexp, EvalError>
+where
+    F: FnOnce(f64, f64) -> f64,
+{
+    let (a, b, af) = num_pair(args, name)?;
+    if af {
+        Ok(Sexp::Float(mixed(a, b)))
+    } else {
+        // Both args are Int — promote-then-cast loses no precision
+        // since neither was Float; use the original i64 path for
+        // wrapping arithmetic.  Caller dispatches via the Int branch.
+        unreachable!("caller should special-case all-int")
+    }
+}
+
+/// `(nelisp--add2 A B)' — 2-arg add building block for the elisp
+/// `+' fold.  Wrapping semantics for int+int (= matches host emacs
+/// integer-overflow behaviour); promote to float when either arg
+/// is Float.
+fn bi_add2(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--add2", args, 2, Some(2))?;
+    if let (Sexp::Int(a), Sexp::Int(b)) = (&args[0], &args[1]) {
+        return Ok(Sexp::Int(a.wrapping_add(*b)));
+    }
+    int_pair_or(args, "nelisp--add2", |a, b| a + b)
+}
+
+/// `(nelisp--sub2 A B)' — 2-arg subtract building block.  Same
+/// promotion rules as `nelisp--add2'; integer wrapping.
+fn bi_sub2(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--sub2", args, 2, Some(2))?;
+    if let (Sexp::Int(a), Sexp::Int(b)) = (&args[0], &args[1]) {
+        return Ok(Sexp::Int(a.wrapping_sub(*b)));
+    }
+    int_pair_or(args, "nelisp--sub2", |a, b| a - b)
+}
+
+/// `(nelisp--mul2 A B)' — 2-arg multiply building block.  Same
+/// promotion rules as `nelisp--add2'; integer wrapping.
+fn bi_mul2(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--mul2", args, 2, Some(2))?;
+    if let (Sexp::Int(a), Sexp::Int(b)) = (&args[0], &args[1]) {
+        return Ok(Sexp::Int(a.wrapping_mul(*b)));
+    }
+    int_pair_or(args, "nelisp--mul2", |a, b| a * b)
+}
 
 // ---------- bitwise -----------------------------------------------------
 //
