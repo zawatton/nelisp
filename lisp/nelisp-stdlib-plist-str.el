@@ -28,6 +28,27 @@
 (defun string-empty-p (s)
   (= (length s) 0))
 
+;; Rust-min (2026-05-06 batch 6c): leaf string/sequence builtins that
+;; compose trivially over `concat' / `apply' / `vector' / `append'.
+;; All 5 below were thin wrappers in `bi_*' with no Sexp-internal
+;; logic — pure dispatch + char-codepoint validation.  The elisp
+;; versions inherit the same validation by re-using `concat' (= the
+;; Rust primitive that already rejects non-int-or-string args).
+(defun string (&rest args)
+  (concat args))
+
+(defun char-to-string (ch)
+  (string ch))
+
+(defun string-to-char (s)
+  (if (= (length s) 0) 0 (aref s 0)))
+
+(defalias 'unibyte-string 'string)
+
+(defun vconcat (&rest args)
+  (apply (function vector)
+         (apply (function append) (append args (list nil)))))
+
 ;; Rust-min (2026-05-06 batch 6b): substring as elisp.  Walks chars
 ;; via `aref' (= O(N) per access in the current Sexp::Str repr) and
 ;; rebuilds via `concat' of an int-list — same hot-loop pattern as

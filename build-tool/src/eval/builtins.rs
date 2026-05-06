@@ -49,7 +49,9 @@ pub fn install_builtins(env: &mut Env) {
         "setcar", "setcdr",
         // generic sequence / array accessors
         "aref", "aset", "elt", "arrayp", "sequencep",
-        "vector", "make-vector", "vconcat",
+        // Rust-min (2026-05-06 batch 6c): vconcat migrated to elisp
+        // (lisp/nelisp-stdlib-plist-str.el).
+        "vector", "make-vector",
         // predicates
         "consp", "listp", "atom", "symbolp", "stringp", "numberp", "integerp", "floatp", "functionp",
         "vectorp", "keywordp", "null", "booleanp",
@@ -69,7 +71,10 @@ pub fn install_builtins(env: &mut Env) {
         "string-match-p",
         // Rust-min (2026-05-06): `regexp-quote' migrated to elisp
         // (see lisp/nelisp-stdlib-plist-str.el).
-        "make-string", "char-to-string", "string-to-char", "string", "unibyte-string",
+        // Rust-min (2026-05-06 batch 6c): char-to-string / string-to-char
+        // / string / unibyte-string migrated to elisp
+        // (lisp/nelisp-stdlib-plist-str.el).
+        "make-string",
         "upcase", "downcase", "capitalize",
         // Rust-min (2026-05-06 batch 5a): string-to-number migrated
         // to elisp (lisp/nelisp-stdlib-plist-str.el).
@@ -202,7 +207,6 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
             | Sexp::Vector(_) | Sexp::CharTable(_) | Sexp::BoolVector(_))),
         "vector" => Ok(Sexp::vector(args.to_vec())),
         "make-vector" => bi_make_vector(args),
-        "vconcat" => bi_vconcat(args),
         // ---- predicates ----
         "consp" => bi_predicate(args, |v| matches!(v, Sexp::Cons(_, _))),
         "listp" => bi_predicate(args, |v| matches!(v, Sexp::Cons(_, _) | Sexp::Nil)),
@@ -265,14 +269,9 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "intern-soft" => bi_intern_soft(args),
         "make-symbol" => bi_make_symbol(args),
         "make-string" => bi_make_string(args),
-        "char-to-string" => bi_char_to_string(args),
-        "string" => bi_string_from_chars(args),
-        // `unibyte-string' is the byte-level analog of `string': args
-        // are interpreted as raw bytes (= 0..255) rather than
-        // codepoints.  For pure ASCII the result is identical so we
-        // alias to the same impl in MVP.
-        "unibyte-string" => bi_string_from_chars(args),
-        "string-to-char" => bi_string_to_char(args),
+        // char-to-string / string / unibyte-string / string-to-char
+        // migrated to elisp (Rust-min 2026-05-06 batch 6c, see
+        // lisp/nelisp-stdlib-plist-str.el).
         // string-to-number migrated to elisp (Rust-min 2026-05-06 batch 5a).
         "upcase" => bi_upcase(args),
         "downcase" => bi_downcase(args),
@@ -1327,61 +1326,10 @@ fn bi_make_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::mut_str(c.to_string().repeat(n)))
 }
 
-fn bi_char_to_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("char-to-string", args, 1, Some(1))?;
-    let c = match &args[0] {
-        Sexp::Int(c) => char::from_u32(*c as u32).ok_or_else(|| EvalError::WrongType {
-            expected: "valid character codepoint".into(),
-            got: args[0].clone(),
-        })?,
-        other => return Err(EvalError::WrongType {
-            expected: "character (integer)".into(),
-            got: other.clone(),
-        }),
-    };
-    Ok(Sexp::Str(c.to_string()))
-}
-
-/// `(string &rest CHARS)' — build a string from integer character
-/// codepoints.  Used by `self-insert-command' (= `(string CHAR)' to
-/// turn an int into a 1-char string for `insert').
-fn bi_string_from_chars(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let mut out = String::with_capacity(args.len());
-    for a in args {
-        match a {
-            Sexp::Int(c) => {
-                let ch = char::from_u32(*c as u32).ok_or_else(|| {
-                    EvalError::WrongType {
-                        expected: "valid character codepoint".into(),
-                        got: a.clone(),
-                    }
-                })?;
-                out.push(ch);
-            }
-            other => {
-                return Err(EvalError::WrongType {
-                    expected: "character (integer)".into(),
-                    got: other.clone(),
-                })
-            }
-        }
-    }
-    Ok(Sexp::Str(out))
-}
-
-fn bi_string_to_char(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("string-to-char", args, 1, Some(1))?;
-    match &args[0] {
-        Sexp::Str(s) => match s.chars().next() {
-            Some(c) => Ok(Sexp::Int(c as i64)),
-            None => Ok(Sexp::Int(0)),
-        },
-        other => Err(EvalError::WrongType {
-            expected: "stringp".into(),
-            got: other.clone(),
-        }),
-    }
-}
+// bi_char_to_string / bi_string_from_chars / bi_string_to_char
+// removed — see lisp/nelisp-stdlib-plist-str.el (Rust-min 2026-05-06
+// batch 6c).  All three composed trivially over `concat' / `aref',
+// no Sexp-internal logic was unique to them.
 
 // bi_string_to_number migrated to elisp (Rust-min 2026-05-06 batch 5a).
 
@@ -3273,57 +3221,11 @@ fn bi_make_vector(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::vector(vec![args[1].clone(); len as usize]))
 }
 
-/// `(vconcat &rest SEQS)' — concatenate any mix of vectors / lists /
-/// strings into a single vector.  Strings expand to integer chars.
-fn bi_vconcat(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let mut out: Vec<Sexp> = Vec::new();
-    for a in args {
-        match a {
-            Sexp::Nil => {}
-            Sexp::Vector(rc) => {
-                for it in rc.borrow().iter() {
-                    out.push(it.clone());
-                }
-            }
-            Sexp::Str(_) | Sexp::MutStr(_) => {
-                let s = match a {
-                    Sexp::Str(s) => s.clone(),
-                    Sexp::MutStr(rc) => rc.borrow().clone(),
-                    _ => unreachable!(),
-                };
-                for ch in s.chars() {
-                    out.push(Sexp::Int(ch as i64));
-                }
-            }
-            Sexp::Cons(_, _) => {
-                // Walk a proper list.
-                let mut cur = a.clone();
-                loop {
-                    match cur {
-                        Sexp::Nil => break,
-                        Sexp::Cons(h, t) => {
-                            out.push(h.borrow().clone());
-                            cur = t.borrow().clone();
-                        }
-                        other => {
-                            return Err(EvalError::WrongType {
-                                expected: "proper list".into(),
-                                got: other,
-                            });
-                        }
-                    }
-                }
-            }
-            other => {
-                return Err(EvalError::WrongType {
-                    expected: "vector / list / string / nil".into(),
-                    got: other.clone(),
-                });
-            }
-        }
-    }
-    Ok(Sexp::vector(out))
-}
+// bi_vconcat removed — see lisp/nelisp-stdlib-plist-str.el (Rust-min
+// 2026-05-06 batch 6c).  Reduces to `(apply #'vector (apply #'append
+// (append args (list nil))))'; the existing `bi_append' already
+// flattens vectors / strings / lists, so there is no Sexp-internal
+// logic worth retaining here.
 
 fn bi_setcar(args: &[Sexp]) -> Result<Sexp, EvalError> {
     // (setcar CELL VALUE) — mutate the car of a cons cell in place.
