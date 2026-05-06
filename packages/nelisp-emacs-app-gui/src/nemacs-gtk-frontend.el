@@ -4534,12 +4534,88 @@ returns nil instead of a row outside the viewport."
             (cons screen-row screen-col)
           nil)))))
 
+(defun nemacs-gtk--pos-to-row-col (pos)
+  "Phase 2.BH — return the on-screen (ROW . COL) of buffer POS in the
+active window, or nil if POS is outside the viewport.  Mirrors
+`--cursor-row-col' but takes an explicit position argument so the
+region overlay can resolve mark + point on the same frame."
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let* ((target (max 0 (1- pos)))
+           (buf-row 0) (col 0)
+           (i 0)
+           (text (buffer-string))
+           (len (length text))
+           (clamped (min target len)))
+      (while (< i clamped)
+        (let ((c (aref text i)))
+          (if (eq c ?\n)
+              (setq buf-row (1+ buf-row) col 0)
+            (setq col (1+ col))))
+        (setq i (1+ i)))
+      (let* ((screen-row-in-window (- buf-row nemacs-gtk--scroll-offset))
+             (top (nemacs-gtk--current-window-top))
+             (rows (nemacs-gtk--current-window-rows))
+             (left (cond
+                    ((null nemacs-gtk--windows) 0)
+                    (t (or (plist-get
+                            (nth nemacs-gtk--current-window-idx
+                                 nemacs-gtk--windows)
+                            :left-col)
+                           0))))
+             (window-cols (cond
+                           ((null nemacs-gtk--windows) nemacs-gtk--cols)
+                           (t (or (plist-get
+                                   (nth nemacs-gtk--current-window-idx
+                                        nemacs-gtk--windows)
+                                   :cols)
+                                  nemacs-gtk--cols))))
+             (max-content-rows
+              (cond
+               ((null nemacs-gtk--windows) rows)
+               (t (max 0 (- rows 1)))))
+             (screen-row (+ top screen-row-in-window))
+             (screen-col (+ left (min col window-cols))))
+        (if (and (>= screen-row-in-window 0)
+                 (< screen-row-in-window max-content-rows))
+            (cons screen-row screen-col)
+          nil)))))
+
+(defun nemacs-gtk--paint-region-overlay ()
+  "Phase 2.BH — push the [mark .. point] cell range to the Rust side
+via `nelisp-gtk-set-region', or 0/0/0/0 to clear when no mark is
+active.  No-op when the extern isn't loaded (= substrate-only
+boot)."
+  (when (fboundp 'nelisp-gtk-set-region)
+    (cond
+     ((or (null nemacs-gtk--mark-pos)
+          (null nemacs-gtk--mark-buffer)
+          (not (eq nemacs-gtk--mark-buffer (nemacs-gtk--active-buffer))))
+      (nelisp-gtk-set-region 0 0 0 0))
+     (t
+      (let* ((p (with-current-buffer (nemacs-gtk--active-buffer)
+                  (nelisp-ec-point)))
+             (m nemacs-gtk--mark-pos)
+             (start (min p m))
+             (end (max p m)))
+        (cond
+         ((= start end)
+          (nelisp-gtk-set-region 0 0 0 0))
+         (t
+          (let ((rc-s (nemacs-gtk--pos-to-row-col start))
+                (rc-e (nemacs-gtk--pos-to-row-col end)))
+            (cond
+             ((and rc-s rc-e)
+              (nelisp-gtk-set-region (car rc-s) (cdr rc-s)
+                                     (car rc-e) (cdr rc-e)))
+             (t (nelisp-gtk-set-region 0 0 0 0)))))))))))
+
 (defun nemacs-gtk--repaint ()
   "One full redraw cycle: buffer, mode line, echo, cursor, queue draw."
   (nelisp-gtk-grid-clear)
   (nemacs-gtk--paint-buffer-area)
   (nemacs-gtk--paint-mode-line)
   (nemacs-gtk--paint-echo-area)
+  (nemacs-gtk--paint-region-overlay)
   (let ((rc (nemacs-gtk--cursor-row-col)))
     (if rc
         (nelisp-gtk-set-cursor (car rc) (cdr rc))
