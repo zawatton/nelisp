@@ -378,6 +378,10 @@ Idempotent — re-calling replaces the global map with a fresh one."
       (define-key esc-map (vector ?\C-f) 'nemacs-gtk-forward-sexp)
       (define-key esc-map (vector ?\C-b) 'nemacs-gtk-backward-sexp)
       (define-key esc-map (vector ?\C-k) 'nemacs-gtk-kill-sexp)
+      ;; Phase 2.BA — sentence motion + mark-defun.
+      (define-key esc-map (vector ?a)    'nemacs-gtk-backward-sentence)
+      (define-key esc-map (vector ?e)    'nemacs-gtk-forward-sentence)
+      (define-key esc-map (vector ?\C-h) 'nemacs-gtk-mark-defun)
       ;; Phase 2.X — `M-g g' = goto-line, `M-g M-g' aliased to same.
       (define-key meta-g-map (vector ?g)    'nemacs-gtk-goto-line)
       (define-key meta-g-map (vector ?\C-g) 'nemacs-gtk-goto-line)
@@ -2768,6 +2772,150 @@ the kill-ring (= clipboard via the installed cut hook)."
                 (format "kill-sexp: %d chars" (- res scan-start)))))))))
 
 
+;;;; --- sentence + defun motion (Phase 2.BA — M-a / M-e / C-M-h) ----------
+
+(defun nemacs-gtk--sentence-end-char-p (ch)
+  "Phase 2.BA — t when CH closes a sentence (= `.', `!', `?').  Quote
++ paren chars that frequently follow are skipped over by the
+sentence scanners after the closing punct rather than detected
+here."
+  (memq ch '(?. ?! ??)))
+
+(defun nemacs-gtk-forward-sentence ()
+  "Bound to `M-a' (= [27 ?a]) is `backward'; `M-e' is `forward'.
+Forward sentence: scan forward from point past one sentence-ending
+punctuation char + the trailing whitespace/quotes/parens.  Stops
+at EOB.  Echoes `forward-sentence -> POS' on success."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let* ((pmax (nelisp-ec-point-max))
+           (p (nelisp-ec-point))
+           (found nil))
+      (catch 'done
+        (while (< p pmax)
+          (let ((ch (emacs-edit--char-at p)))
+            (when (nemacs-gtk--sentence-end-char-p ch)
+              ;; advance past the punct + any closing quote/paren
+              ;; chars + the following whitespace
+              (setq p (1+ p))
+              (while (and (< p pmax)
+                          (memq (emacs-edit--char-at p)
+                                '(?\" ?\) ?\] ?\} ?\')))
+                (setq p (1+ p)))
+              (while (and (< p pmax)
+                          (memq (emacs-edit--char-at p)
+                                '(?\s ?\t ?\n)))
+                (setq p (1+ p)))
+              (setq found p)
+              (throw 'done nil)))
+          (setq p (1+ p))))
+      (cond
+       (found
+        (nelisp-ec-goto-char found)
+        (nemacs-gtk--ensure-cursor-visible)
+        (setq nemacs-gtk--last-key-text
+              (format "forward-sentence -> %d" found)))
+       (t
+        (nelisp-ec-goto-char pmax)
+        (nemacs-gtk--ensure-cursor-visible)
+        (setq nemacs-gtk--last-key-text
+              "forward-sentence -> EOB"))))))
+
+(defun nemacs-gtk-backward-sentence ()
+  "Bound to `M-a' — scan backward to the start of the current sentence.
+Definition: skip back through whitespace + closing-punct chars,
+then find the nearest preceding sentence-ending punct (= `.', `!',
+`?') and land just past the whitespace that follows it.  Stops at
+BOB."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let* ((pmin (nelisp-ec-point-min))
+           (p (nelisp-ec-point))
+           (found nil))
+      ;; step back at least 1 if we're on a sentence-end char so the
+      ;; same call can repeat-progress backward.
+      (when (and (> p pmin)
+                 (memq (emacs-edit--char-at (1- p))
+                       '(?\s ?\t ?\n)))
+        (setq p (1- p))
+        (while (and (> p pmin)
+                    (memq (emacs-edit--char-at (1- p))
+                          '(?\s ?\t ?\n)))
+          (setq p (1- p))))
+      (catch 'done
+        (while (> p pmin)
+          (setq p (1- p))
+          (when (nemacs-gtk--sentence-end-char-p (emacs-edit--char-at p))
+            ;; skip back through the punct + closing chars to find a
+            ;; sentence boundary preceded by whitespace.
+            (setq found (1+ p))
+            ;; advance past whitespace following the punct so found
+            ;; lands on the start of the next sentence.
+            (while (and (< found (nelisp-ec-point-max))
+                        (memq (emacs-edit--char-at found)
+                              '(?\s ?\t ?\n ?\" ?\) ?\] ?\} ?\')))
+              (setq found (1+ found)))
+            (throw 'done nil))))
+      (cond
+       (found
+        (nelisp-ec-goto-char found)
+        (nemacs-gtk--ensure-cursor-visible)
+        (setq nemacs-gtk--last-key-text
+              (format "backward-sentence -> %d" found)))
+       (t
+        (nelisp-ec-goto-char pmin)
+        (nemacs-gtk--ensure-cursor-visible)
+        (setq nemacs-gtk--last-key-text
+              "backward-sentence -> BOB"))))))
+
+(defun nemacs-gtk--beginning-of-defun ()
+  "Move point to the nearest preceding line-starting `('.  This is
+the substrate-MVP version of `beginning-of-defun' — true Emacs
+honours `defun-prompt-regexp' / nested forms; we treat any `(' at
+column 0 as a top-level form opener (which matches the convention
+in elisp / scheme / etc.)."
+  (let ((pmin (nelisp-ec-point-min))
+        (p (nelisp-ec-point)))
+    (catch 'done
+      (while (> p pmin)
+        ;; jump to the start of the current line
+        (let ((bol p))
+          (while (and (> bol pmin)
+                      (not (eq (emacs-edit--char-at (1- bol)) ?\n)))
+            (setq bol (1- bol)))
+          (when (and (< bol (nelisp-ec-point-max))
+                     (eq (emacs-edit--char-at bol) ?\())
+            (nelisp-ec-goto-char bol)
+            (throw 'done bol))
+          (setq p (max pmin (1- bol))))))
+    (nelisp-ec-point)))
+
+(defun nemacs-gtk-mark-defun ()
+  "Bound to `C-M-h' (= [27 ?\\C-h]) — set point at the start of the
+enclosing top-level `(' form and mark at its matching `)'.
+No-op + echo when no enclosing top-level form is found before BOB."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let ((start (nemacs-gtk--beginning-of-defun)))
+      (cond
+       ((not (eq (emacs-edit--char-at start) ?\())
+        (setq nemacs-gtk--last-key-text "mark-defun: no top-level form"))
+       (t
+        (let* ((pmax (nelisp-ec-point-max))
+               (end (nemacs-gtk--scan-sexp-forward pmax)))
+          (cond
+           ((null end)
+            (nelisp-ec-goto-char start)
+            (setq nemacs-gtk--last-key-text "mark-defun: scan-error"))
+           (t
+            (setq nemacs-gtk--mark-pos end)
+            (setq nemacs-gtk--mark-buffer (nemacs-gtk--active-buffer))
+            (nelisp-ec-goto-char start)
+            (nemacs-gtk--ensure-cursor-visible)
+            (setq nemacs-gtk--last-key-text
+                  (format "mark-defun: %d..%d" start end))))))))))
+
+
 ;;;; --- minibuffer mode (Phase 2.J — M-x execute-extended-command) ----------
 
 (defvar nemacs-gtk--minibuffer-active nil
@@ -3213,7 +3361,13 @@ success / failure."
     "nemacs-gtk-bookmark-list"
     "bookmark-set"
     "bookmark-jump"
-    "bookmark-list")
+    "bookmark-list"
+    "nemacs-gtk-forward-sentence"
+    "nemacs-gtk-backward-sentence"
+    "nemacs-gtk-mark-defun"
+    "forward-sentence"
+    "backward-sentence"
+    "mark-defun")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
