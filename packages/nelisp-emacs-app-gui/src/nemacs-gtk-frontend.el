@@ -286,6 +286,8 @@ Idempotent — re-calling replaces the global map with a fresh one."
     (define-key ctl-x-map (vector ?0)    'nemacs-gtk-delete-window)
     (define-key ctl-x-map (vector ?1)    'nemacs-gtk-delete-other-windows)
     (define-key ctl-x-map (vector ?o)    'nemacs-gtk-other-window)
+    ;; Phase 2.AV — `C-x ^' = enlarge-window (= +1 row from next).
+    (define-key ctl-x-map (vector ?^)    'nemacs-gtk-enlarge-window)
     (define-key m (vector ?\C-x) ctl-x-map)
     ;; Mouse-2 (= middle click) → set point + yank, mirroring real
     ;; Emacs's `mouse-yank-primary' / Linux X-clipboard convention.
@@ -664,6 +666,62 @@ Drops back to single-window mode when only one would remain."
         (setq nemacs-gtk--last-key-text
               (format "delete-window: %d remaining"
                       (length nemacs-gtk--windows)))))))))
+
+(defun nemacs-gtk--resize-window (delta)
+  "Phase 2.AV: shrink/grow the current window by DELTA rows.
+Positive = grow current, negative = shrink.  The donor / recipient is
+the next window in `--windows' (= the one immediately below);
+falls back to previous when current is the last.  No-op + echo when
+either side would drop below 4 rows."
+  (cond
+   ((or (null nemacs-gtk--windows)
+        (<= (length nemacs-gtk--windows) 1))
+    (setq nemacs-gtk--last-key-text "resize-window: only one window"))
+   (t
+    (nemacs-gtk--sync-current-to-window)
+    (let* ((idx nemacs-gtk--current-window-idx)
+           (n (length nemacs-gtk--windows))
+           (donor-idx (cond
+                       ((< idx (1- n)) (1+ idx))
+                       (t (1- idx))))
+           (cur (nth idx nemacs-gtk--windows))
+           (donor (nth donor-idx nemacs-gtk--windows))
+           (cur-rows (plist-get cur :rows))
+           (donor-rows (plist-get donor :rows))
+           (new-cur-rows (+ cur-rows delta))
+           (new-donor-rows (- donor-rows delta)))
+      (cond
+       ((or (< new-cur-rows 4) (< new-donor-rows 4))
+        (setq nemacs-gtk--last-key-text
+              (format "resize-window: refusing (delta=%d)" delta)))
+       (t
+        (setcar (nthcdr idx nemacs-gtk--windows)
+                (plist-put cur :rows new-cur-rows))
+        (setcar (nthcdr donor-idx nemacs-gtk--windows)
+                (plist-put donor :rows new-donor-rows))
+        ;; Re-anchor :top-row top-down.
+        (let ((cursor 0)
+              (newlist '()))
+          (dolist (w nemacs-gtk--windows)
+            (let ((w2 (plist-put w :top-row cursor)))
+              (push w2 newlist)
+              (setq cursor (+ cursor (plist-get w2 :rows)))))
+          (setq nemacs-gtk--windows (nreverse newlist)))
+        (setq nemacs-gtk--last-key-text
+              (format "resize-window: cur=%d donor=%d"
+                      new-cur-rows new-donor-rows))))))))
+
+(defun nemacs-gtk-enlarge-window ()
+  "Bound to `C-x ^' — grow the current window by one row, taking it
+from the next window."
+  (interactive)
+  (nemacs-gtk--resize-window 1))
+
+(defun nemacs-gtk-shrink-window ()
+  "M-x command — shrink the current window by one row, giving it
+to the next window."
+  (interactive)
+  (nemacs-gtk--resize-window -1))
 
 (defun nemacs-gtk-delete-other-windows ()
   "Bound to `C-x 1' — keep the current window and discard all others.
@@ -2500,6 +2558,7 @@ success / failure."
     "nemacs-gtk-delete-other-windows"
     "nemacs-gtk-delete-window"
     "nemacs-gtk-describe-bindings"
+    "nemacs-gtk-enlarge-window"
     "nemacs-gtk-describe-key"
     "nemacs-gtk-end-kbd-macro"
     "nemacs-gtk-eval-expression"
@@ -2513,6 +2572,7 @@ success / failure."
     "nemacs-gtk-save-some-buffers"
     "nemacs-gtk-shell-command"
     "nemacs-gtk-shell-command-on-region"
+    "nemacs-gtk-shrink-window"
     "nemacs-gtk-sort-lines"
     "nemacs-gtk-split-window-below"
     "nemacs-gtk-start-kbd-macro"
@@ -2569,7 +2629,9 @@ success / failure."
     "split-window-below"
     "delete-window"
     "delete-other-windows"
-    "other-window")
+    "other-window"
+    "enlarge-window"
+    "shrink-window")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
