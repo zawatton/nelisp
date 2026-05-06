@@ -89,6 +89,7 @@ impl<'a> Parser<'a> {
         match &tok.token {
             Token::LParen => self.parse_list(tok.pos, depth + 1, quasiquote_depth),
             Token::LBracket => self.parse_vector(tok.pos, depth + 1, quasiquote_depth),
+            Token::SharpsParen => self.parse_record(tok.pos, depth + 1, quasiquote_depth),
             Token::Quote => {
                 let inner = self.parse_form(depth + 1, quasiquote_depth)?;
                 Ok(Sexp::quote(inner))
@@ -217,6 +218,47 @@ impl<'a> Parser<'a> {
                 Token::Dot => {
                     return Err(ReadError::parse(
                         "`.` not allowed inside vector literal",
+                        next.pos,
+                    ));
+                }
+                _ => {
+                    let form = self.parse_form(depth, quasiquote_depth)?;
+                    items.push(form);
+                }
+            }
+        }
+    }
+
+    /// Parse the body of a record literal after `#s(` was consumed.
+    /// First element becomes the `type_tag`, the rest become slots.
+    /// Empty `#s()` is rejected — every record must name its type.
+    /// Doc 52 §2.3.
+    fn parse_record(
+        &mut self,
+        open_pos: SourcePos,
+        depth: usize,
+        quasiquote_depth: usize,
+    ) -> Result<Sexp, ReadError> {
+        let mut items: Vec<Sexp> = Vec::new();
+        loop {
+            let next = self.peek().ok_or_else(|| {
+                ReadError::unexpected_eof("unbalanced `#s(' (no matching `)`)", open_pos)
+            })?;
+            match &next.token {
+                Token::RParen => {
+                    self.bump();
+                    if items.is_empty() {
+                        return Err(ReadError::parse(
+                            "empty `#s()' — record must name its type",
+                            open_pos,
+                        ));
+                    }
+                    let type_tag = items.remove(0);
+                    return Ok(Sexp::record(type_tag, items));
+                }
+                Token::Dot => {
+                    return Err(ReadError::parse(
+                        "`.' not allowed inside record literal",
                         next.pos,
                     ));
                 }
@@ -374,5 +416,63 @@ mod tests {
         let toks = tokenize("[a . b]").unwrap();
         let err = parse_one(&toks).unwrap_err();
         assert!(format!("{}", err).contains("not allowed inside vector"));
+    }
+
+    // --- Doc 52 Stage 4b — `#s(...)' record literal ---
+
+    #[test]
+    fn parse_record_simple() {
+        let got = parse("#s(point 3 4)");
+        assert_eq!(
+            got,
+            Sexp::record(
+                Sexp::Symbol("point".into()),
+                vec![Sexp::Int(3), Sexp::Int(4)],
+            )
+        );
+    }
+
+    #[test]
+    fn parse_record_only_tag() {
+        // `#s(unit)' = record with no slots beyond the type tag.
+        let got = parse("#s(unit)");
+        assert_eq!(got, Sexp::record(Sexp::Symbol("unit".into()), vec![]));
+    }
+
+    #[test]
+    fn parse_record_nested() {
+        // Records can contain records.
+        let got = parse("#s(outer #s(inner 1) 2)");
+        let inner = Sexp::record(Sexp::Symbol("inner".into()), vec![Sexp::Int(1)]);
+        assert_eq!(
+            got,
+            Sexp::record(Sexp::Symbol("outer".into()), vec![inner, Sexp::Int(2)]),
+        );
+    }
+
+    #[test]
+    fn parse_record_round_trips_via_printer() {
+        // Reader → printer → reader should be identity for the
+        // positional form covered by Stage 4b.
+        let original = "#s(point 3 4)";
+        let v = parse(original);
+        let printed = format!("{}", v);
+        assert_eq!(printed, original);
+        let again = parse(&printed);
+        assert_eq!(again, v);
+    }
+
+    #[test]
+    fn parse_empty_record_errors() {
+        let toks = tokenize("#s()").unwrap();
+        let err = parse_one(&toks).unwrap_err();
+        assert!(format!("{}", err).contains("empty `#s()'"));
+    }
+
+    #[test]
+    fn parse_record_dot_errors() {
+        let toks = tokenize("#s(point . 3)").unwrap();
+        let err = parse_one(&toks).unwrap_err();
+        assert!(format!("{}", err).contains("not allowed inside record"));
     }
 }

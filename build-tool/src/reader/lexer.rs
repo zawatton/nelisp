@@ -53,6 +53,11 @@ pub enum Token {
     /// do NOT classify nil/t here — the parser does (one source of
     /// truth for keyword recognition).
     Symbol(String),
+    /// `#s(` — record/structure literal opener (Doc 52 §2.3).  The
+    /// matching close is the same `RParen` used by ordinary lists.
+    /// The lexer consumes `#`, `s`, AND `(` to emit this single
+    /// token so the parser does not have to look two tokens ahead.
+    SharpsParen,
 }
 
 /// A token with the source position of its first character.
@@ -332,10 +337,29 @@ impl<'a> Lexer<'a> {
                 "byte-code literal #[...] is deferred (Doc 44 §3.3 risks)",
                 start,
             )),
-            Some(b's') => Err(ReadError::not_yet_implemented(
-                "structure literal #s(...) is deferred",
-                start,
-            )),
+            Some(b's') => {
+                // Doc 52 §2.3 — `#s(TYPE V0 V1 ...)' (positional record
+                // literal).  Consume both `s' and the opening `('; emit
+                // `SharpsParen' so the parser handles record body in one
+                // place.  Other `#s' shapes (= upstream's keyword form
+                // `#s(hash-table ...)') are desugared by the cl-defstruct
+                // macro layer in elisp before reaching the reader.
+                self.bump();
+                match self.peek() {
+                    Some(b'(') => {
+                        self.bump();
+                        Ok(Token::SharpsParen)
+                    }
+                    Some(other) => Err(ReadError::lex(
+                        format!("expected `(` after `#s`, got `{}`", other as char),
+                        start,
+                    )),
+                    None => Err(ReadError::unexpected_eof(
+                        "unexpected EOF after `#s`",
+                        start,
+                    )),
+                }
+            }
             Some(other) => Err(ReadError::lex(
                 format!("unsupported sharpsign form: #{}", other as char),
                 start,

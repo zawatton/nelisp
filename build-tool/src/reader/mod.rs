@@ -16,9 +16,12 @@
 //! Remaining deferred per Doc 44 §3.2:
 //!   - meta char literal modifiers (`?\M-a`, multi-modifier variants)
 //!   - `#[...]` byte-code literal
-//!   - `#s(...)` structure literal
 //!   - multibyte / non-ASCII string content (currently passed through
 //!     as raw bytes; Phase 7.4 NeLisp coding will own real decoding)
+//!
+//! `#s(...)` structure literal landed in Doc 52 Stage 4b — read as a
+//! `Sexp::Record { type_tag, slots }' (positional form; keyword form
+//! is desugared by `cl-defstruct' macros in elisp).
 
 pub mod error;
 pub mod lexer;
@@ -180,9 +183,11 @@ mod tests {
     }
 
     /// Each deferred feature returns NotYetImplemented (= explicit).
+    /// `#s(...)` was deferred until Doc 52 Stage 4b — now read as a
+    /// `Sexp::Record', see parser tests.
     #[test]
     fn deferred_features_explicit() {
-        for src in &["?\\M-a", "#[1 2]", "#s(x)"] {
+        for src in &["?\\M-a", "#[1 2]"] {
             match read_str(src) {
                 Err(ReadError::NotYetImplemented { .. }) => (),
                 Err(other) => panic!("expected NotYetImplemented for {:?}, got {:?}", src, other),
