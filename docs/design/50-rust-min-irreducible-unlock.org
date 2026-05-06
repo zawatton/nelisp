@@ -1,0 +1,378 @@
+#+TITLE: Doc 50 — Rust-min "irreducible" 領域の elisp 化 unlock 設計
+#+AUTHOR: zawatton + Claude
+#+DATE: 2026-05-07
+#+STATE: PROPOSAL
+#+STATUS: Doc 49 実装中に「現状 Rust 実装で elisp に動かせない箇所」が
+#+STATUS: 構造的に何種類存在し、それぞれを unlock する手段は何か、を
+#+STATUS: 整理する。Doc 49 (rust-min-core-selfhost) の continuation で
+#+STATUS: あり、Phase 6m〜6w (Rust→elisp 22 batch / Rust net −356 LOC)
+#+STATUS: の現場知見を踏まえる。
+
+* §0 TL;DR
+
+NeLisp の Rust-min 作業で残っている "irreducible Rust" は **5 種類** の
+構造的制約に分類される:
+
+1. *Sexp variant 直接アクセス* — Rust enum 内部隠蔽
+2. *OS interop* — syscall を呼ぶ手段が elisp に無い
+3. *パーサ/正規表現エンジン* — 移植コスト超過
+4. *パフォーマンス hot path* — funcall overhead
+5. *cycle-safe equality* — visited-set 必要
+
+各制約に対する unlock 手段は明確で、共通原則は
+**「primitive を 1 段下げる」** = 高レベル dispatcher を Rust から
+elisp へ動かす代わりに、低レベル building block を Rust に追加する。
+LOC は短期で増えるが、elisp 側の表現力が劇的に上がる。
+
+* §1 動機 (= Doc 49 実装の現場知見)
+
+Doc 49 の方針 (= 「Rust は OS ABI + executable-memory launcher に限定
+し、reader / evaluator / macro / compiler / stdlib loader は
+native-compiled Elisp seed が担当する」) を 22 batch に分けて段階的に
+適用してきた:
+
+| commit  | batch | 内容                                  |
+|---------+-------+---------------------------------------|
+| =88686ba= | 6a    | gensym → elisp                        |
+| =a6246cb= | 6b    | substring → elisp                     |
+| =b2d67b3= | 6c    | string family + vconcat (5 builtins)  |
+| =fcb2c66= | 6d    | dead null/reverse/nreverse            |
+| =ec8e5d6= | 6e    | alias dispatch collapse (8 defaliases)|
+| =13c7851= | 6f    | booleanp/keywordp/intern-soft         |
+| =3bab827= | 6g    | copy-sequence partial                 |
+| =0d8b2bc= | 6h    | message + write-stderr-line           |
+| =67a3e47= | 6i    | princ + write-stdout-bytes            |
+| =b6b2814= | 6j    | bitwise variadic fold + 3 logop2      |
+| =1b36d65= | 6k    | hash-table-keys/values via maphash    |
+| =a268654= | 6l    | mod sign-adjust formula               |
+| =7498325= | 6m    | format + error (= 単一最大 −183 LOC)  |
+| =ee7fb0c= | 6n    | string-equal + split-string           |
+| =d5a0713= | 6o    | append                                |
+| =7e960e8= | 6p    | upcase/downcase/capitalize            |
+| =273b212= | 6q    | atom/arrayp/sequencep                 |
+| =605d952= | 6r    | concat + nelisp--concat-ints primitive|
+| =e5fe619= | 6s    | make-string + dead split-string scrub |
+| =6e611d6= | 6t    | string-equal scrub (cleanup)          |
+| =6b6799e= | 6u    | predicate bundle via type-of          |
+| =fe3cf11= | 6v    | variadic + - * via 2-arg primitives   |
+| =2eb8c67= | 6w    | chained-pairwise comparisons          |
+
+通算 *Rust net −356 LOC / 全 batch 全テスト green*。
+
+この経過で、**「これ以上は構造的に動かせない」と判定した** Rust 残存
+が約 90 dispatch arms 残っている。本ドキュメントはその "残り" を
+analyze し、unlock 手段を整理する。
+
+* §2 確立された設計パターン (= Doc 49 の collateral)
+
+22 batch を通して、5 つの再利用可能な migration pattern が確立された。
+本 doc の unlock plan はこれらの拡張として書ける。
+
+** §2.1 Thin Rust I/O primitive + elisp dispatcher
+
+例: =message= / =princ=
+- Rust 側: =nelisp--write-stderr-line= / =nelisp--write-stdout-bytes=
+  だけが残る (= writeln + flush の 2 行)。
+- Elisp 側: =message= / =princ= は format → 出力 → 戻り値 のロジック
+  全体を持ち、最後だけ Rust primitive に委譲。
+
+** §2.2 2-arg primitive + elisp variadic fold
+
+例: =logior= / =logand= / =logxor= / =+= / =-= / =*= / =<= / => 等
+- Rust 側: =nelisp--logior2= / =nelisp--add2= / =nelisp--num-lt2= 等の
+  2-arg primitive。型 promotion + wrapping 演算のみ。
+- Elisp 側: 可変長 fold ループ。identity element (= 0 / 1 / -1) と
+  unary 特殊ケース (= =(- x)= 等) をハンドル。
+
+** §2.3 Float-body Rust + elisp parser/padding
+
+例: =format=
+- Rust 側: =nelisp--format-float-body CONV PREC X= だけ残る
+  (= IEEE-754 round-to-nearest は Rust の =format!= 機械を借りる)。
+- Elisp 側: spec parser / flags / width / precision / 整数 radix /
+  sign + padding 全て elisp。
+
+** §2.4 Construct-primitive Rust + elisp dispatcher
+
+例: =concat= / =make-string=
+- Rust 側: =nelisp--concat-ints= (= flat int list → Sexp::Str) /
+  =nelisp--make-mut-string= (= LEN + CH → Sexp::MutStr)。
+- Elisp 側: 引数 walk + 型 dispatch + 検証は elisp、最後 primitive で
+  =Sexp::Str= / =Sexp::MutStr= を構築。
+
+** §2.5 Type-tag introspection primitive + elisp predicates
+
+例: =consp= / =listp= / =stringp= / =integerp= / =floatp= / =numberp=
+/ =vectorp=
+- Rust 側: =type-of OBJECT= が =Sexp= variant 名の symbol (=
+  ='cons= / ='symbol= / ='integer= 等) を返す。
+- Elisp 側: 各 predicate は =(eq (type-of x) 'TAG)= の 1 行。
+
+* §3 5 種の "irreducible" 制約とそれぞれの unlock
+
+** §3.1 制約 1: Sexp variant 直接アクセス
+
+*** 現状
+
+=Sexp::HashTable= の内部 (= =entries: Vec<(Sexp, Sexp)>=) は Rust
+enum 内部に隠蔽。elisp から見ると「箱」。同様に =Sexp::CharTable=
+=Sexp::BoolVector= の内部レイアウトも opaque。
+
+このため:
+- =puthash= / =gethash= / =hash-table-count= / =maphash= 等が elisp
+  化できない (= Sexp::HashTable の =entries= に触れる手段が無い)。
+- 新型を elisp で定義する手段が無い (= Sexp 列挙体は固定)。
+
+*** Unlock 戦略 A: lower-level "iter" primitive を露出
+
+最小コストの解。例えば hash table:
+
+#+begin_src rust
+fn bi_hash_pairs(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--hash-pairs", args, 1, Some(1))?;
+    let table = match &args[0] {
+        Sexp::HashTable(rc) => rc.borrow(),
+        other => return Err(...),
+    };
+    let mut out = Sexp::Nil;
+    for (k, v) in table.entries.iter().rev() {
+        out = Sexp::cons(Sexp::cons(k.clone(), v.clone()), out);
+    }
+    Ok(out)
+}
+#+end_src
+
+これだけで:
+- =hash-table-keys= = =(mapcar #'car (nelisp--hash-pairs h))=
+- =hash-table-values= = =(mapcar #'cdr (nelisp--hash-pairs h))=
+- =hash-table-count= = =(length (nelisp--hash-pairs h))=
+- =maphash= = =(dolist (p (nelisp--hash-pairs h)) (funcall fn (car p) (cdr p)))=
+
+**4 本一括 elisp 化** 可能。ただし =puthash= / =gethash= / =remhash=
+/ =clrhash= は mutation を伴うので別 primitive (=
+=nelisp--hash-set= / =nelisp--hash-clear=) が要る。
+
+§2.1 の I/O primitive pattern と完全に並行な構造。
+
+*** Unlock 戦略 B: cl-defstruct / record 型を露出 (= radical)
+
+Host emacs は =cl-defstruct= マクロ + =Sexp::Record= variant を持つ。
+NeLisp に同等を入れれば、新型を elisp で定義可能 (= HashTable 自体
+を elisp side で reimpl)。
+
+コスト: =Sexp::Record= variant 追加 + リーダ拡張 (=
+=#s(...)=) + printer 拡張 + 既存 Sexp とのインターオプ。〜500 LOC
+Rust。
+
+得失: 戦略 A と比較すると LOC コスト大。短期では戦略 A、長期で
+戦略 B と段階的に進めるのが現実的。
+
+** §3.2 制約 2: OS interop
+
+*** 現状
+
+=bi_file_exists_p= / =bi_file_readable_p= / =bi_file_directory_p= /
+=bi_file_truename= / =bi_load= / =bi_locate_library= /
+=bi_expand_file_name= が =std::fs::*= や =std::path::*= の syscall を
+直接呼ぶ。elisp に「OS と話す手段」が無いので不可。
+
+同様に terminal raw-mode / SIGINT / SIGWINCH / SIGTSTP /
+=read-stdin-bytes= 等の I/O 系も全て Rust。
+
+*** Unlock 戦略: 薄い syscall primitive layer
+
+POSIX 抽象を 1 layer 追加する。最小セット:
+
+#+begin_src
+(nelisp--syscall-stat PATH-STR)
+    → 'absent / 'file / 'directory / 'symlink
+
+(nelisp--syscall-read-fd FD COUNT)
+    → bytes-string / nil (= EOF) / signals on error
+
+(nelisp--syscall-write-fd FD BYTES)
+    → bytes-written-int
+
+(nelisp--syscall-open PATH FLAGS-INT MODE-INT)
+    → fd-int / signals 'file-error
+
+(nelisp--syscall-close FD)
+    → t / signals
+#+end_src
+
+そのうえで:
+- =file-exists-p= = =(memq (nelisp--syscall-stat path) '(file directory symlink))=
+- =file-directory-p= = =(eq (nelisp--syscall-stat path) 'directory)=
+- =file-readable-p= = =(eq (nelisp--syscall-stat path) 'file)= (≒)
+- =load= = =(let ((src (read-file ...)))(dolist (f (read-from-string src)) (eval f)))=
+
+**コスト**: 安全性を保つため abstraction (= path validation, error
+mapping) は Rust に残す。設計コスト中。Doc 51 の anvil-host primitive
+群 (= =anvil-shell-run= / =anvil-host-info= 等) と同じ設計思想で書ける
+ので雛形あり。
+
+*** より radical 案: =read-process-output= / =call-process= 系の上位
+
+完全にプロセス分離した形 (= =nl-spawn= / =nl-pipe-read=) で書けば、
+elisp が child process 経由で OS と話せる。Doc 14 (phase5c-process-
+network) の延長線。コスト: process 起動の overhead + IPC 設計。
+
+** §3.3 制約 3: パーサ/正規表現エンジン
+
+*** 現状
+
+- =string-match-p= は ~5000 LOC の regex engine (= =regex= crate or 自前)
+  を呼ぶ。
+- =read= / =read-from-string= は S 式 reader (~1000 LOC)。
+
+*** Unlock 戦略 1: エンジン全体を elisp で書き直す
+
+- *コスト*: huge (= regex engine 5000 LOC、reader 1000 LOC)。
+- *Gain*: 構造的勝利だが LOC は増加 (Rust −X / Elisp +X+α)。
+- *判定*: **やらない**。ROI 低。
+
+*** Unlock 戦略 2: そのまま Rust にする
+
+これは NeLisp の境界として認める (= "regex は OS interop に近い
+カテゴリ" と扱う)。Doc 49 の §0 でも reader/macro/compiler は elisp
+seed が担当と書かれているが、bootstrap 後の話。MVP では reader が
+chicken-and-egg (= elisp reader を書くには reader が要る)。
+
+Phase 49.1 core-min gate で扱う問題と同じ shape。
+
+** §3.4 制約 4: パフォーマンス hot path
+
+*** 現状
+
+=eq= / =equal= / =functionp= は funcall billions of times レベル。
+elisp 化すると funcall overhead が累積し、たとえ 1 funcall = 数 ns
+でも全体パフォーマンスに直撃する。
+
+特に:
+- =eq= はディスパッチ table の O(1) lookup より遥かに速い必要がある。
+- =equal= は再帰呼出の中で何度も走る。
+- =functionp= は HOF (=funcall= / =apply= / =mapcar=) で必ず呼ばれる。
+
+*** Unlock 戦略: native compilation / JIT inlining
+
+NeLisp は既に JIT を持つ (= =packages/nelisp-jit/src/=、Doc 28
+phase7.1-native-compiler 参照)。primitive call 境界を inline できれば、
+elisp 化コストはゼロに近づく。
+
+具体策:
+1. =nelisp-jit= の inline-primitive policy を拡張、=(eq x y)= のような
+   2-arg call を direct dispatch (= inline =Sexp.eq=) に展開。
+2. Native comp も同方向。Doc 28 §3 で扱う。
+3. JIT 側で elisp primitive 関数の =marker= 属性を見て、その関数の
+   呼び出しを inline 可能と判定する。
+
+*** 結論
+
+hot path の elisp 化は **"JIT が成熟するほど" 自由度が増す**。
+今すぐ無理に migrate せず、JIT 成熟と並行で段階的に。本セッションで
+=functionp= を保留にしたのはこの判断による。
+
+** §3.5 制約 5: cycle-safe equality
+
+*** 現状
+
+=equal= は cycle 検出が必要 (= 自己参照 cons / 循環 list を扱う)。
+現状 Rust 側で =Rc::ptr_eq= による identity 検出 + visited set を
+維持している。
+
+*** Unlock 戦略: elisp visited-set + 1 つの primitive
+
+=nelisp--ref-eq A B= (= =Rc::ptr_eq= 露出) を追加する。それで:
+
+#+begin_src elisp
+(defun equal (a b)
+  (let ((visited (make-hash-table :test 'eq)))
+    (nelisp--equal-rec a b visited)))
+
+(defun nelisp--equal-rec (a b visited)
+  (cond
+   ((nelisp--ref-eq a b) t)             ; identity short-circuit
+   ((eq (type-of a) (type-of b))
+    (cond
+     ((consp a)
+      (cond
+       ((gethash a visited) t)            ; cycle: assume equal
+       (t
+        (puthash a t visited)
+        (and (nelisp--equal-rec (car a) (car b) visited)
+             (nelisp--equal-rec (cdr a) (cdr b) visited)))))
+     ((stringp a) (string= a b))
+     ((vectorp a) ...)
+     ((integerp a) (= a b))
+     (t (eq a b))))))
+#+end_src
+
+ただし =make-hash-table= 自体が制約 1 と絡む → 先に制約 1 解決が必要。
+
+* §4 段階的 unlock plan
+
+| 段階 | 解放手段                  | 解放対象                                 | コスト   |
+|------+---------------------------+------------------------------------------+----------|
+|    1 | iter primitive 露出       | hash-table API surface 全 4 件 (上記)    | 低       |
+|    2 | POSIX syscall layer       | file I/O 全 7 件 / stdio 4 件            | 中       |
+|    3 | JIT inline 拡張           | hot-path predicates / arithmetic 全て    | 中-高    |
+|    4 | cl-defstruct/record 型    | 新型定義 / HashTable 自前実装            | 高       |
+|    5 | regex engine 移植         | string-match-p                           | 超高     |
+
+次セッションで取り組むなら **段階 1** が最も効率的:
+=bi_hash_pairs= 1 つで =hash-table-keys= / =-values= / =-count= /
+=maphash= の 4 本一括 elisp 化が可能。
+
+* §5 共通原則 (= Doc 49 への補足)
+
+「不可能を可能にする」共通原則は **「primitive を 1 段下げる」**:
+
+- 高レベル dispatcher を Rust から削除
+- 代わりに低レベル building block を Rust に追加
+
+LOC は短期で増えるが、elisp 側の表現力が劇的に上がる。これは Doc 49
+§0 の方針を「primitive granularity」軸で具体化したもの。
+
+**ただし** 低レベル過ぎると elisp 側が冗長になる。"ちょうど良い" 粒度
+は migration ごとに判断必要。Doc 49 Phase 6m〜6w の 22 例は経験則として
+有用 — Rust primitive のシグネチャは「elisp 側で 5〜30 LOC で wrapper
+が書ける」「primitive 自体は 5〜30 LOC で書ける」がスイートスポット。
+
+それ以上小さい primitive (= 例 =cons= や =car=) は dispatch overhead
+で割が合わない (= 既に最小)。それ以上大きい primitive (= 例
+=bi_format= 元実装) は elisp 化の余地がある (= split できる)。
+
+* §6 Open questions
+
+** §6.1 record 型 (戦略 4) を入れるタイミング
+
+短期: 戦略 1 (= iter primitive) で十分多くの API を unlock できるので
+record 型は急がない。中期: HashTable / CharTable / BoolVector 等が
+全て同じ pattern (= "elisp record + Rust の bucket primitive") に
+書き換わるのが理想形だが、そこに到達するには Doc 49 の Phase 7 後半
+での bootstrap stable 化が前提。
+
+** §6.2 JIT inline policy の境界
+
+primitive 関数を inline するとき、副作用がある関数 (= =setq= /
+=puthash=) と無い関数 (= =eq= / =+=) で扱いが違う。inline 対象を
+type-tag で marker する規約が要る。Doc 28 §4 の native-comp と
+同じ問題。
+
+** §6.3 syscall layer (戦略 2) と Doc 51 anvil-host の関係
+
+Doc 51 (anvil-modules-via-nelisp-standalone) で =anvil-host-= prefix
+の primitives が host info (= CPU / RAM / OS / disk) を露出している。
+これは syscall layer の precursor。同 design pattern を file I/O に
+適用すれば 整合する。
+
+* §7 References
+
+- Doc 49 (=49-rust-min-core-selfhost.org=) — 本 doc の motivation。
+- Doc 51 (=51-anvil-modules-via-nelisp-standalone.org=) — syscall layer
+  pattern の前例。
+- Doc 28 (=28-phase7.1-native-compiler.org=) — JIT inline policy。
+- =/lisp/nelisp-stdlib*.el= — 22 batch 移行成果物。
+- =/build-tool/src/eval/builtins.rs= — Rust 残存 primitive 群。
+
+;;; Doc 50 ends here
