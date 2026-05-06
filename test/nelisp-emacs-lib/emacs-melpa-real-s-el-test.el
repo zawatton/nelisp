@@ -112,17 +112,31 @@ the API surface s.el's defuns expand against."
 
 ;;;; B. shim-required subset (= documented gap, regression gate)
 
-(ert-deftest emacs-melpa-real-s-el-test/buffer-functions-are-skipped ()
-  "Phase 4 follow-up: `s-' helpers that route through buffers (= s-with,
-s-truncate-or-pad-on-newlines, s-split-up-and-down, ...) require the
-MELPA shim to be installed via `emacs-melpa-shim-with-installed'.
-Direct host load currently breaks on protocol mismatches between
-host C primitives (`load' / `set-buffer' calling C `Fset_buffer'
-directly) and the NeLisp buffer struct.  This test pins the gap as
-a known follow-up so we can un-skip when the shim grows the
-required protocol coverage."
+;; Phase 4 B follow-up: previously a single `buffer-functions-are-skipped'
+;; ert-skip pinned the entire `s-with' / `s-trim' boundary as deferred.
+;; After the Rust→elisp migration of pcase / cl-loop / closure setq
+;; write-through (= NeLisp upstream commits eb89f73 / c08d0db / f1fc1f5)
+;; and the local `replace-match' / `compare-strings' polyfills, the
+;; pure-string + structural-macro subset of s.el is now usable on the
+;; nelisp driver too — pinned as new green tests below.
+
+(ert-deftest emacs-melpa-real-s-el-test/with-threading-macro ()
+  "`s-with' is a threading macro that pipes a string through `s-*'
+helpers in left-to-right order.  Verifies the macro expansion +
+helper composition — used to ert-skip pre-2026-05-06."
   (emacs-melpa-real-s-el-test--skip-without-source
-    (ert-skip "shim-required s-* functions: pending Phase 4 protocol harmonisation")))
+    (should (string= "HI" (s-with "  hi  " s-trim s-upcase)))
+    (should (string= "ABC" (s-with " ABC " s-trim)))
+    (should (string= "x"   (s-with "  X  " s-trim s-downcase)))))
+
+(ert-deftest emacs-melpa-real-s-el-test/buffer-routed-fill-region-is-skipped ()
+  "Phase 4 deeper follow-up: `s-word-wrap' / `s-count-matches' route
+through host emacs `fill-region' / `count-matches' which are buffer-
+mutation routines living in `lisp/textmodes/fill.el' /
+`lisp/replace.el' (= not yet vendor-loaded under the nelisp driver).
+Tracked as the Phase 4 'C' follow-up (= lisp/ utility uptake)."
+  (emacs-melpa-real-s-el-test--skip-without-source
+    (ert-skip "fill-region / count-matches: pending lisp/textmodes uptake")))
 
 (provide 'emacs-melpa-real-s-el-test)
 
