@@ -136,12 +136,17 @@ auto-scroll-when-cursor-leaves-viewport in `dispatch-key'.")
   "Number of buffer lines moved per mouse-wheel notch.")
 
 (defvar nemacs-gtk--windows nil
-  "Phase 2.AU — list of horizontal windows, or nil for single-window
-mode.  Each entry is a plist `(:buffer NAME :scroll N :top-row R
-:rows N)'.  When non-nil, the entry at `--current-window-idx'
-mirrors the global `--active-buffer-name' / `--scroll-offset'
-state — split / other-window / delete-* commands sync the globals
-into the slot before swapping.")
+  "Phase 2.AU+AW — list of windows, or nil for single-window mode.
+Each entry is a plist `(:buffer NAME :scroll N :top-row R :rows N
+:left-col C :cols N)'.  When non-nil, the entry at
+`--current-window-idx' mirrors the global `--active-buffer-name' /
+`--scroll-offset' state.
+
+`:left-col' / `:cols' identify the rectangle's horizontal band — both
+horizontal (Phase 2.AU C-x 2) and vertical (Phase 2.AW C-x 3) splits
+mutate windows into rectangles inside the buffer area.  Mode-line
+of each window goes on row `(:top-row + :rows - 1)' starting at
+column `:left-col' for `:cols' chars.")
 
 (defvar nemacs-gtk--current-window-idx 0
   "Phase 2.AU — index of the current window into `--windows'.  Only
@@ -281,8 +286,9 @@ Idempotent — re-calling replaces the global map with a fresh one."
     (define-key ctl-x-map (vector ?\C-q) 'nemacs-gtk-toggle-read-only)
     ;; Phase 2.AT — `C-x =' = what-cursor-position.
     (define-key ctl-x-map (vector ?=)    'nemacs-gtk-what-cursor-position)
-    ;; Phase 2.AU — window splitting.
+    ;; Phase 2.AU+AW — window splitting.
     (define-key ctl-x-map (vector ?2)    'nemacs-gtk-split-window-below)
+    (define-key ctl-x-map (vector ?3)    'nemacs-gtk-split-window-right)
     (define-key ctl-x-map (vector ?0)    'nemacs-gtk-delete-window)
     (define-key ctl-x-map (vector ?1)    'nemacs-gtk-delete-other-windows)
     (define-key ctl-x-map (vector ?o)    'nemacs-gtk-other-window)
@@ -505,13 +511,16 @@ With no dirty buffers, sets the quit flag immediately."
 (defun nemacs-gtk--ensure-multi-windows ()
   "Materialise `--windows' from the current globals when not already
 in multi-window mode.  Idempotent — when `--windows' is already
-non-nil, this is a no-op."
+non-nil, this is a no-op.  Default rectangle: top=0, rows=buffer-area-end,
+left-col=0, cols=cols (= one full-width window)."
   (unless nemacs-gtk--windows
     (setq nemacs-gtk--windows
           (list (list :buffer nemacs-gtk--active-buffer-name
                       :scroll nemacs-gtk--scroll-offset
                       :top-row 0
-                      :rows nemacs-gtk--buffer-area-end)))
+                      :rows nemacs-gtk--buffer-area-end
+                      :left-col 0
+                      :cols nemacs-gtk--cols)))
     (setq nemacs-gtk--current-window-idx 0)))
 
 (defun nemacs-gtk--sync-current-to-window ()
@@ -571,12 +580,16 @@ to proceed (= 3 content + 1 inline mode-line)."
       (setq nemacs-gtk--last-key-text
             "split-window-below: window too small"))
      (t
-      (let* ((cur-up (plist-put (plist-put cur :rows half-up)
+      (let* ((left-col (plist-get cur :left-col))
+             (cols (plist-get cur :cols))
+             (cur-up (plist-put (plist-put cur :rows half-up)
                                 :top-row top))
              (new-down (list :buffer (plist-get cur :buffer)
                              :scroll (plist-get cur :scroll)
                              :top-row (+ top half-up)
-                             :rows half-down)))
+                             :rows half-down
+                             :left-col left-col
+                             :cols cols)))
         ;; replace cur-slot, then insert new after it.
         (setcar (nthcdr idx nemacs-gtk--windows) cur-up)
         (let ((after (nthcdr (1+ idx) nemacs-gtk--windows)))
@@ -584,6 +597,42 @@ to proceed (= 3 content + 1 inline mode-line)."
                   (cons new-down after))))
       (setq nemacs-gtk--last-key-text
             (format "split-window-below: %d windows"
+                    (length nemacs-gtk--windows)))))))
+
+(defun nemacs-gtk-split-window-right ()
+  "Bound to `C-x 3' — split the current window vertically into two
+side-by-side halves.  The current window keeps the left half, a new
+window with the same buffer + scroll occupies the right.  Each
+window must have at least 16 columns for the split to proceed."
+  (interactive)
+  (nemacs-gtk--ensure-multi-windows)
+  (nemacs-gtk--sync-current-to-window)
+  (let* ((idx nemacs-gtk--current-window-idx)
+         (cur (nth idx nemacs-gtk--windows))
+         (left (plist-get cur :left-col))
+         (cols (plist-get cur :cols))
+         (half-l   (/ cols 2))
+         (half-r   (- cols half-l)))
+    (cond
+     ((< cols 32)
+      (setq nemacs-gtk--last-key-text
+            "split-window-right: window too narrow"))
+     (t
+      (let* ((top (plist-get cur :top-row))
+             (rows (plist-get cur :rows))
+             (cur-left (plist-put cur :cols half-l))
+             (new-right (list :buffer (plist-get cur :buffer)
+                              :scroll (plist-get cur :scroll)
+                              :top-row top
+                              :rows rows
+                              :left-col (+ left half-l)
+                              :cols half-r)))
+        (setcar (nthcdr idx nemacs-gtk--windows) cur-left)
+        (let ((after (nthcdr (1+ idx) nemacs-gtk--windows)))
+          (setcdr (nthcdr idx nemacs-gtk--windows)
+                  (cons new-right after))))
+      (setq nemacs-gtk--last-key-text
+            (format "split-window-right: %d windows"
                     (length nemacs-gtk--windows)))))))
 
 (defun nemacs-gtk-other-window ()
@@ -605,10 +654,59 @@ wraps to first).  No-op + echo when only one window."
                   (1+ nemacs-gtk--current-window-idx)
                   (length nemacs-gtk--windows))))))
 
+(defun nemacs-gtk--find-merge-sibling (idx)
+  "Find a window whose rectangle can absorb the rectangle of window
+IDX exactly.  Returns (DONOR-IDX EXPAND-PROP DELTA NEW-LEFT-OR-TOP)
+where:
+  EXPAND-PROP = `:rows' (vertical merge) or `:cols' (horizontal merge)
+  DELTA       = how much to add to that prop
+  NEW-LEFT-OR-TOP = donor's new :top-row (rows-merge) or :left-col
+                    (cols-merge), or nil if unchanged.
+Returns nil when no perfect sibling exists."
+  (let* ((cur (nth idx nemacs-gtk--windows))
+         (cur-top (plist-get cur :top-row))
+         (cur-rows (plist-get cur :rows))
+         (cur-left (plist-get cur :left-col))
+         (cur-cols (plist-get cur :cols))
+         (n (length nemacs-gtk--windows))
+         (j 0)
+         (hit nil))
+    (while (and (< j n) (null hit))
+      (unless (= j idx)
+        (let* ((w (nth j nemacs-gtk--windows))
+               (w-top (plist-get w :top-row))
+               (w-rows (plist-get w :rows))
+               (w-left (plist-get w :left-col))
+               (w-cols (plist-get w :cols)))
+          (cond
+           ;; vertical merge: same column band + adjacent rows.
+           ((and (= w-left cur-left)
+                 (= w-cols cur-cols)
+                 (or (= (+ w-top w-rows) cur-top)              ; donor above
+                     (= (+ cur-top cur-rows) w-top)))         ; donor below
+            (setq hit
+                  (list j :rows cur-rows
+                        (cond
+                         ((= (+ cur-top cur-rows) w-top) cur-top)
+                         (t nil)))))
+           ;; horizontal merge: same row band + adjacent cols.
+           ((and (= w-top cur-top)
+                 (= w-rows cur-rows)
+                 (or (= (+ w-left w-cols) cur-left)            ; donor left
+                     (= (+ cur-left cur-cols) w-left)))       ; donor right
+            (setq hit
+                  (list j :cols cur-cols
+                        (cond
+                         ((= (+ cur-left cur-cols) w-left) cur-left)
+                         (t nil))))))))
+      (setq j (1+ j)))
+    hit))
+
 (defun nemacs-gtk-delete-window ()
-  "Bound to `C-x 0' — close the current window and give its rows to
-the previous window (or to the next if current is the first).
-Drops back to single-window mode when only one would remain."
+  "Bound to `C-x 0' — close the current window and give its rectangle
+to a perfect sibling (= adjacent same-column or same-row band).
+Drops back to single-window mode when only one remains.  Reports
+\"cannot merge\" when no sibling can fully absorb the rectangle."
   (interactive)
   (cond
    ((or (null nemacs-gtk--windows)
@@ -617,55 +715,60 @@ Drops back to single-window mode when only one would remain."
    (t
     (nemacs-gtk--sync-current-to-window)
     (let* ((idx nemacs-gtk--current-window-idx)
-           (cur (nth idx nemacs-gtk--windows))
-           (cur-rows (plist-get cur :rows))
-           (n (length nemacs-gtk--windows))
-           (donor-idx (cond
-                       ((> idx 0) (1- idx))
-                       (t 1))))
-      ;; remove cur from list, give its rows to donor.
-      (setq nemacs-gtk--windows
-            (append (cl-subseq nemacs-gtk--windows 0 idx)
-                    (cl-subseq nemacs-gtk--windows (1+ idx) n)))
-      ;; donor's index might have shifted if cur was before it.
-      (when (and (= idx 0) (> donor-idx 0))
-        (setq donor-idx (1- donor-idx)))
-      (let* ((donor (nth donor-idx nemacs-gtk--windows))
-             (donor-rows (plist-get donor :rows))
-             (donor-top (plist-get donor :top-row))
-             (donor-new (plist-put donor :rows (+ donor-rows cur-rows))))
-        ;; if cur was ABOVE donor, donor needs to slide up to take its top.
-        (when (< idx donor-idx)
-          (setq donor-new (plist-put donor-new :top-row
-                                     (- donor-top cur-rows))))
-        (setcar (nthcdr donor-idx nemacs-gtk--windows) donor-new))
-      ;; Re-anchor row layout (= top-row of all windows correct given
-      ;; the merged donor).  Simpler: walk the list and rebuild top-row
-      ;; values left-to-right.
-      (let ((cursor 0)
-            (newlist '()))
-        (dolist (w nemacs-gtk--windows)
-          (let ((w2 (plist-put w :top-row cursor)))
-            (push w2 newlist)
-            (setq cursor (+ cursor (plist-get w2 :rows)))))
-        (setq nemacs-gtk--windows (nreverse newlist)))
-      ;; collapse to single-window if exactly one remains.
+           (sibling (nemacs-gtk--find-merge-sibling idx)))
       (cond
-       ((= (length nemacs-gtk--windows) 1)
-        (let ((only (car nemacs-gtk--windows)))
-          (setq nemacs-gtk--active-buffer-name (plist-get only :buffer))
-          (setq nemacs-gtk--scroll-offset (or (plist-get only :scroll) 0))
-          (setq nemacs-gtk--windows nil)
-          (setq nemacs-gtk--current-window-idx 0)
-          (nemacs-gtk--sync-window-title))
-        (setq nemacs-gtk--last-key-text "delete-window: → single"))
-       (t
-        (setq nemacs-gtk--current-window-idx
-              (min donor-idx (1- (length nemacs-gtk--windows))))
-        (nemacs-gtk--load-window-to-globals)
+       ((null sibling)
         (setq nemacs-gtk--last-key-text
-              (format "delete-window: %d remaining"
-                      (length nemacs-gtk--windows)))))))))
+              "delete-window: no mergeable sibling"))
+       (t
+        (let* ((donor-idx (nth 0 sibling))
+               (prop (nth 1 sibling))
+               (delta (nth 2 sibling))
+               (new-anchor (nth 3 sibling))
+               (donor (nth donor-idx nemacs-gtk--windows))
+               (donor-rows (plist-get donor :rows))
+               (donor-cols (plist-get donor :cols))
+               (donor-new
+                (cond
+                 ((eq prop :rows)
+                  (let ((d (plist-put donor :rows (+ donor-rows delta))))
+                    (cond
+                     (new-anchor (plist-put d :top-row new-anchor))
+                     (t d))))
+                 (t
+                  (let ((d (plist-put donor :cols (+ donor-cols delta))))
+                    (cond
+                     (new-anchor (plist-put d :left-col new-anchor))
+                     (t d)))))))
+          (setcar (nthcdr donor-idx nemacs-gtk--windows) donor-new)
+          ;; remove the deleted slot.
+          (setq nemacs-gtk--windows
+                (append (cl-subseq nemacs-gtk--windows 0 idx)
+                        (cl-subseq nemacs-gtk--windows
+                                   (1+ idx)
+                                   (length nemacs-gtk--windows))))
+          ;; donor index shifts if cur was before it.
+          (when (< idx donor-idx)
+            (setq donor-idx (1- donor-idx)))
+          ;; collapse to single-window if exactly one remains.
+          (cond
+           ((= (length nemacs-gtk--windows) 1)
+            (let ((only (car nemacs-gtk--windows)))
+              (setq nemacs-gtk--active-buffer-name
+                    (plist-get only :buffer))
+              (setq nemacs-gtk--scroll-offset
+                    (or (plist-get only :scroll) 0))
+              (setq nemacs-gtk--windows nil)
+              (setq nemacs-gtk--current-window-idx 0)
+              (nemacs-gtk--sync-window-title))
+            (setq nemacs-gtk--last-key-text "delete-window: → single"))
+           (t
+            (setq nemacs-gtk--current-window-idx
+                  (min donor-idx (1- (length nemacs-gtk--windows))))
+            (nemacs-gtk--load-window-to-globals)
+            (setq nemacs-gtk--last-key-text
+                  (format "delete-window: %d remaining"
+                          (length nemacs-gtk--windows))))))))))))
 
 (defun nemacs-gtk--resize-window (delta)
   "Phase 2.AV: shrink/grow the current window by DELTA rows.
@@ -1249,7 +1352,7 @@ display the stdout in `*Shell Command Output*' and switch to it."
 (defun nemacs-gtk-shell-command-on-region ()
   "Bound to `M-|' / `Esc |' — pipe the active region through a shell
 command and display stdout in `*Shell Command Output*'.  Reports
-"no region" when the active buffer has no current selection."
+\"no region\" when the active buffer has no current selection."
   (interactive)
   (let ((bounds (nemacs-gtk--region-bounds)))
     (cond
@@ -2575,6 +2678,7 @@ success / failure."
     "nemacs-gtk-shrink-window"
     "nemacs-gtk-sort-lines"
     "nemacs-gtk-split-window-below"
+    "nemacs-gtk-split-window-right"
     "nemacs-gtk-start-kbd-macro"
     "nemacs-gtk-tab-to-tab-stop"
     "nemacs-gtk-toggle-read-only"
@@ -2627,6 +2731,7 @@ success / failure."
     "shell-command-on-region"
     "what-cursor-position"
     "split-window-below"
+    "split-window-right"
     "delete-window"
     "delete-other-windows"
     "other-window"
@@ -2768,26 +2873,41 @@ viewport scroll-position label (= Top/All/Bot/NN%), major-mode name."
           (concat body (make-string pad ?-))
         (substring body 0 nemacs-gtk--cols)))))
 
-(defun nemacs-gtk--paint-single-window-area (top rows scroll bn)
-  "Paint ROWS lines of buffer named BN starting at grid row TOP, with
-SCROLL as the buffer's first visible line.  When ROWS > 1 the last
-row of the band is left for an inline mode-line (= caller paints
-that)."
+(defun nemacs-gtk--pad-or-trunc-to (s width)
+  "Return S truncated to WIDTH chars, or padded with spaces."
+  (cond
+   ((>= (length s) width) (substring s 0 width))
+   (t (concat s (make-string (- width (length s)) ?\s)))))
+
+(defun nemacs-gtk--paint-single-window-area (top rows scroll bn
+                                                  &optional left-col cols)
+  "Paint a window of buffer named BN into the rectangle at (TOP,
+LEFT-COL) of size ROWS x COLS, with SCROLL as the buffer's first
+visible line.  Last row of the band is left for an inline mode-line.
+When LEFT-COL / COLS are nil, fall back to full-width paint via
+`nelisp-gtk-grid-put-row' (= preserves Phase 2.AU horizontal-only
+behaviour)."
   (let* ((buf (or (get-buffer bn) (get-buffer "*welcome*")))
          (content (with-current-buffer buf (buffer-string)))
          (lines (split-string content "\n"))
          (content-rows (max 0 (- rows 1)))
+         (full-width-p (or (null left-col) (null cols)))
+         (use-cols (or cols nemacs-gtk--cols))
          (i 0))
     (while (< i content-rows)
-      (let ((line (or (nth (+ i scroll) lines) "")))
-        (nelisp-gtk-grid-put-row (+ top i)
-                                 (nemacs-gtk--truncate line nemacs-gtk--cols)))
+      (let* ((raw-line (or (nth (+ i scroll) lines) ""))
+             (cell (nemacs-gtk--pad-or-trunc-to raw-line use-cols)))
+        (cond
+         (full-width-p
+          (nelisp-gtk-grid-put-row (+ top i) cell))
+         (t
+          (nelisp-gtk-grid-put-substr (+ top i) left-col cell))))
       (setq i (1+ i)))))
 
-(defun nemacs-gtk--inline-mode-line-text (bn)
-  "Mode-line text for the inline divider of a non-bottom window
-showing buffer named BN.  Shorter than the frame mode-line — just
-buffer name + modified flag, padded with `-' to grid width."
+(defun nemacs-gtk--inline-mode-line-text (bn &optional cols)
+  "Mode-line text for the inline divider of a window showing buffer
+named BN.  COLS = total width to pad to (defaults to grid width).
+Body = `-:FLAG-  NAME    ' padded with `-' to COLS."
   (let* ((buf (or (get-buffer bn) (get-buffer "*welcome*")))
          (modp (with-current-buffer buf
                  (or (and (boundp 'buffer-read-only) buffer-read-only
@@ -2795,10 +2915,11 @@ buffer name + modified flag, padded with `-' to grid width."
                      (and (nemacs-gtk--buffer-modified-p buf) "**")
                      "--")))
          (body (format "-:%s-  %s    " modp bn))
-         (pad (- nemacs-gtk--cols (length body))))
+         (use-cols (or cols nemacs-gtk--cols))
+         (pad (- use-cols (length body))))
     (cond
      ((> pad 0) (concat body (make-string pad ?-)))
-     (t (substring body 0 nemacs-gtk--cols)))))
+     (t (substring body 0 use-cols)))))
 
 (defun nemacs-gtk--paint-buffer-area ()
   "Phase 2.AU — multi-window aware.  When `--windows' is nil, fall
@@ -2833,15 +2954,24 @@ frame's `--paint-mode-line')."
                (top (plist-get w :top-row))
                (rows (plist-get w :rows))
                (scroll (or (plist-get w :scroll) 0))
-               (bn (plist-get w :buffer)))
+               (bn (plist-get w :buffer))
+               (left (plist-get w :left-col))
+               (cols (plist-get w :cols)))
           ;; All windows reserve their bottom row for an inline mode-line
           ;; (= matches Emacs convention).  The frame's `--paint-mode-line'
           ;; at row `--mode-line-row' (below the buffer area) shows the
           ;; CURRENT window's full mode-line as a global indicator.
-          (nemacs-gtk--paint-single-window-area top rows scroll bn)
+          (nemacs-gtk--paint-single-window-area top rows scroll bn left cols)
           (let ((mode-row (+ top rows -1)))
-            (nelisp-gtk-grid-put-row
-             mode-row (nemacs-gtk--inline-mode-line-text bn))))
+            (cond
+             ((or (null left) (null cols)
+                  (= cols nemacs-gtk--cols))
+              (nelisp-gtk-grid-put-row
+               mode-row (nemacs-gtk--inline-mode-line-text bn cols)))
+             (t
+              (nelisp-gtk-grid-put-substr
+               mode-row left
+               (nemacs-gtk--inline-mode-line-text bn cols))))))
         (setq i (1+ i)))))))
 
 (defun nemacs-gtk--buffer-line-count ()
@@ -2964,10 +3094,11 @@ completion candidates for the echo area, or empty when none."
     (nelisp-gtk-grid-put-row nemacs-gtk--echo-area-row
                              (nemacs-gtk--truncate text nemacs-gtk--cols))))
 
-(defun nemacs-gtk--window-at-row (row)
-  "Return the index in `--windows' that contains grid ROW, or nil
-when single-window mode or ROW is on an inline mode-line row
-(= bottom row of a window's band)."
+(defun nemacs-gtk--window-at-cell (row col)
+  "Return the index in `--windows' that contains grid (ROW, COL), or
+nil when single-window mode or the cell is on a mode-line row.
+Phase 2.AW: also checks `:left-col' / `:cols' so vertical splits
+route correctly."
   (cond
    ((null nemacs-gtk--windows) nil)
    (t
@@ -2978,8 +3109,11 @@ when single-window mode or ROW is on an inline mode-line row
         (let* ((w (nth i nemacs-gtk--windows))
                (top (plist-get w :top-row))
                (rows (plist-get w :rows))
+               (left (or (plist-get w :left-col) 0))
+               (wcols (or (plist-get w :cols) nemacs-gtk--cols))
                (content-rows (max 0 (- rows 1))))
-          (when (and (>= row top) (< row (+ top content-rows)))
+          (when (and (>= row top) (< row (+ top content-rows))
+                     (>= col left) (< col (+ left wcols)))
             (setq hit i)))
         (setq i (1+ i)))
       hit))))
@@ -2997,7 +3131,15 @@ result clamps to the last reachable position in the buffer text
 which is what users expect).  Always returns a 1-based point."
   (with-current-buffer (nemacs-gtk--active-buffer)
     (let* ((top (nemacs-gtk--current-window-top))
+           (left (cond
+                  ((null nemacs-gtk--windows) 0)
+                  (t (or (plist-get
+                          (nth nemacs-gtk--current-window-idx
+                               nemacs-gtk--windows)
+                          :left-col)
+                         0))))
            (row-in-window (- row top))
+           (col-in-window (max 0 (- col left)))
            (target-row (+ row-in-window nemacs-gtk--scroll-offset))
            (text (buffer-string))
            (len  (length text))
@@ -3010,7 +3152,7 @@ which is what users expect).  Always returns a 1-based point."
         (setq i (1+ i)))
       ;; Walk forward COL chars within the row, stopping at newline / EOB.
       (let ((col-i 0))
-        (while (and (< i len) (< col-i col)
+        (while (and (< i len) (< col-i col-in-window)
                     (not (eq (aref text i) ?\n)))
           (setq i (1+ i))
           (setq col-i (1+ col-i))))
@@ -3035,17 +3177,30 @@ returns nil instead of a row outside the viewport."
       (let* ((screen-row-in-window (- buf-row nemacs-gtk--scroll-offset))
              (top (nemacs-gtk--current-window-top))
              (rows (nemacs-gtk--current-window-rows))
+             (left (cond
+                    ((null nemacs-gtk--windows) 0)
+                    (t (or (plist-get
+                            (nth nemacs-gtk--current-window-idx
+                                 nemacs-gtk--windows)
+                            :left-col)
+                           0))))
+             (window-cols (cond
+                           ((null nemacs-gtk--windows) nemacs-gtk--cols)
+                           (t (or (plist-get
+                                   (nth nemacs-gtk--current-window-idx
+                                        nemacs-gtk--windows)
+                                   :cols)
+                                  nemacs-gtk--cols))))
              (max-content-rows
               (cond
                ((null nemacs-gtk--windows) rows)
-               ;; multi-window: every window reserves its bottom row
-               ;; for an inline mode-line.
                (t (max 0 (- rows 1)))))
-             (screen-row (+ top screen-row-in-window)))
+             (screen-row (+ top screen-row-in-window))
+             (screen-col (+ left col)))
         (if (and (>= screen-row-in-window 0)
                  (< screen-row-in-window max-content-rows)
-                 (<= col nemacs-gtk--cols))
-            (cons screen-row col)
+                 (< col window-cols))
+            (cons screen-row screen-col)
           nil)))))
 
 (defun nemacs-gtk--repaint ()
@@ -3348,7 +3503,7 @@ viewport."
                                   'self-insert-command))
                          (fboundp 'undo-boundary))
                 (undo-boundary)))
-            (nemacs-gtk--ensure-cursor-visible))))))))))
+            (nemacs-gtk--ensure-cursor-visible)))))))))))
 
 
 ;;;; --- clipboard glue ------------------------------------------------------
@@ -3525,9 +3680,9 @@ mark there."
          (row (nth 2 ev))
          (col (nth 3 ev)))
     (when ev
-      ;; Phase 2.AU — in multi-window mode, switch current window to
-      ;; whichever one contains the click row.
-      (let ((widx (nemacs-gtk--window-at-row row)))
+      ;; Phase 2.AU+AW — in multi-window mode, switch current window
+      ;; to whichever rectangle contains the click cell.
+      (let ((widx (nemacs-gtk--window-at-cell row col)))
         (when (and widx
                    (not (= widx nemacs-gtk--current-window-idx)))
           (nemacs-gtk--sync-current-to-window)
