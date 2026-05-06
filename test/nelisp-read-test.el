@@ -160,6 +160,43 @@ marker, not the symbol `.'.  But `.foo' or `foo.' is still a symbol."
     (should (equal (car res) 42))
     (should (= (cdr res) 5))))
 
+;;; Phase 3b char-literal chord modifiers -----------------------------
+
+(ert-deftest nelisp-read-char-literal-space-after-question ()
+  "`? ' (question mark + space) is the space character (= 32)."
+  (should (= 32 (nelisp-read "? "))))
+
+(ert-deftest nelisp-read-char-literal-ctrl-letter-collapses ()
+  "?\\C-a / ?\\C-A → ASCII 1 (= matches host Emacs reader)."
+  (should (= 1 (nelisp-read "?\\C-a")))
+  (should (= 1 (nelisp-read "?\\C-A"))))
+
+(ert-deftest nelisp-read-char-literal-ctrl-special ()
+  "?\\C-? → 127 (DEL); ?\\C-@ → 0 (NUL); ?\\C-<sp> → 0."
+  (should (= 127 (nelisp-read "?\\C-?")))
+  (should (= 0   (nelisp-read "?\\C-@")))
+  (should (= 0   (nelisp-read "?\\C- "))))
+
+(ert-deftest nelisp-read-char-literal-meta ()
+  "?\\M-x → 134217848 (= meta-bit + ?x)."
+  (should (= 134217848 (nelisp-read "?\\M-x"))))
+
+(ert-deftest nelisp-read-char-literal-shift-alt-hyper-super ()
+  "Single-modifier escapes match Emacs's bit conventions."
+  (should (= 33554529 (nelisp-read "?\\S-a")))
+  (should (=  4194401 (nelisp-read "?\\A-a")))
+  (should (= 16777313 (nelisp-read "?\\H-a")))
+  (should (=  8388705 (nelisp-read "?\\s-a"))))
+
+(ert-deftest nelisp-read-char-literal-multi-modifier-commutes ()
+  "?\\C-\\M-x and ?\\M-\\C-x both parse to meta-bit + ?\\C-x = 134217752."
+  (should (= 134217752 (nelisp-read "?\\C-\\M-x")))
+  (should (= 134217752 (nelisp-read "?\\M-\\C-x"))))
+
+(ert-deftest nelisp-read-char-literal-bare-backslash-s-stays-space ()
+  "?\\s without trailing `-' is the space char, NOT a super modifier."
+  (should (= 32 (nelisp-read "?\\s"))))
+
 (provide 'nelisp-read-test)
 
 ;;; nelisp-read-test.el ends here
