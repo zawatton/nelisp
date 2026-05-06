@@ -4921,6 +4921,83 @@ when the extern isn't loaded (= substrate-only boot)."
                                      (car rc-e) (cdr rc-e)))
              (t (nelisp-gtk-set-region 0 0 0 0)))))))))))
 
+(defun nemacs-gtk--collect-isearch-highlights ()
+  "Phase 2.BL — return a list of `(SR SC ER EC R G B A)' entries for
+each isearch match in the visible viewport, or nil when isearch
+isn't active / the query is empty.  Yellow tint (rgb 255 230 80)
+at 40% alpha — bright enough to spot, faint enough not to obscure."
+  (when (and nemacs-gtk--isearch-active
+             (stringp nemacs-gtk--isearch-query)
+             (> (length nemacs-gtk--isearch-query) 0))
+    (with-current-buffer (nemacs-gtk--active-buffer)
+      (let* ((needle nemacs-gtk--isearch-query)
+             (nlen (length needle))
+             (text (buffer-string))
+             (tlen (length text))
+             (i 0)
+             (acc '()))
+        (while (< i (- tlen nlen -1))
+          (cond
+           ((and (<= (+ i nlen) tlen)
+                 (string= needle (substring text i (+ i nlen))))
+            (let* ((rc-s (nemacs-gtk--pos-to-row-col (1+ i)))
+                   (rc-e (nemacs-gtk--pos-to-row-col (1+ (+ i nlen)))))
+              (when (and rc-s rc-e)
+                (push (list (car rc-s) (cdr rc-s)
+                            (car rc-e) (cdr rc-e)
+                            255 230 80 102)
+                      acc)))
+            (setq i (+ i nlen)))
+           (t (setq i (1+ i)))))
+        (nreverse acc)))))
+
+(defun nemacs-gtk--paren-match-pos ()
+  "Phase 2.BL — when point is on (or just after) a paren, return the
+buffer position of the matching paren in the same buffer, or nil.
+Uses the existing Phase 2.AY scanners."
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let* ((p (nelisp-ec-point))
+           (pmax (nelisp-ec-point-max))
+           (pmin (nelisp-ec-point-min))
+           (ch-after (and (< p pmax) (emacs-edit--char-at p)))
+           (ch-before (and (> p pmin) (emacs-edit--char-at (1- p)))))
+      (cond
+       ;; Point on an opener — look for matching closer
+       ((memq ch-after '(?\( ?\[ ?\{))
+        (let ((saved p))
+          (let ((res (nemacs-gtk--scan-sexp-forward pmax)))
+            (nelisp-ec-goto-char saved)
+            (and res (1- res)))))
+       ;; Point just after a closer — look back for matching opener
+       ((memq ch-before '(?\) ?\] ?\}))
+        (let ((saved p))
+          (let ((res (nemacs-gtk--scan-sexp-backward pmin)))
+            (nelisp-ec-goto-char saved)
+            res)))
+       (t nil)))))
+
+(defun nemacs-gtk--collect-paren-highlight ()
+  "Phase 2.BL — return a 1-element highlight list for the matching
+paren when point sits on or just past one, or nil otherwise.
+Green tint (rgb 80 220 120) at 50% alpha."
+  (let ((mp (nemacs-gtk--paren-match-pos)))
+    (when mp
+      (let* ((rc-s (nemacs-gtk--pos-to-row-col (1+ mp)))
+             (rc-e (nemacs-gtk--pos-to-row-col (+ 2 mp))))
+        (when (and rc-s rc-e)
+          (list (list (car rc-s) (cdr rc-s)
+                      (car rc-e) (cdr rc-e)
+                      80 220 120 128)))))))
+
+(defun nemacs-gtk--paint-highlights ()
+  "Phase 2.BL — combine isearch matches + paren-match into a single
+highlight list and push to the Rust side.  No-op when the extern
+isn't loaded (= substrate-only boot)."
+  (when (fboundp 'nelisp-gtk-set-highlights)
+    (let ((isearch-hl (nemacs-gtk--collect-isearch-highlights))
+          (paren-hl   (nemacs-gtk--collect-paren-highlight)))
+      (nelisp-gtk-set-highlights (append isearch-hl paren-hl)))))
+
 (defun nemacs-gtk--repaint ()
   "One full redraw cycle: buffer, mode line, echo, cursor, queue draw."
   (nelisp-gtk-grid-clear)
@@ -4928,6 +5005,7 @@ when the extern isn't loaded (= substrate-only boot)."
   (nemacs-gtk--paint-mode-line)
   (nemacs-gtk--paint-echo-area)
   (nemacs-gtk--paint-region-overlay)
+  (nemacs-gtk--paint-highlights)
   (let ((rc (nemacs-gtk--cursor-row-col)))
     (if rc
         (nelisp-gtk-set-cursor (car rc) (cdr rc))
