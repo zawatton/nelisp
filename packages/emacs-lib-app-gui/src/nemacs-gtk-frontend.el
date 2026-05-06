@@ -337,6 +337,9 @@ Idempotent — re-calling replaces the global map with a fresh one."
     ;; Phase 2.BG — `C-x C-d' / `C-x C-v' = list-dir / find-alternate.
     (define-key ctl-x-map (vector ?\C-d) 'nemacs-gtk-list-directory)
     (define-key ctl-x-map (vector ?\C-v) 'nemacs-gtk-find-alternate-file)
+    ;; Phase 2.BJ — `C-x C-u' / `C-x C-l' = upcase / downcase region.
+    (define-key ctl-x-map (vector ?\C-u) 'nemacs-gtk-upcase-region)
+    (define-key ctl-x-map (vector ?\C-l) 'nemacs-gtk-downcase-region)
     ;; Phase 2.AX/AZ — `C-x r' prefix → registers + bookmarks.
     (let ((c-x-r-map (make-sparse-keymap)))
       (define-key c-x-r-map (vector ?s)  'nemacs-gtk-copy-to-register)
@@ -3677,6 +3680,112 @@ through `self-insert-command'."
               (format "electric-pair: %c (no match)" ch)))))))
 
 
+;;;; --- bundle Phase 2.BJ (case regions + kill-this-buffer + quit-window) --
+
+(defun nemacs-gtk--region-bounds-or-error ()
+  "Return `(START . END)' for the active region in the active buffer,
+or nil + set echo when no mark is set / point == mark."
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (cond
+     ((null nemacs-gtk--mark-pos)
+      (setq nemacs-gtk--last-key-text "no mark set")
+      nil)
+     (t
+      (let* ((p (nelisp-ec-point))
+             (s (min p nemacs-gtk--mark-pos))
+             (e (max p nemacs-gtk--mark-pos)))
+        (cond
+         ((= s e)
+          (setq nemacs-gtk--last-key-text "empty region")
+          nil)
+         (t (cons s e))))))))
+
+(defun nemacs-gtk-upcase-region ()
+  "Bound to `C-x C-u' — replace the active region's text with its
+upper-cased form via `upcase'.  No-op + echo when no region is set."
+  (interactive)
+  (let ((b (nemacs-gtk--region-bounds-or-error)))
+    (when b
+      (with-current-buffer (nemacs-gtk--active-buffer)
+        (let* ((s (car b)) (e (cdr b))
+               (text (nelisp-ec-buffer-substring s e))
+               (up   (upcase text)))
+          (nelisp-ec-delete-region s e)
+          (nelisp-ec-goto-char s)
+          (nelisp-ec-insert up)
+          (setq nemacs-gtk--last-key-text
+                (format "upcase-region: %d chars" (length text))))))))
+
+(defun nemacs-gtk-downcase-region ()
+  "Bound to `C-x C-l' — replace the active region's text with its
+lower-cased form via `downcase'.  No-op + echo when no region is set."
+  (interactive)
+  (let ((b (nemacs-gtk--region-bounds-or-error)))
+    (when b
+      (with-current-buffer (nemacs-gtk--active-buffer)
+        (let* ((s (car b)) (e (cdr b))
+               (text (nelisp-ec-buffer-substring s e))
+               (dn   (downcase text)))
+          (nelisp-ec-delete-region s e)
+          (nelisp-ec-goto-char s)
+          (nelisp-ec-insert dn)
+          (setq nemacs-gtk--last-key-text
+                (format "downcase-region: %d chars" (length text))))))))
+
+(defun nemacs-gtk-capitalize-region ()
+  "M-x capitalize-region — title-case each word in the active region.
+Whitespace + punctuation between words are preserved verbatim."
+  (interactive)
+  (let ((b (nemacs-gtk--region-bounds-or-error)))
+    (when b
+      (with-current-buffer (nemacs-gtk--active-buffer)
+        (let* ((s (car b)) (e (cdr b))
+               (text (nelisp-ec-buffer-substring s e))
+               (cap  (capitalize text)))
+          (nelisp-ec-delete-region s e)
+          (nelisp-ec-goto-char s)
+          (nelisp-ec-insert cap)
+          (setq nemacs-gtk--last-key-text
+                (format "capitalize-region: %d chars" (length text))))))))
+
+(defun nemacs-gtk-kill-this-buffer ()
+  "M-x kill-this-buffer — kill the active buffer without prompting.
+Switches the GUI to `*welcome*' afterward (= what `kill-buffer'
+does when the killed buffer was the only display target).  Refuses
+to kill `*welcome*' itself + `*Messages*' (= protective)."
+  (interactive)
+  (let ((bn nemacs-gtk--active-buffer-name))
+    (cond
+     ((member bn '("*welcome*" "*Messages*"))
+      (setq nemacs-gtk--last-key-text
+            (format "kill-this-buffer: refusing to kill %s" bn)))
+     (t
+      (when (fboundp 'kill-buffer)
+        (kill-buffer bn))
+      (setq nemacs-gtk--active-buffer-name "*welcome*")
+      (setq nemacs-gtk--scroll-offset 0)
+      (nemacs-gtk--sync-window-title)
+      (setq nemacs-gtk--last-key-text
+            (format "kill-this-buffer: %s" bn))))))
+
+(defun nemacs-gtk-quit-window ()
+  "M-x quit-window — switch the GUI back to `*welcome*' without
+killing the current buffer.  Useful for dismissing read-only
+help / list buffers (= `*Help*' / `*Bookmarks*' / `*Apropos*')
+where the user wants to keep the content but stop displaying it."
+  (interactive)
+  (let ((bn nemacs-gtk--active-buffer-name))
+    (cond
+     ((string= bn "*welcome*")
+      (setq nemacs-gtk--last-key-text "quit-window: already at welcome"))
+     (t
+      (setq nemacs-gtk--active-buffer-name "*welcome*")
+      (setq nemacs-gtk--scroll-offset 0)
+      (nemacs-gtk--sync-window-title)
+      (setq nemacs-gtk--last-key-text
+            (format "quit-window: hid %s" bn))))))
+
+
 ;;;; --- minibuffer mode (Phase 2.J — M-x execute-extended-command) ----------
 
 (defvar nemacs-gtk--minibuffer-active nil
@@ -4172,7 +4281,17 @@ success / failure."
     "nemacs-gtk-iconify-frame"
     "electric-pair-mode"
     "transient-mark-mode"
-    "iconify-frame")
+    "iconify-frame"
+    "nemacs-gtk-upcase-region"
+    "nemacs-gtk-downcase-region"
+    "nemacs-gtk-capitalize-region"
+    "nemacs-gtk-kill-this-buffer"
+    "nemacs-gtk-quit-window"
+    "upcase-region"
+    "downcase-region"
+    "capitalize-region"
+    "kill-this-buffer"
+    "quit-window")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
@@ -4879,6 +4998,9 @@ itself a keymap (= a prefix mid-sequence)."
     nemacs-gtk-delete-blank-lines
     nemacs-gtk-kill-sentence
     nemacs-gtk-backward-kill-sentence
+    nemacs-gtk-upcase-region
+    nemacs-gtk-downcase-region
+    nemacs-gtk-capitalize-region
     delete-char
     delete-backward-char)
   "Phase 2.AQ: command symbols the dispatcher refuses to run when
