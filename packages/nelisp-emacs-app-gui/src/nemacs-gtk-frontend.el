@@ -4781,13 +4781,28 @@ is available (= safe default — assume clean)."
     (condition-case _ (nelisp-ec-buffer-modified-p buf) (error nil)))
    (t nil)))
 
+(defun nemacs-gtk--cached-line-number-at-point ()
+  "Phase 3.O — when the Rust-side buffer cache is current, use it
+to compute the 1-based line number of point in O(point) Rust bytes,
+which is O(thousands-of-times-faster) than the elisp polyfill (=
+`(buffer-substring 1 point)' through the NeLisp interpreter).
+Falls back to `(line-number-at-pos)' when the cache is stale or
+the extern isn't loaded."
+  (cond
+   ((and nemacs-gtk--cache-synced-buffer
+         (string= nemacs-gtk--cache-synced-buffer
+                  nemacs-gtk--active-buffer-name)
+         (fboundp 'nelisp-gtk-buffer-line-number-at))
+    (nelisp-gtk-buffer-line-number-at (nelisp-ec-point)))
+   (t (line-number-at-pos))))
+
 (defun nemacs-gtk--mode-line-text ()
   "Compose the mode-line for the active buffer.  Includes:
 modified-flag (= `**' / `--'), buffer-name, current line number,
 viewport scroll-position label (= Top/All/Bot/NN%), major-mode name."
   (with-current-buffer (nemacs-gtk--active-buffer)
     (let* ((name (buffer-name))
-           (line (line-number-at-pos))
+           (line (nemacs-gtk--cached-line-number-at-point))
            ;; Phase 3.A — read the GUI's per-buffer mode table first;
            ;; substrate's `major-mode' is global and only reflects the
            ;; LATEST mode change, not the active-buffer's mode.
