@@ -722,6 +722,33 @@ escalate。本 repo §9.5 OQ で同期 stamp。
 - ERT +3: matrix.fingerprint の stamp、static-frame 完全 short-circuit、
   buffer 拡大時の rebuild 復帰。redisplay 67/67、全体 425/425 PASS
 
+*Phase 3.B.6 row-incremental rebuild (SHIPPED 2026-05-06)*:
+- 目的: edit case (= 1 行のみ変化) で全 row rebuild する slow path を、
+  「変化した row だけ rebuild、他 row は cached glyphs を再利用」に変更
+- 追加: =emacs-redisplay-glyph-matrix= に =line-cache= slot (= vector
+  parallel to rows、各 entry は (LINE-STRING . (OVLY-FP . TP-FP)) cons)、
+  =emacs-redisplay-glyph-row= に =pos-delta= slot (= lazy buf-pos shift)、
+  helpers =--overlays-in-row-range= / =--overlay-row-fingerprint= /
+  =--textprop-row-fingerprint= / =--shift-row-positions= /
+  =--effective-buf-pos=
+- redisplay-window-rebuild は per-row 判定:
+  - cache hit: =--shift-row-positions= で =pos-delta= だけ更新 (= O(1))
+  - cache miss: =--clear-row= + =--lay-out-line= + =--fill-row= + cache 更新
+- =cursor-for-point= は =--effective-buf-pos= 経由で =pos-delta= を加算、
+  glyph =:buf-pos= の物理更新を避ける
+- 実測 (bench iters=1000):
+  - edit total: Phase 3.B.5 = 1.12x → Phase 3.B.6 = *2.33x* (~108% 改善)
+  - edit p99: 28.985ms → *13.547ms* (~53% 改善)
+  - static / scroll に regression なし
+- 5x close gate 未達の残ボトルネック: =buffer-string= 構築 (~2.6ms/iter、
+  下層 nelisp-ec の text-content-tick 不足で skip 不可) + lay-out-line
+  自体 (~0.7ms)。完全 5x 化には text-content-tick 機構 + buffer-string
+  cache が必要、Phase 3.B.7+ で別途検討
+- ERT +3: =row-incremental-skips-unchanged-rows= (rebuild count <= 2)、
+  =shifts-buf-pos-via-pos-delta= (pos-delta 経由の effective-pos 検証)、
+  =cursor-after-shift= (cursor placement on shifted row)
+- redisplay 83/83、全体 441/441 PASS、make compile / make bench 通過
+
 *Phase 3.C close gate audit (2026-05-06、Doc 43 §3.2 + 本 §3.3 全 8 項目)*:
 
 | # | カテゴリ        | 項目                                                                | 状態     | 根拠 / Gap                                                                                                                                                                                                                  |

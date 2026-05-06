@@ -512,6 +512,78 @@
                  (dirty (emacs-redisplay-glyph-matrix-dirty-set m)))
             (should (aref dirty 0))))))))
 
+;; --- Phase 3.B.6 row-incremental rebuild: skip path correctness ---
+
+(ert-deftest emacs-redisplay-test-row-incremental-skips-unchanged-rows ()
+  "Single-line edit: only the changed row is rebuilt, others reuse glyphs."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "alpha\nbeta\ngamma\ndelta"
+      (let* ((h (emacs-redisplay-init))
+             (w (emacs-window-selected-window))
+             (rebuild-count 0))
+        (emacs-window-set-window-buffer w b)
+        (emacs-redisplay-redisplay-window h w)
+        ;; Spy on --clear-row to count actual row rebuilds.
+        (advice-add 'emacs-redisplay--clear-row :before
+                    (lambda (&rest _) (cl-incf rebuild-count)))
+        (unwind-protect
+            (progn
+              ;; Edit only line 1 ("beta" → "betaX").
+              (let ((nelisp-ec--current-buffer b))
+                (nelisp-ec-goto-char 11) ;; end of "beta"
+                (nelisp-ec-insert "X"))
+              (setq rebuild-count 0)
+              (emacs-redisplay-redisplay-window h w)
+              ;; Only row 1 should have been cleared+rebuilt; row 0/2/3
+              ;; reuse cached glyphs.  Mode-line row may also be cleared
+              ;; (cache miss on first call after dim change), but normal
+              ;; static buffer keeps it stable.
+              (should (<= rebuild-count 2)))
+          (advice-remove 'emacs-redisplay--clear-row
+                         (lambda (&rest _) (cl-incf rebuild-count))))))))
+
+(ert-deftest emacs-redisplay-test-row-incremental-shifts-buf-pos-via-pos-delta ()
+  "After insert before a row, glyph effective-buf-pos reflects the shift."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "alpha\nbeta"
+      (let* ((h (emacs-redisplay-init))
+             (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (let* ((m (emacs-redisplay-redisplay-window h w))
+               (row1 (emacs-redisplay-glyph-row m 1))
+               (row1-glyph0 (aref (emacs-redisplay-glyph-row-glyphs row1) 0))
+               (orig-bp (emacs-redisplay-glyph-buf-pos row1-glyph0)))
+          ;; Insert at start (= shifts buffer positions for row 1 by +1).
+          (let ((nelisp-ec--current-buffer b))
+            (nelisp-ec-goto-char 1)
+            (nelisp-ec-insert "X"))
+          (let* ((m (emacs-redisplay-redisplay-window h w))
+                 (row1 (emacs-redisplay-glyph-row m 1))
+                 (row1-glyph0 (aref (emacs-redisplay-glyph-row-glyphs row1) 0))
+                 (eff-bp (emacs-redisplay--effective-buf-pos row1 row1-glyph0)))
+            ;; Effective position must reflect the +1 shift.
+            (should (= (1+ orig-bp) eff-bp))))))))
+
+(ert-deftest emacs-redisplay-test-row-incremental-cursor-after-shift ()
+  "cursor-for-point lands correctly even after a skip-path row shift."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "alpha\nbeta"
+      (let* ((h (emacs-redisplay-init))
+             (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (emacs-redisplay-redisplay-window h w)
+        (let ((nelisp-ec--current-buffer b))
+          (nelisp-ec-goto-char 1)
+          (nelisp-ec-insert "X"))
+        ;; Place cursor on "e" of "beta" (now at pos 9 after insert).
+        (emacs-window-set-window-point w 9)
+        (let* ((m (emacs-redisplay-redisplay-window h w))
+               (cur (emacs-redisplay-glyph-matrix-cursor m)))
+          ;; Row 1 column 1 = "e" of "beta".
+          (should (consp cur))
+          (should (= 1 (car cur)))
+          (should (= 1 (cdr cur))))))))
+
 (ert-deftest emacs-redisplay-test-force-mode-line-update-redraws-mode-line ()
   "force-mode-line-update makes an unchanged mode-line row flush again."
   (emacs-redisplay-test--with-fresh-world
