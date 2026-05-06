@@ -111,7 +111,9 @@ pub fn install_builtins(env: &mut Env) {
         "nelisp--concat-ints",
         // Rust-min (2026-05-06 batch 6e): `string=' moved to elisp
         // defalias of `string-equal'.
-        "string-equal",
+        // Rust-min (2026-05-06 batch 6n): `string-equal' migrated to
+        // elisp (lisp/nelisp-stdlib-plist-str.el).  Dead body removed
+        // in batch 6t (resurrected via stash-merge during 6o).
         "string-match-p",
         // Rust-min (2026-05-06): `regexp-quote' migrated to elisp
         // (see lisp/nelisp-stdlib-plist-str.el).
@@ -317,7 +319,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "symbol-name" => bi_symbol_name(args),
         // Rust-min (2026-05-06 batch 6e): `string=' moved to elisp
         // defalias of `string-equal'.
-        "string-equal" => bi_string_eq(args),
+        // string-equal migrated to elisp (Rust-min 2026-05-06 batch 6n,
+        // see lisp/nelisp-stdlib-plist-str.el; dead body removed in 6t).
         "string-match-p" => bi_string_match_p(args),
         // "regexp-quote" — migrated to elisp (Rust-min 2026-05-06)
         "expand-file-name" => bi_expand_file_name(args, env),
@@ -1335,12 +1338,11 @@ fn bi_symbol_name(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-fn bi_string_eq(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("string-equal", args, 2, Some(2))?;
-    let a = string_value(&args[0])?;
-    let b = string_value(&args[1])?;
-    Ok(truthy(a == b))
-}
+// bi_string_eq removed (Rust-min batch 6n / re-cleanup batch 6t).
+// Same stash-merge artefact pattern as the dead `bi_split_string'
+// scrubbed in batch 6s — the user-facing dispatch was always shadowed
+// by the elisp `string-equal' in lisp/nelisp-stdlib-plist-str.el, so
+// the dead body was behaviourally invisible.
 
 fn string_value(v: &Sexp) -> Result<String, EvalError> {
     match v {
