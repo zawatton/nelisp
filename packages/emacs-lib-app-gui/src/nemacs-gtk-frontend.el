@@ -3786,6 +3786,52 @@ where the user wants to keep the content but stop displaying it."
             (format "quit-window: hid %s" bn))))))
 
 
+;;;; --- bundle Phase 2.BK (cheat-sheet + scratch + messages) --------------
+
+(defun nemacs-gtk-cheat-sheet ()
+  "M-x cheat-sheet — refresh + display the welcome buffer.  Same
+content the GUI shows on boot, useful when the user has switched
+away + wants the keybinding reference back."
+  (interactive)
+  (nemacs-gtk--prepare-welcome-buffer)
+  (setq nemacs-gtk--active-buffer-name "*welcome*")
+  (setq nemacs-gtk--scroll-offset 0)
+  (nemacs-gtk--sync-window-title)
+  (setq nemacs-gtk--last-key-text "cheat-sheet"))
+
+(defun nemacs-gtk-scratch-buffer ()
+  "M-x scratch-buffer — switch to `*scratch*', create + seed with a
+boilerplate header if it doesn't exist yet.  The default content
+mirrors real Emacs's `initial-scratch-message'."
+  (interactive)
+  (let ((buf (get-buffer-create "*scratch*")))
+    (when (= (with-current-buffer buf (nelisp-ec-point-max))
+             (with-current-buffer buf (nelisp-ec-point-min)))
+      (with-current-buffer buf
+        (nelisp-ec-insert
+         (concat
+          ";; This buffer is for text that is not saved, and for\n"
+          ";; Lisp evaluation.\n"
+          ";;\n"
+          ";; To create a file, visit it with C-x C-f and enter\n"
+          ";; text in its buffer.\n\n"))))
+    (setq nemacs-gtk--active-buffer-name "*scratch*")
+    (setq nemacs-gtk--scroll-offset 0)
+    (nemacs-gtk--sync-window-title)
+    (setq nemacs-gtk--last-key-text "scratch-buffer")))
+
+(defun nemacs-gtk-messages-buffer ()
+  "M-x messages-buffer — switch to `*Messages*', create if missing.
+Useful for reviewing past echo-area output (= the `--last-key-text'
+log we mirror onto `*Messages*' via the existing `message' wiring)."
+  (interactive)
+  (get-buffer-create "*Messages*")
+  (setq nemacs-gtk--active-buffer-name "*Messages*")
+  (setq nemacs-gtk--scroll-offset 0)
+  (nemacs-gtk--sync-window-title)
+  (setq nemacs-gtk--last-key-text "messages-buffer"))
+
+
 ;;;; --- minibuffer mode (Phase 2.J — M-x execute-extended-command) ----------
 
 (defvar nemacs-gtk--minibuffer-active nil
@@ -4291,7 +4337,13 @@ success / failure."
     "downcase-region"
     "capitalize-region"
     "kill-this-buffer"
-    "quit-window")
+    "quit-window"
+    "nemacs-gtk-cheat-sheet"
+    "nemacs-gtk-scratch-buffer"
+    "nemacs-gtk-messages-buffer"
+    "cheat-sheet"
+    "scratch-buffer"
+    "messages-buffer")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
@@ -4339,28 +4391,61 @@ Tab in the prompt completes against `--m-x-commands' (Phase 2.T)."
    #'nemacs-gtk--m-x-completion-fn))
 
 (defun nemacs-gtk--prepare-welcome-buffer ()
-  "Create / reset the `*welcome*' buffer + drop the cursor at end."
+  "Create / reset the `*welcome*' buffer + drop the cursor at end.
+Phase 2.BK: doubles as the cheat-sheet renderer — `M-x cheat-sheet'
+re-runs this fn to refresh the content with the latest key bindings."
   (let ((buf (or (get-buffer "*welcome*")
                  (generate-new-buffer "*welcome*"))))
     (with-current-buffer buf
       (erase-buffer)
-      (insert "Welcome to nemacs-gtk!\n")
-      (insert "\n")
-      (insert "Phase 2 architecture: this UI is now elisp-driven.\n")
-      (insert "Rust ships GTK plumbing primitives (`nelisp-gtk-*');\n")
-      (insert "every layout / dispatch decision lives in this file.\n")
-      (insert "\n")
-      (insert (format "(window-system) => %S\n"
-                      (if (fboundp 'window-system)
-                          (window-system) 'unbound)))
-      (insert (format "(display-graphic-p) => %S\n"
-                      (if (fboundp 'display-graphic-p)
-                          (display-graphic-p) 'unbound)))
-      (insert "\n")
-      (insert "Type printable keys; Backspace / Enter / arrows for\n")
-      (insert "motion + edits.  Mode line + cursor follow point.\n")
-      (insert "\n")
-      (insert "> "))
+      (insert "Welcome to nemacs-gtk (= nelisp-emacs, Doc 51 Track D + GTK Layer 3)\n")
+      (insert "===============================================================\n\n")
+      (insert "Quick reference — Phase 2 key bindings:\n\n")
+      (insert "Files\n")
+      (insert "  C-x C-f   find-file              C-x C-s   save-buffer\n")
+      (insert "  C-x C-w   write-file             C-x C-v   find-alternate-file\n")
+      (insert "  C-x s     save-some-buffers      C-x C-d   list-directory\n")
+      (insert "Buffers\n")
+      (insert "  C-x b     switch-to-buffer       C-x C-b   buffer-menu\n")
+      (insert "  C-x k     kill-buffer\n")
+      (insert "Motion\n")
+      (insert "  C-f/b     forward/back-char      C-n/p     next/prev-line\n")
+      (insert "  M-f/b     forward/back-word      C-a/e     beg/end-of-line\n")
+      (insert "  M-</>     beg/end-of-buffer      C-v/M-v   page-down/up\n")
+      (insert "  M-{/}     back/forward-paragraph M-a/e     back/forward-sentence\n")
+      (insert "  C-M-f/b   forward/backward-sexp  M-g g     goto-line\n")
+      (insert "  M-r       cycle top/middle/bot   C-l       recenter\n")
+      (insert "Edit\n")
+      (insert "  C-d       delete-char            DEL       delete-backward-char\n")
+      (insert "  C-k       kill-line              M-k       kill-sentence\n")
+      (insert "  C-w/M-w   kill/copy-region       C-y       yank   M-y yank-pop\n")
+      (insert "  C-x u/C-/ undo                   C-q       quoted-insert\n")
+      (insert "  M-d       kill-word              C-x DEL   back-kill-sentence\n")
+      (insert "  C-M-k     kill-sexp              C-x C-o   delete-blank-lines\n")
+      (insert "  M-u/l/c   upcase/down/cap-word   C-x C-u/l upcase/down-region\n")
+      (insert "  C-x +/-   text-scale-incr/decr   C-x z     repeat\n")
+      (insert "Search / Replace\n")
+      (insert "  C-s/r     isearch fwd/back       M-%       query-replace\n")
+      (insert "  M-/       dabbrev-expand         M-z       zap-to-char\n")
+      (insert "Mark / Region\n")
+      (insert "  C-SPC     set-mark               C-x C-x   exchange-pt-and-mark\n")
+      (insert "  M-h       mark-paragraph         C-M-h     mark-defun\n")
+      (insert "  C-M-SPC   mark-sexp              C-x h     mark-whole-buffer\n")
+      (insert "Windows / Narrowing\n")
+      (insert "  C-x 2/3   split-below/right      C-x 0/1   delete/keep-window\n")
+      (insert "  C-x o     other-window           C-x ^     enlarge-window\n")
+      (insert "  C-x n n/w narrow-region/widen    C-x n d   narrow-to-defun\n")
+      (insert "Registers / Bookmarks\n")
+      (insert "  C-x r s/i copy/insert-register   C-x r SPC/j point/jump\n")
+      (insert "  C-x r m/b bookmark-set/jump      C-x r l   bookmark-list\n")
+      (insert "Help\n")
+      (insert "  C-h k     describe-key           C-h b     describe-bindings\n")
+      (insert "  C-h f/v   describe-fn/variable   C-h a     apropos\n")
+      (insert "Modes / Quit\n")
+      (insert "  M-x electric-pair-mode  M-x transient-mark-mode\n")
+      (insert "  M-x overwrite-mode      M-x kill-this-buffer  C-z iconify\n")
+      (insert "  C-x C-c   save-buffers-kill-emacs           M-x version\n")
+      (insert "\nMouse: click sets point; drag selects; right-click context menu.\n"))
     (buffer-name buf)))
 
 
