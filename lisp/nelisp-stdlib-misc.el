@@ -203,6 +203,59 @@ call time, so it is safe for FN to mutate TABLE during the walk
 (defun file-regular-p (path)
   (eq (nelisp--syscall-stat path) 'file))
 
+;; Rust-min batch 7c (2026-05-07, Doc 50 stage 2): `directory-files'
+;; migrated from Rust to elisp on top of the new readdir syscall
+;; primitive `nelisp--syscall-readdir' (see
+;; build-tool/src/eval/builtins.rs `bi_syscall_readdir').  The
+;; primitive returns `(ABS-DIR NAME ...)' or nil for errors; this
+;; wrapper drives the sort / regex match / FULL prefix / COUNT clip
+;; that used to live in Rust.
+;;
+;; Caveat preserved from the prior Rust impl: when MATCH is supplied
+;; the prior code did substring matching (not real regex) after
+;; trimming `\\\\`' / `\\\\''  delimiters.  This rewrite uses
+;; `string-match-p' (= a real regex primitive that's still Rust-side)
+;; so callers passing real regexp patterns now work as expected;
+;; tree-internal callers were all passing nil for MATCH so no
+;; behavioural surprise.
+
+(defun directory-files (dir &optional full match nosort count)
+  "Return a list of names of files in directory DIR.
+FULL non-nil → return absolute paths (= prepends DIR/).
+MATCH non-nil → keep only names matching this regexp (via
+  `string-match-p').
+NOSORT non-nil → preserve readdir order (= filesystem order); the
+  default sorts lexicographically by `string-lessp'.
+COUNT non-nil → clip to at most COUNT entries (post-filter, post-sort)."
+  (let ((rd (nelisp--syscall-readdir dir)))
+    (if (null rd)
+        nil
+      (let ((abs-dir (car rd))
+            (entries (cdr rd)))
+        (when match
+          (setq entries
+                (let ((acc nil) (cur entries))
+                  (while cur
+                    (when (string-match-p match (car cur))
+                      (setq acc (cons (car cur) acc)))
+                    (setq cur (cdr cur)))
+                  (nreverse acc))))
+        (unless nosort
+          (setq entries (sort entries (function string-lessp))))
+        (when (and count (< count (length entries)))
+          (setq entries
+                (let ((acc nil) (cur entries) (i 0))
+                  (while (and cur (< i count))
+                    (setq acc (cons (car cur) acc))
+                    (setq cur (cdr cur))
+                    (setq i (1+ i)))
+                  (nreverse acc))))
+        (when full
+          (setq entries
+                (mapcar (function (lambda (n) (concat abs-dir "/" n)))
+                        entries)))
+        entries))))
+
 ;; Rust-min batch 6e (2026-05-06): alias-only dispatch arms reduced
 ;; to `defalias'.  Each pair below previously routed through a
 ;; single Rust impl via `"foo" | "bar" => bi_<...>(args)' — the

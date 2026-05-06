@@ -191,7 +191,13 @@ pub fn install_builtins(env: &mut Env) {
         // lisp/nelisp-stdlib-misc.el).  Same 1+N collapse pattern as
         // batch 7a (hash-table iter).
         "nelisp--syscall-stat",
-        "file-name-extension", "directory-files",
+        // Rust-min batch 7c (2026-05-07, Doc 50 stage 2): pure-string
+        // `file-name-extension' migrated to elisp (no new primitive
+        // needed); `directory-files' migrated to elisp on top of the
+        // new readdir syscall primitive (sort + match-filter + full-
+        // path formatting all elisp now).  See
+        // lisp/nelisp-stdlib-plist-str.el + lisp/nelisp-stdlib-misc.el.
+        "nelisp--syscall-readdir",
         "load", "locate-library",
         // Rust-min (2026-05-06): `file-name-directory' /
         // `file-name-nondirectory' / `file-name-as-directory' /
@@ -383,8 +389,14 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // `file-regular-p' migrated to elisp on top of 1 syscall
         // primitive — see lisp/nelisp-stdlib-misc.el.
         "nelisp--syscall-stat" => bi_syscall_stat(args, env),
-        "file-name-extension" => bi_file_name_extension(args),
-        "directory-files" => bi_directory_files(args, env),
+        // file-name-extension migrated to elisp (Rust-min batch 7c,
+        // 2026-05-07; pure-string slicer — see
+        // lisp/nelisp-stdlib-plist-str.el).
+        // Rust-min batch 7c (2026-05-07, Doc 50 stage 2): directory-
+        // files migrated to elisp on top of `nelisp--syscall-readdir'
+        // (sort + match-filter + full-path formatting move to elisp;
+        // only the read_dir syscall stays Rust).
+        "nelisp--syscall-readdir" => bi_syscall_readdir(args, env),
         "load" => bi_load(args, env),
         "locate-library" => bi_locate_library(args, env),
         // ---- symbol / function ----
@@ -1609,55 +1621,35 @@ fn bi_syscall_stat(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     Ok(Sexp::Symbol(tag.into()))
 }
 
-fn bi_file_name_extension(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("file-name-extension", args, 1, Some(2))?;
-    let s = string_value(&args[0])?;
-    // Trim directory prefix.
-    let base = s.rsplit('/').next().unwrap_or(&s);
-    match base.rsplit_once('.') {
-        Some((stem, ext)) if !stem.is_empty() => Ok(Sexp::Str(ext.to_string())),
-        _ => Ok(Sexp::Nil),
-    }
-}
+// bi_file_name_extension retired in Rust-min batch 7c (Doc 50 stage 2,
+// 2026-05-07).  Pure-string slicer, no syscall, so migration cost was
+// the lowest of any batch — see lisp/nelisp-stdlib-plist-str.el.
 
-/// `(directory-files DIR &optional FULL MATCH NOSORT COUNT)` — return
-/// the list of file names in DIR.  FULL non-nil prepends DIR to each
-/// name.  MATCH (regexp) and NOSORT / COUNT are accepted for API
-/// compat but only NOSORT is honored (= we always emit sorted unless
-/// NOSORT is t; MATCH is simple substring matching for now).
-fn bi_directory_files(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("directory-files", args, 1, Some(5))?;
+/// `(nelisp--syscall-readdir DIR)' — Rust-min batch 7c (Doc 50 stage
+/// 2).  POSIX readdir layer used by elisp `directory-files' (see
+/// lisp/nelisp-stdlib-misc.el).  Returns the cons-headed list
+///
+///   `(ABS-DIR NAME1 NAME2 ...)`
+///
+/// where ABS-DIR is the `default-directory'-resolved absolute path
+/// (= matches what the prior `bi_directory_files' used internally for
+/// FULL-mode prefix), and NAMEi are unsorted directory entry names.
+/// Returns nil for any error (= dir not found, permission denied,
+/// etc) — same as the prior `bi_directory_files' which also collapsed
+/// all errors to nil.  The elisp wrapper handles sort / regex match /
+/// FULL-path / COUNT clipping.
+fn bi_syscall_readdir(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--syscall-readdir", args, 1, Some(1))?;
     let dir = resolve_existing_path(&args[0], env)?;
-    let full = args.get(1).map(|v| !matches!(v, Sexp::Nil)).unwrap_or(false);
-    let match_pat = match args.get(2) {
-        Some(Sexp::Str(s)) => Some(s.clone()),
-        _ => None,
-    };
-    let nosort = args.get(3).map(|v| !matches!(v, Sexp::Nil)).unwrap_or(false);
-    let mut entries: Vec<String> = match std::fs::read_dir(&dir) {
+    let dir_str = dir.to_string_lossy().into_owned();
+    let entries: Vec<Sexp> = match std::fs::read_dir(&dir) {
         Ok(rd) => rd
             .filter_map(|e| e.ok())
-            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .map(|e| Sexp::Str(e.file_name().to_string_lossy().into_owned()))
             .collect(),
         Err(_) => return Ok(Sexp::Nil),
     };
-    if let Some(pat) = match_pat {
-        // Crude substring-only match (= sufficient for `\\.el\\'` style
-        // suffix tests after we strip backslash escapes).
-        let pat = pat.trim_start_matches("\\`").trim_end_matches("\\'").to_string();
-        entries.retain(|n| n.contains(&pat));
-    }
-    if !nosort {
-        entries.sort();
-    }
-    let items: Vec<Sexp> = entries.into_iter().map(|n| {
-        if full {
-            Sexp::Str(format!("{}/{}", dir.display(), n))
-        } else {
-            Sexp::Str(n)
-        }
-    }).collect();
-    Ok(Sexp::list_from(&items))
+    Ok(Sexp::cons(Sexp::Str(dir_str), Sexp::list_from(&entries)))
 }
 
 /// `(locate-library NAME)' — search `load-path' for a file named NAME

@@ -466,6 +466,43 @@ Result keeps the trailing slash."
      ((eq (aref path (1- n)) ?/) (substring path 0 (1- n)))
      (t path))))
 
+;; Rust-min batch 7c (2026-05-07, Doc 50 stage 2): `string-lessp' was
+;; never an explicit builtin in NeLisp (= no `bi_string_lessp'); host
+;; emacs has it as a C primitive.  Adding it as a thin elisp wrapper
+;; over `compare-strings' (already migrated 2026-05-06) lets the new
+;; elisp `directory-files' sort case-sensitively without a new
+;; primitive.  Returns t when STR1 is lexicographically less than
+;; STR2 by ASCII codepoint (= same semantic as host emacs's
+;; `string-lessp', sufficient for Latin-1 / ASCII filenames).
+(defun string-lessp (str1 str2)
+  "Return t if STR1 sorts before STR2 lexicographically by codepoint."
+  (let ((r (compare-strings str1 0 nil str2 0 nil)))
+    (and (numberp r) (< r 0))))
+
+;; Rust-min batch 7c (2026-05-07, Doc 50 stage 2): `file-name-extension'
+;; was a pure-string slicer in `bi_file_name_extension' — `rsplit('/')'
+;; for the basename + `rsplit_once('.')' for the extension.  No syscall,
+;; so migrating to elisp needs ZERO new primitives (= cheaper than
+;; even batch 7b).  The PERIOD optional arg in host emacs (= include
+;; the leading `.') is also accepted+ignored here because the prior
+;; Rust impl ignored args[1] as well.
+(defun file-name-extension (path &optional _period)
+  "Return the extension of file name PATH (= text after the last `.').
+Returns nil when PATH has no `.', or when the basename starts with
+`.' (= a dotfile such as \".bashrc\" has no extension)."
+  (let* ((non (file-name-nondirectory path))
+         (n (length non))
+         (idx -1)
+         (i 0))
+    (while (< i n)
+      (when (eq (aref non i) ?.)
+        (setq idx i))
+      (setq i (1+ i)))
+    (cond
+     ((< idx 0) nil)
+     ((= idx 0) nil)
+     (t (substring non (1+ idx))))))
+
 ;; Rust-min (2026-05-06): string-trim family + string-prefix-p /
 ;; string-suffix-p — pure string slicing.  Migrated from
 ;; build-tool/src/eval/builtins.rs.
