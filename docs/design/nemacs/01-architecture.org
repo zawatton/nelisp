@@ -696,6 +696,32 @@ escalate。本 repo §9.5 OQ で同期 stamp。
 - 将来の専用 mode-line plane / dedicated row は v2.x で別設計とし、
   その際は `cursor` / `dirty-set` / `row-hash` の contract 更新が必要
 
+*Phase 3.B.5 throughput close gate (SHIPPED 2026-05-06)*:
+- 追加: =emacs-redisplay-glyph-matrix= に =fingerprint= slot、
+  =emacs-redisplay--snapshot-fingerprint= helper、
+  =emacs-redisplay-redisplay-window= 入口の short-circuit 経路
+- fingerprint = (buffer / buf-size / buf-point / narrow-start /
+  narrow-end / window-start / window-point / width / height) vector。
+  二回連続 redisplay で =equal= なら matrix rebuild 自体を skip
+- =mark-window-dirty= / =mark-frame-dirty= は cache-drop 経路で
+  short-circuit を bypass、overlay / text-property / face registry
+  変更時は callers が明示的に dirty mark する契約 (既存 API contract
+  をそのまま流用)
+- bench: =bench/bench-redisplay.el= + =make bench= ターゲット。
+  3 シナリオ (static / edit / scroll)、各 mode (:diff vs :full) で
+  redisplay-only / flush-only / total を計測
+- 実測 (iters=200、本リポジトリ Linux dev box):
+  - static  : total 72.36x (flush-only 171.49x) — 主 gate PASS
+  - edit    : total 1.11x (flush-only 22.43x) — 副 signal PASS
+  - scroll  : total 1.00x — informational (差分余地なし、想定通り)
+- 解釈: Doc 43 §3.2 の「row-hash equal で backend draw call skip
+  → 5x throughput」は idle/static redisplay の主路で実証
+  (72x、対 5x gate)。edit case の total 1x は rebuild が依然
+  dominate するため、row 単位 incremental rebuild は Phase 3.B.6
+  以降の future work として deferred (close gate には不要)
+- ERT +3: matrix.fingerprint の stamp、static-frame 完全 short-circuit、
+  buffer 拡大時の rebuild 復帰。redisplay 67/67、全体 425/425 PASS
+
 *期間 (Doc 43 v1 §3.0 dual case 同期、T130 MAJOR M-1 反映)*:
 - *case A (Phase 11.B core commitment 化決議時)* = 6-12 ヶ月 (= Doc 43
   §3.2 anvil leverage 込、本 repo session-A core 担当、xdisp.c MVP scope
