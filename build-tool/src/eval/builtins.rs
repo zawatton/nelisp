@@ -205,7 +205,12 @@ pub fn install_builtins(env: &mut Env) {
         // path formatting all elisp now).  See
         // lisp/nelisp-stdlib-plist-str.el + lisp/nelisp-stdlib-misc.el.
         "nelisp--syscall-readdir",
-        "load", "locate-library",
+        // Rust-min batch 7e (2026-05-07, Doc 50 stage 2): `locate-library'
+        // migrated to elisp (load-path walk + suffix probe via
+        // `nelisp--syscall-stat'; `bi_load' keeps the private
+        // `locate_load_target' helper for now).  See
+        // lisp/nelisp-stdlib-misc.el.
+        "load",
         // Rust-min (2026-05-06): `file-name-directory' /
         // `file-name-nondirectory' / `file-name-as-directory' /
         // `directory-file-name' migrated to elisp (see
@@ -406,7 +411,6 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // only the read_dir syscall stays Rust).
         "nelisp--syscall-readdir" => bi_syscall_readdir(args, env),
         "load" => bi_load(args, env),
-        "locate-library" => bi_locate_library(args, env),
         // ---- symbol / function ----
         "symbol-value" => bi_symbol_value(args, env),
         "symbol-function" => bi_symbol_function(args, env),
@@ -1666,25 +1670,14 @@ fn bi_syscall_readdir(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     Ok(Sexp::cons(Sexp::Str(dir_str), Sexp::list_from(&entries)))
 }
 
-/// `(locate-library NAME)' — search `load-path' for a file named NAME
-/// (with `.el' / `.elc' suffix).  Returns the absolute path string on
-/// hit, or nil.
-fn bi_locate_library(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("locate-library", args, 1, Some(4))?;
-    let name = match &args[0] {
-        Sexp::Str(s) => s.clone(),
-        Sexp::MutStr(rc) => rc.borrow().clone(),
-        Sexp::Symbol(s) => s.clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "stringp".into(),
-            got: other.clone(),
-        }),
-    };
-    match locate_load_target(&name, env) {
-        Ok(p) => Ok(Sexp::Str(p.to_string_lossy().into_owned())),
-        Err(_) => Ok(Sexp::Nil),
-    }
-}
+// `bi_locate_library' removed — Rust-min batch 7e (2026-05-07, Doc 50
+// stage 2): migrated to elisp `(defun locate-library ...)' on top of
+// existing `expand-file-name' + `nelisp--syscall-stat' primitives.
+// See lisp/nelisp-stdlib-misc.el.  `bi_load' below still uses the
+// private `locate_load_target' helper for its own load-path probe; we
+// keep that helper rather than dispatching back into elisp from
+// inside `load' to avoid a re-entrancy hazard while `load' itself is
+// still Rust-side.
 
 // bi_file_name_as_directory / bi_directory_file_name removed — see
 // lisp/nelisp-stdlib-plist-str.el (Rust-min 2026-05-06).

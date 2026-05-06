@@ -298,6 +298,63 @@ COUNT non-nil → clip to at most COUNT entries (post-filter, post-sort)."
                         entries)))
         entries))))
 
+;; Rust-min batch 7e (2026-05-07, Doc 50 stage 2): `locate-library'
+;; migrated from Rust to elisp.  Walks `default-directory' +
+;; `load-path' and probes each candidate with `nelisp--syscall-stat'.
+;; Suffix logic = the as-given name plus a `.el'-appended variant
+;; (skipped when name already ends in `.el').  Mirrors the prior Rust
+;; `locate_load_target' shape but built on existing primitives —
+;; `expand-file-name' (batch 7d) for the absolute-vs-relative join and
+;; `nelisp--syscall-stat' (batch 7b) for the existence probe.
+;;
+;; The companion `bi_load' Rust-side still owns its own private copy
+;; of the same probe (= `locate_load_target' helper); leaving it there
+;; sidesteps a re-entrancy hazard while `load' itself is still Rust.
+;; A future batch can fold both onto a single elisp helper once
+;; `load' moves elisp-side as well.
+
+(defun nelisp--locate-probe (cand suffixes)
+  "Return CAND + first suffix from SUFFIXES whose path resolves to a
+regular file (per `nelisp--syscall-stat'), or nil if none match."
+  (let ((cur suffixes) (hit nil))
+    (while (and cur (null hit))
+      (let ((p (concat cand (car cur))))
+        (when (eq (nelisp--syscall-stat p) 'file)
+          (setq hit p)))
+      (setq cur (cdr cur)))
+    hit))
+
+(defun locate-library (name &optional _nosuffix _path _interactive-call)
+  "Search `load-path' for a file named NAME, returning its absolute
+path or nil.  Tries NAME as-given first, then NAME with `.el' appended
+(unless NAME already ends in `.el').  Optional NOSUFFIX / PATH /
+INTERACTIVE-CALL args are accepted for host-Emacs compatibility but
+ignored — NeLisp does not byte-compile so there's no `.elc' fork, and
+the load-path override + interactive message machinery aren't wired."
+  (let* ((n (length name))
+         (has-el (and (> n 3)
+                      (eq (aref name (- n 3)) ?.)
+                      (eq (aref name (- n 2)) ?e)
+                      (eq (aref name (- n 1)) ?l)))
+         (suffixes (if has-el (list "") (list "" ".el"))))
+    (cond
+     ;; Absolute path: probe directly, skip load-path walk.
+     ((and (> n 0) (eq (aref name 0) ?/))
+      (nelisp--locate-probe name suffixes))
+     ;; Relative: try `default-directory' first, then walk `load-path'.
+     (t
+      (let ((roots (cons (and (boundp 'default-directory) default-directory)
+                         (and (boundp 'load-path) load-path)))
+            (hit nil))
+        (while (and roots (null hit))
+          (let ((root (car roots)))
+            (when (and (stringp root) (> (length root) 0))
+              (setq hit (nelisp--locate-probe
+                         (expand-file-name name root)
+                         suffixes))))
+          (setq roots (cdr roots)))
+        hit)))))
+
 ;; Rust-min batch 6e (2026-05-06): alias-only dispatch arms reduced
 ;; to `defalias'.  Each pair below previously routed through a
 ;; single Rust impl via `"foo" | "bar" => bi_<...>(args)' — the
