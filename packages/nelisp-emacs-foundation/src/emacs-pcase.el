@@ -194,35 +194,12 @@ See `emacs-pcase--test' for supported pattern shapes."
         (list 'let (list (list value-sym expr))
               (cons 'cond forward))))))
 
-;; Phase 4 B (2026-05-06): override `pcase' ONLY under the nelisp
-;; Rust runtime.  Detection: host emacs ships
-;; `comp-trampoline-compile' (= native-comp 28+ feature that NeLisp
-;; lacks); when that symbol is unbound we are running on NeLisp.
-;; Under bin/nemacs --driver=host we are still on host emacs even
-;; though `nelisp-emacs-vendor-root' is set, so vendor-root alone is
-;; the wrong signal.  Keeping host's richer C-native pcase intact is
-;; required because `make test' subprocess-launches bin/nemacs and
-;; expects host semantics.
-;;
-;; Caveat: NeLisp routes macro expansion through an internal Rust-
-;; side registry that is not visible from elisp, so this override
-;; only applies when callers use `symbol-function' / `macroexpand'
-;; explicitly.  Full un-skip of grammar-rich callers (= nelisp-regex's
-;; `(or :star :plus :opt)' pattern) requires upstream NeLisp to either
-;; expand its built-in pcase grammar or expose a registry-override
-;; API.
-
-;; Direct override attempts (`fset' / `defalias' to either a closure or
-;; a quoted `(macro lambda …)' form) failed under the nelisp driver:
-;;   - closure form    → `wrong-type-argument function closure'
-;;   - quoted lambda    → `wrong-type-argument function lambda'
-;; NeLisp's macro dispatcher uses an internal Rust-side lookup that
-;; doesn't honour elisp-level `defalias'.  Real un-skip of grammar-
-;; rich pcase callers (= nelisp-regex.el's `(or :star :plus :opt)'
-;; pattern) requires upstream NeLisp to either expand its built-in
-;; pcase grammar or expose a registry-override API.  For our local
-;; src/nelisp-regex.el copy we instead rewrite affected pcase forms
-;; into `cond'.
+;; Rust-min migration (2026-05-06): NeLisp upstream now ships the
+;; pcase macro as elisp under `lisp/nelisp-pcase.el', loaded as part
+;; of `Env::new_global' STDLIB_SOURCES.  The nelisp driver therefore
+;; exposes the rich grammar (or / and / pred / guard / cons /
+;; backquote / let) directly — no override hack needed here.
+;; Under host driver, host emacs's C-native pcase is left intact.
 
 (unless (fboundp 'pcase-let)
   (defmacro pcase-let (bindings &rest body)

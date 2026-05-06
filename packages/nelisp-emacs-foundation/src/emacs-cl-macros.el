@@ -707,44 +707,18 @@ defining `emit-before-strings' / `emit-after-strings')."
 (unless (fboundp 'cl-labels)
   (defalias 'cl-labels 'cl-flet))
 
+;; cl-block / cl-return-from / cl-return:
+;;   - host driver:    host emacs's cl-lib provides real impls
+;;   - nelisp driver:  NeLisp upstream `lisp/nelisp-cl-macros.el'
+;;                     ships the real catch+throw impl as part of
+;;                     STDLIB_SOURCES (= Rust-min migration 2026-05-06)
+;; Either way `(fboundp 'cl-block)` is true at load time so the stub
+;; below stays inert.  Kept as a fallback for environments that load
+;; this module without either driver providing the real impl.
 (unless (fboundp 'cl-block)
   (defmacro cl-block (_name &rest body)
     "Stub: cl-block → progn (= no return-from support)."
     (cons 'progn body)))
-
-;; Phase 4 B (2026-05-06): real cl-block / cl-return-from / cl-return.
-;; The previous stub returned nil unconditionally, so any caller that
-;; relied on `cl-return' inside a `cl-loop' (= the bodyless infinite
-;; form) ran forever or silently no-op'd.  nelisp-regex.el's
-;; parse-concat / parse-alt depend on this for the scan loop.
-;;
-;; Expansion strategy:
-;;   (cl-block NAME BODY...) → (catch 'cl-block-NAME BODY...)
-;;   (cl-return-from NAME VAL) → (throw 'cl-block-NAME VAL)
-;;   (cl-return VAL) → (cl-return-from nil VAL) (= unnamed block)
-;;
-;; Tag symbol uses `intern' so two calls to cl-block with the same
-;; NAME share a tag (= correct upward-jump semantics).
-
-(defun emacs-cl-macros--block-tag (name)
-  "Return the catch tag symbol used by cl-block NAME."
-  (intern (format "cl-block-%s" (or name "anon"))))
-
-;; Override the previous progn-stub cl-block / no-op cl-return-from /
-;; cl-return ONLY under the nelisp driver.  Under host emacs, host's
-;; cl-lib already provides the real implementations; replacing them
-;; would break unrelated tests that depend on host's exact return /
-;; binding semantics.
-
-;; Direct override of NeLisp's built-in cl-block / cl-return-from /
-;; cl-return failed for the same reason as pcase (= NeLisp's macro
-;; dispatcher uses an internal Rust-side lookup that doesn't honour
-;; elisp `defalias' / `fset').  See the matching note in
-;; emacs-pcase.el.  For now we leave the previous progn-stub
-;; cl-block / no-op cl-return active under the nelisp driver — it
-;; was correct enough that nelisp-regex.el's parse-concat / parse-alt
-;; loops have to be rewritten to avoid `cl-return' anyway, since
-;; bodyless `cl-loop' isn't a NeLisp built-in either.
 
 ;;;; --- cl-getf / cl-first/second/third --------------------------------
 
