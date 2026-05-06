@@ -421,6 +421,32 @@ section comment for the full contract."
              (noerror nil)
              (t (signal (car err-obj) (cdr err-obj))))))))))))
 
+;; Rust-min batch 7i (2026-05-07, Doc 50 stage 2): `provide' / `featurep'
+;; migrated from Rust to elisp.  The internal `Env::features' HashSet
+;; is retired — `features' is now the single canonical state, the same
+;; dynamic var host Emacs (and prior NeLisp callers reading `features'
+;; directly) already used for introspection.  `bi_require' (Rust-side)
+;; still orchestrates load + post-load contract checks but reads
+;; provided-feature state through the elisp `featurep' fcell.
+;;
+;; `features' is a list of symbols, newest at the front (matching host
+;; Emacs's contract).  `provide' is idempotent (`(memq feature
+;; features)' guards the cons), `featurep' is a 1-line `memq'.
+
+(defvar features nil
+  "List of feature symbols already provided by `provide'.")
+
+(defun provide (feature)
+  "Mark FEATURE (a symbol) as available.  Adds it to `features' if not
+already there.  Returns FEATURE."
+  (unless (memq feature features)
+    (setq features (cons feature features)))
+  feature)
+
+(defun featurep (feature)
+  "Return t if FEATURE (a symbol) has been provided, else nil."
+  (if (memq feature features) t nil))
+
 ;; Rust-min batch 6e (2026-05-06): alias-only dispatch arms reduced
 ;; to `defalias'.  Each pair below previously routed through a
 ;; single Rust impl via `"foo" | "bar" => bi_<...>(args)' — the

@@ -237,7 +237,13 @@ pub fn install_builtins(env: &mut Env) {
         "signal", "prin1-to-string",
         "nelisp--write-stderr-line",
         "nelisp--write-stdout-bytes",
-        "provide", "require", "featurep",
+        // Rust-min batch 7i (2026-05-07, Doc 50 stage 2): `provide' /
+        // `featurep' migrated to elisp on top of the `features' dynamic
+        // var (the canonical source of provided-feature state — see
+        // lisp/nelisp-stdlib-misc.el).  `require' stays Rust because it
+        // orchestrates load + post-load verify (calls back through
+        // `featurep' via the function cell).
+        "require",
         // self-process stdio (Phase 9 minimal — needed by stand-alone Lisp servers
         // such as elisp-lsp running on the `nelisp` binary)
         "read-stdin-bytes",
@@ -526,9 +532,10 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "terminal-take-sigcont" => bi_terminal_take_sigcont(args),
         "read" => bi_read(args),
         "read-from-string" => bi_read_from_string(args),
-        "provide" => bi_provide(args, env),
+        // provide / featurep migrated to elisp (Rust-min batch 7i,
+        // 2026-05-07; see lisp/nelisp-stdlib-misc.el).  Only `require'
+        // stays Rust because it orchestrates load + post-load verify.
         "require" => bi_require(args, env),
-        "featurep" => bi_featurep(args, env),
         _ => {
             // Externally-registered builtin (= `Env::register_extern_builtin')
             // — host crates like nelisp-emacs-gtk install GTK4 / SDL2 /
@@ -2992,38 +2999,19 @@ fn bi_read_from_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::cons(form, Sexp::Int(s.len() as i64)))
 }
 
-fn bi_provide(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("provide", args, 1, Some(1))?;
-    let feature = feature_name_arg("provide", &args[0])?;
-    env.provide_feature(&feature);
-    // Also mirror the feature symbol onto the `features' dynamic
-    // var so introspection from elisp works (= matches host Emacs
-    // contract; nemacs-status / package-loaded-p style code reads
-    // `features' directly).
-    let cur = env.lookup_value("features").unwrap_or(Sexp::Nil);
-    let already = {
-        let mut found = false;
-        let mut node = cur.clone();
-        while let Sexp::Cons(h, t) = node {
-            let head = h.borrow().clone();
-            if let Sexp::Symbol(s) = &head {
-                if s == &feature { found = true; break; }
-            }
-            node = t.borrow().clone();
-        }
-        found
-    };
-    if !already {
-        let new_features = Sexp::cons(Sexp::Symbol(feature.clone()), cur);
-        let _ = env.set_value("features", new_features);
-    }
-    Ok(Sexp::Symbol(feature))
-}
+// `bi_provide' / `bi_featurep' removed — Rust-min batch 7i (2026-05-07,
+// Doc 50 stage 2): both migrated to elisp on top of the `features'
+// dynamic var, which is now the single canonical source of provided-
+// feature state.  The previous `Env::features' HashSet (which both
+// the old Rust `provide' wrote to AND `featurep' read from) duplicated
+// the same information and forced `bi_provide' to manually mirror its
+// writes onto the elisp-visible `features' var — that mirror logic
+// (and the HashSet itself) is gone.  See lisp/nelisp-stdlib-misc.el.
 
 fn bi_require(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("require", args, 1, Some(3))?;
     let feature = feature_name_arg("require", &args[0])?;
-    if env.has_feature(&feature) {
+    if elisp_featurep(env, &feature)? {
         return Ok(Sexp::Symbol(feature));
     }
     // Doc 47 Stage 8b — actually try `load' on the feature name when
@@ -3040,7 +3028,7 @@ fn bi_require(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let noerror = args.get(2).map(is_truthy).unwrap_or(false);
     let load_path_configured = env.lookup_value("load-path").is_ok();
     if !load_path_configured && filename.is_none() {
-        env.provide_feature(&feature);
+        elisp_provide(env, &feature)?;
         return Ok(Sexp::Symbol(feature));
     }
     let target = filename.unwrap_or_else(|| feature.clone());
@@ -3054,7 +3042,7 @@ fn bi_require(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
         Err(_) if noerror => return Ok(Sexp::Nil),
         Err(e) => return Err(e),
     }
-    if !env.has_feature(&feature) {
+    if !elisp_featurep(env, &feature)? {
         if !noerror {
             return Err(EvalError::UserError {
                 tag: "error".into(),
@@ -3069,10 +3057,31 @@ fn bi_require(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     Ok(Sexp::Symbol(feature))
 }
 
-fn bi_featurep(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    require_arity("featurep", args, 1, Some(1))?;
-    let feature = feature_name_arg("featurep", &args[0])?;
-    Ok(truthy(env.has_feature(&feature)))
+/// Rust-min batch 7i: query the elisp `featurep' through its function
+/// cell so any user-level `(defalias 'featurep ...)' is honoured (same
+/// rationale as the `bi_require' → elisp `load' dispatch in 7f).
+fn elisp_featurep(env: &mut Env, feature: &str) -> Result<bool, EvalError> {
+    let fn_cell = env.lookup_function("featurep")?;
+    let result = super::apply_function(
+        &fn_cell,
+        &[Sexp::Symbol(feature.to_string())],
+        env,
+    )?;
+    Ok(is_truthy(&result))
+}
+
+/// Rust-min batch 7i: same dispatch shape as `elisp_featurep' for the
+/// auto-provide branch in `bi_require' (= "no load-path / no filename"
+/// fallback that marks the feature provided without actually loading
+/// anything — Phase 8.0.2 no-file-IO bootstrap contract).
+fn elisp_provide(env: &mut Env, feature: &str) -> Result<(), EvalError> {
+    let fn_cell = env.lookup_function("provide")?;
+    super::apply_function(
+        &fn_cell,
+        &[Sexp::Symbol(feature.to_string())],
+        env,
+    )?;
+    Ok(())
 }
 
 #[allow(dead_code)]
