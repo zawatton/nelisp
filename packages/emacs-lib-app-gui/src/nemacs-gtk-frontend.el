@@ -329,6 +329,9 @@ Idempotent — re-calling replaces the global map with a fresh one."
     ;; Phase 2.BE — `C-x DEL' = backward-kill-sentence, `C-x z' = repeat.
     (define-key ctl-x-map (vector 127) 'nemacs-gtk-backward-kill-sentence)
     (define-key ctl-x-map (vector ?z)  'nemacs-gtk-repeat)
+    ;; Phase 2.BF — `C-x +' / `C-x -' = font zoom in / out.
+    (define-key ctl-x-map (vector ?+) 'nemacs-gtk-text-scale-increase)
+    (define-key ctl-x-map (vector ?-) 'nemacs-gtk-text-scale-decrease)
     ;; Phase 2.AX/AZ — `C-x r' prefix → registers + bookmarks.
     (let ((c-x-r-map (make-sparse-keymap)))
       (define-key c-x-r-map (vector ?s)  'nemacs-gtk-copy-to-register)
@@ -3415,6 +3418,79 @@ isn't fboundp."
             (format "repeat: %s" cmd))))))
 
 
+;;;; --- font zoom (Phase 2.BF — C-x + / C-x - / text-scale-reset) ---------
+
+(defvar nemacs-gtk--font-size 12
+  "Phase 2.BF — current Pango point size used by the GTK backend.
+Mirrors the Rust side's `font' field via
+`nelisp-gtk-set-font-size'.  Default = 12 (= matches the original
+const FONT in gtk_backend.rs).")
+
+(defconst nemacs-gtk--font-size-min 4
+  "Lower bound for `--font-size' — below this Pango refuses to render.")
+
+(defconst nemacs-gtk--font-size-max 60
+  "Upper bound for `--font-size' — capped well below the Rust extern's
+limit (200) so a typo doesn't blank the screen.")
+
+(defun nemacs-gtk--apply-font-size ()
+  "Push `--font-size' into the Rust backend.  Errors from the Rust
+extern (= out-of-range / extern not bound) are caught + reported on
+the echo-area row instead of bubbling."
+  (cond
+   ((not (fboundp 'nelisp-gtk-set-font-size))
+    (setq nemacs-gtk--last-key-text
+          "font-zoom: Rust extern not loaded"))
+   (t
+    (condition-case err
+        (progn
+          (nelisp-gtk-set-font-size nemacs-gtk--font-size)
+          (when (fboundp 'nelisp-gtk-redraw)
+            (nelisp-gtk-redraw))
+          (setq nemacs-gtk--last-key-text
+                (format "font-size: %d" nemacs-gtk--font-size)))
+      (error
+       (setq nemacs-gtk--last-key-text
+             (format "font-zoom: %s" (error-message-string err))))))))
+
+(defun nemacs-gtk-text-scale-increase ()
+  "Bound to `C-x +' — bump the GTK font size by 1 point (capped at
+`--font-size-max').  Triggers a re-measure + redraw on the Rust
+side; the next paint surfaces the new cell metrics."
+  (interactive)
+  (let ((new (1+ nemacs-gtk--font-size)))
+    (cond
+     ((> new nemacs-gtk--font-size-max)
+      (setq nemacs-gtk--last-key-text
+            (format "text-scale-increase: max %d reached"
+                    nemacs-gtk--font-size-max)))
+     (t
+      (setq nemacs-gtk--font-size new)
+      (nemacs-gtk--apply-font-size)))))
+
+(defun nemacs-gtk-text-scale-decrease ()
+  "Bound to `C-x -' — drop the GTK font size by 1 point (floor at
+`--font-size-min')."
+  (interactive)
+  (let ((new (1- nemacs-gtk--font-size)))
+    (cond
+     ((< new nemacs-gtk--font-size-min)
+      (setq nemacs-gtk--last-key-text
+            (format "text-scale-decrease: min %d reached"
+                    nemacs-gtk--font-size-min)))
+     (t
+      (setq nemacs-gtk--font-size new)
+      (nemacs-gtk--apply-font-size)))))
+
+(defun nemacs-gtk-text-scale-reset ()
+  "Reset the GTK font size to the default (= 12 points).  No keymap
+binding by default; reachable via `M-x'.  Useful when iterative
++/- has drifted off the original size."
+  (interactive)
+  (setq nemacs-gtk--font-size 12)
+  (nemacs-gtk--apply-font-size))
+
+
 ;;;; --- minibuffer mode (Phase 2.J — M-x execute-extended-command) ----------
 
 (defvar nemacs-gtk--minibuffer-active nil
@@ -3892,7 +3968,13 @@ success / failure."
     "mark-sexp"
     "move-to-window-line-top-bottom"
     "backward-kill-sentence"
-    "repeat")
+    "repeat"
+    "nemacs-gtk-text-scale-increase"
+    "nemacs-gtk-text-scale-decrease"
+    "nemacs-gtk-text-scale-reset"
+    "text-scale-increase"
+    "text-scale-decrease"
+    "text-scale-reset")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
