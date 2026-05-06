@@ -114,9 +114,79 @@ The pilot ignores properties because `nelisp-ec-buffer-substring'
 already returns plain text."
   (nelisp-ec-buffer-substring start end))
 
-(defun emacs-melpa-shim-text-properties-at (pos)
-  "Return the property plist at POS in the current NeLisp buffer."
-  (emacs-buffer-text-property-at pos))
+(defun emacs-melpa-shim-text-properties-at (pos &optional object)
+  "Return the property plist at POS in OBJECT (= NeLisp buffer or nil).
+Mirrors host `text-properties-at' arity: when OBJECT is nil the current
+NeLisp buffer is used; when OBJECT is a string, host's behaviour
+(= the literal string's properties) is preserved by falling through to
+the captured original via `emacs-melpa-shim--call-orig'."
+  (cond
+   ((stringp object)
+    (emacs-melpa-shim--call-orig 'text-properties-at pos object))
+   ((or (null object) (nelisp-ec-buffer-p object))
+    (emacs-buffer-text-property-at pos))
+   (t (emacs-melpa-shim--call-orig 'text-properties-at pos object))))
+
+;;; Runtime-dispatch shims (Phase 4 protocol harmonisation, 2026-05-06)
+;;
+;; The earlier shim version replaced `set-buffer' / `current-buffer' /
+;; `kill-buffer' wholesale, which broke host C internals (= `load' runs
+;; Fset_buffer(" *load*") which routes through our shim and our shim
+;; rejected the string arg).  These dispatch shims look at the runtime
+;; argument and forward to either `nelisp-ec-*' (when handed a NeLisp
+;; buffer / a known NeLisp buffer name) or the original host primitive
+;; (otherwise — host's own internal *load*-buffer scaffolding stays
+;; intact).
+;;
+;; The originals are captured under `emacs-melpa-shim--orig-*' at
+;; install time so the dispatcher can fall through.
+
+(defvar emacs-melpa-shim--originals nil
+  "Alist (SYMBOL . ORIG-FUNCTION) saved before install; nil afterwards.")
+
+(defun emacs-melpa-shim--call-orig (sym &rest args)
+  "Call the captured original of SYM with ARGS, or signal if absent."
+  (let ((orig (cdr (assq sym emacs-melpa-shim--originals))))
+    (cond
+     ((functionp orig) (apply orig args))
+     (t (signal 'void-function (list sym))))))
+
+(defun emacs-melpa-shim--nelisp-buffer-name-p (name)
+  "Return non-nil if NAME identifies a known nelisp-ec buffer."
+  (and (stringp name)
+       (boundp 'nelisp-ec--buffers)
+       (assoc name nelisp-ec--buffers)))
+
+(defun emacs-melpa-shim-set-buffer-dispatch (buf)
+  "Dispatch `set-buffer' between NeLisp and host based on BUF's type."
+  (cond
+   ((nelisp-ec-buffer-p buf)
+    (nelisp-ec-set-buffer buf))
+   ((emacs-melpa-shim--nelisp-buffer-name-p buf)
+    (nelisp-ec-set-buffer
+     (cdr (assoc buf nelisp-ec--buffers))))
+   (t (emacs-melpa-shim--call-orig 'set-buffer buf))))
+
+(defun emacs-melpa-shim-current-buffer-dispatch ()
+  "Return the current buffer — prefer NeLisp's notion when set."
+  (or nelisp-ec--current-buffer
+      (emacs-melpa-shim--call-orig 'current-buffer)))
+
+(defun emacs-melpa-shim-kill-buffer-dispatch (&optional buf)
+  "Kill BUF — route NeLisp buffers to substrate, others to host."
+  (cond
+   ((null buf)
+    ;; default = current buffer; route to nelisp if it's the active one
+    (cond
+     (nelisp-ec--current-buffer
+      (nelisp-ec-kill-buffer nelisp-ec--current-buffer))
+     (t (emacs-melpa-shim--call-orig 'kill-buffer))))
+   ((nelisp-ec-buffer-p buf)
+    (nelisp-ec-kill-buffer buf))
+   ((emacs-melpa-shim--nelisp-buffer-name-p buf)
+    (nelisp-ec-kill-buffer
+     (cdr (assoc buf nelisp-ec--buffers))))
+   (t (emacs-melpa-shim--call-orig 'kill-buffer buf))))
 
 (defmacro emacs-melpa-shim--with-temp-buffer (&rest body)
   "Evaluate BODY in a fresh temporary NeLisp buffer."
@@ -130,11 +200,20 @@ already returns plain text."
          (nelisp-ec-kill-buffer temp-buffer)))))
 
 (defconst emacs-melpa-shim--aliases
-  '((current-buffer . nelisp-ec-current-buffer)
-    (set-buffer . nelisp-ec-set-buffer)
+  ;; Phase 4 protocol harmonisation (2026-05-06): `current-buffer' /
+  ;; `set-buffer' / `kill-buffer' use runtime-dispatch shims that
+  ;; route NeLisp buffer args to the substrate and fall through to
+  ;; host on host args.  `generate-new-buffer' continues to return
+  ;; a NeLisp buffer (= the synthetic-pilot contract); host C
+  ;; internals that rely on a host-side `*load*' buffer must use
+  ;; `with-temp-buffer' or scope themselves outside `with-installed'.
+  ;; Real-package onboarding past s.el's pure subset is a follow-up
+  ;; that requires a deeper bidirectional buffer bridge.
+  '((current-buffer . emacs-melpa-shim-current-buffer-dispatch)
+    (set-buffer . emacs-melpa-shim-set-buffer-dispatch)
     (generate-new-buffer . emacs-melpa-shim-generate-new-buffer)
     (generate-new-buffer-name . emacs-melpa-shim-generate-new-buffer-name)
-    (kill-buffer . emacs-melpa-shim-kill-buffer)
+    (kill-buffer . emacs-melpa-shim-kill-buffer-dispatch)
     (with-current-buffer . nelisp-ec-with-current-buffer)
     (save-current-buffer . nelisp-ec-save-current-buffer)
     (save-excursion . nelisp-ec-save-excursion)
@@ -212,10 +291,20 @@ already returns plain text."
 (defmacro emacs-melpa-shim-with-installed (&rest body)
   "Run BODY with shim aliases dynamically installed.
 This is the preferred way to evaluate a candidate package inside host
-Emacs without leaking global symbol changes into unrelated code."
+Emacs without leaking global symbol changes into unrelated code.
+
+Captures each shimmed symbol's original definition under
+`emacs-melpa-shim--originals' so the runtime-dispatch shims (= the
+`-dispatch' family) can fall through to host behaviour for arguments
+that don't belong to the NeLisp substrate (= host C `load' running
+`Fset_buffer(\" *load*\")', etc.)."
   (declare (indent 0) (debug (body)))
-  `(let ((native-comp-enable-subr-trampolines nil)
-         (comp-enable-subr-trampolines nil))
+  `(let* ((native-comp-enable-subr-trampolines nil)
+          (comp-enable-subr-trampolines nil)
+          (emacs-melpa-shim--originals
+           (mapcar (lambda (entry)
+                     (cons (car entry) (symbol-function (car entry))))
+                   emacs-melpa-shim--aliases)))
      (cl-letf ,(mapcar (lambda (entry)
                          `((symbol-function ',(car entry))
                            (symbol-function ',(cdr entry))))
