@@ -248,6 +248,67 @@
                            (emacs-redisplay-glyph-row-text
                             (emacs-redisplay-glyph-row m 1)))))))))
 
+;; --- Phase 3.C.1 gate #2: window scroll re-fill after redisplay ---
+
+(ert-deftest emacs-redisplay-test-scroll-after-redisplay-shifts-row-content ()
+  "Changing window-start after redisplay #1 makes redisplay #2 re-fill rows."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "alpha\nbeta\ngamma\ndelta"
+      (let* ((h (emacs-redisplay-init))
+             (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        ;; Initial state: window-start = 1 → row 0 is "alpha".
+        (let ((m (emacs-redisplay-redisplay-window h w)))
+          (should (string= "alpha"
+                           (emacs-redisplay-glyph-row-text
+                            (emacs-redisplay-glyph-row m 0)))))
+        ;; Now scroll: window-start = 7 (= start of "beta").
+        (emacs-window-set-window-start w 7)
+        (let ((m (emacs-redisplay-redisplay-window h w)))
+          (should (string= "beta"
+                           (emacs-redisplay-glyph-row-text
+                            (emacs-redisplay-glyph-row m 0))))
+          (should (string= "gamma"
+                           (emacs-redisplay-glyph-row-text
+                            (emacs-redisplay-glyph-row m 1)))))))))
+
+(ert-deftest emacs-redisplay-test-scroll-back-restores-row-content ()
+  "Scrolling away then back rebuilds the original visible region."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "alpha\nbeta\ngamma\ndelta"
+      (let* ((h (emacs-redisplay-init))
+             (w (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer w b)
+        (emacs-redisplay-redisplay-window h w)
+        ;; Scroll to "beta", then back to "alpha".
+        (emacs-window-set-window-start w 7)
+        (emacs-redisplay-redisplay-window h w)
+        (emacs-window-set-window-start w 1)
+        (let ((m (emacs-redisplay-redisplay-window h w)))
+          (should (string= "alpha"
+                           (emacs-redisplay-glyph-row-text
+                            (emacs-redisplay-glyph-row m 0))))
+          (should (string= "beta"
+                           (emacs-redisplay-glyph-row-text
+                            (emacs-redisplay-glyph-row m 1)))))))))
+
+(ert-deftest emacs-redisplay-test-scroll-after-redisplay-marks-rows-dirty ()
+  "Scroll mutates window-start so the fingerprint changes and rows dirty."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "alpha\nbeta\ngamma\ndelta"
+      (emacs-redisplay-test--with-capture
+        (let* ((bk (emacs-tui-backend-init))
+               (fr (emacs-tui-backend-frame-create bk "frm"))
+               (h  (emacs-redisplay-init (list :backend bk)))
+               (w  (emacs-window-selected-window)))
+          (emacs-window-set-window-buffer w b)
+          (emacs-redisplay-redisplay-window h w)
+          (emacs-redisplay-flush-frame h fr)
+          ;; Scroll → fingerprint must invalidate.
+          (emacs-window-set-window-start w 7)
+          (emacs-redisplay-redisplay-window h w)
+          (should (> (emacs-redisplay-flush-frame h fr) 0)))))))
+
 (ert-deftest emacs-redisplay-test-redisplay-cursor-position ()
   "Cursor (ROW . COL) is computed from window-point."
   (emacs-redisplay-test--with-fresh-world
@@ -387,6 +448,69 @@
           (let* ((canvas (emacs-tui-backend-frame-canvas fr))
                  (row (aref canvas 0)))
             (should (eq ?a (car (aref row 0))))))))))
+
+;; --- Phase 3.C.1 gate #1: text-property face change → dirty propagation ---
+
+(ert-deftest emacs-redisplay-test-face-change-after-redisplay-marks-row-dirty ()
+  "put-text-property-after-redisplay invalidates the cached fingerprint."
+  (emacs-redisplay-test--with-fresh-face-registry
+    (emacs-redisplay-test--with-fresh-world
+      (emacs-redisplay-test--with-buffer b "abcd"
+        (let* ((h (emacs-redisplay-init))
+               (w (emacs-window-selected-window)))
+          (emacs-window-set-window-buffer w b)
+          (emacs-redisplay-redisplay-window h w)
+          ;; Clear dirty bits via a simulated flush (mark all nil).
+          (let* ((m (emacs-redisplay-glyph-matrix h w))
+                 (dirty (emacs-redisplay-glyph-matrix-dirty-set m)))
+            (dotimes (r (length dirty)) (aset dirty r nil)))
+          ;; Now mutate a text-property face — same buffer size + point.
+          (emacs-buffer-put-text-property 2 3 'face '(:foreground "red") b)
+          (emacs-redisplay-redisplay-window h w)
+          (let* ((m (emacs-redisplay-glyph-matrix h w))
+                 (dirty (emacs-redisplay-glyph-matrix-dirty-set m)))
+            ;; Row 0 holds "abcd" — its hash must have changed.
+            (should (aref dirty 0))))))))
+
+(ert-deftest emacs-redisplay-test-face-change-after-redisplay-flushes-new-sgr ()
+  "Changing a `face' property after redisplay re-emits the new SGR escape."
+  (emacs-redisplay-test--with-fresh-face-registry
+    (emacs-redisplay-test--with-fresh-world
+      (emacs-redisplay-test--with-buffer b "abcd"
+        (emacs-redisplay-test--with-capture
+          (let* ((bk (emacs-tui-backend-init))
+                 (fr (emacs-tui-backend-frame-create bk "frm"))
+                 (h  (emacs-redisplay-init (list :backend bk)))
+                 (w  (emacs-window-selected-window)))
+            (emacs-window-set-window-buffer w b)
+            (emacs-redisplay-redisplay-window h w)
+            (emacs-redisplay-flush-frame h fr)
+            (setq emacs-redisplay-test--captured "")
+            (emacs-buffer-put-text-property 2 3 'face '(:foreground "red") b)
+            (emacs-redisplay-redisplay-window h w)
+            (should (> (emacs-redisplay-flush-frame h fr) 0))
+            ;; SGR 31 = ANSI red foreground.
+            (should (string-match-p "\e\\[[^m]*31[^m]*m"
+                                    emacs-redisplay-test--captured))))))))
+
+(ert-deftest emacs-redisplay-test-remove-text-property-also-marks-row-dirty ()
+  "remove-text-properties bumps modified-tick so dirty propagates."
+  (emacs-redisplay-test--with-fresh-face-registry
+    (emacs-redisplay-test--with-fresh-world
+      (emacs-redisplay-test--with-buffer b "abcd"
+        (emacs-buffer-put-text-property 2 3 'face '(:foreground "red") b)
+        (let* ((h (emacs-redisplay-init))
+               (w (emacs-window-selected-window)))
+          (emacs-window-set-window-buffer w b)
+          (emacs-redisplay-redisplay-window h w)
+          (let* ((m (emacs-redisplay-glyph-matrix h w))
+                 (dirty (emacs-redisplay-glyph-matrix-dirty-set m)))
+            (dotimes (r (length dirty)) (aset dirty r nil)))
+          (emacs-buffer-remove-text-properties 2 3 '(face) b)
+          (emacs-redisplay-redisplay-window h w)
+          (let* ((m (emacs-redisplay-glyph-matrix h w))
+                 (dirty (emacs-redisplay-glyph-matrix-dirty-set m)))
+            (should (aref dirty 0))))))))
 
 (ert-deftest emacs-redisplay-test-force-mode-line-update-redraws-mode-line ()
   "force-mode-line-update makes an unchanged mode-line row flush again."
@@ -964,6 +1088,158 @@ buffer char at the overlay's start position."
 (ert-deftest emacs-redisplay-test-face-realize-contract-version-bumped ()
   "Phase 3.B.3 bumps face-realize contract version 1 → 2."
   (should (= 2 emacs-redisplay-face-realize-contract-version)))
+
+;;; J. Phase 3.C.1 integration smoke (TUI + xdisp full pipeline, gate #6)
+;;
+;; Each test exercises the FULL pipeline (= window-set-buffer →
+;; redisplay-window → flush-frame → backend canvas) and asserts the
+;; resulting canvas cell contents directly.  This is the visual-smoke
+;; surface Doc 43 §3.2 "integration smoke ~20 cases" calls for.
+
+(defun emacs-redisplay-test--row-string (canvas row n)
+  "Return first N cells of canvas ROW (0-based) as a string of chars."
+  (let* ((r (aref canvas row)))
+    (apply #'string
+           (cl-loop for i below n collect (car (aref r i))))))
+
+(ert-deftest emacs-redisplay-test-smoke-multi-line-canvas ()
+  "Multi-line buffer paints row 0 = first line, row 1 = second line."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "alpha\nbeta"
+      (emacs-redisplay-test--with-capture
+        (let* ((bk (emacs-tui-backend-init))
+               (fr (emacs-tui-backend-frame-create bk "frm"))
+               (h  (emacs-redisplay-init (list :backend bk)))
+               (w  (emacs-window-selected-window)))
+          (emacs-window-set-window-buffer w b)
+          (emacs-redisplay-redisplay-window h w)
+          (emacs-redisplay-flush-frame h fr)
+          (let ((canvas (emacs-tui-backend-frame-canvas fr)))
+            (should (string= "alpha"
+                             (emacs-redisplay-test--row-string canvas 0 5)))
+            (should (string= "beta"
+                             (emacs-redisplay-test--row-string canvas 1 4)))))))))
+
+(ert-deftest emacs-redisplay-test-smoke-empty-buffer-canvas-blank ()
+  "Empty buffer paints row 0 as all spaces."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b ""
+      (emacs-redisplay-test--with-capture
+        (let* ((bk (emacs-tui-backend-init))
+               (fr (emacs-tui-backend-frame-create bk "frm"))
+               (h  (emacs-redisplay-init (list :backend bk)))
+               (w  (emacs-window-selected-window)))
+          (emacs-window-set-window-buffer w b)
+          (emacs-redisplay-redisplay-window h w)
+          (emacs-redisplay-flush-frame h fr)
+          (let ((canvas (emacs-tui-backend-frame-canvas fr)))
+            (should (string= "          "
+                             (emacs-redisplay-test--row-string canvas 0 10)))))))))
+
+(ert-deftest emacs-redisplay-test-smoke-tab-expands-on-canvas ()
+  "TAB character expands to multiple cells on the rendered canvas."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "a\tb"
+      (emacs-redisplay-test--with-capture
+        (let* ((bk (emacs-tui-backend-init))
+               (fr (emacs-tui-backend-frame-create bk "frm"))
+               (h  (emacs-redisplay-init (list :backend bk)))
+               (w  (emacs-window-selected-window)))
+          (emacs-window-set-window-buffer w b)
+          (emacs-redisplay-redisplay-window h w)
+          (emacs-redisplay-flush-frame h fr)
+          (let* ((canvas (emacs-tui-backend-frame-canvas fr))
+                 (s (emacs-redisplay-test--row-string canvas 0 10)))
+            ;; "a" then spaces until next tab stop, then "b" — "b" must land
+            ;; later than column 1 (= TAB visibly expanded).
+            (should (eq ?a (aref s 0)))
+            (should (eq ?\s (aref s 1)))
+            (should (cl-position ?b (substring s 1)))))))))
+
+(ert-deftest emacs-redisplay-test-smoke-invisible-textprop-hidden-on-canvas ()
+  "`invisible' text-property suppresses cells in the rendered canvas."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "abcde"
+      (emacs-buffer-put-text-property 2 5 'invisible t b)
+      (emacs-redisplay-test--with-capture
+        (let* ((bk (emacs-tui-backend-init))
+               (fr (emacs-tui-backend-frame-create bk "frm"))
+               (h  (emacs-redisplay-init (list :backend bk)))
+               (w  (emacs-window-selected-window)))
+          (emacs-window-set-window-buffer w b)
+          (emacs-redisplay-redisplay-window h w)
+          (emacs-redisplay-flush-frame h fr)
+          (let* ((canvas (emacs-tui-backend-frame-canvas fr))
+                 (s (emacs-redisplay-test--row-string canvas 0 5)))
+            ;; "a" + "e" + 3 spaces (b/c/d hidden).
+            (should (eq ?a (aref s 0)))
+            (should (eq ?e (aref s 1)))
+            (should (eq ?\s (aref s 2)))))))))
+
+(ert-deftest emacs-redisplay-test-smoke-redisplay-then-edit-then-flush-canvas ()
+  "Full cycle: redisplay → flush → edit → redisplay → flush updates canvas."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "abc"
+      (emacs-redisplay-test--with-capture
+        (let* ((bk (emacs-tui-backend-init))
+               (fr (emacs-tui-backend-frame-create bk "frm"))
+               (h  (emacs-redisplay-init (list :backend bk)))
+               (w  (emacs-window-selected-window)))
+          (emacs-window-set-window-buffer w b)
+          (emacs-redisplay-redisplay-window h w)
+          (emacs-redisplay-flush-frame h fr)
+          (let ((nelisp-ec--current-buffer b))
+            (nelisp-ec-goto-char 4)
+            (nelisp-ec-insert "DEF"))
+          (emacs-redisplay-redisplay-window h w)
+          (emacs-redisplay-flush-frame h fr)
+          (let* ((canvas (emacs-tui-backend-frame-canvas fr))
+                 (s (emacs-redisplay-test--row-string canvas 0 6)))
+            (should (string= "abcDEF" s))))))))
+
+(ert-deftest emacs-redisplay-test-smoke-scroll-then-flush-canvas ()
+  "After scroll, flush paints the new visible region into the canvas."
+  (emacs-redisplay-test--with-fresh-world
+    (emacs-redisplay-test--with-buffer b "first\nsecond\nthird"
+      (emacs-redisplay-test--with-capture
+        (let* ((bk (emacs-tui-backend-init))
+               (fr (emacs-tui-backend-frame-create bk "frm"))
+               (h  (emacs-redisplay-init (list :backend bk)))
+               (w  (emacs-window-selected-window)))
+          (emacs-window-set-window-buffer w b)
+          (emacs-redisplay-redisplay-window h w)
+          (emacs-redisplay-flush-frame h fr)
+          (emacs-window-set-window-start w 7) ;; "second"
+          (emacs-redisplay-redisplay-window h w)
+          (emacs-redisplay-flush-frame h fr)
+          (let ((canvas (emacs-tui-backend-frame-canvas fr)))
+            (should (string= "second"
+                             (emacs-redisplay-test--row-string canvas 0 6)))
+            (should (string= "third"
+                             (emacs-redisplay-test--row-string canvas 1 5)))))))))
+
+(ert-deftest emacs-redisplay-test-smoke-face-change-then-flush-canvas-face ()
+  "After put-text-property face change, the canvas cell carries new face."
+  (emacs-redisplay-test--with-fresh-face-registry
+    (emacs-redisplay-test--with-fresh-world
+      (emacs-redisplay-test--with-buffer b "hello"
+        (emacs-redisplay-test--with-capture
+          (let* ((bk (emacs-tui-backend-init))
+                 (fr (emacs-tui-backend-frame-create bk "frm"))
+                 (h  (emacs-redisplay-init (list :backend bk)))
+                 (w  (emacs-window-selected-window)))
+            (emacs-window-set-window-buffer w b)
+            (emacs-redisplay-redisplay-window h w)
+            (emacs-redisplay-flush-frame h fr)
+            (emacs-buffer-put-text-property 2 3 'face '(:foreground "red") b)
+            (emacs-redisplay-redisplay-window h w)
+            (emacs-redisplay-flush-frame h fr)
+            (let* ((canvas (emacs-tui-backend-frame-canvas fr))
+                   (row (aref canvas 0))
+                   (cell-1 (aref row 1)))
+              ;; The cell at column 1 (= "e") carries SOME face information.
+              (should (eq ?e (car cell-1)))
+              (should (cdr cell-1)))))))))
 
 (provide 'emacs-redisplay-test)
 
