@@ -277,6 +277,10 @@ Idempotent — re-calling replaces the global map with a fresh one."
     (let ((help-map (make-sparse-keymap)))
       (define-key help-map (vector ?k) 'nemacs-gtk-describe-key)
       (define-key help-map (vector ?b) 'nemacs-gtk-describe-bindings)
+      ;; Phase 2.BD — function / variable / apropos help.
+      (define-key help-map (vector ?f) 'nemacs-gtk-describe-function)
+      (define-key help-map (vector ?v) 'nemacs-gtk-describe-variable)
+      (define-key help-map (vector ?a) 'nemacs-gtk-apropos)
       (define-key m (vector ?\C-h) help-map))
     ;; C-SPC = ?\C-@ = byte 0
     (define-key m (vector 0) 'nemacs-gtk-set-mark-command)
@@ -3148,6 +3152,145 @@ when no enclosing form is found."
                   (format "narrow-to-defun: %d..%d" start end))))))))))
 
 
+;;;; --- help (Phase 2.BD — C-h f / v / a) ----------------------------------
+
+(defun nemacs-gtk--symbol-completion (input)
+  "Phase 2.BD — return curated names whose prefix matches INPUT, sorted.
+Reuses `--m-x-commands' so the help bundle benefits from the same
+hand-curated set the M-x prompt uses."
+  (let ((acc '()))
+    (dolist (name nemacs-gtk--m-x-commands)
+      (when (string-prefix-p input name)
+        (push name acc)))
+    (sort acc #'string<)))
+
+(defun nemacs-gtk--describe-symbol-function (sym)
+  "Return a string describing SYM as a function, or nil if SYM has
+no function binding."
+  (when (fboundp sym)
+    (let ((fn (symbol-function sym)))
+      (concat
+       (format "%s is " (symbol-name sym))
+       (cond
+        ((subrp fn) (format "a built-in function.\n\n%S" fn))
+        ((byte-code-function-p fn)
+         (format "a compiled function.\n\n%S" fn))
+        ((and (consp fn) (eq (car fn) 'closure))
+         (format "an interpreted closure.\n\n%S" fn))
+        ((and (consp fn) (eq (car fn) 'lambda))
+         (format "an interpreted function.\n\n%S" fn))
+        ((and (consp fn) (eq (car fn) 'macro))
+         (format "a macro.\n\n%S" fn))
+        ((symbolp fn)
+         (format "an alias for `%s'.\n\n%S" fn fn))
+        (t (format "a function.\n\n%S" fn)))))))
+
+(defun nemacs-gtk--describe-symbol-variable (sym)
+  "Return a string describing SYM as a variable, or nil if SYM has
+no value binding."
+  (when (boundp sym)
+    (format "%s is a variable.\n\nValue: %S"
+            (symbol-name sym) (symbol-value sym))))
+
+(defun nemacs-gtk-describe-function ()
+  "Bound to `C-h f' — minibuffer-prompt for a function name with
+completion across `--m-x-commands'; render its definition into a
+`*Help*' buffer + switch to it.  Reports `not a function' on names
+that aren't `fboundp' (= the user is offered everything, but only
+real functions resolve)."
+  (interactive)
+  (nemacs-gtk--enter-minibuffer
+   "Describe function: "
+   (lambda (input)
+     (cond
+      ((or (null input) (= (length input) 0))
+       (setq nemacs-gtk--last-key-text "describe-function: empty"))
+      (t
+       (let* ((sym (intern input))
+              (text (nemacs-gtk--describe-symbol-function sym))
+              (buf (get-buffer-create "*Help*")))
+         (cond
+          ((null text)
+           (setq nemacs-gtk--last-key-text
+                 (format "describe-function: %s is not a function" input)))
+          (t
+           (with-current-buffer buf
+             (when (fboundp 'erase-buffer) (erase-buffer))
+             (nelisp-ec-insert text)
+             (nelisp-ec-insert "\n"))
+           (setq nemacs-gtk--active-buffer-name "*Help*")
+           (setq nemacs-gtk--scroll-offset 0)
+           (nemacs-gtk--sync-window-title)
+           (setq nemacs-gtk--last-key-text
+                 (format "describe-function: %s" input))))))))
+   #'nemacs-gtk--symbol-completion))
+
+(defun nemacs-gtk-describe-variable ()
+  "Bound to `C-h v' — minibuffer-prompt for a variable name; render
+its current value into a `*Help*' buffer + switch to it.  Reports
+`not bound' on names that aren't `boundp'."
+  (interactive)
+  (nemacs-gtk--enter-minibuffer
+   "Describe variable: "
+   (lambda (input)
+     (cond
+      ((or (null input) (= (length input) 0))
+       (setq nemacs-gtk--last-key-text "describe-variable: empty"))
+      (t
+       (let* ((sym (intern input))
+              (text (nemacs-gtk--describe-symbol-variable sym))
+              (buf (get-buffer-create "*Help*")))
+         (cond
+          ((null text)
+           (setq nemacs-gtk--last-key-text
+                 (format "describe-variable: %s not bound" input)))
+          (t
+           (with-current-buffer buf
+             (when (fboundp 'erase-buffer) (erase-buffer))
+             (nelisp-ec-insert text)
+             (nelisp-ec-insert "\n"))
+           (setq nemacs-gtk--active-buffer-name "*Help*")
+           (setq nemacs-gtk--scroll-offset 0)
+           (nemacs-gtk--sync-window-title)
+           (setq nemacs-gtk--last-key-text
+                 (format "describe-variable: %s" input))))))))))
+
+(defun nemacs-gtk-apropos ()
+  "Bound to `C-h a' — minibuffer-prompt for a substring; render names
+from `--m-x-commands' containing that substring (case-insensitive)
+into an `*Apropos*' buffer + switch to it."
+  (interactive)
+  (nemacs-gtk--enter-minibuffer
+   "Apropos: "
+   (lambda (input)
+     (cond
+      ((or (null input) (= (length input) 0))
+       (setq nemacs-gtk--last-key-text "apropos: empty"))
+      (t
+       (let* ((needle (downcase input))
+              (matches (let ((acc '()))
+                         (dolist (name nemacs-gtk--m-x-commands)
+                           (when (string-match-p
+                                  (regexp-quote needle)
+                                  (downcase name))
+                             (push name acc)))
+                         (sort acc #'string<)))
+              (buf (get-buffer-create "*Apropos*")))
+         (with-current-buffer buf
+           (when (fboundp 'erase-buffer) (erase-buffer))
+           (nelisp-ec-insert
+            (format "Apropos: %s\n\n%d matches:\n\n"
+                    input (length matches)))
+           (dolist (name matches)
+             (nelisp-ec-insert (format "  %s\n" name))))
+         (setq nemacs-gtk--active-buffer-name "*Apropos*")
+         (setq nemacs-gtk--scroll-offset 0)
+         (nemacs-gtk--sync-window-title)
+         (setq nemacs-gtk--last-key-text
+               (format "apropos: %d matches for %s"
+                       (length matches) input))))))))
+
+
 ;;;; --- minibuffer mode (Phase 2.J — M-x execute-extended-command) ----------
 
 (defvar nemacs-gtk--minibuffer-active nil
@@ -3611,7 +3754,13 @@ success / failure."
     "nemacs-gtk-widen"
     "narrow-to-region"
     "narrow-to-defun"
-    "widen")
+    "widen"
+    "nemacs-gtk-describe-function"
+    "nemacs-gtk-describe-variable"
+    "nemacs-gtk-apropos"
+    "describe-function"
+    "describe-variable"
+    "apropos")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
