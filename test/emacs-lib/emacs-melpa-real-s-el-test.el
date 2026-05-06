@@ -129,14 +129,36 @@ helper composition — used to ert-skip pre-2026-05-06."
     (should (string= "ABC" (s-with " ABC " s-trim)))
     (should (string= "x"   (s-with "  X  " s-trim s-downcase)))))
 
-(ert-deftest emacs-melpa-real-s-el-test/buffer-routed-fill-region-is-skipped ()
-  "Phase 4 deeper follow-up: `s-word-wrap' / `s-count-matches' route
-through host emacs `fill-region' / `count-matches' which are buffer-
-mutation routines living in `lisp/textmodes/fill.el' /
-`lisp/replace.el' (= not yet vendor-loaded under the nelisp driver).
-Tracked as the Phase 4 'C' follow-up (= lisp/ utility uptake)."
+;; Phase 4 'C' (2026-05-06): un-skipped after `emacs-textmodes-stub.el'
+;; landed.  The stub provides minimal greedy-word-wrap `fill-region'
+;; and non-overlapping-regex `count-matches' polyfills so s.el's
+;; `s-word-wrap' / `s-count-matches' run end-to-end on the nelisp
+;; driver without dragging in `lisp/textmodes/fill.el' (~1800 LOC) or
+;; `lisp/replace.el' (~3000 LOC).  Under host Emacs the polyfills are
+;; `unless (fboundp ...)' guarded so the host implementations stay
+;; authoritative.
+
+(ert-deftest emacs-melpa-real-s-el-test/word-wrap ()
+  "`s-word-wrap' wraps a long string at the requested column.  Routes
+through `with-temp-buffer' + `fill-region', so confirms that the
+buffer-side word-wrap path works for MELPA packages."
   (emacs-melpa-real-s-el-test--skip-without-source
-    (ert-skip "fill-region / count-matches: pending lisp/textmodes uptake")))
+    (should (string= "hello\nworld\nfoo\nbar"
+                     (s-word-wrap 5 "hello world foo bar")))
+    (should (string= "this is\na test"
+                     (s-word-wrap 7 "this is a test")))
+    (should (string= "short"
+                     (s-word-wrap 80 "short")))))
+
+(ert-deftest emacs-melpa-real-s-el-test/count-matches ()
+  "`s-count-matches' counts non-overlapping regex matches in a string.
+Routes through `with-temp-buffer' + `count-matches', so confirms the
+buffer-side counting path works."
+  (emacs-melpa-real-s-el-test--skip-without-source
+    (should (= 3 (s-count-matches "a"   "banana")))
+    (should (= 2 (s-count-matches "ab"  "abracadabra")))
+    (should (= 0 (s-count-matches "z"   "banana")))
+    (should (= 5 (s-count-matches "[aeiou]" "education")))))
 
 (provide 'emacs-melpa-real-s-el-test)
 

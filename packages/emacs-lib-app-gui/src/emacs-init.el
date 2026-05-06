@@ -175,6 +175,15 @@
 (when (locate-library "emacs-mode")
   (require 'emacs-mode))
 (require 'emacs-elisp-mode)
+;; Phase 4 'C' (2026-05-06) — minimal `fill-region' / `count-matches'
+;; polyfills so MELPA packages routing word-wrap / regex counting
+;; through `with-temp-buffer' + buffer ops (canonical: s.el's
+;; `s-word-wrap' / `s-count-matches') run end-to-end without
+;; vendor-loading the full `lisp/textmodes/fill.el' (~1800 LOC) or
+;; `lisp/replace.el' (~3000 LOC).  Loaded after `emacs-search-builtins'
+;; (= `re-search-forward' bridge) and `emacs-buffer-builtins' (=
+;; `delete-region' / `insert' / `buffer-substring').
+(require 'emacs-textmodes-stub)
 ;; Track G (2026-05-03) — Doc 43 redisplay close-gate trigger
 ;; bridges.  Wires `force-mode-line-update' / `redraw-display' /
 ;; `redraw-frame' / `redisplay' to the existing
