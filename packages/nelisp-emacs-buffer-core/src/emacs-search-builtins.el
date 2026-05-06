@@ -97,6 +97,36 @@ contract that `string-match-p' relies on)."
 Returns t / nil and does NOT bump the global match-data registry."
     (and (string-match regexp string start t) t)))
 
+(unless (fboundp 'replace-match)
+  (defun replace-match (newtext &optional fixedcase literal string subexp)
+    "Phase 4 B polyfill: substrate-backed `replace-match'.
+After a successful `string-match', returns STRING with the matched
+range substituted by NEWTEXT.  Without STRING, mutates the current
+buffer (deferred — substrate buffer mutation through match-data
+isn't wired yet, so we signal in that case).
+
+FIXEDCASE / LITERAL / SUBEXP are accepted for API parity:
+  - LITERAL  → backref substitution (`\\1' / `\\\\&') is suppressed
+              when non-nil (default in this polyfill is to treat
+              NEWTEXT literally, matching MVP).
+  - SUBEXP   → integer index of which group's range to replace
+              (default = 0, the whole match).
+  - FIXEDCASE → ignored (= no case-fold layer)."
+    (ignore fixedcase literal)
+    (cond
+     ((stringp string)
+      (let* ((idx (or subexp 0))
+             (b (match-beginning idx))
+             (e (match-end idx)))
+        (cond
+         ((and (integerp b) (integerp e))
+          (concat (substring string 0 b) newtext (substring string e)))
+         (t string))))
+     (t
+      (signal 'error
+              (list "replace-match without STRING needs a buffer-side"
+                    "mutator that the substrate has not wired yet"))))))
+
 (unless (fboundp 'replace-regexp-in-string)
   (defun replace-regexp-in-string
       (regexp rep string &optional fixedcase literal subexp start)
