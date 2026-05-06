@@ -266,6 +266,8 @@ Idempotent — re-calling replaces the global map with a fresh one."
     (define-key ctl-x-map (vector ?e)  'nemacs-gtk-call-last-kbd-macro)
     ;; Phase 2.AQ — `C-x C-q' = toggle-read-only.
     (define-key ctl-x-map (vector ?\C-q) 'nemacs-gtk-toggle-read-only)
+    ;; Phase 2.AT — `C-x =' = what-cursor-position.
+    (define-key ctl-x-map (vector ?=)    'nemacs-gtk-what-cursor-position)
     (define-key m (vector ?\C-x) ctl-x-map)
     ;; Mouse-2 (= middle click) → set point + yank, mirroring real
     ;; Emacs's `mouse-yank-primary' / Linux X-clipboard convention.
@@ -311,6 +313,11 @@ Idempotent — re-calling replaces the global map with a fresh one."
       (define-key esc-map (vector ?^) 'nemacs-gtk-delete-indentation)
       ;; Phase 2.AO — `M-/' = dabbrev-expand.
       (define-key esc-map (vector ?/) 'nemacs-gtk-dabbrev-expand)
+      ;; Phase 2.AR — M-: = eval-expression.
+      (define-key esc-map (vector ?:) 'nemacs-gtk-eval-expression)
+      ;; Phase 2.AS — M-! = shell-command, M-| = shell-command-on-region.
+      (define-key esc-map (vector ?!) 'nemacs-gtk-shell-command)
+      (define-key esc-map (vector ?|) 'nemacs-gtk-shell-command-on-region)
       ;; Phase 2.X — `M-g g' = goto-line, `M-g M-g' aliased to same.
       (define-key meta-g-map (vector ?g)    'nemacs-gtk-goto-line)
       (define-key meta-g-map (vector ?\C-g) 'nemacs-gtk-goto-line)
@@ -880,6 +887,159 @@ macro by feeding its events back through the command loop."
     (setq nemacs-gtk--last-key-text
           (format "Replayed macro (%d events)"
                   (length nemacs-gtk--kbd-macro-last))))))
+
+(defun nemacs-gtk-eval-expression ()
+  "Bound to `M-:' / `Esc :' — read an elisp expression via the
+inline minibuffer, evaluate it, and surface the result on the
+echo-area row.  Errors during read or eval report on echo area
+without crashing."
+  (interactive)
+  (nemacs-gtk--enter-minibuffer
+   "Eval: "
+   (lambda (input)
+     (cond
+      ((or (null input) (string-empty-p input))
+       (setq nemacs-gtk--last-key-text "eval: empty"))
+      (t
+       (condition-case err
+           (let* ((form (read input))
+                  (result (eval form lexical-binding)))
+             (setq nemacs-gtk--last-key-text
+                   (format "%S" result)))
+         (error
+          (setq nemacs-gtk--last-key-text
+                (format "eval: %s"
+                        (cond
+                         ((stringp (cadr err)) (cadr err))
+                         (t (prin1-to-string err))))))))))))
+
+(defun nemacs-gtk--shell-command-output-buffer-fill (text)
+  "Stuff TEXT into a fresh `*Shell Command Output*' buffer + switch
+to it.  Empty TEXT shows a placeholder so the user knows the
+command ran (rather than wondering if the prompt fizzled)."
+  (let ((buf (get-buffer-create "*Shell Command Output*")))
+    (with-current-buffer buf
+      (when (fboundp 'erase-buffer)
+        (erase-buffer))
+      (cond
+       ((or (null text) (= 0 (length text)))
+        (nelisp-ec-insert "[shell-command: no output]\n"))
+       (t (nelisp-ec-insert text))))
+    (setq nemacs-gtk--active-buffer-name "*Shell Command Output*")
+    (setq nemacs-gtk--scroll-offset 0)
+    (nemacs-gtk--sync-window-title)))
+
+(defun nemacs-gtk--shell-command-runner (command &optional input-text)
+  "Run COMMAND through the shell, optionally passing INPUT-TEXT on stdin.
+Returns the stdout string (or empty on no output)."
+  (cond
+   ((null input-text)
+    (or (and (fboundp 'shell-command-to-string)
+             (shell-command-to-string command))
+        ""))
+   (t
+    ;; pipe INPUT-TEXT through stdin via a temp file so we don't have
+    ;; to thread a real pipe.  Tiny enough for MVP.
+    (let* ((tmp (and (fboundp 'make-temp-file)
+                     (make-temp-file "nemacs-gtk-stdin-")))
+           (rendered nil))
+      (cond
+       ((null tmp)
+        (or (shell-command-to-string command) ""))
+       (t
+        (unwind-protect
+            (progn
+              (with-temp-buffer
+                (insert input-text)
+                (write-region (point-min) (point-max) tmp))
+              (setq rendered
+                    (or (shell-command-to-string
+                         (format "%s < %s"
+                                 command
+                                 (shell-quote-argument tmp)))
+                        "")))
+          (when (and tmp (file-exists-p tmp))
+            (delete-file tmp)))
+        rendered))))))
+
+(defun nemacs-gtk-shell-command ()
+  "Bound to `M-!' / `Esc !' — prompt for a shell command, run it,
+display the stdout in `*Shell Command Output*' and switch to it."
+  (interactive)
+  (nemacs-gtk--enter-minibuffer
+   "Shell command: "
+   (lambda (cmd)
+     (cond
+      ((or (null cmd) (string-empty-p cmd))
+       (setq nemacs-gtk--last-key-text "shell-command: empty"))
+      (t
+       (condition-case err
+           (let ((out (nemacs-gtk--shell-command-runner cmd)))
+             (nemacs-gtk--shell-command-output-buffer-fill out)
+             (setq nemacs-gtk--last-key-text
+                   (format "shell-command: %s (%d bytes)"
+                           cmd (length (or out "")))))
+         (error
+          (setq nemacs-gtk--last-key-text
+                (format "shell-command: %s" (cadr err))))))))))
+
+(defun nemacs-gtk-shell-command-on-region ()
+  "Bound to `M-|' / `Esc |' — pipe the active region through a shell
+command and display stdout in `*Shell Command Output*'.  Reports
+"no region" when the active buffer has no current selection."
+  (interactive)
+  (let ((bounds (nemacs-gtk--region-bounds)))
+    (cond
+     ((null bounds)
+      (setq nemacs-gtk--last-key-text "shell-command-on-region: no region"))
+     (t
+      (nemacs-gtk--enter-minibuffer
+       "Shell command on region: "
+       (lambda (cmd)
+         (cond
+          ((or (null cmd) (string-empty-p cmd))
+           (setq nemacs-gtk--last-key-text
+                 "shell-command-on-region: empty"))
+          (t
+           (let* ((beg (car bounds))
+                  (end (cdr bounds))
+                  (text (with-current-buffer (nemacs-gtk--active-buffer)
+                          (nelisp-ec-buffer-substring beg end))))
+             (condition-case err
+                 (let ((out (nemacs-gtk--shell-command-runner cmd text)))
+                   (nemacs-gtk--shell-command-output-buffer-fill out)
+                   (setq nemacs-gtk--last-key-text
+                         (format "shell-command-on-region: %d→%d bytes"
+                                 (length text) (length (or out "")))))
+               (error
+                (setq nemacs-gtk--last-key-text
+                      (format "shell-command-on-region: %s"
+                              (cadr err))))))))))))))
+
+(defun nemacs-gtk-what-cursor-position ()
+  "Bound to `C-x =' — display char at point + decimal/hex/octal value
++ buffer-position percentage on the echo-area row.  Mirrors Emacs'
+`what-cursor-position' MVP."
+  (interactive)
+  (with-current-buffer (nemacs-gtk--active-buffer)
+    (let* ((p (nelisp-ec-point))
+           (max (nelisp-ec-point-max))
+           (min (nelisp-ec-point-min))
+           (size (- max min))
+           (ch (and (< p max) (emacs-edit--char-at p)))
+           (pct (cond
+                 ((or (= size 0) (= p min)) "Top")
+                 ((= p max) "Bot")
+                 (t (format "%d%%"
+                            (/ (* 100 (- p min)) (max 1 size)))))))
+      (cond
+       ((null ch)
+        (setq nemacs-gtk--last-key-text
+              (format "point=%d of %d (%s) — at EOB" p max pct)))
+       (t
+        (setq nemacs-gtk--last-key-text
+              (format "Char: %c (%d, #o%o, #x%x)  point=%d of %d (%s)"
+                      ch ch ch ch p max pct)))))))
 
 (defun nemacs-gtk-toggle-read-only ()
   "Bound to `C-x C-q' — toggle the active buffer's `buffer-read-only'
@@ -2134,6 +2294,7 @@ success / failure."
     "nemacs-gtk-describe-bindings"
     "nemacs-gtk-describe-key"
     "nemacs-gtk-end-kbd-macro"
+    "nemacs-gtk-eval-expression"
     "nemacs-gtk-exchange-point-and-mark"
     "nemacs-gtk-fill-paragraph"
     "nemacs-gtk-mark-paragraph"
@@ -2142,10 +2303,13 @@ success / failure."
     "nemacs-gtk-quoted-insert"
     "nemacs-gtk-recenter"
     "nemacs-gtk-save-some-buffers"
+    "nemacs-gtk-shell-command"
+    "nemacs-gtk-shell-command-on-region"
     "nemacs-gtk-sort-lines"
     "nemacs-gtk-start-kbd-macro"
     "nemacs-gtk-tab-to-tab-stop"
     "nemacs-gtk-toggle-read-only"
+    "nemacs-gtk-what-cursor-position"
     "nemacs-gtk-undo"
     "nemacs-gtk-write-file"
     "nemacs-gtk-save-buffers-kill-emacs"
@@ -2188,7 +2352,11 @@ success / failure."
     "end-kbd-macro"
     "call-last-kbd-macro"
     "toggle-read-only"
-    "sort-lines")
+    "sort-lines"
+    "eval-expression"
+    "shell-command"
+    "shell-command-on-region"
+    "what-cursor-position")
   "Curated list of M-x candidate command names (Phase 2.T).  nelisp's
 `mapatoms' / `commandp' return nil stubs (= we can't enumerate the
 obarray to find interactive commands), so this is the trusted seed
