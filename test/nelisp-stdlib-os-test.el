@@ -375,6 +375,85 @@ result list contains (rfd . REVENTS) with POLLIN bit set."
     (should-not (eq (car r) 0))
     (should (string-match-p "nelisp-os-error" (cdr r)))))
 
+;;; Doc 56 Phase 4.1 — AF_UNIX + AF_INET6 ERTs --------------------------
+
+(ert-deftest nelisp-stdlib-os-test/unix-loopback-roundtrip ()
+  "Server: socket(AF_UNIX) + bind(tmp-path) + listen + accept.  Client
+(forked child) connect+write+close.  Server reads bytes and prints
+them on stdout.  Verifies AF_UNIX bind/connect/accept primitives."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (let* ((sock-path (make-temp-name "/tmp/nelisp-os-unix-"))
+         (expr (format "(progn
+              (require (quote nelisp-stdlib-os))
+              (let* ((path %S)
+                     (srv (nelisp-os-socket nelisp-os-AF-UNIX
+                                            nelisp-os-SOCK-STREAM 0)))
+                (nelisp-os-bind-unix srv path)
+                (nelisp-os-listen srv 1)
+                (let ((child (nelisp-os-fork)))
+                  (cond
+                   ((= child 0)
+                    (let ((c (nelisp-os-socket nelisp-os-AF-UNIX
+                                               nelisp-os-SOCK-STREAM 0)))
+                      (nelisp-os-connect-unix c path)
+                      (nelisp-os-write c \"hello-unix\")
+                      (nelisp-os-close c)
+                      (nelisp-os-exit 0)))
+                   (t
+                    (let* ((acc (nelisp-os-accept-unix srv))
+                           (cfd (car acc))
+                           (data (nelisp-os-read cfd 1024)))
+                      (nelisp-os-close cfd)
+                      (nelisp-os-close srv)
+                      (nelisp-os-wait child 0)
+                      (nelisp-os-write 1 data)
+                      (nelisp-os-exit 0)))))))" sock-path)))
+    (unwind-protect
+        (let ((r (nelisp-stdlib-os-test--eval expr)))
+          (should (eq (car r) 0))
+          (should (equal (cdr r) "hello-unix")))
+      (when (file-exists-p sock-path) (delete-file sock-path)))))
+
+(ert-deftest nelisp-stdlib-os-test/inet6-loopback-roundtrip ()
+  "Server: socket(AF_INET6) + setsockopt(SO_REUSEADDR) + bind(::1, port)
++ listen + accept.  Client (forked child) connect+write+close.
+Verifies AF_INET6 bind/connect/accept + IPv6 group list encoding."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (let ((r (nelisp-stdlib-os-test--eval
+            "(progn
+              (require (quote nelisp-stdlib-os))
+              (let* ((port 47292)
+                     (srv (nelisp-os-socket nelisp-os-AF-INET6
+                                            nelisp-os-SOCK-STREAM
+                                            nelisp-os-IPPROTO-TCP)))
+                (nelisp-os-setsockopt-int srv nelisp-os-SOL-SOCKET
+                                          nelisp-os-SO-REUSEADDR 1)
+                (nelisp-os-bind-inet6 srv nelisp-os-IN6ADDR-LOOPBACK port)
+                (nelisp-os-listen srv 1)
+                (let ((child (nelisp-os-fork)))
+                  (cond
+                   ((= child 0)
+                    (let ((c (nelisp-os-socket nelisp-os-AF-INET6
+                                               nelisp-os-SOCK-STREAM
+                                               nelisp-os-IPPROTO-TCP)))
+                      (nelisp-os-connect-inet6 c nelisp-os-IN6ADDR-LOOPBACK port)
+                      (nelisp-os-write c \"hello-v6\")
+                      (nelisp-os-close c)
+                      (nelisp-os-exit 0)))
+                   (t
+                    (let* ((acc (nelisp-os-accept-inet6 srv))
+                           (cfd (nth 0 acc))
+                           (data (nelisp-os-read cfd 1024)))
+                      (nelisp-os-close cfd)
+                      (nelisp-os-close srv)
+                      (nelisp-os-wait child 0)
+                      (nelisp-os-write 1 data)
+                      (nelisp-os-exit 0)))))))")))
+    (should (eq (car r) 0))
+    (should (equal (cdr r) "hello-v6"))))
+
 (provide 'nelisp-stdlib-os-test)
 
 ;;; nelisp-stdlib-os-test.el ends here

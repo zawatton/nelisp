@@ -1,0 +1,196 @@
+#+TITLE: Doc 56 — OS Surface Phase 4.1: AF_UNIX + AF_INET6
+#+AUTHOR: zawatton
+#+DATE: 2026-05-07
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: DRAFT
+:DEPENDS_ON: Doc 55 Phase 4 (Posix-30 AF_INET socket family)
+:END:
+
+* §0 TL;DR
+
+Doc 55 Phase 4 で AF_INET の socket family 専用 primitive (=bi_syscall_bind_inet=
+/ =-connect-inet= / =-accept-inet=) を ship した。本 Phase 4.1 はその直接拡張で
+AF_UNIX + AF_INET6 を同形に追加する。socket / listen / setsockopt-int / poll /
+read / write / close は family 非依存なので既存のものをそのまま再利用、family
+個別なのは sockaddr 構築 + accept の peer 情報 unpack のみ。
+
+scope = 6 専用 primitive + 6 elisp wrapper + 7 定数 + 2 ERT。
+
+| 区分    | 名前                                  | 提供層        |
+|---------+---------------------------------------+---------------|
+| AF_UNIX | bind / connect / accept (filesystem path) | 専用 primitive |
+| AF_INET6 | bind / connect / accept (sockaddr_in6)    | 専用 primitive |
+
+設計指針 (= Doc 53/54/55 を継承): *Rust 追加を最小化する*。
+
+- =socket= / =listen= / =setsockopt-int= / =poll= / =read= / =write= / =close=
+  は family 非依存なので Doc 55 / 53 の wrapper をそのまま使う。本 Phase は
+  bind/connect/accept の sockaddr 構築/解体だけ family 別の専用 primitive で
+  受ける (= 計 6 本)。
+- AF_UNIX path は filesystem path 限定 (Linux abstract socket = sun_path[0]=NUL
+  prefix は scope 外、Phase 4.1.1 で別途検討)。
+- AF_INET6 アドレスは elisp 側で *length-8 list of 16-bit integers* (= group
+  単位、host byte order) として扱う。e.g. =::1= は ='(0 0 0 0 0 0 0 1)=、
+  Rust 側で各 group を big-endian にパックして in6_addr に積む。
+
+Path A (Linux) のみ。Path B (Darwin/Windows) fallback は他 Phase と同じく
+deferred。
+
+* §1 動機
+
+Doc 55 で TCP loopback が elisp 完結したが、IPC ばかりは AF_UNIX / 現代的な
+modern stack には AF_INET6 が必須。両 family の socket 構築は AF_INET と
+*formula 同一* (sockaddr → libc::bind/connect/accept) なので、追加コストは
+sockaddr_un / sockaddr_in6 をそれぞれ 1 ペアの primitive で受けるだけで済む。
+
+実用 use case:
+
+- *AF_UNIX*: Cowork 環境内の elisp ↔ elisp プロセス間 RPC、editor ↔ daemon の
+  IPC、=anvil= 系工具との bridge を nl-ffi-call なしで elisp で書ける line。
+- *AF_INET6*: dual-stack TCP server / client。最近の loopback でも ::1 経由が
+  multipath として要求されるケースがある (= IPv6-only host)。
+
+将来 (Phase 4.1.1 候補): AF_UNIX abstract namespace、SOCK_SEQPACKET、
+SCM_RIGHTS で fd-passing。
+
+* §2 設計
+
+** §2.1 Rust 追加 (最小化)
+
+builtins.rs:
+
+- =install_builtins()= names + =dispatch()= に *6 名追加*:
+  =nelisp--syscall-bind-unix= / =-connect-unix= / =-accept-unix= /
+  =nelisp--syscall-bind-inet6= / =-connect-inet6= / =-accept-inet6=
+- 関数 6 本実装 (= 全て =#[cfg(target_os = "linux")]= gate、非 Linux は EvalError stub)
+- 共通 helper 2 本: =build_sockaddr_un(path)= / =build_sockaddr_in6(host_groups, port)=
+- =syscall_nr()= には *追加なし* (family 非依存 syscall は既に登録済 / 不要)
+
+*** §2.1.1 AF_UNIX 系
+
+#+BEGIN_SRC rust
+fn build_sockaddr_un(path: &str) -> Result<(libc::sockaddr_un, libc::socklen_t), EvalError> {
+    // path bytes が SUN_PATH_LEN-1 を超えたら EvalError::Internal。
+    // sun_family = AF_UNIX、sun_path に nul-terminated コピー、
+    // 戻り socklen_t = offsetof(sun_path) + path.len() + 1.
+}
+
+fn bi_syscall_bind_unix(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    // FD PATH → 0 / -errno
+}
+
+fn bi_syscall_connect_unix(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    // FD PATH → 0 / -errno
+}
+
+fn bi_syscall_accept_unix(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    // FD → (NEWFD . PEER-PATH) on success, NEWFD only when peer is anonymous;
+    // 失敗時 -errno (Sexp::Int)
+    // listening server 上で接続してくる UNIX socket peer は通常 anonymous
+    // (= sun_path 全 NUL) なので PEER-PATH は "" を返して problem 化しない。
+}
+#+END_SRC
+
+*** §2.1.2 AF_INET6 系
+
+#+BEGIN_SRC rust
+fn build_sockaddr_in6(groups: &[u16; 8], port: u16) -> libc::sockaddr_in6 {
+    // sin6_family = AF_INET6、sin6_port = port.to_be()
+    // sin6_addr.s6_addr = 各 group を big-endian でパックした 16-byte 配列
+    // sin6_flowinfo = 0、sin6_scope_id = 0 (= scope 外)
+}
+
+fn bi_syscall_bind_inet6(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    // FD HOST-LIST PORT → 0 / -errno
+    // HOST-LIST = list of 8 integers (16-bit each, host byte order)
+}
+
+fn bi_syscall_connect_inet6(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    // FD HOST-LIST PORT → 0 / -errno
+}
+
+fn bi_syscall_accept_inet6(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    // FD → (NEWFD CLIENT-HOST-LIST CLIENT-PORT) / -errno
+}
+#+END_SRC
+
+** §2.2 Elisp 追加 (=lisp/nelisp-stdlib-os.el= に追記)
+
+新規 wrapper:
+
+| function                                 | 内部呼出                                     |
+|------------------------------------------+----------------------------------------------|
+| =nelisp-os-bind-unix FD PATH=            | =(nelisp--syscall-bind-unix FD PATH)=        |
+| =nelisp-os-connect-unix FD PATH=         | =(nelisp--syscall-connect-unix FD PATH)=     |
+| =nelisp-os-accept-unix FD=               | =(nelisp--syscall-accept-unix FD)=           |
+| =nelisp-os-bind-inet6 FD HOST6 PORT=     | =(nelisp--syscall-bind-inet6 FD HOST6 PORT)= |
+| =nelisp-os-connect-inet6 FD HOST6 PORT=  | =(nelisp--syscall-connect-inet6 FD HOST6 PORT)= |
+| =nelisp-os-accept-inet6 FD=              | =(nelisp--syscall-accept-inet6 FD)=          |
+
+新規定数:
+
+#+BEGIN_EXAMPLE
+AF_UNIX                                            (= 1 on Linux)
+AF_INET6                                           (= 10 on Linux)
+IN6ADDR-ANY      = '(0 0 0 0 0 0 0 0)             (= ::)
+IN6ADDR-LOOPBACK = '(0 0 0 0 0 0 0 1)             (= ::1)
+SUN-PATH-MAX                                       (= 108、参照のみ)
+#+END_EXAMPLE
+
+** §2.3 ファイル配置
+
+| 種別      | path                                                       | 操作       |
+|-----------+------------------------------------------------------------+------------|
+| 設計書    | =docs/design/56-os-surface-phase4-1-af-unix-inet6.org=     | new        |
+| Rust      | =build-tool/src/eval/builtins.rs=                          | edit       |
+| stdlib    | =lisp/nelisp-stdlib-os.el=                                 | edit (追記) |
+| test      | =test/nelisp-stdlib-os-test.el=                            | edit (追記) |
+
+* §3 Sub-phase 分割
+
+** Phase 4.1 (本 Doc, scope) — AF_UNIX + AF_INET6
+
+6 専用 primitive + 6 wrapper + 7 定数 + 2 ERT。
+
+** Phase 4.1.1 (将来) — AF_UNIX 拡張
+
+abstract namespace (sun_path[0]=NUL prefix)、SCM_RIGHTS で fd-passing。
+
+** Phase 4.1.2 (将来) — IPv6 拡張
+
+scope_id (link-local fe80::...%iface) 対応、getsockname/getpeername (IPv6
+side だけでなく汎用)。
+
+* §4 Test plan
+
+新規 ERT 2 本を =test/nelisp-stdlib-os-test.el= に追記。AF_INET ERT と同じ
+shape (server fork → client connect → write → server read → equal)。
+
+| test                              | flow                                                                |
+|-----------------------------------+---------------------------------------------------------------------|
+| ~unix-loopback-roundtrip~         | unique tmpfile path → bind/listen/accept + connect/write/read/equal |
+| ~inet6-loopback-roundtrip~        | port=47292 → ::1 で bind/listen/accept + ::1 connect/write/read     |
+
+build gate: =cargo build --release --bin nelisp= warning 0 + 既存 16 ERT
++ 新 2 ERT = 計 18 ERT 全 pass。
+
+* §5 Out of scope (= Phase 4.1.x / 別)
+
+- AF_UNIX abstract namespace (= Phase 4.1.1)
+- SCM_RIGHTS / fd-passing (= Phase 4.1.1)
+- IPv6 scope_id (= Phase 4.1.2)
+- getsockname / getpeername (= Phase 4.1.2)
+- send / recv の MSG_* flag bundles (= Phase 4.x)
+- Path B (Darwin/Windows) — Phase 1.1 と同じく nl-ffi-call 拡張で別途
+
+* §6 References
+
+- Doc 53 Phase 1 — =nelisp--syscall= 基盤 + Path A/B 分岐 + bundle hook
+- Doc 54 Phase 3 — Core-12 (lseek/fstat/mmap/dup2/pipe/fcntl)
+- Doc 55 Phase 4 — Posix-30 AF_INET + subprocess + poll
+- memory =project_lisp_machine_vision_95pct= — Lisp Machine vision の進捗
+- memory =feedback_nelisp_minimize_rust= — Rust 最小化方針
+- memory =project_doc55_os_surface_posix30= — Phase 4 の確立済 pattern

@@ -374,6 +374,70 @@ blocks indefinitely; 0 polls without blocking."
         (nelisp-os--check-errno r)
       r)))
 
+;; ---------------------------------------------------------------------------
+;; Doc 56 Phase 4.1 — AF_UNIX + AF_INET6 socket family extensions.
+;;
+;; All other socket plumbing (`nelisp-os-socket' / -listen / -setsockopt-int
+;; / -poll / -read / -write / -close) is family-independent and reused
+;; verbatim from Doc 53/55.  Only bind / connect / accept differ between
+;; sockaddr families.
+;; ---------------------------------------------------------------------------
+
+;; Address families
+(defconst nelisp-os-AF-UNIX  1)
+(defconst nelisp-os-AF-INET6 10)
+
+;; sockaddr_un.sun_path capacity (Linux glibc).  Reference value — the
+;; primitive enforces this internally and signals an error if exceeded.
+(defconst nelisp-os-SUN-PATH-MAX 108)
+
+;; IPv6 helper addresses — host-byte-order group lists.
+(defconst nelisp-os-IN6ADDR-ANY      '(0 0 0 0 0 0 0 0))
+(defconst nelisp-os-IN6ADDR-LOOPBACK '(0 0 0 0 0 0 0 1))
+
+;; ----- AF_UNIX wrappers -----
+
+(defun nelisp-os-bind-unix (fd path)
+  "POSIX bind(2) for AF_UNIX (filesystem path).  Abstract namespace
+sockets (= leading NUL byte) are not supported in Phase 4.1."
+  (nelisp-os--check-errno (nelisp--syscall-bind-unix fd path)))
+
+(defun nelisp-os-connect-unix (fd path)
+  "POSIX connect(2) for AF_UNIX.  PATH is a filesystem path (must
+already be bound by the listening server)."
+  (nelisp-os--check-errno (nelisp--syscall-connect-unix fd path)))
+
+(defun nelisp-os-accept-unix (fd)
+  "POSIX accept(2) for AF_UNIX.  Returns cons (NEWFD . PEER-PATH); the
+peer is typically anonymous on a listening server, in which case the
+PEER-PATH is the empty string."
+  (let ((r (nelisp--syscall-accept-unix fd)))
+    (if (integerp r)
+        (nelisp-os--check-errno r)
+      r)))
+
+;; ----- AF_INET6 wrappers -----
+
+(defun nelisp-os-bind-inet6 (fd host6 port)
+  "POSIX bind(2) for AF_INET6.  HOST6 is a list of 8 16-bit groups in
+host byte order (e.g. `nelisp-os-IN6ADDR-LOOPBACK' for `::1').  PORT is
+a 16-bit host-byte-order port number."
+  (nelisp-os--check-errno (nelisp--syscall-bind-inet6 fd host6 port)))
+
+(defun nelisp-os-connect-inet6 (fd host6 port)
+  "POSIX connect(2) for AF_INET6.  HOST6 / PORT same convention as
+`nelisp-os-bind-inet6'."
+  (nelisp-os--check-errno (nelisp--syscall-connect-inet6 fd host6 port)))
+
+(defun nelisp-os-accept-inet6 (fd)
+  "POSIX accept(2) for AF_INET6.  Returns list (NEWFD CLIENT-HOST6
+CLIENT-PORT); CLIENT-HOST6 is an 8-element list of 16-bit groups in
+host byte order."
+  (let ((r (nelisp--syscall-accept-inet6 fd)))
+    (if (integerp r)
+        (nelisp-os--check-errno r)
+      r)))
+
 (provide 'nelisp-stdlib-os)
 
 ;;; nelisp-stdlib-os.el ends here
