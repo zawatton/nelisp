@@ -135,6 +135,12 @@ impl Env {
             // gethash / remhash / clrhash / hash-table-p /
             // nelisp--hash-pairs (= function-cell override at load).
             ("nelisp-stdlib-hash.el", include_str!("../../../lisp/nelisp-stdlib-hash.el")),
+            // Doc 50 stage 5b (2026-05-07): cycle-safe `equal' in elisp
+            // built on `nelisp--ref-eq' + visited hash-table.  Loaded
+            // AFTER nelisp-stdlib-hash.el because it allocates the
+            // visited table via `make-hash-table'.  Function-cell
+            // override shadows the prior Rust `bi_equal' arm.
+            ("nelisp-stdlib-equal.el", include_str!("../../../lisp/nelisp-stdlib-equal.el")),
         ];
         let mut env = Env {
             globals: HashMap::new(),

@@ -566,6 +566,117 @@ fn equal_structural() {
 }
 
 // ============================================================
+// Doc 50 stage 5b/5c — cycle-safe `equal' (elisp impl on top of
+// `nelisp--ref-eq' + visited hash-table).
+// ============================================================
+
+#[test]
+fn equal_self_referential_cons_does_not_loop() {
+    // A cons whose cdr points back to itself must not stack-overflow
+    // and must compare equal to itself.  setcdr is a Rust primitive.
+    let v = ok_all(
+        "(let ((a (cons 1 nil)))
+           (setcdr a a)
+           (equal a a))",
+    );
+    assert_eq!(v, Sexp::T);
+}
+
+#[test]
+fn equal_two_isomorphic_cycles_compare_equal() {
+    // Two distinct cyclic conses with the same shape (= 1 -> self)
+    // both register their respective cells in their own visited
+    // tables — re-entry through `gethash' returns t and the outer
+    // recursion completes.  Result is t.
+    let v = ok_all(
+        "(let ((a (cons 1 nil)) (b (cons 1 nil)))
+           (setcdr a a)
+           (setcdr b b)
+           (equal a b))",
+    );
+    assert_eq!(v, Sexp::T);
+}
+
+#[test]
+fn equal_cycles_with_different_payloads_are_unequal() {
+    // 1 -> self vs 2 -> self.  visited memoisation protects against
+    // infinite recursion; the car comparison reveals 1 != 2.
+    let v = ok_all(
+        "(let ((a (cons 1 nil)) (b (cons 2 nil)))
+           (setcdr a a)
+           (setcdr b b)
+           (equal a b))",
+    );
+    assert_eq!(v, Sexp::Nil);
+}
+
+#[test]
+fn equal_shared_substructure_walks_once() {
+    // Aliased subtree: (X . shared) and (Y . shared).  Compares t
+    // when X = Y, regardless of whether the shared tail is itself
+    // cyclic — the second visit is short-circuited by `--ref-eq'.
+    let v = ok_all(
+        "(let* ((shared (cons 99 nil)) ; loop guard
+                (a (cons 7 shared))
+                (b (cons 7 shared)))
+           (setcdr shared shared)
+           (equal a b))",
+    );
+    assert_eq!(v, Sexp::T);
+}
+
+#[test]
+fn equal_record_structural() {
+    // Two distinct records with same type-tag and slots are equal.
+    let v = ok_all(
+        "(cl-defstruct point x y)
+         (let ((a (make-point :x 1 :y 2))
+               (b (make-point :x 1 :y 2))
+               (c (make-point :x 1 :y 3)))
+           (list (equal a b) (equal a c)))",
+    );
+    assert_eq!(v, Sexp::list_from(&[Sexp::T, Sexp::Nil]));
+}
+
+#[test]
+fn equal_record_with_circular_slot() {
+    // A record whose slot points back to the record itself must
+    // not stack-overflow.  Compare with a freshly-built isomorphic
+    // record (also self-pointing) — should be t.
+    let v = ok_all(
+        "(cl-defstruct cell value next)
+         (let ((a (make-cell :value 1))
+               (b (make-cell :value 1)))
+           (nelisp--record-set a 1 a)
+           (nelisp--record-set b 1 b)
+           (equal a b))",
+    );
+    assert_eq!(v, Sexp::T);
+}
+
+#[test]
+fn equal_vector_structural_and_circular() {
+    // Vector cycle: a vector whose element is the vector itself.
+    let v = ok_all(
+        "(let ((a (vector 0 nil)) (b (vector 0 nil)))
+           (aset a 1 a)
+           (aset b 1 b)
+           (equal a b))",
+    );
+    assert_eq!(v, Sexp::T);
+}
+
+#[test]
+fn equal_atoms_match_eq() {
+    // Atom comparisons keep eq semantics.
+    assert_eq!(ok_all("(equal 0 0)"), Sexp::T);
+    assert_eq!(ok_all("(equal 'sym 'sym)"), Sexp::T);
+    assert_eq!(ok_all("(equal nil nil)"), Sexp::T);
+    assert_eq!(ok_all("(equal nil 'sym)"), Sexp::Nil);
+    assert_eq!(ok_all("(equal 0 0.0)"), Sexp::Nil);
+}
+
+// ============================================================
 // Doc 50 stage 5a — `nelisp--ref-eq' identity primitive
 // ============================================================
 
