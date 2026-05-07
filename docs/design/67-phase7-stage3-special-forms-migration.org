@@ -1,0 +1,500 @@
+#+TITLE: Doc 67 — Phase 7 Stage 7.3: Special Forms Migration to elisp Macros
+#+AUTHOR: zawatton
+#+DATE: 2026-05-07
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: DRAFT
+:DEPENDS_ON: Doc 50 (irreducible unlock) / Doc 64 (Stage 7.1 printer SHIPPED) / Doc 66 (Stage 7.2 reader SHIPPED-modulo-Rust-delete)
+:PARENT: Doc 63 (Phase 7 self-host roadmap)
+:SIBLING: Doc 68 (Stage 7.4 apply / env、後続)
+:END:
+
+* §0 TL;DR
+
+Phase 7 self-host (Doc 63) の 3 番目の足場。=build-tool/src/eval/special_forms.rs=
+の 33 special forms を「**Tier 1 = irreducible primitive**」と「**Tier 2 =
+elisp macro derivable**」に分類、Tier 2 (= 22 件) を elisp =defmacro=
+として =lisp/nelisp-stdlib-eval-special.el= に移し、Rust 側 =sf_*=
+ハンドラを撤去する。Stage 7.2 (= reader) で確立した *parallel path
++ takeover* pattern の 2 度目の application。
+
+| layer | before | after |
+|-+-+-|
+| Rust =eval/special_forms.rs= (1,146 LOC) | 33 special forms | ~600 LOC (= Tier 1 13 forms 残) |
+| Rust =eval/mod.rs= dispatcher | =apply_special= が 33 arm | 13 arm に縮退 |
+| elisp =lisp/nelisp-stdlib-eval-special.el= | (新規) | ~400 LOC (= Tier 2 22 macros + tests) |
+
+LOC 削減推定: Rust ~500 (= Tier 2 ハンドラ + helpers)、elisp +400。残り
+~600 Rust LOC は Stage 7.4 (= apply / env) 完了後に連動して撤去 (=
+Doc 63 §2.3 〜 §2.4 が言う合計 ~900 LOC 削減のうち、本 Doc 67 が ~500、
+Doc 68 Stage 7.4 が ~400 を担当)。
+
+Tier 1 = control flow / scoping / closure / non-local exit / signal の
+プリミティブで *elisp 自身では書けない*。Tier 2 = Tier 1 を組み合わせ
+れば書ける糖衣構文 — 33 件中 22 件 (= 67%) がこれに該当。Phase 5 JIT
+lower 後、Tier 1 primitive 自身が host 命令直 emit され、Tier 2 macro
+expansion 後の =if= / =while= / =setq= chain も同経路を通るので
+wallclock degradation < 3x で gate (= Doc 63 §5.3)。
+
+* §1 動機
+
+** §1.1 Phase 7 self-host roadmap での位置
+
+Doc 63 §2 の 6 stage:
+
+| stage | item                                  | LOC 削減 | status              |
+|-------+---------------------------------------+----------+---------------------|
+| 7.1   | Sexp printer (= prin1 / princ / etc) | 200      | SHIPPED (commit 49ddcca、Doc 64) |
+| 7.2   | Sexp reader (= read-from-string)      | 1,400    | SHIPPED modulo 7.2.f (Doc 66) |
+| 7.3   | *Special forms dispatcher*            | *~500*   | *本 Doc*            |
+| 7.4   | Apply / call / closure / env          | ~400+700 | Doc 68 (後続)        |
+| 7.5   | switch over + Rust dead code 削除     | 600      | -                   |
+| 7.6   | Reader cleanup (Rust reader 削除)     | 200      | Stage 7.2.f         |
+
+Stage 7.3 = 言語の解釈構造そのものを elisp 化する初手。Stage 7.1 / 7.2
+が「I/O」(= printer / reader) を elisp 化したのに対し、本 Stage は
+「実行 semantics」を elisp 側に移す。
+
+** §1.2 Stage 7.2 chicken-and-egg からの教訓
+
+Stage 7.2 で発見した bootstrap dependency cycle:
+- =reader.el= の body が =not= / =null= / =nreverse= / =floatp= 等
+  「elisp で書かれた helper」を使う
+- それら helper は =nelisp-stdlib*.el= で defun されている
+- =reader.el= 自身を *load する* ためには Rust reader が必要 (=
+  elisp reader が自分自身を読めない)
+
+Stage 7.2 はこれを「Rust reader を Tier 1 残し、elisp reader は
+=read-from-string= entry の takeover として install」で解決 (= Doc 66 §3)。
+
+Stage 7.3 でも同形の罠がある:
+- =nelisp-stdlib-eval-special.el= の =defmacro when= の body が
+  =if= / =progn= 等の primitive を使う
+- =if= / =progn= は Tier 1 (= Rust 残) なので動作するが、もし
+  =when= macro 自身が他 stdlib helper (= =cl-list= 系) を body で
+  使うと再帰の罠が発生
+- 解決: *Tier 2 macro body は Tier 1 primitive のみで書く*。これに
+  より load order に関わらず install 直後から動作する
+
+この **Tier 1-only macro body 制約** が本 Doc の中核設計判断。
+
+** §1.3 Phase 5 native cc lowering との相補関係
+
+Tier 2 macro が =if= / =progn= / =setq= / =while= に展開される。Phase 5
+SHIPPED 後 (= Stage 5.1〜5.6 commit b37cd72/9330f85)、これら Tier 1
+primitive のうち arithmetic / cons / predicate / access 系は lower 経由
+で host 命令直 emit。よって macro 展開後の hot path は Rust special
+form 直叩きと比べて wallclock 増を最小限に抑制可能 (= Doc 63 §5.3
+gate < 3x degradation)。
+
+bench gate 例:
+- =(let ((x 0)) (dotimes (i 10000) (setq x (+ x i))) x)= = =dotimes=
+  macro 展開 → =while= + =setq= + =1+= = Phase 5 ArithIR JIT lower
+  → Rust =sf_dotimes= 直叩きとの差は ~1.5x 以内見込み
+
+** §1.4 既存の elisp macro infra
+
+NeLisp は既に macro expander を持つ:
+- =defmacro= 自身は Tier 1 special form (= Rust =sf_defmacro= が
+  =macro_form= cons cell を =fcell= に install)
+- macro expansion は =eval/mod.rs= の =apply_combiner= が cons head
+  fcell lookup → 結果が =(macro . LAMBDA)= なら body call → 結果を
+  改めて eval ループに戻す
+- Doc 50 で =cl-defmacro= / =pcase= が elisp 化済 (= 既に同 path で
+  動作実績あり)
+
+本 Stage はこの infra を 22 件の primitive に拡張するだけ。新規
+mechanism なし、scaling のみ。
+
+* §2 設計
+
+** §2.1 Tier 分類
+
+*** Tier 1 = irreducible primitive (= Rust 残、13 forms)
+
+elisp macro で derive 不可能。理由:
+- =eval-form= ループが直接構造を見る必要がある
+- Rust 側 control flow (= =EvalError= unwind / =UncaughtThrow=) と直接
+  対応する non-local exit
+- =Env= push_frame / pop_frame の lexical scope mutation
+
+| form | 役割 | Rust 必須理由 |
+|-+-+-|
+| =quote= | reader-evaluated literal | =(car args)= をそのまま return、eval 阻止 |
+| =function= | =#'FORM= closure capture | =sf_lambda= 経路の同義 |
+| =if= | conditional branch | =eval(then)= or =eval(else)= の選択を Rust 側で実行 |
+| =let= | parallel lexical bind | =push_frame= / =bind_local= / =pop_frame= の env mutation |
+| =let*= | sequential lexical bind | 同上 |
+| =lambda= | closure 作成 | =capture_lexical= で env Rc clone を closure に bake |
+| =setq= | symbol 値設定 | =set_value= の env mutation |
+| =while= | loop control | conditional jump の host iteration |
+| =progn= | body sequencing | each form を順 eval |
+| =condition-case= | error catch | Rust =EvalError= unwind の handler dispatch |
+| =unwind-protect= | cleanup 保証 | error path / success path 両方で cleanup を eval |
+| =catch= | non-local exit catch | =EvalError::UncaughtThrow= unwind |
+| =throw= | non-local exit raise | =EvalError::UncaughtThrow= raise |
+
+LOC 推定: 1,146 LOC のうち Tier 1 + helper (= =parse_let_binding= /
+=eval_body= / =sexp_eq= 等) ~600 LOC が残存。
+
+*** Tier 2 = elisp macro derivable (= 22 forms)
+
+Tier 1 primitive の組み合わせで書ける:
+
+| form | derive shape (= macroexpand-1 結果) | dependency |
+|-+-+-|
+| =cond= | =if= の chain | =if= |
+| =when= | =(if COND (progn BODY...) nil)= | =if= / =progn= |
+| =unless= | =(if COND nil (progn BODY...))= | 同上 |
+| =and= | nested =if= short-circuit | =if= |
+| =or= | =let= + =if= short-circuit | =let= / =if= |
+| =prog1= | =(let ((tmp BODY1)) BODY-rest tmp)= | =let= |
+| =prog2= | =(progn BODY1 (prog1 BODY2 BODY-rest))= | =prog1= / =progn= |
+| =dolist= | =let= + =while= + =car= / =cdr= drive | =let= / =while= / =setq= |
+| =dotimes= | =let= + =while= + =1+= drive | 同上 |
+| =defun= | =(fset 'NAME (lambda ARGS BODY...))= | =fset= primitive |
+| =cl-defun= | =defun= + =&key= 解析 macro (= 既存 sf_cl_defun の elisp port) | =defun= / =memq= / =or= / =car= / =cdr= |
+| =defmacro= | =(fset 'NAME (cons 'macro (lambda ARGS BODY...)))= | =fset= |
+| =defvar= | =set= primitive + bound check | =set= / =boundp= |
+| =defvar-local= | =defvar= alias | 同上 |
+| =defconst= | =defvar= + constant flag (= primitive boolean cell op) | =set= / =put= |
+| =defcustom= | =defvar= 簡化版 | 同上 |
+| =defgroup= | symbol entry stub (= no-op に近い) | =put= |
+| =setq-default= | =setq= alias | =setq= |
+| =save-excursion= | =progn= 直 (= 既存も no-op stub) | =progn= |
+| =save-restriction= | =progn= 直 (= 既存も no-op stub) | =progn= |
+| =push= | =(setq PLACE (cons X PLACE))= for symbol place | =setq= / =cons= |
+| =pop= | =(prog1 (car PLACE) (setq PLACE (cdr PLACE)))= for symbol place | =prog1= / =setq= / =car= / =cdr= |
+
+LOC 推定: 22 macro * ~15 LOC = ~330 elisp LOC、+ unit tests ~70 LOC =
+~400 LOC。Rust 側削減 ~500 LOC (= Tier 2 sf_* + dolist/dotimes 等の
+比較的大きいハンドラ)。
+
+** §2.2 Tier 1-only macro body 制約
+
+Stage 7.2 の bootstrap dependency cycle 教訓を application:
+
+- *制約*: 本 Doc で書く Tier 2 macro の body は **Tier 1 primitive
+  + reader-installed builtin (= cons / car / cdr / eq / null) のみ**
+  を使う
+- *理由*: macro install timing が *他 stdlib より早い* (= §2.3) ので、
+  body から呼ぶ helper は「絶対 install 済」のものに限る必要がある
+- *検証*: 各 macro の body から呼ぶ symbol を grep し、Tier 1 / Rust
+  builtin 集合に含まれるか確認 (= ERT で =macroexpand-1= 後の form
+  を walk して symbol 参照を抽出する gate を追加)
+
+例:
+#+BEGIN_SRC emacs-lisp
+;; OK — body は if + progn (= Tier 1)
+(defmacro when (cond &rest body)
+  `(if ,cond (progn ,@body) nil))
+
+;; OK — body は let* + while + setq + car + cdr (= Tier 1 + Rust builtin)
+(defmacro dolist (spec &rest body)
+  (let ((var (car spec))
+        (list-form (cadr spec))
+        (result-form (caddr spec))
+        (--list (gensym))
+        (--result (gensym)))
+    `(let* ((,--list ,list-form)
+            (,var nil)
+            (,--result nil))
+       (while ,--list
+         (setq ,var (car ,--list))
+         ,@body
+         (setq ,--list (cdr ,--list)))
+       ,--result)))
+#+END_SRC
+
+NG (= 制約違反) 例: macro body 中に =mapcar= / =cl-loop= / =seq-each=
+等を呼ぶ。これらは別 stdlib (= =nelisp-stdlib-hof.el= / =nelisp-cl-
+macros.el=) で defun されており、本 Doc の install order より後に
+load される可能性がある。Tier 1 + 既知 Rust builtin だけに自制する。
+
+** §2.3 Bootstrap install order
+
+#+BEGIN_EXAMPLE
+NeLisp 起動 (= bin/nelisp.rs)
+  ▼
+Rust eval / reader 起動 (= 既存)
+  ▼
+Env::new_global STDLIB_SOURCES iterate
+  ▼
+Layer A (新規追加、最先頭):
+  lisp/nelisp-stdlib-eval-special.el
+  ▼ (Tier 2 22 macros が install、defmacro entry 全て Rust sf_defmacro 経由)
+Layer B (既存):
+  lisp/nelisp-stdlib.el / .stdlib-equal.el / .stdlib-list.el / etc.
+  ▼ (これらは Tier 2 macro を使える状態で load)
+Layer C (Stage 7.2 SHIPPED):
+  lisp/nelisp-stdlib-reader.el (= 後段 install、=read-from-string=
+  takeover)
+  ▼
+*** 全 stdlib install 完了 ***
+User code が Tier 2 macro を使うと elisp 経由 expand
+#+END_EXAMPLE
+
+*Layer A の制約*: 本 Doc の elisp file は **Layer A で 1 番目** に
+load されること、かつ body から呼ぶ symbol は Tier 1 + Rust builtin
+のみに自制 (= §2.2)。STDLIB_SOURCES の順序を =build-tool/src/eval/env.rs=
+側で確定。
+
+** §2.4 Rust 側 dispatcher 縮退
+
+Stage 7.3.b で =eval/special_forms.rs= の =apply_special= の match arm
+を Tier 1 13 件のみに縮退:
+
+#+BEGIN_SRC rust
+pub fn apply_special(name: &str, args: &Sexp, env: &mut Env)
+    -> Result<Option<Sexp>, EvalError>
+{
+    let result = match name {
+        // Tier 1 primitive (= elisp macro で derive 不可)
+        "quote" => sf_quote(args)?,
+        "function" => sf_function(args, env)?,
+        "if" => sf_if(args, env)?,
+        "let" => sf_let(args, env)?,
+        "let*" => sf_let_star(args, env)?,
+        "lambda" => sf_lambda(args, env)?,
+        "setq" => sf_setq(args, env)?,
+        "while" => sf_while(args, env)?,
+        "progn" => sf_progn(args, env)?,
+        "condition-case" => sf_condition_case(args, env)?,
+        "unwind-protect" => sf_unwind_protect(args, env)?,
+        "catch" => sf_catch(args, env)?,
+        "throw" => sf_throw(args, env)?,
+        // Stage 7.3 で削除 (= Tier 2、elisp macro 経由)
+        // "cond" / "when" / "unless" / "and" / "or" / "prog1" / "prog2"
+        // "dolist" / "dotimes" / "defun" / "cl-defun" / "defmacro"
+        // "defvar" / "defvar-local" / "defconst" / "defcustom" / "defgroup"
+        // "setq-default" / "save-excursion" / "save-restriction"
+        // "push" / "pop"
+        _ => return Ok(None),
+    };
+    Ok(Some(result))
+}
+#+END_SRC
+
+Tier 2 が =apply_special= で =Ok(None)= 返した後、call site は
+=apply_combiner= に進み、fcell を lookup → =(macro . LAMBDA)= を取り出し
+expand → 結果を再 eval。これは既存 macro expander 経路 (= =cl-defmacro=
+/ =pcase= で動作実績あり) と同じ。
+
+** §2.5 elisp 側 fset / set / put primitive
+
+Tier 2 macros (=defun= / =defmacro= / =defvar= 系) は =fset= / =set= /
+=put= primitive を呼ぶ。これらは現状:
+
+| primitive | 現状 | 必要な追加 |
+|-+-+-|
+| =fset SYMBOL FN= | =bi_fset= 既存 | なし |
+| =set SYMBOL VALUE= | =bi_set= 既存 | なし |
+| =put SYMBOL PROP VALUE= | =bi_put= 既存 | なし |
+| =boundp SYMBOL= | =bi_boundp= 既存 | なし |
+| =gensym &optional PREFIX= | =bi_gensym= 既存 | なし |
+
+新規 Rust primitive 追加ゼロ。Stage 7.2 同様 *primitive 拡張なし* 原則。
+
+** §2.6 cl-defun の elisp port
+
+=sf_cl_defun= は 110+ LOC の比較的大きい special form (= =&key= 引数
+展開 + body wrap)。これも Tier 2 として elisp macro 化:
+
+#+BEGIN_SRC emacs-lisp
+(defmacro cl-defun (name formals &rest body)
+  (let ((parsed (nelisp--parse-cl-formals formals)))
+    (let ((positional (plist-get parsed :positional))
+          (optionals (plist-get parsed :optional))
+          (rest-sym (or (plist-get parsed :rest) '--cl-keys))
+          (keys (plist-get parsed :keys)))
+      (if (null keys)
+          ;; &key なし: ただの defun と同じ
+          `(defun ,name ,formals ,@body)
+        ;; &key あり: formals を書き換え、body を let* で wrap
+        (let ((new-formals (append positional
+                                   (and optionals (cons '&optional optionals))
+                                   (list '&rest rest-sym)))
+              (bindings (mapcar (lambda (k)
+                                  (let ((kw (car k)) (param (cadr k)) (default (caddr k)))
+                                    `(,param (or (car (cdr (memq ',kw ,rest-sym)))
+                                                 ,default))))
+                                keys)))
+          `(defun ,name ,new-formals
+             (let* ,bindings ,@body)))))))
+#+END_SRC
+
+helper =nelisp--parse-cl-formals= は別 defun (= =nelisp-stdlib-eval-special.el=
+内、~50 LOC)。既存 =sf_cl_defun= Rust 実装と完全 1:1 対応。
+
+* §3 段階 / sub-stages
+
+Stage 7.3 を 4 sub-stage に分割、各 sub-stage で independent ship 可能:
+
+** §3.1 Stage 7.3.a — Tier 2 macros 22 件 + 単純 Tier (= cond/when/unless 系)
+
+- =lisp/nelisp-stdlib-eval-special.el= 新規、最初の 18 macros を install
+  - cond / when / unless / and / or / prog1 / prog2 / save-excursion /
+    save-restriction / setq-default / defvar-local / defcustom / defgroup
+  - dolist / dotimes / push / pop / defvar / defconst
+- Rust 側 =apply_special= の対応 match arm は **削除しない** (=
+  parallel path、defmacro install 後は elisp 経由 expand、install 前
+  は Rust fallback)
+- ERT: 各 macro の =macroexpand-1= 結果が想定 form と =equal= かを test
+- bootstrap: =STDLIB_SOURCES= に Layer A 1 番目で追加
+
+LOC: +250 elisp、Rust 不変。
+
+** §3.2 Stage 7.3.b — defun / defmacro elisp port
+
+- =defun= / =defmacro= の 2 macros を追加 install
+- これらは =fset= primitive を呼ぶ純 macro
+- Rust =sf_defun= / =sf_defmacro= は parallel path で残存 (= 7.3.d で
+  撤去)
+- ERT: =(defun foo (x) (+ x 1)) (foo 5)= = 6 の cross-rust 等価性 test
+  + macroexpand-1 結果 inspect
+
+LOC: +30 elisp、Rust 不変。
+
+** §3.3 Stage 7.3.c — cl-defun elisp port
+
+- =cl-defun= を elisp macro 化 (= §2.6 の shape)
+- helper =nelisp--parse-cl-formals= も同 file に defun
+- ERT: 既存 =anvil-memory-list= 等 =&key= 持ち defun が elisp 経由
+  expand で動くか cross test
+- Rust =sf_cl_defun= は parallel path
+
+LOC: +120 elisp、Rust 不変。
+
+** §3.4 Stage 7.3.d — Rust sf_* 22 件撤去
+
+- Stage 7.3.a/b/c で elisp macros が安定動作確認後、=apply_special=
+  の Tier 2 22 arm を削除、=sf_when= / =sf_unless= / =sf_cond= / =sf_and=
+  / =sf_or= / =sf_prog1= / =sf_prog2= / =sf_dolist= / =sf_dotimes= /
+  =sf_save_*= / =sf_push= / =sf_pop= / =sf_defun= / =sf_cl_defun= /
+  =sf_defmacro= / =sf_defvar= / =sf_defcustom= / =sf_defgroup= / =sf_setq_default=
+  ハンドラ全削除
+- =include_str!= で =lisp/nelisp-stdlib-eval-special.el= を image.rs に
+  bake-in (= 起動時必ず install 保証)
+- ERT: 全 ERT pass、self-host gate 通過
+
+LOC: -500 Rust、+5 Rust (= image.rs include)。
+
+** §3.5 sub-stage 順序
+
+7.3.a → 7.3.b → 7.3.c → 7.3.d。各 sub-stage で全 ERT PASS かつ
+=make test= 0 unexpected を gate。Stage 7.3.a で大半の Tier 2 を移し、
+7.3.b/c で defun/defmacro/cl-defun (= 比較的大きい) を分離 ship、
+7.3.d で Rust 側の最終撤去。
+
+* §4 Test plan
+
+** §4.1 macroexpand-1 inspection ERT
+
+各 Tier 2 macro について:
+- =(macroexpand-1 '(when t 1 2))= = =(if t (progn 1 2) nil)= の equal 比較
+- =(macroexpand-1 '(dolist (x '(1 2 3)) (princ x)))= が =let*= +
+  =while= の正しい shape を返すか
+- =(macroexpand-1 '(push x lst))= = =(setq lst (cons x lst))=
+
+22 macros * ~3 case = ~70 ERT 案件。
+
+** §4.2 cross-rust 等価性 ERT
+
+Stage 7.3.a/b/c の sub-stage で *parallel path* が動いている間 (= 7.3.d
+直前まで)、同じ form を:
+- Rust special form (= =apply_special= match arm) で evaluate した結果
+- elisp macro expand 後 evaluate した結果
+
+両者が =equal= かを cross test。差異が出た場合 macro 定義のバグ確定。
+
+** §4.3 self-host gate
+
+- 全 stdlib =.el= ファイル + user code が elisp macro 経由で load
+  可能 (= Stage 7.3.d 直前で確認)
+- 失敗パターン: macro install order の漏れ / Tier 1-only 制約違反
+  (= macro body から =seq-= 系を呼んだ等) / =gensym= 衝突
+
+** §4.4 wallclock gate
+
+- Doc 63 §5.3: elisp macro 切替前後で =make test= wallclock < 3x
+  degradation
+- bench: =(let ((s 0)) (dotimes (i 10000) (setq s (+ s i))) s)= で
+  Rust =sf_dotimes= path / elisp macro 展開後 =while= path の比較
+
+** §4.5 Tier 1-only 制約 gate
+
+- 全 Tier 2 macro の =macroexpand-all= 結果を walk、symbol 参照を
+  collect、Tier 1 (= 13 forms) + Rust builtin (= =cons= / =car= /
+  =cdr= / =eq= / =null= / =not= / =memq= / =fset= / =set= / =put= /
+  =boundp= / =gensym= / =1+= / =1-= / =+= / =-= / =<= / =>= /
+  =error= 等の最小集合) のみ含むかを ERT で確認
+- これにより future な macro 追加でも Tier 1-only 制約が gate される
+
+* §5 段階的 unlock plan
+
+| stage   | 解放対象                                      | LOC 削減 / 増加     | 依存                |
+|---------+-----------------------------------------------+---------------------+---------------------|
+| 7.3.a   | Tier 2 macros 18 件 (= cond/when/unless/...) | 0 (= +250 elisp)    | Stage 7.2 SHIPPED |
+| 7.3.b   | defun / defmacro elisp port                   | 0 (= +30 elisp)     | 7.3.a               |
+| 7.3.c   | cl-defun elisp port                           | 0 (= +120 elisp)    | 7.3.b               |
+| 7.3.d   | Rust sf_* 22 件撤去 + image.rs include        | -500 Rust (= +5)    | 7.3.c (= 安定動作)  |
+| 計      | -                                             | -500 Rust / +405 elisp | -                |
+
+合計: Rust ~500 LOC 削減 + elisp ~405 LOC 増 = net -95 LOC、かつ
+Phase 7 self-host roadmap (Doc 63) で Stage 7.3 完遂。残 Tier 1
+(~600 LOC) は Stage 7.4 (= apply / env elisp 化) と連動して撤去
+される (= eval/mod.rs / env.rs と一蓮托生)。
+
+* §6 共通原則
+
+- *Tier 1-only macro body 制約*: §2.2 通り、Tier 2 macro の body は
+  Tier 1 primitive + 既知 Rust builtin のみ使用。bootstrap order に
+  関わらず install 直後から動作可能を保証
+- *parallel path 期間 minimal*: Stage 7.3.a → 7.3.d を素早く回す。
+  Rust + elisp 両 special form が動く期間が長引くと test infra 冗長化
+- *primitive 追加ゼロ*: §2.5 通り、既存 =fset= / =set= / =put= /
+  =gensym= 等で Tier 2 macros 全件カバー (= Stage 7.2 と同様の Rust
+  min 原則)
+- *macroexpand-1 inspection を gate 化*: §4.1 で各 macro の expansion
+  shape を ERT で固定、future な refactor で expansion が壊れたら
+  即検出
+- *Stage 7.2 教訓の継承*: chicken-and-egg 回避のため Layer A の install
+  order を =STDLIB_SOURCES= 1 番目に固定。reader 同様に bake-in 必須
+
+* §7 Out of scope
+
+- *Phase 7 Stage 7.4* (= apply / env / closure の elisp 化) は別 Doc 68。
+  本 Doc で残す Tier 1 13 件 + eval/mod.rs / env.rs と連動撤去
+- *Stage 7.5 / 7.6* (= Rust 側 dead code 削除) は本 Doc scope 外
+- *Macro body Tier 1-only 制約の relaxation* — future な =seq-=
+  系 macro 化等は別 phase。本 Doc は Tier 2 22 件のみ
+- *=eval-when-compile= / =declare= / =cl-declaim= 系 半 macro 半
+  eval form* — Doc 63 §6 で Stage 7.3.5 とラベル。本 Doc では touch せず、
+  従来の Rust path のまま (= 利用頻度低、Phase 7 完了後の clean-up
+  対象)
+- *=byte-compile= / =native-compile=* (= elisp の AOT) は Phase 7 完了
+  後の Phase 8 (= "second lift") 候補
+- *Generalised places (= =setf= / =cl-incf= 経由 push/pop)* — 現状
+  =sf_push= は symbol-place fast path + cons-place setf bounce、
+  elisp port も同 shape を踏襲 (= cl-lib polyfill 経由)。新規拡張なし
+
+* §8 References
+
+- =feedback_nelisp_minimize_rust= memory
+- =project_doc61_64_phase7_ramp= memory (= Phase 7 ramp 全体)
+- Doc 49 elisp pivot
+- Doc 50 §4 段階的 unlock plan / §5 共通原則
+- Doc 62 Phase 5 native cc lowering (= macro 展開後 hot path JIT lower)
+- Doc 63 Phase 7 NeLisp self-host roadmap (= 親 Doc)
+- Doc 64 Phase 7 Stage 7.1 elisp Sexp printer (= Stage 7.1 SHIPPED 49ddcca)
+- Doc 66 Phase 7 Stage 7.2 elisp Sexp reader (= 兄弟 Doc、parallel path
+  + takeover pattern + Tier 1-only body 制約の元設計)
+- =build-tool/src/eval/special_forms.rs= (= 撤去対象 1,146 LOC、Tier 1
+  ~600 残 / Tier 2 ~500 削)
+- =build-tool/src/eval/mod.rs= =apply_combiner= (= macro expander 既存
+  経路、Tier 2 expansion はここを通る)
+- =lisp/nelisp-pcase.el= (= macro elisp 化の先例、Doc 50 既 SHIPPED)
+- =lisp/nelisp-cl-macros.el= (= cl-defmacro elisp 化の先例)
+- SBCL self-host history、Femtolisp、Guile (= macro elisp 化の上流参考)
