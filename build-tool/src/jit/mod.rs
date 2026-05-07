@@ -101,6 +101,8 @@ pub type LowerFn = fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError>;
 
 mod access;
 mod arith;
+#[cfg(test)]
+mod bench;
 mod cons;
 mod predicate;
 mod syscall;
