@@ -454,6 +454,95 @@ Verifies AF_INET6 bind/connect/accept + IPv6 group list encoding."
     (should (eq (car r) 0))
     (should (equal (cdr r) "hello-v6"))))
 
+;;; Doc 57 Phase 4.3 — modern Linux event surface ERTs ---------------------
+
+(ert-deftest nelisp-stdlib-os-test/pidfd-open-send-signal ()
+  "fork /bin/sleep 30 → parent pidfd_open(child) → pidfd_send_signal
+SIGTERM → wait4 → WIFSIGNALED & WTERMSIG = SIGTERM.  Verifies that
+pidfd-flavoured subprocess control delivers signals reliably."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (skip-unless (file-executable-p "/bin/sleep"))
+  (let ((r (nelisp-stdlib-os-test--eval
+            "(progn
+              (require (quote nelisp-stdlib-os))
+              (let ((child (nelisp-os-fork)))
+                (cond
+                 ((= child 0)
+                  (nelisp-os-execve \"/bin/sleep\" (quote (\"sleep\" \"30\")) nil)
+                  (nelisp-os-exit 127))
+                 (t
+                  (let ((pfd (nelisp-os-pidfd-open child 0)))
+                    (nelisp-os-pidfd-send-signal pfd nelisp-os-SIGTERM 0)
+                    (nelisp-os-close pfd)
+                    (let* ((rs (nelisp-os-wait child 0))
+                           (st (cdr rs)))
+                      (nelisp-os-write 1
+                        (if (and (nelisp-os-WIFSIGNALED st)
+                                 (= (nelisp-os-WTERMSIG st) nelisp-os-SIGTERM))
+                            \"ok\" \"err\"))
+                      (nelisp-os-exit 0))))))) ")))
+    (should (eq (car r) 0))
+    (should (equal (cdr r) "ok"))))
+
+(ert-deftest nelisp-stdlib-os-test/inotify-watch-create-and-read ()
+  "Create a tmp directory, watch it for IN_CREATE, create a file in
+it, then read inotify events — expect at least one event whose name
+matches the created file."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (let* ((dir (make-temp-file "nelisp-os-inotify-" t))
+         (expr (format "(progn
+              (require (quote nelisp-stdlib-os))
+              (let* ((dir %S)
+                     (ifd (nelisp-os-inotify-init 0)))
+                (nelisp-os-inotify-add-watch ifd dir nelisp-os-IN-CREATE)
+                ;; Trigger an IN_CREATE event by opening a new file inside
+                ;; DIR with O_CREAT.
+                (let ((nfd (nelisp-os-open
+                            (concat dir \"/probe.txt\")
+                            (logior nelisp-os-O-WRONLY nelisp-os-O-CREAT) 420)))
+                  (nelisp-os-close nfd))
+                (let* ((events (nelisp-os-inotify-read ifd 8))
+                       (names (mapcar (lambda (e) (nth 3 e)) events)))
+                  (nelisp-os-close ifd)
+                  (nelisp-os-write 1
+                    (if (member \"probe.txt\" names) \"ok\" \"err\"))
+                  (nelisp-os-exit 0))))" dir)))
+    (unwind-protect
+        (let ((r (nelisp-stdlib-os-test--eval expr)))
+          (should (eq (car r) 0))
+          (should (equal (cdr r) "ok")))
+      ;; Best-effort cleanup — tolerate stray probe file from the test.
+      (when (file-exists-p (expand-file-name "probe.txt" dir))
+        (delete-file (expand-file-name "probe.txt" dir)))
+      (when (file-directory-p dir) (delete-directory dir t)))))
+
+(ert-deftest nelisp-stdlib-os-test/eventfd-write-then-read ()
+  "eventfd(0) → write 8-byte little-endian counter (= 7) → read 8 bytes
+→ the read string must equal the bytes we wrote.  Verifies eventfd2
+through the existing read/write wrappers (the counter encoding is
+opaque on the elisp side)."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (let ((r (nelisp-stdlib-os-test--eval
+            "(progn
+              (require (quote nelisp-stdlib-os))
+              (let* ((fd (nelisp-os-eventfd 0 0))
+                     ;; Eight-byte little-endian encoding of the counter
+                     ;; value 7.  Just one non-zero byte at index 0.
+                     (payload (concat (list 7 0 0 0 0 0 0 0))))
+                (nelisp-os-write fd payload)
+                (let ((data (nelisp-os-read fd 8)))
+                  (nelisp-os-close fd)
+                  (nelisp-os-write 1
+                    (if (and (= (length data) 8)
+                             (= (aref data 0) 7))
+                        \"ok\" \"err\"))
+                  (nelisp-os-exit 0))))")))
+    (should (eq (car r) 0))
+    (should (equal (cdr r) "ok"))))
+
 (provide 'nelisp-stdlib-os-test)
 
 ;;; nelisp-stdlib-os-test.el ends here

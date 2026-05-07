@@ -1,0 +1,194 @@
+#+TITLE: Doc 57 — OS Surface Phase 4.3: Modern Linux Event Surface (inotify + pidfd + eventfd)
+#+AUTHOR: zawatton
+#+DATE: 2026-05-07
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: DRAFT
+:DEPENDS_ON: Doc 53 (Minimal-5), Doc 55 (Posix-30 generic syscall + poll)
+:END:
+
+* §0 TL;DR
+
+Doc 53/54/55/56 で POSIX surface が出揃った。本 Phase 4.3 は POSIX 範囲外の
+*Linux 現代 event surface* を 3 系統まとめて ship する。
+
+| 系統     | 名前                                          | 用途                              |
+|----------+-----------------------------------------------+-----------------------------------|
+| pidfd    | pidfd_open / pidfd_send_signal               | race-free subprocess 制御         |
+| inotify  | inotify_init1 / -add_watch / -rm_watch / read | filesystem 変更通知               |
+| eventfd  | eventfd2                                      | 軽量 event-loop notification fd   |
+
+scope = 5 syscall_nr 追加 + 2 専用 primitive + 12 wrapper + ~20 定数 + 3 ERT。
+
+設計指針 (= Doc 53/54/55/56 を継承): *Rust 追加を最小化*。
+
+- =pidfd_open= / =pidfd_send_signal= (info = NULL 限定) / =inotify_init1=
+  / =inotify_rm_watch= / =eventfd2= は int 引数のみ → =syscall_nr()= の symbol
+  map 拡張だけで対応 (5 行追加)
+- =inotify_add_watch= は char-array path が必要 → 専用 primitive
+- =inotify_read= = inotify fd への =read(2)= だが、kernel 返す struct =inotify_event=
+  は (=wd, mask, cookie, len, name[len]=) の可変長 packed binary。elisp の
+  =Sexp::Str(String)= は UTF-8 想定で binary を素直に通せない (= invalid UTF-8
+  に対して replacement char を入れる) ので、Rust 側で *parse して
+  list-of-(WD MASK COOKIE NAME) を返す* 専用 primitive にする。
+
+Path A (Linux) のみ。pidfd は Linux 5.3+, inotify は 2.6.13+, eventfd は 2.6.22+。
+Darwin/Windows 対応は (= 等価機能の kqueue / FSEvents / IO completion port は
+別 OS 別 API) 完全に scope 外。
+
+* §1 動機
+
+NeLisp が host を持たずに自前で event loop を回す設計 (= memory
+~project_lisp_machine_vision_95pct~) で必要になる surface。
+
+- *pidfd*: =waitpid(pid, ...)= の TOCTOU 問題を回避し、subprocess を fd と
+  して扱う。poll に混ぜて子の死亡を select 的に観察できる
+- *inotify*: file-watch 駆動の reactive substrate (= Cowork での org-file
+  edit による journal 自動 import 等) を host Emacs の =file-notify= に依存
+  せず elisp で書ける line を作る
+- *eventfd*: pthread / fork 越しに「起きてくれ」シグナルを送る軽量 fd。
+  poll / select の wake-up signal として標準的
+
+* §2 設計
+
+** §2.1 Rust 追加
+
+builtins.rs:
+
+- =syscall_nr()= の symbol map に 5 件追加: =pidfd_open= / =pidfd_send_signal=
+  / =inotify_init1= / =inotify_rm_watch= / =eventfd2=
+- =install_builtins()= names + =dispatch()= に 2 名追加:
+  =nelisp--syscall-inotify-add-watch= / =nelisp--syscall-inotify-read=
+- 関数 2 本実装 (=#[cfg(target_os = "linux")]= gate、非 Linux stub)
+
+*** §2.1.1 =bi_syscall_inotify_add_watch FD PATH MASK=
+
+#+BEGIN_SRC rust
+fn bi_syscall_inotify_add_watch(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    // FD = inotify fd, PATH = string, MASK = int
+    // libc::inotify_add_watch → wd (int) / -errno
+}
+#+END_SRC
+
+*** §2.1.2 =bi_syscall_inotify_read FD MAX-EVENTS=
+
+inotify fd への read(2) は struct inotify_event の sequence (可変長) を返す。
+本 primitive はそれを Rust 側で parse して elisp list of (WD MASK COOKIE NAME)
+を返す。MAX-EVENTS は upper bound、buffer は内部で =sizeof(inotify_event) +
+NAME_MAX + 1= × MAX-EVENTS バイト確保。
+
+#+BEGIN_SRC rust
+fn bi_syscall_inotify_read(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    // FD MAX-EVENTS → list of (WD MASK COOKIE NAME) or -errno
+    // NAME は inotify_event::name[len] 部分を NUL terminator まで取り、
+    // String::from_utf8_lossy で Sexp::Str 化。空 (= len=0) なら "" を返す。
+}
+#+END_SRC
+
+** §2.2 Elisp 追加 (=lisp/nelisp-stdlib-os.el= に追記)
+
+新規 wrapper:
+
+| function                                  | 内部呼出                                   |
+|-------------------------------------------+--------------------------------------------|
+| =nelisp-os-pidfd-open PID FLAGS=          | =(nelisp--syscall 'pidfd_open PID FLAGS)=  |
+| =nelisp-os-pidfd-send-signal PFD SIG FLAGS= | =(nelisp--syscall 'pidfd_send_signal PFD SIG 0 FLAGS)= |
+| =nelisp-os-inotify-init FLAGS=            | =(nelisp--syscall 'inotify_init1 FLAGS)=   |
+| =nelisp-os-inotify-add-watch FD PATH MASK=| =(nelisp--syscall-inotify-add-watch FD PATH MASK)= |
+| =nelisp-os-inotify-rm-watch FD WD=        | =(nelisp--syscall 'inotify_rm_watch FD WD)= |
+| =nelisp-os-inotify-read FD MAX=           | =(nelisp--syscall-inotify-read FD MAX)=    |
+| =nelisp-os-eventfd INITVAL FLAGS=         | =(nelisp--syscall 'eventfd2 INITVAL FLAGS)=|
+
+新規定数 (代表値、Linux x86_64):
+
+#+BEGIN_EXAMPLE
+;; pidfd flags
+PIDFD-NONBLOCK   = #x800   (O_NONBLOCK)
+
+;; inotify mask (event types)
+IN-ACCESS        = #x1
+IN-MODIFY        = #x2
+IN-ATTRIB        = #x4
+IN-CLOSE-WRITE   = #x8
+IN-CLOSE-NOWRITE = #x10
+IN-OPEN          = #x20
+IN-MOVED-FROM    = #x40
+IN-MOVED-TO      = #x80
+IN-CREATE        = #x100
+IN-DELETE        = #x200
+IN-DELETE-SELF   = #x400
+IN-MOVE-SELF     = #x800
+IN-ALL-EVENTS    = #xFFF
+
+;; inotify_init1 flags
+IN-NONBLOCK      = #x800   (O_NONBLOCK)
+IN-CLOEXEC       = #x80000 (O_CLOEXEC)
+
+;; eventfd flags
+EFD-SEMAPHORE    = #x1
+EFD-NONBLOCK     = #x800
+EFD-CLOEXEC      = #x80000
+#+END_EXAMPLE
+
+** §2.3 ファイル配置
+
+| 種別      | path                                                       | 操作       |
+|-----------+------------------------------------------------------------+------------|
+| 設計書    | =docs/design/57-os-surface-phase4-3-modern-event.org=      | new        |
+| Rust      | =build-tool/src/eval/builtins.rs=                          | edit       |
+| stdlib    | =lisp/nelisp-stdlib-os.el=                                 | edit (追記) |
+| test      | =test/nelisp-stdlib-os-test.el=                            | edit (追記) |
+
+* §3 Sub-phase 分割
+
+** Phase 4.3 (本 Doc, scope) — Modern event surface
+
+5 syscall_nr + 2 専用 primitive + 7 elisp wrapper + ~20 定数 + 3 ERT。
+
+** Phase 4.3.1 (将来) — timerfd / signalfd
+
+=timerfd_create= / =timerfd_settime= / =signalfd= 系。signalfd 経由で
+signal を fd 化すれば Phase 4.2 の sigaction 設計をだいぶ単純化できる
+(= async callback ではなく fd ready の poll で扱える)。
+
+** Phase 4.3.2 (将来) — io_uring (= 別格)
+
+submission queue / completion queue + ring buffer の mapping。Lisp Machine
+vision としても重い設計 jump、別 Doc。
+
+* §4 Test plan
+
+新規 ERT 3 本を =test/nelisp-stdlib-os-test.el= に追記。
+
+| test                              | flow                                                                |
+|-----------------------------------+---------------------------------------------------------------------|
+| ~pidfd-open-send-signal~          | fork /bin/sleep 30 → pidfd_open(child) → pidfd_send_signal SIGTERM → wait4 → WIFSIGNALED |
+| ~inotify-watch-create-and-read~   | mkdtemp → inotify_init → add_watch IN_CREATE → create new file → inotify_read → list 含む新ファイル名 |
+| ~eventfd-write-then-read~         | eventfd 0 → write 8-byte counter → read 8-byte → equal 元値        |
+
+eventfd は 8-byte uint64 の read/write。elisp 側は Phase 1 の =nelisp-os-write=
+/ =-read= をそのまま使い、64-bit 値を 8-byte little-endian string 化する
+helper を test 内で組む。
+
+build gate: =cargo build --release --bin nelisp= warning 0 + 既存 18 ERT
++ 新 3 ERT = 計 21 ERT 全 pass。
+
+* §5 Out of scope (= Phase 4.3.x / 別)
+
+- timerfd / signalfd (= Phase 4.3.1)
+- io_uring (= Phase 4.3.2、別 Doc 候補)
+- pidfd_getfd (= fd 受渡し、Phase 4.3.x 候補)
+- inotify abstract namespace (= filesystem inode 単位なので AF_UNIX abstract
+  と性質違い、Linux にそもそも該当機能なし)
+- pidfd_send_signal の siginfo_t (= info != NULL pass、Phase 4.3.x)
+- Path B (Darwin/Windows) — kqueue / FSEvents / IOCP は別 OS 別 API
+
+* §6 References
+
+- Doc 53 Phase 1 — =nelisp--syscall= 基盤
+- Doc 55 Phase 4 — Posix-30 generic syscall + subprocess + poll
+- man 7 inotify / man 2 pidfd_open / man 2 eventfd
+- memory =project_lisp_machine_vision_95pct= — Lisp Machine vision の進捗
+- memory =feedback_nelisp_minimize_rust= — Rust 最小化方針

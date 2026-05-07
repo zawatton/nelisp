@@ -267,6 +267,11 @@ pub fn install_builtins(env: &mut Env) {
         "nelisp--syscall-bind-inet6",
         "nelisp--syscall-connect-inet6",
         "nelisp--syscall-accept-inet6",
+        // Doc 57 Phase 4.3 (2026-05-07) — modern Linux event surface
+        // (inotify needs path/buffer handling; pidfd_* and eventfd2
+        // ride generic syscall via syscall_nr() symbol map).
+        "nelisp--syscall-inotify-add-watch",
+        "nelisp--syscall-inotify-read",
         // Rust-min (2026-05-06): `file-name-directory' /
         // `file-name-nondirectory' / `file-name-as-directory' /
         // `directory-file-name' migrated to elisp (see
@@ -507,6 +512,9 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nelisp--syscall-bind-inet6" => bi_syscall_bind_inet6(args),
         "nelisp--syscall-connect-inet6" => bi_syscall_connect_inet6(args),
         "nelisp--syscall-accept-inet6" => bi_syscall_accept_inet6(args),
+        // Doc 57 Phase 4.3 (2026-05-07) — inotify path/buffer primitives.
+        "nelisp--syscall-inotify-add-watch" => bi_syscall_inotify_add_watch(args),
+        "nelisp--syscall-inotify-read" => bi_syscall_inotify_read(args),
         // ---- symbol / function ----
         "symbol-value" => bi_symbol_value(args, env),
         "symbol-function" => bi_symbol_function(args, env),
@@ -1920,6 +1928,15 @@ fn syscall_nr(name_or_nr: &Sexp) -> Result<i64, EvalError> {
             "wait4"      => Ok(libc::SYS_wait4      as i64),
             "getppid"    => Ok(libc::SYS_getppid    as i64),
             "setpgid"    => Ok(libc::SYS_setpgid    as i64),
+            // Doc 57 Phase 4.3 (2026-05-07) — modern Linux event
+            // surface (pidfd / inotify / eventfd).  inotify_add_watch
+            // and inotify_read need buffer handling and live in their
+            // own primitives below.
+            "pidfd_open"        => Ok(libc::SYS_pidfd_open        as i64),
+            "pidfd_send_signal" => Ok(libc::SYS_pidfd_send_signal as i64),
+            "inotify_init1"     => Ok(libc::SYS_inotify_init1     as i64),
+            "inotify_rm_watch"  => Ok(libc::SYS_inotify_rm_watch  as i64),
+            "eventfd2"          => Ok(libc::SYS_eventfd2          as i64),
             other => Err(EvalError::Internal(format!(
                 "nelisp--syscall: unknown syscall name `{}'", other))),
         },
@@ -2581,6 +2598,112 @@ fn bi_syscall_accept_inet6(args: &[Sexp]) -> Result<Sexp, EvalError> {
 fn bi_syscall_accept_inet6(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let _ = args;
     Err(EvalError::Internal("nelisp--syscall-accept-inet6: unsupported platform".into()))
+}
+
+// ---------------------------------------------------------------------------
+// Doc 57 Phase 4.3 — Modern Linux event surface (inotify add_watch + read).
+//
+// pidfd_* / inotify_init1 / inotify_rm_watch / eventfd2 ride the generic
+// `nelisp--syscall' arm via syscall_nr() symbol map.  The two inotify
+// primitives below need string / variable-length-binary handling that
+// the int-only generic dispatch can't express.
+// ---------------------------------------------------------------------------
+
+/// `(nelisp--syscall-inotify-add-watch FD PATH MASK)' — POSIX-non-standard
+/// Linux inotify_add_watch(2).  Returns watch descriptor (positive int)
+/// on success, `Sexp::Int(-errno)' on failure.
+#[cfg(target_os = "linux")]
+fn bi_syscall_inotify_add_watch(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    use std::ffi::CString;
+    require_arity("nelisp--syscall-inotify-add-watch", args, 3, Some(3))?;
+    let fd   = syscall_arg_int("nelisp--syscall-inotify-add-watch", 1, &args[0])? as libc::c_int;
+    let path = args[1].as_string_owned().ok_or_else(|| EvalError::WrongType {
+        expected: "string (filesystem path)".into(),
+        got: args[1].clone(),
+    })?;
+    let mask = syscall_arg_int("nelisp--syscall-inotify-add-watch", 3, &args[2])? as u32;
+    let cpath = CString::new(path).map_err(|e| EvalError::Internal(
+        format!("nelisp--syscall-inotify-add-watch: path contains NUL: {}", e)))?;
+    let r = unsafe { libc::inotify_add_watch(fd, cpath.as_ptr(), mask) };
+    if r < 0 {
+        let e = unsafe { *libc::__errno_location() } as i64;
+        return Ok(Sexp::Int(-e));
+    }
+    Ok(Sexp::Int(r as i64))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bi_syscall_inotify_add_watch(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let _ = args;
+    Err(EvalError::Internal("nelisp--syscall-inotify-add-watch: unsupported platform".into()))
+}
+
+/// `(nelisp--syscall-inotify-read FD MAX-EVENTS)' — read inotify(7) events
+/// off FD and return a list of `(WD MASK COOKIE NAME)' 4-element lists.
+///
+/// The inotify packed-binary stream is parsed Rust-side because elisp
+/// `Sexp::Str' is UTF-8 and cannot round-trip the variable-length
+/// `inotify_event::name[]' field cleanly.  Returns `Sexp::Int(-errno)'
+/// on read failure; an empty list is valid (= no events ready, only
+/// possible on a non-blocking fd).
+#[cfg(target_os = "linux")]
+fn bi_syscall_inotify_read(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--syscall-inotify-read", args, 2, Some(2))?;
+    let fd  = syscall_arg_int("nelisp--syscall-inotify-read", 1, &args[0])? as libc::c_int;
+    let max = syscall_arg_int("nelisp--syscall-inotify-read", 2, &args[1])?;
+    if max <= 0 {
+        return Err(EvalError::Internal(
+            "nelisp--syscall-inotify-read: MAX-EVENTS must be positive".into()));
+    }
+    // Each event is sizeof(inotify_event) + name field (up to NAME_MAX + 1).
+    // Allocate enough for MAX-EVENTS worst-case packed events.
+    let one_event = std::mem::size_of::<libc::inotify_event>() + libc::NAME_MAX as usize + 1;
+    let cap = one_event.saturating_mul(max as usize);
+    let mut buf: Vec<u8> = vec![0u8; cap];
+    let n = unsafe {
+        libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
+    };
+    if n < 0 {
+        let e = unsafe { *libc::__errno_location() } as i64;
+        return Ok(Sexp::Int(-e));
+    }
+    let n = n as usize;
+    let mut events: Vec<Sexp> = Vec::new();
+    let header_len = std::mem::size_of::<libc::inotify_event>();
+    let mut off = 0usize;
+    while off + header_len <= n {
+        // SAFETY: we only read the fixed-size header out of the buffer.
+        // Each field is a `__u32' / `int' aligned to 4 bytes, and the
+        // kernel writes them aligned, so a copy via read_unaligned is
+        // safe even if `buf' starts unaligned.
+        let evt: libc::inotify_event = unsafe {
+            std::ptr::read_unaligned(buf[off..].as_ptr() as *const libc::inotify_event)
+        };
+        let name_off = off + header_len;
+        let name_len = evt.len as usize;
+        if name_off + name_len > n { break; }
+        // The name field is NUL-padded; trim at the first NUL byte if any.
+        let raw = &buf[name_off..name_off + name_len];
+        let trimmed: &[u8] = match raw.iter().position(|b| *b == 0) {
+            Some(i) => &raw[..i],
+            None    => raw,
+        };
+        let name = String::from_utf8_lossy(trimmed).into_owned();
+        events.push(Sexp::list_from(&[
+            Sexp::Int(evt.wd as i64),
+            Sexp::Int(evt.mask as i64),
+            Sexp::Int(evt.cookie as i64),
+            Sexp::Str(name),
+        ]));
+        off = name_off + name_len;
+    }
+    Ok(Sexp::list_from(&events))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bi_syscall_inotify_read(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let _ = args;
+    Err(EvalError::Internal("nelisp--syscall-inotify-read: unsupported platform".into()))
 }
 
 /// `(nelisp--syscall-poll PFDS-LIST TIMEOUT-MS)' — POSIX poll(2).

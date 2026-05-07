@@ -438,6 +438,95 @@ host byte order."
         (nelisp-os--check-errno r)
       r)))
 
+;; ---------------------------------------------------------------------------
+;; Doc 57 Phase 4.3 — Modern Linux event surface (pidfd / inotify / eventfd).
+;;
+;; pidfd_open / pidfd_send_signal / inotify_init1 / inotify_rm_watch /
+;; eventfd2 ride the generic `nelisp--syscall' arm via `syscall_nr()'
+;; symbol map.  inotify_add_watch + inotify_read need string / packed
+;; binary handling and live in their own primitives.
+;; ---------------------------------------------------------------------------
+
+;; ----- pidfd flags -----
+
+(defconst nelisp-os-PIDFD-NONBLOCK #x800)         ; O_NONBLOCK
+
+;; ----- inotify event mask bits -----
+
+(defconst nelisp-os-IN-ACCESS        #x1)
+(defconst nelisp-os-IN-MODIFY        #x2)
+(defconst nelisp-os-IN-ATTRIB        #x4)
+(defconst nelisp-os-IN-CLOSE-WRITE   #x8)
+(defconst nelisp-os-IN-CLOSE-NOWRITE #x10)
+(defconst nelisp-os-IN-OPEN          #x20)
+(defconst nelisp-os-IN-MOVED-FROM    #x40)
+(defconst nelisp-os-IN-MOVED-TO      #x80)
+(defconst nelisp-os-IN-CREATE        #x100)
+(defconst nelisp-os-IN-DELETE        #x200)
+(defconst nelisp-os-IN-DELETE-SELF   #x400)
+(defconst nelisp-os-IN-MOVE-SELF     #x800)
+(defconst nelisp-os-IN-ALL-EVENTS    #xFFF)
+
+;; ----- inotify_init1 flags -----
+
+(defconst nelisp-os-IN-NONBLOCK #x800)            ; O_NONBLOCK
+(defconst nelisp-os-IN-CLOEXEC  #x80000)          ; O_CLOEXEC
+
+;; ----- eventfd flags -----
+
+(defconst nelisp-os-EFD-SEMAPHORE #x1)
+(defconst nelisp-os-EFD-NONBLOCK  #x800)          ; O_NONBLOCK
+(defconst nelisp-os-EFD-CLOEXEC   #x80000)        ; O_CLOEXEC
+
+;; ----- pidfd wrappers -----
+
+(defun nelisp-os-pidfd-open (pid flags)
+  "Linux pidfd_open(2) — return a file descriptor referring to PID, or
+signal `nelisp-os-error'.  FLAGS is currently 0 or
+`nelisp-os-PIDFD-NONBLOCK'."
+  (nelisp-os--check-errno (nelisp--syscall 'pidfd_open pid flags)))
+
+(defun nelisp-os-pidfd-send-signal (pidfd sig flags)
+  "Linux pidfd_send_signal(2) — send SIG to the process referenced by
+PIDFD.  Phase 4.3 only supports `info = NULL', so siginfo_t is left
+zero; pass FLAGS = 0 unless you know better."
+  (nelisp-os--check-errno
+   (nelisp--syscall 'pidfd_send_signal pidfd sig 0 flags)))
+
+;; ----- inotify wrappers -----
+
+(defun nelisp-os-inotify-init (flags)
+  "Linux inotify_init1(2) — return a new inotify fd.  FLAGS is OR of
+`nelisp-os-IN-NONBLOCK' / `nelisp-os-IN-CLOEXEC' (or 0)."
+  (nelisp-os--check-errno (nelisp--syscall 'inotify_init1 flags)))
+
+(defun nelisp-os-inotify-add-watch (fd path mask)
+  "Linux inotify_add_watch(2) — return a watch descriptor (positive
+integer) or signal `nelisp-os-error'.  MASK is OR of `IN-*' event bits."
+  (nelisp-os--check-errno
+   (nelisp--syscall-inotify-add-watch fd path mask)))
+
+(defun nelisp-os-inotify-rm-watch (fd wd)
+  "Linux inotify_rm_watch(2) — remove the watch identified by WD."
+  (nelisp-os--check-errno (nelisp--syscall 'inotify_rm_watch fd wd)))
+
+(defun nelisp-os-inotify-read (fd max-events)
+  "Read up to MAX-EVENTS events off inotify FD.  Returns a list of
+4-element lists `(WD MASK COOKIE NAME)'.  Empty list when no events
+are ready (only possible when FD was opened `IN-NONBLOCK')."
+  (let ((r (nelisp--syscall-inotify-read fd max-events)))
+    (if (integerp r)
+        (nelisp-os--check-errno r)
+      r)))
+
+;; ----- eventfd wrapper -----
+
+(defun nelisp-os-eventfd (initval flags)
+  "Linux eventfd2(2) — return a new eventfd with the given INITVAL
+counter and FLAGS (OR of `EFD-*').  Read/write are 8-byte uint64
+counters; use `nelisp-os-write' / `nelisp-os-read' on the returned fd."
+  (nelisp-os--check-errno (nelisp--syscall 'eventfd2 initval flags)))
+
 (provide 'nelisp-stdlib-os)
 
 ;;; nelisp-stdlib-os.el ends here
