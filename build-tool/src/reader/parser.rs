@@ -398,17 +398,24 @@ mod tests {
     }
 
     #[test]
-    fn parse_unquote_outside_backquote_errors() {
+    fn parse_unquote_outside_backquote_parses_as_comma() {
+        // Doc 51 Phase 3-A''-3 (2026-05-04) — `,X' / `,@X' outside an
+        // explicit backquote are legal at parse time because user
+        // macros (= `inline-quote' in vendor json.el) build their own
+        // backquote-shaped inputs.  Whether the comma is meaningful
+        // is a SEMANTIC concern resolved during macro expansion, not
+        // a syntactic one.  The parser yields `(comma X)' / `(comma-at X)'
+        // and lets downstream resolve.
         let toks = tokenize(",foo").unwrap();
-        let err = parse_one(&toks).unwrap_err();
-        assert!(format!("{}", err).contains("outside backquote"));
+        let (form, _) = parse_one(&toks).unwrap();
+        assert_eq!(form, Sexp::comma(Sexp::Symbol("foo".into())));
     }
 
     #[test]
-    fn parse_splice_outside_backquote_errors() {
+    fn parse_splice_outside_backquote_parses_as_comma_at() {
         let toks = tokenize(",@foo").unwrap();
-        let err = parse_one(&toks).unwrap_err();
-        assert!(format!("{}", err).contains("outside backquote"));
+        let (form, _) = parse_one(&toks).unwrap();
+        assert_eq!(form, Sexp::comma_at(Sexp::Symbol("foo".into())));
     }
 
     #[test]

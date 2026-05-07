@@ -856,9 +856,13 @@ mod tests {
     }
 
     #[test]
-    fn char_literal_meta_is_deferred() {
-        let err = tokenize("?\\M-a").unwrap_err();
-        assert!(matches!(err, ReadError::NotYetImplemented { .. }));
+    fn char_literal_meta_modifier_supported() {
+        // Doc 51 Phase 3-A''-2 (2026-05-04) — `?\\M-a' is now read as
+        // 97 | 0x8000000 = 134217825 so keybinding tables can store
+        // key sequences as raw integers.  The previous
+        // `NotYetImplemented' guard was retired with the same commit.
+        let toks = tokenize("?\\M-a").unwrap();
+        assert_eq!(toks.first().map(|t| &t.token), Some(&Token::Int(134217825)));
     }
 
     #[test]

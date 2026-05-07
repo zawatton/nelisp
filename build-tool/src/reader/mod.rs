@@ -14,10 +14,31 @@
 //! producing `LispObject`; this module stops at the syntactic value.
 //!
 //! Remaining deferred per Doc 44 §3.2:
-//!   - meta char literal modifiers (`?\M-a`, multi-modifier variants)
-//!   - `#[...]` byte-code literal
+//!   - `#[...]` byte-code literal (= the last reader-surface gap;
+//!     bytecode evaluator itself is a Phase 8 concern)
 //!   - multibyte / non-ASCII string content (currently passed through
 //!     as raw bytes; Phase 7.4 NeLisp coding will own real decoding)
+//!
+//! Doc 51 Phase 3-A''-1/2/3 (2026-05-04) widened the supported set
+//! beyond the original Doc 44 §3.2 LOCKED subset:
+//!   - `?\M-X` meta-modifier char literals (= `Int(X | 0x8000000)`)
+//!   - `,X` / `,@X` outside backquote contexts (= macro authors'
+//!     `inline-quote` shape)
+//!   - any unknown `\X` inside string / char literals = literal `X`
+//!
+//! Phase 7 Stage 7.2.d/e (2026-05-07, Doc 66) — user-visible
+//! `read-from-string` no longer routes through this module.  The
+//! elisp impl `nelisp--read-from-string-impl` (= `lisp/nelisp-stdlib-
+//! reader.el`) is canonical for any post-bootstrap call.  This Rust
+//! reader survives because (a) `Env::new_global` bootstrap must parse
+//! the bundled stdlib sources — the elisp reader cannot parse itself,
+//! since reader.el's bodies depend on `not` / `null` / `nreverse` /
+//! `floatp` etc. that are defined in `nelisp-stdlib*.el` and the
+//! elisp reader is invoked at PARSE time of subsequent files; (b)
+//! build-tool drivers like `eval_str` / `image::compile_elisp_to_image`
+//! / `bridge::bootstrap_self_host` use it directly; and (c) cargo
+//! unit tests use it to construct fixture values without spinning up
+//! a full `Env`.
 //!
 //! `#s(...)` structure literal landed in Doc 52 Stage 4b — read as a
 //! `Sexp::Record { type_tag, slots }' (positional form; keyword form
@@ -182,17 +203,16 @@ mod tests {
         assert!(read_str("a)").is_err());
     }
 
-    /// Each deferred feature returns NotYetImplemented (= explicit).
-    /// `#s(...)` was deferred until Doc 52 Stage 4b — now read as a
-    /// `Sexp::Record', see parser tests.
+    /// Doc 44 §3.2 byte-code-literal `#[...]` is the last remaining
+    /// deferred reader feature (reader-side; the bytecode evaluator
+    /// itself is a Phase 8 concern).  `?\\M-a' was promoted from
+    /// deferred to supported in Doc 51 Phase 3-A''-2.
     #[test]
-    fn deferred_features_explicit() {
-        for src in &["?\\M-a", "#[1 2]"] {
-            match read_str(src) {
-                Err(ReadError::NotYetImplemented { .. }) => (),
-                Err(other) => panic!("expected NotYetImplemented for {:?}, got {:?}", src, other),
-                Ok(v) => panic!("expected NotYetImplemented for {:?}, got Ok({:?})", src, v),
-            }
+    fn byte_code_literal_still_deferred() {
+        match read_str("#[1 2]") {
+            Err(ReadError::NotYetImplemented { .. }) => (),
+            Err(other) => panic!("expected NotYetImplemented for #[1 2], got {:?}", other),
+            Ok(v) => panic!("expected NotYetImplemented for #[1 2], got Ok({:?})", v),
         }
     }
 
