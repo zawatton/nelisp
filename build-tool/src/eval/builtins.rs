@@ -242,6 +242,10 @@ pub fn install_builtins(env: &mut Env) {
         "nelisp--syscall-openat",
         "nelisp--syscall-read",
         "nelisp--syscall-write",
+        // Doc 54 Phase 3 (2026-05-07) — out-buffer primitives that
+        // can't ride generic `nelisp--syscall' (struct stat / int[2]).
+        "nelisp--syscall-fstat",
+        "nelisp--syscall-pipe",
         // Rust-min (2026-05-06): `file-name-directory' /
         // `file-name-nondirectory' / `file-name-as-directory' /
         // `directory-file-name' migrated to elisp (see
@@ -464,6 +468,9 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nelisp--syscall-openat" => bi_syscall_openat(args),
         "nelisp--syscall-read" => bi_syscall_read(args),
         "nelisp--syscall-write" => bi_syscall_write(args),
+        // Doc 54 Phase 3 dispatch arms.
+        "nelisp--syscall-fstat" => bi_syscall_fstat(args),
+        "nelisp--syscall-pipe" => bi_syscall_pipe(args),
         // ---- symbol / function ----
         "symbol-value" => bi_symbol_value(args, env),
         "symbol-function" => bi_symbol_function(args, env),
@@ -1858,6 +1865,14 @@ fn syscall_nr(name_or_nr: &Sexp) -> Result<i64, EvalError> {
             "dup2"       => Ok(libc::SYS_dup2       as i64),
             "getpid"     => Ok(libc::SYS_getpid     as i64),
             "kill"       => Ok(libc::SYS_kill       as i64),
+            // Doc 54 Phase 3 (2026-05-07) — Core-12 additions.  All
+            // take int-only args so they ride the generic dispatch
+            // without a specialized primitive.  fstat / pipe need
+            // out-buffer handling and have their own primitives.
+            "mmap"       => Ok(libc::SYS_mmap       as i64),
+            "mprotect"   => Ok(libc::SYS_mprotect   as i64),
+            "munmap"     => Ok(libc::SYS_munmap     as i64),
+            "fcntl"      => Ok(libc::SYS_fcntl      as i64),
             other => Err(EvalError::Internal(format!(
                 "nelisp--syscall: unknown syscall name `{}'", other))),
         },
@@ -1974,6 +1989,68 @@ fn bi_syscall_write(args: &[Sexp]) -> Result<Sexp, EvalError> {
 fn bi_syscall_write(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let _ = args;
     Err(EvalError::Internal("nelisp--syscall-write: unsupported platform".into()))
+}
+
+// ---------------------------------------------------------------------------
+// Doc 54 Phase 3 — Core-12 additions that need out-buffer handling.
+// `nelisp--syscall-fstat' returns struct stat as a positional list of
+// 13 fields (size, mode, mtime, mtime-nsec, atime, atime-nsec, ctime,
+// ctime-nsec, nlink, uid, gid, ino, dev) so elisp can unpack with
+// `nth' without further glue; see lisp/nelisp-stdlib-os.el for named
+// accessors.  `nelisp--syscall-pipe' returns a (read-fd . write-fd)
+// cons.  Both stay Linux-only (= cfg gate) and Err on other OSes.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+fn bi_syscall_fstat(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--syscall-fstat", args, 1, Some(1))?;
+    let fd = syscall_arg_int("nelisp--syscall-fstat", 1, &args[0])? as libc::c_int;
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    let r = unsafe { libc::fstat(fd, &mut st as *mut libc::stat) };
+    if r != 0 {
+        let e = unsafe { *libc::__errno_location() } as i64;
+        return Ok(Sexp::Int(-e));
+    }
+    let fields = [
+        Sexp::Int(st.st_size  as i64),
+        Sexp::Int(st.st_mode  as i64),
+        Sexp::Int(st.st_mtime as i64),
+        Sexp::Int(st.st_mtime_nsec as i64),
+        Sexp::Int(st.st_atime as i64),
+        Sexp::Int(st.st_atime_nsec as i64),
+        Sexp::Int(st.st_ctime as i64),
+        Sexp::Int(st.st_ctime_nsec as i64),
+        Sexp::Int(st.st_nlink as i64),
+        Sexp::Int(st.st_uid   as i64),
+        Sexp::Int(st.st_gid   as i64),
+        Sexp::Int(st.st_ino   as i64),
+        Sexp::Int(st.st_dev   as i64),
+    ];
+    Ok(Sexp::list_from(&fields))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bi_syscall_fstat(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let _ = args;
+    Err(EvalError::Internal("nelisp--syscall-fstat: unsupported platform".into()))
+}
+
+#[cfg(target_os = "linux")]
+fn bi_syscall_pipe(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--syscall-pipe", args, 0, Some(0))?;
+    let mut fds: [libc::c_int; 2] = [-1, -1];
+    let r = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    if r != 0 {
+        let e = unsafe { *libc::__errno_location() } as i64;
+        return Ok(Sexp::Int(-e));
+    }
+    Ok(Sexp::cons(Sexp::Int(fds[0] as i64), Sexp::Int(fds[1] as i64)))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bi_syscall_pipe(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let _ = args;
+    Err(EvalError::Internal("nelisp--syscall-pipe: unsupported platform".into()))
 }
 
 // `bi_locate_library' removed — Rust-min batch 7e (2026-05-07, Doc 50

@@ -1,0 +1,165 @@
+#+TITLE: Doc 54 — OS Surface Phase 3: Core-12
+#+AUTHOR: zawatton
+#+DATE: 2026-05-07
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: DRAFT
+:DEPENDS_ON: Doc 53 Phase 1 (Minimal-5 + nelisp--syscall infrastructure)
+:END:
+
+* §0 TL;DR
+
+Doc 53 Phase 1 で着地した =nelisp--syscall= 基盤の上に Core-12 を一括 ship。
+Phase 1 (Minimal-5: open/read/write/close/exit) + Phase 3 (本 Doc, 7 syscall:
+lseek / fstat / mmap / mprotect / munmap / dup2 / pipe / fcntl) で計 12 wrapper。
+
+設計指針: =Rust 追加を最小化する=。
+
+- *generic primitive 経由* (=nelisp--syscall NAME-OR-NR &rest INT-ARGS=):
+  lseek / mmap / mprotect / munmap / dup2 / fcntl — 全て int 引数のみで済むので
+  Rust 側は =syscall_nr()= の symbol map 拡張だけで対応可能。
+- *専用 primitive 追加*: 2 本のみ。
+  - =nelisp--syscall-fstat FD= → list of stat fields (struct stat の out-buffer
+    を Rust 側で確保 → Sexp 値 list に展開)
+  - =nelisp--syscall-pipe= → cons (read-fd . write-fd) (int[2] out-buffer 同上)
+
+elisp 側は =lisp/nelisp-stdlib-os.el= に 7 wrapper + ~17 constant を追記。
+Path A (Linux) のみで動作、Path B (Darwin/Windows) fallback は Phase 1.1 と
+同じく deferred (個別 nl-ffi-call 拡張は積み残し)。
+
+* §1 動機
+
+Doc 53 Phase 1 §3 で予告した Core-12 拡張の本体。
+
+Doc 53 で Lisp Machine vision に向けた骨格 (=nelisp--syscall= dispatch +
+errno 慣例 + Path A/B 分岐 + bundle hook) は既に動いている。Core-12 はその
+上に 7 syscall を「Rust に手を入れずに」elisp で書ける ergonomics 検証でも
+ある (= Doc 53 で標榜した "self-host extensibility" の最初の payoff)。
+
+実用 use case:
+
+- *fileio*: lseek + fstat により =random-access reader= が elisp で書ける
+- *JIT loader*: mmap + mprotect + munmap で MAP_ANONYMOUS + PROT_EXEC page
+  の確保 + 書き換え + 解放を elisp 駆動可能 (将来の native cc bootstrap で
+  Lisp 側から machine code を流し込む path)
+- *subprocess plumbing*: dup2 + pipe + fcntl で fork/exec の前段 (fork/exec
+  自体は Phase 4 = Doc 55 候補)
+
+* §2 設計
+
+** §2.1 Rust 追加 (最小化)
+
+builtins.rs:
+
+- =syscall_nr()= の symbol map に 4 件追加: =mmap= / =mprotect= / =munmap= / =fcntl=
+  (lseek / dup2 は Doc 53 で既に追加済)
+- =install_builtins()= names + =dispatch()= に 2 名追加: =nelisp--syscall-fstat= /
+  =nelisp--syscall-pipe=
+- 関数 2 本実装:
+
+#+BEGIN_SRC rust
+fn bi_syscall_fstat(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    // libc::fstat(fd, &mut stat) → 失敗時 -errno (Sexp::Int)、
+    // 成功時 Sexp::list_from(&[size, mode, mtime, mtime-nsec, atime,
+    //   atime-nsec, ctime, ctime-nsec, nlink, uid, gid, ino, dev]).
+}
+
+fn bi_syscall_pipe(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    // libc::pipe(&mut [int; 2]) → 失敗時 -errno (Sexp::Int)、
+    // 成功時 Sexp::cons(read_fd, write_fd).
+}
+#+END_SRC
+
+両者とも =#[cfg(target_os = "linux")]= gate、非 Linux は EvalError stub。
+
+** §2.2 Elisp 追加 (=lisp/nelisp-stdlib-os.el= に追記)
+
+新規 wrapper:
+
+| function                        | 内部呼出                                   |
+|---------------------------------+--------------------------------------------|
+| =nelisp-os-lseek FD OFFSET WHENCE= | =(nelisp--syscall 'lseek FD OFFSET WHENCE)= |
+| =nelisp-os-fstat FD=            | =(nelisp--syscall-fstat FD)=               |
+| =nelisp-os-mmap LEN PROT FLAGS FD OFFSET= | =(nelisp--syscall 'mmap 0 LEN PROT FLAGS FD OFFSET)= |
+| =nelisp-os-mprotect ADDR LEN PROT= | =(nelisp--syscall 'mprotect ADDR LEN PROT)= |
+| =nelisp-os-munmap ADDR LEN=     | =(nelisp--syscall 'munmap ADDR LEN)=       |
+| =nelisp-os-dup2 OLDFD NEWFD=    | =(nelisp--syscall 'dup2 OLDFD NEWFD)=      |
+| =nelisp-os-pipe=                | =(nelisp--syscall-pipe)=                   |
+| =nelisp-os-fcntl FD CMD ARG=    | =(nelisp--syscall 'fcntl FD CMD ARG)=      |
+
+新規定数:
+
+#+BEGIN_EXAMPLE
+SEEK_SET / SEEK_CUR / SEEK_END                     (lseek whence)
+F_DUPFD / F_GETFL / F_SETFL                        (fcntl cmd)
+O_NONBLOCK                                         (fcntl arg / open flag)
+MAP_PRIVATE / MAP_ANONYMOUS / MAP_FAILED           (mmap)
+PROT_NONE / PROT_READ / PROT_WRITE / PROT_EXEC     (mmap/mprotect)
+S_IFMT / S_IFREG / S_IFDIR / S_IFLNK               (fstat mode)
+#+END_EXAMPLE
+
+fstat 戻り値の elisp 側 accessor (= 同じ stdlib-os.el に同梱):
+
+#+BEGIN_SRC emacs-lisp
+(defun nelisp-os-stat-size (st)  (nth 0 st))
+(defun nelisp-os-stat-mode (st)  (nth 1 st))
+(defun nelisp-os-stat-mtime (st) (nth 2 st))
+;; ... etc.
+#+END_SRC
+
+** §2.3 ファイル配置
+
+| 種別      | path                                                       | 操作       |
+|-----------+------------------------------------------------------------+------------|
+| 設計書    | =docs/design/54-os-surface-phase3-core12.org=              | new        |
+| Rust      | =build-tool/src/eval/builtins.rs=                          | edit       |
+| stdlib    | =lisp/nelisp-stdlib-os.el=                                 | edit (追記) |
+| test      | =test/nelisp-stdlib-os-test.el=                            | edit (追記) |
+| bundle    | (env.rs 不要 — 既存 =nelisp-stdlib-os.el= が拡張されるだけ) | -          |
+
+* §3 Sub-phase 分割
+
+** Phase 3 (本 Doc, scope) — Core-12
+
+7 syscall + 8 wrapper + 17 定数 + ~6-8 ERT。
+
+** Phase 4 (Doc 55 候補) — Posix-30
+
+socket / connect / accept / bind / listen / select / poll +
+fork / execve / wait4 / kill (signal 系は別) — fork/exec は別格に
+pipe + dup2 + execve + wait4 の 4 連で subprocess 全部 elisp 化。
+
+* §4 Test plan
+
+新規 ERT 6 本を =test/nelisp-stdlib-os-test.el= に追記:
+
+| test                              | flow                                         |
+|-----------------------------------+----------------------------------------------|
+| ~lseek-set-cur~                   | open → write → lseek SEEK_SET 0 → read → equal |
+| ~fstat-size-matches-write~        | open → write N bytes → fstat → size = N      |
+| ~pipe-write-then-read~            | pipe → write to wfd → read from rfd → equal  |
+| ~mmap-anonymous-write-roundtrip~  | mmap MAP_ANON RW → 書込相当 (fd=1 へ write 経由) → munmap |
+| ~dup2-fd-aliases~                 | open → dup2 to STDOUT → write to STDOUT → text in tmpfile |
+| ~fcntl-getfl-roundtrip~           | open RW → fcntl F_GETFL → flag check         |
+
+build gate: =cargo build --release --bin nelisp= warning 0 + 既存 4 ERT
+(Doc 53 Phase 1) + 新 6 ERT = 計 10 ERT 全 pass。
+
+* §5 Out of scope (= Phase 4 / 別)
+
+- =fork= / =execve= / =wait4= / =kill= (subprocess 系全て、Phase 4 候補)
+- =socket= / =connect= / =accept= / =bind= / =listen= (network、Phase 4 候補)
+- =select= / =poll= / =epoll= (event multiplexing、Phase 4 候補)
+- =signal= / =sigaction= / =sigprocmask= (signal 系、Phase 4 別カテゴリ)
+- mmap で得た void* に対する zero-copy elisp aref (= 別途 raw-pointer
+  primitive 設計が必要、Phase 5 候補)
+- Path B (Darwin/Windows) 対応 — Phase 1.1 と同じく nl-ffi-call 拡張で
+  別途、本 Doc では Linux Path A のみ ship
+
+* §6 References
+
+- Doc 53 Phase 1 — =nelisp--syscall= 基盤 + Path A/B 分岐 + bundle hook
+- memory =project_lisp_machine_vision_95pct= — Lisp Machine vision の進捗
+- memory =feedback_nelisp_host_simulator_test_pattern= — subprocess test pattern

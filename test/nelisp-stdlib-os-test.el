@@ -105,6 +105,134 @@ preserves bytes verbatim through `nelisp-os-*' wrappers."
             "(progn (require (quote nelisp-stdlib-os)) (nelisp-os-exit 42))")))
     (should (eq (car r) 42))))
 
+;;; Doc 54 Phase 3 — Core-12 ERTs ----------------------------------
+
+(ert-deftest nelisp-stdlib-os-test/lseek-set-rewinds ()
+  "open(WR+CREAT) → write → lseek SEEK_SET 0 → read → equal — verifies
+nelisp-os-lseek round-trips through the generic `nelisp--syscall' arm."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (let* ((tmp (make-temp-file "nelisp-os-lseek-"))
+         (expr (format "(progn
+  (require (quote nelisp-stdlib-os))
+  (let ((fd (nelisp-os-open %S
+              (logior nelisp-os-O-RDWR nelisp-os-O-CREAT nelisp-os-O-TRUNC)
+              420)))
+    (nelisp-os-write fd \"abcdef\")
+    (nelisp-os-lseek fd 0 nelisp-os-SEEK-SET)
+    (let ((data (nelisp-os-read fd 6)))
+      (nelisp-os-close fd)
+      (nelisp-os-write 1 data)
+      (nelisp-os-exit 0))))" tmp)))
+    (unwind-protect
+        (let ((r (nelisp-stdlib-os-test--eval expr)))
+          (should (eq (car r) 0))
+          (should (equal (cdr r) "abcdef")))
+      (when (file-exists-p tmp) (delete-file tmp)))))
+
+(ert-deftest nelisp-stdlib-os-test/fstat-size-matches-write ()
+  "fstat after write reports the byte count we wrote.  Verifies
+`nelisp--syscall-fstat' Rust primitive + positional list shape."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (let* ((tmp (make-temp-file "nelisp-os-fstat-"))
+         (expr (format "(progn
+  (require (quote nelisp-stdlib-os))
+  (let ((fd (nelisp-os-open %S
+              (logior nelisp-os-O-WRONLY nelisp-os-O-CREAT nelisp-os-O-TRUNC)
+              420)))
+    (nelisp-os-write fd \"0123456789\")
+    (let ((sz (nelisp-os-stat-size (nelisp-os-fstat fd))))
+      (nelisp-os-close fd)
+      (nelisp-os-write 1 (number-to-string sz))
+      (nelisp-os-exit 0))))" tmp)))
+    (unwind-protect
+        (let ((r (nelisp-stdlib-os-test--eval expr)))
+          (should (eq (car r) 0))
+          (should (equal (cdr r) "10")))
+      (when (file-exists-p tmp) (delete-file tmp)))))
+
+(ert-deftest nelisp-stdlib-os-test/pipe-write-then-read ()
+  "pipe() → write to wfd → read from rfd round-trips bytes.  Verifies
+`nelisp--syscall-pipe' returns (rfd . wfd) cons usable by Minimal-5."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (let ((r (nelisp-stdlib-os-test--eval
+            "(progn
+  (require (quote nelisp-stdlib-os))
+  (let* ((p (nelisp-os-pipe)) (rfd (car p)) (wfd (cdr p)))
+    (nelisp-os-write wfd \"via-pipe\")
+    (nelisp-os-close wfd)
+    (let ((data (nelisp-os-read rfd 1024)))
+      (nelisp-os-close rfd)
+      (nelisp-os-write 1 data)
+      (nelisp-os-exit 0))))")))
+    (should (eq (car r) 0))
+    (should (equal (cdr r) "via-pipe"))))
+
+(ert-deftest nelisp-stdlib-os-test/dup2-aliases-to-stdout ()
+  "open(tmp) + dup2 onto STDOUT(1) routes subsequent stdio to the file.
+Reuses the writer half of the pipe pattern but verifies aliasing."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (let* ((tmp (make-temp-file "nelisp-os-dup2-"))
+         (expr (format "(progn
+  (require (quote nelisp-stdlib-os))
+  (let ((fd (nelisp-os-open %S
+              (logior nelisp-os-O-WRONLY nelisp-os-O-CREAT nelisp-os-O-TRUNC)
+              420)))
+    (nelisp-os-dup2 fd nelisp-os-STDOUT)
+    (nelisp-os-close fd)
+    (nelisp-os-write 1 \"to-tmpfile\")
+    (nelisp-os-exit 0)))" tmp)))
+    (unwind-protect
+        (let ((r (nelisp-stdlib-os-test--eval expr)))
+          (should (eq (car r) 0))
+          (should (equal (with-temp-buffer (insert-file-contents tmp) (buffer-string))
+                         "to-tmpfile")))
+      (when (file-exists-p tmp) (delete-file tmp)))))
+
+(ert-deftest nelisp-stdlib-os-test/fcntl-getfl-roundtrip ()
+  "open(O_RDWR) + fcntl F_GETFL reports a non-negative flag word with
+the access bits round-trippable via SETFL.  Doesn't assert exact
+value (= mask sensitivity), only sanity."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (let* ((tmp (make-temp-file "nelisp-os-fcntl-"))
+         (expr (format "(progn
+  (require (quote nelisp-stdlib-os))
+  (let* ((fd (nelisp-os-open %S
+               (logior nelisp-os-O-RDWR nelisp-os-O-CREAT nelisp-os-O-TRUNC) 420))
+         (fl (nelisp-os-fcntl fd nelisp-os-F-GETFL 0)))
+    (nelisp-os-close fd)
+    (nelisp-os-write 1 (if (>= fl 0) \"ok\" \"err\"))
+    (nelisp-os-exit 0)))" tmp)))
+    (unwind-protect
+        (let ((r (nelisp-stdlib-os-test--eval expr)))
+          (should (eq (car r) 0))
+          (should (equal (cdr r) "ok")))
+      (when (file-exists-p tmp) (delete-file tmp)))))
+
+(ert-deftest nelisp-stdlib-os-test/mmap-anonymous-roundtrip ()
+  "mmap MAP_ANONYMOUS|MAP_PRIVATE w/ PROT_READ|WRITE returns a
+non-negative addr that munmap accepts cleanly.  We can't safely
+read/write the mapping from elisp without raw-pointer primitives
+(deferred to Phase 5), so this test verifies allocation + free only."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (let ((r (nelisp-stdlib-os-test--eval
+            "(progn
+  (require (quote nelisp-stdlib-os))
+  (let ((addr (nelisp-os-mmap 4096
+                              (logior nelisp-os-PROT-READ nelisp-os-PROT-WRITE)
+                              (logior nelisp-os-MAP-PRIVATE nelisp-os-MAP-ANONYMOUS)
+                              -1 0)))
+    (nelisp-os-munmap addr 4096)
+    (nelisp-os-write 1 \"mmap-ok\")
+    (nelisp-os-exit 0)))")))
+    (should (eq (car r) 0))
+    (should (equal (cdr r) "mmap-ok"))))
+
 (provide 'nelisp-stdlib-os-test)
 
 ;;; nelisp-stdlib-os-test.el ends here
