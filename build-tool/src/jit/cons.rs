@@ -1,37 +1,44 @@
-//! Phase 5 Stage 5.3 — ConsIR lower scaffold via Rust trampoline.
+//! Phase 5 Stage 5.3 — ConsIR lower with inline NIL fast path.
 //!
-//! Stage 5.3 (2026-05-07, Doc 62): `car' / `cdr' / `cons' are
-//! registered as JIT-lowered primitives via the same `JITBuilder::
-//! symbol' + `Linkage::Import' pattern Stage 5.1 used for the generic
-//! syscall.  Per Doc 62 §5 "helper fn 経由の妥協を許容", inline emit
-//! of `Rc<RefCell<Sexp>>' field access requires Sexp `#[repr]'
-//! stabilization which is out-of-scope for this commit; the Stage 5.3
-//! lower entries route the happy-path through a JIT-declared call to
-//! a non-variadic Rust trampoline that does the actual variant match
-//! + clone, with the dispatcher remaining the canonical-error fallback
-//! for arity / wrong-type cases.
+//! Stage 5.3 (2026-05-07, Doc 62, repr-pin commit 2fb64cd):
+//! - Initial scaffold (commit eee1cb9) routed `car' / `cdr' / `cons'
+//!   through Rust trampolines (`nl_jit_cons_car/cdr/make') that did
+//!   the variant match + clone, with the JIT entry being a thin call
+//!   wrapper.  Stage 5.3 v1 = pure trampoline with ~zero perf gain.
+//! - This commit adds an inline NIL tag-byte fast path on top of the
+//!   trampoline now that `Sexp' has `#[repr(C, u8)]':
+//!
+//!   ```text
+//!   jit_car(arg_ptr, out_ptr):
+//!     a_tag = movzx u8 [arg_ptr + 0]
+//!     if a_tag == TAG_NIL → return OK  (= caller's out is already Nil)
+//!     else                  → call helper(arg_ptr, out_ptr)
+//!   ```
+//!
+//! `(car nil) = nil' / `(cdr nil) = nil' is a hot path in elisp list
+//! traversal (= `(while (consp x) ... (setq x (cdr x)))' terminates
+//! on Nil); the inline path skips the helper call entirely for that
+//! case.  Cons / wrong-type cases still flow through the helper for
+//! `Rc<RefCell<...>>' deref + clone + canonical-error fallback.
+//!
+//! `cons' (= the constructor) has no NIL shortcut, so it keeps the
+//! Stage 5.3 v1 pure-trampoline shape (= `declare_helper_call').
 //!
 //! The trampoline ABI is uniform: each helper takes input Sexp(s) by
 //! `*const Sexp' and writes the result to an `*mut Sexp' out-param,
-//! returning a status code (`TRAMPOLINE_OK = 0' on success, `_ERR = 1'
-//! on wrong-type so the caller falls through to the dispatcher for
-//! the canonical `wrong-type-argument' message).  Cranelift sees both
-//! pointer and result as `i64', identical to Stage 5.1 syscall layout.
-//!
-//! Net perf gain over the dispatcher path is intentionally ~zero (the
-//! trampoline does the same work `bi_car' did, plus a JIT call hop);
-//! this stage closes the IR-family scaffold so Stage 5.0〜5.5 are all
-//! exercising the lower hook and ConsIR can be progressively replaced
-//! with inline emit once Sexp gets a stable repr.
+//! returning `TRAMPOLINE_OK = 0' on success or `_ERR = 1' on
+//! wrong-type so the caller falls through to the dispatcher.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
+use cranelift_module::{FuncId, Linkage, Module};
 
 use crate::eval::env::Env;
 use crate::eval::error::EvalError;
-use crate::reader::sexp::Sexp;
+use crate::reader::sexp::{Sexp, SEXP_TAG_NIL};
 
 use super::{declare_helper_call, LowerFn};
 
@@ -87,6 +94,87 @@ struct JitCons {
 
 static JIT_CONS: OnceLock<JitCons> = OnceLock::new();
 
+/// Build a JIT entry that inlines the `(car nil) = nil' / `(cdr nil) =
+/// nil' path: load tag at offset 0, branch on `tag == SEXP_TAG_NIL'.
+/// Nil → return `TRAMPOLINE_OK' immediately (caller's out is already
+/// Nil per `lowered_X' init).  Non-Nil → call HELPER_NAME with the
+/// same `(arg_ptr, out_ptr) -> i64' signature.
+fn declare_unary_with_nil_inline(
+    module: &mut JITModule,
+    jit_name: &str,
+    helper_name: &str,
+) -> FuncId {
+    // Imported helper signature.
+    let mut helper_sig = module.make_signature();
+    helper_sig.params.push(AbiParam::new(types::I64));
+    helper_sig.params.push(AbiParam::new(types::I64));
+    helper_sig.returns.push(AbiParam::new(types::I64));
+    let helper_id = module
+        .declare_function(helper_name, Linkage::Import, &helper_sig)
+        .unwrap_or_else(|e| panic!("cranelift: declare_function {}: {}", helper_name, e));
+
+    // JIT entry signature.
+    let mut entry_sig = module.make_signature();
+    entry_sig.params.push(AbiParam::new(types::I64));
+    entry_sig.params.push(AbiParam::new(types::I64));
+    entry_sig.returns.push(AbiParam::new(types::I64));
+    let entry_id = module
+        .declare_function(jit_name, Linkage::Local, &entry_sig)
+        .unwrap_or_else(|e| panic!("cranelift: declare_function {}: {}", jit_name, e));
+
+    let mut ctx = module.make_context();
+    ctx.func.signature = entry_sig;
+
+    let mut fbcx = FunctionBuilderContext::new();
+    {
+        let mut fb = FunctionBuilder::new(&mut ctx.func, &mut fbcx);
+        let entry_b = fb.create_block();
+        let nil_b = fb.create_block();
+        let slow_b = fb.create_block();
+        fb.append_block_params_for_function_params(entry_b);
+
+        // Entry: load tag byte, dispatch on Nil vs other.
+        fb.switch_to_block(entry_b);
+        let arg_ptr = fb.block_params(entry_b)[0];
+        let out_ptr = fb.block_params(entry_b)[1];
+        let flags = MemFlags::trusted();
+        let tag_byte = fb.ins().load(types::I8, flags, arg_ptr, 0);
+        let tag = fb.ins().uextend(types::I64, tag_byte);
+        let is_nil = fb.ins().icmp_imm(IntCC::Equal, tag, SEXP_TAG_NIL as i64);
+        fb.ins().brif(is_nil, nil_b, &[], slow_b, &[]);
+        fb.seal_block(entry_b);
+
+        // Nil path: write tag byte = SEXP_TAG_NIL (= 0) at offset 0 so
+        // callers that pre-populated `out' with a non-Nil placeholder
+        // (e.g., unit tests) still see `Sexp::Nil' on return.  The
+        // payload bytes are left as-is — `Sexp::Nil' has no payload, so
+        // PartialEq's `(Nil, Nil)' arm and Drop's tag-0 dispatch both
+        // ignore them.
+        fb.switch_to_block(nil_b);
+        let nil_tag = fb.ins().iconst(types::I8, SEXP_TAG_NIL as i64);
+        fb.ins().store(flags, nil_tag, out_ptr, 0);
+        let ok = fb.ins().iconst(types::I64, 0);
+        fb.ins().return_(&[ok]);
+        fb.seal_block(nil_b);
+
+        // Slow path: forward to the trampoline helper.
+        fb.switch_to_block(slow_b);
+        let helper_local = module.declare_func_in_func(helper_id, fb.func);
+        let inst = fb.ins().call(helper_local, &[arg_ptr, out_ptr]);
+        let result = fb.inst_results(inst)[0];
+        fb.ins().return_(&[result]);
+        fb.seal_block(slow_b);
+
+        fb.finalize();
+    }
+
+    module
+        .define_function(entry_id, &mut ctx)
+        .unwrap_or_else(|e| panic!("cranelift: define_function {}: {}", jit_name, e));
+    module.clear_context(&mut ctx);
+    entry_id
+}
+
 fn build_jit_cons() -> JitCons {
     let mut builder = JITBuilder::new(cranelift_module::default_libcall_names())
         .expect("cranelift_jit: host ISA must resolve");
@@ -95,8 +183,10 @@ fn build_jit_cons() -> JitCons {
     builder.symbol("nl_jit_cons_make", nl_jit_cons_make as *const u8);
     let mut module = JITModule::new(builder);
 
-    let car_id = declare_helper_call(&mut module, "nelisp_jit_car", "nl_jit_cons_car", 2);
-    let cdr_id = declare_helper_call(&mut module, "nelisp_jit_cdr", "nl_jit_cons_cdr", 2);
+    let car_id = declare_unary_with_nil_inline(
+        &mut module, "nelisp_jit_car", "nl_jit_cons_car");
+    let cdr_id = declare_unary_with_nil_inline(
+        &mut module, "nelisp_jit_cdr", "nl_jit_cons_cdr");
     let make_id =
         declare_helper_call(&mut module, "nelisp_jit_cons", "nl_jit_cons_make", 3);
 

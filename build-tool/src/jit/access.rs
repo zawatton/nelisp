@@ -1,19 +1,36 @@
-//! Phase 5 Stage 5.4 — AccessIR lower scaffold via Rust trampoline.
+//! Phase 5 Stage 5.4 — AccessIR lower with inline NIL fast path.
 //!
-//! Stage 5.4 (2026-05-07, Doc 62): `length' and `aref' are registered
-//! with the lower hook via the same `JITBuilder::symbol' +
-//! `Linkage::Import' pattern Stage 5.3 (= ConsIR) used.  Per Doc 62
-//! §2.2.4 inline emit of `Vec' element access depends on
-//! `Rc<RefCell<Vec<Sexp>>>' layout stability — out of scope for this
-//! commit — so the trampolines do the variant match + clone in Rust
-//! and the JIT path serves only as the dispatch hook.
+//! Stage 5.4 (2026-05-07, Doc 62, repr-pin commit 2fb64cd):
+//! - Initial scaffold (commit 5299e44) registered `length' and `aref'
+//!   via pure Rust trampolines that did the variant match + clone.
+//! - This commit adds an inline NIL fast path on top of `length' now
+//!   that `Sexp' has `#[repr(C, u8)]':
 //!
-//! The trampoline coverage is intentionally narrow:
+//!   ```text
+//!   jit_length(arg_ptr, out_ptr):
+//!     a_tag = movzx u8 [arg_ptr + 0]
+//!     if a_tag == TAG_NIL:
+//!       store i8  SEXP_TAG_INT to [out_ptr + 0]
+//!       store i64 0            to [out_ptr + 8]
+//!       return OK
+//!     else:
+//!       call helper(arg_ptr, out_ptr)
+//!   ```
+//!
+//! `(length nil) = 0' fires every time elisp builds an alist scan
+//! that ends in Nil, so the inline path is a real hot-path skip.
+//! Vector / Str / etc still flow through the helper for `Rc' deref.
+//!
+//! `aref' has no NIL shortcut (= `(aref nil 0)' is a wrong-type
+//! error, the helper's ERR fallback already short-circuits before
+//! any heap access), so it keeps the v1 `declare_helper_call' shape.
+//!
+//! Trampoline coverage:
 //! - `length': handles `Sexp::Nil' / `Sexp::Vector' / `Sexp::Str';
 //!   `MutStr' / `BoolVector' / `Cons' (spine walk) / others fall
-//!   through to `bi_length' for canonical errors / heavy work.
-//! - `aref': handles `Sexp::Vector' only (= the most common case);
-//!   `Str' / `MutStr' / `CharTable' / `BoolVector' fall through.
+//!   through to `bi_length'.
+//! - `aref': handles `Sexp::Vector' only; `Str' / `MutStr' / `CharTable'
+//!   / `BoolVector' fall through to `bi_aref'.
 //!
 //! `aset' / `elt' are not yet wired (= 4-arg / list-walk semantics);
 //! they continue to flow through `bi_aset' / `bi_elt'.
@@ -21,11 +38,13 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
+use cranelift_module::{FuncId, Linkage, Module};
 
 use crate::eval::env::Env;
 use crate::eval::error::EvalError;
-use crate::reader::sexp::Sexp;
+use crate::reader::sexp::{Sexp, SEXP_TAG_INT, SEXP_TAG_NIL};
 
 use super::{declare_helper_call, LowerFn};
 
@@ -80,6 +99,77 @@ struct JitAccess {
 
 static JIT_ACCESS: OnceLock<JitAccess> = OnceLock::new();
 
+/// Build the `length' JIT entry with an inline NIL → Int(0) fast path.
+/// Cranelift emits an `i8' store + `i64' store for the Nil case,
+/// avoiding the helper call entirely.
+fn declare_length_with_inline_nil(module: &mut JITModule) -> FuncId {
+    let mut helper_sig = module.make_signature();
+    helper_sig.params.push(AbiParam::new(types::I64));
+    helper_sig.params.push(AbiParam::new(types::I64));
+    helper_sig.returns.push(AbiParam::new(types::I64));
+    let helper_id = module
+        .declare_function("nl_jit_access_length", Linkage::Import, &helper_sig)
+        .expect("cranelift: declare_function nl_jit_access_length");
+
+    let mut entry_sig = module.make_signature();
+    entry_sig.params.push(AbiParam::new(types::I64));
+    entry_sig.params.push(AbiParam::new(types::I64));
+    entry_sig.returns.push(AbiParam::new(types::I64));
+    let entry_id = module
+        .declare_function("nelisp_jit_length", Linkage::Local, &entry_sig)
+        .expect("cranelift: declare_function nelisp_jit_length");
+
+    let mut ctx = module.make_context();
+    ctx.func.signature = entry_sig;
+
+    let mut fbcx = FunctionBuilderContext::new();
+    {
+        let mut fb = FunctionBuilder::new(&mut ctx.func, &mut fbcx);
+        let entry_b = fb.create_block();
+        let nil_b = fb.create_block();
+        let slow_b = fb.create_block();
+        fb.append_block_params_for_function_params(entry_b);
+
+        // Entry: load tag byte, branch on Nil vs other.
+        fb.switch_to_block(entry_b);
+        let arg_ptr = fb.block_params(entry_b)[0];
+        let out_ptr = fb.block_params(entry_b)[1];
+        let flags = MemFlags::trusted();
+        let tag_byte = fb.ins().load(types::I8, flags, arg_ptr, 0);
+        let tag = fb.ins().uextend(types::I64, tag_byte);
+        let is_nil = fb.ins().icmp_imm(IntCC::Equal, tag, SEXP_TAG_NIL as i64);
+        fb.ins().brif(is_nil, nil_b, &[], slow_b, &[]);
+        fb.seal_block(entry_b);
+
+        // Nil path: write Sexp::Int(0) inline.  Tag byte at offset 0,
+        // i64 payload at offset 8 (= `#[repr(C, u8)]' fixed offsets).
+        fb.switch_to_block(nil_b);
+        let int_tag_i8 = fb.ins().iconst(types::I8, SEXP_TAG_INT as i64);
+        let zero_i64 = fb.ins().iconst(types::I64, 0);
+        fb.ins().store(flags, int_tag_i8, out_ptr, 0);
+        fb.ins().store(flags, zero_i64, out_ptr, 8);
+        let ok = fb.ins().iconst(types::I64, 0);
+        fb.ins().return_(&[ok]);
+        fb.seal_block(nil_b);
+
+        // Slow path: helper handles Vector/Str/other via match arm.
+        fb.switch_to_block(slow_b);
+        let helper_local = module.declare_func_in_func(helper_id, fb.func);
+        let inst = fb.ins().call(helper_local, &[arg_ptr, out_ptr]);
+        let result = fb.inst_results(inst)[0];
+        fb.ins().return_(&[result]);
+        fb.seal_block(slow_b);
+
+        fb.finalize();
+    }
+
+    module
+        .define_function(entry_id, &mut ctx)
+        .expect("cranelift: define_function nelisp_jit_length");
+    module.clear_context(&mut ctx);
+    entry_id
+}
+
 fn build_jit_access() -> JitAccess {
     let mut builder = JITBuilder::new(cranelift_module::default_libcall_names())
         .expect("cranelift_jit: host ISA must resolve");
@@ -87,8 +177,7 @@ fn build_jit_access() -> JitAccess {
     builder.symbol("nl_jit_access_aref", nl_jit_access_aref as *const u8);
     let mut module = JITModule::new(builder);
 
-    let length_id =
-        declare_helper_call(&mut module, "nelisp_jit_length", "nl_jit_access_length", 2);
+    let length_id = declare_length_with_inline_nil(&mut module);
     let aref_id =
         declare_helper_call(&mut module, "nelisp_jit_aref", "nl_jit_access_aref", 3);
 
