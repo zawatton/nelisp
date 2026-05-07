@@ -277,10 +277,39 @@ when absent.  Used by the constructor expanded from `cl-defstruct'."
 
 (defun nelisp-cl-macros--struct-name-or-options (head)
   "Return the type symbol from HEAD (a symbol or `(NAME OPTION ...)').
-OPTIONS are accepted but currently ignored (= no `:include' /
-`:print-function' support yet).  Returning the symbol is enough for
-predicate / constructor / accessor name synthesis."
+OPTIONS are parsed by `nelisp-cl-macros--struct-options' separately."
   (if (consp head) (car head) head))
+
+(defun nelisp-cl-macros--struct-options (head)
+  "Return the option list from HEAD: nil for symbol, cdr for cons.
+Each option is `(KEY VALUE)' (e.g. `(:copier my-copy)' or
+`(:constructor nil)')."
+  (if (consp head) (cdr head) nil))
+
+(defvar nelisp-cl-macros--struct-absent
+  (make-symbol "nelisp-cl-macros--struct-absent")
+  "Sentinel returned by `--struct-opt' when an option key is absent.
+Distinct from any user-supplied value — used to differentiate
+`(:copier nil)' (= explicit disable) from no `:copier' clause at
+all (= use default name `copy-NAME').")
+
+(defun nelisp-cl-macros--struct-opt (key options)
+  "Look up KEY in OPTIONS plist-of-cells.
+Return the (cadr cell) when found, or
+`nelisp-cl-macros--struct-absent' when no `(KEY ...)' cell exists."
+  (let ((cell (assq key options)))
+    (if cell (car (cdr cell)) nelisp-cl-macros--struct-absent)))
+
+(defun nelisp-cl-macros--struct-resolve-name (name-form default-sym)
+  "Resolve a `:copier'/`:constructor'-style NAME-FORM.
+Returns:
+  - `nelisp-cl-macros--struct-absent' → use DEFAULT-SYM (auto-generate)
+  - nil (= explicit disable in option) → return nil (skip generation)
+  - any other symbol → use that symbol verbatim."
+  (cond
+   ((eq name-form nelisp-cl-macros--struct-absent) default-sym)
+   ((null name-form) nil)
+   (t name-form)))
 
 (defmacro cl-defstruct (name-or-options &rest slots)
   "Define a record type and its predicate / constructor / accessors.
@@ -289,29 +318,46 @@ NAME-OR-OPTIONS is either NAME (symbol) or `(NAME OPTION ...)'.
 Each SLOT is `SLOT-NAME' or `(SLOT-NAME DEFAULT)'.  Generated:
   - `NAME-p OBJECT'        predicate
   - `make-NAME &rest ARGS' constructor (keyword form: `:slot value')
+  - `copy-NAME REC'        shallow copier (option `:copier')
   - `NAME-SLOT REC'        accessor (one per slot)
+
+Supported options (Stage 4f-3):
+  - `(:constructor nil)'    → suppress make-NAME generation
+  - `(:constructor NAME)'   → rename make-NAME
+  - `(:copier nil)'         → suppress copy-NAME generation
+  - `(:copier NAME)'        → rename copy-NAME
 
 Slot index assignment: positional, in declaration order.  The
 record's `type_tag' is NAME (a symbol); accessors call
 `nelisp--record-ref' which is 0-based and excludes the tag — the
 type tag is reachable via `nelisp--record-type'.
 
-Limitations (Doc 50 stage 4e MVP): no `:include', no `:type',
-no `:copier', no `setf' integration, no docstring slot form.
+Limitations (Doc 50 stage 4f-3): no `:include', no `:type',
+no `setf' integration, no docstring slot form.
 
 Note: `(declare ...)' metadata is intentionally omitted because the
 NeLisp Rust evaluator does not yet strip declare forms from macro
 bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
 `defmacro' grows declare-handling parity with host Emacs."
   (let* ((name (nelisp-cl-macros--struct-name-or-options name-or-options))
+         (options (nelisp-cl-macros--struct-options name-or-options))
          (slot-names (mapcar #'nelisp-cl-macros--struct-slot-name slots))
          (slot-defaults (mapcar #'nelisp-cl-macros--struct-slot-default slots))
          (predicate (intern (format "%s-p" name)))
-         (constructor (intern (format "make-%s" name))))
+         (constructor
+          (nelisp-cl-macros--struct-resolve-name
+           (nelisp-cl-macros--struct-opt :constructor options)
+           (intern (format "make-%s" name))))
+         (copier
+          (nelisp-cl-macros--struct-resolve-name
+           (nelisp-cl-macros--struct-opt :copier options)
+           (intern (format "copy-%s" name)))))
     (let ((forms nil)
           (args-sym (make-symbol "cl-defstruct--args"))
           (rec-sym (make-symbol "cl-defstruct--rec"))
+          (src-sym (make-symbol "cl-defstruct--src"))
           (slot-arg-forms nil)
+          (copy-arg-forms nil)
           (i 0))
       ;; Build slot value-extraction forms for the constructor.
       (dolist (s slot-names)
@@ -322,6 +368,12 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
                 slot-arg-forms))
         (setq i (1+ i)))
       (setq slot-arg-forms (nreverse slot-arg-forms))
+      ;; Build per-slot ref forms for the copier.
+      (setq i 0)
+      (dolist (_s slot-names)
+        (push (list 'nelisp--record-ref src-sym i) copy-arg-forms)
+        (setq i (1+ i)))
+      (setq copy-arg-forms (nreverse copy-arg-forms))
       ;; Predicate form.
       (push (list 'defun predicate (list 'obj)
                   (list 'and
@@ -331,12 +383,21 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
                               (list 'quote name))))
             forms)
       ;; Constructor form (keyword-args via &rest).
-      (push (list 'defun constructor (list '&rest args-sym)
-                  (cons 'apply
-                        (cons (list 'quote 'nelisp--make-record)
-                              (cons (list 'quote name)
-                                    (list (cons 'list slot-arg-forms))))))
-            forms)
+      (when constructor
+        (push (list 'defun constructor (list '&rest args-sym)
+                    (cons 'apply
+                          (cons (list 'quote 'nelisp--make-record)
+                                (cons (list 'quote name)
+                                      (list (cons 'list slot-arg-forms))))))
+              forms))
+      ;; Copier form (shallow copy via record-ref / make-record).
+      (when copier
+        (push (list 'defun copier (list src-sym)
+                    (cons 'apply
+                          (cons (list 'quote 'nelisp--make-record)
+                                (cons (list 'quote name)
+                                      (list (cons 'list copy-arg-forms))))))
+              forms))
       ;; Accessor forms — one per slot, indexed positionally.
       (setq i 0)
       (dolist (s slot-names)

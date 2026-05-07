@@ -2260,6 +2260,87 @@ fn defstruct_slot_with_default() {
 }
 
 // ============================================================
+// Doc 50 stage 4f-3 — cl-defstruct `:copier' / `:constructor'
+// options.  Pure elisp (lisp/nelisp-cl-macros.el).
+// ============================================================
+
+#[test]
+fn defstruct_copier_default_shallow_copy() {
+    // Default `copy-NAME' is auto-generated and produces a fresh
+    // record with the same slot values.
+    let v = ok_all(
+        "(cl-defstruct point x y)
+         (let* ((a (make-point :x 1 :y 2))
+                (b (copy-point a)))
+           (list (point-x b) (point-y b) (eq a b)))",
+    );
+    assert_eq!(
+        v,
+        Sexp::list_from(&[Sexp::Int(1), Sexp::Int(2), Sexp::Nil]),
+    );
+}
+
+#[test]
+fn defstruct_copier_disabled_with_nil() {
+    // `(:copier nil)` suppresses copy-NAME.  We expect copy-point
+    // to be unbound — `fboundp' returns nil.
+    let v = ok_all(
+        "(cl-defstruct (point (:copier nil)) x y)
+         (fboundp 'copy-point)",
+    );
+    assert_eq!(v, Sexp::Nil);
+}
+
+#[test]
+fn defstruct_copier_renamed() {
+    // `(:copier dup-point)` renames the copier.
+    let v = ok_all(
+        "(cl-defstruct (point (:copier dup-point)) x y)
+         (let ((b (dup-point (make-point :x 7))))
+           (list (fboundp 'copy-point) (point-x b)))",
+    );
+    assert_eq!(v, Sexp::list_from(&[Sexp::Nil, Sexp::Int(7)]));
+}
+
+#[test]
+fn defstruct_constructor_disabled_with_nil() {
+    // `(:constructor nil)` suppresses make-NAME.
+    let v = ok_all(
+        "(cl-defstruct (only-pred (:constructor nil)) x)
+         (fboundp 'make-only-pred)",
+    );
+    assert_eq!(v, Sexp::Nil);
+}
+
+#[test]
+fn defstruct_constructor_renamed() {
+    // `(:constructor build-point)` renames the constructor.
+    let v = ok_all(
+        "(cl-defstruct (point (:constructor build-point)) x y)
+         (list (fboundp 'make-point)
+               (point-x (build-point :x 9 :y 4))
+               (point-y (build-point :x 9 :y 4)))",
+    );
+    assert_eq!(
+        v,
+        Sexp::list_from(&[Sexp::Nil, Sexp::Int(9), Sexp::Int(4)]),
+    );
+}
+
+#[test]
+fn defstruct_copier_preserves_record_type() {
+    // `copy-NAME` copy keeps the same `type_tag', so predicate / type-of
+    // continue to recognise the result.
+    let v = ok_all(
+        "(cl-defstruct point x y)
+         (let* ((a (make-point :x 1))
+                (b (copy-point a)))
+           (list (point-p b) (eq (type-of b) 'point)))",
+    );
+    assert_eq!(v, Sexp::list_from(&[Sexp::T, Sexp::T]));
+}
+
+// ============================================================
 // Doc 50 stage 4f — hash-table re-implemented in elisp
 // (lisp/nelisp-stdlib-hash.el on top of Stage 4c record primitives)
 // ============================================================
