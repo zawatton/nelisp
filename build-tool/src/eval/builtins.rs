@@ -4815,31 +4815,24 @@ fn bi_read(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
 }
 
-/// `(read-from-string STRING &optional START END)' — return a cons
-/// `(FORM . NEW-INDEX)'.  We currently ignore the optional bounds and
-/// always return `(FORM . (length STRING))' on success.
+/// `(read-from-string STRING &optional START END)' — dispatches to
+/// the elisp impl `nelisp--read-from-string-impl' bundled in
+/// `lisp/nelisp-stdlib-reader.el' (loaded at bootstrap as the last
+/// stdlib file).  Stage 7.2.d (Doc 66): the Rust `read_str' fallback
+/// previously used here has been retired — elisp impl is mandatory.
+/// Bootstrap-time form parsing still uses `reader::read_all'
+/// directly (separate path); Stage 7.2.e retires the Rust reader
+/// entirely.
 fn bi_read_from_string(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("read-from-string", args, 1, Some(3))?;
-    // Phase 7 Stage 7.2.b takeover (Doc 66 §2.5): when the elisp side
-    // has installed `nelisp--read-from-string-impl' (= the bundled
-    // `lisp/nelisp-stdlib-reader.el' loaded at startup), dispatch
-    // every `read-from-string' through it.  The Rust path below is
-    // kept as a bootstrap fallback for the (unlikely) case where the
-    // elisp impl is missing — Stage 7.2.d will remove it.
-    if let Ok(impl_fn) = env.lookup_function("nelisp--read-from-string-impl") {
-        return super::apply_function(&impl_fn, args, env);
-    }
-    let s = match &args[0] {
-        Sexp::Str(s) => s.clone(),
-        Sexp::MutStr(rc) => rc.borrow().clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "stringp".into(),
-            got: other.clone(),
-        }),
-    };
-    let form = super::super::reader::read_str(&s)
-        .map_err(|e| EvalError::Internal(format!("read-from-string: {}", e)))?;
-    Ok(Sexp::cons(form, Sexp::Int(s.len() as i64)))
+    let impl_fn = env.lookup_function("nelisp--read-from-string-impl").map_err(|_| {
+        EvalError::Internal(
+            "read-from-string: `nelisp--read-from-string-impl' not loaded \
+             — `lisp/nelisp-stdlib-reader.el' missing from STDLIB_SOURCES?"
+                .into(),
+        )
+    })?;
+    super::apply_function(&impl_fn, args, env)
 }
 
 // `bi_provide' / `bi_featurep' removed — Rust-min batch 7i (2026-05-07,
