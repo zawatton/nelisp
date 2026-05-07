@@ -85,15 +85,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_contains_stage_5_2_poc() {
-        // Stage 5.2 POC contract: `nelisp--add2' is JIT-lowered.
-        // Once full Stage 5.2 lands (= `-sub2' / `-mul2' / etc.) this
-        // assertion grows; once Stage 5.1 / 5.3〜5.5 land it covers
-        // those names too.
-        assert!(
-            lower_entries().contains_key("nelisp--add2"),
-            "lower_entries must register `nelisp--add2'; found: {:?}",
-            lower_entries().keys().collect::<Vec<_>>(),
-        );
+    fn registry_covers_stage_5_2_arithmetic() {
+        // Stage 5.2 contract: 11 binary arithmetic / comparison /
+        // bitwise primitives are JIT-lowered.  Once Stage 5.1 (=
+        // syscall) / 5.3 (= cons) / 5.4 (= access) / 5.5 (= predicate)
+        // land, this assertion grows accordingly.
+        let needed = [
+            "nelisp--add2", "nelisp--sub2", "nelisp--mul2",
+            "nelisp--num-eq2", "nelisp--num-lt2", "nelisp--num-gt2",
+            "nelisp--num-le2", "nelisp--num-ge2",
+            "nelisp--logior2", "nelisp--logand2", "nelisp--logxor2",
+        ];
+        for name in needed {
+            assert!(
+                lower_entries().contains_key(name),
+                "lower_entries missing `{}'; found: {:?}",
+                name,
+                lower_entries().keys().collect::<Vec<_>>(),
+            );
+        }
     }
 }

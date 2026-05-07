@@ -1,22 +1,39 @@
-//! Phase 5 Stage 5.2 — ArithIR lower (= 13 arithmetic primitives).
+//! Phase 5 Stage 5.2 — ArithIR lower (= 11 binary arithmetic /
+//! comparison / bitwise primitives).
 //!
-//! Stage 5.1 POC (2026-05-07, Doc 62): demonstrates the end-to-end
-//! Cranelift JIT pipeline by lowering `nelisp--add2`'s fast path
-//! (`(Int, Int) → Int`) to a JIT-compiled native function.  The
-//! lowered entry intercepts every `(+ A B)` call where both operands
-//! are integers; mixed-type / float / arity-error cases fall through
-//! to the existing `bi_add2` dispatcher via `dispatch(...)`.
+//! Stage 5.2 (2026-05-07, Doc 62): all 2-arg integer primitives that
+//! map cleanly to a single Cranelift binary instruction are JIT-
+//! compiled into one shared `JITModule` and registered in
+//! `lower_entries`.  Mixed-type / float / arity-error cases fall
+//! through to the existing dispatcher via `dispatch(...)`.
 //!
-//! This is a single-instruction proof of concept; the full Stage 5.2
-//! lower (= 13 arithmetic primitives, all wrapping ops + comparisons)
-//! lands in subsequent commits once the JIT pipeline is verified.
+//! Lowered set (= every "fast path" `(Int, Int) → Int|bool`):
+//!
+//! | primitive             | Cranelift IR              | result kind |
+//! |-----------------------+---------------------------+-------------|
+//! | `nelisp--add2`        | `iadd`                    | Sexp::Int   |
+//! | `nelisp--sub2`        | `isub`                    | Sexp::Int   |
+//! | `nelisp--mul2`        | `imul`                    | Sexp::Int   |
+//! | `nelisp--num-eq2`     | `icmp Equal` + `uextend`  | Sexp::T/Nil |
+//! | `nelisp--num-lt2`     | `icmp SignedLessThan`     | Sexp::T/Nil |
+//! | `nelisp--num-gt2`     | `icmp SignedGreaterThan`  | Sexp::T/Nil |
+//! | `nelisp--num-le2`     | `icmp SignedLessThanOrEqual`        | Sexp::T/Nil |
+//! | `nelisp--num-ge2`     | `icmp SignedGreaterThanOrEqual`     | Sexp::T/Nil |
+//! | `nelisp--logior2`     | `bor`                     | Sexp::Int   |
+//! | `nelisp--logand2`     | `band`                    | Sexp::Int   |
+//! | `nelisp--logxor2`     | `bxor`                    | Sexp::Int   |
+//!
+//! `ash` (= variable shl/sshr with count clamping) is left for a
+//! follow-up commit because the count-direction branch needs control
+//! flow blocks.  All arithmetic op semantics are wrapping by Cranelift
+//! contract — matches the existing `wrapping_add` / etc. behaviour.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{Linkage, Module};
+use cranelift_module::{FuncId, Linkage, Module};
 
 use crate::eval::env::Env;
 use crate::eval::error::EvalError;
@@ -24,31 +41,39 @@ use crate::reader::sexp::Sexp;
 
 use super::LowerFn;
 
-/// Function pointer to the JIT-compiled `iadd` (wrapping i64 add).
-/// Initialized lazily on the first call to `nelisp--add2` whose args
-/// hit the integer fast path; subsequent calls reuse the cached
-/// pointer.  The `JITModule` that owns the executable memory is
-/// `Box::leak`-ed so the function pointer stays valid for the
-/// remainder of the process lifetime (= matches Cranelift JIT's
-/// "finalize once, run forever" use case).
-static JIT_ADD2: OnceLock<extern "C" fn(i64, i64) -> i64> = OnceLock::new();
+/// All 11 JIT-compiled arithmetic / comparison / bitwise primitives.
+/// Built once at first access; shared `JITModule` is leaked so each
+/// `extern "C" fn` pointer stays valid for the process lifetime.
+struct JitArith {
+    add: extern "C" fn(i64, i64) -> i64,
+    sub: extern "C" fn(i64, i64) -> i64,
+    mul: extern "C" fn(i64, i64) -> i64,
+    eq: extern "C" fn(i64, i64) -> i64,
+    lt: extern "C" fn(i64, i64) -> i64,
+    gt: extern "C" fn(i64, i64) -> i64,
+    le: extern "C" fn(i64, i64) -> i64,
+    ge: extern "C" fn(i64, i64) -> i64,
+    logior: extern "C" fn(i64, i64) -> i64,
+    logand: extern "C" fn(i64, i64) -> i64,
+    logxor: extern "C" fn(i64, i64) -> i64,
+}
 
-fn build_jit_add2() -> extern "C" fn(i64, i64) -> i64 {
-    // `JITBuilder::new' resolves the host ISA implicitly via
-    // `cranelift_native::builder()' (= no direct dependency on
-    // `cranelift_native' from this crate).
-    let builder = JITBuilder::new(cranelift_module::default_libcall_names())
-        .expect("cranelift_jit: host ISA must resolve");
-    let mut module = JITModule::new(builder);
+static JIT_ARITH: OnceLock<JitArith> = OnceLock::new();
 
+/// Declare + define a 2-arg i64 → i64 function in MODULE; the EMIT
+/// closure is invoked with the argument values and must return a
+/// Cranelift `Value` of type i64 (= the function's return value).
+fn declare_binop<F>(module: &mut JITModule, name: &str, emit: F) -> FuncId
+where
+    F: FnOnce(&mut FunctionBuilder, Value, Value) -> Value,
+{
     let mut sig = module.make_signature();
     sig.params.push(AbiParam::new(types::I64));
     sig.params.push(AbiParam::new(types::I64));
     sig.returns.push(AbiParam::new(types::I64));
-
     let func_id = module
-        .declare_function("nelisp_jit_add2", Linkage::Local, &sig)
-        .expect("cranelift: declare_function nelisp_jit_add2");
+        .declare_function(name, Linkage::Local, &sig)
+        .unwrap_or_else(|e| panic!("cranelift: declare_function {}: {}", name, e));
 
     let mut ctx = module.make_context();
     ctx.func.signature = sig;
@@ -62,53 +87,161 @@ fn build_jit_add2() -> extern "C" fn(i64, i64) -> i64 {
         fb.seal_block(block);
         let a = fb.block_params(block)[0];
         let b = fb.block_params(block)[1];
-        let sum = fb.ins().iadd(a, b);
-        fb.ins().return_(&[sum]);
+        let r = emit(&mut fb, a, b);
+        fb.ins().return_(&[r]);
         fb.finalize();
     }
 
     module
         .define_function(func_id, &mut ctx)
-        .expect("cranelift: define_function nelisp_jit_add2");
+        .unwrap_or_else(|e| panic!("cranelift: define_function {}: {}", name, e));
     module.clear_context(&mut ctx);
+    func_id
+}
+
+fn build_jit_arith() -> JitArith {
+    let builder = JITBuilder::new(cranelift_module::default_libcall_names())
+        .expect("cranelift_jit: host ISA must resolve");
+    let mut module = JITModule::new(builder);
+
+    // 3 wrapping arithmetic ops.
+    let add_id = declare_binop(&mut module, "nelisp_jit_add2", |fb, a, b| fb.ins().iadd(a, b));
+    let sub_id = declare_binop(&mut module, "nelisp_jit_sub2", |fb, a, b| fb.ins().isub(a, b));
+    let mul_id = declare_binop(&mut module, "nelisp_jit_mul2", |fb, a, b| fb.ins().imul(a, b));
+
+    // 5 signed integer comparisons → i8 (0/1) → uextend i64.
+    fn cmp_to_i64(fb: &mut FunctionBuilder, cc: IntCC, a: Value, b: Value) -> Value {
+        let bit = fb.ins().icmp(cc, a, b);
+        fb.ins().uextend(types::I64, bit)
+    }
+    let eq_id = declare_binop(&mut module, "nelisp_jit_eq2", |fb, a, b| {
+        cmp_to_i64(fb, IntCC::Equal, a, b)
+    });
+    let lt_id = declare_binop(&mut module, "nelisp_jit_lt2", |fb, a, b| {
+        cmp_to_i64(fb, IntCC::SignedLessThan, a, b)
+    });
+    let gt_id = declare_binop(&mut module, "nelisp_jit_gt2", |fb, a, b| {
+        cmp_to_i64(fb, IntCC::SignedGreaterThan, a, b)
+    });
+    let le_id = declare_binop(&mut module, "nelisp_jit_le2", |fb, a, b| {
+        cmp_to_i64(fb, IntCC::SignedLessThanOrEqual, a, b)
+    });
+    let ge_id = declare_binop(&mut module, "nelisp_jit_ge2", |fb, a, b| {
+        cmp_to_i64(fb, IntCC::SignedGreaterThanOrEqual, a, b)
+    });
+
+    // 3 bitwise ops.
+    let or_id = declare_binop(&mut module, "nelisp_jit_logior2", |fb, a, b| {
+        fb.ins().bor(a, b)
+    });
+    let and_id = declare_binop(&mut module, "nelisp_jit_logand2", |fb, a, b| {
+        fb.ins().band(a, b)
+    });
+    let xor_id = declare_binop(&mut module, "nelisp_jit_logxor2", |fb, a, b| {
+        fb.ins().bxor(a, b)
+    });
+
     module
         .finalize_definitions()
         .expect("cranelift: finalize_definitions");
 
-    let ptr = module.get_finalized_function(func_id);
-    // Leak the module so the executable memory the function pointer
-    // references stays valid for the remainder of the process.
+    let get = |id: FuncId| -> extern "C" fn(i64, i64) -> i64 {
+        let ptr = module.get_finalized_function(id);
+        // SAFETY: declared signature is `(i64, i64) -> i64`.
+        unsafe { std::mem::transmute::<_, extern "C" fn(i64, i64) -> i64>(ptr) }
+    };
+
+    let arith = JitArith {
+        add: get(add_id),
+        sub: get(sub_id),
+        mul: get(mul_id),
+        eq: get(eq_id),
+        lt: get(lt_id),
+        gt: get(gt_id),
+        le: get(le_id),
+        ge: get(ge_id),
+        logior: get(or_id),
+        logand: get(and_id),
+        logxor: get(xor_id),
+    };
+
+    // Leak the module so the executable memory the function pointers
+    // reference stays valid for the remainder of the process.
     Box::leak(Box::new(module));
-    // SAFETY: cranelift-jit guarantees the finalized function pointer
-    // matches the declared signature; we declared `(i64, i64) -> i64`.
-    unsafe { std::mem::transmute::<_, extern "C" fn(i64, i64) -> i64>(ptr) }
+
+    arith
 }
 
-fn jit_add2() -> extern "C" fn(i64, i64) -> i64 {
-    *JIT_ADD2.get_or_init(build_jit_add2)
+fn jit() -> &'static JitArith {
+    JIT_ARITH.get_or_init(build_jit_arith)
 }
 
-fn lowered_add2(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    // Fast path: both args are Int → JIT-compiled wrapping add.
-    if args.len() == 2 {
-        if let (Sexp::Int(a), Sexp::Int(b)) = (&args[0], &args[1]) {
-            let sum = jit_add2()(*a, *b);
-            return Ok(Sexp::Int(sum));
-        }
+/// Try-extract a `(i64, i64)' integer pair from a 2-arg call site.
+fn try_int_pair(args: &[Sexp]) -> Option<(i64, i64)> {
+    if args.len() != 2 {
+        return None;
     }
-    // Slow path (= float / arity-error / wrong-type): defer to the
-    // existing dispatcher's `bi_add2`.  Calling `dispatch` directly
-    // does NOT re-enter the lower hook — the hook only fires from
-    // `apply_builtin`.
-    crate::eval::builtins::dispatch("nelisp--add2", args, env)
+    if let (Sexp::Int(a), Sexp::Int(b)) = (&args[0], &args[1]) {
+        Some((*a, *b))
+    } else {
+        None
+    }
 }
+
+/// Wrap a JIT comparison's i64 (1 or 0) result as `Sexp::T' / `Sexp::Nil'.
+fn bool_to_sexp(v: i64) -> Sexp {
+    if v != 0 { Sexp::T } else { Sexp::Nil }
+}
+
+macro_rules! lower_int_binop {
+    ($name:ident, $fast:expr, $primitive:literal) => {
+        fn $name(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+            if let Some((a, b)) = try_int_pair(args) {
+                let r = ($fast)(a, b);
+                return Ok(Sexp::Int(r));
+            }
+            crate::eval::builtins::dispatch($primitive, args, env)
+        }
+    };
+}
+
+macro_rules! lower_int_cmp {
+    ($name:ident, $fast:expr, $primitive:literal) => {
+        fn $name(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+            if let Some((a, b)) = try_int_pair(args) {
+                let r = ($fast)(a, b);
+                return Ok(bool_to_sexp(r));
+            }
+            crate::eval::builtins::dispatch($primitive, args, env)
+        }
+    };
+}
+
+lower_int_binop!(lowered_add2,    |a, b| (jit().add)(a, b),    "nelisp--add2");
+lower_int_binop!(lowered_sub2,    |a, b| (jit().sub)(a, b),    "nelisp--sub2");
+lower_int_binop!(lowered_mul2,    |a, b| (jit().mul)(a, b),    "nelisp--mul2");
+lower_int_binop!(lowered_logior2, |a, b| (jit().logior)(a, b), "nelisp--logior2");
+lower_int_binop!(lowered_logand2, |a, b| (jit().logand)(a, b), "nelisp--logand2");
+lower_int_binop!(lowered_logxor2, |a, b| (jit().logxor)(a, b), "nelisp--logxor2");
+
+lower_int_cmp!(lowered_num_eq2, |a, b| (jit().eq)(a, b), "nelisp--num-eq2");
+lower_int_cmp!(lowered_num_lt2, |a, b| (jit().lt)(a, b), "nelisp--num-lt2");
+lower_int_cmp!(lowered_num_gt2, |a, b| (jit().gt)(a, b), "nelisp--num-gt2");
+lower_int_cmp!(lowered_num_le2, |a, b| (jit().le)(a, b), "nelisp--num-le2");
+lower_int_cmp!(lowered_num_ge2, |a, b| (jit().ge)(a, b), "nelisp--num-ge2");
 
 pub fn register(map: &mut HashMap<&'static str, LowerFn>) {
-    // Stage 5.2 POC — only `nelisp--add2` is JIT-lowered today.
-    // Stage 5.2 full lands `-sub2` / `-mul2` / `-num-{eq,lt,gt,le,ge}2` /
-    // `-logior2` / `-logand2` / `-logxor2` / `ash` in subsequent
-    // commits once the POC is bench-verified.
     map.insert("nelisp--add2", lowered_add2);
+    map.insert("nelisp--sub2", lowered_sub2);
+    map.insert("nelisp--mul2", lowered_mul2);
+    map.insert("nelisp--num-eq2", lowered_num_eq2);
+    map.insert("nelisp--num-lt2", lowered_num_lt2);
+    map.insert("nelisp--num-gt2", lowered_num_gt2);
+    map.insert("nelisp--num-le2", lowered_num_le2);
+    map.insert("nelisp--num-ge2", lowered_num_ge2);
+    map.insert("nelisp--logior2", lowered_logior2);
+    map.insert("nelisp--logand2", lowered_logand2);
+    map.insert("nelisp--logxor2", lowered_logxor2);
 }
 
 #[cfg(test)]
@@ -117,11 +250,40 @@ mod tests {
 
     #[test]
     fn jit_add2_compiles_and_runs() {
-        let f = jit_add2();
+        let f = jit().add;
         assert_eq!(f(1, 2), 3);
         assert_eq!(f(0, 0), 0);
         assert_eq!(f(-7, 10), 3);
         // Wrapping: i64::MAX + 1 = i64::MIN.
         assert_eq!(f(i64::MAX, 1), i64::MIN);
+    }
+
+    #[test]
+    fn jit_sub_mul() {
+        assert_eq!((jit().sub)(10, 3), 7);
+        assert_eq!((jit().sub)(0, 1), -1);
+        assert_eq!((jit().mul)(6, 7), 42);
+        assert_eq!((jit().mul)(-3, 4), -12);
+    }
+
+    #[test]
+    fn jit_cmp_signed() {
+        assert_eq!((jit().eq)(5, 5), 1);
+        assert_eq!((jit().eq)(5, 4), 0);
+        assert_eq!((jit().lt)(3, 4), 1);
+        assert_eq!((jit().lt)(4, 3), 0);
+        assert_eq!((jit().lt)(-1, 1), 1);
+        assert_eq!((jit().gt)(4, 3), 1);
+        assert_eq!((jit().le)(3, 3), 1);
+        assert_eq!((jit().le)(4, 3), 0);
+        assert_eq!((jit().ge)(3, 3), 1);
+        assert_eq!((jit().ge)(2, 3), 0);
+    }
+
+    #[test]
+    fn jit_bitwise() {
+        assert_eq!((jit().logior)(0b1100, 0b0011), 0b1111);
+        assert_eq!((jit().logand)(0b1110, 0b0111), 0b0110);
+        assert_eq!((jit().logxor)(0b1100, 0b1010), 0b0110);
     }
 }
