@@ -322,7 +322,17 @@ pub fn install_builtins(env: &mut Env) {
         // Rust-min (2026-05-06 batch 6m): `error' moved to elisp
         // (lisp/nelisp-stdlib-misc.el) — uses elisp `format' +
         // `signal' so no Rust wrapper is needed any more.
-        "signal", "prin1-to-string",
+        // Phase 7 Stage 7.1.4 (2026-05-07, Doc 64): `prin1-to-string'
+        // migrated to elisp (lisp/nelisp-stdlib-prn.el).  Rust impl
+        // had used `format!("{}", x)' on top of `Sexp' Display; the
+        // elisp impl re-implements the dispatch in pure-elisp on top
+        // of `number-to-string' / `nelisp--prn-string-escaped' /
+        // `nelisp--write-stdout-bytes'.  `princ' / `print' (already
+        // elisp via batch 6e/6i) now route through the elisp printer
+        // automatically because the `prin1-to-string' function-cell
+        // is overridden at stdlib load.  `prin1' and `terpri' are
+        // also added in the same batch.
+        "signal",
         "nelisp--write-stderr-line",
         "nelisp--write-stdout-bytes",
         // Rust-min batch 7i (2026-05-07, Doc 50 stage 2): `provide' /
@@ -618,7 +628,10 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // see lisp/nelisp-stdlib-misc.el).  The byte-write-to-stdout
         // primitive is `nelisp--write-stdout-bytes'.
         "nelisp--write-stdout-bytes" => bi_write_stdout_bytes(args),
-        "prin1-to-string" => bi_prin1_to_string(args),
+        // Phase 7 Stage 7.1.4 (2026-05-07, Doc 64): `prin1-to-string'
+        // migrated to elisp (lisp/nelisp-stdlib-prn.el).  Internal
+        // Rust callers that need a printed Sexp use `format!("{}", x)'
+        // directly via the `Sexp' Display impl in `reader::sexp'.
         // message migrated to elisp (Rust-min 2026-05-06 batch 6h,
         // see lisp/nelisp-stdlib-misc.el).  The writeln-to-stderr
         // primitive is `nelisp--write-stderr-line'.
@@ -4780,11 +4793,6 @@ fn bi_terminal_take_sigcont(args: &[Sexp]) -> Result<Sexp, EvalError> {
     {
         Ok(Sexp::Nil)
     }
-}
-
-fn bi_prin1_to_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("prin1-to-string", args, 1, Some(1))?;
-    Ok(Sexp::Str(format!("{}", args[0])))
 }
 
 /// `(read &optional STREAM)' — parse one elisp form.  STREAM may be

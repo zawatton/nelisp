@@ -148,6 +148,14 @@ impl Env {
             // visited table via `make-hash-table'.  Function-cell
             // override shadows the prior Rust `bi_equal' arm.
             ("nelisp-stdlib-equal.el", include_str!("../../../lisp/nelisp-stdlib-equal.el")),
+            // Phase 7 Stage 7.1.2 (2026-05-07, Doc 64): elisp Sexp
+            // printer / serializer.  Loaded AFTER all type-providing
+            // stdlib modules (record / hash / equal) so the cond-based
+            // dispatcher in `nelisp--prn-to-string' has the full type
+            // landscape available.  Overrides the `prin1-to-string'
+            // function-cell installed by `bi_prin1_to_string' (= Stage
+            // 7.1.4 also removes that Rust arm in the same commit).
+            ("nelisp-stdlib-prn.el", include_str!("../../../lisp/nelisp-stdlib-prn.el")),
         ];
         let mut env = Env {
             globals: HashMap::new(),
