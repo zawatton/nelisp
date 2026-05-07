@@ -1,0 +1,288 @@
+#+TITLE: Doc 63 — Phase 7: NeLisp Self-Host Roadmap (Reader + Evaluator → elisp)
+#+AUTHOR: zawatton
+#+DATE: 2026-05-07
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: DRAFT
+:DEPENDS_ON: Doc 49 (elisp pivot) / Doc 50 (irreducible unlock) / Doc 53〜60 (OS surface) / Doc 61 (cXXr migrate)
+:CONCURRENT_WITH: Doc 62 (Phase 5 native cc lowering)
+:CHILDREN: Doc 64 (Stage 7.1 = Sexp printer), Doc 65 (Stage 7.2 reader), Doc 66 (Stage 7.3 special forms), Doc 67 (Stage 7.4 apply/env)
+:END:
+
+* §0 TL;DR
+
+Phase 7 = NeLisp の reader + evaluator を **elisp 自身で書き直し**、
+Rust に残すのは FFI primitive + 最小 boot loader のみとする最終フェ
+ーズ。Lisp Machine vision の最終形態 = host を持たない Lisp substrate
+の達成。
+
+| component             | 現 Rust LOC | Phase 7 後 Rust LOC | elisp 化先                                |
+|-----------------------+-------------+---------------------+--------------------------------------------|
+| reader (lexer/parser) | 1,625       | ~50 (entry primitive) | =lisp/nelisp-stdlib-reader.el=             |
+| sexp printer          | ~200        | ~30 (= write-bytes I/O) | =lisp/nelisp-stdlib-prn.el=                |
+| special_forms.rs      | 1,146       | 0                   | =lisp/nelisp-stdlib-eval-special.el=       |
+| eval/mod.rs (apply)   | 531         | ~50 (boot loader)   | =lisp/nelisp-stdlib-eval-core.el=          |
+| env.rs (obarray)      | 463         | 0                   | 同上                                       |
+| ffi.rs                | 358         | 358 (= 残す)        | (libdl wrapper、不可)                     |
+| 計                    | ~4,323      | ~488                | -                                          |
+
+合計 Rust ~4,323 → ~488 = **約 3,800 LOC 削減**。Doc 60 後の 11,316 →
+6,500〜7,000 程度 (Phase 5 lower と合わせて) → ratio Rust:elisp =
+3:1 → 1:2〜1:3 を達成。
+
+| stage   | item                                  | LOC 削減 |
+|---------+---------------------------------------+----------|
+| 7.1     | Sexp printer (= prin1 / princ / etc) | 200      |
+| 7.2     | Sexp reader (= read-from-string)     | 1,400    |
+| 7.3     | Special forms dispatcher              | 900      |
+| 7.4     | Apply / call / closure / env          | 700      |
+| 7.5     | switch over + Rust dead code 削除     | 600      |
+| 7.6     | Reader cleanup (Rust reader 削除)     | 200      |
+
+* §1 動機
+
+** §1.1 Lisp Machine vision の最終形態
+- =feedback_layer_boundary_nelisp_vs_nemacs= memory: NeLisp = elisp
+  最小 runtime、buffer/marker/point は nemacs 側
+- *Vision 最終形態*: NeLisp は「言語自体の解釈を自前で持つ Lisp
+  substrate」、host (= Rust eval) を持たない
+- 既存先例:
+  - SBCL (Common Lisp self-host): runtime は C、compiler / loader は
+    Common Lisp 自身で
+  - Femtolisp (Julia 内 minimal Lisp): boot loader だけ C、残り Lisp
+  - Guile (Scheme): VM は C、コア libraries は Scheme
+
+** §1.2 Doc 60 / Doc 62 後に残るもの
+- Doc 53〜60 で OS surface 完結 = file IO / network / IPC / signal /
+  timer 全部 elisp で書ける
+- Doc 62 Phase 5 で hot path JIT lower 完了 = arithmetic / cons /
+  predicate が host 命令直 emit
+- 残るのが「言語自体の解釈」 = special form dispatcher + apply +
+  closure + env、これらが Rust 側に残る最後の根 ≈ 7,909 LOC
+
+** §1.3 Phase 5 native cc lowering との相補関係
+- Phase 5 完成後、elisp 側で書かれた eval も *自身が JIT lower 対象*
+  になる
+- 例: Phase 7 で書く =eval-form FORM ENV= は再帰下降の elisp 関数だが
+  内部で多用される =cons= / =eq= / =car= は ConsIR / PredicateIR で
+  lower されるので、host 命令に直 emit
+- 結果: elisp eval の overhead は Rust eval の数倍程度に収まる見込み
+  (= bench gate < 3x degradation で許容)
+- Phase 5 が無いと Phase 7 の elisp eval は dispatcher 経由で激重
+
+** §1.4 既存の reader pivot 進捗
+- =lisp/doc47-build-tool-reader.el= = 161 LOC、reader の elisp 化が
+  既に部分着手済 (= Doc 47 Phase 8〜9 系)
+- 本 Doc は Doc 47 を発展させて *reader 完全 elisp 化* を最終目標とする
+
+* §2 段階的 self-host plan
+
+** §2.1 Stage 7.1 — Sexp printer / serializer (出力)
+
+別 Doc 64 で詳細設計。本 Doc では概要のみ:
+
+- *現状*: Rust 側 sexp.rs Display/Debug + builtins.rs `bi_prin1_to_string` /
+  `bi_princ` / `bi_print` / `bi_terpri`
+- *elisp 化*: =lisp/nelisp-stdlib-prn.el= 新規。Rust から
+  =nelisp--write-stdout-bytes= I/O 1 本だけ使う
+- *依存最小*: printer は eval / reader 非依存の純粋関数 (=Sexp → Str=)
+- *LOC 削減*: ~200 (Rust)、+200 (elisp)
+
+詳細 → Doc 64
+
+** §2.2 Stage 7.2 — Sexp reader (入力)
+
+- *現状*: reader/lexer.rs (881) + parser.rs (478) + mod.rs (266) = 1,625
+- *elisp 化*: =lisp/nelisp-stdlib-reader.el= (= Doc 47 doc47-build-tool-
+  reader.el を発展)
+- 設計指針: lexer state machine を elisp で。Rust 側は
+  =nelisp--read-bytes-stream= entry 1 本だけ残す (= byte-by-byte input
+  の最低限 primitive)
+- chunk-by-chunk 走査 = =(string-match ...)= 系正規表現主体、または
+  char-index loop
+- *LOC 削減*: ~1,400 (Rust)、+800〜1,000 (elisp)
+- *Bootstrap*: reader 自身を elisp で書くと「elisp ファイルを load する
+  read」自体が elisp = chicken-and-egg。解決:
+  1. 起動時、Rust reader が =lisp/nelisp-stdlib-reader.el= を 1 度だけ
+     読む (= bootstrap)
+  2. 以降の =read-from-string= 呼出は elisp reader が応答 (= takeover)
+
+詳細 → 別 Doc 65 (= 後段で書く、本 Doc では scope 外)
+
+** §2.3 Stage 7.3 — Special forms dispatcher
+
+- *現状*: special_forms.rs (1,146) — let / let* / lambda / defun /
+  defmacro / if / cond / progn / quote / function / setq /
+  save-excursion / save-restriction / unwind-protect / condition-case /
+  and / or / while / catch / throw など 20+ 形式
+- *elisp 化*: =lisp/nelisp-stdlib-eval-special.el= 新規
+- 設計: elisp 側の dispatcher = 大きな (cond) で each special form を
+  解釈、再帰的に sub-form を =eval-form= に渡す:
+
+#+BEGIN_SRC emacs-lisp
+(defun eval-form (form env)
+  (cond
+   ((null form) nil)
+   ((or (eq form t) (numberp form) (stringp form)) form)
+   ((symbolp form) (lookup form env))
+   ((consp form)
+    (let ((head (car form))
+          (rest (cdr form)))
+      (cond
+       ((eq head 'quote) (car rest))
+       ((eq head 'if)
+        (if (eval-form (car rest) env)
+            (eval-form (cadr rest) env)
+          (eval-progn (cddr rest) env)))
+       ((eq head 'let)  (eval-let rest env))
+       ((eq head 'cond) (eval-cond rest env))
+       ;; ... 20+ special forms ...
+       (t (apply-fn head (mapcar (lambda (a) (eval-form a env)) rest) env)))))))
+#+END_SRC
+
+- Rust 側残: =nelisp--call-builtin= (= primitive 直呼び entry) +
+  =nelisp--make-closure= (= Rc<RefCell<Sexp>> capture)
+- *LOC 削減*: ~900 (Rust)、+500〜700 (elisp)
+
+詳細 → 別 Doc 66
+
+** §2.4 Stage 7.4 — Apply / call / closure / env
+
+- *現状*: eval/mod.rs (531) + env.rs (463) = 994
+- *elisp 化*: =lisp/nelisp-stdlib-eval-core.el= 新規
+- 設計:
+  - =apply-fn FN ARGS ENV= = function value のディスパッチ。
+    builtin / closure / macro の 3 系
+  - closure は cl-struct (=name=, =params=, =body=, =captured-env=)
+    で Phase 6 から既に検討済
+  - obarray は alist (= bootstrap 段階) → hash-table (= Doc 50 stage 1
+    で elisp 化済) でスケール
+- bootstrap: NeLisp 起動時 Rust eval が =lisp/nelisp-stdlib-eval-core.el=
+  を read → eval → install。以降 elisp eval が動く (= takeover)
+- *LOC 削減*: ~700 (Rust)、+400〜600 (elisp)
+
+詳細 → 別 Doc 67
+
+** §2.5 Stage 7.5 — switch over + Rust dead code 削除
+
+- Stage 7.1〜7.4 を順次完成、その間 *Rust eval は parallel path とし
+  て残存* (= regression risk 最小化)
+- =--rust-eval= flag で Rust eval を access、default は elisp eval
+- 全 ERT を elisp eval 経由で PASS、wallclock degradation < 3x で gate
+- 数 release 観察 (= 1〜2 ヶ月) 後、Rust eval (special_forms / mod / env)
+  完全削除
+- *LOC 削減*: 上記合計 + ~600 (cleanup、stub 削除等)
+
+** §2.6 Stage 7.6 — Reader cleanup (Rust reader 削除)
+
+- Stage 7.2 後段、=--rust-reader= flag 経由のみ access、default elisp
+- Rust reader (=reader/lexer.rs= = 881 / =parser.rs= = 478 / =mod.rs= =
+  266) を完全削除
+- *LOC 削減*: 上記 1,400 含む、cleanup 200 追加
+
+* §3 Bootstrap problem
+
+** §3.1 Chicken-and-egg
+- elisp eval を elisp で書くと「最初の eval を誰が動かす」が問題
+- elisp reader を elisp で書くと「最初の read を誰が動かす」も問題
+- 両方 NeLisp 起動時に既に Rust 版が動いている前提で *takeover* する
+
+** §3.2 Takeover sequence
+
+#+BEGIN_EXAMPLE
+NeLisp 起動 (= bin/nelisp.rs)
+  ▼
+Rust eval 起動 (= 既存)
+  ▼
+include_str! で bundled elisp 全部 read (= image.rs)
+  ▼
+Rust eval が elisp ファイル全部を eval (= 通常の load 系)
+  ▼
+このタイミングで lisp/nelisp-stdlib-eval-core.el が install される
+  ▼
+elisp 側 eval-form / apply-fn / lookup / etc. の defun が完成
+  ▼
+*** Switch over ***
+Rust eval は =--rust-eval= flag が付いてない限り
+elisp 側 eval-form を *call entry* として使う
+  ▼
+以降の eval は elisp が応答
+#+END_EXAMPLE
+
+** §3.3 AOT bake (option)
+- =image.rs= (545 LOC) は include_str! で elisp ファイルを bake-in 済、
+  Phase 7 でこれを発展させて *AOT で Sexp tree 化* する選択肢:
+  - 起動時 read しない、tree が image.rs に焼き込まれた状態で起動
+  - boot 時間 0-cost (現状 ~50ms read → 0ms)
+  - 反面: bundled elisp が変わるたび rebuild 必要 (= =touch lisp/...=
+    で既に運用中、問題ない)
+- 採用判断は Stage 7.5 で
+
+* §4 Phase 5 native cc lowering との相互作用
+
+| 観点            | Phase 5 (Doc 62)               | Phase 7 (本 Doc)         |
+|-----------------+--------------------------------+--------------------------|
+| 対象            | hot path primitive (=car=, =eq= 等) | 言語の解釈構造 (=eval=, =apply=) |
+| Rust 削除       | dispatcher arm + bi_func body  | special_forms / eval / env |
+| 性能戦略        | 命令直 emit                      | elisp eval が JIT lower される |
+| 進行            | 独立                             | Phase 5 が先行する方が望ましい |
+
+Phase 5 が先行することで Phase 7 の elisp eval が「重くない」状態で
+切替可能。Phase 5 が無くても Phase 7 は実装可能だが性能 degradation
+が 5x〜10x 級になり、user 体感に影響。Phase 5 を Stage 5.1〜5.5 まで
+完了 → Phase 7 Stage 7.1〜7.4 着手の順序が安全。
+
+* §5 Test plan
+
+** §5.1 各 stage で既存 ERT 全 PASS
+- =make test= で 0 unexpected を要件
+- Stage 7.1〜7.4 の間は parallel path で運用 = =--rust-eval= flag で
+  Rust eval / elisp eval 両方 test
+- =cargo test --features rust-eval= = Rust eval、default = elisp eval
+
+** §5.2 self-host gate
+- elisp eval が *自身を含む全 elisp ファイルを load してエラー無し*
+- これは「elisp eval が elisp eval を eval できる」 の 1 段証明 (=
+  meta-circularity)
+- 失敗パターン: special form dispatch の orderering / closure の lexical
+  binding 漏れ / macro expander の eager / lazy 不整合
+
+** §5.3 wallclock gate
+- elisp eval 切替前後で =make test= の wallclock < 3x degradation を
+  要件
+- bench: =(eval '(let ((x 1)) (while (< x 10000) (setq x (1+ x)))))= を
+  100 回 — Rust eval / elisp eval の wallclock 比
+
+* §6 Out of scope
+
+- *Phase 5 native cc lowering 自体* は別 Doc 62
+- *Macro expander の elisp 化* (= cl-defmacro / pcase) は既に elisp 側、
+  Phase 7 で再 visit する程度
+- *Hash-table iter 系* も既に elisp 化済 (Doc 50 stage 1)
+- *Async / threads / process subsystem* (= make-process / async eval)
+  は Phase 8 候補
+- *Path B (Darwin / Windows)* は Phase 5 で同 infra
+- =eval-when-compile= のような半 macro 半 eval form は Stage 7.3.5 で
+  扱う
+- *byte-compile / native-compile* (= elisp の AOT) は Phase 7 完了後の
+  Phase 8 (= "second lift") 候補。本 Doc scope 外
+
+* §7 References
+
+- =feedback_nelisp_minimize_rust= memory
+- =feedback_layer_boundary_nelisp_vs_nemacs= memory
+- Doc 49 elisp pivot
+- Doc 50 §4 段階的 unlock plan / §5 共通原則
+- Doc 53〜60 OS surface (= elisp 完結 pattern の確立)
+- Doc 61 cXXr migrate (= 直前の retire batch)
+- Doc 62 Phase 5 native cc lowering (= 並行 Doc、相補)
+- Doc 64 Phase 7 Stage 7.1 Sexp printer 詳細設計 (= 子 Doc)
+- (Doc 65) Phase 7 Stage 7.2 Sexp reader 詳細設計 — 後続作成
+- (Doc 66) Phase 7 Stage 7.3 Special forms dispatcher 詳細設計 — 後続
+- (Doc 67) Phase 7 Stage 7.4 Apply / env 詳細設計 — 後続
+- =lisp/doc47-build-tool-reader.el= (= reader pivot 既存実装)
+- SBCL self-host history (= 参考)
+- Femtolisp (= Julia 内 minimal Lisp、参考)
+- Guile (= Scheme self-host、参考)

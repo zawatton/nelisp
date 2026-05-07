@@ -1,0 +1,306 @@
+#+TITLE: Doc 64 — Phase 7 Stage 7.1: Elisp Sexp Printer / Serializer
+#+AUTHOR: zawatton
+#+DATE: 2026-05-07
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: DRAFT
+:DEPENDS_ON: Doc 50 stage 5b+5c (cycle-safe equal in elisp、同 pattern)
+:PARENT: Doc 63 (Phase 7 self-host roadmap)
+:END:
+
+* §0 TL;DR
+
+Phase 7 Phase 7 self-host (Doc 63) の最初の足場。Sexp の printer /
+serializer を elisp で書き、Rust 側 builtins から =prin1-to-string= /
+=princ= / =print= / =terpri= の dispatcher を撤去する。
+
+| layer            | before                                       | after                                  |
+|------------------+----------------------------------------------+----------------------------------------|
+| Rust dispatch    | bi_prin1_to_string / bi_princ / bi_print / bi_terpri (4 arm) | (なし)                                 |
+| Rust I/O         | =nelisp--write-stdout-bytes= / =number-to-string= / =nelisp--format-float-body= / =symbol-name= (= 残す) | 同左                                 |
+| elisp 関数       | (なし)                                       | =prin1=/=prin1-to-string=/=princ=/=print=/=terpri= + helpers (7 本) |
+| sexp.rs Display impl | error message format に内部使用 (= 残す)  | 同左                                   |
+
+LOC 削減推定: Rust ~200、elisp +200。
+
+Sexp printer は eval / reader 非依存の純粋関数 (Sexp → string)、
+bootstrap dependency 最小なので Phase 7 の最初の足場として最適。
+
+* §1 動機
+
+** §1.1 Phase 7 の最小入口
+- Doc 63 Phase 7 self-host は reader → special forms → apply/env と
+  進む合計 ~3,800 LOC の大規模 migrate
+- Stage 7.1 Sexp printer は dependency 最小 (eval / reader 非依存) =
+  最初の足場として理想的
+- ここでつまづかなければ Stage 7.2 (reader) → 7.3 (special forms) → 7.4
+  (apply/env) と段階的に詰めていける
+
+** §1.2 純粋関数で取り組みやすい
+- printer = =Sexp → string=、副作用ゼロ (= write-stream への append
+  だけが副作用)
+- 入力 type ごとに dispatch するだけ、再帰下降が単純
+- 既存 Doc 50 stage 5b+5c で =cycle-safe equal= を elisp 化済 = 循環
+  参照対応 pattern が確立 (= hash-table で visited track)
+
+** §1.3 Doc 49〜61 の積み重ね
+- Doc 49 elisp pivot で =directory-files= / =file-exists-p= 系が elisp
+  化、parallel path で運用 → 等価性 → Rust 削除 という 3 段運用が
+  確立
+- Doc 50 stage 7 batch 7a〜7i で 22 retire / 7 new primitive、本 Doc
+  も同 pattern を踏襲
+
+* §2 設計
+
+** §2.1 elisp 関数一覧 (= 5 user-visible + 3 helper = 8 本)
+
+User-visible:
+
+| function                              | 動作                                                  |
+|---------------------------------------+--------------------------------------------------------|
+| =(prin1-to-string OBJECT)=            | =OBJECT= の readable な string 表現を返す              |
+| =(prin1 OBJECT &optional STREAM)=     | =prin1-to-string= + write to stream (default = stdout) |
+| =(princ OBJECT &optional STREAM)=     | readable でない (= no quotes around strings) で write |
+| =(print OBJECT &optional STREAM)=     | =princ= + =terpri=                                     |
+| =(terpri &optional STREAM)=           | 改行 1 個を write                                      |
+
+Internal helpers:
+
+| function                              | 動作                                                  |
+|---------------------------------------+--------------------------------------------------------|
+| =(nelisp--prn-to-string OBJ ESCAPE)= | =OBJ= を string 表現にする中核 dispatcher (=ESCAPE= = readable / non-readable 切替) |
+| =(nelisp--prn-string-escaped STR)=   | string literal の escape 形式 ("..." with \\ / \n / \t / \" 処理) |
+| =(nelisp--prn-cons LIST ESCAPE VISITED)= | cons cell を再帰下降 (proper / dotted / circular の 3 種判定) |
+
+** §2.2 Sexp variant 別 dispatch
+
+#+BEGIN_SRC emacs-lisp
+(defun nelisp--prn-to-string (obj escape)
+  "Convert OBJ to its printed representation.
+ESCAPE = t  → readable form (= prin1)
+ESCAPE = nil → non-readable form (= princ)"
+  (cond
+   ((null obj) "nil")
+   ((eq obj t) "t")
+   ((integerp obj) (number-to-string obj))
+   ((floatp obj)   (nelisp--format-float-body obj))
+   ((symbolp obj)
+    (if escape
+        ;; readable: special chars (e.g. space) need backslash escape
+        (nelisp--prn-symbol-escaped (symbol-name obj))
+      (symbol-name obj)))
+   ((stringp obj)
+    (if escape
+        (concat "\"" (nelisp--prn-string-escaped obj) "\"")
+      obj))
+   ((consp obj)
+    (nelisp--prn-cons obj escape (make-hash-table :test 'eq)))
+   ((vectorp obj)
+    (concat "[" (mapconcat (lambda (e) (nelisp--prn-to-string e escape)) obj " ") "]"))
+   ((recordp obj)
+    (nelisp--prn-record obj escape))
+   ;; ... CharTable / BoolVector ...
+   (t (format "#<unprintable %S>" obj))))
+#+END_SRC
+
+各 variant 詳細:
+- =Nil= → ="nil"=
+- =T= → ="t"=
+- =Int= → =(number-to-string N)=
+- =Float= → 既存 =nelisp--format-float-body=
+- =Symbol= → =(symbol-name SYM)=、ESCAPE=t なら special char に
+  =\\= 付き
+- =Str= → =\"...\"= (prin1) / そのまま (princ)、内部 =\\= =\"= =\n= =\t=
+  などを escape
+- =MutStr= → Str 同形 (= elisp 側からは透過)
+- =Cons= → =(...)=、proper / dotted / circular を判別して再帰下降
+- =Vector= → =[a b c]=
+- =Record= → =#s(type-tag slot1 slot2 ...)=
+- =CharTable= / =BoolVector= → 既存 Rust impl と同形
+- =HashTable= は Doc 50 stage 4f-2 で Rust 撤去済 → record で表現
+
+** §2.3 循環参照の扱い
+
+Doc 50 stage 5b+5c で =equal= の cycle-safe 版を elisp 化済 = 同
+pattern を流用:
+
+#+BEGIN_SRC emacs-lisp
+(defun nelisp--prn-cons (lst escape visited)
+  "Print a cons cell.  VISITED = hash-table 'eq → label string."
+  (when (gethash lst visited)
+    ;; 既に visited = 循環参照
+    (let ((label (gethash lst visited)))
+      (if (eq label 'placeholder)
+          (let ((new-label (format "#%d#" (hash-table-count visited))))
+            (puthash lst new-label visited)
+            new-label)
+        label)))
+  ;; 初回 visit = placeholder を立てる
+  (puthash lst 'placeholder visited)
+  (let ((parts (list "(" (nelisp--prn-to-string (car lst) escape visited)))
+        (tail (cdr lst)))
+    (while (consp tail)
+      (push " " parts)
+      (push (nelisp--prn-to-string (car tail) escape visited) parts)
+      (setq tail (cdr tail)))
+    (when tail
+      (push " . " parts)
+      (push (nelisp--prn-to-string tail escape visited) parts))
+    (push ")" parts)
+    (apply #'concat (nreverse parts))))
+#+END_SRC
+
+MVP では:
+- 循環参照は =#1=...#1#= 表記で正しく出力
+- 過深な構造は =max-lisp-eval-depth= で abort
+- ERT で circular cons / circular vector を確認
+
+** §2.4 String escape 詳細
+
+#+BEGIN_SRC emacs-lisp
+(defun nelisp--prn-string-escaped (s)
+  "Return S with " / \\ / \n / \r / \t escaped per Emacs prin1 rules."
+  (mapconcat (lambda (c)
+               (cond
+                ((eq c ?\")  "\\\"")
+                ((eq c ?\\)  "\\\\")
+                ((eq c ?\n)  "\\n")
+                ((eq c ?\r)  "\\r")
+                ((eq c ?\t)  "\\t")
+                ((or (< c 32) (= c 127))
+                 (format "\\%03o" c))   ; non-printable → octal
+                (t (char-to-string c))))
+             s ""))
+#+END_SRC
+
+** §2.5 Stream 書き出し
+
+elisp eval の世界では =STREAM= は (1) buffer (2) function (3) marker
+(4) t (= stdout) のどれか。NeLisp Stage 7.1 では実装簡素化のため:
+
+- =STREAM= = nil → stdout (= =nelisp--write-stdout-bytes=)
+- =STREAM= = function → =(funcall STREAM CHAR-OR-STRING)=
+- それ以外 → =error= で abort
+
+(buffer / marker は nemacs 側にしかないので NeLisp 単体では non-target)
+
+** §2.6 Rust 側で残す primitive
+
+- =nelisp--write-stdout-bytes BYTES= (既存) — 唯一の I/O 出口
+- =number-to-string N= (既存) — Int → Str
+- =nelisp--format-float-body F= (既存) — Float → Str
+- =symbol-name SYM= (既存) — Symbol → Str
+
+** §2.7 Rust 側削除する primitive
+
+- =bi_prin1_to_string= 関数 + dispatch arm + install_builtins names
+- =bi_princ= 同上
+- =bi_print= 同上
+- =bi_terpri= 同上
+
+ただし sexp.rs::Display impl は内部使用 (= error message format) のた
+め残す。ユーザー visible primitive のみ削除。
+
+** §2.8 ファイル配置
+
+| 種別      | path                                                   | 操作 |
+|-----------+--------------------------------------------------------+------|
+| 設計書    | =docs/design/64-phase7-stage1-elisp-sexp-printer.org=  | new  |
+| stdlib    | =lisp/nelisp-stdlib-prn.el=                            | new  |
+| Rust      | =build-tool/src/eval/builtins.rs=                      | edit (4 arm + 4 関数本体削除) |
+| Rust      | =build-tool/src/eval/sexp.rs= の Display impl          | 残す (= 内部使用) |
+| test      | =test/nelisp-stdlib-prn-test.el=                       | new  |
+
+* §3 段階
+
+| stage   | item                                                       | 状態     |
+|---------+------------------------------------------------------------+----------|
+| 7.1.1   | 設計書 (本 Doc)                                              | DRAFT    |
+| 7.1.2   | =lisp/nelisp-stdlib-prn.el= 実装、Rust dispatch 並行残し     | TBD      |
+| 7.1.2.5 | ERT 整備 (= prin1-to-string round-trip / escape / circular) | TBD      |
+| 7.1.3   | bench で elisp printer < 5x Rust printer 確認                 | TBD      |
+| 7.1.4   | Rust dispatch arm + bi_prin1_to_string 等 4 関数本体削除      | TBD      |
+| 7.1.5   | clean-up + commit                                           | TBD      |
+
+* §4 Test plan
+
+** §4.1 新規 ERT (= =test/nelisp-stdlib-prn-test.el=)
+
+| test                                  | 内容                                              |
+|---------------------------------------+----------------------------------------------------|
+| =prin1-int-roundtrip=                 | =(prin1-to-string 42) = "42"=                      |
+| =prin1-float-roundtrip=               | =(prin1-to-string 1.5) = "1.5"=                    |
+| =prin1-symbol-roundtrip=              | =(prin1-to-string 'hello) = "hello"=              |
+| =prin1-string-readable=               | =(prin1-to-string "abc") = "\"abc\""=              |
+| =princ-string-non-readable=           | =(princ "abc") prints abc (no quotes)=             |
+| =prin1-string-escape-quotes=          | =(prin1-to-string "a\"b") = "\"a\\\"b\""=         |
+| =prin1-string-escape-backslash=       | =(prin1-to-string "a\\b") = "\"a\\\\b\""=         |
+| =prin1-string-escape-newline=         | =(prin1-to-string "a\nb") = "\"a\\nb\""=          |
+| =prin1-cons-proper=                   | =(prin1-to-string '(1 2 3)) = "(1 2 3)"=          |
+| =prin1-cons-dotted=                   | =(prin1-to-string '(1 . 2)) = "(1 . 2)"=          |
+| =prin1-cons-nested=                   | =(prin1-to-string '((a) b (c d))) = "((a) b (c d))"= |
+| =prin1-vector=                        | =(prin1-to-string [1 2 3]) = "[1 2 3]"=           |
+| =prin1-nil=                           | =(prin1-to-string nil) = "nil"=                    |
+| =prin1-t=                             | =(prin1-to-string t) = "t"=                        |
+| =prin1-empty-list=                    | =(prin1-to-string '()) = "nil"=                    |
+| =prin1-circular-cons=                 | =(let ((c (list 1))) (setcdr c c) (prin1-to-string c))= → =#1=(1 . #1#)= or =#<circular>= or finite |
+| =prin1-record=                        | =(prin1-to-string (record 'point 3 4)) = "#s(point 3 4)"= |
+
+** §4.2 既存 ERT 全 PASS
+- bundled elisp 全体で =prin1-to-string= は多用されているため、
+  =make test= で 0 unexpected を要件
+- 特に error message (= internal Rust Display impl) は影響なし、user-
+  visible primitive のみ切替
+
+** §4.3 bench
+- =(prin1-to-string (make-list 1000 'a))= を 100 回回した wallclock
+- 目標: Rust printer の 5x 以下に抑える (= 許容ライン)
+- Phase 5 lower 完成後は再 bench、3x 以下を期待
+
+* §5 Bootstrap dependency
+
+** §5.1 Pure function
+- printer は eval / reader に非依存の pure function
+- =cons= / =car= / =cdr= / =eq= / =hash-table-*= / =number-to-string= /
+  =mapconcat= / =concat= など bundled elisp 既存の primitive のみで
+  実装可能
+- bootstrap 困難なし
+
+** §5.2 internal Rust 使用箇所
+- error message format で =prin1-to-string= を呼ぶ Rust 側コードがある:
+
+#+BEGIN_SRC rust
+EvalError::WrongType { expected, got } => format!("expected {}, got {:?}", expected, got)
+#+END_SRC
+
+- =got: Sexp= の =Debug impl= は sexp.rs::Display impl と等価のため
+  残す (= internal use)
+- ユーザー visible =bi_prin1_to_string= 等は削除しても error message
+  経路に影響なし
+
+* §6 Out of scope
+
+- *Reader (= read-from-string)* は Stage 7.2 で別 Doc 65 (= 後続)
+- *format-string* (=%s= =%d= =%S= 等) は misc.el にあり、本 Doc 触らない
+- *pp / pretty-printer* は MVP scope 外、Stage 7.1.5 候補
+- *write / output-to-string / with-output-to-temp-buffer* など Emacs
+  互換 macro は scope 外、Stage 7.1.6 候補
+- *error message format (= sexp.rs::Display)* は Rust 内部で残す
+- *char-table / bool-vector* の細部 print 形式は MVP では基本形のみ、
+  full Emacs 互換は後段
+
+* §7 References
+
+- Doc 49 elisp pivot
+- Doc 50 stage 5b+5c (= cycle-safe equal in elisp、同 pattern)
+- Doc 50 stage 7 batches 7a〜7i (= retire pattern の積み重ね)
+- Doc 60 OS surface 完走 (commit db9f309)
+- Doc 61 cXXr migrate (commit f05e19b)
+- Doc 62 Phase 5 native cc lowering (= 並行 Doc、相補)
+- Doc 63 Phase 7 NeLisp self-host roadmap (= 親 Doc)
+- existing =lisp/nelisp-stdlib-equal.el= (= cycle 検出例)
+- existing =lisp/nelisp-stdlib-misc.el= (= format 部分実装)
+- Emacs Lisp Reference Manual: =prin1=, =princ=, =print=, =terpri=,
+  =read-syntax= section

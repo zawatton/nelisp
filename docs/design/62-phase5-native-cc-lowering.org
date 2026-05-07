@@ -1,0 +1,329 @@
+#+TITLE: Doc 62 — Phase 5: Native CC Lowering (Cranelift JIT)
+#+AUTHOR: zawatton
+#+DATE: 2026-05-07
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: DRAFT
+:DEPENDS_ON: Doc 49 (elisp pivot) / Doc 50 (irreducible unlock) / Doc 53〜60 (OS surface) / Doc 61 (cXXr migrate)
+:CONCURRENT_WITH: Doc 63 (Phase 7 self-host roadmap)
+:END:
+
+* §0 TL;DR
+
+Phase 5 = =nelisp--syscall= / arithmetic / cons / aref / predicate
+など hot-path primitive を Cranelift JIT で **host CPU 命令に直接
+emit** することで、Rust dispatcher を bypass する設計。Doc 60 まで
+で OS surface ライン (Doc 53〜60) は elisp 完結したが、Rust 側に
+=bi_syscall_*= dispatcher が 25 個 + bridge 残存 — Phase 5 で
+=mov rax,NR; mov rdi,..; syscall= を直 emit すれば全部 dead code
+化する。
+
+| 項目                  | before (Doc 61 後)         | after (Phase 5 完了)        |
+|-----------------------+----------------------------+----------------------------|
+| Rust LOC (テスト除)   | 11,316                     | ~8,200                      |
+| builtins.rs           | 5,189                      | ~2,100                      |
+| ratio Rust:elisp      | 3:1                        | 2:1 (= elisp が追いつく)    |
+| primitive dispatcher  | 186 arm                    | ~80 arm (hot path 105 が JIT) |
+
+| stage | 解放対象                                                 | 推定 LOC 削減 | コスト        |
+|-------+----------------------------------------------------------+---------------+---------------|
+| 5.1   | SyscallIR — 25 specialized + 1 generic 全部 lower         | ~1,400        | 中            |
+| 5.2   | ArithIR — 13 arithmetic primitives                        | ~600          | 中-高         |
+| 5.3   | ConsIR — car / cdr / cons / setcar / setcdr               | ~200          | 高 (Rc<RefCell>) |
+| 5.4   | AccessIR — aref / aset / length / elt                     | ~400          | 高            |
+| 5.5   | PredicateIR — eq / atom / listp / consp / null / *p 系   | ~500          | 中            |
+| 5.6   | (option) Path B = OS 別 syscall instruction emit          | +0            | 低 (lower 拡張) |
+
+合計 ~3,100 LOC 削減。Cranelift 採用 = nelisp-emacs-gtk Phase 3 で
+経験ある backend、pure Rust + LLVM 不要 + single-pass で JIT 向き。
+
+* §1 動機
+
+** §1.1 Doc 60 後の状況
+- Doc 53〜60 で OS surface (subprocess / TCP / UDS / IPv6 / signal/timer
+  fd / SCM_RIGHTS) を =nelisp--syscall= 1 本 + 25 specialized primitive
+  で覆い elisp 完結
+- だが Rust 側に =bi_syscall_*= dispatcher が 25 個残存。各 dispatcher
+  は arity check + 引数 unpack + libc::syscall 呼出 + errno 返却の薄い
+  wrapper
+- =(nelisp--syscall 'getpid)= の eval path は: elisp eval → bi_syscall
+  dispatcher → libc::syscall(SYS_getpid)。dispatcher overhead 1 段が
+  全 syscall に乗る
+
+** §1.2 JIT で dispatcher を bypass する利得
+- =(nelisp--syscall 'getpid)= の call site が JIT で
+  =mov rax, SYS_getpid; syscall; ret= に直接 lower される (= 4 命令)
+- arithmetic も同様: =(+ a b)= の call site が =add %rax, %rbx= 1 命令
+  に lower
+- Doc 49 でも触れた「Rust hop が消える」効果が初めて実数で実現
+
+** §1.3 elisp 化との相補関係
+- Doc 49 / Doc 50 / Doc 53〜60 / Doc 61 の elisp 化は *signature 上の
+  簡素化*: elisp で書ける ものは elisp、Rust に残るのは leaf primitive
+- Phase 5 は *実行 path 上の簡素化*: Rust に残った leaf primitive を
+  JIT で host 命令に直接 emit、Rust 関数 call そのものを消す
+- 二者は独立: Phase 5 が完成しなくても elisp 化は進む。完成すれば
+  「elisp 側で増えた間接 call も含めて」JIT で lower されて性能維持
+
+** §1.4 nelisp-emacs-gtk Phase 3 の経験
+- nelisp-emacs-gtk (substrate side) で Cranelift を採用、buffer-string
+  cache + text-content-tick の path で hot path JIT 化済 (memory
+  =project_nemacs_gtk_perf_phase3=)
+- Cranelift の build / install / IR 設計 / verifier 運用ノウハウは
+  既に蓄積、Phase 5 はそれを NeLisp eval loop 側に再利用
+
+* §2 設計
+
+** §2.1 全体アーキ
+
+#+BEGIN_EXAMPLE
+   ┌──────────────────────────────────────────────────┐
+   │ NeLisp eval loop (build-tool/src/eval/mod.rs)    │
+   │                                                  │
+   │   eval(form, env)                                │
+   │     │                                            │
+   │     ▼                                            │
+   │   call site                                      │
+   │     │ ┌─────────────────────────┐                │
+   │     ├─┤ lower hook (= Phase 5)  │                │
+   │     │ │  if lower_entries[name] │                │
+   │     │ │    → JIT path           │ ← 命中時      │
+   │     │ │  else                    │                │
+   │     │ │    → fallback Rust      │ ← 非命中     │
+   │     │ └─────────────────────────┘                │
+   │     ▼                                            │
+   │   bi_func_name(args, env)  ← fallback           │
+   └──────────────────────────────────────────────────┘
+#+END_EXAMPLE
+
+- eval/mod.rs::eval-call site に *lower hook* を 1 個挿入
+- lower hook は call site の関数名 (= primitive 名) を引数に取り
+  =Option<JIT_PATH>= を返す
+- JIT path に hit したら dispatcher を skip して native code を実行
+- 非 hit なら従来 fallback (= bi_func_name dispatcher)
+
+** §2.2 IR 設計 — Cranelift subset 5 種に絞る
+
+汎用 Cranelift IR を全部 expose せず、以下 5 種の lowerable 命令の
+DSL に閉じる:
+
+| IR              | 入力                          | 出力          | host 命令 emit pattern                |
+|-----------------+-------------------------------+---------------+---------------------------------------|
+| =SyscallIR=     | nr: i64, args: [i64; 6]       | i64 (= ret)  | mov rax,NR; mov rdi,..; syscall       |
+| =ArithIR=       | op, a: i64, b: i64           | i64 / bool    | add/sub/imul/cmp/setcc/shr            |
+| =ConsIR=        | op, sexp_ptr: *Sexp           | sexp_ptr     | load/store fixed offset               |
+| =AccessIR=      | op, vec_ptr: *Vec, idx: usize | sexp_ptr     | bounds check + load                   |
+| =PredicateIR=   | op, sexp_ptr: *Sexp           | bool         | tag bit test                          |
+
+各 IR は build-tool/src/jit/ 配下に新規作成 (= mod jit;)。
+
+*** §2.2.1 SyscallIR
+=(nelisp--syscall NAME-OR-NR &rest INT-ARGS)= の lower。
+
+- name → NR 解決は compile time (= JIT compile 時に syscall_nr() symbol
+  map で resolve)
+- 引数 0〜6 個、各 i64 として渡す (= libc syscall calling convention)
+- emit:
+  #+BEGIN_SRC asm
+  ; %rdi, %rsi, %rdx, %r10, %r8, %r9 ← args[0..6]
+  mov rax, NR
+  syscall
+  ; result in %rax (negative on error = -errno)
+  #+END_SRC
+- 25 個の specialized primitive (=nelisp--syscall-bind-inet= 等) は
+  buffer / struct を扱うため SyscallIR では lower 不可、Rust dispatcher
+  に残す。ただし scope 5.1 で確認 — 一部は IR 拡張 (BufferSyscallIR)
+  で lower 可能
+
+*** §2.2.2 ArithIR
+13 個の arithmetic primitives:
+
+| primitive                      | IR op       | host 命令 |
+|--------------------------------+-------------+-----------|
+| =nelisp--add2 a b=             | Add         | add       |
+| =nelisp--sub2 a b=             | Sub         | sub       |
+| =nelisp--mul2 a b=             | Mul         | imul      |
+| =nelisp--num-eq2 a b=          | CmpEq       | cmp+sete  |
+| =nelisp--num-lt2 a b=          | CmpLt       | cmp+setl  |
+| =nelisp--num-gt2 a b=          | CmpGt       | cmp+setg  |
+| =nelisp--num-le2 a b=          | CmpLe       | cmp+setle |
+| =nelisp--num-ge2 a b=          | CmpGe       | cmp+setge |
+| =nelisp--logior2 a b=          | Or          | or        |
+| =nelisp--logand2 a b=          | And         | and       |
+| =nelisp--logxor2 a b=          | Xor         | xor       |
+| =nelisp--lognot a=             | Not         | not       |
+| =nelisp--ash a n=              | Shift       | shl/shr   |
+
+Sexp::Int は i64 タグ付き (= 上位 bit を tag に使う scheme は今後検討)。
+Phase 5.2 では Float lower は scope 外、generic dispatch に残す。
+
+*** §2.2.3 ConsIR
+=Sexp::Cons(Rc<RefCell<Sexp>>, Rc<RefCell<Sexp>>)= layout の解析が
+必須。Rc<RefCell<...>> は ABI が固定でない (= alloc / vtable layout
+は std internals に依存) ので、stable な =unsafe fn cons_car_ptr=
+helper を Rust 側に追加し JIT が呼ぶ pattern で妥協:
+
+#+BEGIN_SRC rust
+#[no_mangle]
+pub unsafe extern "C" fn nl_cons_car_ptr(ptr: *const Sexp) -> *const Sexp { ... }
+#+END_SRC
+
+Phase 5.3 はこの helper を JIT が =call=で呼ぶ。完全 inline emit は
+将来課題 (= Sexp の memory layout を stable にしてから)。
+
+*** §2.2.4 AccessIR
+=aref VEC IDX= → bounds check + load。bounds check は cmp + jae + 1
+分岐、load は =mov rax, [rsi + rdx*8 + 16]= (= Vec の data ptr offset)。
+
+Vec も Rc<RefCell<Vec<Sexp>>> 経由なので ConsIR と同じく helper
+fn 経由で実装。
+
+*** §2.2.5 PredicateIR
+=eq=, =atom=, =listp=, =consp=, =null=, =integerp=, =stringp=, =symbolp=,
+=numberp=, =floatp=, =vectorp= 11 個。Sexp の variant tag を 1 byte
+ロードして cmp 1 個で判定:
+
+#+BEGIN_SRC asm
+  movzx rax, byte ptr [rsi]   ; tag byte
+  cmp rax, TAG_CONS
+  sete al
+  movzx rax, al               ; → t / nil
+#+END_SRC
+
+** §2.3 lower hook の install
+
+eval/mod.rs::eval-call site:
+
+#+BEGIN_SRC rust
+fn eval_call(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    // Phase 5: lower hook
+    if let Some(jit_fn) = lower_entries().get(name) {
+        return jit_fn(args, env);
+    }
+    // fallback: existing dispatcher
+    dispatch(name, args, env)
+}
+#+END_SRC
+
+=lower_entries()= は =Lazy<HashMap<&'static str, fn(&[Sexp], &mut Env)
+-> Result<Sexp, EvalError>>>= で起動時 1 回構築。
+
+** §2.4 install_builtins からの dispatch arm 削除タイミング (3 段階)
+
+| Stage | 状態                                                                | risk    |
+|-------+---------------------------------------------------------------------+---------|
+| A     | lower hook 追加、dispatcher 残存。JIT path / fallback 並行運用。      | 最小    |
+| B     | bench で JIT が安定動作確認後、install_builtins names 削除。           | 中 (= reflexivity test) |
+| C     | bi_func_name 関数本体削除。                                          | 高 (= dead code 確認) |
+
+Stage A では「lower 経由」と「dispatcher 経由」両方で test を回し
+等価性を検証。Stage B 以降に dispatcher を消す。
+
+** §2.5 Cranelift 採用理由
+
+| 項目                          | Cranelift | LLVM     | 自前 emitter |
+|-------------------------------+-----------+----------+--------------|
+| pure Rust crate               | ✓         |          | △             |
+| Linux x86_64 / aarch64        | ✓         | ✓        | × (各別)     |
+| Darwin / Windows              | ✓         | ✓        | × (各別)     |
+| build cost                    | 軽        | 重        | 軽            |
+| single-pass (low compile lat) | ✓         | × (multi) | ✓             |
+| verifier (IR 整合性)         | ✓         | ✓        | ×             |
+| 既存知見 (nelisp-emacs-gtk)   | ✓         |          |              |
+
+Cranelift = wasmtime / cranelift_jit、stable v0.110+。
+
+** §2.6 ファイル配置
+
+| 種別     | path                                                  | 操作  |
+|----------+-------------------------------------------------------+-------|
+| 設計書    | =docs/design/62-phase5-native-cc-lowering.org=        | new   |
+| Rust mod | =build-tool/src/jit/mod.rs= (lower_entries + IR types) | new   |
+| Rust mod | =build-tool/src/jit/syscall.rs=                        | new   |
+| Rust mod | =build-tool/src/jit/arith.rs=                          | new   |
+| Rust mod | =build-tool/src/jit/cons.rs=                           | new   |
+| Rust mod | =build-tool/src/jit/access.rs=                         | new   |
+| Rust mod | =build-tool/src/jit/predicate.rs=                      | new   |
+| Cargo.toml | cranelift / cranelift_jit dep 追加                   | edit  |
+| eval mod | =build-tool/src/eval/mod.rs= に lower hook 1 個挿入  | edit  |
+
+* §3 段階的 unlock plan
+
+| stage | 解放対象                                       | 推定 LOC 削減 | 依存          |
+|-------+------------------------------------------------+---------------+---------------|
+| 5.0   | jit/mod.rs scaffold + Cranelift dep + verifier | +200 (一時)   | -             |
+| 5.1   | SyscallIR — 25 specialized + 1 generic         | -1,400         | 5.0           |
+| 5.2   | ArithIR — 13 primitives                        | -600           | 5.0           |
+| 5.3   | ConsIR — car/cdr/cons/setcar/setcdr            | -200           | 5.0、Sexp helper fn |
+| 5.4   | AccessIR — aref/aset/length/elt                | -400           | 5.3           |
+| 5.5   | PredicateIR — eq/atom/listp/consp/null/*p     | -500           | 5.0           |
+| 5.6   | Path B (Darwin/Windows port)                   | +0             | 5.1〜5.5 完了 |
+
+合計推定 ~3,100 LOC 削減。Phase 5.0 で +200 一時増えるが、5.1〜5.5
+ですべて回収。
+
+* §4 Test plan
+
+** §4.1 各 stage で既存 ERT 全 PASS
+- =make test= で 0 unexpected を要件
+- JIT path / fallback path 両方を 同 ERT で回す (=cargo test --features
+  no-jit= で fallback、default で JIT)
+
+** §4.2 bench
+- =nelisp--syscall-getpid= 100k 回の wallclock 比較
+- =nelisp--add2= 1M 回の wallclock 比較
+- =car= / =cdr= / =cons= 100k 回 cyclic graph 構築
+- 目標: lower 前後で 5x〜20x 速度向上 (= dispatcher overhead が消える分)
+
+** §4.3 IR verifier
+- Cranelift verifier ON (= =cargo run --features cranelift-verify=)
+- 全 lower entry の IR が verifier PASS = correctness gate
+
+** §4.4 Path B port (= 5.6)
+- syscall instruction emit OS 別: Linux x86_64 = =syscall=、aarch64 =
+  =svc #0=、Darwin x86_64 = =syscall= but BSD ABI、Windows 不対応
+  (= io_uring 互換 IOCP は別 Doc)
+
+* §5 共通原則
+
+- *lower granularity = 1 primitive = 1 IR instruction*: 汎用化したくな
+  る誘惑を抑える。SyscallIR は 1 primitive ごとに 1 instance、ArithIR
+  も同様
+- *fallback path を Stage A〜B で残す*: dispatcher 削除は Stage C 専用
+  操作。間に bench / IR verifier で確認の余地を作る
+- *helper fn 経由の妥協を許容*: Rc<RefCell<Sexp>> の memory layout は
+  std internal に依存するので完全 inline emit はせず、stable な
+  helper fn 経由で十分 (= hop は Rust → JIT → helper → 値 で 1 段
+  だけ、dispatcher 経由より既に短い)
+
+* §6 Out of scope
+
+- *Phase 7 NeLisp self-host* (= reader / eval を elisp 化) は別 Doc 63
+  / 64 で扱う。Phase 5 と Phase 7 は独立に進められる
+- *mmap zero-copy aref / aset* (= raw pointer Sexp variant) は別 Doc
+- *io_uring submission queue lower* — SyscallIR の延長で乗るが ring
+  buffer mmap + cmsg 風の SQE 解釈が大、別 Doc
+- *inline-asm escape* (= elisp から =asm= 形式で host 命令を直書き) は
+  scope 外
+- *Float arithmetic lower* (= ArithIR のみ Int に絞り、Float は generic
+  dispatch に残す)
+- *string ops lower* (= concat / substring 等は配列操作で複雑、Phase 5
+  scope 外)
+- *macro expander lower* — macro は eval-time、JIT 不要
+
+* §7 References
+
+- =feedback_nelisp_minimize_rust= memory
+- =project_nemacs_gtk_perf_phase3= memory (= Cranelift 採用経験)
+- Doc 49 elisp pivot
+- Doc 50 §4 段階的 unlock plan / §5 共通原則
+- Doc 53〜60 OS surface (= SyscallIR の 25 lower 対象を確立)
+- Doc 61 cXXr accessor migration (= Phase 5 lower 対象を =car= /
+  =cdr= 2 個に集約した直前 batch)
+- Doc 63 Phase 7 NeLisp self-host roadmap (= 並行 Doc)
+- Cranelift homepage: https://cranelift.dev/
+- man 2 syscall (Linux x86_64 calling convention: =rax= = NR, =rdi=
+  =rsi= =rdx= =r10= =r8= =r9= = args, ret in =rax=)
+- nelisp-emacs-gtk Phase 3 commit history
