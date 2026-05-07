@@ -233,6 +233,148 @@ read/write the mapping from elisp without raw-pointer primitives
     (should (eq (car r) 0))
     (should (equal (cdr r) "mmap-ok"))))
 
+;;; Doc 55 Phase 4 — Posix-30 ERTs ----------------------------------
+
+(ert-deftest nelisp-stdlib-os-test/getpid-positive ()
+  "`nelisp-os-getpid' returns a positive integer."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (let ((r (nelisp-stdlib-os-test--eval
+            "(progn
+              (require (quote nelisp-stdlib-os))
+              (let ((pid (nelisp-os-getpid)))
+                (nelisp-os-write 1 (if (> pid 0) \"ok\" \"err\"))
+                (nelisp-os-exit 0)))")))
+    (should (eq (car r) 0))
+    (should (equal (cdr r) "ok"))))
+
+(ert-deftest nelisp-stdlib-os-test/fork-exec-wait-roundtrip ()
+  "fork → child execve /bin/true → parent wait4 returns child PID + status
+with WIFEXITED & WEXITSTATUS = 0."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (skip-unless (file-executable-p "/bin/true"))
+  (let ((r (nelisp-stdlib-os-test--eval
+            "(progn
+              (require (quote nelisp-stdlib-os))
+              (let ((child (nelisp-os-fork)))
+                (cond
+                 ((= child 0)
+                  (nelisp-os-execve \"/bin/true\" (quote (\"true\")) nil)
+                  (nelisp-os-exit 127))
+                 (t
+                  (let* ((rs (nelisp-os-wait child 0))
+                         (st (cdr rs)))
+                    (nelisp-os-write 1
+                      (if (and (nelisp-os-WIFEXITED st)
+                               (= (nelisp-os-WEXITSTATUS st) 0))
+                          \"ok\" \"err\"))
+                    (nelisp-os-exit 0))))))")))
+    (should (eq (car r) 0))
+    (should (equal (cdr r) "ok"))))
+
+(ert-deftest nelisp-stdlib-os-test/kill-self-with-sigterm ()
+  "Child fork → parent kill SIGTERM → wait4 → WIFSIGNALED with WTERMSIG
+= SIGTERM."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (skip-unless (file-executable-p "/bin/sleep"))
+  (let ((r (nelisp-stdlib-os-test--eval
+            "(progn
+              (require (quote nelisp-stdlib-os))
+              (let ((child (nelisp-os-fork)))
+                (cond
+                 ((= child 0)
+                  (nelisp-os-execve \"/bin/sleep\" (quote (\"sleep\" \"30\")) nil)
+                  (nelisp-os-exit 127))
+                 (t
+                  (nelisp-os-kill child nelisp-os-SIGTERM)
+                  (let* ((rs (nelisp-os-wait child 0))
+                         (st (cdr rs)))
+                    (nelisp-os-write 1
+                      (if (and (nelisp-os-WIFSIGNALED st)
+                               (= (nelisp-os-WTERMSIG st) nelisp-os-SIGTERM))
+                          \"ok\" \"err\"))
+                    (nelisp-os-exit 0))))))")))
+    (should (eq (car r) 0))
+    (should (equal (cdr r) "ok"))))
+
+(ert-deftest nelisp-stdlib-os-test/tcp-loopback-roundtrip ()
+  "Server: socket+SO_REUSEADDR+bind(127.0.0.1, fixed port)+listen.
+We accept a single connection, read bytes, and exit.  Client (in the
+same process via fork) connects to 127.0.0.1 on the listening port and
+writes bytes.  Verifies socket / setsockopt / bind / listen / accept /
+connect / write / read all integrate.  SO_REUSEADDR keeps the test
+robust against TIME_WAIT lingering from prior runs."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (let ((r (nelisp-stdlib-os-test--eval
+            "(progn
+              (require (quote nelisp-stdlib-os))
+              (let* ((port 47291)
+                     (srv (nelisp-os-socket nelisp-os-AF-INET
+                                            nelisp-os-SOCK-STREAM
+                                            nelisp-os-IPPROTO-TCP)))
+                (nelisp-os-setsockopt-int srv nelisp-os-SOL-SOCKET
+                                          nelisp-os-SO-REUSEADDR 1)
+                (nelisp-os-bind-inet srv nelisp-os-INADDR-LOOPBACK port)
+                (nelisp-os-listen srv 1)
+                (let ((child (nelisp-os-fork)))
+                  (cond
+                   ((= child 0)
+                    ;; Child = client.
+                    (let ((c (nelisp-os-socket nelisp-os-AF-INET
+                                               nelisp-os-SOCK-STREAM
+                                               nelisp-os-IPPROTO-TCP)))
+                      (nelisp-os-connect-inet c nelisp-os-INADDR-LOOPBACK port)
+                      (nelisp-os-write c \"hello-tcp\")
+                      (nelisp-os-close c)
+                      (nelisp-os-exit 0)))
+                   (t
+                    ;; Parent = server.
+                    (let* ((acc (nelisp-os-accept-inet srv))
+                           (cfd (nth 0 acc))
+                           (data (nelisp-os-read cfd 1024)))
+                      (nelisp-os-close cfd)
+                      (nelisp-os-close srv)
+                      (nelisp-os-wait child 0)
+                      (nelisp-os-write 1 data)
+                      (nelisp-os-exit 0)))))))")))
+    (should (eq (car r) 0))
+    (should (equal (cdr r) "hello-tcp"))))
+
+(ert-deftest nelisp-stdlib-os-test/poll-pipe-pollin-fires ()
+  "pipe → write to wfd → poll on rfd with POLLIN, timeout 1000ms →
+result list contains (rfd . REVENTS) with POLLIN bit set."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (let ((r (nelisp-stdlib-os-test--eval
+            "(progn
+  (require (quote nelisp-stdlib-os))
+  (let* ((p (nelisp-os-pipe)) (rfd (car p)) (wfd (cdr p)))
+    (nelisp-os-write wfd \"x\")
+    (let* ((res (nelisp-os-poll (list (cons rfd nelisp-os-POLLIN)) 1000))
+           (revents (cdr (car res))))
+      (nelisp-os-close wfd)
+      (nelisp-os-close rfd)
+      (nelisp-os-write 1
+        (if (/= (logand revents nelisp-os-POLLIN) 0) \"ok\" \"err\"))
+      (nelisp-os-exit 0))))")))
+    (should (eq (car r) 0))
+    (should (equal (cdr r) "ok"))))
+
+(ert-deftest nelisp-stdlib-os-test/socket-bad-family-errors ()
+  "`nelisp-os-socket' with an invalid domain (= 999) signals
+`nelisp-os-error' (kernel returns -EAFNOSUPPORT or -EINVAL)."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (let ((r (nelisp-stdlib-os-test--eval
+            "(progn
+              (require (quote nelisp-stdlib-os))
+              (nelisp-os-socket 999 1 0))")))
+    (should-not (eq (car r) 0))
+    (should (string-match-p "nelisp-os-error" (cdr r)))))
+
 (provide 'nelisp-stdlib-os-test)
 
 ;;; nelisp-stdlib-os-test.el ends here

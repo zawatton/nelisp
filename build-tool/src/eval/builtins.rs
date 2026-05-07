@@ -246,6 +246,18 @@ pub fn install_builtins(env: &mut Env) {
         // can't ride generic `nelisp--syscall' (struct stat / int[2]).
         "nelisp--syscall-fstat",
         "nelisp--syscall-pipe",
+        // Doc 55 Phase 4 (2026-05-07) — Posix-30 specialized primitives
+        // that need buffer / struct in/out handling beyond generic int
+        // dispatch.  fork / socket / listen / wait4 / kill / getpid /
+        // getppid / setpgid stay on the generic `nelisp--syscall' arm
+        // via `syscall_nr()' symbol map.
+        "nelisp--syscall-execve",
+        "nelisp--syscall-wait4",
+        "nelisp--syscall-setsockopt-int",
+        "nelisp--syscall-bind-inet",
+        "nelisp--syscall-connect-inet",
+        "nelisp--syscall-accept-inet",
+        "nelisp--syscall-poll",
         // Rust-min (2026-05-06): `file-name-directory' /
         // `file-name-nondirectory' / `file-name-as-directory' /
         // `directory-file-name' migrated to elisp (see
@@ -471,6 +483,14 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // Doc 54 Phase 3 dispatch arms.
         "nelisp--syscall-fstat" => bi_syscall_fstat(args),
         "nelisp--syscall-pipe" => bi_syscall_pipe(args),
+        // Doc 55 Phase 4 (2026-05-07) — Posix-30 specialized primitives.
+        "nelisp--syscall-execve" => bi_syscall_execve(args),
+        "nelisp--syscall-wait4" => bi_syscall_wait4(args),
+        "nelisp--syscall-setsockopt-int" => bi_syscall_setsockopt_int(args),
+        "nelisp--syscall-bind-inet" => bi_syscall_bind_inet(args),
+        "nelisp--syscall-connect-inet" => bi_syscall_connect_inet(args),
+        "nelisp--syscall-accept-inet" => bi_syscall_accept_inet(args),
+        "nelisp--syscall-poll" => bi_syscall_poll(args),
         // ---- symbol / function ----
         "symbol-value" => bi_symbol_value(args, env),
         "symbol-function" => bi_symbol_function(args, env),
@@ -1873,6 +1893,17 @@ fn syscall_nr(name_or_nr: &Sexp) -> Result<i64, EvalError> {
             "mprotect"   => Ok(libc::SYS_mprotect   as i64),
             "munmap"     => Ok(libc::SYS_munmap     as i64),
             "fcntl"      => Ok(libc::SYS_fcntl      as i64),
+            // Doc 55 Phase 4 (2026-05-07) — Posix-30 additions.  fork
+            // / socket / listen / getppid / setpgid take only int
+            // arguments and ride the generic dispatch.  execve /
+            // wait4 / bind / connect / accept / poll need buffer
+            // handling and live in their own primitives below.
+            "fork"       => Ok(libc::SYS_fork       as i64),
+            "socket"     => Ok(libc::SYS_socket     as i64),
+            "listen"     => Ok(libc::SYS_listen     as i64),
+            "wait4"      => Ok(libc::SYS_wait4      as i64),
+            "getppid"    => Ok(libc::SYS_getppid    as i64),
+            "setpgid"    => Ok(libc::SYS_setpgid    as i64),
             other => Err(EvalError::Internal(format!(
                 "nelisp--syscall: unknown syscall name `{}'", other))),
         },
@@ -2051,6 +2082,264 @@ fn bi_syscall_pipe(args: &[Sexp]) -> Result<Sexp, EvalError> {
 fn bi_syscall_pipe(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let _ = args;
     Err(EvalError::Internal("nelisp--syscall-pipe: unsupported platform".into()))
+}
+
+// ---------------------------------------------------------------------------
+// Doc 55 Phase 4 — Posix-30 specialized primitives (subprocess + network +
+// poll).  Each needs buffer / struct handling that the generic
+// `nelisp--syscall' int-only dispatch cannot express.  Linux-only via
+// `#[cfg(target_os = "linux")]'; non-Linux returns `EvalError::Internal'.
+// ---------------------------------------------------------------------------
+
+/// `(nelisp--syscall-execve PATH ARGV ENVP)' — POSIX execve(2).
+///
+/// PATH is a string, ARGV / ENVP are lists of strings.  On success,
+/// execve does not return; on failure the call returns `Sexp::Int(-errno)'.
+#[cfg(target_os = "linux")]
+fn bi_syscall_execve(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    use std::ffi::CString;
+    require_arity("nelisp--syscall-execve", args, 3, Some(3))?;
+    let path = args[0].as_string_owned().ok_or_else(|| EvalError::WrongType {
+        expected: "string (path)".into(),
+        got: args[0].clone(),
+    })?;
+    let argv_list = list_to_vec(&args[1])?;
+    let envp_list = list_to_vec(&args[2])?;
+    let cpath = CString::new(path).map_err(|e| EvalError::Internal(
+        format!("nelisp--syscall-execve: path contains NUL: {}", e)))?;
+    let argv_c: Vec<CString> = argv_list.iter().enumerate().map(|(i, s)| {
+        let s = s.as_string_owned().ok_or_else(|| EvalError::WrongType {
+            expected: format!("string (argv[{}])", i),
+            got: s.clone(),
+        })?;
+        CString::new(s).map_err(|e| EvalError::Internal(
+            format!("nelisp--syscall-execve: argv[{}] contains NUL: {}", i, e)))
+    }).collect::<Result<Vec<_>, _>>()?;
+    let envp_c: Vec<CString> = envp_list.iter().enumerate().map(|(i, s)| {
+        let s = s.as_string_owned().ok_or_else(|| EvalError::WrongType {
+            expected: format!("string (envp[{}])", i),
+            got: s.clone(),
+        })?;
+        CString::new(s).map_err(|e| EvalError::Internal(
+            format!("nelisp--syscall-execve: envp[{}] contains NUL: {}", i, e)))
+    }).collect::<Result<Vec<_>, _>>()?;
+    let mut argv_ptrs: Vec<*const libc::c_char> =
+        argv_c.iter().map(|s| s.as_ptr()).collect();
+    argv_ptrs.push(std::ptr::null());
+    let mut envp_ptrs: Vec<*const libc::c_char> =
+        envp_c.iter().map(|s| s.as_ptr()).collect();
+    envp_ptrs.push(std::ptr::null());
+    let r = unsafe { libc::execve(cpath.as_ptr(), argv_ptrs.as_ptr(), envp_ptrs.as_ptr()) };
+    // execve only returns on failure (= -1).
+    let _ = r;
+    let e = unsafe { *libc::__errno_location() } as i64;
+    Ok(Sexp::Int(-e))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bi_syscall_execve(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let _ = args;
+    Err(EvalError::Internal("nelisp--syscall-execve: unsupported platform".into()))
+}
+
+/// `(nelisp--syscall-wait4 PID OPTIONS)' — POSIX wait4(2).
+///
+/// rusage is passed as NULL (= we don't surface resource usage in
+/// Phase 4).  Returns `(CHILD-PID . STATUS)' on success, `Sexp::Int(-errno)'
+/// on failure, or `(0 . 0)' when WNOHANG is set and no child is ready.
+#[cfg(target_os = "linux")]
+fn bi_syscall_wait4(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--syscall-wait4", args, 2, Some(2))?;
+    let pid     = syscall_arg_int("nelisp--syscall-wait4", 1, &args[0])? as libc::pid_t;
+    let options = syscall_arg_int("nelisp--syscall-wait4", 2, &args[1])? as libc::c_int;
+    let mut status: libc::c_int = 0;
+    let r = unsafe { libc::wait4(pid, &mut status, options, std::ptr::null_mut()) };
+    if r < 0 {
+        let e = unsafe { *libc::__errno_location() } as i64;
+        return Ok(Sexp::Int(-e));
+    }
+    Ok(Sexp::cons(Sexp::Int(r as i64), Sexp::Int(status as i64)))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bi_syscall_wait4(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let _ = args;
+    Err(EvalError::Internal("nelisp--syscall-wait4: unsupported platform".into()))
+}
+
+/// Build a `struct sockaddr_in' from host byte-order IP + port.  Used by
+/// the bind / connect / accept_inet primitives below.
+#[cfg(target_os = "linux")]
+fn build_sockaddr_in(host_ip: u32, port: u16) -> libc::sockaddr_in {
+    let mut addr: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+    addr.sin_family = libc::AF_INET as libc::sa_family_t;
+    addr.sin_port   = port.to_be();
+    addr.sin_addr   = libc::in_addr { s_addr: host_ip.to_be() };
+    addr
+}
+
+/// `(nelisp--syscall-setsockopt-int FD LEVEL OPTNAME VALUE)' — POSIX
+/// setsockopt(2), int-valued options only (= the common case for
+/// SO_REUSEADDR / TCP_NODELAY etc.).  Returns 0 / -errno.  Variadic
+/// options that take struct linger / struct timeval need their own
+/// primitives; not supported in Phase 4.
+#[cfg(target_os = "linux")]
+fn bi_syscall_setsockopt_int(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--syscall-setsockopt-int", args, 4, Some(4))?;
+    let fd      = syscall_arg_int("nelisp--syscall-setsockopt-int", 1, &args[0])? as libc::c_int;
+    let level   = syscall_arg_int("nelisp--syscall-setsockopt-int", 2, &args[1])? as libc::c_int;
+    let optname = syscall_arg_int("nelisp--syscall-setsockopt-int", 3, &args[2])? as libc::c_int;
+    let value: libc::c_int =
+        syscall_arg_int("nelisp--syscall-setsockopt-int", 4, &args[3])? as libc::c_int;
+    let r = unsafe {
+        libc::setsockopt(fd, level, optname,
+                         &value as *const libc::c_int as *const libc::c_void,
+                         std::mem::size_of::<libc::c_int>() as libc::socklen_t)
+    };
+    if r != 0 {
+        let e = unsafe { *libc::__errno_location() } as i64;
+        return Ok(Sexp::Int(-e));
+    }
+    Ok(Sexp::Int(0))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bi_syscall_setsockopt_int(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let _ = args;
+    Err(EvalError::Internal("nelisp--syscall-setsockopt-int: unsupported platform".into()))
+}
+
+/// `(nelisp--syscall-bind-inet FD HOST-INT PORT)' — POSIX bind(2)
+/// for AF_INET (= IPv4).  HOST-INT / PORT are host byte order.
+#[cfg(target_os = "linux")]
+fn bi_syscall_bind_inet(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--syscall-bind-inet", args, 3, Some(3))?;
+    let fd   = syscall_arg_int("nelisp--syscall-bind-inet", 1, &args[0])? as libc::c_int;
+    let host = syscall_arg_int("nelisp--syscall-bind-inet", 2, &args[1])? as u32;
+    let port = syscall_arg_int("nelisp--syscall-bind-inet", 3, &args[2])? as u16;
+    let addr = build_sockaddr_in(host, port);
+    let r = unsafe {
+        libc::bind(fd,
+                   &addr as *const libc::sockaddr_in as *const libc::sockaddr,
+                   std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t)
+    };
+    if r != 0 {
+        let e = unsafe { *libc::__errno_location() } as i64;
+        return Ok(Sexp::Int(-e));
+    }
+    Ok(Sexp::Int(0))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bi_syscall_bind_inet(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let _ = args;
+    Err(EvalError::Internal("nelisp--syscall-bind-inet: unsupported platform".into()))
+}
+
+/// `(nelisp--syscall-connect-inet FD HOST-INT PORT)' — POSIX connect(2)
+/// for AF_INET (= IPv4).
+#[cfg(target_os = "linux")]
+fn bi_syscall_connect_inet(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--syscall-connect-inet", args, 3, Some(3))?;
+    let fd   = syscall_arg_int("nelisp--syscall-connect-inet", 1, &args[0])? as libc::c_int;
+    let host = syscall_arg_int("nelisp--syscall-connect-inet", 2, &args[1])? as u32;
+    let port = syscall_arg_int("nelisp--syscall-connect-inet", 3, &args[2])? as u16;
+    let addr = build_sockaddr_in(host, port);
+    let r = unsafe {
+        libc::connect(fd,
+                      &addr as *const libc::sockaddr_in as *const libc::sockaddr,
+                      std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t)
+    };
+    if r != 0 {
+        let e = unsafe { *libc::__errno_location() } as i64;
+        return Ok(Sexp::Int(-e));
+    }
+    Ok(Sexp::Int(0))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bi_syscall_connect_inet(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let _ = args;
+    Err(EvalError::Internal("nelisp--syscall-connect-inet: unsupported platform".into()))
+}
+
+/// `(nelisp--syscall-accept-inet FD)' — POSIX accept(2) for AF_INET.
+///
+/// Returns `(NEWFD CLIENT-IP-INT CLIENT-PORT)' on success, where the IP
+/// and port are converted back to host byte order so elisp can compare
+/// against constants such as `nelisp-os-INADDR-LOOPBACK'.  Returns
+/// `Sexp::Int(-errno)' on failure.
+#[cfg(target_os = "linux")]
+fn bi_syscall_accept_inet(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--syscall-accept-inet", args, 1, Some(1))?;
+    let fd = syscall_arg_int("nelisp--syscall-accept-inet", 1, &args[0])? as libc::c_int;
+    let mut addr: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+    let mut len: libc::socklen_t = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+    let r = unsafe {
+        libc::accept(fd,
+                     &mut addr as *mut libc::sockaddr_in as *mut libc::sockaddr,
+                     &mut len as *mut libc::socklen_t)
+    };
+    if r < 0 {
+        let e = unsafe { *libc::__errno_location() } as i64;
+        return Ok(Sexp::Int(-e));
+    }
+    let ip   = u32::from_be(addr.sin_addr.s_addr) as i64;
+    let port = u16::from_be(addr.sin_port)        as i64;
+    Ok(Sexp::list_from(&[
+        Sexp::Int(r as i64),
+        Sexp::Int(ip),
+        Sexp::Int(port),
+    ]))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bi_syscall_accept_inet(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let _ = args;
+    Err(EvalError::Internal("nelisp--syscall-accept-inet: unsupported platform".into()))
+}
+
+/// `(nelisp--syscall-poll PFDS-LIST TIMEOUT-MS)' — POSIX poll(2).
+///
+/// PFDS-LIST is a list of `(FD . EVENTS)' cons cells (each int).  Returns
+/// the same-length list of `(FD . REVENTS)' cons cells on success, or
+/// `Sexp::Int(-errno)' on failure.  TIMEOUT-MS = -1 blocks indefinitely;
+/// 0 polls without blocking.
+#[cfg(target_os = "linux")]
+fn bi_syscall_poll(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--syscall-poll", args, 2, Some(2))?;
+    let pfds_list  = list_to_vec(&args[0])?;
+    let timeout_ms = syscall_arg_int("nelisp--syscall-poll", 2, &args[1])? as libc::c_int;
+    let mut pfds: Vec<libc::pollfd> = Vec::with_capacity(pfds_list.len());
+    for (i, item) in pfds_list.iter().enumerate() {
+        let (fd_s, ev_s) = match item {
+            Sexp::Cons(a, d) => (a.borrow().clone(), d.borrow().clone()),
+            other => return Err(EvalError::WrongType {
+                expected: format!("cons (FD . EVENTS) at index {}", i),
+                got: other.clone(),
+            }),
+        };
+        let fd = syscall_arg_int("nelisp--syscall-poll", i + 1, &fd_s)? as libc::c_int;
+        let ev = syscall_arg_int("nelisp--syscall-poll", i + 1, &ev_s)? as libc::c_short;
+        pfds.push(libc::pollfd { fd, events: ev, revents: 0 });
+    }
+    let r = unsafe {
+        libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, timeout_ms)
+    };
+    if r < 0 {
+        let e = unsafe { *libc::__errno_location() } as i64;
+        return Ok(Sexp::Int(-e));
+    }
+    let result: Vec<Sexp> = pfds.iter().map(|p| {
+        Sexp::cons(Sexp::Int(p.fd as i64), Sexp::Int(p.revents as i64))
+    }).collect();
+    Ok(Sexp::list_from(&result))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bi_syscall_poll(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let _ = args;
+    Err(EvalError::Internal("nelisp--syscall-poll: unsupported platform".into()))
 }
 
 // `bi_locate_library' removed — Rust-min batch 7e (2026-05-07, Doc 50

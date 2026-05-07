@@ -224,6 +224,156 @@ Other variadic forms (struct flock for F_SETLK etc.) need their own
 primitive; not supported in Phase 3."
   (nelisp-os--check-errno (nelisp--syscall 'fcntl fd cmd arg)))
 
+;; ---------------------------------------------------------------------------
+;; Doc 55 Phase 4 — Posix-30 (subprocess + AF_INET network + poll).
+;;
+;; All constants below assume Linux x86_64/arm64 ABI numbers — same scope
+;; restriction as Phase 1/3.  Path B (Darwin/Windows) lookup will land in
+;; Phase 1.1 along with the `read' fallback.
+;; ---------------------------------------------------------------------------
+
+;; ----- Process / signals -----
+
+(defconst nelisp-os-SIGHUP   1)
+(defconst nelisp-os-SIGINT   2)
+(defconst nelisp-os-SIGKILL  9)
+(defconst nelisp-os-SIGTERM 15)
+
+(defconst nelisp-os-WNOHANG    1)
+(defconst nelisp-os-WUNTRACED  2)
+
+;; ----- Network (AF_INET only in Phase 4) -----
+
+(defconst nelisp-os-AF-INET 2)
+
+(defconst nelisp-os-SOCK-STREAM   1)
+(defconst nelisp-os-SOCK-DGRAM    2)
+(defconst nelisp-os-SOCK-NONBLOCK 2048)        ; 0o4000 — OR-able into SOCK_*
+(defconst nelisp-os-SOCK-CLOEXEC  524288)      ; 0o2000000 — OR-able into SOCK_*
+
+(defconst nelisp-os-IPPROTO-IP   0)
+(defconst nelisp-os-IPPROTO-TCP  6)
+(defconst nelisp-os-IPPROTO-UDP 17)
+
+;; INADDR helpers — host byte order (Rust side does htonl on the wire).
+(defconst nelisp-os-INADDR-ANY      0)
+(defconst nelisp-os-INADDR-LOOPBACK #x7F000001)
+
+;; setsockopt level / option (int-valued only in Phase 4)
+(defconst nelisp-os-SOL-SOCKET    1)
+(defconst nelisp-os-SO-REUSEADDR  2)
+(defconst nelisp-os-SO-KEEPALIVE  9)
+
+;; ----- Poll events -----
+
+(defconst nelisp-os-POLLIN    1)
+(defconst nelisp-os-POLLPRI   2)
+(defconst nelisp-os-POLLOUT   4)
+(defconst nelisp-os-POLLERR   8)
+(defconst nelisp-os-POLLHUP  16)
+(defconst nelisp-os-POLLNVAL 32)
+
+;; ----- Subprocess wrappers -----
+
+(defun nelisp-os-fork ()
+  "POSIX fork(2) — returns child PID in the parent, 0 in the child, or
+signals `nelisp-os-error' on failure."
+  (nelisp-os--check-errno (nelisp--syscall 'fork)))
+
+(defun nelisp-os-execve (path argv envp)
+  "POSIX execve(2) — replace current process image with PATH using ARGV
+list and ENVP list of strings.  Only returns on failure (signals
+`nelisp-os-error')."
+  (nelisp-os--check-errno (nelisp--syscall-execve path argv envp)))
+
+(defun nelisp-os-wait (pid options)
+  "POSIX wait4(2) — wait for child PID with OPTIONS (= 0, WNOHANG, etc.).
+Returns cons (CHILD-PID . STATUS) on success, or signals
+`nelisp-os-error' on failure.  When WNOHANG and no child is ready,
+returns (0 . 0)."
+  (let ((r (nelisp--syscall-wait4 pid options)))
+    (if (integerp r)
+        (nelisp-os--check-errno r)
+      r)))
+
+(defun nelisp-os-kill (pid sig)
+  "POSIX kill(2) — send SIG to PID; returns 0 on success."
+  (nelisp-os--check-errno (nelisp--syscall 'kill pid sig)))
+
+(defun nelisp-os-getpid ()
+  "POSIX getpid(2) — return current process id."
+  (nelisp-os--check-errno (nelisp--syscall 'getpid)))
+
+(defun nelisp-os-getppid ()
+  "POSIX getppid(2) — return parent process id."
+  (nelisp-os--check-errno (nelisp--syscall 'getppid)))
+
+;; wait status decoders.  Linux puts the exit status in bits 8-15, the
+;; termination signal in bits 0-6, and 0x7F as the marker for "stopped"
+;; (which we ignore in Phase 4).  These helpers mirror the C macros.
+(defun nelisp-os-WIFEXITED (status)
+  "Non-nil if STATUS came from a normal exit."
+  (= (logand status 127) 0))
+
+(defun nelisp-os-WEXITSTATUS (status)
+  "Extract exit code from STATUS (only meaningful when WIFEXITED)."
+  (logand (lsh status -8) 255))
+
+(defun nelisp-os-WIFSIGNALED (status)
+  "Non-nil if STATUS came from termination by signal."
+  (let ((s (logand status 127)))
+    (and (/= s 0) (/= s 127))))
+
+(defun nelisp-os-WTERMSIG (status)
+  "Extract terminating signal from STATUS (only meaningful when WIFSIGNALED)."
+  (logand status 127))
+
+;; ----- Network wrappers (AF_INET) -----
+
+(defun nelisp-os-socket (domain type proto)
+  "POSIX socket(2) — return new fd or signal `nelisp-os-error'."
+  (nelisp-os--check-errno (nelisp--syscall 'socket domain type proto)))
+
+(defun nelisp-os-setsockopt-int (fd level optname value)
+  "POSIX setsockopt(2) for an int-valued option (e.g. SO_REUSEADDR)."
+  (nelisp-os--check-errno
+   (nelisp--syscall-setsockopt-int fd level optname value)))
+
+(defun nelisp-os-bind-inet (fd host-int port)
+  "POSIX bind(2) for AF_INET.  HOST-INT is a 32-bit IPv4 address in
+host byte order (e.g. `nelisp-os-INADDR-LOOPBACK').  PORT is a
+16-bit host-byte-order port number.  Returns 0 on success."
+  (nelisp-os--check-errno (nelisp--syscall-bind-inet fd host-int port)))
+
+(defun nelisp-os-listen (fd backlog)
+  "POSIX listen(2) — mark FD as accepting connections with BACKLOG."
+  (nelisp-os--check-errno (nelisp--syscall 'listen fd backlog)))
+
+(defun nelisp-os-accept-inet (fd)
+  "POSIX accept(2) for AF_INET.  Returns list (NEWFD CLIENT-IP CLIENT-PORT)
+on success (CLIENT-IP / CLIENT-PORT in host byte order), or signals
+`nelisp-os-error'."
+  (let ((r (nelisp--syscall-accept-inet fd)))
+    (if (integerp r)
+        (nelisp-os--check-errno r)
+      r)))
+
+(defun nelisp-os-connect-inet (fd host-int port)
+  "POSIX connect(2) for AF_INET.  HOST-INT / PORT same convention as
+`nelisp-os-bind-inet'.  Returns 0 on success."
+  (nelisp-os--check-errno (nelisp--syscall-connect-inet fd host-int port)))
+
+;; ----- Multiplexing -----
+
+(defun nelisp-os-poll (pfds timeout-ms)
+  "POSIX poll(2).  PFDS is a list of (FD . EVENTS) cons cells.  Returns
+the same-length list of (FD . REVENTS) cons cells.  TIMEOUT-MS = -1
+blocks indefinitely; 0 polls without blocking."
+  (let ((r (nelisp--syscall-poll pfds timeout-ms)))
+    (if (integerp r)
+        (nelisp-os--check-errno r)
+      r)))
+
 (provide 'nelisp-stdlib-os)
 
 ;;; nelisp-stdlib-os.el ends here

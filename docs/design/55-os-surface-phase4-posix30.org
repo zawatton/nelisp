@@ -1,0 +1,258 @@
+#+TITLE: Doc 55 — OS Surface Phase 4: Posix-30 (subprocess + network + poll)
+#+AUTHOR: zawatton
+#+DATE: 2026-05-07
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: DRAFT
+:DEPENDS_ON: Doc 53 Phase 1 (Minimal-5), Doc 54 Phase 3 (Core-12)
+:END:
+
+* §0 TL;DR
+
+Doc 53 Phase 1 (Minimal-5) + Doc 54 Phase 3 (Core-12) の上に Posix-30 = subprocess
++ network + multiplexing 第一弾を一括 ship。これで NeLisp の OS surface は
+~12 + 11 = 23 wrapper~ となり、=fork → execve → wait4 / TCP server / TCP client /
+poll-based event loop= が elisp で書ける line に到達する。
+
+scope = 11 wrapper / 6 syscall_nr 追加 / 6 専用 primitive。
+
+| 区分              | 名前                                   | 提供層        |
+|-------------------+----------------------------------------+---------------|
+| subprocess        | fork                                   | generic       |
+| subprocess        | kill                                   | generic (済)  |
+| subprocess        | getpid                                 | generic (済)  |
+| subprocess        | execve                                 | 専用 primitive |
+| subprocess        | wait4                                  | 専用 primitive |
+| network (AF_INET) | socket                                 | generic       |
+| network (AF_INET) | listen                                 | generic       |
+| network (AF_INET) | bind                                   | 専用 primitive |
+| network (AF_INET) | connect                                | 専用 primitive |
+| network (AF_INET) | accept                                 | 専用 primitive |
+| multiplexing      | poll                                   | 専用 primitive |
+| setsockopt(int)   | setsockopt-int (= SO_REUSEADDR 等)     | 専用 primitive |
+
+設計指針 (= Doc 54 §0 を継承): *Rust 追加を最小化する*。
+
+- =fork=, =socket=, =listen= は int 引数のみで完結 → =syscall_nr()= の symbol map
+  拡張だけで対応 (1 行 each)。=kill= / =getpid= は Doc 53 で既登録済。
+- =execve= / =wait4= / =bind=/=connect=/=accept= / =poll= は char-array buffer
+  ないし struct out-buffer / in-buffer が必要 → 専用 primitive。
+- =setsockopt= は int-valued option 限定で 1 本 (= SO_REUSEADDR 等) — TIME_WAIT
+  耐性 + ergonomics で必要、struct linger / struct timeval は Phase 4.x。
+
+Path A (Linux) のみ。Path B (Darwin/Windows) fallback は Phase 1.1 と同じく
+deferred (個別 nl-ffi-call 拡張は積み残し)。
+
+* §1 動機
+
+Doc 53 で =nelisp--syscall= 基盤、Doc 54 で fileio + JIT loader 用の Core-12 が
+着地した。本 Phase は Lisp Machine vision (= memory =project_lisp_machine_vision_95pct=)
+の "subprocess + network も elisp 化" に対応する。
+
+実用 use case:
+
+- *subprocess*: fork + execve + wait4 + pipe (Doc 54) + dup2 (Doc 54) で elisp
+  から子プロセスを完全制御。=make-process=(将来) の elisp 実装ベース。
+- *TCP server / client*: socket + bind + listen + accept + connect で
+  =make-network-process=(将来) を elisp 駆動。
+- *event loop*: poll で複数 fd を多重化。Phase 9d の process substrate に組み込む。
+
+将来 (Phase 4.1 / 4.2): AF_UNIX / IPv6 / sigaction / pidfd / select の追加候補。
+
+* §2 設計
+
+** §2.1 Rust 追加 (最小化)
+
+builtins.rs:
+
+- =syscall_nr()= の symbol map に *6 件追加*: =fork= / =socket= / =listen= / =wait4=
+  / =setpgid= / =getppid= (=wait4= は専用 primitive 経由で叩くが将来の汎用呼出も
+  許す)。実コストは 6 行。
+- =install_builtins()= names + =dispatch()= に *6 名追加*:
+  =nelisp--syscall-execve= / =-wait4= / =-bind-inet= / =-connect-inet=
+  / =-accept-inet= / =-poll=
+- 関数 6 本実装 (= 全て =#[cfg(target_os = "linux")]= gate、非 Linux は EvalError stub)
+
+*** §2.1.1 =bi_syscall_execve PATH ARGV ENVP=
+
+#+BEGIN_SRC rust
+fn bi_syscall_execve(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    // args[0] = path (string)
+    // args[1] = argv (list of strings)
+    // args[2] = envp (list of strings)
+    // CString[]::Vec → *const c_char[]::Vec (NULL-terminated)
+    // libc::execve は成功時 return しない、失敗時 -1 → -errno を返す。
+}
+#+END_SRC
+
+*** §2.1.2 =bi_syscall_wait4 PID OPTIONS=
+
+#+BEGIN_SRC rust
+fn bi_syscall_wait4(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    // args[0] = pid (int)        ; -1 = any child
+    // args[1] = options (int)    ; 0 / WNOHANG / WUNTRACED
+    // status: int out-buffer; rusage: NULL (Phase 4 では不要)
+    // 成功: Sexp::cons(Sexp::Int(child_pid), Sexp::Int(status))
+    // 失敗: Sexp::Int(-errno)
+}
+#+END_SRC
+
+*** §2.1.3 =bi_syscall_bind_inet FD HOST-INT PORT=
+
+AF_INET 専用。HOST-INT = 32-bit IPv4 host byte order
+(e.g., 127.0.0.1 = =0x7F000001=)、PORT = 16-bit host byte order。
+Rust 側で =htonl= / =htons= → struct =sockaddr_in= 構築 → libc::bind 呼出。
+
+#+BEGIN_SRC rust
+fn bi_syscall_bind_inet(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    // 成功 0 / 失敗 -errno
+}
+#+END_SRC
+
+*** §2.1.4 =bi_syscall_connect_inet FD HOST-INT PORT=
+
+bind とほぼ同形 (libc::connect)。同上。
+
+*** §2.1.5 =bi_syscall_accept_inet FD=
+
+#+BEGIN_SRC rust
+fn bi_syscall_accept_inet(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    // 成功: Sexp::list_from(&[NEWFD, CLIENT-IP-INT, CLIENT-PORT])
+    //   IP/PORT は host byte order に戻して返す
+    // 失敗: Sexp::Int(-errno)
+}
+#+END_SRC
+
+*** §2.1.6 =bi_syscall_poll PFDS-LIST TIMEOUT-MS=
+
+#+BEGIN_SRC rust
+fn bi_syscall_poll(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    // PFDS-LIST: list of (FD . EVENTS) — 各 cons (int FD . int EVENTS)
+    // TIMEOUT-MS: int (-1 = infinite)
+    // returns: list of (FD . REVENTS) — 入力順を保つ
+    // 失敗: Sexp::Int(-errno)
+}
+#+END_SRC
+
+** §2.2 Elisp 追加 (=lisp/nelisp-stdlib-os.el= に追記)
+
+新規 wrapper:
+
+| function                                  | 内部呼出                                                     |
+|-------------------------------------------+--------------------------------------------------------------|
+| =nelisp-os-fork=                          | =(nelisp--syscall 'fork)=                                    |
+| =nelisp-os-execve PATH ARGV ENVP=         | =(nelisp--syscall-execve PATH ARGV ENVP)=                    |
+| =nelisp-os-wait PID OPTIONS=              | =(nelisp--syscall-wait4 PID OPTIONS)= → cons (CPID . STATUS) |
+| =nelisp-os-kill PID SIG=                  | =(nelisp--syscall 'kill PID SIG)=                            |
+| =nelisp-os-getpid=                        | =(nelisp--syscall 'getpid)=                                  |
+| =nelisp-os-socket DOMAIN TYPE PROTO=      | =(nelisp--syscall 'socket DOMAIN TYPE PROTO)=                |
+| =nelisp-os-bind-inet FD HOST PORT=        | =(nelisp--syscall-bind-inet FD HOST PORT)=                   |
+| =nelisp-os-listen FD BACKLOG=             | =(nelisp--syscall 'listen FD BACKLOG)=                       |
+| =nelisp-os-accept-inet FD=                | =(nelisp--syscall-accept-inet FD)=                           |
+| =nelisp-os-connect-inet FD HOST PORT=     | =(nelisp--syscall-connect-inet FD HOST PORT)=                |
+| =nelisp-os-poll PFDS TIMEOUT=             | =(nelisp--syscall-poll PFDS TIMEOUT)=                        |
+
+新規定数:
+
+#+BEGIN_EXAMPLE
+;; Address families
+AF_INET                                            (= 2 on Linux)
+
+;; Socket types
+SOCK_STREAM / SOCK_DGRAM                           (= 1 / 2)
+SOCK_NONBLOCK / SOCK_CLOEXEC                       (OR-able into SOCK_*)
+
+;; Protocols
+IPPROTO_IP / IPPROTO_TCP / IPPROTO_UDP             (= 0 / 6 / 17)
+
+;; INADDR helpers (host byte order)
+INADDR_ANY                                         (= 0)
+INADDR_LOOPBACK                                    (= 0x7F000001)
+
+;; poll events
+POLLIN / POLLOUT / POLLERR / POLLHUP / POLLNVAL    (= 1 / 4 / 8 / 16 / 32)
+
+;; wait4 options
+WNOHANG / WUNTRACED                                (= 1 / 2)
+
+;; signals (kill)
+SIGTERM / SIGKILL / SIGINT / SIGHUP                (= 15 / 9 / 2 / 1)
+#+END_EXAMPLE
+
+wait status 解釈用 helper:
+
+#+BEGIN_SRC emacs-lisp
+(defun nelisp-os-WIFEXITED   (status) (= (logand status 127) 0))
+(defun nelisp-os-WEXITSTATUS (status) (logand (lsh status -8) 255))
+(defun nelisp-os-WIFSIGNALED (status)
+  (let ((s (logand status 127))) (and (/= s 0) (/= s 127))))
+(defun nelisp-os-WTERMSIG    (status) (logand status 127))
+#+END_SRC
+
+** §2.3 ファイル配置
+
+| 種別      | path                                                       | 操作       |
+|-----------+------------------------------------------------------------+------------|
+| 設計書    | =docs/design/55-os-surface-phase4-posix30.org=             | new        |
+| Rust      | =build-tool/src/eval/builtins.rs=                          | edit       |
+| stdlib    | =lisp/nelisp-stdlib-os.el=                                 | edit (追記) |
+| test      | =test/nelisp-stdlib-os-test.el=                            | edit (追記) |
+| bundle    | (env.rs 不要 — 既存 =nelisp-stdlib-os.el= 拡張のみ)         | -          |
+
+* §3 Sub-phase 分割
+
+** Phase 4 (本 Doc, scope) — Posix-30 第一弾
+
+11 wrapper + 6 syscall_nr 追加 + 6 専用 primitive + 6-8 ERT。
+
+** Phase 4.1 (将来) — AF_UNIX + IPv6 拡張
+
+=bi_syscall_bind_unix= / =-connect-unix= / =-accept-unix= 追加。
+AF_INET6 sockaddr_in6 対応。
+
+** Phase 4.2 (将来) — シグナル系
+
+=sigaction= / =sigprocmask= / =sigpending= の追加。signal handler は
+elisp callback を Rust 側で受けるため =Env= に signal queue 追加が必要 →
+別格の設計 pass (= memory ~feedback_nelisp_minimize_rust~ に従い、
+queue は elisp dynamic var に置けるかも Phase 4.2 で検討)。
+
+** Phase 4.3 (将来) — select / pidfd / inotify
+
+非同期 I/O 周り。poll より新しい multiplexer 群。
+
+* §4 Test plan
+
+新規 ERT 6 本を =test/nelisp-stdlib-os-test.el= に追記。全て =bin/nelisp=
+subprocess を経由 (host Emacs simulator では =nelisp--syscall-*= は未登録)。
+
+| test                                  | flow                                                              |
+|---------------------------------------+-------------------------------------------------------------------|
+| ~getpid-positive~                     | (nelisp-os-getpid) → 正の整数を出力                                |
+| ~fork-exec-wait-roundtrip~            | fork → child: execve "/bin/true" → parent: wait4 → exit 0 確認    |
+| ~tcp-loopback-roundtrip~              | server socket+bind+listen+accept、client socket+connect+write、server read → equal |
+| ~poll-pipe-pollin-fires~              | pipe → write → poll on rfd POLLIN → REVENTS に POLLIN 立つ        |
+| ~kill-self-with-sigterm~              | child fork → parent kill SIGTERM → wait4 → WIFSIGNALED & SIGTERM  |
+| ~socket-bad-family-errors~            | nelisp-os-socket 999 1 0 → signal 'nelisp-os-error                |
+
+build gate: =cargo build --release --bin nelisp= warning 0 + 既存 10 ERT
+(Doc 53 + 54) + 新 6 ERT = 計 16 ERT 全 pass。
+
+* §5 Out of scope (= Phase 4.x / 別 Doc)
+
+- AF_UNIX / IPv6 (= Phase 4.1)
+- sigaction / sigprocmask / signal handler (= Phase 4.2)
+- select / pidfd / inotify (= Phase 4.3)
+- send/recv (= read/write が socket fd でも動くため Phase 4 では別 primitive を起こさない)
+- Path B (Darwin/Windows) — Phase 1.1 と同じく nl-ffi-call 拡張で別途
+- mmap で得た void* に対する zero-copy elisp aref (= Phase 5 候補のまま)
+
+* §6 References
+
+- Doc 53 Phase 1 — =nelisp--syscall= 基盤 + Path A/B 分岐 + bundle hook
+- Doc 54 Phase 3 — Core-12 (lseek/fstat/mmap/dup2/pipe/fcntl)
+- memory =project_lisp_machine_vision_95pct= — Lisp Machine vision の進捗
+- memory =feedback_nelisp_minimize_rust= — Rust 最小化 → elisp 押し下げの方針
+- memory =feedback_nelisp_host_simulator_test_pattern= — subprocess test pattern
