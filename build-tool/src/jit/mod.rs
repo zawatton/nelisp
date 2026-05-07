@@ -28,9 +28,71 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+use cranelift::prelude::*;
+use cranelift_jit::JITModule;
+use cranelift_module::{FuncId, Linkage, Module};
+
 use crate::eval::error::EvalError;
 use crate::eval::env::Env;
 use crate::reader::sexp::Sexp;
+
+/// Shared helper used by Stage 5.1 syscall + 5.3 cons + 5.4 access +
+/// 5.5 predicate trampolines: declare an `(i64 × N_PARAMS) -> i64'
+/// imported helper (= HELPER_NAME, must be `JITBuilder::symbol'-
+/// registered before this is called) and a `Linkage::Local' JIT entry
+/// (= JIT_NAME) whose body forwards all N i64 args to the helper and
+/// returns the helper's i64 result.
+///
+/// Returns the entry's FuncId so the caller can `get_finalized_function'
+/// it after `module.finalize_definitions()'.
+pub(super) fn declare_helper_call(
+    module: &mut JITModule,
+    jit_name: &str,
+    helper_name: &str,
+    n_params: usize,
+) -> FuncId {
+    let mut import_sig = module.make_signature();
+    for _ in 0..n_params {
+        import_sig.params.push(AbiParam::new(types::I64));
+    }
+    import_sig.returns.push(AbiParam::new(types::I64));
+    let helper_id = module
+        .declare_function(helper_name, Linkage::Import, &import_sig)
+        .unwrap_or_else(|e| panic!("cranelift: declare_function {}: {}", helper_name, e));
+
+    let mut entry_sig = module.make_signature();
+    for _ in 0..n_params {
+        entry_sig.params.push(AbiParam::new(types::I64));
+    }
+    entry_sig.returns.push(AbiParam::new(types::I64));
+    let entry_id = module
+        .declare_function(jit_name, Linkage::Local, &entry_sig)
+        .unwrap_or_else(|e| panic!("cranelift: declare_function {}: {}", jit_name, e));
+
+    let mut ctx = module.make_context();
+    ctx.func.signature = entry_sig;
+
+    let mut fbcx = FunctionBuilderContext::new();
+    {
+        let mut fb = FunctionBuilder::new(&mut ctx.func, &mut fbcx);
+        let block = fb.create_block();
+        fb.append_block_params_for_function_params(block);
+        fb.switch_to_block(block);
+        fb.seal_block(block);
+        let params: Vec<Value> = fb.block_params(block).to_vec();
+        let helper_local = module.declare_func_in_func(helper_id, fb.func);
+        let inst = fb.ins().call(helper_local, &params);
+        let ret_val = fb.inst_results(inst)[0];
+        fb.ins().return_(&[ret_val]);
+        fb.finalize();
+    }
+
+    module
+        .define_function(entry_id, &mut ctx)
+        .unwrap_or_else(|e| panic!("cranelift: define_function {}: {}", jit_name, e));
+    module.clear_context(&mut ctx);
+    entry_id
+}
 
 /// Lowered primitive function signature.  Identical to
 /// `eval::builtins::dispatch` so a JIT lowering and the fallback
@@ -99,6 +161,8 @@ mod tests {
             "ash",
             "nelisp--syscall", "nelisp--syscall-supported-p",
             "car", "cdr", "cons",
+            "length", "aref",
+            "eq",
         ];
         for name in needed {
             assert!(

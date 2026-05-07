@@ -27,15 +27,13 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{FuncId, Linkage, Module};
 
 use crate::eval::env::Env;
 use crate::eval::error::EvalError;
 use crate::reader::sexp::Sexp;
 
-use super::LowerFn;
+use super::{declare_helper_call, LowerFn};
 
 const TRAMPOLINE_OK: i64 = 0;
 const TRAMPOLINE_ERR: i64 = 1;
@@ -89,107 +87,6 @@ struct JitCons {
 
 static JIT_CONS: OnceLock<JitCons> = OnceLock::new();
 
-/// Declare a `(i64, i64) -> i64' JIT entry that forwards both i64
-/// args (= ptr1, ptr2) to the imported HELPER_NAME and returns the
-/// helper's result code.  Same shape as Stage 5.1 syscall trampoline.
-fn declare_2ptr_to_i64(
-    module: &mut JITModule,
-    jit_name: &str,
-    helper_name: &str,
-) -> FuncId {
-    let mut import_sig = module.make_signature();
-    for _ in 0..2 {
-        import_sig.params.push(AbiParam::new(types::I64));
-    }
-    import_sig.returns.push(AbiParam::new(types::I64));
-    let helper_id = module
-        .declare_function(helper_name, Linkage::Import, &import_sig)
-        .unwrap_or_else(|e| panic!("cranelift: declare_function {}: {}", helper_name, e));
-
-    let mut entry_sig = module.make_signature();
-    for _ in 0..2 {
-        entry_sig.params.push(AbiParam::new(types::I64));
-    }
-    entry_sig.returns.push(AbiParam::new(types::I64));
-    let entry_id = module
-        .declare_function(jit_name, Linkage::Local, &entry_sig)
-        .unwrap_or_else(|e| panic!("cranelift: declare_function {}: {}", jit_name, e));
-
-    let mut ctx = module.make_context();
-    ctx.func.signature = entry_sig;
-
-    let mut fbcx = FunctionBuilderContext::new();
-    {
-        let mut fb = FunctionBuilder::new(&mut ctx.func, &mut fbcx);
-        let block = fb.create_block();
-        fb.append_block_params_for_function_params(block);
-        fb.switch_to_block(block);
-        fb.seal_block(block);
-        let params: Vec<Value> = fb.block_params(block).to_vec();
-        let helper_local = module.declare_func_in_func(helper_id, fb.func);
-        let inst = fb.ins().call(helper_local, &params);
-        let ret_val = fb.inst_results(inst)[0];
-        fb.ins().return_(&[ret_val]);
-        fb.finalize();
-    }
-
-    module
-        .define_function(entry_id, &mut ctx)
-        .unwrap_or_else(|e| panic!("cranelift: define_function {}: {}", jit_name, e));
-    module.clear_context(&mut ctx);
-    entry_id
-}
-
-/// 3-arg variant of `declare_2ptr_to_i64' for `cons' (= 2 inputs + 1
-/// out-param).  Cranelift signature is `(i64, i64, i64) -> i64'.
-fn declare_3ptr_to_i64(
-    module: &mut JITModule,
-    jit_name: &str,
-    helper_name: &str,
-) -> FuncId {
-    let mut import_sig = module.make_signature();
-    for _ in 0..3 {
-        import_sig.params.push(AbiParam::new(types::I64));
-    }
-    import_sig.returns.push(AbiParam::new(types::I64));
-    let helper_id = module
-        .declare_function(helper_name, Linkage::Import, &import_sig)
-        .unwrap_or_else(|e| panic!("cranelift: declare_function {}: {}", helper_name, e));
-
-    let mut entry_sig = module.make_signature();
-    for _ in 0..3 {
-        entry_sig.params.push(AbiParam::new(types::I64));
-    }
-    entry_sig.returns.push(AbiParam::new(types::I64));
-    let entry_id = module
-        .declare_function(jit_name, Linkage::Local, &entry_sig)
-        .unwrap_or_else(|e| panic!("cranelift: declare_function {}: {}", jit_name, e));
-
-    let mut ctx = module.make_context();
-    ctx.func.signature = entry_sig;
-
-    let mut fbcx = FunctionBuilderContext::new();
-    {
-        let mut fb = FunctionBuilder::new(&mut ctx.func, &mut fbcx);
-        let block = fb.create_block();
-        fb.append_block_params_for_function_params(block);
-        fb.switch_to_block(block);
-        fb.seal_block(block);
-        let params: Vec<Value> = fb.block_params(block).to_vec();
-        let helper_local = module.declare_func_in_func(helper_id, fb.func);
-        let inst = fb.ins().call(helper_local, &params);
-        let ret_val = fb.inst_results(inst)[0];
-        fb.ins().return_(&[ret_val]);
-        fb.finalize();
-    }
-
-    module
-        .define_function(entry_id, &mut ctx)
-        .unwrap_or_else(|e| panic!("cranelift: define_function {}: {}", jit_name, e));
-    module.clear_context(&mut ctx);
-    entry_id
-}
-
 fn build_jit_cons() -> JitCons {
     let mut builder = JITBuilder::new(cranelift_module::default_libcall_names())
         .expect("cranelift_jit: host ISA must resolve");
@@ -198,10 +95,10 @@ fn build_jit_cons() -> JitCons {
     builder.symbol("nl_jit_cons_make", nl_jit_cons_make as *const u8);
     let mut module = JITModule::new(builder);
 
-    let car_id = declare_2ptr_to_i64(&mut module, "nelisp_jit_car", "nl_jit_cons_car");
-    let cdr_id = declare_2ptr_to_i64(&mut module, "nelisp_jit_cdr", "nl_jit_cons_cdr");
+    let car_id = declare_helper_call(&mut module, "nelisp_jit_car", "nl_jit_cons_car", 2);
+    let cdr_id = declare_helper_call(&mut module, "nelisp_jit_cdr", "nl_jit_cons_cdr", 2);
     let make_id =
-        declare_3ptr_to_i64(&mut module, "nelisp_jit_cons", "nl_jit_cons_make");
+        declare_helper_call(&mut module, "nelisp_jit_cons", "nl_jit_cons_make", 3);
 
     module
         .finalize_definitions()
