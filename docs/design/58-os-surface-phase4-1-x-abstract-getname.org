@@ -1,0 +1,159 @@
+#+TITLE: Doc 58 — OS Surface Phase 4.1.1 + 4.1.2: AF_UNIX abstract + getsockname/getpeername
+#+AUTHOR: zawatton
+#+DATE: 2026-05-07
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: DRAFT
+:DEPENDS_ON: Doc 56 Phase 4.1 (AF_UNIX + AF_INET6 base)
+:END:
+
+* §0 TL;DR
+
+Doc 56 Phase 4.1 で AF_UNIX (filesystem path) + AF_INET6 (sockaddr_in6) を ship。
+本 Doc は user-deferred だった (4.1.1) AF_UNIX abstract namespace と (4.1.2)
+getsockname / getpeername を *socket family を完全に使い切る* ところまで
+まとめて積む。
+
+scope = 8 専用 primitive + 8 elisp wrapper + 4 ERT。
+
+| 区分              | 名前                                              | 提供層        |
+|-------------------+---------------------------------------------------+---------------|
+| AF_UNIX abstract  | bind-unix-abstract / connect-unix-abstract       | 専用 primitive |
+| getsockname (×3)  | -inet / -inet6 / -unix                            | 専用 primitive |
+| getpeername (×3)  | -inet / -inet6 / -unix                            | 専用 primitive |
+
+設計指針 (= Doc 53〜57 継承): *Rust 追加最小化*。
+
+- AF_UNIX abstract は Linux 限定 (sun_path[0]=NUL prefix) で、elisp string に
+  NUL を埋め込むのは扱いが面倒なので、=NAME= 引数を 「NUL を含まない string」
+  として受け、Rust 側で NUL prefix と socklen 計算を行う形にする。
+- getsockname / getpeername は family が socket 作成時に確定しているので、
+  elisp 呼び側がどの family の sockaddr を期待するかは既知。専用 primitive
+  3 + 3 で scope 限定 (= AF_INET / AF_INET6 / AF_UNIX) として ship、unknown
+  family は scope 外。
+- SCM_RIGHTS (fd-passing via sendmsg / recvmsg) は struct msghdr / cmsghdr の
+  full surface が要るので別格の設計 pass、Doc 60 候補 (本 Doc では out)。
+
+* §1 動機
+
+- *AF_UNIX abstract*: Linux で systemd / dbus / Wayland 系 IPC は abstract
+  socket を当たり前に使う。filesystem path だと cleanup race / 残骸
+  socket file の問題、abstract は kernel が auto-clean。NeLisp の elisp
+  IPC を modern Linux native pattern に揃える。
+- *getsockname*: =bind(0)= で kernel が選んだ port を後から取り出す
+  ergonomics。Phase 4 で `port=47291` 直書きしていた boilerplate を
+  `port=0 + getsockname` に置き換えられる。
+- *getpeername*: AF_UNIX の credentials 確認 (= peer pid via SO_PEERCRED は
+  Phase 4.x、まずは "誰が繋がってきたか" を AF_INET / AF_INET6 で取れる line
+  だけ作る)。
+
+* §2 設計
+
+** §2.1 Rust 追加
+
+builtins.rs:
+
+- =install_builtins()= names + =dispatch()= に *8 名追加*:
+  - =nelisp--syscall-bind-unix-abstract= / =-connect-unix-abstract=
+  - =nelisp--syscall-getsockname-inet= / =-getsockname-inet6= / =-getsockname-unix=
+  - =nelisp--syscall-getpeername-inet= / =-getpeername-inet6= / =-getpeername-unix=
+- 関数 8 本実装。abstract 系は既存の =build_sockaddr_un= / =parse_sockaddr_un_peer=
+  helper を re-use しつつ NUL prefix encoding を別 helper にくくり出す。
+- getsockname / getpeername は libc::getsockname / getpeername を呼び、
+  Doc 55 / 56 で既に書いた =parse_in6_addr_groups= / =parse_sockaddr_un_peer= を
+  reuse して family 別の Sexp に変換。
+
+*** §2.1.1 abstract socket helper
+
+#+BEGIN_SRC rust
+fn build_sockaddr_un_abstract(name: &str)
+    -> Result<(libc::sockaddr_un, libc::socklen_t), EvalError>
+{
+    // sun_path[0] = NUL、sun_path[1..1+name.len()] = name bytes
+    // socklen = sun_path offset + 1 + name.len()
+    // NAME に NUL byte が含まれる場合は EvalError::Internal.
+}
+#+END_SRC
+
+*** §2.1.2 getsockname / getpeername のシェル
+
+unix:
+
+#+BEGIN_SRC rust
+fn bi_syscall_getsockname_unix(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    // FD → string path (anonymous = "", abstract = "\0name" になるが
+    // NUL を含む string は elisp 側では扱いにくいので abstract 検出時は
+    // Sexp::cons(Sexp::Symbol("abstract"), Sexp::Str(name)) を返す
+    // 通常 fs path は Sexp::Str(path)、anonymous は Sexp::Str("")
+}
+#+END_SRC
+
+inet / inet6:
+
+#+BEGIN_SRC rust
+fn bi_syscall_getsockname_inet(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    // FD → list (HOST-INT PORT)
+}
+
+fn bi_syscall_getsockname_inet6(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    // FD → list (HOST6-LIST PORT)
+}
+#+END_SRC
+
+getpeername-* は全く同形。
+
+** §2.2 Elisp 追加 (=lisp/nelisp-stdlib-os.el= 末尾に追記)
+
+新規 wrapper:
+
+| function                                  | 内部呼出                                       |
+|-------------------------------------------+------------------------------------------------|
+| =nelisp-os-bind-unix-abstract FD NAME=    | =(nelisp--syscall-bind-unix-abstract FD NAME)= |
+| =nelisp-os-connect-unix-abstract FD NAME= | =(nelisp--syscall-connect-unix-abstract FD NAME)= |
+| =nelisp-os-getsockname-inet FD=           | =(nelisp--syscall-getsockname-inet FD)=        |
+| =nelisp-os-getsockname-inet6 FD=          | =(nelisp--syscall-getsockname-inet6 FD)=       |
+| =nelisp-os-getsockname-unix FD=           | =(nelisp--syscall-getsockname-unix FD)=        |
+| =nelisp-os-getpeername-inet FD=           | =(nelisp--syscall-getpeername-inet FD)=        |
+| =nelisp-os-getpeername-inet6 FD=          | =(nelisp--syscall-getpeername-inet6 FD)=       |
+| =nelisp-os-getpeername-unix FD=           | =(nelisp--syscall-getpeername-unix FD)=        |
+
+新規定数: 不要 (= 既存 AF_* / etc. を再利用)。
+
+** §2.3 ファイル配置
+
+| 種別      | path                                                                  | 操作       |
+|-----------+-----------------------------------------------------------------------+------------|
+| 設計書    | =docs/design/58-os-surface-phase4-1-x-abstract-getname.org=           | new        |
+| Rust      | =build-tool/src/eval/builtins.rs=                                     | edit       |
+| stdlib    | =lisp/nelisp-stdlib-os.el=                                            | edit (追記) |
+| test      | =test/nelisp-stdlib-os-test.el=                                       | edit (追記) |
+
+* §3 Test plan
+
+新規 ERT 4 本を =test/nelisp-stdlib-os-test.el= に追記:
+
+| test                                  | flow                                                                            |
+|---------------------------------------+---------------------------------------------------------------------------------|
+| ~unix-abstract-roundtrip~             | bind-unix-abstract NAME → listen → accept → connect-unix-abstract → write/read |
+| ~getsockname-inet-bind-zero-port~     | bind 0 → getsockname-inet → port > 0                                            |
+| ~getsockname-inet6-bind-zero-port~    | bind ::1 0 → getsockname-inet6 → port > 0                                       |
+| ~getpeername-inet-after-accept~       | client connect → server accept → getpeername-inet → host == 127.0.0.1            |
+
+build gate: =cargo build --release --bin nelisp= warning 0 + 既存 21 ERT
++ 新 4 ERT = 計 25 ERT 全 pass。
+
+* §4 Out of scope (= 別 Doc / Phase)
+
+- SCM_RIGHTS (fd-passing via sendmsg / recvmsg) — Doc 60 候補
+- SO_PEERCRED (peer credentials, AF_UNIX) — Doc 60 候補
+- IPv6 scope_id (link-local) — 同 Doc 候補
+- Path B (Darwin/Windows) — 別途
+- AF_UNIX SOCK_SEQPACKET — 同 Doc 候補
+
+* §5 References
+
+- Doc 56 Phase 4.1 — AF_UNIX (filesystem) / AF_INET6 base
+- man 7 unix — abstract namespace 仕様
+- man 2 getsockname / getpeername

@@ -543,6 +543,124 @@ opaque on the elisp side)."
     (should (eq (car r) 0))
     (should (equal (cdr r) "ok"))))
 
+;;; Doc 58 Phase 4.1.x — AF_UNIX abstract + getsockname/peername ----------
+
+(ert-deftest nelisp-stdlib-os-test/unix-abstract-roundtrip ()
+  "AF_UNIX abstract-namespace bind/connect roundtrip — no filesystem
+artefacts even after the test crashes (= kernel auto-cleans abstract
+sockets on close)."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (let* ((name (format "nelisp-os-abs-test-%d-%d"
+                       (emacs-pid) (random 100000)))
+         (expr (format "(progn
+              (require (quote nelisp-stdlib-os))
+              (let* ((name %S)
+                     (srv (nelisp-os-socket nelisp-os-AF-UNIX
+                                            nelisp-os-SOCK-STREAM 0)))
+                (nelisp-os-bind-unix-abstract srv name)
+                (nelisp-os-listen srv 1)
+                (let ((child (nelisp-os-fork)))
+                  (cond
+                   ((= child 0)
+                    (let ((c (nelisp-os-socket nelisp-os-AF-UNIX
+                                               nelisp-os-SOCK-STREAM 0)))
+                      (nelisp-os-connect-unix-abstract c name)
+                      (nelisp-os-write c \"hello-abs\")
+                      (nelisp-os-close c)
+                      (nelisp-os-exit 0)))
+                   (t
+                    (let* ((acc (nelisp-os-accept-unix srv))
+                           (cfd (car acc))
+                           (data (nelisp-os-read cfd 1024)))
+                      (nelisp-os-close cfd)
+                      (nelisp-os-close srv)
+                      (nelisp-os-wait child 0)
+                      (nelisp-os-write 1 data)
+                      (nelisp-os-exit 0)))))))" name)))
+    (let ((r (nelisp-stdlib-os-test--eval expr)))
+      (should (eq (car r) 0))
+      (should (equal (cdr r) "hello-abs")))))
+
+(ert-deftest nelisp-stdlib-os-test/getsockname-inet-bind-zero-port ()
+  "bind AF_INET to port=0 (= kernel-chosen) → getsockname returns the
+positive port the kernel actually picked."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (let ((r (nelisp-stdlib-os-test--eval
+            "(progn
+              (require (quote nelisp-stdlib-os))
+              (let ((s (nelisp-os-socket nelisp-os-AF-INET
+                                         nelisp-os-SOCK-STREAM
+                                         nelisp-os-IPPROTO-TCP)))
+                (nelisp-os-bind-inet s nelisp-os-INADDR-LOOPBACK 0)
+                (let* ((nm (nelisp-os-getsockname-inet s))
+                       (port (nth 1 nm)))
+                  (nelisp-os-close s)
+                  (nelisp-os-write 1 (if (> port 0) \"ok\" \"err\"))
+                  (nelisp-os-exit 0))))")))
+    (should (eq (car r) 0))
+    (should (equal (cdr r) "ok"))))
+
+(ert-deftest nelisp-stdlib-os-test/getsockname-inet6-bind-zero-port ()
+  "bind AF_INET6 to ::1 port=0 → getsockname returns positive port."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (let ((r (nelisp-stdlib-os-test--eval
+            "(progn
+              (require (quote nelisp-stdlib-os))
+              (let ((s (nelisp-os-socket nelisp-os-AF-INET6
+                                         nelisp-os-SOCK-STREAM
+                                         nelisp-os-IPPROTO-TCP)))
+                (nelisp-os-bind-inet6 s nelisp-os-IN6ADDR-LOOPBACK 0)
+                (let* ((nm (nelisp-os-getsockname-inet6 s))
+                       (port (nth 1 nm)))
+                  (nelisp-os-close s)
+                  (nelisp-os-write 1 (if (> port 0) \"ok\" \"err\"))
+                  (nelisp-os-exit 0))))")))
+    (should (eq (car r) 0))
+    (should (equal (cdr r) "ok"))))
+
+(ert-deftest nelisp-stdlib-os-test/getpeername-inet-after-accept ()
+  "Server accept → getpeername-inet on the accepted fd returns the
+client's loopback IP."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (let ((r (nelisp-stdlib-os-test--eval
+            "(progn
+              (require (quote nelisp-stdlib-os))
+              (let* ((srv (nelisp-os-socket nelisp-os-AF-INET
+                                            nelisp-os-SOCK-STREAM
+                                            nelisp-os-IPPROTO-TCP)))
+                (nelisp-os-setsockopt-int srv nelisp-os-SOL-SOCKET
+                                          nelisp-os-SO-REUSEADDR 1)
+                (nelisp-os-bind-inet srv nelisp-os-INADDR-LOOPBACK 0)
+                (nelisp-os-listen srv 1)
+                (let* ((nm (nelisp-os-getsockname-inet srv))
+                       (port (nth 1 nm))
+                       (child (nelisp-os-fork)))
+                  (cond
+                   ((= child 0)
+                    (let ((c (nelisp-os-socket nelisp-os-AF-INET
+                                               nelisp-os-SOCK-STREAM
+                                               nelisp-os-IPPROTO-TCP)))
+                      (nelisp-os-connect-inet c nelisp-os-INADDR-LOOPBACK port)
+                      (nelisp-os-close c)
+                      (nelisp-os-exit 0)))
+                   (t
+                    (let* ((acc (nelisp-os-accept-inet srv))
+                           (cfd (nth 0 acc))
+                           (peer (nelisp-os-getpeername-inet cfd))
+                           (peer-ip (nth 0 peer)))
+                      (nelisp-os-close cfd)
+                      (nelisp-os-close srv)
+                      (nelisp-os-wait child 0)
+                      (nelisp-os-write 1
+                        (if (= peer-ip nelisp-os-INADDR-LOOPBACK) \"ok\" \"err\"))
+                      (nelisp-os-exit 0)))))))")))
+    (should (eq (car r) 0))
+    (should (equal (cdr r) "ok"))))
+
 (provide 'nelisp-stdlib-os-test)
 
 ;;; nelisp-stdlib-os-test.el ends here

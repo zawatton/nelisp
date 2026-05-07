@@ -527,6 +527,64 @@ counter and FLAGS (OR of `EFD-*').  Read/write are 8-byte uint64
 counters; use `nelisp-os-write' / `nelisp-os-read' on the returned fd."
   (nelisp-os--check-errno (nelisp--syscall 'eventfd2 initval flags)))
 
+;; ---------------------------------------------------------------------------
+;; Doc 58 Phase 4.1.1 + 4.1.2 — AF_UNIX abstract namespace + getsockname /
+;; getpeername wrappers.
+;;
+;; Abstract sockets avoid the stale-file race that filesystem AF_UNIX
+;; sockets suffer from (= the kernel auto-cleans on close).  Phase 4.1
+;; only shipped filesystem-path bind/connect; this layer adds the
+;; abstract-namespace counterparts.
+;; ---------------------------------------------------------------------------
+
+(defun nelisp-os-bind-unix-abstract (fd name)
+  "Linux-specific bind(2) for an AF_UNIX abstract-namespace socket.
+NAME is a NUL-free string; the kernel name is `\\0' + NAME and is
+auto-cleaned on close.  Returns 0 or signals `nelisp-os-error'."
+  (nelisp-os--check-errno (nelisp--syscall-bind-unix-abstract fd name)))
+
+(defun nelisp-os-connect-unix-abstract (fd name)
+  "Linux-specific connect(2) for an AF_UNIX abstract-namespace socket."
+  (nelisp-os--check-errno (nelisp--syscall-connect-unix-abstract fd name)))
+
+;; getsockname / getpeername — three families × two ops = six wrappers.
+;; `_inet'  → list (HOST-INT PORT)             both host byte order
+;; `_inet6' → list (HOST6-LIST PORT)            HOST6-LIST = 8 16-bit groups
+;; `_unix'  → string PATH (filesystem) | (abstract . NAME) | "" (anonymous)
+
+(defun nelisp-os-getsockname-inet (fd)
+  "POSIX getsockname(2) for AF_INET — return list (HOST-INT PORT)."
+  (let ((r (nelisp--syscall-getsockname-inet fd)))
+    (if (integerp r) (nelisp-os--check-errno r) r)))
+
+(defun nelisp-os-getsockname-inet6 (fd)
+  "POSIX getsockname(2) for AF_INET6 — return list (HOST6 PORT)."
+  (let ((r (nelisp--syscall-getsockname-inet6 fd)))
+    (if (integerp r) (nelisp-os--check-errno r) r)))
+
+(defun nelisp-os-getsockname-unix (fd)
+  "POSIX getsockname(2) for AF_UNIX — return PATH string for
+filesystem sockets, cons (abstract . NAME) for abstract sockets, or
+\"\" for anonymous (= unbound)."
+  (let ((r (nelisp--syscall-getsockname-unix fd)))
+    (if (integerp r) (nelisp-os--check-errno r) r)))
+
+(defun nelisp-os-getpeername-inet (fd)
+  "POSIX getpeername(2) for AF_INET — return list (HOST-INT PORT)."
+  (let ((r (nelisp--syscall-getpeername-inet fd)))
+    (if (integerp r) (nelisp-os--check-errno r) r)))
+
+(defun nelisp-os-getpeername-inet6 (fd)
+  "POSIX getpeername(2) for AF_INET6 — return list (HOST6 PORT)."
+  (let ((r (nelisp--syscall-getpeername-inet6 fd)))
+    (if (integerp r) (nelisp-os--check-errno r) r)))
+
+(defun nelisp-os-getpeername-unix (fd)
+  "POSIX getpeername(2) for AF_UNIX — same return shape as
+`nelisp-os-getsockname-unix'."
+  (let ((r (nelisp--syscall-getpeername-unix fd)))
+    (if (integerp r) (nelisp-os--check-errno r) r)))
+
 (provide 'nelisp-stdlib-os)
 
 ;;; nelisp-stdlib-os.el ends here
