@@ -89,14 +89,10 @@ pub enum Sexp {
     /// Identity comparison goes through `Rc::ptr_eq'; structural
     /// equality (the derived `PartialEq') unwraps the inner `Vec'.
     Vector(Rc<RefCell<Vec<Sexp>>>),
-    /// Hash-table (Track O'' minimum impl): a list of `(KEY . VALUE)'
-    /// pairs with an associated equality test.  Backed by `Vec' for
-    /// O(n) lookup so we keep the impl compact; substrate use cases
-    /// have ≤ 100 entries per table.  The `test' field stores the
-    /// Symbol name of the equality predicate (`eq' / `eql' / `equal').
-    /// Identity goes through `Rc::ptr_eq', structural equality (the
-    /// derived `PartialEq') compares the inner `HashTableInner'.
-    HashTable(Rc<RefCell<HashTableInner>>),
+    // Sexp::HashTable variant retired in Doc 50 stage 4f (2026-05-07).
+    // Hash-tables are now `(record 'hash-table TEST ENTRIES)' built
+    // on top of the Stage 4c record primitives — see
+    // lisp/nelisp-stdlib-hash.el for the elisp implementation.
     /// Char-table (Track F minimum impl): maps integer codepoints
     /// to arbitrary Sexp values.  Used by Emacs syntax-table /
     /// category-table / case-table / display-table substrates.
@@ -135,18 +131,9 @@ pub enum Sexp {
     },
 }
 
-/// Inner storage for [`Sexp::HashTable`].  Linear-scan vector keeps
-/// the layer simple; substrate hash-tables hold tens of entries at
-/// most.
-#[derive(Debug, Clone, PartialEq)]
-pub struct HashTableInner {
-    /// `eq' / `eql' / `equal' / `string-equal' — selects the key
-    /// comparison rule.  For now we accept anything and route equal-
-    /// behaviour through `Sexp's derived `PartialEq' (= structural).
-    pub test: String,
-    /// Slot list.  Entries are pushed; lookup is linear.
-    pub entries: Vec<(Sexp, Sexp)>,
-}
+// HashTableInner struct retired in Doc 50 stage 4f (2026-05-07);
+// see lisp/nelisp-stdlib-hash.el for the elisp implementation that
+// stores equivalent state inside a Sexp::Record.
 
 /// Inner storage for [`Sexp::CharTable`].  Sparse linear-scan; for
 /// substrate use cases (= syntax-table, category-table, case-table)
@@ -238,15 +225,10 @@ impl Sexp {
         matches!(self, Sexp::Str(_) | Sexp::MutStr(_))
     }
 
-    /// Build an empty hash-table with the given equality TEST name.
-    /// Pass `"equal"' / `"eq"' / `"eql"' (= matches host Emacs's
-    /// `make-hash-table :test ...' values).
-    pub fn hash_table(test: &str) -> Sexp {
-        Sexp::HashTable(Rc::new(RefCell::new(HashTableInner {
-            test: test.to_string(),
-            entries: Vec::new(),
-        })))
-    }
+    // Sexp::hash_table() helper retired in Doc 50 stage 4f
+    // (2026-05-07) along with the HashTable variant — hash-tables are
+    // now constructed via the elisp `make-hash-table' which builds a
+    // Sexp::Record on top of Stage 4c primitives.
 
     /// Build a record with TYPE_TAG (= type symbol) and INIT slot
     /// vector.  Doc 52 §2.1 — used by `cl-defstruct' constructor
@@ -390,23 +372,11 @@ fn write_sexp(out: &mut String, s: &Sexp) {
             }
             out.push(']');
         }
-        Sexp::HashTable(inner) => {
-            // Emacs printer uses `#s(hash-table test TEST data (K1 V1 ...))'
-            // shape; we emit a simplified compatible form.
-            let inner = inner.borrow();
-            out.push_str("#s(hash-table test ");
-            out.push_str(&inner.test);
-            out.push_str(" data (");
-            for (i, (k, v)) in inner.entries.iter().enumerate() {
-                if i > 0 {
-                    out.push(' ');
-                }
-                write_sexp(out, k);
-                out.push(' ');
-                write_sexp(out, v);
-            }
-            out.push_str("))");
-        }
+        // Sexp::HashTable arm retired in Doc 50 stage 4f.  The
+        // hash-table printer (= `#s(hash-table test TEST data (K1
+        // V1 ...))') is now implicit via `Sexp::Record' below: the
+        // record's printer emits `#s(hash-table TEST ENTRIES)' which
+        // is round-trip readable by `parse_record'.
         Sexp::CharTable(inner) => {
             // Compact printer — substrate use cases never need the
             // upstream `#^[...]' faithful shape.  We dump the populated

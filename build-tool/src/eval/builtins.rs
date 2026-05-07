@@ -164,13 +164,14 @@ pub fn install_builtins(env: &mut Env) {
         // (lisp/nelisp-stdlib-misc.el).
         // Rust-min (2026-05-07 batch 7a, Doc 50 stage 1): `maphash' +
         // `hash-table-count' migrated to elisp on top of a new low-
-        // level iter primitive `nelisp--hash-pairs' (= snapshot of
-        // ((K . V) ...) in insertion order).  -keys / -values rewired
-        // to ride that primitive too (was: maphash fold).  4 builtins
-        // collapse into 1 + ~4 elisp wrappers (~10 LOC each).
-        "make-hash-table", "hash-table-p",
-        "puthash", "gethash", "remhash", "clrhash",
-        "nelisp--hash-pairs",
+        // level iter primitive `nelisp--hash-pairs'.
+        // Doc 50 stage 4f (2026-05-07): the remaining 7 hash-table
+        // builtins (make-hash-table / hash-table-p / puthash / gethash /
+        // remhash / clrhash / nelisp--hash-pairs) migrated to elisp on
+        // top of Stage 4c record primitives — `Sexp::HashTable'
+        // variant retired alongside.  Hash-table is now `(record
+        // 'hash-table TEST ENTRIES)' = first elisp-built data type
+        // and proof-of-concept for further container moves.
         // Records (Doc 50 stage 4c, 2026-05-07).  Six low-level
         // primitives that the elisp-side `cl-defstruct' macro
         // (Stage 4e) uses to build constructors / accessors /
@@ -470,17 +471,11 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // lisp/nelisp-stdlib-plist-str.el).
         // string-search / mapconcat / delete-dups also migrated to
         // elisp (Rust-min 2026-05-06 batch 3).
-        "make-hash-table" => bi_make_hash_table(args),
-        "hash-table-p" => bi_hash_table_p(args),
-        "puthash" => bi_puthash(args),
-        "gethash" => bi_gethash(args),
-        "remhash" => bi_remhash(args),
-        "clrhash" => bi_clrhash(args),
-        // Rust-min batch 7a (Doc 50 stage 1, 2026-05-07):
-        // `hash-table-count' / `maphash' / -keys / -values are now
-        // elisp folds over `nelisp--hash-pairs' (see
-        // lisp/nelisp-stdlib-misc.el).
-        "nelisp--hash-pairs" => bi_hash_pairs(args),
+        // Doc 50 stage 4f (2026-05-07): make-hash-table / hash-table-p /
+        // puthash / gethash / remhash / clrhash / nelisp--hash-pairs all
+        // migrated to elisp on top of Stage 4c record primitives —
+        // see lisp/nelisp-stdlib-hash.el.  `Sexp::HashTable' variant +
+        // HashTableInner struct also retired in the same commit.
         // Records (Doc 50 stage 4c, 2026-05-07) — see Stage 4e
         // cl-defstruct macro for the consumer side.
         "nelisp--make-record" => bi_make_record(args),
@@ -844,7 +839,6 @@ fn sxhash_into<H: std::hash::Hasher>(v: &Sexp, h: &mut H) {
             7u8.hash(h);
             for it in rc.borrow().iter() { sxhash_into(it, h); }
         }
-        Sexp::HashTable(_) => 8u8.hash(h),
         Sexp::CharTable(_) => 9u8.hash(h),
         Sexp::BoolVector(rc) => {
             10u8.hash(h);
@@ -948,7 +942,6 @@ fn sexp_equal_safe(a: &Sexp, b: &Sexp, depth: u32) -> bool {
         (Sexp::MutStr(a), Sexp::MutStr(b)) => {
             std::rc::Rc::ptr_eq(a, b) || *a.borrow() == *b.borrow()
         }
-        (Sexp::HashTable(a), Sexp::HashTable(b)) => std::rc::Rc::ptr_eq(a, b) || a == b,
         (Sexp::CharTable(a), Sexp::CharTable(b)) => std::rc::Rc::ptr_eq(a, b) || a == b,
         (Sexp::BoolVector(a), Sexp::BoolVector(b)) => std::rc::Rc::ptr_eq(a, b) || a == b,
         // For the trivial leaf variants the derived PartialEq has no
@@ -1107,7 +1100,6 @@ fn bi_type_of(args: &[Sexp]) -> Result<Sexp, EvalError> {
         Sexp::Float(_) => "float",
         Sexp::Str(_) | Sexp::MutStr(_) => "string",
         Sexp::Vector(_) => "vector",
-        Sexp::HashTable(_) => "hash-table",
         Sexp::CharTable(_) => "char-table",
         Sexp::BoolVector(_) => "bool-vector",
         Sexp::Cell(_) | Sexp::Record { .. } => unreachable!(),
@@ -1303,157 +1295,11 @@ fn bi_make_mut_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
 // bi_string_search removed — see lisp/nelisp-stdlib-plist-str.el
 // (Rust-min 2026-05-06 batch 3).
 
-/// `(make-hash-table &rest KEYWORD-ARGS)' — accepts `:test TEST'
-/// (default `eql' per host Emacs); other keywords (`:size',
-/// `:rehash-size', `:rehash-threshold', `:weakness') are accepted
-/// for parity but ignored by the linear-scan storage.
-fn bi_make_hash_table(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let mut test = String::from("eql");
-    let mut i = 0;
-    while i + 1 < args.len() {
-        if let Sexp::Symbol(kw) = &args[i] {
-            if kw == ":test" {
-                test = match &args[i + 1] {
-                    Sexp::Symbol(s) => s.clone(),
-                    Sexp::Str(s) => s.clone(),
-                    Sexp::MutStr(rc) => rc.borrow().clone(),
-                    Sexp::Cons(h, _) => match &*h.borrow() {
-                        // (quote eq) shape from the reader.
-                        Sexp::Symbol(s) if s == "quote" => {
-                            // Walk past `quote' to the inner symbol.
-                            match &args[i + 1] {
-                                Sexp::Cons(_, t) => match &*t.borrow() {
-                                    Sexp::Cons(h2, _) => match &*h2.borrow() {
-                                        Sexp::Symbol(s) => s.clone(),
-                                        _ => "eql".into(),
-                                    },
-                                    _ => "eql".into(),
-                                },
-                                _ => "eql".into(),
-                            }
-                        }
-                        _ => "eql".into(),
-                    },
-                    _ => "eql".into(),
-                };
-            }
-        }
-        i += 2;
-    }
-    Ok(Sexp::hash_table(&test))
-}
-
-fn bi_hash_table_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("hash-table-p", args, 1, Some(1))?;
-    Ok(if matches!(&args[0], Sexp::HashTable(_)) {
-        Sexp::T
-    } else {
-        Sexp::Nil
-    })
-}
-
-/// `(nelisp--hash-pairs TABLE)' — Rust-min batch 7a (Doc 50 stage 1).
-/// Returns a fresh proper list `((K . V) ...)' of TABLE's entries in
-/// insertion order.  This is the lone Rust-side iter primitive used by
-/// elisp wrappers `hash-table-count' / `maphash' / `hash-table-keys' /
-/// `hash-table-values' (see lisp/nelisp-stdlib-misc.el).  Each cons
-/// pair is fresh, so the caller may mutate the spine freely; the K/V
-/// values themselves are cloned (= cheap for `Rc'-shared variants).
-fn bi_hash_pairs(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--hash-pairs", args, 1, Some(1))?;
-    let table = match &args[0] {
-        Sexp::HashTable(inner) => inner.clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "hash-table-p".into(),
-            got: other.clone(),
-        }),
-    };
-    let mut out = Sexp::Nil;
-    for (k, v) in table.borrow().entries.iter().rev() {
-        out = Sexp::cons(Sexp::cons(k.clone(), v.clone()), out);
-    }
-    Ok(out)
-}
-
-/// `(puthash KEY VALUE TABLE)' — set TABLE[KEY] = VALUE.  Returns VALUE.
-fn bi_puthash(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("puthash", args, 3, Some(3))?;
-    let key = args[0].clone();
-    let value = args[1].clone();
-    let table = match &args[2] {
-        Sexp::HashTable(inner) => inner.clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "hash-table-p".into(),
-            got: other.clone(),
-        }),
-    };
-    let mut inner = table.borrow_mut();
-    let test = inner.test.clone();
-    let mut found = false;
-    for (k, v) in inner.entries.iter_mut() {
-        if hash_test_eq(&test, k, &key) {
-            *v = value.clone();
-            found = true;
-            break;
-        }
-    }
-    if !found {
-        inner.entries.push((key, value.clone()));
-    }
-    Ok(value)
-}
-
-/// `(gethash KEY TABLE &optional DEFAULT)' — lookup, returns DEFAULT
-/// when missing.
-fn bi_gethash(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("gethash", args, 2, Some(3))?;
-    let key = args[0].clone();
-    let default = args.get(2).cloned().unwrap_or(Sexp::Nil);
-    let table = match &args[1] {
-        Sexp::HashTable(inner) => inner.clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "hash-table-p".into(),
-            got: other.clone(),
-        }),
-    };
-    let inner = table.borrow();
-    for (k, v) in inner.entries.iter() {
-        if hash_test_eq(&inner.test, k, &key) {
-            return Ok(v.clone());
-        }
-    }
-    Ok(default)
-}
-
-fn bi_remhash(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("remhash", args, 2, Some(2))?;
-    let key = args[0].clone();
-    let table = match &args[1] {
-        Sexp::HashTable(inner) => inner.clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "hash-table-p".into(),
-            got: other.clone(),
-        }),
-    };
-    let mut inner = table.borrow_mut();
-    let test = inner.test.clone();
-    let before = inner.entries.len();
-    inner.entries.retain(|(k, _)| !hash_test_eq(&test, k, &key));
-    Ok(if inner.entries.len() < before { Sexp::T } else { Sexp::Nil })
-}
-
-fn bi_clrhash(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("clrhash", args, 1, Some(1))?;
-    let table = match &args[0] {
-        Sexp::HashTable(inner) => inner.clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "hash-table-p".into(),
-            got: other.clone(),
-        }),
-    };
-    table.borrow_mut().entries.clear();
-    Ok(args[0].clone())
-}
+// bi_make_hash_table / bi_hash_table_p / bi_puthash / bi_gethash /
+// bi_remhash / bi_clrhash / bi_hash_pairs all retired in Doc 50
+// stage 4f (2026-05-07).  Hash-tables are now `(record 'hash-table
+// TEST ENTRIES)' — see lisp/nelisp-stdlib-hash.el for the elisp
+// implementation built on Stage 4c record primitives.
 
 // --- Doc 50 stage 4c: record primitives ---
 //
@@ -1624,25 +1470,10 @@ fn char_table_get(inner: &Rc<RefCell<crate::reader::sexp::CharTableInner>>, c: i
     borrowed.default_val.clone()
 }
 
-/// Compare two hash-table keys per TEST.  Currently structural for
-/// `equal' / `eql'; `eq' falls through to structural for atoms (= host
-/// Emacs eq on symbols and small ints is structural anyway), but does
-/// not honour pointer identity for cons / vector / hash-table cells
-/// (= our Sexp clones share Rc but we have no Rc-aware test here).
-fn hash_test_eq(test: &str, a: &Sexp, b: &Sexp) -> bool {
-    // For `eq' / `eql' tests we honour cell identity (= Rc::ptr_eq for
-    // heap types) via `sexp_eq'.  Structural `==' would recurse on
-    // cyclic graphs (e.g. cl-defstruct values with parent <-> children
-    // pointers), causing a stack overflow.
-    match test {
-        "eq" | "eql" => sexp_eq(a, b),
-        _ => a == b,
-    }
-}
+// hash_test_eq helper removed in Doc 50 stage 4f — hash-table key
+// comparison now lives in elisp (`nelisp--hash-test-equal' in
+// lisp/nelisp-stdlib-hash.el).
 
-/// Pick the test to use when the table-side `test' isn't accessible
-/// (= during in-place mutation borrow).  Falls through to structural
-/// equality.  Currently a stub kept for symmetry with `hash_test_eq'.
 // bi_delete_dups removed — see lisp/nelisp-stdlib-plist-str.el
 // (Rust-min 2026-05-06 batch 3).
 // inner_test_for helper removed (Rust-min cleanup, 2026-05-07): was

@@ -167,15 +167,10 @@ fn encode_value(out: &mut Vec<u8>, value: &Sexp) -> Result<(), ImageError> {
                 encode_value(out, item)?;
             }
         }
-        Sexp::HashTable(_) => {
-            // Hash-tables are runtime-only objects in our minimal
-            // image format (= they cannot survive `compile-image' /
-            // `eval-image' round-trips).  Surface as the closest
-            // existing variant so users see a clear failure.
-            return Err(ImageError::Eval(EvalError::NotImplemented(
-                "hash-table values are not yet supported by image encoding".into(),
-            )));
-        }
+        // Sexp::HashTable variant retired in Doc 50 stage 4f
+        // (2026-05-07).  Hash-tables are now records; they reach this
+        // arm via Sexp::Record below (= same NotImplemented surface
+        // as before).
         Sexp::CharTable(rc) => {
             out.push(TAG_CHAR_TABLE);
             encode_char_table(out, &rc.borrow())?;

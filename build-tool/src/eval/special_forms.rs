@@ -1121,9 +1121,15 @@ pub fn sexp_eq(a: &Sexp, b: &Sexp) -> bool {
         }
         (Sexp::MutStr(a), Sexp::MutStr(b)) => Rc::ptr_eq(a, b),
         (Sexp::Vector(a), Sexp::Vector(b)) => Rc::ptr_eq(a, b),
-        (Sexp::HashTable(a), Sexp::HashTable(b)) => Rc::ptr_eq(a, b),
         (Sexp::CharTable(a), Sexp::CharTable(b)) => Rc::ptr_eq(a, b),
         (Sexp::BoolVector(a), Sexp::BoolVector(b)) => Rc::ptr_eq(a, b),
+        // Records (Doc 50 stage 4): identity through the slots Rc.
+        // Two records are `eq' iff they share the same slots cell —
+        // hash-tables and cl-defstruct values rely on this for
+        // mutation-aware sharing.
+        (Sexp::Record { slots: a, .. }, Sexp::Record { slots: b, .. }) => {
+            Rc::ptr_eq(a, b)
+        }
         // Strings + floats: bootstrap subset uses structural eq
         // (close enough — Emacs treats short interned strings + small
         // fixnums similarly; full impl would need an interner).
