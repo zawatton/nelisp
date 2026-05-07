@@ -2008,9 +2008,28 @@ fn track_k_leave_without_enter_idempotent() {
 #[cfg(unix)]
 #[test]
 fn track_k_enter_on_non_tty_errors_cleanly() {
-    // cargo test pipes stdin → tcgetattr returns ENOTTY → enter must
-    // surface a wrong-type-ish internal error AND must not flip the
-    // saved-state flag (otherwise unwind would tcsetattr garbage).
+    // The contract under cargo's *normal* invocation (stdin piped) is:
+    // tcgetattr returns ENOTTY → enter surfaces an Internal error AND
+    // leaves TERMIOS_SAVED=nil so unwind does not tcsetattr garbage.
+    //
+    // But when cargo test is launched from an interactive shell that
+    // forwards a real TTY to stdin (= `cargo test` typed at a terminal,
+    // not piped through a runner), tcgetattr succeeds and `enter` would
+    // actually flip the runner's terminal into raw mode — which is both
+    // a wrong assertion target AND destructive to the user's session.
+    //
+    // Detect the TTY case up front and skip cleanly.  We deliberately
+    // do NOT call `terminal-raw-mode-enter` in the skip path so that the
+    // runner's terminal is left untouched.
+    use std::os::fd::AsRawFd;
+    let fd = std::io::stdin().lock().as_raw_fd();
+    if unsafe { libc::isatty(fd) } == 1 {
+        eprintln!(
+            "track_k_enter_on_non_tty_errors_cleanly: stdin is a real TTY, \
+             skipping (this assertion only holds when cargo's stdin is piped)"
+        );
+        return;
+    }
     let res = err_all("(terminal-raw-mode-enter)");
     match res {
         EvalError::Internal(msg) => {
