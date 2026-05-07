@@ -98,6 +98,7 @@ mod tests {
             "nelisp--logior2", "nelisp--logand2", "nelisp--logxor2",
             "ash",
             "nelisp--syscall", "nelisp--syscall-supported-p",
+            "car", "cdr", "cons",
         ];
         for name in needed {
             assert!(
