@@ -330,54 +330,128 @@ helper =nelisp--parse-cl-formals= は別 defun (= =nelisp-stdlib-eval-special.el
 
 * §3 段階 / sub-stages
 
-Stage 7.3 を 4 sub-stage に分割、各 sub-stage で independent ship 可能:
+Stage 7.3 を 4 sub-stage に分割、各 sub-stage で independent ship 可能。
 
-** §3.1 Stage 7.3.a — Tier 2 macros 22 件 + 単純 Tier (= cond/when/unless 系)
+** §3.0 Dispatch order の制約 (= 2026-05-07 Stage 7.3.a 着手時に判明)
 
-- =lisp/nelisp-stdlib-eval-special.el= 新規、最初の 18 macros を install
+Doc 67 初版 (= §3.1〜§3.4) は「parallel path」表現で「Rust special form
+arm と elisp macro が同居しつつ後者が runtime 経路で使われる」を想定
+していたが、実装着手で =build-tool/src/eval/mod.rs:191= の
+=apply_combiner= dispatch order が以下と判明:
+
+#+BEGIN_SRC rust
+fn apply_combiner(head: &Sexp, tail: &Sexp, env: &mut Env)
+    -> Result<Sexp, EvalError> {
+    match head {
+        Sexp::Symbol(name) => {
+            // 1) Special forms — argument evaluation order is form-specific.
+            if let Some(result) = special_forms::apply_special(name, tail, env)? {
+                return Ok(result);
+            }
+            // 2) Macro? — expand once, recurse on expansion.
+            if let Ok(func) = env.lookup_function(name) {
+                if is_macro(&func) { ... }
+                ...
+            }
+        }
+        ...
+    }
+}
+#+END_SRC
+
+つまり =apply_special= が match arm hit する間、fcell に install された
+elisp macro は **dormant** (= unreachable from runtime path)。よって
+Stage 7.3.a〜c で elisp =defmacro= を install しても =(when X Y)= 等の
+runtime evaluation は依然 Rust =sf_when= 直行で、elisp macro path は
+ERT (= =macroexpand-1= 経由) でしか駆動できない。
+
+対応:
+- *Stage 7.3.a〜c は ERT-only parallel install* — elisp macros は install
+  + ERT で expansion shape gate のみ、runtime swap は発生しない
+- *Runtime swap は Stage 7.3.d で一気発生* — Rust 22 arm 削除と同 commit
+  で全 Tier 2 macros が active 化、これ以前の段階では Rust path と elisp
+  path の cross-rust 等価性 test が *等価動作* を保証するわけではない
+  (= elisp expansion が Rust 直行 evaluation と semantic 同一と確認できる
+  のみ、実際の runtime はずっと Rust 経路)
+
+これは Stage 7.2 reader (= =read-from-string= takeover via fcell) と
+非対称: reader entry は Rust =bi_read_from_string= で fcell shadowing
+可能だったが、special form は match arm = override 不可能。
+
+設計判断: dispatch order を逆転 (= macro fcell → special form) させる
+代替案は採らない (= bootstrap 中の =(if ...)= 等 Tier 1 まで影響、リス
+ク過大)。Rust 22 arm 撤去 = elisp swap を **同 commit で原子的に行う**
+方が安全。
+
+** §3.1 Stage 7.3.a — Tier 2 macros 18 件 + macroexpand-1 builtin (SHIPPED 7bab76e)
+
+- =lisp/nelisp-stdlib-eval-special.el= 新規 (+200 LOC)、18 macros を install
   - cond / when / unless / and / or / prog1 / prog2 / save-excursion /
     save-restriction / setq-default / defvar-local / defcustom / defgroup
   - dolist / dotimes / push / pop / defvar / defconst
-- Rust 側 =apply_special= の対応 match arm は **削除しない** (=
-  parallel path、defmacro install 後は elisp 経由 expand、install 前
-  は Rust fallback)
-- ERT: 各 macro の =macroexpand-1= 結果が想定 form と =equal= かを test
+- Rust 側 =apply_special= match arm は **削除しない**。§3.0 通り、
+  ERT-only parallel install (= runtime path は依然 Rust 直行)
+- 新規 builtin =bi_macroexpand_1= 追加 (=build-tool/src/eval/builtins.rs= +50 LOC)
+  - =(macroexpand-1 FORM &optional ENV)= — head が macro なら 1 段 expand
+  - ERT inspection 用、Stage 7.3.d 後も保守
+- ERT (= =test/nelisp-stdlib-eval-special-test.el= +200 LOC、25 case):
+  各 macro の =macroexpand-1= 結果と prin1 expected が =string== で gate
 - bootstrap: =STDLIB_SOURCES= に Layer A 1 番目で追加
+- =provide= は意図的に省略 (= Layer A は =provide= 自身が elisp 定義
+  される前 load、Stage 7.2 reader と同 workaround)
+- gensym 不在のため =--nl-= prefix 固定 symbol で衝突回避
 
-LOC: +250 elisp、Rust 不変。
+LOC 実績: +500 net (= +400 lisp/test + +50 builtin + +5 STDLIB_SOURCES wire)。
+Doc 67 初版 §5 LOC 表 (= +250 elisp / Rust 不変) は誤差あり、§5 で実数に修正。
 
 ** §3.2 Stage 7.3.b — defun / defmacro elisp port
 
-- =defun= / =defmacro= の 2 macros を追加 install
-- これらは =fset= primitive を呼ぶ純 macro
-- Rust =sf_defun= / =sf_defmacro= は parallel path で残存 (= 7.3.d で
-  撤去)
-- ERT: =(defun foo (x) (+ x 1)) (foo 5)= = 6 の cross-rust 等価性 test
-  + macroexpand-1 結果 inspect
+- Stage 7.3.a と同 file (= =lisp/nelisp-stdlib-eval-special.el=) に
+  =defun= / =defmacro= の 2 macros を追記 install
+- shape:
+  - =(defun NAME ARGS BODY...)= → =(fset 'NAME (lambda ARGS BODY...))=
+    + =(quote NAME)= return
+  - =(defmacro NAME ARGS BODY...)= → =(fset 'NAME (cons 'macro (lambda ARGS BODY...)))=
+    + =(quote NAME)= return
+- Rust =sf_defun= / =sf_defmacro= は §3.0 通り parallel path で残存
+  (= ERT-only、Stage 7.3.d で削除)
+- ERT: =macroexpand-1= 結果 inspect (= cross-rust runtime 等価性は §3.0
+  通り 7.3.d までは検証不能、shape 一致のみで gate)
 
-LOC: +30 elisp、Rust 不変。
+LOC: +30 elisp + +5 ERT。
 
 ** §3.3 Stage 7.3.c — cl-defun elisp port
 
 - =cl-defun= を elisp macro 化 (= §2.6 の shape)
-- helper =nelisp--parse-cl-formals= も同 file に defun
-- ERT: 既存 =anvil-memory-list= 等 =&key= 持ち defun が elisp 経由
-  expand で動くか cross test
-- Rust =sf_cl_defun= は parallel path
+- helper =nelisp--parse-cl-formals= も同 file に defun (= macro body より
+  helper を defun で書ける、helper 自身は普通の elisp 関数)
+- ERT: =macroexpand-1 '(cl-defun foo (a &key b) BODY)= が =defun= +
+  =let*= 形式の expansion を返すか shape inspect
+- Rust =sf_cl_defun= は §3.0 通り parallel path で残存
 
-LOC: +120 elisp、Rust 不変。
+LOC: +120 elisp。
 
-** §3.4 Stage 7.3.d — Rust sf_* 22 件撤去
+** §3.4 Stage 7.3.d — Rust sf_* 22 件撤去 + runtime swap
 
-- Stage 7.3.a/b/c で elisp macros が安定動作確認後、=apply_special=
-  の Tier 2 22 arm を削除、=sf_when= / =sf_unless= / =sf_cond= / =sf_and=
-  / =sf_or= / =sf_prog1= / =sf_prog2= / =sf_dolist= / =sf_dotimes= /
-  =sf_save_*= / =sf_push= / =sf_pop= / =sf_defun= / =sf_cl_defun= /
-  =sf_defmacro= / =sf_defvar= / =sf_defcustom= / =sf_defgroup= / =sf_setq_default=
-  ハンドラ全削除
+- §3.0 通り、本 stage で **runtime swap が発生**。それまでに install
+  された elisp macros が active 化、Rust 22 arm を全削除した瞬間
+  =apply_combiner= は fcell 経路に進み macro expand → 結果を eval
+- =apply_special= match arm 削除リスト:
+  =sf_when= / =sf_unless= / =sf_cond= / =sf_and= / =sf_or= /
+  =sf_prog1= / =sf_prog2= / =sf_dolist= / =sf_dotimes= /
+  =sf_save_excursion= / =sf_save_restriction= / =sf_push= / =sf_pop= /
+  =sf_defun= / =sf_cl_defun= / =sf_defmacro= / =sf_defvar= /
+  =sf_defvar_local= / =sf_defconst= / =sf_defcustom= / =sf_defgroup= /
+  =sf_setq_default=
 - =include_str!= で =lisp/nelisp-stdlib-eval-special.el= を image.rs に
-  bake-in (= 起動時必ず install 保証)
-- ERT: 全 ERT pass、self-host gate 通過
+  bake-in (= 起動時必ず install 保証、Stage 7.3.a 時点では =STDLIB_SOURCES=
+  経由のみで bake-in 未済)
+- ERT: 全 ERT pass、self-host gate 通過 — 特に Layer B 以降の全 stdlib
+  =.el= が「elisp macro 経由」で load され続けるか確認 (= 一気切替で
+  semantic 差が露見する fork point)
+- *cross-rust 等価性 ERT は本 stage で初めて意味を持つ* — Stage 7.3.a〜c
+  時点では runtime はずっと Rust 直行だったため、elisp macros の動作
+  検証はここで最終確認
 
 LOC: -500 Rust、+5 Rust (= image.rs include)。
 
@@ -386,7 +460,12 @@ LOC: -500 Rust、+5 Rust (= image.rs include)。
 7.3.a → 7.3.b → 7.3.c → 7.3.d。各 sub-stage で全 ERT PASS かつ
 =make test= 0 unexpected を gate。Stage 7.3.a で大半の Tier 2 を移し、
 7.3.b/c で defun/defmacro/cl-defun (= 比較的大きい) を分離 ship、
-7.3.d で Rust 側の最終撤去。
+7.3.d で Rust 側の最終撤去 + runtime swap (§3.0)。
+
+§3.0 の制約により 7.3.a〜c は **shape gate のみ** (= ERT macroexpand-1
+inspection)、7.3.d で初めて runtime semantic 等価性が test 可能 (§4.2)。
+7.3.d は本質的に "ビッグバン commit" となるため、commit 前に手元で
+全 ERT を回し各 macro shape を再確認する手順が必要。
 
 * §4 Test plan
 
@@ -400,14 +479,22 @@ LOC: -500 Rust、+5 Rust (= image.rs include)。
 
 22 macros * ~3 case = ~70 ERT 案件。
 
-** §4.2 cross-rust 等価性 ERT
+** §4.2 cross-rust 等価性 ERT (Stage 7.3.d でのみ有効)
 
-Stage 7.3.a/b/c の sub-stage で *parallel path* が動いている間 (= 7.3.d
-直前まで)、同じ form を:
-- Rust special form (= =apply_special= match arm) で evaluate した結果
-- elisp macro expand 後 evaluate した結果
+§3.0 通り、Stage 7.3.a〜c では runtime path が依然 Rust 直行のため、
+「elisp macro expand 後 evaluate した結果」は実際には *呼び出されな
+い*。よって 7.3.a〜c の "parallel path 等価性 test" は意味を持たず、
+shape inspection (= §4.1) のみが gate として機能。
 
-両者が =equal= かを cross test。差異が出た場合 macro 定義のバグ確定。
+cross-rust 等価性 ERT は **Stage 7.3.d で runtime swap が起きた直後**
+に初めて意味を持つ:
+- 7.3.d 適用前 commit (= Rust 22 arm 残存) で =(when t 1 2)= 等を
+  evaluate した結果を保存
+- 7.3.d 適用後 (= elisp macros active) で同 form を evaluate
+- 両者が =equal= かを git history を跨いだ regression test として確認
+
+差異が出た場合は macro 定義のバグ確定 — Stage 7.3.d revert + macro
+shape を 7.3.a〜c に戻して修正。
 
 ** §4.3 self-host gate
 
@@ -434,18 +521,20 @@ Stage 7.3.a/b/c の sub-stage で *parallel path* が動いている間 (= 7.3.d
 
 * §5 段階的 unlock plan
 
-| stage   | 解放対象                                      | LOC 削減 / 増加     | 依存                |
-|---------+-----------------------------------------------+---------------------+---------------------|
-| 7.3.a   | Tier 2 macros 18 件 (= cond/when/unless/...) | 0 (= +250 elisp)    | Stage 7.2 SHIPPED |
-| 7.3.b   | defun / defmacro elisp port                   | 0 (= +30 elisp)     | 7.3.a               |
-| 7.3.c   | cl-defun elisp port                           | 0 (= +120 elisp)    | 7.3.b               |
-| 7.3.d   | Rust sf_* 22 件撤去 + image.rs include        | -500 Rust (= +5)    | 7.3.c (= 安定動作)  |
-| 計      | -                                             | -500 Rust / +405 elisp | -                |
+| stage   | 解放対象                                      | LOC 削減 / 増加          | 依存                |
+|---------+-----------------------------------------------+--------------------------+---------------------|
+| 7.3.a   | Tier 2 macros 18 件 + bi_macroexpand_1 (SHIPPED 7bab76e) | +200 lisp / +200 ERT / +50 Rust builtin / +5 wire | Stage 7.2 SHIPPED |
+| 7.3.b   | defun / defmacro elisp port                   | +30 elisp + +5 ERT       | 7.3.a               |
+| 7.3.c   | cl-defun elisp port                           | +120 elisp + +20 ERT     | 7.3.b               |
+| 7.3.d   | Rust sf_* 22 件撤去 + image.rs include + runtime swap | -500 Rust (= +5)         | 7.3.c (= shape gate 通過)  |
+| 計      | -                                             | -500 Rust / +375 elisp / +205 ERT / +50 Rust builtin | -        |
 
-合計: Rust ~500 LOC 削減 + elisp ~405 LOC 増 = net -95 LOC、かつ
-Phase 7 self-host roadmap (Doc 63) で Stage 7.3 完遂。残 Tier 1
-(~600 LOC) は Stage 7.4 (= apply / env elisp 化) と連動して撤去
-される (= eval/mod.rs / env.rs と一蓮托生)。
+合計: Rust 削減 ~450 (= -500 + +50 macroexpand-1 + +5 wire) + elisp ~580
+(= 375 lisp + 205 ERT) = net +130 LOC、かつ Phase 7 self-host roadmap
+(Doc 63) で Stage 7.3 完遂。Doc 67 初版の "net -95 LOC" 見込みは ERT
+追加 + macroexpand-1 builtin 分で増えており、本 update で実数に修正。
+残 Tier 1 (~600 LOC) は Stage 7.4 (= apply / env elisp 化) と連動して
+撤去される (= eval/mod.rs / env.rs と一蓮托生)。
 
 * §6 共通原則
 
