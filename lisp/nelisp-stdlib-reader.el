@@ -139,6 +139,10 @@
         :line (plist-get pos :line)
         :col (plist-get pos :col)))
 
+(defun nelisp--read-tok-with-end (token end-i)
+  "Augment TOKEN with `:end' = byte index just past the token's last char."
+  (append token (list :end end-i)))
+
 (defun nelisp--read-tok-error (msg pos)
   "Raise a reader error for MSG at POS."
   (error "nelisp-read-error: %s (line %d col %d)"
@@ -496,41 +500,46 @@ substrate has no `isnan' primitive yet."
 ;; ---------------------------------------------------------------------------
 
 (defun nelisp--read-next-token (lx)
-  "Return the next token from LX, or nil at EOF."
+  "Return the next token from LX (with `:end' = post-token byte index),
+or nil at EOF."
   (nelisp--read-tok-skip-ws-comments lx)
   (let ((c (nelisp--read-tok-peek lx)))
     (when c
-      (let ((pos (nelisp--read-tok-snapshot-pos lx)))
-        (cond
-         ((eq c ?\() (nelisp--read-tok-bump lx)
-                     (nelisp--read-tok-make 'lparen nil pos))
-         ((eq c ?\)) (nelisp--read-tok-bump lx)
-                     (nelisp--read-tok-make 'rparen nil pos))
-         ((eq c ?\[) (nelisp--read-tok-bump lx)
-                     (nelisp--read-tok-make 'lbracket nil pos))
-         ((eq c ?\]) (nelisp--read-tok-bump lx)
-                     (nelisp--read-tok-make 'rbracket nil pos))
-         ((eq c ?\') (nelisp--read-tok-bump lx)
-                     (nelisp--read-tok-make 'quote nil pos))
-         ((eq c ?`)  (nelisp--read-tok-bump lx)
-                     (nelisp--read-tok-make 'backquote nil pos))
-         ((eq c ?,)
-          (nelisp--read-tok-bump lx)
-          (if (eq (nelisp--read-tok-peek lx) ?@)
-              (progn (nelisp--read-tok-bump lx)
-                     (nelisp--read-tok-make 'comma-at nil pos))
-            (nelisp--read-tok-make 'comma nil pos)))
-         ((eq c ?\") (nelisp--read-tok-string lx pos))
-         ((eq c ?#)  (nelisp--read-tok-sharpsign lx pos))
-         ((eq c ?\?)
-          ;; Doc 51 Phase 3-A''-3: bare `?' followed by whitespace or EOF
-          ;; is the symbol `?', everything else is a char literal.
-          (let ((nx (nelisp--read-tok-peek-at lx 1)))
-            (cond
-             ((null nx) (nelisp--read-tok-atom lx pos))
-             ((nelisp--read-tok-whitespace-p nx) (nelisp--read-tok-atom lx pos))
-             (t (nelisp--read-tok-char-literal lx pos)))))
-         (t (nelisp--read-tok-atom lx pos)))))))
+      (let* ((pos (nelisp--read-tok-snapshot-pos lx))
+             (tok
+              (cond
+               ((eq c ?\() (nelisp--read-tok-bump lx)
+                           (nelisp--read-tok-make 'lparen nil pos))
+               ((eq c ?\)) (nelisp--read-tok-bump lx)
+                           (nelisp--read-tok-make 'rparen nil pos))
+               ((eq c ?\[) (nelisp--read-tok-bump lx)
+                           (nelisp--read-tok-make 'lbracket nil pos))
+               ((eq c ?\]) (nelisp--read-tok-bump lx)
+                           (nelisp--read-tok-make 'rbracket nil pos))
+               ((eq c ?\') (nelisp--read-tok-bump lx)
+                           (nelisp--read-tok-make 'quote nil pos))
+               ((eq c ?`)  (nelisp--read-tok-bump lx)
+                           (nelisp--read-tok-make 'backquote nil pos))
+               ((eq c ?,)
+                (nelisp--read-tok-bump lx)
+                (if (eq (nelisp--read-tok-peek lx) ?@)
+                    (progn (nelisp--read-tok-bump lx)
+                           (nelisp--read-tok-make 'comma-at nil pos))
+                  (nelisp--read-tok-make 'comma nil pos)))
+               ((eq c ?\") (nelisp--read-tok-string lx pos))
+               ((eq c ?#)  (nelisp--read-tok-sharpsign lx pos))
+               ((eq c ?\?)
+                ;; Doc 51 Phase 3-A''-3: bare `?' followed by whitespace
+                ;; or EOF is the symbol `?', everything else is a char
+                ;; literal.
+                (let ((nx (nelisp--read-tok-peek-at lx 1)))
+                  (cond
+                   ((null nx) (nelisp--read-tok-atom lx pos))
+                   ((nelisp--read-tok-whitespace-p nx)
+                    (nelisp--read-tok-atom lx pos))
+                   (t (nelisp--read-tok-char-literal lx pos)))))
+               (t (nelisp--read-tok-atom lx pos)))))
+        (nelisp--read-tok-with-end tok (aref lx 1))))))
 
 (defun nelisp--read-tokenize (string)
   "Tokenize STRING, returning a list of token plists.
@@ -543,6 +552,243 @@ Stage 7.2.a — Doc 66 §2.2."
         (push tok tokens)
         (setq tok (nelisp--read-next-token lx))))
     (nreverse tokens)))
+
+;; ---------------------------------------------------------------------------
+;; Parser (Stage 7.2.b, Doc 66 §2.3 — recursive descent over the
+;; tokenizer's plist stream).
+;;
+;; Convention: every sub-parser takes a TOKENS list, parses ONE form,
+;; and returns `(cons FORM REMAINING-TOKENS)' so the caller can chain.
+;; This mirrors Rust's `parser::parse_one' shape.
+;; ---------------------------------------------------------------------------
+
+(defun nelisp--read-parse-error (msg tok)
+  "Raise a parser error referencing TOK's source position."
+  (let ((line (and tok (plist-get tok :line)))
+        (col  (and tok (plist-get tok :col))))
+    (if (and line col)
+        (error "nelisp-read-error: %s (line %d col %d)" msg line col)
+      (error "nelisp-read-error: %s" msg))))
+
+(defun nelisp--read-parse-one (tokens)
+  "Parse exactly one form from TOKENS.
+Returns `(cons FORM REMAINING-TOKENS)' or signals on error."
+  (when (null tokens)
+    (nelisp--read-parse-error "unexpected EOF" nil))
+  (let* ((tok (car tokens))
+         (rest (cdr tokens))
+         (type (plist-get tok :type))
+         (value (plist-get tok :value)))
+    (cond
+     ((eq type 'int)   (cons value rest))
+     ((eq type 'float) (cons value rest))
+     ((eq type 'str)   (cons value rest))
+     ((eq type 'symbol)
+      ;; nil/t are recognized here (= 1 source of truth).
+      (cond
+       ((string= value "nil") (cons nil rest))
+       ((string= value "t")   (cons t rest))
+       (t (cons (intern value) rest))))
+     ((eq type 'quote)          (nelisp--read-parse-prefix 'quote rest))
+     ((eq type 'backquote)      (nelisp--read-parse-prefix 'backquote rest))
+     ;; `comma' / `comma-at' tag symbols match the names that
+     ;; `nelisp--prn-reader-macro-abbrev' (Stage 7.1, Doc 64) recognizes
+     ;; for the `,X' / `,@X' abbreviated print shape.  Using the literal
+     ;; `,' / `,@' symbols here would print as `(\, X)' since the prn
+     ;; abbrev table is keyed off symbol-name = "comma" / "comma-at".
+     ((eq type 'comma)          (nelisp--read-parse-prefix 'comma rest))
+     ((eq type 'comma-at)       (nelisp--read-parse-prefix 'comma-at rest))
+     ((eq type 'function-quote) (nelisp--read-parse-prefix 'function rest))
+     ((eq type 'lparen)         (nelisp--read-parse-list rest tok))
+     ((eq type 'lbracket)       (nelisp--read-parse-vector rest tok))
+     ((eq type 'sharps-paren)   (nelisp--read-parse-record rest tok))
+     ((eq type 'dot)
+      (nelisp--read-parse-error "unexpected `.'" tok))
+     ((eq type 'rparen)
+      (nelisp--read-parse-error "unexpected `)'" tok))
+     ((eq type 'rbracket)
+      (nelisp--read-parse-error "unexpected `]'" tok))
+     (t
+      (nelisp--read-parse-error
+       (format "unhandled token type `%s'" type) tok)))))
+
+(defun nelisp--read-parse-prefix (tag tokens)
+  "Parse `(TAG ARG)' for quote-family TAG over TOKENS."
+  (when (null tokens)
+    (nelisp--read-parse-error
+     (format "unexpected EOF after `%s' prefix" tag) nil))
+  (let* ((sub (nelisp--read-parse-one tokens))
+         (form (car sub))
+         (rest (cdr sub)))
+    (cons (list tag form) rest)))
+
+(defun nelisp--read-parse-list (tokens open-tok)
+  "Parse a `(...)' list / dotted-pair body, given OPEN-TOK = `(' position."
+  (let ((elements nil) (tail nil) (done nil) (toks tokens))
+    (while (not done)
+      (when (null toks)
+        (nelisp--read-parse-error "unterminated list" open-tok))
+      (let ((tk (car toks)))
+        (cond
+         ((eq (plist-get tk :type) 'rparen)
+          (setq toks (cdr toks))
+          (setq done t))
+         ((eq (plist-get tk :type) 'dot)
+          ;; dotted pair: `(A B . C)' — consume `.', read 1 form for cdr,
+          ;; require closing `)'.
+          (setq toks (cdr toks))
+          (when (null toks)
+            (nelisp--read-parse-error "unexpected EOF after `.'" tk))
+          (let ((sub (nelisp--read-parse-one toks)))
+            (setq tail (car sub))
+            (setq toks (cdr sub)))
+          (when (or (null toks)
+                    (not (eq (plist-get (car toks) :type) 'rparen)))
+            (nelisp--read-parse-error
+             "expected `)' after dotted-pair tail" open-tok))
+          (setq toks (cdr toks))
+          (setq done t))
+         (t
+          (let ((sub (nelisp--read-parse-one toks)))
+            (push (car sub) elements)
+            (setq toks (cdr sub)))))))
+    (let ((result tail))
+      (dolist (el elements)
+        (setq result (cons el result)))
+      (cons result toks))))
+
+(defun nelisp--read-parse-vector (tokens open-tok)
+  "Parse a `[...]' vector body."
+  (let ((elements nil) (done nil) (toks tokens))
+    (while (not done)
+      (when (null toks)
+        (nelisp--read-parse-error "unterminated vector" open-tok))
+      (let ((tk (car toks)))
+        (cond
+         ((eq (plist-get tk :type) 'rbracket)
+          (setq toks (cdr toks))
+          (setq done t))
+         ((eq (plist-get tk :type) 'dot)
+          (nelisp--read-parse-error "unexpected `.' inside vector" tk))
+         (t
+          (let ((sub (nelisp--read-parse-one toks)))
+            (push (car sub) elements)
+            (setq toks (cdr sub)))))))
+    (cons (apply 'vector (nreverse elements)) toks)))
+
+(defun nelisp--read-parse-record (tokens open-tok)
+  "Parse a `#s(TYPE V0 V1 ...)' record body.
+Builds a record with TYPE as `type-tag' and the rest as positional
+slots.  Mirrors Rust's `parser::parse_record' Doc 52 §2.3 shape."
+  (when (null tokens)
+    (nelisp--read-parse-error "unexpected EOF after `#s('" open-tok))
+  ;; First token = type-tag (= a symbol).
+  (let* ((sub (nelisp--read-parse-one tokens))
+         (type-tag (car sub))
+         (toks (cdr sub))
+         (slots nil) (done nil))
+    (while (not done)
+      (when (null toks)
+        (nelisp--read-parse-error "unterminated record" open-tok))
+      (let ((tk (car toks)))
+        (cond
+         ((eq (plist-get tk :type) 'rparen)
+          (setq toks (cdr toks))
+          (setq done t))
+         (t
+          (let ((sub2 (nelisp--read-parse-one toks)))
+            (push (car sub2) slots)
+            (setq toks (cdr sub2)))))))
+    (cons (apply 'nelisp--make-record type-tag (nreverse slots)) toks)))
+
+;; ---------------------------------------------------------------------------
+;; Public entry: `read-from-string' / `read-all-from-string'.
+;;
+;; Stage 7.2.b: defun shadows the Rust dispatcher's installed function
+;; cell once the takeover hook in `bi_read_from_string' fires.  The
+;; takeover hook checks for `nelisp--read-from-string-impl' (= the
+;; internal name) being callable; if so, dispatches to it.
+;; ---------------------------------------------------------------------------
+
+(defun nelisp--read-from-string-impl (string &optional start end)
+  "Stage 7.2.b takeover entry for `read-from-string'.
+
+Reads exactly one form from STRING starting at START (default 0) and
+ending at END (default `(length STRING)').  Returns `(FORM . CONSUMED-END)'
+where CONSUMED-END is the byte index just past the last token consumed.
+
+Mirrors Rust's `bi_read_from_string' return shape: when no token was
+consumed (= empty input), returns `(nil . START)' to match the
+upstream Emacs reader's edge behaviour.
+
+Note: the substring is currently parsed via `(substring STRING START END)',
+so the CONSUMED-END is computed in the SUB-string's coordinates and then
+shifted by START.  This matches Rust's behaviour for the common
+2-and-3-arg call shapes."
+  (let* ((effective-start (or start 0))
+         (effective-end (or end (length string)))
+         (sub (substring string effective-start effective-end))
+         (tokens (nelisp--read-tokenize sub)))
+    (if (null tokens)
+        (cons nil effective-start)
+      (let* ((parse-result (nelisp--read-parse-one tokens))
+             (form (car parse-result))
+             (remaining (cdr parse-result))
+             ;; Compute consumed end in SUB coordinates.  If REMAINING
+             ;; is non-nil, take the first remaining token's `:line/:col'
+             ;; and find its byte offset by linearly walking SUB; for
+             ;; simplicity (= matching Rust's "consume full string"
+             ;; semantics for 1-arg calls) we use the end of the LAST
+             ;; consumed token, which requires recomputing — easier to
+             ;; subtract: consumed-end-in-sub = (length sub) when no
+             ;; remaining, else REMAINING's first :end-of-prev-token.
+             ;;
+             ;; Stage 7.2.b heuristic: if REMAINING is non-nil, use that
+             ;; first token's `:end-pre' if present, else fall back to
+             ;; `:line'/`:col' resolution.  For now, use a simpler
+             ;; model: track the end offset via the consumed tokens'
+             ;; `:end' attribute.
+             (consumed-end
+              (if (null remaining)
+                  (length sub)
+                ;; First REMAINING token starts somewhere in SUB; the
+                ;; consumed prefix ends at that token's `:line/:col'.
+                ;; Stage 7.2.b uses a coarse approximation: compute
+                ;; from token's :line/:col.  For strict round-trip the
+                ;; tokenize phase saves :end on each token; the prior
+                ;; consumed token's :end gives the answer.
+                (nelisp--read--consumed-end-in-sub
+                 sub tokens remaining))))
+        (cons form (+ effective-start consumed-end))))))
+
+(defun nelisp--read--consumed-end-in-sub (sub all-tokens remaining-tokens)
+  "Return the byte index in SUB where the consumed prefix ends.
+
+Walks ALL-TOKENS until REMAINING-TOKENS is `eq' (= same cons cell),
+returns the previous token's `:end' attribute.  If REMAINING-TOKENS is
+the head, returns 0; if it's nil, returns `(length sub)'."
+  (cond
+   ((null remaining-tokens) (length sub))
+   ((eq all-tokens remaining-tokens) 0)
+   (t
+    (let ((prev nil) (cur all-tokens))
+      (while (and cur (not (eq cur remaining-tokens)))
+        (setq prev (car cur))
+        (setq cur (cdr cur)))
+      (if prev
+          (or (plist-get prev :end) (length sub))
+        (length sub))))))
+
+(defun nelisp--read-all-from-string-impl (string)
+  "Read every top-level form from STRING, return as a list.
+Stage 7.2.b takeover for the `read-all' style read used by `load'."
+  (let* ((tokens (nelisp--read-tokenize string))
+         (forms nil))
+    (while tokens
+      (let ((sub (nelisp--read-parse-one tokens)))
+        (push (car sub) forms)
+        (setq tokens (cdr sub))))
+    (nreverse forms)))
 
 (provide 'nelisp-stdlib-reader)
 

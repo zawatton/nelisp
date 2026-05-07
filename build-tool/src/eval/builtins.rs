@@ -676,7 +676,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "_jobctrl-handlers-installed-p" => bi_jobctrl_handlers_installed_p(args),
         "terminal-take-sigcont" => bi_terminal_take_sigcont(args),
         "read" => bi_read(args),
-        "read-from-string" => bi_read_from_string(args),
+        "read-from-string" => bi_read_from_string(args, env),
         // provide / featurep migrated to elisp (Rust-min batch 7i,
         // 2026-05-07; see lisp/nelisp-stdlib-misc.el).  Only `require'
         // stays Rust because it orchestrates load + post-load verify.
@@ -4818,8 +4818,17 @@ fn bi_read(args: &[Sexp]) -> Result<Sexp, EvalError> {
 /// `(read-from-string STRING &optional START END)' — return a cons
 /// `(FORM . NEW-INDEX)'.  We currently ignore the optional bounds and
 /// always return `(FORM . (length STRING))' on success.
-fn bi_read_from_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
+fn bi_read_from_string(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("read-from-string", args, 1, Some(3))?;
+    // Phase 7 Stage 7.2.b takeover (Doc 66 §2.5): when the elisp side
+    // has installed `nelisp--read-from-string-impl' (= the bundled
+    // `lisp/nelisp-stdlib-reader.el' loaded at startup), dispatch
+    // every `read-from-string' through it.  The Rust path below is
+    // kept as a bootstrap fallback for the (unlikely) case where the
+    // elisp impl is missing — Stage 7.2.d will remove it.
+    if let Ok(impl_fn) = env.lookup_function("nelisp--read-from-string-impl") {
+        return super::apply_function(&impl_fn, args, env);
+    }
     let s = match &args[0] {
         Sexp::Str(s) => s.clone(),
         Sexp::MutStr(rc) => rc.borrow().clone(),

@@ -222,6 +222,123 @@ of the `progn' return value)."
                   "(let ((x 1)) (+ x 2))")
                  "(lparen symbol lparen lparen symbol int rparen rparen lparen symbol symbol int rparen rparen)")))
 
+;; ---------------------------------------------------------------------------
+;; Stage 7.2.b parser tests.  Exercise `read-from-string' (= the
+;; takeover entry installed by `lisp/nelisp-stdlib-reader.el') through
+;; the same subprocess pattern as the tokenizer tests.  Each test prints
+;; `(prin1-to-string (read-from-string "..."))' and compares against
+;; the expected `(FORM . CONSUMED-END)' string.
+;; ---------------------------------------------------------------------------
+
+(defun nelisp-stdlib-reader-test--read (input-str)
+  "Run `(read-from-string INPUT-STR)' via subprocess, return prin1 of result."
+  (nelisp-stdlib-reader-test--skip-unless-built)
+  (let* ((quoted (replace-regexp-in-string "\\\\" "\\\\" input-str t t))
+         (quoted (replace-regexp-in-string "\"" "\\\"" quoted t t))
+         (expr (format "(progn (princ (prin1-to-string (read-from-string \"%s\"))) nil)"
+                       quoted))
+         (out (nelisp-stdlib-reader-test--eval expr))
+         (out (nelisp-stdlib-reader-test--strip-trailing out "nil")))
+    out))
+
+(ert-deftest nelisp-stdlib-reader-parse-int ()
+  (should (equal (nelisp-stdlib-reader-test--read "42")
+                 "(42 . 2)")))
+
+(ert-deftest nelisp-stdlib-reader-parse-float ()
+  (should (equal (nelisp-stdlib-reader-test--read "3.14")
+                 "(3.14 . 4)")))
+
+(ert-deftest nelisp-stdlib-reader-parse-string ()
+  (should (equal (nelisp-stdlib-reader-test--read "\"hello\"")
+                 "(\"hello\" . 7)")))
+
+(ert-deftest nelisp-stdlib-reader-parse-symbol ()
+  (should (equal (nelisp-stdlib-reader-test--read "foo")
+                 "(foo . 3)")))
+
+(ert-deftest nelisp-stdlib-reader-parse-nil-t ()
+  (should (equal (nelisp-stdlib-reader-test--read "nil")
+                 "(nil . 3)"))
+  (should (equal (nelisp-stdlib-reader-test--read "t")
+                 "(t . 1)")))
+
+(ert-deftest nelisp-stdlib-reader-parse-list-empty ()
+  (should (equal (nelisp-stdlib-reader-test--read "()")
+                 "(nil . 2)")))
+
+(ert-deftest nelisp-stdlib-reader-parse-list-three ()
+  (should (equal (nelisp-stdlib-reader-test--read "(a b c)")
+                 "((a b c) . 7)")))
+
+(ert-deftest nelisp-stdlib-reader-parse-list-mixed ()
+  (should (equal (nelisp-stdlib-reader-test--read "(foo 42 \"hi\")")
+                 "((foo 42 \"hi\") . 13)")))
+
+(ert-deftest nelisp-stdlib-reader-parse-dotted ()
+  (should (equal (nelisp-stdlib-reader-test--read "(a . b)")
+                 "((a . b) . 7)")))
+
+(ert-deftest nelisp-stdlib-reader-parse-vector ()
+  (should (equal (nelisp-stdlib-reader-test--read "[1 2 3]")
+                 "([1 2 3] . 7)")))
+
+(ert-deftest nelisp-stdlib-reader-parse-quote ()
+  ;; (read-from-string "'x") => ('x . 2) ⟶ ((quote x) . 2) printed
+  ;; abbreviated as `('x . 2)'.
+  (should (equal (nelisp-stdlib-reader-test--read "'x")
+                 "('x . 2)")))
+
+(ert-deftest nelisp-stdlib-reader-parse-backquote-comma ()
+  (should (equal (nelisp-stdlib-reader-test--read "`(a ,b)")
+                 "(`(a ,b) . 7)")))
+
+(ert-deftest nelisp-stdlib-reader-parse-function-quote ()
+  (should (equal (nelisp-stdlib-reader-test--read "#'foo")
+                 "(#'foo . 5)")))
+
+(ert-deftest nelisp-stdlib-reader-parse-record ()
+  (should (equal (nelisp-stdlib-reader-test--read "#s(point 1 2)")
+                 "(#s(point 1 2) . 13)")))
+
+(ert-deftest nelisp-stdlib-reader-parse-nested ()
+  (should (equal (nelisp-stdlib-reader-test--read "(let ((x 1)) (+ x 2))")
+                 "((let ((x 1)) (+ x 2)) . 21)")))
+
+;; ---------------------------------------------------------------------------
+;; round-trip property: `(read-from-string (prin1-to-string OBJ))' returns
+;; OBJ unchanged.  This is the foundation of Stage 7.2.c gate but adding a
+;; few representative cases here gives early signal.
+;; ---------------------------------------------------------------------------
+
+(defun nelisp-stdlib-reader-test--round-trip (obj-form)
+  "Eval `(equal OBJ (car (read-from-string (prin1-to-string OBJ))))'
+where OBJ is OBJ-FORM evaluated; return stdout (= `t' or `nil')."
+  (nelisp-stdlib-reader-test--skip-unless-built)
+  (let* ((expr (format
+                "(progn (princ (prin1-to-string (let* ((obj %s) (s (prin1-to-string obj)) (rt (car (read-from-string s)))) (equal obj rt)))) nil)"
+                obj-form))
+         (out (nelisp-stdlib-reader-test--eval expr))
+         (out (nelisp-stdlib-reader-test--strip-trailing out "nil")))
+    out))
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-int ()
+  (should (equal (nelisp-stdlib-reader-test--round-trip "42") "t")))
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-list ()
+  (should (equal (nelisp-stdlib-reader-test--round-trip "'(a b c)") "t")))
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-string ()
+  (should (equal (nelisp-stdlib-reader-test--round-trip "\"hello\"") "t")))
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-vector ()
+  (should (equal (nelisp-stdlib-reader-test--round-trip "[1 2 3]") "t")))
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-nested ()
+  (should (equal (nelisp-stdlib-reader-test--round-trip
+                  "'(let ((x 1)) (+ x 2))")
+                 "t")))
+
 (provide 'nelisp-stdlib-reader-test)
 
 ;;; nelisp-stdlib-reader-test.el ends here
