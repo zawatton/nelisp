@@ -224,6 +224,65 @@
                     "(defmacro foo (x))")
                    "(progn (fset 'foo (cons 'macro (cons (lambda (x)) nil))) 'foo)")))
 
+;;; ---- cl-defun (Stage 7.3.c) -----------------------------------------
+
+(ert-deftest nelisp-eval-special/cl-defun-no-key-positional ()
+  (nelisp-stdlib-eval-special-test--skip-unless-built)
+  ;; No &key → plain defun passthrough.
+  (should (string= (nelisp-stdlib-eval-special-test--expand
+                    "(cl-defun foo (x) (+ x 1))")
+                   "(defun foo (x) (+ x 1))")))
+
+(ert-deftest nelisp-eval-special/cl-defun-no-key-optional ()
+  (nelisp-stdlib-eval-special-test--skip-unless-built)
+  (should (string= (nelisp-stdlib-eval-special-test--expand
+                    "(cl-defun foo (a &optional b) (+ a (or b 0)))")
+                   "(defun foo (a &optional b) (+ a (or b 0)))")))
+
+(ert-deftest nelisp-eval-special/cl-defun-no-key-rest ()
+  (nelisp-stdlib-eval-special-test--skip-unless-built)
+  (should (string= (nelisp-stdlib-eval-special-test--expand
+                    "(cl-defun foo (&rest tail) tail)")
+                   "(defun foo (&rest tail) tail)")))
+
+(ert-deftest nelisp-eval-special/cl-defun-key-only ()
+  (nelisp-stdlib-eval-special-test--skip-unless-built)
+  (should (string= (nelisp-stdlib-eval-special-test--expand
+                    "(cl-defun foo (&key x) x)")
+                   "(defun foo (&rest --cl-keys) (let* ((x (or (car (cdr (memq ':x --cl-keys))) nil))) x))")))
+
+(ert-deftest nelisp-eval-special/cl-defun-key-with-default ()
+  (nelisp-stdlib-eval-special-test--skip-unless-built)
+  (should (string= (nelisp-stdlib-eval-special-test--expand
+                    "(cl-defun foo (&key (x 10)) x)")
+                   "(defun foo (&rest --cl-keys) (let* ((x (or (car (cdr (memq ':x --cl-keys))) 10))) x))")))
+
+(ert-deftest nelisp-eval-special/cl-defun-multiple-keys ()
+  (nelisp-stdlib-eval-special-test--skip-unless-built)
+  (should (string= (nelisp-stdlib-eval-special-test--expand
+                    "(cl-defun foo (&key a b) (list a b))")
+                   "(defun foo (&rest --cl-keys) (let* ((a (or (car (cdr (memq ':a --cl-keys))) nil)) (b (or (car (cdr (memq ':b --cl-keys))) nil))) (list a b)))")))
+
+(ert-deftest nelisp-eval-special/cl-defun-positional-plus-key ()
+  (nelisp-stdlib-eval-special-test--skip-unless-built)
+  (should (string= (nelisp-stdlib-eval-special-test--expand
+                    "(cl-defun foo (a &key b) (cons a b))")
+                   "(defun foo (a &rest --cl-keys) (let* ((b (or (car (cdr (memq ':b --cl-keys))) nil))) (cons a b)))")))
+
+(ert-deftest nelisp-eval-special/cl-defun-positional-optional-key ()
+  (nelisp-stdlib-eval-special-test--skip-unless-built)
+  (should (string= (nelisp-stdlib-eval-special-test--expand
+                    "(cl-defun foo (a &optional b &key c) (list a b c))")
+                   "(defun foo (a &optional b &rest --cl-keys) (let* ((c (or (car (cdr (memq ':c --cl-keys))) nil))) (list a b c)))")))
+
+(ert-deftest nelisp-eval-special/cl-defun-explicit-rest-plus-key ()
+  (nelisp-stdlib-eval-special-test--skip-unless-built)
+  ;; User-named &rest var is reused as the keyword cursor (matches Rust
+  ;; sf_cl_defun: rest_sym overrides the synthetic --cl-keys default).
+  (should (string= (nelisp-stdlib-eval-special-test--expand
+                    "(cl-defun foo (&rest r &key x) (cons r x))")
+                   "(defun foo (&rest r) (let* ((x (or (car (cdr (memq ':x r))) nil))) (cons r x)))")))
+
 ;;; ---- atom passthrough ------------------------------------------------
 
 (ert-deftest nelisp-eval-special/macroexpand-1-non-macro-passthrough ()

@@ -23,9 +23,8 @@
 ;;   push / pop / defvar / defconst
 ;; (= Stage 7.3.a)
 ;;
-;; 残 4 件は後続 sub-stage:
-;;   defun / defmacro    → Stage 7.3.b
-;;   cl-defun            → Stage 7.3.c
+;; Stage 7.3.b:  defun / defmacro
+;; Stage 7.3.c:  cl-defun + helper `nelisp--parse-cl-formals'
 
 ;;; Code:
 
@@ -284,6 +283,94 @@ dispatches via the `closure' arm."
     (cons 'progn
           (cons (cons 'fset (cons qname (cons outer-cons nil)))
                 (cons qname nil)))))
+
+;;;; --- cl-defun helper + macro (Stage 7.3.c) --------------------------
+
+(defun nelisp--parse-cl-formals (formals)
+  "Parse FORMALS list of a `cl-defun' form.
+Returns a 4-element list (POSITIONAL OPTIONALS REST-OR-NIL KEYS) where
+POSITIONAL / OPTIONALS are flat symbol lists, REST-OR-NIL is the
+&rest var (or nil), and KEYS is a list of (KW PARAM DEFAULT) triples
+— one per &key entry, with KW the leading-colon keyword interned from
+PARAM's name.  &aux entries are silently dropped to match Rust
+`sf_cl_defun' (build-tool/src/eval/special_forms.rs:389)."
+  (let ((mode 'pos)
+        (positional nil)
+        (optionals nil)
+        (rest-sym nil)
+        (keys nil)
+        (cursor formals))
+    (while cursor
+      (let ((f (car cursor)))
+        (if (eq f '&optional)
+            (setq mode 'opt)
+          (if (eq f '&rest)
+              (setq mode 'rest)
+            (if (eq f '&key)
+                (setq mode 'key)
+              (if (eq f '&aux)
+                  (setq mode 'aux)
+                (if (eq mode 'pos)
+                    (setq positional (cons f positional))
+                  (if (eq mode 'opt)
+                      (setq optionals (cons f optionals))
+                    (if (eq mode 'rest)
+                        (if (null rest-sym) (setq rest-sym f))
+                      (if (eq mode 'key)
+                          (let (param default kw)
+                            (if (consp f)
+                                (progn
+                                  (setq param (car f))
+                                  (setq default (car (cdr f))))
+                              (setq param f)
+                              (setq default nil))
+                            (setq kw (intern (concat ":" (symbol-name param))))
+                            (setq keys (cons (list kw param default) keys)))))))))))
+        (setq cursor (cdr cursor))))
+    (list (nreverse positional)
+          (nreverse optionals)
+          rest-sym
+          (nreverse keys))))
+
+(defmacro cl-defun (name formals &rest body)
+  "Common-Lisp style `defun' supporting &key arguments.
+With no &key entry, expands to a plain `defun'.  Otherwise rewrites
+FORMALS into (POS... [&optional O...] &rest R) and wraps BODY in a
+`let*' that lifts each key from R via
+`(or (car (cdr (memq ':KW R))) DEFAULT)' — semantically identical to
+Rust `sf_cl_defun' (build-tool/src/eval/special_forms.rs:389)."
+  (let* ((parsed (nelisp--parse-cl-formals formals))
+         (positional (car parsed))
+         (optionals (car (cdr parsed)))
+         (rest-sym (car (cdr (cdr parsed))))
+         (keys (car (cdr (cdr (cdr parsed))))))
+    (if (null keys)
+        ;; No &key: pass through to plain defun.
+        (cons 'defun (cons name (cons formals body)))
+      ;; &key present: rewrite formals + wrap body.
+      (let* ((rest-name (or rest-sym '--cl-keys))
+             (new-formals
+              (append positional
+                      (if optionals (cons '&optional optionals) nil)
+                      (cons '&rest (cons rest-name nil))))
+             (bindings
+              (mapcar
+               (lambda (k)
+                 ;; k = (KW PARAM DEFAULT)
+                 (let ((kw (car k))
+                       (param (car (cdr k)))
+                       (default (car (cdr (cdr k)))))
+                   (list param
+                         (list 'or
+                               (list 'car
+                                     (list 'cdr
+                                           (list 'memq
+                                                 (list 'quote kw)
+                                                 rest-name)))
+                               default))))
+               keys))
+             (let-form (cons 'let* (cons bindings body))))
+        (cons 'defun (cons name (cons new-formals (cons let-form nil))))))))
 
 ;; (provide 'nelisp-stdlib-eval-special) is intentionally omitted:
 ;; Layer A loads BEFORE `nelisp-stdlib*.el' where `provide' itself is

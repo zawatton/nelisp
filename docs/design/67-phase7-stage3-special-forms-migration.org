@@ -420,7 +420,7 @@ Doc 67 初版 §5 LOC 表 (= +250 elisp / Rust 不変) は誤差あり、§5 で
 
 LOC: +30 elisp + +5 ERT。
 
-** §3.3 Stage 7.3.c — cl-defun elisp port
+** §3.3 Stage 7.3.c — cl-defun elisp port (SHIPPED)
 
 - =cl-defun= を elisp macro 化 (= §2.6 の shape)
 - helper =nelisp--parse-cl-formals= も同 file に defun (= macro body より
