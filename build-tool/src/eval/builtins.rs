@@ -231,6 +231,17 @@ pub fn install_builtins(env: &mut Env) {
         // user-level redefinition.
         "nelisp--syscall-read-file",
         "nelisp--read-all-from-string",
+        // Doc 53 Phase 1 (2026-05-07) — POSIX OS surface (Minimal-5)
+        // Rust primitives.  Five entries that let elisp build the
+        // OS-agnostic `nelisp-os-*' family in lisp/nelisp-stdlib-os.el
+        // without further Rust glue.  Linux-only Path A; the elisp
+        // wrapper detects via `nelisp--syscall-supported-p' and falls
+        // back to `nl-ffi-call' libc bindings on Darwin / Windows.
+        "nelisp--syscall",
+        "nelisp--syscall-supported-p",
+        "nelisp--syscall-openat",
+        "nelisp--syscall-read",
+        "nelisp--syscall-write",
         // Rust-min (2026-05-06): `file-name-directory' /
         // `file-name-nondirectory' / `file-name-as-directory' /
         // `directory-file-name' migrated to elisp (see
@@ -447,6 +458,12 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nelisp--syscall-readdir" => bi_syscall_readdir(args, env),
         "nelisp--syscall-read-file" => bi_syscall_read_file(args, env),
         "nelisp--read-all-from-string" => bi_read_all_from_string(args),
+        // Doc 53 Phase 1 — POSIX OS surface dispatch arms.
+        "nelisp--syscall" => bi_syscall(args),
+        "nelisp--syscall-supported-p" => bi_syscall_supported_p(args),
+        "nelisp--syscall-openat" => bi_syscall_openat(args),
+        "nelisp--syscall-read" => bi_syscall_read(args),
+        "nelisp--syscall-write" => bi_syscall_write(args),
         // ---- symbol / function ----
         "symbol-value" => bi_symbol_value(args, env),
         "symbol-function" => bi_symbol_function(args, env),
@@ -1782,6 +1799,181 @@ fn bi_syscall_readdir(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
         Err(_) => return Ok(Sexp::Nil),
     };
     Ok(Sexp::cons(Sexp::Str(dir_str), Sexp::list_from(&entries)))
+}
+
+// ---------------------------------------------------------------------------
+// Doc 53 Phase 1 (2026-05-07) — POSIX OS surface (Minimal-5).  Five
+// primitives that let elisp build `nelisp-os-open' / `-read' / `-write'
+// / `-close' / `-exit' (lisp/nelisp-stdlib-os.el) without further Rust
+// glue.  Future syscalls that take only int args (lseek / dup2 / kill /
+// getpid etc.) can be invoked directly via `nelisp--syscall NAME-OR-NR
+// ...' from elisp without touching Rust again.
+//
+// Linux-only for Phase 1 (= where libc::syscall + libc::SYS_* are
+// stable + portable).  Darwin / Windows reach the same elisp API via
+// the Path B fallback (= Doc 51 Phase 5 `nl-ffi-call' libc bindings) —
+// see lisp/nelisp-stdlib-os.el.  `nelisp--syscall-supported-p' returns
+// nil on those platforms so the elisp wrapper picks the fallback path;
+// the four other primitives `Err' explicitly if called.
+//
+// Error convention: result < 0 = -errno (Linux kernel ABI shape).
+// `libc::syscall(3)' translates kernel -errno into (-1, errno) so we
+// re-normalize via `__errno_location()' to keep the elisp surface
+// uniform.  When native cc lands (Phase 2 / future Doc) the lowering
+// can emit raw `syscall' instructions and skip this normalization.
+// ---------------------------------------------------------------------------
+
+fn bi_syscall_supported_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--syscall-supported-p", args, 0, Some(0))?;
+    #[cfg(target_os = "linux")]
+    { Ok(Sexp::T) }
+    #[cfg(not(target_os = "linux"))]
+    { Ok(Sexp::Nil) }
+}
+
+#[cfg(target_os = "linux")]
+fn syscall_arg_int(name: &str, idx: usize, s: &Sexp) -> Result<i64, EvalError> {
+    match s {
+        Sexp::Int(n) => Ok(*n),
+        Sexp::Nil => Ok(0),
+        Sexp::T => Ok(1),
+        other => Err(EvalError::WrongType {
+            expected: format!("integer (arg {} of {})", idx, name),
+            got: other.clone(),
+        }),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn syscall_nr(name_or_nr: &Sexp) -> Result<i64, EvalError> {
+    match name_or_nr {
+        Sexp::Int(n) => Ok(*n),
+        Sexp::Symbol(s) => match s.as_str() {
+            "read"       => Ok(libc::SYS_read       as i64),
+            "write"      => Ok(libc::SYS_write      as i64),
+            "close"      => Ok(libc::SYS_close      as i64),
+            "openat"     => Ok(libc::SYS_openat     as i64),
+            "exit_group" => Ok(libc::SYS_exit_group as i64),
+            "lseek"      => Ok(libc::SYS_lseek      as i64),
+            "dup2"       => Ok(libc::SYS_dup2       as i64),
+            "getpid"     => Ok(libc::SYS_getpid     as i64),
+            "kill"       => Ok(libc::SYS_kill       as i64),
+            other => Err(EvalError::Internal(format!(
+                "nelisp--syscall: unknown syscall name `{}'", other))),
+        },
+        other => Err(EvalError::WrongType {
+            expected: "syscall name (symbol) or number (integer)".into(),
+            got: other.clone(),
+        }),
+    }
+}
+
+#[cfg(target_os = "linux")]
+unsafe fn syscall_errno_normalize(r: libc::c_long) -> i64 {
+    if r == -1 {
+        -(*libc::__errno_location() as i64)
+    } else {
+        r as i64
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn bi_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    if args.is_empty() {
+        return Err(EvalError::Internal(
+            "nelisp--syscall: at least one argument (syscall nr / name) required".into()));
+    }
+    let nr = syscall_nr(&args[0])?;
+    let mut a = [0i64; 6];
+    for (i, sexp) in args[1..].iter().enumerate().take(6) {
+        a[i] = syscall_arg_int("nelisp--syscall", i + 1, sexp)?;
+    }
+    let r = unsafe { libc::syscall(nr, a[0], a[1], a[2], a[3], a[4], a[5]) };
+    Ok(Sexp::Int(unsafe { syscall_errno_normalize(r) }))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bi_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let _ = args;
+    Err(EvalError::Internal(
+        "nelisp--syscall: unsupported platform; use Path B (nl-ffi-call libc) fallback".into()))
+}
+
+#[cfg(target_os = "linux")]
+fn bi_syscall_openat(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    use std::ffi::CString;
+    require_arity("nelisp--syscall-openat", args, 4, Some(4))?;
+    let dirfd = syscall_arg_int("nelisp--syscall-openat", 1, &args[0])? as libc::c_int;
+    let path  = args[1].as_string_owned().ok_or_else(|| EvalError::WrongType {
+        expected: "string (path)".into(),
+        got: args[1].clone(),
+    })?;
+    let flags = syscall_arg_int("nelisp--syscall-openat", 3, &args[2])? as libc::c_int;
+    let mode  = syscall_arg_int("nelisp--syscall-openat", 4, &args[3])? as libc::mode_t;
+    let cpath = CString::new(path).map_err(|e| EvalError::Internal(
+        format!("nelisp--syscall-openat: path contains NUL: {}", e)))?;
+    let r = unsafe { libc::syscall(libc::SYS_openat, dirfd, cpath.as_ptr(), flags, mode) };
+    Ok(Sexp::Int(unsafe { syscall_errno_normalize(r) }))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bi_syscall_openat(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let _ = args;
+    Err(EvalError::Internal("nelisp--syscall-openat: unsupported platform".into()))
+}
+
+#[cfg(target_os = "linux")]
+fn bi_syscall_read(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--syscall-read", args, 2, Some(2))?;
+    let fd     = syscall_arg_int("nelisp--syscall-read", 1, &args[0])? as libc::c_int;
+    let nbytes = syscall_arg_int("nelisp--syscall-read", 2, &args[1])?;
+    if nbytes < 0 {
+        return Err(EvalError::Internal(
+            "nelisp--syscall-read: nbytes must be non-negative".into()));
+    }
+    let mut buf: Vec<u8> = vec![0u8; nbytes as usize];
+    let r = unsafe {
+        libc::syscall(libc::SYS_read,
+                      fd as libc::c_long,
+                      buf.as_mut_ptr() as libc::c_long,
+                      nbytes as libc::c_long)
+    };
+    let n = unsafe { syscall_errno_normalize(r) };
+    if n < 0 {
+        return Ok(Sexp::Int(n));
+    }
+    buf.truncate(n as usize);
+    Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned()))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bi_syscall_read(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let _ = args;
+    Err(EvalError::Internal("nelisp--syscall-read: unsupported platform".into()))
+}
+
+#[cfg(target_os = "linux")]
+fn bi_syscall_write(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--syscall-write", args, 2, Some(2))?;
+    let fd = syscall_arg_int("nelisp--syscall-write", 1, &args[0])? as libc::c_int;
+    let s  = args[1].as_string_owned().ok_or_else(|| EvalError::WrongType {
+        expected: "string (write buffer)".into(),
+        got: args[1].clone(),
+    })?;
+    let bytes = s.as_bytes();
+    let r = unsafe {
+        libc::syscall(libc::SYS_write,
+                      fd as libc::c_long,
+                      bytes.as_ptr() as libc::c_long,
+                      bytes.len() as libc::c_long)
+    };
+    Ok(Sexp::Int(unsafe { syscall_errno_normalize(r) }))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bi_syscall_write(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let _ = args;
+    Err(EvalError::Internal("nelisp--syscall-write: unsupported platform".into()))
 }
 
 // `bi_locate_library' removed — Rust-min batch 7e (2026-05-07, Doc 50

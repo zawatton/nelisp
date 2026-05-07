@@ -117,6 +117,13 @@ impl Env {
             ("nelisp-stdlib-search.el", include_str!("../../../lisp/nelisp-stdlib-search.el")),
             ("nelisp-stdlib-plist-str.el", include_str!("../../../lisp/nelisp-stdlib-plist-str.el")),
             ("nelisp-stdlib-misc.el", include_str!("../../../lisp/nelisp-stdlib-misc.el")),
+            // Doc 53 Phase 1 (2026-05-07) — POSIX OS surface (Minimal-5).
+            // Loaded after `nelisp-stdlib-misc.el' so the platform-detect
+            // `defconst' can call `nelisp--syscall-supported-p' (always
+            // available; the rest of the family Errs on non-Linux but the
+            // detect itself is safe).  No upstream stdlib file requires
+            // this module — `(require 'nelisp-stdlib-os)' from caller code.
+            ("nelisp-stdlib-os.el", include_str!("../../../lisp/nelisp-stdlib-os.el")),
             // Rust-min migration (2026-05-06): pcase moved out of
             // special_forms.rs into elisp; loaded here so it's
             // available before any subsequent elisp file uses it.

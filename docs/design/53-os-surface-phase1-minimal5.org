@@ -1,0 +1,195 @@
+#+TITLE: Doc 53 — OS Surface (POSIX layer) Phase 1: Minimal-5
+#+AUTHOR: zawatton
+#+DATE: 2026-05-07
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: DRAFT
+:DEPENDS_ON: Doc 47 (seed image ABI), Doc 50 §2.1 (thin I/O primitive pattern), Doc 51 Phase 5 (nl-ffi-call)
+:END:
+
+* §0 TL;DR
+
+NeLisp の OS interop 表層 (open / read / write / close / exit) を hybrid path で
+elisp に押し下げる第一歩。
+
+- *Path A* (Linux/BSD): =nelisp--syscall= 系 5 primitive を Rust に追加
+  (libc::syscall 薄ラッパー)。Doc 50 §2.1 "thin I/O primitive" pattern。
+- *Path B* (Darwin/Windows): 既存 =nl-ffi-call= (Doc 51 Phase 5) で libc
+  ~open(2)~/~read(2)~/~write(2)~/~close(2)~/~_exit(2)~ を直接呼ぶ elisp fallback。
+  Rust 側追加なし。
+- *共通*: 呼び側 elisp (=nelisp-os-*=) は load 時に platform detect して 1 度だけ
+  分岐選択。OS 非依存の interface を提供。
+
+Phase 1 scope は *Minimal-5* (open / read / write / close / exit) のみ。動く
+end-to-end 経路を最短で作って test し、その上で Core-12 / Posix-30 を別 Phase
+で積み上げる。
+
+* §1 動機
+
+NeLisp は Phase 7+ で native cc + 自己進化的 Lisp Machine vision を掲げている
+(memory =project_lisp_machine_vision_95pct=)。現状 OS interop は Rust 側に
+個別 binding として置く以外の path がない (=nelisp--syscall-stat= /
+=-readdir= / =-read-file= / =-canonicalize= の 4 本が既存)。これらは
+"file metadata" ~ "directory listing" レベルで止まっており、~POSIX open(2)~
+そのものは公開されていない。
+
+Lisp Machine の "FFI-of-one" pattern (Symbolics, LMI) では低層 syscall を
+1 primitive に凝縮し、その上の OS surface (open/read/write 等) を全部 Lisp で
+書く。NeLisp が同じ姿に向かうための第一歩を本 Phase で着地させる。
+
+将来 (Phase 2、別 Doc): native cc が着地したら =nelisp--syscall= の codegen
+を ~mov rax,NR; syscall~ 直接 emit に差し替え。elisp source は不変。Rust の
+実装は dead code として削除可。
+
+* §2 設計
+
+** §2.1 アーキテクチャ
+
+#+BEGIN_EXAMPLE
+                    +---------------------------+
+   elisp client ──→ │ nelisp-stdlib-os.el       │  ← OS 非依存 API
+                    │ (open / read / write /    │
+                    │  close / exit)            │
+                    +─────────────┬─────────────+
+                                  │
+                ┌─────────────────┴─────────────────┐
+                │                                   │
+        platform = linux/bsd               platform = darwin/windows
+                │                                   │
+                ▼                                   ▼
+   nelisp--syscall (Rust)                nl-ffi-call (既存)
+   = libc::syscall(nr, ...)              = libffi → libc.open(2)
+                │                                   │
+                ▼                                   ▼
+        kernel syscall                       libsystem / msvcrt
+#+END_EXAMPLE
+
+** §2.2 Rust primitive (5 本)
+
+新規追加:
+
+| primitive                    | signature                                  | lower      |
+|------------------------------+--------------------------------------------+------------|
+| =nelisp--syscall=            | =NAME-OR-NR &rest INT-ARGS= → integer      | libc::syscall |
+| =nelisp--syscall-supported-p= | (no args) → t / nil                       | cfg gate   |
+| =nelisp--syscall-openat=     | =DIRFD PATH FLAGS MODE= → fd or -errno     | SYS_openat + CString |
+| =nelisp--syscall-read=       | =FD NBYTES= → string or -errno (int)       | libc::read + Vec alloc |
+| =nelisp--syscall-write=      | =FD STR= → byte count or -errno            | libc::write + ptr |
+
+設計理由:
+
+- =nelisp--syscall= 汎用 dispatch は ~int 引数のみ~ 受ける。close / exit や
+  将来の lseek / dup2 / kill / getpid 等は Rust 側変更なしで elisp から
+  symbol-name で叩ける ("self-host extensibility")。
+- pointer / buffer 取り扱いが必要な open / read / write は別 primitive に分離。
+  elisp 側で C string / byte buffer を組み立てる手間を Rust に閉じ込める。
+- error 慣例: 戻り値 negative = -errno (Linux カーネル ABI 互換)。
+  =-syscall-read= だけは「成功時は string, エラー時は -errno (int)」の sum型。
+
+cfg gate:
+
+- =#[cfg(target_os = "linux")]= でまず ship。Linux 限定。
+- 非 Linux build では 5 primitive とも =Err(EvalError::Internal("nelisp--syscall:
+  unsupported on this platform; use Path B"))= を返す stub。
+- =-supported-p= だけは常に compile + 実行可能、t/nil で platform 判別。
+
+** §2.3 Elisp OS layer (=nelisp-stdlib-os.el=)
+
+API:
+
+| function                         | semantics                                |
+|----------------------------------+------------------------------------------|
+| =nelisp-os-open PATH FLAGS MODE= | open file, return fd; signal on error    |
+| =nelisp-os-read FD NBYTES=       | read up to NBYTES, return string         |
+| =nelisp-os-write FD STR=         | write STR bytes, return count            |
+| =nelisp-os-close FD=             | close fd                                 |
+| =nelisp-os-exit CODE=            | exit_group(CODE) — never returns         |
+
+Flag 定数 (=nelisp-os-O-RDONLY= 等) は Linux x86_64/arm64 値で defconst。
+Phase 2 で arch / OS 別の table 引きに refactor 可能。
+
+Platform detect:
+
+#+BEGIN_SRC emacs-lisp
+(defconst nelisp-os--use-direct-syscall (nelisp--syscall-supported-p))
+#+END_SRC
+
+t = Path A (Linux/BSD), nil = Path B (Darwin/Windows / その他)。
+
+Path B fallback:
+
+- =open= / =write= / =close= / =exit= は =nl-ffi-call "libc" "open" ...= で対応可。
+- =read= は mutable buffer 確保が elisp 側で必要 → Phase 1 では deferred、
+  Path B での =read= 呼出は =signal 'nelisp-os-unsupported= で error する。
+  完成は Phase 1.1 (別 PR、bytestring buffer primitive 検討込み)。
+
+** §2.4 ファイル配置
+
+| 種別     | path                                                          | 操作   |
+|----------+---------------------------------------------------------------+--------|
+| 設計書   | =docs/design/53-os-surface-phase1-minimal5.org=               | new    |
+| 設計書   | =docs/design/MASTER-INDEX.org= (該当ある場合)                   | append |
+| Rust     | =build-tool/src/eval/builtins.rs=                             | edit   |
+| stdlib   | =lisp/nelisp-stdlib-os.el=                                    | new    |
+| bundle   | =build-tool/src/eval/env.rs= (STDLIB_SOURCES に include_str!) | edit   |
+| test     | =test/nelisp-stdlib-os-test.el=                               | new    |
+
+* §3 Sub-phase 分割
+
+** Phase 1 (本 Doc, scope) — Minimal-5
+
+5 primitive + 5 elisp 関数 + 3 ERT。Linux でのみ end-to-end 動作。
+
+** Phase 1.1 (将来) — Path B read 完成
+
+Bytestring buffer primitive (=nelisp--make-byte-buffer N=) を追加し、
+Path B で read fallback を完成。Darwin / Windows で Minimal-5 完全動作。
+
+** Phase 2 (別 Doc 候補) — native cc lowering
+
+=nelisp--syscall= の Rust 実装を撤去し、native cc codegen が
+~mov rax,NR; mov rdi,a1; ...; syscall~ を直接 emit する path に差し替え。
+elisp source 不変、Rust hop 消滅。
+
+** Phase 3 (Doc 54 候補) — Core-12
+
+lseek / fstat / mmap / munmap / dup2 / pipe / fcntl の追加。fileio + JIT loader
+が elisp で書ける line。
+
+** Phase 4 (Doc 55 候補) — Posix-30
+
+socket / connect / accept / select / poll + fork / execve / wait4 +
+signal / sigaction。network + process まで一括カバー。
+
+* §4 Test plan
+
+3 ERT、=test/nelisp-stdlib-os-test.el= に配置。全て =bin/nelisp= subprocess
+を経由し、host Emacs では Rust 経路をシミュレートしない (host simulator は
+=nelisp--syscall*= を持たない)。
+
+| test                              | flow                                            |
+|-----------------------------------+-------------------------------------------------|
+| ~round-trip-write-then-read~      | tmpfile に write → close → open → read → equal |
+| ~open-nonexistent-signals~        | 不存在 path で open → 'nelisp-os-error          |
+| ~exit-in-subprocess~              | =bin/nelisp eval "(nelisp-os-exit 42)"= → rc 42 |
+
+Build gate: =cd dev/nelisp && cargo build --release --bin nelisp= が warning 0
+で通る + 上記 3 ERT 全 pass。
+
+* §5 Out of scope
+
+- macOS / Windows 上での Path A 動作 (= raw syscall ABI 不安定)。
+- =read= の zero-copy bytestring (= Phase 1.1)。
+- mmap / fork / network / signal (= Phase 3-4)。
+- native cc lowering (= Phase 2)。
+- =fcntl= / =ioctl= の variadic (= Phase 3)。
+
+* §6 References
+
+- memory =project_lisp_machine_vision_95pct= — 本 Phase の動機背景
+- memory =feedback_nelisp_core_vs_layer2_boundary= — primitive の core / Layer 2 区分
+- memory =feedback_nelisp_perf_not_elisp_interpreter= — native cc 後の性能観
+- Doc 50 §2.1 — thin I/O primitive pattern (本 Doc の親 pattern)
+- Doc 51 Phase 5 — =nl-ffi-call= (本 Doc Path B の依存先)
