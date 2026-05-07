@@ -502,33 +502,66 @@ host-fingerprint 系で別件)。
   process-wide signal/quit flag race)。シリアルで実行すると安定。
   Stage 7.4.a 無関係、別 follow-up 候補
 
-** §3.2 Stage 7.4.b — =nelisp-stdlib-eval-core.el= install (parallel、dormant)
+** §3.2 Stage 7.4.b — =nelisp-stdlib-eval-core.el= install (SHIPPED)
 
-新規 file =lisp/nelisp-stdlib-eval-core.el=:
-- =nelisp--builtinp= / =-closurep= / =-lambdap= / =-macrop=
-- =nelisp--bind-formals=
-- =nelisp--apply-lambda-inner= / =-apply-closure= / =-apply-lambda=
-- =nelisp--apply-fn=
+新規 file =lisp/nelisp-stdlib-eval-core.el= (235 LOC):
+- =nelisp--builtinp= / =-closurep= / =-lambdap= / =-macrop= (predicates)
+- =nelisp--bind-formals--required-count= / =--compute= (pure helpers、frame
+  stack 不変)
+- =nelisp--apply-lambda-inner= (= 中核、push-captured + push-frame +
+  inline binding loop + body eval + unwind-protect pop)
+- =nelisp--apply-closure= / =-apply-lambda= (= 形状違いの薄ラッパ)
+- =nelisp--apply-fn= (= 4-way cond dispatch)
 - =nelisp--expand-macro=
 
-=Env::new_global= の =STDLIB_SOURCES= 末尾に追加 (= 全 stdlib install 後)。
+=Env::new_global= の =STDLIB_SOURCES= 末尾に追加 (= 全 stdlib install 後、
+=nelisp-stdlib-reader.el= の直後)。
 
-ERT (= test/nelisp-stdlib-eval-core-test.el):
-- =eval-core-builtinp-recognizes-cons= ((builtin foo) → t)
-- =eval-core-closurep-recognizes-cons=
-- =eval-core-bind-formals-required-only=
-- =eval-core-bind-formals-with-optional=
-- =eval-core-bind-formals-with-rest=
-- =eval-core-bind-formals-arity-error=
-- =eval-core-apply-lambda-inner-respects-captured-env= (= setq write-through 確認)
-- =eval-core-apply-closure-roundtrip= ((funcall (lambda (x) (* x x)) 5) と同等を =nelisp--apply-fn= 経由で確認)
-- =eval-core-apply-fn-rejects-macro=
-- =eval-core-expand-macro-roundtrip=
+*設計上の修正* (= Doc 68 §2.5 sketch から逸脱):
+
+当初設計では =nelisp--bind-formals= を独立 defun として実装するつもり
+だったが、smoke test で frame-stack 整合性 bug を発見:
+- =defun nelisp--bind-formals= を呼ぶと、apply_function が *bind-formals
+  自身の call-frame* を push する
+- bind-formals の body 内 =(nelisp--bind-local NAME VAL)= は topmost
+  (= bind-formals の call-frame) に bind してしまう
+- bind-formals が return すると call-frame と共に bindings が消える
+
+解決: =bind-formals--compute= を *pure helper* に降格 (= pairs list を
+return するだけ、frame stack 不変)、実際の =bind-local= 呼び出しは
+=apply-lambda-inner= の **直接の body** で =while + setq= ループにより
+inline 実行する。これにより F_formals (= apply-lambda-inner が push した
+frame) が topmost のまま保たれ、bind-local が正しい frame に刺さる。
+
+派生制約: =apply-lambda-inner= の body 内では「展開時に
+=(let ((--nl-...))= を生む macro」(= =or= / =and= / 一部の =cond=) を
+使えない (= 余分 frame が間に挟まる).  =setq= / =if= / =progn= /
+=while= / 直接 cons/car/cdr + builtin 呼び出しのみで実装.
+
+ERT (= test/nelisp-stdlib-eval-core-test.el、16 件):
+- predicates 4 件: =builtinp= / =closurep= / =lambdap= / =macrop= の
+  recognize / reject 確認
+- bind-formals--compute 4 件: required-only / with-optional /
+  with-rest / arity-error
+- apply-lambda-inner 2 件: basic (= mul x x で 25)、captured-env 経由
+  の binding 参照 (= 42)
+- apply-closure / apply-lambda 各 1 件 (= roundtrip 25 / 12)
+- apply-fn 3 件: builtin dispatch (= cons 1 2 → (1 . 2))、closure
+  dispatch (= sq 6 → 36)、macro reject signal
+- expand-macro 1 件: =(macro lambda (x) (cons 'quote ...))= → ='foo=
 
 この時点で =--use-elisp-apply= flag は **未実装** (= 完全 dormant)。
-Rust dispatch が先勝。新 elisp helpers は ERT からのみ呼ばれる。
+Rust dispatch が先勝。新 elisp helpers は ERT 経由でのみ叩かれる。
 
-LOC: +400 elisp、+100 ERT、commit ~2 件 (= file install + ERT)、想定 3〜5h。
+LOC 実績: +235 elisp (= core.el)、+250 ERT (= core-test.el)、+10 LOC
+=env.rs= STDLIB_SOURCES、合計 +495.
+
+確認:
+- =emacs --batch ... -l nelisp-stdlib-eval-core-test.el=: 16/16 PASS
+- =emacs --batch ... -l <Phase 7 系 4 file>=: 147/147 PASS (= core 16
+  + special 13 + prn 27 + reader 91)
+- =cargo test --release --lib -- --test-threads=1=: 431/431 PASS
+  (= Stage 7.4.a stage74a_* 10 件含む、bootstrap 不変)
 
 ** §3.3 Stage 7.4.c — =--use-elisp-apply= flag 経路 + cross-equivalence ERT
 

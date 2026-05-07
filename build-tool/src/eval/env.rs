@@ -173,6 +173,16 @@ impl Env {
             // is exercised through ERT only.  Stage 7.2.b will add the
             // parser + the read-from-string takeover hook.
             ("nelisp-stdlib-reader.el", include_str!("../../../lisp/nelisp-stdlib-reader.el")),
+            // Phase 7 Stage 7.4.b (2026-05-08, Doc 68): elisp apply /
+            // call / closure / env helpers.  Loaded LAST so all
+            // upstream stdlib modules (= cadr/cddr/nth/nthcdr from
+            // -list, memq from -search, the Stage 7.3 special-form
+            // macros) are available in the body.  Stage 7.4.b is
+            // parallel install only — Rust apply_function preempts
+            // these defuns at runtime; ERT exercises them via direct
+            // (nelisp--apply-fn ...) calls.  Stage 7.4.c adds the
+            // --use-elisp-apply takeover hook.
+            ("nelisp-stdlib-eval-core.el", include_str!("../../../lisp/nelisp-stdlib-eval-core.el")),
         ];
         let mut env = Env {
             globals: HashMap::new(),
