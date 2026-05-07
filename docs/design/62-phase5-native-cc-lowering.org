@@ -6,8 +6,13 @@
 * Status
 :PROPERTIES:
 :STATE: IN_PROGRESS
-:STAGE_5_0: SHIPPED (2026-05-07) — Cranelift dep + jit/ scaffold (mod.rs + 5 stub submodules) + lower hook in eval/mod.rs::apply_builtin
-:STAGE_5_2_POC: SHIPPED (2026-05-07) — `nelisp--add2' (Int, Int) fast path JIT-compiled via Cranelift `iadd', registered in lower_entries.  All `(+ a b)' integer calls now route through native code.  2 jit unit tests + 2449 ERT 0 unexpected.
+:STAGE_5_0: SHIPPED (2026-05-07, commit f3bd32e) — Cranelift dep + jit/ scaffold + lower hook in eval/mod.rs::apply_builtin
+:STAGE_5_1_PARTIAL: SHIPPED (2026-05-07) — `nelisp--syscall-supported-p' (= 0-arg const predicate) JIT-compiled to `iconst + return'.  Full Stage 5.1 (= libc syscall instruction emit) is follow-up.
+:STAGE_5_2: SHIPPED (2026-05-07, commits 0c95c93 + f3cfbfd) — 11 binary integer primitives JIT-compiled in 1 shared JITModule:
+  - 算術 3: `-add2'/`-sub2'/`-mul2' (iadd/isub/imul)
+  - 比較 5: `-num-{eq,lt,gt,le,ge}2' (icmp + uextend)
+  - bitwise 3: `-logior2'/`-logand2'/`-logxor2' (bor/band/bxor)
+  - `ash' は Stage 5.2 follow-up (control flow)
 :DEPENDS_ON: Doc 49 (elisp pivot) / Doc 50 (irreducible unlock) / Doc 53〜60 (OS surface) / Doc 61 (cXXr migrate)
 :CONCURRENT_WITH: Doc 63 (Phase 7 self-host roadmap)
 :END:
