@@ -220,4 +220,9 @@
       (setq cur (cdr cur)))
     acc))
 
+;; Rust-min batch 7k (2026-05-07, Doc 65 closing batch).
+;; (lognot X) = bitwise NOT of fixnum X.  In two's complement
+;; ~x = x XOR -1, so the elisp form needs no extra primitive.
+(defun lognot (x) (nelisp--logxor2 x -1))
+
 ;; nelisp-stdlib.el ends here

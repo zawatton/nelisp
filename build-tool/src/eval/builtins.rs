@@ -107,8 +107,12 @@ pub fn install_builtins(env: &mut Env) {
         // Rust-min (2026-05-06 batch 6j): variadic logior / logand /
         // logxor moved to elisp (lisp/nelisp-stdlib.el) folding over
         // the 2-arg primitives `nelisp--logior2' / -logand2 /
-        // -logxor2.  `lognot' (unary) and `ash' (binary) stay native.
-        "lognot", "ash",
+        // -logxor2.
+        // Rust-min batch 7k (2026-05-07, Doc 65 closing batch):
+        // `lognot' migrated to elisp as `(logxor x -1)' on top of
+        // -logxor2 (see lisp/nelisp-stdlib.el).  Only `ash' stays
+        // native because it needs raw bit-shift with overflow clamping.
+        "ash",
         "nelisp--logior2", "nelisp--logand2", "nelisp--logxor2",
         // hashing — used by hash-table key derivation in user code
         // Rust-min (2026-05-06 batch 6e): `sxhash-{equal,eq,eql}'
@@ -462,7 +466,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nelisp--logior2" => bi_logior2(args),
         "nelisp--logand2" => bi_logand2(args),
         "nelisp--logxor2" => bi_logxor2(args),
-        "lognot" => bi_lognot(args),
+        // Rust-min batch 7k (2026-05-07): `lognot' migrated to elisp
+        // as `(logxor x -1)' (see lisp/nelisp-stdlib.el).
         // Rust-min (2026-05-06 batch 6e): `lsh' / `sxhash-{equal,eq,eql}'
         // moved to elisp defalias of `ash' / `sxhash'.
         "ash" => bi_ash(args),
@@ -889,11 +894,6 @@ fn bi_logxor2(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nelisp--logxor2", args, 2, Some(2))?;
     Ok(Sexp::Int(as_int("nelisp--logxor2", &args[0])?
                  ^ as_int("nelisp--logxor2", &args[1])?))
-}
-
-fn bi_lognot(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("lognot", args, 1, Some(1))?;
-    Ok(Sexp::Int(!as_int("lognot", &args[0])?))
 }
 
 /// `(ash N COUNT)' / `(lsh N COUNT)' — arithmetic shift by COUNT bits.

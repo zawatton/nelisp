@@ -1,0 +1,270 @@
+#+TITLE: Doc 65 — Doc 50 Retire 井戸枯渇 + Stage 7k closing batch (lognot)
+#+AUTHOR: zawatton
+#+DATE: 2026-05-07
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: SHIPPED
+:DEPENDS_ON: Doc 50 stage 2/4/6/7 (= 22 retire / 7 new primitive を 7a〜7j で完了)
+:CLOSES: Doc 50 retire ramp
+:END:
+
+* §0 TL;DR
+
+Doc 50 stage 7 ramp の正式 closing batch。Doc 61 §6 / §7k で予告した
+=secure-hash dispatcher collapse= は対象が無いことが判明 (= 既に
+=nl-secure-hash= 1 entry に集約済、md5 / sha1 / sha224 / sha256 /
+sha384 / sha512 は内部 =match algo= 分岐で外部に出ていない)。
+
+代わりに /唯一残っていた thin wrapper/ である =lognot= を elisp 化:
+
+#+BEGIN_SRC emacs-lisp
+(defun lognot (x) (nelisp--logxor2 x -1))
+#+END_SRC
+
+(= 二の補数表現で =~x = x XOR -1=、=-logxor2= 上に 1 行で乗る。)
+
+| layer            | before                              | after                              |
+|------------------+-------------------------------------+------------------------------------|
+| install_builtins | 含 =lognot=                          | =lognot= 削除                       |
+| dispatch         | =lognot= => bi_lognot                | 削除                                |
+| 関数本体          | =fn bi_lognot {3 行}=                | 削除                                |
+| 純 elisp 実装     | なし                                 | 1 行 defun (=lisp/nelisp-stdlib.el= 末尾) |
+
+実測効果:
+- builtins.rs: 5,189 → 5,184 行 (= 5 行減、コメント整理含む実差は ~7 行)
+- 実 LOC 削減は小さいが /Doc 50 retire ramp の正式 closing/ として doc 化
+  し、同時に =retire 井戸枯渇 audit= を含めて Phase 5 / Phase 7 へ bridge
+
+* §1 動機
+
+** §1.1 Stage 7k = secure-hash collapse の前提崩壊
+
+Doc 61 §6 / §4 が想定していた retire batch:
+
+#+BEGIN_QUOTE
+secure-hash dispatcher collapse — md5 / sha1 / sha224 / sha256 / sha384
+/ sha512 が Rust 側で =bi_secure_hash(args, "ALGO")= 形の thin wrapper
+になっているはず
+#+END_QUOTE
+
+実際は:
+
+- 公開 primitive は =nl-secure-hash= の **1 entry のみ**
+- 個別 algo (md5 / sha1 / ...) は =bi_nl_secure_hash= 関数内部の
+  =match algo.as_str() { "sha1" => ..., "sha256" => ..., ... }= 分岐
+- 外部に dispatcher arm として露出していないため、collapse する余地が無い
+
+つまり Doc 61 §6 の前提は誤検知で、対象は元から無かった。grep + 関数本体
+読みで確認 (=builtins.rs:3931-3983=)。
+
+** §1.2 retire 井戸枯渇 = Phase 5 / 7 へ移行のサイン
+
+Doc 50 stage 2/4/6/7 の累積 retire 状況 (= 7a〜7j):
+
+| stage   | 内容                                                  | retired |
+|---------+-------------------------------------------------------+---------|
+| 7a〜7d  | char/list/file-name/string-equal 系 thin wrap         | ~10     |
+| 7e〜7g  | min/max/abs / setq* / record/hash の elisp on top of  | ~7      |
+| 7h      | floor/ceiling/round on =nelisp--f64-trunc= kernel     | 3       |
+| 7i      | provide/featurep on =features= dynvar                  | 2       |
+| 7j      | cXXr accessor family (caar 〜 cadddr) 13 個            | 13      |
+| *7k*    | *lognot 1 entry (本 Doc)*                            | *1*     |
+|---------+-------------------------------------------------------+---------|
+| 計       |                                                       | ~36     |
+
+Doc 50 ramp 開始時 22 retire 想定 → 実態 ~36 retire。残った Rust
+primitive を §5 で audit すると /elisp 化困難な leaf primitives と
+hot-path 算術 / OS surface / 特殊 form 系のみ/ となり、薄ラッパー retire
+の井戸は実質枯渇。
+
+** §1.3 次の方向 = Phase 5 / Phase 7
+
+retire ramp の延長線上ではなく:
+
+- *Phase 5* (Doc 62) = Cranelift JIT lowering で *残留 Rust 自体を CPU
+  命令に直接 emit*
+- *Phase 7* (Doc 63 / 64) = reader / evaluator を elisp で書き直し、
+  *残留 Rust から evaluator を消す*
+
+の 2 線が次のフェーズ。本 Doc は retire ramp の最後の節目として、両線
+への bridge と「何を Rust に残すか」 audit を兼ねる。
+
+* §2 設計
+
+** §2.1 elisp 側追加 (=lisp/nelisp-stdlib.el= 末尾、logxor の直後)
+
+#+BEGIN_SRC emacs-lisp
+;; Rust-min batch 7k (2026-05-07, Doc 65 closing batch).
+;; (lognot X) = bitwise NOT of fixnum X.  In two's complement
+;; ~x = x XOR -1, so the elisp form needs no extra primitive.
+(defun lognot (x) (nelisp--logxor2 x -1))
+#+END_SRC
+
+** §2.2 Rust 側削除 (=build-tool/src/eval/builtins.rs=)
+
+- =install_builtins= の names list から ="lognot"= を除去 (= 既存の
+  ="lognot", "ash",= が ="ash",= に短縮)
+- =dispatch= の =match name= から ="lognot" => bi_lognot(args)= arm を削除
+- 関数本体 =fn bi_lognot(args: &[Sexp]) -> Result<Sexp, EvalError>=
+  (= 4 行) を削除
+- 各箇所の上に Rust-min batch 7k コメントを追加
+
+** §2.3 関数本体 (= bi_logxor2) はそのまま残す
+
+=lognot= の elisp 実装は =nelisp--logxor2= の合成 1 本。leaf primitive
+の =bi_logxor2= は変更なし。
+
+* §3 Test plan
+
+** §3.1 既存 ERT を回す
+
+=lognot= を直接テストする ERT は無いが、bundled elisp で keymap / event
+encoding 系で =lognot= を使う場面は無く (=ash= / =logior= が中心)、
+regression risk は低い。実測で 2429/0 unexpected を確認する。
+
+** §3.2 build gate
+
+- =touch lisp/nelisp-stdlib.el= 後 =cargo build --release --bin nelisp=
+  warning 0 を要件 (= include_str! cache 罠回避、Doc 56/59/60 で踏んだ
+  パターン)
+
+** §3.3 実測結果
+
+| gate                                  | 結果                                                   |
+|---------------------------------------+--------------------------------------------------------|
+| =cargo build --release --bin nelisp= | warning 0、~5.7s                                       |
+| =make test=                           | 2429 ran / 2404 expected / 0 unexpected / 25 skipped (~59.5s) |
+
+* §4 段階
+
+| stage  | item                                                        | 状態 |
+|--------+-------------------------------------------------------------+------|
+| 7k.1   | 設計書 (本 Doc)                                              | DONE |
+| 7k.2   | elisp 側 1 defun 追加                                        | DONE |
+| 7k.3   | Rust 側 names + dispatch + fn body 削除                       | DONE |
+| 7k.4   | =cargo build= + =make test= で regression なし               | DONE |
+| 7k.5   | git commit                                                  | DONE |
+
+* §5 残留 Rust primitive audit (= retire 井戸枯渇 確認)
+
+builtins.rs の =install_builtins= に残っている primitives を分類:
+
+** §5.1 Leaf primitives (= elisp 合成不可、Phase 5 lower 対象)
+
+- *cons / aref* — =car / cdr / cons / setcar / setcdr / aref / aset /
+  elt / vector / make-vector= : Sexp variant 直接操作
+- *eq / equal* — =eq / equal / nelisp--ref-eq= : 同一性 / 構造再帰、
+  primitive で書く以外不可能
+- *predicates* — =type-of / functionp= : Sexp variant 判定 (= type-of
+  自体が leaf、その上に consp / listp / symbolp 等が elisp 化済)
+- *bitwise* — =nelisp--logior2 / -logand2 / -logxor2 / ash= : raw bit
+  ops、ash は overflow clamp 必要
+- *arithmetic* — =nelisp--add2 / -sub2 / -mul2 / / / -num-{lt,gt,le,ge,eq}2=
+  : raw int / float ops
+- *float / IEEE-754* — =float / exp / log / nelisp--f64-trunc / truncate /
+  nelisp--format-float-body= : f64 op に直接降りる必要
+
+** §5.2 Symbol / function table (= state 操作 primitives)
+
+- =symbol-value / symbol-function / fboundp / boundp / defalias / fset /
+  fmakunbound / makunbound / make-symbol / intern / symbol-name=
+- 状態を持つテーブル (= obarray / Env 内) を直接弄るため Phase 7
+  switch-over (= elisp eval が Env を直接 manage) で初めて elisp 化
+
+** §5.3 Special forms / control flow
+
+- =funcall / apply / eval / signal / require=
+- =read / read-from-string= (Track O' Phase 2 で elisp 化予定 = Phase 7
+  Stage 7.2)
+
+** §5.4 OS surface (Doc 53〜60)
+
+- =nelisp--syscall*= 系 26 entries (= Doc 53〜60 の Phase 4.0〜4.4)
+- 全部 syscall / libc / sockaddr のため Rust から下げられない
+- ただし =nelisp--syscall= 1 個だけが generic、他 25 entries は
+  specialized = sockaddr serialization が elisp で書きづらいため Rust 化
+
+** §5.5 Native time / hash / Unicode / file write
+
+- =nl-current-unix-time / nl-secure-hash / nl-format-unix-time / nl-downcase /
+  nl-upcase / nl-split-by-non-alnum / nl-write-file / nl-make-directory=
+- 8 entries、全部 OS / native lib 直叩き、elisp 化不可
+
+** §5.6 Terminal / signal infra (Doc 51 Track E〜Q)
+
+- =terminal-raw-mode-{enter,leave} / read-stdin-byte-available /
+  set-quit-flag / install-sigint-handler / install-winsize-handler /
+  install-jobctrl-handlers= 等 ~14 entries
+- termios / SIGINT / SIGWINCH / SIGTSTP の handler installation
+- 全部 OS native、elisp 化不可
+
+** §5.7 FFI / records / I/O sliver
+
+- =nl-ffi-call / nl-ffi-malloc / nl-ffi-read-bytes / nl-ffi-free=
+- =nelisp--make-record / -record-ref / -record-set / -record-length /
+  -record-type / recordp=
+- =nelisp--write-stdout-bytes / nelisp--write-stderr-line / read-stdin-bytes=
+- 全部 leaf primitive、Phase 7 switch-over でも残る
+
+** §5.8 Phase 7 で elisp 化される primitives (= 現在は Rust)
+
+- =read / read-from-string= → Phase 7 Stage 7.2 (= elisp reader)
+- =eval / funcall / apply= → Phase 7 Stage 7.4 (= elisp apply-env)
+- =prin1-to-string= → Phase 7 Stage 7.1 (= elisp printer、Doc 64 設計済)
+- これら 6 entries は Phase 7 で消える、本 Doc 時点では Rust に残留
+
+** §5.9 結論 = thin wrapper retire の井戸は枯渇
+
+§5.1〜§5.7 の category は全て /elisp 化が物理的に不可能 or 非効率/
+で Rust に残らざるを得ない。§5.8 は Phase 7 で消えるが /thin wrapper
+retire ではなく self-host で消す/ ため、本 Doc 50 ramp の延長線上には
+無い。
+
+つまり Doc 50 stage 7 = 7k で完結、次の retire は Phase 5 / Phase 7
+着地後に再 audit。
+
+* §6 Phase 5 / Phase 7 への bridge
+
+** §6.1 Phase 5 lower 対象の確定
+
+§5.1 + §5.4 = =hot-path arithmetic + bitwise + cons/aref/predicate +
+syscall= が Phase 5 lowering target。Doc 62 §3 stage 5.1〜5.5 と整合:
+
+| Phase 5 stage | lower target                              | LOC 推定 |
+|---------------+-------------------------------------------+----------|
+| 5.1 SyscallIR | =nelisp--syscall*= 26 entries             | ~1,400   |
+| 5.2 ArithIR   | =nelisp--{add,sub,mul}2= / =/= / =-num-*= | ~600     |
+| 5.3 ConsIR    | =car / cdr / cons / setcar / setcdr=      | ~200     |
+| 5.4 AccessIR  | =aref / aset / elt / vector / make-vector= | ~400     |
+| 5.5 PredicateIR | =type-of= ベースの consp/listp/symbolp 等 | ~500     |
+
+(= cXXr / lognot を Rust に残しっぱなしだと Phase 5.3 / 5.4 で lower
+すべき entry が増えていた。本 Doc 65 + Doc 61 で先回し migrate 済み)
+
+** §6.2 Phase 7 elisp 化対象の確定
+
+§5.8 = =read / eval / funcall / apply / prin1-to-string= が Phase 7
+self-host target。Doc 63 §2 stage 7.1〜7.6 と整合。
+
+* §7 Out of scope
+
+- *secure-hash dispatcher collapse* — §1.1 で前提崩壊確認、対象無し
+- =bi_truncate= 17 行 retire — float→int cast の elisp 化は
+  =nelisp--f64-trunc= 上に乗るが、ロジック上 1 行で書けず逆に冗長になる
+  ため見送り (= Phase 5 PredicateIR で lower)
+- =bi_ash= retire — overflow clamp + 符号別分岐で elisp 化すると 5〜10
+  行に膨らむ、Rust 4 行のままの方が保守性高い (= Phase 5 ArithIR 候補)
+
+* §8 References
+
+- =feedback_nelisp_minimize_rust= memory
+- Doc 49 elisp pivot
+- Doc 50 §4 段階的 unlock plan / §5 共通原則
+- Doc 50 stage 7 batches 7a〜7j (commits 3fc2d9c〜f05e19b)
+- Doc 60 OS surface 完走 (commit db9f309)
+- Doc 61 cXXr accessor migration (commit f05e19b)
+- Doc 62 Phase 5 native cc lowering (= retire 後の lowering line)
+- Doc 63 Phase 7 NeLisp self-host roadmap (= retire 後の self-host line)
+- Doc 64 Phase 7 Stage 7.1 elisp Sexp printer
