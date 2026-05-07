@@ -339,6 +339,154 @@ where OBJ is OBJ-FORM evaluated; return stdout (= `t' or `nil')."
                   "'(let ((x 1)) (+ x 2))")
                  "t")))
 
+;; ---------------------------------------------------------------------------
+;; Stage 7.2.c — round-trip property full coverage.  One ERT per
+;; reader-producible Sexp variant (Doc 66 §6).  Excluded variants:
+;; MutStr (only constructed by `make-string'), CharTable / BoolVector
+;; (reader does not support `#^[...]' / `#&N"..."'), Cell (internal
+;; only — appears inside captured environments), Cons-with-cell.  Each
+;; group exercises edge cases (zero / negative / empty / nested) so
+;; future reader changes break visibly.
+;; ---------------------------------------------------------------------------
+
+;; Sexp::Nil + Sexp::T --------------------------------------------------------
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-nil ()
+  (should (equal (nelisp-stdlib-reader-test--round-trip "nil") "t")))
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-t ()
+  (should (equal (nelisp-stdlib-reader-test--round-trip "t") "t")))
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-empty-list ()
+  ;; `()' is the same Sexp as `nil' but go through the list path.
+  (should (equal (nelisp-stdlib-reader-test--round-trip "'()") "t")))
+
+;; Sexp::Int ------------------------------------------------------------------
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-int-zero ()
+  (should (equal (nelisp-stdlib-reader-test--round-trip "0") "t")))
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-int-negative ()
+  (should (equal (nelisp-stdlib-reader-test--round-trip "-7") "t")))
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-int-large ()
+  ;; 2^31 — make sure i64 fixnums survive prn/read round-trip.
+  (should (equal (nelisp-stdlib-reader-test--round-trip "2147483648") "t")))
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-char-literal ()
+  ;; ?A = 65 (Int) — char literals are sugar for fixnums.
+  (should (equal (nelisp-stdlib-reader-test--round-trip "?A") "t")))
+
+;; Sexp::Float ----------------------------------------------------------------
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-float-one ()
+  ;; 1.0 — watch for prn emitting `1' (which would re-read as Int).
+  (should (equal (nelisp-stdlib-reader-test--round-trip "1.0") "t")))
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-float-half ()
+  (should (equal (nelisp-stdlib-reader-test--round-trip "0.5") "t")))
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-float-negative ()
+  (should (equal (nelisp-stdlib-reader-test--round-trip "-3.14") "t")))
+
+;; Sexp::Symbol ---------------------------------------------------------------
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-symbol ()
+  (should (equal (nelisp-stdlib-reader-test--round-trip "'foo") "t")))
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-symbol-special ()
+  ;; symbol containing `-' / digits.
+  (should (equal (nelisp-stdlib-reader-test--round-trip "'foo-bar-1") "t")))
+
+;; Sexp::Str ------------------------------------------------------------------
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-string-empty ()
+  (should (equal (nelisp-stdlib-reader-test--round-trip "\"\"") "t")))
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-string-newline ()
+  ;; \n inside string survives round-trip (prn emits `\n', reader unescapes).
+  (should (equal (nelisp-stdlib-reader-test--round-trip "\"hello\\nworld\"")
+                 "t")))
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-string-quoted ()
+  ;; embedded `"' chars.  Source `"\\\"quoted\\\""' = elisp string
+  ;; `"\"quoted\""' which prn round-trips.
+  (should (equal (nelisp-stdlib-reader-test--round-trip "\"\\\\\\\"quoted\\\\\\\"\"")
+                 "t")))
+
+;; Sexp::Cons -----------------------------------------------------------------
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-list-mixed ()
+  (should (equal (nelisp-stdlib-reader-test--round-trip "'(1 \"hi\" foo)")
+                 "t")))
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-dotted ()
+  (should (equal (nelisp-stdlib-reader-test--round-trip "'(a . b)") "t")))
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-dotted-multi ()
+  (should (equal (nelisp-stdlib-reader-test--round-trip "'(foo bar . baz)")
+                 "t")))
+
+;; Sexp::Vector ---------------------------------------------------------------
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-vector-empty ()
+  (should (equal (nelisp-stdlib-reader-test--round-trip "[]") "t")))
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-vector-nested ()
+  (should (equal (nelisp-stdlib-reader-test--round-trip "[[1 2] [3 4]]")
+                 "t")))
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-vector-mixed ()
+  (should (equal (nelisp-stdlib-reader-test--round-trip "[1 \"hi\" foo nil t]")
+                 "t")))
+
+;; Sexp::Record ---------------------------------------------------------------
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-record ()
+  ;; record needs constructor (Doc 50 stage 4c — `record' is void-fun).
+  (should (equal (nelisp-stdlib-reader-test--round-trip
+                  "(nelisp--make-record 'point 1 2)")
+                 "t")))
+
+(ert-deftest nelisp-stdlib-reader-roundtrip-record-nested ()
+  (should (equal (nelisp-stdlib-reader-test--round-trip
+                  "(nelisp--make-record 'outer (nelisp--make-record 'inner 1) 2)")
+                 "t")))
+
+;; ---------------------------------------------------------------------------
+;; Stage 7.2.c — cross-check with Rust reader test inputs.  Inputs
+;; lifted from `build-tool/src/reader/lexer.rs' / `parser.rs' Rust ERT
+;; bodies; replayed through the elisp reader to confirm parity.  These
+;; exist so that retiring the Rust reader (Stage 7.2.e) does not lose
+;; corner-case coverage that lived only in Rust unit tests.
+;; ---------------------------------------------------------------------------
+
+(ert-deftest nelisp-stdlib-reader-cross-rust-radix-hex ()
+  (should (equal (nelisp-stdlib-reader-test--read "#xff")
+                 "(255 . 4)")))
+
+(ert-deftest nelisp-stdlib-reader-cross-rust-radix-octal ()
+  (should (equal (nelisp-stdlib-reader-test--read "#o17")
+                 "(15 . 4)")))
+
+(ert-deftest nelisp-stdlib-reader-cross-rust-radix-binary ()
+  (should (equal (nelisp-stdlib-reader-test--read "#b1010")
+                 "(10 . 6)")))
+
+(ert-deftest nelisp-stdlib-reader-cross-rust-comment ()
+  ;; `;' starts a line comment; the form after the newline is read.
+  (should (equal (nelisp-stdlib-reader-test--read "; comment\n42")
+                 "(42 . 12)")))
+
+(ert-deftest nelisp-stdlib-reader-cross-rust-leading-ws ()
+  (should (equal (nelisp-stdlib-reader-test--read "   \n\t  42")
+                 "(42 . 9)")))
+
+(ert-deftest nelisp-stdlib-reader-cross-rust-quote-nested ()
+  ;; `''x = (quote (quote x))' — nested quote.
+  (should (equal (nelisp-stdlib-reader-test--read "''x")
+                 "(''x . 3)")))
+
 (provide 'nelisp-stdlib-reader-test)
 
 ;;; nelisp-stdlib-reader-test.el ends here
