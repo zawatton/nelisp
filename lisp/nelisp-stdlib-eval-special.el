@@ -28,6 +28,39 @@
 
 ;;; Code:
 
+;;;; --- bootstrap (Stage 7.3.d) ---------------------------------------
+
+;; Stage 7.3.d removes the Rust `sf_defmacro' arm.  The first
+;; `(defmacro X ...)' form below can no longer dispatch through
+;; `apply_special' — we must install `defmacro' itself as an elisp
+;; macro before any defmacro form runs.  Bootstrap shape:
+;;
+;;   (fset 'defmacro
+;;         (cons 'macro
+;;               (cons (lambda (name args &rest body) <SAME-AS-BELOW>) nil)))
+;;
+;; This uses only Tier 1 special forms (`lambda', `quote') and Rust
+;; builtin functions (`fset', `cons') — no special forms beyond the
+;; 13-form irreducible primitive set.  After this point all later
+;; `(defmacro X ...)' forms (including the redundant
+;; `(defmacro defmacro ...)' near the bottom of this file) dispatch
+;; through fcell → `apply_combiner' macro path normally.
+
+(fset 'defmacro
+      (cons 'macro
+            (cons (lambda (name args &rest body)
+                    (let* ((lambda-form (cons 'lambda (cons args body)))
+                           (qname (cons 'quote (cons name nil)))
+                           (inner-cons (cons 'cons
+                                             (cons lambda-form (cons nil nil))))
+                           (outer-cons (cons 'cons
+                                             (cons (cons 'quote (cons 'macro nil))
+                                                   (cons inner-cons nil)))))
+                      (cons 'progn
+                            (cons (cons 'fset (cons qname (cons outer-cons nil)))
+                                  (cons qname nil)))))
+                  nil)))
+
 ;;;; --- 単純 conditional / sequencing ----------------------------------
 
 (defmacro when (cond &rest body)
@@ -156,9 +189,9 @@ DOCSTRING is currently ignored.  Returns NAME."
   "Stub: ignore OPTIONS, behave like `defvar'."
   (cons 'defvar (cons name (cons value (cons docstring nil)))))
 
-(defmacro defgroup (_name _parent _docstring &rest _options)
-  "No-op: NeLisp has no `customize' UI."
-  nil)
+(defmacro defgroup (name _parent _docstring &rest _options)
+  "No-op: NeLisp has no `customize' UI; returns NAME like host Emacs."
+  (cons 'quote (cons name nil)))
 
 ;;;; --- iteration --------------------------------------------------------
 

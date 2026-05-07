@@ -310,7 +310,7 @@ pub fn install_builtins(env: &mut Env) {
         // lisp/nelisp-stdlib-plist-str.el).
         // symbol / function
         "symbol-value", "symbol-function", "fboundp", "boundp", "funcall", "apply", "eval",
-        "defalias", "fset", "fmakunbound", "makunbound",
+        "defalias", "fset", "set", "fmakunbound", "makunbound",
         "macroexpand-1",
         // Rust-min (2026-05-06 batch 6e): `print' moved to elisp
         // defalias of `princ'.
@@ -579,6 +579,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "boundp" => bi_boundp(args, env),
         "defalias" => bi_defalias(args, env),
         "fset" => bi_fset(args, env),
+        "set" => bi_set(args, env),
         "fmakunbound" => bi_fmakunbound(args, env),
         "makunbound" => bi_makunbound(args, env),
         // Phase 7 Stage 7.3.a (2026-05-07, Doc 67) — macroexpand-1
@@ -3669,6 +3670,24 @@ fn bi_defalias(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     };
     env.set_function(&name, def);
     Ok(args[0].clone())
+}
+
+/// `(set SYMBOL VALUE)` — store VALUE in the value cell of SYMBOL.
+/// Required by Stage 7.3.d (Doc 67) elisp `defvar' / `defconst'
+/// macros that previously bypassed via Rust `sf_defvar' /
+/// `sf_defconst' (which directly called `env.set_value').  Returns
+/// VALUE (= host Emacs contract).
+fn bi_set(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("set", args, 2, Some(2))?;
+    let name = match &args[0] {
+        Sexp::Symbol(s) => s.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "symbol".into(),
+            got: other.clone(),
+        }),
+    };
+    env.set_value(&name, args[1].clone())?;
+    Ok(args[1].clone())
 }
 
 /// `(fset SYMBOL DEFINITION)` — same as `defalias' but without the

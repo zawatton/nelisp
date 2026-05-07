@@ -26,49 +26,31 @@ pub fn apply_special(
     args: &Sexp,
     env: &mut Env,
 ) -> Result<Option<Sexp>, EvalError> {
+    // Phase 7 Stage 7.3.d (Doc 67 §3.4) — only the 13 Tier 1
+    // irreducible special forms remain here.  All Tier 2 forms
+    // (cond / when / unless / and / or / prog1 / prog2 /
+    //  save-excursion / save-restriction / setq-default /
+    //  defvar / defvar-local / defconst / defcustom / defgroup /
+    //  dolist / dotimes / push / pop / defun / defmacro / cl-defun)
+    // have been migrated to elisp macros installed by
+    // lisp/nelisp-stdlib-eval-special.el (= STDLIB_SOURCES Layer A
+    // 1番目).  When `apply_special' returns Ok(None), the caller
+    // falls through to fcell lookup in `apply_combiner', expanding
+    // the macro and re-evaluating the expansion.
     let result = match name {
         "quote" => sf_quote(args)?,
         "function" => sf_function(args, env)?,
         "if" => sf_if(args, env)?,
-        "cond" => sf_cond(args, env)?,
-        "when" => sf_when(args, env)?,
-        "unless" => sf_unless(args, env)?,
         "let" => sf_let(args, env)?,
         "let*" => sf_let_star(args, env)?,
         "lambda" => sf_lambda(args, env)?,
-        "defun" => sf_defun(args, env)?,
-        "cl-defun" => sf_cl_defun(args, env)?,
-        "defmacro" => sf_defmacro(args, env)?,
-        "defvar" => sf_defvar(args, env)?,
-        "defvar-local" => sf_defvar(args, env)?,
-        "defconst" => sf_defconst(args, env)?,
-        "defcustom" => sf_defcustom(args, env)?,
-        "defgroup" => sf_defgroup(args, env)?,
         "setq" => sf_setq(args, env)?,
-        // No buffer-local concept here — the global value IS the
-        // default, so setq-default ≡ setq.
-        "setq-default" => sf_setq(args, env)?,
         "while" => sf_while(args, env)?,
-        "dolist" => sf_dolist(args, env)?,
-        "dotimes" => sf_dotimes(args, env)?,
         "condition-case" => sf_condition_case(args, env)?,
         "unwind-protect" => sf_unwind_protect(args, env)?,
         "progn" => sf_progn(args, env)?,
-        "prog1" => sf_prog1(args, env)?,
-        "prog2" => sf_prog2(args, env)?,
-        "and" => sf_and(args, env)?,
-        "or" => sf_or(args, env)?,
-        // Rust-min migration (2026-05-06): pcase moved to elisp
-        // (= lisp/nelisp-pcase.el); load order ensures the macro is
-        // defined before any caller.  Removing the special-form
-        // dispatch here lets `apply_combiner' fall through to the
-        // macro expander.
-        "save-excursion" => sf_progn(args, env)?, // no-op stub per Doc 44 §3.3
-        "save-restriction" => sf_progn(args, env)?, // no-op stub
         "catch" => sf_catch(args, env)?,
         "throw" => sf_throw(args, env)?,
-        "push" => sf_push(args, env)?,
-        "pop" => sf_pop(args, env)?,
         _ => return Ok(None),
     };
     Ok(Some(result))
@@ -144,7 +126,7 @@ fn extract_lambda_body(lam: &Sexp) -> Result<Sexp, EvalError> {
     Err(EvalError::Internal("lambda has no body".into()))
 }
 
-// ---------- if / cond / when / unless ----------
+// ---------- if ----------
 
 fn sf_if(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     // (if COND THEN ELSE...)
@@ -166,64 +148,6 @@ fn sf_if(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
         }
         Ok(last)
     }
-}
-
-fn sf_cond(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    // (cond (TEST BODY...) (TEST BODY...) ...)
-    let clauses = args_vec(args)?;
-    for clause in clauses {
-        let parts = list_elements(&clause)?;
-        if parts.is_empty() {
-            return Err(EvalError::WrongType {
-                expected: "non-empty cond clause".into(),
-                got: clause,
-            });
-        }
-        let test = eval(&parts[0], env)?;
-        if is_truthy(&test) {
-            if parts.len() == 1 {
-                return Ok(test);
-            }
-            let mut last = Sexp::Nil;
-            for body in parts.iter().skip(1) {
-                last = eval(body, env)?;
-            }
-            return Ok(last);
-        }
-    }
-    Ok(Sexp::Nil)
-}
-
-fn sf_when(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let parts = args_vec(args)?;
-    if parts.is_empty() {
-        return Ok(Sexp::Nil);
-    }
-    let cond = eval(&parts[0], env)?;
-    if !is_truthy(&cond) {
-        return Ok(Sexp::Nil);
-    }
-    let mut last = Sexp::Nil;
-    for b in parts.iter().skip(1) {
-        last = eval(b, env)?;
-    }
-    Ok(last)
-}
-
-fn sf_unless(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let parts = args_vec(args)?;
-    if parts.is_empty() {
-        return Ok(Sexp::Nil);
-    }
-    let cond = eval(&parts[0], env)?;
-    if is_truthy(&cond) {
-        return Ok(Sexp::Nil);
-    }
-    let mut last = Sexp::Nil;
-    for b in parts.iter().skip(1) {
-        last = eval(b, env)?;
-    }
-    Ok(last)
 }
 
 // ---------- let / let* ----------
@@ -319,23 +243,6 @@ fn eval_body(body: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     Ok(last)
 }
 
-fn expect_symbol(form: &Sexp) -> Result<String, EvalError> {
-    match form {
-        Sexp::Symbol(s) => Ok(s.clone()),
-        other => Err(EvalError::WrongType {
-            expected: "symbol".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
-fn quote_body(parts: &[Sexp]) -> &[Sexp] {
-    match parts.first() {
-        Some(Sexp::Str(_)) => &parts[1..],
-        _ => parts,
-    }
-}
-
 // ---------- lambda ----------
 
 fn sf_lambda(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
@@ -354,236 +261,6 @@ fn sf_lambda(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     let mut chain = vec![Sexp::Symbol("closure".into()), captured, formals];
     chain.extend(body);
     Ok(Sexp::list_from(&chain))
-}
-
-// ---------- defun / defmacro / defvar / defconst ----------
-
-fn define_named_lambda(
-    function_name: &str,
-    parts: &[Sexp],
-    env: &mut Env,
-) -> Result<Sexp, EvalError> {
-    if parts.len() < 2 {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: function_name.into(),
-            expected: "≥2".into(),
-            got: parts.len(),
-        });
-    }
-    let name = expect_symbol(&parts[0])?;
-    let formals = parts[1].clone();
-    let body = quote_body(&parts[2..]);
-    let mut chain = vec![Sexp::Symbol("lambda".into()), formals];
-    chain.extend(body.iter().cloned());
-    let lambda = Sexp::list_from(&chain);
-    env.set_function(&name, lambda);
-    Ok(Sexp::Symbol(name))
-}
-
-fn sf_defun(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    // (defun NAME ARGS [DOC] BODY...)
-    let parts = args_vec(args)?;
-    define_named_lambda("defun", &parts, env)
-}
-
-fn sf_cl_defun(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    // (cl-defun NAME (POS... &optional O... &rest R &key (K1 D1) (K2 D2) ...) BODY...)
-    //
-    // Doc 51 Phase 6 (2026-05-03): proper &key expansion.  Previously
-    // cl-defun routed straight through `define_named_lambda' which
-    // treats `&key' as a plain identifier — anvil-memory-list defined
-    // with `(&optional type &key with-decay sort)` then mis-arity'd at
-    // runtime because callers passing `:with-decay X :sort Y' overflow
-    // the 4-slot positional view.
-    //
-    // Rewrite the formals into `(POS... &optional O... &rest --cl-keys)`
-    // + wrap the body in a let* that lifts each &key parameter from
-    // --cl-keys via `(memq :NAME --cl-keys)' lookup.
-    let parts = args_vec(args)?;
-    if parts.len() < 2 {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "cl-defun".into(),
-            expected: "≥2".into(),
-            got: parts.len(),
-        });
-    }
-    let formals = list_elements(&parts[1])?;
-    let mut positional: Vec<Sexp> = Vec::new();
-    let mut optionals: Vec<Sexp> = Vec::new();
-    let mut rest_sym: Option<String> = None;
-    let mut keys: Vec<(String, String, Sexp)> = Vec::new(); // (kw-symbol, param-name, default-form)
-    enum Mode { Pos, Opt, Rest, Key, Aux }
-    let mut mode = Mode::Pos;
-    for f in &formals {
-        match f {
-            Sexp::Symbol(s) if s == "&optional" => mode = Mode::Opt,
-            Sexp::Symbol(s) if s == "&rest" => mode = Mode::Rest,
-            Sexp::Symbol(s) if s == "&key" => mode = Mode::Key,
-            Sexp::Symbol(s) if s == "&aux" => mode = Mode::Aux,
-            other => match mode {
-                Mode::Pos => positional.push(other.clone()),
-                Mode::Opt => optionals.push(other.clone()),
-                Mode::Rest => {
-                    if let Sexp::Symbol(s) = other {
-                        rest_sym = Some(s.clone());
-                    }
-                }
-                Mode::Key => {
-                    let (sym, default) = match other {
-                        Sexp::Symbol(s) => (s.clone(), Sexp::Nil),
-                        Sexp::Cons(_, _) => {
-                            let kparts = list_elements(other)?;
-                            let sym = match kparts.get(0) {
-                                Some(Sexp::Symbol(s)) => s.clone(),
-                                _ => continue,
-                            };
-                            let default = kparts.get(1).cloned().unwrap_or(Sexp::Nil);
-                            (sym, default)
-                        }
-                        _ => continue,
-                    };
-                    let kw = format!(":{}", sym);
-                    keys.push((kw, sym, default));
-                }
-                Mode::Aux => { /* ignore */ }
-            },
-        }
-    }
-
-    // No &key: pass through to define_named_lambda (= plain defun shape).
-    if keys.is_empty() {
-        return define_named_lambda("cl-defun", &parts, env);
-    }
-
-    // Build new formals: positional + &optional + optionals + &rest --cl-keys
-    let rest_name = rest_sym.unwrap_or_else(|| "--cl-keys".to_string());
-    let mut new_formals: Vec<Sexp> = positional;
-    if !optionals.is_empty() {
-        new_formals.push(Sexp::Symbol("&optional".into()));
-        new_formals.extend(optionals);
-    }
-    new_formals.push(Sexp::Symbol("&rest".into()));
-    new_formals.push(Sexp::Symbol(rest_name.clone()));
-
-    // Build let* bindings: for each (:KW PARAM DEFAULT)
-    //   (PARAM (or (car (cdr (memq ':KW' rest-name))) DEFAULT))
-    let rest_var = Sexp::Symbol(rest_name);
-    let mut bindings: Vec<Sexp> = Vec::new();
-    for (kw, param, default) in &keys {
-        let memq = Sexp::list_from(&[
-            Sexp::Symbol("memq".into()),
-            Sexp::list_from(&[Sexp::Symbol("quote".into()), Sexp::Symbol(kw.clone())]),
-            rest_var.clone(),
-        ]);
-        let cdr = Sexp::list_from(&[Sexp::Symbol("cdr".into()), memq]);
-        let car = Sexp::list_from(&[Sexp::Symbol("car".into()), cdr]);
-        let or_form = Sexp::list_from(&[Sexp::Symbol("or".into()), car, default.clone()]);
-        bindings.push(Sexp::list_from(&[Sexp::Symbol(param.clone()), or_form]));
-    }
-
-    // Wrap body in let*: (let* BINDINGS BODY...)
-    let body = &parts[2..];
-    let mut let_star = vec![
-        Sexp::Symbol("let*".into()),
-        Sexp::list_from(&bindings),
-    ];
-    let_star.extend(body.iter().cloned());
-    let wrapped_body = Sexp::list_from(&let_star);
-
-    // Synthesize new defun parts: (NAME NEW-FORMALS WRAPPED-BODY)
-    let new_parts = vec![
-        parts[0].clone(),
-        Sexp::list_from(&new_formals),
-        wrapped_body,
-    ];
-    define_named_lambda("cl-defun", &new_parts, env)
-}
-
-fn sf_defmacro(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    // (defmacro NAME ARGS BODY...)
-    let parts = args_vec(args)?;
-    if parts.len() < 2 {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "defmacro".into(),
-            expected: "≥2".into(),
-            got: parts.len(),
-        });
-    }
-    let name = expect_symbol(&parts[0])?;
-    let formals = parts[1].clone();
-    let body = quote_body(&parts[2..]);
-    let mut lambda_chain = vec![Sexp::Symbol("lambda".into()), formals];
-    lambda_chain.extend(body.iter().cloned());
-    let lambda = Sexp::list_from(&lambda_chain);
-    let macro_form = Sexp::list_from(&[Sexp::Symbol("macro".into()), lambda]);
-    env.set_function(&name, macro_form);
-    Ok(Sexp::Symbol(name))
-}
-
-fn sf_defvar(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let parts = args_vec(args)?;
-    if parts.is_empty() {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "defvar".into(),
-            expected: "≥1".into(),
-            got: 0,
-        });
-    }
-    let name = expect_symbol(&parts[0])?;
-    let value = if parts.len() >= 2 {
-        eval(&parts[1], env)?
-    } else {
-        Sexp::Nil
-    };
-    env.defvar(&name, value, false);
-    Ok(Sexp::Symbol(name))
-}
-
-fn sf_defconst(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let parts = args_vec(args)?;
-    if parts.len() < 2 {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "defconst".into(),
-            expected: "≥2".into(),
-            got: parts.len(),
-        });
-    }
-    let name = expect_symbol(&parts[0])?;
-    let value = eval(&parts[1], env)?;
-    // defconst always overwrites and marks constant.
-    let entry = env.globals.entry(name.clone()).or_default();
-    entry.value = Some(value);
-    entry.constant = true;
-    Ok(Sexp::Symbol(name))
-}
-
-fn sf_defcustom(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let parts = args_vec(args)?;
-    if parts.len() < 3 {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "defcustom".into(),
-            expected: "≥3".into(),
-            got: parts.len(),
-        });
-    }
-    let name = expect_symbol(&parts[0])?;
-    let value = eval(&parts[1], env)?;
-    env.defvar(&name, value, false);
-    Ok(Sexp::Symbol(name))
-}
-
-fn sf_defgroup(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let parts = args_vec(args)?;
-    if parts.len() < 3 {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "defgroup".into(),
-            expected: "≥3".into(),
-            got: parts.len(),
-        });
-    }
-    let name = expect_symbol(&parts[0])?;
-    env.globals.entry(name.clone()).or_default();
-    Ok(Sexp::Symbol(name))
 }
 
 // ---------- setq ----------
@@ -623,7 +300,7 @@ fn sf_setq(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     Ok(last)
 }
 
-// ---------- while / dolist / dotimes ----------
+// ---------- while ----------
 
 fn sf_while(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     let parts = args_vec(args)?;
@@ -643,113 +320,6 @@ fn sf_while(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
             eval(f, env)?;
         }
     }
-}
-
-fn sf_dolist(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    // (dolist (VAR LIST [RESULT]) BODY...)
-    let parts = args_vec(args)?;
-    if parts.is_empty() {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "dolist".into(),
-            expected: "≥1".into(),
-            got: 0,
-        });
-    }
-    let head = list_elements(&parts[0])?;
-    if head.len() < 2 {
-        return Err(EvalError::WrongType {
-            expected: "(VAR LIST [RESULT])".into(),
-            got: parts[0].clone(),
-        });
-    }
-    let var_name = match &head[0] {
-        Sexp::Symbol(s) => s.clone(),
-        other => {
-            return Err(EvalError::WrongType {
-                expected: "symbol".into(),
-                got: other.clone(),
-            })
-        }
-    };
-    let list_value = eval(&head[1], env)?;
-    let result_form = head.get(2).cloned();
-    let items = list_elements(&list_value)?;
-    env.push_frame();
-    for item in items {
-        env.bind_local(&var_name, item);
-        for f in parts.iter().skip(1) {
-            if let Err(e) = eval(f, env) {
-                env.pop_frame();
-                return Err(e);
-            }
-        }
-    }
-    let result = if let Some(rf) = result_form {
-        // Bind var to nil before evaluating result form per Elisp.
-        env.bind_local(&var_name, Sexp::Nil);
-        eval(&rf, env)
-    } else {
-        Ok(Sexp::Nil)
-    };
-    env.pop_frame();
-    result
-}
-
-fn sf_dotimes(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    // (dotimes (VAR COUNT [RESULT]) BODY...)
-    let parts = args_vec(args)?;
-    if parts.is_empty() {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "dotimes".into(),
-            expected: "≥1".into(),
-            got: 0,
-        });
-    }
-    let head = list_elements(&parts[0])?;
-    if head.len() < 2 {
-        return Err(EvalError::WrongType {
-            expected: "(VAR COUNT [RESULT])".into(),
-            got: parts[0].clone(),
-        });
-    }
-    let var_name = match &head[0] {
-        Sexp::Symbol(s) => s.clone(),
-        other => {
-            return Err(EvalError::WrongType {
-                expected: "symbol".into(),
-                got: other.clone(),
-            })
-        }
-    };
-    let count_value = eval(&head[1], env)?;
-    let count = match count_value {
-        Sexp::Int(n) => n,
-        other => {
-            return Err(EvalError::WrongType {
-                expected: "integerp".into(),
-                got: other,
-            })
-        }
-    };
-    let result_form = head.get(2).cloned();
-    env.push_frame();
-    for i in 0..count.max(0) {
-        env.bind_local(&var_name, Sexp::Int(i));
-        for f in parts.iter().skip(1) {
-            if let Err(e) = eval(f, env) {
-                env.pop_frame();
-                return Err(e);
-            }
-        }
-    }
-    let result = if let Some(rf) = result_form {
-        env.bind_local(&var_name, Sexp::Int(count.max(0)));
-        eval(&rf, env)
-    } else {
-        Ok(Sexp::Nil)
-    };
-    env.pop_frame();
-    result
 }
 
 // ---------- condition-case / unwind-protect ----------
@@ -888,7 +458,7 @@ fn sf_unwind_protect(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     }
 }
 
-// ---------- progn / prog1 / prog2 ----------
+// ---------- progn ----------
 
 fn sf_progn(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     let parts = args_vec(args)?;
@@ -897,67 +467,6 @@ fn sf_progn(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
         last = eval(f, env)?;
     }
     Ok(last)
-}
-
-fn sf_prog1(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let parts = args_vec(args)?;
-    if parts.is_empty() {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "prog1".into(),
-            expected: "≥1".into(),
-            got: 0,
-        });
-    }
-    let first = eval(&parts[0], env)?;
-    for f in parts.iter().skip(1) {
-        eval(f, env)?;
-    }
-    Ok(first)
-}
-
-fn sf_prog2(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let parts = args_vec(args)?;
-    if parts.len() < 2 {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "prog2".into(),
-            expected: "≥2".into(),
-            got: parts.len(),
-        });
-    }
-    eval(&parts[0], env)?;
-    let second = eval(&parts[1], env)?;
-    for f in parts.iter().skip(2) {
-        eval(f, env)?;
-    }
-    Ok(second)
-}
-
-// ---------- and / or ----------
-
-fn sf_and(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let parts = args_vec(args)?;
-    if parts.is_empty() {
-        return Ok(Sexp::T);
-    }
-    let mut last = Sexp::T;
-    for f in &parts {
-        last = eval(f, env)?;
-        if !is_truthy(&last) {
-            return Ok(Sexp::Nil);
-        }
-    }
-    Ok(last)
-}
-
-fn sf_or(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let parts = args_vec(args)?;
-    for f in &parts {
-        let v = eval(f, env)?;
-        if is_truthy(&v) {
-            return Ok(v);
-        }
-    }
-    Ok(Sexp::Nil)
 }
 
 // ---------- pcase removed: see lisp/nelisp-pcase.el ----------
@@ -1010,95 +519,6 @@ fn sf_throw(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     let value = eval(&parts[1], env)?;
     Err(EvalError::UncaughtThrow { tag, value })
 }
-
-/// `(push X PLACE)` — minimal-form macro: when PLACE is a symbol,
-/// expands to `(setq PLACE (cons X PLACE))'.  Generalised places
-/// (= `setf'-style accessors) are deferred — Layer 2 callers we have
-/// audited only push onto symbol-bound lists.
-fn sf_push(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let parts = args_vec(args)?;
-    if parts.len() != 2 {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "push".into(),
-            expected: "2".into(),
-            got: parts.len(),
-        });
-    }
-    match &parts[1] {
-        // Symbol place — fast path (no setf bounce).
-        Sexp::Symbol(name) => {
-            let new_head = eval(&parts[0], env)?;
-            let cur = env.lookup_value(name).unwrap_or(Sexp::Nil);
-            let new_list = Sexp::cons(new_head, cur);
-            env.set_value(name, new_list.clone())?;
-            Ok(new_list)
-        }
-        // Generalised place (= cons form, e.g. an accessor call).
-        // Expand to `(setf PLACE (cons NEW PLACE))' and evaluate it,
-        // routing through whatever `setf' macro the substrate has
-        // installed (= our cl-lib polyfill knows about
-        // `cl-struct-setter').  Note: `parts[0]' (= the new value
-        // expression) is interpolated *unevaluated* into the cons
-        // form, so it ends up evaluated exactly once.  PLACE is
-        // evaluated twice — once by the cons read, once by the
-        // setf write — which matches GNU Emacs's MVP `push' macro
-        // expansion (= upstream uses `gensym' to avoid this; we
-        // accept the double-eval cost for substrate accessors,
-        // which are side-effect-free).
-        place_form @ Sexp::Cons(_, _) => {
-            let cons_form = Sexp::list_from(&[
-                Sexp::Symbol("cons".into()),
-                parts[0].clone(),
-                place_form.clone(),
-            ]);
-            let setf_form = Sexp::list_from(&[
-                Sexp::Symbol("setf".into()),
-                place_form.clone(),
-                cons_form,
-            ]);
-            eval(&setf_form, env)
-        }
-        other => Err(EvalError::WrongType {
-            expected: "symbol or generalised place (cons form)".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
-/// `(pop PLACE)` — minimal-form macro: when PLACE is a symbol,
-/// returns its car and rebinds it to the cdr.
-fn sf_pop(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
-    let parts = args_vec(args)?;
-    if parts.len() != 1 {
-        return Err(EvalError::WrongNumberOfArguments {
-            function: "pop".into(),
-            expected: "1".into(),
-            got: parts.len(),
-        });
-    }
-    let place_sym = match &parts[0] {
-        Sexp::Symbol(s) => s.clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "symbol (generalised places NYI)".into(),
-            got: other.clone(),
-        }),
-    };
-    let cur = env.lookup_value(&place_sym).unwrap_or(Sexp::Nil);
-    match &cur {
-        Sexp::Cons(head, tail) => {
-            let head = head.borrow().clone();
-            let tail = tail.borrow().clone();
-            env.set_value(&place_sym, tail)?;
-            Ok(head)
-        }
-        Sexp::Nil => Ok(Sexp::Nil),
-        other => Err(EvalError::WrongType {
-            expected: "list".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
 /// `eq` semantics for `Sexp`.  Symbols match by name, integers by
 /// value, `nil`/`t` by identity, everything else by structural
 /// equality (close enough for the bootstrap; full pointer-eq would

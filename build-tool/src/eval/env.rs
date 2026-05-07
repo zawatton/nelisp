@@ -177,7 +177,16 @@ impl Env {
         let mut env = Env {
             globals: HashMap::new(),
             frames: Vec::new(),
-            max_recursion: 256,
+            // Phase 7 Stage 7.3.d (Doc 67) — Tier 2 special forms now
+            // expand via elisp macros at runtime; each `cond' / `or' /
+            // `when' / `unless' / `dolist' adds 2-3 frames per call.
+            // The Rust prn-* family walks deep cons structures, so 256
+            // is too tight (the cl-defun expansion depth alone needs
+            // ~280 frames after macros pile up).  We bump to 512 — far
+            // below host Emacs's 1600 to keep the Rust call stack
+            // bounded under cargo-test default thread stacks.  See
+            // `recursion_depth_guard' for the upper-bound test.
+            max_recursion: 512,
             current_recursion: 0,
             extern_builtins: HashMap::new(),
         };

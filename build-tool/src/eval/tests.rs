@@ -210,12 +210,14 @@ fn defvar_idempotent() {
 }
 
 #[test]
-fn defconst_marks_constant_signals_on_setq() {
-    let r = err("(defconst k 10) (setq k 11)");
-    // eval_str only takes one form — use eval_str_all path:
-    let _ = r;
-    let r2 = eval_str_all("(defconst k 10) (setq k 11)").unwrap_err();
-    assert!(matches!(r2, EvalError::SettingConstant(name) if name == "k"));
+fn defconst_binds_value() {
+    // Phase 7 Stage 7.3.d (Doc 67) — `defconst' migrated from Rust
+    // `sf_defconst' (which marked the binding as `const' so a later
+    // `setq' would signal `setting-constant') to an elisp macro that
+    // calls `set'.  The const-flag enforcement was bootstrap-only and
+    // has no parallel in the elisp port; the test now just verifies
+    // the value is bound.
+    assert_eq!(ok_all("(defconst k 10) k"), Sexp::Int(10));
 }
 
 // ============================================================
@@ -264,15 +266,22 @@ fn defcustom_missing_args_errors() {
 }
 
 #[test]
-fn defgroup_registers_symbol_without_binding_value() {
+fn defgroup_returns_name_without_binding_value() {
+    // Phase 7 Stage 7.3.d (Doc 67) — `defgroup' migrated to an elisp
+    // macro that returns the quoted name and otherwise no-ops.  The
+    // previous Rust `sf_defgroup' also registered the name in
+    // `env.globals' as an empty entry, but that was unobservable
+    // (the value cell stays unbound — `boundp' returns nil), so the
+    // observable contract still matches host Emacs.
     assert_eq!(ok("(defgroup my-group nil \"doc\")"), Sexp::Symbol("my-group".into()));
     assert_eq!(ok_all("(defgroup my-group nil \"doc\") (boundp 'my-group)"), Sexp::Nil);
 }
 
-#[test]
-fn defgroup_name_must_be_symbol() {
-    assert!(matches!(err("(defgroup 1 nil \"doc\")"), EvalError::WrongType { .. }));
-}
+// Stage 7.3.d removed the runtime type-check on `defgroup' name —
+// the elisp macro accepts any datum and returns it quoted.  Calling
+// `(defgroup 1 nil "doc")' now evaluates to `1' instead of signalling
+// wrong-type-argument.  Type validation belongs in lint/byte-compile,
+// not in the macro expander.
 
 #[test]
 fn cl_defun_supports_optional_arguments() {

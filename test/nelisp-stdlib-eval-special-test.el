@@ -155,10 +155,13 @@
   (should (string= (nelisp-stdlib-eval-special-test--expand "(defcustom foo 5 \"doc\")")
                    "(defvar foo 5 \"doc\")")))
 
-(ert-deftest nelisp-eval-special/defgroup-noop ()
+(ert-deftest nelisp-eval-special/defgroup-returns-name ()
   (nelisp-stdlib-eval-special-test--skip-unless-built)
+  ;; Stage 7.3.d: defgroup returns the quoted name (matches Rust
+  ;; sf_defgroup contract, makes `(defgroup g nil "doc")' useable
+  ;; as a return-value form like host Emacs).
   (should (string= (nelisp-stdlib-eval-special-test--expand "(defgroup grp nil \"doc\")")
-                   "nil")))
+                   "'grp")))
 
 (ert-deftest nelisp-eval-special/dolist-shape ()
   (nelisp-stdlib-eval-special-test--skip-unless-built)

@@ -431,7 +431,38 @@ LOC: +30 elisp + +5 ERT。
 
 LOC: +120 elisp。
 
-** §3.4 Stage 7.3.d — Rust sf_* 22 件撤去 + runtime swap
+** §3.4 Stage 7.3.d — Rust sf_* 22 件撤去 + runtime swap (SHIPPED)
+
+実装での発見:
+
+- *Bootstrap chicken-and-egg*: =sf_defmacro= 削除と同時に file 先頭の
+  =(defmacro X ...)= も dispatch 不能化。解決策として
+  =lisp/nelisp-stdlib-eval-special.el= の最先頭に raw =(fset 'defmacro
+  (cons 'macro (cons (lambda ...) nil)))= を置き、Tier 1 special form
+  + Rust builtin function (=fset= / =cons=) のみで defmacro を installl
+  する bootstrap shim を入れた。Doc 67 §2.3 で「defmacro entry 全て
+  Rust sf_defmacro 経由」と書かれていた前提が削除と矛盾、shim が解
+- *=set= builtin 追加*: =sf_defvar= / =sf_defconst= が直接呼んでいた
+  =env.set_value= は elisp macro からは呼べない。=(set SYMBOL VALUE)=
+  builtin (=bi_set=, ~15 LOC) を =builtins.rs= に追加、defvar/defconst
+  macro が =(set 'NAME VALUE)= で値 cell を更新できるよう wire
+- *=max_recursion= bump (256 → 512)*: Tier 2 macros が runtime expand
+  されると =cond= / =or= / =unless= が depth 当たり 2-3 frame 食う。
+  prn-* 経由で深い cons を walk すると 256 を超えるため (cl-defun 展開
+  だけで ~280 frame)、host Emacs の 1600 default より小さい 512 に
+  bump (cargo test の default Rust stack 内で収まる sweet spot)
+- *Tier 2 elisp port の semantic 簡化*:
+  - =defconst= の const-flag enforcement は Rust =sf_defconst= 専用
+    機能で elisp port は単に =(set 'NAME VALUE)= 化、setq 上書き禁止
+    は失われる (= linter / byte-compile に移譲が筋)
+  - =defgroup= の name type-check は macro 内で出来ないため失われる、
+    =(quote NAME)= return のみ host 互換維持
+  - 該当 cargo test 2 件を新 semantic に合わせて緩めた
+- *cargo: 420/421 PASS* (= 1 件 =track_k_enter_on_non_tty_errors_cleanly=
+  は pre-existing TTY flake、git stash で同様失敗確認済 = Stage 7.3.d
+  無関係)
+- *ERT: 39/39 PASS* (= 7.3.a 25 + 7.3.b 5 + 7.3.c 9)
+
 
 - §3.0 通り、本 stage で **runtime swap が発生**。それまでに install
   された elisp macros が active 化、Rust 22 arm を全削除した瞬間
