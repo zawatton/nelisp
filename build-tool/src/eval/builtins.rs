@@ -63,10 +63,12 @@ pub fn install_builtins(env: &mut Env) {
         // cons / list
         // Rust-min (2026-05-06 batch 6o): `append' migrated to elisp
         // (lisp/nelisp-stdlib-list.el).
+        // Rust-min Doc 61 stage 7 (2026-05-07): cXXr accessor family
+        // (caar / cadr / cdar / cddr / caaar / caadr / cadar / caddr /
+        // cdaar / cdadr / cddar / cdddr / cadddr — 13 names) migrated
+        // to elisp (lisp/nelisp-stdlib-list.el) as plain `car'/`cdr'
+        // composition.  Only the 2 leaf accessors stay in Rust.
         "car", "cdr", "cons", "length",
-        "caar", "cadr", "cdar", "cddr",
-        "caaar", "caadr", "cadar", "caddr",
-        "cdaar", "cdadr", "cddar", "cdddr", "cadddr",
         "setcar", "setcdr",
         // generic sequence / array accessors
         // Rust-min (2026-05-06 batch 6q): `arrayp' / `sequencep'
@@ -416,20 +418,9 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // ---- cons / list ----
         "car" => bi_car(args),
         "cdr" => bi_cdr(args),
-        // Common compositions — substrate code uses these everywhere.
-        "caar"   => bi_car(&[bi_car(args)?]),
-        "cadr"   => bi_car(&[bi_cdr(args)?]),
-        "cdar"   => bi_cdr(&[bi_car(args)?]),
-        "cddr"   => bi_cdr(&[bi_cdr(args)?]),
-        "caaar"  => bi_car(&[bi_car(&[bi_car(args)?])?]),
-        "caadr"  => bi_car(&[bi_car(&[bi_cdr(args)?])?]),
-        "cadar"  => bi_car(&[bi_cdr(&[bi_car(args)?])?]),
-        "caddr"  => bi_car(&[bi_cdr(&[bi_cdr(args)?])?]),
-        "cdaar"  => bi_cdr(&[bi_car(&[bi_car(args)?])?]),
-        "cdadr"  => bi_cdr(&[bi_car(&[bi_cdr(args)?])?]),
-        "cddar"  => bi_cdr(&[bi_cdr(&[bi_car(args)?])?]),
-        "cdddr"  => bi_cdr(&[bi_cdr(&[bi_cdr(args)?])?]),
-        "cadddr" => bi_car(&[bi_cdr(&[bi_cdr(&[bi_cdr(args)?])?])?]),
+        // Common compositions (cXXr family) migrated to elisp in
+        // Doc 61 stage 7 — see lisp/nelisp-stdlib-list.el.  Only the
+        // 2 leaf primitives stay here.
         "cons" => bi_cons(args),
         "length" => bi_length(args),
         // reverse / nreverse migrated to elisp (Rust-min 2026-05-06

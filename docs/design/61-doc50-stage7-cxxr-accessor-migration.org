@@ -1,0 +1,181 @@
+#+TITLE: Doc 61 — Doc 50 Stage 7: cXXr Accessor Family Migration to Elisp
+#+AUTHOR: zawatton
+#+DATE: 2026-05-07
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: SHIPPED
+:DEPENDS_ON: Doc 50 stage 7 batches 7a〜7i (= 同 pattern を 9 連打済)
+:END:
+
+* §0 TL;DR
+
+Rust 最小化 ramp の続編。=builtins.rs= の =cXXr= アクセサ族 13 個
+(=caar=, =cadr=, =cdar=, =cddr=, =caaar=, =caadr=, =cadar=, =caddr=,
+=cdaar=, =cdadr=, =cddar=, =cdddr=, =cadddr=) は実装が `bi_car` /
+`bi_cdr` の純然たる合成に過ぎず、elisp の 1 行 =defun= で完全に等価。
+13 個の dispatcher / installer entry を Rust から外して
+=lisp/nelisp-stdlib-list.el= 末尾へ移動した。
+
+| layer            | before                              | after                              |
+|------------------+-------------------------------------+------------------------------------|
+| install_builtins | 15 名前 (=car= / =cdr= + 13 cXXr)    | 2 名前 (=car= / =cdr= のみ)          |
+| dispatch         | 15 arms                              | 2 arms                              |
+| 純 elisp 実装     | なし                                 | 13 defun (=lisp/nelisp-stdlib-list= 末尾) |
+
+実測効果:
+- builtins.rs: 5,198 → 5,189 行 (= 9 行減)
+- 名前 / arm 削除合計: 13 entry × ~2 行 = ~26 行 (実数差は indent のため少なめ)
+- elisp 側 +22 行 (header comment 含む)
+
+LOC 上の削減幅は小さいが *Rust 側 dispatcher の数* が 13 → 0 になったの
+が本質。dispatcher arm は 1 本ごとに enum match + bi_car/bi_cdr の
+clone を含み、JIT 化の障害になる。Phase 5 native cc lowering 時に
+=cXXr= ごとに lower entry を書く必要がなくなり、=car=/=cdr= の lower
+だけで済む。
+
+Doc 50 stage 7 batch 7a〜7i (Doc 50 §4 段階 1〜2) の続編、
+batch 番号は便宜上 *7j* (= cXXr 単独 batch)。
+
+* §1 動機
+
+** §1.1 Rust 最小化方針 (= memory =feedback_nelisp_minimize_rust=)
+- Rust に残す primitive は 「elisp 化困難」 か 「JIT 化を見据えた最低
+  限」 のどちらかであるべき
+- =cXXr= 群は 13 個の独立 dispatcher arm を持ちながら、各 arm が
+  =bi_car= / =bi_cdr= の合成 1 本以上呼ぶだけで構成されている。
+  つまり 13 × 「dispatcher overhead + 関数 call overhead」 を払って
+  =car= / =cdr= の合成と同じことをしている
+
+** §1.2 Doc 60 までで OS surface ライン完走後の現状
+- Rust 全 11,316 LOC、builtins.rs 5,198。bundled elisp 3,755。ratio 3:1
+- builtins.rs の中で「自明に elisp 化できる primitives」のうち、=cXXr=
+  族は最も低リスクで完全等価な migrate ターゲット
+- Doc 50 stage 7 で 22 retire / 7 new primitive 済、本 Doc が 13 retire 追加
+
+** §1.3 Phase 5 native cc lowering との関係
+- Phase 5 で =car= / =cdr= は ConsIR(load fixed offset) として lower
+  予定 (= Doc 62 §3 stage 5.3)
+- =cXXr= が Rust に残ると lower 対象が 15 個に膨らむ
+- 本 Doc で elisp 化することで lower 対象は 2 個 (=car=, =cdr=) に集約
+- Phase 5 完成後 elisp 側の =cXXr= は inlining + lower の連鎖で host
+  CPU 命令に直 emit される (= 性能 regression なし)
+
+* §2 設計
+
+** §2.1 elisp 側追加 (=lisp/nelisp-stdlib-list.el= 末尾)
+
+13 個の =defun=、各 1 行:
+
+#+BEGIN_SRC emacs-lisp
+(defun caar  (x) (car (car x)))
+(defun cadr  (x) (car (cdr x)))
+(defun cdar  (x) (cdr (car x)))
+(defun cddr  (x) (cdr (cdr x)))
+(defun caaar (x) (car (car (car x))))
+(defun caadr (x) (car (car (cdr x))))
+(defun cadar (x) (car (cdr (car x))))
+(defun caddr (x) (car (cdr (cdr x))))
+(defun cdaar (x) (cdr (car (car x))))
+(defun cdadr (x) (cdr (car (cdr x))))
+(defun cddar (x) (cdr (cdr (car x))))
+(defun cdddr (x) (cdr (cdr (cdr x))))
+(defun cadddr (x) (car (cdr (cdr (cdr x)))))
+#+END_SRC
+
+`(provide 'nelisp-stdlib-list)` の前に header comment 1 ブロック付きで
+追記。
+
+** §2.2 Rust 側削除 (=build-tool/src/eval/builtins.rs=)
+
+*** §2.2.1 install_builtins の names list
+13 名前 (=caar= 〜 =cadddr=) を `&[&str]` から削除。`car`, `cdr`, `cons`,
+`length` の同行に並んでいた箇所が 2 行 → 1 行に短縮。
+
+*** §2.2.2 dispatch arms
+13 個の `"caXXr" => bi_car(&[bi_cdr(args)?])` 形式の arm を全削除。
+`car` / `cdr` の 2 arm のみ残存。
+
+*** §2.2.3 関数本体 (= bi_car / bi_cdr)
+そのまま残す。leaf primitive で hot path、JIT lower の対象になる。
+
+** §2.3 ファイル変更まとめ
+
+| 種別      | path                                               | 変更        |
+|-----------+----------------------------------------------------+-------------|
+| 設計書    | =docs/design/61-doc50-stage7-cxxr-accessor-migration.org= | new         |
+| Rust      | =build-tool/src/eval/builtins.rs=                   | edit (-17 / +8 行) |
+| stdlib    | =lisp/nelisp-stdlib-list.el=                        | edit (+22 行) |
+
+* §3 Test plan
+
+** §3.1 既存 ERT を回す
+- =cXXr= 自身を直接テストする ERT は無いが、bundled elisp 全体で
+  =cadr= / =caddr= 等は多用 (= cl-defstruct accessor、parser が
+  cdr/car で AST 走査、misc.el の文字列分割など)
+- =make test= 全 PASS で regression なしを確認
+
+** §3.2 build gate
+- =cargo build --release --bin nelisp= warning 0 を要件
+- =touch lisp/nelisp-stdlib-list.el= 後再 build (= include_str! cache 問題回避、Doc 56/59/60 で踏んだ罠の再発防止)
+
+** §3.3 実測結果
+
+| gate                                            | 結果                                    |
+|-------------------------------------------------+-----------------------------------------|
+| =cargo build --release --bin nelisp=           | warning 0、~5.7s                         |
+| =make test=                                    | 2429 ran / 2404 expected / 0 unexpected / 25 skipped (~59.1s) |
+
+* §4 段階
+
+| stage  | item                                                            | 状態      |
+|--------+-----------------------------------------------------------------+-----------|
+| 7j.1   | 設計書 (本 Doc)                                                   | DONE      |
+| 7j.2   | elisp 側 13 defun 追加                                          | DONE      |
+| 7j.3   | Rust 側 names + dispatch 削除                                   | DONE      |
+| 7j.4   | =cargo build= + =make test= で regression なし確認                | DONE      |
+| 7j.5   | git commit                                                       | DONE      |
+| 7k     | secure-hash dispatcher collapse (md5 / sha1〜sha512 → nl-secure-hash 1 本) | 別 batch — Rust 内部 wrapper の確認が必要、scope 切り |
+
+* §5 共通原則 (Doc 50 §5 への補足)
+
+** §5.1 「elisp 化判定」の sweet spot
+- Doc 50 §5 で言及した「primitive 自体は 5〜30 LOC で書ける」「elisp 側
+  wrapper も 5〜30 LOC で書ける」を満たす sweet spot に =cXXr= 族はぴ
+  ったり当てはまる
+- 各 =cXXr= の Rust 実装 = 1 行 (`bi_car(&[bi_cdr(args)?])`) → 同じ意
+  味の elisp = 1 行 (`(car (cdr x))`) で 1 対 1 対応
+- *signature が leaf primitive の合成 1 行で書けるなら必ず elisp 化* —
+  本 Doc がその経験則を確認
+
+** §5.2 retire しない判断基準
+- =car= / =cdr= は leaf primitive、合成のしようがない
+- 副作用ある primitives (=setcar=, =setcdr=) は当面 Rust に残す
+  (= Phase 5 で StoreIR として lower 予定、現状は arm のまま)
+
+* §6 Out of scope
+
+- *secure-hash dispatcher collapse* — md5 / sha1 / sha224 / sha256 /
+  sha384 / sha512 が Rust 側で =bi_secure_hash(args, "ALGO")= 形の
+  thin wrapper になっているはずだが、grep して dispatcher の実装を確認
+  していない。確認後 Doc 61.5 (= 7k) として別 batch で
+- *list 操作系の追加 migrate* — =mapcar=, =mapc=, =mapconcat=, =assoc=,
+  =rassoc=, =memq=, =member= 等は Rust に残ってる可能性。grep して
+  thin wrapper なら elisp 化、そうでなければ Phase 5 lower 待ち
+- *predicate primitives* — =null=, =atom=, =listp=, =consp=, =symbolp=,
+  =stringp=, =numberp=, =integerp=, =floatp= 等は ConsIR 上の Phase 5
+  PredicateIR で lower 予定 (Doc 62 §3 stage 5.5)
+- *special forms* (= let / defun / lambda / if / cond …) — 全部 Phase
+  7 self-host で elisp 化 (Doc 63)
+
+* §7 References
+
+- =feedback_nelisp_minimize_rust= memory
+- Doc 49 elisp pivot
+- Doc 50 §4 段階的 unlock plan / §5 共通原則
+- Doc 50 stage 7 batches 7a〜7i (commits 3fc2d9c〜3398580)
+- Doc 60 OS surface 完走 (commit db9f309)
+- Doc 62 Phase 5 native cc lowering (= 並行 Doc、本 Doc の延長線で
+  =car=/=cdr= を ConsIR に lower する)
+- Doc 63 Phase 7 NeLisp self-host roadmap

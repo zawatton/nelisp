@@ -94,4 +94,26 @@ call returns the arg unchanged (= no copy)."
           (setq acc (cdr acc)))
         result)))))
 
+;; Doc 61 stage 7 (2026-05-07) — `cXXr' accessors migrated from Rust
+;; to elisp.  The previous dispatch (= 13 arms in build-tool/src/eval/
+;; builtins.rs around line 420) was a pure composition of `car' / `cdr',
+;; so promoting them to `defun' on the elisp side shrinks the Rust
+;; dispatcher (= 13 arms + 13 names removed) without semantic change.
+;; `car' / `cdr' themselves stay in Rust because they are leaf
+;; primitives and the most heavily used.
+
+(defun caar  (x) (car (car x)))
+(defun cadr  (x) (car (cdr x)))
+(defun cdar  (x) (cdr (car x)))
+(defun cddr  (x) (cdr (cdr x)))
+(defun caaar (x) (car (car (car x))))
+(defun caadr (x) (car (car (cdr x))))
+(defun cadar (x) (car (cdr (car x))))
+(defun caddr (x) (car (cdr (cdr x))))
+(defun cdaar (x) (cdr (car (car x))))
+(defun cdadr (x) (cdr (car (cdr x))))
+(defun cddar (x) (cdr (cdr (car x))))
+(defun cdddr (x) (cdr (cdr (cdr x))))
+(defun cadddr (x) (car (cdr (cdr (cdr x)))))
+
 ;; nelisp-stdlib-list.el ends here
