@@ -147,12 +147,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_covers_stage_5_2_arithmetic() {
-        // Stage 5.2 contract: 11 binary arithmetic / comparison /
-        // bitwise primitives + `ash' are JIT-lowered.  Stage 5.1
-        // ships `nelisp--syscall' / `-supported-p' (= 2 entries) which
-        // are checked separately.  As 5.3 / 5.4 / 5.5 land this
-        // assertion grows accordingly.
+    fn registry_covers_stage_5_6_full_set() {
+        // Cumulative contract through Stage 5.6 (2026-05-07):
+        // - Stage 5.1 SyscallIR: nelisp--syscall, nelisp--syscall-supported-p
+        // - Stage 5.2 ArithIR: 11 binary arith/cmp/bitwise + ash
+        // - Stage 5.3 ConsIR: car, cdr, cons (+ Stage 5.6 setcar, setcdr)
+        // - Stage 5.4 AccessIR: length, aref (+ Stage 5.6 aset, elt)
+        // - Stage 5.5 PredicateIR: eq
         let needed = [
             "nelisp--add2", "nelisp--sub2", "nelisp--mul2",
             "nelisp--num-eq2", "nelisp--num-lt2", "nelisp--num-gt2",
@@ -160,8 +161,8 @@ mod tests {
             "nelisp--logior2", "nelisp--logand2", "nelisp--logxor2",
             "ash",
             "nelisp--syscall", "nelisp--syscall-supported-p",
-            "car", "cdr", "cons",
-            "length", "aref",
+            "car", "cdr", "cons", "setcar", "setcdr",
+            "length", "aref", "aset", "elt",
             "eq",
         ];
         for name in needed {

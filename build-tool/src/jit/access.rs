@@ -32,8 +32,13 @@
 //! - `aref': handles `Sexp::Vector' only; `Str' / `MutStr' / `CharTable'
 //!   / `BoolVector' fall through to `bi_aref'.
 //!
-//! `aset' / `elt' are not yet wired (= 4-arg / list-walk semantics);
-//! they continue to flow through `bi_aset' / `bi_elt'.
+//! Stage 5.6 (2026-05-07) — `aset' and `elt' added on the same
+//! `declare_helper_call' shape:
+//! - `aset': `Vector' fast path only.  `MutStr' (= codepoint mutation
+//!   that rebuilds the underlying String) stays in the dispatcher
+//!   because the 4-arg helper would not save anything.
+//! - `elt': `Vector' (= aref) + `Cons' (= list walk) fast path.  Other
+//!   sequence types fall through.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -92,9 +97,80 @@ unsafe extern "C" fn nl_jit_access_aref(arg: *const Sexp, idx: i64, out: *mut Se
     }
 }
 
+/// `(aset VECTOR INDEX VALUE)' fast path: `Sexp::Vector' only.
+/// Returns VALUE per Emacs' `aset' contract.  `MutStr' aset (=
+/// codepoint mutation) is left to the dispatcher because the rebuild-
+/// String path is not worth a JIT helper.
+unsafe extern "C" fn nl_jit_access_aset(
+    arg: *const Sexp,
+    idx: i64,
+    val: *const Sexp,
+    out: *mut Sexp,
+) -> i64 {
+    if idx < 0 {
+        return TRAMPOLINE_ERR;
+    }
+    match &*arg {
+        Sexp::Vector(v) => {
+            let mut borrowed = v.borrow_mut();
+            if (idx as usize) >= borrowed.len() {
+                return TRAMPOLINE_ERR;
+            }
+            borrowed[idx as usize] = (*val).clone();
+            *out = (*val).clone();
+            TRAMPOLINE_OK
+        }
+        _ => TRAMPOLINE_ERR,
+    }
+}
+
+/// `(elt SEQUENCE INDEX)' fast path: `Sexp::Vector' (= aref) /
+/// `Sexp::Cons' (= list walk).  `Nil' is treated as out-of-range
+/// because every concrete index is "past" an empty sequence.  Other
+/// sequence types (`Str' / `MutStr' / `CharTable' / `BoolVector')
+/// fall through so the dispatcher's `bi_aref' delegation handles them.
+unsafe extern "C" fn nl_jit_access_elt(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64 {
+    if idx < 0 {
+        return TRAMPOLINE_ERR;
+    }
+    match &*arg {
+        Sexp::Vector(v) => {
+            let borrowed = v.borrow();
+            if let Some(elem) = borrowed.get(idx as usize) {
+                *out = elem.clone();
+                TRAMPOLINE_OK
+            } else {
+                TRAMPOLINE_ERR
+            }
+        }
+        Sexp::Cons(_, _) => {
+            let mut cur: Sexp = (*arg).clone();
+            let mut remaining = idx;
+            loop {
+                let next = match &cur {
+                    Sexp::Cons(h, t) => {
+                        if remaining == 0 {
+                            *out = h.borrow().clone();
+                            return TRAMPOLINE_OK;
+                        }
+                        remaining -= 1;
+                        t.borrow().clone()
+                    }
+                    Sexp::Nil => return TRAMPOLINE_ERR,
+                    _ => return TRAMPOLINE_ERR,
+                };
+                cur = next;
+            }
+        }
+        _ => TRAMPOLINE_ERR,
+    }
+}
+
 struct JitAccess {
     length: extern "C" fn(*const Sexp, *mut Sexp) -> i64,
     aref: extern "C" fn(*const Sexp, i64, *mut Sexp) -> i64,
+    aset: extern "C" fn(*const Sexp, i64, *const Sexp, *mut Sexp) -> i64,
+    elt: extern "C" fn(*const Sexp, i64, *mut Sexp) -> i64,
 }
 
 static JIT_ACCESS: OnceLock<JitAccess> = OnceLock::new();
@@ -175,17 +251,25 @@ fn build_jit_access() -> JitAccess {
         .expect("cranelift_jit: host ISA must resolve");
     builder.symbol("nl_jit_access_length", nl_jit_access_length as *const u8);
     builder.symbol("nl_jit_access_aref", nl_jit_access_aref as *const u8);
+    builder.symbol("nl_jit_access_aset", nl_jit_access_aset as *const u8);
+    builder.symbol("nl_jit_access_elt", nl_jit_access_elt as *const u8);
     let mut module = JITModule::new(builder);
 
     let length_id = declare_length_with_inline_nil(&mut module);
     let aref_id =
         declare_helper_call(&mut module, "nelisp_jit_aref", "nl_jit_access_aref", 3);
+    let aset_id =
+        declare_helper_call(&mut module, "nelisp_jit_aset", "nl_jit_access_aset", 4);
+    let elt_id =
+        declare_helper_call(&mut module, "nelisp_jit_elt", "nl_jit_access_elt", 3);
 
     module
         .finalize_definitions()
         .expect("cranelift: finalize_definitions");
     let length_ptr = module.get_finalized_function(length_id);
     let aref_ptr = module.get_finalized_function(aref_id);
+    let aset_ptr = module.get_finalized_function(aset_id);
+    let elt_ptr = module.get_finalized_function(elt_id);
     Box::leak(Box::new(module));
     // SAFETY: declared signatures match the function-pointer types.
     unsafe {
@@ -197,6 +281,14 @@ fn build_jit_access() -> JitAccess {
                 _,
                 extern "C" fn(*const Sexp, i64, *mut Sexp) -> i64,
             >(aref_ptr),
+            aset: std::mem::transmute::<
+                _,
+                extern "C" fn(*const Sexp, i64, *const Sexp, *mut Sexp) -> i64,
+            >(aset_ptr),
+            elt: std::mem::transmute::<
+                _,
+                extern "C" fn(*const Sexp, i64, *mut Sexp) -> i64,
+            >(elt_ptr),
         }
     }
 }
@@ -235,9 +327,50 @@ fn lowered_aref(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     }
 }
 
+fn lowered_aset(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    if args.len() != 3 {
+        return crate::eval::builtins::dispatch("aset", args, env);
+    }
+    let idx = match &args[1] {
+        Sexp::Int(n) => *n,
+        _ => return crate::eval::builtins::dispatch("aset", args, env),
+    };
+    let mut out = Sexp::Nil;
+    let r = (jit().aset)(
+        &args[0] as *const _,
+        idx,
+        &args[2] as *const _,
+        &mut out as *mut _,
+    );
+    if r == TRAMPOLINE_OK {
+        Ok(out)
+    } else {
+        crate::eval::builtins::dispatch("aset", args, env)
+    }
+}
+
+fn lowered_elt(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    if args.len() != 2 {
+        return crate::eval::builtins::dispatch("elt", args, env);
+    }
+    let idx = match &args[1] {
+        Sexp::Int(n) => *n,
+        _ => return crate::eval::builtins::dispatch("elt", args, env),
+    };
+    let mut out = Sexp::Nil;
+    let r = (jit().elt)(&args[0] as *const _, idx, &mut out as *mut _);
+    if r == TRAMPOLINE_OK {
+        Ok(out)
+    } else {
+        crate::eval::builtins::dispatch("elt", args, env)
+    }
+}
+
 pub fn register(map: &mut HashMap<&'static str, LowerFn>) {
     map.insert("length", lowered_length);
     map.insert("aref", lowered_aref);
+    map.insert("aset", lowered_aset);
+    map.insert("elt", lowered_elt);
 }
 
 #[cfg(test)]
@@ -323,5 +456,106 @@ mod tests {
             (jit().aref)(&s as *const _, 0, &mut out as *mut _),
             TRAMPOLINE_ERR
         );
+    }
+
+    // --- Stage 5.6 (2026-05-07) — aset / elt trampolines ---
+
+    #[test]
+    fn jit_aset_vector_in_range_mutates() {
+        let mut out = Sexp::Nil;
+        let v = Sexp::vector(vec![Sexp::Int(10), Sexp::Int(20), Sexp::Int(30)]);
+        let val = Sexp::Symbol("replaced".into());
+        let r = (jit().aset)(
+            &v as *const _,
+            1,
+            &val as *const _,
+            &mut out as *mut _,
+        );
+        assert_eq!(r, TRAMPOLINE_OK);
+        assert_eq!(out, val);
+        // Confirm the mutation through aref.
+        let mut got = Sexp::Nil;
+        let r = (jit().aref)(&v as *const _, 1, &mut got as *mut _);
+        assert_eq!(r, TRAMPOLINE_OK);
+        assert_eq!(got, val);
+    }
+
+    #[test]
+    fn jit_aset_out_of_range_returns_err() {
+        let mut out = Sexp::Nil;
+        let v = Sexp::vector(vec![Sexp::Int(10)]);
+        let val = Sexp::Int(99);
+        let r = (jit().aset)(
+            &v as *const _,
+            5,
+            &val as *const _,
+            &mut out as *mut _,
+        );
+        assert_eq!(r, TRAMPOLINE_ERR);
+    }
+
+    #[test]
+    fn jit_aset_non_vector_returns_err() {
+        let mut out = Sexp::Nil;
+        let s = Sexp::Str("abc".into());
+        let val = Sexp::Int(42);
+        let r = (jit().aset)(
+            &s as *const _,
+            0,
+            &val as *const _,
+            &mut out as *mut _,
+        );
+        assert_eq!(r, TRAMPOLINE_ERR);
+    }
+
+    #[test]
+    fn jit_elt_vector_path() {
+        let mut out = Sexp::Nil;
+        let v = Sexp::vector(vec![
+            Sexp::Symbol("x".into()),
+            Sexp::Symbol("y".into()),
+            Sexp::Symbol("z".into()),
+        ]);
+        let r = (jit().elt)(&v as *const _, 2, &mut out as *mut _);
+        assert_eq!(r, TRAMPOLINE_OK);
+        assert_eq!(out, Sexp::Symbol("z".into()));
+    }
+
+    #[test]
+    fn jit_elt_list_walks_to_index() {
+        let mut out = Sexp::Nil;
+        let lst = Sexp::list_from(&[
+            Sexp::Int(1),
+            Sexp::Int(2),
+            Sexp::Int(3),
+            Sexp::Int(4),
+        ]);
+        let r = (jit().elt)(&lst as *const _, 2, &mut out as *mut _);
+        assert_eq!(r, TRAMPOLINE_OK);
+        assert_eq!(out, Sexp::Int(3));
+    }
+
+    #[test]
+    fn jit_elt_list_overrun_returns_err() {
+        let mut out = Sexp::Nil;
+        let lst = Sexp::list_from(&[Sexp::Int(1), Sexp::Int(2)]);
+        let r = (jit().elt)(&lst as *const _, 5, &mut out as *mut _);
+        assert_eq!(r, TRAMPOLINE_ERR);
+    }
+
+    #[test]
+    fn jit_elt_nil_returns_err() {
+        let mut out = Sexp::Nil;
+        let nil = Sexp::Nil;
+        let r = (jit().elt)(&nil as *const _, 0, &mut out as *mut _);
+        assert_eq!(r, TRAMPOLINE_ERR);
+    }
+
+    #[test]
+    fn jit_elt_negative_index_returns_err() {
+        let mut out = Sexp::Nil;
+        let v = Sexp::vector(vec![Sexp::Int(1)]);
+        let r = (jit().elt)(&v as *const _, -1, &mut out as *mut _);
+        assert_eq!(r, TRAMPOLINE_ERR);
     }
 }

@@ -86,10 +86,46 @@ unsafe extern "C" fn nl_jit_cons_make(
     TRAMPOLINE_OK
 }
 
+/// `(setcar CELL VALUE)' trampoline — mutates the car of a Cons in
+/// place via `Rc<RefCell<Sexp>>::borrow_mut'.  Returns VALUE per
+/// Emacs' `setcar' contract.  Non-Cons → `TRAMPOLINE_ERR' so the
+/// dispatcher can surface the canonical wrong-type error.
+unsafe extern "C" fn nl_jit_cons_setcar(
+    arg: *const Sexp,
+    val: *const Sexp,
+    out: *mut Sexp,
+) -> i64 {
+    match &*arg {
+        Sexp::Cons(h, _) => {
+            *h.borrow_mut() = (*val).clone();
+            *out = (*val).clone();
+            TRAMPOLINE_OK
+        }
+        _ => TRAMPOLINE_ERR,
+    }
+}
+
+unsafe extern "C" fn nl_jit_cons_setcdr(
+    arg: *const Sexp,
+    val: *const Sexp,
+    out: *mut Sexp,
+) -> i64 {
+    match &*arg {
+        Sexp::Cons(_, t) => {
+            *t.borrow_mut() = (*val).clone();
+            *out = (*val).clone();
+            TRAMPOLINE_OK
+        }
+        _ => TRAMPOLINE_ERR,
+    }
+}
+
 struct JitCons {
     car: extern "C" fn(*const Sexp, *mut Sexp) -> i64,
     cdr: extern "C" fn(*const Sexp, *mut Sexp) -> i64,
     cons_make: extern "C" fn(*const Sexp, *const Sexp, *mut Sexp) -> i64,
+    setcar: extern "C" fn(*const Sexp, *const Sexp, *mut Sexp) -> i64,
+    setcdr: extern "C" fn(*const Sexp, *const Sexp, *mut Sexp) -> i64,
 }
 
 static JIT_CONS: OnceLock<JitCons> = OnceLock::new();
@@ -181,6 +217,8 @@ fn build_jit_cons() -> JitCons {
     builder.symbol("nl_jit_cons_car", nl_jit_cons_car as *const u8);
     builder.symbol("nl_jit_cons_cdr", nl_jit_cons_cdr as *const u8);
     builder.symbol("nl_jit_cons_make", nl_jit_cons_make as *const u8);
+    builder.symbol("nl_jit_cons_setcar", nl_jit_cons_setcar as *const u8);
+    builder.symbol("nl_jit_cons_setcdr", nl_jit_cons_setcdr as *const u8);
     let mut module = JITModule::new(builder);
 
     let car_id = declare_unary_with_nil_inline(
@@ -189,6 +227,10 @@ fn build_jit_cons() -> JitCons {
         &mut module, "nelisp_jit_cdr", "nl_jit_cons_cdr");
     let make_id =
         declare_helper_call(&mut module, "nelisp_jit_cons", "nl_jit_cons_make", 3);
+    let setcar_id =
+        declare_helper_call(&mut module, "nelisp_jit_setcar", "nl_jit_cons_setcar", 3);
+    let setcdr_id =
+        declare_helper_call(&mut module, "nelisp_jit_setcdr", "nl_jit_cons_setcdr", 3);
 
     module
         .finalize_definitions()
@@ -196,6 +238,8 @@ fn build_jit_cons() -> JitCons {
     let car_ptr = module.get_finalized_function(car_id);
     let cdr_ptr = module.get_finalized_function(cdr_id);
     let make_ptr = module.get_finalized_function(make_id);
+    let setcar_ptr = module.get_finalized_function(setcar_id);
+    let setcdr_ptr = module.get_finalized_function(setcdr_id);
     Box::leak(Box::new(module));
     // SAFETY: declared signatures match the function-pointer types.
     unsafe {
@@ -210,6 +254,14 @@ fn build_jit_cons() -> JitCons {
                 _,
                 extern "C" fn(*const Sexp, *const Sexp, *mut Sexp) -> i64,
             >(make_ptr),
+            setcar: std::mem::transmute::<
+                _,
+                extern "C" fn(*const Sexp, *const Sexp, *mut Sexp) -> i64,
+            >(setcar_ptr),
+            setcdr: std::mem::transmute::<
+                _,
+                extern "C" fn(*const Sexp, *const Sexp, *mut Sexp) -> i64,
+            >(setcdr_ptr),
         }
     }
 }
@@ -261,10 +313,46 @@ fn lowered_cons(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     }
 }
 
+fn lowered_setcar(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    if args.len() != 2 {
+        return crate::eval::builtins::dispatch("setcar", args, env);
+    }
+    let mut out = Sexp::Nil;
+    let r = (jit().setcar)(
+        &args[0] as *const _,
+        &args[1] as *const _,
+        &mut out as *mut _,
+    );
+    if r == TRAMPOLINE_OK {
+        Ok(out)
+    } else {
+        crate::eval::builtins::dispatch("setcar", args, env)
+    }
+}
+
+fn lowered_setcdr(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    if args.len() != 2 {
+        return crate::eval::builtins::dispatch("setcdr", args, env);
+    }
+    let mut out = Sexp::Nil;
+    let r = (jit().setcdr)(
+        &args[0] as *const _,
+        &args[1] as *const _,
+        &mut out as *mut _,
+    );
+    if r == TRAMPOLINE_OK {
+        Ok(out)
+    } else {
+        crate::eval::builtins::dispatch("setcdr", args, env)
+    }
+}
+
 pub fn register(map: &mut HashMap<&'static str, LowerFn>) {
     map.insert("car", lowered_car);
     map.insert("cdr", lowered_cdr);
     map.insert("cons", lowered_cons);
+    map.insert("setcar", lowered_setcar);
+    map.insert("setcdr", lowered_setcdr);
 }
 
 #[cfg(test)]
@@ -327,5 +415,54 @@ mod tests {
         let r = (jit().cdr)(&nil as *const _, &mut out as *mut _);
         assert_eq!(r, TRAMPOLINE_OK);
         assert_eq!(out, Sexp::Nil);
+    }
+
+    // --- Stage 5.6 (2026-05-07) — setcar / setcdr trampolines ---
+
+    #[test]
+    fn jit_setcar_mutates_in_place() {
+        let pair = Sexp::cons(Sexp::Int(1), Sexp::Int(2));
+        let val = Sexp::Symbol("new-head".into());
+        let mut out = Sexp::Nil;
+        let r = (jit().setcar)(&pair as *const _, &val as *const _, &mut out as *mut _);
+        assert_eq!(r, TRAMPOLINE_OK);
+        assert_eq!(out, val);
+        // Verify the mutation through the JIT car path.
+        let mut got_car = Sexp::Nil;
+        let r = (jit().car)(&pair as *const _, &mut got_car as *mut _);
+        assert_eq!(r, TRAMPOLINE_OK);
+        assert_eq!(got_car, val);
+    }
+
+    #[test]
+    fn jit_setcdr_mutates_in_place() {
+        let pair = Sexp::cons(Sexp::Int(1), Sexp::Int(2));
+        let val = Sexp::Str("new-tail".into());
+        let mut out = Sexp::Nil;
+        let r = (jit().setcdr)(&pair as *const _, &val as *const _, &mut out as *mut _);
+        assert_eq!(r, TRAMPOLINE_OK);
+        assert_eq!(out, val);
+        let mut got_cdr = Sexp::Nil;
+        let r = (jit().cdr)(&pair as *const _, &mut got_cdr as *mut _);
+        assert_eq!(r, TRAMPOLINE_OK);
+        assert_eq!(got_cdr, val);
+    }
+
+    #[test]
+    fn jit_setcar_wrong_type_returns_err() {
+        let i = Sexp::Int(42);
+        let val = Sexp::Nil;
+        let mut out = Sexp::Nil;
+        let r = (jit().setcar)(&i as *const _, &val as *const _, &mut out as *mut _);
+        assert_eq!(r, TRAMPOLINE_ERR);
+    }
+
+    #[test]
+    fn jit_setcdr_wrong_type_returns_err() {
+        let i = Sexp::Int(42);
+        let val = Sexp::Nil;
+        let mut out = Sexp::Nil;
+        let r = (jit().setcdr)(&i as *const _, &val as *const _, &mut out as *mut _);
+        assert_eq!(r, TRAMPOLINE_ERR);
     }
 }
