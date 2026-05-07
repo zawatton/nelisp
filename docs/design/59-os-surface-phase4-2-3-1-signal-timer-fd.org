@@ -1,0 +1,228 @@
+#+TITLE: Doc 59 — OS Surface Phase 4.2 + 4.3.1: signalfd + timerfd (+ sigprocmask)
+#+AUTHOR: zawatton
+#+DATE: 2026-05-07
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: DRAFT
+:DEPENDS_ON: Doc 53 / 55 / 57 (syscall infra + poll + eventfd inotify pattern)
+:END:
+
+* §0 TL;DR
+
+Phase 4.2 (signal handling) と Phase 4.3.1 (timerfd / signalfd) を *統合*
+して 1 batch で ship する。signalfd を使えば signal 通知が普通の fd-poll
+で扱えるので、async-callback ベースの sigaction は完全に skip 可能 —
+これにより Phase 4.2 の "elisp 側 signal queue 設計" 問題が消滅する。
+
+scope = 4 syscall_nr 追加 + 3 specialized primitive + 9 elisp wrapper +
+~20 定数 + 4 ERT。
+
+| 系統        | 名前                                            | 提供層         |
+|-------------+-------------------------------------------------+----------------|
+| signalfd    | signalfd4                                       | 専用 primitive |
+| signalfd    | signalfd-read (= struct signalfd_siginfo parser) | 専用 primitive |
+| sigprocmask | rt_sigprocmask (= sigset_t in/out)               | 専用 primitive |
+| timerfd     | timerfd_create                                  | generic        |
+| timerfd     | timerfd_settime                                 | 専用 primitive |
+| timerfd     | timerfd_gettime                                 | 専用 primitive |
+
+設計指針 (= Doc 53〜58 継承): *Rust 追加最小化*。
+
+- =timerfd_create= は int-only → =syscall_nr()= map 1 行 (新規)
+- =timerfd_settime= / =timerfd_gettime= は struct itimerspec 2 buffers
+  ないし 1 buffer + nullable old_value pointer → 専用 primitive
+- =signalfd4= は sigset_t in 引数 + flags が int → 専用 primitive (mask は
+  list of int 受け、Rust 側で sigset_t 構築)
+- =signalfd-read= は kernel が返す struct signalfd_siginfo を parse →
+  Doc 57 inotify-read と同じ pattern
+- =rt_sigprocmask= は sigset_t in/out → 専用 primitive (in mask は list、
+  out は previous mask の list)
+
+* §1 動機
+
+Phase 4.2 (sigaction) を直接対応すると elisp 側で signal handler を呼ぶ
+async path が必要で、=Env= に signal queue 追加 / signal-safe な elisp
+callback dispatch が要る — どちらも本質的には async runtime 設計問題で
+NeLisp 全体に重い設計 jump がかかる。
+
+Linux 2.6.22+ の =signalfd(2)= はそれを完全に回避する。signal を fd 化
+してしまえば、handler は普通の =read(fd)= + =poll= で扱える。これは:
+
+- 既に Phase 4 で持っている =poll= に signal 通知が乗る
+- Phase 4 の event loop と統合できる
+- async callback の reentrancy / EINTR 等の罠を回避できる
+
+modern Linux server / daemon の signal 扱いは ほぼ全て signalfd ベース
+になっており、NeLisp もそれに揃える。sigaction は legacy として scope
+外 (= host Emacs と違い NeLisp は POSIX 互換性より modern Lisp Machine
+vision を優先)。
+
+timerfd は signalfd の双子: timer 通知を fd 化して poll に乗せる。
+
+* §2 設計
+
+** §2.1 Rust 追加
+
+builtins.rs:
+
+- =syscall_nr()= map に 1 件追加: =timerfd_create= (= int-only)
+- =install_builtins()= names + =dispatch()= に *5 名追加*:
+  - =nelisp--syscall-signalfd4=
+  - =nelisp--syscall-signalfd-read=
+  - =nelisp--syscall-sigprocmask=
+  - =nelisp--syscall-timerfd-settime=
+  - =nelisp--syscall-timerfd-gettime=
+- 関数 5 本実装 (= Linux gate)
+
+*** §2.1.1 =bi_syscall_signalfd4 FD MASK FLAGS=
+
+#+BEGIN_SRC rust
+fn bi_syscall_signalfd4(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    // FD = -1 (新規 fd 作成) または既存 signalfd の fd (= mask 更新)
+    // MASK = list of int (signal numbers)
+    // FLAGS = SFD_NONBLOCK / SFD_CLOEXEC OR
+    // signal number list → sigset_t をゼロクリア + sigaddset で集約
+    // libc::signalfd(FD, &mask, FLAGS) → fd / -errno
+}
+#+END_SRC
+
+*** §2.1.2 =bi_syscall_signalfd_read FD MAX-EVENTS=
+
+#+BEGIN_SRC rust
+fn bi_syscall_signalfd_read(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    // fd への read で struct signalfd_siginfo の 1 個以上が読める
+    // 各 event を Rust 側で parse、useful subset (SIGNO ERRNO CODE PID UID STATUS) を
+    // 6-element list 化、events 全体は list-of-list で返す
+    // 失敗時 Sexp::Int(-errno)
+}
+#+END_SRC
+
+*** §2.1.3 =bi_syscall_sigprocmask HOW MASK=
+
+#+BEGIN_SRC rust
+fn bi_syscall_sigprocmask(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    // HOW = SIG_BLOCK (0) / SIG_UNBLOCK (1) / SIG_SETMASK (2)
+    // MASK = list of int (signal numbers)
+    // libc::pthread_sigmask(HOW, &new, &old) → 0 / -errno
+    //  (= main thread でも process-wide effective、ただし strict POSIX
+    //   compliance で thread safety を担保するために sigprocmask ではなく
+    //   pthread_sigmask を使う)
+    // 戻り値: 失敗時 Sexp::Int(-errno)、成功時 previous mask list (list of int)
+}
+#+END_SRC
+
+*** §2.1.4 =bi_syscall_timerfd_settime FD FLAGS IT-INTERVAL-SEC IT-INTERVAL-NSEC IT-VALUE-SEC IT-VALUE-NSEC=
+
+#+BEGIN_SRC rust
+fn bi_syscall_timerfd_settime(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    // 6 args、struct itimerspec 構築 + libc::timerfd_settime
+    // old_value buffer 取って previous itimerspec を 4-element list で返す
+    //   (PREV-INTERVAL-SEC PREV-INTERVAL-NSEC PREV-VALUE-SEC PREV-VALUE-NSEC)
+    // 失敗時 Sexp::Int(-errno)
+}
+#+END_SRC
+
+*** §2.1.5 =bi_syscall_timerfd_gettime FD=
+
+#+BEGIN_SRC rust
+fn bi_syscall_timerfd_gettime(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    // FD → 4-element list (INTERVAL-SEC INTERVAL-NSEC VALUE-SEC VALUE-NSEC)
+    // 失敗時 Sexp::Int(-errno)
+}
+#+END_SRC
+
+** §2.2 Elisp 追加 (=lisp/nelisp-stdlib-os.el= 末尾に追記)
+
+新規 wrapper:
+
+| function                                         | 内部呼出                                                |
+|--------------------------------------------------+---------------------------------------------------------|
+| =nelisp-os-signalfd FD MASK FLAGS=               | =(nelisp--syscall-signalfd4 FD MASK FLAGS)=             |
+| =nelisp-os-signalfd-read FD MAX=                 | =(nelisp--syscall-signalfd-read FD MAX)=                |
+| =nelisp-os-sigprocmask HOW MASK=                 | =(nelisp--syscall-sigprocmask HOW MASK)=                |
+| =nelisp-os-timerfd-create CLOCKID FLAGS=         | =(nelisp--syscall 'timerfd_create CLOCKID FLAGS)=       |
+| =nelisp-os-timerfd-settime FD FLAGS IT-IN-S IT-IN-NS IT-VAL-S IT-VAL-NS= | =(nelisp--syscall-timerfd-settime ...)= |
+| =nelisp-os-timerfd-gettime FD=                   | =(nelisp--syscall-timerfd-gettime FD)=                  |
+
+(高頻度に使う形は専用 wrapper を後付け、下記参照)
+
+新規定数 (代表値、Linux x86_64):
+
+#+BEGIN_EXAMPLE
+;; signalfd flags
+SFD-NONBLOCK = #x800   (= O_NONBLOCK)
+SFD-CLOEXEC  = #x80000 (= O_CLOEXEC)
+
+;; sigprocmask "how"
+SIG-BLOCK    = 0
+SIG-UNBLOCK  = 1
+SIG-SETMASK  = 2
+
+;; timerfd clockids
+CLOCK-REALTIME             = 0
+CLOCK-MONOTONIC            = 1
+CLOCK-BOOTTIME             = 7
+CLOCK-REALTIME-ALARM       = 8
+CLOCK-BOOTTIME-ALARM       = 9
+
+;; timerfd flags
+TFD-NONBLOCK   = #x800   (= O_NONBLOCK)
+TFD-CLOEXEC    = #x80000 (= O_CLOEXEC)
+TFD-TIMER-ABSTIME = 1
+#+END_EXAMPLE
+
+ergonomics helper:
+
+#+BEGIN_SRC emacs-lisp
+(defun nelisp-os-timerfd-set-relative-ms (fd ms)
+  "Convenience wrapper: schedule a one-shot timer FD-millisecond
+relative timer.  Equivalent to settime FLAGS=0 with it_value=MS,
+it_interval=0."
+  (let* ((sec  (/ ms 1000))
+         (nsec (* (mod ms 1000) 1000000)))
+    (nelisp-os-timerfd-settime fd 0 0 0 sec nsec)))
+#+END_SRC
+
+** §2.3 ファイル配置
+
+| 種別      | path                                                                  | 操作       |
+|-----------+-----------------------------------------------------------------------+------------|
+| 設計書    | =docs/design/59-os-surface-phase4-2-3-1-signal-timer-fd.org=          | new        |
+| Rust      | =build-tool/src/eval/builtins.rs=                                     | edit       |
+| stdlib    | =lisp/nelisp-stdlib-os.el=                                            | edit (追記) |
+| test      | =test/nelisp-stdlib-os-test.el=                                       | edit (追記) |
+
+* §3 Test plan
+
+新規 ERT 4 本を =test/nelisp-stdlib-os-test.el= に追記:
+
+| test                                | flow                                                               |
+|-------------------------------------+--------------------------------------------------------------------|
+| ~signalfd-block-and-receive~        | sigprocmask SIG_BLOCK [SIGUSR1] → signalfd → kill self SIGUSR1 → poll → signalfd-read → ssi_signo == SIGUSR1 |
+| ~timerfd-relative-ms-fires~         | timerfd_create CLOCK_MONOTONIC → settime relative 50ms → poll POLLIN 1000ms → expirations >= 1 |
+| ~sigprocmask-roundtrip~             | block SIGUSR1 → previous mask 確認 → unblock SIGUSR1 → mask が戻ってる |
+| ~timerfd-gettime-disarmed-zero~     | create + 何もしない → gettime → 全要素 0                            |
+
+build gate: =cargo build --release --bin nelisp= warning 0 + 既存 25 ERT
++ 新 4 ERT = 計 29 ERT 全 pass。
+
+* §4 Out of scope (= 別 Phase / 別 Doc)
+
+- =sigaction= / =signal= async callback path — signalfd で代替する方針のため
+  scope 外 (= memory 化済の design choice)
+- =sigsuspend= / =sigwait= / =sigtimedwait= — signalfd + poll で代替可能
+- =rt_sigqueueinfo= (siginfo full surface) — Phase 4.2.x 候補
+- =SCM_RIGHTS= (sendmsg / recvmsg with cmsg) — Doc 60 候補
+- =io_uring= — Phase 4.3.2、別格の設計 jump
+- Path B (Darwin/Windows) — kqueue / IOCP は別 OS 別 API、scope 外
+
+* §5 References
+
+- Doc 53 Phase 1 — =nelisp--syscall= 基盤
+- Doc 55 Phase 4 — Posix-30 + poll
+- Doc 57 Phase 4.3 — eventfd / inotify (本 Doc と同じ "fd 化 event" 設計)
+- man 2 signalfd / man 2 timerfd_create / man 2 pthread_sigmask
+- memory =project_lisp_machine_vision_95pct= — Lisp Machine vision の進捗
+- memory =feedback_nelisp_minimize_rust= — Rust 最小化方針

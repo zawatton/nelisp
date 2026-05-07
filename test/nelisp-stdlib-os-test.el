@@ -661,6 +661,96 @@ client's loopback IP."
     (should (eq (car r) 0))
     (should (equal (cdr r) "ok"))))
 
+;;; Doc 59 Phase 4.2 + 4.3.1 — signalfd / timerfd / sigprocmask -----------
+
+(ert-deftest nelisp-stdlib-os-test/signalfd-block-and-receive ()
+  "Block SIGUSR1, open signalfd watching SIGUSR1, kill self with
+SIGUSR1, then signalfd-read returns one event whose ssi_signo equals
+SIGUSR1.  Verifies the modern fd-poll signal path."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (let ((r (nelisp-stdlib-os-test--eval
+            "(progn
+              (require (quote nelisp-stdlib-os))
+              (nelisp-os-sigprocmask nelisp-os-SIG-BLOCK
+                                     (list nelisp-os-SIGUSR1))
+              (let* ((sfd (nelisp-os-signalfd -1
+                                              (list nelisp-os-SIGUSR1) 0)))
+                (nelisp-os-kill (nelisp-os-getpid) nelisp-os-SIGUSR1)
+                (let* ((events (nelisp-os-signalfd-read sfd 4))
+                       (e0 (car events))
+                       (sig (nth 0 e0)))
+                  (nelisp-os-close sfd)
+                  (nelisp-os-write 1
+                    (if (= sig nelisp-os-SIGUSR1) \"ok\" \"err\"))
+                  (nelisp-os-exit 0))))")))
+    (should (eq (car r) 0))
+    (should (equal (cdr r) "ok"))))
+
+(ert-deftest nelisp-stdlib-os-test/sigprocmask-roundtrip ()
+  "Block SIGUSR1, then unblock SIGUSR1.  After the unblock, the
+returned previous mask must contain SIGUSR1 (= confirms it was
+indeed blocked between the two calls)."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (let ((r (nelisp-stdlib-os-test--eval
+            "(progn
+              (require (quote nelisp-stdlib-os))
+              (nelisp-os-sigprocmask nelisp-os-SIG-BLOCK
+                                     (list nelisp-os-SIGUSR1))
+              (let ((prev (nelisp-os-sigprocmask nelisp-os-SIG-UNBLOCK
+                                                 (list nelisp-os-SIGUSR1))))
+                (nelisp-os-write 1
+                  (if (memq nelisp-os-SIGUSR1 prev) \"ok\" \"err\"))
+                (nelisp-os-exit 0)))")))
+    (should (eq (car r) 0))
+    (should (equal (cdr r) "ok"))))
+
+(ert-deftest nelisp-stdlib-os-test/timerfd-relative-ms-fires ()
+  "timerfd CLOCK_MONOTONIC + 50ms relative one-shot → poll 1000ms →
+POLLIN must fire and read returns 8-byte expiration counter ≥ 1."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (let ((r (nelisp-stdlib-os-test--eval
+            "(progn
+              (require (quote nelisp-stdlib-os))
+              (let ((fd (nelisp-os-timerfd-create
+                         nelisp-os-CLOCK-MONOTONIC 0)))
+                (nelisp-os-timerfd-set-relative-ms fd 50)
+                (let* ((res (nelisp-os-poll
+                             (list (cons fd nelisp-os-POLLIN)) 1000))
+                       (revents (cdr (car res)))
+                       (data (nelisp-os-read fd 8))
+                       (counter (aref data 0)))
+                  (nelisp-os-close fd)
+                  (nelisp-os-write 1
+                    (if (and (/= (logand revents nelisp-os-POLLIN) 0)
+                             (>= counter 1))
+                        \"ok\" \"err\"))
+                  (nelisp-os-exit 0))))")))
+    (should (eq (car r) 0))
+    (should (equal (cdr r) "ok"))))
+
+(ert-deftest nelisp-stdlib-os-test/timerfd-gettime-disarmed-zero ()
+  "Newly-created timerfd that hasn't been settime'd reports
+all-zero itimerspec from gettime (= disarmed)."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (let ((r (nelisp-stdlib-os-test--eval
+            "(progn
+              (require (quote nelisp-stdlib-os))
+              (let* ((fd (nelisp-os-timerfd-create
+                          nelisp-os-CLOCK-MONOTONIC 0))
+                     (it (nelisp-os-timerfd-gettime fd)))
+                (nelisp-os-close fd)
+                (nelisp-os-write 1
+                  (if (and (= (nth 0 it) 0) (= (nth 1 it) 0)
+                           (= (nth 2 it) 0) (= (nth 3 it) 0))
+                      \"ok\" \"err\"))
+                (nelisp-os-exit 0)))")))
+    (should (eq (car r) 0))
+    (should (equal (cdr r) "ok"))))
+
 (provide 'nelisp-stdlib-os-test)
 
 ;;; nelisp-stdlib-os-test.el ends here

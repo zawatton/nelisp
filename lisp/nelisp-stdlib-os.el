@@ -585,6 +585,96 @@ filesystem sockets, cons (abstract . NAME) for abstract sockets, or
   (let ((r (nelisp--syscall-getpeername-unix fd)))
     (if (integerp r) (nelisp-os--check-errno r) r)))
 
+;; ---------------------------------------------------------------------------
+;; Doc 59 Phase 4.2 + 4.3.1 — signalfd + timerfd + sigprocmask.
+;;
+;; NeLisp deliberately routes all signal handling through `signalfd' (=
+;; signals as fd-readable events under `poll') instead of POSIX
+;; `sigaction'.  Async-callback signal handlers would force the
+;; runtime to deal with re-entrancy, EINTR, and signal-safe elisp
+;; dispatch — none of which is needed when the substrate already uses
+;; an event loop.  See Doc 59 §1 for the rationale.
+;; ---------------------------------------------------------------------------
+
+;; ----- signalfd / sigprocmask flags / how -----
+
+(defconst nelisp-os-SFD-NONBLOCK #x800)           ; O_NONBLOCK
+(defconst nelisp-os-SFD-CLOEXEC  #x80000)         ; O_CLOEXEC
+
+(defconst nelisp-os-SIG-BLOCK   0)
+(defconst nelisp-os-SIG-UNBLOCK 1)
+(defconst nelisp-os-SIG-SETMASK 2)
+
+;; ----- timerfd clock ids / flags -----
+
+(defconst nelisp-os-CLOCK-REALTIME            0)
+(defconst nelisp-os-CLOCK-MONOTONIC           1)
+(defconst nelisp-os-CLOCK-BOOTTIME            7)
+(defconst nelisp-os-CLOCK-REALTIME-ALARM      8)
+(defconst nelisp-os-CLOCK-BOOTTIME-ALARM      9)
+
+(defconst nelisp-os-TFD-NONBLOCK     #x800)       ; O_NONBLOCK
+(defconst nelisp-os-TFD-CLOEXEC      #x80000)     ; O_CLOEXEC
+(defconst nelisp-os-TFD-TIMER-ABSTIME 1)
+
+;; ----- common signal numbers (= same as Doc 55 SIG* but extended) -----
+
+(defconst nelisp-os-SIGUSR1 10)
+(defconst nelisp-os-SIGUSR2 12)
+(defconst nelisp-os-SIGCHLD 17)
+(defconst nelisp-os-SIGALRM 14)
+
+;; ----- signalfd wrappers -----
+
+(defun nelisp-os-signalfd (fd mask flags)
+  "Linux signalfd4(2) — return (or update) a signalfd watching MASK.
+FD = -1 to create a new fd, or an existing signalfd to update its
+mask.  MASK is a list of signal numbers; FLAGS = OR of `SFD-*'."
+  (nelisp-os--check-errno (nelisp--syscall-signalfd4 fd mask flags)))
+
+(defun nelisp-os-signalfd-read (fd max-events)
+  "Read up to MAX-EVENTS events off signalfd FD.  Returns a list of
+6-element lists `(SIGNO ERRNO CODE PID UID STATUS)'.  Empty list when
+no events are ready (only on FD opened `SFD-NONBLOCK')."
+  (let ((r (nelisp--syscall-signalfd-read fd max-events)))
+    (if (integerp r) (nelisp-os--check-errno r) r)))
+
+(defun nelisp-os-sigprocmask (how mask)
+  "POSIX pthread_sigmask(3) — apply MASK with HOW (= `SIG-BLOCK' /
+`SIG-UNBLOCK' / `SIG-SETMASK').  Returns the previous mask as a
+list of signal numbers."
+  (let ((r (nelisp--syscall-sigprocmask how mask)))
+    (if (integerp r) (nelisp-os--check-errno r) r)))
+
+;; ----- timerfd wrappers -----
+
+(defun nelisp-os-timerfd-create (clockid flags)
+  "Linux timerfd_create(2) — return a new timer fd."
+  (nelisp-os--check-errno (nelisp--syscall 'timerfd_create clockid flags)))
+
+(defun nelisp-os-timerfd-settime (fd flags it-int-s it-int-ns it-val-s it-val-ns)
+  "Linux timerfd_settime(2) — arm or disarm timer FD.  Returns the
+previous itimerspec as 4-element list (PREV-INT-S PREV-INT-NS
+PREV-VAL-S PREV-VAL-NS)."
+  (let ((r (nelisp--syscall-timerfd-settime
+            fd flags it-int-s it-int-ns it-val-s it-val-ns)))
+    (if (integerp r) (nelisp-os--check-errno r) r)))
+
+(defun nelisp-os-timerfd-gettime (fd)
+  "Linux timerfd_gettime(2) — return current itimerspec as 4-element
+list (INT-S INT-NS VAL-S VAL-NS)."
+  (let ((r (nelisp--syscall-timerfd-gettime fd)))
+    (if (integerp r) (nelisp-os--check-errno r) r)))
+
+;; ergonomics helper — relative one-shot timer in milliseconds.
+(defun nelisp-os-timerfd-set-relative-ms (fd ms)
+  "Schedule a one-shot relative timer of MS milliseconds on FD.
+Equivalent to `nelisp-os-timerfd-settime' with FLAGS=0, interval=0,
+value=MS-as-(sec . nsec)."
+  (let* ((sec  (/ ms 1000))
+         (nsec (* (mod ms 1000) 1000000)))
+    (nelisp-os-timerfd-settime fd 0 0 0 sec nsec)))
+
 (provide 'nelisp-stdlib-os)
 
 ;;; nelisp-stdlib-os.el ends here
