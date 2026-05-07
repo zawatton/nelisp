@@ -156,6 +156,13 @@ impl Env {
             // function-cell installed by `bi_prin1_to_string' (= Stage
             // 7.1.4 also removes that Rust arm in the same commit).
             ("nelisp-stdlib-prn.el", include_str!("../../../lisp/nelisp-stdlib-prn.el")),
+            // Phase 7 Stage 7.2.a (2026-05-07, Doc 66): elisp Sexp
+            // tokenizer (= lexer).  Parallel impl to the Rust reader
+            // (build-tool/src/reader/lexer.rs); the Rust reader still
+            // drives every read-from-string call, the elisp tokenizer
+            // is exercised through ERT only.  Stage 7.2.b will add the
+            // parser + the read-from-string takeover hook.
+            ("nelisp-stdlib-reader.el", include_str!("../../../lisp/nelisp-stdlib-reader.el")),
         ];
         let mut env = Env {
             globals: HashMap::new(),
