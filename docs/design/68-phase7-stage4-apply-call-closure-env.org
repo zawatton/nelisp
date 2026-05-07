@@ -462,21 +462,45 @@ flag は =Env::use_elisp_apply: bool= field、default =false=。CLI で
 
 * §3 段階 / sub-stages
 
-** §3.1 Stage 7.4.a — Rust auxiliary primitives 追加
+** §3.1 Stage 7.4.a — Rust auxiliary primitives 追加 (SHIPPED)
 
-新 Rust builtin:
+新 Rust builtin (=build-tool/src/eval/builtins.rs= に追加):
 - =bi_push_frame= / =bi_pop_frame= / =bi_push_captured= / =bi_bind_local=
 - =bi_apply_builtin_dispatch=
 
-ERT (= Rust 側 =cargo test=):
-- =elisp_can_push_pop_frame= = =(progn (nelisp--push-frame) (nelisp--pop-frame))= → t
-- =elisp_can_bind_local_into_top_frame= = let body 内で =nelisp--bind-local= → 値の lookup_value で取れる
-- =elisp_apply_builtin_dispatch_call_cons= = =(nelisp--apply-builtin-dispatch 'cons '(1 2))= = =(1 . 2)=
+ERT (= =build-tool/src/eval/tests.rs=、stage74a_* prefix で 10 件):
+- =stage74a_push_pop_frame_returns_t= — push → pop で t を返す
+- =stage74a_push_captured_with_nil_alist= — 空 captured-env の許容
+- =stage74a_bind_local_into_let_frame= — let frame 内に =bind-local= で
+  追加 binding、(+ x y) = 141
+- =stage74a_bind_local_returns_value= — VALUE をそのまま返す
+- =stage74a_bind_local_rejects_non_symbol= — NAME != symbol で WrongType
+- =stage74a_apply_builtin_dispatch_cons= — =(cons 1 2)= 経由で (1 . 2)
+- =stage74a_apply_builtin_dispatch_arith= — =(nelisp--add2 3 4)= = 7
+- =stage74a_apply_builtin_dispatch_unbound= — UnboundFunction
+- =stage74a_apply_builtin_dispatch_rejects_non_symbol_name= — WrongType
+- =stage74a_push_captured_with_alist_installs_bindings= — alist push 後
+  bindings が見える ((alpha . 11) (beta . 22) → +alpha beta = 33)
 
 Stage 7.4.a *のみ commit*。elisp 側 core.el は未追加 (= primitive を
 "先" に install して Stage 7.4.b の elisp body が叩けるようにする)。
 
-LOC: +75 Rust、+20 ERT、commit ~1 件、想定 1〜2h。
+LOC 実績: +91 Rust (= builtins.rs)、+122 ERT (= tests.rs)、合計 +213。
+cargo test serial 431/431 PASS (= 421 既存 + 10 new、4 ignored は
+host-fingerprint 系で別件)。
+
+実装メモ:
+- =push-captured= の VALUE 部分は legacy 経路で fresh =Rc<RefCell<>>=
+  に wrap される (= write-through 用 =Sexp::Cell= 以外を渡した場合の
+  fallback)。Stage 7.4.b の =apply-closure= 経路では closure 構築時に
+  既に Cell 化されているので問題なし
+- =prog1= / =let= 等の "frame を push する macro" と手動 =pop-frame=
+  を混ぜると pop 対象を取り違える (= ERT 設計時の罠)。Stage 7.4.b の
+  elisp body は =unwind-protect (progn ...) (nelisp--pop-frame)= 等で
+  「macro が触らない frame stack 操作」を保証する設計
+- 並列 cargo test では =track_m_*= / =track_q_*= が flake (= 既知の
+  process-wide signal/quit flag race)。シリアルで実行すると安定。
+  Stage 7.4.a 無関係、別 follow-up 候補
 
 ** §3.2 Stage 7.4.b — =nelisp-stdlib-eval-core.el= install (parallel、dormant)
 

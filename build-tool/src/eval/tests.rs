@@ -2784,3 +2784,125 @@ fn elisp_hash_table_count_via_misc() {
         Sexp::Int(2),
     );
 }
+
+// ============================================================
+// Phase 7 Stage 7.4.a — apply / call / closure / env primitives
+// ============================================================
+//
+// Doc 68 §3.1 で定めた auxiliary primitives の動作確認.  本 stage
+// では elisp 側 `nelisp-stdlib-eval-core.el' は **未 install**
+// なので、これらの primitive が elisp 側にとって "先に存在する"
+// 状態を担保するのが目的 (= Stage 7.4.b の core.el load 時に
+// 必ず呼べるよう確認しておく).
+
+#[test]
+fn stage74a_push_pop_frame_returns_t() {
+    // 単純な push → pop の round-trip.  両方 t を返す (= idempotent
+    // call から見た成功 sentinel).
+    assert_eq!(
+        ok_all("(progn (nelisp--push-frame) (nelisp--pop-frame))"),
+        Sexp::T,
+    );
+}
+
+#[test]
+fn stage74a_push_captured_with_nil_alist() {
+    // 空の captured-env (= nil) を push しても error にならない.
+    // bare lambda の apply 経路で必要.
+    assert_eq!(
+        ok_all("(progn (nelisp--push-captured nil) (nelisp--pop-frame))"),
+        Sexp::T,
+    );
+}
+
+#[test]
+fn stage74a_bind_local_into_let_frame() {
+    // let が push した frame の中に nelisp--bind-local で追加 binding
+    // を作り、そのまま参照できる.  let 本来の binding (x=99) と
+    // bind-local で追加した binding (y=42) が同 frame に共存.
+    assert_eq!(
+        ok_all("(let ((x 99)) (nelisp--bind-local 'y 42) (+ x y))"),
+        Sexp::Int(141),
+    );
+}
+
+#[test]
+fn stage74a_bind_local_returns_value() {
+    // Rust bi_bind_local は VALUE をそのまま返す契約.  elisp 側
+    // bind-formals が「最後に bind した値」を結果として使う場合に
+    // 利用するので確認.
+    assert_eq!(
+        ok_all("(let ((x 0)) (nelisp--bind-local 'y 'symbol-value))"),
+        Sexp::Symbol("symbol-value".into()),
+    );
+}
+
+#[test]
+fn stage74a_bind_local_rejects_non_symbol() {
+    // NAME が symbol でなければ wrong-type.  elisp 側が誤った
+    // formal-param walk をした時の早期検知.
+    let err = err_all("(nelisp--bind-local 42 'foo)");
+    assert!(matches!(err, EvalError::WrongType { .. }),
+            "expected WrongType, got {:?}", err);
+}
+
+#[test]
+fn stage74a_apply_builtin_dispatch_cons() {
+    // (cons 1 2) を builtin dispatch 経由で呼んで (1 . 2) を得る.
+    // ARGS は proper list (= '(1 2)) を渡す.
+    let result = ok_all("(nelisp--apply-builtin-dispatch 'cons '(1 2))");
+    match result {
+        Sexp::Cons(a, d) => {
+            assert_eq!(*a.borrow(), Sexp::Int(1));
+            assert_eq!(*d.borrow(), Sexp::Int(2));
+        }
+        other => panic!("expected (1 . 2), got {:?}", other),
+    }
+}
+
+#[test]
+fn stage74a_apply_builtin_dispatch_arith() {
+    // 2-arg arith primitive を経由.  Phase 5 lower が効く path
+    // (= try_lower hook 通過) も同 dispatcher を経るので合算で確認.
+    assert_eq!(
+        ok_all("(nelisp--apply-builtin-dispatch 'nelisp--add2 '(3 4))"),
+        Sexp::Int(7),
+    );
+}
+
+#[test]
+fn stage74a_apply_builtin_dispatch_unbound() {
+    // 未登録 NAME は通常 dispatch と同じく UnboundFunction.
+    let err = err_all("(nelisp--apply-builtin-dispatch 'no-such-builtin '())");
+    assert!(matches!(err, EvalError::UnboundFunction(_)),
+            "expected UnboundFunction, got {:?}", err);
+}
+
+#[test]
+fn stage74a_apply_builtin_dispatch_rejects_non_symbol_name() {
+    // NAME が symbol / string でなければ wrong-type.
+    let err = err_all("(nelisp--apply-builtin-dispatch 42 '())");
+    assert!(matches!(err, EvalError::WrongType { .. }),
+            "expected WrongType, got {:?}", err);
+}
+
+#[test]
+fn stage74a_push_captured_with_alist_installs_bindings() {
+    // Stage 7.4.b の apply-closure が使う path: captured-env alist を
+    // 渡して push、bindings が現 scope から見える.  alist 中身は
+    // ((NAME . VALUE) ...) 形式 (= Cell wrap せず raw value でも
+    // push_captured が legacy 経路で fresh cell に wrap してくれる).
+    //
+    // NOTE: literal alist を quote で渡すと VALUE 部分は素の Sexp.
+    // push_captured は Sexp::Cell 以外を fresh Rc<RefCell<>> で wrap
+    // するので write-through は無いが、read は可能.  pop は省略 —
+    // ok_all 毎に fresh Env が立つので test 内で frame 残しても
+    // 問題なし、かつ prog1/let 等の "frame を pushする macro" と
+    // 手動 pop_frame を混ぜると pop 対象を取り違えるため.
+    assert_eq!(
+        ok_all("(progn
+                  (nelisp--push-captured '((alpha . 11) (beta . 22)))
+                  (+ alpha beta))"),
+        Sexp::Int(33),
+    );
+}

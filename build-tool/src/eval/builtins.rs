@@ -392,6 +392,11 @@ pub fn install_builtins(env: &mut Env) {
         "terminal-take-sigcont",
         // reader exposed as elisp callable (Track O' Phase 2)
         "read", "read-from-string",
+        // Phase 7 Stage 7.4.a (Doc 68): apply/call/closure/env elisp 化
+        // 用補助 primitives.  elisp 側 `nelisp--apply-fn' 等が Rust frame
+        // stack を操作するための薄いラッパ.
+        "nelisp--push-frame", "nelisp--pop-frame", "nelisp--push-captured",
+        "nelisp--bind-local", "nelisp--apply-builtin-dispatch",
     ];
     for n in names {
         let sentinel = Sexp::list_from(&[
@@ -585,6 +590,12 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // Phase 7 Stage 7.3.a (2026-05-07, Doc 67) — macroexpand-1
         // entry for ERT inspection of elisp Tier 2 macros.
         "macroexpand-1" => bi_macroexpand_1(args, env),
+        // Phase 7 Stage 7.4.a (Doc 68) — apply/call/closure/env primitives.
+        "nelisp--push-frame" => bi_push_frame(args, env),
+        "nelisp--pop-frame" => bi_pop_frame(args, env),
+        "nelisp--push-captured" => bi_push_captured(args, env),
+        "nelisp--bind-local" => bi_bind_local(args, env),
+        "nelisp--apply-builtin-dispatch" => bi_apply_builtin_dispatch(args, env),
         // intern-soft migrated to elisp (Rust-min 2026-05-06 batch 6f,
         // see lisp/nelisp-stdlib-misc.el).
         "make-symbol" => bi_make_symbol(args),
@@ -3768,6 +3779,86 @@ fn bi_macroexpand_1(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     let inner = &parts[1];
     let arg_forms = super::list_elements(&tail)?;
     super::apply_function(inner, &arg_forms, env)
+}
+
+// ---- Phase 7 Stage 7.4.a — apply/call/closure/env elisp 化用 補助 builtins ----
+//
+// Doc 68 §2.4 で定めた 5 件。Stage 7.4.b で install される
+// `lisp/nelisp-stdlib-eval-core.el' の elisp 側 `nelisp--apply-fn' /
+// `nelisp--apply-closure' / `nelisp--bind-formals' が Rust frame stack
+// を操作するための薄いラッパ。Stage 7.4.a の段階では Rust 側 ERT のみ
+// が呼ぶ (= dormant、elisp 本体が install される前から primitive 自体は
+// 利用可能にしておく)。
+
+/// `(nelisp--push-frame)` — push a fresh empty lexical frame onto the
+/// stack.  Returns t.  Pair with `nelisp--pop-frame'.
+fn bi_push_frame(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--push-frame", args, 0, Some(0))?;
+    env.push_frame();
+    Ok(Sexp::T)
+}
+
+/// `(nelisp--pop-frame)` — pop the innermost lexical frame.  Returns t.
+/// Silently no-ops on under-pop (= matches `Env::pop_frame' contract).
+fn bi_pop_frame(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--pop-frame", args, 0, Some(0))?;
+    env.pop_frame();
+    Ok(Sexp::T)
+}
+
+/// `(nelisp--push-captured ALIST)` — push a frame populated from a
+/// captured-env alist of `((NAME . CELL) ...)' shape.  Used by
+/// `nelisp--apply-closure' to install the closure's captured lexical
+/// scope before the formal-param binding frame.  Returns t.
+fn bi_push_captured(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--push-captured", args, 1, Some(1))?;
+    env.push_captured(&args[0])?;
+    Ok(Sexp::T)
+}
+
+/// `(nelisp--bind-local NAME VALUE)` — bind NAME to VALUE in the
+/// innermost lexical frame.  Returns VALUE.  Mirrors `Env::bind_local'
+/// semantics: if no frame exists, the binding falls through to the
+/// global value slot (= top-level setq behaviour).
+fn bi_bind_local(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--bind-local", args, 2, Some(2))?;
+    let name = match &args[0] {
+        Sexp::Symbol(s) => s.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "symbol".into(),
+            got: other.clone(),
+        }),
+    };
+    env.bind_local(&name, args[1].clone());
+    Ok(args[1].clone())
+}
+
+/// `(nelisp--apply-builtin-dispatch NAME ARGS)` — direct dispatch to
+/// the builtin registry by name.  ARGS is a proper list whose elements
+/// have ALREADY been evaluated.  Returns the builtin's result.
+///
+/// Used by elisp-side `nelisp--apply-fn' when the dispatched function
+/// is a `(builtin NAME)' sentinel.  Equivalent to the Rust
+/// `apply_builtin' helper, just lifted out so the elisp dispatcher can
+/// reach it without a special form arm.
+fn bi_apply_builtin_dispatch(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--apply-builtin-dispatch", args, 2, Some(2))?;
+    let name = match &args[0] {
+        Sexp::Symbol(s) => s.clone(),
+        Sexp::Str(s) => s.clone(),
+        other => return Err(EvalError::WrongType {
+            expected: "symbol".into(),
+            got: other.clone(),
+        }),
+    };
+    let arg_vec = super::list_elements(&args[1])?;
+    // Phase 5 lower hook — same as `apply_builtin' so JIT-lowered
+    // primitives (= arith / cons / aref / predicate) short-circuit
+    // here too when the elisp dispatcher routes through us.
+    if let Some(result) = crate::jit::try_lower(&name, &arg_vec, env) {
+        return result;
+    }
+    dispatch(&name, &arg_vec, env)
 }
 
 /// `(makunbound SYMBOL)` — clear the value cell of SYMBOL.
