@@ -188,6 +188,42 @@
   (should (string= (nelisp-stdlib-eval-special-test--expand "(pop lst)")
                    "(prog1 (car lst) (setq lst (cdr lst)))")))
 
+;;; ---- function / macro definition (Stage 7.3.b) -----------------------
+
+(ert-deftest nelisp-eval-special/defun-shape ()
+  (nelisp-stdlib-eval-special-test--skip-unless-built)
+  ;; (defun foo (x) (+ x 1)) →
+  ;;   (progn (fset 'foo (lambda (x) (+ x 1))) 'foo)
+  (should (string= (nelisp-stdlib-eval-special-test--expand
+                    "(defun foo (x) (+ x 1))")
+                   "(progn (fset 'foo (lambda (x) (+ x 1))) 'foo)")))
+
+(ert-deftest nelisp-eval-special/defun-no-body ()
+  (nelisp-stdlib-eval-special-test--skip-unless-built)
+  (should (string= (nelisp-stdlib-eval-special-test--expand
+                    "(defun foo (x))")
+                   "(progn (fset 'foo (lambda (x))) 'foo)")))
+
+(ert-deftest nelisp-eval-special/defun-multiple-body-forms ()
+  (nelisp-stdlib-eval-special-test--skip-unless-built)
+  (should (string= (nelisp-stdlib-eval-special-test--expand
+                    "(defun foo (x y) a b c)")
+                   "(progn (fset 'foo (lambda (x y) a b c)) 'foo)")))
+
+(ert-deftest nelisp-eval-special/defmacro-shape ()
+  (nelisp-stdlib-eval-special-test--skip-unless-built)
+  ;; (defmacro foo (x) (+ x 1)) →
+  ;;   (progn (fset 'foo (cons 'macro (cons (lambda (x) (+ x 1)) nil))) 'foo)
+  (should (string= (nelisp-stdlib-eval-special-test--expand
+                    "(defmacro foo (x) (+ x 1))")
+                   "(progn (fset 'foo (cons 'macro (cons (lambda (x) (+ x 1)) nil))) 'foo)")))
+
+(ert-deftest nelisp-eval-special/defmacro-no-body ()
+  (nelisp-stdlib-eval-special-test--skip-unless-built)
+  (should (string= (nelisp-stdlib-eval-special-test--expand
+                    "(defmacro foo (x))")
+                   "(progn (fset 'foo (cons 'macro (cons (lambda (x)) nil))) 'foo)")))
+
 ;;; ---- atom passthrough ------------------------------------------------
 
 (ert-deftest nelisp-eval-special/macroexpand-1-non-macro-passthrough ()

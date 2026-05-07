@@ -245,6 +245,46 @@ Generalised places (= setf-style) are out of scope for Stage 7.3.a."
                                 (cons (cons 'cdr (cons place nil)) nil)))
                     nil))))
 
+;;;; --- function / macro definition (Stage 7.3.b) ----------------------
+
+(defmacro defun (name args &rest body)
+  "(defun NAME ARGS BODY...) → (progn (fset 'NAME (lambda ARGS BODY...)) 'NAME).
+Unlike Rust `sf_defun' which stores the raw `(lambda ...)' form
+unmodified, the elisp expansion goes through evaluation of
+`(lambda ARGS BODY...)' = produces a closure with the current lexical
+env captured.  For top-level defun the captured env is empty so
+semantics match Rust; defuns nested inside `let' would receive a
+non-empty captured env in elisp but the bare form in Rust — this is
+an intentional improvement, not a regression."
+  (let ((lambda-form (cons 'lambda (cons args body)))
+        (qname (cons 'quote (cons name nil))))
+    (cons 'progn
+          (cons (cons 'fset (cons qname (cons lambda-form nil)))
+                (cons qname nil)))))
+
+(defmacro defmacro (name args &rest body)
+  "(defmacro NAME ARGS BODY...) →
+   (progn (fset 'NAME (cons 'macro (cons (lambda ARGS BODY...) nil))) 'NAME).
+The fcell shape for a macro is `(macro LAMBDA)' — a 2-element list,
+matching `expand_macro' in eval/mod.rs which does `parts[1]' to grab
+the lambda after stripping the `macro' tag.  As with `defun', the
+embedded lambda evaluates to a closure (not a raw `(lambda ARGS ...)'
+form), so `expand_macro' receives the closure and `apply_function'
+dispatches via the `closure' arm."
+  (let* ((lambda-form (cons 'lambda (cons args body)))
+         (qname (cons 'quote (cons name nil)))
+         ;; Inner cons cell: builds (LAMBDA-FORM nil) at evaluation time.
+         (inner-cons (cons 'cons
+                           (cons lambda-form (cons nil nil))))
+         ;; Outer cons: builds (cons 'macro (LAMBDA-FORM nil)) at
+         ;; evaluation time = (macro LAMBDA-FORM).
+         (outer-cons (cons 'cons
+                           (cons (cons 'quote (cons 'macro nil))
+                                 (cons inner-cons nil)))))
+    (cons 'progn
+          (cons (cons 'fset (cons qname (cons outer-cons nil)))
+                (cons qname nil)))))
+
 ;; (provide 'nelisp-stdlib-eval-special) is intentionally omitted:
 ;; Layer A loads BEFORE `nelisp-stdlib*.el' where `provide' itself is
 ;; defined.  Callers should not `(require 'nelisp-stdlib-eval-special)'.
