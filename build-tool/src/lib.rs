@@ -21,4 +21,8 @@
 pub mod bridge;
 pub mod eval;
 pub mod image;
+// Phase 5 Stage 5.0 (2026-05-07, Doc 62) — Cranelift JIT scaffold.
+// Empty `lower_entries' registry today; SyscallIR / ArithIR / ConsIR /
+// AccessIR / PredicateIR ships in subsequent stages (5.1〜5.5).
+pub mod jit;
 pub mod reader;

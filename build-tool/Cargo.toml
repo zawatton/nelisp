@@ -42,6 +42,19 @@ sha2 = "0.10"
 md5 = "0.7"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
+# Phase 5 Stage 5.0 (2026-05-07, Doc 62) — Cranelift JIT scaffold.
+# `cranelift-jit' / `cranelift-codegen' / `cranelift-frontend' /
+# `cranelift-module' are the canonical 4-crate split for a single-pass
+# JIT module + IR builder + low-level codegen.  Phase 5.0 only adds the
+# scaffold (= lower_entries registry + IR type stubs); actual lowering
+# of SyscallIR / ArithIR / ConsIR / AccessIR / PredicateIR ships in
+# Stage 5.1〜5.5 (= each a separate doc + commit).  Pinned at v0.110+
+# which is the LTS line covering Linux x86_64 / aarch64 / Darwin /
+# Windows codegen targets.
+cranelift = "0.110"
+cranelift-jit = "0.110"
+cranelift-module = "0.110"
+
 # Doc 51 Track E (2026-05-04): libc for termios raw-mode + poll() to
 # enable interactive TTY input wiring under the nelisp driver.  Used
 # only by `terminal-raw-mode-enter' / `-leave' / `read-stdin-byte' /

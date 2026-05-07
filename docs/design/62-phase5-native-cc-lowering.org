@@ -5,7 +5,8 @@
 
 * Status
 :PROPERTIES:
-:STATE: DRAFT
+:STATE: IN_PROGRESS
+:STAGE_5_0: SHIPPED (2026-05-07) — Cranelift dep + jit/ scaffold (mod.rs + 5 stub submodules) + lower hook in eval/mod.rs::apply_builtin
 :DEPENDS_ON: Doc 49 (elisp pivot) / Doc 50 (irreducible unlock) / Doc 53〜60 (OS surface) / Doc 61 (cXXr migrate)
 :CONCURRENT_WITH: Doc 63 (Phase 7 self-host roadmap)
 :END:
