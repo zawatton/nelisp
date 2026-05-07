@@ -7,7 +7,8 @@
 :PROPERTIES:
 :STATE: IN_PROGRESS
 :STAGE_5_0: SHIPPED (2026-05-07, commit f3bd32e) — Cranelift dep + jit/ scaffold + lower hook in eval/mod.rs::apply_builtin
-:STAGE_5_1_PARTIAL: SHIPPED (2026-05-07) — `nelisp--syscall-supported-p' (= 0-arg const predicate) JIT-compiled to `iconst + return'.  Full Stage 5.1 (= libc syscall instruction emit) is follow-up.
+:STAGE_5_1_PARTIAL: SHIPPED (2026-05-07) — `nelisp--syscall-supported-p' (= 0-arg const predicate) JIT-compiled to `iconst + return'.
+:STAGE_5_1: SHIPPED (2026-05-07, this commit) — generic `nelisp--syscall NR ARGS...' JIT-lowered.  Per §2.2.1 the 25 specialized primitives (= sockaddr / pollfd / signalfd / etc. buffer handling) stay on the Rust dispatcher.  Lowering uses Cranelift `Linkage::Import' on a non-variadic Rust trampoline `nl_jit_syscall_call' that wraps `libc::syscall' + errno normalize (Doc 62 §5 "helper fn 経由の妥協を許容" pattern, identical to ConsIR/AccessIR plan).
 :STAGE_5_2: SHIPPED (2026-05-07, commits 0c95c93 + f3cfbfd) — 11 binary integer primitives JIT-compiled in 1 shared JITModule:
   - 算術 3: `-add2'/`-sub2'/`-mul2' (iadd/isub/imul)
   - 比較 5: `-num-{eq,lt,gt,le,ge}2' (icmp + uextend)

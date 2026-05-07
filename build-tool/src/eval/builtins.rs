@@ -1937,7 +1937,7 @@ fn bi_syscall_supported_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(target_os = "linux")]
-fn syscall_arg_int(name: &str, idx: usize, s: &Sexp) -> Result<i64, EvalError> {
+pub(crate) fn syscall_arg_int(name: &str, idx: usize, s: &Sexp) -> Result<i64, EvalError> {
     match s {
         Sexp::Int(n) => Ok(*n),
         Sexp::Nil => Ok(0),
@@ -1950,7 +1950,7 @@ fn syscall_arg_int(name: &str, idx: usize, s: &Sexp) -> Result<i64, EvalError> {
 }
 
 #[cfg(target_os = "linux")]
-fn syscall_nr(name_or_nr: &Sexp) -> Result<i64, EvalError> {
+pub(crate) fn syscall_nr(name_or_nr: &Sexp) -> Result<i64, EvalError> {
     match name_or_nr {
         Sexp::Int(n) => Ok(*n),
         Sexp::Symbol(s) => match s.as_str() {
