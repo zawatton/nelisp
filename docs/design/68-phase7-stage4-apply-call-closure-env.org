@@ -1,0 +1,667 @@
+#+TITLE: Doc 68 — Phase 7 Stage 7.4 / apply / call / closure / env elisp 化
+#+AUTHOR: zawatton
+#+DATE: 2026-05-08
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: DRAFT
+:DEPENDS_ON: Doc 67 (Stage 7.3 special forms migration、SHIPPED 87965ff)
+:PARENT: Doc 63 (Phase 7 self-host roadmap)
+:SIBLING: Doc 64 (Stage 7.1 printer SHIPPED) / Doc 66 (Stage 7.2 reader SHIPPED-modulo-7.2.f) / Doc 67 (Stage 7.3 specials SHIPPED)
+:NEXT: Stage 7.5 (switch over + Rust dead code 削除) / Stage 7.6 (reader cleanup)
+:END:
+
+* §0 TL;DR
+
+Phase 7 self-host (Doc 63) の 4 番目の足場。=build-tool/src/eval/mod.rs=
+の =apply_combiner= / =apply_function= / =apply_closure= / =apply_lambda=
+/ =apply_lambda_inner= / =bind_formals= / =is_macro= / =expand_macro= の
+8 helper (= ~250 LOC) を elisp =lisp/nelisp-stdlib-eval-core.el= に移し、
+Rust 側は **Tier 1 dispatch entry + 環境プリミティブ**だけ残す。Stage
+7.2 (= reader) / Stage 7.3 (= specials) で確立した *parallel install +
+flag-gated takeover* pattern の 3 度目の application。
+
+| layer | before (= post 7.3.d) | after (= post 7.4.d) |
+|-+-+-|
+| Rust =eval/mod.rs= | 541 LOC (= eval / apply_* / bind_formals / is_macro / expand_macro) | ~290 LOC (= eval entry + dispatch fallthrough のみ) |
+| Rust =eval/env.rs= | 497 LOC (= 全 lookup / set / push / pop / capture primitive) | 497 LOC (= 不変、Tier 1 primitive 集合) |
+| elisp =lisp/nelisp-stdlib-eval-core.el= | (新規) | ~400 LOC (= apply-fn / apply-closure / bind-formals / dispatch) |
+
+LOC 削減推定: Rust ~250 (= apply / bind / macro helpers)、elisp +400。
+=env.rs= の primitives は本 Stage では削減対象外 (= Stage 7.5 で flag
+flip + 完全 takeover した後、Rust eval 全体を観察期間経て delete)。
+
+Tier 1 = process-wide quit / signal poll、recursion guard、symbol →
+SymbolEntry slot の I/O、frame stack push/pop、=Rc<RefCell<Sexp>>=
+shared cell 生成。これらは elisp では書けない (= host atomics / Rust
+ownership semantics に依存)。Tier 2 = それを組み合わせて書ける
+function dispatch / formal-param binding / closure capture-env 展開
+ループ — 本 Stage の対象。
+
+Phase 5 JIT lower 後、=apply-fn= が dispatch する builtin 直叩きは
+ArithIR / cons-IR が host 命令に展開され、elisp dispatch 層の overhead
+は ~1.3〜1.8x 想定 (= cl-defun / Tier 2 macro 重ね合わせ後の合算で
+< 3x degradation gate を満たす)。
+
+* §1 動機
+
+** §1.1 Phase 7 self-host roadmap での位置
+
+Doc 63 §2 の 6 stage:
+
+| stage | item                                  | LOC 削減 | status              |
+|-------+---------------------------------------+----------+---------------------|
+| 7.1   | Sexp printer                         | 200      | SHIPPED (49ddcca、Doc 64) |
+| 7.2   | Sexp reader                          | 1,400    | SHIPPED modulo 7.2.f (Doc 66) |
+| 7.3   | Special forms dispatcher             | ~500     | SHIPPED (87965ff、Doc 67) |
+| 7.4   | *Apply / call / closure / env*       | *~250*   | *本 Doc*            |
+| 7.5   | switch over + Rust dead code 削除    | 600+     | -                   |
+| 7.6   | Reader cleanup                       | 200      | Stage 7.2.f         |
+
+Stage 7.4 = 言語実行時の「**関数を呼ぶ**」semantics そのものを elisp
+化する。Stage 7.3 で =defun= / =defmacro= / =cl-defun= の構文糖衣を
+elisp に移したが、defun が *返した* function value を実際に呼ぶのは
+依然 Rust =apply_function=。本 Stage はそこを elisp 側に下ろす。
+
+** §1.2 Stage 7.3 で何が elisp 化済 / 何が残ったか
+
+Stage 7.3.d 完了 (commit 87965ff) 時点の dispatch の流れ:
+
+#+begin_src text
+(my-defun arg1 arg2)               ; user code
+   ↓
+Rust eval (form)                   ; mod.rs:129
+   ↓
+Rust apply_combiner                ; mod.rs:186
+   ├─→ Rust apply_special          ; special_forms.rs (= Tier 1 13 forms only、Stage 7.3.d で縮退)
+   │     │ "my-defun" は special form じゃない → None
+   │     ↓
+   ├─→ Rust env.lookup_function    ; env.rs:309 → fcell value
+   │     │ 結果: (closure ENV ARGS BODY...)
+   │     ↓
+   ├─→ Rust apply_function         ; mod.rs:277  ← 本 Stage の主撤去対象
+   │     ├─→ apply_builtin
+   │     ├─→ apply_closure
+   │     │     └─→ apply_lambda_inner
+   │     │           ├─→ env.push_captured  (= Rust primitive)
+   │     │           ├─→ env.push_frame      (= Rust primitive)
+   │     │           ├─→ bind_formals        (= mod.rs:413、本 Stage の対象)
+   │     │           ├─→ for body: eval(form) (= 再帰)
+   │     │           └─→ env.pop_frame x2    (= Rust primitive)
+   │     ├─→ apply_lambda          (= bare lambda、closure 同形)
+   │     └─→ macro reject path
+   ↓
+Sexp 結果
+#+end_src
+
+**本 Stage で elisp 化する layer**:
+- =apply_function= の 4-way dispatch (builtin / closure / lambda / macro)
+- =apply_closure= / =apply_lambda= / =apply_lambda_inner= の cons walk + body eval ループ
+- =bind_formals= の =&optional= / =&rest= 解析
+- =is_macro= / =expand_macro= の macro driver
+
+**Rust に残る layer (= Tier 1 primitives)**:
+- =env.push_frame= / =env.pop_frame= (= Rust =Frame: HashMap<String, Rc<RefCell<Sexp>>>= 操作)
+- =env.push_captured= / =env.capture_lexical= (= shared cell 経由 closure write-through)
+- =env.bind_local= / =env.lookup_value= / =env.set_value= (= SymbolEntry slot I/O)
+- =builtins::dispatch= (= 180+ Rust builtin 名前 → 関数 pointer の表)
+- =eval= entry (= recursion guard + quit poll + form 種別判定)
+- =apply_special= (= Tier 1 13 forms)
+
+** §1.3 既存 parallel install pattern の流用
+
+Stage 7.2.b (reader) / Stage 7.3.a-d (specials) で確立した手順:
+
+1. **install (= dormant)**: 新 elisp 実装を =Env::new_global= の
+   =STDLIB_SOURCES= に追加。fcell に install されるが、Rust dispatch が
+   *先勝* なので runtime には呼ばれない。ERT のみで等価性を確認。
+2. **takeover hook (flag-gated)**: =--use-elisp-apply= 等の runtime flag
+   で Rust dispatch を short-circuit、elisp side を呼び出す path を有効化。
+3. **default flip**: 全 ERT が両 mode で PASS、wallclock < 3x で gate
+   通過後、default flag を ON。Rust 側は =cfg= 等で死蔵。
+4. **delete (Stage 7.5)**: 1〜2 release 観察 期間後、Rust 死蔵コードを
+   完全削除。
+
+本 Stage 7.4 では (1) と (2) と (3) までを実行 (= Stage 7.4.a〜d)。
+delete は Stage 7.5 に委譲。
+
+** §1.4 Phase 5 native cc lowering との相補関係
+
+=apply_function= dispatch は構造上 =cond= chain (= "head が builtin か
+closure か lambda か macro か") に展開される。Phase 5 SHIPPED 後の
+=cond=/=eq=/=car= 系 lower 経路 (= Stage 5.5 / 5.6) で cond chain は
+host 分岐命令に直 emit。よって elisp dispatch overhead の主要部 (= 4-way
+判定) は <100ns / call の見込み。
+
+bench gate 例:
+- =(let ((f (lambda (x) (* x x)))) (dotimes (i 10000) (funcall f i)))=
+  = =funcall= 経由 = =apply-fn= 1 回 + body eval = Stage 7.4.d 後の
+  実 wallclock を Stage 7.3.d 直前と比較、gate < 1.8x
+
+* §2 設計
+
+** §2.1 Tier 分類
+
+*** Tier 1 = Rust 残 (= 環境プリミティブ + eval entry)
+
+| 関数 | LOC | 残置理由 |
+|-+-+-|
+| =eval= (entry) | ~30 | quit poll + recursion guard が Rust atomic 必要 |
+| =eval_inner= | ~50 | self-eval 判定の type match (= Sexp variant 直接 match) |
+| =apply_combiner= 一部 | ~30 | Symbol head の special form 検査 + fcell lookup |
+| =apply_special= dispatch | (Doc 67) | Tier 1 13 forms だけ |
+| =eval_arg_list= | ~25 | proper list walk + Sexp::Cons match |
+| =list_elements= | ~25 | un-eval list walk |
+| =builtins::dispatch= | (大、本 Stage 対象外) | 180+ Rust builtin の名前 → fn pointer 表 |
+| =Env::*= 全 method | (~497 LOC、env.rs) | =Frame: HashMap<String, Rc<RefCell>>= 操作の primitive 集合 |
+
+eval / apply_combiner は本 Stage で **shape を変える** (= 後述 §2.4):
+takeover flag が立っている場合、apply_combiner が 5) plain function path
+で =elisp_apply_dispatch= へ delegate するように。
+
+*** Tier 2 = elisp 化対象 (= 本 Stage で =lisp/nelisp-stdlib-eval-core.el= 新規)
+
+| Rust 関数 | LOC (post 7.3.d) | elisp 移行先 |
+|-+-+-|
+| =apply_function= | 38 | =nelisp--apply-fn= |
+| =apply_builtin= | 35 | =nelisp--apply-builtin= (= Rust =bi_apply_builtin_internal= 経由でディスパッチ) |
+| =apply_closure= | 14 | =nelisp--apply-closure= |
+| =apply_lambda= | 16 | =nelisp--apply-lambda= |
+| =apply_lambda_inner= | 35 | =nelisp--apply-lambda-inner= |
+| =bind_formals= | 105 | =nelisp--bind-formals= |
+| =is_macro= | 7 | =nelisp--macrop= |
+| =expand_macro= | 12 | =nelisp--expand-macro= |
+| 合計 | ~262 LOC | ~400 LOC (= elisp + cond/let の冗長度込み) |
+
+** §2.2 Tier 1-only body 制約 (= Doc 67 §2.2 の再適用)
+
+elisp 側 =nelisp--apply-fn= 等の body は **Tier 1 special form + Rust
+builtin + Tier 2 macros (Stage 7.3 SHIPPED 済)** でのみ書く。具体的に:
+
+許容:
+- =if= / =progn= / =let= / =let*= / =setq= / =while= / =catch= / =throw=
+  / =condition-case= / =unwind-protect= / =quote= / =function= /
+  =lambda= (= Tier 1 13 forms)
+- =cond= / =when= / =unless= / =or= / =and= / =defun= / =defvar= /
+  =defconst= / =dolist= / =dotimes= / =push= / =pop= / =prog1= / =prog2=
+  (= Stage 7.3 SHIPPED elisp macros)
+- Rust builtin: =cons= / =car= / =cdr= / =eq= / =equal= / =null= / =not=
+  / =symbolp= / =consp= / =listp= / =length= / =nth= / =nthcdr= /
+  =append= / =list= / =error= / =signal= / =funcall= / =apply= 等
+- =nelisp--*= 系 stdlib helper (= 既存)
+
+不許可:
+- =loop= / =cl-loop= / =cl-block= 等 cl-extras (= 自身が =apply-fn=
+  経由で展開、bootstrap cycle 発生のリスク)
+- =seq-*= / =cl-*-fn= 等 HOF (= recursive funcall に依存、本 Stage が
+  まさにそれを実装している)
+
+理由: =nelisp--apply-fn= 自身が「funcall を実装する関数」なので、
+*その body の中で funcall を要求する高階構文は使えない*。これは Doc
+67 の Tier 1-only macro body 制約と同じ chicken-and-egg。
+
+** §2.3 closure / lambda 表現の不変
+
+closure 表現は Stage 7.4 でも変えない:
+
+#+begin_src text
+(closure CAPTURED-ENV ARGS BODY...)
+#+end_src
+
+CAPTURED-ENV は alist of =((NAME . CELL) ...)=、CELL は =Sexp::Cell=
+(= Rust =Rc<RefCell<Sexp>>= の wrapper、setq write-through 用)。
+
+bare lambda:
+#+begin_src text
+(lambda ARGS BODY...)   ; defun が fcell に置く正規形
+#+end_src
+
+elisp 側からこの cons 構造を =car= / =cdr= で walk するだけ。新規
+discriminator や tag は導入しない。
+
+** §2.4 新 Rust 補助 primitive
+
+elisp 側 =nelisp--apply-fn= が Rust frame stack を操作するため、いくつか
+*Stage 7.4 専用* の Rust builtin を追加:
+
+| Rust 名 | elisp 名 | 役割 | LOC |
+|-+-+-+-|
+| =bi_push_frame= | =nelisp--push-frame= | =Env::push_frame= の elisp wrapper、引数なし、t を返す | ~10 |
+| =bi_pop_frame= | =nelisp--pop-frame= | =Env::pop_frame= 同、t を返す | ~10 |
+| =bi_push_captured= | =nelisp--push-captured= | =Env::push_captured(alist)= 同、t を返す | ~15 |
+| =bi_bind_local= | =nelisp--bind-local= | =Env::bind_local(name, value)= 同、value を返す | ~15 |
+| =bi_apply_builtin_dispatch= | =nelisp--apply-builtin-dispatch= | name + args → =builtins::dispatch(&name, &args, env)= の薄ラッパ | ~25 |
+
+合計 ~75 LOC 追加 (= elisp 側 ~400 と合わせ、Rust 純減 = 250 - 75 = ~175 LOC)。
+
+これらは Stage 7.5 で elisp eval が完全 takeover した後も *残す*。
+elisp eval ↔ Rust frame primitive の boundary はここに固定。
+
+** §2.5 elisp 側 =nelisp-stdlib-eval-core.el= 概要
+
+#+begin_src elisp
+;;; nelisp-stdlib-eval-core.el — Phase 7 Stage 7.4 apply / closure / lambda
+
+;; --- predicate -----------------------------------------------------------
+
+(defun nelisp--builtinp (fn)
+  "T if FN is a (builtin NAME) sentinel."
+  (and (consp fn) (eq (car fn) 'builtin)))
+
+(defun nelisp--closurep (fn)
+  "T if FN is a (closure ENV ARGS BODY...) shape."
+  (and (consp fn) (eq (car fn) 'closure)))
+
+(defun nelisp--lambdap (fn)
+  "T if FN is a (lambda ARGS BODY...) shape."
+  (and (consp fn) (eq (car fn) 'lambda)))
+
+(defun nelisp--macrop (fn)
+  "T if FN is a (macro . LAMBDA) shape — same as Rust is_macro."
+  (and (consp fn) (eq (car fn) 'macro)))
+
+;; --- formal-parameter binding -------------------------------------------
+
+(defun nelisp--bind-formals (formals args)
+  "Bind FORMALS to ARGS in the topmost lexical frame.
+Supports &optional / &rest per Elisp manual.  Errors mirror the
+Rust bind_formals shape (WrongNumberOfArguments / WrongType)."
+  (let ((mode 'required)
+        (idx 0)
+        (saw-rest nil)
+        (consumed-rest nil)
+        (required-count 0)
+        (rest-formals formals))
+    ;; first pass: count required arity for diagnostics
+    (let ((p formals))
+      (while (and (consp p)
+                  (not (memq (car p) '(&optional &rest))))
+        (setq required-count (1+ required-count))
+        (setq p (cdr p))))
+    (while (consp rest-formals)
+      (let ((name (car rest-formals)))
+        (cond
+         ((eq name '&optional)
+          (when (eq mode 'rest)
+            (signal 'wrong-type-argument
+                    (list 'formal-after-rest name)))
+          (setq mode 'optional))
+         ((eq name '&rest)
+          (when saw-rest
+            (signal 'wrong-type-argument (list 'multiple-rest name)))
+          (setq mode 'rest)
+          (setq saw-rest t))
+         ((symbolp name)
+          (cond
+           ((eq mode 'required)
+            (when (>= idx (length args))
+              (signal 'wrong-number-of-arguments
+                      (list 'lambda required-count (length args))))
+            (nelisp--bind-local name (nth idx args))
+            (setq idx (1+ idx)))
+           ((eq mode 'optional)
+            (let ((v (if (< idx (length args))
+                         (prog1 (nth idx args) (setq idx (1+ idx)))
+                       nil)))
+              (nelisp--bind-local name v)))
+           ((eq mode 'rest)
+            (when consumed-rest
+              (signal 'wrong-type-argument
+                      (list 'symbol-after-rest name)))
+            (let ((tail (nthcdr idx args)))
+              (nelisp--bind-local name tail)
+              (setq idx (length args))
+              (setq consumed-rest t)))))
+         (t (signal 'wrong-type-argument (list 'symbol name)))))
+      (setq rest-formals (cdr rest-formals)))
+    (when (and (< idx (length args)) (not consumed-rest))
+      (signal 'wrong-number-of-arguments
+              (list 'lambda (format "at most %d" idx) (length args))))
+    (when (and saw-rest (not consumed-rest))
+      (signal 'wrong-type-argument (list 'symbol-after-rest '&rest)))
+    t))
+
+;; --- closure / lambda body apply ----------------------------------------
+
+(defun nelisp--apply-lambda-inner (captured formals body args)
+  "Push CAPTURED env + a fresh frame, bind FORMALS to ARGS, eval BODY."
+  (nelisp--push-captured captured)
+  (nelisp--push-frame)
+  (unwind-protect
+      (progn
+        (nelisp--bind-formals formals args)
+        ;; eval body forms in order, return last
+        (let ((last nil))
+          (dolist (form body)
+            (setq last (eval form)))   ; eval = Rust entry, runs Tier 1 + macros
+          last))
+    (nelisp--pop-frame)
+    (nelisp--pop-frame)))
+
+(defun nelisp--apply-closure (closure args)
+  "Apply (closure CAPTURED ARGS-FORMAL BODY...) to ARGS."
+  (let* ((parts (cdr closure))           ; (CAPTURED FORMALS BODY...)
+         (captured (car parts))
+         (formals (cadr parts))
+         (body (cddr parts)))
+    (nelisp--apply-lambda-inner captured formals body args)))
+
+(defun nelisp--apply-lambda (lambda args)
+  "Apply (lambda FORMALS BODY...) to ARGS — bare lambda, empty captured env."
+  (let* ((parts (cdr lambda))
+         (formals (car parts))
+         (body (cdr parts)))
+    (nelisp--apply-lambda-inner nil formals body args)))
+
+;; --- top-level dispatch -------------------------------------------------
+
+(defun nelisp--apply-fn (fn args)
+  "Dispatch FN to ARGS.  Mirrors Rust eval/mod.rs apply_function."
+  (cond
+   ((nelisp--builtinp fn)
+    ;; (builtin NAME) → registry dispatch via Rust helper
+    (nelisp--apply-builtin-dispatch (cadr fn) args))
+   ((nelisp--closurep fn)
+    (nelisp--apply-closure fn args))
+   ((nelisp--lambdap fn)
+    (nelisp--apply-lambda fn args))
+   ((nelisp--macrop fn)
+    (signal 'wrong-type-argument
+            (list 'function-not-macro fn)))
+   (t
+    (signal 'wrong-type-argument (list 'function fn)))))
+
+(defun nelisp--expand-macro (macro-form arg-forms)
+  "Expand (macro . LAMBDA) by calling LAMBDA on un-evaluated ARG-FORMS."
+  (let ((inner (cdr macro-form)))
+    (cond
+     ((nelisp--lambdap inner)
+      (nelisp--apply-lambda inner arg-forms))
+     ((nelisp--closurep inner)
+      (nelisp--apply-closure inner arg-forms))
+     (t
+      (signal 'wrong-type-argument (list 'malformed-macro macro-form))))))
+
+(provide 'nelisp-stdlib-eval-core)
+#+end_src
+
+LOC 概算: 上記 ~150 LOC + ERT skeleton ~100 LOC + edge case (=
+recursive lambda、setq-write-through、&rest with nil tail) ~100 LOC =
+合計 ~350〜400 LOC。
+
+** §2.6 Bootstrap install order
+
+=Env::new_global= の =STDLIB_SOURCES= 内挿入位置:
+
+#+begin_src text
+(現状、Stage 7.3.d 直後)
+1. nelisp-stdlib-eval-special.el      (Stage 7.3 elisp macros)
+2. nelisp-stdlib.el                   (基礎 helpers)
+3. nelisp-stdlib-list.el
+4. nelisp-stdlib-hof.el
+5. nelisp-stdlib-search.el
+6. ...
+7. nelisp-stdlib-prn.el               (Stage 7.1)
+8. nelisp-stdlib-reader.el            (Stage 7.2)
+
+(Stage 7.4.a 着手後)
+1. nelisp-stdlib-eval-special.el
+2. nelisp-stdlib.el
+3. ...
+N. nelisp-stdlib-eval-core.el         ← 新規、Stage 7.4 elisp apply
+#+end_src
+
+挿入位置の判断:
+- =eval-special.el= の *後*: =defun= / =defmacro= 等の Tier 2 macro が
+  既に install 済 (= core.el 内で =defun= が使える)
+- =stdlib-list.el= 等の helper 群の *後*: =nth= / =length= / =nthcdr=
+  / =memq= 等を =bind-formals= が使うため
+- =reader.el= (= Stage 7.2 dormant) の *後 / 同層*: 互いに参照しないが
+  load order 一意化のため最後尾
+- 推奨: 末尾 (= 全 stdlib install 完了後) に追加
+
+** §2.7 Takeover hook 設計
+
+Rust =apply_combiner= (= mod.rs:186) の 3) plain function path に *flag
+分岐* を入れる:
+
+#+begin_src rust
+// 3) Plain function — evaluate args, apply.
+let args = eval_arg_list(tail, env)?;
+if env.use_elisp_apply {
+    // Stage 7.4.b takeover: delegate to elisp `nelisp--apply-fn'.
+    // Build the form `(nelisp--apply-fn 'FUNC '(ARG...))' and eval
+    // it through the regular Rust eval entry.  The elisp side then
+    // walks FUNC's cons head and calls back into Rust frame
+    // primitives (`nelisp--push-frame' / `nelisp--bind-local' /
+    // `nelisp--apply-builtin-dispatch') as needed.
+    let dispatch_form = Sexp::list_from(&[
+        Sexp::Symbol("nelisp--apply-fn".into()),
+        Sexp::list_from(&[Sexp::Symbol("quote".into()), func.clone()]),
+        Sexp::list_from(&[
+            Sexp::Symbol("quote".into()),
+            Sexp::list_from(&args),
+        ]),
+    ]);
+    return eval(&dispatch_form, env);
+}
+// Default (= Stage 7.4.a〜c の dormant 期間) は Rust path
+return apply_function(&func, &args, env);
+#+end_src
+
+flag は =Env::use_elisp_apply: bool= field、default =false=。CLI で
+=--use-elisp-apply= 指定時、または =(setq nelisp--use-elisp-apply t)=
+時に Rust eval の C-level mutex 越しに ON にする。
+
+注意点: macro 経路 (= step 2 の =is_macro(func)=) は **本 flag 経路を
+通らない** — macro expansion driver 自身は Stage 7.4.b で elisp 化
+するが、Rust =apply_combiner= の dispatch 順序は維持。理由: macro 展開は
+=eval(expansion, env)= で再帰、再帰 entry が flag を尊重するので結果
+として全 path が elisp 経由になる。
+
+* §3 段階 / sub-stages
+
+** §3.1 Stage 7.4.a — Rust auxiliary primitives 追加
+
+新 Rust builtin:
+- =bi_push_frame= / =bi_pop_frame= / =bi_push_captured= / =bi_bind_local=
+- =bi_apply_builtin_dispatch=
+
+ERT (= Rust 側 =cargo test=):
+- =elisp_can_push_pop_frame= = =(progn (nelisp--push-frame) (nelisp--pop-frame))= → t
+- =elisp_can_bind_local_into_top_frame= = let body 内で =nelisp--bind-local= → 値の lookup_value で取れる
+- =elisp_apply_builtin_dispatch_call_cons= = =(nelisp--apply-builtin-dispatch 'cons '(1 2))= = =(1 . 2)=
+
+Stage 7.4.a *のみ commit*。elisp 側 core.el は未追加 (= primitive を
+"先" に install して Stage 7.4.b の elisp body が叩けるようにする)。
+
+LOC: +75 Rust、+20 ERT、commit ~1 件、想定 1〜2h。
+
+** §3.2 Stage 7.4.b — =nelisp-stdlib-eval-core.el= install (parallel、dormant)
+
+新規 file =lisp/nelisp-stdlib-eval-core.el=:
+- =nelisp--builtinp= / =-closurep= / =-lambdap= / =-macrop=
+- =nelisp--bind-formals=
+- =nelisp--apply-lambda-inner= / =-apply-closure= / =-apply-lambda=
+- =nelisp--apply-fn=
+- =nelisp--expand-macro=
+
+=Env::new_global= の =STDLIB_SOURCES= 末尾に追加 (= 全 stdlib install 後)。
+
+ERT (= test/nelisp-stdlib-eval-core-test.el):
+- =eval-core-builtinp-recognizes-cons= ((builtin foo) → t)
+- =eval-core-closurep-recognizes-cons=
+- =eval-core-bind-formals-required-only=
+- =eval-core-bind-formals-with-optional=
+- =eval-core-bind-formals-with-rest=
+- =eval-core-bind-formals-arity-error=
+- =eval-core-apply-lambda-inner-respects-captured-env= (= setq write-through 確認)
+- =eval-core-apply-closure-roundtrip= ((funcall (lambda (x) (* x x)) 5) と同等を =nelisp--apply-fn= 経由で確認)
+- =eval-core-apply-fn-rejects-macro=
+- =eval-core-expand-macro-roundtrip=
+
+この時点で =--use-elisp-apply= flag は **未実装** (= 完全 dormant)。
+Rust dispatch が先勝。新 elisp helpers は ERT からのみ呼ばれる。
+
+LOC: +400 elisp、+100 ERT、commit ~2 件 (= file install + ERT)、想定 3〜5h。
+
+** §3.3 Stage 7.4.c — =--use-elisp-apply= flag 経路 + cross-equivalence ERT
+
+Rust 側 =Env= に =use_elisp_apply: bool= field 追加。=apply_combiner= の
+plain function path に §2.7 の flag 分岐を実装。
+
+CLI integration:
+- =target/release/nelisp --use-elisp-apply eval EXPR= で elisp dispatch
+- 通常の =target/release/nelisp ert= は default (= Rust dispatch)
+- 追加: =target/release/nelisp --use-elisp-apply ert= で ERT 全 suite を
+  elisp dispatch で再走
+
+ERT (= cross-equivalence、両 mode で run):
+- 既存 ERT 全 suite を **そのまま** =--use-elisp-apply= で実行
+- 期待値: PASS 数同一、wallclock < 3x
+
+新規 ERT (= elisp dispatch 固有 path):
+- =stage74c-recursive-defun-elisp-dispatch= = =(defun fact (n) (if (zerop n) 1 (* n (fact (1- n)))))= → =(fact 10)= = 3628800
+- =stage74c-closure-write-through-elisp-dispatch= = (let ((x 0)) (setq f (lambda () (setq x (1+ x))))) → =(funcall f)= 後の x が 1
+- =stage74c-rest-arg-elisp-dispatch= = =(lambda (&rest xs) (length xs))= 経由
+- =stage74c-builtin-via-funcall-elisp-dispatch= = =(funcall #'cons 1 2)= = (1 . 2)
+- =stage74c-recursion-depth-respects-flag= = (defun loop () (loop)) → max-lisp-eval-depth エラー (= 同 message、両 mode で)
+
+LOC: +50 Rust (= flag + dispatch arm + ERT runner)、+150 ERT、commit
+~2 件、想定 4〜6h。
+
+** §3.4 Stage 7.4.d — default flip + perf gate
+
+bench:
+- =bench-compare= で Stage 7.3.d → 7.4.d の wallclock 比較
+- gate: total < 1.8x、p99 < 2.0x
+- 重 path: =dotimes= heavy / closure-heavy / recursive-defun-heavy
+
+合格後:
+- =Env::use_elisp_apply= default を =true= に flip
+- =--use-rust-apply= legacy flag を残す (= Stage 7.5 まで escape hatch)
+- ERT 全 suite を default (= elisp) で再走、PASS 維持
+
+Stage 7.5 の準備として =apply_function= / =apply_closure= / =apply_lambda=
+/ =apply_lambda_inner= / =bind_formals= / =is_macro= / =expand_macro= に
+=#[cfg(feature = "rust-apply-fallback")]= を付け、release build から
+脱落させても CI が通る状態にする。
+
+LOC: ~5 LOC (= flag flip + cfg attr)、commit ~1 件、想定 1〜2h。
+
+** §3.5 sub-stage 順序
+
+a → b → c → d を **直列** で進める:
+- a (Rust primitive 追加) は b の elisp body が呼ぶので先必須
+- b (elisp install) は c の dispatch 経路の dispatch 先なので先必須
+- c (flag 経路) は d の default flip の前提条件
+- d (default flip) は Stage 7.5 の前提条件
+
+各 sub-stage 終了時に commit + worklog 1 件。
+
+* §4 Test plan
+
+** §4.1 Equivalence ERT (= Rust dispatch ↔ elisp dispatch)
+
+対象: =test/= 配下の既存 ERT 全件 (= ~445 件 / 2026-05-08 時点)。
+=test/run-tests.sh= に =NELISP_USE_ELISP_APPLY=1= 環境変数 path を追加、
+両 mode で順次実行。差分があれば fail。
+
+** §4.2 cl-defun cross-mode ERT
+
+Stage 7.3.c で migrate した =cl-defun= は multi-stage macro expansion
+(= cl-defun → defun → lambda → apply) の最深経路。両 mode で:
+- =(cl-defun f (a &key (b 10)) (+ a b))=
+- =(f 1)= = 11
+- =(f 1 :b 20)= = 21
+- =(f 1 :b 30 :extra 99)= = =wrong-key-arg= signal
+
+=test/nelisp-stdlib-eval-special-test.el= の cl-defun ERT を =-elisp-apply=
+mode でも走らせる。
+
+** §4.3 self-host gate
+
+NeLisp 自身を =--use-elisp-apply= で起動 → =anvil-memory= 等の自己 module
+が動作する。具体的に:
+- =target/release/nelisp --use-elisp-apply --batch -l vendor/anvil-memory.el -f anvil-memory-list=
+- 結果: Rust dispatch と同じ memory list を出力
+
+** §4.4 wallclock gate
+
+bench (= bench/run.sh) のうち eval-heavy 5 case:
+- =bench-cl-loop-1m= (= cl-loop 100 万回)
+- =bench-recursive-fact-100=
+- =bench-closure-counter-100k=
+- =bench-funcall-builtin-1m=
+- =bench-defmacro-expand-100k=
+
+それぞれ Stage 7.3.d (= main HEAD) を baseline、Stage 7.4.d で:
+- total < 1.8x
+- p99 < 2.0x
+- p50 < 1.5x
+
+未達なら Phase 5 lower entry 追加または elisp body の最適化 (= cond
+chain 短縮 / 不要 length 計算除去) を Stage 7.4.e として追加。
+
+** §4.5 Tier 1-only body 制約 gate
+
+=lisp/nelisp-stdlib-eval-core.el= の body が *Tier 1 special form +
+Stage 7.3 macro + 既存 builtin* のみ参照することを CI で確認。具体的に:
+- =scripts/check-tier1-body.el= を新規追加 (= macroexpand-all して
+  cl-loop / cl-block / seq-* / cl-*-fn が含まれないことを確認)
+- core.el の load 後、即座に self-test を走らせ、回帰防止
+
+* §5 段階的 unlock plan
+
+Stage 7.4 完了 (= 7.4.d default flip + ERT 全 PASS + bench gate 通過)
+の暁に解禁される work:
+
+1. **Stage 7.5 着手**: Rust =apply_function= 系の完全削除。1〜2 release
+   観察期間の後、commit で約 -250 LOC。
+2. **Doc 69 = Stage 7.5 設計書**: Rust eval 関連の死蔵コード一覧 +
+   削除順序 + 観察期間中の re-enable 経路を別 Doc で立案。
+3. **Stage 7.6 (Reader cleanup)**: 並行進捗。Stage 7.4 とは独立だが、
+   Stage 7.4 完了で Phase 7 の主要 takeover が完成するので Stage 7.6
+   の優先度が上がる。
+
+* §6 共通原則
+
+1. **Tier 1-only body 制約**: =eval-core.el= 内 elisp body は Stage 7.3
+   までに install 済 macro + Tier 1 primitive + Rust builtin のみで書く。
+   cl-loop / seq-* / 高階 HOF を呼ばない (= bootstrap cycle 防止)。
+2. **parallel install + flag-gated takeover**: Stage 7.2 / 7.3 と同形。
+   default 切り替えは bench gate + ERT 両 mode PASS 後のみ。
+3. **Rust frame primitives は不変**: =Env::push_frame= / =push_captured=
+   / =bind_local= 等は Stage 7.4 で *使われ方が増える* が、shape は変えない。
+   Stage 7.5 / 7.6 の前後で Rust eval 全削除しても、これら primitive
+   は **永続的に Rust 残**。
+4. **observable contract preservation**: 全 Sexp 結果 / signal /
+   recursion-depth エラーが Rust dispatch と elisp dispatch で同一。
+   違いは wallclock のみ。
+5. **escape hatch**: =--use-rust-apply= flag を Stage 7.5 までは残す。
+   bench regression 発見時に default を rollback できる退避路を確保。
+
+* §7 Out of scope
+
+- **Rust eval 完全削除**: Stage 7.5 に委譲
+- **Rust reader 完全削除**: Stage 7.6 に委譲
+- **closure 表現の改造**: 現行 =(closure ENV ARGS BODY...)= alist 形式
+  を維持。hash-table 化や struct 化は別 Doc (= Doc 70+)
+- **dynamic binding mode**: lexical-binding=nil の伝統経路は本 Stage の
+  scope 外。現状 NeLisp は lexical-binding=t を強制
+- **byte-compile / native-compile 連携**: 本 Stage は interpreter path
+  のみ。Phase 5 lower との統合は Stage 7.4.d 完了後の Doc 71+
+
+* §8 References
+
+- Doc 63 §2.4 — Stage 7.4 / Apply / call / closure / env (= 本 Doc の
+  parent specification)
+- Doc 67 — Stage 7.3 special forms migration (= Tier 分類 / parallel
+  install pattern の確立)
+- Doc 66 — Stage 7.2 reader (= takeover hook の先行 application)
+- Doc 64 — Stage 7.1 printer (= elisp 移行の最初の足場)
+- =build-tool/src/eval/mod.rs= — apply_function 系の現状実装
+- =build-tool/src/eval/env.rs= — 不変な Tier 1 primitives
+- =lisp/nelisp-stdlib-eval-special.el= — Stage 7.3.d 後の macro 集合
+  (= core.el の body で参照可)
