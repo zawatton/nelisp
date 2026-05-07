@@ -566,6 +566,79 @@ fn equal_structural() {
 }
 
 // ============================================================
+// Doc 50 stage 5a — `nelisp--ref-eq' identity primitive
+// ============================================================
+
+#[test]
+fn ref_eq_returns_t_for_same_cons() {
+    // Same allocation → t.  Two structurally-equal but distinct cons
+    // cells → nil.
+    assert_eq!(
+        ok_all("(let ((a (cons 1 2))) (nelisp--ref-eq a a))"),
+        Sexp::T,
+    );
+    assert_eq!(
+        ok_all("(nelisp--ref-eq (cons 1 2) (cons 1 2))"),
+        Sexp::Nil,
+    );
+}
+
+#[test]
+fn ref_eq_returns_t_for_same_vector() {
+    assert_eq!(
+        ok_all("(let ((v (vector 1 2 3))) (nelisp--ref-eq v v))"),
+        Sexp::T,
+    );
+    assert_eq!(
+        ok_all("(nelisp--ref-eq (vector 1 2 3) (vector 1 2 3))"),
+        Sexp::Nil,
+    );
+}
+
+#[test]
+fn ref_eq_returns_t_for_same_record() {
+    // Two `make-point :x 1' calls produce distinct Records — only the
+    // captured binding is identity-equal.
+    assert_eq!(
+        ok_all(
+            "(cl-defstruct point x)
+             (let ((p (make-point :x 1)))
+               (list (nelisp--ref-eq p p)
+                     (nelisp--ref-eq p (make-point :x 1))))",
+        ),
+        Sexp::list_from(&[Sexp::T, Sexp::Nil]),
+    );
+}
+
+#[test]
+fn ref_eq_falls_back_to_value_eq_for_atoms() {
+    // For non-heap variants (Int / Symbol / Nil / T) `nelisp--ref-eq'
+    // delegates to `sexp_eq', so it matches `eq' semantics.
+    assert_eq!(ok_all("(nelisp--ref-eq 5 5)"), Sexp::T);
+    assert_eq!(ok_all("(nelisp--ref-eq 'foo 'foo)"), Sexp::T);
+    assert_eq!(ok_all("(nelisp--ref-eq nil nil)"), Sexp::T);
+    assert_eq!(ok_all("(nelisp--ref-eq 5 6)"), Sexp::Nil);
+}
+
+#[test]
+fn ref_eq_distinguishes_aliased_subtree_in_cons() {
+    // Identity check distinguishes aliased subtrees from copies.
+    // Two cons that share both halves → t.  After (cons 0 a) which
+    // creates a new outer cons but same a → ref-eq sees different
+    // identities at the OUTER cell.
+    assert_eq!(
+        ok_all(
+            "(let* ((a (cons 1 2))
+                    (b (cons 0 a))
+                    (c (cons 0 a)))
+               (list (nelisp--ref-eq (cdr b) (cdr c))
+                     (nelisp--ref-eq b c)))"
+        ),
+        Sexp::list_from(&[Sexp::T, Sexp::Nil]),
+    );
+}
+
+// ============================================================
 // Built-ins — cons / list
 // ============================================================
 

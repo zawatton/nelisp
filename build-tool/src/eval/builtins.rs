@@ -56,7 +56,10 @@ pub fn install_builtins(env: &mut Env) {
         // equality
         // Rust-min (2026-05-06 batch 6e): `eql' / `equal-including-properties'
         // moved to elisp defalias of `equal'.
-        "eq", "equal",
+        // Doc 50 stage 5a: `nelisp--ref-eq' exposes `Rc::ptr_eq' identity
+        // on shared-heap Sexp variants, enabling a cycle-safe `equal'
+        // re-implementation in elisp via a visited hash-table.
+        "eq", "equal", "nelisp--ref-eq",
         // cons / list
         // Rust-min (2026-05-06 batch 6o): `append' migrated to elisp
         // (lisp/nelisp-stdlib-list.el).
@@ -342,6 +345,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // distinction.
         "eq" => bi_eq(args),
         "equal" => bi_equal(args),
+        "nelisp--ref-eq" => bi_ref_eq(args),
         // ---- cons / list ----
         "car" => bi_car(args),
         "cdr" => bi_cdr(args),
@@ -904,6 +908,52 @@ fn bi_equal(args: &[Sexp]) -> Result<Sexp, EvalError> {
     } else {
         Sexp::Nil
     })
+}
+
+/// Doc 50 stage 5a: expose `Rc::ptr_eq' for shared-heap Sexp variants.
+/// Returns t when A and B refer to the *same* allocation (= identity,
+/// not value equality).  For non-heap variants (Int / Symbol / Nil / T /
+/// etc.) `eq' already does the right thing — `nelisp--ref-eq' is only
+/// useful as the "have-I-seen-this-cons" predicate when the elisp
+/// `equal' walks a graph with a visited hash-table.
+///
+/// Heap variants currently exposed:
+///   - Cons(Rc<RefCell<...>>, Rc<RefCell<...>>) → both head + tail
+///     cells must share allocations to count as identity.  Practically
+///     the cons value is the (head,tail) tuple; we treat two Cons as
+///     identical iff *both* halves are Rc::ptr_eq.
+///   - MutStr / Vector / CharTable / BoolVector / Record / HashTable
+///     are simple Rc-wrapped allocations — Rc::ptr_eq directly.
+///
+/// All other variant pairings fall through to value-equality via
+/// `sexp_eq', preserving the elisp `eq' invariant.
+fn bi_ref_eq(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--ref-eq", args, 2, Some(2))?;
+    let same = match (&args[0], &args[1]) {
+        (Sexp::Cons(a1, a2), Sexp::Cons(b1, b2)) => {
+            std::rc::Rc::ptr_eq(a1, b1) && std::rc::Rc::ptr_eq(a2, b2)
+        }
+        (Sexp::MutStr(a), Sexp::MutStr(b)) => std::rc::Rc::ptr_eq(a, b),
+        (Sexp::Vector(a), Sexp::Vector(b)) => std::rc::Rc::ptr_eq(a, b),
+        (Sexp::CharTable(a), Sexp::CharTable(b)) => std::rc::Rc::ptr_eq(a, b),
+        (Sexp::BoolVector(a), Sexp::BoolVector(b)) => std::rc::Rc::ptr_eq(a, b),
+        (
+            Sexp::Record { type_tag: t1, slots: s1 },
+            Sexp::Record { type_tag: t2, slots: s2 },
+        ) => {
+            // Tag forms are stored by value; identity is the slot
+            // backing-store (= what users actually mutate).  type_tag
+            // equality is part of `equal' value-comparison, not
+            // ref-eq.  But we additionally require value-equal tags so
+            // a renamed record can't masquerade as another (rare in
+            // practice — same Rc<RefCell> ⇒ same struct).
+            std::rc::Rc::ptr_eq(s1, s2) && t1 == t2
+        }
+        // Other variant combinations (incl. mismatched variants) fall
+        // through to value-equality via the existing `eq' rule.
+        (a, b) => sexp_eq(a, b),
+    };
+    Ok(if same { Sexp::T } else { Sexp::Nil })
 }
 
 /// Cycle-safe structural equality.  For heap-backed variants (Cons,
