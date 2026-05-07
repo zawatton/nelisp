@@ -85,15 +85,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_is_empty_at_stage_5_0() {
-        // Stage 5.0 contract: no primitives are JIT-lowered yet, so
-        // the registry must be empty and `try_lower` must always
-        // fall through to the dispatcher.  When Stage 5.1 lands this
-        // test should be deleted (= the registry becomes populated).
+    fn registry_contains_stage_5_2_poc() {
+        // Stage 5.2 POC contract: `nelisp--add2' is JIT-lowered.
+        // Once full Stage 5.2 lands (= `-sub2' / `-mul2' / etc.) this
+        // assertion grows; once Stage 5.1 / 5.3〜5.5 land it covers
+        // those names too.
         assert!(
-            lower_entries().is_empty(),
-            "Stage 5.0 registry must be empty; found {} entries: {:?}",
-            lower_entries().len(),
+            lower_entries().contains_key("nelisp--add2"),
+            "lower_entries must register `nelisp--add2'; found: {:?}",
             lower_entries().keys().collect::<Vec<_>>(),
         );
     }

@@ -7,6 +7,7 @@
 :PROPERTIES:
 :STATE: IN_PROGRESS
 :STAGE_5_0: SHIPPED (2026-05-07) — Cranelift dep + jit/ scaffold (mod.rs + 5 stub submodules) + lower hook in eval/mod.rs::apply_builtin
+:STAGE_5_2_POC: SHIPPED (2026-05-07) — `nelisp--add2' (Int, Int) fast path JIT-compiled via Cranelift `iadd', registered in lower_entries.  All `(+ a b)' integer calls now route through native code.  2 jit unit tests + 2449 ERT 0 unexpected.
 :DEPENDS_ON: Doc 49 (elisp pivot) / Doc 50 (irreducible unlock) / Doc 53〜60 (OS surface) / Doc 61 (cXXr migrate)
 :CONCURRENT_WITH: Doc 63 (Phase 7 self-host roadmap)
 :END:
