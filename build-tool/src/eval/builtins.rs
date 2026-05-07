@@ -289,6 +289,15 @@ pub fn install_builtins(env: &mut Env) {
         "nelisp--syscall-sigprocmask",
         "nelisp--syscall-timerfd-settime",
         "nelisp--syscall-timerfd-gettime",
+        // Doc 60 Phase 4.4 (2026-05-07) — SCM_RIGHTS + SOCK_SEQPACKET +
+        // SO_PEERCRED + IPv6 scope_id full surface.
+        "nelisp--syscall-socketpair",
+        "nelisp--syscall-sendmsg-fds",
+        "nelisp--syscall-recvmsg-fds",
+        "nelisp--syscall-getsockopt-peercred",
+        "nelisp--syscall-bind-inet6-scoped",
+        "nelisp--syscall-connect-inet6-scoped",
+        "nelisp--syscall-accept-inet6-scoped",
         // Rust-min (2026-05-06): `file-name-directory' /
         // `file-name-nondirectory' / `file-name-as-directory' /
         // `directory-file-name' migrated to elisp (see
@@ -547,6 +556,15 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nelisp--syscall-sigprocmask" => bi_syscall_sigprocmask(args),
         "nelisp--syscall-timerfd-settime" => bi_syscall_timerfd_settime(args),
         "nelisp--syscall-timerfd-gettime" => bi_syscall_timerfd_gettime(args),
+        // Doc 60 Phase 4.4 (2026-05-07) — SCM_RIGHTS + SOCK_SEQPACKET +
+        // SO_PEERCRED + IPv6 scope_id full surface.
+        "nelisp--syscall-socketpair" => bi_syscall_socketpair(args),
+        "nelisp--syscall-sendmsg-fds" => bi_syscall_sendmsg_fds(args),
+        "nelisp--syscall-recvmsg-fds" => bi_syscall_recvmsg_fds(args),
+        "nelisp--syscall-getsockopt-peercred" => bi_syscall_getsockopt_peercred(args),
+        "nelisp--syscall-bind-inet6-scoped" => bi_syscall_bind_inet6_scoped(args),
+        "nelisp--syscall-connect-inet6-scoped" => bi_syscall_connect_inet6_scoped(args),
+        "nelisp--syscall-accept-inet6-scoped" => bi_syscall_accept_inet6_scoped(args),
         // ---- symbol / function ----
         "symbol-value" => bi_symbol_value(args, env),
         "symbol-function" => bi_symbol_function(args, env),
@@ -3186,6 +3204,328 @@ fn bi_syscall_timerfd_gettime(args: &[Sexp]) -> Result<Sexp, EvalError> {
 fn bi_syscall_timerfd_gettime(args: &[Sexp]) -> Result<Sexp, EvalError> {
     let _ = args;
     Err(EvalError::Internal("nelisp--syscall-timerfd-gettime: unsupported platform".into()))
+}
+
+// ---------------------------------------------------------------------------
+// Doc 60 Phase 4.4 — SCM_RIGHTS + SOCK_SEQPACKET + SO_PEERCRED + IPv6
+// scope_id full surface.  These primitives close the last gap in the
+// AF_UNIX / AF_INET6 lines.  See docs/design/60-...org for design notes.
+// ---------------------------------------------------------------------------
+
+/// `(nelisp--syscall-socketpair DOMAIN TYPE PROTOCOL)' — POSIX socketpair(2).
+///
+/// Returns `(FD1 . FD2)' on success or `Sexp::Int(-errno)'.  Typical use
+/// is AF_UNIX with SOCK_STREAM / SOCK_DGRAM / SOCK_SEQPACKET.
+#[cfg(target_os = "linux")]
+fn bi_syscall_socketpair(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--syscall-socketpair", args, 3, Some(3))?;
+    let domain   = syscall_arg_int("nelisp--syscall-socketpair", 1, &args[0])? as libc::c_int;
+    let ty       = syscall_arg_int("nelisp--syscall-socketpair", 2, &args[1])? as libc::c_int;
+    let protocol = syscall_arg_int("nelisp--syscall-socketpair", 3, &args[2])? as libc::c_int;
+    let mut sv: [libc::c_int; 2] = [0, 0];
+    let r = unsafe { libc::socketpair(domain, ty, protocol, sv.as_mut_ptr()) };
+    if r != 0 {
+        let e = unsafe { *libc::__errno_location() } as i64;
+        return Ok(Sexp::Int(-e));
+    }
+    Ok(Sexp::cons(Sexp::Int(sv[0] as i64), Sexp::Int(sv[1] as i64)))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bi_syscall_socketpair(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let _ = args;
+    Err(EvalError::Internal("nelisp--syscall-socketpair: unsupported platform".into()))
+}
+
+/// `(nelisp--syscall-sendmsg-fds FD FDS-LIST PAYLOAD)' — sendmsg(2) with
+/// a single SCM_RIGHTS cmsg attaching FDS-LIST file descriptors and a
+/// 1-IOV PAYLOAD string (≥ 1 byte; the kernel rejects cmsg-only
+/// sendmsg).  Returns bytes_sent or `Sexp::Int(-errno)'.
+#[cfg(target_os = "linux")]
+fn bi_syscall_sendmsg_fds(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--syscall-sendmsg-fds", args, 3, Some(3))?;
+    let fd     = syscall_arg_int("nelisp--syscall-sendmsg-fds", 1, &args[0])? as libc::c_int;
+    let fds_v  = list_to_vec(&args[1])?;
+    let mut fds: Vec<libc::c_int> = Vec::with_capacity(fds_v.len());
+    for (i, item) in fds_v.iter().enumerate() {
+        fds.push(syscall_arg_int("nelisp--syscall-sendmsg-fds", i + 1, item)? as libc::c_int);
+    }
+    let payload = args[2].as_string_owned().ok_or_else(|| EvalError::WrongType {
+        expected: "string (sendmsg payload)".into(),
+        got: args[2].clone(),
+    })?;
+    let payload_bytes = payload.as_bytes();
+    if payload_bytes.is_empty() {
+        return Err(EvalError::Internal(
+            "nelisp--syscall-sendmsg-fds: PAYLOAD must be ≥ 1 byte".into()));
+    }
+
+    let fds_bytes = fds.len().checked_mul(std::mem::size_of::<libc::c_int>())
+        .ok_or_else(|| EvalError::Internal(
+            "nelisp--syscall-sendmsg-fds: FDS-LIST too large".into()))?;
+    let cmsg_len_bytes   = unsafe { libc::CMSG_LEN(fds_bytes as libc::c_uint) } as usize;
+    let cmsg_space_bytes = unsafe { libc::CMSG_SPACE(fds_bytes as libc::c_uint) } as usize;
+    let mut cmsg_buf: Vec<u8> = vec![0; cmsg_space_bytes];
+
+    let mut iov = [libc::iovec {
+        iov_base: payload_bytes.as_ptr() as *mut libc::c_void,
+        iov_len:  payload_bytes.len(),
+    }];
+    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+    msg.msg_iov        = iov.as_mut_ptr();
+    msg.msg_iovlen     = 1;
+    msg.msg_control    = cmsg_buf.as_mut_ptr() as *mut libc::c_void;
+    msg.msg_controllen = cmsg_space_bytes as _;
+
+    unsafe {
+        let cmsg = libc::CMSG_FIRSTHDR(&msg);
+        if cmsg.is_null() {
+            return Err(EvalError::Internal(
+                "nelisp--syscall-sendmsg-fds: CMSG_FIRSTHDR returned NULL".into()));
+        }
+        (*cmsg).cmsg_level = libc::SOL_SOCKET;
+        (*cmsg).cmsg_type  = libc::SCM_RIGHTS;
+        (*cmsg).cmsg_len   = cmsg_len_bytes as _;
+        let data_ptr = libc::CMSG_DATA(cmsg) as *mut libc::c_int;
+        for (i, src_fd) in fds.iter().enumerate() {
+            std::ptr::write_unaligned(data_ptr.add(i), *src_fd);
+        }
+    }
+
+    let r = unsafe { libc::sendmsg(fd, &msg, 0) };
+    if r < 0 {
+        let e = unsafe { *libc::__errno_location() } as i64;
+        return Ok(Sexp::Int(-e));
+    }
+    Ok(Sexp::Int(r as i64))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bi_syscall_sendmsg_fds(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let _ = args;
+    Err(EvalError::Internal("nelisp--syscall-sendmsg-fds: unsupported platform".into()))
+}
+
+/// `(nelisp--syscall-recvmsg-fds FD MAX-FDS MAX-BYTES)' — recvmsg(2)
+/// with a single IOV (MAX-BYTES) and SCM_RIGHTS cmsg buffer sized for
+/// MAX-FDS file descriptors.  Returns `(PAYLOAD-STRING . FDS-LIST)' on
+/// success or `Sexp::Int(-errno)'.  PAYLOAD-STRING is truncated to the
+/// actual bytes_received, FDS-LIST collects all SCM_RIGHTS cmsgs
+/// (concatenated if the kernel split into multiple cmsg entries).
+#[cfg(target_os = "linux")]
+fn bi_syscall_recvmsg_fds(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--syscall-recvmsg-fds", args, 3, Some(3))?;
+    let fd        = syscall_arg_int("nelisp--syscall-recvmsg-fds", 1, &args[0])? as libc::c_int;
+    let max_fds   = syscall_arg_int("nelisp--syscall-recvmsg-fds", 2, &args[1])? as usize;
+    let max_bytes = syscall_arg_int("nelisp--syscall-recvmsg-fds", 3, &args[2])? as usize;
+    if max_bytes == 0 {
+        return Err(EvalError::Internal(
+            "nelisp--syscall-recvmsg-fds: MAX-BYTES must be ≥ 1".into()));
+    }
+    let fds_bytes = max_fds.checked_mul(std::mem::size_of::<libc::c_int>())
+        .ok_or_else(|| EvalError::Internal(
+            "nelisp--syscall-recvmsg-fds: MAX-FDS too large".into()))?;
+    let cmsg_space = if max_fds == 0 {
+        0usize
+    } else {
+        (unsafe { libc::CMSG_SPACE(fds_bytes as libc::c_uint) }) as usize
+    };
+
+    let mut payload: Vec<u8> = vec![0; max_bytes];
+    let mut iov = [libc::iovec {
+        iov_base: payload.as_mut_ptr() as *mut libc::c_void,
+        iov_len:  max_bytes,
+    }];
+    let mut cmsg_buf: Vec<u8> = vec![0; cmsg_space.max(1)];
+
+    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+    msg.msg_iov        = iov.as_mut_ptr();
+    msg.msg_iovlen     = 1;
+    msg.msg_control    = cmsg_buf.as_mut_ptr() as *mut libc::c_void;
+    msg.msg_controllen = cmsg_space as _;
+
+    let r = unsafe { libc::recvmsg(fd, &mut msg, 0) };
+    if r < 0 {
+        let e = unsafe { *libc::__errno_location() } as i64;
+        return Ok(Sexp::Int(-e));
+    }
+    let bytes_received = r as usize;
+    payload.truncate(bytes_received);
+
+    let mut fds: Vec<Sexp> = Vec::new();
+    unsafe {
+        let mut cmsg = libc::CMSG_FIRSTHDR(&msg);
+        while !cmsg.is_null() {
+            if (*cmsg).cmsg_level == libc::SOL_SOCKET
+                && (*cmsg).cmsg_type == libc::SCM_RIGHTS
+            {
+                let header_bytes = libc::CMSG_LEN(0) as usize;
+                let total_bytes  = (*cmsg).cmsg_len as usize;
+                if total_bytes >= header_bytes {
+                    let payload_len = total_bytes - header_bytes;
+                    let n_fds = payload_len / std::mem::size_of::<libc::c_int>();
+                    let data_ptr = libc::CMSG_DATA(cmsg) as *const libc::c_int;
+                    for i in 0..n_fds {
+                        let recv_fd = std::ptr::read_unaligned(data_ptr.add(i));
+                        fds.push(Sexp::Int(recv_fd as i64));
+                    }
+                }
+            }
+            cmsg = libc::CMSG_NXTHDR(&msg, cmsg);
+        }
+    }
+
+    let payload_str = String::from_utf8_lossy(&payload).into_owned();
+    Ok(Sexp::cons(Sexp::Str(payload_str), Sexp::list_from(&fds)))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bi_syscall_recvmsg_fds(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let _ = args;
+    Err(EvalError::Internal("nelisp--syscall-recvmsg-fds: unsupported platform".into()))
+}
+
+/// `(nelisp--syscall-getsockopt-peercred FD)' — getsockopt with
+/// SOL_SOCKET / SO_PEERCRED.  Returns `(PID UID GID)' 3-element list
+/// on success, `Sexp::Int(-errno)' on failure.  Only meaningful on
+/// AF_UNIX sockets connected to a known peer.
+#[cfg(target_os = "linux")]
+fn bi_syscall_getsockopt_peercred(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--syscall-getsockopt-peercred", args, 1, Some(1))?;
+    let fd = syscall_arg_int("nelisp--syscall-getsockopt-peercred", 1, &args[0])? as libc::c_int;
+    let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut len: libc::socklen_t = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let r = unsafe {
+        libc::getsockopt(
+            fd, libc::SOL_SOCKET, libc::SO_PEERCRED,
+            &mut cred as *mut libc::ucred as *mut libc::c_void,
+            &mut len)
+    };
+    if r != 0 {
+        let e = unsafe { *libc::__errno_location() } as i64;
+        return Ok(Sexp::Int(-e));
+    }
+    Ok(Sexp::list_from(&[
+        Sexp::Int(cred.pid as i64),
+        Sexp::Int(cred.uid as i64),
+        Sexp::Int(cred.gid as i64),
+    ]))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bi_syscall_getsockopt_peercred(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let _ = args;
+    Err(EvalError::Internal("nelisp--syscall-getsockopt-peercred: unsupported platform".into()))
+}
+
+/// Build a full `sockaddr_in6' carrying `flowinfo' and `scope_id' in
+/// addition to host / port.  Used by the Doc 60 IPv6 scoped variants.
+#[cfg(target_os = "linux")]
+fn build_sockaddr_in6_with_scope(
+    groups: &[u16; 8], port: u16, flowinfo: u32, scope_id: u32,
+) -> libc::sockaddr_in6 {
+    let mut addr: libc::sockaddr_in6 = unsafe { std::mem::zeroed() };
+    addr.sin6_family   = libc::AF_INET6 as libc::sa_family_t;
+    addr.sin6_port     = port.to_be();
+    addr.sin6_flowinfo = flowinfo.to_be();
+    addr.sin6_scope_id = scope_id;
+    let mut bytes: [u8; 16] = [0; 16];
+    for (i, g) in groups.iter().enumerate() {
+        let be = g.to_be_bytes();
+        bytes[i * 2]     = be[0];
+        bytes[i * 2 + 1] = be[1];
+    }
+    addr.sin6_addr.s6_addr = bytes;
+    addr
+}
+
+#[cfg(target_os = "linux")]
+fn bi_syscall_bind_inet6_scoped(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--syscall-bind-inet6-scoped", args, 5, Some(5))?;
+    let fd       = syscall_arg_int("nelisp--syscall-bind-inet6-scoped", 1, &args[0])? as libc::c_int;
+    let groups   = decode_in6_groups("nelisp--syscall-bind-inet6-scoped", &args[1])?;
+    let port     = syscall_arg_int("nelisp--syscall-bind-inet6-scoped", 3, &args[2])? as u16;
+    let flowinfo = syscall_arg_int("nelisp--syscall-bind-inet6-scoped", 4, &args[3])? as u32;
+    let scope_id = syscall_arg_int("nelisp--syscall-bind-inet6-scoped", 5, &args[4])? as u32;
+    let addr     = build_sockaddr_in6_with_scope(&groups, port, flowinfo, scope_id);
+    let r = unsafe {
+        libc::bind(fd,
+                   &addr as *const libc::sockaddr_in6 as *const libc::sockaddr,
+                   std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t)
+    };
+    if r != 0 {
+        let e = unsafe { *libc::__errno_location() } as i64;
+        return Ok(Sexp::Int(-e));
+    }
+    Ok(Sexp::Int(0))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bi_syscall_bind_inet6_scoped(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let _ = args;
+    Err(EvalError::Internal("nelisp--syscall-bind-inet6-scoped: unsupported platform".into()))
+}
+
+#[cfg(target_os = "linux")]
+fn bi_syscall_connect_inet6_scoped(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--syscall-connect-inet6-scoped", args, 5, Some(5))?;
+    let fd       = syscall_arg_int("nelisp--syscall-connect-inet6-scoped", 1, &args[0])? as libc::c_int;
+    let groups   = decode_in6_groups("nelisp--syscall-connect-inet6-scoped", &args[1])?;
+    let port     = syscall_arg_int("nelisp--syscall-connect-inet6-scoped", 3, &args[2])? as u16;
+    let flowinfo = syscall_arg_int("nelisp--syscall-connect-inet6-scoped", 4, &args[3])? as u32;
+    let scope_id = syscall_arg_int("nelisp--syscall-connect-inet6-scoped", 5, &args[4])? as u32;
+    let addr     = build_sockaddr_in6_with_scope(&groups, port, flowinfo, scope_id);
+    let r = unsafe {
+        libc::connect(fd,
+                      &addr as *const libc::sockaddr_in6 as *const libc::sockaddr,
+                      std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t)
+    };
+    if r != 0 {
+        let e = unsafe { *libc::__errno_location() } as i64;
+        return Ok(Sexp::Int(-e));
+    }
+    Ok(Sexp::Int(0))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bi_syscall_connect_inet6_scoped(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let _ = args;
+    Err(EvalError::Internal("nelisp--syscall-connect-inet6-scoped: unsupported platform".into()))
+}
+
+#[cfg(target_os = "linux")]
+fn bi_syscall_accept_inet6_scoped(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--syscall-accept-inet6-scoped", args, 1, Some(1))?;
+    let fd = syscall_arg_int("nelisp--syscall-accept-inet6-scoped", 1, &args[0])? as libc::c_int;
+    let mut addr: libc::sockaddr_in6 = unsafe { std::mem::zeroed() };
+    let mut len: libc::socklen_t = std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t;
+    let r = unsafe {
+        libc::accept(fd,
+                     &mut addr as *mut libc::sockaddr_in6 as *mut libc::sockaddr,
+                     &mut len as *mut libc::socklen_t)
+    };
+    if r < 0 {
+        let e = unsafe { *libc::__errno_location() } as i64;
+        return Ok(Sexp::Int(-e));
+    }
+    let groups   = parse_in6_addr_groups(&addr);
+    let port     = u16::from_be(addr.sin6_port) as i64;
+    let flowinfo = u32::from_be(addr.sin6_flowinfo) as i64;
+    let scope_id = addr.sin6_scope_id as i64;
+    let groups_list: Vec<Sexp> = groups.iter().map(|g| Sexp::Int(*g as i64)).collect();
+    Ok(Sexp::list_from(&[
+        Sexp::Int(r as i64),
+        Sexp::list_from(&groups_list),
+        Sexp::Int(port),
+        Sexp::Int(flowinfo),
+        Sexp::Int(scope_id),
+    ]))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bi_syscall_accept_inet6_scoped(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let _ = args;
+    Err(EvalError::Internal("nelisp--syscall-accept-inet6-scoped: unsupported platform".into()))
 }
 
 /// `(nelisp--syscall-poll PFDS-LIST TIMEOUT-MS)' — POSIX poll(2).

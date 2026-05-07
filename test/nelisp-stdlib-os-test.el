@@ -751,6 +751,142 @@ all-zero itimerspec from gettime (= disarmed)."
     (should (eq (car r) 0))
     (should (equal (cdr r) "ok"))))
 
+;; ---------------------------------------------------------------------------
+;; Doc 60 Phase 4.4 — SCM_RIGHTS + SOCK_SEQPACKET + SO_PEERCRED + IPv6
+;; scope_id full surface.
+;; ---------------------------------------------------------------------------
+
+(ert-deftest nelisp-stdlib-os-test/scm-rights-fd-passing-roundtrip ()
+  "socketpair AF_UNIX SOCK_STREAM → pipe → sendmsg-fds attaches the
+pipe write-end → recvmsg-fds returns a different fd referring to the
+same pipe end → write through the received fd → read back from the
+original pipe read-end and verify bytes match."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (let ((r (nelisp-stdlib-os-test--eval
+            "(progn
+              (require (quote nelisp-stdlib-os))
+              (let* ((sp (nelisp-os-socketpair nelisp-os-AF-UNIX
+                                               nelisp-os-SOCK-STREAM 0))
+                     (s0 (car sp))
+                     (s1 (cdr sp))
+                     (pp (nelisp-os-pipe))
+                     (rfd (car pp))
+                     (wfd (cdr pp)))
+                (nelisp-os-sendmsg-fds s0 (list wfd) \"x\")
+                (let* ((res (nelisp-os-recvmsg-fds s1 4 16))
+                       (fds (cdr res))
+                       (got-wfd (car fds)))
+                  (nelisp-os-write got-wfd \"hello-fd\")
+                  (nelisp-os-close got-wfd)
+                  (nelisp-os-close wfd)
+                  (let ((data (nelisp-os-read rfd 64)))
+                    (nelisp-os-close rfd)
+                    (nelisp-os-close s0)
+                    (nelisp-os-close s1)
+                    (nelisp-os-write 1
+                      (if (equal data \"hello-fd\") \"ok\" \"err\"))
+                    (nelisp-os-exit 0)))))")))
+    (should (eq (car r) 0))
+    (should (equal (cdr r) "ok"))))
+
+(ert-deftest nelisp-stdlib-os-test/socketpair-seqpacket-boundary ()
+  "AF_UNIX SOCK_SEQPACKET preserves message boundaries — sending two
+distinct messages must come back as two distinct receives, never as
+a concatenated stream."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (let ((r (nelisp-stdlib-os-test--eval
+            "(progn
+              (require (quote nelisp-stdlib-os))
+              (let* ((sp (nelisp-os-socketpair nelisp-os-AF-UNIX
+                                               nelisp-os-SOCK-SEQPACKET 0))
+                     (s0 (car sp))
+                     (s1 (cdr sp)))
+                (nelisp-os-write s0 \"msg1\")
+                (nelisp-os-write s0 \"msg2-longer\")
+                (let ((m1 (nelisp-os-read s1 64))
+                      (m2 (nelisp-os-read s1 64)))
+                  (nelisp-os-close s0)
+                  (nelisp-os-close s1)
+                  (nelisp-os-write 1
+                    (if (and (equal m1 \"msg1\")
+                             (equal m2 \"msg2-longer\"))
+                        \"ok\" \"err\"))
+                  (nelisp-os-exit 0))))")))
+    (should (eq (car r) 0))
+    (should (equal (cdr r) "ok"))))
+
+(ert-deftest nelisp-stdlib-os-test/so-peercred-self-pair ()
+  "socketpair AF_UNIX SOCK_STREAM → getsockopt-peercred on either end
+must return (PID UID GID) where PID is the current process's PID and
+UID equals the current effective UID (= the side calling getsockopt
+sees its own credentials, since both ends are in this process)."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (let ((r (nelisp-stdlib-os-test--eval
+            "(progn
+              (require (quote nelisp-stdlib-os))
+              (let* ((sp (nelisp-os-socketpair nelisp-os-AF-UNIX
+                                               nelisp-os-SOCK-STREAM 0))
+                     (s0 (car sp))
+                     (s1 (cdr sp))
+                     (cred (nelisp-os-getsockopt-peercred s0))
+                     (peer-pid (nth 0 cred))
+                     (peer-uid (nth 1 cred))
+                     (my-pid   (nelisp-os-getpid)))
+                (nelisp-os-close s0)
+                (nelisp-os-close s1)
+                (nelisp-os-write 1
+                  (if (and (= peer-pid my-pid)
+                           (>= peer-uid 0))
+                      \"ok\" \"err\"))
+                (nelisp-os-exit 0)))")))
+    (should (eq (car r) 0))
+    (should (equal (cdr r) "ok"))))
+
+(ert-deftest nelisp-stdlib-os-test/inet6-scoped-loopback-roundtrip ()
+  "bind-inet6-scoped on ::1 with flowinfo=0 / scope_id=0 → listen →
+connect-inet6-scoped → accept-inet6-scoped returns a 5-element list
+(FD HOST6 PORT FLOWINFO SCOPE-ID) → ping6/pong6 byte roundtrip."
+  (nelisp-stdlib-os-test--skip-unless-built)
+  (skip-unless (eq system-type 'gnu/linux))
+  (let ((r (nelisp-stdlib-os-test--eval
+            "(progn
+              (require (quote nelisp-stdlib-os))
+              (let* ((srv (nelisp-os-socket nelisp-os-AF-INET6
+                                            nelisp-os-SOCK-STREAM
+                                            nelisp-os-IPPROTO-TCP)))
+                (nelisp-os-setsockopt-int srv nelisp-os-SOL-SOCKET
+                                          nelisp-os-SO-REUSEADDR 1)
+                (nelisp-os-bind-inet6-scoped
+                 srv (list 0 0 0 0 0 0 0 1) 0 0 0)
+                (nelisp-os-listen srv 1)
+                (let* ((sn (nelisp-os-getsockname-inet6 srv))
+                       (port (nth 1 sn))
+                       (cli (nelisp-os-socket nelisp-os-AF-INET6
+                                              nelisp-os-SOCK-STREAM
+                                              nelisp-os-IPPROTO-TCP)))
+                  (nelisp-os-connect-inet6-scoped
+                   cli (list 0 0 0 0 0 0 0 1) port 0 0)
+                  (let* ((ar (nelisp-os-accept-inet6-scoped srv))
+                         (sfd (nth 0 ar)))
+                    (nelisp-os-write cli \"ping6\")
+                    (let ((m1 (nelisp-os-read sfd 64)))
+                      (nelisp-os-write sfd \"pong6\")
+                      (let ((m2 (nelisp-os-read cli 64)))
+                        (nelisp-os-close sfd)
+                        (nelisp-os-close cli)
+                        (nelisp-os-close srv)
+                        (nelisp-os-write 1
+                          (if (and (equal m1 \"ping6\")
+                                   (equal m2 \"pong6\")
+                                   (= (length ar) 5))
+                              \"ok\" \"err\"))
+                        (nelisp-os-exit 0)))))))")))
+    (should (eq (car r) 0))
+    (should (equal (cdr r) "ok"))))
+
 (provide 'nelisp-stdlib-os-test)
 
 ;;; nelisp-stdlib-os-test.el ends here

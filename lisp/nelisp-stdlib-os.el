@@ -675,6 +675,84 @@ value=MS-as-(sec . nsec)."
          (nsec (* (mod ms 1000) 1000000)))
     (nelisp-os-timerfd-settime fd 0 0 0 sec nsec)))
 
+;; ---------------------------------------------------------------------------
+;; Doc 60 Phase 4.4 — SCM_RIGHTS + SOCK_SEQPACKET + SO_PEERCRED + IPv6
+;; scope_id full surface.  These wrappers close the last AF_UNIX /
+;; AF_INET6 gap so daemon-style IPC (fd passing, peer auth,
+;; boundary-preserving messages) and link-local IPv6 are all
+;; expressible from elisp without touching anything beyond the Doc 53
+;; substrate.  See docs/design/60-...org for design notes.
+;; ---------------------------------------------------------------------------
+
+;; ----- Extra socket type / cmsg / sockopt constants -----
+
+(defconst nelisp-os-SOCK-SEQPACKET 5)              ; AF_UNIX boundary-preserving stream
+(defconst nelisp-os-SCM-RIGHTS     1)              ; SOL_SOCKET cmsg type — fd passing
+(defconst nelisp-os-SO-PEERCRED    17)             ; getsockopt option — struct ucred
+
+;; ----- socketpair -----
+
+(defun nelisp-os-socketpair (domain type protocol)
+  "POSIX socketpair(2) — returns (FD1 . FD2) on success.
+Typical use: (nelisp-os-socketpair AF-UNIX SOCK-STREAM 0).  Signals
+`nelisp-os-error' on failure."
+  (let ((r (nelisp--syscall-socketpair domain type protocol)))
+    (if (and (consp r) (integerp (car r)) (integerp (cdr r)))
+        r
+      (nelisp-os--check-errno r))))
+
+;; ----- SCM_RIGHTS fd passing -----
+
+(defun nelisp-os-sendmsg-fds (fd fds payload)
+  "Send PAYLOAD plus FDS (list of int file descriptors) over UDS FD
+via sendmsg(2) + SCM_RIGHTS cmsg.  PAYLOAD must be a string ≥ 1 byte
+(the kernel rejects cmsg-only sendmsg).  Returns bytes_sent."
+  (nelisp-os--check-errno
+   (nelisp--syscall-sendmsg-fds fd fds payload)))
+
+(defun nelisp-os-recvmsg-fds (fd max-fds max-bytes)
+  "Receive up to MAX-BYTES of payload + up to MAX-FDS file descriptors
+over UDS FD via recvmsg(2).  Returns (PAYLOAD-STRING . FDS-LIST).
+PAYLOAD-STRING is truncated to the actual bytes_received; FDS-LIST is
+all descriptors collected from SCM_RIGHTS cmsgs (may be fewer than
+MAX-FDS, never more)."
+  (let ((r (nelisp--syscall-recvmsg-fds fd max-fds max-bytes)))
+    (if (consp r)
+        r
+      (nelisp-os--check-errno r))))
+
+;; ----- SO_PEERCRED -----
+
+(defun nelisp-os-getsockopt-peercred (fd)
+  "Retrieve the peer's `struct ucred' on AF_UNIX FD via getsockopt
+SO_PEERCRED.  Returns (PID UID GID) on success."
+  (let ((r (nelisp--syscall-getsockopt-peercred fd)))
+    (if (and (listp r) (= (length r) 3))
+        r
+      (nelisp-os--check-errno r))))
+
+;; ----- IPv6 scoped (full sockaddr_in6 surface) -----
+
+(defun nelisp-os-bind-inet6-scoped (fd host6 port flowinfo scope-id)
+  "Bind FD to IPv6 (HOST6 = 8-element host-byte-order group list, PORT,
+FLOWINFO, SCOPE-ID).  All extra fields are wire-protocol-aware
+(flowinfo gets htonl on the way out)."
+  (nelisp-os--check-errno
+   (nelisp--syscall-bind-inet6-scoped fd host6 port flowinfo scope-id)))
+
+(defun nelisp-os-connect-inet6-scoped (fd host6 port flowinfo scope-id)
+  "Same as `nelisp-os-bind-inet6-scoped' but for connect(2)."
+  (nelisp-os--check-errno
+   (nelisp--syscall-connect-inet6-scoped fd host6 port flowinfo scope-id)))
+
+(defun nelisp-os-accept-inet6-scoped (fd)
+  "Accept on listening IPv6 FD and return a 5-element list
+(NEW-FD HOST6 PORT FLOWINFO SCOPE-ID)."
+  (let ((r (nelisp--syscall-accept-inet6-scoped fd)))
+    (if (and (listp r) (= (length r) 5))
+        r
+      (nelisp-os--check-errno r))))
+
 (provide 'nelisp-stdlib-os)
 
 ;;; nelisp-stdlib-os.el ends here
