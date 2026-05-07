@@ -23,10 +23,15 @@
 //! | `nelisp--logand2`     | `band`                    | Sexp::Int   |
 //! | `nelisp--logxor2`     | `bxor`                    | Sexp::Int   |
 //!
-//! `ash` (= variable shl/sshr with count clamping) is left for a
-//! follow-up commit because the count-direction branch needs control
-//! flow blocks.  All arithmetic op semantics are wrapping by Cranelift
-//! contract — matches the existing `wrapping_add` / etc. behaviour.
+//! `ash` (= variable shl/sshr) is added in this commit (Stage 5.2
+//! follow-up) using Cranelift's `brif' for the count-sign dispatch.
+//! All arithmetic op semantics are wrapping by Cranelift contract —
+//! matches the existing `wrapping_add` / etc. behaviour.
+//!
+//! `ash` JIT path covers count ∈ [-62, +62] (= every typical bit-twiddling
+//! use); pathological counts fall through to the Rust dispatcher so the
+//! 32-bit-truncation / clamping semantics of `bi_ash' are preserved
+//! without re-emitting them in IR.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -56,6 +61,10 @@ struct JitArith {
     logior: extern "C" fn(i64, i64) -> i64,
     logand: extern "C" fn(i64, i64) -> i64,
     logxor: extern "C" fn(i64, i64) -> i64,
+    /// `ash(n, count)' for count ∈ [-62, +62]: positive count → ishl,
+    /// negative count → sshr by `-count'.  Outside this range the
+    /// caller falls through to the Rust dispatcher.
+    ash: extern "C" fn(i64, i64) -> i64,
 }
 
 static JIT_ARITH: OnceLock<JitArith> = OnceLock::new();
@@ -95,6 +104,61 @@ where
     module
         .define_function(func_id, &mut ctx)
         .unwrap_or_else(|e| panic!("cranelift: define_function {}: {}", name, e));
+    module.clear_context(&mut ctx);
+    func_id
+}
+
+/// Build the `ash' lowering: `(n, count) -> i64' with two-block
+/// control flow (positive count → `ishl', negative → `ineg' + `sshr').
+/// Caller is responsible for clamping count ∈ [-62, +62] before
+/// invoking — outside that range the JIT path is bypassed.
+fn declare_ash(module: &mut JITModule) -> FuncId {
+    let mut sig = module.make_signature();
+    sig.params.push(AbiParam::new(types::I64));
+    sig.params.push(AbiParam::new(types::I64));
+    sig.returns.push(AbiParam::new(types::I64));
+    let func_id = module
+        .declare_function("nelisp_jit_ash", Linkage::Local, &sig)
+        .expect("cranelift: declare_function nelisp_jit_ash");
+
+    let mut ctx = module.make_context();
+    ctx.func.signature = sig;
+
+    let mut fbcx = FunctionBuilderContext::new();
+    {
+        let mut fb = FunctionBuilder::new(&mut ctx.func, &mut fbcx);
+        let entry_b = fb.create_block();
+        let pos_b = fb.create_block();
+        let neg_b = fb.create_block();
+        fb.append_block_params_for_function_params(entry_b);
+
+        // Entry: dispatch on sign of `count'.
+        fb.switch_to_block(entry_b);
+        let n = fb.block_params(entry_b)[0];
+        let count = fb.block_params(entry_b)[1];
+        let count_neg = fb.ins().icmp_imm(IntCC::SignedLessThan, count, 0);
+        fb.ins().brif(count_neg, neg_b, &[], pos_b, &[]);
+        fb.seal_block(entry_b);
+
+        // Positive count: `ishl(n, count)'.
+        fb.switch_to_block(pos_b);
+        let r_pos = fb.ins().ishl(n, count);
+        fb.ins().return_(&[r_pos]);
+        fb.seal_block(pos_b);
+
+        // Negative count: `sshr(n, -count)'.
+        fb.switch_to_block(neg_b);
+        let abs = fb.ins().ineg(count);
+        let r_neg = fb.ins().sshr(n, abs);
+        fb.ins().return_(&[r_neg]);
+        fb.seal_block(neg_b);
+
+        fb.finalize();
+    }
+
+    module
+        .define_function(func_id, &mut ctx)
+        .expect("cranelift: define_function nelisp_jit_ash");
     module.clear_context(&mut ctx);
     func_id
 }
@@ -141,6 +205,10 @@ fn build_jit_arith() -> JitArith {
         fb.ins().bxor(a, b)
     });
 
+    // `ash' — signed-count shift with `brif' control flow.  Caller
+    // bounds-checks count ∈ [-62, +62] before invoking.
+    let ash_id = declare_ash(&mut module);
+
     module
         .finalize_definitions()
         .expect("cranelift: finalize_definitions");
@@ -163,6 +231,7 @@ fn build_jit_arith() -> JitArith {
         logior: get(or_id),
         logand: get(and_id),
         logxor: get(xor_id),
+        ash: get(ash_id),
     };
 
     // Leak the module so the executable memory the function pointers
@@ -230,6 +299,20 @@ lower_int_cmp!(lowered_num_gt2, |a, b| (jit().gt)(a, b), "nelisp--num-gt2");
 lower_int_cmp!(lowered_num_le2, |a, b| (jit().le)(a, b), "nelisp--num-le2");
 lower_int_cmp!(lowered_num_ge2, |a, b| (jit().ge)(a, b), "nelisp--num-ge2");
 
+/// `(ash N COUNT)' — lower for count ∈ [-62, +62] only.  Pathological
+/// counts (= ones whose `bi_ash' result depends on the 32-bit
+/// truncation of `(-count) as u32') fall through to the dispatcher so
+/// the existing semantics remain bit-for-bit identical.
+fn lowered_ash(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    if let Some((n, count)) = try_int_pair(args) {
+        if (-62..=62).contains(&count) {
+            let r = (jit().ash)(n, count);
+            return Ok(Sexp::Int(r));
+        }
+    }
+    crate::eval::builtins::dispatch("ash", args, env)
+}
+
 pub fn register(map: &mut HashMap<&'static str, LowerFn>) {
     map.insert("nelisp--add2", lowered_add2);
     map.insert("nelisp--sub2", lowered_sub2);
@@ -242,6 +325,7 @@ pub fn register(map: &mut HashMap<&'static str, LowerFn>) {
     map.insert("nelisp--logior2", lowered_logior2);
     map.insert("nelisp--logand2", lowered_logand2);
     map.insert("nelisp--logxor2", lowered_logxor2);
+    map.insert("ash", lowered_ash);
 }
 
 #[cfg(test)]
@@ -285,5 +369,29 @@ mod tests {
         assert_eq!((jit().logior)(0b1100, 0b0011), 0b1111);
         assert_eq!((jit().logand)(0b1110, 0b0111), 0b0110);
         assert_eq!((jit().logxor)(0b1100, 0b1010), 0b0110);
+    }
+
+    #[test]
+    fn jit_ash_left_shift() {
+        // count > 0 → ishl
+        assert_eq!((jit().ash)(1, 3), 8);
+        assert_eq!((jit().ash)(0xFF, 4), 0xFF0);
+        // count = 0 → identity (ishl by 0)
+        assert_eq!((jit().ash)(42, 0), 42);
+        assert_eq!((jit().ash)(-42, 0), -42);
+        // negatives shift left preserves sign-extension at top bits
+        assert_eq!((jit().ash)(-1, 1), -2);
+    }
+
+    #[test]
+    fn jit_ash_right_shift_signed() {
+        // count < 0 → sshr by abs(count); sign bit is replicated.
+        assert_eq!((jit().ash)(8, -3), 1);
+        assert_eq!((jit().ash)(0xFF0, -4), 0xFF);
+        // -8 >> 3 = -1 (all sign bits shifted in)
+        assert_eq!((jit().ash)(-8, -3), -1);
+        assert_eq!((jit().ash)(-100, -1), -50);
+        // -1 >> 1 = -1 (every bit set, sign-extends to all-ones)
+        assert_eq!((jit().ash)(-1, -1), -1);
     }
 }

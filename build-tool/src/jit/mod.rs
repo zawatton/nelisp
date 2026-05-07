@@ -87,14 +87,17 @@ mod tests {
     #[test]
     fn registry_covers_stage_5_2_arithmetic() {
         // Stage 5.2 contract: 11 binary arithmetic / comparison /
-        // bitwise primitives are JIT-lowered.  Once Stage 5.1 (=
-        // syscall) / 5.3 (= cons) / 5.4 (= access) / 5.5 (= predicate)
-        // land, this assertion grows accordingly.
+        // bitwise primitives + `ash' are JIT-lowered.  Stage 5.1
+        // ships `nelisp--syscall' / `-supported-p' (= 2 entries) which
+        // are checked separately.  As 5.3 / 5.4 / 5.5 land this
+        // assertion grows accordingly.
         let needed = [
             "nelisp--add2", "nelisp--sub2", "nelisp--mul2",
             "nelisp--num-eq2", "nelisp--num-lt2", "nelisp--num-gt2",
             "nelisp--num-le2", "nelisp--num-ge2",
             "nelisp--logior2", "nelisp--logand2", "nelisp--logxor2",
+            "ash",
+            "nelisp--syscall", "nelisp--syscall-supported-p",
         ];
         for name in needed {
             assert!(
