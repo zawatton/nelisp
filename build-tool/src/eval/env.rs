@@ -111,6 +111,16 @@ impl Env {
     /// installed.  Equivalent to GNU Emacs' empty-buffer top-level.
     pub fn new_global() -> Self {
         const STDLIB_SOURCES: &[(&str, &str)] = &[
+            // Phase 7 Stage 7.3.a (2026-05-07, Doc 67): Tier 2 special
+            // forms as elisp macros.  Layer A — loaded BEFORE
+            // `nelisp-stdlib.el' so its `defmacro' bodies don't depend
+            // on any other elisp helper (Tier 1-only macro body
+            // constraint, Doc 67 §2.2).  Stage 7.3.a is parallel
+            // install only — `apply_special' match arms still preempt
+            // these macros at runtime; ERT exercises them via
+            // `macroexpand-1'.  Stage 7.3.d will retire the Rust arms
+            // and the elisp macros activate.
+            ("nelisp-stdlib-eval-special.el", include_str!("../../../lisp/nelisp-stdlib-eval-special.el")),
             ("nelisp-stdlib.el", include_str!("../../../lisp/nelisp-stdlib.el")),
             ("nelisp-stdlib-list.el", include_str!("../../../lisp/nelisp-stdlib-list.el")),
             ("nelisp-stdlib-hof.el", include_str!("../../../lisp/nelisp-stdlib-hof.el")),

@@ -311,6 +311,7 @@ pub fn install_builtins(env: &mut Env) {
         // symbol / function
         "symbol-value", "symbol-function", "fboundp", "boundp", "funcall", "apply", "eval",
         "defalias", "fset", "fmakunbound", "makunbound",
+        "macroexpand-1",
         // Rust-min (2026-05-06 batch 6e): `print' moved to elisp
         // defalias of `princ'.
         // Rust-min (2026-05-06 batch 6h): `message' moved to elisp
@@ -580,6 +581,9 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "fset" => bi_fset(args, env),
         "fmakunbound" => bi_fmakunbound(args, env),
         "makunbound" => bi_makunbound(args, env),
+        // Phase 7 Stage 7.3.a (2026-05-07, Doc 67) — macroexpand-1
+        // entry for ERT inspection of elisp Tier 2 macros.
+        "macroexpand-1" => bi_macroexpand_1(args, env),
         // intern-soft migrated to elisp (Rust-min 2026-05-06 batch 6f,
         // see lisp/nelisp-stdlib-misc.el).
         "make-symbol" => bi_make_symbol(args),
@@ -3699,6 +3703,52 @@ fn bi_fmakunbound(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     };
     env.clear_function(&name);
     Ok(args[0].clone())
+}
+
+/// `(macroexpand-1 FORM &optional ENV)` — expand FORM by ONE level if
+/// its head is a macro; otherwise return FORM unchanged.  ENV is
+/// currently ignored (= NeLisp has no environment-override macro
+/// lookup, all macros live in the global function cell).
+///
+/// Phase 7 Stage 7.3.a (Doc 67): added so ERT can verify the expansion
+/// shape of elisp-side Tier 2 macros (= `cond' / `when' / `unless' / ...)
+/// while their dispatch is still preempted by `apply_special' match
+/// arms.  Stage 7.3.d retires the Rust arms and the elisp macros
+/// activate at runtime; `macroexpand-1' remains useful for tests.
+fn bi_macroexpand_1(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("macroexpand-1", args, 1, Some(2))?;
+    let form = &args[0];
+    // Only `(SYM ARG...)` shape is expandable — atoms / dotted lists /
+    // lambda-headed combiners (= `((lambda ...) X)`) self-expand.
+    let (head_sym, tail) = match form {
+        Sexp::Cons(h, t) => match &*h.borrow() {
+            Sexp::Symbol(s) => (s.clone(), t.borrow().clone()),
+            _ => return Ok(form.clone()),
+        },
+        _ => return Ok(form.clone()),
+    };
+    let func = match env.lookup_function(&head_sym) {
+        Ok(f) => f,
+        // Unbound symbol → return form unchanged (= Emacs parity for
+        // `macroexpand-1' on non-macros).
+        Err(_) => return Ok(form.clone()),
+    };
+    // `(macro . LAMBDA)` shape — expand via the macro's lambda.
+    let is_macro = matches!(
+        &func,
+        Sexp::Cons(h, _) if matches!(&*h.borrow(), Sexp::Symbol(s) if s == "macro")
+    );
+    if !is_macro {
+        return Ok(form.clone());
+    }
+    // Strip the `macro' tag, get the underlying lambda.
+    let parts = super::list_elements(&func)?;
+    if parts.len() < 2 {
+        return Err(EvalError::Internal("malformed macro".into()));
+    }
+    let inner = &parts[1];
+    let arg_forms = super::list_elements(&tail)?;
+    super::apply_function(inner, &arg_forms, env)
 }
 
 /// `(makunbound SYMBOL)` — clear the value cell of SYMBOL.
