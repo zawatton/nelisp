@@ -2341,6 +2341,102 @@ fn defstruct_copier_preserves_record_type() {
 }
 
 // ============================================================
+// Doc 50 stage 4f-4 — cl-defstruct `:include' (slot inheritance
+// + predicate chain).  Pure elisp.
+// ============================================================
+
+#[test]
+fn defstruct_include_inherits_slots() {
+    // Child accessors see parent's slots in addition to its own.
+    let v = ok_all(
+        "(cl-defstruct point x y)
+         (cl-defstruct (cpoint (:include point)) color)
+         (let ((p (make-cpoint :x 1 :y 2 :color 'red)))
+           (list (cpoint-x p) (cpoint-y p) (cpoint-color p)))",
+    );
+    assert_eq!(
+        v,
+        Sexp::list_from(&[Sexp::Int(1), Sexp::Int(2),
+                          Sexp::Symbol("red".into())]),
+    );
+}
+
+#[test]
+fn defstruct_include_parent_accessors_apply_to_child() {
+    // The parent's accessors `point-x' / `point-y' work on a child
+    // record because slot indices are preserved (parent-first).
+    let v = ok_all(
+        "(cl-defstruct point x y)
+         (cl-defstruct (cpoint (:include point)) color)
+         (let ((p (make-cpoint :x 5 :y 6 :color 'blue)))
+           (list (point-x p) (point-y p)))",
+    );
+    assert_eq!(v, Sexp::list_from(&[Sexp::Int(5), Sexp::Int(6)]));
+}
+
+#[test]
+fn defstruct_include_predicate_chain() {
+    // Parent predicate satisfies child records.  Child predicate
+    // does NOT satisfy bare parent records.
+    let v = ok_all(
+        "(cl-defstruct point x y)
+         (cl-defstruct (cpoint (:include point)) color)
+         (let ((par (make-point :x 1 :y 2))
+               (chl (make-cpoint :x 3 :y 4 :color 'green)))
+           (list (point-p par) (point-p chl)
+                 (cpoint-p par) (cpoint-p chl)))",
+    );
+    assert_eq!(
+        v,
+        Sexp::list_from(&[Sexp::T, Sexp::T, Sexp::Nil, Sexp::T]),
+    );
+}
+
+#[test]
+fn defstruct_include_three_level_chain() {
+    // Predicate chain walks transitively.
+    let v = ok_all(
+        "(cl-defstruct base a)
+         (cl-defstruct (mid (:include base)) b)
+         (cl-defstruct (leaf (:include mid)) c)
+         (let ((g (make-leaf :a 1 :b 2 :c 3)))
+           (list (base-p g) (mid-p g) (leaf-p g)
+                 (base-a g) (mid-b g) (leaf-c g)))",
+    );
+    assert_eq!(
+        v,
+        Sexp::list_from(&[
+            Sexp::T, Sexp::T, Sexp::T,
+            Sexp::Int(1), Sexp::Int(2), Sexp::Int(3),
+        ]),
+    );
+}
+
+#[test]
+fn defstruct_include_unknown_parent_errors() {
+    // Including an undefined parent should error.
+    let _e = err_all("(cl-defstruct (orphan (:include never-defined)) x)");
+}
+
+#[test]
+fn defstruct_include_distinct_records_have_distinct_tags() {
+    // The child record carries its own `type_tag', not the parent's.
+    let v = ok_all(
+        "(cl-defstruct point x y)
+         (cl-defstruct (cpoint (:include point)) color)
+         (let ((p (make-point :x 1)) (c (make-cpoint :color 'r)))
+           (list (type-of p) (type-of c)))",
+    );
+    assert_eq!(
+        v,
+        Sexp::list_from(&[
+            Sexp::Symbol("point".into()),
+            Sexp::Symbol("cpoint".into()),
+        ]),
+    );
+}
+
+// ============================================================
 // Doc 50 stage 4f — hash-table re-implemented in elisp
 // (lisp/nelisp-stdlib-hash.el on top of Stage 4c record primitives)
 // ============================================================

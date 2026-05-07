@@ -311,6 +311,44 @@ Returns:
    ((null name-form) nil)
    (t name-form)))
 
+;;;; --- defstruct registry (Stage 4f-4 :include) -------------------------
+
+(defvar nelisp-cl-macros--struct-info nil
+  "Alist of (NAME . PLIST) describing every defined cl-defstruct.
+PLIST has keys :slot-names (list of symbols, parent-first when
+:included) and :parent (symbol or nil).  Populated both at
+macro expansion time (so that `:include' can resolve parent
+slots while expanding the child) and at runtime evaluation
+of the macro's expansion (so that AOT-compiled callers and
+predicates see the same data).  `assq' takes the most-recent
+push, which keeps re-loading idempotent.")
+
+(defun nelisp-cl-macros--struct-record (name parent slot-names)
+  "Push (NAME . (:slot-names SLOT-NAMES :parent PARENT)) into the
+runtime struct registry.  Re-pushes shadow earlier entries — the
+front-of-list wins on lookup."
+  (setq nelisp-cl-macros--struct-info
+        (cons (cons name (list :slot-names slot-names :parent parent))
+              nelisp-cl-macros--struct-info)))
+
+(defun nelisp-cl-macros--struct-isa (tag target)
+  "Return non-nil iff TAG = TARGET or one of TAG's :include ancestors
+is TARGET.  Walks `nelisp-cl-macros--struct-info' chain.  Used by
+predicates of structs that have been `:included' as a parent so a
+descendant record satisfies the parent predicate."
+  (cond
+   ((eq tag target) t)
+   ((null tag) nil)
+   (t
+    (let ((info (cdr (assq tag nelisp-cl-macros--struct-info))))
+      (let ((parent (and info (car (cdr (memq :parent info))))))
+        (and parent (nelisp-cl-macros--struct-isa parent target)))))))
+
+(defun nelisp-cl-macros--struct-lookup-slots (name)
+  "Return the :slot-names list for struct NAME, or nil if unknown."
+  (let ((info (cdr (assq name nelisp-cl-macros--struct-info))))
+    (and info (car (cdr (memq :slot-names info))))))
+
 (defmacro cl-defstruct (name-or-options &rest slots)
   "Define a record type and its predicate / constructor / accessors.
 
@@ -321,19 +359,25 @@ Each SLOT is `SLOT-NAME' or `(SLOT-NAME DEFAULT)'.  Generated:
   - `copy-NAME REC'        shallow copier (option `:copier')
   - `NAME-SLOT REC'        accessor (one per slot)
 
-Supported options (Stage 4f-3):
+Supported options:
   - `(:constructor nil)'    → suppress make-NAME generation
   - `(:constructor NAME)'   → rename make-NAME
   - `(:copier nil)'         → suppress copy-NAME generation
   - `(:copier NAME)'        → rename copy-NAME
+  - `(:include PARENT)'     → inherit PARENT's slots (parent-first)
 
 Slot index assignment: positional, in declaration order.  The
 record's `type_tag' is NAME (a symbol); accessors call
 `nelisp--record-ref' which is 0-based and excludes the tag — the
 type tag is reachable via `nelisp--record-type'.
 
-Limitations (Doc 50 stage 4f-3): no `:include', no `:type',
-no `setf' integration, no docstring slot form.
+`:include' semantics: child slots come AFTER parent slots, so the
+parent's accessor indices remain valid for the child record.  The
+parent's predicate continues to satisfy child records via the
+runtime chain walk in `nelisp-cl-macros--struct-isa'.
+
+Limitations: no `:type', no `setf' integration, no docstring slot
+form.
 
 Note: `(declare ...)' metadata is intentionally omitted because the
 NeLisp Rust evaluator does not yet strip declare forms from macro
@@ -341,8 +385,19 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
 `defmacro' grows declare-handling parity with host Emacs."
   (let* ((name (nelisp-cl-macros--struct-name-or-options name-or-options))
          (options (nelisp-cl-macros--struct-options name-or-options))
-         (slot-names (mapcar #'nelisp-cl-macros--struct-slot-name slots))
-         (slot-defaults (mapcar #'nelisp-cl-macros--struct-slot-default slots))
+         (parent-form (nelisp-cl-macros--struct-opt :include options))
+         (parent (if (eq parent-form nelisp-cl-macros--struct-absent)
+                     nil parent-form))
+         (own-slot-names (mapcar #'nelisp-cl-macros--struct-slot-name slots))
+         (own-slot-defaults
+          (mapcar #'nelisp-cl-macros--struct-slot-default slots))
+         (parent-slot-names
+          (and parent (nelisp-cl-macros--struct-lookup-slots parent)))
+         (slot-names (append parent-slot-names own-slot-names))
+         (slot-defaults
+          (let ((pads nil) (rem parent-slot-names))
+            (while rem (setq pads (cons nil pads)) (setq rem (cdr rem)))
+            (append pads own-slot-defaults)))
          (predicate (intern (format "%s-p" name)))
          (constructor
           (nelisp-cl-macros--struct-resolve-name
@@ -352,6 +407,16 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
           (nelisp-cl-macros--struct-resolve-name
            (nelisp-cl-macros--struct-opt :copier options)
            (intern (format "copy-%s" name)))))
+    (when (and parent (null parent-slot-names))
+      ;; Either parent doesn't exist or parent has zero slots.  The
+      ;; latter is rare but legal — distinguish via registry presence.
+      (unless (assq parent nelisp-cl-macros--struct-info)
+        (error "cl-defstruct :include — parent struct `%s' not defined"
+               parent)))
+    ;; Expansion-time registry update so subsequent (cl-defstruct
+    ;; (CHILD (:include NAME)) ...)  macros expanded in this same
+    ;; pass can resolve our slot list.
+    (nelisp-cl-macros--struct-record name parent slot-names)
     (let ((forms nil)
           (args-sym (make-symbol "cl-defstruct--args"))
           (rec-sym (make-symbol "cl-defstruct--rec"))
@@ -374,11 +439,21 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
         (push (list 'nelisp--record-ref src-sym i) copy-arg-forms)
         (setq i (1+ i)))
       (setq copy-arg-forms (nreverse copy-arg-forms))
-      ;; Predicate form.
+      ;; Runtime registry update — keeps the registry in sync with
+      ;; the runtime form (matters for AOT-compiled code where the
+      ;; expansion-time setq above no longer runs in fresh processes).
+      (push (list 'nelisp-cl-macros--struct-record
+                  (list 'quote name)
+                  (list 'quote parent)
+                  (list 'quote slot-names))
+            forms)
+      ;; Predicate form — uses --struct-isa for chain matching so
+      ;; descendant records still satisfy the parent predicate when
+      ;; this struct is later used as someone else's `:include'.
       (push (list 'defun predicate (list 'obj)
                   (list 'and
                         (list 'recordp 'obj)
-                        (list 'eq
+                        (list 'nelisp-cl-macros--struct-isa
                               (list 'nelisp--record-type 'obj)
                               (list 'quote name))))
             forms)
