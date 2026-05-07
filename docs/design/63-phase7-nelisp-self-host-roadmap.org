@@ -8,7 +8,8 @@
 :STATE: DRAFT
 :DEPENDS_ON: Doc 49 (elisp pivot) / Doc 50 (irreducible unlock) / Doc 53〜60 (OS surface) / Doc 61 (cXXr migrate)
 :CONCURRENT_WITH: Doc 62 (Phase 5 native cc lowering)
-:CHILDREN: Doc 64 (Stage 7.1 = Sexp printer), Doc 65 (Stage 7.2 reader), Doc 66 (Stage 7.3 special forms), Doc 67 (Stage 7.4 apply/env)
+:CHILDREN: Doc 64 (Stage 7.1 = Sexp printer SHIPPED 49ddcca), Doc 66 (Stage 7.2 reader DRAFT), Doc 67 (Stage 7.3 special forms — pending), Doc 68 (Stage 7.4 apply/env — pending)
+:NOTE: Doc 65 was reused by retire well exhaustion (= Stage 7k closing batch); Stage 7.2 reader detail design lives in Doc 66 instead.
 :END:
 
 * §0 TL;DR
@@ -278,10 +279,10 @@ Phase 5 が先行することで Phase 7 の elisp eval が「重くない」状
 - Doc 53〜60 OS surface (= elisp 完結 pattern の確立)
 - Doc 61 cXXr migrate (= 直前の retire batch)
 - Doc 62 Phase 5 native cc lowering (= 並行 Doc、相補)
-- Doc 64 Phase 7 Stage 7.1 Sexp printer 詳細設計 (= 子 Doc)
-- (Doc 65) Phase 7 Stage 7.2 Sexp reader 詳細設計 — 後続作成
-- (Doc 66) Phase 7 Stage 7.3 Special forms dispatcher 詳細設計 — 後続
-- (Doc 67) Phase 7 Stage 7.4 Apply / env 詳細設計 — 後続
+- Doc 64 Phase 7 Stage 7.1 Sexp printer 詳細設計 (= 子 Doc、SHIPPED 49ddcca)
+- Doc 66 Phase 7 Stage 7.2 Sexp reader 詳細設計 (= 子 Doc、DRAFT 2026-05-07)
+- (Doc 67) Phase 7 Stage 7.3 Special forms dispatcher 詳細設計 — 後続
+- (Doc 68) Phase 7 Stage 7.4 Apply / env 詳細設計 — 後続
 - =lisp/doc47-build-tool-reader.el= (= reader pivot 既存実装)
 - SBCL self-host history (= 参考)
 - Femtolisp (= Julia 内 minimal Lisp、参考)

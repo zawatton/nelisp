@@ -1,0 +1,456 @@
+#+TITLE: Doc 66 — Phase 7 Stage 7.2: Elisp Sexp Reader (Tokenizer + Parser)
+#+AUTHOR: zawatton
+#+DATE: 2026-05-07
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: DRAFT
+:DEPENDS_ON: Doc 50 stage 5b+5c (cycle-safe equal pattern) / Doc 64 (Stage 7.1 elisp printer SHIPPED)
+:PARENT: Doc 63 (Phase 7 self-host roadmap)
+:SUPERSEDES: Doc 47 phase 8 reader pivot (= ~lisp/doc47-build-tool-reader.el~)
+:END:
+
+* §0 TL;DR
+
+Phase 7 self-host (Doc 63) の 2 番目の足場。Sexp の reader (= tokenizer
++ parser + entry) を elisp で書き、Rust 側 ~build-tool/src/reader/~ の
+3 module (lexer.rs 881 / parser.rs 478 / mod.rs 266 = 1,625 LOC) を
+撤去する。Stage 7.1 (= printer) と対をなす入力側の self-host。
+
+| layer            | before                                       | after                                  |
+|------------------+----------------------------------------------+----------------------------------------|
+| Rust ~build-tool/src/reader/lexer.rs~ (881 LOC) | tokenize state machine               | (削除)                                 |
+| Rust ~build-tool/src/reader/parser.rs~ (478 LOC) | recursive descent                    | (削除)                                 |
+| Rust ~build-tool/src/reader/mod.rs~ (266 LOC) | ~read_str~ / ~read_all~ entry            | ~50 LOC (= bootstrap shim 残)          |
+| Rust ~build-tool/src/reader/sexp.rs~ (671 LOC) | Sexp 型定義 + Display 実装               | 同左 (Sexp 型は core data structure、残す) |
+| Rust ~build-tool/src/reader/error.rs~ (106 LOC) | ReadError + SourcePos                | 同左 (= elisp 側からも同 error type で raise) |
+| elisp 関数       | (なし)                                       | =read-from-string=/=read=/=read-all= + tokenizer/parser helpers (~30 本) |
+
+LOC 削減推定: Rust ~1,400 (= lexer + parser + mod entry)、elisp +1,000〜1,200。
+
+reader は eval 非依存 (= 純粋 string → Sexp 関数) かつ printer (Stage 7.1)
+と双対関係 — printer 出力を reader が読み戻せる round-trip property
+で test gate を組める。bootstrap chicken-and-egg は §3 で解く。
+
+* §1 動機
+
+** §1.1 Phase 7 self-host roadmap での位置
+
+Doc 63 §2 の 6 stage:
+
+| stage | item                                  | LOC 削減 | status              |
+|-------+---------------------------------------+----------+---------------------|
+| 7.1   | Sexp printer (= prin1 / princ / etc) | 200      | SHIPPED (commit 49ddcca、Doc 64) |
+| 7.2   | *Sexp reader (= read-from-string)*    | *1,400*  | *本 Doc*            |
+| 7.3   | Special forms dispatcher              | 900      | Doc 67 (後続)        |
+| 7.4   | Apply / call / closure / env          | 700      | Doc 68 (後続)        |
+| 7.5   | switch over + Rust dead code 削除     | 600      | -                   |
+| 7.6   | Reader cleanup (Rust reader 削除)     | 200      | Stage 7.2 完了後    |
+
+Stage 7.2 = Phase 7 で最大の LOC 削減 (~1,400) を持つ stage。reader が
+elisp 側で動けば、user code の load path 全てが elisp 経由になる
+(= include_str! bake-in されている ~lisp/*.el~ の load も含む)。
+
+** §1.2 printer (Stage 7.1) との双対関係
+
+- printer: ~Sexp → string~ (純粋関数)
+- reader:  ~string → Sexp~ (純粋関数)
+- 二者は inverse 関係: ~(read (prin1-to-string OBJ))~ で OBJ と equal
+  な値が得られる (= round-trip property)
+- Stage 7.1 で確立した defensive 設計 (= variant 毎 dispatch、escape
+  処理、循環参照 hash-table tracking) が Stage 7.2 でも再利用可能
+
+** §1.3 Doc 47 reader pivot との関係
+
+- ~lisp/doc47-build-tool-reader.el~ (161 LOC) は既に reader の elisp 化
+  に着手済 (Doc 47 Phase 8〜9)
+- 現状は thin wrapper around host Emacs ~read~ (= 完全 self-host で
+  はない、host Emacs の reader を再利用)
+- 本 Doc は Doc 47 を *自前 lexer + parser に置き換え* て host
+  Emacs ~read~ 依存を撤去する最終形を設計
+
+** §1.4 bootstrap chicken-and-egg
+
+reader を elisp で書くと「elisp ファイルを読む reader 自身が elisp で
+書かれた elisp ファイル」という循環 — Doc 63 §3.2 で解いた takeover
+sequence を Stage 7.2 で初めて適用する:
+
+#+BEGIN_EXAMPLE
+NeLisp 起動 (= bin/nelisp.rs)
+  ▼
+Rust eval 起動
+  ▼
+include_str! で bundled elisp 全部 read (Rust reader 経由)
+  ▼
+このタイミングで lisp/nelisp-stdlib-reader.el を install
+(= elisp 側 read-from-string defun が完成)
+  ▼
+*** Switch over ***
+Rust 側 read_str / read_all entry は elisp 側 read-from-string を call
+  ▼
+以降の load (= ~load~ / ~require~) は elisp reader が応答
+#+END_EXAMPLE
+
+** §1.5 Phase 5 native cc lowering との相互作用
+
+- reader は per-byte ループが多用される = string-search / aref / 1+
+  / cdr / cons の hot path
+- Phase 5 SHIPPED 後 (commit 5299e44 + 7b88738 + 7b57142) これら
+  primitive は inline JIT lower 済 = elisp reader でも host 命令直 emit
+  経路を通る
+- 結果: elisp reader の wallclock degradation < 3x で Rust reader と
+  比べて見込まれる (= Doc 63 §5.3 gate を満たす)
+
+* §2 設計
+
+** §2.1 全体アーキ
+
+#+BEGIN_EXAMPLE
+   string input
+     │
+     ▼
+   ┌──────────────────────────────────┐
+   │ (nelisp--read-tokenize STRING)   │  ← lexer (= state machine)
+   │   ↓                              │
+   │ list of token plist:             │
+   │  (:type :pos :line :col :value)  │
+   └──────────────────────────────────┘
+     │
+     ▼
+   ┌──────────────────────────────────┐
+   │ (nelisp--read-parse-one TOKENS)  │  ← parser (= recursive descent)
+   │   ↓                              │
+   │ (FORM REMAINING-TOKENS)          │
+   └──────────────────────────────────┘
+     │
+     ▼
+   Sexp value
+#+END_EXAMPLE
+
+- lexer + parser は完全 elisp、Rust 側は entry shim のみ
+- Sexp は ~#[repr(C, u8)]~ stable layout (Doc 62 commit 2fb64cd) なので
+  elisp 側で生成した Sexp も Rust 側 と layout 互換
+
+** §2.2 lexer (~lisp/nelisp-stdlib-reader.el~ §1)
+
+state machine は char-index loop で実装:
+
+#+BEGIN_SRC emacs-lisp
+(defun nelisp--read-tokenize (string)
+  "Tokenize STRING into a list of token plists.
+Each token is (:type TYPE :value VALUE :pos POS :line LINE :col COL).
+TYPE is one of: lparen rparen lbracket rbracket
+                quote backquote comma comma-at function-quote
+                dot int float str symbol sharps-paren."
+  (let ((len (length string))
+        (i 0) (line 1) (col 1)
+        (tokens nil))
+    (while (< i len)
+      (let ((c (aref string i)))
+        (cond
+         ;; whitespace
+         ((memq c '(?\s ?\t ?\n ?\r ?\f))
+          (when (eq c ?\n) (setq line (1+ line) col 0))
+          (setq i (1+ i) col (1+ col)))
+         ;; line comment
+         ((eq c ?\;)
+          (while (and (< i len) (not (eq (aref string i) ?\n)))
+            (setq i (1+ i)))
+          ;; do not consume the newline; outer loop handles it
+          )
+         ;; opener / closer
+         ((eq c ?\() (push (nelisp--read-token 'lparen "(" line col) tokens)
+                     (setq i (1+ i) col (1+ col)))
+         ;; ... rest of dispatch ...
+         (t (nelisp--read-error "unexpected character" line col)))))
+    (nreverse tokens)))
+#+END_SRC
+
+15+ token type、各 type に専用の sub-tokenizer:
+
+| token type     | tokenizer                                            |
+|----------------+------------------------------------------------------|
+| =int=          | =nelisp--read-tok-int= (= 10進 / #x / #o / #b)       |
+| =float=        | =nelisp--read-tok-float= (= 1.5 / 1e3 等)            |
+| =str=          | =nelisp--read-tok-string= (= "..." with \\ / \n 等)  |
+| =symbol=       | =nelisp--read-tok-symbol= (= alnum + - _ . :)        |
+| =quote-family= | =nelisp--read-tok-prefix= (= ' ` , ,@ #')             |
+| =sharps-paren= | =nelisp--read-tok-sharps= (= #s()                  |
+
+数値 vs symbol disambiguation は lookahead 1 char で判定 (= "1.5" は
+float、"1.5.x" は symbol、"1abc" は symbol — Rust lexer の
+=is_symbol_char= 関数を elisp で再実装)。
+
+** §2.3 parser (~lisp/nelisp-stdlib-reader.el~ §2)
+
+recursive descent、token list を消費:
+
+#+BEGIN_SRC emacs-lisp
+(defun nelisp--read-parse-one (tokens)
+  "Parse exactly one form from TOKENS.
+Returns (cons FORM REMAINING-TOKENS) or signals on error."
+  (when (null tokens) (nelisp--read-error "unexpected EOF"))
+  (let ((tok (car tokens)) (rest (cdr tokens)))
+    (pcase (plist-get tok :type)
+      ('int    (cons (plist-get tok :value) rest))
+      ('float  (cons (plist-get tok :value) rest))
+      ('str    (cons (plist-get tok :value) rest))
+      ('symbol
+       ;; nil/t are recognized here (= 1 source of truth)
+       (let ((name (plist-get tok :value)))
+         (cond
+          ((string= name "nil") (cons nil rest))
+          ((string= name "t")   (cons t rest))
+          (t (cons (intern name) rest)))))
+      ('quote          (nelisp--read-parse-prefix 'quote rest))
+      ('backquote      (nelisp--read-parse-prefix 'backquote rest))
+      ('comma          (nelisp--read-parse-prefix '\, rest))
+      ('comma-at       (nelisp--read-parse-prefix '\,@ rest))
+      ('function-quote (nelisp--read-parse-prefix 'function rest))
+      ('lparen         (nelisp--read-parse-list rest))
+      ('lbracket       (nelisp--read-parse-vector rest))
+      ('sharps-paren   (nelisp--read-parse-record rest))
+      ('dot            (nelisp--read-error "unexpected ." tok))
+      ('rparen         (nelisp--read-error "unexpected )" tok))
+      ('rbracket       (nelisp--read-error "unexpected ]" tok)))))
+#+END_SRC
+
+主 sub-parser:
+
+| sub-parser                      | 役割                                                |
+|---------------------------------+----------------------------------------------------|
+| =nelisp--read-parse-list=       | =(...)= = proper list / dotted pair                 |
+| =nelisp--read-parse-vector=     | =[...]= = vector literal                            |
+| =nelisp--read-parse-record=     | =#s(...)= = record literal (Doc 52 stage 4b 参照)  |
+| =nelisp--read-parse-prefix=     | quote-family の =(quote X)= / =(function X)= 等 desugar |
+
+dotted pair handling: parse-list は token を消費しながら element を
+集積、=dot= token 検出時に「次の 1 form を cdr として読み、=)= を要求」
+の特殊 path に分岐。
+
+** §2.4 entry surface
+
+3 個の user-visible function:
+
+| function                              | 動作                                          |
+|---------------------------------------+-----------------------------------------------|
+| =(read-from-string STRING &optional START END)= | 1 form と consumed-end を cons で返す |
+| =(read &optional STREAM)=             | STREAM (= string OR symbol OR fn) から 1 form 読む |
+| =(read-all-from-string STRING)=       | 全 top-level form を list で返す (= load 用)  |
+
+~read~ の STREAM = symbol/function は host Emacs 互換 (= 1 char 取得
+function)。bootstrap subset では string と nil (= ~standard-input~) を
+support、symbol/function は別 phase。
+
+** §2.5 bootstrap entry primitive
+
+Rust 側に残す ~read-from-string~ shim:
+
+#+BEGIN_SRC rust
+// build-tool/src/eval/builtins.rs
+"read-from-string" => bi_read_from_string(args, env),
+
+fn bi_read_from_string(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("read-from-string", args, 1, Some(3))?;
+    // Stage 7.2 takeover: if elisp-side `nelisp--read-from-string-impl'
+    // is defined, dispatch to it.  Otherwise fall back to Rust reader
+    // (= bootstrap before stdlib-reader.el is loaded).
+    if env.has_function("nelisp--read-from-string-impl") {
+        return env.call_function("nelisp--read-from-string-impl", args.to_vec());
+    }
+    // Bootstrap fallback: Rust reader directly.
+    let s = args[0].as_string_owned().ok_or_else(|| ...)?;
+    let form = read_str(&s).map_err(|e| EvalError::Reader(e))?;
+    Ok(Sexp::cons(form, Sexp::Int(s.len() as i64)))
+}
+#+END_SRC
+
+このパターンは Doc 49 の elisp pivot で確立済 (= Rust 側 dispatcher が
+elisp 関数の存在を確認、有れば call、無ければ Rust 実装に fallback)。
+
+** §2.6 dependency 一覧
+
+reader が依存する primitive:
+
+| primitive                          | source                              |
+|------------------------------------+--------------------------------------|
+| =aref STRING IDX=                  | Phase 5 Stage 5.4 AccessIR (helper) |
+| =length STRING=                    | Phase 5 Stage 5.4 AccessIR (inline NIL + helper) |
+| =substring STRING START END=       | Rust ~bi_substring~ (残)            |
+| =string-search NEEDLE HAYSTACK=    | Rust ~bi_string_search~ (残)         |
+| =string-match-p REGEXP STRING=     | Rust ~bi_string_match_p~ (残、optional) |
+| =string-to-number STRING &optional BASE= | Rust ~bi_string_to_number~ (残) |
+| =number-to-string N=               | Rust ~bi_number_to_string~ (残)     |
+| =intern NAME=                      | Rust ~bi_intern~ (残)               |
+| =vector ELEMENTS...= / =make-vector LEN INIT= | Rust ~bi_vector~ etc. (残) |
+| =cons= / =car= / =cdr= / =eq=      | Phase 5 lower 経由 (= inline 化済)  |
+
+外部 primitive 8 本 + Phase 5 lower 4 本 = 12 dependency。全て既存
+SHIPPED 機能、reader 用に新規追加すべき primitive はゼロ。
+
+** §2.7 error handling
+
+Rust 側 ~ReadError~ enum を elisp 側で再現:
+
+#+BEGIN_SRC emacs-lisp
+(defun nelisp--read-error (msg &optional pos)
+  "Signal a reader error."
+  (signal 'nelisp-read-error
+          (list msg
+                (and pos (plist-get pos :line))
+                (and pos (plist-get pos :col)))))
+
+(define-error 'nelisp-read-error "Reader error" 'error)
+#+END_SRC
+
+Rust 側 ~ReadError::Lex~ / ~::Parse~ / ~::NotYetImplemented~ の 3
+variant は同 ~nelisp-read-error~ symbol の data argument で区別 (=
+~(:type lex :line ... :col ...)~ plist)。
+
+* §3 段階 / sub-stages
+
+Stage 7.2 を更に細分化、各 sub-stage で independent ship 可能:
+
+** §3.1 Stage 7.2.a — lexer + token plist 仕様
+
+- ~lisp/nelisp-stdlib-reader.el~ 新規、~nelisp--read-tokenize~ 1 関数
+  + sub-tokenizer 7 本
+- ERT: 既存 ~build-tool/src/reader/lexer.rs::tests~ の test case を
+  全 elisp 化 (Doc 47 既存 161 LOC は Phase 8 lexer 部分の再利用元)
+- Bootstrap: まだ Rust reader が active、新規 elisp tokenizer は
+  *並列実装*、host Emacs ~read~ 経由でなく自前で動かす
+
+LOC: +400 elisp (lexer + sub-tokenizer + tests)。
+
+** §3.2 Stage 7.2.b — parser + entry shim
+
+- ~nelisp--read-parse-one~ + sub-parser 4 本
+- ~read-from-string~ / ~read-all-from-string~ entry を elisp で defun
+- Rust 側 ~bi_read_from_string~ に takeover hook (= ~has_function~ +
+  fallback) を追加
+- ERT: parser tests の elisp port
+
+LOC: +500 elisp (parser + entry + tests)、+30 Rust (takeover hook)。
+
+** §3.3 Stage 7.2.c — round-trip property test
+
+- Stage 7.1 printer SHIPPED + Stage 7.2.b reader SHIPPED で round-trip
+  property を確立: ~(equal OBJ (read-from-string (prin1-to-string OBJ)))~
+- 全 Sexp variant について round-trip test を追加 (= ERT 30+ 本)
+- 既存 Rust reader test の input string で elisp reader / Rust reader
+  双方が等価な Sexp を返すか cross-check
+
+LOC: +200 elisp (test fixtures)。
+
+** §3.4 Stage 7.2.d — Rust reader fallback retire
+
+- Stage 7.2.b/c で elisp reader が安定動作確認後、~bi_read_from_string~
+  の Rust fallback path を削除、elisp 実装が install されてない場合は
+  hard error
+- ~include_str!~ で ~lisp/nelisp-stdlib-reader.el~ を bundled image に
+  bake-in (= 起動時必ず install される保証)
+
+LOC: -50 Rust (fallback path)、+5 Rust (image.rs include)。
+
+** §3.5 Stage 7.2.e — Rust reader 全体削除 (Stage 7.6 の前哨戦)
+
+- ~build-tool/src/reader/lexer.rs~ / ~parser.rs~ 削除 (= 1,359 LOC)
+- ~mod.rs~ は Sexp re-export と ~ReadError~ shim のみ残す (~30 LOC)
+- ~sexp.rs~ は core data structure として残す (= Sexp 型自体は Rust
+  と elisp 両方で使われる、type 定義の真実は 1 つ)
+
+LOC: -1,400 Rust。
+
+** §3.6 stage 順序
+
+7.2.a → 7.2.b → 7.2.c → 7.2.d → 7.2.e。各 stage で全 ERT PASS かつ
+~make test~ 0 unexpected を gate。Stage 7.2.c (= round-trip) で
+等価性を empirical 確認、7.2.d で fallback 撤去、7.2.e で Rust 削除。
+
+* §4 Test plan
+
+** §4.1 各 sub-stage で ERT 全 PASS
+- Stage 7.2.a SHIPPED 時点: Rust reader 動作中、新 elisp lexer は parallel
+  - ERT: ~nelisp-read-tokenize~ で既存 Rust lexer と同 token を生成
+- Stage 7.2.b SHIPPED 時点: elisp reader が takeover、Rust fallback も生
+  - ERT: 全 ~.el~ ファイルが elisp reader 経由で load 可能 (= self-host
+    gate の前哨戦)
+- Stage 7.2.c〜e: round-trip + Rust delete
+
+** §4.2 self-host gate
+- elisp reader が *自身を含む全 elisp ファイルを load してエラー無し*
+- Stage 7.2.d 完了で「elisp reader が ~lisp/nelisp-stdlib-reader.el~ を
+  read できる」を 1 段証明 (= meta-circularity)
+
+** §4.3 wallclock gate
+- Doc 63 §5.3 gate: elisp eval / reader 切替前後で ~make test~ wallclock
+  < 3x degradation
+- Stage 7.2.b SHIPPED 後 ~make test~ 計測、3x 以下なら gate PASS
+- bench: ~(read-from-string (mapconcat 'identity (make-list 1000 "(a b c d)") " "))~
+
+** §4.4 round-trip property
+- 全 Sexp variant (Nil/T/Int/Float/Symbol/Str/MutStr/Cons/Vector/CharTable/
+  BoolVector/Cell/Record) について
+- ~(equal OBJ (read-from-string (prin1-to-string OBJ)))~ が t を返す
+- 例外: Sexp::Cell は printer で readable な表現を持たないので除外
+  (= eval-only 内部 variant)
+
+* §5 段階的 unlock plan
+
+| stage   | 解放対象                                     | 推定 LOC 削減 | 依存                |
+|---------+----------------------------------------------+---------------+---------------------|
+| 7.2.a   | lexer + token plist (= parallel impl)        | 0 (= +400)    | Stage 7.1 SHIPPED   |
+| 7.2.b   | parser + read-from-string takeover           | 0 (= +500/+30)| 7.2.a               |
+| 7.2.c   | round-trip property tests                     | 0 (= +200)    | 7.2.b               |
+| 7.2.d   | Rust fallback 撤去 + image.rs include         | -50 (= +5)    | 7.2.c (= 安定動作)  |
+| 7.2.e   | Rust reader 全削除 (lexer.rs / parser.rs)    | -1,359        | 7.2.d (= 数 release 観察) |
+| 計      | -                                            | -1,400 / +1,135 | -                 |
+
+合計: Rust ~1,400 LOC 削減 + elisp ~1,135 LOC 増 = net -265 LOC、
+かつ Phase 7 self-host roadmap (Doc 63) が大きく前進。
+
+* §6 共通原則
+
+- *parallel path 期間 minimal*: Stage 7.2.b → 7.2.d を素早く回す
+  (= Rust + elisp 両 reader が動く期間が長引くと test infra が冗長化)
+- *round-trip を gate 化*: Stage 7.2.c で自動化、以降の primitive
+  追加 / Sexp variant 追加で必ず round-trip pass を確認
+- *bootstrap で host Emacs reader を借用しない*: Doc 47 では host
+  Emacs ~read~ を呼んでいたが本 Doc では完全に自前 lexer + parser
+  に切替、host 依存を撤去
+- *primitive 追加を最小限*: §2.6 通り既存 12 primitive で reader が
+  完結、新規追加は不要 (= Rust min 原則)
+
+* §7 Out of scope
+
+- *Phase 7 Stage 7.3〜7.6* (= special forms / apply / takeover) は別 Doc
+- *Macro expansion within reader* (= ~#'~ の eager expand 等) は
+  Stage 7.3 で扱う
+- *Reader macros* (= host Emacs の ~set-macro-character~ 系) は scope
+  外。NeLisp は Doc 44 §3.2 LOCKED subset のみ
+- *Multibyte / non-ASCII string content* — bootstrap subset では raw
+  bytes pass-through、Phase 7.4 NeLisp coding が owner
+- *Streaming reader* (= file descriptor から 1 char 読み) は別 phase。
+  本 Doc の subset は string-based reader のみ
+- *Position tracking for source maps* (= ~read-from-string~ の return
+  に位置情報を含める) は Phase 8 候補
+- *Bytecode literal* ~#[...]~ — Doc 44 §3.2 で deferred のまま、Stage
+  7.2 でも same scope に維持
+
+* §8 References
+
+- =feedback_nelisp_minimize_rust= memory
+- Doc 49 elisp pivot
+- Doc 50 §4 段階的 unlock plan / §5 共通原則
+- Doc 62 Phase 5 native cc lowering (= reader hot path JIT)
+- Doc 63 Phase 7 NeLisp self-host roadmap (= 親 Doc)
+- Doc 64 Phase 7 Stage 7.1 elisp Sexp printer (= 兄弟 Doc、双対)
+- ~lisp/doc47-build-tool-reader.el~ (= reader pivot 既存 161 LOC、
+  本 Doc で発展 + host Emacs ~read~ 借用を撤去)
+- ~build-tool/src/reader/lexer.rs~ (= 撤去対象 881 LOC)
+- ~build-tool/src/reader/parser.rs~ (= 撤去対象 478 LOC)
+- ~build-tool/src/reader/mod.rs~ (= ~50 LOC に縮退)
+- ~build-tool/src/reader/sexp.rs~ (= 残す、Sexp 型 + ~#[repr(C, u8)]~)
+- ~build-tool/src/reader/error.rs~ (= 残す、ReadError + SourcePos)
+- SBCL self-host history、Femtolisp、Guile
