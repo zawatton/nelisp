@@ -34,7 +34,18 @@ use std::rc::Rc;
 /// list traversal is O(n) without a recursion-blow risk on the *enum*
 /// itself.  Deeply nested forms are still bounded by parser recursion
 /// depth which is checked separately.
+///
+/// **Layout** (Doc 62 Phase 5 inline-emit unlock, 2026-05-07): `#[repr(C, u8)]`
+/// pins the discriminant as a single `u8` at offset 0, followed by the
+/// variant payload at the next 8-byte aligned offset.  This lets the
+/// JIT (build-tool/src/jit/) read the variant tag inline (`movzx tag,
+/// byte ptr [rdi]`) without going through a `match` helper.  The tag
+/// values are kept stable via the `SEXP_TAG_*` constants below;
+/// re-ordering variants would invalidate compiled JIT code, so any
+/// future variant must be appended at the end (or guarded by a JIT
+/// recompile).
 #[derive(Debug, Clone, PartialEq)]
+#[repr(C, u8)]
 pub enum Sexp {
     /// `nil` literal — also the empty list `()`.
     Nil,
@@ -129,6 +140,47 @@ pub enum Sexp {
         type_tag: Box<Sexp>,
         slots: Rc<RefCell<Vec<Sexp>>>,
     },
+}
+
+// ---------------------------------------------------------------------------
+// Sexp variant tag constants (Doc 62 Phase 5 inline-emit unlock).
+//
+// These mirror the declaration order of the `Sexp' enum above and are
+// the values stored in the `#[repr(C, u8)]' discriminant byte at offset
+// 0 of every Sexp value.  The `variant_tags_are_stable' unit test in
+// the `mod tests' block below asserts each constant matches what
+// `variant_tag(&Sexp::FOO)' actually returns.
+//
+// JIT code (build-tool/src/jit/) is allowed to depend on these values
+// being stable — re-ordering variants WILL invalidate compiled JIT
+// modules.  When adding a new variant, append it at the end of the
+// enum and the constant list, and add a corresponding assertion in
+// the unit test.
+// ---------------------------------------------------------------------------
+
+pub const SEXP_TAG_NIL: u8 = 0;
+pub const SEXP_TAG_T: u8 = 1;
+pub const SEXP_TAG_INT: u8 = 2;
+pub const SEXP_TAG_FLOAT: u8 = 3;
+pub const SEXP_TAG_SYMBOL: u8 = 4;
+pub const SEXP_TAG_STR: u8 = 5;
+pub const SEXP_TAG_MUT_STR: u8 = 6;
+pub const SEXP_TAG_CONS: u8 = 7;
+pub const SEXP_TAG_VECTOR: u8 = 8;
+pub const SEXP_TAG_CHAR_TABLE: u8 = 9;
+pub const SEXP_TAG_BOOL_VECTOR: u8 = 10;
+pub const SEXP_TAG_CELL: u8 = 11;
+pub const SEXP_TAG_RECORD: u8 = 12;
+
+/// Read the discriminant byte (offset 0) of a Sexp value.  Stable per
+/// `#[repr(C, u8)]'; matches one of the `SEXP_TAG_*' constants above.
+#[inline]
+pub fn variant_tag(s: &Sexp) -> u8 {
+    // SAFETY: `#[repr(C, u8)]' guarantees the discriminant is a `u8'
+    // at offset 0 of the enum value.  We read it through a `*const u8'
+    // cast which is well-defined as long as the cast does not extend
+    // past the enum's first byte.
+    unsafe { *(s as *const Sexp as *const u8) }
 }
 
 // HashTableInner struct retired in Doc 50 stage 4f (2026-05-07);
@@ -559,5 +611,61 @@ mod tests {
     fn fmt_float_keeps_decimal() {
         assert_eq!(fmt_sexp(&Sexp::Float(1.0)), "1.0");
         assert_eq!(fmt_sexp(&Sexp::Float(3.14)), "3.14");
+    }
+
+    /// Doc 62 Phase 5 — pin every `SEXP_TAG_*' constant to the actual
+    /// `#[repr(C, u8)]' discriminant byte.  JIT-emitted code reads the
+    /// tag from offset 0 of every Sexp pointer; if a re-ordering of
+    /// variants ever changes the discriminant numeric values, this
+    /// test fails BEFORE the JIT silently mis-classifies cons cells
+    /// as integers (or worse).
+    #[test]
+    fn variant_tags_are_stable() {
+        assert_eq!(variant_tag(&Sexp::Nil), SEXP_TAG_NIL);
+        assert_eq!(variant_tag(&Sexp::T), SEXP_TAG_T);
+        assert_eq!(variant_tag(&Sexp::Int(0)), SEXP_TAG_INT);
+        assert_eq!(variant_tag(&Sexp::Float(0.0)), SEXP_TAG_FLOAT);
+        assert_eq!(variant_tag(&Sexp::Symbol("x".into())), SEXP_TAG_SYMBOL);
+        assert_eq!(variant_tag(&Sexp::Str("x".into())), SEXP_TAG_STR);
+        assert_eq!(variant_tag(&Sexp::mut_str("x")), SEXP_TAG_MUT_STR);
+        assert_eq!(
+            variant_tag(&Sexp::cons(Sexp::Nil, Sexp::Nil)),
+            SEXP_TAG_CONS
+        );
+        assert_eq!(variant_tag(&Sexp::vector(vec![])), SEXP_TAG_VECTOR);
+        assert_eq!(
+            variant_tag(&Sexp::char_table(Sexp::Nil, Sexp::Nil)),
+            SEXP_TAG_CHAR_TABLE
+        );
+        assert_eq!(
+            variant_tag(&Sexp::BoolVector(Rc::new(RefCell::new(vec![])))),
+            SEXP_TAG_BOOL_VECTOR
+        );
+        assert_eq!(
+            variant_tag(&Sexp::Cell(Rc::new(RefCell::new(Sexp::Nil)))),
+            SEXP_TAG_CELL
+        );
+        assert_eq!(
+            variant_tag(&Sexp::Record {
+                type_tag: Box::new(Sexp::Symbol("foo".into())),
+                slots: Rc::new(RefCell::new(vec![]))
+            }),
+            SEXP_TAG_RECORD
+        );
+    }
+
+    /// `#[repr(C, u8)]' should keep the Sexp footprint at the same
+    /// alignment / largest-payload bound it had under default repr.
+    /// We don't pin the exact byte size (= depends on String/Rc layout
+    /// details that are stable in practice but not guaranteed by spec)
+    /// but the alignment is fixed, and the size must accommodate the
+    /// largest payload.
+    #[test]
+    fn sexp_layout_alignment_and_size_sane() {
+        assert_eq!(std::mem::align_of::<Sexp>(), 8);
+        // String is 24 bytes (3 × usize on 64-bit), payload at offset 8
+        // → minimum total 32 bytes.  Allow up to 40 for niche slack.
+        let sz = std::mem::size_of::<Sexp>();
+        assert!(sz >= 32 && sz <= 48, "Sexp size = {} (expected 32..=48)", sz);
     }
 }
