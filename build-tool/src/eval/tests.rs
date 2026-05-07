@@ -2258,3 +2258,140 @@ fn defstruct_slot_with_default() {
     );
     assert_eq!(v, Sexp::Int(0));
 }
+
+// ============================================================
+// Doc 50 stage 4f — hash-table re-implemented in elisp
+// (lisp/nelisp-stdlib-hash.el on top of Stage 4c record primitives)
+// ============================================================
+
+#[test]
+fn elisp_hash_table_basic_round_trip() {
+    // make-hash-table → puthash → gethash round-trip with default
+    // (eql) test.  After Stage 4f the storage is a Record, so the
+    // result must come back unchanged from elisp wrappers.
+    assert_eq!(
+        ok_all("(let ((h (make-hash-table)))
+                  (puthash 'a 1 h)
+                  (puthash 'b 2 h)
+                  (gethash 'b h))"),
+        Sexp::Int(2),
+    );
+}
+
+#[test]
+fn elisp_hash_table_type_of_is_hash_table() {
+    // Doc 52 §2.2 — `type-of' returns the record's `type_tag', which
+    // for hash-tables is the symbol `hash-table' (= host Emacs parity).
+    assert_eq!(
+        ok_all("(type-of (make-hash-table))"),
+        Sexp::Symbol("hash-table".into()),
+    );
+    assert_eq!(ok_all("(hash-table-p (make-hash-table))"), Sexp::T);
+    assert_eq!(ok_all("(hash-table-p 42)"), Sexp::Nil);
+    assert_eq!(ok_all("(hash-table-p '(a b c))"), Sexp::Nil);
+}
+
+#[test]
+fn elisp_hash_table_overwrite_in_place() {
+    // Re-puthash on the same key under `eql' overwrites the existing
+    // binding (= no duplicate entries).  Verified via length of the
+    // pairs snapshot.
+    assert_eq!(
+        ok_all("(let ((h (make-hash-table)))
+                  (puthash 'k 1 h)
+                  (puthash 'k 2 h)
+                  (puthash 'k 3 h)
+                  (length (nelisp--hash-pairs h)))"),
+        Sexp::Int(1),
+    );
+    assert_eq!(
+        ok_all("(let ((h (make-hash-table)))
+                  (puthash 'k 1 h)
+                  (puthash 'k 99 h)
+                  (gethash 'k h))"),
+        Sexp::Int(99),
+    );
+}
+
+#[test]
+fn elisp_hash_table_remhash() {
+    assert_eq!(
+        ok_all("(let ((h (make-hash-table)))
+                  (puthash 'a 1 h)
+                  (puthash 'b 2 h)
+                  (remhash 'a h)
+                  (gethash 'a h 'missing))"),
+        Sexp::Symbol("missing".into()),
+    );
+    // remhash returns t on hit, nil on miss.
+    assert_eq!(
+        ok_all("(let ((h (make-hash-table)))
+                  (puthash 'a 1 h)
+                  (remhash 'a h))"),
+        Sexp::T,
+    );
+    assert_eq!(
+        ok_all("(let ((h (make-hash-table)))
+                  (remhash 'never h))"),
+        Sexp::Nil,
+    );
+}
+
+#[test]
+fn elisp_hash_table_clrhash() {
+    assert_eq!(
+        ok_all("(let ((h (make-hash-table)))
+                  (puthash 'a 1 h)
+                  (puthash 'b 2 h)
+                  (clrhash h)
+                  (length (nelisp--hash-pairs h)))"),
+        Sexp::Int(0),
+    );
+}
+
+#[test]
+fn elisp_hash_table_test_equal() {
+    // :test 'equal compares strings + lists structurally.
+    assert_eq!(
+        ok_all("(let ((h (make-hash-table :test 'equal)))
+                  (puthash \"foo\" 1 h)
+                  (gethash \"foo\" h))"),
+        Sexp::Int(1),
+    );
+}
+
+#[test]
+fn elisp_hash_table_pairs_insertion_order() {
+    // `nelisp--hash-pairs' returns entries in INSERTION order.  The
+    // internal storage prepends, so the iteration reverses to get
+    // back to insertion order.
+    let v = ok_all(
+        "(let ((h (make-hash-table)))
+           (puthash 'a 1 h)
+           (puthash 'b 2 h)
+           (puthash 'c 3 h)
+           (mapcar 'car (nelisp--hash-pairs h)))",
+    );
+    assert_eq!(
+        v,
+        Sexp::list_from(&[
+            Sexp::Symbol("a".into()),
+            Sexp::Symbol("b".into()),
+            Sexp::Symbol("c".into()),
+        ]),
+    );
+}
+
+#[test]
+fn elisp_hash_table_count_via_misc() {
+    // The pre-existing `hash-table-count' (lisp/nelisp-stdlib-misc.el)
+    // is a fold over `nelisp--hash-pairs'; verify it still works after
+    // we swap the underlying storage to a Record.
+    assert_eq!(
+        ok_all("(let ((h (make-hash-table)))
+                  (puthash 'a 1 h)
+                  (puthash 'b 2 h)
+                  (hash-table-count h))"),
+        Sexp::Int(2),
+    );
+}

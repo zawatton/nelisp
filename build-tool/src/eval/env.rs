@@ -127,6 +127,14 @@ impl Env {
             // minimal stub; now NeLisp stdlib carries the richer
             // implementation so all consumers share a single source.
             ("nelisp-cl-macros.el", include_str!("../../../lisp/nelisp-cl-macros.el")),
+            // Doc 50 stage 4f (2026-05-07): hash-table re-implemented
+            // in elisp on top of Stage 4c record primitives.  Loaded
+            // AFTER cl-macros so a future setf/gv path can land here
+            // without further reorder.  The elisp defuns override the
+            // prior Rust dispatch arms for make-hash-table / puthash /
+            // gethash / remhash / clrhash / hash-table-p /
+            // nelisp--hash-pairs (= function-cell override at load).
+            ("nelisp-stdlib-hash.el", include_str!("../../../lisp/nelisp-stdlib-hash.el")),
         ];
         let mut env = Env {
             globals: HashMap::new(),
