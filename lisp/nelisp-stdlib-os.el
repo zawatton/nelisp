@@ -36,6 +36,37 @@
 Linux/BSD).  When nil, fall back to `nl-ffi-call' libc bindings
 (Darwin/Windows).  Set once at load time.")
 
+;; Doc 76 後段 (2026-05-09): host OS family detection for arch-aware
+;; layout / flag selection.  NeLisp does not yet bind `system-type', so
+;; we sniff the host via filesystem fingerprints — `/proc/version' is
+;; Linux-only, `/System/Library' is macOS-only.  Result is bound once
+;; at load time; downstream defconsts dispatch on this symbol.
+(defun nelisp-os--detect-platform ()
+  "Return one of `linux', `darwin', `windows', `unknown'."
+  (cond
+   ((file-readable-p "/proc/version") 'linux)
+   ((file-readable-p "/System/Library") 'darwin)
+   ((file-readable-p "C:/Windows") 'windows)
+   (t 'unknown)))
+
+(defconst nelisp-os--platform (nelisp-os--detect-platform)
+  "Detected host OS family symbol — bound once at load time.
+Downstream defconsts use this to pick arch-aware values (e.g. O_CREAT
+is 64 on Linux but 0x200 on Darwin).  Linux-only kernel surfaces
+(inotify / signalfd / timerfd / eventfd / pidfd / SO_PEERCRED) call
+`nelisp-os--require-linux' from their wrapper entry to fail loudly on
+non-Linux platforms instead of returning misleading errno values from
+a syscall that does not exist there.")
+
+(defun nelisp-os--require-linux (feature-name)
+  "Signal `nelisp-os-error' when FEATURE-NAME is invoked on a non-Linux
+platform.  Used by Linux-only wrappers (inotify, signalfd, timerfd,
+eventfd, pidfd, SO_PEERCRED) to make platform constraints explicit."
+  (unless (eq nelisp-os--platform 'linux)
+    (signal 'nelisp-os-error
+            (list (format "%s is Linux-only (current platform: %s)"
+                          feature-name nelisp-os--platform)))))
+
 ;; ---------------------------------------------------------------------------
 ;; POSIX flag constants (Linux x86_64/arm64 values).  Phase 3+ refactor
 ;; should look these up from a per-OS table; for Phase 1 the Linux
@@ -44,13 +75,24 @@ Linux/BSD).  When nil, fall back to `nl-ffi-call' libc bindings
 ;; ---------------------------------------------------------------------------
 
 (defconst nelisp-os-AT-FDCWD -100)         ; openat dirfd sentinel for cwd
-(defconst nelisp-os-O-RDONLY 0)
-(defconst nelisp-os-O-WRONLY 1)
-(defconst nelisp-os-O-RDWR   2)
-(defconst nelisp-os-O-CREAT  64)           ; 0o100
-(defconst nelisp-os-O-EXCL   128)          ; 0o200
-(defconst nelisp-os-O-TRUNC  512)          ; 0o1000
-(defconst nelisp-os-O-APPEND 1024)         ; 0o2000
+(defconst nelisp-os-O-RDONLY 0)            ; OK on Linux/Darwin/musl
+(defconst nelisp-os-O-WRONLY 1)            ; OK on Linux/Darwin/musl
+(defconst nelisp-os-O-RDWR   2)            ; OK on Linux/Darwin/musl
+;; Doc 76 後段 (2026-05-09): O_CREAT / O_EXCL / O_TRUNC / O_APPEND
+;; differ between Linux glibc and Darwin (BSD-derived).  Hard-coded
+;; values were Linux-only; this block adds arch-aware dispatch.
+(defconst nelisp-os-O-CREAT
+  (cond ((eq nelisp-os--platform 'darwin) #x200)  ; macOS / FreeBSD
+        (t                                64)))    ; Linux glibc / musl (= 0o100)
+(defconst nelisp-os-O-EXCL
+  (cond ((eq nelisp-os--platform 'darwin) #x800)
+        (t                                128)))
+(defconst nelisp-os-O-TRUNC
+  (cond ((eq nelisp-os--platform 'darwin) #x400)
+        (t                                512)))
+(defconst nelisp-os-O-APPEND
+  (cond ((eq nelisp-os--platform 'darwin) #x8)
+        (t                                1024)))
 
 ;; Standard fds.
 (defconst nelisp-os-STDIN  0)
@@ -168,7 +210,10 @@ went through `:string' (= CString::new, NUL-rejecting)."
 (defconst nelisp-os-F-SETFL 4)
 
 ;; open(2) / fcntl(2) extra flag
-(defconst nelisp-os-O-NONBLOCK 2048)        ; 0o4000
+;; Doc 76 後段: O_NONBLOCK = 2048 (Linux 0o4000) vs 4 (Darwin/FreeBSD).
+(defconst nelisp-os-O-NONBLOCK
+  (cond ((eq nelisp-os--platform 'darwin) 4)
+        (t                                2048)))
 
 ;; mmap(2) prot
 (defconst nelisp-os-PROT-NONE  0)
@@ -323,12 +368,18 @@ primitive; not supported in Phase 3."
 
 ;; ----- Network (AF_INET only in Phase 4) -----
 
-(defconst nelisp-os-AF-INET 2)
+(defconst nelisp-os-AF-INET 2)             ; OK on Linux/Darwin/musl/Windows
 
 (defconst nelisp-os-SOCK-STREAM   1)
 (defconst nelisp-os-SOCK-DGRAM    2)
-(defconst nelisp-os-SOCK-NONBLOCK 2048)        ; 0o4000 — OR-able into SOCK_*
-(defconst nelisp-os-SOCK-CLOEXEC  524288)      ; 0o2000000 — OR-able into SOCK_*
+;; Doc 76 後段: SOCK_NONBLOCK / SOCK_CLOEXEC are Linux extensions (=
+;; OR-able directly into the SOCK_* type).  Darwin / FreeBSD lack
+;; these — set 0 so OR'ing them is a no-op; rely on fcntl(F_SETFL) +
+;; FD_CLOEXEC for equivalent behaviour on those platforms.
+(defconst nelisp-os-SOCK-NONBLOCK
+  (cond ((eq nelisp-os--platform 'linux) 2048) (t 0)))
+(defconst nelisp-os-SOCK-CLOEXEC
+  (cond ((eq nelisp-os--platform 'linux) 524288) (t 0)))
 
 (defconst nelisp-os-IPPROTO-IP   0)
 (defconst nelisp-os-IPPROTO-TCP  6)
@@ -339,9 +390,18 @@ primitive; not supported in Phase 3."
 (defconst nelisp-os-INADDR-LOOPBACK #x7F000001)
 
 ;; setsockopt level / option (int-valued only in Phase 4)
-(defconst nelisp-os-SOL-SOCKET    1)
-(defconst nelisp-os-SO-REUSEADDR  2)
-(defconst nelisp-os-SO-KEEPALIVE  9)
+;; Doc 76 後段: SOL_SOCKET / SO_REUSEADDR / SO_KEEPALIVE differ between
+;; Linux (= small ints, kernel-managed namespace) and Darwin/FreeBSD
+;; (= legacy BSD layout, SOL_SOCKET = 0xffff sentinel).
+(defconst nelisp-os-SOL-SOCKET
+  (cond ((eq nelisp-os--platform 'darwin) #xffff)
+        (t                                1)))
+(defconst nelisp-os-SO-REUSEADDR
+  (cond ((eq nelisp-os--platform 'darwin) 4)
+        (t                                2)))
+(defconst nelisp-os-SO-KEEPALIVE
+  (cond ((eq nelisp-os--platform 'darwin) 8)
+        (t                                9)))
 
 ;; ----- Poll events -----
 
@@ -618,12 +678,20 @@ blocks indefinitely; 0 polls without blocking."
 ;; ---------------------------------------------------------------------------
 
 ;; Address families
-(defconst nelisp-os-AF-UNIX  1)
-(defconst nelisp-os-AF-INET6 10)
+(defconst nelisp-os-AF-UNIX  1)            ; OK on Linux/Darwin/musl
+;; Doc 76 後段: AF_INET6 = 10 (Linux) vs 30 (Darwin) vs 28 (FreeBSD).
+(defconst nelisp-os-AF-INET6
+  (cond ((eq nelisp-os--platform 'darwin) 30)
+        (t                                10)))
 
 ;; sockaddr_un.sun_path capacity (Linux glibc).  Reference value — the
 ;; primitive enforces this internally and signals an error if exceeded.
-(defconst nelisp-os-SUN-PATH-MAX 108)
+;; Doc 76 後段: sun_path[] is 108 bytes on Linux / glibc / musl, 104 on
+;; Darwin (BSD-derived, including the leading family byte).  Total
+;; sockaddr_un length follows: Linux=2+108=110, Darwin=1+1+104=106.
+(defconst nelisp-os-SUN-PATH-MAX
+  (cond ((eq nelisp-os--platform 'darwin) 104)
+        (t                                108)))
 
 ;; IPv6 helper addresses — host-byte-order group lists.
 (defconst nelisp-os-IN6ADDR-ANY      '(0 0 0 0 0 0 0 0))
@@ -637,8 +705,15 @@ blocks indefinitely; 0 polls without blocking."
 ;; sin6_scope_id u32 at 24, total 28).
 ;; ---------------------------------------------------------------------------
 
-(defconst nelisp-os--sockaddr-un-len 110)
-(defconst nelisp-os--sockaddr-in6-len 28)
+;; Doc 76 後段: sockaddr_un total length = sun_family (2 bytes Linux,
+;; 2 bytes BSD with sun_len + sun_family each 1 byte) + sun_path[].
+;; Linux glibc: 2 + 108 = 110.  Darwin/FreeBSD: 2 (sun_len + sun_family)
+;; + 104 = 106.  We keep the same +2 prefix arithmetic since the
+;; encode helper writes the family at offset 0 / sun_path at offset 2
+;; on both arches (the BSD sun_len byte is harmlessly initialised to 0
+;; by the kernel for AF_UNIX bind/connect).
+(defconst nelisp-os--sockaddr-un-len (+ 2 nelisp-os-SUN-PATH-MAX))
+(defconst nelisp-os--sockaddr-in6-len 28)  ; OK on Linux/Darwin/musl
 
 (defun nelisp-os--encode-sockaddr-un (buf path)
   "Populate BUF (= 110-byte zeroed `nl-ffi-malloc') with sockaddr_un for
@@ -855,12 +930,14 @@ host byte order."
   "Linux pidfd_open(2) — return a file descriptor referring to PID, or
 signal `nelisp-os-error'.  FLAGS is currently 0 or
 `nelisp-os-PIDFD-NONBLOCK'."
+  (nelisp-os--require-linux 'pidfd-open)
   (nelisp-os--check-errno (nelisp--syscall 'pidfd_open pid flags)))
 
 (defun nelisp-os-pidfd-send-signal (pidfd sig flags)
   "Linux pidfd_send_signal(2) — send SIG to the process referenced by
 PIDFD.  Phase 4.3 only supports `info = NULL', so siginfo_t is left
 zero; pass FLAGS = 0 unless you know better."
+  (nelisp-os--require-linux 'pidfd-send-signal)
   (nelisp-os--check-errno
    (nelisp--syscall 'pidfd_send_signal pidfd sig 0 flags)))
 
@@ -894,6 +971,7 @@ zero; pass FLAGS = 0 unless you know better."
 (defun nelisp-os-inotify-init (flags)
   "Linux inotify_init1(2) — return a new inotify fd.  FLAGS is OR of
 `nelisp-os-IN-NONBLOCK' / `nelisp-os-IN-CLOEXEC' (or 0)."
+  (nelisp-os--require-linux 'inotify-init)
   (nelisp-os--check-errno (nelisp--syscall 'inotify_init1 flags)))
 
 (defun nelisp-os-inotify-add-watch (fd path mask)
@@ -902,6 +980,7 @@ integer) or signal `nelisp-os-error'.  MASK is OR of `IN-*' event bits."
   ;; libc::inotify_add_watch: int(int fd, const char *path, uint32_t mask)
   ;; → int.  Returns -1 on error and sets errno; the wd is a positive
   ;; per-fd integer otherwise.
+  (nelisp-os--require-linux 'inotify-add-watch)
   (let ((r (nl-ffi-call "libc" "inotify_add_watch"
                         [:sint32 :sint32 :string :uint32]
                         fd path mask)))
@@ -911,12 +990,14 @@ integer) or signal `nelisp-os-error'.  MASK is OR of `IN-*' event bits."
 
 (defun nelisp-os-inotify-rm-watch (fd wd)
   "Linux inotify_rm_watch(2) — remove the watch identified by WD."
+  (nelisp-os--require-linux 'inotify-rm-watch)
   (nelisp-os--check-errno (nelisp--syscall 'inotify_rm_watch fd wd)))
 
 (defun nelisp-os-inotify-read (fd max-events)
   "Read up to MAX-EVENTS events off inotify FD.  Returns a list of
 4-element lists `(WD MASK COOKIE NAME)'.  Empty list when no events
 are ready (only possible when FD was opened `IN-NONBLOCK')."
+  (nelisp-os--require-linux 'inotify-read)
   ;; Doc 76 Stage E: was a Rust specialized primitive; now elisp-side
   ;; libc.read + nl-ffi-read-i32/u32/bytes-at parse loop.
   (let* ((per-event-cap (+ 16 256))             ; sizeof(header) + NAME_MAX+1
@@ -957,6 +1038,7 @@ are ready (only possible when FD was opened `IN-NONBLOCK')."
   "Linux eventfd2(2) — return a new eventfd with the given INITVAL
 counter and FLAGS (OR of `EFD-*').  Read/write are 8-byte uint64
 counters; use `nelisp-os-write' / `nelisp-os-read' on the returned fd."
+  (nelisp-os--require-linux 'eventfd)
   (nelisp-os--check-errno (nelisp--syscall 'eventfd2 initval flags)))
 
 ;; ---------------------------------------------------------------------------
@@ -1087,9 +1169,19 @@ auto-cleaned on close.  Returns 0 or signals `nelisp-os-error'."
 
 ;; ----- common signal numbers (= same as Doc 55 SIG* but extended) -----
 
-(defconst nelisp-os-SIGUSR1 10)
-(defconst nelisp-os-SIGUSR2 12)
-(defconst nelisp-os-SIGCHLD 17)
+;; Doc 76 後段: realtime / job-control signal numbers split between
+;; System V (Linux) and BSD (Darwin) lineages.  SIGALRM = 14 / SIGHUP
+;; = 1 / SIGINT = 2 / SIGKILL = 9 / SIGTERM = 15 are POSIX-mandated
+;; and identical everywhere; SIGUSR1 / SIGUSR2 / SIGCHLD differ.
+(defconst nelisp-os-SIGUSR1
+  (cond ((eq nelisp-os--platform 'darwin) 30)
+        (t                                10)))
+(defconst nelisp-os-SIGUSR2
+  (cond ((eq nelisp-os--platform 'darwin) 31)
+        (t                                12)))
+(defconst nelisp-os-SIGCHLD
+  (cond ((eq nelisp-os--platform 'darwin) 20)
+        (t                                17)))
 (defconst nelisp-os-SIGALRM 14)
 
 ;; ---------------------------------------------------------------------------
@@ -1107,9 +1199,15 @@ auto-cleaned on close.  Returns 0 or signals `nelisp-os-error'."
 ;; (i32), pid @ 12 (u32), uid @ 16 (u32), status @ 40 (i32).
 ;; ---------------------------------------------------------------------------
 
-(defconst nelisp-os--sigset-len 128)
-(defconst nelisp-os--itimerspec-len 32)
-(defconst nelisp-os--signalfd-siginfo-len 128)
+;; Doc 76 後段: glibc sigset_t = 128 bytes (= 1024-bit mask), musl =
+;; 128 bytes (same), Darwin = 4 bytes (= u32 mask, no realtime
+;; signals).  signalfd_siginfo / timerfd are Linux-only so their
+;; lengths are gated by `--require-linux'.
+(defconst nelisp-os--sigset-len
+  (cond ((eq nelisp-os--platform 'darwin) 4)
+        (t                                128)))
+(defconst nelisp-os--itimerspec-len 32)        ; OK on Linux/Darwin (= 4 × i64)
+(defconst nelisp-os--signalfd-siginfo-len 128) ; Linux-only (gated)
 
 (defun nelisp-os--encode-sigset (buf signals)
   "Populate BUF (= 128-byte zeroed) as sigset_t with SIGNALS list."
@@ -1160,6 +1258,7 @@ i64 @ 24)."
   "Linux signalfd4(2) — return (or update) a signalfd watching MASK.
 FD = -1 to create a new fd, or an existing signalfd to update its
 mask.  MASK is a list of signal numbers; FLAGS = OR of `SFD-*'."
+  (nelisp-os--require-linux 'signalfd)
   (let ((set-buf (nl-ffi-malloc nelisp-os--sigset-len)))
     (unwind-protect
         (progn
@@ -1174,6 +1273,7 @@ mask.  MASK is a list of signal numbers; FLAGS = OR of `SFD-*'."
   "Read up to MAX-EVENTS events off signalfd FD.  Returns a list of
 6-element lists `(SIGNO ERRNO CODE PID UID STATUS)'.  Empty list when
 no events are ready (only on FD opened `SFD-NONBLOCK')."
+  (nelisp-os--require-linux 'signalfd-read)
   (let* ((cap (* nelisp-os--signalfd-siginfo-len max-events))
          (buf (nl-ffi-malloc cap)))
     (unwind-protect
@@ -1194,6 +1294,11 @@ no events are ready (only on FD opened `SFD-NONBLOCK')."
   "POSIX pthread_sigmask(3) — apply MASK with HOW (= `SIG-BLOCK' /
 `SIG-UNBLOCK' / `SIG-SETMASK').  Returns the previous mask as a
 list of signal numbers."
+  ;; pthread_sigmask is portable POSIX, but our wrapper assumes the
+  ;; Linux glibc/musl 1024-bit sigset_t (= 128 bytes).  Darwin uses a
+  ;; 32-bit mask (= 4 bytes) and `nelisp-os--encode-sigset' would
+  ;; overflow.  Gate until a Darwin-aware encoder lands.
+  (nelisp-os--require-linux 'sigprocmask)
   (let ((new-buf (nl-ffi-malloc nelisp-os--sigset-len))
         (old-buf (nl-ffi-malloc nelisp-os--sigset-len)))
     (unwind-protect
@@ -1213,12 +1318,14 @@ list of signal numbers."
 
 (defun nelisp-os-timerfd-create (clockid flags)
   "Linux timerfd_create(2) — return a new timer fd."
+  (nelisp-os--require-linux 'timerfd-create)
   (nelisp-os--check-errno (nelisp--syscall 'timerfd_create clockid flags)))
 
 (defun nelisp-os-timerfd-settime (fd flags it-int-s it-int-ns it-val-s it-val-ns)
   "Linux timerfd_settime(2) — arm or disarm timer FD.  Returns the
 previous itimerspec as 4-element list (PREV-INT-S PREV-INT-NS
 PREV-VAL-S PREV-VAL-NS)."
+  (nelisp-os--require-linux 'timerfd-settime)
   (let ((new-buf (nl-ffi-malloc nelisp-os--itimerspec-len))
         (old-buf (nl-ffi-malloc nelisp-os--itimerspec-len)))
     (unwind-protect
@@ -1236,6 +1343,7 @@ PREV-VAL-S PREV-VAL-NS)."
 (defun nelisp-os-timerfd-gettime (fd)
   "Linux timerfd_gettime(2) — return current itimerspec as 4-element
 list (INT-S INT-NS VAL-S VAL-NS)."
+  (nelisp-os--require-linux 'timerfd-gettime)
   (let ((cur-buf (nl-ffi-malloc nelisp-os--itimerspec-len)))
     (unwind-protect
         (let ((r (nl-ffi-call "libc" "timerfd_gettime"
@@ -1288,10 +1396,26 @@ value=MS-as-(sec . nsec)."
 ;;                 = 16 bytes; data follows after CMSG_ALIGN(16) = 16
 ;; struct ucred    = pid_t pid (4) + uid_t uid (4) + gid_t gid (4) = 12 bytes
 
-(defconst nelisp-os--iovec-len   16)
-(defconst nelisp-os--msghdr-len  56)
-(defconst nelisp-os--cmsghdr-len 16)
-(defconst nelisp-os--ucred-len   12)
+;; Doc 76 後段: iovec is identical on 64-bit Linux/Darwin (= 8 + 8 = 16
+;; bytes).  msghdr layout differs: Linux glibc uses size_t (8B) for
+;; msg_iovlen / msg_controllen, Darwin / POSIX uses int (4B).
+;;   Linux x86_64 glibc msghdr = 8+4+4+8+8+8+8+4+4 = 56 bytes
+;;   Darwin x86_64        msghdr = 8+4+4+8+4+4+8+4+4 = 48 bytes (with
+;;                                  msg_iovlen/msg_controllen as int)
+;; cmsghdr also differs: Linux x86_64 = 8+4+4 = 16 (cmsg_len = size_t),
+;; Darwin = 4+4+4 = 12 (cmsg_len = socklen_t = u32).
+;; struct ucred is Linux-only (= SO_PEERCRED kernel surface); on
+;; Darwin the peer-credential API is `LOCAL_PEERCRED' returning
+;; struct xucred (≈ 76 bytes).  We gate ucred-using wrappers via
+;; `--require-linux' rather than supporting both surfaces here.
+(defconst nelisp-os--iovec-len 16)
+(defconst nelisp-os--msghdr-len
+  (cond ((eq nelisp-os--platform 'darwin) 48)
+        (t                                56)))
+(defconst nelisp-os--cmsghdr-len
+  (cond ((eq nelisp-os--platform 'darwin) 12)
+        (t                                16)))
+(defconst nelisp-os--ucred-len 12)              ; Linux-only (gated)
 
 (defun nelisp-os--cmsg-align (n)
   "Round N up to a multiple of sizeof(size_t) = 8 (Linux x86_64).
@@ -1472,6 +1596,10 @@ MAX-FDS, never more)."
 (defun nelisp-os-getsockopt-peercred (fd)
   "Retrieve the peer's `struct ucred' on AF_UNIX FD via getsockopt
 SO_PEERCRED.  Returns (PID UID GID) on success."
+  ;; SO_PEERCRED is a Linux extension — Darwin uses LOCAL_PEERCRED
+  ;; with struct xucred (different layout).  Gate until that surface
+  ;; is added.
+  (nelisp-os--require-linux 'getsockopt-peercred)
   (let ((cred-buf (nl-ffi-malloc nelisp-os--ucred-len))
         (len-buf  (nl-ffi-malloc 4)))
     (unwind-protect

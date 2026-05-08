@@ -5,7 +5,7 @@
 
 * Status
 :PROPERTIES:
-:STATE: SHIPPED — Stage 0/A/B/C/D/E/F/G all SHIPPED 2026-05-09 (= 40/40 = 100% specialized 削除、Phase 7 Doc 76 完走)
+:STATE: SHIPPED — Stage 0/A/B/C/D/E/F/G all SHIPPED 2026-05-09 (= 40/40 = 100% specialized 削除、Phase 7 Doc 76 完走) + cross-arch defconst (= 後段 / 純 elisp、2026-05-09)
 :DEPENDS_ON: Doc 51 Phase 5 (nl-ffi-call) / Doc 53〜60 (specialized syscall surface) / Doc 62 Stage 5.8 (non-Linux stub macro 化、commit a81e089)
 :PARENT: Doc 62 §0 audit-revised (= Phase 7 elisp-side OS surface migration が specialized 削除の正規 track)
 :SUPERSEDES: Doc 53〜60 の Path A "specialized" 規約 (= Linux 専用 specialized primitive)
