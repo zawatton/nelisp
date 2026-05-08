@@ -179,6 +179,9 @@
           (delete-file dst))))))
 
 (ert-deftest emacs-fileio-global-key-bindings-installed ()
+  ;; Re-install bindings explicitly so this test is robust against other
+  ;; modules' fixtures (e.g. *--with-fresh-world*) that swap current-global-map.
+  (emacs-fileio--ensure-global-bindings)
   (let ((map (current-global-map)))
     (should (eq #'find-file (lookup-key map (kbd "C-x C-f"))))
     (should (eq #'save-buffer (lookup-key map (kbd "C-x C-s"))))
