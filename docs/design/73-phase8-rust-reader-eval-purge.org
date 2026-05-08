@@ -1,0 +1,451 @@
+#+TITLE: Phase 8 — Rust reader/eval purge (production migrate + 物理削除)
+#+DATE: 2026-05-08
+#+AUTHOR: Claude (z=Opus 4.7) + user direction
+#+OPTIONS: ^:nil
+
+* §0 Status
+
+- 親 Doc: 63 (Phase 7 self-host roadmap §3.4 後続フェーズ)
+- 前提 SHIPPED: Doc 64〜72 (Phase 7 main scope)
+- 本 Doc: Phase 8 全体設計 — *DRAFT 2026-05-08*
+- Phase 8 の sub-stage は 8.1〜8.5、各 sub-stage は別 commit / 別検証
+
+* §1 背景
+
+** §1.1 Phase 7 完了形 (= 2026-05-08 時点)
+
+Phase 7 main scope (Doc 64〜72) で以下が達成済:
+
+- 産品 =nelisp= binary は =reader::read_*= を一切呼ばない (Stage 7.7.c.1)
+- =image::compile_elisp_to_image= は =image-baker= feature gate (Stage 7.7.c.2)
+- cargo unit test fixture は 100% elisp reader 経由 (Stage 7.7.d)
+- STDLIB 15 ファイルは AOT bake 済 (Stage 7.7.a/b、=lisp/*.image=)
+
+しかし Rust reader/eval を *物理削除* するには、まだ以下の 4 種類の
+production callsite が残る:
+
+1. =bridge/loader.rs::bootstrap_self_host= の =reader::read_all= 直呼び
+2. =anvil-runtime= 3 箇所 (=anvil_module_registry.rs:103,121=,
+   =anvil_host_registry.rs:104=) の =reader::read_all= 直呼び
+3. =bin/nelisp.rs:59= の =reader::fmt_sexp= 直呼び
+4. JIT module 5 ファイル + image.rs + eval/builtins.rs / sexp.rs / error.rs
+   の =reader::sexp::*=  / =reader::ReadError= 型 import (= 純粋 type-only)
+
+(4) は型 import なので Sexp 型を =eval/sexp.rs= に move すれば自然解消.
+(1)〜(3) は behavioral migrate が必要.
+
+** §1.2 Phase 8 の本質的目的
+
+- *Production binary から Rust reader/eval を完全切離*: 産品 =nelisp= +
+  =anvil-runtime= が =reader/= module を一切 link しない状態にする
+- *Rust LOC 大幅削減*: =reader/{lexer,parser,error,mod}.rs= = 1,779 LOC
+  を =cfg(image-baker)= gate に降ろし、production build から落とす
+- *Sexp 型の論理 home を eval に明確化*: 現状 =reader/sexp.rs= 671 LOC が
+  Sexp 値型を所有しているが、Stage 7.7.c.1 以降 reader は parse-only
+  なので Sexp 型は =eval= が所有すべき
+
+* §2 Stage 8 sub-stages
+
+** §2.1 Stage 8.1 — Sexp rehome (= structural pre-step)
+
+=reader/sexp.rs= (671 LOC) を =eval/sexp.rs= に物理 move し、type-only
+import を全て =crate::eval::sexp= 経由に書き換え.
+
+*** Scope
+
+| 移動対象 | 新 path |
+|----------+---------|
+| =Sexp= enum | =eval/sexp.rs= |
+| =CharTableInner= struct | =eval/sexp.rs= |
+| =SEXP_TAG_*= constants | =eval/sexp.rs= |
+| =fmt_sexp= | =eval/sexp.rs= |
+| =list_from= helper | =eval/sexp.rs= |
+| その他 Sexp methods | =eval/sexp.rs= |
+
+*** 影響を受ける import 箇所 (= ~10 ファイル)
+
+- =build-tool/src/jit/{cons,access,predicate,syscall,arith,mod,bench}.rs= (7)
+- =build-tool/src/image.rs= (1)
+- =build-tool/src/eval/builtins.rs= (2 callsite)
+- =build-tool/src/eval/error.rs= (1, =reader::ReadError= は別途 8.1.b)
+- =build-tool/src/bin/nelisp.rs= (1, =reader::fmt_sexp= → =eval::sexp::fmt_sexp=)
+- =build-tool/src/bridge/loader.rs= (1, =reader::fmt_sexp=)
+- =anvil-runtime/src/{anvil_module_registry,anvil_host_registry,...}.rs=
+  (= =eval::Sexp= 経由なので変更不要、=eval/sexp.rs= が内部 home に)
+
+*** Stage 8.1.a — ReadError rehome 判断
+
+=reader/error.rs= (106 LOC) の =ReadError= は eval が =EvalError::Read=
+として保持している. Sexp と一緒に =eval/error.rs= に統合する選択肢と、
+=reader/error.rs= に残して reader feature gate に乗る選択肢がある.
+
+- *推奨*: =ReadError= を =eval/error.rs= に統合.  Phase 8 後 reader
+  module 自体が =cfg(image-baker)= gate に乗るため、=ReadError= type
+  が production code から消えるのは整合的でない (= EvalError::Read
+  variant が依然存在するから).  bake-only な =image= も =ReadError=
+  type を返すので、=eval/error.rs= に rehome すれば feature gate
+  問題が解消.
+
+*** 検証
+
+- =cargo build --release= = 0 warnings (両 feature mode)
+- =cargo test --release --lib --tests -- --test-threads=1= = 435/435 PASS
+- =make test= ERT 全 PASS
+- =reader/sexp.rs= 物理削除 (= =reader= module 内の他ファイルからは
+  =crate::eval::sexp::Sexp= で参照)
+
+*** 推定コスト
+
+- 1 commit、~250 LOC import rewrite、~10 ファイル
+- 純粋 mechanical refactor、behavior change なし
+
+** §2.2 Stage 8.2 — anvil-runtime read_all migrate
+
+anvil-runtime の 3 箇所 (=read_all= 直呼び) を elisp reader 経由に
+migrate.
+
+*** Scope
+
+| ファイル | 行 | 用途 |
+|----------+----+------|
+| =anvil_module_registry.rs= | :103 | =read_all(&source)= で module elisp source の forms 取得 |
+| =anvil_module_registry.rs= | :121 | =read_all("(anvil-nelisp-shims-drain)")= で 1 form 構築 |
+| =anvil_host_registry.rs= | :104 | =read_all(&source)= で anvil_host_file の forms 取得 |
+
+*** 設計
+
+- =eval::read_all_via_elisp(input, env)= を =pub= に widen (= 現状
+  =pub(crate)=)
+- =eval::read_one_via_elisp= は =cfg(test)= のままだが、新たに =pub fn
+  read_one_via_elisp= を追加 (cfg なし) して anvil-runtime からも reach
+  可能にする
+- anvil-runtime の 3 箇所を =read_all(&source)= → =read_all_via_elisp(&source, &mut env)= に
+  置換.  env はその場の bootstrap 済 env を引数で受け取る形
+
+*** 検証
+
+- =cargo build --release= = anvil-runtime も含めて 0 warnings
+- 既存 anvil-runtime test suite PASS
+- module / host registry の MCP tool integration test PASS
+
+*** 推定コスト
+
+- 1 commit、~50 LOC + helper visibility change
+- behavior change: parse error が =ReadError= でなく =EvalError= で
+  surface (= UserError tag = "error")、error type の caller 側調整必要
+
+** §2.3 Stage 8.3 — bridge/loader.rs migrate (= line-tracking variant 必要)
+
+bridge bootstrap が =reader::read_all= + =reader::lexer::tokenize= +
+=reader::parser::parse_one= を呼ぶのは、各 form に行番号を付けて
+error 時に =BridgeError::EvalError("line N in ...")= を出すため.
+
+elisp reader をそのまま使うと line 情報が失われるので、まず elisp
+reader 側に line-tracking variant を追加.
+
+*** §2.3.a — =nelisp--read-all-with-line= 追加
+
+=lisp/nelisp-stdlib-reader.el= に新 entrypoint:
+
+#+begin_src emacs-lisp
+(defun nelisp--read-all-with-line-from-string-impl (input)
+  "Like `nelisp--read-all-from-string-impl' but each result is
+\(LINE . FORM\) where LINE is the 1-origin source line at which
+FORM started."
+  ...)
+#+end_src
+
+実装は既存 reader internal state (= =:position= cursor) を流用、
+parse 開始時の position を record して 1-origin line に変換.
+
+*** §2.3.b — bridge =parse_tracked_forms= migrate
+
+=bridge/loader.rs::parse_tracked_forms= を migrate:
+
+- 既存 =reader::lexer::tokenize= + =reader::parser::parse_one= の二段
+  parse を、=eval::read_all_with_line_via_elisp(source, env)= 1 callに
+- =TrackedForm { form, line }= の取得元が変わるが struct 自体は維持
+- =reader::fmt_sexp= 呼出 (= 行 306, 308) は Stage 8.1 で
+  =eval::sexp::fmt_sexp= に migrate 済
+
+*** Stage 8.3 が *達成しなかった* こと
+
+- bridge bootstrap が STDLIB_IMAGES の elisp reader に依存 — chicken-
+  and-egg は無し (= STDLIB は image deserialize で先に load 済、bridge
+  はその後)
+- 5 canonical files を image bake する選択肢は別途 Stage 8.5 (= frozen
+  heap) で扱う
+
+*** 検証
+
+- =cargo test --release= 全 PASS
+- ERT =bridge::tests::*= 全 PASS (4 case)
+- 既存 anvil-runtime smoke test (= bootstrap_self_host 完走) PASS
+
+*** 推定コスト
+
+- 2 commit (8.3.a + 8.3.b)、~100 LOC + reader.el ~30 LOC
+- elisp reader extension は moderate 難度 (line tracking は既存 cursor
+  state から導出可)
+
+** §2.4 Stage 8.4 — reader feature gate (= dev-only)
+
+Stage 8.1〜8.3 完了後、=reader/{lexer,parser,error,mod}.rs= は:
+- production callsite: 0 (= bridge migrate 完了)
+- test callsite: 既に 0 (= Stage 7.7.d 完了)
+- baker callsite: 1 (= =image::compile_elisp_to_image=、既に
+  =image-baker= feature gate)
+
+そこで reader module 全体を =cfg(any(test, feature = "image-baker"))=
+gate に降ろす.
+
+*** Scope
+
+- =build-tool/src/lib.rs= = =pub mod reader;= を =#[cfg(any(test, feature = "image-baker"))]
+  pub mod reader;= に
+- =build-tool/src/image.rs= = =use crate::reader= を同 cfg 下に
+- 各 jit/* の =use crate::reader::sexp= は Stage 8.1 完了で
+  =eval::sexp= 経由に書き換え済 → cfg 不要
+- =build-tool/src/bin/nelisp-baker.rs= は =required-features = ["image-baker"]=
+  なので reader が cfg gate 下にあっても問題なし
+
+*** 効果
+
+- production =cargo build --release= の Rust LOC が ~1,779 削減
+- =nelisp= binary size 縮小 (~lexer 巨大 byte tables の dead code 排除)
+- reader が完全に "dev tooling のみ" の position に降りる
+
+*** 検証
+
+- =cargo build --release= (= default features)
+  - =reader= module link されないことを =cargo bloat= で確認
+- =cargo build --release --features image-baker=
+  - reader module link されることを確認
+- =cargo test --release --lib --tests --features image-baker= = 435/435 PASS
+
+*** 推定コスト
+
+- 1 commit、~30 LOC (主に lib.rs / image.rs の cfg attr)
+
+** §2.5 Stage 8.5 — bootstrap eval frozen heap (= Stage 7.7.e、Phase 9 候補)
+
+STDLIB 15 files を起動毎に eval するのではなく、build 時に env を
+構築済 image として serialize、起動時に直接 deserialize.
+
+*** 期待効果
+
+- =Env::new_global= の所要時間 ~80ms+ → ~5ms (deserialize のみ)
+- bridge canonical files も同様に frozen heap 化すれば bridge bootstrap
+  も skip 可
+
+*** Risks / 設計課題
+
+- =Sexp= cycle (= cycle-safe equal pattern を Doc 50 で構築済) を
+  serialize 形式で扱う必要
+- =Rc<RefCell<...>>= の identity を deserialize 後も保つには、内部
+  pointer を index に置換する custom serializer 必要
+- closures (= =Sexp::Function= variant、=Frame= ref を keep) の serialize
+  は不可 — 現実的には builtins / defvar / defun の result snapshot
+  のみ frozen 化、closures は起動時再構築
+
+*** Phase 9 に分離する判断
+
+- 規模が大きい (~500 LOC + image format v3 拡張)
+- Phase 8 (= reader 削除) と独立に扱える
+- frozen heap は startup speed 改善であり、現状の AOT bake で十分実用
+  という user feedback が出る可能性あり
+
+→ *Phase 8 から外す*. 別 Doc (= Doc 74 候補) で扱う.
+
+* §3 Architecture diagram
+
+** §3.1 Before Phase 8 (= Phase 7 完了形)
+
+#+begin_example
+[Production runtime]
+  Env::new_global
+    → STDLIB images deserialize (Stage 7.7.b)
+    → elisp reader (nelisp-stdlib-reader.el) 利用可能
+
+  eval_str / eval_str_all
+    → read_all_via_elisp (= elisp reader)
+    → eval
+
+  bridge::bootstrap_self_host
+    → reader::read_all  ← ★ ここがまだ Rust reader
+    → eval
+
+  anvil-runtime::*::read_all  ← ★ ここも Rust reader
+    → eval_via_self_host
+
+[Dev tooling]
+  nelisp-baker (= image-baker feature)
+    → reader::read_all (= encoder source parse)
+    → image encode
+
+[Tests]
+  cargo test
+    → read_one_via_elisp / read_form (= elisp reader)
+#+end_example
+
+** §3.2 After Phase 8 (= Stage 8.1〜8.4 完了形)
+
+#+begin_example
+[Production runtime]
+  Env::new_global
+    → STDLIB images deserialize (unchanged)
+
+  eval_str / eval_str_all (unchanged)
+
+  bridge::bootstrap_self_host
+    → read_all_with_line_via_elisp (= elisp reader, 8.3)
+
+  anvil-runtime::*
+    → read_all_via_elisp (= elisp reader, 8.2)
+
+  Sexp 型 home: eval/sexp.rs (= 8.1)
+  ReadError 型 home: eval/error.rs (= 8.1.a)
+
+[Dev tooling]
+  nelisp-baker (= image-baker feature)
+    → reader::read_all (= unchanged)
+
+  reader/{lexer,parser,error,mod}.rs
+    → cfg(any(test, feature = "image-baker"))   ← ★ 8.4 gate
+#+end_example
+
+* §4 Risks / Mitigation
+
+** §4.1 anvil-runtime の error type 互換性
+
+- Stage 8.2 で =ReadError= → =EvalError= に migrate するが、
+  =anvil-runtime= の =AnvilModuleRegistryError::ModuleParse= /
+  =AnvilHostRegistryError::AnvilHostParse= が =message: String= で
+  保持しているため、外側 (= MCP error) には影響しない
+- *Mitigation*: error message の prefix が変わる (=nelisp-read-error: ...= →
+  =elisp signal "error" with: ...=) ので test fixture の文字列 match
+  を確認.  影響あれば test だけ書き換え
+
+** §4.2 elisp reader の line tracking 精度
+
+- Stage 8.3.a で =position= cursor → 1-origin line 計算する際、
+  multi-byte char や =\r\n= 改行で off-by-one リスクあり
+- *Mitigation*: =\n= count + Rust reader が出していた行番号と
+  cross-equiv ERT を 5 case 用意 (= 既存 bridge 行追跡で動いていた
+  fixture を流用)
+
+** §4.3 Sexp rehome の git diff churn
+
+- Stage 8.1 で ~10 ファイルの import 一括書き換え + =reader/sexp.rs= →
+  =eval/sexp.rs= の物理 move (= git mv で履歴保持)
+- *Mitigation*: 1 commit に集約、commit message で =git log --follow=
+  での参照方法を articulate.  =git mv= で blame 履歴は維持される
+
+** §4.4 reader module の cfg gate が IDE / rust-analyzer に与える影響
+
+- =cfg(feature = "image-baker")= 下に降ろした reader が rust-analyzer
+  で grey-out される (= LSP completion から消える)
+- *Mitigation*: dev で reader を触る際は =cargo +nightly check --features image-baker=
+  を README に記述、IDE 側設定で =rust-analyzer.cargo.features = ["image-baker"]=
+  を推奨
+
+** §4.5 frozen heap の serialize 複雑度 (Stage 8.5 = Phase 9 候補)
+
+- 既述の通り cycle / closure 周辺で実装コスト大
+- *Mitigation*: Phase 8 では Stage 8.5 を out-of-scope とし、Phase 9
+  Doc 74 で別途扱う.  本 Doc は §2.5 で articulate 済
+
+* §5 Out of scope
+
+- *Stage 7.7.e bootstrap eval frozen heap* — Phase 9 候補 (Doc 74)
+- *Phase 5 native cc lowering* (Doc 62) — Phase 8 と独立 track
+- =nelisp-runtime= crate 側の reader / eval 利用 — 既に 2026-04-30
+  Sweep 6 で大半削減、残ったものは別途
+- IDE LSP feature gate UX 改善 — 別 Doc
+- =anvil-runtime= の MCP API surface 変更 — Phase 8 は internal migrate
+  のみ、API 不変
+
+* §6 Test plan
+
+** §6.1 Stage 8.1 = Sexp rehome 検証
+
+- =cargo test --release --lib --tests -- --test-threads=1= 両 feature
+  mode で 435/435 PASS
+- =cargo build --release= 両 feature mode で 0 warnings
+- =git mv reader/sexp.rs eval/sexp.rs= 後の =git log --follow=
+  blame 維持確認
+
+** §6.2 Stage 8.2 = anvil-runtime migrate 検証
+
+- =cargo test -p anvil-runtime --release= 全 PASS
+- MCP integration test (= =anvil-host= / =anvil-modules= MCP tools)
+  PASS
+- module load 時の error message が elisp signal 経由でも有用 (=
+  =nelisp-read-error: ...= prefix 維持) を fixture で確認
+
+** §6.3 Stage 8.3 = bridge migrate 検証
+
+- =cargo test -p nelisp-build-tool --release= 全 PASS (= =bridge::tests=
+  4 case)
+- 既存 =bootstrap_eval_failure_keeps_file_context= test = =line N=
+  prefix が elisp reader 経由でも維持
+- ERT = =nelisp-self-host-*= skip 解除して line tracking 動作確認 (=
+  別 SKIPPED tests 5 件のうち 1〜2 件を unblock)
+
+** §6.4 Stage 8.4 = reader feature gate 検証
+
+- =cargo build --release= で reader module が link されないことを
+  =cargo bloat --release --crates= で確認 (= =nelisp_build_tool::reader=
+  entry が消える)
+- =cargo build --release --features image-baker= で reader が含まれる
+  ことを確認
+- binary size 比較 (= release default vs image-baker、~100KB+ 差を期待)
+
+* §7 共通原則 (= Doc 67/68/69/70/71/72 から継承)
+
+- 1 sub-stage = 1 commit、commit message に SHIPPED record
+- 各 commit で =cargo test --release --lib --tests --features image-baker= +
+  =cargo test --release --lib --tests= 両 mode 435/435 PASS 必須
+- =make test= ERT 全 PASS 必須
+- 改判断は §9 record に追記、article は LOCKED 後でも改訂 OK
+- escape hatch =NELISP_USE_RUST_APPLY=1= は Phase 8 でも維持 (= Stage
+  7.5.a/b user delegate verify が 2026-06-07 まで pending のため、
+  互換性確保)
+
+* §8 References
+
+- =build-tool/src/reader/= — 削除候補 module 群
+- =build-tool/src/bridge/loader.rs:181= — production reader callsite
+- =anvil-runtime/src/anvil_module_registry.rs:103,121= — production callsite
+- =anvil-runtime/src/anvil_host_registry.rs:104= — production callsite
+- =build-tool/src/eval/mod.rs::read_all_via_elisp= — Stage 7.7.c.1 で導入
+- =lisp/nelisp-stdlib-reader.el= — post-bootstrap reader
+- Doc 71 §8 — bridge migrate を Phase 8 候補と articulated 済
+- Doc 72 §2.4 (after Stage 7.7.d) — Phase 8 残 = bridge / 7.7.e /
+  reader 物理削除と articulated
+
+* §9 改判断 record
+
+(2026-05-08, Claude session continuation; Phase 7 main scope SHIPPED 後)
+
+設計時点での判断:
+
+1. *Stage 8.5 (= Stage 7.7.e frozen heap) を Phase 9 に分離*: 当初
+   Phase 8 は "Rust reader/eval 完全削除 + frozen heap" を含む scope
+   だったが、frozen heap は serialize 形式設計 + cycle / closure 対応で
+   ~500 LOC 規模の独立タスクと判明.  Phase 8 は "reader 物理削除 +
+   eval 完全切離" に focus し、frozen heap は別 Doc 74 で扱う.
+2. *Stage 8.1 (Sexp rehome) を最初に置く*: type-only refactor で
+   behavior change なし、後続 sub-stage の前提.  逆順 (= 先に bridge
+   migrate) も検討したが、Sexp が =reader/sexp.rs= に居る間は
+   "reader が Sexp の home" という言外の依存が残り、削除コストが
+   上がる.
+3. *=ReadError= を =eval/error.rs= に移す*: =reader/error.rs= に残す
+   と =cfg(image-baker)= gate 下になり、production code の
+   =EvalError::Read= variant がbroken.  =eval/error.rs= rehome で
+   feature gate 整合性を確保.
+4. *=read_one_via_elisp= の cfg(test) gate を解除する判断は保留*:
+   現状 cargo test 専用、Stage 8.2 で anvil-runtime からも使いたく
+   なるが、anvil-runtime は =read_all_via_elisp= で十分 (= 1 form
+   ケースは =into_iter().next()= で取得可).  =read_one_via_elisp=
+   は test 専用のままにする.
