@@ -401,6 +401,14 @@ pub fn install_builtins(env: &mut Env) {
         "nl-jit-call-i64-i64",
         "nl-jit-call-ptr-ptr",
         "nl-jit-call-syscall",
+        // Doc 77b Stage b.2.5 (2026-05-09) — out-param trampoline
+        // primitives covering the 9 lowered_X fns (5 cons + 4 access)
+        // whose JIT entries write the result via `*mut Sexp' out-slot
+        // and return TRAMPOLINE_OK / _ERR.  See `jit/bridge.rs'.
+        "nl-jit-call-out-1",
+        "nl-jit-call-out-2",
+        "nl-jit-call-out-1i",
+        "nl-jit-call-out-2i",
     ];
     for n in names {
         let sentinel = Sexp::list_from(&[
@@ -703,6 +711,11 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-jit-call-i64-i64" => crate::jit::bi_nl_jit_call_i64_i64(args),
         "nl-jit-call-ptr-ptr" => crate::jit::bi_nl_jit_call_ptr_ptr(args),
         "nl-jit-call-syscall" => crate::jit::bi_nl_jit_call_syscall(args),
+        // Doc 77b Stage b.2.5 — out-param primitives (cons / access).
+        "nl-jit-call-out-1" => crate::jit::bi_nl_jit_call_out_1(args),
+        "nl-jit-call-out-2" => crate::jit::bi_nl_jit_call_out_2(args),
+        "nl-jit-call-out-1i" => crate::jit::bi_nl_jit_call_out_1i(args),
+        "nl-jit-call-out-2i" => crate::jit::bi_nl_jit_call_out_2i(args),
         _ => {
             // Externally-registered builtin (= `Env::register_extern_builtin')
             // — host crates like nelisp-emacs-gtk install GTK4 / SDL2 /

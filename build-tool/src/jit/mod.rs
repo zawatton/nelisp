@@ -112,7 +112,9 @@ mod bench;
 // types into the crate-public surface.
 pub(super) mod bridge;
 pub use bridge::{
-    bi_nl_jit_call_i64_i64, bi_nl_jit_call_ptr_ptr, bi_nl_jit_call_syscall,
+    bi_nl_jit_call_i64_i64, bi_nl_jit_call_out_1, bi_nl_jit_call_out_1i,
+    bi_nl_jit_call_out_2, bi_nl_jit_call_out_2i, bi_nl_jit_call_ptr_ptr,
+    bi_nl_jit_call_syscall,
 };
 mod cons;
 // Doc 77b Stage b.1 (2026-05-09): JIT IR DSL interpreter.  No

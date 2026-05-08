@@ -166,6 +166,141 @@ pub fn bi_nl_jit_call_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::Int(v))
 }
 
+// ---------------------------------------------------------------
+// Doc 77b Stage b.2.5 — out-param trampoline primitives.
+//
+// The remaining 9 lowered_X fns (5 cons + 4 access) follow a
+// different trampoline shape from Stage b.2's 3 primitives: each
+// trampoline takes the input Sexp(s) by `*const Sexp', writes the
+// result Sexp into a caller-supplied `*mut Sexp' out-slot, and
+// returns `i64' as `TRAMPOLINE_OK = 0' / `TRAMPOLINE_ERR = 1'.
+//
+// To keep `unsafe' / fn-ptr casts centralized, we expose 4
+// primitives covering the 4 trampoline shapes (= 2-arg / 3-arg /
+// 3-arg-with-i64 / 4-arg-with-i64).  The ERR case bubbles up as a
+// generic `WrongType { expected: "jit-call-out-N", got: <first
+// arg> }' so the elisp wrapper (Stage b.4) can `condition-case'
+// + re-signal with the proper user-facing message (= same model
+// as the existing `lowered_X' fns in cons.rs / access.rs).
+// ---------------------------------------------------------------
+
+/// Trampoline ABI: `OK = 0' / `ERR = 1' — matches `cons.rs' /
+/// `access.rs'.  Only `OK' is needed here; non-zero is treated as
+/// ERR uniformly so we never spell `TRAMPOLINE_ERR' explicitly.
+const TRAMPOLINE_OK: i64 = 0;
+
+/// `(nl-jit-call-out-1 NAME ARG) -> Sexp'.  For `car' / `cdr' /
+/// `length' (= shape `extern "C" fn(*const Sexp, *mut Sexp) -> i64').
+/// Allocates an `out = Sexp::Nil' on the host stack, invokes the
+/// resolved trampoline with `(&arg, &mut out)', and returns `out' on
+/// `TRAMPOLINE_OK' or a generic `WrongType' on `TRAMPOLINE_ERR'.
+pub fn bi_nl_jit_call_out_1(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nl-jit-call-out-1", args, 2, Some(2))?;
+    let name = as_name("nl-jit-call-out-1", &args[0])?;
+    let p = unified_fn_ptr(name)
+        .ok_or_else(|| unknown_name_err("nl-jit-call-out-1", name))?;
+    // SAFETY: caller passes a name whose JIT entry has the
+    // `(*const Sexp, *mut Sexp) -> i64' shape — `nelisp_jit_car' /
+    // `_cdr' / `_length' qualify.  Other shapes are UB.
+    let f: extern "C" fn(*const Sexp, *mut Sexp) -> i64 =
+        unsafe { std::mem::transmute(p) };
+    let mut out = Sexp::Nil;
+    let r = f(&args[1] as *const _, &mut out as *mut _);
+    if r == TRAMPOLINE_OK {
+        Ok(out)
+    } else {
+        Err(EvalError::WrongType {
+            expected: "jit-call-out-1".into(),
+            got: args[1].clone(),
+        })
+    }
+}
+
+/// `(nl-jit-call-out-2 NAME ARG1 ARG2) -> Sexp'.  For `cons' /
+/// `setcar' / `setcdr' (= shape `extern "C" fn(*const Sexp, *const
+/// Sexp, *mut Sexp) -> i64').
+pub fn bi_nl_jit_call_out_2(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nl-jit-call-out-2", args, 3, Some(3))?;
+    let name = as_name("nl-jit-call-out-2", &args[0])?;
+    let p = unified_fn_ptr(name)
+        .ok_or_else(|| unknown_name_err("nl-jit-call-out-2", name))?;
+    // SAFETY: caller passes a name whose JIT entry has the
+    // `(*const Sexp, *const Sexp, *mut Sexp) -> i64' shape —
+    // `nelisp_jit_cons' / `_setcar' / `_setcdr' qualify.
+    let f: extern "C" fn(*const Sexp, *const Sexp, *mut Sexp) -> i64 =
+        unsafe { std::mem::transmute(p) };
+    let mut out = Sexp::Nil;
+    let r = f(
+        &args[1] as *const _,
+        &args[2] as *const _,
+        &mut out as *mut _,
+    );
+    if r == TRAMPOLINE_OK {
+        Ok(out)
+    } else {
+        Err(EvalError::WrongType {
+            expected: "jit-call-out-2".into(),
+            got: args[1].clone(),
+        })
+    }
+}
+
+/// `(nl-jit-call-out-1i NAME ARG IDX) -> Sexp'.  For `aref' / `elt'
+/// (= shape `extern "C" fn(*const Sexp, i64, *mut Sexp) -> i64').
+pub fn bi_nl_jit_call_out_1i(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nl-jit-call-out-1i", args, 3, Some(3))?;
+    let name = as_name("nl-jit-call-out-1i", &args[0])?;
+    let idx = as_int("nl-jit-call-out-1i", &args[2])?;
+    let p = unified_fn_ptr(name)
+        .ok_or_else(|| unknown_name_err("nl-jit-call-out-1i", name))?;
+    // SAFETY: caller passes a name whose JIT entry has the
+    // `(*const Sexp, i64, *mut Sexp) -> i64' shape — `nelisp_jit_aref'
+    // / `_elt' qualify.
+    let f: extern "C" fn(*const Sexp, i64, *mut Sexp) -> i64 =
+        unsafe { std::mem::transmute(p) };
+    let mut out = Sexp::Nil;
+    let r = f(&args[1] as *const _, idx, &mut out as *mut _);
+    if r == TRAMPOLINE_OK {
+        Ok(out)
+    } else {
+        Err(EvalError::WrongType {
+            expected: "jit-call-out-1i".into(),
+            got: args[1].clone(),
+        })
+    }
+}
+
+/// `(nl-jit-call-out-2i NAME ARG IDX VAL) -> Sexp'.  For `aset' (=
+/// shape `extern "C" fn(*const Sexp, i64, *const Sexp, *mut Sexp) ->
+/// i64').
+pub fn bi_nl_jit_call_out_2i(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nl-jit-call-out-2i", args, 4, Some(4))?;
+    let name = as_name("nl-jit-call-out-2i", &args[0])?;
+    let idx = as_int("nl-jit-call-out-2i", &args[2])?;
+    let p = unified_fn_ptr(name)
+        .ok_or_else(|| unknown_name_err("nl-jit-call-out-2i", name))?;
+    // SAFETY: caller passes a name whose JIT entry has the
+    // `(*const Sexp, i64, *const Sexp, *mut Sexp) -> i64' shape —
+    // `nelisp_jit_aset' qualifies.
+    let f: extern "C" fn(*const Sexp, i64, *const Sexp, *mut Sexp) -> i64 =
+        unsafe { std::mem::transmute(p) };
+    let mut out = Sexp::Nil;
+    let r = f(
+        &args[1] as *const _,
+        idx,
+        &args[3] as *const _,
+        &mut out as *mut _,
+    );
+    if r == TRAMPOLINE_OK {
+        Ok(out)
+    } else {
+        Err(EvalError::WrongType {
+            expected: "jit-call-out-2i".into(),
+            got: args[1].clone(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,5 +526,300 @@ mod tests {
             }
             other => panic!("expected Internal, got {:?}", other),
         }
+    }
+
+    // --- Stage b.2.5 — bi_nl_jit_call_out_1 (car / cdr / length) ---
+
+    #[test]
+    fn call_out_1_car_returns_head() {
+        // (1 2 3) cons → car = 1.
+        let lst = Sexp::list_from(&[Sexp::Int(1), Sexp::Int(2), Sexp::Int(3)]);
+        let r = bi_nl_jit_call_out_1(&[
+            Sexp::Symbol("nelisp_jit_car".into()),
+            lst,
+        ])
+        .expect("car must succeed");
+        assert_eq!(r, Sexp::Int(1));
+    }
+
+    #[test]
+    fn call_out_1_cdr_returns_tail() {
+        // (1 2 3) cons → cdr = (2 3).
+        let lst = Sexp::list_from(&[Sexp::Int(1), Sexp::Int(2), Sexp::Int(3)]);
+        let expected_tail =
+            Sexp::list_from(&[Sexp::Int(2), Sexp::Int(3)]);
+        let r = bi_nl_jit_call_out_1(&[
+            Sexp::Symbol("nelisp_jit_cdr".into()),
+            lst,
+        ])
+        .expect("cdr must succeed");
+        assert_eq!(r, expected_tail);
+    }
+
+    #[test]
+    fn call_out_1_car_nil_returns_nil() {
+        // Nil → trampoline OK with out = Nil.
+        let r = bi_nl_jit_call_out_1(&[
+            Sexp::Symbol("nelisp_jit_car".into()),
+            Sexp::Nil,
+        ])
+        .expect("car nil must succeed");
+        assert_eq!(r, Sexp::Nil);
+    }
+
+    #[test]
+    fn call_out_1_car_wrong_type_errors() {
+        // Int(7) → trampoline ERR → WrongType.
+        let err = bi_nl_jit_call_out_1(&[
+            Sexp::Symbol("nelisp_jit_car".into()),
+            Sexp::Int(7),
+        ])
+        .expect_err("car of int must error");
+        match err {
+            EvalError::WrongType { expected, got } => {
+                assert_eq!(expected, "jit-call-out-1");
+                assert_eq!(got, Sexp::Int(7));
+            }
+            other => panic!("expected WrongType, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn call_out_1_length_vector() {
+        // (length [1 2 3]) → 3.
+        let v = Sexp::vector(vec![Sexp::Int(1), Sexp::Int(2), Sexp::Int(3)]);
+        let r = bi_nl_jit_call_out_1(&[
+            Sexp::Symbol("nelisp_jit_length".into()),
+            v,
+        ])
+        .expect("length vec must succeed");
+        assert_eq!(r, Sexp::Int(3));
+    }
+
+    #[test]
+    fn call_out_1_arity_too_few() {
+        let err = bi_nl_jit_call_out_1(&[Sexp::Symbol("nelisp_jit_car".into())])
+            .expect_err("arity 1 must reject");
+        match err {
+            EvalError::WrongNumberOfArguments { function, .. } => {
+                assert_eq!(function, "nl-jit-call-out-1");
+            }
+            other => panic!("expected WrongNumberOfArguments, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn call_out_1_unknown_name_errors() {
+        let err = bi_nl_jit_call_out_1(&[
+            Sexp::Symbol("nelisp_jit_no_such_out".into()),
+            Sexp::Nil,
+        ])
+        .expect_err("unknown name must error");
+        match err {
+            EvalError::Internal(msg) => {
+                assert!(msg.contains("nl-jit-call-out-1"));
+                assert!(msg.contains("nelisp_jit_no_such_out"));
+            }
+            other => panic!("expected Internal, got {:?}", other),
+        }
+    }
+
+    // --- Stage b.2.5 — bi_nl_jit_call_out_2 (cons / setcar / setcdr) ---
+
+    #[test]
+    fn call_out_2_cons_constructs_pair() {
+        // (cons 1 2) → (1 . 2).
+        let r = bi_nl_jit_call_out_2(&[
+            Sexp::Symbol("nelisp_jit_cons".into()),
+            Sexp::Int(1),
+            Sexp::Int(2),
+        ])
+        .expect("cons must succeed");
+        // Verify the result is (1 . 2) by extracting via car / cdr
+        // through bi_nl_jit_call_out_1.
+        let car = bi_nl_jit_call_out_1(&[
+            Sexp::Symbol("nelisp_jit_car".into()),
+            r.clone(),
+        ])
+        .expect("car of constructed pair");
+        assert_eq!(car, Sexp::Int(1));
+        let cdr = bi_nl_jit_call_out_1(&[
+            Sexp::Symbol("nelisp_jit_cdr".into()),
+            r,
+        ])
+        .expect("cdr of constructed pair");
+        assert_eq!(cdr, Sexp::Int(2));
+    }
+
+    #[test]
+    fn call_out_2_setcar_returns_value_and_mutates() {
+        let pair = Sexp::cons(Sexp::Int(1), Sexp::Int(2));
+        let val = Sexp::Symbol("new-head".into());
+        let r = bi_nl_jit_call_out_2(&[
+            Sexp::Symbol("nelisp_jit_setcar".into()),
+            pair.clone(),
+            val.clone(),
+        ])
+        .expect("setcar must succeed");
+        // setcar returns VALUE per Emacs contract.
+        assert_eq!(r, val);
+        // And the pair is mutated.
+        let car = bi_nl_jit_call_out_1(&[
+            Sexp::Symbol("nelisp_jit_car".into()),
+            pair,
+        ])
+        .expect("car after setcar");
+        assert_eq!(car, val);
+    }
+
+    #[test]
+    fn call_out_2_setcdr_returns_value_and_mutates() {
+        let pair = Sexp::cons(Sexp::Int(1), Sexp::Int(2));
+        let val = Sexp::Str("new-tail".into());
+        let r = bi_nl_jit_call_out_2(&[
+            Sexp::Symbol("nelisp_jit_setcdr".into()),
+            pair.clone(),
+            val.clone(),
+        ])
+        .expect("setcdr must succeed");
+        assert_eq!(r, val);
+        let cdr = bi_nl_jit_call_out_1(&[
+            Sexp::Symbol("nelisp_jit_cdr".into()),
+            pair,
+        ])
+        .expect("cdr after setcdr");
+        assert_eq!(cdr, val);
+    }
+
+    #[test]
+    fn call_out_2_setcar_wrong_type_errors() {
+        let err = bi_nl_jit_call_out_2(&[
+            Sexp::Symbol("nelisp_jit_setcar".into()),
+            Sexp::Int(42),
+            Sexp::Nil,
+        ])
+        .expect_err("setcar of int must error");
+        match err {
+            EvalError::WrongType { expected, got } => {
+                assert_eq!(expected, "jit-call-out-2");
+                assert_eq!(got, Sexp::Int(42));
+            }
+            other => panic!("expected WrongType, got {:?}", other),
+        }
+    }
+
+    // --- Stage b.2.5 — bi_nl_jit_call_out_1i (aref / elt) ---
+
+    #[test]
+    fn call_out_1i_aref_in_range() {
+        // (aref [1 2 3] 1) → 2.
+        let v = Sexp::vector(vec![Sexp::Int(1), Sexp::Int(2), Sexp::Int(3)]);
+        let r = bi_nl_jit_call_out_1i(&[
+            Sexp::Symbol("nelisp_jit_aref".into()),
+            v,
+            Sexp::Int(1),
+        ])
+        .expect("aref in-range must succeed");
+        assert_eq!(r, Sexp::Int(2));
+    }
+
+    #[test]
+    fn call_out_1i_aref_out_of_range_errors() {
+        // (aref [1 2 3] 5) → trampoline ERR → WrongType.
+        let v = Sexp::vector(vec![Sexp::Int(1), Sexp::Int(2), Sexp::Int(3)]);
+        let err = bi_nl_jit_call_out_1i(&[
+            Sexp::Symbol("nelisp_jit_aref".into()),
+            v.clone(),
+            Sexp::Int(5),
+        ])
+        .expect_err("aref out-of-range must error");
+        match err {
+            EvalError::WrongType { expected, got } => {
+                assert_eq!(expected, "jit-call-out-1i");
+                assert_eq!(got, v);
+            }
+            other => panic!("expected WrongType, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn call_out_1i_elt_vector() {
+        // (elt [10 20 30] 2) → 30.
+        let v = Sexp::vector(vec![
+            Sexp::Int(10),
+            Sexp::Int(20),
+            Sexp::Int(30),
+        ]);
+        let r = bi_nl_jit_call_out_1i(&[
+            Sexp::Symbol("nelisp_jit_elt".into()),
+            v,
+            Sexp::Int(2),
+        ])
+        .expect("elt in-range must succeed");
+        assert_eq!(r, Sexp::Int(30));
+    }
+
+    #[test]
+    fn call_out_1i_arity_too_few() {
+        let err = bi_nl_jit_call_out_1i(&[
+            Sexp::Symbol("nelisp_jit_aref".into()),
+            Sexp::Nil,
+        ])
+        .expect_err("arity 2 must reject");
+        assert!(matches!(err, EvalError::WrongNumberOfArguments { .. }));
+    }
+
+    // --- Stage b.2.5 — bi_nl_jit_call_out_2i (aset) ---
+
+    #[test]
+    fn call_out_2i_aset_returns_value_and_mutates() {
+        // (aset [1 2 3] 1 99) → 99, vector becomes [1 99 3].
+        let v = Sexp::vector(vec![Sexp::Int(1), Sexp::Int(2), Sexp::Int(3)]);
+        let r = bi_nl_jit_call_out_2i(&[
+            Sexp::Symbol("nelisp_jit_aset".into()),
+            v.clone(),
+            Sexp::Int(1),
+            Sexp::Int(99),
+        ])
+        .expect("aset must succeed");
+        assert_eq!(r, Sexp::Int(99));
+        // Verify slot 1 mutated via aref.
+        let got = bi_nl_jit_call_out_1i(&[
+            Sexp::Symbol("nelisp_jit_aref".into()),
+            v,
+            Sexp::Int(1),
+        ])
+        .expect("aref after aset");
+        assert_eq!(got, Sexp::Int(99));
+    }
+
+    #[test]
+    fn call_out_2i_aset_out_of_range_errors() {
+        let v = Sexp::vector(vec![Sexp::Int(1)]);
+        let err = bi_nl_jit_call_out_2i(&[
+            Sexp::Symbol("nelisp_jit_aset".into()),
+            v.clone(),
+            Sexp::Int(5),
+            Sexp::Int(99),
+        ])
+        .expect_err("aset out-of-range must error");
+        match err {
+            EvalError::WrongType { expected, got } => {
+                assert_eq!(expected, "jit-call-out-2i");
+                assert_eq!(got, v);
+            }
+            other => panic!("expected WrongType, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn call_out_2i_arity_too_few() {
+        let err = bi_nl_jit_call_out_2i(&[
+            Sexp::Symbol("nelisp_jit_aset".into()),
+            Sexp::Nil,
+            Sexp::Int(0),
+        ])
+        .expect_err("arity 3 must reject");
+        assert!(matches!(err, EvalError::WrongNumberOfArguments { .. }));
     }
 }
