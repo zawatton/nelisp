@@ -18,66 +18,6 @@ use std::rc::Rc;
 pub const IMAGE_MAGIC: &[u8; 8] = b"NELIMG\0\x02";
 pub const IMAGE_ABI_VERSION: u32 = 2;
 
-// ---------------------------------------------------------------------------
-// Doc 75 Phase 9 — NELIMG v3 schema constants (Stage 7.7.e.1).
-//
-// The v3 image format extends v2 with a *frozen-heap* mode that
-// snapshots the entire post-bootstrap `Env::new_global' state, not
-// just a list of unevaluated source forms.  v3 introduces a node-pool
-// representation where every shared / cyclic Sexp identity is
-// preserved as a single entry referenced by `u32 NODE_INDEX', and a
-// trailing globals table that names the symbols and points at the
-// node indices of their value / function / plist cells.
-//
-// Schema overview (binary layout):
-//
-//   NELIMG\0\x03                        magic + version byte = v3
-//   u32  IMAGE_ABI_VERSION = 3
-//   u8   IMAGE_KIND                     0x00 = form-list (v2 compat)
-//                                       0x01 = frozen-heap (v3-only)
-//   --- KIND 0x01 (frozen-heap) only ---
-//   u32  N_NODES                        size of the shared node pool
-//   N_NODES × {                         node bodies, post-order
-//     u8   NODE_TAG                       (re-uses TAG_NIL..TAG_BOOL_VECTOR
-//                                          0x00..0x09 plus the v3-only
-//                                          NODE_TAG_CELL / RECORD / MUT_STR)
-//     ...payload...                       (child Sexps are u32 NODE_INDEX
-//                                          references — *never* inlined)
-//   }
-//   u32  N_GLOBALS
-//   N_GLOBALS × {
-//     u32  NAME_LEN; bytes NAME
-//     u8   FLAGS                        bit0 = has_value
-//                                       bit1 = has_function
-//                                       bit2 = has_plist
-//                                       bit3 = constant
-//     if has_value:    u32 NODE_INDEX
-//     if has_function: u32 NODE_INDEX
-//     if has_plist:    u32 NODE_INDEX
-//   }
-//   u32  N_FALLBACK_FORMS               (= "re-eval at startup" forms,
-//                                          covers Strategy C escape
-//                                          hatch for closure-with-captures
-//                                          when the prereq breaks)
-//   N_FALLBACK_FORMS × { u32 NODE_INDEX }
-//
-// `NODE_TAG_*' values mirror the v2 `TAG_*' for the variants both
-// formats share.  The *payload format* differs: in v2 the cons / vector
-// children are inlined recursively; in v3 they are u32 indices into
-// the node pool, which is what enables identity preservation and
-// cycle handling (see Doc 75 §2.2.5 / §2.3.1).
-//
-// The decoder (Stage 7.7.e.3) keeps separate entrypoints — v2 stays
-// `decode_image', v3 lands as `decode_frozen_heap'.  This keeps the
-// hot-path image v2 reader unchanged.
-pub const IMAGE_MAGIC_V3: &[u8; 8] = b"NELIMG\0\x03";
-pub const IMAGE_ABI_VERSION_V3: u32 = 3;
-
-/// Image kind byte at offset 12 of a v3 image — selects the decoder.
-pub const IMAGE_KIND_FORM_LIST: u8 = 0x00;
-/// Image kind byte at offset 12 of a v3 image — frozen-heap payload.
-pub const IMAGE_KIND_FROZEN_HEAP: u8 = 0x01;
-
 const TAG_NIL: u8 = 0x00;
 const TAG_T: u8 = 0x01;
 const TAG_INT: u8 = 0x02;
@@ -91,18 +31,6 @@ const TAG_VECTOR: u8 = 0x07;
 // these.  Old v1 images now fail with `UnsupportedVersion(1)`.
 const TAG_CHAR_TABLE: u8 = 0x08;
 const TAG_BOOL_VECTOR: u8 = 0x09;
-// Doc 75 Phase 9 (Stage 7.7.e.1) — v3-only node tags for variants
-// that the v2 form-list mode could flatten or drop.  These extend the
-// shared 0x00..0x09 tag space; the v2 decoder rejects them via the
-// existing `UnknownTag' arm, which is the desired failure mode (=
-// "v2 reader can't load v3 frozen-heap" is a property the schema
-// requires, not a bug).
-#[cfg_attr(not(any(test, feature = "image-baker")), allow(dead_code))]
-pub const NODE_TAG_CELL: u8 = 0x0A;
-#[cfg_attr(not(any(test, feature = "image-baker")), allow(dead_code))]
-pub const NODE_TAG_RECORD: u8 = 0x0B;
-#[cfg_attr(not(any(test, feature = "image-baker")), allow(dead_code))]
-pub const NODE_TAG_MUT_STR: u8 = 0x0C;
 
 #[derive(Debug)]
 pub enum ImageError {
@@ -623,92 +551,5 @@ mod tests {
             Err(ImageError::BadMagic) | Err(ImageError::UnsupportedVersion(1)) => {}
             other => panic!("expected v1 image to be rejected, got {:?}", other),
         }
-    }
-
-    // -----------------------------------------------------------------
-    // Doc 75 Phase 9 — Stage 7.7.e.1 schema + Strategy C prerequisites.
-    // -----------------------------------------------------------------
-
-    #[test]
-    fn frozen_heap_v3_node_tag_layout_is_documented() {
-        // Schema: NELIMG v3 magic ends in 0x03, ABI version is 3.
-        assert_eq!(IMAGE_MAGIC_V3, b"NELIMG\0\x03");
-        assert_eq!(IMAGE_ABI_VERSION_V3, 3);
-        // Image kinds: 0x00 = form-list (v2 compat), 0x01 = frozen heap.
-        assert_eq!(IMAGE_KIND_FORM_LIST, 0x00);
-        assert_eq!(IMAGE_KIND_FROZEN_HEAP, 0x01);
-        // v2-shared tags survive at their original values so the
-        // schema can keep saying "TAG_NIL is 0x00 in both formats."
-        assert_eq!(TAG_NIL, 0x00);
-        assert_eq!(TAG_T, 0x01);
-        assert_eq!(TAG_INT, 0x02);
-        assert_eq!(TAG_FLOAT, 0x03);
-        assert_eq!(TAG_SYMBOL, 0x04);
-        assert_eq!(TAG_STRING, 0x05);
-        assert_eq!(TAG_CONS, 0x06);
-        assert_eq!(TAG_VECTOR, 0x07);
-        assert_eq!(TAG_CHAR_TABLE, 0x08);
-        assert_eq!(TAG_BOOL_VECTOR, 0x09);
-        // v3-only tags occupy the next slots, contiguous, no gaps.
-        assert_eq!(NODE_TAG_CELL, 0x0A);
-        assert_eq!(NODE_TAG_RECORD, 0x0B);
-        assert_eq!(NODE_TAG_MUT_STR, 0x0C);
-    }
-
-    /// Doc 75 §3.3 risk mitigation: Strategy C (= top-level defun is
-    /// frozen, only closure-with-captures escape via `fallback_forms')
-    /// hinges on the post-bootstrap globals containing essentially no
-    /// closures whose captured environment is non-nil.  We measure the
-    /// figure here so a future STDLIB change that introduces such a
-    /// closure breaks loudly instead of silently growing
-    /// `fallback_forms' until Strategy C ceases to pay off.
-    ///
-    /// The walk is "function cell only and only one level deep" — that
-    /// matches the encoder's planned classifier (Doc 75 §2.3.2).  If
-    /// the count grows past zero, the ERT prints which symbol it came
-    /// from so the offending defun is easy to locate, then asserts an
-    /// upper bound (currently 0) that we can ratchet up when accepted.
-    #[test]
-    fn frozen_heap_strategy_c_prereq_holds() {
-        let env = Env::new_global();
-        let mut offenders: Vec<String> = Vec::new();
-        for (name, entry) in env.globals.iter() {
-            let Some(func) = entry.function.as_ref() else {
-                continue;
-            };
-            // Strategy C only treats a non-nil captured-env as an
-            // escape, so we walk the head-of-list tag and the second
-            // cell (= captured env) explicitly.  Anything that is not
-            // a `(closure ENV ARGS BODY...)' shape is fine — for
-            // example `(macro . LAMBDA)', `(autoload ...)', or a raw
-            // builtin sentinel.
-            if let Sexp::Cons(head_rc, tail_rc) = func {
-                let head = head_rc.borrow().clone();
-                let tail = tail_rc.borrow().clone();
-                if let Sexp::Symbol(ref s) = head {
-                    if s == "closure" {
-                        if let Sexp::Cons(env_rc, _) = tail {
-                            let captured = env_rc.borrow().clone();
-                            if !matches!(captured, Sexp::Nil) {
-                                offenders.push(name.clone());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        // Sort for deterministic diagnostic output.
-        offenders.sort();
-        assert!(
-            offenders.is_empty(),
-            "Doc 75 Strategy C prereq broke: {} closure-with-captures \
-             defun(s) leaked into post-bootstrap globals (= {:?}). \
-             Either move the offending lambdas under top-level `defun' \
-             so their captured env is nil, or land the `fallback_forms' \
-             escape hatch first (Stage 7.7.e.2 §2.3.2) and then ratchet \
-             this assertion up to the new known-good count.",
-            offenders.len(),
-            offenders,
-        );
     }
 }

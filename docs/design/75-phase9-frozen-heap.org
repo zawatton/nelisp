@@ -9,16 +9,10 @@
 - 関連 Doc: 72 (Stage 7.7.a/b AOT bake LOCKED) / 73 §9 #1 (Doc 75 候補 shift) /
   74 (anvil migration、独立 track)
 - 前提 SHIPPED: Doc 64〜72 (Phase 7 main scope) / Doc 73 Stage 8.1 + 8.3.a/b
-- 本 Doc: Phase 9 frozen heap 全体設計 — *Stage 7.7.e.1 SHIPPED 2026-05-09*
+- 本 Doc: Phase 9 frozen heap 全体設計 — *DRAFT 2026-05-08*
 - 規模: Phase 9 相当 (~500 LOC + image format v3 拡張)、複数 commit / 複数 sub-stage
 - Phase 8 Stage 8.4 (= reader feature gate) とは互いに独立 — どちらが先でも可
-- *Stage 7.7.e.1 進捗 (2026-05-09)*: NELIMG v3 schema 定数 (=IMAGE_MAGIC_V3=,
-  =IMAGE_ABI_VERSION_V3 = 3=, =IMAGE_KIND_FORM_LIST/FROZEN_HEAP=,
-  =NODE_TAG_CELL/RECORD/MUT_STR=) を =build-tool/src/image.rs= に追加。
-  schema 同期 ERT (=frozen_heap_v3_node_tag_layout_is_documented=) と戦略 C
-  前提検証 ERT (=frozen_heap_strategy_c_prereq_holds=) を追加 — *結果:
-  =Env::new_global= 完了直後の globals に closure-with-captures は 0 個*。
-  戦略 C 採用が安全に確定。Stage 7.7.e.2 / .3 着手可
+- 本 Doc は articulation のみ; 着手判断は Phase 8 完了 + user feedback 待ち
 
 * §1 背景
 
