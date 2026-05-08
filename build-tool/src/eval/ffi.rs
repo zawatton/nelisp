@@ -546,6 +546,90 @@ pub fn nl_ffi_write_i32(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::T)
 }
 
+/// `(nl-ffi-read-u8 PTR OFFSET)` → integer (= u8 zero-extended to i64).
+/// Doc 76 Stage D (2026-05-08): sockaddr_un sun_path[0] (= abstract
+/// namespace sentinel) check + per-byte sun_path scan.
+pub fn nl_ffi_read_u8(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let (p, off) = ffi_read_args("nl-ffi-read-u8", args)?;
+    ffi_read_check_bounds("nl-ffi-read-u8", p, off, 1)?;
+    let v = unsafe { std::ptr::read_unaligned((p + off) as *const u8) } as i64;
+    Ok(Sexp::Int(v))
+}
+
+/// `(nl-ffi-write-bytes-at PTR OFFSET STR)` → t.  Like `nl-ffi-write-bytes'
+/// but the bytes land at PTR + OFFSET instead of PTR.  Doc 76 Stage D:
+/// sockaddr_un sun_path[2..] write.  Same alloc_table gate; `OFFSET +
+/// STR's UTF-8 byte length' must fit in the recorded length.
+pub fn nl_ffi_write_bytes_at(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    if args.len() != 3 {
+        return Err(ffi_err(format!(
+            "nl-ffi-write-bytes-at: expected 3 args (ptr offset str), got {}",
+            args.len()
+        )));
+    }
+    let p = coerce_int(&args[0])?;
+    let off = coerce_int(&args[1])?;
+    if p == 0 {
+        return Err(ffi_err("nl-ffi-write-bytes-at: NULL pointer".into()));
+    }
+    if off < 0 {
+        return Err(ffi_err(format!("nl-ffi-write-bytes-at: negative offset {}", off)));
+    }
+    let bytes_owned = args[2].as_string_owned().ok_or_else(|| {
+        ffi_err(format!("nl-ffi-write-bytes-at: expected string for arg 3, got {:?}", args[2]))
+    })?;
+    let bytes = bytes_owned.as_bytes();
+    let alloc_len = *alloc_table().lock().unwrap().get(&p).ok_or_else(|| {
+        ffi_err(format!("nl-ffi-write-bytes-at: pointer {} not from nl-ffi-malloc", p))
+    })?;
+    if (off as usize) + bytes.len() > alloc_len {
+        return Err(ffi_err(format!(
+            "nl-ffi-write-bytes-at: write of {} bytes at offset {} exceeds buffer length {}",
+            bytes.len(), off, alloc_len
+        )));
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), (p + off) as *mut u8, bytes.len());
+    }
+    Ok(Sexp::T)
+}
+
+/// `(nl-ffi-read-bytes-at PTR OFFSET LEN)` → string of LEN bytes copied
+/// from PTR + OFFSET.  Doc 76 Stage D: sockaddr_un sun_path read after
+/// `accept(2)' / `getsockname(2)'.  Returns `String::from_utf8_lossy'
+/// like `nl-ffi-read-bytes' (= raw bytes 0x80-0xFF will be munged; OK
+/// for ASCII filesystem paths and abstract socket names).
+pub fn nl_ffi_read_bytes_at(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    if args.len() != 3 {
+        return Err(ffi_err(format!(
+            "nl-ffi-read-bytes-at: expected 3 args (ptr offset len), got {}",
+            args.len()
+        )));
+    }
+    let p = coerce_int(&args[0])?;
+    let off = coerce_int(&args[1])?;
+    let n = coerce_int(&args[2])?;
+    if p == 0 {
+        return Err(ffi_err("nl-ffi-read-bytes-at: NULL pointer".into()));
+    }
+    if off < 0 || n < 0 {
+        return Err(ffi_err(format!(
+            "nl-ffi-read-bytes-at: negative offset/len ({}, {})", off, n
+        )));
+    }
+    let alloc_len = *alloc_table().lock().unwrap().get(&p).ok_or_else(|| {
+        ffi_err(format!("nl-ffi-read-bytes-at: pointer {} not from nl-ffi-malloc", p))
+    })?;
+    if (off as usize) + (n as usize) > alloc_len {
+        return Err(ffi_err(format!(
+            "nl-ffi-read-bytes-at: read of {} bytes at offset {} exceeds buffer length {}",
+            n, off, alloc_len
+        )));
+    }
+    let bytes = unsafe { std::slice::from_raw_parts((p + off) as *const u8, n as usize) };
+    Ok(Sexp::Str(String::from_utf8_lossy(bytes).into_owned()))
+}
+
 /// Internal helper: parse `(PTR OFFSET)` args + null guard.
 fn ffi_read_args(name: &str, args: &[Sexp]) -> Result<(i64, i64), EvalError> {
     if args.len() != 2 {

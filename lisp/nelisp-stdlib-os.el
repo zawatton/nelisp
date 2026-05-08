@@ -570,48 +570,183 @@ blocks indefinitely; 0 polls without blocking."
 (defconst nelisp-os-IN6ADDR-ANY      '(0 0 0 0 0 0 0 0))
 (defconst nelisp-os-IN6ADDR-LOOPBACK '(0 0 0 0 0 0 0 1))
 
+;; ---------------------------------------------------------------------------
+;; Doc 76 Stage D (2026-05-08) — sockaddr_un / sockaddr_in6 marshaling
+;; helpers.  sun_path layout (= sun_family u16 at 0 + 108 path bytes at 2,
+;; total 110).  sockaddr_in6 layout (= sin6_family u16 at 0 + sin6_port
+;; u16 BE at 2 + sin6_flowinfo u32 at 4 + sin6_addr u8[16] at 8 +
+;; sin6_scope_id u32 at 24, total 28).
+;; ---------------------------------------------------------------------------
+
+(defconst nelisp-os--sockaddr-un-len 110)
+(defconst nelisp-os--sockaddr-in6-len 28)
+
+(defun nelisp-os--encode-sockaddr-un (buf path)
+  "Populate BUF (= 110-byte zeroed `nl-ffi-malloc') with sockaddr_un for
+filesystem path PATH.  Return the addrlen (= 2 + bytes + 1 NUL)."
+  (nl-ffi-write-i16 buf 0 nelisp-os-AF-UNIX)
+  (nl-ffi-write-bytes-at buf 2 path)
+  (+ 3 (string-bytes path)))
+
+(defun nelisp-os--encode-sockaddr-un-abstract (buf name)
+  "Populate BUF with sockaddr_un for Linux abstract namespace NAME.
+Leading sun_path[0] = NUL (= abstract sentinel) stays 0 from malloc.
+Return the addrlen (= 2 + 1 + bytes)."
+  (nl-ffi-write-i16 buf 0 nelisp-os-AF-UNIX)
+  ;; sun_path[0] at offset 2 = 0 (already zeroed)
+  (nl-ffi-write-bytes-at buf 3 name)
+  (+ 3 (string-bytes name)))
+
+(defun nelisp-os--decode-sockaddr-un (buf socklen)
+  "Decode sockaddr_un at BUF.  SOCKLEN = total addrlen returned by
+accept(2) / getsockname(2).  Return:
+ - empty string for anonymous (= socklen ≤ 2);
+ - cons (abstract . NAME) for abstract namespace (= sun_path[0] == NUL);
+ - string PATH for filesystem path (= NUL-terminated)."
+  (cond
+   ((<= socklen 2) "")
+   ((= (nl-ffi-read-u8 buf 2) 0)
+    (let ((body-len (- socklen 3)))
+      (cons 'abstract
+            (if (<= body-len 0) "" (nl-ffi-read-bytes-at buf 3 body-len)))))
+   (t
+    (let* ((max-len (- socklen 2))
+           (n (catch 'nul
+                (dotimes (i max-len)
+                  (when (= (nl-ffi-read-u8 buf (+ 2 i)) 0)
+                    (throw 'nul i)))
+                max-len)))
+      (if (= n 0) "" (nl-ffi-read-bytes-at buf 2 n))))))
+
+(defun nelisp-os--encode-sockaddr-in6 (buf groups port)
+  "Populate BUF (= 28-byte zeroed) with sockaddr_in6: family + port BE +
+flowinfo=0 + 8 BE u16 groups + scope_id=0."
+  (nl-ffi-write-i16 buf 0 nelisp-os-AF-INET6)
+  (let ((port-be (nl-ffi-call "libc" "htons" [:uint16 :uint16] port)))
+    (nl-ffi-write-i16 buf 2 port-be))
+  ;; flowinfo at 4 stays 0
+  (let ((idx 0))
+    (dolist (g groups)
+      (let* ((off (+ 8 (* idx 2)))
+             (g-be (nl-ffi-call "libc" "htons" [:uint16 :uint16] g)))
+        (nl-ffi-write-i16 buf off g-be))
+      (setq idx (1+ idx))))
+  ;; scope_id at 24 stays 0
+  )
+
+(defun nelisp-os--decode-sockaddr-in6 (buf)
+  "Decode 28-byte sockaddr_in6 BUF.  Return cons (GROUPS-LIST . PORT) in
+host byte order."
+  (let* ((port-be (nl-ffi-read-u16 buf 2))
+         (port    (nl-ffi-call "libc" "ntohs" [:uint16 :uint16] port-be))
+         (groups  nil))
+    (dotimes (i 8)
+      (let ((g-be (nl-ffi-read-u16 buf (+ 8 (* i 2)))))
+        (push (nl-ffi-call "libc" "ntohs" [:uint16 :uint16] g-be) groups)))
+    (cons (nreverse groups) port)))
+
 ;; ----- AF_UNIX wrappers -----
 
 (defun nelisp-os-bind-unix (fd path)
   "POSIX bind(2) for AF_UNIX (filesystem path).  Abstract namespace
-sockets (= leading NUL byte) are not supported in Phase 4.1."
-  (nelisp-os--check-errno (nelisp--syscall-bind-unix fd path)))
+sockets use `nelisp-os-bind-unix-abstract'."
+  (let ((buf (nl-ffi-malloc nelisp-os--sockaddr-un-len)))
+    (unwind-protect
+        (let* ((alen (nelisp-os--encode-sockaddr-un buf path))
+               (r (nl-ffi-call "libc" "bind"
+                               [:sint32 :sint32 :pointer :uint32]
+                               fd buf alen)))
+          (if (= r -1) (nelisp-os--ffi-errno-signal) r))
+      (nl-ffi-free buf))))
 
 (defun nelisp-os-connect-unix (fd path)
-  "POSIX connect(2) for AF_UNIX.  PATH is a filesystem path (must
-already be bound by the listening server)."
-  (nelisp-os--check-errno (nelisp--syscall-connect-unix fd path)))
+  "POSIX connect(2) for AF_UNIX.  PATH is a filesystem path."
+  (let ((buf (nl-ffi-malloc nelisp-os--sockaddr-un-len)))
+    (unwind-protect
+        (let* ((alen (nelisp-os--encode-sockaddr-un buf path))
+               (r (nl-ffi-call "libc" "connect"
+                               [:sint32 :sint32 :pointer :uint32]
+                               fd buf alen)))
+          (if (= r -1) (nelisp-os--ffi-errno-signal) r))
+      (nl-ffi-free buf))))
 
-(defun nelisp-os-accept-unix (fd)
+(defun nelisp-os-accept-unix (sockfd)
   "POSIX accept(2) for AF_UNIX.  Returns cons (NEWFD . PEER-PATH); the
-peer is typically anonymous on a listening server, in which case the
-PEER-PATH is the empty string."
-  (let ((r (nelisp--syscall-accept-unix fd)))
-    (if (integerp r)
-        (nelisp-os--check-errno r)
-      r)))
+peer is typically anonymous on a listening server."
+  (let ((addr-buf (nl-ffi-malloc nelisp-os--sockaddr-un-len))
+        (len-buf  (nl-ffi-malloc 4)))
+    (unwind-protect
+        (progn
+          (nl-ffi-write-i32 len-buf 0 nelisp-os--sockaddr-un-len)
+          (let ((newfd (nl-ffi-call "libc" "accept"
+                                    [:sint32 :sint32 :pointer :pointer]
+                                    sockfd addr-buf len-buf)))
+            (if (= newfd -1)
+                (nelisp-os--ffi-errno-signal)
+              (let* ((socklen (nl-ffi-read-i32 len-buf 0))
+                     ;; accept-unix legacy: peer string-only (= matches
+                     ;; old `parse_sockaddr_un_peer' that stops at first
+                     ;; NUL, so abstract peer surfaces as "").
+                     (peer (cond
+                            ((<= socklen 2) "")
+                            ((= (nl-ffi-read-u8 addr-buf 2) 0) "")
+                            (t (let* ((max-len (- socklen 2))
+                                      (n (catch 'nul
+                                           (dotimes (i max-len)
+                                             (when (= (nl-ffi-read-u8 addr-buf (+ 2 i)) 0)
+                                               (throw 'nul i)))
+                                           max-len)))
+                                 (if (= n 0) "" (nl-ffi-read-bytes-at addr-buf 2 n)))))))
+                (cons newfd peer)))))
+      (nl-ffi-free addr-buf)
+      (nl-ffi-free len-buf))))
 
 ;; ----- AF_INET6 wrappers -----
 
 (defun nelisp-os-bind-inet6 (fd host6 port)
   "POSIX bind(2) for AF_INET6.  HOST6 is a list of 8 16-bit groups in
-host byte order (e.g. `nelisp-os-IN6ADDR-LOOPBACK' for `::1').  PORT is
-a 16-bit host-byte-order port number."
-  (nelisp-os--check-errno (nelisp--syscall-bind-inet6 fd host6 port)))
+host byte order (e.g. `nelisp-os-IN6ADDR-LOOPBACK')."
+  (let ((buf (nl-ffi-malloc nelisp-os--sockaddr-in6-len)))
+    (unwind-protect
+        (progn
+          (nelisp-os--encode-sockaddr-in6 buf host6 port)
+          (let ((r (nl-ffi-call "libc" "bind"
+                                [:sint32 :sint32 :pointer :uint32]
+                                fd buf nelisp-os--sockaddr-in6-len)))
+            (if (= r -1) (nelisp-os--ffi-errno-signal) r)))
+      (nl-ffi-free buf))))
 
 (defun nelisp-os-connect-inet6 (fd host6 port)
   "POSIX connect(2) for AF_INET6.  HOST6 / PORT same convention as
 `nelisp-os-bind-inet6'."
-  (nelisp-os--check-errno (nelisp--syscall-connect-inet6 fd host6 port)))
+  (let ((buf (nl-ffi-malloc nelisp-os--sockaddr-in6-len)))
+    (unwind-protect
+        (progn
+          (nelisp-os--encode-sockaddr-in6 buf host6 port)
+          (let ((r (nl-ffi-call "libc" "connect"
+                                [:sint32 :sint32 :pointer :uint32]
+                                fd buf nelisp-os--sockaddr-in6-len)))
+            (if (= r -1) (nelisp-os--ffi-errno-signal) r)))
+      (nl-ffi-free buf))))
 
-(defun nelisp-os-accept-inet6 (fd)
+(defun nelisp-os-accept-inet6 (sockfd)
   "POSIX accept(2) for AF_INET6.  Returns list (NEWFD CLIENT-HOST6
 CLIENT-PORT); CLIENT-HOST6 is an 8-element list of 16-bit groups in
 host byte order."
-  (let ((r (nelisp--syscall-accept-inet6 fd)))
-    (if (integerp r)
-        (nelisp-os--check-errno r)
-      r)))
+  (let ((addr-buf (nl-ffi-malloc nelisp-os--sockaddr-in6-len))
+        (len-buf  (nl-ffi-malloc 4)))
+    (unwind-protect
+        (progn
+          (nl-ffi-write-i32 len-buf 0 nelisp-os--sockaddr-in6-len)
+          (let ((newfd (nl-ffi-call "libc" "accept"
+                                    [:sint32 :sint32 :pointer :pointer]
+                                    sockfd addr-buf len-buf)))
+            (if (= newfd -1)
+                (nelisp-os--ffi-errno-signal)
+              (let ((gp (nelisp-os--decode-sockaddr-in6 addr-buf)))
+                (list newfd (car gp) (cdr gp))))))
+      (nl-ffi-free addr-buf)
+      (nl-ffi-free len-buf))))
 
 ;; ---------------------------------------------------------------------------
 ;; Doc 57 Phase 4.3 — Modern Linux event surface (pidfd / inotify / eventfd).
@@ -716,49 +851,85 @@ counters; use `nelisp-os-write' / `nelisp-os-read' on the returned fd."
   "Linux-specific bind(2) for an AF_UNIX abstract-namespace socket.
 NAME is a NUL-free string; the kernel name is `\\0' + NAME and is
 auto-cleaned on close.  Returns 0 or signals `nelisp-os-error'."
-  (nelisp-os--check-errno (nelisp--syscall-bind-unix-abstract fd name)))
+  (let ((buf (nl-ffi-malloc nelisp-os--sockaddr-un-len)))
+    (unwind-protect
+        (let* ((alen (nelisp-os--encode-sockaddr-un-abstract buf name))
+               (r (nl-ffi-call "libc" "bind"
+                               [:sint32 :sint32 :pointer :uint32]
+                               fd buf alen)))
+          (if (= r -1) (nelisp-os--ffi-errno-signal) r))
+      (nl-ffi-free buf))))
 
 (defun nelisp-os-connect-unix-abstract (fd name)
   "Linux-specific connect(2) for an AF_UNIX abstract-namespace socket."
-  (nelisp-os--check-errno (nelisp--syscall-connect-unix-abstract fd name)))
+  (let ((buf (nl-ffi-malloc nelisp-os--sockaddr-un-len)))
+    (unwind-protect
+        (let* ((alen (nelisp-os--encode-sockaddr-un-abstract buf name))
+               (r (nl-ffi-call "libc" "connect"
+                               [:sint32 :sint32 :pointer :uint32]
+                               fd buf alen)))
+          (if (= r -1) (nelisp-os--ffi-errno-signal) r))
+      (nl-ffi-free buf))))
 
 ;; getsockname / getpeername — three families × two ops = six wrappers.
 ;; `_inet'  → list (HOST-INT PORT)             both host byte order
 ;; `_inet6' → list (HOST6-LIST PORT)            HOST6-LIST = 8 16-bit groups
 ;; `_unix'  → string PATH (filesystem) | (abstract . NAME) | "" (anonymous)
 
-(defun nelisp-os-getsockname-inet (fd)
-  "POSIX getsockname(2) for AF_INET — return list (HOST-INT PORT)."
-  (let ((r (nelisp--syscall-getsockname-inet fd)))
-    (if (integerp r) (nelisp-os--check-errno r) r)))
+(defun nelisp-os--getname-inet (fd is-peer)
+  (let ((addr-buf (nl-ffi-malloc nelisp-os--sockaddr-in-len))
+        (len-buf  (nl-ffi-malloc 4)))
+    (unwind-protect
+        (progn
+          (nl-ffi-write-i32 len-buf 0 nelisp-os--sockaddr-in-len)
+          (let ((r (nl-ffi-call "libc" (if is-peer "getpeername" "getsockname")
+                                [:sint32 :sint32 :pointer :pointer]
+                                fd addr-buf len-buf)))
+            (if (= r -1)
+                (nelisp-os--ffi-errno-signal)
+              (let ((hp (nelisp-os--decode-sockaddr-in addr-buf)))
+                (list (car hp) (cdr hp))))))
+      (nl-ffi-free addr-buf)
+      (nl-ffi-free len-buf))))
 
-(defun nelisp-os-getsockname-inet6 (fd)
-  "POSIX getsockname(2) for AF_INET6 — return list (HOST6 PORT)."
-  (let ((r (nelisp--syscall-getsockname-inet6 fd)))
-    (if (integerp r) (nelisp-os--check-errno r) r)))
+(defun nelisp-os--getname-inet6 (fd is-peer)
+  (let ((addr-buf (nl-ffi-malloc nelisp-os--sockaddr-in6-len))
+        (len-buf  (nl-ffi-malloc 4)))
+    (unwind-protect
+        (progn
+          (nl-ffi-write-i32 len-buf 0 nelisp-os--sockaddr-in6-len)
+          (let ((r (nl-ffi-call "libc" (if is-peer "getpeername" "getsockname")
+                                [:sint32 :sint32 :pointer :pointer]
+                                fd addr-buf len-buf)))
+            (if (= r -1)
+                (nelisp-os--ffi-errno-signal)
+              (let ((gp (nelisp-os--decode-sockaddr-in6 addr-buf)))
+                (list (car gp) (cdr gp))))))
+      (nl-ffi-free addr-buf)
+      (nl-ffi-free len-buf))))
 
-(defun nelisp-os-getsockname-unix (fd)
-  "POSIX getsockname(2) for AF_UNIX — return PATH string for
-filesystem sockets, cons (abstract . NAME) for abstract sockets, or
-\"\" for anonymous (= unbound)."
-  (let ((r (nelisp--syscall-getsockname-unix fd)))
-    (if (integerp r) (nelisp-os--check-errno r) r)))
+(defun nelisp-os--getname-unix (fd is-peer)
+  (let ((addr-buf (nl-ffi-malloc nelisp-os--sockaddr-un-len))
+        (len-buf  (nl-ffi-malloc 4)))
+    (unwind-protect
+        (progn
+          (nl-ffi-write-i32 len-buf 0 nelisp-os--sockaddr-un-len)
+          (let ((r (nl-ffi-call "libc" (if is-peer "getpeername" "getsockname")
+                                [:sint32 :sint32 :pointer :pointer]
+                                fd addr-buf len-buf)))
+            (if (= r -1)
+                (nelisp-os--ffi-errno-signal)
+              (nelisp-os--decode-sockaddr-un addr-buf
+                                              (nl-ffi-read-i32 len-buf 0)))))
+      (nl-ffi-free addr-buf)
+      (nl-ffi-free len-buf))))
 
-(defun nelisp-os-getpeername-inet (fd)
-  "POSIX getpeername(2) for AF_INET — return list (HOST-INT PORT)."
-  (let ((r (nelisp--syscall-getpeername-inet fd)))
-    (if (integerp r) (nelisp-os--check-errno r) r)))
-
-(defun nelisp-os-getpeername-inet6 (fd)
-  "POSIX getpeername(2) for AF_INET6 — return list (HOST6 PORT)."
-  (let ((r (nelisp--syscall-getpeername-inet6 fd)))
-    (if (integerp r) (nelisp-os--check-errno r) r)))
-
-(defun nelisp-os-getpeername-unix (fd)
-  "POSIX getpeername(2) for AF_UNIX — same return shape as
-`nelisp-os-getsockname-unix'."
-  (let ((r (nelisp--syscall-getpeername-unix fd)))
-    (if (integerp r) (nelisp-os--check-errno r) r)))
+(defun nelisp-os-getsockname-inet  (fd) (nelisp-os--getname-inet  fd nil))
+(defun nelisp-os-getsockname-inet6 (fd) (nelisp-os--getname-inet6 fd nil))
+(defun nelisp-os-getsockname-unix  (fd) (nelisp-os--getname-unix  fd nil))
+(defun nelisp-os-getpeername-inet  (fd) (nelisp-os--getname-inet  fd t))
+(defun nelisp-os-getpeername-inet6 (fd) (nelisp-os--getname-inet6 fd t))
+(defun nelisp-os-getpeername-unix  (fd) (nelisp-os--getname-unix  fd t))
 
 ;; ---------------------------------------------------------------------------
 ;; Doc 59 Phase 4.2 + 4.3.1 — signalfd + timerfd + sigprocmask.

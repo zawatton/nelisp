@@ -257,25 +257,10 @@ pub fn install_builtins(env: &mut Env) {
         // Doc 55 Phase 4 socket-int (= bind-inet / connect-inet / accept-inet
         // / setsockopt-int / poll) retired in Doc 76 Stage C (2026-05-08);
         // elisp now builds sockaddr_in / pollfd[] via nl-ffi primitives.
-        // Doc 56 Phase 4.1 (2026-05-07) — AF_UNIX + AF_INET6 sockaddr
-        // family extensions to round out the network surface (AF_INET
-        // is already covered by Doc 55 above).
-        "nelisp--syscall-bind-unix",
-        "nelisp--syscall-connect-unix",
-        "nelisp--syscall-accept-unix",
-        "nelisp--syscall-bind-inet6",
-        "nelisp--syscall-connect-inet6",
-        "nelisp--syscall-accept-inet6",
-        // Doc 58 Phase 4.1.x (2026-05-07) — AF_UNIX abstract namespace
-        // + getsockname / getpeername × {inet, inet6, unix}.
-        "nelisp--syscall-bind-unix-abstract",
-        "nelisp--syscall-connect-unix-abstract",
-        "nelisp--syscall-getsockname-inet",
-        "nelisp--syscall-getsockname-inet6",
-        "nelisp--syscall-getsockname-unix",
-        "nelisp--syscall-getpeername-inet",
-        "nelisp--syscall-getpeername-inet6",
-        "nelisp--syscall-getpeername-unix",
+        // Doc 56/58 Phase 4.1.x (= AF_UNIX + AF_INET6 sockaddr +
+        // abstract namespace + getsockname/peername) retired in Doc 76
+        // Stage D (2026-05-08); elisp now drives all 14 wrappers via
+        // nl-ffi sockaddr_un / sockaddr_in6 encode/decode helpers.
         // Doc 57 Phase 4.3 (2026-05-07) — modern Linux event surface
         // (inotify needs path/buffer handling; pidfd_* and eventfd2
         // ride generic syscall via syscall_nr() symbol map).
@@ -358,6 +343,9 @@ pub fn install_builtins(env: &mut Env) {
         // sockaddr_in / pollfd field marshaling.
         "nl-ffi-read-i16", "nl-ffi-read-u16", "nl-ffi-read-u32",
         "nl-ffi-write-i16", "nl-ffi-write-i32",
+        // Doc 76 Stage D (2026-05-08): byte-level + offset variants for
+        // sockaddr_un sun_path (= path / abstract namespace) marshaling.
+        "nl-ffi-read-u8", "nl-ffi-write-bytes-at", "nl-ffi-read-bytes-at",
         // Doc 51 Phase 6 write-path: time + cryptographic hash primitives.
         // Needed by anvil-memory-add etc. (= NOT NULL `created' column +
         // body digest).  Both are inherently OS / native-lib dependent
@@ -548,21 +536,10 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nelisp--syscall-wait4" => bi_syscall_wait4(args),
         // Doc 76 Stage C (2026-05-08) retired socket-int dispatch arms.
         // Doc 56 Phase 4.1 (2026-05-07) — AF_UNIX + AF_INET6 sockaddr handlers.
-        "nelisp--syscall-bind-unix" => bi_syscall_bind_unix(args),
-        "nelisp--syscall-connect-unix" => bi_syscall_connect_unix(args),
-        "nelisp--syscall-accept-unix" => bi_syscall_accept_unix(args),
-        "nelisp--syscall-bind-inet6" => bi_syscall_bind_inet6(args),
-        "nelisp--syscall-connect-inet6" => bi_syscall_connect_inet6(args),
-        "nelisp--syscall-accept-inet6" => bi_syscall_accept_inet6(args),
+        // Doc 76 Stage D (2026-05-08) retired AF_UNIX/INET6 dispatch arms.
         // Doc 58 Phase 4.1.x (2026-05-07) — AF_UNIX abstract + getname pair.
-        "nelisp--syscall-bind-unix-abstract" => bi_syscall_bind_unix_abstract(args),
-        "nelisp--syscall-connect-unix-abstract" => bi_syscall_connect_unix_abstract(args),
-        "nelisp--syscall-getsockname-inet" => bi_syscall_getsockname_inet(args),
-        "nelisp--syscall-getsockname-inet6" => bi_syscall_getsockname_inet6(args),
-        "nelisp--syscall-getsockname-unix" => bi_syscall_getsockname_unix(args),
-        "nelisp--syscall-getpeername-inet" => bi_syscall_getpeername_inet(args),
-        "nelisp--syscall-getpeername-inet6" => bi_syscall_getpeername_inet6(args),
-        "nelisp--syscall-getpeername-unix" => bi_syscall_getpeername_unix(args),
+        // Doc 76 Stage D (2026-05-08) retired abstract + getsockname/
+        // peername dispatch arms.
         // Doc 57 Phase 4.3 (2026-05-07) — inotify path/buffer primitives.
         "nelisp--syscall-inotify-add-watch" => bi_syscall_inotify_add_watch(args),
         "nelisp--syscall-inotify-read" => bi_syscall_inotify_read(args),
@@ -675,6 +652,9 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-ffi-read-u32" => super::ffi::nl_ffi_read_u32(args),
         "nl-ffi-write-i16" => super::ffi::nl_ffi_write_i16(args),
         "nl-ffi-write-i32" => super::ffi::nl_ffi_write_i32(args),
+        "nl-ffi-read-u8" => super::ffi::nl_ffi_read_u8(args),
+        "nl-ffi-write-bytes-at" => super::ffi::nl_ffi_write_bytes_at(args),
+        "nl-ffi-read-bytes-at" => super::ffi::nl_ffi_read_bytes_at(args),
         "nl-current-unix-time" => bi_nl_current_unix_time(args),
         "nl-secure-hash" => bi_nl_secure_hash(args),
         "nl-format-unix-time" => bi_nl_format_unix_time(args),
@@ -2087,149 +2067,13 @@ syscall_unsupported!(bi_syscall_wait4, "nelisp--syscall-wait4");
 
 /// Build a `sockaddr_un' from a filesystem path.  Abstract-namespace
 /// sockets (= leading NUL byte) are out of Phase 4.1's scope.  Returns
-/// the populated sockaddr_un and the address length suitable for
-/// `bind(2)' / `connect(2)' (= sun_path offset + path bytes + trailing
-/// NUL).
-#[cfg(target_os = "linux")]
-fn build_sockaddr_un(path: &str) -> Result<(libc::sockaddr_un, libc::socklen_t), EvalError> {
-    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
-    let bytes = path.as_bytes();
-    if bytes.len() + 1 > addr.sun_path.len() {
-        return Err(EvalError::Internal(format!(
-            "sockaddr_un: path too long ({} bytes, max {})",
-            bytes.len(), addr.sun_path.len() - 1)));
-    }
-    if bytes.contains(&0u8) {
-        return Err(EvalError::Internal(
-            "sockaddr_un: filesystem path must not contain NUL".into()));
-    }
-    for (i, b) in bytes.iter().enumerate() {
-        addr.sun_path[i] = *b as libc::c_char;
-    }
-    let path_offset = {
-        let base = &addr as *const libc::sockaddr_un as usize;
-        let p    = &addr.sun_path as *const _ as usize;
-        p - base
-    };
-    let len = (path_offset + bytes.len() + 1) as libc::socklen_t;
-    Ok((addr, len))
-}
-
-/// Read a peer path back from a `sockaddr_un' returned by `accept(2)'.
-/// Listening UNIX sockets typically see anonymous peers (= `sun_path'
-/// is all NUL); we surface that as the empty string.
-#[cfg(target_os = "linux")]
-fn parse_sockaddr_un_peer(addr: &libc::sockaddr_un, len: libc::socklen_t) -> String {
-    let path_offset = {
-        let base = addr as *const libc::sockaddr_un as usize;
-        let p    = &addr.sun_path as *const _ as usize;
-        p - base
-    } as libc::socklen_t;
-    if len <= path_offset { return String::new(); }
-    let payload_len = (len - path_offset) as usize;
-    let bytes: Vec<u8> = addr.sun_path.iter().take(payload_len)
-        .take_while(|c| **c != 0)
-        .map(|c| *c as u8)
-        .collect();
-    String::from_utf8_lossy(&bytes).into_owned()
-}
-
-#[cfg(target_os = "linux")]
-fn bi_syscall_bind_unix(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-bind-unix", args, 2, Some(2))?;
-    let fd   = syscall_arg_int("nelisp--syscall-bind-unix", 1, &args[0])? as libc::c_int;
-    let path = args[1].as_string_owned().ok_or_else(|| EvalError::WrongType {
-        expected: "string (unix socket path)".into(),
-        got: args[1].clone(),
-    })?;
-    let (addr, len) = build_sockaddr_un(&path)?;
-    let r = unsafe {
-        libc::bind(fd, &addr as *const libc::sockaddr_un as *const libc::sockaddr, len)
-    };
-    if r != 0 {
-        let e = unsafe { *libc::__errno_location() } as i64;
-        return Ok(Sexp::Int(-e));
-    }
-    Ok(Sexp::Int(0))
-}
-
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_bind_unix, "nelisp--syscall-bind-unix");
-
-#[cfg(target_os = "linux")]
-fn bi_syscall_connect_unix(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-connect-unix", args, 2, Some(2))?;
-    let fd   = syscall_arg_int("nelisp--syscall-connect-unix", 1, &args[0])? as libc::c_int;
-    let path = args[1].as_string_owned().ok_or_else(|| EvalError::WrongType {
-        expected: "string (unix socket path)".into(),
-        got: args[1].clone(),
-    })?;
-    let (addr, len) = build_sockaddr_un(&path)?;
-    let r = unsafe {
-        libc::connect(fd, &addr as *const libc::sockaddr_un as *const libc::sockaddr, len)
-    };
-    if r != 0 {
-        let e = unsafe { *libc::__errno_location() } as i64;
-        return Ok(Sexp::Int(-e));
-    }
-    Ok(Sexp::Int(0))
-}
-
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_connect_unix, "nelisp--syscall-connect-unix");
-
-#[cfg(target_os = "linux")]
-fn bi_syscall_accept_unix(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-accept-unix", args, 1, Some(1))?;
-    let fd = syscall_arg_int("nelisp--syscall-accept-unix", 1, &args[0])? as libc::c_int;
-    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    let mut len: libc::socklen_t = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
-    let r = unsafe {
-        libc::accept(fd,
-                     &mut addr as *mut libc::sockaddr_un as *mut libc::sockaddr,
-                     &mut len as *mut libc::socklen_t)
-    };
-    if r < 0 {
-        let e = unsafe { *libc::__errno_location() } as i64;
-        return Ok(Sexp::Int(-e));
-    }
-    let peer = parse_sockaddr_un_peer(&addr, len);
-    Ok(Sexp::cons(Sexp::Int(r as i64), Sexp::Str(peer)))
-}
-
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_accept_unix, "nelisp--syscall-accept-unix");
-
-/// Build a `sockaddr_in6' from 8 host-byte-order 16-bit groups + a
-/// host-byte-order port.  Each group is packed big-endian into the
-/// 16-byte `s6_addr' so the wire layout matches RFC 4291.  Flow info /
-/// scope_id are zero (= Phase 4.1.2 territory).
-#[cfg(target_os = "linux")]
-fn build_sockaddr_in6(groups: &[u16; 8], port: u16) -> libc::sockaddr_in6 {
-    let mut addr: libc::sockaddr_in6 = unsafe { std::mem::zeroed() };
-    addr.sin6_family = libc::AF_INET6 as libc::sa_family_t;
-    addr.sin6_port   = port.to_be();
-    let mut bytes: [u8; 16] = [0; 16];
-    for (i, g) in groups.iter().enumerate() {
-        let be = g.to_be_bytes();
-        bytes[i * 2]     = be[0];
-        bytes[i * 2 + 1] = be[1];
-    }
-    addr.sin6_addr.s6_addr = bytes;
-    addr
-}
-
-/// Read 8 host-byte-order 16-bit groups out of a `sockaddr_in6'.
-#[cfg(target_os = "linux")]
-fn parse_in6_addr_groups(addr: &libc::sockaddr_in6) -> [u16; 8] {
-    let bytes = &addr.sin6_addr.s6_addr;
-    let mut groups = [0u16; 8];
-    for i in 0..8 {
-        groups[i] = u16::from_be_bytes([bytes[i * 2], bytes[i * 2 + 1]]);
-    }
-    groups
-}
+// Doc 76 Stage D (2026-05-08): bind/connect/accept × {unix, inet6}
+// specialized primitives + most sockaddr_un / -_in6 helpers removed.
+// elisp wrappers now drive sockaddr_un / sockaddr_in6 encode/decode
+// directly via nl-ffi-malloc + nl-ffi-write/read primitives.
+//
+// `decode_in6_groups' / `parse_in6_addr_groups' kept (= Stage G's
+// inet6-scoped variants still use them, retiring with Stage G).
 
 /// Decode an 8-element list of 16-bit integers (= host-byte-order
 /// IPv6 group form, e.g. `(0 0 0 0 0 0 0 1)' for `::1') into a [u16; 8].
@@ -2252,77 +2096,16 @@ fn decode_in6_groups(name: &str, val: &Sexp) -> Result<[u16; 8], EvalError> {
     Ok(groups)
 }
 
+/// Read 8 host-byte-order 16-bit groups out of a `sockaddr_in6'.
 #[cfg(target_os = "linux")]
-fn bi_syscall_bind_inet6(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-bind-inet6", args, 3, Some(3))?;
-    let fd     = syscall_arg_int("nelisp--syscall-bind-inet6", 1, &args[0])? as libc::c_int;
-    let groups = decode_in6_groups("nelisp--syscall-bind-inet6", &args[1])?;
-    let port   = syscall_arg_int("nelisp--syscall-bind-inet6", 3, &args[2])? as u16;
-    let addr   = build_sockaddr_in6(&groups, port);
-    let r = unsafe {
-        libc::bind(fd,
-                   &addr as *const libc::sockaddr_in6 as *const libc::sockaddr,
-                   std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t)
-    };
-    if r != 0 {
-        let e = unsafe { *libc::__errno_location() } as i64;
-        return Ok(Sexp::Int(-e));
+fn parse_in6_addr_groups(addr: &libc::sockaddr_in6) -> [u16; 8] {
+    let bytes = &addr.sin6_addr.s6_addr;
+    let mut groups = [0u16; 8];
+    for i in 0..8 {
+        groups[i] = u16::from_be_bytes([bytes[i * 2], bytes[i * 2 + 1]]);
     }
-    Ok(Sexp::Int(0))
+    groups
 }
-
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_bind_inet6, "nelisp--syscall-bind-inet6");
-
-#[cfg(target_os = "linux")]
-fn bi_syscall_connect_inet6(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-connect-inet6", args, 3, Some(3))?;
-    let fd     = syscall_arg_int("nelisp--syscall-connect-inet6", 1, &args[0])? as libc::c_int;
-    let groups = decode_in6_groups("nelisp--syscall-connect-inet6", &args[1])?;
-    let port   = syscall_arg_int("nelisp--syscall-connect-inet6", 3, &args[2])? as u16;
-    let addr   = build_sockaddr_in6(&groups, port);
-    let r = unsafe {
-        libc::connect(fd,
-                      &addr as *const libc::sockaddr_in6 as *const libc::sockaddr,
-                      std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t)
-    };
-    if r != 0 {
-        let e = unsafe { *libc::__errno_location() } as i64;
-        return Ok(Sexp::Int(-e));
-    }
-    Ok(Sexp::Int(0))
-}
-
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_connect_inet6, "nelisp--syscall-connect-inet6");
-
-#[cfg(target_os = "linux")]
-fn bi_syscall_accept_inet6(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-accept-inet6", args, 1, Some(1))?;
-    let fd = syscall_arg_int("nelisp--syscall-accept-inet6", 1, &args[0])? as libc::c_int;
-    let mut addr: libc::sockaddr_in6 = unsafe { std::mem::zeroed() };
-    let mut len: libc::socklen_t = std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t;
-    let r = unsafe {
-        libc::accept(fd,
-                     &mut addr as *mut libc::sockaddr_in6 as *mut libc::sockaddr,
-                     &mut len as *mut libc::socklen_t)
-    };
-    if r < 0 {
-        let e = unsafe { *libc::__errno_location() } as i64;
-        return Ok(Sexp::Int(-e));
-    }
-    let groups = parse_in6_addr_groups(&addr);
-    let port   = u16::from_be(addr.sin6_port) as i64;
-    let groups_list: Vec<Sexp> = groups.iter().map(|g| Sexp::Int(*g as i64)).collect();
-    Ok(Sexp::list_from(&[
-        Sexp::Int(r as i64),
-        Sexp::list_from(&groups_list),
-        Sexp::Int(port),
-    ]))
-}
-
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_accept_inet6, "nelisp--syscall-accept-inet6");
 
 // ---------------------------------------------------------------------------
 // Doc 58 Phase 4.1.1 + 4.1.2 — AF_UNIX abstract namespace + getsockname /
@@ -2330,206 +2113,9 @@ syscall_unsupported!(bi_syscall_accept_inet6, "nelisp--syscall-accept-inet6");
 // / `parse_in6_addr_groups' and Doc 55's AF_INET sockaddr layout.
 // ---------------------------------------------------------------------------
 
-/// Build a `sockaddr_un' for a Linux abstract-namespace socket.
-///
-/// On Linux a UNIX socket is "abstract" when `sun_path[0]' is NUL and the
-/// remaining bytes (up to the supplied address length) carry the name.
-/// The kernel auto-cleans abstract sockets on close so they avoid the
-/// stale-file race that filesystem UNIX sockets suffer from.
-///
-/// `name' must be NUL-free; the leading NUL is added Rust-side so elisp
-/// callers don't have to embed a NUL in the wrapper string.
-#[cfg(target_os = "linux")]
-fn build_sockaddr_un_abstract(name: &str)
-    -> Result<(libc::sockaddr_un, libc::socklen_t), EvalError>
-{
-    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
-    let bytes = name.as_bytes();
-    if bytes.contains(&0u8) {
-        return Err(EvalError::Internal(
-            "sockaddr_un (abstract): NAME must not contain NUL".into()));
-    }
-    if 1 + bytes.len() > addr.sun_path.len() {
-        return Err(EvalError::Internal(format!(
-            "sockaddr_un (abstract): NAME too long ({} bytes, max {})",
-            bytes.len(), addr.sun_path.len() - 1)));
-    }
-    // sun_path[0] = NUL (= abstract sentinel), then NAME bytes.
-    addr.sun_path[0] = 0;
-    for (i, b) in bytes.iter().enumerate() {
-        addr.sun_path[1 + i] = *b as libc::c_char;
-    }
-    let path_offset = {
-        let base = &addr as *const libc::sockaddr_un as usize;
-        let p    = &addr.sun_path as *const _ as usize;
-        p - base
-    };
-    let len = (path_offset + 1 + bytes.len()) as libc::socklen_t;
-    Ok((addr, len))
-}
-
-#[cfg(target_os = "linux")]
-fn bi_syscall_bind_unix_abstract(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-bind-unix-abstract", args, 2, Some(2))?;
-    let fd   = syscall_arg_int("nelisp--syscall-bind-unix-abstract", 1, &args[0])? as libc::c_int;
-    let name = args[1].as_string_owned().ok_or_else(|| EvalError::WrongType {
-        expected: "string (abstract socket name)".into(),
-        got: args[1].clone(),
-    })?;
-    let (addr, len) = build_sockaddr_un_abstract(&name)?;
-    let r = unsafe {
-        libc::bind(fd, &addr as *const libc::sockaddr_un as *const libc::sockaddr, len)
-    };
-    if r != 0 {
-        let e = unsafe { *libc::__errno_location() } as i64;
-        return Ok(Sexp::Int(-e));
-    }
-    Ok(Sexp::Int(0))
-}
-
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_bind_unix_abstract, "nelisp--syscall-bind-unix-abstract");
-
-#[cfg(target_os = "linux")]
-fn bi_syscall_connect_unix_abstract(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-connect-unix-abstract", args, 2, Some(2))?;
-    let fd   = syscall_arg_int("nelisp--syscall-connect-unix-abstract", 1, &args[0])? as libc::c_int;
-    let name = args[1].as_string_owned().ok_or_else(|| EvalError::WrongType {
-        expected: "string (abstract socket name)".into(),
-        got: args[1].clone(),
-    })?;
-    let (addr, len) = build_sockaddr_un_abstract(&name)?;
-    let r = unsafe {
-        libc::connect(fd, &addr as *const libc::sockaddr_un as *const libc::sockaddr, len)
-    };
-    if r != 0 {
-        let e = unsafe { *libc::__errno_location() } as i64;
-        return Ok(Sexp::Int(-e));
-    }
-    Ok(Sexp::Int(0))
-}
-
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_connect_unix_abstract, "nelisp--syscall-connect-unix-abstract");
-
-/// Inner helper: invoke `getsockname' / `getpeername' of the right
-/// kind into a caller-supplied sockaddr buffer.  Returns `(r, len)'
-/// where `r == 0' on success and `r == -1' on failure (caller should
-/// translate to -errno).
-#[cfg(target_os = "linux")]
-unsafe fn getsock_either<T>(
-    fd: libc::c_int,
-    is_peer: bool,
-    addr: *mut T,
-    len: *mut libc::socklen_t,
-) -> libc::c_int {
-    if is_peer {
-        libc::getpeername(fd, addr as *mut libc::sockaddr, len)
-    } else {
-        libc::getsockname(fd, addr as *mut libc::sockaddr, len)
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn syscall_getname_inet(name: &str, args: &[Sexp], is_peer: bool) -> Result<Sexp, EvalError> {
-    require_arity(name, args, 1, Some(1))?;
-    let fd = syscall_arg_int(name, 1, &args[0])? as libc::c_int;
-    let mut addr: libc::sockaddr_in = unsafe { std::mem::zeroed() };
-    let mut len: libc::socklen_t = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
-    let r = unsafe { getsock_either(fd, is_peer, &mut addr as *mut _, &mut len) };
-    if r != 0 {
-        let e = unsafe { *libc::__errno_location() } as i64;
-        return Ok(Sexp::Int(-e));
-    }
-    let host = u32::from_be(addr.sin_addr.s_addr) as i64;
-    let port = u16::from_be(addr.sin_port)        as i64;
-    Ok(Sexp::list_from(&[Sexp::Int(host), Sexp::Int(port)]))
-}
-
-#[cfg(target_os = "linux")]
-fn syscall_getname_inet6(name: &str, args: &[Sexp], is_peer: bool) -> Result<Sexp, EvalError> {
-    require_arity(name, args, 1, Some(1))?;
-    let fd = syscall_arg_int(name, 1, &args[0])? as libc::c_int;
-    let mut addr: libc::sockaddr_in6 = unsafe { std::mem::zeroed() };
-    let mut len: libc::socklen_t = std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t;
-    let r = unsafe { getsock_either(fd, is_peer, &mut addr as *mut _, &mut len) };
-    if r != 0 {
-        let e = unsafe { *libc::__errno_location() } as i64;
-        return Ok(Sexp::Int(-e));
-    }
-    let groups = parse_in6_addr_groups(&addr);
-    let port   = u16::from_be(addr.sin6_port) as i64;
-    let groups_list: Vec<Sexp> = groups.iter().map(|g| Sexp::Int(*g as i64)).collect();
-    Ok(Sexp::list_from(&[Sexp::list_from(&groups_list), Sexp::Int(port)]))
-}
-
-#[cfg(target_os = "linux")]
-fn syscall_getname_unix(name: &str, args: &[Sexp], is_peer: bool) -> Result<Sexp, EvalError> {
-    require_arity(name, args, 1, Some(1))?;
-    let fd = syscall_arg_int(name, 1, &args[0])? as libc::c_int;
-    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    let mut len: libc::socklen_t = std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t;
-    let r = unsafe { getsock_either(fd, is_peer, &mut addr as *mut _, &mut len) };
-    if r != 0 {
-        let e = unsafe { *libc::__errno_location() } as i64;
-        return Ok(Sexp::Int(-e));
-    }
-    // Detect abstract: socklen > path_offset && sun_path[0] == 0.
-    let path_offset = {
-        let base = &addr as *const libc::sockaddr_un as usize;
-        let p    = &addr.sun_path as *const _ as usize;
-        p - base
-    } as libc::socklen_t;
-    if len > path_offset && addr.sun_path[0] == 0 {
-        // Abstract — bytes after the leading NUL form the name.
-        let body_len = (len - path_offset - 1) as usize;
-        let bytes: Vec<u8> = addr.sun_path[1..1 + body_len]
-            .iter().map(|c| *c as u8).collect();
-        let name = String::from_utf8_lossy(&bytes).into_owned();
-        return Ok(Sexp::cons(Sexp::Symbol("abstract".into()), Sexp::Str(name)));
-    }
-    let path = parse_sockaddr_un_peer(&addr, len);
-    Ok(Sexp::Str(path))
-}
-
-#[cfg(target_os = "linux")]
-fn bi_syscall_getsockname_inet(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    syscall_getname_inet("nelisp--syscall-getsockname-inet", args, false)
-}
-#[cfg(target_os = "linux")]
-fn bi_syscall_getpeername_inet(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    syscall_getname_inet("nelisp--syscall-getpeername-inet", args, true)
-}
-#[cfg(target_os = "linux")]
-fn bi_syscall_getsockname_inet6(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    syscall_getname_inet6("nelisp--syscall-getsockname-inet6", args, false)
-}
-#[cfg(target_os = "linux")]
-fn bi_syscall_getpeername_inet6(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    syscall_getname_inet6("nelisp--syscall-getpeername-inet6", args, true)
-}
-#[cfg(target_os = "linux")]
-fn bi_syscall_getsockname_unix(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    syscall_getname_unix("nelisp--syscall-getsockname-unix", args, false)
-}
-#[cfg(target_os = "linux")]
-fn bi_syscall_getpeername_unix(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    syscall_getname_unix("nelisp--syscall-getpeername-unix", args, true)
-}
-
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_getsockname_inet, "nelisp--syscall-getsockname-inet");
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_getpeername_inet, "nelisp--syscall-getpeername-inet");
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_getsockname_inet6, "nelisp--syscall-getsockname-inet6");
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_getpeername_inet6, "nelisp--syscall-getpeername-inet6");
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_getsockname_unix, "nelisp--syscall-getsockname-unix");
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_getpeername_unix, "nelisp--syscall-getpeername-unix");
+// Doc 76 Stage D (2026-05-08) — abstract namespace + getsockname /
+// getpeername helpers + 8 specialized primitives all retired.  elisp
+// drives all variants via nl-ffi sockaddr_un / sockaddr_in6 helpers.
 
 // ---------------------------------------------------------------------------
 // Doc 57 Phase 4.3 — Modern Linux event surface (inotify add_watch + read).

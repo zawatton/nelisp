@@ -5,7 +5,7 @@
 
 * Status
 :PROPERTIES:
-:STATE: IN PROGRESS — Stage 0/A/C SHIPPED 2026-05-08 (= 10/40 specialized 削除、Stage A file I/O + Stage C socket-int)
+:STATE: IN PROGRESS — Stage 0/A/C/D SHIPPED 2026-05-08 (= 24/40 specialized 削除、file I/O + socket-int + AF_UNIX/INET6 + abstract + getsockname/peername)
 :DEPENDS_ON: Doc 51 Phase 5 (nl-ffi-call) / Doc 53〜60 (specialized syscall surface) / Doc 62 Stage 5.8 (non-Linux stub macro 化、commit a81e089)
 :PARENT: Doc 62 §0 audit-revised (= Phase 7 elisp-side OS surface migration が specialized 削除の正規 track)
 :SUPERSEDES: Doc 53〜60 の Path A "specialized" 規約 (= Linux 専用 specialized primitive)
@@ -251,7 +251,8 @@ unit:
 | 0     | nl-ffi 基盤拡張           | (新規)                          | 0                   | +60 (Rust 拡張、SHIPPED 5cb1521)         |
 | A.1   | open / read / write     | Doc 53 (= specialized #1〜3)    | 3                   | -67 builtins / +20 ffi resolver / +20 string-bytes (SHIPPED ef65611) |
 | A.2/3 | pipe + fstat            | Doc 54 (= specialized #4〜5)    | 2                   | -75 builtins / +130 ffi read-i32/i64 + stat-offset defconsts (SHIPPED f0c47f9) |
-| C     | socket-int (5)          | Doc 55 (= specialized #8〜12)   | 5                   | -190 builtins (= 5 fn + build_sockaddr_in helper) / +130 ffi read-i16/u16/u32+write-i16/i32 + sockaddr-in encode/decode helper (SHIPPED 2026-05-08) |
+| C     | socket-int (5)          | Doc 55 (= specialized #8〜12)   | 5                   | -190 builtins (= 5 fn + build_sockaddr_in helper) / +130 ffi read-i16/u16/u32+write-i16/i32 + sockaddr-in encode/decode helper (SHIPPED 55926f4) |
+| D     | socket-uds + INET6 + abstract + getsockname/peername (14) | Doc 56 / 58 (= specialized #13〜26) | 14 | -700 builtins (= 14 fn + 5 helper、`decode_in6_groups`/`parse_in6_addr_groups` は Stage G まで残す) / +110 ffi read-u8 / write-bytes-at / read-bytes-at / +200 elisp encode-/decode-sockaddr-un / -in6 helper + 14 wrapper rewrite (SHIPPED 2026-05-08) |
 | B     | process                  | Doc 55                          | 2 (= 6〜7)          | -60 Rust  |
 | C     | socket-int (AF_INET + poll) | Doc 55                       | 5 (= 8〜12)         | -120 Rust |
 | D     | socket-uds + AF_INET6 + getsockname/peername | Doc 56 / 58 | 14 (= 13〜26)        | -250 Rust |
