@@ -266,13 +266,10 @@ pub fn install_builtins(env: &mut Env) {
         // ride generic syscall via syscall_nr() symbol map).
         "nelisp--syscall-inotify-add-watch",
         "nelisp--syscall-inotify-read",
-        // Doc 59 Phase 4.2 + 4.3.1 (2026-05-07) — signalfd / timerfd /
-        // sigprocmask.  timerfd_create rides the generic syscall.
-        "nelisp--syscall-signalfd4",
-        "nelisp--syscall-signalfd-read",
-        "nelisp--syscall-sigprocmask",
-        "nelisp--syscall-timerfd-settime",
-        "nelisp--syscall-timerfd-gettime",
+        // Doc 59 Phase 4.2 + 4.3.1 signalfd / timerfd / sigprocmask
+        // retired in Doc 76 Stage F (2026-05-08); elisp drives sigset_t /
+        // itimerspec via libc.sigemptyset / sigaddset / sigismember +
+        // nl-ffi-write-i64 + signalfd_siginfo decoder.
         // Doc 60 Phase 4.4 (2026-05-07) — SCM_RIGHTS + SOCK_SEQPACKET +
         // SO_PEERCRED + IPv6 scope_id full surface.
         "nelisp--syscall-socketpair",
@@ -346,6 +343,9 @@ pub fn install_builtins(env: &mut Env) {
         // Doc 76 Stage D (2026-05-08): byte-level + offset variants for
         // sockaddr_un sun_path (= path / abstract namespace) marshaling.
         "nl-ffi-read-u8", "nl-ffi-write-bytes-at", "nl-ffi-read-bytes-at",
+        // Doc 76 Stage F (2026-05-08): 64-bit field write for
+        // itimerspec encode (= timerfd_settime).
+        "nl-ffi-write-i64",
         // Doc 51 Phase 6 write-path: time + cryptographic hash primitives.
         // Needed by anvil-memory-add etc. (= NOT NULL `created' column +
         // body digest).  Both are inherently OS / native-lib dependent
@@ -544,11 +544,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nelisp--syscall-inotify-add-watch" => bi_syscall_inotify_add_watch(args),
         "nelisp--syscall-inotify-read" => bi_syscall_inotify_read(args),
         // Doc 59 Phase 4.2 + 4.3.1 (2026-05-07) — signal/timer fd surface.
-        "nelisp--syscall-signalfd4" => bi_syscall_signalfd4(args),
-        "nelisp--syscall-signalfd-read" => bi_syscall_signalfd_read(args),
-        "nelisp--syscall-sigprocmask" => bi_syscall_sigprocmask(args),
-        "nelisp--syscall-timerfd-settime" => bi_syscall_timerfd_settime(args),
-        "nelisp--syscall-timerfd-gettime" => bi_syscall_timerfd_gettime(args),
+        // Doc 76 Stage F (2026-05-08) retired signal/timer dispatch arms.
         // Doc 60 Phase 4.4 (2026-05-07) — SCM_RIGHTS + SOCK_SEQPACKET +
         // SO_PEERCRED + IPv6 scope_id full surface.
         "nelisp--syscall-socketpair" => bi_syscall_socketpair(args),
@@ -655,6 +651,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-ffi-read-u8" => super::ffi::nl_ffi_read_u8(args),
         "nl-ffi-write-bytes-at" => super::ffi::nl_ffi_write_bytes_at(args),
         "nl-ffi-read-bytes-at" => super::ffi::nl_ffi_read_bytes_at(args),
+        "nl-ffi-write-i64" => super::ffi::nl_ffi_write_i64(args),
         "nl-current-unix-time" => bi_nl_current_unix_time(args),
         "nl-secure-hash" => bi_nl_secure_hash(args),
         "nl-format-unix-time" => bi_nl_format_unix_time(args),
@@ -2228,193 +2225,12 @@ syscall_unsupported!(bi_syscall_inotify_read, "nelisp--syscall-inotify-read");
 // asynchronously.
 // ---------------------------------------------------------------------------
 
-/// Build a `sigset_t' from a list of signal numbers.  An empty list
-/// yields an empty mask.
-#[cfg(target_os = "linux")]
-fn build_sigset_from_list(name: &str, mask_val: &Sexp) -> Result<libc::sigset_t, EvalError> {
-    let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
-    unsafe { libc::sigemptyset(&mut set); }
-    let items = list_to_vec(mask_val)?;
-    for (i, item) in items.iter().enumerate() {
-        let signo = syscall_arg_int(name, i + 1, item)? as libc::c_int;
-        unsafe { libc::sigaddset(&mut set, signo); }
-    }
-    Ok(set)
-}
-
-/// Decode a `sigset_t' into a list of the signal numbers it contains.
-/// We probe 1..=64 which covers the standard + RT signal range on Linux.
-#[cfg(target_os = "linux")]
-fn sigset_to_list(set: &libc::sigset_t) -> Sexp {
-    let mut signos: Vec<Sexp> = Vec::new();
-    for sig in 1..=64 {
-        let r = unsafe { libc::sigismember(set as *const libc::sigset_t, sig as libc::c_int) };
-        if r == 1 {
-            signos.push(Sexp::Int(sig as i64));
-        }
-    }
-    Sexp::list_from(&signos)
-}
-
-/// `(nelisp--syscall-signalfd4 FD MASK FLAGS)' — Linux signalfd4(2).
-///
-/// FD = -1 to create a new signalfd, or an existing fd to update its
-/// mask.  MASK is a list of signal numbers.  FLAGS = OR of SFD_*.
-/// Returns the fd or `Sexp::Int(-errno)'.
-#[cfg(target_os = "linux")]
-fn bi_syscall_signalfd4(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-signalfd4", args, 3, Some(3))?;
-    let fd    = syscall_arg_int("nelisp--syscall-signalfd4", 1, &args[0])? as libc::c_int;
-    let set   = build_sigset_from_list("nelisp--syscall-signalfd4", &args[1])?;
-    let flags = syscall_arg_int("nelisp--syscall-signalfd4", 3, &args[2])? as libc::c_int;
-    // Use the glibc wrapper rather than the raw SYS_signalfd4: the
-    // kernel signalfd4 syscall expects the *kernel* sigset_t size
-    // (= _NSIG/8 = 8 on x86_64), not glibc's user-side `sigset_t' (=
-    // 128 bytes).  Passing the wrong size yields EINVAL — the wrapper
-    // hides that detail by truncating the mask appropriately.
-    let r = unsafe {
-        libc::signalfd(fd, &set, flags)
-    };
-    if r < 0 {
-        let e = unsafe { *libc::__errno_location() } as i64;
-        return Ok(Sexp::Int(-e));
-    }
-    Ok(Sexp::Int(r as i64))
-}
-
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_signalfd4, "nelisp--syscall-signalfd4");
-
-/// `(nelisp--syscall-signalfd-read FD MAX-EVENTS)' — read signalfd events
-/// off FD and return a list of `(SIGNO ERRNO CODE PID UID STATUS)'
-/// 6-element lists.  Signalfd's binary stream of `struct signalfd_siginfo'
-/// is parsed Rust-side because the struct has reserved padding that
-/// makes pure-elisp byte slicing fragile across kernel versions.
-#[cfg(target_os = "linux")]
-fn bi_syscall_signalfd_read(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-signalfd-read", args, 2, Some(2))?;
-    let fd  = syscall_arg_int("nelisp--syscall-signalfd-read", 1, &args[0])? as libc::c_int;
-    let max = syscall_arg_int("nelisp--syscall-signalfd-read", 2, &args[1])?;
-    if max <= 0 {
-        return Err(EvalError::Internal(
-            "nelisp--syscall-signalfd-read: MAX-EVENTS must be positive".into()));
-    }
-    let one = std::mem::size_of::<libc::signalfd_siginfo>();
-    let cap = one.saturating_mul(max as usize);
-    let mut buf: Vec<u8> = vec![0u8; cap];
-    let n = unsafe {
-        libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
-    };
-    if n < 0 {
-        let e = unsafe { *libc::__errno_location() } as i64;
-        return Ok(Sexp::Int(-e));
-    }
-    let n = n as usize;
-    let mut events: Vec<Sexp> = Vec::new();
-    let mut off = 0usize;
-    while off + one <= n {
-        // SAFETY: `signalfd_siginfo' is `repr(C)' with no internal Rc /
-        // pointer cells; copy via read_unaligned avoids alignment UB.
-        let si: libc::signalfd_siginfo = unsafe {
-            std::ptr::read_unaligned(buf[off..].as_ptr() as *const libc::signalfd_siginfo)
-        };
-        events.push(Sexp::list_from(&[
-            Sexp::Int(si.ssi_signo  as i64),
-            Sexp::Int(si.ssi_errno  as i64),
-            Sexp::Int(si.ssi_code   as i64),
-            Sexp::Int(si.ssi_pid    as i64),
-            Sexp::Int(si.ssi_uid    as i64),
-            Sexp::Int(si.ssi_status as i64),
-        ]));
-        off += one;
-    }
-    Ok(Sexp::list_from(&events))
-}
-
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_signalfd_read, "nelisp--syscall-signalfd-read");
-
-/// `(nelisp--syscall-sigprocmask HOW MASK)' — POSIX pthread_sigmask(3).
-///
-/// HOW = SIG_BLOCK / SIG_UNBLOCK / SIG_SETMASK (= 0 / 1 / 2 on Linux).
-/// MASK is a list of signal numbers to apply.  Returns the *previous*
-/// mask as a list of signal numbers on success, `Sexp::Int(-errno)'
-/// on failure.
-#[cfg(target_os = "linux")]
-fn bi_syscall_sigprocmask(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-sigprocmask", args, 2, Some(2))?;
-    let how  = syscall_arg_int("nelisp--syscall-sigprocmask", 1, &args[0])? as libc::c_int;
-    let new  = build_sigset_from_list("nelisp--syscall-sigprocmask", &args[1])?;
-    let mut old: libc::sigset_t = unsafe { std::mem::zeroed() };
-    let r = unsafe { libc::pthread_sigmask(how, &new, &mut old) };
-    if r != 0 {
-        // pthread_sigmask returns the error number directly (= positive).
-        return Ok(Sexp::Int(-(r as i64)));
-    }
-    Ok(sigset_to_list(&old))
-}
-
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_sigprocmask, "nelisp--syscall-sigprocmask");
-
-/// `(nelisp--syscall-timerfd-settime FD FLAGS IT-INTERVAL-SEC IT-INTERVAL-NSEC IT-VALUE-SEC IT-VALUE-NSEC)'
-/// — Linux timerfd_settime(2).
-///
-/// Returns the previous itimerspec as a 4-element list
-/// `(PREV-INTERVAL-SEC PREV-INTERVAL-NSEC PREV-VALUE-SEC PREV-VALUE-NSEC)'
-/// on success, `Sexp::Int(-errno)' on failure.
-#[cfg(target_os = "linux")]
-fn bi_syscall_timerfd_settime(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-timerfd-settime", args, 6, Some(6))?;
-    let fd      = syscall_arg_int("nelisp--syscall-timerfd-settime", 1, &args[0])? as libc::c_int;
-    let flags   = syscall_arg_int("nelisp--syscall-timerfd-settime", 2, &args[1])? as libc::c_int;
-    let int_s   = syscall_arg_int("nelisp--syscall-timerfd-settime", 3, &args[2])?;
-    let int_ns  = syscall_arg_int("nelisp--syscall-timerfd-settime", 4, &args[3])?;
-    let val_s   = syscall_arg_int("nelisp--syscall-timerfd-settime", 5, &args[4])?;
-    let val_ns  = syscall_arg_int("nelisp--syscall-timerfd-settime", 6, &args[5])?;
-    let new = libc::itimerspec {
-        it_interval: libc::timespec { tv_sec: int_s as libc::time_t, tv_nsec: int_ns as i64 },
-        it_value:    libc::timespec { tv_sec: val_s as libc::time_t, tv_nsec: val_ns as i64 },
-    };
-    let mut old: libc::itimerspec = unsafe { std::mem::zeroed() };
-    let r = unsafe { libc::timerfd_settime(fd, flags, &new, &mut old) };
-    if r != 0 {
-        let e = unsafe { *libc::__errno_location() } as i64;
-        return Ok(Sexp::Int(-e));
-    }
-    Ok(Sexp::list_from(&[
-        Sexp::Int(old.it_interval.tv_sec  as i64),
-        Sexp::Int(old.it_interval.tv_nsec as i64),
-        Sexp::Int(old.it_value.tv_sec     as i64),
-        Sexp::Int(old.it_value.tv_nsec    as i64),
-    ]))
-}
-
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_timerfd_settime, "nelisp--syscall-timerfd-settime");
-
-/// `(nelisp--syscall-timerfd-gettime FD)' — Linux timerfd_gettime(2).
-/// Returns 4-element list with the current itimerspec.
-#[cfg(target_os = "linux")]
-fn bi_syscall_timerfd_gettime(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-timerfd-gettime", args, 1, Some(1))?;
-    let fd = syscall_arg_int("nelisp--syscall-timerfd-gettime", 1, &args[0])? as libc::c_int;
-    let mut cur: libc::itimerspec = unsafe { std::mem::zeroed() };
-    let r = unsafe { libc::timerfd_gettime(fd, &mut cur) };
-    if r != 0 {
-        let e = unsafe { *libc::__errno_location() } as i64;
-        return Ok(Sexp::Int(-e));
-    }
-    Ok(Sexp::list_from(&[
-        Sexp::Int(cur.it_interval.tv_sec  as i64),
-        Sexp::Int(cur.it_interval.tv_nsec as i64),
-        Sexp::Int(cur.it_value.tv_sec     as i64),
-        Sexp::Int(cur.it_value.tv_nsec    as i64),
-    ]))
-}
-
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_timerfd_gettime, "nelisp--syscall-timerfd-gettime");
+// Doc 76 Stage F (2026-05-08): signalfd / signalfd-read / sigprocmask
+// / timerfd-{set,get}time specialized + build_sigset_from_list /
+// sigset_to_list helpers all removed.  elisp drives sigset_t via
+// libc.sigemptyset / sigaddset / sigismember and itimerspec via
+// nl-ffi-write-i64 / read-i64.  signalfd_siginfo (= 128-byte event)
+// is decoded directly via read-u32/i32 at known offsets.
 
 // ---------------------------------------------------------------------------
 // Doc 60 Phase 4.4 — SCM_RIGHTS + SOCK_SEQPACKET + SO_PEERCRED + IPv6

@@ -970,27 +970,122 @@ auto-cleaned on close.  Returns 0 or signals `nelisp-os-error'."
 (defconst nelisp-os-SIGCHLD 17)
 (defconst nelisp-os-SIGALRM 14)
 
+;; ---------------------------------------------------------------------------
+;; Doc 76 Stage F (2026-05-08) — sigset_t + itimerspec + signalfd_siginfo
+;; marshaling helpers.
+;;
+;; sigset_t = 128 bytes glibc-side; we drive it via libc.sigemptyset /
+;; .sigaddset / .sigismember (= no need to know the bitmap layout).
+;;
+;; itimerspec = 32 bytes (= 2 × timespec, each 16 bytes: tv_sec i64 +
+;; tv_nsec i64 LE).
+;;
+;; signalfd_siginfo = 128 bytes; offsets surfaced (matches old Rust
+;; primitive's 6-tuple): signo @ 0 (u32), errno @ 4 (i32), code @ 8
+;; (i32), pid @ 12 (u32), uid @ 16 (u32), status @ 40 (i32).
+;; ---------------------------------------------------------------------------
+
+(defconst nelisp-os--sigset-len 128)
+(defconst nelisp-os--itimerspec-len 32)
+(defconst nelisp-os--signalfd-siginfo-len 128)
+
+(defun nelisp-os--encode-sigset (buf signals)
+  "Populate BUF (= 128-byte zeroed) as sigset_t with SIGNALS list."
+  (nl-ffi-call "libc" "sigemptyset" [:sint32 :pointer] buf)
+  (dolist (sig signals)
+    (nl-ffi-call "libc" "sigaddset" [:sint32 :pointer :sint32] buf sig)))
+
+(defun nelisp-os--decode-sigset (buf)
+  "Decode sigset_t at BUF.  Probe sigismember for signals 1..64
+(= standard + Linux RT range) to recover the membership list."
+  (let ((signos nil))
+    (dotimes (i 64)
+      (let ((sig (1+ i)))
+        (when (= 1 (nl-ffi-call "libc" "sigismember"
+                                [:sint32 :pointer :sint32] buf sig))
+          (push sig signos))))
+    (nreverse signos)))
+
+(defun nelisp-os--encode-itimerspec (buf int-s int-ns val-s val-ns)
+  "Populate BUF (= 32-byte zeroed) as itimerspec.  Layout: it_interval
+(tv_sec i64 @ 0, tv_nsec i64 @ 8) + it_value (tv_sec i64 @ 16, tv_nsec
+i64 @ 24)."
+  (nl-ffi-write-i64 buf 0  int-s)
+  (nl-ffi-write-i64 buf 8  int-ns)
+  (nl-ffi-write-i64 buf 16 val-s)
+  (nl-ffi-write-i64 buf 24 val-ns))
+
+(defun nelisp-os--decode-itimerspec (buf)
+  "Decode 32-byte itimerspec BUF into list (INT-S INT-NS VAL-S VAL-NS)."
+  (list (nl-ffi-read-i64 buf 0)
+        (nl-ffi-read-i64 buf 8)
+        (nl-ffi-read-i64 buf 16)
+        (nl-ffi-read-i64 buf 24)))
+
+(defun nelisp-os--decode-signalfd-event (buf base)
+  "Decode a single 128-byte signalfd_siginfo at BUF + BASE into 6-tuple
+(SIGNO ERRNO CODE PID UID STATUS) matching the legacy primitive."
+  (list (nl-ffi-read-u32 buf (+ base 0))
+        (nl-ffi-read-i32 buf (+ base 4))
+        (nl-ffi-read-i32 buf (+ base 8))
+        (nl-ffi-read-u32 buf (+ base 12))
+        (nl-ffi-read-u32 buf (+ base 16))
+        (nl-ffi-read-i32 buf (+ base 40))))
+
 ;; ----- signalfd wrappers -----
 
 (defun nelisp-os-signalfd (fd mask flags)
   "Linux signalfd4(2) — return (or update) a signalfd watching MASK.
 FD = -1 to create a new fd, or an existing signalfd to update its
 mask.  MASK is a list of signal numbers; FLAGS = OR of `SFD-*'."
-  (nelisp-os--check-errno (nelisp--syscall-signalfd4 fd mask flags)))
+  (let ((set-buf (nl-ffi-malloc nelisp-os--sigset-len)))
+    (unwind-protect
+        (progn
+          (nelisp-os--encode-sigset set-buf mask)
+          (let ((r (nl-ffi-call "libc" "signalfd"
+                                [:sint32 :sint32 :pointer :sint32]
+                                fd set-buf flags)))
+            (if (= r -1) (nelisp-os--ffi-errno-signal) r)))
+      (nl-ffi-free set-buf))))
 
 (defun nelisp-os-signalfd-read (fd max-events)
   "Read up to MAX-EVENTS events off signalfd FD.  Returns a list of
 6-element lists `(SIGNO ERRNO CODE PID UID STATUS)'.  Empty list when
 no events are ready (only on FD opened `SFD-NONBLOCK')."
-  (let ((r (nelisp--syscall-signalfd-read fd max-events)))
-    (if (integerp r) (nelisp-os--check-errno r) r)))
+  (let* ((cap (* nelisp-os--signalfd-siginfo-len max-events))
+         (buf (nl-ffi-malloc cap)))
+    (unwind-protect
+        (let ((n (nl-ffi-call "libc" "read"
+                              [:sint64 :sint32 :pointer :uint64]
+                              fd buf cap)))
+          (if (= n -1)
+              (nelisp-os--ffi-errno-signal)
+            (let ((events nil)
+                  (off 0))
+              (while (<= (+ off nelisp-os--signalfd-siginfo-len) n)
+                (push (nelisp-os--decode-signalfd-event buf off) events)
+                (setq off (+ off nelisp-os--signalfd-siginfo-len)))
+              (nreverse events))))
+      (nl-ffi-free buf))))
 
 (defun nelisp-os-sigprocmask (how mask)
   "POSIX pthread_sigmask(3) — apply MASK with HOW (= `SIG-BLOCK' /
 `SIG-UNBLOCK' / `SIG-SETMASK').  Returns the previous mask as a
 list of signal numbers."
-  (let ((r (nelisp--syscall-sigprocmask how mask)))
-    (if (integerp r) (nelisp-os--check-errno r) r)))
+  (let ((new-buf (nl-ffi-malloc nelisp-os--sigset-len))
+        (old-buf (nl-ffi-malloc nelisp-os--sigset-len)))
+    (unwind-protect
+        (progn
+          (nelisp-os--encode-sigset new-buf mask)
+          (let ((r (nl-ffi-call "libc" "pthread_sigmask"
+                                [:sint32 :sint32 :pointer :pointer]
+                                how new-buf old-buf)))
+            ;; pthread_sigmask returns errno directly (= 0 on success).
+            (if (/= r 0)
+                (signal 'nelisp-os-error (list r))
+              (nelisp-os--decode-sigset old-buf))))
+      (nl-ffi-free new-buf)
+      (nl-ffi-free old-buf))))
 
 ;; ----- timerfd wrappers -----
 
@@ -1002,15 +1097,32 @@ list of signal numbers."
   "Linux timerfd_settime(2) — arm or disarm timer FD.  Returns the
 previous itimerspec as 4-element list (PREV-INT-S PREV-INT-NS
 PREV-VAL-S PREV-VAL-NS)."
-  (let ((r (nelisp--syscall-timerfd-settime
-            fd flags it-int-s it-int-ns it-val-s it-val-ns)))
-    (if (integerp r) (nelisp-os--check-errno r) r)))
+  (let ((new-buf (nl-ffi-malloc nelisp-os--itimerspec-len))
+        (old-buf (nl-ffi-malloc nelisp-os--itimerspec-len)))
+    (unwind-protect
+        (progn
+          (nelisp-os--encode-itimerspec new-buf it-int-s it-int-ns it-val-s it-val-ns)
+          (let ((r (nl-ffi-call "libc" "timerfd_settime"
+                                [:sint32 :sint32 :sint32 :pointer :pointer]
+                                fd flags new-buf old-buf)))
+            (if (= r -1)
+                (nelisp-os--ffi-errno-signal)
+              (nelisp-os--decode-itimerspec old-buf))))
+      (nl-ffi-free new-buf)
+      (nl-ffi-free old-buf))))
 
 (defun nelisp-os-timerfd-gettime (fd)
   "Linux timerfd_gettime(2) — return current itimerspec as 4-element
 list (INT-S INT-NS VAL-S VAL-NS)."
-  (let ((r (nelisp--syscall-timerfd-gettime fd)))
-    (if (integerp r) (nelisp-os--check-errno r) r)))
+  (let ((cur-buf (nl-ffi-malloc nelisp-os--itimerspec-len)))
+    (unwind-protect
+        (let ((r (nl-ffi-call "libc" "timerfd_gettime"
+                              [:sint32 :sint32 :pointer]
+                              fd cur-buf)))
+          (if (= r -1)
+              (nelisp-os--ffi-errno-signal)
+            (nelisp-os--decode-itimerspec cur-buf)))
+      (nl-ffi-free cur-buf))))
 
 ;; ergonomics helper — relative one-shot timer in milliseconds.
 (defun nelisp-os-timerfd-set-relative-ms (fd ms)

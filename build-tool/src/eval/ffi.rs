@@ -546,6 +546,15 @@ pub fn nl_ffi_write_i32(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::T)
 }
 
+/// `(nl-ffi-write-i64 PTR OFFSET VALUE)` → t.  Stores VALUE as 8 bytes LE.
+/// Doc 76 Stage F (2026-05-08): timerfd itimerspec field write.
+pub fn nl_ffi_write_i64(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let (p, off, v) = ffi_write_args("nl-ffi-write-i64", args)?;
+    ffi_read_check_bounds("nl-ffi-write-i64", p, off, 8)?;
+    unsafe { std::ptr::write_unaligned((p + off) as *mut i64, v) };
+    Ok(Sexp::T)
+}
+
 /// `(nl-ffi-read-u8 PTR OFFSET)` → integer (= u8 zero-extended to i64).
 /// Doc 76 Stage D (2026-05-08): sockaddr_un sun_path[0] (= abstract
 /// namespace sentinel) check + per-byte sun_path scan.
