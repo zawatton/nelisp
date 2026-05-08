@@ -353,7 +353,7 @@ LOC: +200 elisp (test fixtures)。
 
 LOC: -50 Rust (fallback path)、+5 Rust (image.rs include)。
 
-** §3.5 Stage 7.2.e — Rust reader 全体削除 (Stage 7.6 の前哨戦)
+** §3.5 Stage 7.2.e — Rust reader 全体削除 (Stage 7.6 の前哨戦) [2026-05-08 改判断 → SHIPPED 内容を縮小]
 
 - ~build-tool/src/reader/lexer.rs~ / ~parser.rs~ 削除 (= 1,359 LOC)
 - ~mod.rs~ は Sexp re-export と ~ReadError~ shim のみ残す (~30 LOC)
@@ -361,6 +361,30 @@ LOC: -50 Rust (fallback path)、+5 Rust (image.rs include)。
   と elisp 両方で使われる、type 定義の真実は 1 つ)
 
 LOC: -1,400 Rust。
+
+*** 2026-05-08 改判断 (= Doc 71 / Stage 7.6 設計時に明確化)
+
+実装着手前の精査で、Stage 7.2.e + Stage 7.6 通じての Rust reader 完全
+削除は **bootstrap chicken-and-egg** + ~Sexp~ 値型共有で *aspirational*
+と判明.
+
+- ~Env::new_global~ が ~STDLIB_SOURCES~ 順次 parse のため Rust reader
+  必須 (= ~lisp/nelisp-stdlib-reader.el~ 自身も STDLIB_SOURCES に
+  含まれる)
+- ~reader/sexp.rs~ (= 671 LOC) は ~Sexp~ enum を定義、~eval/~ /
+  ~jit/~ / ~bridge/~ / ~image.rs~ から runtime value 型として共有
+- ~image.rs~ / ~bridge/loader.rs~ も Rust reader 直接利用 (= AOT bake
+  / Phase 8 self-host bridge 別 layer)
+
+→ 実際に Stage 7.2.e で SHIPPED されたのは「stale reader-deferred test
+の retire + reader role の commentary 整理」のみ (commit 42ee89b、
+~50 LOC).  「reader 完全削除」は AOT bake (Doc 63 §3.3) 採用と
+合わせて Stage 7.7+ で再評価.
+
+Doc 71 (Stage 7.6) では更に ~bi_read~ / ~bi_read_all_from_string~ の
+elisp impl 委譲化 (~15 LOC 削減) を実施、Rust reader を bootstrap +
+image + bridge 専用と doc 化した上で「現実的に消せる範囲」の cleanup
+を完了.  詳細は Doc 71 §1.3 / §2.1 参照.
 
 ** §3.6 stage 順序
 

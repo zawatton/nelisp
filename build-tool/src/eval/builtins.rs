@@ -532,7 +532,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // only the read_dir syscall stays Rust).
         "nelisp--syscall-readdir" => bi_syscall_readdir(args, env),
         "nelisp--syscall-read-file" => bi_syscall_read_file(args, env),
-        "nelisp--read-all-from-string" => bi_read_all_from_string(args),
+        "nelisp--read-all-from-string" => bi_read_all_from_string(args, env),
         // Doc 53 Phase 1 — POSIX OS surface dispatch arms.
         "nelisp--syscall" => bi_syscall(args),
         "nelisp--syscall-supported-p" => bi_syscall_supported_p(args),
@@ -703,7 +703,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "install-jobctrl-handlers" => bi_install_jobctrl_handlers(args),
         "_jobctrl-handlers-installed-p" => bi_jobctrl_handlers_installed_p(args),
         "terminal-take-sigcont" => bi_terminal_take_sigcont(args),
-        "read" => bi_read(args),
+        "read" => bi_read(args, env),
         "read-from-string" => bi_read_from_string(args, env),
         // provide / featurep migrated to elisp (Rust-min batch 7i,
         // 2026-05-07; see lisp/nelisp-stdlib-misc.el).  Only `require'
@@ -1827,31 +1827,24 @@ fn bi_syscall_read_file(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError>
     }
 }
 
-/// `(nelisp--read-all-from-string STR)' — Rust-min batch 7f (Doc 50
-/// stage 2): wrap `reader::read_all', returning every top-level form
-/// in STR as a list.  Empty / whitespace-only input → nil.
-///
-/// Used by elisp `load' to walk a freshly-slurped source file form by
-/// form.  The host `read-from-string' primitive returns only the
-/// first form (and a buggy NEW-INDEX pinned to `(length STR)') so
-/// can't drive a multi-form loop from elisp directly.
-fn bi_read_all_from_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
+/// `(nelisp--read-all-from-string STR)' — Phase 7 Stage 7.6.a (Doc 71
+/// §3.1): mandatory delegation to elisp
+/// `nelisp--read-all-from-string-impl' (= `lisp/nelisp-stdlib-reader.el').
+/// Mirrors the Stage 7.2.d retirement pattern that
+/// `bi_read_from_string' adopted: post-bootstrap user-visible reads
+/// MUST go through the elisp reader so the Rust `reader::read_all'
+/// surface is bootstrap-only.  Hard error if the elisp impl isn't
+/// installed (= reader.el missing from STDLIB_SOURCES).
+fn bi_read_all_from_string(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("nelisp--read-all-from-string", args, 1, Some(1))?;
-    let s = match &args[0] {
-        Sexp::Str(s) => s.clone(),
-        Sexp::MutStr(rc) => rc.borrow().clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "stringp".into(),
-            got: other.clone(),
-        }),
-    };
-    let forms = super::super::reader::read_all(&s)
-        .map_err(|e| EvalError::Internal(format!("nelisp--read-all-from-string: {}", e)))?;
-    let mut out = Sexp::Nil;
-    for f in forms.into_iter().rev() {
-        out = Sexp::cons(f, out);
-    }
-    Ok(out)
+    let impl_fn = env.lookup_function("nelisp--read-all-from-string-impl").map_err(|_| {
+        EvalError::Internal(
+            "nelisp--read-all-from-string: `nelisp--read-all-from-string-impl' not loaded \
+             — `lisp/nelisp-stdlib-reader.el' missing from STDLIB_SOURCES?"
+                .into(),
+        )
+    })?;
+    super::apply_function(&impl_fn, args, env)
 }
 
 // ---------- Doc 47 Stage 8b — file I/O for multi-file load chains ----------
@@ -5007,14 +5000,34 @@ fn bi_terminal_take_sigcont(args: &[Sexp]) -> Result<Sexp, EvalError> {
 
 /// `(read &optional STREAM)' — parse one elisp form.  STREAM may be
 /// a string (= read from it), a marker / buffer / function (= NYI),
-/// or absent (= NYI: would read from stdin).  We accept the string
-/// case used by callers like `bin/nemacs's `--eval' splice (=
-/// `(read "...")').
-fn bi_read(args: &[Sexp]) -> Result<Sexp, EvalError> {
+/// or absent (= NYI: would read from stdin).
+///
+/// Phase 7 Stage 7.6.a (Doc 71 §3.1): mandatory delegation to elisp
+/// `nelisp--read-from-string-impl' for the string case, matching the
+/// Stage 7.2.d retirement of `bi_read_from_string''s Rust fallback.
+/// `read-from-string-impl' returns `(FORM . CONSUMED-END)'; `read'
+/// returns just FORM, so we take `car' of the result.
+fn bi_read(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("read", args, 0, Some(1))?;
     match args.get(0) {
-        Some(Sexp::Str(s)) => super::super::reader::read_str(s)
-            .map_err(|e| EvalError::Internal(format!("read: {}", e))),
+        Some(Sexp::Str(_)) | Some(Sexp::MutStr(_)) => {
+            let impl_fn = env.lookup_function("nelisp--read-from-string-impl").map_err(|_| {
+                EvalError::Internal(
+                    "read: `nelisp--read-from-string-impl' not loaded \
+                     — `lisp/nelisp-stdlib-reader.el' missing from STDLIB_SOURCES?"
+                        .into(),
+                )
+            })?;
+            let result = super::apply_function(&impl_fn, &args[0..1], env)?;
+            // (FORM . CONSUMED-END) → FORM
+            match result {
+                Sexp::Cons(car, _) => Ok(car.borrow().clone()),
+                other => Err(EvalError::Internal(format!(
+                    "read: expected `(FORM . CONSUMED-END)' from impl, got {:?}",
+                    other
+                ))),
+            }
+        }
         Some(other) => Err(EvalError::NotImplemented(format!(
             "read STREAM type: {:?}",
             other

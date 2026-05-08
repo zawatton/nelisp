@@ -26,19 +26,25 @@
 //!     `inline-quote` shape)
 //!   - any unknown `\X` inside string / char literals = literal `X`
 //!
-//! Phase 7 Stage 7.2.d/e (2026-05-07, Doc 66) — user-visible
-//! `read-from-string` no longer routes through this module.  The
-//! elisp impl `nelisp--read-from-string-impl` (= `lisp/nelisp-stdlib-
-//! reader.el`) is canonical for any post-bootstrap call.  This Rust
-//! reader survives because (a) `Env::new_global` bootstrap must parse
-//! the bundled stdlib sources — the elisp reader cannot parse itself,
-//! since reader.el's bodies depend on `not` / `null` / `nreverse` /
-//! `floatp` etc. that are defined in `nelisp-stdlib*.el` and the
-//! elisp reader is invoked at PARSE time of subsequent files; (b)
-//! build-tool drivers like `eval_str` / `image::compile_elisp_to_image`
-//! / `bridge::bootstrap_self_host` use it directly; and (c) cargo
+//! Phase 7 Stage 7.2.d/e (2026-05-07, Doc 66) + Stage 7.6.a
+//! (2026-05-08, Doc 71) — *all* user-visible reads now route through
+//! the elisp impl `nelisp--read-from-string-impl' / `nelisp--read-all-
+//! from-string-impl' (= `lisp/nelisp-stdlib-reader.el').  Specifically
+//! `read-from-string' (Stage 7.2.d), `read' and `nelisp--read-all-
+//! from-string' (Stage 7.6.a) all delegate mandatorily.
+//!
+//! This Rust reader survives because (a) `Env::new_global' bootstrap
+//! must parse the bundled stdlib sources — the elisp reader cannot
+//! parse itself, since reader.el's bodies depend on `not` / `null` /
+//! `nreverse` / `floatp` etc. that are defined in `nelisp-stdlib*.el'
+//! and the elisp reader is invoked at PARSE time of subsequent files;
+//! (b) build-tool drivers like `eval_str' / `image::compile_elisp_to_image'
+//! / `bridge::bootstrap_self_host' use it directly; and (c) cargo
 //! unit tests use it to construct fixture values without spinning up
-//! a full `Env`.
+//! a full `Env'.  Doc 63 §2.6 anticipated complete deletion of this
+//! module (~1,400 LOC), but bootstrap chicken-and-egg + `Sexp' value-
+//! type sharing across the entire crate make that aspirational —
+//! AOT bake (Doc 63 §3.3) is the prerequisite for deletion.
 //!
 //! `#s(...)` structure literal landed in Doc 52 Stage 4b — read as a
 //! `Sexp::Record { type_tag, slots }' (positional form; keyword form

@@ -4,12 +4,21 @@
 
 * Status
 
-- DRAFT — Stage 7.5.c SHIPPED (= f89139c、post-bootstrap macro elisp 経由化)
-  直後.  本 Doc 71 は Doc 63 §2.6 の Stage 7.6 を Phase 7 Stage 7.5
-  完了状態に合わせて execution 可能なレベルに落とし込む
+- SHIPPED 2026-05-08 — Stage 7.6.a (= bi_read / bi_read_all_from_string
+  elisp 委譲) + Stage 7.6.b (= reader/mod.rs commentary + Doc 66 §3.5
+  status 更新) 完了.
 - 上位 doc: =docs/design/63-phase7-nelisp-self-host-roadmap.org= §2.6
 - 関連 doc: Doc 66 (Stage 7.2 reader migration、§3.5 で Stage 7.6 の前哨戦
   と位置づけ) / Doc 69 (Stage 7.5 = 同じ bootstrap 制約問題の構造)
+- 検証 evidence:
+  - cargo build --release: PASS
+  - cargo serial 全件: 435/435 PASS、4 ignored
+  - ERT eval-core: 22/22 PASS
+- sub-stage status:
+  | sub-stage | status | note |
+  |-----------+--------+------|
+  | 7.6.a | SHIPPED | bi_read / bi_read_all_from_string elisp 委譲 |
+  | 7.6.b | SHIPPED | reader/mod.rs commentary + Doc 66 §3.5 更新 |
 
 * §0 TL;DR
 
