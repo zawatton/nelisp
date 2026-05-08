@@ -1,0 +1,363 @@
+#+TITLE: Doc 70 — Phase 7 Stage 7.4.e: apply-lambda-inner Rust builtin 化 + default flip
+#+AUTHOR: zawatton
+#+DATE: 2026-05-08
+
+* Status
+
+- DRAFT — Stage 7.4.e 着手前 (= Stage 7.4.d a0dbf26 直後)
+- 直接の上位 doc: =docs/design/68-phase7-stage4-apply-call-closure-env.org= §3.4
+  (= DEFERRED 区画).  本 Doc 70 はその切り出し続編
+- 影響: Phase 7 self-host roadmap (Doc 63) Stage 7.4 完遂 + Stage 7.5 着手
+  解禁
+
+* §0 TL;DR
+
+Stage 7.4.d で発見した *frame-capture leak* を、
+=nelisp--apply-lambda-inner= の *elisp defun を Rust builtin に降ろす* こと
+で解消する。helper の formal slot (= =--nl-ali-captured= /-formals/-body/
+-args) が elisp lexical env に出ないため、=defun= が body 内で実行されても
+slot を捕捉できない。
+
+| sub-stage | 内容 | 想定 LOC |
+|-----------+------+----------|
+| e.1 | =bi_apply_lambda_inner= 追加 + elisp defun 削除 (atomic) | Rust +30 / elisp -50 |
+| e.2 | =Env::use_elisp_apply= default true + bench gate + Doc 68 §3.4 更新 | Rust ±5 / Doc +30 |
+
+* §1 動機 (= Doc 68 §3.4 の再要約)
+
+** §1.1 観測 bug (= Stage 7.4.d default-on spike で fail)
+
+#+begin_example
+$ NELISP_USE_ELISP_APPLY=1 cargo test load_evaluates_file_contents
+...
+panic: assertion failed: result == 99
+note: signaled wrong-number-of-arguments: (lambda 0 1)
+#+end_example
+
+具体経路:
+
+1. =(load "/tmp/zz.el")= — =load= は elisp 関数 (= Doc 67 で migrate 済).
+2. =load= body 内で各 top-level form を =eval= する.
+3. ある form が =(defun X () 99)= の場合、=defun= は special form 判定
+   後に =sf_lambda= で *現在の lexical env を captured-env として snapshot*.
+4. snapshot 時の lexical env スタック:
+   - =[load の call-frame: file, ...]=
+   - =[apply-lambda-inner の call-frame: --nl-ali-captured, --nl-ali-formals, --nl-ali-body, --nl-ali-args]=
+   - =[captured frame: load の closure]=
+   - =[inner formals frame: file=...]=
+5. =capture_lexical= は innermost-first で walk するので、=--nl-ali-*=
+   slot 4 つも snapshot に含まれる.
+6. 後で =(X)= 呼出 → =push-captured= で =--nl-ali-formals= 等が new
+   captured frame に install.
+7. 次に =apply-lambda-inner= が呼ばれると、helper 自身の formal binding
+   が leaked slot を *shadow* (= bind-local 時に topmost frame を target
+   するが、leaked frame の slot を上書き) → state machine 破綻.
+
+** §1.2 なぜ Rust 化で解決するか
+
+apply-lambda-inner を Rust builtin にすると、helper の state
+(= captured / formals / body / args / 中間 pairs / last result) は
+*Rust の関数 stack frame* に置かれる. elisp 側の =Env::frames= には
+出ない → =capture_lexical= の walk 対象外.  defun が body 内で snapshot
+を取っても helper の slot は含まれない.
+
+apply-fn / apply-closure / apply-lambda の formal slot (= =fn=, =closure=,
+=args=) は *elisp lexical env に残る* が、それらの leak は本 Stage の
+scope 外 (= 観測される failure を起こさない範囲).  必要なら Stage 7.4.f
+以降で扱う.
+
+** §1.3 Rust 側に既に基盤がある
+
+=build-tool/src/eval/mod.rs= line 476-512 に既存の
+=fn apply_lambda_inner(captured, formals, body, args, env)= があり、
+Rust dispatch 経路 (= =Env::use_elisp_apply= 未設定) で常用.
+本 Stage はそれを *builtin として exposed する* だけ → ロジック書き起し
+不要、~25 LOC のラッパで済む.
+
+* §2 設計
+
+** §2.1 Rust 側
+
+*** =fn apply_lambda_inner= の visibility 変更
+
+=mod.rs=:
+
+#+begin_src rust
+-fn apply_lambda_inner(
++pub(crate) fn apply_lambda_inner(
+     captured: &Sexp,
+     formals: &Sexp,
+     body: &[Sexp],
+     args: &[Sexp],
+     env: &mut Env,
+ ) -> Result<Sexp, EvalError> {
+     ...
+ }
+#+end_src
+
+*** =fn bi_apply_lambda_inner= 追加
+
+=builtins.rs=:
+
+#+begin_src rust
+/// `(nelisp--apply-lambda-inner CAPTURED FORMALS BODY ARGS)` —
+/// Rust builtin replacing the elisp defun of the same name (Stage
+/// 7.4.b dormant install → Stage 7.4.e Rust takeover).  All four
+/// state slots plus intermediate `pairs' / `last' live on the Rust
+/// call stack — nothing enters the elisp lexical env, so a `defun'
+/// executed within BODY cannot snapshot this builtin's formal slots.
+/// Surgical fix for the Stage 7.4.d capture-leak bug.
+fn bi_apply_lambda_inner(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--apply-lambda-inner", args, 4, Some(4))?;
+    let captured = &args[0];
+    let formals = &args[1];
+    let body_list = &args[2];
+    let args_list = &args[3];
+    let body_vec = super::list_elements(body_list)?;
+    let args_vec = super::list_elements(args_list)?;
+    super::apply_lambda_inner(captured, formals, &body_vec, &args_vec, env)
+}
+#+end_src
+
+*** registration
+
+=builtins.rs= line ~398 (BUILTIN_NAMES static array):
+
+=nelisp--apply-lambda-inner= を追加 (Stage 7.4.a の =push-frame= 等と
+同区画).
+
+=builtins.rs= line ~601 (dispatch match):
+
+=#+begin_src rust=
+=        "nelisp--apply-lambda-inner" => bi_apply_lambda_inner(args, env),=
+=#+end_src=
+
+** §2.2 elisp 側
+
+=lisp/nelisp-stdlib-eval-core.el=:
+
+- =defun nelisp--apply-lambda-inner= を *削除* (= ~50 LOC drop)
+- =defun nelisp--apply-closure= の =(nelisp--apply-lambda-inner ...)=
+  呼出は同名 builtin に解決されるので **変更不要**
+- 同 =defun nelisp--apply-lambda= も同様
+- ファイル冒頭 commentary 内の =--nl-ali-*= 記述を更新 (= "Rust builtin
+  に降ろした" 旨に書き換え).  内部 helper として残る =bf-compute=
+  および =bf-required-count= は *形状不変*
+
+** §2.3 helper exemption list
+
+=mod.rs= =fn is_elisp_apply_helper=:
+
+=nelisp--apply-lambda-inner= の 1 行は **削除可** (= builtin になった
+ので =is_builtin_value= 判定で短絡される、helper 例外不要).
+
+ただし削除しなくても害は無いので、cleanup として削除する場合のみ
+実施.  Stage 7.4.e.1 atomic commit で同時に削除して問題なし.
+
+** §2.4 default flip (= e.2)
+
+=env.rs= 初期化:
+
+#+begin_src rust
+// Stage 7.4.e.2: default ON.  Bootstrap が完了するまでは use_elisp_apply
+// は false で、stdlib install 後に true へ flip.  env var
+// NELISP_USE_RUST_APPLY=1 を escape hatch として残す.
+use_elisp_apply: false,  // bootstrap 中は Rust dispatch (変更なし)
+#+end_src
+
+bootstrap 後の flip pattern (= Stage 7.4.d で試行した形を踏襲):
+
+#+begin_src rust
+// After stdlib install, flip to env-var-controlled value.
+let force_rust = std::env::var("NELISP_USE_RUST_APPLY")
+    .map(|v| v == "1" || v == "true")
+    .unwrap_or(false);
+env.use_elisp_apply = !force_rust;  // default true (= elisp dispatch),
+                                     // env var で Rust dispatch に escape
+#+end_src
+
+旧 =NELISP_USE_ELISP_APPLY= env var は logic を反転 (= 不要なら drop、
+deprecation period として 1 release だけ残しても可).  Stage 7.4.e.2 では
+**drop して =NELISP_USE_RUST_APPLY= だけ残す** (= 簡素化).
+
+** §2.5 bench gate (= e.2)
+
+bench/eval-heavy 5 case を Stage 7.3.d (= main HEAD = a0dbf26) baseline と
+Stage 7.4.e.2 で比較:
+
+| bench | gate (total) | gate (p99) |
+|-------+--------------+------------|
+| =bench-cl-loop-1m=         | < 1.8x | < 2.0x |
+| =bench-recursive-fact-100= | < 1.8x | < 2.0x |
+| =bench-closure-counter-100k= | < 1.8x | < 2.0x |
+| =bench-funcall-builtin-1m= | < 1.5x | < 1.8x |
+| =bench-defmacro-expand-100k= | < 1.8x | < 2.0x |
+
+未達なら Phase 5 lower entry 追加 (= apply-fn / apply-closure の
+=consp= / =null= / =eq= path) を Stage 7.4.f として切出。
+
+* §3 段階 / sub-stages
+
+** §3.1 Stage 7.4.e.1 — Rust builtin + elisp defun 削除 (atomic)
+
+タスク:
+
+1. =mod.rs= =fn apply_lambda_inner= を =pub(crate)= 化
+2. =builtins.rs= に =bi_apply_lambda_inner= 追加 (~25 LOC)
+3. =BUILTIN_NAMES= array に =nelisp--apply-lambda-inner= 追加
+4. dispatch match arm に =nelisp--apply-lambda-inner=> bi_apply_lambda_inner=
+5. =lisp/nelisp-stdlib-eval-core.el= の =defun nelisp--apply-lambda-inner=
+   を **削除**
+6. =mod.rs= =is_elisp_apply_helper= から =nelisp--apply-lambda-inner= を
+   削除 (cleanup)
+7. =test/nelisp-stdlib-eval-core-test.el= の Stage 7.4.b ERT は **不変**
+   (= name unchanged、builtin が defun を置き換える)
+8. =build-tool/src/eval/tests.rs= に Rust 直接 ERT 追加 (~3 件):
+   - =stage74e1_apply_lambda_inner_binds_required_formals=
+   - =stage74e1_apply_lambda_inner_handles_optional_and_rest=
+   - =stage74e1_apply_lambda_inner_does_not_leak_formal_slots= (=
+     defun を body 内で eval して captured-env に =--nl-ali-*= が
+     入らないことを assert)
+9. 検証 cmd:
+   - =cargo build --release -p nelisp-build-tool=
+   - =emacs --batch -Q -L src -L test -l ert -l test/nelisp-stdlib-eval-core-test.el -f ert-run-tests-batch-and-exit=
+   - =cargo test --release --lib -p nelisp-build-tool -- --test-threads=1=
+10. 期待結果: ERT 22+ 件 PASS、cargo serial 431+ 件 PASS、
+    =stage74e1_*= 3 件追加.
+
+LOC: Rust +30 / elisp -50 / 純減 -20
+
+commit message:
+=feat(nelisp): Phase 7 Stage 7.4.e.1 SHIPPED — apply-lambda-inner Rust builtin 化 (frame-capture leak fix)=
+
+** §3.2 Stage 7.4.e.2 — default flip + bench gate + Doc 68 §3.4 更新
+
+タスク:
+
+1. =env.rs= bootstrap 後の =use_elisp_apply= を default true に変更
+   (= env var で escape 化)
+2. env var 名を =NELISP_USE_ELISP_APPLY= → =NELISP_USE_RUST_APPLY= に
+   反転 (= default を表す方が短い名前)
+3. =cargo test load_evaluates_file_contents= が PASS することを確認
+   (= leak 解消の決定的 evidence)
+4. =cargo test --release --lib -p nelisp-build-tool -- --test-threads=1=
+   全 PASS
+5. ERT 全件 (= test/run-tests.sh) PASS
+6. bench gate 5 case 計測、§2.5 の閾値 PASS
+7. Doc 68 §3.4 を =[DEFERRED → Stage 7.4.e]= から =[SHIPPED via Doc 70 / Stage 7.4.e.2]=
+   に更新
+8. Doc 70 status を =DRAFT= → =SHIPPED= に更新
+9. CHANGELOG / README 更新 (= 必要なら)
+
+LOC: Rust ±5 / elisp 0 / Doc +30
+
+commit message:
+=feat(nelisp): Phase 7 Stage 7.4.e.2 SHIPPED — elisp apply default ON + bench gate=
+
+* §4 Test plan
+
+** §4.1 既存 ERT regression check
+
+Stage 7.4.b で追加した 16 件 + Stage 7.4.c で追加した 6 件 = 計 22 件
+は **形状不変** (= function 名 / 期待値 全て同じ、内部実装だけ変わる).
+全 PASS 維持が必要.
+
+** §4.2 Rust 直接 ERT 追加 (= e.1 で 3 件)
+
+=build-tool/src/eval/tests.rs= に追加:
+
+#+begin_src rust
+#[test]
+fn stage74e1_apply_lambda_inner_binds_required_formals() {
+    let mut env = Env::new();
+    bootstrap(&mut env).unwrap();
+    let result = eval_str(
+        "(nelisp--apply-lambda-inner nil '(a b) '((+ a b)) '(3 4))",
+        &mut env,
+    ).unwrap();
+    assert_eq!(result, Sexp::Int(7));
+}
+
+#[test]
+fn stage74e1_apply_lambda_inner_does_not_leak_formal_slots() {
+    let mut env = Env::new();
+    bootstrap(&mut env).unwrap();
+    // helper 内で defun を eval、captured-env に --nl-ali-* が
+    // 入らないことを assert
+    let result = eval_str(
+        r#"(progn
+             (nelisp--apply-lambda-inner nil '() '((defun __probe () 'ok)) '())
+             (let ((c (symbol-function '__probe)))
+               (and (consp c)
+                    (let ((captured (cadr c)))
+                      (not (assq '--nl-ali-captured captured))))))"#,
+        &mut env,
+    ).unwrap();
+    assert_eq!(result, Sexp::T);
+}
+#+end_src
+
+** §4.3 leak repro test (= e.2 verification)
+
+Stage 7.4.d で fail した =cargo test load_evaluates_file_contents= が
+default-on で PASS することを確認.
+
+** §4.4 wallclock gate (= e.2)
+
+§2.5 の bench gate 5 case.
+
+* §5 Risks / Open issues
+
+** §5.1 apply-fn / apply-closure formal slot leak (= 残存)
+
+apply-fn の =fn=, =args= 等の formal slot は依然として lexical env に
+入る.  user defun が同名 formal を declared していなければ unobservable
+だが、observable な場合は default-on で test fail の可能性.
+
+mitigation: e.2 で全 test 走らせて問題があれば e.3 として apply-fn /
+apply-closure も Rust builtin 化.
+
+** §5.2 expand-macro / bf-compute slot leak
+
+同じく defun のため formal slot が残る.  =macro-form= / =arg-forms=
+/ =formals= / =args= が user code と衝突する場合に problematic.
+特に =formals= / =args= は common name なので注意.
+
+mitigation: e.2 で fail 観測があれば、bf-compute だけでも Rust 化
+(= ~30 LOC) → bf-compute は dispatch logic ではなく state計算なので
+Doc 68 §1 の "dispatch logic を elisp に" 趣旨を毀損しない.
+
+** §5.3 bench regression > 2x
+
+elisp dispatch が outermost-only (= delegation_depth=0 のみ) でも
+function 1 回 call ごとに =delegate_to_elisp_apply= の dispatch_form
+構築 + eval が走る.  100 万回呼ぶ bench で 2x 超える可能性あり.
+
+mitigation: Phase 5 lower entry に =apply-fn= path を追加し、Rust
+builtin 直接 lower で bypass.  Stage 7.4.f として切出.
+
+* §6 共通原則 (= Doc 68 から継承)
+
+- Tier 1-only body 制約 = elisp 側 dispatcher は Tier 1 special form
+  + 既存 builtin のみ参照.  本 Stage は =defun= を 1 つ削除するだけ
+  なので制約に変化なし.
+- 既存 ERT regression = 22+431+α 全件 PASS を必須 gate.
+- bench gate = total < 1.8x / p99 < 2.0x.
+
+* §7 Out of scope
+
+- apply-fn / apply-closure / apply-lambda の Rust 化 (= 必要なら
+  Stage 7.4.f).
+- expand-macro の Rust 化 (= macro 定義時の slot leak).
+- Stage 7.5 (= Rust eval/mod.rs の冗長 path 削除、Doc 69 予定).
+- Stage 7.6 (= reader cleanup, Stage 7.2.f follow-up).
+
+* §8 References
+
+- Doc 63 §3 — Phase 7 self-host roadmap、Stage 7.4 / 7.5 位置づけ
+- Doc 67 §2.2 — Tier 1-only body 制約
+- Doc 68 全体 — Stage 7.4 a/b/c/d 設計 + §3.4 capture-leak 解析
+- =build-tool/src/eval/mod.rs:476-512= — 既存 =apply_lambda_inner= 関数
+- =build-tool/src/eval/builtins.rs:3799-3890= — Stage 7.4.a / 7.4.c builtin
+  実装パターン (= 本 Stage の手本)
+- =lisp/nelisp-stdlib-eval-core.el:163-207= — 削除対象 elisp defun

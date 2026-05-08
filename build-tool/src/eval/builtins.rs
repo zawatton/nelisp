@@ -400,6 +400,10 @@ pub fn install_builtins(env: &mut Env) {
         // Phase 7 Stage 7.4.c (Doc 68 §2.7) — `use_elisp_apply' takeover
         // flag の runtime toggle.  ERT 用.
         "nelisp--set-use-elisp-apply", "nelisp--get-use-elisp-apply",
+        // Phase 7 Stage 7.4.e (Doc 70): apply-lambda-inner Rust 化.
+        // helper の state slot を elisp lexical env に出さないことで
+        // Stage 7.4.d で観測した frame-capture leak を解消.
+        "nelisp--apply-lambda-inner",
     ];
     for n in names {
         let sentinel = Sexp::list_from(&[
@@ -602,6 +606,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // Phase 7 Stage 7.4.c (Doc 68 §2.7) — takeover flag toggle.
         "nelisp--set-use-elisp-apply" => bi_set_use_elisp_apply(args, env),
         "nelisp--get-use-elisp-apply" => bi_get_use_elisp_apply(args, env),
+        // Phase 7 Stage 7.4.e (Doc 70) — apply-lambda-inner Rust 化.
+        "nelisp--apply-lambda-inner" => bi_apply_lambda_inner(args, env),
         // intern-soft migrated to elisp (Rust-min 2026-05-06 batch 6f,
         // see lisp/nelisp-stdlib-misc.el).
         "make-symbol" => bi_make_symbol(args),
@@ -3883,6 +3889,26 @@ fn bi_apply_builtin_dispatch(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalE
         return result;
     }
     dispatch(&name, &arg_vec, env)
+}
+
+/// Phase 7 Stage 7.4.e (Doc 70) — `(nelisp--apply-lambda-inner CAPTURED
+/// FORMALS BODY ARGS)`.  Rust builtin replacing the Stage 7.4.b elisp
+/// defun of the same name.  All four state slots plus intermediate
+/// `pairs' / `last' live on the Rust call stack — nothing enters the
+/// elisp lexical env, so a `defun' executed within BODY cannot
+/// snapshot this builtin's "formal slots".  Surgical fix for the
+/// Stage 7.4.d capture-leak bug.
+///
+/// BODY is a proper list of forms (= the elisp dispatcher passes the
+/// closure body cdr directly).  ARGS is a proper list of already-
+/// evaluated arguments (= matches the elisp dispatcher contract).
+fn bi_apply_lambda_inner(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--apply-lambda-inner", args, 4, Some(4))?;
+    let captured = &args[0];
+    let formals = &args[1];
+    let body_vec = super::list_elements(&args[2])?;
+    let args_vec = super::list_elements(&args[3])?;
+    super::apply_lambda_inner(captured, formals, &body_vec, &args_vec, env)
 }
 
 /// `(makunbound SYMBOL)` — clear the value cell of SYMBOL.

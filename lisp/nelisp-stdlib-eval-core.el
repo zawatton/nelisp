@@ -5,37 +5,22 @@
 ;;; Commentary:
 
 ;; Phase 7 Stage 7.4.b (= Doc 68): Rust =eval/mod.rs= の =apply_function=
-;; / =apply_closure= / =apply_lambda= / =apply_lambda_inner= / =bind_formals=
-;; / =is_macro= / =expand_macro= 8 helper を elisp に移植する.  Stage
-;; 7.4.b 時点では Rust 側 =apply_function= が runtime path を握って
-;; いるので本 file の defun は *dormant* (= ERT 経由でのみ叩かれる).
-;; Stage 7.4.c で `--use-elisp-apply' flag 経路が入り、Stage 7.4.d で
-;; default が flip して active 化する.
+;; / =apply_closure= / =apply_lambda= / =bind_formals= / =is_macro= /
+;; =expand_macro= helper を elisp に移植する.  Stage 7.4.b 時点では
+;; Rust 側 =apply_function= が runtime path を握っているので本 file の
+;; defun は *dormant* (= ERT 経由でのみ叩かれる).  Stage 7.4.c で
+;; =--use-elisp-apply= flag 経路が入り、Stage 7.4.e (Doc 70) で
+;; =apply-lambda-inner= だけは frame-capture leak 修正のため Rust
+;; builtin に降ろされた (= 本 file には残らず、Rust =bi_apply_lambda_inner=
+;; が同名で expose).
 ;;
-;; Tier 1-only body 制約 + frame-stack 整合性制約: 本 file の各 defun の
-;; body は Tier 1 special form (= if / let / let* / setq / while /
-;; progn / lambda / quote / function / catch / throw / condition-case /
-;; unwind-protect) + Stage 7.3 SHIPPED 済 Tier 2 macro (= cond / when /
-;; unless / and / or / dolist / dotimes / push / pop / prog1 / prog2 /
-;; defun / defvar) + Rust builtin + Stage 7.4.a primitive のみ.
-;; cl-loop / seq-* / mapcar 等は使わない (= bootstrap cycle).
-;;
-;; *Frame stack 整合性*: =apply_function= for elisp lambda は call-side で
-;; 必ず frame を push する (= elisp 標準 semantics).  そのため、
-;; =nelisp--bind-local NAME VALUE= を defun の body から呼ぶと、その
-;; defun 自身の call-frame に bind されて return 時に消える.  本 file は
-;; この罠を回避するため:
-;;   (1) 状態走査 + arity 検査 を *pure* helper に隔離 (= bindings の
-;;       list を返すだけ、frame stack は触らない)
-;;   (2) 実際の =bind-local= 呼び出しは =apply-lambda-inner= の **直接の
-;;       body** で行う (= push-frame で立てた F_formals が topmost、
-;;       defun 余分 frame が間に挟まらない)
-;;   (3) =apply-lambda-inner= body 内では =let= / =or= / =and= 等
-;;       「展開時に =let ((--nl-...))= を生む macro」を絶対に使わない
-;;       (= =setq= / =if= / =progn= / =while= / 直接 =cons= で書く)
-;;
-;; この制約は =bind-formals--compute= 等の *pure helper* には適用しない
-;; (= helper の return 値だけ使う、helper 自身の frame は破棄される).
+;; Tier 1-only body 制約: 本 file の各 defun の body は Tier 1 special
+;; form (= if / let / let* / setq / while / progn / lambda / quote /
+;; function / catch / throw / condition-case / unwind-protect) + Stage
+;; 7.3 SHIPPED 済 Tier 2 macro (= cond / when / unless / and / or /
+;; dolist / dotimes / push / pop / prog1 / prog2 / defun / defvar) +
+;; Rust builtin + Stage 7.4.a/e primitive のみ.  cl-loop / seq-* /
+;; mapcar 等は使わない (= bootstrap cycle).
 
 ;;; Code:
 
@@ -147,63 +132,17 @@ in a context where the topmost frame is the intended target."
 
 ;; ---- closure / lambda body apply -----------------------------------
 ;;
-;; Mirrors Rust eval/mod.rs `apply_lambda_inner' (lines 368-411).
-;; Pushes the captured-env frame + a fresh formals frame, runs the
-;; binding loop INLINE (= no separate defun call between push-frame
-;; and bind-local), evals BODY in order returning the last value,
-;; then pops both frames.  `unwind-protect' guarantees pop on signal.
-;;
-;; The body of this defun MUST NOT use any frame-pushing macro
-;; between the `(nelisp--push-frame)' and the bind-local loop —
-;; specifically no `let' / `let*' / `or' / `and' / `cond' with empty
-;; body / etc.  We use only `setq', `if', `progn', `while', plain
-;; cons/car/cdr access, and direct builtin calls.  See file
-;; commentary for the rationale.
-
-(defun nelisp--apply-lambda-inner (--nl-ali-captured --nl-ali-formals
-                                                    --nl-ali-body
-                                                    --nl-ali-args)
-  "Apply (lambda FORMALS BODY...) with CAPTURED env to ARGS.
-Push CAPTURED (an alist of `((NAME . CELL) ...)') as a lexical frame,
-push another frame for FORMALS, walk a pre-computed pair list to
-install each formal binding in the just-pushed frame, eval BODY in
-order, return the last value.  Both frames are popped on normal and
-error exit.
-
-Formal-name convention: the `--nl-ali-*' prefix avoids name collisions
-with the *user-level* formals being installed.  Plain names like
-`captured' / `formals' / `body' / `args' would clash if a user defun
-happened to declare a formal of the same name (= `setq' from inside
-this body would target the just-pushed F_formals slot instead of this
-function's own call-frame slot, corrupting the user binding)."
-  (nelisp--push-captured --nl-ali-captured)
-  (nelisp--push-frame)
-  (unwind-protect
-      (progn
-        ;; Compute pairs via a pure helper.  The helper has its own
-        ;; transient call-frame, but only its return value (= the
-        ;; pairs list) escapes.  Reuse the `--nl-ali-captured' slot
-        ;; to hold the pairs list — avoids a `let' which would push
-        ;; F_let on top of F_formals and re-target bind-local.
-        (setq --nl-ali-captured
-              (nelisp--bind-formals--compute --nl-ali-formals --nl-ali-args))
-        ;; Walk pairs.  No `let' / no nested defun call between here
-        ;; and bind-local — F_formals stays topmost, bindings go
-        ;; into the right place.
-        (while (consp --nl-ali-captured)
-          (nelisp--bind-local (car (car --nl-ali-captured))
-                              (cdr (car --nl-ali-captured)))
-          (setq --nl-ali-captured (cdr --nl-ali-captured)))
-        ;; Eval body.  Reuse `--nl-ali-formals' slot for `last result'
-        ;; since we no longer need the original FORMALS value.
-        (setq --nl-ali-formals nil)
-        (while (consp --nl-ali-body)
-          (setq --nl-ali-formals (eval (car --nl-ali-body)))
-          (setq --nl-ali-body (cdr --nl-ali-body)))
-        --nl-ali-formals)
-    (progn
-      (nelisp--pop-frame)
-      (nelisp--pop-frame))))
+;; `nelisp--apply-lambda-inner' is registered as a Rust builtin
+;; (build-tool/src/eval/builtins.rs `bi_apply_lambda_inner').  It
+;; mirrors `apply_lambda_inner' (eval/mod.rs) and was demoted from an
+;; elisp defun in Stage 7.4.e (Doc 70) to fix the Stage 7.4.d
+;; frame-capture leak: when the defun ran user code in its body, its
+;; `--nl-ali-*' formal slots leaked into closures that `defun'
+;; snapshotted, corrupting the dispatcher's state on later re-entry.
+;; Keeping the helper's state on the Rust call stack closes that
+;; surface — `apply-closure' / `apply-lambda' below call the builtin
+;; by name (= same `(nelisp--apply-lambda-inner CAPTURED FORMALS
+;; BODY ARGS)' shape as the previous defun).
 
 (defun nelisp--apply-closure (closure args)
   "Apply CLOSURE = `(closure CAPTURED FORMALS BODY...)' to ARGS.

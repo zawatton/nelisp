@@ -310,12 +310,15 @@ pub(crate) fn list_elements(list: &Sexp) -> Result<Vec<Sexp>, EvalError> {
 /// flag-on tests dispatch *user* defuns whose formal names do not
 /// collide with `--nl-ali-*'.
 fn is_elisp_apply_helper(name: &str) -> bool {
+    // Stage 7.4.e (Doc 70): `nelisp--apply-lambda-inner' was demoted
+    // to a Rust builtin to fix the frame-capture leak — it is now
+    // short-circuited by `is_builtin_value' before reaching this list,
+    // so dropping it here is a cleanup, not a behaviour change.
     matches!(
         name,
         "nelisp--apply-fn"
             | "nelisp--apply-closure"
             | "nelisp--apply-lambda"
-            | "nelisp--apply-lambda-inner"
             | "nelisp--bind-formals--compute"
             | "nelisp--bind-formals--required-count"
             | "nelisp--builtinp"
@@ -473,7 +476,7 @@ fn apply_lambda(
     apply_lambda_inner(captured, formals, body, args, env)
 }
 
-fn apply_lambda_inner(
+pub(crate) fn apply_lambda_inner(
     captured: &Sexp,
     formals: &Sexp,
     body: &[Sexp],

@@ -2906,3 +2906,71 @@ fn stage74a_push_captured_with_alist_installs_bindings() {
         Sexp::Int(33),
     );
 }
+
+// ============================================================
+// Phase 7 Stage 7.4.e (Doc 70) — apply-lambda-inner Rust builtin
+// ============================================================
+//
+// Stage 7.4.b で elisp defun として導入した
+// `nelisp--apply-lambda-inner' を Rust builtin に降ろした.  Stage
+// 7.4.d 観測の frame-capture leak (= helper の `--nl-ali-*' formal
+// slot が defun 経由で closure に snapshot される) を解消するため.
+//
+// 本 section は builtin の入出力 contract と "leak が起きない" 性質
+// の双方を assert する.
+
+#[test]
+fn stage74e1_apply_lambda_inner_binds_required_formals() {
+    // 必須 formals 2 + body 1 form.  args が unevaluated でも quote
+    // 経由で渡すと Int として届く (= elisp 側 dispatcher contract).
+    assert_eq!(
+        ok_all("(nelisp--apply-lambda-inner nil '(a b) '((+ a b)) '(3 4))"),
+        Sexp::Int(7),
+    );
+}
+
+#[test]
+fn stage74e1_apply_lambda_inner_handles_optional_and_rest() {
+    // &optional 既定 nil, &rest 残余を list で receive.
+    assert_eq!(
+        ok_all("(nelisp--apply-lambda-inner nil
+                                            '(x &optional y &rest zs)
+                                            '((list x y zs))
+                                            '(1 2 3 4 5))"),
+        Sexp::list_from(&[
+            Sexp::Int(1),
+            Sexp::Int(2),
+            Sexp::list_from(&[Sexp::Int(3), Sexp::Int(4), Sexp::Int(5)]),
+        ]),
+    );
+}
+
+#[test]
+fn stage74e1_apply_lambda_inner_does_not_leak_formal_slots() {
+    // helper の body 内で `defun' を eval し、生成された closure の
+    // captured-env に `--nl-ali-*' slot が含まれないことを assert.
+    // Stage 7.4.d では elisp defun 版が同 slot を leak していた (=
+    // 本 builtin の存在意義).
+    assert_eq!(
+        ok_all("(progn
+                  (nelisp--apply-lambda-inner nil '() '((defun __probe () 42)) '())
+                  (let ((c (symbol-function '__probe)))
+                    (and (consp c)
+                         (eq (car c) 'closure)
+                         (let ((captured (car (cdr c))))
+                           (not (assq '--nl-ali-captured captured))))))"),
+        Sexp::T,
+    );
+}
+
+#[test]
+fn stage74e1_apply_lambda_inner_preserves_user_args_formal() {
+    // user の formal 名 `args' が helper 自身の旧 formal と衝突する
+    // case (= --nl-ali-* prefix 化前の最大の罠).  Rust 化後は helper
+    // 側に "args" slot 自体が無い → user の args binding が一意に
+    // 効く.
+    assert_eq!(
+        ok_all("(nelisp--apply-lambda-inner nil '(args) '((+ args args)) '(21))"),
+        Sexp::Int(42),
+    );
+}
