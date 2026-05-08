@@ -524,33 +524,108 @@ dispatch 構成 = anvil-orchestrator codex 5 並列、各 worktree:
 - capture template 中 =%?= 後で =C-c C-c= した時の point 復帰挙動
 - M3.1 の =org-cycle= (=TAB=) での fold 実装方式 = invisible text-property vs overlay vs redisplay 直接 (= Doc 51 redisplay engine 互換性)
 
-** 3.4 M4 — shell + completion (3-4w)
+** 3.4 M4 — shell + completion + project (3-4w)
 
-*scope*:
+3 sub-milestone (M4.1 - M4.3) に分割、anvil-orchestrator codex 並列 dispatch 想定。M3 全 SHIPPED 後着手、v0.1 close 直前 milestone。
 
-- shell-command (=M-!=) / shell-command-on-region (=M-|=)
-  - output → =*Shell Output*= buffer、最低限 process 同期実行
-  - 既 =emacs-process.el= 上に layer
-- async-shell-command (=M-&=) — 非同期、=*Async Shell Command*= buffer
-- minibuffer completion (= built-in =completing-read= 拡張)
-  - =TAB= で completion candidates 出す
-  - =*Completions*= buffer 描画
-  - icomplete style live-update は **optional / 後送り**
-- project.el subset
-  - =project-current= = =vc-root-of-buffer= or =.git= directory 検出
-  - =project-find-file= = =find-file= の root 限定版
-  - =project-switch-project= = 既知 project list から選択
+*** 3.4.1 M4.1 — shell-command (sync + async)
 
-*close gate*:
+新規: =src/emacs-shell-command.el= (~250-400 LOC) + =test/emacs-shell-command-test.el= (~100-150 LOC)
 
-| # | gate |
-|---+------|
-| 1 | =M-!= で =ls /tmp= → =*Shell Output*= に listing |
-| 2 | =M-&= で long-running command が non-blocking 実行 |
-| 3 | =C-x C-f /home/madblack-21/Co= で =TAB= → completion 候補 |
-| 4 | =M-x project-find-file= で git root 内 file を絞り込み選択 |
+functions:
+- shell-command (COMMAND &optional OUTPUT-BUFFER ERROR-BUFFER) — interactive (=M-!=). 同期実行、output を =*Shell Output*= buffer (or OUTPUT-BUFFER) に dump。終了 exit-code が non-zero なら echo + buffer に表示。
+- shell-command-on-region (START END COMMAND &optional OUTPUT-BUFFER REPLACE-FLAG) — interactive (=M-|=). region content を stdin で COMMAND に渡す。REPLACE-FLAG 設定で region を output で置換。
+- async-shell-command (COMMAND &optional OUTPUT-BUFFER ERROR-BUFFER) — interactive (=M-&=). 非同期実行 (= make-process)、=*Async Shell Command*= buffer に追記。
+- 既 =emacs-process.el= の =call-process= / =make-process= primitive 利用、再実装しない。
+- bind =M-!= / =M-|= / =M-&= を current-global-map に。
 
-*LOC 見積*: 600-1000
+close gate:
+- =M-! ls /tmp= → =*Shell Output*= に listing 表示
+- =M-! false= → exit-code 1 表示
+- =M-&= で長時間 command (= sleep 5 等) が non-blocking 実行、output buffer に追記
+- region 内で =M-| sort= → region 中身 sort 結果で置換 (REPLACE-FLAG)
+
+ERT bundle (≥6):
+- shell-command-runs-and-displays-output
+- shell-command-handles-non-zero-exit
+- shell-command-on-region-pipes-stdin
+- shell-command-on-region-with-replace-flag
+- async-shell-command-spawns-non-blocking-process
+- async-shell-command-output-buffer-receives-data
+
+*** 3.4.2 M4.2 — minibuffer completion enhancements
+
+新規: =src/emacs-completion-ui.el= (~200-350 LOC) + =test/emacs-completion-ui-test.el= (~100 LOC)
+
+functions:
+- minibuffer-complete (TAB) — 既 =completing-read= 上に拡張。partial input から候補抽出 (= prefix match)、unique なら自動補完、複数なら =*Completions*= buffer 表示。
+- minibuffer-complete-and-exit (RET in completion mode) — 候補を確定 + minibuffer 終了。
+- =*Completions*= buffer 描画 (= 候補一覧、navigation: =next-completion= / =previous-completion= / mouse click)。
+- =switch-to-completions= = =*Completions*= 内に point 移動。
+- icomplete style live update は **optional / Phase 4** = scope 外。
+- 既 =emacs-minibuffer.el= primitive 上に layer、再実装しない。
+
+close gate:
+- =C-x C-f /home/madblack-21/Co= で =TAB= → completion 候補表示 (=Cowork=)
+- =M-x descr= で =TAB= → describe-* 候補一覧
+- =*Completions*= 内 RET で候補確定
+
+ERT bundle (≥5):
+- minibuffer-complete-prefix-match
+- minibuffer-complete-unique-auto-completes
+- minibuffer-complete-multiple-shows-completions-buffer
+- completions-buffer-rendering-shape (= 列フォーマット確認)
+- minibuffer-complete-and-exit-confirms-and-closes
+
+*** 3.4.3 M4.3 — project.el subset
+
+新規: =src/emacs-project.el= (~150-250 LOC) + =test/emacs-project-test.el= (~80 LOC)
+
+functions:
+- project-current (&optional MAYBE-PROMPT) — 現在 buffer の project root を返す (= directory backed by =.git= or =.hg= or other vc marker)。MAYBE-PROMPT が non-nil で root 不明なら prompt。
+- project-root (PROJECT) — accessor。
+- project-find-file (&optional INCLUDE-ALL) — interactive。current project root 配下の files を candidate list、=completing-read= で選択 → find-file (M1)。
+- project-switch-project (DIR) — interactive。既知 project list (= history 保持) から選択 → default-directory 変更。
+- project list 永続化は最低限 (= =project--list-file= に append)。
+- 既 =emacs-fileio-builtins= (=directory-files-recursively=) 利用。
+
+close gate:
+- nelisp-emacs repo 内 buffer で =M-x project-current= → repo root path 返す
+- =M-x project-find-file= で root 内 file 絞り込み選択 + open
+- =M-x project-switch-project= で別 project に切替 (= =default-directory= 変更)
+
+ERT bundle (≥5):
+- project-current-detects-git-root
+- project-current-returns-nil-outside-vc
+- project-find-file-lists-tracked-files
+- project-find-file-opens-selected
+- project-switch-project-changes-default-directory
+
+*** 3.4.4 LOC 累計 + dispatch 構成
+
+| sub-M | LOC src | LOC test |
+|-------+---------+----------|
+| M4.1 shell-command | 250-400 | 100-150 |
+| M4.2 completion-ui | 200-350 | 100 |
+| M4.3 project | 150-250 | 80 |
+| 計 | 600-1000 | 280-330 |
+
+合計 ~880-1330 LOC (= §1.1 元見積 600-1000 + test 分)。
+
+dispatch 構成 = anvil-orchestrator codex 3 並列、各 worktree:
+- =.worktrees/v01-m4-shell-command= / =-completion-ui= / =-project=
+
+3 task 全 disjoint (異 module、相互依存なし) で並列 OK。codex pool cap 3 ぴったり消費、queue 0。
+
+*M2/M3 教訓継承* (= prompt 必須事項):
+- 「=make test= を回さない、targeted ERT のみ」明記
+- byte-compile は単 file 限定
+- orchestrator-status の transient "failed daemon restart" は再 poll で確認 (feedback_orchestrator_status_transient_failed)
+
+*M4 SHIPPED 条件* = v0.1 close gate:
+- 上記 3 sub-milestone 全 SHIPPED
+- 統合 ERT polish round 完了 (= M1+M2 の 4 fail を test isolation fix)
+- nemacs-gtk で実 daily 操作 (= journals-2026.org 編集 → C-c c → C-c a a → describe-function 等) を一連動作確認
 
 * §4 dependencies
 
