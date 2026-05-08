@@ -20,6 +20,14 @@ path = "src/lib.rs"
 name = "nelisp"
 path = "src/bin/nelisp.rs"
 
+# Phase 7 Stage 7.7.a (Doc 72): STDLIB elisp → AOT image baker.
+# Run via `make bake-images` ahead of `cargo build` to refresh
+# `lisp/*.image` artifacts that Stage 7.7.b's `STDLIB_IMAGES`
+# embeds via `include_bytes!`.
+[[bin]]
+name = "nelisp-baker"
+path = "src/bin/nelisp-baker.rs"
+
 [dependencies]
 # Sweep 6 (2026-04-30): the previous nelisp-runtime path dependency
 # (Doc 47 Stage 6d) was carried for `nelisp_runtime::image::*' wire-

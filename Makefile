@@ -5,7 +5,8 @@
         release-artifact release-checksum soak-blocker soak-post-ship \
         bench-actual bench-actual-cargo bench-allocator bench-allocator-heavy \
         stage-d-v2-tarball stage-d-v2-tarball-verify \
-        stage-d-v3-tarball stage-d-v3-tarball-verify
+        stage-d-v3-tarball stage-d-v3-tarball-verify \
+        bake-images bake-check
 
 EMACS ?= emacs
 
@@ -60,6 +61,21 @@ compile:
 
 clean:
 	find . -name '*.elc' -type f -delete
+
+# Phase 7 Stage 7.7.a (Doc 72): AOT-bake bundled stdlib elisp into
+# `lisp/*.image' so Stage 7.7.b's `Env::new_global' can `include_bytes!'
+# them and skip the Rust reader at startup.  Run after editing any
+# `lisp/nelisp-stdlib*.el' / `lisp/nelisp-pcase.el' / `lisp/nelisp-cl-
+# macros.el' before the next `cargo build'; otherwise the embedded
+# image bytes drift from the source.  CI should run `bake-check'
+# instead — exits non-zero if a `.el' was edited without rebake.
+bake-images:
+	cargo build --release --manifest-path build-tool/Cargo.toml --bin nelisp-baker
+	./target/release/nelisp-baker
+
+bake-check:
+	cargo build --release --manifest-path build-tool/Cargo.toml --bin nelisp-baker
+	./target/release/nelisp-baker --check
 
 # Phase 7+ replan-gate audit scanner (T14 nelisp-dev-audit).
 # Optional NELISP_AUDIT_WEEK env to inject current development week (e.g., 4 / 8 / 12).

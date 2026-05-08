@@ -22,7 +22,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::reader;
+use crate::image;
 
 use super::error::EvalError;
 use super::sexp::Sexp;
@@ -135,79 +135,35 @@ impl Env {
     /// Construct a globals-only environment with all built-ins
     /// installed.  Equivalent to GNU Emacs' empty-buffer top-level.
     pub fn new_global() -> Self {
-        const STDLIB_SOURCES: &[(&str, &str)] = &[
-            // Phase 7 Stage 7.3.a (2026-05-07, Doc 67): Tier 2 special
-            // forms as elisp macros.  Layer A — loaded BEFORE
-            // `nelisp-stdlib.el' so its `defmacro' bodies don't depend
-            // on any other elisp helper (Tier 1-only macro body
-            // constraint, Doc 67 §2.2).  Stage 7.3.a is parallel
-            // install only — `apply_special' match arms still preempt
-            // these macros at runtime; ERT exercises them via
-            // `macroexpand-1'.  Stage 7.3.d will retire the Rust arms
-            // and the elisp macros activate.
-            ("nelisp-stdlib-eval-special.el", include_str!("../../../lisp/nelisp-stdlib-eval-special.el")),
-            ("nelisp-stdlib.el", include_str!("../../../lisp/nelisp-stdlib.el")),
-            ("nelisp-stdlib-list.el", include_str!("../../../lisp/nelisp-stdlib-list.el")),
-            ("nelisp-stdlib-hof.el", include_str!("../../../lisp/nelisp-stdlib-hof.el")),
-            ("nelisp-stdlib-search.el", include_str!("../../../lisp/nelisp-stdlib-search.el")),
-            ("nelisp-stdlib-plist-str.el", include_str!("../../../lisp/nelisp-stdlib-plist-str.el")),
-            ("nelisp-stdlib-misc.el", include_str!("../../../lisp/nelisp-stdlib-misc.el")),
-            // Doc 53 Phase 1 (2026-05-07) — POSIX OS surface (Minimal-5).
-            // Loaded after `nelisp-stdlib-misc.el' so the platform-detect
-            // `defconst' can call `nelisp--syscall-supported-p' (always
-            // available; the rest of the family Errs on non-Linux but the
-            // detect itself is safe).  No upstream stdlib file requires
-            // this module — `(require 'nelisp-stdlib-os)' from caller code.
-            ("nelisp-stdlib-os.el", include_str!("../../../lisp/nelisp-stdlib-os.el")),
-            // Rust-min migration (2026-05-06): pcase moved out of
-            // special_forms.rs into elisp; loaded here so it's
-            // available before any subsequent elisp file uses it.
-            ("nelisp-pcase.el", include_str!("../../../lisp/nelisp-pcase.el")),
-            // Rust-min migration (2026-05-06 #2): cl-loop / cl-block /
-            // cl-return-from / cl-return as elisp.  Previously each
-            // consumer (= nelisp-emacs / nelisp-cc) shipped its own
-            // minimal stub; now NeLisp stdlib carries the richer
-            // implementation so all consumers share a single source.
-            ("nelisp-cl-macros.el", include_str!("../../../lisp/nelisp-cl-macros.el")),
-            // Doc 50 stage 4f (2026-05-07): hash-table re-implemented
-            // in elisp on top of Stage 4c record primitives.  Loaded
-            // AFTER cl-macros so a future setf/gv path can land here
-            // without further reorder.  The elisp defuns override the
-            // prior Rust dispatch arms for make-hash-table / puthash /
-            // gethash / remhash / clrhash / hash-table-p /
-            // nelisp--hash-pairs (= function-cell override at load).
-            ("nelisp-stdlib-hash.el", include_str!("../../../lisp/nelisp-stdlib-hash.el")),
-            // Doc 50 stage 5b (2026-05-07): cycle-safe `equal' in elisp
-            // built on `nelisp--ref-eq' + visited hash-table.  Loaded
-            // AFTER nelisp-stdlib-hash.el because it allocates the
-            // visited table via `make-hash-table'.  Function-cell
-            // override shadows the prior Rust `bi_equal' arm.
-            ("nelisp-stdlib-equal.el", include_str!("../../../lisp/nelisp-stdlib-equal.el")),
-            // Phase 7 Stage 7.1.2 (2026-05-07, Doc 64): elisp Sexp
-            // printer / serializer.  Loaded AFTER all type-providing
-            // stdlib modules (record / hash / equal) so the cond-based
-            // dispatcher in `nelisp--prn-to-string' has the full type
-            // landscape available.  Overrides the `prin1-to-string'
-            // function-cell installed by `bi_prin1_to_string' (= Stage
-            // 7.1.4 also removes that Rust arm in the same commit).
-            ("nelisp-stdlib-prn.el", include_str!("../../../lisp/nelisp-stdlib-prn.el")),
-            // Phase 7 Stage 7.2.a (2026-05-07, Doc 66): elisp Sexp
-            // tokenizer (= lexer).  Parallel impl to the Rust reader
-            // (build-tool/src/reader/lexer.rs); the Rust reader still
-            // drives every read-from-string call, the elisp tokenizer
-            // is exercised through ERT only.  Stage 7.2.b will add the
-            // parser + the read-from-string takeover hook.
-            ("nelisp-stdlib-reader.el", include_str!("../../../lisp/nelisp-stdlib-reader.el")),
-            // Phase 7 Stage 7.4.b (2026-05-08, Doc 68): elisp apply /
-            // call / closure / env helpers.  Loaded LAST so all
-            // upstream stdlib modules (= cadr/cddr/nth/nthcdr from
-            // -list, memq from -search, the Stage 7.3 special-form
-            // macros) are available in the body.  Stage 7.4.b is
-            // parallel install only — Rust apply_function preempts
-            // these defuns at runtime; ERT exercises them via direct
-            // (nelisp--apply-fn ...) calls.  Stage 7.4.c adds the
-            // --use-elisp-apply takeover hook.
-            ("nelisp-stdlib-eval-core.el", include_str!("../../../lisp/nelisp-stdlib-eval-core.el")),
+        // Phase 7 Stage 7.7.b (2026-05-08, Doc 72): bootstrap stdlib is
+        // now AOT-baked — each `lisp/*.el' has a sibling `*.image'
+        // produced by `make bake-images' (= `nelisp-baker' running
+        // `image::compile_elisp_to_image' on the source).  At startup
+        // we `image::decode_image' the embedded bytes and feed the
+        // resulting `Sexp` forms straight to `eval'; the Rust reader
+        // is no longer touched on the production startup path.
+        //
+        // Order is identical to the pre-Stage-7.7.b STDLIB_SOURCES list
+        // (= upstream history preserved in git).  Each comment kept
+        // there is now folded into the corresponding `.el' file's
+        // own header so future readers can look there for the dep
+        // ordering rationale.
+        const STDLIB_IMAGES: &[(&str, &[u8])] = &[
+            ("nelisp-stdlib-eval-special.el", include_bytes!("../../../lisp/nelisp-stdlib-eval-special.el.image")),
+            ("nelisp-stdlib.el", include_bytes!("../../../lisp/nelisp-stdlib.el.image")),
+            ("nelisp-stdlib-list.el", include_bytes!("../../../lisp/nelisp-stdlib-list.el.image")),
+            ("nelisp-stdlib-hof.el", include_bytes!("../../../lisp/nelisp-stdlib-hof.el.image")),
+            ("nelisp-stdlib-search.el", include_bytes!("../../../lisp/nelisp-stdlib-search.el.image")),
+            ("nelisp-stdlib-plist-str.el", include_bytes!("../../../lisp/nelisp-stdlib-plist-str.el.image")),
+            ("nelisp-stdlib-misc.el", include_bytes!("../../../lisp/nelisp-stdlib-misc.el.image")),
+            ("nelisp-stdlib-os.el", include_bytes!("../../../lisp/nelisp-stdlib-os.el.image")),
+            ("nelisp-pcase.el", include_bytes!("../../../lisp/nelisp-pcase.el.image")),
+            ("nelisp-cl-macros.el", include_bytes!("../../../lisp/nelisp-cl-macros.el.image")),
+            ("nelisp-stdlib-hash.el", include_bytes!("../../../lisp/nelisp-stdlib-hash.el.image")),
+            ("nelisp-stdlib-equal.el", include_bytes!("../../../lisp/nelisp-stdlib-equal.el.image")),
+            ("nelisp-stdlib-prn.el", include_bytes!("../../../lisp/nelisp-stdlib-prn.el.image")),
+            ("nelisp-stdlib-reader.el", include_bytes!("../../../lisp/nelisp-stdlib-reader.el.image")),
+            ("nelisp-stdlib-eval-core.el", include_bytes!("../../../lisp/nelisp-stdlib-eval-core.el.image")),
         ];
         let mut env = Env {
             globals: HashMap::new(),
@@ -253,10 +209,10 @@ impl Env {
         env.intern_constant("nil", Sexp::Nil);
         env.intern_constant("t", Sexp::T);
         super::builtins::install_builtins(&mut env);
-        for (name, src) in STDLIB_SOURCES {
-            let forms = match reader::read_all(src) {
+        for (name, image_bytes) in STDLIB_IMAGES {
+            let forms = match image::decode_image(image_bytes) {
                 Ok(forms) => forms,
-                Err(e) => panic!("{} bootstrap failed: {}", name, e),
+                Err(e) => panic!("{} image decode failed: {}", name, e),
             };
             for form in &forms {
                 if let Err(e) = super::eval(form, &mut env) {
