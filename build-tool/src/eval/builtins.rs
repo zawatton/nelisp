@@ -1928,6 +1928,33 @@ unsafe fn syscall_errno_normalize(r: libc::c_long) -> i64 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Phase 5 Stage 5.8 (Doc 62, 2026-05-08) — non-Linux syscall stub macro.
+//
+// On non-Linux platforms every `nelisp--syscall-*` Rust primitive is a
+// dead path: `lisp/nelisp-stdlib-os.el` flips
+// `nelisp-os--use-direct-syscall' to nil at load time (via
+// `nelisp--syscall-supported-p`) and routes all syscall callers through
+// `nl-ffi-call' libc bindings (= Path B) instead.  These stubs only
+// surface if elisp accidentally bypasses that routing — they signal a
+// canonical Internal error so the bug is loud.
+//
+// Originally each stub was a 5-line `fn` definition (40+ blocks =
+// ~200 LOC).  Stage 5.8 collapses them into 1-line `syscall_unsupported!`
+// invocations behind this shared macro.
+// ---------------------------------------------------------------------------
+#[cfg(not(target_os = "linux"))]
+macro_rules! syscall_unsupported {
+    ($name:ident, $primitive:literal) => {
+        fn $name(args: &[Sexp]) -> Result<Sexp, EvalError> {
+            let _ = args;
+            Err(EvalError::Internal(
+                concat!($primitive, ": unsupported platform").into(),
+            ))
+        }
+    };
+}
+
 #[cfg(target_os = "linux")]
 fn bi_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
     if args.is_empty() {
@@ -1944,11 +1971,7 @@ fn bi_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal(
-        "nelisp--syscall: unsupported platform; use Path B (nl-ffi-call libc) fallback".into()))
-}
+syscall_unsupported!(bi_syscall, "nelisp--syscall");
 
 #[cfg(target_os = "linux")]
 fn bi_syscall_openat(args: &[Sexp]) -> Result<Sexp, EvalError> {
@@ -1968,10 +1991,7 @@ fn bi_syscall_openat(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_openat(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-openat: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_openat, "nelisp--syscall-openat");
 
 #[cfg(target_os = "linux")]
 fn bi_syscall_read(args: &[Sexp]) -> Result<Sexp, EvalError> {
@@ -1998,10 +2018,7 @@ fn bi_syscall_read(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_read(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-read: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_read, "nelisp--syscall-read");
 
 #[cfg(target_os = "linux")]
 fn bi_syscall_write(args: &[Sexp]) -> Result<Sexp, EvalError> {
@@ -2022,10 +2039,7 @@ fn bi_syscall_write(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_write(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-write: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_write, "nelisp--syscall-write");
 
 // ---------------------------------------------------------------------------
 // Doc 54 Phase 3 — Core-12 additions that need out-buffer handling.
@@ -2066,10 +2080,7 @@ fn bi_syscall_fstat(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_fstat(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-fstat: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_fstat, "nelisp--syscall-fstat");
 
 #[cfg(target_os = "linux")]
 fn bi_syscall_pipe(args: &[Sexp]) -> Result<Sexp, EvalError> {
@@ -2084,10 +2095,7 @@ fn bi_syscall_pipe(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_pipe(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-pipe: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_pipe, "nelisp--syscall-pipe");
 
 // ---------------------------------------------------------------------------
 // Doc 55 Phase 4 — Posix-30 specialized primitives (subprocess + network +
@@ -2142,10 +2150,7 @@ fn bi_syscall_execve(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_execve(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-execve: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_execve, "nelisp--syscall-execve");
 
 /// `(nelisp--syscall-wait4 PID OPTIONS)' — POSIX wait4(2).
 ///
@@ -2167,10 +2172,7 @@ fn bi_syscall_wait4(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_wait4(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-wait4: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_wait4, "nelisp--syscall-wait4");
 
 /// Build a `struct sockaddr_in' from host byte-order IP + port.  Used by
 /// the bind / connect / accept_inet primitives below.
@@ -2209,10 +2211,7 @@ fn bi_syscall_setsockopt_int(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_setsockopt_int(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-setsockopt-int: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_setsockopt_int, "nelisp--syscall-setsockopt-int");
 
 /// `(nelisp--syscall-bind-inet FD HOST-INT PORT)' — POSIX bind(2)
 /// for AF_INET (= IPv4).  HOST-INT / PORT are host byte order.
@@ -2236,10 +2235,7 @@ fn bi_syscall_bind_inet(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_bind_inet(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-bind-inet: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_bind_inet, "nelisp--syscall-bind-inet");
 
 /// `(nelisp--syscall-connect-inet FD HOST-INT PORT)' — POSIX connect(2)
 /// for AF_INET (= IPv4).
@@ -2263,10 +2259,7 @@ fn bi_syscall_connect_inet(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_connect_inet(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-connect-inet: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_connect_inet, "nelisp--syscall-connect-inet");
 
 /// `(nelisp--syscall-accept-inet FD)' — POSIX accept(2) for AF_INET.
 ///
@@ -2299,10 +2292,7 @@ fn bi_syscall_accept_inet(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_accept_inet(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-accept-inet: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_accept_inet, "nelisp--syscall-accept-inet");
 
 // ---------------------------------------------------------------------------
 // Doc 56 Phase 4.1 — AF_UNIX + AF_INET6 sockaddr handling.
@@ -2385,10 +2375,7 @@ fn bi_syscall_bind_unix(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_bind_unix(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-bind-unix: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_bind_unix, "nelisp--syscall-bind-unix");
 
 #[cfg(target_os = "linux")]
 fn bi_syscall_connect_unix(args: &[Sexp]) -> Result<Sexp, EvalError> {
@@ -2410,10 +2397,7 @@ fn bi_syscall_connect_unix(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_connect_unix(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-connect-unix: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_connect_unix, "nelisp--syscall-connect-unix");
 
 #[cfg(target_os = "linux")]
 fn bi_syscall_accept_unix(args: &[Sexp]) -> Result<Sexp, EvalError> {
@@ -2435,10 +2419,7 @@ fn bi_syscall_accept_unix(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_accept_unix(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-accept-unix: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_accept_unix, "nelisp--syscall-accept-unix");
 
 /// Build a `sockaddr_in6' from 8 host-byte-order 16-bit groups + a
 /// host-byte-order port.  Each group is packed big-endian into the
@@ -2511,10 +2492,7 @@ fn bi_syscall_bind_inet6(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_bind_inet6(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-bind-inet6: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_bind_inet6, "nelisp--syscall-bind-inet6");
 
 #[cfg(target_os = "linux")]
 fn bi_syscall_connect_inet6(args: &[Sexp]) -> Result<Sexp, EvalError> {
@@ -2536,10 +2514,7 @@ fn bi_syscall_connect_inet6(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_connect_inet6(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-connect-inet6: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_connect_inet6, "nelisp--syscall-connect-inet6");
 
 #[cfg(target_os = "linux")]
 fn bi_syscall_accept_inet6(args: &[Sexp]) -> Result<Sexp, EvalError> {
@@ -2567,10 +2542,7 @@ fn bi_syscall_accept_inet6(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_accept_inet6(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-accept-inet6: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_accept_inet6, "nelisp--syscall-accept-inet6");
 
 // ---------------------------------------------------------------------------
 // Doc 58 Phase 4.1.1 + 4.1.2 — AF_UNIX abstract namespace + getsockname /
@@ -2637,10 +2609,7 @@ fn bi_syscall_bind_unix_abstract(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_bind_unix_abstract(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-bind-unix-abstract: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_bind_unix_abstract, "nelisp--syscall-bind-unix-abstract");
 
 #[cfg(target_os = "linux")]
 fn bi_syscall_connect_unix_abstract(args: &[Sexp]) -> Result<Sexp, EvalError> {
@@ -2662,10 +2631,7 @@ fn bi_syscall_connect_unix_abstract(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_connect_unix_abstract(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-connect-unix-abstract: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_connect_unix_abstract, "nelisp--syscall-connect-unix-abstract");
 
 /// Inner helper: invoke `getsockname' / `getpeername' of the right
 /// kind into a caller-supplied sockaddr buffer.  Returns `(r, len)'
@@ -2773,35 +2739,17 @@ fn bi_syscall_getpeername_unix(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_getsockname_inet(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-getsockname-inet: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_getsockname_inet, "nelisp--syscall-getsockname-inet");
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_getpeername_inet(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-getpeername-inet: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_getpeername_inet, "nelisp--syscall-getpeername-inet");
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_getsockname_inet6(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-getsockname-inet6: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_getsockname_inet6, "nelisp--syscall-getsockname-inet6");
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_getpeername_inet6(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-getpeername-inet6: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_getpeername_inet6, "nelisp--syscall-getpeername-inet6");
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_getsockname_unix(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-getsockname-unix: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_getsockname_unix, "nelisp--syscall-getsockname-unix");
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_getpeername_unix(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-getpeername-unix: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_getpeername_unix, "nelisp--syscall-getpeername-unix");
 
 // ---------------------------------------------------------------------------
 // Doc 57 Phase 4.3 — Modern Linux event surface (inotify add_watch + read).
@@ -2836,10 +2784,7 @@ fn bi_syscall_inotify_add_watch(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_inotify_add_watch(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-inotify-add-watch: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_inotify_add_watch, "nelisp--syscall-inotify-add-watch");
 
 /// `(nelisp--syscall-inotify-read FD MAX-EVENTS)' — read inotify(7) events
 /// off FD and return a list of `(WD MASK COOKIE NAME)' 4-element lists.
@@ -2904,10 +2849,7 @@ fn bi_syscall_inotify_read(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_inotify_read(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-inotify-read: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_inotify_read, "nelisp--syscall-inotify-read");
 
 // ---------------------------------------------------------------------------
 // Doc 59 Phase 4.2 + 4.3.1 — signalfd + timerfd + sigprocmask.
@@ -2975,10 +2917,7 @@ fn bi_syscall_signalfd4(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_signalfd4(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-signalfd4: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_signalfd4, "nelisp--syscall-signalfd4");
 
 /// `(nelisp--syscall-signalfd-read FD MAX-EVENTS)' — read signalfd events
 /// off FD and return a list of `(SIGNO ERRNO CODE PID UID STATUS)'
@@ -3027,10 +2966,7 @@ fn bi_syscall_signalfd_read(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_signalfd_read(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-signalfd-read: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_signalfd_read, "nelisp--syscall-signalfd-read");
 
 /// `(nelisp--syscall-sigprocmask HOW MASK)' — POSIX pthread_sigmask(3).
 ///
@@ -3053,10 +2989,7 @@ fn bi_syscall_sigprocmask(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_sigprocmask(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-sigprocmask: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_sigprocmask, "nelisp--syscall-sigprocmask");
 
 /// `(nelisp--syscall-timerfd-settime FD FLAGS IT-INTERVAL-SEC IT-INTERVAL-NSEC IT-VALUE-SEC IT-VALUE-NSEC)'
 /// — Linux timerfd_settime(2).
@@ -3092,10 +3025,7 @@ fn bi_syscall_timerfd_settime(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_timerfd_settime(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-timerfd-settime: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_timerfd_settime, "nelisp--syscall-timerfd-settime");
 
 /// `(nelisp--syscall-timerfd-gettime FD)' — Linux timerfd_gettime(2).
 /// Returns 4-element list with the current itimerspec.
@@ -3118,10 +3048,7 @@ fn bi_syscall_timerfd_gettime(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_timerfd_gettime(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-timerfd-gettime: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_timerfd_gettime, "nelisp--syscall-timerfd-gettime");
 
 // ---------------------------------------------------------------------------
 // Doc 60 Phase 4.4 — SCM_RIGHTS + SOCK_SEQPACKET + SO_PEERCRED + IPv6
@@ -3149,10 +3076,7 @@ fn bi_syscall_socketpair(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_socketpair(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-socketpair: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_socketpair, "nelisp--syscall-socketpair");
 
 /// `(nelisp--syscall-sendmsg-fds FD FDS-LIST PAYLOAD)' — sendmsg(2) with
 /// a single SCM_RIGHTS cmsg attaching FDS-LIST file descriptors and a
@@ -3218,10 +3142,7 @@ fn bi_syscall_sendmsg_fds(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_sendmsg_fds(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-sendmsg-fds: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_sendmsg_fds, "nelisp--syscall-sendmsg-fds");
 
 /// `(nelisp--syscall-recvmsg-fds FD MAX-FDS MAX-BYTES)' — recvmsg(2)
 /// with a single IOV (MAX-BYTES) and SCM_RIGHTS cmsg buffer sized for
@@ -3297,10 +3218,7 @@ fn bi_syscall_recvmsg_fds(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_recvmsg_fds(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-recvmsg-fds: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_recvmsg_fds, "nelisp--syscall-recvmsg-fds");
 
 /// `(nelisp--syscall-getsockopt-peercred FD)' — getsockopt with
 /// SOL_SOCKET / SO_PEERCRED.  Returns `(PID UID GID)' 3-element list
@@ -3330,10 +3248,7 @@ fn bi_syscall_getsockopt_peercred(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_getsockopt_peercred(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-getsockopt-peercred: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_getsockopt_peercred, "nelisp--syscall-getsockopt-peercred");
 
 /// Build a full `sockaddr_in6' carrying `flowinfo' and `scope_id' in
 /// addition to host / port.  Used by the Doc 60 IPv6 scoped variants.
@@ -3378,10 +3293,7 @@ fn bi_syscall_bind_inet6_scoped(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_bind_inet6_scoped(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-bind-inet6-scoped: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_bind_inet6_scoped, "nelisp--syscall-bind-inet6-scoped");
 
 #[cfg(target_os = "linux")]
 fn bi_syscall_connect_inet6_scoped(args: &[Sexp]) -> Result<Sexp, EvalError> {
@@ -3405,10 +3317,7 @@ fn bi_syscall_connect_inet6_scoped(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_connect_inet6_scoped(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-connect-inet6-scoped: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_connect_inet6_scoped, "nelisp--syscall-connect-inet6-scoped");
 
 #[cfg(target_os = "linux")]
 fn bi_syscall_accept_inet6_scoped(args: &[Sexp]) -> Result<Sexp, EvalError> {
@@ -3440,10 +3349,7 @@ fn bi_syscall_accept_inet6_scoped(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_accept_inet6_scoped(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-accept-inet6-scoped: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_accept_inet6_scoped, "nelisp--syscall-accept-inet6-scoped");
 
 /// `(nelisp--syscall-poll PFDS-LIST TIMEOUT-MS)' — POSIX poll(2).
 ///
@@ -3483,10 +3389,7 @@ fn bi_syscall_poll(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn bi_syscall_poll(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal("nelisp--syscall-poll: unsupported platform".into()))
-}
+syscall_unsupported!(bi_syscall_poll, "nelisp--syscall-poll");
 
 // `bi_locate_library' removed — Rust-min batch 7e (2026-05-07, Doc 50
 // stage 2): migrated to elisp `(defun locate-library ...)' on top of
