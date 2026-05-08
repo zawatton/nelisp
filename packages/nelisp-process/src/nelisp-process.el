@@ -73,7 +73,11 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'nelisp-eval)
+;; nelisp-eval is not actually used by this file's body (verified 2026-05-08
+;; via grep — zero `nelisp-eval-' callsites).  Pulling it in forces the
+;; full evaluator + network-process surface, which makes nelisp-process
+;; un-loadable on minimal standalone bootstraps (Doc 43 Phase 1e).  Keep
+;; only the cl-lib + nelisp-actor deps that are actually exercised below.
 (require 'nelisp-actor)
 
 ;; --- optional eventloop integration helper ------------------------
