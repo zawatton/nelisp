@@ -9,10 +9,21 @@
 - 関連 Doc: 72 (Stage 7.7.a/b AOT bake LOCKED) / 73 §9 #1 (Doc 75 候補 shift) /
   74 (anvil migration、独立 track)
 - 前提 SHIPPED: Doc 64〜72 (Phase 7 main scope) / Doc 73 Stage 8.1 + 8.3.a/b
-- 本 Doc: Phase 9 frozen heap 全体設計 — *DRAFT 2026-05-08*
+- 本 Doc: Phase 9 frozen heap 全体設計 — *PAUSED INDEFINITELY 2026-05-09*
 - 規模: Phase 9 相当 (~500 LOC + image format v3 拡張)、複数 commit / 複数 sub-stage
 - Phase 8 Stage 8.4 (= reader feature gate) とは互いに独立 — どちらが先でも可
 - 本 Doc は articulation のみ; 着手判断は Phase 8 完了 + user feedback 待ち
+- *判断 2026-05-09 (commit fde921e で Stage 7.7.e.1 revert)*: 本 Doc の
+  実装路線は =feedback_rust_core_minimization_principle= (= 2026-04-30
+  確立) と直交する。decoder は elisp 起動前に走る必要があり、構造的に
+  Rust core に置くしかなく、Stage 7.7.e.1 の段階で +159 LOC、Stage
+  7.7.e.2 + .3 まで通すと +~650 LOC 想定。Doc 76 で -700 LOC 削った
+  直後に同等の規模を戻すこと自体が rule 違反。startup 80ms 短縮は
+  ユーザ体感閾値と直接干渉せず、Rust 最小化原則を優先する。
+  代替検討は (a) lazy STDLIB load、(b) elisp 側 baker (= 起動後の
+  最初の eval で env state を elisp 側で snapshot)、(c) Doc 77 JIT
+  完了後の startup profile 再計測 — どれも Rust 増分なしを検証してから。
+  *本 Doc は articulation として保存、実装は再開しない方針*
 
 * §1 背景
 
