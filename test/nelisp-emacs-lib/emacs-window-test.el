@@ -157,6 +157,52 @@
       (should-error (emacs-window-delete-window w)
                     :type 'emacs-window-only))))
 
+(ert-deftest split-window-below-creates-second-window ()
+  (emacs-window-test--with-fresh-world
+    (let ((w1 (emacs-window-selected-window)))
+      (let ((w2 (split-window-below)))
+        (should (= 2 (length (emacs-window-window-list))))
+        (should (eq w1 (emacs-window-selected-window)))
+        (should (= 12 (emacs-window-window-height w1)))
+        (should (= 12 (emacs-window-window-height w2)))
+        (should (eq 'vertical
+                    (emacs-window-direction (emacs-window-parent w2))))))))
+
+(ert-deftest split-window-right-creates-second-window ()
+  (emacs-window-test--with-fresh-world
+    (let ((w1 (emacs-window-selected-window)))
+      (let ((w2 (split-window-right)))
+        (should (= 2 (length (emacs-window-window-list))))
+        (should (eq w1 (emacs-window-selected-window)))
+        (should (= 40 (emacs-window-window-width w1)))
+        (should (= 40 (emacs-window-window-width w2)))
+        (should (eq 'horizontal
+                    (emacs-window-direction (emacs-window-parent w2))))))))
+
+(ert-deftest other-window-cycles-forward ()
+  (emacs-window-test--with-fresh-world
+    (let* ((w1 (emacs-window-selected-window))
+           (w2 (split-window-below)))
+      (should (eq w1 (emacs-window-selected-window)))
+      (should (eq w2 (other-window)))
+      (should (eq w2 (emacs-window-selected-window)))
+      (should (eq w1 (other-window 1)))
+      (should (eq w1 (emacs-window-selected-window))))))
+
+(ert-deftest other-window-with-negative-cycles-back ()
+  (emacs-window-test--with-fresh-world
+    (let* ((w1 (emacs-window-selected-window))
+           (w2 (split-window-below))
+           (w3 (split-window-right)))
+      ;; tree order = (w1 w3 w2); selected = w1
+      (should (eq w2 (other-window -1)))
+      (should (eq w2 (emacs-window-selected-window)))
+      (should (eq w3 (other-window -1)))
+      ;; from w3, +1 step forward in (w1 w3 w2) → w2
+      (should (eq w2 (other-window 1)))
+      ;; from w2, +1 step forward → w1 (wrap)
+      (should (eq w1 (other-window 1))))))
+
 (ert-deftest emacs-window-delete-other-windows ()
   (emacs-window-test--with-fresh-world
     (let ((w (emacs-window-selected-window)))
@@ -166,6 +212,40 @@
       (emacs-window-delete-other-windows w)
       (should (= 1 (length (emacs-window-window-list))))
       (should (eq w (emacs-window-selected-window))))))
+
+(ert-deftest delete-window-leaves-one ()
+  (emacs-window-test--with-fresh-world
+    (let ((w1 (emacs-window-selected-window)))
+      (let ((w2 (split-window-below)))
+        (delete-window)
+        (should (= 1 (length (emacs-window-window-list))))
+        (should (eq w2 (emacs-window-selected-window)))
+        (should-not (emacs-window-windowp w1))
+        (should (= 24 (emacs-window-window-height w2)))))))
+
+(ert-deftest delete-other-windows-leaves-one ()
+  (emacs-window-test--with-fresh-world
+    (let ((w1 (emacs-window-selected-window)))
+      (split-window-below)
+      (other-window)
+      (split-window-right)
+      (other-window -1)
+      (delete-other-windows)
+      (should (= 1 (length (emacs-window-window-list))))
+      (should (eq w1 (emacs-window-selected-window)))
+      (should (= 80 (emacs-window-window-width w1)))
+      (should (= 24 (emacs-window-window-height w1))))))
+
+(ert-deftest split-window-then-delete-window-restores-single-window ()
+  (emacs-window-test--with-fresh-world
+    (let ((w1 (emacs-window-selected-window)))
+      (split-window-right)
+      (other-window)
+      (delete-window)
+      (should (= 1 (length (emacs-window-window-list))))
+      (should (eq w1 (emacs-window-selected-window)))
+      (should (= 80 (emacs-window-window-width w1)))
+      (should (= 24 (emacs-window-window-height w1))))))
 
 (ert-deftest emacs-window-delete-windows-on ()
   (emacs-window-test--with-fresh-world
