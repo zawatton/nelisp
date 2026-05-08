@@ -247,13 +247,9 @@ pub fn install_builtins(env: &mut Env) {
         // were retired in Doc 76 Stage A.2/A.3 (2026-05-08).  elisp
         // now decodes struct stat / int[2] from `nl-ffi-malloc' bufs
         // via `nl-ffi-read-i32' / `-i64'.
-        // Doc 55 Phase 4 (2026-05-07) — Posix-30 specialized primitives
-        // that need buffer / struct in/out handling beyond generic int
-        // dispatch.  fork / socket / listen / wait4 / kill / getpid /
-        // getppid / setpgid stay on the generic `nelisp--syscall' arm
-        // via `syscall_nr()' symbol map.
-        "nelisp--syscall-execve",
-        "nelisp--syscall-wait4",
+        // Doc 55 Phase 4 execve / wait4 retired in Doc 76 Stage B
+        // (2026-05-08); elisp drives argv/envp char* array + status
+        // by-ref via nl-ffi primitives.
         // Doc 55 Phase 4 socket-int (= bind-inet / connect-inet / accept-inet
         // / setsockopt-int / poll) retired in Doc 76 Stage C (2026-05-08);
         // elisp now builds sockaddr_in / pollfd[] via nl-ffi primitives.
@@ -532,8 +528,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // Doc 54 Phase 3 dispatch arms — retired in Doc 76 Stage
         // A.2/A.3 (2026-05-08); elisp now routes via nl-ffi-call.
         // Doc 55 Phase 4 (2026-05-07) — Posix-30 specialized primitives.
-        "nelisp--syscall-execve" => bi_syscall_execve(args),
-        "nelisp--syscall-wait4" => bi_syscall_wait4(args),
+        // Doc 76 Stage B (2026-05-08) retired execve / wait4 dispatch arms.
         // Doc 76 Stage C (2026-05-08) retired socket-int dispatch arms.
         // Doc 56 Phase 4.1 (2026-05-07) — AF_UNIX + AF_INET6 sockaddr handlers.
         // Doc 76 Stage D (2026-05-08) retired AF_UNIX/INET6 dispatch arms.
@@ -1977,73 +1972,12 @@ syscall_unsupported!(bi_syscall, "nelisp--syscall");
 
 /// `(nelisp--syscall-execve PATH ARGV ENVP)' — POSIX execve(2).
 ///
-/// PATH is a string, ARGV / ENVP are lists of strings.  On success,
-/// execve does not return; on failure the call returns `Sexp::Int(-errno)'.
-#[cfg(target_os = "linux")]
-fn bi_syscall_execve(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    use std::ffi::CString;
-    require_arity("nelisp--syscall-execve", args, 3, Some(3))?;
-    let path = args[0].as_string_owned().ok_or_else(|| EvalError::WrongType {
-        expected: "string (path)".into(),
-        got: args[0].clone(),
-    })?;
-    let argv_list = list_to_vec(&args[1])?;
-    let envp_list = list_to_vec(&args[2])?;
-    let cpath = CString::new(path).map_err(|e| EvalError::Internal(
-        format!("nelisp--syscall-execve: path contains NUL: {}", e)))?;
-    let argv_c: Vec<CString> = argv_list.iter().enumerate().map(|(i, s)| {
-        let s = s.as_string_owned().ok_or_else(|| EvalError::WrongType {
-            expected: format!("string (argv[{}])", i),
-            got: s.clone(),
-        })?;
-        CString::new(s).map_err(|e| EvalError::Internal(
-            format!("nelisp--syscall-execve: argv[{}] contains NUL: {}", i, e)))
-    }).collect::<Result<Vec<_>, _>>()?;
-    let envp_c: Vec<CString> = envp_list.iter().enumerate().map(|(i, s)| {
-        let s = s.as_string_owned().ok_or_else(|| EvalError::WrongType {
-            expected: format!("string (envp[{}])", i),
-            got: s.clone(),
-        })?;
-        CString::new(s).map_err(|e| EvalError::Internal(
-            format!("nelisp--syscall-execve: envp[{}] contains NUL: {}", i, e)))
-    }).collect::<Result<Vec<_>, _>>()?;
-    let mut argv_ptrs: Vec<*const libc::c_char> =
-        argv_c.iter().map(|s| s.as_ptr()).collect();
-    argv_ptrs.push(std::ptr::null());
-    let mut envp_ptrs: Vec<*const libc::c_char> =
-        envp_c.iter().map(|s| s.as_ptr()).collect();
-    envp_ptrs.push(std::ptr::null());
-    let r = unsafe { libc::execve(cpath.as_ptr(), argv_ptrs.as_ptr(), envp_ptrs.as_ptr()) };
-    // execve only returns on failure (= -1).
-    let _ = r;
-    let e = unsafe { *libc::__errno_location() } as i64;
-    Ok(Sexp::Int(-e))
-}
-
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_execve, "nelisp--syscall-execve");
-
-/// `(nelisp--syscall-wait4 PID OPTIONS)' — POSIX wait4(2).
-///
-/// rusage is passed as NULL (= we don't surface resource usage in
-/// Phase 4).  Returns `(CHILD-PID . STATUS)' on success, `Sexp::Int(-errno)'
-/// on failure, or `(0 . 0)' when WNOHANG is set and no child is ready.
-#[cfg(target_os = "linux")]
-fn bi_syscall_wait4(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-wait4", args, 2, Some(2))?;
-    let pid     = syscall_arg_int("nelisp--syscall-wait4", 1, &args[0])? as libc::pid_t;
-    let options = syscall_arg_int("nelisp--syscall-wait4", 2, &args[1])? as libc::c_int;
-    let mut status: libc::c_int = 0;
-    let r = unsafe { libc::wait4(pid, &mut status, options, std::ptr::null_mut()) };
-    if r < 0 {
-        let e = unsafe { *libc::__errno_location() } as i64;
-        return Ok(Sexp::Int(-e));
-    }
-    Ok(Sexp::cons(Sexp::Int(r as i64), Sexp::Int(status as i64)))
-}
-
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_wait4, "nelisp--syscall-wait4");
+// Doc 76 Stage B (2026-05-08): `nelisp--syscall-execve' / `-wait4'
+// specialized primitives removed.  elisp `nelisp-os-execve' /
+// `nelisp-os-wait' now drive argv/envp char* array marshaling via
+// `nl-ffi-malloc' per-string + `nl-ffi-write-i64' for the pointer
+// table, and wait4 status via `nl-ffi-malloc' + `nl-ffi-read-i32'.
+// See lisp/nelisp-stdlib-os.el.
 
 // Doc 76 Stage C (2026-05-08): `nelisp--syscall-setsockopt-int' /
 // `-bind-inet' / `-connect-inet' / `-accept-inet' specialized

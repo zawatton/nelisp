@@ -359,21 +359,80 @@ primitive; not supported in Phase 3."
 signals `nelisp-os-error' on failure."
   (nelisp-os--check-errno (nelisp--syscall 'fork)))
 
+;; ---------------------------------------------------------------------------
+;; Doc 76 Stage B (2026-05-08) — execve argv/envp marshaling helper.
+;;
+;; libc.execve takes char *path, char *const argv[], char *const envp[].
+;; Each `argv[]' / `envp[]' entry is a NUL-terminated C string; the
+;; arrays themselves are NULL-terminated (= sentinel pointer).  We
+;; allocate one buffer per string + one buffer per pointer-array.  All
+;; allocations are tracked in `nl-ffi' alloc_table so the unwind-protect
+;; cleanup `nl-ffi-free's them on the failure path.  On success execve
+;; replaces the process so the leaks are moot.
+;; ---------------------------------------------------------------------------
+
+(defun nelisp-os--alloc-cstring (s)
+  "Allocate (string-bytes S + 1) bytes, write S, return the pointer.
+Trailing NUL terminator is satisfied by `nl-ffi-malloc' zeroing."
+  (let* ((nbytes (string-bytes s))
+         (buf    (nl-ffi-malloc (1+ nbytes))))
+    (nl-ffi-write-bytes-at buf 0 s)
+    buf))
+
+(defun nelisp-os--build-cstr-array (strs)
+  "Allocate per-string buffers + a NULL-terminated pointer array of
+the same length.  Return (POINTER-ARRAY . LIST-OF-STRING-PTRS) so the
+caller can `nl-ffi-free' both the array and each string after use."
+  (let* ((string-ptrs (mapcar #'nelisp-os--alloc-cstring strs))
+         (n           (length string-ptrs))
+         (array       (nl-ffi-malloc (* (1+ n) 8)))
+         (idx         0))
+    (dolist (sp string-ptrs)
+      (nl-ffi-write-i64 array (* idx 8) sp)
+      (setq idx (1+ idx)))
+    ;; Trailing NULL pointer at offset n*8 stays 0 from malloc.
+    (cons array string-ptrs)))
+
+(defun nelisp-os--free-cstr-array (pair)
+  "Reverse `nelisp-os--build-cstr-array': free the array + each string."
+  (let ((array       (car pair))
+        (string-ptrs (cdr pair)))
+    (dolist (sp string-ptrs) (nl-ffi-free sp))
+    (nl-ffi-free array)))
+
 (defun nelisp-os-execve (path argv envp)
   "POSIX execve(2) — replace current process image with PATH using ARGV
 list and ENVP list of strings.  Only returns on failure (signals
 `nelisp-os-error')."
-  (nelisp-os--check-errno (nelisp--syscall-execve path argv envp)))
+  (let ((argv-pair (nelisp-os--build-cstr-array argv))
+        (envp-pair (nelisp-os--build-cstr-array envp)))
+    (unwind-protect
+        (let ((r (nl-ffi-call "libc" "execve"
+                              [:sint32 :string :pointer :pointer]
+                              path (car argv-pair) (car envp-pair))))
+          ;; libc.execve only returns on failure (= -1).
+          (if (= r -1)
+              (nelisp-os--ffi-errno-signal)
+            r))
+      (nelisp-os--free-cstr-array argv-pair)
+      (nelisp-os--free-cstr-array envp-pair))))
 
 (defun nelisp-os-wait (pid options)
   "POSIX wait4(2) — wait for child PID with OPTIONS (= 0, WNOHANG, etc.).
 Returns cons (CHILD-PID . STATUS) on success, or signals
 `nelisp-os-error' on failure.  When WNOHANG and no child is ready,
 returns (0 . 0)."
-  (let ((r (nelisp--syscall-wait4 pid options)))
-    (if (integerp r)
-        (nelisp-os--check-errno r)
-      r)))
+  ;; libc.wait4(pid_t pid, int *status, int options, struct rusage *ru).
+  ;; rusage = NULL (= raw 0 via :pointer).
+  (let ((status-buf (nl-ffi-malloc 4)))
+    (unwind-protect
+        (let ((r (nl-ffi-call "libc" "wait4"
+                              [:sint32 :sint32 :pointer :sint32 :pointer]
+                              pid status-buf options 0)))
+          (if (= r -1)
+              (nelisp-os--ffi-errno-signal)
+            (cons r (nl-ffi-read-i32 status-buf 0))))
+      (nl-ffi-free status-buf))))
 
 (defun nelisp-os-kill (pid sig)
   "POSIX kill(2) — send SIG to PID; returns 0 on success."
