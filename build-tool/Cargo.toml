@@ -59,7 +59,12 @@ required-features = ["image-baker"]
 # Elisp without per-function dispatch glue.  External crates only — keeps
 # the "zero internal-crate deps" Sweep-6 invariant intact.
 libloading = "0.8"
-libffi = "3"
+# M1 Darwin verify (2026-05-09): bundled libffi (libffi-sys 2.3.0) は
+# macOS 26.4 / 新 clang で aarch64/sysv.S の preprocessor が壊れて
+# compile 不可。`system' feature で pkg-config 経由 OS 側 libffi に
+# 切替 (Linux: `apt install libffi-dev' 既定 / Darwin: `brew install
+# libffi' + PKG_CONFIG_PATH=/opt/homebrew/opt/libffi/lib/pkgconfig)。
+libffi = { version = "3", features = ["system"] }
 sha1 = "0.10"
 sha2 = "0.10"
 md5 = "0.7"
