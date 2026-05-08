@@ -419,20 +419,15 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
     match name {
         // ---- arithmetic ----
         // + / - / * migrated to elisp (Rust-min 2026-05-06 batch 6v,
-        // see lisp/nelisp-stdlib.el).  2-arg primitives:
-        "nelisp--add2" => bi_add2(args),
-        "nelisp--sub2" => bi_sub2(args),
-        "nelisp--mul2" => bi_mul2(args),
+        // see lisp/nelisp-stdlib.el).
+        // nelisp--add2/sub2/mul2 + nelisp--num-{eq,lt,gt,le,ge}2
+        // migrated to JIT-only path (Phase 5 Stage 5.7, Doc 62
+        // 2026-05-08).  See `jit/arith.rs::lowered_*'.
         "/" => bi_div(args),
         // mod migrated to elisp (Rust-min 2026-05-06 batch 6l, see
         // lisp/nelisp-stdlib.el).
         // < / > / <= / >= / = / /= migrated to elisp (Rust-min
         // 2026-05-06 batch 6w, see lisp/nelisp-stdlib.el).
-        "nelisp--num-lt2" => bi_num_lt2(args),
-        "nelisp--num-gt2" => bi_num_gt2(args),
-        "nelisp--num-le2" => bi_num_le2(args),
-        "nelisp--num-ge2" => bi_num_ge2(args),
-        "nelisp--num-eq2" => bi_num_eq2(args),
         // ---- equality ----
         // Rust-min (2026-05-06 batch 6e): `equal-including-properties'
         // / `eql' moved to elisp defalias of `equal'.  The MVP impl
@@ -485,14 +480,13 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // ---- bitwise (essential for keymap / event encoding) ----
         // logior / logand / logxor variadic moved to elisp
         // (Rust-min 2026-05-06 batch 6j, see lisp/nelisp-stdlib.el).
-        "nelisp--logior2" => bi_logior2(args),
-        "nelisp--logand2" => bi_logand2(args),
-        "nelisp--logxor2" => bi_logxor2(args),
+        // 2-arg primitives (nelisp--logior2/logand2/logxor2) + ash
+        // migrated to JIT (Phase 5 Stage 5.7, Doc 62 2026-05-08).
+        // See `jit/arith.rs::lowered_{logior2,logand2,logxor2,ash}'.
         // Rust-min batch 7k (2026-05-07): `lognot' migrated to elisp
         // as `(logxor x -1)' (see lisp/nelisp-stdlib.el).
         // Rust-min (2026-05-06 batch 6e): `lsh' / `sxhash-{equal,eq,eql}'
         // moved to elisp defalias of `ash' / `sxhash'.
-        "ash" => bi_ash(args),
         "sxhash" => bi_sxhash(args),
         // ---- string ----
         // concat migrated to elisp (Rust-min 2026-05-06 batch 6r,
@@ -746,7 +740,7 @@ pub(crate) fn require_arity(
     Ok(())
 }
 
-fn as_int(name: &str, v: &Sexp) -> Result<i64, EvalError> {
+pub(crate) fn as_int(name: &str, v: &Sexp) -> Result<i64, EvalError> {
     match v {
         Sexp::Int(n) => Ok(*n),
         Sexp::Float(x) => Ok(*x as i64),
@@ -768,7 +762,7 @@ fn truthy(value: bool) -> Sexp {
 }
 
 /// Numeric promotion: if any input is float, output is float.
-fn numeric_promote(args: &[Sexp]) -> Result<(bool, Vec<f64>), EvalError> {
+pub(crate) fn numeric_promote(args: &[Sexp]) -> Result<(bool, Vec<f64>), EvalError> {
     let mut any_float = false;
     let mut out = Vec::with_capacity(args.len());
     for a in args {
@@ -847,7 +841,7 @@ fn bi_div(args: &[Sexp]) -> Result<Sexp, EvalError> {
 // all-int) — a step-wise fold would lose precision when later args
 // are float (e.g. `(/ 10 3 2.0)' = 1.666 upfront vs 1.5 step-wise).
 
-fn num_pair(args: &[Sexp], name: &str) -> Result<(f64, f64, bool), EvalError> {
+pub(crate) fn num_pair(args: &[Sexp], name: &str) -> Result<(f64, f64, bool), EvalError> {
     require_arity(name, args, 2, Some(2))?;
     let af = matches!(args[0], Sexp::Float(_)) || matches!(args[1], Sexp::Float(_));
     let to_f64 = |v: &Sexp| -> Result<f64, EvalError> {
@@ -863,52 +857,16 @@ fn num_pair(args: &[Sexp], name: &str) -> Result<(f64, f64, bool), EvalError> {
     Ok((to_f64(&args[0])?, to_f64(&args[1])?, af))
 }
 
-fn int_pair_or<F>(args: &[Sexp], name: &str, mixed: F) -> Result<Sexp, EvalError>
-where
-    F: FnOnce(f64, f64) -> f64,
-{
-    let (a, b, af) = num_pair(args, name)?;
-    if af {
-        Ok(Sexp::Float(mixed(a, b)))
-    } else {
-        // Both args are Int — promote-then-cast loses no precision
-        // since neither was Float; use the original i64 path for
-        // wrapping arithmetic.  Caller dispatches via the Int branch.
-        unreachable!("caller should special-case all-int")
-    }
-}
+// `int_pair_or' removed — its sole callers (`bi_add2' / `bi_sub2' /
+// `bi_mul2') were deleted in Phase 5 Stage 5.7.  The JIT side now
+// uses `num_pair' directly for the Float promotion path and the
+// Int+Int wrapping arithmetic happens via Cranelift `iadd'/`isub'/
+// `imul' which is wrapping by IR contract.
 
-/// `(nelisp--add2 A B)' — 2-arg add building block for the elisp
-/// `+' fold.  Wrapping semantics for int+int (= matches host emacs
-/// integer-overflow behaviour); promote to float when either arg
-/// is Float.
-fn bi_add2(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--add2", args, 2, Some(2))?;
-    if let (Sexp::Int(a), Sexp::Int(b)) = (&args[0], &args[1]) {
-        return Ok(Sexp::Int(a.wrapping_add(*b)));
-    }
-    int_pair_or(args, "nelisp--add2", |a, b| a + b)
-}
-
-/// `(nelisp--sub2 A B)' — 2-arg subtract building block.  Same
-/// promotion rules as `nelisp--add2'; integer wrapping.
-fn bi_sub2(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--sub2", args, 2, Some(2))?;
-    if let (Sexp::Int(a), Sexp::Int(b)) = (&args[0], &args[1]) {
-        return Ok(Sexp::Int(a.wrapping_sub(*b)));
-    }
-    int_pair_or(args, "nelisp--sub2", |a, b| a - b)
-}
-
-/// `(nelisp--mul2 A B)' — 2-arg multiply building block.  Same
-/// promotion rules as `nelisp--add2'; integer wrapping.
-fn bi_mul2(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--mul2", args, 2, Some(2))?;
-    if let (Sexp::Int(a), Sexp::Int(b)) = (&args[0], &args[1]) {
-        return Ok(Sexp::Int(a.wrapping_mul(*b)));
-    }
-    int_pair_or(args, "nelisp--mul2", |a, b| a * b)
-}
+// `bi_add2' / `bi_sub2' / `bi_mul2' deleted — Phase 5 Stage 5.7
+// (Doc 62, 2026-05-08).  See `jit/arith.rs::lowered_{add2,sub2,mul2}'
+// for the JIT-only path (= Int+Int via Cranelift `iadd'/`isub'/`imul',
+// Float involvement via inline `num_pair' f64 promotion).
 
 // ---------- bitwise -----------------------------------------------------
 //
@@ -923,42 +881,11 @@ fn bi_mul2(args: &[Sexp]) -> Result<Sexp, EvalError> {
 // found 54 callers — all exactly 2-arg, so the variadic feature
 // was unused in practice and the elisp fold has no real cost.
 
-fn bi_logior2(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--logior2", args, 2, Some(2))?;
-    Ok(Sexp::Int(as_int("nelisp--logior2", &args[0])?
-                 | as_int("nelisp--logior2", &args[1])?))
-}
-
-fn bi_logand2(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--logand2", args, 2, Some(2))?;
-    Ok(Sexp::Int(as_int("nelisp--logand2", &args[0])?
-                 & as_int("nelisp--logand2", &args[1])?))
-}
-
-fn bi_logxor2(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--logxor2", args, 2, Some(2))?;
-    Ok(Sexp::Int(as_int("nelisp--logxor2", &args[0])?
-                 ^ as_int("nelisp--logxor2", &args[1])?))
-}
-
-/// `(ash N COUNT)' / `(lsh N COUNT)' — arithmetic shift by COUNT bits.
-/// Positive COUNT is left shift, negative is right shift.  We treat
-/// `lsh` as an alias of `ash` per recent Emacs conventions (= the
-/// MVP doesn't distinguish logical vs arithmetic for the use-cases
-/// that matter, key-event encoding being the main one).
-fn bi_ash(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("ash", args, 2, Some(2))?;
-    let n = as_int("ash", &args[0])?;
-    let count = as_int("ash", &args[1])?;
-    let r = if count >= 0 {
-        // Left shift; clamp obscene shifts to avoid Rust panic.
-        if count >= 63 { 0 } else { n.wrapping_shl(count as u32) }
-    } else {
-        let abs = (-count) as u32;
-        if abs >= 63 { if n < 0 { -1 } else { 0 } } else { n >> abs }
-    };
-    Ok(Sexp::Int(r))
-}
+// `bi_logior2' / `bi_logand2' / `bi_logxor2' / `bi_ash' deleted —
+// Phase 5 Stage 5.7 (Doc 62, 2026-05-08).  See
+// `jit/arith.rs::lowered_{logior2,logand2,logxor2,ash}'.  ash
+// preserves the count-clamping semantics inline; the JIT fast path
+// covers count ∈ [-62, +62].
 
 /// `(sxhash OBJECT)' / `sxhash-{equal,eq,eql}' — fold OBJECT into
 /// an i64 hash.  All four flavours share the same impl here; that
@@ -1022,27 +949,14 @@ fn sxhash_into<H: std::hash::Hasher>(v: &Sexp, h: &mut H) {
 // Float-tolerance `=' uses `1e-15' epsilon — moved to the
 // `nelisp--num-eq2' primitive.  `/=' is just `(not (= a b))'.
 
-fn cmp2_helper(args: &[Sexp], name: &str, cmp: fn(f64, f64) -> bool) -> Result<Sexp, EvalError> {
-    require_arity(name, args, 2, Some(2))?;
-    let (_, vs) = numeric_promote(args)?;
-    Ok(if cmp(vs[0], vs[1]) { Sexp::T } else { Sexp::Nil })
-}
-
-fn bi_num_lt2(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    cmp2_helper(args, "nelisp--num-lt2", |a, b| a < b)
-}
-fn bi_num_gt2(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    cmp2_helper(args, "nelisp--num-gt2", |a, b| a > b)
-}
-fn bi_num_le2(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    cmp2_helper(args, "nelisp--num-le2", |a, b| a <= b)
-}
-fn bi_num_ge2(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    cmp2_helper(args, "nelisp--num-ge2", |a, b| a >= b)
-}
-fn bi_num_eq2(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    cmp2_helper(args, "nelisp--num-eq2", |a, b| (a - b).abs() < 1e-15)
-}
+// `bi_num_eq2' / `bi_num_lt2' / `bi_num_gt2' / `bi_num_le2' /
+// `bi_num_ge2' deleted — Phase 5 Stage 5.7 (Doc 62, 2026-05-08).
+// See `jit/arith.rs::lowered_num_*'.  Int+Int → Cranelift icmp
+// (exact); Float involvement → `num_pair' f64 promotion + Rust
+// fcmp.  `num-eq2' preserves the 1e-15 epsilon for Float (=
+// matches Emacs semantics + the previous `bi_num_eq2').
+//
+// `cmp2_helper' removed (= no remaining callers).
 
 // ---------- equality ----------
 //

@@ -262,55 +262,114 @@ fn bool_to_sexp(v: i64) -> Sexp {
     if v != 0 { Sexp::T } else { Sexp::Nil }
 }
 
-macro_rules! lower_int_binop {
-    ($name:ident, $fast:expr, $primitive:literal) => {
-        fn $name(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+// Phase 5 Stage 5.7 (Doc 62, 2026-05-08) — arith primitives are now
+// self-contained: Int+Int via JIT fast path, Float involvement via
+// inline f64 promotion, wrong-type via direct `EvalError'.  No
+// `dispatch'/`bi_*' fallback remains.
+
+/// Float promotion arith binop (= add/sub/mul): Int+Int → JIT, else
+/// num_pair-based f64 op.  Wrapping semantics are preserved for
+/// Int+Int (= Cranelift `iadd' is wrapping); Float results are
+/// natural f64 ops.
+macro_rules! lower_arith_binop_with_float {
+    ($name:ident, $fast:expr, $float_op:expr, $primitive:literal) => {
+        fn $name(args: &[Sexp], _env: &mut Env) -> Result<Sexp, EvalError> {
             if let Some((a, b)) = try_int_pair(args) {
                 let r = ($fast)(a, b);
                 return Ok(Sexp::Int(r));
             }
-            crate::eval::builtins::dispatch($primitive, args, env)
+            // Float involvement (= or arity error / wrong-type) — let
+            // `num_pair' handle the diagnostics.  arity > 2 or
+            // non-numeric args yield the canonical EvalError.
+            let (a, b, _af) = crate::eval::builtins::num_pair(args, $primitive)?;
+            Ok(Sexp::Float(($float_op)(a, b)))
         }
     };
 }
 
-macro_rules! lower_int_cmp {
-    ($name:ident, $fast:expr, $primitive:literal) => {
-        fn $name(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+/// Numeric comparison binop: Int+Int → JIT icmp (exact); Float
+/// involvement → numeric_promote + Rust fcmp.  Note: `num-eq2'
+/// uses 1e-15 epsilon for Float involvement (= matches Emacs
+/// semantics from the previous `bi_num_eq2'); for Int+Int the JIT
+/// path uses exact icmp eq.
+macro_rules! lower_arith_cmp_with_float {
+    ($name:ident, $fast:expr, $float_cmp:expr, $primitive:literal) => {
+        fn $name(args: &[Sexp], _env: &mut Env) -> Result<Sexp, EvalError> {
             if let Some((a, b)) = try_int_pair(args) {
                 let r = ($fast)(a, b);
                 return Ok(bool_to_sexp(r));
             }
-            crate::eval::builtins::dispatch($primitive, args, env)
+            let (a, b, _af) = crate::eval::builtins::num_pair(args, $primitive)?;
+            Ok(if ($float_cmp)(a, b) { Sexp::T } else { Sexp::Nil })
         }
     };
 }
 
-lower_int_binop!(lowered_add2,    |a, b| (jit().add)(a, b),    "nelisp--add2");
-lower_int_binop!(lowered_sub2,    |a, b| (jit().sub)(a, b),    "nelisp--sub2");
-lower_int_binop!(lowered_mul2,    |a, b| (jit().mul)(a, b),    "nelisp--mul2");
-lower_int_binop!(lowered_logior2, |a, b| (jit().logior)(a, b), "nelisp--logior2");
-lower_int_binop!(lowered_logand2, |a, b| (jit().logand)(a, b), "nelisp--logand2");
-lower_int_binop!(lowered_logxor2, |a, b| (jit().logxor)(a, b), "nelisp--logxor2");
-
-lower_int_cmp!(lowered_num_eq2, |a, b| (jit().eq)(a, b), "nelisp--num-eq2");
-lower_int_cmp!(lowered_num_lt2, |a, b| (jit().lt)(a, b), "nelisp--num-lt2");
-lower_int_cmp!(lowered_num_gt2, |a, b| (jit().gt)(a, b), "nelisp--num-gt2");
-lower_int_cmp!(lowered_num_le2, |a, b| (jit().le)(a, b), "nelisp--num-le2");
-lower_int_cmp!(lowered_num_ge2, |a, b| (jit().ge)(a, b), "nelisp--num-ge2");
-
-/// `(ash N COUNT)' — lower for count ∈ [-62, +62] only.  Pathological
-/// counts (= ones whose `bi_ash' result depends on the 32-bit
-/// truncation of `(-count) as u32') fall through to the dispatcher so
-/// the existing semantics remain bit-for-bit identical.
-fn lowered_ash(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    if let Some((n, count)) = try_int_pair(args) {
-        if (-62..=62).contains(&count) {
-            let r = (jit().ash)(n, count);
-            return Ok(Sexp::Int(r));
+/// Int-only bitwise binop (= logior/logand/logxor): Int+Int → JIT,
+/// Float casts to i64 via `as_int', wrong-type yields canonical
+/// EvalError.  No Float-result path (= elisp bitwise semantics).
+macro_rules! lower_int_bitwise {
+    ($name:ident, $fast:expr, $primitive:literal) => {
+        fn $name(args: &[Sexp], _env: &mut Env) -> Result<Sexp, EvalError> {
+            crate::eval::builtins::require_arity($primitive, args, 2, Some(2))?;
+            if let Some((a, b)) = try_int_pair(args) {
+                let r = ($fast)(a, b);
+                return Ok(Sexp::Int(r));
+            }
+            // Non-Int args: as_int handles Float-to-i64 cast + WrongType.
+            let a = crate::eval::builtins::as_int($primitive, &args[0])?;
+            let b = crate::eval::builtins::as_int($primitive, &args[1])?;
+            Ok(Sexp::Int(($fast)(a, b)))
         }
+    };
+}
+
+lower_arith_binop_with_float!(lowered_add2, |a, b| (jit().add)(a, b), |a, b| a + b, "nelisp--add2");
+lower_arith_binop_with_float!(lowered_sub2, |a, b| (jit().sub)(a, b), |a, b| a - b, "nelisp--sub2");
+lower_arith_binop_with_float!(lowered_mul2, |a, b| (jit().mul)(a, b), |a, b| a * b, "nelisp--mul2");
+
+lower_int_bitwise!(lowered_logior2, |a, b| (jit().logior)(a, b), "nelisp--logior2");
+lower_int_bitwise!(lowered_logand2, |a, b| (jit().logand)(a, b), "nelisp--logand2");
+lower_int_bitwise!(lowered_logxor2, |a, b| (jit().logxor)(a, b), "nelisp--logxor2");
+
+lower_arith_cmp_with_float!(lowered_num_eq2,
+    |a, b| (jit().eq)(a, b),
+    |a: f64, b: f64| (a - b).abs() < 1e-15,
+    "nelisp--num-eq2");
+lower_arith_cmp_with_float!(lowered_num_lt2,
+    |a, b| (jit().lt)(a, b),
+    |a: f64, b: f64| a < b,
+    "nelisp--num-lt2");
+lower_arith_cmp_with_float!(lowered_num_gt2,
+    |a, b| (jit().gt)(a, b),
+    |a: f64, b: f64| a > b,
+    "nelisp--num-gt2");
+lower_arith_cmp_with_float!(lowered_num_le2,
+    |a, b| (jit().le)(a, b),
+    |a: f64, b: f64| a <= b,
+    "nelisp--num-le2");
+lower_arith_cmp_with_float!(lowered_num_ge2,
+    |a, b| (jit().ge)(a, b),
+    |a: f64, b: f64| a >= b,
+    "nelisp--num-ge2");
+
+/// `(ash N COUNT)' — Int-only.  JIT fast path covers count ∈ [-62, +62];
+/// outside that range, explicit clamping (= matches the previous
+/// `bi_ash' semantics bit-for-bit).
+fn lowered_ash(args: &[Sexp], _env: &mut Env) -> Result<Sexp, EvalError> {
+    crate::eval::builtins::require_arity("ash", args, 2, Some(2))?;
+    let n = crate::eval::builtins::as_int("ash", &args[0])?;
+    let count = crate::eval::builtins::as_int("ash", &args[1])?;
+    if (-62..=62).contains(&count) {
+        return Ok(Sexp::Int((jit().ash)(n, count)));
     }
-    crate::eval::builtins::dispatch("ash", args, env)
+    let r = if count >= 0 {
+        if count >= 63 { 0 } else { n.wrapping_shl(count as u32) }
+    } else {
+        let abs = (-count) as u32;
+        if abs >= 63 { if n < 0 { -1 } else { 0 } } else { n >> abs }
+    };
+    Ok(Sexp::Int(r))
 }
 
 pub fn register(map: &mut HashMap<&'static str, LowerFn>) {
