@@ -194,13 +194,57 @@ went through `:string' (= CString::new, NUL-rejecting)."
 WHENCE = `nelisp-os-SEEK-SET' / `-CUR' / `-END'."
   (nelisp-os--check-errno (nelisp--syscall 'lseek fd offset whence)))
 
+;; ---------------------------------------------------------------------------
+;; Doc 76 Stage A.3 — Linux x86_64 / aarch64 struct stat field offsets.
+;; (FreeBSD / macOS / Windows have different layouts; cross-OS support is
+;; deferred to a follow-up that auto-generates these consts via build.rs
+;; per Doc 76 §7.1.)
+;; ---------------------------------------------------------------------------
+
+(defconst nelisp-os--stat-buflen 256
+  "Allocation size for the libc.fstat output buffer (= safe upper bound
+for any common arch's `struct stat'; Linux x86_64 actual = 144).")
+
+(defconst nelisp-os--stat-offset-dev         0)
+(defconst nelisp-os--stat-offset-ino         8)
+(defconst nelisp-os--stat-offset-nlink      16)
+(defconst nelisp-os--stat-offset-mode       24)
+(defconst nelisp-os--stat-offset-uid        28)
+(defconst nelisp-os--stat-offset-gid        32)
+(defconst nelisp-os--stat-offset-size       48)
+(defconst nelisp-os--stat-offset-atime      72)
+(defconst nelisp-os--stat-offset-atime-nsec 80)
+(defconst nelisp-os--stat-offset-mtime      88)
+(defconst nelisp-os--stat-offset-mtime-nsec 96)
+(defconst nelisp-os--stat-offset-ctime     104)
+(defconst nelisp-os--stat-offset-ctime-nsec 112)
+
 (defun nelisp-os-fstat (fd)
   "POSIX fstat(2) — return positional list of stat fields, or signal
-`nelisp-os-error'.  Order matches `nelisp-os-stat-*' accessors below."
-  (let ((r (nelisp--syscall-fstat fd)))
-    (if (integerp r)
-        (nelisp-os--check-errno r)
-      r)))
+`nelisp-os-error'.  Order matches `nelisp-os-stat-*' accessors below
+and the old `nelisp--syscall-fstat' Rust primitive (Doc 54 Phase 3)."
+  ;; libc::fstat: int(int fd, struct stat *buf) → 0 / -1.
+  (let ((buf (nl-ffi-malloc nelisp-os--stat-buflen)))
+    (unwind-protect
+        (let ((r (nl-ffi-call "libc" "fstat"
+                              [:sint32 :sint32 :pointer]
+                              fd buf)))
+          (if (= r -1)
+              (nelisp-os--ffi-errno-signal)
+            (list (nl-ffi-read-i64 buf nelisp-os--stat-offset-size)
+                  (nl-ffi-read-i32 buf nelisp-os--stat-offset-mode)
+                  (nl-ffi-read-i64 buf nelisp-os--stat-offset-mtime)
+                  (nl-ffi-read-i64 buf nelisp-os--stat-offset-mtime-nsec)
+                  (nl-ffi-read-i64 buf nelisp-os--stat-offset-atime)
+                  (nl-ffi-read-i64 buf nelisp-os--stat-offset-atime-nsec)
+                  (nl-ffi-read-i64 buf nelisp-os--stat-offset-ctime)
+                  (nl-ffi-read-i64 buf nelisp-os--stat-offset-ctime-nsec)
+                  (nl-ffi-read-i64 buf nelisp-os--stat-offset-nlink)
+                  (nl-ffi-read-i32 buf nelisp-os--stat-offset-uid)
+                  (nl-ffi-read-i32 buf nelisp-os--stat-offset-gid)
+                  (nl-ffi-read-i64 buf nelisp-os--stat-offset-ino)
+                  (nl-ffi-read-i64 buf nelisp-os--stat-offset-dev))))
+      (nl-ffi-free buf))))
 
 ;; struct stat positional accessors (= same field order the Rust
 ;; primitive emits).  Add named getters as the substrate needs them.
@@ -240,10 +284,18 @@ mapping failure (raw kernel returns -errno for failed mmap)."
 (defun nelisp-os-pipe ()
   "POSIX pipe(2) — return cons (READ-FD . WRITE-FD), or signal
 `nelisp-os-error'."
-  (let ((r (nelisp--syscall-pipe)))
-    (if (integerp r)
-        (nelisp-os--check-errno r)
-      r)))
+  ;; libc::pipe: int(int pipefd[2]) → 0 / -1.  Allocate 8 bytes
+  ;; (= 2 × int32) so libc.pipe can fill them, then decode via
+  ;; `nl-ffi-read-i32' to dodge `nl-ffi-read-bytes''s UTF-8 lossy
+  ;; conversion (= corrupts byte values 0x80-0xFF).
+  (let ((buf (nl-ffi-malloc 8)))
+    (unwind-protect
+        (let ((r (nl-ffi-call "libc" "pipe" [:sint32 :pointer] buf)))
+          (if (= r -1)
+              (nelisp-os--ffi-errno-signal)
+            (cons (nl-ffi-read-i32 buf 0)
+                  (nl-ffi-read-i32 buf 4))))
+      (nl-ffi-free buf))))
 
 (defun nelisp-os-fcntl (fd cmd arg)
   "POSIX fcntl(2) — int-only variant (= F_GETFL / F_SETFL / F_DUPFD).

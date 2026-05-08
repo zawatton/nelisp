@@ -433,6 +433,74 @@ pub fn nl_ffi_write_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::T)
 }
 
+/// `(nl-ffi-read-i32 PTR OFFSET)` → integer (= sign-extended i32 LE
+/// at PTR + OFFSET).  Doc 76 Stage A.2/A.3 (2026-05-08): added so
+/// `nelisp-os-pipe' / `-fstat' can decode int[2] / struct stat fields
+/// from `nl-ffi-malloc' buffers without going through `nl-ffi-read-bytes'
+/// (= `String::from_utf8_lossy' munges non-UTF-8 bytes).
+///
+/// Safety gate: PTR must be from `nl-ffi-malloc' (= alloc_table) and
+/// OFFSET + 4 ≤ recorded length.
+pub fn nl_ffi_read_i32(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    if args.len() != 2 {
+        return Err(ffi_err(format!(
+            "nl-ffi-read-i32: expected 2 args (ptr offset), got {}",
+            args.len()
+        )));
+    }
+    let p = coerce_int(&args[0])?;
+    let off = coerce_int(&args[1])?;
+    if p == 0 {
+        return Err(ffi_err("nl-ffi-read-i32: NULL pointer".into()));
+    }
+    if off < 0 {
+        return Err(ffi_err(format!("nl-ffi-read-i32: negative offset {}", off)));
+    }
+    let alloc_len = *alloc_table().lock().unwrap().get(&p).ok_or_else(|| {
+        ffi_err(format!("nl-ffi-read-i32: pointer {} not from nl-ffi-malloc", p))
+    })?;
+    if (off as usize) + 4 > alloc_len {
+        return Err(ffi_err(format!(
+            "nl-ffi-read-i32: read at offset {} exceeds buffer length {}",
+            off, alloc_len
+        )));
+    }
+    let addr = (p + off) as *const i32;
+    let v = unsafe { std::ptr::read_unaligned(addr) } as i64;
+    Ok(Sexp::Int(v))
+}
+
+/// `(nl-ffi-read-i64 PTR OFFSET)` → integer (= i64 LE at PTR + OFFSET).
+/// Same safety gate as `nl-ffi-read-i32' but 8-byte read.
+pub fn nl_ffi_read_i64(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    if args.len() != 2 {
+        return Err(ffi_err(format!(
+            "nl-ffi-read-i64: expected 2 args (ptr offset), got {}",
+            args.len()
+        )));
+    }
+    let p = coerce_int(&args[0])?;
+    let off = coerce_int(&args[1])?;
+    if p == 0 {
+        return Err(ffi_err("nl-ffi-read-i64: NULL pointer".into()));
+    }
+    if off < 0 {
+        return Err(ffi_err(format!("nl-ffi-read-i64: negative offset {}", off)));
+    }
+    let alloc_len = *alloc_table().lock().unwrap().get(&p).ok_or_else(|| {
+        ffi_err(format!("nl-ffi-read-i64: pointer {} not from nl-ffi-malloc", p))
+    })?;
+    if (off as usize) + 8 > alloc_len {
+        return Err(ffi_err(format!(
+            "nl-ffi-read-i64: read at offset {} exceeds buffer length {}",
+            off, alloc_len
+        )));
+    }
+    let addr = (p + off) as *const i64;
+    let v = unsafe { std::ptr::read_unaligned(addr) };
+    Ok(Sexp::Int(v))
+}
+
 /// `(nl-ffi-errno)` → integer errno of the last libc call from the
 /// current thread.  Cross-OS thin shim:
 ///   - Linux/glibc: `*__errno_location()`

@@ -244,9 +244,9 @@ pub fn install_builtins(env: &mut Env) {
         "nelisp--syscall",
         "nelisp--syscall-supported-p",
         // Doc 54 Phase 3 (2026-05-07) — out-buffer primitives that
-        // can't ride generic `nelisp--syscall' (struct stat / int[2]).
-        "nelisp--syscall-fstat",
-        "nelisp--syscall-pipe",
+        // were retired in Doc 76 Stage A.2/A.3 (2026-05-08).  elisp
+        // now decodes struct stat / int[2] from `nl-ffi-malloc' bufs
+        // via `nl-ffi-read-i32' / `-i64'.
         // Doc 55 Phase 4 (2026-05-07) — Posix-30 specialized primitives
         // that need buffer / struct in/out handling beyond generic int
         // dispatch.  fork / socket / listen / wait4 / kill / getpid /
@@ -352,6 +352,10 @@ pub fn install_builtins(env: &mut Env) {
         // poke for sockaddr_in / pollfd / sigset_t / msghdr+SCM_RIGHTS
         // marshaling) + errno (= libc cross-OS thin shim).
         "nl-ffi-write-bytes", "nl-ffi-errno",
+        // Doc 76 Stage A.2/A.3 (2026-05-08): primitive int decoders so
+        // pipe / fstat wrappers can read int[2] / struct stat fields
+        // out of `nl-ffi-malloc' buffers without UTF-8 munging.
+        "nl-ffi-read-i32", "nl-ffi-read-i64",
         // Doc 51 Phase 6 write-path: time + cryptographic hash primitives.
         // Needed by anvil-memory-add etc. (= NOT NULL `created' column +
         // body digest).  Both are inherently OS / native-lib dependent
@@ -535,9 +539,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // specialized arms; elisp now routes via `nl-ffi-call libc'.
         "nelisp--syscall" => bi_syscall(args),
         "nelisp--syscall-supported-p" => bi_syscall_supported_p(args),
-        // Doc 54 Phase 3 dispatch arms.
-        "nelisp--syscall-fstat" => bi_syscall_fstat(args),
-        "nelisp--syscall-pipe" => bi_syscall_pipe(args),
+        // Doc 54 Phase 3 dispatch arms — retired in Doc 76 Stage
+        // A.2/A.3 (2026-05-08); elisp now routes via nl-ffi-call.
         // Doc 55 Phase 4 (2026-05-07) — Posix-30 specialized primitives.
         "nelisp--syscall-execve" => bi_syscall_execve(args),
         "nelisp--syscall-wait4" => bi_syscall_wait4(args),
@@ -667,6 +670,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-ffi-free" => super::ffi::nl_ffi_free(args),
         "nl-ffi-write-bytes" => super::ffi::nl_ffi_write_bytes(args),
         "nl-ffi-errno" => super::ffi::nl_ffi_errno(args),
+        "nl-ffi-read-i32" => super::ffi::nl_ffi_read_i32(args),
+        "nl-ffi-read-i64" => super::ffi::nl_ffi_read_i64(args),
         "nl-current-unix-time" => bi_nl_current_unix_time(args),
         "nl-secure-hash" => bi_nl_secure_hash(args),
         "nl-format-unix-time" => bi_nl_format_unix_time(args),
@@ -1977,61 +1982,11 @@ syscall_unsupported!(bi_syscall, "nelisp--syscall");
 // `-read' / `-write' now route through `nl-ffi-call libc' unified
 // (= single-path, no Path A/B branch).  See lisp/nelisp-stdlib-os.el.
 
-// ---------------------------------------------------------------------------
-// Doc 54 Phase 3 — Core-12 additions that need out-buffer handling.
-// `nelisp--syscall-fstat' returns struct stat as a positional list of
-// 13 fields (size, mode, mtime, mtime-nsec, atime, atime-nsec, ctime,
-// ctime-nsec, nlink, uid, gid, ino, dev) so elisp can unpack with
-// `nth' without further glue; see lisp/nelisp-stdlib-os.el for named
-// accessors.  `nelisp--syscall-pipe' returns a (read-fd . write-fd)
-// cons.  Both stay Linux-only (= cfg gate) and Err on other OSes.
-// ---------------------------------------------------------------------------
-
-#[cfg(target_os = "linux")]
-fn bi_syscall_fstat(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-fstat", args, 1, Some(1))?;
-    let fd = syscall_arg_int("nelisp--syscall-fstat", 1, &args[0])? as libc::c_int;
-    let mut st: libc::stat = unsafe { std::mem::zeroed() };
-    let r = unsafe { libc::fstat(fd, &mut st as *mut libc::stat) };
-    if r != 0 {
-        let e = unsafe { *libc::__errno_location() } as i64;
-        return Ok(Sexp::Int(-e));
-    }
-    let fields = [
-        Sexp::Int(st.st_size  as i64),
-        Sexp::Int(st.st_mode  as i64),
-        Sexp::Int(st.st_mtime as i64),
-        Sexp::Int(st.st_mtime_nsec as i64),
-        Sexp::Int(st.st_atime as i64),
-        Sexp::Int(st.st_atime_nsec as i64),
-        Sexp::Int(st.st_ctime as i64),
-        Sexp::Int(st.st_ctime_nsec as i64),
-        Sexp::Int(st.st_nlink as i64),
-        Sexp::Int(st.st_uid   as i64),
-        Sexp::Int(st.st_gid   as i64),
-        Sexp::Int(st.st_ino   as i64),
-        Sexp::Int(st.st_dev   as i64),
-    ];
-    Ok(Sexp::list_from(&fields))
-}
-
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_fstat, "nelisp--syscall-fstat");
-
-#[cfg(target_os = "linux")]
-fn bi_syscall_pipe(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-pipe", args, 0, Some(0))?;
-    let mut fds: [libc::c_int; 2] = [-1, -1];
-    let r = unsafe { libc::pipe(fds.as_mut_ptr()) };
-    if r != 0 {
-        let e = unsafe { *libc::__errno_location() } as i64;
-        return Ok(Sexp::Int(-e));
-    }
-    Ok(Sexp::cons(Sexp::Int(fds[0] as i64), Sexp::Int(fds[1] as i64)))
-}
-
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_pipe, "nelisp--syscall-pipe");
+// Doc 76 Stage A.2/A.3 (2026-05-08): `nelisp--syscall-fstat' /
+// `nelisp--syscall-pipe' specialized primitives removed.  elisp
+// `nelisp-os-fstat' / `nelisp-os-pipe' now route through `nl-ffi-call
+// libc' + `nl-ffi-read-i32' / `-i64' for struct decoding.  See
+// lisp/nelisp-stdlib-os.el.
 
 // ---------------------------------------------------------------------------
 // Doc 55 Phase 4 — Posix-30 specialized primitives (subprocess + network +
