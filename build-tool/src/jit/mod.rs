@@ -104,6 +104,15 @@ mod arith;
 #[cfg(test)]
 mod bench;
 mod cons;
+// Doc 77b Stage b.1 (2026-05-09): JIT IR DSL interpreter.  No
+// integration with `UnifiedJit` yet — the module is parallel to the
+// existing `declare_X_inline` helpers.  Stage b.3 will switch the
+// 5 `declare_X_inline` callers to go through `dsl::build_rule' on
+// elisp-authored Sexp rules.  Until then the AST + parser + builder
+// have no production callers, only `#[cfg(test)]' coverage; allow
+// `dead_code` here so the b.1 ship is warning-clean.
+#[allow(dead_code)]
+mod dsl;
 mod predicate;
 mod syscall;
 
