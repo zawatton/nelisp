@@ -1,0 +1,455 @@
+#+TITLE: Doc 76 — Phase 7 Elisp-side OS Surface Migration (= nl-ffi-call libc 統一)
+#+AUTHOR: zawatton
+#+DATE: 2026-05-08
+#+OPTIONS: toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: DRAFT
+:DEPENDS_ON: Doc 51 Phase 5 (nl-ffi-call) / Doc 53〜60 (specialized syscall surface) / Doc 62 Stage 5.8 (non-Linux stub macro 化、commit a81e089)
+:PARENT: Doc 62 §0 audit-revised (= Phase 7 elisp-side OS surface migration が specialized 削除の正規 track)
+:SUPERSEDES: Doc 53〜60 の Path A "specialized" 規約 (= Linux 専用 specialized primitive)
+:RELATED: Doc 49 (elisp pivot) / Doc 50 (irreducible unlock pattern) / Doc 63 (Phase 7 self-host roadmap)
+:END:
+
+* §0 TL;DR
+
+Doc 53〜60 で積み上げた 40 の specialized =bi_syscall_*= primitive
+(= sockaddr_in / sockaddr_un / sockaddr_in6 / pollfd / inotify_event /
+signalfd_siginfo / msghdr+SCM_RIGHTS / itimerspec / sigset_t / ucred 等
+struct & buffer marshaling) を、elisp 側で =nl-ffi-call libc=
++ 新規 buffer helper 群 (= =nl-ffi-write-bytes= 等) で組み立てる方式
+に migrate して Rust side から完全削除する。
+
+| layer                      | before (Doc 60 後)                                | after (Doc 76 完了)                  |
+|---------------------------+---------------------------------------------------+--------------------------------------|
+| Rust =bi_syscall_*= 専用     | 40 (Linux active + 40 non-Linux stub macro 化)     | 0 (生成 / dispatcher 共に削除)       |
+| Rust =bi_syscall= generic    | 1 (libc::syscall 6-arg arm)                       | 1 (= 残す。Phase 8 で再評価)          |
+| Rust =nl-ffi-call= primitive | 4 (call / malloc / read-bytes / free)             | 6+ (= +write-bytes / +errno 等)      |
+| elisp =nelisp-os-*= wrapper   | 約 70 関数 (= Path A direct + Path B fallback)    | 同 70 関数 (実装は単一 nl-ffi-call path) |
+| =nelisp-os--use-direct-syscall= flag | 起動時 1 回 detect → branch 配線      | 廃止 (= 全 OS で nl-ffi-call 単線)     |
+| Rust LOC                  | builtins.rs 4,959 LOC                             | 約 -1,200 (= -40 specialized × ~30 LOC) |
+
+LOC 削減推定 (= Rust):
+- 40 specialized primitive 本体 (Linux 実装): ~-30 × 40 = -1,200
+- 同 non-Linux stub (= 1-line macro 呼び 40 件): -40 (= macro 呼び自体の line)
+- =build_sockaddr_*= helpers + =build_sigset_from_list= 等: -100
+- dispatcher arm 削除 (= 40 line): -40
+- *合計*: 約 -1,380 Rust LOC
+
+elisp 増分推定:
+- 40 wrapper の本体置換 (= specialized → nl-ffi-call + struct marshaling): +約 600 LOC
+- 既存 Path B fallback 分岐削除 (= =nelisp-os--use-direct-syscall= 撤去): -40
+- 新規 helper モジュール =nelisp-stdlib-ffi-marshal.el= (= sockaddr_in encode 等): +約 250 LOC
+
+正味: Rust ~-1,380 / elisp ~+810 = *約 -570 LOC* + Linux/Darwin/Windows 完全統一。
+
+Path B (= Darwin/Windows) は Doc 53 以来 deferred されていた多数の wrapper
+(= =read= / =fstat= / =bind-inet= / inotify / signalfd / timerfd / SCM_RIGHTS …)
+が一気に動く。NeLisp の "Linux Lisp Machine 限定" から "POSIX Lisp Machine"
+に格上げする migration。
+
+* §1 動機
+
+** §1.1 Doc 62 §0 audit-revised の articulate
+
+Doc 62 §0 audit-revised (2026-05-08) で:
+
+#+BEGIN_QUOTE
+specialized primitives は Linux 用 active code、elisp 側 Path B は
+nl-ffi-call で並行運用、Rust side は依然必要.  specialized 削除は
+別 track (= Phase 7 elisp-side OS surface migration、nl-ffi-call で
+全 OS 統一).
+#+END_QUOTE
+
+と明記された。Doc 62 (Cranelift JIT lowering) の scope では specialized
+primitive を削除できないことが Stage B/C audit で確定 (= JIT は
+sockaddr / pollfd 等 buffer arg を lower 不可)。本 Doc 76 で正式に
+specialized 削除 track を articulate する。
+
+** §1.2 nelisp-stdlib-os.el の現状 (= 二重実装)
+
+=lisp/nelisp-stdlib-os.el= 758 LOC のうち Path A / Path B 両分岐を
+持つのは Doc 53 Phase 1 の 5 関数 (=open= / =read= / =write= / =close= / =exit=)
+のみ。Doc 54 以降 (Doc 54 Core-12 / Doc 55 Posix-30 / Doc 56〜60) で
+追加された 約 60 関数は **Path A 一本**:
+
+#+BEGIN_SRC emacs-lisp
+;; e.g. Doc 55
+(defun nelisp-os-bind-inet (fd host-int port)
+  (nelisp-os--check-errno (nelisp--syscall-bind-inet fd host-int port)))
+#+END_SRC
+
+すなわち現状の Darwin/Windows では Doc 53 の 5 関数しか動かない。
+Doc 76 完了で全 70 関数が Linux/Darwin/Windows いずれでも動くよう
+になる (= Linux 限定の解除)。
+
+** §1.3 LOC ratio + Phase 7 self-host vision
+
+Doc 63 Phase 7 self-host vision の核心は "Rust 最小化 + elisp 増産"。
+Doc 64〜72 で reader / printer / special-form / apply は elisp 化済。
+残る Rust 帯域は (a) sexp + GC + JIT (= 不可避) と (b) OS surface
+specialized 40 (= 不可避ではない、libffi で elisp 側に上げられる)。
+本 Doc 76 で (b) を消化。
+
+** §1.4 Path B fallback "deferred to Phase 1.1" の解消
+
+Doc 53 §1 の =read= Path B fallback は
+
+#+BEGIN_SRC emacs-lisp
+(signal 'nelisp-os-unsupported
+        '(read "Path B fallback for read deferred to Phase 1.1"))
+#+END_SRC
+
+で deferred されたまま。理由は "needs mutable bytestring buffer
+primitive". 本 Doc で =nl-ffi-malloc= + =nl-ffi-read-bytes= 経由で
+Path B =read= を実装することで、長く deferred されていた item を一気に消化。
+
+* §2 audit: 削除対象 40 specialized primitives
+
+** §2.1 inventory (= dispatcher list 順)
+
+builtins.rs:511〜580 を読み下した一覧 (= =bi_syscall= 1 generic は除外):
+
+| # | primitive                                  | 入出力の struct / buffer    | LOC 概算 (Linux body) | 削除可否 stage |
+|---+--------------------------------------------+-----------------------------+-----------------------+----------------|
+|  1 | =nelisp--syscall-openat=                   | string PATH                 | ~18                   | A (file)      |
+|  2 | =nelisp--syscall-read=                     | mutable buffer (sum-return) | ~25                   | A (file)      |
+|  3 | =nelisp--syscall-write=                    | string                      | ~18                   | A (file)      |
+|  4 | =nelisp--syscall-fstat=                    | struct stat (13-field list) | ~28                   | A (file)      |
+|  5 | =nelisp--syscall-pipe=                     | int[2] cons                 | ~12                   | A (file)      |
+|  6 | =nelisp--syscall-execve=                   | argv/envp string lists      | ~42                   | B (process)   |
+|  7 | =nelisp--syscall-wait4=                    | status return cons          | ~14                   | B (process)   |
+|  8 | =nelisp--syscall-setsockopt-int=           | int by-ref                  | ~20                   | C (socket-int) |
+|  9 | =nelisp--syscall-bind-inet=                | sockaddr_in                 | ~20                   | C (socket-int) |
+| 10 | =nelisp--syscall-connect-inet=             | sockaddr_in                 | ~20                   | C (socket-int) |
+| 11 | =nelisp--syscall-accept-inet=              | sockaddr_in (out)           | ~25                   | C (socket-int) |
+| 12 | =nelisp--syscall-poll=                     | pollfd[]                    | ~32                   | C (socket-int) |
+| 13 | =nelisp--syscall-bind-unix=                | sockaddr_un                 | ~20                   | D (socket-uds) |
+| 14 | =nelisp--syscall-connect-unix=             | sockaddr_un                 | ~20                   | D (socket-uds) |
+| 15 | =nelisp--syscall-accept-unix=              | sockaddr_un (out)           | ~22                   | D (socket-uds) |
+| 16 | =nelisp--syscall-bind-inet6=               | sockaddr_in6                | ~20                   | D (socket-uds) |
+| 17 | =nelisp--syscall-connect-inet6=            | sockaddr_in6                | ~20                   | D (socket-uds) |
+| 18 | =nelisp--syscall-accept-inet6=             | sockaddr_in6 (out)          | ~28                   | D (socket-uds) |
+| 19 | =nelisp--syscall-bind-unix-abstract=       | sockaddr_un (NUL-prefix)   | ~20                   | D (socket-uds) |
+| 20 | =nelisp--syscall-connect-unix-abstract=    | sockaddr_un (NUL-prefix)   | ~20                   | D (socket-uds) |
+| 21 | =nelisp--syscall-getsockname-inet=         | sockaddr_in (out)           | ~5 (helper-driven)    | D (socket-uds) |
+| 22 | =nelisp--syscall-getsockname-inet6=        | sockaddr_in6 (out)          | ~5                    | D (socket-uds) |
+| 23 | =nelisp--syscall-getsockname-unix=         | sockaddr_un (out)           | ~5                    | D (socket-uds) |
+| 24 | =nelisp--syscall-getpeername-inet=         | sockaddr_in (out)           | ~5                    | D (socket-uds) |
+| 25 | =nelisp--syscall-getpeername-inet6=        | sockaddr_in6 (out)          | ~5                    | D (socket-uds) |
+| 26 | =nelisp--syscall-getpeername-unix=         | sockaddr_un (out)           | ~5                    | D (socket-uds) |
+| 27 | =nelisp--syscall-inotify-add-watch=        | string PATH                 | ~22                   | E (filenotify) |
+| 28 | =nelisp--syscall-inotify-read=             | inotify_event[] parse       | ~55                   | E (filenotify) |
+| 29 | =nelisp--syscall-signalfd4=                | sigset_t in                 | ~22                   | F (signal/timer) |
+| 30 | =nelisp--syscall-signalfd-read=            | signalfd_siginfo[] parse    | ~42                   | F (signal/timer) |
+| 31 | =nelisp--syscall-sigprocmask=              | sigset_t in/out             | ~16                   | F (signal/timer) |
+| 32 | =nelisp--syscall-timerfd-settime=          | itimerspec in/out           | ~30                   | F (signal/timer) |
+| 33 | =nelisp--syscall-timerfd-gettime=          | itimerspec out              | ~22                   | F (signal/timer) |
+| 34 | =nelisp--syscall-socketpair=               | int[2] cons                 | ~14                   | G (scm-rights) |
+| 35 | =nelisp--syscall-sendmsg-fds=              | msghdr + SCM_RIGHTS cmsg    | ~62                   | G (scm-rights) |
+| 36 | =nelisp--syscall-recvmsg-fds=              | msghdr + SCM_RIGHTS cmsg parse | ~70                | G (scm-rights) |
+| 37 | =nelisp--syscall-getsockopt-peercred=      | struct ucred (out)          | ~24                   | G (scm-rights) |
+| 38 | =nelisp--syscall-bind-inet6-scoped=        | sockaddr_in6 + scope_id     | ~22                   | G (scm-rights) |
+| 39 | =nelisp--syscall-connect-inet6-scoped=     | sockaddr_in6 + scope_id     | ~22                   | G (scm-rights) |
+| 40 | =nelisp--syscall-accept-inet6-scoped=      | sockaddr_in6 + scope_id (out) | ~30                 | G (scm-rights) |
+
+40 関数、Linux body 合計 ~1,000 LOC + helpers (=build_sockaddr_in= /
+=build_sockaddr_un= / =build_sockaddr_in6= / =build_sockaddr_in6_with_scope=
+/ =build_sigset_from_list= / =sigset_to_list=) 約 +200 LOC。
+
+** §2.2 残す Rust primitive
+
+| primitive                       | 残す理由                                                                  |
+|---------------------------------+--------------------------------------------------------------------------|
+| =nelisp--syscall= (generic)     | =SYS_*= NR への直接 dispatch、JIT lowering 候補 (Doc 62 Stage 5.1) |
+| =nelisp--syscall-supported-p=   | Phase 7 完了後は常に t 相当 (= libc 経由) で固定値化を検討、当面残す       |
+| =nelisp--syscall-canonicalize=  | realpath(3) thin wrapper、文字列 only、libc 直 ffi 化候補 → §6 future    |
+| =nelisp--syscall-stat=          | =nelisp--syscall-fstat= の path 版、Doc 49 で elisp =file-exists-p= が依存。Stage A.4 で fstat と一緒に migrate |
+| =nelisp--syscall-readdir=       | DT_* + d_name parsing、Doc 49 で =directory-files= が依存。Stage A.5     |
+| =nelisp--syscall-read-file=     | 高速 read-loop、Doc 49 =load= の hot path。Stage A.6 で migrate 済とするか別 Doc 化検討 (= performance-bound)  |
+
+* §3 設計
+
+** §3.1 アーキ — nl-ffi-call をマクロ的に薄包んだ elisp marshaling 層
+
+#+BEGIN_EXAMPLE
+   ┌────────────────────────────────────────────────────────────────┐
+   │ nelisp-os-*  (= 70 wrapper、unchanged signature)                │
+   │   │                                                            │
+   │   ▼                                                            │
+   │ nelisp-os-ffi-*  (= 新規 marshaling helper、本 Doc で追加)        │
+   │   │ build-sockaddr-in / build-sockaddr-un / encode-pollfd-list │
+   │   │ decode-stat / decode-inotify-events / decode-signalfd-* …  │
+   │   ▼                                                            │
+   │ nl-ffi-malloc / nl-ffi-write-bytes / nl-ffi-call /             │
+   │ nl-ffi-read-bytes / nl-ffi-free / nl-ffi-errno (= 6 primitive)  │
+   │   │                                                            │
+   │   ▼                                                            │
+   │ libc.so / libsystem.dylib / msvcrt.dll                         │
+   └────────────────────────────────────────────────────────────────┘
+#+END_EXAMPLE
+
+** §3.2 nl-ffi-call 拡張 (= 必須 prerequisite Phase 0)
+
+現 =nl-ffi-call= (=ffi.rs= 359 LOC) は call / malloc / read-bytes / free
+の 4 primitive のみ. Doc 76 では以下 2 primitive を追加:
+
+*** §3.2.1 =nl-ffi-write-bytes PTR STR=
+
+PTR (= integer raw pointer) に STR (= elisp string、UTF-8 / binary)
+の bytes を書き込む。戻り値 t。これで struct field を offset 単位で
+poke できるようになり、=sockaddr_in= 等を elisp 側で組み立て可能。
+
+*** §3.2.2 =nl-ffi-errno=
+
+直近 syscall の errno を返す。glibc =__errno_location()= / Darwin
+=__error()= / Windows GetLastError の OS 別 thin shim. =nl-ffi-call=
+と同 thread / 同 call-site で使う前提。
+
+(libc crate が cross-OS で同名 cfg expose、cross-OS 1 関数で済む。)
+
+** §3.3 struct marshaling 設計
+
+(具体的な =sockaddr_in= / =sockaddr_un= / =sockaddr_in6= / =pollfd[]= /
+=inotify_event[]= / =signalfd_siginfo[]= / =itimerspec= / =sigset_t= /
+=msghdr+SCM_RIGHTS cmsg= の encode/decode 設計は Stage 0 着手時に確定。
+本 Doc は scope articulation のみ。各 struct の OS 別 layout const は
+=lisp/nelisp-stdlib-ffi-marshal.el= で管理、Linux x86_64 / aarch64 /
+Darwin arm64 / Windows x64 の差は per-OS defconst で吸収。)
+
+** §3.4 errno propagation 設計
+
+specialized =bi_*= の =-errno= 規約は単純で elisp 側 =nelisp-os--check-errno=
+が `(< r 0)` で signal する. nl-ffi-call libc 経由では:
+
+1. libc 関数の戻り値は POSIX 規約 (= 失敗時 -1)
+2. =nl-ffi-errno= で errno を取得
+3. elisp wrapper が判定:
+
+#+BEGIN_SRC emacs-lisp
+(let ((r (nl-ffi-call "libc" "open" [:sint32 :string :sint32 :sint32]
+                      path flags mode)))
+  (if (= r -1)
+      (signal 'nelisp-os-error (list (nl-ffi-errno)))
+    r))
+#+END_SRC
+
+注: =nl-ffi-errno= は thread-local だが elisp 側 single-thread eval
+前提なので race は無し. ただし GC が間に挟まると errno が上書きされ
+得る (= libffi trampoline 内で再度 syscall 走る可能性) — §5 で gate
+test を書く.
+
+** §3.5 段階的 stage breakdown — 7 段階
+
+Doc 53〜60 で積み上げた順を再生する形で 7 stage に切る. 各 stage は
+独立 commit、Doc 64〜72 (Phase 7 stage 7.1〜7.7) と同じく 1〜数日 work
+unit:
+
+| stage | 名前                    | 対応 Doc                        | 削除 specialized 数 | LOC 削減 |
+|-------+-------------------------+---------------------------------+---------------------+----------|
+| 0     | nl-ffi 基盤拡張           | (新規)                          | 0                   | +60 (Rust 拡張)         |
+| A     | file I/O                 | Doc 53 / 54                     | 5 (= 1〜5)          | -120 Rust |
+| B     | process                  | Doc 55                          | 2 (= 6〜7)          | -60 Rust  |
+| C     | socket-int (AF_INET + poll) | Doc 55                       | 5 (= 8〜12)         | -120 Rust |
+| D     | socket-uds + AF_INET6 + getsockname/peername | Doc 56 / 58 | 14 (= 13〜26)        | -250 Rust |
+| E     | filenotify (inotify + eventfd + pidfd) | Doc 57         | 2 (= 27〜28)         | -80 Rust  |
+| F     | signal/timer (signalfd + sigprocmask + timerfd) | Doc 59 | 5 (= 29〜33)         | -130 Rust |
+| G     | SCM_RIGHTS + IPv6 scoped + peercred + socketpair | Doc 60 | 7 (= 34〜40)         | -250 Rust |
+
+各 stage の commit pattern:
+1. =build-tool/src/eval/builtins.rs= の specialized fn 削除 + non-Linux stub macro 削除 + dispatcher arm 削除
+2. =lisp/nelisp-stdlib-os.el= 該当 wrapper の =nelisp--syscall-*= 呼出を =nelisp-os-ffi--*= helper 経由 =nl-ffi-call= に置換
+3. =lisp/nelisp-stdlib-ffi-marshal.el= (新規) に struct encode/decode helper 追加
+4. =test/nelisp-stdlib-os-test.el= の対応 ERT を再利用 (= signature 不変なので無変更)
+5. cargo build + make test 全 pass
+
+** §3.6 Stage 0 (= nl-ffi 基盤拡張) の詳細
+
+|--------------+---------------------------------|
+| primitive    | 追加内容                        |
+|--------------+---------------------------------|
+| =nl-ffi-write-bytes= | 新規 (`ffi.rs` に ~25 LOC)      |
+| =nl-ffi-errno=       | 新規 (`ffi.rs` に ~10 LOC)      |
+| =nl-ffi-int-pack=    | 任意 (`ffi.rs` に ~20 LOC) |
+| =nl-ffi-int-unpack=  | 任意 (`ffi.rs` に ~20 LOC) |
+
+合計 ~75 LOC 追加. dispatcher (=builtins.rs:354=付近 nl-ffi 名前 list) +
+match arm (=builtins.rs:662= 付近) 更新.
+
+最初のコミット = Stage 0 単独で、その後の Stage A〜G が乗る基盤.
+
+** §3.7 deprecation の進め方
+
+=nelisp-os--use-direct-syscall= flag は Stage A〜G で **stage ごとに
+半分死ぬ**: 該当 stage の wrapper 群が flag を見なくなる. 全 stage 完了で
+flag は誰も参照しなくなり、Stage H (= cleanup) で flag 自体を削除.
+
+* §4 ファイル配置
+
+| 種別   | path                                                                | 操作        |
+|--------+---------------------------------------------------------------------+-------------|
+| 設計書 | =docs/design/76-phase7-elisp-side-os-surface-migration.org=         | new (本 Doc) |
+| Rust   | =build-tool/src/eval/ffi.rs=                                        | edit (Stage 0) |
+| Rust   | =build-tool/src/eval/builtins.rs=                                   | edit (Stage 0〜G で削除進行) |
+| stdlib | =lisp/nelisp-stdlib-os.el=                                          | edit (Stage A〜G) |
+| stdlib | =lisp/nelisp-stdlib-ffi-marshal.el=                                  | new (Stage 0、struct encode/decode) |
+| test   | =test/nelisp-stdlib-os-test.el=                                     | edit (regression 維持) |
+| test   | =test/nelisp-stdlib-ffi-marshal-test.el=                            | new (= encode/decode unit) |
+| bench  | =bench/nelisp-os-bench.el=                                           | new (= per-syscall latency) |
+
+* §5 Test plan
+
+** §5.1 既存 33 ERT (= =nelisp-stdlib-os-test.el=) の維持
+
+各 stage 完了時に既存 ERT を **無変更** で全 pass させる. signature が
+不変 (= =nelisp-os-bind-inet= の引数 / 戻り値 は変えない) なので、
+内部実装が specialized → nl-ffi-call に切り替わっても test は通る. これが
+本 Doc の最重要 invariant.
+
+** §5.2 新規 ERT — marshaling unit test
+
+=test/nelisp-stdlib-ffi-marshal-test.el= に追加:
+
+| test                                | 検証内容                                                          |
+|-------------------------------------+-------------------------------------------------------------------|
+| =sockaddr-in-encode-roundtrip=        | encode → libc::ntohs / ntohl で復元 → 元の host/port と一致         |
+| =sockaddr-un-fs-encode=               | filesystem path 用 encode、length が path_offset + len + 1 と一致 |
+| =sockaddr-un-abstract-encode=         | abstract namespace、先頭 NUL byte 確認                            |
+| =sockaddr-in6-scope-encode=           | flowinfo BE / scope_id host order                               |
+| =pollfd-list-encode-decode=           | 3 entry encode → decode、events/revents が一致                    |
+| =inotify-event-decode-multi=          | 2 event packed buffer → 2 list 戻り、name の NUL trim             |
+| =signalfd-siginfo-decode=             | 1 event 128 bytes → 6-tuple                                      |
+| =sigset-encode-decode=                | (1 9 15) → encode → decode で同等 list                            |
+| =cmsg-scm-rights-build=               | 3 fd cmsg buffer build、CMSG_LEN/CMSG_SPACE 一致                  |
+
+合計 9 unit ERT.
+
+** §5.3 cross-OS 検証
+
+CI / local で 3 OS の matrix 走行:
+
+| OS                       | Path A 旧                                | Doc 76 後 |
+|--------------------------+------------------------------------------+-----------|
+| Linux x86_64 (Debian)    | specialized 全 active                    | nl-ffi 統一 |
+| Linux aarch64 (RPi 5)    | specialized 全 active                    | nl-ffi 統一 |
+| macOS arm64 (M1)         | specialized 全 stub error                | nl-ffi 統一 |
+| Windows x86_64 (CI only) | specialized 全 stub error、5 関数のみ動 | nl-ffi 統一 |
+
+各 OS で =make test= の =nelisp-stdlib-os-test= 33 ERT 全 pass を gate
+にする. Windows は signalfd / inotify / SCM_RIGHTS / pidfd / timerfd
+が無い OS なので、それら test は =skip-unless= で除外する従来運用を継承
+(= Doc 60 §3 と同 pattern).
+
+** §5.4 bench 計画
+
+=bench/nelisp-os-bench.el= 新規:
+
+| bench              | hot-path                              | 期待 latency 比 (vs specialized) |
+|--------------------+---------------------------------------+----------------------------------|
+| getpid loop 100k   | =(nelisp-os-getpid)= × 100,000        | × 1.5〜2.5 (= libffi overhead)   |
+| open+close loop 10k | =/tmp/x= に open + close × 10,000    | × 1.2〜1.8                        |
+| poll loop 10k      | 1 fd POLLIN poll(timeout=0) × 10,000  | × 1.3〜2.0                        |
+| sendmsg-recvmsg roundtrip 1k | 1 fd 1 byte payload × 1,000 | × 1.4〜2.2 (cmsg encode 重い)    |
+
+許容上限: 全 bench で × 3.0 以内. これを超えた wrapper は §6 future
+work で "JIT lower で specialized 再導入" を検討 (= Cranelift で
+=mov rax,NR; syscall= 直 emit、Doc 62 Stage 5.1 の延長).
+
+** §5.5 errno propagation 検証
+
+各 stage で 3 種の errno path を確認:
+
+1. open(/nonexistent) → ENOENT (2)
+2. close(99999) → EBADF (9)
+3. socket() in container 制限 → EAFNOSUPPORT 等
+
+旧 (=-errno=規約) と新 (=nl-ffi-errno=規約) で同一 errno が elisp 側
+=nelisp-os-error= に届くこと.
+
+* §6 Out of scope (= 別 Phase / 別 Doc)
+
+** §6.1 現 Doc では扱わないもの
+
+- *generic =nelisp--syscall=*: SYS_NR ベースの 6-arg generic は残す。
+  Doc 62 Stage 5.1 で JIT lower 済 (= mov rax,NR; syscall) で hot path 維持.
+- *=nelisp--syscall-canonicalize= / =-stat= / =-readdir= / =-read-file=*:
+  Doc 49 で elisp 化済の上位 API (= =file-exists-p= / =directory-files= /
+  =load=) が依存している thin primitive、性能 critical. nl-ffi-call で
+  realpath/stat/getdents64/loop-read を組み立てるのは可能だが
+  hot-path で × 1.5〜3.0 latency penalty が effective、移行は別 Doc.
+- *io_uring*: Doc 60 §4 で deferred、別 Doc 候補.
+- *kqueue (Darwin) / IOCP (Windows) / FSEvents*: Linux signalfd /
+  timerfd / inotify と同等の event surface だが API 全く別。Doc 76 で
+  Linux 限定 surface (= signalfd 等) は migration 後も Linux 専用、
+  Darwin/Windows は別途 wrapper を別 Doc で追加する.
+- *Cranelift JIT で specialized 再導入*: bench で × 3.0 超えた wrapper
+  があれば、=mov rax,NR; syscall= 直 emit する SyscallIR を拡張する形で
+  再導入候補. 別 Doc.
+
+* §7 Risks
+
+** §7.1 ABI drift
+
+OS / glibc バージョン違いで struct layout が変わる可能性. 緩和策:
+
+- =sizeof= / =offsetof= は Rust =std::mem::size_of=/ =offset_of= の
+  既知値を Stage 0 で =build.rs= から JSON 生成 → elisp 側 const に取り込む
+- 上記 const を =nelisp-os-ffi--layout.el= (auto-generated) に rev-pin
+- Doc 60 / Doc 59 の既存 specialized 実装を **削除前に layout 比較 ERT**
+  を書いて Linux/Darwin で gate.
+
+** §7.2 errno race
+
+GC が間に挟まると errno が上書きされ得る. 緩和:
+
+- =nl-ffi-call= 直後に **第 2 alloc を起こさない** wrapper pattern
+  (= 戻り値が < 0 の場合だけ =nl-ffi-errno= を呼ぶ、成功時は呼ばない)
+- bench で sense check (= 1k 回の errno consistency)
+
+** §7.3 性能 regression
+
+§5.4 bench で許容上限 × 3.0 を超えるものが出た場合の対応:
+
+1. 該当 wrapper を =Doc 76.x.A= として specialized 再 specialize 候補に登録
+2. Cranelift JIT で SyscallIR 拡張、=mov rax,NR; syscall= で hot path 維持
+3. それでも回復しない場合は specialized を Doc 76 から exception 扱いで保持
+
+** §7.4 SCM_RIGHTS の elisp marshaling 複雑度
+
+Stage G (= SCM_RIGHTS) の cmsg 計算は POSIX マクロ依存で、glibc / musl /
+Darwin libc の internal padding が微妙に違う. 緩和:
+
+- Stage G を最終 stage に置く (= 他の simpler stage で nl-ffi marshaling
+  pattern 確立後に取り組む)
+- =nl-ffi-call libc CMSG_SPACE [:size_t :size_t]= は POSIX が =extern=
+  symbol を提供しない (= マクロ only). 苦肉の策として Rust 側に
+  =nl_cmsg_space=/=nl_cmsg_len= helper を =cdylib= の =libnelisp_runtime=
+  に export する. これは "specialized primitive を 1 つ減らすために
+  数行 helper を残す" trade-off で許容.
+
+** §7.5 Stage 中の partial 状態でのリリース
+
+各 stage commit は independent build/test pass を要件にする. user が
+途中 stage で release を取ったとしても挙動が一貫している (= signature
+不変、内部実装のみ切替). この invariant は Doc 50 stage 7a〜7i で確立済.
+
+* §8 References
+
+- Doc 51 Phase 5 — =nl-ffi-call= 基盤 (= ffi.rs 359 LOC)
+- Doc 53 Phase 1 — Minimal-5 / Path A / Path B 二重実装の起源
+- Doc 54 Phase 3 — Core-12 (lseek / fstat / pipe / fcntl / mmap)
+- Doc 55 Phase 4 — Posix-30 (subprocess / AF_INET / poll)
+- Doc 56 Phase 4.1 — AF_UNIX / AF_INET6
+- Doc 57 Phase 4.3 — pidfd / inotify / eventfd
+- Doc 58 Phase 4.1.1 / 4.1.2 — abstract namespace + getsockname / getpeername
+- Doc 59 Phase 4.2 / 4.3.1 — signalfd / sigprocmask / timerfd
+- Doc 60 Phase 4.4 — SCM_RIGHTS / SOCK_SEQPACKET / SO_PEERCRED / IPv6 scope
+- Doc 62 §0 audit-revised — 本 Doc の articulate 起点
+- Doc 63 Phase 7 self-host roadmap — 全体 vision
+- =build-tool/src/eval/builtins.rs= 4,959 LOC (audit base)
+- =build-tool/src/eval/ffi.rs= 359 LOC (= 拡張 base)
+- =lisp/nelisp-stdlib-os.el= 758 LOC (= migration target)
+- =test/nelisp-stdlib-os-test.el= 892 LOC / 33 ERT (= regression base)
+- POSIX.1-2017 §6 (Sockets) / §6.7 (cmsg) / Linux man 2 signalfd / timerfd / inotify
+- libc crate Rust docs — struct layout reference

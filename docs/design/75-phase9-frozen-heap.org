@@ -1,0 +1,624 @@
+#+TITLE: Phase 9 — bootstrap eval frozen heap (= STDLIB env image 化)
+#+DATE: 2026-05-08
+#+AUTHOR: Claude (z=Opus 4.7) + user direction
+#+OPTIONS: ^:nil
+
+* §0 Status
+
+- 親 Doc: 73 §2.5 (= Stage 8.5 articulation で Phase 9 候補と articulated)
+- 関連 Doc: 72 (Stage 7.7.a/b AOT bake LOCKED) / 73 §9 #1 (Doc 75 候補 shift) /
+  74 (anvil migration、独立 track)
+- 前提 SHIPPED: Doc 64〜72 (Phase 7 main scope) / Doc 73 Stage 8.1 + 8.3.a/b
+- 本 Doc: Phase 9 frozen heap 全体設計 — *DRAFT 2026-05-08*
+- 規模: Phase 9 相当 (~500 LOC + image format v3 拡張)、複数 commit / 複数 sub-stage
+- Phase 8 Stage 8.4 (= reader feature gate) とは互いに独立 — どちらが先でも可
+- 本 Doc は articulation のみ; 着手判断は Phase 8 完了 + user feedback 待ち
+
+* §1 背景
+
+** §1.1 Phase 7 Stage 7.7.a/b の到達点 (= 起動時 Rust reader skip)
+
+Doc 72 で SHIPPED した AOT bake によって、起動時の bootstrap path は以下:
+
+#+begin_example
+[Production binary 起動時]
+  Env::new_global
+    1. globals + frames を空で初期化
+    2. install_builtins(&mut env)
+       → ~150 builtins 登録 (= bi_car / bi_cons / bi_intern …)
+    3. STDLIB_IMAGES 15 個を順に decode_image
+       → 各 image bytes (= NELIMG v2) を Vec<Sexp> に逆構築
+       → for form in &forms { eval(form, &mut env) }
+    4. use_elisp_apply フラグ ON
+#+end_example
+
+(3) で Rust reader は呼ばれない (= 起動 path から完全切離) が *eval* は
+依然として走る. 各 STDLIB image の中身は本質的に=defvar=, =defun=,
+=defalias=, =defmacro=, =put= の連発であり、評価結果は env の
+=globals= map を mutating 更新するだけ.
+
+** §1.2 計測 (= 2026-05-08 baseline)
+
+=Env::new_global= は CI box (Linux x86_64, release build) で:
+
+- builtins install: ~3ms
+- 15 STDLIB images の decode + eval: ~80-100ms
+  - decode 自体は ~5ms 程度 (= bytes parse は速い)
+  - 残り ~75ms+ は eval (= defvar/defun の loop で globals に挿入)
+
+つまり起動オーバーヘッドの大半は *image 化されているにも関わらず
+eval が走る* ことに起因. =defun=で =Sexp::Cons= chain を function cell
+に詰めるだけの仕事だが、=eval= が macro 展開 / =sf_*= 特殊形式 /
+=apply_combiner= を辿るため見かけ以上に重い.
+
+** §1.3 Phase 9 frozen heap が解こうとする問題
+
+仮に =Env::new_global= の最終状態 (= globals map + 内部の Sexp tree)
+を build 時に snapshot し、起動時に *直接 deserialize* できれば:
+
+- builtins install (= Rust 側の =install_builtins=) はそのまま実行
+- STDLIB の 15 image decode + eval を *スキップ* 可能
+- かわりに 1 個の =frozen-env.image= を deserialize して =globals= 直挿入
+
+期待効果:
+
+| 項目 | 現状 (Stage 7.7.b) | Stage 7.7.e 目標 |
+|------+--------------------+------------------|
+| =Env::new_global= 全体 | ~80-100ms | ~5-10ms |
+| reader skip | 達成済 | 維持 |
+| eval skip | 未達 | *新規* |
+| binary size 増分 | image 計 ~190KB | snapshot ~250-400KB 想定 |
+
+** §1.4 既存 STDLIB AOT bake (Stage 7.7.a/b) との差別化
+
+| 観点 | Stage 7.7.a/b (= AOT bake) | Stage 7.7.e (= frozen heap) |
+|------+----------------------------+-----------------------------|
+| 対象 | 各 .el の *source forms* | =Env::new_global= の *最終 env state* |
+| 単位 | file ごと (= 15 image) | env 全体 (= 1 image) |
+| 起動時の処理 | decode → *eval* 各 form | decode → *globals 直挿入* |
+| Sexp 単位 | source 由来 = closure 不在 | env 内 closure / Frame ref が混在 |
+| cycle / shared 構造 | 起こりにくい (= source は tree) | 起きうる (= 同 cons が複数 globals に共有) |
+| invalidation | =.el= 変更で baker 再走 | 上記 + Rust builtin 変更でも要再走 |
+| 移植性 | image format v2 で確定 | format v3 拡張要、互換 break |
+
+つまり frozen heap は AOT bake の "次の段" — source 形のままだった
+形式を、評価済 env 状態へと押し上げる.
+
+* §2 設計
+
+** §2.1 Stage 分解
+
+Phase 9 は規模が大きいため、論理的に独立な 3 stage に分割:
+
+- Stage 7.7.e.1 — *snapshot 形式設計* (= image format v3 schema 確定、shared/cycle
+  Sexp の identity 保持方法、closure / FrameCell の扱い articulate)
+- Stage 7.7.e.2 — *cycle-safe encoder 実装* (= =Env= → bytes、=image-baker= 内部の
+  新規 entrypoint =compile_env_to_frozen_heap=)
+- Stage 7.7.e.3 — *deserializer + 起動時組み込み* (= bytes → =Env=、
+  =Env::new_global= の bootstrap loop を image deserialize に切替)
+
+各 stage 別 commit / 別検証. Stage 7.7.e.2 と .3 は encode 形式合意後に
+並走可能.
+
+** §2.2 Stage 7.7.e.1 — snapshot 形式設計
+
+*** §2.2.1 表現する必要があるもの
+
+=Env::new_global= 完了時の env 状態:
+
+| 構成要素 | 既存 image v2 で対応? | frozen heap で必要 |
+|----------+----------------------+--------------------|
+| =globals: HashMap<String, SymbolEntry>= | × (= top-level 構造) | ○ |
+| =SymbolEntry { value, function, plist, constant }= | × | ○ |
+| =Sexp::Nil/T/Int/Float/Str/Symbol= | ○ (= TAG_NIL..STRING) | ○ (= 流用) |
+| =Sexp::MutStr= | △ (= Str に flatten) | identity 必要なら拡張 |
+| =Sexp::Cons(Rc<RefCell>,Rc<RefCell>)= | ○ (= TAG_CONS、ただし *identity 喪失*) | identity 保持版が必要 |
+| =Sexp::Vector= | ○ (= 同上、identity 喪失) | identity 保持版が必要 |
+| =Sexp::CharTable= / =Sexp::BoolVector= | ○ (= TAG_CHAR_TABLE/BOOL_VECTOR) | 流用 |
+| =Sexp::Cell(Rc<RefCell<Sexp>>)= | △ (= 内側を平坦化) | identity 保持 + cycle 対策必要 |
+| =Sexp::Record { type_tag, slots }= | × (= 現状 NotImplemented) | 新規 |
+| =Frame= ref を持つ closure | × | *対象外* (= 後述 §2.2.4) |
+| =extern_builtins=, =use_elisp_apply= 等 | × | 起動時再構築 |
+
+*** §2.2.2 NELIMG v3 schema 概要
+
+Doc 72 で確立した NELIMG v2 を拡張:
+
+#+begin_example
+NELIMG\0\x03                                  (8 byte magic, version=3)
+u32  IMAGE_ABI_VERSION = 3
+u8   IMAGE_KIND        = 0x01 (= "frozen-heap"、0x00 は v2 互換 form-list)
+─── KIND 0x01 only ───
+u32  N_NODES                                  ; shared object pool size
+[N_NODES] {
+   u8   NODE_TAG                              ; TAG_NIL..TAG_RECORD
+   ...payload...                              ; 子参照は u32 NODE_INDEX で記述
+}
+u32  N_GLOBALS
+[N_GLOBALS] {
+   u32  NAME_LEN ; bytes NAME
+   u8   FLAGS    ; bit0=has_value bit1=has_function bit2=has_plist bit3=constant
+   if has_value:    u32 NODE_INDEX
+   if has_function: u32 NODE_INDEX
+   if has_plist:    u32 NODE_INDEX
+}
+#+end_example
+
+*key 性質*:
+
+- Sexp tree を *DAG* として正規化 — 同 =Rc::ptr_eq= のセルは同 NODE_INDEX
+- =Cons= の car/cdr は子 Sexp を *NODE_INDEX 参照* で表す (= v2 では再帰 inline)
+- これにより shared 構造 (= 同じ symbol object が 100 globals から指される、
+  cycle list、self-referential cons) が identity 保ったまま round-trip
+- v2 既存 TAG (= TAG_NIL..TAG_BOOL_VECTOR) は値の表現を流用しつつ
+  *子参照だけ NODE_INDEX に置き換え*
+
+*** §2.2.3 既存 image v2 との互換
+
+- v2 image (= Stage 7.7.b の STDLIB image) は KIND=0x00 (= form-list mode) と
+  解釈、現行 =decode_image= が処理
+- v3 frozen-heap image は KIND=0x01 で新 path =decode_frozen_heap=
+- 両者は同じ magic prefix 末尾 byte (= ABI version) で区別
+- v3 reader は v2 image を読めるよう *両 KIND を支持* するか、
+  *別 entrypoint* (= =decode_image_v2= / =decode_frozen_heap_v3=) として
+  分けるか — 推奨は後者 (= 用途が異なるため別 surface)
+
+*** §2.2.4 closure / FrameCell の扱い (= core risk)
+
+現状 =Env::new_global= 完了後の =globals= 内には、各 =defun= が installed
+した =Sexp::Cons= で表現された closure が居る:
+
+#+begin_src text
+function cell of `my-fn':
+   (closure CAPTURED-ENV (ARGS...) BODY...)
+where CAPTURED-ENV is an alist ((name . FrameCell) ...)
+#+end_src
+
+問題:
+
+1. CAPTURED-ENV の =FrameCell= (= =Rc<RefCell<Sexp>>=) は Cons 形式で
+   =(name . Cell-wrapped-value)= に折られているが、Cell の identity は
+   "同じ let-binding を共有する別 closure からの write-through" を支える
+2. =Frame= 自体は Vec<HashMap> で =new_global= 完了時には空 (= 全 frame
+   pop 済) だが、closure CAPTURED-ENV alist 内の FrameCell は heap で生存
+3. これらを serialize して deserialize 後も identity を保つには、
+   =FrameCell= も DAG node として encode 必要
+
+*戦略 A: 完全 frozen* — closure / Cell も含めて全 env DAG を snapshot.
+identity 保持で 100% 等価復元. *実装難度高、bug リスク大*.
+
+*戦略 B: builtins + plain data 限定* — 起動時に:
+- builtins は Rust から再 install (= 既存 =install_builtins=)
+- =defvar= の値 (= 純粋 Sexp tree) は frozen heap から復元
+- =defun= / =defmacro= / =defalias= は *起動時に再 eval* で closure 再生成
+
+戦略 B では closure 部分だけ起動時 eval が必要 — つまり frozen heap は
+"source eval を deferred eval へ" ではなく "値の serialize は frozen /
+closure は再生成" の hybrid. 期待 speedup は若干薄まる (~80ms → ~30ms 想定).
+
+*戦略 C: 戦略 B + closure body のみ pre-decode* — =defun= の引数 list と
+body Sexp tree は frozen 化 (= source decode + macro 展開後の form を
+保存)、CAPTURED-ENV は起動時に空 alist (= top-level defun は lexical env
+を捕捉していない) として再構築. 多くの defun は CAPTURED-ENV が =nil= の
+ため、これで大半のケースが通る.
+
+*推奨*: *戦略 C*. STDLIB 内の =defun= はほぼ全て top-level (= CAPTURED-ENV
+が空) であり、closure-with-captures が居るのは下位で =let= 内 lambda が
+=defalias= された限定パターンのみ. それは fallback として "起動時再 eval
+が必要な form" として別 list で持たせる.
+
+*** §2.2.5 NODE_TAG 拡張
+
+NELIMG v2 から追加する tag (= NODE_TAG として識別):
+
+| TAG | 値 | payload |
+|-----+----+--------|
+| TAG_CELL | 0x0A | u32 NODE_INDEX (= 中身 Sexp) |
+| TAG_RECORD | 0x0B | u32 type_tag NODE_INDEX, u32 slot 数, [slot] u32 NODE_INDEX |
+| TAG_MUT_STR | 0x0C | u32 LEN, bytes UTF-8 |
+
+子参照を *インライン* せず *NODE_INDEX 参照化* するため、TAG_CONS /
+TAG_VECTOR の payload も v2 から変更:
+
+| TAG | v2 (form-list mode) | v3 (frozen heap mode) |
+|-----+---------------------+-----------------------|
+| TAG_CONS | inline car / inline cdr (= 再帰) | u32 car_idx, u32 cdr_idx |
+| TAG_VECTOR | u32 len, inline items × n | u32 len, [u32 idx] × n |
+| TAG_CHAR_TABLE | inline subtype/default/entries | NODE_INDEX 参照版 |
+
+つまり KIND=0x01 では tag 値は同じだが payload 形式が DAG 化する.
+*混同を避けるため別 decoder 関数を用意* — 既存 =decode_value= は v2 専用、
+新規 =decode_node= は v3 frozen heap 専用.
+
+** §2.3 Stage 7.7.e.2 — cycle-safe encoder 実装
+
+*** §2.3.1 algorithm (= DAG 正規化 + post-order 出力)
+
+#+begin_src text
+fn encode_env(env: &Env) -> Vec<u8>:
+  let mut interner = NodeInterner::new()
+  let mut globals_table = Vec::new()
+  for (name, entry) in &env.globals (sorted for determinism):
+    let value_idx = entry.value.as_ref().map(|v| intern(&mut interner, v))
+    let function_idx = entry.function.as_ref().map(|v| intern(&mut interner, v))
+    let plist_idx = entry.plist.as_ref().map(|v| intern(&mut interner, v))
+    globals_table.push((name, value_idx, function_idx, plist_idx, entry.constant))
+  serialize: header + interner.to_bytes() + globals_table.to_bytes()
+
+fn intern(interner: &mut NodeInterner, sexp: &Sexp) -> u32:
+  match sexp {
+    Sexp::Nil | Sexp::T => atomic_intern(...)
+    Sexp::Int(_) | Sexp::Float(_) | Sexp::Symbol(_) | Sexp::Str(_) =>
+       value-keyed dedupe (= same Int n → same idx)
+    Sexp::Cons(car, cdr):
+       let key = ConsKey { car_ptr: Rc::as_ptr(car), cdr_ptr: Rc::as_ptr(cdr) }
+       if let Some(idx) = interner.cons_seen.get(&key): return idx
+       let placeholder_idx = interner.alloc_placeholder()
+       interner.cons_seen.insert(key, placeholder_idx)   // mark before recursion
+       let car_idx = intern(interner, &car.borrow())
+       let cdr_idx = intern(interner, &cdr.borrow())
+       interner.fill(placeholder_idx, NodeBody::Cons { car_idx, cdr_idx })
+       return placeholder_idx
+    // Sexp::Vector / Sexp::Cell / Sexp::Record も同パターン
+    // (= Rc::as_ptr で identity key、placeholder で cycle 対応)
+  }
+#+end_src
+
+*key 設計*:
+
+- =Rc::as_ptr(rc)= で Rc の generation を捕捉、cycle 中の self-ref で
+  二重訪問しない (= Doc 50 §3.5 の cycle-safe equal pattern を踏襲)
+- placeholder 戦略 = 訪問開始時に NODE_INDEX を予約、子訪問が完了して
+  から body を書き込む (= cycle 中に "親が見えていない" 状況回避)
+- Sexp::Symbol / Str など atomic は value-keyed dedupe (= "true" symbol
+  が 100 箇所から指されても node 1 つ)
+
+*** §2.3.2 Closure 戦略 C の落とし穴
+
+戦略 C では =defun= installed Sexp は基本 =(closure nil ARGS BODY...)=
+の形 (= CAPTURED-ENV = =Sexp::Nil=). しかし以下が混在しうる:
+
+1. =(closure ((cell . FrameCell-Sexp)) ARGS BODY...)= = let 内 lambda が
+   defalias で global に出たケース
+2. =(macro . (lambda ARGS BODY))= = =defmacro= 形式
+3. =(autoload ...)= = =autoload= 設定 (= STDLIB ではほぼ未使用、念のため)
+
+戦略:
+- (1) は frozen heap の対象外として =Env::new_global= 起動時 fallback
+  list (= "再 eval forms") に格納、起動時に source 再 eval
+- (2) は内部の lambda body だけが Sexp tree なので普通に encode 可
+- (3) は =Symbol= + =List= の組み合わせ、普通に encode 可
+
+判定: encoder は =Sexp::Cons(head, body)= の =head= を見て、
+=head == Symbol("closure")= かつ =body.car != Nil= なら fallback 行き、
+それ以外は通常 encode.
+
+*** §2.3.3 baker entrypoint
+
+新 binary 引数 (= =build-tool/src/bin/nelisp-baker.rs= 拡張):
+
+#+begin_src text
+nelisp-baker --frozen-heap --output OUT_DIR/frozen-env.image
+  → fn run():
+      let env = Env::new_global()       // 通常 bootstrap
+      let bytes = encode_env(&env)       // Stage 7.7.e.2 新規
+      write_file(out, &bytes)
+#+end_src
+
+build.rs (= Stage 7.7.a で導入済) からは = =cargo run --bin nelisp-baker
+--features image-baker -- --frozen-heap --output ...= を呼出.
+
+依存: =Env::new_global= 自体が走るので "正しく bootstrap できた env" の
+snapshot 化. ここで unsoundness はない (= 起動時 path と全く同じ).
+
+** §2.4 Stage 7.7.e.3 — deserializer + 起動時組み込み
+
+*** §2.4.1 deserializer
+
+#+begin_src text
+fn decode_frozen_heap(bytes: &[u8]) -> Result<DecodedEnv, ImageError>:
+  parse header (= magic + version=3 + kind=0x01)
+  let n_nodes = read_u32
+  let mut nodes: Vec<Option<Sexp>> = vec![None; n_nodes]
+  // 1st pass: パース node body (子参照は idx で持つ、まだ Sexp 化しない)
+  let mut bodies: Vec<NodeBody> = parse n_nodes 個
+  // 2nd pass: cycle-safe build — 各 idx に Rc allocation しつつ填める
+  for idx in 0..n_nodes:
+    nodes[idx] = Some(allocate_shell(&bodies[idx]))   // RefCell-empty placeholder
+  for idx in 0..n_nodes:
+    fill_in(&mut nodes[idx], &bodies[idx], &nodes)    // inner Sexp 設定
+  // 3rd: globals_table parse
+  let n_globals = read_u32
+  let mut globals: HashMap<String, SymbolEntry> = HashMap::with_capacity(n_globals)
+  for _ in 0..n_globals:
+    parse name + flags + idxs
+    populate SymbolEntry
+  Ok(DecodedEnv { globals, fallback_forms: ... })
+#+end_src
+
+*key*:
+- 2-pass で =Rc<RefCell>= の placeholder allocation → 中身設定. これで
+  cycle (= self-referential cons) も復元可
+- =Cons(Rc::clone(&nodes[car_idx]).downcast_to_cell(), ...)= の代わりに
+  各 node ごとに =Rc<RefCell<Sexp>>= を保持し、parent-child は Rc::clone で
+  share
+
+*** §2.4.2 =Env::new_global= の bootstrap loop 切替
+
+before (Stage 7.7.b):
+
+#+begin_src rust
+super::builtins::install_builtins(&mut env);
+for (name, image_bytes) in STDLIB_IMAGES {
+    let forms = image::decode_image(image_bytes)?;
+    for form in &forms {
+        super::eval(form, &mut env)?;
+    }
+}
+#+end_src
+
+after (Stage 7.7.e.3):
+
+#+begin_src rust
+super::builtins::install_builtins(&mut env);
+const FROZEN_HEAP: &[u8] = include_bytes!("../../../lisp/frozen-env.image");
+let decoded = image::decode_frozen_heap(FROZEN_HEAP)?;
+env.globals = decoded.globals;
+for src in decoded.fallback_forms {
+    let forms = read_all_via_elisp(&src, &mut env)?;
+    for form in &forms {
+        super::eval(form, &mut env)?;
+    }
+}
+#+end_src
+
+戦略 C の fallback_forms は通常空 list — STDLIB が closure-with-captures
+を持たないなら fallback path は走らない.
+
+*** §2.4.3 invalidation policy
+
+frozen-env.image は依存の transitive closure が広い:
+1. =lisp/*.el= の内容
+2. =install_builtins= が登録する関数 list
+3. NELIMG v3 schema 自体
+4. =Sexp= 型の derive 順 / Variant 並び (= JIT inline-emit と同じ理由)
+
+build.rs で再 bake trigger:
+- =cargo:rerun-if-changed=lisp/= = (1)
+- =cargo:rerun-if-changed=build-tool/src/eval/builtins.rs= = (2)
+- =cargo:rerun-if-changed=build-tool/src/image.rs= = (3)
+- =cargo:rerun-if-changed=build-tool/src/eval/sexp.rs= = (4)
+
+frozen-env.image 自体は Stage 7.7.b の =lisp/*.image= と並んで
+git track するか、build artifact として OUT_DIR に置くかは設計判断:
+
+- *git track 案*: 新人 / CI box でも cargo build 1 step で走る (= 既存
+  Stage 7.7.b 流儀踏襲)
+- *artifact 案*: image size ~300KB でリポジトリ膨張 (= Stage 7.7.b
+  でも debate あり、結局 git track 採用)
+
+→ *git track 推奨*. Stage 7.7.b 流儀継続.
+
+* §3 Risks / Mitigation
+
+** §3.1 format breakage の影響範囲
+
+NELIMG v3 schema が一度 ship されると、=Sexp= variant の追加 / 並び替え /
+struct field 追加で format が壊れる. =Sexp= 型は既に
+=#[repr(C, u8)]= 制約 (= Doc 62 Phase 5 inline-emit unlock) で並びが固定
+されているが、frozen heap はさらに *値の binary representation* も pin する.
+
+- *Mitigation*: =IMAGE_ABI_VERSION= を v3 → v4 に bump する pre-flight
+  check を =image-baker= 側に持たせる. ABI bump は Stage 7.7.b の
+  =UnsupportedVersion(1)= reject と同じ pattern (= image.rs:549 参照)
+- *Mitigation*: =SEXP_TAG_*= constants と NODE_TAG が同期しているか
+  check する unit test (= =frozen_heap_tags_match_sexp_variants= 相当)
+
+** §3.2 初期化順序保証 (= globals の install 順)
+
+=defvar= / =defun= には load 順依存があるケースがある (= ある defvar
+の値が別 defun の closure body に直接埋まっている). frozen heap は
+"全 globals を一括復元" するため、現状の load 順仮定が破れていないか
+検証必要.
+
+- *Mitigation*: =Env::new_global= 通常 path と frozen heap path で
+  =globals= 内容を =equal= で比較する cross-equiv test (= 全 entry の
+  =SymbolEntry= が一致することを確認). この test を CI gate に置く
+
+** §3.3 closure fallback (= 戦略 C ↔ 戦略 B 切替)
+
+戦略 C (= top-level defun は frozen、closure-with-captures だけ fallback)
+が *実は STDLIB に closure-with-captures が多い* と判明したケース、
+fallback ratio が高くなり期待 speedup が消える.
+
+- *Mitigation*: Stage 7.7.e.1 で実測 — =Env::new_global= 完了後に
+  globals を walk し、=Sexp::Cons(Symbol("closure"), Cons(env, ...))=
+  の env-cell が =Nil= 以外の数を count. 多ければ戦略 B (= defun も
+  起動時再 eval) に retreat
+- *Mitigation*: 戦略 retreat path を Stage 7.7.e.2 着手前に決定、本 Doc
+  §9 改判断 record に明記
+
+** §3.4 cycle / shared identity の正当性
+
+=Sexp::Cons= に cycle が STDLIB 内で発生するかは現状未調査. 仮に発生
+していると =equal= の cycle-safe 実装 (= Doc 50 §3.5) が前提だが、
+serialize でも同じ visited-set pattern を使えば対応可能 (= §2.3.1
+algorithm).
+
+- *Mitigation*: encoder の cycle handling に specific test (= self-ref
+  cons / 相互参照 list) を ERT で追加. Stage 7.7.e.2 検証必須項目
+- *Mitigation*: 万一 STDLIB に予期せぬ cycle が居て encoder が無限再帰
+  したら =std::collections::HashSet<*const RefCell<Sexp>>= で訪問記録、
+  既訪問は idx 返却で抜ける (= placeholder pattern と同じ思想)
+
+** §3.5 binary size 増分
+
+STDLIB image (= Stage 7.7.b 完了形) は計 ~190KB. frozen heap は env 全体
+を持つため 1.5x〜2x 想定 = ~250-400KB. =nelisp= binary に
+=include_bytes!= で埋め込むと binary size が膨張.
+
+- *Mitigation*: 既存 STDLIB image (= 15 個) を *frozen heap が成立した
+  時点で deprecate*. =Env::new_global= は frozen heap 1 個だけ参照すれば
+  良いので、STDLIB images は =cfg(feature = "image-baker")= 下に下げる
+  (= bake-time の中間生成物に格下げ).  これで net 増は ~250KB - 190KB
+  = +60KB 程度
+- *Mitigation*: frozen heap を gzip 圧縮した形で埋め込み、起動時 inflate
+  も検討 (= gzip on ~300KB → ~80KB 程度の見込み). ただし inflate コスト
+  が ~5ms 加わるので net trade-off
+
+** §3.6 development iteration cost
+
+elisp 開発者が =lisp/*.el= を編集するたびに frozen heap 再 bake が走る:
+
+- 現状 (Stage 7.7.b): 1 ファイル変更 → 該当 image だけ再 bake (= 1秒)
+- 将来 (Stage 7.7.e): 1 ファイル変更 → frozen heap 全体再 bake (= 5-10秒
+  想定、=Env::new_global= の現状 80ms + I/O)
+
+- *Mitigation*: dev mode で =NELISP_NO_FROZEN_HEAP=1= 環境変数を見る、
+  この場合は Stage 7.7.b path を走らせる (= per-file bake で iteration
+  速度維持). production / CI のみ frozen heap path
+
+** §3.7 既存 escape hatch との両立
+
+=NELISP_USE_RUST_APPLY= (= Doc 70 Stage 7.4.e.2) は frozen heap 内に
+保存される =use_elisp_apply= フラグ初期値とは独立. 起動時に frozen heap
+deserialize → =env.use_elisp_apply= の re-set (= 環境変数読み直し) を
+順序で行う.
+
+- *Mitigation*: =Env::new_global= の末尾で現状通り環境変数 check し、
+  flag 上書き. frozen heap 自体は flag 値を含めない (= runtime 設定なので)
+
+* §4 Out of scope
+
+- *closure (= =Sexp::Function= variant) の純粋 frozen 化* — 戦略 A は
+  bug リスク高、本 Doc では戦略 C を採用しその範囲で扱う
+- *bridge canonical files の frozen 化* — Phase 9 後の別議題. 5 canonical
+  files (= bridge bootstrap path) は STDLIB と独立、本 Doc は触れない
+- *anvil-runtime の frozen 化* — Doc 74 で anvil-runtime crate 自体が
+  消える / 縮小されるため別 track. anvil.el 側 elisp は host emacs で
+  実行される
+- *=nelisp-runtime= crate の startup 改善* — 別 carve-out
+- *image format v3 を bridge / anvil でも採用するか* — 別 Doc 判断
+- *Phase 8 Stage 8.4 (= reader feature gate)* — Doc 73 内、本 Doc とは
+  並走可能で互いに blocking しない
+- *binary 圧縮 / mmap* — §3.5 で言及した gzip / mmap 化は別 micro-stage
+
+* §5 Test plan
+
+** §5.1 Stage 7.7.e.1 = 形式設計検証
+
+- NELIMG v3 schema docstring を =build-tool/src/image.rs= に追記、
+  =SEXP_TAG_*= と NODE_TAG の対応表を inline で確認
+- 戦略 C の前提検証 ERT: =Env::new_global= 完了後、closure-with-captures
+  の数が 0 (or 既知の小 list 範囲) であることを fixture
+- =frozen_heap_v3_node_tag_layout_is_documented= 単体 test (= 形式 doc 同期)
+
+** §5.2 Stage 7.7.e.2 = encoder 検証
+
+ERT (Rust unit test):
+
+- =frozen_heap_round_trip_atomic= = Nil/T/Int/Float/Symbol/Str を encode
+  → decode → 同等
+- =frozen_heap_round_trip_cons_shared= = 2 globals が同 cons を共有 →
+  decode 後 =Rc::ptr_eq= で identity 保持確認
+- =frozen_heap_round_trip_self_ref_cons= = =(let ((x (cons 1 nil))) (setcdr
+  x x))= の cycle 構造 → encode → decode → 同 identity
+- =frozen_heap_round_trip_vector_shared= = 同 vector が複数 globals に
+  appears → identity 保持
+- =frozen_heap_round_trip_record= = =Sexp::Record= を含む env → 復元
+  (= 現状 v2 では NotImplemented なので Stage 7.7.e で初対応)
+- =frozen_heap_encode_skips_closure_with_captures= = closure-with-captures
+  が fallback list に入ることを確認
+
+** §5.3 Stage 7.7.e.3 = deserializer + 起動時組み込み 検証
+
+ERT + integration:
+
+- =frozen_heap_decode_matches_eval_path= = =Env::new_global= (= 通常 path)
+  と =Env::new_global_from_frozen_heap= (= 新 path) で =globals= が equal
+- =cargo test --release --lib --tests= 全 PASS (= 既存 435 case)
+  - 内部で =Env::new_global= を使う test 全てが新 path で動く
+- =make test= ERT 全 PASS
+- 起動時間 bench: =hyperfine 'nelisp -Q --eval 0'= の median が現状
+  ~120ms から ~40ms (= 改善幅 75ms) に近いことを確認 (= speedup 4σ 範囲)
+- =cargo build --release= 0 warnings 両 feature mode
+
+** §5.4 Performance gate
+
+- =Env::new_global= 単体 micro-bench: 80ms → 5-10ms target
+- 全体 startup bench: 120ms → 40ms target
+- 未達 (= < 2x speedup) なら戦略 retreat / 形式見直し
+
+* §6 共通原則 (= Doc 67〜74 から継承)
+
+- 1 sub-stage = 1 commit、commit message に SHIPPED record
+- 各 commit で =cargo test --release --lib --tests= +
+  =cargo test --release --lib --tests --features image-baker= 両 mode
+  全 PASS 必須
+- =make test= ERT 全 PASS 必須
+- frozen heap 形式変更は ABI version bump で明示 (= Stage 7.7.b と同流)
+- 改判断は §8 record に追記、article は LOCKED 後でも改訂 OK
+- escape hatch =NELISP_NO_FROZEN_HEAP=1= で Stage 7.7.b path に retreat
+  可能 (= Stage 7.7.e ship 後の bisect 補助)
+- =NELISP_USE_RUST_APPLY= は引き続き維持 (= Doc 70 + Doc 73 §7 共通原則)
+
+* §7 References
+
+- Doc 50 §3.5 — cycle-safe equal pattern (= visited-set strategy 流用元)
+- Doc 52 §2.1 — =Sexp::Record= variant articulation
+- Doc 62 — Phase 5 native cc lowering と =Sexp= layout pin
+- Doc 64〜71 — Phase 7 main scope の前提 LOCKED record
+- Doc 72 — Stage 7.7.a/b AOT bake LOCKED, NELIMG v2 確立
+- Doc 73 §2.5 — Stage 8.5 frozen heap articulation, Phase 9 候補と articulated
+- Doc 73 §9 #1 — Doc 75 候補 shift articulation
+- Doc 74 — anvil-runtime → anvil.el migration (= 独立 track、frozen heap と
+  互いに blocking しない)
+- =build-tool/src/image.rs= — NELIMG v2 実装 (= 拡張元)
+- =build-tool/src/eval/env.rs::Env::new_global= — 切替対象
+- =build-tool/src/eval/sexp.rs::Sexp= — encode 対象 enum
+- =build-tool/src/bin/nelisp-baker.rs= — 拡張対象 baker
+
+* §8 改判断 record
+
+(2026-05-08, Claude session continuation; Doc 73 Stage 8.1 + 8.3.a/b
+SHIPPED 後、Doc 74 articulation と並走)
+
+設計時点での判断:
+
+1. *Doc 75 を frozen heap に確定 (= Doc 73 §9 #1 で予告した shift の
+   完了)*: Doc 73 articulation 時に "Doc 74 候補は frozen heap" と
+   articulated していたが、user 2026-05-08 後半指示で Doc 74 を
+   anvil-runtime migration に reassign、frozen heap は Doc 75 に降りた.
+   本 Doc は 73 §2.5 の articulation 受け皿として正式設計化.
+2. *closure 戦略は C (= top-level defun frozen + 例外 fallback) を採用*:
+   戦略 A (= 完全 frozen) は識別 / FrameCell handling で bug リスク高.
+   戦略 B (= defun も再 eval) は speedup が薄まる (~80ms → ~30ms 程度).
+   戦略 C は STDLIB の実態 (= 大半の defun は top-level、CAPTURED-ENV
+   が空) に最 fit. ただし §3.3 で実測未済を articulate、Stage 7.7.e.1
+   で確定.
+3. *NELIMG v3 schema を v2 と非互換にする (= 別 KIND byte で分岐)*:
+   v2 は form-list mode、v3 は frozen-heap mode で payload 形式が
+   根本的に異なる (= 子参照 inline vs NODE_INDEX). 同一 magic / 別 KIND
+   で論理的に分離、decoder も別 entrypoint (= =decode_image= 維持 +
+   =decode_frozen_heap= 新規).
+4. *frozen heap は Phase 9 の単一 deliverable*: 当初 Doc 73 §2.5 では
+   "Phase 9 候補" として軽く articulated だったが、規模 (= ~500 LOC +
+   format 拡張 + cross-equiv 検証) を考えると Phase 9 の単独 scope に
+   据えるのが適切. 関連する binary 圧縮 / bridge frozen 化等は §4 Out
+   of scope に明示.
+5. *Stage 7.7.e ナンバリングは Doc 72 の延長線で維持*: Doc 73 §2.5 で
+   "Stage 7.7.e" と articulated、本 Doc も同番号 / 同 sub-stage 体系
+   (= e.1 / e.2 / e.3) を継承. Phase 8 (= Doc 73 stage 8.1〜8.4) と
+   Phase 9 (= Doc 75 stage 7.7.e.1〜.3) が並走しても番号衝突なし.
+6. *binary size 増分の解消は STDLIB image deprecate で*: §3.5 で
+   articulate 通り、frozen heap 採用後 STDLIB image を =cfg(feature =
+   "image-baker")= 下に降ろせば net 増分は +60KB 程度に抑えられる.
+   この降ろし作業も Stage 7.7.e.3 内で実施する (= sub-task として).
+7. *dev iteration UX 確保のため =NELISP_NO_FROZEN_HEAP= escape hatch*:
+   §3.6 / §6 共通原則で articulate. dev で =.el= 編集毎の bake が
+   重い場合 retreat path として Stage 7.7.b (= 既存) に戻れる.
+8. *本 Doc は articulation 段階、着手判断は別途*: Phase 8 (= Doc 73 +
+   Doc 74) 完了 + frozen heap への user demand confirm を待ってから
+   Stage 7.7.e.1 着手. Doc 73 §2.5 で articulated 通り "現状の AOT
+   bake で十分実用" feedback の可能性は依然あり、その場合は本 Doc
+   が long-term parking のまま停まる選択肢も可.
