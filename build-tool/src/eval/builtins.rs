@@ -68,7 +68,7 @@ pub fn install_builtins(env: &mut Env) {
         // cdaar / cdadr / cddar / cdddr / cadddr — 13 names) migrated
         // to elisp (lisp/nelisp-stdlib-list.el) as plain `car'/`cdr'
         // composition.  Only the 2 leaf accessors stay in Rust.
-        "car", "cdr", "cons", "length",
+        "car", "cdr", "cons", "length", "string-bytes",
         "setcar", "setcdr",
         // generic sequence / array accessors
         // Rust-min (2026-05-06 batch 6q): `arrayp' / `sequencep'
@@ -237,17 +237,12 @@ pub fn install_builtins(env: &mut Env) {
         // user-level redefinition.
         "nelisp--syscall-read-file",
         "nelisp--read-all-from-string",
-        // Doc 53 Phase 1 (2026-05-07) — POSIX OS surface (Minimal-5)
-        // Rust primitives.  Five entries that let elisp build the
-        // OS-agnostic `nelisp-os-*' family in lisp/nelisp-stdlib-os.el
-        // without further Rust glue.  Linux-only Path A; the elisp
-        // wrapper detects via `nelisp--syscall-supported-p' and falls
-        // back to `nl-ffi-call' libc bindings on Darwin / Windows.
+        // Doc 53 Phase 1 (2026-05-07) — POSIX OS surface generic
+        // primitives.  `nelisp--syscall-openat' / `-read' / `-write'
+        // were retired in Doc 76 Stage A.1 (2026-05-08); their elisp
+        // wrappers now ride `nl-ffi-call libc' directly.
         "nelisp--syscall",
         "nelisp--syscall-supported-p",
-        "nelisp--syscall-openat",
-        "nelisp--syscall-read",
-        "nelisp--syscall-write",
         // Doc 54 Phase 3 (2026-05-07) — out-buffer primitives that
         // can't ride generic `nelisp--syscall' (struct stat / int[2]).
         "nelisp--syscall-fstat",
@@ -509,6 +504,10 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // string-equal migrated to elisp (Rust-min 2026-05-06 batch 6n,
         // see lisp/nelisp-stdlib-plist-str.el; dead body removed in 6t).
         "string-match-p" => bi_string_match_p(args),
+        // Doc 76 Stage A.1 (2026-05-08) — UTF-8 byte count, used by
+        // `nelisp-os-write' to size `nl-ffi-malloc' / `-write-bytes'
+        // for binary-safe libc.write payloads.
+        "string-bytes" => bi_string_bytes(args),
         // "regexp-quote" — migrated to elisp (Rust-min 2026-05-06)
         // expand-file-name / file-truename migrated to elisp (Rust-min
         // batch 7d, 2026-05-07; see lisp/nelisp-stdlib-misc.el).
@@ -531,12 +530,11 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nelisp--syscall-readdir" => bi_syscall_readdir(args, env),
         "nelisp--syscall-read-file" => bi_syscall_read_file(args, env),
         "nelisp--read-all-from-string" => bi_read_all_from_string(args, env),
-        // Doc 53 Phase 1 — POSIX OS surface dispatch arms.
+        // Doc 53 Phase 1 — POSIX OS surface dispatch arms.  Doc 76
+        // Stage A.1 (2026-05-08) retired the openat / read / write
+        // specialized arms; elisp now routes via `nl-ffi-call libc'.
         "nelisp--syscall" => bi_syscall(args),
         "nelisp--syscall-supported-p" => bi_syscall_supported_p(args),
-        "nelisp--syscall-openat" => bi_syscall_openat(args),
-        "nelisp--syscall-read" => bi_syscall_read(args),
-        "nelisp--syscall-write" => bi_syscall_write(args),
         // Doc 54 Phase 3 dispatch arms.
         "nelisp--syscall-fstat" => bi_syscall_fstat(args),
         "nelisp--syscall-pipe" => bi_syscall_pipe(args),
@@ -1083,6 +1081,24 @@ fn sexp_equal_safe(a: &Sexp, b: &Sexp, depth: u32) -> bool {
 // `bi_length' deleted — Phase 5 Stage C-Phase1b (Doc 62, 2026-05-08).
 // See `jit/access.rs::lowered_length' (= JIT fast path + inline
 // MutStr / BoolVector / Cons-walk / WrongType handling).
+
+/// `(string-bytes STRING)' — return the number of bytes in STRING's
+/// UTF-8 representation.  Doc 76 Stage A.1 (2026-05-08): added as
+/// the prerequisite for binary-safe `nelisp-os-write' on top of
+/// `nl-ffi-call libc.write' + `nl-ffi-malloc' / `nl-ffi-write-bytes'
+/// (= without it elisp can only get char count via `length', which
+/// truncates multi-byte payloads at the libc.write boundary).
+fn bi_string_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("string-bytes", args, 1, Some(1))?;
+    match &args[0] {
+        Sexp::Str(s) => Ok(Sexp::Int(s.as_bytes().len() as i64)),
+        Sexp::MutStr(rc) => Ok(Sexp::Int(rc.borrow().as_bytes().len() as i64)),
+        other => Err(EvalError::WrongType {
+            expected: "string".into(),
+            got: other.clone(),
+        }),
+    }
+}
 
 // `vec_to_list' helper removed — its only caller was `bi_reverse'
 // (Rust-min 2026-05-06 batch 6d).
@@ -1956,73 +1972,10 @@ fn bi_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
 #[cfg(not(target_os = "linux"))]
 syscall_unsupported!(bi_syscall, "nelisp--syscall");
 
-#[cfg(target_os = "linux")]
-fn bi_syscall_openat(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    use std::ffi::CString;
-    require_arity("nelisp--syscall-openat", args, 4, Some(4))?;
-    let dirfd = syscall_arg_int("nelisp--syscall-openat", 1, &args[0])? as libc::c_int;
-    let path  = args[1].as_string_owned().ok_or_else(|| EvalError::WrongType {
-        expected: "string (path)".into(),
-        got: args[1].clone(),
-    })?;
-    let flags = syscall_arg_int("nelisp--syscall-openat", 3, &args[2])? as libc::c_int;
-    let mode  = syscall_arg_int("nelisp--syscall-openat", 4, &args[3])? as libc::mode_t;
-    let cpath = CString::new(path).map_err(|e| EvalError::Internal(
-        format!("nelisp--syscall-openat: path contains NUL: {}", e)))?;
-    let r = unsafe { libc::syscall(libc::SYS_openat, dirfd, cpath.as_ptr(), flags, mode) };
-    Ok(Sexp::Int(unsafe { syscall_errno_normalize(r) }))
-}
-
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_openat, "nelisp--syscall-openat");
-
-#[cfg(target_os = "linux")]
-fn bi_syscall_read(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-read", args, 2, Some(2))?;
-    let fd     = syscall_arg_int("nelisp--syscall-read", 1, &args[0])? as libc::c_int;
-    let nbytes = syscall_arg_int("nelisp--syscall-read", 2, &args[1])?;
-    if nbytes < 0 {
-        return Err(EvalError::Internal(
-            "nelisp--syscall-read: nbytes must be non-negative".into()));
-    }
-    let mut buf: Vec<u8> = vec![0u8; nbytes as usize];
-    let r = unsafe {
-        libc::syscall(libc::SYS_read,
-                      fd as libc::c_long,
-                      buf.as_mut_ptr() as libc::c_long,
-                      nbytes as libc::c_long)
-    };
-    let n = unsafe { syscall_errno_normalize(r) };
-    if n < 0 {
-        return Ok(Sexp::Int(n));
-    }
-    buf.truncate(n as usize);
-    Ok(Sexp::Str(String::from_utf8_lossy(&buf).into_owned()))
-}
-
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_read, "nelisp--syscall-read");
-
-#[cfg(target_os = "linux")]
-fn bi_syscall_write(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-write", args, 2, Some(2))?;
-    let fd = syscall_arg_int("nelisp--syscall-write", 1, &args[0])? as libc::c_int;
-    let s  = args[1].as_string_owned().ok_or_else(|| EvalError::WrongType {
-        expected: "string (write buffer)".into(),
-        got: args[1].clone(),
-    })?;
-    let bytes = s.as_bytes();
-    let r = unsafe {
-        libc::syscall(libc::SYS_write,
-                      fd as libc::c_long,
-                      bytes.as_ptr() as libc::c_long,
-                      bytes.len() as libc::c_long)
-    };
-    Ok(Sexp::Int(unsafe { syscall_errno_normalize(r) }))
-}
-
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_write, "nelisp--syscall-write");
+// Doc 76 Stage A.1 (2026-05-08): `nelisp--syscall-openat' / `-read' /
+// `-write' specialized primitives removed.  elisp `nelisp-os-open' /
+// `-read' / `-write' now route through `nl-ffi-call libc' unified
+// (= single-path, no Path A/B branch).  See lisp/nelisp-stdlib-os.el.
 
 // ---------------------------------------------------------------------------
 // Doc 54 Phase 3 — Core-12 additions that need out-buffer handling.

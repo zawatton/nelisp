@@ -71,42 +71,69 @@ Linux/BSD).  When nil, fall back to `nl-ffi-call' libc bindings
 ;; Minimal-5 — open / read / write / close / exit
 ;; ---------------------------------------------------------------------------
 
+;; ---------------------------------------------------------------------------
+;; Doc 76 Stage A.1 — open / read / write are now nl-ffi-call libc unified
+;; (= no Path A/B branch).  libc functions return -1 on error and set
+;; errno; we read errno through `nl-ffi-errno' and signal `nelisp-os-error'.
+;; ---------------------------------------------------------------------------
+
+(defun nelisp-os--ffi-errno-signal ()
+  "Signal `nelisp-os-error' with the current errno."
+  (signal 'nelisp-os-error (list (nl-ffi-errno))))
+
 (defun nelisp-os-open (path flags mode)
   "POSIX open(2) — return integer fd, or signal `nelisp-os-error'.
-PATH is a string, FLAGS / MODE are integers.  Routes through
-`nelisp--syscall-openat' on Path A or `libc.open' via FFI on Path B."
-  (if nelisp-os--use-direct-syscall
-      (nelisp-os--check-errno
-       (nelisp--syscall-openat nelisp-os-AT-FDCWD path flags mode))
-    ;; Path B fallback — libc.open(3) sets -1 on error and we infer
-    ;; -errno from the return.  Phase 1.1 will route errno through a
-    ;; dedicated FFI helper; for Phase 1 the wrapper signals a generic
-    ;; `nelisp-os-error' on any negative result.
-    (nelisp-os--check-errno
-     (nl-ffi-call "libc" "open" [:int :string :int :int]
-                  path flags mode))))
+PATH is a string, FLAGS / MODE are integers."
+  ;; libc::open: int(const char *path, int flags, mode_t mode) → int.
+  ;; Linux glibc: int=:sint32, mode_t=:uint32.
+  (let ((r (nl-ffi-call "libc" "open" [:sint32 :string :sint32 :uint32]
+                        path flags mode)))
+    (if (= r -1)
+        (nelisp-os--ffi-errno-signal)
+      r)))
 
 (defun nelisp-os-read (fd nbytes)
   "POSIX read(2) — return string of up to NBYTES bytes or signal
-`nelisp-os-error'.  Path B path is deferred to Phase 1.1 (needs
-mutable bytestring buffer primitive)."
-  (if nelisp-os--use-direct-syscall
-      (let ((r (nelisp--syscall-read fd nbytes)))
-        ;; Sum return: integer = -errno on failure, string on success.
-        (if (integerp r)
-            (nelisp-os--check-errno r)
-          r))
-    (signal 'nelisp-os-unsupported
-            '(read "Path B fallback for read deferred to Phase 1.1"))))
+`nelisp-os-error'."
+  ;; libc::read: ssize_t(int fd, void *buf, size_t count) → ssize_t.
+  ;; Linux x86_64 / aarch64: ssize_t=:sint64, size_t=:uint64.
+  (when (< nbytes 0)
+    (signal 'nelisp-os-error (list 22)))     ; EINVAL
+  (if (= nbytes 0)
+      ""
+    (let ((buf (nl-ffi-malloc nbytes)))
+      (unwind-protect
+          (let ((r (nl-ffi-call "libc" "read"
+                                [:sint64 :sint32 :pointer :uint64]
+                                fd buf nbytes)))
+            (cond
+             ((= r -1) (nelisp-os--ffi-errno-signal))
+             ((= r 0)  "")
+             (t        (nl-ffi-read-bytes buf r))))
+        (nl-ffi-free buf)))))
 
 (defun nelisp-os-write (fd str)
   "POSIX write(2) — write the bytes of STR to FD, return byte count
-or signal `nelisp-os-error'."
-  (if nelisp-os--use-direct-syscall
-      (nelisp-os--check-errno (nelisp--syscall-write fd str))
-    (nelisp-os--check-errno
-     (nl-ffi-call "libc" "write" [:int :int :string :int]
-                  fd str (length str)))))
+or signal `nelisp-os-error'.
+
+Binary-safe: STR may contain interior NUL bytes and multi-byte UTF-8
+sequences; we route through `nl-ffi-malloc' / `-write-bytes' so the
+exact bytes (= `string-bytes' worth) reach libc.write — matching old
+Path A's `as_bytes()' semantics rather than the broken Path B that
+went through `:string' (= CString::new, NUL-rejecting)."
+  (let* ((nbytes (string-bytes str))
+         (buf    (nl-ffi-malloc nbytes)))
+    (unwind-protect
+        (progn
+          (nl-ffi-write-bytes buf str)
+          ;; libc::write: ssize_t(int fd, const void *buf, size_t count).
+          (let ((r (nl-ffi-call "libc" "write"
+                                [:sint64 :sint32 :pointer :uint64]
+                                fd buf nbytes)))
+            (if (= r -1)
+                (nelisp-os--ffi-errno-signal)
+              r)))
+      (nl-ffi-free buf))))
 
 (defun nelisp-os-close (fd)
   "POSIX close(2) — close FD, return nil or signal `nelisp-os-error'."

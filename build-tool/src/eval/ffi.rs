@@ -57,20 +57,38 @@ fn library_cache() -> &'static Mutex<HashMap<String, &'static Library>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Resolve `"libc"` to the platform-specific shared object name so
+/// elisp wrappers can write `(nl-ffi-call "libc" ...)` portably.
+/// Doc 76 Stage A.1 (2026-05-08): added so file-I/O wrappers don't
+/// have to encode platform-specific filenames; covers the common
+/// libc handle.  Other names pass through unchanged.
+fn resolve_libname(path: &str) -> &str {
+    if path == "libc" {
+        #[cfg(target_os = "linux")]
+        { return "libc.so.6"; }
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        { return "libSystem.dylib"; }
+        #[cfg(target_os = "windows")]
+        { return "msvcrt.dll"; }
+    }
+    path
+}
+
 fn dlopen(path: &str) -> Result<&'static Library, EvalError> {
+    let resolved = resolve_libname(path);
     {
         let cache = library_cache().lock().unwrap();
-        if let Some(lib) = cache.get(path) {
+        if let Some(lib) = cache.get(resolved) {
             return Ok(*lib);
         }
     }
-    let lib = unsafe { Library::new(path) }
-        .map_err(|e| ffi_err(format!("nl-ffi-call: dlopen failed for {:?}: {}", path, e)))?;
+    let lib = unsafe { Library::new(resolved) }
+        .map_err(|e| ffi_err(format!("nl-ffi-call: dlopen failed for {:?}: {}", resolved, e)))?;
     let leaked: &'static Library = Box::leak(Box::new(lib));
     library_cache()
         .lock()
         .unwrap()
-        .insert(path.to_string(), leaked);
+        .insert(resolved.to_string(), leaked);
     Ok(leaked)
 }
 

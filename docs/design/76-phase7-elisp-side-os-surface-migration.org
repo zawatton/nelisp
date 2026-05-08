@@ -5,7 +5,7 @@
 
 * Status
 :PROPERTIES:
-:STATE: DRAFT
+:STATE: IN PROGRESS — Stage 0 SHIPPED (5cb1521) + Stage A.1 SHIPPED (= TBD, openat/read/write removed, 2026-05-08)
 :DEPENDS_ON: Doc 51 Phase 5 (nl-ffi-call) / Doc 53〜60 (specialized syscall surface) / Doc 62 Stage 5.8 (non-Linux stub macro 化、commit a81e089)
 :PARENT: Doc 62 §0 audit-revised (= Phase 7 elisp-side OS surface migration が specialized 削除の正規 track)
 :SUPERSEDES: Doc 53〜60 の Path A "specialized" 規約 (= Linux 専用 specialized primitive)
@@ -249,7 +249,8 @@ unit:
 | stage | 名前                    | 対応 Doc                        | 削除 specialized 数 | LOC 削減 |
 |-------+-------------------------+---------------------------------+---------------------+----------|
 | 0     | nl-ffi 基盤拡張           | (新規)                          | 0                   | +60 (Rust 拡張)         |
-| A     | file I/O                 | Doc 53 / 54                     | 5 (= 1〜5)          | -120 Rust |
+| A.1   | open / read / write     | Doc 53 (= specialized #1〜3)    | 3                   | -67 builtins / +20 ffi resolver / +20 string-bytes (SHIPPED 2026-05-08) |
+| A.2-3 | fstat / pipe (残)         | Doc 54 (= specialized #4〜5)    | 2                   | -30 Rust (TBD)            |
 | B     | process                  | Doc 55                          | 2 (= 6〜7)          | -60 Rust  |
 | C     | socket-int (AF_INET + poll) | Doc 55                       | 5 (= 8〜12)         | -120 Rust |
 | D     | socket-uds + AF_INET6 + getsockname/peername | Doc 56 / 58 | 14 (= 13〜26)        | -250 Rust |
