@@ -48,16 +48,49 @@
 
 (require 'nelisp-emacs-compat)
 
+;;;; --- batched trivial defaliases (Doc 51 Phase 5 boot perf) -----------
+;;
+;; Pattern source: commit d3c17fa (emacs-stub-bulk Phase 11.D batch).  The
+;; nelisp standalone interpreter charges ~47ms per top-level form for the
+;; original `(unless (fboundp X) (defalias X #'nelisp-ec-Y))' idiom — 23
+;; clauses below + 14 in `emacs-fileio-builtins.el' add ~1.8s on every
+;; bootstrap.  Collapsing through one dolist body keeps the gate semantics
+;; identical (= each entry still does exactly one fboundp test) while
+;; paying the per-form interpreter overhead only once.  Under host Emacs
+;; the C subr wins fboundp so this is a no-op either way.
+
+(dolist (--cell--
+         '((generate-new-buffer        . nelisp-ec-generate-new-buffer)
+           (kill-buffer                . nelisp-ec-kill-buffer)
+           (bufferp                    . nelisp-ec-buffer-p)
+           (current-buffer             . nelisp-ec-current-buffer)
+           (set-buffer                 . nelisp-ec-set-buffer)
+           (point                      . nelisp-ec-point)
+           (point-min                  . nelisp-ec-point-min)
+           (point-max                  . nelisp-ec-point-max)
+           (goto-char                  . nelisp-ec-goto-char)
+           (buffer-size                . nelisp-ec-buffer-size)
+           (insert                     . nelisp-ec-insert)
+           (erase-buffer               . nelisp-ec-erase-buffer)
+           (delete-region              . nelisp-ec-delete-region)
+           (buffer-string              . nelisp-ec-buffer-string)
+           (buffer-substring           . nelisp-ec-buffer-substring)
+           ;; Phase 9 MVP: text properties are not yet stored on
+           ;; `nelisp-ec-buffer'; the substring already carries no
+           ;; properties so `-no-properties' is a plain alias.
+           (buffer-substring-no-properties . nelisp-ec-buffer-substring)
+           (narrow-to-region           . nelisp-ec-narrow-to-region)
+           (widen                      . nelisp-ec-widen)
+           (make-marker                . nelisp-ec-make-marker)
+           (set-marker                 . nelisp-ec-set-marker)
+           (marker-position            . nelisp-ec-marker-position)
+           (marker-buffer              . nelisp-ec-marker-buffer)
+           (point-marker               . nelisp-ec-point-marker)))
+  (let ((--name-- (car --cell--)) (--target-- (cdr --cell--)))
+    (unless (fboundp --name--)
+      (defalias --name-- --target--))))
+
 ;;;; --- creation / liveness -----------------------------------------------
-
-(unless (fboundp 'generate-new-buffer)
-  (defalias 'generate-new-buffer #'nelisp-ec-generate-new-buffer))
-
-(unless (fboundp 'kill-buffer)
-  (defalias 'kill-buffer #'nelisp-ec-kill-buffer))
-
-(unless (fboundp 'bufferp)
-  (defalias 'bufferp #'nelisp-ec-buffer-p))
 
 (unless (fboundp 'buffer-live-p)
   (defun buffer-live-p (object)
@@ -140,11 +173,7 @@ buffers are returned regardless."
 
 ;;;; --- current buffer ---------------------------------------------------
 
-(unless (fboundp 'current-buffer)
-  (defalias 'current-buffer #'nelisp-ec-current-buffer))
-
-(unless (fboundp 'set-buffer)
-  (defalias 'set-buffer #'nelisp-ec-set-buffer))
+;; current-buffer / set-buffer batched into the dolist near the top.
 
 (unless (fboundp 'with-current-buffer)
   (defmacro with-current-buffer (buf &rest body)
@@ -154,17 +183,8 @@ buffers are returned regardless."
 
 ;;;; --- positions ---------------------------------------------------------
 
-(unless (fboundp 'point)
-  (defalias 'point #'nelisp-ec-point))
-
-(unless (fboundp 'point-min)
-  (defalias 'point-min #'nelisp-ec-point-min))
-
-(unless (fboundp 'point-max)
-  (defalias 'point-max #'nelisp-ec-point-max))
-
-(unless (fboundp 'goto-char)
-  (defalias 'goto-char #'nelisp-ec-goto-char))
+;; point / point-min / point-max / goto-char batched into the dolist near
+;; the top.
 
 (unless (fboundp 'forward-char)
   (defun forward-char (&optional n)
@@ -204,19 +224,12 @@ clamp + signal semantics."
     (interactive "p")
     (forward-char (- (or n 1)))))
 
-(unless (fboundp 'buffer-size)
-  (defalias 'buffer-size #'nelisp-ec-buffer-size))
+;; buffer-size batched into the dolist near the top.
 
 ;;;; --- text mutation + accessors ----------------------------------------
 
-(unless (fboundp 'insert)
-  (defalias 'insert #'nelisp-ec-insert))
-
-(unless (fboundp 'erase-buffer)
-  (defalias 'erase-buffer #'nelisp-ec-erase-buffer))
-
-(unless (fboundp 'delete-region)
-  (defalias 'delete-region #'nelisp-ec-delete-region))
+;; insert / erase-buffer / delete-region batched into the dolist near the
+;; top.
 
 (unless (fboundp 'delete-char)
   (defun delete-char (n &optional killflag)
@@ -233,16 +246,8 @@ required N parameter (= the same lambda-arity-mismatch that bit
     (ignore killflag)
     (nelisp-ec-delete-char n)))
 
-(unless (fboundp 'buffer-string)
-  (defalias 'buffer-string #'nelisp-ec-buffer-string))
-
-(unless (fboundp 'buffer-substring)
-  (defalias 'buffer-substring #'nelisp-ec-buffer-substring))
-
-(unless (fboundp 'buffer-substring-no-properties)
-  ;; Phase 9 MVP: text properties are not yet stored on
-  ;; `nelisp-ec-buffer'; the substring already carries no properties.
-  (defalias 'buffer-substring-no-properties #'nelisp-ec-buffer-substring))
+;; buffer-string / buffer-substring / buffer-substring-no-properties
+;; batched into the dolist near the top.
 
 ;;;; --- save-* family ----------------------------------------------------
 
@@ -266,28 +271,12 @@ required N parameter (= the same lambda-arity-mismatch that bit
 
 ;;;; --- narrow / widen ---------------------------------------------------
 
-(unless (fboundp 'narrow-to-region)
-  (defalias 'narrow-to-region #'nelisp-ec-narrow-to-region))
-
-(unless (fboundp 'widen)
-  (defalias 'widen #'nelisp-ec-widen))
+;; narrow-to-region / widen batched into the dolist near the top.
 
 ;;;; --- markers ----------------------------------------------------------
 
-(unless (fboundp 'make-marker)
-  (defalias 'make-marker #'nelisp-ec-make-marker))
-
-(unless (fboundp 'set-marker)
-  (defalias 'set-marker #'nelisp-ec-set-marker))
-
-(unless (fboundp 'marker-position)
-  (defalias 'marker-position #'nelisp-ec-marker-position))
-
-(unless (fboundp 'marker-buffer)
-  (defalias 'marker-buffer #'nelisp-ec-marker-buffer))
-
-(unless (fboundp 'point-marker)
-  (defalias 'point-marker #'nelisp-ec-point-marker))
+;; make-marker / set-marker / marker-position / marker-buffer /
+;; point-marker batched into the dolist near the top.
 
 ;;;; --- with-temp-buffer / with-temp-file (Phase 9 rewrite) -------------
 

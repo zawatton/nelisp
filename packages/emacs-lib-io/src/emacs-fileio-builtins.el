@@ -43,55 +43,62 @@
 (require 'nelisp-emacs-compat-fileio)
 (require 'emacs-buffer-builtins)
 
+;;;; --- batched trivial defaliases (Doc 51 Phase 5 boot perf) -----------
+;;
+;; Pattern source: commit d3c17fa (emacs-stub-bulk Phase 11.D batch).  The
+;; nelisp standalone interpreter charges ~47ms per top-level form for the
+;; original `(unless (fboundp X) (defalias X #'nelisp-ec-Y))' idiom — 14
+;; clauses below + 23 in `emacs-buffer-builtins.el' add ~1.8s on every
+;; bootstrap.  Collapsing through one dolist body keeps the gate semantics
+;; identical (= each entry still does exactly one fboundp test) while
+;; paying the per-form interpreter overhead only once.  Under host Emacs
+;; the C subr wins fboundp so this is a no-op either way.
+;;
+;; All 14 substrate-direct file-I/O bridges in this file map uniformly to
+;; `nelisp-ec-<same-name>', so we use a bare symbol list (no pairs) and
+;; synthesize the target name with `(intern (concat "nelisp-ec-" ...))'.
+
+(dolist (--name--
+         '(;; --- file-name parsing
+           expand-file-name
+           file-name-absolute-p
+           file-name-directory
+           file-name-nondirectory
+           file-name-as-directory
+           ;; --- predicates / attributes
+           file-exists-p
+           file-readable-p
+           file-directory-p
+           file-attributes
+           directory-files
+           executable-find
+           ;; --- mutation
+           delete-file
+           rename-file
+           ;; --- read / write
+           insert-file-contents))
+  (unless (fboundp --name--)
+    (defalias --name--
+      (intern (concat "nelisp-ec-" (symbol-name --name--))))))
+
 ;;;; --- file-name parsing ----------------------------------------------
 
-(unless (fboundp 'expand-file-name)
-  (defalias 'expand-file-name #'nelisp-ec-expand-file-name))
-
-(unless (fboundp 'file-name-absolute-p)
-  (defalias 'file-name-absolute-p #'nelisp-ec-file-name-absolute-p))
-
-(unless (fboundp 'file-name-directory)
-  (defalias 'file-name-directory #'nelisp-ec-file-name-directory))
-
-(unless (fboundp 'file-name-nondirectory)
-  (defalias 'file-name-nondirectory #'nelisp-ec-file-name-nondirectory))
-
-(unless (fboundp 'file-name-as-directory)
-  (defalias 'file-name-as-directory #'nelisp-ec-file-name-as-directory))
+;; expand-file-name / file-name-absolute-p / file-name-directory /
+;; file-name-nondirectory / file-name-as-directory batched into the dolist
+;; near the top.
 
 ;;;; --- predicates / attributes ----------------------------------------
 
-(unless (fboundp 'file-exists-p)
-  (defalias 'file-exists-p #'nelisp-ec-file-exists-p))
-
-(unless (fboundp 'file-readable-p)
-  (defalias 'file-readable-p #'nelisp-ec-file-readable-p))
-
-(unless (fboundp 'file-directory-p)
-  (defalias 'file-directory-p #'nelisp-ec-file-directory-p))
-
-(unless (fboundp 'file-attributes)
-  (defalias 'file-attributes #'nelisp-ec-file-attributes))
-
-(unless (fboundp 'directory-files)
-  (defalias 'directory-files #'nelisp-ec-directory-files))
-
-(unless (fboundp 'executable-find)
-  (defalias 'executable-find #'nelisp-ec-executable-find))
+;; file-exists-p / file-readable-p / file-directory-p / file-attributes /
+;; directory-files / executable-find batched into the dolist near the top.
 
 ;;;; --- mutation ------------------------------------------------------
 
-(unless (fboundp 'delete-file)
-  (defalias 'delete-file #'nelisp-ec-delete-file))
-
-(unless (fboundp 'rename-file)
-  (defalias 'rename-file #'nelisp-ec-rename-file))
+;; delete-file / rename-file batched into the dolist near the top.
 
 ;;;; --- read / write ---------------------------------------------------
 
-(unless (fboundp 'insert-file-contents)
-  (defalias 'insert-file-contents #'nelisp-ec-insert-file-contents))
+;; insert-file-contents batched into the dolist near the top.
 
 (unless (fboundp 'write-region)
   (defun write-region (start end filename &optional append visit lockname mustbenew)
