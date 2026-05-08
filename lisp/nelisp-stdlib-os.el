@@ -240,34 +240,158 @@ WHENCE = `nelisp-os-SEEK-SET' / `-CUR' / `-END'."
   (nelisp-os--check-errno (nelisp--syscall 'lseek fd offset whence)))
 
 ;; ---------------------------------------------------------------------------
-;; Doc 76 Stage A.3 — Linux x86_64 / aarch64 struct stat field offsets.
-;; (FreeBSD / macOS / Windows have different layouts; cross-OS support is
-;; deferred to a follow-up that auto-generates these consts via build.rs
-;; per Doc 76 §7.1.)
+;; Doc 76 後段 (2026-05-09): struct stat layout — arch-aware.
+;;
+;; Linux glibc / musl on x86_64 / aarch64 (sizeof = 144):
+;;   off  0  i64  st_dev
+;;   off  8  i64  st_ino
+;;   off 16  i64  st_nlink     (=glibc; musl agrees)
+;;   off 24  i32  st_mode
+;;   off 28  i32  st_uid
+;;   off 32  i32  st_gid
+;;   off 36  pad 4
+;;   off 40  i64  st_rdev
+;;   off 48  i64  st_size
+;;   off 56  i64  st_blksize
+;;   off 64  i64  st_blocks
+;;   off 72  i64+i64  st_atim {tv_sec, tv_nsec}
+;;   off 88  i64+i64  st_mtim {tv_sec, tv_nsec}
+;;   off 104 i64+i64  st_ctim {tv_sec, tv_nsec}
+;;
+;; Darwin (= macOS, _DARWIN_FEATURE_64_BIT_INODE = stat64 default since
+;; 10.6, sizeof = 144):
+;;   off  0  i32  st_dev
+;;   off  4  u16  st_mode      (= different width than Linux!)
+;;   off  6  u16  st_nlink     (= different width than Linux!)
+;;   off  8  u64  st_ino
+;;   off 16  u32  st_uid
+;;   off 20  u32  st_gid
+;;   off 24  i32  st_rdev
+;;   off 28  pad 4
+;;   off 32  i64+i64  st_atimespec {tv_sec, tv_nsec}
+;;   off 48  i64+i64  st_mtimespec {tv_sec, tv_nsec}
+;;   off 64  i64+i64  st_ctimespec {tv_sec, tv_nsec}
+;;   off 80  i64+i64  st_birthtimespec
+;;   off 96  i64  st_size
+;;   off 104 i64  st_blocks
+;;   off 112 i32  st_blksize
+;;   ...
 ;; ---------------------------------------------------------------------------
 
 (defconst nelisp-os--stat-buflen 256
   "Allocation size for the libc.fstat output buffer (= safe upper bound
-for any common arch's `struct stat'; Linux x86_64 actual = 144).")
+for any common arch's `struct stat'; Linux/Darwin actual = 144).")
 
-(defconst nelisp-os--stat-offset-dev         0)
-(defconst nelisp-os--stat-offset-ino         8)
-(defconst nelisp-os--stat-offset-nlink      16)
-(defconst nelisp-os--stat-offset-mode       24)
-(defconst nelisp-os--stat-offset-uid        28)
-(defconst nelisp-os--stat-offset-gid        32)
-(defconst nelisp-os--stat-offset-size       48)
-(defconst nelisp-os--stat-offset-atime      72)
-(defconst nelisp-os--stat-offset-atime-nsec 80)
-(defconst nelisp-os--stat-offset-mtime      88)
-(defconst nelisp-os--stat-offset-mtime-nsec 96)
-(defconst nelisp-os--stat-offset-ctime     104)
-(defconst nelisp-os--stat-offset-ctime-nsec 112)
+;; ----- Linux x86_64 / aarch64 struct stat field offsets -----
+(defconst nelisp-os--stat-linux-offset-dev         0)
+(defconst nelisp-os--stat-linux-offset-ino         8)
+(defconst nelisp-os--stat-linux-offset-nlink      16)
+(defconst nelisp-os--stat-linux-offset-mode       24)
+(defconst nelisp-os--stat-linux-offset-uid        28)
+(defconst nelisp-os--stat-linux-offset-gid        32)
+(defconst nelisp-os--stat-linux-offset-size       48)
+(defconst nelisp-os--stat-linux-offset-atime      72)
+(defconst nelisp-os--stat-linux-offset-atime-nsec 80)
+(defconst nelisp-os--stat-linux-offset-mtime      88)
+(defconst nelisp-os--stat-linux-offset-mtime-nsec 96)
+(defconst nelisp-os--stat-linux-offset-ctime     104)
+(defconst nelisp-os--stat-linux-offset-ctime-nsec 112)
+
+;; ----- Darwin (macOS, _DARWIN_FEATURE_64_BIT_INODE) struct stat -----
+;;
+;; Darwin's mode_t / nlink_t are 16-bit (= u16) — different width from
+;; Linux's i32 / i64 — so the reader helpers below dispatch on
+;; `nelisp-os--platform' both for offset *and* for `nl-ffi-read-*'
+;; primitive width.
+(defconst nelisp-os--stat-darwin-offset-dev         0)   ; i32
+(defconst nelisp-os--stat-darwin-offset-mode        4)   ; u16
+(defconst nelisp-os--stat-darwin-offset-nlink       6)   ; u16
+(defconst nelisp-os--stat-darwin-offset-ino         8)   ; u64
+(defconst nelisp-os--stat-darwin-offset-uid        16)   ; u32
+(defconst nelisp-os--stat-darwin-offset-gid        20)   ; u32
+(defconst nelisp-os--stat-darwin-offset-atime      32)   ; i64
+(defconst nelisp-os--stat-darwin-offset-atime-nsec 40)
+(defconst nelisp-os--stat-darwin-offset-mtime      48)
+(defconst nelisp-os--stat-darwin-offset-mtime-nsec 56)
+(defconst nelisp-os--stat-darwin-offset-ctime      64)
+(defconst nelisp-os--stat-darwin-offset-ctime-nsec 72)
+(defconst nelisp-os--stat-darwin-offset-size       96)   ; i64
+
+;; ----- Platform-aware readers (both offset and primitive width) -----
+
+(defun nelisp-os--stat-read-dev (buf)
+  (cond ((eq nelisp-os--platform 'darwin)
+         (nl-ffi-read-i32 buf nelisp-os--stat-darwin-offset-dev))
+        (t (nl-ffi-read-i64 buf nelisp-os--stat-linux-offset-dev))))
+
+(defun nelisp-os--stat-read-ino (buf)
+  ;; u64 on both, but elisp ints are signed.  Negative wraparound for
+  ;; > 2^63 inodes is theoretical and ignored here.
+  (cond ((eq nelisp-os--platform 'darwin)
+         (nl-ffi-read-i64 buf nelisp-os--stat-darwin-offset-ino))
+        (t (nl-ffi-read-i64 buf nelisp-os--stat-linux-offset-ino))))
+
+(defun nelisp-os--stat-read-nlink (buf)
+  (cond ((eq nelisp-os--platform 'darwin)
+         (nl-ffi-read-u16 buf nelisp-os--stat-darwin-offset-nlink))
+        (t (nl-ffi-read-i64 buf nelisp-os--stat-linux-offset-nlink))))
+
+(defun nelisp-os--stat-read-mode (buf)
+  (cond ((eq nelisp-os--platform 'darwin)
+         (nl-ffi-read-u16 buf nelisp-os--stat-darwin-offset-mode))
+        (t (nl-ffi-read-i32 buf nelisp-os--stat-linux-offset-mode))))
+
+(defun nelisp-os--stat-read-uid (buf)
+  (cond ((eq nelisp-os--platform 'darwin)
+         (nl-ffi-read-u32 buf nelisp-os--stat-darwin-offset-uid))
+        (t (nl-ffi-read-i32 buf nelisp-os--stat-linux-offset-uid))))
+
+(defun nelisp-os--stat-read-gid (buf)
+  (cond ((eq nelisp-os--platform 'darwin)
+         (nl-ffi-read-u32 buf nelisp-os--stat-darwin-offset-gid))
+        (t (nl-ffi-read-i32 buf nelisp-os--stat-linux-offset-gid))))
+
+(defun nelisp-os--stat-read-size (buf)
+  (cond ((eq nelisp-os--platform 'darwin)
+         (nl-ffi-read-i64 buf nelisp-os--stat-darwin-offset-size))
+        (t (nl-ffi-read-i64 buf nelisp-os--stat-linux-offset-size))))
+
+(defun nelisp-os--stat-read-atime (buf)
+  (cond ((eq nelisp-os--platform 'darwin)
+         (nl-ffi-read-i64 buf nelisp-os--stat-darwin-offset-atime))
+        (t (nl-ffi-read-i64 buf nelisp-os--stat-linux-offset-atime))))
+
+(defun nelisp-os--stat-read-atime-nsec (buf)
+  (cond ((eq nelisp-os--platform 'darwin)
+         (nl-ffi-read-i64 buf nelisp-os--stat-darwin-offset-atime-nsec))
+        (t (nl-ffi-read-i64 buf nelisp-os--stat-linux-offset-atime-nsec))))
+
+(defun nelisp-os--stat-read-mtime (buf)
+  (cond ((eq nelisp-os--platform 'darwin)
+         (nl-ffi-read-i64 buf nelisp-os--stat-darwin-offset-mtime))
+        (t (nl-ffi-read-i64 buf nelisp-os--stat-linux-offset-mtime))))
+
+(defun nelisp-os--stat-read-mtime-nsec (buf)
+  (cond ((eq nelisp-os--platform 'darwin)
+         (nl-ffi-read-i64 buf nelisp-os--stat-darwin-offset-mtime-nsec))
+        (t (nl-ffi-read-i64 buf nelisp-os--stat-linux-offset-mtime-nsec))))
+
+(defun nelisp-os--stat-read-ctime (buf)
+  (cond ((eq nelisp-os--platform 'darwin)
+         (nl-ffi-read-i64 buf nelisp-os--stat-darwin-offset-ctime))
+        (t (nl-ffi-read-i64 buf nelisp-os--stat-linux-offset-ctime))))
+
+(defun nelisp-os--stat-read-ctime-nsec (buf)
+  (cond ((eq nelisp-os--platform 'darwin)
+         (nl-ffi-read-i64 buf nelisp-os--stat-darwin-offset-ctime-nsec))
+        (t (nl-ffi-read-i64 buf nelisp-os--stat-linux-offset-ctime-nsec))))
 
 (defun nelisp-os-fstat (fd)
   "POSIX fstat(2) — return positional list of stat fields, or signal
 `nelisp-os-error'.  Order matches `nelisp-os-stat-*' accessors below
-and the old `nelisp--syscall-fstat' Rust primitive (Doc 54 Phase 3)."
+and the old `nelisp--syscall-fstat' Rust primitive (Doc 54 Phase 3).
+Layout-aware: dispatches between Linux and Darwin via
+`nelisp-os--platform'."
   ;; libc::fstat: int(int fd, struct stat *buf) → 0 / -1.
   (let ((buf (nl-ffi-malloc nelisp-os--stat-buflen)))
     (unwind-protect
@@ -276,19 +400,19 @@ and the old `nelisp--syscall-fstat' Rust primitive (Doc 54 Phase 3)."
                               fd buf)))
           (if (= r -1)
               (nelisp-os--ffi-errno-signal)
-            (list (nl-ffi-read-i64 buf nelisp-os--stat-offset-size)
-                  (nl-ffi-read-i32 buf nelisp-os--stat-offset-mode)
-                  (nl-ffi-read-i64 buf nelisp-os--stat-offset-mtime)
-                  (nl-ffi-read-i64 buf nelisp-os--stat-offset-mtime-nsec)
-                  (nl-ffi-read-i64 buf nelisp-os--stat-offset-atime)
-                  (nl-ffi-read-i64 buf nelisp-os--stat-offset-atime-nsec)
-                  (nl-ffi-read-i64 buf nelisp-os--stat-offset-ctime)
-                  (nl-ffi-read-i64 buf nelisp-os--stat-offset-ctime-nsec)
-                  (nl-ffi-read-i64 buf nelisp-os--stat-offset-nlink)
-                  (nl-ffi-read-i32 buf nelisp-os--stat-offset-uid)
-                  (nl-ffi-read-i32 buf nelisp-os--stat-offset-gid)
-                  (nl-ffi-read-i64 buf nelisp-os--stat-offset-ino)
-                  (nl-ffi-read-i64 buf nelisp-os--stat-offset-dev))))
+            (list (nelisp-os--stat-read-size       buf)
+                  (nelisp-os--stat-read-mode       buf)
+                  (nelisp-os--stat-read-mtime      buf)
+                  (nelisp-os--stat-read-mtime-nsec buf)
+                  (nelisp-os--stat-read-atime      buf)
+                  (nelisp-os--stat-read-atime-nsec buf)
+                  (nelisp-os--stat-read-ctime      buf)
+                  (nelisp-os--stat-read-ctime-nsec buf)
+                  (nelisp-os--stat-read-nlink      buf)
+                  (nelisp-os--stat-read-uid        buf)
+                  (nelisp-os--stat-read-gid        buf)
+                  (nelisp-os--stat-read-ino        buf)
+                  (nelisp-os--stat-read-dev        buf))))
       (nl-ffi-free buf))))
 
 ;; struct stat positional accessors (= same field order the Rust
