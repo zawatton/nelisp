@@ -108,12 +108,12 @@ pub struct Env {
     /// elisp-side `nelisp--apply-fn' dispatch.  When `true',
     /// `eval/mod.rs::apply_combiner' delegates the plain-function and
     /// lambda-head paths to elisp instead of invoking the Rust
-    /// `apply_function' helpers directly.  Default is `false' so the
-    /// pre-Stage-7.4 Rust dispatch remains the runtime path.
-    /// Initialised from the `NELISP_USE_ELISP_APPLY' env var (any
-    /// non-empty value flips it to `true') and runtime-mutable via
-    /// the `nelisp--set-use-elisp-apply' builtin so ERT can flip it
-    /// inside a single subprocess.
+    /// `apply_function' helpers directly.  Stage 7.4.e (Doc 70):
+    /// default is `true' once bootstrap completes (= elisp dispatch
+    /// is the runtime path).  Set the `NELISP_USE_RUST_APPLY' env var
+    /// to a non-empty value to keep Rust dispatch as an escape hatch.
+    /// Runtime-mutable via the `nelisp--set-use-elisp-apply' builtin
+    /// so ERT can flip it inside a single subprocess.
     pub use_elisp_apply: bool,
     /// Phase 7 Stage 7.4.c (Doc 68 §2.7) — re-entry guard for the
     /// elisp-apply takeover.  Counts active `delegate_to_elisp_apply'
@@ -243,8 +243,8 @@ impl Env {
             // doesn't exist until bootstrap completes; if the flag
             // were on from the start, every defun load along the way
             // would try to delegate through a `void-function:
-            // nelisp--apply-fn' panic.  Stage 7.4.d post-bootstrap
-            // step decides the runtime default based on the env var.
+            // nelisp--apply-fn' panic.  Stage 7.4.e.2 post-bootstrap
+            // step then flips it ON by default (= Doc 70).
             use_elisp_apply: false,
             delegation_depth: 0,
         };
@@ -264,26 +264,20 @@ impl Env {
                 }
             }
         }
-        // Phase 7 Stage 7.4.d (Doc 68 §3.4) — default flip *deferred*.
-        // The naive flip (= `use_elisp_apply' true by default after
-        // bootstrap) surfaced a frame-capture leak: when an elisp
-        // `defun' is evaluated inside the body of another elisp
-        // function (= e.g. `(load FILE)' which is itself elisp),
-        // `sf_lambda' captures the lexical env *including* the
-        // apply-lambda-inner helper's `--nl-ali-*' formal slots.
-        // Subsequent calls to the loaded function then shadow our
-        // helper-state vars with the captured load-time values,
-        // corrupting the dispatch (= the `load_evaluates_file_contents'
-        // cargo test surfaces this as `wrong-number-of-arguments:
-        // (lambda 0 1)').  Clean fix is to migrate the
-        // `nelisp--apply-lambda-inner' helper itself into Rust as a
-        // builtin so its formals never enter the lexical frame stack
-        // (= proposed Stage 7.4.e).  Until that lands, keep the env-
-        // var-controlled opt-in path (Stage 7.4.c) as the only way
-        // to enable elisp dispatch.
-        env.use_elisp_apply = std::env::var_os("NELISP_USE_ELISP_APPLY")
+        // Phase 7 Stage 7.4.e.2 (Doc 70) — default ON post-bootstrap.
+        // Stage 7.4.d で発見した frame-capture leak は Stage 7.4.e.1
+        // で `nelisp--apply-lambda-inner' を Rust builtin に降ろすこと
+        // で解消済 → helper の state slot は lexical env に出ず、
+        // `sf_lambda' が user code 評価中の env を snapshot しても
+        // dispatcher 内部状態は捕捉されない.
+        //
+        // escape hatch: `NELISP_USE_RUST_APPLY' env var が非空なら
+        // Rust dispatch を維持 (= 旧 Stage 7.3.d behaviour に戻す).
+        // 観測未知の dispatch regression が出た場合の bisect 補助.
+        let force_rust = std::env::var_os("NELISP_USE_RUST_APPLY")
             .map(|v| !v.is_empty())
             .unwrap_or(false);
+        env.use_elisp_apply = !force_rust;
         env
     }
 

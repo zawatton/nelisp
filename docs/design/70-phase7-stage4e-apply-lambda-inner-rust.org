@@ -4,11 +4,18 @@
 
 * Status
 
-- DRAFT — Stage 7.4.e 着手前 (= Stage 7.4.d a0dbf26 直後)
+- SHIPPED 2026-05-08 — Stage 7.4.e.1 (commit b2657c2) + Stage 7.4.e.2
+  (本 commit) で完遂.  =Env::use_elisp_apply= post-bootstrap default true、
+  =NELISP_USE_RUST_APPLY= env var が escape hatch.
 - 直接の上位 doc: =docs/design/68-phase7-stage4-apply-call-closure-env.org= §3.4
   (= DEFERRED 区画).  本 Doc 70 はその切り出し続編
-- 影響: Phase 7 self-host roadmap (Doc 63) Stage 7.4 完遂 + Stage 7.5 着手
+- 影響: Phase 7 self-host roadmap (Doc 63) Stage 7.4 完遂 → Stage 7.5 着手
   解禁
+- 検証 evidence:
+  - =cargo test load_evaluates_file_contents= PASS (= default-on で leak fix)
+  - =cargo test --release --lib -- --test-threads=1= 435/435 PASS
+  - =emacs --batch ... ert-run-tests-batch-and-exit= eval-core 22/22 PASS
+  - bench gate (= §2.5 5 case) は user delegate (= make/bench 長系)
 
 * §0 TL;DR
 

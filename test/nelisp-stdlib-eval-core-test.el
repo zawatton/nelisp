@@ -326,20 +326,22 @@ apply_combiner) still routes to bi_cons under flag-on."
            "(1 . 2)")))
 
 (ert-deftest nelisp-eval-core/flag-runtime-toggle-roundtrip ()
-  "Flag toggle is observable both ways via `nelisp--get-use-elisp-apply'."
+  "Flag toggle is observable both ways via `nelisp--get-use-elisp-apply'.
+Stage 7.4.e.2 (Doc 70) で default が ON に flip された (= elisp dispatch
+が runtime path) ので、初期値は t.  toggle で nil → t を確認する."
   (nelisp-stdlib-eval-core-test--skip-unless-built)
   (let* ((expr "(progn
                   (princ (prin1-to-string (nelisp--get-use-elisp-apply)))
                   (princ \" \")
-                  (nelisp--set-use-elisp-apply t)
+                  (nelisp--set-use-elisp-apply nil)
                   (princ (prin1-to-string (nelisp--get-use-elisp-apply)))
                   (princ \" \")
-                  (nelisp--set-use-elisp-apply nil)
+                  (nelisp--set-use-elisp-apply t)
                   (princ (prin1-to-string (nelisp--get-use-elisp-apply))))")
          (r (nelisp-stdlib-eval-core-test--eval expr)))
     (should (eq (car r) 0))
-    ;; STDOUT: "nil t nil"<auto-print>
-    (should (string-prefix-p "nil t nil" (cdr r)))))
+    ;; STDOUT: "t nil t"<auto-print>
+    (should (string-prefix-p "t nil t" (cdr r)))))
 
 (ert-deftest nelisp-eval-core/flag-recursion-depth-still-bounded ()
   "Even with elisp dispatch on, runaway recursion hits max-lisp-eval-depth.

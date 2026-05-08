@@ -643,7 +643,7 @@ LOC 実績: +43 Rust env (= 2 field + max_recursion bump)、+44 mod
 +50/+150 と比較して Rust は -7、ERT は -55 (= cross-equiv は subprocess
 + printed 比較で簡素).
 
-** §3.4 Stage 7.4.d — default flip [DEFERRED → Stage 7.4.e]
+** §3.4 Stage 7.4.d — default flip [DEFERRED → Stage 7.4.e — SHIPPED via Doc 70]
 
 実装試行 (= 2026-05-08 半日 spike) の結果、naive な default flip
 (= =Env::use_elisp_apply= 起動時 true 化、bootstrap 後に env var で flip)
@@ -697,6 +697,14 @@ strategy で overhead は最小、bench 余裕で PASS 想定).
 LOC 実績: 0 (= 設計判断のみ、コード変更は default flip 試行を全 revert).
 default flip 試行で得た知見 (= leak の root cause + 修正案 4 つ) を
 本 §3.4 に記録.  Stage 7.4.e で referenceable.
+
+*** 続編 (= Stage 7.4.e SHIPPED 後追記、2026-05-08)
+
+Doc 70 で Stage 7.4.e.1 (= apply-lambda-inner Rust 化) + Stage 7.4.e.2
+(= default flip + leak fix verification) を実施.  capture leak は解消
+され、=cargo test load_evaluates_file_contents= は default-on で PASS.
+=Env::use_elisp_apply= bootstrap 後 default true、=NELISP_USE_RUST_APPLY=
+env var を escape hatch として残置.
 
 ** §3.5 sub-stage 順序
 
