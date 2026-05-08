@@ -42,11 +42,27 @@ Linux/BSD).  When nil, fall back to `nl-ffi-call' libc bindings
 ;; Linux-only, `/System/Library' is macOS-only.  Result is bound once
 ;; at load time; downstream defconsts dispatch on this symbol.
 (defun nelisp-os--detect-platform ()
-  "Return one of `linux', `darwin', `windows', `unknown'."
+  "Return one of `linux', `darwin', `windows', `unknown'.
+
+Sniff via filesystem fingerprints since NeLisp does not bind
+`system-type' yet.  `file-readable-p' returns nil for directories in
+the current NeLisp stdlib (see `nelisp-stdlib-misc.el' note), so the
+Darwin / Windows arms test against a regular file (= the standard
+SystemVersion.plist on macOS, cmd.exe on Windows) plus an optional
+`file-exists-p' fallback that does work on directories."
   (cond
+   ;; Linux: /proc/version is a regular file readable by everyone.
    ((file-readable-p "/proc/version") 'linux)
-   ((file-readable-p "/System/Library") 'darwin)
-   ((file-readable-p "C:/Windows") 'windows)
+   ;; Darwin: SystemVersion.plist is a regular file present on every
+   ;; macOS install; fall back to the `/System/Library' directory test
+   ;; in case Apple ever moves the plist (= unlikely but cheap).
+   ((or (file-readable-p "/System/Library/CoreServices/SystemVersion.plist")
+        (file-exists-p   "/System/Library"))
+    'darwin)
+   ;; Windows: cmd.exe is the canonical regular-file probe.
+   ((or (file-readable-p "C:/Windows/System32/cmd.exe")
+        (file-exists-p   "C:/Windows"))
+    'windows)
    (t 'unknown)))
 
 (defconst nelisp-os--platform (nelisp-os--detect-platform)
