@@ -409,6 +409,20 @@ pub fn install_builtins(env: &mut Env) {
         "nl-jit-call-out-2",
         "nl-jit-call-out-1i",
         "nl-jit-call-out-2i",
+        // Doc 77b Stage b.4 (2026-05-09) — helper primitives backing
+        // the elisp JIT-strategy wrappers (lisp/nelisp-jit-strategy.el).
+        // See `jit/strategy.rs'.
+        "nelisp--int-eq-zero",
+        "nelisp--add2-float", "nelisp--sub2-float", "nelisp--mul2-float",
+        "nelisp--num-eq2-float", "nelisp--num-lt2-float",
+        "nelisp--num-gt2-float", "nelisp--num-le2-float",
+        "nelisp--num-ge2-float",
+        "nelisp--logior2-impl", "nelisp--logand2-impl",
+        "nelisp--logxor2-impl",
+        "nelisp--ash-impl",
+        "nelisp--length-impl", "nelisp--aref-impl", "nelisp--aset-impl",
+        "nelisp--elt-impl",
+        "nelisp--syscall-nr-resolve",
     ];
     for n in names {
         let sentinel = Sexp::list_from(&[
@@ -716,6 +730,25 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-jit-call-out-2" => crate::jit::bi_nl_jit_call_out_2(args),
         "nl-jit-call-out-1i" => crate::jit::bi_nl_jit_call_out_1i(args),
         "nl-jit-call-out-2i" => crate::jit::bi_nl_jit_call_out_2i(args),
+        // Doc 77b Stage b.4 (2026-05-09) — JIT strategy helpers.
+        "nelisp--int-eq-zero" => crate::jit::bi_int_eq_zero(args),
+        "nelisp--add2-float" => crate::jit::bi_add2_float(args),
+        "nelisp--sub2-float" => crate::jit::bi_sub2_float(args),
+        "nelisp--mul2-float" => crate::jit::bi_mul2_float(args),
+        "nelisp--num-eq2-float" => crate::jit::bi_num_eq2_float(args),
+        "nelisp--num-lt2-float" => crate::jit::bi_num_lt2_float(args),
+        "nelisp--num-gt2-float" => crate::jit::bi_num_gt2_float(args),
+        "nelisp--num-le2-float" => crate::jit::bi_num_le2_float(args),
+        "nelisp--num-ge2-float" => crate::jit::bi_num_ge2_float(args),
+        "nelisp--logior2-impl" => crate::jit::bi_logior2_impl(args),
+        "nelisp--logand2-impl" => crate::jit::bi_logand2_impl(args),
+        "nelisp--logxor2-impl" => crate::jit::bi_logxor2_impl(args),
+        "nelisp--ash-impl" => crate::jit::bi_ash_impl(args),
+        "nelisp--length-impl" => crate::jit::bi_length_impl(args),
+        "nelisp--aref-impl" => crate::jit::bi_aref_impl(args),
+        "nelisp--aset-impl" => crate::jit::bi_aset_impl(args),
+        "nelisp--elt-impl" => crate::jit::bi_elt_impl(args),
+        "nelisp--syscall-nr-resolve" => crate::jit::bi_syscall_nr_resolve(args),
         _ => {
             // Externally-registered builtin (= `Env::register_extern_builtin')
             // — host crates like nelisp-emacs-gtk install GTK4 / SDL2 /

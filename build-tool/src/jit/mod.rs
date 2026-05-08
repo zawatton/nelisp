@@ -127,6 +127,19 @@ mod cons;
 #[allow(dead_code)]
 mod dsl;
 mod predicate;
+// Doc 77b Stage b.4 (2026-05-09): Rust helper primitives backing
+// the elisp wrappers in `lisp/nelisp-jit-strategy.el'.  Holds the
+// multi-variant fall-through bodies (= length / aref / aset / elt)
+// + arith Float helpers + bitwise Int helpers + bool conversion +
+// syscall-nr resolver.  See `strategy.rs' header for the surface.
+mod strategy;
+pub use strategy::{
+    bi_add2_float, bi_aref_impl, bi_ash_impl, bi_aset_impl, bi_elt_impl,
+    bi_int_eq_zero, bi_length_impl, bi_logand2_impl, bi_logior2_impl,
+    bi_logxor2_impl, bi_mul2_float, bi_num_eq2_float, bi_num_ge2_float,
+    bi_num_gt2_float, bi_num_le2_float, bi_num_lt2_float, bi_sub2_float,
+    bi_syscall_nr_resolve,
+};
 mod syscall;
 
 /// Doc 77 Stage 2-prep (2026-05-09) — unified JITModule.
@@ -214,78 +227,26 @@ pub(super) fn unified_jit() -> &'static UnifiedJit {
     })
 }
 
-/// Doc 77 Stage 1.C (2026-05-09) — env-toggleable JIT entries.
-///
-/// Names listed here have a working `bi_*' fallback in
-/// `eval::builtins::dispatch', so removing them from the JIT registry
-/// is safe (= the eval loop's `try_lower` returns `None' and the
-/// dispatcher takes over).  Used by the `NELISP_NO_JIT=1' escape hatch
-/// for ABI-suspect debugging and side-by-side perf comparison.
-///
-/// Other JIT entries (= `eq' / `car' / `cdr' / `cons' / `setcar' /
-/// `setcdr' / `aref' / `aset' / `length' / `elt' / `nelisp--add2'
-/// etc.) are **JIT-only** since their `bi_*' arms were deleted in
-/// Doc 62 Stage C-Phase1/1b.  They stay registered unconditionally —
-/// without that, `dispatch("car", ...)' would return
-/// `UnboundFunction("car")' and elisp would fail to load.
-const ENV_TOGGLEABLE_ENTRIES: &[&str] = &[
-    "nelisp--syscall",
-    "nelisp--syscall-supported-p",
-];
-
-/// Return whether the `NELISP_NO_JIT=1' escape hatch is active.
-/// Sampled at registry init time (= the first `lower_entries()' call)
-/// so the value is sticky for the process lifetime.
-fn no_jit_env_set() -> bool {
-    std::env::var("NELISP_NO_JIT").as_deref() == Ok("1")
-}
-
-/// Apply the `NELISP_NO_JIT=1' filter to a freshly-built JIT registry.
-/// Removes only the env-toggleable entries (= those with bi_*
-/// fallback); JIT-only entries are kept so dispatch does not fail.
-/// Extracted as a free fn so unit tests can exercise the filter logic
-/// without touching the global `OnceLock' (= which is initialized once
-/// per process and therefore not env-var-controllable from test code).
-fn apply_no_jit_filter(map: &mut HashMap<&'static str, LowerFn>, no_jit: bool) {
-    if !no_jit {
-        return;
-    }
-    for n in ENV_TOGGLEABLE_ENTRIES {
-        map.remove(*n);
-    }
-}
-
-/// Return the global lowering registry.  Initialized lazily on first
-/// access (= the first eval-loop call site that consults it).
-///
-/// In Stage 5.0 every call to `lower_entries().get(name)` returns
-/// `None`, routing the eval loop to the existing dispatcher.  As
-/// subsequent stages register entries via the `register(...)`
-/// entry-points below, hot-path primitives short-circuit through the
-/// JIT path here without any further eval-loop changes.
-///
-/// Doc 77 Stage 1.C (2026-05-09): the env var `NELISP_NO_JIT=1' is
-/// sampled at init time; when set, env-toggleable entries (see
-/// `ENV_TOGGLEABLE_ENTRIES') are dropped from the returned map so
-/// the dispatcher takes the load.  JIT-only entries stay regardless.
+// Doc 77b Stage b.4 (2026-05-09) — registry empty.
+//
+// Pre-b.4 this map held the 24 `lowered_X' Rust strategy fns (= 12
+// arith + 5 cons + 4 access + 1 predicate + 2 syscall).  Stage b.4
+// deleted all 24 fns + their `register(map)' calls; dispatch for
+// those names now flows through the elisp wrappers in
+// `lisp/nelisp-jit-strategy.el' which call the JIT entries via the
+// Stage b.2 / b.2.5 `nl-jit-call-*' bridge primitives.
+//
+// `lower_entries()' / `try_lower()' are kept as no-op stubs so the
+// eval-loop hook (`eval::mod.rs::apply_builtin') can stay
+// structurally unchanged; the map is empty and `try_lower' always
+// returns `None', routing every call site straight to the
+// dispatcher.  The `NELISP_NO_JIT=1' env-toggleable filter is also
+// retired (= the env var has no effect after Stage b.4 — a future
+// commit can revive an env-gated wrapper-disable mechanism at the
+// elisp level if cross-platform debugging needs it).
 pub fn lower_entries() -> &'static HashMap<&'static str, LowerFn> {
     static ENTRIES: OnceLock<HashMap<&'static str, LowerFn>> = OnceLock::new();
-    ENTRIES.get_or_init(|| {
-        let mut map: HashMap<&'static str, LowerFn> = HashMap::new();
-        // Stage 5.1: SyscallIR — `nelisp--syscall*' family.
-        syscall::register(&mut map);
-        // Stage 5.2: ArithIR — 2-arg arithmetic / comparison.
-        arith::register(&mut map);
-        // Stage 5.3: ConsIR — car / cdr / cons / setcar / setcdr.
-        cons::register(&mut map);
-        // Stage 5.4: AccessIR — aref / aset / length / elt.
-        access::register(&mut map);
-        // Stage 5.5: PredicateIR — eq / atom / consp / listp / null / *p.
-        predicate::register(&mut map);
-        // Doc 77 Stage 1.C: NELISP_NO_JIT=1 escape hatch.
-        apply_no_jit_filter(&mut map, no_jit_env_set());
-        map
-    })
+    ENTRIES.get_or_init(HashMap::new)
 }
 
 /// Try to lower a call site through the JIT registry.  Returns
@@ -303,95 +264,18 @@ pub fn try_lower(
 mod tests {
     use super::*;
 
+    /// Doc 77b Stage b.4 (2026-05-09): the 24 pre-b.4 entries (= 12
+    /// arith + 5 cons + 4 access + 1 predicate + 2 syscall) have been
+    /// migrated to elisp wrappers in `lisp/nelisp-jit-strategy.el'.
+    /// The registry is empty by design — `try_lower' always returns
+    /// `None', and the eval loop's dispatcher takes over.
     #[test]
-    fn registry_covers_stage_5_6_full_set() {
-        // Cumulative contract through Stage 5.6 (2026-05-07):
-        // - Stage 5.1 SyscallIR: nelisp--syscall, nelisp--syscall-supported-p
-        // - Stage 5.2 ArithIR: 11 binary arith/cmp/bitwise + ash
-        // - Stage 5.3 ConsIR: car, cdr, cons (+ Stage 5.6 setcar, setcdr)
-        // - Stage 5.4 AccessIR: length, aref (+ Stage 5.6 aset, elt)
-        // - Stage 5.5 PredicateIR: eq
-        let needed = [
-            "nelisp--add2", "nelisp--sub2", "nelisp--mul2",
-            "nelisp--num-eq2", "nelisp--num-lt2", "nelisp--num-gt2",
-            "nelisp--num-le2", "nelisp--num-ge2",
-            "nelisp--logior2", "nelisp--logand2", "nelisp--logxor2",
-            "ash",
-            "nelisp--syscall", "nelisp--syscall-supported-p",
-            "car", "cdr", "cons", "setcar", "setcdr",
-            "length", "aref", "aset", "elt",
-            "eq",
-        ];
-        for name in needed {
-            assert!(
-                lower_entries().contains_key(name),
-                "lower_entries missing `{}'; found: {:?}",
-                name,
-                lower_entries().keys().collect::<Vec<_>>(),
-            );
-        }
-    }
-
-    // --- Doc 77 Stage 1.C (2026-05-09) — NELISP_NO_JIT escape hatch ---
-
-    /// Build the same map `lower_entries()' would build, ignoring the
-    /// `OnceLock' cache and the live env var.  Used to test the
-    /// filter without dirtying global process state.
-    fn build_unfiltered_map_for_test() -> HashMap<&'static str, LowerFn> {
-        let mut map: HashMap<&'static str, LowerFn> = HashMap::new();
-        syscall::register(&mut map);
-        arith::register(&mut map);
-        cons::register(&mut map);
-        access::register(&mut map);
-        predicate::register(&mut map);
-        map
-    }
-
-    #[test]
-    fn no_jit_filter_unset_keeps_all_entries() {
-        let mut map = build_unfiltered_map_for_test();
-        let baseline = map.len();
-        apply_no_jit_filter(&mut map, false);
-        assert_eq!(map.len(), baseline);
-        for n in ENV_TOGGLEABLE_ENTRIES {
-            assert!(
-                map.contains_key(n),
-                "no-op filter must leave env-toggleable `{}' in place",
-                n
-            );
-        }
-    }
-
-    #[test]
-    fn no_jit_filter_set_removes_only_env_toggleable() {
-        let mut map = build_unfiltered_map_for_test();
-        let baseline = map.len();
-        apply_no_jit_filter(&mut map, true);
-        assert_eq!(
-            map.len(),
-            baseline - ENV_TOGGLEABLE_ENTRIES.len(),
-            "filter removed wrong number of entries"
+    fn registry_is_empty_after_stage_b4() {
+        assert!(
+            lower_entries().is_empty(),
+            "lower_entries must be empty after Doc 77b Stage b.4; \
+             found: {:?}",
+            lower_entries().keys().collect::<Vec<_>>(),
         );
-        for n in ENV_TOGGLEABLE_ENTRIES {
-            assert!(
-                !map.contains_key(n),
-                "env-toggleable `{}' must be removed when NELISP_NO_JIT=1",
-                n
-            );
-        }
-        // JIT-only entries (sampled): no `bi_*' fallback exists, must
-        // stay registered so dispatch does not UnboundFunction-fail.
-        for n in [
-            "eq", "car", "cdr", "cons", "setcar", "setcdr",
-            "aref", "aset", "length", "elt",
-            "nelisp--add2", "nelisp--sub2", "nelisp--mul2",
-            "ash",
-        ] {
-            assert!(
-                map.contains_key(n),
-                "JIT-only `{}' must stay registered even with NELISP_NO_JIT=1",
-                n
-            );
-        }
     }
 }

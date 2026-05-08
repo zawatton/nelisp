@@ -42,17 +42,13 @@
 //! - `elt': `Vector' (= aref) + `Cons' (= list walk) fast path.  Other
 //!   sequence types fall through.
 
-use std::collections::HashMap;
-
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 
-use crate::eval::env::Env;
-use crate::eval::error::EvalError;
 use crate::eval::sexp::{Sexp, SEXP_TAG_INT, SEXP_TAG_NIL};
 
-use super::{declare_helper_call, LowerFn};
+use super::declare_helper_call;
 
 const TRAMPOLINE_OK: i64 = 0;
 const TRAMPOLINE_ERR: i64 = 1;
@@ -343,283 +339,20 @@ pub(super) fn collect_funcs(module: &JITModule, ids: AccessIds) -> JitAccess {
     }
 }
 
+// Doc 77b Stage b.4 (2026-05-09) — `lowered_X' Rust strategy fns
+// + `register(map)' + `aref_helper' deleted.  The 4 entries (=
+// length/aref/aset/elt) are now driven by elisp wrappers in
+// `lisp/nelisp-jit-strategy.el' that call the JIT trampolines
+// through the Stage b.2.5 `nl-jit-call-out-{1,1i,2i}' bridge
+// primitives + `jit/strategy.rs' multi-variant fall-through helpers
+// (`bi_length_impl' / `bi_aref_impl' / `bi_aset_impl' /
+// `bi_elt_impl').  The Rust trampolines (`nl_jit_access_*') stay in
+// this module, as do the IR builders + the `JitAccess' fn-ptr
+// struct reachable via `super::unified_jit()'.
+
+#[cfg(test)]
 fn jit() -> &'static JitAccess {
     &super::unified_jit().access
-}
-
-// Phase 5 Stage C-Phase1b (Doc 62, 2026-05-08) — `lowered_length' /
-// `lowered_aref' / `lowered_aset' / `lowered_elt' are now self-contained:
-// JIT helper covers the hot Vector/Str/Nil fast paths, and remaining
-// Sexp variants (= MutStr / BoolVector / CharTable / Cons walk) plus
-// canonical errors are handled inline.  No `dispatch'/`bi_*' fallback.
-
-fn lowered_length(args: &[Sexp], _env: &mut Env) -> Result<Sexp, EvalError> {
-    crate::eval::builtins::require_arity("length", args, 1, Some(1))?;
-    let mut out = Sexp::Nil;
-    let r = (jit().length)(&args[0] as *const _, &mut out as *mut _);
-    if r == TRAMPOLINE_OK {
-        return Ok(out);
-    }
-    // JIT helper covers Nil / Vector / Str.  Remaining variants:
-    match &args[0] {
-        Sexp::MutStr(rc) => Ok(Sexp::Int(rc.borrow().chars().count() as i64)),
-        Sexp::BoolVector(v) => Ok(Sexp::Int(v.borrow().len() as i64)),
-        Sexp::Cons(_, _) => {
-            let mut n = 0i64;
-            let mut cur: Sexp = args[0].clone();
-            loop {
-                let next = match &cur {
-                    Sexp::Nil => return Ok(Sexp::Int(n)),
-                    Sexp::Cons(_, d) => {
-                        n += 1;
-                        d.borrow().clone()
-                    }
-                    other => {
-                        return Err(EvalError::WrongType {
-                            expected: "sequence".into(),
-                            got: other.clone(),
-                        });
-                    }
-                };
-                cur = next;
-            }
-        }
-        other => Err(EvalError::WrongType {
-            expected: "sequence".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
-/// Shared aref helper: implements the multi-variant array indexing
-/// fallback path used by both `lowered_aref' and `lowered_elt' (=
-/// elt's array branch delegates to aref semantics).  ARGS layout:
-/// `[ARRAY, INDEX]'.  ARITY pre-checked by caller.
-fn aref_helper(args: &[Sexp], primitive: &'static str) -> Result<Sexp, EvalError> {
-    let index = crate::eval::builtins::as_int(primitive, &args[1])?;
-    if index < 0 {
-        return Err(EvalError::ArithError(format!(
-            "{}: negative index {}",
-            primitive, index
-        )));
-    }
-    // JIT helper handles Vector + non-negative in-range fast path.
-    let mut out = Sexp::Nil;
-    let r = (jit().aref)(&args[0] as *const _, index, &mut out as *mut _);
-    if r == TRAMPOLINE_OK {
-        return Ok(out);
-    }
-    // Variants the JIT helper does not cover: Str / MutStr / CharTable
-    // / BoolVector + canonical out-of-range / wrong-type errors.
-    match &args[0] {
-        Sexp::Str(s) => {
-            let chars: Vec<char> = s.chars().collect();
-            chars
-                .get(index as usize)
-                .map(|c| Sexp::Int(*c as i64))
-                .ok_or_else(|| {
-                    EvalError::ArithError(format!(
-                        "{}: index {} out of range for string of length {}",
-                        primitive,
-                        index,
-                        chars.len()
-                    ))
-                })
-        }
-        Sexp::MutStr(rc) => {
-            let s = rc.borrow();
-            let chars: Vec<char> = s.chars().collect();
-            chars
-                .get(index as usize)
-                .map(|c| Sexp::Int(*c as i64))
-                .ok_or_else(|| {
-                    EvalError::ArithError(format!(
-                        "{}: index {} out of range for string of length {}",
-                        primitive,
-                        index,
-                        chars.len()
-                    ))
-                })
-        }
-        Sexp::Vector(v) => {
-            // Out-of-range Vector: JIT returned ERR for index >= len.
-            let borrowed = v.borrow();
-            Err(EvalError::ArithError(format!(
-                "{}: index {} out of range for vector of length {}",
-                primitive,
-                index,
-                borrowed.len()
-            )))
-        }
-        Sexp::CharTable(rc) => Ok(crate::eval::builtins::char_table_get(rc, index)),
-        Sexp::BoolVector(v) => {
-            let borrowed = v.borrow();
-            borrowed
-                .get(index as usize)
-                .map(|b| if *b { Sexp::T } else { Sexp::Nil })
-                .ok_or_else(|| {
-                    EvalError::ArithError(format!(
-                        "{}: index {} out of range for bool-vector of length {}",
-                        primitive,
-                        index,
-                        borrowed.len()
-                    ))
-                })
-        }
-        other => Err(EvalError::WrongType {
-            expected: "arrayp".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
-fn lowered_aref(args: &[Sexp], _env: &mut Env) -> Result<Sexp, EvalError> {
-    crate::eval::builtins::require_arity("aref", args, 2, Some(2))?;
-    aref_helper(args, "aref")
-}
-
-fn lowered_aset(args: &[Sexp], _env: &mut Env) -> Result<Sexp, EvalError> {
-    crate::eval::builtins::require_arity("aset", args, 3, Some(3))?;
-    let index = crate::eval::builtins::as_int("aset", &args[1])?;
-    if index < 0 {
-        return Err(EvalError::ArithError(format!(
-            "aset: negative index {}",
-            index
-        )));
-    }
-    // JIT helper covers Vector with in-range index.
-    let mut out = Sexp::Nil;
-    let r = (jit().aset)(
-        &args[0] as *const _,
-        index,
-        &args[2] as *const _,
-        &mut out as *mut _,
-    );
-    if r == TRAMPOLINE_OK {
-        return Ok(out);
-    }
-    // Remaining variants: Vector out-of-range / MutStr (codepoint
-    // mutation) / CharTable / BoolVector / immutable Str rejection.
-    match &args[0] {
-        Sexp::Vector(v) => {
-            let borrowed = v.borrow();
-            let len = borrowed.len();
-            Err(EvalError::ArithError(format!(
-                "aset: index {} out of range for vector of length {}",
-                index, len
-            )))
-        }
-        Sexp::MutStr(rc) => {
-            // Codepoint mutation: replace the char at INDEX with the
-            // codepoint VALUE (= integer).  Indexing is by char count
-            // (Emacs semantics), not by byte position.  We rebuild the
-            // String to keep multi-byte UTF-8 correctness.
-            let new_ch = match &args[2] {
-                Sexp::Int(n) => char::from_u32(*n as u32).ok_or_else(|| {
-                    EvalError::WrongType {
-                        expected: "valid character codepoint".into(),
-                        got: args[2].clone(),
-                    }
-                })?,
-                other => {
-                    return Err(EvalError::WrongType {
-                        expected: "character (integer)".into(),
-                        got: other.clone(),
-                    });
-                }
-            };
-            let mut s = rc.borrow_mut();
-            let chars: Vec<char> = s.chars().collect();
-            if (index as usize) >= chars.len() {
-                return Err(EvalError::ArithError(format!(
-                    "aset: index {} out of range for string of length {}",
-                    index,
-                    chars.len()
-                )));
-            }
-            let mut new_str = String::with_capacity(s.len());
-            for (i, c) in chars.iter().enumerate() {
-                if i == index as usize {
-                    new_str.push(new_ch);
-                } else {
-                    new_str.push(*c);
-                }
-            }
-            *s = new_str;
-            Ok(args[2].clone())
-        }
-        Sexp::CharTable(rc) => {
-            let mut inner = rc.borrow_mut();
-            crate::eval::builtins::char_table_set_one(&mut inner, index, args[2].clone());
-            Ok(args[2].clone())
-        }
-        Sexp::BoolVector(rc) => {
-            let mut borrowed = rc.borrow_mut();
-            let len = borrowed.len();
-            if (index as usize) >= len {
-                return Err(EvalError::ArithError(format!(
-                    "aset: index {} out of range for bool-vector of length {}",
-                    index, len
-                )));
-            }
-            borrowed[index as usize] = crate::eval::special_forms::is_truthy(&args[2]);
-            Ok(args[2].clone())
-        }
-        Sexp::Str(_) => Err(EvalError::WrongType {
-            expected: "mutable-array".into(),
-            got: args[0].clone(),
-        }),
-        other => Err(EvalError::WrongType {
-            expected: "arrayp".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
-fn lowered_elt(args: &[Sexp], _env: &mut Env) -> Result<Sexp, EvalError> {
-    crate::eval::builtins::require_arity("elt", args, 2, Some(2))?;
-    // JIT helper covers Vector + Cons fast paths.
-    let idx = crate::eval::builtins::as_int("elt", &args[1])?;
-    if idx < 0 {
-        return Err(EvalError::ArithError(format!(
-            "elt: negative index {}",
-            idx
-        )));
-    }
-    let mut out = Sexp::Nil;
-    let r = (jit().elt)(&args[0] as *const _, idx, &mut out as *mut _);
-    if r == TRAMPOLINE_OK {
-        return Ok(out);
-    }
-    // Remaining variants: Nil (= empty seq error), Cons out-of-range,
-    // Str / MutStr / CharTable / BoolVector → aref semantics.
-    match &args[0] {
-        Sexp::Nil => Err(EvalError::ArithError(format!(
-            "elt: index {} out of range for empty sequence",
-            idx
-        ))),
-        Sexp::Cons(_, _) => {
-            // JIT covered Cons but returned ERR — that means index was
-            // past the proper-list end.  Surface canonical message.
-            Err(EvalError::ArithError(format!(
-                "elt: index {} out of range for list",
-                idx
-            )))
-        }
-        Sexp::Str(_) | Sexp::MutStr(_) | Sexp::Vector(_)
-        | Sexp::CharTable(_) | Sexp::BoolVector(_) => aref_helper(args, "elt"),
-        other => Err(EvalError::WrongType {
-            expected: "sequencep".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
-pub fn register(map: &mut HashMap<&'static str, LowerFn>) {
-    map.insert("length", lowered_length);
-    map.insert("aref", lowered_aref);
-    map.insert("aset", lowered_aset);
-    map.insert("elt", lowered_elt);
 }
 
 #[cfg(test)]

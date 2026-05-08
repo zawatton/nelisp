@@ -35,6 +35,13 @@ use std::process::ExitCode;
 /// 1:1 mirror of `Env::new_global`'s STDLIB_SOURCES list.  Keep in
 /// sync — Stage 7.7.b's `STDLIB_IMAGES` will iterate the same names.
 const STDLIB_FILES: &[&str] = &[
+    // Doc 77b Stage b.4 (2026-05-09): JIT-strategy wrappers for the
+    // 24 pre-b.4 `lowered_X' Rust fns.  Loads FIRST so the elisp
+    // wrappers (= `(fset 'car (lambda ...))' etc.) install BEFORE
+    // any later stdlib form invokes the wrapped names.  Wrappers use
+    // only Tier 1 special forms + Rust builtins (no `cond' / `and' /
+    // `integerp' which only appear in nelisp-stdlib*.el).
+    "nelisp-jit-strategy.el",
     "nelisp-stdlib-eval-special.el",
     "nelisp-stdlib.el",
     "nelisp-stdlib-list.el",

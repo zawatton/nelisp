@@ -149,6 +149,12 @@ impl Env {
         // own header so future readers can look there for the dep
         // ordering rationale.
         const STDLIB_IMAGES: &[(&str, &[u8])] = &[
+            // Doc 77b Stage b.4 (2026-05-09): JIT-strategy wrappers
+            // (= 24 elisp `(fset 'X (lambda ...))' overrides for the
+            // pre-b.4 `lowered_X' Rust strategy fns).  Loads FIRST so
+            // wrappers install BEFORE any later stdlib form invokes
+            // the wrapped names.  See `lisp/nelisp-jit-strategy.el'.
+            ("nelisp-jit-strategy.el", include_bytes!("../../../lisp/nelisp-jit-strategy.el.image")),
             ("nelisp-stdlib-eval-special.el", include_bytes!("../../../lisp/nelisp-stdlib-eval-special.el.image")),
             ("nelisp-stdlib.el", include_bytes!("../../../lisp/nelisp-stdlib.el.image")),
             ("nelisp-stdlib-list.el", include_bytes!("../../../lisp/nelisp-stdlib-list.el.image")),

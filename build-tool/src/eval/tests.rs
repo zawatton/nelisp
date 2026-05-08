@@ -2874,9 +2874,17 @@ fn stage74a_bind_local_rejects_non_symbol() {
 
 #[test]
 fn stage74a_apply_builtin_dispatch_cons() {
-    // (cons 1 2) を builtin dispatch 経由で呼んで (1 . 2) を得る.
-    // ARGS は proper list (= '(1 2)) を渡す.
-    let result = ok_all("(nelisp--apply-builtin-dispatch 'cons '(1 2))");
+    // Doc 77b Stage b.4 (2026-05-09): `cons' is no longer a Rust
+    // builtin — its function cell is now an elisp closure (=
+    // `lisp/nelisp-jit-strategy.el' `(fset 'cons (lambda ...))').
+    // The bridge primitive `nl-jit-call-out-2' IS still a Rust
+    // builtin and reachable via `apply-builtin-dispatch'; cover that
+    // surface instead.  Direct `(cons 1 2)' coverage is in
+    // `cons_constructs_pair' / etc.
+    let result = ok_all(
+        "(nelisp--apply-builtin-dispatch 'nl-jit-call-out-2 \
+                                          '(\"nelisp_jit_cons\" 1 2))",
+    );
     match result {
         Sexp::Cons(a, d) => {
             assert_eq!(*a.borrow(), Sexp::Int(1));
@@ -2888,10 +2896,15 @@ fn stage74a_apply_builtin_dispatch_cons() {
 
 #[test]
 fn stage74a_apply_builtin_dispatch_arith() {
-    // 2-arg arith primitive を経由.  Phase 5 lower が効く path
-    // (= try_lower hook 通過) も同 dispatcher を経るので合算で確認.
+    // Doc 77b Stage b.4 (2026-05-09): `nelisp--add2' is no longer a
+    // Rust builtin — its function cell is now an elisp closure.
+    // Cover the bridge surface (= `nl-jit-call-i64-i64') reachable
+    // via `apply-builtin-dispatch' instead.
     assert_eq!(
-        ok_all("(nelisp--apply-builtin-dispatch 'nelisp--add2 '(3 4))"),
+        ok_all(
+            "(nelisp--apply-builtin-dispatch 'nl-jit-call-i64-i64 \
+                                              '(\"nelisp_jit_add2\" 3 4))",
+        ),
         Sexp::Int(7),
     );
 }

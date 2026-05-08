@@ -31,17 +31,9 @@
 //! dispatch → libc and the lower entry is what unblocks the rest of the
 //! Stage 5.1 ramp.
 
-use std::collections::HashMap;
-
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
-
-use crate::eval::env::Env;
-use crate::eval::error::EvalError;
-use crate::eval::sexp::Sexp;
-
-use super::LowerFn;
 
 /// Linux build returns 1, others return 0.  The constant is baked into
 /// the JIT-emitted `iconst' so the function is a 2-instruction
@@ -218,52 +210,26 @@ pub(super) fn collect_funcs(module: &JITModule, ids: SyscallIds) -> JitSyscall {
     }
 }
 
+// Doc 77b Stage b.4 (2026-05-09) — `lowered_syscall*' Rust strategy
+// fns + `register(map)' deleted.  The `nelisp--syscall' /
+// `nelisp--syscall-supported-p' entries are now driven by elisp
+// wrappers in `lisp/nelisp-jit-strategy.el' that call the JIT
+// trampolines through the Stage b.2 `nl-jit-call-syscall' /
+// `nl-jit-call-i64-i64' bridge primitives + the
+// `nelisp--syscall-nr-resolve' helper (= the libc symbol catalog
+// stays Rust because `libc::SYS_*' constants are Rust-side).
+//
+// On non-Linux the wrappers still install — the JIT entries return
+// a constant -ENOSYS / 0 surface that elisp `nelisp-os-*' callers
+// route around via `nelisp--syscall-supported-p' returning nil.
+// Original `bi_syscall' / `bi_syscall_supported_p' fallback in
+// `eval/builtins.rs::dispatch' is unreachable for these names after
+// the elisp wrappers install, but kept for the rare
+// `nelisp--apply-builtin-dispatch' direct-route case.
+
+#[cfg(test)]
 fn jit() -> &'static JitSyscall {
     &super::unified_jit().syscall
-}
-
-fn lowered_syscall_supported_p(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    if !args.is_empty() {
-        // Arity error: defer to dispatcher's `require_arity' for the
-        // canonical error shape.
-        return crate::eval::builtins::dispatch("nelisp--syscall-supported-p", args, env);
-    }
-    let v = (jit().supported_p)();
-    Ok(if v != 0 { Sexp::T } else { Sexp::Nil })
-}
-
-#[cfg(target_os = "linux")]
-fn lowered_syscall(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    if args.is_empty() {
-        // Arity error: the dispatcher emits the canonical "at least one
-        // argument" message.
-        return crate::eval::builtins::dispatch("nelisp--syscall", args, env);
-    }
-    let nr = match crate::eval::builtins::syscall_nr(&args[0]) {
-        Ok(n) => n,
-        // Unknown syscall name / wrong type: the dispatcher emits the
-        // canonical error so behavior is identical to the Rust path.
-        Err(_) => return crate::eval::builtins::dispatch("nelisp--syscall", args, env),
-    };
-    let mut a = [0i64; 6];
-    for (i, sexp) in args[1..].iter().enumerate().take(6) {
-        match crate::eval::builtins::syscall_arg_int("nelisp--syscall", i + 1, sexp) {
-            Ok(v) => a[i] = v,
-            Err(_) => return crate::eval::builtins::dispatch("nelisp--syscall", args, env),
-        }
-    }
-    let r = (jit().syscall)(nr, a[0], a[1], a[2], a[3], a[4], a[5]);
-    Ok(Sexp::Int(r))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn lowered_syscall(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    crate::eval::builtins::dispatch("nelisp--syscall", args, env)
-}
-
-pub fn register(map: &mut HashMap<&'static str, LowerFn>) {
-    map.insert("nelisp--syscall-supported-p", lowered_syscall_supported_p);
-    map.insert("nelisp--syscall", lowered_syscall);
 }
 
 #[cfg(test)]

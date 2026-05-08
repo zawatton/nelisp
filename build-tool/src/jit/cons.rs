@@ -29,17 +29,13 @@
 //! returning `TRAMPOLINE_OK = 0' on success or `_ERR = 1' on
 //! wrong-type so the caller falls through to the dispatcher.
 
-use std::collections::HashMap;
-
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 
-use crate::eval::env::Env;
-use crate::eval::error::EvalError;
 use crate::eval::sexp::{Sexp, SEXP_TAG_NIL};
 
-use super::{declare_helper_call, LowerFn};
+use super::declare_helper_call;
 
 const TRAMPOLINE_OK: i64 = 0;
 const TRAMPOLINE_ERR: i64 = 1;
@@ -277,104 +273,18 @@ pub(super) fn collect_funcs(module: &JITModule, ids: ConsIds) -> JitCons {
     }
 }
 
+// Doc 77b Stage b.4 (2026-05-09) — `lowered_X' Rust strategy fns
+// + `register(map)' deleted.  The 5 entries (= car/cdr/cons/
+// setcar/setcdr) are now driven by elisp wrappers in
+// `lisp/nelisp-jit-strategy.el' that call the JIT trampolines
+// through the Stage b.2.5 `nl-jit-call-out-{1,2}' bridge primitives.
+// The Rust trampolines (`nl_jit_cons_*') stay in this module, as do
+// the IR builders + the `JitCons' fn-ptr struct reachable via
+// `super::unified_jit()'.
+
+#[cfg(test)]
 fn jit() -> &'static JitCons {
     &super::unified_jit().cons
-}
-
-fn lowered_car(args: &[Sexp], _env: &mut Env) -> Result<Sexp, EvalError> {
-    // Phase 5 Stage C-Phase1 (Doc 62, 2026-05-08): self-contained —
-    // arity check via `require_arity', wrong-type via direct
-    // `EvalError::WrongType' (= same shape `bi_car' produced before
-    // its deletion).  Never falls back through `dispatch'.
-    crate::eval::builtins::require_arity("car", args, 1, Some(1))?;
-    let mut out = Sexp::Nil;
-    let r = (jit().car)(&args[0] as *const _, &mut out as *mut _);
-    if r == TRAMPOLINE_OK {
-        Ok(out)
-    } else {
-        Err(EvalError::WrongType {
-            expected: "listp".into(),
-            got: args[0].clone(),
-        })
-    }
-}
-
-fn lowered_cdr(args: &[Sexp], _env: &mut Env) -> Result<Sexp, EvalError> {
-    crate::eval::builtins::require_arity("cdr", args, 1, Some(1))?;
-    let mut out = Sexp::Nil;
-    let r = (jit().cdr)(&args[0] as *const _, &mut out as *mut _);
-    if r == TRAMPOLINE_OK {
-        Ok(out)
-    } else {
-        Err(EvalError::WrongType {
-            expected: "listp".into(),
-            got: args[0].clone(),
-        })
-    }
-}
-
-fn lowered_cons(args: &[Sexp], _env: &mut Env) -> Result<Sexp, EvalError> {
-    crate::eval::builtins::require_arity("cons", args, 2, Some(2))?;
-    let mut out = Sexp::Nil;
-    let r = (jit().cons_make)(
-        &args[0] as *const _,
-        &args[1] as *const _,
-        &mut out as *mut _,
-    );
-    // `cons' has no wrong-type case (any two values produce a Cons),
-    // so TRAMPOLINE_ERR is unreachable.  Guard with a defensive
-    // Internal error instead of dispatcher fallback.
-    if r == TRAMPOLINE_OK {
-        Ok(out)
-    } else {
-        Err(EvalError::Internal(
-            "lowered_cons: trampoline returned ERR for arbitrary inputs".into(),
-        ))
-    }
-}
-
-fn lowered_setcar(args: &[Sexp], _env: &mut Env) -> Result<Sexp, EvalError> {
-    crate::eval::builtins::require_arity("setcar", args, 2, Some(2))?;
-    let mut out = Sexp::Nil;
-    let r = (jit().setcar)(
-        &args[0] as *const _,
-        &args[1] as *const _,
-        &mut out as *mut _,
-    );
-    if r == TRAMPOLINE_OK {
-        Ok(out)
-    } else {
-        Err(EvalError::WrongType {
-            expected: "consp".into(),
-            got: args[0].clone(),
-        })
-    }
-}
-
-fn lowered_setcdr(args: &[Sexp], _env: &mut Env) -> Result<Sexp, EvalError> {
-    crate::eval::builtins::require_arity("setcdr", args, 2, Some(2))?;
-    let mut out = Sexp::Nil;
-    let r = (jit().setcdr)(
-        &args[0] as *const _,
-        &args[1] as *const _,
-        &mut out as *mut _,
-    );
-    if r == TRAMPOLINE_OK {
-        Ok(out)
-    } else {
-        Err(EvalError::WrongType {
-            expected: "consp".into(),
-            got: args[0].clone(),
-        })
-    }
-}
-
-pub fn register(map: &mut HashMap<&'static str, LowerFn>) {
-    map.insert("car", lowered_car);
-    map.insert("cdr", lowered_cdr);
-    map.insert("cons", lowered_cons);
-    map.insert("setcar", lowered_setcar);
-    map.insert("setcdr", lowered_setcdr);
 }
 
 #[cfg(test)]

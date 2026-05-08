@@ -39,17 +39,11 @@
 //! dispatcher arm to lower.  Stage 5.5 covers the residual Rust-side
 //! predicate, `eq'.
 
-use std::collections::HashMap;
-
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 
-use crate::eval::env::Env;
-use crate::eval::error::EvalError;
 use crate::eval::sexp::{Sexp, SEXP_TAG_INT};
-
-use super::LowerFn;
 
 /// `(eq A B) -> 1 if equal, 0 otherwise' helper trampoline used by
 /// the JIT entry's slow path.  Wraps the existing
@@ -231,20 +225,18 @@ pub(super) fn collect_funcs(module: &JITModule, ids: PredicateIds) -> JitPredica
     }
 }
 
+// Doc 77b Stage b.4 (2026-05-09) — `lowered_eq' Rust strategy fn
+// + `register(map)' deleted.  The `eq' entry is now driven by an
+// elisp wrapper in `lisp/nelisp-jit-strategy.el' that calls the
+// `nelisp_jit_eq_inline' JIT entry through the Stage b.2
+// `nl-jit-call-ptr-ptr' bridge primitive.  The Rust trampoline
+// (`nl_jit_pred_eq') stays in this module, as does the IR builder +
+// the `JitPredicate' fn-ptr struct reachable via
+// `super::unified_jit()'.
+
+#[cfg(test)]
 fn jit() -> &'static JitPredicate {
     &super::unified_jit().predicate
-}
-
-fn lowered_eq(args: &[Sexp], _env: &mut Env) -> Result<Sexp, EvalError> {
-    // Phase 5 Stage C-Phase1 (Doc 62, 2026-05-08): self-contained
-    // arity check; never falls back through `dispatch'.
-    crate::eval::builtins::require_arity("eq", args, 2, Some(2))?;
-    let v = (jit().eq)(&args[0] as *const _, &args[1] as *const _);
-    Ok(if v != 0 { Sexp::T } else { Sexp::Nil })
-}
-
-pub fn register(map: &mut HashMap<&'static str, LowerFn>) {
-    map.insert("eq", lowered_eq);
 }
 
 #[cfg(test)]
