@@ -1,0 +1,336 @@
+#+TITLE: Doc 77b — Rust-min JIT (= Doc 77 (b) rewrite, elisp 駆動 strategy + Rust 最小骨格)
+
+* Status
+:PROPERTIES:
+:STATE: DRAFT
+:DRAFTED: 2026-05-09
+:PARENT: Doc 77 (= 軸 A/B Stage 1-5 articulation)
+:SUPERSEDES: Doc 77 §2.3 Stage 2-5 articulation (= Rust 拡大方向の plan)
+:RELATED: Doc 49 (elisp pivot) / Doc 50 (irreducible unlock) / Doc 76 (OS surface elisp 化) / Doc 62 (Phase 5 IR family scaffold)
+:DEPENDS_ON: Doc 77 Stage 2-prep SHIPPED (= unified JITModule)
+:END:
+
+* §0 TL;DR
+
+Doc 77 §0 articulate した perf 課題 (= 1.4-1.6x のみ達成、target 5-20x 未達) は依然有効. 解 = "extern \"C\" boundary 撚廃 + IR 直 emit". ただし Doc 77 §3 の Stage 2-5 が *Rust core を +1000-1500 LOC 拡大してから -2000 LOC 削除* する path で、途中 Stage で大量の Rust が一時的に積み上がる.
+
+Doc 77 (b) rewrite (= 本 Doc) の articulation: *strategy / wiring / IR 記述を elisp に移し、Rust は最小骨格 (Cranelift bridge + extern "C" trampolines + DSL interpreter) に留める*. Doc 76 (OS surface elisp 化) と同じ Rust-min 哲学を JIT に適用.
+
+期待 net delta:
+- 既存 jit/ Rust core 3163 LOC → ~1220 LOC (-1940 LOC, aggressive 推定)
+- 移管先 elisp ~600-800 LOC 増 (= DSL rules + strategy wrapper)
+- *Rust core net -1640〜-1800 LOC*, elisp net +600-800 LOC, *合計 -1000 LOC 程度*
+- perf goal は変えず (= extern "C" 撚廃で 5-10x speedup) — strategy が elisp でも JIT 自体は依然 Cranelift native
+
+* §1 動機
+
+** §1.1 Doc 77 (a) path の Rust 拡大 tension
+
+Doc 77 §3 の Stage 表 (= 再掲):
+
+| stage | 実装 | Rust LOC delta |
+|-------+------+----------------|
+|     1 | 軸 B inline 拡張 | +110-140 |
+| 2-prep | unified JITModule | -50 (実 +112) |
+|     2 | call-site JIT entry | +150-200 |
+|     3 | hot eval form lift | +300-400 |
+|     4 | Sexp ABI pin | +400-500 |
+|     5 | trampoline 削除 | -2,000 |
+
+Stage 5 完了で net -450 LOC、ただし途中 (Stage 2-4) で +1000-1500 LOC 一時拡大.
+
+** §1.2 Doc 76 / Rust-min 路線との衝突
+
+Doc 76 = OS surface specialized 全 31/40 を Rust から elisp に port (= nl-ffi-call 経由).  Net -2,000 LOC 程度の Rust 削減を狙う流れ.  ここで Doc 77 (a) の "Rust 拡大期" を入れると Rust LOC が一旦バウンドする.
+
+ユーザー指示 (2026-05-09): "JITのRust側の機能をelispで再現するのは完全に無理ですか？" → "(b) しかありません。" → 本 Doc 77b で articulate.
+
+** §1.3 elisp で再現可能な範囲 (= 本 Doc の核心)
+
+*完全に Rust 必須 (= Cranelift API access、mmap、extern "C" boundary)*:
+- =JITBuilder= / =JITModule= / =FunctionBuilder= の API 呼出
+- =Box::leak= (executable page を process 寿命に固定)
+- =unsafe extern "C" fn nl_jit_*= trampoline (= Sexp の =Rc<RefCell<...>>= 直アクセス)
+- =std::mem::transmute= で fn pointer を typed extern fn に cast
+
+*elisp で十分*:
+- registry の populate (= "eq → JIT entry, car → JIT entry")
+- inline rule の strategy 選択 (= "BoolVector aref を inline する/しない")
+- IR 構造の記述 (= block / op / branch を data-driven で表現)
+- =lowered_*= の arity check + JIT call + dispatch fallback wrap
+- bench harness 全部
+- env-toggleable filter
+
+*data-driven (= elisp が描き、Rust が解釈実行)*:
+- =declare_eq_inline= / =declare_length_with_inline_nil= / =declare_binop= 等の IR 構築 fn
+  → elisp DSL でルール記述、Rust DSL interpreter が Cranelift IR call を emit
+
+* §2 設計
+
+** §2.1 全体構成
+
+#+begin_example
++--------------------------------------------+
+| elisp Layer 2  (lisp/nelisp-jit-*.el)      |
+| - jit registry: '((eq . eq-rule) ...)      |
+| - inline rules: jit-rule s-expr 群          |
+| - lowered_* strategy: (defun eq (a b) ...) |
+| - bench harness: (benchmark-run ...)       |
++--------------------------------------------+
+              |
+              | (1) DSL spec を Sexp で渡す
+              | (2) extern fn ptr を取得
+              v
++--------------------------------------------+
+| Rust 最小骨格 (build-tool/src/jit/)         |
+| - dsl.rs: DSL interpreter (= Sexp → Cranelift) |
+| - bridge.rs: nl-jit-* primitives           |
+| - trampolines: nl_jit_X (extern "C")       |
+| - mod.rs: UnifiedJit + try_lower            |
++--------------------------------------------+
+              |
+              | Cranelift API
+              v
++--------------------------------------------+
+| Cranelift codegen (= 既存 crate)            |
++--------------------------------------------+
+#+end_example
+
+** §2.2 DSL syntax (= elisp s-expr で IR 記述)
+
+s-expr 1 個 = 1 JIT 関数. 詳細は §A "DSL Reference" 参照.
+
+#+begin_example
+(jit-rule
+ :name "nelisp_jit_eq_inline" :linkage local
+ :params ((a ptr) (b ptr)) :returns i64
+ :imports (("nl_jit_pred_eq" (ptr ptr) i64))
+ :blocks
+ ((block entry
+    (= same (icmp eq a b))
+    (brif same same-blk load-blk))
+  (block same-blk
+    (= one (iconst i64 1))
+    (return one))
+  (block load-blk
+    (= at8 (load i8 a 0)) (= bt8 (load i8 b 0))
+    (= at  (uextend i64 at8)) (= bt (uextend i64 bt8))
+    (= teq (icmp eq at bt))
+    (brif teq match-blk diff-blk))
+  (block diff-blk (= z (iconst i64 0)) (return z))
+  (block match-blk
+    (= isi (icmp-imm eq at (tag SEXP_TAG_INT)))
+    (brif isi int-blk slow-blk))
+  (block int-blk
+    (= ai (load i64 a 8)) (= bi (load i64 b 8))
+    (= eq1 (icmp eq ai bi)) (= r (uextend i64 eq1))
+    (return r))
+  (block slow-blk
+    (= r (call "nl_jit_pred_eq" a b)) (return r))))
+#+end_example
+
+5 jit-rule (= eq / length / car / cdr / aref) を elisp に書けば Doc 77 §3 Stage 2 の "call-site JIT entry" がカバーする領域がほぼ達成.
+
+** §2.3 Rust interpreter (= dsl.rs ~330 LOC)
+
+#+begin_example
+struct Rule { name, linkage, params, returns, imports, blocks }
+enum Op { Load, Store, Uext, Iconst, Icmp, IcmpImm, Bin, Unary, Call }
+enum Term { Brif, Jump, Return }
+
+pub(super) fn build_rule(module: &mut JITModule, rule: &Rule) -> FuncId;
+fn parse_rule(sexp: &Sexp) -> Rule;
+fn ty(t: Ty) -> types::Type;
+fn cc(s: &Symbol) -> IntCC;
+fn lit(lit: &Lit, tags: &TagTable) -> i64;
+#+end_example
+
+walks blocks twice:
+1. pass-1: =fb.create_block()= each block, register name → BlockId.
+2. pass-2: each op に対して =fb.ins().<verb>(...)= emit.
+
+** §2.4 elisp registry (= lisp/nelisp-jit-strategy.el)
+
+#+begin_example
+(defconst nelisp--jit-rules
+  '((eq         . #s(jit-rule :name "nelisp_jit_eq_inline" ...))
+    (car        . #s(jit-rule :name "nelisp_jit_car"       ...))
+    (cdr        . #s(jit-rule :name "nelisp_jit_cdr"       ...))
+    (length     . #s(jit-rule :name "nelisp_jit_length"    ...))
+    (aref       . #s(jit-rule :name "nelisp_jit_aref"      ...))
+    (aset       . #s(jit-rule :name "nelisp_jit_aset"      ...))
+    (elt        . #s(jit-rule :name "nelisp_jit_elt"       ...))
+    (cons       . #s(jit-rule :name "nelisp_jit_cons"      ...))
+    (setcar     . #s(jit-rule :name "nelisp_jit_setcar"    ...))
+    (setcdr     . #s(jit-rule :name "nelisp_jit_setcdr"    ...))
+    (nelisp--add2 . #s(jit-rule :name "nelisp_jit_add2"   ...))
+    ;; ... 12 arith ops
+    (nelisp--syscall . #s(jit-rule :name "nelisp_jit_syscall" ...))
+    (nelisp--syscall-supported-p . #s(jit-rule ...))))
+
+(defconst nelisp--jit-env-toggleable
+  '(nelisp--syscall nelisp--syscall-supported-p))
+
+(defun nelisp--jit-bootstrap ()
+  "Called by Rust startup before Box::leak.  Iterates over
+   `nelisp--jit-rules' and calls into Rust:
+     (nl-jit-build-rule rule-spec) -> registers JIT entry
+   Returns alist of (NAME . FN-PTR) for try_lower."
+  (mapcar (lambda (cell)
+            (cons (car cell)
+                  (nl-jit-build-rule (cdr cell))))
+          nelisp--jit-rules))
+#+end_example
+
+Rust startup hook: =UnifiedJit::build= 内で elisp =nelisp--jit-bootstrap= を =Env= 経由で呼出 → 結果 alist を =lower_entries= に injest.
+
+** §2.5 lowered_* の strategy も elisp 化
+
+Pre-Doc-77b の lowered_eq:
+
+#+begin_example
+fn lowered_eq(args: &[Sexp], _env: &mut Env) -> Result<Sexp, EvalError> {
+    crate::eval::builtins::require_arity("eq", args, 2, Some(2))?;
+    let v = (jit().eq)(&args[0] as *const _, &args[1] as *const _);
+    Ok(if v != 0 { Sexp::T } else { Sexp::Nil })
+}
+#+end_example
+
+Doc 77b 後の elisp 等価:
+
+#+begin_example
+(defun eq (a b)
+  "JIT-driven eq.  Calls Rust extern \"C\" fn pointer registered at
+   bootstrap time."
+  (if (= 0 (nl-jit-call-ptr-ptr 'nelisp_jit_eq_inline a b))
+      nil t))
+#+end_example
+
+Rust 側に必要な primitive: =nl-jit-call-ptr-ptr name a b= が name → fn ptr → call → i64 result を返す.
+
+12 lowered_arith_* / 4 lowered_access_* / 5 lowered_cons_* / 1 lowered_eq / 2 lowered_syscall_* = *24 fn が elisp 化*.
+
+** §2.6 ファイル配置
+
+| 種別     | path                                                      | 操作   |
+|----------+-----------------------------------------------------------+--------|
+| 設計書    | =docs/design/77b-rust-min-jit.org=                        | new    |
+| Rust 新   | =build-tool/src/jit/dsl.rs= (DSL interpreter)             | new ~330 LOC |
+| Rust 新   | =build-tool/src/jit/bridge.rs= (=nl-jit-*= primitives)    | new ~150 LOC |
+| Rust 削   | =build-tool/src/jit/{arith,cons,access,predicate,syscall}.rs= の declare_X_inline + lowered_X | -1500〜-1700 LOC |
+| Rust 残   | =build-tool/src/jit/{cons,access,predicate,syscall}.rs= の =unsafe extern "C" nl_jit_*= trampoline | 不変 ~250 LOC |
+| Rust 残   | =mod.rs::UnifiedJit / try_lower / declare_helper_call=    | 微改 |
+| elisp 新  | =lisp/nelisp-jit-rules.el= (= jit-rule s-expr 集)         | new ~400 LOC |
+| elisp 新  | =lisp/nelisp-jit-strategy.el= (= lowered_X 24 fn)         | new ~250 LOC |
+| elisp 新  | =lisp/nelisp-jit-bench.el= (= 既存 bench.rs equivalent)    | new ~150 LOC |
+
+* §3 段階的 unlock plan
+
+各 Stage 独立 ship 可能、bisectable.
+
+| stage | 解放対象 | Rust delta | elisp delta | 依存 |
+|-------+----------+------------+-------------+------|
+| b.1 | DSL interpreter (dsl.rs) + tag table + 1 pilot rule (= eq) elisp 化 | +330 / -100 | +50 | -    |
+| b.2 | =nl-jit-call-*= primitives (bridge.rs) + lowered_eq elisp 化 | +150 / -30 | +30 | b.1 |
+| b.3 | 5 declare_X_inline 全部 DSL 化 (= predicate / access / cons / arith / syscall) | -600 | +400 | b.1, b.2 |
+| b.4 | 24 lowered_X 全部 elisp 化 | -620 | +250 | b.2 |
+| b.5 | bench.rs 全部 elisp ERT 化 | -270 | +150 | b.2 |
+| b.6 | 旧 declare/lowered のうち未削除分 cleanup | -100〜200 | 0 | b.3-b.5 |
+
+合計推定: Rust *-1640 LOC*, elisp *+880 LOC*, **net -760 LOC** (= プロジェクト全体).
+
+各 Stage 後 =cargo test= + =make test= で no regression 確認.
+
+* §4 Test plan
+
+** §4.1 各 Stage の既存 ERT + cargo test 全 PASS
+
+各 Stage 完了時:
+- =cargo test --release --lib --tests -p nelisp-build-tool=: 既存数値 + Stage 内の新 unit test
+- =make test= ERT: 既存 expected 数値 (= 2557 程度) 維持
+
+** §4.2 DSL parse round-trip test
+
+=parse_rule(serialize(rule)) == rule= の roundtrip check.  Rust unit test として =build-tool/src/jit/dsl/tests.rs= に置く.
+
+** §4.3 IR 等価性 test
+
+各 declare_X_inline と DSL-driven 等価 rule で、生成 Cranelift IR が同等 (= 同一の IR text dump) を bench スタイルで verify.
+
+** §4.4 perf 退行 gate
+
+=cargo test bench --ignored= で Doc 77 §0 baseline と +/- 10% 以内であること.  DSL 経由 build は first-call で +N ms cost あるが、JIT 後の execution path は同一速度のはず.
+
+* §5 共通原則
+
+- Rust core は "Cranelift bridge + trampolines" だけに痩せる.  IR strategy は全て elisp.
+- elisp 側の jit-rule は data として diff-reviewable.
+- 新 inline rule の追加は elisp file 編集のみ (= cargo build 不要).
+- =nl-jit-*= primitive は最小限で十分.
+
+* §6 Out of scope
+
+- Stage 2 (= call-site JIT entry / form-identity cache) のような *runtime-time* JIT 化は本 Doc から除外. 本 Doc は init-time DSL bootstrap までで Doc 77 (b) の主要利得を回収.  Stage 3 以降の動的 JIT は別 Doc (= 77c) を起こす.
+- Sexp ABI pin (= Doc 77 §2.3.3 Stage 4) は ABI 変更で Doc 76 と衝突懸念あり、本 Doc では deferred.
+- bench harness の elisp 化は b.5 で扱うが、JIT 自体の perf 改善ではないので最後に回す.
+
+* §7 References
+
+- Doc 76 (OS surface elisp 化, = Rust-min precedent)
+- Doc 77 (= 本 Doc の parent)
+- Doc 49 / 50 (elisp pivot, irreducible unlock)
+- nl-ffi-call patterns: =lisp/nelisp-stdlib-os.el= (Doc 76 stages の実装例)
+- =Env::register_extern_builtin= (= elisp → Rust dispatch 入口)
+
+* §A DSL Reference
+
+** Type vocabulary
+
+=i8= / =i64= / =ptr= (= i64 が ABI 上同一).
+
+** Op grammar
+
+| form | semantics |
+|------+-----------|
+| =(= V (load TY PTR OFFSET))= | TY 値を [PTR + OFFSET] から load して V に bind |
+| =(store TY VAL PTR OFFSET)=  | VAL (TY 型) を [PTR + OFFSET] に store |
+| =(= V (uextend TY INNER))= | INNER (smaller TY) を TY に zero-extend |
+| =(= V (iconst TY LIT))= | TY 型の immediate. LIT = 整数 or =(tag SYMBOL)= |
+| =(= V (icmp CC A B))= | i64 比較 → i8 (0/1).  CC = eq/ne/slt/sle/ult/ule/sgt/sge/ugt/uge |
+| =(= V (icmp-imm CC A LIT))= | A vs immediate LIT |
+| =(= V (iadd A B))= 等 | iadd / isub / imul / ishl / sshr / bor / band / bxor |
+| =(= V (call HELPER A B ...))= | imported helper を call、戻り値 i64 を V に bind |
+
+** Terminator
+
+| form | semantics |
+|------+-----------|
+| =(brif COND THEN ELSE)= | COND が i8 / i64 / bool で truthy なら THEN block へ jump |
+| =(jump BLK)= | unconditional jump |
+| =(return V)= | V を function return |
+
+** Tag references
+
+=(tag SYMBOL)= は Rust 側 const table (=TagTable=) を引く.  対応:
+
+- =SEXP_TAG_NIL= → 0
+- =SEXP_TAG_T= → 1
+- =SEXP_TAG_INT= → 2
+- =SEXP_TAG_FLOAT= → 3
+- =SEXP_TAG_SYMBOL= → 4
+- =SEXP_TAG_STR= → 5
+- =SEXP_TAG_MUT_STR= → 6
+- =SEXP_TAG_CONS= → 7
+- =SEXP_TAG_VECTOR= → 8
+- =SEXP_TAG_CHAR_TABLE= → 9
+- =SEXP_TAG_BOOL_VECTOR= → 10
+- =SEXP_TAG_CELL= → 11
+- =SEXP_TAG_RECORD= → 12
+
+** Block scope rule
+
+各 block 内の =(= V ...)= で bind した V は same block + dominator chain で参照可.  cross-block phi 必要時は jump arg として渡す: =(jump BLK V1 V2)= → =(block BLK (V1-PARAM ...) ...)= の予定 (= 初期版 b.1 では未対応、必要になった Stage で追加).
+
+* §B 改判断 record
+
+- 2026-05-09 (Stage 1 / 2-prep ship 済時): Doc 77 (a) の Rust 拡大 tension を user 提示 → user 指示 "(b) しかありません" → 本 Doc 77b draft.
