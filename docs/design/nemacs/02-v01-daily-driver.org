@@ -1,0 +1,402 @@
+#+TITLE: nelisp-emacs Doc 02 — v0.1 Daily-Driver Gate
+#+AUTHOR: zawatton + Claude
+#+DATE: 2026-05-08
+#+STATUS: DRAFT
+#+DEPENDS_ON: nelisp-emacs Doc 01 (architecture LOCKED-2026-04-25-v2), Doc 51 (emacs-builtins port, feat/doc-51-emacs-builtins) Phase 3.C SHIPPED-2026-05-06
+#+SIBLINGS: nelisp-emacs-gtk Phase 2 残 (= GTK menu / multi-frame / proportional font), Phase 4 MELPA reference subset (canonical, parallel branch)
+
+* §0 motivation
+
+** 0.1 何故 v0.1 を切るか
+
+Doc 01 §3.4 の Phase 4 (= MELPA helm/ido/dired/org/company/eglot reference
+subset、~3000-8000 LOC、6-12ヶ月) を完遂するまで nelisp-emacs +
+nelisp-emacs-gtk は daily-driver として使えない。これは「user (=
+zawatton) 自身が日常作業で本 binary を Emacs 代替として使い始める」
+までの距離が長すぎる。
+
+本 doc は *Phase 4 を deprecate せず、parallel に進めながら* user の
+主用途 (= org-mode + elisp 開発 + dired) で daily-driver として使える
+最小 MVP を切り出し、~4-5ヶ月で ship する代替 path を定義する。
+
+** 0.2 v0.1 の本質
+
+「Emacs として使える」を *user 主観で* 切り取る:
+- =journals-2026.org= / =todo.org= を nemacs-gtk 上で編集できる
+- =anvil-*= elisp を =C-x C-e= で eval、=C-h f= で describe できる
+- =M-x dired= で directory を辿って file 開ける
+- =M-!= で shell command 実行できる
+
+Phase 4 が目指す「helm で fuzzy 補完」「magit で git 操作」「eglot で
+LSP」等の発展機能は v0.1 では out-of-scope (= Phase 4 / external repo
+担当)。
+
+** 0.3 並行 stream
+
+3 stream parallel:
+
+| stream | branch | 担当 | 期間 |
+|--------+--------+------+------|
+| A: 本 v0.1 | =feat/v01-daily-driver= | claude 設計 + codex 実装 | 4-5ヶ月 |
+| B: Phase 4 (canonical) | =feat/phase4-melpa-compat= (未作成) | codex 主体 | 6-12ヶ月 |
+| C: GTK Phase 2 残 | =feat/gtk-phase2-menu= (= nelisp-emacs-gtk repo) | codex (Rust) | ~3ヶ月 |
+
+* §1 scope
+
+** 1.1 in-scope (= 本 doc 担当 4 milestone)
+
+- *M1: file/buffer + dired-min* (4-5w)
+- *M2: 開発体験* (3-4w) — isearch / undo UI / help / eval-defun / ielm
+- *M3: org-mode subset* (6-8w) — outline / TODO / agenda 軽量 / capture
+- *M4: shell + completion* (3-4w) — shell-command / minibuffer completion / project.el subset
+
+合計 *16-21w (~4-5ヶ月)*、LOC 見積 *4500-6600*
+
+** 1.2 out-of-scope (= 別 stream / phase / repo 担当)
+
+- helm / ido (= built-in =completing-read= で代用、Phase 4 で追加)
+- dired full feature (= mark / sort / copy / async dired、Phase 4 担当、本 v0.1 は最小 entry/RET/kill のみ)
+- org-mode full (= org-publish / org-roam / org-agenda dispatcher 全種、Phase 4 / external repo 担当)
+- company / eglot (= Phase 4)
+- magit (= 別 repo =nelisp-elisp-compat= 候補、永続的に本 repo 範囲外)
+- self-host bootstrap (= Phase 5 / =bin/nelisp-emacs= 単独 binary)
+- src block tangle / babel execute (= 専用 module、Phase 4 or 別 phase)
+
+** 1.3 release artifact
+
+- branch =feat/v01-daily-driver= (worktree =.worktrees/v01-daily-driver=)
+- M1 → M2 → M3 → M4 を順次 main に merge
+- 各 M ship 時に nelisp-emacs-gtk から require できる Layer 2 substrate
+  として使える (= 既存 =NEMACS_HOME= で point すれば nemacs-gtk が即拡張機能を見られる)
+- v0.1 全 ship = M4 完遂時点で =bin/nemacs-gtk= が daily-driver gate を通過
+
+* §2 architecture
+
+** 2.1 module 配置 (M1 着手分)
+
+新規:
+- =src/emacs-fileio.el= — =find-file= / =save-buffer= の interactive layer (= 既存 =emacs-fileio-builtins.el= primitive の上に load)
+- =src/emacs-dired-min.el= — 最小 dired (= entry / RET / kill のみ、mark/sort 後送り)
+
+拡張:
+- =src/emacs-window.el= — =split-window-below= / =split-window-right= / =other-window= / =delete-window= の real impl (= Phase 1 stub の置換)
+- =src/emacs-buffer.el= — =switch-to-buffer= / =kill-buffer= / =list-buffers= の interactive layer
+
+** 2.2 GTK 連携
+
+- nelisp-emacs-gtk からは =require= のみ、Rust extern 追加なし
+- Stream C で GTK Phase 2.A menu bar が ship した場合、File メニューに
+  =find-file= を bind するため interactive command 名 = =find-file= 固定化
+- Stream A / Stream C は **menu bar bind を契機としてのみ同期**、それ
+  以外の interaction なし
+
+** 2.3 dependency on Phase 3
+
+- 本 v0.1 は =feat/doc-51-emacs-builtins= の Phase 3 SHIPPED 状態 (=
+  3dff60a) を起点
+- =emacs-buffer.el= / =emacs-redisplay.el= / =emacs-fileio-builtins.el= /
+  =emacs-keymap.el= / =emacs-minibuffer.el= / =emacs-command-loop.el= は
+  既 SHIPPED の primitive として消費、本 v0.1 では拡張のみ
+
+* §3 milestone 詳細
+
+** 3.1 M1 — file/buffer + dired-min (4-5w)
+
+*scope*:
+
+1. find-file
+   - =find-file (FILENAME)= interactive (=C-x C-f=)
+   - minibuffer prompt =Find file: = + path completion (= built-in
+     =read-file-name=、helm/ido 不要)
+   - 既存 buffer に同 file あれば switch-to-buffer、なければ buffer 作成
+     + =insert-file-contents= で content load
+   - =buffer-file-name= / =default-directory= 設定
+   - major-mode dispatch (= =auto-mode-alist= 引き、= =fundamental-mode=
+     fallback)
+2. find-file-noselect (= programmatic、interactive ではない)
+3. save-buffer
+   - =save-buffer= interactive (=C-x C-s=)
+   - =buffer-file-name= に =write-region= で書き戻し
+   - =buffer-modified-p= が nil なら no-op (+ message)
+   - coding system 既定は =utf-8= (= NeLisp Doc 38 coding contract に従う)
+4. switch-to-buffer / kill-buffer / list-buffers
+   - =switch-to-buffer (BUFFER-OR-NAME)= interactive (=C-x b=)
+     - minibuffer + =completing-read= で buffer 名選択
+     - 存在しない名前なら新 buffer を作成
+   - =kill-buffer (BUFFER)= interactive (=C-x k=)
+     - buffer-modified-p なら =yes-or-no-p= で確認
+   - =list-buffers= interactive (=C-x C-b=)
+     - =*Buffer List*= buffer 描画 (= name / size / mode / file 4 列)
+5. window split / navigate
+   - =split-window-below= (=C-x 2=) / =split-window-right= (=C-x 3=)
+   - =other-window N= (=C-x o=) — 順巡回
+   - =delete-window= (=C-x 0=) / =delete-other-windows= (=C-x 1=)
+   - 既存 =emacs-window.el= の stub を real impl に置換
+6. dired-min
+   - =M-x dired= → minibuffer prompt =Dired (directory): = → =*Dired DIR*= buffer
+   - =directory-files-and-attributes= で listing、簡易 1-line/file 描画
+   - keybinding (= =dired-mode-map=):
+     | key | command | 内容 |
+     |-----+---------+------|
+     | =RET= | dired-find-file | point の file/dir を find-file |
+     | =n= | dired-next-line | next line |
+     | =p= | dired-previous-line | previous line |
+     | =q= | quit-window | dired buffer を bury |
+     | =g= | revert-buffer | listing 再読込 |
+     | =^= | dired-up-directory | 親 dir に move |
+   - mark / copy / rename / chmod / sort 等は **scope 外** (= Phase 4)
+
+*close gate*:
+
+| # | gate | 確認方法 |
+|---+------+---------|
+| 1 | nemacs-gtk 上で =C-x C-f /tmp/foo.txt= → 編集 → =C-x C-s= で /tmp/foo.txt が保存される | 手動 + ERT (subprocess で write→read 一致) |
+| 2 | =C-x 2= で 2 window 表示、=C-x o= で point 切替できる | ERT |
+| 3 | =M-x dired RET ~/Cowork/Notes/= で directory listing が *Dired* buffer に表示、=RET= で file 開ける、=^= で親に上がれる | ERT + 手動 |
+| 4 | =C-x C-b= で =*Buffer List*= が表示、列 (name/size/mode/file) が揃う | ERT |
+| 5 | =C-x b foo RET= で新 buffer 作成、再度 =C-x b foo RET= で switch | ERT |
+| 6 | byte-compile clean、=make test= 全 PASS | CI |
+
+*ERT smoke* (= 新規 +20 case 目標):
+
+- =find-file-creates-buffer-and-loads-content=
+- =find-file-existing-buffer-switches-to-it=
+- =find-file-sets-buffer-file-name=
+- =find-file-dispatches-major-mode-via-auto-mode-alist=
+- =find-file-noselect-does-not-switch-to-buffer=
+- =save-buffer-writes-back-to-disk=
+- =save-buffer-respects-utf-8=
+- =save-buffer-no-op-when-not-modified=
+- =switch-to-buffer-completes-existing=
+- =switch-to-buffer-creates-new-on-unknown-name=
+- =kill-buffer-removes-from-buffer-list=
+- =kill-buffer-prompts-on-modified=
+- =list-buffers-renders-four-columns=
+- =split-window-below-creates-second-window=
+- =split-window-right-creates-second-window=
+- =other-window-cycles=
+- =delete-window-leaves-one=
+- =delete-other-windows-leaves-one=
+- =dired-lists-files-and-dirs=
+- =dired-RET-opens-file-at-point=
+- =dired-RET-on-subdir-enters-it=
+- =dired-up-directory-goes-to-parent=
+- =dired-revert-buffer-rescans=
+
+*LOC 見積*: 600-900
+
+| module | LOC |
+|--------+-----|
+| =emacs-fileio.el= 新規 | 200-300 |
+| =emacs-dired-min.el= 新規 | 250-350 |
+| =emacs-window.el= 拡張 | 80-120 |
+| =emacs-buffer.el= 拡張 (interactive layer) | 70-130 |
+
+** 3.2 M2 — 開発体験 (3-4w)
+
+*scope*:
+
+- isearch-forward / isearch-backward (= =C-s= / =C-r=) interactive UI、minibuffer prompt + match highlighting (= overlay or face、既 =emacs-faces.el= に依存)
+- undo (= =C-/=) / undo-redo (= =C-x u=) interactive layer (= 既 =emacs-undo.el= primitive 上)
+- *help system*:
+  - =describe-function= (=C-h f=) → =*Help*= buffer に signature + docstring
+  - =describe-variable= (=C-h v=) → value + docstring
+  - =describe-key= (=C-h k=) → keybinding 解析
+  - =help-mode= (= =q= で quit、=l= で history back、=TAB= で next-button)
+- eval-defun (=C-x C-e= = eval last sexp、=C-M-x= = eval defun)
+- eval-region / eval-buffer
+- =M-x ielm= = comint-style elisp REPL minimum
+
+*close gate*:
+
+| # | gate |
+|---+------|
+| 1 | =C-s foo= で buffer 内 first match に point move、=C-s= 連打で next、=C-g= で abort & 元に戻る |
+| 2 | =C-/= で 1 step undo、=C-x u= で redo |
+| 3 | =C-h f find-file= → =*Help*= に signature + docstring 表示 |
+| 4 | =C-h k C-x C-f= → "C-x C-f runs find-file" 様の表示 |
+| 5 | =(defun foo () 42)= を =C-x C-e= で eval、ミニバッファ echo 42 |
+| 6 | =M-x ielm= で REPL prompt、=(+ 1 2)= → 3 |
+
+*LOC 見積*: 800-1200
+
+** 3.3 M3 — org-mode subset (6-8w)
+
+*scope* (= user の =journals-YYYY.org= / =todo.org= / =capture/= 用途 subset):
+
+- outline structure
+  - =org-mode= major-mode (= file extension =.org= で auto-dispatch)
+  - heading promote/demote (=M-←= / =M-→=)
+  - insert-heading (=M-RET=)
+  - subtree fold/unfold (= =TAB= / =S-TAB= / =org-cycle-global=)
+- TODO state cycle
+  - =org-todo= (=C-c C-t=) で keyword cycle
+  - todo.org の 6 keyword 対応 (= INBOX / NEXT / WAIT / PROJECTS / SCHEDULED / SOMEDAY)
+  - DONE marker + log 軽量
+- table edit
+  - =org-table-align= (=TAB= within table)
+  - =org-table-next-field= (=TAB=)
+  - column add/remove は最低限
+- agenda 軽量
+  - =org-agenda= (=C-c a a=) で SCHEDULED + DEADLINE 一覧
+  - 日付 group / TODO state filter
+  - dispatcher は =a= (agenda) / =t= (todo) / =m= (match) のみ、=L= / =B= 等の advanced は scope 外
+- capture 軽量
+  - =org-capture= (=C-c c=)
+  - template DSL: =(file+headline FILE HEADLINE)= / =(file+olp+datetree FILE …)= の 2 種のみ実装
+  - user 既存 template (Journal / Todo) が動くこと
+
+*scope 外* (= Phase 4 担当):
+
+- org-publish / org-roam / org-noter
+- agenda full (= block / weekly / category dispatcher 全種)
+- src block babel execute / tangle
+- :PROPERTIES: drawer 高度処理 (logbook 全機能、clocking 等は最低限)
+
+*close gate*:
+
+| # | gate |
+|---+------|
+| 1 | =todo.org= を nemacs-gtk で開くと outline 構造が表示、=TAB= で fold/unfold |
+| 2 | TODO heading で =C-c C-t= → state cycle、INBOX → NEXT → WAIT → … |
+| 3 | =journals-2026.org= の datetree に =C-c c j= で entry 追加できる |
+| 4 | =C-c a a= で SCHEDULED 一覧 agenda buffer 表示 |
+| 5 | table 上で =TAB= でセル間移動 + auto-align |
+
+*LOC 見積*: 2500-3500 (= 本 v0.1 の最大 milestone)
+
+** 3.4 M4 — shell + completion (3-4w)
+
+*scope*:
+
+- shell-command (=M-!=) / shell-command-on-region (=M-|=)
+  - output → =*Shell Output*= buffer、最低限 process 同期実行
+  - 既 =emacs-process.el= 上に layer
+- async-shell-command (=M-&=) — 非同期、=*Async Shell Command*= buffer
+- minibuffer completion (= built-in =completing-read= 拡張)
+  - =TAB= で completion candidates 出す
+  - =*Completions*= buffer 描画
+  - icomplete style live-update は **optional / 後送り**
+- project.el subset
+  - =project-current= = =vc-root-of-buffer= or =.git= directory 検出
+  - =project-find-file= = =find-file= の root 限定版
+  - =project-switch-project= = 既知 project list から選択
+
+*close gate*:
+
+| # | gate |
+|---+------|
+| 1 | =M-!= で =ls /tmp= → =*Shell Output*= に listing |
+| 2 | =M-&= で long-running command が non-blocking 実行 |
+| 3 | =C-x C-f /home/madblack-21/Co= で =TAB= → completion 候補 |
+| 4 | =M-x project-find-file= で git root 内 file を絞り込み選択 |
+
+*LOC 見積*: 600-1000
+
+* §4 dependencies
+
+** 4.1 NeLisp / nelisp-emacs side
+
+| dep | 消費先 |
+|-----+--------|
+| nelisp-emacs Doc 01 (architecture) | 本 v0.1 の position 整合 (= Phase 4 と parallel) |
+| nelisp-emacs Doc 51 (emacs-builtins) Phase 3 SHIPPED | M1 が build 上に乗る base |
+| =emacs-buffer.el= / =emacs-buffer-builtins.el= (Phase 3 SHIPPED) | M1 buffer interactive layer |
+| =emacs-window.el= (Phase 1 stub) | M1 で real 化 |
+| =emacs-keymap.el= (Phase 3 SHIPPED) | 全 milestone keybinding |
+| =emacs-minibuffer.el= (Phase 3 SHIPPED) | M1 / M4 minibuffer prompt |
+| =emacs-fileio-builtins.el= (Phase 3 SHIPPED) | M1 fileio primitive |
+| =emacs-process.el= (Phase 3 SHIPPED) | M4 shell-command |
+| =emacs-undo.el= (Phase 3 SHIPPED) | M2 undo interactive layer |
+| =emacs-redisplay.el= (Phase 3 SHIPPED) | 全 milestone (= no direct touch、消費のみ) |
+| =emacs-elisp-mode.el= (Phase 3 SHIPPED) | M2 eval-defun / ielm |
+
+** 4.2 nelisp-emacs-gtk side
+
+- =bin/nemacs-gtk= の =NEMACS_HOME= が本 worktree path を point すれば、
+  Rust 再ビルド不要で全 v0.1 機能が見える
+- Stream C (GTK Phase 2 残) と本 v0.1 は **menu bar bind 以外で同期しない**
+  - File メニュー → =find-file= bind は Stream C が本 v0.1 M1 ship 後に追加
+
+** 4.3 anvil.el (= 開発時 tooling、optional)
+
+- =file-batch= / =file-batch-across= — 複数 module を一括編集
+- =org-read-headline= — 本 doc / 01-architecture.org / Doc 51 等の section pull
+- =worklog-add= — milestone ship 時の作業ログ記録
+
+* §5 sub-phase 期間まとめ
+
+| M | 期間 | 累積 | LOC | 累積 LOC |
+|---+------+------+-----+----------|
+| M1 | 4-5w | 4-5w | 600-900 | 600-900 |
+| M2 | 3-4w | 7-9w | 800-1200 | 1400-2100 |
+| M3 | 6-8w | 13-17w | 2500-3500 | 3900-5600 |
+| M4 | 3-4w | 16-21w | 600-1000 | 4500-6600 |
+
+合計 *16-21w (~4-5ヶ月)*、LOC *4500-6600*
+
+* §6 Phase 4 / GTK との合流
+
+** 6.1 v0.1 ship 後の道筋
+
+- v0.1 全 ship → main merge → daily-driver gate 達成宣言
+- Phase 4 (= =feat/phase4-melpa-compat=) で helm / ido / dired-full / org-full を漸進的に肉付け、本 v0.1 の M1 dired-min / M3 org-subset の上に top
+- GTK Phase 2.A-2.F SHIPPED で見栄え完成
+- Phase 5 (= self-host bootstrap、=bin/nelisp-emacs=) は v0.1 + Phase 4 安定後
+
+** 6.2 conflict 回避
+
+- v0.1 M1 dired-min vs Phase 4 dired-full → v0.1 先行 ship、Phase 4 は M1 の上に top (= mark / sort / copy / async dired 追加)
+- v0.1 M3 org-subset vs Phase 4 org-full → 同 pattern、Phase 4 は M3 を base に拡張
+- worktree 物理隔離 (= =feedback_git_worktree_parallel_sessions.md= 反映)、weekly rebase で merge 吸収
+- =feat/v01-daily-driver= base = =feat/doc-51-emacs-builtins= = =feat/phase4-melpa-compat= base、3 branch とも 3dff60a 起点
+
+* §7 open question / 後送り
+
+** 7.1 M2 help-mode のナビゲーション粒度
+
+- =l= (history back) / =b= (back symbol) / =TAB= (next button) を v0.1 で
+  どこまで実装するか
+- 案: =q= / =l= のみ最低限、button/back-symbol は Phase 4 で fuller
+
+** 7.2 M3 capture template DSL の互換性
+
+- v0.1 で =file+headline= / =file+olp+datetree= の 2 形式のみ
+- =:prepend= / =:immediate-finish= / =:jump-to-captured= 等の property
+  flag は v0.1 で対応するか後送りか
+- 案: 既存 user template (Journal / Todo) で使われる flag のみ対応、未使用は no-op
+
+** 7.3 M4 minibuffer completion style
+
+- icomplete style (= live-update inline 候補) を v0.1 で実装するか
+- 案: PSP (= pure =completing-read= + =*Completions*= buffer) で v0.1 close、icomplete は Phase 4
+
+** 7.4 M3 org-mode の =emacs-org-subset.el= vs vendored Org
+
+- 既存 Org Mode の lisp ファイル (= =org.el= ~30k LOC) を vendor して
+  ロードする path も検討余地あり
+- 案: vendored は外部依存が大きい (= cl-lib / org-macs / ob-* 多数)、subset 自前実装の方が
+  v0.1 では現実的。Phase 4 で full vendor 検討
+
+** 7.5 dired sort 順
+
+- v0.1 dired-min は =directory-files-and-attributes= の order そのまま (= alphabetical)、
+  Emacs default の =-al= ls と一致しない可能性
+- 案: v0.1 は alphabetical 固定、=-al= 互換は Phase 4
+
+* §8 next action (= 本 doc 採択後)
+
+1. 本 doc を main merge (= design doc は SHIPPED 扱い、内容変更は revision)
+2. M1 着手:
+   - =feat/v01-daily-driver-m1= sub-branch (or 直接 =feat/v01-daily-driver= で commit、worktree 1 つで足りる)
+   - codex dispatch (= anvil-orchestrator):
+     - task: =emacs-fileio.el= 新規 + ERT bundle
+     - task: =emacs-dired-min.el= 新規 + ERT bundle
+     - task: =emacs-window.el= real impl 拡張
+     - task: =emacs-buffer.el= interactive layer 拡張
+   - 並行 Stream B (Phase 4) / Stream C (GTK Phase 2) も別 session で起動
+3. M1 close gate 達成 → main merge → M2 着手
+
+* §9 revision log
+
+- v0 (2026-05-08): 初版 DRAFT、user 確認待ち
