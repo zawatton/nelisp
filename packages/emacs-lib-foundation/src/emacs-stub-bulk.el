@@ -251,9 +251,11 @@ Forwarder to `forward-char' with negated count."
 (unless (fboundp 'erase-buffer) (defun erase-buffer (&rest _) nil))
 (unless (fboundp 'error-message-string) (defun error-message-string (&rest _) nil))
 (unless (fboundp 'eval) (defun eval (&rest _) nil))
+(unless (fboundp 'eval-after-load) (defun eval-after-load (&rest _) nil))
 (unless (fboundp 'eval-and-compile) (defmacro eval-and-compile (&rest _) nil))
 (unless (fboundp 'eval-buffer) (defun eval-buffer (&rest _) nil))
 (unless (fboundp 'eval-when-compile) (defmacro eval-when-compile (&rest _) nil))
+(unless (fboundp 'with-eval-after-load) (defmacro with-eval-after-load (_file &rest _body) nil))
 (unless (fboundp 'event-convert-list) (defun event-convert-list (&rest _) nil))
 (unless (fboundp 'exec-path) (defun exec-path (&rest _) nil))
 ;; execute-extended-command moved to emacs-command-loop-builtins (Phase B.5).

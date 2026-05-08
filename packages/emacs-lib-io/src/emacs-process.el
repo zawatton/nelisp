@@ -145,6 +145,63 @@ touching this file."
   "Return PROCESS's name string."
   (emacs-process--delegate 'process-name (list process)))
 
+(defun emacs-process-process-command (process)
+  "Return PROCESS's command (program + args) as a list."
+  (emacs-process--delegate 'process-command (list process)))
+
+(defun emacs-process-process-live-p (process)
+  "Return non-nil if PROCESS is alive (status = run/open/listen/connect/stop)."
+  (cond
+   ((emacs-process--delegate-p 'process-live-p)
+    (funcall (indirect-function 'process-live-p) process))
+   (t
+    ;; Standalone fallback: derive from process-status if available.
+    (let ((s (and (or (fboundp 'process-status)
+                      (fboundp 'emacs-process-process-status))
+                  (emacs-process-process-status process))))
+      (memq s '(run open listen connect stop))))))
+
+(defun emacs-process-process-id (process)
+  "Return PROCESS's OS pid integer (or nil if not yet running)."
+  (emacs-process--delegate 'process-id (list process)))
+
+(defun emacs-process-process-mark (process)
+  "Return PROCESS's filter mark (used by buffer-attached output)."
+  (emacs-process--delegate 'process-mark (list process)))
+
+(defun emacs-process-set-process-filter (process filter)
+  "Install FILTER as PROCESS's stdout/stderr callback."
+  (emacs-process--delegate 'set-process-filter (list process filter)))
+
+(defun emacs-process-set-process-sentinel (process sentinel)
+  "Install SENTINEL as PROCESS's lifecycle callback."
+  (emacs-process--delegate 'set-process-sentinel (list process sentinel)))
+
+(defun emacs-process-accept-process-output (&optional process seconds millisec just-this-one)
+  "Block until PROCESS produces output or SECONDS pass.
+
+Same calling convention as Emacs's `accept-process-output'.  When
+the host primitive is available, delegate.  Otherwise the
+substrate currently signals `emacs-process-not-implemented' —
+async I/O without an event loop is out of γ-MVP scope."
+  (emacs-process--delegate 'accept-process-output
+                           (list process seconds millisec just-this-one)))
+
+(defun emacs-process-signal-process (process-or-pid signum)
+  "Send SIGNUM (number or symbol) to PROCESS-OR-PID."
+  (emacs-process--delegate 'signal-process (list process-or-pid signum)))
+
+(defun emacs-process-kill-process (process)
+  "Send SIGKILL to PROCESS.
+
+Equivalent to `(signal-process PROCESS \\='KILL)'; provided as a
+top-level alias for parity with the Emacs API."
+  (cond
+   ((emacs-process--delegate-p 'kill-process)
+    (funcall (indirect-function 'kill-process) process))
+   (t
+    (emacs-process-signal-process process 'KILL))))
+
 ;;;; --- I/O + lifecycle ----------------------------------------------
 
 (defun emacs-process-process-send-string (process string)
