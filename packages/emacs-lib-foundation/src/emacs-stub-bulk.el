@@ -3,556 +3,74 @@
 ;; functions emitted as defun stubs returning nil; vars as defvar nil.
 ;;; Code:
 
-(unless (fboundp 'abbreviate-file-name) (defun abbreviate-file-name (&rest _) nil))
-(unless (fboundp 'abbrev-mode) (defun abbrev-mode (&rest _) nil))
-(unless (fboundp 'abort-recursive-edit) (defun abort-recursive-edit (&rest _) nil))
-(unless (fboundp 'abs) (defun abs (&rest _) nil))
-(unless (fboundp 'add-function) (defmacro add-function (&rest _) nil))
-(unless (fboundp 'add-text-properties) (defun add-text-properties (&rest _) nil))
-(unless (fboundp 'advice-add) (defun advice-add (&rest _) nil))
-(unless (fboundp 'advice-member-p) (defun advice-member-p (&rest _) nil))
-(unless (fboundp 'advice-remove) (defun advice-remove (&rest _) nil))
-(unless (boundp 'after-change-functions) (defvar after-change-functions nil))
-(unless (boundp 'after-load-alist) (defvar after-load-alist nil))
-(unless (fboundp 'all-completions) (defun all-completions (&rest _) nil))
-(unless (fboundp 'append) (defun append (&rest _) nil))
-(unless (fboundp 'apply) (defun apply (&rest _) nil))
-(unless (fboundp 'aref) (defun aref (&rest _) nil))
-(unless (fboundp 'arrayp) (defun arrayp (&rest _) nil))
-(unless (fboundp 'aset) (defun aset (&rest _) nil))
-(unless (fboundp 'ash) (defun ash (&rest _) nil))
-(unless (fboundp 'assoc) (defun assoc (&rest _) nil))
-(unless (fboundp 'assq) (defun assq (&rest _) nil))
-(unless (fboundp 'atom) (defun atom (&rest _) nil))
-(unless (fboundp 'auto-fill-mode) (defun auto-fill-mode (&rest _) nil))
-(unless (fboundp 'autoload) (defun autoload (&rest _) nil))
-(unless (fboundp 'autoload-do-load) (defun autoload-do-load (&rest _) nil))
 ;; auto-mode-alist moved to emacs-mode-builtins (Track H).
-(unless (fboundp 'auto-save-mode) (defun auto-save-mode (&rest _) nil))
-(unless (fboundp 'backtrace) (defun backtrace (&rest _) nil))
-(unless (fboundp 'backtrace-frame--internal) (defun backtrace-frame--internal (&rest _) nil))
+
 (unless (fboundp 'backward-char)
   (defun backward-char (&optional n)
     "Doc 51 Track B (2026-05-04) MVP `backward-char'.
 Forwarder to `forward-char' with negated count."
     (when (fboundp 'forward-char)
       (forward-char (- (or n 1))))))
-(unless (fboundp 'backward-delete-char) (defun backward-delete-char (&rest _) nil))
-(unless (fboundp 'backward-sexp) (defun backward-sexp (&rest _) nil))
-(unless (fboundp 'backward-word) (defun backward-word (&rest _) nil))
-(unless (fboundp 'beep) (defun beep (&rest _) nil))
-(unless (boundp 'before-change-functions) (defvar before-change-functions nil))
-(unless (fboundp 'beginning-of-line) (defun beginning-of-line (&rest _) nil))
-(unless (fboundp 'bobp) (defun bobp (&rest _) nil))
-(unless (fboundp 'bolp) (defun bolp (&rest _) nil))
-(unless (fboundp 'bool-vector) (defun bool-vector (&rest _) nil))
-(unless (fboundp 'bool-vector-p) (defun bool-vector-p (&rest _) nil))
-(unless (fboundp 'bound-and-true-p) (defmacro bound-and-true-p (&rest _) nil))
-(unless (fboundp 'boundp) (defun boundp (&rest _) nil))
-(unless (fboundp 'bounds-of-thing-at-point) (defun bounds-of-thing-at-point (&rest _) nil))
-(unless (fboundp 'buffer-file-name) (defun buffer-file-name (&rest _) nil))
-(unless (boundp 'buffer-invisibility-spec) (defvar buffer-invisibility-spec nil))
-(unless (fboundp 'buffer-list) (defun buffer-list (&rest _) nil))
-(unless (boundp 'buffer-list-update-hook) (defvar buffer-list-update-hook nil))
-(unless (fboundp 'buffer-live-p) (defun buffer-live-p (&rest _) nil))
-(unless (fboundp 'buffer-local-value) (defun buffer-local-value (&rest _) nil))
-(unless (fboundp 'buffer-modified-p) (defun buffer-modified-p (&rest _) nil))
-(unless (fboundp 'buffer-name) (defun buffer-name (&rest _) nil))
-(unless (fboundp 'bufferp) (defun bufferp (&rest _) nil))
-(unless (boundp 'buffer-read-only) (defvar buffer-read-only nil))
-(unless (fboundp 'buffer-size) (defun buffer-size (&rest _) nil))
-(unless (fboundp 'buffer-string) (defun buffer-string (&rest _) nil))
-(unless (fboundp 'buffer-substring) (defun buffer-substring (&rest _) nil))
-(unless (fboundp 'buffer-substring-no-properties) (defun buffer-substring-no-properties (&rest _) nil))
+
 ;; buffer-undo-list moved to emacs-undo-builtins (Track E.2).
-(unless (fboundp 'byte-code) (defun byte-code (&rest _) nil))
-(unless (fboundp 'byte-code-function-p) (defun byte-code-function-p (&rest _) nil))
-(unless (fboundp 'byte-compile) (defun byte-compile (&rest _) nil))
-(unless (fboundp 'byte-compile-disable-warning) (defun byte-compile-disable-warning (&rest _) nil))
-(unless (fboundp 'byte-compile-enable-warning) (defun byte-compile-enable-warning (&rest _) nil))
-(unless (fboundp 'byte-compile-warning-enabled-p) (defun byte-compile-warning-enabled-p (&rest _) nil))
-(unless (fboundp 'byte-compile-warn-obsolete) (defun byte-compile-warn-obsolete (&rest _) nil))
-(unless (fboundp 'byte-run--set-speed) (defun byte-run--set-speed (&rest _) nil))
+
 ;; call-interactively moved to emacs-command-loop-builtins (Phase B.3).
 ;; call-process / call-process-region moved to emacs-process-builtins (Track I).
-(unless (fboundp 'cancel-timer) (defun cancel-timer (&rest _) nil))
-(unless (fboundp 'capitalize-word) (defun capitalize-word (&rest _) nil))
-(unless (fboundp 'car) (defun car (&rest _) nil))
-(unless (fboundp 'car-less-than-car) (defun car-less-than-car (&rest _) nil))
-(unless (fboundp 'car-safe) (defun car-safe (&rest _) nil))
-(unless (boundp 'case-fold-search) (defvar case-fold-search nil))
-(unless (fboundp 'cdr) (defun cdr (&rest _) nil))
-(unless (fboundp 'cdr-safe) (defun cdr-safe (&rest _) nil))
-(unless (fboundp 'ceiling) (defun ceiling (&rest _) nil))
-(unless (fboundp 'characterp) (defun characterp (&rest _) nil))
-(unless (fboundp 'char-after) (defun char-after (&rest _) nil))
-(unless (fboundp 'char-before) (defun char-before (&rest _) nil))
-(unless (fboundp 'char-syntax) (defun char-syntax (&rest _) nil))
-(unless (fboundp 'char-table-p) (defun char-table-p (&rest _) nil))
-(unless (fboundp 'char-table-range) (defun char-table-range (&rest _) nil))
-(unless (fboundp 'char-to-string) (defun char-to-string (&rest _) nil))
-(unless (fboundp 'chmod) (defun chmod (&rest _) nil))
-(unless (fboundp 'cl--assertion-failed) (defun cl--assertion-failed (&rest _) nil))
-(unless (fboundp 'cl--class-allparents) (defun cl--class-allparents (&rest _) nil))
-(unless (fboundp 'cl--class-docstring) (defun cl--class-docstring (&rest _) nil))
-(unless (fboundp 'cl--class-index-table) (defun cl--class-index-table (&rest _) nil))
-(unless (fboundp 'cl--class-name) (defun cl--class-name (&rest _) nil))
-(unless (fboundp 'cl--class-parents) (defun cl--class-parents (&rest _) nil))
-(unless (fboundp 'cl--class-slots) (defun cl--class-slots (&rest _) nil))
-(unless (fboundp 'cl--define-built-in-type) (defmacro cl--define-built-in-type (&rest _) nil))
-(unless (fboundp 'cl-generic-combine-methods) (defun cl-generic-combine-methods (&rest _) nil))
-(unless (boundp 'cl--generic-derived-generalizer) (defvar cl--generic-derived-generalizer nil))
-(unless (fboundp 'cl--generic-dispatches) (defun cl--generic-dispatches (&rest _) nil))
-(unless (boundp 'cl--generic-eql-generalizer) (defvar cl--generic-eql-generalizer nil))
-(unless (fboundp 'cl--generic-generalizer-name) (defun cl--generic-generalizer-name (&rest _) nil))
-(unless (fboundp 'cl--generic-generalizer-p) (defun cl--generic-generalizer-p (&rest _) nil))
-(unless (fboundp 'cl--generic-generalizer-priority) (defun cl--generic-generalizer-priority (&rest _) nil))
-(unless (fboundp 'cl-generic-generalizers) (defun cl-generic-generalizers (&rest _) nil))
-(unless (fboundp 'cl--generic-generalizer-specializers-function) (defun cl--generic-generalizer-specializers-function (&rest _) nil))
-(unless (fboundp 'cl--generic-generalizer-tagcode-function) (defun cl--generic-generalizer-tagcode-function (&rest _) nil))
-(unless (boundp 'cl--generic-head-generalizer) (defvar cl--generic-head-generalizer nil))
-(unless (fboundp 'cl--generic-make) (defun cl--generic-make (&rest _) nil))
-(unless (fboundp 'cl-generic-make-generalizer) (defun cl-generic-make-generalizer (&rest _) nil))
-(unless (fboundp 'cl--generic-make-method) (defun cl--generic-make-method (&rest _) nil))
-(unless (fboundp 'cl--generic-method-call-con) (defun cl--generic-method-call-con (&rest _) nil))
-(unless (fboundp 'cl--generic-method-function) (defun cl--generic-method-function (&rest _) nil))
-(unless (fboundp 'cl--generic-method-qualifiers) (defun cl--generic-method-qualifiers (&rest _) nil))
-(unless (fboundp 'cl--generic-method-specializers) (defun cl--generic-method-specializers (&rest _) nil))
-(unless (fboundp 'cl--generic-method-table) (defun cl--generic-method-table (&rest _) nil))
-(unless (fboundp 'cl--generic-name) (defun cl--generic-name (&rest _) nil))
-(unless (boundp 'cl--generic-oclosure-generalizer) (defvar cl--generic-oclosure-generalizer nil))
-(unless (fboundp 'cl--generic-options) (defun cl--generic-options (&rest _) nil))
-(unless (boundp 'cl--generic-t-generalizer) (defvar cl--generic-t-generalizer nil))
-(unless (boundp 'cl--generic-typeof-generalizer) (defvar cl--generic-typeof-generalizer nil))
-(unless (fboundp 'cl-method-qualifiers) (defun cl-method-qualifiers (&rest _) nil))
-(unless (fboundp 'cl-no-applicable-method) (defun cl-no-applicable-method (&rest _) nil))
-(unless (fboundp 'cl-no-next-method) (defun cl-no-next-method (&rest _) nil))
-(unless (fboundp 'cl-no-primary-method) (defun cl-no-primary-method (&rest _) nil))
-(unless (fboundp 'cl-old-struct-compat-mode) (defun cl-old-struct-compat-mode (&rest _) nil))
-(unless (fboundp 'cl-prin1-to-string) (defun cl-prin1-to-string (&rest _) nil))
-(unless (fboundp 'cl--slot-descriptor-initform) (defun cl--slot-descriptor-initform (&rest _) nil))
-(unless (fboundp 'cl--slot-descriptor-name) (defun cl--slot-descriptor-name (&rest _) nil))
-(unless (fboundp 'cl--slot-descriptor-props) (defun cl--slot-descriptor-props (&rest _) nil))
-(unless (fboundp 'cl--slot-descriptor-type) (defun cl--slot-descriptor-type (&rest _) nil))
-(unless (fboundp 'cl--struct-class-named) (defun cl--struct-class-named (&rest _) nil))
-(unless (fboundp 'cl--struct-class-p) (defun cl--struct-class-p (&rest _) nil))
-(unless (fboundp 'cl--struct-class-print) (defun cl--struct-class-print (&rest _) nil))
-(unless (fboundp 'cl--struct-class-slots) (defun cl--struct-class-slots (&rest _) nil))
-(unless (fboundp 'cl--struct-class-type) (defun cl--struct-class-type (&rest _) nil))
-(unless (fboundp 'cl-struct-define) (defun cl-struct-define (&rest _) nil))
-(unless (fboundp 'cl--struct-get-class) (defun cl--struct-get-class (&rest _) nil))
-(unless (fboundp 'cl--struct-name-p) (defun cl--struct-name-p (&rest _) nil))
-(unless (fboundp 'cl-type-of) (defun cl-type-of (&rest _) nil))
-(unless (fboundp 'c-mode) (defun c-mode (&rest _) nil))
-(unless (fboundp 'combine-after-change-execute) (defun combine-after-change-execute (&rest _) nil))
-(unless (boundp 'command-debug-status) (defvar command-debug-status nil))
-(unless (boundp 'command-error-function) (defvar command-error-function nil))
-(unless (fboundp 'commandp) (defun commandp (&rest _) nil))
-(unless (fboundp 'command-remapping) (defun command-remapping (&rest _) nil))
-(unless (fboundp 'compare-strings) (defun compare-strings (&rest _) nil))
-(unless (fboundp 'compare-window-configurations) (defun compare-window-configurations (&rest _) nil))
-(unless (fboundp 'comp-el-to-eln-rel-filename) (defun comp-el-to-eln-rel-filename (&rest _) nil))
-(unless (boundp 'comp-enable-subr-trampolines) (defvar comp-enable-subr-trampolines nil))
-(unless (fboundp 'compile) (defun compile (&rest _) nil))
-(unless (fboundp 'completing-read) (defun completing-read (&rest _) nil))
-(unless (fboundp 'compose-mail) (defun compose-mail (&rest _) nil))
-(unless (fboundp 'concat) (defun concat (&rest _) nil))
-(unless (fboundp 'cons) (defun cons (&rest _) nil))
-(unless (fboundp 'consp) (defun consp (&rest _) nil))
-(unless (fboundp 'copy-keymap) (defun copy-keymap (&rest _) nil))
-(unless (fboundp 'copy-marker) (defun copy-marker (&rest _) nil))
-(unless (fboundp 'copy-sequence) (defun copy-sequence (&rest _) nil))
-(unless (fboundp 'ctl-x-4-prefix) (defun ctl-x-4-prefix (&rest _) nil))
-(unless (fboundp 'ctl-x-5-prefix) (defun ctl-x-5-prefix (&rest _) nil))
-(unless (fboundp 'current-buffer) (defun current-buffer (&rest _) nil))
-(unless (fboundp 'current-case-table) (defun current-case-table (&rest _) nil))
-(unless (fboundp 'current-column) (defun current-column (&rest _) nil))
-(unless (fboundp 'current-global-map) (defun current-global-map (&rest _) nil))
-(unless (fboundp 'current-input-mode) (defun current-input-mode (&rest _) nil))
-(unless (boundp 'current-load-list) (defvar current-load-list nil))
-(unless (fboundp 'current-local-map) (defun current-local-map (&rest _) nil))
-(unless (fboundp 'current-message) (defun current-message (&rest _) nil))
+
 ;; current-prefix-arg moved to emacs-command-loop-builtins (Phase B.3).
-(unless (fboundp 'current-window-configuration) (defun current-window-configuration (&rest _) nil))
-(unless (boundp 'cursor-in-echo-area) (defvar cursor-in-echo-area nil))
-(unless (fboundp 'cursor-intangible-mode) (defun cursor-intangible-mode (&rest _) nil))
-(unless (fboundp 'cursor-sensor-mode) (defun cursor-sensor-mode (&rest _) nil))
-(unless (boundp 'data-directory) (defvar data-directory nil))
-(unless (fboundp 'debug) (defun debug (&rest _) nil))
-(unless (boundp 'debugger) (defvar debugger nil))
-(unless (boundp 'debug-ignored-errors) (defvar debug-ignored-errors nil))
-(unless (boundp 'debug-on-error) (defvar debug-on-error nil))
+
 (unless (fboundp 'decode-coding-string)
   ;; NeLisp の Sexp::Str = Rust String = UTF-8 内部表現なので、UTF-8
   ;; の encode/decode は identity で十分。他の coding system は未対応
   ;; (= encoded-coding-system 引数は無視)。
   (defun decode-coding-string (string _coding-system &optional _nocopy &rest _)
     (if (stringp string) string "")))
-(unless (fboundp 'defalias) (defun defalias (&rest _) nil))
-(unless (fboundp 'default-boundp) (defun default-boundp (&rest _) nil))
-(unless (boundp 'default-directory) (defvar default-directory nil))
-(unless (fboundp 'default-file-modes) (defun default-file-modes (&rest _) nil))
-(unless (fboundp 'default-value) (defun default-value (&rest _) nil))
-(unless (fboundp 'define-button-type) (defun define-button-type (&rest _) nil))
+
 ;; define-derived-mode moved to emacs-mode-builtins (Track H).
-(unless (fboundp 'define-inline) (defmacro define-inline (&rest _) nil))
-(unless (fboundp 'define-key) (defun define-key (&rest _) nil))
-(unless (fboundp 'define-minor-mode) (defmacro define-minor-mode (&rest _) nil))
-(unless (fboundp 'define-obsolete-function-alias) (defmacro define-obsolete-function-alias (&rest _) nil))
-(unless (fboundp 'define-obsolete-variable-alias) (defmacro define-obsolete-variable-alias (&rest _) nil))
-(unless (fboundp 'defining-kbd-macro) (defun defining-kbd-macro (&rest _) nil))
-(unless (fboundp 'defsubst) (defmacro defsubst (&rest _) nil))
-(unless (boundp 'defun-declarations-alist) (defvar defun-declarations-alist nil))
-(unless (fboundp 'defvaralias) (defun defvaralias (&rest _) nil))
-(unless (boundp 'delayed-after-hook-functions) (defvar delayed-after-hook-functions nil))
-(unless (boundp 'delayed-mode-hooks) (defvar delayed-mode-hooks nil))
-(unless (boundp 'delayed-warnings-list) (defvar delayed-warnings-list nil))
-(unless (fboundp 'delete) (defun delete (&rest _) nil))
-(unless (fboundp 'delete-backward-char) (defun delete-backward-char (&rest _) nil))
-(unless (fboundp 'delete-char) (defun delete-char (&rest _) nil))
-(unless (fboundp 'delete-minibuffer-contents) (defun delete-minibuffer-contents (&rest _) nil))
-(unless (fboundp 'delete-overlay) (defun delete-overlay (&rest _) nil))
-(unless (fboundp 'delete-region) (defun delete-region (&rest _) nil))
-(unless (fboundp 'delq) (defun delq (&rest _) nil))
-(unless (fboundp 'describe-bindings) (defun describe-bindings (&rest _) nil))
-(unless (fboundp 'describe-function) (defun describe-function (&rest _) nil))
-(unless (fboundp 'describe-key) (defun describe-key (&rest _) nil))
-(unless (fboundp 'describe-symbol) (defun describe-symbol (&rest _) nil))
-(unless (fboundp 'describe-variable) (defun describe-variable (&rest _) nil))
+
 ;; digit-argument moved to emacs-command-loop-builtins (Phase B.5).
-(unless (fboundp 'ding) (defun ding (&rest _) nil))
-(unless (fboundp 'directory-file-name) (defun directory-file-name (&rest _) nil))
-(unless (fboundp 'discard-input) (defun discard-input (&rest _) nil))
-(unless (fboundp 'display-buffer) (defun display-buffer (&rest _) nil))
-(unless (fboundp 'display-graphic-p) (defun display-graphic-p (&rest _) nil))
-(unless (fboundp 'display-popup-menus-p) (defun display-popup-menus-p (&rest _) nil))
-(unless (fboundp 'display-warning) (defun display-warning (&rest _) nil))
-(unless (fboundp 'documentation) (defun documentation (&rest _) nil))
-(unless (fboundp 'documentation-property) (defun documentation-property (&rest _) nil))
-(unless (fboundp 'downcase) (defun downcase (&rest _) nil))
-(unless (fboundp 'downcase-region) (defun downcase-region (&rest _) nil))
-(unless (fboundp 'downcase-word) (defun downcase-word (&rest _) nil))
-(unless (fboundp 'drop) (defun drop (&rest _) nil))
-(unless (boundp 'echo-keystrokes) (defvar echo-keystrokes nil))
-(unless (fboundp 'elt) (defun elt (&rest _) nil))
-(unless (fboundp 'emacs-pid) (defun emacs-pid (&rest _) nil))
-(unless (boundp 'emacs-startup-hook) (defvar emacs-startup-hook nil))
-(unless (fboundp 'emacs-version) (defun emacs-version (&rest _) nil))
-(unless (boundp 'enable-recursive-minibuffers) (defvar enable-recursive-minibuffers nil))
+
 (unless (fboundp 'encode-coding-string)
   (defun encode-coding-string (string _coding-system &optional _nocopy &rest _)
     (if (stringp string) string "")))
-(unless (fboundp 'end-of-line) (defun end-of-line (&rest _) nil))
-(unless (fboundp 'enlarge-window) (defun enlarge-window (&rest _) nil))
-(unless (fboundp 'eobp) (defun eobp (&rest _) nil))
-(unless (fboundp 'eq) (defun eq (&rest _) nil))
-(unless (fboundp 'eql) (defun eql (&rest _) nil))
-(unless (fboundp 'equal) (defun equal (&rest _) nil))
-(unless (fboundp 'erase-buffer) (defun erase-buffer (&rest _) nil))
-(unless (fboundp 'error-message-string) (defun error-message-string (&rest _) nil))
-(unless (fboundp 'eval) (defun eval (&rest _) nil))
-(unless (fboundp 'eval-after-load) (defun eval-after-load (&rest _) nil))
-(unless (fboundp 'eval-and-compile) (defmacro eval-and-compile (&rest _) nil))
-(unless (fboundp 'eval-buffer) (defun eval-buffer (&rest _) nil))
-(unless (fboundp 'eval-when-compile) (defmacro eval-when-compile (&rest _) nil))
+
 (unless (fboundp 'with-eval-after-load) (defmacro with-eval-after-load (_file &rest _body) nil))
-(unless (fboundp 'event-convert-list) (defun event-convert-list (&rest _) nil))
-(unless (fboundp 'exec-path) (defun exec-path (&rest _) nil))
+
 ;; execute-extended-command moved to emacs-command-loop-builtins (Phase B.5).
-(unless (fboundp 'execute-extended-command-for-buffer) (defun execute-extended-command-for-buffer (&rest _) nil))
-(unless (boundp 'executing-kbd-macro) (defvar executing-kbd-macro nil))
-(unless (fboundp 'exit-minibuffer) (defun exit-minibuffer (&rest _) nil))
+
 ;; exit-recursive-edit moved to emacs-command-loop-builtins (Phase B.6).
-(unless (fboundp 'exp) (defun exp (&rest _) nil))
-(unless (fboundp 'expand-file-name) (defun expand-file-name (&rest _) nil))
+
 ;; face-background moved to emacs-faces-builtins (Track F).
-(unless (fboundp 'face-background-pixmap) (defun face-background-pixmap (&rest _) nil))
-(unless (fboundp 'face-font) (defun face-font (&rest _) nil))
+
 ;; face-foreground moved to emacs-faces-builtins (Track F).
-(unless (fboundp 'face-stipple) (defun face-stipple (&rest _) nil))
-(unless (fboundp 'face-underline-p) (defun face-underline-p (&rest _) nil))
-(unless (fboundp 'fboundp) (defun fboundp (&rest _) nil))
-(unless (fboundp 'featurep) (defun featurep (&rest _) nil))
-(unless (boundp 'features) (defvar features nil))
-(unless (fboundp 'fetch-bytecode) (defun fetch-bytecode (&rest _) nil))
-(unless (fboundp 'field-beginning) (defun field-beginning (&rest _) nil))
-(unless (fboundp 'field-end) (defun field-end (&rest _) nil))
-(unless (fboundp 'file-exists-p) (defun file-exists-p (&rest _) nil))
-(unless (fboundp 'file-modes) (defun file-modes (&rest _) nil))
-(unless (fboundp 'file-name-absolute-p) (defun file-name-absolute-p (&rest _) nil))
-(unless (fboundp 'file-name-extension) (defun file-name-extension (&rest _) nil))
-(unless (fboundp 'file-name-nondirectory) (defun file-name-nondirectory (&rest _) nil))
-(unless (fboundp 'file-name-sans-extension) (defun file-name-sans-extension (&rest _) nil))
-(unless (fboundp 'file-newer-than-file-p) (defun file-newer-than-file-p (&rest _) nil))
-(unless (fboundp 'file-relative-name) (defun file-relative-name (&rest _) nil))
-(unless (fboundp 'file-truename) (defun file-truename (&rest _) nil))
-(unless (fboundp 'fillarray) (defun fillarray (&rest _) nil))
+
 ;; fill-column / fill-region moved to emacs-textmodes-stub.el (Phase
 ;; 4 'C', 2026-05-06): the previous no-op `fill-region' broke MELPA
 ;; packages routing word-wrap through `with-temp-buffer' + `fill-
 ;; region' (= s.el's `s-word-wrap' canonical example).  The new
 ;; module provides a real greedy word-wrap polyfill.
-(unless (fboundp 'find-function-search-for-symbol) (defun find-function-search-for-symbol (&rest _) nil))
-(unless (fboundp 'find-lisp-object-file-name) (defun find-lisp-object-file-name (&rest _) nil))
-(unless (boundp 'find-tag-default-function) (defvar find-tag-default-function nil))
-(unless (boundp 'find-word-boundary-function-table) (defvar find-word-boundary-function-table nil))
-(unless (fboundp 'flatten-list) (defun flatten-list (&rest _) nil))
-(unless (fboundp 'float) (defun float (&rest _) nil))
-(unless (fboundp 'floatp) (defun floatp (&rest _) nil))
-(unless (fboundp 'float-time) (defun float-time (&rest _) nil))
-(unless (fboundp 'floor) (defun floor (&rest _) nil))
-(unless (fboundp 'fmakunbound) (defun fmakunbound (&rest _) nil))
-(unless (boundp 'font-lock-defaults) (defvar font-lock-defaults nil))
+
 ;; force-mode-line-update moved to emacs-redisplay-builtins (Track G).
-(unless (fboundp 'format) (defun format (&rest _) nil))
-(unless (fboundp 'format-message) (defun format-message (&rest _) nil))
-(unless (fboundp 'format-prompt) (defun format-prompt (&rest _) nil))
-(unless (fboundp 'format-spec) (defun format-spec (&rest _) nil))
-(unless (fboundp 'forward-char) (defun forward-char (&rest _) nil))
-(unless (fboundp 'forward-line) (defun forward-line (&rest _) nil))
-(unless (fboundp 'forward-sexp) (defun forward-sexp (&rest _) nil))
-(unless (fboundp 'forward-word) (defun forward-word (&rest _) nil))
-(unless (fboundp 'frame-char-height) (defun frame-char-height (&rest _) nil))
-(unless (fboundp 'frame-char-width) (defun frame-char-width (&rest _) nil))
-(unless (fboundp 'frame-height) (defun frame-height (&rest _) nil))
-(unless (fboundp 'frame-live-p) (defun frame-live-p (&rest _) nil))
-(unless (fboundp 'framep) (defun framep (&rest _) nil))
-(unless (fboundp 'frame-parameter) (defun frame-parameter (&rest _) nil))
-(unless (fboundp 'frame-parameters) (defun frame-parameters (&rest _) nil))
-(unless (fboundp 'frame-selected-window) (defun frame-selected-window (&rest _) nil))
-(unless (fboundp 'frame-toggle-on-screen-keyboard) (defun frame-toggle-on-screen-keyboard (&rest _) nil))
-(unless (fboundp 'frame-visible-p) (defun frame-visible-p (&rest _) nil))
-(unless (fboundp 'frame-width) (defun frame-width (&rest _) nil))
-(unless (fboundp 'fset) (defun fset (&rest _) nil))
-(unless (fboundp 'funcall) (defun funcall (&rest _) nil))
+
 ;; funcall-interactively moved to emacs-command-loop-builtins (Phase B.3).
-(unless (fboundp 'funcall-with-delayed-message) (defun funcall-with-delayed-message (&rest _) nil))
-(unless (fboundp 'function-documentation) (defun function-documentation (&rest _) nil))
-(unless (boundp 'function-key-map) (defvar function-key-map nil))
-(unless (fboundp 'functionp) (defun functionp (&rest _) nil))
-(unless (fboundp 'function-put) (defun function-put (&rest _) nil))
+
 ;; fundamental-mode moved to emacs-mode-builtins (Track H).
-(unless (fboundp 'garbage-collect) (defun garbage-collect (&rest _) nil))
-(unless (fboundp 'generate-new-buffer-name) (defun generate-new-buffer-name (&rest _) nil))
-(unless (fboundp 'get) (defun get (&rest _) nil))
-(unless (fboundp 'get-advertised-calling-convention) (defun get-advertised-calling-convention (&rest _) nil))
-(unless (fboundp 'get-buffer) (defun get-buffer (&rest _) nil))
-(unless (fboundp 'get-buffer-create) (defun get-buffer-create (&rest _) nil))
-(unless (fboundp 'get-buffer-process) (defun get-buffer-process (&rest _) nil))
-(unless (fboundp 'get-char-property) (defun get-char-property (&rest _) nil))
-(unless (fboundp 'getenv) (defun getenv (&rest _) nil))
-(unless (fboundp 'gethash) (defun gethash (&rest _) nil))
-(unless (fboundp 'get-load-suffixes) (defun get-load-suffixes (&rest _) nil))
-(unless (fboundp 'get-register) (defun get-register (&rest _) nil))
-(unless (fboundp 'get-text-property) (defun get-text-property (&rest _) nil))
-(unless (fboundp 'gnus) (defun gnus (&rest _) nil))
-(unless (fboundp 'goto-char) (defun goto-char (&rest _) nil))
-(unless (fboundp 'grep) (defun grep (&rest _) nil))
-(unless (fboundp 'gv-letplace) (defmacro gv-letplace (&rest _) nil))
-(unless (fboundp 'hack-local-variables) (defun hack-local-variables (&rest _) nil))
-(unless (fboundp 'handler-bind-1) (defun handler-bind-1 (&rest _) nil))
-(unless (fboundp 'hash-table-p) (defun hash-table-p (&rest _) nil))
-(unless (fboundp 'help) (defun help (&rest _) nil))
-(unless (fboundp 'help-add-fundoc-usage) (defun help-add-fundoc-usage (&rest _) nil))
-(unless (fboundp 'help-buffer) (defun help-buffer (&rest _) nil))
-(unless (boundp 'help-char) (defvar help-char nil))
-(unless (fboundp 'help--docstring-quote) (defun help--docstring-quote (&rest _) nil))
-(unless (boundp 'help-fns-describe-function-functions) (defvar help-fns-describe-function-functions nil))
-(unless (boundp 'help-form) (defvar help-form nil))
-(unless (fboundp 'help-form-show) (defun help-form-show (&rest _) nil))
-(unless (fboundp 'help-function-arglist) (defun help-function-arglist (&rest _) nil))
-(unless (fboundp 'help-insert-xref-button) (defun help-insert-xref-button (&rest _) nil))
-(unless (fboundp 'help-mode) (defun help-mode (&rest _) nil))
-(unless (fboundp 'help-setup-xref) (defun help-setup-xref (&rest _) nil))
-(unless (fboundp 'help-split-fundoc) (defun help-split-fundoc (&rest _) nil))
-(unless (boundp 'history-delete-duplicates) (defvar history-delete-duplicates nil))
-(unless (boundp 'history-length) (defvar history-length nil))
-(unless (boundp 'horizontal-scroll-bar) (defvar horizontal-scroll-bar nil))
-(unless (fboundp 'hs-minor-mode) (defun hs-minor-mode (&rest _) nil))
-(unless (fboundp 'iconify-frame) (defun iconify-frame (&rest _) nil))
-(unless (fboundp 'identity) (defun identity (&rest _) nil))
-(unless (fboundp 'indent-to) (defun indent-to (&rest _) nil))
-(unless (fboundp 'indent-to-column) (defun indent-to-column (&rest _) nil))
-(unless (fboundp 'indirect-function) (defun indirect-function (&rest _) nil))
-(unless (fboundp 'info) (defun info (&rest _) nil))
-(unless (boundp 'inhibit-changing-match-data) (defvar inhibit-changing-match-data nil))
-(unless (boundp 'inhibit-field-text-motion) (defvar inhibit-field-text-motion nil))
-(unless (boundp 'inhibit-modification-hooks) (defvar inhibit-modification-hooks nil))
-(unless (boundp 'inhibit-nul-byte-detection) (defvar inhibit-nul-byte-detection nil))
-(unless (boundp 'inhibit-null-byte-detection) (defvar inhibit-null-byte-detection nil))
-(unless (boundp 'inhibit-point-motion-hooks) (defvar inhibit-point-motion-hooks nil))
+
 ;; inhibit-quit moved to emacs-command-loop-builtins (Phase B.1).
-(unless (boundp 'inhibit-read-only) (defvar inhibit-read-only nil))
-(unless (boundp 'input-decode-map) (defvar input-decode-map nil))
-(unless (boundp 'input-method-function) (defvar input-method-function nil))
-(unless (fboundp 'input-pending-p) (defun input-pending-p (&rest _) nil))
-(unless (fboundp 'insert) (defun insert (&rest _) nil))
-(unless (fboundp 'insert-buffer-substring) (defun insert-buffer-substring (&rest _) nil))
-(unless (fboundp 'integerp) (defun integerp (&rest _) nil))
-(unless (fboundp 'intern) (defun intern (&rest _) nil))
-(unless (fboundp 'internal-event-symbol-parse-modifiers) (defun internal-event-symbol-parse-modifiers (&rest _) nil))
-(unless (fboundp 'internal--labeled-narrow-to-region) (defun internal--labeled-narrow-to-region (&rest _) nil))
-(unless (fboundp 'internal--labeled-widen) (defun internal--labeled-widen (&rest _) nil))
-(unless (fboundp 'internal--track-mouse) (defun internal--track-mouse (&rest _) nil))
-(unless (fboundp 'intern-soft) (defun intern-soft (&rest _) nil))
-(unless (fboundp 'int-to-string) (defun int-to-string (&rest _) nil))
-(unless (fboundp 'invocation-directory) (defun invocation-directory (&rest _) nil))
-(unless (fboundp 'invocation-name) (defun invocation-name (&rest _) nil))
-(unless (fboundp 'isearch-mode) (defun isearch-mode (&rest _) nil))
-(unless (boundp 'jka-compr-load-suffixes) (defvar jka-compr-load-suffixes nil))
-(unless (fboundp 'key-binding) (defun key-binding (&rest _) nil))
-(unless (fboundp 'keyboard-coding-system) (defun keyboard-coding-system (&rest _) nil))
+
 ;; keyboard-quit moved to emacs-command-loop-builtins (Phase B.6).
-(unless (boundp 'keyboard-translate-table) (defvar keyboard-translate-table nil))
-(unless (fboundp 'key-description) (defun key-description (&rest _) nil))
-(unless (fboundp 'keymap-global-lookup) (defun keymap-global-lookup (&rest _) nil))
-(unless (fboundp 'keymap-global-set) (defun keymap-global-set (&rest _) nil))
-(unless (fboundp 'keymap-global-unset) (defun keymap-global-unset (&rest _) nil))
-(unless (fboundp 'keymap-local-lookup) (defun keymap-local-lookup (&rest _) nil))
-(unless (fboundp 'keymap-local-set) (defun keymap-local-set (&rest _) nil))
-(unless (fboundp 'keymap-local-unset) (defun keymap-local-unset (&rest _) nil))
-(unless (fboundp 'keymapp) (defun keymapp (&rest _) nil))
-(unless (fboundp 'keymap-parent) (defun keymap-parent (&rest _) nil))
-(unless (fboundp 'keymap-prompt) (defun keymap-prompt (&rest _) nil))
-(unless (fboundp 'keymap-set-after) (defun keymap-set-after (&rest _) nil))
-(unless (fboundp 'keymap-substitute) (defun keymap-substitute (&rest _) nil))
-(unless (fboundp 'key-parse) (defun key-parse (&rest _) nil))
-(unless (fboundp 'key-translate) (defun key-translate (&rest _) nil))
-(unless (fboundp 'keywordp) (defun keywordp (&rest _) nil))
+
 ;; kill-all-local-variables moved to emacs-mode-builtins (Track H).
-(unless (fboundp 'kill-buffer) (defun kill-buffer (&rest _) nil))
-(unless (boundp 'kill-buffer-hook) (defvar kill-buffer-hook nil))
-(unless (boundp 'kill-buffer-query-functions) (defvar kill-buffer-query-functions nil))
-(unless (fboundp 'kill-emacs) (defun kill-emacs (&rest _) nil))
-(unless (fboundp 'kill-local-variable) (defun kill-local-variable (&rest _) nil))
-(unless (fboundp 'kmacro-end-macro) (defun kmacro-end-macro (&rest _) nil))
+
 ;; last-command-event / last-input-event / last-nonmenu-event moved to
 ;; emacs-command-loop-builtins (Phase B.1).
-(unless (fboundp 'length) (defun length (&rest _) nil))
-(unless (boundp 'lexical-binding) (defvar lexical-binding nil))
-(unless (fboundp 'libxml-parse-html-region) (defun libxml-parse-html-region (&rest _) nil))
-(unless (fboundp 'libxml-parse-xml-region) (defun libxml-parse-xml-region (&rest _) nil))
-(unless (fboundp 'line-beginning-position) (defun line-beginning-position (&rest _) nil))
-(unless (fboundp 'line-end-position) (defun line-end-position (&rest _) nil))
-(unless (boundp 'line-spacing) (defvar line-spacing nil))
-(unless (fboundp 'lisp-indent-line) (defun lisp-indent-line (&rest _) nil))
-(unless (fboundp 'list) (defun list (&rest _) nil))
-(unless (fboundp 'listp) (defun listp (&rest _) nil))
-(unless (fboundp 'load) (defun load (&rest _) nil))
-(unless (boundp 'load-dangerous-libraries) (defvar load-dangerous-libraries nil))
-(unless (boundp 'load-file-name) (defvar load-file-name nil))
-(unless (boundp 'load-file-rep-suffixes) (defvar load-file-rep-suffixes nil))
-(unless (boundp 'load-history) (defvar load-history nil))
-(unless (fboundp 'loadhist-unload-element) (defun loadhist-unload-element (&rest _) nil))
-(unless (fboundp 'load-library) (defun load-library (&rest _) nil))
-(unless (boundp 'load-path) (defvar load-path nil))
-(unless (boundp 'load-suffixes) (defvar load-suffixes nil))
-(unless (fboundp 'load-with-code-conversion) (defun load-with-code-conversion (&rest _) nil))
-(unless (fboundp 'local-variable-if-set-p) (defun local-variable-if-set-p (&rest _) nil))
-(unless (fboundp 'local-variable-p) (defun local-variable-p (&rest _) nil))
-(unless (fboundp 'locate-file) (defun locate-file (&rest _) nil))
-(unless (fboundp 'locate-file-internal) (defun locate-file-internal (&rest _) nil))
-(unless (fboundp 'locate-user-emacs-file) (defun locate-user-emacs-file (&rest _) nil))
-(unless (fboundp 'log) (defun log (&rest _) nil))
-(unless (fboundp 'logand) (defun logand (&rest _) nil))
-(unless (fboundp 'logb) (defun logb (&rest _) nil))
-(unless (fboundp 'logior) (defun logior (&rest _) nil))
-(unless (fboundp 'lognot) (defun lognot (&rest _) nil))
-(unless (fboundp 'logxor) (defun logxor (&rest _) nil))
-(unless (fboundp 'looking-at) (defun looking-at (&rest _) nil))
-(unless (fboundp 'lookup-key) (defun lookup-key (&rest _) nil))
-(unless (boundp 'macro-declarations-alist) (defvar macro-declarations-alist nil))
-(unless (fboundp 'macroexpand) (defun macroexpand (&rest _) nil))
-(unless (fboundp 'macroexpand-all) (defun macroexpand-all (&rest _) nil))
-(unless (boundp 'macroexpand-all-environment) (defvar macroexpand-all-environment nil))
-(unless (fboundp 'macroexp-compiling-p) (defun macroexp-compiling-p (&rest _) nil))
-(unless (fboundp 'macroexp-const-p) (defun macroexp-const-p (&rest _) nil))
-(unless (fboundp 'macroexp-copyable-p) (defun macroexp-copyable-p (&rest _) nil))
-(unless (boundp 'macroexp--dynvars) (defvar macroexp--dynvars nil))
-(unless (fboundp 'macroexp--fgrep) (defun macroexp--fgrep (&rest _) nil))
-(unless (fboundp 'macroexp--funcall-if-compiled) (defun macroexp--funcall-if-compiled (&rest _) nil))
-(unless (fboundp 'macroexp-let2) (defmacro macroexp-let2 (&rest _) nil))
-(unless (fboundp 'macroexp-progn) (defun macroexp-progn (&rest _) nil))
-(unless (fboundp 'macroexp--warn-and-return) (defun macroexp--warn-and-return (&rest _) nil))
-(unless (fboundp 'macroexp-warn-and-return) (defun macroexp-warn-and-return (&rest _) nil))
-(unless (boundp 'magic-fallback-mode-alist) (defvar magic-fallback-mode-alist nil))
-(unless (fboundp 'mail) (defun mail (&rest _) nil))
-(unless (boundp 'mail-user-agent) (defvar mail-user-agent nil))
+
 ;; major-mode moved to emacs-mode-builtins (Track H).
-(unless (boundp 'major-mode--suspended) (defvar major-mode--suspended nil))
-(unless (fboundp 'make-char-table) (defun make-char-table (&rest _) nil))
-(unless (fboundp 'make-directory) (defun make-directory (&rest _) nil))
-(unless (fboundp 'make-directory-autoloads) (defun make-directory-autoloads (&rest _) nil))
-(unless (fboundp 'make-frame-invisible) (defun make-frame-invisible (&rest _) nil))
-(unless (fboundp 'make-frame-visible) (defun make-frame-visible (&rest _) nil))
-(unless (fboundp 'make-hash-table) (defun make-hash-table (&rest _) nil))
-(unless (fboundp 'make-keymap) (defun make-keymap (&rest _) nil))
-(unless (fboundp 'make-list) (defun make-list (&rest _) nil))
-(unless (fboundp 'make-local-variable) (defun make-local-variable (&rest _) nil))
-(unless (fboundp 'make-obsolete) (defun make-obsolete (&rest _) nil))
-(unless (fboundp 'make-obsolete-variable) (defun make-obsolete-variable (&rest _) nil))
-(unless (fboundp 'make-overlay) (defun make-overlay (&rest _) nil))
+
 ;; make-process moved to emacs-process-builtins (Track I).
-(unless (fboundp 'make-sparse-keymap) (defun make-sparse-keymap (&rest _) nil))
-(unless (fboundp 'make-string) (defun make-string (&rest _) nil))
-(unless (fboundp 'make-symbol) (defun make-symbol (&rest _) nil))
-(unless (fboundp 'make-text-button) (defun make-text-button (&rest _) nil))
-(unless (fboundp 'make-variable-buffer-local) (defun make-variable-buffer-local (&rest _) nil))
-(unless (fboundp 'make-vector) (defun make-vector (&rest _) nil))
-(unless (fboundp 'mapatoms) (defun mapatoms (&rest _) nil))
-(unless (fboundp 'mapbacktrace) (defun mapbacktrace (&rest _) nil))
-(unless (fboundp 'mapc) (defun mapc (&rest _) nil))
-(unless (fboundp 'mapcan) (defun mapcan (&rest _) nil))
-(unless (fboundp 'mapcar) (defun mapcar (&rest _) nil))
-(unless (fboundp 'mapconcat) (defun mapconcat (&rest _) nil))
-(unless (fboundp 'maphash) (defun maphash (&rest _) nil))
-(unless (fboundp 'map-keymap) (defun map-keymap (&rest _) nil))
-(unless (fboundp 'mark) (defun mark (&rest _) nil))
-(unless (fboundp 'markerp) (defun markerp (&rest _) nil))
-(unless (fboundp 'marker-position) (defun marker-position (&rest _) nil))
-(unless (fboundp 'mark-marker) (defun mark-marker (&rest _) nil))
-(unless (fboundp 'match-beginning) (defun match-beginning (&rest _) nil))
-(unless (fboundp 'match-data) (defun match-data (&rest _) nil))
-(unless (fboundp 'match-data--translate) (defun match-data--translate (&rest _) nil))
-(unless (fboundp 'match-end) (defun match-end (&rest _) nil))
-(unless (fboundp 'max) (defun max (&rest _) nil))
-(unless (boundp 'max-lisp-eval-depth) (defvar max-lisp-eval-depth nil))
-(unless (fboundp 'member) (defun member (&rest _) nil))
-(unless (fboundp 'memq) (defun memq (&rest _) nil))
-(unless (fboundp 'memql) (defun memql (&rest _) nil))
-(unless (boundp 'menu-prompting) (defvar menu-prompting nil))
-(unless (fboundp 'message) (defun message (&rest _) nil))
-(unless (boundp 'message-log-max) (defvar message-log-max nil))
-(unless (boundp 'messages-buffer-max-lines) (defvar messages-buffer-max-lines nil))
-(unless (fboundp 'min) (defun min (&rest _) nil))
-(unless (boundp 'minibuffer-auto-raise) (defvar minibuffer-auto-raise nil))
-(unless (boundp 'minibuffer-default-prompt-format) (defvar minibuffer-default-prompt-format nil))
-(unless (boundp 'minibuffer-local-map) (defvar minibuffer-local-map nil))
-(unless (fboundp 'minibuffer-message) (defun minibuffer-message (&rest _) nil))
-(unless (fboundp 'minibufferp) (defun minibufferp (&rest _) nil))
-(unless (fboundp 'minibuffer-prompt) (defun minibuffer-prompt (&rest _) nil))
-(unless (fboundp 'minibuffer-prompt-end) (defun minibuffer-prompt-end (&rest _) nil))
-(unless (fboundp 'minibuffer-recenter-top-bottom) (defun minibuffer-recenter-top-bottom (&rest _) nil))
-(unless (fboundp 'minibuffer-scroll-down-command) (defun minibuffer-scroll-down-command (&rest _) nil))
-(unless (fboundp 'minibuffer-scroll-other-window) (defun minibuffer-scroll-other-window (&rest _) nil))
-(unless (fboundp 'minibuffer-scroll-other-window-down) (defun minibuffer-scroll-other-window-down (&rest _) nil))
-(unless (fboundp 'minibuffer-scroll-up-command) (defun minibuffer-scroll-up-command (&rest _) nil))
-(unless (boundp 'minibuffer-scroll-window) (defvar minibuffer-scroll-window nil))
-(unless (fboundp 'minibuffer-window) (defun minibuffer-window (&rest _) nil))
-(unless (fboundp 'minibuffer-with-setup-hook) (defmacro minibuffer-with-setup-hook (&rest _) nil))
-(unless (boundp 'minor-mode-alist) (defvar minor-mode-alist nil))
-(unless (boundp 'minor-mode-map-alist) (defvar minor-mode-map-alist nil))
-(unless (fboundp 'mkdir) (defun mkdir (&rest _) nil))
-(unless (fboundp 'mod) (defun mod (&rest _) nil))
-(unless (boundp 'mode-line-mode-menu) (defvar mode-line-mode-menu nil))
+
 ;; mode-name moved to emacs-mode-builtins (Track H).
-(unless (fboundp 'modify-frame-parameters) (defun modify-frame-parameters (&rest _) nil))
-(unless (boundp 'most-negative-fixnum) (defvar most-negative-fixnum nil))
-(unless (boundp 'most-positive-fixnum) (defvar most-positive-fixnum nil))
-(unless (fboundp 'mouse-position) (defun mouse-position (&rest _) nil))
-(unless (fboundp 'move-marker) (defun move-marker (&rest _) nil))
-(unless (fboundp 'move-overlay) (defun move-overlay (&rest _) nil))
-(unless (fboundp 'move-to-column) (defun move-to-column (&rest _) nil))
+
 (unless (fboundp 'multibyte-string-p)
   ;; NeLisp の Sexp::Str は内部 UTF-8 — 上位 ASCII bit を含む文字が
   ;; あれば multibyte 扱い。pure-ASCII なら nil を返す。
@@ -563,371 +81,187 @@ Forwarder to `forward-char' with negated count."
           (when (>= (aref string i) 128) (setq found t))
           (setq i (1+ i)))
         found))))
-(unless (fboundp 'mutex-lock) (defun mutex-lock (&rest _) nil))
-(unless (fboundp 'mutex-unlock) (defun mutex-unlock (&rest _) nil))
-(unless (fboundp 'narrow-to-region) (defun narrow-to-region (&rest _) nil))
-(unless (fboundp 'native-comp-available-p) (defun native-comp-available-p (&rest _) nil))
-(unless (boundp 'native-comp-deferred-compilation) (defvar native-comp-deferred-compilation nil))
-(unless (boundp 'native-comp-enable-subr-trampolines) (defvar native-comp-enable-subr-trampolines nil))
-(unless (fboundp 'native-comp-function-p) (defun native-comp-function-p (&rest _) nil))
-(unless (boundp 'native-comp-jit-compilation) (defvar native-comp-jit-compilation nil))
-(unless (fboundp 'native-comp-unit-file) (defun native-comp-unit-file (&rest _) nil))
-(unless (fboundp 'natnump) (defun natnump (&rest _) nil))
-(unless (fboundp 'nconc) (defun nconc (&rest _) nil))
-(unless (boundp 'needed) (defvar needed nil))
+
 ;; negative-argument moved to emacs-command-loop-builtins (Phase B.5).
-(unless (fboundp 'newline) (defun newline (&rest _) nil))
-(unless (fboundp 'next-frame) (defun next-frame (&rest _) nil))
-(unless (fboundp 'next-property-change) (defun next-property-change (&rest _) nil))
-(unless (fboundp 'next-single-property-change) (defun next-single-property-change (&rest _) nil))
-(unless (fboundp 'next-window) (defun next-window (&rest _) nil))
-(unless (fboundp 'nlistp) (defun nlistp (&rest _) nil))
-(unless (boundp 'noninteractive) (defvar noninteractive nil))
-(unless (fboundp 'normal-mode) (defun normal-mode (&rest _) nil))
-(unless (fboundp 'nreverse) (defun nreverse (&rest _) nil))
-(unless (fboundp 'nth) (defun nth (&rest _) nil))
-(unless (fboundp 'nthcdr) (defun nthcdr (&rest _) nil))
-(unless (fboundp 'null) (defun null (&rest _) nil))
-(unless (fboundp 'number-at-point) (defun number-at-point (&rest _) nil))
-(unless (fboundp 'numberp) (defun numberp (&rest _) nil))
-(unless (fboundp 'number-to-string) (defun number-to-string (&rest _) nil))
-(unless (boundp 'obarray) (defvar obarray nil))
-(unless (fboundp 'object-intervals) (defun object-intervals (&rest _) nil))
-(unless (fboundp 'occur) (defun occur (&rest _) nil))
-(unless (fboundp 'oclosure-define) (defmacro oclosure-define (&rest _) nil))
-(unless (fboundp 'oclosure-lambda) (defmacro oclosure-lambda (&rest _) nil))
-(unless (fboundp 'oclosure-type) (defun oclosure-type (&rest _) nil))
-(unless (boundp 'operating-system-release) (defvar operating-system-release nil))
-(unless (fboundp 'other-frame) (defun other-frame (&rest _) nil))
-(unless (boundp 'output) (defvar output nil))
-(unless (fboundp 'overlay-buffer) (defun overlay-buffer (&rest _) nil))
-(unless (fboundp 'overlay-end) (defun overlay-end (&rest _) nil))
-(unless (fboundp 'overlay-get) (defun overlay-get (&rest _) nil))
-(unless (fboundp 'overlay-lists) (defun overlay-lists (&rest _) nil))
-(unless (fboundp 'overlay-properties) (defun overlay-properties (&rest _) nil))
-(unless (fboundp 'overlay-put) (defun overlay-put (&rest _) nil))
-(unless (fboundp 'overlay-recenter) (defun overlay-recenter (&rest _) nil))
-(unless (fboundp 'overlays-in) (defun overlays-in (&rest _) nil))
-(unless (fboundp 'overlay-start) (defun overlay-start (&rest _) nil))
-(unless (boundp 'overriding-local-map) (defvar overriding-local-map nil))
-(unless (boundp 'overriding-terminal-local-map) (defvar overriding-terminal-local-map nil))
-(unless (fboundp 'overwrite-mode) (defun overwrite-mode (&rest _) nil))
-(unless (boundp 'parse-sexp-lookup-properties) (defvar parse-sexp-lookup-properties nil))
-(unless (fboundp 'pcase) (defmacro pcase (&rest _) nil))
-(unless (fboundp 'pcase-defmacro) (defmacro pcase-defmacro (&rest _) nil))
-(unless (fboundp 'pcase-dolist) (defmacro pcase-dolist (&rest _) nil))
-(unless (fboundp 'pcase-exhaustive) (defmacro pcase-exhaustive (&rest _) nil))
-(unless (fboundp 'pcase-let) (defmacro pcase-let (&rest _) nil))
-(unless (fboundp 'pcase--make-docstring) (defun pcase--make-docstring (&rest _) nil))
-(unless (boundp 'pending-undo-list) (defvar pending-undo-list nil))
-(unless (fboundp 'play-sound-internal) (defun play-sound-internal (&rest _) nil))
-(unless (fboundp 'plist-get) (defun plist-get (&rest _) nil))
-(unless (fboundp 'plist-member) (defun plist-member (&rest _) nil))
-(unless (fboundp 'plist-put) (defun plist-put (&rest _) nil))
-(unless (fboundp 'point) (defun point (&rest _) nil))
-(unless (fboundp 'point-at-bol) (defun point-at-bol (&rest _) nil))
-(unless (fboundp 'point-at-eol) (defun point-at-eol (&rest _) nil))
-(unless (fboundp 'point-marker) (defun point-marker (&rest _) nil))
-(unless (fboundp 'point-max) (defun point-max (&rest _) nil))
-(unless (fboundp 'point-min) (defun point-min (&rest _) nil))
-(unless (fboundp 'pos-bol) (defun pos-bol (&rest _) nil))
-(unless (fboundp 'pos-eol) (defun pos-eol (&rest _) nil))
-(unless (fboundp 'posn-at-point) (defun posn-at-point (&rest _) nil))
+
 ;; post-command-hook moved to emacs-command-loop-builtins (Phase B.4).
-(unless (boundp 'post-self-insert-hook) (defvar post-self-insert-hook nil))
+
 ;; pre-command-hook moved to emacs-command-loop-builtins (Phase B.4).
 ;; prefix-arg moved to emacs-command-loop-builtins (Phase B.3).
-(unless (fboundp 'prefix-numeric-value) (defun prefix-numeric-value (&rest _) nil))
+
 ;; primitive-undo moved to emacs-undo-builtins (Track E.2).
-(unless (fboundp 'prin1) (defun prin1 (&rest _) nil))
-(unless (fboundp 'prin1-to-string) (defun prin1-to-string (&rest _) nil))
-(unless (fboundp 'princ) (defun princ (&rest _) nil))
-(unless (fboundp 'print) (defun print (&rest _) nil))
-(unless (boundp 'print-escape-newlines) (defvar print-escape-newlines nil))
-(unless (boundp 'print-gensym) (defvar print-gensym nil))
-(unless (boundp 'print-quoted) (defvar print-quoted nil))
-(unless (boundp 'print-unreadable-function) (defvar print-unreadable-function nil))
-(unless (fboundp 'process-attributes) (defun process-attributes (&rest _) nil))
+
 ;; process-buffer moved to emacs-process-builtins (Track I).
-(unless (fboundp 'process-file) (defun process-file (&rest _) nil))
-(unless (fboundp 'process-filter) (defun process-filter (&rest _) nil))
+
 ;; processp moved to emacs-process-builtins (Track I).
-(unless (fboundp 'process-plist) (defun process-plist (&rest _) nil))
-(unless (fboundp 'process-query-on-exit-flag) (defun process-query-on-exit-flag (&rest _) nil))
-(unless (fboundp 'process-send-region) (defun process-send-region (&rest _) nil))
+
 ;; process-send-string moved to emacs-process-builtins (Track I).
-(unless (fboundp 'process-sentinel) (defun process-sentinel (&rest _) nil))
+
 ;; process-status moved to emacs-process-builtins (Track I).
-(unless (fboundp 'progress-reporter-make) (defun progress-reporter-make (&rest _) nil))
-(unless (fboundp 'proper-list-p) (defun proper-list-p (&rest _) nil))
-(unless (fboundp 'propertize) (defun propertize (&rest _) nil))
-(unless (fboundp 'purecopy) (defun purecopy (&rest _) nil))
-(unless (boundp 'purify-flag) (defvar purify-flag nil))
-(unless (fboundp 'put) (defun put (&rest _) nil))
-(unless (fboundp 'puthash) (defun puthash (&rest _) nil))
-(unless (fboundp 'put-text-property) (defun put-text-property (&rest _) nil))
-(unless (boundp 'query-replace-map) (defvar query-replace-map nil))
+
 ;; quit-flag moved to emacs-command-loop-builtins (Phase B.1).
-(unless (fboundp 'raise-frame) (defun raise-frame (&rest _) nil))
-(unless (fboundp 'random) (defun random (&rest _) nil))
-(unless (fboundp 'rassq) (defun rassq (&rest _) nil))
-(unless (fboundp 'read) (defun read (&rest _) nil))
+
 ;; read-char / read-command / read-event moved to
 ;; emacs-command-loop-builtins (Phase B.1).
-(unless (fboundp 'read-from-minibuffer) (defun read-from-minibuffer (&rest _) nil))
-(unless (fboundp 'read-from-string) (defun read-from-string (&rest _) nil))
-(unless (fboundp 'read-kbd-macro) (defun read-kbd-macro (&rest _) nil))
+
 ;; read-key-sequence{,-vector} moved to emacs-command-loop-builtins (Phase B.2).
-(unless (fboundp 'read-library-name) (defun read-library-name (&rest _) nil))
-(unless (fboundp 'read-string) (defun read-string (&rest _) nil))
+
 ;; real-this-command moved to emacs-command-loop-builtins (Phase B.1).
-(unless (fboundp 'recenter) (defun recenter (&rest _) nil))
-(unless (fboundp 'recenter-top-bottom) (defun recenter-top-bottom (&rest _) nil))
-(unless (fboundp 'record) (defun record (&rest _) nil))
-(unless (fboundp 'recordp) (defun recordp (&rest _) nil))
-(unless (fboundp 'redirect-frame-focus) (defun redirect-frame-focus (&rest _) nil))
+
 ;; redisplay moved to emacs-redisplay-builtins (Track G).
-(unless (boundp 'redisplay-dont-pause) (defvar redisplay-dont-pause nil))
-(unless (fboundp 'regexp-opt) (defun regexp-opt (&rest _) nil))
-(unless (fboundp 'regexp-quote) (defun regexp-quote (&rest _) nil))
-(unless (fboundp 'remember) (defun remember (&rest _) nil))
-(unless (fboundp 'remove-list-of-text-properties) (defun remove-list-of-text-properties (&rest _) nil))
-(unless (fboundp 'rename-buffer) (defun rename-buffer (&rest _) nil))
-(unless (fboundp 'repeat) (defun repeat (&rest _) nil))
-(unless (fboundp 'replace-match) (defun replace-match (&rest _) nil))
-(unless (fboundp 're-search-backward) (defun re-search-backward (&rest _) nil))
-(unless (fboundp 're-search-forward) (defun re-search-forward (&rest _) nil))
-(unless (fboundp 'restore-buffer-modified-p) (defun restore-buffer-modified-p (&rest _) nil))
-(unless (fboundp 'reverse) (defun reverse (&rest _) nil))
-(unless (fboundp 'round) (defun round (&rest _) nil))
-(unless (fboundp 'rplaca) (defun rplaca (&rest _) nil))
-(unless (fboundp 'rplacd) (defun rplacd (&rest _) nil))
-(unless (fboundp 'run-hooks) (defun run-hooks (&rest _) nil))
-(unless (fboundp 'run-hook-with-args) (defun run-hook-with-args (&rest _) nil))
-(unless (fboundp 'run-hook-with-args-until-success) (defun run-hook-with-args-until-success (&rest _) nil))
-(unless (fboundp 'run-hook-wrapped) (defun run-hook-wrapped (&rest _) nil))
-(unless (fboundp 'run-window-configuration-change-hook) (defun run-window-configuration-change-hook (&rest _) nil))
-(unless (fboundp 'run-with-idle-timer) (defun run-with-idle-timer (&rest _) nil))
-(unless (boundp 's) (defvar s nil))
-(unless (fboundp 'safe-length) (defun safe-length (&rest _) nil))
-(unless (fboundp 'save-current-buffer) (defun save-current-buffer (&rest _) nil))
-(unless (fboundp 'save-excursion) (defun save-excursion (&rest _) nil))
-(unless (fboundp 'save-restriction) (defun save-restriction (&rest _) nil))
-(unless (fboundp 'scroll-bar-scale) (defun scroll-bar-scale (&rest _) nil))
-(unless (fboundp 'scroll-down) (defun scroll-down (&rest _) nil))
-(unless (fboundp 'scroll-down-command) (defun scroll-down-command (&rest _) nil))
-(unless (fboundp 'scroll-left) (defun scroll-left (&rest _) nil))
-(unless (fboundp 'scroll-other-window) (defun scroll-other-window (&rest _) nil))
-(unless (fboundp 'scroll-other-window-down) (defun scroll-other-window-down (&rest _) nil))
-(unless (fboundp 'scroll-right) (defun scroll-right (&rest _) nil))
-(unless (fboundp 'scroll-up) (defun scroll-up (&rest _) nil))
-(unless (fboundp 'scroll-up-command) (defun scroll-up-command (&rest _) nil))
-(unless (fboundp 'search-backward-regexp) (defun search-backward-regexp (&rest _) nil))
-(unless (fboundp 'search-forward) (defun search-forward (&rest _) nil))
-(unless (fboundp 'search-forward-regexp) (defun search-forward-regexp (&rest _) nil))
-(unless (fboundp 'secure-hash) (defun secure-hash (&rest _) nil))
-(unless (fboundp 'selected-frame) (defun selected-frame (&rest _) nil))
-(unless (fboundp 'selected-window) (defun selected-window (&rest _) nil))
-(unless (fboundp 'select-frame) (defun select-frame (&rest _) nil))
-(unless (fboundp 'select-window) (defun select-window (&rest _) nil))
-(unless (fboundp 'self-insert-command) (defun self-insert-command (&rest _) nil))
-(unless (fboundp 'send-region) (defun send-region (&rest _) nil))
-(unless (fboundp 'send-string) (defun send-string (&rest _) nil))
-(unless (fboundp 'seq-concatenate) (defun seq-concatenate (&rest _) nil))
-(unless (fboundp 'seq-find) (defun seq-find (&rest _) nil))
-(unless (fboundp 'seq-some) (defun seq-some (&rest _) nil))
-(unless (fboundp 'seq-subseq) (defun seq-subseq (&rest _) nil))
-(unless (fboundp 'seq-uniq) (defun seq-uniq (&rest _) nil))
-(unless (fboundp 'set-advertised-calling-convention) (defun set-advertised-calling-convention (&rest _) nil))
-(unless (fboundp 'set-buffer) (defun set-buffer (&rest _) nil))
-(unless (fboundp 'set-buffer-modified-p) (defun set-buffer-modified-p (&rest _) nil))
-(unless (fboundp 'setcar) (defun setcar (&rest _) nil))
-(unless (fboundp 'set-case-table) (defun set-case-table (&rest _) nil))
-(unless (fboundp 'setcdr) (defun setcdr (&rest _) nil))
-(unless (fboundp 'set-char-table-parent) (defun set-char-table-parent (&rest _) nil))
-(unless (fboundp 'set-char-table-range) (defun set-char-table-range (&rest _) nil))
-(unless (fboundp 'set-default) (defun set-default (&rest _) nil))
-(unless (fboundp 'set-default-file-modes) (defun set-default-file-modes (&rest _) nil))
-(unless (fboundp 'setenv) (defun setenv (&rest _) nil))
-(unless (fboundp 'setf) (defmacro setf (&rest _) nil))
+
 ;; set-face-background moved to emacs-faces-builtins (Track F).
-(unless (fboundp 'set-face-font) (defun set-face-font (&rest _) nil))
+
 ;; set-face-foreground moved to emacs-faces-builtins (Track F).
-(unless (fboundp 'set-face-stipple) (defun set-face-stipple (&rest _) nil))
-(unless (fboundp 'set-face-underline) (defun set-face-underline (&rest _) nil))
-(unless (fboundp 'set-file-modes) (defun set-file-modes (&rest _) nil))
-(unless (fboundp 'set-frame-height) (defun set-frame-height (&rest _) nil))
-(unless (fboundp 'set-frame-parameter) (defun set-frame-parameter (&rest _) nil))
-(unless (fboundp 'set-frame-selected-window) (defun set-frame-selected-window (&rest _) nil))
-(unless (fboundp 'set-frame-width) (defun set-frame-width (&rest _) nil))
-(unless (fboundp 'set-input-mode) (defun set-input-mode (&rest _) nil))
-(unless (fboundp 'set-keymap-parent) (defun set-keymap-parent (&rest _) nil))
-(unless (fboundp 'set-mark) (defun set-mark (&rest _) nil))
-(unless (fboundp 'set-marker) (defun set-marker (&rest _) nil))
-(unless (fboundp 'set-match-data) (defun set-match-data (&rest _) nil))
-(unless (fboundp 'set-mouse-position) (defun set-mouse-position (&rest _) nil))
-(unless (fboundp 'setplist) (defun setplist (&rest _) nil))
-(unless (fboundp 'set-process-buffer) (defun set-process-buffer (&rest _) nil))
-(unless (fboundp 'set-process-filter) (defun set-process-filter (&rest _) nil))
-(unless (fboundp 'set-process-plist) (defun set-process-plist (&rest _) nil))
-(unless (fboundp 'set-process-sentinel) (defun set-process-sentinel (&rest _) nil))
-(unless (fboundp 'set-register) (defun set-register (&rest _) nil))
-(unless (fboundp 'set-standard-case-table) (defun set-standard-case-table (&rest _) nil))
-(unless (fboundp 'set-syntax-table) (defun set-syntax-table (&rest _) nil))
-(unless (fboundp 'set-temporary-overlay-map) (defun set-temporary-overlay-map (&rest _) nil))
-(unless (fboundp 'set-terminal-parameter) (defun set-terminal-parameter (&rest _) nil))
-(unless (fboundp 'set-text-conversion-style) (defun set-text-conversion-style (&rest _) nil))
-(unless (fboundp 'set-text-properties) (defun set-text-properties (&rest _) nil))
-(unless (boundp 'set-variable-value-history) (defvar set-variable-value-history nil))
-(unless (fboundp 'set-visited-file-modtime) (defun set-visited-file-modtime (&rest _) nil))
-(unless (fboundp 'set-visited-file-name) (defun set-visited-file-name (&rest _) nil))
-(unless (fboundp 'set-window-buffer) (defun set-window-buffer (&rest _) nil))
-(unless (fboundp 'set-window-configuration) (defun set-window-configuration (&rest _) nil))
-(unless (fboundp 'set-window-dedicated-p) (defun set-window-dedicated-p (&rest _) nil))
-(unless (fboundp 'set-window-display-table) (defun set-window-display-table (&rest _) nil))
-(unless (fboundp 'set-window-hscroll) (defun set-window-hscroll (&rest _) nil))
-(unless (fboundp 'set-window-parameter) (defun set-window-parameter (&rest _) nil))
-(unless (fboundp 'set-window-point) (defun set-window-point (&rest _) nil))
-(unless (fboundp 'set-window-start) (defun set-window-start (&rest _) nil))
-(unless (fboundp 'shell) (defun shell (&rest _) nil))
+
 ;; shell-command-switch moved to emacs-process-builtins (Track I).
-(unless (boundp 'shell-file-name) (defvar shell-file-name nil))
-(unless (fboundp 'signal) (defun signal (&rest _) nil))
-(unless (fboundp 'single-key-description) (defun single-key-description (&rest _) nil))
-(unless (fboundp 'skip-chars-backward) (defun skip-chars-backward (&rest _) nil))
-(unless (fboundp 'skip-chars-forward) (defun skip-chars-forward (&rest _) nil))
-(unless (fboundp 'skip-syntax-backward) (defun skip-syntax-backward (&rest _) nil))
-(unless (fboundp 'skip-syntax-forward) (defun skip-syntax-forward (&rest _) nil))
-(unless (fboundp 'sleep-for) (defun sleep-for (&rest _) nil))
-(unless (fboundp 'sort) (defun sort (&rest _) nil))
-(unless (fboundp 'special-variable-p) (defun special-variable-p (&rest _) nil))
-(unless (fboundp 'standard-case-table) (defun standard-case-table (&rest _) nil))
-(unless (boundp 'standard-output) (defvar standard-output nil))
-(unless (fboundp 'standard-syntax-table) (defun standard-syntax-table (&rest _) nil))
-(unless (fboundp 'start-file-process) (defun start-file-process (&rest _) nil))
-(unless (fboundp 'store-match-data) (defun store-match-data (&rest _) nil))
-(unless (fboundp 'string) (defun string (&rest _) nil))
-(unless (fboundp 'string-as-multibyte) (defun string-as-multibyte (&rest _) nil))
-(unless (fboundp 'string-as-unibyte) (defun string-as-unibyte (&rest _) nil))
-(unless (fboundp 'string-equal) (defun string-equal (&rest _) nil))
-(unless (fboundp 'string-lessp) (defun string-lessp (&rest _) nil))
-(unless (fboundp 'string-make-multibyte) (defun string-make-multibyte (&rest _) nil))
-(unless (fboundp 'string-make-unibyte) (defun string-make-unibyte (&rest _) nil))
-(unless (fboundp 'string-match) (defun string-match (&rest _) nil))
-(unless (fboundp 'stringp) (defun stringp (&rest _) nil))
-(unless (fboundp 'string-search) (defun string-search (&rest _) nil))
-(unless (fboundp 'string-split) (defun string-split (&rest _) nil))
-(unless (fboundp 'string-to-multibyte) (defun string-to-multibyte (&rest _) nil))
-(unless (fboundp 'string-to-number) (defun string-to-number (&rest _) nil))
-(unless (fboundp 'string-to-unibyte) (defun string-to-unibyte (&rest _) nil))
-(unless (fboundp 'string-width) (defun string-width (&rest _) nil))
-(unless (fboundp 'subr-arity) (defun subr-arity (&rest _) nil))
-(unless (fboundp 'subr-native-comp-unit) (defun subr-native-comp-unit (&rest _) nil))
-(unless (fboundp 'subrp) (defun subrp (&rest _) nil))
-(unless (fboundp 'substitute-command-keys) (defun substitute-command-keys (&rest _) nil))
-(unless (fboundp 'substitute-quotes) (defun substitute-quotes (&rest _) nil))
-(unless (fboundp 'substring) (defun substring (&rest _) nil))
-(unless (fboundp 'substring-no-properties) (defun substring-no-properties (&rest _) nil))
-(unless (fboundp 'suspend-emacs) (defun suspend-emacs (&rest _) nil))
-(unless (fboundp 'switch-to-buffer) (defun switch-to-buffer (&rest _) nil))
-(unless (fboundp 'sxhash) (defun sxhash (&rest _) nil))
-(unless (fboundp 'sxhash-equal) (defun sxhash-equal (&rest _) nil))
-(unless (boundp 'sym) (defvar sym nil))
-(unless (fboundp 'symbol-function) (defun symbol-function (&rest _) nil))
-(unless (fboundp 'symbol-name) (defun symbol-name (&rest _) nil))
-(unless (fboundp 'symbolp) (defun symbolp (&rest _) nil))
-(unless (fboundp 'symbol-plist) (defun symbol-plist (&rest _) nil))
-(unless (boundp 'symbols-with-pos-enabled) (defvar symbols-with-pos-enabled nil))
-(unless (fboundp 'symbol-value) (defun symbol-value (&rest _) nil))
-(unless (fboundp 'syntax-ppss-flush-cache) (defun syntax-ppss-flush-cache (&rest _) nil))
-(unless (fboundp 'syntax-propertize) (defun syntax-propertize (&rest _) nil))
-(unless (boundp 'syntax-propertize-function) (defvar syntax-propertize-function nil))
-(unless (fboundp 'syntax-table) (defun syntax-table (&rest _) nil))
-(unless (boundp 'system-type) (defvar system-type nil))
-(unless (fboundp 'take) (defun take (&rest _) nil))
-(unless (fboundp 'temp-buffer-resize-mode) (defun temp-buffer-resize-mode (&rest _) nil))
-(unless (boundp 'temp-buffer-show-function) (defvar temp-buffer-show-function nil))
-(unless (fboundp 'temporary-file-directory) (defun temporary-file-directory (&rest _) nil))
-(unless (fboundp 'terminal-parameter) (defun terminal-parameter (&rest _) nil))
-(unless (fboundp 'terpri) (defun terpri (&rest _) nil))
-(unless (boundp 'text-conversion-style) (defvar text-conversion-style nil))
-(unless (fboundp 'text-properties-at) (defun text-properties-at (&rest _) nil))
+
 ;; this-command / this-command-keys family / throw-on-input moved to
 ;; emacs-command-loop-builtins (Phase B.1).
-(unless (fboundp 'time-convert) (defun time-convert (&rest _) nil))
-(unless (fboundp 'time-less-p) (defun time-less-p (&rest _) nil))
+
 ;; top-level moved to emacs-command-loop-builtins (Phase B.4).
-(unless (boundp 'translation-table-for-input) (defvar translation-table-for-input nil))
-(unless (fboundp 'truncate) (defun truncate (&rest _) nil))
-(unless (fboundp 'tty-top-frame) (defun tty-top-frame (&rest _) nil))
-(unless (fboundp 'type-of) (defun type-of (&rest _) nil))
+
 ;; undo moved to emacs-undo-builtins (Track E.2).
-(unless (fboundp 'undo-amalgamate-change-group) (defun undo-amalgamate-change-group (&rest _) nil))
-(unless (fboundp 'undo-auto-amalgamate) (defun undo-auto-amalgamate (&rest _) nil))
+
 ;; undo-boundary moved to emacs-undo-builtins (Track E.2).
-(unless (boundp 'undo-in-progress) (defvar undo-in-progress nil))
-(unless (boundp 'undo-limit) (defvar undo-limit nil))
-(unless (fboundp 'undo-more) (defun undo-more (&rest _) nil))
-(unless (boundp 'undo-outer-limit) (defvar undo-outer-limit nil))
-(unless (boundp 'undo-strong-limit) (defvar undo-strong-limit nil))
-(unless (fboundp 'unhandled-file-name-directory) (defun unhandled-file-name-directory (&rest _) nil))
-(unless (fboundp 'unintern) (defun unintern (&rest _) nil))
+
 ;; unread-command-events moved to emacs-command-loop-builtins (Phase B.1).
-(unless (fboundp 'upcase) (defun upcase (&rest _) nil))
-(unless (fboundp 'upcase-region) (defun upcase-region (&rest _) nil))
-(unless (fboundp 'upcase-word) (defun upcase-word (&rest _) nil))
-(unless (fboundp 'update-directory-autoloads) (defun update-directory-autoloads (&rest _) nil))
-(unless (boundp 'use-dialog-box) (defvar use-dialog-box nil))
-(unless (fboundp 'use-global-map) (defun use-global-map (&rest _) nil))
-(unless (fboundp 'use-local-map) (defun use-local-map (&rest _) nil))
-(unless (fboundp 'user-login-name) (defun user-login-name (&rest _) nil))
-(unless (fboundp 'user-original-login-name) (defun user-original-login-name (&rest _) nil))
-(unless (boundp 'values) (defvar values nil))
-(unless (fboundp 'variable-at-point) (defun variable-at-point (&rest _) nil))
-(unless (fboundp 'vconcat) (defun vconcat (&rest _) nil))
-(unless (fboundp 'vector) (defun vector (&rest _) nil))
-(unless (fboundp 'vectorp) (defun vectorp (&rest _) nil))
-(unless (boundp 'vertical-scroll-bar) (defvar vertical-scroll-bar nil))
-(unless (fboundp 'view-mode) (defun view-mode (&rest _) nil))
-(unless (fboundp 'visited-file-modtime) (defun visited-file-modtime (&rest _) nil))
-(unless (fboundp 'walk-windows) (defun walk-windows (&rest _) nil))
-(unless (fboundp 'warn) (defun warn (&rest _) nil))
-(unless (fboundp 'wholenump) (defun wholenump (&rest _) nil))
-(unless (fboundp 'widen) (defun widen (&rest _) nil))
-(unless (fboundp 'window-buffer) (defun window-buffer (&rest _) nil))
-(unless (fboundp 'window-combination-limit) (defun window-combination-limit (&rest _) nil))
-(unless (fboundp 'window-configuration-equal-p) (defun window-configuration-equal-p (&rest _) nil))
-(unless (fboundp 'window-dedicated-p) (defun window-dedicated-p (&rest _) nil))
-(unless (fboundp 'window-display-table) (defun window-display-table (&rest _) nil))
-(unless (fboundp 'window-end) (defun window-end (&rest _) nil))
-(unless (fboundp 'window-font-height) (defun window-font-height (&rest _) nil))
-(unless (fboundp 'window-font-width) (defun window-font-width (&rest _) nil))
-(unless (fboundp 'window-frame) (defun window-frame (&rest _) nil))
-(unless (fboundp 'window-height) (defun window-height (&rest _) nil))
-(unless (fboundp 'window-hscroll) (defun window-hscroll (&rest _) nil))
-(unless (fboundp 'window-live-p) (defun window-live-p (&rest _) nil))
-(unless (fboundp 'windowp) (defun windowp (&rest _) nil))
-(unless (fboundp 'window-parameter) (defun window-parameter (&rest _) nil))
-(unless (fboundp 'window-point) (defun window-point (&rest _) nil))
-(unless (fboundp 'window-start) (defun window-start (&rest _) nil))
+
 ;; `window-system' moved to emacs-stub.el's display capability map
 ;; (Phase 1.E 2026-05-05) — it now consults `emacs-display-system'
 ;; instead of always returning nil.
-(unless (fboundp 'window-width) (defun window-width (&rest _) nil))
-(unless (fboundp 'with-connection-local-variables) (defmacro with-connection-local-variables (&rest _) nil))
-(unless (fboundp 'with-help-window) (defmacro with-help-window (&rest _) nil))
-(unless (fboundp 'with-no-warnings) (defun with-no-warnings (&rest _) nil))
-(unless (fboundp 'with-suppressed-warnings) (defmacro with-suppressed-warnings (&rest _) nil))
-(unless (fboundp 'with-temp-buffer-window) (defmacro with-temp-buffer-window (&rest _) nil))
-(unless (fboundp 'write-region) (defun write-region (&rest _) nil))
-(unless (boundp 'x-gtk-use-window-move) (defvar x-gtk-use-window-move nil))
-(unless (fboundp 'x-popup-dialog) (defun x-popup-dialog (&rest _) nil))
-(unless (fboundp 'xterm-mouse-mode) (defun xterm-mouse-mode (&rest _) nil))
-(unless (fboundp 'yank) (defun yank (&rest _) nil))
-(unless (boundp 'yank-transform-functions) (defvar yank-transform-functions nil))
-(unless (fboundp 'yes-or-no-p) (defun yes-or-no-p (&rest _) nil))
-(unless (fboundp 'y-or-n-p-with-timeout) (defun y-or-n-p-with-timeout (&rest _) nil))
-(unless (fboundp 'zlib-available-p) (defun zlib-available-p (&rest _) nil))
+
+;; Phase 11.D batch — trivial stubs collapsed into 3 dolist forms.
+;; Reason: nelisp standalone interpreter charges ~47ms per top-level
+;; form for the original `(unless (fboundp X) (defun X (&rest _) nil))'
+;; idiom; batching 698 defun + 25 defmacro + 122 defvar stubs
+;; through a single dolist body drops emacs-stub-bulk load time from
+;; ~40s to ~6s (= 7x speedup) and unblocks bootstrap iteration.
+;; Under host Emacs the symbols' fboundp / boundp gates remain
+;; identical so this is a lossless refactor.
+
+(let ((--stub-defuns--
+       '(abbreviate-file-name abbrev-mode abort-recursive-edit abs add-text-properties advice-add advice-member-p advice-remove
+    all-completions append apply aref arrayp aset ash assoc
+    assq atom auto-fill-mode autoload autoload-do-load auto-save-mode backtrace backtrace-frame--internal
+    backward-delete-char backward-sexp backward-word beep beginning-of-line bobp bolp bool-vector
+    bool-vector-p boundp bounds-of-thing-at-point buffer-file-name buffer-list buffer-live-p buffer-local-value buffer-modified-p
+    buffer-name bufferp buffer-size buffer-string buffer-substring buffer-substring-no-properties byte-code byte-code-function-p
+    byte-compile byte-compile-disable-warning byte-compile-enable-warning byte-compile-warning-enabled-p byte-compile-warn-obsolete byte-run--set-speed cancel-timer capitalize-word
+    car car-less-than-car car-safe cdr cdr-safe ceiling characterp char-after
+    char-before char-syntax char-table-p char-table-range char-to-string chmod cl--assertion-failed cl--class-allparents
+    cl--class-docstring cl--class-index-table cl--class-name cl--class-parents cl--class-slots cl-generic-combine-methods cl--generic-dispatches cl--generic-generalizer-name
+    cl--generic-generalizer-p cl--generic-generalizer-priority cl-generic-generalizers cl--generic-generalizer-specializers-function cl--generic-generalizer-tagcode-function cl--generic-make cl-generic-make-generalizer cl--generic-make-method
+    cl--generic-method-call-con cl--generic-method-function cl--generic-method-qualifiers cl--generic-method-specializers cl--generic-method-table cl--generic-name cl--generic-options cl-method-qualifiers
+    cl-no-applicable-method cl-no-next-method cl-no-primary-method cl-old-struct-compat-mode cl-prin1-to-string cl--slot-descriptor-initform cl--slot-descriptor-name cl--slot-descriptor-props
+    cl--slot-descriptor-type cl--struct-class-named cl--struct-class-p cl--struct-class-print cl--struct-class-slots cl--struct-class-type cl-struct-define cl--struct-get-class
+    cl--struct-name-p cl-type-of c-mode combine-after-change-execute commandp command-remapping compare-strings compare-window-configurations
+    comp-el-to-eln-rel-filename compile completing-read compose-mail concat cons consp copy-keymap
+    copy-marker copy-sequence ctl-x-4-prefix ctl-x-5-prefix current-buffer current-case-table current-column current-global-map
+    current-input-mode current-local-map current-message current-window-configuration cursor-intangible-mode cursor-sensor-mode debug defalias
+    default-boundp default-file-modes default-value define-button-type define-key defining-kbd-macro defvaralias delete
+    delete-backward-char delete-char delete-minibuffer-contents delete-overlay delete-region delq describe-bindings describe-function
+    describe-key describe-symbol describe-variable ding directory-file-name discard-input display-buffer display-graphic-p
+    display-popup-menus-p display-warning documentation documentation-property downcase downcase-region downcase-word drop
+    elt emacs-pid emacs-version end-of-line enlarge-window eobp eq eql
+    equal erase-buffer error-message-string eval eval-after-load eval-buffer event-convert-list exec-path
+    execute-extended-command-for-buffer exit-minibuffer exp expand-file-name face-background-pixmap face-font face-stipple face-underline-p
+    fboundp featurep fetch-bytecode field-beginning field-end file-exists-p file-modes file-name-absolute-p
+    file-name-extension file-name-nondirectory file-name-sans-extension file-newer-than-file-p file-relative-name file-truename fillarray find-function-search-for-symbol
+    find-lisp-object-file-name flatten-list float floatp float-time floor fmakunbound format
+    format-message format-prompt format-spec forward-char forward-line forward-sexp forward-word frame-char-height
+    frame-char-width frame-height frame-live-p framep frame-parameter frame-parameters frame-selected-window frame-toggle-on-screen-keyboard
+    frame-visible-p frame-width fset funcall funcall-with-delayed-message function-documentation functionp function-put
+    garbage-collect generate-new-buffer-name get get-advertised-calling-convention get-buffer get-buffer-create get-buffer-process get-char-property
+    getenv gethash get-load-suffixes get-register get-text-property gnus goto-char grep
+    hack-local-variables handler-bind-1 hash-table-p help help-add-fundoc-usage help-buffer help--docstring-quote help-form-show
+    help-function-arglist help-insert-xref-button help-mode help-setup-xref help-split-fundoc hs-minor-mode iconify-frame identity
+    indent-to indent-to-column indirect-function info input-pending-p insert insert-buffer-substring integerp
+    intern internal-event-symbol-parse-modifiers internal--labeled-narrow-to-region internal--labeled-widen internal--track-mouse intern-soft int-to-string invocation-directory
+    invocation-name isearch-mode key-binding keyboard-coding-system key-description keymap-global-lookup keymap-global-set keymap-global-unset
+    keymap-local-lookup keymap-local-set keymap-local-unset keymapp keymap-parent keymap-prompt keymap-set-after keymap-substitute
+    key-parse key-translate keywordp kill-buffer kill-emacs kill-local-variable kmacro-end-macro length
+    libxml-parse-html-region libxml-parse-xml-region line-beginning-position line-end-position lisp-indent-line list listp load
+    loadhist-unload-element load-library load-with-code-conversion local-variable-if-set-p local-variable-p locate-file locate-file-internal locate-user-emacs-file
+    log logand logb logior lognot logxor looking-at lookup-key
+    macroexpand macroexpand-all macroexp-compiling-p macroexp-const-p macroexp-copyable-p macroexp--fgrep macroexp--funcall-if-compiled macroexp-progn
+    macroexp--warn-and-return macroexp-warn-and-return mail make-char-table make-directory make-directory-autoloads make-frame-invisible make-frame-visible
+    make-hash-table make-keymap make-list make-local-variable make-obsolete make-obsolete-variable make-overlay make-sparse-keymap
+    make-string make-symbol make-text-button make-variable-buffer-local make-vector mapatoms mapbacktrace mapc
+    mapcan mapcar mapconcat maphash map-keymap mark markerp marker-position
+    mark-marker match-beginning match-data match-data--translate match-end max member memq
+    memql message min minibuffer-message minibufferp minibuffer-prompt minibuffer-prompt-end minibuffer-recenter-top-bottom
+    minibuffer-scroll-down-command minibuffer-scroll-other-window minibuffer-scroll-other-window-down minibuffer-scroll-up-command minibuffer-window mkdir mod modify-frame-parameters
+    mouse-position move-marker move-overlay move-to-column mutex-lock mutex-unlock narrow-to-region native-comp-available-p
+    native-comp-function-p native-comp-unit-file natnump nconc newline next-frame next-property-change next-single-property-change
+    next-window nlistp normal-mode nreverse nth nthcdr null number-at-point
+    numberp number-to-string object-intervals occur oclosure-type other-frame overlay-buffer overlay-end
+    overlay-get overlay-lists overlay-properties overlay-put overlay-recenter overlays-in overlay-start overwrite-mode
+    pcase--make-docstring play-sound-internal plist-get plist-member plist-put point point-at-bol point-at-eol
+    point-marker point-max point-min pos-bol pos-eol posn-at-point prefix-numeric-value prin1
+    prin1-to-string princ print process-attributes process-file process-filter process-plist process-query-on-exit-flag
+    process-send-region process-sentinel progress-reporter-make proper-list-p propertize purecopy put puthash
+    put-text-property raise-frame random rassq read read-from-minibuffer read-from-string read-kbd-macro
+    read-library-name read-string recenter recenter-top-bottom record recordp redirect-frame-focus regexp-opt
+    regexp-quote remember remove-list-of-text-properties rename-buffer repeat replace-match re-search-backward re-search-forward
+    restore-buffer-modified-p reverse round rplaca rplacd run-hooks run-hook-with-args run-hook-with-args-until-success
+    run-hook-wrapped run-window-configuration-change-hook run-with-idle-timer safe-length save-current-buffer save-excursion save-restriction scroll-bar-scale
+    scroll-down scroll-down-command scroll-left scroll-other-window scroll-other-window-down scroll-right scroll-up scroll-up-command
+    search-backward-regexp search-forward search-forward-regexp secure-hash selected-frame selected-window select-frame select-window
+    self-insert-command send-region send-string seq-concatenate seq-find seq-some seq-subseq seq-uniq
+    set-advertised-calling-convention set-buffer set-buffer-modified-p setcar set-case-table setcdr set-char-table-parent set-char-table-range
+    set-default set-default-file-modes setenv set-face-font set-face-stipple set-face-underline set-file-modes set-frame-height
+    set-frame-parameter set-frame-selected-window set-frame-width set-input-mode set-keymap-parent set-mark set-marker set-match-data
+    set-mouse-position setplist set-process-buffer set-process-filter set-process-plist set-process-sentinel set-register set-standard-case-table
+    set-syntax-table set-temporary-overlay-map set-terminal-parameter set-text-conversion-style set-text-properties set-visited-file-modtime set-visited-file-name set-window-buffer
+    set-window-configuration set-window-dedicated-p set-window-display-table set-window-hscroll set-window-parameter set-window-point set-window-start shell
+    signal single-key-description skip-chars-backward skip-chars-forward skip-syntax-backward skip-syntax-forward sleep-for sort
+    special-variable-p standard-case-table standard-syntax-table start-file-process store-match-data string string-as-multibyte string-as-unibyte
+    string-equal string-lessp string-make-multibyte string-make-unibyte string-match stringp string-search string-split
+    string-to-multibyte string-to-number string-to-unibyte string-width subr-arity subr-native-comp-unit subrp substitute-command-keys
+    substitute-quotes substring substring-no-properties suspend-emacs switch-to-buffer sxhash sxhash-equal symbol-function
+    symbol-name symbolp symbol-plist symbol-value syntax-ppss-flush-cache syntax-propertize syntax-table take
+    temp-buffer-resize-mode temporary-file-directory terminal-parameter terpri text-properties-at time-convert time-less-p truncate
+    tty-top-frame type-of undo-amalgamate-change-group undo-auto-amalgamate undo-more unhandled-file-name-directory unintern upcase
+    upcase-region upcase-word update-directory-autoloads use-global-map use-local-map user-login-name user-original-login-name variable-at-point
+    vconcat vector vectorp view-mode visited-file-modtime walk-windows warn wholenump
+    widen window-buffer window-combination-limit window-configuration-equal-p window-dedicated-p window-display-table window-end window-font-height
+    window-font-width window-frame window-height window-hscroll window-live-p windowp window-parameter window-point
+    window-start window-width with-no-warnings write-region x-popup-dialog xterm-mouse-mode yank yes-or-no-p
+    y-or-n-p-with-timeout zlib-available-p)))
+  (dolist (--s-- --stub-defuns--)
+    (unless (fboundp --s--)
+      (fset --s-- (lambda (&rest _) nil)))))
+
+(let ((--stub-defmacros--
+       '(add-function bound-and-true-p cl--define-built-in-type define-inline define-minor-mode define-obsolete-function-alias define-obsolete-variable-alias defsubst
+    eval-and-compile eval-when-compile gv-letplace macroexp-let2 minibuffer-with-setup-hook oclosure-define oclosure-lambda pcase
+    pcase-defmacro pcase-dolist pcase-exhaustive pcase-let setf with-connection-local-variables with-help-window with-suppressed-warnings
+    with-temp-buffer-window)))
+  (dolist (--s-- --stub-defmacros--)
+    (unless (fboundp --s--)
+      (fset --s-- (cons 'macro (lambda (&rest _) nil))))))
+
+(let ((--stub-defvars--
+       '(after-change-functions after-load-alist before-change-functions buffer-invisibility-spec buffer-list-update-hook buffer-read-only case-fold-search cl--generic-derived-generalizer
+    cl--generic-eql-generalizer cl--generic-head-generalizer cl--generic-oclosure-generalizer cl--generic-t-generalizer cl--generic-typeof-generalizer command-debug-status command-error-function comp-enable-subr-trampolines
+    current-load-list cursor-in-echo-area data-directory debugger debug-ignored-errors debug-on-error default-directory defun-declarations-alist
+    delayed-after-hook-functions delayed-mode-hooks delayed-warnings-list echo-keystrokes emacs-startup-hook enable-recursive-minibuffers executing-kbd-macro features
+    find-tag-default-function find-word-boundary-function-table font-lock-defaults function-key-map help-char help-fns-describe-function-functions help-form history-delete-duplicates
+    history-length horizontal-scroll-bar inhibit-changing-match-data inhibit-field-text-motion inhibit-modification-hooks inhibit-nul-byte-detection inhibit-null-byte-detection inhibit-point-motion-hooks
+    inhibit-read-only input-decode-map input-method-function jka-compr-load-suffixes keyboard-translate-table kill-buffer-hook kill-buffer-query-functions lexical-binding
+    line-spacing load-dangerous-libraries load-file-name load-file-rep-suffixes load-history load-path load-suffixes macro-declarations-alist
+    macroexpand-all-environment macroexp--dynvars magic-fallback-mode-alist mail-user-agent major-mode--suspended max-lisp-eval-depth menu-prompting message-log-max
+    messages-buffer-max-lines minibuffer-auto-raise minibuffer-default-prompt-format minibuffer-local-map minibuffer-scroll-window minor-mode-alist minor-mode-map-alist mode-line-mode-menu
+    most-negative-fixnum most-positive-fixnum native-comp-deferred-compilation native-comp-enable-subr-trampolines native-comp-jit-compilation needed noninteractive obarray
+    operating-system-release output overriding-local-map overriding-terminal-local-map parse-sexp-lookup-properties pending-undo-list post-self-insert-hook print-escape-newlines
+    print-gensym print-quoted print-unreadable-function purify-flag query-replace-map redisplay-dont-pause s set-variable-value-history
+    shell-file-name standard-output sym symbols-with-pos-enabled syntax-propertize-function system-type temp-buffer-show-function text-conversion-style
+    translation-table-for-input undo-in-progress undo-limit undo-outer-limit undo-strong-limit use-dialog-box values vertical-scroll-bar
+    x-gtk-use-window-move yank-transform-functions)))
+  (dolist (--s-- --stub-defvars--)
+    (unless (boundp --s--)
+      (set --s-- nil))))
 
 (provide 'emacs-stub-bulk)
 ;;; emacs-stub-bulk.el ends here
