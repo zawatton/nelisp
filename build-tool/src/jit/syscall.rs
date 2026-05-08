@@ -40,7 +40,7 @@ use cranelift_module::{FuncId, Linkage, Module};
 
 use crate::eval::env::Env;
 use crate::eval::error::EvalError;
-use crate::reader::sexp::Sexp;
+use crate::eval::sexp::Sexp;
 
 use super::LowerFn;
 

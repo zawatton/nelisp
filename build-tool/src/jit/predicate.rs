@@ -39,7 +39,7 @@ use cranelift_module::{FuncId, Linkage, Module};
 
 use crate::eval::env::Env;
 use crate::eval::error::EvalError;
-use crate::reader::sexp::{Sexp, SEXP_TAG_INT};
+use crate::eval::sexp::{Sexp, SEXP_TAG_INT};
 
 use super::LowerFn;
 

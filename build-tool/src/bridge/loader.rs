@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 
+use crate::eval::sexp::fmt_sexp;
 use crate::eval::{self, Env, Sexp};
 use crate::reader::{self, lexer, parser};
 
@@ -303,8 +304,8 @@ fn form_context(form: &Sexp) -> String {
     match form {
         Sexp::Cons(head, _) => match &*head.borrow() {
             Sexp::Symbol(name) => format!("top-level `{}`", name),
-            _ => format!("form `{}`", reader::fmt_sexp(form)),
+            _ => format!("form `{}`", fmt_sexp(form)),
         },
-        _ => format!("form `{}`", reader::fmt_sexp(form)),
+        _ => format!("form `{}`", fmt_sexp(form)),
     }
 }

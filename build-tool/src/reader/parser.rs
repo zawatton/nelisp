@@ -16,9 +16,9 @@
 //!     `,x` -> `(comma x)`, `,@x` -> `(comma-at x)`,
 //!     `#'x` -> `(function x)`.
 
-use super::error::{ReadError, SourcePos};
 use super::lexer::{PositionedToken, Token};
-use super::sexp::Sexp;
+use crate::eval::error::{ReadError, SourcePos};
+use crate::eval::sexp::Sexp;
 
 /// Maximum nesting depth of `(...)` / `[...]` / quote chains.  Pure
 /// safety net; the bootstrap source per Doc 44 §3.2 nests at most

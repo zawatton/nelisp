@@ -61,13 +61,19 @@
 //! `Sexp::Record { type_tag, slots }' (positional form; keyword form
 //! is desugared by `cl-defstruct' macros in elisp).
 
-pub mod error;
 pub mod lexer;
 pub mod parser;
-pub mod sexp;
 
-pub use error::{ReadError, SourcePos};
-pub use sexp::{fmt_sexp, Sexp};
+// Phase 8 Stage 8.1 (Doc 73, 2026-05-08): the value type (`Sexp',
+// `CharTableInner', tag constants, `fmt_sexp') and the read-side
+// error type (`ReadError', `SourcePos') were rehomed to `eval/sexp.rs'
+// and `eval/error.rs' respectively.  This module now re-exports them
+// for backward compatibility with downstream consumers (= the
+// `image-baker' bin via `image::compile_elisp_to_image' and any
+// remaining `use crate::reader::Sexp' callsites pending migration in
+// later sub-stages).  The lexer / parser also import from `eval' now.
+pub use crate::eval::error::{ReadError, SourcePos};
+pub use crate::eval::sexp::{fmt_sexp, Sexp};
 
 /// Parse exactly one top-level form from `input`.  Trailing
 /// non-whitespace tokens (after one form is read) are an error — use

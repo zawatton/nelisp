@@ -34,7 +34,7 @@ use cranelift_module::{FuncId, Linkage, Module};
 
 use crate::eval::error::EvalError;
 use crate::eval::env::Env;
-use crate::reader::sexp::Sexp;
+use crate::eval::sexp::Sexp;
 
 /// Shared helper used by Stage 5.1 syscall + 5.3 cons + 5.4 access +
 /// 5.5 predicate trampolines: declare an `(i64 × N_PARAMS) -> i64'

@@ -12,7 +12,7 @@
 //! "1.5.x" is `Symbol`).  Pure recursive-descent grammar lives in
 //! `parser.rs`.
 
-use super::error::{ReadError, SourcePos};
+use crate::eval::error::{ReadError, SourcePos};
 
 /// Tokens emitted by the lexer.  `Quote` and `Dot` are kept distinct
 /// from `Symbol` because the parser treats them syntactically.

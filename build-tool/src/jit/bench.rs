@@ -34,7 +34,7 @@
 use std::time::{Duration, Instant};
 
 use crate::eval::env::Env;
-use crate::reader::sexp::Sexp;
+use crate::eval::sexp::Sexp;
 
 use super::lower_entries;
 

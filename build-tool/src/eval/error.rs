@@ -17,9 +17,112 @@
 
 use std::fmt;
 
-use crate::reader::ReadError;
-
 use super::sexp::Sexp;
+
+// ---------------------------------------------------------------------------
+// Read-side errors — *eval-owned* since Phase 8 Stage 8.1 (Doc 73,
+// 2026-05-08).  Originally lived in `reader/error.rs' but the reader
+// is feature-gated to dev tooling in Stage 8.4, so the error type
+// must live where production code (= `EvalError::Read' variant) can
+// always reach it.  History preserved via `git rm reader/error.rs'
+// + content merged here verbatim.
+// ---------------------------------------------------------------------------
+
+/// Source position, 1-indexed line + column.  Tracked at the byte
+/// level (= multibyte chars cost their UTF-8 byte width in `col`,
+/// matching how Elisp's reader reports column on `.el` files for
+/// error messages).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourcePos {
+    pub line: u32,
+    pub col: u32,
+}
+
+impl fmt::Display for SourcePos {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.line, self.col)
+    }
+}
+
+/// What went wrong while reading.  The variants are stable enough
+/// that the next sub-phase (= Phase 7.5.4.2 evaluator) can pattern
+/// match on them when it surfaces reader errors as Elisp `(error ...)`
+/// signals.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReadError {
+    /// Lexer-level malformed input (unknown escape, bad radix digit,
+    /// stray byte).
+    Lex { msg: String, pos: SourcePos },
+    /// Parser-level structural failure (unbalanced paren, dot in the
+    /// wrong position, trailing garbage).
+    Parse { msg: String, pos: SourcePos },
+    /// Stream ended while we still expected more input.
+    UnexpectedEof { msg: String, pos: SourcePos },
+    /// A construct the bootstrap subset deliberately defers.  Doc 44
+    /// §3.2 lists backquote, char literal, sharpsign function-quote,
+    /// byte-code literal, multibyte string handling.
+    NotYetImplemented { feature: String, pos: SourcePos },
+}
+
+impl ReadError {
+    pub fn lex(msg: impl Into<String>, pos: SourcePos) -> Self {
+        ReadError::Lex {
+            msg: msg.into(),
+            pos,
+        }
+    }
+
+    pub fn parse(msg: impl Into<String>, pos: SourcePos) -> Self {
+        ReadError::Parse {
+            msg: msg.into(),
+            pos,
+        }
+    }
+
+    pub fn unexpected_eof(msg: impl Into<String>, pos: SourcePos) -> Self {
+        ReadError::UnexpectedEof {
+            msg: msg.into(),
+            pos,
+        }
+    }
+
+    pub fn not_yet_implemented(feature: impl Into<String>, pos: SourcePos) -> Self {
+        ReadError::NotYetImplemented {
+            feature: feature.into(),
+            pos,
+        }
+    }
+
+    pub fn pos(&self) -> SourcePos {
+        match self {
+            ReadError::Lex { pos, .. }
+            | ReadError::Parse { pos, .. }
+            | ReadError::UnexpectedEof { pos, .. }
+            | ReadError::NotYetImplemented { pos, .. } => *pos,
+        }
+    }
+}
+
+impl fmt::Display for ReadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ReadError::Lex { msg, pos } => write!(f, "lex error at {}: {}", pos, msg),
+            ReadError::Parse { msg, pos } => write!(f, "parse error at {}: {}", pos, msg),
+            ReadError::UnexpectedEof { msg, pos } => {
+                write!(f, "unexpected EOF at {}: {}", pos, msg)
+            }
+            ReadError::NotYetImplemented { feature, pos } => {
+                write!(
+                    f,
+                    "not-yet-implemented at {}: {} (deferred per Doc 44 §3.2)",
+                    pos, feature
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ReadError {}
 
 /// All the ways the evaluator can fail.  `condition-case` clauses
 /// pattern-match on [`EvalError::error_tag`] which returns the Elisp

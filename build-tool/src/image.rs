@@ -7,7 +7,7 @@
 //! a second object model.
 
 use crate::eval::{self, Env, EvalError};
-use crate::reader::sexp::CharTableInner;
+use crate::eval::sexp::CharTableInner;
 use crate::reader::{ReadError, Sexp};
 #[cfg(any(test, feature = "image-baker"))]
 use crate::reader;
@@ -369,7 +369,7 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reader::fmt_sexp;
+    use crate::eval::sexp::fmt_sexp;
 
     #[test]
     fn phase4_6a_header_and_version_are_checked() {

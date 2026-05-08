@@ -56,7 +56,7 @@ use std::process::ExitCode;
 
 use nelisp_build_tool::eval::{eval_str, eval_str_all};
 use nelisp_build_tool::image;
-use nelisp_build_tool::reader::fmt_sexp;
+use nelisp_build_tool::eval::sexp::fmt_sexp;
 
 const USAGE: &str = "usage: nelisp --version
        nelisp eval EXPR                 # evaluate EXPR and print the result

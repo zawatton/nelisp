@@ -1647,7 +1647,7 @@ fn bi_recordp(args: &[Sexp]) -> Result<Sexp, EvalError> {
 // below let `bi_aref' / `bi_aset' continue to read/write any
 // legacy-decoded instances even though no new ones are minted.
 
-fn char_table_set_one(inner: &mut crate::reader::sexp::CharTableInner, c: i64, v: Sexp) {
+fn char_table_set_one(inner: &mut crate::eval::sexp::CharTableInner, c: i64, v: Sexp) {
     for entry in inner.entries.iter_mut() {
         if entry.0 == c {
             entry.1 = v;
@@ -1657,7 +1657,7 @@ fn char_table_set_one(inner: &mut crate::reader::sexp::CharTableInner, c: i64, v
     inner.entries.push((c, v));
 }
 
-fn char_table_get(inner: &Rc<RefCell<crate::reader::sexp::CharTableInner>>, c: i64) -> Sexp {
+fn char_table_get(inner: &Rc<RefCell<crate::eval::sexp::CharTableInner>>, c: i64) -> Sexp {
     let borrowed = inner.borrow();
     for (k, v) in borrowed.entries.iter() {
         if *k == c {

@@ -7,8 +7,9 @@
 
 - 親 Doc: 63 (Phase 7 self-host roadmap §3.4 後続フェーズ)
 - 前提 SHIPPED: Doc 64〜72 (Phase 7 main scope)
-- 本 Doc: Phase 8 全体設計 — *DRAFT 2026-05-08*
+- 本 Doc: Phase 8 全体設計 — DRAFT 2026-05-08
 - Phase 8 の sub-stage は 8.1〜8.5、各 sub-stage は別 commit / 別検証
+- *Stage 8.1 SHIPPED 2026-05-08* (= Sexp / ReadError / SourcePos rehome)
 
 * §1 背景
 
