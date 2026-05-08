@@ -762,6 +762,70 @@ CONFIG must be a value returned by
             (or sel (car (emacs-window--all-leaves)))))
     nil))
 
+;;; User-facing window commands
+
+(defun emacs-window--normalize-prefix-number (value)
+  "Return VALUE as a plain integer or nil when VALUE is nil."
+  (when value
+    (if (integerp value)
+        value
+      (prefix-numeric-value value))))
+
+;;;###autoload
+(defun split-window-below (&optional size)
+  "Split the selected window into two stacked windows and return the new window.
+
+SIZE, when non-nil, is the size of the new window."
+  (interactive
+   (list (emacs-window--normalize-prefix-number current-prefix-arg)))
+  (emacs-window-split-window-vertically size))
+
+;;;###autoload
+(defun split-window-right (&optional size)
+  "Split the selected window side-by-side and return the new window.
+
+SIZE, when non-nil, is the size of the new window."
+  (interactive
+   (list (emacs-window--normalize-prefix-number current-prefix-arg)))
+  (emacs-window-split-window-horizontally size))
+
+(defun emacs-window-other-window-impl (&optional count all-frames)
+  "Select the COUNTth next window and return it.
+
+COUNT defaults to 1.  Negative COUNT cycles backward.  ALL-FRAMES is
+accepted for API compatibility and ignored in Phase 1."
+  (let* ((n (or count 1))
+         (target (emacs-window-selected-window)))
+    (dotimes (_ (abs n))
+      (setq target
+            (if (< n 0)
+                (emacs-window-previous-window target nil all-frames)
+              (emacs-window-next-window target nil all-frames))))
+    (when target
+      (emacs-window-select-window target))
+    target))
+
+;;;###autoload
+(defun other-window (&optional n all-frames)
+  "Select the Nth next window.
+
+N defaults to 1.  Negative N cycles backward.  ALL-FRAMES is accepted
+for API compatibility and ignored in Phase 1."
+  (interactive "p")
+  (emacs-window-other-window-impl n all-frames))
+
+;;;###autoload
+(defun delete-window (&optional window)
+  "Delete WINDOW, or the selected window if WINDOW is nil."
+  (interactive)
+  (emacs-window-delete-window window))
+
+;;;###autoload
+(defun delete-other-windows (&optional window)
+  "Delete every window except WINDOW, or the selected window if WINDOW is nil."
+  (interactive)
+  (emacs-window-delete-other-windows window))
+
 ;;; E. selection
 
 (defun emacs-window-select-window (window &optional _norecord)
