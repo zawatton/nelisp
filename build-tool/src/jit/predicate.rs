@@ -10,12 +10,21 @@
 //!
 //!   ```text
 //!   jit_eq(a_ptr, b_ptr):
+//!     if a_ptr == b_ptr     → return 1       (= same Sexp ref, Doc 77 Stage 1)
 //!     a_tag = movzx u8 [a_ptr + 0]
 //!     b_tag = movzx u8 [b_ptr + 0]
 //!     if a_tag != b_tag    → return 0       (= different variants)
 //!     if a_tag == TAG_INT  → return cmp i64 [a_ptr+8] vs [b_ptr+8]
 //!     else                  → call helper (= sexp_eq trampoline)
 //!   ```
+//!
+//! Doc 77 Stage 1 (2026-05-09) — eq same-ref short-circuit:
+//! prepends a pointer-equality check before the tag-byte load.  When
+//! `a_ptr == b_ptr' (= same `Sexp' struct address) the two are
+//! definitionally `eq' in every variant, so the JIT can return 1
+//! immediately without loading the tag or entering the helper.  Saves
+//! 4 host instructions on `(eq x x)' and any case where a Sexp ref is
+//! compared to itself (= idiom in pcase / cl-typecase guard chains).
 //!
 //! Net effect: `(eq INT INT)' is now ~3 host instructions (load, load,
 //! cmp + uextend) instead of a full `sexp_eq' match dispatch, and any
@@ -65,6 +74,11 @@ static JIT_PREDICATE: OnceLock<JitPredicate> = OnceLock::new();
 ///
 /// ```text
 ///   block_entry(a_ptr, b_ptr):
+///     same_ref = icmp Equal, a_ptr, b_ptr
+///     brif same_ref, block_same, block_load_tags
+///   block_same:                    (= Doc 77 Stage 1 short-circuit)
+///     return iconst.i64 1
+///   block_load_tags:
 ///     a_tag = uextend.i64 (load.i8 [a_ptr+0])
 ///     b_tag = uextend.i64 (load.i8 [b_ptr+0])
 ///     tags_eq = icmp Equal, a_tag, b_tag
@@ -109,16 +123,30 @@ fn declare_eq_inline(module: &mut JITModule) -> FuncId {
     {
         let mut fb = FunctionBuilder::new(&mut ctx.func, &mut fbcx);
         let entry_b = fb.create_block();
+        let same_b = fb.create_block();
+        let load_tags_b = fb.create_block();
         let diff_b = fb.create_block();
         let match_b = fb.create_block();
         let int_eq_b = fb.create_block();
         let slow_b = fb.create_block();
         fb.append_block_params_for_function_params(entry_b);
 
-        // Entry: load tag bytes from both args + branch.
+        // Entry: short-circuit if a_ptr == b_ptr (Doc 77 Stage 1).
         fb.switch_to_block(entry_b);
         let a_ptr = fb.block_params(entry_b)[0];
         let b_ptr = fb.block_params(entry_b)[1];
+        let same_ref = fb.ins().icmp(IntCC::Equal, a_ptr, b_ptr);
+        fb.ins().brif(same_ref, same_b, &[], load_tags_b, &[]);
+        fb.seal_block(entry_b);
+
+        // Same Sexp ref → guaranteed eq (every variant).
+        fb.switch_to_block(same_b);
+        let one = fb.ins().iconst(types::I64, 1);
+        fb.ins().return_(&[one]);
+        fb.seal_block(same_b);
+
+        // Different refs: load tag bytes from both args + branch.
+        fb.switch_to_block(load_tags_b);
         let flags = MemFlags::trusted();
         let a_tag_byte = fb.ins().load(types::I8, flags, a_ptr, 0);
         let b_tag_byte = fb.ins().load(types::I8, flags, b_ptr, 0);
@@ -126,7 +154,7 @@ fn declare_eq_inline(module: &mut JITModule) -> FuncId {
         let b_tag = fb.ins().uextend(types::I64, b_tag_byte);
         let tags_eq = fb.ins().icmp(IntCC::Equal, a_tag, b_tag);
         fb.ins().brif(tags_eq, match_b, &[], diff_b, &[]);
-        fb.seal_block(entry_b);
+        fb.seal_block(load_tags_b);
 
         // Tags differ → return 0 (= guaranteed not eq across variants).
         fb.switch_to_block(diff_b);
@@ -266,11 +294,35 @@ mod tests {
     #[test]
     fn jit_eq_cons_identity_via_helper() {
         // Two separately-constructed cons cells with same value are
-        // NOT eq (= identity check via Rc::ptr_eq inside the helper).
+        // NOT eq (= identity check via Rc::ptr_eq inside the helper,
+        // reached after both same-ref check and tag-equal branches).
         let a = Sexp::cons(Sexp::Int(1), Sexp::Int(2));
         let b = Sexp::cons(Sexp::Int(1), Sexp::Int(2));
         assert_eq!((jit().eq)(&a as *const _, &b as *const _), 0);
-        // But the same cell IS eq with itself.
+        // The same cell IS eq with itself — Doc 77 Stage 1 short-circuit
+        // returns 1 from `same_b' before any helper call.
         assert_eq!((jit().eq)(&a as *const _, &a as *const _), 1);
+    }
+
+    // --- Doc 77 Stage 1: eq same-ref short-circuit ---
+
+    #[test]
+    fn jit_eq_same_ref_short_circuit() {
+        // For every variant, comparing a Sexp ref to itself must
+        // return 1 without entering the helper.  Pre-Doc-77 this
+        // worked for Int via int_eq_b and for non-Int variants only
+        // because the helper happened to handle the same-ref case;
+        // now it is handled by the inline `same_b' branch up front.
+        let int = Sexp::Int(42);
+        let flt = Sexp::Float(3.14);
+        let nil = Sexp::Nil;
+        let t = Sexp::T;
+        let sym = Sexp::Symbol("x".into());
+        let s = Sexp::Str("hello".into());
+        let cons = Sexp::cons(Sexp::Int(1), Sexp::Int(2));
+        for r in [&int, &flt, &nil, &t, &sym, &s, &cons] {
+            let p = r as *const Sexp;
+            assert_eq!((jit().eq)(p, p), 1);
+        }
     }
 }
