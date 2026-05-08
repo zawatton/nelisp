@@ -254,11 +254,9 @@ pub fn install_builtins(env: &mut Env) {
         // via `syscall_nr()' symbol map.
         "nelisp--syscall-execve",
         "nelisp--syscall-wait4",
-        "nelisp--syscall-setsockopt-int",
-        "nelisp--syscall-bind-inet",
-        "nelisp--syscall-connect-inet",
-        "nelisp--syscall-accept-inet",
-        "nelisp--syscall-poll",
+        // Doc 55 Phase 4 socket-int (= bind-inet / connect-inet / accept-inet
+        // / setsockopt-int / poll) retired in Doc 76 Stage C (2026-05-08);
+        // elisp now builds sockaddr_in / pollfd[] via nl-ffi primitives.
         // Doc 56 Phase 4.1 (2026-05-07) — AF_UNIX + AF_INET6 sockaddr
         // family extensions to round out the network surface (AF_INET
         // is already covered by Doc 55 above).
@@ -356,6 +354,10 @@ pub fn install_builtins(env: &mut Env) {
         // pipe / fstat wrappers can read int[2] / struct stat fields
         // out of `nl-ffi-malloc' buffers without UTF-8 munging.
         "nl-ffi-read-i32", "nl-ffi-read-i64",
+        // Doc 76 Stage C (2026-05-08): primitive int read/write for
+        // sockaddr_in / pollfd field marshaling.
+        "nl-ffi-read-i16", "nl-ffi-read-u16", "nl-ffi-read-u32",
+        "nl-ffi-write-i16", "nl-ffi-write-i32",
         // Doc 51 Phase 6 write-path: time + cryptographic hash primitives.
         // Needed by anvil-memory-add etc. (= NOT NULL `created' column +
         // body digest).  Both are inherently OS / native-lib dependent
@@ -544,11 +546,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // Doc 55 Phase 4 (2026-05-07) — Posix-30 specialized primitives.
         "nelisp--syscall-execve" => bi_syscall_execve(args),
         "nelisp--syscall-wait4" => bi_syscall_wait4(args),
-        "nelisp--syscall-setsockopt-int" => bi_syscall_setsockopt_int(args),
-        "nelisp--syscall-bind-inet" => bi_syscall_bind_inet(args),
-        "nelisp--syscall-connect-inet" => bi_syscall_connect_inet(args),
-        "nelisp--syscall-accept-inet" => bi_syscall_accept_inet(args),
-        "nelisp--syscall-poll" => bi_syscall_poll(args),
+        // Doc 76 Stage C (2026-05-08) retired socket-int dispatch arms.
         // Doc 56 Phase 4.1 (2026-05-07) — AF_UNIX + AF_INET6 sockaddr handlers.
         "nelisp--syscall-bind-unix" => bi_syscall_bind_unix(args),
         "nelisp--syscall-connect-unix" => bi_syscall_connect_unix(args),
@@ -672,6 +670,11 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-ffi-errno" => super::ffi::nl_ffi_errno(args),
         "nl-ffi-read-i32" => super::ffi::nl_ffi_read_i32(args),
         "nl-ffi-read-i64" => super::ffi::nl_ffi_read_i64(args),
+        "nl-ffi-read-i16" => super::ffi::nl_ffi_read_i16(args),
+        "nl-ffi-read-u16" => super::ffi::nl_ffi_read_u16(args),
+        "nl-ffi-read-u32" => super::ffi::nl_ffi_read_u32(args),
+        "nl-ffi-write-i16" => super::ffi::nl_ffi_write_i16(args),
+        "nl-ffi-write-i32" => super::ffi::nl_ffi_write_i32(args),
         "nl-current-unix-time" => bi_nl_current_unix_time(args),
         "nl-secure-hash" => bi_nl_secure_hash(args),
         "nl-format-unix-time" => bi_nl_format_unix_time(args),
@@ -2065,125 +2068,11 @@ fn bi_syscall_wait4(args: &[Sexp]) -> Result<Sexp, EvalError> {
 #[cfg(not(target_os = "linux"))]
 syscall_unsupported!(bi_syscall_wait4, "nelisp--syscall-wait4");
 
-/// Build a `struct sockaddr_in' from host byte-order IP + port.  Used by
-/// the bind / connect / accept_inet primitives below.
-#[cfg(target_os = "linux")]
-fn build_sockaddr_in(host_ip: u32, port: u16) -> libc::sockaddr_in {
-    let mut addr: libc::sockaddr_in = unsafe { std::mem::zeroed() };
-    addr.sin_family = libc::AF_INET as libc::sa_family_t;
-    addr.sin_port   = port.to_be();
-    addr.sin_addr   = libc::in_addr { s_addr: host_ip.to_be() };
-    addr
-}
-
-/// `(nelisp--syscall-setsockopt-int FD LEVEL OPTNAME VALUE)' — POSIX
-/// setsockopt(2), int-valued options only (= the common case for
-/// SO_REUSEADDR / TCP_NODELAY etc.).  Returns 0 / -errno.  Variadic
-/// options that take struct linger / struct timeval need their own
-/// primitives; not supported in Phase 4.
-#[cfg(target_os = "linux")]
-fn bi_syscall_setsockopt_int(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-setsockopt-int", args, 4, Some(4))?;
-    let fd      = syscall_arg_int("nelisp--syscall-setsockopt-int", 1, &args[0])? as libc::c_int;
-    let level   = syscall_arg_int("nelisp--syscall-setsockopt-int", 2, &args[1])? as libc::c_int;
-    let optname = syscall_arg_int("nelisp--syscall-setsockopt-int", 3, &args[2])? as libc::c_int;
-    let value: libc::c_int =
-        syscall_arg_int("nelisp--syscall-setsockopt-int", 4, &args[3])? as libc::c_int;
-    let r = unsafe {
-        libc::setsockopt(fd, level, optname,
-                         &value as *const libc::c_int as *const libc::c_void,
-                         std::mem::size_of::<libc::c_int>() as libc::socklen_t)
-    };
-    if r != 0 {
-        let e = unsafe { *libc::__errno_location() } as i64;
-        return Ok(Sexp::Int(-e));
-    }
-    Ok(Sexp::Int(0))
-}
-
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_setsockopt_int, "nelisp--syscall-setsockopt-int");
-
-/// `(nelisp--syscall-bind-inet FD HOST-INT PORT)' — POSIX bind(2)
-/// for AF_INET (= IPv4).  HOST-INT / PORT are host byte order.
-#[cfg(target_os = "linux")]
-fn bi_syscall_bind_inet(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-bind-inet", args, 3, Some(3))?;
-    let fd   = syscall_arg_int("nelisp--syscall-bind-inet", 1, &args[0])? as libc::c_int;
-    let host = syscall_arg_int("nelisp--syscall-bind-inet", 2, &args[1])? as u32;
-    let port = syscall_arg_int("nelisp--syscall-bind-inet", 3, &args[2])? as u16;
-    let addr = build_sockaddr_in(host, port);
-    let r = unsafe {
-        libc::bind(fd,
-                   &addr as *const libc::sockaddr_in as *const libc::sockaddr,
-                   std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t)
-    };
-    if r != 0 {
-        let e = unsafe { *libc::__errno_location() } as i64;
-        return Ok(Sexp::Int(-e));
-    }
-    Ok(Sexp::Int(0))
-}
-
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_bind_inet, "nelisp--syscall-bind-inet");
-
-/// `(nelisp--syscall-connect-inet FD HOST-INT PORT)' — POSIX connect(2)
-/// for AF_INET (= IPv4).
-#[cfg(target_os = "linux")]
-fn bi_syscall_connect_inet(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-connect-inet", args, 3, Some(3))?;
-    let fd   = syscall_arg_int("nelisp--syscall-connect-inet", 1, &args[0])? as libc::c_int;
-    let host = syscall_arg_int("nelisp--syscall-connect-inet", 2, &args[1])? as u32;
-    let port = syscall_arg_int("nelisp--syscall-connect-inet", 3, &args[2])? as u16;
-    let addr = build_sockaddr_in(host, port);
-    let r = unsafe {
-        libc::connect(fd,
-                      &addr as *const libc::sockaddr_in as *const libc::sockaddr,
-                      std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t)
-    };
-    if r != 0 {
-        let e = unsafe { *libc::__errno_location() } as i64;
-        return Ok(Sexp::Int(-e));
-    }
-    Ok(Sexp::Int(0))
-}
-
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_connect_inet, "nelisp--syscall-connect-inet");
-
-/// `(nelisp--syscall-accept-inet FD)' — POSIX accept(2) for AF_INET.
-///
-/// Returns `(NEWFD CLIENT-IP-INT CLIENT-PORT)' on success, where the IP
-/// and port are converted back to host byte order so elisp can compare
-/// against constants such as `nelisp-os-INADDR-LOOPBACK'.  Returns
-/// `Sexp::Int(-errno)' on failure.
-#[cfg(target_os = "linux")]
-fn bi_syscall_accept_inet(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-accept-inet", args, 1, Some(1))?;
-    let fd = syscall_arg_int("nelisp--syscall-accept-inet", 1, &args[0])? as libc::c_int;
-    let mut addr: libc::sockaddr_in = unsafe { std::mem::zeroed() };
-    let mut len: libc::socklen_t = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
-    let r = unsafe {
-        libc::accept(fd,
-                     &mut addr as *mut libc::sockaddr_in as *mut libc::sockaddr,
-                     &mut len as *mut libc::socklen_t)
-    };
-    if r < 0 {
-        let e = unsafe { *libc::__errno_location() } as i64;
-        return Ok(Sexp::Int(-e));
-    }
-    let ip   = u32::from_be(addr.sin_addr.s_addr) as i64;
-    let port = u16::from_be(addr.sin_port)        as i64;
-    Ok(Sexp::list_from(&[
-        Sexp::Int(r as i64),
-        Sexp::Int(ip),
-        Sexp::Int(port),
-    ]))
-}
-
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_accept_inet, "nelisp--syscall-accept-inet");
+// Doc 76 Stage C (2026-05-08): `nelisp--syscall-setsockopt-int' /
+// `-bind-inet' / `-connect-inet' / `-accept-inet' specialized
+// primitives + `build_sockaddr_in' helper removed.  elisp wrappers
+// now build/decode `sockaddr_in' via `nl-ffi-malloc' + `nl-ffi-write-i16/i32'
+// + `libc.htons/htonl/ntohs/ntohl'.  See lisp/nelisp-stdlib-os.el.
 
 // ---------------------------------------------------------------------------
 // Doc 56 Phase 4.1 — AF_UNIX + AF_INET6 sockaddr handling.
@@ -3242,45 +3131,10 @@ fn bi_syscall_accept_inet6_scoped(args: &[Sexp]) -> Result<Sexp, EvalError> {
 #[cfg(not(target_os = "linux"))]
 syscall_unsupported!(bi_syscall_accept_inet6_scoped, "nelisp--syscall-accept-inet6-scoped");
 
-/// `(nelisp--syscall-poll PFDS-LIST TIMEOUT-MS)' — POSIX poll(2).
-///
-/// PFDS-LIST is a list of `(FD . EVENTS)' cons cells (each int).  Returns
-/// the same-length list of `(FD . REVENTS)' cons cells on success, or
-/// `Sexp::Int(-errno)' on failure.  TIMEOUT-MS = -1 blocks indefinitely;
-/// 0 polls without blocking.
-#[cfg(target_os = "linux")]
-fn bi_syscall_poll(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--syscall-poll", args, 2, Some(2))?;
-    let pfds_list  = list_to_vec(&args[0])?;
-    let timeout_ms = syscall_arg_int("nelisp--syscall-poll", 2, &args[1])? as libc::c_int;
-    let mut pfds: Vec<libc::pollfd> = Vec::with_capacity(pfds_list.len());
-    for (i, item) in pfds_list.iter().enumerate() {
-        let (fd_s, ev_s) = match item {
-            Sexp::Cons(a, d) => (a.borrow().clone(), d.borrow().clone()),
-            other => return Err(EvalError::WrongType {
-                expected: format!("cons (FD . EVENTS) at index {}", i),
-                got: other.clone(),
-            }),
-        };
-        let fd = syscall_arg_int("nelisp--syscall-poll", i + 1, &fd_s)? as libc::c_int;
-        let ev = syscall_arg_int("nelisp--syscall-poll", i + 1, &ev_s)? as libc::c_short;
-        pfds.push(libc::pollfd { fd, events: ev, revents: 0 });
-    }
-    let r = unsafe {
-        libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, timeout_ms)
-    };
-    if r < 0 {
-        let e = unsafe { *libc::__errno_location() } as i64;
-        return Ok(Sexp::Int(-e));
-    }
-    let result: Vec<Sexp> = pfds.iter().map(|p| {
-        Sexp::cons(Sexp::Int(p.fd as i64), Sexp::Int(p.revents as i64))
-    }).collect();
-    Ok(Sexp::list_from(&result))
-}
-
-#[cfg(not(target_os = "linux"))]
-syscall_unsupported!(bi_syscall_poll, "nelisp--syscall-poll");
+// Doc 76 Stage C (2026-05-08): `nelisp--syscall-poll' specialized
+// removed.  elisp `nelisp-os-poll' now encodes `pollfd[]' via
+// `nl-ffi-malloc' + `nl-ffi-write-i32/i16' and decodes revents via
+// `nl-ffi-read-i16'.  See lisp/nelisp-stdlib-os.el.
 
 // `bi_locate_library' removed — Rust-min batch 7e (2026-05-07, Doc 50
 // stage 2): migrated to elisp `(defun locate-library ...)' on top of

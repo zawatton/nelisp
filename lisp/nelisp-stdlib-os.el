@@ -413,34 +413,105 @@ returns (0 . 0)."
   "POSIX socket(2) — return new fd or signal `nelisp-os-error'."
   (nelisp-os--check-errno (nelisp--syscall 'socket domain type proto)))
 
+;; ---------------------------------------------------------------------------
+;; Doc 76 Stage C (2026-05-08) — sockaddr_in encode/decode + pollfd[]
+;; marshaling helpers.  Used by bind-inet / connect-inet / accept-inet /
+;; poll wrappers below.
+;; ---------------------------------------------------------------------------
+
+(defconst nelisp-os--AF-INET 2)
+(defconst nelisp-os--sockaddr-in-len 16)
+(defconst nelisp-os--pollfd-len 8)
+
+(defun nelisp-os--encode-sockaddr-in (buf host-int port)
+  "Populate BUF (= 16-byte zeroed `nl-ffi-malloc') with sockaddr_in
+fields: sin_family + sin_port (BE) + sin_addr (BE).  The 8 zero pad
+bytes at offset 8-15 are left as malloc'd zeros."
+  (let ((port-be (nl-ffi-call "libc" "htons" [:uint16 :uint16] port))
+        (addr-be (nl-ffi-call "libc" "htonl" [:uint32 :uint32] host-int)))
+    (nl-ffi-write-i16 buf 0 nelisp-os--AF-INET)
+    (nl-ffi-write-i16 buf 2 port-be)
+    (nl-ffi-write-i32 buf 4 addr-be)))
+
+(defun nelisp-os--decode-sockaddr-in (buf)
+  "Decode 16-byte sockaddr_in BUF.  Return cons (HOST-INT . PORT) in
+host byte order."
+  (let* ((port-be (nl-ffi-read-u16 buf 2))
+         (port    (nl-ffi-call "libc" "ntohs" [:uint16 :uint16] port-be))
+         (addr-be (nl-ffi-read-u32 buf 4))
+         (addr    (nl-ffi-call "libc" "ntohl" [:uint32 :uint32] addr-be)))
+    (cons addr port)))
+
 (defun nelisp-os-setsockopt-int (fd level optname value)
-  "POSIX setsockopt(2) for an int-valued option (e.g. SO_REUSEADDR)."
-  (nelisp-os--check-errno
-   (nelisp--syscall-setsockopt-int fd level optname value)))
+  "POSIX setsockopt(2) for an int-valued option (e.g. SO_REUSEADDR).
+Returns 0 on success."
+  ;; libc::setsockopt(int sockfd, int level, int optname,
+  ;;                  const void *optval, socklen_t optlen) → int.
+  (let ((buf (nl-ffi-malloc 4)))
+    (unwind-protect
+        (progn
+          (nl-ffi-write-i32 buf 0 value)
+          (let ((r (nl-ffi-call "libc" "setsockopt"
+                                [:sint32 :sint32 :sint32 :sint32 :pointer :uint32]
+                                fd level optname buf 4)))
+            (if (= r -1)
+                (nelisp-os--ffi-errno-signal)
+              r)))
+      (nl-ffi-free buf))))
 
 (defun nelisp-os-bind-inet (fd host-int port)
   "POSIX bind(2) for AF_INET.  HOST-INT is a 32-bit IPv4 address in
 host byte order (e.g. `nelisp-os-INADDR-LOOPBACK').  PORT is a
 16-bit host-byte-order port number.  Returns 0 on success."
-  (nelisp-os--check-errno (nelisp--syscall-bind-inet fd host-int port)))
+  (let ((buf (nl-ffi-malloc nelisp-os--sockaddr-in-len)))
+    (unwind-protect
+        (progn
+          (nelisp-os--encode-sockaddr-in buf host-int port)
+          (let ((r (nl-ffi-call "libc" "bind"
+                                [:sint32 :sint32 :pointer :uint32]
+                                fd buf nelisp-os--sockaddr-in-len)))
+            (if (= r -1)
+                (nelisp-os--ffi-errno-signal)
+              r)))
+      (nl-ffi-free buf))))
 
 (defun nelisp-os-listen (fd backlog)
   "POSIX listen(2) — mark FD as accepting connections with BACKLOG."
   (nelisp-os--check-errno (nelisp--syscall 'listen fd backlog)))
 
-(defun nelisp-os-accept-inet (fd)
+(defun nelisp-os-accept-inet (sockfd)
   "POSIX accept(2) for AF_INET.  Returns list (NEWFD CLIENT-IP CLIENT-PORT)
 on success (CLIENT-IP / CLIENT-PORT in host byte order), or signals
 `nelisp-os-error'."
-  (let ((r (nelisp--syscall-accept-inet fd)))
-    (if (integerp r)
-        (nelisp-os--check-errno r)
-      r)))
+  (let ((addr-buf (nl-ffi-malloc nelisp-os--sockaddr-in-len))
+        (len-buf  (nl-ffi-malloc 4)))
+    (unwind-protect
+        (progn
+          (nl-ffi-write-i32 len-buf 0 nelisp-os--sockaddr-in-len)
+          (let ((newfd (nl-ffi-call "libc" "accept"
+                                    [:sint32 :sint32 :pointer :pointer]
+                                    sockfd addr-buf len-buf)))
+            (if (= newfd -1)
+                (nelisp-os--ffi-errno-signal)
+              (let ((hp (nelisp-os--decode-sockaddr-in addr-buf)))
+                (list newfd (car hp) (cdr hp))))))
+      (nl-ffi-free addr-buf)
+      (nl-ffi-free len-buf))))
 
 (defun nelisp-os-connect-inet (fd host-int port)
   "POSIX connect(2) for AF_INET.  HOST-INT / PORT same convention as
 `nelisp-os-bind-inet'.  Returns 0 on success."
-  (nelisp-os--check-errno (nelisp--syscall-connect-inet fd host-int port)))
+  (let ((buf (nl-ffi-malloc nelisp-os--sockaddr-in-len)))
+    (unwind-protect
+        (progn
+          (nelisp-os--encode-sockaddr-in buf host-int port)
+          (let ((r (nl-ffi-call "libc" "connect"
+                                [:sint32 :sint32 :pointer :uint32]
+                                fd buf nelisp-os--sockaddr-in-len)))
+            (if (= r -1)
+                (nelisp-os--ffi-errno-signal)
+              r)))
+      (nl-ffi-free buf))))
 
 ;; ----- Multiplexing -----
 
@@ -448,10 +519,35 @@ on success (CLIENT-IP / CLIENT-PORT in host byte order), or signals
   "POSIX poll(2).  PFDS is a list of (FD . EVENTS) cons cells.  Returns
 the same-length list of (FD . REVENTS) cons cells.  TIMEOUT-MS = -1
 blocks indefinitely; 0 polls without blocking."
-  (let ((r (nelisp--syscall-poll pfds timeout-ms)))
-    (if (integerp r)
-        (nelisp-os--check-errno r)
-      r)))
+  ;; libc::poll(struct pollfd *fds, nfds_t nfds, int timeout) → int.
+  ;; pollfd layout: int fd (4) + short events (2) + short revents (2) = 8 bytes.
+  (let* ((n (length pfds))
+         (buf (nl-ffi-malloc (* n nelisp-os--pollfd-len))))
+    (unwind-protect
+        (progn
+          (let ((idx 0))
+            (dolist (entry pfds)
+              (let ((off (* idx nelisp-os--pollfd-len)))
+                (nl-ffi-write-i32 buf off            (car entry))
+                (nl-ffi-write-i16 buf (+ off 4)      (cdr entry))
+                ;; revents at offset+6 stays zero from malloc.
+                )
+              (setq idx (1+ idx))))
+          (let ((r (nl-ffi-call "libc" "poll"
+                                [:sint32 :pointer :uint64 :sint32]
+                                buf n timeout-ms)))
+            (if (= r -1)
+                (nelisp-os--ffi-errno-signal)
+              (let ((result nil)
+                    (idx 0))
+                (dolist (entry pfds)
+                  (let ((off (* idx nelisp-os--pollfd-len)))
+                    (push (cons (nl-ffi-read-i32 buf off)
+                                (nl-ffi-read-i16 buf (+ off 6)))
+                          result))
+                  (setq idx (1+ idx)))
+                (nreverse result)))))
+      (nl-ffi-free buf))))
 
 ;; ---------------------------------------------------------------------------
 ;; Doc 56 Phase 4.1 — AF_UNIX + AF_INET6 socket family extensions.

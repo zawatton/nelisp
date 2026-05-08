@@ -501,6 +501,102 @@ pub fn nl_ffi_read_i64(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::Int(v))
 }
 
+/// `(nl-ffi-read-i16 PTR OFFSET)` → integer (= sign-extended i16 LE).
+/// Doc 76 Stage C (2026-05-08): pollfd revents (= short) decode.
+pub fn nl_ffi_read_i16(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let (p, off) = ffi_read_args("nl-ffi-read-i16", args)?;
+    ffi_read_check_bounds("nl-ffi-read-i16", p, off, 2)?;
+    let v = unsafe { std::ptr::read_unaligned((p + off) as *const i16) } as i64;
+    Ok(Sexp::Int(v))
+}
+
+/// `(nl-ffi-read-u16 PTR OFFSET)` → integer (= zero-extended u16 LE).
+/// Doc 76 Stage C: sockaddr_in.sin_port BE-raw read (then `ntohs').
+pub fn nl_ffi_read_u16(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let (p, off) = ffi_read_args("nl-ffi-read-u16", args)?;
+    ffi_read_check_bounds("nl-ffi-read-u16", p, off, 2)?;
+    let v = unsafe { std::ptr::read_unaligned((p + off) as *const u16) } as i64;
+    Ok(Sexp::Int(v))
+}
+
+/// `(nl-ffi-read-u32 PTR OFFSET)` → integer (= zero-extended u32 LE).
+/// Doc 76 Stage C: sockaddr_in.sin_addr BE-raw read (then `ntohl').
+pub fn nl_ffi_read_u32(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let (p, off) = ffi_read_args("nl-ffi-read-u32", args)?;
+    ffi_read_check_bounds("nl-ffi-read-u32", p, off, 4)?;
+    let v = unsafe { std::ptr::read_unaligned((p + off) as *const u32) } as i64;
+    Ok(Sexp::Int(v))
+}
+
+/// `(nl-ffi-write-i16 PTR OFFSET VALUE)` → t.  Truncates VALUE to 16 bits
+/// and stores LE.  Doc 76 Stage C: sockaddr_in / pollfd field write.
+pub fn nl_ffi_write_i16(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let (p, off, v) = ffi_write_args("nl-ffi-write-i16", args)?;
+    ffi_read_check_bounds("nl-ffi-write-i16", p, off, 2)?;
+    unsafe { std::ptr::write_unaligned((p + off) as *mut i16, v as i16) };
+    Ok(Sexp::T)
+}
+
+/// `(nl-ffi-write-i32 PTR OFFSET VALUE)` → t.  Truncates VALUE to 32 bits
+/// and stores LE.  Doc 76 Stage C: sockaddr_in.sin_addr / pollfd.fd write.
+pub fn nl_ffi_write_i32(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let (p, off, v) = ffi_write_args("nl-ffi-write-i32", args)?;
+    ffi_read_check_bounds("nl-ffi-write-i32", p, off, 4)?;
+    unsafe { std::ptr::write_unaligned((p + off) as *mut i32, v as i32) };
+    Ok(Sexp::T)
+}
+
+/// Internal helper: parse `(PTR OFFSET)` args + null guard.
+fn ffi_read_args(name: &str, args: &[Sexp]) -> Result<(i64, i64), EvalError> {
+    if args.len() != 2 {
+        return Err(ffi_err(format!(
+            "{}: expected 2 args (ptr offset), got {}", name, args.len()
+        )));
+    }
+    let p = coerce_int(&args[0])?;
+    let off = coerce_int(&args[1])?;
+    if p == 0 {
+        return Err(ffi_err(format!("{}: NULL pointer", name)));
+    }
+    if off < 0 {
+        return Err(ffi_err(format!("{}: negative offset {}", name, off)));
+    }
+    Ok((p, off))
+}
+
+/// Internal helper: parse `(PTR OFFSET VALUE)` args + null guard.
+fn ffi_write_args(name: &str, args: &[Sexp]) -> Result<(i64, i64, i64), EvalError> {
+    if args.len() != 3 {
+        return Err(ffi_err(format!(
+            "{}: expected 3 args (ptr offset value), got {}", name, args.len()
+        )));
+    }
+    let p = coerce_int(&args[0])?;
+    let off = coerce_int(&args[1])?;
+    let v = coerce_int(&args[2])?;
+    if p == 0 {
+        return Err(ffi_err(format!("{}: NULL pointer", name)));
+    }
+    if off < 0 {
+        return Err(ffi_err(format!("{}: negative offset {}", name, off)));
+    }
+    Ok((p, off, v))
+}
+
+/// Internal helper: alloc_table-gated bounds check.
+fn ffi_read_check_bounds(name: &str, p: i64, off: i64, sz: usize) -> Result<(), EvalError> {
+    let alloc_len = *alloc_table().lock().unwrap().get(&p).ok_or_else(|| {
+        ffi_err(format!("{}: pointer {} not from nl-ffi-malloc", name, p))
+    })?;
+    if (off as usize) + sz > alloc_len {
+        return Err(ffi_err(format!(
+            "{}: access at offset {} (size {}) exceeds buffer length {}",
+            name, off, sz, alloc_len
+        )));
+    }
+    Ok(())
+}
+
 /// `(nl-ffi-errno)` → integer errno of the last libc call from the
 /// current thread.  Cross-OS thin shim:
 ///   - Linux/glibc: `*__errno_location()`
