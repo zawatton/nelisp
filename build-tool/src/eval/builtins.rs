@@ -443,9 +443,11 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // car / cdr / cons / setcar / setcdr migrated to JIT
         // (Phase 5 Stage C-Phase1, Doc 62 2026-05-08).  See
         // `jit/cons.rs::lowered_{car,cdr,cons,setcar,setcdr}'.
+        // length / aref / aset / elt migrated to JIT (Phase 5 Stage
+        // C-Phase1b, Doc 62 2026-05-08).  See `jit/access.rs::
+        // lowered_{length,aref,aset,elt}'.
         // Common compositions (cXXr family) migrated to elisp in
         // Doc 61 stage 7 — see lisp/nelisp-stdlib-list.el.
-        "length" => bi_length(args),
         // reverse / nreverse migrated to elisp (Rust-min 2026-05-06
         // batch 6d, see lisp/nelisp-stdlib-list.el).
         // copy-sequence migrated to elisp (Rust-min 2026-05-06
@@ -454,9 +456,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // append migrated to elisp (Rust-min 2026-05-06 batch 6o,
         // see lisp/nelisp-stdlib-list.el).
         // ---- generic accessors ----
-        "aref" => bi_aref(args),
-        "aset" => bi_aset(args),
-        "elt" => bi_elt(args),
+        // aref / aset / elt migrated to JIT (Phase 5 Stage C-Phase1b,
+        // Doc 62 2026-05-08).  See `jit/access.rs::lowered_*'.
         // arrayp / sequencep migrated to elisp (Rust-min 2026-05-06
         // batch 6q, see lisp/nelisp-stdlib.el).
         "vector" => Ok(Sexp::vector(args.to_vec())),
@@ -1073,40 +1074,9 @@ fn sexp_equal_safe(a: &Sexp, b: &Sexp, depth: u32) -> bool {
 // the single source of truth; arity / wrong-type errors are emitted
 // from each lowered wrapper directly, no `dispatch' fallback.
 
-fn bi_length(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("length", args, 1, Some(1))?;
-    match &args[0] {
-        Sexp::Nil => Ok(Sexp::Int(0)),
-        Sexp::Str(s) => Ok(Sexp::Int(s.chars().count() as i64)),
-        Sexp::MutStr(rc) => Ok(Sexp::Int(rc.borrow().chars().count() as i64)),
-        Sexp::Vector(v) => Ok(Sexp::Int(v.borrow().len() as i64)),
-        Sexp::BoolVector(v) => Ok(Sexp::Int(v.borrow().len() as i64)),
-        Sexp::Cons(_, _) => {
-            let mut n = 0i64;
-            let mut cur: Sexp = args[0].clone();
-            loop {
-                let next = match &cur {
-                    Sexp::Nil => return Ok(Sexp::Int(n)),
-                    Sexp::Cons(_, d) => {
-                        n += 1;
-                        d.borrow().clone()
-                    }
-                    other => {
-                        return Err(EvalError::WrongType {
-                            expected: "sequence".into(),
-                            got: other.clone(),
-                        })
-                    }
-                };
-                cur = next;
-            }
-        }
-        other => Err(EvalError::WrongType {
-            expected: "sequence".into(),
-            got: other.clone(),
-        }),
-    }
-}
+// `bi_length' deleted — Phase 5 Stage C-Phase1b (Doc 62, 2026-05-08).
+// See `jit/access.rs::lowered_length' (= JIT fast path + inline
+// MutStr / BoolVector / Cons-walk / WrongType handling).
 
 // `vec_to_list' helper removed — its only caller was `bi_reverse'
 // (Rust-min 2026-05-06 batch 6d).
@@ -1539,7 +1509,11 @@ fn bi_recordp(args: &[Sexp]) -> Result<Sexp, EvalError> {
 // below let `bi_aref' / `bi_aset' continue to read/write any
 // legacy-decoded instances even though no new ones are minted.
 
-fn char_table_set_one(inner: &mut crate::eval::sexp::CharTableInner, c: i64, v: Sexp) {
+pub(crate) fn char_table_set_one(
+    inner: &mut crate::eval::sexp::CharTableInner,
+    c: i64,
+    v: Sexp,
+) {
     for entry in inner.entries.iter_mut() {
         if entry.0 == c {
             entry.1 = v;
@@ -1549,7 +1523,10 @@ fn char_table_set_one(inner: &mut crate::eval::sexp::CharTableInner, c: i64, v: 
     inner.entries.push((c, v));
 }
 
-fn char_table_get(inner: &Rc<RefCell<crate::eval::sexp::CharTableInner>>, c: i64) -> Sexp {
+pub(crate) fn char_table_get(
+    inner: &Rc<RefCell<crate::eval::sexp::CharTableInner>>,
+    c: i64,
+) -> Sexp {
     let borrowed = inner.borrow();
     for (k, v) in borrowed.entries.iter() {
         if *k == c {
@@ -4950,130 +4927,10 @@ fn _unused_truthy(v: &Sexp) -> bool {
 // real-world Elisp packages assume the runtime ships.  Boundary
 // policy: language rule -> NeLisp core; Emacs/OS API -> Layer 2.
 
-fn bi_aref(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("aref", args, 2, Some(2))?;
-    let index = as_int("aref", &args[1])?;
-    if index < 0 {
-        return Err(EvalError::ArithError(format!(
-            "aref: negative index {}",
-            index
-        )));
-    }
-    match &args[0] {
-        Sexp::Str(s) => {
-            let chars: Vec<char> = s.chars().collect();
-            chars
-                .get(index as usize)
-                .map(|c| Sexp::Int(*c as i64))
-                .ok_or_else(|| {
-                    EvalError::ArithError(format!(
-                        "aref: index {} out of range for string of length {}",
-                        index,
-                        chars.len()
-                    ))
-                })
-        }
-        Sexp::MutStr(rc) => {
-            let s = rc.borrow();
-            let chars: Vec<char> = s.chars().collect();
-            chars
-                .get(index as usize)
-                .map(|c| Sexp::Int(*c as i64))
-                .ok_or_else(|| {
-                    EvalError::ArithError(format!(
-                        "aref: index {} out of range for string of length {}",
-                        index,
-                        chars.len()
-                    ))
-                })
-        }
-        Sexp::Vector(v) => {
-            let borrowed = v.borrow();
-            borrowed
-                .get(index as usize)
-                .cloned()
-                .ok_or_else(|| {
-                    EvalError::ArithError(format!(
-                        "aref: index {} out of range for vector of length {}",
-                        index,
-                        borrowed.len()
-                    ))
-                })
-        }
-        // Char-table indexed by codepoint (= char int).  Out-of-range
-        // codepoints return the default rather than erroring (= matches
-        // upstream's "lookup never fails" contract).
-        Sexp::CharTable(rc) => Ok(char_table_get(rc, index)),
-        Sexp::BoolVector(v) => {
-            let borrowed = v.borrow();
-            borrowed
-                .get(index as usize)
-                .map(|b| if *b { Sexp::T } else { Sexp::Nil })
-                .ok_or_else(|| {
-                    EvalError::ArithError(format!(
-                        "aref: index {} out of range for bool-vector of length {}",
-                        index,
-                        borrowed.len()
-                    ))
-                })
-        }
-        other => Err(EvalError::WrongType {
-            expected: "arrayp".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
-fn bi_elt(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("elt", args, 2, Some(2))?;
-    let index = as_int("elt", &args[1])?;
-    if index < 0 {
-        return Err(EvalError::ArithError(format!(
-            "elt: negative index {}",
-            index
-        )));
-    }
-    match &args[0] {
-        Sexp::Nil => Err(EvalError::ArithError(format!(
-            "elt: index {} out of range for empty sequence",
-            index
-        ))),
-        Sexp::Cons(_, _) => {
-            let mut cur: Sexp = args[0].clone();
-            let mut remaining = index;
-            loop {
-                let next = match &cur {
-                    Sexp::Cons(h, t) => {
-                        if remaining == 0 {
-                            return Ok(h.borrow().clone());
-                        }
-                        remaining -= 1;
-                        t.borrow().clone()
-                    }
-                    Sexp::Nil => {
-                        return Err(EvalError::ArithError(format!(
-                            "elt: index {} out of range for list",
-                            index
-                        )));
-                    }
-                    other => {
-                        return Err(EvalError::WrongType {
-                            expected: "sequencep".into(),
-                            got: other.clone(),
-                        });
-                    }
-                };
-                cur = next;
-            }
-        }
-        Sexp::Str(_) | Sexp::MutStr(_) | Sexp::Vector(_)
-            | Sexp::CharTable(_) | Sexp::BoolVector(_) => bi_aref(args),
-        other => Err(EvalError::WrongType {
-            expected: "sequencep".into(),
-            got: other.clone(),
-        }),
-    }
-}
+// `bi_aref' / `bi_elt' deleted — Phase 5 Stage C-Phase1b (Doc 62,
+// 2026-05-08).  See `jit/access.rs::lowered_{aref,elt}' (= JIT fast
+// path + inline aref_helper for MutStr / CharTable / BoolVector + Cons
+// walk for elt).
 
 fn bi_make_vector(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("make-vector", args, 2, Some(2))?;
@@ -5096,93 +4953,7 @@ fn bi_make_vector(args: &[Sexp]) -> Result<Sexp, EvalError> {
 // `bi_setcar' / `bi_setcdr' deleted in Phase 5 Stage C-Phase1
 // (Doc 62, 2026-05-08).  See `jit/cons.rs::lowered_{setcar,setcdr}'.
 
-fn bi_aset(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    // (aset ARRAY INDEX VALUE) — mutates ARRAY in place.
-    // Phase 8.x supports vectors and `MutStr' (= the make-string
-    // result variant).  Plain `Str' literals stay immutable.
-    require_arity("aset", args, 3, Some(3))?;
-    let index = as_int("aset", &args[1])?;
-    if index < 0 {
-        return Err(EvalError::ArithError(format!(
-            "aset: negative index {}",
-            index
-        )));
-    }
-    match &args[0] {
-        Sexp::Vector(v) => {
-            let mut borrowed = v.borrow_mut();
-            let len = borrowed.len();
-            if (index as usize) >= len {
-                return Err(EvalError::ArithError(format!(
-                    "aset: index {} out of range for vector of length {}",
-                    index, len
-                )));
-            }
-            borrowed[index as usize] = args[2].clone();
-            // Emacs' `aset' returns the assigned value.
-            Ok(args[2].clone())
-        }
-        Sexp::MutStr(rc) => {
-            // Codepoint mutation: replace the char at INDEX with the
-            // codepoint VALUE (= integer).  Indexing is by char count
-            // (Emacs semantics), not by byte position.  We rebuild the
-            // String to keep multi-byte UTF-8 correctness.
-            let new_ch = match &args[2] {
-                Sexp::Int(n) => char::from_u32(*n as u32).ok_or_else(|| {
-                    EvalError::WrongType {
-                        expected: "valid character codepoint".into(),
-                        got: args[2].clone(),
-                    }
-                })?,
-                other => return Err(EvalError::WrongType {
-                    expected: "character (integer)".into(),
-                    got: other.clone(),
-                }),
-            };
-            let mut s = rc.borrow_mut();
-            let chars: Vec<char> = s.chars().collect();
-            if (index as usize) >= chars.len() {
-                return Err(EvalError::ArithError(format!(
-                    "aset: index {} out of range for string of length {}",
-                    index,
-                    chars.len()
-                )));
-            }
-            let mut new_str = String::with_capacity(s.len());
-            for (i, c) in chars.iter().enumerate() {
-                if i == index as usize {
-                    new_str.push(new_ch);
-                } else {
-                    new_str.push(*c);
-                }
-            }
-            *s = new_str;
-            Ok(args[2].clone())
-        }
-        Sexp::CharTable(rc) => {
-            let mut inner = rc.borrow_mut();
-            char_table_set_one(&mut inner, index, args[2].clone());
-            Ok(args[2].clone())
-        }
-        Sexp::BoolVector(rc) => {
-            let mut borrowed = rc.borrow_mut();
-            let len = borrowed.len();
-            if (index as usize) >= len {
-                return Err(EvalError::ArithError(format!(
-                    "aset: index {} out of range for bool-vector of length {}",
-                    index, len
-                )));
-            }
-            borrowed[index as usize] = is_truthy(&args[2]);
-            Ok(args[2].clone())
-        }
-        Sexp::Str(_) => Err(EvalError::WrongType {
-            expected: "mutable-array".into(),
-            got: args[0].clone(),
-        }),
-        other => Err(EvalError::WrongType {
-            expected: "arrayp".into(),
-            got: other.clone(),
-        }),
-    }
-}
+// `bi_aset' deleted — Phase 5 Stage C-Phase1b (Doc 62, 2026-05-08).
+// See `jit/access.rs::lowered_aset' (= JIT fast path + inline MutStr
+// codepoint mutation / CharTable / BoolVector / immutable-Str
+// rejection).
