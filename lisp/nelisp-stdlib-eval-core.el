@@ -160,36 +160,47 @@ in a context where the topmost frame is the intended target."
 ;; cons/car/cdr access, and direct builtin calls.  See file
 ;; commentary for the rationale.
 
-(defun nelisp--apply-lambda-inner (captured formals body args)
+(defun nelisp--apply-lambda-inner (--nl-ali-captured --nl-ali-formals
+                                                    --nl-ali-body
+                                                    --nl-ali-args)
   "Apply (lambda FORMALS BODY...) with CAPTURED env to ARGS.
 Push CAPTURED (an alist of `((NAME . CELL) ...)') as a lexical frame,
 push another frame for FORMALS, walk a pre-computed pair list to
 install each formal binding in the just-pushed frame, eval BODY in
 order, return the last value.  Both frames are popped on normal and
-error exit."
-  (nelisp--push-captured captured)
+error exit.
+
+Formal-name convention: the `--nl-ali-*' prefix avoids name collisions
+with the *user-level* formals being installed.  Plain names like
+`captured' / `formals' / `body' / `args' would clash if a user defun
+happened to declare a formal of the same name (= `setq' from inside
+this body would target the just-pushed F_formals slot instead of this
+function's own call-frame slot, corrupting the user binding)."
+  (nelisp--push-captured --nl-ali-captured)
   (nelisp--push-frame)
   (unwind-protect
       (progn
         ;; Compute pairs via a pure helper.  The helper has its own
         ;; transient call-frame, but only its return value (= the
-        ;; pairs list) escapes.  Reuse the `captured' slot to hold
-        ;; the pairs list — avoids a `let' which would push F_let on
-        ;; top of F_formals and re-target bind-local.
-        (setq captured (nelisp--bind-formals--compute formals args))
+        ;; pairs list) escapes.  Reuse the `--nl-ali-captured' slot
+        ;; to hold the pairs list — avoids a `let' which would push
+        ;; F_let on top of F_formals and re-target bind-local.
+        (setq --nl-ali-captured
+              (nelisp--bind-formals--compute --nl-ali-formals --nl-ali-args))
         ;; Walk pairs.  No `let' / no nested defun call between here
         ;; and bind-local — F_formals stays topmost, bindings go
         ;; into the right place.
-        (while (consp captured)
-          (nelisp--bind-local (car (car captured)) (cdr (car captured)))
-          (setq captured (cdr captured)))
-        ;; Eval body.  Reuse `formals' slot for `last result' since
-        ;; we no longer need the original FORMALS value.
-        (setq formals nil)
-        (while (consp body)
-          (setq formals (eval (car body)))
-          (setq body (cdr body)))
-        formals)
+        (while (consp --nl-ali-captured)
+          (nelisp--bind-local (car (car --nl-ali-captured))
+                              (cdr (car --nl-ali-captured)))
+          (setq --nl-ali-captured (cdr --nl-ali-captured)))
+        ;; Eval body.  Reuse `--nl-ali-formals' slot for `last result'
+        ;; since we no longer need the original FORMALS value.
+        (setq --nl-ali-formals nil)
+        (while (consp --nl-ali-body)
+          (setq --nl-ali-formals (eval (car --nl-ali-body)))
+          (setq --nl-ali-body (cdr --nl-ali-body)))
+        --nl-ali-formals)
     (progn
       (nelisp--pop-frame)
       (nelisp--pop-frame))))

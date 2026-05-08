@@ -643,24 +643,60 @@ LOC 実績: +43 Rust env (= 2 field + max_recursion bump)、+44 mod
 +50/+150 と比較して Rust は -7、ERT は -55 (= cross-equiv は subprocess
 + printed 比較で簡素).
 
-** §3.4 Stage 7.4.d — default flip + perf gate
+** §3.4 Stage 7.4.d — default flip [DEFERRED → Stage 7.4.e]
 
-bench:
-- =bench-compare= で Stage 7.3.d → 7.4.d の wallclock 比較
-- gate: total < 1.8x、p99 < 2.0x
-- 重 path: =dotimes= heavy / closure-heavy / recursive-defun-heavy
+実装試行 (= 2026-05-08 半日 spike) の結果、naive な default flip
+(= =Env::use_elisp_apply= 起動時 true 化、bootstrap 後に env var で flip)
+で次の **frame-capture leak** を発見:
 
-合格後:
-- =Env::use_elisp_apply= default を =true= に flip
-- =--use-rust-apply= legacy flag を残す (= Stage 7.5 まで escape hatch)
-- ERT 全 suite を default (= elisp) で再走、PASS 維持
+- elisp =defun= を別の elisp 関数の body 内で評価すると、=sf_lambda= が
+  *現在の lexical env を captured-env として取り込む*
+- そのとき、=apply-lambda-inner= helper の =--nl-ali-= formal 4 slot
+  (= =--nl-ali-captured= / -formals / -body / -args) も lexical env に
+  混ざっており、捕捉される
+- =(load "/tmp/zz.el")= → file 内の =(defun X () 99)= → ロード後 =(X)=
+  呼び出すと、helper が closure を walk → push-captured で =--nl-ali-=
+  を **user の captured-env として再 install** → helper 内 setq /
+  variable lookup が user の captured 値で shadow されて誤動作
+- 具体的 surface: =cargo test load_evaluates_file_contents= が
+  =wrong-number-of-arguments: (lambda 0 1)= で fail (= load の formal
+  =(file &optional ...)= が apply-lambda-inner の =--nl-ali-formals= に
+  shadow → bf-compute が違う formal-list を見て一致せず)
 
-Stage 7.5 の準備として =apply_function= / =apply_closure= / =apply_lambda=
-/ =apply_lambda_inner= / =bind_formals= / =is_macro= / =expand_macro= に
-=#[cfg(feature = "rust-apply-fallback")]= を付け、release build から
-脱落させても CI が通る状態にする。
+修正方針 (= 検討):
 
-LOC: ~5 LOC (= flag flip + cfg attr)、commit ~1 件、想定 1〜2h。
+| 案 | 概要 | trade-off |
+|----|------|-----------|
+| A. apply-lambda-inner を Rust builtin 化 | helper の formals が lexical frame に入らないので capture されない | clean、Stage 7.4 の "elisp port" 範囲は縮小 |
+| B. =push-captured= 時に =--nl-ali-= prefix を filter | 局所 hack、新 builtin 1 つ追加 | 漏れ多数、保守困難 |
+| C. =Frame::Sealed= variant 導入 | capture_lexical が sealed frame を skip | env.rs 大改修 |
+| D. apply-lambda-inner state を cons cell + setcar/setcdr に | 名前 collision 回避 | 読みづらい、root cause 残存 |
+
+A が clean.  Stage 7.4.b で elisp 化した =nelisp--apply-lambda-inner= を
+Rust builtin =bi_apply_lambda_inner= に戻す (= 約 50 LOC Rust + elisp
+側 defun は削除 or 薄ラッパに).  状態 (= captured/formals/body/args/pairs/
+last) は Rust 関数 stack に閉じ込める → lexical frame に出ない →
+capture もされない.  apply-fn / apply-closure / apply-lambda /
+bf-compute / 4 predicates / expand-macro は **elisp のまま残す** (=
+Stage 7.4 の主目的 "dispatch logic を elisp に移す" は維持).
+
+これは Stage 7.4 の本来 scope を超える work なので、独立の Stage 7.4.e
+として切り出す (= Doc 70 設計予定).
+
+Stage 7.4.d の本 commit では:
+
+1. =Env::use_elisp_apply= default は **opt-in のまま** (= =NELISP_USE_ELISP_APPLY=1=
+   で有効化、default off).  Stage 7.4.c の API を維持
+2. 既存 ERT 全件 (= cargo serial 431/431 PASS) regression なし確認
+3. 本 §3.4 の更新 (= leak 発見 + Stage 7.4.e への切り出し)
+
+bench gate (= total < 1.8x / p99 < 2.0x) は Stage 7.4.e で apply-lambda-
+inner Rust 化後に measure (= 期待としては leak 解決 + outermost-only
+strategy で overhead は最小、bench 余裕で PASS 想定).
+
+LOC 実績: 0 (= 設計判断のみ、コード変更は default flip 試行を全 revert).
+default flip 試行で得た知見 (= leak の root cause + 修正案 4 つ) を
+本 §3.4 に記録.  Stage 7.4.e で referenceable.
 
 ** §3.5 sub-stage 順序
 

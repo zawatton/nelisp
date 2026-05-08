@@ -236,13 +236,16 @@ impl Env {
             max_recursion: 1024,
             current_recursion: 0,
             extern_builtins: HashMap::new(),
-            // Phase 7 Stage 7.4.c (Doc 68 §2.7) — initialise from
-            // env var so `NELISP_USE_ELISP_APPLY=1 cargo test' (or
-            // `... target/release/nelisp eval ...') flips the
-            // takeover without any code change in callers.
-            use_elisp_apply: std::env::var_os("NELISP_USE_ELISP_APPLY")
-                .map(|v| !v.is_empty())
-                .unwrap_or(false),
+            // Phase 7 Stage 7.4.c (Doc 68 §2.7): start with elisp
+            // dispatch *off* during bootstrap.  The dispatcher
+            // (`nelisp--apply-fn' et al., installed by the LAST
+            // STDLIB_SOURCES entry `nelisp-stdlib-eval-core.el')
+            // doesn't exist until bootstrap completes; if the flag
+            // were on from the start, every defun load along the way
+            // would try to delegate through a `void-function:
+            // nelisp--apply-fn' panic.  Stage 7.4.d post-bootstrap
+            // step decides the runtime default based on the env var.
+            use_elisp_apply: false,
             delegation_depth: 0,
         };
         // `nil` and `t` self-evaluate; mark them constant so that
@@ -261,6 +264,26 @@ impl Env {
                 }
             }
         }
+        // Phase 7 Stage 7.4.d (Doc 68 §3.4) — default flip *deferred*.
+        // The naive flip (= `use_elisp_apply' true by default after
+        // bootstrap) surfaced a frame-capture leak: when an elisp
+        // `defun' is evaluated inside the body of another elisp
+        // function (= e.g. `(load FILE)' which is itself elisp),
+        // `sf_lambda' captures the lexical env *including* the
+        // apply-lambda-inner helper's `--nl-ali-*' formal slots.
+        // Subsequent calls to the loaded function then shadow our
+        // helper-state vars with the captured load-time values,
+        // corrupting the dispatch (= the `load_evaluates_file_contents'
+        // cargo test surfaces this as `wrong-number-of-arguments:
+        // (lambda 0 1)').  Clean fix is to migrate the
+        // `nelisp--apply-lambda-inner' helper itself into Rust as a
+        // builtin so its formals never enter the lexical frame stack
+        // (= proposed Stage 7.4.e).  Until that lands, keep the env-
+        // var-controlled opt-in path (Stage 7.4.c) as the only way
+        // to enable elisp dispatch.
+        env.use_elisp_apply = std::env::var_os("NELISP_USE_ELISP_APPLY")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
         env
     }
 

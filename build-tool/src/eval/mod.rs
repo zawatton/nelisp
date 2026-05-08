@@ -215,6 +215,7 @@ fn apply_combiner(head: &Sexp, tail: &Sexp, env: &mut Env) -> Result<Sexp, EvalE
                 //       distinct semantics
                 if env.use_elisp_apply
                     && env.delegation_depth == 0
+                    && !is_elisp_apply_helper(name)
                     && !is_builtin_value(&func)
                 {
                     return delegate_to_elisp_apply(&func, &args, env);
@@ -289,6 +290,40 @@ pub(crate) fn list_elements(list: &Sexp) -> Result<Vec<Sexp>, EvalError> {
         };
         cur = next;
     }
+}
+
+/// Phase 7 Stage 7.4.d (Doc 68) — names of the elisp dispatcher's
+/// own support stack, exempted from `delegate_to_elisp_apply' even
+/// at the outermost call boundary.  Without this, a *user-level*
+/// direct call to e.g. `(nelisp--apply-lambda-inner ...)' would be
+/// dispatched through the elisp `nelisp--apply-fn' loop, which
+/// recursively re-enters `nelisp--apply-lambda-inner' (= the
+/// helper applies *itself* with its OWN formal-list as the user-
+/// level formal-list).  The recursive bind-local then writes the
+/// helper's `--nl-ali-*' formal NAMES into the topmost user-formals
+/// frame, shadowing the helper's own internal state vars, and the
+/// state-walk loop reads stale values.  Helper-name skip avoids
+/// the entire recursive-dispatch chain; the helper runs straight
+/// through Rust `apply_function' / `apply_lambda_inner', binding
+/// only its own real call-frame slots.  Stage 7.4.b ERT exercises
+/// each helper's behaviour in isolation, and the Stage 7.4.c
+/// flag-on tests dispatch *user* defuns whose formal names do not
+/// collide with `--nl-ali-*'.
+fn is_elisp_apply_helper(name: &str) -> bool {
+    matches!(
+        name,
+        "nelisp--apply-fn"
+            | "nelisp--apply-closure"
+            | "nelisp--apply-lambda"
+            | "nelisp--apply-lambda-inner"
+            | "nelisp--bind-formals--compute"
+            | "nelisp--bind-formals--required-count"
+            | "nelisp--builtinp"
+            | "nelisp--closurep"
+            | "nelisp--lambdap"
+            | "nelisp--macrop"
+            | "nelisp--expand-macro"
+    )
 }
 
 /// Phase 7 Stage 7.4.c (Doc 68 §2.7) — `(builtin NAME)' shape detector.
