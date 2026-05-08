@@ -4,12 +4,18 @@
 
 * Status
 
-- DRAFT — Stage 7.4.e.2 SHIPPED (= 4aa76ff、=Env::use_elisp_apply= post-
-  bootstrap default true) 直後.  本 Doc 69 は switch-over の検証手順
-  と、その後に削除可能な Rust eval code の inventory + sub-stage 分解
-  を扱う
+- 部分 SHIPPED 2026-05-08 — sub-stage 7.5.d (= apply_closure /
+  apply_lambda inline、commit 2c4c150) 完了、7.5.c は Skip 判断.
+  7.5.a/b は user delegate (= make/bench 長系).
 - 上位 doc: =docs/design/63-phase7-nelisp-self-host-roadmap.org= §2.5
 - 関連 doc: Doc 67 (Stage 7.3) / Doc 68 (Stage 7.4) / Doc 70 (Stage 7.4.e)
+- sub-stage status:
+  | sub-stage | status | note |
+  |-----------+--------+------|
+  | 7.5.a | PENDING | user delegate (= make test 両 mode) |
+  | 7.5.b | PENDING | user delegate (= bench 5 case + 30 日観察) |
+  | 7.5.c | SKIPPED | bootstrap 依存で LOC 削減効果薄、§4.3 末追記参照 |
+  | 7.5.d | SHIPPED | commit 2c4c150、-4 net LOC、ERT/cargo 全 PASS |
 
 * §0 TL;DR
 
@@ -349,7 +355,7 @@ LOC: Doc +30.
 commit message:
 =docs(nelisp): Phase 7 Stage 7.5.b — bench gate + observation start=
 
-** §4.3 Stage 7.5.c — =is_macro= / =expand_macro= 削除 spike (optional)
+** §4.3 Stage 7.5.c — =is_macro= / =expand_macro= 削除 spike [SKIPPED 2026-05-08]
 
 タスク:
 
@@ -366,6 +372,26 @@ LOC 削減: -27 〜 -47 (= spike 結果次第).
 
 commit message:
 =feat(nelisp): Phase 7 Stage 7.5.c — macro path elisp 経由化 + Rust is_macro/expand_macro 削除=
+
+*** 2026-05-08 SKIPPED の判断根拠
+
+実装着手前の精査で、以下が判明したため Stage 7.5.c は **skip**:
+
+1. bootstrap chicken-and-egg: =STDLIB_SOURCES= 内で =cl-loop= 等の
+   macro 多用ファイルは =nelisp--expand-macro= が install される
+   *前* に評価される (= dispatcher は最後の entry).  したがって
+   bootstrap 中の Rust =is_macro= / =expand_macro= は **削除不可** —
+   post-bootstrap だけ elisp 経由化しても両 path 両方残る形になる
+2. LOC 削減効果: 仮に post-bootstrap path を追加しても、Rust 側の
+   関数自体は残るので削除不可、純減は 0 LOC.  inline 化のみで -5 LOC
+   は可能だが追加複雑さに見合わない
+3. 追加 cost: =delegate_to_elisp_apply_with_unevaluated_args= (=
+   ~50 LOC、新 contract、テスト追加) を実装する必要がある
+4. Risk: macro 形 sf_lambda 評価の subtle case で capture leak の
+   再発リスク (= Doc 68 §3.4 / Stage 7.4.d で観測した類似 surface)
+
+→ ROI が極めて低い.  本 Stage 7.5.c は skip し、必要なら Stage 7.7+
+で AOT bake 化と合わせて再検討.
 
 ** §4.4 Stage 7.5.d — =apply_closure= / =apply_lambda= inline
 
