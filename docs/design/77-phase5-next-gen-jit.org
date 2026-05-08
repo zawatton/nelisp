@@ -612,6 +612,29 @@ Stage 4 前に =Sexp= layout invariant を unit test で固化:
   は LOC reduction でなく hot path 最適化" を再確認、Doc 77 では perf
   軸を中心に articulate. LOC 軸の改善 (Stage 5 cleanup -2,000 LOC) は
   副作用扱い.
+- *2026-05-08 audit-revised — Stage 1.b 着手後の発見*: Stage 1.b
+  (= eq same-ref short-circuit) を実装したが、=lowered_eq= が呼ぶ
+  =(jit().eq)(&args[0] as *const _, &args[1] as *const _)= の
+  =&args[0]= と =&args[1]= は slice 隣接 element の address (= 16 bytes
+  間隔、Sexp size 16 bytes/element). elisp eval が apply_builtin に渡す
+  =args: &[Sexp]= は eval 結果の clone を contiguous slice に詰める
+  ため、現実の elisp call では *常に* =&args[0] != &args[1]=. つまり
+  Stage 1.b の same-ref short-circuit は *elisp eval から fire しない*
+  (= unit test で synthetic に同 ptr を渡した時だけ働く).
+  実装を revert. 軸 B 全候補の再評価:
+  - BoolVector aref/aset inline (~80 LOC, ~5-15% improvement for
+    BoolVector ops) — 依然 valid だが BoolVector は call frequency
+    低、絶対 impact 小. 着手するなら Stage 4 ABI pin 後に integrate
+    した方が ROI 高
+  - CharTable miss inline — 既に §2.2.2 で deferred articulated
+  - Vector aset bounds inline (~30-40 LOC, ~5-10% for aset) — 同様、
+    Stage 4 ABI pin で完全 inline 化する方が筋
+  - eq same-ref — 本 entry で revert 確定
+  *結論*: Stage 1 軸 B は *Stage 4 ABI pin (= 軸 A) の後に inline emit
+  enabling work* として再 schedule する方が筋. Stage 1 単独 ship は
+  perf gain 限定的かつ Cranelift IR work が Stage 4 でやる work と
+  duplicate. Doc 77 は articulation 維持、実装は Stage 2 (= call-site
+  JIT entry point) から着手するのが現実路線. user 判断待ち.
 
 # Local Variables:
 # org-html-validation-link: nil
