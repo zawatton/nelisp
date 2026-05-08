@@ -397,6 +397,9 @@ pub fn install_builtins(env: &mut Env) {
         // stack を操作するための薄いラッパ.
         "nelisp--push-frame", "nelisp--pop-frame", "nelisp--push-captured",
         "nelisp--bind-local", "nelisp--apply-builtin-dispatch",
+        // Phase 7 Stage 7.4.c (Doc 68 §2.7) — `use_elisp_apply' takeover
+        // flag の runtime toggle.  ERT 用.
+        "nelisp--set-use-elisp-apply", "nelisp--get-use-elisp-apply",
     ];
     for n in names {
         let sentinel = Sexp::list_from(&[
@@ -596,6 +599,9 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nelisp--push-captured" => bi_push_captured(args, env),
         "nelisp--bind-local" => bi_bind_local(args, env),
         "nelisp--apply-builtin-dispatch" => bi_apply_builtin_dispatch(args, env),
+        // Phase 7 Stage 7.4.c (Doc 68 §2.7) — takeover flag toggle.
+        "nelisp--set-use-elisp-apply" => bi_set_use_elisp_apply(args, env),
+        "nelisp--get-use-elisp-apply" => bi_get_use_elisp_apply(args, env),
         // intern-soft migrated to elisp (Rust-min 2026-05-06 batch 6f,
         // see lisp/nelisp-stdlib-misc.el).
         "make-symbol" => bi_make_symbol(args),
@@ -3831,6 +3837,24 @@ fn bi_bind_local(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     };
     env.bind_local(&name, args[1].clone());
     Ok(args[1].clone())
+}
+
+/// `(nelisp--set-use-elisp-apply T-OR-NIL)` — flip the Stage 7.4.c
+/// takeover flag at runtime.  Returns the new value (= the arg
+/// converted to t/nil).  Used by ERT to exercise both Rust dispatch
+/// and elisp dispatch within a single subprocess.
+fn bi_set_use_elisp_apply(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--set-use-elisp-apply", args, 1, Some(1))?;
+    let truthy = !matches!(args[0], Sexp::Nil);
+    env.use_elisp_apply = truthy;
+    Ok(if truthy { Sexp::T } else { Sexp::Nil })
+}
+
+/// `(nelisp--get-use-elisp-apply)` — read the current Stage 7.4.c
+/// takeover flag.  Returns t/nil.
+fn bi_get_use_elisp_apply(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    require_arity("nelisp--get-use-elisp-apply", args, 0, Some(0))?;
+    Ok(if env.use_elisp_apply { Sexp::T } else { Sexp::Nil })
 }
 
 /// `(nelisp--apply-builtin-dispatch NAME ARGS)` — direct dispatch to

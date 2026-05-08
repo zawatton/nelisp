@@ -104,6 +104,31 @@ pub struct Env {
     /// `builtins::dispatch' fallback consults this map before
     /// surfacing `EvalError::UnboundFunction`.
     pub extern_builtins: HashMap<String, ExternBuiltin>,
+    /// Phase 7 Stage 7.4.c (Doc 68 §2.7) — takeover flag for the
+    /// elisp-side `nelisp--apply-fn' dispatch.  When `true',
+    /// `eval/mod.rs::apply_combiner' delegates the plain-function and
+    /// lambda-head paths to elisp instead of invoking the Rust
+    /// `apply_function' helpers directly.  Default is `false' so the
+    /// pre-Stage-7.4 Rust dispatch remains the runtime path.
+    /// Initialised from the `NELISP_USE_ELISP_APPLY' env var (any
+    /// non-empty value flips it to `true') and runtime-mutable via
+    /// the `nelisp--set-use-elisp-apply' builtin so ERT can flip it
+    /// inside a single subprocess.
+    pub use_elisp_apply: bool,
+    /// Phase 7 Stage 7.4.c (Doc 68 §2.7) — re-entry guard for the
+    /// elisp-apply takeover.  Counts active `delegate_to_elisp_apply'
+    /// frames; when > 0 the apply_combiner skips its delegate gate so
+    /// that the dispatcher's own machinery (= helpers, predicates,
+    /// macro expansion phases, the elisp defuns they internally
+    /// invoke like `consp' / `null' / `nth') runs through the Rust
+    /// `apply_function' path without recursing back through itself.
+    /// Trade-off: only the *outermost* user-level call is exercised
+    /// through the elisp dispatcher.  Cross-equivalence ERT verifies
+    /// that one entry through the elisp path computes the same final
+    /// value as Rust dispatch would; deep / recursive coverage is
+    /// Stage 7.4.d's default-flip job (= every user-entry-point call
+    /// flows through elisp by default).
+    pub delegation_depth: u32,
 }
 
 impl Env {
@@ -196,9 +221,29 @@ impl Env {
             // below host Emacs's 1600 to keep the Rust call stack
             // bounded under cargo-test default thread stacks.  See
             // `recursion_depth_guard' for the upper-bound test.
-            max_recursion: 512,
+            // Phase 7 Stage 7.4.c (Doc 68): bumped from 512 to 1024
+            // because the elisp-apply takeover adds ~10-15 eval
+            // frames per outermost user-level call (= cond expansion
+            // + apply-closure helper + apply-lambda-inner + body
+            // eval).  1024 absorbs that overhead with margin while
+            // staying within cargo test's default 2MB thread stack
+            // (= 4096 was tested and overflowed `recursion_depth_guard'
+            // under the test runner; 1024 fits with ~256-byte
+            // release-mode frames).  Stage 7.4.c's
+            // `delegation_depth' counter ensures the takeover only
+            // multiplies depth at the outermost user-call boundary,
+            // not on every recursive entry.
+            max_recursion: 1024,
             current_recursion: 0,
             extern_builtins: HashMap::new(),
+            // Phase 7 Stage 7.4.c (Doc 68 §2.7) — initialise from
+            // env var so `NELISP_USE_ELISP_APPLY=1 cargo test' (or
+            // `... target/release/nelisp eval ...') flips the
+            // takeover without any code change in callers.
+            use_elisp_apply: std::env::var_os("NELISP_USE_ELISP_APPLY")
+                .map(|v| !v.is_empty())
+                .unwrap_or(false),
+            delegation_depth: 0,
         };
         // `nil` and `t` self-evaluate; mark them constant so that
         // (setq nil 1) is a hard error per Elisp.
@@ -229,6 +274,11 @@ impl Env {
             max_recursion: 256,
             current_recursion: 0,
             extern_builtins: HashMap::new(),
+            // `Env::empty' is for stand-alone error-path tests that
+            // never reach the apply-fn dispatch; default `false' is
+            // safe.
+            use_elisp_apply: false,
+            delegation_depth: 0,
         }
     }
 

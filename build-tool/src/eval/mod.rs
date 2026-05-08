@@ -199,6 +199,26 @@ fn apply_combiner(head: &Sexp, tail: &Sexp, env: &mut Env) -> Result<Sexp, EvalE
                 }
                 // 3) Plain function — evaluate args, apply.
                 let args = eval_arg_list(tail, env)?;
+                // Phase 7 Stage 7.4.c (Doc 68 §2.7) — delegate to
+                // elisp `nelisp--apply-fn' for the *outermost*
+                // user-level closure call.  Skip:
+                //   (a) when already inside a delegation
+                //       (`delegation_depth > 0') — the dispatcher's
+                //       own machinery + every defun it internally
+                //       invokes (= consp / null / nth / memq / etc.)
+                //       must run through Rust apply_function or we
+                //       cycle (`consp' delegated → apply-fn body →
+                //       builtinp call → consp call → ...)
+                //   (b) Rust builtins — round-tripping through the
+                //       elisp dispatcher would just call the same
+                //       Rust dispatch table indirectly with no
+                //       distinct semantics
+                if env.use_elisp_apply
+                    && env.delegation_depth == 0
+                    && !is_builtin_value(&func)
+                {
+                    return delegate_to_elisp_apply(&func, &args, env);
+                }
                 return apply_function(&func, &args, env);
             }
             Err(EvalError::UnboundFunction(name.clone()))
@@ -209,6 +229,12 @@ fn apply_combiner(head: &Sexp, tail: &Sexp, env: &mut Env) -> Result<Sexp, EvalE
         Sexp::Cons(_, _) => {
             let func = eval(head, env)?;
             let args = eval_arg_list(tail, env)?;
+            if env.use_elisp_apply
+                && env.delegation_depth == 0
+                && !is_builtin_value(&func)
+            {
+                return delegate_to_elisp_apply(&func, &args, env);
+            }
             apply_function(&func, &args, env)
         }
         other => Err(EvalError::WrongType {
@@ -263,6 +289,53 @@ pub(crate) fn list_elements(list: &Sexp) -> Result<Vec<Sexp>, EvalError> {
         };
         cur = next;
     }
+}
+
+/// Phase 7 Stage 7.4.c (Doc 68 §2.7) — `(builtin NAME)' shape detector.
+/// Used by [`apply_combiner`] to short-circuit the elisp delegation
+/// for Rust builtins (= round-tripping a builtin through the elisp
+/// dispatcher would just call the same Rust dispatch table indirectly
+/// with no distinct semantics; Stage 7.4.a ERT already covers the
+/// elisp builtin-dispatch branch in isolation).
+fn is_builtin_value(func: &Sexp) -> bool {
+    if let Sexp::Cons(h, _) = func {
+        if let Sexp::Symbol(s) = &*h.borrow() {
+            return s == "builtin";
+        }
+    }
+    false
+}
+
+/// Phase 7 Stage 7.4.c (Doc 68 §2.7) — delegate to elisp
+/// `(nelisp--apply-fn FUNC ARGS)' so the function-application
+/// semantics run through the elisp implementation in
+/// `lisp/nelisp-stdlib-eval-core.el'.
+///
+/// Bumps `env.delegation_depth' for the duration of the recursive
+/// `eval' so the apply_combiner gate correctly disables further
+/// delegation for everything that runs *inside* the dispatcher (=
+/// helper defuns + the elisp macros they call internally + their
+/// macro-expansion phases).  Without that guard, a single call to
+/// `(consp X)' from a predicate body would re-trigger delegation
+/// through `nelisp--apply-fn', whose body is itself a `(cond ...)'
+/// that calls `consp' again — infinite recursion.
+///
+/// The macro-expansion path in [`apply_combiner`] step 2 is
+/// intentionally NOT routed through this helper: macro expansion is
+/// itself a Rust primitive (= [`expand_macro`]) and runs with
+/// `delegation_depth' inherited from its caller, so it falls into
+/// the no-delegate path automatically.
+fn delegate_to_elisp_apply(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    let args_list = Sexp::list_from(args);
+    let dispatch_form = Sexp::list_from(&[
+        Sexp::Symbol("nelisp--apply-fn".into()),
+        Sexp::list_from(&[Sexp::Symbol("quote".into()), func.clone()]),
+        Sexp::list_from(&[Sexp::Symbol("quote".into()), args_list]),
+    ]);
+    env.delegation_depth += 1;
+    let result = eval(&dispatch_form, env);
+    env.delegation_depth -= 1;
+    result
 }
 
 /// Apply `func` to `args`.  `func` may be:

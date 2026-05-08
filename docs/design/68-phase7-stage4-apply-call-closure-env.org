@@ -563,30 +563,85 @@ LOC 実績: +235 elisp (= core.el)、+250 ERT (= core-test.el)、+10 LOC
 - =cargo test --release --lib -- --test-threads=1=: 431/431 PASS
   (= Stage 7.4.a stage74a_* 10 件含む、bootstrap 不変)
 
-** §3.3 Stage 7.4.c — =--use-elisp-apply= flag 経路 + cross-equivalence ERT
+** §3.3 Stage 7.4.c — =--use-elisp-apply= flag 経路 + cross-equivalence ERT (SHIPPED)
 
-Rust 側 =Env= に =use_elisp_apply: bool= field 追加。=apply_combiner= の
-plain function path に §2.7 の flag 分岐を実装。
+実装:
+- =build-tool/src/eval/env.rs=:
+  - =Env::use_elisp_apply: bool= field 追加.  default false、env var
+    =NELISP_USE_ELISP_APPLY= 非空で true 初期化
+  - =Env::delegation_depth: u32= field 追加 (= 後述 cycle 解決の核)
+  - =max_recursion= を 512 → 1024 に bump (= elisp dispatch overhead を
+    吸収しつつ cargo test 2MB thread stack に収まる、4096 は overflow した)
+- =build-tool/src/eval/mod.rs=:
+  - =delegate_to_elisp_apply= helper: =(nelisp--apply-fn 'FUNC '(ARGS))=
+    の dispatch form を組んで =eval=、その間 =delegation_depth= を ++/--
+  - =is_builtin_value= helper: =(builtin NAME)= 形状判定で builtin を
+    delegation gate から除外
+  - =apply_combiner= step 3 の plain function path + lambda head path に
+    flag 分岐:
+    =if env.use_elisp_apply && env.delegation_depth == 0 && !is_builtin_value(&func) → delegate=
+- =build-tool/src/eval/builtins.rs=:
+  - =bi_set_use_elisp_apply= / =bi_get_use_elisp_apply= 2 builtin 追加
+  - install list / dispatch arm に追加
 
 CLI integration:
-- =target/release/nelisp --use-elisp-apply eval EXPR= で elisp dispatch
-- 通常の =target/release/nelisp ert= は default (= Rust dispatch)
-- 追加: =target/release/nelisp --use-elisp-apply ert= で ERT 全 suite を
-  elisp dispatch で再走
+- =NELISP_USE_ELISP_APPLY=1 target/release/nelisp eval EXPR= (= 起動時
+  flag-on)
+- runtime toggle: =(nelisp--set-use-elisp-apply t)= / =(... nil)=、
+  状態確認は =(nelisp--get-use-elisp-apply)=
+- CLI flag (=--use-elisp-apply=) は採用せず (= env var + builtin で十分、
+  CLI parser を肥大化させない)
 
-ERT (= cross-equivalence、両 mode で run):
-- 既存 ERT 全 suite を **そのまま** =--use-elisp-apply= で実行
-- 期待値: PASS 数同一、wallclock < 3x
+設計上の発見 — *outermost-only delegation strategy*:
 
-新規 ERT (= elisp dispatch 固有 path):
-- =stage74c-recursive-defun-elisp-dispatch= = =(defun fact (n) (if (zerop n) 1 (* n (fact (1- n)))))= → =(fact 10)= = 3628800
-- =stage74c-closure-write-through-elisp-dispatch= = (let ((x 0)) (setq f (lambda () (setq x (1+ x))))) → =(funcall f)= 後の x が 1
-- =stage74c-rest-arg-elisp-dispatch= = =(lambda (&rest xs) (length xs))= 経由
-- =stage74c-builtin-via-funcall-elisp-dispatch= = =(funcall #'cons 1 2)= = (1 . 2)
-- =stage74c-recursion-depth-respects-flag= = (defun loop () (loop)) → max-lisp-eval-depth エラー (= 同 message、両 mode で)
+当初は「ALL 関数 call が elisp dispatch を経由」を目指したが、実装中に
+深刻な cycle を発見:
 
-LOC: +50 Rust (= flag + dispatch arm + ERT runner)、+150 ERT、commit
-~2 件、想定 4〜6h。
+  =consp= (defun) → delegate → =nelisp--apply-fn= body の =(cond ...)=
+  expansion で =(null clauses)= 呼び出し → null は defun → delegate
+  → cond expansion で再び null → 無限再帰
+
+helper exemption list で逃げようとしたが、helpers が依存する defun
+(=consp= / =null= / =nth= / =memq= / =<= / =1+= 等) を全て exempt 必要
+で保守不可.  解決として =Env::delegation_depth= counter を導入:
+
+- =delegate_to_elisp_apply= 進入時に depth++、退出時に --
+- =apply_combiner= の delegate gate に =delegation_depth == 0= 条件追加
+- 結果: **outermost user-level call のみ elisp dispatch、内部 (= helper
+  + macro expansion + 内部 defun) は全て Rust apply_function**
+
+trade-off: cross-equivalence は最外 1 layer のみ.  深い coverage は
+Stage 7.4.d の default flip 後に「全 user entry point が elisp dispatch」
+で達成する.  Stage 7.4.c の ERT は最終値の同一性で検証するので outermost
+で十分.
+
+ERT (= test/nelisp-stdlib-eval-core-test.el に追加、stage 7.4.b の 16
+件 + 7.4.c の 6 件 = 22 件):
+- =flag-recursive-defun-dispatch= = =(fact 10)= = 3628800
+- =flag-closure-write-through= = =(let ((x 0)) (let ((f (lambda () (setq x (1+ x))))) (funcall f) (funcall f) x))= = 2
+- =flag-rest-arg-defun= = =(defun count-args (&rest xs) (length xs))= +
+  =(count-args 'a 'b 'c)= = 3
+- =flag-funcall-builtin-passthrough= = =(funcall #'cons 1 2)= = (1 . 2)
+- =flag-runtime-toggle-roundtrip= = nil → t → nil の toggle
+- =flag-recursion-depth-still-bounded= = =(defun loop () (loop)) (loop)=
+  が =max-lisp-eval-depth= で停止 (= delegation_depth + 1024 budget が
+  Rust stack overflow を防ぐ)
+
+cross-equivalence: 既存 ERT 全 suite を =NELISP_USE_ELISP_APPLY=1= で
+再走するのは Stage 7.4.d 移行と一緒に実施 (= bench gate と並走).
+
+確認:
+- =cargo build --release=: PASS
+- runtime smoke (=fact 10= / closure write-through / =princ=): PASS
+- ERT (eval-core-test.el 単独): 22/22 PASS
+- =cargo test --release --lib -- --test-threads=1=: 431/431 PASS (= bump
+  した 1024 で =recursion_depth_guard= も既存挙動維持)
+
+LOC 実績: +43 Rust env (= 2 field + max_recursion bump)、+44 mod
+(= delegate / is_builtin / apply_combiner 分岐)、+40 builtins (= 2 toggle
++ install/dispatch)、+95 ERT (= 6 件 + helper)、合計 +222.  当初想定
++50/+150 と比較して Rust は -7、ERT は -55 (= cross-equiv は subprocess
++ printed 比較で簡素).
 
 ** §3.4 Stage 7.4.d — default flip + perf gate
 

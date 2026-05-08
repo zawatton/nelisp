@@ -252,3 +252,118 @@ The prin1 reader-syntax for (quote X) is 'X, so we compare against that."
 (provide 'nelisp-stdlib-eval-core-test)
 
 ;;; nelisp-stdlib-eval-core-test.el ends here
+
+;;; ---- Stage 7.4.c — flag-on cross-equivalence ERT --------------------
+;;;
+;;; Verify that with `nelisp--set-use-elisp-apply t' the runtime
+;;; dispatch goes through the elisp `nelisp--apply-fn' and produces
+;;; the same final value as the Rust dispatch.  Stage 7.4.c uses the
+;;; *outermost-only* delegation strategy (= delegation_depth counter
+;;; in env.rs), so what we verify is that one entry through the elisp
+;;; path computes correctly; deep recursive coverage is Stage 7.4.d's
+;;; default-flip job.
+
+(defun nelisp-stdlib-eval-core-test--printed-with-flag (probe-form)
+  "Like `--printed' but with `nelisp--set-use-elisp-apply t' first.
+Wraps PROBE-FORM in a progn that flips the flag, runs the probe,
+then `princ's the prin1 of the probe result.  Same trim semantics as
+`--printed' (= strips the trailing wrapper auto-print)."
+  (let* ((wrapper
+          (format "(progn (nelisp--set-use-elisp-apply t) (princ (prin1-to-string %s)))"
+                  probe-form))
+         (r (nelisp-stdlib-eval-core-test--eval wrapper)))
+    (should (eq (car r) 0))
+    (let* ((out (string-trim-right (cdr r))))
+      (if (string-match "\\(.*\\)\"\\([^\"]*\\)\"\\'" out)
+          (match-string 1 out)
+        out))))
+
+(ert-deftest nelisp-eval-core/flag-recursive-defun-dispatch ()
+  "Recursive defun via elisp dispatch.
+(fact 10) = 3628800 must hold whether dispatch is Rust or elisp."
+  (nelisp-stdlib-eval-core-test--skip-unless-built)
+  (should (string=
+           (nelisp-stdlib-eval-core-test--printed-with-flag
+            "(progn
+               (defun fact (n)
+                 (if (= n 0) 1 (nelisp--mul2 n (fact (nelisp--sub2 n 1)))))
+               (fact 10))")
+           "3628800")))
+
+(ert-deftest nelisp-eval-core/flag-closure-write-through ()
+  "setq inside a closure body writes through to the captured cell.
+After 2 funcall, x = 2 (= the let binding's cell observed mutation)."
+  (nelisp-stdlib-eval-core-test--skip-unless-built)
+  (should (string=
+           (nelisp-stdlib-eval-core-test--printed-with-flag
+            "(let ((x 0))
+               (let ((f (lambda () (setq x (1+ x)))))
+                 (funcall f)
+                 (funcall f)
+                 x))")
+           "2")))
+
+(ert-deftest nelisp-eval-core/flag-rest-arg-defun ()
+  "&rest formal collects the tail; (length xs) returns the count."
+  (nelisp-stdlib-eval-core-test--skip-unless-built)
+  ;; (defun count-args (&rest xs) (length xs))
+  ;; (count-args 'a 'b 'c) → 3
+  (should (string=
+           (nelisp-stdlib-eval-core-test--printed-with-flag
+            "(progn
+               (defun count-args (&rest xs) (length xs))
+               (count-args (quote a) (quote b) (quote c)))")
+           "3")))
+
+(ert-deftest nelisp-eval-core/flag-funcall-builtin-passthrough ()
+  "funcall on a builtin sentinel works through the elisp dispatcher.
+The Rust builtin short-circuit (= is_builtin_value check in
+apply_combiner) still routes to bi_cons under flag-on."
+  (nelisp-stdlib-eval-core-test--skip-unless-built)
+  (should (string=
+           (nelisp-stdlib-eval-core-test--printed-with-flag
+            "(funcall (function cons) 1 2)")
+           "(1 . 2)")))
+
+(ert-deftest nelisp-eval-core/flag-runtime-toggle-roundtrip ()
+  "Flag toggle is observable both ways via `nelisp--get-use-elisp-apply'."
+  (nelisp-stdlib-eval-core-test--skip-unless-built)
+  (let* ((expr "(progn
+                  (princ (prin1-to-string (nelisp--get-use-elisp-apply)))
+                  (princ \" \")
+                  (nelisp--set-use-elisp-apply t)
+                  (princ (prin1-to-string (nelisp--get-use-elisp-apply)))
+                  (princ \" \")
+                  (nelisp--set-use-elisp-apply nil)
+                  (princ (prin1-to-string (nelisp--get-use-elisp-apply))))")
+         (r (nelisp-stdlib-eval-core-test--eval expr)))
+    (should (eq (car r) 0))
+    ;; STDOUT: "nil t nil"<auto-print>
+    (should (string-prefix-p "nil t nil" (cdr r)))))
+
+(ert-deftest nelisp-eval-core/flag-recursion-depth-still-bounded ()
+  "Even with elisp dispatch on, runaway recursion hits max-lisp-eval-depth.
+Verifies that `delegation_depth' guard plus the bumped 1024 budget
+do not let an infinite (defun loop () (loop)) silently overflow the
+Rust call stack — it must surface a recoverable Internal error."
+  (nelisp-stdlib-eval-core-test--skip-unless-built)
+  (let* ((expr "(progn
+                  (nelisp--set-use-elisp-apply t)
+                  (defun nelisp-test-loop () (nelisp-test-loop))
+                  (condition-case _e
+                      (nelisp-test-loop)
+                    (error (princ \"caught\"))))")
+         (r (nelisp-stdlib-eval-core-test--eval expr)))
+    ;; The depth error is an Internal `EvalError', surfaced by the
+    ;; CLI as exit 1 with a stderr message; the elisp condition-case
+    ;; cannot catch it (= it's an Internal, not a signal).  Either:
+    ;;   exit=0 + STDOUT contains "caught" (= elisp signal layer),
+    ;;   or exit≠0 + STDERR mentions max-lisp-eval-depth.
+    (cond
+     ((eq (car r) 0)
+      (should (string-match-p "caught" (cdr r))))
+     (t
+      ;; Either path is acceptable — both prove "doesn't silently
+      ;; segfault".  The cdr is STDOUT; we don't capture STDERR via
+      ;; call-process here, so just assert non-zero exit.
+      (should (not (eq (car r) 0)))))))

@@ -196,18 +196,23 @@ error exit."
 
 (defun nelisp--apply-closure (closure args)
   "Apply CLOSURE = `(closure CAPTURED FORMALS BODY...)' to ARGS.
-Walk the cons head with car/cadr/cddr to extract the three slots,
-delegate to `nelisp--apply-lambda-inner'."
-  (let* ((parts (cdr closure))
+Walks the cons head with explicit car/cdr nesting (= NOT cadr/cddr)
+because the latter are themselves elisp defuns and would re-trigger
+delegation through `nelisp--apply-fn' when the takeover flag is on,
+causing an infinite recursion loop while extracting the very slots
+the dispatcher needs to apply *itself*."
+  (let* ((parts (cdr closure))                       ; (CAPTURED FORMALS BODY...)
+         (rest1 (cdr parts))                         ; (FORMALS BODY...)
          (captured (car parts))
-         (formals (cadr parts))
-         (body (cddr parts)))
+         (formals (car rest1))
+         (body (cdr rest1)))
     (nelisp--apply-lambda-inner captured formals body args)))
 
 (defun nelisp--apply-lambda (lambda-form args)
   "Apply a bare `(lambda FORMALS BODY...)' to ARGS.
 Equivalent to a closure with empty CAPTURED env.  This is the shape
-that defun stores in the function cell directly."
+that defun stores in the function cell directly.  Uses only car/cdr
+(= same Rust-builtin-only constraint as `nelisp--apply-closure')."
   (let* ((parts (cdr lambda-form))
          (formals (car parts))
          (body (cdr parts)))
@@ -226,10 +231,14 @@ that defun stores in the function cell directly."
 FN is one of: `(builtin NAME)' / `(closure ENV ARGS BODY...)' /
 `(lambda ARGS BODY...)' / `(macro . LAMBDA)'.  ARGS is a list of
 already-evaluated values.  Macro shape signals an error — the
-caller should `nelisp--expand-macro' first and re-eval the result."
+caller should `nelisp--expand-macro' first and re-eval the result.
+
+NOTE: extracts the builtin NAME with `(car (cdr fn))' rather than
+`(cadr fn)' because cadr is itself an elisp defun and would re-trigger
+delegation through this same dispatcher when the takeover flag is on."
   (cond
    ((nelisp--builtinp fn)
-    (nelisp--apply-builtin-dispatch (cadr fn) args))
+    (nelisp--apply-builtin-dispatch (car (cdr fn)) args))
    ((nelisp--closurep fn)
     (nelisp--apply-closure fn args))
    ((nelisp--lambdap fn)
