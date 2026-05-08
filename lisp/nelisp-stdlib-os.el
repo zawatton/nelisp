@@ -812,8 +812,10 @@ host byte order."
 ;;
 ;; pidfd_open / pidfd_send_signal / inotify_init1 / inotify_rm_watch /
 ;; eventfd2 ride the generic `nelisp--syscall' arm via `syscall_nr()'
-;; symbol map.  inotify_add_watch + inotify_read need string / packed
-;; binary handling and live in their own primitives.
+;; symbol map.  inotify_add_watch + inotify_read used to be specialized
+;; Rust primitives (path string + packed `struct inotify_event' parse)
+;; but were retired in Doc 76 Stage E (2026-05-09); the Stage E section
+;; below now drives them elisp-side via `nl-ffi-call' libc.
 ;; ---------------------------------------------------------------------------
 
 ;; ----- pidfd flags -----
@@ -863,6 +865,31 @@ zero; pass FLAGS = 0 unless you know better."
    (nelisp--syscall 'pidfd_send_signal pidfd sig 0 flags)))
 
 ;; ----- inotify wrappers -----
+;;
+;; Doc 76 Stage E (2026-05-09): inotify_add_watch / inotify_read were
+;; specialized Rust primitives (= path string + variable-length packed
+;; `struct inotify_event' buffer) but are now driven elisp-side through
+;; `nl-ffi-call' libc.  inotify_init1 / inotify_rm_watch keep riding
+;; the generic int-only `nelisp--syscall' arm via syscall_nr() symbol map.
+;;
+;; struct inotify_event (Linux) layout — same on all glibc/musl arches:
+;;   offset 0  i32 wd          (watch descriptor; -1 for IN_Q_OVERFLOW)
+;;   offset 4  u32 mask        (event mask bits, see IN-* defconsts)
+;;   offset 8  u32 cookie      (rename pair correlator)
+;;   offset 12 u32 len         (length of name[], including NUL pad)
+;;   offset 16 char name[len]  (NUL-padded UTF-8 file basename, len = 0
+;;                              for events on the watched path itself)
+;;   sizeof(struct inotify_event) without name = 16 bytes
+;;   NAME_MAX (Linux) = 255, +1 NUL = 256 bytes max name field per event.
+;;
+;; Read pattern:
+;;   1. nl-ffi-malloc (per-event-cap = 16 + 256 = 272) * MAX-EVENTS bytes
+;;   2. libc.read (fd, buf, cap) → ssize_t n
+;;   3. walk buf [0..n) parsing header (= read-i32/u32) + name field (=
+;;      read-bytes-at + NUL-truncate via string-search), advance to next
+;;      record at off + 16 + len
+;; Empty result list = no events ready (only possible when FD opened
+;; with IN-NONBLOCK).
 
 (defun nelisp-os-inotify-init (flags)
   "Linux inotify_init1(2) — return a new inotify fd.  FLAGS is OR of
@@ -872,8 +899,15 @@ zero; pass FLAGS = 0 unless you know better."
 (defun nelisp-os-inotify-add-watch (fd path mask)
   "Linux inotify_add_watch(2) — return a watch descriptor (positive
 integer) or signal `nelisp-os-error'.  MASK is OR of `IN-*' event bits."
-  (nelisp-os--check-errno
-   (nelisp--syscall-inotify-add-watch fd path mask)))
+  ;; libc::inotify_add_watch: int(int fd, const char *path, uint32_t mask)
+  ;; → int.  Returns -1 on error and sets errno; the wd is a positive
+  ;; per-fd integer otherwise.
+  (let ((r (nl-ffi-call "libc" "inotify_add_watch"
+                        [:sint32 :sint32 :string :uint32]
+                        fd path mask)))
+    (if (= r -1)
+        (nelisp-os--ffi-errno-signal)
+      r)))
 
 (defun nelisp-os-inotify-rm-watch (fd wd)
   "Linux inotify_rm_watch(2) — remove the watch identified by WD."
@@ -883,10 +917,39 @@ integer) or signal `nelisp-os-error'.  MASK is OR of `IN-*' event bits."
   "Read up to MAX-EVENTS events off inotify FD.  Returns a list of
 4-element lists `(WD MASK COOKIE NAME)'.  Empty list when no events
 are ready (only possible when FD was opened `IN-NONBLOCK')."
-  (let ((r (nelisp--syscall-inotify-read fd max-events)))
-    (if (integerp r)
-        (nelisp-os--check-errno r)
-      r)))
+  ;; Doc 76 Stage E: was a Rust specialized primitive; now elisp-side
+  ;; libc.read + nl-ffi-read-i32/u32/bytes-at parse loop.
+  (let* ((per-event-cap (+ 16 256))             ; sizeof(header) + NAME_MAX+1
+         (cap           (* max-events per-event-cap))
+         (buf           (nl-ffi-malloc cap)))
+    (unwind-protect
+        (let ((n (nl-ffi-call "libc" "read"
+                              [:sint64 :sint32 :pointer :uint64]
+                              fd buf cap)))
+          (cond
+           ((= n -1) (nelisp-os--ffi-errno-signal))
+           ((= n 0)  nil)
+           (t (let ((events nil) (off 0))
+                (catch 'done
+                  (while (<= (+ off 16) n)
+                    (let* ((wd     (nl-ffi-read-i32 buf off))
+                           (mask   (nl-ffi-read-u32 buf (+ off 4)))
+                           (cookie (nl-ffi-read-u32 buf (+ off 8)))
+                           (nlen   (nl-ffi-read-u32 buf (+ off 12)))
+                           (name-off (+ off 16)))
+                      ;; Truncated tail (kernel never writes a partial
+                      ;; record; this guards corruption / short read).
+                      (when (> (+ name-off nlen) n)
+                        (throw 'done nil))
+                      (let* ((raw  (if (= nlen 0)
+                                       ""
+                                     (nl-ffi-read-bytes-at buf name-off nlen)))
+                             (cut  (string-search "\0" raw))
+                             (name (if cut (substring raw 0 cut) raw)))
+                        (push (list wd mask cookie name) events))
+                      (setq off (+ name-off nlen)))))
+                (nreverse events)))))
+      (nl-ffi-free buf))))
 
 ;; ----- eventfd wrapper -----
 
