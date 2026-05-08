@@ -1,0 +1,399 @@
+#+TITLE: Phase 7 Stage 7.7 — AOT Sexp tree bake (bootstrap path image 化)
+#+DATE: 2026-05-08
+#+AUTHOR: Claude (z=Opus 4.7) + user direction
+#+OPTIONS: ^:nil
+
+* §0 Status
+
+- 親 Doc: 63 (Phase 7 self-host roadmap §3.3)
+- 前提 SHIPPED: Doc 64〜71 (Stage 7.1〜7.6)
+- 本 Doc: Stage 7.7 詳細設計 — DRAFT 2026-05-08
+- 後続 Phase 8 (= Rust reader/eval 完全削除) は scope 外
+
+* §1 背景
+
+** §1.1 Stage 7.6 が残した形
+
+Stage 7.6.a/b SHIPPED (commit f15b16b) で post-bootstrap reader callsite
+は **すべて** elisp reader (=nelisp--read-from-string-impl= /
+=nelisp--read-all-from-string-impl=) 経由になった.  しかし *bootstrap
+path* は依然 Rust reader が使われる:
+
+#+begin_src rust
+// build-tool/src/eval/env.rs:256-266
+for (name, src) in STDLIB_SOURCES {
+    let forms = match reader::read_all(src) {       // ← Rust reader
+        Ok(forms) => forms,
+        Err(e) => panic!("{} bootstrap failed: {}", name, e),
+    };
+    for form in &forms {
+        if let Err(e) = super::eval(form, &mut env) { // ← Rust eval
+            panic!("{} bootstrap failed: {}", name, e);
+        }
+    }
+}
+#+end_src
+
+これが解消できないと:
+
+- =reader/mod.rs= (292 LOC) を削除できない (bootstrap が依存)
+- =reader/lexer.rs= (885 LOC) / =reader/parser.rs= (485 LOC) も同様
+- =reader/sexp.rs= (671 LOC) は runtime data structure なので別問題
+
+つまり Stage 7.6 §8 で articulated されていた "Rust reader 完全削除"
+は bootstrap reader 依存の解消が前提.
+
+** §1.2 既存の image 形式
+
+=image.rs= (545 LOC) が既に Sexp tree の binary serialization 形式を
+持っている:
+
+| component                | LOC             | 役割                                       |
+|--------------------------+-----------------+--------------------------------------------|
+| =IMAGE_MAGIC=            | 1               | =NELIMG\0\x02= (8 bytes)                   |
+| =IMAGE_ABI_VERSION=      | 1               | =u32= = 2                                  |
+| TAG_NIL/T/INT/FLOAT/.../BOOL_VECTOR | 10  | Sexp variant 1 byte tag                    |
+| =compile_elisp_to_image= | 4               | source → reader::read_all → encode_image   |
+| =encode_image=           | ~10             | =[Sexp]= → bytes                           |
+| =decode_image=           | ~20             | bytes → =Vec<Sexp>= (reader 不要)           |
+| =eval_image=             | 3               | bytes → decode → =eval_forms=              |
+
+*key 性質*:
+- =decode_image= は **Rust reader を呼ばない** (=encode 時の tag 列を
+  直接 Sexp::Cons / Sexp::Symbol 等に逆構築)
+- 既に Phase 8.x 「smoke path」 として =bootstrap.el -> image -> eval=
+  が動作確認済 (= image.rs の冒頭 docstring)
+
+→ *bootstrap STDLIB_SOURCES を image にすれば Rust reader を起動時に
+呼ばずに済む*.
+
+* §2 Stage 7.7 sub-stages
+
+** §2.1 Stage 7.7.a — image baker tooling
+
+build 時に bundled elisp を image bytes に変換する pipeline を追加.
+
+実装案 (= 実装難度の低い順):
+
+*** Option A: separate baker binary + build.rs
+
+#+begin_example
+[Crate structure]
+build-tool/
+  src/
+    bin/
+      nelisp.rs               (既存: REPL + driver)
+      nelisp-baker.rs         (新規: STDLIB → image bytes)
+    eval/...
+    reader/...
+    image.rs
+  build.rs                    (新規: cargo build 前に baker 実行)
+#+end_example
+
+build.rs:
+1. cargo の =OUT_DIR= に =baked-stdlib/{name}.image= を書き出し対象として
+2. =cargo:rerun-if-changed= で =lisp/*.el= 変更を hook
+3. =cargo run --bin nelisp-baker -- --out OUT_DIR/baked-stdlib= で baker を呼ぶ
+4. baker は STDLIB_SOURCES と同じ list を内部に持ち、各 file を
+   =compile_elisp_to_image= で bake、=OUT_DIR/baked-stdlib/{name}.image= に
+   書き出す
+
+困難: build.rs が *自分の crate* (build-tool) を =cargo run= で呼ぶのは
+循環依存になる.  解消法:
+- (a) baker を独立 workspace member にする (= =image-baker/=)
+  → reader+image+sexp の dependency 整理が必要
+- (b) cargo の =[build-dependencies]= に =build-tool= を入れる
+  → workspace の build graph で cycle を作るので不可
+- (c) build.rs に reader+image のロジックを duplicate
+  → メンテ二重化、却下
+- (d) image bake を offline で = =cargo xtask bake-images= の
+  別 task として手動実行、=lisp/*.image= を git track
+  → 開発者が elisp 編集後に毎回手動で再 bake、UX 悪い
+
+→ *Option A は (a) workspace 分離が現実的*.
+
+*** Option B: pre-built image を git track
+
+baker 実行責任を CI / 開発者の hook で外出しし、=lisp/*.el= とペアで
+=lisp/*.image= を git track する:
+
+| pro                                         | con                                      |
+|---------------------------------------------+------------------------------------------|
+| build.rs 不要、cargo build cycle 問題ゼロ      | =.image= は binary、git review 不能         |
+| =include_bytes!= で zero-cost embed         | elisp 編集 → image 再生成漏れの risk       |
+| 複雑な workspace 操作不要                     | image format 変更時に大量 churn          |
+
+→ *Option B は image format が安定している前提なら現実的*. しかし
+ABI_VERSION bump (= 例: tag 追加) が起きるたび全 .image 再生成.
+
+*** Option C: 起動時 read を keep + Stage 7.7 を Phase 8 に格上げ
+
+Stage 7.7 を skip、Stage 7.6 までで自然な区切りとする.
+
+| pro                              | con                              |
+|----------------------------------+----------------------------------|
+| 実装コストゼロ                    | Rust reader/eval 完全削除の道筋が消える |
+| 現状で動いているのを触らない      | Doc 63 §2.6 / §3.3 の articulated 計画が宙に浮く |
+
+→ Option C は本 Doc の「設計しない」結論. user judgment 待ち.
+
+*** 推奨
+
+*Option A (workspace 分離)* が architectural には最も clean.  しかし
+実装コスト (= reader+image+sexp の sub-crate 化) が大きいため、
+*Option B (git-tracked .image)* を本 Doc では default 推奨.
+
+理由:
+- image ABI_VERSION は v2 で stabilize (=v2 拡張は Stage 7.7 中に必要に
+  なれば bump するが、頻度低)
+- =.image= 再生成は =make bake-images= target で一発、開発者の hook で
+  自動化可能
+- workspace 分離は将来 image format 拡張時に再検討
+
+** §2.2 Stage 7.7.b — bootstrap STDLIB を image 経由
+
+=Env::new_global()= の bootstrap loop を以下に置換:
+
+#+begin_src rust
+// 改: STDLIB_SOURCES → STDLIB_IMAGES
+const STDLIB_IMAGES: &[(&str, &[u8])] = &[
+    ("nelisp-stdlib-eval-special.el", include_bytes!("../../../lisp/nelisp-stdlib-eval-special.el.image")),
+    ("nelisp-stdlib.el",              include_bytes!("../../../lisp/nelisp-stdlib.el.image")),
+    // ... (他 18 entry)
+];
+
+for (name, image_bytes) in STDLIB_IMAGES {
+    let forms = match crate::image::decode_image(image_bytes) {
+        Ok(forms) => forms,
+        Err(e) => panic!("{} image decode failed: {}", name, e),
+    };
+    for form in &forms {
+        if let Err(e) = super::eval(form, &mut env) {
+            panic!("{} bootstrap failed: {}", name, e);
+        }
+    }
+}
+#+end_src
+
+以降:
+- =reader::read_all= の callsite は env.rs から消える
+- =reader= module は post-bootstrap user-visible read 経由 (= elisp 経由)
+  と cargo unit test fixture のみ
+- 起動時 ~50ms read → 0ms (= Doc 63 §3.3 articulated speedup)
+
+** §2.3 Stage 7.7.c — Rust reader を test-only に降ろす
+
+=reader/mod.rs= の =read_all= / =read_from_string= を =cfg(test)= 又は
+=cfg(feature = "rust-reader")= で gate.
+
+#+begin_src rust
+// build-tool/src/lib.rs
+#[cfg(any(test, feature = "rust-reader"))]
+pub mod reader;
+
+// non-test build では reader 全体が消える
+#+end_src
+
+実際には =image.rs::compile_elisp_to_image= も =reader::read_all= を
+使うが、これは baker tool 専用なので =cfg(feature = "image-baker")= で
+分離する.  bootstrap path には不要.
+
+** §2.4 Stage 7.7.d — Rust reader 完全削除 (= Phase 8 候補)
+
+cargo unit test fixture (= 数十箇所で =reader::read_all= 等を使用) を
+elisp reader 経由に migrate.  これは Stage 7.6 §8 で out-of-scope と
+articulated 済の churn.
+
+→ *Phase 8 で扱う*.  本 Stage 7.7 は (a)〜(c) で打ち止め.
+
+** §2.5 Stage 7.7.e — Rust eval 完全削除 (= Phase 8 候補)
+
+bootstrap path の eval 自体を elisp 化するには:
+- *frozen heap* approach: stdlib-eval-core.el を pre-eval した state を
+  image 化、起動時に env を直接 deserialize
+- これは byte-compile / native-compile 系の AOT で、Doc 63 §6 で
+  「Phase 7 完了後の Phase 8 (second lift) 候補」と articulated 済
+
+→ Phase 8 で扱う.
+
+* §3 Architecture diagram
+
+** §3.1 Before Stage 7.7 (= Stage 7.6 final)
+
+#+begin_example
+[Build time]
+  lisp/*.el (text, include_str! embedded)
+       ▼
+  build-tool binary
+
+[Startup]
+  Env::new_global()
+       ▼
+  for each STDLIB:
+       reader::read_all(src) ──► Sexp tree
+       eval(form, env)       ──► env populated
+       ▼
+  use_elisp_apply = true (= Stage 7.4.e.2)
+       ▼
+[Post-bootstrap user-visible read]
+  read-from-string ──► nelisp--read-from-string-impl (elisp)
+                       (= Stage 7.6.a SHIPPED)
+#+end_example
+
+** §3.2 After Stage 7.7
+
+#+begin_example
+[Build time]
+  lisp/*.el (text)
+       ▼
+  nelisp-baker (cargo run --bin nelisp-baker)
+       ▼
+  lisp/*.el.image (binary, git tracked OR OUT_DIR)
+       ▼
+  build-tool binary (include_bytes! embedded)
+
+[Startup]
+  Env::new_global()
+       ▼
+  for each STDLIB:
+       image::decode_image(bytes) ──► Sexp tree (Rust reader skipped!)
+       eval(form, env)            ──► env populated
+       ▼
+  use_elisp_apply = true
+
+[Post-bootstrap user-visible read]
+  (unchanged) read-from-string ──► nelisp--read-from-string-impl (elisp)
+
+[Reader fate]
+  reader/mod.rs        cfg(test) only
+  reader/lexer.rs      cfg(test) only
+  reader/parser.rs     cfg(test) only
+  reader/sexp.rs       *KEEP*  (= Sexp value type は runtime data 共有)
+#+end_example
+
+* §4 Risks / Mitigation
+
+** §4.1 .image format breakage
+
+=Sexp= variant 追加 (= 新 tag) が起きるたび ABI_VERSION bump、stale
+=.image= は =UnsupportedVersion= で fail.
+
+mitigation:
+- =make bake-images= target を整備、=make compile= に dep として追加
+- CI で =.el → .image= の rebuild を gate
+
+** §4.2 baker 自体が壊れる
+
+baker は Rust reader を使うので、reader bug が image にも propagate.
+runtime と baker で同じ reader を使う限り対称性は保たれるが、image
+の中で reader bug が *cached* される形になる.
+
+mitigation:
+- baker は cargo serial の前に常に再実行 (= =make bake-images= が
+  cargo build より先)
+- =eval_image= の round-trip ERT を追加 (= source → image → decode →
+  eval した結果が source → reader → eval と同じ)
+
+** §4.3 git binary churn
+
+=lisp/*.image= を git track する場合、=.el= 編集の度に binary diff が
+発生.  PR review で =.image= を見比べる意味は無い (= source-of-truth
+は =.el=) ので、=.gitattributes= で =merge=binary= 扱いにする.
+
+mitigation:
+- =.gitattributes= に =*.image binary= を記述
+- PR review では =.el= の diff を見て、=.image= は再生成済か checkbox
+  で確認
+
+** §4.4 build.rs cycle (Option A 採用時)
+
+build.rs から =cargo run --bin nelisp-baker= を呼ぶと cargo の build
+graph が cycle.  Option B (= git track) を default にすれば回避.
+
+** §4.5 cargo unit test fixture の互換性
+
+cargo unit test は Rust reader を直接呼ぶ fixture を多数持つ.  Stage
+7.7.c で =reader= module を =cfg(test)= 又は =feature= gate にする際、
+test build では variant が active なので互換性は保たれる.
+
+* §5 Out of scope
+
+- *Stage 7.7.d* (Rust reader test fixture migration → 完全削除)
+- *Stage 7.7.e* (Rust eval bootstrap elisp 化 / frozen heap)
+- *Sexp value type の整理* (= reader/sexp.rs 671 LOC) — runtime data 共有
+- *bridge/* module の Rust reader 利用整理 (= Phase 8 layer)
+- *byte-compile / native-compile* (= elisp の AOT) — Phase 8 second lift
+
+* §6 Test plan
+
+** §6.1 image round-trip ERT
+
+各 STDLIB_SOURCES entry に対して:
+
+#+begin_src elisp
+(ert-deftest stage77a-image-roundtrip-stdlib-list ()
+  (let* ((source (with-temp-buffer
+                   (insert-file-contents "lisp/nelisp-stdlib-list.el")
+                   (buffer-string)))
+         (forms-from-source (read-from-string-multiple source))
+         (forms-from-image  (decode-image-from-file
+                             "lisp/nelisp-stdlib-list.el.image")))
+    (should (equal forms-from-source forms-from-image))))
+#+end_src
+
+** §6.2 cargo serial 全件 PASS
+
+= make compile + cargo nextest serial 435/435 PASS
+
+** §6.3 起動時間 bench
+
+#+begin_src bash
+hyperfine --warmup 3 'target/release/nelisp -e "(message \"hello\")"'
+#+end_src
+
+before / after で起動時間 *減少* を確認 (= Doc 63 §3.3 articulated
+~50ms → 0ms).  *増加してはいけない*.
+
+** §6.4 escape hatch 互換
+
+=NELISP_USE_RUST_APPLY=1= で起動 → 動作不変.
+
+* §7 共通原則 (= Doc 67/68/69/70/71 から継承)
+
+- 既存 ERT regression = 全件 PASS を必須 gate
+- escape hatch (=NELISP_USE_RUST_APPLY=) との互換性維持
+- bench gate = total < 1.8x / p99 < 2.0x (= 起動時間は逆に減るはず)
+
+* §8 References
+
+- Doc 63 §3.3 — AOT bake (option) — articulated origin
+- Doc 64〜71 — Phase 7 Stage 7.1〜7.6
+- =build-tool/src/image.rs= — 既存 image 形式 v2 (NELIMG)
+- =build-tool/src/eval/env.rs:138-211= — STDLIB_SOURCES list
+- =build-tool/src/reader/= — 削除候補 (Stage 7.7.c で test-only gate)
+- =lisp/nelisp-stdlib-reader.el= — post-bootstrap reader (Stage 7.6.a)
+
+* §9 改判断 record
+
+(2026-05-08, Claude session continuation)
+
+設計 review で以下の改判断:
+
+1. *Option B (git-tracked .image) を default 推奨に格上げ*: 当初
+   workspace 分離 (Option A) が architectural に clean だったが、
+   実装コスト (=image-baker/= sub-crate 切り出し、reader/image/sexp
+   依存整理) が Stage 7.7 範囲を超える.  Option B は =.image= を
+   build artifact として git track する trade-off があるが、image
+   format が v2 で stabilize 済 + =.gitattributes= で binary 扱いに
+   できるため許容範囲.
+
+2. *Stage 7.7.d/e を Phase 8 に分離*: "Rust reader/eval 完全削除" は
+   cargo unit test fixture の大量 migration + bootstrap eval の
+   elisp 化 (= frozen heap) を要するため、Stage 7.7 と独立に扱う.
+   Stage 7.7 は (a)〜(c) で打ち止め.
+
+3. *起動時間以外の primary motivation を追加*: 当初は ~50ms 短縮が
+   pitch だったが、本質的には *Rust reader を post-bootstrap path
+   から完全に切り離す* ことで Stage 7.7.c (= test-only gate) が
+   可能になる点が architectural value.  Doc 71 §結言で articulated
+   されていた "AOT bake が前提" が具体形に.
