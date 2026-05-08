@@ -1,0 +1,508 @@
+#+TITLE: Doc 69 — Phase 7 Stage 7.5: switch-over verification + Rust eval dead code 削除
+#+AUTHOR: zawatton
+#+DATE: 2026-05-08
+
+* Status
+
+- DRAFT — Stage 7.4.e.2 SHIPPED (= 4aa76ff、=Env::use_elisp_apply= post-
+  bootstrap default true) 直後.  本 Doc 69 は switch-over の検証手順
+  と、その後に削除可能な Rust eval code の inventory + sub-stage 分解
+  を扱う
+- 上位 doc: =docs/design/63-phase7-nelisp-self-host-roadmap.org= §2.5
+- 関連 doc: Doc 67 (Stage 7.3) / Doc 68 (Stage 7.4) / Doc 70 (Stage 7.4.e)
+
+* §0 TL;DR
+
+Doc 63 §2.5 の **"Rust eval (special_forms / mod / env) 完全削除"** は
+bootstrap chicken-and-egg + Rust API 多数 callsite の制約により *aspirational*.
+本 Doc 69 の Stage 7.5 では:
+
+1. switch-over の十分性を *検証* する (= make test 全 ERT、両 mode 完走)
+2. Doc 63 が予告する **観察期間** (= 1〜2 ヶ月) の watch-list を定める
+3. 観察後に削除可能なコードを **保守的に inventory** する
+   (= 全削除では無く、bootstrap 依存しない部分の絞り込み)
+
+| sub-stage | 内容 | 想定 LOC | 依存 |
+|-----------+------+----------+------|
+| 7.5.a | switch-over verification (= 両 mode で全 ERT 完走) | Doc +20 | user (= make/bench 長系) |
+| 7.5.b | bench gate (= Doc 63 §2.5 wallclock < 3x) + 観察期間開始 | Doc +30 | user |
+| 7.5.c | =is_macro= / =expand_macro= elisp 経由化 + Rust 関数削除 | Rust -30 / elisp ±0 | 7.5.a/b PASS |
+| 7.5.d | =apply_lambda= Rust 関数を =apply_closure= 経由に統合 | Rust -25 | 7.5.c PASS |
+
+合計予想削減 = ~55 LOC (Rust).  Doc 63 §2.5 の "~600 LOC" 計画値とは
+大きな開きがある — その差は本 Doc §2 で詳述する **bootstrap + API
+callsite 制約** に起因.
+
+* §1 動機 / 背景
+
+** §1.1 Doc 63 §2.5 の元計画
+
+#+begin_quote
+- Stage 7.1〜7.4 を順次完成、その間 Rust eval は parallel path として残存
+- =--rust-eval= flag で Rust eval を access、default は elisp eval
+- 全 ERT を elisp eval 経由で PASS、wallclock degradation < 3x で gate
+- 数 release 観察 (= 1〜2 ヶ月) 後、Rust eval (special_forms / mod / env)
+  完全削除
+- LOC 削減: 上記合計 + ~600 (cleanup、stub 削除等)
+#+end_quote
+
+** §1.2 Stage 7.4.e.2 完了直後の事実関係
+
+| 項目 | 事実 |
+|------+------|
+| =Env::use_elisp_apply= default | true post-bootstrap (= elisp dispatch が runtime path) |
+| escape hatch | =NELISP_USE_RUST_APPLY= env var |
+| capture leak | Stage 7.4.e.1 で apply-lambda-inner Rust 化により解消 |
+| =cargo test= | 435/435 PASS、4 ignored |
+| =ert eval-core= | 22/22 PASS |
+| =cargo test load_evaluates_file_contents= | PASS (= leak fix evidence) |
+| =make test= 完走確認 | **未実施** (= user delegate、Stage 7.5.a で gate 化) |
+| bench wallclock | **未計測** (= user delegate、Stage 7.5.b で gate 化) |
+
+** §1.3 "完全削除" が aspirational である理由
+
+*** §1.3.1 bootstrap chicken-and-egg
+
+=Env::new_global= bootstrap 中、=STDLIB_SOURCES= の elisp ファイルを順次
+=eval= する.  =nelisp-stdlib-eval-core.el= は **最後** の entry なので、
+それ以前の defun / defmacro / defvar 評価時点では elisp dispatcher
+(=nelisp--apply-fn= 等) はまだ install されていない.  したがって
+bootstrap 中の =apply_combiner= は **必ず** Rust =apply_function= 経路
+を取る.
+
+→ =apply_function= / =apply_closure= / =apply_lambda= / =apply_lambda_inner=
+/ =bind_formals= は bootstrap path として削除不可.
+
+*** §1.3.2 Rust API 多数 callsite
+
+=apply_function= は build-tool 内の **多数の Rust 関数** から呼ばれる
+(= 単に "elisp 関数を呼ぶ" Rust API として):
+
+| caller | 用途 |
+|--------+------|
+| =eval/mod.rs= =apply_combiner= | dispatch 本体 (= Rust path 時) |
+| =eval/mod.rs= =expand_macro= | macro lambda 適用 |
+| =eval/builtins.rs= =bi_funcall= | =(funcall FN ARGS)= |
+| =eval/builtins.rs= =bi_apply= | =(apply FN ARGS)= |
+| =eval/builtins.rs= =bi_mapcar= | =(mapcar FN LIST)= |
+| =eval/builtins.rs= =bi_load_file= | =load= で評価された関数の呼出 |
+| =eval/builtins.rs= 他 5+ 箇所 | =run-hook-with-args= 等 |
+| =bridge/takeover.rs= | Phase 8.0.3 self-host bridge (= 別 layer) |
+
+→ =apply_function= 関数本体を削除すると上記すべての callsite が壊れる.
+個別 callsite を =delegate_to_elisp_apply= 経由に書換える方法もあるが、
+helper 検出 / depth 増減 / dispatch_form 構築 overhead が builtin 内
+ループで嵩む (= mapcar 等で性能 regression リスク).
+
+*** §1.3.3 helper exemption の必要性
+
+=is_elisp_apply_helper= で除外している 11 helper (= apply-fn / apply-closure
+/ apply-lambda / bind-formals--compute / -required-count / 4 predicate
+/ expand-macro) は、user の defun と同じく =defun= で定義された
+**普通の elisp 関数**.  ただし dispatcher 自身がこれらを呼ぶ際に再度
+=nelisp--apply-fn= を経由すると infinite recursion (= consp が consp
+を呼ぶ) するため、Rust =apply_function= で **直接** 適用する必要が
+ある.
+
+→ 仮に =apply_function= を delete しても、helper を呼ぶ専用の Rust
+path は何らかの形で残さざるを得ない.
+
+** §1.4 結論: Stage 7.5 の現実的 scope
+
+Doc 63 §2.5 が予告した "~600 LOC 削減" は、現状の bootstrap + API 構造
+では達成不能.  Stage 7.5 の現実的 deliverable は:
+
+1. **検証**: make test 全 ERT + bench gate を両 mode で完走
+2. **観察期間の体系化**: 何を watch するか、何が出たら escape hatch で
+   切戻すか、を doc 化
+3. **保守的削除**: Rust dispatch 経路で *呼ばれない* 関数 (= 現状の
+   apply_combiner で見ると =is_macro= / =expand_macro= の Rust 版が
+   候補) を elisp 経路に振替えて削除.  ~30-50 LOC 程度.
+4. **将来計画**: bootstrap path を AOT bake (= Doc 63 §3.3) に移すなら
+   更なる削除可能、その場合 Stage 7.7 として切出 (= Phase 7 範囲外).
+
+* §2 現状の Rust dispatch 経路 inventory
+
+** §2.1 = Rust dispatch 関数 reachability matrix
+
+| 関数 | bootstrap | helper | builtin | non-helper post-bootstrap | 削除可? |
+|------+-----------+--------+---------+---------------------------+---------|
+| =eval= | 必須 | 必須 | 必須 | 必須 | NO |
+| =eval_inner= | 必須 | 必須 | 必須 | 必須 | NO |
+| =apply_combiner= | 必須 | 必須 | 必須 | 必須 | NO |
+| =eval_arg_list= | 必須 | 必須 | 必須 | 必須 | NO |
+| =list_elements= | 必須 | 必須 | 必須 | 必須 | NO |
+| =delegate_to_elisp_apply= | (skip) | (skip) | (skip) | 必須 | NO |
+| =is_elisp_apply_helper= | (false skip) | (true skip) | (false) | 必須 | NO |
+| =is_builtin_value= | (skip) | (skip) | true skip | 必須 | NO |
+| =apply_function= | 必須 | 必須 | 必須 | (skip via delegate) | **NO** (= API) |
+| =apply_builtin= | 必須 | 必須 | 必須 | (経由しない) | NO |
+| =apply_closure= | 必須 | 必須 | (経由しない) | (skip) | **YES** (= apply_function arm に inline 可) |
+| =apply_lambda= | 必須 | 必須 | (経由しない) | (skip) | **YES** (= 同上、apply_closure に集約可) |
+| =apply_lambda_inner= | 必須 | 必須 | =bi_apply_lambda_inner= | (経由しない) | NO |
+| =bind_formals= | 必須 | 必須 | =apply_lambda_inner= | (経由しない) | NO |
+| =is_macro= | 必須 | 必須 | (経由しない) | 必須 | **MAYBE** (= 後述 §3.1) |
+| =expand_macro= | 必須 | 必須 | (経由しない) | 必須 | **MAYBE** (= 後述 §3.1) |
+
+合計 16 関数中、削除候補: =apply_closure= / =apply_lambda= の 2 つ
+(= apply_function の closure/lambda arm に inline)、=is_macro= /
+=expand_macro= の 2 つ (= elisp 経由化、§3.1 の trade-off).
+
+** §2.2 LOC 内訳
+
+| 関数 | 行数 | 削除可能性 |
+|------+------+------------|
+| =apply_closure= | ~14 | ◎ (apply_function arm inline) |
+| =apply_lambda= | ~13 | ◎ (apply_function arm inline) |
+| =is_macro= | ~7 | △ (elisp =nelisp--macrop= 経由可、ただし bootstrap で macro 多用) |
+| =expand_macro= | ~13 | △ (同上) |
+| 削除合計 | ~47 | (== Doc 63 §2.5 予告の 8% 程度) |
+
+** §2.3 Phase 8.0.3 bridge との関係
+
+=bridge/takeover.rs= は Phase 8 self-host (= =nelisp-eval-form= 経由)
+の別 layer.  Phase 7 の =nelisp--apply-fn= は **無関係**.  本 Doc 69
+の scope に bridge/ は含めない.
+
+* §3 削除候補の詳細
+
+** §3.1 =is_macro= / =expand_macro= elisp 経由化
+
+*** 現状
+
+=apply_combiner= line ~196:
+
+#+begin_src rust
+if let Ok(func) = env.lookup_function(name) {
+    if is_macro(&func) {
+        let expansion = expand_macro(&func, tail, env)?;
+        return eval(&expansion, env);
+    }
+    ...
+}
+#+end_src
+
+bootstrap でも post-bootstrap でも同じ Rust path.  Stage 7.4.b で
+elisp 側に =nelisp--macrop= / =nelisp--expand-macro= が install 済だが、
+=apply_combiner= からは呼ばれない.
+
+*** 案
+
+elisp dispatcher の =nelisp--apply-fn= 内では既に =nelisp--macrop= が
+使われている (= 内部 cond chain).  =apply_combiner= で macro を
+=nelisp--apply-fn= に丸投げすると、elisp dispatcher が macro 展開も
+担当 → Rust =is_macro= / =expand_macro= 不要.
+
+ただし bootstrap 中は =nelisp--apply-fn= が無いので、bootstrap では
+Rust 側を使う必要がある.  →
+
+#+begin_src rust
+// Stage 7.5.c (Doc 69)
+if let Ok(func) = env.lookup_function(name) {
+    if env.delegation_depth == 0
+        && !is_elisp_apply_helper(name)
+        && !is_builtin_value(&func)
+        && env.has_function("nelisp--apply-fn")  // self-pacing
+    {
+        // 一括 elisp 委譲: macro / closure / lambda 全て delegate
+        // 先で判定.  args は un-evaluated のまま渡す (= macro 用)
+        return delegate_to_elisp_apply_with_unevaluated_args(&func, tail, env);
+    }
+    // Rust path (bootstrap / helper / builtin / escape hatch)
+    if is_macro(&func) {
+        let expansion = expand_macro(&func, tail, env)?;
+        return eval(&expansion, env);
+    }
+    let args = eval_arg_list(tail, env)?;
+    return apply_function(&func, &args, env);
+}
+#+end_src
+
+ただし *args un-evaluated 経路* の追加は新たな contract で、=delegate_to_elisp_apply=
+の仕様変更となる (= 現状は evaluated args を quote で渡す).  Risk
+非小.
+
+*** 採用判断
+
+Stage 7.5.c で *調査+spike* し、リスクが小さければ採用.  困難なら
+=is_macro= / =expand_macro= は据え置き、合計削減 ~27 LOC のみ
+(= apply_closure / apply_lambda inline).
+
+** §3.2 =apply_closure= / =apply_lambda= の inline
+
+*** 現状
+
+#+begin_src rust
+pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    match func {
+        Sexp::Cons(head, _) => match &*head.borrow() {
+            Sexp::Symbol(s) if s == "builtin" => apply_builtin(func, args, env),
+            Sexp::Symbol(s) if s == "closure" => apply_closure(func, args, env),
+            Sexp::Symbol(s) if s == "lambda" => {
+                apply_lambda(func, &Sexp::Nil, args, env)
+            }
+            ...
+        },
+        ...
+    }
+}
+
+fn apply_closure(closure: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    let parts = list_elements(closure)?;
+    if parts.len() < 3 { return Err(...) }
+    apply_lambda_inner(&parts[1], &parts[2], &parts[3..], args, env)
+}
+
+fn apply_lambda(lambda: &Sexp, captured: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    let parts = list_elements(lambda)?;
+    if parts.len() < 2 { return Err(...) }
+    apply_lambda_inner(captured, &parts[1], &parts[2..], args, env)
+}
+#+end_src
+
+=apply_closure= / =apply_lambda= は単に list_elements + apply_lambda_inner
+の薄いラッパ.  callsite が =apply_function= 1 箇所のみなので inline 化
+で削除可.
+
+*** 案
+
+#+begin_src rust
+// Stage 7.5.d
+pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    match func {
+        Sexp::Cons(head, _) => match &*head.borrow() {
+            Sexp::Symbol(s) if s == "builtin" => apply_builtin(func, args, env),
+            Sexp::Symbol(s) if s == "closure" => {
+                let parts = list_elements(func)?;
+                if parts.len() < 3 {
+                    return Err(EvalError::Internal("closure missing env / args / body".into()));
+                }
+                apply_lambda_inner(&parts[1], &parts[2], &parts[3..], args, env)
+            }
+            Sexp::Symbol(s) if s == "lambda" => {
+                let parts = list_elements(func)?;
+                if parts.len() < 2 {
+                    return Err(EvalError::Internal("lambda missing args / body".into()));
+                }
+                apply_lambda_inner(&Sexp::Nil, &parts[1], &parts[2..], args, env)
+            }
+            Sexp::Symbol(s) if s == "macro" => Err(EvalError::WrongType { ... }),
+            _ => Err(EvalError::WrongType { ... }),
+        },
+        _ => Err(EvalError::WrongType { ... }),
+    }
+}
+#+end_src
+
+LOC 削減: ~27 (= 関数 2 つ削除 - inline コードの増加).
+
+*** Risk
+
+低い.  callsite 1 箇所のみ、ロジック完全等価、ERT regression 検出が
+容易.
+
+* §4 段階 / sub-stages
+
+** §4.1 Stage 7.5.a — switch-over verification
+
+タスク:
+
+1. =make test= を両 mode で完走確認:
+   - default (= elisp dispatch on): =cd /home/madblack-21/Cowork/Notes/dev/nelisp && make test=
+   - escape hatch (= Rust dispatch on): =NELISP_USE_RUST_APPLY=1 make test=
+2. 両 mode で同じ test pass 数 + 同じ failure list (= 完走自体が gate、
+   既存 known-skip は OK).
+3. 結果を =diagnostics-stage75-switch-over.org= に記録.
+4. **user delegate** (= make test 86 file は重い).
+
+期待結果: 両 mode で identical pass/fail counts.
+
+LOC: Doc +20.
+
+commit message:
+=docs(nelisp): Phase 7 Stage 7.5.a — switch-over verification record=
+
+** §4.2 Stage 7.5.b — bench gate + 観察期間開始
+
+タスク:
+
+1. bench/eval-heavy 5 case (Doc 70 §2.5 と同じ) を両 mode で計測:
+   - =bench-cl-loop-1m=
+   - =bench-recursive-fact-100=
+   - =bench-closure-counter-100k=
+   - =bench-funcall-builtin-1m=
+   - =bench-defmacro-expand-100k=
+2. Doc 63 §2.5 の閾値: total < 3x、p99 < 3x.  本 Doc 69 では
+   total < 1.8x、p99 < 2.0x (= Doc 70 §2.5 と同等の厳しさ).
+3. 観察期間: 2026-05-08 起算、最低 30 日 (= 2026-06-07 まで).
+4. watch-list:
+   - =cargo serial= regression
+   - =NELISP_USE_RUST_APPLY=1= で挙動が分かれる新たな case
+   - bench p99 が時系列で degrade
+5. 結果を =diagnostics-stage75-bench.org= に記録.
+6. **user delegate** (= bench は実行時間が長い).
+
+期待結果: 5 case 全て gate PASS、観察期間タイマー開始.
+
+LOC: Doc +30.
+
+commit message:
+=docs(nelisp): Phase 7 Stage 7.5.b — bench gate + observation start=
+
+** §4.3 Stage 7.5.c — =is_macro= / =expand_macro= 削除 spike (optional)
+
+タスク:
+
+1. =delegate_to_elisp_apply_with_unevaluated_args= prototype (~30 LOC)
+2. =apply_combiner= の macro path を post-bootstrap で elisp 経由化
+3. ERT 全 PASS 確認.  特に macro 多用 case (= cl-loop / cl-defun / dolist /
+   condition-case 等) が動作することを確認
+4. PASS なら =fn is_macro= / =fn expand_macro= を削除、commit
+5. FAIL なら revert、§4.4 のみ実施
+
+LOC 削減: -27 〜 -47 (= spike 結果次第).
+
+依存: Stage 7.5.a + 7.5.b PASS.
+
+commit message:
+=feat(nelisp): Phase 7 Stage 7.5.c — macro path elisp 経由化 + Rust is_macro/expand_macro 削除=
+
+** §4.4 Stage 7.5.d — =apply_closure= / =apply_lambda= inline
+
+タスク:
+
+1. =apply_function= の closure / lambda arm を inline 化
+2. =fn apply_closure= / =fn apply_lambda= を削除
+3. ERT 全 PASS 確認、特に bootstrap が完走 (= =Env::new_global= panic
+   なし)、=cargo serial= 全 PASS、=ert eval-core= 22+ PASS
+4. =cargo bench= で perf regression なし (= function pointer call 1 hop
+   削減で僅かに速くなる想定)
+
+LOC 削減: -25 〜 -27.
+
+依存: Stage 7.5.a + 7.5.b PASS.  Stage 7.5.c とは独立、並行可.
+
+commit message:
+=refactor(nelisp): Phase 7 Stage 7.5.d — apply_closure/apply_lambda を apply_function に inline=
+
+** §4.5 sub-stage 順序
+
+a (verification) → b (bench gate + observation start) → c (macro spike,
+optional) + d (closure inline) **並行可**.
+
+各 sub-stage 終了時に commit + worklog 1 件.
+
+* §5 Test plan
+
+** §5.1 Stage 7.5.a/b verification gate
+
+両 mode で:
+- =make test= 全 ERT (= 86 file)
+- =cargo test --release --lib -p nelisp-build-tool -- --test-threads=1=
+- =cargo test --release --lib -p nelisp-build-tool= (= parallel)
+- =bench/run.sh= eval-heavy 5 case
+
+** §5.2 Stage 7.5.c regression check
+
+特に注意する case:
+
+- =(cl-loop for i from 1 to 100 do ...)= macro 展開
+- =(condition-case ... :error ...)= 内部 macro 展開
+- Stage 7.4.b で elisp 化した =nelisp--expand-macro= 自身の動作
+- 自己参照 macro (= macro が macro を呼ぶ) の展開順序
+- =macroexpand-1= builtin の出力 (= elisp 経由化前後で identical)
+
+** §5.3 Stage 7.5.d regression check
+
+全 ERT.  Rust dispatch path のみ exercise する test (= 例: bootstrap
+中の挙動 test) は両方 PASS する.
+
+** §5.4 自己 host 完走確認
+
+=NeLisp の self-host 起動= = nelisp バイナリで =anvil-memory.el= 等を
+loading + 動作.  Stage 7.5.a/b の make test を含む.
+
+* §6 観察期間 watch-list
+
+** §6.1 必ず確認するもの (週次)
+
+- CI green: =cargo test --release --lib= + =make test= + =make compile=
+- worklog の "bug observed" / "regression" 記述件数 (= 2026-05-08 起算で
+  追加されない、または減少傾向)
+
+** §6.2 触発時に escape hatch を試すもの
+
+新しい test failure / 動作不審が出たら、まず:
+
+#+begin_src bash
+NELISP_USE_RUST_APPLY=1 <repro cmd>
+#+end_src
+
+で Rust dispatch でも再現するかを確認.  Rust では PASS、elisp では
+FAIL なら elisp dispatcher の bug.  両方 FAIL なら別件.
+
+** §6.3 観察期間終了条件
+
+以下を全て満たしたら Stage 7.5.c/d を実施 (= dead code 削除へ進む):
+
+- 30 日経過 (2026-06-07 以降)
+- escape hatch で挙動が分かれた case が *0 件* (= worklog 検索)
+- bench p99 が baseline (= Stage 7.4.e.2) から degrade していない
+- =make test= が両 mode で identical PASS
+
+満たさない場合は観察期間を延長 (+30 日) し、再評価.
+
+* §7 Risks / Open issues
+
+** §7.1 macro elisp 経由化の subtle bug (= Stage 7.5.c)
+
+=(macro lambda ARGS BODY)= の =sf_lambda= 評価時 captured-env に
+=apply_combiner= の状態が混入する subtle case があるかも.  Stage 7.4.d
+で観測した capture leak の類似 surface.  Stage 7.5.c spike で慎重に
+検証する.
+
+mitigation: spike が FAIL なら §4.3 を skip、§4.4 のみで確定.
+
+** §7.2 bench wallclock < 1.8x 未達
+
+elisp dispatch overhead が予想以上に大きく、bench gate FAIL する case
+が出るかも.  特に =bench-funcall-builtin-1m= (= builtin を 100 万回
+funcall) は dispatch overhead がモロに見える.
+
+mitigation: Phase 5 native cc lowering (= Doc 62) で =funcall= /
+=apply= / hot-path 関数を JIT lower 化.  Stage 7.5.b の bench 結果次第
+で Stage 7.5.e として計画.
+
+** §7.3 Phase 8.0.3 bridge との二重管理
+
+=bridge/takeover.rs= は別の self-host 機構.  Phase 7 と Phase 8 が
+共存するなら維持コストが二重.  Stage 7.5 の scope 外だが、Stage 7.6
+以降で統合検討.
+
+* §8 共通原則 (= Doc 67/68/70 から継承)
+
+- Tier 1-only body 制約 = elisp 側 dispatcher は Tier 1 special form
+  + 既存 builtin のみ参照
+- 既存 ERT regression = 全件 PASS を必須 gate
+- bench gate = total < 1.8x / p99 < 2.0x
+
+* §9 Out of scope
+
+- Rust eval 完全削除 (= Doc 63 §2.5 の aspirational 部分).  AOT bake
+  (Doc 63 §3.3) 等の bootstrap path 移行が必要、Stage 7.7+ として
+  切出
+- =bridge/= module の整理 (= Phase 8.0.3 別 layer、Stage 7.6 以降)
+- =eval/special_forms.rs= の elisp 化 (= Doc 67 で部分的に migrate 済、
+  残部は Phase 8 以降)
+- Phase 5 native cc lowering の hot-path 拡張 (= Doc 62、独立 stage)
+- Stage 7.6 (= reader cleanup, Stage 7.2.f follow-up) — 既に計画化済
+
+* §10 References
+
+- Doc 63 §2.5 — Phase 7 Stage 7.5 元計画 (= "complete deletion" aspirational)
+- Doc 63 §3 — bootstrap chicken-and-egg、AOT bake option
+- Doc 67 §3 — Stage 7.3 special_forms migration (= 既存 elisp 化の手本)
+- Doc 68 全体 — Stage 7.4 a/b/c/d 設計 + §3.4 capture-leak 解析
+- Doc 70 全体 — Stage 7.4.e (= apply-lambda-inner Rust 化、leak fix)
+- =build-tool/src/eval/mod.rs= 全 652 LOC — 本 Stage の主要対象
+- =build-tool/src/bridge/= — Phase 8.0.3 別 layer (= scope 外)
