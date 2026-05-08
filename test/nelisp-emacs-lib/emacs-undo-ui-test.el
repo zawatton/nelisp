@@ -68,6 +68,9 @@
     (should-error (undo) :type 'user-error)))
 
 (ert-deftest undo-ui-installs-global-bindings ()
+  ;; Re-install bindings explicitly so this test is robust against other
+  ;; modules' fixtures that swap current-global-map between tests.
+  (emacs-undo-ui--install-bindings)
   (should (eq #'undo (key-binding (kbd "C-/"))))
   (should (eq #'undo (key-binding (kbd "C-_"))))
   (should (eq #'undo-redo (key-binding (kbd "C-x u")))))

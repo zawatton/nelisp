@@ -110,6 +110,9 @@
       (makunbound b))))
 
 (ert-deftest emacs-elisp-eval-global-key-bindings-installed ()
+  ;; Re-install bindings explicitly so this test is robust against other
+  ;; modules' fixtures that swap current-global-map between tests.
+  (emacs-elisp-eval--install-bindings)
   (let ((map (current-global-map)))
     (should (eq #'eval-last-sexp (lookup-key map (kbd "C-x C-e"))))
     (should (eq #'eval-defun (lookup-key map (kbd "C-M-x"))))))
