@@ -1,0 +1,423 @@
+#+TITLE: anvil-runtime → anvil.el migration (= Stage 8.2 拡張)
+#+DATE: 2026-05-08
+#+AUTHOR: Claude (z=Opus 4.7) + user direction
+#+OPTIONS: ^:nil
+
+* §0 Status
+
+- 親 Doc: 73 §2.2 / §9 #5 (= Stage 8.2 方針転換)
+- 前提 SHIPPED: Doc 64〜72 (Phase 7) / Doc 73 Stage 8.1 + 8.3.a/b
+- 本 Doc: anvil-runtime crate 全体 (5,667 LOC) を =anvil.el= 側に移行
+  する大型 migration の全体設計 — *DRAFT 2026-05-08*
+- 規模: Phase 9 相当、複数 session に跨る. 実装は本 Doc 内 sub-stage
+  分割で段階的に進める
+- 完了で Stage 8.4 (= reader feature gate, Doc 73) の前提が揃う
+
+* §1 背景
+
+** §1.1 現状の Rust / elisp 分離
+
+architecture_correction_anvil_uses_nelisp_2026-04-25.org §1.2 LOCKED:
+
+| layer | 担当 | LOC |
+|-------+------+-----|
+| =anvil-runtime= (Rust crate) | MCP server + tool registries + emacs-less launcher | 5,667 |
+| =nelisp-runtime= (Rust crate) | pure Elisp interpreter | (別 carve-out) |
+| =anvil.el= リポジトリ | Emacs-attached helpers (= anvil-host.el 等) | ~多数 |
+
+=anvil-runtime= は "emacs-less standalone" の MCP server. 起動時に
+=anvil-host.el= を =read_all= でパース → =eval_via_self_host= で
+評価 → tool registry 構築. その後 MCP request を受けて tool dispatch
+を Rust 側で組み立て、=eval_via_self_host= で elisp 関数を呼出.
+
+** §1.2 なぜ anvil.el 側に移すのか
+
+User durable feedback =feedback_nelisp_minimize_rust= 通り:
+
+#+begin_quote
+Rust 最小化、elisp 化可能なら elisp。JIT + native comp で速度問題なし。
+Rust 実装も migrate していく
+#+end_quote
+
+=anvil-runtime= の orchestration (= file load / tool registry / dispatch
+form 構築 / formal introspection / JSON ↔ Sexp 変換) は本質的に
+elisp で記述できる内容で、Rust に書く必然性が薄い. 残すべき Rust
+は:
+- MCP transport (= stdio JSON-RPC 受信 / 送信ループ)
+- =nelisp= standalone binary (= eval entrypoint)
+
+それ以外の orchestration は =anvil.el= に移す方が:
+- *単一 source of truth*: tool dispatch logic が Emacs-attached / -less
+  両モードで共通化される (= 現状は Rust dispatch + Emacs server dispatch
+  の二重実装)
+- *iteration 速度*: elisp で書けば再 build 不要、=eval-buffer= で即反映
+- *Rust LOC 削減*: 5,667 LOC → ~500-800 LOC (= MCP transport 残り) に
+  減る見込み
+
+** §1.3 Phase 8 全体での位置付け
+
+Doc 73 の Phase 8 sub-stage の文脈で:
+
+- 8.1 (= Sexp rehome): SHIPPED
+- 8.3.a/b (= bridge migrate): SHIPPED
+- *8.2 — anvil-runtime read_all 3 callsite* → 本 Doc 74 で大型 scope
+  に再定義.  3 callsite を読み替えるだけでなく、anvil-runtime crate
+  自体を anvil.el 側に移行することで自然消滅させる
+- 8.4 (= reader feature gate): 本 Doc 完了で前提が揃う
+- 8.5 (= frozen heap): 別 Doc 75 候補
+
+* §2 anvil-runtime 現状 audit
+
+** §2.1 LOC inventory
+
+| ファイル | LOC | 役割 |
+|----------+-----+------|
+| =anvil_host_registry.rs= | 1,739 | anvil-host.el パース + tool registry + dispatch |
+| =anvil_module_registry.rs= | 523 | anvil-state.el / anvil-memory.el 等の Pattern C module load + tool registry |
+| =anvil_data_registry.rs= | 508 | data tools の registry |
+| =anvil_file_registry.rs= | 657 | file tools の registry |
+| =anvil_shell_filter_registry.rs= | 656 | shell filter tools の registry |
+| =anvil_tools_registry.rs= | 357 | 全 registry の合成 |
+| =mcp/dispatch.rs= | 402 | JSON-RPC dispatch loop |
+| =mcp/mod.rs= | 192 | MCP server top-level |
+| =mcp/protocol.rs= | 218 | JSON-RPC protocol types |
+| =mcp/tool.rs= | 162 | =ToolRegistry= trait |
+| =bin/anvil-runtime.rs= | 208 | binary entrypoint |
+| =bin/anvil-mcp-demo.rs= | 20 | smoke demo |
+| =lib.rs= | 25 | crate root |
+| *合計* | *5,667* | |
+
+** §2.2 各 module の責務
+
+*** =anvil_host_registry.rs= (1,739 LOC)
+
+- =seed_host_constants(env)= = =system-type=, =anvil-runtime-version=
+  など定数 inject (~30 LOC)
+- =bootstrap_with_fallback= = =bootstrap_self_host= 呼出 + retry (~30 LOC)
+- =read_all + eval= による =anvil-host.el= load (~30 LOC)
+- =collect_registry_tools= = static analysis で =defun anvil-host-FOO=
+  を検出、=ToolDef { name, formals, description }= を抽出 (~200 LOC)
+- =should_expose_tool= = filter (~50 LOC)
+- =call_via_eval= / =call_via_compat= = MCP call → Sexp form 構築 →
+  eval (~100 LOC)
+- =build_call_form= = JSON args → Sexp lambda call form (~150 LOC)
+- =extract_lambda_formals= = lambda introspection (~50 LOC)
+- =compat_*= = =anvil-host-env= / =-which= / =-info= / =-shell= 等の
+  Rust-side 互換実装 (~700 LOC)
+- =sexp_tool_result= / =json_to_quoted_sexp= = JSON ↔ Sexp 変換 (~200 LOC)
+- =seed_*= = ed env constants (~150 LOC)
+
+*** =anvil_module_registry.rs= (523 LOC)
+
+- =new(env, paths)= = paths を順に load + eval、shim drain で tool
+  spec 収集
+- =parse_drained_specs= = =:id=, =:handler=, =:description= plist 解析
+- =build_module_call_form= = JSON args → Sexp call form (formals
+  introspection 込み)
+- =list_elements= / =plist_get_string= 等 = Sexp utility
+
+*** =anvil_data_registry= / =anvil_file_registry= / =anvil_shell_filter_registry= (1,821 LOC)
+
+各 registry とも:
+- 特定の elisp 関数群を MCP tool として expose
+- JSON ↔ Sexp 変換
+- compat 互換実装
+
+*** =anvil_tools_registry.rs= (357 LOC)
+
+- 5 つの sub-registry を合成、全 tool を集約
+
+*** =mcp/*= (974 LOC)
+
+- JSON-RPC 2.0 transport
+- =stdio= 経由の serve loop
+- =tools/list= / =tools/call= dispatch
+
+** §2.3 anvil.el 側既存実装との重複
+
+| 機能 | Rust 実装 | anvil.el 既存 | 重複度 |
+|------+-----------+---------------+--------|
+| =anvil-host-info= | =compat_info= (~150 LOC) | =anvil-host-info= (anvil-host.el) | *100%* (= 同 spec、Emacs vs Rust) |
+| =anvil-shell= | =compat_shell= (~150 LOC) | =anvil-shell= (anvil-host.el) | *100%* |
+| =anvil-host-env= | =compat_env= (~50 LOC) | =anvil-host-env= (anvil-host.el) | *100%* |
+| Pattern C tool dispatch | =anvil_module_registry.rs= | =anvil-server-register-tools= (anvil-server.el) | 部分重複 (= elisp-side は MCP transport 無し) |
+| static analysis (=defun 抽出) | =collect_registry_tools= | 一部 anvil-disclosure.el | 部分重複 |
+
+つまり Rust 側の =compat_*= 実装 = anvil.el 側 =anvil-host-*= の
+*完全二重実装*. anvil.el 経由で eval すれば全て解決する.
+
+** §2.4 移行困難な部分
+
+- *MCP stdio transport*: JSON-RPC over stdio loop は elisp で書ける
+  が、毎メッセージで Lisp object → JSON string 変換 + flush + lock
+  管理が必要. Rust で書く方が remote 実装と互換性高い.
+  → *残す* (= ~500 LOC、=mcp/= 配下 + =bin/anvil-runtime.rs= の minimal shim)
+- *NeLisp interpreter binary*: =nelisp= command 自体は Rust + elisp
+  混合実装. これは Phase 7 で既に最小化済 (= eval は Rust、reader は
+  elisp).  *残す* (= 既存)
+
+* §3 Migration architecture
+
+** §3.1 完了形 split
+
+#+begin_example
+[Before — 現状]
+  anvil-runtime crate (Rust, 5,667 LOC)
+  ├── MCP server (~974 LOC)
+  ├── 6 tool registries (~3,300 LOC)
+  ├── compat_* implementations (~1,200 LOC, anvil.el の二重実装)
+  └── 補助 utilities (~200 LOC)
+
+  anvil.el repo (elisp, 多数)
+  ├── anvil-host.el (Emacs-attached helpers)
+  ├── anvil-server.el (Pattern C registration)
+  └── ...
+
+[After — Doc 74 完了形]
+  anvil-runtime crate (Rust, ~500-800 LOC)
+  ├── MCP stdio transport (~600 LOC)
+  └── nelisp interpreter glue (~100 LOC)
+
+  anvil.el repo (elisp, 多数 + 新規)
+  ├── anvil-host.el (= 既存)
+  ├── anvil-server.el (= 既存)
+  ├── anvil-mcp-server.el (= 新規、tool registry + dispatch)
+  ├── anvil-mcp-host-tools.el (= 新規、host registry の elisp port)
+  ├── anvil-mcp-module-tools.el (= 新規、module registry の elisp port)
+  └── ... (data / file / shell-filter registry も elisp 化)
+#+end_example
+
+** §3.2 Rust ↔ elisp boundary
+
+- *Rust 側*:
+  - stdio JSON-RPC 1 byte 単位の receive loop
+  - JSON parse / serialize
+  - request を 1 form (= =(anvil-mcp-handle-request JSON)=) に詰めて
+    elisp に投げる
+  - elisp の return を JSON で stdout に送出
+- *elisp 側*:
+  - =anvil-mcp-handle-request= = MCP request ディスパッチ
+  - tool registry (= 起動時に各 anvil-*-tools.el を load)
+  - tool call → JSON args 変換 → elisp 関数呼出 → return JSON 変換
+  - error 時 JSON-RPC error 形式に整形
+
+要するに Rust = transport、elisp = orchestration + business logic.
+
+** §3.3 anvil.el repo 構造への影響
+
+新規 elisp ファイル群:
+
+| ファイル | 推定 LOC | 役割 |
+|----------+----------+------|
+| =anvil-mcp-protocol.el= | ~100 | JSON-RPC 構造体 + error code |
+| =anvil-mcp-server.el= | ~300 | top-level dispatch + tool registry 合成 |
+| =anvil-mcp-host-tools.el= | ~400 | =anvil_host_registry.rs= の elisp port |
+| =anvil-mcp-module-tools.el= | ~200 | =anvil_module_registry.rs= elisp port |
+| =anvil-mcp-data-tools.el= | ~200 | =anvil_data_registry.rs= elisp port |
+| =anvil-mcp-file-tools.el= | ~250 | =anvil_file_registry.rs= elisp port |
+| =anvil-mcp-shell-filter-tools.el= | ~250 | =anvil_shell_filter_registry.rs= elisp port |
+| *合計* | *~1,700* | |
+
+既存 anvil.el ファイルへの追加 modification:
+
+- =anvil-host.el= = 既存実装は変更なし、ただ =anvil-mcp-host-tools.el=
+  が呼び出す形
+- =anvil-server.el= = Pattern C 実装は MCP transport bypass mode を追加
+
+* §4 Sub-stages
+
+本 Doc 74 内の段階分け. 各 stage 別 commit、別検証.
+
+** §4.1 Stage A — anvil.el repo に MCP skeleton 整備
+
+- =anvil-mcp-protocol.el= = JSON-RPC error / request / response の
+  helper 関数群を anvil.el 側に追加 (= 既存 =anvil-server.el= からの
+  抽出 + 拡張)
+- =anvil-mcp-server.el= = top-level =anvil-mcp-handle-request= を実装、
+  最初は =tools/list= が空 list を返すだけの skeleton
+- Rust 側 =mcp/dispatch.rs= に新 mode =--elisp-dispatch= を追加、
+  この mode では tool dispatch を Rust から elisp 1-call に転送
+- 既存 mode (= Rust-side dispatch) も維持 (= migration 中の互換)
+
+*検証*: =--elisp-dispatch= で =tools/list= が空配列を返す MCP smoke
+
+** §4.2 Stage B — anvil-host registry を elisp 移植
+
+- =anvil-mcp-host-tools.el= = =anvil_host_registry.rs= の主要機能を
+  elisp port:
+  - =anvil-mcp-host-tools-list= = =anvil-host.el= の =defun anvil-host-*=
+    を =obarray-map= で列挙、=ToolSpec= 相当の plist を返す
+  - =anvil-mcp-host-tools-call= = name / args plist で elisp 関数 invoke
+  - formals introspection (= =help-function-arglist= 利用)
+  - JSON ↔ Sexp は elisp 自然形 (= =json-encode= / =json-parse-string=)
+- =anvil-mcp-server.el= の dispatch table に =anvil-host-*= を登録
+- Rust 側 =anvil_host_registry.rs= は =--elisp-dispatch= mode で skip、
+  ただし default mode では引き続き利用 (= 並行運用)
+
+*検証*: =anvil-mcp-host-info= 等が Rust dispatch / elisp dispatch 両
+mode で同 JSON 出力を返す
+
+** §4.3 Stage C — anvil-module / data / file / shell-filter registry を elisp 移植
+
+各 registry 同様の手順で elisp port. 1 stage = 1 registry の段階分け
+(= Stage C-1, C-2, C-3, C-4) で進める.
+
+各 stage 完了で対応する Rust =*_registry.rs= を =--elisp-dispatch= mode
+の dispatch table から外す.
+
+*検証*: 各 registry の MCP integration test PASS
+
+** §4.4 Stage D — Rust =compat_*= 実装の削除
+
+=anvil_host_registry.rs::compat_env= / =compat_which= / =compat_info= /
+=compat_shell= 等 (= ~700 LOC) を削除. これらは elisp port が
+完成すれば不要.
+
+*検証*: =anvil-host-info= 等の MCP出力が elisp port 経由で同等
+
+** §4.5 Stage E — Rust =anvil_*_registry= module 削除
+
+各 elisp port が完成し =--elisp-dispatch= で全 tool が走る状態を確認後、
+Rust 側 registry module を削除. =mcp/dispatch.rs= も simplify (=
+elisp dispatch 1 path のみ).
+
+*検証*: =cargo build --release= で anvil-runtime crate が ~500 LOC に縮小
+
+** §4.6 Stage F — anvil-runtime crate 削除 / 統合判断
+
+ここで判断分岐:
+
+- *Option I — anvil-runtime crate 維持 (= MCP transport のみ)*: ~500 LOC
+  程度の thin shim として残す. =bin/anvil-runtime= は引き続き
+  =anvil mcp serve --no-emacs= の resolve 先
+- *Option II — anvil-runtime crate 削除、=nelisp= binary に MCP mode 統合*:
+  =nelisp serve-mcp= サブコマンドを =nelisp= binary に追加、別 crate
+  不要になる. workspace member 1 個減
+
+*推奨*: Option I (= 段階的移行、影響範囲限定). Stage F は別 Phase で
+判断.
+
+* §5 Risks / Mitigation
+
+** §5.1 性能
+
+- elisp dispatch は Rust dispatch より overhead 大 (= function lookup,
+  apply, JSON encode/decode を全部 elisp で行う)
+- *Mitigation*: bench 測定、典型 tool で latency p99 が 5ms 以下なら
+  許容. JIT (Cranelift, Phase 5) が有効化されれば diff 大半解消
+
+** §5.2 既存 anvil-runtime tests の port
+
+- Rust の =anvil_host_registry.rs= 等には ~1,000 LOC の test fixture
+  がある (= anvil-host parse / formal introspection / dispatch shape)
+- *Mitigation*: 各 elisp port stage で対応する ERT を追加、Rust test
+  は段階的に削除 (= elisp port 完了で Rust test ignore + 後で削除)
+
+** §5.3 anvil.el repo 側の build / load order
+
+- elisp ファイル間 dep (= require) graph が複雑化する可能性
+- *Mitigation*: =provide= / =require= で明示的に整理、各新規 file の
+  header に dep 列挙
+
+** §5.4 user 既存 workflow への影響
+
+- =anvil mcp serve --no-emacs= で起動する user は Rust binary 経由で
+  動く前提
+- *Mitigation*: Stage A で =--elisp-dispatch= mode 追加、default は
+  既存 Rust dispatch のまま. 全 stage 完了で switch.  Rust binary 自体
+  の CLI surface は不変
+
+** §5.5 cross-PC 互換 (Linux / Windows)
+
+- elisp port は OS-agnostic に書く (= =system-type= 分岐は anvil-host.el
+  既存 pattern を踏襲)
+- Windows でも shell command 動作確認
+
+* §6 Out of scope
+
+- *frozen heap* (= Stage 7.7.e) — Doc 75 候補に再 assign
+- *reader feature gate* (= Doc 73 Stage 8.4) — 本 Doc 完了が前提、
+  Doc 73 で実施
+- *Phase 5 native cc* (Doc 62) — 別 track
+- *anvil.el repo の git history 統合* — anvil.el は別 repo として
+  維持、本 Doc は anvil.el への file 追加 + nelisp 側 anvil-runtime
+  削除を扱う
+- 旧 nelisp-runtime crate (= seed loader / sqlite / image boot) — 別 scope
+
+* §7 Test plan
+
+** §7.1 各 stage の検証 baseline
+
+| stage | 検証項目 |
+|-------+----------|
+| A skeleton | =anvil mcp serve= で =--elisp-dispatch=、=tools/list= 空 |
+| B host | =tools/list= に =anvil-host-*= 登場、=tools/call= で =anvil-host-info= 動作 |
+| C-1〜4 module/data/file/shell-filter | 各 registry の tool が elisp dispatch で動作 |
+| D compat 削除 | Rust side compat 関数削除、tool 出力等価 |
+| E registry 削除 | =cargo build --release= で anvil-runtime 縮小 |
+| F crate 判断 | (= 別 Phase) |
+
+** §7.2 ERT 追加
+
+各 stage で対応する =anvil-mcp-*-test.el= を追加:
+
+- =anvil-mcp-protocol-test.el= (Stage A)
+- =anvil-mcp-host-tools-test.el= (Stage B)
+- =anvil-mcp-module-tools-test.el= (Stage C-1)
+- ...
+
+** §7.3 cross-mode equivalence
+
+Stage A で =--elisp-dispatch= flag を導入する際、Rust dispatch と
+elisp dispatch の出力が同一であることを fixture で検証.  各 stage で
+対応する tool に対して同 fixture を adapt.
+
+** §7.4 性能 bench
+
+- baseline: 現状 Rust dispatch の =anvil-host-info= = ~Xms
+- target: elisp dispatch で latency p99 < baseline + 5ms
+- 測定: =anvil mcp bench --tool anvil-host-info --iters 100=
+
+* §8 共通原則 (= Doc 67〜73 から継承)
+
+- 1 sub-stage = 1 commit、commit message に SHIPPED record
+- 各 commit で =cargo test --release --lib --tests -p nelisp-build-tool=
+  両 feature mode PASS 必須
+- =make test= ERT 全 PASS 必須
+- elisp port は anvil.el repo の既存 conventions (= =defcustom= /
+  =defgroup= / =provide= header) に従う
+- 改判断は §9 record に追記
+
+* §9 References
+
+- Doc 73 §2.2 / §9 #5 — Stage 8.2 方針転換 articulation
+- =anvil-runtime/src/= — 本 migration の source
+- =/home/madblack-21/Cowork/Notes/dev/anvil.el/= — 移行先 repo
+- =architecture_correction_anvil_uses_nelisp_2026-04-25.org= §1.2 —
+  layer 境界 LOCKED
+- =feedback_nelisp_minimize_rust= memory — durable user directive
+
+* §10 改判断 record
+
+(2026-05-08, Claude session continuation; Doc 73 Stage 8.3.a/b SHIPPED 後)
+
+設計時点での判断:
+
+1. *Doc 74 を anvil-runtime → anvil.el migration に re-assign*
+   (2026-05-08): 当初 Doc 73 §9 #1 で "Doc 74 候補は frozen heap" と
+   articulated していたが、user 2026-05-08 後半指示で Stage 8.2 を
+   anvil-runtime 全体 migration に格上げ. Doc 74 を本 migration に
+   割り当て、frozen heap は Doc 75 候補に shift.
+2. *Stage F (= crate 削除) を Phase 別判断*: anvil-runtime crate を
+   完全削除するか thin transport として残すかは Stage E 完了後の
+   実測 / 評価で判断. 本 Doc では both options を articulate.
+3. *Rust side =--elisp-dispatch= mode 並行運用*: Stage A で導入する
+   切替 flag は段階的移行のため必須. 全 stage 完了まで Rust dispatch
+   を保ち、elisp dispatch の cross-mode equivalence を担保.
+4. *性能 risk は JIT (Phase 5) で吸収する前提*: elisp dispatch overhead
+   が懸念だが、Cranelift JIT (Phase 5) が有効化されれば差解消の見込み.
+   本 Doc では bench gate を設けるが、許容 latency 未達の場合は
+   JIT 待ち / 別 stage で最適化.
+5. *anvil.el repo 側の git history は本 Doc では扱わない*: anvil.el は
+   独立 repo、本 Doc は file 追加 + nelisp 側削除のみ. anvil.el repo
+   での commit / PR 戦略は別途.
