@@ -196,10 +196,10 @@ fn jit() -> &'static JitPredicate {
     JIT_PREDICATE.get_or_init(build_jit_predicate)
 }
 
-fn lowered_eq(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    if args.len() != 2 {
-        return crate::eval::builtins::dispatch("eq", args, env);
-    }
+fn lowered_eq(args: &[Sexp], _env: &mut Env) -> Result<Sexp, EvalError> {
+    // Phase 5 Stage C-Phase1 (Doc 62, 2026-05-08): self-contained
+    // arity check; never falls back through `dispatch'.
+    crate::eval::builtins::require_arity("eq", args, 2, Some(2))?;
     let v = (jit().eq)(&args[0] as *const _, &args[1] as *const _);
     Ok(if v != 0 { Sexp::T } else { Sexp::Nil })
 }

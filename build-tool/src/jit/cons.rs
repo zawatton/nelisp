@@ -270,53 +270,60 @@ fn jit() -> &'static JitCons {
     JIT_CONS.get_or_init(build_jit_cons)
 }
 
-fn lowered_car(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    if args.len() != 1 {
-        return crate::eval::builtins::dispatch("car", args, env);
-    }
+fn lowered_car(args: &[Sexp], _env: &mut Env) -> Result<Sexp, EvalError> {
+    // Phase 5 Stage C-Phase1 (Doc 62, 2026-05-08): self-contained —
+    // arity check via `require_arity', wrong-type via direct
+    // `EvalError::WrongType' (= same shape `bi_car' produced before
+    // its deletion).  Never falls back through `dispatch'.
+    crate::eval::builtins::require_arity("car", args, 1, Some(1))?;
     let mut out = Sexp::Nil;
     let r = (jit().car)(&args[0] as *const _, &mut out as *mut _);
     if r == TRAMPOLINE_OK {
         Ok(out)
     } else {
-        crate::eval::builtins::dispatch("car", args, env)
+        Err(EvalError::WrongType {
+            expected: "listp".into(),
+            got: args[0].clone(),
+        })
     }
 }
 
-fn lowered_cdr(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    if args.len() != 1 {
-        return crate::eval::builtins::dispatch("cdr", args, env);
-    }
+fn lowered_cdr(args: &[Sexp], _env: &mut Env) -> Result<Sexp, EvalError> {
+    crate::eval::builtins::require_arity("cdr", args, 1, Some(1))?;
     let mut out = Sexp::Nil;
     let r = (jit().cdr)(&args[0] as *const _, &mut out as *mut _);
     if r == TRAMPOLINE_OK {
         Ok(out)
     } else {
-        crate::eval::builtins::dispatch("cdr", args, env)
+        Err(EvalError::WrongType {
+            expected: "listp".into(),
+            got: args[0].clone(),
+        })
     }
 }
 
-fn lowered_cons(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    if args.len() != 2 {
-        return crate::eval::builtins::dispatch("cons", args, env);
-    }
+fn lowered_cons(args: &[Sexp], _env: &mut Env) -> Result<Sexp, EvalError> {
+    crate::eval::builtins::require_arity("cons", args, 2, Some(2))?;
     let mut out = Sexp::Nil;
     let r = (jit().cons_make)(
         &args[0] as *const _,
         &args[1] as *const _,
         &mut out as *mut _,
     );
+    // `cons' has no wrong-type case (any two values produce a Cons),
+    // so TRAMPOLINE_ERR is unreachable.  Guard with a defensive
+    // Internal error instead of dispatcher fallback.
     if r == TRAMPOLINE_OK {
         Ok(out)
     } else {
-        crate::eval::builtins::dispatch("cons", args, env)
+        Err(EvalError::Internal(
+            "lowered_cons: trampoline returned ERR for arbitrary inputs".into(),
+        ))
     }
 }
 
-fn lowered_setcar(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    if args.len() != 2 {
-        return crate::eval::builtins::dispatch("setcar", args, env);
-    }
+fn lowered_setcar(args: &[Sexp], _env: &mut Env) -> Result<Sexp, EvalError> {
+    crate::eval::builtins::require_arity("setcar", args, 2, Some(2))?;
     let mut out = Sexp::Nil;
     let r = (jit().setcar)(
         &args[0] as *const _,
@@ -326,14 +333,15 @@ fn lowered_setcar(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     if r == TRAMPOLINE_OK {
         Ok(out)
     } else {
-        crate::eval::builtins::dispatch("setcar", args, env)
+        Err(EvalError::WrongType {
+            expected: "consp".into(),
+            got: args[0].clone(),
+        })
     }
 }
 
-fn lowered_setcdr(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    if args.len() != 2 {
-        return crate::eval::builtins::dispatch("setcdr", args, env);
-    }
+fn lowered_setcdr(args: &[Sexp], _env: &mut Env) -> Result<Sexp, EvalError> {
+    crate::eval::builtins::require_arity("setcdr", args, 2, Some(2))?;
     let mut out = Sexp::Nil;
     let r = (jit().setcdr)(
         &args[0] as *const _,
@@ -343,7 +351,10 @@ fn lowered_setcdr(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     if r == TRAMPOLINE_OK {
         Ok(out)
     } else {
-        crate::eval::builtins::dispatch("setcdr", args, env)
+        Err(EvalError::WrongType {
+            expected: "consp".into(),
+            got: args[0].clone(),
+        })
     }
 }
 

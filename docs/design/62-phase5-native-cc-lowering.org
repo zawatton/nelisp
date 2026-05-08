@@ -6,6 +6,7 @@
 * Status
 :PROPERTIES:
 :STATE: IN_PROGRESS
+:STAGE_B_C_AUDIT: 2026-05-08 — original Doc 62 §0 "~3,100 LOC reduction" was optimistic, premised on JIT achieving full coverage for all 24 primitives.  Actual Stage 5.0〜5.6 SHIPPED only added *fast paths*; bi_* dispatcher fallbacks remain structurally needed for Float arithmetic, non-Linux syscall, MutStr/BoolVector access variants etc.  Realistic Stage C-full = staged migration: (1) Stage C-Phase1 = 10 simple primitives (eq/cons/car/cdr/setcar/setcdr/length/aref/aset/elt) where JIT helpers can be extended to full coverage (~200-300 LOC reduction), (2) Stage 5.7 = ArithIR Float lower (= prerequisite for Phase2 arith bi_* removal), (3) Stage 5.8 = Path B non-Linux syscall instruction emit (= prerequisite for Phase3 syscall removal).  Phases 2/3 land later; Doc 62 §0 estimates revised below with realistic per-stage figures.
 :STAGE_5_0: SHIPPED (2026-05-07, commit f3bd32e) — Cranelift dep + jit/ scaffold + lower hook in eval/mod.rs::apply_builtin
 :STAGE_5_1_PARTIAL: SHIPPED (2026-05-07) — `nelisp--syscall-supported-p' (= 0-arg const predicate) JIT-compiled to `iconst + return'.
 :STAGE_5_1: SHIPPED (2026-05-07, this commit) — generic `nelisp--syscall NR ARGS...' JIT-lowered.  Per §2.2.1 the 25 specialized primitives (= sockaddr / pollfd / signalfd / etc. buffer handling) stay on the Rust dispatcher.  Lowering uses Cranelift `Linkage::Import' on a non-variadic Rust trampoline `nl_jit_syscall_call' that wraps `libc::syscall' + errno normalize (Doc 62 §5 "helper fn 経由の妥協を許容" pattern, identical to ConsIR/AccessIR plan).
@@ -40,15 +41,33 @@ emit** することで、Rust dispatcher を bypass する設計。Doc 60 まで
 
 | stage | 解放対象                                                 | 推定 LOC 削減 | コスト        |
 |-------+----------------------------------------------------------+---------------+---------------|
-| 5.1   | SyscallIR — 25 specialized + 1 generic 全部 lower         | ~1,400        | 中            |
-| 5.2   | ArithIR — 13 arithmetic primitives                        | ~600          | 中-高         |
+| 5.1   | SyscallIR — 25 specialized + 1 generic 全部 lower         | ~1,400 (= 楽観、実 -200 にとどまる)        | 中            |
+| 5.2   | ArithIR — 13 arithmetic primitives                        | ~600 (= 楽観、実 -50)          | 中-高         |
 | 5.3   | ConsIR — car / cdr / cons / setcar / setcdr               | ~200          | 高 (Rc<RefCell>) |
-| 5.4   | AccessIR — aref / aset / length / elt                     | ~400          | 高            |
-| 5.5   | PredicateIR — eq / atom / listp / consp / null / *p 系   | ~500          | 中            |
+| 5.4   | AccessIR — aref / aset / length / elt                     | ~400 (= 実 -150)         | 高            |
+| 5.5   | PredicateIR — eq / atom / listp / consp / null / *p 系   | ~500 (= 実 -50)          | 中            |
 | 5.6   | (option) Path B = OS 別 syscall instruction emit          | +0            | 低 (lower 拡張) |
 
-合計 ~3,100 LOC 削減。Cranelift 採用 = nelisp-emacs-gtk Phase 3 で
-経験ある backend、pure Rust + LLVM 不要 + single-pass で JIT 向き。
+*Original estimate: 合計 ~3,100 LOC 削減* — 楽観的、JIT が full coverage
+する前提.
+
+*2026-05-08 audit revised estimate*: Stage 5.0〜5.6 SHIPPED 後、Rust
+LOC は dispatcher arm + bi_* body の両方が残る (= JIT は fast path のみ).
+Stage B/C 実現には以下の追加 stage が必要:
+
+| 追加 stage | 内容 | 推定 LOC 削減 |
+|-------------+------+---------------|
+| Stage C-Phase1 | 10 simple primitive (eq/cons/car/cdr/setcar/setcdr/length/aref/aset/elt) を JIT full coverage 化 + bi_* 削除 | -200〜-300 |
+| Stage 5.7 ArithIR Float | Int+Float / Float+Float 対応 + bi_add2 等 11 arith primitive 削除 | -300〜-400 |
+| Stage 5.8 Path B non-Linux | macOS / Windows syscall 命令 emit + bi_syscall 25 specialized 削除 | -1,200 (= Linux full + 非 Linux 自然消滅) |
+| Stage B (= 全 stage 後) | dispatch match arm から 24 primitive 削除 | -24 |
+| *合計 (= Stage C-full 完遂時)* | | *-1,800〜-2,000* (= 当初 -3,100 に対し ~60% 達成) |
+
+現実的な Stage C-full 完遂 LOC = -1,800〜-2,000 程度. 残差 (= 当初
+estimate との差) は Float / non-Linux fallback の不可避コスト.
+
+Cranelift 採用 = nelisp-emacs-gtk Phase 3 で経験ある backend、pure
+Rust + LLVM 不要 + single-pass で JIT 向き。
 
 * §1 動機
 

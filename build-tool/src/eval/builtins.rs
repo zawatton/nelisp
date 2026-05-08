@@ -439,16 +439,17 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // collapses both into the strict structural-equality path, so
         // the dispatch fanout was a typing burden with no runtime
         // distinction.
-        "eq" => bi_eq(args),
+        // `eq' migrated to JIT (Phase 5 Stage C-Phase1, Doc 62
+        // 2026-05-08) — `lowered_eq' in `jit/predicate.rs' is the
+        // single source of truth.
         "equal" => bi_equal(args),
         "nelisp--ref-eq" => bi_ref_eq(args),
         // ---- cons / list ----
-        "car" => bi_car(args),
-        "cdr" => bi_cdr(args),
+        // car / cdr / cons / setcar / setcdr migrated to JIT
+        // (Phase 5 Stage C-Phase1, Doc 62 2026-05-08).  See
+        // `jit/cons.rs::lowered_{car,cdr,cons,setcar,setcdr}'.
         // Common compositions (cXXr family) migrated to elisp in
-        // Doc 61 stage 7 — see lisp/nelisp-stdlib-list.el.  Only the
-        // 2 leaf primitives stay here.
-        "cons" => bi_cons(args),
+        // Doc 61 stage 7 — see lisp/nelisp-stdlib-list.el.
         "length" => bi_length(args),
         // reverse / nreverse migrated to elisp (Rust-min 2026-05-06
         // batch 6d, see lisp/nelisp-stdlib-list.el).
@@ -457,8 +458,6 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // copy-tree / sort migrated to elisp (Rust-min 2026-05-06 batch 4).
         // append migrated to elisp (Rust-min 2026-05-06 batch 6o,
         // see lisp/nelisp-stdlib-list.el).
-        "setcar" => bi_setcar(args),
-        "setcdr" => bi_setcdr(args),
         // ---- generic accessors ----
         "aref" => bi_aref(args),
         "aset" => bi_aset(args),
@@ -726,7 +725,12 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
 
 // ---------- arity helpers ----------
 
-fn require_arity(name: &str, args: &[Sexp], min: usize, max: Option<usize>) -> Result<(), EvalError> {
+pub(crate) fn require_arity(
+    name: &str,
+    args: &[Sexp],
+    min: usize,
+    max: Option<usize>,
+) -> Result<(), EvalError> {
     if args.len() < min || max.map_or(false, |m| args.len() > m) {
         let expected = match max {
             Some(m) if m == min => format!("{}", min),
@@ -1041,15 +1045,12 @@ fn bi_num_eq2(args: &[Sexp]) -> Result<Sexp, EvalError> {
 }
 
 // ---------- equality ----------
-
-fn bi_eq(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("eq", args, 2, Some(2))?;
-    Ok(if sexp_eq(&args[0], &args[1]) {
-        Sexp::T
-    } else {
-        Sexp::Nil
-    })
-}
+//
+// Phase 5 Stage C-Phase1 (Doc 62, 2026-05-08): `bi_eq' deleted.
+// The JIT path (`jit/predicate.rs::lowered_eq') is the single source
+// of truth; arity / wrong-type errors are emitted from the lowered
+// wrapper, no `dispatch'/`bi_eq' fallback.  `sexp_eq' helper below
+// stays — it is still used by `bi_equal' / `bi_ref_eq' / `nl_jit_pred_eq'.
 
 fn bi_equal(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("equal", args, 2, Some(2))?;
@@ -1151,35 +1152,12 @@ fn sexp_equal_safe(a: &Sexp, b: &Sexp, depth: u32) -> bool {
 }
 
 // ---------- cons / list ----------
-
-fn bi_car(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("car", args, 1, Some(1))?;
-    match &args[0] {
-        Sexp::Nil => Ok(Sexp::Nil),
-        Sexp::Cons(a, _) => Ok(a.borrow().clone()),
-        other => Err(EvalError::WrongType {
-            expected: "listp".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
-fn bi_cdr(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("cdr", args, 1, Some(1))?;
-    match &args[0] {
-        Sexp::Nil => Ok(Sexp::Nil),
-        Sexp::Cons(_, d) => Ok(d.borrow().clone()),
-        other => Err(EvalError::WrongType {
-            expected: "listp".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
-fn bi_cons(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("cons", args, 2, Some(2))?;
-    Ok(Sexp::cons(args[0].clone(), args[1].clone()))
-}
+//
+// Phase 5 Stage C-Phase1 (Doc 62, 2026-05-08): `bi_car' / `bi_cdr' /
+// `bi_cons' / `bi_setcar' / `bi_setcdr' deleted (5 functions).  The
+// JIT path (`jit/cons.rs::lowered_{car,cdr,cons,setcar,setcdr}') is
+// the single source of truth; arity / wrong-type errors are emitted
+// from each lowered wrapper directly, no `dispatch' fallback.
 
 fn bi_length(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("length", args, 1, Some(1))?;
@@ -5298,37 +5276,8 @@ fn bi_make_vector(args: &[Sexp]) -> Result<Sexp, EvalError> {
 // flattens vectors / strings / lists, so there is no Sexp-internal
 // logic worth retaining here.
 
-fn bi_setcar(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    // (setcar CELL VALUE) — mutate the car of a cons cell in place.
-    // Sharing of the cell across bindings is the load-bearing
-    // guarantee the Sexp::Cons -> Rc<RefCell<Sexp>> migration buys.
-    require_arity("setcar", args, 2, Some(2))?;
-    match &args[0] {
-        Sexp::Cons(h, _) => {
-            *h.borrow_mut() = args[1].clone();
-            // Emacs' setcar returns the new value.
-            Ok(args[1].clone())
-        }
-        other => Err(EvalError::WrongType {
-            expected: "consp".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
-fn bi_setcdr(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("setcdr", args, 2, Some(2))?;
-    match &args[0] {
-        Sexp::Cons(_, t) => {
-            *t.borrow_mut() = args[1].clone();
-            Ok(args[1].clone())
-        }
-        other => Err(EvalError::WrongType {
-            expected: "consp".into(),
-            got: other.clone(),
-        }),
-    }
-}
+// `bi_setcar' / `bi_setcdr' deleted in Phase 5 Stage C-Phase1
+// (Doc 62, 2026-05-08).  See `jit/cons.rs::lowered_{setcar,setcdr}'.
 
 fn bi_aset(args: &[Sexp]) -> Result<Sexp, EvalError> {
     // (aset ARRAY INDEX VALUE) — mutates ARRAY in place.
