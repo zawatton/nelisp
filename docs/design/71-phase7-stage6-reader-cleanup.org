@@ -1,0 +1,290 @@
+#+TITLE: Doc 71 — Phase 7 Stage 7.6: Reader cleanup (Rust reader 後置 path 整理)
+#+AUTHOR: zawatton
+#+DATE: 2026-05-08
+
+* Status
+
+- DRAFT — Stage 7.5.c SHIPPED (= f89139c、post-bootstrap macro elisp 経由化)
+  直後.  本 Doc 71 は Doc 63 §2.6 の Stage 7.6 を Phase 7 Stage 7.5
+  完了状態に合わせて execution 可能なレベルに落とし込む
+- 上位 doc: =docs/design/63-phase7-nelisp-self-host-roadmap.org= §2.6
+- 関連 doc: Doc 66 (Stage 7.2 reader migration、§3.5 で Stage 7.6 の前哨戦
+  と位置づけ) / Doc 69 (Stage 7.5 = 同じ bootstrap 制約問題の構造)
+
+* §0 TL;DR
+
+Doc 63 §2.6 の **"Rust reader (=lexer.rs= 885 / =parser.rs= 485 /
+=mod.rs= 286) 完全削除 ~1,400 LOC"** は、Stage 7.5 と同じく bootstrap
+chicken-and-egg で *aspirational*.  =Env::new_global= で stdlib を
+parse するための reader が必要、その reader 自身を elisp で書くと
+ロード時に既に reader が必要 — 解決には AOT bake (= Doc 63 §3.3)
+が前提.
+
+本 Doc 71 の Stage 7.6 では:
+
+1. *Stage 7.2 完了状態の確認*: 7.2.a-e SHIPPED で =read-from-string=
+   は既に elisp 経由、Rust reader 残存は bootstrap + 一部 builtin
+2. *残存 Rust reader callsite の post-bootstrap 移行*: =read= /
+   =nelisp--read-all-from-string= の 2 builtin を elisp impl に委譲
+3. *cosmetic cleanup*: reader/mod.rs commentary 更新、Doc 66 §3.5 status
+
+| sub-stage | 内容 | 想定 LOC | 依存 |
+|-----------+------+----------+------|
+| 7.6.a | =bi_read= / =bi_read_all_from_string= elisp 委譲 | Rust -10〜-20 | 7.5.c PASS |
+| 7.6.b | doc cleanup (reader/mod.rs + Doc 66 §3.5 status) | Doc +30 | 7.6.a |
+
+純減 ~15 LOC (Rust).  Doc 63 §2.6 の "~1,400 LOC" 計画値とは大きな
+開きがあり、その差分は §1.3 で詳述する **bootstrap 制約 + Sexp 値型
+共有** に起因.
+
+* §1 動機 / 背景
+
+** §1.1 Doc 63 §2.6 の元計画
+
+#+begin_quote
+- Stage 7.2 後段、=--rust-reader= flag 経由のみ access、default elisp
+- Rust reader (=reader/lexer.rs= = 881 / =parser.rs= = 478 /
+  =mod.rs= = 266) を完全削除
+- LOC 削減: 上記 1,400 含む、cleanup 200 追加
+#+end_quote
+
+** §1.2 Stage 7.2.a-e SHIPPED 状態
+
+| sub-stage | commit | 内容 |
+|-----------+--------+------|
+| 7.2.a | e6ebe1d | elisp tokenizer (= =nelisp-stdlib-reader.el= 部分) |
+| 7.2.b | 0391890 | elisp parser + =read-from-string= takeover |
+| 7.2.c | 0e3de1b | round-trip property + cross-rust ERT |
+| 7.2.d | 67d1451 | Rust fallback in =bi_read_from_string= 撤去 |
+| 7.2.e | 42ee89b | stale reader-deferred test 整理 |
+
+Stage 7.2.d 時点で =bi_read_from_string= は **必ず** elisp impl
+(=nelisp--read-from-string-impl=) に委譲、未 install 時は internal
+error.  ただし他の reader 経路 (= =read=, =nelisp--read-all-from-string=,
+bootstrap, image bake, bridge) は依然 Rust 直接 path.
+
+** §1.3 "完全削除" が aspirational である理由
+
+*** §1.3.1 bootstrap chicken-and-egg
+
+=Env::new_global= は =STDLIB_SOURCES= 内 elisp ファイルを順次
+=reader::read_all= で parse.  elisp reader (=nelisp-stdlib-reader.el=)
+自身も STDLIB_SOURCES に含まれるため、その install *前* の parse
+は Rust reader でしか出来ない.
+
+→ =reader/lexer.rs= / =reader/parser.rs= / =reader/mod.rs= は bootstrap
+path として削除不可.
+
+*** §1.3.2 =Sexp= value type の共有
+
+=reader/sexp.rs= (= 671 LOC) は =Sexp= enum を定義する.  Rust 全体で
+**runtime value 型** として使われており、reader 専用ではない:
+
+#+begin_example
+crate::reader::sexp::Sexp が以下から import される:
+  - eval/* (= 全 file)
+  - jit/* (= access / arith / cons / predicate / syscall)
+  - bridge/*
+  - image.rs
+#+end_example
+
+→ =reader/sexp.rs= は reader cleanup の scope 外、Rust 値表現として
+継続使用.  本 Doc 71 では削除候補に含めない.
+
+*** §1.3.3 build-tool driver の Rust reader 直接利用
+
+| caller | 用途 | 必須度 |
+|--------+------+--------|
+| =eval_str= / =eval_str_all= | テスト + REPL 入力 | Rust API として必須 |
+| =Env::new_global= | bootstrap | 必須 (= chicken-and-egg) |
+| =image::compile_elisp_to_image= | AOT bake (image.rs) | 必須 |
+| =bridge::bootstrap_self_host= | Phase 8 self-host bridge | Phase 8 別 layer |
+| =bi_read= | =(read STRING)= builtin | post-bootstrap 移行可 |
+| =bi_read_all_from_string= | =(nelisp--read-all-from-string STRING)= | post-bootstrap 移行可 |
+| cargo unit tests | fixture 構築 | テスト便利、移行 cost 高 |
+
+→ post-bootstrap path から Rust reader 直接利用を消せるのは
+=bi_read= と =bi_read_all_from_string= の 2 つ.  bootstrap / image /
+bridge / tests は据え置き.
+
+** §1.4 結論: Stage 7.6 の現実的 scope
+
+Doc 63 §2.6 が予告した "~1,400 LOC 削減" は実現不能.  Stage 7.6 の
+現実的 deliverable:
+
+1. =bi_read= / =bi_read_all_from_string= を elisp impl に委譲
+   (= Stage 7.2.d と同じ pattern).  ~15 LOC 純減
+2. Rust reader を "bootstrap + image + bridge 専用" と doc に明記
+3. =reader/mod.rs= commentary を Stage 7.6 SHIPPED 状態に更新
+
+* §2 残存 Rust reader callsite inventory
+
+** §2.1 callsite map
+
+| 場所 | 関数 | bootstrap | post-bootstrap user-visible |
+|------+------+-----------+-----------------------------|
+| =eval/env.rs:257= | =reader::read_all= | ◎ STDLIB_SOURCES 順次 parse | (経由しない) |
+| =eval/mod.rs:53= | =reader::read_str= | △ test driver | △ =eval_str= 経由 |
+| =eval/mod.rs:62/109= | =reader::read_all= | △ test driver | △ =eval_str_all= 経由 |
+| =eval/builtins.rs:5016= =bi_read= | =reader::read_str= | (経由しない) | ◎ =(read STRING)= |
+| =eval/builtins.rs:1848= =bi_read_all_from_string= | =reader::read_all= | (経由しない) | ◎ elisp =load= 経由 |
+| =eval/builtins.rs:5042= =bi_read_from_string= | (Rust 経由なし) | (経由しない) | ✗ 既に elisp 委譲 (Stage 7.2.d) |
+| =image.rs:77= | =reader::read_all= | ◎ AOT compile | (経由しない) |
+| =bridge/loader.rs:181= | =reader::read_all= | ◎ Phase 8 bridge | (経由しない) |
+| =bridge/mod.rs:161/211/214= | =reader::read_str= | △ Phase 8 test | (経由しない) |
+
+→ Stage 7.6.a で *post-bootstrap user-visible* な 2 callsite (=
+=bi_read= / =bi_read_all_from_string=) を elisp impl 委譲化.
+
+** §2.2 elisp impl の確認
+
+=lisp/nelisp-stdlib-reader.el= が以下を提供:
+
+| 関数 | 用途 |
+|------+------|
+| =nelisp--read-from-string-impl= | =(read STRING)= / =(read-from-string STRING)= の elisp impl |
+| =nelisp--read-all-from-string-impl= | =(nelisp--read-all-from-string STRING)= の elisp impl |
+
+両者は Stage 7.2.b で install 済、Stage 7.2.d で =bi_read_from_string=
+が =-impl= 経由化された.  =bi_read= / =bi_read_all_from_string= も
+同じ pattern を適用すればよい.
+
+* §3 段階 / sub-stages
+
+** §3.1 Stage 7.6.a — =bi_read= / =bi_read_all_from_string= elisp 委譲
+
+タスク:
+
+1. =bi_read_all_from_string= の signature を =(args, env)= に変更し、
+   =Env::lookup_function("nelisp--read-all-from-string-impl")= で
+   elisp impl を取得 → =apply_function= で委譲.  未 install 時は
+   internal error (= Stage 7.2.d と同じ severity).
+2. =bi_read= も同様に =nelisp--read-from-string-impl= に委譲.
+   adapter: =read= は単一 form を返す、=read-from-string-impl= は
+   =(form . consumed-end)= cons を返すので =car= を取る.
+3. dispatch match arm の =env= 引数渡しを修正 (= =bi_read_all_from_string=
+   は env を受け取るようになる).
+4. ERT 全件 PASS 確認 + cargo serial 全件 PASS:
+   - =cargo test --release --lib -p nelisp-build-tool -- --test-threads=1=
+   - =emacs --batch ... ert eval-core-test.el=
+5. 旧 =reader::read_str= / =reader::read_all= の直接呼出は完全に
+   消える (= bootstrap 以外).
+
+LOC 削減: -10 〜 -20 (= 2 builtin の direct read 部分が elisp 委譲
+3 行に縮む).
+
+commit message:
+=feat(nelisp): Phase 7 Stage 7.6.a SHIPPED — bi_read / bi_read_all_from_string を elisp impl 委譲化=
+
+** §3.2 Stage 7.6.b — doc cleanup
+
+タスク:
+
+1. =build-tool/src/reader/mod.rs= 冒頭 commentary 更新:
+   - Stage 7.2.d/e (= 既存記述) に Stage 7.6.a SHIPPED の記述追加
+   - "post-bootstrap user-visible reads がすべて elisp 経由" を明記
+   - bootstrap / image / bridge / tests が direct caller として残る
+     旨を明記
+2. Doc 66 §3.5 (= Stage 7.2.e の説明、Stage 7.6 への前哨戦と位置付け)
+   に Stage 7.6 SHIPPED 反映
+3. Doc 71 status を DRAFT → SHIPPED 2026-05-08 (= 7.6.a/b 完了後)
+
+LOC: docs +30.
+
+commit message:
+=docs(nelisp): Phase 7 Stage 7.6.b — reader/mod.rs commentary + Doc 66 §3.5 を Stage 7.6 SHIPPED に更新=
+
+** §3.3 sub-stage 順序
+
+a → b 直列.  並行可能性なし (= b は a の SHIPPED 状態に基づく).
+
+* §4 Test plan
+
+** §4.1 Stage 7.6.a regression check
+
+- cargo serial 全件 PASS (= 435/435 + 4 ignored).  特に注意:
+  =bi_read= / =bi_read_all_from_string= 経由のテストが elisp impl で
+  identical な結果を返す
+- ERT eval-core 22/22 PASS (= reader 関連は無いが regression check)
+- =bench-defmacro-expand-100k= が elisp reader 経由で degrade < 1.5x
+
+** §4.2 elisp =load= 経路の動作確認
+
+elisp =load= は =nelisp--read-all-from-string= を内部で使う.
+Stage 7.6.a 後は同 builtin が elisp impl 委譲なので、=load= 経路全体が
+elisp 化される.
+
+確認 cmd:
+#+begin_src bash
+target/release/nelisp eval '(progn (load "/tmp/test.el") (test-fn))'
+#+end_src
+
+** §4.3 escape hatch との互換性
+
+=NELISP_USE_RUST_APPLY=1= で起動した場合も =bi_read= 等は影響受けず
+動作する (= reader は dispatch path と独立).
+
+* §5 Risks
+
+** §5.1 elisp reader の未対応 syntax
+
+=nelisp--read-from-string-impl= が Rust reader と完全 parity でない
+syntax がある可能性.  Stage 7.2.c (= round-trip property test) で
+検証されているはずだが、edge case が残るかも.
+
+mitigation: cargo serial 全件 PASS で empirical 検証.  fail なら
+elisp impl の bug を特定 → fix.
+
+** §5.2 perf regression
+
+=bi_read= は =eval_arg_list= 後の dispatch + =apply_function=
+overhead が乗る.  小さな string を頻繁に read する場合に subtle.
+
+mitigation: bench で計測、3x 超なら Phase 5 lower entry 追加検討.
+
+** §5.3 bridge / image との二重管理
+
+=bridge/= と =image.rs= は依然 Rust reader 直接利用.  本 Stage 7.6
+の scope 外.  将来 AOT bake (= Doc 63 §3.3) で =image.rs= が elisp
+reader を使う形に移行する可能性あり、その時 Stage 7.7+ として再検討.
+
+* §6 観察期間 / Doc 66 §3.5 との整合
+
+Doc 66 §3.5 は Stage 7.2.e の位置付けを "Stage 7.6 の前哨戦" と
+記述.  Stage 7.6 SHIPPED で:
+
+- post-bootstrap reader callsite は **すべて** elisp reader 経由化
+- bootstrap path は明示的に Rust reader 専用と doc 化
+- "Rust reader 完全削除" は AOT bake 後に再評価 (= Stage 7.7+)
+
+→ Doc 66 §3.5 を SHIPPED 反映する.
+
+* §7 共通原則 (= Doc 67/68/69/70 から継承)
+
+- 既存 ERT regression = 全件 PASS を必須 gate
+- escape hatch (=NELISP_USE_RUST_APPLY=) との互換性維持
+- bench gate = total < 1.8x / p99 < 2.0x
+
+* §8 Out of scope
+
+- Rust reader 完全削除 (= Doc 63 §2.6 aspirational 部分).  AOT bake
+  (Doc 63 §3.3) 移行が前提、Stage 7.7+
+- =bridge/= module の Rust reader 利用整理 (= Phase 8 別 layer)
+- =image.rs= の Rust reader 利用整理 (= AOT bake と同時に検討)
+- cargo unit test fixture の Rust reader 利用整理 (= 大量 churn、
+  低 ROI、Out of scope)
+- =reader/sexp.rs= (671 LOC) の整理 (= Sexp value type は runtime
+  全体で共有、scope 外)
+
+* §9 References
+
+- Doc 63 §2.6 — Phase 7 Stage 7.6 元計画 (= "complete deletion" aspirational)
+- Doc 63 §3 — bootstrap chicken-and-egg、AOT bake option
+- Doc 66 全体 — Stage 7.2 reader migration、§3.5 で Stage 7.6 と
+  関連付け
+- Doc 69 全体 — Stage 7.5 (= 同じ bootstrap 制約構造を共有、本 Doc 71
+  は同じ pattern)
+- =build-tool/src/reader/= (= 2,433 LOC、scope 外含む) — 本 Stage の
+  対象範囲は =bi_read= / =bi_read_all_from_string= 周辺のみ
+- =lisp/nelisp-stdlib-reader.el= (= 795 LOC) — elisp reader impl、
+  Stage 7.2.b で install 済
