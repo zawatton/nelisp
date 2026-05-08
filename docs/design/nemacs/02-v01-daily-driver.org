@@ -334,48 +334,195 @@ dispatch 構成 = anvil-orchestrator codex 5 並列、各 worktree:
 
 ** 3.3 M3 — org-mode subset (6-8w)
 
-*scope* (= user の =journals-YYYY.org= / =todo.org= / =capture/= 用途 subset):
+5 sub-milestone (M3.1 - M3.5) に分割、anvil-orchestrator codex 並列 dispatch 想定。本 M3 は v0.1 最大 milestone (~2500-3500 LOC)、user の主用途 (=journals-YYYY.org= / =todo.org= / =capture/= 編集) を覆うため重点。
 
-- outline structure
-  - =org-mode= major-mode (= file extension =.org= で auto-dispatch)
-  - heading promote/demote (=M-←= / =M-→=)
-  - insert-heading (=M-RET=)
-  - subtree fold/unfold (= =TAB= / =S-TAB= / =org-cycle-global=)
-- TODO state cycle
-  - =org-todo= (=C-c C-t=) で keyword cycle
-  - todo.org の 6 keyword 対応 (= INBOX / NEXT / WAIT / PROJECTS / SCHEDULED / SOMEDAY)
-  - DONE marker + log 軽量
-- table edit
-  - =org-table-align= (=TAB= within table)
-  - =org-table-next-field= (=TAB=)
-  - column add/remove は最低限
-- agenda 軽量
-  - =org-agenda= (=C-c a a=) で SCHEDULED + DEADLINE 一覧
-  - 日付 group / TODO state filter
-  - dispatcher は =a= (agenda) / =t= (todo) / =m= (match) のみ、=L= / =B= 等の advanced は scope 外
-- capture 軽量
-  - =org-capture= (=C-c c=)
-  - template DSL: =(file+headline FILE HEADLINE)= / =(file+olp+datetree FILE …)= の 2 種のみ実装
-  - user 既存 template (Journal / Todo) が動くこと
-
-*scope 外* (= Phase 4 担当):
-
+*scope 外* (= Phase 4 / 別 repo 担当):
 - org-publish / org-roam / org-noter
-- agenda full (= block / weekly / category dispatcher 全種)
+- agenda full (= block / weekly / category / =L= / =B= 等の advanced dispatcher)
 - src block babel execute / tangle
-- :PROPERTIES: drawer 高度処理 (logbook 全機能、clocking 等は最低限)
+- :PROPERTIES: drawer 高度処理 (logbook 全機能、clocking)
+- org-export / HTML / LaTeX
+- org-element-cache (= 性能最適化、Phase 4 で検討)
 
-*close gate*:
+*** 3.3.1 M3.1 — outline + heading manipulation + folding
 
-| # | gate |
-|---+------|
-| 1 | =todo.org= を nemacs-gtk で開くと outline 構造が表示、=TAB= で fold/unfold |
-| 2 | TODO heading で =C-c C-t= → state cycle、INBOX → NEXT → WAIT → … |
-| 3 | =journals-2026.org= の datetree に =C-c c j= で entry 追加できる |
-| 4 | =C-c a a= で SCHEDULED 一覧 agenda buffer 表示 |
-| 5 | table 上で =TAB= でセル間移動 + auto-align |
+新規: =src/emacs-org-outline.el= (~600-800 LOC) + =test/emacs-org-outline-test.el= (~200 LOC)
 
-*LOC 見積*: 2500-3500 (= 本 v0.1 の最大 milestone)
+functions / mode:
+- =org-mode= major-mode (= file extension =.org= で auto-dispatch via auto-mode-alist、M1 emacs-fileio.el が拾う)
+- =org-mode-map= keymap with the bindings below
+- heading detection / parsing (= 行頭 =*= の数で level 判定)
+- =org-insert-heading= (=M-RET=): same level、point 後に新 heading
+- =org-promote= (=M-←=) / =org-demote= (=M-→=): heading level + / -
+- =org-cycle= (=TAB=): subtree fold / unfold (= overlay で隠す or 行 invisible property)
+- =org-shifttab= (=S-TAB= = =org-global-cycle=): file 全体 fold / unfold cycle
+- =org-move-subtree-up= / =-down= (=M-↑= / =M-↓=): subtree 入れ替え (optional、time あれば)
+
+close gate:
+- =todo.org= を =M-x dired= 経由で開く (= =.org= → org-mode dispatch 確認)
+- =TAB= で subtree fold、再 =TAB= で unfold
+- =S-TAB= で全体 cycle
+- heading の上で =M-RET= で同 level 新 heading 挿入
+- =M-→= で heading level demote (=*= → =**=)、=M-←= で promote
+
+ERT bundle (≥8):
+- org-mode-dispatches-on-org-extension
+- org-cycle-folds-subtree
+- org-cycle-unfolds-subtree
+- org-shifttab-cycles-global-visibility
+- org-insert-heading-at-same-level
+- org-promote-decreases-level
+- org-demote-increases-level
+- org-promote-on-toplevel-errors
+
+*** 3.3.2 M3.2 — TODO state cycle + DONE log
+
+新規: =src/emacs-org-todo.el= (~400-600 LOC) + =test/emacs-org-todo-test.el= (~150 LOC)
+
+functions:
+- =org-todo-keywords= defcustom (= user todo.org の 6 keyword: INBOX / NEXT / WAIT / PROJECTS / SCHEDULED / SOMEDAY、DONE / CANCEL を sequence 区切りで分離)
+- =org-todo= (=C-c C-t=) interactive — heading 行で keyword 追加 / cycle / 削除。prefix 引数で specific keyword に jump
+- =org-toggle-todo= (=C-c C-c= context 依存): heading 行なら todo cycle、checkbox 行なら toggle
+- DONE 入りで CLOSED timestamp 軽量挿入 (optional、defcustom で disable 可)
+- TODO state による face highlight (= INBOX / NEXT は強調、DONE は灰色 strikethrough)
+
+close gate:
+- todo.org の =* INBOX foo= heading で =C-c C-t= → INBOX → NEXT → WAIT → PROJECTS → SCHEDULED → SOMEDAY → DONE → CANCEL → 無し → INBOX … の cycle
+- DONE になったら CLOSED [tstamp] が drawer 内に挿入 (defvar で control)
+- todo.org 既存の DONE/CANCEL entry は cycle で skip しない (= 通常通り cycle)
+
+ERT bundle (≥6):
+- org-todo-cycles-through-keywords
+- org-todo-with-prefix-arg-jumps-to-keyword
+- org-todo-handles-non-heading-line-gracefully
+- org-todo-DONE-inserts-closed-timestamp
+- org-todo-NIL-removes-keyword
+- org-todo-six-keyword-sequence (= user 設定の 6 keyword 全 cycle 検証)
+
+*** 3.3.3 M3.3 — table edit
+
+新規: =src/emacs-org-table.el= (~500-700 LOC) + =test/emacs-org-table-test.el= (~200 LOC)
+
+functions:
+- =org-table-p=: 現在行が table 内かどうか
+- =org-table-align= (=TAB= context: table 内の場合): 列幅 auto-align、=|= 区切りを揃える
+- =org-table-next-field= (=TAB=): 次セルに point 移動、必要なら新 row 自動挿入
+- =org-table-previous-field= (=S-TAB=)
+- =org-table-insert-column= / =org-table-delete-column= (最低限)
+- =org-table-insert-row= / =org-table-delete-row= (最低限)
+- formula evaluation (= =#+TBLFM:=) は v0.1 では out of scope
+
+close gate:
+- =| foo | bar |= 行で =TAB= で auto-align (= 列幅統一 + space padding)
+- 末尾セルで =TAB= → 新 row 追加
+- =S-TAB= で前セル
+
+ERT bundle (≥6):
+- org-table-align-pads-cells-to-column-width
+- org-table-next-field-moves-to-next-cell
+- org-table-next-field-at-end-creates-row
+- org-table-previous-field-moves-back
+- org-table-insert-column-shifts-cells
+- org-table-delete-row-removes-line
+
+*** 3.3.4 M3.4 — agenda 軽量
+
+新規: =src/emacs-org-agenda.el= (~600-800 LOC) + =test/emacs-org-agenda-test.el= (~200 LOC)
+
+functions:
+- =org-agenda-files= defcustom (= user 設定の =capture/journals-2026.org=, =capture/todo.org= 等の list)
+- =org-agenda= (=C-c a=) dispatcher: =a= = agenda、=t= = todo list、=m= = match (tag)。=L= / =B= / =s= 等の advanced は v0.1 out of scope
+- =org-agenda-mode= major-mode for *Org Agenda* buffer
+- agenda view 構築:
+  - =a= = SCHEDULED / DEADLINE timestamp の日付別 group (default = 7 day window from today)
+  - =t= = 全 agenda-files 内の TODO state heading 一覧 (= filter は v0.1 では minimal、user-error path のみ)
+  - =m= = =:tag:= match (= 簡易 regex で headline tag 抽出)
+- agenda buffer 内 keybinding:
+  - =RET= = 元 buffer の該当 heading に飛ぶ
+  - =q= = quit
+  - =g= = revert (re-build)
+  - =f= / =b= = forward / backward day (a view のみ)
+
+close gate:
+- =C-c a a= で *Org Agenda* buffer に SCHEDULED + DEADLINE 一覧 (今日 + 7 day forward)
+- =C-c a t= で全 agenda-files の TODO state list
+- agenda buffer で =RET= → 元 file の該当行 jump
+- =C-c a m :work:= で tag :work: のみ抽出
+
+ERT bundle (≥7):
+- org-agenda-dispatches-a-shows-scheduled
+- org-agenda-dispatches-t-shows-todos
+- org-agenda-dispatches-m-shows-matched-tag
+- org-agenda-RET-jumps-to-source
+- org-agenda-q-quits
+- org-agenda-g-reverts
+- org-agenda-respects-org-agenda-files
+
+*** 3.3.5 M3.5 — capture 軽量
+
+新規: =src/emacs-org-capture.el= (~400-600 LOC) + =test/emacs-org-capture-test.el= (~150 LOC)
+
+functions:
+- =org-capture-templates= defcustom (= user 既存 template list を直接受け入れる)
+- template DSL 解釈 (subset):
+  - =(file+headline FILE HEADLINE)= = FILE 内 HEADLINE の subtree 末尾に挿入
+  - =(file+olp+datetree FILE)= = FILE 内 datetree (Year/Month/Day) を auto 作成 + その日に entry 挿入
+  - placeholder: =%?= (= cursor 位置)、=%t= (= active timestamp)、=%T= (= active timestamp with time)、=%U= (= inactive)、=%a= (= back link、optional)
+  - 上記以外の placeholder (= =%i= region、=%f= filename 等) は v0.1 では nil 返却
+- =org-capture= (=C-c c=) interactive — template 一覧表示、key で選択、capture buffer 開く
+- capture buffer keybinding:
+  - =C-c C-c= = save & exit (= entry をフォーマットして target file の該当位置に挿入)
+  - =C-c C-k= = abort
+
+close gate:
+- =org-capture-templates= に user の Journal / Todo template 設定済の前提で、=C-c c j= → Journal capture buffer 開く → 入力 + =C-c C-c= で =journals-2026.org= の datetree 該当日に entry 追加
+- =C-c c t= で =todo.org= INBOX 末尾に追加
+- =C-c C-k= で abort、target file 変更なし
+
+ERT bundle (≥6):
+- org-capture-shows-template-menu
+- org-capture-file+headline-inserts-at-headline-end
+- org-capture-file+olp+datetree-creates-datetree
+- org-capture-percent-question-leaves-cursor
+- org-capture-percent-T-inserts-timestamp
+- org-capture-C-c-C-k-aborts-without-modifying-target
+
+*** 3.3.6 LOC 累計 + dispatch 構成
+
+| sub-M | LOC src | LOC test |
+|-------+---------+----------|
+| M3.1 outline | 600-800 | 200 |
+| M3.2 todo | 400-600 | 150 |
+| M3.3 table | 500-700 | 200 |
+| M3.4 agenda | 600-800 | 200 |
+| M3.5 capture | 400-600 | 150 |
+| 計 | 2500-3500 | 900 |
+
+合計 ~3400-4400 LOC (= §1.1 元見積 2500-3500 src + test)。
+
+dispatch 構成 = anvil-orchestrator codex 5 並列、各 worktree:
+- =.worktrees/v01-m3-outline= / =-todo= / =-table= / =-agenda= / =-capture=
+
+*M3 特有の依存性*:
+- M3.1 outline は他 4 sub-milestone の前提 (= org-mode major-mode が必要)。**M3.1 を先行 ship**、残 4 sub は M3.1 base から fork
+- M3.2 todo は M3.1 outline の heading parse を利用
+- M3.4 agenda は M3.2 todo の TODO state を読む
+- M3.5 capture は M3.1 outline の datetree 構築を利用
+
+実 dispatch 順:
+1. *Phase A*: M3.1 (outline) を単独 dispatch + ship (= ~2 週間想定)
+2. *Phase B*: M3.2 / M3.3 / M3.4 / M3.5 を 4 並列 dispatch (= ~4-6 週間想定)
+
+*M2 教訓継承* (= prompt 必須事項):
+- 「=make test= を回さない、targeted ERT のみ」明記 (orchestrator 600s wallclock cap 回避)
+- targeted ERT command: =emacs --batch -L src -L test -L $HOME/Notes/dev/nelisp/src $(for d in $HOME/Notes/dev/nelisp/packages/*/src; do echo -L $d; done) -l test/<your-test>.el -f ert-run-tests-batch-and-exit=
+- byte-compile は単 file 限定: =emacs --batch ... -f batch-byte-compile src/<your-file>.el=
+
+*open question (M3 着手前確認)*:
+- =org-todo-keywords= の 6 keyword (INBOX / NEXT / WAIT / PROJECTS / SCHEDULED / SOMEDAY) を v0.1 で hardcoded default にするか、user defcustom 経由で読むか
+- agenda の date sort 順 (= ascending vs descending) の default
+- capture template 中 =%?= 後で =C-c C-c= した時の point 復帰挙動
+- M3.1 の =org-cycle= (=TAB=) での fold 実装方式 = invisible text-property vs overlay vs redisplay 直接 (= Doc 51 redisplay engine 互換性)
 
 ** 3.4 M4 — shell + completion (3-4w)
 
