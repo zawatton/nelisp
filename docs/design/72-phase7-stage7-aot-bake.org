@@ -7,8 +7,10 @@
 
 - 親 Doc: 63 (Phase 7 self-host roadmap §3.3)
 - 前提 SHIPPED: Doc 64〜71 (Stage 7.1〜7.6)
-- 本 Doc: Stage 7.7 詳細設計 — DRAFT 2026-05-08
-- 後続 Phase 8 (= Rust reader/eval 完全削除) は scope 外
+- 本 Doc: Stage 7.7 詳細設計 — *LOCKED 2026-05-08*
+- Stage 7.7.a/b/c.1/c.2/d *SHIPPED 2026-05-08* (= 6 sub-stage)
+- 後続 Phase 8 (= bridge production migrate + Rust reader 物理削除 +
+  Stage 7.7.e bootstrap eval frozen heap) は scope 外
 
 * §1 背景
 
@@ -266,13 +268,40 @@ elisp reader が cross-equiv with Rust reader を回復.
   全体共有、scope 外
 - bridge module の reader 利用整理 — Doc 71 §8 articulated 済 Phase 8
 
-** §2.4 Stage 7.7.d — Rust reader 完全削除 (= Phase 8 候補)
+** §2.4 Stage 7.7.d — cargo unit test fixture migrate (SHIPPED 2026-05-08)
 
-cargo unit test fixture (= 数十箇所で =reader::read_all= 等を使用) を
-elisp reader 経由に migrate.  これは Stage 7.6 §8 で out-of-scope と
-articulated 済の churn.
+cargo unit test fixture (= =eval/tests.rs= に 12 callsite, =bridge/mod.rs=
+test mod に 3 callsite) で =reader::read_str("...").unwrap()= を
+=eval::read_one_via_elisp(...)= 経由に migrate.
 
-→ *Phase 8 で扱う*.  本 Stage 7.7 は (a)〜(c) で打ち止め.
+*Scope*:
+- =eval/mod.rs= に =read_one_via_elisp= helper を追加 (=read_all_via_elisp=
+  の単数形 wrapper).  =cfg(test)= gate で release build に乗らない
+- =read_all_via_elisp= を =pub(crate)= に widen (= 同 crate 内 tests から
+  reach 可)
+- =eval/tests.rs= で =read_form= / =read_form_in= helpers を local 定義
+  (前者は fresh =Env::new_global= を確保、後者は呼び元の env を再利用)
+- 12 + 3 = *15 callsite* を一括置換 (= =assert_eq!(ok(...),
+  reader::read_str("...")= → =assert_eq!(ok(...), read_form("..."))= 等)
+
+*効果*:
+- cargo unit test 全件 *100% elisp-reader-coverage* で fixture 構築
+- =reader::read_str= は実コードに 0 hit (doc コメント言及のみ).  残る
+  非テスト・非 baker 直呼びは =bridge/loader.rs::bootstrap_self_host=
+  (production) のみ
+- Phase 8 で =reader/mod.rs= 削除する際の前段確保 — bridge migration が
+  決まれば =reader/{lexer,parser}.rs= は即削除可
+
+*検証*:
+- =cargo test --release --lib --tests -- --test-threads=1= = 435/435 PASS
+  (default + =--features image-baker= 両 mode、4 ignored、0 failed)
+- =make test= ERT = 2582 tests / 0 unexpected / 25 skipped
+- =cargo build --release= = warning 0 (=read_one_via_elisp= は =cfg(test)=
+  なので release ビルドで dead_code 警告にならない)
+
+→ Phase 8 が残担当: =bridge/loader.rs= production callsite migrate +
+  =reader/mod.rs= 削除 + =reader/sexp.rs= の Sexp 型 ownership move
+  (eval/sexp.rs に rehome).
 
 ** §2.5 Stage 7.7.e — Rust eval 完全削除 (= Phase 8 候補)
 
@@ -438,7 +467,7 @@ before / after で起動時間 *減少* を確認 (= Doc 63 §3.3 articulated
 - Doc 64〜71 — Phase 7 Stage 7.1〜7.6
 - =build-tool/src/image.rs= — 既存 image 形式 v2 (NELIMG)
 - =build-tool/src/eval/env.rs:138-211= — STDLIB_SOURCES list
-- =build-tool/src/reader/= — 削除候補 (Stage 7.7.c で test-only gate)
+- =build-tool/src/reader/= — 削除候補 (Stage 7.7.c.2 で encoder feature gate, 7.7.d で test fixture migrate)
 - =lisp/nelisp-stdlib-reader.el= — post-bootstrap reader (Stage 7.6.a)
 
 * §9 改判断 record
@@ -455,10 +484,15 @@ before / after で起動時間 *減少* を確認 (= Doc 63 §3.3 articulated
    format が v2 で stabilize 済 + =.gitattributes= で binary 扱いに
    できるため許容範囲.
 
-2. *Stage 7.7.d/e を Phase 8 に分離*: "Rust reader/eval 完全削除" は
-   cargo unit test fixture の大量 migration + bootstrap eval の
-   elisp 化 (= frozen heap) を要するため、Stage 7.7 と独立に扱う.
-   Stage 7.7 は (a)〜(c) で打ち止め.
+2. *Stage 7.7.d を Stage 7.7 envelope 内で着手、7.7.e は Phase 8 に
+   分離* (2026-05-08 後半): 当初 §9 #2 では 7.7.d/e 共に Phase 8 に
+   出していたが、cargo unit test fixture の migration (= 7.7.d) は
+   Stage 7.7.c.1 の =read_all_via_elisp= helper を再利用するだけで
+   実質完了するため、Stage 7.7 envelope 内に取り込んだ.  15 callsite
+   置換 / 1 helper 追加 / cfg(test) gate のみ.  7.7.e (= bootstrap
+   eval frozen heap) は依然 Phase 8 候補.  bridge production callsite
+   migration (= =bridge/loader.rs::bootstrap_self_host=) は Doc 71 §8
+   articulated 通り Phase 8.
 
 3. *起動時間以外の primary motivation を追加*: 当初は ~50ms 短縮が
    pitch だったが、本質的には *Rust reader を post-bootstrap path
@@ -490,3 +524,14 @@ before / after で起動時間 *減少* を確認 (= Doc 63 §3.3 articulated
    reader が user-visible read のみ呼ばれる" 経路だったため exposure
    小、Stage 7.7.c.1 の eval_str migrate で初めて露見.  Phase 7
    self-host の cross-equiv 検証として有用な副産物.
+
+6. *Stage 7.7.d 着手判断* (2026-05-08, Claude continuation): 7.7.d を
+   "Phase 8 候補" として保留する代わりに、Stage 7.7.c.1 で導入した
+   =read_all_via_elisp= が test fixture の単純な置換に直接使える
+   pattern と判明したため、scope を限定 (= cargo unit test 内 callsite
+   のみ) して Stage 7.7 内に組み込み.  実装コスト = 15 callsite 一括
+   置換 + helper 1 個 (=read_one_via_elisp=) で、production code への
+   surface change なし.  これにより Stage 7.7 envelope の "本質的に
+   完成" 範囲が広がり、Phase 8 で残るのは bridge production migrate
+   + =reader/{lexer,parser}.rs= 物理削除 + =Sexp= 型 rehome の三つに
+   絞られる.

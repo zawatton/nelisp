@@ -28,6 +28,24 @@ fn err_all(input: &str) -> EvalError {
     eval_str_all(input).expect_err(&format!("eval_str_all({:?}) unexpectedly succeeded", input))
 }
 
+/// Stage 7.7.d (Doc 72) — parse a single form via the elisp reader for
+/// fixture construction.  Spins up a fresh global env (= ~stdlib load
+/// cost on each call).  Use `read_form_in' if an env is already in
+/// scope to avoid the bootstrap cost.
+fn read_form(input: &str) -> Sexp {
+    let mut env = Env::new_global();
+    super::read_one_via_elisp(input, &mut env)
+        .unwrap_or_else(|e| panic!("read_form({:?}) failed: {:?}", input, e))
+}
+
+/// Stage 7.7.d (Doc 72) — parse a single form via the elisp reader,
+/// reusing an existing env (= cheaper than `read_form' when one is
+/// already constructed for the test).
+fn read_form_in(input: &str, env: &mut Env) -> Sexp {
+    super::read_one_via_elisp(input, env)
+        .unwrap_or_else(|e| panic!("read_form_in({:?}) failed: {:?}", input, e))
+}
+
 // ============================================================
 // Acceptance demo (Doc 44 §3.3 + prompt acceptance)
 // ============================================================
@@ -299,11 +317,11 @@ fn cl_defun_supports_optional_arguments() {
 fn cl_defun_supports_rest_arguments() {
     assert_eq!(
         ok_all("(cl-defun gather (head &optional mid &rest tail) (list head mid tail)) (gather 1 2 3 4)"),
-        crate::reader::read_str("(1 2 (3 4))").unwrap()
+        read_form("(1 2 (3 4))")
     );
     assert_eq!(
         ok_all("(cl-defun gather (head &optional mid &rest tail) (list head mid tail)) (gather 1)"),
-        crate::reader::read_str("(1 nil nil)").unwrap()
+        read_form("(1 nil nil)")
     );
 }
 
@@ -1058,7 +1076,7 @@ fn env_empty_has_no_builtins() {
 #[test]
 fn eval_with_explicit_env() {
     let mut env = Env::new_global();
-    let form = crate::reader::read_str("(* 6 7)").unwrap();
+    let form = read_form_in("(* 6 7)", &mut env);
     assert_eq!(eval(&form, &mut env).unwrap(), Sexp::Int(42));
 }
 
@@ -1069,12 +1087,12 @@ fn plist_get_returns_value() {
 
 #[test]
 fn plist_put_replaces_existing_key() {
-    assert_eq!(ok("(plist-put '(:a 1 :b 2) ':b 9)"), crate::reader::read_str("(:a 1 :b 9)").unwrap());
+    assert_eq!(ok("(plist-put '(:a 1 :b 2) ':b 9)"), read_form("(:a 1 :b 9)"));
 }
 
 #[test]
 fn plist_member_returns_tail() {
-    assert_eq!(ok("(plist-member '(:a 1 :b 2) ':b)"), crate::reader::read_str("(:b 2)").unwrap());
+    assert_eq!(ok("(plist-member '(:a 1 :b 2) ':b)"), read_form("(:b 2)"));
 }
 
 #[test]
@@ -1140,7 +1158,7 @@ fn eval_str_all_handles_macro_extension_synthetic_snippet() {
     ";
     assert_eq!(
         ok_all(input),
-        crate::reader::read_str("(ready \"state\" 42 ((x y)))").unwrap()
+        read_form("(ready \"state\" 42 ((x y)))")
     );
 }
 
@@ -2295,12 +2313,12 @@ fn extern_builtin_basic_dispatch() {
             _ => Err(EvalError::ArithError("test-extern-add: bad args".into())),
         }
     });
-    let form = crate::reader::read_str("(test-extern-add 3 4)").unwrap();
+    let form = read_form_in("(test-extern-add 3 4)", &mut env);
     let result = super::eval(&form, &mut env).unwrap();
     assert_eq!(result, Sexp::Int(7));
     assert_eq!(calls.get(), 1);
     // Second call hits the same closure.
-    let form2 = crate::reader::read_str("(test-extern-add 100 200)").unwrap();
+    let form2 = read_form_in("(test-extern-add 100 200)", &mut env);
     assert_eq!(super::eval(&form2, &mut env).unwrap(), Sexp::Int(300));
     assert_eq!(calls.get(), 2);
 }
@@ -2309,7 +2327,7 @@ fn extern_builtin_basic_dispatch() {
 fn extern_builtin_overrides_previous_registration() {
     let mut env = Env::new_global();
     env.register_extern_builtin("test-extern-x", |_, _| Ok(Sexp::Int(1)));
-    let form = crate::reader::read_str("(test-extern-x)").unwrap();
+    let form = read_form_in("(test-extern-x)", &mut env);
     assert_eq!(super::eval(&form, &mut env).unwrap(), Sexp::Int(1));
     // Re-register same name → new closure wins.
     env.register_extern_builtin("test-extern-x", |_, _| Ok(Sexp::Int(2)));
@@ -2324,17 +2342,17 @@ fn extern_builtin_can_call_eval_recursively() {
     // `env' mutably without aliasing the registry's borrow.
     let mut env = Env::new_global();
     env.register_extern_builtin("test-extern-callback", |_args, env| {
-        let form = crate::reader::read_str("(+ 10 20)").unwrap();
+        let form = read_form_in("(+ 10 20)", env);
         super::eval(&form, env)
     });
-    let form = crate::reader::read_str("(test-extern-callback)").unwrap();
+    let form = read_form_in("(test-extern-callback)", &mut env);
     assert_eq!(super::eval(&form, &mut env).unwrap(), Sexp::Int(30));
 }
 
 #[test]
 fn extern_builtin_unregistered_signals_unbound_function() {
     let mut env = Env::new_global();
-    let form = crate::reader::read_str("(no-such-extern-builtin 1 2)").unwrap();
+    let form = read_form_in("(no-such-extern-builtin 1 2)", &mut env);
     let err = super::eval(&form, &mut env).unwrap_err();
     match err {
         EvalError::UnboundFunction(name) => {

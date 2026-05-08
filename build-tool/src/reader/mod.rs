@@ -38,13 +38,24 @@
 //! parse itself, since reader.el's bodies depend on `not` / `null` /
 //! `nreverse` / `floatp` etc. that are defined in `nelisp-stdlib*.el'
 //! and the elisp reader is invoked at PARSE time of subsequent files;
-//! (b) build-tool drivers like `eval_str' / `image::compile_elisp_to_image'
-//! / `bridge::bootstrap_self_host' use it directly; and (c) cargo
-//! unit tests use it to construct fixture values without spinning up
-//! a full `Env'.  Doc 63 §2.6 anticipated complete deletion of this
-//! module (~1,400 LOC), but bootstrap chicken-and-egg + `Sexp' value-
-//! type sharing across the entire crate make that aspirational —
-//! AOT bake (Doc 63 §3.3) is the prerequisite for deletion.
+//! and (b) `bridge::bootstrap_self_host' + the feature-gated
+//! `image::compile_elisp_to_image' baker still call it directly.
+//! Doc 63 §2.6 anticipated complete deletion of this module
+//! (~1,400 LOC), but bootstrap chicken-and-egg + `Sexp' value-type
+//! sharing across the entire crate make that aspirational — AOT bake
+//! (Doc 63 §3.3) is the prerequisite for deletion.
+//!
+//! Stage 7.7.c.1 (Doc 72) routed `eval_str' / `eval_str_all' /
+//! `eval_str_all_at_path' through the elisp reader so the production
+//! `nelisp' binary no longer touches `reader::read_*'.  Stage 7.7.c.2
+//! gated `image::compile_elisp_to_image' behind `image-baker'.
+//! Stage 7.7.d (this comment, 2026-05-08) migrated the cargo unit
+//! test fixture-construction callsites (= 12 in `eval/tests.rs', 3 in
+//! `bridge/mod.rs') from `reader::read_str' to `eval::read_one_via_
+//! elisp', so the test suite now exercises the elisp reader for
+//! every fixture.  Remaining non-test, non-baker callsite =
+//! `bridge/loader.rs::bootstrap_self_host' (production) — Phase 8
+//! migrates it.
 //!
 //! `#s(...)` structure literal landed in Doc 52 Stage 4b — read as a
 //! `Sexp::Record { type_tag, slots }' (positional form; keyword form

@@ -158,8 +158,8 @@ mod tests {
         assert_eq!(report.files_loaded, canonical_files().len());
         assert_eq!(report.forms_evaluated, 7);
 
-        let got = eval_via_self_host(&crate::reader::read_str("(+ 1 2 3)").unwrap(), &mut env)
-            .unwrap();
+        let plus = crate::eval::read_one_via_elisp("(+ 1 2 3)", &mut env).unwrap();
+        let got = eval_via_self_host(&plus, &mut env).unwrap();
         assert_eq!(got, Sexp::Int(7));
 
         let _ = fs::remove_dir_all(dir);
@@ -208,10 +208,11 @@ mod tests {
         assert_eq!(report.files_loaded, canonical_files().len());
         assert!(report.forms_evaluated > 0);
 
-        let plus = crate::reader::read_str("(+ 1 2 3)").unwrap();
+        let plus = crate::eval::read_one_via_elisp("(+ 1 2 3)", &mut env).unwrap();
         assert_eq!(eval_via_self_host(&plus, &mut env).unwrap(), Sexp::Int(6));
 
-        let square = crate::reader::read_str("(funcall (lambda (n) (* n n)) 7)").unwrap();
+        let square =
+            crate::eval::read_one_via_elisp("(funcall (lambda (n) (* n n)) 7)", &mut env).unwrap();
         assert_eq!(eval_via_self_host(&square, &mut env).unwrap(), Sexp::Int(49));
     }
 }

@@ -50,7 +50,14 @@ pub use sexp::Sexp;
 /// CLI entry points (`eval_str' / `eval_str_all' / `eval_str_all_
 /// at_path') route through this helper so the production `nelisp'
 /// binary never touches `reader::read_*' directly.
-fn read_all_via_elisp(input: &str, env: &mut Env) -> Result<Vec<Sexp>, EvalError> {
+///
+/// Stage 7.7.d (Doc 72): widened to `pub(crate)' so cargo unit-test
+/// fixtures in `eval/tests.rs' and `bridge/mod.rs' can construct
+/// expected `Sexp' values via the elisp reader instead of calling
+/// `crate::reader::read_str' directly.  This brings the cargo test
+/// suite to 100% elisp-reader-coverage for fixture parsing — a
+/// prerequisite for Phase 8's full Rust reader deletion.
+pub(crate) fn read_all_via_elisp(input: &str, env: &mut Env) -> Result<Vec<Sexp>, EvalError> {
     let impl_fn = env
         .lookup_function("nelisp--read-all-from-string-impl")
         .map_err(|_| {
@@ -79,6 +86,29 @@ fn read_all_via_elisp(input: &str, env: &mut Env) -> Result<Vec<Sexp>, EvalError
         }
     }
     Ok(out)
+}
+
+/// Stage 7.7.d (Doc 72) — read exactly one form via the elisp reader.
+/// Convenience wrapper around `read_all_via_elisp' that errors on
+/// empty / multi-form input.  Used by cargo unit tests (= `eval/tests.rs',
+/// `bridge/mod.rs') to construct fixture `Sexp' values without calling
+/// `crate::reader::read_str' directly.  Phase 8 will delete the Rust
+/// reader; this helper is the migration bridge.  Gated with `cfg(test)'
+/// because it is purely a test-fixture helper — production callers use
+/// `read_all_via_elisp' (or its `eval_str*' wrappers) directly.
+#[cfg(test)]
+pub(crate) fn read_one_via_elisp(input: &str, env: &mut Env) -> Result<Sexp, EvalError> {
+    let forms = read_all_via_elisp(input, env)?;
+    match forms.as_slice() {
+        [single] => Ok(single.clone()),
+        [] => Err(EvalError::Internal(
+            "read_one_via_elisp: empty input — at least one form required".into(),
+        )),
+        _ => Err(EvalError::Internal(format!(
+            "read_one_via_elisp: expected exactly one form, got {}",
+            forms.len()
+        ))),
+    }
 }
 
 /// Read exactly one form from `input` and evaluate it in a fresh
