@@ -103,6 +103,17 @@ mod access;
 mod arith;
 #[cfg(test)]
 mod bench;
+// Doc 77b Stage b.2 (2026-05-09): `nl-jit-call-*' bridge primitives
+// that elisp wrappers (= future replacements for the `lowered_X' Rust
+// fns shipped earlier in Doc 62 Stage C-Phase1) call to invoke JIT
+// entries by name.  Wired into `eval::builtins::dispatch' as the
+// 3 `nl-jit-call-*' built-ins via the re-exports below — keeping
+// the module itself `pub(super)' avoids leaking `UnifiedJit' field
+// types into the crate-public surface.
+pub(super) mod bridge;
+pub use bridge::{
+    bi_nl_jit_call_i64_i64, bi_nl_jit_call_ptr_ptr, bi_nl_jit_call_syscall,
+};
 mod cons;
 // Doc 77b Stage b.1 (2026-05-09): JIT IR DSL interpreter.  No
 // integration with `UnifiedJit` yet — the module is parallel to the

@@ -393,6 +393,14 @@ pub fn install_builtins(env: &mut Env) {
         // helper の state slot を elisp lexical env に出さないことで
         // Stage 7.4.d で観測した frame-capture leak を解消.
         "nelisp--apply-lambda-inner",
+        // Doc 77b Stage b.2 (2026-05-09) — `nl-jit-call-*' bridge
+        // primitives.  elisp wrappers shipped in Stage b.4 will replace
+        // the `lowered_X' Rust fns by calling these to invoke JIT
+        // entries by name (`nelisp_jit_add2', `nelisp_jit_eq_inline',
+        // `nelisp_jit_syscall' etc.).  See `jit/bridge.rs'.
+        "nl-jit-call-i64-i64",
+        "nl-jit-call-ptr-ptr",
+        "nl-jit-call-syscall",
     ];
     for n in names {
         let sentinel = Sexp::list_from(&[
@@ -687,6 +695,14 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // 2026-05-07; see lisp/nelisp-stdlib-misc.el).  Only `require'
         // stays Rust because it orchestrates load + post-load verify.
         "require" => bi_require(args, env),
+        // Doc 77b Stage b.2 (2026-05-09) — `nl-jit-call-*' bridge.
+        // See `crate::jit::bridge' for the name → fn ptr lookup +
+        // arity-checked callers.  Wired here (not via `lower_entries')
+        // because these are plain primitives the elisp wrappers call,
+        // not lowered hot-path entries themselves.
+        "nl-jit-call-i64-i64" => crate::jit::bi_nl_jit_call_i64_i64(args),
+        "nl-jit-call-ptr-ptr" => crate::jit::bi_nl_jit_call_ptr_ptr(args),
+        "nl-jit-call-syscall" => crate::jit::bi_nl_jit_call_syscall(args),
         _ => {
             // Externally-registered builtin (= `Env::register_extern_builtin')
             // — host crates like nelisp-emacs-gtk install GTK4 / SDL2 /
