@@ -79,9 +79,13 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Stage 5.1〜5.5 (= each a separate doc + commit).  Pinned at v0.110+
 # which is the LTS line covering Linux x86_64 / aarch64 / Darwin /
 # Windows codegen targets.
-cranelift = "0.110"
-cranelift-jit = "0.110"
-cranelift-module = "0.110"
+# M1 Darwin verify (2026-05-09): bump 0.110 → 0.131 (latest) to pick up
+# aarch64 PLT support (= 0.110 panics with "PLT is currently only
+# supported on x86_64" on M1 macOS during JITBuilder::new).  Linux
+# x86_64 retest required after bump.
+cranelift = "0.131"
+cranelift-jit = "0.131"
+cranelift-module = "0.131"
 
 # Doc 51 Track E (2026-05-04): libc for termios raw-mode + poll() to
 # enable interactive TTY input wiring under the nelisp driver.  Used
