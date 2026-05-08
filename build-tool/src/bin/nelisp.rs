@@ -63,16 +63,20 @@ const USAGE: &str = "usage: nelisp --version
        nelisp -l FILE                   # load FILE and print the last result
        nelisp exec FILE                 # load FILE silently (no final-value print)
        nelisp -                         # read from stdin and print the last result
-       nelisp compile-image SRC IMG     # Doc 47 phase 4 walking skeleton
        nelisp eval-image IMG            # decode IMG and evaluate, print result
+
+Note: `compile-image SRC IMG' was retired from the production binary
+in Phase 7 Stage 7.7.c.2 (Doc 72) — the encoder is feature-gated
+behind `image-baker' and lives in the dev-tooling `nelisp-baker'
+binary (= `make bake-images' / `cargo run --bin nelisp-baker').
 
 Note: Doc 47 image mint commands (mint-list-from-source, mint-eval-*,
 mint-int-*, mint-chain, mint-from-ast) were removed in the 2026-04-30
 Elisp-pivot rollback.  The 2,420-LOC `nelisp_runtime::image' native-
 code subsystem was likewise retired in Sweep 6 (2026-04-30) in favour
-of the simpler walking-skeleton image format above (`compile-image' /
-`eval-image'), which serializes real `Sexp' values and lets the
-existing `eval/' module evaluate them — no second object model.";
+of the simpler walking-skeleton image format above (`eval-image'),
+which serializes real `Sexp' values and lets the existing `eval/'
+module evaluate them — no second object model.";
 
 #[derive(Debug)]
 enum Command {
@@ -84,7 +88,6 @@ enum Command {
     /// reply corrupts the wire.  Errors still go to stderr and set exit 1.
     ExecFile(String),
     LoadStdin,
-    CompileImage { src: String, image: String },
     EvalImage(String),
 }
 
@@ -100,10 +103,6 @@ where
         [_, flag, path] if flag == "-l" || flag == "--load" => Ok(Command::LoadFile(path.clone())),
         [_, mode, path] if mode == "exec" => Ok(Command::ExecFile(path.clone())),
         [_, flag] if flag == "-" => Ok(Command::LoadStdin),
-        [_, mode, src, image] if mode == "compile-image" => Ok(Command::CompileImage {
-            src: src.clone(),
-            image: image.clone(),
-        }),
         [_, mode, image] if mode == "eval-image" => Ok(Command::EvalImage(image.clone())),
         _ => Err(USAGE.to_string()),
     }
@@ -146,31 +145,8 @@ fn main() -> ExitCode {
             }
             run_eval_all(&buf)
         }
-        Command::CompileImage { src, image } => run_compile_image(&src, &image),
         Command::EvalImage(image) => run_eval_image(&image),
     }
-}
-
-fn run_compile_image(src_path: &str, image_path: &str) -> ExitCode {
-    let source = match fs::read_to_string(Path::new(src_path)) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("nelisp: cannot read {}: {}", src_path, e);
-            return ExitCode::from(1);
-        }
-    };
-    let bytes = match image::compile_elisp_to_image(&source) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("nelisp: compile-image: {}", e);
-            return ExitCode::from(7);
-        }
-    };
-    if let Err(e) = fs::write(Path::new(image_path), bytes) {
-        eprintln!("nelisp: cannot write {}: {}", image_path, e);
-        return ExitCode::from(1);
-    }
-    ExitCode::SUCCESS
 }
 
 fn run_eval_image(image_path: &str) -> ExitCode {
@@ -280,14 +256,12 @@ mod tests {
     }
 
     #[test]
-    fn parses_compile_image() {
-        match parse_args(["nelisp", "compile-image", "boot.el", "/tmp/img.bin"]).unwrap() {
-            Command::CompileImage { src, image } => {
-                assert_eq!(src, "boot.el");
-                assert_eq!(image, "/tmp/img.bin");
-            }
-            other => panic!("unexpected: {:?}", other),
-        }
+    fn rejects_compile_image_post_7_7_c2() {
+        // Phase 7 Stage 7.7.c.2 (Doc 72): `compile-image' moved to the
+        // dev-tooling `nelisp-baker' bin under the `image-baker'
+        // feature, so the production `nelisp' binary no longer parses
+        // it.  See `make bake-images' / `cargo run --bin nelisp-baker'.
+        assert!(parse_args(["nelisp", "compile-image", "boot.el", "/tmp/img.bin"]).is_err());
     }
 
     #[test]

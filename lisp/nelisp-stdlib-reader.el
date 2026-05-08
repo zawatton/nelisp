@@ -334,17 +334,70 @@
         (when all-digits
           (string-to-number s)))))))
 
+(defun nelisp--read-tok-text-float-shape-p (text)
+  "Non-nil if TEXT has the exact shape of an Elisp float literal.
+
+Mirrors the grammar Rust's `try_parse_float' accepts:
+  [+-]? digit+ ( `.' digit* )? ( [eE] [+-]? digit+ )?
+  [+-]?         `.' digit+   ( [eE] [+-]? digit+ )?
+
+(= integer mantissa with optional fractional / exponent, OR leading-
+dot mantissa requiring at least one fractional digit).  Both shapes
+require a fp-marker (`.', `e', `E') somewhere — bare integers are
+rejected so the int branch keeps its own ownership.  Whole TEXT must
+be consumed; trailing junk like `1e2x' falls through to the symbol
+arm."
+  (let* ((n (length text))
+         (i 0)
+         (has-int-digits nil)
+         (has-frac-digits nil)
+         (has-fp-marker nil)
+         (ok t))
+    (when (and (< i n) (or (eq (aref text i) ?+) (eq (aref text i) ?-)))
+      (setq i (1+ i)))
+    (while (and (< i n)
+                (let ((c (aref text i)))
+                  (and (>= c ?0) (<= c ?9))))
+      (setq has-int-digits t)
+      (setq i (1+ i)))
+    (when (and ok (< i n) (eq (aref text i) ?.))
+      (setq has-fp-marker t)
+      (setq i (1+ i))
+      (while (and (< i n)
+                  (let ((c (aref text i)))
+                    (and (>= c ?0) (<= c ?9))))
+        (setq has-frac-digits t)
+        (setq i (1+ i))))
+    (when (and ok (< i n)
+               (or (eq (aref text i) ?e) (eq (aref text i) ?E)))
+      (setq has-fp-marker t)
+      (setq i (1+ i))
+      (when (and (< i n) (or (eq (aref text i) ?+) (eq (aref text i) ?-)))
+        (setq i (1+ i)))
+      (let ((exp-digits 0))
+        (while (and (< i n)
+                    (let ((c (aref text i)))
+                      (and (>= c ?0) (<= c ?9))))
+          (setq exp-digits (1+ exp-digits))
+          (setq i (1+ i)))
+        (when (= exp-digits 0) (setq ok nil))))
+    (and ok
+         (= i n)
+         has-fp-marker
+         (or has-int-digits has-frac-digits))))
+
 (defun nelisp--read-tok-try-float (text)
   "Parse TEXT as a float if it looks like one, else nil.
 
-Bootstrap subset: rely on `string-to-number' for the actual parse and
-require the result to be a `floatp' value.  `string-to-number' returns
-0 (integer) for non-numeric text and a float for valid float text;
-treating only `floatp' results as success rejects the symbol shape
-`1.x' that the Rust `try_parse_float' also rejects.  NaN / Inf
-rejection is left to Stage 7.2.b parser-side validation since the
-substrate has no `isnan' primitive yet."
-  (when (nelisp--read-tok-text-has-fp-marker-p text)
+Bootstrap subset: validate shape first (Stage 7.7.c.1 fix — see
+`nelisp--read-tok-text-float-shape-p') so symbol-shaped tokens that
+happen to contain `e' / `E' / `.' (= bare `e', `.x', `e0', `--->')
+fall through to the symbol arm instead of being classified as float
+0.0 by the digit-less `string-to-number' edge case.  Once shape is
+validated, delegate to `string-to-number' for the actual parse;
+NaN / Inf rejection is left to Stage 7.2.b parser-side validation
+since the substrate has no `isnan' primitive yet."
+  (when (nelisp--read-tok-text-float-shape-p text)
     (let ((f (string-to-number text)))
       (and (floatp f) f))))
 

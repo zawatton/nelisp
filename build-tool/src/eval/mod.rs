@@ -43,23 +43,75 @@ pub use env::{Env, Frame, SymbolEntry};
 pub use error::{is_error_subtype, EvalError};
 pub use sexp::Sexp;
 
-use crate::reader;
+/// Phase 7 Stage 7.7.c.1 (Doc 72) — read `input` via the post-
+/// bootstrap elisp reader (`nelisp--read-all-from-string-impl' from
+/// `lisp/nelisp-stdlib-reader.el').  The Rust reader is reachable
+/// only through the bridge / baker / cargo-test paths; production
+/// CLI entry points (`eval_str' / `eval_str_all' / `eval_str_all_
+/// at_path') route through this helper so the production `nelisp'
+/// binary never touches `reader::read_*' directly.
+fn read_all_via_elisp(input: &str, env: &mut Env) -> Result<Vec<Sexp>, EvalError> {
+    let impl_fn = env
+        .lookup_function("nelisp--read-all-from-string-impl")
+        .map_err(|_| {
+            EvalError::Internal(
+                "eval_str: `nelisp--read-all-from-string-impl' not loaded \
+                 — `lisp/nelisp-stdlib-reader.el' missing from STDLIB_IMAGES?"
+                    .into(),
+            )
+        })?;
+    let arg = Sexp::Str(input.to_string());
+    let mut list = apply_function(&impl_fn, &[arg], env)?;
+    let mut out = Vec::new();
+    loop {
+        match list {
+            Sexp::Nil => break,
+            Sexp::Cons(car, cdr) => {
+                out.push(car.borrow().clone());
+                list = cdr.borrow().clone();
+            }
+            other => {
+                return Err(EvalError::Internal(format!(
+                    "eval_str: expected proper list from elisp reader, got {:?}",
+                    other
+                )));
+            }
+        }
+    }
+    Ok(out)
+}
 
 /// Read exactly one form from `input` and evaluate it in a fresh
 /// global environment.  Trailing tokens after the first form are an
-/// error (see [`reader::read_str`]).
+/// error.  Stage 7.7.c.1 (Doc 72): reading goes through the elisp
+/// reader; the Rust `reader::read_str' is no longer called here.
 pub fn eval_str(input: &str) -> Result<Sexp, EvalError> {
     let mut env = Env::new_global();
-    let form = reader::read_str(input)?;
+    let forms = read_all_via_elisp(input, &mut env)?;
+    let form = match forms.as_slice() {
+        [single] => single.clone(),
+        [] => {
+            return Err(EvalError::Internal(
+                "eval_str: empty input — at least one form required".into(),
+            ));
+        }
+        _ => {
+            return Err(EvalError::Internal(format!(
+                "eval_str: expected exactly one form, got {}",
+                forms.len()
+            )));
+        }
+    };
     eval(&form, &mut env)
 }
 
 /// Read every top-level form from `input` and evaluate them in
 /// sequence in a single fresh global environment, returning the last
-/// value (= `progn`).  Empty input returns `nil`.
+/// value (= `progn`).  Empty input returns `nil`.  Stage 7.7.c.1
+/// (Doc 72): reading goes through the elisp reader.
 pub fn eval_str_all(input: &str) -> Result<Sexp, EvalError> {
     let mut env = Env::new_global();
-    let forms = reader::read_all(input)?;
+    let forms = read_all_via_elisp(input, &mut env)?;
     let mut last = Sexp::Nil;
     for f in &forms {
         last = eval(f, &mut env)?;
@@ -106,7 +158,7 @@ pub fn eval_str_all_at_path(input: &str, src_path: &str) -> Result<Sexp, EvalErr
         "load-path",
         Sexp::cons(Sexp::Str(parent_dir), Sexp::Nil),
     )?;
-    let forms = reader::read_all(input)?;
+    let forms = read_all_via_elisp(input, &mut env)?;
     let mut last = Sexp::Nil;
     for f in &forms {
         last = eval(f, &mut env)?;

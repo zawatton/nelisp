@@ -70,11 +70,11 @@ clean:
 # image bytes drift from the source.  CI should run `bake-check'
 # instead — exits non-zero if a `.el' was edited without rebake.
 bake-images:
-	cargo build --release --manifest-path build-tool/Cargo.toml --bin nelisp-baker
+	cargo build --release --manifest-path build-tool/Cargo.toml --features image-baker --bin nelisp-baker
 	./target/release/nelisp-baker
 
 bake-check:
-	cargo build --release --manifest-path build-tool/Cargo.toml --bin nelisp-baker
+	cargo build --release --manifest-path build-tool/Cargo.toml --features image-baker --bin nelisp-baker
 	./target/release/nelisp-baker --check
 
 # Phase 7+ replan-gate audit scanner (T14 nelisp-dev-audit).

@@ -8,7 +8,9 @@
 
 use crate::eval::{self, Env, EvalError};
 use crate::reader::sexp::CharTableInner;
-use crate::reader::{self, ReadError, Sexp};
+use crate::reader::{ReadError, Sexp};
+#[cfg(any(test, feature = "image-baker"))]
+use crate::reader;
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
@@ -73,6 +75,14 @@ impl From<EvalError> for ImageError {
     }
 }
 
+/// Phase 7 Stage 7.7.c.2 (Doc 72): the only non-test, non-bridge
+/// caller of `reader::read_all'.  Gated behind the `image-baker'
+/// feature so the production `nelisp' binary (= which only runs
+/// pre-baked images via `decode_image' / `eval_image') doesn't drag
+/// the encoder + its reader dependency into its build graph.
+/// `nelisp-baker' (= Stage 7.7.a baker bin) requires this feature
+/// via `Cargo.toml :: required-features'.
+#[cfg(any(test, feature = "image-baker"))]
 pub fn compile_elisp_to_image(source: &str) -> Result<Vec<u8>, ImageError> {
     let forms = reader::read_all(source)?;
     encode_image(&forms)

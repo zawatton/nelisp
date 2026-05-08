@@ -181,22 +181,90 @@ for (name, image_bytes) in STDLIB_IMAGES {
   と cargo unit test fixture のみ
 - 起動時 ~50ms read → 0ms (= Doc 63 §3.3 articulated speedup)
 
-** §2.3 Stage 7.7.c — Rust reader を test-only に降ろす
+** §2.3 Stage 7.7.c — Rust reader 利用 callsite の整理 (= partial gate)
 
-=reader/mod.rs= の =read_all= / =read_from_string= を =cfg(test)= 又は
-=cfg(feature = "rust-reader")= で gate.
+[2026-05-08 改判断] 当初設計の "pure cfg(test) / feature gate of
+=reader/mod.rs= 全体" は **不可** と判明.  実装着手時の callsite
+audit (=git grep="reader::") で以下の reader 依存が判明:
+
+| caller                                          | 系統             | 7.7.c での扱い              |
+|-------------------------------------------------+------------------+-----------------------------|
+| =eval/mod.rs::eval_str= / =eval_str_all= / =_at_path= | 産品 CLI entry   | *7.7.c.1: elisp reader へ migrate* |
+| =image::compile_elisp_to_image=                 | baker dev 専用   | *7.7.c.2: =image-baker= feature gate* |
+| =bridge/loader.rs= / =bridge/mod.rs=            | downstream API   | Phase 8 (= Doc 71 §8 articulated 済) |
+| =eval/tests.rs= 多数                             | unit test        | =cfg(test)= 暗黙 (現状維持) |
+
+→ realistic Stage 7.7.c は 2 つの sub-stage に分解:
+
+*** §2.3.1 Stage 7.7.c.1 — eval_str 族を elisp reader 経由に migrate
+
+産品 =nelisp= binary の CLI entry (=eval EXPR= / =-l FILE= / =exec
+FILE= / =-= stdin / =eval_str_all_at_path=) は内部で =reader::read_str=
+/ =reader::read_all= を呼んでいた.  これを Stage 7.6.a の bi_read
+pattern と同形で =nelisp--read-all-from-string-impl= 委譲に置換:
 
 #+begin_src rust
-// build-tool/src/lib.rs
-#[cfg(any(test, feature = "rust-reader"))]
-pub mod reader;
-
-// non-test build では reader 全体が消える
+fn read_all_via_elisp(input: &str, env: &mut Env) -> Result<Vec<Sexp>, EvalError> {
+    let impl_fn = env.lookup_function("nelisp--read-all-from-string-impl")?;
+    let arg = Sexp::Str(input.to_string());
+    let mut list = apply_function(&impl_fn, &[arg], env)?;
+    let mut out = Vec::new();
+    loop {
+        match list {
+            Sexp::Nil => break,
+            Sexp::Cons(car, cdr) => {
+                out.push(car.borrow().clone());
+                list = cdr.borrow().clone();
+            }
+            other => return Err(EvalError::Internal(...)),
+        }
+    }
+    Ok(out)
+}
 #+end_src
 
-実際には =image.rs::compile_elisp_to_image= も =reader::read_all= を
-使うが、これは baker tool 専用なので =cfg(feature = "image-baker")= で
-分離する.  bootstrap path には不要.
+これで産品 =nelisp eval EXPR= は **Rust reader を一切使わない** 経路に.
+
+*** §2.3.2 Stage 7.7.c.2 — image::compile_elisp_to_image を feature gate
+
+=image::compile_elisp_to_image= は baker tool が =reader::read_all= を
+通る唯一の non-test, non-bridge callsite.  これを =cfg(feature =
+"image-baker")= で gate:
+
+#+begin_src rust
+#[cfg(any(test, feature = "image-baker"))]
+pub fn compile_elisp_to_image(source: &str) -> Result<Vec<u8>, ImageError> {
+    let forms = reader::read_all(source)?;
+    encode_image(&forms)
+}
+#+end_src
+
+産品 =nelisp= binary の =compile-image SRC IMG= subcommand は同時に
+廃止 (= =nelisp-baker= bin が dev tooling として既存、機能重複).
+=Cargo.toml= に =[[bin]] nelisp-baker= の =required-features =
+["image-baker"]= を追加、=make bake-images= も =--features
+image-baker= に更新.
+
+*** §2.3.3 副産物 — elisp reader bug fix (=nelisp--read-tok-try-float=)
+
+Stage 7.7.c.1 で =eval_str= が elisp reader 経由になり、cargo unit
+test 6 個が落ちて bug 発覚: =nelisp--read-tok-try-float= が =text-
+has-fp-marker-p= だけで float 候補判定し、=string-to-number= が
+digit-less な =e= / =.x= / =e0= 等で 0.0 を返す edge case と組み合
+わさって "bare =e= が 0.0 にされる" 不具合.
+
+修正: =nelisp--read-tok-text-float-shape-p= 述語を追加 (= Rust
+=try_parse_float= と同じ grammar を model)、shape 検証を pre-gate.
+elisp reader が cross-equiv with Rust reader を回復.
+
+** §2.3.4 Stage 7.7.c が *達成しなかった* こと
+
+- =reader/mod.rs= 全体の =cfg(test)= gate (= bridge production 依存
+  のため不可).  Doc 72 §2.3 origin draft の wording は **scope 過大**
+  だった
+- =reader/sexp.rs= (671 LOC) の整理 — Sexp value type は runtime
+  全体共有、scope 外
+- bridge module の reader 利用整理 — Doc 71 §8 articulated 済 Phase 8
 
 ** §2.4 Stage 7.7.d — Rust reader 完全削除 (= Phase 8 候補)
 
@@ -397,3 +465,28 @@ before / after で起動時間 *減少* を確認 (= Doc 63 §3.3 articulated
    から完全に切り離す* ことで Stage 7.7.c (= test-only gate) が
    可能になる点が architectural value.  Doc 71 §結言で articulated
    されていた "AOT bake が前提" が具体形に.
+
+4. *Stage 7.7.c の "pure cfg(test) gate" は不可と判明、partial
+   gate に scope 縮小* (2026-05-08 implementation 着手時): 当初の
+   §2.3 wording は =reader/mod.rs= 全体を =cfg(test)= に降ろす
+   articulation だったが、実 callsite audit で以下が判明:
+   - =eval/mod.rs::eval_str{,_all,_at_path}= が =reader::read_str=
+     / =read_all= を直接呼ぶ (= 産品 CLI entry)
+   - =bridge/loader.rs= も同 (= downstream API、anvil-runtime 利用)
+   →  realistic scope は (a) eval_str 族の elisp reader migrate
+   と (b) =image::compile_elisp_to_image= の =image-baker= feature
+   gate に限定.  bridge は Doc 71 §8 既存 articulation の通り Phase
+   8 候補.  §2.3 を 2.3.1〜2.3.4 に sub-divide して書き直し、
+   articulated でない reader callsite を out-of-scope と明記.
+
+5. *副産物 bug fix* (2026-05-08): Stage 7.7.c.1 で =eval_str= が
+   elisp reader 経由になった結果、cargo unit test 6 個が
+   =wrong-type-argument: (symbol or nil 0.0)= で落ちた.  原因は
+   =nelisp--read-tok-try-float= が =text-has-fp-marker-p= だけで
+   float 判定し、=string-to-number= の digit-less edge case (= bare
+   =e= が 0.0 を返す) と相互作用.  修正: float shape predicate
+   =nelisp--read-tok-text-float-shape-p= を追加、Rust =try_parse
+   _float= grammar を mirror.  この bug は Stage 7.6 までは "elisp
+   reader が user-visible read のみ呼ばれる" 経路だったため exposure
+   小、Stage 7.7.c.1 の eval_str migrate で初めて露見.  Phase 7
+   self-host の cross-equiv 検証として有用な副産物.

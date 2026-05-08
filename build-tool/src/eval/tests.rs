@@ -1003,9 +1003,17 @@ fn division_by_zero() {
 
 #[test]
 fn read_error_propagates_through_eval_str() {
+    // Phase 7 Stage 7.7.c.1 (Doc 72): `eval_str' reads via the elisp
+    // reader (`nelisp--read-all-from-string-impl' from `nelisp-stdlib-
+    // reader.el'), which signals parse failures with
+    // `(error "nelisp-read-error: ...")'.  That surfaces as
+    // `EvalError::UserError { tag = "error" }' instead of the legacy
+    // `EvalError::Read(_)' which only the Rust reader path emitted.
     match eval_str("(") {
-        Err(EvalError::Read(_)) => (),
-        other => panic!("expected Read error, got {:?}", other),
+        Err(EvalError::UserError { tag, data: _ }) => {
+            assert_eq!(tag, "error", "expected `error' tag for elisp read failure")
+        }
+        other => panic!("expected UserError(error), got {:?}", other),
     }
 }
 
