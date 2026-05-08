@@ -64,6 +64,33 @@
 (unless (fboundp 'process-name)
   (defalias 'process-name #'emacs-process-process-name))
 
+(unless (fboundp 'process-command)
+  (defalias 'process-command #'emacs-process-process-command))
+
+(unless (fboundp 'process-live-p)
+  (defalias 'process-live-p #'emacs-process-process-live-p))
+
+(unless (fboundp 'process-id)
+  (defalias 'process-id #'emacs-process-process-id))
+
+(unless (fboundp 'process-mark)
+  (defalias 'process-mark #'emacs-process-process-mark))
+
+(unless (fboundp 'set-process-filter)
+  (defalias 'set-process-filter #'emacs-process-set-process-filter))
+
+(unless (fboundp 'set-process-sentinel)
+  (defalias 'set-process-sentinel #'emacs-process-set-process-sentinel))
+
+(unless (fboundp 'accept-process-output)
+  (defalias 'accept-process-output #'emacs-process-accept-process-output))
+
+(unless (fboundp 'signal-process)
+  (defalias 'signal-process #'emacs-process-signal-process))
+
+(unless (fboundp 'kill-process)
+  (defalias 'kill-process #'emacs-process-kill-process))
+
 (unless (fboundp 'process-send-string)
   (defalias 'process-send-string #'emacs-process-process-send-string))
 

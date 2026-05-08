@@ -731,6 +731,26 @@ defining `emit-before-strings' / `emit-after-strings')."
   (defun cl-second (l) (car (cdr l))))
 (unless (fboundp 'cl-third)
   (defun cl-third (l) (car (cdr (cdr l)))))
+(unless (fboundp 'cl-rest)
+  (defalias 'cl-rest 'cdr))
+
+;; cl-defmacro: minimal stub that aliases plain `defmacro'.  Common Lisp
+;; arglist features (&key / &whole etc. on macro arglists) are not used
+;; by the Phase 1e nelisp-actor / nelisp-process call sites, so the
+;; thin alias is sufficient.  If a future caller needs CL arglist
+;; semantics inside macros, swap this for the same expansion logic
+;; `cl-defun' uses above.
+(unless (fboundp 'cl-defmacro)
+  (defmacro cl-defmacro (name arglist &rest body)
+    "Phase 1e stub: forwards to plain `defmacro'."
+    (cons 'defmacro (cons name (cons arglist body)))))
+
+;; List helpers commonly used by upstream packages.  caar / cadr / cddr
+;; are already defined by `emacs-list.el'; cdar is missing.
+(unless (fboundp 'caar)
+  (defun caar (x) (car (car x))))
+(unless (fboundp 'cdar)
+  (defun cdar (x) (cdr (car x))))
 
 ;;;; --- feature provides ------------------------------------------------
 
