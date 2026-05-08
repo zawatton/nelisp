@@ -48,6 +48,22 @@ Equivalent to `error' under NeLisp standalone."
       (put name 'error-message message))
     name))
 
+;; `ignore-errors' polyfill — must be defined before any later emacs-*
+;; module evaluates a top-level form that uses it.  `emacs-time.el'
+;; gates its `float-time' / `current-time' polyfills with
+;; `(and (fboundp ...) (let ((x (ignore-errors ...))) ...))' and
+;; `emacs-stub-bulk.el' makes `(fboundp 'float-time)' true, so
+;; `ignore-errors' must already be a macro by the time the gate runs.
+;; Under host Emacs the builtin takes precedence; under NeLisp the
+;; symbol is unbound until cl-lib / subr.el load (which happens later
+;; on this code path), so an early polyfill is required.
+(unless (fboundp 'ignore-errors)
+  (defmacro ignore-errors (&rest body)
+    "Polyfill: execute BODY; return nil if any error is raised."
+    (list 'condition-case nil
+          (cons 'progn body)
+          (list 'error nil))))
+
 
 (provide 'emacs-error)
 
