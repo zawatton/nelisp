@@ -43,7 +43,6 @@
 //!   sequence types fall through.
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
@@ -205,14 +204,19 @@ unsafe extern "C" fn nl_jit_access_elt(arg: *const Sexp, idx: i64, out: *mut Sex
     }
 }
 
-struct JitAccess {
-    length: extern "C" fn(*const Sexp, *mut Sexp) -> i64,
-    aref: extern "C" fn(*const Sexp, i64, *mut Sexp) -> i64,
-    aset: extern "C" fn(*const Sexp, i64, *const Sexp, *mut Sexp) -> i64,
-    elt: extern "C" fn(*const Sexp, i64, *mut Sexp) -> i64,
+pub(super) struct JitAccess {
+    pub(super) length: extern "C" fn(*const Sexp, *mut Sexp) -> i64,
+    pub(super) aref: extern "C" fn(*const Sexp, i64, *mut Sexp) -> i64,
+    pub(super) aset: extern "C" fn(*const Sexp, i64, *const Sexp, *mut Sexp) -> i64,
+    pub(super) elt: extern "C" fn(*const Sexp, i64, *mut Sexp) -> i64,
 }
 
-static JIT_ACCESS: OnceLock<JitAccess> = OnceLock::new();
+pub(super) struct AccessIds {
+    length: FuncId,
+    aref: FuncId,
+    aset: FuncId,
+    elt: FuncId,
+}
 
 /// Build the `length' JIT entry with an inline NIL → Int(0) fast path.
 /// Cranelift emits an `i8' store + `i64' store for the Nil case,
@@ -285,31 +289,38 @@ fn declare_length_with_inline_nil(module: &mut JITModule) -> FuncId {
     entry_id
 }
 
-fn build_jit_access() -> JitAccess {
-    let mut builder = JITBuilder::new(cranelift_module::default_libcall_names())
-        .expect("cranelift_jit: host ISA must resolve");
+/// Doc 77 Stage 2-prep (2026-05-09): submodule-level helper that
+/// registers all imported `nl_jit_access_*' symbols on the shared
+/// JITBuilder.
+pub(super) fn register_symbols(builder: &mut JITBuilder) {
     builder.symbol("nl_jit_access_length", nl_jit_access_length as *const u8);
     builder.symbol("nl_jit_access_aref", nl_jit_access_aref as *const u8);
     builder.symbol("nl_jit_access_aset", nl_jit_access_aset as *const u8);
     builder.symbol("nl_jit_access_elt", nl_jit_access_elt as *const u8);
-    let mut module = JITModule::new(builder);
+}
 
-    let length_id = declare_length_with_inline_nil(&mut module);
-    let aref_id =
-        declare_helper_call(&mut module, "nelisp_jit_aref", "nl_jit_access_aref", 3);
-    let aset_id =
-        declare_helper_call(&mut module, "nelisp_jit_aset", "nl_jit_access_aset", 4);
-    let elt_id =
-        declare_helper_call(&mut module, "nelisp_jit_elt", "nl_jit_access_elt", 3);
+/// Doc 77 Stage 2-prep: declare + define every JIT entry this module
+/// owns on the *shared* JITModule.
+pub(super) fn declare_funcs(module: &mut JITModule) -> AccessIds {
+    let length = declare_length_with_inline_nil(module);
+    let aref = declare_helper_call(module, "nelisp_jit_aref", "nl_jit_access_aref", 3);
+    let aset = declare_helper_call(module, "nelisp_jit_aset", "nl_jit_access_aset", 4);
+    let elt = declare_helper_call(module, "nelisp_jit_elt", "nl_jit_access_elt", 3);
+    AccessIds {
+        length,
+        aref,
+        aset,
+        elt,
+    }
+}
 
-    module
-        .finalize_definitions()
-        .expect("cranelift: finalize_definitions");
-    let length_ptr = module.get_finalized_function(length_id);
-    let aref_ptr = module.get_finalized_function(aref_id);
-    let aset_ptr = module.get_finalized_function(aset_id);
-    let elt_ptr = module.get_finalized_function(elt_id);
-    Box::leak(Box::new(module));
+/// Doc 77 Stage 2-prep: fetch finalized function pointers post-
+/// `finalize_definitions' and pack them into `JitAccess'.
+pub(super) fn collect_funcs(module: &JITModule, ids: AccessIds) -> JitAccess {
+    let length_ptr = module.get_finalized_function(ids.length);
+    let aref_ptr = module.get_finalized_function(ids.aref);
+    let aset_ptr = module.get_finalized_function(ids.aset);
+    let elt_ptr = module.get_finalized_function(ids.elt);
     // SAFETY: declared signatures match the function-pointer types.
     unsafe {
         JitAccess {
@@ -333,7 +344,7 @@ fn build_jit_access() -> JitAccess {
 }
 
 fn jit() -> &'static JitAccess {
-    JIT_ACCESS.get_or_init(build_jit_access)
+    &super::unified_jit().access
 }
 
 // Phase 5 Stage C-Phase1b (Doc 62, 2026-05-08) — `lowered_length' /

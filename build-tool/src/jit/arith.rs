@@ -34,7 +34,6 @@
 //! without re-emitting them in IR.
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
@@ -47,27 +46,41 @@ use crate::eval::sexp::Sexp;
 use super::LowerFn;
 
 /// All 11 JIT-compiled arithmetic / comparison / bitwise primitives.
-/// Built once at first access; shared `JITModule` is leaked so each
-/// `extern "C" fn` pointer stays valid for the process lifetime.
-struct JitArith {
-    add: extern "C" fn(i64, i64) -> i64,
-    sub: extern "C" fn(i64, i64) -> i64,
-    mul: extern "C" fn(i64, i64) -> i64,
-    eq: extern "C" fn(i64, i64) -> i64,
-    lt: extern "C" fn(i64, i64) -> i64,
-    gt: extern "C" fn(i64, i64) -> i64,
-    le: extern "C" fn(i64, i64) -> i64,
-    ge: extern "C" fn(i64, i64) -> i64,
-    logior: extern "C" fn(i64, i64) -> i64,
-    logand: extern "C" fn(i64, i64) -> i64,
-    logxor: extern "C" fn(i64, i64) -> i64,
+/// Built once at first access via `super::unified_jit'; the shared
+/// `JITModule' is leaked so each `extern "C" fn' pointer stays valid
+/// for the process lifetime.
+pub(super) struct JitArith {
+    pub(super) add: extern "C" fn(i64, i64) -> i64,
+    pub(super) sub: extern "C" fn(i64, i64) -> i64,
+    pub(super) mul: extern "C" fn(i64, i64) -> i64,
+    pub(super) eq: extern "C" fn(i64, i64) -> i64,
+    pub(super) lt: extern "C" fn(i64, i64) -> i64,
+    pub(super) gt: extern "C" fn(i64, i64) -> i64,
+    pub(super) le: extern "C" fn(i64, i64) -> i64,
+    pub(super) ge: extern "C" fn(i64, i64) -> i64,
+    pub(super) logior: extern "C" fn(i64, i64) -> i64,
+    pub(super) logand: extern "C" fn(i64, i64) -> i64,
+    pub(super) logxor: extern "C" fn(i64, i64) -> i64,
     /// `ash(n, count)' for count ∈ [-62, +62]: positive count → ishl,
     /// negative count → sshr by `-count'.  Outside this range the
     /// caller falls through to the Rust dispatcher.
-    ash: extern "C" fn(i64, i64) -> i64,
+    pub(super) ash: extern "C" fn(i64, i64) -> i64,
 }
 
-static JIT_ARITH: OnceLock<JitArith> = OnceLock::new();
+pub(super) struct ArithIds {
+    add: FuncId,
+    sub: FuncId,
+    mul: FuncId,
+    eq: FuncId,
+    lt: FuncId,
+    gt: FuncId,
+    le: FuncId,
+    ge: FuncId,
+    logior: FuncId,
+    logand: FuncId,
+    logxor: FuncId,
+    ash: FuncId,
+}
 
 /// Declare + define a 2-arg i64 → i64 function in MODULE; the EMIT
 /// closure is invoked with the argument values and must return a
@@ -163,86 +176,100 @@ fn declare_ash(module: &mut JITModule) -> FuncId {
     func_id
 }
 
-fn build_jit_arith() -> JitArith {
-    let builder = JITBuilder::new(cranelift_module::default_libcall_names())
-        .expect("cranelift_jit: host ISA must resolve");
-    let mut module = JITModule::new(builder);
+/// Doc 77 Stage 2-prep (2026-05-09): submodule-level helper that
+/// registers imported symbols on the shared JITBuilder.  ArithIR
+/// has *no* external helpers (= every binop is pure Cranelift IR),
+/// so this is a no-op kept for API symmetry with the other modules.
+pub(super) fn register_symbols(_builder: &mut JITBuilder) {
+    // Intentionally empty — see doc comment above.
+}
 
+/// Doc 77 Stage 2-prep: declare + define every JIT entry this module
+/// owns on the *shared* JITModule.
+pub(super) fn declare_funcs(module: &mut JITModule) -> ArithIds {
     // 3 wrapping arithmetic ops.
-    let add_id = declare_binop(&mut module, "nelisp_jit_add2", |fb, a, b| fb.ins().iadd(a, b));
-    let sub_id = declare_binop(&mut module, "nelisp_jit_sub2", |fb, a, b| fb.ins().isub(a, b));
-    let mul_id = declare_binop(&mut module, "nelisp_jit_mul2", |fb, a, b| fb.ins().imul(a, b));
+    let add = declare_binop(module, "nelisp_jit_add2", |fb, a, b| fb.ins().iadd(a, b));
+    let sub = declare_binop(module, "nelisp_jit_sub2", |fb, a, b| fb.ins().isub(a, b));
+    let mul = declare_binop(module, "nelisp_jit_mul2", |fb, a, b| fb.ins().imul(a, b));
 
     // 5 signed integer comparisons → i8 (0/1) → uextend i64.
     fn cmp_to_i64(fb: &mut FunctionBuilder, cc: IntCC, a: Value, b: Value) -> Value {
         let bit = fb.ins().icmp(cc, a, b);
         fb.ins().uextend(types::I64, bit)
     }
-    let eq_id = declare_binop(&mut module, "nelisp_jit_eq2", |fb, a, b| {
+    let eq = declare_binop(module, "nelisp_jit_eq2", |fb, a, b| {
         cmp_to_i64(fb, IntCC::Equal, a, b)
     });
-    let lt_id = declare_binop(&mut module, "nelisp_jit_lt2", |fb, a, b| {
+    let lt = declare_binop(module, "nelisp_jit_lt2", |fb, a, b| {
         cmp_to_i64(fb, IntCC::SignedLessThan, a, b)
     });
-    let gt_id = declare_binop(&mut module, "nelisp_jit_gt2", |fb, a, b| {
+    let gt = declare_binop(module, "nelisp_jit_gt2", |fb, a, b| {
         cmp_to_i64(fb, IntCC::SignedGreaterThan, a, b)
     });
-    let le_id = declare_binop(&mut module, "nelisp_jit_le2", |fb, a, b| {
+    let le = declare_binop(module, "nelisp_jit_le2", |fb, a, b| {
         cmp_to_i64(fb, IntCC::SignedLessThanOrEqual, a, b)
     });
-    let ge_id = declare_binop(&mut module, "nelisp_jit_ge2", |fb, a, b| {
+    let ge = declare_binop(module, "nelisp_jit_ge2", |fb, a, b| {
         cmp_to_i64(fb, IntCC::SignedGreaterThanOrEqual, a, b)
     });
 
     // 3 bitwise ops.
-    let or_id = declare_binop(&mut module, "nelisp_jit_logior2", |fb, a, b| {
+    let logior = declare_binop(module, "nelisp_jit_logior2", |fb, a, b| {
         fb.ins().bor(a, b)
     });
-    let and_id = declare_binop(&mut module, "nelisp_jit_logand2", |fb, a, b| {
+    let logand = declare_binop(module, "nelisp_jit_logand2", |fb, a, b| {
         fb.ins().band(a, b)
     });
-    let xor_id = declare_binop(&mut module, "nelisp_jit_logxor2", |fb, a, b| {
+    let logxor = declare_binop(module, "nelisp_jit_logxor2", |fb, a, b| {
         fb.ins().bxor(a, b)
     });
 
     // `ash' — signed-count shift with `brif' control flow.  Caller
     // bounds-checks count ∈ [-62, +62] before invoking.
-    let ash_id = declare_ash(&mut module);
+    let ash = declare_ash(module);
 
-    module
-        .finalize_definitions()
-        .expect("cranelift: finalize_definitions");
+    ArithIds {
+        add,
+        sub,
+        mul,
+        eq,
+        lt,
+        gt,
+        le,
+        ge,
+        logior,
+        logand,
+        logxor,
+        ash,
+    }
+}
 
+/// Doc 77 Stage 2-prep: fetch finalized function pointers post-
+/// `finalize_definitions' and pack them into `JitArith'.
+pub(super) fn collect_funcs(module: &JITModule, ids: ArithIds) -> JitArith {
     let get = |id: FuncId| -> extern "C" fn(i64, i64) -> i64 {
         let ptr = module.get_finalized_function(id);
         // SAFETY: declared signature is `(i64, i64) -> i64`.
         unsafe { std::mem::transmute::<_, extern "C" fn(i64, i64) -> i64>(ptr) }
     };
-
-    let arith = JitArith {
-        add: get(add_id),
-        sub: get(sub_id),
-        mul: get(mul_id),
-        eq: get(eq_id),
-        lt: get(lt_id),
-        gt: get(gt_id),
-        le: get(le_id),
-        ge: get(ge_id),
-        logior: get(or_id),
-        logand: get(and_id),
-        logxor: get(xor_id),
-        ash: get(ash_id),
-    };
-
-    // Leak the module so the executable memory the function pointers
-    // reference stays valid for the remainder of the process.
-    Box::leak(Box::new(module));
-
-    arith
+    JitArith {
+        add: get(ids.add),
+        sub: get(ids.sub),
+        mul: get(ids.mul),
+        eq: get(ids.eq),
+        lt: get(ids.lt),
+        gt: get(ids.gt),
+        le: get(ids.le),
+        ge: get(ids.ge),
+        logior: get(ids.logior),
+        logand: get(ids.logand),
+        logxor: get(ids.logxor),
+        ash: get(ids.ash),
+    }
 }
 
 fn jit() -> &'static JitArith {
-    JIT_ARITH.get_or_init(build_jit_arith)
+    &super::unified_jit().arith
 }
 
 /// Try-extract a `(i64, i64)' integer pair from a 2-arg call site.

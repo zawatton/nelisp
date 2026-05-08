@@ -30,7 +30,6 @@
 //! wrong-type so the caller falls through to the dispatcher.
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
@@ -120,15 +119,21 @@ unsafe extern "C" fn nl_jit_cons_setcdr(
     }
 }
 
-struct JitCons {
-    car: extern "C" fn(*const Sexp, *mut Sexp) -> i64,
-    cdr: extern "C" fn(*const Sexp, *mut Sexp) -> i64,
-    cons_make: extern "C" fn(*const Sexp, *const Sexp, *mut Sexp) -> i64,
-    setcar: extern "C" fn(*const Sexp, *const Sexp, *mut Sexp) -> i64,
-    setcdr: extern "C" fn(*const Sexp, *const Sexp, *mut Sexp) -> i64,
+pub(super) struct JitCons {
+    pub(super) car: extern "C" fn(*const Sexp, *mut Sexp) -> i64,
+    pub(super) cdr: extern "C" fn(*const Sexp, *mut Sexp) -> i64,
+    pub(super) cons_make: extern "C" fn(*const Sexp, *const Sexp, *mut Sexp) -> i64,
+    pub(super) setcar: extern "C" fn(*const Sexp, *const Sexp, *mut Sexp) -> i64,
+    pub(super) setcdr: extern "C" fn(*const Sexp, *const Sexp, *mut Sexp) -> i64,
 }
 
-static JIT_CONS: OnceLock<JitCons> = OnceLock::new();
+pub(super) struct ConsIds {
+    car: FuncId,
+    cdr: FuncId,
+    cons_make: FuncId,
+    setcar: FuncId,
+    setcdr: FuncId,
+}
 
 /// Build a JIT entry that inlines the `(car nil) = nil' / `(cdr nil) =
 /// nil' path: load tag at offset 0, branch on `tag == SEXP_TAG_NIL'.
@@ -211,36 +216,42 @@ fn declare_unary_with_nil_inline(
     entry_id
 }
 
-fn build_jit_cons() -> JitCons {
-    let mut builder = JITBuilder::new(cranelift_module::default_libcall_names())
-        .expect("cranelift_jit: host ISA must resolve");
+/// Doc 77 Stage 2-prep (2026-05-09): submodule-level helper that
+/// registers all imported `nl_jit_cons_*' symbols on the shared
+/// JITBuilder.
+pub(super) fn register_symbols(builder: &mut JITBuilder) {
     builder.symbol("nl_jit_cons_car", nl_jit_cons_car as *const u8);
     builder.symbol("nl_jit_cons_cdr", nl_jit_cons_cdr as *const u8);
     builder.symbol("nl_jit_cons_make", nl_jit_cons_make as *const u8);
     builder.symbol("nl_jit_cons_setcar", nl_jit_cons_setcar as *const u8);
     builder.symbol("nl_jit_cons_setcdr", nl_jit_cons_setcdr as *const u8);
-    let mut module = JITModule::new(builder);
+}
 
-    let car_id = declare_unary_with_nil_inline(
-        &mut module, "nelisp_jit_car", "nl_jit_cons_car");
-    let cdr_id = declare_unary_with_nil_inline(
-        &mut module, "nelisp_jit_cdr", "nl_jit_cons_cdr");
-    let make_id =
-        declare_helper_call(&mut module, "nelisp_jit_cons", "nl_jit_cons_make", 3);
-    let setcar_id =
-        declare_helper_call(&mut module, "nelisp_jit_setcar", "nl_jit_cons_setcar", 3);
-    let setcdr_id =
-        declare_helper_call(&mut module, "nelisp_jit_setcdr", "nl_jit_cons_setcdr", 3);
+/// Doc 77 Stage 2-prep: declare + define every JIT entry this module
+/// owns on the *shared* JITModule.
+pub(super) fn declare_funcs(module: &mut JITModule) -> ConsIds {
+    let car = declare_unary_with_nil_inline(module, "nelisp_jit_car", "nl_jit_cons_car");
+    let cdr = declare_unary_with_nil_inline(module, "nelisp_jit_cdr", "nl_jit_cons_cdr");
+    let cons_make = declare_helper_call(module, "nelisp_jit_cons", "nl_jit_cons_make", 3);
+    let setcar = declare_helper_call(module, "nelisp_jit_setcar", "nl_jit_cons_setcar", 3);
+    let setcdr = declare_helper_call(module, "nelisp_jit_setcdr", "nl_jit_cons_setcdr", 3);
+    ConsIds {
+        car,
+        cdr,
+        cons_make,
+        setcar,
+        setcdr,
+    }
+}
 
-    module
-        .finalize_definitions()
-        .expect("cranelift: finalize_definitions");
-    let car_ptr = module.get_finalized_function(car_id);
-    let cdr_ptr = module.get_finalized_function(cdr_id);
-    let make_ptr = module.get_finalized_function(make_id);
-    let setcar_ptr = module.get_finalized_function(setcar_id);
-    let setcdr_ptr = module.get_finalized_function(setcdr_id);
-    Box::leak(Box::new(module));
+/// Doc 77 Stage 2-prep: fetch finalized function pointers post-
+/// `finalize_definitions' and pack them into `JitCons'.
+pub(super) fn collect_funcs(module: &JITModule, ids: ConsIds) -> JitCons {
+    let car_ptr = module.get_finalized_function(ids.car);
+    let cdr_ptr = module.get_finalized_function(ids.cdr);
+    let make_ptr = module.get_finalized_function(ids.cons_make);
+    let setcar_ptr = module.get_finalized_function(ids.setcar);
+    let setcdr_ptr = module.get_finalized_function(ids.setcdr);
     // SAFETY: declared signatures match the function-pointer types.
     unsafe {
         JitCons {
@@ -267,7 +278,7 @@ fn build_jit_cons() -> JitCons {
 }
 
 fn jit() -> &'static JitCons {
-    JIT_CONS.get_or_init(build_jit_cons)
+    &super::unified_jit().cons
 }
 
 fn lowered_car(args: &[Sexp], _env: &mut Env) -> Result<Sexp, EvalError> {

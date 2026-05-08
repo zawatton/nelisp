@@ -32,7 +32,6 @@
 //! Stage 5.1 ramp.
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
@@ -91,14 +90,17 @@ unsafe extern "C" fn nl_jit_syscall_call(
     -38 /* ENOSYS */
 }
 
-struct JitSyscall {
-    supported_p: extern "C" fn() -> i64,
+pub(super) struct JitSyscall {
+    pub(super) supported_p: extern "C" fn() -> i64,
     /// `(nr, a0..a5) -> i64' (errno already normalized to `-errno' on
     /// error, else raw `libc::syscall' return value).
-    syscall: extern "C" fn(i64, i64, i64, i64, i64, i64, i64) -> i64,
+    pub(super) syscall: extern "C" fn(i64, i64, i64, i64, i64, i64, i64) -> i64,
 }
 
-static JIT_SYSCALL: OnceLock<JitSyscall> = OnceLock::new();
+pub(super) struct SyscallIds {
+    supported_p: FuncId,
+    syscall: FuncId,
+}
 
 fn declare_const_i64(module: &mut JITModule, name: &str, k: i64) -> FuncId {
     let mut sig = module.make_signature();
@@ -180,26 +182,30 @@ fn declare_syscall_trampoline(module: &mut JITModule) -> FuncId {
     entry_id
 }
 
-fn build_jit_syscall() -> JitSyscall {
-    let mut builder = JITBuilder::new(cranelift_module::default_libcall_names())
-        .expect("cranelift_jit: host ISA must resolve");
-    // Register the trampoline helper so `Linkage::Import' resolves at
-    // finalize time.
+/// Doc 77 Stage 2-prep (2026-05-09): submodule-level helper that
+/// registers all imported syscall trampoline symbols on the shared
+/// JITBuilder.
+pub(super) fn register_symbols(builder: &mut JITBuilder) {
     builder.symbol("nl_jit_syscall_call", nl_jit_syscall_call as *const u8);
-    let mut module = JITModule::new(builder);
+}
 
-    let supported_id =
-        declare_const_i64(&mut module, "nelisp_jit_syscall_supported_p", SUPPORTED_CONST);
-    let syscall_id = declare_syscall_trampoline(&mut module);
+/// Doc 77 Stage 2-prep: declare + define every JIT entry this module
+/// owns on the *shared* JITModule.
+pub(super) fn declare_funcs(module: &mut JITModule) -> SyscallIds {
+    let supported_p =
+        declare_const_i64(module, "nelisp_jit_syscall_supported_p", SUPPORTED_CONST);
+    let syscall = declare_syscall_trampoline(module);
+    SyscallIds {
+        supported_p,
+        syscall,
+    }
+}
 
-    module
-        .finalize_definitions()
-        .expect("cranelift: finalize_definitions");
-    let supported_ptr = module.get_finalized_function(supported_id);
-    let syscall_ptr = module.get_finalized_function(syscall_id);
-    // Keep the JITModule alive for the rest of the process lifetime so
-    // the executable pages stay mapped.
-    Box::leak(Box::new(module));
+/// Doc 77 Stage 2-prep: fetch finalized function pointers post-
+/// `finalize_definitions' and pack them into `JitSyscall'.
+pub(super) fn collect_funcs(module: &JITModule, ids: SyscallIds) -> JitSyscall {
+    let supported_ptr = module.get_finalized_function(ids.supported_p);
+    let syscall_ptr = module.get_finalized_function(ids.syscall);
     // SAFETY: declared signatures match the function-pointer types.
     unsafe {
         JitSyscall {
@@ -213,7 +219,7 @@ fn build_jit_syscall() -> JitSyscall {
 }
 
 fn jit() -> &'static JitSyscall {
-    JIT_SYSCALL.get_or_init(build_jit_syscall)
+    &super::unified_jit().syscall
 }
 
 fn lowered_syscall_supported_p(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {

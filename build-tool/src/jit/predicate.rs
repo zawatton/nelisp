@@ -40,7 +40,6 @@
 //! predicate, `eq'.
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
@@ -63,11 +62,13 @@ unsafe extern "C" fn nl_jit_pred_eq(a: *const Sexp, b: *const Sexp) -> i64 {
     }
 }
 
-struct JitPredicate {
-    eq: extern "C" fn(*const Sexp, *const Sexp) -> i64,
+pub(super) struct JitPredicate {
+    pub(super) eq: extern "C" fn(*const Sexp, *const Sexp) -> i64,
 }
 
-static JIT_PREDICATE: OnceLock<JitPredicate> = OnceLock::new();
+pub(super) struct PredicateIds {
+    eq: FuncId,
+}
 
 /// Build the `eq' JIT entry with inline tag-byte fast paths.  The
 /// shape is:
@@ -197,19 +198,29 @@ fn declare_eq_inline(module: &mut JITModule) -> FuncId {
     entry_id
 }
 
-fn build_jit_predicate() -> JitPredicate {
-    let mut builder = JITBuilder::new(cranelift_module::default_libcall_names())
-        .expect("cranelift_jit: host ISA must resolve");
+/// Doc 77 Stage 2-prep (2026-05-09): submodule-level helper that
+/// registers all imported `nl_jit_pred_*' symbols on the shared
+/// JITBuilder.  Called by `super::unified_jit' before the JITModule
+/// is constructed so `Linkage::Import' resolves at finalize time.
+pub(super) fn register_symbols(builder: &mut JITBuilder) {
     builder.symbol("nl_jit_pred_eq", nl_jit_pred_eq as *const u8);
-    let mut module = JITModule::new(builder);
+}
 
-    let eq_id = declare_eq_inline(&mut module);
+/// Doc 77 Stage 2-prep: declare + define every JIT entry this module
+/// owns on the *shared* JITModule, returning their FuncIds for later
+/// `collect_funcs' lookup.  Mirrors the body of the old per-module
+/// `build_jit_predicate' minus the JITBuilder/JITModule bring-up and
+/// the post-finalize symbol fetch.
+pub(super) fn declare_funcs(module: &mut JITModule) -> PredicateIds {
+    let eq = declare_eq_inline(module);
+    PredicateIds { eq }
+}
 
-    module
-        .finalize_definitions()
-        .expect("cranelift: finalize_definitions");
-    let eq_ptr = module.get_finalized_function(eq_id);
-    Box::leak(Box::new(module));
+/// Doc 77 Stage 2-prep: after `module.finalize_definitions()`, fetch
+/// the executable-page function pointers for every entry declared by
+/// `declare_funcs' and pack them into `JitPredicate'.
+pub(super) fn collect_funcs(module: &JITModule, ids: PredicateIds) -> JitPredicate {
+    let eq_ptr = module.get_finalized_function(ids.eq);
     // SAFETY: declared signature matches the function-pointer type.
     unsafe {
         JitPredicate {
@@ -221,7 +232,7 @@ fn build_jit_predicate() -> JitPredicate {
 }
 
 fn jit() -> &'static JitPredicate {
-    JIT_PREDICATE.get_or_init(build_jit_predicate)
+    &super::unified_jit().predicate
 }
 
 fn lowered_eq(args: &[Sexp], _env: &mut Env) -> Result<Sexp, EvalError> {

@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use cranelift::prelude::*;
-use cranelift_jit::JITModule;
+use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 
 use crate::eval::error::EvalError;
@@ -106,6 +106,91 @@ mod bench;
 mod cons;
 mod predicate;
 mod syscall;
+
+/// Doc 77 Stage 2-prep (2026-05-09) — unified JITModule.
+///
+/// Pre-Doc-77 each submodule (arith / cons / access / predicate /
+/// syscall) owned its own `OnceLock<JitX>' which built a separate
+/// `JITModule' on first access.  That meant 5 `mmap' pages, 5
+/// independent symbol namespaces, and Stage 3's "JIT fn calls JIT fn"
+/// pattern was structurally infeasible (= each module's `FuncId'
+/// only resolves within its own JITModule).
+///
+/// Stage 2-prep consolidates the 5 modules into one shared
+/// `JITBuilder' / `JITModule' built at first `unified_jit()' access:
+///
+/// 1. Each submodule registers its imported helper symbols on a
+///    *shared* `JITBuilder' via `register_symbols(&mut JITBuilder)'.
+/// 2. `JITModule::new(builder)' once.
+/// 3. Each submodule declares + defines its functions on the *shared*
+///    JITModule via `declare_funcs(&mut JITModule) -> XxxIds'.
+/// 4. `module.finalize_definitions()' once (= one mmap page bring-up).
+/// 5. Each submodule fetches its function pointers via
+///    `collect_funcs(&JITModule, ids) -> JitX'.
+/// 6. `Box::leak(module)' once to keep executable pages alive.
+///
+/// Net effect: 5x → 1x mmap, single FuncId namespace.  Submodule
+/// `jit() -> &'static JitX' now returns `&unified_jit().x'.
+pub(super) struct UnifiedJit {
+    pub(super) arith: arith::JitArith,
+    pub(super) cons: cons::JitCons,
+    pub(super) access: access::JitAccess,
+    pub(super) predicate: predicate::JitPredicate,
+    pub(super) syscall: syscall::JitSyscall,
+}
+
+static UNIFIED_JIT: OnceLock<UnifiedJit> = OnceLock::new();
+
+/// Return the shared `UnifiedJit' instance, building it on first
+/// access.  See `UnifiedJit' doc for the 6-step orchestration.
+pub(super) fn unified_jit() -> &'static UnifiedJit {
+    UNIFIED_JIT.get_or_init(|| {
+        // Step 1: shared JITBuilder + each submodule registers its
+        // imported `nl_jit_*' symbols.
+        let mut builder = JITBuilder::new(cranelift_module::default_libcall_names())
+            .expect("cranelift_jit: host ISA must resolve");
+        arith::register_symbols(&mut builder);
+        cons::register_symbols(&mut builder);
+        access::register_symbols(&mut builder);
+        predicate::register_symbols(&mut builder);
+        syscall::register_symbols(&mut builder);
+
+        // Step 2: one JITModule for all 5 submodules.
+        let mut module = JITModule::new(builder);
+
+        // Step 3: each submodule declares + defines its JIT entries
+        // on the shared module.  FuncIds carry forward to step 5.
+        let arith_ids = arith::declare_funcs(&mut module);
+        let cons_ids = cons::declare_funcs(&mut module);
+        let access_ids = access::declare_funcs(&mut module);
+        let predicate_ids = predicate::declare_funcs(&mut module);
+        let syscall_ids = syscall::declare_funcs(&mut module);
+
+        // Step 4: single finalize → one mmap of executable pages.
+        module
+            .finalize_definitions()
+            .expect("cranelift: finalize_definitions");
+
+        // Step 5: fetch function pointers per submodule.
+        let arith = arith::collect_funcs(&module, arith_ids);
+        let cons = cons::collect_funcs(&module, cons_ids);
+        let access = access::collect_funcs(&module, access_ids);
+        let predicate = predicate::collect_funcs(&module, predicate_ids);
+        let syscall = syscall::collect_funcs(&module, syscall_ids);
+
+        // Step 6: keep executable pages alive for the process
+        // lifetime by leaking the JITModule.
+        Box::leak(Box::new(module));
+
+        UnifiedJit {
+            arith,
+            cons,
+            access,
+            predicate,
+            syscall,
+        }
+    })
+}
 
 /// Doc 77 Stage 1.C (2026-05-09) — env-toggleable JIT entries.
 ///
