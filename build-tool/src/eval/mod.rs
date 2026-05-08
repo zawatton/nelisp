@@ -386,15 +386,35 @@ fn delegate_to_elisp_apply(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<
 ///     against the call-site env if the leading `closure` marker is
 ///     missing)
 pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
+    // Phase 7 Stage 7.5.d (Doc 69): closure / lambda arms inline the
+    // formerly-separate `apply_closure' / `apply_lambda' helpers.
+    // Both were thin wrappers that called `list_elements' + dispatched
+    // to `apply_lambda_inner' — inlining drops 2 functions (~27 LOC)
+    // without changing dispatch semantics.
     match func {
         Sexp::Cons(head, _) => match &*head.borrow() {
             Sexp::Symbol(s) if s == "builtin" => apply_builtin(func, args, env),
-            Sexp::Symbol(s) if s == "closure" => apply_closure(func, args, env),
+            Sexp::Symbol(s) if s == "closure" => {
+                // Shape: (closure CAPTURED-ENV ARGS BODY...)
+                let parts = list_elements(func)?;
+                if parts.len() < 3 {
+                    return Err(EvalError::Internal(
+                        "closure missing env / args / body".into(),
+                    ));
+                }
+                apply_lambda_inner(&parts[1], &parts[2], &parts[3..], args, env)
+            }
             Sexp::Symbol(s) if s == "lambda" => {
                 // Bare `(lambda ARGS BODY...)` — apply against an empty
                 // captured env.  This is what `defun` produces (the
                 // function cell stores the lambda form unmodified).
-                apply_lambda(func, &Sexp::Nil, args, env)
+                let parts = list_elements(func)?;
+                if parts.len() < 2 {
+                    return Err(EvalError::Internal(
+                        "lambda missing args / body".into(),
+                    ));
+                }
+                apply_lambda_inner(&Sexp::Nil, &parts[1], &parts[2..], args, env)
             }
             Sexp::Symbol(s) if s == "macro" => Err(EvalError::WrongType {
                 expected: "function (not macro)".into(),
@@ -446,35 +466,11 @@ fn apply_builtin(
     builtins::dispatch(&name, args, env)
 }
 
-fn apply_closure(closure: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
-    // Shape: (closure CAPTURED-ENV ARGS BODY...)
-    let parts = list_elements(closure)?;
-    if parts.len() < 3 {
-        return Err(EvalError::Internal(
-            "closure missing env / args / body".into(),
-        ));
-    }
-    let captured = &parts[1];
-    let formals = &parts[2];
-    let body = &parts[3..];
-    apply_lambda_inner(captured, formals, body, args, env)
-}
-
-fn apply_lambda(
-    lambda: &Sexp,
-    captured: &Sexp,
-    args: &[Sexp],
-    env: &mut Env,
-) -> Result<Sexp, EvalError> {
-    // Shape: (lambda ARGS BODY...)
-    let parts = list_elements(lambda)?;
-    if parts.len() < 2 {
-        return Err(EvalError::Internal("lambda missing args / body".into()));
-    }
-    let formals = &parts[1];
-    let body = &parts[2..];
-    apply_lambda_inner(captured, formals, body, args, env)
-}
+// Phase 7 Stage 7.5.d (Doc 69) — `fn apply_closure' / `fn apply_lambda'
+// were inlined into `apply_function' above (closure / lambda arms).
+// Both were thin wrappers; only `apply_lambda_inner' carries the real
+// work and remains a separate function (= also called by Stage 7.4.e
+// `bi_apply_lambda_inner' builtin).
 
 pub(crate) fn apply_lambda_inner(
     captured: &Sexp,
