@@ -88,6 +88,78 @@ pub(crate) fn read_all_via_elisp(input: &str, env: &mut Env) -> Result<Vec<Sexp>
     Ok(out)
 }
 
+/// Stage 8.3.a (Doc 73, Phase 8) — read every top-level form from
+/// `input` via the elisp reader and return `(LINE, FORM)` tuples
+/// where `LINE` is the 1-origin source line at which each form
+/// started.  Used by `bridge::loader::parse_tracked_forms' so the
+/// production bridge bootstrap can attach source line numbers to
+/// `BridgeError::EvalError' messages without falling back to the
+/// Rust reader's `lexer::tokenize' + `parser::parse_one' twin pass.
+///
+/// Requires `nelisp--read-all-with-line-from-string-impl' from
+/// `lisp/nelisp-stdlib-reader.el' to be loaded; that ships in the
+/// STDLIB images so by the time `bootstrap_self_host' runs, this
+/// helper is callable.
+pub fn read_all_with_line_via_elisp(
+    input: &str,
+    env: &mut Env,
+) -> Result<Vec<(u32, Sexp)>, EvalError> {
+    let impl_fn = env
+        .lookup_function("nelisp--read-all-with-line-from-string-impl")
+        .map_err(|_| {
+            EvalError::Internal(
+                "read_all_with_line_via_elisp: \
+                 `nelisp--read-all-with-line-from-string-impl' not loaded \
+                 — `lisp/nelisp-stdlib-reader.el' missing from STDLIB_IMAGES?"
+                    .into(),
+            )
+        })?;
+    let arg = Sexp::Str(input.to_string());
+    let mut list = apply_function(&impl_fn, &[arg], env)?;
+    let mut out = Vec::new();
+    loop {
+        match list {
+            Sexp::Nil => break,
+            Sexp::Cons(car, cdr) => {
+                let pair = car.borrow().clone();
+                match pair {
+                    Sexp::Cons(line_rc, form_rc) => {
+                        let line = match line_rc.borrow().clone() {
+                            Sexp::Int(n) if n >= 0 => n as u32,
+                            other => {
+                                return Err(EvalError::Internal(format!(
+                                    "read_all_with_line_via_elisp: \
+                                     expected (LINE . FORM) where LINE is a \
+                                     positive integer, got line = {:?}",
+                                    other
+                                )));
+                            }
+                        };
+                        let form = form_rc.borrow().clone();
+                        out.push((line, form));
+                    }
+                    other => {
+                        return Err(EvalError::Internal(format!(
+                            "read_all_with_line_via_elisp: \
+                             expected (LINE . FORM) cons element, got {:?}",
+                            other
+                        )));
+                    }
+                }
+                list = cdr.borrow().clone();
+            }
+            other => {
+                return Err(EvalError::Internal(format!(
+                    "read_all_with_line_via_elisp: \
+                     expected proper list from elisp reader, got {:?}",
+                    other
+                )));
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Stage 7.7.d (Doc 72) — read exactly one form via the elisp reader.
 /// Convenience wrapper around `read_all_via_elisp' that errors on
 /// empty / multi-form input.  Used by cargo unit tests (= `eval/tests.rs',

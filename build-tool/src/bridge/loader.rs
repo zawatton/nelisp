@@ -3,7 +3,6 @@ use std::path::Path;
 
 use crate::eval::sexp::fmt_sexp;
 use crate::eval::{self, Env, Sexp};
-use crate::reader::{self, lexer, parser};
 
 use super::BridgeError;
 
@@ -42,7 +41,7 @@ fn load_file(env: &mut Env, path: &Path) -> Result<usize, BridgeError> {
     let source = fs::read_to_string(path)
         .map_err(|err| BridgeError::ReadError(err.to_string(), path.to_path_buf()))?;
     let normalized = normalize_bootstrap_source(&source);
-    let forms = parse_tracked_forms(&normalized, path)?;
+    let forms = parse_tracked_forms(&normalized, path, env)?;
     let mut count = 0usize;
 
     for tracked in forms {
@@ -178,23 +177,25 @@ fn read_char_literal(bytes: &[u8]) -> Option<(i64, usize)> {
     }
 }
 
-fn parse_tracked_forms(source: &str, path: &Path) -> Result<Vec<TrackedForm>, BridgeError> {
-    let _ = reader::read_all(source)
+fn parse_tracked_forms(
+    source: &str,
+    path: &Path,
+    env: &mut Env,
+) -> Result<Vec<TrackedForm>, BridgeError> {
+    // Phase 8 Stage 8.3.b (Doc 73, 2026-05-08): replace the previous
+    // twin-tokenize hack (= Rust `reader::read_all' for validation
+    // plus `lexer::tokenize' + `parser::parse_one' loop for line
+    // tracking) with a single elisp-reader call that returns
+    // (LINE . FORM) pairs.  The elisp impl
+    // `nelisp--read-all-with-line-from-string-impl' is loaded as
+    // part of STDLIB_IMAGES so it is callable by the time bridge
+    // bootstrap reaches this function.
+    let pairs = eval::read_all_with_line_via_elisp(source, env)
         .map_err(|err| BridgeError::ReadError(err.to_string(), path.to_path_buf()))?;
-    let tokens = lexer::tokenize(source)
-        .map_err(|err| BridgeError::ReadError(err.to_string(), path.to_path_buf()))?;
-    let mut forms = Vec::new();
-    let mut pos = 0usize;
-
-    while pos < tokens.len() {
-        let line = tokens[pos].pos.line;
-        let (form, consumed) = parser::parse_one(&tokens[pos..])
-            .map_err(|err| BridgeError::ReadError(err.to_string(), path.to_path_buf()))?;
-        forms.push(TrackedForm { form, line });
-        pos += consumed;
-    }
-
-    Ok(forms)
+    Ok(pairs
+        .into_iter()
+        .map(|(line, form)| TrackedForm { form, line })
+        .collect())
 }
 
 fn handle_bridge_form(env: &mut Env, form: &Sexp) -> Result<bool, BridgeError> {

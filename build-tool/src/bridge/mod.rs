@@ -56,9 +56,12 @@ impl std::error::Error for BridgeError {}
 /// Bootstrap the NeLisp self-host into `env` from `src_dir`.
 ///
 /// The loader consumes the canonical Phase 8.0.3 file list in
-/// dependency order, parses each file with `reader::read_all`'s
-/// underlying tokenizer/parser, and evaluates each top-level form
-/// sequentially in the shared `env`.
+/// dependency order.  Stage 8.3.b (Doc 73, 2026-05-08): parsing
+/// goes through `eval::read_all_with_line_via_elisp' (= elisp
+/// reader's `nelisp--read-all-with-line-from-string-impl') so each
+/// form retains its source line for `BridgeError::EvalError'
+/// messages without a Rust-reader twin pass.  Forms are then
+/// evaluated sequentially in the shared `env`.
 pub fn bootstrap_self_host(
     env: &mut Env,
     src_dir: &Path,

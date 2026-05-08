@@ -843,6 +843,25 @@ Stage 7.2.b takeover for the `read-all' style read used by `load'."
         (setq tokens (cdr sub))))
     (nreverse forms)))
 
+(defun nelisp--read-all-with-line-from-string-impl (string)
+  "Like `nelisp--read-all-from-string-impl' but each result is a
+\(LINE . FORM\) cons where LINE is the 1-origin source line at
+which FORM started.
+
+Phase 8 Stage 8.3.a (Doc 73, 2026-05-08): used by
+`bridge/loader.rs::parse_tracked_forms' so production error
+messages can reference source line numbers, replacing the previous
+twin-tokenize hack (= Rust `reader::read_all' once for validation
+plus `lexer::tokenize' + `parser::parse_one' loop for line tracking)."
+  (let* ((tokens (nelisp--read-tokenize string))
+         (pairs nil))
+    (while tokens
+      (let* ((line (or (plist-get (car tokens) :line) 1))
+             (sub (nelisp--read-parse-one tokens)))
+        (push (cons line (car sub)) pairs)
+        (setq tokens (cdr sub))))
+    (nreverse pairs)))
+
 (provide 'nelisp-stdlib-reader)
 
 ;;; nelisp-stdlib-reader.el ends here
