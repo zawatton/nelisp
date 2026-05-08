@@ -194,31 +194,143 @@ LSP」等の発展機能は v0.1 では out-of-scope (= Phase 4 / external repo
 
 ** 3.2 M2 — 開発体験 (3-4w)
 
-*scope*:
+5 sub-milestone (M2.1 - M2.5) に分割、anvil-orchestrator codex 5 並列 dispatch 想定。
 
-- isearch-forward / isearch-backward (= =C-s= / =C-r=) interactive UI、minibuffer prompt + match highlighting (= overlay or face、既 =emacs-faces.el= に依存)
-- undo (= =C-/=) / undo-redo (= =C-x u=) interactive layer (= 既 =emacs-undo.el= primitive 上)
-- *help system*:
-  - =describe-function= (=C-h f=) → =*Help*= buffer に signature + docstring
-  - =describe-variable= (=C-h v=) → value + docstring
-  - =describe-key= (=C-h k=) → keybinding 解析
-  - =help-mode= (= =q= で quit、=l= で history back、=TAB= で next-button)
-- eval-defun (=C-x C-e= = eval last sexp、=C-M-x= = eval defun)
-- eval-region / eval-buffer
-- =M-x ielm= = comint-style elisp REPL minimum
+*** 3.2.1 M2.1 — isearch UI
 
-*close gate*:
+新規: =src/emacs-isearch.el= (~250-400 LOC) + =test/emacs-isearch-test.el= (~150-200 LOC)
 
-| # | gate |
-|---+------|
-| 1 | =C-s foo= で buffer 内 first match に point move、=C-s= 連打で next、=C-g= で abort & 元に戻る |
-| 2 | =C-/= で 1 step undo、=C-x u= で redo |
-| 3 | =C-h f find-file= → =*Help*= に signature + docstring 表示 |
-| 4 | =C-h k C-x C-f= → "C-x C-f runs find-file" 様の表示 |
-| 5 | =(defun foo () 42)= を =C-x C-e= で eval、ミニバッファ echo 42 |
-| 6 | =M-x ielm= で REPL prompt、=(+ 1 2)= → 3 |
+functions:
+- isearch-forward (=C-s=) / isearch-backward (=C-r=) interactive
+- minibuffer prompt =I-search: ...= display
+- match highlighting via overlay or face on current match
+- =C-s= next / =C-r= prev / =C-g= abort & restore point / =RET= commit / =DEL= shrink pattern
+- 既存 =emacs-search-builtins.el= primitives (re-search-forward 等) 利用、再実装しない
 
-*LOC 見積*: 800-1200
+close gate:
+- 単語 search で =C-s "foo"= → first match に point 移動、=C-s= 連打で next
+- =C-r= で逆方向、=C-g= で abort & point 戻る、=RET= で confirm
+
+ERT bundle (≥6):
+- isearch-forward-finds-first-match
+- isearch-forward-cycles-to-next-match
+- isearch-backward-finds-prev-match
+- isearch-abort-restores-point
+- isearch-RET-commits-point
+- isearch-DEL-shrinks-pattern
+
+*** 3.2.2 M2.2 — help system
+
+新規: =src/emacs-help.el= (~300-450 LOC) + =test/emacs-help-test.el= (~200 LOC)
+
+functions:
+- describe-function (=C-h f=) → =*Help*= buffer に signature + docstring + file location
+- describe-variable (=C-h v=) → value (pp formatted) + docstring
+- describe-key (=C-h k=) → key sequence parse + bound function name + docstring
+- help-mode major-mode (= =q= bury / =g= revert; =l= history back は v0.1 後送り)
+
+close gate:
+- =C-h f find-file= → =*Help*= に "(find-file FILENAME...)" + docstring 表示
+- =C-h v auto-mode-alist= → 現在値 (pp 整形) + docstring
+- =C-h k C-x C-f= → "C-x C-f runs find-file" 様
+- =*Help*= で =q= → bury buffer
+
+ERT bundle (≥6):
+- describe-function-renders-signature-and-docstring
+- describe-function-handles-undefined-function
+- describe-variable-renders-value-and-docstring
+- describe-variable-handles-unbound-variable
+- describe-key-resolves-binding
+- help-mode-q-buries-buffer
+
+*** 3.2.3 M2.3 — undo UI
+
+新規: =src/emacs-undo-ui.el= (~80-150 LOC) + =test/emacs-undo-ui-test.el= (~80 LOC)
+
+既存 =emacs-undo.el= primitive 上の interactive layer。
+
+functions:
+- undo (=C-/= / =C-_=) interactive
+- undo-redo (=C-x u=) Emacs28+ semantics (redo within undo group)
+- undo boundary handling
+
+close gate:
+- buffer 編集 → =C-/= で 1 step undo、連打で過去に戻る
+- =C-x u= で redo
+
+ERT bundle (≥4):
+- undo-reverts-last-edit
+- undo-multiple-times
+- undo-redo-restores-undone-edit
+- undo-on-empty-history-errors
+
+*** 3.2.4 M2.4 — eval-defun / region / buffer
+
+新規: =src/emacs-elisp-eval.el= (~150-250 LOC) + =test/emacs-elisp-eval-test.el= (~100 LOC)
+
+既存 =emacs-elisp-mode.el= の上に layer、interactive 部分のみ追加。
+
+functions:
+- eval-last-sexp (=C-x C-e=): preceding sexp を read-from-string + eval
+- eval-defun (=C-M-x=): 囲む defun を find + eval whole
+- eval-region / eval-buffer (= interactive)
+- result echo with =prin1-to-string=
+
+close gate:
+- buffer に =(+ 1 2)= 末尾で =C-x C-e= → echo "3"
+- =(defun foo () 42)= 内で =C-M-x= → echo "foo"、=(foo)= eval で 42
+
+ERT bundle (≥5):
+- eval-last-sexp-evaluates-and-prints
+- eval-last-sexp-handles-error
+- eval-defun-defines-function
+- eval-region-evaluates-multiple-forms
+- eval-buffer-evaluates-all-toplevel-forms
+
+*** 3.2.5 M2.5 — ielm REPL
+
+新規: =src/emacs-ielm.el= (~250-400 LOC) + =test/emacs-ielm-test.el= (~150 LOC)
+
+functions:
+- =M-x ielm= で =*ielm*= buffer 開く
+- prompt =ELISP> = display
+- comint-style: history (=M-p= / =M-n=)、reset (=C-c C-l=)
+- read-eval-print loop、error は catch + 表示 + prompt 復帰
+- 最低限 =inferior-emacs-lisp-mode= major mode
+
+close gate:
+- =M-x ielm= で =*ielm*= buffer 開く、prompt 表示
+- =ELISP> (+ 1 2)= RET → "3" 表示
+- =(foo)= で error → エラー表示 → prompt に戻る
+- =M-p= で前の input 再現
+
+ERT bundle (≥5):
+- ielm-creates-buffer-with-prompt
+- ielm-evaluates-and-prints-result
+- ielm-handles-error-and-returns-to-prompt
+- ielm-history-recall-with-M-p
+- ielm-reset-clears-history
+
+*** 3.2.6 LOC 累計 + dispatch 構成
+
+| sub-M | LOC src | LOC test |
+|-------+---------+----------|
+| M2.1 isearch | 250-400 | 150-200 |
+| M2.2 help | 300-450 | 200 |
+| M2.3 undo-ui | 80-150 | 80 |
+| M2.4 eval | 150-250 | 100 |
+| M2.5 ielm | 250-400 | 150 |
+| 計 | 1030-1650 | 680-830 |
+
+合計 ~1700-2480 LOC (= §1.1 元見積 800-1200 を超過、user 用途に絞った reasonable 拡張)。
+
+dispatch 構成 = anvil-orchestrator codex 5 並列、各 worktree:
+- =.worktrees/v01-m2-isearch= / =-help= / =-undo-ui= / =-elisp-eval= / =-ielm=
+
+*M1 教訓反映 (重要)*:
+- 各 codex prompt に「=make test= を回さない、targeted ERT のみ」明記 (= orchestrator 600s wallclock cap 回避)
+- targeted ERT command: =emacs --batch -L src -L test -L $HOME/Notes/dev/nelisp/src $(for d in $HOME/Notes/dev/nelisp/packages/*/src; do echo -L $d; done) -l test/<your-test>.el -f ert-run-tests-batch-and-exit=
+- byte-compile は単 file 限定 = =emacs --batch ... -f batch-byte-compile src/<your-file>.el= (= make compile 全 67 file 不要)
 
 ** 3.3 M3 — org-mode subset (6-8w)
 
