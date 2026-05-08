@@ -29,14 +29,16 @@
 //! - `length': handles `Sexp::Nil' / `Sexp::Vector' / `Sexp::Str';
 //!   `MutStr' / `BoolVector' / `Cons' (spine walk) / others fall
 //!   through to `bi_length'.
-//! - `aref': handles `Sexp::Vector' only; `Str' / `MutStr' / `CharTable'
-//!   / `BoolVector' fall through to `bi_aref'.
+//! - `aref': handles `Sexp::Vector' + `Sexp::BoolVector' (= Doc 77
+//!   Stage 1.B, 2026-05-09); `Str' / `MutStr' / `CharTable' fall
+//!   through to `aref_helper'.
 //!
 //! Stage 5.6 (2026-05-07) — `aset' and `elt' added on the same
 //! `declare_helper_call' shape:
-//! - `aset': `Vector' fast path only.  `MutStr' (= codepoint mutation
-//!   that rebuilds the underlying String) stays in the dispatcher
-//!   because the 4-arg helper would not save anything.
+//! - `aset': `Vector' + `BoolVector' fast path (= Doc 77 Stage 1.B,
+//!   2026-05-09).  `MutStr' (= codepoint mutation that rebuilds the
+//!   underlying String) stays in the dispatcher because the 4-arg
+//!   helper would not save anything.
 //! - `elt': `Vector' (= aref) + `Cons' (= list walk) fast path.  Other
 //!   sequence types fall through.
 
@@ -76,9 +78,22 @@ unsafe extern "C" fn nl_jit_access_length(arg: *const Sexp, out: *mut Sexp) -> i
     }
 }
 
-/// `(aref VECTOR INDEX)' fast path: `Sexp::Vector' only with non-
-/// negative INDEX in range.  Out-of-range / wrong-type / negative
-/// index returns `TRAMPOLINE_ERR' for canonical-error fall-through.
+/// `(aref VECTOR INDEX)' fast path: `Sexp::Vector' / `Sexp::BoolVector'
+/// with non-negative INDEX in range.  Out-of-range / wrong-type /
+/// negative index returns `TRAMPOLINE_ERR' for canonical-error fall-
+/// through (= the dispatcher's `aref_helper' surfaces the proper
+/// out-of-range / wrong-type message).
+///
+/// Doc 77 Stage 1.B (2026-05-09) — BoolVector coverage extension:
+/// previously fell through to the Rust match arm in `aref_helper',
+/// adding a second-level `match' dispatch + extra borrow.  Now handled
+/// in the trampoline directly, removing one Rust call boundary on the
+/// hot path.  Conservative variant of Doc 77 §2.2.1 (= full IR-level
+/// inline with unpack helper + bounds check + byte load is deferred
+/// because the Rc/RefCell aliasing analysis around a freed `Ref' guard
+/// is non-trivial; a future commit can replace this Rust-side coverage
+/// with the spec's IR shape after benchmarking confirms BoolVector is
+/// hot in the bootstrap workload).
 unsafe extern "C" fn nl_jit_access_aref(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64 {
     if idx < 0 {
         return TRAMPOLINE_ERR;
@@ -93,14 +108,29 @@ unsafe extern "C" fn nl_jit_access_aref(arg: *const Sexp, idx: i64, out: *mut Se
                 TRAMPOLINE_ERR
             }
         }
+        Sexp::BoolVector(v) => {
+            let borrowed = v.borrow();
+            if let Some(b) = borrowed.get(idx as usize) {
+                *out = if *b { Sexp::T } else { Sexp::Nil };
+                TRAMPOLINE_OK
+            } else {
+                TRAMPOLINE_ERR
+            }
+        }
         _ => TRAMPOLINE_ERR,
     }
 }
 
-/// `(aset VECTOR INDEX VALUE)' fast path: `Sexp::Vector' only.
-/// Returns VALUE per Emacs' `aset' contract.  `MutStr' aset (=
-/// codepoint mutation) is left to the dispatcher because the rebuild-
-/// String path is not worth a JIT helper.
+/// `(aset VECTOR INDEX VALUE)' fast path: `Sexp::Vector' /
+/// `Sexp::BoolVector'.  Returns VALUE per Emacs' `aset' contract.
+/// `MutStr' aset (= codepoint mutation) is left to the dispatcher
+/// because the rebuild-String path is not worth a JIT helper.
+///
+/// Doc 77 Stage 1.B (2026-05-09) — BoolVector coverage extension:
+/// previously fell through to the Rust match arm in `lowered_aset'
+/// for a second-level `match' + borrow_mut + truthy + write.  Now
+/// handled in the trampoline directly.  See aref note above for why
+/// this is the conservative form of Doc 77 §2.2.1.
 unsafe extern "C" fn nl_jit_access_aset(
     arg: *const Sexp,
     idx: i64,
@@ -117,6 +147,15 @@ unsafe extern "C" fn nl_jit_access_aset(
                 return TRAMPOLINE_ERR;
             }
             borrowed[idx as usize] = (*val).clone();
+            *out = (*val).clone();
+            TRAMPOLINE_OK
+        }
+        Sexp::BoolVector(v) => {
+            let mut borrowed = v.borrow_mut();
+            if (idx as usize) >= borrowed.len() {
+                return TRAMPOLINE_ERR;
+            }
+            borrowed[idx as usize] = crate::eval::special_forms::is_truthy(&*val);
             *out = (*val).clone();
             TRAMPOLINE_OK
         }
@@ -655,6 +694,94 @@ mod tests {
             (jit().aref)(&s as *const _, 0, &mut out as *mut _),
             TRAMPOLINE_ERR
         );
+    }
+
+    // --- Doc 77 Stage 1.B (2026-05-09) — BoolVector trampoline coverage ---
+
+    #[test]
+    fn jit_aref_bool_vector_in_range() {
+        // bv = [false, true, false] → aref(bv, 0) = Nil, aref(bv, 1) = T.
+        let bv = Sexp::bool_vector(3, false);
+        if let Sexp::BoolVector(rc) = &bv {
+            rc.borrow_mut()[1] = true;
+        } else {
+            panic!("bool_vector did not produce BoolVector");
+        }
+        let mut out = Sexp::Nil;
+        let r = (jit().aref)(&bv as *const _, 0, &mut out as *mut _);
+        assert_eq!(r, TRAMPOLINE_OK);
+        assert_eq!(out, Sexp::Nil);
+        let r = (jit().aref)(&bv as *const _, 1, &mut out as *mut _);
+        assert_eq!(r, TRAMPOLINE_OK);
+        assert_eq!(out, Sexp::T);
+        let r = (jit().aref)(&bv as *const _, 2, &mut out as *mut _);
+        assert_eq!(r, TRAMPOLINE_OK);
+        assert_eq!(out, Sexp::Nil);
+    }
+
+    #[test]
+    fn jit_aref_bool_vector_out_of_range() {
+        let bv = Sexp::bool_vector(2, true);
+        let mut out = Sexp::Nil;
+        let r = (jit().aref)(&bv as *const _, 5, &mut out as *mut _);
+        assert_eq!(r, TRAMPOLINE_ERR);
+    }
+
+    #[test]
+    fn jit_aset_bool_vector_in_range_mutates() {
+        // bv = [true, true, true] → aset(bv, 1, nil) flips slot 1 to false.
+        let bv = Sexp::bool_vector(3, true);
+        let val_nil = Sexp::Nil;
+        let mut out = Sexp::T;
+        let r = (jit().aset)(
+            &bv as *const _,
+            1,
+            &val_nil as *const _,
+            &mut out as *mut _,
+        );
+        assert_eq!(r, TRAMPOLINE_OK);
+        assert_eq!(out, Sexp::Nil);
+        // Confirm the mutation: aref returns Nil at slot 1, T elsewhere.
+        let mut probe = Sexp::Nil;
+        assert_eq!(
+            (jit().aref)(&bv as *const _, 0, &mut probe as *mut _),
+            TRAMPOLINE_OK
+        );
+        assert_eq!(probe, Sexp::T);
+        assert_eq!(
+            (jit().aref)(&bv as *const _, 1, &mut probe as *mut _),
+            TRAMPOLINE_OK
+        );
+        assert_eq!(probe, Sexp::Nil);
+        // Truthy non-Nil value sets slot to true.
+        let val_int = Sexp::Int(42);
+        let r = (jit().aset)(
+            &bv as *const _,
+            1,
+            &val_int as *const _,
+            &mut out as *mut _,
+        );
+        assert_eq!(r, TRAMPOLINE_OK);
+        assert_eq!(out, val_int);
+        assert_eq!(
+            (jit().aref)(&bv as *const _, 1, &mut probe as *mut _),
+            TRAMPOLINE_OK
+        );
+        assert_eq!(probe, Sexp::T);
+    }
+
+    #[test]
+    fn jit_aset_bool_vector_out_of_range_returns_err() {
+        let bv = Sexp::bool_vector(2, false);
+        let val = Sexp::T;
+        let mut out = Sexp::Nil;
+        let r = (jit().aset)(
+            &bv as *const _,
+            5,
+            &val as *const _,
+            &mut out as *mut _,
+        );
+        assert_eq!(r, TRAMPOLINE_ERR);
     }
 
     // --- Stage 5.6 (2026-05-07) — aset / elt trampolines ---
