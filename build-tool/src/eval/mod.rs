@@ -194,6 +194,23 @@ fn apply_combiner(head: &Sexp, tail: &Sexp, env: &mut Env) -> Result<Sexp, EvalE
             // 2) Macro? — expand once, recurse on expansion.
             if let Ok(func) = env.lookup_function(name) {
                 if is_macro(&func) {
+                    // Phase 7 Stage 7.5.c (Doc 69 §3.1): post-bootstrap →
+                    // route through elisp `nelisp--expand-macro'.  The
+                    // self-pacing `lookup_function' check on the helper
+                    // lets bootstrap fall through to Rust `expand_macro'
+                    // (= the elisp helper isn't installed until
+                    // nelisp-stdlib-eval-core.el — last STDLIB_SOURCES
+                    // entry — completes loading).  Helpers and the
+                    // delegation-depth-guarded recursive path also fall
+                    // through to avoid cycles: the elisp helper itself
+                    // expands macros via its own `cond' chain that
+                    // calls back into the dispatcher.
+                    if env.delegation_depth == 0
+                        && !is_elisp_apply_helper(name)
+                        && env.lookup_function("nelisp--expand-macro").is_ok()
+                    {
+                        return delegate_macro_to_elisp(&func, tail, env);
+                    }
                     let expansion = expand_macro(&func, tail, env)?;
                     return eval(&expansion, env);
                 }
@@ -374,6 +391,34 @@ fn delegate_to_elisp_apply(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<
     let result = eval(&dispatch_form, env);
     env.delegation_depth -= 1;
     result
+}
+
+/// Phase 7 Stage 7.5.c (Doc 69 §3.1) — delegate a macro expansion to
+/// the elisp `nelisp--expand-macro' helper, then evaluate the
+/// resulting form.  `macro_form' is the `(macro . LAMBDA)' shape;
+/// `arg_forms' is the *un-evaluated* argument list (= macro semantics).
+///
+/// Bumps `env.delegation_depth' for the duration of the expansion call
+/// so helpers invoked within (= cdr / null / consp / etc.) take the
+/// Rust dispatch path and don't recurse back through this delegate.
+/// The returned expansion is then `eval'd in the caller's env so that
+/// any free variables it references are resolved against the call
+/// site's lexical scope, matching Rust `expand_macro` semantics.
+fn delegate_macro_to_elisp(
+    macro_form: &Sexp,
+    arg_forms: &Sexp,
+    env: &mut Env,
+) -> Result<Sexp, EvalError> {
+    let dispatch_form = Sexp::list_from(&[
+        Sexp::Symbol("nelisp--expand-macro".into()),
+        Sexp::list_from(&[Sexp::Symbol("quote".into()), macro_form.clone()]),
+        Sexp::list_from(&[Sexp::Symbol("quote".into()), arg_forms.clone()]),
+    ]);
+    env.delegation_depth += 1;
+    let expansion = eval(&dispatch_form, env);
+    env.delegation_depth -= 1;
+    let expansion = expansion?;
+    eval(&expansion, env)
 }
 
 /// Apply `func` to `args`.  `func` may be:

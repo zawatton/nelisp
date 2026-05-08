@@ -200,11 +200,23 @@ delegation through this same dispatcher when the takeover flag is on."
     (signal 'wrong-type-argument (list 'function fn)))))
 
 (defun nelisp--expand-macro (macro-form arg-forms)
-  "Expand `(macro . LAMBDA)' shape MACRO-FORM by calling its LAMBDA on
+  "Expand a macro MACRO-FORM by calling its underlying function on
 ARG-FORMS un-evaluated.  ARG-FORMS is a list of *raw* argument forms
 (= macro semantics, args are not evaluated before the call).  Returns
-the expansion form; the caller is expected to re-eval it."
-  (let ((inner (cdr macro-form)))
+the expansion form; the caller is expected to re-eval it.
+
+Two macro shapes are accepted (matches GNU Emacs + Rust eval/mod.rs
+`expand_macro'):
+  (a) =(macro . LAMBDA)= dotted pair (= ERT-artificial / explicit cons
+      construction).  cdr is the lambda directly.
+  (b) =(macro LAMBDA)= 2-element list (= what `defmacro' actually
+      builds: `(cons \\='macro (cons LAMBDA-OR-CLOSURE nil))').  cdr is
+      a 1-element list wrapping the lambda."
+  (let* ((c (cdr macro-form))
+         (inner (cond
+                 ((or (nelisp--lambdap c) (nelisp--closurep c)) c)
+                 ((consp c) (car c))
+                 (t c))))
     (cond
      ((nelisp--lambdap inner)
       (nelisp--apply-lambda inner arg-forms))
