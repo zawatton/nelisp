@@ -1,0 +1,618 @@
+#+TITLE: Doc 77 — Phase 5 Next-Gen JIT (extern boundary 撚廃 + inline fast path 拡張)
+#+AUTHOR: Claude (z=Opus 4.7) + user direction
+#+DATE: 2026-05-08
+#+OPTIONS: ^:nil toc:2 num:t
+
+* Status
+:PROPERTIES:
+:STATE: DRAFT
+:DRAFTED: 2026-05-08
+:PARENT: Doc 62 §0 audit-revised (= Phase 5 IR family scaffold complete だが perf target 未達)
+:RELATED: Doc 49 (elisp pivot) / Doc 50 (irreducible unlock) / Doc 63 (Phase 7 self-host roadmap) / Doc 64〜76 (= Phase 7 elisp 化 stages)
+:DEPENDS_ON: Doc 62 Stage 5.0〜5.7 SHIPPED (= 5 IR family / 24 primitives lowered / repr-pin commit 2fb64cd)
+:SUPERSEDES: Doc 62 §3 5.6 "Path B = OS 別 syscall instruction emit" の perf 期待値 (= 軸 A の eval-site JIT が先決)
+:END:
+
+* §0 TL;DR
+
+Doc 62 Phase 5 (= Stage 5.0〜5.7 SHIPPED) は scaffold としては成功:
+5 IR family (Syscall/Arith/Cons/Access/Predicate) / 24 primitives
+を Cranelift で lower、=lower_entries= registry + =try_lower=
+hook で eval から呼出可能、Stage C で 6 primitive の =bi_*=
+を削除 (=-175 LOC=).
+
+しかし =bench_*= harness (Doc 62 §4.2) で計測したところ perf
+target (= 5x〜20x speedup) は *未達*:
+
+| primitive            | dispatch ns/op | JIT ns/op | speedup |
+|----------------------+----------------+-----------+---------|
+| =add2= Int+Int       |          6.68  |     4.68  |  1.43x  |
+| =eq= Int+Int (inline)|          ~5.5  |     ~3.5  |  1.56x  |
+| =car= Cons head      |         ~10.0  |    ~10.0  |  0.99x  |
+| =cdr= Cons head      |         ~10.0  |    ~10.0  |  0.99x  |
+| =length= Cons walk   |         ~12.0  |    ~13.0  |  0.92x  |
+| =car nil= (inline)   |          ~6.0  |     ~8.2  |  0.73x  |
+| =syscall(getpid)=    |        ~520    |   ~538    |  0.97x  |
+
+根本原因は明白で、Cranelift で生成した JIT 関数を Rust 側から
+=extern "C"= 経由で呼出すための *trampoline boundary cost* が
+~3-5 ns/call 乗る一方、=dispatch()= の =match= arm cost は
+~1-2 ns しかない. つまり「Rust → JIT trampoline → helper」hop の
+合計は「Rust → match arm → helper」hop より長く、helper を呼ぶ
+primitive (= cons / length / aref / aset / elt / setcar / setcdr /
+syscall) では JIT path が dispatch path より *遅い*.  Inline 化が
+効いた add2 / eq でさえ speedup 1.4-1.6x にとどまる (= 計算自体が
+1 命令で終わるので boundary cost の相対比率が大きい).
+
+Doc 62 の scaffold は valid だが、perf target を満たすには
+*別 dimension の最適化* が必要. Doc 77 はこの next-gen step を
+2 軸で articulate する:
+
+** 軸 A — eval call-site JIT 化 (= extern "C" boundary 撚廃, big)
+
+call-site で primitive 名がコンパイル時固定なら、
+=apply_builtin= 自体を JIT compile object として再構築できる.
+具体的には:
+
+- =eval_call(form, env)= の form が =(F ARG1 ARG2)= で F が
+  builtin であると判明した時点で、その call site 専用の
+  JIT entry を発行 (= F が =add2= なら =iadd= 直 emit、=cons=
+  なら Sexp::Cons constructor 直 emit、…)
+- =&[Sexp]= 引数 array を構築するための =Vec= alloc / clone も
+  JIT 側で emit (= stack-alloc + 引数 i64 直渡し)
+- helper 経由を完全 bypass、Sexp memory layout (= 既存の
+  =#[repr(C, u8)]= + payload offset 8) を JIT が直 read/write
+
+これは v8 / SBCL / Common Lisp native compile / Cranelift wasmtime
+で確立された手法に近い. Phase 5 next-gen / Phase 10 候補.
+規模感は多 session・多 commit、Sexp ABI を pin しつつ漸進的に
+trampoline を削っていく必要がある.
+
+** 軸 B — inline fast path 拡張 (= small + safe)
+
+既存 5 IR family の inline emit を、まだ helper 経由に頼っている
+hot variant 群へ拡張:
+
+- =BoolVector= aref/aset (= =Rc<RefCell<Vec<bool>>>= の data ptr
+  を Rust helper で 1 度引いた後、index → byte load / store を
+  Cranelift IR で直 emit)
+- =CharTable= aref (= 現状 sparse =Vec<(i64, Sexp)>= linear scan、
+  小エントリ前提なので、Rust helper 内で linear scan するが、
+  miss 時 default_val 返却の判定だけを inline 化)
+- =Vector= aset の bounds check inline 化 (= 現状 Rust 側で
+  =borrow_mut= → match → bounds check、JIT で len load + cmp +
+  brif を emit すれば helper call 1 hop 削減可能)
+- =eq= の Symbol fast path (= tag が Symbol で a_ptr ≠ b_ptr の
+  時、payload offset 8 が =Box<String>= ptr の場合 ptr_eq だけ
+  でも安全に answer 出せる場合あり)
+
+各 +20-40 LOC、5-15% 改善見込み. 1-2 commit で完了、Stage 1
+として早期 ship 可.
+
+** Stage 構成
+
+| Stage | 軸 | 内容                                               | 規模 / commit 数 |
+|-------+----+----------------------------------------------------+------------------|
+|     1 | B  | inline fast path 拡張 (BoolVector / CharTable / 他) | ~50-100 LOC, 1-2 |
+|     2 | A  | eval/mod.rs に call-site JIT entry point 仕込み    | ~150 LOC, 1-2    |
+|     3 | A  | hot eval form (= function call) を JIT compile object へ | ~300 LOC, 2-3 |
+|     4 | A  | Sexp memory layout を JIT emit base (= Rc ABI dependency 撚廃) | ~400 LOC, 3-4 |
+|     5 | A  | 既存 trampoline path delete + LOC 回収                  | ~-2,000 LOC, 1-2 |
+
+Stage 1 のみ独立 ship 可能、Stage 2-5 は順序依存 (= Stage 4 が
+Sexp ABI pin、Stage 5 が cleanup). 着手判断は Stage 1 完了後の
+bench 結果と user 判断に応じる.
+
+** 期待 perf delta (= 数値は articulate のみ、実測は Stage 完了で確定)
+
+| 軸 / Stage         | 想定 speedup (vs current dispatch) |
+|--------------------+------------------------------------|
+| Stage 1 (= 軸 B)   | 1.05〜1.15x (= 現状 inline path の helper-call 1 hop 削減) |
+| Stage 2-3 (= 軸 A) | 2-4x (= boundary cost 撚廃 + arg pack inline) |
+| Stage 4-5 (= 軸 A) | 5-10x (= Sexp 直 emit + Rc bump 削減、Doc 62 当初目標値) |
+
+* §1 動機
+
+** §1.1 Doc 62 §0 audit-revised の articulate と限界
+
+Doc 62 §0 audit-revised (2026-05-08) は LOC reduction が当初
+=-3,100= 楽観値から =-145= 実値に改訂された理由を articulate
+した:
+
+- specialized syscall 25 primitive は buffer/struct 引数で
+  lower 不可 (= Phase 7 elisp 化 = Doc 76 で別 track)
+- Float 対応 / non-Linux fallback は不可避
+- Stage C-Phase1b 4 primitive (length/aref/aset/elt) は variant 多く
+  helper 残存
+
+LOC 軸はこれで closed. 残るのは *perf 軸*: Doc 62 §1.2 で
+articulate された "dispatcher overhead 1 段消去で 5x〜20x" の
+実値が 0.7-1.6x で打ち止めだった事実.
+
+** §1.2 bench audit (= 2026-05-08 計測結果)
+
+=cargo test --release -p nelisp-build-tool --lib -- --ignored
+--nocapture jit::bench= で計測 (= jit/bench.rs §4.2):
+
+#+begin_example
+[bench] add2 (Int+Int)             1000000 iters | jit  4.68ns/op | dispatch  6.68ns/op | speedup 1.43x
+[bench] syscall(getpid)             100000 iters | jit  538ns/op  | dispatch  520ns/op  | speedup 0.97x
+[bench] cons (build 64-deep chain) 6400000 iters | jit ~38ns/op   | dispatch ~32ns/op   | speedup 0.84x
+[bench] car (Cons head)             100000 iters | jit ~10ns/op   | dispatch ~10ns/op   | speedup 0.99x
+[bench] cdr (Cons tail)             100000 iters | jit ~10ns/op   | dispatch ~10ns/op   | speedup 0.99x
+[bench] car nil (inline)           1000000 iters | jit  8.2ns/op  | dispatch  6.0ns/op  | speedup 0.73x
+[bench] cdr nil (inline)           1000000 iters | jit  8.2ns/op  | dispatch  6.0ns/op  | speedup 0.73x
+[bench] length nil (inline)        1000000 iters | jit  8.2ns/op  | dispatch  6.0ns/op  | speedup 0.73x
+[bench] eq Int+Int (inline)        1000000 iters | jit  3.5ns/op  | dispatch  5.5ns/op  | speedup 1.56x
+#+end_example
+
+speedup > 1.0x なのは inline tag-byte fast path が効いた add2 / eq
+のみ. helper 経由 (= cons/syscall/car/cdr/length non-Nil/aref/aset/elt)
+は 0.84-0.99x で全て *parity 以下*.
+
+特に注目すべきは =(car nil)= / =(cdr nil)= / =(length nil)= の
+inline 経路: Stage 5.3/5.4 で「tag byte 1 個 load して NIL なら
+即 return」という最短 inline path を emit したにも関わらず speedup
+0.73x. つまり JIT 経路自体に乗る overhead (= =try_lower(name, args, env)= の
+HashMap lookup + LowerFn dynamic dispatch + arg refcheck + extern "C"
+call boundary + 結果 Sexp の =*mut Sexp= store) が dispatch の
+=match name= arm より遅い.
+
+** §1.3 構造的な原因 — extern "C" boundary 撚廃が必須
+
+Cranelift で emit した関数を Rust から呼ぶ pattern は (Doc 62 §2.3
+で articulate された通り):
+
+#+begin_src rust
+// jit/cons.rs::lowered_car
+fn lowered_car(args: &[Sexp], _env: &mut Env) -> Result<Sexp, EvalError> {
+    crate::eval::builtins::require_arity("car", args, 1, Some(1))?;
+    let mut out = Sexp::Nil;
+    let r = (jit().car)(&args[0] as *const _, &mut out as *mut _);  // ← extern "C" call
+    if r == TRAMPOLINE_OK { Ok(out) }
+    else { Err(EvalError::WrongType { ... }) }
+}
+#+end_src
+
+cost 分解:
+
+- =require_arity= (= len check + Result alloc): ~1 ns
+- =Sexp::Nil= 初期化 (= tag store): ~0.5 ns
+- =&args[0] as *const _= / =&mut out as *mut _= ptr 取得: ~0.5 ns
+- =extern "C" fn(*const Sexp, *mut Sexp) -> i64= 呼出: *~3 ns* (= push/pop + ABI shuffle + indirect call)
+- (内部) Cranelift emit IR: tag load + brif + 1 命令 inline ~1.5 ns
+- branch return + =if r == TRAMPOLINE_OK= dispatch: ~1 ns
+- =Ok(out)= の Result wrap (= Move): ~1.5 ns
+
+合計 ~9 ns/call. 一方 =dispatch("car", args, env)= は:
+
+- =match name= 文字列比較 (= 早期 hit): ~1.5 ns
+- =bi_car(args)= 直接呼出 (= Rust 関数、inline 候補): ~3 ns
+- =Sexp::Cons= match + clone: ~1.5 ns
+
+合計 ~6 ns/call. JIT path の ~3 ns/call boundary が dispatch path の
+match arm cost を上回る. *helper 経由 inline 化は本質的に勝てない*.
+
+Inline tag-byte path (= car nil / cdr nil / length nil) でさえ JIT
+trampoline 自体が 3 ns 乗るので、5 命令の short helper を呼ぶのと
+ほぼ同じ cost になり結局負ける.
+
+** §1.4 v8 / SBCL pattern との対比
+
+商用 native compiler では call-site が JIT compile 単位:
+
+- *v8 (TurboFan)*: hot function 全体を IR に lift、call site 内部の
+  (a + b) は IR node、=Smi+Smi= path は host =add= 1 命令、Smi 判定
+  + deopt branch は inline、boundary は IC patching (= 関数全体 1 hop)
+- *SBCL*: =(declare (optimize (speed 3)))= で fixnum 引数 known な
+  関数は call site で =add rax, rbx= 直 emit、Lisp object 表現が
+  tagged i64 (= LSB tag bit) でメモリレイアウト不要
+- *Cranelift wasmtime*: wasm function 全体を 1 unit で compile、
+  call は wasm-internal で boundary 不在、host runtime call (=
+  =call_indirect= に Rust =extern "C"= 経由) のみ boundary
+
+Doc 62 Phase 5 の現状は 1 primitive = 1 JIT entry なので各 call ごとに
+boundary が乗る. 軸 A は v8/SBCL pattern (= eval form 全体を JIT
+compile unit にする) への移行.
+
+** §1.5 軸 B が並行で意味を持つ理由
+
+軸 A は数 session 単位の大規模再構成で着手判断もまだ確定していない.
+一方 *Phase 5 IR scaffold が既にある* ので、まだ helper 経由のままの
+variant に inline fast path を追加するだけで小幅 (5-15%) の改善は出る.
+具体的:
+
+- =BoolVector aref=: 現状 Vector aref が JIT で済むが BoolVector は
+  Rust helper match arm 経由. inline 化可能 (= len load + bounds + bit pack)
+- =Vector aset bounds=: 現状 helper 内 =borrow_mut= + match + len cmp、
+  JIT で len load + cmp + brif + ERR fallback emit すれば 1 hop 短縮
+- =CharTable aref=: sparse linear scan は JIT 化が割に合わないが、
+  =default_val 返却 path= だけ inline で OK 可能
+- =eq Symbol=: Symbol は heap-alloc =String=、interned でも =Rc::ptr_eq=
+  は使えないので JIT でできるのは tag 判定までだが、tag mismatch path
+  と Int path は既に inline、Symbol/Str/Cons は helper. Symbol の
+  =&Sexp= ptr 比較 (= 同 Sexp ref) を inline で先取りすると
+  =(let ((s 'foo)) (eq s s))= 系の hot-path で +α
+
+これらは Stage 1 の 1-2 commit で ship 可能.  実改善は Doc 62 当初
+目標 (5x-20x) の足下にも届かないが、軸 A が遅れた場合の現実的 fallback
+として有用.
+
+** §1.6 escape hatch =NELISP_NO_JIT= の必要性
+
+Stage 4 (= Sexp 直 emit) を踏むと Sexp ABI 変更が必要になる場合
+ある. その時点で:
+
+- production build は inline emit で動く
+- ABI 変更を疑う事象 (= 不正 SEGV / undef behaviour) で fallback
+  比較したい
+- Sexp 型 derive な test (= reader output 比較) を ABI 抵触なく回す
+
+ため、起動時 1 回判定の =NELISP_NO_JIT=1= 環境変数で =lower_entries=
+を空に短絡する hatch を Stage 1 で先行導入. Doc 62 §2.4 Stage A
+の "並行運用" を製品 build にも残す形.
+
+* §2 設計
+
+** §2.1 全体構成 — 2 軸 + Stage 分解
+
+#+begin_example
+                          Doc 77 Phase 5 next-gen
+                                    │
+                ┌───────────────────┼─────────────────────┐
+                │                   │                     │
+        Stage 1 (= 軸 B)    Stage 2-3 (= 軸 A 前段)  Stage 4-5 (= 軸 A 後段)
+        ─────────────       ──────────────────       ──────────────────
+        BoolVector inline   call-site JIT entry      Sexp 直 emit
+        CharTable miss      hot form lift            Rc ABI 撚廃
+        Vector aset bounds  arg pack inline          trampoline delete
+        eq Symbol fast      多 commit                LOC -2,000
+        +50-100 LOC         +300-450 LOC             commit 多数
+        1.05-1.15x          2-4x                     5-10x
+        1-2 commit          2-3 stage                3-4 stage
+#+end_example
+
+** §2.2 軸 B (Stage 1) — inline fast path 拡張
+
+*** §2.2.1 BoolVector aref / aset
+
+現状の =jit/access.rs::aref_helper= で =Sexp::BoolVector(rc)= は
+helper match arm 経由. inline 化 plan: helper を =unpack= +
+=get_data_ptr + len= 返却、JIT で =idx u8 load + cmp_imm 0 + select
+T/Nil tag store= を emit. helper 1 個追加 + IR 4-5 命令.
+
+aset 同様: helper で =borrow_mut= → =as_mut_ptr= + len 返却、JIT で
+bounds + =store.i8 [data_ptr + idx], byte= emit.
+
+LOC 規模: helper 2 fn (~30 LOC) + IR build 2 fn (~50 LOC) = ~80 LOC.
+
+*** §2.2.2 CharTable aref miss path inline
+
+現状の =char_table_get= は sparse linear scan. linear scan 自体を
+inline 化するのは loop 制御が要るので割に合わない. =CharTable= の
+典型用途 (syntax-table) は entries 多めなので benefit 小. *Stage 1
+では deferred 推奨*. articulate のみ.
+
+*** §2.2.3 Vector aset bounds check inline
+
+現状の =jit/access.rs::nl_jit_access_aset= は match arm 内で
+=borrow_mut= + bounds check + write. =Sexp= variant の中には
+=Box<...>= / =Rc<...>= を含むものがあり、単純 16-byte copy では Rc bump
+が起きず use-after-free の危険. *Stage 1 で即 inline 化はせず、軸 A
+Stage 4 (Sexp ABI pin) の後で実装*. Stage 1 範囲では =bounds check
+のみ inline= (= len load + cmp + ERR branch まで JIT、=clone=実体は
+helper) で +α 削減.
+
+LOC 規模: ~30-40 LOC.
+
+*** §2.2.4 eq Symbol short-circuit (= same Rc)
+
+現状の =jit/predicate.rs::declare_eq_inline= は tag mismatch + Int
+fast path のみ inline. inline 化 plan: =a_ptr == b_ptr= の同一 Sexp
+ref check を tag load 前に追加. =(eq x x)= は host =cmp=で 0 → 1
+(= true). 1 命令追加で hot pattern を取れる.
+
+LOC 規模: +5-10 LOC. 単純なので含めるべき.
+
+*** §2.2.5 Stage 1 まとめ
+
+| 候補               | LOC 増  | 想定 perf delta              | 推奨 |
+|--------------------+---------+------------------------------+------|
+| BoolVector aref    | +40-50  | BoolVector hot で +20-30%     | Yes  |
+| BoolVector aset    | +30-40  | 同上                          | Yes  |
+| CharTable miss     | +20     | 限定的 (= elisp 化候補)       | No   |
+| Vector aset bounds | +30-40  | aset all で +5-10%            | Yes  |
+| eq same-ref        | +10     | =(eq x x)= で 50% 短縮        | Yes  |
+
+合計 +110-140 LOC、1-2 commit. Stage 1 完了で =NELISP_NO_JIT=
+escape hatch + bench 比較 → Stage 2 着手判断.
+
+** §2.3 軸 A (Stage 2-5) — call-site JIT 化
+
+*** §2.3.1 Stage 2 — call-site JIT entry point
+
+eval/mod.rs::apply_builtin の call site は現在 =try_lower(name, args, env)=
+で HashMap lookup + name 文字列比較. *name はコンパイル時固定*なのに
+毎回 lookup.
+
+Stage 2 の articulation: =eval(form, env)= で =form = (F ARG1 ARG2)=
+の F が =Sexp::Cons(builtin, F-name)= だと判明したら、その call
+site (= *form の identity*) に紐づく *cached JIT entry* を引く.
+
+cache key は =Sexp::Cons= の =Rc::as_ptr()= (= form 自体が解釈中
+存在し続ける、GC 後の identity は同 Rc). =ThreadLocal<HashMap<
+*const Sexp, JitEntry>>= で keep. 初回 hit で =NAME= を読んで JIT
+entry 取得、HashMap insert. 以降は ptr 比較 1 命令 + direct call.
+
+LOC 規模: +150 LOC, 1-2 commit. ABI 変更なし.
+
+*** §2.3.2 Stage 3 — hot eval form を JIT compile object へ
+
+Stage 2 の cache hit 後の dispatch は依然 =LowerFn= 経由 (= dynamic
+call). Stage 3 では form が *連続して評価される* (= loop body /
+map closure body) と判明した時点 (= eval call counter で 100+ hit)
+でその form 全体を JIT compile object に lift.
+
+例: =(while (consp x) (setq x (cdr x)))= の body =(setq x (cdr x))=
+は 100 iteration 回るので JIT compile 候補.
+
+emit pattern:
+- =cdr x= → =x_ptr = load.i64 [env_ptr + frame_offsets["x"]]; tag =
+  load.i8 [x_ptr + 0]; if tag == NIL → emit Nil; else → call helper_cons_cdr=
+- =setq x ...= → =store.i64 [env_ptr + frame_offsets["x"]], result_ptr=
+
+LOC 規模: +300-400 LOC, 2-3 commit. 複数 sub-stage:
+
+- Stage 3.a: form lift detector (= eval call counter, threshold)
+- Stage 3.b: simple form (= setq + builtin call) を IR に compile
+- Stage 3.c: branch / let / lambda body の対応
+- Stage 3.d: invalidation (= form が macroexpand で書き換わった場合)
+
+*** §2.3.3 Stage 4 — Sexp memory layout を JIT emit base
+
+Stage 3 までで =Rc<RefCell<...>>= は依然 helper 経由. Stage 4 で
+=Sexp::Cons(Rc<RefCell<Sexp>>, Rc<RefCell<Sexp>>)= の memory layout
+を pin して JIT が直 emit. 解決策候補:
+
+- (i) =Rc<...>= を =NlRc<...>= 自前実装で置換 — 規模大
+- (ii) =Sexp::Cons(NlConsBox*)= で =NlConsBox= を =#[repr(C) struct
+  { car: Sexp, cdr: Sexp, refcount: AtomicUsize }= に固定 — 妥当
+- (iii) tagged pointer (= SBCL pattern) — Rust 系生態系から外れる
+
+(ii) を採用. =NlConsBox= だけ pin、=Vec= / =Box<String>= は dispatcher
+経由維持.
+
+emit pattern:
+
+#+begin_example
+jit_car(arg_ptr, out_ptr):
+  tag = load.i8 [arg_ptr + 0]
+  if tag == NIL: store NIL, return OK
+  if tag != CONS: return ERR
+  cons_box_ptr = load.i64 [arg_ptr + 8]      # Sexp::Cons payload = NlConsBox*
+  car_tag = load.i8 [cons_box_ptr + 0]       # NlConsBox.car @ offset 0
+  car_pld = load.i64 [cons_box_ptr + 8]
+  store.i8  car_tag → [out_ptr + 0]
+  store.i64 car_pld → [out_ptr + 8]
+  return OK
+#+end_example
+
+LOC 規模: +400-500 LOC, 3-4 commit. =NlRc / NlConsBox= 実装 + 全 Sexp
+manipulation の置換.
+
+*** §2.3.4 Stage 5 — trampoline path delete
+
+Stage 4 まで完了で trampoline 削除 + =bi_*= 残骸 cleanup で =-2,000 LOC=
+の見込み. Sexp 直 emit が確立すれば、Phase 5 当初目標 (5x-20x) に到達.
+
+LOC 規模: -2,000 LOC, 1-2 commit. cleanup なので低 risk.
+
+** §2.4 Cranelift module batching
+
+現状の =jit/{arith,cons,access,predicate,syscall}.rs= は各 module ごとに
+独自の =OnceLock<JITModule>= を持つ. 起動時の mmap 5 個 + Cranelift
+codegen 5 回.
+
+Stage 2 〜の前作業として、*5 module を 1 module にまとめる*. 利点:
+- mmap page 1 個 (= 起動コスト 5x 削減)
+- =declare_function= で全 entry を共通 namespace に置けるので、
+  call-site JIT (Stage 3) で「ある JIT 関数が別の JIT 関数を直 call」
+  できる
+- module 間の symbol resolution overhead 削減
+
+LOC delta: -50 LOC. Stage 2 前段の prep として 1 commit で先行 ship 可.
+
+** §2.5 escape hatch =NELISP_NO_JIT=
+
+Stage 1 で先行導入. =NELISP_NO_JIT=1= で =lower_entries= を空に短絡.
+ただし Stage C で =bi_car= 等を *削除済み* なので、空 map では
+=dispatch("car", ...)= が落ちる. 採用方針: =NELISP_NO_JIT= は
+「JIT 化されていて bi_* も残ってる primitive」のみ意味あり、JIT-only
+化された primitive は強制 JIT (= env 変数を無視) とする.
+
+** §2.6 ファイル配置
+
+| 種別     | path                                                 | 操作       |
+|----------+------------------------------------------------------+------------|
+| 設計書    | =docs/design/77-phase5-next-gen-jit.org=             | new (本 Doc) |
+| Stage 1   | =jit/access.rs= (BoolVector inline + bounds check)   | edit       |
+| Stage 1   | =jit/predicate.rs= (eq same-ref)                      | edit       |
+| Stage 1   | =jit/mod.rs= (=NELISP_NO_JIT= hatch)                  | edit       |
+| Stage 1   | =jit/bench.rs= (BoolVector + Vector aset bench 追加)   | edit       |
+| Stage 2   | =jit/site_cache.rs= (新規: form-identity cache)        | new        |
+| Stage 2   | =eval/mod.rs::apply_builtin= 改修                       | edit       |
+| Stage 3   | =jit/form_lift.rs= (新規: form lift / IR builder)       | new        |
+| Stage 3   | =eval/mod.rs::eval= の hot detector                    | edit       |
+| Stage 4   | =eval/sexp.rs::NlRc / NlConsBox=                      | new types  |
+| Stage 4   | =eval/sexp.rs::Sexp::Cons= variant 内部置換              | edit       |
+| Stage 4   | 全 Sexp manipulation 経路の =Rc::clone / borrow= 置換      | edit 多数  |
+| Stage 5   | =jit/{cons,access,predicate}.rs= の trampoline 削除      | delete     |
+
+* §3 段階的 unlock plan
+
+| stage | 解放対象                                              | 推定 perf delta | 推定 LOC delta | 依存          |
+|-------+-------------------------------------------------------+-----------------+-----------------+---------------|
+|     1 | 軸 B inline fast path 拡張 + =NELISP_NO_JIT= hatch    | +1.05〜1.15x    | +110-140         | -             |
+|   2-prep | Cranelift module batching (= 5 module → 1)           | +0.05x (= startup) | -50          | -             |
+|     2 | call-site JIT entry point + form-identity cache         | +1.5〜2x        | +150-200         | 1, 2-prep     |
+|     3 | hot eval form lift to JIT compile object              | +2〜3x          | +300-400         | 2             |
+|     4 | Sexp memory layout pin + JIT emit base                 | +1.5〜2x        | +400-500         | 3             |
+|     5 | trampoline delete (= cons/access/predicate)            | +0.1x (= cleanup) | -2,000         | 4             |
+
+合計推定: Stage 5 完了で **+5〜10x speedup** (= Doc 62 当初目標値の
+下限〜中位). =-1,000 LOC= 程度の Rust 削減.
+
+各 stage は独立 ship 可能 (= 1, 2-prep, 2, 3, 4, 5 全部別 commit).
+Stage 4 は ABI 変更なので user 確認必須.
+
+* §4 Test plan
+
+** §4.1 各 stage 既存 ERT 全 PASS
+- =make test= で 0 unexpected を要件
+- Stage 4 着手時は =Sexp::Cons= 経路の全 manipulation を unit test で
+  個別検証 (= reader → Sexp / printer / equal / eq / clone / Drop /
+  cycle GC test の各 path)
+- =NELISP_NO_JIT=1 cargo test= で全 dispatch 経路 PASS (Stage 1〜3 のみ)
+
+** §4.2 bench
+
+各 stage で =cargo test --release -p nelisp-build-tool --lib --
+--ignored --nocapture jit::bench= を回し、Doc 62 §4.2 の primitive
++ Stage 1 で追加の primitive を計測:
+
+| primitive                | Stage 0 (current) | Stage 1 目標 | Stage 3 目標 | Stage 5 目標 |
+|--------------------------+-------------------+--------------+--------------+--------------|
+| add2 Int+Int              | 1.43x             | 1.43x         | 2.5x          | 5x           |
+| eq Int+Int                | 1.56x             | 1.56x         | 2.5x          | 5x           |
+| eq same-ref               | n/a               | 2.0x          | 3.0x          | 5x           |
+| car Cons head             | 0.99x             | 0.99x         | 2.0x          | 8x           |
+| cdr Cons head             | 0.99x             | 0.99x         | 2.0x          | 8x           |
+| length Cons walk          | 0.92x             | 0.92x         | 2.5x          | 6x           |
+| BoolVector aref           | n/a               | 1.3x          | 2.0x          | 4x           |
+| BoolVector aset           | n/a               | 1.3x          | 2.0x          | 4x           |
+| Vector aset               | n/a               | 1.1x          | 2.0x          | 5x           |
+| syscall(getpid)           | 0.97x             | 0.97x         | 0.97x         | 0.97x (= helper 残存) |
+
+各値は articulate のみ. 実値は stage 完了 commit で記録.
+
+** §4.3 cross-arch 検証
+
+軸 A は Sexp memory layout を JIT が直 read するので、aarch64 / Darwin
+での =#[repr(C, u8)]= の payload offset / alignment 検証必要.
+具体的に Stage 1 commit と同 commit で:
+
+- Linux x86_64: 既 SHIPPED, payload offset 8 確認済
+- Linux aarch64: cross-build で same offset 確認 (= =cargo test
+  --target aarch64-unknown-linux-gnu=)
+- Darwin x86_64 / aarch64: 仮想 macOS or CI 経由で variant_tag
+  unit test PASS 確認
+- Windows x86_64: Cranelift 対応済、同様
+
+bench は Linux x86_64 のみ正式. arch 別 perf delta は articulate のみ.
+
+** §4.4 ABI invariant test
+
+Stage 4 前に =Sexp= layout invariant を unit test で固化:
+
+- =std::mem::size_of::<Sexp>() == 16= (= 1 + 7 padding + 8 payload)
+- =std::mem::align_of::<Sexp>() == 8=
+- =SEXP_TAG_*= constants が =variant_tag(&Sexp::FOO)= と完全一致
+  (= 既 sexp.rs::tests に存在、Stage 4 で =NlConsBox= も追加)
+- =NlConsBox= layout: =offset_of!(NlConsBox, car) == 0=,
+  =offset_of!(NlConsBox, cdr) == 16=
+
+* §5 共通原則
+
+- *軸 B (= Stage 1) は軸 A の準備でなく独立 ship*: Stage 2 着手判断が
+  user 待ちなので、Stage 1 だけで perf 改善 +5-15% を即得る. Stage 2
+  への足掛かりではない (= 独立に valid な改善).
+- *Stage 4 ABI 変更前に必ず frozen 状態 (= 全 ERT PASS + bench 記録)
+  を commit*: ABI 変更で既存 commit から bisect する場合の足場確保.
+- *invariant 違反は assert! で fail-fast*: Stage 4 で =NlConsBox= layout
+  違反は startup 時 assert で panic、production への ABI drift を防ぐ.
+- *escape hatch を Stage 4 まで保つ*: =NELISP_NO_JIT= は Stage 1〜3 で
+  fallback 経路として valid、Stage 4 以降は強制 JIT で hatch 廃止.
+  hatch 廃止 commit は明示的に articulate.
+- *Doc 62 Stage A〜C の 3 段操作を踏襲*: 各 Stage で (a) lower entry
+  追加 → (b) bench で perf 検証 → (c) trampoline delete + bi_* cleanup.
+  Doc 62 と同じ pattern.
+- *cross-arch 検証は Stage 1 commit と同 commit で必須実施*: aarch64 /
+  Darwin で =#[repr(C, u8)]= が Linux x86_64 と同 layout になる保証は
+  Cranelift 側だけでは不十分、host Rust ABI も検証. Stage 4 でこれが
+  ABI 変更の前提.
+
+* §6 Out of scope
+
+- *non-x86_64 syscall instruction emit (= Doc 62 §3 5.6 Path B)*: aarch64
+  =svc #0= / Darwin BSD ABI などの emit は Doc 62 で deferred、本 Doc
+  も継承して deferred. specialized syscall は Doc 76 で elisp 化中.
+- *Float native compile*: Stage 3 で form lift の対象外、Float 含む form
+  は dispatcher 経路維持. Stage 4 以降に再評価.
+- *Macro expansion lower*: macro は eval-time、JIT 化対象外 (Doc 62 §6
+  と同方針).
+- *string ops (= concat / substring) lower*: 配列操作で複雑、Phase 5
+  scope 外を継承.
+- *GC / allocator 統合*: Phase 7.3 (Doc 30) と独立. Sexp ABI pin
+  (= Stage 4) は GC layout に影響するが、本 Doc は GC 改修を伴わず
+  既存 =Rc= refcount を維持する pattern (= =NlRc=) で wrap.
+- *bytecode VM との合流*: Doc 8 phase4 bytecode VM は別 track. Phase
+  5 JIT は eval-time direct compile pattern なので bytecode 経由しない.
+- *form lift の deopt support*: Stage 3 で macro 再展開 / setq による
+  形変化が起きた場合は cache invalidate のみ、deopt branch (= v8
+  pattern) は実装しない.
+
+* §7 References
+
+- *Doc 62* Phase 5 native CC lowering — 親 Doc, §0 audit-revised の
+  perf 未達状況を articulate, IR family 5 種の scaffold を提供
+- *Doc 62 §1.2* "JIT で dispatcher を bypass する利得" — 当初 5x-20x
+  目標値の articulate
+- *Doc 62 §2.3* lower hook 実装 (= =eval/mod.rs::apply_builtin= の
+  =try_lower= consultation pattern, Stage 2 で再構成対象)
+- *Doc 62 §2.4* dispatch arm 削除 3 段階 (= Stage A/B/C, 本 Doc も同
+  pattern)
+- *Doc 62 §5* "helper fn 経由の妥協を許容" — Stage 4 で撚廃する設計
+- *Doc 49* elisp pivot — Rust hop 撚廃の上位 vision
+- *Doc 50* §4 段階的 unlock plan / §5 共通原則 — Doc 77 §3/§5 の
+  template
+- *Doc 76* Phase 7 elisp-side OS surface migration — specialized
+  syscall は elisp で扱う (= 軸 A の対象外、syscall は generic のみ)
+- *jit/mod.rs* (179 LOC) — =lower_entries= / =try_lower= scaffold,
+  Stage 2 で =site_cache= に拡張
+- *jit/access.rs* (760 LOC) — Stage 1 BoolVector / Vector aset 改修
+  対象, =declare_length_with_inline_nil= が Stage 4 inline emit の
+  template
+- *jit/cons.rs* (479 LOC) — Stage 4 で trampoline → 完全 inline emit、
+  =declare_unary_with_nil_inline= の slow_b 経路を撚廃する Stage
+- *jit/predicate.rs* (276 LOC) — Stage 1 eq same-ref 改修対象,
+  =declare_eq_inline= の entry_b に新規 block 追加
+- *jit/arith.rs* (456 LOC) — perf 1.43x の origin, Stage 3 で form lift
+  時の inline 化候補
+- *jit/syscall.rs* (304 LOC) — helper 経由は Stage 4 でも残存 (= libc
+  trampoline 不可避)
+- *jit/bench.rs* (207 LOC) — Stage 1〜5 の perf 検証 harness
+- *eval/mod.rs::apply_builtin* (build-tool/src/eval/mod.rs:634-666) —
+  Stage 2 改修起点
+- *eval/sexp.rs::Sexp* (build-tool/src/eval/sexp.rs:42-147) —
+  =#[repr(C, u8)]= layout, Stage 4 で =NlConsBox= 拡張対象
+- Cranelift homepage: https://cranelift.dev/
+- v8 TurboFan: 関数 単位 JIT compile + IC + deopt の reference 実装
+- SBCL: =(declare (optimize (speed 3)))= による Lisp native
+  compile pattern
+
+* §8 改判断 record
+
+- *2026-05-08 (DRAFT)*: Doc 62 Stage 5.0〜5.7 完了後の bench audit で
+  perf 未達 (= speedup 0.73〜1.56x) を確定、Doc 77 を articulate 開始.
+  軸 A (= eval call-site JIT) と軸 B (= inline fast path 拡張) を 1
+  Doc で並行 articulate. 着手判断は user 待ち、本 Doc は articulation
+  のみ. Stage 1 (= 軸 B) のみ独立 ship 可、Stage 2-5 (= 軸 A) は ABI
+  変更を伴うため user 確認必須.
+- *2026-05-08 (DRAFT 改訂候補)*: Doc 62 §0 audit-revised の "JIT 主目的
+  は LOC reduction でなく hot path 最適化" を再確認、Doc 77 では perf
+  軸を中心に articulate. LOC 軸の改善 (Stage 5 cleanup -2,000 LOC) は
+  副作用扱い.
+
+# Local Variables:
+# org-html-validation-link: nil
+# End:

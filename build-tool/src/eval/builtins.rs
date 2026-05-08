@@ -353,6 +353,10 @@ pub fn install_builtins(env: &mut Env) {
         // Companion buffer-management primitives for "fill caller-provided
         // buffer" C APIs (= nl_sqlite_query, getline-style readers, etc.).
         "nl-ffi-malloc", "nl-ffi-read-bytes", "nl-ffi-free",
+        // Doc 76 Stage 0 (2026-05-08): write-bytes (= struct field
+        // poke for sockaddr_in / pollfd / sigset_t / msghdr+SCM_RIGHTS
+        // marshaling) + errno (= libc cross-OS thin shim).
+        "nl-ffi-write-bytes", "nl-ffi-errno",
         // Doc 51 Phase 6 write-path: time + cryptographic hash primitives.
         // Needed by anvil-memory-add etc. (= NOT NULL `created' column +
         // body digest).  Both are inherently OS / native-lib dependent
@@ -663,6 +667,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-ffi-malloc" => super::ffi::nl_ffi_malloc(args),
         "nl-ffi-read-bytes" => super::ffi::nl_ffi_read_bytes(args),
         "nl-ffi-free" => super::ffi::nl_ffi_free(args),
+        "nl-ffi-write-bytes" => super::ffi::nl_ffi_write_bytes(args),
+        "nl-ffi-errno" => super::ffi::nl_ffi_errno(args),
         "nl-current-unix-time" => bi_nl_current_unix_time(args),
         "nl-secure-hash" => bi_nl_secure_hash(args),
         "nl-format-unix-time" => bi_nl_format_unix_time(args),

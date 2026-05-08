@@ -356,3 +356,190 @@ fn alloc_table() -> &'static Mutex<HashMap<i64, usize>> {
     static T: OnceLock<Mutex<HashMap<i64, usize>>> = OnceLock::new();
     T.get_or_init(|| Mutex::new(HashMap::new()))
 }
+
+// ---------------------------------------------------------------------------
+// Doc 76 Stage 0 (2026-05-08) — nl-ffi 基盤拡張.
+//
+// `nl-ffi-write-bytes' + `nl-ffi-errno' add the missing pieces needed for
+// the Doc 76 elisp-side OS surface migration (= Linux/Darwin/Windows
+// unified `nl-ffi-call libc' 経由 syscall family).  Together with the
+// existing `nl-ffi-malloc' / `nl-ffi-read-bytes' / `nl-ffi-free' the elisp
+// side can now build / poke / read back arbitrary C structs (sockaddr_in,
+// pollfd, sigset_t, msghdr+SCM_RIGHTS, etc.) without any per-syscall Rust
+// glue.
+// ---------------------------------------------------------------------------
+
+/// `(nl-ffi-write-bytes PTR STR)` → t on success.  Copies STR bytes (=
+/// raw bytes interpreting STR as Latin-1, matching `nl-ffi-read-bytes'
+/// inverse) into the buffer at PTR.
+///
+/// Safety gate: PTR must be a pointer that came from `nl-ffi-malloc' (=
+/// tracked in `alloc_table') and the write must fit in the buffer's
+/// recorded length.  This is the same alloc-table gate that
+/// `nl-ffi-free' uses; out-of-tracked-set pointers signal `ffi-error'
+/// instead of doing a wild write.
+pub fn nl_ffi_write_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    if args.len() != 2 {
+        return Err(ffi_err(format!(
+            "nl-ffi-write-bytes: expected 2 args (ptr str), got {}",
+            args.len()
+        )));
+    }
+    let p = coerce_int(&args[0])?;
+    if p == 0 {
+        return Err(ffi_err("nl-ffi-write-bytes: NULL pointer".into()));
+    }
+    let bytes_owned = args[1].as_string_owned().ok_or_else(|| {
+        ffi_err(format!(
+            "nl-ffi-write-bytes: expected string for arg 2, got {:?}",
+            args[1]
+        ))
+    })?;
+    let bytes = bytes_owned.as_bytes();
+    let alloc_len = *alloc_table().lock().unwrap().get(&p).ok_or_else(|| {
+        ffi_err(format!(
+            "nl-ffi-write-bytes: pointer {} not from nl-ffi-malloc",
+            p
+        ))
+    })?;
+    if bytes.len() > alloc_len {
+        return Err(ffi_err(format!(
+            "nl-ffi-write-bytes: write of {} bytes exceeds buffer length {}",
+            bytes.len(),
+            alloc_len
+        )));
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), p as *mut u8, bytes.len());
+    }
+    Ok(Sexp::T)
+}
+
+/// `(nl-ffi-errno)` → integer errno of the last libc call from the
+/// current thread.  Cross-OS thin shim:
+///   - Linux/glibc: `*__errno_location()`
+///   - macOS / *BSD: `*__error()`
+///   - Windows: `*_errno()` (= MSVCRT's CRT errno, distinct from
+///     GetLastError; the libc crate exposes this as `__errno`).
+///
+/// Convention: elisp wrappers call this immediately after a libc
+/// function that returned -1 / NULL to retrieve the canonical errno.
+/// No second alloc must occur between the libc call and `(nl-ffi-errno)`
+/// or the value can be clobbered (= same constraint as C: errno is
+/// thread-local but easily overwritten by the next failing call).
+pub fn nl_ffi_errno(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    if !args.is_empty() {
+        return Err(ffi_err(format!(
+            "nl-ffi-errno: expected 0 args, got {}",
+            args.len()
+        )));
+    }
+    #[cfg(target_os = "linux")]
+    let e = unsafe { *libc::__errno_location() } as i64;
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd",
+              target_os = "netbsd", target_os = "openbsd", target_os = "dragonfly"))]
+    let e = unsafe { *libc::__error() } as i64;
+    #[cfg(target_os = "windows")]
+    let e = unsafe { *libc::__errno() } as i64;
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "ios",
+                  target_os = "freebsd", target_os = "netbsd",
+                  target_os = "openbsd", target_os = "dragonfly",
+                  target_os = "windows")))]
+    let e: i64 = 0; // unsupported platform — return 0 (= "no error")
+    Ok(Sexp::Int(e))
+}
+
+#[cfg(test)]
+mod tests_doc76_stage0 {
+    //! Doc 76 Stage 0 unit tests for `nl-ffi-write-bytes' / `nl-ffi-errno'.
+    //! Covered: round-trip with `nl-ffi-malloc' + `nl-ffi-read-bytes',
+    //! safety gates (NULL / unknown ptr / oversized write), errno read.
+    use super::*;
+
+    fn malloc_n(n: i64) -> i64 {
+        match nl_ffi_malloc(&[Sexp::Int(n)]).unwrap() {
+            Sexp::Int(p) => p,
+            other => panic!("nl-ffi-malloc returned {:?}", other),
+        }
+    }
+
+    fn read_n(p: i64, n: i64) -> String {
+        match nl_ffi_read_bytes(&[Sexp::Int(p), Sexp::Int(n)]).unwrap() {
+            Sexp::Str(s) => s,
+            other => panic!("nl-ffi-read-bytes returned {:?}", other),
+        }
+    }
+
+    #[test]
+    fn write_bytes_round_trip_str() {
+        let p = malloc_n(16);
+        let r = nl_ffi_write_bytes(&[Sexp::Int(p), Sexp::Str("hello".into())]).unwrap();
+        assert_eq!(r, Sexp::T);
+        // First 5 bytes should be "hello", rest is malloc-zeroed.
+        let s = read_n(p, 5);
+        assert_eq!(s, "hello");
+        nl_ffi_free(&[Sexp::Int(p)]).unwrap();
+    }
+
+    #[test]
+    fn write_bytes_rejects_null_ptr() {
+        let r = nl_ffi_write_bytes(&[Sexp::Int(0), Sexp::Str("x".into())]);
+        assert!(r.is_err(), "NULL ptr must be rejected");
+    }
+
+    #[test]
+    fn write_bytes_rejects_unknown_ptr() {
+        // 0xDEAD_BEEF is not a tracked alloc.
+        let r = nl_ffi_write_bytes(&[Sexp::Int(0xDEAD_BEEF), Sexp::Str("x".into())]);
+        assert!(r.is_err(), "unknown ptr must be rejected");
+    }
+
+    #[test]
+    fn write_bytes_rejects_oversize() {
+        let p = malloc_n(4);
+        let r = nl_ffi_write_bytes(&[Sexp::Int(p), Sexp::Str("12345".into())]);
+        assert!(r.is_err(), "5-byte write into 4-byte buffer must be rejected");
+        nl_ffi_free(&[Sexp::Int(p)]).unwrap();
+    }
+
+    #[test]
+    fn write_bytes_empty_str_is_noop() {
+        let p = malloc_n(4);
+        let r = nl_ffi_write_bytes(&[Sexp::Int(p), Sexp::Str(String::new())]).unwrap();
+        assert_eq!(r, Sexp::T);
+        // buffer should still be zeroed.
+        let s = read_n(p, 4);
+        assert_eq!(s.as_bytes(), &[0u8, 0, 0, 0]);
+        nl_ffi_free(&[Sexp::Int(p)]).unwrap();
+    }
+
+    #[test]
+    fn errno_reads_thread_local() {
+        // Trigger a known-bad libc call to set errno: open(/nonexistent) → ENOENT (= 2 on Linux).
+        // The exact value differs by OS, but on supported platforms it must be > 0
+        // after a deliberately-failing libc call.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            use std::ffi::CString;
+            let bad = CString::new("/this-path-must-not-exist-for-test").unwrap();
+            let _ = unsafe { libc::open(bad.as_ptr(), libc::O_RDONLY) };
+            let r = nl_ffi_errno(&[]).unwrap();
+            match r {
+                Sexp::Int(e) => assert!(e > 0, "errno must be set after failing open, got {}", e),
+                other => panic!("nl-ffi-errno returned {:?}", other),
+            }
+        }
+        // On unsupported platforms, just check the call returns Int (= 0 stub).
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            let r = nl_ffi_errno(&[]).unwrap();
+            assert!(matches!(r, Sexp::Int(_)));
+        }
+    }
+
+    #[test]
+    fn errno_rejects_args() {
+        let r = nl_ffi_errno(&[Sexp::Int(0)]);
+        assert!(r.is_err(), "nl-ffi-errno takes 0 args");
+    }
+}
