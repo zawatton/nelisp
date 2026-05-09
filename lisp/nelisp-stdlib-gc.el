@@ -11,22 +11,25 @@
 
 ;;; Commentary:
 
-;; Doc 79 v7 Phase C Stage 5.3.a (2026-05-09) — initial skeleton for
-;; the elisp-side Bacon-Rajan cycle collector.  Stage 5.3.a ships:
+;; Doc 79 v7 Phase C Stage 5.3.a + 5.3.b — elisp-side Bacon-Rajan
+;; cycle collector.  Stage 5.3.a shipped the skeleton; Stage 5.3.b
+;; replaces the no-op stub with the full four-phase algorithm
+;; (= mark-gray / scan / scan-black / collect-white) over the 10
+;; `nl-rc-*' / `nl-gc-*' primitives in `rc_primitives.rs'.
 ;;
-;;   - data-structure shells (= `gc-cycle-roots-buffer',
-;;     `gc-color-table', `gc-internal-rc-table'),
-;;   - `gc-collect-cycles' top-level entry point as a no-op stub,
-;;   - `gc-stats' MVP accessor returning a 3-key alist,
-;;   - thin elisp wrappers over the 10 `nl-rc-*' / `nl-gc-*'
-;;     primitives shipped in the same atomic commit (= `rc_primitives.rs').
+;; Stage 5.3.b ships (Doc 79 §5.3.5.b〜.d, consolidated):
+;;   - `gc-collect-cycles' real entry point invoking the four phases,
+;;   - per-phase walkers `gc--mark-gray-walk' / `gc--scan-walk' /
+;;     `gc--scan-black-walk' / `gc--collect-white-walk',
+;;   - per-kind children dispatch via `gc--children' /
+;;     `gc--root-candidate-kind-p' (= delegates to `nl-gc-walk-children'
+;;     for the actual edge list, returning nil for kinds whose
+;;     primitives report no outgoing edges).
 ;;
-;; Stage 5.3.b〜.e replace the stubs with the full algorithm
-;; (= mark-roots / scan-trial-delete / scan / collect-white).  The
-;; signatures and data-structure shells in this file are the
-;; consumer-side anchor that prevents the primitives from being
-;; dead code (= Doc 79 §11.7 atomic-with-consumer pattern, project
-;; memory `feedback_commit_dead_code_claim_must_grep.md').
+;; Algorithm reference: Bacon & Rajan, "Concurrent Cycle Collection in
+;; Reference Counted Systems" (ECOOP 2001), Algorithm 4 (synchronous).
+;; elisp is single-threaded so we use the synchronous variant verbatim
+;; (= no read/write barriers, Doc 79 §6.4).
 ;;
 ;; Substrate dependencies (Doc 80 + nelisp-stdlib-hash):
 ;;   - `cond' / `when' / `unless' / `null' / `defun' / `defvar' from
@@ -34,14 +37,16 @@
 ;;   - `make-hash-table' from `nelisp-stdlib-hash.el' (loads
 ;;     immediately before this file in the STDLIB chain).
 ;;
-;; Public surface (Stage 5.3.a):
-;;   `gc-collect-cycles'   - run one synchronous CC pass (no-op MVP)
-;;   `gc-stats'            - return alist of GC counters (MVP keys)
+;; Public surface (Stage 5.3.b):
+;;   `gc-collect-cycles'   - run one synchronous CC pass, returns # freed
+;;   `gc-stats'            - return alist of GC counters (4 keys)
 ;;
-;; Internal helpers exposed for Stage 5.3.b〜.e to extend:
-;;   `gc-cycle-roots-buffer'   - suspect handle list
+;; Internal helpers (= Stage 5.3.c〜.e extension surface):
+;;   `gc-cycle-roots-buffer'   - suspect handle list (drained per pass)
 ;;   `gc-color-table'          - per-handle color (white/gray/black/purple)
 ;;   `gc-internal-rc-table'    - per-handle trial-delete refcount
+;;   `gc--children'            - outgoing edge enumeration
+;;   `gc--root-candidate-kind-p' - predicate for cycle-capable kinds
 
 ;;; Code:
 
@@ -66,44 +71,165 @@ compares against the strong count to detect cycles.")
 (defvar gc-stats-counters
   ;; Use `cons' explicitly so this defvar runs before `list' is
   ;; available (= `nelisp-stdlib-list' loads later in some bake
-  ;; orderings).  3-key MVP alist.
+  ;; orderings).  Stage 5.3.b extends the MVP alist with `passes'
+  ;; (= `gc-collect-cycles' invocation count) so observers can tell
+  ;; the difference between "no garbage" and "collector never ran".
   (cons (cons 'total-allocs 0)
         (cons (cons 'total-frees 0)
-              (cons (cons 'pending-cycles 0) nil)))
+              (cons (cons 'pending-cycles 0)
+                    (cons (cons 'passes 0) nil))))
   "Alist of GC observability counters.
-Stage 5.3.a ships only the 3 MVP keys; Stage 5.5 (= self-host gate
-bench) expands to the 10-key plist articulated in Doc 79 §5.5.4.")
+Stage 5.3.b ships 4 keys: `total-allocs' / `total-frees' /
+`pending-cycles' / `passes'.  Stage 5.5 (= self-host gate bench)
+expands to the 10-key plist articulated in Doc 79 §5.5.4.")
 
 ;; ---- Top-level entry point ------------------------------------------
 
 (defun gc-collect-cycles ()
-  "Run one synchronous cycle-collection pass.
-Stage 5.3.a is a no-op stub: drains `gc-cycle-roots-buffer' without
-inspecting it and returns nil.  Stage 5.3.b〜.e replace the body
-with the four-phase Bacon-Rajan algorithm:
+  "Run one synchronous Bacon-Rajan cycle-collection pass.
 
-  Phase 1 (mark-roots) — color suspect handles `purple',
-  Phase 2 (scan-trial-delete) — decrement internal-rc on outgoing
-                               edges, color reachable nodes `gray',
-  Phase 3 (scan) — re-color survivors `black', dead-cycle members
-                  stay `white',
-  Phase 4 (collect-white) — `nl-gc-finalize' every white handle."
-  ;; Drain the buffer (no-op MVP — Stage 5.3.b implements the real
-  ;; mark-roots pass here).
-  (setq gc-cycle-roots-buffer nil)
-  ;; Reset the bookkeeping tables for the next cycle.
-  (clrhash gc-color-table)
-  (clrhash gc-internal-rc-table)
-  nil)
+Drains `gc-cycle-roots-buffer' into a snapshot of suspect handles,
+runs the four phases over the snapshot, then increments the
+`passes' / `boxes-freed' counters on `gc-stats-counters'.
+
+  Phase 1 (mark-gray) — for each suspect, decrement the internal
+                        rc of its outgoing edges and recolor reached
+                        nodes `gray'.
+  Phase 2 (scan)       — for each suspect, if internal rc < strong
+                        count then recolor `black' and undo the
+                        decrement (= live root); otherwise mark it
+                        `white' and recurse into children.
+  Phase 3 (scan-black) — restore counts on the live subgraph
+                        (= performed inline by `gc--scan-walk').
+  Phase 4 (collect-white) — finalize every `white' handle via
+                        `nl-gc-finalize'.
+
+Returns the number of boxes freed in this pass (= 0 when the
+suspect buffer was empty)."
+  (let ((roots (gc--snapshot-roots))
+        (freed 0))
+    (when roots
+      (clrhash gc-color-table)
+      (clrhash gc-internal-rc-table)
+      (dolist (ptr roots) (gc--mark-gray-walk ptr))
+      (dolist (ptr roots) (gc--scan-walk ptr))
+      (dolist (ptr roots)
+        (when (eq (gethash ptr gc-color-table) 'white)
+          (setq freed (+ freed (gc--collect-white-walk ptr))))))
+    (gc--bump-stat 'passes 1)
+    (when (> freed 0)
+      (gc--bump-stat 'total-frees freed))
+    freed))
+
+;; ---- Phase helpers --------------------------------------------------
+
+(defun gc--snapshot-roots ()
+  "Drain `gc-cycle-roots-buffer' into a fresh list (Phase-1 prep)."
+  (let ((buf gc-cycle-roots-buffer))
+    (setq gc-cycle-roots-buffer nil)
+    buf))
+
+(defun gc--bump-stat (key delta)
+  "Add DELTA to the counter under KEY in `gc-stats-counters'."
+  (let ((cell (assq key gc-stats-counters)))
+    (when cell (setcdr cell (+ (cdr cell) delta)))))
+
+(defun gc--mark-gray-walk (ptr)
+  "Phase 1 walker: paint PTR `gray', decrement child internal rc."
+  (unless (eq (gethash ptr gc-color-table) 'gray)
+    (puthash ptr 'gray gc-color-table)
+    ;; Seed the trial-delete count from the live strong count on
+    ;; first visit so subsequent phases compare apples to apples.
+    (unless (gethash ptr gc-internal-rc-table)
+      (puthash ptr (gc--rc-strong-count ptr) gc-internal-rc-table))
+    (dolist (child (gc--children ptr))
+      (when (gc--root-candidate-kind-p child)
+        ;; Virtual decrement: count the edge we just walked as if
+        ;; it had vanished.  External roots will still exceed the
+        ;; resulting internal count and survive Phase 2.
+        (let ((cur (or (gethash child gc-internal-rc-table)
+                       (gc--rc-strong-count child))))
+          (puthash child (- cur 1) gc-internal-rc-table))
+        (gc--mark-gray-walk child)))))
+
+(defun gc--scan-walk (ptr)
+  "Phase 2 walker: classify PTR as `black' (live) or `white' (cycle).
+Per Bacon-Rajan Algorithm 4: after mark-gray subtracts every
+intra-suspect-set edge from `gc-internal-rc-table', the post-
+decrement count exceeding 0 means PTR has at least one referrer
+*outside* the suspect set (= externally pinned, live).  When the
+post-decrement count reaches 0 (or below in degenerate inputs),
+all references to PTR come from inside the cycle, so it is white."
+  (when (eq (gethash ptr gc-color-table) 'gray)
+    (let ((internal (gethash ptr gc-internal-rc-table 0)))
+      (cond
+       ((> internal 0)
+        ;; External reference survives — restore counts on the
+        ;; reachable subgraph (Phase 3 scan-black inlined).
+        (gc--scan-black-walk ptr))
+       (t
+        (puthash ptr 'white gc-color-table)
+        (dolist (child (gc--children ptr))
+          (when (gc--root-candidate-kind-p child)
+            (gc--scan-walk child))))))))
+
+(defun gc--scan-black-walk (ptr)
+  "Phase 3 walker: re-mark PTR + reachable subgraph `black'."
+  (puthash ptr 'black gc-color-table)
+  (dolist (child (gc--children ptr))
+    (when (gc--root-candidate-kind-p child)
+      ;; Undo the Phase-1 virtual decrement on the survivor edge.
+      (let ((cur (or (gethash child gc-internal-rc-table)
+                     (gc--rc-strong-count child))))
+        (puthash child (+ cur 1) gc-internal-rc-table))
+      (unless (eq (gethash child gc-color-table) 'black)
+        (gc--scan-black-walk child)))))
+
+(defun gc--collect-white-walk (ptr)
+  "Phase 4 walker: finalize every `white' handle reachable from PTR.
+Returns the number of handles finalized in this subtree."
+  (cond
+   ((not (eq (gethash ptr gc-color-table) 'white)) 0)
+   (t
+    ;; Recolor first to break self-referential recursion before
+    ;; descending into children.
+    (puthash ptr 'black gc-color-table)
+    (let ((freed 1))
+      (dolist (child (gc--children ptr))
+        (when (gc--root-candidate-kind-p child)
+          (setq freed (+ freed (gc--collect-white-walk child)))))
+      ;; Force-finalize the box.  Stage 5.3.b inline-only path
+      ;; (= no `gc-finalize-queue' yet, threshold is nil).
+      (nl-gc-finalize ptr)
+      freed))))
+
+;; ---- Per-kind children dispatch -------------------------------------
+
+(defun gc--children (ptr)
+  "Return the outgoing-edge list of PTR for cycle traversal.
+Delegates to the Rust `nl-gc-walk-children' primitive, which
+returns the proper child list for cycle-capable kinds (CONS /
+VECTOR / CELL / RECORD / CHAR_TABLE) and nil for everything else."
+  (gc--walk-children ptr))
+
+(defun gc--root-candidate-kind-p (ptr)
+  "Return non-nil iff PTR's kind tag has potential outgoing edges.
+Cycle-capable kinds per Doc 79 §5.3.2: CONS (7), VECTOR (8),
+CHAR_TABLE (9), CELL (11), RECORD (12).  Unboxed / leaf kinds
+(NIL / T / INT / FLOAT / SYMBOL / STR / MUT_STR / BOOL_VECTOR)
+are skipped early so the walkers never recurse through them."
+  (let ((kind (gc--rc-kind ptr)))
+    (or (eq kind 7) (eq kind 8) (eq kind 9)
+        (eq kind 11) (eq kind 12))))
 
 ;; ---- Observability --------------------------------------------------
 
 (defun gc-stats ()
-  "Return the MVP GC stats alist.
-Stage 5.3.a returns 3 keys: `total-allocs', `total-frees',
-`pending-cycles' (= length of `gc-cycle-roots-buffer').  The first
-two are 0 until Stage 5.3.b wires the alloc / dec hooks; the third
-is computed live from the buffer."
+  "Return the GC stats alist (Stage 5.3.b: 4 keys).
+Keys: `total-allocs', `total-frees', `pending-cycles' (= live
+length of `gc-cycle-roots-buffer'), `passes' (= `gc-collect-cycles'
+invocation count).  `total-allocs' stays 0 until Stage 5.3.c wires
+the alloc-hook side; the other three are driven by Stage 5.3.b."
   ;; Re-build the alist with the current `pending-cycles' value so
   ;; observers always see a fresh snapshot.  We deliberately avoid
   ;; mutating `gc-stats-counters' in place: Stage 5.5 turns this into
@@ -113,7 +239,9 @@ is computed live from the buffer."
         (cons (cons 'total-frees (cdr (assq 'total-frees gc-stats-counters)))
               (cons (cons 'pending-cycles
                           (length gc-cycle-roots-buffer))
-                    nil))))
+                    (cons (cons 'passes
+                                (cdr (assq 'passes gc-stats-counters)))
+                          nil)))))
 
 ;; ---- Primitive wrappers (= consumer-side anchor) --------------------
 ;;
