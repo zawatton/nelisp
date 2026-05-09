@@ -2,12 +2,13 @@
 
 * Status
 :PROPERTIES:
-:STATE: DRAFT
+:STATE: ACTIVE — Phase A.1 SHIPPED (e6c7367) / Phase A.2 IN_PROGRESS (A.2.0/A.2.1 並行 session 中)
 :DRAFTED: 2026-05-09
 :PARENT: Doc 77 (= 元 Stage 4 articulation)
 :RELATED: Doc 77b (= Rust-min JIT 路線)、Doc 75 (= NELIMG image decode、PAUSED 別 issue)、Doc 63 (= Phase 7 self-host roadmap、70% SHIPPED)
 :UPDATES: Doc 77 §2.3.3 Stage 4 status (= deferred → IN_PROGRESS)、Doc 77b §6 (= "Sexp ABI pin deferred" 削除)
 :DECISION_DATE: 2026-05-09 (user 指示: "Doc 77 の Stage4 を unpause")
+:LATEST: 2026-05-09 — Phase A.1 (NlRc<T>) e6c7367 SHIPPED / Phase A.2 (NlConsBox + Sexp::Cons migrate) 着手中
 :END:
 
 * §0 TL;DR
@@ -310,24 +311,31 @@ baseline ~3000 LOC → ~810 LOC、**~73% 縮小**.
 
 * §4 immediate next steps (= 本 Doc 完成直後)
 
-** §4.1 Doc 77 / 77b status update
+** §4.1 Doc 77 / 77b status update — ✅ SHIPPED (commit d697875, 2026-05-09)
 
-- Doc 77 §2.3.3 Stage 4 を =STATE: deferred= から =STATE: IN_PROGRESS, see Doc 77c= に書換
-- Doc 77b §6 から "Sexp ABI pin deferred" 行を削除
-- Doc 77c (= 本 Doc) を main worktree に commit
+実施済み:
+- Doc 77 top-level =:STATE:= を =DRAFT= → =PARTIALLY SUPERSEDED ... / Stage 4 = 2026-05-09 Doc 77c で unpause= に書換 (= Stage 4 単独の =STATE:= block は元来未保有のため top-level に articulate)
+- Doc 77 §2.3.3 Stage 4 本文先頭に =2026-05-09 STATUS UPDATE= 段落を追加 (Doc 77c で unpause、自前実装 path)
+- Doc 77b §6 の "Sexp ABI pin (= Doc 77 §2.3.3 Stage 4) は ... 本 Doc では deferred" 行を "2026-05-09 に Doc 77c で unpause された ... Stage 4 → Doc 77c Phase A で resume、本 Doc 77b 範囲外" に書換 (= 削除と等価意味)
+- Doc 77c (= 本 Doc) を =feat/doc-77-stage2-prep= に commit (= main は Doc 76 完了 merge 直後)
 
-** §4.2 Phase A.1 着手 — NlRc<T> 設計 + POC 実装
+** §4.2 Phase A.1 着手 — NlRc<T> 設計 + POC 実装 — ✅ SHIPPED (commit e6c7367, 2026-05-09)
 
-- =build-tool/src/eval/nlrc.rs= 新設 (= ~100 LOC)
-- =NlRc<T>= struct + Drop impl + Deref impl + Clone impl
-- ERT で =Rc<T>= と等価動作確認 (= 既存 =Rc= を =NlRc= に置換するテスト)
-- ~1 週間で着地
+実施済み:
+- =build-tool/src/eval/nlrc.rs= 新設 (= 503 LOC、当初見積 ~100 LOC から拡大は doc + test 込み)
+- =NlRc<T>= struct + =Drop= / =Deref= / =Clone= / =strong_count= / =ptr_eq= 全 API
+- =NlRcInner<T>= layout pin (=#[repr(C)]= + =const _= compile-time offset assert + runtime layout test)
+- ERT 19/19 PASS (= 3 layout + 5 lifecycle + 3 deref + 3 ptr_eq + 2 composite + 1 atomic round-trip + 2 misc)
+- 全体 regression 504 lib + 8 bin = 512 PASS, 0 fail
+- 着地: 1 commit (= 設計 + 実装 + ERT を 1 commit に)
 
-** §4.3 Phase A.2 着手 — NlConsBox 試作 + 1 site での migrate
+** §4.3 Phase A.2 着手 — NlConsBox 試作 + 1 site での migrate — ⏳ IN_PROGRESS (並行 session, 2026-05-09 着手)
 
-- =Sexp::Cons= 1 箇所だけ NlConsBox に置換 (= 他 variant は Rc のまま)
-- =bi_car= / =bi_cdr= / JIT trampoline =nl_jit_cons_car= が動くこと確認
-- ~2 週間で着地
+進捗:
+- Sub-stage A.2.0 (= NlConsBox struct + layout pin + tests) 並行 session 実施中
+- Sub-stage A.2.1 (= Sexp::Cons variant を =Rc<RefCell<Sexp>>= 2 個から =NonNull<NlConsBox>= 1 個に切替) 同上
+- 完了 gate: =bi_car= / =bi_cdr= / JIT trampoline =nl_jit_cons_car= が PASS、既存 ERT regression 0
+- ~2 週間で着地予定 (= §2.1.5 A.2 工数見積 2-3 週間の前半)
 
 * §5 Test plan
 
