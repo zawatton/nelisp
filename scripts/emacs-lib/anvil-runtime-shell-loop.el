@@ -74,6 +74,153 @@
   (when (fboundp 'emacs-stdio-install-stdin-shim)
     (emacs-stdio-install-stdin-shim))
 
+  ;; Phase B5 Final B Stage 1b — regex-free overrides for the framing
+  ;; helpers anvil-server.el uses.  Standalone NeLisp ships only
+  ;; `string-match-p' and even that is a hand-rolled lookup table (=
+  ;; not a real regex engine), so the original `string-match' /
+  ;; `replace-regexp-in-string' patterns return nil unconditionally.
+  ;; The overrides below cover the exact callsites in anvil-server's
+  ;; MCP framing path with string-search / substring-based logic.
+
+  ;; `(replace-regexp-in-string "\r\\'" "" line)' just strips a single
+  ;; trailing CR.  Replace with a simple suffix check.
+  (defun anvil-server--strip-trailing-cr (s)
+    (if (and (stringp s)
+             (> (length s) 0)
+             (eq (aref s (1- (length s))) ?\r))
+        (substring s 0 (1- (length s)))
+      s))
+
+  (defun anvil-server-mcp-parse-content-length-header (header-block)
+    "Phase B5 Stage 1b override — regex-free Content-Length parser.
+Walks HEADER-BLOCK line-by-line searching for `Content-Length:'
+case-insensitively, returns the integer value or nil."
+    (when (stringp header-block)
+      (let ((lines (split-string header-block "\r\n"))
+            (found nil))
+        (while (and lines (not found))
+          (let* ((line (anvil-server--strip-trailing-cr (car lines)))
+                 (line-down (downcase line))
+                 (prefix "content-length:"))
+            (when (and (>= (length line-down) (length prefix))
+                       (string= (substring line-down 0 (length prefix)) prefix))
+              (let* ((rest (substring line (length prefix)))
+                     ;; Skip leading whitespace.
+                     (i 0)
+                     (n (length rest)))
+                (while (and (< i n)
+                            (let ((c (aref rest i)))
+                              (or (eq c ?\s) (eq c ?\t))))
+                  (setq i (1+ i)))
+                (let* ((num-start i)
+                       (num-end i))
+                  (while (and (< num-end n)
+                              (let ((c (aref rest num-end)))
+                                (and (>= c ?0) (<= c ?9))))
+                    (setq num-end (1+ num-end)))
+                  (when (> num-end num-start)
+                    (setq found (string-to-number
+                                 (substring rest num-start num-end))))))))
+          (setq lines (cdr lines)))
+        found)))
+
+  (defun anvil-server-mcp-detect-framing-p (initial)
+    "Phase B5 Stage 1b override — case-insensitive prefix check for
+`Content-Length:' on INITIAL string (= the first line read from stdin)."
+    (when (stringp initial)
+      (let* ((stripped (anvil-server--strip-trailing-cr initial))
+             (down (downcase stripped))
+             (prefix "content-length:"))
+        (and (>= (length down) (length prefix))
+             (string= (substring down 0 (length prefix)) prefix)))))
+
+  (defun anvil-server-mcp-frame-encode (body)
+    "Phase B5 Stage 1b override — emit `Content-Length: N\r\n\r\nBODY'.
+N is the UTF-8 byte length of BODY.  Standalone NeLisp strings are
+already UTF-8, so `length' is byte-count for ASCII bodies and
+`encode-coding-string' is a no-op identity per Phase B5 stub."
+    (let* ((bytes (if (fboundp 'encode-coding-string)
+                      (encode-coding-string body 'utf-8 t)
+                    body))
+           (n (length bytes)))
+      (concat "Content-Length: " (number-to-string n) "\r\n\r\n" body)))
+
+  ;; Override the framed-with-prefix reader entirely.  The original uses
+  ;; `replace-regexp-in-string' for trailing-CR strip, which is a no-op
+  ;; stub on standalone NeLisp — that caused the header read loop to
+  ;; consume the body line as just another header (= the empty `\r' line
+  ;; never matched `string-empty-p'), so by the time body collection
+  ;; ran, stdin was at EOF.  This regex-free port restores correctness.
+  (defun anvil-server--batch-read-framed-with-prefix (first-header-line)
+    "Phase B5 Stage 1b override — regex-free framed reader."
+    (let ((header-lines (list (anvil-server--strip-trailing-cr first-header-line)))
+          (seen-blank nil))
+      (catch 'done
+        (while (not seen-blank)
+          (let ((line (ignore-errors (read-from-minibuffer ""))))
+            (cond
+             ((null line) (throw 'done nil))
+             ((string-empty-p (anvil-server--strip-trailing-cr line))
+              (setq seen-blank t))
+             (t (push (anvil-server--strip-trailing-cr line)
+                      header-lines))))))
+      (let* ((header-block (mapconcat #'identity
+                                      (nreverse header-lines) "\r\n"))
+             (n (anvil-server-mcp-parse-content-length-header header-block)))
+        (when (and n (>= n 0))
+          (let* ((acc "")
+                 (need n)
+                 (first t))
+            ;; Read first non-blank body line.
+            (let ((line "") )
+              (while (and (stringp line) (string-empty-p line))
+                (setq line (ignore-errors (read-from-minibuffer ""))))
+              (when line
+                (let ((line-len (length line)))
+                  (cond
+                   ((<= line-len need)
+                    (setq acc (concat acc line))
+                    (setq need (- need line-len)))
+                   (t
+                    (setq acc (concat acc (substring line 0 need)))
+                    (setq need 0)))
+                  (setq first nil))))
+            ;; Continue reading more body lines until N bytes collected.
+            (while (> need 0)
+              (let ((chunk (ignore-errors (read-from-minibuffer ""))))
+                (cond
+                 ((null chunk) (setq need 0))
+                 (t
+                  (let* ((piece (if first chunk (concat "\n" chunk)))
+                         (piece-len (length piece)))
+                    (setq first nil)
+                    (cond
+                     ((<= piece-len need)
+                      (setq acc (concat acc piece))
+                      (setq need (- need piece-len)))
+                     (t
+                      (setq acc (concat acc (substring piece 0 need)))
+                      (setq need 0))))))))
+            (and (not (string-empty-p acc)) acc))))))
+
+  (defun anvil-server--batch-read-framed-message ()
+    "Phase B5 Stage 1b override — used on subsequent loop iterations.
+Reads the first header line, then delegates to the framed-with-prefix
+reader."
+    (let ((first (ignore-errors (read-from-minibuffer ""))))
+      (cond
+       ((null first) nil)
+       (t (anvil-server--batch-read-framed-with-prefix first)))))
+
+  (defun anvil-server--batch-skip-blank-lines ()
+    "Phase B5 Stage 1b override — drain blanks until non-blank line.
+Uses CR-strip to recognise lines that are CRLF artefacts as blank."
+    (let ((line ""))
+      (while (and (stringp line)
+                  (string-empty-p (anvil-server--strip-trailing-cr line)))
+        (setq line (ignore-errors (read-from-minibuffer ""))))
+      line))
+
   ;; `anvil-server-run-batch-stdio' itself calls `anvil-server-start'
   ;; on entry, so we MUST NOT call it here (= duplicate call signals
   ;; `MCP server is already running').  Just enter the loop.
