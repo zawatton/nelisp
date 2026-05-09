@@ -28,6 +28,7 @@
 use crate::eval::nlcell::NlCellRef;
 use crate::eval::nlconsbox::NlConsBoxRef;
 use crate::eval::nlstr::NlStrRef;
+use crate::eval::nlvector::NlVectorRef;
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
@@ -115,11 +116,15 @@ pub enum Sexp {
     Cons(NlConsBoxRef),
     /// `[a b c]` vector literal.
     ///
-    /// Wrapped in `Rc<RefCell<...>>' to support `aset' / in-place
-    /// mutation while keeping `Sexp: Clone` cheap (Rc bump only).
-    /// Identity comparison goes through `Rc::ptr_eq'; structural
-    /// equality (the derived `PartialEq') unwraps the inner `Vec'.
-    Vector(Rc<RefCell<Vec<Sexp>>>),
+    /// Backed by [`NlVectorRef`] so `aset' / in-place mutation work
+    /// while keeping `Sexp: Clone` cheap (refcount bump only).
+    /// Identity comparison goes through `NlVectorRef::ptr_eq';
+    /// structural equality (the derived `PartialEq') unwraps the
+    /// inner `Vec'.
+    ///
+    /// Phase A.4.3 (Doc 77c §4.5.3, 2026-05-09): migrated from
+    /// `Rc<RefCell<Vec<Sexp>>>' to layout-pinned [`NlVectorRef`].
+    Vector(NlVectorRef),
     // Sexp::HashTable variant retired in Doc 50 stage 4f (2026-05-07).
     // Hash-tables are now `(record 'hash-table TEST ENTRIES)' built
     // on top of the Stage 4c record primitives — see
@@ -261,7 +266,7 @@ impl Sexp {
     /// Build a vector Sexp from an owned `Vec<Sexp>` without forcing
     /// every call site to spell out `Rc::new(RefCell::new(...))'.
     pub fn vector(items: Vec<Sexp>) -> Sexp {
-        Sexp::Vector(Rc::new(RefCell::new(items)))
+        Sexp::Vector(NlVectorRef::new(items))
     }
 
     /// Build a mutable string Sexp from a `String` (or `&str`).  Used
@@ -445,8 +450,7 @@ fn write_sexp(out: &mut String, s: &Sexp) {
         }
         Sexp::Vector(items) => {
             out.push('[');
-            let borrowed = items.borrow();
-            for (i, item) in borrowed.iter().enumerate() {
+            for (i, item) in items.value.iter().enumerate() {
                 if i > 0 {
                     out.push(' ');
                 }

@@ -521,29 +521,32 @@ mod tests {
 
     #[test]
     fn payload_drop_runs_exactly_once() {
-        // We probe via `Sexp::Vector(Rc<RefCell<Vec<Sexp>>>)' — the
-        // outer `Rc' lets us observe the strong-count round-trip:
+        // We probe via `Sexp::Vector(NlVectorRef)' — the inner
+        // strong_count lets us observe the round-trip:
         //   1 (probe) + 1 (moved into box) = 2
         //   after drop(box) → 1
         // This catches both 'destructor never ran' (= leak) and
-        // 'destructor ran twice' (= UB; would underflow Rc count to
-        // panic on second drop).
-        let probe = Rc::new(RefCell::new(vec![Sexp::Int(1)]));
+        // 'destructor ran twice' (= UB; would underflow refcount to
+        // panic on second drop).  Phase A.4.3 (2026-05-09): switched
+        // from legacy `Rc<RefCell<Vec<Sexp>>>' probe to NlVectorRef
+        // since the Rc shape no longer exists for `Sexp::Vector'.
+        use crate::eval::nlvector::NlVectorRef;
+        let probe = NlVectorRef::new(vec![Sexp::Int(1)]);
         let payload = Sexp::Vector(probe.clone());
         let r = NlConsBoxRef::new(payload, Sexp::Nil);
         let c1 = r.clone();
         let c2 = r.clone();
-        // 3 handles all alive — payload Rc still bumped by 1 (the
-        // moved-in `Sexp::Vector' holds it; clones share the box).
-        assert_eq!(Rc::strong_count(&probe), 2);
+        // 3 handles all alive — payload NlVectorRef still bumped by 1
+        // (the moved-in `Sexp::Vector' holds it; clones share the box).
+        assert_eq!(NlVectorRef::strong_count(&probe), 2);
         drop(c1);
         drop(c2);
-        // 1 handle left — payload Rc still bumped.
-        assert_eq!(Rc::strong_count(&probe), 2);
+        // 1 handle left — payload NlVectorRef still bumped.
+        assert_eq!(NlVectorRef::strong_count(&probe), 2);
         drop(r);
         // Last handle gone — payload destructor must have run once,
-        // dropping the Sexp::Vector and decrementing the inner Rc.
-        assert_eq!(Rc::strong_count(&probe), 1);
+        // dropping the Sexp::Vector and decrementing the inner refcount.
+        assert_eq!(NlVectorRef::strong_count(&probe), 1);
     }
 
     #[test]

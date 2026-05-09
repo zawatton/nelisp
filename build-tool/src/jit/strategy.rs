@@ -228,12 +228,11 @@ fn aref_helper(args: &[Sexp], primitive: &'static str) -> Result<Sexp, EvalError
                 })
         }
         Sexp::Vector(v) => {
-            let borrowed = v.borrow();
             Err(EvalError::ArithError(format!(
                 "{}: index {} out of range for vector of length {}",
                 primitive,
                 index,
-                borrowed.len()
+                v.value.len()
             )))
         }
         Sexp::CharTable(rc) => Ok(crate::eval::builtins::char_table_get(rc, index)),
@@ -285,8 +284,7 @@ pub fn bi_aset_impl(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
     match &args[0] {
         Sexp::Vector(v) => {
-            let borrowed = v.borrow();
-            let len = borrowed.len();
+            let len = v.value.len();
             Err(EvalError::ArithError(format!(
                 "aset: index {} out of range for vector of length {}",
                 index, len
