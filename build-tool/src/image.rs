@@ -199,7 +199,7 @@ fn encode_value(out: &mut Vec<u8>, value: &Sexp) -> Result<(), ImageError> {
         Sexp::Cell(c) => {
             encode_value(out, &c.value)?;
         }
-        Sexp::Record { .. } => {
+        Sexp::Record(_) => {
             // Records (Doc 52 Stage 4) are not yet covered by the
             // image format — same policy as `HashTable' above.
             // Image-format support is a follow-up (extends the binary

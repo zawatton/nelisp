@@ -28,6 +28,7 @@
 use crate::eval::nlboolvector::NlBoolVectorRef;
 use crate::eval::nlcell::NlCellRef;
 use crate::eval::nlconsbox::NlConsBoxRef;
+use crate::eval::nlrecord::NlRecordRef;
 use crate::eval::nlstr::NlStrRef;
 use crate::eval::nlvector::NlVectorRef;
 use std::cell::RefCell;
@@ -168,16 +169,20 @@ pub enum Sexp {
     /// instead of `record'.  Remaining slots are user-visible and
     /// `aset'-able.  Doc 52 §2.1 (Doc 50 Stage 4).
     ///
-    /// Identity goes through `Rc::ptr_eq' on `slots'; structural
-    /// equality (the derived `PartialEq') compares both `type_tag'
-    /// and inner slot vector.  Printer round-trips as
+    /// Identity goes through `NlRecordRef::ptr_eq' (= same allocation);
+    /// structural equality (the derived `PartialEq') compares both
+    /// `type_tag' and inner slot vector.  Printer round-trips as
     /// `#s(TYPE V0 V1 ...)' (positional shape — keyword forms are
     /// desugared by the `cl-defstruct' macro before reaching the
     /// reader).
-    Record {
-        type_tag: Box<Sexp>,
-        slots: Rc<RefCell<Vec<Sexp>>>,
-    },
+    ///
+    /// Phase A.4.5 (Doc 77c §4.5.5, 2026-05-09): migrated from
+    /// `Record { type_tag: Box<Sexp>, slots: Rc<RefCell<Vec<Sexp>>> }'
+    /// to a single layout-pinned [`NlRecordRef`] allocation that holds
+    /// both fields at fixed offsets — same reason `Cons' moved to
+    /// `NlConsBoxRef' in Phase A.2.1, fixed offsets enable Phase A.5
+    /// JIT direct emit and Phase B elisp self-host primitive access.
+    Record(NlRecordRef),
 }
 
 // ---------------------------------------------------------------------------
@@ -329,10 +334,7 @@ impl Sexp {
     /// macros after the user-side keyword args are shuffled into
     /// positional order.
     pub fn record(type_tag: Sexp, init: Vec<Sexp>) -> Sexp {
-        Sexp::Record {
-            type_tag: Box::new(type_tag),
-            slots: Rc::new(RefCell::new(init)),
-        }
+        Sexp::Record(NlRecordRef::new(type_tag, init))
     }
 
     /// Read the car of a cons cell as a fresh `Sexp` clone.  Returns
@@ -514,14 +516,14 @@ fn write_sexp(out: &mut String, s: &Sexp) {
         // Lexical-binding cell — print the inner value transparently
         // so user-facing prints never reveal the storage wrapper.
         Sexp::Cell(c) => write_sexp(out, &c.value),
-        Sexp::Record { type_tag, slots } => {
+        Sexp::Record(rec) => {
             // Round-trippable positional shape: `#s(TYPE V0 V1 ...)'.
             // The reader (lexer.rs) accepts the same form; the
             // `cl-defstruct' macro handles keyword desugaring before
             // values reach here.
             out.push_str("#s(");
-            write_sexp(out, type_tag);
-            for v in slots.borrow().iter() {
+            write_sexp(out, &rec.type_tag);
+            for v in rec.slots.iter() {
                 out.push(' ');
                 write_sexp(out, v);
             }
@@ -683,10 +685,10 @@ mod tests {
             SEXP_TAG_CELL
         );
         assert_eq!(
-            variant_tag(&Sexp::Record {
-                type_tag: Box::new(Sexp::Symbol("foo".into())),
-                slots: Rc::new(RefCell::new(vec![]))
-            }),
+            variant_tag(&Sexp::Record(NlRecordRef::new(
+                Sexp::Symbol("foo".into()),
+                vec![]
+            ))),
             SEXP_TAG_RECORD
         );
     }

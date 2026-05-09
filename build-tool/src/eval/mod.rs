@@ -40,6 +40,7 @@ pub mod nlboolvector;
 pub mod nlcell;
 pub mod nlconsbox;
 pub mod nlrc;
+pub mod nlrecord;
 pub mod nlstr;
 pub mod nlvector;
 pub mod quit;
@@ -319,7 +320,7 @@ fn eval_inner(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
         Sexp::Nil | Sexp::T | Sexp::Int(_) | Sexp::Float(_) | Sexp::Str(_)
             | Sexp::MutStr(_) | Sexp::Vector(_)
             | Sexp::CharTable(_) | Sexp::BoolVector(_)
-            | Sexp::Record { .. } => {
+            | Sexp::Record(_) => {
             Ok(form.clone())
         }
         // `Sexp::Cell' wraps a let-binding slot for closure write-
