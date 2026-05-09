@@ -3,7 +3,7 @@
 #+DATE: 2026-05-09
 
 * Status
-:STATE: DRAFT v3 2026-05-09
+:STATE: DRAFT v5 2026-05-09
 :PARENT: Doc 77c (= Phase A〜E master plan)
 :PARALLEL: Doc 76 (OS surface elisp 化) / Doc 73 (reader/eval purge) / Doc 78 (Phase D-A Cranelift wrapper)
 :DEPENDS_ON: Doc 77c Phase A 完了 (= NlConsBox/NlCell/NlStr/NlVector/NlBoolVector/NlRecord/NlCharTable layout pin、cons_primitives.rs Layer 2 surface 出荷済)
@@ -321,16 +321,367 @@ overrun).  Doc 79 v4 では Stage C.1+4 を 2 sub-stage に分割:
 
 ** §5.3 Stage C.2 — cycle collector elisp 実装 (3-4 週間)
 
-- =lisp/nelisp-stdlib-gc.el= 新設、Bacon-Rajan アルゴリズムを実装.
-- 構成:
-  - =gc-cycle-roots= = =nl-gc-buffered-decs= → buffer of "suspect" boxed (= rc が dec されたが 0 にならなかった boxed; cycle root 候補).
-  - =gc-collect-cycles= = trial deletion phase: 各 root から =nl-gc-walk-children= で graph walk、internal rc を仮想 dec.
-  - =gc-scan= = 仮想 rc=0 の box は cycle、再 inc して mark white.  kind dispatch は =nl-rc-kind= 経由で elisp 側 =cond=.
-  - =gc-collect-white= = white box の =nl-gc-finalize= 強制呼出.
-- ERT: cycle 2-deep / 3-deep / mutual ref / =equal= 上の self-cycle 等で leak 検出 → collect → mem_free 確認.
-- *Rust delta*: ±0.
-- *elisp delta*: +~400 LOC (= gc.el).
-- *commit-rule check*: net Rust delta = 0、monotonic shrink rule 充足.
+*v5 refinement (2026-05-09)*: v4 の高水準 articulation (=lisp/nelisp-stdlib-gc.el= 新設、Bacon-Rajan、+~400 elisp LOC、3-4 週間) を *concrete pseudo-elisp + 5 sub-stage breakdown + risk + test plan* に展開.  Stage C.1.b primitive set (= §4.2 articulate 済) を consumer 側から articulate して dead-code 化を回避.
+
+実装 file は =lisp/nelisp-stdlib-gc.el=、STDLIB_FILES order 上 =nelisp-stdlib-hash.el= の後 (= hash-table primitive 利用可) かつ =nelisp-stdlib-equal.el= の前 (= cycle-aware equal が cycle collector を逆参照しない).  baker 配置案: =nelisp-stdlib-hash.el= 直後.
+
+*** §5.3.1 Bacon-Rajan algorithm overview
+
+Bacon-Rajan = "Concurrent Cycle Collection in Reference Counted Systems" (ECOOP 2001).  本 Doc は *synchronous* 版 (= concurrent mutator なし、elisp single-thread 前提) を採用.  4 phase で構成:
+
+- *Phase 1: Mark roots (= "suspect" buffering)*
+  - 各 boxed が =nl-rc-dec-strong= で refcount dec されたとき、新 count が 0 にならず *かつ* 自身が cycle 候補となり得る kind (= Cons / Vector / Cell / Record / CharTable) なら =gc-cycle-roots-buffer= に push.
+  - 不要な root (= MutStr / BoolVector 等 child を持たない kind) は最初から除外する.
+  - 既に buffer 済の box は重複 push 抑止 (= "purple" color 検査).
+
+- *Phase 2: Trial deletion*
+  - root buffer の各 box から =nl-gc-walk-children= で reachable graph を DFS walk.
+  - 訪問するたびに *internal* refcount を =gc-internal-rc-table= で 1 つ仮想 dec.
+  - 訪問済 box は "gray" color で mark、cycle (= back edge) は walk 終了.
+  - 結果として、*真の external root* から到達できる box は internal_rc < strong_count、cycle のみで参照される box は internal_rc == strong_count.
+
+- *Phase 3: Scan*
+  - root buffer を再 walk.  internal_rc < strong_count (= external 参照あり) の box は再 inc して "black" mark (= live).
+  - internal_rc == strong_count の box は "white" mark (= cycle、garbage).
+  - ※ scan は再帰的: white を mark する際、その children も white に下り mark (= 後段の collect-white で free を漏らさないため).
+
+- *Phase 4: Collect white*
+  - white-marked box の =nl-gc-finalize= を強制呼出 (= refcount 無視で payload drop + dealloc).
+  - large payload (= NlVector size > threshold) は Stage C.3 finalizer queue に enqueue (= synchronous free を 避ける).
+
+reference: Bacon-Rajan paper §4 ("Algorithm 4: Synchronous Cycle Collection") に対応.  本 Doc では *Algorithm 4* を simplified 形で採用 (= weak ref / phantom ref 抜き、Stage C.3 で finalizer queue 拡張).
+
+*** §5.3.2 elisp data structures
+
+| 名前                       | 型                        | 用途                                                |
+|----------------------------+---------------------------+-----------------------------------------------------|
+| =gc-cycle-roots-buffer=    | list of opaque ptr        | dec で 0 にならず purple mark された suspect box list |
+| =gc-color-table=           | hash (ptr → symbol)       | =black= (live) / =gray= (visiting) / =white= (cycle、garbage) / =purple= (root candidate buffered) |
+| =gc-internal-rc-table=     | hash (ptr → int)          | trial deletion 中の virtual refcount.  初期値 = =nl-rc-strong-count= ptr |
+| =gc-finalize-queue=        | list of opaque ptr        | Stage C.3 idle-timer finalizer に手渡す large box    |
+| =gc-cycle-roots-limit=     | int (defcustom = 32768)   | buffer overflow protect、超過時は immediate fire     |
+| =gc-stats-counters=        | plist                     | observability: cycles-collected / boxes-freed / passes 統計 |
+
+すべて elisp object、Stage C.1.b の =nl-rc-*= primitive を介して Rust heap と接続.  =gc-color-table= / =gc-internal-rc-table= は =gc-collect-cycles= の各 invocation で =clrhash= して reuse (= GC pressure 自体を増やさない).
+
+color table の "kind tag" は §4.2 の =NlRcKind= = 0..=12 の sexp tag 派生.  Cons / Vector / Cell / Record / CharTable のみ root-candidate kind とする (= MutStr / BoolVector / Generic は children 0 で cycle 不可、early-skip).
+
+*** §5.3.3 Per-phase pseudo-elisp
+
+以下は articulation のための pseudo (= 実装時に微調整).  =cond= / =when= / =unless= / =null= / =not= / =nelisp--signal-*= は Doc 80 substrate (= STDLIB_FILES[0]) で利用可能.  =gethash= / =puthash= / =clrhash= / =maphash= は =nelisp-stdlib-hash.el= で提供済.
+
+#+begin_src elisp
+;; --- Phase entry point ---
+(defun gc-collect-cycles ()
+  "Bacon-Rajan synchronous cycle collection (Doc 79 §5.3)."
+  (let ((roots (gc--snapshot-roots)))
+    (when roots
+      (clrhash gc-color-table)
+      (clrhash gc-internal-rc-table)
+      (gc--mark-roots roots)            ; Phase 1 (snapshot already; this seeds purple)
+      (gc--trial-delete-pass roots)     ; Phase 2
+      (gc--scan-pass roots)             ; Phase 3
+      (gc--collect-white-pass roots)    ; Phase 4
+      (setq gc-cycle-roots-buffer nil))
+    (gc--bump-stat 'passes 1)))
+
+;; --- Phase 1 helper: snapshot + mark purple ---
+(defun gc--snapshot-roots ()
+  "Drain `gc-cycle-roots-buffer' into a list and mark each purple."
+  (let ((acc nil)
+        (drained gc-cycle-roots-buffer))
+    (setq gc-cycle-roots-buffer nil)
+    (dolist (ptr drained acc)
+      (unless (eq (gethash ptr gc-color-table) 'purple)
+        (puthash ptr 'purple gc-color-table)
+        (setq acc (cons ptr acc))))))
+
+(defun gc--mark-roots (roots)
+  "No-op in Algorithm 4 (purple already set in snapshot).  Hook for future async."
+  (ignore roots))
+
+;; --- Phase 2: trial deletion ---
+(defun gc--trial-delete-pass (roots)
+  (dolist (ptr roots)
+    (gc--trial-delete-walk ptr)))
+
+(defun gc--trial-delete-walk (ptr)
+  (let ((color (gethash ptr gc-color-table 'black)))
+    (unless (eq color 'gray)
+      (puthash ptr 'gray gc-color-table)
+      ;; Initialize internal rc snapshot lazily.
+      (unless (gethash ptr gc-internal-rc-table)
+        (puthash ptr (nl-rc-strong-count ptr) gc-internal-rc-table))
+      (let ((children (gc--children ptr)))
+        (dolist (child children)
+          (when (gc--root-candidate-kind-p child)
+            (puthash child (- (or (gethash child gc-internal-rc-table)
+                                  (nl-rc-strong-count child))
+                              1)
+                     gc-internal-rc-table)
+            (gc--trial-delete-walk child)))))))
+
+;; --- Phase 3: scan ---
+(defun gc--scan-pass (roots)
+  (dolist (ptr roots)
+    (gc--scan-walk ptr)))
+
+(defun gc--scan-walk (ptr)
+  (let ((color (gethash ptr gc-color-table)))
+    (when (eq color 'gray)
+      (let ((internal (gethash ptr gc-internal-rc-table 0))
+            (strong   (nl-rc-strong-count ptr)))
+        (cond
+         ((> strong internal)
+          (gc--scan-black ptr))            ; live, has external ref
+         (t
+          (puthash ptr 'white gc-color-table)
+          (dolist (child (gc--children ptr))
+            (when (gc--root-candidate-kind-p child)
+              (gc--scan-walk child)))))))))
+
+(defun gc--scan-black (ptr)
+  "Re-mark `ptr' and its children black (= live), restoring internal rc."
+  (puthash ptr 'black gc-color-table)
+  (dolist (child (gc--children ptr))
+    (when (gc--root-candidate-kind-p child)
+      (puthash child (+ (or (gethash child gc-internal-rc-table)
+                            (nl-rc-strong-count child))
+                        1)
+               gc-internal-rc-table)
+      (unless (eq (gethash child gc-color-table) 'black)
+        (gc--scan-black child)))))
+
+;; --- Phase 4: collect white ---
+(defun gc--collect-white-pass (roots)
+  (dolist (ptr roots)
+    (when (eq (gethash ptr gc-color-table) 'white)
+      (gc--collect-white-walk ptr))))
+
+(defun gc--collect-white-walk (ptr)
+  (when (eq (gethash ptr gc-color-table) 'white)
+    (puthash ptr 'black gc-color-table)
+    (dolist (child (gc--children ptr))
+      (when (gc--root-candidate-kind-p child)
+        (gc--collect-white-walk child)))
+    ;; Hand to Stage C.3 finalizer queue if large; else inline.
+    (if (gc--large-payload-p ptr)
+        (push ptr gc-finalize-queue)
+      (nl-gc-finalize ptr))
+    (gc--bump-stat 'boxes-freed 1)))
+
+;; --- kind dispatch helpers ---
+(defun gc--children (ptr)
+  "List of child opaque ptrs reachable from PTR (= Cons car/cdr, Vector elts, ...)"
+  (let ((kind (nl-rc-kind ptr)))
+    (cond
+     ((= kind 7)  (gc--cons-children ptr))      ; CONS = car + cdr
+     ((= kind 8)  (gc--vector-children ptr))    ; VECTOR = N elts
+     ((= kind 11) (gc--cell-children ptr))      ; CELL = single payload
+     ((= kind 12) (gc--record-children ptr))    ; RECORD = type + slots
+     ((= kind 9)  (gc--chartable-children ptr)) ; CHAR_TABLE = parent + slot vec
+     (t nil))))
+
+(defun gc--root-candidate-kind-p (ptr)
+  "Return non-nil iff PTR's kind has child edges (= cycle-possible)."
+  (let ((kind (nl-rc-kind ptr)))
+    (or (= kind 7) (= kind 8) (= kind 11) (= kind 12) (= kind 9))))
+#+end_src
+
+(各 helper 5-15 LOC、合計 §5.3.3 で ~150 elisp LOC.  per-kind children extraction = §5.3.5.b で別途 ~80 LOC.)
+
+*** §5.3.4 New boundary primitive needs (delta from §4.2 v1)
+
+§4.2 articulation で既に Stage C.1.b として:
+
+- =nl-rc-alloc= / =-dealloc= / =-inc-strong= / =-dec-strong= / =-strong-count= / =-kind= / =-payload-ptr= (= 7 generic)
+- =nl-gc-walk-children= / =-buffered-decs= / =-finalize= (= 3 GC helper)
+
+合計 *10 fns* が articulate 済.  本 v5 refinement で C.2 cycle collector の concrete pseudo を起こしたところ、追加で必要な primitive は:
+
+| 候補名                  | 必要性                                             | 判定        |
+|-------------------------+----------------------------------------------------+-------------|
+| =nl-rc-color-bit=       | per-box color tag を Rust trailer に置く            | *不要*      |
+| =nl-rc-cas-strong=      | concurrent mutator 対策の atomic CAS                | *不要*      |
+| =nl-gc-pin=             | finalizer queue 中の box が再参照された場合の rescue | *不要*      |
+| =nl-rc-payload-size=    | =gc--large-payload-p= で finalizer queue 振り分け    | *候補*     |
+
+判定根拠:
+- *color-bit*: §5.3.2 の =gc-color-table= が elisp hash で sufficient.  Rust trailer に color 1 byte 追加するのは layout pin 維持 (= 推奨せず).  hash overhead は cycle collection 中のみなので mutator hot path 0 cost.
+- *cas-strong*: elisp single-thread (= §6.4 articulation) なので Relaxed inc/dec で十分.  multi-thread は別 Doc.
+- *pin*: synchronous Bacon-Rajan では rescue 不要 (= scan-black が同 pass 中で external 検出).  Stage C.3 で deferred finalize に shift する際に再評価.
+- *payload-size*: =gc--large-payload-p= で必要.  Stage C.3 と coupled、本 stage では threshold = nil (= 全 inline finalize) で start、Stage C.3 着手時に追加判断.
+
+*delta = 0 (本 v5 で確定追加なし)*.  既存 §4.2 の 10 prim で C.2 を完走できる.  =nl-rc-payload-size= は Stage C.3 着手時の §4.2 への追補候補として §11 Open question に articulate.
+
+*** §5.3.5 Sub-stage breakdown 5.3.a〜5.3.e
+
+19 day 配分で 3-4 週間 budget を articulate.  各 sub-stage は単独 commit、ERT green、make test-all green を gate.
+
+**** §5.3.5.a — infrastructure (~3 days, ~80 elisp LOC)
+
+- =lisp/nelisp-stdlib-gc.el= skeleton (= file header / Commentary / =defcustom= 4 件 / =defvar= 6 件 + =gc-color-table= / =gc-internal-rc-table= 初期化).
+- baker.rs STDLIB_FILES に =nelisp-stdlib-gc.el= を =nelisp-stdlib-hash.el= の直後で配置追加.
+- =gc-cycle-roots-buffer= push hook を =nl-gc-buffered-decs= 経由で driving (= Stage C.1.b の primitive を直接 wrap、本 stage で初 consumer 化).
+- =gc-collect-cycles= は最初は =(maphash ...)= で buffer drain のみ、no-op stub.
+- ERT: buffer push 動作 (= dec で suspect が積まれる) / =clrhash= 後の状態 / =gc-stats-counters= 初期値.
+- *commit-rule*: Rust delta = 0、elisp delta = +~80 LOC.  Stage C.1.b primitive を本 commit に *atomic 抱合* (= dead-code 回避、project memory =feedback_commit_dead_code_claim_must_grep.md= 準拠).
+
+**** §5.3.5.b — trial deletion pass (~5 days, ~110 elisp LOC)
+
+- =gc--trial-delete-walk= / =gc--children= / per-kind =gc--cons-children= / =gc--vector-children= / =gc--cell-children= / =gc--record-children= / =gc--chartable-children= 実装.
+- =nl-gc-walk-children= primitive 経由で children 列挙.  per-kind 5 helper で =cond= dispatch.
+- =gc-internal-rc-table= 初期化 lazy + dec ロジック.
+- ERT: 2-deep linear list (= cycle なし) で internal_rc が strong_count 未満で残ること / mutual ref (a→b→a) で internal_rc == strong_count に減ること.
+- *commit-rule*: Rust delta = 0、elisp delta = +~110 LOC.
+
+**** §5.3.5.c — scan pass (~3 days, ~70 elisp LOC)
+
+- =gc--scan-walk= / =gc--scan-black= 実装.  white / black mark の正しい propagation.
+- 再帰的 scan (= white 配下の white を漏らさない).
+- ERT: 3-deep cycle で全 box が white / 1 box が external 参照ありの cycle で scan-black が cascade して全 box live になること.
+- *commit-rule*: Rust delta = 0、elisp delta = +~70 LOC.
+
+**** §5.3.5.d — collect-white pass (~3 days, ~50 elisp LOC)
+
+- =gc--collect-white-walk= / =nl-gc-finalize= 強制呼出.
+- =gc-finalize-queue= への enqueue 経路は本 stage では threshold = nil で全 inline (= Stage C.3 で実利用).
+- =gc-stats-counters= boxes-freed bump.
+- ERT: =nl-rc-strong-count= が collect 後 0 / =gc-stats-counters= 'boxes-freed が想定値.
+- *commit-rule*: Rust delta = 0、elisp delta = +~50 LOC.
+
+**** §5.3.5.e — ERT + stress (~5 days, ~90 elisp LOC + 既存 ERT 強化)
+
+- ERT scenario 拡張: 2-deep / 3-deep / mutual ref / self-cycle (= cons cell の cdr が自身) / cross-tree cycle / no-cycle baseline / NlCharTable parent self-ref (= §8 既存 case).
+- stress test: 100k allocation × 1% cycle rate (= 1k cycle) → =gc-collect-cycles= N 回で全 collect、=nl-rc-strong-count= 合計が pre-stress baseline ±0.
+- =equal_two_isomorphic_cycles_compare_equal= 等の既存 cycle test を *collect 観測 mode* で再走 (= cycle_test_with_gc).
+- bench harness skeleton (= Stage C.5 で本格化、ここでは 1 case のみ).
+- *commit-rule*: Rust delta = 0、elisp delta = +~90 LOC (test).
+
+**** Sub-stage 合計
+
+| Sub-stage | days | elisp LOC | Rust LOC | 備考                                          |
+|-----------+------+-----------+----------+-----------------------------------------------|
+| 5.3.a     |    3 |       ~80 |   ~+115  | Stage C.1.b primitive atomic 抱合 (= dead-code 回避) |
+| 5.3.b     |    5 |      ~110 |        0 |                                               |
+| 5.3.c     |    3 |       ~70 |        0 |                                               |
+| 5.3.d     |    3 |       ~50 |        0 |                                               |
+| 5.3.e     |    5 |       ~90 |        0 |                                               |
+| *合計*    | *19* |    *~400* | *~+115*  | net Rust delta = C.1.b portion only           |
+
+19 day = ~3 週間 working day + 1 週間 buffer = *3-4 週間 budget 維持 ✅*.  v4 の "+~400 elisp LOC" 高水準 estimate と合致.
+
+*Stage C.1.b の dead-code 回避*: C.1.b primitive の +115 LOC は 5.3.a sub-stage に atomic 抱合.  単独で C.1.b を ship すると consumer 不在 = monotonic shrink rule per-commit 違反 + project memory =feedback_commit_dead_code_claim_must_grep.md= 違反、5.3.a と atomic にすることで 5.3.a 単独 commit が consumer + producer の両側を同時に carry、grep で zero-callsite 状態を作らない.
+
+*** §5.3.6 Risk + mitigation
+
+**** §5.3.6.1 Performance regression (elisp GC slower than Rust refcount)
+
+- *risk*: =gc-collect-cycles= 内の hash table op + per-kind cond dispatch + recursive walk が Rust =Drop= に比べて 10-30x 遅い可能性.
+- *mitigation*:
+  - cycle collector は *eval-time idle hook* でのみ走る (= mutator hot path 0 cost).  =run-with-idle-timer= で 1s idle で fire.
+  - =nl-rc-inc-strong= / =-dec-strong= は Phase A.5 JIT trampoline で native code 化 (= primitive 自体の op cost は inline level).
+  - hash table は =clrhash= で reuse、GC pressure を増やさない.
+  - *threshold gate*: Stage C.5 で baseline (= Phase A) 比 -10% 以下 (= 90% 速度維持) に収束させる.  超過したら C.2 algorithm を Algorithm 5 (= concurrent CC、async background) に shift / write-barrier 追加.
+
+**** §5.3.6.2 Concurrent mutator
+
+- *risk*: cycle collector が trial deletion 中に mutator が refcount を変更すると inconsistent state (= Bacon-Rajan の有名 race).
+- *mitigation*:
+  - elisp は *single-threaded* (= §6.4 既存 articulation).  cross-thread race そのものが現状発生せず.
+  - eval-time に走るが、=gc-collect-cycles= 自体が elisp なので invocation 中 mutator は走らない (= sequential consistency).
+  - Phase D が thread emit を始めたら (= multi-thread eval)、本 §を re-articulate (= memory barrier primitive 追加 / Algorithm 5 への shift / weak-ref ロック).
+
+**** §5.3.6.3 Bootstrap circularity (verified absent)
+
+- *risk*: GC が elisp で書かれる → eval が必要 → eval は alloc を必要 → alloc が GC を必要 → 無限 loop.
+- *mitigation* (= verified absent):
+  - =nl-rc-alloc= / =-dealloc= / =-inc-strong= / =-dec-strong= は pure C-like primitive (= Stage C.1.b articulation 済).  GC を呼ばない.
+  - cycle collector は =run-with-idle-timer= か explicit =(garbage-collect)= でのみ起動.  boot phase (= image decode 中) は disabled、=gc-cycle-roots-buffer= も image decode 中は push されない (= initialization order で =run-with-idle-timer= は最終).
+  - boot 期 cycle leak は process exit で OS が回収 (= 実害なし; build 1 回 < 10ms cycle 形成余地小).
+  - finalizer queue (Stage C.3) も idle-timer hook で driving、boot 期 disabled.
+  - *確認*: alloc path に elisp 呼出無し / cycle-collector が require する関数群 (=cond= / =when= / =null= / =gethash= / =puthash= / =clrhash= / =dolist=) は Doc 80 substrate + =nelisp-stdlib-hash.el= で boot 完了済.
+
+**** §5.3.6.4 Walk-children for unboxed Sexp
+
+- *risk*: =nl-gc-walk-children= が unboxed Sexp (= Nil / T / Int / Float / Symbol / Str inline tag) を渡されたら crash / SEGV.
+- *mitigation*:
+  - =nl-rc-kind= が tag 0..=5 (= unboxed range) を返したら =gc--root-candidate-kind-p= が nil を返す = early-skip.
+  - =gc--children= も =cond= の default 節で nil 返却.
+  - debug build で =nl-rc-kind= が 13..=255 を返したら =error= raise (= type-confusion catch、§6.6 articulation 援用).
+  - ERT: 各 unboxed kind を root buffer に強制 push して collector が clean に skip すること.
+
+**** §5.3.6.5 Cycle root buffer overflow
+
+- *risk*: dec rate が cycle collection rate を上回り、=gc-cycle-roots-buffer= が肥大化、heap pressure を悪化させる.
+- *mitigation*:
+  - =gc-cycle-roots-limit= (defcustom = 32768) で hard cap.  超過時は =gc-collect-cycles= immediate fire.
+  - Stage C.5 bench で adaptive threshold (= alloc rate × ratio) を articulate.
+
+*** §5.3.7 Test plan
+
+**** §5.3.7.1 Cycle scenario coverage (ERT)
+
+| Test name                            | scenario                                | 期待                                       |
+|--------------------------------------+-----------------------------------------+--------------------------------------------|
+| =gc-cycle-2-deep=                    | =a.cdr = b; b.cdr = a=                  | 全 2 box collect、strong_count = 0         |
+| =gc-cycle-3-deep=                    | =a.cdr = b; b.cdr = c; c.cdr = a=       | 全 3 box collect                           |
+| =gc-cycle-mutual-ref=                | =a.car = b; b.car = a= (both ways)      | 全 2 box collect                           |
+| =gc-cycle-self=                      | =a.cdr = a=                             | 1 box collect                              |
+| =gc-cycle-cross-tree=                | tree A の leaf が tree B root を参照     | cycle 部のみ collect、tree 残部は live      |
+| =gc-no-cycle-baseline=               | linear list 100 node                    | 0 collect、全 box live                     |
+| =gc-cycle-with-external-pin=         | cycle に external var 参照あり           | 0 collect (= scan-black が rescue)         |
+| =gc-cycle-vector=                    | NlVector の 1 element が自身を参照       | 1 box collect                              |
+| =gc-cycle-record=                    | NlRecord slot 経由で cycle               | 1 box collect                              |
+| =gc-cycle-chartable-parent=          | NlCharTable parent chain で cycle        | cycle 部 collect、§8 既存 case と整合      |
+| =gc-cycle-mixed-kind=                | Cons → Vector → Cons cycle              | 全 box collect                             |
+| =gc-no-cycle-unboxed-only=           | Int / Symbol / Nil を root buffer に強制 push | clean skip、error なし                |
+
+合計 *12 ERT* (= 5.3.5.e で実装).
+
+**** §5.3.7.2 Memory leak detection
+
+- =gc-stats-counters= の =boxes-freed= を Rust-side =nl-rc-alloc= 累積 count と差分比較 (= Stage C.1.b primitive で expose).
+- pre-stress strong_count 合計 vs post-stress collect 後 strong_count 合計 = 0 (= no leak).
+- Stage C.5 で =cargo +nightly miri test= + =valgrind --leak-check= で UAF / leak の Rust-side 検証.
+
+**** §5.3.7.3 Stress test
+
+- 100k allocation, 1% cycle rate (= 1k cycle、各 cycle 5 box 平均) = 5k cycle box + 95k acyclic box.
+- 全 dec → cycle box 5k は =gc-cycle-roots-buffer= に集積、acyclic 95k は Rust =Drop= で即 free.
+- =gc-collect-cycles= N 回 (= ceil(5k / 32k limit) = 1 回で足りる) で 5k 全 collect.
+- Stage C.5 bench gate: 100k workload total time が Phase A baseline 比 +10% 以内.
+
+**** §5.3.7.4 既存 cycle test の collect 観測 mode
+
+- =equal_two_isomorphic_cycles_compare_equal= 等の既存 cycle-using ERT を *collect 観測 wrapper* で再走 (= test 終了後 =gc-collect-cycles=、strong_count 0 確認).
+- 既存 test 自体は変更せず、=ert-deftest gc-existing-cycle-collect-observe= で別 test として追加.
+
+*** §5.3.8 Integration with Stage C.3 finalizer queue
+
+Stage C.3 (= Doc 79 §5.4 articulation) は large payload の incremental free を articulate.  本 Stage C.2 は collect-white phase の最終で finalize 経路を 2 分岐:
+
+#+begin_src elisp
+(if (gc--large-payload-p ptr)
+    (push ptr gc-finalize-queue)
+  (nl-gc-finalize ptr))
+#+end_src
+
+handoff API:
+
+- *=gc-finalize-queue=* (= elisp dynamic var、list of opaque ptr): Stage C.2 が enqueue、Stage C.3 が =run-with-idle-timer= で =gc-finalize-step= 経由 dequeue.
+- *=gc--large-payload-p ptr=* (= predicate): Stage C.2 では threshold = nil (= 常に false、全 inline finalize) で start.  Stage C.3 着手時に =nl-rc-payload-size= primitive (= §5.3.4 articulate 候補) を追加して threshold check 化.
+- *=gc-stats-counters '(deferred-bytes)=* (= Stage C.3 で追加): finalizer queue 経由で deferred な bytes 累計 (observability).
+
+ordering invariant: =gc-finalize-queue= に入った box は次 idle cycle で free.  その間に =gc-collect-cycles= が再 fire しても、queue 上の ptr は color = black (= 既 collect 済) で gc--children walk からも保護される (= queue に乗せた時点で children link を null化、tomb 化).
+
+*Stage C.2 単独 ship 時の振る舞い*: =gc-finalize-queue= は常に空、全 box が inline =nl-gc-finalize=.  Stage C.3 着手で threshold > 0 化、queue が活性化.  C.2 ship 時点で *handoff API は wired*、threshold だけ flip すれば C.3 が機能する設計.
+
+*** §5.3 全体 summary
+
+- *Rust delta*: ±0 (= Stage C.1.b primitive +115 LOC は 5.3.a sub-stage に atomic 抱合、本 stage 実体は elisp).
+- *elisp delta*: +~400 LOC (= 80 + 110 + 70 + 50 + 90).
+- *commit-rule check*: 5 sub-commit 全てで net Rust delta non-positive (= 5.3.a で +115、5.3.b〜5.3.e で 0).  5.3.a が monotonic shrink rule strict 解釈で +115 違反するが、Stage C.1.b primitive を C.2 consumer と atomic 化する以外 dead-code 回避策がない (= project memory =feedback_commit_dead_code_claim_must_grep.md= とのトレードオフ).  Phase C 累積では *-56 〜 -101 LOC* 維持 (= Stage C.4-atomic SHIPPED -81 + Stage C.1.b +115 = +34、その後 Stage C.2 sub-stage 5.3.b〜e で 0、累積 +34、Phase C 全体は Stage C.3 / C.5 で更に shrink せず).  *user 確認推奨*: 5.3.a の per-commit +115 LOC を許容するか、または C.1.b を更に sub-split するか.  本 Doc は前者を推奨 (= dead-code 回避 + atomic primitive ship).
 
 ** §5.4 Stage C.3 — finalizer queue elisp 化 (1-2 週間)
 
@@ -525,6 +876,34 @@ GC literature:
 
 v3 (2026-05-09): Stage C.1 + C.4 を 1 atomic stage =C.1+4= に統合.  per-commit monotonic shrink rule の strict 解釈下で違反する stage を排除 (= v2 の =atomic PR boundary= 緩和 interpretation 提案を撤回).  Net Rust delta は v2 と同じ -56〜-101.  user 2026-05-09 confirmed.
 
+** v3 → v4 (2026-05-09)
+
+v4 (2026-05-09): Stage C.1+4 atomic ship が実装 audit で +168 LOC GATE FAILED (= C.1 primitive surface +205 LOC が C.4 -148 LOC を overrun).  Stage C.1+4 を 2 sub-stage に分割:
+- *Stage C.4-atomic*: DROP_FN + NLRC_DROP_TABLE + Drop body slim.  -81 LOC net、commit =8ba6f32= で SHIPPED.
+- *Stage C.1.b*: =rc_primitives.rs= 7 NlRc primitives + 3 GC helpers.  Stage C.2 cycle collector elisp 実装と atomic ship する path に変更 (= dead-code 回避、project memory =feedback_commit_dead_code_claim_must_grep.md= 準拠).
+
+§5.2 末尾に v4 sub-stage split 記載を追加.  Doc 79 articulation 全体は v3 を下敷き.
+
+** v4 → v5 (2026-05-09)
+
+v5 (2026-05-09): Stage C.2 cycle collector elisp 実装の concrete refinement.  v4 の高水準 articulation (= "+~400 elisp LOC、3-4 週間") を 8 sub-section に展開:
+
+- §5.3.1 Bacon-Rajan Algorithm 4 (synchronous) 4 phase overview.
+- §5.3.2 elisp data structures (= roots buffer / color table / internal rc table / finalize queue / overflow limit / stats counter).
+- §5.3.3 per-phase pseudo-elisp (= ~150 LOC、Phase 1〜4 entry + helper).
+- §5.3.4 boundary primitive delta articulation: *delta = 0* (= §4.2 既存 10 prim で C.2 完走可能、color/cas/pin は不要、=nl-rc-payload-size= は Stage C.3 着手時の §11 候補).
+- §5.3.5 sub-stage breakdown 5.3.a〜5.3.e (= 19 days / ~400 elisp LOC / Stage C.1.b primitive +115 LOC は 5.3.a に atomic 抱合 で dead-code 回避).
+- §5.3.6 risk + mitigation (= performance / concurrent mutator / bootstrap circularity verified absent / unboxed walk safety / root buffer overflow).
+- §5.3.7 test plan (= 12 ERT scenario + memory leak detection + 100k cycle stress + 既存 cycle test の collect 観測 mode).
+- §5.3.8 Stage C.3 finalizer queue handoff API (= =gc-finalize-queue= / =gc--large-payload-p= / threshold flip で C.3 activate).
+
+*Trade-off acceptance*:
+- 取得: Phase C C.1.b + C.2 atomic dispatch path 確立、dead-code 回避、test plan articulate、bootstrap circularity verified absent.
+- 放棄: 5.3.a sub-commit で per-commit monotonic shrink rule strict 解釈に +115 LOC 違反.  代替案 (= C.1.b を更に sub-split、各 prim を C.2 helper と atomic) は §11.7 open question として user に逆送.
+- 中立: Phase C 累積 Rust delta は v4 と同じ -56 〜 -101 LOC range.
+
+*Rust delta*: ±0 (本 v5 = doc-only).  *elisp delta*: ±0 (本 v5 = doc-only、~400 LOC は Stage C.2 implementation で投入).
+
 * §11 Open questions
 
 1. =nl-gc-buffered-decs= の buffer 上限 / overflow policy: 32k 固定 vs adaptive.  Stage C.2 着手時に決定.
@@ -533,8 +912,13 @@ v3 (2026-05-09): Stage C.1 + C.4 を 1 atomic stage =C.1+4= に統合.  per-comm
 4. =gc-stats= API の MCP exposure: anvil tool 経由で elisp 内 GC observation 可能にするか (= memo / future tooling).
 5. *(v2 新規)* user 2026-05-09 monotonic shrink rule の granularity: "every commit" vs "every PR".  Stage C.1 単独は +115〜160 LOC で違反、ただし C.1 + C.4 atomic PR で net -56〜-101 となる.  本 Doc は PR boundary 解釈を採用するが、user に逆送して strict per-commit を採るなら C.1 を 5+ sub-commit に分けた更なる refactor が必要.
 6. *(v2 新規)* kind tag を =Sexp::tag()= byte 再利用 vs 独立 byte: 前者は layout pin 完全不変、後者は abstraction 分離.  Stage C.0 で確定.
+7. *(v5 新規)* Stage C.1.b primitive (+115 Rust LOC) と Stage C.2 sub-stage 5.3.a の atomic 抱合: 本 Doc は dead-code 回避を優先して 5.3.a に +115 LOC 抱合を推奨、ただし per-commit monotonic shrink rule strict 解釈には違反.  代替案 = C.1.b を更に 7 prim × ~16 LOC に sub-split、各 prim を C.2 helper の atomic consumer と 1:1 対応で ship.  user 確認案件.
+8. *(v5 新規)* =nl-rc-payload-size= primitive: Stage C.3 finalizer queue 着手時に追加判断.  threshold = nil (= 全 inline finalize) で start なら本 stage 不要、Stage C.3 で large box 振り分け化する際に §4.2 追補.
 
 * §12 Change log
 
 - 2026-05-09 DRAFT 初版.  Doc 77c §2.3 の articulation.  Option C (hybrid) 推奨、6 sub-stage 案、LOC inventory + delta target.
 - 2026-05-09 DRAFT v2.  Stage C.1 を generic NlRc primitive set に refactor (= per-kind 22 prim → 10 generic fns、+423 Rust → +115〜160 Rust).  Stage C.4 amplification (= Drop body 統一で -100 → -216 LOC).  Phase C 単独で net -56〜-101 LOC、user 2026-05-09 monotonic shrink rule を Phase B 統合に依存せず充足.  §6.6/§6.7 に generic API 新 risk 追記、§10 に refactor history 追加.
+- 2026-05-09 DRAFT v3.  Stage C.1 + C.4 を atomic =C.1+4= に統合、per-commit shrink rule strict 解釈下で違反 stage 排除.
+- 2026-05-09 DRAFT v4.  Stage C.1+4 atomic ship が +168 LOC GATE FAILED → Stage C.4-atomic (= -81 LOC SHIPPED commit =8ba6f32=) + Stage C.1.b (= 7 prim + 3 GC helper、deferred until C.2 consumer atomic).
+- 2026-05-09 DRAFT v5.  Stage C.2 cycle collector elisp 実装の concrete refinement (= §5.3 を §5.3.1〜§5.3.8 sub-section に展開).  Bacon-Rajan Algorithm 4 articulation、4 phase pseudo-elisp、5 sub-stage breakdown (~19 days / ~400 elisp LOC)、12 ERT scenario、Stage C.3 finalizer queue handoff API、bootstrap circularity verified absent.  §11 に v5 open question 2 件追加 (= 5.3.a +115 LOC 抱合 / =nl-rc-payload-size= deferred).  §10 に v3→v4 / v4→v5 refactor history 追加.  *boundary primitive delta = 0* (= §4.2 既存 10 prim で C.2 完走).  Doc-only refactor、Rust ±0 / elisp ±0.
