@@ -32,48 +32,6 @@
 (require 'emacs-mode-builtins)
 (require 'cl-lib)
 
-;; Doc 02 v0.2 — vendor Emacs lisp activation for daily-driver use.
-;; nemacs-gtk is the GUI daily-driver; load the vendor Emacs Lisp tree
-;; eagerly so user's standard Emacs commands work without per-buffer
-;; lazy-load surprises.  Probe SHIPPED 2026-05-09: load + runtime
-;; both validated for the 22 modules below.  See
-;; feedback_nelisp_emacs_gtk_gui_only_boundary — editor logic stays
-;; in nelisp-emacs (vendor included).  v0.1 scratch
-;; emacs-{fileio,dired-min,buffer-ui,isearch,help,undo-ui,elisp-eval,
-;; ielm,shell-command,completion-ui,project,org-*}.el were deleted
-;; (2026-05-09) once vendor equivalents proved both load + runtime OK.
-;; Foundational macros — must precede anything that USES them.  Host
-;; Emacs pre-loads these via dump file; NeLisp does not, so we require
-;; explicitly. Without easy-mmode, files like font-core / lisp-mode
-;; that call (define-globalized-minor-mode ...) signal void-function
-;; at runtime because the macro never expanded.
-(require 'easy-mmode)
-(require 'derived)
-;; Editor base (file / buffer / window / minibuffer / undo / help /
-;; eval / shell / completion / project / dired / isearch):
-(require 'files)
-(require 'simple)
-(require 'minibuffer)
-(require 'help-fns)
-(require 'help-mode)
-(require 'lisp-mode)
-(require 'ielm)
-(require 'project)
-(require 'isearch)
-(require 'dired)
-;; org-mode + theme + babel + export:
-(require 'org)
-(require 'org-refile)
-(require 'org-archive)
-(require 'ob)
-(require 'ob-emacs-lisp)
-(require 'ox)
-(require 'ox-md)
-(require 'ox-html)
-(require 'ox-ascii)
-(require 'cus-theme)
-(require 'cus-edit)
-
 ;; Grid dimensions are now mutable defvars (Phase 2.I) — the GTK
 ;; window is resizable and `nelisp-gtk-poll-resize' surfaces the
 ;; new (rows, cols) tuple per drag.  Boot defaults match the old
