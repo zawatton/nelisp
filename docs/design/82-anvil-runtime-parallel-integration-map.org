@@ -1,0 +1,506 @@
+#+TITLE: Doc 82 — anvil-runtime 並行 session 統合 map (= 二重 audit alignment + 将来 convergence)
+#+AUTHOR: NeLisp / Claude (z=Opus 4.7) + user direction
+#+DATE: 2026-05-09
+#+OPTIONS: ^:nil
+
+:PROPERTIES:
+:STATE: DRAFT 2026-05-09
+:DRAFTED: 2026-05-09
+:PARENT: Doc 77c (= 100% 純 elisp commitment master plan)、Doc 74 (= my session's anvil-runtime migration audit v2)、memory =project_anvil_runtime_phase_b4_shipped= (= parallel session)
+:RELATED: Doc 73 (= Phase 8 reader/eval purge), Doc 75 (= Phase 9 frozen heap)
+:DECISION_DATE: 2026-05-09 (= 二重 session 並行を articulate、将来 convergence path 整理)
+:END:
+
+* §0 TL;DR
+
+2026-05-09 時点で anvil-runtime crate の 100% 純 elisp 化に向け **2 つの session が並行進行**:
+
+1. *Parallel session* (= memory =project_anvil_runtime_phase_b4_shipped=、
+   nelisp main =a6de799=): Phase A0/A1/A2/B1/B2/B3/B4 SHIPPED、Phase B5
+   next、Final B target = *-7,346 Rust LOC* (= anvil-runtime crate 全削除
+   + reader cfg-gate 込み).  approach = NeLisp standalone runtime に
+   primitive (cl-defstruct setf / functionp / json parser / edebug-stubs 等)
+   を増強し、anvil-server.el を **そのまま** load 可能にする bottom-up.
+2. *My session* (= Doc 74 v2 audit、commit =d4caa9c= / merge =6fbbb76=
+   on =feat/doc-77-stage2-prep=): Stages 74.1〜74.7 articulate、
+   target = *-4,365 〜 -5,667 Rust LOC*.  approach = anvil-runtime crate
+   の Rust module を stage 単位で elisp port + 削除する top-down.
+
+両 session は **同一 crate (= =anvil-runtime/=) の 100% 削除を目標**
+にしているが、**framing / branch / phase ordering / LOC accounting が
+異なる**.  本 Doc は二者の alignment matrix + dependency 連鎖 +
+convergence path を articulate し、二重 commit 衝突 / framing 不整合
+/ LOC 二重計上 risk を mitigate するための統合 map を残す.
+
+*Recommendation*: my session の Doc 74 v2 audit (= concrete LOC
+inventory + per-stage Rust LOC delta target + callsite map) を **parallel
+session の Final B 詳細設計** として再利用する形で convergence、Doc 74
+は \"deferred to parallel session\" 状態とし Doc 77c §4.x からの cross-link
+で同期点を明示する.
+
+* §1 動機
+
+** §1.1 二重 audit の存在
+
+2026-05-09 当日に **2 つの独立 session** が anvil-runtime crate の
+elisp 化を別 framing で同時着手した:
+
+- Parallel session = NeLisp standalone bootstrap 経路で =Phase A/B=
+  系列を ship.  焦点 = standalone NeLisp で anvil-server.el が load
+  + register + dispatch するまでの primitive 不足を埋める bottom-up.
+- My session = Doc 74 v2 で anvil-runtime crate を =module 単位で
+  elisp 化 + 削除= する top-down 設計.  焦点 = Rust LOC monotonic
+  shrink rule に従った per-stage delta target articulation.
+
+両者とも user の \"100% 純 elisp\" + \"per-commit monotonic shrink rule\"
+(= Doc 77c §1.1 LATEST 確定) commitment 下で動いている.  しかし
+**実装順序 / 削除 unit / branch** が独立に決まったため、整合 audit が
+必要.
+
+** §1.2 framing 差異 (= Phase A/B vs Stage 74.x)
+
+| 観点 | Parallel session (Phase A/B) | My session (Stage 74.x) |
+|------+------------------------------+-------------------------|
+| 削除 unit | NeLisp standalone primitive 増強で anvil-server.el の Rust 化前 = elisp 直 load | anvil-runtime crate 内 module 単位で Rust → elisp port |
+| baseline | NeLisp が anvil-server.el を read_all + eval する経路 | anvil-runtime crate が compile error 14 個を抱えた broken state からの fix-then-shrink |
+| primary delta | NeLisp Rust 側 +5 ERT、elisp 側 +540 (subr-extras) + 200 (json parser) + 86 (cl-defstruct setf) ≈ +830 | anvil.el repo 側 elisp +1500-2000 (= Doc 77c §0 estimate)、anvil-runtime crate Rust -4,365〜-5,667 |
+| monotonic shrink rule satisfy | NeLisp 自身の Rust LOC 増は許容? (= 投資 LOC、Final B で -7,346 で回収) | 各 stage で Δ Rust LOC ≤ 0 (= Stage 74.1 のみ ±0 例外) |
+| target final delta | -7,346 Rust LOC (= anvil-runtime crate + reader cfg-gate) | -4,365 〜 -5,667 Rust LOC (= anvil-runtime crate のみ) |
+| branch | nelisp =main= (= a6de799) + nelisp-emacs =main= | =feat/doc-77-stage2-prep= (= 8fd06e2) |
+
+差の本質: parallel session は **anvil-server.el を一切触らず NeLisp
+側の primitive 不足を埋める** ことで Rust 削除を達成、my session は
+**anvil-runtime crate 内 Rust を elisp に port + 削除** することで Rust
+削除を達成.  どちらも最終的に anvil-runtime crate を消す点は一致するが、
+*中間状態の型* が異なる (= NeLisp primitive 増 vs anvil.el repo elisp file 増).
+
+** §1.3 alignment 必要性
+
+両 session を放置すると:
+
+- 同じ anvil-runtime/ Rust file を異なる branch で同時編集する commit
+  衝突
+- LOC delta accounting の二重計上 (例: =mcp/dispatch.rs= 削除を両 session
+  が独立に commit する)
+- framing の不整合 (= parallel = phase B5 が my session = Stage 74.2 と
+  実質同じ file を触る、Rust monotonic rule 解釈の差異)
+- 「parallel session が Final B で全削除する場合、my session の Stage
+  74.x 設計は何を残すべきか」の判断不能
+
+本 Doc は alignment matrix で重複と連鎖を articulate し、convergence
+path で「単一 canonical roadmap 化」の道筋を残す.
+
+* §2 並行 session inventory
+
+** §2.1 Parallel session = NeLisp standalone + anvil.el load chain
+
+session memory: =anvil-memory:db:project_anvil_runtime_phase_b4_shipped=
+(+ =_b1_audit= / =_b2_shipped= / =_b3_shipped=).
+
+SHIPPED phase:
+
+| Phase | scope | commit / branch | Rust LOC delta | elisp LOC delta |
+|-------+-------+-----------------+----------------+------------------|
+| A0 | bootstrap probe (= standalone NeLisp で anvil-server.el の primitive 不足検出) | (= memory only) | 0 | 0 |
+| A1 | =throw= / =catch= / =unwind-protect= を funcall 可能 builtin 化 | nelisp =78e4be4= | +67 (Rust) | 0 |
+| A2 | stdio shim (= NeLisp standalone + emacs-stdio.el shim) | nelisp-emacs =fb0dc48= | 0 | +110 |
+| B1 | audit-first design memo + bootstrap probe rev3 | (= memory only) | 0 | 0 |
+| B2 | =functionp= symbol resolve + =alist-get= verbatim cdr fix + subr-extras (= 19 entry) + =json-read-from-string= parser | nelisp =855f0de= + nelisp-emacs =2c64627= | +84 | +740 |
+| B3 | edebug stubs (= =def-edebug-elem-spec= / =def-edebug-spec= / =define-symbol-prop=) | nelisp-emacs =bfa8cc2= (merge =b6557da=) | 0 | +96 |
+| B4 | =cl-defstruct= setf integration + =setf= / =cl-incf= / =cl-decf= macros | nelisp =a6de799= (merge =a2b6fef=) | 0 | +166 |
+
+到達点 (= Phase B4 SHIPPED 直後の Stage D smoke):
+
+- bootstrap + load + register + read までは standalone NeLisp で稼働
+- =anvil-server--validate-and-dispatch-request= で =void-variable: 100.0=
+  (= NeLisp reader float-literal バグ) で trip → Phase B5 で fix 予定
+- anvil-server-metrics.el smoke で =cl-incf= round-trip 完璧
+
+Phase B5 next (= 残 blocker):
+
+1. NeLisp reader float-literal bug (= Rust ~10-30 LOC、Phase B4 範囲外)
+2. anvil-server.el / anvil-server-commands.el / anvil-server-jsonrpc.el
+   の全 load 検証
+3. JSON-RPC frame round-trip (= initialize / initialized / tools/list
+   / tools/call の 4 frame Python json.loads validate)
+
+Final B (= 多 session、Phase B6+):
+
+- *Final B target = -7,346 Rust LOC* (= anvil-runtime crate 5,667 +
+  reader cfg-gate 1,679)
+- module-by-module で anvil-host / anvil-data / anvil-file / anvil-manifest
+  を個別 standalone NeLisp 上で動作確認 → anvil-runtime crate を空にする
+
+** §2.2 My session = Doc 74 v2 anvil-runtime → anvil.el migration
+
+DRAFT: =docs/design/74-anvil-runtime-to-anvil-el-migration.org= v2 (=
+commit =d4caa9c= / merge =6fbbb76= on =feat/doc-77-stage2-prep=).
+
+audit 内容:
+
+- *concrete LOC inventory* (= =wc -l= 実測): anvil-runtime/ 全 5,667
+  LOC (= non-test 4,484 + test 1,141)
+- *callsite map*: leaf crate 実証 (= external surface = =bin/anvil-
+  runtime= binary のみ)
+- *migration option 比較*: Option A (= ABI 追従) reject、Option B (=
+  big-bang) 高 risk、Option C (= fix-then-incremental-delete) 推奨
+- *per-stage Rust LOC delta target* (= §5):
+
+| Stage | scope | Δ Rust LOC target |
+|-------+-------+-------------------|
+| 74.1 | compile error 14 個解消 | ±0 〜 -10 |
+| 74.2 | =anvil-mcp-protocol.el= + =anvil-mcp-server.el= skeleton 整備 + =--elisp-dispatch= flag | -100 〜 -200 |
+| 74.3 | =anvil-mcp-host-tools.el= 作成 → =anvil_host_registry::compat_*= 17 個削除 | -700 〜 -900 |
+| 74.4 | =anvil-mcp-module-tools.el= 作成 → =anvil_module_registry.rs= 削除 | -457 〜 -523 |
+| 74.5 | =anvil-mcp-{data,file,shell-filter}-tools.el= 作成 → 3 registry 削除 | -1,400 〜 -1,821 |
+| 74.6 | =anvil_tools_registry.rs= 削除 + =anvil_host_registry= 残骸削除 | -1,500 〜 -2,000 |
+| 74.7 | crate 削除 / 統合判断 (= Option I thin shim / Option II 完全削除) | -208 〜 -5,667 |
+
+合計 target = *-4,365 〜 -5,667 Rust LOC*.
+
+** §2.3 二者の rough comparison
+
+| 軸 | Parallel session | My session (Doc 74 v2) |
+|----+------------------+-----------------------|
+| 開始 | 2026-05-09 14:50 (Phase B1) | 2026-05-08 (Doc 74 v1) → 2026-05-09 (v2) |
+| 着手 commit | =78e4be4= (Phase A1) | =d4caa9c= (Doc 74 v1)、=6fbbb76= (v2 merge) |
+| 進捗 | Phase B4 SHIPPED、Phase B5 next | DRAFT 完成、実装着手前 |
+| 削除済 Rust LOC | 0 (= まだ anvil-runtime には触っていない) | 0 (= DRAFT のみ) |
+| 投資済 LOC | NeLisp Rust +151 + elisp +1,112 ≈ +1,263 | DRAFT のみ、+0 |
+| 残工数 estimate | Final B まで多 session (= 1-2 ヶ月、Doc 77c §0 後半推定) | 7 stage、stage あたり ~1 day = ~7 day |
+
+* §3 Alignment matrix
+
+** §3.1 Same target (= anvil-runtime crate)
+
+両 session とも以下 unit を最終削除対象としている (= Doc 74 v2 §2.1 LOC
+inventory より):
+
+- =anvil_host_registry.rs= (1,739)
+- =anvil_module_registry.rs= (523)
+- =anvil_data_registry.rs= (508)
+- =anvil_file_registry.rs= (657)
+- =anvil_shell_filter_registry.rs= (656)
+- =anvil_tools_registry.rs= (357)
+- =mcp/*= (974)
+- =bin/anvil-runtime.rs= (208)
+- =bin/anvil-mcp-demo.rs= (20)
+- =lib.rs= (25)
+
+Final delta:
+- Parallel session = -7,346 Rust LOC (= 上記 5,667 + reader cfg-gate 1,679)
+- My session = -4,365 〜 -5,667 Rust LOC (= 上記 5,667 中、Option I or II)
+
+差 = *parallel session が reader cfg-gate (= Doc 73 Stage 8.4) を込み
+で計上、my session は別 stage (= Doc 73 §2.4) 扱い*.  実体は同じ -1,679
+LOC を別 Doc に accounting しているだけで、grand total では一致する.
+
+** §3.2 Different layer
+
+| layer | Parallel session 関与 | My session 関与 |
+|-------+----------------------+-----------------|
+| NeLisp Rust core (= reader / eval / Sexp ABI) | A1 で +67 LOC、Phase B5 で reader fix +10〜30 LOC 予定 | 触らず (= Doc 77c の Phase A 範疇) |
+| NeLisp standalone elisp (= subr-extras / json parser / cl-defstruct setf / edebug-stubs) | 主戦場 (+1,112 LOC) | 触らず |
+| anvil.el repo elisp (= anvil-mcp-host-tools.el 等) | 触らず (= anvil.el は 1 行も触らない方針) | 主戦場 (= Doc 77c §0 \"+1500-2000 LOC\" 推定) |
+| anvil-runtime crate Rust | 最終削除対象、Final B まで触らず | Stage 74.1 から段階的に削除 |
+| Doc 73 reader cfg-gate | Final B accounting に込み | §7 で別 Doc 扱い |
+
+差の本質: *parallel session は NeLisp standalone runtime を強化して
+anvil-server.el の 既存 elisp を直 load*、*my session は anvil-runtime
+の Rust dispatch logic を anvil.el repo の新 elisp file に書き換える*.
+
+両者は **layer が直交している** (= 同じ Rust file を同時編集しない).
+ただし *Stage 74.x の実装着手時には parallel session の Phase B が
+prerequisite* (= 後述 §3.3 dependency).
+
+** §3.3 Dependency relationship
+
+Phase B SHIPPED → Stage 74.x 着手可能の連鎖:
+
+#+begin_example
+Phase A1 (throw/catch/unwind builtin) ──┐
+Phase A2 (stdio shim)                   │
+Phase B2 (subr-extras + json parser)    ├── prerequisite for Stage 74.2
+Phase B3 (edebug-stubs)                 │   (= elisp dispatch path 検証)
+Phase B4 (cl-defstruct setf)            │
+                                        │
+Phase B5 (reader fix + anvil-server.el  │
+         全 load + JSON-RPC round-trip) ┴── REQUIRED before Stage 74.2
+                                            ship (= cross-mode equivalence
+                                            test の baseline)
+#+end_example
+
+理由: my session の Stage 74.2 では =--elisp-dispatch= flag を導入し
+elisp 経路の MCP dispatch を Rust 経路と並走させる (= cross-mode
+equivalence test).  この elisp 経路は **standalone NeLisp + anvil-server.el
+load chain で動く必要がある**.  すなわち Phase B5 (= anvil-server.el
+全 load + JSON-RPC frame round-trip) が ship していないと Stage 74.2
+の equivalence test は fixture が動かない.
+
+逆方向の dependency:
+- Stage 74.x は Phase B5 完了 *後* なら *並列実行可能* (= 異なる registry
+  を異なる session で elisp port).  parallel session が Final B path で
+  全 module を 1 session ずつ標準化していくのと同じ effort 量.
+- ただし Stage 74.x は my session が anvil.el repo に新 elisp file を
+  追加する path で、parallel session は anvil.el repo に手を入れない
+  方針.  *layer は直交、commit 衝突無し*.
+
+* §4 Convergence path
+
+** §4.1 Phase B5 → Stage 74.1 prerequisite
+
+Stage 74.1 (= Doc 74 v2 で \"compile error 14 個解消、Δ Rust LOC ±0 〜
+-10\" の例外的 net-zero commit) は **parallel session の Phase B5 完了
+を待たずに着手可能**.  理由:
+
+- Stage 74.1 の主 task = =Sexp::Cons(NlConsBoxRef)= ABI migration 追従
+  (= Doc 77c Phase A.2.1 既 SHIPPED 結果に Rust 側 anvil-runtime を
+  sync) + =NlXxxRef.borrow= 削除
+- これは parallel session の Phase B (= NeLisp standalone primitive
+  増強) と完全直交
+- Stage 74.1 完了で =cargo build -p anvil-runtime --release= 成功 →
+  以降 stage の baseline 確立
+
+Stage 74.2 以降は Phase B5 SHIPPED 待ち (= cross-mode equivalence test
+fixture が動くため).
+
+** §4.2 Final B (= -7,346) と Stage 74.7 (= 最大 -5,667) の overlap articulate
+
+両者の grand total LOC を articulate:
+
+| accounting | parallel session | my session | 差 |
+|------------+------------------+------------+----|
+| anvil-runtime crate (= 5,667) | 含む | 含む | 0 |
+| Doc 73 Stage 8.4 reader cfg-gate (= 1,679) | 含む (= Final B target -7,346) | 別 Doc 扱い (= §7 で unblock 述べるのみ) | +1,679 |
+| 投資 elisp LOC (= NeLisp primitive 増 + anvil.el repo 新 file) | NeLisp +1,112 (= 既 invest) | anvil.el repo +1,500〜2,000 (= 推定) | overlapping ではない |
+| net Rust shrink (= 純削減) | -7,346 | -4,365 〜 -5,667 | 1,679 〜 2,981 |
+
+結論: **両者の Rust shrink target は accounting boundary を揃えれば
+ほぼ等価**.  `parallel - 1,679 (= reader cfg-gate を別計上に揃える)
+≈ my session Option II = -5,667`.
+
+** §4.3 LOC delta reconciliation
+
+二重計上回避のため、以下を canonical accounting とする:
+
+1. *anvil-runtime crate Rust 削減 = -5,667 LOC* (= anvil-runtime/ 全削除、
+   両 session 共通)
+2. *Doc 73 Stage 8.4 reader cfg-gate 削減 = -1,679 LOC* (= 別 Doc
+   accounting)
+3. *NeLisp standalone primitive 増 = +1,263 elisp* (= parallel session
+   が既 invest)
+4. *anvil.el repo 新 file 増 = +1,500〜2,000 elisp* (= my session の
+   Stage 74.x で必要分)
+
+Q: 両 session が同時進行した場合、*anvil.el repo 新 file 増は本当に
+必要か?*
+
+A: parallel session の Final B path で anvil-server.el を NeLisp
+standalone 経由で load + dispatch する完全動作が確認できれば、my
+session の Stage 74.3-74.5 (= =anvil-mcp-host-tools.el= / =-data-tools.el=
+等の作成) は **不要**.  anvil-server.el が既存の anvil.el repo 内で
+そのまま動くため、anvil-runtime crate の compat_* / dispatch logic は
+削除するだけで replacement file は不要.
+
+すなわち *parallel session の Final B が成功すれば my session の Stage
+74.3-74.5 は merge せず deferred*.  Stage 74.6-74.7 (= crate 削除 /
+統合判断) のみ実行.
+
+** §4.4 Single canonical roadmap 化 path
+
+3 通りの convergence option:
+
+*** Option α — parallel session Final B 採用、my Doc 74 deferred
+
+- parallel session が Phase B5 → Final B まで進める
+- my session の Doc 74 v2 audit は \"Final B 詳細設計の reference 資料\"
+  として保管 (= LOC inventory + callsite map + migration option 比較が
+  Final B の per-module shrink で再利用可)
+- Stage 74.x は Final B の sub-step として再 number (= Stage 74.1 →
+  Phase B6.1 等)
+- *recommended* — parallel session が既に多 commit invest 済 + Stage
+  74.x の anvil.el repo 新 file 追加が不要になるため
+
+*** Option β — my Doc 74 v2 採用、parallel Phase B 縮小
+
+- parallel session を Phase B5 で stop (= reader fix + anvil-server.el
+  load 確認まで)
+- my session の Stage 74.1 から実装、Stage 74.7 で crate 削除
+- *not recommended* — parallel session の Phase B6+ articulation を捨
+  てる + anvil.el repo に追加 elisp が必要 (= duplication)
+
+*** Option γ — 並走 (= 両 session を独立に進める)
+
+- parallel session = Phase B5 → B6+ で anvil-server.el load 経路確立
+- my session = Stage 74.1 (= Rust compile fix) のみ実行、Stage 74.2-74.7
+  は parallel session の進捗待ち
+- *acceptable fallback* — parallel session が stall した場合の保険
+
+→ *Option α 推奨*、Option γ は contingency.
+
+* §5 Risk + mitigation
+
+** §5.1 二重 commit 衝突 (= 同 file を両 session で編集)
+
+Risk: 両 session が同じ anvil-runtime/ Rust file を異なる branch で
+同時編集する.
+
+Mitigation:
+- §3.2 で示した通り *layer 直交* (= parallel session は NeLisp side、
+  my session は anvil.el repo + anvil-runtime delete).  Phase B 進行
+  中 (= parallel session 主体) は my session の Stage 74.1 (= Rust
+  compile fix) のみ ship、Stage 74.2 以降は parallel session の Phase
+  B5 SHIPPED 確認後に dispatch.
+- Doc 82 に \"並行 session 状態\" を articulate し、各 session 開始時
+  に本 Doc を確認.
+
+** §5.2 framing 不整合 (= rule 解釈 / 工数 estimate / scope boundary)
+
+Risk:
+- monotonic shrink rule の解釈差 (= parallel session の \"投資 LOC は
+  Final B で回収\" vs my session の \"per-stage で必ず Δ ≤ 0\")
+- 工数 estimate (= parallel = 1-2 ヶ月、my = 7 day) の不一致
+
+Mitigation:
+- Doc 82 §3.2 で layer 直交を articulate、両 session が *同じ commit
+  の中で Rust 増加を ship しない* 限り rule 違反は発生しない.  parallel
+  session の elisp 投資は Rust LOC 0 increment で進められている (= 確認済み:
+  Phase B2-B4 commit body の Rust delta = +84 のみ、それも Phase B6+
+  で回収予定).
+- 工数 estimate は両者が独立に立てた数値で *grand total では同じ
+  destination*.  本 Doc §4.2 で reconciliation table を残す.
+
+** §5.3 phase 順序衝突 (= my session の Stage 74.x が parallel の Phase B より先に出る場合)
+
+Risk: my session が Stage 74.2 以降を ship → anvil.el repo に新 elisp
+file が増える → parallel session の Final B が anvil.el repo を 1 行も
+触らない方針と矛盾、結果 anvil.el repo に dead code が残る.
+
+Mitigation:
+- Doc 82 §4.4 Option α 採用 → my session の Stage 74.2-74.5 は parallel
+  session Final B の進捗を見て決める
+- Stage 74.1 (= Rust compile fix) のみ即時 ship 可、それ以降は dispatch
+  gate を Doc 82 §6 で明記
+
+** §5.4 LOC accounting double-count
+
+Risk: =anvil-runtime crate 削除= を両 session が独立に \"自分の delta\"
+として claim する.
+
+Mitigation:
+- Doc 82 §4.3 で canonical accounting を固定 (= anvil-runtime crate -5,667
+  は 1 度のみ計上、reader cfg-gate -1,679 は Doc 73 Stage 8.4 accounting)
+- 各 session の commit message に \"per Doc 82 §4.3 canonical accounting\"
+  を入れる慣行を提案
+
+* §6 Recommended action
+
+** §6.1 my session's Doc 74 v2 audit を parallel session の Final B 詳細設計として再利用提案
+
+Action:
+- parallel session が Phase B5 SHIPPED 後、Final B (= Phase B6+) の
+  module-by-module roadmap を articulate する際、Doc 74 v2 の §2.1 LOC
+  inventory + §2.2 public API surface + §3 callsite map + §5 stage
+  breakdown を base reference として活用
+- Stage 74.3-74.5 (= per-registry elisp port) の articulation は parallel
+  session の Final B path では \"anvil.el repo に file 追加\" が不要に
+  なる代わりに \"NeLisp standalone で anvil-server.el の compat_* 相当を
+  どう動かすか\" の articulation に flip する (= 既存 anvil-host.el が
+  そのまま動く前提なら additional elisp 不要).
+- Doc 74 v2 の §6 Risk articulation (= 性能 / build order / cross-PC) は
+  parallel session の Final B でも同じ risk 群が登場するため共通参照.
+
+** §6.2 Doc 74 を \"deferred to parallel session\" 化 + cross-link from Doc 77c §4.x
+
+Action:
+- Doc 74 v2 の §0 STATE に \"DEFERRED to parallel session Phase B6+ per
+  Doc 82 §4.4 Option α\" を追記 (= 別 commit、本 Doc DRAFT 確定後)
+- Doc 77c §4.x (= immediate next steps) に Doc 82 reference を入れる
+  (= 本 commit に含む)
+- Doc 74 v2 自体は **削除しない** — Final B 詳細設計の reference 資料
+  として保持
+
+** §6.3 Phase B5 SHIPPED 後の Stage 74.x dispatch 可能性 articulate
+
+Action: Phase B5 SHIPPED の確認後、本 Doc §4.4 Option α/β/γ から正式
+に選択し Doc 82 §0 を Status update する.  選択後の dispatch path:
+
+- Option α 採用時: Stage 74.1 のみ即時 ship (= Rust compile fix、独立)、
+  Stage 74.2-74.7 は \"deferred、Final B に統合\" 状態
+- Option γ 採用時: Stage 74.1 即時 ship + Stage 74.2 を Phase B5 結果を
+  見て決定
+
+* §7 Out of scope
+
+** §7.1 NeLisp standalone runtime 拡張 (= parallel session の専有領域)
+
+- =subr-extras.el= の追加 entry / =cl-macs.el= 全 load chain の edebug
+  stub cascade / =cl-defstruct= accessor の gv-setter / =cl-generic.el=
+  port etc は本 Doc では扱わない.  parallel session の Phase B6+ の
+  articulation で扱う.
+- NeLisp Rust core の reader/eval bug fix (= float-literal、symbol
+  resolve etc) も本 Doc out of scope.
+
+** §7.2 anvil.el package 自体の機能拡張 (= 別 doc の領域)
+
+- anvil.el repo 内の新機能追加 / refactor / Stage D launcher 改善は
+  別 Doc で扱う.  本 Doc は anvil-runtime crate 削除に伴う anvil.el
+  repo 側の影響のみ articulate.
+
+** §7.3 Doc 73 Stage 8.4 reader cfg-gate 詳細
+
+- 既 Doc 73 §2.4 で articulated 済.  本 Doc は Stage 74.x / Phase B6+
+  完了で unblock される旨のみ言及.
+
+** §7.4 Phase A.6 anvil-runtime fix-or-replace 判断
+
+- Doc 77c §4.7 で Doc 74 (本 session) にボール送り済.  本 Doc 82 で
+  さらに parallel session に再 dispatch (= Option α).  最終判断は
+  parallel session の Phase B5 SHIPPED 後.
+
+* §8 References
+
+- Doc 73 §2.2 / §2.4 / §9 — Phase 8 reader/eval purge + Stage 8.4
+  reader cfg-gate
+- Doc 74 v2 — anvil-runtime → anvil.el migration audit (= my session、
+  本 Doc 82 でその位置付けを再 articulate)
+- Doc 75 — Phase 9 frozen heap (= 並行 track、本 Doc 影響なし)
+- Doc 77c — 100% 純 elisp commitment master plan + monotonic shrink rule
+  (= 本 Doc parent)
+- =anvil-runtime/src/= — 両 session 共通の削除対象
+- memory =project_anvil_runtime_phase_b1_audit= — parallel session
+  Phase B1 audit
+- memory =project_anvil_runtime_phase_b2_shipped= — parallel session
+  Phase B2 6 commit ship
+- memory =project_anvil_runtime_phase_b3_shipped= — parallel session
+  Phase B3 edebug stubs
+- memory =project_anvil_runtime_phase_b4_shipped= — parallel session
+  Phase B4 cl-defstruct setf integration
+- memory =feedback_anvil_uses_nelisp_architecture= — durable user
+  directive (= dual-target: Emacs / NeLisp)
+- memory =feedback_nelisp_minimize_rust= — durable user directive
+- nelisp commit =a6de799= — parallel session Phase B4 SHIPPED
+- nelisp commit =6fbbb76= / =d4caa9c= — my session Doc 74 v2 audit
+- =architecture_correction_anvil_uses_nelisp_2026-04-25.org= §1.2 —
+  layer 境界 LOCKED
+
+* §9 Refactor history
+
+** v1 (2026-05-09 DRAFT)
+
+(= 初版、二重 session 並行発生を 2026-05-09 当日に articulate)
+
+1. *並行 session 存在を articulate*: parallel session (= Phase A/B 系列、
+   nelisp main =a6de799=) と my session (= Doc 74 v2 audit、=6fbbb76=)
+   が同 day に独立に着手された事実を初めて 1 doc で記録.
+2. *alignment matrix を articulate* (= §3): same target / different
+   layer / dependency relationship を 3 軸で整理.  layer 直交を実証.
+3. *convergence path Option α/β/γ articulate* (= §4.4): parallel Final
+   B 採用 (α) / my Doc 74 採用 (β) / 並走 (γ) の 3 option、α 推奨理由
+   articulate.
+4. *LOC accounting reconciliation* (= §4.3): -7,346 vs -4,365〜-5,667
+   の差は reader cfg-gate (= 1,679) accounting boundary 差で説明、
+   grand total では一致を articulate.
+5. *Doc 74 を \"deferred\" 状態に articulate* (= §6.2): Doc 74 v2 audit
+   の reference 価値は保持、実装 dispatch は parallel session に dispatch.
+6. *Doc 77c §4.x cross-link* を本 commit で追加.

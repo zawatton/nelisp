@@ -20,6 +20,13 @@
 - 規模: Phase 9 相当、複数 session に跨る. 実装は本 Doc 内 sub-stage
   分割で段階的に進める
 - 完了で Stage 8.4 (= reader feature gate, Doc 73) の前提が揃う
+- *2026-05-09 並行 session 注記*: 同日に **parallel session** (= nelisp
+  =a6de799= までで Phase A/B 系列 SHIPPED、Final B target -7,346 Rust
+  LOC) が独立に着手. 二重 audit alignment は *Doc 82* で articulate
+  (= §3 alignment matrix で layer 直交、§4 convergence path で Option
+  α 推奨 = parallel Final B 採用 + 本 Doc 74 v2 を Final B 詳細設計
+  reference として deferred).  Stage 74.1 のみ即時 ship 可、Stage
+  74.2-74.7 は parallel Phase B5 SHIPPED 確認後に正式 dispatch 判断.
 
 ** §0.1 v1 → v2 改訂点 (= 2026-05-09)
 
