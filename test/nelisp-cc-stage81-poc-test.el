@@ -1054,5 +1054,290 @@ miss."
   (should-not (eq (nth 2 (nelisp-cc-pipeline-primitive-info 'length))
                   (nth 2 (nelisp-cc-pipeline-primitive-info 'cdr)))))
 
+;;; Doc 81 Stage 81.4 — recognition pass + dlsym bridge --------------
+;;
+;; Stage 81.4 wires the trampoline ABI infrastructure shipped in
+;; 81.1〜81.3 to elisp call sites:
+;;
+;;   - `nelisp-cc-pipeline--recognize-primitives' walks compiled SSA
+;;     IR and rewrites `:call' instructions whose `:fn' meta names a
+;;     known primitive (= `car' / `cdr' / `cons' / `setcar' / `setcdr'
+;;     / `length' / `aref' / `aset' / `elt') to the new
+;;     `:ssa-call-primitive' opcode with the right `:abi' / `:symbol'
+;;     meta from the Stage 81.3 table.
+;;
+;;   - `nelisp-cc-runtime-resolve-symbol' is the dlsym bridge contract
+;;     surface.  On host Emacs (Stage 81.4 hard-constrains 0 Rust LOC)
+;;     it returns a sentinel `:host-stub' status.  Standalone NeLisp
+;;     overrides via `nelisp-cc-runtime-resolve-symbol-function'.
+;;
+;; The 6 ERT below cover:
+;;
+;;   26. recognition-pass-default-off
+;;        Default `nelisp-cc-pipeline-recognize-primitives-enable' = nil
+;;        so existing 1086/1091 ERT corpus runs unchanged through the
+;;        legacy `:call' path.
+;;
+;;   27. recognition-pass-rewrites-call-to-primitive
+;;        Build a hand-rolled SSA fn with one `:call :fn car' instr,
+;;        invoke `--recognize-primitives' directly, observe (a) the
+;;        opcode flips to `ssa-call-primitive', (b) `:abi' /
+;;        `:symbol' meta come from `primitive-table-stage3', (c)
+;;        `:fn' is preserved for debug, and (d) the count returned
+;;        is 1.
+;;
+;;   28. recognition-pass-skips-non-primitives
+;;        `:call :fn user-defined-fn' (= not in the primitive table)
+;;        is left untouched.  Recognition pass is conservative.
+;;
+;;   29. recognition-pass-arity-mismatch-signals
+;;        `:call' to `cons' (arity 2 in the table) with operand list
+;;        of length 1 raises `nelisp-cc-runtime-error' with
+;;        :recognition-arity-mismatch.
+;;
+;;   30. recognition-pass-idempotent
+;;        Running the pass twice on the same function rewrites the
+;;        primitive on the first sweep and reports 0 rewrites on
+;;        the second (= already-recognized sites are no longer
+;;        `:call' opcodes).
+;;
+;;   31. resolve-symbol-stub-on-host-emacs
+;;        `nelisp-cc-runtime-resolve-symbol' on host Emacs returns
+;;        `(:host-stub . SENTINEL)' for any symbol; the
+;;        `-host-stub-p' predicate confirms.  Override hook is
+;;        respected when bound.
+;;
+;;   32. recognition-pass-end-to-end-pipeline-stats
+;;        `nelisp-cc-runtime-compile-and-allocate' on `(lambda (x)
+;;        (car x))' with `recognize-primitives-enable' bound to t
+;;        flows the recognition pass through the pipeline driver and
+;;        tallies the rewrite count in `pipeline-stats'.
+
+;;; (26) Recognition pass default off --------------------------------
+
+(ert-deftest nelisp-cc-stage81-poc-stage4-recognize-default-off ()
+  "`nelisp-cc-pipeline-recognize-primitives-enable' defaults to nil so
+existing call sites flow through the legacy `:call' codepath
+unchanged.  This is the regression guard for the Phase 7.1.5 LOCKED
+1086/1091 ERT corpus — the recognition pass must not auto-engage
+during normal test runs."
+  ;; Pristine value (= no test has bound it yet at this point).
+  (should (boundp 'nelisp-cc-pipeline-recognize-primitives-enable))
+  (let ((default-val (default-value
+                       'nelisp-cc-pipeline-recognize-primitives-enable)))
+    (should (null default-val)))
+  ;; The recognition pass function exists and is autoloadable.
+  (should (fboundp 'nelisp-cc-pipeline--recognize-primitives))
+  ;; The stats struct now carries the new field.
+  (let ((stats (nelisp-cc-pipeline-stats-make)))
+    (should (= 0 (nelisp-cc-pipeline-stats-recognized-primitives stats)))))
+
+;;; (27) Recognition pass rewrites :call → :ssa-call-primitive --------
+
+(ert-deftest nelisp-cc-stage81-poc-stage4-recognize-rewrites-primitive ()
+  "The recognition pass rewrites a `:call :fn car' instruction in
+place to `ssa-call-primitive' with the `:abi' / `:symbol' meta
+sourced from `nelisp-cc-pipeline-primitive-table-stage3', preserving
+the original `:fn' for debug pretty-printing."
+  (let* ((fn (nelisp-cc--ssa-make-function 'recog-test '(int)))
+         (entry (nelisp-cc--ssa-function-entry fn))
+         (param (car (nelisp-cc--ssa-function-params fn)))
+         (def (nelisp-cc--ssa-make-value fn))
+         (instr (nelisp-cc--ssa-add-instr fn entry 'call (list param) def)))
+    (setf (nelisp-cc--ssa-instr-meta instr)
+          (list :fn 'car :unresolved t))
+    ;; Pre-condition.
+    (should (eq 'call (nelisp-cc--ssa-instr-opcode instr)))
+    (let* ((result (nelisp-cc-pipeline--recognize-primitives fn))
+           (count (cdr result)))
+      ;; One rewrite occurred.
+      (should (= 1 count))
+      ;; Opcode flipped.
+      (should (eq 'ssa-call-primitive (nelisp-cc--ssa-instr-opcode instr)))
+      ;; Meta now carries the trampoline shape from the table.
+      (let ((meta (nelisp-cc--ssa-instr-meta instr)))
+        (should (eq :trampoline-unary (plist-get meta :abi)))
+        (should (eq 'nl_jit_cons_car (plist-get meta :symbol)))
+        ;; Original :fn preserved for debugging / pretty-printing.
+        (should (eq 'car (plist-get meta :fn)))
+        ;; Recognition tag set so a second sweep can detect (and
+        ;; downstream passes that care about origin can consult).
+        (should (eq t (plist-get meta :recognized))))
+      ;; Operands / def / id unchanged.
+      (should (equal (list param) (nelisp-cc--ssa-instr-operands instr)))
+      (should (eq def (nelisp-cc--ssa-instr-def instr))))))
+
+;;; (28) Recognition pass skips non-primitives ------------------------
+
+(ert-deftest nelisp-cc-stage81-poc-stage4-recognize-skips-non-primitives ()
+  "A `:call :fn user-fn' where `user-fn' is *not* in the primitive
+table is left untouched by the recognition pass.  This guards
+against accidental rewrites of letrec callees / lambda-lifted
+synthetic names that happen to share a surface symbol with a
+primitive."
+  (let* ((fn (nelisp-cc--ssa-make-function 'skip-test '(int)))
+         (entry (nelisp-cc--ssa-function-entry fn))
+         (param (car (nelisp-cc--ssa-function-params fn)))
+         (def (nelisp-cc--ssa-make-value fn))
+         (instr (nelisp-cc--ssa-add-instr fn entry 'call (list param) def))
+         ;; A second instr — this one DOES name a primitive — to confirm
+         ;; the pass discriminates per-instruction not per-block.
+         (def2 (nelisp-cc--ssa-make-value fn))
+         (instr2 (nelisp-cc--ssa-add-instr fn entry 'call (list param) def2)))
+    (setf (nelisp-cc--ssa-instr-meta instr)
+          (list :fn 'my-user-fn :unresolved t))
+    (setf (nelisp-cc--ssa-instr-meta instr2)
+          (list :fn 'cdr :unresolved t))
+    (let* ((result (nelisp-cc-pipeline--recognize-primitives fn))
+           (count (cdr result)))
+      ;; Only one rewrite (= the cdr call); user-fn left alone.
+      (should (= 1 count))
+      ;; user-fn instruction still `:call'.
+      (should (eq 'call (nelisp-cc--ssa-instr-opcode instr)))
+      ;; Original meta retained verbatim (= no :recognized tag added).
+      (should (null (plist-get (nelisp-cc--ssa-instr-meta instr) :recognized)))
+      ;; cdr instruction flipped.
+      (should (eq 'ssa-call-primitive (nelisp-cc--ssa-instr-opcode instr2)))
+      (should (eq 'nl_jit_cons_cdr
+                  (plist-get (nelisp-cc--ssa-instr-meta instr2) :symbol))))))
+
+;;; (29) Recognition pass arity mismatch signals ----------------------
+
+(ert-deftest nelisp-cc-stage81-poc-stage4-recognize-arity-mismatch ()
+  "A `:call' to a primitive with the wrong operand count signals
+`nelisp-cc-runtime-error' rather than silently producing a malformed
+trampoline shape.  This catches frontend bugs during recognition
+instead of as undefined-behaviour at exec time."
+  (let* ((fn (nelisp-cc--ssa-make-function 'arity-test '(int)))
+         (entry (nelisp-cc--ssa-function-entry fn))
+         (param (car (nelisp-cc--ssa-function-params fn)))
+         (def (nelisp-cc--ssa-make-value fn))
+         ;; `cons' has arity 2 in the table — pass only 1 operand.
+         (instr (nelisp-cc--ssa-add-instr fn entry 'call (list param) def)))
+    (setf (nelisp-cc--ssa-instr-meta instr)
+          (list :fn 'cons :unresolved t))
+    (should-error (nelisp-cc-pipeline--recognize-primitives fn)
+                  :type 'nelisp-cc-runtime-error)))
+
+;;; (30) Recognition pass idempotent ----------------------------------
+
+(ert-deftest nelisp-cc-stage81-poc-stage4-recognize-idempotent ()
+  "Running the recognition pass twice on the same function rewrites
+once on the first sweep and produces zero rewrites on the second.
+Already-recognized sites are no longer `:call' opcodes so the second
+walk simply skips them."
+  (let* ((fn (nelisp-cc--ssa-make-function 'idem-test '(int)))
+         (entry (nelisp-cc--ssa-function-entry fn))
+         (param (car (nelisp-cc--ssa-function-params fn)))
+         (def (nelisp-cc--ssa-make-value fn))
+         (instr (nelisp-cc--ssa-add-instr fn entry 'call (list param) def)))
+    (setf (nelisp-cc--ssa-instr-meta instr)
+          (list :fn 'car :unresolved t))
+    (let* ((first  (nelisp-cc-pipeline--recognize-primitives fn))
+           (second (nelisp-cc-pipeline--recognize-primitives fn)))
+      (should (= 1 (cdr first)))
+      (should (= 0 (cdr second)))
+      ;; Final state — opcode is `ssa-call-primitive', meta unchanged
+      ;; from the first sweep.
+      (should (eq 'ssa-call-primitive
+                  (nelisp-cc--ssa-instr-opcode instr)))
+      (should (eq :trampoline-unary
+                  (plist-get (nelisp-cc--ssa-instr-meta instr) :abi))))))
+
+;;; (31) Resolve-symbol stub on host Emacs ----------------------------
+
+(ert-deftest nelisp-cc-stage81-poc-stage4-resolve-symbol-host-stub ()
+  "`nelisp-cc-runtime-resolve-symbol' on host Emacs returns
+`(:host-stub . SENTINEL)' for any symbol when the override hook is
+unset.  When the override is bound, the override result is
+returned verbatim — this is the contract Phase 7.1.6.a's standalone
+NeLisp implementation must satisfy."
+  ;; Default path — override unbound, returns the sentinel.
+  (let ((nelisp-cc-runtime-resolve-symbol-function nil))
+    (let ((result (nelisp-cc-runtime-resolve-symbol 'nl_jit_cons_make)))
+      (should (consp result))
+      (should (eq :host-stub (car result)))
+      (should (= nelisp-cc-runtime--resolve-symbol-stub-addr (cdr result)))
+      (should (nelisp-cc-runtime-resolve-symbol-host-stub-p result)))
+    ;; Sentinel is non-zero (= distinct from `:not-found' addr nil).
+    (should (not (zerop nelisp-cc-runtime--resolve-symbol-stub-addr)))
+    ;; Different symbol — same sentinel (= host stub doesn't query
+    ;; anything; it's a placeholder for the real dlsym hook).
+    (let ((result-2 (nelisp-cc-runtime-resolve-symbol 'nl_jit_access_aref)))
+      (should (eq :host-stub (car result-2)))
+      (should (= nelisp-cc-runtime--resolve-symbol-stub-addr
+                 (cdr result-2)))))
+  ;; Override path — Phase 7.1.6.a will register a real dlsym
+  ;; function here; ERT exercises the contract via a fake.
+  (let ((nelisp-cc-runtime-resolve-symbol-function
+         (lambda (sym)
+           (cond
+            ((eq sym 'nl_jit_cons_car)
+             (cons :resolved #x7F0011223344))
+            (t (cons :not-found nil))))))
+    (let ((r1 (nelisp-cc-runtime-resolve-symbol 'nl_jit_cons_car))
+          (r2 (nelisp-cc-runtime-resolve-symbol 'nl_jit_unknown)))
+      (should (eq :resolved (car r1)))
+      (should (= #x7F0011223344 (cdr r1)))
+      (should (eq :not-found (car r2)))
+      (should (null (cdr r2)))
+      ;; Override results are NOT host stubs.
+      (should-not (nelisp-cc-runtime-resolve-symbol-host-stub-p r1))
+      (should-not (nelisp-cc-runtime-resolve-symbol-host-stub-p r2))))
+  ;; Non-symbol input rejected with runtime error.
+  (should-error (nelisp-cc-runtime-resolve-symbol "string-not-symbol")
+                :type 'nelisp-cc-runtime-error)
+  (should-error (nelisp-cc-runtime-resolve-symbol nil)
+                :type 'nelisp-cc-runtime-error))
+
+;;; (32) Recognition pass end-to-end via pipeline stats ---------------
+
+(ert-deftest nelisp-cc-stage81-poc-stage4-pipeline-stats-recognition ()
+  "When `recognize-primitives-enable' is t, the pipeline driver
+counts rewrites in `pipeline-stats-recognized-primitives'.  This is
+the integration smoke that confirms the recognition pass is wired
+through `nelisp-cc-pipeline-run-7.7-passes' (= the real entry the
+runtime calls) — not just exercised in isolation by ERT 27〜30."
+  (let ((fn (nelisp-cc--ssa-make-function 'pipeline-stats-test '(int))))
+    (let* ((entry (nelisp-cc--ssa-function-entry fn))
+           (param (car (nelisp-cc--ssa-function-params fn)))
+           (def (nelisp-cc--ssa-make-value fn))
+           (instr (nelisp-cc--ssa-add-instr fn entry 'call (list param) def))
+           (def2 (nelisp-cc--ssa-make-value fn))
+           (instr2 (nelisp-cc--ssa-add-instr fn entry 'call (list param) def2)))
+      (setf (nelisp-cc--ssa-instr-meta instr)
+            (list :fn 'car :unresolved t))
+      (setf (nelisp-cc--ssa-instr-meta instr2)
+            (list :fn 'cdr :unresolved t))
+      ;; A return is also needed for ssa-verify, but the pipeline
+      ;; driver doesn't verify — it just walks blocks.
+      ;; Disable inliner pipeline (= keep test focused on recognition).
+      (let ((nelisp-cc-enable-7.7-passes nil)
+            (nelisp-cc-pipeline-recognize-primitives-enable t))
+        (let* ((result (nelisp-cc-pipeline-run-7.7-passes fn))
+               (stats  (cdr result)))
+          ;; Two primitives recognized.
+          (should (= 2 (nelisp-cc-pipeline-stats-recognized-primitives
+                        stats)))
+          ;; And the instructions were actually rewritten.
+          (should (eq 'ssa-call-primitive
+                      (nelisp-cc--ssa-instr-opcode instr)))
+          (should (eq 'ssa-call-primitive
+                      (nelisp-cc--ssa-instr-opcode instr2))))))
+    ;; With the flag off (= default), no rewrites and the count stays 0.
+    (let ((fn2 (nelisp-cc--ssa-make-function 'pipeline-off-test '(int))))
+      (let* ((entry (nelisp-cc--ssa-function-entry fn2))
+             (param (car (nelisp-cc--ssa-function-params fn2)))
+             (def (nelisp-cc--ssa-make-value fn2))
+             (instr (nelisp-cc--ssa-add-instr fn2 entry 'call (list param) def)))
+        (setf (nelisp-cc--ssa-instr-meta instr) (list :fn 'car))
+        (let ((nelisp-cc-enable-7.7-passes nil)
+              (nelisp-cc-pipeline-recognize-primitives-enable nil))
+          (let* ((result (nelisp-cc-pipeline-run-7.7-passes fn2))
+                 (stats (cdr result)))
+            (should (= 0 (nelisp-cc-pipeline-stats-recognized-primitives
+                          stats)))
+            (should (eq 'call (nelisp-cc--ssa-instr-opcode instr)))))))))
+
 (provide 'nelisp-cc-stage81-poc-test)
 ;;; nelisp-cc-stage81-poc-test.el ends here
