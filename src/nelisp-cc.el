@@ -1981,5 +1981,88 @@ loaded) plus a built-in scaffold expander (see
     (nelisp-cc--ssa-verify-function fn)
     fn))
 
+;;; Doc 81 Stage 81.1 — primitive trampoline opcodes ---------------------
+;;
+;; Three SSA opcodes added by Doc 81 §5.1.detail to support the
+;; primitive-trampoline ABI (= `:trampoline-unary' shape).  The
+;; opcodes describe the *low-level Sexp inspection* operations a
+;; primitive trampoline (e.g. `car') needs in order to read the tag
+;; byte at offset 0, branch on it, and dereference the payload pointer
+;; at offset 8.  Subsequent stages (81.2+) layer cdr / cons / setcar /
+;; setcdr on top of the same opcode set.
+;;
+;; Critical IR design decision (Doc 81 §5.1.2): `ssa-load-tag' returns
+;; an *unsigned* (zero-extended) i64.  Tag bytes >= 0x80 (e.g. future
+;; TAG_FORWARDED expansion) must NOT be sign-extended; sign-extension
+;; would yield a negative i64 that the existing CMP / branch helpers
+;; mis-interpret.  The x86_64 emit therefore uses MOVZX (not MOVSX)
+;; and arm64 relies on LDRB's automatic zero-extension.
+;;
+;; Opcode contract:
+;;   ssa-load-tag         (PTR-VAL)               -> u64 (zero-extended u8)
+;;     read tag byte at offset 0 of the *const Sexp argument
+;;   ssa-load-payload-ptr (PTR-VAL)               -> u64 (NlConsBox raw ptr)
+;;     read 8-byte payload pointer at offset 8 of the *const Sexp arg
+;;   ssa-cmp-tag-imm      (TAG-VAL)               -> branch terminator
+;;     meta carries (:imm IMM :then THEN-ID :else ELSE-ID); the
+;;     instruction terminates its block — emit-side fixes up rel32 to
+;;     L_block_<THEN-ID> for je, falls through to <ELSE-ID>.
+;;
+;; This is a *scaffold subset* — the opcodes are tagged as
+;; def-producing (load-tag / load-payload-ptr) or terminator
+;; (cmp-tag-imm).  The verifier uses
+;; `nelisp-cc--ssa-stage81-opcode-p' to recognise them so that
+;; `--ssa-verify-function' does not flag them as malformed during
+;; ERT round-trips.
+;;
+;; Phase 7.1.6.a (= cons.rs takeover) will plug these opcodes into the
+;; primitive recognition pass (nelisp-cc-pipeline.el) so that
+;; eval-time `(car X)' calls flow through the trampoline-emit path
+;; instead of the Cranelift `nelisp_jit_car' fast path.
+
+(defconst nelisp-cc--stage81-opcodes
+  '((ssa-load-tag         . (:arity 1 :def t  :terminator nil
+                             :returns (unsigned i64)
+                             :doc "Load tag byte at *Sexp offset 0 (zero-extended u64)"))
+    (ssa-load-payload-ptr . (:arity 1 :def t  :terminator nil
+                             :returns (unsigned i64)
+                             :doc "Load payload pointer at *Sexp offset 8"))
+    (ssa-cmp-tag-imm      . (:arity 1 :def nil :terminator t
+                             :returns nil
+                             :doc "Compare TAG-VAL against meta :imm; branch :then / :else")))
+  "Doc 81 Stage 81.1 SSA opcode descriptors.
+
+Each entry is (OPCODE-SYM . PROPS) where PROPS is a plist with:
+  :arity      — number of value operands (excluding meta-only fields)
+  :def        — t when the instruction produces a def value, nil for
+                terminator-style instructions
+  :terminator — t when the instruction must be the last one in its
+                block (= ssa-cmp-tag-imm carries :then / :else block ids
+                in its meta and acts like a `branch' node)
+  :returns    — type tag of the def value (`(unsigned i64)' for the
+                two load opcodes); nil for non-defining opcodes
+  :doc        — single-line semantic summary
+
+Doc 81 §5.1.2 critical decision: the `:returns (unsigned i64)' tag is
+load-bearing — codegen MUST emit a zero-extending load (MOVZX on
+x86_64, plain LDRB on arm64 which already zero-extends), never a
+sign-extending one.  The verifier currently only consults this table
+to recognise the opcodes; Phase 7.1.6.a may extend it to type-check
+operand flows once the recognition pass starts producing them.")
+
+(defun nelisp-cc--ssa-stage81-opcode-p (opcode)
+  "Return non-nil when OPCODE is one of the Doc 81 Stage 81.1 opcodes.
+
+Used by external passes (= the x86_64 / arm64 backends and the
+recognition pass) to short-circuit-test whether a given SSA
+instruction is a primitive-trampoline opcode without consing a
+linked-list traversal of `nelisp-cc--stage81-opcodes' on every
+dispatch."
+  (and (assq opcode nelisp-cc--stage81-opcodes) t))
+
+(defun nelisp-cc--ssa-stage81-opcode-info (opcode)
+  "Return the descriptor plist for Stage 81.1 OPCODE, or nil."
+  (cdr (assq opcode nelisp-cc--stage81-opcodes)))
+
 (provide 'nelisp-cc)
 ;;; nelisp-cc.el ends here

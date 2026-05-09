@@ -1333,7 +1333,67 @@ ERT golden tests that pin specific byte sequences."
     (_ (signal 'nelisp-cc-runtime-error
                (list :unknown-backend backend)))))
 
-(defun nelisp-cc-runtime-compile-and-allocate (lambda-form &optional backend exec-args)
+;;; Doc 81 Stage 81.1 — entry-ABI mode dispatch ----------------------
+;;
+;; `nelisp-cc-runtime-compile-and-allocate' historically produced
+;; `extern "C" fn(i64, ..., i64) -> i64' entry points (`:host-int'
+;; ABI mode).  Doc 81 §5.1.1 adds `:trampoline-unary' for the
+;; primitive-trampoline shape:
+;;
+;;   :host-int          extern "C" fn(i64, ..., i64) -> i64    (default)
+;;   :trampoline-unary  extern "C" fn(*const Sexp, *mut Sexp) -> i64
+;;
+;; In the `:trampoline-unary' shape, arg0 = a *const Sexp pointer
+;; (rdi / x0), arg1 = a *mut Sexp out-buffer (rsi / x1), and the
+;; return value (rax / x0) carries TRAMPOLINE_OK (0) or TRAMPOLINE_ERR
+;; (>0).  This is the calling convention the Cranelift `nl_jit_cons_*'
+;; primitives already use, so trampoline emit lined up with Phase
+;; 7.1.6.a (cons.rs takeover) keeps caller layout invariant.
+;;
+;; The Stage 81.1 PoC does *not* yet thread the ABI mode through to
+;; backend prologue/epilogue emission — frame layout on
+;; `:trampoline-unary' just records arg/out-pointer slot positions
+;; for downstream stages.  The ABI mode is currently used as a
+;; metadata channel that the recognition pass (Stage 81.3) consults
+;; when selecting the trampoline shape for a given primitive.
+
+(defconst nelisp-cc-runtime-trampoline-ok 0
+  "Status returned in rax/x0 by a `:trampoline-unary' entry on success.
+
+Mirrors the convention of the existing Cranelift `nl_jit_cons_car'
+trampoline: out-buffer is written, then the function returns 0.
+Doc 81 §5.1.1 critical decision — staying compatible with the
+extant FFI shape lets Phase 7.1.6.a take over without changing the
+Rust callee-side fixups.")
+
+(defconst nelisp-cc-runtime-trampoline-err 1
+  "Status returned by a `:trampoline-unary' entry on failure.
+
+The trampoline returns this value when the input Sexp does not
+match the primitive's expected variant (e.g. `car' on an Int).  The
+out-buffer contents are then unspecified — callers must check the
+status before reading the buffer.")
+
+(defconst nelisp-cc-runtime--entry-abi-modes
+  '(:host-int :trampoline-unary)
+  "Allowed values for the `:entry-abi' keyword to
+`nelisp-cc-runtime-compile-and-allocate'.
+
+`:host-int' is the legacy default (`extern \"C\" fn(i64, ..., i64) -> i64').
+`:trampoline-unary' (Doc 81 §5.1.1) is `extern \"C\" fn(*const Sexp,
+*mut Sexp) -> i64' for unary primitive trampolines (= car / cdr /
+length / etc).  Stage 81.2 will add `:trampoline-binary-ctor'
+(cons constructor) and `:trampoline-binary-mut' (setcar/setcdr).")
+
+(defun nelisp-cc-runtime--validate-entry-abi (mode)
+  "Signal `nelisp-cc-runtime-error' if MODE is not a valid entry-ABI keyword."
+  (unless (memq mode nelisp-cc-runtime--entry-abi-modes)
+    (signal 'nelisp-cc-runtime-error
+            (list :unknown-entry-abi mode
+                  :valid nelisp-cc-runtime--entry-abi-modes))))
+
+(cl-defun nelisp-cc-runtime-compile-and-allocate
+    (lambda-form &optional backend exec-args &key (entry-abi :host-int))
   "Run the full Phase 7.1.4 pipeline on LAMBDA-FORM.
 
 Steps:
@@ -1350,7 +1410,20 @@ Steps:
 
 BACKEND is `x86_64' / `arm64' (default = host inference).  EXEC-ARGS
 is forwarded to `nelisp-cc-runtime--exec-real' when MODE is `real';
-nil preserves the old zero-argument behavior.  Returns:
+nil preserves the old zero-argument behavior.
+
+ENTRY-ABI (Doc 81 Stage 81.1) selects the produced entry-point's
+calling convention:
+  :host-int         (default) extern \"C\" fn(i64, ..., i64) -> i64
+  :trampoline-unary extern \"C\" fn(*const Sexp, *mut Sexp) -> i64
+                    primitive trampoline shape (= car / cdr / etc.).
+                    Stage 81.1 records the mode in the result plist
+                    under `:entry-abi' but does NOT yet alter
+                    prologue/epilogue emit; that wires in Stage
+                    81.2 once arm64 backend mirrors the x86_64
+                    frame layout.
+
+Returns:
 
   (:exec-page PAGE         ; `nelisp-cc-runtime--exec-page' simulator
    :gc-metadata META       ; plist from `--insert-safe-points'
@@ -1369,6 +1442,7 @@ nil preserves the old zero-argument behavior.  Returns:
 The `:final-bytes' equals `(--exec-page-bytes PAGE)' restricted to
 `(--exec-page-length PAGE)' — exposed separately so test code does
 not have to slice the page buffer manually."
+  (nelisp-cc-runtime--validate-entry-abi entry-abi)
   (let* ((be (or backend (nelisp-cc-runtime--default-backend)))
          (fn (nelisp-cc-build-ssa-from-ast lambda-form))
          ;; T158 — Phase 7.7 SSA passes (escape + inline + rec-inline +
@@ -1399,6 +1473,7 @@ not have to slice the page buffer manually."
            :gc-metadata gc-meta
            :tail-call-rewritten rewrote-p
            :backend be
+           :entry-abi entry-abi
            :ssa-function fn
            :pipeline-stats pipeline-stats
            :raw-bytes raw

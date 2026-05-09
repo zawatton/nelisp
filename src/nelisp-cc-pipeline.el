@@ -281,6 +281,45 @@ exactly as Doc 42 §4.2 specifies."
         (nelisp-cc-pipeline--run-passes-on-fn function registry stats)))
     (cons function stats)))
 
+;;; Doc 81 Stage 81.1 — primitive recognition table (1 entry: car) -----
+;;
+;; Stage 81.1 ships a *one-entry* primitive table — `car' only — so the
+;; trampoline-emit infrastructure (Doc 81 §5.1) can be exercised
+;; end-to-end on the simplest possible primitive.  Stage 81.2 expands
+;; this to 5 cons primitives and Stage 81.3 to 24 (cons / arith /
+;; access / predicate / syscall) per Doc 28 §3.6.a~.e.  The recognition
+;; pass that consumes this table is *not* yet wired (= Stage 81.3
+;; scope); for Stage 81.1 the table only declares "if you call this
+;; primitive, here is the ABI mode + the C symbol to fix up".
+
+(defconst nelisp-cc-pipeline-primitive-table-stage1
+  '((car 1 :trampoline-unary nl_jit_cons_car))
+  "Stage 81.1 primitive recognition table (1 entry: `car').
+
+Each entry is (ELISP-NAME ARITY ABI-MODE C-SYMBOL):
+
+  ELISP-NAME — the elisp symbol the user wrote (= `car')
+  ARITY      — number of value arguments the primitive expects (1)
+  ABI-MODE   — entry-ABI keyword from
+               `nelisp-cc-runtime--entry-abi-modes'
+               (`car' uses `:trampoline-unary')
+  C-SYMBOL   — Rust-side extern \"C\" symbol the trampoline calls
+               (= `nl_jit_cons_car' from
+               build-tool/src/jit/cons.rs).
+
+The recognition pass (Stage 81.3, `nelisp-cc-pipeline--recognize-
+primitives') will consult this table to rewrite eligible `:call'
+instructions into the SSA opcode triple from Doc 81 §5.1.2
+(`ssa-load-tag' / `ssa-load-payload-ptr' / `ssa-cmp-tag-imm').
+For Stage 81.1 the recognition pass is a no-op stub.")
+
+(defun nelisp-cc-pipeline-primitive-info (sym)
+  "Return the primitive descriptor for ELISP SYM, or nil.
+
+Returned shape: (ARITY ABI-MODE C-SYMBOL).  Stage 81.1 only knows
+about `car'; future stages extend the lookup table."
+  (cdr (assq sym nelisp-cc-pipeline-primitive-table-stage1)))
+
 (provide 'nelisp-cc-pipeline)
 
 ;;; nelisp-cc-pipeline.el ends here
