@@ -2,13 +2,13 @@
 
 * Status
 :PROPERTIES:
-:STATE: ACTIVE — Phase A.1 / A.2 / A.3 / A.4.1 (Cell pilot) SHIPPED、Phase A.4.2-A.4.6 (5 残 variant) / A.5 (JIT trampoline rewrite) / A.6 (regression gate) 残
+:STATE: ACTIVE — Phase A.1 / A.2 / A.3 / A.4.1 (Cell) / A.4.2 (MutStr) SHIPPED、Phase A.4.3-A.4.6 (4 残 variant: Vector / BoolVector / Record / CharTable) / A.5 (JIT trampoline rewrite) / A.6 (regression gate) 残
 :DRAFTED: 2026-05-09
 :PARENT: Doc 77 (= 元 Stage 4 articulation)
 :RELATED: Doc 77b (= Rust-min JIT 路線)、Doc 75 (= NELIMG image decode、PAUSED 別 issue)、Doc 63 (= Phase 7 self-host roadmap、70% SHIPPED)
 :UPDATES: Doc 77 §2.3.3 Stage 4 status (= deferred → IN_PROGRESS)、Doc 77b §6 (= "Sexp ABI pin deferred" 削除)
 :DECISION_DATE: 2026-05-09 (user 指示: "Doc 77 の Stage4 を unpause")
-:LATEST: 2026-05-09 — Phase A.1 (NlRc<T>) / A.2.0 (NlConsBox) / A.2.1 (Sexp::Cons migrate) / A.3 (8 nl-cons-*/nl-rc-* primitives) / A.4.1 (Sexp::Cell → NlCellRef) SHIPPED
+:LATEST: 2026-05-09 — Phase A.1 (NlRc<T>) / A.2.0 (NlConsBox) / A.2.1 (Sexp::Cons migrate) / A.3 (8 nl-cons-*/nl-rc-* primitives) / A.4.1 (Sexp::Cell → NlCellRef) / A.4.2 (Sexp::MutStr → NlStrRef) SHIPPED
 :END:
 
 * §0 TL;DR
@@ -377,11 +377,25 @@ audit 結果 (2026-05-09): A.2.1 (= Sexp::Cons) 着地後に残った =Rc<RefCel
 - ERT 17/17 PASS (= 3 layout + 5 lifecycle + 3 ptr_eq + 3 set_value + 2 partial_eq + 1 debug-fmt + payload-drop + intermediate-drop)
 - 全体 regression: =cargo test --release --lib --test-threads=1=: 557/557 PASS, 0 fail (= base 540 + 新規 17、回帰 0)
 
-*** §4.5.2 Phase A.4.2-A.4.6 残 5 variant (= 後続 commit)
+*** §4.5.2 Phase A.4.2 — Sexp::MutStr → NlStrRef migrate — ✅ SHIPPED (2026-05-09)
 
-各 sub-stage は A.4.1 同 pattern (= NlXxxRef struct + Sexp variant migrate + callsite rewrite + ERT). 推定:
+実施済み:
+- =build-tool/src/eval/nlstr.rs= 新設 (~370 LOC): =NlStr= struct (=#[repr(C)]=、value @ offset 0、refcount @ offset sizeof(String)) + =NlStrRef= handle (Drop / Clone / Deref / =unsafe set_value= / =unsafe with_value_mut=)
+- =Sexp::MutStr(Rc<RefCell<String>>)= → =Sexp::MutStr(NlStrRef)= に migrate
+- 23 callsite touch:
+  - =sexp.rs= の constructor (=mut_str=)、getter (=as_string_owned=)、printer 各 1 (= 3)
+  - =builtins.rs= の sxhash / sexp_eq (eq) / sexp_equal_safe (equal) / length-bytes / intern / make-symbol / string_value / read-from-string-impl 各 1 (= 8) — read 経路は =rc.borrow()= → =rc.value=、ptr_eq は =Rc::ptr_eq= → =NlStrRef::ptr_eq=
+  - =jit/strategy.rs= の length-impl / aref / aset 各 1 (= 3)。aset の =*s = new_str= → =unsafe { rc.set_value(new_str) }= に rewrite (Phase A.2.1 setcar discipline)
+  - =image.rs= の encode_value 1
+  - =eval/special_forms.rs= の eq 1
+  - =eval/mod.rs= の self-evaluate 1
+- ERT 19/19 PASS (= 2 layout + 5 lifecycle + 2 ptr_eq + 5 set/with_value_mut + 1 debug-fmt + 2 partial_eq + payload-drop + intermediate-drop)
+- 全体 regression: =cargo test --release --lib --test-threads=1=: 576/576 PASS, 0 fail (= base 557 + 新規 19、回帰 0)
 
-- A.4.2 MutStr: NlStrRef (= NlCell の String 版)、~23 callsite、1-2 commit
+*** §4.5.3 Phase A.4.3-A.4.6 残 4 variant (= 後続 commit)
+
+各 sub-stage は A.4.1 / A.4.2 同 pattern (= NlXxxRef struct + Sexp variant migrate + callsite rewrite + ERT). 推定:
+
 - A.4.3 Vector: NlVectorRef (= Vec<Sexp> + refcount)、~26 callsite、1-2 commit
 - A.4.4 BoolVector: NlBoolVectorRef、~26 callsite、1-2 commit
 - A.4.5 Record: NlRecordRef (= type_tag + slots)、~21 callsite、1-2 commit

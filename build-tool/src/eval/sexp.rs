@@ -27,6 +27,7 @@
 
 use crate::eval::nlcell::NlCellRef;
 use crate::eval::nlconsbox::NlConsBoxRef;
+use crate::eval::nlstr::NlStrRef;
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
@@ -79,16 +80,21 @@ pub enum Sexp {
     Str(String),
     /// Mutable string buffer.  Returned by `make-string' so substrate
     /// code (= `nelisp-text-buffer''s gap-buffer mgmt) can do
-    /// `(aset BYTES I N)' to fill in raw bytes.  Equivalent to a
-    /// `String' under `Rc<RefCell<...>>' — clone is a cheap Rc bump,
-    /// mutation through any alias is shared.  Identity comparison
-    /// goes through `Rc::ptr_eq'; structural equality (the derived
+    /// `(aset BYTES I N)' to fill in raw bytes.  Clone is a cheap
+    /// refcount bump on the underlying [`NlStrRef`]; mutation through
+    /// any alias is shared.  Identity comparison goes through
+    /// `NlStrRef::ptr_eq'; structural equality (the derived
     /// `PartialEq') unwraps the inner `String'.
     ///
     /// Predicates such as `stringp' / `arrayp' treat `MutStr' the
     /// same as `Str'; printers, equality, and format conversions all
     /// share the helper [`Sexp::as_string_owned`].
-    MutStr(Rc<RefCell<String>>),
+    ///
+    /// Phase A.4.2 (Doc 77c §4.5.2, 2026-05-09): migrated from
+    /// `Rc<RefCell<String>>' to layout-pinned [`NlStrRef`] for the
+    /// same reason `Cell' moved in A.4.1 — unifies the boxed-variant
+    /// ABI for Phase A.5 JIT direct emit and Phase B elisp self-host.
+    MutStr(NlStrRef),
     /// Cons cell.  Lists are encoded as right-leaning `Cons` chains
     /// terminated by `Nil`; dotted pairs (`(a . b)`) leave the cdr as
     /// any non-`Nil` value.
@@ -262,7 +268,7 @@ impl Sexp {
     /// by `make-string' / similar constructors that need `aset'-able
     /// content.
     pub fn mut_str(s: impl Into<String>) -> Sexp {
-        Sexp::MutStr(Rc::new(RefCell::new(s.into())))
+        Sexp::MutStr(NlStrRef::new(s.into()))
     }
 
     /// Build an empty char-table with the given SUBTYPE and INIT
@@ -290,7 +296,7 @@ impl Sexp {
     pub fn as_string_owned(&self) -> Option<String> {
         match self {
             Sexp::Str(s) => Some(s.clone()),
-            Sexp::MutStr(s) => Some(s.borrow().clone()),
+            Sexp::MutStr(s) => Some(s.value.clone()),
             _ => None,
         }
     }
@@ -418,7 +424,7 @@ fn write_sexp(out: &mut String, s: &Sexp) {
             out.push('"');
         }
         Sexp::MutStr(rc) => {
-            let text = rc.borrow();
+            let text = &rc.value;
             out.push('"');
             for ch in text.chars() {
                 match ch {

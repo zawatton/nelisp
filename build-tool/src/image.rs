@@ -161,8 +161,7 @@ fn encode_value(out: &mut Vec<u8>, value: &Sexp) -> Result<(), ImageError> {
             // `compile-image' / `eval-image' do not depend on
             // post-load aset behavior.
             out.push(TAG_STRING);
-            let text = rc.borrow();
-            write_string(out, &text)?;
+            write_string(out, &rc.value)?;
         }
         Sexp::Cons(b) => {
             out.push(TAG_CONS);

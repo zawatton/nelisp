@@ -39,6 +39,7 @@ pub mod ffi;
 pub mod nlcell;
 pub mod nlconsbox;
 pub mod nlrc;
+pub mod nlstr;
 pub mod quit;
 pub mod sexp;
 pub mod special_forms;
