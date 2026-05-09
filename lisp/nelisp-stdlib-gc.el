@@ -11,14 +11,18 @@
 
 ;;; Commentary:
 
-;; Doc 79 v7 Phase C Stage 5.3.a + 5.3.b + 5.3.c + 5.3.d — elisp-side
-;; Bacon-Rajan cycle collector.  Stage 5.3.a shipped the skeleton;
-;; Stage 5.3.b replaced the no-op stub with the full four-phase
-;; algorithm (= mark-gray / scan / scan-black / collect-white);
-;; Stage 5.3.c wires the deferred finalizer queue + threshold +
-;; idle-timer auto-trigger on top of the four phases; Stage 5.3.d
-;; wires the alloc-side dec callback so suspect handles auto-enqueue
-;; and `gc-maybe-collect-cycles' fires when the threshold is crossed.
+;; Doc 79 v7 Phase C Stage 5.3.a + 5.3.b + 5.3.c + 5.3.d + 5.3.e —
+;; elisp-side Bacon-Rajan cycle collector.  Stage 5.3.a shipped the
+;; skeleton; Stage 5.3.b replaced the no-op stub with the full
+;; four-phase algorithm (= mark-gray / scan / scan-black /
+;; collect-white); Stage 5.3.c wires the deferred finalizer queue +
+;; threshold + idle-timer auto-trigger on top of the four phases;
+;; Stage 5.3.d wires the alloc-side dec callback so suspect handles
+;; auto-enqueue and `gc-maybe-collect-cycles' fires when the
+;; threshold is crossed; Stage 5.3.e closes Phase C with the
+;; self-host parity gate: a bench harness + ERT confirming that the
+;; pure-elisp collector identifies every cycle in a synthetic input
+;; (= correctness parity with the prior Cranelift-driven Rust path).
 ;;
 ;; Stage 5.3.b ships (Doc 79 §5.3.5.b〜.d, consolidated):
 ;;   - `gc-collect-cycles' real entry point invoking the four phases,
@@ -62,7 +66,7 @@
 ;;   - `make-hash-table' from `nelisp-stdlib-hash.el' (loads
 ;;     immediately before this file in the STDLIB chain).
 ;;
-;; Public surface (Stage 5.3.d):
+;; Public surface (Stage 5.3.d + 5.3.e):
 ;;   `gc-collect-cycles'   - run one synchronous CC pass, returns # freed
 ;;   `gc-stats'            - return alist of GC counters (4 keys)
 ;;   `gc-finalize-flush'   - drain `gc-finalize-queue' synchronously
@@ -75,6 +79,16 @@
 ;;                                `gc-dec-callback' (Stage 5.3.d, replaces
 ;;                                bare `nl-rc-dec-strong' callsites for
 ;;                                cycle-capable kinds).
+;;   `gc-bench-cycle-collection' - Stage 5.3.e self-host parity bench:
+;;                                build N synthetic cycles of DEPTH each,
+;;                                drive `gc-collect-cycles' to completion,
+;;                                return a stats alist (passes, freed,
+;;                                elapsed-ms, per-pass-ms, leaked,
+;;                                queue-drained, cycles-built, nodes-built).
+;;   `gc-bench-parity-gate-p'  - Stage 5.3.e gate predicate; returns t
+;;                                iff the bench harness output meets the
+;;                                §5.5 parity criteria (zero leaks, full
+;;                                queue drain, freed count = nodes-built).
 ;;
 ;; Internal helpers (= Stage 5.3.e extension surface):
 ;;   `gc-cycle-roots-buffer'   - suspect handle list (drained per pass)
@@ -618,6 +632,175 @@ switch to `nl-rc-dec-strong-wrapped' to opt into the alloc-side
 suspect-enqueue + auto-trigger machinery without a behavioural
 diff for non-cycle-capable kinds.  Pure elisp, 0 Rust delta."
   (gc-dec-callback handle))
+
+;; ---- Stage 5.3.e self-host parity gate + bench harness --------------
+;;
+;; Phase C closing stage.  Doc 79 §5.5 articulates a 3-axis bench that
+;; runs against a real `nelisp' standalone binary (= cons-heavy /
+;; vector-heavy / cycle-heavy throughput, baseline-relative).  That
+;; spec depends on the standalone runtime + image-baker pipeline,
+;; neither of which is reachable from host Emacs (= Doc 78 / Doc 47
+;; phase 6 prerequisites).
+;;
+;; What IS reachable from host Emacs — and what the user prompt spells
+;; out as the deliverable — is the *correctness* axis of the gate: do
+;; we identify every cycle in a synthetic input?  The bench harness
+;; below builds N independent K-deep cycles, runs `gc-collect-cycles'
+;; once (sync mode), and reports:
+;;
+;;   - passes              : `gc-collect-cycles' invocation count
+;;   - cycles-built        : N (= input parameter)
+;;   - nodes-built         : N * K (= total handles allocated)
+;;   - freed               : `gc-collect-cycles' return value
+;;   - elapsed-ms          : wallclock ms of the entire pass
+;;   - per-pass-ms         : elapsed-ms / passes
+;;   - leaked              : nodes-built - freed (= cycles missed)
+;;   - queue-drained       : (null gc-finalize-queue) at return
+;;   - roots-drained       : (null gc-cycle-roots-buffer) at return
+;;
+;; The §5.5 self-host gate condition under host-Emacs constraints
+;; ("after N suspect enqueues + `gc-collect-cycles', the freed count
+;; == expected and `gc-cycle-roots-buffer' is fully drained") becomes
+;; `gc-bench-parity-gate-p' = t.
+;;
+;; The harness is parameterized over an alloc-fn / link-fn pair so the
+;; ERT can wire host-Emacs mock primitives in via `cl-letf' (= same
+;; pattern as Stage 5.3.b〜.d ERT).  On a real NeLisp standalone the
+;; same harness runs against the actual `nl-rc-*' / `nl-gc-*'
+;; primitives by passing #'nl-cons-alloc / #'nl-cons-set-cdr, etc.;
+;; the bench code itself is runtime-agnostic.
+
+(defun gc-bench--default-alloc (kind)
+  "Default mock allocator for `gc-bench-cycle-collection'.
+Returns a fresh `cl-gensym'-style symbol with `:kind' / `:rc' /
+`:children' properties initialised, mimicking the box mocks the
+Stage 5.3.b〜.d ERT use so the harness Just Works under
+`gc-test--with-mocks'.  Real NeLisp callsites override via the
+`:alloc-fn' keyword."
+  (let ((h (make-symbol (format "gc-bench-%d" (random)))))
+    (put h :kind kind)
+    (put h :rc 1)
+    (put h :children nil)
+    h))
+
+(defun gc-bench--default-link (parent child)
+  "Default mock linker: append CHILD to PARENT's `:children' list.
+
+The mock alloc-fn (`gc-bench--default-alloc') starts CHILD's `:rc'
+at 1 = exactly one incoming intra-cycle edge per node when the
+ring closes, modelling the post-mutator-drop state where the
+external root that was holding the cycle alive has just gone
+away.  Stage 5.3.b〜.d ERT uses the same convention (= rc=1
+boxes form a leak-able cycle when buffered as suspects); see
+e.g. `gc-cycle-2-deep-collected'.  We therefore do NOT bump
+CHILD's rc here — the alloc baseline is already correct.
+
+Real NeLisp callsites that use `nl-cons-alloc' + a real linker
+override LINK-FN; the Rust-side primitive bumps the inner
+strong_count via an inc-strong call inside `set-cdr'."
+  (when (and (symbolp parent) (symbolp child))
+    (put parent :children
+         (append (get parent :children) (list child)))))
+
+(defun gc-bench--build-one-cycle (depth alloc-fn link-fn)
+  "Build a single DEPTH-node cycle and return the list of handles.
+ALLOC-FN is called DEPTH times with kind=7 (CONS).  LINK-FN wires
+node[i] -> node[i+1] for i in [0, DEPTH-1) and node[DEPTH-1] ->
+node[0] to close the loop."
+  (let ((nodes nil))
+    (dotimes (_ depth) (push (funcall alloc-fn 7) nodes))
+    (let ((vec (apply #'vector nodes)))
+      (dotimes (i depth)
+        (let ((src (aref vec i))
+              (dst (aref vec (mod (1+ i) depth))))
+          (funcall link-fn src dst)))
+      (append nodes nil))))
+
+(defun gc-bench-cycle-collection (&optional cycles depth alloc-fn link-fn)
+  "Run the Stage 5.3.e self-host parity bench harness.
+Build CYCLES independent DEPTH-node cycles via ALLOC-FN / LINK-FN,
+push every node onto `gc-cycle-roots-buffer', run a single
+synchronous `gc-collect-cycles' pass, and return a stats alist:
+
+  ((:cycles-built  . CYCLES)
+   (:nodes-built   . (CYCLES * DEPTH))
+   (:freed         . return-value-of-gc-collect-cycles)
+   (:passes        . 1)
+   (:elapsed-ms    . wallclock-ms)
+   (:per-pass-ms   . elapsed-ms / passes)
+   (:leaked        . nodes-built - freed)
+   (:queue-drained . t/nil)
+   (:roots-drained . t/nil))
+
+CYCLES defaults to 100, DEPTH to 3 (= 300 nodes) which completes
+under host Emacs in a few ms.  ALLOC-FN defaults to
+`gc-bench--default-alloc' (host-Emacs mock); LINK-FN defaults to
+`gc-bench--default-link'.  Production self-host invocations on a
+standalone NeLisp binary should crank CYCLES to 100k per Doc 79
+§5.5.2 and pass the real `nl-cons-alloc' / linker primitives.
+
+The harness depends on `gc-collect-cycles', the four phase
+walkers, and the finalizer queue, so it exercises the full
+cycle-collection pipeline end to end.  Plain defun (= no cl-lib
+require) so it loads under the standalone NeLisp substrate
+unchanged."
+  (let* ((cycles      (or cycles 100))
+         (depth       (or depth 3))
+         (alloc-fn    (or alloc-fn #'gc-bench--default-alloc))
+         (link-fn     (or link-fn  #'gc-bench--default-link))
+         (nodes-built (* cycles depth))
+         ;; Build all cycles before timing; cycle construction is
+         ;; mutator work, not collector work.
+         (all-nodes
+          (let ((acc nil))
+            (dotimes (_ cycles)
+              (setq acc
+                    (append acc
+                            (gc-bench--build-one-cycle
+                             depth alloc-fn link-fn))))
+            acc))
+         (passes-before (cdr (assq 'passes gc-stats-counters)))
+         (frees-before  (cdr (assq 'total-frees gc-stats-counters))))
+    ;; Buffer every node as a suspect and run one pass.  Real
+    ;; production paths get nodes onto the buffer via the dec callback
+    ;; (Stage 5.3.d); the bench short-circuits that for determinism.
+    (setq gc-cycle-roots-buffer (append all-nodes nil))
+    (let* ((t0 (current-time))
+           (freed (gc-collect-cycles))
+           (elapsed-ms (* 1000.0 (float-time (time-since t0))))
+           (passes-delta
+            (- (cdr (assq 'passes gc-stats-counters)) passes-before))
+           (frees-delta
+            (- (cdr (assq 'total-frees gc-stats-counters)) frees-before))
+           (per-pass-ms (if (> passes-delta 0)
+                            (/ elapsed-ms passes-delta)
+                          elapsed-ms)))
+      (list (cons :cycles-built  cycles)
+            (cons :nodes-built   nodes-built)
+            (cons :freed         freed)
+            (cons :passes        passes-delta)
+            (cons :stat-frees    frees-delta)
+            (cons :elapsed-ms    elapsed-ms)
+            (cons :per-pass-ms   per-pass-ms)
+            (cons :leaked        (- nodes-built freed))
+            (cons :queue-drained (null gc-finalize-queue))
+            (cons :roots-drained (null gc-cycle-roots-buffer))))))
+
+(defun gc-bench-parity-gate-p (stats)
+  "Return non-nil iff bench STATS satisfy the Stage 5.3.e parity gate.
+The gate corresponds to Doc 79 §5.5.3 gate-3 (= memory leak = 0)
+plus the user-prompt's host-Emacs interpretation of self-host
+parity: every suspect enqueue must terminate with a fully-drained
+suspect buffer and finalize queue, freed-count must equal the
+nodes-built input count, and leaked-count must be exactly 0.
+
+STATS is the return value of `gc-bench-cycle-collection'."
+  (and stats
+       (= 0 (cdr (assq :leaked        stats)))
+       (=   (cdr (assq :nodes-built   stats))
+            (cdr (assq :freed         stats)))
+       (eq t (cdr (assq :queue-drained stats)))
+       (eq t (cdr (assq :roots-drained stats)))))
 
 (provide 'nelisp-stdlib-gc)
 ;;; nelisp-stdlib-gc.el ends here
