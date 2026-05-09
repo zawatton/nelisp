@@ -120,5 +120,51 @@ mock returns nil (= EOF).")
       (when saved
         (defalias 'read-from-minibuffer saved)))))
 
+;;;; emacs-stdio-read-bytes (Phase B6, 2026-05-10)
+
+(ert-deftest nelisp-emacs-stdio-read-bytes-exact ()
+  "Read exactly N bytes when buffer has them already."
+  (nelisp-emacs-stdio-test--with-feed (list "abcdef")
+    (should (string= "abc" (emacs-stdio-read-bytes 3)))
+    (should (string= "def" (emacs-stdio-read-bytes 3)))
+    (should (null (emacs-stdio-read-bytes 1)))))
+
+(ert-deftest nelisp-emacs-stdio-read-bytes-refills ()
+  "Read across chunk boundary triggers `read-stdin-bytes' refill."
+  (nelisp-emacs-stdio-test--with-feed (list "ab" "cd" "ef")
+    (should (string= "abcd" (emacs-stdio-read-bytes 4)))
+    (should (string= "ef" (emacs-stdio-read-bytes 2)))))
+
+(ert-deftest nelisp-emacs-stdio-read-bytes-partial-at-eof ()
+  "Returns the partial tail when fewer than N bytes remain."
+  (nelisp-emacs-stdio-test--with-feed (list "xy")
+    (should (string= "xy" (emacs-stdio-read-bytes 5)))
+    (should (null (emacs-stdio-read-bytes 1)))))
+
+(ert-deftest nelisp-emacs-stdio-read-bytes-zero-or-negative ()
+  "Non-positive N returns nil without consuming bytes."
+  (nelisp-emacs-stdio-test--with-feed (list "abc")
+    (should (null (emacs-stdio-read-bytes 0)))
+    (should (null (emacs-stdio-read-bytes -1)))
+    (should (string= "abc" (emacs-stdio-read-bytes 3)))))
+
+(ert-deftest nelisp-emacs-stdio-read-bytes-preserves-no-newline-bodies ()
+  "MCP framed body without trailing newline is read correctly even when
+the next frame's header bytes follow immediately in the stream.
+
+`emacs-stdio-read-line' only strips LF, so CR remains; that's fine
+because the framing parser strips CR via
+`anvil-server--strip-trailing-cr'.  This test asserts byte-precise
+body extraction, not header normalisation."
+  (nelisp-emacs-stdio-test--with-feed
+      (list "Content-Length: 5\r\n\r\nhelloContent-Length: 5\r\n\r\nworld")
+    (should (string= "Content-Length: 5\r" (emacs-stdio-read-line)))
+    (should (string= "\r" (emacs-stdio-read-line)))
+    (should (string= "hello" (emacs-stdio-read-bytes 5)))
+    (should (string= "Content-Length: 5\r" (emacs-stdio-read-line)))
+    (should (string= "\r" (emacs-stdio-read-line)))
+    (should (string= "world" (emacs-stdio-read-bytes 5)))
+    (should (null (emacs-stdio-read-bytes 1)))))
+
 (provide 'nelisp-emacs-stdio-test)
 ;;; nelisp-emacs-stdio-test.el ends here
