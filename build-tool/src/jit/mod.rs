@@ -25,16 +25,11 @@
 //! calls once at startup.  A submodule with no lowerings yet (= all
 //! 5 today) is a no-op.
 
-use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
-
-use crate::eval::error::EvalError;
-use crate::eval::env::Env;
-use crate::eval::sexp::Sexp;
 
 /// Shared helper used by Stage 5.1 syscall + 5.3 cons + 5.4 access +
 /// 5.5 predicate trampolines: declare an `(i64 × N_PARAMS) -> i64'
@@ -93,11 +88,6 @@ pub(super) fn declare_helper_call(
     module.clear_context(&mut ctx);
     entry_id
 }
-
-/// Lowered primitive function signature.  Identical to
-/// `eval::builtins::dispatch` so a JIT lowering and the fallback
-/// dispatcher are interchangeable from the eval loop's perspective.
-pub type LowerFn = fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError>;
 
 mod access;
 mod arith;
@@ -232,57 +222,4 @@ pub(super) fn unified_jit() -> &'static UnifiedJit {
             syscall,
         }
     })
-}
-
-// Doc 77b Stage b.4 (2026-05-09) — registry empty.
-//
-// Pre-b.4 this map held the 24 `lowered_X' Rust strategy fns (= 12
-// arith + 5 cons + 4 access + 1 predicate + 2 syscall).  Stage b.4
-// deleted all 24 fns + their `register(map)' calls; dispatch for
-// those names now flows through the elisp wrappers in
-// `lisp/nelisp-jit-strategy.el' which call the JIT entries via the
-// Stage b.2 / b.2.5 `nl-jit-call-*' bridge primitives.
-//
-// `lower_entries()' / `try_lower()' are kept as no-op stubs so the
-// eval-loop hook (`eval::mod.rs::apply_builtin') can stay
-// structurally unchanged; the map is empty and `try_lower' always
-// returns `None', routing every call site straight to the
-// dispatcher.  The `NELISP_NO_JIT=1' env-toggleable filter is also
-// retired (= the env var has no effect after Stage b.4 — a future
-// commit can revive an env-gated wrapper-disable mechanism at the
-// elisp level if cross-platform debugging needs it).
-pub fn lower_entries() -> &'static HashMap<&'static str, LowerFn> {
-    static ENTRIES: OnceLock<HashMap<&'static str, LowerFn>> = OnceLock::new();
-    ENTRIES.get_or_init(HashMap::new)
-}
-
-/// Try to lower a call site through the JIT registry.  Returns
-/// `Some(result)` when a lowering is registered for `name`, else
-/// `None` so the caller falls back to the generic dispatcher.
-pub fn try_lower(
-    name: &str,
-    args: &[Sexp],
-    env: &mut Env,
-) -> Option<Result<Sexp, EvalError>> {
-    lower_entries().get(name).map(|f| f(args, env))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Doc 77b Stage b.4 (2026-05-09): the 24 pre-b.4 entries (= 12
-    /// arith + 5 cons + 4 access + 1 predicate + 2 syscall) have been
-    /// migrated to elisp wrappers in `lisp/nelisp-jit-strategy.el'.
-    /// The registry is empty by design — `try_lower' always returns
-    /// `None', and the eval loop's dispatcher takes over.
-    #[test]
-    fn registry_is_empty_after_stage_b4() {
-        assert!(
-            lower_entries().is_empty(),
-            "lower_entries must be empty after Doc 77b Stage b.4; \
-             found: {:?}",
-            lower_entries().keys().collect::<Vec<_>>(),
-        );
-    }
 }

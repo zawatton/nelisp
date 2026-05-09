@@ -2442,12 +2442,6 @@ fn bi_apply_builtin_dispatch(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalE
         }),
     };
     let arg_vec = super::list_elements(&args[1])?;
-    // Phase 5 lower hook — same as `apply_builtin' so JIT-lowered
-    // primitives (= arith / cons / aref / predicate) short-circuit
-    // here too when the elisp dispatcher routes through us.
-    if let Some(result) = crate::jit::try_lower(&name, &arg_vec, env) {
-        return result;
-    }
     dispatch(&name, &arg_vec, env)
 }
 
@@ -3747,11 +3741,6 @@ fn elisp_provide(env: &mut Env, feature: &str) -> Result<(), EvalError> {
         env,
     )?;
     Ok(())
-}
-
-#[allow(dead_code)]
-fn _unused_truthy(v: &Sexp) -> bool {
-    is_truthy(v)
 }
 
 // ===== Generic accessors (Phase 8.x core completion) =====================
