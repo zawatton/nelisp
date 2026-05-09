@@ -64,14 +64,41 @@ for testability of the recursive walker."
 
 (defun emacs-backquote--list (form)
   "Build an elisp form that constructs the list FORM, honouring comma /
-comma-at substitutions inside its cells."
+comma-at substitutions inside its cells.
+
+Phase B5 fix (= 2026-05-09): detect `(... . ,Y)' / `(... . ,@Y)' tails
+specifically.  The reader represents `(a . ,x)' as `(a comma x)' — a
+3-element proper list — and `(a . ,@x)' as `(a comma-at x)'.  Without
+the dotted-tail detection below the recursive walker treated those as
+`(a comma x)' / `(a comma-at x)' literal lists and produced
+`(list 'a 'comma 'x)' instead of the intended `(cons 'a x)'."
   (cond
    ;; Empty list: just nil.
    ((null form)
     nil)
-   ;; Improper list terminator (= dotted-pair tail): quote it.
+   ;; Improper list terminator (= non-cons tail): quote it.
    ((not (consp form))
     (list 'quote form))
+   ;; Dotted-tail comma form: `(... HEAD . ,Y)' read as
+   ;; `(... HEAD comma Y)'.  Stop recursion and emit (cons HEAD-EXPR Y).
+   ((and (consp (cdr form))
+         (eq (car (cdr form)) 'comma)
+         (consp (cdr (cdr form)))
+         (null (cdr (cdr (cdr form)))))
+    (let ((head-expr (emacs-backquote--expand (car form)))
+          (tail-value (car (cdr (cdr form)))))
+      (list 'cons head-expr tail-value)))
+   ;; Dotted-tail splicing form: `(... HEAD . ,@Y)' read as
+   ;; `(... HEAD comma-at Y)'.  Real Emacs would error here at read-time
+   ;; (`,@' after `.' is not a list), but we just emit `(append HEAD
+   ;; Y)' for forwards-compat with tests that pre-construct the form.
+   ((and (consp (cdr form))
+         (eq (car (cdr form)) 'comma-at)
+         (consp (cdr (cdr form)))
+         (null (cdr (cdr (cdr form)))))
+    (let ((head-expr (emacs-backquote--expand (car form)))
+          (tail-value (car (cdr (cdr form)))))
+      (list 'append (list 'list head-expr) tail-value)))
    (t
     (let* ((head (car form))
            (tail (cdr form))

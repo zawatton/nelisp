@@ -1837,3 +1837,14 @@ START / END / BINARY are accepted for API compat but only the
   (defvar invocation-directory ""))
 (unless (boundp 'invocation-name)
   (defvar invocation-name "nelisp"))
+
+;; Phase B5 — coding-string identity stubs.  Standalone NeLisp strings
+;; are UTF-8 already; the bulk-stub no-op (returns nil) breaks JSON-RPC
+;; parsing when callers wrap incoming strings with `decode-coding-string'.
+;; Forward to identity so the round-trip is a no-op.
+(defun decode-coding-string (string &optional _coding-system _nocopy &rest _)
+  "Identity stub — return STRING unchanged.  NeLisp strings are UTF-8."
+  string)
+(defun encode-coding-string (string &optional _coding-system _nocopy &rest _)
+  "Identity stub — return STRING unchanged."
+  string)
