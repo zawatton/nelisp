@@ -183,6 +183,21 @@ Standalone NeLisp has no interactive frontend; always nil."
     "Do nothing and return nil — for use as a callback that disregards args."
     nil))
 
+;; ---- subr.el property-helper primitives ----
+;;
+;; Vendor `cl-macs.el' uses `define-symbol-prop' to attach metadata
+;; (= cl-deftype, cl-typep, compiler-macro etc.) to symbols.  Minimal
+;; port matches host Emacs `put' semantics; the current-load-list
+;; bookkeeping that real `define-symbol-prop' performs is irrelevant
+;; on standalone (= unload-feature is not used).
+
+(unless (fboundp 'define-symbol-prop)
+  (defun define-symbol-prop (symbol prop val)
+    "Define the property PROP of SYMBOL to be VAL.
+Minimal subr.el port — matches host Emacs `put' behaviour but
+skips the `current-load-list' bookkeeping (= unused on standalone)."
+    (put symbol prop val)))
+
 ;; ---- Compiler-macro helper for `cXXr' family ----
 ;;
 ;; Vendor `cl-macs.el' references `internal--compiler-macro-cXXr'

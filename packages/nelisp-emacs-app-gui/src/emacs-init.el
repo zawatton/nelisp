@@ -64,6 +64,12 @@
 ;; under host Emacs; trivial cost on standalone (~50 LOC of `defun's).
 (require 'emacs-subr-extras)
 
+;; Phase B3 — Edebug-related primitives that vendor `cl-macs.el'
+;; references at load time (= `def-edebug-elem-spec' / `def-edebug-spec'
+;; etc.).  Without these, cl-macs.el silently truncates partway and
+;; `cl-callf' never gets registered.
+(require 'emacs-edebug-stubs)
+
 (provide 'emacs-init)
 
 ;;; emacs-init.el ends here
