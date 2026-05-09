@@ -198,6 +198,19 @@ Minimal subr.el port — matches host Emacs `put' behaviour but
 skips the `current-load-list' bookkeeping (= unused on standalone)."
     (put symbol prop val)))
 
+;; ---- byte-compile-only metadata declarations ----
+;;
+;; `declare-function' is a byte-compiler hint in stock Emacs and a
+;; runtime no-op.  Vendor `anvil-server.el' / `cl-extra.el' and many
+;; subr-derived files put these at top level; standalone NeLisp has
+;; no byte compiler, so the simplest thing is to register a no-op
+;; macro that swallows the args.
+
+(unless (fboundp 'declare-function)
+  (defmacro declare-function (&rest _args)
+    "No-op stub for the byte-compiler hint `declare-function'."
+    nil))
+
 ;; ---- Compiler-macro helper for `cXXr' family ----
 ;;
 ;; Vendor `cl-macs.el' references `internal--compiler-macro-cXXr'

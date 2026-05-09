@@ -37,6 +37,18 @@
           (unless (and (boundp 'load-path) (member path load-path))
             (setq load-path (cons path (and (boundp 'load-path) load-path)))))))))
 
+;; Phase B5 (= 2026-05-09): also surface this file's own directory on
+;; load-path so that the `(require 'emacs-...)' lines below resolve
+;; against the bundled `src/' modules under standalone NeLisp where
+;; the caller did NOT pre-load emacs-init's directory.  Without this,
+;; NeLisp's permissive `require' silently provides the feature without
+;; running the file body — the helper definitions never land and
+;; downstream stubs (e.g. `define-error') trip with `void-function'.
+(when (and (boundp 'load-file-name) load-file-name)
+  (let ((dir (file-name-directory load-file-name)))
+    (unless (and (boundp 'load-path) (member dir load-path))
+      (setq load-path (cons dir (and (boundp 'load-path) load-path))))))
+
 ;; Order matters: emacs-eval (defalias) before emacs-list (uses defalias);
 ;; emacs-fns (plist-get) before emacs-symbol (uses plist-get + plist-put);
 ;; emacs-list (nreverse, copy-sequence) before emacs-hash (uses both).
