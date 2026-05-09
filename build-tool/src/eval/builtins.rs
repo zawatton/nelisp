@@ -421,8 +421,15 @@ pub fn install_builtins(env: &mut Env) {
         "nelisp--logior2-impl", "nelisp--logand2-impl",
         "nelisp--logxor2-impl",
         "nelisp--ash-impl",
-        "nelisp--length-impl", "nelisp--aref-impl", "nelisp--aset-impl",
-        "nelisp--elt-impl",
+        // Doc 80 Stage 80.3〜80.4 (2026-05-09) — slim primitives for
+        // the elisp-side `length' / `aref' / `aset' / `elt' fall-
+        // through dispatch.  Replaces the pre-Doc-80 `nelisp--{length,
+        // aref,aset,elt}-impl' Rust helpers (= ~255 LOC).  See
+        // `lisp/nelisp-jit-strategy.el' for the elisp wrappers and
+        // `jit/strategy.rs' for the Rust bodies.
+        "nelisp--mut-str-len", "nelisp--bool-vector-len",
+        "nelisp--str-codepoint-at", "nelisp--mut-str-set-codepoint",
+        "nelisp--char-table-aref", "nelisp--char-table-aset",
         "nelisp--syscall-nr-resolve",
     ];
     for n in names {
@@ -742,10 +749,13 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nelisp--logand2-impl" => crate::jit::bi_logand2_impl(args),
         "nelisp--logxor2-impl" => crate::jit::bi_logxor2_impl(args),
         "nelisp--ash-impl" => crate::jit::bi_ash_impl(args),
-        "nelisp--length-impl" => crate::jit::bi_length_impl(args),
-        "nelisp--aref-impl" => crate::jit::bi_aref_impl(args),
-        "nelisp--aset-impl" => crate::jit::bi_aset_impl(args),
-        "nelisp--elt-impl" => crate::jit::bi_elt_impl(args),
+        // Doc 80 Stage 80.3〜80.4 — slim primitives.
+        "nelisp--mut-str-len" => crate::jit::bi_mut_str_len(args),
+        "nelisp--bool-vector-len" => crate::jit::bi_bool_vector_len(args),
+        "nelisp--str-codepoint-at" => crate::jit::bi_str_codepoint_at(args),
+        "nelisp--mut-str-set-codepoint" => crate::jit::bi_mut_str_set_codepoint(args),
+        "nelisp--char-table-aref" => crate::jit::bi_char_table_aref(args),
+        "nelisp--char-table-aset" => crate::jit::bi_char_table_aset(args),
         "nelisp--syscall-nr-resolve" => crate::jit::bi_syscall_nr_resolve(args),
         // Doc 77c Phase A.3 (2026-05-09) — Layer 2 cons-cell primitives
         // operating directly on `NlConsBox' / `NlConsBoxRef' (Phase A.2).
@@ -2523,6 +2533,45 @@ fn bi_signal(args: &[Sexp]) -> Result<Sexp, EvalError> {
     // is discarded — quit carries no payload in Emacs.
     if tag == "quit" {
         return Err(EvalError::Quit);
+    }
+    // Doc 80 Stage 80.3 (2026-05-09) — canonicalise `arith-error' /
+    // `wrong-type-argument' tags to the structurally-distinct
+    // `EvalError' variants.  Without this, the elisp-side fall-
+    // through dispatch in `lisp/nelisp-jit-strategy.el' (= `aref' /
+    // `aset' / `elt' replacements) would produce `UserError { tag,
+    // data }', which `condition-case' catches identically but every
+    // existing `matches!(e, EvalError::ArithError(_))' /
+    // `EvalError::WrongType { .. })' test would silently break.
+    // See `error.rs::error_tag' for the bidirectional `tag ↔ variant'
+    // map; this is its inverse for `(signal 'TAG DATA)' callsites.
+    if tag == "arith-error" {
+        let msg = match &args[1] {
+            Sexp::Cons(b) => match &b.car {
+                Sexp::Str(s) => s.clone(),
+                other => format!("{:?}", other),
+            },
+            Sexp::Str(s) => s.clone(),
+            _ => "arith-error".to_string(),
+        };
+        return Err(EvalError::ArithError(msg));
+    }
+    if tag == "wrong-type-argument" {
+        let (expected, got) = match &args[1] {
+            Sexp::Cons(b) => {
+                let exp = match &b.car {
+                    Sexp::Symbol(s) => s.clone(),
+                    Sexp::Str(s) => s.clone(),
+                    other => format!("{:?}", other),
+                };
+                let got = match &b.cdr {
+                    Sexp::Cons(c) => c.car.clone(),
+                    other => other.clone(),
+                };
+                (exp, got)
+            }
+            other => ("argument".to_string(), other.clone()),
+        };
+        return Err(EvalError::WrongType { expected, got });
     }
     // Per Elisp, the second arg is the *data list*.
     Err(EvalError::UserError {

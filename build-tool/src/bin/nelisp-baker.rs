@@ -35,12 +35,18 @@ use std::process::ExitCode;
 /// 1:1 mirror of `Env::new_global`'s STDLIB_SOURCES list.  Keep in
 /// sync — Stage 7.7.b's `STDLIB_IMAGES` will iterate the same names.
 const STDLIB_FILES: &[&str] = &[
+    // Doc 80 Stage 80.1 (2026-05-09): Pre-stdlib elisp substrate
+    // (`cond' / `when' / `unless' / `defmacro' self-boot / signal
+    // helpers).  Loads FIRST so `nelisp-jit-strategy.el' below can
+    // express multi-variant fall-through dispatch in elisp, unlocking
+    // ~227 LOC Rust shrink in `jit/strategy.rs'.  See
+    // `lisp/nelisp-jit-substrate.el' header.
+    "nelisp-jit-substrate.el",
     // Doc 77b Stage b.4 (2026-05-09): JIT-strategy wrappers for the
-    // 24 pre-b.4 `lowered_X' Rust fns.  Loads FIRST so the elisp
+    // 24 pre-b.4 `lowered_X' Rust fns.  Loads SECOND so the elisp
     // wrappers (= `(fset 'car (lambda ...))' etc.) install BEFORE
     // any later stdlib form invokes the wrapped names.  Wrappers use
-    // only Tier 1 special forms + Rust builtins (no `cond' / `and' /
-    // `integerp' which only appear in nelisp-stdlib*.el).
+    // only Tier 1 special forms + Rust builtins + Doc 80 substrate.
     "nelisp-jit-strategy.el",
     "nelisp-stdlib-eval-special.el",
     "nelisp-stdlib.el",

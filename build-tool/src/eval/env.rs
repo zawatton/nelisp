@@ -155,9 +155,15 @@ impl Env {
         // own header so future readers can look there for the dep
         // ordering rationale.
         const STDLIB_IMAGES: &[(&str, &[u8])] = &[
+            // Doc 80 Stage 80.1 (2026-05-09): Pre-stdlib elisp
+            // substrate (`cond' / `when' / `unless' / `defmacro'
+            // self-boot / signal helpers).  Loads FIRST so the
+            // jit-strategy wrappers below can express fall-through
+            // dispatch in elisp.  See `lisp/nelisp-jit-substrate.el'.
+            ("nelisp-jit-substrate.el", include_bytes!("../../../lisp/nelisp-jit-substrate.el.image")),
             // Doc 77b Stage b.4 (2026-05-09): JIT-strategy wrappers
             // (= 24 elisp `(fset 'X (lambda ...))' overrides for the
-            // pre-b.4 `lowered_X' Rust strategy fns).  Loads FIRST so
+            // pre-b.4 `lowered_X' Rust strategy fns).  Loads SECOND so
             // wrappers install BEFORE any later stdlib form invokes
             // the wrapped names.  See `lisp/nelisp-jit-strategy.el'.
             ("nelisp-jit-strategy.el", include_bytes!("../../../lisp/nelisp-jit-strategy.el.image")),
