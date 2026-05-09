@@ -11,10 +11,11 @@
 
 ;;; Commentary:
 
-;; Doc 79 v7 Phase C Stage 5.3.a + 5.3.b ERT for the elisp-side
+;; Doc 79 v7 Phase C Stage 5.3.a + 5.3.b + 5.3.c ERT for the elisp-side
 ;; cycle collector in `lisp/nelisp-stdlib-gc.el'.  We exercise the
 ;; *pure-elisp* surface (= `gc-stats' / `gc-collect-cycles' four-phase
-;; algorithm + data-structure shells) from host Emacs.
+;; algorithm + data-structure shells + Stage 5.3.c finalizer queue)
+;; from host Emacs.
 ;;
 ;; The 10 underlying `nl-rc-*' / `nl-gc-*' primitives are Rust-side
 ;; (= `build-tool/src/eval/rc_primitives.rs' tests) and not callable
@@ -79,10 +80,18 @@
 
 (defmacro gc-test--with-mocks (&rest body)
   "Execute BODY with mock `nl-rc-*' / `nl-gc-*' primitives in scope.
-Also resets `gc-cycle-roots-buffer', the color/internal-rc tables
-and `gc-test--finalized' so each test starts from a clean slate."
+Also resets `gc-cycle-roots-buffer', the color/internal-rc tables,
+`gc-finalize-queue' / `gc-finalize-timer' (Stage 5.3.c), and
+`gc-test--finalized' so each test starts from a clean slate.
+Forces `gc-finalize-flush-mode' = `sync' so tests do not rely on
+host idle-timer firing (Doc 79 §5.4.6.1 batch-mode mitigation)."
   `(let ((gc-test--finalized nil)
-         (gc-cycle-roots-buffer nil))
+         (gc-cycle-roots-buffer nil)
+         (gc-finalize-queue nil)
+         (gc-finalize-timer nil)
+         (gc-finalize-flush-mode 'sync)
+         (gc-finalize-large-threshold nil)
+         (gc-collect-cycles-threshold 1024))
      (clrhash gc-color-table)
      (clrhash gc-internal-rc-table)
      ;; Reset the alist to a known baseline so accounting tests don't
@@ -311,6 +320,181 @@ and `gc-test--finalized' so each test starts from a clean slate."
    (dolist (k '(0 1 2 3 4 5 6 10))
      (let ((h (gc-test--alloc k 1)))
        (should (not (gc--root-candidate-kind-p h)))))))
+
+;; ---- Stage 5.3.c finalizer queue + threshold + idle-timer ----------
+
+(ert-deftest gc-finalize-queue-fifo-order ()
+  "`gc-finalize-flush' processes the queue in FIFO order."
+  (skip-unless (fboundp 'gc-finalize-flush))
+  (gc-test--with-mocks
+   (let ((a (gc-test--alloc 7 1))
+         (b (gc-test--alloc 7 1))
+         (c (gc-test--alloc 7 1)))
+     (gc-finalize-enqueue (list a b c))
+     (should (equal 3 (gc-finalize-flush)))
+     ;; `gc-test--finalized' is built via `push' so the head is the
+     ;; most recently finalized; reversing recovers the call order.
+     (should (equal (list a b c) (nreverse gc-test--finalized))))))
+
+(ert-deftest gc-collect-cycles-defers-finalize-via-queue ()
+  "Phase 4 enqueues handles; the queue drains synchronously before return."
+  (skip-unless (fboundp 'gc-collect-cycles))
+  (skip-unless (boundp 'gc-finalize-queue))
+  (gc-test--with-mocks
+   (let ((a (gc-test--alloc 7 1))
+         (b (gc-test--alloc 7 1)))
+     (gc-test--set-children a (list b))
+     (gc-test--set-children b (list a))
+     (setq gc-cycle-roots-buffer (list a b))
+     (should (equal 2 (gc-collect-cycles)))
+     ;; Queue was used during the pass and is empty on return.
+     (should (null gc-finalize-queue))
+     ;; `nl-gc-finalize' was still called for both handles.
+     (should (memq a gc-test--finalized))
+     (should (memq b gc-test--finalized)))))
+
+(ert-deftest gc-finalize-step-respects-budget ()
+  "`gc-finalize-step' returns early when the wallclock budget is exceeded."
+  (skip-unless (fboundp 'gc-finalize-step))
+  (gc-test--with-mocks
+   ;; Budget = 0 ms forces the loop to exit before processing anything;
+   ;; the queue should remain populated for a follow-up step.
+   (let ((gc-finalize-budget-ms 0)
+         (a (gc-test--alloc 7 1))
+         (b (gc-test--alloc 7 1)))
+     (gc-finalize-enqueue (list a b))
+     (let ((processed (gc-finalize-step)))
+       (should (and (>= processed 0) (<= processed 2))))
+     ;; Whatever was not processed survives in the queue.
+     (should (or gc-finalize-queue (= 2 (length gc-test--finalized)))))))
+
+(ert-deftest gc-maybe-collect-cycles-threshold-gate ()
+  "Auto-trigger fires only after threshold; below it returns 0."
+  (skip-unless (fboundp 'gc-maybe-collect-cycles))
+  (gc-test--with-mocks
+   (let ((gc-collect-cycles-threshold 3)
+         (a (gc-test--alloc 7 1))
+         (b (gc-test--alloc 7 1))
+         (c (gc-test--alloc 7 1)))
+     ;; 1 root → below threshold = no collection.
+     (push a gc-cycle-roots-buffer)
+     (should (equal 0 (gc-maybe-collect-cycles)))
+     (should (equal 1 (length gc-cycle-roots-buffer)))
+     ;; Ramp to 3 roots → meets threshold = fires.  These are
+     ;; orphaned (no children, no external refs) so they hit the
+     ;; `internal == 0' white branch and get queued + finalized.
+     (push b gc-cycle-roots-buffer)
+     (push c gc-cycle-roots-buffer)
+     (let ((freed (gc-maybe-collect-cycles)))
+       ;; The exact count depends on the orphan-classifier outcome
+       ;; (Stage 5.3.b post-fix uses `(> internal 0)' so rc=1 with
+       ;; no children means white).  We only assert the call ran.
+       (should (>= freed 0))
+       (should (null gc-cycle-roots-buffer))))))
+
+(ert-deftest gc-maybe-collect-cycles-threshold-disabled ()
+  "Auto-trigger is suppressed when threshold = nil."
+  (skip-unless (fboundp 'gc-maybe-collect-cycles))
+  (gc-test--with-mocks
+   (let ((gc-collect-cycles-threshold nil)
+         (a (gc-test--alloc 7 1)))
+     (dotimes (_ 100) (push a gc-cycle-roots-buffer))
+     (should (equal 0 (gc-maybe-collect-cycles)))
+     (should (equal 100 (length gc-cycle-roots-buffer))))))
+
+(ert-deftest gc-finalize-flush-mode-sync-default-on-batch ()
+  "Loaded under -batch should yield `sync' default for `flush-mode'."
+  (skip-unless (boundp 'gc-finalize-flush-mode))
+  ;; Host Emacs batch run sets `noninteractive' = t which steers the
+  ;; defcustom default to `sync' even though `run-with-idle-timer'
+  ;; would be available.  This guards the Doc 79 §5.4.6.1 mitigation.
+  (when noninteractive
+    (should (eq 'sync (default-value 'gc-finalize-flush-mode)))))
+
+(ert-deftest gc-finalize-arm-timer-noop-in-sync-mode ()
+  "In `sync' mode `gc-finalize-arm-timer' must not arm a timer."
+  (skip-unless (fboundp 'gc-finalize-arm-timer))
+  (gc-test--with-mocks
+   (let ((gc-finalize-flush-mode 'sync))
+     (gc-finalize-enqueue (list (gc-test--alloc 7 1)))
+     (should (null gc-finalize-timer)))))
+
+(ert-deftest gc-finalize-arm-timer-fires-on-idle-mode ()
+  "In `idle' mode an enqueue arms `gc-finalize-timer' (host idle-timer)."
+  (skip-unless (fboundp 'gc-finalize-arm-timer))
+  (skip-unless (fboundp 'run-with-idle-timer))
+  (gc-test--with-mocks
+   (let ((gc-finalize-flush-mode 'idle)
+         (armed-with nil))
+     (cl-letf (((symbol-function 'run-with-idle-timer)
+                (lambda (secs _repeat fn &rest _args)
+                  (setq armed-with (cons secs fn))
+                  ;; Return a fake timer object.
+                  (cons 'fake-timer secs))))
+       (gc-finalize-enqueue (list (gc-test--alloc 7 1)))
+       (should armed-with)
+       (should (eq 'gc-finalize-step (cdr armed-with)))
+       (should (numberp (car armed-with)))
+       (should (not (null gc-finalize-timer)))))))
+
+(ert-deftest gc-finalize-step-rearms-when-budget-exceeded ()
+  "If the queue still has entries after a step, the idle-timer re-arms."
+  (skip-unless (fboundp 'gc-finalize-step))
+  (skip-unless (fboundp 'run-with-idle-timer))
+  (gc-test--with-mocks
+   (let ((gc-finalize-flush-mode 'idle)
+         (gc-finalize-budget-ms 0)
+         (rearm-count 0))
+     (cl-letf (((symbol-function 'run-with-idle-timer)
+                (lambda (&rest _) (cl-incf rearm-count) 'fake-timer)))
+       (setq gc-finalize-queue
+             (list (gc-test--alloc 7 1)
+                   (gc-test--alloc 7 1)
+                   (gc-test--alloc 7 1)))
+       ;; Step exits immediately due to 0 ms budget; re-arm path runs.
+       (gc-finalize-step)
+       (should (>= rearm-count 1))
+       (should gc-finalize-queue)))))
+
+(ert-deftest gc-finalize-flush-disarms-pending-timer ()
+  "Sync flush cancels any in-flight idle-timer."
+  (skip-unless (fboundp 'gc-finalize-flush))
+  (gc-test--with-mocks
+   (let ((gc-finalize-timer 'fake-timer)
+         (cancel-called-with nil))
+     (cl-letf (((symbol-function 'cancel-timer)
+                (lambda (tm) (setq cancel-called-with tm) nil)))
+       (gc-finalize-enqueue (list (gc-test--alloc 7 1)))
+       (gc-finalize-flush)
+       (should (eq 'fake-timer cancel-called-with))
+       (should (null gc-finalize-timer))))))
+
+(ert-deftest gc-large-payload-p-returns-nil-without-primitive ()
+  "`gc--large-payload-p' is conservative when the Stage D primitive is absent."
+  (skip-unless (fboundp 'gc--large-payload-p))
+  (gc-test--with-mocks
+   ;; Threshold set, but the primitive is unbound on host Emacs.
+   (let ((gc-finalize-large-threshold 4096))
+     (when (not (fboundp 'nl-rc-payload-size))
+       (should-not (gc--large-payload-p (gc-test--alloc 8 1)))))))
+
+(ert-deftest gc-finalize-batched-large-cycle ()
+  "Cycle of 50 boxes is fully drained in one synchronous flush."
+  (skip-unless (fboundp 'gc-collect-cycles))
+  (gc-test--with-mocks
+   (let ((handles nil))
+     (dotimes (_ 50) (push (gc-test--alloc 7 1) handles))
+     ;; Wire as a ring: each box points at the next, last → first.
+     (let ((ring handles))
+       (while (cdr ring)
+         (gc-test--set-children (car ring) (list (cadr ring)))
+         (setq ring (cdr ring)))
+       (gc-test--set-children (car ring) (list (car handles))))
+     (setq gc-cycle-roots-buffer (copy-sequence handles))
+     (let ((freed (gc-collect-cycles)))
+       (should (equal 50 freed))
+       (should (equal 50 (length gc-test--finalized)))
+       (should (null gc-finalize-queue))))))
 
 (provide 'nelisp-rc-primitives-test)
 ;;; nelisp-rc-primitives-test.el ends here

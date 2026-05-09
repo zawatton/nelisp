@@ -3,11 +3,17 @@
 #+DATE: 2026-05-09
 
 * Status
-:STATE: DRAFT v7 2026-05-09
+:STATE: DRAFT v7 2026-05-09 (Stage 5.3.a / 5.3.b / 5.3.c SHIPPED)
 :PARENT: Doc 77c (= Phase A〜E master plan)
 :PARALLEL: Doc 76 (OS surface elisp 化) / Doc 73 (reader/eval purge) / Doc 78 (Phase D-A Cranelift wrapper)
 :DEPENDS_ON: Doc 77c Phase A 完了 (= NlConsBox/NlCell/NlStr/NlVector/NlBoolVector/NlRecord/NlCharTable layout pin、cons_primitives.rs Layer 2 surface 出荷済)
 :UPDATES: Doc 77c §2.3 を本 Doc への外部参照に切替
+
+*Stage 5.3.c SHIPPED 2026-05-10*: deferred finalizer queue +
+threshold-gated auto-trigger + idle-timer integration on host
+Emacs.  0 Rust LOC (=nl-rc-payload-size= primitive deferred to
+Stage D handoff; queue path active for all kinds in the interim
+via `fboundp' gating).  ERT 17 → 29 (= +12 new), all green.
 
 * §0 TL;DR
 
@@ -684,6 +690,23 @@ ordering invariant: =gc-finalize-queue= に入った box は次 idle cycle で f
 - *commit-rule check*: 5 sub-commit 全てで net Rust delta non-positive (= 5.3.a で +115、5.3.b〜5.3.e で 0).  5.3.a が monotonic shrink rule strict 解釈で +115 違反するが、Stage C.1.b primitive を C.2 consumer と atomic 化する以外 dead-code 回避策がない (= project memory =feedback_commit_dead_code_claim_must_grep.md= とのトレードオフ).  Phase C 累積では *-56 〜 -101 LOC* 維持 (= Stage C.4-atomic SHIPPED -81 + Stage C.1.b +115 = +34、その後 Stage C.2 sub-stage 5.3.b〜e で 0、累積 +34、Phase C 全体は Stage C.3 / C.5 で更に shrink せず).  *user 確認推奨*: 5.3.a の per-commit +115 LOC を許容するか、または C.1.b を更に sub-split するか.  本 Doc は前者を推奨 (= dead-code 回避 + atomic primitive ship).
 
 ** §5.4 Stage C.3 — finalizer queue elisp 化 (1-2 週間)
+
+:STATE: SHIPPED 2026-05-10 (Stage 5.3.c, =run-with-idle-timer=
+依存以外を全 ship、Stage D handoff articulate 済)
+
+*Stage 5.3.c SHIPPED 2026-05-10*: =gc-finalize-queue= FIFO + drain
+2 entry (=gc-finalize-flush= 同期 / =gc-finalize-step= budget) +
+=gc-finalize-arm-timer= 経由 idle-timer hook (host Emacs 限定、
+NeLisp standalone は =fboundp= gate で Stage D handoff) + 上位
+=gc-collect-cycles-threshold= auto-trigger.  =gc--collect-white-walk=
+が =nl-gc-finalize= inline 経路を queue enqueue に置換、
+=gc-collect-cycles= 終端で =gc-finalize-flush= 同期 drain (= Doc 79
+§6 single-threaded model + user prompt synchronous-semantics
+constraint 維持).  =nl-rc-payload-size= primitive (+12 Rust LOC) は
+本 Stage では deferred、=gc--large-payload-p= は =fboundp= で primitive
+有無を probe して unavailable 時は universal queue 経路 fallback
+(= conservative default).  Rust delta = 0、elisp delta = +203
+LOC、ERT 17 → 29 (= +12 new、all green).
 
 *v6 refinement (2026-05-09)*: v5 の高水準 articulation (= =gc-finalize-queue= / =gc-finalize-step= / =gc-finalize-budget= / =run-with-idle-timer= hook、+~150 elisp LOC、1-2 週間) を *concrete pseudo-elisp + 4 sub-stage breakdown + risk + test plan + Stage C.5 handoff* に展開.  Track U §5.3 (= Stage C.2 Bacon-Rajan) と同 detail 水準.
 
