@@ -35,6 +35,7 @@ pub mod builtins;
 pub mod env;
 pub mod error;
 pub mod ffi;
+pub mod nlconsbox;
 pub mod nlrc;
 pub mod quit;
 pub mod sexp;
