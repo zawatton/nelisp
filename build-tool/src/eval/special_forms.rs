@@ -11,8 +11,6 @@
 //! the dispatcher falls through to function/macro lookup), and
 //! `Err(EvalError)` on invalid syntax / sub-form failure.
 
-use std::rc::Rc;
-
 use super::env::Env;
 use super::error::{is_error_subtype, EvalError};
 use super::sexp::Sexp;
@@ -545,7 +543,9 @@ pub fn sexp_eq(a: &Sexp, b: &Sexp) -> bool {
         }
         (Sexp::MutStr(a), Sexp::MutStr(b)) => crate::eval::nlstr::NlStrRef::ptr_eq(a, b),
         (Sexp::Vector(a), Sexp::Vector(b)) => crate::eval::nlvector::NlVectorRef::ptr_eq(a, b),
-        (Sexp::CharTable(a), Sexp::CharTable(b)) => Rc::ptr_eq(a, b),
+        (Sexp::CharTable(a), Sexp::CharTable(b)) => {
+            crate::eval::nlchartable::NlCharTableRef::ptr_eq(a, b)
+        }
         (Sexp::BoolVector(a), Sexp::BoolVector(b)) => {
             crate::eval::nlboolvector::NlBoolVectorRef::ptr_eq(a, b)
         }

@@ -27,8 +27,6 @@ use super::env::Env;
 use super::error::EvalError;
 use super::quit;
 use super::sexp::Sexp;
-use std::cell::RefCell;
-use std::rc::Rc;
 use super::special_forms::{is_truthy, sexp_eq};
 use std::path::{Path, PathBuf};
 
@@ -1064,7 +1062,9 @@ fn bi_ref_eq(args: &[Sexp]) -> Result<Sexp, EvalError> {
         }
         (Sexp::MutStr(a), Sexp::MutStr(b)) => crate::eval::nlstr::NlStrRef::ptr_eq(a, b),
         (Sexp::Vector(a), Sexp::Vector(b)) => crate::eval::nlvector::NlVectorRef::ptr_eq(a, b),
-        (Sexp::CharTable(a), Sexp::CharTable(b)) => std::rc::Rc::ptr_eq(a, b),
+        (Sexp::CharTable(a), Sexp::CharTable(b)) => {
+            crate::eval::nlchartable::NlCharTableRef::ptr_eq(a, b)
+        }
         (Sexp::BoolVector(a), Sexp::BoolVector(b)) => {
             crate::eval::nlboolvector::NlBoolVectorRef::ptr_eq(a, b)
         }
@@ -1120,7 +1120,9 @@ fn sexp_equal_safe(a: &Sexp, b: &Sexp, depth: u32) -> bool {
         (Sexp::MutStr(a), Sexp::MutStr(b)) => {
             crate::eval::nlstr::NlStrRef::ptr_eq(a, b) || a.value == b.value
         }
-        (Sexp::CharTable(a), Sexp::CharTable(b)) => std::rc::Rc::ptr_eq(a, b) || a == b,
+        (Sexp::CharTable(a), Sexp::CharTable(b)) => {
+            crate::eval::nlchartable::NlCharTableRef::ptr_eq(a, b) || a == b
+        }
         (Sexp::BoolVector(a), Sexp::BoolVector(b)) => {
             crate::eval::nlboolvector::NlBoolVectorRef::ptr_eq(a, b) || a == b
         }
@@ -1611,19 +1613,19 @@ pub(crate) fn char_table_set_one(
 }
 
 pub(crate) fn char_table_get(
-    inner: &Rc<RefCell<crate::eval::sexp::CharTableInner>>,
+    rc: &crate::eval::nlchartable::NlCharTableRef,
     c: i64,
 ) -> Sexp {
-    let borrowed = inner.borrow();
-    for (k, v) in borrowed.entries.iter() {
+    let inner = &rc.inner;
+    for (k, v) in inner.entries.iter() {
         if *k == c {
             return v.clone();
         }
     }
-    if let Some(parent) = &borrowed.parent {
+    if let Some(parent) = &inner.parent {
         return char_table_get(parent, c);
     }
-    borrowed.default_val.clone()
+    inner.default_val.clone()
 }
 
 // hash_test_eq helper removed in Doc 50 stage 4f — hash-table key

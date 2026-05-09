@@ -38,6 +38,7 @@ pub mod error;
 pub mod ffi;
 pub mod nlboolvector;
 pub mod nlcell;
+pub mod nlchartable;
 pub mod nlconsbox;
 pub mod nlrc;
 pub mod nlrecord;

@@ -7,13 +7,12 @@
 //! a second object model.
 
 use crate::eval::{self, Env, EvalError};
+use crate::eval::nlchartable::NlCharTableRef;
 use crate::eval::sexp::CharTableInner;
 use crate::reader::{ReadError, Sexp};
 #[cfg(any(test, feature = "image-baker"))]
 use crate::reader;
-use std::cell::RefCell;
 use std::fmt;
-use std::rc::Rc;
 
 pub const IMAGE_MAGIC: &[u8; 8] = b"NELIMG\0\x02";
 pub const IMAGE_ABI_VERSION: u32 = 2;
@@ -181,7 +180,7 @@ fn encode_value(out: &mut Vec<u8>, value: &Sexp) -> Result<(), ImageError> {
         // as before).
         Sexp::CharTable(rc) => {
             out.push(TAG_CHAR_TABLE);
-            encode_char_table(out, &rc.borrow())?;
+            encode_char_table(out, &rc.inner)?;
         }
         Sexp::BoolVector(rc) => {
             out.push(TAG_BOOL_VECTOR);
@@ -237,7 +236,7 @@ fn decode_value(rd: &mut Reader<'_>) -> Result<Sexp, ImageError> {
         }
         TAG_CHAR_TABLE => {
             let inner = decode_char_table(rd)?;
-            Ok(Sexp::CharTable(Rc::new(RefCell::new(inner))))
+            Ok(Sexp::CharTable(NlCharTableRef::new(inner)))
         }
         TAG_BOOL_VECTOR => {
             let len = rd.read_u32("bool-vector length")? as usize;
@@ -263,7 +262,7 @@ fn encode_char_table(out: &mut Vec<u8>, ct: &CharTableInner) -> Result<(), Image
     match &ct.parent {
         Some(p) => {
             out.push(1);
-            encode_char_table(out, &p.borrow())?;
+            encode_char_table(out, &p.inner)?;
         }
         None => out.push(0),
     }
@@ -286,7 +285,7 @@ fn decode_char_table(rd: &mut Reader<'_>) -> Result<CharTableInner, ImageError> 
     }
     let has_parent = rd.read_u8("char-table parent flag")? != 0;
     let parent = if has_parent {
-        Some(Rc::new(RefCell::new(decode_char_table(rd)?)))
+        Some(NlCharTableRef::new(decode_char_table(rd)?))
     } else {
         None
     };
@@ -475,14 +474,19 @@ mod tests {
     fn track_l_char_table_minimal_round_trips() {
         let ct = Sexp::char_table(Sexp::Symbol("display".into()), Sexp::Nil);
         if let Sexp::CharTable(rc) = &ct {
-            rc.borrow_mut().entries.push((65, Sexp::Int(1))); // 'A' -> 1
-            rc.borrow_mut().entries.push((97, Sexp::Int(2))); // 'a' -> 2
+            // SAFETY: no other borrow live on `rc.inner`.
+            unsafe {
+                rc.with_inner_mut(|i| {
+                    i.entries.push((65, Sexp::Int(1))); // 'A' -> 1
+                    i.entries.push((97, Sexp::Int(2))); // 'a' -> 2
+                });
+            }
         }
         let image = encode_image(&[ct]).unwrap();
         let loaded = decode_image(&image).unwrap();
         match &loaded[0] {
             Sexp::CharTable(rc) => {
-                let inner = rc.borrow();
+                let inner = &rc.inner;
                 assert_eq!(inner.subtype, Sexp::Symbol("display".into()));
                 assert_eq!(inner.default_val, Sexp::Nil);
                 assert_eq!(inner.entries, vec![
@@ -503,16 +507,21 @@ mod tests {
         let parent = Sexp::char_table(Sexp::Symbol("syntax".into()), Sexp::Int(99));
         let child = Sexp::char_table(Sexp::Symbol("syntax".into()), Sexp::Nil);
         if let (Sexp::CharTable(prc), Sexp::CharTable(crc)) = (&parent, &child) {
-            crc.borrow_mut().parent = Some(Rc::clone(prc));
-            crc.borrow_mut().entries.push((65, Sexp::Int(7)));
+            // SAFETY: no other borrow live.
+            unsafe {
+                crc.with_inner_mut(|i| {
+                    i.parent = Some(prc.clone());
+                    i.entries.push((65, Sexp::Int(7)));
+                });
+            }
         }
         let image = encode_image(&[child]).unwrap();
         let loaded = decode_image(&image).unwrap();
         match &loaded[0] {
             Sexp::CharTable(rc) => {
-                let inner = rc.borrow();
+                let inner = &rc.inner;
                 assert_eq!(inner.entries, vec![(65, Sexp::Int(7))]);
-                let pinner = inner.parent.as_ref().expect("parent dropped").borrow();
+                let pinner = &inner.parent.as_ref().expect("parent dropped").inner;
                 assert_eq!(pinner.default_val, Sexp::Int(99));
             }
             other => panic!("expected CharTable, got {:?}", other),
@@ -523,14 +532,18 @@ mod tests {
     fn track_l_char_table_with_extra_slots_round_trips() {
         let ct = Sexp::char_table(Sexp::Symbol("case-table".into()), Sexp::Nil);
         if let Sexp::CharTable(rc) = &ct {
-            rc.borrow_mut().extra =
-                vec![Sexp::Str("up".into()), Sexp::Str("down".into())];
+            // SAFETY: no other borrow live.
+            unsafe {
+                rc.with_inner_mut(|i| {
+                    i.extra = vec![Sexp::Str("up".into()), Sexp::Str("down".into())];
+                });
+            }
         }
         let image = encode_image(&[ct]).unwrap();
         let loaded = decode_image(&image).unwrap();
         match &loaded[0] {
             Sexp::CharTable(rc) => {
-                let inner = rc.borrow();
+                let inner = &rc.inner;
                 assert_eq!(inner.extra.len(), 2);
                 assert_eq!(inner.extra[0], Sexp::Str("up".into()));
                 assert_eq!(inner.extra[1], Sexp::Str("down".into()));
