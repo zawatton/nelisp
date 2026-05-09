@@ -36,6 +36,7 @@ pub mod cons_primitives;
 pub mod env;
 pub mod error;
 pub mod ffi;
+pub mod nlboolvector;
 pub mod nlcell;
 pub mod nlconsbox;
 pub mod nlrc;

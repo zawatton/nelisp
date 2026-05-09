@@ -25,6 +25,7 @@
 //! must NOT depend on the evaluator (= layer separation, see prompt
 //! constraints).
 
+use crate::eval::nlboolvector::NlBoolVectorRef;
 use crate::eval::nlcell::NlCellRef;
 use crate::eval::nlconsbox::NlConsBoxRef;
 use crate::eval::nlstr::NlStrRef;
@@ -140,7 +141,13 @@ pub enum Sexp {
     /// Used by Emacs syntax classes / region-mark bookkeeping.
     /// `aref' returns t / nil; `aset' takes any Sexp and stores
     /// truthy/falsy.  `length' returns the bit count.
-    BoolVector(Rc<RefCell<Vec<bool>>>),
+    ///
+    /// Phase A.4.4 (Doc 77c §4.5, 2026-05-09): migrated from
+    /// `Rc<RefCell<Vec<bool>>>' to a layout-pinned [`NlBoolVectorRef`]
+    /// for the same reason `Vector' moved to `NlVectorRef' in Phase
+    /// A.4.3 — fixed offset of `value' enables Phase A.5 JIT direct
+    /// emit and Phase B elisp self-host primitive access.
+    BoolVector(NlBoolVectorRef),
     /// Mutable cell (= write-through reference) used to back let-
     /// binding storage so `setq' inside a closure mutates the
     /// captured slot, not a copy.  The reader does NOT produce this
@@ -291,7 +298,7 @@ impl Sexp {
     /// Build a bool-vector of LEN bits all initialised to INIT.  Used
     /// by `make-bool-vector'.
     pub fn bool_vector(len: usize, init: bool) -> Sexp {
-        Sexp::BoolVector(Rc::new(RefCell::new(vec![init; len])))
+        Sexp::BoolVector(NlBoolVectorRef::new(vec![init; len]))
     }
 
     /// Return the string content of any string-like variant as an
@@ -480,7 +487,7 @@ fn write_sexp(out: &mut String, s: &Sexp) {
             out.push('>');
         }
         Sexp::BoolVector(rc) => {
-            let v = rc.borrow();
+            let v = &rc.value;
             out.push_str("#&");
             out.push_str(&v.len().to_string());
             out.push('"');
@@ -668,7 +675,7 @@ mod tests {
             SEXP_TAG_CHAR_TABLE
         );
         assert_eq!(
-            variant_tag(&Sexp::BoolVector(Rc::new(RefCell::new(vec![])))),
+            variant_tag(&Sexp::BoolVector(NlBoolVectorRef::new(vec![]))),
             SEXP_TAG_BOOL_VECTOR
         );
         assert_eq!(

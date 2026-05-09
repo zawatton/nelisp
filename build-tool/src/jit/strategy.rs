@@ -154,7 +154,7 @@ pub fn bi_length_impl(args: &[Sexp]) -> Result<Sexp, EvalError> {
     }
     match &args[0] {
         Sexp::MutStr(rc) => Ok(Sexp::Int(rc.value.chars().count() as i64)),
-        Sexp::BoolVector(v) => Ok(Sexp::Int(v.borrow().len() as i64)),
+        Sexp::BoolVector(v) => Ok(Sexp::Int(v.value.len() as i64)),
         Sexp::Cons(_) => {
             let mut n = 0i64;
             let mut cur: Sexp = args[0].clone();
@@ -237,8 +237,7 @@ fn aref_helper(args: &[Sexp], primitive: &'static str) -> Result<Sexp, EvalError
         }
         Sexp::CharTable(rc) => Ok(crate::eval::builtins::char_table_get(rc, index)),
         Sexp::BoolVector(v) => {
-            let borrowed = v.borrow();
-            borrowed
+            v.value
                 .get(index as usize)
                 .map(|b| if *b { Sexp::T } else { Sexp::Nil })
                 .ok_or_else(|| {
@@ -246,7 +245,7 @@ fn aref_helper(args: &[Sexp], primitive: &'static str) -> Result<Sexp, EvalError
                         "{}: index {} out of range for bool-vector of length {}",
                         primitive,
                         index,
-                        borrowed.len()
+                        v.value.len()
                     ))
                 })
         }
@@ -334,15 +333,22 @@ pub fn bi_aset_impl(args: &[Sexp]) -> Result<Sexp, EvalError> {
             Ok(args[2].clone())
         }
         Sexp::BoolVector(rc) => {
-            let mut borrowed = rc.borrow_mut();
-            let len = borrowed.len();
+            let len = rc.value.len();
             if (index as usize) >= len {
                 return Err(EvalError::ArithError(format!(
                     "aset: index {} out of range for bool-vector of length {}",
                     index, len
                 )));
             }
-            borrowed[index as usize] = crate::eval::special_forms::is_truthy(&args[2]);
+            let bit = crate::eval::special_forms::is_truthy(&args[2]);
+            // SAFETY: Phase A.4.4 — same discipline as the Vector / MutStr
+            // arms above; bounds check above does not borrow `rc.value`,
+            // and the closure mutates exactly the indexed slot.
+            unsafe {
+                rc.with_value_mut(|vec| {
+                    vec[index as usize] = bit;
+                });
+            }
             Ok(args[2].clone())
         }
         Sexp::Str(_) => Err(EvalError::WrongType {

@@ -987,7 +987,7 @@ fn sxhash_into<H: std::hash::Hasher>(v: &Sexp, h: &mut H) {
         Sexp::CharTable(_) => 9u8.hash(h),
         Sexp::BoolVector(rc) => {
             10u8.hash(h);
-            for &b in rc.borrow().iter() { (b as u8).hash(h); }
+            for &b in rc.value.iter() { (b as u8).hash(h); }
         }
         // Lexical-binding storage cell — hash through to inner value
         // (= cells should be invisible to user-facing sxhash).
@@ -1065,7 +1065,9 @@ fn bi_ref_eq(args: &[Sexp]) -> Result<Sexp, EvalError> {
         (Sexp::MutStr(a), Sexp::MutStr(b)) => crate::eval::nlstr::NlStrRef::ptr_eq(a, b),
         (Sexp::Vector(a), Sexp::Vector(b)) => crate::eval::nlvector::NlVectorRef::ptr_eq(a, b),
         (Sexp::CharTable(a), Sexp::CharTable(b)) => std::rc::Rc::ptr_eq(a, b),
-        (Sexp::BoolVector(a), Sexp::BoolVector(b)) => std::rc::Rc::ptr_eq(a, b),
+        (Sexp::BoolVector(a), Sexp::BoolVector(b)) => {
+            crate::eval::nlboolvector::NlBoolVectorRef::ptr_eq(a, b)
+        }
         (
             Sexp::Record { type_tag: t1, slots: s1 },
             Sexp::Record { type_tag: t2, slots: s2 },
@@ -1122,7 +1124,9 @@ fn sexp_equal_safe(a: &Sexp, b: &Sexp, depth: u32) -> bool {
             crate::eval::nlstr::NlStrRef::ptr_eq(a, b) || a.value == b.value
         }
         (Sexp::CharTable(a), Sexp::CharTable(b)) => std::rc::Rc::ptr_eq(a, b) || a == b,
-        (Sexp::BoolVector(a), Sexp::BoolVector(b)) => std::rc::Rc::ptr_eq(a, b) || a == b,
+        (Sexp::BoolVector(a), Sexp::BoolVector(b)) => {
+            crate::eval::nlboolvector::NlBoolVectorRef::ptr_eq(a, b) || a == b
+        }
         // For the trivial leaf variants the derived PartialEq has no
         // cycles to chase; fall through to the existing impl.
         _ => a == b,
