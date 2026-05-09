@@ -2,6 +2,7 @@
 #+DATE: 2026-04-25
 #+AUTHOR: zawatton + Claude (session-A 起草、session-B DRAFT 化、session-A v2 改訂)
 #+STATUS: LOCKED-2026-04-25-v2 (orchestrator codex review MAJOR REVISIONS 反映 + Emacs native-comp 参照追加 + user signoff 待ち)
+#+LATEST: 2026-05-09 — Track M audit で nelisp-cc native compiler ~12,263 LOC elisp (13 modules) SHIPPED 確認、Doc 28 §3 を extend、§3.6 Phase 7.1.6 (= eval-site primitive lowering takeover、6 sub-stage) + §3.7 Phase 7.1.7 (= build-tool/src/jit/ 削除 + Cranelift Cargo deps 削除、4 sub-stage) で Cranelift 完全削除 path (= ~-4,782 Rust LOC、Doc 77c §2.4.2 Path D-B 着地) を articulate。§3.8 aggregate LOC delta + 4-8 週工数見積、§3.9 dependency graph (= Doc 80 substrate / Doc 62 Cranelift / Doc 28 nelisp-cc 三者関係)。
 
 * §0 要旨 (TL;DR)
 
@@ -520,6 +521,242 @@ A3 を信頼して built される。
 - A3 self-recompile が A2 と diff する case (compiler bug、recursive
   self-bug など) → mitigation: stage2 reject で A2 fallback、不変条件
   (=fixed seed → fixed bytes=) を ERT で固定
+
+** 3.6 Phase 7.1.6 — eval-site primitive lowering takeover (= Cranelift 責任の nelisp-cc 移管)
+
+:LATEST: 2026-05-09 — Track M audit で nelisp-cc native compiler =~12,263 LOC elisp= (13 modules) が SHIPPED 確認 (=src/nelisp-cc{.el,-pipeline.el,-x86_64.el,-arm64.el,-runtime.el,-bootstrap.el,-callees.el,-inline.el,-recursive-inline.el,-rewrite.el,-escape.el,-lambda-lift.el,-base-case-fold.el}=).  Phase 7.1.6 = Doc 62 Phase 5.0〜5.5 で =build-tool/src/jit/= に積んだ Cranelift dispatch 経路を nelisp-cc が直接 emit する経路 (= elisp が =mmap PROT_EXEC= page に host machine code を書込む経路、Doc 77c §2.4.2 Path D-B) に移管する.
+
+*位置づけ*:
+- Doc 77c §2.4.2 (= Path D-B、本命) の 100% 純 elisp commitment 終着点を Doc 28 §3 sub-phase 構造に articulate する細則
+- Doc 62 Phase 5 (= Cranelift JIT lower) の eval-time dispatch arm Rust 実装は Doc 77b Stage b.4 で =lower_entries= map 自体は空化済 (= 24 lowered_X strategy fn は elisp wrapper =lisp/nelisp-jit-strategy.el= に migrate 完了)、ただし =build-tool/src/jit/{arith,cons,access,predicate,syscall}.rs= が emit する Cranelift IR + JIT-compiled =nl_jit_*= entry symbol 群はまだ Rust 経由で生きている.  これらが 7.1.6 の削除対象
+- Phase 7.1.5 完了 (= 4-stage bootstrap protocol で A3 authoritative 化、3-軸 bench gate 通過) が前提.  bench gate を満たした native cc が無いと Cranelift baseline からの hot path 引き取り判定ができない
+
+*entry point* (= nelisp-cc 側の primitive lowering 拡張点):
+
+=src/nelisp-cc-runtime.el::nelisp-cc-runtime-compile-and-allocate= (line 1336、Phase 7.1.4 SHIPPED) の pipeline:
+#+begin_example
+  AST → SSA (T6 frontend)
+      → Phase 7.7 passes (T158: escape / inline / rec-inline / lift)
+      → safe-points (T11)
+      → linear-scan (T4)
+      → backend compile (T9 x86_64 / T10 arm64)
+      → tail-call rewrite (`--lower-tail-call`)
+      → safe-point stub injection
+      → exec-page allocation (W^X)
+      → real exec via subprocess `nelisp-exec-bytes`
+#+end_example
+
+Phase 7.1.6 の追加点: SSA opcode set に *primitive lowering opcodes* (=ssa-call-primitive '+= / =ssa-call-primitive 'cons= / etc.) を追加し、x86_64 backend (=src/nelisp-cc-x86_64.el=) / arm64 backend (=src/nelisp-cc-arm64.el=) で各 primitive を host machine code として直 emit する.  helper trampoline 経由 (= Doc 62 §5 "helper fn 経由の妥協") は最初は許容、後段で inline へ昇格.
+
+*Cranelift dispatch arm inventory (= 削除対象、=wc -l= 実測)*:
+
+| jit/*.rs file    | LOC  | 担当 primitive                                                              | nelisp-cc 引取先 |
+|------------------+------+-----------------------------------------------------------------------------+--------------------|
+| =cons.rs=        |  415 | =car= / =cdr= / =cons= (+ inline NIL fast path)                             | Phase 7.1.6.a      |
+| =access.rs=      |  628 | =length= / =aref= / =aset= / =elt= (+ inline NIL Int(0) fast path)          | Phase 7.1.6.b      |
+| =arith.rs=       |  344 | 12 binary int primitives (=−add2 / -sub2 / -mul2 / -num-{eq,lt,gt,le,ge}2 / -logior2 / -logand2 / -logxor2 / ash=) | Phase 7.1.6.c      |
+| =predicate.rs=   |  331 | =eq= (4-block control-flow inline tag test)                                 | Phase 7.1.6.d      |
+| =syscall.rs=     |  276 | =nelisp--syscall= (generic libc trampoline) + =nelisp--syscall-supported-p= | Phase 7.1.6.e      |
+| =dsl.rs=         | 1190 | Doc 77b Stage b.1 IR DSL interpreter (= elisp の =(jit-rule ...)= form を Cranelift IR に 翻訳)  | Phase 7.1.6.f      |
+| =bridge.rs=      |  825 | Doc 77b Stage b.2 =nl-jit-call-{i64-i64,sexp-sexp,sexp-i64,...}= primitives | Phase 7.1.6.f      |
+| =strategy.rs=    |  425 | Doc 77b Stage b.4 fall-through helpers (= Float / non-Linux syscall / Mutstr / BoolVector)  | Phase 7.1.7.a (= Doc 80 Stage 80.1〜80.5 substrate dependent)  |
+| =mod.rs=         |  288 | =UnifiedJit= / =unified_jit()= / =lower_entries()= scaffold (= Stage b.4 後 empty)  | Phase 7.1.7.b      |
+| *小計*           | 4722 |                                                                             |                    |
+
+*per-cluster migration order* (= 各 sub-stage):
+
+*** 3.6.a Phase 7.1.6.a — =cons= takeover (= cons.rs ~-415 Rust LOC)
+
+- nelisp-cc-x86_64.el / -arm64.el に =ssa-call-primitive 'car= / =ssa-call-primitive 'cdr= / =ssa-call-primitive 'cons= を host machine code として emit (inline NIL fast path = =cmp byte ptr [rax], TAG_NIL / je nil_path= 相当を elisp で =unibyte-string= 経由で書込む).  helper 経由は最初許容 (= =nelisp-cc-runtime= の =--list-to-vector= の bytes wrapper で =nl_jit_cons_*= 同等 Rust trampoline を呼ぶ shim を残す → 後で inline 昇格)
+- =build-tool/src/jit/cons.rs= 削除、=jit/mod.rs::unified_jit()= の =cons::register_symbols= / =cons::declare_funcs= / =cons::collect_funcs= 配線 + =UnifiedJit::cons= field 削除
+- gate: existing nelisp-cc-test.el (T11 simulator) 全 PASS、3-軸 bench (=fib 30x= / =fact-iter 20x= / =alloc-heavy 5x=) で cons-heavy work load が Cranelift baseline と semantic equivalent + perf ≧ baseline
+- *Rust LOC delta target*: *-415* (cons.rs 全削除) + 微小調整 (mod.rs UnifiedJit field 1 行 / 配線 4 行) ≈ *net -425 Rust*
+
+*** 3.6.b Phase 7.1.6.b — =access= takeover (= access.rs ~-628 Rust LOC)
+
+- =length= / =aref= / =aset= / =elt= の host machine code emit を nelisp-cc に追加.  =length= の inline NIL → =Int(0)= fast path (= =store i8 SEXP_TAG_INT to [out+0] / store i64 0 to [out+8] / return OK= の x86_64/arm64 直 emit)、=aref= は wrong-type の helper ERR fallback を保持 (= =Doc 80 Stage 80.4= で =bi_aref_impl= elisp 化済が前提)
+- =build-tool/src/jit/access.rs= 削除、配線削除
+- gate: vector-heavy work load (= bench に新規 vector-stress 軸を追加 or 既存 =alloc-heavy= に inclusive) で Cranelift baseline と semantic equivalent + perf ≧ baseline
+- *Rust LOC delta target*: *-628* (access.rs) + 配線 ~10 行 ≈ *net -638 Rust*
+- *依存*: Doc 80 Stage 80.4 (= =aref_helper= / =bi_aref_impl= / =bi_aset_impl= / =bi_elt_impl= elisp 化) 完了
+
+*** 3.6.c Phase 7.1.6.c — =arith= takeover (= arith.rs ~-344 Rust LOC)
+
+- 12 binary int primitive (=−add2 / -sub2 / -mul2 / -num-{eq,lt,gt,le,ge}2 / -logior2 / -logand2 / -logxor2 / ash=) を nelisp-cc backend で直 emit.  Cranelift =iadd / isub / imul / icmp / bor / band / bxor / brif= の 1-対-1 対応で x86_64 (=add / sub / imul / cmp / or / and / xor / jcc=) / arm64 (=add / sub / mul / cmp / orr / and / eor / b.cond=) emit.
+- Float fall-through (= Doc 62 §0 audit で identify された non-Int operand path) は dispatcher 経路維持 → Doc 80 Stage 5.7 (= ArithIR Float lower) で elisp 化、または 7.1.6.c 内 sub-task として扱う (= TBD、user signoff 待ち)
+- =build-tool/src/jit/arith.rs= 削除、配線削除
+- gate: =fib(30) ≧ 30x= / =fact-iter ≧ 20x= の 2 軸 bench で Cranelift baseline と semantic equivalent + perf ≧ baseline (= fib / fact-iter は arith hot path)
+- *Rust LOC delta target*: *-344* (arith.rs) + 配線 ~10 行 ≈ *net -354 Rust*
+
+*** 3.6.d Phase 7.1.6.d — =predicate= takeover (= predicate.rs ~-331 Rust LOC)
+
+- =eq= の 4-block control flow (= entry / diff / match / int_eq / slow) を x86_64 / arm64 で直 emit.  =movzx tag= 相当の inline tag-byte test + helper (=sexp_eq=) wrap を nelisp-cc 側に移植.  helper 自体は Doc 80 Stage 80.x で elisp 化 (= 既に Rust-min batch 6u 2026-05-06 で =consp / listp / null / integerp= 等 elisp 化済、=eq= も同 path)
+- =build-tool/src/jit/predicate.rs= 削除、配線削除
+- gate: predicate-heavy (= type test loop) bench で Cranelift baseline と semantic equivalent + perf ≧ baseline
+- *Rust LOC delta target*: *-331* (predicate.rs) + 配線 ~10 行 ≈ *net -341 Rust*
+
+*** 3.6.e Phase 7.1.6.e — =syscall= takeover (= syscall.rs ~-276 Rust LOC)
+
+- =nelisp--syscall NR ARGS...= の generic libc trampoline JIT lower を nelisp-cc に移管.  Linux x86_64 syscall ABI (= =syscall= instruction with args in =rdi/rsi/rdx/r10/r8/r9=) / arm64 (=svc #0= with args in =x0..x5=) を直 emit.  errno normalize は Doc 80 Stage 80.5 で elisp 化済 (= =nl-syscall-normalize-errno= primitive 経由)
+- =nelisp--syscall-supported-p= (0-arg const predicate) は単純な =movabs / ret= で trivially emit
+- 25 specialized primitive (= sockaddr / pollfd / signalfd / etc. buffer handling) は Rust dispatcher 維持 (= Doc 62 §2.2.1 で out of scope と articulate 済).  ただし Doc 80 Stage 5.8 (= Path B non-Linux syscall instruction emit) で elisp 化が並行進行
+- =build-tool/src/jit/syscall.rs= 削除、配線削除
+- gate: syscall-heavy work load (= file I/O loop) で Cranelift baseline と semantic equivalent + perf ≧ baseline
+- *Rust LOC delta target*: *-276* (syscall.rs) + 配線 ~10 行 ≈ *net -286 Rust*
+
+*** 3.6.f Phase 7.1.6.f — =dsl= + =bridge= cleanup (= ~-2,015 Rust LOC)
+
+7.1.6.a〜.e 完了後、=jit/dsl.rs= (Doc 77b Stage b.1 IR DSL interpreter) と =jit/bridge.rs= (Stage b.2 =nl-jit-call-*= bridge primitives) は呼出元なし.
+
+- =build-tool/src/jit/dsl.rs= 削除 (= 1190 LOC).  elisp の =(jit-rule ...)= form は nelisp-cc-x86_64.el / -arm64.el の SSA opcode 経路に直 lower
+- =build-tool/src/jit/bridge.rs= 削除 (= 825 LOC).  =nl-jit-call-i64-i64= / =nl-jit-call-sexp-sexp= / etc. の bridge primitive は呼出側 (=lisp/nelisp-jit-strategy.el=) も併せて nelisp-cc 直 emit に移行
+- =lisp/nelisp-jit-strategy.el= の wrapper 24 件は nelisp-cc が emit する exec-page を直接呼び出す path に rewire (= 詳細は Phase 7.1.6.f sub-design、TBD)
+- gate: existing 1086/1091 ERT 全 PASS 維持、3-軸 bench 全部維持
+- *Rust LOC delta target*: *-2,015* (dsl.rs + bridge.rs) ≈ *net -2,015 Rust*
+
+** 3.7 Phase 7.1.7 — =build-tool/src/jit/= deletion + Cranelift Cargo dep removal
+
+7.1.6 完了後の最終 cleanup.  =jit/= directory 全削除 + =Cargo.toml= の Cranelift 3 crate dependency 削除.
+
+*** 3.7.a Phase 7.1.7.a — =strategy.rs= ERR fall-through deletion (= Doc 80 substrate dependent)
+
+- =build-tool/src/jit/strategy.rs= の 425 LOC は Float arithmetic / non-Linux syscall / MutStr / BoolVector の variant fall-through helper.  Doc 80 Stage 80.1〜80.5 (= pre-stdlib elisp substrate = =cond= / =signal= / =bi_length_impl= / =aref_helper= / =bi_aref_impl= / =bi_aset_impl= / =bi_elt_impl= の elisp 化) が前提
+- *依存*: Doc 80 Stage 80.5 (= final cleanup + =nelisp-jit-strategy.el= note 修正) SHIPPED
+- 削除内容: =strategy.rs= 全削除、=lower_X_*= helper の elisp 側等価実装で代替
+- gate: existing 1086/1091 ERT 全 PASS 維持
+- *Rust LOC delta target*: *-425* (strategy.rs) ≈ *net -425 Rust*
+
+*** 3.7.b Phase 7.1.7.b — 残 =jit/= directory 削除 (= mod.rs + 残骸)
+
+7.1.6.a〜.f + 7.1.7.a 完了後、=jit/mod.rs= の =UnifiedJit= struct + =unified_jit()= initializer + =lower_entries()= / =try_lower()= no-op stub は呼出元なし.
+
+- =build-tool/src/jit/mod.rs= 削除 (= 288 LOC).  =eval/mod.rs::apply_builtin= の =try_lower()= 呼出 hook も削除 (= ~5-10 LOC)
+- =build-tool/src/jit/= directory 自体を =rmdir= 化
+- =build-tool/src/lib.rs= の =pub mod jit;= 宣言削除
+- gate: =cargo build= 通過、existing 1086/1091 ERT 全 PASS 維持
+- *Rust LOC delta target*: *-288* (mod.rs) + apply_builtin hook 削除 ~10 行 ≈ *net -298 Rust*
+
+*** 3.7.c Phase 7.1.7.c — Cranelift Cargo dep removal (= =cranelift= / =cranelift-jit= / =cranelift-module=)
+
+7.1.7.b 完了後、=build-tool/Cargo.toml= の Cranelift 3 crate dependency 行 (= =cranelift = "0.110"= / =cranelift-jit = "0.110"= / =cranelift-module = "0.110"=) は呼出元なし.
+
+- =build-tool/Cargo.toml= の Cranelift 3 行削除 (+ "Phase 5 Stage 5.0" comment block 削除)
+- =Cargo.lock= の cranelift transitive dependency (= =cranelift-codegen= / =cranelift-frontend= / =cranelift-native= / =cranelift-bforest= / =regalloc2= / etc.) も自動的に削除される
+- gate: =cargo build= 通過、=cargo build --release= で binary size 大幅縮小 (= cranelift-codegen の x86_64/arm64 ISA encoder 削除 + regalloc2 + LLVM IR emit infra 削除 → 概算 ~30-50 MB compressed binary 削減)
+- *Rust LOC delta target*: *0 LOC* (Cargo.toml 3 行 + comment、純 LOC は ±0 だが transitive 削除 = build graph 大幅縮小)
+
+*** 3.7.d Phase 7.1.7.d — =bin/nelisp.rs= adjustments
+
+7.1.7.b で =eval/mod.rs::apply_builtin= の =jit::try_lower()= hook を削除済.  =bin/nelisp.rs= (= 274 LOC) で Cranelift / jit module 直接参照箇所はないと audit 済 (=grep -nE "cranelift|jit::" bin/nelisp.rs= で hit 0).
+
+- =bin/nelisp.rs= は変更不要 (= 0 行) または微小調整 (= startup banner / version info の comment update のみ、~0-50 LOC)
+- gate: =./nelisp-runtime= 起動 + ERT 全 PASS
+- *Rust LOC delta target*: *0〜-50 LOC* (cleanup のみ)
+
+** 3.8 Aggregate LOC delta + 工数見積
+
+*Phase 7.1.6 + 7.1.7 aggregate Rust LOC delete*:
+
+| sub-stage   | 内容                                | Rust LOC delta |
+|-------------+-------------------------------------+----------------|
+| 7.1.6.a     | =cons.rs= 削除 + 配線               | -425           |
+| 7.1.6.b     | =access.rs= 削除 + 配線             | -638           |
+| 7.1.6.c     | =arith.rs= 削除 + 配線              | -354           |
+| 7.1.6.d     | =predicate.rs= 削除 + 配線          | -341           |
+| 7.1.6.e     | =syscall.rs= 削除 + 配線            | -286           |
+| 7.1.6.f     | =dsl.rs= + =bridge.rs= 削除         | -2,015         |
+| 7.1.7.a     | =strategy.rs= 削除 (Doc 80 dep)     | -425           |
+| 7.1.7.b     | =jit/mod.rs= + apply_builtin hook    | -298           |
+| 7.1.7.c     | Cargo Cranelift dep 削除 (transitive)| 0 (Rust LOC) / 大幅 build graph 縮小 |
+| 7.1.7.d     | =bin/nelisp.rs= adjustments          | 0〜-50         |
+| *合計*       |                                      | *≈ -4,782 Rust LOC* |
+
+*concrete count* (= =wc -l= 実測 + 配線 overhead):
+- =build-tool/src/jit/= 9 file = =4,722 LOC=
+- 配線 overhead (mod.rs UnifiedJit field / register_symbols / declare_funcs / collect_funcs 配線、apply_builtin hook、lib.rs pub mod 宣言) = ~50-60 LOC
+- =bin/nelisp.rs= adjustments = 0〜-50 LOC
+- *aggregate target*: *-4,722 〜 -4,832 Rust LOC*、中央値 *≈ -4,782 Rust LOC*
+- 元 task brief の =-4,584 Rust LOC= は配線込み conservative 見積 (= 7.1.6.f の dsl.rs / bridge.rs = 2,015 LOC を一部 anvil-runtime 移植で温存する case を含む).  full deletion path の理論上限は =-4,832 LOC=
+
+monotonic shrink rule 検証 (= 各 sub-stage 単独で net Rust ≤ 0):
+- 7.1.6.a〜.e: 各 stage 単独で =-286〜-638= = 全部 net 削減 ✓
+- 7.1.6.f: 単独で =-2,015= = 大幅削減 ✓ (= dsl/bridge は内部使い回しの重複 helper、削除で表面 dispatch path 短縮)
+- 7.1.7.a〜.d: 各 stage 単独で =-0〜-425= = 全部 net 削減 ✓ (7.1.7.c は Cargo dep のみ純 Rust LOC ±0、transitive build graph 削減で実 binary size 縮小)
+- *全 sub-stage が net Rust ≤ 0、user 2026-05-09 monotonic shrink rule 順守* ✓
+
+*工数見積* (= 4-8 週間 focused work、Doc 77c §3.4 D-B 着地):
+- Phase 7.1.6.a〜.f: 3-5 週間 (= 6 sub-stage × 平均 4-7 日)
+- Phase 7.1.7.a〜.d: 1-3 週間 (= 4 sub-stage × 平均 2-5 日、7.1.7.a の Doc 80 Stage 80.5 dependency が critical path)
+- 合計 *4-8 週間*.  Track M audit 2026-05-09 で nelisp-cc 12,263 LOC SHIPPED 済前提で、Cranelift dispatch arm の elisp emit への 1 対 1 対応は機械的 work が大半.  bench gate 各 sub-stage 必達のため perf regression triage に bottleneck 集中
+
+** 3.9 Dependency graph (= Doc 80 substrate / Doc 62 Cranelift / Doc 28 nelisp-cc の関係)
+
+#+begin_example
+                   ┌─────────────────────────────────────┐
+                   │ Doc 28 §3.1〜§3.5 Phase 7.1.1〜7.1.5 │
+                   │ (= nelisp-cc 12,263 LOC SHIPPED)     │
+                   │ • SSA + linear-scan + W^X + bench    │
+                   └─────────────────────────────────────┘
+                                      │
+                                      │ 前提
+                                      ▼
+   ┌────────────────────┐    ┌─────────────────────────────────────┐
+   │ Doc 80 substrate   │    │ Doc 62 §3 Stage 5.0〜5.5             │
+   │ Stage 80.1〜80.5   │    │ (= jit/{arith,cons,access,           │
+   │ • =cond= / =signal=│    │    predicate,syscall}.rs SHIPPED)    │
+   │ • =bi_length_impl= │    │ • Doc 77b Stage b.1〜b.4 で          │
+   │ • =aref_helper=    │    │   =lower_entries= 空化、               │
+   │ • =bi_aref_impl=   │    │   =nl-jit-call-*= bridge primitives    │
+   │ • =bi_aset_impl=   │    │   経由 elisp wrapper 化              │
+   │ • =bi_elt_impl=    │    └─────────────────────────────────────┘
+   │   elisp 化         │                       │
+   └────────────────────┘                       │
+              │                                 │
+              │ 7.1.7.a 前提                    │ 7.1.6.a〜.f で
+              │                                 │ Cranelift IR + JIT
+              │                                 │ 経路を nelisp-cc 直 emit に移管
+              ▼                                 ▼
+   ┌─────────────────────────────────────────────────────────┐
+   │ Doc 28 §3.6 Phase 7.1.6 (= eval-site primitive lowering takeover) │
+   │ • 7.1.6.a cons takeover (-425 Rust)                      │
+   │ • 7.1.6.b access takeover (-638 Rust、Doc 80 Stage 80.4 dep) │
+   │ • 7.1.6.c arith takeover (-354 Rust)                     │
+   │ • 7.1.6.d predicate takeover (-341 Rust)                 │
+   │ • 7.1.6.e syscall takeover (-286 Rust)                   │
+   │ • 7.1.6.f dsl + bridge cleanup (-2,015 Rust)             │
+   └─────────────────────────────────────────────────────────┘
+                       │
+                       │ 7.1.6 完了後
+                       ▼
+   ┌─────────────────────────────────────────────────────────┐
+   │ Doc 28 §3.7 Phase 7.1.7 (= build-tool/src/jit/ deletion) │
+   │ • 7.1.7.a strategy.rs (-425 Rust、Doc 80 Stage 80.5 dep) │
+   │ • 7.1.7.b mod.rs + apply_builtin hook (-298 Rust)        │
+   │ • 7.1.7.c Cargo Cranelift dep removal (0 LOC、transitive 大幅縮小) │
+   │ • 7.1.7.d bin/nelisp.rs adjustments (0〜-50 Rust)        │
+   └─────────────────────────────────────────────────────────┘
+                       │
+                       │ 7.1.7 完了 = Cranelift Rust crate dependency 完全消失
+                       ▼
+   ┌─────────────────────────────────────────────────────────┐
+   │ Doc 77c §2.4.2 Path D-B 着地 (= 100% 純 elisp commitment) │
+   │ • Rust core ~810 LOC (Doc 77c §3.4)                       │
+   │ • aggregate Rust delta from Phase 7.1.6 + 7.1.7 ≈ -4,782 LOC │
+   │ • build-graph cranelift transitive 全消失                  │
+   └─────────────────────────────────────────────────────────┘
+#+end_example
+
+*依存 critical path*:
+1. Phase 7.1.5 完了 (= 4-stage bootstrap protocol で A3 authoritative 化、3-軸 bench gate 通過) — 必達
+2. Doc 80 Stage 80.4 完了 — 7.1.6.b access takeover の前提
+3. Doc 80 Stage 80.5 完了 — 7.1.7.a strategy.rs 削除の前提
+4. Doc 62 Stage 5.0〜5.5 SHIPPED 維持 — 7.1.6 各 sub-stage の semantic equivalence 比較 baseline (= Cranelift native の golden hash)
+
+*並行可能性*:
+- 7.1.6.a (cons) / 7.1.6.c (arith) / 7.1.6.d (predicate) / 7.1.6.e (syscall) は相互独立 → 4 並行 worker で同時着手可能 (= anvil-orchestrator codex 4 並列、Doc 28 §6.6 anvil leverage week 4/8 replan gate と整合)
+- 7.1.6.b (access) は Doc 80 Stage 80.4 dep でやや後ろ倒し
+- 7.1.6.f (dsl / bridge cleanup) は 7.1.6.a〜.e 完了後の sequential cleanup
+- 7.1.7.a〜.d は 7.1.6 全 sub-stage 完了後の sequential cleanup
 
 * §4 Architecture (5-stage pipeline)
 
