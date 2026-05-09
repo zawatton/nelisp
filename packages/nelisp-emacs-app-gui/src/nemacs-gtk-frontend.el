@@ -6864,7 +6864,7 @@ is closed."
       (when dirty
         (nemacs-gtk--repaint))
       (when (<= iter-count 3)
-        (message "[loop] iter %d: end" iter-count))))
+        (message "[loop] iter %d: end" iter-count)))))
   'done)
 
 (provide 'nemacs-gtk-frontend)
