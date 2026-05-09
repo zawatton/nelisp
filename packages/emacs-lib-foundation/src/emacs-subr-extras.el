@@ -155,5 +155,59 @@ not supported in this minimal port)."))
   (defalias 'when-let 'when-let*
     "Compatibility alias for `when-let*'."))
 
+;; ---- interactive-context primitives ----
+;;
+;; Standalone NeLisp has no Emacs UI, so `called-interactively-p'
+;; always returns nil — every call is a programmatic call.  This
+;; matches the safe behaviour for batch-mode Emacs.
+
+(unless (fboundp 'called-interactively-p)
+  (defun called-interactively-p (&optional _kind)
+    "Return non-nil when the calling fn is invoked interactively.
+Standalone NeLisp has no interactive frontend; always nil."
+    nil))
+
+(unless (fboundp 'apply-partially)
+  (defun apply-partially (fun &rest args)
+    "Return a function that calls FUN with leading ARGS plus its callers' args."
+    (lambda (&rest more) (apply fun (append args more)))))
+
+(unless (fboundp 'ignore-errors)
+  (defmacro ignore-errors (&rest body)
+    "Eval BODY, returning nil if any error is signalled."
+    (declare (indent 0))
+    `(condition-case nil (progn ,@body) (error nil))))
+
+(unless (fboundp 'ignore)
+  (defun ignore (&rest _ignored)
+    "Do nothing and return nil — for use as a callback that disregards args."
+    nil))
+
+;; ---- Compiler-macro helper for `cXXr' family ----
+;;
+;; Vendor `cl-macs.el' references `internal--compiler-macro-cXXr'
+;; (= subr.el line 598) as a compiler-macro for the entire car/cdr
+;; composition family.  Without it `(load cl-macs.el)' silently
+;; truncates partway through — `cl-letf' / `cl-defstruct' register
+;; but `cl-callf' / `cl-callf2' (= line 2886+) never get defined,
+;; which then breaks `cl-incf' expansion at runtime.  Port verbatim
+;; from subr.el so the cXXr forms collapse to nested car/cdr at
+;; compile time.
+
+(unless (fboundp 'internal--compiler-macro-cXXr)
+  (defun internal--compiler-macro-cXXr (form x)
+    (let* ((head (car form))
+           (n (symbol-name head))
+           (i (- (length n) 2)))
+      (if (not (string-match "c[ad]+r\\'" n))
+          (if (and (fboundp head) (symbolp (symbol-function head)))
+              (internal--compiler-macro-cXXr
+               (cons (symbol-function head) (cdr form)) x)
+            (error "Compiler macro for cXXr applied to non-cXXr form"))
+        (while (> i (match-beginning 0))
+          (setq x (list (if (eq (aref n i) ?a) 'car 'cdr) x))
+          (setq i (1- i)))
+        x))))
+
 (provide 'emacs-subr-extras)
 ;;; emacs-subr-extras.el ends here
