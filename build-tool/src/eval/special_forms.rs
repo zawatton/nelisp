@@ -546,7 +546,9 @@ pub fn sexp_eq(a: &Sexp, b: &Sexp) -> bool {
         (Sexp::MutStr(a), Sexp::MutStr(b)) => crate::eval::nlstr::NlStrRef::ptr_eq(a, b),
         (Sexp::Vector(a), Sexp::Vector(b)) => crate::eval::nlvector::NlVectorRef::ptr_eq(a, b),
         (Sexp::CharTable(a), Sexp::CharTable(b)) => Rc::ptr_eq(a, b),
-        (Sexp::BoolVector(a), Sexp::BoolVector(b)) => Rc::ptr_eq(a, b),
+        (Sexp::BoolVector(a), Sexp::BoolVector(b)) => {
+            crate::eval::nlboolvector::NlBoolVectorRef::ptr_eq(a, b)
+        }
         // Records (Doc 50 stage 4): identity through the slots Rc.
         // Two records are `eq' iff they share the same slots cell —
         // hash-tables and cl-defstruct values rely on this for

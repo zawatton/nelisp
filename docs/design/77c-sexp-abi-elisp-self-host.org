@@ -2,13 +2,13 @@
 
 * Status
 :PROPERTIES:
-:STATE: ACTIVE — Phase A.1 / A.2 / A.3 / A.4.1 (Cell) / A.4.2 (MutStr) / A.4.3 (Vector) SHIPPED、Phase A.4.4-A.4.6 (3 残 variant: BoolVector / Record / CharTable) / A.5 (JIT trampoline rewrite) / A.6 (regression gate) 残
+:STATE: ACTIVE — Phase A.1 / A.2 / A.3 / A.4.1 (Cell) / A.4.2 (MutStr) / A.4.3 (Vector) / A.4.4 (BoolVector) SHIPPED、Phase A.4.5-A.4.6 (2 残 variant: Record / CharTable) / A.5 (JIT trampoline rewrite) / A.6 (regression gate) 残
 :DRAFTED: 2026-05-09
 :PARENT: Doc 77 (= 元 Stage 4 articulation)
 :RELATED: Doc 77b (= Rust-min JIT 路線)、Doc 75 (= NELIMG image decode、PAUSED 別 issue)、Doc 63 (= Phase 7 self-host roadmap、70% SHIPPED)
 :UPDATES: Doc 77 §2.3.3 Stage 4 status (= deferred → IN_PROGRESS)、Doc 77b §6 (= "Sexp ABI pin deferred" 削除)
 :DECISION_DATE: 2026-05-09 (user 指示: "Doc 77 の Stage4 を unpause")
-:LATEST: 2026-05-09 — Phase A.1 (NlRc<T>) / A.2.0 (NlConsBox) / A.2.1 (Sexp::Cons migrate) / A.3 (8 nl-cons-*/nl-rc-* primitives) / A.4.1 (Sexp::Cell → NlCellRef) / A.4.2 (Sexp::MutStr → NlStrRef) / A.4.3 (Sexp::Vector → NlVectorRef) SHIPPED
+:LATEST: 2026-05-09 — Phase A.1 (NlRc<T>) / A.2.0 (NlConsBox) / A.2.1 (Sexp::Cons migrate) / A.3 (8 nl-cons-*/nl-rc-* primitives) / A.4.1 (Sexp::Cell → NlCellRef) / A.4.2 (Sexp::MutStr → NlStrRef) / A.4.3 (Sexp::Vector → NlVectorRef) / A.4.4 (Sexp::BoolVector → NlBoolVectorRef) SHIPPED
 :END:
 
 * §0 TL;DR
@@ -360,9 +360,9 @@ audit 結果 (2026-05-09): A.2.1 (= Sexp::Cons) 着地後に残った =Rc<RefCel
 | variant      | callsite | 内部       | 複雑度 | sub-stage |
 |--------------|---------:|------------|--------|-----------|
 | Cell         |       14 | Sexp 1     | ★      | A.4.1 ✅  |
-| MutStr       |       23 | String     | ★      | A.4.2     |
-| Vector       |       26 | Vec<Sexp>  | ★★     | A.4.3     |
-| BoolVector   |       26 | Vec<bool>  | ★★     | A.4.4     |
+| MutStr       |       23 | String     | ★      | A.4.2 ✅  |
+| Vector       |       26 | Vec<Sexp>  | ★★     | A.4.3 ✅  |
+| BoolVector   |       26 | Vec<bool>  | ★★     | A.4.4 ✅  |
 | Record       |       21 | Vec<Sexp>+ | ★★     | A.4.5     |
 | CharTable    |       21 | self-ref   | ★★★    | A.4.6     |
 
@@ -409,11 +409,27 @@ audit 結果 (2026-05-09): A.2.1 (= Sexp::Cons) 着地後に残った =Rc<RefCel
 - ERT 19/19 PASS (= 2 layout + 5 lifecycle + 2 ptr_eq + 5 set/with_value_mut + 1 debug-fmt + 2 partial_eq + payload-drop + intermediate-drop + empty-vec)
 - 全体 regression: =cargo test --release --lib --test-threads=1=: 595/595 PASS, 0 fail (= base 576 + 新規 19、回帰 0)
 
-*** §4.5.4 Phase A.4.4-A.4.6 残 3 variant (= 後続 commit)
+*** §4.5.4 Phase A.4.4 — Sexp::BoolVector → NlBoolVectorRef migrate — ✅ SHIPPED (2026-05-09)
 
-各 sub-stage は A.4.1 / A.4.2 / A.4.3 同 pattern. 推定:
+`Sexp::BoolVector(Rc<RefCell<Vec<bool>>>)` → `Sexp::BoolVector(NlBoolVectorRef)` migration. NlVector を template として最短 path で完了.
 
-- A.4.4 BoolVector: NlBoolVectorRef、~26 callsite、1-2 commit (= NlVector の Vec<bool> 版、最も近い template)
+実装:
+- =build-tool/src/eval/nlboolvector.rs= (NEW、~310 LOC): NlBoolVector struct (= value @ offset 0、refcount @ trailer) + NlBoolVectorRef handle. NlVectorRef と Vec<bool> 以外は完全同型 (= 19 unit tests も同 pattern)
+- =build-tool/src/eval/sexp.rs=: variant decl + bool_vector constructor + printer + variant_tag test の 4 callsite migrate
+- =build-tool/src/eval/builtins.rs=: 3 callsite (sxhash_into / sexp_eq Vector ptr_eq / sexp_equal_safe ptr_eq fast path)
+- =build-tool/src/eval/special_forms.rs=: 1 callsite (sexp-eq Vector arm)
+- =build-tool/src/jit/access.rs=: 4 callsite (aref/aset trampoline + 1 test)。aset は bounds check を =rc.value.len()= 先 → =with_value_mut= で in-place mutation
+- =build-tool/src/jit/strategy.rs=: 2 callsite (length / aref-helper)
+- =build-tool/src/image.rs=: 2 callsite (encode / decode) + 2 test 修正
+
+Verification:
+- =cargo build --release --lib=: clean (5 既存 warning のみ)
+- =cargo test --release --lib -- --test-threads=1=: 614 passed (= +19 from new NlBoolVector unit tests); 0 failed; 0 ignored
+
+*** §4.5.5 Phase A.4.5-A.4.6 残 2 variant (= 後続 commit)
+
+各 sub-stage は A.4.1 / A.4.2 / A.4.3 / A.4.4 同 pattern. 推定:
+
 - A.4.5 Record: NlRecordRef (= type_tag + slots)、~21 callsite、1-2 commit (= 2-field struct なので NlConsBox に近いが両 field とも user-visible 故 layout 注意)
 - A.4.6 CharTable: NlCharTableRef (= self-ref parent field 含む、最複雑)、~21 callsite、2-3 commit
 

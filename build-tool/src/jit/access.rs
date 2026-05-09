@@ -103,8 +103,7 @@ unsafe extern "C" fn nl_jit_access_aref(arg: *const Sexp, idx: i64, out: *mut Se
             }
         }
         Sexp::BoolVector(v) => {
-            let borrowed = v.borrow();
-            if let Some(b) = borrowed.get(idx as usize) {
+            if let Some(b) = v.value.get(idx as usize) {
                 *out = if *b { Sexp::T } else { Sexp::Nil };
                 TRAMPOLINE_OK
             } else {
@@ -153,11 +152,18 @@ unsafe extern "C" fn nl_jit_access_aset(
             TRAMPOLINE_OK
         }
         Sexp::BoolVector(v) => {
-            let mut borrowed = v.borrow_mut();
-            if (idx as usize) >= borrowed.len() {
+            if (idx as usize) >= v.value.len() {
                 return TRAMPOLINE_ERR;
             }
-            borrowed[idx as usize] = crate::eval::special_forms::is_truthy(&*val);
+            let bit = crate::eval::special_forms::is_truthy(&*val);
+            // SAFETY: Phase A.4.4 — same discipline as the Vector arm
+            // above; bounds check above does not borrow `v.value`,
+            // and the closure mutates exactly the indexed slot.
+            unsafe {
+                v.with_value_mut(|vec| {
+                    vec[idx as usize] = bit;
+                });
+            }
             *out = (*val).clone();
             TRAMPOLINE_OK
         }
@@ -453,7 +459,10 @@ mod tests {
         // bv = [false, true, false] → aref(bv, 0) = Nil, aref(bv, 1) = T.
         let bv = Sexp::bool_vector(3, false);
         if let Sexp::BoolVector(rc) = &bv {
-            rc.borrow_mut()[1] = true;
+            // SAFETY: no other borrow live in this test setup.
+            unsafe {
+                rc.with_value_mut(|v| v[1] = true);
+            }
         } else {
             panic!("bool_vector did not produce BoolVector");
         }

@@ -185,7 +185,7 @@ fn encode_value(out: &mut Vec<u8>, value: &Sexp) -> Result<(), ImageError> {
         }
         Sexp::BoolVector(rc) => {
             out.push(TAG_BOOL_VECTOR);
-            let bits = rc.borrow();
+            let bits = &rc.value;
             write_len(out, bits.len())?;
             // One byte per element (= 0 / 1).  Simpler than bit-packing
             // and the image format is not space-critical.
@@ -246,7 +246,7 @@ fn decode_value(rd: &mut Reader<'_>) -> Result<Sexp, ImageError> {
                 let byte = rd.read_u8("bool-vector bit")?;
                 bits.push(byte != 0);
             }
-            Ok(Sexp::BoolVector(Rc::new(RefCell::new(bits))))
+            Ok(Sexp::BoolVector(crate::eval::nlboolvector::NlBoolVectorRef::new(bits)))
         }
         other => Err(ImageError::UnknownTag(other)),
     }
@@ -446,14 +446,15 @@ mod tests {
         let bits = vec![true, false, true, true, false];
         let bv = Sexp::bool_vector(bits.len(), false);
         if let Sexp::BoolVector(rc) = &bv {
-            *rc.borrow_mut() = bits.clone();
+            // SAFETY: no other borrow live in this test setup.
+            unsafe { rc.set_value(bits.clone()) };
         }
         let image = encode_image(&[bv.clone()]).unwrap();
         let loaded = decode_image(&image).unwrap();
         assert_eq!(loaded.len(), 1);
         match &loaded[0] {
             Sexp::BoolVector(rc) => {
-                assert_eq!(*rc.borrow(), bits);
+                assert_eq!(rc.value, bits);
             }
             other => panic!("expected BoolVector, got {:?}", other),
         }
@@ -465,7 +466,7 @@ mod tests {
         let image = encode_image(&[bv]).unwrap();
         let loaded = decode_image(&image).unwrap();
         match &loaded[0] {
-            Sexp::BoolVector(rc) => assert!(rc.borrow().is_empty()),
+            Sexp::BoolVector(rc) => assert!(rc.value.is_empty()),
             other => panic!("expected BoolVector, got {:?}", other),
         }
     }
