@@ -431,6 +431,24 @@ pub fn install_builtins(env: &mut Env) {
         "nelisp--str-codepoint-at", "nelisp--mut-str-set-codepoint",
         "nelisp--char-table-aref", "nelisp--char-table-aset",
         "nelisp--syscall-nr-resolve",
+        // Doc 77c Phase A.3 (2026-05-09) — Layer 2 cons-cell
+        // primitives.  Not previously registered here because Phase
+        // A.3 only exercised them via Rust-side cargo tests; Doc 79
+        // Stage 5.3.a wires elisp consumers (= `nelisp-stdlib-gc.el')
+        // so the names must resolve.  See `cons_primitives' for
+        // bodies.
+        "nl-cons-alloc", "nl-cons-car", "nl-cons-cdr",
+        "nl-cons-set-car", "nl-cons-set-cdr",
+        "nl-rc-inc", "nl-rc-dec", "nl-rc-count",
+        // Doc 79 v7 Phase C Stage 5.3.a (2026-05-09) — generic NlRc
+        // primitive set + initial GC helper trio backing the
+        // Bacon-Rajan cycle collector skeleton.  See
+        // `rc_primitives' for bodies and `nelisp-stdlib-gc.el' for
+        // the elisp consumer.
+        "nl-rc-alloc", "nl-rc-dealloc",
+        "nl-rc-inc-strong", "nl-rc-dec-strong", "nl-rc-strong-count",
+        "nl-rc-kind", "nl-rc-payload-ptr",
+        "nl-gc-walk-children", "nl-gc-buffered-decs", "nl-gc-finalize",
     ];
     for n in names {
         let sentinel = Sexp::list_from(&[
@@ -770,6 +788,21 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-rc-inc" => crate::eval::cons_primitives::bi_nl_rc_inc(args),
         "nl-rc-dec" => crate::eval::cons_primitives::bi_nl_rc_dec(args),
         "nl-rc-count" => crate::eval::cons_primitives::bi_nl_rc_count(args),
+        // Doc 79 v7 Phase C Stage 5.3.a (2026-05-09) — generic NlRc
+        // primitive set + initial GC helper trio.  10 dispatch arms
+        // backing `lisp/nelisp-stdlib-gc.el' Bacon-Rajan cycle
+        // collector skeleton.  See `crate::eval::rc_primitives' for
+        // the surface table + MVP scope (= CONS kind only).
+        "nl-rc-alloc" => crate::eval::rc_primitives::bi_nl_rc_alloc(args),
+        "nl-rc-dealloc" => crate::eval::rc_primitives::bi_nl_rc_dealloc(args),
+        "nl-rc-inc-strong" => crate::eval::rc_primitives::bi_nl_rc_inc_strong(args),
+        "nl-rc-dec-strong" => crate::eval::rc_primitives::bi_nl_rc_dec_strong(args),
+        "nl-rc-strong-count" => crate::eval::rc_primitives::bi_nl_rc_strong_count(args),
+        "nl-rc-kind" => crate::eval::rc_primitives::bi_nl_rc_kind(args),
+        "nl-rc-payload-ptr" => crate::eval::rc_primitives::bi_nl_rc_payload_ptr(args),
+        "nl-gc-walk-children" => crate::eval::rc_primitives::bi_nl_gc_walk_children(args),
+        "nl-gc-buffered-decs" => crate::eval::rc_primitives::bi_nl_gc_buffered_decs(args),
+        "nl-gc-finalize" => crate::eval::rc_primitives::bi_nl_gc_finalize(args),
         _ => {
             // Externally-registered builtin (= `Env::register_extern_builtin')
             // — host crates like nelisp-emacs-gtk install GTK4 / SDL2 /

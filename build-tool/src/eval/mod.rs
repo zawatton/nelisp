@@ -45,6 +45,7 @@ pub mod nlrecord;
 pub mod nlstr;
 pub mod nlvector;
 pub mod quit;
+pub mod rc_primitives;
 pub mod sexp;
 pub mod special_forms;
 

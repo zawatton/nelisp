@@ -59,6 +59,14 @@ const STDLIB_FILES: &[&str] = &[
     "nelisp-pcase.el",
     "nelisp-cl-macros.el",
     "nelisp-stdlib-hash.el",
+    // Doc 79 v7 Phase C Stage 5.3.a (2026-05-09): Bacon-Rajan
+    // cycle collector skeleton.  Loads RIGHT AFTER stdlib-hash so
+    // its `make-hash-table' is available for `gc-color-table' /
+    // `gc-internal-rc-table' init.  Stage 5.3.b〜.e fill in the
+    // collector body; this entry is the consumer-side anchor for
+    // the 10 `nl-rc-*' / `nl-gc-*' primitives shipped in the same
+    // atomic commit (= Doc 79 §11.7 atomic-with-consumer pattern).
+    "nelisp-stdlib-gc.el",
     "nelisp-stdlib-equal.el",
     "nelisp-stdlib-prn.el",
     "nelisp-stdlib-reader.el",
