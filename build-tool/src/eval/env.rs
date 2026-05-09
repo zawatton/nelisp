@@ -178,6 +178,11 @@ impl Env {
             ("nelisp-pcase.el", include_bytes!("../../../lisp/nelisp-pcase.el.image")),
             ("nelisp-cl-macros.el", include_bytes!("../../../lisp/nelisp-cl-macros.el.image")),
             ("nelisp-stdlib-hash.el", include_bytes!("../../../lisp/nelisp-stdlib-hash.el.image")),
+            // Doc 79 v7 Phase C Stage 5.3.a (2026-05-09): Bacon-Rajan
+            // cycle collector skeleton.  See `nelisp-baker.rs'
+            // `STDLIB_FILES' for the load-order rationale (= depends
+            // on `make-hash-table' from `nelisp-stdlib-hash').
+            ("nelisp-stdlib-gc.el", include_bytes!("../../../lisp/nelisp-stdlib-gc.el.image")),
             ("nelisp-stdlib-equal.el", include_bytes!("../../../lisp/nelisp-stdlib-equal.el.image")),
             ("nelisp-stdlib-prn.el", include_bytes!("../../../lisp/nelisp-stdlib-prn.el.image")),
             ("nelisp-stdlib-reader.el", include_bytes!("../../../lisp/nelisp-stdlib-reader.el.image")),
