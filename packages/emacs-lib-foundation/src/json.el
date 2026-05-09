@@ -130,6 +130,16 @@ responses.  An alist may legitimately have list-valued cdrs."
             (mapconcat (lambda (x) (json-encode x)) items ",")
             "]")))
 
+(defun emacs-json--encode-hash-table (h)
+  "Encode hash-table H as a JSON object.
+Empty hash → `{}'.  Iteration order follows `maphash' (= insertion
+order on standalone NeLisp).  This is the canonical path for the
+empty `(make-hash-table)' values that anvil-server uses to mean
+empty JSON object in initialize / capabilities responses."
+  (let ((pairs nil))
+    (maphash (lambda (k v) (push (cons k v) pairs)) h)
+    (emacs-json--encode-pairs (nreverse pairs))))
+
 (defun json-encode (object)
   "Return a JSON representation of OBJECT as a string."
   (cond
@@ -143,6 +153,7 @@ responses.  An alist may legitimately have list-valued cdrs."
     (emacs-json--encode-string (substring (symbol-name object) 1)))
    ((symbolp object) (emacs-json--encode-string (symbol-name object)))
    ((vectorp object) (emacs-json--encode-array object))
+   ((hash-table-p object) (emacs-json--encode-hash-table object))
    ((emacs-json--alist-p object)
     (emacs-json--encode-pairs object))
    ((emacs-json--plist-p object)

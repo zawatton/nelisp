@@ -152,7 +152,13 @@ already UTF-8, so `length' is byte-count for ASCII bodies and
   ;; never matched `string-empty-p'), so by the time body collection
   ;; ran, stdin was at EOF.  This regex-free port restores correctness.
   (defun anvil-server--batch-read-framed-with-prefix (first-header-line)
-    "Phase B5 Stage 1b override — regex-free framed reader."
+    "Phase B5 Stage 1b override — regex-free framed reader.
+
+Body bytes are pulled via `emacs-stdio-read-bytes' (Phase B6 fix,
+2026-05-10) because the MCP wire format does not insert a newline
+between body and the next frame's header — line-based reads would
+consume past the body's Content-Length boundary and discard the
+head of the next header line."
     (let ((header-lines (list (anvil-server--strip-trailing-cr first-header-line)))
           (seen-blank nil))
       (catch 'done
@@ -168,40 +174,9 @@ already UTF-8, so `length' is byte-count for ASCII bodies and
                                       (nreverse header-lines) "\r\n"))
              (n (anvil-server-mcp-parse-content-length-header header-block)))
         (when (and n (>= n 0))
-          (let* ((acc "")
-                 (need n)
-                 (first t))
-            ;; Read first non-blank body line.
-            (let ((line "") )
-              (while (and (stringp line) (string-empty-p line))
-                (setq line (ignore-errors (read-from-minibuffer ""))))
-              (when line
-                (let ((line-len (length line)))
-                  (cond
-                   ((<= line-len need)
-                    (setq acc (concat acc line))
-                    (setq need (- need line-len)))
-                   (t
-                    (setq acc (concat acc (substring line 0 need)))
-                    (setq need 0)))
-                  (setq first nil))))
-            ;; Continue reading more body lines until N bytes collected.
-            (while (> need 0)
-              (let ((chunk (ignore-errors (read-from-minibuffer ""))))
-                (cond
-                 ((null chunk) (setq need 0))
-                 (t
-                  (let* ((piece (if first chunk (concat "\n" chunk)))
-                         (piece-len (length piece)))
-                    (setq first nil)
-                    (cond
-                     ((<= piece-len need)
-                      (setq acc (concat acc piece))
-                      (setq need (- need piece-len)))
-                     (t
-                      (setq acc (concat acc (substring piece 0 need)))
-                      (setq need 0))))))))
-            (and (not (string-empty-p acc)) acc))))))
+          (let ((body (and (fboundp 'emacs-stdio-read-bytes)
+                           (emacs-stdio-read-bytes n))))
+            (and body (> (length body) 0) body))))))
 
   (defun anvil-server--batch-read-framed-message ()
     "Phase B5 Stage 1b override — used on subsequent loop iterations.
