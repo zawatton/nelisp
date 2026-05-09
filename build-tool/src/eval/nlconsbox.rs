@@ -67,6 +67,9 @@ pub struct NlConsBox {
 }
 
 impl NlConsBox {
+    /// Doc 79 v4 Stage C.4-atomic in-place destructor (= `NLRC_DROP_TABLE`).
+    pub(crate) const DROP_FN: unsafe fn(*mut std::ffi::c_void) = crate::eval::nlrc::nlrc_payload_drop::<NlConsBox>;
+
     /// Mutate `car' in place through a raw `&NlConsBox' borrow.  Used by
     /// the Phase A.5.2 cons trampolines after they resolve `Sexp::Cons'
     /// to `*const NlConsBox' via [`Sexp::cons_box_ptr`].  See
@@ -315,39 +318,7 @@ impl Clone for NlConsBoxRef {
 }
 
 impl Drop for NlConsBoxRef {
-    /// Decrement the refcount.  When it reaches zero, drop the `car'
-    /// + `cdr' Sexps and free the allocation.
-    ///
-    /// Ordering: `Release` on the decrement so prior writes by this
-    /// handle are visible to whichever thread observes the final 0;
-    /// an `Acquire` fence on the freeing path synchronizes with all
-    /// earlier `Release` decrements.  We must not panic from `Drop`.
-    fn drop(&mut self) {
-        // SAFETY: `self.ptr' is alive because we hold a handle.
-        let prev = unsafe {
-            (*self.ptr.as_ptr())
-                .refcount
-                .fetch_sub(1, Ordering::Release)
-        };
-        if prev != 1 {
-            return;
-        }
-        // We were the last handle: synchronize with prior `Release`
-        // decrements then drop the payload + free the box.
-        std::sync::atomic::fence(Ordering::Acquire);
-        // SAFETY: refcount just hit 0 and we haven't observed any
-        // thread re-incrementing through a stale ptr (= `NlConsBoxRef'
-        // is not `Send` / `Sync` for now).  Both `car' and `cdr' were
-        // initialized in `NlConsBoxRef::new' and are still valid; we
-        // run their destructors then return the box's memory.  The
-        // refcount itself is a plain `AtomicUsize' with no destructor.
-        unsafe {
-            std::ptr::drop_in_place(std::ptr::addr_of_mut!((*self.ptr.as_ptr()).car));
-            std::ptr::drop_in_place(std::ptr::addr_of_mut!((*self.ptr.as_ptr()).cdr));
-            let layout = Layout::new::<NlConsBox>();
-            alloc::dealloc(self.ptr.as_ptr() as *mut u8, layout);
-        }
-    }
+    fn drop(&mut self) { unsafe { crate::nlrc_drop_box!(self.ptr.as_ptr(), NlConsBox, crate::eval::sexp::SEXP_TAG_CONS); } }
 }
 
 impl Deref for NlConsBoxRef {

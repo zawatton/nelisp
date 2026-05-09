@@ -61,6 +61,7 @@ pub struct NlBoolVectorRef {
     _marker: PhantomData<NlBoolVector>,
 }
 
+impl NlBoolVector { pub(crate) const DROP_FN: unsafe fn(*mut std::ffi::c_void) = crate::eval::nlrc::nlrc_payload_drop::<NlBoolVector>; } // Doc 79 v4 C.4-atomic
 impl NlBoolVectorRef {
     /// Allocate a fresh [`NlBoolVector`] on the heap with `refcount = 1'.
     pub fn new(value: Vec<bool>) -> NlBoolVectorRef {
@@ -136,25 +137,7 @@ impl Clone for NlBoolVectorRef {
 }
 
 impl Drop for NlBoolVectorRef {
-    fn drop(&mut self) {
-        // SAFETY: `self.ptr' is alive because we hold a handle.
-        let prev = unsafe {
-            (*self.ptr.as_ptr())
-                .refcount
-                .fetch_sub(1, Ordering::Release)
-        };
-        if prev != 1 {
-            return;
-        }
-        std::sync::atomic::fence(Ordering::Acquire);
-        // SAFETY: refcount just hit 0 and `NlBoolVectorRef' is not
-        // Send / Sync.
-        unsafe {
-            std::ptr::drop_in_place(std::ptr::addr_of_mut!((*self.ptr.as_ptr()).value));
-            let layout = Layout::new::<NlBoolVector>();
-            alloc::dealloc(self.ptr.as_ptr() as *mut u8, layout);
-        }
-    }
+    fn drop(&mut self) { unsafe { crate::nlrc_drop_box!(self.ptr.as_ptr(), NlBoolVector, crate::eval::sexp::SEXP_TAG_BOOL_VECTOR); } }
 }
 
 impl Deref for NlBoolVectorRef {

@@ -303,6 +303,21 @@ impl Drop for NlConsBox {
 
 - *Rust delta (合算)*: +115〜160 (C.1) − 216 (C.4) = *-56〜-101 LOC* ✅
 - *commit-rule check*: net Rust delta = -56〜-101 LOC、単独で monotonic shrink rule 充足.
+*v4 sub-stage split (2026-05-09)*: Stage C.1+4 atomic original plan は実装 audit
+で +168 LOC GATE FAILED (= C.1 primitive surface +205 LOC が C.4 -148 LOC を
+overrun).  Doc 79 v4 では Stage C.1+4 を 2 sub-stage に分割:
+
+- *Stage C.4-atomic* (= 本 doc に置換): DROP_FN + NLRC_DROP_TABLE + Drop body
+  slim.  -81 LOC net、本 commit で SHIPPED.  user 2026-05-09 "絶対に純 elisp
+  化を進めたい" + monotonic shrink rule の両立路線.
+- *Stage C.1.b* (= 別 commit、Stage C.2 cycle collector elisp と atomic 化):
+  =rc_primitives.rs= 7 NlRc primitives + 3 GC helpers.  Stage C.2 が consumer
+  になるまで dead code 回避のため deferred (= project memory
+  =feedback_commit_dead_code_claim_must_grep.md= 準拠).
+
+*Note*: 元の v3 §5.2 articulation はそのまま保存、本 v4 sub-stage split は
+§5.2 末尾の本段で articulate.
+
 
 ** §5.3 Stage C.2 — cycle collector elisp 実装 (3-4 週間)
 
