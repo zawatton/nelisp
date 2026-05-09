@@ -55,6 +55,8 @@ D-B 工数 refine: 当初 3-6 ヶ月 → *5-7 週間* (= Phase 7.1.5 close 0 + P
 
 *2026-05-09 anvil-runtime 並行 session articulate* (= Doc 82 DRAFT): anvil-runtime crate 削除 path は **2 session 並行進行** (= parallel session の Phase A/B 系列 = nelisp =a6de799= までで -7,346 LOC target、my session の Doc 74 v2 audit = -4,365〜-5,667 LOC target).  Doc 82 §3 alignment matrix で layer 直交確認、§4 convergence path で Option α (= parallel session Final B 採用、Doc 74 v2 を Final B 詳細設計 reference として deferred) 推奨.  Doc 74 v2 の status は parallel session Phase B5 SHIPPED 確認後に正式 update.
 
+詳細 roadmap consolidated は Doc 83 (= =docs/design/83-100pct-pure-elisp-roadmap-consolidated.org=) 参照.  本 §0 + Doc 28/73/74/75/78/79/80/81/82 の 18+ design doc を single canonical roadmap に統合、5 並列 track inventory + concrete sequencing (= 10 step) + LOC accounting reconciliation を articulate.
+
 * §1 動機
 
 ** §1.1 「Sexp ABI elisp 化諦めない」commitment + 100% 純 elisp commitment + monotonic shrink rule
