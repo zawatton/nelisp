@@ -6788,34 +6788,47 @@ is closed."
   ;; GUI.  Motion events also dropped in favour of just-the-last so
   ;; the user doesn't pay paint cost for every pixel of drag.
   (setq nemacs-gtk--quit-requested nil)
-  (while (and (not (nelisp-gtk-should-quit))
-              (not nemacs-gtk--quit-requested))
-    (nelisp-gtk-iterate t)
-    (let ((dirty nil)
-          (last-motion nil))
-      ;; Drain key queue.
-      (let ((kv (nelisp-gtk-poll-key)))
-        (while kv
-          (let ((keysym (car kv))
-                (mods   (cadr kv))
-                (uni    (car (cddr kv))))
-            (setq nemacs-gtk--last-key-text
-                  (nemacs-gtk--describe-key keysym mods uni))
-            (nemacs-gtk--dispatch-key keysym mods uni)
-            (setq dirty t))
-          (setq kv (nelisp-gtk-poll-key))))
+  (let ((iter-count 0))
+    (while (and (not (nelisp-gtk-should-quit))
+                (not nemacs-gtk--quit-requested))
+      (setq iter-count (1+ iter-count))
+      (when (<= iter-count 3)
+        (message "[loop] iter %d: pre nelisp-gtk-iterate" iter-count))
+      (nelisp-gtk-iterate t)
+      (when (<= iter-count 3)
+        (message "[loop] iter %d: post iterate, pre poll-key" iter-count))
+      (let ((dirty nil)
+            (last-motion nil))
+        ;; Drain key queue.
+        (let ((kv (nelisp-gtk-poll-key)))
+          (while kv
+            (when (<= iter-count 3)
+              (message "[loop] iter %d: dispatch-key %S" iter-count kv))
+            (let ((keysym (car kv))
+                  (mods   (cadr kv))
+                  (uni    (car (cddr kv))))
+              (setq nemacs-gtk--last-key-text
+                    (nemacs-gtk--describe-key keysym mods uni))
+              (nemacs-gtk--dispatch-key keysym mods uni)
+              (setq dirty t))
+            (setq kv (nelisp-gtk-poll-key))))
+      (when (<= iter-count 3)
+        (message "[loop] iter %d: pre poll-menu" iter-count))
       ;; Drain menu queue.
       (let ((m (nelisp-gtk-poll-menu-event)))
         (while m
+          (when (<= iter-count 3)
+            (message "[loop] iter %d: handle-menu %S" iter-count m))
           (nemacs-gtk--handle-menu-action m)
           (setq dirty t)
           (setq m (nelisp-gtk-poll-menu-event))))
-      ;; Drain mouse queue.  Motion events get coalesced (= only the
-      ;; last motion is processed; press / release / scroll are
-      ;; processed individually so click count + scroll deltas don't
-      ;; get lost).
+      (when (<= iter-count 3)
+        (message "[loop] iter %d: pre poll-mouse" iter-count))
+      ;; Drain mouse queue.
       (let ((mev (nelisp-gtk-poll-mouse)))
         (while mev
+          (when (<= iter-count 3)
+            (message "[loop] iter %d: mouse %S" iter-count mev))
           (let ((kind (nth 0 mev)))
             (cond
              ((eq kind 'motion)
@@ -6830,19 +6843,28 @@ is closed."
         (when last-motion
           (nemacs-gtk--handle-mouse-event last-motion)
           (setq dirty t)))
-      ;; Drain resize queue (= use the LAST one; coalescing works
-      ;; because each carries an absolute (rows cols), not a delta).
+      (when (<= iter-count 3)
+        (message "[loop] iter %d: pre poll-resize" iter-count))
+      ;; Drain resize queue.
       (let ((rs (nelisp-gtk-poll-resize))
             (last-rs nil))
         (while rs
+          (when (<= iter-count 3)
+            (message "[loop] iter %d: resize %S" iter-count rs))
           (setq last-rs rs)
           (setq rs (nelisp-gtk-poll-resize)))
         (when last-rs
+          (when (<= iter-count 3)
+            (message "[loop] iter %d: apply-grid-size %S" iter-count last-rs))
           (nemacs-gtk--apply-grid-size (nth 0 last-rs) (nth 1 last-rs))
           (setq dirty t)))
+      (when (<= iter-count 3)
+        (message "[loop] iter %d: pre dirty-repaint dirty=%S" iter-count dirty))
       ;; One repaint per main-loop iteration if anything changed.
       (when dirty
-        (nemacs-gtk--repaint))))
+        (nemacs-gtk--repaint))
+      (when (<= iter-count 3)
+        (message "[loop] iter %d: end" iter-count))))
   'done)
 
 (provide 'nemacs-gtk-frontend)
