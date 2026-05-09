@@ -1115,9 +1115,13 @@ without SIGSEGV (T43 Phase 7.5.6 bench gate enabler)."
 ;; carry the first 8 integer / pointer arguments and x0 carries the
 ;; integer return.  For the trampoline shapes:
 ;;
-;;   :trampoline-unary       arg0 → x0, arg1 (out-ptr) → x1
-;;   :trampoline-binary-ctor arg0 → x0, arg1 → x1, arg2 (out-ptr) → x2
-;;   :trampoline-binary-mut  arg0 → x0, arg1 → x1
+;;   :trampoline-unary        arg0 → x0, arg1 (out-ptr) → x1
+;;   :trampoline-binary-ctor  arg0 → x0, arg1 → x1, arg2 (out-ptr) → x2
+;;   :trampoline-binary-mut   arg0 → x0, arg1 → x1
+;;   :trampoline-binary-aref  arg0 → x0, arg1 (i64 idx) → x1,
+;;                            arg2 (out-ptr) → x2                     (Stage 81.3)
+;;   :trampoline-ternary-aset arg0 → x0, arg1 (i64 idx) → x1,
+;;                            arg2 (val ptr) → x2, arg3 (out-ptr) → x3 (Stage 81.3)
 ;;
 ;; arm64 instruction sizes (vs x86_64 in parens):
 ;;   ssa-load-tag         LDRB Wt, [Xn]              — 4 bytes (vs 4 x86_64)
@@ -1295,8 +1299,11 @@ return) is written back to the def's allocated register."
       (signal 'nelisp-cc-arm64-encoding-error
               (list :ssa-call-primitive-missing-symbol
                     (nelisp-cc--ssa-instr-id instr))))
-    (unless (memq abi '(:trampoline-unary :trampoline-binary-ctor
-                        :trampoline-binary-mut))
+    (unless (memq abi '(:trampoline-unary
+                        :trampoline-binary-ctor
+                        :trampoline-binary-mut
+                        :trampoline-binary-aref
+                        :trampoline-ternary-aset))
       (signal 'nelisp-cc-arm64-encoding-error
               (list :ssa-call-primitive-bad-abi abi)))
     (when (> n (length nelisp-cc-arm64--int-arg-regs))

@@ -759,5 +759,300 @@ allocator); `setcar' / `setcdr' fan into `:trampoline-binary-mut'
     (let ((mode (nth 1 (nelisp-cc-pipeline-primitive-info sym))))
       (should (memq mode nelisp-cc-runtime--entry-abi-modes)))))
 
+;;; Doc 81 Stage 81.3 — vector primitive trampoline ABI ---------------
+;;
+;; Stage 81.3 extends the trampoline ABI to non-cons primitives.
+;; First wave = vector cluster (= length / aref / aset / elt) per
+;; Doc 28 §3.6.b (Phase 7.1.6.b access.rs takeover prerequisite).
+;; Two new ABI shapes are added:
+;;
+;;   :trampoline-binary-aref  fn(*const Sexp, i64, *mut Sexp) -> i64
+;;   :trampoline-ternary-aset fn(*const Sexp, i64, *const Sexp,
+;;                                *mut Sexp) -> i64
+;;
+;; The `length' primitive reuses :trampoline-unary (already SHIPPED
+;; in Stage 81.1).  The four ERT below verify:
+;;   17. ABI validation accepts both new modes
+;;   18. primitive-table-stage3 carries 9 entries (5 cons + 4 vector)
+;;   19. vector-cluster ABI mode routing
+;;   20. x86_64 emit accepts :trampoline-binary-aref
+;;   21. x86_64 emit accepts :trampoline-ternary-aset
+;;   22. arm64 emit accepts :trampoline-binary-aref
+;;   23. arm64 emit accepts :trampoline-ternary-aset
+;;   24. backends still reject *garbage* ABI (= regression guard)
+;;   25. extern-c symbols match access.rs
+
+;;; (17) Stage 81.3 entry-ABI mode validation ------------------------
+
+(ert-deftest nelisp-cc-stage81-poc-stage3-entry-abi-validation ()
+  "`nelisp-cc-runtime--entry-abi-modes' includes the two Stage 81.3
+vector ABI keywords (= `:trampoline-binary-aref' /
+`:trampoline-ternary-aset') and the validator accepts them."
+  ;; Both new modes registered.
+  (should (memq :trampoline-binary-aref
+                nelisp-cc-runtime--entry-abi-modes))
+  (should (memq :trampoline-ternary-aset
+                nelisp-cc-runtime--entry-abi-modes))
+  ;; Validator accepts each new mode.
+  (dolist (mode '(:trampoline-binary-aref :trampoline-ternary-aset))
+    (should-not (condition-case nil
+                    (progn (nelisp-cc-runtime--validate-entry-abi mode)
+                           nil)
+                  (nelisp-cc-runtime-error t))))
+  ;; All 4 prior ABI modes still present (= no regression).
+  (should (memq :host-int nelisp-cc-runtime--entry-abi-modes))
+  (should (memq :trampoline-unary nelisp-cc-runtime--entry-abi-modes))
+  (should (memq :trampoline-binary-ctor
+                nelisp-cc-runtime--entry-abi-modes))
+  (should (memq :trampoline-binary-mut
+                nelisp-cc-runtime--entry-abi-modes))
+  ;; 6 modes total (host-int + 5 trampoline shapes).
+  (should (= 6 (length nelisp-cc-runtime--entry-abi-modes))))
+
+;;; (18) Stage 81.3 primitive-table-stage3 shape ---------------------
+
+(ert-deftest nelisp-cc-stage81-poc-primitive-table-stage3-shape ()
+  "`nelisp-cc-pipeline-primitive-table-stage3' carries the 5 cons
++ 4 vector primitives (= 9 entries total) per Doc 81 §5.3.
+
+The vector cluster (= length / aref / aset / elt) targets Phase
+7.1.6.b `access.rs' takeover; each entry maps to its
+`nl_jit_access_*' Rust C symbol via the appropriate ABI shape.
+The cons cluster (Stage 81.2) is preserved verbatim."
+  (should (= 9 (length nelisp-cc-pipeline-primitive-table-stage3)))
+  (let ((expected
+         '(;; cons cluster (Stage 81.2 — preserved).
+           (car    1 :trampoline-unary        nl_jit_cons_car)
+           (cdr    1 :trampoline-unary        nl_jit_cons_cdr)
+           (cons   2 :trampoline-binary-ctor  nl_jit_cons_make)
+           (setcar 2 :trampoline-binary-mut   nl_jit_cons_setcar)
+           (setcdr 2 :trampoline-binary-mut   nl_jit_cons_setcdr)
+           ;; vector cluster (Stage 81.3 addition).
+           (length 1 :trampoline-unary        nl_jit_access_length)
+           (aref   2 :trampoline-binary-aref  nl_jit_access_aref)
+           (aset   3 :trampoline-ternary-aset nl_jit_access_aset)
+           (elt    2 :trampoline-binary-aref  nl_jit_access_elt))))
+    (dolist (entry expected)
+      (let* ((sym  (nth 0 entry))
+             (info (nelisp-cc-pipeline-primitive-info sym)))
+        (should info)
+        (should (= (nth 1 entry) (nth 0 info)))     ; arity
+        (should (eq (nth 2 entry) (nth 1 info)))    ; abi-mode
+        (should (eq (nth 3 entry) (nth 2 info))))))
+  ;; Outside the 9-entry surface — still nil.
+  (should-not (nelisp-cc-pipeline-primitive-info '+))
+  (should-not (nelisp-cc-pipeline-primitive-info 'eq)))
+
+;;; (19) Stage 81.3 vector ABI mode routing --------------------------
+
+(ert-deftest nelisp-cc-stage81-poc-stage3-vector-abi-routing ()
+  "Each vector primitive maps to its declared ABI shape.
+
+  length → :trampoline-unary        (1 vec arg, returns i64 length)
+  aref   → :trampoline-binary-aref  (vec, i64 idx → val)
+  aset   → :trampoline-ternary-aset (vec, i64 idx, val → val)
+  elt    → :trampoline-binary-aref  (seq, i64 idx → val)
+
+The recognition pass (Stage 81.4+) will consume this routing to
+choose the per-primitive trampoline ABI for the elisp-emit path."
+  ;; length — :trampoline-unary (= shared with car/cdr).
+  (should (eq :trampoline-unary
+              (nth 1 (nelisp-cc-pipeline-primitive-info 'length))))
+  ;; aref / elt — :trampoline-binary-aref (= 2-arg + i64 idx + out).
+  (should (eq :trampoline-binary-aref
+              (nth 1 (nelisp-cc-pipeline-primitive-info 'aref))))
+  (should (eq :trampoline-binary-aref
+              (nth 1 (nelisp-cc-pipeline-primitive-info 'elt))))
+  ;; aset — :trampoline-ternary-aset (= 3-arg + i64 idx + out).
+  (should (eq :trampoline-ternary-aset
+              (nth 1 (nelisp-cc-pipeline-primitive-info 'aset))))
+  ;; All ABI modes referenced are valid runtime entry-ABI keywords.
+  (dolist (sym '(length aref aset elt))
+    (let ((mode (nth 1 (nelisp-cc-pipeline-primitive-info sym))))
+      (should (memq mode nelisp-cc-runtime--entry-abi-modes))))
+  ;; Arity matches the elisp surface contract.
+  (should (= 1 (nth 0 (nelisp-cc-pipeline-primitive-info 'length))))
+  (should (= 2 (nth 0 (nelisp-cc-pipeline-primitive-info 'aref))))
+  (should (= 3 (nth 0 (nelisp-cc-pipeline-primitive-info 'aset))))
+  (should (= 2 (nth 0 (nelisp-cc-pipeline-primitive-info 'elt)))))
+
+;;; (20) x86_64 :trampoline-binary-aref emit -------------------------
+
+(ert-deftest nelisp-cc-stage81-poc-stage3-aref-x86_64-emit ()
+  "x86_64: `ssa-call-primitive' with `:trampoline-binary-aref' ABI
+emits CALL rel32 + records call-fixup against `nl_jit_access_aref'.
+
+ABI marshalling (System V AMD64): arg0 → rdi (vec ptr), arg1 → rsi
+(i64 raw idx).  The out-ptr (arg2) is allocated by the recognition
+pass — Stage 81.3 ERT exercises the 2-operand IR shape (= just vec
++ idx, no explicit out-ptr operand at the SSA level)."
+  (cl-destructuring-bind (cg fn param def extras)
+      ;; Pre-provision r2 (= rdx) for the i64 idx operand.
+      (nelisp-cc-stage81-test--make-empty-codegen '(r2))
+    (let* ((idx-val (car extras))
+           (instr (nelisp-cc--ssa-add-instr
+                   fn (nelisp-cc--ssa-function-entry fn)
+                   'ssa-call-primitive (list param idx-val) def)))
+      (setf (nelisp-cc--ssa-instr-meta instr)
+            '(:abi :trampoline-binary-aref :symbol nl_jit_access_aref))
+      (nelisp-cc-x86_64--lower-instr cg instr)
+      (let ((bytes (nelisp-cc-stage81-test--bytes cg))
+            (fixups (nelisp-cc-x86_64--codegen-call-fixups cg)))
+        ;; CALL rel32 byte (= 0xE8) appears at least once.
+        (should (memq #xE8 (append bytes nil)))
+        ;; Exactly one call-fixup against the C symbol.
+        (should (= 1 (length fixups)))
+        (should (eq 'nl_jit_access_aref (cdar fixups)))))))
+
+;;; (21) x86_64 :trampoline-ternary-aset emit ------------------------
+
+(ert-deftest nelisp-cc-stage81-poc-stage3-aset-x86_64-emit ()
+  "x86_64: `ssa-call-primitive' with `:trampoline-ternary-aset' ABI
+emits CALL rel32 + records call-fixup against `nl_jit_access_aset'.
+
+ABI marshalling (System V AMD64): arg0 → rdi (vec ptr), arg1 → rsi
+(i64 raw idx), arg2 → rdx (val ptr).  The out-ptr (arg3) is
+allocated by the recognition pass — Stage 81.3 ERT exercises the
+3-operand IR shape."
+  (cl-destructuring-bind (cg fn param def extras)
+      ;; Pre-provision r2 (= rdx) and r3 (= rcx).
+      (nelisp-cc-stage81-test--make-empty-codegen '(r2 r3))
+    (let* ((idx-val (nth 0 extras))
+           (val-val (nth 1 extras))
+           (instr (nelisp-cc--ssa-add-instr
+                   fn (nelisp-cc--ssa-function-entry fn)
+                   'ssa-call-primitive
+                   (list param idx-val val-val) def)))
+      (setf (nelisp-cc--ssa-instr-meta instr)
+            '(:abi :trampoline-ternary-aset :symbol nl_jit_access_aset))
+      (nelisp-cc-x86_64--lower-instr cg instr)
+      (let ((bytes (nelisp-cc-stage81-test--bytes cg))
+            (fixups (nelisp-cc-x86_64--codegen-call-fixups cg)))
+        (should (memq #xE8 (append bytes nil)))
+        (should (= 1 (length fixups)))
+        (should (eq 'nl_jit_access_aset (cdar fixups)))))))
+
+;;; (22) arm64 :trampoline-binary-aref emit --------------------------
+
+(ert-deftest nelisp-cc-stage81-poc-stage3-aref-arm64-emit ()
+  "arm64: `ssa-call-primitive' with `:trampoline-binary-aref' ABI
+emits BL placeholder + records fixup against
+`callee:nl_jit_access_aref'.
+
+AAPCS64 marshalling: arg0 → x0, arg1 → x1.  PARAM is pre-pinned
+to r0 (x0); the i64 idx operand resides in r2 (x2) and gets
+moved into x1 by the marshaller.  Status (in x0) is written back
+to the def's register."
+  (cl-destructuring-bind (cg fn param def extras)
+      (nelisp-cc-stage81-test--make-arm64-codegen '(r2))
+    (let* ((idx-val (car extras))
+           (instr (nelisp-cc--ssa-add-instr
+                   fn (nelisp-cc--ssa-function-entry fn)
+                   'ssa-call-primitive (list param idx-val) def)))
+      (setf (nelisp-cc--ssa-instr-meta instr)
+            '(:abi :trampoline-binary-aref :symbol nl_jit_access_aref))
+      (nelisp-cc-arm64--lower-instr cg instr)
+      (let ((fixups (nelisp-cc-arm64--buffer-fixups
+                     (nelisp-cc-arm64--codegen-buffer cg))))
+        ;; At least one fixup against `callee:nl_jit_access_aref'.
+        (should (>= (length fixups) 1))
+        (let ((labels (mapcar (lambda (fx) (cadr fx)) fixups)))
+          (should (memq 'callee:nl_jit_access_aref labels)))))))
+
+;;; (23) arm64 :trampoline-ternary-aset emit -------------------------
+
+(ert-deftest nelisp-cc-stage81-poc-stage3-aset-arm64-emit ()
+  "arm64: `ssa-call-primitive' with `:trampoline-ternary-aset' ABI
+emits BL placeholder + records fixup against
+`callee:nl_jit_access_aset'.
+
+AAPCS64 marshalling: arg0 → x0, arg1 → x1, arg2 → x2.  Three
+operands are passed; out-ptr (arg3 → x3) is allocated by the
+recognition pass before the call."
+  (cl-destructuring-bind (cg fn param def extras)
+      (nelisp-cc-stage81-test--make-arm64-codegen '(r2 r3))
+    (let* ((idx-val (nth 0 extras))
+           (val-val (nth 1 extras))
+           (instr (nelisp-cc--ssa-add-instr
+                   fn (nelisp-cc--ssa-function-entry fn)
+                   'ssa-call-primitive
+                   (list param idx-val val-val) def)))
+      (setf (nelisp-cc--ssa-instr-meta instr)
+            '(:abi :trampoline-ternary-aset :symbol nl_jit_access_aset))
+      (nelisp-cc-arm64--lower-instr cg instr)
+      (let ((fixups (nelisp-cc-arm64--buffer-fixups
+                     (nelisp-cc-arm64--codegen-buffer cg))))
+        (should (>= (length fixups) 1))
+        (let ((labels (mapcar (lambda (fx) (cadr fx)) fixups)))
+          (should (memq 'callee:nl_jit_access_aset labels)))))))
+
+;;; (24) Garbage ABI still rejected after Stage 81.3 -----------------
+
+(ert-deftest nelisp-cc-stage81-poc-stage3-garbage-abi-still-rejected ()
+  "Stage 81.3 adds 2 modes but does NOT relax the validator —
+non-listed ABI keywords still raise `*-encoding-error' on both
+backends.  This is the regression guard for Doc 81 §5.3 sub-task
+81.3.b dispatcher updates."
+  ;; x86_64: garbage ABI still rejected.
+  (cl-destructuring-bind (cg fn param _def _extras)
+      (nelisp-cc-stage81-test--make-empty-codegen)
+    (let ((instr (nelisp-cc--ssa-add-instr
+                  fn (nelisp-cc--ssa-function-entry fn)
+                  'ssa-call-primitive (list param) nil)))
+      (setf (nelisp-cc--ssa-instr-meta instr)
+            '(:abi :stage99-garbage :symbol foo))
+      (should-error (nelisp-cc-x86_64--lower-instr cg instr)
+                    :type 'nelisp-cc-x86_64-encoding-error)))
+  ;; arm64: garbage ABI still rejected.
+  (cl-destructuring-bind (cg fn param _def _extras)
+      (nelisp-cc-stage81-test--make-arm64-codegen)
+    (let ((instr (nelisp-cc--ssa-add-instr
+                  fn (nelisp-cc--ssa-function-entry fn)
+                  'ssa-call-primitive (list param) nil)))
+      (setf (nelisp-cc--ssa-instr-meta instr)
+            '(:abi :stage99-garbage :symbol foo))
+      (should-error (nelisp-cc-arm64--lower-instr cg instr)
+                    :type 'nelisp-cc-arm64-encoding-error)))
+  ;; The 5 valid ABIs (1 host-int + 4 trampoline) all still accepted.
+  ;; (host-int omitted — it is not a `ssa-call-primitive' value, just
+  ;; a `compile-and-allocate' entry-abi.)
+  (dolist (good '(:trampoline-unary :trampoline-binary-ctor
+                  :trampoline-binary-mut :trampoline-binary-aref
+                  :trampoline-ternary-aset))
+    (cl-destructuring-bind (cg fn param def _extras)
+        (nelisp-cc-stage81-test--make-empty-codegen)
+      (let ((instr (nelisp-cc--ssa-add-instr
+                    fn (nelisp-cc--ssa-function-entry fn)
+                    'ssa-call-primitive (list param) def)))
+        (setf (nelisp-cc--ssa-instr-meta instr)
+              (list :abi good :symbol 'nl_jit_test_sym))
+        ;; Should NOT signal — should emit cleanly.
+        (nelisp-cc-x86_64--lower-instr cg instr)))))
+
+;;; (25) Stage 81.3 extern-c symbol parity --------------------------
+
+(ert-deftest nelisp-cc-stage81-poc-stage3-extern-c-symbol-parity ()
+  "Stage 81.3 vector primitives target the `nl_jit_access_*' symbols
+that build-tool/src/jit/access.rs already declares + registers (=
+length / aref / aset / elt).  This ERT is the documentation
+contract: if access.rs ever renames a symbol the table must move
+in lockstep, otherwise the link pass dlsym lookup will silently
+miss."
+  ;; Each vector primitive's C symbol matches the access.rs declaration.
+  (should (eq 'nl_jit_access_length
+              (nth 2 (nelisp-cc-pipeline-primitive-info 'length))))
+  (should (eq 'nl_jit_access_aref
+              (nth 2 (nelisp-cc-pipeline-primitive-info 'aref))))
+  (should (eq 'nl_jit_access_aset
+              (nth 2 (nelisp-cc-pipeline-primitive-info 'aset))))
+  (should (eq 'nl_jit_access_elt
+              (nth 2 (nelisp-cc-pipeline-primitive-info 'elt))))
+  ;; Cons cluster's symbols are *not* aliased into the vector cluster
+  ;; (= no accidental cross-mapping).
+  (should-not (eq (nth 2 (nelisp-cc-pipeline-primitive-info 'aref))
+                  (nth 2 (nelisp-cc-pipeline-primitive-info 'car))))
+  (should-not (eq (nth 2 (nelisp-cc-pipeline-primitive-info 'length))
+                  (nth 2 (nelisp-cc-pipeline-primitive-info 'cdr)))))
+
 (provide 'nelisp-cc-stage81-poc-test)
 ;;; nelisp-cc-stage81-poc-test.el ends here

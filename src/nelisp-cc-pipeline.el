@@ -281,21 +281,24 @@ exactly as Doc 42 §4.2 specifies."
         (nelisp-cc-pipeline--run-passes-on-fn function registry stats)))
     (cons function stats)))
 
-;;; Doc 81 Stage 81.1 / 81.2 — primitive recognition table -------------
+;;; Doc 81 Stage 81.1 / 81.2 / 81.3 — primitive recognition table -----
 ;;
 ;; Stage 81.1 shipped a *one-entry* table — `car' only — so the
 ;; trampoline-emit infrastructure (Doc 81 §5.1) could be exercised on
 ;; the simplest possible primitive.  Stage 81.2 extends this to 5 cons
 ;; primitives covering the `cons.rs' Rust API parity surface (read 2 +
-;; write 2 + alloc 1).  Stage 81.3 will further extend to 24 primitives
-;; (cons / arith / access / predicate / syscall) per Doc 28 §3.6.a~.e
-;; and wire the recognition pass that consumes this table.
+;; write 2 + alloc 1).  Stage 81.3 (this stage) extends the trampoline
+;; ABI to non-cons primitives by adding the *vector cluster* (= length
+;; / aref / aset / elt) — 4 entries on top of the cons 5 = 9 entry
+;; table targeting Phase 7.1.6.b `access.rs' takeover.  Subsequent
+;; stages (81.4+) will further extend to arith / predicate / syscall
+;; clusters per Doc 28 §3.6.c~.e.
 ;;
-;; The recognition pass (Stage 81.3, `nelisp-cc-pipeline--recognize-
-;; primitives') is *not* yet wired; for Stage 81.1/81.2 the table only
-;; declares "if you call this primitive, here is the ABI mode + the C
-;; symbol to fix up".  `nelisp-cc-pipeline-primitive-info' is the
-;; lookup helper used by ERT and by the Stage 81.3 recognition pass.
+;; The recognition pass (`nelisp-cc-pipeline--recognize-primitives')
+;; is *not* yet wired; for Stage 81.1/81.2/81.3 the table only declares
+;; "if you call this primitive, here is the ABI mode + the C symbol to
+;; fix up".  `nelisp-cc-pipeline-primitive-info' is the lookup helper
+;; used by ERT and by the Stage 81.4+ recognition pass.
 
 (defconst nelisp-cc-pipeline-primitive-table-stage1
   '((car 1 :trampoline-unary nl_jit_cons_car))
@@ -326,17 +329,56 @@ Each entry is (ELISP-NAME ARITY ABI-MODE C-SYMBOL):
   C-SYMBOL   — Rust-side extern \"C\" symbol the trampoline calls
                (= `nl_jit_cons_*' from build-tool/src/jit/cons.rs).
 
-Stage 81.3 will extend this to ~24 primitives (cons / arith /
-access / predicate / syscall) per Doc 28 §3.6.a~.e.")
+Retained as the Stage 81.2 archaeological snapshot — the canonical
+lookup goes through `-table-stage3' once Stage 81.3 lands.")
+
+(defconst nelisp-cc-pipeline-primitive-table-stage3
+  '(;; cons cluster (Stage 81.2 — preserved verbatim).
+    (car    1 :trampoline-unary        nl_jit_cons_car)
+    (cdr    1 :trampoline-unary        nl_jit_cons_cdr)
+    (cons   2 :trampoline-binary-ctor  nl_jit_cons_make)
+    (setcar 2 :trampoline-binary-mut   nl_jit_cons_setcar)
+    (setcdr 2 :trampoline-binary-mut   nl_jit_cons_setcdr)
+    ;; vector cluster (Stage 81.3 — Doc 28 §3.6.b access.rs takeover).
+    (length 1 :trampoline-unary        nl_jit_access_length)
+    (aref   2 :trampoline-binary-aref  nl_jit_access_aref)
+    (aset   3 :trampoline-ternary-aset nl_jit_access_aset)
+    (elt    2 :trampoline-binary-aref  nl_jit_access_elt))
+  "Doc 81 Stage 81.3 primitive recognition table (5 cons + 4 vector).
+
+Each entry is (ELISP-NAME ARITY ABI-MODE C-SYMBOL).
+
+Vector cluster (Stage 81.3 addition, Phase 7.1.6.b `access.rs'
+takeover prerequisite):
+
+  length  arity 1, :trampoline-unary       — `(length VEC)'
+  aref    arity 2, :trampoline-binary-aref — `(aref VEC IDX)'
+  aset    arity 3, :trampoline-ternary-aset — `(aset VEC IDX VAL)'
+  elt     arity 2, :trampoline-binary-aref — `(elt SEQ IDX)'
+
+The vector primitives reuse the `nl_jit_access_*' Rust trampolines
+from build-tool/src/jit/access.rs, which already implement the
+Vector / BoolVector / Str / Cons-list fast paths the Stage 81.3
+elisp-emit path will eventually subsume in Phase 7.1.6.b.
+
+Note `length' is *also* the unary trampoline shape — same as
+car/cdr — so it shares the existing `:trampoline-unary' ABI mode
+without needing a new one.  `aref' / `elt' use the new
+`:trampoline-binary-aref' shape (= vec, i64-idx, out-ptr); `aset'
+uses the new `:trampoline-ternary-aset' shape (= vec, i64-idx,
+val, out-ptr).
+
+Stage 81.4+ will further extend this to arith / predicate /
+syscall clusters per Doc 28 §3.6.c~.e (= ~15 more entries).")
 
 (defun nelisp-cc-pipeline-primitive-info (sym)
   "Return the primitive descriptor for ELISP SYM, or nil.
 
 Returned shape: (ARITY ABI-MODE C-SYMBOL).  Looks up in the
-Stage 81.2 table (= 5 cons primitives) — supersedes the Stage
-81.1 1-entry table.  Stage 81.3 will extend the table to ~24
-primitives."
-  (cdr (assq sym nelisp-cc-pipeline-primitive-table-stage2)))
+Stage 81.3 table (= 5 cons + 4 vector primitives) — supersedes
+the Stage 81.1 / 81.2 tables which are kept as archaeological
+snapshots.  Stage 81.4+ will further extend the table."
+  (cdr (assq sym nelisp-cc-pipeline-primitive-table-stage3)))
 
 (provide 'nelisp-cc-pipeline)
 
