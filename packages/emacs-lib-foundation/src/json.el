@@ -67,13 +67,20 @@ Currently a no-op in the standalone port — output is always compact.")
   (concat "\"" (emacs-json--escape-string s) "\""))
 
 (defun emacs-json--alist-p (lst)
-  "Non-nil if LST is a proper alist of cons cells."
+  "Non-nil if LST is a proper alist (= every element is a cons cell).
+
+Phase B5 fix (= 2026-05-09): the earlier check additionally required
+`(not (consp (cdr (car cur))))', i.e. that no entry's value was itself
+a list.  That rejected nested-object alists like
+`((result . ((protocolVersion . \"...\"))))', forcing them through the
+generic `listp' encoder which mapconcat-ed the dotted pair and tripped
+with `(wrong-type-argument listp \"2.0\")' deep inside JSON-RPC
+responses.  An alist may legitimately have list-valued cdrs."
   (and (listp lst) lst
        (let ((all-cons t)
              (cur lst))
          (while (and cur all-cons)
-           (unless (and (consp (car cur))
-                        (not (consp (cdr (car cur)))))
+           (unless (consp (car cur))
              (setq all-cons nil))
            (setq cur (cdr cur)))
          all-cons)))
