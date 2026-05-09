@@ -1,12 +1,18 @@
 //! Doc 77b Stage b.4 — Rust helper primitives for elisp JIT-strategy
 //! wrappers (= `lisp/nelisp-jit-strategy.el').
 //!
-//! The 24 elisp wrappers shipped in `nelisp-jit-strategy.el' replace
-//! the pre-b.4 `lowered_X' Rust strategy fns by routing through the
-//! Stage b.2 / b.2.5 `nl-jit-call-*' bridge primitives.  For the
-//! Int+Int (or in-range Vector) fast paths the wrappers go straight
-//! to the bridge; for fall-through cases they call into one of the
-//! helpers below:
+//! Doc 80 Stage 80.3〜80.5 (2026-05-09) — `bi_length_impl' /
+//! `aref_helper' / `bi_aref_impl' / `bi_aset_impl' / `bi_elt_impl'
+//! deleted (= ~255 LOC).  The multi-variant fall-through dispatch is
+//! now expressed in elisp via the Doc 80 substrate (`cond' / `signal'
+//! / `nelisp--signal-{wrong-type,arith}'), with narrow per-variant
+//! slim primitives in this file (= `bi_mut_str_*' / `bi_bool_vector_*'
+//! / `bi_char_table_*') for the Sexp-internal mutations that elisp
+//! cannot reach without exposing the variant boxes wholesale.
+//!
+//! The remaining helpers (`nelisp--int-eq-zero', arith Float, bitwise
+//! Int, `ash', `syscall-nr-resolve') stay as before — they are not in
+//! Doc 80's scope.
 //!
 //!   - `nelisp--int-eq-zero N'                — `if'-friendly bool
 //!     conversion of bridge `i64' results.  Used by the `eq' wrapper
@@ -33,16 +39,24 @@
 //!     the [-62, +62] JIT bounds + clamping fallback for pathological
 //!     counts.  Body lifted verbatim from the pre-b.4 `lowered_ash'.
 //!
-//!   - `nelisp--{length,aref,aset,elt}-impl ...' — full multi-variant
-//!     dispatch for the access primitives (= JIT call covers the
-//!     Vector/Str/Nil/Cons-walk fast paths, fall-through handles
-//!     MutStr/CharTable/BoolVector with canonical `ArithError' (out-
-//!     of-range, negative index) vs `WrongType' (non-arrayp,
-//!     immutable Str aset) error shapes).  Body lifted verbatim from
-//!     the pre-b.4 `lowered_length' / `aref_helper' / `lowered_aset'
-//!     / `lowered_elt'.  Multi-variant dispatch with two distinct
-//!     error families is not a clean fit for pre-stdlib elisp (=
-//!     `cond' / `signal' aren't installed yet at strategy load time).
+//!   - `nelisp--mut-str-len S' / `nelisp--bool-vector-len V' — slim
+//!     fall-through primitives for `length' (= MutStr UTF-8 char count
+//!     / BoolVector bit count).  `Sexp::Str' / `Sexp::Vector' /
+//!     `Sexp::Nil' length stay JIT-trampoline-only.
+//!
+//!   - `nelisp--str-codepoint-at S IDX' — Str + MutStr char-indexed
+//!     codepoint read with `arith-error' on out-of-range.  Used by
+//!     elisp `aref' / `elt' fall-through for both immutable + mutable
+//!     strings.
+//!
+//!   - `nelisp--mut-str-set-codepoint S IDX CP' — MutStr in-place
+//!     codepoint mutation (= rebuilds the backing String).  Returns
+//!     CP per Emacs `aset' contract.
+//!
+//!   - `nelisp--char-table-aref T IDX' / `nelisp--char-table-aset T
+//!     IDX V' — CharTable get / set wrappers over `char_table_get' /
+//!     `char_table_set_one'.  Kept Rust because `CharTableInner' is
+//!     a private box; no general elisp accessor exists.
 //!
 //!   - `nelisp--syscall-nr-resolve NAME-OR-NR' — wraps
 //!     `syscall_nr' (= the symbol → `libc::SYS_*' Int map).  The
@@ -52,9 +66,6 @@
 
 use crate::eval::error::EvalError;
 use crate::eval::sexp::Sexp;
-
-// Match the pre-b.4 trampoline ABI used by `nl_jit_*' fns.
-const TRAMPOLINE_OK: i64 = 0;
 
 // ---------- nelisp--int-eq-zero ------------------------------------
 
@@ -142,268 +153,118 @@ pub fn bi_ash_impl(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::Int(r))
 }
 
-// ---------- length impl (verbatim from pre-b.4 lowered_length) ----
+// ---------- Doc 80 slim primitives (length / aref / aset fall-through) -------
 
-pub fn bi_length_impl(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    crate::eval::builtins::require_arity("length", args, 1, Some(1))?;
-    let access = &super::unified_jit().access;
-    let mut out = Sexp::Nil;
-    let r = (access.length)(&args[0] as *const _, &mut out as *mut _);
-    if r == TRAMPOLINE_OK {
-        return Ok(out);
-    }
+/// `(nelisp--mut-str-len S)' — UTF-8 char count for `Sexp::MutStr'.
+/// Signals `wrong-type-argument' for any other variant.
+pub fn bi_mut_str_len(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    crate::eval::builtins::require_arity("nelisp--mut-str-len", args, 1, Some(1))?;
     match &args[0] {
         Sexp::MutStr(rc) => Ok(Sexp::Int(rc.value.chars().count() as i64)),
+        other => Err(EvalError::WrongType {
+            expected: "mut-string".into(),
+            got: other.clone(),
+        }),
+    }
+}
+
+/// `(nelisp--bool-vector-len V)' — bit count for `Sexp::BoolVector'.
+pub fn bi_bool_vector_len(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    crate::eval::builtins::require_arity("nelisp--bool-vector-len", args, 1, Some(1))?;
+    match &args[0] {
         Sexp::BoolVector(v) => Ok(Sexp::Int(v.value.len() as i64)),
-        Sexp::Cons(_) => {
-            let mut n = 0i64;
-            let mut cur: Sexp = args[0].clone();
-            loop {
-                let next = match &cur {
-                    Sexp::Nil => return Ok(Sexp::Int(n)),
-                    Sexp::Cons(b) => {
-                        n += 1;
-                        b.cdr.clone()
-                    }
-                    other => {
-                        return Err(EvalError::WrongType {
-                            expected: "sequence".into(),
-                            got: other.clone(),
-                        });
-                    }
-                };
-                cur = next;
-            }
-        }
         other => Err(EvalError::WrongType {
-            expected: "sequence".into(),
+            expected: "bool-vector".into(),
             got: other.clone(),
         }),
     }
 }
 
-// ---------- aref / aset / elt impls (verbatim from pre-b.4) -------
-
-fn aref_helper(args: &[Sexp], primitive: &'static str) -> Result<Sexp, EvalError> {
-    let index = crate::eval::builtins::as_int(primitive, &args[1])?;
-    if index < 0 {
-        return Err(EvalError::ArithError(format!(
-            "{}: negative index {}",
-            primitive, index
-        )));
-    }
-    let access = &super::unified_jit().access;
-    let mut out = Sexp::Nil;
-    let r = (access.aref)(&args[0] as *const _, index, &mut out as *mut _);
-    if r == TRAMPOLINE_OK {
-        return Ok(out);
-    }
-    match &args[0] {
-        Sexp::Str(s) => {
-            let chars: Vec<char> = s.chars().collect();
-            chars
-                .get(index as usize)
-                .map(|c| Sexp::Int(*c as i64))
-                .ok_or_else(|| {
-                    EvalError::ArithError(format!(
-                        "{}: index {} out of range for string of length {}",
-                        primitive,
-                        index,
-                        chars.len()
-                    ))
-                })
-        }
-        Sexp::MutStr(rc) => {
-            let chars: Vec<char> = rc.value.chars().collect();
-            chars
-                .get(index as usize)
-                .map(|c| Sexp::Int(*c as i64))
-                .ok_or_else(|| {
-                    EvalError::ArithError(format!(
-                        "{}: index {} out of range for string of length {}",
-                        primitive,
-                        index,
-                        chars.len()
-                    ))
-                })
-        }
-        Sexp::Vector(v) => {
-            Err(EvalError::ArithError(format!(
-                "{}: index {} out of range for vector of length {}",
-                primitive,
-                index,
-                v.value.len()
-            )))
-        }
-        Sexp::CharTable(rc) => Ok(crate::eval::builtins::char_table_get(rc, index)),
-        Sexp::BoolVector(v) => {
-            v.value
-                .get(index as usize)
-                .map(|b| if *b { Sexp::T } else { Sexp::Nil })
-                .ok_or_else(|| {
-                    EvalError::ArithError(format!(
-                        "{}: index {} out of range for bool-vector of length {}",
-                        primitive,
-                        index,
-                        v.value.len()
-                    ))
-                })
-        }
-        other => Err(EvalError::WrongType {
-            expected: "arrayp".into(),
+/// `(nelisp--str-codepoint-at S IDX)' — char-indexed codepoint read
+/// for `Sexp::Str' / `Sexp::MutStr'.  Signals `arith-error' on
+/// out-of-range and `wrong-type-argument' on non-string S.
+pub fn bi_str_codepoint_at(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    crate::eval::builtins::require_arity("nelisp--str-codepoint-at", args, 2, Some(2))?;
+    let idx = crate::eval::builtins::as_int("nelisp--str-codepoint-at", &args[1])?;
+    let s: &str = match &args[0] {
+        Sexp::Str(s) => s.as_str(),
+        Sexp::MutStr(rc) => rc.value.as_str(),
+        other => return Err(EvalError::WrongType {
+            expected: "string".into(),
             got: other.clone(),
         }),
-    }
-}
-
-pub fn bi_aref_impl(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    crate::eval::builtins::require_arity("aref", args, 2, Some(2))?;
-    aref_helper(args, "aref")
-}
-
-pub fn bi_aset_impl(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    crate::eval::builtins::require_arity("aset", args, 3, Some(3))?;
-    let index = crate::eval::builtins::as_int("aset", &args[1])?;
-    if index < 0 {
-        return Err(EvalError::ArithError(format!(
-            "aset: negative index {}",
-            index
-        )));
-    }
-    let access = &super::unified_jit().access;
-    let mut out = Sexp::Nil;
-    let r = (access.aset)(
-        &args[0] as *const _,
-        index,
-        &args[2] as *const _,
-        &mut out as *mut _,
-    );
-    if r == TRAMPOLINE_OK {
-        return Ok(out);
-    }
-    match &args[0] {
-        Sexp::Vector(v) => {
-            let len = v.value.len();
-            Err(EvalError::ArithError(format!(
-                "aset: index {} out of range for vector of length {}",
-                index, len
-            )))
-        }
-        Sexp::MutStr(rc) => {
-            let new_ch = match &args[2] {
-                Sexp::Int(n) => char::from_u32(*n as u32).ok_or_else(|| {
-                    EvalError::WrongType {
-                        expected: "valid character codepoint".into(),
-                        got: args[2].clone(),
-                    }
-                })?,
-                other => {
-                    return Err(EvalError::WrongType {
-                        expected: "character (integer)".into(),
-                        got: other.clone(),
-                    });
-                }
-            };
-            let chars: Vec<char> = rc.value.chars().collect();
-            if (index as usize) >= chars.len() {
-                return Err(EvalError::ArithError(format!(
-                    "aset: index {} out of range for string of length {}",
-                    index,
-                    chars.len()
-                )));
-            }
-            let mut new_str = String::with_capacity(rc.value.len());
-            for (i, c) in chars.iter().enumerate() {
-                if i == index as usize {
-                    new_str.push(new_ch);
-                } else {
-                    new_str.push(*c);
-                }
-            }
-            // SAFETY: Phase A.4.2 — `args' has been evaluated to owned
-            // Sexps; no `&String' borrow into `rc.value' is live (the
-            // local `chars' / `new_str' don't alias the box).  Same
-            // Phase A.2.1 setcar discipline applies.
-            unsafe { rc.set_value(new_str) };
-            Ok(args[2].clone())
-        }
-        Sexp::CharTable(rc) => {
-            // SAFETY: Phase A.4.6 — `args' has been evaluated to owned
-            // Sexps; no `&CharTableInner' borrow into `rc.inner' is live
-            // (the closure does the entire mutation).  Same Phase A.2.1
-            // setcar discipline applies.
-            unsafe {
-                rc.with_inner_mut(|inner| {
-                    crate::eval::builtins::char_table_set_one(
-                        inner,
-                        index,
-                        args[2].clone(),
-                    );
-                });
-            }
-            Ok(args[2].clone())
-        }
-        Sexp::BoolVector(rc) => {
-            let len = rc.value.len();
-            if (index as usize) >= len {
-                return Err(EvalError::ArithError(format!(
-                    "aset: index {} out of range for bool-vector of length {}",
-                    index, len
-                )));
-            }
-            let bit = crate::eval::special_forms::is_truthy(&args[2]);
-            // SAFETY: Phase A.4.4 — same discipline as the Vector / MutStr
-            // arms above; bounds check above does not borrow `rc.value`,
-            // and the closure mutates exactly the indexed slot.
-            unsafe {
-                rc.with_value_mut(|vec| {
-                    vec[index as usize] = bit;
-                });
-            }
-            Ok(args[2].clone())
-        }
-        Sexp::Str(_) => Err(EvalError::WrongType {
-            expected: "mutable-array".into(),
-            got: args[0].clone(),
-        }),
-        other => Err(EvalError::WrongType {
-            expected: "arrayp".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
-pub fn bi_elt_impl(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    crate::eval::builtins::require_arity("elt", args, 2, Some(2))?;
-    let idx = crate::eval::builtins::as_int("elt", &args[1])?;
+    };
     if idx < 0 {
-        return Err(EvalError::ArithError(format!(
-            "elt: negative index {}",
-            idx
-        )));
+        return Err(EvalError::ArithError(format!("negative index {}", idx)));
     }
-    let access = &super::unified_jit().access;
-    let mut out = Sexp::Nil;
-    let r = (access.elt)(&args[0] as *const _, idx, &mut out as *mut _);
-    if r == TRAMPOLINE_OK {
-        return Ok(out);
+    s.chars().nth(idx as usize)
+        .map(|c| Sexp::Int(c as i64))
+        .ok_or_else(|| EvalError::ArithError(format!("index {} out of range", idx)))
+}
+
+/// `(nelisp--mut-str-set-codepoint S IDX CP)' — in-place codepoint
+/// mutation of a `Sexp::MutStr'.  Returns CP per Emacs `aset' contract.
+pub fn bi_mut_str_set_codepoint(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    crate::eval::builtins::require_arity("nelisp--mut-str-set-codepoint", args, 3, Some(3))?;
+    let idx = crate::eval::builtins::as_int("nelisp--mut-str-set-codepoint", &args[1])?;
+    let cp = crate::eval::builtins::as_int("nelisp--mut-str-set-codepoint", &args[2])?;
+    let new_ch = char::from_u32(cp as u32).ok_or_else(|| EvalError::WrongType {
+        expected: "valid character codepoint".into(),
+        got: args[2].clone(),
+    })?;
+    let rc = match &args[0] {
+        Sexp::MutStr(rc) => rc,
+        other => return Err(EvalError::WrongType {
+            expected: "mut-string".into(),
+            got: other.clone(),
+        }),
+    };
+    let chars: Vec<char> = rc.value.chars().collect();
+    if idx < 0 || (idx as usize) >= chars.len() {
+        return Err(EvalError::ArithError(format!("index {} out of range", idx)));
     }
+    let mut new_str = String::with_capacity(rc.value.len());
+    for (i, c) in chars.iter().enumerate() {
+        new_str.push(if i == idx as usize { new_ch } else { *c });
+    }
+    // SAFETY: Phase A.4.2 — same discipline as the pre-Doc-80
+    // `bi_aset_impl' MutStr arm; locals don't alias the box.
+    unsafe { rc.set_value(new_str) };
+    Ok(args[2].clone())
+}
+
+/// `(nelisp--char-table-aref T IDX)' — wrapper over `char_table_get'.
+pub fn bi_char_table_aref(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    crate::eval::builtins::require_arity("nelisp--char-table-aref", args, 2, Some(2))?;
+    let idx = crate::eval::builtins::as_int("nelisp--char-table-aref", &args[1])?;
     match &args[0] {
-        Sexp::Nil => Err(EvalError::ArithError(format!(
-            "elt: index {} out of range for empty sequence",
-            idx
-        ))),
-        Sexp::Cons(_) => Err(EvalError::ArithError(format!(
-            "elt: index {} out of range for list",
-            idx
-        ))),
-        Sexp::Str(_) | Sexp::MutStr(_) | Sexp::Vector(_)
-        | Sexp::CharTable(_) | Sexp::BoolVector(_) => aref_helper(args, "elt"),
+        Sexp::CharTable(rc) => Ok(crate::eval::builtins::char_table_get(rc, idx)),
         other => Err(EvalError::WrongType {
-            expected: "sequencep".into(),
+            expected: "char-table".into(),
             got: other.clone(),
         }),
     }
+}
+
+/// `(nelisp--char-table-aset T IDX V)' — wrapper over
+/// `char_table_set_one'.  Returns V per `aset' contract.
+pub fn bi_char_table_aset(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    crate::eval::builtins::require_arity("nelisp--char-table-aset", args, 3, Some(3))?;
+    let idx = crate::eval::builtins::as_int("nelisp--char-table-aset", &args[1])?;
+    let rc = match &args[0] {
+        Sexp::CharTable(rc) => rc,
+        other => return Err(EvalError::WrongType {
+            expected: "char-table".into(),
+            got: other.clone(),
+        }),
+    };
+    // SAFETY: Phase A.4.6 — closure does the entire mutation.
+    unsafe {
+        rc.with_inner_mut(|inner| {
+            crate::eval::builtins::char_table_set_one(inner, idx, args[2].clone());
+        });
+    }
+    Ok(args[2].clone())
 }
 
 // ---------- syscall-nr-resolve ------------------------------------

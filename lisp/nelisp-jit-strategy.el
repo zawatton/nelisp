@@ -1,4 +1,4 @@
-;;; nelisp-jit-strategy.el --- JIT lowering strategy wrappers (Doc 77b Stage b.4)  -*- lexical-binding: t; -*-
+;;; nelisp-jit-strategy.el --- JIT lowering strategy wrappers (Doc 77b Stage b.4 + Doc 80)  -*- lexical-binding: t; -*-
 
 ;;; Commentary:
 
@@ -6,46 +6,39 @@
 ;; wrappers on top of the `nl-jit-call-*' bridge primitives shipped in
 ;; Stage b.2 / b.2.5.
 ;;
+;; Doc 80 Stage 80.3〜80.5 (2026-05-09) — `length' / `aref' / `aset' /
+;; `elt' fall-through dispatch lifted from Rust (`bi_length_impl' /
+;; `aref_helper' / `bi_aref_impl' / `bi_aset_impl' / `bi_elt_impl', =
+;; ~255 LOC) into elisp on top of the `lisp/nelisp-jit-substrate.el'
+;; expression substrate (`cond' / `signal' / signal-helpers).  The
+;; remaining narrow per-variant operations (= MutStr char count /
+;; codepoint mutation / BoolVector length / CharTable get/set) live as
+;; slim Rust primitives in `jit/strategy.rs'.
+;;
 ;; 24 wrappers cover the full pre-b.4 JIT registry surface:
 ;;
 ;;   12 arith    (nelisp--add2 / -sub2 / -mul2 / -num-{eq,lt,gt,le,ge}2 /
 ;;                -logior2 / -logand2 / -logxor2 / ash)
-;;    5 cons     (car / cdr / cons / setcar / setcdr)
+;;    5 cons     (car / cdr / cons / setcar / setcdr)  ← pre-installed
+;;                  by Doc 80 substrate; this file's re-`fset' is a
+;;                  redundant idempotent restoration left in place for
+;;                  self-documentation.
 ;;    4 access   (length / aref / aset / elt)
 ;;    1 predicate (eq)
 ;;    2 syscall  (nelisp--syscall / nelisp--syscall-supported-p)
 ;;
-;; This file is loaded FIRST in the STDLIB image chain so it can
-;; install fcell overrides BEFORE `nelisp-stdlib-eval-special.el' /
-;; `nelisp-stdlib.el' run any of these names.  After installation, the
-;; function cell for each wrapped name points at an elisp closure
-;; instead of the Rust `(builtin NAME)' sentinel — `apply_builtin'
-;; (which used to consult the JIT registry's `lowered_X') is no longer
-;; reached for these names, so deleting `lowered_X' + their
-;; `register(map)' insert calls is safe.
-;;
-;; Constraints on wrapper bodies:
+;; Constraints on wrapper bodies (Doc 80-relaxed):
 ;; - Only Tier 1 special forms (`if', `quote', `lambda', `let',
-;;   `let*') are used — `cond' / `and' / `when' aren't defined yet at
-;;   this point in the bootstrap.
-;; - Pre-eq-wrapper code uses `nelisp--ref-eq' (= a Rust builtin
-;;   exposed for cycle-safe `equal') for symbol equality;
-;;   `nelisp--ref-eq' falls through to `sexp_eq' for `(Symbol, Symbol)'
-;;   which compares by name — same semantics as `eq' for symbols.
+;;   `let*', `progn', `while', `setq', `condition-case') and Rust
+;;   builtins are used PLUS the macros / helpers installed by
+;;   `lisp/nelisp-jit-substrate.el' (= `cond' / `when' / `unless' /
+;;   `null' / `not' / `nelisp--signal-{wrong-type,arith}').
 ;; - For arith Float fallback (= mixed Int/Float), wrappers call
 ;;   `nelisp--*-float' Rust primitives.  Calling host `+' here would
 ;;   recurse via `nelisp-stdlib.el' `+' → `nelisp--add2' → `+'.
-;; - For length/aref/aset/elt the multi-variant fall-through (=
-;;   MutStr / CharTable / BoolVector / Cons-walk + canonical
-;;   ArithError / WrongType shapes) is delegated to a Rust helper
-;;   (`nelisp--{length,aref,aset,elt}-impl').  These helpers carry the
-;;   exact body of the pre-b.4 `lowered_X' fn — same JIT call + same
-;;   match-on-variant fall-through.  The elisp wrapper exists so the
-;;   public name's function cell becomes a closure instead of a
-;;   `(builtin NAME)' sentinel; the heavy lifting stays Rust because
-;;   variant dispatching with proper error shapes (ArithError vs
-;;   WrongType, message formatting) is not expressible cleanly in
-;;   pre-stdlib elisp.
+;; - For `length' / `aref' / `aset' / `elt' the variant dispatch is
+;;   pure elisp (= `cond' on `type-of') with slim Rust primitives for
+;;   MutStr / BoolVector / CharTable Sexp-internal access.
 
 ;;; Code:
 
@@ -90,25 +83,138 @@
       (lambda (cell val)
         (nl-jit-call-out-2 "nelisp_jit_setcdr" cell val)))
 
-;; ---------- access (length / aref / aset / elt) -------------------
+;; ---------- access (length / aref / aset / elt) — Doc 80 elisp dispatch ----
 ;;
-;; Each wrapper trampolines into the Rust `*-impl' helper which does
-;; JIT call + multi-variant fall-through (= verbatim body of the
-;; pre-b.4 `lowered_X' fn).  Reason for keeping the body in Rust: the
-;; ERR branch needs ArithError vs WrongType discrimination + multi-
-;; line format strings, not a clean fit for pre-stdlib elisp.
+;; Pure-elisp variant dispatch on top of the JIT trampoline (= JIT
+;; covers Nil / Vector / Str / BoolVector-in-range / Cons-elt-in-range
+;; fast paths) + slim Rust primitives for MutStr / BoolVector /
+;; CharTable Sexp-internal access.  See Doc 80 §3 for the bootstrap
+;; expressibility audit.
+;;
+;; Each wrapper:
+;;   1. Calls the `nl-jit-call-out-N' bridge to invoke the JIT entry.
+;;      On `TRAMPOLINE_OK' the bridge returns the result.
+;;   2. On `TRAMPOLINE_ERR' the bridge raises a generic `WrongType'
+;;      error.  The wrapper catches it via `condition-case' and
+;;      dispatches by type-tag to the appropriate slim primitive or
+;;      raises the canonical `arith-error' / `wrong-type-argument'
+;;      via `nelisp--signal-{arith,wrong-type}'.
 
 (fset 'length
-      (lambda (x) (nelisp--length-impl x)))
+      (lambda (x)
+        (condition-case _err
+            (nl-jit-call-out-1 "nelisp_jit_length" x)
+          (error
+           (let ((tag (type-of x)))
+             (cond
+              ;; MutStr arm (= JIT length only handles immutable Str).
+              ((eq tag 'string) (nelisp--mut-str-len x))
+              ;; BoolVector arm.
+              ((eq tag 'bool-vector) (nelisp--bool-vector-len x))
+              ;; Cons-walk via `cdr' chain — Tier-1 `while' loop.
+              ((eq tag 'cons)
+               (let ((n 0) (p x))
+                 (while (eq (type-of p) 'cons)
+                   (setq n (nelisp--add2 n 1))
+                   (setq p (cdr p)))
+                 (if (eq p nil)
+                     n
+                   (nelisp--signal-wrong-type 'sequencep x))))
+              (t (nelisp--signal-wrong-type 'sequencep x)))))))) 
 
 (fset 'aref
-      (lambda (arr idx) (nelisp--aref-impl arr idx)))
+      (lambda (arr idx)
+        ;; Negative index check before dispatch (= matches pre-Doc-80
+        ;; `aref_helper' arith-error shape).  `nelisp--num-lt2' returns
+        ;; t/nil — the substrate `if' tests Elisp truthiness directly,
+        ;; no `nelisp--int-eq-zero' bridge needed.
+        (if (nelisp--ref-eq (type-of idx) 'integer)
+            (if (nelisp--num-lt2 idx 0)
+                (nelisp--signal-arith (cons "negative index" nil))
+              ;; idx >= 0 → JIT call + fall-through dispatch.
+              (condition-case _err
+                  (nl-jit-call-out-1i "nelisp_jit_aref" arr idx)
+                (error
+                 (let ((tag (type-of arr)))
+                   (cond
+                    ;; Str / MutStr — char-indexed codepoint via
+                    ;; slim primitive (handles both variants).
+                    ((eq tag 'string)
+                     (nelisp--str-codepoint-at arr idx))
+                    ;; CharTable — slim primitive.
+                    ((eq tag 'char-table)
+                     (nelisp--char-table-aref arr idx))
+                    ;; Vector / BoolVector hit ERR only on out-of-
+                    ;; range; the `bool-vector' arm needs a
+                    ;; dedicated arith-error (the JIT trampoline
+                    ;; doesn't know to disambiguate).
+                    ((eq tag 'bool-vector)
+                     (nelisp--signal-arith
+                      (cons "bool-vector index out of range" nil)))
+                    ((eq tag 'vector)
+                     (nelisp--signal-arith
+                      (cons "vector index out of range" nil)))
+                    (t (nelisp--signal-wrong-type 'arrayp arr)))))))
+          (nelisp--signal-wrong-type 'integerp idx))))
 
 (fset 'aset
-      (lambda (arr idx val) (nelisp--aset-impl arr idx val)))
+      (lambda (arr idx val)
+        (if (nelisp--ref-eq (type-of idx) 'integer)
+            (if (nelisp--num-lt2 idx 0)
+                (nelisp--signal-arith (cons "negative index" nil))
+              (condition-case _err
+                  (nl-jit-call-out-2i "nelisp_jit_aset" arr idx val)
+                (error
+                 (let ((tag (type-of arr)))
+                   (cond
+                    ;; MutStr — codepoint mutation via slim primitive.
+                    ;; Note: type-of also returns 'string for Str
+                    ;; (immutable); the slim primitive raises
+                    ;; wrong-type-argument internally for Str so the
+                    ;; canonical "mutable-array" error shape surfaces.
+                    ((eq tag 'string)
+                     (nelisp--mut-str-set-codepoint arr idx val))
+                    ;; CharTable — slim primitive.
+                    ((eq tag 'char-table)
+                     (nelisp--char-table-aset arr idx val))
+                    ;; Vector / BoolVector → only OOR arrives here.
+                    ((eq tag 'vector)
+                     (nelisp--signal-arith
+                      (cons "vector index out of range" nil)))
+                    ((eq tag 'bool-vector)
+                     (nelisp--signal-arith
+                      (cons "bool-vector index out of range" nil)))
+                    (t (nelisp--signal-wrong-type 'arrayp arr)))))))
+          (nelisp--signal-wrong-type 'integerp idx))))
 
 (fset 'elt
-      (lambda (seq idx) (nelisp--elt-impl seq idx)))
+      (lambda (seq idx)
+        (if (nelisp--ref-eq (type-of idx) 'integer)
+            (if (nelisp--num-lt2 idx 0)
+                (nelisp--signal-arith (cons "negative index" nil))
+              (condition-case _err
+                  (nl-jit-call-out-1i "nelisp_jit_elt" seq idx)
+                (error
+                 (let ((tag (type-of seq)))
+                   (cond
+                    ;; Empty list / cons-OOR → arith-error.
+                    ((eq tag 'symbol)
+                     (if (eq seq nil)
+                         (nelisp--signal-arith
+                          (cons "elt: empty sequence" nil))
+                       (nelisp--signal-wrong-type 'sequencep seq)))
+                    ((eq tag 'cons)
+                     (nelisp--signal-arith
+                      (cons "elt: index out of range for list" nil)))
+                    ;; Strings / char-tables / bool-vectors / vectors
+                    ;; all delegate to `aref' (= same fall-through
+                    ;; arms; the elisp `aref' wrapper handles them).
+                    ((eq tag 'string) (aref seq idx))
+                    ((eq tag 'char-table) (aref seq idx))
+                    ((eq tag 'bool-vector) (aref seq idx))
+                    ((eq tag 'vector) (aref seq idx))
+                    (t (nelisp--signal-wrong-type 'sequencep seq)))))))
+          (nelisp--signal-wrong-type 'integerp idx))))
 
 ;; ---------- arith (12) --------------------------------------------
 ;;

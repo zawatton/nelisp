@@ -141,11 +141,11 @@ mod predicate;
 // syscall-nr resolver.  See `strategy.rs' header for the surface.
 mod strategy;
 pub use strategy::{
-    bi_add2_float, bi_aref_impl, bi_ash_impl, bi_aset_impl, bi_elt_impl,
-    bi_int_eq_zero, bi_length_impl, bi_logand2_impl, bi_logior2_impl,
-    bi_logxor2_impl, bi_mul2_float, bi_num_eq2_float, bi_num_ge2_float,
-    bi_num_gt2_float, bi_num_le2_float, bi_num_lt2_float, bi_sub2_float,
-    bi_syscall_nr_resolve,
+    bi_add2_float, bi_ash_impl, bi_bool_vector_len, bi_char_table_aref,
+    bi_char_table_aset, bi_int_eq_zero, bi_logand2_impl, bi_logior2_impl,
+    bi_logxor2_impl, bi_mul2_float, bi_mut_str_len, bi_mut_str_set_codepoint,
+    bi_num_eq2_float, bi_num_ge2_float, bi_num_gt2_float, bi_num_le2_float,
+    bi_num_lt2_float, bi_str_codepoint_at, bi_sub2_float, bi_syscall_nr_resolve,
 };
 mod syscall;
 
