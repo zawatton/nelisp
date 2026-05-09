@@ -93,6 +93,9 @@
         (kill-buffer buffer)))))
 
 (ert-deftest emacs-shell-command-install-bindings ()
+  ;; Re-install bindings explicitly so this test is robust against other
+  ;; modules' fixtures (e.g. *--with-fresh-world*) that swap current-global-map.
+  (emacs-shell-command--install-bindings)
   (let ((map (current-global-map)))
     (should (eq (lookup-key map (kbd "M-!")) #'shell-command))
     (should (eq (lookup-key map (kbd "M-|")) #'shell-command-on-region))
