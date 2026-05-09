@@ -1983,13 +1983,15 @@ loaded) plus a built-in scaffold expander (see
 
 ;;; Doc 81 Stage 81.1 — primitive trampoline opcodes ---------------------
 ;;
-;; Three SSA opcodes added by Doc 81 §5.1.detail to support the
-;; primitive-trampoline ABI (= `:trampoline-unary' shape).  The
-;; opcodes describe the *low-level Sexp inspection* operations a
-;; primitive trampoline (e.g. `car') needs in order to read the tag
-;; byte at offset 0, branch on it, and dereference the payload pointer
-;; at offset 8.  Subsequent stages (81.2+) layer cdr / cons / setcar /
-;; setcdr on top of the same opcode set.
+;; SSA opcodes added by Doc 81 §5.1.detail / §5.2.detail to support the
+;; primitive-trampoline ABI (= `:trampoline-unary' / `-binary-ctor' /
+;; `-binary-mut' shapes).  The opcodes describe the *low-level Sexp
+;; inspection* operations a primitive trampoline (e.g. `car') needs in
+;; order to read the tag byte at offset 0, branch on it, dereference
+;; the payload pointer at offset 8, and CALL out to the extern "C"
+;; trampoline body.  Stage 81.1 shipped 3 (load-tag, load-payload-ptr,
+;; cmp-tag-imm); Stage 81.2 adds the 4th (`ssa-call-primitive') to
+;; layer cdr / cons / setcar / setcdr on top of the same opcode set.
 ;;
 ;; Critical IR design decision (Doc 81 §5.1.2): `ssa-load-tag' returns
 ;; an *unsigned* (zero-extended) i64.  Tag bytes >= 0x80 (e.g. future
@@ -2007,6 +2009,15 @@ loaded) plus a built-in scaffold expander (see
 ;;     meta carries (:imm IMM :then THEN-ID :else ELSE-ID); the
 ;;     instruction terminates its block — emit-side fixes up rel32 to
 ;;     L_block_<THEN-ID> for je, falls through to <ELSE-ID>.
+;;   ssa-call-primitive   (ARG-VALS...)           -> u64 (TRAMPOLINE_OK/_ERR)
+;;     CALL extern "C" trampoline body; meta carries (:abi ABI-MODE
+;;     :symbol C-SYMBOL).  ABI-MODE selects argument-passing layout:
+;;       :trampoline-unary       — (arg-ptr, out-ptr) -> i64
+;;       :trampoline-binary-ctor — (a-ptr, b-ptr, out-ptr) -> i64
+;;       :trampoline-binary-mut  — (a-ptr, b-ptr) -> i64 (mutate-in-place)
+;;     The def value receives the i64 status (= rax / x0 on return);
+;;     the actual primitive result lives in the caller-provided
+;;     out-slot (allocated by the recognition pass in Stage 81.3).
 ;;
 ;; This is a *scaffold subset* — the opcodes are tagged as
 ;; def-producing (load-tag / load-payload-ptr) or terminator
@@ -2029,7 +2040,20 @@ loaded) plus a built-in scaffold expander (see
                              :doc "Load payload pointer at *Sexp offset 8"))
     (ssa-cmp-tag-imm      . (:arity 1 :def nil :terminator t
                              :returns nil
-                             :doc "Compare TAG-VAL against meta :imm; branch :then / :else")))
+                             :doc "Compare TAG-VAL against meta :imm; branch :then / :else"))
+    ;; Doc 81 Stage 81.2: 4th opcode for primitive trampoline CALL.
+    ;; :arity is variadic (= depends on the ABI shape declared in
+    ;; the instruction's :abi meta — :trampoline-unary takes 1, the
+    ;; -binary-ctor / -binary-mut shapes take 2).  We use :arity nil
+    ;; as a sentinel so the verifier does not enforce a fixed count;
+    ;; per-shape arity is checked by the lower helper at emit time.
+    ;; The opcode is *not* a terminator (control returns inline) and
+    ;; produces a def value that holds the trampoline status code
+    ;; (= TRAMPOLINE_OK / TRAMPOLINE_ERR — see nelisp-cc-runtime-
+    ;; trampoline-ok/-err).
+    (ssa-call-primitive   . (:arity nil :def t :terminator nil
+                             :returns (unsigned i64)
+                             :doc "CALL extern \"C\" primitive trampoline; status in def")))
   "Doc 81 Stage 81.1 SSA opcode descriptors.
 
 Each entry is (OPCODE-SYM . PROPS) where PROPS is a plist with:
