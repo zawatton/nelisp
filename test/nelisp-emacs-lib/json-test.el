@@ -116,5 +116,28 @@
 (ert-deftest json-read-missing-comma-in-object ()
   (should-error (json-read-from-string "{\"a\":1 \"b\":2}") :type 'json-error))
 
+(ert-deftest json-encode-empty-hash-table-emits-curly ()
+  "Phase B6 (2026-05-10): empty hash-table → `{}'.
+This is the canonical encoding for `(make-hash-table)' values that
+anvil-server uses to mean an empty MCP capabilities sub-object."
+  (should (equal (json-encode (make-hash-table)) "{}")))
+
+(ert-deftest json-encode-populated-hash-table-emits-pairs ()
+  "Phase B6 (2026-05-10): non-empty hash-table → JSON object."
+  (let ((h (make-hash-table :test 'equal)))
+    (puthash "a" 1 h)
+    (let ((s (json-encode h)))
+      (should (string-match-p "\\`{" s))
+      (should (string-match-p "\"a\":1" s))
+      (should (string-match-p "}\\'" s)))))
+
+(ert-deftest json-encode-hash-table-inside-alist ()
+  "Phase B6 (2026-05-10): nested empty hash inside an alist value.
+Mirrors the exact shape `anvil-server--handle-initialize' produces
+when the server has at least one tool registered."
+  (let* ((h (make-hash-table))
+         (s (json-encode `((capabilities . ((tools . ,h)))))))
+    (should (equal s "{\"capabilities\":{\"tools\":{}}}"))))
+
 (provide 'json-test)
 ;;; json-test.el ends here
