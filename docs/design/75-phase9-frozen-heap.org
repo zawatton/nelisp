@@ -6,7 +6,7 @@
 * §0 Status
 
 :PROPERTIES:
-:STATE: DRAFT v2 2026-05-09 — v1 (2026-05-08) audit + concrete LOC inventory + stage breakdown
+:STATE: DRAFT v3 2026-05-09 — Phase 9 sub-stage 9.1〜9.6 detail articulation (Doc 81 detail level)
 :PARENT: Doc 73 §2.5 (= Stage 8.5 articulation で Phase 9 候補)
 :RELATED: Doc 72 (Stage 7.7.a/b AOT bake SHIPPED 2026-05-08) / Doc 73 §9 #1 (Doc 75 候補 shift) / Doc 77c (= 100% pure elisp self-host commitment 2026-05-09)
 :DECISION_RULE: 2026-05-09 user 指示 — *every commit must net-decrease Rust LOC* (= per-commit monotonic shrink rule)
@@ -17,7 +17,11 @@
   73 §9 #1 (Doc 75 候補 shift) / 74 (anvil migration、独立 track) /
   77c (= 100% pure elisp self-host commitment、Phase A.5 SHIPPED 2026-05-09)
 - 前提 SHIPPED: Doc 64〜72 (Phase 7 main scope) / Doc 73 Stage 8.1 + 8.3.a/b
-- 本 Doc: Phase 9 frozen heap 全体設計 — *DRAFT v2 2026-05-09*
+- 本 Doc: Phase 9 frozen heap 全体設計 — *DRAFT v3 2026-05-09* (= v2 stage
+  breakdown を Doc 81 detail level に拡張、§3.x.detail で各 sub-stage の
+  sub-task / Rust LOC delta source / image format v3 design / encoder-
+  decoder articulation を articulate. Phase 9 個別 sub-stage dispatch を
+  unblock)
 - 規模: Phase 9 相当 (~500 LOC + image format v3 拡張)、4-6 sub-stage、
   各 commit で *Rust LOC delta が ≤ 0* を厳守
 - Phase 8 Stage 8.4 (= reader feature gate) とは互いに独立 — どちらが先でも可
@@ -309,6 +313,77 @@ production LOC に含まれない).
 *検証*: cargo test --lib で count 出力確認、Doc 75 §1.5 戦略 C の前提
 (= 大半が CAPTURED-ENV nil) を実測で確定.
 
+*** §3.1.detail Stage 9.1 詳細 articulate (~2 days)
+
+**** §3.1.1 image format v3 doc — NELIMG magic / version / KIND byte 確定
+
+確定 form に articulate する schema 文言は §5.2 と同期させる.
+本 stage で image.rs 冒頭 docstring に追記する section:
+
+#+begin_example
+//! NELIMG image format spec
+//!
+//! magic   = b"NELIMG\0"  (7 bytes)
+//! version = 0x02 | 0x03  (1 byte)  ; v2 = form-list, v3 = frozen-heap
+//! kind    = 0x00 | 0x01  (1 byte, only when version=3)
+//!           0x00 = legacy (form-list, identical to v2 payload after KIND)
+//!           0x01 = frozen-heap (Doc 75 §5.2 layout)
+//!
+//! v3 KIND=0x01 payload follows §5.2:
+//!   u32 N_NODES, [NODE_TAG, payload...] × N,
+//!   u32 N_GLOBALS, [name, flags, idxs] × N,
+//!   u32 N_FALLBACK_FORMS, [u32 src_len, utf8] × N
+#+end_example
+
+doc 行追加合計: ~+15 行 (= image.rs 冒頭). 既存 doc 行内 sub-section
+として absorb することで *production net 0 LOC* を維持する (= 既存
+`//! ABI...` 行と同 doc block に追記、新規 `pub` item 追加なし).
+
+**** §3.1.2 cfg(test) gate strategy (= 戦略 C closure-with-captures spike)
+
+戦略 C 採用判定の検証 ERT を =build-tool/src/eval/tests.rs= に追加.
+production binary には *0 LOC* を増やさないため、cfg(test) 配下に隔離.
+
+ERT 名: =frozen_heap_strategy_c_closure_with_captures_count=
+
+実装 sketch:
+
+#+begin_src rust
+#[test]
+fn frozen_heap_strategy_c_closure_with_captures_count() {
+    let env = Env::new_global().expect("bootstrap");
+    let mut count = 0usize;
+    for (_name, entry) in env.globals.iter() {
+        if let Some(Sexp::Cons(c)) = &entry.function {
+            // (closure CAPTURED-ENV ARGS BODY) の 2nd elem を見て
+            // CAPTURED-ENV != nil なら captures あり と判定
+            if is_closure_with_captures(c) { count += 1; }
+        }
+    }
+    eprintln!("CLOSURE_WITH_CAPTURES_COUNT={count}");
+    // 戦略 C 採用 gate: §7.1 thresholds に従う
+    assert!(count <= 5, "fallback list が大きすぎる (= {count})");
+}
+#+end_src
+
+cfg(test) 配下なので Doc 77c counting policy と同様 production LOC
+からは除外. =cargo test --lib frozen_heap_strategy_c= で count 出力
+を見て §7.1 の閾値判定に使う.
+
+**** §3.1.3 sub-tasks 9.1.a〜9.1.b
+
+| sub-task | 内容 | LOC delta (production) | 検証 |
+|----------+------+------------------------+------|
+| 9.1.a | image.rs 冒頭 docstring に v3 schema 追記 | 0 (= doc only) | =cargo doc= で render 確認 |
+| 9.1.b | cfg(test) closure-with-captures count test 追加 | 0 (= cfg(test)) | =cargo test --lib= で count 出力 |
+
+**** §3.1.4 Rust ±0 articulation
+
+production 側変更: docstring (= 行 +15、ただし新規 module / fn / const
+追加なし、build graph 内コード行は不変). Doc 77c counting policy
+(= cfg-attribute で gate された行は LOC count から除外、doc-only 行も
+除外) を本 Doc にも適用 → *Phase 9 monotonic shrink 評価上は ±0*.
+
 ** §3.2 Stage 9.2 — image v2 encode path を image-baker 配下のみに移管 (= 削減先行)
 
 *Scope*: image.rs の v2 form-list encode path (= encode_image / encode_value /
@@ -330,6 +405,61 @@ production binary には decode 側のみ残る.
 - =cargo build --release --features image-baker= → 成功
 - =cargo build --release= (= production) → encode_* 系が grey-out 確認
 - =cargo test --release= → ERT 全 PASS
+
+*** §3.2.detail Stage 9.2 詳細 articulate (~3 days)
+
+**** §3.2.1 image-baker 配下移動 rationale (= dev tool としての位置付け)
+
+v2 form-list encode path (= encode_image / encode_value /
+encode_char_table) は STDLIB image を生成する =nelisp-baker= bin が
+*唯一の caller*. production binary は decode のみ要する (= STDLIB
+image bytes を読み込んで eval). よって encode 系は dev tool に降格させ
+=cfg(feature = "image-baker")= 配下に固定するのが自然.
+
+降格の利点:
+- production binary build graph から ~110 LOC (= encode_value /
+  encode_char_table 本体) が消える → release binary size 軽量化
+- v3 frozen heap encoder と並べて =image-baker= feature 配下で
+  「どちらの形式を出すか」を baker bin が選択できる構造に整う
+- 万一 v2 image 形式に regression が入っても production には影響しない
+  (= dev path のみ broken)
+
+降格しない reason は無し (= production caller 0 件は §2.2 の grep で
+確認済).
+
+**** §3.2.2 sub-tasks 9.2.a〜9.2.b
+
+| sub-task | 内容 | LOC delta | 検証 |
+|----------+------+-----------+------|
+| 9.2.a | =fn encode_image= / =fn encode_value= / =fn encode_char_table= に =#[cfg(any(test, feature = "image-baker"))]= attr 追加 | +6 行 (= attr のみ) | =cargo build --release= で feature off graph に消える |
+| 9.2.b | =compile_elisp_to_image= の cfg attr 既存 (= image.rs:84 SHIPPED 済) との整合確認 + write_string / write_len helper 共有判定 | +4 行 (= helper も dev のみなら attr 追加) | =cargo check --no-default-features= で encode 系 unreferenced warning 0 |
+
+注意: =write_string= / =write_len= 等 helper は decoder 側 (=
+=read_string= / =read_len=) と独立しており encoder 専用. encoder と
+共に gate 可. =Reader struct= は v2 decode で使うため non-gated 維持.
+
+**** §3.2.3 +10 LOC cfg attr 追加内訳
+
+| 追加箇所 | attr 行数 |
+|----------+-----------|
+| =fn encode_image= 直前 | +1 |
+| =fn encode_value= 直前 | +1 |
+| =fn encode_char_table= 直前 | +1 |
+| =fn write_string= 直前 (= encoder 専用と判断するなら) | +1 |
+| =fn write_len= 直前 (= 同上) | +1 |
+| 既存 ERT (mod tests) の cfg(test) 内、encode 系を呼ぶ部分への gate 整合 | +5 |
+| 計 | *+10 LOC* |
+
+production binary build graph 内の実 LOC delta は *0* (= cfg attr 行は
+コード行ではあるが production graph から外す行を *増やしている*).
+Doc 77c counting policy で Phase 9 monotonic shrink 評価上は *±0*.
+
+**** §3.2.4 中間 broken state なし
+
+本 stage 単独で =cargo build --release= も =cargo build --release
+--features image-baker= も両 PASS 維持. encode caller (= baker bin)
+は元々 image-baker feature 経由でしか reach しないため、attr 追加で
+新規 broken は発生しない.
 
 ** §3.3 Stage 9.3 — STDLIB_IMAGES を image-baker 配下に降ろす + new_global path 切替準備
 
@@ -423,6 +553,174 @@ review コスト大. 妥協案:
 *production binary build graph 内 LOC* と解釈する (= cfg gate で
 非ロード path は count しない).
 
+*** §3.3+§3.4.detail Stage 9.3+9.4 詳細 articulate (~7 days、合体 commit)
+
+**** §3.3.1 NELIMG v3 encoder design (= 12 NODE_TAG + u32 NODE_INDEX + cycle placeholder)
+
+encoder は =image::frozen_heap::encode_env= として新設.
+=cfg(feature = "image-baker")= 配下 (= production graph 外).
+
+入力: =&Env= (= bootstrap 完了後の global env)
+出力: =Vec<u8>= (= NELIMG v3 frozen-heap KIND payload)
+
+algorithm:
+
+1. *Phase A (visit + DAG dedup)*: env.globals を walk、各 SymbolEntry の
+   value / function / plist が =Sexp::Cons | Vector | CharTable |
+   BoolVector | Cell | Record | MutStr= の時 =NlRc::as_ptr(&rc)= を
+   key に =HashMap<usize, u32>= で NODE_INDEX 採番 (Doc 50 §3.5
+   visited-set strategy 踏襲)
+2. *Phase B (placeholder reserve)*: cycle 検出のため、visit 開始時に
+   NODE_INDEX を *先に* 採番、子訪問が同 ptr に戻ってきたら採番済
+   index を返す (= Doc 50 cycle-safe equal pattern と同形)
+3. *Phase C (write nodes)*: NODE_INDEX 順に NODE_TAG byte + payload を
+   serialize. 子参照は u32 NODE_INDEX で書く (= inline せず参照化)
+4. *Phase D (write globals)*: env.globals.iter() を name で alpha sort
+   (= deterministic) → name + flags + NODE_INDEX を書く
+5. *Phase E (write fallback forms)*: §1.5 戦略 C の fallback list (=
+   closure-with-captures である defun の source 文字列) を末尾に書く
+
+NODE_TAG 12 件は §5.3 表で確定済 (= TAG_NIL ... TAG_MUT_STR).
+
+encode size 推定: §2.4 の v2 STDLIB images 計 222 KB に対し、frozen heap
+は env 全体 + DAG dedup により 1.5x〜2x = ~330-450 KB.
+
+**** §3.3.2 NELIMG v3 decoder design (= one-pass parse + node table)
+
+decoder は =image::frozen_heap::decode_env_into= として新設、production
+binary に組み込まれる (= cfg gate なし、= caller は =Env::new_global=).
+
+入力: =&[u8]= (= NELIMG v3 image bytes、include_bytes! macro 経由)
+出力: =Result<Env, ImageError>=
+
+algorithm:
+
+1. *Phase 1 (header parse)*: magic / version=3 / KIND=0x01 確認、
+   N_NODES を読む
+2. *Phase 2 (allocate placeholders)*: NODE_INDEX 0..N_NODES の各 idx
+   に対して、TAG だけ peek して shell allocation:
+   - =TAG_CONS= → =NlConsBoxRef::new(Sexp::Nil, Sexp::Nil)= (= empty
+     placeholder)
+   - =TAG_VECTOR= → =NlVectorRef::new(vec![Sexp::Nil; len])=
+   - 同様に CharTable / BoolVector / Cell / Record / MutStr
+   - atomic TAG (= NIL/T/INT/FLOAT/SYMBOL/STRING) は placeholder 不要
+3. *Phase 3 (fill nodes)*: 同じ順で再 walk、payload を実値で fill.
+   NODE_INDEX 参照は Phase 2 で allocate 済の =NlRc<T>= を =Rc::clone=
+   で取得 → 子の slot に store
+4. *Phase 4 (build globals)*: N_GLOBALS 分 name + flags + NODE_INDEX
+   を読み、=env.globals.insert(name, SymbolEntry { value, function,
+   plist, constant })= を実行
+5. *Phase 5 (eval fallback forms)*: N_FALLBACK_FORMS 分 source 文字列
+   を読み、=read_all_via_elisp + eval_form= で 1 件ずつ起動時 eval
+   (= 戦略 C 救済 path)
+
+注意: Phase 2 の placeholder allocation で =NlConsBoxRef::new= が
+無条件 nil で初期化できる前提が要 (= Doc 77c Phase A.5.1 で確定済).
+TAG_RECORD は type_tag を Phase 2 で読まなければ placeholder size が
+決まらないため、Phase 2 で type_tag NODE_INDEX も先読みする変則 path
+が要る. 設計詳細は §5 補足.
+
+**** §3.3.3 new_global decode loop 切替 (= STDLIB_IMAGES 降ろし)
+
+現状 (= Stage 7.7.b SHIPPED):
+
+#+begin_src rust
+// build-tool/src/eval/env.rs:143-240
+const STDLIB_IMAGES: &[&[u8]] = &[
+    include_bytes!("../../../lisp/nelisp-stdlib.el.image"),
+    include_bytes!("../../../lisp/nelisp-cl-macros.el.image"),
+    // ... 16 entry
+];
+
+pub fn new_global() -> Result<Env, EvalError> {
+    let mut env = Env::default();
+    install_builtins(&mut env);
+    for image_bytes in STDLIB_IMAGES {
+        let forms = image::decode_image(image_bytes)?;
+        for form in forms {
+            env.eval(&form)?;
+        }
+    }
+    Ok(env)
+}
+#+end_src
+
+Phase 9 後:
+
+#+begin_src rust
+#[cfg(feature = "image-baker")]
+const STDLIB_IMAGES: &[&[u8]] = &[ /* 16 entry */ ];
+
+#[cfg(not(feature = "image-baker"))]
+const STDLIB_IMAGES: &[&[u8]] = &[];
+
+const FROZEN_ENV_IMAGE: &[u8] = include_bytes!("../../../lisp/frozen-env.image");
+
+pub fn new_global() -> Result<Env, EvalError> {
+    let mut env = Env::default();
+    install_builtins(&mut env);
+    image::frozen_heap::decode_env_into(&mut env, FROZEN_ENV_IMAGE)?;
+    Ok(env)
+}
+#+end_src
+
+production graph では STDLIB_IMAGES が空、=for image_bytes= loop が
+zero-iteration となり、frozen heap decode 1 回で env が組み上がる.
+=cfg(feature = "image-baker")= mode (= dev path) では従来通り
+STDLIB_IMAGES から個別 image を decode + eval する path も残す
+(= baker 自身が STDLIB image を生成する時に必要).
+
+**** §3.3.4 sub-tasks 9.3.a〜9.4.b
+
+| sub-task | 内容 | LOC delta | 依存 |
+|----------+------+-----------+------|
+| 9.3.a | =image::frozen_heap= submodule 新設 (= encoder のみ、cfg(feature = "image-baker") 配下) | +180 (= encoder + DAG visitor + tests) | 9.1 (= schema doc 確定) |
+| 9.3.b | =build-tool/src/bin/nelisp-baker.rs= に =--frozen-heap= flag 追加 (= dev path) | +30 (= flag parse + encode_env 呼出 + 出力 path 決定) | 9.3.a |
+| 9.4.a | =image::frozen_heap::decode_env_into= 実装 (= production graph) | +100 (= decoder + placeholder fill) | 9.3.a (= NODE_TAG 共有) |
+| 9.4.b | =Env::new_global= の image decode loop を frozen heap 1 回 call に切替 + STDLIB_IMAGES を cfg(feature = "image-baker") 配下に降ろす + =lisp/frozen-env.image= bytes を git track | −65 (= STDLIB loop -40, image decode loop -15, cfg ガード -10) +30 (= new path call + cfg fallback) | 9.4.a |
+
+合計 4 sub-task. 4.b で「削除を最後にまとめて行う」ことで mid-state
+broken を avoid (= 9.3.a/b/4.a は production への影響なし、4.b で
+atomic 切替).
+
+**** §3.3.5 +265 LOC source articulation
+
+| 追加 LOC 内訳 | LOC |
+|---------------+-----|
+| =image::frozen_heap::encode_env= (= Phase A-E) | +120 |
+| =image::frozen_heap= 内 helper (= write_node, write_node_index, visit_dag, NodeIndex newtype) | +60 |
+| =image::frozen_heap::decode_env_into= (= Phase 1-5) | +90 |
+| =image::frozen_heap= 内 decoder helper (= read_node_at, fill_node, alloc_placeholder) | +30 |
+| =Env::new_global= 修正 (= frozen heap call + cfg fallback) | +30 |
+| =nelisp-baker.rs= の =--frozen-heap= branch | +30 |
+| =Sexp::Record= TAG_RECORD encode/decode 新規対応 | +25 |
+| 削除 LOC: STDLIB_IMAGES 16 entry + comments | -40 |
+| 削除 LOC: image decode loop in new_global | -15 |
+| 削除 LOC: 起動 path cfg ガード簡素化 | -10 |
+| *Stage 9.3+9.4 atomic net* | *+~290 LOC* |
+
+注意: encoder 部分は =cfg(feature = "image-baker")= 配下なので
+production graph 内 net delta は *+90 (decoder) + +30 (new_global) +
+-65 (削除) = +55 LOC*. Phase 8 Stage 8.4 reader fence-off (= -1679 LOC)
+prereq との bundle 評価で −1624 LOC.
+
+**** §3.3.6 atomic commit 戦略
+
+mid-state broken state を avoid するため、=draft/doc-75-phase9-93-94=
+worktree 上で 4 sub-task を sequential commit、最後に =git rebase -i=
+で squash → master (or develop) に 1 commit で merge する形が clean.
+
+各 sub-task 完了時の =cargo test --release= / =make test= 状態:
+
+| 段階 | =cargo build --release= | production startup | dev =--features image-baker= |
+|------+-------------------------+---------------------+-------------------------------|
+| 9.3.a 完了 (encoder のみ) | OK | unchanged | encoder 呼出可 |
+| 9.3.b 完了 (baker flag 追加) | OK | unchanged | =nelisp-baker --frozen-heap= 動作 |
+| 9.4.a 完了 (decoder 追加) | OK | unchanged (= caller なし) | OK |
+| 9.4.b 完了 (切替) | OK | frozen heap path | dev fallback 残置 |
+
+→ 各段階で =cargo build --release= が PASS する形で進行可能.
+
 ** §3.5 Stage 9.5 — image v2 form-list encode path 削除 (= 後始末)
 
 *Scope*: frozen heap が ship した後、v2 form-list mode (= encode_image /
@@ -440,6 +738,66 @@ encode_value 等) は image-baker dev tool でしか使われない. その bake
 - =cargo build --release --features image-baker= → 成功
 - =cargo test --release= → image_v2 round-trip ERT を削除 or migrate
 
+*** §3.5.detail Stage 9.5 詳細 articulate (~2 days)
+
+**** §3.5.1 v2 encode path inventory (= image.rs 内 v2 specific code)
+
+§3.2 で =cfg(feature = "image-baker")= 配下に降格させた v2 encode 系
+は dev tool でのみ使われる. =nelisp-baker= が frozen heap mode 専用化
+された後 (= 9.4.b 完了後) は v2 encode path 自体が dead code.
+
+削除候補 (= image.rs 内の v2-specific 関数群):
+
+| 関数 | LOC | 削除可否 |
+|------+-----+----------|
+| =fn encode_image= (= image.rs:90) | ~10 | 削除可 (= caller 0 件) |
+| =fn encode_value= (= image.rs:136) | ~80 | 削除可 (= encode_image 専用) |
+| =fn encode_char_table= (= image.rs:254) | ~22 | 削除可 (= encode_value から call) |
+| =fn write_string= (= image.rs:306) | ~6 | 削除可 (= encoder helper) |
+| =fn write_len= (= image.rs:312) | ~12 | 削除可 (= 同上) |
+| =fn compile_elisp_to_image= (= image.rs:85) | ~5 | 削除可 (= encode_image 経由のみ) |
+
+decode 側 (= =fn decode_image= / =fn decode_value= / =fn
+decode_char_table= / =Reader struct= / =fn read_*= helper) は frozen
+heap が ship した後でも *残す* — 移行期間中に既存 v2 STDLIB image を
+読む path が必要なため. 完全削除は Phase 10 以降.
+
+**** §3.5.2 -120 LOC source articulation
+
+| 削除箇所 | LOC |
+|----------+-----|
+| =fn encode_image= 全体 | -10 |
+| =fn encode_value= 全体 (= match arms × 9 variants) | -80 |
+| =fn encode_char_table= 全体 | -22 |
+| =fn write_string= / =fn write_len= helper | -18 |
+| =fn compile_elisp_to_image= (= encode 専用 wrapper) | -5 |
+| 既存 ERT (mod tests) で encode 系を呼ぶ test ~5 件 | -25 (= test も migrate or 削除) |
+| 関連 use 文 / cfg attr cleanup | -5 |
+| 計 | *-165 LOC* |
+| 微増 (= ERT で frozen heap encode に migrate するもの) | +45 |
+| *Stage 9.5 net* | *-120 LOC* ✓ |
+
+ERT migrate 内訳: =image_v2_round_trip_*= 既存 ERT を
+=frozen_heap_round_trip_*= に置換 (= §6.2 と統合). v2 specific な
+test (= encode_value/decode_value 直叩き系) は削除、frozen heap で
+等価 coverage を確保した時点で消す.
+
+**** §3.5.3 sub-tasks 9.5.a
+
+| sub-task | 内容 | LOC delta | 依存 |
+|----------+------+-----------+------|
+| 9.5.a | image.rs から v2 encode 系 6 関数 + 関連 ERT 削除 / migrate | -120 (= net) | 9.4.b 完了 + nelisp-baker frozen heap mode 専用化済 |
+
+**** §3.5.4 risk
+
+- decoder 側 (= =decode_image= / =decode_value=) 残置で v2 STDLIB image
+  ファイルを git tree から削除しない方針 (= Doc 75 §2.4 の 222 KB は
+  baker dev path 用に保持). bridge / 外部 tool が v2 image を生成し
+  続ける可能性 → 削除前に grep で「v2 を encode する caller 0」確認必須
+- ERT cleanup で v2 round-trip coverage が落ちる場合、frozen heap で
+  *上位互換 coverage* を確保してから削除 (= 9.5.a の git history を見て
+  rollback 可能にする)
+
 ** §3.6 Stage 9.6 — frozen heap mode で startup latency / size 確定
 
 *Scope*: 計測 + threshold gate を CI に組み込み. コード追加なし.
@@ -450,6 +808,90 @@ encode_value 等) は image-baker dev tool でしか使われない. その bake
 - =hyperfine 'nelisp -Q --eval 0'= median が ~120ms (Stage 7.7.b) →
   ~40ms (Stage 9 完了) に近いことを確認
 - frozen-env.image size が 500 KB 以下に収まる確認
+
+*** §3.6.detail Stage 9.6 詳細 articulate (~2 days)
+
+**** §3.6.1 bench harness design (= startup latency 計測)
+
+=Makefile= に新規 target =bench-startup= を追加 (= Rust LOC 不変、
+Makefile + scripts/ のみ).
+
+#+begin_src makefile
+.PHONY: bench-startup
+bench-startup: build-release
+	hyperfine --warmup 3 --runs 30 \
+	  --export-json target/bench-startup.json \
+	  --export-markdown target/bench-startup.md \
+	  '$(NELISP_BIN) -Q --eval 0'
+	scripts/bench-gate.sh target/bench-startup.json $(STARTUP_GATE_MS)
+#+end_src
+
+=scripts/bench-gate.sh= は jq で =mean / median / stddev= を抽出、
+=STARTUP_GATE_MS= (= 環境変数 default 60ms) と比較し、超過なら exit 1.
+
+bench fixture:
+- =nelisp -Q --eval 0= (= bare startup、env 全 load + 1 trivial eval)
+- =nelisp -Q -l benchmark/large-script.el= (= STDLIB 全 reach)
+- =nelisp -Q --batch --eval '(princ (length obarray))'= (= globals 健全性)
+
+target metrics:
+- median ≤ 60ms (= Stage 7.7.b の 120ms から半減)
+- stretch goal: ≤ 40ms
+- regression alert: ≤ 80ms (= ±33% margin)
+
+frozen-env.image size:
+- target: ≤ 500 KB
+- alert: ≤ 700 KB
+- 超過なら gzip / zstd 圧縮 (= §7.5 open question)
+
+**** §3.6.2 CI gate articulation
+
+GitHub Actions =.github/workflows/ci-bench.yml= 新規 (= Doc 75 v3 で
+articulate、本 Doc では outline のみ):
+
+#+begin_src yaml
+jobs:
+  bench-startup:
+    runs-on: [self-hosted, perf-stable]
+    steps:
+      - uses: actions/checkout@v4
+      - run: make build-release
+      - run: make bench-startup
+        env:
+          STARTUP_GATE_MS: 60
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-startup
+          path: target/bench-startup.json
+#+end_src
+
+self-hosted runner 推奨 (= GitHub-hosted は CPU jitter で ±20ms 揺れ).
+無い場合は GitHub-hosted ubuntu-latest で warmup 5 + runs 30 + 中央値
+比較に retreat、gate を ≤ 80ms に緩和.
+
+PR 時の表示: =bench-startup.md= を PR comment に投稿 (= bench-action
+plugin or 自前 script). 7 day rolling baseline と比較し regression 時
+は status check fail.
+
+**** §3.6.3 sub-tasks 9.6.a
+
+| sub-task | 内容 | LOC delta (Rust) | 検証 |
+|----------+------+-------------------+------|
+| 9.6.a | =Makefile= bench-startup target + =scripts/bench-gate.sh= + GitHub Actions workflow 追加 | 0 (= Rust 不変、Makefile + sh + yaml のみ) | =make bench-startup= local 実行で gate PASS / FAIL 動作確認 |
+
+**** §3.6.4 LOC ±0 articulation
+
+Rust source 変更なし (= Makefile + scripts/*.sh + .github/workflows/*.yml
+のみ). Doc 77c counting policy で *Phase 9 monotonic shrink 評価上は
+±0*. 本 stage は *gate 設置* が主目的、shrink には貢献しない.
+
+**** §3.6.5 失敗条件 + 退行 path
+
+- median > 80ms: regression、commit を bisect で特定 → revert
+- frozen-env.image > 700 KB: §7.5 open question (= 圧縮)
+- self-hosted runner 不在: GitHub-hosted retreat (= 上記)
+- bench harness 自体の flakiness: warmup を 10 に、runs を 50 に
+  増やして stddev ≤ 5ms 確認
 
 ** §3.7 Stage 一覧 + per-commit LOC delta target
 
@@ -875,6 +1317,41 @@ v1 baseline を保ったまま以下を追加 / refine:
 - *§10 Refactor history (本節)* 新設 — v1 → v2 の delta を文書化
 
 行数: v1 ~624 行 → v2 ~高密度化 (= 同程度 ~430 行を target)
+
+** v3 (2026-05-09, this commit) — Phase 9 sub-stage 9.1〜9.6 detail articulation
+
+v2 stage breakdown は high-level (= 各 stage 1 段落 + LOC delta 表) に
+留まっていた. v3 は各 sub-stage を Doc 81 同 detail level に拡張し、
+個別 sub-stage dispatch を unblock する.
+
+追加された detail sub-section:
+
+- *§3.1.detail Stage 9.1 (= image v3 doc + cfg(test) gate, ~2 days)*:
+  3 sub-section (= image format v3 doc 文言 / cfg(test) gate strategy /
+  sub-tasks 9.1.a〜9.1.b / Rust ±0 articulation)、sub-task 2 件
+- *§3.2.detail Stage 9.2 (= image v2 encode path image-baker 配下, ~3 days)*:
+  4 sub-section (= rationale / sub-tasks 9.2.a〜9.2.b / +10 LOC cfg attr
+  内訳 / 中間 broken state なし)、sub-task 2 件
+- *§3.3+§3.4.detail Stage 9.3+9.4 (= encoder + decoder atomic, ~7 days)*:
+  6 sub-section (= encoder design 5-phase / decoder design 5-phase /
+  new_global decode loop 切替 source diff / sub-tasks 9.3.a〜9.4.b /
+  +265 LOC source articulation / atomic commit 戦略)、sub-task 4 件
+- *§3.5.detail Stage 9.5 (= v2 encode path 削除, ~2 days)*:
+  4 sub-section (= v2 encode path inventory / -120 LOC source
+  articulation / sub-tasks 9.5.a / risk)、sub-task 1 件
+- *§3.6.detail Stage 9.6 (= startup bench gate, ~2 days)*:
+  5 sub-section (= bench harness design / CI gate articulation /
+  sub-tasks 9.6.a / LOC ±0 articulation / 失敗条件)、sub-task 1 件
+
+aggregate:
+- Phase 9 内合計 16 days (= Phase 8 Stage 8.4 prereq 別)
+- LOC: +155 Phase 9 単独 (= 9.1 ±0 + 9.2 ±0 + 9.3+9.4 +275 + 9.5 -120 +
+  9.6 ±0)、Phase 8 Stage 8.4 -1,679 bundle で *-1,524 net*
+- sub-task 計: 10 件 (= 9.1.a/b + 9.2.a/b + 9.3.a/b + 9.4.a/b + 9.5.a +
+  9.6.a)
+
+行数: v2 ~880 行 → v3 ~+200 行追加 (= 各 stage detail 約 +40 行) =
+~1080 行
 着手判断は *依然 articulation 段階*. Phase 8 Stage 8.4 完了 + Doc 77c
 Phase A.6 完了 + frozen heap への user demand confirm を待ってから
 Stage 9.1 着手.
