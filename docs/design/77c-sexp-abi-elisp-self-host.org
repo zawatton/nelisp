@@ -2,13 +2,13 @@
 
 * Status
 :PROPERTIES:
-:STATE: ACTIVE — Phase A.1 / A.2 SHIPPED、Phase A.3-A.6 残 (= elisp primitive 追加 / JIT trampoline rewrite / 残 Rc->NlRc audit / ERT regression gate)
+:STATE: ACTIVE — Phase A.1 / A.2 / A.3 SHIPPED、Phase A.4-A.6 残 (= 残 Rc->NlRc audit / JIT trampoline rewrite / ERT regression gate)
 :DRAFTED: 2026-05-09
 :PARENT: Doc 77 (= 元 Stage 4 articulation)
 :RELATED: Doc 77b (= Rust-min JIT 路線)、Doc 75 (= NELIMG image decode、PAUSED 別 issue)、Doc 63 (= Phase 7 self-host roadmap、70% SHIPPED)
 :UPDATES: Doc 77 §2.3.3 Stage 4 status (= deferred → IN_PROGRESS)、Doc 77b §6 (= "Sexp ABI pin deferred" 削除)
 :DECISION_DATE: 2026-05-09 (user 指示: "Doc 77 の Stage4 を unpause")
-:LATEST: 2026-05-09 — Phase A.1 (NlRc<T>) e6c7367 / Phase A.2.0 (NlConsBox struct) 02aa7e6 / Phase A.2.1 (Sexp::Cons → NlConsBoxRef migrate, 56 callsite / 13 files) a6b3757 すべて SHIPPED
+:LATEST: 2026-05-09 — Phase A.1 (NlRc<T>) e6c7367 / Phase A.2.0 (NlConsBox struct) 02aa7e6 / Phase A.2.1 (Sexp::Cons → NlConsBoxRef migrate) a6b3757 / Phase A.3 (8 nl-cons-*/nl-rc-* primitives) SHIPPED
 :END:
 
 * §0 TL;DR
@@ -338,10 +338,24 @@ baseline ~3000 LOC → ~810 LOC、**~73% 縮小**.
 - 並行 test 時に 2-5 件出る flake (track_h / track_m / track_p / stage74e1) は signal-handler global state 由来 pre-existing race、本 commit と無関係
 - 着地工数: §2.1.5 推定 2-3 週間に対し並行 session 1 日で完走 (= 設計仕様明確化 + 並列 worktree が効いた)
 
-** §4.4 Phase A.3-A.6 残作業 (= 後続 commit)
+** §4.4 Phase A.3 着手 — Layer 2 elisp primitive 8 件追加 — ✅ SHIPPED (2026-05-09)
+
+実施済み:
+- =build-tool/src/eval/cons_primitives.rs= 新設 (= 5 nl-cons-* + 3 nl-rc-* = 8 =bi_*= 関数)
+  - =bi_nl_cons_alloc= (CAR CDR → Sexp::Cons): NlConsBoxRef::new + Sexp::Cons wrap
+  - =bi_nl_cons_car= / =bi_nl_cons_cdr= (CONS → Sexp): field clone read
+  - =bi_nl_cons_set_car= / =bi_nl_cons_set_cdr= (CONS VAL → VAL): unsafe set_car/set_cdr 経由 in-place mutate
+  - =bi_nl_rc_inc= / =bi_nl_rc_dec= (CONS → Nil): refcount manual inc/dec、dec 時 0 で free
+  - =bi_nl_rc_count= (CONS → Int): NlConsBoxRef::strong_count
+- =build-tool/src/eval/nlconsbox.rs=: =rc_inc_raw= / =rc_dec_raw= 2 unsafe method 追加 (= Drop 本体相当 + safety contract)
+- =build-tool/src/eval/builtins.rs::dispatch=: 8 dispatch entry 追加 (=nl-cons-alloc / -car / -cdr / -set-car / -set-cdr / nl-rc-inc / -dec / -count=)
+- =build-tool/src/eval/mod.rs=: =pub mod cons_primitives;= 追加
+- ERT 15/15 PASS (= 4 alloc/access + 2 set + 2 inc/dec + 7 error/round-trip cases)
+- 全体 regression: =cargo test --release --lib --test-threads=1=: 540/540 PASS、0 fail (= base 525 + 新規 15)
+
+** §4.5 Phase A.4-A.6 残作業 (= 後続 commit)
 
 §2.1.5 工数表通り:
-- A.3 (1-2 週間予定): elisp =nl-cons-*= / =nl-rc-*= primitive 追加。Layer 2 (=lisp/nelisp-jit-strategy.el= 系) から NlConsBox / NlRc を直操作する 8 primitive 群 (= §2.1.3 表)
 - A.5 (1-2 週間予定): JIT trampoline rewrite。現 =nl_jit_cons_car= の =&*arg= match-clone 経路を =addr_of!= 直接 emit に書換 (= §2.1.4 emit pattern)
 - A.4 (= 残 =Rc<RefCell<...>>= の audit + 置換、§2.1.5 表で A.3 と書かれているもの): Sexp::Cell / Sexp::CharTable / Sexp::BoolVector 等の他 variant 移管判断
 - A.6 (1 週間予定): ERT 全面 regression gate

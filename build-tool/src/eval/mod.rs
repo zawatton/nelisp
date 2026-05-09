@@ -32,6 +32,7 @@
 //! syntactic (Phase 8.0.1) and the MCP server (Phase 8.0.4) is a peer.
 
 pub mod builtins;
+pub mod cons_primitives;
 pub mod env;
 pub mod error;
 pub mod ffi;

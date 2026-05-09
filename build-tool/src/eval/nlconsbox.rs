@@ -142,6 +142,76 @@ impl NlConsBoxRef {
         this.ptr.as_ptr()
     }
 
+    /// Phase A.3: bump the refcount **without acquiring a Rust handle**.
+    /// Backs the elisp `nl-rc-inc' primitive.  Layer 2 elisp takes
+    /// responsibility for matching every `nl-rc-inc' with exactly one
+    /// `nl-rc-dec' — typical use is keeping the box alive while a raw
+    /// pointer / opaque handle is stashed in an elisp data structure
+    /// outside of Rust ownership tracking.
+    ///
+    /// `Relaxed` is the same ordering [`NlConsBoxRef::clone`] uses for
+    /// the corresponding +1; the synchronization story matches.
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee a matching [`Self::rc_dec_raw`]
+    /// follows.  Unbalanced calls leak (extra inc) or use-after-free
+    /// (extra dec).
+    pub unsafe fn rc_inc_raw(this: &Self) {
+        // SAFETY: `this.ptr' is alive because the caller holds the
+        // handle backing `this'.  fetch_add cannot wrap (= would need
+        // 2^64 handles, physically impossible).
+        unsafe {
+            (*this.ptr.as_ptr())
+                .refcount
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Phase A.3: decrement the refcount, freeing the box when it
+    /// reaches zero.  Backs the elisp `nl-rc-dec' primitive.  Mirrors
+    /// the body of [`NlConsBoxRef::drop`] but takes `&Self` instead of
+    /// `&mut Self` so it can be invoked from a primitive that received
+    /// the cons through `args: &[Sexp]'.
+    ///
+    /// # Safety
+    ///
+    /// (a) Must be paired with a prior [`Self::rc_inc_raw`] (or be the
+    ///     final balancing decrement of a normal handle's lifecycle).
+    /// (b) If the resulting refcount is 0 the box's `car' / `cdr' are
+    ///     dropped and the allocation is freed; any other handle
+    ///     pointing at this box is then dangling.  Layer 2 elisp must
+    ///     guarantee no such handle survives.
+    pub unsafe fn rc_dec_raw(this: &Self) {
+        // SAFETY: `this.ptr' is alive on entry.  The Release/Acquire
+        // pattern matches `Drop' below — we cannot reuse `Drop' here
+        // because we have `&Self', not `&mut Self', and re-creating a
+        // temporary `NlConsBoxRef' for the sole purpose of dropping
+        // would re-enter `Clone' on the way in (= +1) and Drop on the
+        // way out (= -1), leaving the count unchanged.
+        let prev = unsafe {
+            (*this.ptr.as_ptr())
+                .refcount
+                .fetch_sub(1, Ordering::Release)
+        };
+        if prev != 1 {
+            return;
+        }
+        std::sync::atomic::fence(Ordering::Acquire);
+        // SAFETY: refcount just hit 0.  See `Drop' for the same
+        // invariants.
+        unsafe {
+            std::ptr::drop_in_place(std::ptr::addr_of_mut!(
+                (*this.ptr.as_ptr()).car
+            ));
+            std::ptr::drop_in_place(std::ptr::addr_of_mut!(
+                (*this.ptr.as_ptr()).cdr
+            ));
+            let layout = Layout::new::<NlConsBox>();
+            alloc::dealloc(this.ptr.as_ptr() as *mut u8, layout);
+        }
+    }
+
     /// Mutate `car` in place.  Drops the previous `car' value, then
     /// writes the new one.  Phase A.2.0 deliberately drops the
     /// `RefCell<>' indirection that the legacy
