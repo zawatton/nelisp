@@ -70,6 +70,12 @@ pub struct NlCell {
 /// The `NonNull<NlCell>' inner gives niche optimization
 /// (= `Option<NlCellRef>' is the same size as `NlCellRef') and
 /// rules out null-ptr UB by construction.
+///
+/// Phase A.5.1 (Doc 77c §4.6.1, 2026-05-09): `#[repr(transparent)]'
+/// pins the layout to `NonNull<NlCell>' so JIT trampolines + Phase B
+/// elisp can read the cell pointer directly off the `Sexp' payload at
+/// offset `SEXP_PAYLOAD_OFFSET'.
+#[repr(transparent)]
 pub struct NlCellRef {
     ptr: NonNull<NlCell>,
     /// Tells the borrow-checker we own an `NlCell` even though the

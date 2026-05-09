@@ -58,6 +58,12 @@ pub struct NlCharTable {
 
 /// Refcounted handle to an [`NlCharTable`].  API parity with
 /// [`super::nlrecord::NlRecordRef`] / [`super::nlboolvector::NlBoolVectorRef`].
+///
+/// Phase A.5.1 (Doc 77c §4.6.1, 2026-05-09): `#[repr(transparent)]' pins
+/// the layout to `NonNull<NlCharTable>' so JIT trampolines + Phase B elisp
+/// can read the char-table pointer directly off the `Sexp' payload at
+/// offset `SEXP_PAYLOAD_OFFSET'.
+#[repr(transparent)]
 pub struct NlCharTableRef {
     ptr: NonNull<NlCharTable>,
     _marker: PhantomData<NlCharTable>,

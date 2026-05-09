@@ -70,6 +70,12 @@ pub struct NlStr {
 /// Refcounted handle to an [`NlStr`].  API parity with
 /// [`super::nlcell::NlCellRef`] + [`super::nlconsbox::NlConsBoxRef`]:
 /// `new` / `Clone` / `Drop` / `Deref` (returns `&NlStr`).
+///
+/// Phase A.5.1 (Doc 77c §4.6.1, 2026-05-09): `#[repr(transparent)]' pins
+/// the layout to `NonNull<NlStr>' so JIT trampolines + Phase B elisp can
+/// read the string pointer directly off the `Sexp' payload at offset
+/// `SEXP_PAYLOAD_OFFSET'.
+#[repr(transparent)]
 pub struct NlStrRef {
     ptr: NonNull<NlStr>,
     /// Tells the borrow-checker we own an `NlStr` even though the

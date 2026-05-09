@@ -239,6 +239,128 @@ pub fn variant_tag(s: &Sexp) -> u8 {
     unsafe { *(s as *const Sexp as *const u8) }
 }
 
+// ---------------------------------------------------------------------------
+// Sexp ABI direct-access helpers (Doc 77c Phase A.5).
+//
+// `#[repr(C, u8)]` lays out a Sexp as { tag: u8, _pad: [u8; 7], payload: T }
+// where `T` is the variant payload, aligned to the largest variant's
+// alignment requirement.  All boxed variants (Cons / Cell / MutStr /
+// Vector / BoolVector / Record / CharTable) carry an `NlXxxRef` handle
+// that internally contains a single `NonNull<NlXxx>` pointer (= 8 bytes,
+// pointer-aligned).  Therefore the box pointer is always at byte offset
+// `SEXP_PAYLOAD_OFFSET = 8` of every boxed Sexp.
+//
+// The helpers below let JIT trampolines and Phase B elisp wrappers read
+// the box pointer directly without a `match` on the enum, which collapses
+// each trampoline arm from "match → borrow → clone" to "if tag == X →
+// load *const NlXxx + clone".  Phase A.4.x layout-pinned every box's
+// `value(s) @ offset 0, refcount @ trailer' so the loaded pointer is
+// stable across compiler versions.
+//
+// SAFETY contract: every `*_box_ptr` accessor is an `unsafe fn` that
+// caller must guard by a tag check.  Reading the payload bytes for the
+// wrong variant is UB (= e.g. reading a Vector's `Vec<Sexp>` header as
+// an `NlConsBox*` would dereference the Vec ptr-len-cap as a struct).
+// ---------------------------------------------------------------------------
+
+/// Byte offset of the variant payload within a `Sexp` value.  Pinned by
+/// `#[repr(C, u8)]` + 8-byte payload alignment (= max alignment of any
+/// payload = pointer / `f64` / `String` ptr / NonNull ptr = 8).  Phase
+/// A.5 JIT IR emits direct loads at this offset.
+pub const SEXP_PAYLOAD_OFFSET: usize = 8;
+
+impl Sexp {
+    /// Read the discriminant byte (offset 0).  Equivalent to
+    /// [`variant_tag`] but spelled as a method for trampoline ergonomics.
+    #[inline]
+    pub fn tag(&self) -> u8 {
+        variant_tag(self)
+    }
+
+    /// Read the boxed pointer of a [`Sexp::Cons`] without going through
+    /// `match`.  Returns a raw `*const NlConsBox`.
+    ///
+    /// # Safety
+    ///
+    /// Caller must guarantee `self.tag() == SEXP_TAG_CONS`.  The returned
+    /// pointer is borrowed for the lifetime of `self`; cloning the
+    /// pointed-to handle requires a separate refcount bump (= go through
+    /// the `Sexp::Cons(rc)` clone if you need an owned reference).
+    #[inline]
+    pub unsafe fn cons_box_ptr(&self) -> *const crate::eval::nlconsbox::NlConsBox {
+        // Layout: { tag: u8 @ 0, _pad: [u8; 7], handle: NonNull<NlConsBox> @ 8 }
+        let payload = (self as *const Sexp as *const u8).add(SEXP_PAYLOAD_OFFSET)
+            as *const std::ptr::NonNull<crate::eval::nlconsbox::NlConsBox>;
+        unsafe { (*payload).as_ptr() }
+    }
+
+    /// Boxed pointer for [`Sexp::Cell`].  See [`Sexp::cons_box_ptr`].
+    #[inline]
+    pub unsafe fn cell_box_ptr(&self) -> *const crate::eval::nlcell::NlCell {
+        let payload = (self as *const Sexp as *const u8).add(SEXP_PAYLOAD_OFFSET)
+            as *const std::ptr::NonNull<crate::eval::nlcell::NlCell>;
+        unsafe { (*payload).as_ptr() }
+    }
+
+    /// Boxed pointer for [`Sexp::MutStr`].  See [`Sexp::cons_box_ptr`].
+    #[inline]
+    pub unsafe fn mut_str_box_ptr(&self) -> *const crate::eval::nlstr::NlStr {
+        let payload = (self as *const Sexp as *const u8).add(SEXP_PAYLOAD_OFFSET)
+            as *const std::ptr::NonNull<crate::eval::nlstr::NlStr>;
+        unsafe { (*payload).as_ptr() }
+    }
+
+    /// Boxed pointer for [`Sexp::Vector`].  See [`Sexp::cons_box_ptr`].
+    #[inline]
+    pub unsafe fn vector_box_ptr(&self) -> *const crate::eval::nlvector::NlVector {
+        let payload = (self as *const Sexp as *const u8).add(SEXP_PAYLOAD_OFFSET)
+            as *const std::ptr::NonNull<crate::eval::nlvector::NlVector>;
+        unsafe { (*payload).as_ptr() }
+    }
+
+    /// Boxed pointer for [`Sexp::BoolVector`].  See [`Sexp::cons_box_ptr`].
+    #[inline]
+    pub unsafe fn bool_vector_box_ptr(&self)
+        -> *const crate::eval::nlboolvector::NlBoolVector
+    {
+        let payload = (self as *const Sexp as *const u8).add(SEXP_PAYLOAD_OFFSET)
+            as *const std::ptr::NonNull<crate::eval::nlboolvector::NlBoolVector>;
+        unsafe { (*payload).as_ptr() }
+    }
+
+    /// Boxed pointer for [`Sexp::Record`].  See [`Sexp::cons_box_ptr`].
+    #[inline]
+    pub unsafe fn record_box_ptr(&self) -> *const crate::eval::nlrecord::NlRecord {
+        let payload = (self as *const Sexp as *const u8).add(SEXP_PAYLOAD_OFFSET)
+            as *const std::ptr::NonNull<crate::eval::nlrecord::NlRecord>;
+        unsafe { (*payload).as_ptr() }
+    }
+
+    /// Boxed pointer for [`Sexp::CharTable`].  See [`Sexp::cons_box_ptr`].
+    #[inline]
+    pub unsafe fn char_table_box_ptr(&self)
+        -> *const crate::eval::nlchartable::NlCharTable
+    {
+        let payload = (self as *const Sexp as *const u8).add(SEXP_PAYLOAD_OFFSET)
+            as *const std::ptr::NonNull<crate::eval::nlchartable::NlCharTable>;
+        unsafe { (*payload).as_ptr() }
+    }
+}
+
+// Compile-time check: every NlXxxRef handle must be exactly pointer-
+// sized (= 8 bytes on 64-bit) so the payload offset stays at 8.
+const _: () = {
+    use std::mem::size_of;
+    assert!(size_of::<std::ptr::NonNull<crate::eval::nlconsbox::NlConsBox>>() == 8);
+    assert!(size_of::<crate::eval::nlconsbox::NlConsBoxRef>() == 8);
+    assert!(size_of::<crate::eval::nlcell::NlCellRef>() == 8);
+    assert!(size_of::<crate::eval::nlstr::NlStrRef>() == 8);
+    assert!(size_of::<crate::eval::nlvector::NlVectorRef>() == 8);
+    assert!(size_of::<crate::eval::nlboolvector::NlBoolVectorRef>() == 8);
+    assert!(size_of::<crate::eval::nlrecord::NlRecordRef>() == 8);
+    assert!(size_of::<crate::eval::nlchartable::NlCharTableRef>() == 8);
+};
+
 // HashTableInner struct retired in Doc 50 stage 4f (2026-05-07);
 // see lisp/nelisp-stdlib-hash.el for the elisp implementation that
 // stores equivalent state inside a Sexp::Record.
@@ -614,6 +736,7 @@ fn write_list_body(out: &mut String, s: &Sexp) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ops::Deref;
 
     #[test]
     fn list_from_empty_is_nil() {
@@ -724,5 +847,133 @@ mod tests {
         // → minimum total 32 bytes.  Allow up to 40 for niche slack.
         let sz = std::mem::size_of::<Sexp>();
         assert!(sz >= 32 && sz <= 48, "Sexp size = {} (expected 32..=48)", sz);
+    }
+
+    // ----------------------------------------------------------------
+    // Phase A.5 ABI helpers — round-trip read of `*_box_ptr' against
+    // the existing match-arm path.  If the payload offset (= 8) ever
+    // shifts under us (= compiler change, repr override), these fail
+    // BEFORE JIT-emitted IR mis-decodes a Sexp value.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn sexp_payload_offset_is_eight() {
+        // Manual layout probe: build a Sexp with a known boxed payload
+        // and check that the pointer at offset 8 equals the box's ptr.
+        let cons = Sexp::cons(Sexp::Int(1), Sexp::Int(2));
+        let direct = unsafe { cons.cons_box_ptr() } as usize;
+        // Read offset 8 manually through the *const Sexp.
+        let raw = (&cons as *const Sexp) as *const u8;
+        let payload_at_8 = unsafe {
+            let p = raw.add(8) as *const std::ptr::NonNull<crate::eval::nlconsbox::NlConsBox>;
+            (*p).as_ptr()
+        } as usize;
+        assert_eq!(direct, payload_at_8);
+    }
+
+    #[test]
+    fn cons_box_ptr_round_trips_to_match() {
+        let cons = Sexp::cons(Sexp::Int(7), Sexp::Symbol("x".into()));
+        if let Sexp::Cons(rc) = &cons {
+            let via_match = rc.deref() as *const _ as usize;
+            let via_direct = unsafe { cons.cons_box_ptr() } as usize;
+            assert_eq!(via_match, via_direct);
+        } else {
+            panic!("expected Cons");
+        }
+    }
+
+    #[test]
+    fn cell_box_ptr_round_trips_to_match() {
+        let cell = Sexp::Cell(NlCellRef::new(Sexp::Int(99)));
+        if let Sexp::Cell(rc) = &cell {
+            let via_match = rc.deref() as *const _ as usize;
+            let via_direct = unsafe { cell.cell_box_ptr() } as usize;
+            assert_eq!(via_match, via_direct);
+        } else {
+            panic!("expected Cell");
+        }
+    }
+
+    #[test]
+    fn mut_str_box_ptr_round_trips_to_match() {
+        let s = Sexp::mut_str("hello");
+        if let Sexp::MutStr(rc) = &s {
+            let via_match = rc.deref() as *const _ as usize;
+            let via_direct = unsafe { s.mut_str_box_ptr() } as usize;
+            assert_eq!(via_match, via_direct);
+        } else {
+            panic!("expected MutStr");
+        }
+    }
+
+    #[test]
+    fn vector_box_ptr_round_trips_to_match() {
+        let v = Sexp::vector(vec![Sexp::Int(1), Sexp::Int(2)]);
+        if let Sexp::Vector(rc) = &v {
+            let via_match = rc.deref() as *const _ as usize;
+            let via_direct = unsafe { v.vector_box_ptr() } as usize;
+            assert_eq!(via_match, via_direct);
+        } else {
+            panic!("expected Vector");
+        }
+    }
+
+    #[test]
+    fn bool_vector_box_ptr_round_trips_to_match() {
+        let bv = Sexp::bool_vector(8, true);
+        if let Sexp::BoolVector(rc) = &bv {
+            let via_match = rc.deref() as *const _ as usize;
+            let via_direct = unsafe { bv.bool_vector_box_ptr() } as usize;
+            assert_eq!(via_match, via_direct);
+        } else {
+            panic!("expected BoolVector");
+        }
+    }
+
+    #[test]
+    fn record_box_ptr_round_trips_to_match() {
+        let r = Sexp::record(Sexp::Symbol("point".into()), vec![Sexp::Int(3)]);
+        if let Sexp::Record(rc) = &r {
+            let via_match = rc.deref() as *const _ as usize;
+            let via_direct = unsafe { r.record_box_ptr() } as usize;
+            assert_eq!(via_match, via_direct);
+        } else {
+            panic!("expected Record");
+        }
+    }
+
+    #[test]
+    fn char_table_box_ptr_round_trips_to_match() {
+        let ct = Sexp::char_table(Sexp::Symbol("syntax".into()), Sexp::Nil);
+        if let Sexp::CharTable(rc) = &ct {
+            let via_match = rc.deref() as *const _ as usize;
+            let via_direct = unsafe { ct.char_table_box_ptr() } as usize;
+            assert_eq!(via_match, via_direct);
+        } else {
+            panic!("expected CharTable");
+        }
+    }
+
+    #[test]
+    fn tag_method_matches_variant_tag_fn() {
+        let cases = [
+            Sexp::Nil,
+            Sexp::T,
+            Sexp::Int(0),
+            Sexp::Float(0.0),
+            Sexp::Symbol("x".into()),
+            Sexp::Str("x".into()),
+            Sexp::mut_str("x"),
+            Sexp::cons(Sexp::Nil, Sexp::Nil),
+            Sexp::vector(vec![]),
+            Sexp::char_table(Sexp::Nil, Sexp::Nil),
+            Sexp::bool_vector(0, false),
+            Sexp::Cell(NlCellRef::new(Sexp::Nil)),
+            Sexp::record(Sexp::Symbol("k".into()), vec![]),
+        ];
+        for s in &cases {
+            assert_eq!(s.tag(), variant_tag(s));
+        }
     }
 }

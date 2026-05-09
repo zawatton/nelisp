@@ -33,42 +33,48 @@ use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 
-use crate::eval::sexp::{Sexp, SEXP_TAG_NIL};
+use crate::eval::sexp::{Sexp, SEXP_TAG_CONS, SEXP_TAG_NIL};
 
 use super::declare_helper_call;
 
 const TRAMPOLINE_OK: i64 = 0;
 const TRAMPOLINE_ERR: i64 = 1;
 
+// Phase A.5 (Doc 77c §2.1.4): trampolines dispatch on the
+// `#[repr(C, u8)]' tag byte directly via `Sexp::tag()' and read the
+// `NlConsBox' pointer at offset 8 via `Sexp::cons_box_ptr()'.  Each arm
+// collapses to "tag check → ptr deref → field clone", which mirrors the
+// cranelift IR shape that the JIT entry will eventually inline.
+
 /// `(car CELL) -> Sexp' trampoline.  `Nil' is treated as `(car nil)' =
 /// `nil' per elisp.  Wrong-type returns `TRAMPOLINE_ERR' so the caller
 /// can fall back to the dispatcher's canonical error.
 unsafe extern "C" fn nl_jit_cons_car(arg: *const Sexp, out: *mut Sexp) -> i64 {
-    match &*arg {
-        Sexp::Nil => {
-            *out = Sexp::Nil;
-            TRAMPOLINE_OK
-        }
-        Sexp::Cons(b) => {
-            *out = b.car.clone();
-            TRAMPOLINE_OK
-        }
-        _ => TRAMPOLINE_ERR,
+    let tag = (*arg).tag();
+    if tag == SEXP_TAG_NIL {
+        *out = Sexp::Nil;
+        return TRAMPOLINE_OK;
     }
+    if tag == SEXP_TAG_CONS {
+        let box_ptr = (*arg).cons_box_ptr();
+        *out = (*box_ptr).car.clone();
+        return TRAMPOLINE_OK;
+    }
+    TRAMPOLINE_ERR
 }
 
 unsafe extern "C" fn nl_jit_cons_cdr(arg: *const Sexp, out: *mut Sexp) -> i64 {
-    match &*arg {
-        Sexp::Nil => {
-            *out = Sexp::Nil;
-            TRAMPOLINE_OK
-        }
-        Sexp::Cons(b) => {
-            *out = b.cdr.clone();
-            TRAMPOLINE_OK
-        }
-        _ => TRAMPOLINE_ERR,
+    let tag = (*arg).tag();
+    if tag == SEXP_TAG_NIL {
+        *out = Sexp::Nil;
+        return TRAMPOLINE_OK;
     }
+    if tag == SEXP_TAG_CONS {
+        let box_ptr = (*arg).cons_box_ptr();
+        *out = (*box_ptr).cdr.clone();
+        return TRAMPOLINE_OK;
+    }
+    TRAMPOLINE_ERR
 }
 
 /// `(cons A B) -> (A . B)' constructor — never wrong-type, always OK.
@@ -82,7 +88,7 @@ unsafe extern "C" fn nl_jit_cons_make(
 }
 
 /// `(setcar CELL VALUE)' trampoline — mutates the car of a Cons in
-/// place via `Rc<RefCell<Sexp>>::borrow_mut'.  Returns VALUE per
+/// place through the shared [`NlConsBox`] handle.  Returns VALUE per
 /// Emacs' `setcar' contract.  Non-Cons → `TRAMPOLINE_ERR' so the
 /// dispatcher can surface the canonical wrong-type error.
 unsafe extern "C" fn nl_jit_cons_setcar(
@@ -90,20 +96,20 @@ unsafe extern "C" fn nl_jit_cons_setcar(
     val: *const Sexp,
     out: *mut Sexp,
 ) -> i64 {
-    match &*arg {
-        // Doc 77c Phase A.2.1: in-place car write through the shared
-        // [`NlConsBox`] (= replaces legacy `Rc<RefCell<>>::borrow_mut').
-        // SAFETY: `arg' was constructed from a valid `Sexp::Cons' on
-        // the trampoline boundary; no live `&Sexp' borrow into `b.car'
-        // is observable here because the JIT entry holds the only
-        // active handle while it runs.
-        Sexp::Cons(b) => {
-            b.set_car((*val).clone());
-            *out = (*val).clone();
-            TRAMPOLINE_OK
-        }
-        _ => TRAMPOLINE_ERR,
+    if (*arg).tag() != SEXP_TAG_CONS {
+        return TRAMPOLINE_ERR;
     }
+    // SAFETY: tag-checked Cons above; `cons_box_ptr()' is valid for the
+    // lifetime of `*arg' and no live `&Sexp' borrow into the box is
+    // observable here.  Phase A.2.1 setcar discipline applies — drop the
+    // old car in place then write the new one.  Mirrors the cranelift
+    // IR shape (offset_of car == 0, so the write target is `box_ptr').
+    let box_ptr = (*arg).cons_box_ptr() as *mut crate::eval::nlconsbox::NlConsBox;
+    let car_ptr = std::ptr::addr_of_mut!((*box_ptr).car);
+    std::ptr::drop_in_place(car_ptr);
+    std::ptr::write(car_ptr, (*val).clone());
+    *out = (*val).clone();
+    TRAMPOLINE_OK
 }
 
 unsafe extern "C" fn nl_jit_cons_setcdr(
@@ -111,16 +117,17 @@ unsafe extern "C" fn nl_jit_cons_setcdr(
     val: *const Sexp,
     out: *mut Sexp,
 ) -> i64 {
-    match &*arg {
-        // Doc 77c Phase A.2.1: see `nl_jit_cons_setcar' for the
-        // SAFETY contract behind the in-place cdr write.
-        Sexp::Cons(b) => {
-            b.set_cdr((*val).clone());
-            *out = (*val).clone();
-            TRAMPOLINE_OK
-        }
-        _ => TRAMPOLINE_ERR,
+    if (*arg).tag() != SEXP_TAG_CONS {
+        return TRAMPOLINE_ERR;
     }
+    // SAFETY: see `nl_jit_cons_setcar'.  cdr lives at
+    // `offset_of!(NlConsBox, cdr) == sizeof(Sexp)'.
+    let box_ptr = (*arg).cons_box_ptr() as *mut crate::eval::nlconsbox::NlConsBox;
+    let cdr_ptr = std::ptr::addr_of_mut!((*box_ptr).cdr);
+    std::ptr::drop_in_place(cdr_ptr);
+    std::ptr::write(cdr_ptr, (*val).clone());
+    *out = (*val).clone();
+    TRAMPOLINE_OK
 }
 
 pub(super) struct JitCons {
