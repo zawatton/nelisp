@@ -2,13 +2,13 @@
 
 * Status
 :PROPERTIES:
-:STATE: ACTIVE — Phase A.1 / A.2 / A.3 / A.4 完遂 + Phase A.5.1+A.5.2 (Sexp ABI helpers + cons.rs/access.rs trampoline rewrite) SHIPPED、Phase A.5.3+A.5.4 は Phase B 投資効率の理由で skip、Phase A.6 (regression gate) 残
+:STATE: Phase A 完了、Phase B GATE FAILED audit (= structural infeasibility)、Doc 79 v3 Phase C 設計 SHIPPED、Doc 76 100% SHIPPED.  Phase D-B = 100% 純 elisp 終着点 (3-6 ヶ月)
 :DRAFTED: 2026-05-09
 :PARENT: Doc 77 (= 元 Stage 4 articulation)
 :RELATED: Doc 77b (= Rust-min JIT 路線)、Doc 75 (= NELIMG image decode、PAUSED 別 issue)、Doc 63 (= Phase 7 self-host roadmap、70% SHIPPED)
 :UPDATES: Doc 77 §2.3.3 Stage 4 status (= deferred → IN_PROGRESS)、Doc 77b §6 (= "Sexp ABI pin deferred" 削除)
 :DECISION_DATE: 2026-05-09 (user 指示: "Doc 77 の Stage4 を unpause")
-:LATEST: 2026-05-09 — Phase A.1 (NlRc<T>) / A.2.0 (NlConsBox) / A.2.1 (Sexp::Cons migrate) / A.3 (8 nl-cons-*/nl-rc-* primitives) / A.4.1-A.4.6 (Cell / MutStr / Vector / BoolVector / Record / CharTable 全 6 variant migrate) / A.5.1 (Sexp ABI direct-access helpers + 7 NlXxxRef を =#[repr(transparent)]= に固定) / A.5.2 (cons.rs/access.rs trampoline を tag-byte dispatch + box_ptr deref に rewrite) SHIPPED
+:LATEST: 2026-05-09 — user 100% 純 elisp commit + per-commit monotonic shrink rule 確定.  Doc 78 D-A DEFERRED. Doc 76 = 40/40 100% SHIPPED (Rust -406 LOC). Doc 79 v3 Phase C 設計 SHIPPED. Phase C C.1+4 実装 dispatch 中.
 :END:
 
 * §0 TL;DR
@@ -26,17 +26,32 @@ Doc 77 §2.3.3 Stage 4 (= Sexp memory layout pin、JIT direct emit base) を **r
 - elisp: ~+1500-2000 LOC 増加 (= Sexp 操作 + GC + native compiler)
 - 起動時間: NELIMG image decode を elisp 化すると +80ms (= 許容範囲、Doc 75 PAUSED 議論より)
 
+** 2026-05-09 session 進捗
+
+本 session で以下が確定:
+- *user 100% 純 elisp commitment 確定*: nelisp は 100% pure elisp self-host を達成する.  運用 rule = 「全 commit が net-decrease Rust LOC」 (= per-commit monotonic shrink rule).
+- *Doc 76 Phase 7 elisp-side OS surface migration = 100% SHIPPED*: 40/40 specialized syscall primitive 削除完遂、本 session で Stage E + G が ship (Rust -89 + -317 = -406 LOC).
+- *Doc 78 Phase D-A Cranelift wrapper = DEFERRED 2026-05-09*: D-A の C-style shim path は Cranelift Rust crate を温存する hybrid であり 100% 純 elisp commitment と方向矛盾、さらに D-A.1 単独で +800 LOC 中間状態 (= shim 400 + ERT 400) を要し monotonic shrink rule 違反.
+- *Doc 79 Phase C GC elisp 化 設計 v3 = SHIPPED* (commit 5e85ea7、merge e48f79a): Stage C.1+4 を atomic 1 stage に折り畳み per-commit shrink rule satisfy、Phase C 単独 net Rust target -56〜-101 LOC.
+- *Phase B = GATE FAILED audit 結論*: Doc 62 Phase 5 (= 2026-05-08) で eval-time dispatch arm はすでに削除済、Phase B "−408 strategy.rs 削除" alibi は前提が古く invalid.  本 §2.2 の Phase B 計画は structural infeasibility.
+- *本命は Phase D-B*: Cranelift 完全置換 / NeLisp Phase 7+ native cc 切替 (= 3-6 ヶ月).  D-A skip + D-B 直行が 100% 純 elisp commitment の最短 path.
+
 * §1 動機
 
-** §1.1 「Sexp ABI elisp 化諦めない」commitment
+** §1.1 「Sexp ABI elisp 化諦めない」commitment + 100% 純 elisp commitment + monotonic shrink rule
 
 user 2026-05-09 指示を直接引用:
 - "下記の部分も elisp で記述出来るようにするにはどうしたら良いですか？ 1. nelisp 自身の runtime ABI (= Sexp / GC / JIT bridge)、2. Cranelift などの外部 native compiler crate との bridge"
 - "4. nelisp self-host roadmap 全体を遂行。これしか目指していません。"
 - "Sexp ABI elisp 化はまだ諦めていません"
 - "Doc 77 の Stage4 を unpause で"
+- (2026-05-09 session 後半) "100% 純 elisp で self-host する。途中で Rust crate を残すような hybrid は採らない"
+- (2026-05-09 session 後半) "全 commit が net-decrease Rust LOC でなければならない (= per-commit monotonic shrink rule)"
 
-これらが本 Doc の出発点.
+これらが本 Doc の出発点.  特に後 2 点は本 session で確定した *operating rule* で、以後の sub-Doc (Doc 78 / 79 / 76) と本 Doc の Phase 計画は両 rule を gate にして取捨選択する:
+
+- *100% 純 elisp commitment*: 終着点は Rust 側に Cranelift / image decoder / 大規模 GC ロジック等を温存しない。Rust core は heap allocator + atomic 操作 + layout pin の primitive のみ (= Doc 47 phase 6 の C-runtime 自前化に繋がる最小核).
+- *per-commit monotonic shrink rule*: 1 commit でも Rust net LOC が増えると、その commit は ship 不可。中間状態 (例: Doc 78 D-A.1 の shim 400 + ERT 400 = +800 LOC) は許されない。Phase 計画は atomic stage 単位で per-commit shrink rule を satisfy する形に再設計する (例: Doc 79 v3 が Stage C.1+4 を atomic 1 stage に折り畳んだのはこの rule 適用).
 
 ** §1.2 過去の "deferred" 判断の見直し
 
@@ -171,9 +186,15 @@ Doc 77b Stage b.4 で elisp wrapper は既にあるが Rust =strategy.rs= 経由
 
 Vector / Str / その他 variant も同様に NlVecBox / NlStrBox 化、elisp 移管.
 
+#+begin_quote
+*Note 2026-05-09*: Phase B "Sexp 操作 elisp 化 + strategy.rs -408 削除" は audit (GATE FAILED) で structural infeasibility 判明.  Doc 62 Phase 5 (= 2026-05-08) で eval-time dispatch arm はすでに削除済、Phase B 単独で削除すべき Rust 残骸が無い.  本 §2.2 の "-408 LOC" 記述は前提が古い.  代わりに Doc 76 (100% SHIPPED 2026-05-09、Rust -406 LOC) + Doc 79 v3 Phase C (target Rust -56〜-101) + Phase D-B (Cranelift 完全置換) で Rust 削減を進める.
+#+end_quote
+
 ** §2.3 Phase C — GC を elisp に migrate (= 1-2 ヶ月)
 
-詳細設計は **Doc 79 (= Phase C GC elisp 化 設計、DRAFT 2026-05-09)** に articulate. Option C (hybrid: refcount mechanism は Rust 残置 + cycle collector を elisp で Bacon-Rajan 実装) 推奨、Stage C.0〜C.5 で +423/-100 LOC Rust + ~+680 LOC elisp.  以下は本 Doc の概要:
+詳細設計は **Doc 79 v3 (commit 5e85ea7、merge e48f79a) を canonical** とする.  Stage C.1+4 (atomic) → C.2 cycle collector elisp → C.3 finalizer queue elisp → C.5 self-host gate の 5 sub-stage.  Phase C 単独 net Rust target -56〜-101 LOC (= per-commit shrink rule satisfy、Phase B alibi 不要).  対応 elisp +~660 LOC (= cycle collector 400 + finalizer 150 + wrapper 60 + bench 50).
+
+以下は本 Doc 残置の概要 (= Doc 79 v3 と齟齬がある場合は Doc 79 v3 に従う):
 
 =Drop= による auto-free は Rust 内部のみ.  elisp が manual ref counting を駆動:
 
@@ -199,20 +220,20 @@ Rust =Drop= impl は依然必要 (= elisp が dec 漏らした時の safety net)
 
 Cranelift 依存を解消.  2 path:
 
-*** §2.4.1 Path D-A: Cranelift C-style shim (= 1-2 週間、現実路線)
+*** §2.4.1 Path D-A: Cranelift C-style shim (= DEFERRED 2026-05-09)
 
-Cranelift Rust crate を保持しつつ薄い C API で expose、elisp が =nl-ffi-call= で IR builder を driving.
+Doc 78 → **DEFERRED 2026-05-09** (= user 100% 純 elisp commitment と方向矛盾、D-A.1 単独 +800 LOC 中間状態が monotonic shrink rule 違反).  本命は §2.4.2 Path D-B.
 
-詳細設計は **Doc 78 (= Phase D-A Cranelift wrapper 設計、DRAFT 2026-05-09)** に articulate.  Doc 77c §2.4.1 articulation の deepening:
-- 実数ベースの shim inventory: =fb.ins().*= 19 → ~16 fn / Module 6 fn / Builder 9 fn / Signature 4 fn / Type 3 fn = **計 ~38 shim fn** (= 当初推定 ~50 fn を refine)
-- state mgmt は opaque ptr + =NlRc<Box<T>>= 案 (= cranelift =JITModule= / =Context= / =FunctionBuilder= を Rust 側 =Box= で持ち、elisp に =Sexp::Int= handle で渡す)
-- Migration plan: cons.rs → access.rs → arith.rs → predicate.rs → syscall.rs → dsl.rs の順次 elisp 側に lift
-- Rust net: **-2656 LOC** (= 削除 3456 + 新規 cl_shim 400 + ERT 400)、対応 elisp +1700 LOC
-- D-A 着地後の Rust core ~1750 LOC (= "self-host = Rust core ≈ 300-500 LOC" 目標は D-B が必要)
+経緯: D-A の C-style shim は Cranelift Rust crate を保持しつつ薄い C API で expose し elisp が =nl-ffi-call= で IR builder を driving する hybrid 案.  当初は「現実路線」として §2.4.1 articulation の deepening を Doc 78 で進行 (= 計 ~38 shim fn / Rust net -2656 LOC / 対応 elisp +1700 LOC) していたが、本 session で以下 2 点で却下:
 
-Cranelift crate は依然 Rust だが「**Rust crate を呼ぶ shim**」のみが Rust core に残る.
+1. *100% 純 elisp commitment との矛盾*: D-A 着地後も Cranelift Rust crate は依然 Rust core に残置、終着点で Rust crate dependency が消えない.
+2. *monotonic shrink rule 違反*: D-A.1 単独で shim 400 + ERT 400 = +800 LOC 中間状態を要し、per-commit Rust net 増の commit が出る.
 
-*** §2.4.2 Path D-B: Cranelift 完全置換 (= 3-6 ヶ月、true self-host)
+再開条件: D-B が技術的に不可能と判明し、Cranelift 温存 hybrid に方針変更があった場合のみ.  Doc 78 自身は DEFERRED status で archive 維持 (= 後に Cranelift 路線へ regress した時の reference).
+
+*** §2.4.2 Path D-B: Cranelift 完全置換 (= 3-6 ヶ月、true self-host) — *本命*
+
+D-A DEFERRED 確定 (2026-05-09) により、Phase D は **D-B 直行** が canonical path.  100% 純 elisp commitment の終着点でもある (= Cranelift Rust crate dependency 完全消失、Rust core ~810 LOC まで縮小).
 
 x86_64 / ARM64 の machine code byte sequence を elisp で直 emit、=mmap PROT_EXEC= した page に書込んで dispatch:
 
@@ -225,7 +246,7 @@ x86_64 / ARM64 の machine code byte sequence を elisp で直 emit、=mmap PROT
 
 これが完成すれば nelisp は **Rust の Cranelift 依存ゼロ** で動く.  ただし register allocator / instruction selection / ELF linkage の elisp 実装が必要 (= ~5000 LOC elisp).
 
-Phase D-A で start、Phase D-B は将来 Stage として後段化を推奨.
+Phase D-A は DEFERRED 化により skip、**Phase D-B 直行**.  NeLisp Phase 7+ native cc 切替 (= 2026 後半 〜) と timeline 同期.
 
 ** §2.5 Phase E — reader/eval 残作業 (= 1-2 ヶ月)
 
@@ -238,25 +259,37 @@ Phase A-D と並行可能 (= 別ファイル群).  Stage 7.1 は smaller pilot.
 
 * §3 総合工数 + 着地形
 
-** §3.1 全 Phase 並行不可、依存関係
+** §3.1 全 Phase 並行不可、依存関係 (2026-05-09 refresh)
+
+旧 graph (Phase A → B → C/D-A/E → D-B 任意) は 2026-05-09 で再編成.  Phase B GATE FAILED + Doc 78 D-A DEFERRED + Doc 79 v3 SHIPPED + Doc 76 100% SHIPPED を反映:
 
 #+begin_example
    ┌─────┐
-   │ A   │ Sexp ABI 解放
+   │ A   │ Sexp ABI 解放 (= 完了)
    └──┬──┘
       ↓
-   ┌─────┐
-   │ B   │ Sexp 操作 elisp 化
-   └──┬──┘
+   ┌─────┐ ✗ GATE FAILED audit (= structural infeasibility)
+   │ B   │ Phase B は skip、削除すべき strategy.rs 残骸が無い
+   └─────┘   (= Doc 62 Phase 5 で eval-time dispatch arm 削除済)
       ↓
    ┌─────┐    ┌─────┐    ┌─────┐
-   │ C   │    │ D-A │    │ E   │  (互いに並行可)
-   │ GC  │    │JIT  │    │7.1/2│
-   └─────┘    └─────┘    └─────┘
-                ↓
-              ┌─────┐
-              │ D-B │  (任意、後段)
-              └─────┘
+   │ C   │    │ D-A │    │ E   │
+   │ Doc │    │DEFER│    │7.1/2│
+   │ 79  │    │RED  │    │     │
+   │ v3  │    │(Doc │    │     │
+   │     │    │78)  │    │     │
+   └──┬──┘    └─────┘    └─────┘
+      ↓                       ↓
+   ┌─────────────────────────────┐
+   │ D-B (本命、3-6 ヶ月)        │
+   │ Cranelift 完全置換 = 100% 純 elisp 終着点
+   │ NeLisp Phase 7+ native cc 切替と timeline 同期
+   └─────────────────────────────┘
+
+   並行 (= 別 file 群、Phase A 完了で unblock 済):
+   - Doc 76 (= OS surface migration、100% SHIPPED)
+   - Doc 75 Phase 9 v2 audit (= 進行中)
+   - Doc 74 anvil-runtime migration audit (= 進行中)
 #+end_example
 
 ** §3.2 工数 grand total
@@ -493,9 +526,37 @@ LOC delta (Phase A.5.1+A.5.2 着地時):
 
 このうち ~150 LOC は ERT (= safety net for Phase B) なので runtime LOC は +75 LOC 程度.  Phase A.5 の役割を「Phase B 用の foundation 投資」と位置付け、本物の Rust core 縮減 (= 元 plan の =Rust core ≈ 300-500 LOC=) は Phase B-D で実現する.
 
-** §4.7 Phase A.6 残作業
+** §4.7 Phase A.6 残作業 (= 旧 articulation、2026-05-09 で superseded)
 
 - A.6 (1 週間予定): ERT 全面 regression gate (= make test 0 unexpected + perf bench 退行 10% 以下)。anvil-runtime crate は Phase A.2.1 / A.4.x 移行に追従しておらず compile error 残存、A.6 で同期させるか Phase B で elisp 化に合わせて削除するか判断要
+
+** §4.8 next steps (2026-05-09 refresh — 進行中 3 track + 残 task)
+
+旧 §4.7 "Phase A.6 / B 着手" articulation は 2026-05-09 で再編成. Phase B GATE FAILED により直接 Phase C / D-B / 並行 audit に dispatch:
+
+*** §4.8.1 完了済み (2026-05-09 時点)
+
+- Phase A.1〜A.6 (NlRc / NlConsBox / 8 primitives / 6 variant migrate / Sexp ABI helpers + cons.rs/access.rs trampoline rewrite)
+- Phase A.5.1 + A.5.2 (= JIT trampoline minimal scope)
+- *Doc 76 = 100% SHIPPED* (Phase 7 elisp-side OS surface migration、40/40 specialized 削除完遂、Rust -406 LOC 本 session)
+- *Doc 78 D-A = DEFERRED 確定* (= 100% 純 elisp commitment 違反 + monotonic shrink rule 違反)
+- *Doc 79 v3 = SHIPPED* (= Phase C GC elisp 化 設計、commit 5e85ea7、merge e48f79a)
+
+*** §4.8.2 進行中 (2026-05-09 dispatch)
+
+- *Phase C C.1+4 実装* (= Doc 79 v3 atomic stage、generic NlRc primitive 5-8 件 + Drop 本体 thin 化、target Rust -56〜-101 LOC)
+- *Doc 75 Phase 9 v2 audit* (= NELIMG image decode 関連 PAUSED の見直し)
+- *Doc 74 anvil-runtime migration audit* (= Phase A.2.1 / A.4.x migrate 追従、anvil-runtime crate を anvil-el に集約)
+
+*** §4.8.3 残 task (= future)
+
+- Phase C C.2 (cycle collector elisp、Bacon-Rajan 実装、+~400 LOC elisp)
+- Phase C C.3 (finalizer queue elisp、+~150 LOC elisp)
+- Phase C C.5 (self-host gate)
+- Doc 73 Stage 8.4 (Doc 74 dependent)
+- Phase 9 実装 (Doc 75 Phase 9 v2 audit 結果に応じて)
+- *Phase D-B* (= Cranelift 完全置換、3-6 ヶ月、100% 純 elisp 終着点、NeLisp Phase 7+ native cc 切替と timeline 同期)
+- Phase E (Doc 64 printer / Doc 66 reader port — Stage 7.1 / 7.2 SHIPPED 済、残は Doc 73 Phase 8 内で消化)
 
 * §5 Test plan
 
@@ -535,3 +596,10 @@ D-A or D-B 完了時:
 * §8 改判断 record
 
 - 2026-05-09: user 指示 "Doc 77 Stage4 を unpause" を受け、本 Doc を draft.  Doc 75 PAUSED は image decode 限定で、Sexp ABI 一般の elisp 化を否定したものではないことを articulate.
+- 2026-05-09 (session 後半): 以下を確定し本 Doc に同期.
+  - *user 100% 純 elisp commitment 確定* — nelisp 終着点で Cranelift / image decoder / 大規模 Rust GC 等を残さず、Rust core は heap allocator + atomic + layout pin の primitive のみ.  §1.1 で articulate.
+  - *per-commit monotonic shrink rule 確定* — 全 commit が net-decrease Rust LOC を満たす.  +N LOC 中間状態は不可、Phase 計画は atomic stage 単位で再設計 (Doc 79 v3 が代表例).
+  - *Doc 78 D-A DEFERRED 確定* — Cranelift Rust crate を残す hybrid path は 100% 純 elisp commitment 違反 + D-A.1 単独 +800 LOC が monotonic shrink rule 違反.  §2.4.1 を DEFERRED articulation に書換、§2.4.2 D-B を本命化.
+  - *Phase B GATE FAILED 確定* — Doc 62 Phase 5 (= 2026-05-08) で eval-time dispatch arm 削除済、Phase B 単独で削除すべき strategy.rs 残骸が無い (= "-408 LOC" alibi invalid).  §2.2 に Note block 追記.
+  - *Doc 79 v3 SHIPPED* — Phase C GC elisp 化 設計が Stage C.1+4 atomic stage で per-commit shrink rule satisfy.  commit 5e85ea7、merge e48f79a.  §2.3 を Doc 79 v3 への外部参照に切替.
+  - *Doc 76 100% SHIPPED* — Phase 7 elisp-side OS surface migration が 40/40 specialized 削除完遂 (= 本 session で Stage E + G ship、Rust -89 + -317 = -406 LOC).  §3.1 dependency graph に並行 track として追記.
