@@ -34,7 +34,24 @@ Doc 77 §2.3.3 Stage 4 (= Sexp memory layout pin、JIT direct emit base) を **r
 - *Doc 78 Phase D-A Cranelift wrapper = DEFERRED 2026-05-09*: D-A の C-style shim path は Cranelift Rust crate を温存する hybrid であり 100% 純 elisp commitment と方向矛盾、さらに D-A.1 単独で +800 LOC 中間状態 (= shim 400 + ERT 400) を要し monotonic shrink rule 違反.
 - *Doc 79 Phase C GC elisp 化 設計 v3 = SHIPPED* (commit 5e85ea7、merge e48f79a): Stage C.1+4 を atomic 1 stage に折り畳み per-commit shrink rule satisfy、Phase C 単独 net Rust target -56〜-101 LOC.
 - *Phase B = GATE FAILED audit 結論*: Doc 62 Phase 5 (= 2026-05-08) で eval-time dispatch arm はすでに削除済、Phase B "−408 strategy.rs 削除" alibi は前提が古く invalid.  本 §2.2 の Phase B 計画は structural infeasibility.
-- *本命は Phase D-B*: Cranelift 完全置換 / NeLisp Phase 7+ native cc 切替 (= 3-6 ヶ月).  D-A skip + D-B 直行が 100% 純 elisp commitment の最短 path.
+- *本命は Phase D-B*: Cranelift 完全置換 / NeLisp Phase 7+ native cc 切替 (= 当初 3-6 ヶ月推定 → Track M+S+T audit で *5-7 週間* に refine).  D-A skip + D-B 直行が 100% 純 elisp commitment の最短 path.
+
+** 2026-05-09 session 後半 — Track G 以降の累計進捗
+
+本 session 累計 *Rust -681 LOC SHIPPED* 内訳:
+- Doc 76 Stage E filenotify (commit 6f23c40): *-89 Rust*
+- Doc 76 Stage G SCM_RIGHTS (commit 03329c3): *-317 Rust* (Doc 76 = 40/40 100% 完遂)
+- Doc 79 v4 Stage C.4-atomic (commit 8ba6f32): *-81 Rust* (NLRC_DROP_TABLE + Drop body slim)
+- Doc 80 Stage 80.1〜80.5 substrate (commit 99440d4): *-78 Rust* (= cond/when/unless/signal helper + 5 strategy.rs fn delete)
+- Doc 80 §7 v2 fold-in (commit 5a4949d): *-34 Rust* (= slim! macro で 5 primitives 統合)
+- Doc 77b stub cleanup (commit 401fb17): *-82 Rust* (= lower_entries + try_lower + LowerFn type + _unused_truthy delete)
+
+D-B path 完全 articulate:
+- *Track M audit*: nelisp-cc native compiler ~12,512 LOC elisp **既 SHIPPED** (Doc 28 LOCKED-v2 Phase 7.1.1〜7.1.5 + Phase 7.7 inliner) と確定.  D-B = greenfield ではなく既存 finishing work.
+- *Track S audit* (commit b0a030f / merge 3a2e624): Phase 7.1.5 fib 30x perf gate **既 CLOSED** (実測 fib-30 *3964.05x* speedup、12 commit follow-up で T96 stale state を超克).  Doc 28 §11.5 errata "post-v1.0 defer" 記述は obsolete、§11.6 で retract articulate.
+- *Track T DRAFT* (commit a6e1a8c / merge e59ba5e): Doc 81 — Phase 7.1.6.a〜.f cluster takeover の prerequisite (= primitive trampoline ABI mode + 4 SSA opcodes + x86_64/arm64 backend emit + FFI external C symbol resolution).  4 sub-stage、~1 週間 / +780 elisp / Rust ±0.
+
+D-B 工数 refine: 当初 3-6 ヶ月 → *5-7 週間* (= Phase 7.1.5 close 0 + Phase 7.1.6 archi extension 1 週間 + .a〜.f cluster takeover 3-5 週間 + Phase 7.1.7 cleanup 1 週間).  100% 純 elisp 到達は *2-4 ヶ月* 見込 (= Doc 74 anvil-runtime 1-2 ヶ月 + Phase 9 frozen heap 1 ヶ月 + D-B 5-7 週間).
 
 * §1 動機
 
