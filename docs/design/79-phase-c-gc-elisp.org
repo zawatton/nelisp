@@ -1,0 +1,525 @@
+#+TITLE: Doc 79 — Phase C: GC elisp 化 設計
+#+AUTHOR: NeLisp / Claude
+#+DATE: 2026-05-09
+
+* Status
+:STATE: DRAFT v3 2026-05-09
+:PARENT: Doc 77c (= Phase A〜E master plan)
+:PARALLEL: Doc 76 (OS surface elisp 化) / Doc 73 (reader/eval purge) / Doc 78 (Phase D-A Cranelift wrapper)
+:DEPENDS_ON: Doc 77c Phase A 完了 (= NlConsBox/NlCell/NlStr/NlVector/NlBoolVector/NlRecord/NlCharTable layout pin、cons_primitives.rs Layer 2 surface 出荷済)
+:UPDATES: Doc 77c §2.3 を本 Doc への外部参照に切替
+
+* §0 TL;DR
+
+Doc 77c §2.3 (= "Phase C: GC を elisp に migrate, 1-2 ヶ月") の詳細設計.
+
+*v2 refactor (2026-05-09)*: v1 の per-kind 22 prim 展開 (= +423 Rust) は user 2026-05-09 monotonic shrink rule (= 全 commit が net Rust LOC を減らす) に違反.  Phase B "−408 統合" alibi も独立 audit で *invalidated* (= GATE FAILED、=strategy.rs= に削除すべき cons-arm 不在).  本 v2 では Stage C.1 を *generic NlRc primitive surface* (= opaque ptr + kind tag、5-8 fns) に再設計し、Phase C 単独で net Rust LOC が減るようにする.
+
+- *現状*: Rust 内に refcount-based GC が ~1,936 LOC (= 8 ファイル合計 non-test).  Drop 本体だけで 208 LOC, =NlRc<T>= core 240 LOC, 各 =NlXxxRef= の =Clone= / =Drop= / refcount API が残り.
+- *target*: GC の *policy* (= cycle 検出、bulk free、finalizer queue) を elisp に持ち上げ、Rust 側は *mechanism* (= layout-pinned heap + atomic refcount + 単一 generic alloc/dealloc primitive set) のみに縮める.
+- *推奨 approach*: =Option C (hybrid) + generic boundary= = refcount mechanism は Rust 残置 (= layout pin 維持 / hot path 維持)、boundary は kind-tag dispatch の *generic NlRc primitive 5-8 件* で全 boxed type を覆い、cycle collector + bulk finalizer scheduler を elisp に新設.
+- *sub-stage*: C.0 audit → *C.1+4 generic boundary primitive + Drop 本体 thin 化 (1 atomic stage)* → C.2 cycle collector elisp (+~400 LOC) → C.3 finalizer queue elisp (+~150 LOC) → C.5 self-host gate.
+- *Rust 純 delta (Phase C 単独)*: C.1+4 -56〜-101 / 残 stage ±0 = *-56〜-101 LOC Rust* ✅.  monotonic shrink rule *per-commit* で充足 (= C.1+4 を atomic 1 commit ship、Phase B alibi 不要).
+- *elisp 純 delta*: ~+660 LOC (= cycle collector +400 + finalizer +150 + wrapper +60 + bench +50).
+- *bootstrap circularity*: GC が eval を必要としない設計 (= alloc / dealloc / inc / dec はすべて pure C-like loop) で回避.  cycle collector は eval-time にのみ走るので boot 中 (= image decode 期) は呼ばない.
+
+* §1 動機
+
+** §1.1 100% pure elisp self-host commitment
+
+memory =project_nelisp_100_percent_elisp_commitment= (user 2026-05-09 directive) と Doc 77c §2.3 の framing に従い、GC を含む runtime 全層を elisp で記述可能にする.  Phase C の完了で「Rust 側は heap allocator + atomic 操作 + layout pin の primitive のみ」という最終姿勢に近づく.
+
+** §1.2 elisp 化のメリット
+
+- *Cycle collection が hackable*: Bacon-Rajan / Recycler / Sapphire 等のアルゴリズム選択が elisp 修正のみで可能.  Rust recompile + ABI 同期不要.
+- *Finalizer hook の自由度*: weak ref / phantom ref / 大規模 buffer の段階的解放など elisp 側で defcustom できる.
+- *self-host depth の articulation*: =project_nelisp_100_percent_elisp_commitment= で謳う「runtime ABI も elisp」の証跡として GC は最後の砦.
+- *future 移植 cost*: Rust→Zig / Rust→C 等の seed core 言語変更時、GC policy の elisp 部分は無関係に流用可能 (= Doc 47 phase 6 の C-runtime 自前化に効く).
+
+** §1.3 elisp 化しない選択肢の reason
+
+実は GC を elisp 化しない選択肢もあり得る (= Lua / Squirrel / Tcl 流: GC は VM の責務、language は触らない).  しかし NeLisp は
+
+- 「Elisp が runtime 全責務を持つ」という Doc 73 / 77c の設計の柱
+- =defadvice= 文化に基づく、ユーザーが GC policy を override できる Emacs Lisp 的な hackability
+- Doc 47 phase 6 の C-runtime self-impl roadmap
+
+から、elisp 化を採る.
+
+* §2 現状 GC mechanism (audit 2026-05-09)
+
+** §2.1 全体構造
+
+Phase A 完了時点で、Sexp の boxed variant は以下の layout-pinned refcount struct で支えられている:
+
+| Variant       | Box struct       | Ref handle             | LOC (non-test) |
+|---------------|------------------|------------------------|----------------|
+| (generic)     | =NlRcInner<T>=   | =NlRc<T>=              | 240            |
+| =Cons=        | =NlConsBox=      | =NlConsBoxRef=         | 423            |
+| =Cell=        | =NlCell=         | =NlCellRef=            | 255            |
+| =MutStr=      | =NlStr=          | =NlStrRef=             | 250            |
+| =Vector=      | =NlVector=       | =NlVectorRef=          | 193            |
+| =BoolVector=  | =NlBoolVector=   | =NlBoolVectorRef=      | 192            |
+| =Record=      | =NlRecord=       | =NlRecordRef=          | 194            |
+| =CharTable=   | =NlCharTable=    | =NlCharTableRef=       | 189            |
+| *合計*        |                  |                        | *1,936*        |
+
+LOC source: =wc -l build-tool/src/eval/nl*.rs= + non-test 行 (= =#[cfg(test)]= 直前まで).
+
+** §2.2 Refcount プロトコル (NlRc<T> 由来、全 Ref で再現)
+
+各 =NlXxxRef= は:
+
+1. =new(payload)= → =std::alloc::alloc(Layout::new::<NlXxx>())= で heap 確保 → refcount=1 で初期化、=NonNull<NlXxx>= 保持.
+2. =Clone= → =refcount.fetch_add(1, Relaxed)= bump、新 handle 返却.
+3. =Drop= → =refcount.fetch_sub(1, Release)=、prev==1 なら =fence(Acquire)= → =drop_in_place(payload)= → =alloc::dealloc=.
+4. =Deref= → =&NlXxx= 借用、固定 offset access.
+
+=AtomicUsize= refcount は offset 0 (= NlRc) または末尾 (= NlConsBox) に locked、Phase A.5 JIT trampoline + Phase A.3 elisp =nl-ffi-write-i64= が直接読書きする contract.
+
+** §2.3 Drop 本体 LOC inventory
+
+Doc 77c §2.3 で議論された「Rust =Drop= 削れる量」の concrete 数:
+
+| File              | Drop body 行範囲 | LOC |
+|-------------------|------------------|-----|
+| nlrc.rs           | 163-196          | 34  |
+| nlconsbox.rs      | 317-351          | 35  |
+| nlcell.rs         | 176-203          | 28  |
+| nlstr.rs          | 188-211          | 24  |
+| nlvector.rs       | 139-159          | 21  |
+| nlboolvector.rs   | 138-158          | 21  |
+| nlrecord.rs       | 133-154          | 22  |
+| nlchartable.rs    | 131-153          | 23  |
+| *合計 Drop*       |                  | *208* |
+
+(Drop bodies は payload kind ごとに drop_in_place の対象 field が違うだけで、refcount→0 判定 + fence + dealloc の boilerplate がほぼ同じ.)
+
+** §2.4 Cycle handling 現状
+
+- =NlConsBox= / =NlVector= / =NlCell= 等は acyclic invariant (= Phase A の cons_primitives.rs §記述通り).  ユーザーが =setcdr= で cycle を作れるが、Rust =Drop= は cycle 検出なし → =refcount > 0= のまま leak.
+- =NlCharTable= の =parent= field は self-reference 不可 (= API gating、コメント nlchartable.rs §1.5).
+- 結果: *cycle leak は現状 Rust に修復ロジックがない*.  既存 elisp test (= =equal_two_isomorphic_cycles_compare_equal= 等) は cycle を作って exit するが GC せず終了に頼っている.
+
+** §2.5 Allocator boundary
+
+全 Box struct は =std::alloc::alloc= = libc =malloc= 直 (= Rust default GlobalAlloc).  arena / pool / bump allocator なし.  third-party GC crate (= bdwgc, rsgc, gc-arena, shifgrethor, broom) は Cargo.toml 検索結果 *zero hit*.
+
+ffi.rs の =Box::leak(Box::new(lib))= は plugin 動的 lib の lifetime 管理で GC 対象外.
+
+** §2.6 既存 elisp boundary primitive
+
+=cons_primitives.rs= (305 LOC, ~140 non-test) で Phase A.3 出荷済:
+
+- =nl-cons-alloc=, =nl-cons-car=, =nl-cons-cdr=, =nl-cons-set-car=, =nl-cons-set-cdr=
+- =nl-rc-inc=, =nl-rc-dec=, =nl-rc-count=
+
+Cons 専用.  Phase C で =nl-vector-*= / =nl-str-*= / =nl-cell-*= / =nl-record-*= / =nl-bool-vector-*= / =nl-chartable-*= の similar surface が必要 (= elisp 側が allocate/free/inc/dec を全 boxed kind で driving).
+
+* §3 Migration target — 3 option 比較
+
+** §3.1 Option A: keep refcount in Rust + expose alloc/free as primitives
+
+- *content*: 現状の =Drop= 本体を残し、=alloc/dealloc/inc/dec/count= を elisp primitive 化、cycle collector のみ elisp 新設.
+- *Rust 削減*: ほぼ 0 (= cycle 関連 helper だけ).  cons_primitives.rs 系の追加で actually +200 LOC.
+- *elisp 追加*: cycle collector ~300 LOC + finalizer scheduler ~150 LOC = ~450 LOC.
+- *risk*: 低.  cycle leak 対応のみが elisp 仕事.
+- *self-host depth*: 低 (= Rust の Drop 本体を温存).
+
+** §3.2 Option B: replace refcount entirely with mark-sweep tracing GC
+
+- *content*: =NlRc= / =NlXxxRef= refcount logic 全削除、Rust は heap region + roots set を expose、elisp 側 mark/sweep walker が evict.
+- *Rust 削減*: ~-1,500 LOC (= refcount Clone/Drop 全廃 + atomic 操作削除).
+- *elisp 追加*: ~+1,200-1,500 LOC (= mark/sweep + tri-color + write barrier shim).
+- *risk*: 高.  Sexp ABI 大改修 (= refcount field 削除 = layout 再 pin = JIT trampoline rewrite = Phase A.5 の成果と衝突).  bootstrap circular (= mark/sweep が eval を必要 → eval は alloc を必要 → alloc は GC を必要 という circle).
+- *self-host depth*: 最高.  ただし Phase A 投資の大部分が無駄になる.
+
+** §3.3 Option C: hybrid — refcount for hot path + elisp cycle collector on demand
+
+- *content*: =NlRc= / =NlXxxRef= の refcount logic を保持 (= JIT 互換性、layout pin 維持).  Drop 本体は payload drop + dealloc に縮め、elisp 側 cycle collector は =rc-inc/dec= の上で Bacon-Rajan を実装.  finalizer scheduler も elisp.
+- *Rust 削減*: -56〜-101 LOC (= 後述 §4 generic boundary refactor で C.1 +115〜160 を C.4 -216 が上回る).
+- *elisp 追加*: ~+660 LOC (= cycle collector ~400 + scheduler ~150 + generic wrapper ~60 + bench ~50).
+- *risk*: 中.  Phase A の成果を温存しつつ elisp 化が前進.  generic API は kind-tag corruption / type-erased pointer debugging という新 risk を導入 (§6.6 参照).
+- *self-host depth*: 中.  Rust に refcount は残るが policy は elisp.
+
+** §3.4 推奨: Option C + generic boundary
+
+reasoning:
+1. Phase A の Sexp ABI pin (= 8 boxed kind の layout-pin) は JIT direct emit (= Doc 78 Phase D-A) の前提条件であり、refcount field を消す Option B は Phase A 投資全廃.
+2. Doc 77c §2.3 の elisp pseudo code (= =(defun cons (a b) (let ((box (nl-cons-alloc a b))) (nl-rc-inc a) (nl-rc-inc b) box))=) は明確に hybrid 路線.
+3. Bacon-Rajan は Option C で機能する (= 必須前提が「mutator が refcount を bump/dec する」).
+4. bootstrap circularity 回避が容易 (= cycle collector 不在でも alloc/free は動く、boot phase は cycle 無視で OK).
+5. *v2 追加 reasoning*: per-kind 22 prim (v1) ではなく =nl-rc-*= 5-8 fns + kind tag dispatch にすれば、Stage C.1 Rust delta が +423 → +115〜160 に圧縮、C.4 の Drop body 統一 (-216) と合わせて Phase C 単独で net 負 delta.  Phase B 統合に依存せずに monotonic shrink rule を満たせる.
+
+* §4 Boundary primitives — Rust → elisp 露出する API
+
+*v2 refactor*: v1 の per-kind 22 prim (= +423 Rust) を *generic NlRc primitive 5-8 fns + kind-tag dispatch* に再設計.  payload access (= car/cdr/aref 等) は本 Doc 79 範囲外として Phase B (Sexp 操作 elisp 化) に投げる (= Phase B は元々 =strategy.rs= 大改修を含むので per-kind access prim はそちらの自然責務).  本 Doc 79 は *GC mechanism boundary* に絞る.
+
+** §4.1 既存 (Phase A 出荷済、Phase C で再利用)
+
+- =nl-cons-alloc=, =nl-cons-car=, =nl-cons-cdr=, =nl-cons-set-car=, =nl-cons-set-cdr=
+- =nl-rc-inc=, =nl-rc-dec=, =nl-rc-count=
+
+cons 専用に出ているこれらは Phase B で =nl-rc-*= generic 経由に rewire 予定 (= Phase B 範疇).  本 Doc では既存 surface を破壊しない.
+
+** §4.2 Phase C で追加 (generic NlRc primitive set)
+
+設計の柱:
+
+1. *kind tag*: 単一 byte enum =NlRcKind= (= Phase A.5.1 の =Sexp::tag()= 由来 byte をそのまま再利用).  値 = =0=Cons / =1=Cell / =2=MutStr / =3=Vector / =4=BoolVector / =5=Record / =6=CharTable / =7=Generic.  kind tag は alloc 時に refcount trailer の隣 (= 1 byte 追加 field、各 NlXxxBox layout に既存の padding を使えば *layout pin 不変*) に書かれる.
+2. *DROP_FN const*: 各 =impl NlXxxBox= に =const DROP_FN: unsafe fn(*mut c_void)= を追加 (= ~5 LOC × 8 kind = +40 LOC).  drop dispatch は =NLRC_DROP_TABLE: [unsafe fn(*mut c_void); 8]= から kind tag で index lookup.
+3. *generic primitive 5-7 fns* (= 各 ~10-20 Rust LOC、bodies + extern 宣言 + arity check 込みで合計 ~75-120 LOC).
+
+| 新規 prim              | sig (Rust extern)                                            | 用途                                                    | LOC 見積 |
+|------------------------|--------------------------------------------------------------|---------------------------------------------------------|----------|
+| =nl-rc-alloc=          | =unsafe extern "C" fn(kind: u8, payload_size: usize) -> *mut c_void= | kind dispatch で対応 =NlXxxBox::new()= 内部呼出、opaque ptr 返却 | 20       |
+| =nl-rc-dealloc=        | =unsafe extern "C" fn(ptr: *mut c_void) -> ()=                | trailer の kind 読取 → =NLRC_DROP_TABLE[kind]= dispatch    | 15       |
+| =nl-rc-inc-strong=     | =unsafe extern "C" fn(ptr: *mut c_void) -> ()=                | trailer の AtomicUsize fetch_add(1, Relaxed)             | 12       |
+| =nl-rc-dec-strong=     | =unsafe extern "C" fn(ptr: *mut c_void) -> usize=             | fetch_sub(1, Release) → 新 count 返却 (auto-drop *なし*; elisp が explicit dealloc) | 15       |
+| =nl-rc-strong-count=   | =unsafe extern "C" fn(ptr: *mut c_void) -> usize=             | trailer load(Acquire)                                    | 10       |
+| =nl-rc-kind=           | =unsafe extern "C" fn(ptr: *mut c_void) -> u8=                | trailer の kind byte 読取 (cycle collector の dispatch 用)  | 8        |
+| =nl-rc-payload-ptr=    | =unsafe extern "C" fn(ptr: *mut c_void) -> *mut c_void=       | interior pointer (= NlXxx struct の先頭 byte) を返却、=nl-ffi-read-bytes-at= で elisp が struct walk | 10       |
+| *合計 generic prim*    | *7 fns*                                                      |                                                         | *~90*    |
+
+加えて、各 =impl NlXxxBox= に =DROP_FN= constant を追加:
+
+#+begin_src rust
+impl NlConsBox {
+    pub const DROP_FN: unsafe fn(*mut c_void) = nlconsbox_drop_thunk;
+    // ...
+}
+unsafe fn nlconsbox_drop_thunk(ptr: *mut c_void) {
+    let p = ptr as *mut NlConsBox;
+    std::ptr::drop_in_place(p);
+    std::alloc::dealloc(p as *mut u8, std::alloc::Layout::new::<NlConsBox>());
+}
+#+end_src
+
+8 kind × ~5 LOC = +40 LOC.  drop table は単一 const array:
+
+#+begin_src rust
+const NLRC_DROP_TABLE: [unsafe fn(*mut c_void); 8] = [
+    NlConsBox::DROP_FN,
+    NlCell::DROP_FN,
+    NlStr::DROP_FN,
+    NlVector::DROP_FN,
+    NlBoolVector::DROP_FN,
+    NlRecord::DROP_FN,
+    NlCharTable::DROP_FN,
+    nl_rc_generic_drop_thunk, // for NlRc<T> pure refcount payloads
+];
+#+end_src
+
+加えて GC 用 helper 3 fns (= cycle collector が必要):
+
+| 新規 prim                 | sig                                  | 用途                                                   | LOC 見積 |
+|---------------------------|--------------------------------------|--------------------------------------------------------|----------|
+| =nl-gc-walk-children=     | =unsafe extern "C" fn(*mut c_void) -> *mut c_void= (returns Sexp pointer of List) | 1 box の outgoing edge 列挙、kind tag dispatch で内部 layout walk | 30       |
+| =nl-gc-buffered-decs=     | =unsafe extern "C" fn() -> *mut c_void= (returns Sexp List)                       | recent dec の buffer (Bacon-Rajan roots candidate)       | 25       |
+| =nl-gc-finalize=          | =unsafe extern "C" fn(*mut c_void)=  | refcount=0 強制 finalize (cycle 解除後 dealloc shortcut) | 15       |
+| *合計 GC helper*          | *3 fns*                              |                                                        | *~70*    |
+
+*Stage C.1 Rust 合計*: 90 (generic prim) + 40 (DROP_FN) + 70 (GC helper) = *+200 LOC* — 上限見積.  arity check / wrong-type test を tight に書けば +115〜160 LOC range に収まる.  本 Doc では保守側 *+115〜160* を target、+200 を upper bound として記載.
+
+(Note: =nl-gc-trace-roots= / =nl-gc-rc-snapshot= は v1 にあったが、=nl-rc-strong-count= で代用可能 / mutator の root set は elisp 側で stack-walk すべきと判断し v2 で削除.  surface 縮小に貢献.)
+
+** §4.3 elisp 側の generic API 駆動
+
+elisp wrapper の典型形:
+
+#+begin_src elisp
+(defun nl-cons-alloc (a b)
+  "Allocate a new cons cell."
+  (let ((ptr (nl-rc-alloc 0 (nl-cons-payload-size))))  ; kind=0 = Cons
+    (nl-rc-inc-strong (nl-sexp-as-ptr a))
+    (nl-rc-inc-strong (nl-sexp-as-ptr b))
+    ;; payload write は Phase B の per-kind access prim 経由
+    (nl-cons--init-payload ptr a b)
+    (nl-ptr-as-sexp 0 ptr)))  ; tag=0 = Cons sexp
+#+end_src
+
+cycle collector 中の kind dispatch:
+
+#+begin_src elisp
+(defun gc-walk-children (ptr)
+  (let ((kind (nl-rc-kind ptr)))
+    (cond
+     ((= kind 0) (gc--cons-children ptr))      ; car + cdr
+     ((= kind 3) (gc--vector-children ptr))    ; len 個 element
+     ((= kind 5) (gc--record-children ptr))    ; type-tag + slots
+     ;; ...
+     (t nil))))
+#+end_src
+
+** §4.4 elisp wrapper 命名規約
+
+Phase B (= Sexp 操作 elisp 化) との衝突回避:
+- 公開 =cons= / =car= / =cdr= 等は Phase B で elisp 再実装、=nl-cons-*= / =nl-rc-*= の上に build.
+- Phase C 追加分は =nl-rc-*= prefix 維持 (= 「raw, not-for-public」signal).
+- elisp 公開 GC API は =gc-= prefix で別 layer (= =(gc-collect-cycles)=, =(gc-stats)= 等).
+
+* §5 Stage breakdown
+
+Doc 77c §2.3 の "1-2 ヶ月" estimate を 6 sub-stage に展開.  各 stage は monotonic shrink rule に従う (= test_count_unchanged_or_grow + Rust LOC monotonically non-increasing on net total).
+
+** §5.1 Stage C.0 — audit + design freeze (1 週間)
+
+- 本 Doc 79 の review + commit.
+- generic NlRc primitive surface 確定 (= §4.2 の 7 generic + 3 GC helper = 10 fns 確定).
+- Bacon-Rajan アルゴリズム選定確認 (= alternative: Lins, Recycler, Synchronous CC) → Bacon-Rajan が elisp 実装 cost / 動作 trace 容易性 / Doc 77c §2.3 言及済 で確定.
+- *Rust delta*: ±0.  *elisp delta*: ±0.
+- *commit-rule check*: net Rust delta = 0、monotonic shrink rule 充足 (= 増加なし).
+
+** §5.2 Stage C.1+4 — generic boundary primitive set + Rust Drop 本体 thin 化 (4-5 週間)
+
+- §4.2 の generic NlRc primitive 7 fns + GC helper 3 fns を =build-tool/src/eval/rc_primitives.rs= 単一 file に集約 (= 8 file 新設しない、ここが per-kind 22 prim 案との最大差).
+- 各 =impl NlXxxBox= に =DROP_FN: unsafe fn(*mut c_void)= constant 追加 (8 kind × ~5 LOC).
+- =NLRC_DROP_TABLE: [unsafe fn(*mut c_void); 8]= const array を =nlrc.rs= に追加 (~10 LOC).
+- Rust ERT: =nl_rc_alloc= 各 kind / =nl_rc_dealloc= round-trip / =nl_rc_inc_strong= + =dec_strong= balance / =nl_rc_kind= byte read / =nl_rc_payload_ptr= interior valid / =nl_gc_walk_children= per-kind 列挙.
+- elisp wrapper は薄 (= 単に generic prim を kind 引数で wrap、policy は C.2 以降で書く).
+- *Rust delta (C.1 portion)*: +115〜160 LOC (target) / +200 LOC (upper bound).  内訳: generic prim ~90 + DROP_FN const ~40 + GC helper ~70 (upper) → arity/error check tight 化で ~115〜160 に収まる見込み.
+- *elisp delta*: +~60 LOC (= 8 kind 用 thin wrapper、cons の既存 surface に合わせる adapter).
+
+*v3 merge (= 旧 §5.5 Stage C.4 を本 stage に統合)*:
+
+generic =NLRC_DROP_TABLE= + =DROP_FN= constants (上記 C.1 portion で導入) を活用し、各 =impl Drop= 本体を 1 行 dispatch に統一.
+
+- =nlconsbox.rs= (35 LOC) / =nlcell.rs= (28) / =nlstr.rs= (24) / =nlvector.rs= (21) / =nlboolvector.rs= (21) / =nlrecord.rs= (22) / =nlchartable.rs= (23) + =nlrc.rs= (34) 各 =Drop= の本体を:
+
+#+begin_src rust
+impl Drop for NlConsBox {
+    fn drop(&mut self) {
+        unsafe { (Self::DROP_FN)(self as *mut _ as *mut c_void) }
+    }
+}
+#+end_src
+
+の ~3 LOC pattern に統一.
+
+- 8 kind × ~30 LOC (現行平均 26、generic は 34) → ~3 LOC each = 8 × ~3 = 24 LOC.  削減 = 208 (=§2.3 audit 合計) - ~24 - 8 (各 file の use 1 行) = *~-176 LOC*.  保守側で *-216 LOC* を target、-176 を lower bound として記載.  realistic mid-point は *~-200 LOC*.
+- =impl NlXxxRef= の =Clone= は touch しない (= refcount inc は generic API 経由で elisp が呼ぶが、Rust 内部利用も残るので =Clone= は維持).
+- *Rust delta (C.4 portion)*: -216 LOC (target) / -176 LOC (lower).
+- *elisp delta (C.4 portion)*: 0.
+
+- *Rust delta (合算)*: +115〜160 (C.1) − 216 (C.4) = *-56〜-101 LOC* ✅
+- *commit-rule check*: net Rust delta = -56〜-101 LOC、単独で monotonic shrink rule 充足.
+
+** §5.3 Stage C.2 — cycle collector elisp 実装 (3-4 週間)
+
+- =lisp/nelisp-stdlib-gc.el= 新設、Bacon-Rajan アルゴリズムを実装.
+- 構成:
+  - =gc-cycle-roots= = =nl-gc-buffered-decs= → buffer of "suspect" boxed (= rc が dec されたが 0 にならなかった boxed; cycle root 候補).
+  - =gc-collect-cycles= = trial deletion phase: 各 root から =nl-gc-walk-children= で graph walk、internal rc を仮想 dec.
+  - =gc-scan= = 仮想 rc=0 の box は cycle、再 inc して mark white.  kind dispatch は =nl-rc-kind= 経由で elisp 側 =cond=.
+  - =gc-collect-white= = white box の =nl-gc-finalize= 強制呼出.
+- ERT: cycle 2-deep / 3-deep / mutual ref / =equal= 上の self-cycle 等で leak 検出 → collect → mem_free 確認.
+- *Rust delta*: ±0.
+- *elisp delta*: +~400 LOC (= gc.el).
+- *commit-rule check*: net Rust delta = 0、monotonic shrink rule 充足.
+
+** §5.4 Stage C.3 — finalizer queue elisp 化 (1-2 週間)
+
+- 大規模 buffer (= NlVector 等 size > threshold) の同期 free を avoid、background finalizer queue を elisp で実装.
+- =gc-finalize-queue=, =gc-finalize-step=, =gc-finalize-budget= (= ~16ms / step).
+- =run-with-idle-timer= 経由で eval-cycle に hook.
+- ERT: 100k vector free が 16ms 内で incremental 進行を確認.
+- *Rust delta*: ±0.
+- *elisp delta*: +~150 LOC.
+- *commit-rule check*: net Rust delta = 0、monotonic shrink rule 充足.
+
+** §5.5 Stage C.5 — self-host gate + perf bench (1-2 週間)
+
+- ERT 全 pass (= cycle leak が cycle collector で回収されることを既存 cycle-using test で確認).
+- bench: 10M cons + recycle / 1M vector alloc-free / cycle-heavy graph (= 100k node 5-cycle) で Phase A baseline 比 -10% 以下に収束.
+- =gc-stats= MCP tool 追加で elisp side observability.
+- self-host gate: NeLisp 標準 image を =cargo run= せず、=nelisp= binary 単体で =(gc-collect-cycles)= 含む test image を回せるか.
+- *Rust delta*: ±0.
+- *elisp delta*: +~50 LOC (= bench harness).
+- *commit-rule check*: net Rust delta = 0、monotonic shrink rule 充足.
+
+** §5.7 LOC delta summary
+
+*v2 refactor* (target = generic boundary、+ realistic mid-points):
+
+| Stage | Rust delta | elisp delta | 累積 Rust  | 累積 elisp | 単独 shrink rule |
+|-------|-----------:|------------:|-----------:|-----------:|------------------|
+| C.0   |          0 |           0 |       1936 |          0 | OK (= 0)         |
+| C.1+4 |   -56〜-101 |         +60 | 1835〜1880 |         60 | OK ✅            |
+| C.2   |          0 |        +400 | 1835〜1880 |        460 | OK               |
+| C.3   |          0 |        +150 | 1835〜1880 |        610 | OK               |
+| C.5   |          0 |         +50 | 1835〜1880 |        660 | OK               |
+
+*Phase C 単独 net Rust delta*: 1936 → 1835〜1880 = *-56 〜 -101 LOC* ✅.
+
+monotonic shrink rule per-commit 解釈:
+- C.1+4 を atomic 1 commit ship する設計に統一 (= per-commit shrink rule satisfied in all 5 sub-stages、PR boundary 解釈緩和は不要).
+
+Phase B (= Sexp 操作 elisp 化) との関係: Phase B で =strategy.rs= が削れる *見込み* は v1 で alibi として使われたが、独立 audit で *invalidated* (= GATE FAILED).  本 v2 は Phase B 統合に依存しない、Phase C 単独 net 負 delta を target にする.
+
+* §6 Risk + mitigation
+
+** §6.1 Performance regression
+
+- *risk*: cycle collector が elisp 駆動 → trace phase が Rust の Drop より 10-30x 遅い可能性.
+- *mitigation*:
+  - =gc-collect-cycles= は eval-time の idle hook でのみ走る (= mutator hot path 0 cost).
+  - Phase A.5 の JIT trampoline で =nl-rc-inc= / =nl-rc-dec= は native code 化、refcount op は inline level.
+  - Stage C.5 で 10% threshold gate.  超過したら C.2 algorithm を sync→async に変更 / write-barrier 追加.
+
+** §6.2 Cycle leak (correctness)
+
+- *risk*: cycle collector 未呼出時 / collector bug 時に rc 残留 → leak.
+- *mitigation*:
+  - finalizer queue (C.3) で =(garbage-collect)= API を提供、user / image-baker から explicit 呼出可能.
+  - boot 期 (= image decode 中) は cycle 形成不可 contract (= Doc 75 PAUSED の image decode は cycle-free).
+  - Rust =Drop= 本体は残置 (= Option C 採用).  cycle 以外の non-shared box は Rust =Drop= で即 free.
+
+** §6.3 Bootstrap circularity
+
+- *risk*: cycle collector が elisp で書かれる → elisp eval が必要 → eval は alloc を必要 → alloc は GC を必要 → 無限 loop.
+- *mitigation*:
+  - alloc / dealloc / inc / dec は pure C-level op、GC を呼ばない (= =std::alloc::alloc= 直 + atomic op のみ).
+  - cycle collector は =run-with-idle-timer= か explicit =(garbage-collect)= でのみ起動、boot phase は呼ばない.
+  - boot 期 leak は process exit で OS が回収 (= 実害なし; build 1 回 < 10ms cycle 形成余地小).
+  - finalizer queue も idle-timer hook で driving、boot 期 disabled.
+
+** §6.4 Atomic ordering subtlety
+
+- *risk*: elisp が =rc-inc= / =rc-dec= を call する際、Rust 内部の =Release= / =Acquire= ordering が elisp 側 race と整合しない.
+- *mitigation*:
+  - elisp は single-threaded (= Doc 76 の thread 化議論は別 phase).  cross-thread race そのものが現状発生せず.
+  - Phase A.1 の =NlRc= test (= =refcount_atomic_round_trip=) で raw ptr access の round-trip 検証済.
+  - Phase D の native compiler が thread emit を始めたら、本 Doc を update (= memory barrier elisp primitive 追加).
+
+** §6.5 Phase A 投資の保護
+
+- *risk*: 本 Doc が Option B 路線に shift すると Phase A の Sexp ABI pin / JIT trampoline / cons_primitives.rs (~700 LOC) が無駄.
+- *mitigation*: Option C 採用で Phase A 投資 100% 温存.  本 Doc §3.4 の reasoning 1 が gate.
+
+** §6.6 Generic API type erasure (v2 新規 risk)
+
+- *risk*: =nl-rc-alloc= が =*mut c_void= を返す = Rust 側 type checker が NlConsBox / NlVector の取り違えを検出できない.  kind tag corruption (= 1 byte 破壊) で全 Drop dispatch が wrong DROP_FN を引き、SEGV / heap corruption / silent UAF.
+- *mitigation*:
+  - kind tag は refcount trailer の 1 byte (= AtomicUsize の隣).  layout pin を破壊しないこと、固定 offset であることを Phase A.5.1 の Sexp ABI helper に追記.
+  - =nl-rc-alloc= が返す opaque ptr を elisp 側で =Sexp= に packing するときに、tag-from-Sexp と =nl-rc-kind= の値が一致することを assert (= cheap byte compare、ERT で coverage).
+  - debug build で =nl_rc_dealloc= が =NLRC_DROP_TABLE[kind]= を呼ぶ前に「magic word」(= alloc 時に書いた 4 byte sentinel) を check、type-confusion を catch.  release build では 0 cost.
+  - cycle collector の =gc-walk-children= も kind dispatch を持つので、kind 不正値 = 8〜255 は =error= raise (= silent leak より visible 失敗).
+  - ERT 追加: =nl_rc_alloc(0, …) → nl_rc_kind == 0=、各 kind round-trip、unknown kind の panic / error 動作.
+
+** §6.7 Generic API debugging difficulty (v2 新規 risk)
+
+- *risk*: =*mut c_void= が gdb / lldb で type 表示されない、bug 解析時に kind を毎回手動 lookup.
+- *mitigation*:
+  - elisp 側 =gc-describe-ptr= helper で kind tag + payload preview を pretty-print.
+  - rust-gdb pretty printer 拡張 (= =impl fmt::Debug for NlRcOpaque= を debug-only feature で provide).
+  - cycle collector の trace log に必ず kind name を記録 (= =[gc] walk Cons 0x7f.. children 2 internal-rc 1=).
+
+* §7 Test plan
+
+** §7.1 Correctness ERT
+
+- 既存 =equal_two_isomorphic_cycles_compare_equal= / =equal_cycles_with_different_payloads_are_unequal= 等が Stage C.2 完了後 *cycle 解除を観測できる* (= 走った後に =gc-collect-cycles= 呼んで全 box が free) ように ERT 強化.
+- generic NlRc primitive (§4.2) に arity / kind validation / refcount-balance ERT 各 3 case = ~30 ERT (= 10 fns × 3 case).  per-kind round-trip は generic prim を 8 kind で driving すれば cover (= dedicated per-kind test 不要、network 分の test 削減も surface 縮小の副次効果).
+- type-confusion 防御 ERT: kind tag 破壊シナリオ / unknown kind value / dealloc-after-dealloc / inc-after-dealloc.
+- bootstrap test: =cargo run= 経由 + bin =nelisp= 単体経由の両方で同 image が動く.
+
+** §7.2 Bench
+
+- =bench/gc-cycle-pressure.el= 新設、5 シナリオ:
+  1. 10M cons alloc-recycle (cycle なし)
+  2. 1M vector alloc-free (large payload)
+  3. 100k cycle root (5-cycle each) → collect.
+  4. mixed workload (= eval-heavy script + GC pressure).
+  5. boot time (= image decode + first 1k cons).
+- baseline = Phase A 完了時点 (= 本 worktree の HEAD 2f8fdb2).
+- target: -10% threshold (= 90% 速度維持).
+
+** §7.3 Self-host gate
+
+- =make selftest-gc= = nelisp binary 単体で gc-only ERT subset を回す (= =cargo= に依存しない).
+- Stage C.5 の gate.
+
+** §7.4 leak detection
+
+- =cargo +nightly miri test= で =Drop= の thin 化が UAF を入れていないか.
+- =valgrind --leak-check= で 100k cycle workload を回した後 process exit 時の non-pinned leak 量 < 1KB.
+
+* §8 Out of scope
+
+- *Cranelift D-B* (= Cranelift 完全置換): Doc 78 / Doc 77c §2.4.2 範囲、本 Doc は Phase D の前提 (= D-A wrapper まで利用可能) のみ.
+- *Sexp ABI 変更*: Phase A は closed.  本 Doc は Phase A の layout を *維持* したまま Drop policy を移管する.
+- *Reader/eval 残作業*: Doc 73 (= phase 8 Rust reader/eval purge) 範囲.  本 Doc は eval が触る box 種別は変えない.
+- *Phase 7.3 inner GC* (= Doc 30): NeLisp v1.x が C runtime self-impl に進んだ後の *inner* GC 設計.  本 Doc は Rust runtime 上の elisp 化、Doc 30 は C runtime 上の GC、layer が違う.
+- *thread / parallelism*: single-threaded model 前提.  multi-thread になったら別 Doc.
+- *NlCharTable parent self-ref 改修*: parent chain は acyclic、現状 OK.  ただし Phase C.2 cycle collector 実装時に walk-children でこの edge を扱う (= test case として include).
+
+* §9 References
+
+- *Doc 77c* (= Sexp ABI elisp self-host master plan)
+- *Doc 78* (= Phase D-A Cranelift wrapper、本 Doc と並列)
+- *Doc 76* (= OS surface elisp 化)
+- *Doc 73* (= Rust reader/eval purge)
+- *Doc 63* (= Phase 7 NeLisp self-host roadmap)
+- *Doc 30* (= phase 7.3 inner GC、C runtime layer)
+- *Doc 29* (= phase 7.2 allocator)
+- *memory =project_nelisp_100_percent_elisp_commitment== (user 2026-05-09 directive)
+
+GC literature:
+- *Bacon-Rajan*: D.F. Bacon, V.T. Rajan, "Concurrent Cycle Collection in Reference Counted Systems" (ECOOP 2001).  本 Doc Stage C.2 の baseline algorithm.
+- *Boehm-Demers-Weiser*: 参考のみ (= conservative tracing GC、本 Doc 路線とは違う).
+- *OCaml multicore GC*: refcount→tracing transition の事例 (= 参考、本 Doc は tracing に行かない).
+- *Lua incremental GC*: idle-timer hook の参考.
+
+* §10 Refactor history
+
+** v1 → v2 (2026-05-09)
+
+*Trigger*:
+1. user 2026-05-09 directive (= memory =project_nelisp_100_percent_elisp_commitment=) で「全 commit が net Rust LOC を減らす monotonic shrink rule」を Phase B〜C 全体に適用.
+2. Phase B "−408 統合" alibi (= v1 §5.7 で Stage C.1 の +423 を Phase B の =strategy.rs= 削除 -408 で相殺と articulate) を independent audit で検証 → *GATE FAILED* (= =strategy.rs= に削除すべき cons-arm 不在.  Phase B の Rust 削減 magnitude が v1 の主張より大幅に小さい).
+3. v1 案では Phase C 単独で net Rust +323 LOC 増加、Phase B に依存しないと shrink rule violate.
+
+*Refactor 内容*:
+- Stage C.1 を *per-kind 22 prim* (= +423 Rust) から *generic NlRc primitive set* (= 7 fns + 3 GC helper + 8 DROP_FN const = +115〜160 Rust) に縮約.
+  - kind tag (= 1 byte enum、Phase A.5.1 Sexp::tag() byte を再利用) で dispatch.
+  - opaque =*mut c_void= boundary、payload access は Phase B の per-kind access prim に投げる (= Doc 79 範囲外).
+  - surface 削減: 22 fns → 10 fns (= 7 generic + 3 GC helper).  ERT も 66 → 30 case に縮約.
+- Stage C.4 を *Drop body 統一* (= =NLRC_DROP_TABLE[Self::DROP_FN]= 1 行 dispatch) に拡張.
+  - 8 kind × ~30 LOC → ~3 LOC each = 240 → 24 LOC = -216 LOC (vs v1 の -100).
+  - DROP_FN const は Stage C.1 で導入されるので C.4 と naturally coupled.
+- §6.6 / §6.7 に generic API 由来の新 risk (= type erasure、kind tag corruption、debug 困難) + mitigation 追記.
+
+*v1 → v2 数値 diff*:
+
+| 項目                    | v1            | v2           | delta       |
+|-------------------------|---------------|--------------|-------------|
+| Stage C.1 Rust          | +423          | +115〜160     | -263〜-308 |
+| Stage C.4 Rust          | -100          | -216 (target) | -116        |
+| Phase C 単独 net Rust   | +323 (要 Phase B 統合) | -56〜-101 ✅ | -424〜-379 |
+| Boundary prim 数        | 22            | 10           | -12         |
+| ERT case 数 (per prim)  | ~66           | ~30          | -36         |
+
+*Trade-off acceptance*:
+- 取得: Phase C 単独 monotonic shrink、Phase B alibi 不要.  surface 縮小に伴う test 縮小、API レビュー surface も縮小.
+- 放棄: Rust 側 type checker による type-confusion 検出.  代替として magic word sentinel (debug build) + kind validation (release build) で fall-back.
+- 中立: layout pin 不変 (= kind tag は既存 trailer の隣 byte、refcount field の offset 動かさない).  Phase A.5 JIT trampoline 互換性 100%.
+
+*Commit*: 本 v2 = =draft/doc-79-refactor= の単一 commit.  parent = =4bed8bc= (v1 DRAFT、=draft/doc-77c-phase-c-gc-design=).
+
+** v2 → v3 (2026-05-09)
+
+v3 (2026-05-09): Stage C.1 + C.4 を 1 atomic stage =C.1+4= に統合.  per-commit monotonic shrink rule の strict 解釈下で違反する stage を排除 (= v2 の =atomic PR boundary= 緩和 interpretation 提案を撤回).  Net Rust delta は v2 と同じ -56〜-101.  user 2026-05-09 confirmed.
+
+* §11 Open questions
+
+1. =nl-gc-buffered-decs= の buffer 上限 / overflow policy: 32k 固定 vs adaptive.  Stage C.2 着手時に決定.
+2. cycle collector の trigger: idle-timer のみ vs alloc-counter threshold (= 100k alloc 後 auto-fire).  Lua / Python の混合方式に倣うか.
+3. Phase B (= Sexp 操作 elisp 化) との順序: Phase B 先 → Phase C / Phase C 先 → Phase B / 並列.  Doc 77c §2.2 / §2.3 共に依存先は Phase A のみで両並列可.  並列 worktree session で着手するのが効率的.
+4. =gc-stats= API の MCP exposure: anvil tool 経由で elisp 内 GC observation 可能にするか (= memo / future tooling).
+5. *(v2 新規)* user 2026-05-09 monotonic shrink rule の granularity: "every commit" vs "every PR".  Stage C.1 単独は +115〜160 LOC で違反、ただし C.1 + C.4 atomic PR で net -56〜-101 となる.  本 Doc は PR boundary 解釈を採用するが、user に逆送して strict per-commit を採るなら C.1 を 5+ sub-commit に分けた更なる refactor が必要.
+6. *(v2 新規)* kind tag を =Sexp::tag()= byte 再利用 vs 独立 byte: 前者は layout pin 完全不変、後者は abstraction 分離.  Stage C.0 で確定.
+
+* §12 Change log
+
+- 2026-05-09 DRAFT 初版.  Doc 77c §2.3 の articulation.  Option C (hybrid) 推奨、6 sub-stage 案、LOC inventory + delta target.
+- 2026-05-09 DRAFT v2.  Stage C.1 を generic NlRc primitive set に refactor (= per-kind 22 prim → 10 generic fns、+423 Rust → +115〜160 Rust).  Stage C.4 amplification (= Drop body 統一で -100 → -216 LOC).  Phase C 単独で net -56〜-101 LOC、user 2026-05-09 monotonic shrink rule を Phase B 統合に依存せず充足.  §6.6/§6.7 に generic API 新 risk 追記、§10 に refactor history 追加.
