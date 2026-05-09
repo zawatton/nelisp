@@ -69,7 +69,13 @@ impl SymbolEntry {
 /// Without the cell layer, `Env::capture_lexical' would have to
 /// copy-by-value into the closure's captured-env alist and `setq'
 /// would silently mutate only the copy (= bug fixed 2026-05-06).
-pub type FrameCell = std::rc::Rc<std::cell::RefCell<Sexp>>;
+/// Phase A.4 (Doc 77c §4.5, 2026-05-09): migrated from
+/// `Rc<RefCell<Sexp>>' to layout-pinned [`NlCellRef`](crate::eval::nlcell::NlCellRef).
+/// Same shared-ownership semantics + write-through closure invariant —
+/// callers retain the pattern of cloning the handle to install in a
+/// closure's captured-env alist + reading the slot via Deref / writing
+/// via `unsafe set_value'.
+pub type FrameCell = crate::eval::nlcell::NlCellRef;
 pub type Frame = HashMap<String, FrameCell>;
 
 /// The evaluator's runtime environment.
@@ -307,7 +313,7 @@ impl Env {
     pub fn lookup_value(&self, name: &str) -> Result<Sexp, EvalError> {
         for frame in self.frames.iter().rev() {
             if let Some(cell) = frame.get(name) {
-                return Ok(cell.borrow().clone());
+                return Ok(cell.value.clone());
             }
         }
         match self.globals.get(name) {
@@ -331,7 +337,12 @@ impl Env {
         }
         for frame in self.frames.iter().rev() {
             if let Some(cell) = frame.get(name) {
-                *cell.borrow_mut() = value.clone();
+                // SAFETY: `value' is owned (= caller-evaluated, no
+                // outstanding `&Sexp' borrow into the cell's slot).
+                // Same Phase A.2.1 setcar discipline applies — the
+                // eval loop never holds a `&Sexp' alias into a frame
+                // slot across a `set_value' call.
+                unsafe { cell.set_value(value.clone()) };
                 return Ok(value);
             }
         }
@@ -417,10 +428,7 @@ impl Env {
     /// capturing this name shares the cell (= setq write-through).
     pub fn bind_local(&mut self, name: &str, value: Sexp) {
         if let Some(frame) = self.frames.last_mut() {
-            frame.insert(
-                name.to_string(),
-                std::rc::Rc::new(std::cell::RefCell::new(value)),
-            );
+            frame.insert(name.to_string(), FrameCell::new(value));
         } else {
             let entry = self
                 .globals
@@ -463,10 +471,11 @@ impl Env {
     /// data.  Inner frames take precedence over outer.
     ///
     /// Each captured slot is wrapped in `Sexp::Cell` carrying the
-    /// **same** `Rc<RefCell<Sexp>>` as the original frame entry, so
-    /// `setq' inside the closure mutates the cell visible at the
-    /// originating let-binding (= write-through closures, fixed
-    /// 2026-05-06).
+    /// **same** [`NlCellRef`](crate::eval::nlcell::NlCellRef) as the
+    /// original frame entry, so `setq' inside the closure mutates the
+    /// cell visible at the originating let-binding (= write-through
+    /// closures, fixed 2026-05-06; storage migrated to layout-pinned
+    /// NlCellRef in Phase A.4, 2026-05-09).
     pub fn capture_lexical(&self) -> Sexp {
         let mut seen = std::collections::HashSet::new();
         let mut entries: Vec<(String, FrameCell)> = Vec::new();
@@ -506,8 +515,8 @@ impl Env {
                             // slot; otherwise wrap in a fresh cell.
                             let value_inner = inner.cdr.clone();
                             let cell = match value_inner {
-                                Sexp::Cell(rc) => rc,
-                                v => std::rc::Rc::new(std::cell::RefCell::new(v)),
+                                Sexp::Cell(c) => c,
+                                v => FrameCell::new(v),
                             };
                             frame.insert(s.clone(), cell);
                         } else {

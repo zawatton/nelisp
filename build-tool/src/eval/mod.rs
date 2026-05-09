@@ -36,6 +36,7 @@ pub mod cons_primitives;
 pub mod env;
 pub mod error;
 pub mod ffi;
+pub mod nlcell;
 pub mod nlconsbox;
 pub mod nlrc;
 pub mod quit;
@@ -322,7 +323,7 @@ fn eval_inner(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
         // through; should never be evaluated as a form, but if it
         // is (= someone manually evaluates a captured-env alist
         // entry), treat the inner value as self-evaluating.
-        Sexp::Cell(rc) => Ok(rc.borrow().clone()),
+        Sexp::Cell(c) => Ok(c.value.clone()),
         // Symbols.  Per Elisp manual "Constant Variables" §11.2,
         // a symbol whose name begins with `:' is a keyword: it is
         // its own value and cannot be bound.  This rule predates

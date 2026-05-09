@@ -2,13 +2,13 @@
 
 * Status
 :PROPERTIES:
-:STATE: ACTIVE — Phase A.1 / A.2 / A.3 SHIPPED、Phase A.4-A.6 残 (= 残 Rc->NlRc audit / JIT trampoline rewrite / ERT regression gate)
+:STATE: ACTIVE — Phase A.1 / A.2 / A.3 / A.4.1 (Cell pilot) SHIPPED、Phase A.4.2-A.4.6 (5 残 variant) / A.5 (JIT trampoline rewrite) / A.6 (regression gate) 残
 :DRAFTED: 2026-05-09
 :PARENT: Doc 77 (= 元 Stage 4 articulation)
 :RELATED: Doc 77b (= Rust-min JIT 路線)、Doc 75 (= NELIMG image decode、PAUSED 別 issue)、Doc 63 (= Phase 7 self-host roadmap、70% SHIPPED)
 :UPDATES: Doc 77 §2.3.3 Stage 4 status (= deferred → IN_PROGRESS)、Doc 77b §6 (= "Sexp ABI pin deferred" 削除)
 :DECISION_DATE: 2026-05-09 (user 指示: "Doc 77 の Stage4 を unpause")
-:LATEST: 2026-05-09 — Phase A.1 (NlRc<T>) e6c7367 / Phase A.2.0 (NlConsBox struct) 02aa7e6 / Phase A.2.1 (Sexp::Cons → NlConsBoxRef migrate) a6b3757 / Phase A.3 (8 nl-cons-*/nl-rc-* primitives) SHIPPED
+:LATEST: 2026-05-09 — Phase A.1 (NlRc<T>) / A.2.0 (NlConsBox) / A.2.1 (Sexp::Cons migrate) / A.3 (8 nl-cons-*/nl-rc-* primitives) / A.4.1 (Sexp::Cell → NlCellRef) SHIPPED
 :END:
 
 * §0 TL;DR
@@ -353,12 +353,45 @@ baseline ~3000 LOC → ~810 LOC、**~73% 縮小**.
 - ERT 15/15 PASS (= 4 alloc/access + 2 set + 2 inc/dec + 7 error/round-trip cases)
 - 全体 regression: =cargo test --release --lib --test-threads=1=: 540/540 PASS、0 fail (= base 525 + 新規 15)
 
-** §4.5 Phase A.4-A.6 残作業 (= 後続 commit)
+** §4.5 Phase A.4 — 残 =Rc<RefCell<...>>= variant audit + Cell pilot SHIPPED
+
+audit 結果 (2026-05-09): A.2.1 (= Sexp::Cons) 着地後に残った =Rc<RefCell<...>>= variant は 6 件、calling site count は以下:
+
+| variant      | callsite | 内部       | 複雑度 | sub-stage |
+|--------------|---------:|------------|--------|-----------|
+| Cell         |       14 | Sexp 1     | ★      | A.4.1 ✅  |
+| MutStr       |       23 | String     | ★      | A.4.2     |
+| Vector       |       26 | Vec<Sexp>  | ★★     | A.4.3     |
+| BoolVector   |       26 | Vec<bool>  | ★★     | A.4.4     |
+| Record       |       21 | Vec<Sexp>+ | ★★     | A.4.5     |
+| CharTable    |       21 | self-ref   | ★★★    | A.4.6     |
+
+合計 ~131 callsite + 各 sub-stage に対応する struct 設計.  A.2.1 (= 56 callsite for Cons) と同等規模が 6 つ並ぶ計算で、§2.1.5 原見積 "全 manipulation 経路 audit + 置換 ~600 LOC、2-4 週間" は妥当.
+
+*** §4.5.1 Phase A.4.1 — Cell pilot — ✅ SHIPPED (2026-05-09)
+
+実施済み:
+- =build-tool/src/eval/nlcell.rs= 新設 (~340 LOC): =NlCell= struct (=#[repr(C)]=、value @ offset 0、refcount @ offset sizeof(Sexp)) + =NlCellRef= handle (Drop / Clone / Deref / =unsafe set_value=)
+- =Sexp::Cell(Rc<RefCell<Sexp>>)= → =Sexp::Cell(NlCellRef)= に migrate
+- =FrameCell= type alias を =Rc<RefCell<Sexp>>= → =NlCellRef= に flip。env.rs / mod.rs / builtins.rs / image.rs の =cell.borrow().clone()= → =cell.value.clone()= 、 =*cell.borrow_mut() = v= → =unsafe { cell.set_value(v) }= に rewrite (Phase A.2.1 setcar discipline と同等)
+- ERT 17/17 PASS (= 3 layout + 5 lifecycle + 3 ptr_eq + 3 set_value + 2 partial_eq + 1 debug-fmt + payload-drop + intermediate-drop)
+- 全体 regression: =cargo test --release --lib --test-threads=1=: 557/557 PASS, 0 fail (= base 540 + 新規 17、回帰 0)
+
+*** §4.5.2 Phase A.4.2-A.4.6 残 5 variant (= 後続 commit)
+
+各 sub-stage は A.4.1 同 pattern (= NlXxxRef struct + Sexp variant migrate + callsite rewrite + ERT). 推定:
+
+- A.4.2 MutStr: NlStrRef (= NlCell の String 版)、~23 callsite、1-2 commit
+- A.4.3 Vector: NlVectorRef (= Vec<Sexp> + refcount)、~26 callsite、1-2 commit
+- A.4.4 BoolVector: NlBoolVectorRef、~26 callsite、1-2 commit
+- A.4.5 Record: NlRecordRef (= type_tag + slots)、~21 callsite、1-2 commit
+- A.4.6 CharTable: NlCharTableRef (= self-ref parent field 含む、最複雑)、~21 callsite、2-3 commit
+
+** §4.6 Phase A.5 / A.6 残作業
 
 §2.1.5 工数表通り:
-- A.5 (1-2 週間予定): JIT trampoline rewrite。現 =nl_jit_cons_car= の =&*arg= match-clone 経路を =addr_of!= 直接 emit に書換 (= §2.1.4 emit pattern)
-- A.4 (= 残 =Rc<RefCell<...>>= の audit + 置換、§2.1.5 表で A.3 と書かれているもの): Sexp::Cell / Sexp::CharTable / Sexp::BoolVector 等の他 variant 移管判断
-- A.6 (1 週間予定): ERT 全面 regression gate
+- A.5 (1-2 週間予定): JIT trampoline rewrite。現 =nl_jit_cons_car= の =&*arg= match-clone 経路を =addr_of!= 直接 emit に書換 (= §2.1.4 emit pattern)。Cons + Cell layout pin 完了済みなので blocker なし
+- A.6 (1 週間予定): ERT 全面 regression gate (= make test 0 unexpected + perf bench 退行 10% 以下)
 
 * §5 Test plan
 
