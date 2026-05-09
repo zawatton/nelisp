@@ -6753,29 +6753,33 @@ Release is intentionally silent so click events don't double-fire."
   "Entry point invoked by the Rust boot stub.  Brings up the GUI,
 paints the initial frame, and drives the main loop until the window
 is closed."
+  (message "[boot] step 1 nelisp-gtk-init")
   ;; 1. GTK init.
   (nelisp-gtk-init nemacs-gtk--rows nemacs-gtk--cols)
   (nelisp-gtk-set-mode-line-row nemacs-gtk--mode-line-row)
+  (message "[boot] step 2 menu-bar")
   ;; 2. Native menu bar (= Phase 2.A re-add, now elisp-driven).
   (when (fboundp 'nelisp-gtk-set-menu-accels)
     (nelisp-gtk-set-menu-accels nemacs-gtk--menu-accels))
   (nelisp-gtk-set-menu-bar nemacs-gtk--menu-spec)
-  ;; 3. System clipboard bridge — kill-ring ↔ GTK clipboard
-  ;; (Phase 2.C, lives behind the substrate's `interprogram-*'
-  ;; hook points so `kill-new' / `yank' transparently sync).
+  (message "[boot] step 3 clipboard-glue")
+  ;; 3. System clipboard bridge.
   (nemacs-gtk--install-clipboard-glue)
+  (message "[boot] step 4a init-keymap")
   ;; 4. Layer 2 keymap + welcome buffer.
   (nemacs-gtk--init-keymap)
-  ;; Phase 3.A — seed auto-mode-alist before any file open.
+  (message "[boot] step 4b seed-auto-mode-alist")
   (nemacs-gtk--seed-auto-mode-alist)
-  ;; Phase 3.C — load user init file (~/.emacs.d/init.el or ~/.emacs)
-  ;; before painting so any `setq` of GUI defvars / `electric-pair-mode'
-  ;; calls / etc. take effect on the first frame.
+  (message "[boot] step 4c load-user-init-file")
   (nemacs-gtk--load-user-init-file)
+  (message "[boot] step 4d prepare-welcome-buffer")
   (nemacs-gtk--prepare-welcome-buffer)
+  (message "[boot] step 4e sync-window-title")
   (nemacs-gtk--sync-window-title)
-  ;; 4. First paint.
+  (message "[boot] step 5 first-repaint")
+  ;; 5. First paint.
   (nemacs-gtk--repaint)
+  (message "[boot] step 6 enter main loop")
   ;; 5. Main loop.  Phase 3.G change: drain ALL queued events of every
   ;; channel per iteration + repaint at most ONCE at the end (= the
   ;; `dirty' flag).  Previously each event triggered its own paint;
