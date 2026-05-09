@@ -59,6 +59,11 @@
 (require 'emacs-error)
 (require 'emacs-string)
 
+;; Phase B2 — subr.el primitives that vendor `cl-lib.el' / `subr-x.el'
+;; need at load time but standalone NeLisp does not ship.  Idempotent
+;; under host Emacs; trivial cost on standalone (~50 LOC of `defun's).
+(require 'emacs-subr-extras)
+
 (provide 'emacs-init)
 
 ;;; emacs-init.el ends here
