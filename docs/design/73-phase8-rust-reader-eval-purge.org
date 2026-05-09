@@ -7,12 +7,15 @@
 
 - 親 Doc: 63 (Phase 7 self-host roadmap §3.4 後続フェーズ)
 - 前提 SHIPPED: Doc 64〜72 (Phase 7 main scope)
-- 本 Doc: Phase 8 全体設計 — DRAFT 2026-05-08
+- 本 Doc: Phase 8 全体設計 — DRAFT 2026-05-08 / §2.4 detail articulation 2026-05-09
 - Phase 8 の sub-stage は 8.1〜8.5、各 sub-stage は別 commit / 別検証
 - *Stage 8.1 SHIPPED 2026-05-08* (= Sexp / ReadError / SourcePos rehome)
 - *Stage 8.3.a/b SHIPPED 2026-05-08* (= bridge migrate to elisp reader with line tracking)
 - Stage 8.2 *DEFERRED to Doc 74* (= anvil-runtime → anvil.el migration、
   user 2026-05-08 指示で大型 migration に方針転換)
+- *Stage 8.4 §2.4 detail articulation DRAFT 2026-05-09* (= Doc 81 同 detail
+  level に展開、sub-stage 8.4.a〜.d / LOC delta / risk / test plan / Phase 9
+  bundle integration を articulate.  着手は Doc 74 Stage 74.6 SHIPPED 待機)
 
 * §1 背景
 
@@ -194,7 +197,12 @@ parse 開始時の position を record して 1-origin line に変換.
 
 ** §2.4 Stage 8.4 — reader feature gate (= dev-only)
 
-Stage 8.1〜8.3 完了後、=reader/{lexer,parser,error,mod}.rs= は:
+:LATEST: 2026-05-09 (= 高水準 DRAFT を Doc 81 同 detail level に articulate、
+sub-section 8.4.1〜8.4.7 で sub-stage 8.4.a〜.d / LOC delta / risk /
+test plan / Phase 9 bundle integration を展開)
+
+Stage 8.1〜8.3 完了後、=reader/{lexer,parser,mod}.rs= は (実数 1679 LOC =
+=wc -l build-tool/src/reader/*.rs= 2026-05-09):
 - production callsite: 0 (= bridge migrate 完了)
 - test callsite: 既に 0 (= Stage 7.7.d 完了)
 - baker callsite: 1 (= =image::compile_elisp_to_image=、既に
@@ -203,33 +211,316 @@ Stage 8.1〜8.3 完了後、=reader/{lexer,parser,error,mod}.rs= は:
 そこで reader module 全体を =cfg(any(test, feature = "image-baker"))=
 gate に降ろす.
 
-*** Scope
+*** §2.4.1 Reader feature gate concept overview (= dev-only gating)
 
-- =build-tool/src/lib.rs= = =pub mod reader;= を =#[cfg(any(test, feature = "image-baker"))]
-  pub mod reader;= に
-- =build-tool/src/image.rs= = =use crate::reader= を同 cfg 下に
-- 各 jit/* の =use crate::reader::sexp= は Stage 8.1 完了で
-  =eval::sexp= 経由に書き換え済 → cfg 不要
-- =build-tool/src/bin/nelisp-baker.rs= は =required-features = ["image-baker"]=
-  なので reader が cfg gate 下にあっても問題なし
+Stage 8.4 の本質は *reader files を物理削除しない* ことにある.
+=build-tool/src/reader/{lexer,parser,mod}.rs= を:
 
-*** 効果
+1. =cfg(any(test, feature = "image-baker"))= attribute で *production
+   build から conditional に exclude*
+2. *default features 設定 = =[]== (= image-baker は opt-in、現状の
+   =Cargo.toml= 19-30 行で確認済)
+3. *production runtime* (= image-baked path、Stage 7.7.b SHIPPED) は
+   reader module を build graph から外す → binary size 削減
+4. *elisp side reader* (= =lisp/nelisp-stdlib-reader.el= Phase 7.2 SHIPPED)
+   が post-bootstrap 唯一の reader、bridge / production code の read 操作は
+   全て elisp 経由
 
-- production =cargo build --release= の Rust LOC が ~1,779 削減
-- =nelisp= binary size 縮小 (~lexer 巨大 byte tables の dead code 排除)
-- reader が完全に "dev tooling のみ" の position に降りる
+「物理削除しない」理由 = =image-baker= feature build (= dev tooling)、
+=cargo test --features image-baker= (= cargo unit fixture) で reader が
+必要なため.  source は git track 維持、production graph 上の effective LOC
+だけが削減される.
 
-*** 検証
+注: user's task spec で言及された =reader= feature 追加 alternative も
+検討したが、既存 =image-baker= feature が reader callsite 唯一の survivor
+(= =image::compile_elisp_to_image=) を gate しているので separate =reader=
+feature 追加は冗長.  =image-baker= 1 本に集約するのが clean.
 
-- =cargo build --release= (= default features)
-  - =reader= module link されないことを =cargo bloat= で確認
-- =cargo build --release --features image-baker=
-  - reader module link されることを確認
-- =cargo test --release --lib --tests --features image-baker= = 435/435 PASS
+*** §2.4.2 Prerequisite chain (= 着手 unblock 条件)
 
-*** 推定コスト
+Stage 8.4 dispatch には以下 *両方* の完了が必要:
 
-- 1 commit、~30 LOC (主に lib.rs / image.rs の cfg attr)
+1. *Doc 74 anvil-runtime → anvil.el migration、Stage 74.6 完了*
+   - Stage 74.4 完了で =anvil_module_registry.rs:103,121= の
+     =read_all= 2 callsite 消滅 (= Stage 8.4 ⅔ unblock)
+   - Stage 74.6 完了で =anvil_host_registry.rs:104= の最後の
+     =read_all= callsite 消滅 (= Stage 8.4 完全 unblock)
+   - Doc 74 §7 で本対応表が articulated 済 (= 2026-05-09)
+   - 別 session 進行中 (= Phase B4 SHIPPED、Phase B5+ 計画中)、
+     完了予定: Doc 74 v2 §5 の per-stage delta target に従い
+     =-4,365 〜 -5,667 Rust LOC= (= Stage 74.7 Option 依存)
+
+2. *Doc 75 Phase 9 frozen heap、Stage 9.0 prereq として Stage 8.4 自身*
+   - Doc 75 §3.7 表で =9.0 (= prereq) Phase 8 Stage 8.4= = =-1679=、
+     =Phase 9 単体 +155 LOC=、=Phase 9 + 9.0 net -1524 LOC= と
+     bundle 評価が articulated 済
+   - つまり Phase 9 着手前に Stage 8.4 を ship する逆順序
+   - Stage 8.4 単独 ship → Phase 9.1〜.6 が monotonic shrink rule
+     違反 (= Stage 9.3+9.4 で +265 LOC) を bundle 評価で吸収
+
+着手最早タイミング:
+
+#+begin_example
+Doc 74 Stage 74.4 SHIPPED  → Stage 8.4 部分 unblock (read_all 2/3 消滅)
+Doc 74 Stage 74.6 SHIPPED  → Stage 8.4 完全 unblock 【真の起点】
+                            ↓
+                         Stage 8.4 dispatch (= 本 §2.4.3 sub-stage)
+                            ↓
+                         Phase 9 (Doc 75 Stage 9.1〜9.6) dispatch
+#+end_example
+
+注: Stage 74.7 (= crate 削除) は Stage 8.4 着手の必要条件ではない (=
+crate が thin shim で残っていても reader を呼ばない state なら gate 可能、
+Doc 74 §7 articulated).
+
+*** §2.4.3 Sub-stage breakdown 8.4.a〜8.4.d (= ~7 days total)
+
+各 sub-stage = 1 commit、各 commit で =cargo test= 両 feature mode PASS
++ =cargo build= 両 feature mode 0 warnings 必須.
+
+**** Stage 8.4.a — =Cargo.toml= 確認 + default features 確定 (~1 day)
+
+- 既存 =Cargo.toml= 19-30 行の =[features] default = []= / =image-baker = []=
+  を *維持* (= 新 feature 追加せず、既存 image-baker を flagship として扱う)
+- doc-only commit に近い: =Cargo.toml= 内 comment block で「reader module は
+  Stage 8.4 で =image-baker= feature gate 下に降りる」articulate を追記
+- =default = []= の「empty」が意図的なものであることを comment で明示
+  (= production runtime は image-baker 不要)
+- 検証: =cargo build --release= (= default) + =cargo build --release --features image-baker=
+  両方が現状通り PASS
+- LOC delta: ±0 (= comment block のみ)
+- Risk: ±0 (= 既存 feature 構造を docs で固める step)
+
+**** Stage 8.4.b — reader files に cfg gate attribute 追加 (~2 days)
+
+- =build-tool/src/lib.rs:30= = =pub mod reader;= →
+  =#[cfg(any(test, feature = "image-baker"))] pub mod reader;= に変更
+- =build-tool/src/reader/{lexer,parser,mod}.rs= 各 file の top-level
+  =//!= module doc に「This module is gated behind =cfg(any(test,
+  feature = \"image-baker\"))=」articulate を追記 (= 将来の reader 寄稿者へ
+  の signal)
+- module-level gate なので各 .rs file 内 individual item gate 不要
+  (= rust の cfg 伝播で自動的に excluded)
+- 検証: =cargo build --release= (= default) で reader-related symbol が
+  build graph に存在しないことを =cargo bloat --release --crates= で確認
+- LOC delta: +5〜10 (= cfg attribute + module doc 追記)
+- Risk: low (= module-level gate は cfg の最も straightforward な使い方)
+
+**** Stage 8.4.c — caller side cfg gate 整合 + fallback path (~2 days)
+
+- =build-tool/src/image.rs= の =use crate::reader::*= 全 import を
+  =#[cfg(any(test, feature = "image-baker"))]= block 内に集約 (= 既に
+  =image::compile_elisp_to_image= 自体が同 cfg 下なので、追加で同 cfg を
+  block 化する形)
+- production code の read 操作は全て =eval::read_all_via_elisp= /
+  =bridge::loader::nelisp--read-all-with-line= 経由 (= Stage 8.1〜8.3 で
+  既に migration 済) なので、この sub-stage は *use 文の cfg attribute
+  追加のみ*、behavior change なし
+- jit/* (= 5 file) の =use crate::reader::sexp= は Stage 8.1 で
+  =eval::sexp= 経由に書き換え済 → cfg gate 不要を確認
+- 検証: =cargo check --release= (= default) で =unresolved import= 系
+  error が出ないこと、=cargo build --release --features image-baker= で
+  reader module link されること
+- LOC delta: +5〜15 (= use 文 cfg attribute、または block 化で ±0)
+- Risk: medium (= =use crate::reader= の callsite を全て検出する grep
+  scan が必要、漏れると =--features image-baker= mode でのみ build 通る
+  silent breakage)
+
+**** Stage 8.4.d — production build verify + binary size measurement (~2 days)
+
+- =cargo build --release= (= default features) + =cargo build --release --features image-baker=
+  両方を build server / CI で実行、binary size 差分を bench 記録
+- =cargo bloat --release --crates= で =nelisp_build_tool::reader::*= entry
+  が default build から消失したことを確認
+- =cargo test --release --lib --tests= (= default) で 435/435 PASS、
+  =cargo test --release --lib --tests --features image-baker= も 435/435
+  PASS の two-mode CI green を確認
+- effective Rust LOC delta が *=-1679 LOC=* (= production graph 上)
+  であることを measured で記録、commit message に SHIPPED record
+- LOC delta: ±0 (= verify only、code change なし)
+- Risk: low (= measurement step、failure mode = test red のみ)
+
+**** Sub-stage 集計
+
+| Sub-stage | 内容 | 日数 | code Δ LOC | production graph Δ LOC |
+|-----------+------+------+------------+------------------------|
+| 8.4.a | Cargo.toml comment 整備 | ~1 | ±0 | 0 |
+| 8.4.b | reader/* に cfg gate 追加 | ~2 | +5〜10 | =-1679= (= 実 effective) |
+| 8.4.c | caller side cfg block 整合 | ~2 | +5〜15 | 0 (= 8.4.b で達成済) |
+| 8.4.d | release build / size verify | ~2 | ±0 | 0 |
+| Total | | *~7 days* | *+10〜25 LOC* | *=-1679 LOC= effective* |
+
+注: code 上 +10〜25 LOC は cfg attribute / comment / module doc の追記.
+production binary build graph 上は reader 1679 LOC が excluded されるので
+*effective net Δ Rust LOC = =-1679 LOC == (= -1654 〜 -1669 net も同義).
+
+*** §2.4.4 LOC delta articulation (= effective vs source)
+
+Stage 8.4 の LOC 削減は *物理削除ではなく cfg gate による effective exclude*:
+
+1. =build-tool/src/reader/{lexer,parser,mod}.rs= = 1679 LOC は git track 維持
+2. =cargo build --release= (= default features = production) では reader
+   module が cfg gate でcompile pipeline から除外、build graph 上 0 LOC
+3. =cargo build --release --features image-baker= (= dev / baker) では
+   reader module が含まれ、source の 1679 LOC が compile される
+4. =cargo test= (= cfg(test) 自動有効) は両 mode で reader を見られる
+   (= test gate と feature gate を =any(...)= で OR、test fixture 互換)
+
+production binary build graph 上の Rust LOC delta:
+
+- before Stage 8.4: =reader/{lexer,parser,mod}.rs= 1679 LOC + その他
+  reader-related callsite を含む total
+- after Stage 8.4: reader 1679 LOC が cfg-excluded → production graph 上
+  *effective -1679 LOC*
+- Doc 75 §3.7 の =9.0 (= prereq) Stage 8.4= = =-1679 LOC= bundle 起点
+  数値と一致
+
+数値 source-of-truth:
+
+#+begin_example
+$ wc -l build-tool/src/reader/*.rs    # 2026-05-09
+   885 build-tool/src/reader/lexer.rs
+   309 build-tool/src/reader/mod.rs
+   485 build-tool/src/reader/parser.rs
+  1679 total
+#+end_example
+
+注: 2026-05-08 旧 §2.4 で言及された "1,779 LOC" は =reader/error.rs=
+(= 100 LOC) 含みの数値だったが、Stage 8.1 で =error.rs= は =eval/error.rs=
+に rehome 済で reader/ から消失 (= Doc 73 §9 改判断 record #3 articulated
+済).  current 1679 LOC が正.
+
+*** §2.4.5 Risk + mitigation
+
+**** Risk 1 — Bootstrap circularity (= image bake 自体に reader 必要)
+
+- 現象: Phase 9 frozen heap baker (= Doc 75 Stage 9.3+9.4) は内部で
+  =image::compile_elisp_to_image= → =reader::read_all= を呼ぶ.  reader が
+  cfg gate 下に降りた状態で baker が build できないと bootstrap circularity
+  発症
+- mitigation: Phase 9 image baker は =cargo build --release --bin nelisp-baker --features image-baker=
+  で build される (= =Cargo.toml:44 required-features = ["image-baker"]=
+  で既に enforced).  baker 専用 binary が image-baker feature 下にある間、
+  reader が gate されても *baker build path では reader 入る* ので circularity
+  なし
+- verify step: Stage 8.4.d で =cargo build --release --bin nelisp-baker
+  --features image-baker= が PASS することを確認
+
+**** Risk 2 — elisp reader perf parity (= post-Stage 8.4 唯一の post-bootstrap reader)
+
+- 現象: Stage 8.4 後 production runtime は =lisp/nelisp-stdlib-reader.el=
+  (= elisp reader、Phase 7.2 SHIPPED) のみ使用.  仮に elisp reader が Rust
+  reader 比 ~10x 遅い場合、production load 時間 regression
+- mitigation: Phase 7.2 SHIPPED 時に perf 確認済 (= Doc 66 §X perf gate、
+  =bridge_bootstrap= bench で elisp reader 経由 + image cache が Rust reader
+  経由比 ≦ 1.05x).  Phase 7.7.b の AOT image bake (= STDLIB 15 ファイル
+  pre-baked) で起動 reader 呼び出し回数自体が ~0 に近い
+- verify step: Stage 8.4.d で =bench/bridge_bootstrap= に perf gate 追加
+  (= Phase 7 baseline 維持、≦ +5% latency)
+
+**** Risk 3 — Test coverage (= reader が cfg-gated されると Rust-side reader test は dev only)
+
+- 現象: =build-tool/src/reader/*.rs= 内 =#[cfg(test)] mod tests= は cfg gate
+  下に入ると =cargo test --release= (= default features) では実行されない.
+  reader regression が dev mode test でしか検出されない silent gap
+- mitigation: cfg gate を =cfg(any(test, feature = "image-baker"))= に
+  する (= test gate と feature gate を =any(...)= で OR).  =cargo test=
+  は =--cfg test= 自動付加 + reader cfg gate に test arm が含まれるため、
+  default features でも reader test 実行される (= Phase 7.6 reader cleanup
+  で test も elisp 化済確認)
+- verify step: Stage 8.4.b で =cargo test --release --lib --tests= (= default
+  features) に reader test が含まれ 435/435 PASS することを確認
+
+**** Risk 4 — IDE / rust-analyzer 表示 (= 既存 §4.4 articulated)
+
+- 現象: rust-analyzer が default cfg で reader module を grayed-out 表示、
+  reader file 編集時 inline diagnostic 出ない
+- mitigation: workspace 設定で =rust-analyzer.cargo.features = ["image-baker"]=
+  を articulate (= =.vscode/settings.json= or =.dir-locals.el=)、reader
+  寄稿時は IDE 側 feature flag toggle で対応
+- verify step: 既存 §4.4 reference
+
+*** §2.4.6 Test plan (= --release vs --features image-baker)
+
+**** Build verification matrix
+
+| Build mode | reader module | 期待 | size delta |
+|------------+----------------+------+------------|
+| =cargo build --release= (= default) | excluded | binary 縮小 | baseline =-100KB+= 期待 |
+| =cargo build --release --features image-baker= | included | dev parity | baseline 同等 |
+| =cargo build --release --bin nelisp= (= production) | excluded | image-baked path のみ | baseline =-100KB+= 期待 |
+| =cargo build --release --bin nelisp-baker --features image-baker= | included | baker dev tool | baseline 同等 |
+
+**** Test verification matrix
+
+| Test mode | reader test 走行 | 期待 PASS 数 |
+|-----------+------------------+----------------|
+| =cargo test --release --lib --tests= (= default) | yes (= cfg(any(test, ...)) で test arm hit) | 435/435 |
+| =cargo test --release --lib --tests --features image-baker= | yes | 435/435 |
+| =make test= (= ERT) | n/a (= Rust feature と独立) | full PASS |
+
+**** 既存 reader test の cfg gate と feature gate 分離
+
+- =reader/{lexer,parser,mod}.rs= 内 =#[cfg(test)] mod tests= は variant
+  =cfg(any(test, feature = "image-baker"))= の test arm で hit
+- これにより =--features image-baker= 不要で reader unit test 走行可能
+  (= Risk 3 mitigation の core 仕掛)
+- =cfg(test)= と =cfg(feature = "image-baker")= は別系統で OR 結合、
+  どちらかが true なら module visible
+
+**** 検証 commit script (= Stage 8.4.d で記録)
+
+#+begin_example
+# default mode = production
+cargo build --release 2>&1 | grep -E "warning|error"          # → 0 件
+cargo bloat --release --crates 2>&1 | grep "reader"           # → 0 件 (= excluded)
+cargo test --release --lib --tests -- --test-threads=1        # → 435/435 PASS
+
+# image-baker mode = dev / baker
+cargo build --release --features image-baker 2>&1             # → 0 warnings
+cargo build --release --bin nelisp-baker --features image-baker  # → PASS
+cargo test --release --lib --tests --features image-baker     # → 435/435 PASS
+#+end_example
+
+*** §2.4.7 Phase 9 bundle integration (= -1,524 net Rust LOC)
+
+Stage 8.4 単独評価 + Phase 9 (Doc 75 Stage 9.1〜9.6) 単独評価 の合算:
+
+| Stage 単位 | net Rust LOC (production graph) | source |
+|------------+---------------------------------+--------|
+| Stage 8.4 (= 本 §2.4) | =-1679= | reader/* cfg gate |
+| Phase 9 単体 (= 9.1+9.2+9.3+9.4+9.5+9.6) | =+155= | image v3 encoder/decoder net (= +265 −110 ≒ +155) |
+| *Bundle (= Stage 8.4 + Phase 9.1〜9.6)* | *=-1524=* | Doc 75 §3.7 表 source-of-truth |
+
+bundle 評価ロジック (= Doc 75 §3.7 articulated):
+
+- Phase 9 単独では Stage 9.3+9.4 (= encoder/decoder 追加 +265 LOC) で
+  monotonic shrink rule 違反 (= per-commit Δ Rust LOC ≤ 0 invariant)
+- Stage 8.4 を Phase 9 着手前に prereq として完了 (= -1679 LOC を先取り)
+  すれば、Stage 9.1〜9.6 全体で =Stage 8.4 -1679= + =Phase 9 +155= = =-1524=
+  net shrink を達成
+- これが Doc 75 §3.7 の =Phase 9 + 9.0 net -1524 LOC= 数値の意味
+
+順序:
+
+#+begin_example
+Doc 74 Stage 74.6 SHIPPED        (= prerequisite chain §2.4.2)
+        ↓
+Stage 8.4 SHIPPED (= -1679 LOC)  (= 本 §2.4)
+        ↓
+Phase 9 Stage 9.1〜9.6 SHIPPED   (= +155 LOC、Doc 75)
+        ↓
+Bundle 着地形: -1524 net LOC     (= Doc 75 §3.7、user 2026-05-09 monotonic shrink rule 達成)
+#+end_example
+
+*** §2.4.8 推定コスト (= 集計)
+
+- 各 sub-stage 別 commit、Total ~7 days (= 8.4.a 1 + 8.4.b 2 + 8.4.c 2
+  + 8.4.d 2)
+- code 上の総 LOC delta = +10〜25 (= cfg attribute + comment 追記)
+- production build graph 上の effective net Δ = =-1679 LOC=
+- Phase 9 bundle integration 後の集計 = =-1524 net Rust LOC= (= §2.4.7)
+- 着手前提 = Doc 74 Stage 74.6 SHIPPED (= §2.4.2、別 session 進行中)
 
 ** §2.5 Stage 8.5 — bootstrap eval frozen heap (= Stage 7.7.e、Phase 9 候補)
 
@@ -401,12 +692,19 @@ migration に再 assign のため frozen heap は 75 番に shift) で扱う.
 
 ** §6.4 Stage 8.4 = reader feature gate 検証
 
-- =cargo build --release= で reader module が link されないことを
-  =cargo bloat --release --crates= で確認 (= =nelisp_build_tool::reader=
-  entry が消える)
-- =cargo build --release --features image-baker= で reader が含まれる
-  ことを確認
-- binary size 比較 (= release default vs image-baker、~100KB+ 差を期待)
+詳細 test plan は §2.4.6 に展開済 (= 2026-05-09 articulation).  本節は
+sub-stage 8.4.a〜.d 集計 view:
+
+- *§2.4.6 Build verification matrix*: =cargo build --release= (= default)
+  vs =cargo build --release --features image-baker= の 4 mode で binary
+  size 差分計測 (= ~100KB+ 期待)
+- *§2.4.6 Test verification matrix*: =cargo test= 両 feature mode で
+  435/435 PASS (= reader test は =cfg(any(test, feature = "image-baker"))=
+  test arm 経由で default features でも走行)
+- =cargo bloat --release --crates= で =nelisp_build_tool::reader= entry
+  が default build 上 0 件であることを確認
+- 各 sub-stage 8.4.a〜.d の per-commit acceptance criteria は §2.4.3 表
+  参照 (= LOC delta + behavior invariant)
 
 * §7 共通原則 (= Doc 67/68/69/70/71/72 から継承)
 
@@ -470,4 +768,30 @@ migration に再 assign のため frozen heap は 75 番に shift) で扱う.
    に scope 切出. 本 Stage 8.2 は Doc 74 完了で自然消滅 (= read_all
    callsite は anvil-runtime crate 削除と同時に消える).
    - 影響: Stage 8.4 (= reader feature gate) は Doc 74 完了 dep.
+
+6. *Stage 8.4 §2.4 detail articulation* (2026-05-09): 元 §2.4 = ~38 行の
+   高水準 DRAFT. Doc 81 (= nelisp-cc primitive trampoline extension) と
+   同 detail level に展開、sub-section 8.4.1〜8.4.7 + 集計 8.4.8 を articulate.
+   主要追加:
+   - §2.4.1 reader feature gate concept overview (= dev-only gating
+     concept、=image-baker= feature 既存 1 本に集約方針、separate =reader=
+     feature 追加 alternative は冗長として却下)
+   - §2.4.2 prerequisite chain (= Doc 74 Stage 74.6 SHIPPED + Phase 9
+     bundle 評価着手前提)
+   - §2.4.3 sub-stage 8.4.a〜.d breakdown (~7 days total、各 commit
+     LOC delta + acceptance criteria 表)
+   - §2.4.4 LOC delta articulation (= production graph 上 effective
+     =-1679 LOC=、source 残置).  旧 §2.4 で言及された "1,779 LOC" は
+     =reader/error.rs= 含み数値で、Stage 8.1 で =error.rs= が =eval/=
+     に rehome 済のため current 1679 LOC が正
+   - §2.4.5 risk + mitigation (= bootstrap circularity / perf parity /
+     test coverage / IDE)
+   - §2.4.6 test plan (= --release vs --features image-baker、Build /
+     Test verification matrix)
+   - §2.4.7 Phase 9 bundle integration (= Stage 8.4 -1679 + Phase 9
+     +155 = -1524 net、Doc 75 §3.7 source-of-truth と一致)
+   - 着手は Doc 74 Stage 74.6 SHIPPED 待機 (= 別 session 進行中 Phase B5+)
+   - 効果: Phase 8 Stage 8.4 dispatch 時、source code 着手前に
+     sub-stage breakdown / LOC delta / risk が既知、design discovery
+     overhead 削減
    - 旧 Doc 74 候補だった frozen heap は Doc 75 に再 assign.
