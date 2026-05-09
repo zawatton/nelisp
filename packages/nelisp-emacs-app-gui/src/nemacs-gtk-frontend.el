@@ -33,13 +33,28 @@
 (require 'cl-lib)
 
 ;; Doc 02 v0.2 — vendor Emacs lisp activation for daily-driver use.
-;; nemacs-gtk is the GUI daily-driver; load full vendor org-mode +
-;; theme + babel + export 取り込み so user's standard Emacs commands
-;; (= C-c C-w refile / C-c $ archive / C-c C-c on src block /
-;; C-c C-e export / M-x load-theme) work without per-buffer
+;; nemacs-gtk is the GUI daily-driver; load the vendor Emacs Lisp tree
+;; eagerly so user's standard Emacs commands work without per-buffer
 ;; lazy-load surprises.  Probe SHIPPED 2026-05-09: load + runtime
-;; both validated.  See feedback_nelisp_emacs_gtk_gui_only_boundary
-;; — editor logic stays in nelisp-emacs (vendor included).
+;; both validated for the 22 modules below.  See
+;; feedback_nelisp_emacs_gtk_gui_only_boundary — editor logic stays
+;; in nelisp-emacs (vendor included).  v0.1 scratch
+;; emacs-{fileio,dired-min,buffer-ui,isearch,help,undo-ui,elisp-eval,
+;; ielm,shell-command,completion-ui,project,org-*}.el were deleted
+;; (2026-05-09) once vendor equivalents proved both load + runtime OK.
+;; Editor base (file / buffer / window / minibuffer / undo / help /
+;; eval / shell / completion / project / dired / isearch):
+(require 'files)
+(require 'simple)
+(require 'minibuffer)
+(require 'help-fns)
+(require 'help-mode)
+(require 'lisp-mode)
+(require 'ielm)
+(require 'project)
+(require 'isearch)
+(require 'dired)
+;; org-mode + theme + babel + export:
 (require 'org)
 (require 'org-refile)
 (require 'org-archive)
