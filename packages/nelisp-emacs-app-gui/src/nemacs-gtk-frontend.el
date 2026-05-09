@@ -42,6 +42,13 @@
 ;; emacs-{fileio,dired-min,buffer-ui,isearch,help,undo-ui,elisp-eval,
 ;; ielm,shell-command,completion-ui,project,org-*}.el were deleted
 ;; (2026-05-09) once vendor equivalents proved both load + runtime OK.
+;; Foundational macros — must precede anything that USES them.  Host
+;; Emacs pre-loads these via dump file; NeLisp does not, so we require
+;; explicitly. Without easy-mmode, files like font-core / lisp-mode
+;; that call (define-globalized-minor-mode ...) signal void-function
+;; at runtime because the macro never expanded.
+(require 'easy-mmode)
+(require 'derived)
 ;; Editor base (file / buffer / window / minibuffer / undo / help /
 ;; eval / shell / completion / project / dired / isearch):
 (require 'files)
