@@ -11,12 +11,14 @@
 
 ;;; Commentary:
 
-;; Doc 79 v7 Phase C Stage 5.3.a + 5.3.b + 5.3.c — elisp-side
+;; Doc 79 v7 Phase C Stage 5.3.a + 5.3.b + 5.3.c + 5.3.d — elisp-side
 ;; Bacon-Rajan cycle collector.  Stage 5.3.a shipped the skeleton;
 ;; Stage 5.3.b replaced the no-op stub with the full four-phase
 ;; algorithm (= mark-gray / scan / scan-black / collect-white);
 ;; Stage 5.3.c wires the deferred finalizer queue + threshold +
-;; idle-timer auto-trigger on top of the four phases.
+;; idle-timer auto-trigger on top of the four phases; Stage 5.3.d
+;; wires the alloc-side dec callback so suspect handles auto-enqueue
+;; and `gc-maybe-collect-cycles' fires when the threshold is crossed.
 ;;
 ;; Stage 5.3.b ships (Doc 79 §5.3.5.b〜.d, consolidated):
 ;;   - `gc-collect-cycles' real entry point invoking the four phases,
@@ -60,20 +62,33 @@
 ;;   - `make-hash-table' from `nelisp-stdlib-hash.el' (loads
 ;;     immediately before this file in the STDLIB chain).
 ;;
-;; Public surface (Stage 5.3.c):
+;; Public surface (Stage 5.3.d):
 ;;   `gc-collect-cycles'   - run one synchronous CC pass, returns # freed
 ;;   `gc-stats'            - return alist of GC counters (4 keys)
 ;;   `gc-finalize-flush'   - drain `gc-finalize-queue' synchronously
 ;;   `gc-finalize-step'    - drain up to `gc-finalize-budget-ms' of queue
 ;;   `gc-maybe-collect-cycles' - threshold-gated auto-trigger entry
+;;   `gc-dec-callback'         - alloc-side hook: dec + suspect enqueue
+;;                                + threshold-gated auto-collect
+;;   `nl-rc-dec-strong-wrapped' - convenience wrapper around
+;;                                `nl-rc-dec-strong' that routes through
+;;                                `gc-dec-callback' (Stage 5.3.d, replaces
+;;                                bare `nl-rc-dec-strong' callsites for
+;;                                cycle-capable kinds).
 ;;
-;; Internal helpers (= Stage 5.3.d〜.e extension surface):
+;; Internal helpers (= Stage 5.3.e extension surface):
 ;;   `gc-cycle-roots-buffer'   - suspect handle list (drained per pass)
 ;;   `gc-color-table'          - per-handle color (white/gray/black/purple)
 ;;   `gc-internal-rc-table'    - per-handle trial-delete refcount
 ;;   `gc-finalize-queue'       - FIFO of handles awaiting `nl-gc-finalize'
 ;;   `gc--children'            - outgoing edge enumeration
 ;;   `gc--root-candidate-kind-p' - predicate for cycle-capable kinds
+;;   `gc--collecting-p'        - dynamic guard: set to t during phases
+;;                                1-4 so the dec-callback skips enqueue
+;;                                while the collector itself is running
+;;                                (= prevents recursion + spurious
+;;                                re-enqueue of handles the collector
+;;                                is currently classifying).
 
 ;;; Code:
 
@@ -179,6 +194,32 @@ Used as a re-arm guard so `gc-finalize-arm-timer' is idempotent.
 Cleared by `gc-finalize-step' on entry; re-armed if the queue
 still has work after the budget expires.")
 
+;; ---- Stage 5.3.d alloc-side dec-callback tunables -------------------
+
+(defvar gc--collecting-p nil
+  "Dynamic guard: non-nil while `gc-collect-cycles' is mid-pass.
+Set by `gc-collect-cycles' around phases 1-4 + the synchronous
+finalizer flush so the alloc-side dec callback can short-circuit
+its suspect-enqueue + auto-trigger logic.
+
+Why: Phase 4 (= `gc--collect-white-walk') and the queue-drain
+finalizer indirectly cause `nl-rc-dec-strong' to fire on the
+children of cycle members (= the collector itself drives
+refcount transitions).  Without this guard those decs would
+re-push handles onto `gc-cycle-roots-buffer' and recursively
+re-enter `gc-maybe-collect-cycles', producing spurious passes
+and (in pathological graphs) unbounded recursion.")
+
+(defcustom gc-dec-callback-enabled t
+  "When non-nil, `gc-dec-callback' performs suspect enqueue + auto-fire.
+When nil the callback degenerates to a thin pass-through over
+`nl-rc-dec-strong' — the boxed handle is decremented but no
+cycle bookkeeping happens.  Useful for benchmarking the raw
+refcount cost (= Phase A baseline) and for boot-phase image
+decode where the cycle collector is intentionally inert."
+  :type 'boolean
+  :group 'nelisp-gc)
+
 ;; ---- Top-level entry point ------------------------------------------
 
 (defun gc-collect-cycles ()
@@ -205,8 +246,16 @@ suspect buffer was empty).  Stage 5.3.c: Phase 4 enqueues
 handles into `gc-finalize-queue' instead of finalizing inline;
 the queue is drained synchronously here before returning so the
 caller observes a fully-collected heap (= Doc 79 §6 single-
-threaded model + user prompt synchronous-semantics constraint)."
-  (let ((roots (gc--snapshot-roots))
+threaded model + user prompt synchronous-semantics constraint).
+
+Stage 5.3.d: binds `gc--collecting-p' = t around the entire pass
+so the alloc-side dec callback (`gc-dec-callback') skips suspect
+enqueue + auto-trigger while the collector itself is running.
+Without this guard, Phase 4 + finalizer queue drain would re-fire
+`nl-rc-dec-strong' on member children, recursively re-entering
+`gc-maybe-collect-cycles' and causing spurious passes."
+  (let ((gc--collecting-p t)
+        (roots (gc--snapshot-roots))
         (freed 0))
     (when roots
       (clrhash gc-color-table)
@@ -492,6 +541,83 @@ Returns the number of handles finalized.  Used by:
       (cancel-timer gc-finalize-timer)
       (setq gc-finalize-timer nil))
     processed))
+
+;; ---- Stage 5.3.d alloc-side dec callback ----------------------------
+;;
+;; Bacon-Rajan Phase 1 (= "suspect buffering") wires here.  When a
+;; mutator drops a refcount via `nl-rc-dec-strong', the new count is
+;; either 0 (= dealloc path, no cycle possible) or N>0 (= the box is
+;; still referenced — but if the *only* remaining references form a
+;; cycle we have to find that out later).  Doc 79 §5.3.1 articulation:
+;; "新 count が 0 にならず *かつ* 自身が cycle 候補となり得る kind
+;; (= Cons / Vector / Cell / Record / CharTable) なら
+;; `gc-cycle-roots-buffer' に push".
+;;
+;; Architecture choice (Doc 79 §5.4.6 / Stage 5.3.d prompt):
+;;
+;;   * Pure elisp wrapper around `nl-rc-dec-strong' — 0 Rust delta.
+;;     The Rust primitive already returns the new count as an Int
+;;     (= rc_primitives.rs `bi_nl_rc_dec_strong'); the elisp wrapper
+;;     reads that count, applies the §5.3.1 predicate, and routes
+;;     accordingly.  No Rust hook table / no callback registration
+;;     across the FFI boundary needed.
+;;
+;; Callsites that drove `(nl-rc-dec-strong handle)' directly should
+;; switch to `(nl-rc-dec-strong-wrapped handle)' (or call
+;; `(gc-dec-callback handle)' if they want the explicit "this is the
+;; alloc-side hook" naming).  Both entries are equivalent.
+;;
+;; Recursion guard: `gc--collecting-p' is bound to t inside
+;; `gc-collect-cycles'; the callback short-circuits when set, so
+;; phase-4 finalize + finalize-queue drain (which themselves cause
+;; refcount drops) cannot re-enter the cycle collector.
+
+(defun gc-dec-callback (handle)
+  "Decrement HANDLE's strong refcount and run the Bacon-Rajan suspect hook.
+
+Stage 5.3.d alloc-side hook — the `nl-rc-dec-strong-wrapped'
+machinery routes here.  Returns the new strong count (= same
+value `nl-rc-dec-strong' would have returned).
+
+Behaviour:
+  1. Call `nl-rc-dec-strong handle' to drop the count.
+  2. If `gc-dec-callback-enabled' is nil, OR `gc--collecting-p'
+     is t (= we are mid-pass already, see recursion-guard
+     commentary), skip steps 3-4 and return early.
+  3. If the new count > 0 AND HANDLE's kind is a cycle-capable
+     root candidate (`gc--root-candidate-kind-p'), push HANDLE
+     onto `gc-cycle-roots-buffer'.
+  4. Tail-call `gc-maybe-collect-cycles' so the threshold gate
+     (`gc-collect-cycles-threshold', default 1024) decides
+     whether to fire a synchronous pass right now.
+
+Counts of 0 (= the box is being deallocated by the allocator
+proper) bypass the suspect buffer because a free'd box cannot
+be part of a live cycle.  The dealloc hook (`nl-rc-dealloc' /
+`nl-gc-finalize') is the one that handles that case, not the
+cycle collector.
+
+Negative counts (= use-after-free / double-dec) are unreachable
+in correct callers; we still tolerate them quietly so the
+collector cannot crash on a buggy mutator — the suspect-enqueue
+predicate `(> new-count 0)' already gates them out."
+  (let ((new-count (nl-rc-dec-strong handle)))
+    (when (and gc-dec-callback-enabled
+               (not gc--collecting-p)
+               (integerp new-count)
+               (> new-count 0)
+               (gc--root-candidate-kind-p handle))
+      (push handle gc-cycle-roots-buffer)
+      (gc-maybe-collect-cycles))
+    new-count))
+
+(defun nl-rc-dec-strong-wrapped (handle)
+  "Convenience alias for `gc-dec-callback' (Stage 5.3.d).
+Existing callsites that named `nl-rc-dec-strong' directly can
+switch to `nl-rc-dec-strong-wrapped' to opt into the alloc-side
+suspect-enqueue + auto-trigger machinery without a behavioural
+diff for non-cycle-capable kinds.  Pure elisp, 0 Rust delta."
+  (gc-dec-callback handle))
 
 (provide 'nelisp-stdlib-gc)
 ;;; nelisp-stdlib-gc.el ends here

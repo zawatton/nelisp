@@ -3,11 +3,25 @@
 #+DATE: 2026-05-09
 
 * Status
-:STATE: DRAFT v7 2026-05-09 (Stage 5.3.a / 5.3.b / 5.3.c SHIPPED)
+:STATE: DRAFT v7 2026-05-10 (Stage 5.3.a / 5.3.b / 5.3.c / 5.3.d SHIPPED)
 :PARENT: Doc 77c (= Phase A〜E master plan)
 :PARALLEL: Doc 76 (OS surface elisp 化) / Doc 73 (reader/eval purge) / Doc 78 (Phase D-A Cranelift wrapper)
 :DEPENDS_ON: Doc 77c Phase A 完了 (= NlConsBox/NlCell/NlStr/NlVector/NlBoolVector/NlRecord/NlCharTable layout pin、cons_primitives.rs Layer 2 surface 出荷済)
 :UPDATES: Doc 77c §2.3 を本 Doc への外部参照に切替
+
+*Stage 5.3.d SHIPPED 2026-05-10*: alloc-side dec callback —
+=gc-dec-callback= elisp wrapper around =nl-rc-dec-strong= that
+auto-enqueues cycle-capable handles onto =gc-cycle-roots-buffer=
+when the post-dec count > 0 and tail-calls =gc-maybe-collect-cycles=
+to apply the §5.3.c threshold gate.  Recursion guard
+=gc--collecting-p= bound to t inside =gc-collect-cycles= so
+phase-4 + finalizer-queue drain (which themselves cause
+=nl-rc-dec-strong= drops on cycle members) cannot re-enter the
+collector.  =nl-rc-dec-strong-wrapped= alias provided as a
+drop-in callsite replacement.  0 Rust LOC delta (= elisp wrapper
+choice over Rust callback table; the Rust primitive already
+returns the new count, so no FFI hook plumbing is needed).
+ERT 29 → 39 (= +10 new), all green.
 
 *Stage 5.3.c SHIPPED 2026-05-10*: deferred finalizer queue +
 threshold-gated auto-trigger + idle-timer integration on host
@@ -548,13 +562,52 @@ color table の "kind tag" は §4.2 の =NlRcKind= = 0..=12 の sexp tag 派生
 - ERT: 3-deep cycle で全 box が white / 1 box が external 参照ありの cycle で scan-black が cascade して全 box live になること.
 - *commit-rule*: Rust delta = 0、elisp delta = +~70 LOC.
 
-**** §5.3.5.d — collect-white pass (~3 days, ~50 elisp LOC)
+**** §5.3.5.d — alloc-side dec callback (~3 days, ~50 elisp LOC) [SHIPPED 2026-05-10]
 
-- =gc--collect-white-walk= / =nl-gc-finalize= 強制呼出.
-- =gc-finalize-queue= への enqueue 経路は本 stage では threshold = nil で全 inline (= Stage C.3 で実利用).
-- =gc-stats-counters= boxes-freed bump.
-- ERT: =nl-rc-strong-count= が collect 後 0 / =gc-stats-counters= 'boxes-freed が想定値.
-- *commit-rule*: Rust delta = 0、elisp delta = +~50 LOC.
+:STATE: SHIPPED 2026-05-10
+
+*v7 articulation (= 旧 §5.3.5.d collect-white pass を Stage 5.3.b
+collect-white walk に統合済、本 §5.3.5.d を *alloc-side dec
+callback* sub-stage に再 framing)*: Bacon-Rajan Phase 1 の
+"suspect buffering" 経路 (= Doc 79 §5.3.1 articulation:「新 count
+が 0 にならず *かつ* 自身が cycle 候補となり得る kind なら
+=gc-cycle-roots-buffer= に push」) を =nl-rc-dec-strong= の
+elisp wrapper として実装.  Stage 5.3.c ship 時点で TODO だった
+=gc-maybe-collect-cycles= の trigger callsite を本 stage で wire.
+
+- =gc-dec-callback handle= =defun= (= Bacon-Rajan Phase 1 entry):
+  =nl-rc-dec-strong= 呼出 → 新 count > 0 + cycle-capable kind +
+  非 collector 中 (= =gc--collecting-p= nil) なら
+  =gc-cycle-roots-buffer= に push、=gc-maybe-collect-cycles= で
+  threshold gate 適用.
+- =nl-rc-dec-strong-wrapped= (= =gc-dec-callback= alias、callsite
+  switch-over の名前互換).
+- =gc--collecting-p= dynamic var (= recursion guard、phase 1-4 +
+  finalizer queue drain 中の dec を short-circuit).
+- =gc-dec-callback-enabled= defcustom (= boot-phase / bench で
+  callback を opt-out するための kill switch).
+- ERT: dec → suspect enqueue / 0-count skip / leaf-kind skip /
+  threshold-crossing auto-fire / 同 collector 中 dec の
+  recursion-guard / =gc-collect-cycles= の guard binding /
+  =-wrapped= alias equivalence / disabled-flag bypass.
+- *architecture choice*: elisp wrapper 経路 (= Rust primitive は
+  既に新 count を Int で return する =bi_nl_rc_dec_strong=、FFI
+  callback table 不要)、+ recursion guard は dynamic var で Phase
+  4 内 dec を抑止.  *0 Rust LOC delta* (= Stage 5.3.d の最重要
+  invariant、Rust hook table 経路を採用すると +20 LOC 程度発生).
+- *commit-rule*: Rust delta = 0、elisp delta = +~125 LOC (実体)
+  + ~165 LOC (test) = +~290 LOC total (内訳: gc.el +132 -6 net
+  +126 / test +167 -4 net +163).  budget +~50 LOC は v6 高水準
+  estimate 由来 (= collect-white pass 時の見積)、Stage 5.3.d
+  re-framing で defcustom + recursion guard + =-wrapped= alias +
+  10 ERT 含めて +~125 elisp impl LOC が現実的.
+
+*Stage 5.3.d ship 時の振る舞い*: =gc-dec-callback= が wired、
+但し旧 callsite (= =nl-rc-dec-strong= 直呼出) は Phase A.5 JIT
+trampoline + Phase B reader/eval purge 完了まで残置.  Stage 5.3.e
+で全 callsite を =nl-rc-dec-strong-wrapped= に switch-over、
+JIT-emitted dec 経路の hook insertion は別 Doc (= Doc 78 / 77c
+Phase D-A Cranelift wrapper) で carry.
 
 **** §5.3.5.e — ERT + stress (~5 days, ~90 elisp LOC + 既存 ERT 強化)
 
