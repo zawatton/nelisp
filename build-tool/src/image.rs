@@ -125,6 +125,7 @@ pub fn compile_elisp_to_image(source: &str) -> Result<Vec<u8>, ImageError> {
     encode_image(&forms)
 }
 
+#[cfg(any(test, feature = "image-baker"))]
 pub fn encode_image(forms: &[Sexp]) -> Result<Vec<u8>, ImageError> {
     let mut out = Vec::new();
     out.extend_from_slice(IMAGE_MAGIC);
@@ -171,6 +172,7 @@ pub fn eval_forms(forms: &[Sexp]) -> Result<Sexp, ImageError> {
     Ok(last)
 }
 
+#[cfg(any(test, feature = "image-baker"))]
 fn encode_value(out: &mut Vec<u8>, value: &Sexp) -> Result<(), ImageError> {
     match value {
         Sexp::Nil => out.push(TAG_NIL),
@@ -289,6 +291,7 @@ fn decode_value(rd: &mut Reader<'_>) -> Result<Sexp, ImageError> {
     }
 }
 
+#[cfg(any(test, feature = "image-baker"))]
 fn encode_char_table(out: &mut Vec<u8>, ct: &CharTableInner) -> Result<(), ImageError> {
     encode_value(out, &ct.subtype)?;
     encode_value(out, &ct.default_val)?;
@@ -341,12 +344,14 @@ fn decode_char_table(rd: &mut Reader<'_>) -> Result<CharTableInner, ImageError> 
     })
 }
 
+#[cfg(any(test, feature = "image-baker"))]
 fn write_string(out: &mut Vec<u8>, value: &str) -> Result<(), ImageError> {
     write_len(out, value.len())?;
     out.extend_from_slice(value.as_bytes());
     Ok(())
 }
 
+#[cfg(any(test, feature = "image-baker"))]
 fn write_len(out: &mut Vec<u8>, len: usize) -> Result<(), ImageError> {
     let len = u32::try_from(len).map_err(|_| ImageError::LengthOverflow)?;
     out.extend_from_slice(&len.to_le_bytes());
