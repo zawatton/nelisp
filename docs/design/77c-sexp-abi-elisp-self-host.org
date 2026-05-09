@@ -248,6 +248,10 @@ x86_64 / ARM64 の machine code byte sequence を elisp で直 emit、=mmap PROT
 
 Phase D-A は DEFERRED 化により skip、**Phase D-B 直行**.  NeLisp Phase 7+ native cc 切替 (= 2026 後半 〜) と timeline 同期.
 
+*canonical implementation plan* (= 2026-05-09 articulate):
+
+D-B path の細則は Doc 28 §3.6 (= Phase 7.1.6 eval-site primitive lowering takeover、6 sub-stage、Rust ≈ -4,063 LOC) + Doc 28 §3.7 (= Phase 7.1.7 build-tool/src/jit/ 削除 + Cranelift Cargo dep 削除、4 sub-stage、Rust ≈ -719 LOC) に articulate.  aggregate Rust delta = *≈ -4,782 LOC*、工数 *4-8 週間*.  Track M audit 2026-05-09 で nelisp-cc native compiler ~12,263 LOC elisp (13 modules) SHIPPED 確認済、Cranelift dispatch arm の elisp emit への 1 対 1 対応は機械的 work が大半.  詳細 stage breakdown / 依存 critical path / 並行可能性は Doc 28 §3.6〜§3.9 参照.
+
 ** §2.5 Phase E — reader/eval 残作業 (= 1-2 ヶ月)
 
 Doc 63 master plan の残:
