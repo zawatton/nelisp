@@ -3,7 +3,7 @@
 #+DATE: 2026-05-09
 
 * Status
-:STATE: DRAFT v6 2026-05-09
+:STATE: DRAFT v7 2026-05-09
 :PARENT: Doc 77c (= Phase A〜E master plan)
 :PARALLEL: Doc 76 (OS surface elisp 化) / Doc 73 (reader/eval purge) / Doc 78 (Phase D-A Cranelift wrapper)
 :DEPENDS_ON: Doc 77c Phase A 完了 (= NlConsBox/NlCell/NlStr/NlVector/NlBoolVector/NlRecord/NlCharTable layout pin、cons_primitives.rs Layer 2 surface 出荷済)
@@ -994,17 +994,330 @@ Stage C.5 (= Doc 79 §5.5 articulation) は self-host gate + perf bench.  Stage 
 
 ** §5.5 Stage C.5 — self-host gate + perf bench (1-2 週間)
 
-- ERT 全 pass (= cycle leak が cycle collector で回収されることを既存 cycle-using test で確認).
-- bench: 10M cons + recycle / 1M vector alloc-free / cycle-heavy graph (= 100k node 5-cycle) で Phase A baseline 比 -10% 以下に収束.
-- =gc-stats= MCP tool 追加で elisp side observability.
-- self-host gate: NeLisp 標準 image を =cargo run= せず、=nelisp= binary 単体で =(gc-collect-cycles)= 含む test image を回せるか.
-- *Rust delta*: ±0.
-- *elisp delta*: +~50 LOC (= bench harness).
-- *commit-rule check*: net Rust delta = 0、monotonic shrink rule 充足.
+*v7 refinement (2026-05-09)*: v6 の高水準 articulation (= ERT 全 pass、bench 3 axis、=gc-stats= MCP tool、self-host gate、+~50 elisp LOC、1-2 週間) を *self-host 定義 + bench harness 設計 + gate threshold + 4 sub-stage breakdown + risk + test plan + Phase D-B handoff* に展開.  Track U §5.3 (= Stage C.2 Bacon-Rajan) + Track V §5.4 (= Stage C.3 finalizer queue) と同 detail 水準.
+
+実装 file は =bench/nelisp-gc-c5-bench.el= (新規) + =lisp/nelisp-stdlib-gc.el= (= Stage C.2 / C.3 articulation 末尾に append).  Stage C.2 + C.3 ship 後の最終 stage、本 Doc 79 の closing gate であると同時に Phase D-B Cranelift 削除の prerequisite.
+
+*** §5.5.1 self-host gate definition
+
+Stage C.5 自己定義の中核は「NeLisp 標準 image を =cargo run= delegation せず =nelisp= binary 単体で動かせるか」.  「self-host」を 3 axis で articulate:
+
+- *axis 1: binary 単体実行*  =./target/release/nelisp -batch test/c5-self-host.el= が =cargo run= 経由でなく標準 image で起動.  build-tool 介さず =nelisp::main()= 直.  =cargo run --bin nelisp -- -batch …= で同 path、本 axis は build-tool path 不要を確認するだけ.
+- *axis 2: GC test image 内蔵*  =(gc-collect-cycles)= + =(gc-finalize-flush)= + 100k cycle alloc-and-collect を含む test image が image-baked elisp として load + 実行可能.  =image/= 配下に =gc-self-host-test.eln= が precompile 済、binary 起動 → image load → eval = 完走.
+- *axis 3: bench delegation 不要*  bench harness =bench/nelisp-gc-c5-bench.el= も =cargo run= でなく =./target/release/nelisp -batch= で直接走行.  Phase A baseline (= Cranelift JIT + Rc<RefCell<>> 経路、本 worktree HEAD =2f8fdb2= 前後) との throughput 比較を実施可能.
+
+3 axis 全 PASS で「NeLisp の GC を含む runtime が 100% standalone binary で動く」ことを demonstrate.  Phase D-B (= Cranelift wrapper 削除) の prerequisite として活用 (= §5.5.8 handoff).
+
+*Phase A baseline 概念定義*: Phase A baseline = =Cranelift JIT + Rc<RefCell<>> 経路 + Rust 内 Drop 本体 + 既存 strategy.rs= の状態.  本 worktree HEAD (= =50b1130=、post-Track-W merge) より前の =2f8fdb2= 前後を baseline 計測点とする (= Phase B / C 着手前).  baseline image は git tag =bench/phase-a-baseline= で固定、Stage C.5 着手時に checkout して同 bench harness を走らせ throughput を記録.
+
+*** §5.5.2 bench harness design
+
+3 axis bench harness を =bench/nelisp-gc-c5-bench.el= に新設.  既存 =bench/nelisp-gc-bench.el= (= Phase 3c.6 reachable-set walk bench) は別目的 (= reachable walker correctness gate)、混同しない.
+
+| Axis             | Workload                                            | 主測定                                    | sample size |
+|------------------+-----------------------------------------------------+-------------------------------------------+-------------|
+| cons-heavy       | 10M cons alloc + recycle (= Bacon-Rajan trial pass) | total wallclock / per-op median / p99     | 3-run median |
+| vector-heavy     | 1M NlVector alloc + free (= finalize queue drain)   | total wallclock / per-op median / p99     | 3-run median |
+| cycle-heavy      | 100k node × 5-cycle graph alloc + collect           | cycle-collect latency / leak count        | 3-run median |
+
+*measurement design* (= existing =bench/nelisp-gc-bench.el= pattern 継承):
+- *wallclock*: =current-time= → workload → =current-time= で =float-time (time-since t0)= = total seconds.
+- *per-op latency*: workload を =N= iteration で divide、median = sort 後 N/2 番目、p99 = sort 後 N×0.99 番目.
+- *memory-peak*: =gc-stats= の =:peak-rc= key を bench 開始 / 終了 で snapshot、delta が peak alloc 数の proxy.
+- *3-run median*: 各 axis を 3 回連続実行、median を採用 (= flaky timing 対策、§5.5.6 risk).
+- *warmup phase*: 各 axis の本計測前に 10% size の warmup run を 1 回 (= JIT codegen / cache warm)、warmup 結果は破棄.
+
+*harness skeleton (~30 elisp LOC)*:
+
+#+begin_src elisp
+;; bench/nelisp-gc-c5-bench.el (= 新規 file、~50 LOC total)
+(require 'nelisp)
+(require 'nelisp-gc)
+
+(defun nelisp-gc-c5-bench--cons-heavy (n)
+  \"10M cons alloc + recycle workload.  Returns (:total-sec S :median-us M :p99-us P).\"
+  (let ((t0 (current-time))
+        (samples nil))
+    (dotimes (i n)
+      (let ((s0 (current-time)))
+        (let ((c (cons i (cons (format \"v-%d\" i) nil))))
+          (setq c nil))   ; 即時 recycle、cycle なし
+        (push (* 1e6 (float-time (time-since s0))) samples)))
+    (gc-collect-cycles)
+    (gc-finalize-flush)
+    (nelisp-gc-c5-bench--summarize t0 samples)))
+
+(defun nelisp-gc-c5-bench--vector-heavy (n) ...)   ; 同 pattern
+(defun nelisp-gc-c5-bench--cycle-heavy (n) ...)    ; cycle 構築 + (gc-collect-cycles) timing
+
+(defun nelisp-gc-c5-bench--summarize (t0 samples)
+  (let* ((sorted (sort samples #'<))
+         (len (length sorted))
+         (total-sec (float-time (time-since t0)))
+         (median-us (nth (/ len 2) sorted))
+         (p99-us (nth (truncate (* len 0.99)) sorted)))
+    (list :total-sec total-sec :median-us median-us :p99-us p99-us)))
+
+;;;###autoload
+(defun nelisp-gc-c5-bench-batch ()
+  \"`make gc-c5-bench' entry point.  Runs 3 axis × 3-run median.\"
+  (dolist (axis '((cons-heavy   10000000)
+                  (vector-heavy  1000000)
+                  (cycle-heavy    100000)))
+    (let* ((name (car axis)) (n (cadr axis))
+           (warmup (nelisp-gc-c5-bench--run name (/ n 10)))
+           (runs (cl-loop repeat 3 collect
+                          (nelisp-gc-c5-bench--run name n))))
+      (nelisp-gc-c5-bench--report name runs))))
+#+end_src
+
+(各 helper 4-12 LOC、合計 §5.5.2 で ~30 elisp LOC.  3 axis × workload + summarize + dispatch + batch entry の 6 helper.)
+
+*baseline source*: =git checkout bench/phase-a-baseline -- bench/nelisp-gc-c5-bench.el= で baseline 用に同 bench harness を carry、=./target/release/nelisp -batch bench/nelisp-gc-c5-bench.el -f nelisp-gc-c5-bench-batch= で計測.  output JSON を =bench/baseline/phase-a.json= に保存、Stage C.5 計測時に diff.
+
+*** §5.5.3 gate threshold articulation
+
+3 gate を articulate.  各 gate を Stage C.5 sub-stage 5.5.d で confirm、超過時は §5.5.6 risk 経路で fallback.
+
+- *gate 1: throughput*  Phase A baseline (= =bench/phase-a-baseline= tag) 比 *-10% 以下* (= 90% 以上維持) を 3 axis 全てで.
+  - cons-heavy: total-sec、median-us、p99-us 全 metric で 1.10x 以下 (= 10% 以内 regression).
+  - vector-heavy: 同上.
+  - cycle-heavy: cycle-collect latency が 1.10x 以下、leak count = 0.
+- *gate 2: cycle collection latency*  cycle collector + finalizer の合計 budget 内完了:
+  - 100k node 5-cycle で =gc-collect-cycles= 単独 wallclock が *Doc 79 §5.4 finalize budget 16ms × N step* 整合 (= step-count × 16ms 以下).
+  - finalizer queue drain は =gc-finalize-budget-ms= = 16ms per step、idle 0.5s で fire (= sync mode bench では即時 drain、step-count = 1 期待).
+- *gate 3: memory leak*  cycle-heavy bench で alloc count = free count + 0:
+  - =gc-stats= の =:total-allocs= - =:total-frees= = 0 (= post-cycle-collect post-finalize-flush の差分).
+  - 残 RC = 0 (= =gc-stats= の =:peak-rc= から bench 終了時点で 0 に decay).
+
+*threshold rationale*:
+- *-10% rationale*: Doc 79 §6.1 articulation (= elisp 駆動 cycle collector が Rust の Drop より 10-30x 遅い *可能性*、JIT trampoline で inline 化される refcount op で吸収) と整合.  -10% を超えると elisp Bacon-Rajan の algorithm cost が JIT inline で隠せていない signal、§5.5.6 risk fallback (= =nl-gc-disable= で Phase A 経路 retain) 発動.
+- *16ms budget rationale*: Stage C.3 §5.4.6.2 articulation (= UI freeze 16ms 以下分散) と整合.  60fps frame budget (= 16.67ms) を超えない.
+- *leak 0 rationale*: cycle collector が 100% 回収するべき.  1 でも leak すると Bacon-Rajan algorithm が incomplete な signal、§5.5.6 risk (= cycle leak debug) 発動.
+
+*** §5.5.4 elisp data structures (= gc-stats observability)
+
+Stage C.2 + C.3 既存 stats (= =gc-collect-cycles-stats=、=gc-finalize-stats-counters=) を統合 accessor =gc-stats= で 1 plist にまとめる.  observability 専用 var を 3 件追加.
+
+| 名前                            | 型                       | 用途                                                 |
+|---------------------------------+--------------------------+------------------------------------------------------|
+| =gc-stats=                      | function → plist         | 統合 stats accessor (= Stage C.5 self-host gate handoff) |
+| =gc-debug-mode=                 | symbol (defcustom)       | =verbose= / =silent= / =off= の 3 値、debug log 制御     |
+| =gc-trace-buffer=               | string (defcustom)       | log buffer 名 (default = =\"*nelisp-gc-trace*\"=)        |
+
+*=gc-stats= return plist 構造*:
+
+| key                       | type     | 由来                                                  |
+|---------------------------+----------+-------------------------------------------------------|
+| =:total-allocs=           | int      | NlRc alloc 累積 (= =nl-rc-alloc-count= primitive)       |
+| =:total-frees=            | int      | NlRc dealloc 累積 (= =nl-rc-free-count= primitive)      |
+| =:cycle-collect-runs=     | int      | =gc-collect-cycles= 起動回数 (= Stage C.2 既存)         |
+| =:finalize-step-runs=     | int      | =gc-finalize-step= 起動回数 (= Stage C.3 既存)          |
+| =:total-elapsed-ms=       | int      | cycle-collect + finalize-step の wallclock 累積 ms     |
+| =:peak-rc=                | int      | observed peak strong_count (= 全 alloc 中の最大 RC)     |
+| =:leaked-cycles-count=    | int      | post-collect で残った cycle box 数 (= leak detection)   |
+| =:bypass-count=           | int      | finalize-queue overflow bypass 累積 (= Stage C.3 既存)  |
+| =:pending-count=          | int      | finalize-queue 残件数 (= Stage C.3 既存)                |
+| =:timer-armed=            | bool     | idle-timer 状態 (= Stage C.3 既存)                      |
+
+*observability hook 構造*:
+
+#+begin_src elisp
+;; lisp/nelisp-stdlib-gc.el (= 既存 file 末尾に append)
+
+(defcustom gc-debug-mode 'off
+  \"GC debug log verbosity: `verbose' (all events), `silent' (errors only), `off'.\"
+  :type '(choice (const verbose) (const silent) (const off))
+  :group 'nelisp-gc)
+
+(defcustom gc-trace-buffer \"*nelisp-gc-trace*\"
+  \"Buffer name for `gc-debug-mode' = `verbose' log output.\"
+  :type 'string :group 'nelisp-gc)
+
+(defun gc-stats ()
+  \"Return integrated GC stats plist (Stage C.5 self-host gate handoff).
+Combines Stage C.2 cycle-collect stats + Stage C.3 finalize-queue stats +
+NlRc alloc/free counters from boundary primitives.\"
+  (let ((cc (gc-collect-cycles-stats))    ; Stage C.2 既存
+        (fz (gc-finalize-stats)))         ; Stage C.3 既存
+    (list :total-allocs           (nl-rc-alloc-count)
+          :total-frees            (nl-rc-free-count)
+          :cycle-collect-runs     (plist-get cc :runs)
+          :finalize-step-runs     (plist-get fz :step-count)
+          :total-elapsed-ms       (+ (or (plist-get cc :total-elapsed-ms) 0)
+                                     (or (plist-get fz :total-elapsed-ms) 0))
+          :peak-rc                (nl-rc-peak-strong-count)
+          :leaked-cycles-count    (plist-get cc :leaked-count)
+          :bypass-count           (plist-get fz :bypass-count)
+          :pending-count          (plist-get fz :pending-count)
+          :timer-armed            (plist-get fz :timer-armed))))
+
+(defun gc-trace (fmt &rest args)
+  \"Log GC event to `gc-trace-buffer' if `gc-debug-mode' = `verbose'.\"
+  (when (eq gc-debug-mode 'verbose)
+    (with-current-buffer (get-buffer-create gc-trace-buffer)
+      (goto-char (point-max))
+      (insert (apply #'format fmt args) \"\\n\"))))
+#+end_src
+
+(各 helper 4-15 LOC、合計 §5.5.4 で ~20 elisp LOC.  defcustom 2 + accessor 1 + trace helper 1 = 4 helper.)
+
+*MCP tool integration* (= anvil-server / Claude Code 経由で実行時 GC 観測):
+- =mcp__emacs-eval__gc-stats= (= elisp =gc-stats= を MCP wrapper に expose、prefix =gc-= で =anvil-server-metrics= と区別、§5.5.6 risk).
+- 用途: Stage C.5 bench 実行中の遠隔観測、Phase D-B 移行後の regression 監視、production NeLisp deploy 時の health check.
+- 実装は anvil-XXX module 側 (= 別 Doc / Cowork project)、本 Doc 79 範囲外.  本 §は elisp surface のみ articulate、anvil 側 wrapper は別 Doc が consume.
+
+*boundary primitive delta from §4.2 + §5.4.4*:
+- =nl-rc-alloc-count= / =nl-rc-free-count= / =nl-rc-peak-strong-count= の 3 件は §4.2 既存 10 prim + §5.4.4 +1 (= =nl-rc-payload-size=) に *追加 +3 prim*?  *判定 = 不要*.
+  - 既存 stats counter は Rust 内部 =AtomicUsize= で常時 maintain 済 (= NlRc::new / NlRc::Drop で increment).  読出 primitive を expose する必要があるが、既存 generic NlRc primitive set (§4.2) の =nl-rc-strong-count= で全 ptr の RC を walk 取得すれば accumulator は elisp 側で計算可能 (= O(N) cost 容認).
+  - peak-rc は walk 経由で per-step max を maintain (= elisp 側 =gc-stats-counters= var に accumulator).
+  - 本 v7 では *boundary primitive delta = 0* (= §4.2 + §5.4.4 既存 11 prim で C.5 完走可能、stats accessor は elisp 側 walker で実装).
+
+*** §5.5.5 Sub-stage 5.5.a〜5.5.d breakdown
+
+9 day 配分で 1-2 週間 budget を articulate.  各 sub-stage は単独 commit、ERT green、make test-all green、bench gate PASS を gate.
+
+**** §5.5.5.a — bench harness skeleton (~2 days, ~30 elisp LOC)
+
+- =bench/nelisp-gc-c5-bench.el= 新設、3 axis (= cons-heavy / vector-heavy / cycle-heavy) workload + summarize + batch entry.
+- =Makefile= に =gc-c5-bench= target 追加 (= 既存 =gc-bench= と並列、別 target).
+- baseline tag =bench/phase-a-baseline= 設定 (= =git tag bench/phase-a-baseline 2f8fdb2=).
+- baseline 計測実行 + =bench/baseline/phase-a.json= 保存.
+- ERT: 各 axis warmup 完走 + summarize plist の shape validation.
+- *commit-rule*: Rust delta = 0、elisp delta = +~30 LOC.
+
+**** §5.5.5.b — =gc-stats= MCP tool + observability hooks (~2 days, ~20 elisp LOC)
+
+- =gc-stats= 統合 accessor 実装 (= Stage C.2 + C.3 既存 stats + NlRc accumulator integrate).
+- =gc-debug-mode= / =gc-trace-buffer= defcustom + =gc-trace= helper.
+- anvil-server / Claude Code 経由の MCP wrapper (= =mcp__emacs-eval__gc-stats=) は別 Doc / 本 Doc 範囲外、surface のみ準備.
+- ERT: =gc-stats= 返却 plist の 10 key 全部存在 + bench 走行後 stats 数値妥当性.
+- ERT: =gc-debug-mode= = =verbose= で trace buffer に log 記録、=off= で無記録.
+- *commit-rule*: Rust delta = 0、elisp delta = +~20 LOC.
+
+**** §5.5.5.c — self-host gate verification (~2 days, ~0 elisp LOC + image-baked test)
+
+- =image/= 配下に =gc-self-host-test.eln= precompile (= bake 済 elisp として nelisp 起動時に load).
+- =./target/release/nelisp -batch image/gc-self-host-test.eln= で 100k cycle alloc-and-collect が完走 (= =cargo run= 不要、binary 単体).
+- bench harness も =./target/release/nelisp -batch bench/nelisp-gc-c5-bench.el -f nelisp-gc-c5-bench-batch= で直接走行.
+- ERT: self-host run の return code = 0、stdout に bench summary 3 axis 表示.
+- *commit-rule*: Rust delta = 0、elisp delta = 0 (image-baked test、image build pipeline 整備のみ).
+
+**** §5.5.5.d — regression triage (~3 days, ~0 elisp LOC + bisect)
+
+- bench harness で Phase A baseline 比 -10% 以下 PASS confirm (= 3 axis × 3-run median).
+- 超過 axis あれば =git bisect= で root cause identification (= Phase B / C 着手後の commit 群を bisect).
+- bisect 結果に応じて §5.5.6 risk fallback path 発動 (= =nl-gc-disable= で Phase A 経路 retain).
+- bench gate PASS で Phase D-B handoff PASS (= §5.5.8).
+- *commit-rule*: Rust delta = 0、elisp delta = 0 (triage、bench gate confirm).
+
+**** Sub-stage 合計
+
+| Sub-stage | days | elisp LOC | Rust LOC | 備考                                                        |
+|-----------+------+-----------+----------+-------------------------------------------------------------|
+| 5.5.a     |    2 |       ~30 |        0 | 3 axis bench harness + Makefile target + baseline tag       |
+| 5.5.b     |    2 |       ~20 |        0 | =gc-stats= 統合 accessor + observability hooks               |
+| 5.5.c     |    2 |         0 |        0 | self-host gate verification (= image-baked test)            |
+| 5.5.d     |    3 |         0 |        0 | regression triage + bench gate PASS confirm                 |
+| *合計*    |  *9* |     *~50* |     *0*  | net Rust delta = 0、monotonic shrink rule per-commit 充足    |
+
+9 day = ~1.8 週間 working day = *1-2 週間 budget 維持 ✅*.  v6 の \"+~50 elisp LOC\" 高水準 estimate と合致 (= 30+20+0+0 = 50).
+
+*Stage C.5 monotonic shrink rule 充足*: 全 sub-commit で Rust delta = 0、Stage C.2 §5.3.5.a の +115 / Stage C.3 §5.4.5.a の +12 のような per-commit 違反は本 stage に *無し*.  Phase C closing stage として monotonic shrink rule strict 解釈に完全準拠.
+
+*** §5.5.6 Risk + mitigation
+
+**** §5.5.6.1 Performance regression > -10% (elisp Bacon-Rajan が Cranelift baseline 比で大幅 perf regression)
+
+- *risk*: 3 axis bench で -10% を超える regression (= 例 -50% / cycle-heavy で 2-3x slowdown).  原因候補 = (a) elisp cycle collector の trial deletion pass が 32k root buffer 限界で多 step 化、(b) JIT trampoline が =nl-rc-inc= / =nl-rc-dec= を inline 化できていない、(c) =gc--children= walk の per-kind dispatch が hot path で branch-miss 多発.
+- *mitigation*:
+  - *=nl-gc-disable= defcustom* (= =nil= / =cycle-only= / =all= の 3 値、default = =nil=).  =all= で Phase A 経路 (= Rust Drop + 既存 strategy.rs) に完全 fallback、=cycle-only= で cycle collector のみ disable (= refcount は新経路、cycle 検出は無効、leak risk 受容).
+  - bisect で root cause identification (= §5.5.5.d).  Phase B / C 着手後の commit 群を bisect、特定 commit が原因なら revert / refactor.
+  - =gc-collect-cycles= の algorithm shift (= Doc 79 §5.3.6.1 articulation の Algorithm 5 / write-barrier 追加 / sync→async).
+  - production deploy 前に gate (= release blocker)、Phase D-B Cranelift 削除 prerequisite として活用.
+
+**** §5.5.6.2 Bench harness の reproducibility (= flaky timing)
+
+- *risk*: bench wallclock measurement が CPU governor / thermal throttling / system load で揺れ、3-run median でも ±15% 揺らぐ.  -10% gate を flaky に PASS / FAIL する.
+- *mitigation*:
+  - 3-run median + warmup phase (= §5.5.2 articulation).  warmup で JIT codegen / cache warm を完了、本計測の cold start 影響を排除.
+  - bench 実行時は CPU governor を =performance= に固定 (= =cpupower frequency-set -g performance=)、可能な限り (= CI 環境で sudo 制約あり、bench-marker は host machine で実行を想定).
+  - 5% buffer 設定: -10% gate 計測時に 3-run median が -5% 〜 -10% range なら 5-run median で再測、-5% 以内なら gate PASS、-10% 超過なら gate FAIL.
+  - bench harness 自身に variance 計測 (= sample stdev) を report、3-run median + stdev 比 で reliability 判定.
+
+**** §5.5.6.3 MCP tool naming collision (= 既存 anvil-server-metrics と)
+
+- *risk*: =gc-stats= MCP tool 名が既存 anvil-server / Claude Code 内 tool と衝突 (= =anvil-server-metrics= / =mcp__emacs-eval__metrics= 等).  registration 時に silent override / runtime confusion.
+- *mitigation*:
+  - prefix =gc-= で anvil-prefix と区別 (= =mcp__emacs-eval__gc-stats= が完全名、anvil-XXX module 経由で expose).  既存 anvil naming convention は =anvil-= prefix 主体、=gc-= は新 namespace.
+  - MCP tool registration 前に =anvil-tools-by-intent= で既存 tool listing、collision check.
+  - =gc-= prefix 範囲: =gc-stats= / =gc-debug-mode= / =gc-trace-buffer= / =gc-collect-cycles= / =gc-finalize-flush= / =gc-finalize-step= / =gc-finalize-stats= / =gc-finalize-enqueue= / =gc-finalize-arm-timer=.  全て elisp 側で管轄、anvil-XXX module は wrapper のみ.
+
+**** §5.5.6.4 image-baked test の image build pipeline 不在
+
+- *risk*: =image/gc-self-host-test.eln= の precompile pipeline が現 NeLisp に未整備 (= =eln= cache pipeline は Doc 78 / Doc 47 phase 6 依存).  Stage C.5 sub-stage 5.5.c が単独で着手不能.
+- *mitigation*:
+  - fallback: =./target/release/nelisp -batch test/c5-self-host.el= で =eln= 不要の plain elisp 起動 (= 起動時 byte-compile 経由、image-baked と同等の standalone 走行).
+  - eln cache pipeline 完成は別 Doc gate、本 Stage は plain elisp で self-host axis 1+3 を達成、axis 2 (= image-baked) は eln pipeline 完成後 deferred articulate.
+  - =gc-self-host-test.el= (= plain) と =gc-self-host-test.eln= (= image-baked) を同 source から build、pipeline 完成度に応じて切替.
+
+*** §5.5.7 Test plan
+
+| Test name                              | scenario                                                | 期待                                                |
+|----------------------------------------+---------------------------------------------------------+-----------------------------------------------------|
+| =gc-c5-bench-cons-heavy=               | 10M cons alloc + recycle、3-run median                  | total / median / p99 全 metric Phase A 比 ≤ 1.10x   |
+| =gc-c5-bench-vector-heavy=             | 1M NlVector alloc + free、3-run median                  | 同上                                                |
+| =gc-c5-bench-cycle-heavy=              | 100k node 5-cycle alloc + collect、3-run median         | cycle-collect latency ≤ 1.10x、leak count = 0       |
+| =gc-c5-leak-detection-100k-cycle=      | 100k cycle alloc → =gc-collect-cycles= → =gc-finalize-flush= | =:total-allocs= = =:total-frees=、leak count = 0    |
+| =gc-c5-self-host-binary-only=          | =./target/release/nelisp -batch test/c5-self-host.el=    | return code = 0、cycle collect + finalize 走行 confirm |
+| =gc-c5-stats-plist-shape=              | =gc-stats= 返却 plist の 10 key 全部存在                  | plist shape validation                              |
+| =gc-c5-debug-mode-trace=               | =gc-debug-mode= = =verbose= で trace buffer 記録          | =gc-trace-buffer= に log entry 出現                  |
+| =gc-c5-bisect-root-cause=              | -10% 超 regression 発生時の bisect 走行                  | offending commit identification + revert / refactor  |
+| =gc-c5-fallback-disable=               | =nl-gc-disable= = =all= で Phase A 経路完全 fallback       | 全 ERT pass + bench 走行 (= regression なし)         |
+
+合計 *9 ERT + bench* (= 5.5.5.a〜.d で実装).  既存 =bench/nelisp-gc-bench.el= (= reachable walker bench) と並列存在、混同しない.
+
+*bench gate execution flow*:
+1. =git checkout bench/phase-a-baseline=、=./target/release/nelisp -batch bench/nelisp-gc-c5-bench.el -f nelisp-gc-c5-bench-batch= → =bench/baseline/phase-a.json= に保存.
+2. =git checkout draft/doc-79-c5-design-v2= (or successor branch)、同 bench harness 走行 → =bench/current/post-phase-c.json= に保存.
+3. =bench/compare.el= (= 別 helper、本 Doc 範囲外) で 2 JSON を diff、3 axis 全 metric の ratio が ≤ 1.10x なら gate PASS.
+4. gate FAIL なら §5.5.6.1 fallback path 発動.
+
+*** §5.5.8 Phase D-B handoff
+
+Phase D-B (= Cranelift wrapper 削除、Doc 78 Phase D 範囲) の prerequisite として Stage C.5 self-host gate を活用.  handoff 構造:
+
+- *Stage C.5 PASS = Phase D-B 着手 prerequisite 充足*:
+  - axis 1 (= binary 単体実行) PASS = Cranelift JIT 経由でなく nelisp binary が standalone 走行可能 = Phase D-B で Cranelift 削除しても残 runtime が完走 candidate.
+  - axis 2 (= GC test image 内蔵) PASS = image-baked elisp が Cranelift 不在で動く = Phase D-B 削除後の image baker pipeline 互換.
+  - axis 3 (= bench delegation 不要) PASS = throughput が Phase A baseline 比 -10% 以内 = Cranelift 削除による perf regression risk が contained.
+- *bench harness の Phase D-B 後 regression 監視への再利用*:
+  - Phase D-B ship 後 (= Cranelift 削除完了)、同 bench harness =bench/nelisp-gc-c5-bench.el= を =./target/release/nelisp= 経由で再走行、Phase D-B 前 (= post-Phase-C) との throughput 比較.
+  - regression > 5% で Phase D-B revert / refactor (= Cranelift 削除に伴う perf regression が想定外).
+  - bench harness は本 Stage C.5 で確立、Phase D-B / Phase E (= 100% pure elisp self-host 完成) でも変更なく再利用.
+- *=gc-stats= observability の Phase D-B での活用*:
+  - Cranelift 削除後の runtime で =gc-stats= return plist 構造は不変 (= Stage C.2 / C.3 内部 stats が Cranelift 非依存).
+  - Phase D-B 着手 → 新 runtime build → =gc-stats= 経由で alloc / free / cycle-collect / finalize-step counter monitor、Cranelift 削除の影響を track.
+
+*Phase D-B handoff API surface*:
+- =gc-stats= (= elisp accessor、§5.5.4 articulation).
+- =gc-c5-bench-batch= (= bench entry、§5.5.2 articulation).
+- =bench/baseline/phase-a.json= (= baseline 計測値、§5.5.5.a で生成).
+- =bench/current/post-phase-c.json= (= Phase C 完了時計測値、§5.5.7 step 2 で生成).
+
+*Phase D-B 単独 ship 時の Stage C.5 依存*: Phase D-B が Cranelift wrapper 削除を ship する commit で、本 Stage C.5 の bench gate PASS が *prerequisite confirm signal*.  bench gate FAIL なら Phase D-B 着手不可、Stage C.5 §5.5.6.1 fallback path 経由で先に perf regression を解消.
+
+*** §5.5 全体 summary
+
+- *Rust delta*: ±0 (= bench harness + observability hooks は elisp 側のみ、Rust ±0).
+- *elisp delta*: +~50 LOC (= 30 + 20 + 0 + 0).
+- *commit-rule check*: 4 sub-commit 全てで Rust delta = 0、monotonic shrink rule per-commit 充足.  Stage C.2 §5.3.5.a / Stage C.3 §5.4.5.a の per-commit 違反は本 stage に無し.  Phase C closing stage として strict 解釈完全準拠.
+- *Stage C.5 単独 ship 制約*: image-baked test pipeline (= =eln= cache、Doc 78 / Doc 47 phase 6 依存) 未整備.  本 Stage は plain elisp =./target/release/nelisp -batch test/c5-self-host.el= で axis 1+3 達成、axis 2 (= image-baked) は eln pipeline 完成後 deferred articulate.
+- *Phase D-B handoff*: Stage C.5 PASS = Phase D-B Cranelift 削除 prerequisite 充足 (= §5.5.8).  bench harness は Phase D-B / E でも再利用、Phase D-B 後 regression 監視に活用.
 
 ** §5.7 LOC delta summary
 
-*v2 refactor* (target = generic boundary、+ realistic mid-points、*v6 で C.3 Rust delta +12 articulate*):
+*v2 refactor* (target = generic boundary、+ realistic mid-points、*v6 で C.3 Rust delta +12 articulate、v7 で C.5 elisp +50 detail articulate*):
 
 | Stage | Rust delta | elisp delta | 累積 Rust  | 累積 elisp | 単独 shrink rule           |
 |-------|-----------:|------------:|-----------:|-----------:|----------------------------|
@@ -1226,6 +1539,28 @@ v6 (2026-05-09): Stage C.3 finalizer queue elisp 化の concrete refinement.  v5
 
 *Rust delta*: ±0 (本 v6 = doc-only).  *elisp delta*: ±0 (本 v6 = doc-only、~150 LOC は Stage C.3 implementation で投入).
 
+** v6 → v7 (2026-05-09)
+
+v7 (2026-05-09): Stage C.5 self-host gate + perf bench の concrete refinement.  v6 の高水準 articulation (= ERT 全 pass、bench 3 axis、=gc-stats= MCP tool、self-host gate、+~50 elisp LOC、1-2 週間) を 8 sub-section に展開:
+
+- §5.5.1 self-host gate definition 3 axis (= binary 単体実行 / GC test image 内蔵 / bench delegation 不要) + Phase A baseline 概念定義 (= =bench/phase-a-baseline= tag).
+- §5.5.2 3 axis bench harness 設計 (= cons-heavy 10M / vector-heavy 1M / cycle-heavy 100k 5-cycle、wallclock + per-op median + p99 + memory-peak、3-run median + warmup phase、~30 LOC pseudo-elisp).
+- §5.5.3 gate threshold 3 件 articulation (= throughput Phase A baseline 比 -10% 以下 / cycle latency 16ms × N step / leak count = 0).
+- §5.5.4 elisp data structures (= =gc-stats= 統合 accessor + =gc-debug-mode= / =gc-trace-buffer= defcustom + 10 key plist + observability hook、~20 LOC).
+- §5.5.5 sub-stage breakdown 5.5.a〜5.5.d (= 9 days / ~50 elisp LOC / Rust ±0、bench harness + gc-stats + self-host gate + regression triage).
+- §5.5.6 risk + mitigation (= perf regression > -10% / flaky timing / MCP naming collision / image-baked pipeline 不在 の 4 class).
+- §5.5.7 test plan (= 9 ERT + bench、bench gate execution flow 4 step).
+- §5.5.8 Phase D-B handoff (= Stage C.5 PASS = Cranelift 削除 prerequisite、bench harness の再利用、=gc-stats= observability の Phase D-B での活用).
+
+*Trade-off acceptance*:
+- 取得: Phase C closing stage articulation 完成、Phase D-B prerequisite confirm 経路確立、observability surface 設計、bench gate execution flow 明確化.  Phase C 5-stage detail series (C.0 / C.1+4 / C.2 / C.3 / C.5) これで完了.
+- 放棄: image-baked test pipeline (= =eln= cache、Doc 78 / Doc 47 phase 6 依存) 未整備で axis 2 (= image-baked) が deferred、plain elisp で axis 1+3 のみ Stage C.5 内で達成.
+- 中立: Phase C 累積 Rust delta は v6 -44〜-89 から v7 -44〜-89 に *不変* (= Stage C.5 sub-stage 全てで Rust delta = 0).
+
+*v7 boundary primitive delta*: 0 (= §4.2 既存 10 prim + §5.4.4 +1 = 11 prim で Stage C.5 完走可能).  =nl-rc-alloc-count= / =nl-rc-free-count= / =nl-rc-peak-strong-count= の 3 件 stats accessor 追加候補は *判定 = 不要* (= 既存 =nl-rc-strong-count= walker 経由で elisp 側 accumulator 実装、O(N) cost 容認).
+
+*Rust delta*: ±0 (本 v7 = doc-only).  *elisp delta*: ±0 (本 v7 = doc-only、~50 LOC は Stage C.5 implementation で投入).
+
 * §11 Open questions
 
 1. =nl-gc-buffered-decs= の buffer 上限 / overflow policy: 32k 固定 vs adaptive.  Stage C.2 着手時に決定.
@@ -1239,6 +1574,9 @@ v6 (2026-05-09): Stage C.3 finalizer queue elisp 化の concrete refinement.  v5
 9. *(v6 新規)* Stage C.3 sub-stage 5.4.a の +12 LOC 抱合 vs Stage C.5 直前独立 ship: 本 Doc は dead-code 回避を優先して 5.4.a に +12 LOC 抱合を推奨、ただし per-commit monotonic shrink rule strict 解釈には違反.  代替案 = =nl-rc-payload-size= を Stage C.5 直前に独立 ship、その時点で =gc--large-payload-p= の callsite を flip.  user 確認案件.
 10. *(v6 新規)* =run-with-idle-timer= primitive の expose 経路: 現 NeLisp runtime に未実装 (= Doc 78 / Doc 47 phase 6 依存).  Stage C.3 単独 ship 時は =gc-finalize-flush-mode= = =sync= default で fallback、production =idle= 化は別 Doc 完了 gate.  Doc 78 articulation 時に NeLisp eval loop の idle 概念 (= main loop に何 ms event-poll するか) を articulate する必要.
 11. *(v6 新規)* finalize-queue overflow bypass の adaptive threshold: =gc-finalize-queue-limit= = 65536 を fixed defcustom にするか、alloc rate × ratio で adaptive にするか.  Stage C.5 bench で実測してから決定.
+12. *(v7 新規)* image-baked test pipeline (= =eln= cache、Doc 78 / Doc 47 phase 6 依存): Stage C.5 axis 2 (= GC test image 内蔵) は eln pipeline 完成後に articulate.  本 Doc 79 では plain elisp =./target/release/nelisp -batch test/c5-self-host.el= で axis 1+3 を達成、axis 2 は deferred.  user 確認案件 = image baker pipeline の整備順 (= Doc 78 完了前後で Stage C.5 ship 可能か).
+13. *(v7 新規)* bench reproducibility の CI 環境制約: bench 実行時の CPU governor =performance= 固定が CI 環境で sudo 制約により不可.  CI 上で flaky -10% gate を回避する代替案 = (a) 5-run median 採用、(b) gate threshold を CI 用に -15% に緩和、(c) bench 実行を host machine (= bench-marker) に限定し CI は smoke のみ.  本 Doc は (c) を推奨、CI smoke + host bench gate 分離.  user 確認案件.
+14. *(v7 新規)* =nl-gc-disable= fallback の granularity: =nil= / =cycle-only= / =all= の 3 値で十分か、より細かい (= per-axis disable / per-kind disable) が必要か.  Stage C.5 bench gate FAIL 時の triage 経路で実用判断、本 Doc は 3 値で start.
 
 * §12 Change log
 
@@ -1248,3 +1586,4 @@ v6 (2026-05-09): Stage C.3 finalizer queue elisp 化の concrete refinement.  v5
 - 2026-05-09 DRAFT v4.  Stage C.1+4 atomic ship が +168 LOC GATE FAILED → Stage C.4-atomic (= -81 LOC SHIPPED commit =8ba6f32=) + Stage C.1.b (= 7 prim + 3 GC helper、deferred until C.2 consumer atomic).
 - 2026-05-09 DRAFT v5.  Stage C.2 cycle collector elisp 実装の concrete refinement (= §5.3 を §5.3.1〜§5.3.8 sub-section に展開).  Bacon-Rajan Algorithm 4 articulation、4 phase pseudo-elisp、5 sub-stage breakdown (~19 days / ~400 elisp LOC)、12 ERT scenario、Stage C.3 finalizer queue handoff API、bootstrap circularity verified absent.  §11 に v5 open question 2 件追加 (= 5.3.a +115 LOC 抱合 / =nl-rc-payload-size= deferred).  §10 に v3→v4 / v4→v5 refactor history 追加.  *boundary primitive delta = 0* (= §4.2 既存 10 prim で C.2 完走).  Doc-only refactor、Rust ±0 / elisp ±0.
 - 2026-05-09 DRAFT v6.  Stage C.3 finalizer queue elisp 化の concrete refinement (= §5.4 を §5.4.1〜§5.4.8 sub-section に展開).  idle-timer-driven 5-phase pipeline articulation、~80 LOC pseudo-elisp、4 sub-stage breakdown (~9 days / ~150 elisp LOC + 12 Rust LOC)、9 ERT scenario、Stage C.5 self-host gate handoff API、batch-mode sync fallback 設計.  §11.8 (= =nl-rc-payload-size= deferred) を v6 で resolve (= 確定追加 +1 prim)、§11 に v6 open question 3 件追加 (= 5.4.a +12 LOC 抱合 / =run-with-idle-timer= 未実装依存 / overflow adaptive threshold).  §10 に v5→v6 refactor history 追加、§5.7 LOC delta summary 表で C.3 Rust delta +12 / Phase C 累積 -44〜-89 に update.  *boundary primitive delta = +1* (= =nl-rc-payload-size= 確定追加).  Doc-only refactor、Rust ±0 / elisp ±0.
+- 2026-05-09 DRAFT v7.  Stage C.5 self-host gate + perf bench の concrete refinement (= §5.5 を §5.5.1〜§5.5.8 sub-section に展開).  3 axis self-host gate definition (= binary 単体 / image-baked / bench delegation 不要)、3 axis bench harness 設計 (= cons-heavy 10M / vector-heavy 1M / cycle-heavy 100k 5-cycle、3-run median + warmup)、3 gate threshold articulation (= -10% throughput / 16ms cycle latency / 0 leak)、=gc-stats= 統合 accessor 10 key plist + =gc-debug-mode= / =gc-trace-buffer= observability hooks、4 sub-stage breakdown (~9 days / ~50 elisp LOC / Rust ±0)、9 ERT + bench scenario、4 risk class (= perf regression > -10% / flaky timing / MCP collision / image pipeline 不在)、Phase D-B handoff (= Cranelift 削除 prerequisite、bench harness 再利用).  §11 に v7 open question 3 件追加 (= image baker pipeline 整備順 / CI bench reproducibility / =nl-gc-disable= granularity).  §10 に v6→v7 refactor history 追加、§5.7 LOC delta summary 表は不変 (= C.5 全 sub-commit Rust ±0).  *boundary primitive delta = 0* (= §4.2 既存 10 prim + §5.4.4 +1 = 11 prim で C.5 完走、stats accessor は elisp 側 walker で実装).  *Phase C 5-stage detail series (C.0 / C.1+4 / C.2 / C.3 / C.5) これで完了*.  Doc-only refactor、Rust ±0 / elisp ±0.
