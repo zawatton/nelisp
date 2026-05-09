@@ -543,7 +543,7 @@ pub fn sexp_eq(a: &Sexp, b: &Sexp) -> bool {
         (Sexp::Cons(a), Sexp::Cons(b)) => {
             crate::eval::nlconsbox::NlConsBoxRef::ptr_eq(a, b)
         }
-        (Sexp::MutStr(a), Sexp::MutStr(b)) => Rc::ptr_eq(a, b),
+        (Sexp::MutStr(a), Sexp::MutStr(b)) => crate::eval::nlstr::NlStrRef::ptr_eq(a, b),
         (Sexp::Vector(a), Sexp::Vector(b)) => Rc::ptr_eq(a, b),
         (Sexp::CharTable(a), Sexp::CharTable(b)) => Rc::ptr_eq(a, b),
         (Sexp::BoolVector(a), Sexp::BoolVector(b)) => Rc::ptr_eq(a, b),

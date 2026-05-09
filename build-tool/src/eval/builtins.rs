@@ -974,7 +974,7 @@ fn sxhash_into<H: std::hash::Hasher>(v: &Sexp, h: &mut H) {
         Sexp::Float(x) => { 3u8.hash(h); x.to_bits().hash(h); }
         Sexp::Symbol(s) => { 4u8.hash(h); s.hash(h); }
         Sexp::Str(s) => { 5u8.hash(h); s.hash(h); }
-        Sexp::MutStr(rc) => { 5u8.hash(h); rc.borrow().hash(h); }
+        Sexp::MutStr(rc) => { 5u8.hash(h); rc.value.hash(h); }
         Sexp::Cons(b) => {
             6u8.hash(h);
             sxhash_into(&b.car, h);
@@ -1062,7 +1062,7 @@ fn bi_ref_eq(args: &[Sexp]) -> Result<Sexp, EvalError> {
         (Sexp::Cons(a), Sexp::Cons(b)) => {
             crate::eval::nlconsbox::NlConsBoxRef::ptr_eq(a, b)
         }
-        (Sexp::MutStr(a), Sexp::MutStr(b)) => std::rc::Rc::ptr_eq(a, b),
+        (Sexp::MutStr(a), Sexp::MutStr(b)) => crate::eval::nlstr::NlStrRef::ptr_eq(a, b),
         (Sexp::Vector(a), Sexp::Vector(b)) => std::rc::Rc::ptr_eq(a, b),
         (Sexp::CharTable(a), Sexp::CharTable(b)) => std::rc::Rc::ptr_eq(a, b),
         (Sexp::BoolVector(a), Sexp::BoolVector(b)) => std::rc::Rc::ptr_eq(a, b),
@@ -1119,7 +1119,7 @@ fn sexp_equal_safe(a: &Sexp, b: &Sexp, depth: u32) -> bool {
                     .all(|(x, y)| sexp_equal_safe(x, y, depth + 1))
         }
         (Sexp::MutStr(a), Sexp::MutStr(b)) => {
-            std::rc::Rc::ptr_eq(a, b) || *a.borrow() == *b.borrow()
+            crate::eval::nlstr::NlStrRef::ptr_eq(a, b) || a.value == b.value
         }
         (Sexp::CharTable(a), Sexp::CharTable(b)) => std::rc::Rc::ptr_eq(a, b) || a == b,
         (Sexp::BoolVector(a), Sexp::BoolVector(b)) => std::rc::Rc::ptr_eq(a, b) || a == b,
@@ -1151,7 +1151,7 @@ fn bi_string_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("string-bytes", args, 1, Some(1))?;
     match &args[0] {
         Sexp::Str(s) => Ok(Sexp::Int(s.as_bytes().len() as i64)),
-        Sexp::MutStr(rc) => Ok(Sexp::Int(rc.borrow().as_bytes().len() as i64)),
+        Sexp::MutStr(rc) => Ok(Sexp::Int(rc.value.as_bytes().len() as i64)),
         other => Err(EvalError::WrongType {
             expected: "string".into(),
             got: other.clone(),
@@ -1323,7 +1323,7 @@ fn bi_intern(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("intern", args, 1, Some(1))?;
     match &args[0] {
         Sexp::Str(s) => Ok(Sexp::Symbol(s.clone())),
-        Sexp::MutStr(rc) => Ok(Sexp::Symbol(rc.borrow().clone())),
+        Sexp::MutStr(rc) => Ok(Sexp::Symbol(rc.value.clone())),
         other => Err(EvalError::WrongType {
             expected: "stringp".into(),
             got: other.clone(),
@@ -1349,7 +1349,7 @@ fn bi_make_symbol(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("make-symbol", args, 1, Some(1))?;
     let name = match &args[0] {
         Sexp::Str(s) => s.clone(),
-        Sexp::MutStr(rc) => rc.borrow().clone(),
+        Sexp::MutStr(rc) => rc.value.clone(),
         Sexp::Symbol(s) => s.clone(),
         other => return Err(EvalError::WrongType {
             expected: "stringp".into(),
@@ -1652,7 +1652,7 @@ fn bi_symbol_name(args: &[Sexp]) -> Result<Sexp, EvalError> {
 fn string_value(v: &Sexp) -> Result<String, EvalError> {
     match v {
         Sexp::Str(s) => Ok(s.clone()),
-        Sexp::MutStr(rc) => Ok(rc.borrow().clone()),
+        Sexp::MutStr(rc) => Ok(rc.value.clone()),
         Sexp::Symbol(s) => Ok(s.clone()),
         Sexp::Nil => Ok("nil".into()),
         Sexp::T => Ok("t".into()),

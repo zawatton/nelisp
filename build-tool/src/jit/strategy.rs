@@ -153,7 +153,7 @@ pub fn bi_length_impl(args: &[Sexp]) -> Result<Sexp, EvalError> {
         return Ok(out);
     }
     match &args[0] {
-        Sexp::MutStr(rc) => Ok(Sexp::Int(rc.borrow().chars().count() as i64)),
+        Sexp::MutStr(rc) => Ok(Sexp::Int(rc.value.chars().count() as i64)),
         Sexp::BoolVector(v) => Ok(Sexp::Int(v.borrow().len() as i64)),
         Sexp::Cons(_) => {
             let mut n = 0i64;
@@ -214,8 +214,7 @@ fn aref_helper(args: &[Sexp], primitive: &'static str) -> Result<Sexp, EvalError
                 })
         }
         Sexp::MutStr(rc) => {
-            let s = rc.borrow();
-            let chars: Vec<char> = s.chars().collect();
+            let chars: Vec<char> = rc.value.chars().collect();
             chars
                 .get(index as usize)
                 .map(|c| Sexp::Int(*c as i64))
@@ -308,8 +307,7 @@ pub fn bi_aset_impl(args: &[Sexp]) -> Result<Sexp, EvalError> {
                     });
                 }
             };
-            let mut s = rc.borrow_mut();
-            let chars: Vec<char> = s.chars().collect();
+            let chars: Vec<char> = rc.value.chars().collect();
             if (index as usize) >= chars.len() {
                 return Err(EvalError::ArithError(format!(
                     "aset: index {} out of range for string of length {}",
@@ -317,7 +315,7 @@ pub fn bi_aset_impl(args: &[Sexp]) -> Result<Sexp, EvalError> {
                     chars.len()
                 )));
             }
-            let mut new_str = String::with_capacity(s.len());
+            let mut new_str = String::with_capacity(rc.value.len());
             for (i, c) in chars.iter().enumerate() {
                 if i == index as usize {
                     new_str.push(new_ch);
@@ -325,7 +323,11 @@ pub fn bi_aset_impl(args: &[Sexp]) -> Result<Sexp, EvalError> {
                     new_str.push(*c);
                 }
             }
-            *s = new_str;
+            // SAFETY: Phase A.4.2 — `args' has been evaluated to owned
+            // Sexps; no `&String' borrow into `rc.value' is live (the
+            // local `chars' / `new_str' don't alias the box).  Same
+            // Phase A.2.1 setcar discipline applies.
+            unsafe { rc.set_value(new_str) };
             Ok(args[2].clone())
         }
         Sexp::CharTable(rc) => {
