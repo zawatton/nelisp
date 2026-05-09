@@ -51,6 +51,12 @@ pub struct NlVector {
 /// Refcounted handle to an [`NlVector`].  API parity with
 /// [`super::nlstr::NlStrRef`] / [`super::nlcell::NlCellRef`] /
 /// [`super::nlconsbox::NlConsBoxRef`].
+///
+/// Phase A.5.1 (Doc 77c §4.6.1, 2026-05-09): `#[repr(transparent)]' pins
+/// the layout to `NonNull<NlVector>' so JIT trampolines + Phase B elisp
+/// can read the vector pointer directly off the `Sexp' payload at offset
+/// `SEXP_PAYLOAD_OFFSET'.
+#[repr(transparent)]
 pub struct NlVectorRef {
     ptr: NonNull<NlVector>,
     _marker: PhantomData<NlVector>,

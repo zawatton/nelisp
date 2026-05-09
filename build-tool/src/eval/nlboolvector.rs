@@ -50,6 +50,12 @@ pub struct NlBoolVector {
 /// Refcounted handle to an [`NlBoolVector`].  API parity with
 /// [`super::nlvector::NlVectorRef`] / [`super::nlstr::NlStrRef`] /
 /// [`super::nlcell::NlCellRef`] / [`super::nlconsbox::NlConsBoxRef`].
+///
+/// Phase A.5.1 (Doc 77c §4.6.1, 2026-05-09): `#[repr(transparent)]' pins
+/// the layout to `NonNull<NlBoolVector>' so JIT trampolines + Phase B
+/// elisp can read the bool-vector pointer directly off the `Sexp' payload
+/// at offset `SEXP_PAYLOAD_OFFSET'.
+#[repr(transparent)]
 pub struct NlBoolVectorRef {
     ptr: NonNull<NlBoolVector>,
     _marker: PhantomData<NlBoolVector>,

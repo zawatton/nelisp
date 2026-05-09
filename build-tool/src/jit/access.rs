@@ -46,31 +46,43 @@ use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 
-use crate::eval::sexp::{Sexp, SEXP_TAG_INT, SEXP_TAG_NIL};
+use crate::eval::sexp::{
+    Sexp, SEXP_TAG_BOOL_VECTOR, SEXP_TAG_CONS, SEXP_TAG_INT, SEXP_TAG_NIL, SEXP_TAG_STR,
+    SEXP_TAG_VECTOR,
+};
 
 use super::declare_helper_call;
 
 const TRAMPOLINE_OK: i64 = 0;
 const TRAMPOLINE_ERR: i64 = 1;
 
+// Phase A.5 (Doc 77c §2.1.4): trampolines dispatch on `Sexp::tag()' and
+// read box pointers via `Sexp::*_box_ptr()' instead of `match'.  Each
+// arm collapses to "tag check → ptr deref → field op", which mirrors
+// the cranelift IR shape that the JIT entry will eventually inline.
+
 /// `(length OBJ)' fast path: `Nil' / `Vector' / `Str'.  Other types
 /// return `TRAMPOLINE_ERR' so the caller falls through to `bi_length'.
 unsafe extern "C" fn nl_jit_access_length(arg: *const Sexp, out: *mut Sexp) -> i64 {
-    match &*arg {
-        Sexp::Nil => {
-            *out = Sexp::Int(0);
-            TRAMPOLINE_OK
-        }
-        Sexp::Vector(v) => {
-            *out = Sexp::Int(v.value.len() as i64);
-            TRAMPOLINE_OK
-        }
-        Sexp::Str(s) => {
-            *out = Sexp::Int(s.chars().count() as i64);
-            TRAMPOLINE_OK
-        }
-        _ => TRAMPOLINE_ERR,
+    let tag = (*arg).tag();
+    if tag == SEXP_TAG_NIL {
+        *out = Sexp::Int(0);
+        return TRAMPOLINE_OK;
     }
+    if tag == SEXP_TAG_VECTOR {
+        let box_ref = &*(*arg).vector_box_ptr();
+        *out = Sexp::Int(box_ref.value.len() as i64);
+        return TRAMPOLINE_OK;
+    }
+    if tag == SEXP_TAG_STR {
+        // Str is `String' inline at offset 8; the simplest correct read
+        // is through the match arm (= no separate box).
+        if let Sexp::Str(s) = &*arg {
+            *out = Sexp::Int(s.chars().count() as i64);
+            return TRAMPOLINE_OK;
+        }
+    }
+    TRAMPOLINE_ERR
 }
 
 /// `(aref VECTOR INDEX)' fast path: `Sexp::Vector' / `Sexp::BoolVector'
@@ -78,52 +90,34 @@ unsafe extern "C" fn nl_jit_access_length(arg: *const Sexp, out: *mut Sexp) -> i
 /// negative index returns `TRAMPOLINE_ERR' for canonical-error fall-
 /// through (= the dispatcher's `aref_helper' surfaces the proper
 /// out-of-range / wrong-type message).
-///
-/// Doc 77 Stage 1.B (2026-05-09) — BoolVector coverage extension:
-/// previously fell through to the Rust match arm in `aref_helper',
-/// adding a second-level `match' dispatch + extra borrow.  Now handled
-/// in the trampoline directly, removing one Rust call boundary on the
-/// hot path.  Conservative variant of Doc 77 §2.2.1 (= full IR-level
-/// inline with unpack helper + bounds check + byte load is deferred
-/// because the Rc/RefCell aliasing analysis around a freed `Ref' guard
-/// is non-trivial; a future commit can replace this Rust-side coverage
-/// with the spec's IR shape after benchmarking confirms BoolVector is
-/// hot in the bootstrap workload).
 unsafe extern "C" fn nl_jit_access_aref(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64 {
     if idx < 0 {
         return TRAMPOLINE_ERR;
     }
-    match &*arg {
-        Sexp::Vector(v) => {
-            if let Some(elem) = v.value.get(idx as usize) {
-                *out = elem.clone();
-                TRAMPOLINE_OK
-            } else {
-                TRAMPOLINE_ERR
-            }
+    let tag = (*arg).tag();
+    if tag == SEXP_TAG_VECTOR {
+        let box_ref = &*(*arg).vector_box_ptr();
+        if let Some(elem) = box_ref.value.get(idx as usize) {
+            *out = elem.clone();
+            return TRAMPOLINE_OK;
         }
-        Sexp::BoolVector(v) => {
-            if let Some(b) = v.value.get(idx as usize) {
-                *out = if *b { Sexp::T } else { Sexp::Nil };
-                TRAMPOLINE_OK
-            } else {
-                TRAMPOLINE_ERR
-            }
-        }
-        _ => TRAMPOLINE_ERR,
+        return TRAMPOLINE_ERR;
     }
+    if tag == SEXP_TAG_BOOL_VECTOR {
+        let box_ref = &*(*arg).bool_vector_box_ptr();
+        if let Some(b) = box_ref.value.get(idx as usize) {
+            *out = if *b { Sexp::T } else { Sexp::Nil };
+            return TRAMPOLINE_OK;
+        }
+        return TRAMPOLINE_ERR;
+    }
+    TRAMPOLINE_ERR
 }
 
 /// `(aset VECTOR INDEX VALUE)' fast path: `Sexp::Vector' /
 /// `Sexp::BoolVector'.  Returns VALUE per Emacs' `aset' contract.
 /// `MutStr' aset (= codepoint mutation) is left to the dispatcher
 /// because the rebuild-String path is not worth a JIT helper.
-///
-/// Doc 77 Stage 1.B (2026-05-09) — BoolVector coverage extension:
-/// previously fell through to the Rust match arm in `lowered_aset'
-/// for a second-level `match' + borrow_mut + truthy + write.  Now
-/// handled in the trampoline directly.  See aref note above for why
-/// this is the conservative form of Doc 77 §2.2.1.
 unsafe extern "C" fn nl_jit_access_aset(
     arg: *const Sexp,
     idx: i64,
@@ -133,83 +127,71 @@ unsafe extern "C" fn nl_jit_access_aset(
     if idx < 0 {
         return TRAMPOLINE_ERR;
     }
-    match &*arg {
-        Sexp::Vector(v) => {
-            if (idx as usize) >= v.value.len() {
-                return TRAMPOLINE_ERR;
-            }
-            // SAFETY: Phase A.4.3 — `arg' is a valid `&Sexp::Vector(v)'
-            // on the trampoline boundary; no other `&Vec<Sexp>' borrow
-            // into `v.value' is live (the read just above doesn't
-            // outlive the bounds check + does not alias the indexed
-            // write).  Phase A.2.1 setcar discipline applies.
-            unsafe {
-                v.with_value_mut(|vec| {
-                    vec[idx as usize] = (*val).clone();
-                });
-            }
-            *out = (*val).clone();
-            TRAMPOLINE_OK
+    let tag = (*arg).tag();
+    if tag == SEXP_TAG_VECTOR {
+        let box_ptr = (*arg).vector_box_ptr() as *mut crate::eval::nlvector::NlVector;
+        let len = (&*box_ptr).value.len();
+        if (idx as usize) >= len {
+            return TRAMPOLINE_ERR;
         }
-        Sexp::BoolVector(v) => {
-            if (idx as usize) >= v.value.len() {
-                return TRAMPOLINE_ERR;
-            }
-            let bit = crate::eval::special_forms::is_truthy(&*val);
-            // SAFETY: Phase A.4.4 — same discipline as the Vector arm
-            // above; bounds check above does not borrow `v.value`,
-            // and the closure mutates exactly the indexed slot.
-            unsafe {
-                v.with_value_mut(|vec| {
-                    vec[idx as usize] = bit;
-                });
-            }
-            *out = (*val).clone();
-            TRAMPOLINE_OK
-        }
-        _ => TRAMPOLINE_ERR,
+        // SAFETY: Phase A.4.3 — bounds-checked, no other `&Vec<Sexp>'
+        // borrow live.  Phase A.2.1 setcar discipline applies.
+        let value_ref = &mut (*box_ptr).value;
+        value_ref[idx as usize] = (*val).clone();
+        *out = (*val).clone();
+        return TRAMPOLINE_OK;
     }
+    if tag == SEXP_TAG_BOOL_VECTOR {
+        let box_ptr = (*arg).bool_vector_box_ptr()
+            as *mut crate::eval::nlboolvector::NlBoolVector;
+        let len = (&*box_ptr).value.len();
+        if (idx as usize) >= len {
+            return TRAMPOLINE_ERR;
+        }
+        let bit = crate::eval::special_forms::is_truthy(&*val);
+        // SAFETY: Phase A.4.4 — same discipline as the Vector arm above.
+        let value_ref = &mut (*box_ptr).value;
+        value_ref[idx as usize] = bit;
+        *out = (*val).clone();
+        return TRAMPOLINE_OK;
+    }
+    TRAMPOLINE_ERR
 }
 
 /// `(elt SEQUENCE INDEX)' fast path: `Sexp::Vector' (= aref) /
-/// `Sexp::Cons' (= list walk).  `Nil' is treated as out-of-range
-/// because every concrete index is "past" an empty sequence.  Other
-/// sequence types (`Str' / `MutStr' / `CharTable' / `BoolVector')
-/// fall through so the dispatcher's `bi_aref' delegation handles them.
+/// `Sexp::Cons' (= list walk).  Other sequence types fall through.
 unsafe extern "C" fn nl_jit_access_elt(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64 {
     if idx < 0 {
         return TRAMPOLINE_ERR;
     }
-    match &*arg {
-        Sexp::Vector(v) => {
-            if let Some(elem) = v.value.get(idx as usize) {
-                *out = elem.clone();
-                TRAMPOLINE_OK
-            } else {
-                TRAMPOLINE_ERR
-            }
+    let tag = (*arg).tag();
+    if tag == SEXP_TAG_VECTOR {
+        let box_ref = &*(*arg).vector_box_ptr();
+        if let Some(elem) = box_ref.value.get(idx as usize) {
+            *out = elem.clone();
+            return TRAMPOLINE_OK;
         }
-        Sexp::Cons(_) => {
-            let mut cur: Sexp = (*arg).clone();
-            let mut remaining = idx;
-            loop {
-                let next = match &cur {
-                    Sexp::Cons(b) => {
-                        if remaining == 0 {
-                            *out = b.car.clone();
-                            return TRAMPOLINE_OK;
-                        }
-                        remaining -= 1;
-                        b.cdr.clone()
-                    }
-                    Sexp::Nil => return TRAMPOLINE_ERR,
-                    _ => return TRAMPOLINE_ERR,
-                };
-                cur = next;
-            }
-        }
-        _ => TRAMPOLINE_ERR,
+        return TRAMPOLINE_ERR;
     }
+    if tag == SEXP_TAG_CONS {
+        let mut cur_ptr: *const Sexp = arg;
+        let mut remaining = idx;
+        loop {
+            let cur_tag = (*cur_ptr).tag();
+            if cur_tag == SEXP_TAG_CONS {
+                let box_ref = &*(*cur_ptr).cons_box_ptr();
+                if remaining == 0 {
+                    *out = box_ref.car.clone();
+                    return TRAMPOLINE_OK;
+                }
+                remaining -= 1;
+                cur_ptr = std::ptr::addr_of!(box_ref.cdr);
+                continue;
+            }
+            return TRAMPOLINE_ERR;
+        }
+    }
+    TRAMPOLINE_ERR
 }
 
 pub(super) struct JitAccess {

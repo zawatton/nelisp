@@ -59,6 +59,12 @@ pub struct NlRecord {
 
 /// Refcounted handle to an [`NlRecord`].  API parity with
 /// [`super::nlvector::NlVectorRef`] / [`super::nlconsbox::NlConsBoxRef`].
+///
+/// Phase A.5.1 (Doc 77c §4.6.1, 2026-05-09): `#[repr(transparent)]' pins
+/// the layout to `NonNull<NlRecord>' so JIT trampolines + Phase B elisp
+/// can read the record pointer directly off the `Sexp' payload at offset
+/// `SEXP_PAYLOAD_OFFSET'.
+#[repr(transparent)]
 pub struct NlRecordRef {
     ptr: NonNull<NlRecord>,
     _marker: PhantomData<NlRecord>,

@@ -2,13 +2,13 @@
 
 * Status
 :PROPERTIES:
-:STATE: ACTIVE — Phase A.1 / A.2 / A.3 / A.4 完遂 (= Cell / MutStr / Vector / BoolVector / Record / CharTable 全 6 variant 移行 SHIPPED)、Phase A.5 (JIT trampoline rewrite) / A.6 (regression gate) 残
+:STATE: ACTIVE — Phase A.1 / A.2 / A.3 / A.4 完遂 + Phase A.5.1+A.5.2 (Sexp ABI helpers + cons.rs/access.rs trampoline rewrite) SHIPPED、Phase A.5.3+A.5.4 は Phase B 投資効率の理由で skip、Phase A.6 (regression gate) 残
 :DRAFTED: 2026-05-09
 :PARENT: Doc 77 (= 元 Stage 4 articulation)
 :RELATED: Doc 77b (= Rust-min JIT 路線)、Doc 75 (= NELIMG image decode、PAUSED 別 issue)、Doc 63 (= Phase 7 self-host roadmap、70% SHIPPED)
 :UPDATES: Doc 77 §2.3.3 Stage 4 status (= deferred → IN_PROGRESS)、Doc 77b §6 (= "Sexp ABI pin deferred" 削除)
 :DECISION_DATE: 2026-05-09 (user 指示: "Doc 77 の Stage4 を unpause")
-:LATEST: 2026-05-09 — Phase A.1 (NlRc<T>) / A.2.0 (NlConsBox) / A.2.1 (Sexp::Cons migrate) / A.3 (8 nl-cons-*/nl-rc-* primitives) / A.4.1 (Sexp::Cell → NlCellRef) / A.4.2 (Sexp::MutStr → NlStrRef) / A.4.3 (Sexp::Vector → NlVectorRef) / A.4.4 (Sexp::BoolVector → NlBoolVectorRef) / A.4.5 (Sexp::Record → NlRecordRef) / A.4.6 (Sexp::CharTable → NlCharTableRef、self-ref parent 含む 6 全 variant 完了) SHIPPED
+:LATEST: 2026-05-09 — Phase A.1 (NlRc<T>) / A.2.0 (NlConsBox) / A.2.1 (Sexp::Cons migrate) / A.3 (8 nl-cons-*/nl-rc-* primitives) / A.4.1-A.4.6 (Cell / MutStr / Vector / BoolVector / Record / CharTable 全 6 variant migrate) / A.5.1 (Sexp ABI direct-access helpers + 7 NlXxxRef を =#[repr(transparent)]= に固定) / A.5.2 (cons.rs/access.rs trampoline を tag-byte dispatch + box_ptr deref に rewrite) SHIPPED
 :END:
 
 * §0 TL;DR
@@ -470,11 +470,46 @@ Verification:
 
 §4.5 完遂 — Phase A.4.x 6 variant (Cell / MutStr / Vector / BoolVector / Record / CharTable) 全件 NlXxxRef 化。次は Phase A.5 JIT trampoline =addr_of!= 直接 emit (-1640 LOC 想定の核).
 
-** §4.6 Phase A.5 / A.6 残作業
+** §4.6 Phase A.5 — JIT trampoline rewrite (minimal scope SHIPPED, A.5.3/A.5.4 skipped)
 
-§2.1.5 工数表通り:
-- A.5 (1-2 週間予定): JIT trampoline rewrite。現 =nl_jit_cons_car= の =&*arg= match-clone 経路を =addr_of!= 直接 emit に書換 (= §2.1.4 emit pattern)。Cons + Cell layout pin 完了済みなので blocker なし
-- A.6 (1 週間予定): ERT 全面 regression gate (= make test 0 unexpected + perf bench 退行 10% 以下)
+*** §4.6.1 Phase A.5.1 — Sexp ABI direct-access helpers — ✅ SHIPPED (2026-05-09)
+
+実装:
+- =build-tool/src/eval/sexp.rs= に 7 件の box-ptr accessor + 1 件の tag accessor を impl Sexp 直下に追加 (~100 LOC source + ~150 LOC tests):
+  - =Sexp::tag(&self) -> u8= (= =variant_tag= の method 版)
+  - =Sexp::cons_box_ptr() / cell_box_ptr() / mut_str_box_ptr() / vector_box_ptr() / bool_vector_box_ptr() / record_box_ptr() / char_table_box_ptr()= (= 各 =unsafe= で =SEXP_TAG_*= 確認後の deref を caller 責務に articulate)
+  - =SEXP_PAYLOAD_OFFSET: usize = 8= 定数 + compile-time =const _= layout assertion (= 7 NlXxxRef が NonNull と同サイズ = 8 bytes)
+- =build-tool/src/eval/nl{consbox,cell,str,vector,boolvector,record,chartable}.rs= の 7 件の =Ref= struct に =#[repr(transparent)]= を追加 — Phase A.5.1 必須の load-bearing invariant (= NonNull 直 layout = box ptr が =SEXP_PAYLOAD_OFFSET= から raw ptr で読める保証)
+- =build-tool/src/eval/nlconsbox.rs= に =NlConsBox::set_car / set_cdr= 直 impl (= raw =*const NlConsBox= 経由で setcar / setcdr 可能、=NlConsBoxRef::set_car= の delegating wrapper を温存)
+- ERT 9 件追加 (= 7 box_ptr round-trip + payload_offset_is_eight + tag_method_matches_variant_tag_fn): =cargo test --release --lib eval::sexp -- --test-threads=1= 18/18 PASS
+
+*** §4.6.2 Phase A.5.2 — cons.rs / access.rs trampoline rewrite — ✅ SHIPPED (2026-05-09)
+
+実装:
+- =build-tool/src/jit/cons.rs= の 5 trampoline (=nl_jit_cons_car/cdr/make/setcar/setcdr=) を =match &*arg { Sexp::Cons(b) => ... }= → =if (*arg).tag() == SEXP_TAG_CONS { let p = (*arg).cons_box_ptr(); ... }= に書換。jump-table dispatch (= 13 arms after Phase A.4.6) が =cmp tag, 7= 1 命令に collapse
+- =build-tool/src/jit/access.rs= の 4 trampoline (=length / aref / aset / elt=) を同形に書換。Cons walking (=elt=) も =std::ptr::addr_of!(box.cdr)= で raw ptr 経由のループに整理
+- ERT regression: =cargo test --release --lib --test-threads=1= 663/663 PASS, 0 fail (= base 654 + 9 new sexp helper tests)
+
+*** §4.6.3 Phase A.5.3 / A.5.4 skip 判断 (2026-05-09)
+
+A.5 当初計画では predicate.rs / 残 trampoline の cranelift IR direct emit + 全 boxed variant rewrite を含めていた.  Phase B (= Sexp 操作 elisp 化) 詳細を考慮して以下を skip:
+
+- A.5.3 (predicate.rs IR direct emit): consp / nullp / atomp 等を helper-call → cranelift IR 直 emit に書換える計画.  Phase B で predicate も elisp wrapper に migrate される見込みであり、IR 化の投資は B で chase される.  layout pinning の運用検証は cons.rs + access.rs で達成済 (= 全 boxed variant が同 ABI なので残 5 variant も pattern reproducible と確認済).
+- A.5.4 (残 trampoline rewrite): MutStr / Vector / BoolVector / Record / CharTable / Cell の rewrite を当初予定したが、A.5.2 で代表 2 module の rewrite が動作確認済で「pattern が再現可能」が証明されたため、残 trampoline は Phase B で elisp wrapper 化されるタイミングで自然消滅する (= rewrite するコストが消える).
+
+LOC delta (Phase A.5.1+A.5.2 着地時):
+- =sexp.rs= +251 LOC (= helpers 100 + ERT 150)
+- =nlconsbox.rs= +39 LOC (= =NlConsBox::set_car/set_cdr= + repr(transparent) doc)
+- =nl{cell,str,vector,boolvector,record,chartable}.rs= 各 +6 LOC (= repr(transparent) attribute + doc)
+- =jit/cons.rs= ±51 LOC (= rewrite、ほぼ net-neutral)
+- =jit/access.rs= +47 LOC net (= 200 / -153、rewrite で comment 整理 + match-arm 圧縮)
+- **net: +377 LOC infra/-153 LOC match cleanup = +224 LOC source net**
+
+このうち ~150 LOC は ERT (= safety net for Phase B) なので runtime LOC は +75 LOC 程度.  Phase A.5 の役割を「Phase B 用の foundation 投資」と位置付け、本物の Rust core 縮減 (= 元 plan の =Rust core ≈ 300-500 LOC=) は Phase B-D で実現する.
+
+** §4.7 Phase A.6 残作業
+
+- A.6 (1 週間予定): ERT 全面 regression gate (= make test 0 unexpected + perf bench 退行 10% 以下)。anvil-runtime crate は Phase A.2.1 / A.4.x 移行に追従しておらず compile error 残存、A.6 で同期させるか Phase B で elisp 化に合わせて削除するか判断要
 
 * §5 Test plan
 

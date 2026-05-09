@@ -66,6 +66,38 @@ pub struct NlConsBox {
     pub refcount: AtomicUsize,
 }
 
+impl NlConsBox {
+    /// Mutate `car' in place through a raw `&NlConsBox' borrow.  Used by
+    /// the Phase A.5.2 cons trampolines after they resolve `Sexp::Cons'
+    /// to `*const NlConsBox' via [`Sexp::cons_box_ptr`].  See
+    /// [`NlConsBoxRef::set_car`] for the higher-level API + safety
+    /// contract — they share the same drop-then-write semantics.
+    ///
+    /// # Safety
+    ///
+    /// Same contract as [`NlConsBoxRef::set_car`]: caller must guarantee
+    /// no other `&Sexp' borrow into `self.car' is live for the duration
+    /// of the call.
+    #[inline]
+    pub unsafe fn set_car(&self, val: Sexp) {
+        let car_ptr = std::ptr::addr_of!(self.car) as *mut Sexp;
+        std::ptr::drop_in_place(car_ptr);
+        std::ptr::write(car_ptr, val);
+    }
+
+    /// Mutate `cdr' in place.  See [`NlConsBox::set_car`].
+    ///
+    /// # Safety
+    ///
+    /// Same contract as [`NlConsBox::set_car`].
+    #[inline]
+    pub unsafe fn set_cdr(&self, val: Sexp) {
+        let cdr_ptr = std::ptr::addr_of!(self.cdr) as *mut Sexp;
+        std::ptr::drop_in_place(cdr_ptr);
+        std::ptr::write(cdr_ptr, val);
+    }
+}
+
 /// Refcounted handle to an [`NlConsBox`].  API parity with
 /// [`NlRc<T>`](super::nlrc::NlRc): `new` / `Clone` / `Drop` / `Deref`
 /// (returns `&NlConsBox`).
@@ -73,6 +105,13 @@ pub struct NlConsBox {
 /// The `NonNull<NlConsBox>' inner gives niche optimization
 /// (= `Option<NlConsBoxRef>' is the same size as `NlConsBoxRef') and
 /// rules out null-ptr UB by construction.
+///
+/// Phase A.5.1 (Doc 77c §4.6.1, 2026-05-09): pinned to
+/// `#[repr(transparent)]' so the on-disk layout matches `NonNull<NlConsBox>'
+/// exactly.  This is the load-bearing invariant for `Sexp::cons_box_ptr',
+/// which reads the box pointer at offset `SEXP_PAYLOAD_OFFSET' of the
+/// outer `Sexp' enum.
+#[repr(transparent)]
 pub struct NlConsBoxRef {
     ptr: NonNull<NlConsBox>,
     /// Tells the borrow-checker we own an `NlConsBox` even though the
