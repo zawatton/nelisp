@@ -13,13 +13,20 @@
 ;; just the surface anvil.el modules use:
 ;;
 ;;   `json-encode'                — main serializer
+;;   `json-read-from-string'      — recursive-descent parser, alist
+;;                                  with symbol keys (= upstream
+;;                                  default), int / float / string /
+;;                                  list / nested object support
 ;;   `json-encoding-pretty-print' — defvar, controls indentation (no-op
 ;;                                  in this minimal port; emit compact)
-;;   `json-false' / `json-null'   — sentinels
-;;   `json-read-from-string'      — stub (unused on standalone path)
+;;   `json-false' / `json-null'   — sentinels (`:json-false' / `:json-null'
+;;                                  to distinguish JSON `false' / `null'
+;;                                  from elisp `nil')
 ;;
-;; If a future module needs JSON parsing, replace the stub with a
-;; real reader (~150 LoC).
+;; The parser is a single-pass recursive-descent reader operating on
+;; the input string with a fluid-bound position cursor.  Errors
+;; signal `json-error' so callers (e.g. `anvil-server-process-jsonrpc')
+;; can `condition-case' on parse failures.
 
 ;;; Code:
 
@@ -136,10 +143,207 @@ Currently a no-op in the standalone port — output is always compact.")
    ((listp object) (emacs-json--encode-array object))
    (t (error "json-encode: unsupported type for %S" object))))
 
-(defun json-read-from-string (_string)
-  "Stub: NeLisp standalone does not yet support JSON parsing.
-Replace with a real parser when needed."
-  (error "json-read-from-string not implemented in NeLisp standalone"))
+;;; ---- JSON reader (Phase B2) ------------------------------------
+
+(defvar emacs-json--read-pos 0
+  "Current position in the input being parsed.  Fluid-bound by
+`json-read-from-string'; set to 0 before each parse.")
+
+(defvar emacs-json--read-src ""
+  "Input string currently being parsed.  Fluid-bound by
+`json-read-from-string'.")
+
+(define-error 'json-error "JSON parsing error")
+
+(defun emacs-json--read-error (fmt &rest args)
+  (signal 'json-error
+          (list (apply #'format fmt args)
+                emacs-json--read-pos)))
+
+(defun emacs-json--read-peek ()
+  (when (< emacs-json--read-pos (length emacs-json--read-src))
+    (aref emacs-json--read-src emacs-json--read-pos)))
+
+(defun emacs-json--read-bump ()
+  (setq emacs-json--read-pos (1+ emacs-json--read-pos)))
+
+(defun emacs-json--read-eof-p ()
+  (>= emacs-json--read-pos (length emacs-json--read-src)))
+
+(defun emacs-json--read-skip-ws ()
+  (while (and (not (emacs-json--read-eof-p))
+              (let ((c (emacs-json--read-peek)))
+                (or (eq c ?\s) (eq c ?\t) (eq c ?\n) (eq c ?\r))))
+    (emacs-json--read-bump)))
+
+(defun emacs-json--read-expect (ch)
+  (unless (eq (emacs-json--read-peek) ch)
+    (emacs-json--read-error "expected %c, got %S" ch (emacs-json--read-peek)))
+  (emacs-json--read-bump))
+
+(defun emacs-json--read-keyword (word value)
+  "Match literal WORD at cursor; return VALUE on success."
+  (let ((len (length word))
+        (start emacs-json--read-pos))
+    (when (> (+ start len) (length emacs-json--read-src))
+      (emacs-json--read-error "unexpected EOF reading %s" word))
+    (unless (string= word
+                     (substring emacs-json--read-src start (+ start len)))
+      (emacs-json--read-error "expected %s" word))
+    (setq emacs-json--read-pos (+ start len))
+    value))
+
+(defun emacs-json--read-string ()
+  "Read a JSON string at cursor, return elisp string."
+  (emacs-json--read-expect ?\")
+  (let ((acc "")
+        (done nil))
+    (while (not done)
+      (when (emacs-json--read-eof-p)
+        (emacs-json--read-error "unterminated string"))
+      (let ((c (emacs-json--read-peek)))
+        (cond
+         ((eq c ?\") (emacs-json--read-bump) (setq done t))
+         ((eq c ?\\)
+          (emacs-json--read-bump)
+          (when (emacs-json--read-eof-p)
+            (emacs-json--read-error "trailing backslash in string"))
+          (let ((esc (emacs-json--read-peek)))
+            (emacs-json--read-bump)
+            (setq acc
+                  (concat acc
+                          (cond
+                           ((eq esc ?\") "\"")
+                           ((eq esc ?\\) "\\")
+                           ((eq esc ?/)  "/")
+                           ((eq esc ?n)  "\n")
+                           ((eq esc ?t)  "\t")
+                           ((eq esc ?r)  "\r")
+                           ((eq esc ?b)  "\b")
+                           ((eq esc ?f)  "\f")
+                           ((eq esc ?u)
+                            (when (> (+ emacs-json--read-pos 4)
+                                     (length emacs-json--read-src))
+                              (emacs-json--read-error "short \\u escape"))
+                            (let ((hex (substring emacs-json--read-src
+                                                  emacs-json--read-pos
+                                                  (+ emacs-json--read-pos 4))))
+                              (setq emacs-json--read-pos
+                                    (+ emacs-json--read-pos 4))
+                              (char-to-string
+                               (string-to-number hex 16))))
+                           (t (emacs-json--read-error
+                               "invalid escape \\%c" esc)))))))
+         (t
+          (emacs-json--read-bump)
+          (setq acc (concat acc (char-to-string c)))))))
+    acc))
+
+(defun emacs-json--read-number ()
+  "Read a JSON number at cursor.  Return int or float."
+  (let ((start emacs-json--read-pos)
+        (has-frac nil)
+        (has-exp nil))
+    (when (eq (emacs-json--read-peek) ?-)
+      (emacs-json--read-bump))
+    (while (and (not (emacs-json--read-eof-p))
+                (let ((c (emacs-json--read-peek)))
+                  (and (>= c ?0) (<= c ?9))))
+      (emacs-json--read-bump))
+    (when (eq (emacs-json--read-peek) ?.)
+      (setq has-frac t)
+      (emacs-json--read-bump)
+      (while (and (not (emacs-json--read-eof-p))
+                  (let ((c (emacs-json--read-peek)))
+                    (and (>= c ?0) (<= c ?9))))
+        (emacs-json--read-bump)))
+    (let ((c (emacs-json--read-peek)))
+      (when (or (eq c ?e) (eq c ?E))
+        (setq has-exp t)
+        (emacs-json--read-bump)
+        (let ((s (emacs-json--read-peek)))
+          (when (or (eq s ?+) (eq s ?-))
+            (emacs-json--read-bump)))
+        (while (and (not (emacs-json--read-eof-p))
+                    (let ((d (emacs-json--read-peek)))
+                      (and (>= d ?0) (<= d ?9))))
+          (emacs-json--read-bump))))
+    (let ((text (substring emacs-json--read-src start emacs-json--read-pos)))
+      (if (or has-frac has-exp)
+          (string-to-number text)
+        (string-to-number text)))))
+
+(defun emacs-json--read-array ()
+  "Read a JSON array at cursor.  Return list."
+  (emacs-json--read-expect ?\[)
+  (emacs-json--read-skip-ws)
+  (if (eq (emacs-json--read-peek) ?\])
+      (progn (emacs-json--read-bump) nil)
+    (let ((items nil)
+          (done nil))
+      (while (not done)
+        (push (emacs-json--read-value) items)
+        (emacs-json--read-skip-ws)
+        (let ((c (emacs-json--read-peek)))
+          (cond
+           ((eq c ?,) (emacs-json--read-bump) (emacs-json--read-skip-ws))
+           ((eq c ?\]) (emacs-json--read-bump) (setq done t))
+           (t (emacs-json--read-error "expected , or ] in array")))))
+      (nreverse items))))
+
+(defun emacs-json--read-object ()
+  "Read a JSON object at cursor.  Return alist with symbol keys."
+  (emacs-json--read-expect ?\{)
+  (emacs-json--read-skip-ws)
+  (if (eq (emacs-json--read-peek) ?\})
+      (progn (emacs-json--read-bump) nil)
+    (let ((pairs nil)
+          (done nil))
+      (while (not done)
+        (emacs-json--read-skip-ws)
+        (let ((key-str (emacs-json--read-string)))
+          (emacs-json--read-skip-ws)
+          (emacs-json--read-expect ?:)
+          (emacs-json--read-skip-ws)
+          (let ((val (emacs-json--read-value)))
+            (push (cons (intern key-str) val) pairs)))
+        (emacs-json--read-skip-ws)
+        (let ((c (emacs-json--read-peek)))
+          (cond
+           ((eq c ?,) (emacs-json--read-bump))
+           ((eq c ?\}) (emacs-json--read-bump) (setq done t))
+           (t (emacs-json--read-error "expected , or } in object")))))
+      (nreverse pairs))))
+
+(defun emacs-json--read-value ()
+  "Read any JSON value at cursor."
+  (emacs-json--read-skip-ws)
+  (let ((c (emacs-json--read-peek)))
+    (cond
+     ((null c) (emacs-json--read-error "unexpected EOF"))
+     ((eq c ?\") (emacs-json--read-string))
+     ((eq c ?\{) (emacs-json--read-object))
+     ((eq c ?\[) (emacs-json--read-array))
+     ((eq c ?t)  (emacs-json--read-keyword "true" t))
+     ((eq c ?f)  (emacs-json--read-keyword "false" json-false))
+     ((eq c ?n)  (emacs-json--read-keyword "null" json-null))
+     ((or (eq c ?-) (and (>= c ?0) (<= c ?9)))
+      (emacs-json--read-number))
+     (t (emacs-json--read-error "unexpected character %c" c)))))
+
+(defun json-read-from-string (string)
+  "Parse JSON STRING into an elisp value.
+Objects are returned as alists with symbol keys; arrays as lists;
+numbers as int or float; `true' / `false' / `null' as t /
+`json-false' / `json-null' respectively.  Signals `json-error' on
+malformed input."
+  (let ((emacs-json--read-pos 0)
+        (emacs-json--read-src string))
+    (let ((value (emacs-json--read-value)))
+      (emacs-json--read-skip-ws)
+      (unless (emacs-json--read-eof-p)
+        (emacs-json--read-error "trailing garbage after JSON value"))
+      value)))
 
 (provide 'json)
 ;;; json.el ends here
