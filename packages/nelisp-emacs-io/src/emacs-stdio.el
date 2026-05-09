@@ -98,6 +98,27 @@ return nil."
         line))
      (t nil))))
 
+(defun emacs-stdio-read-bytes (n)
+  "Read exactly N bytes from stdin, or fewer at EOF.
+
+Returns a string of up to N bytes consumed from the internal buffer
+(refilling via `read-stdin-bytes' as needed) or nil if N <= 0 or
+EOF is reached before any byte is available.  Unlike
+`emacs-stdio-read-line' this does NOT split on LF, so it is the
+correct primitive for MCP framed bodies whose Content-Length runs
+straight into the next frame's header line without an intervening
+newline."
+  (when (and (numberp n) (> n 0))
+    (while (and (< (length emacs-stdio--buffer) n)
+                (emacs-stdio--refill)))
+    (let* ((avail (length emacs-stdio--buffer))
+           (take (if (< avail n) avail n)))
+      (when (> take 0)
+        (let ((chunk (substring emacs-stdio--buffer 0 take)))
+          (setq emacs-stdio--buffer
+                (substring emacs-stdio--buffer take))
+          chunk)))))
+
 (defun emacs-stdio--minibuffer-shim (&rest _ignored)
   "Stdin-backed `read-from-minibuffer' replacement.
 
