@@ -1,4 +1,4 @@
-;;; nelisp-jit-bench.el --- JIT lowering bench harness  -*- lexical-binding: t -*-
+;;; nelisp-jit-bench-test.el --- JIT lowering bench harness  -*- lexical-binding: t -*-
 
 ;;; Commentary:
 ;;
@@ -30,12 +30,14 @@
 ;; same fn-ptr path the elisp `lowered_X' wrappers use, so we measure
 ;; the trampoline + helper, not the elisp wrapper overhead.
 ;;
-;; STATE: drafted at Doc 77b Stage b.1 ship time but the
-;; `nl-jit-call-*' primitives it depends on are introduced in Stage
-;; b.2 (= bridge.rs).  Until then this file loads cleanly (defuns
-;; don't execute at load time) but the benches will signal
-;; `void-function' if NELISP_BENCH is set early.  Safe to ship as
-;; Stage b.5 prep — no impact on regular `make test'.
+;; STATE: Stage b.5 SHIPPED.  Stage b.2 (= bridge.rs) added the
+;; `nl-jit-call-*' primitives this bench depends on, so the benches
+;; are now fully functional under `NELISP_BENCH=1 make test'.  The
+;; companion Rust harness `build-tool/src/jit/bench.rs' is deleted at
+;; this Stage; this file is the canonical bench surface.  Located in
+;; `test/' (= picked up by Makefile's `TESTS := wildcard
+;; test/nelisp*-test.el' glob); without `NELISP_BENCH' set the four
+;; `ert-deftest' bodies skip silently via `skip-unless'.
 
 ;;; Code:
 
@@ -169,5 +171,5 @@ inline fast path that skips the helper.  All JIT-only."
       (lambda () (nl-jit-call-ptr-ptr "eq" 42 42))
       (lambda () (eq 42 42)))))
 
-(provide 'nelisp-jit-bench)
-;;; nelisp-jit-bench.el ends here
+(provide 'nelisp-jit-bench-test)
+;;; nelisp-jit-bench-test.el ends here

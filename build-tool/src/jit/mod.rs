@@ -101,8 +101,15 @@ pub type LowerFn = fn(&[Sexp], &mut Env) -> Result<Sexp, EvalError>;
 
 mod access;
 mod arith;
-#[cfg(test)]
-mod bench;
+// Doc 77b Stage b.5 (2026-05-09): the former `mod bench;' (=
+// `build-tool/src/jit/bench.rs', 268 LOC of `#[ignore]' Rust benches
+// covering Doc 62 §4.2 dispatcher-bypass speedup measurements) was
+// migrated to elisp ERT under `test/nelisp-jit-bench-test.el'.  The
+// elisp port talks to the same JIT entries through the Stage b.2
+// `nl-jit-call-*' bridge primitives, so the speedup methodology is
+// preserved verbatim while the Rust core sheds the dependency on
+// `Env' construction inside `#[cfg(test)]'.
+//
 // Doc 77b Stage b.2 (2026-05-09): `nl-jit-call-*' bridge primitives
 // that elisp wrappers (= future replacements for the `lowered_X' Rust
 // fns shipped earlier in Doc 62 Stage C-Phase1) call to invoke JIT
