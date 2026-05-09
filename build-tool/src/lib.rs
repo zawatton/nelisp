@@ -21,8 +21,10 @@
 pub mod bridge;
 pub mod eval;
 pub mod image;
-// Phase 5 Stage 5.0 (2026-05-07, Doc 62) — Cranelift JIT scaffold.
-// Empty `lower_entries' registry today; SyscallIR / ArithIR / ConsIR /
-// AccessIR / PredicateIR ships in subsequent stages (5.1〜5.5).
+// Phase 5 Stage 5.0 / Doc 77b Stage b.4 — Cranelift JIT.  Lowered
+// primitives flow through elisp wrappers in
+// `lisp/nelisp-jit-strategy.el' that call JIT entries via the
+// `nl-jit-call-*' bridge primitives; eval-loop dispatches builtins
+// directly to `eval::builtins::dispatch' (no `lower_entries' hook).
 pub mod jit;
 pub mod reader;

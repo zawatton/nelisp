@@ -661,16 +661,6 @@ fn apply_builtin(
         },
         _ => return Err(EvalError::Internal("builtin sentinel not a cons".into())),
     };
-    // Phase 5 Stage 5.0 (2026-05-07, Doc 62) — lower hook.  Consults
-    // the JIT registry `crate::jit::lower_entries' BEFORE the generic
-    // dispatcher.  In Stage 5.0 the registry is empty so this always
-    // falls through; once Stage 5.1〜5.5 plug entries in, hot-path
-    // primitives (= syscall / arith / cons / aref / predicate) will
-    // short-circuit through the JIT path here without further
-    // changes to this hook.
-    if let Some(result) = crate::jit::try_lower(&name, args, env) {
-        return result;
-    }
     builtins::dispatch(&name, args, env)
 }
 
