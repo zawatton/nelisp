@@ -11,10 +11,11 @@
 
 ;;; Commentary:
 
-;; Doc 79 v7 Phase C Stage 5.3.a + 5.3.b + 5.3.c ERT for the elisp-side
-;; cycle collector in `lisp/nelisp-stdlib-gc.el'.  We exercise the
-;; *pure-elisp* surface (= `gc-stats' / `gc-collect-cycles' four-phase
-;; algorithm + data-structure shells + Stage 5.3.c finalizer queue)
+;; Doc 79 v7 Phase C Stage 5.3.a + 5.3.b + 5.3.c + 5.3.d ERT for the
+;; elisp-side cycle collector in `lisp/nelisp-stdlib-gc.el'.  We
+;; exercise the *pure-elisp* surface (= `gc-stats' /
+;; `gc-collect-cycles' four-phase algorithm + data-structure shells +
+;; Stage 5.3.c finalizer queue + Stage 5.3.d alloc-side dec callback)
 ;; from host Emacs.
 ;;
 ;; The 10 underlying `nl-rc-*' / `nl-gc-*' primitives are Rust-side
@@ -106,6 +107,17 @@ host idle-timer firing (Doc 79 §5.4.6.1 batch-mode mitigation)."
                 (lambda (h) (or (and (symbolp h) (get h :rc)) 0)))
                ((symbol-function 'nl-rc-payload-ptr)
                 (lambda (h) (sxhash h)))
+               ;; Stage 5.3.d: `gc-dec-callback' calls the underlying
+               ;; primitive; mock returns the post-dec count by mutating
+               ;; the handle's :rc property the same way the Rust
+               ;; primitive's atomic fetch_sub would.  Negative inputs
+               ;; clamp to 0 so use-after-free never confuses the gate.
+               ((symbol-function 'nl-rc-dec-strong)
+                (lambda (h)
+                  (let* ((cur (or (and (symbolp h) (get h :rc)) 0))
+                         (new (if (> cur 0) (- cur 1) 0)))
+                    (when (symbolp h) (put h :rc new))
+                    new)))
                ((symbol-function 'nl-gc-walk-children)
                 (lambda (h) (and (symbolp h) (get h :children))))
                ((symbol-function 'nl-gc-finalize)
@@ -495,6 +507,157 @@ host idle-timer firing (Doc 79 §5.4.6.1 batch-mode mitigation)."
        (should (equal 50 freed))
        (should (equal 50 (length gc-test--finalized)))
        (should (null gc-finalize-queue))))))
+
+;; ---- Stage 5.3.d alloc-side dec callback ---------------------------
+
+(ert-deftest gc-dec-callback-decrements-and-returns-count ()
+  "`gc-dec-callback' returns the post-dec count from `nl-rc-dec-strong'."
+  (skip-unless (fboundp 'gc-dec-callback))
+  (gc-test--with-mocks
+   ;; rc=3 → post-dec count 2 returned + handle's :rc updated.
+   (let ((h (gc-test--alloc 7 3)))
+     (should (equal 2 (gc-dec-callback h)))
+     (should (equal 2 (get h :rc))))))
+
+(ert-deftest gc-dec-callback-zero-count-skips-suspect-buffer ()
+  "When new count = 0 the handle is NOT pushed onto the suspect buffer.
+A box dropping to 0 is the dealloc path; cycle collection is irrelevant."
+  (skip-unless (fboundp 'gc-dec-callback))
+  (gc-test--with-mocks
+   (let ((h (gc-test--alloc 7 1)))
+     (should (equal 0 (gc-dec-callback h)))
+     (should (null gc-cycle-roots-buffer)))))
+
+(ert-deftest gc-dec-callback-positive-count-enqueues-suspect ()
+  "Cycle-capable handle with new count > 0 lands on `gc-cycle-roots-buffer'."
+  (skip-unless (fboundp 'gc-dec-callback))
+  (gc-test--with-mocks
+   ;; Bump threshold so the auto-fire doesn't immediately drain the buffer.
+   (let ((gc-collect-cycles-threshold 1024)
+         (h (gc-test--alloc 7 5)))                ; CONS, rc=5
+     (gc-dec-callback h)
+     (should (equal (list h) gc-cycle-roots-buffer)))))
+
+(ert-deftest gc-dec-callback-leaf-kind-skips-suspect-buffer ()
+  "Non-cycle-capable kinds (= NIL/INT/STR/etc.) do not enqueue."
+  (skip-unless (fboundp 'gc-dec-callback))
+  (gc-test--with-mocks
+   (let ((gc-collect-cycles-threshold 1024)
+         (h-int (gc-test--alloc 2 5))             ; INT, leaf
+         (h-str (gc-test--alloc 6 5)))            ; STR, leaf
+     (gc-dec-callback h-int)
+     (gc-dec-callback h-str)
+     (should (null gc-cycle-roots-buffer)))))
+
+(ert-deftest gc-dec-callback-disabled-flag-bypasses-bookkeeping ()
+  "With `gc-dec-callback-enabled' = nil the hook is a thin pass-through."
+  (skip-unless (fboundp 'gc-dec-callback))
+  (gc-test--with-mocks
+   (let ((gc-dec-callback-enabled nil)
+         (h (gc-test--alloc 7 5)))
+     (should (equal 4 (gc-dec-callback h)))
+     (should (null gc-cycle-roots-buffer)))))
+
+(ert-deftest gc-dec-callback-fires-auto-collect-on-threshold ()
+  "Threshold-crossing dec triggers a synchronous `gc-collect-cycles'.
+
+Builds an isolated 2-deep cycle, drops the simulated external
+references via `gc-dec-callback' until the suspect buffer crosses
+threshold = 2.  The auto-trigger should fire and finalize both
+boxes (= cycle is internally referenced only)."
+  (skip-unless (fboundp 'gc-dec-callback))
+  (gc-test--with-mocks
+   (let ((gc-collect-cycles-threshold 2)
+         ;; Strong count 1 = exactly one external ref each (= what the
+         ;; mutator just released), and one peer-edge in the cycle.
+         ;; After the external ref drops, the handles will have rc=1
+         ;; with a single mutual edge — perfect cycle leak target.
+         (a (gc-test--alloc 7 2))                 ; CONS, rc=2 (ext + B-edge)
+         (b (gc-test--alloc 7 2)))                ; CONS, rc=2 (ext + A-edge)
+     (gc-test--set-children a (list b))
+     (gc-test--set-children b (list a))
+     ;; Drop external refs via the dec callback (= what the mutator
+     ;; would do when its variable goes out of scope).  Each drop
+     ;; lands the handle on the suspect buffer; the second one
+     ;; crosses threshold = 2 and fires `gc-collect-cycles'.
+     (gc-dec-callback a)                          ; rc 2 → 1, enqueue
+     (should (equal 1 (length gc-cycle-roots-buffer)))
+     (should (null gc-test--finalized))
+     (gc-dec-callback b)                          ; rc 2 → 1, enqueue + fire
+     (should (memq a gc-test--finalized))
+     (should (memq b gc-test--finalized))
+     (should (null gc-cycle-roots-buffer)))))
+
+(ert-deftest gc-dec-callback-does-not-recurse-during-collection ()
+  "Dec calls during phases 1-4 must not re-enter the collector.
+
+`gc--collect-white-walk' / finalizer queue drain cause downstream
+refcount drops; without the recursion guard those would re-fire
+`gc-maybe-collect-cycles' and either spuriously bump the `passes'
+counter or recurse without bound."
+  (skip-unless (fboundp 'gc-dec-callback))
+  (gc-test--with-mocks
+   ;; Threshold 1 = the most aggressive auto-fire — would re-enter
+   ;; on every dec absent the guard.
+   (let ((gc-collect-cycles-threshold 1)
+         (h (gc-test--alloc 7 5)))
+     ;; Fake "we are inside the collector" by setting the dynamic guard.
+     (let ((gc--collecting-p t))
+       (gc-dec-callback h)
+       ;; Even with threshold = 1, no enqueue happened because the
+       ;; guard short-circuits step 3.
+       (should (null gc-cycle-roots-buffer))))))
+
+(ert-deftest gc-collect-cycles-binds-collecting-guard ()
+  "`gc-collect-cycles' binds `gc--collecting-p' = t around the pass.
+
+Verified by intercepting `nl-gc-finalize' and observing the
+guard's value at finalize time — the queue drains while the
+collector still owns the dynamic frame."
+  (skip-unless (fboundp 'gc-collect-cycles))
+  (gc-test--with-mocks
+   (let ((observed-during-finalize nil)
+         (a (gc-test--alloc 7 1))
+         (b (gc-test--alloc 7 1)))
+     (gc-test--set-children a (list b))
+     (gc-test--set-children b (list a))
+     (setq gc-cycle-roots-buffer (list a b))
+     (cl-letf (((symbol-function 'nl-gc-finalize)
+                (lambda (h)
+                  (push gc--collecting-p observed-during-finalize)
+                  (push h gc-test--finalized)
+                  nil)))
+       (gc-collect-cycles))
+     ;; Outside the pass the guard is back to nil (= cleanly unwound).
+     (should (null gc--collecting-p))
+     ;; Inside finalize the guard was always t (= recursion shield).
+     (should (cl-every #'identity observed-during-finalize)))))
+
+(ert-deftest gc-dec-callback-wrapped-alias-is-equivalent ()
+  "`nl-rc-dec-strong-wrapped' is a drop-in alias for `gc-dec-callback'."
+  (skip-unless (fboundp 'nl-rc-dec-strong-wrapped))
+  (gc-test--with-mocks
+   (let ((gc-collect-cycles-threshold 1024)
+         (h (gc-test--alloc 7 3)))
+     (should (equal 2 (nl-rc-dec-strong-wrapped h)))
+     (should (memq h gc-cycle-roots-buffer)))))
+
+(ert-deftest gc-dec-callback-respects-disabled-during-collection ()
+  "When the collector is running, even threshold = 1 cannot fire.
+
+Combines the recursion-guard scenario with an explicit threshold
+= 1 to assert the guard wins over the auto-trigger."
+  (skip-unless (fboundp 'gc-dec-callback))
+  (gc-test--with-mocks
+   (let ((gc-collect-cycles-threshold 1)
+         (a (gc-test--alloc 7 5))
+         (b (gc-test--alloc 7 5)))
+     (let ((gc--collecting-p t))
+       (gc-dec-callback a)
+       (gc-dec-callback b)
+       (should (null gc-cycle-roots-buffer))
+       ;; passes counter should not have moved (= no recursion happened).
+       (should (equal 0 (cdr (assq 'passes (gc-stats)))))))))
 
 (provide 'nelisp-rc-primitives-test)
 ;;; nelisp-rc-primitives-test.el ends here
