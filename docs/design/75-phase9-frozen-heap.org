@@ -27,21 +27,40 @@
 - Phase 8 Stage 8.4 (= reader feature gate) とは互いに独立 — どちらが先でも可
 - 本 Doc は articulation のみ; 着手判断は Phase 8 完了 + Doc 77c Phase A.6
   完了 + user feedback 待ち
-- *2026-05-09 着手 (Stage 9.1〜9.3)*: user direction で Doc 75 v3
+- *2026-05-09 着手 (Stage 9.1〜9.4 atomic)*: user direction で Doc 75 v3
   detail を pilot 開始. SHIPPED record:
   - Stage 9.1 (commit 06864a3): NELIMG v3 magic / version / KIND
     constants + cfg(test) spike (+7 production Rust LOC、doc-only)
   - Stage 9.2 (commit 1159f21): image v2 encode path → image-baker
     feature gate (+5 transient Rust per §3.2 bundle accounting)
-  - Stage 9.3 (= this commit, 2026-05-10): NELIMG v3 *header-only*
-    encoder (= =encode_v3=) + 4 cargo tests (3 active + 1 ignored
-    pending Stage 9.4 decoder).  Scope = empty heap (= magic + u32
-    version + u8 KIND + 3 zero u32 length prefixes = 25 bytes total),
-    DAG payload deferred to Stage 9.3.b.  +117 Rust LOC transient
-    per §3 bundle accounting (= net Phase 9 target -1,524 stays
-    intact via Stage 9.6 v2 encode path delete + Stage 8.4 reader
-    fence-off bundle).  cargo build (default + image-baker) +
-    cargo test image:: green.
+  - Stage 9.3 (commit 5dd2cd5): NELIMG v3 *header-only* encoder
+    (= =encode_v3=) + 4 cargo tests (3 active + 1 ignored placeholder
+    pending Stage 9.4 decoder).  +117 Rust LOC transient.
+  - Stage 9.3.b + 9.4 (= this commit, atomic per §3.4 Mitigation
+    Option C, 2026-05-10): NELIMG v3 *full payload* encoder (Phase
+    A-E DAG-dedup) + matching unconditional decoder (Pass 1-4 = peek
+    + placeholder allocate + fill + globals/fallback parse).
+    `encode_v3' is now end-to-end functional: walks `env.globals',
+    interns reachable Sexps via box-pointer dedupe (NlConsBox /
+    NlVector / NlCharTable / NlBoolVector / NlCell / NlRecord /
+    NlStr) + structural atom dedupe (Nil/T/Int/Float/Symbol/Str),
+    emits NODE_INDEX-referenced node records, alpha-sorts globals
+    for determinism, and trails a fallback-form section for
+    strategy-C re-eval list.  `decode_v3' rebuilds an `Env' from
+    such a byte stream by allocating `NlXxxRef::new(empty)'
+    placeholders during Pass 2 then filling children via
+    `unsafe set_*'/`with_*_mut' during Pass 3, preserving cycles
+    and shared identity (= ptr_eq holds across the round-trip).
+    +625 Rust LOC transient per §3 bundle accounting (Phase 9 net
+    target -1,524 still on track via Stage 9.5 v2 encode delete +
+    Stage 8.4 reader fence-off bundle).  cargo build (default +
+    image-baker) + cargo test image:: = 25 passed / 0 failed / 0
+    ignored — the previously ignored
+    =doc75_stage9_3_encode_v3_round_trip_default_env= is now active
+    + green.  9 new round-trip cases cover ints, cons cells,
+    vectors, char-tables, fallback forms, constant flag, DAG
+    deduplication, self-referential cycles, and v2-magic / unknown-
+    KIND rejection.
 
 * §1 背景 + frozen heap が指す具体物
 
@@ -570,22 +589,29 @@ review コスト大. 妥協案:
 
 *** §3.3+§3.4.detail Stage 9.3+9.4 詳細 articulate (~7 days、合体 commit)
 
-**** §3.3.1 NELIMG v3 encoder design (= 12 NODE_TAG + u32 NODE_INDEX + cycle placeholder)
+**** §3.3.1 NELIMG v3 encoder design (= 12 NODE_TAG + u32 NODE_INDEX + cycle placeholder) [SHIPPED 2026-05-10]
 
-encoder は =image::frozen_heap::encode_env= として新設.
-=cfg(feature = "image-baker")= 配下 (= production graph 外).
+encoder は =image::encode_v3= / =image::encode_v3_with_fallback=
+として新設.  =cfg(any(test, feature = "image-baker"))= 配下 (=
+production graph 外).  Stage 9.3.b で submodule 昇格は見送り —
+image.rs 1 ファイル keep で encoder + decoder が並んだ方が読みやすい
+判断.
 
 入力: =&Env= (= bootstrap 完了後の global env)
 出力: =Vec<u8>= (= NELIMG v3 frozen-heap KIND payload)
 
 *Stage 9.3 (= 2026-05-10) SHIPPED スコープ*: header-only encode のみ
 (= magic + u32 version + u8 KIND + 3 zero u32 length prefixes = 25
-bytes total).  function 名は =image::encode_v3= (= 中間 form、
-=image::frozen_heap= submodule への昇格は Stage 9.3.b で実施).
-DAG 構築 / placeholder 戦略 / NODE_TAG payload 書込 (= Phase A-E
-全体) は Stage 9.3.b に持越し — 9.4 decoder と atomic に出す方が
-mid-state broken を avoid できるため.  +117 Rust LOC transient (=
-encoder skeleton 50 + 4 cargo tests 65 + module-level docstring 2).
+bytes total).  +117 Rust LOC transient.
+
+*Stage 9.3.b (= 2026-05-10) SHIPPED スコープ*: full Phase A-E DAG-
+dedup encoder.  =NodeTable= struct で box-pointer 識別 (HashMap<usize,
+u32>) と atomic 値の構造 dedupe (HashMap<AtomKey, u32>) を併走させ、
+intern() 時に NODE_INDEX を *先に予約* してから recursive build —
+これで cycle が children 内で発生しても reservation を返す (Doc 50
+§3.5 visited-set strategy 踏襲).  Globals は alpha-sort で
+deterministic 化済 (= §3.3.1 Phase D 要件).  +~325 Rust LOC
+transient.
 
 algorithm (= 9.3.b 以降の full payload encode):
 
@@ -609,10 +635,13 @@ NODE_TAG 12 件は §5.3 表で確定済 (= TAG_NIL ... TAG_MUT_STR).
 encode size 推定: §2.4 の v2 STDLIB images 計 222 KB に対し、frozen heap
 は env 全体 + DAG dedup により 1.5x〜2x = ~330-450 KB.
 
-**** §3.3.2 NELIMG v3 decoder design (= one-pass parse + node table)
+**** §3.3.2 NELIMG v3 decoder design (= one-pass parse + node table) [SHIPPED 2026-05-10]
 
-decoder は =image::frozen_heap::decode_env_into= として新設、production
-binary に組み込まれる (= cfg gate なし、= caller は =Env::new_global=).
+decoder は =image::decode_v3= / =image::decode_v3_into= として新設、
+production binary に組み込まれる (= cfg gate なし、= caller は
+=Env::new_global=、Stage 9.5 で wire-up).  Stage 9.3.b 同様に
+submodule 昇格は image.rs 1 ファイル keep の方針で見送り、encoder と
+並べて読めるようにする.
 
 入力: =&[u8]= (= NELIMG v3 image bytes、include_bytes! macro 経由)
 出力: =Result<Env, ImageError>=
