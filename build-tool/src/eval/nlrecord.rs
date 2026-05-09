@@ -70,6 +70,7 @@ pub struct NlRecordRef {
     _marker: PhantomData<NlRecord>,
 }
 
+impl NlRecord { pub(crate) const DROP_FN: unsafe fn(*mut std::ffi::c_void) = crate::eval::nlrc::nlrc_payload_drop::<NlRecord>; } // Doc 79 v4 C.4-atomic
 impl NlRecordRef {
     /// Allocate a fresh [`NlRecord`] on the heap with `refcount = 1'.
     pub fn new(type_tag: Sexp, slots: Vec<Sexp>) -> NlRecordRef {
@@ -131,26 +132,7 @@ impl Clone for NlRecordRef {
 }
 
 impl Drop for NlRecordRef {
-    fn drop(&mut self) {
-        // SAFETY: `self.ptr' is alive because we hold a handle.
-        let prev = unsafe {
-            (*self.ptr.as_ptr())
-                .refcount
-                .fetch_sub(1, Ordering::Release)
-        };
-        if prev != 1 {
-            return;
-        }
-        std::sync::atomic::fence(Ordering::Acquire);
-        // SAFETY: refcount just hit 0 and `NlRecordRef' is not
-        // Send / Sync.  Drop both payload fields then dealloc.
-        unsafe {
-            std::ptr::drop_in_place(std::ptr::addr_of_mut!((*self.ptr.as_ptr()).type_tag));
-            std::ptr::drop_in_place(std::ptr::addr_of_mut!((*self.ptr.as_ptr()).slots));
-            let layout = Layout::new::<NlRecord>();
-            alloc::dealloc(self.ptr.as_ptr() as *mut u8, layout);
-        }
-    }
+    fn drop(&mut self) { unsafe { crate::nlrc_drop_box!(self.ptr.as_ptr(), NlRecord, crate::eval::sexp::SEXP_TAG_RECORD); } }
 }
 
 impl Deref for NlRecordRef {

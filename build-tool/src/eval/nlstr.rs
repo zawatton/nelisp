@@ -84,6 +84,7 @@ pub struct NlStrRef {
     _marker: PhantomData<NlStr>,
 }
 
+impl NlStr { pub(crate) const DROP_FN: unsafe fn(*mut std::ffi::c_void) = crate::eval::nlrc::nlrc_payload_drop::<NlStr>; } // Doc 79 v4 C.4-atomic
 impl NlStrRef {
     /// Allocate a fresh [`NlStr`] on the heap with `refcount = 1`
     /// and return the unique handle.  The supplied `value` is moved
@@ -186,28 +187,7 @@ impl Clone for NlStrRef {
 }
 
 impl Drop for NlStrRef {
-    /// Decrement the refcount.  When it reaches zero, drop the
-    /// `value' String (= frees its heap chars buffer) and free the
-    /// allocation.
-    fn drop(&mut self) {
-        // SAFETY: `self.ptr' is alive because we hold a handle.
-        let prev = unsafe {
-            (*self.ptr.as_ptr())
-                .refcount
-                .fetch_sub(1, Ordering::Release)
-        };
-        if prev != 1 {
-            return;
-        }
-        std::sync::atomic::fence(Ordering::Acquire);
-        // SAFETY: refcount just hit 0 and `NlStrRef' is not Send /
-        // Sync — no concurrent re-increment can race the free.
-        unsafe {
-            std::ptr::drop_in_place(std::ptr::addr_of_mut!((*self.ptr.as_ptr()).value));
-            let layout = Layout::new::<NlStr>();
-            alloc::dealloc(self.ptr.as_ptr() as *mut u8, layout);
-        }
-    }
+    fn drop(&mut self) { unsafe { crate::nlrc_drop_box!(self.ptr.as_ptr(), NlStr, crate::eval::sexp::SEXP_TAG_MUT_STR); } }
 }
 
 impl Deref for NlStrRef {

@@ -84,6 +84,7 @@ pub struct NlCellRef {
     _marker: PhantomData<NlCell>,
 }
 
+impl NlCell { pub(crate) const DROP_FN: unsafe fn(*mut std::ffi::c_void) = crate::eval::nlrc::nlrc_payload_drop::<NlCell>; } // Doc 79 v4 C.4-atomic
 impl NlCellRef {
     /// Allocate a fresh [`NlCell`] on the heap with `refcount = 1`
     /// and return the unique handle.  The supplied `value` is moved
@@ -174,32 +175,7 @@ impl Clone for NlCellRef {
 }
 
 impl Drop for NlCellRef {
-    /// Decrement the refcount.  When it reaches zero, drop the
-    /// `value' Sexp and free the allocation.
-    ///
-    /// Ordering: `Release` on the decrement so prior writes by this
-    /// handle are visible to whichever thread observes the final 0;
-    /// an `Acquire` fence on the freeing path synchronizes with all
-    /// earlier `Release` decrements.  We must not panic from `Drop`.
-    fn drop(&mut self) {
-        // SAFETY: `self.ptr' is alive because we hold a handle.
-        let prev = unsafe {
-            (*self.ptr.as_ptr())
-                .refcount
-                .fetch_sub(1, Ordering::Release)
-        };
-        if prev != 1 {
-            return;
-        }
-        std::sync::atomic::fence(Ordering::Acquire);
-        // SAFETY: refcount just hit 0 and `NlCellRef' is not Send /
-        // Sync — no concurrent re-increment can race the free.
-        unsafe {
-            std::ptr::drop_in_place(std::ptr::addr_of_mut!((*self.ptr.as_ptr()).value));
-            let layout = Layout::new::<NlCell>();
-            alloc::dealloc(self.ptr.as_ptr() as *mut u8, layout);
-        }
-    }
+    fn drop(&mut self) { unsafe { crate::nlrc_drop_box!(self.ptr.as_ptr(), NlCell, crate::eval::sexp::SEXP_TAG_CELL); } }
 }
 
 impl Deref for NlCellRef {

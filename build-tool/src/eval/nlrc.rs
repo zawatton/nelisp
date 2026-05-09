@@ -211,6 +211,69 @@ impl<T> Deref for NlRc<T> {
     }
 }
 
+// ---- Doc 79 v4 Stage C.4-atomic: NLRC_DROP_TABLE + nlrc_drop_box! ----
+//
+// `DROP_FN` const + this table drive the slim `impl Drop for NlXxxRef`
+// bodies (~3 lines each).  Stage C.2 cycle collector (deferred) will
+// reach into the table from elisp via Sexp tag dispatch.  SEXP_TAG_*
+// (sexp.rs:217-229) is non-contiguous: slots 0..=5 (= NIL/T/INT/FLOAT/
+// SYMBOL/STR) are unboxed and route to a panic stub; slots 6..=12 reach
+// the seven boxed kinds.
+
+/// Generic in-place drop helper — runs `T`'s destructor without freeing
+/// the heap slot.  The `nlrc_drop_box!` macro pairs each invocation
+/// with exactly one `dealloc`.
+///
+/// # Safety
+/// `ptr` must point at a fully-initialized `T` whose backing alloc the
+/// caller is about to free.
+pub unsafe fn nlrc_payload_drop<T>(ptr: *mut std::ffi::c_void) {
+    std::ptr::drop_in_place(ptr as *mut T);
+}
+
+/// Panic stub for unboxed `SEXP_TAG_*` slots (NIL/T/INT/FLOAT/SYMBOL/STR).
+unsafe fn nl_rc_unboxed_drop_panic(_ptr: *mut std::ffi::c_void) {
+    panic!("NLRC_DROP_TABLE: unboxed Sexp tag dispatched (= tag corruption?)");
+}
+
+/// Per-tag drop dispatch.  Indexed by `SEXP_TAG_*`; slots 0..=5 panic,
+/// slots 6..=12 forward to each box's `DROP_FN`.
+pub const NLRC_DROP_TABLE: [unsafe fn(*mut std::ffi::c_void); 13] = [
+    nl_rc_unboxed_drop_panic,                          // 0 NIL
+    nl_rc_unboxed_drop_panic,                          // 1 T
+    nl_rc_unboxed_drop_panic,                          // 2 INT
+    nl_rc_unboxed_drop_panic,                          // 3 FLOAT
+    nl_rc_unboxed_drop_panic,                          // 4 SYMBOL
+    nl_rc_unboxed_drop_panic,                          // 5 STR (immutable)
+    crate::eval::nlstr::NlStr::DROP_FN,                // 6 MUT_STR
+    crate::eval::nlconsbox::NlConsBox::DROP_FN,        // 7 CONS
+    crate::eval::nlvector::NlVector::DROP_FN,          // 8 VECTOR
+    crate::eval::nlchartable::NlCharTable::DROP_FN,    // 9 CHAR_TABLE
+    crate::eval::nlboolvector::NlBoolVector::DROP_FN,  // 10 BOOL_VECTOR
+    crate::eval::nlcell::NlCell::DROP_FN,              // 11 CELL
+    crate::eval::nlrecord::NlRecord::DROP_FN,          // 12 RECORD
+];
+
+/// Slim Drop dispatch.  Expansion: `fetch_sub(Release)` → if was 1,
+/// `fence(Acquire)` → `NLRC_DROP_TABLE[tag](ptr)` → `dealloc(layout)`.
+/// Refcount access via `(*typed_ptr).refcount` so each box's trailer
+/// offset resolves correctly per `repr(C)`.
+///
+/// # Safety
+/// Caller must pass a typed `*mut $T` reachable from a live handle.
+#[macro_export]
+macro_rules! nlrc_drop_box {
+    ($ptr:expr, $T:ty, $tag:expr) => {{
+        let raw: *mut $T = $ptr;
+        let prev = (*raw).refcount.fetch_sub(1, ::std::sync::atomic::Ordering::Release);
+        if prev == 1 {
+            ::std::sync::atomic::fence(::std::sync::atomic::Ordering::Acquire);
+            $crate::eval::nlrc::NLRC_DROP_TABLE[$tag as usize](raw as *mut ::std::ffi::c_void);
+            ::std::alloc::dealloc(raw as *mut u8, ::std::alloc::Layout::new::<$T>());
+        }
+    }};
+}
+
 // ---- Compile-time layout assertions ----
 //
 // These guarantee that elisp / Cranelift can reach `refcount` at

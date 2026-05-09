@@ -69,6 +69,7 @@ pub struct NlCharTableRef {
     _marker: PhantomData<NlCharTable>,
 }
 
+impl NlCharTable { pub(crate) const DROP_FN: unsafe fn(*mut std::ffi::c_void) = crate::eval::nlrc::nlrc_payload_drop::<NlCharTable>; } // Doc 79 v4 C.4-atomic
 impl NlCharTableRef {
     /// Allocate a fresh [`NlCharTable`] on the heap with `refcount = 1'.
     pub fn new(inner: CharTableInner) -> NlCharTableRef {
@@ -129,27 +130,7 @@ impl Clone for NlCharTableRef {
 }
 
 impl Drop for NlCharTableRef {
-    fn drop(&mut self) {
-        // SAFETY: `self.ptr' is alive because we hold a handle.
-        let prev = unsafe {
-            (*self.ptr.as_ptr())
-                .refcount
-                .fetch_sub(1, Ordering::Release)
-        };
-        if prev != 1 {
-            return;
-        }
-        std::sync::atomic::fence(Ordering::Acquire);
-        // SAFETY: refcount just hit 0 and `NlCharTableRef' is not
-        // Send / Sync.  Drop the inner payload (= which transitively
-        // drops the parent NlCharTableRef, if any, decrementing the
-        // parent chain) then dealloc.
-        unsafe {
-            std::ptr::drop_in_place(std::ptr::addr_of_mut!((*self.ptr.as_ptr()).inner));
-            let layout = Layout::new::<NlCharTable>();
-            alloc::dealloc(self.ptr.as_ptr() as *mut u8, layout);
-        }
-    }
+    fn drop(&mut self) { unsafe { crate::nlrc_drop_box!(self.ptr.as_ptr(), NlCharTable, crate::eval::sexp::SEXP_TAG_CHAR_TABLE); } }
 }
 
 impl Deref for NlCharTableRef {
