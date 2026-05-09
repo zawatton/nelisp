@@ -5,7 +5,7 @@
 
 * Status
 :PROPERTIES:
-:STATE: IN PROGRESS — Stage 0/A/B/C/D/E/F SHIPPED 2026-05-09 (= 33/40 = 83% specialized 削除、+ process / inotify)
+:STATE: SHIPPED — Stage 0/A/B/C/D/E/F/G SHIPPED 2026-05-09 (= 40/40 = 100% specialized 削除完遂)
 :DEPENDS_ON: Doc 51 Phase 5 (nl-ffi-call) / Doc 53〜60 (specialized syscall surface) / Doc 62 Stage 5.8 (non-Linux stub macro 化、commit a81e089)
 :PARENT: Doc 62 §0 audit-revised (= Phase 7 elisp-side OS surface migration が specialized 削除の正規 track)
 :SUPERSEDES: Doc 53〜60 の Path A "specialized" 規約 (= Linux 専用 specialized primitive)
@@ -261,7 +261,7 @@ unit:
 | D     | socket-uds + AF_INET6 + getsockname/peername | Doc 56 / 58 | 14 (= 13〜26)        | -250 Rust |
 | E     | filenotify (inotify-add-watch + inotify-read) | Doc 57 | 2 (= 27〜28)        | -89 Rust (SHIPPED 2026-05-09) |
 | F     | signal/timer (signalfd + sigprocmask + timerfd) | Doc 59 | 5 (= 29〜33)         | -130 Rust |
-| G     | SCM_RIGHTS + IPv6 scoped + peercred + socketpair | Doc 60 | 7 (= 34〜40)         | -250 Rust |
+| G     | SCM_RIGHTS + IPv6 scoped + peercred + socketpair | Doc 60 | 7 (= 34〜40)         | -297 builtins (= 7 fn + build_sockaddr_in6_with_scope / decode_in6_groups / parse_in6_addr_groups helpers) / +260 elisp cmsg-len/-space/-iterate + ucred decoder + sockaddr_in6-scoped encode/decode + 7 wrapper rewrite (SHIPPED 2026-05-09; cmsg ABI = 64-bit Linux glibc/musl alignment 8) |
 
 各 stage の commit pattern:
 1. =build-tool/src/eval/builtins.rs= の specialized fn 削除 + non-Linux stub macro 削除 + dispatcher arm 削除
