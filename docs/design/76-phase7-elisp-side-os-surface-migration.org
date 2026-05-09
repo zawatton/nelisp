@@ -5,7 +5,15 @@
 
 * Status
 :PROPERTIES:
-:STATE: SHIPPED — Stage 0/A/B/C/D/E/F/G all SHIPPED 2026-05-09 (= 40/40 = 100% specialized 削除、Phase 7 Doc 76 完走) + cross-arch defconst (= 後段 / 純 elisp、2026-05-09)
+:STATE: SHIPPED — Stage 0/A/B/C/D/E/F/G all SHIPPED 2026-05-09 (= 40/40 = 100% specialized 削除、Phase 7 Doc 76 完走) + cross-arch defconst (= 後段 / 純 elisp、2026-05-09) + M1 Darwin defconst 値検証 PASS (= 21/21 一致、FFI runtime 検証は libffi-rs 上流待ち)
+:M1_VERIFY: PARTIAL — 2026-05-09 M1 MacBook Air (aarch64 Darwin 26.4) 実機検証で:
+- (a) Linux/Darwin 両 build OK (= libffi system feature + cranelift 0.131 bump で macOS 26.4 + 新 clang 対応)
+- (b) platform 検出 + 21 cross-arch defconst Darwin 値 (= O_CREAT 512 / AF_INET6 30 / SOL_SOCKET 65535 / SUN_PATH_MAX 104 / msghdr 48 / cmsghdr 12 / sigset 4 / SIGCHLD 20 等)
+  すべて Apple SDK 仕様と一致確認 (= step 2 PASS、私の docs ベース derivation 完璧)
+- (c) **FFI runtime 検証 (= step 3 fstat 以降) は BLOCKED** — libffi-rs 3.2.0 + libffi 3.5.2 の ABI 非互換で
+  getpid 単発 SEGV (= apple aarch64 variadic ABI 仮説より深い、libffi-rs 上流が libffi 3.5 対応するまで保留)
+- (d) struct stat layout (= mode/nlink u16 width 切替) は Apple SDK header と一致するため high confidence、
+  実機 round-trip 検証は libffi-rs upstream 待ち
 :DEPENDS_ON: Doc 51 Phase 5 (nl-ffi-call) / Doc 53〜60 (specialized syscall surface) / Doc 62 Stage 5.8 (non-Linux stub macro 化、commit a81e089)
 :PARENT: Doc 62 §0 audit-revised (= Phase 7 elisp-side OS surface migration が specialized 削除の正規 track)
 :SUPERSEDES: Doc 53〜60 の Path A "specialized" 規約 (= Linux 専用 specialized primitive)

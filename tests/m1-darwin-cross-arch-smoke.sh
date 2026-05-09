@@ -7,10 +7,30 @@
 #
 # 使い方:
 #   cd /path/to/nelisp
+#   # macOS 必須前準備:
+#   #   brew install libffi
+#   #   export RUSTFLAGS="-L/opt/homebrew/opt/libffi/lib -C link-args=-Wl,-rpath,/opt/homebrew/opt/libffi/lib"
+#   #   export PKG_CONFIG_PATH="/opt/homebrew/opt/libffi/lib/pkgconfig:$PKG_CONFIG_PATH"
 #   bash tests/m1-darwin-cross-arch-smoke.sh
 #
 # 期待結果: 出力末尾が「[m1-smoke] all PASS」になれば検証成功。
 # どこかで FAIL すれば、そこより手前の output で原因を確認。
+#
+# === 2026-05-09 実機検証ステータス (= M1 aarch64 Darwin 26.4) ===
+#
+# step 1 (build) PASS / step 2 (= 21 defconst Darwin 値、最重要部分) PASS /
+# step 3 (= fstat / FFI runtime) 以降 BLOCKED — libffi-rs 3.2.0 + libffi 3.5.2
+# の ABI 非互換で getpid 単発でも SEGV する。libffi-rs 上流が libffi 3.5 対応
+# する release を出すまで step 3+ は実行不可。
+#
+# 私 (Claude) の docs ベースで derive した Darwin defconst 値 (O_CREAT 512 /
+# AF_INET6 30 / SOL_SOCKET 65535 / SUN_PATH_MAX 104 / msghdr 48 / cmsghdr 12
+# / sigset 4 / SIGCHLD 20 / 等) は step 2 で 21/21 すべて Apple SDK 仕様と
+# 一致確認済 — つまり cross-arch 化は値の正しさは validated、残るは FFI
+# runtime での round-trip 確認のみ。
+#
+# step 3+ 再開条件: libffi crate (libffi-rs) の libffi 3.5 対応 release
+# 待ち、または brew で libffi@3.4 以前を install できれば手動で動く可能性。
 
 set -e
 
