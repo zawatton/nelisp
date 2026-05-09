@@ -47,8 +47,13 @@
 ;; explicitly. Without easy-mmode, files like font-core / lisp-mode
 ;; that call (define-globalized-minor-mode ...) signal void-function
 ;; at runtime because the macro never expanded.
+(message "[v0.2-probe] before easy-mmode")
 (require 'easy-mmode)
+(message "[v0.2-probe] after easy-mmode, define-globalized-minor-mode fboundp=%s" (fboundp 'define-globalized-minor-mode))
+(message "[v0.2-probe] before derived")
 (require 'derived)
+(message "[v0.2-probe] after derived")
+(message "[v0.2-probe] before files")
 ;; Editor base (file / buffer / window / minibuffer / undo / help /
 ;; eval / shell / completion / project / dired / isearch):
 (require 'files)
