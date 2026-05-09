@@ -565,6 +565,17 @@ Phase 7.1.6 の追加点: SSA opcode set に *primitive lowering opcodes* (=ssa-
 
 *per-cluster migration order* (= 各 sub-stage):
 
+*Architectural prerequisite*: Phase 7.1.6.a〜.f の各 cluster takeover は
+*Doc 81 (= nelisp-cc primitive trampoline architectural extension)* で
+articulate された 4 新 SSA opcode (= =ssa-call-primitive= /
+=ssa-load-tag= / =ssa-load-payload-ptr= / =ssa-cmp-tag-imm=) +
+=:trampoline-unary= / =:trampoline-binary-ctor= / =:trampoline-binary-mut=
+の 3 entry-point ABI mode + extern-c-fixups (= 外部 C symbol への CALL
+emit path) が前提.  本 §3.6 の各 cluster は *Doc 81 Stage 81.1〜81.4
+完了後* に dispatch される.  Doc 81 = elisp +780 LOC / Rust ±0 / ~1 週間
+scope (= 8 営業日)、Stage 81.4 で =cons-heavy bench= で Cranelift
+baseline ≧ 確認 = =gate=.
+
 *** 3.6.a Phase 7.1.6.a — =cons= takeover (= cons.rs ~-415 Rust LOC)
 
 - nelisp-cc-x86_64.el / -arm64.el に =ssa-call-primitive 'car= / =ssa-call-primitive 'cdr= / =ssa-call-primitive 'cons= を host machine code として emit (inline NIL fast path = =cmp byte ptr [rax], TAG_NIL / je nil_path= 相当を elisp で =unibyte-string= 経由で書込む).  helper 経由は最初許容 (= =nelisp-cc-runtime= の =--list-to-vector= の bytes wrapper で =nl_jit_cons_*= 同等 Rust trampoline を呼ぶ shim を残す → 後で inline 昇格)
@@ -1186,6 +1197,10 @@ session-B/C は Phase 7.0 SHIPPED 待ち、Phase 7.0 SHIPPED 後に Phase
 
 - =docs/design/27-phase7-c-runtime-self-impl.org= (Doc 27 LOCKED
   2026-04-25 = 2a52bda main、本 doc 親)
+- =docs/design/81-nelisp-cc-primitive-trampoline-extension.org= (Doc
+  81 DRAFT 2026-05-09、本 §3.6 Phase 7.1.6.a〜.f の architectural
+  prerequisite = nelisp-cc 4 新 SSA opcode + 3 entry-point ABI mode +
+  extern-c-fixups path、elisp +780 LOC / Rust ±0 / ~1 週間)
 - =docs/design/18-stage-d-standalone.org= (Stage D, Phase 6.1
   architecture α SHIPPED)
 - =docs/design/25-phase6.5-nelisp-defs-index.org= (=nelisp-defs-index=
