@@ -2,13 +2,13 @@
 
 * Status
 :PROPERTIES:
-:STATE: DRAFT — Phase A 完遂、Phase B-quick 着手前。設計のみ articulate
+:STATE: DEFERRED 2026-05-09 — user 100% 純 elisp commitment と方向矛盾、本設計を保留
 :DRAFTED: 2026-05-09
 :PARENT: Doc 77c (= Sexp ABI elisp 化 commitment)
-:RELATED: Doc 77b (= Rust-min JIT 路線)、Doc 63 (= Phase 7 self-host roadmap)、Doc 77 (= Stage 4 sexp memory layout pin の上位)
+:RELATED: Doc 77b (= Rust-min JIT 路線)、Doc 63 (= Phase 7 self-host roadmap)、Doc 77 (= Stage 4 sexp memory layout pin の上位)、Doc 79 (= Phase C GC elisp 化 設計 v3)
 :UPDATES: Doc 77c §2.4.1 を deepen (= ~50 fn shim の概略から具体 ~38 fn list + state mgmt + migration plan に refine)
-:DECISION_DATE: pending — Phase B 着地後、Phase C/D-A の発動を gate
-:LATEST: 2026-05-09 — Doc 77c Phase A.5.1+A.5.2 着地に伴い "JIT を elisp で driving する技術前提が揃った" と user 確認。Phase D-A の design doc 化が次の論理ステップ
+:DECISION_DATE: 2026-05-09 — DEFERRED 確定
+:LATEST: 2026-05-09 — D-A の C-style shim wrapper は本質的に "Cranelift を Rust 経由で温存" 路線で、user 2026-05-09 確定の "100% 純 elisp (= Cranelift も完全に elisp 化)" 目標と矛盾。さらに D-A.1 単独で Rust core +800 LOC 中間状態 (= shim 400 + ERT 400) を要し、user 2026-05-09 monotonic shrink rule にも違反 (= Track 2 dispatch 中止経緯)。Doc 77c §3.4 D-B 経路 (= Cranelift 完全置換 / NeLisp Phase 7+ native cc 切替) を本命とする方針合意により本 Doc は DEFERRED 化。再開条件: D-B が技術的に不可能と判明し、Cranelift 温存 hybrid に方針変更があった場合のみ。
 :END:
 
 * §0 TL;DR
