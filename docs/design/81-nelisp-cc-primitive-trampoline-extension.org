@@ -1,7 +1,7 @@
 #+TITLE: Doc 81 — nelisp-cc primitive trampoline architectural extension (= Phase 7.1.6 prerequisite)
 #+AUTHOR: NeLisp / Claude
 #+DATE: 2026-05-09
-#+STATUS: Stage 81.1 + 81.2 SHIPPED 2026-05-10 (Stage 81.3〜81.4 DRAFT)
+#+STATUS: Stage 81.1 + 81.2 + 81.3 SHIPPED 2026-05-10 (Stage 81.4 DRAFT)
 #+PARENT: Doc 28 (= Phase 7.1 native compiler)、Doc 77c (= 100% 純 elisp commitment)
 #+UNLOCKS: Phase 7.1.6.a〜.f cluster takeovers (= D-B Cranelift 削除 -4,782 Rust LOC)
 #+DEPENDS_ON: Phase 7.1.5 LOCKED (= 既 SHIPPED 2026-05-09 per Doc 28 §11.6)、Phase A.5.1 SHIPPED (= Sexp::tag() / cons_box_ptr())
@@ -25,12 +25,23 @@ LOC* / *Rust ±0* / *~1 週間* (= Stage 81.1〜81.4 で 8 営業日).
 *Status (2026-05-10)*:
 - Stage 81.1 *SHIPPED* (8ab6da1) — entry-ABI + 3 SSA opcode +
   x86_64 emit + car PoC, +800 elisp / 0 Rust, 8 ERT (PASS).
-- Stage 81.2 *SHIPPED* (feat/doc-81-stage2) — 4th opcode
+- Stage 81.2 *SHIPPED* (ba664c1) — 4th opcode
   =ssa-call-primitive= + arm64 mirror of 4 lower-* fn + 5-entry
   primitive-table-stage2 (cons.rs API parity) + 2 new ABI modes,
   +447 elisp / 0 Rust, 17 ERT (PASS, +9 vs Stage 81.1).
-- Stage 81.3 *DRAFT* — recognition pass + takeover routing.
-- Stage 81.4 *DRAFT* — bench gate + dlsym bridge production.
+- Stage 81.3 *SHIPPED* (feat/doc-81-stage3) — vector primitive
+  trampoline ABI: 2 new ABI modes (=:trampoline-binary-aref= /
+  =:trampoline-ternary-aset=) + 4 vector entries (=length / aref
+  / aset / elt=) in =primitive-table-stage3= (= 5 cons + 4 vector
+  = 9 total) + 2-backend dispatcher updates (x86_64 + arm64 accept
+  the new modes) + extern-C symbol parity (=nl_jit_access_*= from
+  build-tool/src/jit/access.rs).  +127 elisp impl / +295 ERT / 0
+  Rust, 26 ERT (PASS, +9 vs Stage 81.2).  Phase 7.1.6.b
+  (=access.rs= takeover) elisp-emit prerequisite *unblocked*.
+  Recognition pass / dlsym bridge production deferred to Stage
+  81.4 per design doc §5.3 reframing.
+- Stage 81.4 *DRAFT* — recognition pass wiring + takeover routing
+  + bench gate + dlsym bridge production.
 
 * §1 動機
 
@@ -684,6 +695,20 @@ deliverable: existing 1086/1091 ERT 全 PASS 維持 + 新規 trampoline
 ERT 30+ PASS.
 
 *** §5.3.detail Stage 81.3 — articulation
+
+**SHIPPED 2026-05-10 — feat/doc-81-stage3 branch (vector primitive
+trampoline ABI reframing)**: Stage 81.3 was reframed away from the
+recognition-pass-first plan toward extending the trampoline ABI to
+the vector cluster (= Phase 7.1.6.b prerequisite, Doc 28 §3.6.b).
+Two new ABI modes shipped (=:trampoline-binary-aref= for `(vec, i64)
+→ Sexp` shape, =:trampoline-ternary-aset= for `(vec, i64, val) → ()`
+shape), four vector entries (=length / aref / aset / elt=) added on
+top of the Stage 81.2 cons table to form a 9-entry
+=primitive-table-stage3=, and both backends' =-lower-call-primitive=
+ABI validators extended to accept the new modes.  Recognition pass
+wiring + dlsym bridge production deferred to Stage 81.4.  ERT diff:
++9 (17 → 26 in =test/nelisp-cc-stage81-poc-test.el=).  Rust delta
+= 0 LOC.  elisp delta = ~+127 impl + ~+295 ERT.
 
 **** §5.3.1 pipeline integration (= =nelisp-cc-pipeline-run-*= が primitive lowering を 認識する hook)
 

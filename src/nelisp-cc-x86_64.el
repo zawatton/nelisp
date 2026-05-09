@@ -2151,16 +2151,20 @@ encoding pattern)."
        else-label
        1))))
 
-;;; Doc 81 Stage 81.2 — ssa-call-primitive emit ----------------------
+;;; Doc 81 Stage 81.2 / 81.3 — ssa-call-primitive emit ----------------
 ;;
 ;; The 4th opcode (Stage 81.2 addition) — emit a CALL rel32 to the
 ;; extern "C" trampoline body whose name is recorded in the
 ;; instruction's META `:symbol' slot.  Argument marshalling follows
 ;; the ABI shape declared in `:abi':
 ;;
-;;   :trampoline-unary       arg0 → rdi, arg1 (out-ptr) → rsi
-;;   :trampoline-binary-ctor arg0 → rdi, arg1 → rsi, arg2 (out-ptr) → rdx
-;;   :trampoline-binary-mut  arg0 → rdi, arg1 → rsi
+;;   :trampoline-unary        arg0 → rdi, arg1 (out-ptr) → rsi
+;;   :trampoline-binary-ctor  arg0 → rdi, arg1 → rsi, arg2 (out-ptr) → rdx
+;;   :trampoline-binary-mut   arg0 → rdi, arg1 → rsi
+;;   :trampoline-binary-aref  arg0 → rdi, arg1 (i64 idx) → rsi,
+;;                            arg2 (out-ptr) → rdx                     (Stage 81.3)
+;;   :trampoline-ternary-aset arg0 → rdi, arg1 (i64 idx) → rsi,
+;;                            arg2 (val ptr) → rdx, arg3 (out-ptr) → rcx (Stage 81.3)
 ;;
 ;; Stage 81.2 keeps the out-ptr / mutate-in-place distinction *purely
 ;; in metadata* — the recognition pass (Stage 81.3) is responsible for
@@ -2169,6 +2173,15 @@ encoding pattern)."
 ;; argument registers and emit the rel32 placeholder + a call-fixup
 ;; entry whose cdr is the C symbol (= linker-resolved at link time
 ;; against `dlsym(RTLD_DEFAULT, SYMBOL-NAME)').
+;;
+;; Stage 81.3 extends the accepted ABI set to the two vector shapes
+;; (= aref / aset).  The marshalling helper is *shape-isomorphic* —
+;; operands flow into rdi/rsi/rdx/rcx in declaration order regardless
+;; of whether they carry a Sexp pointer or a raw i64 index, because
+;; both are 8-byte int-class quantities at the System V AMD64 ABI
+;; level.  The Sexp-vs-i64 distinction is enforced upstream by the
+;; recognition pass (= it is responsible for materialising the index
+;; as an i64-typed SSA value).
 
 (defun nelisp-cc-x86_64--lower-call-primitive (cg instr)
   "Lower SSA `ssa-call-primitive' (Doc 81 Stage 81.2).
@@ -2190,8 +2203,11 @@ written back to the def's allocated register if a def is present."
       (signal 'nelisp-cc-x86_64-encoding-error
               (list :ssa-call-primitive-missing-symbol
                     (nelisp-cc--ssa-instr-id instr))))
-    (unless (memq abi '(:trampoline-unary :trampoline-binary-ctor
-                        :trampoline-binary-mut))
+    (unless (memq abi '(:trampoline-unary
+                        :trampoline-binary-ctor
+                        :trampoline-binary-mut
+                        :trampoline-binary-aref
+                        :trampoline-ternary-aset))
       (signal 'nelisp-cc-x86_64-encoding-error
               (list :ssa-call-primitive-bad-abi abi)))
     (when (> n (length nelisp-cc-x86_64--int-arg-regs))

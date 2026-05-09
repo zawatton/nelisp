@@ -1375,7 +1375,12 @@ out-buffer contents are then unspecified — callers must check the
 status before reading the buffer.")
 
 (defconst nelisp-cc-runtime--entry-abi-modes
-  '(:host-int :trampoline-unary :trampoline-binary-ctor :trampoline-binary-mut)
+  '(:host-int
+    :trampoline-unary
+    :trampoline-binary-ctor
+    :trampoline-binary-mut
+    :trampoline-binary-aref
+    :trampoline-ternary-aset)
   "Allowed values for the `:entry-abi' keyword to
 `nelisp-cc-runtime-compile-and-allocate'.
 
@@ -1399,7 +1404,26 @@ setcdr).  arg0 = *mut Sexp cons cell to mutate, arg1 = *const Sexp
 new value; return = i64 status (= TRAMPOLINE_OK on success).  No
 out-buffer slot — the caller's eval-time return value is the
 unchanged arg1 (= V), so the recognition pass in Stage 81.3 just
-threads V back as the SSA def of the parent `(setcar C V)' call.")
+threads V back as the SSA def of the parent `(setcar C V)' call.
+
+`:trampoline-binary-aref' (Doc 81 §5.3.1) is `extern \"C\"
+fn(*const Sexp, i64, *mut Sexp) -> i64' for vector / array indexed
+reads (= aref / elt).  arg0 = *const Sexp container, arg1 = i64 raw
+index (= NOT a Sexp — the recognition pass unboxes a const-folded
+small-integer or threads through a known-i64 SSA def), arg2 = *mut
+Sexp out-buffer; return = i64 status.  The shape mirrors the
+existing Cranelift `nl_jit_access_aref' /
+`nl_jit_access_elt' contracts in build-tool/src/jit/access.rs so
+Phase 7.1.6.b (vector cluster takeover) can wire elisp-emit
+verbatim against the same Rust trampolines.
+
+`:trampoline-ternary-aset' (Doc 81 §5.3.1) is `extern \"C\"
+fn(*const Sexp, i64, *const Sexp, *mut Sexp) -> i64' for vector /
+array indexed writes (= aset).  arg0 = *const Sexp container, arg1
+= i64 raw index, arg2 = *const Sexp value to store, arg3 = *mut
+Sexp out-buffer; return = i64 status.  Per Emacs' `aset' contract
+the trampoline writes the value into the out-slot so the eval-time
+return value is (= V).  The shape mirrors `nl_jit_access_aset'.")
 
 (defun nelisp-cc-runtime--validate-entry-abi (mode)
   "Signal `nelisp-cc-runtime-error' if MODE is not a valid entry-ABI keyword."
@@ -1428,20 +1452,25 @@ BACKEND is `x86_64' / `arm64' (default = host inference).  EXEC-ARGS
 is forwarded to `nelisp-cc-runtime--exec-real' when MODE is `real';
 nil preserves the old zero-argument behavior.
 
-ENTRY-ABI (Doc 81 Stage 81.1 / 81.2) selects the produced entry-point's
-calling convention:
+ENTRY-ABI (Doc 81 Stage 81.1 / 81.2 / 81.3) selects the produced
+entry-point's calling convention:
   :host-int                (default) extern \"C\" fn(i64, ..., i64) -> i64
   :trampoline-unary        extern \"C\" fn(*const Sexp, *mut Sexp) -> i64
-                           unary primitive trampoline (= car / cdr).
+                           unary primitive trampoline (= car / cdr / length).
   :trampoline-binary-ctor  extern \"C\" fn(*const Sexp, *const Sexp,
                                             *mut Sexp) -> i64
                            binary constructor (= cons), Stage 81.2.
   :trampoline-binary-mut   extern \"C\" fn(*mut Sexp, *const Sexp) -> i64
                            binary mutator (= setcar / setcdr), Stage 81.2.
+  :trampoline-binary-aref  extern \"C\" fn(*const Sexp, i64, *mut Sexp) -> i64
+                           vector indexed read (= aref / elt), Stage 81.3.
+  :trampoline-ternary-aset extern \"C\" fn(*const Sexp, i64, *const Sexp,
+                                            *mut Sexp) -> i64
+                           vector indexed write (= aset), Stage 81.3.
 
-Stage 81.1/81.2 records the mode in the result plist under
+Stage 81.1/81.2/81.3 records the mode in the result plist under
 `:entry-abi' but does NOT yet alter prologue/epilogue emit; the
-backend frame layout is taken over in Stage 81.3 once the
+backend frame layout is taken over in a later stage once the
 recognition pass starts producing trampoline-shape calls.
 
 Returns:
