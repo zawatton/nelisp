@@ -749,6 +749,19 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nelisp--aset-impl" => crate::jit::bi_aset_impl(args),
         "nelisp--elt-impl" => crate::jit::bi_elt_impl(args),
         "nelisp--syscall-nr-resolve" => crate::jit::bi_syscall_nr_resolve(args),
+        // Doc 77c Phase A.3 (2026-05-09) — Layer 2 cons-cell primitives
+        // operating directly on `NlConsBox' / `NlConsBoxRef' (Phase A.2).
+        // 5 `nl-cons-*' (alloc / car / cdr / set-car / set-cdr) + 3
+        // `nl-rc-*' (inc / dec / count) for manual refcount management.
+        // See `crate::eval::cons_primitives' for the surface table.
+        "nl-cons-alloc" => crate::eval::cons_primitives::bi_nl_cons_alloc(args),
+        "nl-cons-car" => crate::eval::cons_primitives::bi_nl_cons_car(args),
+        "nl-cons-cdr" => crate::eval::cons_primitives::bi_nl_cons_cdr(args),
+        "nl-cons-set-car" => crate::eval::cons_primitives::bi_nl_cons_set_car(args),
+        "nl-cons-set-cdr" => crate::eval::cons_primitives::bi_nl_cons_set_cdr(args),
+        "nl-rc-inc" => crate::eval::cons_primitives::bi_nl_rc_inc(args),
+        "nl-rc-dec" => crate::eval::cons_primitives::bi_nl_rc_dec(args),
+        "nl-rc-count" => crate::eval::cons_primitives::bi_nl_rc_count(args),
         _ => {
             // Externally-registered builtin (= `Env::register_extern_builtin')
             // — host crates like nelisp-emacs-gtk install GTK4 / SDL2 /
