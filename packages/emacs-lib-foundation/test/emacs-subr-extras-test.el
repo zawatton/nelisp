@@ -102,5 +102,31 @@
                cdaaar cdaadr cdadar cdaddr cddaar cddadr cdddar cddddr))
     (should (fboundp s))))
 
+;;;; if-let* / when-let* / if-let / when-let
+
+(ert-deftest emacs-subr-extras-if-let-star-all-non-nil ()
+  (should (= (if-let* ((a 1) (b (+ a 2))) (* a b) 999) 3)))
+
+(ert-deftest emacs-subr-extras-if-let-star-first-nil ()
+  (should (= (if-let* ((a nil) (b 99)) 1 2) 2)))
+
+(ert-deftest emacs-subr-extras-if-let-star-second-nil ()
+  (should (eq (if-let* ((a 1) (b nil)) 'then 'else) 'else)))
+
+(ert-deftest emacs-subr-extras-if-let-star-no-else ()
+  (should (null (if-let* ((a nil)) 'then))))
+
+(ert-deftest emacs-subr-extras-when-let-star-positive ()
+  (should (= (when-let* ((a 5) (b (* a 2))) b) 10)))
+
+(ert-deftest emacs-subr-extras-when-let-star-negative ()
+  (should (null (when-let* ((a nil)) 'never))))
+
+(ert-deftest emacs-subr-extras-if-let-alias ()
+  (should (= (if-let ((a 7)) a 0) 7)))
+
+(ert-deftest emacs-subr-extras-when-let-alias ()
+  (should (= (when-let ((a 8)) a) 8)))
+
 (provide 'emacs-subr-extras-test)
 ;;; emacs-subr-extras-test.el ends here

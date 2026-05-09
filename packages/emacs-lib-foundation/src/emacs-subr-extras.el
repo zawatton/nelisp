@@ -103,5 +103,57 @@ return nil."
 (unless (fboundp 'cdddar) (defun cdddar (x) (cdr (cdr (cdr (car x))))))
 (unless (fboundp 'cddddr) (defun cddddr (x) (cdr (cdr (cdr (cdr x))))))
 
+;; ---- if-let* / when-let* / if-let / when-let (subr.el 2626+) ----
+;;
+;; In modern Emacs these macros live in `subr.el' (NOT `subr-x.el')
+;; and are preloaded at dump time so callers never `require' them
+;; explicitly.  Standalone NeLisp does not preload `subr.el', so
+;; `(void-function if-let*)' fires for any anvil-*.el module that
+;; uses the macro.  The minimal expansion below is sufficient for
+;; the spec form `((SYM VALFORM) ...)' that anvil-server.el and
+;; friends actually use; the obsolete bare-symbol shorthand is not
+;; supported.
+
+(defun emacs-subr-extras--build-if-let (varlist then else)
+  "Build the expansion for `if-let*'.  VARLIST is a list of
+`(SYM VALFORM)' entries (or bare SYM, treated as `(SYM SYM)').
+Returns a sexp that evaluates THEN when every binding is non-nil
+and ELSE (a list of forms to splice into a `progn') otherwise."
+  (let ((else-form (if else (cons 'progn else) nil))
+        (continuation then)
+        (entries (reverse varlist)))
+    (while entries
+      (let* ((entry (car entries))
+             (sym (if (consp entry) (car entry) entry))
+             (val (if (consp entry) (cadr entry) entry)))
+        (setq continuation
+              `(let ((,sym ,val))
+                 (if ,sym ,continuation ,else-form))))
+      (setq entries (cdr entries)))
+    continuation))
+
+(unless (fboundp 'if-let*)
+  (defmacro if-let* (varlist then &rest else)
+    "If all bindings in VARLIST evaluate non-nil, eval THEN, else ELSE.
+Each VARLIST entry is `(SYMBOL VALUEFORM)' or just `SYMBOL'.  Bindings
+are sequential — later forms see earlier symbols."
+    (declare (indent 2))
+    (emacs-subr-extras--build-if-let varlist then else)))
+
+(unless (fboundp 'when-let*)
+  (defmacro when-let* (varlist &rest body)
+    "Bind variables sequentially per VARLIST and eval BODY when all bindings are non-nil."
+    (declare (indent 1))
+    `(if-let* ,varlist (progn ,@body))))
+
+(unless (fboundp 'if-let)
+  (defalias 'if-let 'if-let*
+    "Compatibility alias for `if-let*' (= deprecated bare-symbol form
+not supported in this minimal port)."))
+
+(unless (fboundp 'when-let)
+  (defalias 'when-let 'when-let*
+    "Compatibility alias for `when-let*'."))
+
 (provide 'emacs-subr-extras)
 ;;; emacs-subr-extras.el ends here
