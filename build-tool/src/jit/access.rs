@@ -62,7 +62,7 @@ unsafe extern "C" fn nl_jit_access_length(arg: *const Sexp, out: *mut Sexp) -> i
             TRAMPOLINE_OK
         }
         Sexp::Vector(v) => {
-            *out = Sexp::Int(v.borrow().len() as i64);
+            *out = Sexp::Int(v.value.len() as i64);
             TRAMPOLINE_OK
         }
         Sexp::Str(s) => {
@@ -95,8 +95,7 @@ unsafe extern "C" fn nl_jit_access_aref(arg: *const Sexp, idx: i64, out: *mut Se
     }
     match &*arg {
         Sexp::Vector(v) => {
-            let borrowed = v.borrow();
-            if let Some(elem) = borrowed.get(idx as usize) {
+            if let Some(elem) = v.value.get(idx as usize) {
                 *out = elem.clone();
                 TRAMPOLINE_OK
             } else {
@@ -137,11 +136,19 @@ unsafe extern "C" fn nl_jit_access_aset(
     }
     match &*arg {
         Sexp::Vector(v) => {
-            let mut borrowed = v.borrow_mut();
-            if (idx as usize) >= borrowed.len() {
+            if (idx as usize) >= v.value.len() {
                 return TRAMPOLINE_ERR;
             }
-            borrowed[idx as usize] = (*val).clone();
+            // SAFETY: Phase A.4.3 — `arg' is a valid `&Sexp::Vector(v)'
+            // on the trampoline boundary; no other `&Vec<Sexp>' borrow
+            // into `v.value' is live (the read just above doesn't
+            // outlive the bounds check + does not alias the indexed
+            // write).  Phase A.2.1 setcar discipline applies.
+            unsafe {
+                v.with_value_mut(|vec| {
+                    vec[idx as usize] = (*val).clone();
+                });
+            }
             *out = (*val).clone();
             TRAMPOLINE_OK
         }
@@ -169,8 +176,7 @@ unsafe extern "C" fn nl_jit_access_elt(arg: *const Sexp, idx: i64, out: *mut Sex
     }
     match &*arg {
         Sexp::Vector(v) => {
-            let borrowed = v.borrow();
-            if let Some(elem) = borrowed.get(idx as usize) {
+            if let Some(elem) = v.value.get(idx as usize) {
                 *out = elem.clone();
                 TRAMPOLINE_OK
             } else {

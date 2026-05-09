@@ -982,7 +982,7 @@ fn sxhash_into<H: std::hash::Hasher>(v: &Sexp, h: &mut H) {
         }
         Sexp::Vector(rc) => {
             7u8.hash(h);
-            for it in rc.borrow().iter() { sxhash_into(it, h); }
+            for it in rc.value.iter() { sxhash_into(it, h); }
         }
         Sexp::CharTable(_) => 9u8.hash(h),
         Sexp::BoolVector(rc) => {
@@ -1063,7 +1063,7 @@ fn bi_ref_eq(args: &[Sexp]) -> Result<Sexp, EvalError> {
             crate::eval::nlconsbox::NlConsBoxRef::ptr_eq(a, b)
         }
         (Sexp::MutStr(a), Sexp::MutStr(b)) => crate::eval::nlstr::NlStrRef::ptr_eq(a, b),
-        (Sexp::Vector(a), Sexp::Vector(b)) => std::rc::Rc::ptr_eq(a, b),
+        (Sexp::Vector(a), Sexp::Vector(b)) => crate::eval::nlvector::NlVectorRef::ptr_eq(a, b),
         (Sexp::CharTable(a), Sexp::CharTable(b)) => std::rc::Rc::ptr_eq(a, b),
         (Sexp::BoolVector(a), Sexp::BoolVector(b)) => std::rc::Rc::ptr_eq(a, b),
         (
@@ -1107,11 +1107,11 @@ fn sexp_equal_safe(a: &Sexp, b: &Sexp, depth: u32) -> bool {
                 && sexp_equal_safe(&ab.cdr, &bb.cdr, depth + 1)
         }
         (Sexp::Vector(a), Sexp::Vector(b)) => {
-            if std::rc::Rc::ptr_eq(a, b) {
+            if crate::eval::nlvector::NlVectorRef::ptr_eq(a, b) {
                 return true;
             }
-            let av = a.borrow();
-            let bv = b.borrow();
+            let av = &a.value;
+            let bv = &b.value;
             av.len() == bv.len()
                 && av
                     .iter()

@@ -375,18 +375,20 @@ mod tests {
 
     #[test]
     fn payload_drop_runs_exactly_once() {
-        // Probe via `Sexp::Vector(Rc<RefCell<Vec<Sexp>>>)' — the outer
-        // Rc lets us observe the strong-count round-trip when the
-        // NlCell drops the value.  Same approach as nlconsbox tests.
-        use std::cell::RefCell;
-        use std::rc::Rc;
-        let vec_rc = Rc::new(RefCell::new(vec![Sexp::Int(1)]));
-        assert_eq!(Rc::strong_count(&vec_rc), 1);
+        // Probe via `Sexp::Vector(NlVectorRef)' — the inner
+        // NlVectorRef strong_count lets us observe the drop round-trip
+        // when the NlCell drops the value.  Same approach as
+        // nlconsbox tests.  Phase A.4.3 (2026-05-09): switched from
+        // `Rc<RefCell<Vec<Sexp>>>' probe to `NlVectorRef' since the
+        // legacy Rc shape no longer exists for `Sexp::Vector'.
+        use crate::eval::nlvector::NlVectorRef;
+        let probe = NlVectorRef::new(vec![Sexp::Int(1)]);
+        assert_eq!(NlVectorRef::strong_count(&probe), 1);
         {
-            let _c = NlCellRef::new(Sexp::Vector(vec_rc.clone()));
-            assert_eq!(Rc::strong_count(&vec_rc), 2);
+            let _c = NlCellRef::new(Sexp::Vector(probe.clone()));
+            assert_eq!(NlVectorRef::strong_count(&probe), 2);
         }
-        assert_eq!(Rc::strong_count(&vec_rc), 1);
+        assert_eq!(NlVectorRef::strong_count(&probe), 1);
     }
 
     #[test]

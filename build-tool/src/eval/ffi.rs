@@ -234,7 +234,7 @@ pub fn nl_ffi_call(args: &[Sexp]) -> Result<Sexp, EvalError> {
         _ => return Err(ffi_err(format!("nl-ffi-call: FUNC must be string or symbol, got {:?}", args[1]))),
     };
     let sig_vec = match &args[2] {
-        Sexp::Vector(v) => v.borrow().clone(),
+        Sexp::Vector(v) => v.value.clone(),
         _ => return Err(ffi_err(format!("nl-ffi-call: SIG must be a vector, got {:?}", args[2]))),
     };
     if sig_vec.is_empty() {

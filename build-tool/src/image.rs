@@ -170,9 +170,8 @@ fn encode_value(out: &mut Vec<u8>, value: &Sexp) -> Result<(), ImageError> {
         }
         Sexp::Vector(items) => {
             out.push(TAG_VECTOR);
-            let borrowed = items.borrow();
-            write_len(out, borrowed.len())?;
-            for item in borrowed.iter() {
+            write_len(out, items.value.len())?;
+            for item in items.value.iter() {
                 encode_value(out, item)?;
             }
         }

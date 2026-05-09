@@ -544,7 +544,7 @@ pub fn sexp_eq(a: &Sexp, b: &Sexp) -> bool {
             crate::eval::nlconsbox::NlConsBoxRef::ptr_eq(a, b)
         }
         (Sexp::MutStr(a), Sexp::MutStr(b)) => crate::eval::nlstr::NlStrRef::ptr_eq(a, b),
-        (Sexp::Vector(a), Sexp::Vector(b)) => Rc::ptr_eq(a, b),
+        (Sexp::Vector(a), Sexp::Vector(b)) => crate::eval::nlvector::NlVectorRef::ptr_eq(a, b),
         (Sexp::CharTable(a), Sexp::CharTable(b)) => Rc::ptr_eq(a, b),
         (Sexp::BoolVector(a), Sexp::BoolVector(b)) => Rc::ptr_eq(a, b),
         // Records (Doc 50 stage 4): identity through the slots Rc.
