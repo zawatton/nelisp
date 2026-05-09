@@ -1,0 +1,538 @@
+#+TITLE: Doc 83 — 100% 純 elisp self-host roadmap consolidated v1
+#+AUTHOR: NeLisp / Claude
+#+DATE: 2026-05-09
+
+* Status
+:PROPERTIES:
+:STATE: DRAFT 2026-05-09
+:PARENT: Doc 77c (= Sexp ABI Stage 4 unpause + 100% 純 elisp commitment)
+:CONSOLIDATES: Doc 28 / Doc 73 / Doc 74 / Doc 75 / Doc 77c / Doc 78 / Doc 79 / Doc 80 / Doc 81 / Doc 82
+:USER_DIRECTIVE: 2026-05-09 — "純 elisp 化は絶対です、早く実現したい"
+:ROADMAP_HORIZON: 2026-05-09 〜 2026-09 (= 4 ヶ月見込)
+:DRAFTED: 2026-05-09
+:END:
+
+* §0 TL;DR
+
+本 Doc は今 session (2026-05-09) で articulated 18+ design docs (= Doc 28
+§3.6+§3.7+§11.6 / Doc 73 §2.4 / Doc 74 v2 / Doc 75 v3 / Doc 77c §0+§2.4 /
+Doc 78 / Doc 79 v3〜v7 / Doc 80 / Doc 81 / Doc 82) を *single canonical
+roadmap* に統合.  user 2026-05-09 directive ("純 elisp 化は絶対です、
+早く実現したい") を実現する concrete sequencing + parallel track inventory
++ LOC accounting reconciliation を提供する.
+
+主要数値:
+- Rust workspace 現況 (= 2026-05-09 実測 =wc -l=): *32,599 LOC*
+  (= build-tool 22,474 + anvil-runtime 5,667 + nelisp-runtime 1,147 +
+  nelisp-runtime-cli 146 + bench/syscall sub-crates 除外)
+- elisp 現況 (= 2026-05-09 実測): *54,693 LOC* (=src/=) + *6,834 LOC*
+  (=lisp/=) = *61,527 elisp LOC total*
+- 今 session 累計 SHIPPED Rust shrink: *-681 LOC* (= 6 commit、§2.3 articulate)
+- 4 ヶ月後 Phase 1 着地 (= Doc 73-82 全 ship 後): *Rust ~17,000 LOC* 見込
+- Phase 2 (= eval/ refactor): *Rust ~5,000-8,000 LOC*
+- Phase 3 (= 究極 D-B、追加設計必要): *Rust ~300-500 LOC*
+
+5 並列 track inventory:
+- Track A (= 別 session、anvil-runtime parallel) = *-7,346 LOC* target、Phase B4 SHIPPED
+- Track B (= my session、Phase C GC elisp 化) = *-69 net Rust + 600 elisp*
+- Track C (= my session、Phase D-B Cranelift 削除) = *-4,782 Rust + 1,660 elisp*
+- Track D (= my session、Phase 8/9 frozen heap) = *-1,524 net Rust*
+- Track E (= 残 minor / verification)
+
+推奨 dispatch sequence (= §8): 10 step、現進行中 3 worktree (= doc-79
+Stage 5.3.a / doc-81 Stage 81.1 / doc-75 Stage 9.1) を起点に、parallel
+session の Phase B5 SHIPPED 待ち → 順次 dispatch.
+
+* §1 100% 純 elisp commitment
+
+** §1.1 user 確定 directive
+
+2026-05-09 session で user が確定した directive (= 順序重要):
+
+1. "下記の部分も elisp で記述出来るようにするにはどうしたら良いですか？
+   1. nelisp 自身の runtime ABI (= Sexp / GC / JIT bridge)、
+   2. Cranelift などの外部 native compiler crate との bridge"
+2. "4. nelisp self-host roadmap 全体を遂行。これしか目指していません。"
+3. "Sexp ABI elisp 化はまだ諦めていません" / "Doc 77 の Stage4 を unpause で"
+4. "100% 純 elisp で self-host する。途中で Rust crate を残すような
+   hybrid は採らない" (= 2026-05-09 session 後半)
+5. "全 commit が net-decrease Rust LOC でなければならない (= per-commit
+   monotonic shrink rule)" (= 2026-05-09 session 後半)
+6. "純 elisp 化は絶対です、早く実現したい" (= 2026-05-09 latest re-affirm、
+   本 Doc 83 起草の trigger)
+
+** §1.2 monotonic shrink rule + precursor exception articulation
+
+per-commit rule: *全 commit で Rust net LOC が non-positive でなければ
+ship しない*.  例外 articulation:
+
+- *atomic primitive + consumer ship*: primitive 追加と consumer 配線を
+  同 commit に折り畳むことで dead-code (= zero-callsite) 状態を回避.
+  Doc 79 v4 Stage C.4-atomic / Doc 79 v6 Stage C.3 sub-stage 5.4.a /
+  Doc 79 v7 Stage 5.3.a で実例.
+- *bundle 評価*: per-commit 緩和ではなく *prereq stage ship を先取り
+  する bundle 評価*.  Doc 75 §3.7 Phase 9 + Stage 8.4 prereq bundle で
+  -1,524 net、Doc 81 §4.3 Stage 81.x + Phase 7.1.6.a bundle で
+  cumulative net -415 Rust 等.
+
+precursor 例外 = *primitive +X / consumer atomic carry* のみ許容.
+shim 中間 +800 LOC のような hybrid path (= Doc 78 D-A) は user directive
+#4 (= 100% 純 elisp commitment) と方向矛盾で reject.
+
+** §1.3 終着点 (= 完全 NeLisp standalone + Cranelift 削除)
+
+最終到達点 (= Phase 3、§6.3):
+
+- Cranelift Cargo dependency *完全消失* (= =cranelift= / =cranelift-jit=
+  / =cranelift-module= 3 direct dep + 13 transitive crate 全削除)
+- =build-tool/src/jit/= directory *物理消滅*
+- nelisp は NeLisp Phase 7+ native cc (= =src/nelisp-cc.el= + 12 module、
+  既 12,512 LOC SHIPPED) のみで host machine code emit
+- =anvil-runtime/= crate *物理消滅* (= elisp 経由で MCP host 機能を提供)
+- Rust core ~300-500 LOC (= heap allocator + atomic 操作 + layout pin
+  primitive のみ、Doc 77c §3.4 articulate、Doc 47 phase 6 C-runtime 自前
+  化に繋がる最小核)
+
+* §2 Workspace 現況 (= 2026-05-09)
+
+** §2.1 Rust LOC inventory (= 実測 =wc -l= per crate)
+
+#+begin_example
+$ wc -l build-tool/src/**/*.rs build-tool/src/*.rs        # 22,474 total
+$ wc -l anvil-runtime/src/**/*.rs anvil-runtime/src/*.rs  #  5,667 total
+$ wc -l nelisp-runtime/src/**/*.rs                        #  1,147 total
+$ wc -l nelisp-runtime-cli/src/main.rs                    #    146 total
+                                                          # ─────
+$ workspace 計                                              # 32,599 LOC
+#+end_example
+
+excl: =bench/= harness sub-crates、=nelisp-syscall-*= helper crates.
+これらは Phase 1 着地後の Phase 2 で別途 audit.
+
+** §2.2 elisp LOC inventory (= 実測)
+
+#+begin_example
+$ wc -l src/**/*.el          # 54,693 LOC (= nelisp-cc + supporting modules)
+$ wc -l lisp/**/*.el         #  6,834 LOC (= STDLIB_FILES + bootstrap)
+                              # ─────
+$ elisp 計                    # 61,527 LOC
+#+end_example
+
+note: =src/nelisp-cc*= で *12,512 LOC elisp* (= 13 module、Doc 28
+LOCKED-v2 Phase 7.1.1〜7.1.5 + Phase 7.7 inliner)、=lisp/nelisp-stdlib-*=
+で残り stdlib reader / printer / special form 等を担う.  Phase D-B 着地後の
+elisp grand total ≈ 63,000-65,000 LOC 見込.
+
+** §2.3 SHIPPED 累計 (= 2026-05-09 session)
+
+| commit  | scope                                         | Rust delta |
+|---------+-----------------------------------------------+------------|
+| 6f23c40 | Doc 76 Stage E filenotify (= inotify_event[]) | -89        |
+| 03329c3 | Doc 76 Stage G SCM_RIGHTS (= cmsg + IPv6 + peercred + socketpair) | -317 |
+| 8ba6f32 | Doc 79 v4 Stage C.4-atomic (= NLRC_DROP_TABLE + Drop body slim) | -81 |
+| 99440d4 | Doc 80 Stage 80.1〜80.5 substrate (= cond/when/unless/signal helper + 5 strategy.rs fn) | -78 |
+| 5a4949d | Doc 80 §7 v2 fold-in (= slim! macro で 5 primitives 統合) | -34 |
+| 401fb17 | Doc 77b stub cleanup (= lower_entries + try_lower + LowerFn type + _unused_truthy) | -82 |
+| *合計*  |                                               | *-681 LOC* |
+
+= Doc 76 100% SHIPPED (40/40 specialized syscall primitive 削除).
+Doc 79 v3〜v7 + Doc 80 + Doc 77b stub cleanup の 5 docs articulate 完成.
+
+* §3 Phase parallel master sequence
+
+** §3.1 dependency graph (= 全 phase の依存関係 ASCII)
+
+#+begin_example
+                                  ┌─────────────────────────┐
+                                  │ §1 user directive       │
+                                  │ 2026-05-09 100% 純 elisp │
+                                  │ commitment + monotonic   │
+                                  │ shrink rule              │
+                                  └────────────┬────────────┘
+                                               │
+                ┌──────────────────────────────┼──────────────────────────────┐
+                │                              │                              │
+        ┌───────▼────────┐         ┌───────────▼────────────┐       ┌─────────▼─────────┐
+        │ Track A        │         │ Track B/C/D           │       │ Track E (verify)  │
+        │ Parallel       │         │ My session            │       │ - bench harness   │
+        │ session        │         │ - Phase C (Doc 79)    │       │ - perf gate       │
+        │ - anvil-runtime│         │ - Phase D-B (Doc 28)  │       │ - smoke           │
+        │ - Phase A1〜B4 │         │ - Phase 8/9 (Doc 73/75)│       │ - cross-platform  │
+        │   SHIPPED      │         │ - Phase A/B (Doc 80)   │       │                   │
+        │ - B5 next      │         │   SHIPPED              │       │                   │
+        │ - Final B path │         └────────────┬───────────┘       └─────────┬─────────┘
+        └───────┬────────┘                      │                             │
+                │                               │                             │
+                │ Phase B5 SHIPPED              │ Track CC + FF + GG          │
+                │ (anvil-server.el load OK)     │ in flight (3 worktree)      │
+                │                               │                             │
+                └──────────────┬────────────────┘                             │
+                               │                                              │
+                ┌──────────────▼─────────────────────────────────────────┐    │
+                │ Doc 81 Stage 81.1〜81.4 sequential (Track CC)         │    │
+                │   primitive trampoline ABI + 4 SSA opcodes + bench gate │   │
+                └──────────────┬─────────────────────────────────────────┘    │
+                               │                                              │
+                ┌──────────────▼─────────────────────────────────────────┐    │
+                │ Doc 28 §3.6 Phase 7.1.6.a〜.f cluster takeover         │    │
+                │   cons (-415) → arith (-354) → predicate (-341)        │    │
+                │     → syscall (-286) → access (-638、Doc 80 dep)       │    │
+                │     → dsl + bridge cleanup (-2,015)                    │    │
+                └──────────────┬─────────────────────────────────────────┘    │
+                               │                                              │
+                ┌──────────────▼─────────────────────────────────────────┐    │
+                │ Doc 79 v7 Phase C C.5 self-host gate (Track FF)       │    │
+                │   bench harness + gc-stats + Phase D-B handoff        │    │
+                └──────────────┬─────────────────────────────────────────┘    │
+                               │                                              │
+                ┌──────────────▼─────────────────────────────────────────┐    │
+                │ Doc 28 §3.7 Phase 7.1.7.a〜.d cleanup                  │    │
+                │   strategy.rs (-425) + mod.rs (-298) + Cargo dep + bin/ │   │
+                └──────────────┬─────────────────────────────────────────┘    │
+                               │                                              │
+                ┌──────────────▼─────────────────────────────────────────┐    │
+                │ Doc 73 Stage 8.4 reader cfg-gate (-1,679)              │    │
+                │   + Doc 75 v3 Phase 9 frozen heap (+155)               │    │
+                │   = bundle -1,524 net                                  │    │
+                └──────────────┬─────────────────────────────────────────┘    │
+                               │                                              │
+                ┌──────────────▼──────────────────────────────────────────────▼─┐
+                │ Final convergence — main merge (= parallel session + my session) │
+                │   Phase 1 着地 (= Rust ~17,000 LOC)                            │
+                │   → Phase 2 (= eval/ refactor、Rust ~5,000-8,000 LOC)          │
+                │   → Phase 3 (= 究極 D-B + standalone runtime、~300-500 LOC)    │
+                └────────────────────────────────────────────────────────────────┘
+#+end_example
+
+** §3.2 critical path (= 5 並列 track の同時進行性)
+
+並列実行可能の articulation:
+- *Track A* (= parallel session) は my session と直交 (= layer 直交、
+  commit 衝突無し、Doc 82 §3.2)
+- *Track B Stage 5.3.a〜.e* = elisp 完結、Track C / D に影響しない
+- *Track C Stage 81.1〜81.4* = nelisp-cc 拡張、Track B / D に影響しない
+- *Track D Stage 9.1〜9.6* = image decoder elisp 化、Track B / C に
+  影響しない
+- ただし *cumulative LOC accounting* は §5.1 で reconciliation 必須
+
+bottleneck (= sequential dep が必須):
+- Track C Stage 81.4 (cons-heavy bench gate) → Phase 7.1.6.a (cons takeover)
+- Doc 80 Stage 80.4 SHIPPED → Phase 7.1.6.b (access takeover)
+- Doc 80 Stage 80.5 SHIPPED → Phase 7.1.7.a (strategy.rs 削除)
+- Track A Phase B5 SHIPPED → Doc 73 Stage 8.4 (reader cfg-gate)
+- Stage 8.4 SHIPPED → Phase 9.1〜9.6 bundle (= -1,524 net)
+
+** §3.3 milestone (= bench gate / SHIPPED gate / convergence point)
+
+| milestone | gate condition | source |
+|-----------+----------------+--------|
+| Track CC Stage 81.4 cons-heavy bench | nelisp-cc trampoline-emit ≧ 0.9x Cranelift baseline + 既存 3-軸 regression 0 | Doc 81 §5.4 |
+| Track FF Stage 5.3.e cycle ERT | 12 cycle scenario PASS + stress 100k workload + leak 0 | Doc 79 v7 §5.3.7 |
+| Phase 7.1.6 全 cluster SHIPPED | =build-tool/src/jit/= 5 cluster 削除 + bench 4-axis ≧ baseline | Doc 28 §3.6.f |
+| Phase 7.1.5 perf gate (= 既 CLOSED) | fib(30) 3964.05x / fact-iter 24.11x / alloc-heavy 23.01x | Doc 28 §11.6 |
+| Track A Phase B5 SHIPPED | anvil-server.el 全 load + JSON-RPC frame round-trip | Doc 82 §3.3 |
+| Final convergence | parallel + my session の develop branches を main merge | §8 step 10 |
+
+* §4 Track inventory (= 5 並列 stream)
+
+** §4.1 Track A: parallel anvil-runtime session (= 別 session)
+
+- *進行 status*: Phase A0/A1/A2 SHIPPED + Phase B1〜B4 SHIPPED (= a6de799
+  on main、=2026-05-09= 時点)
+- *next dispatch*: Phase B5 (= anvil-server.el 全 load + JSON-RPC frame
+  round-trip)
+- *Final B target*: *-7,346 Rust LOC* (= anvil-runtime 5,667 + Doc 73
+  Stage 8.4 reader cfg-gate 1,679 込み計上)
+- *canonical reference*: memory =project_anvil_runtime_phase_b4_shipped=
+  + Doc 82
+- *layer*: NeLisp standalone runtime + anvil.el load chain (= my session
+  と直交)
+- *invest*: NeLisp standalone primitive +1,112 LOC elisp 既 invest
+- *commit 衝突 risk*: 0 (= my session は anvil.el repo に手を入れない、
+  parallel session は anvil-runtime crate と NeLisp 拡張のみ)
+
+** §4.2 Track B: Phase C GC elisp 化 (= my session)
+
+- *進行 status*: Doc 79 v3〜v7 articulate、Stage C.1+4 SHIPPED (= -81
+  Rust、commit 8ba6f32)
+- *in flight*: Stage 5.3.a (= Track FF worktree =draft/doc-79-c2-stage53a=、
+  +115 Rust + ~80 elisp precursor、Stage C.1.b primitive を C.2 consumer
+  と atomic 抱合)
+- *残 sub-stage*:
+  - Stage 5.3.b〜.e (= cycle collector main body、合計 16 days、+330
+    elisp、Doc 79 v7 §5.3.5)
+  - Stage C.3 finalizer queue (= 1-2 週間、+150 elisp + 12 Rust primitive)
+  - Stage C.5 self-host gate (= 1-2 週間、+50 elisp、Doc 79 v7 §5.5)
+- *Final delta*: *-44〜-89 Rust + ~600 elisp* (Doc 79 v7 §5.7、累積
+  Rust 1936 → 1847〜1892)
+- *合計工数*: 37 days (= Stage 5.3.a〜.e 19 days + Stage C.3 7 days +
+  Stage C.5 7 days + buffer 4 days)
+
+** §4.3 Track C: D-B Cranelift 削除 (= my session)
+
+- *進行 status*: Doc 28 §3.6+§3.7 + Doc 81 articulate
+- *in flight*: Doc 81 Stage 81.1 PoC (= Track CC worktree
+  =draft/doc-81-stage1-poc=、+280 elisp / 0 Rust、=:trampoline-unary= ABI
+  + 3 SSA opcode + x86_64 backend で =car= PoC)
+- *Phase 7.1.5 perf gate*: 既 CLOSED (= Track S 確認、fib-30 3964.05x、
+  Doc 28 §11.6)
+- *残 sub-stage*:
+  - Stage 81.2〜81.4 (= arm64 backend port + 5 cons primitive parity +
+    bench gate、~6 days、+500 elisp)
+  - Phase 7.1.6.a〜.f cluster takeover (= cons / access / arith /
+    predicate / syscall / dsl+bridge cleanup、3-5 週間、-4,059 Rust +
+    +1,460 elisp)
+  - Phase 7.1.7.a〜.d cleanup (= strategy.rs / mod.rs / Cargo dep /
+    bin/、1-3 週間、-723〜-773 Rust + +180 elisp)
+- *Final delta*: *-4,782 Rust + 1,660 elisp* (Doc 28 §3.8 中央値)
+- *合計工数*: 33 days (= Stage 81.x 7 days + Phase 7.1.6 21 days +
+  Phase 7.1.7 5 days)
+
+** §4.4 Track D: Phase 8/9 frozen heap (= my session)
+
+- *進行 status*: Doc 73 §2.4 + Doc 75 v3 articulate
+- *in flight*: Stage 9.1 (= Track GG worktree =draft/doc-75-stage91=、
+  +0 Rust precursor、image v3 schema doc-only commit)
+- *残 sub-stage*:
+  - Stage 9.1.b 戦略 C 検証 cfg(test) (= 0 Rust)
+  - Stage 9.2 image v2 encode path image-baker 配下に固定 (= +10 Rust)
+  - Stage 9.3+9.4 合体 encoder + decoder + new_global 切替 (= +265 Rust)
+  - Stage 9.5 v2 encode path 削除 (= -120 Rust)
+  - Stage 9.6 startup bench gate CI のみ (= 0 Rust)
+  - Stage 8.4 reader cfg-gate (= -1,679 effective、Phase 9 prereq)
+- *Final delta*: *-1,524 net Rust* (= 8.4 -1,679 production + 9 +155、
+  Doc 75 v3 §3.7 bundle 評価)
+- *合計工数*: 23 days (= Stage 9.x 16 days + Stage 8.4 7 days)
+
+** §4.5 Track E: Misc / Phase E reader/eval residual
+
+- Phase E (= Doc 77c §2.5 articulate) は Phase 8 + Phase 9 + Phase D-B
+  で実質 cover (= reader 完全 elisp 化 = Stage 8.4 cfg-gate、eval =
+  Phase 9 frozen heap、native cc = Phase D-B)
+- 残 minor:
+  - 各 stage の bench harness 拡張 (= Doc 81 §5.4 cons-heavy / Doc 79
+    v7 §5.5 perf gate 等)
+  - smoke verification (= cross-platform、Linux x86_64 / arm64 darwin)
+  - ERT regression 0 維持 (= existing 1086/1091 を全 sub-stage で gate)
+
+* §5 整合 / convergence
+
+** §5.1 LOC accounting reconciliation
+
+Doc 82 §4.3 articulated canonical accounting:
+
+| accounting unit                     | LOC      | session 帰属                |
+|-------------------------------------+----------+-----------------------------|
+| anvil-runtime crate                 | -5,667   | parallel session (Final B)  |
+| Doc 73 Stage 8.4 reader cfg-gate    | -1,679   | my session (Track D)        |
+| Phase 7.1.6 cluster takeover (5)    | -2,634   | my session (Track C)        |
+| Phase 7.1.6.f dsl+bridge cleanup    | -2,015   | my session (Track C)        |
+| Phase 7.1.7 cleanup (4)             | -723〜-773 | my session (Track C)      |
+| Phase C GC elisp 化                  | -44〜-89 | my session (Track B)        |
+| Phase 9 frozen heap (= 単独 net)     | +155     | my session (Track D)        |
+| invest elisp (= NeLisp primitive 等) | +1,112    | parallel session            |
+| invest elisp (= anvil.el repo 新 file) | +0      | parallel B path で不要化     |
+| invest elisp (= Phase 7.1.6 / 7.1.7 / Phase C) | +2,260 | my session             |
+| *grand total Rust delta*            | *-13,317 〜 -13,387* | (parallel + my、4 ヶ月後) |
+
+二重 count 回避: parallel session の Final B target -7,346 は reader
+cfg-gate 1,679 を込み計上、my session の Doc 73 §2.4 は別 Doc accounting.
+両 session の grand total は *boundary を揃えれば等価* (= Doc 82 §4.3
+articulated).
+
+** §5.2 phase 順序 conflict 防止
+
+Doc 82 §4.4 Option α 推奨:
+- *parallel session の Final B 採用* (= -7,346 path、reader cfg-gate 込み)
+- *my Doc 74 v2 を Final B 詳細設計の reference 資料* として deferred
+- my session の Stage 74.x は Final B の sub-step として再 number、
+  parallel session の Phase B6+ articulation で吸収
+
+contingency (= Option γ): parallel session が stall した場合、my session
+で Stage 74.1 (= 例外的 net-zero compile fix) のみ実行、Stage 74.2-74.7
+は parallel session の進捗待ち.
+
+** §5.3 milestone (= 全 track 起点 = 2026-05-09、終点 = 2026-09 見込)
+
+| date       | milestone                                                    |
+|------------+--------------------------------------------------------------|
+| 2026-05-09 | 全 track 起点、Doc 28/73/74/75/77c/78/79/80/81/82 articulate 完成 |
+| 2026-05-15 | Track CC Stage 81.1 PoC SHIPPED + Track FF Stage 5.3.a SHIPPED + Track GG Stage 9.1 SHIPPED |
+| 2026-05-22 | Track A Phase B5 SHIPPED 期待、Doc 73 Stage 8.4 dispatch unblock |
+| 2026-06-15 | Track CC Stage 81.4 SHIPPED + Phase 7.1.6.a (cons) SHIPPED   |
+| 2026-07-15 | Phase 7.1.6.b〜.f 全 SHIPPED                                  |
+| 2026-08-01 | Track FF Stage C.3 + C.5 SHIPPED + Phase C 全 close          |
+| 2026-08-15 | Phase 7.1.7.a〜.d cleanup SHIPPED + Cranelift Cargo dep 完全消失 |
+| 2026-09-01 | Phase 9 Stage 8.4 + 9.1〜9.6 bundle SHIPPED (= -1,524 net)   |
+| 2026-09-15 | Final convergence — main merge (= parallel + my session)     |
+
+* §6 Final Rust core 構成 (= 各段階)
+
+** §6.1 Phase 1 (= Doc 73-82 全 ship 後): ~17,000 LOC
+
+current 32,599 - SHIPPED accounting 上の累積 ~13,317 + invest +1,000 余白
+= *~17,000 LOC*.
+
+| 残る Rust 領域                                  | 推定 LOC |
+|-------------------------------------------------+----------|
+| =build-tool/src/eval/=                          | ~6,000   |
+| =build-tool/src/image/= (= image-baker dev tool) | ~2,500   |
+| =build-tool/src/bridge/=                        | ~1,500   |
+| =build-tool/src/reader/= (= image-baker feature gate 下) | ~1,679 (= source、production graph 上 0) |
+| =build-tool/src/lib.rs= + =bin/=                | ~500     |
+| =nelisp-runtime/= (= cdylib + C shim)           | ~1,147   |
+| =nelisp-runtime-cli/=                           | ~146     |
+| 残 misc + comment + test                        | ~3,500   |
+| *合計*                                          | *~17,000* |
+
+** §6.2 Phase 2 (= eval/ さらに refactor): ~5,000-8,000 LOC
+
+eval/ refactor で更に Rust shrink:
+- =eval/builtins.rs= dispatch arm を全 elisp 移管 (= -2,000〜-3,000 LOC)
+- =eval/error.rs= を nelisp-stdlib-error.el に移管 (= -500 LOC)
+- =eval/env.rs= scope chain を elisp 化 (= -1,500 LOC)
+
+| 残る Rust 領域 (Phase 2 着地)                  | 推定 LOC |
+|-------------------------------------------------+----------|
+| =build-tool/src/bridge/=                        | ~1,500   |
+| =build-tool/src/reader/= (cfg-gate 下、source) | ~1,679   |
+| =build-tool/src/eval/= (= 最小 evaluator core) | ~1,500   |
+| =nelisp-runtime/=                              | ~1,000   |
+| 残 misc                                          | ~500     |
+| *合計*                                          | *~6,000-8,000* |
+
+** §6.3 Phase 3 (= 究極 D-B 採用、追加設計必要): ~300-500 LOC
+
+Doc 77c §3.4 articulated 最終形:
+
+| 残る Rust 領域 (Phase 3 究極 D-B)              | 推定 LOC |
+|-------------------------------------------------+----------|
+| Sexp 型定義 + NlRc / NlConsBox layout pin       | ~300     |
+| ffi.rs (= libdl wrapper)                       | ~360     |
+| boot loader (= main + image load)              | ~150     |
+| (= Cranelift C shim は Phase 1 で完全消失)     | 0        |
+| *合計*                                          | *~810*    |
+
+更に深掘り (= Phase 47 phase 6 C-runtime 自前化、別 Doc 必要):
+- =nelisp-runtime/= の libffi 経由 syscall を inline asm に置換 (= 追加 -300)
+- =bin/= driver を elisp で書き直し (= 追加 -200)
+- 究極着地 *~300-500 LOC*.
+
+* §7 Risk / open question
+
+** §7.1 anvil-runtime parallel session の Phase B5 SHIPPED 確認待ち
+
+- Doc 73 Stage 8.4 dispatch precondition (= §2.4.2 articulated)
+- Stage 74.x の equivalence test fixture が動かない (= my session 単独
+  では cross-mode test 不可、Doc 82 §3.3)
+- contingency: Phase B5 が 1 ヶ月内に ship しない場合、my session で
+  Stage 74.1 (= 例外的 net-zero compile fix) のみ実行で先行
+
+** §7.2 Doc 79 §11.7 atomic-with-consumer pattern の rule violation 容認
+
+- user 確定済 (= Doc 79 v6 §11.7、§5.3.5.a の +115 Rust が per-commit
+  +115 LOC を carry する rule violation)
+- 代替案 = Stage C.1.b を更に sub-split は dead-code 化 risk (= project
+  memory =feedback_commit_dead_code_claim_must_grep.md=)、user 推奨は
+  atomic 抱合
+- 全 Phase で同 pattern を使う場合 (= Doc 81 §4.3 Stage 81.x + Phase
+  7.1.6.a bundle、Doc 79 §5.4.5.a Stage C.3 sub-stage 5.4.a) は Doc 83
+  §1.2 articulated rule に従う
+
+** §7.3 Doc 81 §6.3 FFI external C symbol resolution risk (= AAPCS64 ±128MB 制限)
+
+- arm64 backend で =BL #imm26= encoding は ±128MB rel26 制限あり
+- =nl_jit_cons_*= 等 helper symbol が exec page から ±128MB 範囲外に
+  ある場合、linker stub が必要
+- mitigation: Doc 81 §3.5 articulated extern-c-fixups + dlsym bridge で
+  absolute address patch、stub 不要化
+- verify: Stage 81.2 arm64 backend port 時に AAPCS64 BL emit + dlsym
+  patch の hello-world test PASS
+
+** §7.4 Phase 7.1.6.a 〜.f cluster takeover の bench gate
+
+- 各 cluster で per-axis bench gate 必須 (= Cranelift baseline 比 ≧ 1.0x、
+  特に 7.1.6.a cons-heavy / 7.1.6.b vector-stress / 7.1.6.d
+  predicate-stress / 7.1.6.e syscall-stress)
+- 失敗時 fallback (= Doc 81 §5.4.3 articulated): recognition pass を
+  =enabled-p= flag 経由で opt-out 可能化、Doc 81 を v2 改訂 (= 追加
+  opcode / ABI mode 拡張) に戻す
+- regression triage の bottleneck 集中 risk (= Doc 28 §3.8 articulated、
+  4-8 週間 budget の variance source)
+
+** §7.5 Track A SHIPPED と my session SHIPPED の merge order
+
+- parallel session が main 直 push、my session は draft branch 経由
+  (= Doc 82 §6.2 articulated)
+- merge order = parallel session B5+ → my session draft の順番 (=
+  conflict 0 だが accounting 整合のため)
+- ship coordination tool = =git fetch && git diff main..origin/main= で
+  parallel session の最新 main を毎日 sync
+
+* §8 Sequence (= 推奨 dispatch 順)
+
+1. *(進行中)* Track CC Stage 81.1 PoC + Track FF Stage 5.3.a + Track GG
+   Stage 9.1 (= 3 worktree 並走、各 ~3 days)
+2. *parallel session Phase B5 SHIPPED 待ち* (= ~1-2 週間、anvil-server.el
+   load chain 確立)
+3. *Stage 81.2〜81.4 sequential dispatch* (= Doc 81 完了、+500 elisp、
+   ~6 days)
+4. *Phase 7.1.6.a (cons takeover)* (= cons.rs delete -415 Rust、Doc 81
+   と batched merge で rule 整合、~1 週間)
+5. *Stage 5.3.b〜.e* (= cycle collector main body、+330 elisp、~16 days、
+   並走可)
+6. *Phase 7.1.6.b〜.f* (= 4 並列可、Doc 80 Stage 80.4 dep の .b 含む、
+   ~3-5 週間、-3,634 Rust、+1,160 elisp)
+7. *Phase 7.1.7.a〜.d* (= cleanup、Doc 80 Stage 80.5 SHIPPED 必要、~1-3
+   週間、-723〜-773 Rust)
+8. *Phase 8 Stage 8.4 + Phase 9 bundle ship* (= -1,524 net、~7+16 days)
+9. *Phase C C.5 self-host gate* (= 全 perf bench、~7 days)
+10. *Final convergence* (= parallel session + my session merge to main、
+    Phase 1 着地、Phase 2 / Phase 3 設計再開)
+
+* §9 References
+
+** internal NeLisp design docs (= 本 Doc が consolidate)
+
+- Doc 28 = Phase 7.1 native compiler + §3.6/§3.7 D-B implementation plan + §11.6 perf gate CLOSED
+- Doc 73 = Phase 8 Rust reader/eval purge + §2.4 Stage 8.4 detail
+- Doc 74 v2 = anvil-runtime → anvil.el migration (= parallel session に
+  deferred per Doc 82 Option α)
+- Doc 75 v3 = Phase 9 frozen heap
+- Doc 77c = Sexp ABI Stage 4 unpause + 100% 純 elisp commitment master plan
+- Doc 78 = Phase D-A Cranelift wrapper (= DEFERRED 2026-05-09)
+- Doc 79 v7 = Phase C GC elisp 化 (= Stage C.1+4 SHIPPED -81 Rust)
+- Doc 80 = Pre-stdlib elisp substrate (= Stage 80.1〜80.5 SHIPPED -78 Rust)
+- Doc 81 = nelisp-cc primitive trampoline architectural extension
+- Doc 82 = anvil-runtime parallel session integration map
+
+** 関連 memory
+
+- =project_nelisp_100_percent_elisp_commitment= = user 2026-05-09
+  directive + monotonic shrink rule 確定
+- =project_nelisp_phase71_native_cc_shipped= = nelisp-cc ~12,512 LOC
+  既 SHIPPED 確認 (Track M audit)
+- =project_nelisp_phase715_perf_gate_closed= = fib-30 3964.05x speedup
+  実測 (Track S audit)、§11.5 errata retract
+- =project_anvil_runtime_phase_b4_shipped= = parallel session
+  =a6de799= 時点 status
+
+** 今 session SHIPPED commit (= 6 件、§2.3 累計 -681 Rust)
+
+- =6f23c40= Doc 76 Stage E filenotify (-89 Rust)
+- =03329c3= Doc 76 Stage G SCM_RIGHTS (-317 Rust)
+- =8ba6f32= Doc 79 v4 Stage C.4-atomic (-81 Rust)
+- =99440d4= Doc 80 Stage 80.1〜80.5 substrate (-78 Rust)
+- =5a4949d= Doc 80 §7 v2 fold-in (-34 Rust)
+- =401fb17= Doc 77b stub cleanup (-82 Rust)
+
+* §10 Refactor history
+
+** v1 (2026-05-09 DRAFT)
+
+- 初稿、18+ design doc 統合
+- Doc 77c §0 TL;DR 末尾に Doc 83 reference pointer 追記 (= 同 commit)
+- 主要内容: §1 100% 純 elisp commitment / §2 workspace 現況 / §3 phase
+  parallel master sequence / §4 5 並列 track inventory / §5 整合 / §6
+  final Rust core 構成 / §7 risk / §8 sequence / §9 references
+- ROADMAP_HORIZON 設定: 2026-05-09 〜 2026-09 (= 4 ヶ月見込)
