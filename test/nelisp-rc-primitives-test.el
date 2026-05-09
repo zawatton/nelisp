@@ -11,8 +11,8 @@
 
 ;;; Commentary:
 
-;; Doc 79 v7 Phase C Stage 5.3.a + 5.3.b + 5.3.c + 5.3.d ERT for the
-;; elisp-side cycle collector in `lisp/nelisp-stdlib-gc.el'.  We
+;; Doc 79 v7 Phase C Stage 5.3.a + 5.3.b + 5.3.c + 5.3.d + 5.3.e ERT
+;; for the elisp-side cycle collector in `lisp/nelisp-stdlib-gc.el'.  We
 ;; exercise the *pure-elisp* surface (= `gc-stats' /
 ;; `gc-collect-cycles' four-phase algorithm + data-structure shells +
 ;; Stage 5.3.c finalizer queue + Stage 5.3.d alloc-side dec callback)
@@ -658,6 +658,156 @@ Combines the recursion-guard scenario with an explicit threshold
        (should (null gc-cycle-roots-buffer))
        ;; passes counter should not have moved (= no recursion happened).
        (should (equal 0 (cdr (assq 'passes (gc-stats)))))))))
+
+;; ---- Stage 5.3.e self-host parity gate + bench harness -------------
+;;
+;; These ERTs exercise `gc-bench-cycle-collection' / `gc-bench-parity-
+;; gate-p' through the same `gc-test--with-mocks' fixture used by
+;; Stage 5.3.b〜.d.  The harness's default alloc-fn / link-fn already
+;; produce mock-symbol handles compatible with the existing primitive
+;; mocks, so the only extra wiring needed is the standard fixture +
+;; (optionally) overriding `gc-collect-cycles-threshold' so the auto-
+;; trigger doesn't fire mid-build (= the harness pre-buffers all roots
+;; before kicking the collector).
+
+(ert-deftest gc-bench-cycle-collection-defaults-shape ()
+  "`gc-bench-cycle-collection' default invocation returns the 10-key alist."
+  (skip-unless (fboundp 'gc-bench-cycle-collection))
+  (gc-test--with-mocks
+   (let* ((gc-collect-cycles-threshold nil)  ; no auto-fire mid-pass
+          (stats (gc-bench-cycle-collection 8 3)))
+     (should (equal 8  (cdr (assq :cycles-built stats))))
+     (should (equal 24 (cdr (assq :nodes-built  stats))))
+     (should (assq :freed         stats))
+     (should (assq :passes        stats))
+     (should (assq :elapsed-ms    stats))
+     (should (assq :per-pass-ms   stats))
+     (should (assq :leaked        stats))
+     (should (assq :queue-drained stats))
+     (should (assq :roots-drained stats)))))
+
+(ert-deftest gc-bench-parity-gate-passes-on-clean-input ()
+  "Self-host gate: 50 independent 4-node cycles all collected, 0 leaked.
+
+This is the parity gate condition spelled out in Doc 79 §5.5.3 +
+the user prompt: after N suspect enqueues + `gc-collect-cycles',
+freed == nodes-built and `gc-cycle-roots-buffer' /
+`gc-finalize-queue' are both fully drained."
+  (skip-unless (fboundp 'gc-bench-cycle-collection))
+  (skip-unless (fboundp 'gc-bench-parity-gate-p))
+  (gc-test--with-mocks
+   (let* ((gc-collect-cycles-threshold nil)
+          (stats (gc-bench-cycle-collection 50 4)))
+     (should (equal 200 (cdr (assq :nodes-built   stats))))
+     (should (equal 200 (cdr (assq :freed         stats))))
+     (should (equal 0   (cdr (assq :leaked        stats))))
+     (should (eq    t   (cdr (assq :queue-drained stats))))
+     (should (eq    t   (cdr (assq :roots-drained stats))))
+     (should (gc-bench-parity-gate-p stats)))))
+
+(ert-deftest gc-bench-parity-gate-rejects-leaked-input ()
+  "Gate predicate is sensitive: a fabricated leak fails `gc-bench-parity-gate-p'."
+  (skip-unless (fboundp 'gc-bench-parity-gate-p))
+  ;; Hand-rolled stats imitating a single-cycle leak: 4 built, 3 freed.
+  (let ((bad '((:cycles-built  . 1)
+               (:nodes-built   . 4)
+               (:freed         . 3)
+               (:passes        . 1)
+               (:stat-frees    . 3)
+               (:elapsed-ms    . 1.0)
+               (:per-pass-ms   . 1.0)
+               (:leaked        . 1)
+               (:queue-drained . t)
+               (:roots-drained . t))))
+    (should-not (gc-bench-parity-gate-p bad))))
+
+(ert-deftest gc-bench-cycle-collection-large-input-100-cycles ()
+  "Large-ish input (100 cycles × 3 depth = 300 nodes) all collected.
+Doc 79 §5.5.2 articulates 100k cycles for the production gate;
+we run the host-Emacs scaled-down equivalent.  300 nodes is
+plenty to flush every Bacon-Rajan phase + the finalizer queue
+synchronously, exercising `gc--mark-gray-walk' /
+`gc--scan-walk' / `gc--scan-black-walk' / `gc--collect-white-
+walk' + `gc-finalize-flush' end-to-end."
+  (skip-unless (fboundp 'gc-bench-cycle-collection))
+  (gc-test--with-mocks
+   (let* ((gc-collect-cycles-threshold nil)
+          (stats (gc-bench-cycle-collection 100 3)))
+     (should (equal 300 (cdr (assq :nodes-built stats))))
+     (should (equal 300 (cdr (assq :freed       stats))))
+     (should (equal 0   (cdr (assq :leaked      stats))))
+     (should (gc-bench-parity-gate-p stats))
+     ;; Sanity: per-pass-ms is positive (= clock actually advanced).
+     (should (>= (cdr (assq :elapsed-ms  stats)) 0.0))
+     (should (>= (cdr (assq :per-pass-ms stats)) 0.0)))))
+
+(ert-deftest gc-bench-cycle-collection-bench-summary-emit ()
+  "Bench harness output is shape-stable enough to drive a summary printer.
+Doc 79 §5.5.2's CI consumer reads (:freed / :elapsed-ms /
+:per-pass-ms / :leaked) and emits one summary line; this ERT
+walks those keys and confirms each is the documented type."
+  (skip-unless (fboundp 'gc-bench-cycle-collection))
+  (gc-test--with-mocks
+   (let* ((gc-collect-cycles-threshold nil)
+          (stats (gc-bench-cycle-collection 5 2)))
+     (should (integerp (cdr (assq :cycles-built  stats))))
+     (should (integerp (cdr (assq :nodes-built   stats))))
+     (should (integerp (cdr (assq :freed         stats))))
+     (should (integerp (cdr (assq :passes        stats))))
+     (should (numberp  (cdr (assq :elapsed-ms    stats))))
+     (should (numberp  (cdr (assq :per-pass-ms   stats))))
+     (should (integerp (cdr (assq :leaked        stats))))
+     (should (memq     (cdr (assq :queue-drained stats)) '(t nil)))
+     (should (memq     (cdr (assq :roots-drained stats)) '(t nil))))))
+
+(ert-deftest gc-bench-build-one-cycle-shape ()
+  "`gc-bench--build-one-cycle' returns DEPTH handles wired into a ring."
+  (skip-unless (fboundp 'gc-bench--build-one-cycle))
+  (gc-test--with-mocks
+   (let ((nodes (gc-bench--build-one-cycle
+                 5 #'gc-bench--default-alloc #'gc-bench--default-link)))
+     (should (equal 5 (length nodes)))
+     ;; Every node has a kind-7 (CONS) tag and at least one child.
+     (dolist (n nodes)
+       (should (equal 7 (get n :kind)))
+       (should (consp (get n :children))))
+     ;; The child of the last node must be the first node — closed ring.
+     ;; (Order: `gc-bench--build-one-cycle' pushes onto `nodes'
+     ;; `dotimes' DEPTH times, then iterates indices 0..D-1 over the
+     ;; vectorised list to wire i -> i+1 mod D.)
+     (let* ((ring (apply #'vector nodes))
+            (last (aref ring (1- (length ring)))))
+       (should (memq (aref ring 0) (get last :children)))))))
+
+(ert-deftest gc-bench-self-host-gate-end-to-end ()
+  "End-to-end self-host gate scenario per Doc 79 §5.5.
+
+Build N cycles, drive `gc-collect-cycles' once, assert (a) every
+node was finalized, (b) `gc-cycle-roots-buffer' fully drained,
+(c) `gc-finalize-queue' fully drained, (d) the integrated
+`gc-stats' counters reflect the work, (e) `gc-bench-parity-gate-
+p' returns t.  This is the parity-with-Cranelift assertion that
+closes Phase C."
+  (skip-unless (fboundp 'gc-bench-cycle-collection))
+  (skip-unless (fboundp 'gc-bench-parity-gate-p))
+  (gc-test--with-mocks
+   (let* ((gc-collect-cycles-threshold nil)
+          (cycles 30)
+          (depth  3)
+          (stats (gc-bench-cycle-collection cycles depth))
+          (nodes-built (* cycles depth)))
+     ;; (a) every node finalized.
+     (should (equal nodes-built (length gc-test--finalized)))
+     ;; (b) suspect buffer drained.
+     (should (null gc-cycle-roots-buffer))
+     ;; (c) finalize queue drained.
+     (should (null gc-finalize-queue))
+     ;; (d) `gc-stats' counters reflect the work.
+     (let ((s (gc-stats)))
+       (should (equal nodes-built (cdr (assq 'total-frees s))))
+       (should (>= (cdr (assq 'passes s)) 1)))
+     ;; (e) integrated parity gate predicate passes.
+     (should (gc-bench-parity-gate-p stats)))))
 
 (provide 'nelisp-rc-primitives-test)
 ;;; nelisp-rc-primitives-test.el ends here

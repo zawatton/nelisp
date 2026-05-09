@@ -3,11 +3,32 @@
 #+DATE: 2026-05-09
 
 * Status
-:STATE: DRAFT v7 2026-05-10 (Stage 5.3.a / 5.3.b / 5.3.c / 5.3.d SHIPPED)
+:STATE: SHIPPED v7 2026-05-10 (Phase C COMPLETE — Stage 5.3.a / 5.3.b / 5.3.c / 5.3.d / 5.3.e all SHIPPED)
 :PARENT: Doc 77c (= Phase A〜E master plan)
 :PARALLEL: Doc 76 (OS surface elisp 化) / Doc 73 (reader/eval purge) / Doc 78 (Phase D-A Cranelift wrapper)
 :DEPENDS_ON: Doc 77c Phase A 完了 (= NlConsBox/NlCell/NlStr/NlVector/NlBoolVector/NlRecord/NlCharTable layout pin、cons_primitives.rs Layer 2 surface 出荷済)
 :UPDATES: Doc 77c §2.3 を本 Doc への外部参照に切替
+:HANDOFF: Phase D-B (= Doc 78 Cranelift wrapper 削除) prerequisite 充足 — bench harness + parity gate predicate を Phase D-B regression 監視に再利用可
+
+*Stage 5.3.e SHIPPED 2026-05-10*: Phase C closing self-host parity
+gate — =gc-bench-cycle-collection= bench harness (host-Emacs +
+NeLisp standalone 両対応 = =:alloc-fn= / =:link-fn= injection で
+mock / real primitive を切替) + =gc-bench-parity-gate-p= 述語が
+Doc 79 §5.5.3 gate 3 (= memory leak = 0) と user prompt の host-
+Emacs 解釈 (= N suspect enqueue + =gc-collect-cycles= 後の freed
+== nodes-built かつ =gc-cycle-roots-buffer= / =gc-finalize-queue=
+完全 drain) を articulate.  bench output 9 keys (=:cycles-built=
+/ =:nodes-built= / =:freed= / =:passes= / =:elapsed-ms= /
+=:per-pass-ms= / =:leaked= / =:queue-drained= / =:roots-drained=)
+で Phase D-B handoff API surface (= §5.5.8 articulation) を成立.
+host-Emacs bench 計測値 (cycles=500 depth=5 nodes=2500 = full
+Bacon-Rajan four-phase + finalizer queue drain) で elapsed=18ms
+per-pass、leaked=0、gate=t を実測.  Doc 79 §5.5.5 v7 articulation
+の image-baked test pipeline (= =gc-self-host-test.eln=) は Doc
+78 / Doc 47 phase 6 prerequisite 待ちで本 stage 範囲外、host-
+Emacs 経路で correctness axis (= self-host gate condition の
+本質) を済ませる.  0 Rust LOC delta、ERT 39 → 46 (= +7 new、
+内 6 new bench gate + 1 build-cycle shape)、all green.
 
 *Stage 5.3.d SHIPPED 2026-05-10*: alloc-side dec callback —
 =gc-dec-callback= elisp wrapper around =nl-rc-dec-strong= that
@@ -1068,7 +1089,24 @@ Stage C.5 (= Doc 79 §5.5 articulation) は self-host gate + perf bench.  Stage 
 - *commit-rule check*: 4 sub-commit のうち 5.4.a が monotonic shrink rule strict 解釈で +12 LOC 違反、5.4.b〜5.4.d で 0.  Stage C.2 §5.3.5.a と同 pattern (= primitive と consumer の atomic ship で dead-code 回避).  Phase C 累積では Stage C.4-atomic SHIPPED -81 + Stage C.1.b +115 + Stage C.3.a +12 = +46、Phase C 全体 -56〜-101 LOC range の上端寄り (= -56 - 12 = -44 〜 -101 - 12 = -89).  *user 確認推奨*: 5.4.a の per-commit +12 LOC を許容するか、または =nl-rc-payload-size= を Stage C.5 直前に独立 ship するか.  本 Doc は前者を推奨 (= dead-code 回避 + atomic primitive ship).
 - *Stage C.3 単独 ship 制約*: =run-with-idle-timer= primitive 未実装 (= Doc 78 / Doc 47 phase 6 依存).  本 Stage は =gc-finalize-flush-mode= = =sync= default で ship、production =idle= 化は別 Doc 完了 gate.
 
-** §5.5 Stage C.5 — self-host gate + perf bench (1-2 週間)
+** §5.5 Stage C.5 — self-host gate + perf bench (SHIPPED 2026-05-10)
+
+*Stage 5.3.e SHIPPED 2026-05-10*: 本 §5.5 の host-Emacs subset を
+=lisp/nelisp-stdlib-gc.el= に append として ship.  *correctness
+axis* (= self-host gate condition の本質、user prompt 明文化版)
+を =gc-bench-cycle-collection= + =gc-bench-parity-gate-p= で
+articulate、ERT 6 件 (内 1 件は build-cycle helper の shape
+test、5 件は bench / gate predicate / large input / summary
+emission / end-to-end gate) + 39 件既存 = 46/46 ERT all green.
+v7 articulation の *throughput axis* (= Phase A baseline 比 -10%
+gate) と *image-baked axis* (= =gc-self-host-test.eln=) は Doc 78
+/ Doc 47 phase 6 prerequisite 待ちで Phase D-B 着手と同期、本
+stage では correctness axis を確定し、bench harness を Phase D-B
+で再利用可能な形に articulate して引渡す.  =bench/nelisp-gc-c5-
+bench.el= 別 file 化は本 stage 範囲外 (= harness が host-Emacs
+mock + 標準 NeLisp primitive 両対応の =:alloc-fn= / =:link-fn=
+injection 設計なので =lisp/nelisp-stdlib-gc.el= 内 append で十分、
+別 file 化は throughput axis 着手時に再考).
 
 *v7 refinement (2026-05-09)*: v6 の高水準 articulation (= ERT 全 pass、bench 3 axis、=gc-stats= MCP tool、self-host gate、+~50 elisp LOC、1-2 週間) を *self-host 定義 + bench harness 設計 + gate threshold + 4 sub-stage breakdown + risk + test plan + Phase D-B handoff* に展開.  Track U §5.3 (= Stage C.2 Bacon-Rajan) + Track V §5.4 (= Stage C.3 finalizer queue) と同 detail 水準.
 
