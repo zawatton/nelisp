@@ -290,7 +290,10 @@ Phase A-D と並行可能 (= 別ファイル群).  Stage 7.1 は smaller pilot.
    - Doc 76 (= OS surface migration、100% SHIPPED)
    - Doc 75 Phase 9 v2 audit (= 進行中)
    - Doc 74 anvil-runtime migration audit (= 進行中)
+   - Doc 80 (= pre-stdlib elisp substrate、DRAFT 2026-05-09、=strategy.rs= ~-227 LOC unlock path)
 #+end_example
+
+Note 2026-05-09: Doc 80 (= =docs/design/80-elisp-pre-stdlib-substrate.org=) は §3.1 の "Phase B GATE FAILED" 結論を invalidate するわけではない (= 旧 Phase B plan は relevance を失ったまま) が、Track H audit が =memory project_nelisp_strategy_rs_pinned= で identify した "future deletion path" を main path に格上げし、=strategy.rs= の =bi_length_impl= / =aref_helper= / =bi_aset_impl= / =bi_elt_impl= の multi-variant fall-through body (= ~250 LOC) を elisp 再表現可能にする独立 shrink path として並行進行可.
 
 ** §3.2 工数 grand total
 
