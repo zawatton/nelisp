@@ -271,7 +271,7 @@ Rust 側に必要な primitive: =nl-jit-call-ptr-ptr name a b= が name → fn p
 * §6 Out of scope
 
 - Stage 2 (= call-site JIT entry / form-identity cache) のような *runtime-time* JIT 化は本 Doc から除外. 本 Doc は init-time DSL bootstrap までで Doc 77 (b) の主要利得を回収.  Stage 3 以降の動的 JIT は別 Doc (= 77c) を起こす.
-- Sexp ABI pin (= Doc 77 §2.3.3 Stage 4) は ABI 変更で Doc 76 と衝突懸念あり、本 Doc では deferred.
+- Sexp ABI pin (= Doc 77 §2.3.3 Stage 4) は **2026-05-09 に Doc 77c で unpause** された (= Doc 76 OS surface 100% SHIPPED で衝突懸念解消).  Stage 4 → Doc 77c Phase A で resume、本 Doc 77b 範囲外.
 - bench harness の elisp 化は b.5 で扱うが、JIT 自体の perf 改善ではないので最後に回す.
 
 * §7 References

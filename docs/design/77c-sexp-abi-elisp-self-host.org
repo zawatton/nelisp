@@ -1,0 +1,369 @@
+#+TITLE: Doc 77c — Sexp ABI Stage 4 unpause + 完全 elisp self-host commitment
+
+* Status
+:PROPERTIES:
+:STATE: DRAFT
+:DRAFTED: 2026-05-09
+:PARENT: Doc 77 (= 元 Stage 4 articulation)
+:RELATED: Doc 77b (= Rust-min JIT 路線)、Doc 75 (= NELIMG image decode、PAUSED 別 issue)、Doc 63 (= Phase 7 self-host roadmap、70% SHIPPED)
+:UPDATES: Doc 77 §2.3.3 Stage 4 status (= deferred → IN_PROGRESS)、Doc 77b §6 (= "Sexp ABI pin deferred" 削除)
+:DECISION_DATE: 2026-05-09 (user 指示: "Doc 77 の Stage4 を unpause")
+:END:
+
+* §0 TL;DR
+
+Doc 77 §2.3.3 Stage 4 (= Sexp memory layout pin、JIT direct emit base) を **resume**.  さらに本 Doc は同 Stage を入口として **Sexp ABI を完全 elisp 化** し、最終的に nelisp を self-hosting (= Rust core ≈ 300-500 LOC) する commitment を articulate する.
+
+過去の関連判断と本 Doc の位置:
+- Doc 77 (= JIT 拡大路線): Stage 4 = NlConsBox layout pin。Doc 77b で deferred。
+- Doc 77b (= Rust-min 路線): elisp wrapper で strategy 移管。Sexp ABI pin は §6 で deferred と articulate。
+- Doc 75 (= image decode in elisp): PAUSED INDEFINITELY。**ただし**理由は image decoder の Rust 必須性 (= boot 前要件) で、Sexp ABI 一般の elisp 化を否定したものではない。
+- 本 Doc (= 77c): user 改判断 "Sexp ABI elisp 化はまだ諦めていません" に基づき Stage 4 unpause。
+
+期待 net delta (= 全 Phase A-E 完走時):
+- Rust core: 現 ~3000 LOC → ~300-500 LOC (= ~85% 縮小)
+- elisp: ~+1500-2000 LOC 増加 (= Sexp 操作 + GC + native compiler)
+- 起動時間: NELIMG image decode を elisp 化すると +80ms (= 許容範囲、Doc 75 PAUSED 議論より)
+
+* §1 動機
+
+** §1.1 「Sexp ABI elisp 化諦めない」commitment
+
+user 2026-05-09 指示を直接引用:
+- "下記の部分も elisp で記述出来るようにするにはどうしたら良いですか？ 1. nelisp 自身の runtime ABI (= Sexp / GC / JIT bridge)、2. Cranelift などの外部 native compiler crate との bridge"
+- "4. nelisp self-host roadmap 全体を遂行。これしか目指していません。"
+- "Sexp ABI elisp 化はまだ諦めていません"
+- "Doc 77 の Stage4 を unpause で"
+
+これらが本 Doc の出発点.
+
+** §1.2 過去の "deferred" 判断の見直し
+
+Doc 77b §6 articulation:
+> Sexp ABI pin (= Doc 77 §2.3.3 Stage 4) は ABI 変更で Doc 76 と衝突懸念あり、本 Doc では deferred.
+
+検証: Doc 76 (= OS surface migration) は 2026-05-09 に **100% SHIPPED** (= Stage 0/A/B/C/D/E/F/G 全完). Sexp ABI 変更との衝突は事実上解消.  =Stage 4 を妨げる構造的理由は現存しない=.
+
+** §1.3 Doc 75 PAUSED との区別
+
+Doc 75 PAUSED の commit body より:
+> 本 Doc の実装は decoder が elisp 起動前に走る必要があり、構造的に Rust core にしか置けない (= image binary I/O 範囲を超える DAG cycle-safe encoder/decoder ロジック)
+
+これは **image decode** (= boot 前) 限定の制約.  本 Doc が対象とする **runtime での Sexp 操作** (= boot 後) は elisp が走っている前提なので別問題.  Doc 75 PAUSED は本 Doc の path を否定しない.
+
+* §2 段階的 plan (= Phase A-E)
+
+** §2.1 Phase A — Sexp ABI 解放 (= 1-2 ヶ月)
+
+Doc 77 §2.3.3 Stage 4 の articulation を実装段階に落とす.
+
+*** §2.1.1 NlRc<T> 自前実装
+
+現状: =Rc<RefCell<T>>= が =Sexp::Cons= 等の payload に使われる.  Rust 内部では std で動くが elisp / Cranelift IR から直触れない.
+
+新設: =NlRc<T>= 自前 ref-counted ptr.  layout fixed:
+
+#+begin_example
+#[repr(C)]
+struct NlRcInner<T> {
+    refcount: AtomicUsize,  // offset 0
+    value: T,                // offset 8
+}
+
+pub struct NlRc<T>(*mut NlRcInner<T>);
+#+end_example
+
+API parity with =Rc<T>=:
+- =NlRc::new(value) -> NlRc<T>=
+- =NlRc::clone(this) -> NlRc<T>= (= refcount += 1)
+- =Drop= impl (= refcount -= 1, free if 0)
+- =NlRc::deref(this) -> &T=
+
+*** §2.1.2 NlConsBox layout pin
+
+#+begin_example
+#[repr(C)]
+struct NlConsBox {
+    car: Sexp,    // offset 0  (= 16 bytes: 1 byte tag @ 0, 8 byte payload @ 8)
+    cdr: Sexp,    // offset 16
+    refcount: AtomicUsize,  // offset 32
+}
+#+end_example
+
+Sexp 自体も pin:
+
+#+begin_example
+#[repr(C, u8)]
+pub enum Sexp {
+    Nil,                       // tag = 0, payload = 0
+    T,                         // tag = 1, payload = 0
+    Int(i64),                  // tag = 2, payload = i64
+    Cons(NonNull<NlConsBox>),  // tag = 7, payload = box ptr
+    // ... 他 variant
+}
+#+end_example
+
+Sexp Cons → NlConsBox の deref は単一 ptr load + offset access.  JIT IR で直 emit 可能 (= Doc 77 §2.3.3 emit pattern 通り).
+
+*** §2.1.3 elisp primitive 追加
+
+Layer 2 から NlConsBox を直接操作するための primitive:
+
+| primitive | signature | semantics |
+|-----------+-----------+-----------|
+| =nl-cons-alloc CAR CDR= | =Sexp Sexp -> Sexp= | NlConsBox を heap に malloc、Sexp::Cons を返す |
+| =nl-cons-car BOX= | =Sexp -> Sexp= | NlConsBox の car field を read |
+| =nl-cons-cdr BOX= | =Sexp -> Sexp= | NlConsBox の cdr field を read |
+| =nl-cons-set-car BOX VAL= | =Sexp Sexp -> Sexp= | car field を write |
+| =nl-cons-set-cdr BOX VAL= | =Sexp Sexp -> Sexp= | cdr field を write |
+| =nl-rc-inc BOX= | =Sexp -> ()= | refcount +1 |
+| =nl-rc-dec BOX= | =Sexp -> ()= | refcount -1, 0 になったら drop |
+| =nl-rc-count BOX= | =Sexp -> i64= | 現 refcount を read |
+
+Rust 側 ~50 LOC の薄い shim で実装.  elisp から =nl-ffi-call= 経由で呼ばれる.
+
+*** §2.1.4 JIT trampoline 改修
+
+現在 =build-tool/src/jit/cons.rs::nl_jit_cons_car= は =&*arg= で =Sexp::Cons(rc)= を match、=rc.borrow().clone()= で deref.  Stage 4 後は:
+
+#+begin_example
+unsafe extern "C" fn nl_jit_cons_car(arg: *const Sexp, out: *mut Sexp) -> i64 {
+    if (*arg).tag() == SEXP_TAG_CONS {
+        let box_ptr = (*arg).cons_box_ptr();
+        *out = (*box_ptr).car.clone();  // Sexp clone (= 16 byte memcpy + tag adjust)
+        TRAMPOLINE_OK
+    } else {
+        TRAMPOLINE_ERR
+    }
+}
+#+end_example
+
+clone semantics: Sexp::Cons(box_ptr) の clone は box の refcount inc + ptr copy. 別 variant (Int / Float / Nil / T) は payload memcpy.
+
+*** §2.1.5 Phase A 工数見積
+
+| sub-stage | 内容 | 工数 |
+|-----------+------+------|
+| A.1 | NlRc<T> 設計書 + 実装 + ERT | 1-2 週間 |
+| A.2 | NlConsBox layout pin + Sexp variant 改修 | 2-3 週間 |
+| A.3 | 全 manipulation 経路 audit + 置換 (= ~600 LOC Rust 変更) | 2-4 週間 |
+| A.4 | elisp primitive 追加 + smoke | 1 週間 |
+| A.5 | JIT trampoline 書換 | 1-2 週間 |
+| A.6 | ERT regression 検証 | 1 週間 |
+| **計** | | **8-13 週間** (= 2-3 ヶ月) |
+
+** §2.2 Phase B — Sexp 操作を elisp wrapper に migrate (= 2-4 週間)
+
+Phase A 完了後、=cons= / =car= / =cdr= / =setcar= / =setcdr= の elisp wrapper を =nl-cons-*= primitive で書換:
+
+#+begin_example
+(defun cons (a b)
+  (nl-cons-alloc a b))
+
+(defun car (cell)
+  (cond ((eq cell nil) nil)
+        ((nl-cons-p cell) (nl-cons-car cell))
+        (t (signal 'wrong-type-argument (list 'consp cell)))))
+#+end_example
+
+Doc 77b Stage b.4 で elisp wrapper は既にあるが Rust =strategy.rs= 経由で box 操作していた.  Phase B で =strategy.rs= 削除可 (~-408 LOC Rust).
+
+Vector / Str / その他 variant も同様に NlVecBox / NlStrBox 化、elisp 移管.
+
+** §2.3 Phase C — GC を elisp に migrate (= 1-2 ヶ月)
+
+=Drop= による auto-free は Rust 内部のみ.  elisp が manual ref counting を駆動:
+
+#+begin_example
+(defun cons (a b)
+  (let ((box (nl-cons-alloc a b)))
+    (nl-rc-inc a)        ; car ref +1
+    (nl-rc-inc b)        ; cdr ref +1
+    box))
+
+(defun nl-cons-finalize (box)
+  "cons の refcount = 0 時、car/cdr の refcount を dec して free."
+  (nl-rc-dec (nl-cons-car box))
+  (nl-rc-dec (nl-cons-cdr box))
+  (nl-cons-free-box box))
+#+end_example
+
+Cycle detection (= cons 同士の循環参照) は elisp で Bacon-Rajan アルゴリズムを実装. ~300 LOC elisp.
+
+Rust =Drop= impl は依然必要 (= elisp が dec 漏らした時の safety net) だが、運用上は elisp 駆動.
+
+** §2.4 Phase D — Native compiler を elisp 化 (= 3-6 ヶ月)
+
+Cranelift 依存を解消.  2 path:
+
+*** §2.4.1 Path D-A: Cranelift C-style shim (= 1-2 週間、現実路線)
+
+Cranelift Rust crate を保持しつつ薄い C API で expose:
+
+#+begin_example
+#[no_mangle]
+pub extern "C" fn cl_make_module() -> *mut c_void { ... }
+#[no_mangle]
+pub extern "C" fn cl_emit_iadd(b: *mut c_void, a: u32, c: u32) -> u32 { ... }
+// ... ~50 fn
+#+end_example
+
+elisp が =nl-ffi-call= で driving:
+
+#+begin_example
+(defun nl-jit-build-add2 (module)
+  (let ((sig (cl-make-sig 2 1)))           ; 2 i64 in, 1 i64 out
+    (cl-add-param sig :i64) (cl-add-param sig :i64)
+    (cl-add-return sig :i64)
+    (let ((func (cl-declare-function module "add2" :local sig)))
+      (cl-emit-block func 'entry)
+      (let ((a (cl-arg func 0)) (b (cl-arg func 1)))
+        (cl-emit-iadd func a b)
+        (cl-emit-return func a))
+      func)))
+#+end_example
+
+Cranelift crate は依然 Rust だが「**Rust crate を呼ぶ shim**」のみが Rust core に残る.
+
+*** §2.4.2 Path D-B: Cranelift 完全置換 (= 3-6 ヶ月、true self-host)
+
+x86_64 / ARM64 の machine code byte sequence を elisp で直 emit、=mmap PROT_EXEC= した page に書込んで dispatch:
+
+#+begin_example
+(defun nl-emit-iadd-rax-rdx (page offset)
+  ;; x86_64: 48 01 d0 = add rax, rdx
+  (nl-ffi-write-bytes-at page offset (unibyte-string #x48 #x01 #xd0))
+  (+ offset 3))
+#+end_example
+
+これが完成すれば nelisp は **Rust の Cranelift 依存ゼロ** で動く.  ただし register allocator / instruction selection / ELF linkage の elisp 実装が必要 (= ~5000 LOC elisp).
+
+Phase D-A で start、Phase D-B は将来 Stage として後段化を推奨.
+
+** §2.5 Phase E — reader/eval 残作業 (= 1-2 ヶ月)
+
+Doc 63 master plan の残:
+- Stage 7.1 (Doc 64 printer port): DRAFT → SHIPPED 完了 (= ~200 LOC 削減)
+- Stage 7.2 (Doc 66 reader port): DRAFT → SHIPPED 完了 (= ~1400 LOC 削減)
+- Phase 8 残 (Doc 73 Rust reader/eval purge 完了)
+
+Phase A-D と並行可能 (= 別ファイル群).  Stage 7.1 は smaller pilot.
+
+* §3 総合工数 + 着地形
+
+** §3.1 全 Phase 並行不可、依存関係
+
+#+begin_example
+   ┌─────┐
+   │ A   │ Sexp ABI 解放
+   └──┬──┘
+      ↓
+   ┌─────┐
+   │ B   │ Sexp 操作 elisp 化
+   └──┬──┘
+      ↓
+   ┌─────┐    ┌─────┐    ┌─────┐
+   │ C   │    │ D-A │    │ E   │  (互いに並行可)
+   │ GC  │    │JIT  │    │7.1/2│
+   └─────┘    └─────┘    └─────┘
+                ↓
+              ┌─────┐
+              │ D-B │  (任意、後段)
+              └─────┘
+#+end_example
+
+** §3.2 工数 grand total
+
+| phase | 期間 | Rust LOC delta |
+|-------+------+----------------|
+| A | 2-3 ヶ月 | +0 (= refactor) |
+| B | 2-4 週間 | -400 (= strategy.rs 削除) |
+| C | 1-2 ヶ月 | -100 |
+| D-A | 1-2 週間 | -2000 (= cranelift wrapper 残るが dsl.rs 等削除) |
+| D-B (任意) | 3-6 ヶ月 | -200 (= cranelift binding shim 削除) |
+| E | 1-2 ヶ月 | -1600 (= Stage 7.1 + 7.2) |
+| **合計 (D-A まで)** | **5-8 ヶ月** | **-4100 LOC** |
+| **合計 (D-B まで)** | **8-14 ヶ月** | **-4300 LOC** |
+
+** §3.3 最終 Rust core 構成 (= D-A 採用)
+
+| 残る Rust 領域 | 推定 LOC |
+|---------------+----------|
+| Sexp 型定義 + NlRc / NlConsBox | ~300 |
+| ffi.rs (= libdl wrapper) | ~360 |
+| boot loader (= main + image load) | ~150 |
+| Cranelift C shim (= ~50 fn) | ~600 |
+| **計** | **~1400 LOC** |
+
+baseline ~3000 LOC → ~1400 LOC、**~50% 縮小**.
+
+** §3.4 最終 Rust core 構成 (= D-B 採用)
+
+| 残る Rust 領域 | 推定 LOC |
+|---------------+----------|
+| Sexp 型定義 + NlRc / NlConsBox | ~300 |
+| ffi.rs | ~360 |
+| boot loader | ~150 |
+| **計** | **~810 LOC** |
+
+baseline ~3000 LOC → ~810 LOC、**~73% 縮小**.
+
+* §4 immediate next steps (= 本 Doc 完成直後)
+
+** §4.1 Doc 77 / 77b status update
+
+- Doc 77 §2.3.3 Stage 4 を =STATE: deferred= から =STATE: IN_PROGRESS, see Doc 77c= に書換
+- Doc 77b §6 から "Sexp ABI pin deferred" 行を削除
+- Doc 77c (= 本 Doc) を main worktree に commit
+
+** §4.2 Phase A.1 着手 — NlRc<T> 設計 + POC 実装
+
+- =build-tool/src/eval/nlrc.rs= 新設 (= ~100 LOC)
+- =NlRc<T>= struct + Drop impl + Deref impl + Clone impl
+- ERT で =Rc<T>= と等価動作確認 (= 既存 =Rc= を =NlRc= に置換するテスト)
+- ~1 週間で着地
+
+** §4.3 Phase A.2 着手 — NlConsBox 試作 + 1 site での migrate
+
+- =Sexp::Cons= 1 箇所だけ NlConsBox に置換 (= 他 variant は Rc のまま)
+- =bi_car= / =bi_cdr= / JIT trampoline =nl_jit_cons_car= が動くこと確認
+- ~2 週間で着地
+
+* §5 Test plan
+
+** §5.1 Phase A 各 stage で既存 ERT 全 PASS
+
+各 sub-stage 完了時:
+- =cargo test --release --lib --tests -p nelisp-build-tool=: 既存 PASS 維持
+- =make test=: ERT regression 0 unexpected
+- 性能 bench: 退行 10% 以下
+
+** §5.2 Phase B-E 各 stage で smoke + ERT
+
+Phase A 完了後の各 stage は基本 elisp 側の追加なので smoke + ERT の組合せで sufficient.
+
+** §5.3 Final self-host gate
+
+D-A or D-B 完了時:
+- nelisp binary 単体で stdlib + user code が動く
+- Rust core LOC < 2000 (D-A) or < 1000 (D-B)
+- 起動時間 < 200ms (= NELIMG decode を elisp 化した場合の +80ms 込み)
+
+* §6 Out of scope
+
+- 既存 Doc 76 の OS surface migration は完了済 (= 100% SHIPPED).  本 Doc は同 path の延長.
+- 本 Doc は **設計** であり **実装** は別 commits.  各 Phase の sub-stage commit が SHIPPED 報告.
+- 性能チューニング (= Doc 77 元 §0 perf target 5-20x) は本 Doc の goal ではない.  Sexp ABI 解放は perf にとっても正方向だが measurement は別.
+
+* §7 References
+
+- Doc 77 (= 親 Doc、Stage 4 元 articulation)
+- Doc 77b (= Rust-min 路線、本 Doc が更新する側)
+- Doc 75 (= NELIMG image decode、PAUSED — 本 Doc の path とは別 issue)
+- Doc 76 (= OS surface migration、100% SHIPPED — 本 Doc の前提整備)
+- Doc 63 (= Phase 7 self-host roadmap)
+- Doc 73 (= Phase 8 Rust reader/eval purge)
+
+* §8 改判断 record
+
+- 2026-05-09: user 指示 "Doc 77 Stage4 を unpause" を受け、本 Doc を draft.  Doc 75 PAUSED は image decode 限定で、Sexp ABI 一般の elisp 化を否定したものではないことを articulate.
