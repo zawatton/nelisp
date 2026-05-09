@@ -1,0 +1,550 @@
+#+TITLE: Doc 81 — nelisp-cc primitive trampoline architectural extension (= Phase 7.1.6 prerequisite)
+#+AUTHOR: NeLisp / Claude
+#+DATE: 2026-05-09
+#+STATUS: DRAFT 2026-05-09
+#+PARENT: Doc 28 (= Phase 7.1 native compiler)、Doc 77c (= 100% 純 elisp commitment)
+#+UNLOCKS: Phase 7.1.6.a〜.f cluster takeovers (= D-B Cranelift 削除 -4,782 Rust LOC)
+#+DEPENDS_ON: Phase 7.1.5 LOCKED (= 既 SHIPPED 2026-05-09 per Doc 28 §11.6)、Phase A.5.1 SHIPPED (= Sexp::tag() / cons_box_ptr())
+
+* §0 要旨 (TL;DR)
+
+Track O 2026-05-09 audit で identify した *Blocker 2* (= "nelisp-cc has
+no primitive trampoline emit mode") の concrete design + sub-task
+breakdown.  Phase 7.1.5 perf gate は Track S audit (= Doc 28 §11.6、
+2026-05-09) で *fib 3964x / fact-iter 24.1x / alloc-heavy 23.0x* =
+*PASS-PASS-PASS* CLOSED 確認済、本 Doc 81 が *唯一の architectural
+blocker*.  scope = nelisp-cc backend (=src/nelisp-cc.el= +
+=src/nelisp-cc-x86_64.el= + =src/nelisp-cc-arm64.el= +
+=src/nelisp-cc-runtime.el=) に *4 新 SSA opcode* + *1 新 entry-point ABI
+mode* + *1 新 FFI extern-C 解決 path* を追加.  total ~*+650-800 elisp
+LOC* / *Rust ±0* / *~1 週間* (= Stage 81.1〜81.4 で 8 営業日).
+完了後、Phase 7.1.6.a (=cons= takeover、cons.rs ~-415 Rust LOC) 〜
+7.1.6.f (=dsl= + =bridge= cleanup、~-2,015 Rust LOC) の 6 cluster +
+7.1.7 deletion (= 計 ~-4,782 Rust LOC) が *並行 dispatchable*.
+
+* §1 動機
+
+** §1.1 Phase 7.1.6 prerequisite
+
+Doc 28 §3.6 (= Phase 7.1.6 eval-site primitive lowering takeover) は
+*Cranelift JIT が emit している =nl_jit_*= trampoline 群を nelisp-cc
+backend で直 emit する経路*.  しかし 2026-05-09 時点の nelisp-cc は:
+
+1. *SSA IR 上の primitive lowering opcode が無い* — =cons= / =car= /
+   =cdr= / =setcar= / =setcdr= は =:call= opcode の callee meta で
+   identify されるが、host machine code emit pattern は generic CALL
+   rel32 (= System V AMD64 / AAPCS64 ABI 経由) しか持たない.
+   =build-tool/src/jit/cons.rs= が emit する *inline NIL fast path* (=
+   tag-byte load + immediate compare + conditional branch + helper
+   tail-call) は表現不能.
+
+2. *Sexp memory layout を読む opcode が無い* — Phase A.5.1 で =Sexp=
+   は =#[repr(C, u8)]= に pin されており、tag-byte = offset 0 / payload
+   ptr = offset 8 (=SEXP_PAYLOAD_OFFSET=) として inline で読める.  しかし
+   nelisp-cc には =mov al, byte ptr [rdi]= / =mov rax, qword ptr
+   [rdi+8]= 相当の SSA-level abstraction が無く、=:load-var= /
+   =:store-var= は heap-cell / spill-slot 専用 (= elisp i64 wrapper).
+
+3. *外部 C symbol への CALL emit path が無い* — 現 =--lower-call= は
+   =nelisp-defs-index= 経由で elisp callee fixup を解決 (= 同一 mmap
+   page 内 letrec / inner closure).  =nl_jit_cons_car= のような *外部
+   linker symbol* を =Linkage::Import= 相当で resolve する path が無い.
+
+4. *Trampoline ABI mode が無い* — 現
+   =nelisp-cc-runtime-compile-and-allocate= の出力 page は host ABI
+   (=System V AMD64= 6-arg int register / =AAPCS64= x0..x7) の
+   =extern "C" fn(i64, i64, ..., i64) -> i64= 形状.  Cranelift trampoline
+   は =extern "C" fn(*const Sexp, *mut Sexp) -> i64= (= unary) /
+   =extern "C" fn(*const Sexp, *const Sexp, *mut Sexp) -> i64= (= binary
+   constructor) で *out-pointer をもらって `i64` で OK/ERR を返す* 別 ABI.
+
+** §1.2 Track O Blocker 2 articulation (= 何が現状 nelisp-cc に不在か)
+
+Track O 2026-05-09 audit (= Phase 7.1.6.a 着手判定) で以下 inventory:
+
+| 項目                                | 現状 nelisp-cc                         | 7.1.6 takeover で必要              |
+|-------------------------------------+----------------------------------------+------------------------------------|
+| SSA opcode set                       | 10 opcode (= const/load-var/store-var/  | *+4 opcode* (= ssa-call-primitive   |
+|                                      | call/call-indirect/closure/copy/branch/ | / ssa-load-tag / ssa-load-payload-  |
+|                                      | jump/return; phi は phi-out 後消去)     | ptr / ssa-cmp-tag-imm)              |
+| Sexp 内部 layout 読取り              | 無し (= elisp wrapper i64 のみ)         | *tag byte at [rdi+0]* + *payload   |
+|                                      |                                          | ptr at [rdi+8]* の direct emit       |
+| FFI external C symbol 解決           | =nelisp-defs-index= (= elisp letrec のみ) | *=declare-extern-c=* (= linker      |
+|                                      |                                          | symbol を Phase 7.5 fixup pass で   |
+|                                      |                                          | mmap exec page の RIP-relative にpatch) |
+| entry-point ABI                      | =extern "C" fn(i64, i64, ...) -> i64=     | *trampoline mode* (= 上記別 ABI)    |
+|                                      | (System V AMD64 / AAPCS64 6-arg)         | +既存 ABI mode 維持 (= dual mode)   |
+| 条件分岐 i8 immediate compare        | 無し (= 既存 =:branch= は i64 reg 比較) | =cmp byte ptr [rdi], imm8= +       |
+|                                      |                                          | =je/jne= (x86_64) / =cbz/cbnz= (arm64) |
+
+これら 5 項目が揃わないと Phase 7.1.6.a (=cons=) で =declare_unary_with_nil_inline=
+等価の inline NIL fast path が elisp-emit で書けない.  Phase 7.1.6.b〜.f
+は =cons= takeover の pattern に乗るので *81 完了 = 6 cluster 全部
+unblocking*.
+
+* §2 Current nelisp-cc state
+
+** §2.1 既存 SSA IR opcode set
+
+=src/nelisp-cc.el= (= 1,985 LOC) + 13 module total *~12,263 LOC elisp*
+(Doc 28 §0 LATEST に articulate 済).  SSA opcode set は backend pcase
+dispatch (=src/nelisp-cc-x86_64.el::nelisp-cc-x86_64--lower-instr=
+line 1984 / =src/nelisp-cc-arm64.el::nelisp-cc-arm64--lower-instr=
+line 1111) で 10 種:
+
+#+begin_example
+  pcase opcode
+    'const          → load literal i64 into def reg
+    'load-var       → load named var (cell / spill / register)
+    'store-var      → store def value to named var
+    'call           → CALL rel32 + ABI marshalling (System V AMD64 / AAPCS64)
+    'call-indirect  → CALL r/m64 (function-pointer call、closure 展開後)
+    'closure        → LEA rax, [rip + cell:inner:N] (or alloc-closure rel32)
+    'copy           → MOV reg, reg (phi-out 後の resolution)
+    'branch         → TEST + JE/JNE (current = i64 reg vs 0 比較)
+    'jump           → JMP rel32 (unconditional)
+    'return         → MOV rax, value-reg + epilogue + RET
+    'phi            → ERROR (= phi-out pass 必須)
+#+end_example
+
+これに =:tail-call=, =:tail-call-self=, =:self-direct-call=,
+=:inner-function-index= 等の meta が plist で乗る (= Phase 7.7 inliner
+の各 pass が annotate).
+
+** §2.2 既存 backend emit dispatch (x86_64 / arm64)
+
+各 backend は:
+- *prologue / epilogue* = System V AMD64 (rbp save + rsp align) /
+  AAPCS64 (fp/lr save + sp align)
+- *register file* = 16 x86_64 GPR (rax..r15) / 32 arm64 GPR (x0..x30 + sp)
+- *spill slot* = stack frame の RBP-relative / FP-relative slot
+- *fixup table* = call-fixups (= elisp letrec 名 → 同 mmap page 内
+  CALL rel32 disp32 patch) / cell-fixups (= =cell:NAME= label → RIP-rel
+  load patch)
+
+外部 C symbol fixup table は *存在しない*.
+
+** §2.3 既存 entry-point ABI (= nelisp-cc-runtime-compile-and-allocate)
+
+=src/nelisp-cc-runtime.el::nelisp-cc-runtime-compile-and-allocate=
+(line 1336、1408 LOC total) の 8-step pipeline:
+
+#+begin_example
+  AST → SSA (T6 frontend)
+      → Phase 7.7 passes (T158: escape / inline / rec-inline / lift)
+      → safe-points (T11)
+      → linear-scan (T4)
+      → backend compile (T9 x86_64 / T10 arm64)
+      → tail-call rewrite (`--lower-tail-call`)
+      → safe-point stub injection
+      → exec-page allocation (W^X mmap PROT_EXEC)
+      → real exec via subprocess `nelisp-exec-bytes`
+#+end_example
+
+返り値 plist に =:exec-page=, =:final-bytes=, =:exec-result= 等.
+ABI shape は固定 = =extern "C" fn(i64, i64, ..., i64) -> i64=.
+
+** §2.4 既存 FFI call resolution (= --lower-call の制約)
+
+=src/nelisp-cc-x86_64.el::nelisp-cc-x86_64--lower-call= (line 1415):
+- =meta :fn CALLEE-SYM= = elisp symbol (= letrec 名 / inner closure 名)
+- 出力 = =CALL rel32= with =disp32 = 0= placeholder + =call-fixups=
+  entry =(fixup-offset . CALLEE-SYM)=
+- Phase 7.5 link pass (= =nelisp-cc-x86_64-compile-with-link=) が
+  =nelisp-defs-index= 経由で CALLEE-SYM の同 page 内 entry offset を
+  resolve、disp32 に patch
+
+*制約*: CALLEE-SYM は *同 mmap page 内の elisp letrec / inner* に限る.
+外部 linker symbol (= =nl_jit_cons_car= 相当) は resolve 不能.
+
+* §3 Extension scope
+
+** §3.1 New entry-point ABI mode (= primitive trampoline shape)
+
+=nelisp-cc-runtime-compile-and-allocate= に *第 4 引数 ENTRY-ABI* を
+追加.  既定 =:host-int= (= 既存 =extern "C" fn(i64, ..., i64) -> i64=).
+新値 =:trampoline-unary=, =:trampoline-binary-ctor=,
+=:trampoline-binary-mut= で primitive trampoline shape を選択.
+
+#+begin_src elisp
+  ;; 既存 (= shape 1):
+  (nelisp-cc-runtime-compile-and-allocate LAMBDA-FORM 'x86_64 EXEC-ARGS)
+    ;; → page :: extern "C" fn(i64, i64, ..., i64) -> i64
+
+  ;; 新 (= shape 2 = unary out-param trampoline):
+  (nelisp-cc-runtime-compile-and-allocate LAMBDA-FORM 'x86_64 nil
+                                          :entry-abi :trampoline-unary)
+    ;; → page :: extern "C" fn(*const Sexp, *mut Sexp) -> i64
+    ;; arg0 = arg_ptr (rdi / x0), arg1 = out_ptr (rsi / x1)
+    ;; 返り値 = TRAMPOLINE_OK (0) / TRAMPOLINE_ERR (1)
+#+end_src
+
+実装 = backend prologue emit pass で =--frame-layout-mode=
+(=:host-int= / =:trampoline-unary= / =:trampoline-binary-ctor= /
+=:trampoline-binary-mut=) を選択.  =nelisp-cc-x86_64--emit-prologue= /
+=nelisp-cc-arm64--emit-prologue= に mode 引数追加.
+
+** §3.2 New SSA opcodes (= ssa-call-primitive, ssa-load-tag, ssa-load-payload-ptr, ssa-cmp-tag-imm)
+
+| opcode               | operands                | meta            | semantics                                   |
+|----------------------+-------------------------+-----------------+---------------------------------------------|
+| =ssa-call-primitive= | (PRIM-SYM ARG-VALS...) | =:abi=          | 外部 C symbol への CALL.  =:abi= で          |
+|                      |                          | (= shape の指定) | trampoline-unary / -binary-ctor / -binary-mut |
+| =ssa-load-tag=       | (PTR-VAL)              | nil             | =mov al, byte ptr [PTR-VAL]= = tag byte     |
+|                      |                          |                  | (8-bit zero-extend to i64)                   |
+| =ssa-load-payload-ptr= | (PTR-VAL)            | nil             | =mov rax, qword ptr [PTR-VAL+8]= = payload   |
+|                      |                          |                  | ptr (=NlConsBox*= / =NlVectorBox*= 等)       |
+| =ssa-cmp-tag-imm=    | (TAG-VAL IMM-VAL)      | =:cond=         | i8 immediate compare + branch (= TAG_NIL    |
+|                      |                          | (=:eq= / =:ne=) | / TAG_CONS / TAG_INT 等の constant 比較)     |
+
+*注*: =ssa-call-primitive= は既存 =call= opcode と独立 (= meta merge で
+ 統合する option もあるが、call-fixups table の扱いを分離した方が
+ link pass の責務が clean).  =ssa-load-tag= / =ssa-load-payload-ptr= は
+ *unsafe memory read* (= GC safe-point の在 / 不在で扱いが変わる).
+
+** §3.3 Backend emit additions (x86_64)
+
+=src/nelisp-cc-x86_64.el= に 4 新 lower 関数:
+
+#+begin_src elisp
+  ;; +200 LOC ≈
+  (defun nelisp-cc-x86_64--lower-call-primitive (cg instr) ...)
+    ;; → CALL rel32 with extern-c-fixups entry (= linker symbol patch)
+    ;; ABI marshalling (= shape ごとに rdi/rsi/rdx 配置)
+  (defun nelisp-cc-x86_64--lower-load-tag (cg instr) ...)
+    ;; → MOVZX r64, byte ptr [src-reg]
+    ;; opcode bytes: 0F B6 /r (8-byte zero-extend)
+  (defun nelisp-cc-x86_64--lower-load-payload-ptr (cg instr) ...)
+    ;; → MOV r64, qword ptr [src-reg + 0x08]
+    ;; opcode bytes: REX.W 8B /r ModR/M+disp8
+  (defun nelisp-cc-x86_64--lower-cmp-tag-imm (cg instr) ...)
+    ;; → CMP r8, imm8 + JE/JNE rel8
+    ;; opcode bytes: 80 /7 ib + 74/75 cb
+#+end_src
+
+=nelisp-cc-x86_64--lower-instr= の =pcase= に 4 新 arm 追加.
+
+** §3.4 Backend emit additions (arm64)
+
+=src/nelisp-cc-arm64.el= に 4 新 lower 関数 (= 同 4 opcode の AAPCS64
+版):
+
+#+begin_src elisp
+  ;; +160 LOC ≈
+  (defun nelisp-cc-arm64--lower-call-primitive (cg instr) ...)
+    ;; → BL #imm26 with extern-c-fixups (= ADRP + LDR の 2-instr lazy
+    ;; pattern も option、初手は BL rel26 + linker stub で十分)
+  (defun nelisp-cc-arm64--lower-load-tag (cg instr) ...)
+    ;; → LDRB Wt, [Xn]  (32-bit zero-extend; UXTB で 64-bit 化)
+    ;; encoding: 0011 1001 01 imm12 Rn Rt
+  (defun nelisp-cc-arm64--lower-load-payload-ptr (cg instr) ...)
+    ;; → LDR Xt, [Xn, #8]
+    ;; encoding: 1111 1001 01 imm12 Rn Rt (imm12 = 1 = 8-byte offset)
+  (defun nelisp-cc-arm64--lower-cmp-tag-imm (cg instr) ...)
+    ;; → CMP Wn, #imm12 + B.EQ/B.NE rel19
+    ;; encoding: 0111 0001 00 imm12 Rn 11111  +  0101 0100 imm19 cond
+#+end_src
+
+=nelisp-cc-arm64--lower-instr= の =pcase= に 4 新 arm 追加.
+
+** §3.5 FFI call resolution path (= external C symbol via =declare-extern-c=)
+
+新 fixup table: =extern-c-fixups= (= alist =((PATCH-OFFSET . SYMBOL-NAME) ...)=).
+Phase 7.5 link pass (= =nelisp-cc-x86_64-compile-with-link= /
+=nelisp-cc-arm64-compile-with-link=) で resolve.
+
+resolve 戦略:
+1. =mmap PROT_EXEC= page allocation 後、=dlsym= 相当で host runtime の
+   =nl_jit_cons_*= symbol address を query (= Linux =dlsym(RTLD_DEFAULT,
+   "nl_jit_cons_car")=、macOS =dlsym(RTLD_DEFAULT, ...)=)
+2. *initial implementation* = =nelisp-cc-runtime= が elisp 側で symbol
+   address を =anvil-runtime= module call で query (= 既存
+   =nelisp-cc-runtime--exec-real= と同 subprocess bridge 経由)
+3. *future optimization* = nelisp-cc-runtime に *known-extern-c
+   table* (= alist =((SYM . ABS-ADDR) ...)= ) を keep して dlsym roundtrip
+   を回避
+
+*caveat*: System V AMD64 で CALL rel32 = ±2GB range、=dlsym= が返す
+absolute address が mmap page から ±2GB を超える場合は *trampoline
+indirection* (= =mov rax, abs64 / call rax=) に fallback.  arm64 BL
+rel26 = ±128MB なので同様の indirection が頻出.
+
+** §3.6 Pipeline integration (= where takeover hooks in)
+
+=src/nelisp-cc-pipeline.el::nelisp-cc-pipeline-run-7.7-passes= (= line 240)
+の前段に *primitive recognition pass* を新設 (= 80 LOC ≈):
+
+#+begin_src elisp
+  (defun nelisp-cc-pipeline--recognize-primitives (function)
+    "Replace `:call' instructions whose callee = primitive (= cons / car
+  / cdr / setcar / setcdr / aref / aset / + / - / * / etc.) with
+  `:ssa-call-primitive' + (optional) inline `:ssa-load-tag' / `:ssa-cmp-
+  tag-imm' fast-path blocks."
+    ...)
+#+end_src
+
+primitive recognition table は =nelisp-cc-runtime-primitive-table= (=
+defconst alist =((SYM ARITY ABI-SHAPE) ...)=) で集中管理.
+
+* §4 LOC budget
+
+** §4.1 Per-component LOC estimate
+
+| component                                     | 既存 LOC | 追加 LOC | 注 |
+|-----------------------------------------------+----------+----------+----|
+| =src/nelisp-cc.el= (SSA IR core)              | 1,985    | +60      | 4 新 opcode の =cl-defstruct= 拡張 + verifier |
+| =src/nelisp-cc-x86_64.el= (x86_64 backend)    | 2,592    | +200     | 4 lower-* fn + extern-c-fixups |
+| =src/nelisp-cc-arm64.el= (arm64 backend)      | 1,273    | +160     | 4 lower-* fn + extern-c-fixups |
+| =src/nelisp-cc-runtime.el= (entry-point)      | 1,408    | +120     | =:entry-abi= 引数 + 4 ABI mode dispatch + dlsym bridge |
+| =src/nelisp-cc-pipeline.el= (pipeline)        | 286      | +80      | primitive recognition pass + table |
+| =src/nelisp-cc-callees.el= (callee resolver)  | TBD      | +40      | extern-c link table |
+| ERT (=test/nelisp-cc-test.el=)                | TBD      | +120     | round-trip + per-opcode + integration |
+| *aggregate elisp*                              |          | *+780*   |    |
+| Rust delta                                     | -        | *±0*     | Stage 81.x は elisp のみ (= cluster 削除は 7.1.6 で発動) |
+
+*concrete count target* = *+780 elisp LOC* (= 中央値、range 650-900).
+
+** §4.2 Aggregate (= +nelisp-cc elisp、Rust ±0)
+
+- elisp: *+780 LOC* (Stage 81.1〜81.4 合計)
+- Rust: *±0 LOC* (= Stage 81.x 内では削除発動しない)
+
+monotonic shrink rule (= user 2026-05-09 articulate):
+- Stage 81.x 単独では Rust LOC は減らない (= elisp 拡張のみ)
+- *Phase 7.1.6.a 着手時に -415 Rust* (= cons.rs 削除) で *cumulative
+  net = +780 elisp + -415 Rust* で全体の *Rust shrink rule 維持*
+- Phase 7.1.6.a〜.f 完了で *cumulative = +780 elisp + -4,022 Rust*
+- Phase 7.1.7.a〜.d 完了で *cumulative = +780 elisp + -4,782 Rust*
+
+** §4.3 Rule satisfaction (= Phase 7.1.6 cluster takeover での Rust shrink で offset)
+
+「Rust LOC は monotonic に減らす」ルールは *Doc 81 単独では
+elisp +780 で Rust ±0 = 純拡張*.  ルールは *本 Doc 81 が unlock する
+Phase 7.1.6.a (= 単独 -415 Rust) と必ず同 PR or 同 batch で merge*
+することで担保 (= 81.4 bench gate PASS 時点で 7.1.6.a のドラフト
+PR を repository 上に上げ、Doc 81 と同時 main merge).
+
+* §5 Sub-task breakdown
+
+** §5.1 Stage 81.1 — entry-point ABI mode + minimum opcode (= car only PoC) (~3 日)
+
+scope:
+- =nelisp-cc-runtime-compile-and-allocate= に =:entry-abi= 引数追加
+  (=:host-int= 既定 + =:trampoline-unary= 1 mode のみ)
+- =ssa-call-primitive=, =ssa-load-tag=, =ssa-cmp-tag-imm= 3 opcode
+  (= =ssa-load-payload-ptr= は Stage 81.2、cons constructor まで保留)
+- x86_64 backend のみ (= arm64 は Stage 81.2)
+- =--lower-call-primitive=, =--lower-load-tag=, =--lower-cmp-tag-imm=
+  3 lower fn
+- extern-c-fixups table + dlsym bridge (= initial = symbol table
+  hardcode、=nl_jit_cons_car= 1 件のみ)
+- ERT: =car nil → nil= の trampoline shape で end-to-end PASS
+
+LOC delta:
+- elisp: +280 (= core 30 + x86_64 100 + runtime 80 + pipeline 30 + ERT 40)
+- Rust: ±0
+
+deliverable: =draft/doc-81-stage1-entry-abi= branch で =car= 1 件の
+trampoline-shape exec page + ERT 5 件 PASS.  Phase 7.1.5 既存 1086/1091
+ERT は全部 PASS 維持.
+
+** §5.2 Stage 81.2 — full opcode set (= cons/car/cdr/setcar/setcdr) (~2 日)
+
+scope:
+- =ssa-load-payload-ptr= 4 番目の opcode 追加 (= cons constructor で
+  必要)
+- =:trampoline-binary-ctor= / =:trampoline-binary-mut= ABI mode 追加
+- arm64 backend に同 4 lower-* fn 追加
+- =nl_jit_cons_cdr= / =nl_jit_cons_make= / =nl_jit_cons_setcar= /
+  =nl_jit_cons_setcdr= の extern-c-fixups 4 件追加
+- ERT: =car / cdr / cons / setcar / setcdr= 5 op の round-trip PASS
+
+LOC delta:
+- elisp: +260 (= core 20 + x86_64 50 + arm64 100 + runtime 30 +
+  pipeline 30 + ERT 30)
+- Rust: ±0
+
+deliverable: 5 cons primitive を nelisp-cc emit で完全 cover、Phase
+7.1.6.a で削除する =build-tool/src/jit/cons.rs= の機能を *parity 100%*
+で elisp emit 経路で出せる.
+
+** §5.3 Stage 81.3 — pipeline integration + ERT (~2 日)
+
+scope:
+- =nelisp-cc-pipeline--recognize-primitives= pass 実装
+- =nelisp-cc-runtime-primitive-table= defconst 設置 (= cons 5 件 +
+  arith 12 件 + access 4 件 + predicate 1 件 + syscall 2 件 = 24 件分の
+  metadata、ただし emit は cons 5 件のみ、他は Phase 7.1.6.b〜.e で発動)
+- nelisp-cc-test.el の round-trip ERT 拡充 (= primitive recognition →
+  emit → exec の e2e)
+- =nelisp-cc-test.el= に *trampoline-shape exec ERT* 追加 (= Sexp tag
+  byte の actual layout を verify)
+
+LOC delta:
+- elisp: +160 (= pipeline 20 + runtime 30 + callees 40 + ERT 70)
+- Rust: ±0
+
+deliverable: existing 1086/1091 ERT 全 PASS 維持 + 新規 trampoline
+ERT 30+ PASS.
+
+** §5.4 Stage 81.4 — bench gate (= cons-heavy workload で Cranelift baseline ≧ 確認) (~1 日)
+
+scope:
+- =bench-actual= harness に =cons-heavy= 軸を新設 (= =(let loop ((n
+  N)) (if (zerop n) nil (cons n (loop (1- n)))))= 相当 elisp、Cranelift
+  baseline と nelisp-cc trampoline-emit で同 workload 走らせて perf 比較)
+- gate: nelisp-cc trampoline-emit perf ≧ Cranelift baseline (= 等価か
+  +α、regression 0)
+- 既存 3-軸 (= fib / fact-iter / alloc-heavy) の perf も regression 0
+- bench result を =memory project_doc81_stage4_bench_pass= に articulate
+
+LOC delta:
+- elisp: +80 (= bench harness 拡張 + ERT 30)
+- Rust: ±0
+
+deliverable: cons-heavy bench で Cranelift baseline と semantic
+equivalent + perf ≧ baseline、Doc 28 §3.6.a (= Phase 7.1.6.a =cons=
+takeover) の *gate condition 全部達成*、=draft/doc-81-archi-extension=
+を main merge → Phase 7.1.6.a dispatch ready.
+
+* §6 Risk + mitigation
+
+** §6.1 性能回帰 (= elisp-side IR overhead vs Cranelift native)
+
+risk: nelisp-cc が emit する trampoline shape の machine code 品質が
+Cranelift baseline 未達 (= linear-scan vs Cranelift regalloc2 + LLVM
+ISA encoder の差)
+
+mitigation:
+- Stage 81.4 の =cons-heavy bench= を *gate*.  baseline 未達なら 81.4
+  blocked、emit pattern tuning を Stage 81.5 (= 仮設) で実施
+- Phase 7.7 inliner との合算で Cranelift より速くなる可能性が高い (=
+  Phase 7.1.5 fib 3964x の前例)
+- worst-case = 5-10% perf gap → *user 2026-05-09 strategic directive
+  「100% 純 elisp」を優先*、5-10% gap は acceptable
+
+** §6.2 ABI 不一致 (= System V AMD64 vs AAPCS64)
+
+risk: trampoline ABI shape (=*const Sexp, *mut Sexp -> i64=) は
+=System V AMD64= = =rdi, rsi -> rax=、=AAPCS64= = =x0, x1 -> x0=、
+両者で *out-pointer 経由の return value writeback* が必要.
+
+mitigation:
+- Stage 81.1 で x86_64 のみ実装、out-pointer writeback は明示的な
+  =MOV qword ptr [rsi], src= emit
+- Stage 81.2 で arm64 移植、=STR Xn, [X1]= で同等
+- ERT に *cross-platform parity test* (= same elisp source、x86_64 /
+  arm64 両方 compile + same Sexp output) を入れる
+
+** §6.3 FFI call resolution の external C symbol 解決
+
+risk: =dlsym= roundtrip が exec page 起動毎に走ると overhead 大、また
+mmap page から symbol address ±2GB / ±128MB を超える場合の indirection
+fallback.
+
+mitigation:
+- *known-extern-c table* (= compile-time hardcode、=anvil-runtime=
+  module から symbol absolute address を取得して elisp side に baked
+  in、=nelisp-cc-runtime-primitive-table= の field として保持)
+- range overflow 時は *trampoline indirection* (= =mov rax, abs64 +
+  call rax=) に自動 fallback、emit pattern を =--lower-call-primitive=
+  内で range check で分岐
+- ERT に *long-range fixup test* (= mmap page を high address に
+  allocate して indirection path 強制) を入れる
+
+** §6.4 Phase 7.1.5 LOCKED 維持 (= 既 close した perf gate を破らない)
+
+risk: Doc 81 の SSA IR 拡張 (= 4 新 opcode + recognition pass) が
+既存 =fib= / =fact-iter= / =alloc-heavy= 3-軸 bench に regression 入れる.
+
+mitigation:
+- Stage 81.1〜81.4 各 stage で =make bench-actual= を *gate*.
+  regression 検知 (= baseline -5% 以下) なら stage 戻し
+- primitive recognition pass は *opt-in* (= existing IR は =:call=
+  opcode のまま、新 =:ssa-call-primitive= opcode は明示的に migrate
+  された primitive のみ)
+- existing 1086/1091 ERT 全 PASS を *hard gate* (= ERT 5 件
+  failing は既存、Phase 7.7 fix で着手中、新規 fail は許容しない)
+
+* §7 Test plan
+
+** §7.1 nelisp-cc-test.el での opcode round-trip ERT
+
+新規 ERT 30+ 件:
+- per-opcode round-trip: 4 新 opcode × (build → verify → emit → bytes
+  match) = 16 件
+- per-shape ABI: =:trampoline-unary= / =:trampoline-binary-ctor= /
+  =:trampoline-binary-mut= × x86_64/arm64 = 6 件
+- e2e exec: =car nil= / =car '(1 . 2)= / =cdr nil= / =cdr '(1 . 2)= /
+  =cons 1 2= / =setcar= / =setcdr= = 7 件
+- extern-c fixup: short-range / long-range / unknown-symbol-error = 3 件
+
+** §7.2 既存 fib / fact-iter / alloc-heavy bench で性能 regression 0
+
+=make bench-actual= で:
+- fib(30): ≧ 30x bytecode = 30x gate
+- fact-iter: ≧ 20x gate
+- alloc-heavy: ≧ 5x gate
+- 全 PASS-PASS-PASS 維持 (= Phase 7.1.5 LOCKED §11.6 actual)
+
+** §7.3 cons-heavy bench (= 新規) で takeover 検証
+
+=bench-actual cons-heavy= 軸新設:
+- workload: =(let loop ((n 100000)) (if (zerop n) nil (cons n (loop
+  (1- n)))))= 相当 elisp
+- baseline: Cranelift =nl_jit_cons_*= path (= 現 build-tool/src/jit/cons.rs)
+- target: nelisp-cc =:ssa-call-primitive= path (= 本 Doc 81 で実装)
+- gate: nelisp-cc perf ≧ Cranelift baseline (= regression 0、+α
+  acceptable)
+
+* §8 Out of scope
+
+** §8.1 cluster takeover 本体 (= Phase 7.1.6.a〜.f は別 Doc)
+
+Doc 81 は *architectural extension のみ*.  実際の cluster takeover (=
+Cranelift =cons.rs= / =arith.rs= / =access.rs= / =predicate.rs= /
+=syscall.rs= / =dsl.rs= / =bridge.rs= 削除) は Phase 7.1.6.a〜.f で
+別 PR / 別 commit.
+
+** §8.2 jit/* 削除 (= Phase 7.1.7 別 Doc)
+
+=build-tool/src/jit/= directory 削除 + Cranelift Cargo deps 削除は
+Phase 7.1.7 (= Doc 28 §3.7、4 sub-stage).
+
+** §8.3 Cranelift Cargo deps removal (= Phase 7.1.7.c)
+
+=cranelift= / =cranelift-jit= / =cranelift-module= の 3 crate 削除は
+Phase 7.1.7.c.  Doc 81 単独では *build-tool は build 通る* (= 81.x は
+elisp のみ).
+
+* §9 References
+
+- Doc 28 §3.6.a (= Phase 7.1.6.a =cons= takeover articulation)
+- Doc 28 §11.6 (= Phase 7.1.5 LOCKED、Track S audit 2026-05-09)
+- Doc 77c §2.4.2 (= Path D-B、100% 純 elisp commitment)
+- =src/nelisp-cc.el= line 121-280 (= SSA IR core、=cl-defstruct
+  nelisp-cc--ssa-instr=)
+- =src/nelisp-cc-x86_64.el= line 1984 (= =--lower-instr= dispatch)
+- =src/nelisp-cc-arm64.el= line 1111 (= =--lower-instr= dispatch)
+- =src/nelisp-cc-runtime.el= line 1336 (= =compile-and-allocate=
+  entry point)
+- =build-tool/src/jit/cons.rs= line 150-249 (=
+  =declare_unary_with_nil_inline= = takeover 対象 trampoline shape)
+- =build-tool/src/jit/bridge.rs= line 60-130 (= =unified_fn_ptr=
+  symbol resolver)
+- =build-tool/src/eval/sexp.rs= line 217-229 (= =SEXP_TAG_*= constants)
+- =build-tool/src/eval/sexp.rs= line 270-339 (= =SEXP_PAYLOAD_OFFSET=
+  + =cons_box_ptr()= helpers)
+- Track O 2026-05-09 audit (= Blocker 2 articulation、本 Doc 81 起草の
+  trigger)
+- Track N 2026-05-09 audit (= 4 cluster 並行 dispatch articulation、
+  =nelisp-cc-runtime-compile-and-allocate= entry-point identification)
+
+* §10 Refactor history
+
+** v1 (2026-05-09 DRAFT)
+
+初稿、Track O Blocker 2 + Track N §3.6 articulation を統合.
+Doc 28 §11.6 (Phase 7.1.5 LOCKED) を依存 SHIPPED として明示.
+Stage 81.1〜81.4 4 段階 = 8 営業日 plan.  elisp +780 LOC / Rust ±0、
+Phase 7.1.6.a 同時 merge で monotonic shrink rule 担保.
