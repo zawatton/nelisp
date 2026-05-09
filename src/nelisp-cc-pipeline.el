@@ -281,44 +281,62 @@ exactly as Doc 42 §4.2 specifies."
         (nelisp-cc-pipeline--run-passes-on-fn function registry stats)))
     (cons function stats)))
 
-;;; Doc 81 Stage 81.1 — primitive recognition table (1 entry: car) -----
+;;; Doc 81 Stage 81.1 / 81.2 — primitive recognition table -------------
 ;;
-;; Stage 81.1 ships a *one-entry* primitive table — `car' only — so the
-;; trampoline-emit infrastructure (Doc 81 §5.1) can be exercised
-;; end-to-end on the simplest possible primitive.  Stage 81.2 expands
-;; this to 5 cons primitives and Stage 81.3 to 24 (cons / arith /
-;; access / predicate / syscall) per Doc 28 §3.6.a~.e.  The recognition
-;; pass that consumes this table is *not* yet wired (= Stage 81.3
-;; scope); for Stage 81.1 the table only declares "if you call this
-;; primitive, here is the ABI mode + the C symbol to fix up".
+;; Stage 81.1 shipped a *one-entry* table — `car' only — so the
+;; trampoline-emit infrastructure (Doc 81 §5.1) could be exercised on
+;; the simplest possible primitive.  Stage 81.2 extends this to 5 cons
+;; primitives covering the `cons.rs' Rust API parity surface (read 2 +
+;; write 2 + alloc 1).  Stage 81.3 will further extend to 24 primitives
+;; (cons / arith / access / predicate / syscall) per Doc 28 §3.6.a~.e
+;; and wire the recognition pass that consumes this table.
+;;
+;; The recognition pass (Stage 81.3, `nelisp-cc-pipeline--recognize-
+;; primitives') is *not* yet wired; for Stage 81.1/81.2 the table only
+;; declares "if you call this primitive, here is the ABI mode + the C
+;; symbol to fix up".  `nelisp-cc-pipeline-primitive-info' is the
+;; lookup helper used by ERT and by the Stage 81.3 recognition pass.
 
 (defconst nelisp-cc-pipeline-primitive-table-stage1
   '((car 1 :trampoline-unary nl_jit_cons_car))
-  "Stage 81.1 primitive recognition table (1 entry: `car').
+  "Stage 81.1 PoC primitive recognition table (1 entry: `car').
+
+Retained as a separate constant so Stage 81.1 ERT (= sole-entry
+shape verification) keeps passing without modification.  The
+canonical lookup goes through
+`nelisp-cc-pipeline-primitive-table-stage2' in 81.2+.")
+
+(defconst nelisp-cc-pipeline-primitive-table-stage2
+  '((car    1 :trampoline-unary       nl_jit_cons_car)
+    (cdr    1 :trampoline-unary       nl_jit_cons_cdr)
+    (cons   2 :trampoline-binary-ctor nl_jit_cons_make)
+    (setcar 2 :trampoline-binary-mut  nl_jit_cons_setcar)
+    (setcdr 2 :trampoline-binary-mut  nl_jit_cons_setcdr))
+  "Doc 81 Stage 81.2 primitive recognition table (5 cons primitives).
 
 Each entry is (ELISP-NAME ARITY ABI-MODE C-SYMBOL):
 
-  ELISP-NAME — the elisp symbol the user wrote (= `car')
-  ARITY      — number of value arguments the primitive expects (1)
+  ELISP-NAME — the elisp symbol the user wrote
+  ARITY      — number of value arguments the primitive expects
   ABI-MODE   — entry-ABI keyword from
-               `nelisp-cc-runtime--entry-abi-modes'
-               (`car' uses `:trampoline-unary')
+               `nelisp-cc-runtime--entry-abi-modes'.  Stage 81.2
+               uses three: `:trampoline-unary' (read = car / cdr),
+               `:trampoline-binary-ctor' (alloc = cons), and
+               `:trampoline-binary-mut' (write = setcar / setcdr).
   C-SYMBOL   — Rust-side extern \"C\" symbol the trampoline calls
-               (= `nl_jit_cons_car' from
-               build-tool/src/jit/cons.rs).
+               (= `nl_jit_cons_*' from build-tool/src/jit/cons.rs).
 
-The recognition pass (Stage 81.3, `nelisp-cc-pipeline--recognize-
-primitives') will consult this table to rewrite eligible `:call'
-instructions into the SSA opcode triple from Doc 81 §5.1.2
-(`ssa-load-tag' / `ssa-load-payload-ptr' / `ssa-cmp-tag-imm').
-For Stage 81.1 the recognition pass is a no-op stub.")
+Stage 81.3 will extend this to ~24 primitives (cons / arith /
+access / predicate / syscall) per Doc 28 §3.6.a~.e.")
 
 (defun nelisp-cc-pipeline-primitive-info (sym)
   "Return the primitive descriptor for ELISP SYM, or nil.
 
-Returned shape: (ARITY ABI-MODE C-SYMBOL).  Stage 81.1 only knows
-about `car'; future stages extend the lookup table."
-  (cdr (assq sym nelisp-cc-pipeline-primitive-table-stage1)))
+Returned shape: (ARITY ABI-MODE C-SYMBOL).  Looks up in the
+Stage 81.2 table (= 5 cons primitives) — supersedes the Stage
+81.1 1-entry table.  Stage 81.3 will extend the table to ~24
+primitives."
+  (cdr (assq sym nelisp-cc-pipeline-primitive-table-stage2)))
 
 (provide 'nelisp-cc-pipeline)
 

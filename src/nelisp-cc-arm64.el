@@ -1108,6 +1108,223 @@ without SIGSEGV (T43 Phase 7.5.6 bench gate enabler)."
     (when def
       (nelisp-cc-arm64--writeback-def cg def 'x0))))
 
+;;; Doc 81 Stage 81.2 — primitive trampoline opcode lowerings (arm64) ---
+;;
+;; Mirror of the x86_64 backend's Stage 81.1 + 81.2 emit subset.  The
+;; AAPCS64 calling convention is *symmetric* to System V AMD64: x0..x7
+;; carry the first 8 integer / pointer arguments and x0 carries the
+;; integer return.  For the trampoline shapes:
+;;
+;;   :trampoline-unary       arg0 → x0, arg1 (out-ptr) → x1
+;;   :trampoline-binary-ctor arg0 → x0, arg1 → x1, arg2 (out-ptr) → x2
+;;   :trampoline-binary-mut  arg0 → x0, arg1 → x1
+;;
+;; arm64 instruction sizes (vs x86_64 in parens):
+;;   ssa-load-tag         LDRB Wt, [Xn]              — 4 bytes (vs 4 x86_64)
+;;   ssa-load-payload-ptr LDR Xt, [Xn, #8]           — 4 bytes (vs 4)
+;;   ssa-cmp-tag-imm      CMP Wn, #imm12 + B.cond + B — 12 bytes (vs 15)
+;;   ssa-call-primitive   BL #imm26                   — 4 bytes (vs 5)
+;;
+;; Critical decision (Doc 81 §5.1.2): LDRB already zero-extends the
+;; loaded byte into the W register, and writing W zero-extends to X
+;; — so plain LDRB is the moral equivalent of MOVZX on x86_64.  No
+;; UXTB needed.
+
+(defun nelisp-cc-arm64--encode-ldrb-w-x-uimm (rt rn uimm12)
+  "Encode LDRB Wt, [Xn, #UIMM12] (zero-extending byte load).
+
+UIMM12 is a *byte* offset (0..4095); for the Doc 81 PoC the tag
+byte sits at offset 0.  Encoding (32-bit unsigned-offset variant):
+
+  0011 1001 01 imm12 Rn Rt
+  0x39400000 base | (imm12 << 10) | (Rn << 5) | Rt
+
+LDRB writes the loaded byte to Wt with zero-extension to 32 bits;
+the upper 32 bits of Xt are also zeroed (= AAPCS64 W-write
+semantics), so the SSA def lands as a clean u64."
+  (unless (and (integerp uimm12) (>= uimm12 0) (< uimm12 #x1000))
+    (signal 'nelisp-cc-arm64-encoding-error
+            (list :ldrb-imm12-out-of-range uimm12)))
+  (let ((t-enc (nelisp-cc-arm64--reg-encoding rt))
+        (n-enc (nelisp-cc-arm64--reg-encoding rn)))
+    (logior #x39400000
+            (ash (logand uimm12 #xFFF) 10)
+            (ash (logand n-enc #x1F) 5)
+            (logand t-enc #x1F))))
+
+(defun nelisp-cc-arm64--encode-ldr-x-x-uimm (rt rn byte-offset)
+  "Encode LDR Xt, [Xn, #BYTE-OFFSET] (unsigned-offset addressing).
+
+BYTE-OFFSET must be 8-byte aligned and fit the 12-bit imm12 field
+after dividing by 8 (so 0..32760).  For Doc 81 §5.1.2 the payload
+pointer lives at offset 8 (= imm12 = 1).
+
+Encoding:
+  1111 1001 01 imm12 Rn Rt
+  0xF9400000 base | (imm12 << 10) | (Rn << 5) | Rt"
+  (unless (zerop (mod byte-offset 8))
+    (signal 'nelisp-cc-arm64-encoding-error
+            (list :ldr-misaligned byte-offset)))
+  (let ((imm12 (/ byte-offset 8))
+        (t-enc (nelisp-cc-arm64--reg-encoding rt))
+        (n-enc (nelisp-cc-arm64--reg-encoding rn)))
+    (unless (and (>= imm12 0) (< imm12 #x1000))
+      (signal 'nelisp-cc-arm64-encoding-error
+              (list :ldr-imm12-out-of-range byte-offset)))
+    (logior #xF9400000
+            (ash (logand imm12 #xFFF) 10)
+            (ash (logand n-enc #x1F) 5)
+            (logand t-enc #x1F))))
+
+(defun nelisp-cc-arm64--encode-cmp-w-imm12 (rn imm12)
+  "Encode 32-bit CMP Wn, #IMM12 (canonical alias for SUBS WZR, Wn, #imm).
+
+IMM12 is the 12-bit unsigned immediate (0..4095) the tag byte is
+compared against; tag values like SEXP_TAG_CONS = 7 fit
+trivially.  Wn is the 32-bit view of the X register holding the
+zero-extended tag byte.
+
+Encoding (sf=0, op=1, S=1, sh=0):
+  0 1 1 1 0 0 0 1 0 0 imm12 Rn 11111
+  0x7100001F base | (imm12 << 10) | (Rn << 5)
+
+Like CMP Xn, Xm, this updates NZCV without writing back; the
+subsequent B.cond consumes the EQ/NE flag."
+  (unless (and (integerp imm12) (>= imm12 0) (< imm12 #x1000))
+    (signal 'nelisp-cc-arm64-encoding-error
+            (list :cmp-imm12-out-of-range imm12)))
+  (let ((n-enc (nelisp-cc-arm64--reg-encoding rn)))
+    (logior #x7100001F
+            (ash (logand imm12 #xFFF) 10)
+            (ash (logand n-enc #x1F) 5))))
+
+(defun nelisp-cc-arm64--lower-load-tag (cg instr)
+  "Lower SSA `ssa-load-tag' (Doc 81 Stage 81.2 arm64 mirror).
+
+Emits LDRB Wt, [Xn] — reads the 1-byte tag at Sexp offset 0 with
+zero-extension into the 64-bit destination register.  See the
+x86_64 sibling `nelisp-cc-x86_64--lower-load-tag' for the parent
+contract."
+  (let* ((buf      (nelisp-cc-arm64--codegen-buffer cg))
+         (def      (nelisp-cc--ssa-instr-def instr))
+         (operands (nelisp-cc--ssa-instr-operands instr))
+         (src-val  (car operands))
+         (src-reg  (nelisp-cc-arm64--materialise-operand cg src-val))
+         (dst-reg  (nelisp-cc-arm64--def-target cg def)))
+    (nelisp-cc-arm64--buffer-emit-instruction
+     buf (nelisp-cc-arm64--encode-ldrb-w-x-uimm dst-reg src-reg 0))
+    (nelisp-cc-arm64--writeback-def cg def dst-reg)))
+
+(defun nelisp-cc-arm64--lower-load-payload-ptr (cg instr)
+  "Lower SSA `ssa-load-payload-ptr' (Doc 81 Stage 81.2 arm64 mirror).
+
+Emits LDR Xt, [Xn, #8] — reads the 8-byte payload pointer at
+Sexp offset 8 (SEXP_PAYLOAD_OFFSET, Phase A.5.1)."
+  (let* ((buf      (nelisp-cc-arm64--codegen-buffer cg))
+         (def      (nelisp-cc--ssa-instr-def instr))
+         (operands (nelisp-cc--ssa-instr-operands instr))
+         (src-val  (car operands))
+         (src-reg  (nelisp-cc-arm64--materialise-operand cg src-val))
+         (dst-reg  (nelisp-cc-arm64--def-target cg def)))
+    (nelisp-cc-arm64--buffer-emit-instruction
+     buf (nelisp-cc-arm64--encode-ldr-x-x-uimm dst-reg src-reg 8))
+    (nelisp-cc-arm64--writeback-def cg def dst-reg)))
+
+(defun nelisp-cc-arm64--lower-cmp-tag-imm (cg instr)
+  "Lower SSA `ssa-cmp-tag-imm' (Doc 81 Stage 81.2 arm64 mirror).
+
+Sequence (3 instructions, 12 bytes):
+  CMP   Wn, #IMM      ; SUBS WZR, Wn, #imm (sets NZCV)
+  B.EQ  L_block_THEN  ; conditional branch on equal
+  B     L_block_ELSE  ; unconditional fall-through
+
+The two branches are emitted via `--buffer-emit-fixup' against
+the synthetic `L_block_<id>' labels, exactly matching the x86_64
+contract.  arm64 conditional branches use the imm19 field
+(±1 MiB), so very long primitive trampolines may need an
+intermediate stub — out of scope for Stage 81.2 (= the cons
+primitives all fit comfortably)."
+  (let* ((buf      (nelisp-cc-arm64--codegen-buffer cg))
+         (operands (nelisp-cc--ssa-instr-operands instr))
+         (meta     (nelisp-cc--ssa-instr-meta instr))
+         (imm      (plist-get meta :imm))
+         (then-id  (plist-get meta :then))
+         (else-id  (plist-get meta :else))
+         (tag-val  (car operands))
+         (tag-reg  (nelisp-cc-arm64--materialise-operand cg tag-val)))
+    (unless (integerp imm)
+      (signal 'nelisp-cc-arm64-encoding-error
+              (list :ssa-cmp-tag-imm-missing-imm
+                    (nelisp-cc--ssa-instr-id instr))))
+    (unless (and (integerp then-id) (integerp else-id))
+      (signal 'nelisp-cc-arm64-encoding-error
+              (list :ssa-cmp-tag-imm-missing-target
+                    (nelisp-cc--ssa-instr-id instr))))
+    ;; CMP Wn, #imm12 (4 bytes).
+    (nelisp-cc-arm64--buffer-emit-instruction
+     buf (nelisp-cc-arm64--encode-cmp-w-imm12 tag-reg imm))
+    ;; B.EQ to THEN block (4 bytes, fixup).
+    (let ((then-label (intern (format "L_block_%d" then-id))))
+      (nelisp-cc-arm64--buffer-emit-fixup
+       buf
+       (lambda (off) (nelisp-cc-arm64--encode-bcc 'eq off))
+       then-label))
+    ;; B to ELSE block (4 bytes, fixup).
+    (let ((else-label (intern (format "L_block_%d" else-id))))
+      (nelisp-cc-arm64--buffer-emit-fixup
+       buf
+       (lambda (off) (nelisp-cc-arm64--encode-b off))
+       else-label))))
+
+(defun nelisp-cc-arm64--lower-call-primitive (cg instr)
+  "Lower SSA `ssa-call-primitive' (Doc 81 Stage 81.2 arm64 mirror).
+
+Marshals operands into x0..x7 in declaration order, emits BL
+#imm26 with a 0-displacement placeholder, and records a fixup
+against `callee:<C-SYMBOL>' so the link pass can resolve to the
+trampoline body's address.  The trampoline status (in x0 on
+return) is written back to the def's allocated register."
+  (let* ((buf      (nelisp-cc-arm64--codegen-buffer cg))
+         (def      (nelisp-cc--ssa-instr-def instr))
+         (operands (nelisp-cc--ssa-instr-operands instr))
+         (meta     (nelisp-cc--ssa-instr-meta instr))
+         (abi      (plist-get meta :abi))
+         (symbol   (plist-get meta :symbol))
+         (n        (length operands)))
+    (unless symbol
+      (signal 'nelisp-cc-arm64-encoding-error
+              (list :ssa-call-primitive-missing-symbol
+                    (nelisp-cc--ssa-instr-id instr))))
+    (unless (memq abi '(:trampoline-unary :trampoline-binary-ctor
+                        :trampoline-binary-mut))
+      (signal 'nelisp-cc-arm64-encoding-error
+              (list :ssa-call-primitive-bad-abi abi)))
+    (when (> n (length nelisp-cc-arm64--int-arg-regs))
+      (signal 'nelisp-cc-arm64-todo
+              (list :stack-arg-spill-not-implemented n)))
+    ;; Marshal operands into x0..x7 in order.  Stage 81.2 keeps the
+    ;; per-arg MOV-from-source naive (= sequential, no parallel-copy
+    ;; cycle break) — primitive trampolines have at most 3 args and
+    ;; the recognition pass (Stage 81.3) is responsible for laying
+    ;; out the SSA so source / target registers do not collide.
+    (cl-loop for op in operands
+             for arg-reg in nelisp-cc-arm64--int-arg-regs
+             do (let ((src-reg (nelisp-cc-arm64--materialise-operand
+                                cg op)))
+                  (unless (eq src-reg arg-reg)
+                    (nelisp-cc-arm64--buffer-emit-instruction
+                     buf (nelisp-cc-arm64--encode-mov-reg-reg
+                          arg-reg src-reg)))))
+    ;; BL with placeholder fixup against the C symbol's `callee:<sym>'
+    ;; label — the link pass binds it to the trampoline body's offset.
+    (nelisp-cc-arm64--buffer-emit-fixup
+     buf
+     (lambda (off) (nelisp-cc-arm64--encode-bl off))
+     (intern (format "callee:%s" symbol)))
+    ;; Status code (x0) → def register.
+    (when def
+      (nelisp-cc-arm64--writeback-def cg def 'x0))))
+
 (defun nelisp-cc-arm64--lower-instr (cg instr)
   "Lower one SSA INSTR using CG's allocation decisions and slot map.
 Dispatches on `nelisp-cc--ssa-instr-opcode'.  Unknown opcodes raise
@@ -1123,6 +1340,13 @@ Dispatches on `nelisp-cc--ssa-instr-opcode'.  Unknown opcodes raise
       ('branch         (nelisp-cc-arm64--lower-branch    cg instr))
       ('load-var       (nelisp-cc-arm64--lower-load-var  cg instr))
       ('store-var      (nelisp-cc-arm64--lower-store-var cg instr))
+      ;; Doc 81 Stage 81.2 — primitive-trampoline opcodes (arm64 mirror
+       ;; of x86_64 Stage 81.1 + 81.2).  All four opcodes route to the
+       ;; per-opcode `--lower-XXX' helpers above.
+       ('ssa-load-tag         (nelisp-cc-arm64--lower-load-tag         cg instr))
+       ('ssa-load-payload-ptr (nelisp-cc-arm64--lower-load-payload-ptr cg instr))
+       ('ssa-cmp-tag-imm      (nelisp-cc-arm64--lower-cmp-tag-imm      cg instr))
+       ('ssa-call-primitive   (nelisp-cc-arm64--lower-call-primitive   cg instr))
       ('jump
        ;; T63 Phase 7.5.7 — :jump terminator.  The frontend emits a
        ;; `:jump' at the tail of every then-/else-arm of an `if' (so

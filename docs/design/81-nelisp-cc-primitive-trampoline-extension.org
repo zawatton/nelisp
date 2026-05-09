@@ -1,7 +1,7 @@
 #+TITLE: Doc 81 — nelisp-cc primitive trampoline architectural extension (= Phase 7.1.6 prerequisite)
 #+AUTHOR: NeLisp / Claude
 #+DATE: 2026-05-09
-#+STATUS: DRAFT 2026-05-09
+#+STATUS: Stage 81.1 + 81.2 SHIPPED 2026-05-10 (Stage 81.3〜81.4 DRAFT)
 #+PARENT: Doc 28 (= Phase 7.1 native compiler)、Doc 77c (= 100% 純 elisp commitment)
 #+UNLOCKS: Phase 7.1.6.a〜.f cluster takeovers (= D-B Cranelift 削除 -4,782 Rust LOC)
 #+DEPENDS_ON: Phase 7.1.5 LOCKED (= 既 SHIPPED 2026-05-09 per Doc 28 §11.6)、Phase A.5.1 SHIPPED (= Sexp::tag() / cons_box_ptr())
@@ -21,6 +21,16 @@ LOC* / *Rust ±0* / *~1 週間* (= Stage 81.1〜81.4 で 8 営業日).
 完了後、Phase 7.1.6.a (=cons= takeover、cons.rs ~-415 Rust LOC) 〜
 7.1.6.f (=dsl= + =bridge= cleanup、~-2,015 Rust LOC) の 6 cluster +
 7.1.7 deletion (= 計 ~-4,782 Rust LOC) が *並行 dispatchable*.
+
+*Status (2026-05-10)*:
+- Stage 81.1 *SHIPPED* (8ab6da1) — entry-ABI + 3 SSA opcode +
+  x86_64 emit + car PoC, +800 elisp / 0 Rust, 8 ERT (PASS).
+- Stage 81.2 *SHIPPED* (feat/doc-81-stage2) — 4th opcode
+  =ssa-call-primitive= + arm64 mirror of 4 lower-* fn + 5-entry
+  primitive-table-stage2 (cons.rs API parity) + 2 new ABI modes,
+  +447 elisp / 0 Rust, 17 ERT (PASS, +9 vs Stage 81.1).
+- Stage 81.3 *DRAFT* — recognition pass + takeover routing.
+- Stage 81.4 *DRAFT* — bench gate + dlsym bridge production.
 
 * §1 動機
 
@@ -522,6 +532,15 @@ deliverable: 5 cons primitive を nelisp-cc emit で完全 cover、Phase
 で elisp emit 経路で出せる.
 
 *** §5.2.detail Stage 81.2 — articulation
+
+**SHIPPED 2026-05-10 — feat/doc-81-stage2 branch**: 4th opcode
+=ssa-call-primitive= + arm64 mirror of 4 lower-* fn + 5-entry
+=primitive-table-stage2= + 2 new ABI modes (=:trampoline-binary-ctor=
+/ =:trampoline-binary-mut=) all landed.  ERT diff: +9 (8→17 in
+=test/nelisp-cc-stage81-poc-test.el=); =make test= 2613/2613
+expected, 0 unexpected.  Rust delta = 0 LOC (verified
+=git diff --stat -- '*.rs' 'Cargo.*'= empty).  Stage 81.3 (=
+recognition pass + takeover routing) is next.
 
 **** §5.2.1 full opcode set extension (= =ssa-call-primitive= dispatch table for 5 cons primitives)
 

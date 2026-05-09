@@ -1375,15 +1375,31 @@ out-buffer contents are then unspecified — callers must check the
 status before reading the buffer.")
 
 (defconst nelisp-cc-runtime--entry-abi-modes
-  '(:host-int :trampoline-unary)
+  '(:host-int :trampoline-unary :trampoline-binary-ctor :trampoline-binary-mut)
   "Allowed values for the `:entry-abi' keyword to
 `nelisp-cc-runtime-compile-and-allocate'.
 
 `:host-int' is the legacy default (`extern \"C\" fn(i64, ..., i64) -> i64').
+
 `:trampoline-unary' (Doc 81 §5.1.1) is `extern \"C\" fn(*const Sexp,
 *mut Sexp) -> i64' for unary primitive trampolines (= car / cdr /
-length / etc).  Stage 81.2 will add `:trampoline-binary-ctor'
-(cons constructor) and `:trampoline-binary-mut' (setcar/setcdr).")
+length / etc).  arg0 = *const Sexp pointer to the read-only argument,
+arg1 = *mut Sexp out-buffer the trampoline writes into; return = i64
+TRAMPOLINE_OK / TRAMPOLINE_ERR status.
+
+`:trampoline-binary-ctor' (Doc 81 §5.2.1) is `extern \"C\"
+fn(*const Sexp, *const Sexp, *mut Sexp) -> i64' for binary
+constructors (= cons).  arg0/arg1 = read-only inputs, arg2 = *mut
+Sexp out-buffer, return = i64 status.  The trampoline allocates a
+fresh box and writes the new Sexp into the out-slot.
+
+`:trampoline-binary-mut' (Doc 81 §5.2.1) is `extern \"C\"
+fn(*mut Sexp, *const Sexp) -> i64' for binary mutators (= setcar /
+setcdr).  arg0 = *mut Sexp cons cell to mutate, arg1 = *const Sexp
+new value; return = i64 status (= TRAMPOLINE_OK on success).  No
+out-buffer slot — the caller's eval-time return value is the
+unchanged arg1 (= V), so the recognition pass in Stage 81.3 just
+threads V back as the SSA def of the parent `(setcar C V)' call.")
 
 (defun nelisp-cc-runtime--validate-entry-abi (mode)
   "Signal `nelisp-cc-runtime-error' if MODE is not a valid entry-ABI keyword."
@@ -1412,16 +1428,21 @@ BACKEND is `x86_64' / `arm64' (default = host inference).  EXEC-ARGS
 is forwarded to `nelisp-cc-runtime--exec-real' when MODE is `real';
 nil preserves the old zero-argument behavior.
 
-ENTRY-ABI (Doc 81 Stage 81.1) selects the produced entry-point's
+ENTRY-ABI (Doc 81 Stage 81.1 / 81.2) selects the produced entry-point's
 calling convention:
-  :host-int         (default) extern \"C\" fn(i64, ..., i64) -> i64
-  :trampoline-unary extern \"C\" fn(*const Sexp, *mut Sexp) -> i64
-                    primitive trampoline shape (= car / cdr / etc.).
-                    Stage 81.1 records the mode in the result plist
-                    under `:entry-abi' but does NOT yet alter
-                    prologue/epilogue emit; that wires in Stage
-                    81.2 once arm64 backend mirrors the x86_64
-                    frame layout.
+  :host-int                (default) extern \"C\" fn(i64, ..., i64) -> i64
+  :trampoline-unary        extern \"C\" fn(*const Sexp, *mut Sexp) -> i64
+                           unary primitive trampoline (= car / cdr).
+  :trampoline-binary-ctor  extern \"C\" fn(*const Sexp, *const Sexp,
+                                            *mut Sexp) -> i64
+                           binary constructor (= cons), Stage 81.2.
+  :trampoline-binary-mut   extern \"C\" fn(*mut Sexp, *const Sexp) -> i64
+                           binary mutator (= setcar / setcdr), Stage 81.2.
+
+Stage 81.1/81.2 records the mode in the result plist under
+`:entry-abi' but does NOT yet alter prologue/epilogue emit; the
+backend frame layout is taken over in Stage 81.3 once the
+recognition pass starts producing trampoline-shape calls.
 
 Returns:
 

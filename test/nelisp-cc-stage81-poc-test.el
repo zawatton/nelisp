@@ -65,6 +65,7 @@
 (require 'ert)
 (require 'nelisp-cc)
 (require 'nelisp-cc-x86_64)
+(require 'nelisp-cc-arm64)
 (require 'nelisp-cc-runtime)
 (require 'nelisp-cc-pipeline)
 
@@ -124,34 +125,46 @@ a vector for easier `should (equal ...)' comparisons."
 ;;; (1) Opcode registry shape ----------------------------------------
 
 (ert-deftest nelisp-cc-stage81-poc-opcode-registry-shape ()
-  "`nelisp-cc--stage81-opcodes' has the 3 Doc 81 §5.1.2 opcodes
-with the articulated descriptor plist."
-  (should (= 3 (length nelisp-cc--stage81-opcodes)))
+  "`nelisp-cc--stage81-opcodes' has the 4 Doc 81 §5.1.2 + §5.2.1
+opcodes with the articulated descriptor plist.
+
+Stage 81.1 shipped 3 opcodes (load-tag, load-payload-ptr,
+cmp-tag-imm); Stage 81.2 added the 4th (`ssa-call-primitive')."
+  (should (= 4 (length nelisp-cc--stage81-opcodes)))
   (let ((load-tag (nelisp-cc--ssa-stage81-opcode-info 'ssa-load-tag))
         (load-pp  (nelisp-cc--ssa-stage81-opcode-info 'ssa-load-payload-ptr))
-        (cmp-tag  (nelisp-cc--ssa-stage81-opcode-info 'ssa-cmp-tag-imm)))
-    ;; All three are present.
+        (cmp-tag  (nelisp-cc--ssa-stage81-opcode-info 'ssa-cmp-tag-imm))
+        (call-prim (nelisp-cc--ssa-stage81-opcode-info 'ssa-call-primitive)))
+    ;; All four are present.
     (should load-tag)
     (should load-pp)
     (should cmp-tag)
-    ;; Arity = 1 for all (single ptr / tag operand).
+    (should call-prim)
+    ;; Arity = 1 for the 3 Stage 81.1 opcodes (single ptr / tag).
     (should (= 1 (plist-get load-tag :arity)))
     (should (= 1 (plist-get load-pp  :arity)))
     (should (= 1 (plist-get cmp-tag  :arity)))
-    ;; Two loads produce a def; cmp-tag-imm is a terminator.
+    ;; Stage 81.2 ssa-call-primitive uses :arity nil (variadic per ABI shape).
+    (should (null (plist-get call-prim :arity)))
+    ;; Two loads + call-primitive produce a def; cmp-tag-imm is a terminator.
     (should     (plist-get load-tag :def))
     (should     (plist-get load-pp  :def))
+    (should     (plist-get call-prim :def))
     (should-not (plist-get cmp-tag  :def))
     (should-not (plist-get load-tag :terminator))
     (should-not (plist-get load-pp  :terminator))
     (should     (plist-get cmp-tag  :terminator))
+    (should-not (plist-get call-prim :terminator))
     ;; *Critical* §5.1.2 design decision: zero-extended (unsigned) loads.
     (should (equal '(unsigned i64) (plist-get load-tag :returns)))
     (should (equal '(unsigned i64) (plist-get load-pp  :returns)))
+    ;; Stage 81.2 — call-primitive returns u64 status (TRAMPOLINE_OK/_ERR).
+    (should (equal '(unsigned i64) (plist-get call-prim :returns)))
     ;; Recognition predicate.
     (should (nelisp-cc--ssa-stage81-opcode-p 'ssa-load-tag))
     (should (nelisp-cc--ssa-stage81-opcode-p 'ssa-load-payload-ptr))
     (should (nelisp-cc--ssa-stage81-opcode-p 'ssa-cmp-tag-imm))
+    (should (nelisp-cc--ssa-stage81-opcode-p 'ssa-call-primitive))
     (should-not (nelisp-cc--ssa-stage81-opcode-p 'add))
     (should-not (nelisp-cc--ssa-stage81-opcode-p 'return))))
 
@@ -159,21 +172,23 @@ with the articulated descriptor plist."
 
 (ert-deftest nelisp-cc-stage81-poc-entry-abi-validation ()
   "`nelisp-cc-runtime-compile-and-allocate' rejects unknown ABI mode
-and accepts `:host-int' / `:trampoline-unary'."
+and accepts the 4 valid modes (Stage 81.1 + 81.2)."
   ;; `:host-int' is the legacy default — pre-existing behavior unchanged.
   (should (memq :host-int nelisp-cc-runtime--entry-abi-modes))
   ;; `:trampoline-unary' is the Doc 81 Stage 81.1 addition.
   (should (memq :trampoline-unary nelisp-cc-runtime--entry-abi-modes))
-  ;; The validator accepts both.
-  (should-not (condition-case nil
-                  (progn (nelisp-cc-runtime--validate-entry-abi :host-int)
-                         nil)
-                (nelisp-cc-runtime-error t)))
-  (should-not (condition-case nil
-                  (progn (nelisp-cc-runtime--validate-entry-abi
-                          :trampoline-unary)
-                         nil)
-                (nelisp-cc-runtime-error t)))
+  ;; Stage 81.2 — `:trampoline-binary-ctor' / `:trampoline-binary-mut'.
+  (should (memq :trampoline-binary-ctor
+                nelisp-cc-runtime--entry-abi-modes))
+  (should (memq :trampoline-binary-mut
+                nelisp-cc-runtime--entry-abi-modes))
+  ;; The validator accepts all 4.
+  (dolist (mode '(:host-int :trampoline-unary
+                  :trampoline-binary-ctor :trampoline-binary-mut))
+    (should-not (condition-case nil
+                    (progn (nelisp-cc-runtime--validate-entry-abi mode)
+                           nil)
+                  (nelisp-cc-runtime-error t))))
   ;; And rejects garbage.
   (should-error (nelisp-cc-runtime--validate-entry-abi :garbage-mode)
                 :type 'nelisp-cc-runtime-error)
@@ -324,18 +339,25 @@ registers — see commentary on `--emit-cmp-r8-imm8'."
 ;;; (6) Primitive table shape ----------------------------------------
 
 (ert-deftest nelisp-cc-stage81-poc-primitive-table-shape ()
-  "`nelisp-cc-pipeline-primitive-table-stage1' has the single `car' entry."
+  "`nelisp-cc-pipeline-primitive-table-stage1' still has the single
+`car' entry (= preserved verbatim for ABI archaeology); the canonical
+lookup `nelisp-cc-pipeline-primitive-info' now resolves against the
+Stage 81.2 table (= 5 cons primitives)."
+  ;; Stage 81.1 PoC table is preserved for archaeology — not the
+  ;; canonical lookup any more.
   (should (= 1 (length nelisp-cc-pipeline-primitive-table-stage1)))
   (let ((info (nelisp-cc-pipeline-primitive-info 'car)))
     (should info)
     (should (= 1 (nth 0 info)))                      ; arity
     (should (eq :trampoline-unary (nth 1 info)))     ; abi-mode
     (should (eq 'nl_jit_cons_car (nth 2 info))))     ; C symbol
-  ;; Stage 81.1 is car-only; cdr/cons/setcar/setcdr land in 81.2.
-  (should-not (nelisp-cc-pipeline-primitive-info 'cdr))
-  (should-not (nelisp-cc-pipeline-primitive-info 'cons))
-  (should-not (nelisp-cc-pipeline-primitive-info 'setcar))
-  (should-not (nelisp-cc-pipeline-primitive-info 'setcdr)))
+  ;; Stage 81.2 — `cdr' / `cons' / `setcar' / `setcdr' all resolve.
+  (should (nelisp-cc-pipeline-primitive-info 'cdr))
+  (should (nelisp-cc-pipeline-primitive-info 'cons))
+  (should (nelisp-cc-pipeline-primitive-info 'setcar))
+  (should (nelisp-cc-pipeline-primitive-info 'setcdr))
+  ;; Outside the cons surface — still nil.
+  (should-not (nelisp-cc-pipeline-primitive-info '+)))
 
 ;;; (7) Trampoline status constants ----------------------------------
 
@@ -406,6 +428,336 @@ threading lands in Stage 81.2 with the recognition pass."
            (fn2  (nelisp-cc--ssa-from-sexp sexp)))
       (should fn2)
       (should (eq t (nelisp-cc--ssa-verify-function fn2))))))
+
+;;; Doc 81 Stage 81.2 — additional ERT (arm64 + 5 cons primitives) ----
+
+;;; arm64 helper -----------------------------------------------------
+
+(defun nelisp-cc-stage81-test--make-arm64-codegen (&optional extra-vids-vregs)
+  "arm64 mirror of `nelisp-cc-stage81-test--make-empty-codegen'.
+
+Returns (CG FN PARAM DEF EXTRA-VALUES).  The codegen wraps a fresh
+arm64 buffer; PARAM is pre-allocated to virtual r0 (= x0 = AAPCS64
+arg-0) and DEF to r1 (= x1).  EXTRA-VIDS-VREGS provisions further
+virtual regs (e.g. `(r2 r3)') for tests that need an intermediate
+SSA value beyond PARAM/DEF."
+  (let* ((fn (nelisp-cc--ssa-make-function 'stage81-arm64-test '(int)))
+         (param (car (nelisp-cc--ssa-function-params fn)))
+         (def (nelisp-cc--ssa-make-value fn))
+         (extras (mapcar (lambda (_vreg) (nelisp-cc--ssa-make-value fn))
+                         extra-vids-vregs))
+         (extra-cells (cl-mapcar
+                       (lambda (val vreg)
+                         (cons (nelisp-cc--ssa-value-id val) vreg))
+                       extras extra-vids-vregs))
+         (alloc-state (append
+                       extra-cells
+                       (list (cons (nelisp-cc--ssa-value-id param) 'r0)
+                             (cons (nelisp-cc--ssa-value-id def)   'r1))))
+         (buf (nelisp-cc-arm64--buffer-make))
+         (cg (nelisp-cc-arm64--codegen-make
+              :function fn
+              :alloc-state alloc-state
+              :buffer buf
+              :slot-alist nil
+              :frame-size 0)))
+    (list cg fn param def extras)))
+
+(defun nelisp-cc-stage81-test--arm64-bytes (cg)
+  "Return CG's arm64 buffer bytes in *forward* order as a vector.
+
+Mirror of `nelisp-cc-stage81-test--bytes' for the arm64 buffer
+shape (BYTES list reverse-built; we reverse + vconcat for indexed
+inspection).  Does NOT resolve fixups — Stage 81.2 ERT inspects
+the placeholder byte stream pre-finalize."
+  (let ((bs (nelisp-cc-arm64--buffer-bytes
+             (nelisp-cc-arm64--codegen-buffer cg))))
+    (vconcat (nreverse (copy-sequence bs)))))
+
+;;; (9) arm64 ssa-load-tag bytes -------------------------------------
+
+(ert-deftest nelisp-cc-stage81-poc-arm64-load-tag-bytes ()
+  "arm64: lowering `ssa-load-tag' of param-0 (= x0) into a fresh def
+(= x1) emits LDRB W1, [X0] = 0x39400001 (LE bytes 01 00 40 39).
+
+Encoding (32-bit unsigned-offset variant):
+  0011 1001 01 imm12=0 Rn=0 Rt=1
+  0x39400000 base | (imm12=0 << 10) | (Rn=0 << 5) | Rt=1
+  = 0x39400001
+
+LDRB writes Wt with zero-extension to 32 bits + automatic top-32
+zero-extension under AAPCS64, so the SSA def lands as a clean u64
+without a separate UXTB step.  This is the arm64 mirror of the
+x86_64 MOVZX decision (Doc 81 §5.1.2) — both architectures must
+zero-extend, never sign-extend, the tag byte."
+  (cl-destructuring-bind (cg fn param def _extras)
+      (nelisp-cc-stage81-test--make-arm64-codegen)
+    (let ((instr (nelisp-cc--ssa-add-instr
+                  fn (nelisp-cc--ssa-function-entry fn)
+                  'ssa-load-tag (list param) def)))
+      (nelisp-cc-arm64--lower-instr cg instr)
+      (let ((bytes (nelisp-cc-stage81-test--arm64-bytes cg)))
+        ;; 4 bytes total (one fixed-width arm64 instruction).
+        (should (= 4 (length bytes)))
+        ;; LE bytes of 0x39400001 = [01 00 40 39].
+        (should (= #x01 (aref bytes 0)))
+        (should (= #x00 (aref bytes 1)))
+        (should (= #x40 (aref bytes 2)))
+        (should (= #x39 (aref bytes 3)))))))
+
+;;; (10) arm64 ssa-load-payload-ptr bytes ----------------------------
+
+(ert-deftest nelisp-cc-stage81-poc-arm64-load-payload-ptr-bytes ()
+  "arm64: lowering `ssa-load-payload-ptr' of param-0 (= x0) into a
+fresh def (= x1) emits LDR X1, [X0, #8] = 0xF9400401 (LE bytes
+01 04 40 F9).
+
+Encoding (unsigned-offset variant, sf=1):
+  1111 1001 01 imm12=1 Rn=0 Rt=1
+  0xF9400000 base | (imm12=1 << 10) | (Rn=0 << 5) | Rt=1
+  = 0xF9400401
+
+imm12 = 1 because the LDR Xt encoding scales the offset by 8
+(= 8-byte stride for 64-bit loads), so byte offset 8 → imm12 = 1.
+The +8 is SEXP_PAYLOAD_OFFSET (Phase A.5.1)."
+  (cl-destructuring-bind (cg fn param def _extras)
+      (nelisp-cc-stage81-test--make-arm64-codegen)
+    (let ((instr (nelisp-cc--ssa-add-instr
+                  fn (nelisp-cc--ssa-function-entry fn)
+                  'ssa-load-payload-ptr (list param) def)))
+      (nelisp-cc-arm64--lower-instr cg instr)
+      (let ((bytes (nelisp-cc-stage81-test--arm64-bytes cg)))
+        (should (= 4 (length bytes)))
+        ;; LE bytes of 0xF9400401 = [01 04 40 F9].
+        (should (= #x01 (aref bytes 0)))
+        (should (= #x04 (aref bytes 1)))
+        (should (= #x40 (aref bytes 2)))
+        (should (= #xF9 (aref bytes 3)))))))
+
+;;; (11) arm64 ssa-cmp-tag-imm bytes + fixups ------------------------
+
+(ert-deftest nelisp-cc-stage81-poc-arm64-cmp-tag-imm-bytes-and-fixups ()
+  "arm64: lowering `ssa-cmp-tag-imm' emits CMP Wn,#imm + B.EQ fixup +
+B fixup (= 12 bytes total, 2 fixups recorded).
+
+Sequence (3 instructions, 4 bytes each):
+  CMP   W2, #7        — encoded inline (no fixup)
+  B.EQ  L_block_THEN  — placeholder 4 bytes, fixup against label
+  B     L_block_ELSE  — placeholder 4 bytes, fixup against label
+
+The CMP encoding uses 32-bit operand size (Wn = low 32 bits of the
+X register holding the zero-extended tag).  Two fixups are
+recorded against the synthetic `L_block_<id>' labels — the same
+contract as the x86_64 sibling so the recognition pass can emit
+identical SSA in either backend.
+
+CMP W2, #7 = 0x7100001F | (7<<10) | (2<<5) = 0x71001C5F
+  (sf=0 indicates 32-bit operand; Wn==2 → bits 9..5 = 00010)."
+  (cl-destructuring-bind (cg fn param _def extras)
+      (nelisp-cc-stage81-test--make-arm64-codegen '(r2))
+    (let* ((tag-val (car extras))
+           (load-instr
+            (nelisp-cc--ssa-add-instr
+             fn (nelisp-cc--ssa-function-entry fn)
+             'ssa-load-tag (list param) tag-val))
+           (cmp-instr
+            (nelisp-cc--ssa-add-instr
+             fn (nelisp-cc--ssa-function-entry fn)
+             'ssa-cmp-tag-imm (list tag-val) nil)))
+      (setf (nelisp-cc--ssa-instr-meta cmp-instr)
+            '(:imm 7 :then 100 :else 200))
+      (nelisp-cc-arm64--lower-instr cg load-instr)
+      (nelisp-cc-arm64--lower-instr cg cmp-instr)
+      (let ((bytes (nelisp-cc-stage81-test--arm64-bytes cg))
+            (fixups (nelisp-cc-arm64--buffer-fixups
+                     (nelisp-cc-arm64--codegen-buffer cg))))
+        ;; 4 (load-tag) + 4 (CMP) + 4 (B.EQ) + 4 (B) = 16 bytes total.
+        (should (= 16 (length bytes)))
+        ;; Inspect the CMP slice (offsets 4..7).  CMP W2, #7 has
+        ;; encoding 0x7100001F | (7<<10) | (2<<5)
+        ;;       = 0x7100001F | 0x1C00 | 0x40
+        ;;       = 0x71001C5F.  LE bytes: [5F 1C 00 71].
+        (should (= #x5F (aref bytes 4)))
+        (should (= #x1C (aref bytes 5)))
+        (should (= #x00 (aref bytes 6)))
+        (should (= #x71 (aref bytes 7)))
+        ;; B.EQ + B placeholders are zero (4-byte each, fixup pre-resolve).
+        (should (= 0 (aref bytes 8)))
+        (should (= 0 (aref bytes 9)))
+        (should (= 0 (aref bytes 10)))
+        (should (= 0 (aref bytes 11)))
+        (should (= 0 (aref bytes 12)))
+        (should (= 0 (aref bytes 13)))
+        (should (= 0 (aref bytes 14)))
+        (should (= 0 (aref bytes 15)))
+        ;; Two fixups against the synthetic labels.
+        (should (= 2 (length fixups)))
+        ;; Each fixup is (FIXUP-OFFSET . (LABEL . ENCODER-FN)).
+        (let ((labels (mapcar (lambda (fx) (cadr fx)) fixups)))
+          (should (memq 'L_block_100 labels))
+          (should (memq 'L_block_200 labels)))))))
+
+;;; (12) ssa-call-primitive ABI validation ---------------------------
+
+(ert-deftest nelisp-cc-stage81-poc-call-primitive-bad-abi-rejected ()
+  "Both backends reject `ssa-call-primitive' with an unrecognised ABI."
+  ;; x86_64.
+  (cl-destructuring-bind (cg fn param _def _extras)
+      (nelisp-cc-stage81-test--make-empty-codegen)
+    (let ((instr (nelisp-cc--ssa-add-instr
+                  fn (nelisp-cc--ssa-function-entry fn)
+                  'ssa-call-primitive (list param) nil)))
+      (setf (nelisp-cc--ssa-instr-meta instr)
+            '(:abi :garbage :symbol foo))
+      (should-error (nelisp-cc-x86_64--lower-instr cg instr)
+                    :type 'nelisp-cc-x86_64-encoding-error)))
+  ;; arm64.
+  (cl-destructuring-bind (cg fn param _def _extras)
+      (nelisp-cc-stage81-test--make-arm64-codegen)
+    (let ((instr (nelisp-cc--ssa-add-instr
+                  fn (nelisp-cc--ssa-function-entry fn)
+                  'ssa-call-primitive (list param) nil)))
+      (setf (nelisp-cc--ssa-instr-meta instr)
+            '(:abi :garbage :symbol foo))
+      (should-error (nelisp-cc-arm64--lower-instr cg instr)
+                    :type 'nelisp-cc-arm64-encoding-error))))
+
+(ert-deftest nelisp-cc-stage81-poc-call-primitive-missing-symbol-rejected ()
+  "Both backends reject `ssa-call-primitive' lacking a `:symbol' meta."
+  (cl-destructuring-bind (cg fn param _def _extras)
+      (nelisp-cc-stage81-test--make-empty-codegen)
+    (let ((instr (nelisp-cc--ssa-add-instr
+                  fn (nelisp-cc--ssa-function-entry fn)
+                  'ssa-call-primitive (list param) nil)))
+      (setf (nelisp-cc--ssa-instr-meta instr)
+            '(:abi :trampoline-unary))
+      (should-error (nelisp-cc-x86_64--lower-instr cg instr)
+                    :type 'nelisp-cc-x86_64-encoding-error)))
+  (cl-destructuring-bind (cg fn param _def _extras)
+      (nelisp-cc-stage81-test--make-arm64-codegen)
+    (let ((instr (nelisp-cc--ssa-add-instr
+                  fn (nelisp-cc--ssa-function-entry fn)
+                  'ssa-call-primitive (list param) nil)))
+      (setf (nelisp-cc--ssa-instr-meta instr)
+            '(:abi :trampoline-unary))
+      (should-error (nelisp-cc-arm64--lower-instr cg instr)
+                    :type 'nelisp-cc-arm64-encoding-error))))
+
+;;; (13) ssa-call-primitive emit on x86_64 ---------------------------
+
+(ert-deftest nelisp-cc-stage81-poc-call-primitive-x86_64-emit ()
+  "x86_64: `ssa-call-primitive' emits CALL rel32 + records call-fixup
+keyed on the `:symbol' meta.
+
+Argument 0 is already in r0 (= rdi = System V arg-0) — the
+allocator pre-pinned it, so marshalling is a no-op.  The CALL rel32
+is the canonical 5-byte encoding (0xE8 + 4-byte placeholder).  A
+single call-fixup is recorded with the C symbol as cdr."
+  (cl-destructuring-bind (cg fn param def _extras)
+      (nelisp-cc-stage81-test--make-empty-codegen)
+    (let ((instr (nelisp-cc--ssa-add-instr
+                  fn (nelisp-cc--ssa-function-entry fn)
+                  'ssa-call-primitive (list param) def)))
+      (setf (nelisp-cc--ssa-instr-meta instr)
+            '(:abi :trampoline-unary :symbol nl_jit_cons_car))
+      (nelisp-cc-x86_64--lower-instr cg instr)
+      (let ((bytes (nelisp-cc-stage81-test--bytes cg))
+            (fixups (nelisp-cc-x86_64--codegen-call-fixups cg)))
+        ;; Marshalling is push-pop strategy by default — for a single
+        ;; arg already in rdi the bench may emit PUSH RDI / POP RDI;
+        ;; we just assert the CALL byte (= 0xE8) appears exactly once.
+        (should (memq #xE8 (append bytes nil)))
+        ;; Exactly one call-fixup recorded with the C symbol as cdr.
+        (should (= 1 (length fixups)))
+        (should (eq 'nl_jit_cons_car (cdar fixups)))))))
+
+;;; (14) ssa-call-primitive emit on arm64 ----------------------------
+
+(ert-deftest nelisp-cc-stage81-poc-call-primitive-arm64-emit ()
+  "arm64: `ssa-call-primitive' emits BL placeholder + status MOV
++ records a fixup against `callee:<C-SYMBOL>'.
+
+x0 is already pre-pinned (= AAPCS64 arg-0), so no marshalling MOV
+fires.  After BL, the status (in x0) is moved into the def's
+register (= x1 in this fixture), yielding 8 bytes total: a 4-byte
+BL placeholder followed by 4 bytes of `MOV X1, X0' = 0xAA0003E1
+(LE bytes E1 03 00 AA)."
+  (cl-destructuring-bind (cg fn param def _extras)
+      (nelisp-cc-stage81-test--make-arm64-codegen)
+    (let ((instr (nelisp-cc--ssa-add-instr
+                  fn (nelisp-cc--ssa-function-entry fn)
+                  'ssa-call-primitive (list param) def)))
+      (setf (nelisp-cc--ssa-instr-meta instr)
+            '(:abi :trampoline-unary :symbol nl_jit_cons_car))
+      (nelisp-cc-arm64--lower-instr cg instr)
+      (let ((bytes (nelisp-cc-stage81-test--arm64-bytes cg))
+            (fixups (nelisp-cc-arm64--buffer-fixups
+                     (nelisp-cc-arm64--codegen-buffer cg))))
+        ;; 4-byte BL placeholder + 4-byte writeback MOV.
+        (should (= 8 (length bytes)))
+        ;; BL placeholder at offset 0.
+        (should (= 0 (aref bytes 0)))
+        (should (= 0 (aref bytes 1)))
+        (should (= 0 (aref bytes 2)))
+        (should (= 0 (aref bytes 3)))
+        ;; Writeback MOV X1, X0 = 0xAA0003E1, LE bytes E1 03 00 AA.
+        (should (= #xE1 (aref bytes 4)))
+        (should (= #x03 (aref bytes 5)))
+        (should (= #x00 (aref bytes 6)))
+        (should (= #xAA (aref bytes 7)))
+        ;; One fixup against `callee:nl_jit_cons_car'.
+        (should (= 1 (length fixups)))
+        (let ((labels (mapcar (lambda (fx) (cadr fx)) fixups)))
+          (should (memq 'callee:nl_jit_cons_car labels)))))))
+
+;;; (15) Stage 81.2 primitive table — 5 cons primitives --------------
+
+(ert-deftest nelisp-cc-stage81-poc-primitive-table-stage2-shape ()
+  "`nelisp-cc-pipeline-primitive-table-stage2' carries 5 cons entries
+(read 2 = car/cdr, alloc 1 = cons, write 2 = setcar/setcdr) per
+Doc 81 §5.2.3.  Each entry maps to its `nl_jit_cons_*' Rust C
+symbol and the appropriate trampoline-binary-* ABI shape."
+  (should (= 5 (length nelisp-cc-pipeline-primitive-table-stage2)))
+  (let ((expected '((car    1 :trampoline-unary       nl_jit_cons_car)
+                    (cdr    1 :trampoline-unary       nl_jit_cons_cdr)
+                    (cons   2 :trampoline-binary-ctor nl_jit_cons_make)
+                    (setcar 2 :trampoline-binary-mut  nl_jit_cons_setcar)
+                    (setcdr 2 :trampoline-binary-mut  nl_jit_cons_setcdr))))
+    (dolist (entry expected)
+      (let* ((sym  (nth 0 entry))
+             (info (nelisp-cc-pipeline-primitive-info sym)))
+        (should info)
+        (should (= (nth 1 entry) (nth 0 info)))         ; arity
+        (should (eq (nth 2 entry) (nth 1 info)))        ; abi-mode
+        (should (eq (nth 3 entry) (nth 2 info)))))))    ; C symbol
+
+;;; (16) Per-primitive ABI mode lookup -------------------------------
+
+(ert-deftest nelisp-cc-stage81-poc-primitive-abi-mode-routing ()
+  "Each Stage 81.2 cons primitive maps to its declared ABI shape.
+
+This is the contract the recognition pass (Stage 81.3) consumes:
+`car' / `cdr' fan into `:trampoline-unary' (1 read arg + out-ptr);
+`cons' fans into `:trampoline-binary-ctor' (2 read args + out-ptr,
+allocator); `setcar' / `setcdr' fan into `:trampoline-binary-mut'
+(2 args, mutate-in-place, no out-ptr)."
+  ;; Read 2 — :trampoline-unary.
+  (should (eq :trampoline-unary
+              (nth 1 (nelisp-cc-pipeline-primitive-info 'car))))
+  (should (eq :trampoline-unary
+              (nth 1 (nelisp-cc-pipeline-primitive-info 'cdr))))
+  ;; Alloc 1 — :trampoline-binary-ctor.
+  (should (eq :trampoline-binary-ctor
+              (nth 1 (nelisp-cc-pipeline-primitive-info 'cons))))
+  ;; Write 2 — :trampoline-binary-mut.
+  (should (eq :trampoline-binary-mut
+              (nth 1 (nelisp-cc-pipeline-primitive-info 'setcar))))
+  (should (eq :trampoline-binary-mut
+              (nth 1 (nelisp-cc-pipeline-primitive-info 'setcdr))))
+  ;; All ABI modes referenced are valid runtime entry-ABI keywords.
+  (dolist (sym '(car cdr cons setcar setcdr))
+    (let ((mode (nth 1 (nelisp-cc-pipeline-primitive-info sym))))
+      (should (memq mode nelisp-cc-runtime--entry-abi-modes)))))
 
 (provide 'nelisp-cc-stage81-poc-test)
 ;;; nelisp-cc-stage81-poc-test.el ends here

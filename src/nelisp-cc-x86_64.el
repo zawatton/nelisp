@@ -2151,6 +2151,71 @@ encoding pattern)."
        else-label
        1))))
 
+;;; Doc 81 Stage 81.2 — ssa-call-primitive emit ----------------------
+;;
+;; The 4th opcode (Stage 81.2 addition) — emit a CALL rel32 to the
+;; extern "C" trampoline body whose name is recorded in the
+;; instruction's META `:symbol' slot.  Argument marshalling follows
+;; the ABI shape declared in `:abi':
+;;
+;;   :trampoline-unary       arg0 → rdi, arg1 (out-ptr) → rsi
+;;   :trampoline-binary-ctor arg0 → rdi, arg1 → rsi, arg2 (out-ptr) → rdx
+;;   :trampoline-binary-mut  arg0 → rdi, arg1 → rsi
+;;
+;; Stage 81.2 keeps the out-ptr / mutate-in-place distinction *purely
+;; in metadata* — the recognition pass (Stage 81.3) is responsible for
+;; allocating the out-slot via `alloca' SSA before this CALL.  Here we
+;; just marshal whatever operand list the IR carries into the System V
+;; argument registers and emit the rel32 placeholder + a call-fixup
+;; entry whose cdr is the C symbol (= linker-resolved at link time
+;; against `dlsym(RTLD_DEFAULT, SYMBOL-NAME)').
+
+(defun nelisp-cc-x86_64--lower-call-primitive (cg instr)
+  "Lower SSA `ssa-call-primitive' (Doc 81 Stage 81.2).
+
+Marshals operands into System V argument registers per the ABI
+shape declared in INSTR's META :abi field, emits CALL rel32 with a
+zero-displacement placeholder, and records a call-fixup entry on
+the codegen so the link pass can resolve the C symbol's address.
+The trampoline status (= rax = TRAMPOLINE_OK / TRAMPOLINE_ERR) is
+written back to the def's allocated register if a def is present."
+  (let* ((buf      (nelisp-cc-x86_64--codegen-buffer cg))
+         (def      (nelisp-cc--ssa-instr-def instr))
+         (operands (nelisp-cc--ssa-instr-operands instr))
+         (meta     (nelisp-cc--ssa-instr-meta instr))
+         (abi      (plist-get meta :abi))
+         (symbol   (plist-get meta :symbol))
+         (n        (length operands)))
+    (unless symbol
+      (signal 'nelisp-cc-x86_64-encoding-error
+              (list :ssa-call-primitive-missing-symbol
+                    (nelisp-cc--ssa-instr-id instr))))
+    (unless (memq abi '(:trampoline-unary :trampoline-binary-ctor
+                        :trampoline-binary-mut))
+      (signal 'nelisp-cc-x86_64-encoding-error
+              (list :ssa-call-primitive-bad-abi abi)))
+    (when (> n (length nelisp-cc-x86_64--int-arg-regs))
+      (signal 'nelisp-cc-x86_64-unsupported-opcode
+              (list :stack-arg-spill-not-implemented n)))
+    ;; Marshal operands into rdi / rsi / rdx / ... in declaration
+    ;; order.  Stage 81.2 reuses the existing parallel-copy /
+    ;; push-pop strategy — primitive-call is shape-isomorphic to a
+    ;; regular `:call' from a marshalling POV.
+    (nelisp-cc-x86_64--marshal-args buf cg operands)
+    ;; Emit CALL rel32 placeholder + record the extern-C fixup.  We
+    ;; piggyback on `--codegen-call-fixups' rather than introducing a
+    ;; separate `extern-c-fixups' slot — the link pass discriminates by
+    ;; symbol name (= primitive symbols are `nl_jit_*' prefixed).
+    (let ((before-call (nelisp-cc-x86_64--buffer-offset buf)))
+      (nelisp-cc-x86_64--buffer-emit-bytes
+       buf (nelisp-cc-x86_64--emit-call-rel32 0))
+      (push (cons (+ before-call 1) symbol)
+            (nelisp-cc-x86_64--codegen-call-fixups cg)))
+    ;; Status code (rax) → def register.
+    (when def
+      (nelisp-cc-x86_64--writeback-def
+       cg def nelisp-cc-x86_64--return-reg))))
+
 (defun nelisp-cc-x86_64--lower-instr (cg instr)
   "Dispatch a single SSA INSTR to its per-opcode lower helper.
 
@@ -2159,8 +2224,10 @@ Skeleton subset — opcodes outside the supported set raise
 be lowered out by a phi-out pass before this dispatch sees them.
 
 Doc 81 Stage 81.1 added `ssa-load-tag' / `ssa-load-payload-ptr' /
-`ssa-cmp-tag-imm' for the primitive-trampoline ABI; subsequent
-stages will activate these via the recognition pass."
+`ssa-cmp-tag-imm' for the primitive-trampoline ABI.  Stage 81.2
+added the 4th opcode `ssa-call-primitive' (= the actual CALL out
+to the extern \"C\" trampoline body); subsequent stages will
+activate these via the recognition pass."
   (pcase (nelisp-cc--ssa-instr-opcode instr)
     ('const               (nelisp-cc-x86_64--lower-const cg instr))
     ('load-var            (nelisp-cc-x86_64--lower-load-var cg instr))
@@ -2175,6 +2242,7 @@ stages will activate these via the recognition pass."
     ('ssa-load-tag        (nelisp-cc-x86_64--lower-load-tag cg instr))
     ('ssa-load-payload-ptr (nelisp-cc-x86_64--lower-load-payload-ptr cg instr))
     ('ssa-cmp-tag-imm     (nelisp-cc-x86_64--lower-cmp-tag-imm cg instr))
+    ('ssa-call-primitive  (nelisp-cc-x86_64--lower-call-primitive cg instr))
     ('phi
      (signal 'nelisp-cc-x86_64-unsupported-opcode
              (list :phi-must-be-lowered-out-before-codegen
