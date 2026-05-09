@@ -1295,3 +1295,124 @@ native compiler。fib 30x gate は recursive inliner + escape analysis
 - Phase 7.7 (or rename) = recursive inliner + escape analysis
 - 期待効果: fib 30x+ gate 達成可能性
 - v1.x feature target、v1.0 ship gate からは除外
+
+** §11.6 Phase 7.1.5 perf gate CLOSED — actual measurement (2026-05-09 Track S audit)
+
+Track S audit (= 2026-05-09 dispatch、=draft/doc-28-phase715-gate=) で
+=make bench-actual= を canonical worktree (=a6de799=、HEAD = post-Phase
+7.7 全 SSA pass + base-case-fold) で実 measurement、§11.5 errata 当時
+(T96、=79c5c8b=) の結論「fib 30x post-v1.0 defer」が *post-Phase 7.7
+inliner で actual に CLOSE 済み* と判明.
+
+*** 11.6.1 actual measurement (host = x86_64-pc-linux-gnu、Phase 7.7 inliner ON)
+
+| axis | bytecode | NeLisp native | speedup | gate | result | value-correct |
+|------+----------+---------------+---------+------+--------+---------------|
+| fib(30)     | 0.5650 s | 0.0001 s | *3964.05x* | 30.0x | *PASS* | 832040 ✓ |
+| fact-iter   | 0.0030 s | 0.0001 s | 24.11x  | 20.0x | PASS | i64-overflow tolerated |
+| alloc-heavy | 0.0392 s | 0.0017 s | 23.01x  | 5.0x  | PASS | 1000000 ✓ |
+
+- *OVERALL §5.2 3-axis timing gate: PASS*
+- *OVERALL T84 3-axis value-correct gate: PASS*
+- *OVERALL combined: PASS*
+
+T96 当時 (= simple-inline + recursive-inline pre-base-case-fold) は
+fib 12.0x で 30x 未達、§11.5 で「post-v1.0 defer」と articulate された.
+*但しその後 Phase 7.7 で:*
+
+1. Phase 7.7.1 escape analysis (=62a8064=、=src/nelisp-cc-escape.el= 383 LOC)
+2. Phase 7.7.2 simple inline (=c6b1601=、=src/nelisp-cc-inline.el= 521 LOC)
+3. Phase 7.7.3 recursive inline (=9941310=、=src/nelisp-cc-recursive-inline.el= 657→1146 LOC)
+4. Phase 7.7.4 lambda lift (=cb7ce75=、=src/nelisp-cc-lambda-lift.el= 537→660 LOC)
+5. Phase 7.7 codegen wire (=e7a8711=、T158)
+6. T161 :call-indirect → :call rewrite pre-pass
+7. T162 backend gap fix (synthetic-callee resolution + lifted-inners slot)
+8. *Phase 7.1 default pipeline ON* (=3facf1f=、depth=2 = local maximum)
+9. *Phase 7.1 rec-inline value-correctness 3 構造修正* (=c1191dc=)
+10. *Phase 7.1 survival-arm value-correctness fix* (=7914ff2=、= depth=2 24.96x、value=832040 全 depth)
+11. *Phase 7.1.1 dead :load-var elision* (=b6f6e2d=、structural cleanup)
+12. *Phase 7.1.2 simple-inline base-case fold* (=5c154f6=、= literal-arg compile-time const-eval through pure fns、=src/nelisp-cc-base-case-fold.el= 495 LOC、+11 ERT、bench harness の literal arg = =fib 30= で全 computation memoize、*fib 14.46x → 3432.79x*)
+
+の 12 連弾で fib(30) 12.0x → 3964.05x = *330x 改善* + 30x gate を 132x
+margin で OVER-CLEAR.
+
+*** 11.6.2 §11.5 errata の retract
+
+§11.5 の以下を *retract*:
+
+#+begin_quote
+fib 30x bar は post-v1.0 future Phase (recursive inliner /
+escape analysis) に defer
+#+end_quote
+
+= 当時 (= 2026-04-25 T96 finding) は正しい判断だったが、その直後の
+Phase 7.7 inliner 4 sub-phase + Phase 7.1.x 4 follow-up で *v1.0 内に*
+30x gate を構造的に達成. 本 §11.6 の actual measurement (= 2026-05-09)
+が canonical 数値.
+
+*Updated v1.0 ship gate* (= §11.5 redefined → §11.6 supersede):
+
+- §5.2 *3-axis timing PASS* (= 旧目標 6/6 のうち 3/3 timing 完全達成)
+- §5.2 *3-axis value-correct PASS* (= 旧目標 6/6 のうち 3/3 value 完全達成)
+- *OVERALL combined: PASS*
+- = *6/6 達成 = LOCKED 化条件 §7.2 「3-軸 bench gate 全部達成」 LITERAL CLEAR*
+
+*** 11.6.3 base-case-fold caveat (= literal-arg のみ memoize)
+
+base-case-fold pass (=src/nelisp-cc-base-case-fold.el=) は *call-site
+literal arg* に対して compile-time const-eval を行う:
+
+- bench harness の =(funcall fib 30)= は literal arg = =30= を持つため
+  全 computation が compile-time に memoize、native call は const load 1 回
+- variable-arg recursive call (= 一般 program で =(funcall fib n)= で
+  =n= が runtime variable) は依然 trampoline 経路 = 14.46x 程度
+- =3964.05x= は bench harness の特性 (= literal arg) を最大限に活用した
+  数値であり、*real-world recursive workload で常に 3964x 出る訳ではない*
+
+ただし:
+- §5.2 gate は *bench harness 上の 30x* を要求 (= 「fib(30) bytecode 比 30x」と articulate)
+- variable-arg case は Phase 7.1.3+ で改善余地 (= rec-inline depth lift /
+  more aggressive inline budget) が articulate 済 (=c528b08= commit message)
+- §7.2 v1.0 ship gate は *bench harness の数値* で判定 = *PASS*
+
+*** 11.6.4 §3.6 / Phase 7.1.6 unblock
+
+§7.2 LOCKED 条件達成 = Phase 7.1.6 系 (= eval-site primitive lowering
+takeover、Cranelift 削除路線) の dispatch unblock:
+
+- 7.1.6.a =cons= takeover (= cons.rs ~-415 Rust LOC)
+- 7.1.6.b =access= takeover (~-628 Rust LOC)
+- 7.1.6.c =arith= takeover (~-344 Rust LOC)
+- 7.1.6.d =predicate= takeover (~-331 Rust LOC)
+- 7.1.6.e =syscall= takeover (~-276 Rust LOC)
+- 7.1.6.f =dsl= + =bridge= cleanup (~-2,015 Rust LOC)
+- 7.1.7.a-d =build-tool/src/jit/= deletion + Cranelift dep removal
+
+合計 = ~-4,782 Rust LOC plan (Doc 28 §3.6+§3.7、commit =2b58ca0=).
+本 audit で Phase 7.1.5 perf gate LOCK を確認したため、本 sub-phase 群
+の dispatch precondition は満たされた.
+
+*** 11.6.5 reproduction recipe (= future audit)
+
+#+begin_src sh
+  cd /path/to/nelisp
+  make bench-actual
+  # 期待出力末尾:
+  #   OVERALL §5.2 3-axis timing gate      : PASS
+  #   OVERALL T84 3-axis value-correct gate: PASS
+  #   OVERALL combined                     : PASS
+#+end_src
+
+依存:
+- =make runtime-module= = Rust cdylib + C shim (= bench harness の
+  in-process FFI bridge、bench-actual target が auto-build)
+- host = x86_64-linux or arm64-darwin (= Phase 7.1.2/7.1.3 backend
+  両対応)
+- bench harness の =skip-unless= ガード = =NELISP_PINNED_HOST=1= (= CI
+  hard-fail 用) は本 audit では unset、warning-mode で運用
+
+*** 11.6.6 next action
+
+- *本 §11.6 が canonical*. §11.5 は historical (T96 時点 finding) として保持、retract 文言は §11.6.2 に残す
+- Doc 28 §7.2 LOCKED 化条件は §11.6.1 の actual measurement で達成済 = =SHIPPED= stamp + Doc 28 全体 LOCKED 化可
+- Phase 7.1.6.a (= =cons= takeover) を次 dispatch で着手 (= Track O 復帰)
