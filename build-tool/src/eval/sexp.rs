@@ -25,6 +25,7 @@
 //! must NOT depend on the evaluator (= layer separation, see prompt
 //! constraints).
 
+use crate::eval::nlcell::NlCellRef;
 use crate::eval::nlconsbox::NlConsBoxRef;
 use std::cell::RefCell;
 use std::fmt;
@@ -134,9 +135,15 @@ pub enum Sexp {
     /// captured slot, not a copy.  The reader does NOT produce this
     /// variant — it appears only inside captured-environment alists
     /// emitted by `Env::capture_lexical' (build-tool/src/eval/env.rs).
-    /// Identity goes through `Rc::ptr_eq'; structural equality
+    /// Identity goes through `NlCellRef::ptr_eq'; structural equality
     /// unwraps the inner Sexp.
-    Cell(Rc<RefCell<Sexp>>),
+    ///
+    /// Phase A.4 (Doc 77c §4.5, 2026-05-09): migrated from
+    /// `Rc<RefCell<Sexp>>' to a layout-pinned [`NlCellRef`] for the
+    /// same reason `Cons' moved to `NlConsBoxRef' in Phase A.2.1 —
+    /// fixed offset of `value' enables Phase A.5 JIT direct emit and
+    /// Phase B elisp self-host primitive access.
+    Cell(NlCellRef),
     /// Record (= host emacs `record' / pvec subtype).  Underlies
     /// `cl-defstruct' user types — the first slot (`type_tag') names
     /// the struct type so `type-of' can return that symbol verbatim
@@ -489,7 +496,7 @@ fn write_sexp(out: &mut String, s: &Sexp) {
         }
         // Lexical-binding cell — print the inner value transparently
         // so user-facing prints never reveal the storage wrapper.
-        Sexp::Cell(rc) => write_sexp(out, &rc.borrow()),
+        Sexp::Cell(c) => write_sexp(out, &c.value),
         Sexp::Record { type_tag, slots } => {
             // Round-trippable positional shape: `#s(TYPE V0 V1 ...)'.
             // The reader (lexer.rs) accepts the same form; the
@@ -655,7 +662,7 @@ mod tests {
             SEXP_TAG_BOOL_VECTOR
         );
         assert_eq!(
-            variant_tag(&Sexp::Cell(Rc::new(RefCell::new(Sexp::Nil)))),
+            variant_tag(&Sexp::Cell(NlCellRef::new(Sexp::Nil))),
             SEXP_TAG_CELL
         );
         assert_eq!(

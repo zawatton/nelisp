@@ -991,7 +991,7 @@ fn sxhash_into<H: std::hash::Hasher>(v: &Sexp, h: &mut H) {
         }
         // Lexical-binding storage cell — hash through to inner value
         // (= cells should be invisible to user-facing sxhash).
-        Sexp::Cell(rc) => sxhash_into(&rc.borrow(), h),
+        Sexp::Cell(c) => sxhash_into(&c.value, h),
         Sexp::Record { type_tag, slots } => {
             11u8.hash(h);
             sxhash_into(type_tag, h);
@@ -1218,8 +1218,8 @@ fn bi_type_of(args: &[Sexp]) -> Result<Sexp, EvalError> {
     // Unwrap closure write-through Cells so the user-visible type
     // matches what was captured (= identity of the inner Sexp).
     let mut v: Sexp = args[0].clone();
-    while let Sexp::Cell(rc) = v {
-        let inner = rc.borrow().clone();
+    while let Sexp::Cell(c) = v {
+        let inner = c.value.clone();
         v = inner;
     }
     // Doc 52 §2.2: `record' is the only variant whose `type-of'
