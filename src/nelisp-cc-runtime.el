@@ -1529,5 +1529,134 @@ not have to slice the page buffer manually."
            :raw-bytes raw
            :final-bytes final))))
 
+;;; Doc 81 Stage 81.4 — dlsym bridge (resolve-symbol stub) -------------
+;;
+;; When the recognition pass rewrites `(call cons …)' to
+;; `(ssa-call-primitive :symbol nl_jit_cons_make …)', the backend
+;; emitter records a *call-fixup* keyed on the C symbol name.  At link
+;; time the fixup must be resolved to an *absolute address* so the CALL
+;; rel32 / BL placeholder can be patched.  The legacy (Stage 81.1〜81.3)
+;; fixup path piggybacks on `nelisp-defs-index' which only resolves
+;; same-page elisp letrec entries — extern C trampolines like
+;; `nl_jit_cons_make' need a different lookup.
+;;
+;; `nelisp-cc-runtime-resolve-symbol' is the *contract surface* for that
+;; lookup.  On host Emacs it is a *stub* — Emacs has no general way to
+;; ask the running process for the address of an arbitrary C symbol
+;; without loading a dynamic module that calls dlsym(3) itself, and
+;; Doc 81 hard-constrains zero Rust LOC delta in Stage 81.4.  The host
+;; stub therefore returns a *sentinel* address (= the first valid
+;; non-NULL u64 unlikely to collide with any real exec page) and a
+;; status keyword indicating the lookup was deferred.  Real exec on
+;; host Emacs is gated upstream by `nelisp-cc-runtime-exec-mode' (=
+;; `simulator' / `in-process' modes never attempt to invoke the
+;; trampolines so the sentinel is never dereferenced).
+;;
+;; On standalone NeLisp (= Phase 7.1.6.a's takeover target) the stub
+;; will be *overridden* by a runtime hook that calls into a thin Rust
+;; shim exposing `dlsym(RTLD_DEFAULT, SYMBOL-NAME)'.  Phase 7.1.6.a is
+;; what introduces the Rust hook (= part of the cluster takeover
+;; PR's Rust delta budget); Stage 81.4 itself stays at zero Rust LOC.
+;;
+;; The override contract is:
+;;
+;;   - Standalone NeLisp shall let-bind or `setq' the dynamic variable
+;;     `nelisp-cc-runtime-resolve-symbol-function' to a function with
+;;     signature `(SYMBOL-NAME) -> (STATUS . ADDR-OR-NIL)'.
+;;   - STATUS is `:resolved' (ADDR is a non-zero unsigned i64) or
+;;     `:not-found' (ADDR is nil) or `:host-stub' (host Emacs default —
+;;     ADDR is the sentinel `nelisp-cc-runtime--resolve-symbol-stub-addr').
+;;   - The override MUST be idempotent on the same SYMBOL-NAME within a
+;;     single page allocation (= the link pass may query it more than
+;;     once for the same fixup; returning a different ADDR between
+;;     queries silently corrupts CALL rel32 patching).
+;;   - The override is invoked at link time, *not* at SSA compile time;
+;;     it must therefore tolerate being called with arbitrary symbol
+;;     names — unknown symbols return `(:not-found . nil)' rather than
+;;     erroring out, so the link pass can decide whether to patch a
+;;     trampoline indirection (= Doc 81 §6.3 fallback) or signal.
+;;
+;; Phase 7.1.6.a will provide the Rust override via
+;; `nelisp-cc-runtime-resolve-symbol-via-dlsym' (registered through
+;; `nelisp-cc-runtime-resolve-symbol-function').  Until then host Emacs
+;; uses the stub which returns the sentinel address — sufficient for
+;; ERT / link-table inspection but never executed (= simulator /
+;; in-process exec modes are the host default).
+
+(defconst nelisp-cc-runtime--resolve-symbol-stub-addr #x0DEADBEEF
+  "Sentinel pointer returned by `nelisp-cc-runtime-resolve-symbol' on host.
+
+The value is chosen to be:
+  - non-zero (= distinguishable from `:not-found')
+  - misaligned (= would SEGV if accidentally CALLed, so a host Emacs
+    bug that strays into trampoline exec hits an obvious crash rather
+    than silent wrong-result)
+  - inside the i32 representable range so test code can compare bytes
+    without 64-bit subtleties
+
+Standalone NeLisp's override returns real dlsym addresses — this
+sentinel is never observed in production once Phase 7.1.6.a's hook
+is installed.")
+
+(defvar nelisp-cc-runtime-resolve-symbol-function nil
+  "Function used by `nelisp-cc-runtime-resolve-symbol' to do the lookup.
+
+When non-nil, called with one argument (= SYMBOL-NAME, a symbol such
+as `nl_jit_cons_make') and must return `(STATUS . ADDR-OR-NIL)'
+following the contract documented on `nelisp-cc-runtime-resolve-symbol'.
+
+Default = nil → host stub path (= return the sentinel address).
+Standalone NeLisp registers a real dlsym implementation here at
+runtime startup; ERT can let-bind it for fault-injection
+(= `:not-found' fallback testing).")
+
+(defun nelisp-cc-runtime-resolve-symbol (symbol-name)
+  "Resolve a primitive C SYMBOL-NAME to a runtime address.
+
+SYMBOL-NAME is a symbol (e.g. `nl_jit_cons_make') typically extracted
+from an `:ssa-call-primitive' instruction's `:symbol' meta during
+the link pass.  Returns `(STATUS . ADDR-OR-NIL)':
+
+  STATUS = `:resolved'   — ADDR is a non-zero unsigned i64
+                            host-process address ready for fixup patching
+  STATUS = `:host-stub'  — host Emacs has no dlsym; ADDR is the
+                            sentinel
+                            `nelisp-cc-runtime--resolve-symbol-stub-addr'.
+                            The link pass treats this as a *deferred*
+                            fixup (= patches the placeholder with the
+                            sentinel and records the symbol on a
+                            `:unresolved-extern-c-symbols' list in the
+                            page meta so the simulator never executes it).
+  STATUS = `:not-found'  — ADDR is nil; SYMBOL-NAME is not exported by
+                            the running process.  Phase 7.1.6.a's link
+                            pass converts this into a runtime error
+                            keyed on the page allocation site.
+
+When `nelisp-cc-runtime-resolve-symbol-function' is non-nil, the
+function is delegated to (= override hook for standalone NeLisp).
+Otherwise the host stub returns `(:host-stub
+. nelisp-cc-runtime--resolve-symbol-stub-addr)' for *any* symbol
+name (= the host has no dlsym available without a Rust dynamic
+module, which Doc 81 §0 STATUS forbids in Stage 81.4 — Rust delta
+must be 0)."
+  (unless (and symbol-name (symbolp symbol-name))
+    (signal 'nelisp-cc-runtime-error
+            (list :resolve-symbol-bad-type symbol-name)))
+  (if nelisp-cc-runtime-resolve-symbol-function
+      (funcall nelisp-cc-runtime-resolve-symbol-function symbol-name)
+    (cons :host-stub nelisp-cc-runtime--resolve-symbol-stub-addr)))
+
+(defun nelisp-cc-runtime-resolve-symbol-host-stub-p (status-addr)
+  "Return non-nil when STATUS-ADDR (= a `resolve-symbol' return value)
+is the host-Emacs sentinel response.
+
+Convenience predicate for ERT / link-pass code so callers do not have
+to remember the sentinel address constant or the `:host-stub' tag
+key."
+  (and (consp status-addr)
+       (eq (car status-addr) :host-stub)
+       (eq (cdr status-addr)
+           nelisp-cc-runtime--resolve-symbol-stub-addr)))
+
 (provide 'nelisp-cc-runtime)
 ;;; nelisp-cc-runtime.el ends here
