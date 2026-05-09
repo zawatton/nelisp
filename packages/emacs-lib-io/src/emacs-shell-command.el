@@ -90,24 +90,35 @@ split from stdout in this MVP."
     (delete-region start end)
     (insert text)))
 
-(defun emacs-shell-command--async-sentinel (command output-buffer)
-  "Build a process sentinel for COMMAND writing to OUTPUT-BUFFER."
-  (lambda (process event)
-    (when (memq (process-status process) '(exit signal))
-      (with-current-buffer output-buffer
-        (let ((inhibit-read-only t))
-          (goto-char (point-max))
-          (unless (bolp)
-            (insert "\n"))
-          (insert
-           (format "[Process %s %s]" (process-name process) (string-trim-right event)))
-          (unless (bolp)
-            (insert "\n"))))
+(defun emacs-shell-command--async-sentinel-fn (process event)
+  "Process sentinel for async shell commands.
+Recovers OUTPUT-BUFFER + COMMAND via `process-buffer' / `process-name'
+instead of closure capture, since NeLisp closure semantics differ from
+host Emacs and earlier closure-based sentinel raised
+\"Symbol's value as variable is void: output-buffer\" at sentinel firing."
+  (when (memq (process-status process) '(exit signal))
+    (let ((output-buffer (process-buffer process))
+          (proc-name (process-name process)))
+      (when (and output-buffer (buffer-live-p output-buffer))
+        (with-current-buffer output-buffer
+          (let ((inhibit-read-only t))
+            (goto-char (point-max))
+            (unless (bolp)
+              (insert "\n"))
+            (insert
+             (format "[Process %s %s]" proc-name (string-trim-right event)))
+            (unless (bolp)
+              (insert "\n")))))
       (let ((status (process-exit-status process)))
         (when (and (integerp status) (/= status 0))
-          (emacs-shell-command--message "%s"
-                                        (emacs-shell-command--exit-summary
-                                         command status)))))))
+          (let ((command (if (and (stringp proc-name)
+                                  (string-match "\\`async-shell-command<\\(.*\\)>\\'"
+                                                proc-name))
+                             (match-string 1 proc-name)
+                           proc-name)))
+            (emacs-shell-command--message "%s"
+                                          (emacs-shell-command--exit-summary
+                                           command status))))))))
 
 (defun emacs-shell-command--make-process (command output-buffer &optional error-buffer)
   "Start COMMAND asynchronously, writing into OUTPUT-BUFFER.
@@ -120,7 +131,7 @@ MVP because the host process bridge does not yet split stderr."
      :buffer output-buffer
      :command (list shell-file-name shell-command-switch command)
      :noquery t
-     :sentinel (emacs-shell-command--async-sentinel command output-buffer))))
+     :sentinel #'emacs-shell-command--async-sentinel-fn)))
 
 ;;;###autoload
 (defun shell-command (command &optional output-buffer error-buffer)
