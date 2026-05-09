@@ -3011,3 +3011,46 @@ fn stage74e1_apply_lambda_inner_preserves_user_args_formal() {
         Sexp::Int(42),
     );
 }
+// ============================================================
+// Doc 75 v3 Stage 9.1.b (2026-05-09) — frozen-heap 戦略 C spike
+// ============================================================
+//
+// closure-with-captures count spike per Doc 75 v3 §3.1.2.  After
+// Env::new_global() bootstrap completes, walk the globals map and
+// count function cells whose value is a closure form
+// `(closure CAPTURED-ENV ARGS BODY...)' with a non-nil CAPTURED-ENV.
+// Doc 75 v3 §1.5 戦略 C banks on this set being small (= the
+// fallback list of forms that v3 frozen heap will re-evaluate
+// instead of materialising as nodes); §7.1 sets the gate.
+//
+// This is a cfg(test) probe ONLY — it is not exercised by the
+// production binary and counts toward 0 production Rust LOC per
+// Doc 77c counting policy + Doc 75 v3 §3.1.4 articulation.
+//
+// Stage 9.3+9.4 (= encoder + decoder atomic) will replace this with
+// a v3 encode/decode round-trip happy-path test.
+
+#[test]
+fn frozen_heap_strategy_c_closure_with_captures_count() {
+    let env = Env::new_global();
+    let mut count = 0usize;
+    for (_name, entry) in env.globals.iter() {
+        if let Some(Sexp::Cons(c)) = &entry.function {
+            // (closure CAPTURED-ENV ARGS BODY...) — pattern match
+            // car == 'closure and cadr (= CAPTURED-ENV) != nil.
+            if c.car == Sexp::Symbol("closure".into()) {
+                if let Sexp::Cons(rest) = &c.cdr {
+                    if rest.car != Sexp::Nil {
+                        count += 1;
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("CLOSURE_WITH_CAPTURES_COUNT={count}");
+    // Stage 9.1.b records the count for §7.1 threshold review.
+    // No hard assert yet — the value feeds the Stage 9.3 design.
+    // We only sanity-check that the bootstrap produced a globals
+    // map (= the spike actually walked something).
+    assert!(!env.globals.is_empty(), "bootstrap globals map empty");
+}

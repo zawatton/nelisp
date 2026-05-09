@@ -5,6 +5,26 @@
 //! value universe the Rust Elisp evaluator already executes, so the
 //! smoke path proves `bootstrap.el -> image -> eval` without inventing
 //! a second object model.
+//!
+//! # NELIMG image format spec (v2 shipped, v3 reserved per Doc 75)
+//!
+//! ```text
+//! magic   = b"NELIMG\0"  (7 bytes)
+//! version = 0x02 | 0x03  (1 byte)  ; v2 = form-list, v3 = frozen-heap
+//! kind    = 0x00 | 0x01  (1 byte, only when version=3)
+//!           0x00 = legacy (form-list, identical to v2 payload after KIND)
+//!           0x01 = frozen-heap (Doc 75 v3 §5.2 layout)
+//! ```
+//!
+//! v3 KIND=0x01 payload follows Doc 75 v3 §5.2:
+//!   `u32 N_NODES, [NODE_TAG, payload...] × N,`
+//!   `u32 N_GLOBALS, [name, flags, idxs] × N,`
+//!   `u32 N_FALLBACK_FORMS, [u32 src_len, utf8] × N`
+//!
+//! Stage 9.1 (Doc 75 v3 §3.1.detail, this commit) only declares the v3
+//! magic / version / KIND constants — encoder is Stage 9.3 and decoder
+//! is Stage 9.4.  The v2 path remains the only encode/decode pair until
+//! Stage 9.5 atomic-cutover.
 
 use crate::eval::{self, Env, EvalError};
 use crate::eval::nlchartable::NlCharTableRef;
@@ -16,6 +36,24 @@ use std::fmt;
 
 pub const IMAGE_MAGIC: &[u8; 8] = b"NELIMG\0\x02";
 pub const IMAGE_ABI_VERSION: u32 = 2;
+
+// Doc 75 v3 Stage 9.1 (2026-05-09): NELIMG v3 magic / version / KIND
+// constants — declared here so Stage 9.3 (encoder) and Stage 9.4
+// (decoder) commits can reference a single source of truth.  The
+// constants are intentionally not yet wired into encode_image /
+// decode_image; they are referenced in cfg(test) only until the
+// atomic encoder/decoder land.  Per Doc 75 v3 §3.1.4, this is a
+// production net 0 LOC delta target — these declarations are the
+// minimum surface needed for the v3 path to gain a name.
+#[allow(dead_code)]
+pub const NELIMG_V3_MAGIC: &[u8; 8] = b"NELIMG\0\x03";
+#[allow(dead_code)]
+pub const NELIMG_V3_VERSION: u8 = 3;
+/// NELIMG v3 KIND byte: frozen-heap variant (= Doc 75 v3 §5.2).
+/// 0x02 reserved for future compressed-frozen-heap, 0x03 for
+/// differential / overlay images.
+#[allow(dead_code)]
+pub const NELIMG_V3_KIND_FROZEN_HEAP: u8 = 0x01;
 
 const TAG_NIL: u8 = 0x00;
 const TAG_T: u8 = 0x01;
