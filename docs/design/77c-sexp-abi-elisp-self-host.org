@@ -53,6 +53,8 @@ D-B path 完全 articulate:
 
 D-B 工数 refine: 当初 3-6 ヶ月 → *5-7 週間* (= Phase 7.1.5 close 0 + Phase 7.1.6 archi extension 1 週間 + .a〜.f cluster takeover 3-5 週間 + Phase 7.1.7 cleanup 1 週間).  100% 純 elisp 到達は *2-4 ヶ月* 見込 (= Doc 74 anvil-runtime 1-2 ヶ月 + Phase 9 frozen heap 1 ヶ月 + D-B 5-7 週間).
 
+*2026-05-09 anvil-runtime 並行 session articulate* (= Doc 82 DRAFT): anvil-runtime crate 削除 path は **2 session 並行進行** (= parallel session の Phase A/B 系列 = nelisp =a6de799= までで -7,346 LOC target、my session の Doc 74 v2 audit = -4,365〜-5,667 LOC target).  Doc 82 §3 alignment matrix で layer 直交確認、§4 convergence path で Option α (= parallel session Final B 採用、Doc 74 v2 を Final B 詳細設計 reference として deferred) 推奨.  Doc 74 v2 の status は parallel session Phase B5 SHIPPED 確認後に正式 update.
+
 * §1 動機
 
 ** §1.1 「Sexp ABI elisp 化諦めない」commitment + 100% 純 elisp commitment + monotonic shrink rule
