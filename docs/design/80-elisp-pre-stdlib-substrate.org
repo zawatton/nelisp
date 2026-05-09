@@ -1,0 +1,418 @@
+#+TITLE: Doc 80 — Pre-stdlib elisp substrate (= cond / signal / etc. for STDLIB_FILES[0] 以前)
+#+AUTHOR: NeLisp / Claude
+#+DATE: 2026-05-09
+
+* Status
+
+:STATE: DRAFT 2026-05-09
+:PARENT: Doc 77c (= 100% 純 elisp commitment) / Doc 63 (= Phase 7 self-host roadmap)
+:UNLOCKS: =strategy.rs= ~255 LOC 削除 (= Track H 2026-05-09 audit identified future deletion path、=bi_length_impl= / =aref_helper= / =bi_aref_impl= / =bi_aset_impl= / =bi_elt_impl= の multi-variant fall-through body)
+:USER_DIRECTIVE: 2026-05-09 — "elisp 再表現可能とする為に、足らない表現があったらelispで実装しましょう"
+:RELATED: =project_nelisp_strategy_rs_pinned= memory (= future deletion path identified、本 Doc が main path に格上げ) / =feedback_nelisp_unlock_substrate_dont_accept_pin= (= 同 user 2026-05-09 directive の memo)
+
+* §0 TL;DR
+
+User 2026-05-09 directive (= "足らない表現があったらelispで実装しましょう") を受け、=lisp/nelisp-jit-substrate.el= を新設し =STDLIB_FILES[0]= に挿入する.  この substrate は =cond= / =when= / =unless= / =signal= helper / =wrong-type-argument= 等の最小表現セットを提供し、現在の =nelisp-jit-strategy.el= を置き換える(= 直前に置かれる).
+
+これにより =build-tool/src/jit/strategy.rs= の =bi_length_impl= (37 LOC) / =aref_helper= (71 LOC) / =bi_aref_impl= (4 LOC) / =bi_aset_impl= (111 LOC) / =bi_elt_impl= (32 LOC) = **255 LOC の Rust** を elisp に再表現可能になる.  =strategy.rs= の "structurally pinned" 結論 (= Track H 2026-05-09 audit) は、substrate を作って unlock することで invalidate される.
+
+aggregate Rust shrink target: **~-260 LOC** (= 255 LOC 削除 + 残骸 cleanup).
+
+ただし本 Doc は **doc-only DRAFT** = Rust / elisp source への変更は行わない.  Stage 80.1 以降の実装は別 commit で進める.
+
+* §1 動機
+
+** §1.1 Track H audit が identify した future deletion path
+
+=memory/project_nelisp_strategy_rs_pinned= (2026-05-09) は =strategy.rs= 425 LOC を audit し、deletion candidates = 0 LOC (= 全 18 fn が live) と結論した.  ただし *future deletion path* として:
+
+#+begin_quote
+=strategy.rs= の future deletion path: =nelisp--cond= / =nelisp--signal= substrate を =nelisp-jit-strategy.el= **より先に** load されるよう refactor すれば、~250/425 LOC (= =bi_length_impl= / =aref_helper= / =bi_aset_impl= / =bi_elt_impl= の multi-variant fall-through body) が elisp 再表現可能.  別 Doc 候補、Doc 77c の deliverable には含めない.
+#+end_quote
+
+…と明記された.  本 Doc 80 はこの "別 Doc 候補" の articulation.
+
+** §1.2 user directive の格上げ
+
+User 2026-05-09 directive: "elisp 再表現可能とする為に、足らない表現があったらelispで実装しましょう" (= "to make [things] expressible in elisp, if there is missing expression, implement it in elisp").
+
+これは =strategy.rs= "structurally pinned" の結論を invalidate する明示的指示.  pin を accept して "Rust 必須" と諦める path から、substrate を build して unlock する path へ pivot する.
+
+** §1.3 現状 =nelisp-jit-strategy.el= が Rust に委譲する理由
+
+=lisp/nelisp-jit-strategy.el= 38-48 行のコメント (= 既存 file の self-documentation):
+
+#+begin_quote
+For length/aref/aset/elt the multi-variant fall-through (= MutStr / CharTable / BoolVector / Cons-walk + canonical ArithError / WrongType shapes) is delegated to a Rust helper (=nelisp--{length,aref,aset,elt}-impl=).  These helpers carry the exact body of the pre-b.4 =lowered_X= fn — same JIT call + same match-on-variant fall-through.  The elisp wrapper exists so the public name's function cell becomes a closure instead of a =(builtin NAME)= sentinel; the heavy lifting stays Rust because variant dispatching with proper error shapes (ArithError vs WrongType, message formatting) is not expressible cleanly in **pre-stdlib elisp**.
+#+end_quote
+
+「pre-stdlib elisp で expressive cleanly でない」が委譲の唯一の理由 → substrate で expressibility を補充すれば消える.
+
+* §2 missing expression power audit
+
+** §2.1 STDLIB_FILES[0] 時点で利用可能な表現 (= "input")
+
+=nelisp-baker.rs:37= の =STDLIB_FILES= は現在 =nelisp-jit-strategy.el= を index 0 に置く.  この時点で elisp が踏める expression は次の 2 種類のみ:
+
+*** §2.1.1 Rust special form (= =eval/special_forms.rs:38-52=)
+
+| 名前 | 用途 |
+|---------+------|
+| =quote= | constant data |
+| =function= | =#'fn= |
+| =if= | branch |
+| =let= / =let*= | local bind |
+| =lambda= | closure |
+| =setq= | mutation |
+| =while= | loop |
+| =progn= | seq |
+| =catch= / =throw= | non-local exit |
+| =condition-case= | error catch |
+| =unwind-protect= | finalizer |
+
+Note: =defun= / =defmacro= / =cond= / =and= / =or= / =when= / =unless= は special form **ではない** = =nelisp-stdlib-eval-special.el= (= STDLIB_FILES[1]) で macro として定義される.
+
+*** §2.1.2 Rust builtin function (= =eval/builtins.rs:60-180=)
+
+少なくとも次の primitive 群は STDLIB_FILES[0] でも =fset= 経由で reach 可能 (= =bi_signal= 等):
+
+| カテゴリ | 名前 |
+|----------+------|
+| equality | =eq= / =equal= / =nelisp--ref-eq= |
+| cons | =car= / =cdr= / =cons= / =setcar= / =setcdr= |
+| accessors | =aref= / =aset= / =elt= / =length= (← 本 Doc が rewrite 対象) |
+| type | =type-of= / =vectorp= / =functionp= |
+| symbol | =intern= / =symbol-name= / =make-symbol= |
+| def | =fset= / =defalias= / =fboundp= / =boundp= / =set= / =fmakunbound= |
+| error | =signal= |
+| numeric | =ash= / =nelisp--logior2= / =nelisp--logand2= / =nelisp--logxor2= / =sxhash= |
+| string | =string-bytes= / =string-match-p= / =nelisp--make-mut-string= |
+| record | =nelisp--make-record= / =nelisp--record-ref= / =-set= / =-length= / =-type= / =recordp= |
+| eval | =funcall= / =apply= / =eval= / =macroexpand-1= |
+
+=signal= は arg 0 = symbol、arg 1 = data list を受けて =EvalError::UserError { tag, data }= を throw する.  =condition-case= で catch 可能 (= =eval/builtins.rs:2509-2532=).
+
+** §2.2 strategy.rs body が必要とする expression
+
+=bi_length_impl= / =aref_helper= / =bi_aset_impl= / =bi_elt_impl= の Rust body を逐行追って elisp re-expression に必要な要素を audit:
+
+*** §2.2.1 multi-variant dispatch — =cond= 等価
+
+#+begin_src rust
+match &args[0] {
+    Sexp::MutStr(rc) => Ok(Sexp::Int(rc.value.chars().count() as i64)),
+    Sexp::BoolVector(v) => Ok(Sexp::Int(v.value.len() as i64)),
+    Sexp::Cons(_) => { ... cons-walk ... },
+    other => Err(EvalError::WrongType { expected: "sequence".into(), got: other.clone() }),
+}
+#+end_src
+
+elisp 再表現:
+
+#+begin_src emacs-lisp
+(let ((tag (type-of x)))
+  (cond
+    ((eq tag 'string) ...)         ; MutStr arm
+    ((eq tag 'bool-vector) ...)    ; BoolVector arm
+    ((eq tag 'cons) ...)           ; Cons-walk arm
+    (t (signal 'wrong-type-argument (cons 'sequencep (cons x nil))))))
+#+end_src
+
+要 expression: =cond= macro (= =if= chain).  →  §3.1 に substrate.
+
+*** §2.2.2 error 投げ — =signal= + =wrong-type-argument= / =arith-error= sym
+
+=signal= は Rust builtin として既に reach 可能 (= §2.1.2).  ただし =strategy.rs= の =EvalError::ArithError(format!("{}: index {} out of range...", primitive, index, len))= を elisp 再表現するには:
+
+1. =format= macro (= STDLIB_FILES[5+] で定義) を待たずに、簡易 message construction が要る.
+2. =arith-error= / =wrong-type-argument= 等の data symbol は =(quote arith-error)= でリテラル可能.
+
+→ §3.2 で =nelisp--signal-arith= / =nelisp--signal-wrong-type= helper を articulate.  format 不要 = =concat= も不要 = =cons= でリスト構築すれば良い (= elisp =signal= の data list は any sexp で OK).
+
+*** §2.2.3 cons-walk — =while= で loop 化
+
+#+begin_src rust
+let mut n = 0i64;
+let mut cur: Sexp = args[0].clone();
+loop {
+    match &cur {
+        Sexp::Nil => return Ok(Sexp::Int(n)),
+        Sexp::Cons(b) => { n += 1; cur = b.cdr.clone(); }
+        other => return Err(WrongType { ... }),
+    }
+}
+#+end_src
+
+elisp 再表現は =while= + =setq= で素直にできる.  =while= は special form (= §2.1.1).  →  追加 substrate 不要.
+
+*** §2.2.4 string char-count — =length= primitive 自体が再帰になる罠
+
+=Sexp::MutStr(rc) => Ok(Sexp::Int(rc.value.chars().count() as i64))= は UTF-8 char-count.  elisp 側の =length= は string に対して何を返すか?  →  Rust =bi_length_impl= 自体を elisp 化するので、char-count を別 primitive に出す必要がある.  candidate: =string-bytes= は byte length であり char-count ではない.
+
+新 Rust primitive 候補 (Stage 80.3 で必要なら追加):
+- =nelisp--str-char-count= (= UTF-8 char count、=String::chars().count()=)
+- =nelisp--str-char-at INDEX= (= UTF-8 nth char as int)
+
+これは ~10 LOC × 2 の Rust primitive 追加 = elisp で expressive にできない真の slim primitive.  net Rust delta: +20 LOC (Stage 80.3).
+
+*** §2.2.5 vector / bool-vector / char-table accessor
+
+=Sexp::Vector(v).value.len()= 等は既に =length= primitive (= 本 Doc rewrite 対象) でループ越しに取れる、だが circular.  alternative: =nelisp--vector-length= の slim primitive を追加 (もしくは =Sexp::Vector= 直接の variant 別 primitive を残し、それを上から =length= elisp wrapper が呼ぶ).
+
+→ Stage 80.4 で =nelisp--vector-length= / =nelisp--bool-vector-length= / =nelisp--char-table-ref= / =nelisp--char-table-set= の slim primitive を追加 (= 既存 helper の thin wrapper) し、elisp 側で variant dispatch する.
+
+** §2.3 Bootstrap circularity assessment
+
+| substrate sym | 依存 | 提供方法 |
+|---------------+------+----------|
+| =cond= macro | =if= (special form) + =defmacro= (= 自己起動 boot) | =fset 'cond (cons 'macro ...)= で初期 install |
+| =when= / =unless= macro | =if= + =progn= (special form) + =defmacro= | 同上 |
+| =defmacro= macro 自体 | =fset= + =cons= (Rust builtin) + =lambda= (special form) | =nelisp-stdlib-eval-special.el= 49-62 の bootstrap pattern を流用 |
+| =defun= macro | =fset= + =lambda= + =defmacro= (上で定義済) | 同 file 後半に order |
+| =signal-helper= 関数 | =signal= (Rust builtin) + =cons= + =quote= | 直接 =fset= で install |
+
+循環は無い: =if= は special form で常時 available、=defmacro= は self-bootstrap pattern が =nelisp-stdlib-eval-special.el= 49-62 で実証済み、=signal= は Rust builtin で常時 available.
+
+唯一 risk: =cond= 内で使われる =null= (= =(eq x nil)= の elisp wrapper) は =nelisp-stdlib.el= で定義される.  substrate では =null= を使わず inline で =(if x ... ...)= を書く (= or =(eq x nil)= 直書き).  既存 =nelisp-stdlib-eval-special.el= の =cond= macro body は =null= を使っているが、これは現 STDLIB_FILES[1] で =null= は Rust builtin (= まだ shadowed されてない) として reach 可能だった経緯による.  substrate では =null= を Rust builtin 経由で reach できるかどうかを確認 (= =builtins.rs:79-87= "null shadowed by elisp 2026-05-06 batch 6d" 記述 — Rust 側 =null= は既に削除済の可能性 = =substrate= では =eq x nil= 直書きが安全).
+
+* §3 設計: =lisp/nelisp-jit-substrate.el=
+
+** §3.1 file 配置 + STDLIB_FILES order
+
+新規 file: =lisp/nelisp-jit-substrate.el= (+ baked =nelisp-jit-substrate.el.image=).
+
+=nelisp-baker.rs:37= の =STDLIB_FILES= に index 0 として挿入:
+
+#+begin_src rust
+const STDLIB_FILES: &[&str] = &[
+    "nelisp-jit-substrate.el",     // ← NEW (Doc 80)
+    "nelisp-jit-strategy.el",
+    "nelisp-stdlib-eval-special.el",
+    ... (以下既存)
+];
+#+end_src
+
+substrate が先に load される = =nelisp-jit-strategy.el= の =fset 'length=, =fset 'aref= 等の wrapper body から =cond= / =signal= / =nelisp--signal-wrong-type= 等が利用可能になる.
+
+** §3.2 提供する symbol set (= "output" of substrate)
+
+| symbol | kind | 用途 |
+|--------+------+------|
+| =defmacro= | macro (self-boot) | 後続 macro 定義の前提 |
+| =defun= | macro | 関数定義 |
+| =cond= | macro | multi-arm dispatch (= §2.2.1 用) |
+| =when= / =unless= | macro | 条件 (= concise =if=) |
+| =null= | function | =(eq x nil)= wrapper (= 後続 stdlib も上書きして良い) |
+| =not= | function | =null= の alias |
+| =nelisp--signal-wrong-type= | function | =(signal 'wrong-type-argument (cons EXPECTED (cons GOT nil))) =の thin helper |
+| =nelisp--signal-arith= | function | =(signal 'arith-error DATA)= の thin helper |
+| =nelisp--type-tag= | function | =type-of= の thin alias (= future 切替 hook) |
+
+これだけで =bi_length_impl= / =aref_helper= / =bi_aset_impl= / =bi_elt_impl= の elisp 再表現に十分.
+
+** §3.3 implementation skeleton (= 抜粋)
+
+#+begin_src emacs-lisp
+;;; nelisp-jit-substrate.el --- Pre-stdlib expression substrate (Doc 80) -*- lexical-binding: t; -*-
+
+;;; Code:
+
+;; ---- 1. defmacro self-bootstrap (lifted from nelisp-stdlib-eval-special.el 49-62) ----
+(fset 'defmacro
+      (cons 'macro
+            (cons (lambda (name args &rest body)
+                    (let* ((lambda-form (cons 'lambda (cons args body)))
+                           (qname (cons 'quote (cons name nil)))
+                           (inner-cons (cons 'cons (cons lambda-form (cons nil nil))))
+                           (outer-cons (cons 'cons
+                                             (cons (cons 'quote (cons 'macro nil))
+                                                   (cons inner-cons nil)))))
+                      (cons 'progn
+                            (cons (cons 'fset (cons qname (cons outer-cons nil)))
+                                  (cons qname nil)))))
+                  nil)))
+
+;; ---- 2. when / unless / cond ----
+(defmacro when (test &rest body)
+  (cons 'if (cons test (cons (cons 'progn body) (cons nil nil)))))
+
+(defmacro unless (test &rest body)
+  (cons 'if (cons test (cons nil (cons (cons 'progn body) nil)))))
+
+(defmacro cond (&rest clauses)
+  (if (eq clauses nil)
+      nil
+    (let* ((clause (car clauses))
+           (rest (cdr clauses))
+           (test (car clause))
+           (body (cdr clause)))
+      (if (eq body nil)
+          (cons 'let
+                (cons (cons (cons '--nl-cond-tmp (cons test nil)) nil)
+                      (cons (cons 'if
+                                  (cons '--nl-cond-tmp
+                                        (cons '--nl-cond-tmp
+                                              (cons (cons 'cond rest) nil))))
+                            nil)))
+        (cons 'if
+              (cons test
+                    (cons (cons 'progn body)
+                          (cons (cons 'cond rest) nil))))))))
+
+;; ---- 3. defun (after defmacro) ----
+(defmacro defun (name args &rest body)
+  (let ((lambda-form (cons 'lambda (cons args body)))
+        (qname (cons 'quote (cons name nil))))
+    (cons 'progn
+          (cons (cons 'fset (cons qname (cons lambda-form nil)))
+                (cons qname nil)))))
+
+;; ---- 4. null / not ----
+(defun null (x) (eq x nil))
+(defun not (x) (eq x nil))
+
+;; ---- 5. signal helpers ----
+(defun nelisp--signal-wrong-type (expected got)
+  (signal 'wrong-type-argument (cons expected (cons got nil))))
+
+(defun nelisp--signal-arith (data)
+  (signal 'arith-error data))
+
+;; ---- 6. type-tag thin alias ----
+(defun nelisp--type-tag (x) (type-of x))
+
+(provide 'nelisp-jit-substrate)
+;;; nelisp-jit-substrate.el ends here
+#+end_src
+
+LOC budget: ~80-100 LOC elisp.
+
+* §4 stage breakdown
+
+各 stage 単独 commit、ERT green、make test-all green を gate にする.  per-commit monotonic Rust shrink rule (= user 2026-05-09 ルール) を遵守.
+
+** §4.1 Stage 80.1 — substrate skeleton + load order wiring
+
+- 新規 =lisp/nelisp-jit-substrate.el= (= §3.3 の skeleton, ~80 LOC elisp).
+- =nelisp-baker.rs:37= の STDLIB_FILES に index 0 挿入.
+- =Env::new_global= の STDLIB_SOURCES (= =eval/env.rs= 等) も同期.
+- =Makefile= の bake target が新 file を picking up することを確認.
+- ERT smoke: 既存 stdlib test 全 pass.
+
+Net Rust delta: **+0 LOC** (= elisp-only + baker order の 1 行追加).
+
+** §4.2 Stage 80.2 — substrate signal / cond の ERT 整備
+
+- =tests/= に substrate 単体 ERT 追加: =cond=/=when=/=unless=/=signal-wrong-type=/=signal-arith= 各 5-10 case.
+- =nelisp-stdlib-eval-special.el= の =cond= 実装が **shadow 上書き** されても挙動同一であることを confirm (= 後続 stdlib が re-define する設計).
+- 重複 macro definition の noise を許容することを documentation 化.
+
+Net Rust delta: **+0 LOC**.
+
+** §4.3 Stage 80.3 — =bi_length_impl= elisp 化 (37 LOC 削除 + slim primitive 追加)
+
+- =strategy.rs:147-183= =bi_length_impl= を削除.
+- =builtins.rs= に slim primitive 追加: =nelisp--str-char-count= (~6 LOC) / =nelisp--bool-vector-length= (~4 LOC) / =nelisp--vector-length= (~4 LOC) — 既存の helper 一部の thin wrapper.
+- =nelisp-jit-strategy.el= の =(fset 'length ...)= body を pure-elisp 版に rewrite (= =cond= + cons-walk + =signal=).  ~25 行 elisp 増.
+- ERT で string / vector / cons / nil / bool-vector / char-table の length 全 case green.
+
+Net Rust delta: **-37 LOC** (= bi_length_impl) **+ ~14 LOC** (= 3 slim primitive) **= -23 LOC**.
+
+** §4.4 Stage 80.4 — =aref_helper= + =bi_aref_impl= + =bi_aset_impl= + =bi_elt_impl= elisp 化
+
+- =strategy.rs:187-407= 全削除 (= 71 + 4 + 111 + 32 = 218 LOC).
+- =builtins.rs= に slim primitive 追加: =nelisp--str-char-at= (~8 LOC) / =nelisp--char-table-set-one-thin= (~6 LOC) / =nelisp--bool-vector-set= (~5 LOC) / =nelisp--vector-aset-bounds= (~5 LOC) / =nelisp--mut-str-set-at= (~10 LOC).
+- =nelisp-jit-strategy.el= の =(fset 'aref ...)= / =(fset 'aset ...)= / =(fset 'elt ...)= body を pure-elisp 版に rewrite.  ~80 行 elisp 増.
+- ERT: aref / aset / elt edge cases (= negative index, out-of-range, type mismatch, cons / nil non-array, MutStr aset preserve length) 全 green.
+
+Net Rust delta: **-218 LOC** (= 4 fn 削除) **+ ~34 LOC** (= 5 slim primitive) **= -184 LOC**.
+
+** §4.5 Stage 80.5 — final cleanup + nelisp-jit-strategy.el note 修正
+
+- =nelisp-jit-strategy.el= 前文コメント 38-48 行 ("variant dispatching with proper error shapes ... not expressible cleanly in pre-stdlib elisp") を削除/書換 = "Doc 80 substrate により expressive 化済".
+- =strategy.rs= の use clause / dead helper の cleanup (= =char_table_get= / =char_table_set_one= は他 caller があれば残す、無ければ削除).  予想 -20 LOC.
+- memory =project_nelisp_strategy_rs_pinned= を **OBSOLETE** 化 + =project_nelisp_strategy_rs_unlocked= に置換.
+
+Net Rust delta: **~-20 LOC** (= dead helper).
+
+** §4.6 aggregate
+
+| stage | net Rust delta | 累計 |
+|-------+----------------+------|
+| 80.1 | +0 | +0 |
+| 80.2 | +0 | +0 |
+| 80.3 | -23 | -23 |
+| 80.4 | -184 | -207 |
+| 80.5 | ~-20 | **~-227** |
+
+Track H "future deletion path ~250 LOC" 見積に対し、slim primitive 追加分を引いた net で **~-227 LOC**.  slim primitive を absolutely minimal に切り詰めれば -250 LOC まで到達可能 (= helper を inline 化、char-table set を =sexp.rs= の既存 hot-path に折り込む等).
+
+Doc 77c §3.1 dependency graph に対しては:
+
+- Phase B GATE FAILED (= 旧 plan -408 LOC) は変わらない (= 構造的 infeasibility).
+- 代わりに Doc 80 が **independent shrink path** として merge 可 (= Phase A 完了済が前提、Phase C / D-A / E と並行可能).
+- Doc 80 → Doc 77c §3.2 工数 grand total に "Doc 80: -227 LOC, 1-2 週間" を追加可.
+
+* §5 risk + mitigation
+
+** §5.1 Bootstrap circularity
+
+=cond= 内 =null= 不在 risk: §2.3 で析出済.  mitigation: substrate 内 =cond= macro body は =null= でなく =(eq x nil)= 直書きにする (= =nelisp-stdlib-eval-special.el= の cond 実装と微妙に異なる ⇒ 後続 stdlib が re-define で上書き = 問題なし).
+
+=defmacro= self-boot: =nelisp-stdlib-eval-special.el= 49-62 で 2026-05-08 に実証済 pattern を流用 = risk 低.
+
+** §5.2 Performance regression
+
+elisp =cond= via if-chain は Rust =match= dispatch より遅い.  hot path は =length= / =aref= だが、これらは既に JIT trampoline 経由 (= =nl-jit-call-*=) で fast path を踏み、ERR fall-through だけが elisp 経路 = ERR は exception 系なので perf hit は非クリティカル.
+
+Doc 62 Phase 5 / Doc 76 bench history を Stage 80.3 / 80.4 完了直後に re-run、specific bench tagged regression > 5% なら =strategy.rs= 残し戻す revert option を保持.
+
+** §5.3 Bytecode dependency
+
+=nelisp-baker.rs= の =compile_elisp_to_image= は新 file をそのまま bake できることを確認.  pre-stdlib の elisp file は既に nelisp-jit-strategy.el で前例があり、Tier 1 special form + Rust builtin only の制約下で問題なく compile されている.
+
+* §6 test plan
+
+** §6.1 Stage 80.1 / 80.2
+
+- =substrate-cond-test.el= : =cond= 5-arm / empty body / fallthrough / nested.
+- =substrate-when-unless-test.el= : =when= / =unless= の eval order.
+- =substrate-signal-helper-test.el= : =nelisp--signal-wrong-type= の =condition-case= catch.
+
+** §6.2 Stage 80.3 (length elisp 化)
+
+- existing =strategy-length-test.el= 全 case を green (= UTF-8 char count, vector / cons / nil / bool-vector / char-table / non-sequence error shape).
+- 新 ERT: =substrate-length-eq-test.el= (= 旧 Rust impl と同 result).
+
+** §6.3 Stage 80.4 (aref / aset / elt elisp 化)
+
+- existing =strategy-aref-test.el= / =strategy-aset-test.el= / =strategy-elt-test.el= 全 case green.
+- error shape regression: =wrong-type-argument= vs =arith-error= の正確な signal tag を ERT で assert.
+
+** §6.4 全 stage 共通 gate
+
+- =make test-all=: 既存 1300+ test 0 failed.
+- =cargo test --all=: build-tool / runtime 全 test green.
+- =make bake-images=: 全 .image regenerate clean.
+
+* §7 out of scope
+
+- Doc 62 Cranelift JIT lowering の strategy.rs 残 fn (= =bi_int_eq_zero= / =bi_num_eq2_float= / =bi_ash_impl= / =bi_syscall_nr_resolve= 等 13 fn) は本 Doc 対象外 = 他 path で削減を別 Doc で扱う.
+- Phase C GC primitives elisp 化 (= Doc 79 v3) は別 path、本 Doc は orthogonal.
+- Phase D-B Cranelift 完全置換 (= 3-6 ヶ月) は本 Doc の前提でも結果でもなく、独立 timeline.
+- =nelisp-stdlib-eval-special.el= から =cond= / =when= / =unless= 等を削除する refactor は本 Doc 範囲外 (= 重複 macro definition は noise だが、shadow 上書きで挙動同一なら遅延 cleanup).
+- =strategy.rs= の slim primitive 追加 (= Stage 80.3/80.4 で +~50 LOC) を回避する更に深い refactor (= sexp.rs hot-path に直接折込) は v2 候補.
+
+* §8 summary
+
+| 軸 | value |
+|----+-------|
+| missing expression power | =cond= / =when= / =unless= / =signal-wrong-type= / =signal-arith= |
+| pre-stdlib expressibility surface (= input) | 11 special form + ~60 Rust builtin |
+| substrate file | =lisp/nelisp-jit-substrate.el= (~80 LOC elisp) |
+| STDLIB_FILES position | index 0 (= =nelisp-jit-strategy.el= の前) |
+| stage count | 5 (= 80.1〜80.5) |
+| aggregate Rust shrink | **~-227 LOC** (= -255 削除 + ~+28 slim primitive) |
+| bootstrap circularity | 無し (= =if= special form + =defmacro= self-boot 既存実証 pattern) |
+| timeline | 1-2 週間 |
+| 並行可能 | Phase C / D-A / E と同時進行可 (= =strategy.rs= 修正は他 Doc と非衝突) |
