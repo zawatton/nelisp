@@ -2,7 +2,7 @@
 
 * Status
 :PROPERTIES:
-:STATE: DRAFT
+:STATE: PARTIALLY SHIPPED — b.1 / b.2 / b.2.5 / b.4 / b.5 SHIPPED、b.3 / b.6 残
 :DRAFTED: 2026-05-09
 :PARENT: Doc 77 (= 軸 A/B Stage 1-5 articulation)
 :SUPERSEDES: Doc 77 §2.3 Stage 2-5 articulation (= Rust 拡大方向の plan)
@@ -222,20 +222,21 @@ Rust 側に必要な primitive: =nl-jit-call-ptr-ptr name a b= が name → fn p
 | Rust 残   | =mod.rs::UnifiedJit / try_lower / declare_helper_call=    | 微改 |
 | elisp 新  | =lisp/nelisp-jit-rules.el= (= jit-rule s-expr 集)         | new ~400 LOC |
 | elisp 新  | =lisp/nelisp-jit-strategy.el= (= lowered_X 24 fn)         | new ~250 LOC |
-| elisp 新  | =lisp/nelisp-jit-bench.el= (= 既存 bench.rs equivalent)    | new ~150 LOC |
+| elisp 新  | =test/nelisp-jit-bench-test.el= (= 既存 bench.rs equivalent、b.5 で /lisp/ から /test/ に re-locate) | new ~170 LOC |
 
 * §3 段階的 unlock plan
 
 各 Stage 独立 ship 可能、bisectable.
 
-| stage | 解放対象 | Rust delta | elisp delta | 依存 |
-|-------+----------+------------+-------------+------|
-| b.1 | DSL interpreter (dsl.rs) + tag table + 1 pilot rule (= eq) elisp 化 | +330 / -100 | +50 | -    |
-| b.2 | =nl-jit-call-*= primitives (bridge.rs) + lowered_eq elisp 化 | +150 / -30 | +30 | b.1 |
-| b.3 | 5 declare_X_inline 全部 DSL 化 (= predicate / access / cons / arith / syscall) | -600 | +400 | b.1, b.2 |
-| b.4 | 24 lowered_X 全部 elisp 化 | -620 | +250 | b.2 |
-| b.5 | bench.rs 全部 elisp ERT 化 | -270 | +150 | b.2 |
-| b.6 | 旧 declare/lowered のうち未削除分 cleanup | -100〜200 | 0 | b.3-b.5 |
+| stage | 解放対象 | Rust delta | elisp delta | 依存 | status |
+|-------+----------+------------+-------------+------+--------|
+| b.1   | DSL interpreter (dsl.rs) + tag table + 1 pilot rule (= eq) elisp 化 | +330 / -100 | +50 | - | ✅ SHIPPED ad6c3e4 |
+| b.2   | =nl-jit-call-*= primitives (bridge.rs) + lowered_eq elisp 化 | +150 / -30 | +30 | b.1 | ✅ SHIPPED 87e103d |
+| b.2.5 | bridge out-param primitives (cons/access trampolines) | +50 | 0 | b.2 | ✅ SHIPPED 6298e00 |
+| b.3   | 5 declare_X_inline 全部 DSL 化 (= predicate / access / cons / arith / syscall) | -600 | +400 | b.1, b.2 | ❌ PENDING |
+| b.4   | 24 lowered_X 全部 elisp 化 | -620 | +250 | b.2 | ✅ SHIPPED 09fe88d |
+| b.5   | bench.rs 全部 elisp ERT 化 (= test/nelisp-jit-bench-test.el) | -270 | +173 | b.2 | ✅ SHIPPED (本 commit) |
+| b.6   | 旧 declare/lowered のうち未削除分 cleanup | -100〜200 | 0 | b.3-b.5 | ❌ PENDING (b.3 完了後) |
 
 合計推定: Rust *-1640 LOC*, elisp *+880 LOC*, **net -760 LOC** (= プロジェクト全体).
 
