@@ -1368,6 +1368,14 @@ specializer cons-cells from arglist (e.g. `(SEQUENCE array)' → `SEQUENCE')."
 (unless (featurep 'cl-seq) (provide 'cl-seq))
 (unless (featurep 'cl-extra) (provide 'cl-extra))
 (unless (featurep 'cl-generic) (provide 'cl-generic))
+;; Phase B5 (= 2026-05-09): phantom-provide cl-lib so anvil-server's
+;; `(require 'cl-lib)' short-circuits without descending into vendor
+;; cl-lib.el (= ~80s load on standalone NeLisp).  The Cl primitives
+;; anvil-* uses are already covered by NeLisp natives (`cl-defstruct',
+;; `cl-incf', `cl-decf', `setf' from Phase B4) plus the `cl-loop' /
+;; `cl-some' / `cl-pushnew' / etc. stubs lower in this file.
+(unless (featurep 'cl-lib) (provide 'cl-lib))
+(unless (featurep 'cl-loaddefs) (provide 'cl-loaddefs))
 
 ;;;; --- standard error symbols ---------------------------------------------
 ;; Common Emacs error symbols that subr / cl-lib / vendor code signals;
@@ -1597,8 +1605,14 @@ on exit the accumulator is written via `nl-write-file'."
     ""))
 
 
+(unless (fboundp 'downcase)
 (defun downcase (string-or-char)
-  "Phase 8 polyfill: lowercase via nl-downcase Rust builtin."
+  "Phase 8 polyfill: lowercase via nl-downcase Rust builtin.
+
+Phase B5 gate (= 2026-05-09): standalone NeLisp ships its own
+`downcase' that handles full Unicode; this polyfill is a fallback
+for runtimes that lack it.  Without the gate the polyfill clobbers
+the native and breaks downstream symbol normalisation."
   (cond
    ((null string-or-char) nil)
    ((stringp string-or-char)
@@ -1609,10 +1623,13 @@ on exit the accumulator is written via `nl-write-file'."
     (if (and (>= string-or-char ?A) (<= string-or-char ?Z))
         (+ string-or-char (- ?a ?A))
       string-or-char))
-   (t string-or-char)))
+   (t string-or-char))))
 
+(unless (fboundp 'upcase)
 (defun upcase (string-or-char)
-  "Phase 8 polyfill: uppercase via nl-upcase."
+  "Phase 8 polyfill: uppercase via nl-upcase.
+
+Phase B5 gate — see `downcase' note above."
   (cond
    ((null string-or-char) nil)
    ((stringp string-or-char)
@@ -1621,8 +1638,9 @@ on exit the accumulator is written via `nl-write-file'."
     (if (and (>= string-or-char ?a) (<= string-or-char ?z))
         (- string-or-char (- ?a ?A))
       string-or-char))
-   (t string-or-char)))
+   (t string-or-char))))
 
+(unless (fboundp 'split-string)
 (defun split-string (string &optional separators omit-nulls trim)
   "Phase 8 polyfill: split STRING by SEPARATORS regexp.
 Supports the common `[^[:alnum:]]+' / `[ \\t\\n]+' / nil regexp shapes
@@ -1682,10 +1700,18 @@ applied when whitespace separator is given."
           rev))))
    (t
     ;; Unknown regex — fall back to single string return (= no split).
-    (list string))))
+    (list string)))))
 
+(unless (fboundp 'string-to-number)
 (defun string-to-number (string &optional base)
   "Phase 6 polyfill: parse STRING as decimal integer.
+
+Phase B5 gate (= 2026-05-09): standalone NeLisp ships a native
+`string-to-number' that handles floats correctly.  Without the
+`fboundp' guard this integer-only polyfill clobbered the native and
+broke the file-load reader path for any literal `100.0' / `0.5' etc.
+because the reader fell back to symbol parsing when the textual
+form did not survive a round-trip through this stub.
 BASE optional (default 10).  Negative strings supported.  Returns 0
 for unparseable input (= matches Emacs semantics).  Float parsing is
 limited to integer truncation when no `.' is present."
@@ -1710,7 +1736,7 @@ limited to integer truncation when no `.' is present."
         (setq acc (+ (* acc 10) (- (aref string i) ?0)))
         (setq saw-digit t)
         (setq i (+ i 1)))
-      (if saw-digit (* sign acc) 0)))))
+      (if saw-digit (* sign acc) 0))))))
 
 (defun system-name ()
   "Phase 6 polyfill: return host name.
@@ -1797,3 +1823,17 @@ START / END / BINARY are accepted for API compat but only the
   (defun sleep-for (&rest _) nil))
 (unless (boundp 'timer-list) (defvar timer-list nil))
 (unless (boundp 'timer-idle-list) (defvar timer-idle-list nil))
+
+;; Phase B5 globals — anvil-server.el / vendor cl-* reach for these as
+;; `defcustom' defaults / load-path participants.  Empty defaults are
+;; safe because anvil callers fall back through (or VAR DEFAULT).
+(unless (boundp 'user-emacs-directory)
+  (defvar user-emacs-directory ""))
+(unless (boundp 'user-init-file)
+  (defvar user-init-file nil))
+(unless (boundp 'data-directory)
+  (defvar data-directory ""))
+(unless (boundp 'invocation-directory)
+  (defvar invocation-directory ""))
+(unless (boundp 'invocation-name)
+  (defvar invocation-name "nelisp"))
