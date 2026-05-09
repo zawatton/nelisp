@@ -549,12 +549,12 @@ pub fn sexp_eq(a: &Sexp, b: &Sexp) -> bool {
         (Sexp::BoolVector(a), Sexp::BoolVector(b)) => {
             crate::eval::nlboolvector::NlBoolVectorRef::ptr_eq(a, b)
         }
-        // Records (Doc 50 stage 4): identity through the slots Rc.
-        // Two records are `eq' iff they share the same slots cell —
-        // hash-tables and cl-defstruct values rely on this for
-        // mutation-aware sharing.
-        (Sexp::Record { slots: a, .. }, Sexp::Record { slots: b, .. }) => {
-            Rc::ptr_eq(a, b)
+        // Records (Doc 50 stage 4 / Phase A.4.5): identity through the
+        // single NlRecord allocation.  Two records are `eq' iff they
+        // share the same heap cell — hash-tables and cl-defstruct
+        // values rely on this for mutation-aware sharing.
+        (Sexp::Record(a), Sexp::Record(b)) => {
+            crate::eval::nlrecord::NlRecordRef::ptr_eq(a, b)
         }
         // Strings + floats: bootstrap subset uses structural eq
         // (close enough — Emacs treats short interned strings + small

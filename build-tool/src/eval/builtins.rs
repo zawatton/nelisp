@@ -992,10 +992,10 @@ fn sxhash_into<H: std::hash::Hasher>(v: &Sexp, h: &mut H) {
         // Lexical-binding storage cell — hash through to inner value
         // (= cells should be invisible to user-facing sxhash).
         Sexp::Cell(c) => sxhash_into(&c.value, h),
-        Sexp::Record { type_tag, slots } => {
+        Sexp::Record(rec) => {
             11u8.hash(h);
-            sxhash_into(type_tag, h);
-            for s in slots.borrow().iter() {
+            sxhash_into(&rec.type_tag, h);
+            for s in rec.slots.iter() {
                 sxhash_into(s, h);
             }
         }
@@ -1068,17 +1068,14 @@ fn bi_ref_eq(args: &[Sexp]) -> Result<Sexp, EvalError> {
         (Sexp::BoolVector(a), Sexp::BoolVector(b)) => {
             crate::eval::nlboolvector::NlBoolVectorRef::ptr_eq(a, b)
         }
-        (
-            Sexp::Record { type_tag: t1, slots: s1 },
-            Sexp::Record { type_tag: t2, slots: s2 },
-        ) => {
-            // Tag forms are stored by value; identity is the slot
-            // backing-store (= what users actually mutate).  type_tag
-            // equality is part of `equal' value-comparison, not
-            // ref-eq.  But we additionally require value-equal tags so
-            // a renamed record can't masquerade as another (rare in
-            // practice — same Rc<RefCell> ⇒ same struct).
-            std::rc::Rc::ptr_eq(s1, s2) && t1 == t2
+        (Sexp::Record(a), Sexp::Record(b)) => {
+            // Phase A.4.5: identity is the single NlRecord allocation
+            // (= type_tag + slots packed in one box).  Two records are
+            // `eq' iff they share the same heap cell — strictly stronger
+            // than the legacy "same slots Rc + value-equal type_tag"
+            // rule, but consistent in practice since the only
+            // constructor (`Sexp::record') allocates fresh.
+            crate::eval::nlrecord::NlRecordRef::ptr_eq(a, b)
         }
         // Other variant combinations (incl. mismatched variants) fall
         // through to value-equality via the existing `eq' rule.
@@ -1231,9 +1228,9 @@ fn bi_type_of(args: &[Sexp]) -> Result<Sexp, EvalError> {
     // (`type_tag') is a symbol, return that symbol verbatim — this
     // is what `cl-defstruct' relies on so user-defined types behave
     // like first-class types under `type-of' / `cl-typep' / dispatch.
-    if let Sexp::Record { ref type_tag, .. } = v {
-        if let Sexp::Symbol(_) = **type_tag {
-            return Ok((**type_tag).clone());
+    if let Sexp::Record(rec) = v {
+        if let Sexp::Symbol(_) = rec.type_tag {
+            return Ok(rec.type_tag.clone());
         }
         // Defensive fallback: a record with a non-symbol type_tag
         // shouldn't be constructible via `record', but if it sneaks
@@ -1249,7 +1246,7 @@ fn bi_type_of(args: &[Sexp]) -> Result<Sexp, EvalError> {
         Sexp::Vector(_) => "vector",
         Sexp::CharTable(_) => "char-table",
         Sexp::BoolVector(_) => "bool-vector",
-        Sexp::Cell(_) | Sexp::Record { .. } => unreachable!(),
+        Sexp::Cell(_) | Sexp::Record(_) => unreachable!(),
     };
     Ok(Sexp::Symbol(tag.into()))
 }
@@ -1480,8 +1477,8 @@ fn bi_make_record(args: &[Sexp]) -> Result<Sexp, EvalError> {
 /// surface error name).
 fn bi_record_ref(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nelisp--record-ref", args, 2, Some(2))?;
-    let slots = match &args[0] {
-        Sexp::Record { slots, .. } => slots.clone(),
+    let rec = match &args[0] {
+        Sexp::Record(r) => r.clone(),
         other => return Err(EvalError::WrongType {
             expected: "recordp".into(),
             got: other.clone(),
@@ -1494,15 +1491,14 @@ fn bi_record_ref(args: &[Sexp]) -> Result<Sexp, EvalError> {
             got: other.clone(),
         }),
     };
-    let v = slots.borrow();
-    if idx < 0 || (idx as usize) >= v.len() {
+    if idx < 0 || (idx as usize) >= rec.slots.len() {
         return Err(EvalError::Internal(format!(
             "nelisp--record-ref: out-of-range-args index {} for length {}",
             idx,
-            v.len()
+            rec.slots.len()
         )));
     }
-    Ok(v[idx as usize].clone())
+    Ok(rec.slots[idx as usize].clone())
 }
 
 /// `(nelisp--record-set RECORD INDEX VALUE)` — overwrite slot INDEX
@@ -1510,8 +1506,8 @@ fn bi_record_ref(args: &[Sexp]) -> Result<Sexp, EvalError> {
 /// `setq'-style use.
 fn bi_record_set(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nelisp--record-set", args, 3, Some(3))?;
-    let slots = match &args[0] {
-        Sexp::Record { slots, .. } => slots.clone(),
+    let rec = match &args[0] {
+        Sexp::Record(r) => r.clone(),
         other => return Err(EvalError::WrongType {
             expected: "recordp".into(),
             got: other.clone(),
@@ -1525,15 +1521,21 @@ fn bi_record_set(args: &[Sexp]) -> Result<Sexp, EvalError> {
         }),
     };
     let value = args[2].clone();
-    let mut v = slots.borrow_mut();
-    if idx < 0 || (idx as usize) >= v.len() {
+    let len = rec.slots.len();
+    if idx < 0 || (idx as usize) >= len {
         return Err(EvalError::Internal(format!(
             "nelisp--record-set: out-of-range-args index {} for length {}",
-            idx,
-            v.len()
+            idx, len
         )));
     }
-    v[idx as usize] = value.clone();
+    // SAFETY: Phase A.4.5 — `rec' is a fresh handle clone on this stack;
+    // no other borrow into `rec.slots' is live, and the closure mutates
+    // exactly the indexed slot.  Phase A.2.1 setcar discipline applies.
+    unsafe {
+        rec.with_slots_mut(|slots| {
+            slots[idx as usize] = value.clone();
+        });
+    }
     Ok(value)
 }
 
@@ -1542,7 +1544,7 @@ fn bi_record_set(args: &[Sexp]) -> Result<Sexp, EvalError> {
 fn bi_record_length(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nelisp--record-length", args, 1, Some(1))?;
     match &args[0] {
-        Sexp::Record { slots, .. } => Ok(Sexp::Int(slots.borrow().len() as i64)),
+        Sexp::Record(rec) => Ok(Sexp::Int(rec.slots.len() as i64)),
         other => Err(EvalError::WrongType {
             expected: "recordp".into(),
             got: other.clone(),
@@ -1557,7 +1559,7 @@ fn bi_record_length(args: &[Sexp]) -> Result<Sexp, EvalError> {
 fn bi_record_type(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nelisp--record-type", args, 1, Some(1))?;
     match &args[0] {
-        Sexp::Record { type_tag, .. } => Ok((**type_tag).clone()),
+        Sexp::Record(rec) => Ok(rec.type_tag.clone()),
         other => Err(EvalError::WrongType {
             expected: "recordp".into(),
             got: other.clone(),
@@ -1568,7 +1570,7 @@ fn bi_record_type(args: &[Sexp]) -> Result<Sexp, EvalError> {
 /// `(recordp OBJECT)` — predicate, returns t/nil.  User-facing.
 fn bi_recordp(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("recordp", args, 1, Some(1))?;
-    Ok(if matches!(&args[0], Sexp::Record { .. }) {
+    Ok(if matches!(&args[0], Sexp::Record(_)) {
         Sexp::T
     } else {
         Sexp::Nil
