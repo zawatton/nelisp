@@ -164,10 +164,10 @@ fn encode_value(out: &mut Vec<u8>, value: &Sexp) -> Result<(), ImageError> {
             let text = rc.borrow();
             write_string(out, &text)?;
         }
-        Sexp::Cons(car, cdr) => {
+        Sexp::Cons(b) => {
             out.push(TAG_CONS);
-            encode_value(out, &car.borrow())?;
-            encode_value(out, &cdr.borrow())?;
+            encode_value(out, &b.car)?;
+            encode_value(out, &b.cdr)?;
         }
         Sexp::Vector(items) => {
             out.push(TAG_VECTOR);
@@ -409,7 +409,9 @@ mod tests {
         assert_eq!(loaded, forms);
 
         match &loaded[0] {
-            Sexp::Cons(car, _) => *car.borrow_mut() = Sexp::Symbol("changed".into()),
+            Sexp::Cons(b) => unsafe {
+                b.set_car(Sexp::Symbol("changed".into()));
+            },
             other => panic!("expected cons, got {:?}", other),
         }
         assert_eq!(fmt_sexp(&loaded[0]), "(changed 1)");

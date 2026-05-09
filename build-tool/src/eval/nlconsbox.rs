@@ -257,6 +257,35 @@ impl Deref for NlConsBoxRef {
     }
 }
 
+impl std::fmt::Debug for NlConsBoxRef {
+    /// Forward to the inner box so `Sexp::Cons' debug output keeps
+    /// the legacy `Cons(<car>, <cdr>)' shape downstream consumers
+    /// (= ERT panics, log lines) already expect.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Cons").field(&self.car).field(&self.cdr).finish()
+    }
+}
+
+impl PartialEq for NlConsBoxRef {
+    /// Structural equality — matches the legacy
+    /// `Rc<RefCell<Sexp>> == Rc<RefCell<Sexp>>' derive that compared
+    /// inner Sexps recursively.  We add a `ptr_eq' fast path *first*
+    /// so a Sexp value compared to itself short-circuits without
+    /// cycling — the legacy derived `Cons' arm could hang on
+    /// `(let ((x (cons 1 nil))) (setcdr x x) (equal x x))' style
+    /// inputs because `Rc<RefCell<>>' derive recursed unconditionally
+    /// (only `sexp_equal_safe' had the bounded recursion guard).
+    /// `ptr_eq' converts that pathology into a constant-time return
+    /// for the self-compare case while still recursing for distinct
+    /// allocations with the same logical shape.
+    fn eq(&self, other: &Self) -> bool {
+        if Self::ptr_eq(self, other) {
+            return true;
+        }
+        self.car == other.car && self.cdr == other.cdr
+    }
+}
+
 // ---- Compile-time layout assertions ----
 //
 // These guarantee that the JIT (Phase A.5) and the elisp `nl-cons-*' /
@@ -524,16 +553,17 @@ mod tests {
 
     #[test]
     fn nested_cons_payload_via_sexp_cons() {
-        // We can hold a *legacy* `Sexp::Cons(Rc<...>, Rc<...>)' as
-        // either field — useful while Phase A.2.1 is mid-migration
-        // (= some callsites still use the legacy variant; the box
-        // wraps them transparently).
+        // Nested cons: car of the outer `NlConsBoxRef' is a Sexp
+        // whose `Sexp::Cons' variant wraps a *different*
+        // `NlConsBoxRef'.  Phase A.2.1 unified the cons variant on
+        // `NlConsBoxRef', so the inner box is the same self-managed
+        // type as the outer.
         let inner = Sexp::cons(Sexp::Int(1), Sexp::Int(2));
         let r = NlConsBoxRef::new(inner, Sexp::Nil);
         match &r.car {
-            Sexp::Cons(c, d) => {
-                assert!(matches!(*c.borrow(), Sexp::Int(1)));
-                assert!(matches!(*d.borrow(), Sexp::Int(2)));
+            Sexp::Cons(b) => {
+                assert!(matches!(b.car, Sexp::Int(1)));
+                assert!(matches!(b.cdr, Sexp::Int(2)));
             }
             other => panic!("expected nested Sexp::Cons, got {:?}", other),
         }

@@ -155,15 +155,15 @@ pub fn bi_length_impl(args: &[Sexp]) -> Result<Sexp, EvalError> {
     match &args[0] {
         Sexp::MutStr(rc) => Ok(Sexp::Int(rc.borrow().chars().count() as i64)),
         Sexp::BoolVector(v) => Ok(Sexp::Int(v.borrow().len() as i64)),
-        Sexp::Cons(_, _) => {
+        Sexp::Cons(_) => {
             let mut n = 0i64;
             let mut cur: Sexp = args[0].clone();
             loop {
                 let next = match &cur {
                     Sexp::Nil => return Ok(Sexp::Int(n)),
-                    Sexp::Cons(_, d) => {
+                    Sexp::Cons(b) => {
                         n += 1;
-                        d.borrow().clone()
+                        b.cdr.clone()
                     }
                     other => {
                         return Err(EvalError::WrongType {
@@ -376,7 +376,7 @@ pub fn bi_elt_impl(args: &[Sexp]) -> Result<Sexp, EvalError> {
             "elt: index {} out of range for empty sequence",
             idx
         ))),
-        Sexp::Cons(_, _) => Err(EvalError::ArithError(format!(
+        Sexp::Cons(_) => Err(EvalError::ArithError(format!(
             "elt: index {} out of range for list",
             idx
         ))),

@@ -75,9 +75,9 @@ pub(crate) fn read_all_via_elisp(input: &str, env: &mut Env) -> Result<Vec<Sexp>
     loop {
         match list {
             Sexp::Nil => break,
-            Sexp::Cons(car, cdr) => {
-                out.push(car.borrow().clone());
-                list = cdr.borrow().clone();
+            Sexp::Cons(b) => {
+                out.push(b.car.clone());
+                list = b.cdr.clone();
             }
             other => {
                 return Err(EvalError::Internal(format!(
@@ -122,11 +122,11 @@ pub fn read_all_with_line_via_elisp(
     loop {
         match list {
             Sexp::Nil => break,
-            Sexp::Cons(car, cdr) => {
-                let pair = car.borrow().clone();
+            Sexp::Cons(b) => {
+                let pair = b.car.clone();
                 match pair {
-                    Sexp::Cons(line_rc, form_rc) => {
-                        let line = match line_rc.borrow().clone() {
+                    Sexp::Cons(inner) => {
+                        let line = match inner.car.clone() {
                             Sexp::Int(n) if n >= 0 => n as u32,
                             other => {
                                 return Err(EvalError::Internal(format!(
@@ -137,7 +137,7 @@ pub fn read_all_with_line_via_elisp(
                                 )));
                             }
                         };
-                        let form = form_rc.borrow().clone();
+                        let form = inner.cdr.clone();
                         out.push((line, form));
                     }
                     other => {
@@ -148,7 +148,7 @@ pub fn read_all_with_line_via_elisp(
                         )));
                     }
                 }
-                list = cdr.borrow().clone();
+                list = b.cdr.clone();
             }
             other => {
                 return Err(EvalError::Internal(format!(
@@ -332,7 +332,7 @@ fn eval_inner(form: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
         // Plain symbols evaluate via the value cell.
         Sexp::Symbol(name) => env.lookup_value(name),
         // Cons → function application.
-        Sexp::Cons(head, tail) => apply_combiner(&head.borrow(), &tail.borrow(), env),
+        Sexp::Cons(b) => apply_combiner(&b.car, &b.cdr, env),
     }
 }
 
@@ -400,7 +400,7 @@ fn apply_combiner(head: &Sexp, tail: &Sexp, env: &mut Env) -> Result<Sexp, EvalE
         // Lambda head: `((lambda ARGS BODY...) ARG ARG ...)` — evaluate
         // the head form in the current env (it is a literal lambda or
         // closure), then apply.
-        Sexp::Cons(_, _) => {
+        Sexp::Cons(_) => {
             let func = eval(head, env)?;
             let args = eval_arg_list(tail, env)?;
             if env.use_elisp_apply
@@ -426,9 +426,9 @@ pub(crate) fn eval_arg_list(args: &Sexp, env: &mut Env) -> Result<Vec<Sexp>, Eva
     loop {
         let next = match &cur {
             Sexp::Nil => return Ok(out),
-            Sexp::Cons(a, d) => {
-                out.push(eval(&a.borrow(), env)?);
-                d.borrow().clone()
+            Sexp::Cons(b) => {
+                out.push(eval(&b.car, env)?);
+                b.cdr.clone()
             }
             _ => {
                 return Err(EvalError::WrongType {
@@ -450,9 +450,9 @@ pub(crate) fn list_elements(list: &Sexp) -> Result<Vec<Sexp>, EvalError> {
     loop {
         let next = match &cur {
             Sexp::Nil => return Ok(out),
-            Sexp::Cons(a, d) => {
-                out.push(a.borrow().clone());
-                d.borrow().clone()
+            Sexp::Cons(b) => {
+                out.push(b.car.clone());
+                b.cdr.clone()
             }
             _ => {
                 return Err(EvalError::WrongType {
@@ -509,8 +509,8 @@ fn is_elisp_apply_helper(name: &str) -> bool {
 /// with no distinct semantics; Stage 7.4.a ERT already covers the
 /// elisp builtin-dispatch branch in isolation).
 fn is_builtin_value(func: &Sexp) -> bool {
-    if let Sexp::Cons(h, _) = func {
-        if let Sexp::Symbol(s) = &*h.borrow() {
+    if let Sexp::Cons(b) = func {
+        if let Sexp::Symbol(s) = &b.car {
             return s == "builtin";
         }
     }
@@ -593,7 +593,7 @@ pub fn apply_function(func: &Sexp, args: &[Sexp], env: &mut Env) -> Result<Sexp,
     // to `apply_lambda_inner' — inlining drops 2 functions (~27 LOC)
     // without changing dispatch semantics.
     match func {
-        Sexp::Cons(head, _) => match &*head.borrow() {
+        Sexp::Cons(b) => match &b.car {
             Sexp::Symbol(s) if s == "builtin" => apply_builtin(func, args, env),
             Sexp::Symbol(s) if s == "closure" => {
                 // Shape: (closure CAPTURED-ENV ARGS BODY...)
@@ -640,8 +640,8 @@ fn apply_builtin(
 ) -> Result<Sexp, EvalError> {
     // `(builtin <NAME>)` — pull the name out, dispatch via the registry.
     let name = match func {
-        Sexp::Cons(_, tail) => match &*tail.borrow() {
-            Sexp::Cons(name, _) => match &*name.borrow() {
+        Sexp::Cons(outer) => match &outer.cdr {
+            Sexp::Cons(inner) => match &inner.car {
                 Sexp::Symbol(s) => s.clone(),
                 Sexp::Str(s) => s.clone(),
                 _ => return Err(EvalError::Internal(
@@ -828,7 +828,7 @@ pub(crate) fn bind_formals(
 fn is_macro(func: &Sexp) -> bool {
     matches!(
         func,
-        Sexp::Cons(head, _) if matches!(&*head.borrow(), Sexp::Symbol(s) if s == "macro")
+        Sexp::Cons(b) if matches!(&b.car, Sexp::Symbol(s) if s == "macro")
     )
 }
 

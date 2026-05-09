@@ -177,18 +177,18 @@ unsafe extern "C" fn nl_jit_access_elt(arg: *const Sexp, idx: i64, out: *mut Sex
                 TRAMPOLINE_ERR
             }
         }
-        Sexp::Cons(_, _) => {
+        Sexp::Cons(_) => {
             let mut cur: Sexp = (*arg).clone();
             let mut remaining = idx;
             loop {
                 let next = match &cur {
-                    Sexp::Cons(h, t) => {
+                    Sexp::Cons(b) => {
                         if remaining == 0 {
-                            *out = h.borrow().clone();
+                            *out = b.car.clone();
                             return TRAMPOLINE_OK;
                         }
                         remaining -= 1;
-                        t.borrow().clone()
+                        b.cdr.clone()
                     }
                     Sexp::Nil => return TRAMPOLINE_ERR,
                     _ => return TRAMPOLINE_ERR,

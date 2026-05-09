@@ -139,8 +139,8 @@ fn function_on_symbol_returns_symbol() {
 fn function_on_lambda_makes_closure() {
     let v = ok("(function (lambda (x) x))");
     // Should be a closure form starting with `closure` symbol.
-    if let Sexp::Cons(head, _) = &v {
-        assert_eq!(*head.borrow(), Sexp::Symbol("closure".into()));
+    if let Sexp::Cons(b) = &v {
+        assert_eq!(b.car, Sexp::Symbol("closure".into()));
     } else {
         panic!("expected closure cons, got {:?}", v);
     }
@@ -2266,11 +2266,9 @@ fn track_p_current_winsize_callable() {
     let r = ok_all("(terminal-current-winsize)");
     match r {
         Sexp::Nil => {}
-        Sexp::Cons(car, cdr) => {
-            let car = car.borrow();
-            let cdr = cdr.borrow();
-            assert!(matches!(*car, Sexp::Int(_)));
-            assert!(matches!(*cdr, Sexp::Int(_)));
+        Sexp::Cons(b) => {
+            assert!(matches!(b.car, Sexp::Int(_)));
+            assert!(matches!(b.cdr, Sexp::Int(_)));
         }
         other => panic!("expected nil or (int . int), got {:?}", other),
     }
@@ -2886,9 +2884,9 @@ fn stage74a_apply_builtin_dispatch_cons() {
                                           '(\"nelisp_jit_cons\" 1 2))",
     );
     match result {
-        Sexp::Cons(a, d) => {
-            assert_eq!(*a.borrow(), Sexp::Int(1));
-            assert_eq!(*d.borrow(), Sexp::Int(2));
+        Sexp::Cons(b) => {
+            assert_eq!(b.car, Sexp::Int(1));
+            assert_eq!(b.cdr, Sexp::Int(2));
         }
         other => panic!("expected (1 . 2), got {:?}", other),
     }

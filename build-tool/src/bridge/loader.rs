@@ -273,9 +273,9 @@ fn sanitize_label(sexp: &Sexp) -> String {
 
 fn list_head(form: &Sexp) -> Option<(String, Vec<Sexp>)> {
     match form {
-        Sexp::Cons(head, tail) => {
-            let head_inner = head.borrow().clone();
-            let tail_inner = tail.borrow().clone();
+        Sexp::Cons(b) => {
+            let head_inner = b.car.clone();
+            let tail_inner = b.cdr.clone();
             match head_inner {
                 Sexp::Symbol(name) => Some((name, list_to_vec(&tail_inner).ok()?)),
                 _ => None,
@@ -291,9 +291,9 @@ fn list_to_vec(list: &Sexp) -> Result<Vec<Sexp>, ()> {
     loop {
         let next = match &cur {
             Sexp::Nil => return Ok(out),
-            Sexp::Cons(car, cdr) => {
-                out.push(car.borrow().clone());
-                cdr.borrow().clone()
+            Sexp::Cons(b) => {
+                out.push(b.car.clone());
+                b.cdr.clone()
             }
             _ => return Err(()),
         };
@@ -303,7 +303,7 @@ fn list_to_vec(list: &Sexp) -> Result<Vec<Sexp>, ()> {
 
 fn form_context(form: &Sexp) -> String {
     match form {
-        Sexp::Cons(head, _) => match &*head.borrow() {
+        Sexp::Cons(b) => match &b.car {
             Sexp::Symbol(name) => format!("top-level `{}`", name),
             _ => format!("form `{}`", fmt_sexp(form)),
         },

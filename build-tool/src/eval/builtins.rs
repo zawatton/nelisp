@@ -488,7 +488,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // `type-of' primitive.  atom migrated separately in batch 6q.
         "type-of" => bi_type_of(args),
         "functionp" => bi_predicate(args, |v| matches!(v,
-            Sexp::Cons(h, _) if matches!(&*h.borrow(),
+            Sexp::Cons(b) if matches!(&b.car,
                 Sexp::Symbol(s) if s == "lambda" || s == "closure" || s == "builtin"))),
         // `null' is the alias for `nil-p' — `(null nil)' = t, anything
         // else = nil.  Distinct from `not' which has identical semantics
@@ -962,10 +962,10 @@ fn sxhash_into<H: std::hash::Hasher>(v: &Sexp, h: &mut H) {
         Sexp::Symbol(s) => { 4u8.hash(h); s.hash(h); }
         Sexp::Str(s) => { 5u8.hash(h); s.hash(h); }
         Sexp::MutStr(rc) => { 5u8.hash(h); rc.borrow().hash(h); }
-        Sexp::Cons(car, cdr) => {
+        Sexp::Cons(b) => {
             6u8.hash(h);
-            sxhash_into(&car.borrow(), h);
-            sxhash_into(&cdr.borrow(), h);
+            sxhash_into(&b.car, h);
+            sxhash_into(&b.cdr, h);
         }
         Sexp::Vector(rc) => {
             7u8.hash(h);
@@ -1042,8 +1042,12 @@ fn bi_equal(args: &[Sexp]) -> Result<Sexp, EvalError> {
 fn bi_ref_eq(args: &[Sexp]) -> Result<Sexp, EvalError> {
     require_arity("nelisp--ref-eq", args, 2, Some(2))?;
     let same = match (&args[0], &args[1]) {
-        (Sexp::Cons(a1, a2), Sexp::Cons(b1, b2)) => {
-            std::rc::Rc::ptr_eq(a1, b1) && std::rc::Rc::ptr_eq(a2, b2)
+        // Doc 77c Phase A.2.1: cons identity is now box-pointer
+        // equality on the single `NlConsBoxRef' handle (= replaces
+        // the legacy two-Rc::ptr_eq AND, since the box owns car+cdr
+        // as a single allocation).
+        (Sexp::Cons(a), Sexp::Cons(b)) => {
+            crate::eval::nlconsbox::NlConsBoxRef::ptr_eq(a, b)
         }
         (Sexp::MutStr(a), Sexp::MutStr(b)) => std::rc::Rc::ptr_eq(a, b),
         (Sexp::Vector(a), Sexp::Vector(b)) => std::rc::Rc::ptr_eq(a, b),
@@ -1082,12 +1086,12 @@ fn sexp_equal_safe(a: &Sexp, b: &Sexp, depth: u32) -> bool {
         return sexp_eq(a, b);
     }
     match (a, b) {
-        (Sexp::Cons(a1, a2), Sexp::Cons(b1, b2)) => {
-            if std::rc::Rc::ptr_eq(a1, b1) && std::rc::Rc::ptr_eq(a2, b2) {
+        (Sexp::Cons(ab), Sexp::Cons(bb)) => {
+            if crate::eval::nlconsbox::NlConsBoxRef::ptr_eq(ab, bb) {
                 return true;
             }
-            sexp_equal_safe(&a1.borrow(), &b1.borrow(), depth + 1)
-                && sexp_equal_safe(&a2.borrow(), &b2.borrow(), depth + 1)
+            sexp_equal_safe(&ab.car, &bb.car, depth + 1)
+                && sexp_equal_safe(&ab.cdr, &bb.cdr, depth + 1)
         }
         (Sexp::Vector(a), Sexp::Vector(b)) => {
             if std::rc::Rc::ptr_eq(a, b) {
@@ -1166,9 +1170,9 @@ fn list_to_vec(v: &Sexp) -> Result<Vec<Sexp>, EvalError> {
     loop {
         let next = match &cur {
             Sexp::Nil => return Ok(out),
-            Sexp::Cons(a, d) => {
-                out.push(a.borrow().clone());
-                d.borrow().clone()
+            Sexp::Cons(b) => {
+                out.push(b.car.clone());
+                b.cdr.clone()
             }
             other => {
                 return Err(EvalError::WrongType {
@@ -1220,7 +1224,7 @@ fn bi_type_of(args: &[Sexp]) -> Result<Sexp, EvalError> {
         return Ok(Sexp::Symbol("record".into()));
     }
     let tag = match v {
-        Sexp::Cons(_, _) => "cons",
+        Sexp::Cons(_) => "cons",
         Sexp::Nil | Sexp::T | Sexp::Symbol(_) => "symbol",
         Sexp::Int(_) => "integer",
         Sexp::Float(_) => "float",
@@ -1260,8 +1264,8 @@ fn bi_concat_ints(args: &[Sexp]) -> Result<Sexp, EvalError> {
     loop {
         match cur {
             Sexp::Nil => break,
-            Sexp::Cons(h, t) => {
-                let v = h.borrow().clone();
+            Sexp::Cons(b) => {
+                let v = b.car.clone();
                 match &v {
                     Sexp::Int(n) => {
                         if let Some(ch) = char::from_u32(*n as u32) {
@@ -1275,7 +1279,7 @@ fn bi_concat_ints(args: &[Sexp]) -> Result<Sexp, EvalError> {
                         });
                     }
                 }
-                cur = t.borrow().clone();
+                cur = b.cdr.clone();
             }
             other => {
                 return Err(EvalError::WrongType {
@@ -2694,8 +2698,8 @@ fn bi_macroexpand_1(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     // Only `(SYM ARG...)` shape is expandable — atoms / dotted lists /
     // lambda-headed combiners (= `((lambda ...) X)`) self-expand.
     let (head_sym, tail) = match form {
-        Sexp::Cons(h, t) => match &*h.borrow() {
-            Sexp::Symbol(s) => (s.clone(), t.borrow().clone()),
+        Sexp::Cons(b) => match &b.car {
+            Sexp::Symbol(s) => (s.clone(), b.cdr.clone()),
             _ => return Ok(form.clone()),
         },
         _ => return Ok(form.clone()),
@@ -2709,7 +2713,7 @@ fn bi_macroexpand_1(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     // `(macro . LAMBDA)` shape — expand via the macro's lambda.
     let is_macro = matches!(
         &func,
-        Sexp::Cons(h, _) if matches!(&*h.borrow(), Sexp::Symbol(s) if s == "macro")
+        Sexp::Cons(b) if matches!(&b.car, Sexp::Symbol(s) if s == "macro")
     );
     if !is_macro {
         return Ok(form.clone());
@@ -3959,7 +3963,7 @@ fn bi_read(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
             let result = super::apply_function(&impl_fn, &args[0..1], env)?;
             // (FORM . CONSUMED-END) → FORM
             match result {
-                Sexp::Cons(car, _) => Ok(car.borrow().clone()),
+                Sexp::Cons(b) => Ok(b.car.clone()),
                 other => Err(EvalError::Internal(format!(
                     "read: expected `(FORM . CONSUMED-END)' from impl, got {:?}",
                     other

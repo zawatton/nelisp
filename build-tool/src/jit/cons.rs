@@ -49,8 +49,8 @@ unsafe extern "C" fn nl_jit_cons_car(arg: *const Sexp, out: *mut Sexp) -> i64 {
             *out = Sexp::Nil;
             TRAMPOLINE_OK
         }
-        Sexp::Cons(h, _) => {
-            *out = h.borrow().clone();
+        Sexp::Cons(b) => {
+            *out = b.car.clone();
             TRAMPOLINE_OK
         }
         _ => TRAMPOLINE_ERR,
@@ -63,8 +63,8 @@ unsafe extern "C" fn nl_jit_cons_cdr(arg: *const Sexp, out: *mut Sexp) -> i64 {
             *out = Sexp::Nil;
             TRAMPOLINE_OK
         }
-        Sexp::Cons(_, d) => {
-            *out = d.borrow().clone();
+        Sexp::Cons(b) => {
+            *out = b.cdr.clone();
             TRAMPOLINE_OK
         }
         _ => TRAMPOLINE_ERR,
@@ -91,8 +91,14 @@ unsafe extern "C" fn nl_jit_cons_setcar(
     out: *mut Sexp,
 ) -> i64 {
     match &*arg {
-        Sexp::Cons(h, _) => {
-            *h.borrow_mut() = (*val).clone();
+        // Doc 77c Phase A.2.1: in-place car write through the shared
+        // [`NlConsBox`] (= replaces legacy `Rc<RefCell<>>::borrow_mut').
+        // SAFETY: `arg' was constructed from a valid `Sexp::Cons' on
+        // the trampoline boundary; no live `&Sexp' borrow into `b.car'
+        // is observable here because the JIT entry holds the only
+        // active handle while it runs.
+        Sexp::Cons(b) => {
+            b.set_car((*val).clone());
             *out = (*val).clone();
             TRAMPOLINE_OK
         }
@@ -106,8 +112,10 @@ unsafe extern "C" fn nl_jit_cons_setcdr(
     out: *mut Sexp,
 ) -> i64 {
     match &*arg {
-        Sexp::Cons(_, t) => {
-            *t.borrow_mut() = (*val).clone();
+        // Doc 77c Phase A.2.1: see `nl_jit_cons_setcar' for the
+        // SAFETY contract behind the in-place cdr write.
+        Sexp::Cons(b) => {
+            b.set_cdr((*val).clone());
             *out = (*val).clone();
             TRAMPOLINE_OK
         }

@@ -496,15 +496,15 @@ impl Env {
         loop {
             let next = match &cur {
                 Sexp::Nil => break,
-                Sexp::Cons(car, cdr) => {
-                    let car_inner = car.borrow().clone();
-                    if let Sexp::Cons(name, value) = &car_inner {
-                        if let Sexp::Symbol(s) = &*name.borrow() {
+                Sexp::Cons(outer) => {
+                    let car_inner = outer.car.clone();
+                    if let Sexp::Cons(inner) = &car_inner {
+                        if let Sexp::Symbol(s) = &inner.car {
                             // Closure write-through: when value is a
                             // `Sexp::Cell`, install the SAME Rc so the
                             // closure shares the originating frame's
                             // slot; otherwise wrap in a fresh cell.
-                            let value_inner = value.borrow().clone();
+                            let value_inner = inner.cdr.clone();
                             let cell = match value_inner {
                                 Sexp::Cell(rc) => rc,
                                 v => std::rc::Rc::new(std::cell::RefCell::new(v)),
@@ -520,7 +520,7 @@ impl Env {
                             "closure env entry not a cons".into(),
                         ));
                     }
-                    cdr.borrow().clone()
+                    outer.cdr.clone()
                 }
                 _ => {
                     return Err(EvalError::Internal(

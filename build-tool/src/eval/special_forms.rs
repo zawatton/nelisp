@@ -60,7 +60,7 @@ pub fn apply_special(
 
 fn first_arg(args: &Sexp, op: &str) -> Result<Sexp, EvalError> {
     match args {
-        Sexp::Cons(a, _) => Ok(a.borrow().clone()),
+        Sexp::Cons(b) => Ok(b.car.clone()),
         _ => Err(EvalError::WrongNumberOfArguments {
             function: op.into(),
             expected: "≥1".into(),
@@ -98,7 +98,7 @@ fn sf_function(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
     // returns the symbol (the evaluator will fcell-lookup at funcall).
     let form = first_arg(args, "function")?;
     match &form {
-        Sexp::Cons(head, _) if matches!(&*head.borrow(), Sexp::Symbol(s) if s == "lambda") => {
+        Sexp::Cons(b) if matches!(&b.car, Sexp::Symbol(s) if s == "lambda") => {
             sf_lambda(&Sexp::cons(
                 extract_lambda_args(&form)?,
                 extract_lambda_body(&form)?,
@@ -109,18 +109,18 @@ fn sf_function(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
 }
 
 fn extract_lambda_args(lam: &Sexp) -> Result<Sexp, EvalError> {
-    if let Sexp::Cons(_, rest) = lam {
-        if let Sexp::Cons(args, _) = &*rest.borrow() {
-            return Ok(args.borrow().clone());
+    if let Sexp::Cons(outer) = lam {
+        if let Sexp::Cons(rest) = &outer.cdr {
+            return Ok(rest.car.clone());
         }
     }
     Err(EvalError::Internal("lambda has no formals".into()))
 }
 
 fn extract_lambda_body(lam: &Sexp) -> Result<Sexp, EvalError> {
-    if let Sexp::Cons(_, rest) = lam {
-        if let Sexp::Cons(_, body) = &*rest.borrow() {
-            return Ok(body.borrow().clone());
+    if let Sexp::Cons(outer) = lam {
+        if let Sexp::Cons(rest) = &outer.cdr {
+            return Ok(rest.cdr.clone());
         }
     }
     Err(EvalError::Internal("lambda has no body".into()))
@@ -210,7 +210,7 @@ fn parse_let_binding(
 ) -> Result<(String, Sexp), EvalError> {
     match b {
         Sexp::Symbol(name) => Ok((name.clone(), Sexp::Nil)),
-        Sexp::Cons(_, _) => {
+        Sexp::Cons(_) => {
             let parts = list_elements(b)?;
             let name = match &parts[0] {
                 Sexp::Symbol(s) => s.clone(),
@@ -365,7 +365,7 @@ fn sf_condition_case(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
                 }
                 let claims_no_catch = match &h_parts[0] {
                     Sexp::Symbol(s) => s == "no-catch",
-                    Sexp::Cons(_, _) => {
+                    Sexp::Cons(_) => {
                         let tag_list = list_elements(&h_parts[0])?;
                         tag_list.iter().any(|t| {
                             matches!(t, Sexp::Symbol(s) if s == "no-catch")
@@ -402,7 +402,7 @@ fn sf_condition_case(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
                 let matches = match &h_parts[0] {
                     Sexp::Symbol(s) => is_error_subtype(s, &actual_tag),
                     Sexp::T => true,
-                    Sexp::Cons(_, _) => {
+                    Sexp::Cons(_) => {
                         // Tag list — match if any member matches.
                         let tag_list = list_elements(&h_parts[0])?;
                         tag_list.iter().any(|t| {
@@ -536,8 +536,12 @@ pub fn sexp_eq(a: &Sexp, b: &Sexp) -> bool {
         // shared cons cells (e.g. window parent/children pointers)
         // would compare structurally — which on a cyclic graph
         // recurses forever.
-        (Sexp::Cons(a1, a2), Sexp::Cons(b1, b2)) => {
-            Rc::ptr_eq(a1, b1) && Rc::ptr_eq(a2, b2)
+        // Doc 77c Phase A.2.1: cons identity is now box-pointer
+        // equality on the single `NlConsBoxRef' (= replaces the
+        // legacy two-Rc::ptr_eq AND, since the box owns car+cdr as
+        // a single allocation).
+        (Sexp::Cons(a), Sexp::Cons(b)) => {
+            crate::eval::nlconsbox::NlConsBoxRef::ptr_eq(a, b)
         }
         (Sexp::MutStr(a), Sexp::MutStr(b)) => Rc::ptr_eq(a, b),
         (Sexp::Vector(a), Sexp::Vector(b)) => Rc::ptr_eq(a, b),

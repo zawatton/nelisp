@@ -273,9 +273,9 @@ fn list_to_vec(s: &Sexp) -> Result<Vec<Sexp>, DslParseError> {
     loop {
         match cur {
             Sexp::Nil => return Ok(out),
-            Sexp::Cons(car, cdr) => {
-                out.push(car.borrow().clone());
-                let next = cdr.borrow().clone();
+            Sexp::Cons(b) => {
+                out.push(b.car.clone());
+                let next = b.cdr.clone();
                 cur = next;
             }
             _ => return err("expected proper list, got dotted tail"),
@@ -326,7 +326,7 @@ fn parse_cc(name: &str) -> Result<IntCC, DslParseError> {
 fn parse_lit(s: &Sexp, tags: &TagTable) -> Result<i64, DslParseError> {
     match s {
         Sexp::Int(n) => Ok(*n),
-        Sexp::Cons(_, _) => {
+        Sexp::Cons(_) => {
             let parts = list_to_vec(s)?;
             if parts.len() != 2 {
                 return err(format!("expected `(tag SYMBOL)`, got {:?}", parts));

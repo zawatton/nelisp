@@ -25,6 +25,7 @@
 //! must NOT depend on the evaluator (= layer separation, see prompt
 //! constraints).
 
+use crate::eval::nlconsbox::NlConsBoxRef;
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
@@ -91,12 +92,20 @@ pub enum Sexp {
     /// terminated by `Nil`; dotted pairs (`(a . b)`) leave the cdr as
     /// any non-`Nil` value.
     ///
-    /// Phase 8.x: each pointer is `Rc<RefCell<Sexp>>` so `setcar' /
-    /// `setcdr' can mutate in place and the change is visible
-    /// through any aliased binding (the cell itself has identity,
-    /// like Common Lisp / Scheme cons cells).  Clone is two Rc
-    /// bumps — cheap; equality stays structural.
-    Cons(Rc<RefCell<Sexp>>, Rc<RefCell<Sexp>>),
+    /// Doc 77c Phase A.2.1 (2026-05-09): the legacy
+    /// `(Rc<RefCell<Sexp>>, Rc<RefCell<Sexp>>)' tuple was replaced
+    /// with a single `NlConsBoxRef' handle backed by the layout-
+    /// pinned [`NlConsBox`](crate::eval::nlconsbox::NlConsBox).  The
+    /// box embeds `car' / `cdr' / `refcount' at fixed byte offsets
+    /// so the JIT (Phase A.5) and elisp `nl-cons-*' / `nl-rc-*'
+    /// primitives (Phase A.3) can reach them without consulting
+    /// Rust at runtime.  Clone is one refcount bump (= cheaper than
+    /// the old two `Rc::clone'); equality remains structural with a
+    /// `ptr_eq' fast path; `setcar' / `setcdr' mutate the shared box
+    /// in place via [`NlConsBoxRef::set_car`] /
+    /// [`NlConsBoxRef::set_cdr`] so the change is still visible
+    /// through every aliased handle.
+    Cons(NlConsBoxRef),
     /// `[a b c]` vector literal.
     ///
     /// Wrapped in `Rc<RefCell<...>>' to support `aset' / in-place
@@ -225,11 +234,15 @@ impl Sexp {
         acc
     }
 
-    /// Build a cons cell.  Allocates two Rc<RefCell<Sexp>> wrappers
-    /// so the cell has identity (== same Rc instance through any
-    /// alias) and supports `setcar' / `setcdr' mutation.
+    /// Build a cons cell.  Doc 77c Phase A.2.1: allocates a single
+    /// layout-pinned [`NlConsBox`](crate::eval::nlconsbox::NlConsBox)
+    /// (= `car @ 0' / `cdr @ sizeof(Sexp)' / `refcount' trailer) and
+    /// returns a [`NlConsBoxRef`] handle wrapped in `Sexp::Cons'.
+    /// The cell has identity (= same box ptr through any clone) and
+    /// supports `setcar' / `setcdr' via in-place mutation through
+    /// the shared box.
     pub fn cons(car: Sexp, cdr: Sexp) -> Sexp {
-        Sexp::Cons(Rc::new(RefCell::new(car)), Rc::new(RefCell::new(cdr)))
+        Sexp::Cons(NlConsBoxRef::new(car, cdr))
     }
 
     /// Build a vector Sexp from an owned `Vec<Sexp>` without forcing
@@ -301,7 +314,7 @@ impl Sexp {
     /// `Nil' for non-cons input — same shape as Emacs' `car'.
     pub fn cons_car(&self) -> Sexp {
         match self {
-            Sexp::Cons(h, _) => h.borrow().clone(),
+            Sexp::Cons(b) => b.car.clone(),
             _ => Sexp::Nil,
         }
     }
@@ -309,7 +322,7 @@ impl Sexp {
     /// Read the cdr of a cons cell as a fresh `Sexp` clone.
     pub fn cons_cdr(&self) -> Sexp {
         match self {
-            Sexp::Cons(_, t) => t.borrow().clone(),
+            Sexp::Cons(b) => b.cdr.clone(),
             _ => Sexp::Nil,
         }
     }
@@ -412,7 +425,7 @@ fn write_sexp(out: &mut String, s: &Sexp) {
             }
             out.push('"');
         }
-        Sexp::Cons(_, _) => {
+        Sexp::Cons(_) => {
             out.push('(');
             write_list_body(out, s);
             out.push(')');
@@ -515,18 +528,14 @@ fn write_reader_macro(out: &mut String, s: &Sexp) -> bool {
 /// detect quote-family forms.
 fn list_tag_and_arg(s: &Sexp) -> Option<(String, Sexp)> {
     match s {
-        Sexp::Cons(car_rc, cdr_rc) => {
-            let car = car_rc.borrow();
-            let cdr = cdr_rc.borrow();
-            match (&*car, &*cdr) {
-                (Sexp::Symbol(tag), Sexp::Cons(arg_rc, tail_rc))
-                    if matches!(&*tail_rc.borrow(), Sexp::Nil) =>
-                {
-                    Some((tag.clone(), arg_rc.borrow().clone()))
-                }
-                _ => None,
+        Sexp::Cons(b) => match (&b.car, &b.cdr) {
+            (Sexp::Symbol(tag), Sexp::Cons(rest))
+                if matches!(&rest.cdr, Sexp::Nil) =>
+            {
+                Some((tag.clone(), rest.car.clone()))
             }
-        }
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -539,13 +548,13 @@ fn write_list_body(out: &mut String, s: &Sexp) {
     let mut first = true;
     loop {
         let next = match &cur {
-            Sexp::Cons(car_rc, cdr_rc) => {
+            Sexp::Cons(b) => {
                 if !first {
                     out.push(' ');
                 }
                 first = false;
-                write_sexp(out, &car_rc.borrow());
-                cdr_rc.borrow().clone()
+                write_sexp(out, &b.car);
+                b.cdr.clone()
             }
             Sexp::Nil => return,
             other => {
