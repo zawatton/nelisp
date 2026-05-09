@@ -137,6 +137,53 @@ pub fn encode_image(forms: &[Sexp]) -> Result<Vec<u8>, ImageError> {
     Ok(out)
 }
 
+/// Doc 75 v3 Stage 9.3 (2026-05-10): NELIMG v3 frozen-heap *encoder*.
+///
+/// Scope = **header-only** — produces a well-formed v3 image whose
+/// node pool / globals table / fallback-form list are all empty.
+/// This validates the v3 wire format end-to-end (= magic + u32 ABI
+/// version + u8 KIND + three u32 length prefixes per Doc 75 v3 §5.2)
+/// without committing to the DAG-dedup encoder design articulated in
+/// §3.3.1 — that ships as Stage 9.3.b alongside (or atomic with) the
+/// Stage 9.4 decoder.
+///
+/// The function is gated under `cfg(any(test, feature =
+/// "image-baker"))` like the v2 encoder it sits next to (= Stage 9.2
+/// SHIPPED).  The production runtime needs only the *decoder* path
+/// (= ships in Stage 9.4); encoders live in the baker dev tool.
+///
+/// Wire format (all little-endian):
+///
+/// ```text
+/// NELIMG\0\x03                 (8 byte magic)
+/// u32  IMAGE_ABI_VERSION = 3
+/// u8   KIND              = 0x01 (= frozen-heap)
+/// u32  N_NODES           = 0   (header-only scope)
+/// u32  N_GLOBALS         = 0   (header-only scope)
+/// u32  N_FALLBACK_FORMS  = 0   (header-only scope)
+/// ```
+///
+/// Total = 8 + 4 + 1 + 4 + 4 + 4 = **25 bytes** for an empty heap.
+///
+/// Per Doc 75 v3 §3 bundle accounting, this stage is a transient +N
+/// LOC slice; the full Phase 9 net target = -1,524 LOC at Stage 9.6.
+#[cfg(any(test, feature = "image-baker"))]
+pub fn encode_v3(_env: &Env) -> Result<Vec<u8>, ImageError> {
+    let mut out = Vec::new();
+    // Header.
+    out.extend_from_slice(NELIMG_V3_MAGIC);
+    out.extend_from_slice(&u32::from(NELIMG_V3_VERSION).to_le_bytes());
+    out.push(NELIMG_V3_KIND_FROZEN_HEAP);
+    // Three empty length-prefixed sections (= Stage 9.3 header-only
+    // scope).  Stage 9.3.b will replace each `0u32` with the real
+    // count + payload per §3.3.1 Phase A-E (DAG visit / placeholder
+    // reserve / write nodes / write globals / write fallback forms).
+    out.extend_from_slice(&0u32.to_le_bytes()); // N_NODES
+    out.extend_from_slice(&0u32.to_le_bytes()); // N_GLOBALS
+    out.extend_from_slice(&0u32.to_le_bytes()); // N_FALLBACK_FORMS
+    Ok(out)
+}
+
 pub fn decode_image(bytes: &[u8]) -> Result<Vec<Sexp>, ImageError> {
     let mut rd = Reader { bytes, pos: 0 };
     let magic = rd.read_exact(IMAGE_MAGIC.len(), "magic")?;
@@ -608,5 +655,75 @@ mod tests {
             Err(ImageError::BadMagic) | Err(ImageError::UnsupportedVersion(1)) => {}
             other => panic!("expected v1 image to be rejected, got {:?}", other),
         }
+    }
+
+    // ---- Doc 75 v3 Stage 9.3 (2026-05-10) — NELIMG v3 frozen-heap encoder ----
+
+    #[test]
+    fn doc75_stage9_3_encode_v3_emits_v3_header_for_default_env() {
+        // Header-only scope: an empty `Env::empty()` round-trips
+        // through `encode_v3' as a 25-byte image whose header matches
+        // the constants from Stage 9.1 + three empty length prefixes.
+        let env = Env::empty();
+        let bytes = encode_v3(&env).unwrap();
+        assert_eq!(bytes.len(), 25, "header-only image should be 25 bytes");
+        assert_eq!(&bytes[..8], NELIMG_V3_MAGIC);
+        // u32 version (= 3) immediately after magic.
+        let version = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+        assert_eq!(version, u32::from(NELIMG_V3_VERSION));
+        // u8 KIND.
+        assert_eq!(bytes[12], NELIMG_V3_KIND_FROZEN_HEAP);
+        // Three u32 zero-length sections.
+        for (offset, name) in [(13, "N_NODES"), (17, "N_GLOBALS"), (21, "N_FALLBACK_FORMS")] {
+            let n = u32::from_le_bytes(
+                bytes[offset..offset + 4].try_into().unwrap(),
+            );
+            assert_eq!(n, 0, "section {name} should be empty in header-only scope");
+        }
+    }
+
+    #[test]
+    fn doc75_stage9_3_encode_v3_magic_distinguishes_from_v2() {
+        // Per §5.1, v2 magic = "NELIMG\0\x02" and v3 magic =
+        // "NELIMG\0\x03".  A loader that dispatches on the trailing
+        // magic byte must see them as distinct.
+        let v3_bytes = encode_v3(&Env::empty()).unwrap();
+        let v2_bytes = encode_image(&[Sexp::Nil]).unwrap();
+        assert_eq!(&v3_bytes[..7], &v2_bytes[..7]); // "NELIMG\0" prefix shared
+        assert_ne!(v3_bytes[7], v2_bytes[7]);       // last magic byte differs
+        assert_eq!(v3_bytes[7], 0x03);
+        assert_eq!(v2_bytes[7], 0x02);
+    }
+
+    #[test]
+    fn doc75_stage9_3_encode_v3_is_deterministic_for_default_env() {
+        // §6.4 / §6.5: the encoder is required to be deterministic
+        // for cross-platform reproducible builds.  The header-only
+        // scope is trivially deterministic, but we lock that in
+        // before Stage 9.3.b adds the DAG payload (which depends on
+        // HashMap iteration order + must alpha-sort to stay
+        // reproducible per §3.3.1 Phase D).
+        let a = encode_v3(&Env::empty()).unwrap();
+        let b = encode_v3(&Env::empty()).unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    #[ignore = "Stage 9.4 decoder not yet shipped — round-trip blocked on decode_v3"]
+    fn doc75_stage9_3_encode_v3_round_trip_default_env() {
+        // Once Stage 9.4 lands `decode_v3' the round-trip becomes
+        // assertable: encode → decode → equal.  Until then this test
+        // is the explicit placeholder so the cargo test list shows
+        // the gap.  Per Doc 75 v3 §3.4 Mitigation Option C (= atomic
+        // 9.3+9.4 commit) this will lift to active when the decoder
+        // ships.
+        let env = Env::empty();
+        let _bytes = encode_v3(&env).unwrap();
+        // Once Stage 9.4 ships:
+        //   let decoded = decode_v3(&_bytes).unwrap();
+        //   assert_globals_eq(&env, &decoded);
+        // For now the test body is intentionally minimal — the
+        // `#[ignore]` attribute is what keeps it from running in CI.
+        let _ = env;
     }
 }
