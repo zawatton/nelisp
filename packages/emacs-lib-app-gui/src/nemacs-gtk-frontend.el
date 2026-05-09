@@ -32,6 +32,26 @@
 (require 'emacs-mode-builtins)
 (require 'cl-lib)
 
+;; Doc 02 v0.2 — vendor Emacs lisp activation for daily-driver use.
+;; nemacs-gtk is the GUI daily-driver; load full vendor org-mode +
+;; theme + babel + export 取り込み so user's standard Emacs commands
+;; (= C-c C-w refile / C-c $ archive / C-c C-c on src block /
+;; C-c C-e export / M-x load-theme) work without per-buffer
+;; lazy-load surprises.  Probe SHIPPED 2026-05-09: load + runtime
+;; both validated.  See feedback_nelisp_emacs_gtk_gui_only_boundary
+;; — editor logic stays in nelisp-emacs (vendor included).
+(require 'org)
+(require 'org-refile)
+(require 'org-archive)
+(require 'ob)
+(require 'ob-emacs-lisp)
+(require 'ox)
+(require 'ox-md)
+(require 'ox-html)
+(require 'ox-ascii)
+(require 'cus-theme)
+(require 'cus-edit)
+
 ;; Grid dimensions are now mutable defvars (Phase 2.I) — the GTK
 ;; window is resizable and `nelisp-gtk-poll-resize' surfaces the
 ;; new (rows, cols) tuple per drag.  Boot defaults match the old
