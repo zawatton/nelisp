@@ -27,13 +27,12 @@
 
 use crate::eval::nlboolvector::NlBoolVectorRef;
 use crate::eval::nlcell::NlCellRef;
+use crate::eval::nlchartable::NlCharTableRef;
 use crate::eval::nlconsbox::NlConsBoxRef;
 use crate::eval::nlrecord::NlRecordRef;
 use crate::eval::nlstr::NlStrRef;
 use crate::eval::nlvector::NlVectorRef;
-use std::cell::RefCell;
 use std::fmt;
-use std::rc::Rc;
 
 /// A parsed s-expression.  The variants form the minimal value
 /// universe that the Phase 7.5.4.1 reader can produce; the evaluator
@@ -137,7 +136,21 @@ pub enum Sexp {
     /// Sparse linear-scan storage; substrate use cases hold tens
     /// of entries (= ASCII coverage), occasional whole-range fills
     /// via `set-char-table-range'.
-    CharTable(Rc<RefCell<CharTableInner>>),
+    ///
+    /// Backed by [`NlCharTableRef`] so the boxed-variant ABI is
+    /// uniform across Phase A.4.x boxes.  Identity comparison goes
+    /// through `NlCharTableRef::ptr_eq'; structural equality (the
+    /// derived `PartialEq') unwraps the inner [`CharTableInner`].
+    /// The `parent' chain is itself an `Option<NlCharTableRef>',
+    /// which is a self-reference handled by refcount semantics
+    /// (no cycle API exposed — only the child can install a parent).
+    ///
+    /// Phase A.4.6 (Doc 77c §4.5.6, 2026-05-09): migrated from
+    /// `Rc<RefCell<CharTableInner>>' to layout-pinned [`NlCharTableRef`]
+    /// for the same reason `Record' moved in A.4.5 — fixed offset
+    /// of `inner' enables Phase A.5 JIT direct emit and Phase B
+    /// elisp self-host primitive access.
+    CharTable(NlCharTableRef),
     /// Bool-vector (Track F minimum impl): packed boolean array.
     /// Used by Emacs syntax classes / region-mark bookkeeping.
     /// `aref' returns t / nil; `aset' takes any Sexp and stores
@@ -234,7 +247,12 @@ pub fn variant_tag(s: &Sexp) -> u8 {
 /// substrate use cases (= syntax-table, category-table, case-table)
 /// the typical entry count is < 256 (ASCII range).  Future scaling
 /// to full Unicode would replace this with a paged table.
+///
+/// Phase A.4.6: parent chain now holds [`NlCharTableRef`] handles
+/// (= refcount-tracked self-reference) instead of the legacy
+/// `Rc<RefCell<CharTableInner>>'.
 #[derive(Debug, Clone, PartialEq)]
+#[repr(C)]
 pub struct CharTableInner {
     /// Subtype symbol (e.g., `syntax-table', `display-table',
     /// `category-table').  Stored verbatim; we do not interpret it.
@@ -246,7 +264,7 @@ pub struct CharTableInner {
     /// Optional parent char-table.  When set, lookups that miss the
     /// local `entries' fall through to the parent.  Used by syntax
     /// tables that derive from a base.
-    pub parent: Option<Rc<RefCell<CharTableInner>>>,
+    pub parent: Option<NlCharTableRef>,
     /// Per-table extra slots (= upstream `char-table-extra-slot').
     /// Allocated lazily by `set-char-table-extra-slot'.  We keep this
     /// minimal — most substrate consumers only touch slots 0-3.
@@ -291,13 +309,13 @@ impl Sexp {
     /// Build an empty char-table with the given SUBTYPE and INIT
     /// (= default value for unset chars).  Used by `make-char-table'.
     pub fn char_table(subtype: Sexp, init: Sexp) -> Sexp {
-        Sexp::CharTable(Rc::new(RefCell::new(CharTableInner {
+        Sexp::CharTable(NlCharTableRef::new(CharTableInner {
             subtype,
             default_val: init,
             entries: Vec::new(),
             parent: None,
             extra: Vec::new(),
-        })))
+        }))
     }
 
     /// Build a bool-vector of LEN bits all initialised to INIT.  Used
@@ -472,11 +490,11 @@ fn write_sexp(out: &mut String, s: &Sexp) {
         // V1 ...))') is now implicit via `Sexp::Record' below: the
         // record's printer emits `#s(hash-table TEST ENTRIES)' which
         // is round-trip readable by `parse_record'.
-        Sexp::CharTable(inner) => {
+        Sexp::CharTable(rc) => {
             // Compact printer — substrate use cases never need the
             // upstream `#^[...]' faithful shape.  We dump the populated
             // entries and the default in a self-describing form.
-            let inner = inner.borrow();
+            let inner = &rc.inner;
             out.push_str("#<char-table");
             if !matches!(inner.subtype, Sexp::Nil) {
                 out.push(' ');

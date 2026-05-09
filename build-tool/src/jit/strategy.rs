@@ -328,8 +328,19 @@ pub fn bi_aset_impl(args: &[Sexp]) -> Result<Sexp, EvalError> {
             Ok(args[2].clone())
         }
         Sexp::CharTable(rc) => {
-            let mut inner = rc.borrow_mut();
-            crate::eval::builtins::char_table_set_one(&mut inner, index, args[2].clone());
+            // SAFETY: Phase A.4.6 — `args' has been evaluated to owned
+            // Sexps; no `&CharTableInner' borrow into `rc.inner' is live
+            // (the closure does the entire mutation).  Same Phase A.2.1
+            // setcar discipline applies.
+            unsafe {
+                rc.with_inner_mut(|inner| {
+                    crate::eval::builtins::char_table_set_one(
+                        inner,
+                        index,
+                        args[2].clone(),
+                    );
+                });
+            }
             Ok(args[2].clone())
         }
         Sexp::BoolVector(rc) => {
