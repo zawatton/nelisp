@@ -199,30 +199,14 @@ Cranelift 依存を解消.  2 path:
 
 *** §2.4.1 Path D-A: Cranelift C-style shim (= 1-2 週間、現実路線)
 
-Cranelift Rust crate を保持しつつ薄い C API で expose:
+Cranelift Rust crate を保持しつつ薄い C API で expose、elisp が =nl-ffi-call= で IR builder を driving.
 
-#+begin_example
-#[no_mangle]
-pub extern "C" fn cl_make_module() -> *mut c_void { ... }
-#[no_mangle]
-pub extern "C" fn cl_emit_iadd(b: *mut c_void, a: u32, c: u32) -> u32 { ... }
-// ... ~50 fn
-#+end_example
-
-elisp が =nl-ffi-call= で driving:
-
-#+begin_example
-(defun nl-jit-build-add2 (module)
-  (let ((sig (cl-make-sig 2 1)))           ; 2 i64 in, 1 i64 out
-    (cl-add-param sig :i64) (cl-add-param sig :i64)
-    (cl-add-return sig :i64)
-    (let ((func (cl-declare-function module "add2" :local sig)))
-      (cl-emit-block func 'entry)
-      (let ((a (cl-arg func 0)) (b (cl-arg func 1)))
-        (cl-emit-iadd func a b)
-        (cl-emit-return func a))
-      func)))
-#+end_example
+詳細設計は **Doc 78 (= Phase D-A Cranelift wrapper 設計、DRAFT 2026-05-09)** に articulate.  Doc 77c §2.4.1 articulation の deepening:
+- 実数ベースの shim inventory: =fb.ins().*= 19 → ~16 fn / Module 6 fn / Builder 9 fn / Signature 4 fn / Type 3 fn = **計 ~38 shim fn** (= 当初推定 ~50 fn を refine)
+- state mgmt は opaque ptr + =NlRc<Box<T>>= 案 (= cranelift =JITModule= / =Context= / =FunctionBuilder= を Rust 側 =Box= で持ち、elisp に =Sexp::Int= handle で渡す)
+- Migration plan: cons.rs → access.rs → arith.rs → predicate.rs → syscall.rs → dsl.rs の順次 elisp 側に lift
+- Rust net: **-2656 LOC** (= 削除 3456 + 新規 cl_shim 400 + ERT 400)、対応 elisp +1700 LOC
+- D-A 着地後の Rust core ~1750 LOC (= "self-host = Rust core ≈ 300-500 LOC" 目標は D-B が必要)
 
 Cranelift crate は依然 Rust だが「**Rust crate を呼ぶ shim**」のみが Rust core に残る.
 
