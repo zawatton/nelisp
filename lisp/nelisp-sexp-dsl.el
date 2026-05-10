@@ -1622,6 +1622,727 @@ internal encoder)."
 (define-error 'nelisp-sexp-bake-mismatch
   "NELIMG v3 round-trip produced non-identical bytes")
 
+;;;==================================================================
+;;; §95.f full NELIMG v3 node-pool encoder + decoder
+;;;==================================================================
+;;
+;; §95.e shipped the *envelope-only* path (= 0 nodes / 0 globals / N
+;; fallback forms) which covers every currently baked image but rejects
+;; non-empty node tables.  §95.f extends elisp coverage to the full
+;; Phase A-E walk in `build-tool/src/image.rs', so any NELIMG v3 image
+;; (including hand-crafted multi-node / multi-global fixtures) can be
+;; read, written, and round-tripped from elisp.
+;;
+;; The encoder accepts *node records* (= elisp plists mirroring the
+;; Rust `NodeRecord' enum 1:1) plus a *globals alist* and emits the
+;; same wire bytes the Rust `encode_v3_with_fallback' produces.  The
+;; decoder is the byte-for-byte inverse.  A `verify-full' helper
+;; round-trips any v3 byte string and signals a diagnostic on diverge.
+;;
+;; Node-record shape (internal IR — exactly one plist per NODE_INDEX):
+;;   (:tag nil)
+;;   (:tag t)
+;;   (:tag int :value N)
+;;   (:tag float :bits U64)
+;;   (:tag symbol :name STR)
+;;   (:tag string :value STR)
+;;   (:tag cons :car IDX :cdr IDX)
+;;   (:tag vector :items (IDX...))
+;;   (:tag char-table :subtype IDX :default-val IDX
+;;                    :entries ((I64 . IDX)...)
+;;                    :parent NODE-RECORD-OR-NIL
+;;                    :extra (IDX...))
+;;   (:tag bool-vector :bits (BOOL...))
+;;   (:tag cell :idx IDX)
+;;   (:tag record :type-tag IDX :slots (IDX...))
+;;   (:tag mut-str :value STR)
+;;
+;; Global record:
+;;   (:name STR :value IDX|nil :function IDX|nil :plist IDX|nil
+;;    :constant BOOL)
+
+;;; --- §95.f v3 node-tag constants ----------------------------------
+
+(defconst nelisp-sexp-bake-v3-tag-nil         #x00)
+(defconst nelisp-sexp-bake-v3-tag-t           #x01)
+(defconst nelisp-sexp-bake-v3-tag-int         #x02)
+(defconst nelisp-sexp-bake-v3-tag-float       #x03)
+(defconst nelisp-sexp-bake-v3-tag-symbol      #x04)
+(defconst nelisp-sexp-bake-v3-tag-string      #x05)
+(defconst nelisp-sexp-bake-v3-tag-cons        #x06)
+(defconst nelisp-sexp-bake-v3-tag-vector      #x07)
+(defconst nelisp-sexp-bake-v3-tag-char-table  #x08)
+(defconst nelisp-sexp-bake-v3-tag-bool-vector #x09)
+(defconst nelisp-sexp-bake-v3-tag-cell        #x0A)
+(defconst nelisp-sexp-bake-v3-tag-record      #x0B)
+(defconst nelisp-sexp-bake-v3-tag-mut-str     #x0C)
+
+(defconst nelisp-sexp-bake-v3-global-flag-has-value    #b0001)
+(defconst nelisp-sexp-bake-v3-global-flag-has-function #b0010)
+(defconst nelisp-sexp-bake-v3-global-flag-has-plist    #b0100)
+(defconst nelisp-sexp-bake-v3-global-flag-constant     #b1000)
+
+;;; --- §95.f primitive u64 LE helpers -------------------------------
+;;
+;; `nelisp-sexp--read-u64' was missing from §95.c — add it here so the
+;; full decoder can read the FLOAT u64 bit pattern without going
+;; through the §95.c f64 helper (which interprets the bits as a float
+;; immediately and loses the canonical NaN bit-pattern).
+
+(defun nelisp-sexp-bake--write-u64 (buf val)
+  "Emit u64 LE encoding of VAL into BUF (= reversed list of strings).
+VAL must be a non-negative integer fitting 64 bits."
+  (unless (and (integerp val) (>= val 0) (< val (ash 1 64)))
+    (signal 'args-out-of-range (list 'u64 val)))
+  (cons (unibyte-string (logand val           #xFF)
+                        (logand (ash val  -8) #xFF)
+                        (logand (ash val -16) #xFF)
+                        (logand (ash val -24) #xFF)
+                        (logand (ash val -32) #xFF)
+                        (logand (ash val -40) #xFF)
+                        (logand (ash val -48) #xFF)
+                        (logand (ash val -56) #xFF))
+        buf))
+
+(defun nelisp-sexp-bake--read-u64 (bytes pos)
+  "Read u64 LE from BYTES at POS, returning (VAL . NEW-POS).
+Signals `nelisp-sexp-truncated' when fewer than 8 bytes remain."
+  (when (> (+ pos 8) (length bytes))
+    (signal 'nelisp-sexp-truncated (list 'u64 pos (length bytes))))
+  (cons (logior (aref bytes pos)
+                (ash (aref bytes (+ pos 1))  8)
+                (ash (aref bytes (+ pos 2)) 16)
+                (ash (aref bytes (+ pos 3)) 24)
+                (ash (aref bytes (+ pos 4)) 32)
+                (ash (aref bytes (+ pos 5)) 40)
+                (ash (aref bytes (+ pos 6)) 48)
+                (ash (aref bytes (+ pos 7)) 56))
+        (+ pos 8)))
+
+;;; --- §95.f node-record encoder helpers ----------------------------
+
+(defun nelisp-sexp-bake--node-record-tag (node)
+  "Return the :tag symbol of NODE (= internal node-record plist)."
+  (unless (and (listp node) (keywordp (car node)) (eq (car node) :tag))
+    (signal 'nelisp-sexp-bake-malformed-node
+            (list 'expected-plist node)))
+  (plist-get node :tag))
+
+(defun nelisp-sexp-bake--write-char-table-body
+    (buf subtype default-val entries parent extra)
+  "Write a NELIMG v3 CHAR_TABLE body (= no leading TAG byte) into BUF.
+Used both for the top-level CHAR_TABLE node payload and (inlined)
+for the parent chain.  Mirrors Rust `write_v3_char_table_body'."
+  (setq buf (nelisp-sexp--write-u32 buf subtype))
+  (setq buf (nelisp-sexp--write-u32 buf default-val))
+  (setq buf (nelisp-sexp--write-u32 buf (length entries)))
+  (dolist (e entries)
+    (setq buf (nelisp-sexp--write-i64 buf (car e)))
+    (setq buf (nelisp-sexp--write-u32 buf (cdr e))))
+  (cond
+   ((null parent)
+    (setq buf (nelisp-sexp--emit-byte buf 0)))
+   (t
+    (unless (eq (nelisp-sexp-bake--node-record-tag parent) 'char-table)
+      (signal 'nelisp-sexp-bake-malformed-node
+              (list 'parent-must-be-char-table parent)))
+    (setq buf (nelisp-sexp--emit-byte buf 1))
+    (setq buf (nelisp-sexp-bake--write-char-table-body
+               buf
+               (plist-get parent :subtype)
+               (plist-get parent :default-val)
+               (plist-get parent :entries)
+               (plist-get parent :parent)
+               (plist-get parent :extra)))))
+  (setq buf (nelisp-sexp--write-u32 buf (length extra)))
+  (dolist (i extra)
+    (setq buf (nelisp-sexp--write-u32 buf i)))
+  buf)
+
+(defun nelisp-sexp-bake--write-node-record (buf node)
+  "Write a single v3 NODE_TAG + payload into BUF (reversed string list).
+Mirrors Rust `write_node_record' in `image.rs'."
+  (let ((tag (nelisp-sexp-bake--node-record-tag node)))
+    (cond
+     ((eq tag 'nil)
+      (nelisp-sexp--emit-byte buf nelisp-sexp-bake-v3-tag-nil))
+     ((eq tag 't)
+      (nelisp-sexp--emit-byte buf nelisp-sexp-bake-v3-tag-t))
+     ((eq tag 'int)
+      (nelisp-sexp--write-i64
+       (nelisp-sexp--emit-byte buf nelisp-sexp-bake-v3-tag-int)
+       (plist-get node :value)))
+     ((eq tag 'float)
+      (nelisp-sexp-bake--write-u64
+       (nelisp-sexp--emit-byte buf nelisp-sexp-bake-v3-tag-float)
+       (plist-get node :bits)))
+     ((eq tag 'symbol)
+      (nelisp-sexp--write-utf8
+       (nelisp-sexp--emit-byte buf nelisp-sexp-bake-v3-tag-symbol)
+       (plist-get node :name)))
+     ((eq tag 'string)
+      (nelisp-sexp--write-utf8
+       (nelisp-sexp--emit-byte buf nelisp-sexp-bake-v3-tag-string)
+       (plist-get node :value)))
+     ((eq tag 'cons)
+      (let ((b (nelisp-sexp--emit-byte buf nelisp-sexp-bake-v3-tag-cons)))
+        (setq b (nelisp-sexp--write-u32 b (plist-get node :car)))
+        (nelisp-sexp--write-u32 b (plist-get node :cdr))))
+     ((eq tag 'vector)
+      (let* ((items (plist-get node :items))
+             (b (nelisp-sexp--emit-byte
+                 buf nelisp-sexp-bake-v3-tag-vector))
+             (b2 (nelisp-sexp--write-u32 b (length items))))
+        (dolist (i items)
+          (setq b2 (nelisp-sexp--write-u32 b2 i)))
+        b2))
+     ((eq tag 'char-table)
+      (let ((b (nelisp-sexp--emit-byte
+                buf nelisp-sexp-bake-v3-tag-char-table)))
+        (nelisp-sexp-bake--write-char-table-body
+         b
+         (plist-get node :subtype)
+         (plist-get node :default-val)
+         (plist-get node :entries)
+         (plist-get node :parent)
+         (plist-get node :extra))))
+     ((eq tag 'bool-vector)
+      (let* ((bits (plist-get node :bits))
+             (b (nelisp-sexp--emit-byte
+                 buf nelisp-sexp-bake-v3-tag-bool-vector))
+             (b2 (nelisp-sexp--write-u32 b (length bits))))
+        (dolist (bit bits)
+          (setq b2 (nelisp-sexp--emit-byte b2 (if bit 1 0))))
+        b2))
+     ((eq tag 'cell)
+      (nelisp-sexp--write-u32
+       (nelisp-sexp--emit-byte buf nelisp-sexp-bake-v3-tag-cell)
+       (plist-get node :idx)))
+     ((eq tag 'record)
+      (let* ((slots (plist-get node :slots))
+             (b (nelisp-sexp--emit-byte
+                 buf nelisp-sexp-bake-v3-tag-record))
+             (b2 (nelisp-sexp--write-u32 b (plist-get node :type-tag)))
+             (b3 (nelisp-sexp--write-u32 b2 (length slots))))
+        (dolist (s slots)
+          (setq b3 (nelisp-sexp--write-u32 b3 s)))
+        b3))
+     ((eq tag 'mut-str)
+      (nelisp-sexp--write-utf8
+       (nelisp-sexp--emit-byte buf nelisp-sexp-bake-v3-tag-mut-str)
+       (plist-get node :value)))
+     (t (signal 'nelisp-sexp-bake-malformed-node
+                (list 'unknown-tag tag))))))
+
+;;; --- §95.f node-record decoder helpers ----------------------------
+
+(defun nelisp-sexp-bake--read-char-table-body (bytes pos)
+  "Read a NELIMG v3 CHAR_TABLE body (= post-TAG) starting at POS.
+Returns ((:subtype I :default-val I :entries ((K . I)...)
+          :parent CT-OR-NIL :extra (I...)) . NEW-POS)."
+  (let* ((sp (nelisp-sexp--read-u32 bytes pos))
+         (subtype (car sp))
+         (p1 (cdr sp))
+         (dp (nelisp-sexp--read-u32 bytes p1))
+         (default-val (car dp))
+         (p2 (cdr dp))
+         (np (nelisp-sexp--read-u32 bytes p2))
+         (n-entries (car np))
+         (p (cdr np))
+         (entries nil))
+    (dotimes (_ n-entries)
+      (let* ((kp (nelisp-sexp--read-i64 bytes p))
+             (k (car kp))
+             (p3 (cdr kp))
+             (vp (nelisp-sexp--read-u32 bytes p3))
+             (v (car vp))
+             (p4 (cdr vp)))
+        (push (cons k v) entries)
+        (setq p p4)))
+    (let* ((flag (aref bytes p))
+           (after-flag (1+ p))
+           (parent nil)
+           (p5 after-flag))
+      (when (/= flag 0)
+        ;; Parent body is inlined with the same shape as a CHAR_TABLE
+        ;; payload but no leading TAG byte (= the parent flag itself
+        ;; disambiguates).  Recursively read it and wrap with
+        ;; `:tag char-table' so the result is a full node-record.
+        (let ((pp (nelisp-sexp-bake--read-char-table-body
+                   bytes after-flag)))
+          (setq parent (append (list :tag 'char-table) (car pp)))
+          (setq p5 (cdr pp))))
+      (let* ((ep (nelisp-sexp--read-u32 bytes p5))
+             (n-extra (car ep))
+             (p6 (cdr ep))
+             (extra nil))
+        (dotimes (_ n-extra)
+          (let ((ip (nelisp-sexp--read-u32 bytes p6)))
+            (push (car ip) extra)
+            (setq p6 (cdr ip))))
+        (cons (list :subtype subtype
+                    :default-val default-val
+                    :entries (nreverse entries)
+                    :parent parent
+                    :extra (nreverse extra))
+              p6)))))
+
+(defun nelisp-sexp-bake--read-node-record (bytes pos)
+  "Read one NELIMG v3 NODE_TAG + payload from BYTES at POS.
+Returns (NODE-RECORD . NEW-POS).  Mirrors Rust Pass-2 + Pass-3 fused."
+  (when (>= pos (length bytes))
+    (signal 'nelisp-sexp-truncated (list 'v3-tag pos (length bytes))))
+  (let ((tag (aref bytes pos))
+        (after (1+ pos)))
+    (cond
+     ((= tag nelisp-sexp-bake-v3-tag-nil)
+      (cons (list :tag 'nil) after))
+     ((= tag nelisp-sexp-bake-v3-tag-t)
+      (cons (list :tag 't) after))
+     ((= tag nelisp-sexp-bake-v3-tag-int)
+      (let ((vp (nelisp-sexp--read-i64 bytes after)))
+        (cons (list :tag 'int :value (car vp)) (cdr vp))))
+     ((= tag nelisp-sexp-bake-v3-tag-float)
+      (let ((bp (nelisp-sexp-bake--read-u64 bytes after)))
+        (cons (list :tag 'float :bits (car bp)) (cdr bp))))
+     ((= tag nelisp-sexp-bake-v3-tag-symbol)
+      (let ((sp (nelisp-sexp--read-utf8 bytes after)))
+        (cons (list :tag 'symbol :name (car sp)) (cdr sp))))
+     ((= tag nelisp-sexp-bake-v3-tag-string)
+      (let ((sp (nelisp-sexp--read-utf8 bytes after)))
+        (cons (list :tag 'string :value (car sp)) (cdr sp))))
+     ((= tag nelisp-sexp-bake-v3-tag-cons)
+      (let* ((cp (nelisp-sexp--read-u32 bytes after))
+             (car-idx (car cp))
+             (p2 (cdr cp))
+             (dp (nelisp-sexp--read-u32 bytes p2))
+             (cdr-idx (car dp))
+             (p3 (cdr dp)))
+        (cons (list :tag 'cons :car car-idx :cdr cdr-idx) p3)))
+     ((= tag nelisp-sexp-bake-v3-tag-vector)
+      (let* ((lp (nelisp-sexp--read-u32 bytes after))
+             (n (car lp))
+             (p (cdr lp))
+             (items nil))
+        (dotimes (_ n)
+          (let ((ip (nelisp-sexp--read-u32 bytes p)))
+            (push (car ip) items)
+            (setq p (cdr ip))))
+        (cons (list :tag 'vector :items (nreverse items)) p)))
+     ((= tag nelisp-sexp-bake-v3-tag-char-table)
+      (let ((bp (nelisp-sexp-bake--read-char-table-body bytes after)))
+        (cons (append (list :tag 'char-table) (car bp)) (cdr bp))))
+     ((= tag nelisp-sexp-bake-v3-tag-bool-vector)
+      (let* ((lp (nelisp-sexp--read-u32 bytes after))
+             (n (car lp))
+             (p (cdr lp)))
+        (when (> (+ p n) (length bytes))
+          (signal 'nelisp-sexp-truncated
+                  (list 'bool-vector p n (length bytes))))
+        (let ((bits nil))
+          (dotimes (i n)
+            (push (/= 0 (aref bytes (+ p i))) bits))
+          (cons (list :tag 'bool-vector :bits (nreverse bits))
+                (+ p n)))))
+     ((= tag nelisp-sexp-bake-v3-tag-cell)
+      (let ((ip (nelisp-sexp--read-u32 bytes after)))
+        (cons (list :tag 'cell :idx (car ip)) (cdr ip))))
+     ((= tag nelisp-sexp-bake-v3-tag-record)
+      (let* ((tp (nelisp-sexp--read-u32 bytes after))
+             (type-tag (car tp))
+             (p2 (cdr tp))
+             (np (nelisp-sexp--read-u32 bytes p2))
+             (n (car np))
+             (p3 (cdr np))
+             (slots nil))
+        (dotimes (_ n)
+          (let ((sp (nelisp-sexp--read-u32 bytes p3)))
+            (push (car sp) slots)
+            (setq p3 (cdr sp))))
+        (cons (list :tag 'record
+                    :type-tag type-tag
+                    :slots (nreverse slots))
+              p3)))
+     ((= tag nelisp-sexp-bake-v3-tag-mut-str)
+      (let ((sp (nelisp-sexp--read-utf8 bytes after)))
+        (cons (list :tag 'mut-str :value (car sp)) (cdr sp))))
+     (t (signal 'nelisp-sexp-bake-unknown-tag (list tag pos))))))
+
+;;; --- §95.f globals encoder / decoder ------------------------------
+
+(defun nelisp-sexp-bake--write-global (buf global)
+  "Write a single v3 global record GLOBAL into BUF.
+GLOBAL = (:name STR :value IDX|nil :function IDX|nil
+          :plist IDX|nil :constant BOOL)."
+  (let* ((name (plist-get global :name))
+         (value (plist-get global :value))
+         (function (plist-get global :function))
+         (plist (plist-get global :plist))
+         (constant (plist-get global :constant))
+         (flags 0))
+    (when value
+      (setq flags (logior flags
+                          nelisp-sexp-bake-v3-global-flag-has-value)))
+    (when function
+      (setq flags (logior flags
+                          nelisp-sexp-bake-v3-global-flag-has-function)))
+    (when plist
+      (setq flags (logior flags
+                          nelisp-sexp-bake-v3-global-flag-has-plist)))
+    (when constant
+      (setq flags (logior flags
+                          nelisp-sexp-bake-v3-global-flag-constant)))
+    (setq buf (nelisp-sexp--write-utf8 buf name))
+    (setq buf (nelisp-sexp--emit-byte buf flags))
+    (when value
+      (setq buf (nelisp-sexp--write-u32 buf value)))
+    (when function
+      (setq buf (nelisp-sexp--write-u32 buf function)))
+    (when plist
+      (setq buf (nelisp-sexp--write-u32 buf plist)))
+    buf))
+
+(defun nelisp-sexp-bake--read-global (bytes pos)
+  "Read a single v3 global record from BYTES at POS.
+Returns (GLOBAL-PLIST . NEW-POS)."
+  (let* ((np (nelisp-sexp--read-utf8 bytes pos))
+         (name (car np))
+         (p1 (cdr np))
+         (flags (aref bytes p1))
+         (p2 (1+ p1))
+         (value nil)
+         (function nil)
+         (plist nil)
+         (constant nil))
+    (when (/= 0 (logand
+                 flags nelisp-sexp-bake-v3-global-flag-has-value))
+      (let ((vp (nelisp-sexp--read-u32 bytes p2)))
+        (setq value (car vp))
+        (setq p2 (cdr vp))))
+    (when (/= 0 (logand
+                 flags nelisp-sexp-bake-v3-global-flag-has-function))
+      (let ((fp (nelisp-sexp--read-u32 bytes p2)))
+        (setq function (car fp))
+        (setq p2 (cdr fp))))
+    (when (/= 0 (logand
+                 flags nelisp-sexp-bake-v3-global-flag-has-plist))
+      (let ((pp (nelisp-sexp--read-u32 bytes p2)))
+        (setq plist (car pp))
+        (setq p2 (cdr pp))))
+    (setq constant
+          (/= 0 (logand
+                 flags nelisp-sexp-bake-v3-global-flag-constant)))
+    (cons (list :name name
+                :value value
+                :function function
+                :plist plist
+                :constant constant)
+          p2)))
+
+;;; --- §95.f top-level encoder / decoder ----------------------------
+
+(defun nelisp-sexp-bake-encode-full (nodes globals fallback-forms)
+  "Encode a full NELIMG v3 image from NODES + GLOBALS + FALLBACK-FORMS.
+NODES is a list of node-records (= one entry per NODE_INDEX, in
+order).  Children encoded inside each record reference parent /
+sibling indices by integer.
+
+GLOBALS is a list of global plists each of shape
+  (:name STR :value IDX|nil :function IDX|nil
+   :plist IDX|nil :constant BOOL).
+The caller is responsible for sorting GLOBALS by name for
+deterministic output (Rust uses alpha sort — mirrors §3.3.1
+Phase D).
+
+FALLBACK-FORMS is a list of strings (= strategy-C re-eval sources).
+
+Returns the on-disk byte string.  Mirrors Rust
+`encode_v3_with_fallback' bytewise."
+  (unless (listp nodes)
+    (signal 'wrong-type-argument (list 'listp nodes)))
+  (unless (listp globals)
+    (signal 'wrong-type-argument (list 'listp globals)))
+  (unless (listp fallback-forms)
+    (signal 'wrong-type-argument (list 'listp fallback-forms)))
+  (let ((buf nil))
+    (setq buf (cons nelisp-sexp-bake-v3-magic buf))
+    (setq buf (nelisp-sexp--write-u32 buf nelisp-sexp-bake-v3-version))
+    (setq buf (nelisp-sexp--emit-byte
+               buf nelisp-sexp-bake-v3-kind-frozen-heap))
+    (setq buf (nelisp-sexp--write-u32 buf (length nodes)))
+    (dolist (node nodes)
+      (setq buf (nelisp-sexp-bake--write-node-record buf node)))
+    (setq buf (nelisp-sexp--write-u32 buf (length globals)))
+    (dolist (g globals)
+      (setq buf (nelisp-sexp-bake--write-global buf g)))
+    (setq buf (nelisp-sexp--write-u32 buf (length fallback-forms)))
+    (dolist (form fallback-forms)
+      (setq buf (nelisp-sexp--write-utf8 buf form)))
+    (apply #'concat (nreverse buf))))
+
+(defun nelisp-sexp-bake-decode-full (bytes)
+  "Decode a NELIMG v3 image byte string BYTES into its components.
+Returns a plist (:nodes NODES :globals GLOBALS :fallback-forms FORMS
+:version V :kind K).  Inverse of `nelisp-sexp-bake-encode-full'."
+  (unless (stringp bytes)
+    (signal 'wrong-type-argument (list 'stringp bytes)))
+  (when (< (length bytes) 21)
+    (signal 'nelisp-sexp-bake-truncated
+            (list 'header (length bytes))))
+  (let ((magic (substring bytes 0 8)))
+    (unless (equal magic nelisp-sexp-bake-v3-magic)
+      (signal 'nelisp-sexp-bake-bad-magic
+              (list 'expected nelisp-sexp-bake-v3-magic 'got magic))))
+  (let* ((vp (nelisp-sexp--read-u32 bytes 8))
+         (version (car vp))
+         (p (cdr vp)))
+    (unless (= version nelisp-sexp-bake-v3-version)
+      (signal 'nelisp-sexp-bake-bad-version (list version)))
+    (let* ((kind (aref bytes p))
+           (p1 (1+ p)))
+      (unless (= kind nelisp-sexp-bake-v3-kind-frozen-heap)
+        (signal 'nelisp-sexp-bake-bad-kind (list kind)))
+      (let* ((np (nelisp-sexp--read-u32 bytes p1))
+             (n-nodes (car np))
+             (p2 (cdr np))
+             (nodes nil))
+        (dotimes (_ n-nodes)
+          (let ((rp (nelisp-sexp-bake--read-node-record bytes p2)))
+            (push (car rp) nodes)
+            (setq p2 (cdr rp))))
+        (let* ((gp (nelisp-sexp--read-u32 bytes p2))
+               (n-globals (car gp))
+               (p3 (cdr gp))
+               (globals nil))
+          (dotimes (_ n-globals)
+            (let ((grp (nelisp-sexp-bake--read-global bytes p3)))
+              (push (car grp) globals)
+              (setq p3 (cdr grp))))
+          (let* ((fp (nelisp-sexp--read-u32 bytes p3))
+                 (n-fallback (car fp))
+                 (p4 (cdr fp))
+                 (forms nil))
+            (dotimes (_ n-fallback)
+              (let ((sp (nelisp-sexp--read-utf8 bytes p4)))
+                (push (car sp) forms)
+                (setq p4 (cdr sp))))
+            (unless (= p4 (length bytes))
+              (signal 'nelisp-sexp-bake-trailing-bytes
+                      (list 'pos p4 'len (length bytes))))
+            (list :version version
+                  :kind kind
+                  :nodes (nreverse nodes)
+                  :globals (nreverse globals)
+                  :fallback-forms (nreverse forms))))))))
+
+(defun nelisp-sexp-bake-verify-full (bytes)
+  "Round-trip BYTES through `decode-full' + `encode-full' + compare.
+Returns t when re-encoded bytes are byte-identical; signals
+`nelisp-sexp-bake-mismatch' otherwise.  Works on any NELIMG v3
+image, not just the envelope-only subset (= §95.e + §95.f together)."
+  (let* ((parsed (nelisp-sexp-bake-decode-full bytes))
+         (reemit (nelisp-sexp-bake-encode-full
+                  (plist-get parsed :nodes)
+                  (plist-get parsed :globals)
+                  (plist-get parsed :fallback-forms))))
+    (cond
+     ((equal bytes reemit) t)
+     (t (signal 'nelisp-sexp-bake-mismatch
+                (list :on-disk-len (length bytes)
+                      :reemit-len (length reemit)
+                      :first-diff
+                      (cl-loop for i from 0 below
+                               (min (length bytes) (length reemit))
+                               when (/= (aref bytes i) (aref reemit i))
+                               return i
+                               finally return nil)))))))
+
+(defun nelisp-sexp-bake-verify-image-full (file-path)
+  "Like `nelisp-sexp-bake-verify-image' but using the §95.f full codec.
+Reads FILE-PATH as bytes, round-trips through the full encoder, and
+returns t on byte-identity.  Works on any baked .image file regardless
+of N_NODES / N_GLOBALS (= the envelope-only ones still round-trip
+because the full codec degrades gracefully when nodes / globals lists
+are empty)."
+  (unless (stringp file-path)
+    (signal 'wrong-type-argument (list 'stringp file-path)))
+  (let ((bytes (with-temp-buffer
+                 (set-buffer-multibyte nil)
+                 (insert-file-contents-literally file-path)
+                 (buffer-substring-no-properties
+                  (point-min) (point-max)))))
+    (nelisp-sexp-bake-verify-full bytes)))
+
+;;; --- §95.f Phase A DSL interner -----------------------------------
+;;
+;; Convenience layer: given a list of §95.a DSL sexps, build a node
+;; table by post-order walk + atomic-structural dedupe + boxed-eq
+;; dedupe (= elisp cons-cell identity).  This is what Rust's `intern'
+;; does; the elisp side substitutes `eq' for box pointer identity.
+;;
+;; CharTable note: the §95.a DSL stores only :default + :extras, not
+;; the full Rust CharTableInner layout (subtype / entries / parent).
+;; The interner emits the minimal-loss mapping
+;;   subtype = NODE_INDEX of Sexp::Nil
+;;   default-val = NODE_INDEX of :default
+;;   entries = []
+;;   parent  = None
+;;   extra   = [NODE_INDEX of each :extras]
+;; which faithfully round-trips DSL char-tables but cannot represent
+;; non-empty entries maps or parent chains.  Hand-crafted node records
+;; with `:entries' / `:parent' must be passed to `encode-full' directly
+;; (= bypass the interner).
+
+(defun nelisp-sexp-bake--intern-atom-key (sexp)
+  "Return a structural dedupe key for an atomic SEXP, or nil.
+Atomic = the 6 leaf variants (nil/t/int/float/symbol/str)."
+  (let ((tag (nelisp-sexp-tag sexp)))
+    (cond
+     ((null tag) (list 'atom-nil))
+     ((eq tag t) (list 'atom-t))
+     ((eq tag 'int) (list 'atom-int (plist-get sexp :value)))
+     ((eq tag 'float)
+      (list 'atom-float (nelisp-sexp--f64-to-bits
+                         (plist-get sexp :value))))
+     ((eq tag 'symbol)
+      (list 'atom-symbol (plist-get sexp :value)))
+     ((eq tag 'str)
+      (list 'atom-str (plist-get sexp :value)))
+     (t nil))))
+
+(defun nelisp-sexp-bake--intern (sexp ctx)
+  "Intern SEXP into CTX (a vector [NODES BY-PTR BY-ATOM COUNT]).
+Returns the NODE_INDEX assigned (= integer).  NODES is a hash-table
+mapping NODE_INDEX -> node-record so allocation is O(1) per insert
+even with placeholder cycles; the final node list is produced by
+`nelisp-sexp-bake--ctx-to-list'.
+
+Boxed variants (cons/vector/char-table/bool-vector/cell/record/
+mut-str) dedupe on `eq' identity of the plist itself; atomic
+variants dedupe structurally."
+  (let* ((tag (nelisp-sexp-tag sexp))
+         (boxed (memq tag '(cons vector char-table bool-vector
+                                 cell record mut-str))))
+    (cond
+     (boxed
+      (let* ((by-ptr (aref ctx 1))
+             (cached (gethash sexp by-ptr)))
+        (or cached
+            (let ((idx (aref ctx 3)))
+              (aset ctx 3 (1+ idx))
+              ;; Reserve placeholder Nil to support cycles + sharing.
+              (puthash idx (list :tag 'nil) (aref ctx 0))
+              (puthash sexp idx by-ptr)
+              (puthash idx
+                       (nelisp-sexp-bake--build-record sexp ctx)
+                       (aref ctx 0))
+              idx))))
+     (t
+      (let* ((key (nelisp-sexp-bake--intern-atom-key sexp))
+             (by-atom (aref ctx 2))
+             (cached (gethash key by-atom)))
+        (or cached
+            (let ((idx (aref ctx 3)))
+              (aset ctx 3 (1+ idx))
+              (puthash idx
+                       (nelisp-sexp-bake--build-record sexp ctx)
+                       (aref ctx 0))
+              (puthash key idx by-atom)
+              idx)))))))
+
+(defun nelisp-sexp-bake--ctx-to-list (ctx)
+  "Linearise CTX's NODES hash-table into a list ordered by NODE_INDEX."
+  (let* ((count (aref ctx 3))
+         (nodes (aref ctx 0))
+         (out nil))
+    (dotimes (i count)
+      (push (gethash (- count 1 i) nodes) out))
+    out))
+
+(defun nelisp-sexp-bake--build-record (sexp ctx)
+  "Translate a §95.a DSL SEXP into a v3 node-record (uses CTX for refs)."
+  (let ((tag (nelisp-sexp-tag sexp)))
+    (cond
+     ((null tag) (list :tag 'nil))
+     ((eq tag t) (list :tag 't))
+     ((eq tag 'int)
+      (list :tag 'int :value (plist-get sexp :value)))
+     ((eq tag 'float)
+      (list :tag 'float
+            :bits (nelisp-sexp--f64-to-bits
+                   (plist-get sexp :value))))
+     ((eq tag 'symbol)
+      (list :tag 'symbol :name (plist-get sexp :value)))
+     ((eq tag 'str)
+      (list :tag 'string :value (plist-get sexp :value)))
+     ((eq tag 'mut-str)
+      (list :tag 'mut-str :value (plist-get sexp :value)))
+     ((eq tag 'cons)
+      (list :tag 'cons
+            :car (nelisp-sexp-bake--intern (plist-get sexp :car) ctx)
+            :cdr (nelisp-sexp-bake--intern (plist-get sexp :cdr) ctx)))
+     ((eq tag 'vector)
+      (list :tag 'vector
+            :items
+            (mapcar (lambda (e) (nelisp-sexp-bake--intern e ctx))
+                    (plist-get sexp :elts))))
+     ((eq tag 'char-table)
+      (list :tag 'char-table
+            :subtype (nelisp-sexp-bake--intern
+                      (nelisp-sexp-make-nil) ctx)
+            :default-val (nelisp-sexp-bake--intern
+                          (plist-get sexp :default) ctx)
+            :entries nil
+            :parent nil
+            :extra
+            (mapcar (lambda (e) (nelisp-sexp-bake--intern e ctx))
+                    (plist-get sexp :extras))))
+     ((eq tag 'bool-vector)
+      (let ((len (plist-get sexp :len))
+            (init (plist-get sexp :init)))
+        (list :tag 'bool-vector
+              :bits (make-list len init))))
+     ((eq tag 'cell)
+      (list :tag 'cell
+            :idx (nelisp-sexp-bake--intern
+                  (plist-get sexp :inner) ctx)))
+     ((eq tag 'record)
+      (list :tag 'record
+            :type-tag (nelisp-sexp-bake--intern
+                       (nelisp-sexp-make-symbol
+                        (plist-get sexp :type-sym))
+                       ctx)
+            :slots
+            (mapcar (lambda (s) (nelisp-sexp-bake--intern s ctx))
+                    (plist-get sexp :slots))))
+     (t (signal 'nelisp-sexp-bake-malformed-node
+                (list 'unknown-dsl-tag tag))))))
+
+(defun nelisp-sexp-bake-intern-dsl (sexps)
+  "Intern a list of §95.a DSL SEXPS into a v3 node table.
+Returns the list of node-records (= what `encode-full' consumes).
+Atomic values dedupe structurally; boxed values dedupe on plist
+identity (= elisp `eq', which is the closest analogue to Rust's
+box pointer identity within the elisp object model).
+
+CharTable DSL inputs are translated using a minimal-loss mapping
+(empty entries, no parent) — see the section comment for caveats."
+  (let* ((ctx (vector (make-hash-table :test 'eql)
+                      (make-hash-table :test 'eq)
+                      (make-hash-table :test 'equal)
+                      0))
+         (_indices (mapcar (lambda (s)
+                             (nelisp-sexp-bake--intern s ctx))
+                           sexps)))
+    (nelisp-sexp-bake--ctx-to-list ctx)))
+
+;;; --- §95.f error symbols ------------------------------------------
+
+(define-error 'nelisp-sexp-bake-malformed-node
+  "NELIMG v3 node-record plist is malformed")
+(define-error 'nelisp-sexp-bake-unknown-tag
+  "NELIMG v3 node-record has an unrecognised tag byte")
+
 (provide 'nelisp-sexp-dsl)
 
 ;;; nelisp-sexp-dsl.el ends here

@@ -223,6 +223,277 @@ producing nonsense fallback strings."
                         :type 'nelisp-sexp-bake-unsupported))
       (when (file-exists-p tmp) (delete-file tmp)))))
 
+;;; --- §95.f full encoder / decoder round-trip ----------------------
+
+(defconst nelisp-sexp-bake-test--minimal-empty
+  (nelisp-sexp-bake-encode-full nil nil nil)
+  "A minimal NELIMG v3 image with 0 nodes / 0 globals / 0 fallback.
+25 bytes total = 8 magic + 4 version + 1 kind + 4 N_NODES
++ 4 N_GLOBALS + 4 N_FALLBACK.")
+
+(ert-deftest nelisp-sexp-bake-full-encode-empty-image ()
+  "Empty `encode-full' produces a 25-byte well-formed image."
+  (let ((bytes nelisp-sexp-bake-test--minimal-empty))
+    (should (= (length bytes) 25))
+    (should (equal (substring bytes 0 8) nelisp-sexp-bake-v3-magic))
+    (should (eq t (nelisp-sexp-bake-verify-full bytes)))))
+
+(ert-deftest nelisp-sexp-bake-full-decode-empty-image ()
+  "Decoder returns empty :nodes / :globals / :fallback-forms."
+  (let* ((bytes nelisp-sexp-bake-test--minimal-empty)
+         (parsed (nelisp-sexp-bake-decode-full bytes)))
+    (should (= (plist-get parsed :version) 3))
+    (should (= (plist-get parsed :kind) 1))
+    (should (null (plist-get parsed :nodes)))
+    (should (null (plist-get parsed :globals)))
+    (should (null (plist-get parsed :fallback-forms)))))
+
+(ert-deftest nelisp-sexp-bake-full-two-atomic-nodes-round-trip ()
+  "Encode + decode an image with two atomic nodes (= Nil, Int)."
+  (let* ((nodes (list (list :tag 'nil)
+                      (list :tag 'int :value 42)))
+         (bytes (nelisp-sexp-bake-encode-full nodes nil nil)))
+    (should (eq t (nelisp-sexp-bake-verify-full bytes)))
+    (let ((parsed (nelisp-sexp-bake-decode-full bytes)))
+      (should (equal (plist-get parsed :nodes) nodes)))))
+
+(ert-deftest nelisp-sexp-bake-full-all-atomic-tags ()
+  "Every atomic node tag round-trips byte-identical."
+  (let* ((nodes
+          (list (list :tag 'nil)
+                (list :tag 't)
+                (list :tag 'int :value -123456789012345)
+                (list :tag 'float :bits #x4008000000000000) ; = 3.0
+                (list :tag 'symbol :name "foo-bar")
+                (list :tag 'string :value "hello")
+                (list :tag 'mut-str :value "mut")))
+         (bytes (nelisp-sexp-bake-encode-full nodes nil nil)))
+    (should (eq t (nelisp-sexp-bake-verify-full bytes)))
+    (let ((parsed (nelisp-sexp-bake-decode-full bytes)))
+      (should (equal (plist-get parsed :nodes) nodes)))))
+
+(ert-deftest nelisp-sexp-bake-full-cons-references-children ()
+  "CONS node with car/cdr indices round-trips with linkage intact."
+  (let* ((nodes (list (list :tag 'int :value 1)         ; idx 0
+                      (list :tag 'int :value 2)         ; idx 1
+                      (list :tag 'cons :car 0 :cdr 1))) ; idx 2
+         (bytes (nelisp-sexp-bake-encode-full nodes nil nil)))
+    (should (eq t (nelisp-sexp-bake-verify-full bytes)))
+    (let ((parsed (nelisp-sexp-bake-decode-full bytes)))
+      (should (equal (plist-get parsed :nodes) nodes)))))
+
+(ert-deftest nelisp-sexp-bake-full-deep-cons-tree-10-levels ()
+  "10-level-deep right-nested cons spine round-trips identically.
+Builds (1 . (2 . (3 . ... (10 . nil)))) via direct node records."
+  (let* ((nil-idx 0)
+         (nodes (list (list :tag 'nil)))
+         (next-idx 1)
+         (last-cdr nil-idx))
+    ;; Walk from 10 down to 1, inserting int + cons pairs.
+    (cl-loop for n from 10 downto 1 do
+             (let ((int-idx next-idx)
+                   (cons-idx (1+ next-idx)))
+               (setq nodes
+                     (append nodes
+                             (list (list :tag 'int :value n)
+                                   (list :tag 'cons
+                                         :car int-idx
+                                         :cdr last-cdr))))
+               (setq last-cdr cons-idx)
+               (setq next-idx (+ next-idx 2))))
+    (let ((bytes (nelisp-sexp-bake-encode-full nodes nil nil)))
+      (should (eq t (nelisp-sexp-bake-verify-full bytes)))
+      (let ((parsed (nelisp-sexp-bake-decode-full bytes)))
+        (should (= (length (plist-get parsed :nodes))
+                   (1+ (* 10 2))))))))
+
+(ert-deftest nelisp-sexp-bake-full-shared-sub-tree ()
+  "Two CONS nodes referencing the same child idx round-trip."
+  (let* ((nodes (list (list :tag 'int :value 7)             ; 0
+                      (list :tag 'cons :car 0 :cdr 0)       ; 1
+                      (list :tag 'cons :car 0 :cdr 1)))     ; 2
+         (bytes (nelisp-sexp-bake-encode-full nodes nil nil)))
+    (should (eq t (nelisp-sexp-bake-verify-full bytes)))))
+
+(ert-deftest nelisp-sexp-bake-full-vector-with-items ()
+  "VECTOR node referencing index list round-trips."
+  (let* ((nodes (list (list :tag 'int :value 1)
+                      (list :tag 'int :value 2)
+                      (list :tag 'int :value 3)
+                      (list :tag 'vector :items '(0 1 2 0 1 2))))
+         (bytes (nelisp-sexp-bake-encode-full nodes nil nil)))
+    (should (eq t (nelisp-sexp-bake-verify-full bytes)))))
+
+(ert-deftest nelisp-sexp-bake-full-bool-vector ()
+  "BOOL_VECTOR with mixed bits round-trips bit-faithfully."
+  (let* ((nodes (list (list :tag 'bool-vector
+                            :bits (list t nil t t nil nil t))))
+         (bytes (nelisp-sexp-bake-encode-full nodes nil nil)))
+    (should (eq t (nelisp-sexp-bake-verify-full bytes)))
+    (let* ((parsed (nelisp-sexp-bake-decode-full bytes))
+           (first (car (plist-get parsed :nodes))))
+      (should (equal (plist-get first :bits)
+                     (list t nil t t nil nil t))))))
+
+(ert-deftest nelisp-sexp-bake-full-cell-and-record ()
+  "CELL + RECORD nodes referencing children round-trip."
+  (let* ((nodes (list (list :tag 'symbol :name "my-rec")    ; 0
+                      (list :tag 'int :value 11)            ; 1
+                      (list :tag 'int :value 22)            ; 2
+                      (list :tag 'cell :idx 1)              ; 3
+                      (list :tag 'record :type-tag 0
+                            :slots '(1 2 3))))              ; 4
+         (bytes (nelisp-sexp-bake-encode-full nodes nil nil)))
+    (should (eq t (nelisp-sexp-bake-verify-full bytes)))))
+
+(ert-deftest nelisp-sexp-bake-full-char-table-minimal ()
+  "Minimal CHAR_TABLE node (= no entries, no parent) round-trips."
+  (let* ((nodes (list (list :tag 'nil)                        ; 0
+                      (list :tag 'char-table
+                            :subtype 0
+                            :default-val 0
+                            :entries nil
+                            :parent nil
+                            :extra nil)))
+         (bytes (nelisp-sexp-bake-encode-full nodes nil nil)))
+    (should (eq t (nelisp-sexp-bake-verify-full bytes)))))
+
+(ert-deftest nelisp-sexp-bake-full-char-table-with-entries ()
+  "CHAR_TABLE with non-empty entries map + parent chain round-trips."
+  (let* ((nodes (list (list :tag 'nil)                        ; 0
+                      (list :tag 'int :value 99)              ; 1
+                      (list :tag 'int :value 100)             ; 2
+                      (list :tag 'char-table
+                            :subtype 0
+                            :default-val 1
+                            :entries '((65 . 2) (97 . 1))
+                            :parent (list :tag 'char-table
+                                          :subtype 0
+                                          :default-val 2
+                                          :entries nil
+                                          :parent nil
+                                          :extra nil)
+                            :extra '(1 2))))
+         (bytes (nelisp-sexp-bake-encode-full nodes nil nil)))
+    (should (eq t (nelisp-sexp-bake-verify-full bytes)))))
+
+(ert-deftest nelisp-sexp-bake-full-globals-section ()
+  "Globals section with value / function / plist / constant round-trips."
+  (let* ((nodes (list (list :tag 'int :value 1)            ; 0
+                      (list :tag 'int :value 2)            ; 1
+                      (list :tag 'int :value 3)))          ; 2
+         (globals (list (list :name "alpha"
+                              :value 0 :function nil :plist nil
+                              :constant nil)
+                        (list :name "beta"
+                              :value 0 :function 1 :plist 2
+                              :constant t)
+                        (list :name "gamma"
+                              :value nil :function nil :plist nil
+                              :constant t)))
+         (bytes (nelisp-sexp-bake-encode-full nodes globals nil)))
+    (should (eq t (nelisp-sexp-bake-verify-full bytes)))
+    (let ((parsed (nelisp-sexp-bake-decode-full bytes)))
+      (should (= (length (plist-get parsed :globals)) 3))
+      (should (equal (plist-get (nth 1 (plist-get parsed :globals))
+                                :name)
+                     "beta")))))
+
+(ert-deftest nelisp-sexp-bake-full-fallback-forms-section ()
+  "FALLBACK_FORMS section coexists with node + global sections."
+  (let* ((nodes (list (list :tag 't)))
+         (globals nil)
+         (forms '("(message \"a\")" "(message \"b\")"))
+         (bytes (nelisp-sexp-bake-encode-full nodes globals forms)))
+    (should (eq t (nelisp-sexp-bake-verify-full bytes)))
+    (let ((parsed (nelisp-sexp-bake-decode-full bytes)))
+      (should (equal (plist-get parsed :fallback-forms) forms)))))
+
+;;; --- §95.f Phase A DSL interner -----------------------------------
+
+(ert-deftest nelisp-sexp-bake-intern-atomic-dedupe ()
+  "Atomic DSL values dedupe structurally during intern."
+  (let ((s1 (nelisp-sexp-make-int 42))
+        (s2 (nelisp-sexp-make-int 42)))
+    (let ((nodes (nelisp-sexp-bake-intern-dsl (list s1 s2))))
+      ;; Both interns hit the same atomic key (= one node total).
+      (should (= (length nodes) 1))
+      (should (equal (car nodes) (list :tag 'int :value 42))))))
+
+(ert-deftest nelisp-sexp-bake-intern-cons-eq-dedupe ()
+  "Same cons plist (by eq) dedupes; structurally-equal copies do not."
+  (let* ((c1 (nelisp-sexp-make-cons
+              (nelisp-sexp-make-int 1) (nelisp-sexp-make-int 2)))
+         (c2 c1)                  ; same eq identity
+         (c3 (nelisp-sexp-make-cons
+              (nelisp-sexp-make-int 1) (nelisp-sexp-make-int 2))))
+    (let ((nodes-shared
+           (nelisp-sexp-bake-intern-dsl (list c1 c2))))
+      ;; c1 and c2 are eq → 1 cons + 2 atomic int = 3 nodes total.
+      (should (= (length nodes-shared) 3)))
+    (let ((nodes-distinct
+           (nelisp-sexp-bake-intern-dsl (list c1 c3))))
+      ;; c1 and c3 are structurally equal but eq-distinct → 2 cons.
+      ;; Atomic int 1 + int 2 dedupe, so 2 + 2 = 4 nodes total.
+      (should (= (length nodes-distinct) 4)))))
+
+(ert-deftest nelisp-sexp-bake-intern-full-pipeline ()
+  "Intern + encode + decode + re-encode = byte identity."
+  (let* ((dsl (list (nelisp-sexp-make-cons
+                     (nelisp-sexp-make-int 1)
+                     (nelisp-sexp-make-int 2))
+                    (nelisp-sexp-make-vector
+                     (list (nelisp-sexp-make-symbol 'foo)
+                           (nelisp-sexp-make-str "bar")))))
+         (nodes (nelisp-sexp-bake-intern-dsl dsl))
+         (bytes (nelisp-sexp-bake-encode-full nodes nil nil)))
+    (should (eq t (nelisp-sexp-bake-verify-full bytes)))))
+
+;;; --- §95.f compat with §95.e envelope-only path -------------------
+
+(ert-deftest nelisp-sexp-bake-full-real-images-still-round-trip ()
+  "Every baked .image (envelope-only today) round-trips via full codec."
+  (let* ((dir (nelisp-sexp-bake-test--lisp-dir))
+         (images (directory-files dir t "\\.image\\'"))
+         (failures nil))
+    (should (> (length images) 0))
+    (dolist (img images)
+      (condition-case e
+          (progn
+            (nelisp-sexp-bake-verify-image-full img)
+            t)
+        (error (push (cons img e) failures))))
+    (should (null failures))))
+
+(ert-deftest nelisp-sexp-bake-full-vs-envelope-byte-equal ()
+  "§95.f full encoder produces same bytes as §95.e envelope encoder
+when N_NODES = 0 / N_GLOBALS = 0 (= they describe the same image)."
+  (let* ((forms '("(+ 1 2)"))
+         (envelope (nelisp-sexp-bake--encode-envelope forms))
+         (full (nelisp-sexp-bake-encode-full nil nil forms)))
+    (should (equal envelope full))))
+
+;;; --- §95.f error paths --------------------------------------------
+
+(ert-deftest nelisp-sexp-bake-full-unknown-tag-rejected ()
+  "Decoder rejects an unknown node tag byte."
+  (let* ((bytes (concat nelisp-sexp-bake-v3-magic
+                        (unibyte-string 3 0 0 0)   ; version = 3
+                        (unibyte-string 1)         ; kind = 1
+                        (unibyte-string 1 0 0 0)   ; N_NODES = 1
+                        (unibyte-string #xFF)      ; bogus tag
+                        (unibyte-string 0 0 0 0)   ; N_GLOBALS = 0
+                        (unibyte-string 0 0 0 0)))) ; N_FALLBACK = 0
+    (should-error (nelisp-sexp-bake-decode-full bytes)
+                  :type 'nelisp-sexp-bake-unknown-tag)))
+
+(ert-deftest nelisp-sexp-bake-full-malformed-node-on-encode ()
+  "Encoder rejects a node plist missing the :tag keyword."
+  (should-error
+   (nelisp-sexp-bake-encode-full
+    (list (list :value 42)) nil nil)
+   :type 'nelisp-sexp-bake-malformed-node))
+
 (provide 'nelisp-sexp-bake-test)
 
 ;;; nelisp-sexp-bake-test.el ends here

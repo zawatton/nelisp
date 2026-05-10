@@ -1386,6 +1386,169 @@ LOC delta (= §95.e CI integration only, additive only):
   =bake-images= opt-in)
 - =.github/workflows/ci.yml= delta: +13 LOC (= new step + comment)
 
+** §95.f SHIPPED (2026-05-11)
+
+Full NELIMG v3 node-pool encoder + decoder landed on top of §95.e
+in the same =lisp/nelisp-sexp-dsl.el=, expanding elisp coverage
+from the empty-env single-fallback envelope subset to every
+NELIMG v3 wire shape (= any combination of N_NODES / N_GLOBALS /
+N_FALLBACK_FORMS).
+
+**Outcome A** chosen: the Rust serializer turned out tractable
+to mirror because all wire bytes are little-endian primitives
+(u8 / u32 / i64 / u64 / utf-8 length-prefixed) that §95.c
+already had helpers for, and the Phase A-E walk is a mechanical
+post-order traversal.  Decision made after reading
+=build-tool/src/image.rs= lines 60-300 (= tag inventory,
+=encode_v3_with_fallback=, =decode_v3_into=) and confirming
+no bit-packing or custom hash-table layouts on the wire.
+
+*** Architecture
+
+§95.f introduces three layers on top of §95.e:
+
+1. *Internal IR (= "node records"):* a 13-variant plist shape that
+   mirrors Rust =NodeRecord= 1:1.  Encoder/decoder operate on this
+   IR directly (= no DSL conversion in the hot path), so every
+   bit-exact wire byte is round-trippable.  Variants:
+   =nil / t / int / float / symbol / string / cons / vector
+    / char-table / bool-vector / cell / record / mut-str=.
+
+2. *Encoder / decoder pair* (=nelisp-sexp-bake-encode-full= /
+   =nelisp-sexp-bake-decode-full= / =nelisp-sexp-bake-verify-full=):
+   take NODES + GLOBALS + FALLBACK-FORMS triples, emit / parse
+   byte strings, and round-trip them through =verify-full= for
+   byte-identity proof.
+
+3. *DSL Phase-A interner* (=nelisp-sexp-bake-intern-dsl=): walks a
+   list of §95.a DSL sexps and produces a node list ready for
+   =encode-full=.  Uses =eq= identity for boxed plists (cons /
+   vector / record / cell / mut-str / bool-vector / char-table)
+   and structural keys for atoms (nil / t / int / float / symbol /
+   str) so cycles + sharing survive the encode boundary.
+
+*** Coverage
+
+All 13 v3 node tags fully supported on both encoder and decoder:
+
+| Tag             | Encode | Decode | Notes |
+|-----------------+--------+--------+----------------------------|
+| TAG_V3_NIL      | ✓      | ✓      |                            |
+| TAG_V3_T        | ✓      | ✓      |                            |
+| TAG_V3_INT      | ✓      | ✓      | i64 LE                     |
+| TAG_V3_FLOAT    | ✓      | ✓      | u64 bit pattern (NaN safe) |
+| TAG_V3_SYMBOL   | ✓      | ✓      | utf-8 length-prefixed      |
+| TAG_V3_STRING   | ✓      | ✓      | utf-8 length-prefixed      |
+| TAG_V3_CONS     | ✓      | ✓      | car_idx / cdr_idx          |
+| TAG_V3_VECTOR   | ✓      | ✓      | len + idx[]                |
+| TAG_V3_CHAR_TABLE | ✓    | ✓      | subtype/default/entries/   |
+|                 |        |        | parent chain/extra all     |
+|                 |        |        | round-trip                 |
+| TAG_V3_BOOL_VECTOR | ✓   | ✓      | one byte per bit           |
+| TAG_V3_CELL     | ✓      | ✓      | inner idx                  |
+| TAG_V3_RECORD   | ✓      | ✓      | type_tag idx + slots[]     |
+| TAG_V3_MUT_STR  | ✓      | ✓      | utf-8 length-prefixed      |
+
+Globals section: all 4 FLAGS bits supported (HAS_VALUE / HAS_FUNCTION
+/ HAS_PLIST / CONSTANT), optional NODE_INDEX fields emitted in the
+canonical order matching the Rust =write= block.
+
+Fallback forms section: unchanged from §95.e (= u32 count + N
+length-prefixed strings).
+
+*** DSL interner CharTable limitation
+
+The §95.a DSL =char-table= shape (=:default + :extras=) is a
+simplification of the full Rust =CharTableInner= layout (=subtype /
+default_val / entries / parent / extra=).  =intern-dsl= maps it
+losslessly to a minimal-entry node record:
+=(subtype = Nil, default_val = :default, entries = [], parent =
+None, extra = :extras)=.  Hand-crafted node records with non-empty
+=:entries= or non-=nil= =:parent= must be passed to =encode-full=
+directly (= bypass the interner).  This is *not* a wire-format
+limitation — the encoder + decoder both fully support the rich
+CharTable shape and exercise it in ERT
+=nelisp-sexp-bake-full-char-table-with-entries=.
+
+*** ERT additions
+
+21 new =ert-deftest= cases in
+=test/nelisp-sexp-bake-test.el=, covering:
+
+- empty-image encode + decode (= 25-byte minimum)
+- every atomic tag (nil / t / int / float / symbol / string / mut-str)
+- CONS with car/cdr index linkage
+- 10-level deep right-nested cons spine
+- shared sub-tree (= one idx referenced from two parents)
+- vector with mixed item indices
+- bool-vector with mixed bits
+- cell + record with type_tag + slots
+- minimal char-table (= empty entries, no parent)
+- char-table with non-empty entries + parent chain
+- globals section with all flag combinations
+- fallback-forms section coexisting with nodes + globals
+- DSL interner atomic structural dedupe
+- DSL interner cons =eq= dedupe (vs structural-equal copies)
+- DSL interner → encode → decode round-trip
+- envelope-only baked images still round-trip via full codec
+  (= 25/25 lisp/*.image files pass)
+- §95.f =encode-full= byte-equal to §95.e =encode-envelope= when
+  N_NODES = 0 / N_GLOBALS = 0 (= layer consistency)
+- error paths: unknown node tag, malformed-node on encode
+
+*** LOC accounting
+
+- elisp =lisp/nelisp-sexp-dsl.el= delta: +721 LOC (encoder helpers
+  / decoder helpers / global encode-decode / top-level
+  encode-full + decode-full + verify-full / DSL Phase-A interner
+  + ctx helpers / 13 tag constants + 4 global-flag constants +
+  2 error symbols + section banners + docstrings).  Total file
+  now 2348 LOC.
+- elisp =test/nelisp-sexp-bake-test.el= delta: +271 LOC (21 new
+  ert-deftest + 1 helper defconst + section banners).  Total
+  file now 499 LOC.
+- No other files touched.  =build-tool/src/image.rs= remains
+  read-only per task constraint.
+
+*** Replacing =make bake-images= via elisp
+
+§95.f closes the gap §95.e left:
+
+| Capability                       | §95.e | §95.f |
+|----------------------------------+-------+-------|
+| Read NELIMG v3 envelope (0 node) | ✓     | ✓     |
+| Re-emit envelope byte-identical  | ✓     | ✓     |
+| Read multi-node NELIMG v3        |       | ✓     |
+| Encode multi-node NELIMG v3      |       | ✓     |
+| Encode multi-global NELIMG v3    |       | ✓     |
+| Round-trip CharTable parent chain |      | ✓     |
+| Mirror Rust =encode_v3= exactly  |       | ✓     |
+
+What remains for §95.g / Phase 48 (= true =make bake-images=
+*replacement* rather than just byte-identity verification):
+
+1. Wire =NELISP_BAKE_VIA_DSL=1= flag into =make bake-images= so
+   the elisp path emits the on-disk =.image= files rather than
+   shelling out to =nelisp-baker=.
+2. Add a Rust =Env= → §95.a DSL converter so production Rust
+   builds can hand globals to the elisp encoder (= currently the
+   DSL interner consumes elisp-side fixtures only).
+3. Stretch: replace the §95.a DSL CharTable shape with a richer
+   plist that mirrors =CharTableInner= 1:1 so the interner is
+   never lossy.
+
+These are out of scope for §95.f because each requires touching
+the Rust crate (= forbidden by the §95.f task constraints).
+
+*** Validation summary
+
+- =make compile= 0 warning
+- =ert= §95.f: 21/21 passes, plus 13/13 §95.e carried = 34/34
+- =ert= §95.a-d regression: 138/138 passes (= unchanged)
+- All 25 baked =lisp/*.image= files round-trip byte-identical
+  through =nelisp-sexp-bake-verify-image-full= (= the §95.f full
+  codec gracefully handles the envelope subset)
+
 ----
 
 End of Doc 95 DRAFT.
