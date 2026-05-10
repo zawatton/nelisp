@@ -883,6 +883,48 @@ bench gate: 既存 =fib(30) ≧ 30x= / =fact-iter(20) ≧ 20x= 軸で Cranelift
 baseline 比 ≧ 1.0x.  fib / fact-iter は arith hot path なので *gate 自体
 が takeover validation*.
 
+**** 3.6.c.AUDIT-RECORD-CLUSTER (2026-05-10) — no-op finding
+
+別 agent session が「Phase 7.1.6.c = record cluster takeover」と framing
+した briefing で着手 audit を実施 (= 7.1.6.a.2 cons / 7.1.6.b access の
+mirror として =record.rs= を探した).
+
+*Finding: no-op*.  =build-tool/src/jit/= 配下に record cluster 用
+Cranelift wrapper は *存在しない*.  実 inventory:
+
+#+begin_src text
+build-tool/src/jit/
+  access.rs    (Phase 7.1.6.b で takeover 済)
+  arith.rs     (Phase 7.1.6.c 本来の対象、上記 §3.6.c.1〜.4)
+  bridge.rs
+  cons.rs      (Phase 7.1.6.a.2 で takeover 済)
+  dsl.rs
+  mod.rs
+  predicate.rs (Phase 7.1.6.d 対象)
+  strategy.rs
+  syscall.rs   (Phase 7.1.6.e 対象)
+#+end_src
+
+record primitive (= =nelisp--make-record= / =recordp= /
+=nelisp--record-ref= / =-set= / =-length= / =-type=) は
+=build-tool/src/eval/builtins.rs= の =bi_make_record= /
+=bi_recordp= 等 plain Rust =bi_*= 関数として生きており、Cranelift JIT
+wrapper layer (= =JitRecord= struct + IR builder + register/declare/
+collect 配線) は最初から存在しない.  Doc 28 §3.6 全体でも Phase
+7.1.6.x で record を扱う sub-stage は articulate されていない.
+
+含意:
+- record cluster takeover は *Phase 7.1.6 の対象外*.  record primitive
+  の elisp 化は別 track (= Doc 80 stdlib 化、Doc 79 self-host) で進む
+- agent briefing の「record cluster」framing は誤認、本 §3.6.c の
+  正しい scope は arith takeover (上記 §3.6.c.1〜.4).
+- 本 audit を no-op confirmation commit として記録、Rust LOC delta = 0
+  (per-commit shrink rule の例外 = 「target file が存在しない場合は
+  no-op commit を ship」運用に従う)
+
+agent commit 自身の Rust LOC delta = 0 (本 §3.6.c.AUDIT-RECORD-CLUSTER
+追記のみ、=*.rs= 変更なし、=Cargo.*= 変更なし).
+
 *** 3.6.d Phase 7.1.6.d — =predicate= takeover (= predicate.rs ~-331 Rust LOC)
 
 **** 3.6.d.1 predicate primitive inventory
