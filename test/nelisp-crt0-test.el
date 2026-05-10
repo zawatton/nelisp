@@ -284,6 +284,281 @@
             (should (string-match-p "Entry point address:[ \t]+0x40" out))))
       (ignore-errors (delete-file path)))))
 
+;; ---------------------------------------------------------------- §6 §94.c full-entry stub
+
+(ert-deftest nelisp-crt0-full-entry-bytes-length ()
+  "The §94.c full-entry stub is exactly 44 bytes (= 26+5+13)."
+  (let ((b (nelisp-crt0-x86_64-full-entry-bytes)))
+    (should (= (length b) 44))
+    (should (= (length b) nelisp-crt0-x86_64-full-entry-size))))
+
+(ert-deftest nelisp-crt0-full-entry-argc-load ()
+  "Full entry begins with `mov rdi, [rsp]' = 48 8b 3c 24 (= argc → rdi)."
+  (let ((b (nelisp-crt0-x86_64-full-entry-bytes)))
+    (should (= (aref b 0) #x48))
+    (should (= (aref b 1) #x8b))
+    (should (= (aref b 2) #x3c))
+    (should (= (aref b 3) #x24))))
+
+(ert-deftest nelisp-crt0-full-entry-argv-load ()
+  "Bytes 4..8 emit `lea rsi, [rsp+8]' = 48 8d 74 24 08 (= argv → rsi)."
+  (let ((b (nelisp-crt0-x86_64-full-entry-bytes)))
+    (should (= (aref b 4) #x48))
+    (should (= (aref b 5) #x8d))
+    (should (= (aref b 6) #x74))
+    (should (= (aref b 7) #x24))
+    (should (= (aref b 8) #x08))))
+
+(ert-deftest nelisp-crt0-full-entry-envp-compute ()
+  "Bytes 9..18 compute envp via mov rcx,rdi + inc rcx + lea rdx,[rsi+rcx*8]."
+  (let ((b (nelisp-crt0-x86_64-full-entry-bytes)))
+    ;; mov rcx, rdi = 48 89 f9
+    (should (= (aref b 9)  #x48))
+    (should (= (aref b 10) #x89))
+    (should (= (aref b 11) #xf9))
+    ;; inc rcx = 48 ff c1
+    (should (= (aref b 12) #x48))
+    (should (= (aref b 13) #xff))
+    (should (= (aref b 14) #xc1))
+    ;; lea rdx, [rsi + rcx*8] = 48 8d 14 ce
+    (should (= (aref b 15) #x48))
+    (should (= (aref b 16) #x8d))
+    (should (= (aref b 17) #x14))
+    (should (= (aref b 18) #xce))))
+
+(ert-deftest nelisp-crt0-full-entry-stack-align ()
+  "Full entry includes `and rsp, -16' (= 48 83 e4 f0) for SysV alignment."
+  (let* ((b (nelisp-crt0-x86_64-full-entry-bytes))
+         ;; mov rbp, rsp at offsets 19..21, then and rsp,-16 at 22..25.
+         (and-rsp (substring b 22 26)))
+    (should (= (aref b 19) #x48))     ; mov rbp, rsp = 48 89 e5
+    (should (= (aref b 20) #x89))
+    (should (= (aref b 21) #xe5))
+    (should (equal and-rsp
+                   (unibyte-string #x48 #x83 #xe4 #xf0)))))
+
+(ert-deftest nelisp-crt0-full-entry-call-opcode ()
+  "Byte at offset 26 is the `call rel32' opcode `e8'."
+  (let ((b (nelisp-crt0-x86_64-full-entry-bytes)))
+    (should (= (aref b 26) #xe8))))
+
+(ert-deftest nelisp-crt0-full-entry-call-rel32-resolved ()
+  "Explicit CALL-REL32 lands at byte offsets 27..30 in little-endian."
+  (let ((b (nelisp-crt0-x86_64-full-entry-bytes #x12345678)))
+    (should (= (aref b 27) #x78))
+    (should (= (aref b 28) #x56))
+    (should (= (aref b 29) #x34))
+    (should (= (aref b 30) #x12))))
+
+(ert-deftest nelisp-crt0-full-entry-epilogue ()
+  "Bytes 31..43 restore rsp + invoke SYS_exit with main's rax."
+  (let ((b (nelisp-crt0-x86_64-full-entry-bytes)))
+    ;; mov rsp, rbp = 48 89 ec
+    (should (= (aref b 31) #x48))
+    (should (= (aref b 32) #x89))
+    (should (= (aref b 33) #xec))
+    ;; mov rdi, rax = 48 89 c7
+    (should (= (aref b 34) #x48))
+    (should (= (aref b 35) #x89))
+    (should (= (aref b 36) #xc7))
+    ;; mov eax, 60 = b8 3c 00 00 00
+    (should (= (aref b 37) #xb8))
+    (should (= (aref b 38) #x3c))
+    (should (= (aref b 39) 0))
+    (should (= (aref b 40) 0))
+    (should (= (aref b 41) 0))
+    ;; syscall = 0f 05
+    (should (= (aref b 42) #x0f))
+    (should (= (aref b 43) #x05))))
+
+(ert-deftest nelisp-crt0-full-entry-call-placeholder ()
+  "Without CALL-REL32, bytes 27..30 are zero (= linker placeholder)."
+  (let ((b (nelisp-crt0-x86_64-full-entry-bytes)))
+    (should (= (aref b 27) 0))
+    (should (= (aref b 28) 0))
+    (should (= (aref b 29) 0))
+    (should (= (aref b 30) 0))))
+
+(ert-deftest nelisp-crt0-full-entry-preserves-old-api ()
+  "§94.a `nelisp-crt0-x86_64-entry-bytes' (= 23 bytes) still works."
+  (let ((old (nelisp-crt0-x86_64-entry-bytes))
+        (new (nelisp-crt0-x86_64-full-entry-bytes)))
+    (should (= (length old) 23))
+    (should (= (length new) 44))
+    ;; They are distinct byte strings (= no accidental aliasing).
+    (should-not (equal old new))))
+
+;; ---------------------------------------------------------------- §7 find-auxv
+
+(ert-deftest nelisp-crt0-find-auxv-length ()
+  "The §94.c `find_auxv' stub is exactly 16 bytes."
+  (let ((b (nelisp-crt0-x86_64-find-auxv-bytes)))
+    (should (= (length b) 16))))
+
+(ert-deftest nelisp-crt0-find-auxv-shape ()
+  "find_auxv: mov rax,rdi; loop: mov rcx,[rax]; add rax,8; test; jne; ret."
+  (let ((b (nelisp-crt0-x86_64-find-auxv-bytes)))
+    ;; 48 89 f8 = mov rax, rdi
+    (should (= (aref b 0) #x48))
+    (should (= (aref b 1) #x89))
+    (should (= (aref b 2) #xf8))
+    ;; 48 8b 08 = mov rcx, [rax]
+    (should (= (aref b 3) #x48))
+    (should (= (aref b 4) #x8b))
+    (should (= (aref b 5) #x08))
+    ;; 48 83 c0 08 = add rax, 8
+    (should (= (aref b 6) #x48))
+    (should (= (aref b 7) #x83))
+    (should (= (aref b 8) #xc0))
+    (should (= (aref b 9) #x08))
+    ;; 48 85 c9 = test rcx, rcx
+    (should (= (aref b 10) #x48))
+    (should (= (aref b 11) #x85))
+    (should (= (aref b 12) #xc9))
+    ;; 75 f4 = jne -12
+    (should (= (aref b 13) #x75))
+    (should (= (aref b 14) #xf4))
+    ;; c3 = ret
+    (should (= (aref b 15) #xc3))))
+
+;; ---------------------------------------------------------------- §8 getauxval
+
+(ert-deftest nelisp-crt0-getauxval-length ()
+  "The §94.c `getauxval' stub is exactly 27 bytes."
+  (let ((b (nelisp-crt0-x86_64-getauxval-bytes)))
+    (should (= (length b) 27))))
+
+(ert-deftest nelisp-crt0-getauxval-shape ()
+  "getauxval: loop probes (type, value) pairs; returns value or 0."
+  (let ((b (nelisp-crt0-x86_64-getauxval-bytes)))
+    ;; 48 8b 07 = mov rax, [rdi]
+    (should (= (aref b 0) #x48))
+    (should (= (aref b 1) #x8b))
+    (should (= (aref b 2) #x07))
+    ;; 48 85 c0 = test rax, rax
+    (should (= (aref b 3) #x48))
+    (should (= (aref b 4) #x85))
+    (should (= (aref b 5) #xc0))
+    ;; 74 10 = je LNOT
+    (should (= (aref b 6) #x74))
+    (should (= (aref b 7) #x10))
+    ;; 48 39 f0 = cmp rax, rsi
+    (should (= (aref b 8) #x48))
+    (should (= (aref b 9) #x39))
+    (should (= (aref b 10) #xf0))
+    ;; 74 06 = je LFOUND
+    (should (= (aref b 11) #x74))
+    (should (= (aref b 12) #x06))
+    ;; 48 83 c7 10 = add rdi, 16
+    (should (= (aref b 13) #x48))
+    (should (= (aref b 14) #x83))
+    (should (= (aref b 15) #xc7))
+    (should (= (aref b 16) #x10))
+    ;; eb ed = jmp loop
+    (should (= (aref b 17) #xeb))
+    (should (= (aref b 18) #xed))
+    ;; 48 8b 47 08 = mov rax, [rdi+8]
+    (should (= (aref b 19) #x48))
+    (should (= (aref b 20) #x8b))
+    (should (= (aref b 21) #x47))
+    (should (= (aref b 22) #x08))
+    ;; c3 = ret
+    (should (= (aref b 23) #xc3))
+    ;; 31 c0 = xor eax, eax
+    (should (= (aref b 24) #x31))
+    (should (= (aref b 25) #xc0))
+    ;; c3 = ret
+    (should (= (aref b 26) #xc3))))
+
+;; ---------------------------------------------------------------- §9 hello-argc
+
+(ert-deftest nelisp-crt0-hello-argc-text-length ()
+  "The §94.c hello-with-argc _start routine is exactly 108 bytes."
+  (let ((b (nelisp-crt0--hello-argc-emit-text #x400078 #x4000e4)))
+    (should (= (length b) 108))
+    (should (= (length b) nelisp-crt0--hello-argc-text-size))))
+
+(ert-deftest nelisp-crt0-hello-argc-rip-rel ()
+  "hello-argc `lea rsi, [rip+rel]' rel32 = rodata-vaddr - (text-vaddr + 16)."
+  (let* ((text-vaddr  #x400078)
+         (rodata-vaddr (+ text-vaddr 108))    ; .rodata after .text
+         (rel-expected (- rodata-vaddr (+ text-vaddr 16)))
+         (b (nelisp-crt0--hello-argc-emit-text text-vaddr rodata-vaddr)))
+    ;; mov rbx,[rsp] at 0..3, mov edi,1 at 4..8, lea rsi at 9..15.
+    (should (= (aref b 9)  #x48))
+    (should (= (aref b 10) #x8d))
+    (should (= (aref b 11) #x35))
+    (should (= (aref b 12) (logand rel-expected #xff)))
+    (should (= (aref b 13) (logand (ash rel-expected -8) #xff)))
+    (should (= (aref b 14) (logand (ash rel-expected -16) #xff)))
+    (should (= (aref b 15) (logand (ash rel-expected -24) #xff)))))
+
+(ert-deftest nelisp-crt0-hello-argc-emit-file ()
+  "`nelisp-crt0-emit-hello-with-argc' writes a valid ELF file."
+  (let ((path (make-temp-file "nelisp-crt0-argc-emit-")))
+    (unwind-protect
+        (progn
+          (nelisp-crt0-emit-hello-with-argc path)
+          (should (file-exists-p path))
+          (let ((bytes (nelisp-crt0-test--read-file-bytes path)))
+            ;; ELF magic.
+            (should (equal (substring bytes 0 4)
+                           (unibyte-string #x7F #x45 #x4C #x46)))
+            ;; ELFCLASS64 + ELFDATA2LSB.
+            (should (= (aref bytes 4) 2))
+            (should (= (aref bytes 5) 1))
+            ;; .text at 0x78 starts with `mov rbx, [rsp]'.
+            (should (= (aref bytes #x78) #x48))
+            (should (= (aref bytes (+ #x78 1)) #x8b))
+            (should (= (aref bytes (+ #x78 2)) #x1c))
+            (should (= (aref bytes (+ #x78 3)) #x24))
+            ;; .rodata `argc=' starts at file offset 0x78 + 108.
+            (should (equal
+                     (substring bytes (+ #x78 108) (+ #x78 108 5))
+                     (unibyte-string ?a ?r ?g ?c ?=)))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-crt0-hello-argc-exec-no-args ()
+  "End-to-end: exec hello-with-argc with no args → stdout = `argc=1\\n'."
+  (skip-unless (nelisp-crt0-test--x86_64-host-p))
+  (let ((path   (make-temp-file "nelisp-crt0-argc-exec-1-"))
+        (output (make-temp-file "nelisp-crt0-argc-out-1-")))
+    (unwind-protect
+        (progn
+          (nelisp-crt0-emit-hello-with-argc path)
+          (let ((rc (call-process path nil (list :file output) nil)))
+            (should (eq rc 0))
+            (should
+             (equal
+              (with-temp-buffer
+                (set-buffer-multibyte nil)
+                (insert-file-contents-literally output)
+                (buffer-substring-no-properties (point-min) (point-max)))
+              (unibyte-string ?a ?r ?g ?c ?= ?1 ?\n)))))
+      (ignore-errors (delete-file path))
+      (ignore-errors (delete-file output)))))
+
+(ert-deftest nelisp-crt0-hello-argc-exec-three-args ()
+  "End-to-end: exec hello-with-argc with 3 args → stdout = `argc=4\\n'."
+  (skip-unless (nelisp-crt0-test--x86_64-host-p))
+  (let ((path   (make-temp-file "nelisp-crt0-argc-exec-4-"))
+        (output (make-temp-file "nelisp-crt0-argc-out-4-")))
+    (unwind-protect
+        (progn
+          (nelisp-crt0-emit-hello-with-argc path)
+          (let ((rc (call-process path nil (list :file output) nil
+                                  "arg1" "arg2" "arg3")))
+            (should (eq rc 0))
+            (should
+             (equal
+              (with-temp-buffer
+                (set-buffer-multibyte nil)
+                (insert-file-contents-literally output)
+                (buffer-substring-no-properties (point-min) (point-max)))
+              (unibyte-string ?a ?r ?g ?c ?= ?4 ?\n)))))
+      (ignore-errors (delete-file path))
+      (ignore-errors (delete-file output)))))
+
 (provide 'nelisp-crt0-test)
 
 ;;; nelisp-crt0-test.el ends here

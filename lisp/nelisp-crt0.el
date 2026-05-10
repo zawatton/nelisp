@@ -50,9 +50,56 @@
 ;;       b8 3c 00 00 00    ; mov    eax, 60      (SYS_exit)
 ;;       0f 05             ; syscall
 ;;
-;; Status (= Doc 94 §7 §94.a SHIPPED): x86_64 Linux only.  arm64
-;; (§94.b) and argv/envp/auxv unpack (§94.c) are deferred per Doc 94
-;; §7.2 / §7.3.
+;; Status (= Doc 94 §7 §94.a + §94.c SHIPPED): x86_64 Linux only.
+;; arm64 (§94.b) lives in `lisp/nelisp-crt0-arm64.el'.
+;;
+;; §94.c additions (= argv / envp / auxv unpacking):
+;;
+;;   `nelisp-crt0-x86_64-full-entry-bytes' (= 44 bytes, optional
+;;    rel32):
+;;       48 8b 3c 24       ; mov    rdi, [rsp]    (argc → 1st arg)
+;;       48 8d 74 24 08    ; lea    rsi, [rsp+8]  (argv → 2nd arg)
+;;       48 89 f9          ; mov    rcx, rdi      (argc copy)
+;;       48 ff c1          ; inc    rcx           (argc+1)
+;;       48 8d 14 ce       ; lea    rdx, [rsi+rcx*8] (envp → 3rd arg)
+;;       48 89 e5          ; mov    rbp, rsp      (save rsp)
+;;       48 83 e4 f0       ; and    rsp, -16      (16-byte align)
+;;       e8 RR RR RR RR    ; call   main          (rel32 placeholder)
+;;       48 89 ec          ; mov    rsp, rbp      (restore rsp)
+;;       48 89 c7          ; mov    rdi, rax      (exit status)
+;;       b8 3c 00 00 00    ; mov    eax, 60       (SYS_exit)
+;;       0f 05             ; syscall
+;;
+;;   `nelisp-crt0-x86_64-find-auxv-bytes' (= 16 bytes, callable,
+;;    rdi = envp ptr, returns auxv ptr in rax):
+;;       48 89 f8          ; mov    rax, rdi
+;;     L0:
+;;       48 8b 08          ; mov    rcx, [rax]
+;;       48 83 c0 08       ; add    rax, 8
+;;       48 85 c9          ; test   rcx, rcx
+;;       75 f4             ; jne    L0
+;;       c3                ; ret
+;;
+;;   `nelisp-crt0-x86_64-getauxval-bytes' (= 27 bytes, callable,
+;;    rdi = auxv ptr, rsi = type wanted, returns value in rax):
+;;     L0:
+;;       48 8b 07          ; mov    rax, [rdi]
+;;       48 85 c0          ; test   rax, rax
+;;       74 10             ; je     LNOT
+;;       48 39 f0          ; cmp    rax, rsi
+;;       74 06             ; je     LFOUND
+;;       48 83 c7 10       ; add    rdi, 16
+;;       eb ed             ; jmp    L0
+;;     LFOUND:
+;;       48 8b 47 08       ; mov    rax, [rdi+8]
+;;       c3                ; ret
+;;     LNOT:
+;;       31 c0             ; xor    eax, eax
+;;       c3                ; ret
+;;
+;; The §94.c `nelisp-crt0-emit-hello-with-argc' orchestrator wires
+;; the full-entry pattern into a self-contained ELF that prints
+;; `argc=<N>\\n' to stdout, exercising the argc unpack end-to-end.
 
 ;;; Code:
 
@@ -237,6 +284,224 @@ set) by `nelisp-elf-write-binary'."
                        :section 'text :bind 'global :type 'func)
                  (list :name "hello_msg" :value 0
                        :size msg-len :section 'rodata
+                       :bind 'local :type 'object))
+           :entry-sym "_start"))))
+
+;; ---- §94.c byte sequence constants (x86_64 Linux) ----
+
+(defconst nelisp-crt0--x86_64-full-entry-prologue
+  (unibyte-string
+   #x48 #x8b #x3c #x24                  ; mov    rdi, [rsp]   (argc)
+   #x48 #x8d #x74 #x24 #x08             ; lea    rsi, [rsp+8] (argv)
+   #x48 #x89 #xf9                       ; mov    rcx, rdi     (argc copy)
+   #x48 #xff #xc1                       ; inc    rcx          (argc+1)
+   #x48 #x8d #x14 #xce                  ; lea    rdx,         (envp =
+                                        ;                     [rsi+rcx*8])
+   #x48 #x89 #xe5                       ; mov    rbp, rsp     (save rsp)
+   #x48 #x83 #xe4 #xf0)                 ; and    rsp, -16     (align)
+  "Bytes for the §94.c full-entry prologue before `call main'.
+Length = 26 bytes.  Establishes the SysV ABI register state
+\(rdi=argc, rsi=argv, rdx=envp), saves rsp into rbp (= callee-save),
+then forces 16-byte stack alignment for the upcoming call.")
+
+(defconst nelisp-crt0--x86_64-full-entry-epilogue
+  (unibyte-string
+   #x48 #x89 #xec                       ; mov    rsp, rbp     (restore)
+   #x48 #x89 #xc7                       ; mov    rdi, rax     (exit code)
+   #xb8 #x3c #x00 #x00 #x00             ; mov    eax, 60      (SYS_exit)
+   #x0f #x05)                           ; syscall
+  "Bytes for the §94.c full-entry epilogue after `main' returns.
+Length = 13 bytes.  Restores rsp from rbp, hands main's rax to the
+exit syscall.")
+
+(defconst nelisp-crt0-x86_64-full-entry-prologue-size 26
+  "Length in bytes of the §94.c full-entry prologue (= 26).")
+
+(defconst nelisp-crt0-x86_64-full-entry-epilogue-size 13
+  "Length in bytes of the §94.c full-entry epilogue (= 13).")
+
+(defconst nelisp-crt0-x86_64-full-entry-size
+  (+ nelisp-crt0-x86_64-full-entry-prologue-size
+     nelisp-crt0-x86_64-call-size
+     nelisp-crt0-x86_64-full-entry-epilogue-size)
+  "Total length in bytes of the §94.c full-entry stub (= 44).")
+
+(defun nelisp-crt0-x86_64-full-entry-bytes (&optional call-rel32)
+  "Return bytes for the §94.c x86_64 Linux `_start' entry stub.
+
+Unlike `nelisp-crt0-x86_64-entry-bytes' (= §94.a, 23 bytes), the §94.c
+variant performs the full SysV AMD64 ABI process-entry handoff:
+  rdi ← argc          (= 1st arg per psABI §3.4.1)
+  rsi ← argv          (= 2nd arg, NULL-terminated pointer array)
+  rdx ← envp          (= 3rd arg, computed as argv + (argc+1)*8)
+  rbp ← rsp           (= callee-save, used to restore on return)
+  rsp &= -16          (= 16-byte align before `call')
+
+CALL-REL32 is the signed 32-bit displacement for the call to `main';
+when omitted or nil, four `00' bytes are emitted as a placeholder
+that a linker can patch later via `R_X86_64_PLT32'/`R_X86_64_PC32'.
+
+After main returns, the stub restores rsp from rbp and traps to the
+kernel via `mov rdi, rax; mov eax, 60; syscall' (= SYS_exit).
+
+Returns a unibyte string of exactly 44 bytes."
+  (concat nelisp-crt0--x86_64-full-entry-prologue
+          (unibyte-string #xe8)
+          (nelisp-crt0--encode-rel32 (or call-rel32 0))
+          nelisp-crt0--x86_64-full-entry-epilogue))
+
+(defun nelisp-crt0-x86_64-find-auxv-bytes ()
+  "Return bytes for a §94.c callable `find_auxv(envp)' helper.
+
+The emitted function expects rdi = envp pointer (= base of the
+NULL-terminated envp array as placed by the kernel), and returns
+rax = auxv pointer (= the byte immediately after envp's NULL
+terminator, where the kernel begins the ELF auxiliary vector).
+
+Clobbers rax + rcx (= caller-save per SysV) and falls through to
+`ret'.
+
+Returns a unibyte string of exactly 16 bytes."
+  (unibyte-string
+   #x48 #x89 #xf8                       ; mov  rax, rdi
+   ;; L0: scan envp[] until NULL.
+   #x48 #x8b #x08                       ; mov  rcx, [rax]
+   #x48 #x83 #xc0 #x08                  ; add  rax, 8
+   #x48 #x85 #xc9                       ; test rcx, rcx
+   #x75 #xf4                            ; jne  L0 (rel8 = -12)
+   #xc3))                               ; ret
+
+(defun nelisp-crt0-x86_64-getauxval-bytes ()
+  "Return bytes for a §94.c callable `getauxval(auxv, type)' helper.
+
+The emitted function expects rdi = auxv pointer, rsi = type tag (=
+one of `AT_*' constants, e.g. AT_RANDOM = 25, AT_PHDR = 3) and
+returns rax = the matching value, or 0 when the requested type is
+absent.  Iterates Elf64_auxv_t entries (= 16 bytes each: u64 type +
+u64 value) until matching type or AT_NULL.
+
+Clobbers rax + rdi (= caller-save) and falls through to `ret'.
+
+Returns a unibyte string of exactly 27 bytes."
+  (unibyte-string
+   ;; L0:
+   #x48 #x8b #x07                       ; mov  rax, [rdi]   (= type)
+   #x48 #x85 #xc0                       ; test rax, rax     (AT_NULL?)
+   #x74 #x10                            ; je   LNOT (rel8 = 16)
+   #x48 #x39 #xf0                       ; cmp  rax, rsi
+   #x74 #x06                            ; je   LFOUND (rel8 = 6)
+   #x48 #x83 #xc7 #x10                  ; add  rdi, 16
+   #xeb #xed                            ; jmp  L0 (rel8 = -19)
+   ;; LFOUND:
+   #x48 #x8b #x47 #x08                  ; mov  rax, [rdi+8] (= value)
+   #xc3                                 ; ret
+   ;; LNOT:
+   #x31 #xc0                            ; xor  eax, eax
+   #xc3))                               ; ret
+
+;; ---- §94.c hello-with-argc orchestrator ----
+
+(defun nelisp-crt0--hello-argc-emit-text (text-vaddr rodata-vaddr)
+  "Emit §94.c hello-with-argc .text bytes with a resolved RIP-relative load.
+TEXT-VADDR is the runtime virtual address of `_start' (= start of
+.text).  RODATA-VADDR is the runtime virtual address of the `argc='
+prefix buffer (= start of .rodata).
+
+Layout returned (= 108 bytes total).  The routine reads argc from
+[rsp], writes `argc=' via syscall write, formats argc as decimal
+ASCII (= div-by-10 loop on a stack scratch buffer), writes the
+digits + a trailing `\\n', and exits with status 0."
+  (let* (;; rel32 for `lea rsi, [rip+rel]' is relative to the
+         ;; instruction *after* the lea.  The lea opcode starts at
+         ;; offset 9 and is 7 bytes long, so the next-instruction
+         ;; address is text_vaddr + 16.
+         (next-after-lea (+ text-vaddr 16))
+         (rel32 (- rodata-vaddr next-after-lea)))
+    (concat
+     ;; --- save argc + write "argc=" ---
+     (unibyte-string #x48 #x8b #x1c #x24)              ; mov rbx,[rsp]
+     (unibyte-string #xbf #x01 #x00 #x00 #x00)         ; mov edi, 1
+     (unibyte-string #x48 #x8d #x35)                   ; lea rsi,[rip+
+     (nelisp-crt0--encode-rel32 rel32)                 ;   rel32]
+     (unibyte-string #xba #x05 #x00 #x00 #x00)         ; mov edx, 5
+     (unibyte-string #xb8 #x01 #x00 #x00 #x00)         ; mov eax, 1
+     (unibyte-string #x0f #x05)                        ; syscall
+     ;; --- convert argc → ASCII on a 32-byte stack scratch ---
+     (unibyte-string #x48 #x83 #xec #x20)              ; sub rsp, 32
+     (unibyte-string #x4c #x8d #x44 #x24 #x0f)         ; lea r8,[rsp+15]
+     (unibyte-string #x41 #xc6 #x00 #x0a)              ; mov [r8],'\n'
+     (unibyte-string #x49 #xff #xc8)                   ; dec r8
+     (unibyte-string #x48 #x89 #xd8)                   ; mov rax, rbx
+     (unibyte-string #xb9 #x0a #x00 #x00 #x00)         ; mov ecx, 10
+     ;; .digit_loop: (offset 52)
+     (unibyte-string #x31 #xd2)                        ; xor edx, edx
+     (unibyte-string #x48 #xf7 #xf1)                   ; div rcx
+     (unibyte-string #x80 #xc2 #x30)                   ; add dl, '0'
+     (unibyte-string #x41 #x88 #x10)                   ; mov [r8], dl
+     (unibyte-string #x49 #xff #xc8)                   ; dec r8
+     (unibyte-string #x48 #x85 #xc0)                   ; test rax, rax
+     (unibyte-string #x75 #xed)                        ; jne -19
+     ;; --- write digits + newline ---
+     (unibyte-string #x49 #x8d #x70 #x01)              ; lea rsi,[r8+1]
+     (unibyte-string #x48 #x8d #x54 #x24 #x10)         ; lea rdx,[rsp+16]
+     (unibyte-string #x48 #x29 #xf2)                   ; sub rdx, rsi
+     (unibyte-string #xbf #x01 #x00 #x00 #x00)         ; mov edi, 1
+     (unibyte-string #xb8 #x01 #x00 #x00 #x00)         ; mov eax, 1
+     (unibyte-string #x0f #x05)                        ; syscall
+     (unibyte-string #x48 #x83 #xc4 #x20)              ; add rsp, 32
+     ;; --- exit(0) ---
+     (unibyte-string #x31 #xff)                        ; xor edi, edi
+     (unibyte-string #xb8 #x3c #x00 #x00 #x00)         ; mov eax, 60
+     (unibyte-string #x0f #x05))))                     ; syscall
+
+(defconst nelisp-crt0--hello-argc-text-size 108
+  "Length in bytes of the §94.c hello-with-argc `_start' routine (= 108).
+Used by the orchestrator to compute the .rodata vaddr before
+emitting the RIP-relative displacement.")
+
+(defconst nelisp-crt0--hello-argc-prefix
+  (unibyte-string ?a ?r ?g ?c ?=)
+  "The `argc=' prefix bytes written by the hello-with-argc binary.
+Length = 5 (= `a' `r' `g' `c' `=').  The digits + newline are
+formatted on the stack at run time and written by a second `write(2)'
+syscall.")
+
+;;;###autoload
+(defun nelisp-crt0-emit-hello-with-argc (file-path)
+  "Emit a §94.c ELF64 binary to FILE-PATH that prints `argc=<N>\\n'.
+The produced binary, when exec'd on x86_64 Linux:
+  1. reads argc from the kernel-supplied stack at `[rsp]';
+  2. writes `argc=<N>\\n' (= where <N> is argc in decimal ASCII)
+     to stdout via two direct `write(2)' syscalls;
+  3. exits with status code 0 via a direct `exit(2)' syscall.
+No libc, no dynamic loader, no Rust runtime is involved at run time.
+
+This demonstrates the §94.c argv-stack unpacking end-to-end: e.g.
+`./bin' prints `argc=1', `./bin a b c' prints `argc=4'.
+
+Returns FILE-PATH.  The file is created with mode #o755 by
+`nelisp-elf-write-binary'."
+  (let* ((vaddr-base #x400000)
+         (text-off  (+ 64 56))           ; = 0x78
+         (text-vaddr (+ vaddr-base text-off))
+         (prefix-len (length nelisp-crt0--hello-argc-prefix))
+         (rodata-off (+ text-off nelisp-crt0--hello-argc-text-size))
+         (rodata-vaddr (+ vaddr-base rodata-off))
+         (text-bytes (nelisp-crt0--hello-argc-emit-text
+                      text-vaddr rodata-vaddr)))
+    (unless (= (length text-bytes) nelisp-crt0--hello-argc-text-size)
+      (error "nelisp-crt0: hello-argc .text drift (got %d expected %d)"
+             (length text-bytes) nelisp-crt0--hello-argc-text-size))
+    (nelisp-elf-write-binary
+     file-path
+     (list :text  text-bytes
+           :rodata nelisp-crt0--hello-argc-prefix
+           :symbols
+           (list (list :name "_start" :value 0
+                       :size nelisp-crt0--hello-argc-text-size
+                       :section 'text :bind 'global :type 'func)
+                 (list :name "argc_prefix" :value 0
+                       :size prefix-len :section 'rodata
                        :bind 'local :type 'object))
            :entry-sym "_start"))))
 

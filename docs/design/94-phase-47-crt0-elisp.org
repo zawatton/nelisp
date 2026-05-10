@@ -4,11 +4,11 @@
 
 * Status
 
-- *State*: §94.a + §94.b SHIPPED (2026-05-11, branches
-  =agent-doc-94a-impl= / =agent-doc-94b-impl=) + DRAFT (= spike,
-  implementation-ready 化のための design doc。Doc 85 §3.4 / §5.1 で
-  「crt0 elisp ~150 LOC で =-150 Rust=、ROI 1:1」とした 5 component 中
-  の 1 本)
+- *State*: §94.a + §94.b + §94.c SHIPPED (2026-05-11, branches
+  =agent-doc-94a-impl= / =agent-doc-94b-impl= / =agent-doc-94c-impl=)
+  + DRAFT (= spike, implementation-ready 化のための design doc。Doc
+  85 §3.4 / §5.1 で「crt0 elisp ~150 LOC で =-150 Rust=、ROI 1:1」と
+  した 5 component 中の 1 本)
 - *§94.a SHIPPED*: =lisp/nelisp-crt0.el= (~95 LOC) + =test/nelisp-crt0-
   test.el= (20 ert) — x86_64 Linux entry stub (= 23 bytes) + callable
   =write(1,buf,len)= stub (= 19 bytes) + =exit(rdi)= stub (= 7 bytes) +
@@ -32,7 +32,23 @@
   =e_machine= bytes at file offset 0x12 in place. Live exec gated on
   =aarch64-linux= host (= skipped on x86_64 CI without qemu binfmt).
   Self-contained (= no Doc 92 / Doc 93 dependency)
-- *§94.c DEFERRED*: argv / envp / auxv unpacking (= Doc 94 §7.3)
+- *§94.c SHIPPED*: =lisp/nelisp-crt0.el= (+~70 LOC code, +~115 LOC
+  docstrings) + =test/nelisp-crt0-test.el= (+15 ert) — x86_64 Linux
+  full-entry stub (= 44 bytes = =mov rdi,[rsp]= / =lea rsi,[rsp+8]= /
+  =mov rcx,rdi= / =inc rcx= / =lea rdx,[rsi+rcx*8]= / =mov rbp,rsp= /
+  =and rsp,-16= / =call main= / =mov rsp,rbp= / =mov rdi,rax= / =mov
+  eax,60= / =syscall=, rdi=argc, rsi=argv, rdx=envp per SysV psABI
+  §3.4.1) + callable =find_auxv(envp)= helper (= 16 bytes, scans
+  envp[] past its NULL terminator to locate auxv start) + callable
+  =getauxval(auxv, type)= helper (= 27 bytes, iterates Elf64_auxv_t
+  pairs returning value or 0 on AT_NULL) + integrated
+  =nelisp-crt0-emit-hello-with-argc= orchestrator producing a binary
+  that prints =argc=<N>\n= (= div-by-10 ASCII formatter on a 32-byte
+  stack scratch, two =write(2)= syscalls). End-to-end smoke:
+  =/tmp/nelisp-argc-test= prints =argc=1=, =/tmp/nelisp-argc-test a b
+  c= prints =argc=4=. §94.a public API preserved (= old
+  =nelisp-crt0-x86_64-entry-bytes= still emits 23 bytes). Self-
+  contained (= no Doc 92 / Doc 93 dependency)
 - *Parent*: Doc 85 (= phase-47-feasibility-spike.org §3.4 / §5.1 / §6.1)
 - *Sibling*: Doc 91 (ELF writer, DRAFT SHIPPED), Doc 92 (assembler), Doc
   93 (static linker + syscall inline), Doc 95 (Sexp DSL, DRAFT SHIPPED)
@@ -672,20 +688,30 @@ gate: byte-pattern ert 36/37 pass + =readelf -h= が =Machine: AArch64=
 "hello\n" 出力 + exit 0) は aarch64 host = qemu-aarch64 で確認待ち
 (= skip-unless で gate)
 
-** §7.3 §94.c — argv / envp / auxv unpacking
+** §7.3 §94.c — argv / envp / auxv unpacking (SHIPPED 2026-05-11)
 
 scope:
-- =nelisp-crt0--unpack-stack= の full impl (= §2.3、~40 LOC)
-- argv pointer table を main の =rsi= に load
-- envp 末尾の NULL terminator を超えて auxv pointer を =r10= or 第 4
-  arg slot に渡す option
-- auxv reader stub (= optional、=AT_PAGESZ= 等を NeLisp runtime に
-  渡したい場合のみ)
+- =nelisp-crt0--unpack-stack= の full impl (= §2.3、~40 LOC) — shipped
+  as =nelisp-crt0-x86_64-full-entry-bytes= (= 44-byte stub combining
+  argc/argv/envp register setup + 16-byte stack alignment + call
+  +exit, see top-of-file commentary for the byte-by-byte map)
+- argv pointer table を main の =rsi= に load — shipped (= byte 4..8
+  of full-entry-bytes)
+- envp 末尾の NULL terminator を超えて auxv pointer を取り出す helper
+  — shipped as =nelisp-crt0-x86_64-find-auxv-bytes= (= 16 bytes,
+  callable, scans envp[] until NULL then returns next 8-byte
+  boundary, the auxv start)
+- auxv reader stub (= =AT_PAGESZ= / =AT_RANDOM= 等を引きたい場合) —
+  shipped as =nelisp-crt0-x86_64-getauxval-bytes= (= 27 bytes,
+  callable, iterates Elf64_auxv_t pairs returning matching value
+  or 0)
 
-LOC: ~30 elisp (auxv stub 込)
-工数: 1-2 day
-gate: =./nelisp eval '(message "%S" command-line-args)'= が argv を
-正しく引いてくる、=getenv= 等価 builtin が envp 経由で動く
+LOC: +70 elisp (+~115 docstring) + 15 ert
+工数: 1 day (= 2026-05-11)
+gate: =nelisp-crt0-emit-hello-with-argc= が =argc=1= / =argc=4= 等を
+正しく出力、stack alignment ert (= =and rsp,-16= byte pattern) + 15
+new byte-pattern + smoke ert pass、§94.a の 23-byte entry-bytes 公開
+API 不変
 
 ** §7.4 sub-stage 合計
 
