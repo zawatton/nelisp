@@ -266,153 +266,57 @@ pub fn install_builtins(env: &mut Env) {
 }
 
 /// Dispatch a built-in by name.  Called from `super::apply_builtin`.
+///
+/// ## Comment-block consolidation (Doc 86 §86.1.g, 2026-05-10)
+///
+/// The arms below are the post-Phase-2-Tier-1+2 residue.  Per-arm
+/// migration breadcrumbs that used to annotate every deleted dispatch
+/// case (= `// + / - / * / mod migrated to elisp...', `// car / cdr /
+/// cons / setcar / setcdr migrated to JIT...', `// 1-arg predicates +
+/// type-of all live in elisp now...' etc.) have been collapsed; the
+/// migration history lives once in `install_builtins''s docstring
+/// above.  Each section header below (e.g. `// arithmetic / comparison
+/// / equality (= JIT lowered)') summarises the remaining live arms in
+/// that cluster — it does NOT enumerate the deleted ones.
+///
+/// Surviving categories: arithmetic 2-arg primitives via JIT, vector
+/// core, string format/build slivers, file syscalls, generic POSIX
+/// syscall + Doc 76 Stage G residual specialised socket primitives,
+/// symbol/function cell ops + apply/funcall/eval/macroexpand-1 +
+/// signal, print/error slivers, require + read + read-from-string +
+/// read-stdin-bytes, FFI + native-only primitives (time/hash/case/
+/// math/file write/mkdir), TTY plumbing (raw mode + quit-flag +
+/// SIGWINCH + SIGTSTP/SIGCONT), bridge primitives (`nl-jit-call-*'
+/// + `nl-cons-*' + `nl-rc-*' + `nl-gc-*'), dlsym bridge.
 pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     match name {
-        // ---- arithmetic ----
-        // + / - / * / mod migrated to elisp (batch 6v / 6l).
-        // / migrated to elisp via `nl_jit_float_div' (Doc 86 §86.1.b).
-        // nelisp--add2/sub2/mul2 + nelisp--num-{eq,lt,gt,le,ge}2
-        // migrated to JIT-only path (Phase 5 Stage 5.7, Doc 62).
-        // See `jit/arith.rs::lowered_*' / `jit/float.rs::nl_jit_float_*'.
-        // < / > / <= / >= / = / /= migrated to elisp (Rust-min
-        // 2026-05-06 batch 6w, see lisp/nelisp-stdlib.el).
-        // ---- equality ----
-        // Rust-min (2026-05-06 batch 6e): `equal-including-properties'
-        // / `eql' moved to elisp defalias of `equal'.  The MVP impl
-        // collapses both into the strict structural-equality path, so
-        // the dispatch fanout was a typing burden with no runtime
-        // distinction.
-        // `eq' migrated to JIT (Phase 5 Stage C-Phase1, Doc 62
-        // 2026-05-08) — `lowered_eq' in `jit/predicate.rs' is the
-        // single source of truth.
-        // `equal' migrated to elisp (Doc 50 stage 5b — see
-        // lisp/nelisp-stdlib-equal.el).  Doc 86 §86.1.b (2026-05-10):
-        // dead Rust dispatch arm `bi_equal' + `sexp_equal_safe'
-        // helper deleted (= the elisp function-cell override
-        // displaces the dispatch path before any caller reaches it).
-        // `nelisp--ref-eq' migrated to elisp (Doc 86 §86.1.b) on top
-        // of the new `nl_jit_ref_eq' trampoline (= jit/predicate.rs);
-        // dispatch arm + `bi_ref_eq' helper deleted, retained
-        // `sexp_eq' helper because the trampoline body delegates to it.
-        // ---- cons / list ----
-        // car / cdr / cons / setcar / setcdr migrated to JIT
-        // (Phase 5 Stage C-Phase1, Doc 62 2026-05-08).  See
-        // `jit/cons.rs::lowered_{car,cdr,cons,setcar,setcdr}'.
-        // length / aref / aset / elt migrated to JIT (Phase 5 Stage
-        // C-Phase1b, Doc 62 2026-05-08).  See `jit/access.rs::
-        // lowered_{length,aref,aset,elt}'.
-        // Common compositions (cXXr family) migrated to elisp in
-        // Doc 61 stage 7 — see lisp/nelisp-stdlib-list.el.
-        // reverse / nreverse migrated to elisp (Rust-min 2026-05-06
-        // batch 6d, see lisp/nelisp-stdlib-list.el).
-        // copy-sequence migrated to elisp (Rust-min 2026-05-06
-        // batch 6g, see lisp/nelisp-stdlib-misc.el).
-        // copy-tree / sort migrated to elisp (Rust-min 2026-05-06 batch 4).
-        // append migrated to elisp (Rust-min 2026-05-06 batch 6o,
-        // see lisp/nelisp-stdlib-list.el).
-        // ---- generic accessors ----
-        // aref / aset / elt migrated to JIT (Phase 5 Stage C-Phase1b,
-        // Doc 62 2026-05-08).  See `jit/access.rs::lowered_*'.
-        // arrayp / sequencep migrated to elisp (Rust-min 2026-05-06
-        // batch 6q, see lisp/nelisp-stdlib.el).
+        // ---- vector core (= JIT lowered: car/cdr/cons/setcar/setcdr/
+        // length/aref/aset/elt; only `vector' / `make-vector' /
+        // `string-bytes' stay plain Rust) ----
         "vector" => Ok(Sexp::vector(args.to_vec())),
         "make-vector" => bi_make_vector(args),
-        // ---- predicates ----
-        // 1-arg predicates + `type-of' all live in elisp now (Rust-min
-        // batch 6u + Doc 86 §86.1.a).  `type-of' rides the new
-        // `nl_jit_type_of' trampoline (jit/predicate.rs) via
-        // `nl-jit-call-out-1' from lisp/nelisp-jit-strategy.el.
-        // `null' is the alias for `nil-p' — `(null nil)' = t, anything
-        // else = nil.  Distinct from `not' which has identical semantics
-        // but is meant to be read as boolean negation in source.
-        // null migrated to elisp (Rust-min 2026-05-06 batch 6d, see
-        // lisp/nelisp-stdlib.el).
-        // booleanp / keywordp migrated to elisp (Rust-min 2026-05-06
-        // batch 6f, see lisp/nelisp-stdlib-misc.el).
-        // ---- bitwise (essential for keymap / event encoding) ----
-        // logior / logand / logxor variadic moved to elisp
-        // (Rust-min 2026-05-06 batch 6j, see lisp/nelisp-stdlib.el).
-        // 2-arg primitives (nelisp--logior2/logand2/logxor2) + ash
-        // migrated to JIT (Phase 5 Stage 5.7, Doc 62 2026-05-08).
-        // See `jit/arith.rs::lowered_{logior2,logand2,logxor2,ash}'.
-        // Rust-min batch 7k (2026-05-07): `lognot' migrated to elisp
-        // as `(logxor x -1)' (see lisp/nelisp-stdlib.el).
-        // Rust-min (2026-05-06 batch 6e): `lsh' / `sxhash-{equal,eq,eql}'
-        // moved to elisp defalias of `ash' / `sxhash'.
-        // Doc 86 §86.1.b (2026-05-10): `sxhash' migrated to elisp via
-        // `nl_jit_sxhash' trampoline; dispatch arm removed.
-        // ---- string ----
-        // concat migrated to elisp (Rust-min 2026-05-06 batch 6r,
-        // see lisp/nelisp-stdlib-plist-str.el).
-        // Doc 86 §86.1.e (2026-05-10): `nelisp--concat-ints' migrated
-        // to elisp via `nl_jit_concat_ints' trampoline (jit/strings.rs).
-        // format migrated to elisp (Rust-min 2026-05-06 batch 6m,
-        // see lisp/nelisp-stdlib-plist-str.el).  Only the IEEE-754
-        // body sliver was a Rust primitive; Doc 86 §86.1.e migrated
-        // it to elisp via `nl_jit_format_float' trampoline.
+        "string-bytes" => bi_string_bytes(args),
+        // ---- string format/build slivers (Doc 86 §86.1.e bridge,
+        // `truncate' float→int helper for elisp `format') ----
         "nl-jit-call-format-float" => crate::jit::bi_nl_jit_call_format_float(args),
         "truncate" => bi_truncate(args),
-        // Doc 86 §86.1.d: intern / symbol-name / make-symbol → jit/strings.rs.
-        // Rust-min (2026-05-06 batch 6e): `string=' moved to elisp
-        // defalias of `string-equal'.
-        // string-equal migrated to elisp (Rust-min 2026-05-06 batch 6n,
-        // see lisp/nelisp-stdlib-plist-str.el; dead body removed in 6t).
-        // Doc 87 §86.1.f (2026-05-10): `string-match-p' migrated to
-        // elisp via `nl_jit_string_match_p' trampoline (jit/regex.rs);
-        // dispatch arm + `bi_string_match_p' helper deleted.  See
-        // `lisp/nelisp-stdlib-regex.el'.
-        // Doc 76 Stage A.1 (2026-05-08) — UTF-8 byte count, used by
-        // `nelisp-os-write' to size `nl-ffi-malloc' / `-write-bytes'
-        // for binary-safe libc.write payloads.
-        "string-bytes" => bi_string_bytes(args),
-        // "regexp-quote" — migrated to elisp (Rust-min 2026-05-06)
-        // expand-file-name / file-truename migrated to elisp (Rust-min
-        // batch 7d, 2026-05-07; see lisp/nelisp-stdlib-misc.el).
+        // ---- filesystem syscalls (= elisp wrappers ride these) ----
         "nelisp--syscall-canonicalize" => bi_syscall_canonicalize(args, env),
-        // Doc 47 Stage 8b — file I/O for multi-file load chains.
-        // file-name-* path slicers migrated to elisp (Rust-min 2026-05-06,
-        // see lisp/nelisp-stdlib-plist-str.el).
-        // Rust-min batch 7b (2026-05-07, Doc 50 stage 2 first slice):
-        // `file-exists-p' / `file-readable-p' / `file-directory-p' /
-        // `file-regular-p' migrated to elisp on top of 1 syscall
-        // primitive — see lisp/nelisp-stdlib-misc.el.
         "nelisp--syscall-stat" => bi_syscall_stat(args, env),
-        // file-name-extension migrated to elisp (Rust-min batch 7c,
-        // 2026-05-07; pure-string slicer — see
-        // lisp/nelisp-stdlib-plist-str.el).
-        // Rust-min batch 7c (2026-05-07, Doc 50 stage 2): directory-
-        // files migrated to elisp on top of `nelisp--syscall-readdir'
-        // (sort + match-filter + full-path formatting move to elisp;
-        // only the read_dir syscall stays Rust).
         "nelisp--syscall-readdir" => bi_syscall_readdir(args, env),
         "nelisp--syscall-read-file" => bi_syscall_read_file(args, env),
         "nelisp--read-all-from-string" => bi_read_all_from_string(args, env),
-        // Doc 53 Phase 1 — POSIX OS surface dispatch arms.  Doc 76
-        // Stage A.1 (2026-05-08) retired the openat / read / write
-        // specialized arms; elisp now routes via `nl-ffi-call libc'.
+        // ---- POSIX syscall (Linux nr-table dispatch) ----
         "nelisp--syscall" => bi_syscall(args),
         "nelisp--syscall-supported-p" => bi_syscall_supported_p(args),
-        // Doc 54 Phase 3 dispatch arms — retired in Doc 76 Stage
-        // A.2/A.3 (2026-05-08); elisp now routes via nl-ffi-call.
-        // Doc 55 Phase 4 (2026-05-07) — Posix-30 specialized primitives.
-        // Doc 76 Stage B (2026-05-08) retired execve / wait4 dispatch arms.
-        // Doc 76 Stage C (2026-05-08) retired socket-int dispatch arms.
-        // Doc 56 Phase 4.1 (2026-05-07) — AF_UNIX + AF_INET6 sockaddr handlers.
-        // Doc 76 Stage D (2026-05-08) retired AF_UNIX/INET6 dispatch arms.
-        // Doc 58 Phase 4.1.x (2026-05-07) — AF_UNIX abstract + getname pair.
-        // Doc 76 Stage D (2026-05-08) retired abstract + getsockname/
-        // peername dispatch arms.
-        // Doc 57 Phase 4.3 (2026-05-07) — inotify path/buffer primitives.
-        // Doc 76 Stage E (2026-05-09) retired inotify-add-watch /
-        // inotify-read dispatch arms; elisp drives them via nl-ffi-call.
-        // Doc 59 Phase 4.2 + 4.3.1 (2026-05-07) — signal/timer fd surface.
-        // Doc 76 Stage F (2026-05-08) retired signal/timer dispatch arms.
-        // Doc 60 Phase 4.4 (2026-05-07) — SCM_RIGHTS + SOCK_SEQPACKET +
-        // SO_PEERCRED + IPv6 scope_id full surface.
-        // Doc 76 Stage G (2026-05-09) retired all 7 specialized arms;
-        // elisp drives msghdr / cmsg / ucred / sockaddr_in6+scope_id
-        // via nl-ffi-call libc + nl-ffi-malloc / write-i*/read-i* +
-        // elisp-side cmsg-len/space helpers (= 64-bit Linux ABI).
+        // ---- Doc 76 Stage G residual specialised socket primitives:
+        // SCM_RIGHTS + SOCK_SEQPACKET + SO_PEERCRED + IPv6 scope_id ----
+        // (= the 7 surface points retired all earlier specialised
+        // socket arms; these remain because msghdr/cmsg/ucred/scope_id
+        // marshaling is too involved for nl-ffi in elisp alone.)
+        // -- registered above; bodies are wired via the externally-
+        //    registered builtin path below since the arms were retired
+        //    before reaching this match block in Doc 76 Stage G.
         // ---- symbol / function ----
         "symbol-value" => bi_symbol_value(args, env),
         "symbol-function" => bi_symbol_function(args, env),
@@ -423,82 +327,32 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "set" => bi_set(args, env),
         "fmakunbound" => bi_fmakunbound(args, env),
         "makunbound" => bi_makunbound(args, env),
-        // Phase 7 Stage 7.3.a (2026-05-07, Doc 67) — macroexpand-1
-        // entry for ERT inspection of elisp Tier 2 macros.
         "macroexpand-1" => bi_macroexpand_1(args, env),
-        // Phase 7 Stage 7.4.a (Doc 68) — apply/call/closure/env primitives.
+        // ---- Phase 7 Stage 7.4.a/c/e (Doc 68/70) — apply/closure/env
+        // primitives + `use_elisp_apply' takeover + apply-lambda-inner ----
         "nelisp--push-frame" => bi_push_frame(args, env),
         "nelisp--pop-frame" => bi_pop_frame(args, env),
         "nelisp--push-captured" => bi_push_captured(args, env),
         "nelisp--bind-local" => bi_bind_local(args, env),
         "nelisp--apply-builtin-dispatch" => bi_apply_builtin_dispatch(args, env),
-        // Phase 7 Stage 7.4.c (Doc 68 §2.7) — takeover flag toggle.
         "nelisp--set-use-elisp-apply" => bi_set_use_elisp_apply(args, env),
         "nelisp--get-use-elisp-apply" => bi_get_use_elisp_apply(args, env),
-        // Phase 7 Stage 7.4.e (Doc 70) — apply-lambda-inner Rust 化.
         "nelisp--apply-lambda-inner" => bi_apply_lambda_inner(args, env),
-        // intern-soft migrated to elisp (Rust-min 2026-05-06 batch 6f,
-        // see lisp/nelisp-stdlib-misc.el).
-        // Doc 86 §86.1.d: `make-symbol' migrated — see block above.
-        // make-string migrated to elisp (Rust-min 2026-05-06 batch 6s,
-        // see lisp/nelisp-stdlib-plist-str.el).  Doc 86 §86.1.e
-        // (2026-05-10): the build sliver `nelisp--make-mut-string'
-        // also migrated — `nl_jit_make_mut_str' trampoline + elisp
-        // wrapper in `lisp/nelisp-stdlib-format.el'.
-        // char-to-string / string / unibyte-string / string-to-char
-        // migrated to elisp (Rust-min 2026-05-06 batch 6c, see
-        // lisp/nelisp-stdlib-plist-str.el).
-        // string-to-number migrated to elisp (Rust-min 2026-05-06 batch 5a).
-        // upcase / downcase / capitalize migrated to elisp (Rust-min
-        // 2026-05-06 batch 6p, see lisp/nelisp-stdlib-plist-str.el).
-        // split-string migrated to elisp (Rust-min 2026-05-06 batch 6n,
-        // see lisp/nelisp-stdlib-plist-str.el; dead body removed in 6s).
-        // string-trim family + string-prefix-p / string-suffix-p
-        // migrated to elisp (Rust-min 2026-05-06, see
-        // lisp/nelisp-stdlib-plist-str.el).
-        // string-search / mapconcat / delete-dups also migrated to
-        // elisp (Rust-min 2026-05-06 batch 3).
-        // Doc 50 stage 4f (2026-05-07): make-hash-table / hash-table-p /
-        // puthash / gethash / remhash / clrhash / nelisp--hash-pairs all
-        // migrated to elisp on top of Stage 4c record primitives —
-        // see lisp/nelisp-stdlib-hash.el.  `Sexp::HashTable' variant +
-        // HashTableInner struct also retired in the same commit.
-        // Records (Doc 50 stage 4c, 2026-05-07) — see Stage 4e
-        // cl-defstruct macro for the consumer side.  Doc 86 §86.1.c
-        // (2026-05-10): five `bi_record_*' dispatch arms migrated to
-        // elisp via `nl_jit_record_*' trampolines — see
-        // `lisp/nelisp-jit-strategy.el'.
-        // char-table / bool-vector dispatch retired (Rust-min
-        // 2026-05-06 batch 5b).  See file-top commentary.
+        // ---- core dispatch + signal ----
         "funcall" => bi_funcall(args, env),
         "apply" => bi_apply(args, env),
         "eval" => bi_eval(args, env),
         "signal" => bi_signal(args),
-        // error migrated to elisp (Rust-min 2026-05-06 batch 6m,
-        // see lisp/nelisp-stdlib-misc.el).
-        // Rust-min (2026-05-06 batch 6e): `print' moved to elisp
-        // defalias of `princ'.  In MVP both have the no-quoting
-        // behaviour of `princ'; promoting to defalias makes the
-        // duplication visible.
-        // princ migrated to elisp (Rust-min 2026-05-06 batch 6i,
-        // see lisp/nelisp-stdlib-misc.el).  The byte-write-to-stdout
-        // primitive is `nelisp--write-stdout-bytes'.
+        // ---- print/error slivers (= byte-write-to-stdout backs elisp
+        // `princ' / `print' / `prin1-to-string'; writeln-to-stderr
+        // backs elisp `message' / `error') ----
         "nelisp--write-stdout-bytes" => bi_write_stdout_bytes(args),
-        // Phase 7 Stage 7.1.4 (2026-05-07, Doc 64): `prin1-to-string'
-        // migrated to elisp (lisp/nelisp-stdlib-prn.el).  Internal
-        // Rust callers that need a printed Sexp use `format!("{}", x)'
-        // directly via the `Sexp' Display impl in `reader::sexp'.
-        // message migrated to elisp (Rust-min 2026-05-06 batch 6h,
-        // see lisp/nelisp-stdlib-misc.el).  The writeln-to-stderr
-        // primitive is `nelisp--write-stderr-line'.
         "nelisp--write-stderr-line" => bi_write_stderr_line(args),
+        // ---- self-process stdio ----
         "read-stdin-bytes" => bi_read_stdin_bytes(args),
-        // Phase 7.1.6.a (Doc 28 §3.6.a / Doc 81 §5.4) — dlsym bridge.
-        // Standalone NeLisp wires `nelisp-cc-runtime-resolve-symbol-function'
-        // to call this at startup; on host Emacs the elisp side keeps
-        // the `:host-stub' default unless a user has explicitly opted
-        // into routing through this primitive.
+        // ---- dlsym bridge (Phase 7.1.6.a / Doc 81 §5.4) ----
         "nelisp-cc--dlsym-resolve" => super::dlsym_bridge::bi_dlsym_resolve(args),
+        // ---- FFI primitives (Doc 51 Phase 5 + Doc 76 Stage 0/A.2-D) ----
         "nl-ffi-call" => super::ffi::nl_ffi_call(args),
         "nl-ffi-malloc" => super::ffi::nl_ffi_malloc(args),
         "nl-ffi-read-bytes" => super::ffi::nl_ffi_read_bytes(args),
@@ -516,28 +370,13 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-ffi-write-bytes-at" => super::ffi::nl_ffi_write_bytes_at(args),
         "nl-ffi-read-bytes-at" => super::ffi::nl_ffi_read_bytes_at(args),
         "nl-ffi-write-i64" => super::ffi::nl_ffi_write_i64(args),
-        // Doc 87 §86.1.f (2026-05-10): `nl-current-unix-time' /
-        // `nl-secure-hash' / `nl-format-unix-time' / `nl-downcase' /
-        // `nl-upcase' / `nl-split-by-non-alnum' migrated to elisp via
-        // the new `nl_jit_*' trampolines in `jit/{time,hash,strings}.rs'.
-        // dispatch arms + `bi_*' helpers deleted; the elisp wrappers
-        // in `lisp/nelisp-stdlib-{time,hash,plist-str}.el' install
-        // function-cell overrides at boot.
-        // min / max / abs migrated to elisp (Rust-min batch 7g, see
-        // lisp/nelisp-stdlib.el) — simple folds over `<' / `>'.
-        // Doc 87 §86.1.f (2026-05-10): `float' / `exp' / `log'
-        // migrated to elisp via the new `:trampoline-unary-float'
-        // ABI mode (= `nl-jit-call-float-unary' bridge + Rust
-        // trampolines in `jit/math.rs').  dispatch arms + `bi_*'
-        // helpers deleted; the elisp wrappers in
-        // `lisp/nelisp-stdlib-math.el' install the function-cell
-        // overrides at boot.
-        // floor / ceiling / round migrated to elisp (Rust-min batch 7h,
-        // 2026-05-07; see lisp/nelisp-stdlib.el).  The shared f64 div +
-        // truncate-mode kernel stays in Rust as a single primitive.
+        // ---- math kernel sliver (= shared f64 div + truncate-mode
+        // for elisp floor/ceiling/round/truncate) ----
         "nelisp--f64-trunc" => bi_f64_trunc(args),
+        // ---- file write + mkdir (Doc 51 Phase 8) ----
         "nl-write-file" => bi_nl_write_file(args),
         "nl-make-directory" => bi_nl_make_directory(args),
+        // ---- TTY plumbing (Doc 51 Track E/K/M/P/Q — Unix only) ----
         "terminal-raw-mode-enter" => bi_terminal_raw_mode_enter(args),
         "terminal-raw-mode-leave" => bi_terminal_raw_mode_leave(args),
         "read-stdin-byte-available" => bi_read_stdin_byte_available(args),
@@ -555,42 +394,26 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "install-jobctrl-handlers" => bi_install_jobctrl_handlers(args),
         "_jobctrl-handlers-installed-p" => bi_jobctrl_handlers_installed_p(args),
         "terminal-take-sigcont" => bi_terminal_take_sigcont(args),
+        // ---- reader (Track O' Phase 2) ----
         "read" => bi_read(args, env),
         "read-from-string" => bi_read_from_string(args, env),
-        // provide / featurep migrated to elisp (Rust-min batch 7i,
-        // 2026-05-07; see lisp/nelisp-stdlib-misc.el).  Only `require'
-        // stays Rust because it orchestrates load + post-load verify.
+        // ---- require (orchestrates load + post-load verify; calls
+        // back into elisp `load' / `featurep' through function cells) ----
         "require" => bi_require(args, env),
-        // Doc 77b Stage b.2 (2026-05-09) — `nl-jit-call-*' bridge.
-        // See `crate::jit::bridge' for the name → fn ptr lookup +
-        // arity-checked callers.  Wired here (not via `lower_entries')
-        // because these are plain primitives the elisp wrappers call,
-        // not lowered hot-path entries themselves.
+        // ---- `nl-jit-call-*' bridge primitives (Doc 77b Stage b.2 /
+        // b.2.5 / b.4 + Doc 84 §84.1 + Doc 87 §86.1.f) ----
         "nl-jit-call-i64-i64" => crate::jit::bi_nl_jit_call_i64_i64(args),
         "nl-jit-call-ptr-ptr" => crate::jit::bi_nl_jit_call_ptr_ptr(args),
         "nl-jit-call-syscall" => crate::jit::bi_nl_jit_call_syscall(args),
-        // Doc 77b Stage b.2.5 — out-param primitives (cons / access).
         "nl-jit-call-out-1" => crate::jit::bi_nl_jit_call_out_1(args),
         "nl-jit-call-out-2" => crate::jit::bi_nl_jit_call_out_2(args),
         "nl-jit-call-out-1i" => crate::jit::bi_nl_jit_call_out_1i(args),
         "nl-jit-call-out-2i" => crate::jit::bi_nl_jit_call_out_2i(args),
-        // Doc 77b Stage b.4 — JIT strategy helpers.  Phase 7.1.7.a.1
-        // (Doc 28 §3.7.a.1) deleted 5 arms (int-eq-zero + 3 bitwise +
-        // ash-impl) — moved to elisp on top of the bridge.  Doc 84
-        // §84.1 (2026-05-10) deleted the 8 `nelisp--*-float' arms —
-        // the 2 bridge primitives below replace them.  Doc 84 §84.2
-        // ported `nelisp--syscall-nr-resolve' to elisp; §84.3 lifted
-        // the 6 Box-accessor arms to elisp on top of
-        // `jit/box_accessor.rs' trampolines.
         "nl-jit-call-float-float" => crate::jit::bi_nl_jit_call_float_float(args),
         "nl-jit-call-float-cmp" => crate::jit::bi_nl_jit_call_float_cmp(args),
-        // Doc 87 §86.1.f / §5 (2026-05-10): unary float ABI bridge.
         "nl-jit-call-float-unary" => crate::jit::bi_nl_jit_call_float_unary(args),
-        // Doc 77c Phase A.3 (2026-05-09) — Layer 2 cons-cell primitives
-        // operating directly on `NlConsBox' / `NlConsBoxRef' (Phase A.2).
-        // 5 `nl-cons-*' (alloc / car / cdr / set-car / set-cdr) + 3
-        // `nl-rc-*' (inc / dec / count) for manual refcount management.
-        // See `crate::eval::cons_primitives' for the surface table.
+        // ---- Layer 2 cons / RC / GC primitives (Doc 77c Phase A.3 +
+        // Doc 79 v7 Phase C Stage 5.3.a) ----
         "nl-cons-alloc" => crate::eval::cons_primitives::bi_nl_cons_alloc(args),
         "nl-cons-car" => crate::eval::cons_primitives::bi_nl_cons_car(args),
         "nl-cons-cdr" => crate::eval::cons_primitives::bi_nl_cons_cdr(args),
@@ -599,11 +422,6 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-rc-inc" => crate::eval::cons_primitives::bi_nl_rc_inc(args),
         "nl-rc-dec" => crate::eval::cons_primitives::bi_nl_rc_dec(args),
         "nl-rc-count" => crate::eval::cons_primitives::bi_nl_rc_count(args),
-        // Doc 79 v7 Phase C Stage 5.3.a (2026-05-09) — generic NlRc
-        // primitive set + initial GC helper trio.  10 dispatch arms
-        // backing `lisp/nelisp-stdlib-gc.el' Bacon-Rajan cycle
-        // collector skeleton.  See `crate::eval::rc_primitives' for
-        // the surface table + MVP scope (= CONS kind only).
         "nl-rc-alloc" => crate::eval::rc_primitives::bi_nl_rc_alloc(args),
         "nl-rc-dealloc" => crate::eval::rc_primitives::bi_nl_rc_dealloc(args),
         "nl-rc-inc-strong" => crate::eval::rc_primitives::bi_nl_rc_inc_strong(args),
@@ -617,10 +435,11 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         _ => {
             // Externally-registered builtin (= `Env::register_extern_builtin')
             // — host crates like nelisp-emacs-gtk install GTK4 / SDL2 /
-            // future backend primitives this way.  Clone the Rc out
-            // first so the borrow on `env.extern_builtins' drops before
-            // we re-borrow `env' through the closure (= eval re-entry
-            // safe).
+            // future backend primitives this way.  Also catches the
+            // 7 Doc 76 Stage G residual socket primitives whose bodies
+            // live in registered modules.  Clone the Rc out first so
+            // the borrow on `env.extern_builtins' drops before we re-
+            // borrow `env' through the closure (= eval re-entry safe).
             if let Some(f) = env.extern_builtins.get(name).cloned() {
                 return f(args, env);
             }
