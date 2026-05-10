@@ -4,10 +4,10 @@
 
 * Status
 
-- *State*: DRAFT (= spike, implementation-ready 化のための design doc。
-  本 doc 自体はコード変更を伴わない。Doc 85 §3.2 / §5.1 で「Phase 47
-  着手なら macro assembler 拡張 ~800 elisp / Rust 削減なし (= 既存
-  Rust 側に encoder 自体は無い)」とした component の articulate)
+- *State*: DRAFT — §92.a SHIPPED (2026-05-11, see §7.1.S).  §92.b /
+  §92.c / §92.d remain DRAFT.  Doc 85 §3.2 / §5.1 で「Phase 47 着手
+  なら macro assembler 拡張 ~800 elisp / Rust 削減なし (= 既存 Rust
+  側に encoder 自体は無い)」とした component の articulate)
 - *Parent*: Doc 85 (= phase-47-feasibility-spike.org §3.2 / §5.1 /
   §6.1)
 - *Sibling*: Doc 91 (= ELF writer, DRAFT SHIPPED 2026-05-10), Doc 93
@@ -669,6 +669,34 @@ LOC 目安: ~150
 dependencies: なし (= Phase 7.x substrate のみ)
 
 testing: §4.1 round-trip × 各 mnemonic ~10 fixture = ~100 ert
+
+*** §7.1.S §92.a SHIPPED (2026-05-11)
+
+- *Path*: B (= new freestanding file `lisp/nelisp-asm-x86_64.el`,
+  separate from the Phase 7.x JIT backend `src/nelisp-cc-x86_64.el`).
+  Rationale: the AOT chain wants a byte-buffer-build shape (=
+  unibyte-string accumulator + reloc list for Doc 93 handoff) that is
+  distinct from the JIT trampoline's reversed-list cl-defstruct + SSA
+  register-allocator hooks.  Keeping them physically split avoids
+  namespace pollution and keeps the spike self-contained (= per Doc
+  92 §0.2 + Doc 91/94/95 sibling convention).
+- *Impl*: `lisp/nelisp-asm-x86_64.el` (≈ 280 LOC after docstrings + 80-
+  char limit) — buffer abstraction (= make / bytes / pos / labels /
+  fixups / relocs + resolve-fixups), register table (16 GPR), REX +
+  ModR/M + imm32/imm64 helpers, 16 instruction emitters (mov-imm64 /
+  mov-imm32 / mov-reg-reg / add-reg-reg / add-imm32 / sub-reg-reg /
+  sub-imm32 / cmp-imm32 / push / pop / syscall / ret / call-rel32 /
+  jmp-rel32 / nop / int3 / hlt), relocation marker API (pc32 / abs64
+  / plt32).
+- *Tests*: `test/nelisp-asm-x86_64-test.el`, 46 ert-deftest, 46/46
+  pass.  Includes objdump cross-check for the canonical exit(0) shape
+  (= `48 c7 c0 3c 00 00 00 | 48 c7 c7 00 00 00 00 | 0f 05`).
+- *Compile*: `make compile' green.  Module byte-compiles clean under
+  `byte-compile-error-on-warn t' with `-L src -L lisp'.
+- *Deferrals*: System V ABI mode encoders / arm64 (= §92.b) / SIB byte
+  / buffer-v3 performance optimisation (= §92.d) / linker-side reloc
+  consumer (= Doc 93).  Not wired into baker — freestanding per Doc
+  92 §0.2.
 
 ** §7.2 §92.b arm64 minimal opcode set
 
