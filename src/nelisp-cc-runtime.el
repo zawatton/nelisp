@@ -1388,7 +1388,8 @@ status before reading the buffer.")
     :trampoline-ternary-aset
     :trampoline-binary-float-arith
     :trampoline-unary-float
-    :trampoline-binary-float-cmp)
+    :trampoline-binary-float-cmp
+    :trampoline-format-float)
   "Allowed values for the `:entry-abi' keyword to
 `nelisp-cc-runtime-compile-and-allocate'.
 
@@ -1459,7 +1460,21 @@ trampolines live in `build-tool/src/jit/math.rs'
 in rax/x0.  The `=` arm uses an `1e-15' epsilon to mirror the
 deleted `bi_num_eq2_float'.  Backing trampolines live in
 `build-tool/src/jit/float.rs' (`nl_jit_float_{eq_eps,lt,gt,le,ge}'),
-invoked through the `nl-jit-call-float-cmp' bridge primitive.")
+invoked through the `nl-jit-call-float-cmp' bridge primitive.
+
+`:trampoline-format-float' (Doc 86 §86.1.e / Doc 87 §5.1, 2026-05-10)
+is `extern \"C\" fn(f64, char, i64, *mut Sexp) -> i64' for the
+`format' float-conversion body builder (= ?f / ?F / ?e / ?E / ?g /
+?G).  arg0 = f64 magnitude in xmm0, arg1 = i64 conv codepoint in
+rsi, arg2 = i64 precision in rdx, arg3 = *mut Sexp out-buffer in
+rcx; return = i64 status.  The trampoline writes a fresh
+`Sexp::Str' (= unsigned, unpadded body) into the out-slot.  Sole
+consumer is `lisp/nelisp-stdlib-format.el' `nelisp--format-float-
+body'.  Like the two `:trampoline-binary-float-*' modes above, the
+cc backend never emits an entry of this shape — the path is
+bridge-only via the `nl-jit-call-format-float' primitive in
+`bridge.rs', so registering the keyword here is for documentation
+/ validation symmetry.")
 
 (defun nelisp-cc-runtime--validate-entry-abi (mode)
   "Signal `nelisp-cc-runtime-error' if MODE is not a valid entry-ABI keyword."
@@ -1512,6 +1527,10 @@ entry-point's calling convention:
                            extern \"C\" fn(f64, f64) -> i64
                            binary Float cmp (= eq-eps/lt/gt/le/ge),
                            Doc 84 §84.1.
+  :trampoline-format-float
+                           extern \"C\" fn(f64, char, i64, *mut Sexp) -> i64
+                           format float body (= %f/%F/%e/%E/%g/%G),
+                           Doc 86 §86.1.e / Doc 87 §5.1.
 
 Stage 81.1/81.2/81.3 records the mode in the result plist under
 `:entry-abi' but does NOT yet alter prologue/epilogue emit; the

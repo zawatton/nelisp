@@ -126,8 +126,11 @@ pub fn install_builtins(env: &mut Env) {
         // "build-Sexp::Str-from-int-list" sliver remains as
         // `nelisp--concat-ints'.
         // Doc 86 §86.1.d (2026-05-10): `intern' / `symbol-name' moved to elisp.
-        "nelisp--format-float-body", "truncate",
-        "nelisp--concat-ints",
+        // Doc 86 §86.1.e (2026-05-10): `nelisp--format-float-body' /
+        // `nelisp--concat-ints' migrated to elisp on top of the new
+        // `nl_jit_format_float' / `nl_jit_concat_ints' trampolines.
+        "truncate",
+        "nl-jit-call-format-float",
         // Rust-min (2026-05-06 batch 6e): `string=' moved to elisp
         // defalias of `string-equal'.
         // Rust-min (2026-05-06 batch 6n): `string-equal' migrated to
@@ -143,7 +146,8 @@ pub fn install_builtins(env: &mut Env) {
         // elisp (lisp/nelisp-stdlib-plist-str.el).  Only the
         // build-a-Sexp::MutStr sliver remains as
         // `nelisp--make-mut-string'.
-        "nelisp--make-mut-string",
+        // Doc 86 §86.1.e (2026-05-10): `nelisp--make-mut-string'
+        // migrated to elisp via `nl_jit_make_mut_str' trampoline.
         // Rust-min (2026-05-06 batch 6p): upcase / downcase /
         // capitalize migrated to elisp (ASCII-only case mapping —
         // see lisp/nelisp-stdlib-plist-str.el).
@@ -529,11 +533,13 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // ---- string ----
         // concat migrated to elisp (Rust-min 2026-05-06 batch 6r,
         // see lisp/nelisp-stdlib-plist-str.el).
-        "nelisp--concat-ints" => bi_concat_ints(args),
+        // Doc 86 §86.1.e (2026-05-10): `nelisp--concat-ints' migrated
+        // to elisp via `nl_jit_concat_ints' trampoline (jit/strings.rs).
         // format migrated to elisp (Rust-min 2026-05-06 batch 6m,
         // see lisp/nelisp-stdlib-plist-str.el).  Only the IEEE-754
-        // body sliver remains as `nelisp--format-float-body'.
-        "nelisp--format-float-body" => bi_format_float_body(args),
+        // body sliver was a Rust primitive; Doc 86 §86.1.e migrated
+        // it to elisp via `nl_jit_format_float' trampoline.
+        "nl-jit-call-format-float" => crate::jit::bi_nl_jit_call_format_float(args),
         "truncate" => bi_truncate(args),
         // Doc 86 §86.1.d: intern / symbol-name / make-symbol → jit/strings.rs.
         // Rust-min (2026-05-06 batch 6e): `string=' moved to elisp
@@ -624,8 +630,10 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // see lisp/nelisp-stdlib-misc.el).
         // Doc 86 §86.1.d: `make-symbol' migrated — see block above.
         // make-string migrated to elisp (Rust-min 2026-05-06 batch 6s,
-        // see lisp/nelisp-stdlib-plist-str.el).  Build sliver:
-        "nelisp--make-mut-string" => bi_make_mut_string(args),
+        // see lisp/nelisp-stdlib-plist-str.el).  Doc 86 §86.1.e
+        // (2026-05-10): the build sliver `nelisp--make-mut-string'
+        // also migrated — `nl_jit_make_mut_str' trampoline + elisp
+        // wrapper in `lisp/nelisp-stdlib-format.el'.
         // char-to-string / string / unibyte-string / string-to-char
         // migrated to elisp (Rust-min 2026-05-06 batch 6c, see
         // lisp/nelisp-stdlib-plist-str.el).
@@ -1052,40 +1060,9 @@ fn list_to_vec(v: &Sexp) -> Result<Vec<Sexp>, EvalError> {
 /// `lisp/nelisp-stdlib-plist-str.el' walks variadic args (= mixed
 /// strings + lists + nil), accumulates a flat int-list, and calls
 /// this primitive once at the end.
-fn bi_concat_ints(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--concat-ints", args, 1, Some(1))?;
-    let mut out = String::new();
-    let mut cur = args[0].clone();
-    loop {
-        match cur {
-            Sexp::Nil => break,
-            Sexp::Cons(b) => {
-                let v = b.car.clone();
-                match &v {
-                    Sexp::Int(n) => {
-                        if let Some(ch) = char::from_u32(*n as u32) {
-                            out.push(ch);
-                        }
-                    }
-                    _ => {
-                        return Err(EvalError::WrongType {
-                            expected: "integerp".into(),
-                            got: v,
-                        });
-                    }
-                }
-                cur = b.cdr.clone();
-            }
-            other => {
-                return Err(EvalError::WrongType {
-                    expected: "listp".into(),
-                    got: other,
-                });
-            }
-        }
-    }
-    Ok(Sexp::Str(out))
-}
+// Doc 86 §86.1.e: bi_concat_ints body deleted; trampoline `nl_jit_concat_ints'
+// in `jit/strings.rs' takes over.  Elisp wrapper in
+// `lisp/nelisp-stdlib-format.el'.
 
 // Rust-min batch 6m (2026-05-06): `format` migrated from Rust to elisp.
 // The previous `bi_format` (~200 LOC) + helpers FormatSpec /
@@ -1128,26 +1105,9 @@ fn bi_concat_ints(args: &[Sexp]) -> Result<Sexp, EvalError> {
 /// LEN being non-negative + CH being a valid codepoint is done by
 /// the elisp `make-string' wrapper, so this primitive trusts
 /// its inputs.  Sole "build-a-MutStr" sliver after batch 6s.
-fn bi_make_mut_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--make-mut-string", args, 2, Some(2))?;
-    let n = match &args[0] {
-        Sexp::Int(n) if *n >= 0 => *n as usize,
-        other => return Err(EvalError::WrongType {
-            expected: "non-negative integer".into(),
-            got: other.clone(),
-        }),
-    };
-    let c = match &args[1] {
-        Sexp::Int(c) if (0..=0x10FFFF).contains(c) => {
-            char::from_u32(*c as u32).unwrap_or(' ')
-        }
-        other => return Err(EvalError::WrongType {
-            expected: "character (integer)".into(),
-            got: other.clone(),
-        }),
-    };
-    Ok(Sexp::mut_str(c.to_string().repeat(n)))
-}
+// Doc 86 §86.1.e: bi_make_mut_string body deleted; trampoline
+// `nl_jit_make_mut_str' in `jit/strings.rs' takes over.  Elisp
+// wrapper in `lisp/nelisp-stdlib-format.el'.
 
 // bi_char_to_string / bi_string_from_chars / bi_string_to_char
 // removed — see lisp/nelisp-stdlib-plist-str.el (Rust-min 2026-05-06
@@ -2179,73 +2139,10 @@ fn bi_write_stderr_line(args: &[Sexp]) -> Result<Sexp, EvalError> {
 // fully expressible in elisp once `nelisp--write-stderr-line'
 // exists as a primitive (just above).
 
-/// `(nelisp--format-float-body CONV PREC X)' — return the unsigned,
-/// unpadded body string for a `format' float-conversion (CONV one of
-/// ?f ?F ?e ?E ?g ?G).  PREC is the precision (>= 0); X is the
-/// magnitude (the elisp dispatcher already took the absolute value
-/// and will prepend the sign + apply width / padding itself).
-///
-/// Sole survivor of the Rust-min batch 6m migration of `format' to
-/// elisp: the IEEE-754 round-to-nearest-decimal logic is provided by
-/// Rust's `{:.*}' / `{:.*e}' / `{:.*E}' format machinery, which is
-/// not feasibly re-implementable in pure elisp without ~1000 LOC of
-/// Grisu / dragon4.  Everything else (= spec parser, padding, sign,
-/// integer→radix-string, %s / %S / %c / %% / %d / %i / %x / %X /
-/// %o / %b) lives in lisp/nelisp-stdlib-plist-str.el.
-fn bi_format_float_body(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--format-float-body", args, 3, Some(3))?;
-    let conv = match &args[0] {
-        Sexp::Int(n) => char::from_u32(*n as u32).ok_or_else(|| {
-            EvalError::Internal(format!("nelisp--format-float-body: bad conv code {}", n))
-        })?,
-        other => {
-            return Err(EvalError::WrongType {
-                expected: "integerp".into(),
-                got: other.clone(),
-            })
-        }
-    };
-    let prec = match &args[1] {
-        Sexp::Int(n) if *n >= 0 => *n as usize,
-        other => {
-            return Err(EvalError::WrongType {
-                expected: "non-negative integerp".into(),
-                got: other.clone(),
-            })
-        }
-    };
-    let x = match &args[2] {
-        Sexp::Float(x) => *x,
-        Sexp::Int(n) => *n as f64,
-        other => {
-            return Err(EvalError::WrongType {
-                expected: "numberp".into(),
-                got: other.clone(),
-            })
-        }
-    };
-    let body = match conv {
-        'f' | 'F' => format!("{:.*}", prec, x),
-        'e' => format!("{:.*e}", prec, x),
-        'E' => format!("{:.*E}", prec, x),
-        'g' | 'G' => {
-            let f = format!("{:.*}", prec, x);
-            let e = format!("{:.*e}", prec, x);
-            if f.len() <= e.len() {
-                f
-            } else {
-                e
-            }
-        }
-        other => {
-            return Err(EvalError::Internal(format!(
-                "nelisp--format-float-body: unsupported conv %{}",
-                other
-            )))
-        }
-    };
-    Ok(Sexp::Str(body))
-}
+// Doc 86 §86.1.e: bi_format_float_body body + docstring deleted;
+// trampoline `nl_jit_format_float' in `jit/strings.rs' takes over
+// via the new `:trampoline-format-float' ABI mode.  Elisp wrapper
+// in `lisp/nelisp-stdlib-format.el'.
 
 /// `(truncate X)' — return X truncated toward zero as an integer.
 /// For a Float argument we cast via `as i64' (= the same trunc-toward-

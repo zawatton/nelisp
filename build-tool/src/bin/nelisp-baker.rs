@@ -75,6 +75,12 @@ const STDLIB_FILES: &[&str] = &[
     "nelisp-stdlib-hof.el",
     "nelisp-stdlib-search.el",
     "nelisp-stdlib-plist-str.el",
+    // Doc 86 §86.1.e (2026-05-10): Tier 2 simple wrappers
+    // (`concat-ints' / `make-mut-string' / `format-float-body').
+    // Loads AFTER `nelisp-stdlib-plist-str.el' (= `format' / `concat'
+    // / `make-string' dispatchers reference these wrappers) but BEFORE
+    // `nelisp-stdlib-misc.el' (= no consumer there).
+    "nelisp-stdlib-format.el",
     "nelisp-stdlib-misc.el",
     "nelisp-stdlib-os.el",
     "nelisp-pcase.el",

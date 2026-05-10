@@ -193,6 +193,13 @@ impl Env {
             ("nelisp-stdlib-hof.el", include_bytes!("../../../lisp/nelisp-stdlib-hof.el.image")),
             ("nelisp-stdlib-search.el", include_bytes!("../../../lisp/nelisp-stdlib-search.el.image")),
             ("nelisp-stdlib-plist-str.el", include_bytes!("../../../lisp/nelisp-stdlib-plist-str.el.image")),
+            // Doc 86 §86.1.e (2026-05-10): Tier 2 simple wrappers
+            // (`concat-ints' / `make-mut-string' / `format-float-body').
+            // Loads AFTER `stdlib-plist-str.el' (= which references the
+            // wrapper bodies in `concat' / `make-string' / `format'
+            // dispatchers via late-binding function-cell lookup) and
+            // BEFORE `stdlib-misc.el' (= no consumer there).
+            ("nelisp-stdlib-format.el", include_bytes!("../../../lisp/nelisp-stdlib-format.el.image")),
             ("nelisp-stdlib-misc.el", include_bytes!("../../../lisp/nelisp-stdlib-misc.el.image")),
             ("nelisp-stdlib-os.el", include_bytes!("../../../lisp/nelisp-stdlib-os.el.image")),
             ("nelisp-pcase.el", include_bytes!("../../../lisp/nelisp-pcase.el.image")),

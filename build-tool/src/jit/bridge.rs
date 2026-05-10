@@ -216,6 +216,15 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
         "nl_jit_float_float" => super::math::nl_jit_float_float as *const u8,
         "nl_jit_float_exp" => super::math::nl_jit_float_exp as *const u8,
         "nl_jit_float_log" => super::math::nl_jit_float_log as *const u8,
+        // ---- Doc 86 §86.1.e Tier 2 simple (3) ---- (2026-05-10).
+        // First two share the existing `:trampoline-unary' shape (=
+        // reachable via `nl-jit-call-out-1' from `lisp/nelisp-stdlib-
+        // format.el').  `nl_jit_format_float' uses the new
+        // `:trampoline-format-float' ABI mode (= xmm0 + rsi + rdx +
+        // rcx, reachable via `bi_nl_jit_call_format_float' below).
+        "nl_jit_concat_ints" => super::strings::nl_jit_concat_ints as *const u8,
+        "nl_jit_make_mut_str" => super::strings::nl_jit_make_mut_str as *const u8,
+        "nl_jit_format_float" => super::strings::nl_jit_format_float as *const u8,
         _ => return None,
     };
     Some(p)
@@ -492,6 +501,55 @@ pub fn bi_nl_jit_call_out_2i(args: &[Sexp]) -> Result<Sexp, EvalError> {
     } else {
         Err(EvalError::WrongType {
             expected: "jit-call-out-2i".into(),
+            got: args[1].clone(),
+        })
+    }
+}
+
+
+// ---------------------------------------------------------------
+// Doc 86 §86.1.e — `:trampoline-format-float' bridge primitive.
+//
+// `(nl-jit-call-format-float NAME X CONV PREC) -> Sexp'.  Resolves
+// NAME via `unified_fn_ptr', casts to `extern "C" fn(f64, u32, i64,
+// *mut Sexp) -> i64' (= the `:trampoline-format-float' ABI mode
+// declared in `src/nelisp-cc-runtime.el'), invokes with X = f64
+// magnitude, CONV = u32 codepoint of the conversion char, PREC =
+// non-negative precision.  Wraps the trampoline's out-Sexp on OK or
+// surfaces ERR as a generic `WrongType' the elisp wrapper translates
+// to its preferred user-facing tag.  Sole caller: `lisp/nelisp-
+// stdlib-format.el' `nelisp--format-float-body'.
+// ---------------------------------------------------------------
+
+/// `(nl-jit-call-format-float NAME X CONV PREC) -> Sexp'.
+pub fn bi_nl_jit_call_format_float(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    require_arity("nl-jit-call-format-float", args, 4, Some(4))?;
+    let name = as_name("nl-jit-call-format-float", &args[0])?;
+    let x: f64 = match &args[1] {
+        Sexp::Float(v) => *v,
+        Sexp::Int(n) => *n as f64,
+        other => {
+            return Err(EvalError::WrongType {
+                expected: "numberp".into(),
+                got: other.clone(),
+            })
+        }
+    };
+    let conv = as_int("nl-jit-call-format-float", &args[2])?;
+    let prec = as_int("nl-jit-call-format-float", &args[3])?;
+    let p = unified_fn_ptr(name)
+        .ok_or_else(|| unknown_name_err("nl-jit-call-format-float", name))?;
+    // SAFETY: NAME resolves to `nl_jit_format_float' shape (= xmm0 +
+    // rsi + rdx + rcx).
+    let f: extern "C" fn(f64, u32, i64, *mut Sexp) -> i64 =
+        unsafe { std::mem::transmute(p) };
+    let mut out = Sexp::Nil;
+    let r = f(x, conv as u32, prec, &mut out as *mut _);
+    if r == TRAMPOLINE_OK {
+        Ok(out)
+    } else {
+        Err(EvalError::WrongType {
+            expected: "jit-call-format-float".into(),
             got: args[1].clone(),
         })
     }

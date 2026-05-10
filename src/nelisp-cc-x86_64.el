@@ -2166,6 +2166,13 @@ encoding pattern)."
 ;;   :trampoline-ternary-aset arg0 → rdi, arg1 (i64 idx) → rsi,
 ;;                            arg2 (val ptr) → rdx, arg3 (out-ptr) → rcx (Stage 81.3)
 ;;
+;; Doc 86 §86.1.e (2026-05-10): the new `:trampoline-format-float'
+;; mode (= `extern "C" fn(f64, char, i64, *mut Sexp) -> i64', xmm0 +
+;; rsi + rdx + rcx) is *bridge-only* — the cc backend never emits a
+;; trampoline of this shape, the path is `nl-jit-call-format-float'
+;; in `bridge.rs'.  No `--lower-call-primitive' arm needed; the same
+;; applies to the existing `:trampoline-binary-float-{arith,cmp}'.
+;;
 ;; Stage 81.2 keeps the out-ptr / mutate-in-place distinction *purely
 ;; in metadata* — the recognition pass (Stage 81.3) is responsible for
 ;; allocating the out-slot via `alloca' SSA before this CALL.  Here we

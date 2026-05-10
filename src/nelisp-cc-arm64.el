@@ -1123,6 +1123,14 @@ without SIGSEGV (T43 Phase 7.5.6 bench gate enabler)."
 ;;   :trampoline-ternary-aset arg0 → x0, arg1 (i64 idx) → x1,
 ;;                            arg2 (val ptr) → x2, arg3 (out-ptr) → x3 (Stage 81.3)
 ;;
+;; Doc 86 §86.1.e (2026-05-10): the new `:trampoline-format-float'
+;; mode (= `extern "C" fn(f64, char, i64, *mut Sexp) -> i64', d0 + x1
+;; + x2 + x3 under AAPCS) is *bridge-only* — the cc backend never
+;; emits a trampoline of this shape, the path is `nl-jit-call-format-
+;; float' in `bridge.rs'.  No `--lower-call-primitive' arm needed;
+;; the same applies to the existing `:trampoline-binary-float-{arith,
+;; cmp}'.
+;;
 ;; arm64 instruction sizes (vs x86_64 in parens):
 ;;   ssa-load-tag         LDRB Wt, [Xn]              — 4 bytes (vs 4 x86_64)
 ;;   ssa-load-payload-ptr LDR Xt, [Xn, #8]           — 4 bytes (vs 4)
