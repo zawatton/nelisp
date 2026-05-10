@@ -4,10 +4,11 @@
 
 * Status
 
-- *State*: DRAFT — §92.a SHIPPED (2026-05-11, see §7.1.S).  §92.b /
-  §92.c / §92.d remain DRAFT.  Doc 85 §3.2 / §5.1 で「Phase 47 着手
-  なら macro assembler 拡張 ~800 elisp / Rust 削減なし (= 既存 Rust
-  側に encoder 自体は無い)」とした component の articulate)
+- *State*: DRAFT — §92.a SHIPPED (2026-05-11, see §7.1.S), §92.b
+  SHIPPED (2026-05-11, see §7.2.S).  §92.c / §92.d remain DRAFT.
+  Doc 85 §3.2 / §5.1 で「Phase 47 着手なら macro assembler 拡張
+  ~800 elisp / Rust 削減なし (= 既存 Rust 側に encoder 自体は無い)」
+  とした component の articulate)
 - *Parent*: Doc 85 (= phase-47-feasibility-spike.org §3.2 / §5.1 /
   §6.1)
 - *Sibling*: Doc 91 (= ELF writer, DRAFT SHIPPED 2026-05-10), Doc 93
@@ -715,6 +716,43 @@ LOC 目安: ~150
 dependencies: なし
 
 testing: §4.1 round-trip × 各 mnemonic ~10 fixture = ~110 ert
+
+*** §7.2.S §92.b SHIPPED (2026-05-11)
+
+- *Path*: B (= new freestanding file `lisp/nelisp-asm-arm64.el`,
+  sibling of §92.a's `lisp/nelisp-asm-x86_64.el', separate from the
+  Phase 7.x JIT backend `src/nelisp-cc-arm64.el').  Rationale matches
+  §92.a: the AOT chain wants a flat byte-buffer-build shape (=
+  unibyte-string accumulator + reloc list for Doc 93 linker handoff)
+  distinct from the JIT struct + SSA register-allocator hooks.
+- *Impl*: `lisp/nelisp-asm-arm64.el' (≈ 470 LOC including docstrings
+  + commentary, ~155 emit + helper LOC modulo blank lines) — buffer
+  abstraction (= make / bytes / pos / labels / fixups / relocs +
+  resolve-fixups), register table (32 GPR + sp / xzr / wzr aliases),
+  4-byte LE word emitter, 12 instruction emitters (mov-imm-z =
+  MOVZ / mov-imm-k = MOVK / mov-imm64 = MOVZ+MOVK chain meta /
+  mov-reg-reg = ORR Xd,XZR,Xm alias / add-imm / sub-imm / cmp-imm =
+  SUBS XZR,Xn,#imm12 alias / svc / brk / ret / nop / bl / b),
+  relocation marker API (b26-pc = R_AARCH64_CALL26 / abs64 =
+  R_AARCH64_ABS64).
+- *Tests*: `test/nelisp-asm-arm64-test.el', 43 ert-deftest, 42/42
+  pass + 1 skipped (= objdump cross-check, host binutils lacks
+  aarch64 BFD).  Includes the canonical Linux arm64 exit(0) shape
+  (= MOVZ x8,#93 ; MOVZ x0,#0 ; SVC #0 = `A8 0B 80 D2 | 00 00 80 D2
+  | 01 00 00 D4').
+- *Compile*: `make compile' green (= 0 warning / 0 error under
+  `byte-compile-error-on-warn t').  Module byte-compiles clean with
+  `-L lisp'.
+- *Deferrals*: MOVN (= MOVZ family の bit-inverted variant) / STP /
+  LDP / STR / LDR (= memory ops) / B.cond / CBZ (= conditional
+  branch + zero-test branch) / ADRP / ADR (= PC-relative addressing
+  for large-offset symbol relocs) はすべて Phase 47 critical-path
+  外で defer — Doc 92 §2.2 の追加 11 mnemonic 表のうち、minimal
+  exit(0) + 64-bit immediate loading + simple branch だけを §92.b
+  scope に絞った。残りは Phase 7.x JIT 側 (= `src/nelisp-cc-arm64.el')
+  に既存 encoder があり、AOT で必要になった時点で port する。
+  System V AArch64 ABI 完全 emitter は OOS。Not wired into baker —
+  freestanding per Doc 92 §0.2.
 
 ** §7.3 §92.c relocation marker integration
 
