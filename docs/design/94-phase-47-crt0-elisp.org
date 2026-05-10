@@ -4,9 +4,21 @@
 
 * Status
 
-- *State*: DRAFT (= spike, implementation-ready 化のための design doc。
-  本 doc 自体はコード変更を伴わない。Doc 85 §3.4 / §5.1 で「crt0 elisp
-  ~150 LOC で =-150 Rust=、ROI 1:1」とした 5 component 中の 1 本)
+- *State*: §94.a SHIPPED (2026-05-11, branch =agent-doc-94a-impl=) +
+  DRAFT (= spike, implementation-ready 化のための design doc。Doc 85
+  §3.4 / §5.1 で「crt0 elisp ~150 LOC で =-150 Rust=、ROI 1:1」とした
+  5 component 中の 1 本)
+- *§94.a SHIPPED*: =lisp/nelisp-crt0.el= (~95 LOC) + =test/nelisp-crt0-
+  test.el= (20 ert) — x86_64 Linux entry stub (= 23 bytes) + callable
+  =write(1,buf,len)= stub (= 19 bytes) + =exit(rdi)= stub (= 7 bytes) +
+  =nelisp-crt0-emit-hello-world= integrated with Doc 91 §91.b rich-plist
+  ELF writer. End-to-end smoke: =/tmp/nelisp-hello-world= prints
+  =hello\n= + exits 0 on x86_64 Linux. =objdump -d= disassembly
+  matches §2.2 emit pattern. Self-contained (= no Doc 92 / Doc 93
+  dependency, =call main= rel32 either computed at emit time or
+  zeroed for future linker)
+- *§94.b DEFERRED*: arm64 entry stub (= Doc 94 §7.2)
+- *§94.c DEFERRED*: argv / envp / auxv unpacking (= Doc 94 §7.3)
 - *Parent*: Doc 85 (= phase-47-feasibility-spike.org §3.4 / §5.1 / §6.1)
 - *Sibling*: Doc 91 (ELF writer, DRAFT SHIPPED), Doc 92 (assembler), Doc
   93 (static linker + syscall inline), Doc 95 (Sexp DSL, DRAFT SHIPPED)
