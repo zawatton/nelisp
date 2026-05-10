@@ -155,6 +155,19 @@ For lists, walks linearly.  For vectors, builds a fresh vector via
          (t (error "cl-subseq: unsupported sequence type")))))))
 
 
+;; --- seq.el gaps ----------------------------------------------------
+
+;; anvil-bench uses `seq-take' to clip the per-call timing list to TOP
+;; entries when reporting profile results.  seq.el is not bundled on
+;; standalone NeLisp, so polyfill the minimum surface using the cl-*
+;; primitives already provided above.
+(unless (fboundp 'seq-take)
+  (defun seq-take (sequence n)
+    "Polyfill: return the first N elements of SEQUENCE.
+Delegates to `cl-subseq', clamping N to (length SEQUENCE)."
+    (cl-subseq sequence 0 (min n (length sequence)))))
+
+
 ;; --- sqlite FFI wire-up via emacs-sqlite-ffi + vendor sqlite.el ------
 
 ;; Standalone NeLisp ships:
