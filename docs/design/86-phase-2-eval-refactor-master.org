@@ -1236,6 +1236,133 @@ Commits (= 4 atomic) on `agent-doc-86-1g-impl' branch:
 4. build-tool: Doc 86 §86.1.g — purge stale removal/migration commentary
    (この §12.8 SHIPPED status update を含めて 5 atomic commit)
 
+** §12.9 §86.3.c — env switch-over (SHIPPED 2026-05-10)
+
+Status: SHIPPED 2026-05-10 (= Doc 89 §4.3 single-agent dispatch on
+`agent-doc-86-3c-impl' branch).
+
+Doc 89 §4.3 articulated §86.3.c as the largest and final sub-stage of
+Phase 2 (= -1,214 net Rust target across 4 files + +550 elisp shim
+expansion).  v1 § estimate had targeted full Rust `Env::*' method
+elision into thin slim-primitive wrappers; v2 / v3 reconciled this
+toward a more conservative landing because Doc 89 §10.1 explicitly
+preserves the hot path (= `eval/mod.rs' / `eval/special_forms.rs'
+internal callsites) on Tier 0 to avoid elisp round-trip latency in
+`eval' loop / `bind_formals' / `parse_let_binding'.
+
+Switch-over scope (= what flipped to slim-primitive-canonical):
+
+1. *User-visible env names* (`symbol-value' / `symbol-function' /
+   `boundp' / `fboundp' / `defalias' / `fset' / `set' / `fmakunbound' /
+   `makunbound') — `lisp/nelisp-stdlib-env-shim.el' grew from 123 LOC
+   skeleton (§86.3.a) to 293 LOC user-API surface (= +170 LOC, well
+   under the §4.3.2 +550 estimate because the shim wrappers are tiny
+   1-line forwarders rather than full re-implementations).  Each name
+   `fset's at the bottom of the file to a wrapper that funcalls the
+   corresponding `nelisp--env-globals-*' slim primitive.  Also exports
+   `nelisp--parse-let-binding' for future Phase 3 D-B sf_let elisp
+   lift (not yet wired from Rust per §10.1 hot-path policy).
+
+2. *Shadow-verify retirement* — the §86.3.b cfg-gated dual-update
+   verify infrastructure is now dead-by-construction: the slim
+   primitive IS the canonical user-visible path, sharing the same
+   `Env::globals' HashMap as the Rust `Env::*' methods (= no second
+   source of truth to compare against).  Removed:
+   - `eval/env.rs' shadow_verify block + 6 helper fns +
+     `frame_stack_is_empty` (~338 LOC)
+   - 4 cfg-gated `verify_elisp_mirror_set_value' calls in
+     `eval_str_all_at_path' + 1 in `eval_inner' Symbol arm
+     (~14 LOC)
+   - 1 cfg-gated call in `sf_setq' (~3 LOC)
+   - 7 cfg-gated calls across 9 Tier 3 arms in `eval/builtins.rs';
+     arm bodies simplify back to single-expression matches (~30 LOC)
+   - `env-shadow-verify' Cargo feature kept declared as an empty
+     alias for CI workflow compatibility, comment records its
+     retirement.
+
+LOC delta:
+
+| file                              | before | after | delta |
+|-----------------------------------+--------+-------+-------|
+| `eval/env.rs'                     |    935 |   597 |  -338 |
+| `eval/mod.rs'                     |    856 |   840 |   -16 |
+| `eval/special_forms.rs'           |    575 |   572 |    -3 |
+| `eval/builtins.rs'                |  2,216 | 2,177 |   -39 |
+| `lisp/nelisp-stdlib-env-shim.el'  |    123 |   293 |  +170 |
+| build-tool/src `*.rs' total       | 21,732 | 21,336 | -396 |
+
+Net Rust delta: **-396 LOC** (= well under Doc 89 §4.3.2 -1,214 target;
+see Deferrals below).
+
+Deferrals (= scope reductions vs Doc 89 §4.3.1 § Step list):
+
+- *§4.3.1 Step 3 — env.rs 19 methods → thin wrappers*: NOT applied.
+  Each `Env::*' method already has a tight body (3-24 LOC) and shares
+  storage with the slim primitive via `Env::globals'.  Restructuring
+  the methods into thin slim-primitive forwarders would require
+  refactoring the slim primitive's `(args: &[Sexp], env: &mut Env)'
+  signature — invasive and tangential to the switch-over goal.
+  Reduction landed via shadow-verify retirement (= -338 of -514
+  target) instead.
+
+- *§4.3.1 Step 5 — special_forms.rs `parse_let_binding' → elisp delegate*:
+  NOT applied.  The `nelisp--parse-let-binding' shim defun is
+  exported for Phase 3 D-B but not yet called from Rust because every
+  `let' / `let*' evaluation would pay an elisp dispatch round-trip per
+  binding (= ~50x slowdown estimated, Doc 89 §10.1 hot path warning).
+  The Rust `parse_let_binding' is already 30 LOC including comments;
+  yield is small.
+
+- *§4.3.1 Step 6 — mod.rs `bind_formals' → elisp delegate*: NOT
+  applied.  Doc 89 §10.1 explicitly preserves Rust internal callsites
+  on Tier 0 (= "hot path slowdown ~10-50x" if elisp-routed).  The
+  Stage 7.4.b `nelisp--bind-formals--compute' helper from
+  `nelisp-stdlib-eval-core.el' remains available for elisp-side
+  callers but the Rust hot path retains its inline `bind_formals'
+  helper.
+
+- *§8.4 Tier 3 dispatch arm REMOVAL*: NOT applied.  The arms remain
+  as bootstrap-path entry points (= `install_builtins' fset's
+  `(builtin NAME)' sentinels at startup; the env-shim load REPLACES
+  those sentinels with elisp wrappers; before that load, the dispatch
+  arms are the canonical Tier 0 path).  Removing them would break the
+  bootstrap chain.  Their bodies have been reduced to 2-3 LOC each by
+  the shadow-verify cleanup, matching the §86.3.c spirit.
+
+What this means for v3 reconciled landing (§13.3): the §86.3.c
+projected line "**~20,518** ***-1,278***" should be revised to **~21,336**
+*-460* (= -64 from §86.1.g + -396 from §86.3.c).  The remaining
+delta to the v2 -2,898 target is structurally locked in Tier 2
+trampoline body + Rust internal callsites that cannot move to elisp
+without paying hot-path overhead; full closure is a Phase 3 D-B job
+(= Doc 77c ultimate D-B with native compiler takeover making elisp
+round-trips free).
+
+Verification gate (all green on `agent-doc-86-3c-impl'):
+- `cargo build --workspace --release` — green.
+- `cargo build --workspace --release --features image-baker` — green.
+- `cargo build --workspace --release --features env-shadow-verify`
+  — green (= empty alias build).
+- `cargo test --workspace --release --lib --features image-baker
+  -- --test-threads=1` — 680 + 4 + 5 + 9 + 0 + 15 + 0 = 713 passed,
+  0 failed.
+- `make compile` — green (byte-compile-error-on-warn t).
+- `make test` — same baseline as `feat/doc-77-stage2-prep' (= 1
+  pre-existing FAILED `nelisp-eval-core/apply-fn-dispatches-to-builtin'
+  + the same SKIPPED set, no new regression introduced by §86.3.c).
+- `make bake-images` — clean re-bake of `nelisp-stdlib-env-shim.el.image`
+  for the expanded shim; no other image diffs.
+- Smoke: `./target/release/nelisp eval '(let ((x 10)) (setq x (+ x 1)) x)'`
+  prints `11`.
+
+Commits (= 3 atomic) on `agent-doc-86-3c-impl' branch:
+1. nelisp-stdlib-env-shim.el: Doc 86 §86.3.c — switch-over user-visible
+   API install (+170 LOC elisp)
+2. build-tool: Doc 86 §86.3.c — retire env-shadow-verify infra
+   (-396 LOC across env.rs / mod.rs / special_forms.rs / builtins.rs +
+   Cargo.toml feature comment)
+3. docs(design): Doc 86 §12.9 — §86.3.c SHIPPED status (= this entry)
+
 * §13 v2 reconcile appendix (= 2026-05-10)
 
 Doc 87 / Doc 88 / Doc 89 detail design 起こし時に判明した v1 estimate
