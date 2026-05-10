@@ -1,0 +1,860 @@
+#+TITLE: Doc 88 — Phase 2 §86.2: error.rs migration detailed design
+#+AUTHOR: NeLisp design
+#+DATE: 2026-05-10
+
+* Status
+
+- *State*: DRAFT (= 詳細 design、§86.2 単独 dispatch 用、実装は別 agent)
+- *Parent*: Doc 86 §86.2 (= Phase 2 eval/ refactor master の 1 sub-stage)
+- *Builds-on*: Doc 80 SHIPPED (= elisp-pre-stdlib-substrate、=signal= /
+  =condition-case= / =wrong-type-argument= 系 condition infra が STDLIB
+  load order 上で既に available)
+- *Sibling docs*: Doc 87 (= §86.1 builtins.rs 詳細、別 agent)、Doc 89
+  (= §86.3 env.rs 詳細、別 agent)
+- *Unlocks*: =build-tool/src/eval/error.rs= 308 LOC のうち ~258-278 LOC
+  を =lisp/nelisp-stdlib-error.el= に移管、Rust 側に ~30-50 LOC residual
+  (= =EvalError::Internal= panic 等価のみ) で着地
+- *OOS for THIS doc*: 実装 (= 別 agent)、=builtins.rs= の per-callsite
+  signal 移管 (= Doc 87 範囲)、=env.rs= の SettingConstant の elisp 化
+  (= Doc 89 範囲、=env.rs= が elisp 化されると同時に消える)、
+  =reader/= 内の SourcePos 計装拡張 (= Doc 88-A 候補で別途)
+
+* §0 TL;DR
+
+Doc 86 §86.2 が articulate した 2-3 day sub-stage の sub-stage articulation.
+=eval/error.rs= 308 LOC は次の 3 part に分解できる:
+
+| 部位 | LOC | 移管先 | 残置可否 |
+|------+-----+--------+----------|
+| =SourcePos= struct | 14 | 移管 (= elisp plist =(:line N :col N)=) | Rust にも mirror keep (= reader 内では Rust struct のまま使う) |
+| =ReadError= enum + impl (4 variants) | ~85 | 移管 (= =invalid-read-syntax= 系 elisp condition) | × (= ReadError 自体は構造値として残るが、`Display`/`error_tag` は不要に) |
+| =EvalError= enum + impl (12 variants) | ~209 | 11 variant は elisp condition、1 variant (=Internal=) のみ Rust 残置 | △ (= panic 等価のみ Rust) |
+
+elisp 側の condition system は **既に Doc 80 substrate で establish 済**
+(= =signal= Rust builtin + =condition-case= special form + =error_tag=
+mapping in =error.rs::error_tag= が =builtins.rs:bi_signal= 内で逆 map
+されている). Doc 80 §3.2 で =nelisp--signal-wrong-type= /
+=nelisp--signal-arith= helper が提供済 = §86.2 はこの infrastructure を
+**完成形に拡張** する (= 全 EvalError variant に対応する =signal= helper
+を提供 + Rust 側 enum を panic-only に縮減).
+
+実装順序は Doc 79 §11.7 atomic-with-consumer pattern (= elisp 側 helper
+を install してから Rust callsite を一斉移管、同 commit で完結) を踏襲.
+
+* §1 EvalError + ReadError 全 variant inventory
+
+** §1.1 EvalError variants (12 個)
+
+|---+--------------------------+-------------------+----------------+----------+----------------+----------------------------------------------------|
+|   | variant                  | error_tag         | data shape     | call cnt | classification | construction sites (= grep eval/)                  |
+|---+--------------------------+-------------------+----------------+----------+----------------+----------------------------------------------------|
+| 1 | =UnboundVariable(String)= | =void-variable=   | =(SYM)=        | 6        | migrate        | =env.rs=, =eval/mod.rs= (=symbol-value=), =special_forms.rs= |
+| 2 | =UnboundFunction(String)= | =void-function=   | =(SYM)=        | 10       | migrate        | =builtins.rs:805= (funcall path), =eval/mod.rs=, =special_forms.rs= |
+| 3 | =WrongType{exp,got}=     | =wrong-type-argument= | =(EXP GOT)= | 104      | migrate        | 全 builtins.rs 全域 (= 最頻出 variant)              |
+| 4 | =WrongNumberOfArguments{fn,exp,got}= | =wrong-number-of-arguments= | =(FN GOT)= | 31 | migrate | =require_arity= helper、=apply= path、=special_forms.rs= |
+| 5 | =ArithError(String)=     | =arith-error=     | =(MSG)=        | 16       | migrate        | =builtins.rs= div / mod / ash 系                    |
+| 6 | =UserError{tag,data}=    | =tag.as_str()=    | =data= raw     | 11       | migrate        | =bi_signal= (= 全 user-issued =(signal ...)= の sink)  |
+| 7 | =UncaughtThrow{tag,val}= | =no-catch=        | =(TAG VAL)=    | 8        | migrate        | =catch=/=throw= path、=special_forms.rs:sf_throw=    |
+| 8 | =SettingConstant(String)= | =setting-constant= | =(SYM)=      | 6        | migrate        | =env.rs::setq=, =bi_set= (= =nil=/=t= mutation)     |
+| 9 | =NotImplemented(String)= | =error=           | =(MSG)=        | 5        | migrate        | =bi_apply= 等の defer path、=Read= surface          |
+|10 | =Read(ReadError)=        | =invalid-read-syntax= | =(MSG)=    | 6        | migrate (via §1.2) | =From<ReadError>= で auto-wrap、=eval/mod.rs:read=  |
+|11 | =Quit=                   | =quit=            | =nil=          | 17       | migrate        | =bi_signal= (= =(signal 'quit ...)=)、SIGINT path  |
+|12 | =Internal(String)=       | =error=           | =(MSG)=        | 53       | **RESIDUAL**   | 各 builtin の "should never happen" branch          |
+|---+--------------------------+-------------------+----------------+----------+----------------+----------------------------------------------------|
+
+合計 construction site count: 273 (= grep =EvalError::= across =build-tool/src/eval/=).
+
+うち migrate 対象: 220 sites、residual (=Internal=): 53 sites.
+
+** §1.2 ReadError variants (4 個)
+
+|---+----------------------+-------------------+--------------------+----------+--------------------------------+-----------+
+|   | variant              | elisp condition   | data shape         | call cnt | sources (= =build-tool/src/=)  | residual? |
+|---+----------------------+-------------------+--------------------+----------+--------------------------------+-----------+
+| 1 | =Lex{msg,pos}=       | =invalid-read-syntax= | =(MSG :line L :col C)= | 3 | =reader/lexer.rs=               | × (= 移管) |
+| 2 | =Parse{msg,pos}=     | =invalid-read-syntax= | =(MSG :line L :col C)= | 3 | =reader/parser.rs=, =reader/mod.rs:86= | × (= 移管) |
+| 3 | =UnexpectedEof{msg,pos}= | =end-of-file= | =(MSG :line L :col C)= | 3 | =reader/lexer.rs=               | × (= 移管) |
+| 4 | =NotYetImplemented{feature,pos}= | =error= | =(FEATURE :line L :col C)= | 4 | =reader/parser.rs= (= =#'fn= 等の deferred construct) | × (= 移管) |
+|---+----------------------+-------------------+--------------------+----------+--------------------------------+-----------+
+
+合計: 13 sites、全 13 sites 移管.
+
+注: ReadError 自体は **Rust struct として残る可能性が高い** = =reader/=
+は Doc 86 §1.1 で "Phase 2 着地後も Rust に残る " 領域 (= 構造的に reader
+は Rust DSL 抽出に向かない).  ReadError の Rust 側形は keep、ただし
+=Display= / =error_tag= 経由の elisp signal への変換 logic を elisp 側
+=nelisp--read-error->signal= helper に統一する.
+
+** §1.3 SourcePos struct
+
+=SourcePos { line: u32, col: u32 }= は **構造値** として Rust 側で残す
+(= reader 内部で line/col tracking する責務は Rust のまま).  elisp 側
+には =(:line N :col M)= plist として transit する (= signal data に
+attach する形式).
+
+詳細: §5 SourcePos preservation strategy.
+
+* §2 elisp condition mapping table (1:1)
+
+** §2.1 EvalError → elisp =signal= 形
+
+下表は =error.rs::error_tag= + =error.rs::signal_data= が現在 producing
+している =(TAG . DATA)= cons を、elisp =signal= の 2-arg shape (=
+=(signal 'TAG DATA)=) に分解したもの.  =signal= の 2nd arg は always
+=DATA= list (= cdr of cons).
+
+|---+-----------------------+----------------------+------------------------+--------------------------------------------------|
+|   | EvalError variant     | elisp tag (= sym)    | elisp data (= 2nd arg) | helper fn name (= proposed in §3.2)              |
+|---+-----------------------+----------------------+------------------------+--------------------------------------------------|
+| 1 | =UnboundVariable(s)=  | =void-variable=      | =(list s-sym)=         | =nelisp--signal-void-variable=                   |
+| 2 | =UnboundFunction(s)=  | =void-function=      | =(list s-sym)=         | =nelisp--signal-void-function=                   |
+| 3 | =WrongType{exp,got}=  | =wrong-type-argument= | =(list exp-sym got)=  | =nelisp--signal-wrong-type= (← Doc 80 既存、shape 確認) |
+| 4 | =WrongNumberOfArguments{fn,exp,got}= | =wrong-number-of-arguments= | =(list fn-sym got-int)= | =nelisp--signal-wrong-arity= |
+| 5 | =ArithError(msg)=     | =arith-error=        | =(list msg-str)=       | =nelisp--signal-arith= (← Doc 80 既存)            |
+| 6 | =UserError{tag,data}= | =tag-sym=            | =data= (raw)           | (= =signal= 直呼び、helper 不要)                  |
+| 7 | =UncaughtThrow{t,v}=  | =no-catch=           | =(list tag value)=     | =nelisp--signal-no-catch=                        |
+| 8 | =SettingConstant(s)=  | =setting-constant=   | =(list s-sym)=         | =nelisp--signal-setting-constant=                |
+| 9 | =NotImplemented(msg)= | =error=              | =(list msg-str)=       | =nelisp--signal-not-implemented=                 |
+|10 | =Read(ReadError)=     | =invalid-read-syntax= | (= §2.2 詳細)         | =nelisp--read-error->signal= (= dispatcher)      |
+|11 | =Quit=                | =quit=                | =nil=                 | (= =(signal 'quit nil)= 直呼び、helper 不要)      |
+|12 | =Internal(msg)=       | =error=              | =(list "internal:" msg-str)= | (= **residual = Rust panic-equivalent**) |
+|---+-----------------------+----------------------+------------------------+--------------------------------------------------|
+
+** §2.2 ReadError → elisp =signal= 形
+
+|---+----------------------------+-------------------+-------------------------------------+----------------------------------|
+|   | ReadError variant          | elisp tag         | elisp data                          | helper fn name                   |
+|---+----------------------------+-------------------+-------------------------------------+----------------------------------|
+| 1 | =Lex{msg,pos}=             | =invalid-read-syntax= | =(list msg :line L :col C :kind 'lex)= | =nelisp--signal-read-lex=    |
+| 2 | =Parse{msg,pos}=           | =invalid-read-syntax= | =(list msg :line L :col C :kind 'parse)= | =nelisp--signal-read-parse= |
+| 3 | =UnexpectedEof{msg,pos}=   | =end-of-file=     | =(list msg :line L :col C)=         | =nelisp--signal-read-eof=        |
+| 4 | =NotYetImplemented{feat,pos}= | =error=        | =(list "not-yet-implemented:" feat :line L :col C)= | =nelisp--signal-read-nyi= |
+|---+----------------------------+-------------------+-------------------------------------+----------------------------------|
+
+** §2.3 condition hierarchy
+
+GNU Emacs の =(put 'TAG 'error-conditions LIST)= property により condition
+hierarchy が表現される. =condition-case= は handler clause の tag を
+=error-conditions= list と照合する.
+
+現状 (= Phase 1 末端) の =error.rs::is_error_subtype= は **bootstrap
+minimal hierarchy** のみ実装:
+- exact match
+- =t= = catch all
+- =error= = catch all non-=quit=
+
+GNU Emacs full hierarchy (= 例: =arith-error= → =(arith-error error)=,
+=void-variable= → =(void-variable error)=) は §86.2 で elisp 側
+=(put 'TAG 'error-conditions ...)= を設定して実現する.
+
+提案 hierarchy (= =nelisp-stdlib-error.el= 冒頭で install):
+
+#+begin_src emacs-lisp
+(put 'error 'error-conditions '(error))
+(put 'quit 'error-conditions '(quit))
+(put 'wrong-type-argument 'error-conditions '(wrong-type-argument error))
+(put 'arith-error 'error-conditions '(arith-error error))
+(put 'void-variable 'error-conditions '(void-variable error))
+(put 'void-function 'error-conditions '(void-function error))
+(put 'wrong-number-of-arguments
+     'error-conditions '(wrong-number-of-arguments error))
+(put 'no-catch 'error-conditions '(no-catch error))
+(put 'setting-constant 'error-conditions '(setting-constant error))
+(put 'invalid-read-syntax 'error-conditions '(invalid-read-syntax error))
+(put 'end-of-file 'error-conditions '(end-of-file error))
+#+end_src
+
+これが install されたら Rust 側 =is_error_subtype= は **データ駆動** に
+変えるか、もしくは elisp に subtype check 自体を移管する.  推奨:
+=condition-case= の matching logic を elisp =error-conditions= 経由に
+切り替える (= Doc 89 で =condition-case= special form の env aware 部を
+elisp 化する流れと統合可能).
+
+* §3 =lisp/nelisp-stdlib-error.el= 構造
+
+** §3.1 file 配置 + STDLIB_FILES order
+
+新規 file: =lisp/nelisp-stdlib-error.el= (+ baked =.image=).
+
+=nelisp-baker.rs:37= の =STDLIB_FILES= 上での position:
+
+#+begin_src rust
+const STDLIB_FILES: &[&str] = &[
+    "nelisp-jit-substrate.el",     // Doc 80
+    "nelisp-syscall-table.el",     // Doc 84 §84.2
+    "nelisp-jit-strategy.el",      // Doc 80 + 84
+    "nelisp-stdlib-error.el",      // ← NEW (Doc 88) — index 3
+    "nelisp-stdlib-eval-special.el",
+    ... (以下既存)
+];
+#+end_src
+
+**根拠**:
+- Doc 80 substrate (= =signal= helper の minimal 2 個) で十分 boot は
+  立ち上がるが、=stdlib-error.el= は =put 'TAG 'error-conditions ...=
+  と完全な signal helper set を install する役割.
+- =stdlib-eval-special.el= (= STDLIB_FILES[4]) 以降は =defun= /
+  =defmacro= など macro infra に依存するが、それは Doc 80 substrate
+  内で establish 済 = =stdlib-error.el= は substrate の直後に置ける.
+- =stdlib-error.el= は **elisp callsite からの =signal= helper** が
+  主用途 = 後続 stdlib (= =stdlib-list.el= 等) が =wrong-type-argument=
+  を投げる際にこの helper を使う (= 現状 Rust =EvalError::WrongType=
+  に頼っていた箇所が elisp wrapper に置き換わる).
+
+** §3.2 file body skeleton (~250 LOC elisp)
+
+#+begin_src emacs-lisp
+;;; nelisp-stdlib-error.el --- Elisp condition-system surface (Doc 88) -*- lexical-binding: t; -*-
+
+;;; Commentary:
+
+;; Doc 88 §86.2 (2026-05-10) — elisp-side condition / signal surface.
+;;
+;; Loaded as STDLIB_FILES[3] (= AFTER `nelisp-jit-substrate.el' /
+;; `nelisp-jit-strategy.el', BEFORE `nelisp-stdlib-eval-special.el').
+;; The substrate already provides minimal `nelisp--signal-wrong-type'
+;; / `nelisp--signal-arith' (Doc 80).  This file completes the surface:
+;;
+;;   - `error-conditions' put-properties for full hierarchy
+;;     (`wrong-type-argument' is-a `error', etc.)
+;;   - signal helpers for every `EvalError' variant Doc 88 migrates
+;;   - `define-error' macro for user code to declare new conditions
+;;   - `error-message-string' for `(condition-case e ... (e (message
+;;     "%s" (error-message-string e))))' pattern
+;;   - `nelisp--read-error->signal' dispatcher for reader-side errors
+;;
+;; The Rust side (= `eval/error.rs') retains ONLY `EvalError::Internal'
+;; for panic-equivalent invariant breakage (= ~30-50 LOC residual);
+;; every other variant becomes an elisp `signal' callsite emitted from
+;; the migrated builtins (Doc 87) / env (Doc 89) layers.
+
+;;; Code:
+
+;;;; --- 1. Condition hierarchy via `error-conditions' put ---
+
+(put 'error 'error-conditions '(error))
+(put 'error 'error-message "error")
+
+(put 'quit 'error-conditions '(quit))
+(put 'quit 'error-message "Quit")
+
+(put 'wrong-type-argument 'error-conditions
+     '(wrong-type-argument error))
+(put 'wrong-type-argument 'error-message "Wrong type argument")
+
+(put 'arith-error 'error-conditions '(arith-error error))
+(put 'arith-error 'error-message "Arithmetic error")
+
+(put 'void-variable 'error-conditions '(void-variable error))
+(put 'void-variable 'error-message "Symbol's value as variable is void")
+
+(put 'void-function 'error-conditions '(void-function error))
+(put 'void-function 'error-message "Symbol's function definition is void")
+
+(put 'wrong-number-of-arguments 'error-conditions
+     '(wrong-number-of-arguments error))
+(put 'wrong-number-of-arguments
+     'error-message "Wrong number of arguments")
+
+(put 'no-catch 'error-conditions '(no-catch error))
+(put 'no-catch 'error-message "No catch for tag")
+
+(put 'setting-constant 'error-conditions '(setting-constant error))
+(put 'setting-constant 'error-message "Attempt to set a constant symbol")
+
+(put 'invalid-read-syntax 'error-conditions
+     '(invalid-read-syntax error))
+(put 'invalid-read-syntax 'error-message "Invalid read syntax")
+
+(put 'end-of-file 'error-conditions '(end-of-file error))
+(put 'end-of-file 'error-message "End of file during parsing")
+
+;;;; --- 2. Signal helpers (1-to-1 with EvalError variants) ---
+
+;; `nelisp--signal-wrong-type' / `nelisp--signal-arith' are already
+;; defined in `nelisp-jit-substrate.el' (Doc 80 §3.2).  We *redefine*
+;; here only if shape change is needed.  As of Doc 88 the substrate
+;; shape (= `(EXPECTED GOT)') matches the migration plan.
+
+(defun nelisp--signal-void-variable (sym)
+  (signal 'void-variable (list sym)))
+
+(defun nelisp--signal-void-function (sym)
+  (signal 'void-function (list sym)))
+
+(defun nelisp--signal-wrong-arity (fn-name got)
+  (signal 'wrong-number-of-arguments (list fn-name got)))
+
+(defun nelisp--signal-no-catch (tag value)
+  (signal 'no-catch (list tag value)))
+
+(defun nelisp--signal-setting-constant (sym)
+  (signal 'setting-constant (list sym)))
+
+(defun nelisp--signal-not-implemented (msg)
+  (signal 'error (list (concat "not-implemented: " msg))))
+
+;;;; --- 3. ReadError dispatcher ---
+
+(defun nelisp--signal-read-lex (msg line col)
+  (signal 'invalid-read-syntax
+          (list msg :line line :col col :kind 'lex)))
+
+(defun nelisp--signal-read-parse (msg line col)
+  (signal 'invalid-read-syntax
+          (list msg :line line :col col :kind 'parse)))
+
+(defun nelisp--signal-read-eof (msg line col)
+  (signal 'end-of-file
+          (list msg :line line :col col)))
+
+(defun nelisp--signal-read-nyi (feature line col)
+  (signal 'error
+          (list (concat "not-yet-implemented: " feature)
+                :line line :col col)))
+
+;; Dispatcher used by Rust `From<ReadError>' equivalent — Rust calls
+;; this with `(KIND MSG LINE COL)' tuple converted to a Sexp list.
+(defun nelisp--read-error->signal (kind msg line col)
+  (cond
+    ((eq kind 'lex)   (nelisp--signal-read-lex   msg line col))
+    ((eq kind 'parse) (nelisp--signal-read-parse msg line col))
+    ((eq kind 'eof)   (nelisp--signal-read-eof   msg line col))
+    ((eq kind 'nyi)   (nelisp--signal-read-nyi   msg line col))
+    (t (signal 'error (list "unknown read-error kind:" kind)))))
+
+;;;; --- 4. error-message-string + define-error ---
+
+(defun error-message-string (err-obj)
+  ;; ERR-OBJ is the (TAG . DATA) cons that condition-case binds VAR to.
+  (let* ((tag (car err-obj))
+         (data (cdr err-obj))
+         (msg (get tag 'error-message)))
+    (cond
+      ((null msg) (format "%S" err-obj))
+      ((null data) msg)
+      (t (concat msg ": " (format "%S" data))))))
+
+(defmacro define-error (name message &optional parent)
+  ;; `(define-error 'my-err "My error" 'arith-error)' →
+  ;; (put 'my-err 'error-conditions '(my-err arith-error error))
+  ;; (put 'my-err 'error-message "My error")
+  (let* ((parent-conds (if parent (get parent 'error-conditions) '(error)))
+         (conds (cons name parent-conds)))
+    (list 'progn
+          (list 'put (list 'quote name) ''error-conditions
+                (list 'quote conds))
+          (list 'put (list 'quote name) ''error-message message))))
+
+(provide 'nelisp-stdlib-error)
+;;; nelisp-stdlib-error.el ends here
+#+end_src
+
+LOC budget breakdown:
+- Condition hierarchy puts (= 11 conditions × 2 puts each) = ~30 LOC
+- Signal helpers (= 7 new + 2 from substrate carry-over) = ~50 LOC
+- ReadError dispatcher (= 4 helpers + 1 dispatcher) = ~30 LOC
+- =error-message-string= + =define-error= macro = ~30 LOC
+- file header / commentary = ~50 LOC
+- whitespace + block separators = ~60 LOC
+
+合計推定: ~250 LOC.  Doc 86 §3.4 試算と一致.
+
+** §3.3 substrate との重複 / shadow
+
+=nelisp-jit-substrate.el= 内の =nelisp--signal-wrong-type= /
+=nelisp--signal-arith= は既に shape 一致 = re-define しない (= 重複
+shadow を避ける).  むしろ =stdlib-error.el= 内では substrate 既存 helper
+を **前提** とする (= =fboundp= check は不要、load order 保証).
+
+substrate 内 shape:
+#+begin_src emacs-lisp
+(defun nelisp--signal-wrong-type (expected got)
+  (signal 'wrong-type-argument (cons expected (cons got nil))))
+#+end_src
+
+これは =(list expected got)= と等価 = §2.1 row 3 の shape と一致.
+
+* §4 Rust residual (= ~30-50 LOC kept)
+
+** §4.1 残置 variant
+
+唯一 Rust に残す variant は **=EvalError::Internal(String)=**.
+
+理由:
+- panic 等価 = elisp で recover 不能な invariant breakage を表現
+  (= Sexp variant の予期しない shape、UTF-8 invalid bytes、I/O syscall
+  failure 等)
+- Rust callsite が ~53 ヶ所と最頻出 = elisp 移管しても "should-never-
+  happen" branch を elisp 化する benefit が薄い
+- =condition-case= で =(error ...)= clause で catch 可能 (= 完全に
+  unrecoverable ではない、bug surface としての value あり)
+
+** §4.2 Rust file 縮減後の skeleton
+
+post-Doc-88 の =eval/error.rs= 推定構造:
+
+#+begin_src rust
+//! Evaluator panic-equivalent error type — Phase 8.0.2 + Doc 88 (§86.2).
+//!
+//! After Doc 88 ship, every user-visible error variant moved to
+//! elisp `signal' callsites (see `lisp/nelisp-stdlib-error.el').
+//! The remaining `EvalError::Internal' represents bug-surface only:
+//! invariant breakage that elisp cannot meaningfully recover from
+//! (= e.g. malformed `Sexp' variant payload, UTF-8 corruption in
+//! pre-validated bytes, I/O syscall returning EBADF on a known-good
+//! fd).  These still surface as elisp `(error "internal: ...")' so
+//! `condition-case' with an `error' clause catches them, but no
+//! finer-grained variant remains.
+
+use std::fmt;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EvalError {
+    pub message: String,
+}
+
+impl EvalError {
+    pub fn internal(msg: impl Into<String>) -> Self {
+        Self { message: msg.into() }
+    }
+    /// Map to the elisp `(TAG . DATA)' cons that `condition-case' binds
+    /// to.  All Rust-side `EvalError' instances are `error' tag now.
+    pub fn signal_data(&self) -> super::sexp::Sexp {
+        // (error "internal: MSG")
+        super::sexp::Sexp::cons(
+            super::sexp::Sexp::Symbol("error".into()),
+            super::sexp::Sexp::list_from(&[
+                super::sexp::Sexp::Str(format!("internal: {}", self.message)),
+            ]),
+        )
+    }
+    pub fn error_tag(&self) -> &str { "error" }
+}
+
+impl fmt::Display for EvalError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "internal: {}", self.message)
+    }
+}
+
+impl std::error::Error for EvalError {}
+
+// ReadError stays — see §5.  `From<ReadError> for EvalError' goes
+// away because ReadError now signals elisp directly via
+// `nelisp--read-error->signal' at the eval/read boundary.
+pub use super::reader_pos::{ReadError, SourcePos};
+#+end_src
+
+LOC 試算: ~40 LOC (= 旧 308 LOC との差分 -268).
+
+** §4.3 SettingConstant が "migrate" でも Rust 側で立つ理由
+
+§1.1 row 8 の =SettingConstant= は =env.rs::setq= / =bi_set= から立つ
+= Doc 89 (= =env.rs= elisp 化) で env layer 自身が elisp 化されると
+**Rust callsite が消える** = §86.2 では elisp helper を提供しておくが、
+最後の Rust callsite 撤去は Doc 89 の責務.
+
+同様に =SettingConstant= 残置中は Rust 側 internal mapping (= "Rust
+=env::set= が立てるエラー" → "elisp =setting-constant= signal") の
+glue が必要.  §6.4 で詳述.
+
+* §5 SourcePos preservation strategy
+
+** §5.1 Rust 側 representation
+
+=SourcePos { line: u32, col: u32 }= は **reader 内部の Rust struct
+として残す**:
+
+- =reader/lexer.rs= / =reader/parser.rs= の internal state は
+  byte-level offset を tracking する (= UTF-8 multibyte char で col が
+  byte width 単位) = Rust の方が効率的
+- elisp に運ぶのは error path のみ = hot path に impact なし
+
+** §5.2 elisp 側 transit shape
+
+elisp 側 signal data に =:line= / =:col= keyword pair で attach する.
+これは Emacs-compatible な慣行 (= GNU Emacs の =scan-error= 等が
+=(scan-error MSG START END)= で position を運ぶのと類似).
+
+#+begin_src emacs-lisp
+(signal 'invalid-read-syntax
+        (list "unmatched paren" :line 42 :col 7 :kind 'parse))
+#+end_src
+
+handler 側 access:
+#+begin_src emacs-lisp
+(condition-case e
+    (read-from-string "(foo (bar)")
+  (invalid-read-syntax
+    (let* ((data (cdr e))
+           (msg (car data))
+           (line (plist-get (cdr data) :line))
+           (col  (plist-get (cdr data) :col)))
+      (format "%s at %d:%d" msg line col))))
+#+end_src
+
+** §5.3 reader → eval boundary での conversion
+
+Rust =reader/= が =Result<Sexp, ReadError>= を返す path は、Doc 88 で
+は elisp =signal= に **直接** 変換する (= =From<ReadError> for
+EvalError= は廃止):
+
+旧 path:
+#+begin_src
+reader → ReadError → From → EvalError::Read(rerr) → condition-case Rust
+                                                  → e.signal_data()
+                                                  → Sexp cons
+#+end_src
+
+新 path (= Doc 88 後):
+#+begin_src
+reader → ReadError → reader_to_signal_helper(rerr) → eval =(funcall
+                                                           'nelisp--read-error->signal
+                                                           kind msg line col)=
+                                                  → elisp signal
+                                                  → unwind via condition-case
+#+end_src
+
+実装上 =reader_to_signal_helper(env, rerr)= は Rust fn として書き、
+内部で =env.eval(funcall-form)= を呼ぶ (= 4-arg helper invocation).
+これにより Rust=>elisp boundary で SourcePos が plist として運ばれる.
+
+** §5.4 backward compat
+
+既存 ERT (= =reader/= test 群) が =EvalError::Read(ReadError::Lex {
+... pos })= を pattern match していた箇所は、=condition-case= で
+=invalid-read-syntax= を catch + =plist-get :line / :col= で抽出する
+形式に書き換える.  test side change: ~30 ERT site (推定).
+
+* §6 実装順序 (= atomic-with-consumer)
+
+** §6.1 stage breakdown
+
+|---+---------+----------------------------------+------------------+----------+----------|
+|   | stage   | scope                            | net Rust delta   | elisp Δ  | gate     |
+|---+---------+----------------------------------+------------------+----------+----------|
+| 1 | §88.1   | =stdlib-error.el= 新規 + STDLIB_FILES order + 全 11 condition put + helpers, ERT が **既存 EvalError 経路と並走** することを確認 | +0 (= elisp-only) | +250 | make test-all green、新 ERT 25+ pass |
+| 2 | §88.2   | =builtins.rs= の =EvalError::WrongType= / =ArithError= / =UserError= callsite を elisp =signal= に移管 (= 大半は Doc 87 範囲だが、=error.rs= 移管の atomic-with-consumer として最低限の demonstration を組み込む) | -0 (= callsite 同数だが API 経路変更) | +0 | ERT 既存 + new |
+| 3 | §88.3   | =error.rs= の Rust enum を =Internal(String)= 1 variant に縮減、不要 variant + =error_tag= / =signal_data= / =is_error_subtype= 削除 | **-258〜-278** | +0 | =cargo build= green、make test-all green |
+| 4 | §88.4   | =From<ReadError>= 削除、reader→eval boundary を elisp helper invocation 経由に書換 | -10 | +0 | reader ERT green |
+| 5 | §88.5   | post-cleanup (= dead helper 削除、comments 更新、Doc 88 SHIPPED 化) | -5〜-10 | +0 | release-audit |
+|---+---------+----------------------------------+------------------+----------+----------|
+
+合計: Rust net **-273〜-298**, elisp **+250**.  Doc 86 §3.4 試算
+(-258〜-278) と整合.
+
+** §6.2 atomic-with-consumer 単位
+
+Doc 79 §11.7 の atomic-with-consumer pattern (= "elisp 側 install と
+Rust 側 callsite 撤去を同 commit に bundle、半端な状態を git history に
+残さない"):
+
+- §88.1 commit: =stdlib-error.el= + STDLIB_FILES + 既存 path 並走 verify
+- §88.2 commit: =EvalError::WrongType= → =nelisp--signal-wrong-type=
+  callsite migration **AND** Rust enum から =WrongType= 削除を **同時**
+- §88.3 commit: 残 9 migrate-target variant の callsite 全移管 + Rust
+  enum 縮減 = 単一 atomic
+- §88.4 commit: reader→eval boundary 書換 + =From<ReadError>= 削除
+- §88.5 commit: cleanup + status 更新
+
+** §6.3 risk: 並走 vs full-cutover
+
+§88.1 で並走 (= 旧 EvalError 経路と新 elisp signal 経路を coexist) する
+理由:
+- §88.1 単独で =cargo build= が green、make test-all が現行のまま green
+  にできる = revert easy
+- §88.2 以降が atomic-with-consumer で variant ごと撤去 = 1 commit
+  あたりの blast radius が小さい
+
+並走しない alternative (= big-bang cutover):
+- 1 commit で全 variant elisp 化 = bisect 困難、ERT regression の root
+  cause が特定しづらい
+
+→ **§88.1 並走 + §88.2-3 atomic 撤去 を推奨**.
+
+** §6.4 SettingConstant の Doc 89 連動
+
+§1.1 row 8 で SettingConstant は Doc 88 で elisp helper 提供のみ、Rust
+callsite 撤去は Doc 89 に委ねるべきかどうか:
+
+Doc 88 §86.2 の original scope (= error.rs 1 file 縮減) を遵守するため、
+=SettingConstant= の Rust callsite (= =env.rs::setq=) は Doc 88 でも
+**elisp signal に書き換える** = =EvalError::SettingConstant= variant
+は Doc 88 で削除.
+
+具体的には =env.rs::setq= の該当箇所を:
+
+#+begin_src rust
+// 旧:
+return Err(EvalError::SettingConstant(name.to_string()));
+
+// 新 (= Doc 88):
+let _ = env.eval_funcall("nelisp--signal-setting-constant", &[
+    Sexp::Symbol(name.to_string())
+])?;
+unreachable!("signal must unwind"); // signal helper never returns
+#+end_src
+
+これにより Doc 88 の "error.rs ファイル縮減 -278" が完全達成、Doc 89 は
+=env.rs= の他の責務 (= scope chain elisp 化) に集中できる.
+
+** §6.5 dependency
+
+#+begin_src text
+[Doc 80 SHIPPED] ──────────────────────┐
+                                       │
+[Doc 84 SHIPPED] ──┐                   │
+                   │                   │
+                   v                   v
+            [Doc 86 §86.2 = Doc 88 DRAFT]
+                   │                   │
+                   v                   v
+              §88.1 ship          §88.2 ship
+                                       │
+                                       v
+                                  §88.3 ship
+                                       │
+                                       v
+                                  §88.4 ship
+                                       │
+                                       v
+                                  §88.5 SHIPPED
+#+end_src
+
+並列性: §88.1 / §88.2 と Doc 87 (= §86.1 builtins.rs detail) は
+**並列可能** (= 別 file の編集).  ただし =builtins.rs= の =EvalError::*=
+callsite が Doc 87 でも触られる場合は §88.3 と Doc 87 の builtins
+migration stage が race する = 以下のいずれか:
+  - (a) §88.3 完了後に Doc 87 の builtins migration、または
+  - (b) §88.1 だけ ship してから Doc 87 builtins migration、最後に §88.3
+
+(b) の方が Doc 87 / Doc 88 dispatcher 的に時系列が短い → 推奨.
+
+* §7 ERT coverage plan
+
+** §7.1 Stage §88.1 ERT (= 並走 verification)
+
+新規 ERT file: =tests/stdlib-error-test.el= (~150 LOC、25+ test).
+
+- =stdlib-error-conditions-installed= : 11 condition tag 全てが
+  =error-conditions= property を持つことを assert
+- =stdlib-error-hierarchy-arith-is-error= : =(member 'error
+  (get 'arith-error 'error-conditions))= = =t=
+- =stdlib-error-hierarchy-quit-not-error= : =(member 'error
+  (get 'quit 'error-conditions))= = =nil=
+- =stdlib-error-signal-void-variable= : =(condition-case e
+  (nelisp--signal-void-variable 'foo) (void-variable e))= で 'foo
+  catch + data shape = =(foo)=
+- 同様に void-function / wrong-arity / no-catch / setting-constant
+  / not-implemented / read-{lex,parse,eof,nyi} で 1-2 case ずつ
+- =stdlib-error-message-string= : =error-message-string= が
+  =(wrong-type-argument numberp foo)= を =Wrong type argument:
+  (numberp foo)= に format
+- =stdlib-error-define-error= : =(define-error 'my-arith "..."
+  'arith-error)= で hierarchy が =(my-arith arith-error error)=
+
+** §7.2 Stage §88.2-3 ERT (= callsite migration)
+
+既存 ERT が catch する error tag は変わらない = =build-tool/tests/=
+配下の ~2,700 ERT は **無変更で green** であるべき.  これが migration
+の正しさの primary gate.
+
+新規 ERT (= elisp signal path 専用):
+- =builtin-wrong-type-via-elisp-signal= : =(car 1)= が elisp =signal=
+  経路を踏むことを =condition-case= で確認
+- =builtin-arith-via-elisp-signal= : =(/ 1 0)= 同様
+
+** §7.3 Stage §88.4 ERT (= reader boundary)
+
+reader test は既に多数 = =build-tool/tests/reader/=. これらが
+=invalid-read-syntax= / =end-of-file= を catch している pattern を
+=plist-get :line / :col= 抽出 form に **migrate** する (= ERT 側
+書換 = ~30 site).
+
+新規:
+- =reader-pos-line-col-via-plist= : =(read-from-string "(foo")= で
+  signal data から =(plist-get d :line)= が =1= を返すこと
+
+** §7.4 Cross-cutting gate
+
+- =make test-all= 全 1300+ pass 0 fail
+- =cargo test --all= 全 build-tool / runtime test green
+- =make bake-images= 全 .image regenerate clean
+- bench gate: =fib 30= micro-bench で >5% regression 無し (= elisp
+  signal path が hot path に乗らないことの確認)
+
+** §7.5 perf observability
+
+elisp signal path は cold path = perf 計測対象は **error case 専用**.
+hot-path computation (= =(+ 1 2)=) は signal を踏まないので、
+=condition-case= 発火率が低ければ overhead は negligible.
+
+ただし =bi_signal= 内で elisp =signal= callable (= Rust =bi_signal=
+は維持、elisp 側 helper が呼ぶ) という self-reference があるため、
+=bi_signal= 自身の Rust 実装は §88.x で **触らない** = stable invariant.
+
+* §8 Risk / unknowns
+
+** §8.1 Backtrace info loss / gain trade-off
+
+*** §8.1.1 Rust 側 backtrace の loss
+
+post-Doc-88 では Rust =EvalError= が =Internal(msg)= 1 variant のみ =
+=cargo test= 時の Rust backtrace は粒度を落とす (= "wrong-type-argument
+in =bi_car=" のような Rust file:line 情報が直接 enum variant に embedded
+されない).
+
+*** §8.1.2 elisp 側 backtrace の gain
+
+逆に elisp =signal= path に乗ると:
+- =backtrace= primitive (= =eval/builtins.rs::bi_backtrace= 既存) が
+  elisp call stack を walk 可能
+- =condition-case= handler が =error= を catch した時点の elisp dynamic
+  stack を access できる
+- ユーザは =(message "%s" (error-message-string e))= で human-readable
+  diagnostic を得る
+
+*** §8.1.3 trade-off 結論
+
+end-user-facing は **elisp backtrace の方が valuable** (= "Rust
+internal" な情報は user has no way to fix).  developer debug は
+=EvalError::Internal= の =msg= field に Rust file:line を embed する
+慣行 (= =format!("error.rs:{}: invariant", line!())=) で部分的に救済.
+
+ただし net info loss は **存在する** = §88.5 ship 時に design memo
+として「Rust enum 由来の static variant info を失った」を記録.
+
+** §8.2 condition hierarchy migration race
+
+Phase 1 末端で =error.rs::is_error_subtype= が hardcode した hierarchy
+(= =error= catches non-=quit=) と、Doc 88 で elisp =error-conditions=
+property に移すタイミングの不一致.
+
+具体的: §88.1 で put-property を install しても、Rust 側
+=is_error_subtype= は依然 hardcode のままなら、新 condition tag (=
+=void-variable= 等) を catch する rule が **2 source-of-truth** になる.
+
+mitigation:
+- §88.1 で put-property install + Rust 側 =is_error_subtype= が
+  =get 'TAG 'error-conditions= を look up するように rewrite (= ~10 LOC
+  Rust 増)
+- これにより hierarchy の SoT が elisp に統一される
+- 既存 ERT (= =error= catches =arith-error=) の挙動は不変
+
+** §8.3 reader boundary の Rust=>elisp call cost
+
+§5.3 で articulate した =reader_to_signal_helper(env, rerr)= は Rust
+fn 内から elisp =funcall= を発火する = boundary cross が発生.
+rough cost: 1 elisp funcall ≈ 100-500 ns (= JIT 経由).  reader error
+は 1 read あたり最悪 1 回発火 = total cost ~1 µs/error = 許容.
+
+ただし =read-from-string= を loop で呼ぶ pathological case で error
+を毎回踏むと cost が積もる.  unlikely in practice = §88.5 で perf
+ERT 1 case 追加で gate (= 1000 error/s 最低 throughput).
+
+** §8.4 SourcePos struct の Rust 側依存
+
+reader 内の Rust struct =SourcePos= は eval 側からも参照される (=
+=eval/error.rs:: pub struct SourcePos=) = post-Doc-88 では reader
+crate の internal struct に retire.  callsite migration で
+=use= path の書換が ~5 site 必要.
+
+** §8.5 =UserError= 経由の任意 tag
+
+=EvalError::UserError { tag, data }= は user code (= =(signal 'my-tag
+DATA)=) の sink.  post-Doc-88 では =bi_signal= 内で **elisp の signal
+callable に直 dispatch** = Rust enum 介在無し.
+
+ただし =bi_signal= 自身は Rust builtin として keep (= elisp は =signal=
+の primitive をどこかで踏まないと立ち上がらない、self-reference).
+=bi_signal= の internal は Doc 80 で既に articulated (= =arith-error=
+/ =wrong-type-argument= は dedicated variant に canonical 化、それ以外
+は =UserError=).  Doc 88 で =UserError= variant 自体は消える = =bi_signal=
+は **直接** elisp condition unwind を起動する形に refactor 必要.
+
+具体的 design:
+- =bi_signal(args)= が =Result<Sexp, EvalError>= を返すのではなく、
+  =Result<Sexp, ElispSignal>= 等の dedicated control-flow type に変える
+- =ElispSignal { tag: Sexp, data: Sexp }= = =EvalError= とは独立、
+  =condition-case= matching が直接食う
+
+これは Doc 88 内では **scope に入れない** (= =eval/= 内 control flow
+の architectural rewrite に近い) = §88.5 で残課題として note + 別 Doc
+候補化 (= "Doc 88-A: signal control-flow refactor").
+
+仮実装としては: =UserError= の Rust enum は keep (= ~5 LOC)、ただし
+"migrate target" 表記から外す = §1.1 row 6 を **partial migrate** に
+修正する選択肢.
+
+代替: §88.x 内で =EvalError= を完全に消すために =Result=Sexp,
+ElispSignal>= type alias を導入する (= ~30 LOC Rust 増、純粋移管 net
+は維持).  この alternative を採用するかは §88.5 で実装側判断.
+
+** §8.6 unknowns 一覧
+
+- =define-error= macro が =defmacro= 経由で正しく boot するか (= Doc
+  80 substrate の =defmacro= self-boot pattern + put-property install
+  順序の interplay).  smoke test 必須.
+- =error-conditions= 経由の subtype check が =bi_signal= 内 hardcode
+  と整合するか (= §8.2 と関連).
+- reader test の plist-get migration (= ~30 site) の労力試算が適切か.
+- =bi_signal= の =UserError= dependency を Doc 88 内で解決するか別 Doc
+  に escalate するか (= §8.5).
+
+* §9 References
+
+** §9.1 親 / 兄弟 design docs
+
+- Doc 86 = Phase 2 eval/ refactor master design (parent、§86.2 articulated)
+- Doc 80 = pre-stdlib elisp substrate (SHIPPED) — =signal= /
+  =condition-case= / =wrong-type-argument= / =arith-error= 系の
+  pre-stdlib infrastructure を establish 済、Doc 88 が build-on
+- Doc 87 = §86.1 builtins dispatch arm migration detailed (sibling,
+  parallel agent)
+- Doc 89 = §86.3 env.rs scope chain elisp 化 detailed (sibling,
+  parallel agent、=SettingConstant= callsite 撤去で連動)
+- Doc 79 §11.7 = atomic-with-consumer pattern (= ship discipline)
+- Doc 84 = strategy.rs final elisp-ization (SHIPPED) — Phase 1 末端
+  closure、=error.rs= が pinned だった理由を Doc 80 が解除した経緯
+
+** §9.2 Rust 側 anchor file
+
+- =build-tool/src/eval/error.rs= 308 LOC — 本 Doc 88 の primary target
+- =build-tool/src/eval/builtins.rs:2535-2597= =bi_signal= — elisp
+  =signal= の Rust sink、Doc 88 後も keep
+- =build-tool/src/eval/special_forms.rs:325-427= =sf_condition_case=
+  — handler matching、Doc 88 で =error-conditions= property look-up
+  に rewrite
+- =build-tool/src/bin/nelisp-baker.rs:37= STDLIB_FILES — 新 file
+  insertion point
+- =build-tool/src/eval/env.rs= =SettingConstant= callsite (= §6.4)
+- =build-tool/src/reader/lexer.rs= / =reader/parser.rs= / =reader/mod.rs=
+  — ReadError 構築 13 site
+
+** §9.3 elisp 側 anchor file
+
+- =lisp/nelisp-jit-substrate.el= 143-147 行 =nelisp--signal-wrong-type=
+  / =nelisp--signal-arith= — Doc 80 既存 helper、Doc 88 が拡張
+- =lisp/nelisp-stdlib-error.el= = **本 Doc 88 が新規作成**
+- =lisp/nelisp-stdlib-eval-special.el= — =condition-case= macro
+  expand path、Doc 88 で =error-conditions= property に依存
+
+** §9.4 関連 memory
+
+- =project_anvil_runtime_phase_b6_shipped= (= NeLisp standalone MCP
+  context)
+- =feedback_nelisp_core_vs_layer2_boundary= (= NeLisp に primitive 追加
+  可否の判定軸 — error.rs は core 側に近いが elisp 化可能)
+- =feedback_nelisp_runtime_vs_elisp_language= (= NeLisp = runtime、
+  elisp = 構文)
+
+** §9.5 external prior art
+
+- GNU Emacs =subr.el= の =define-error= macro pattern
+- GNU Emacs =error-conditions= property による hierarchy 表現
+- Common Lisp =define-condition= macro (= class hierarchy として
+  reify、Doc 88 では simple property based に簡略化)
+- Rust =thiserror= crate の enum-per-variant pattern (= 旧
+  =EvalError= の出自) → elisp condition system の方が end-user-facing
+  には適切という argument
