@@ -805,3 +805,131 @@ pub(super) fn verify_elisp_mirror_clear_function(env: &Env, name: &str) {
         );
     }
 }
+
+// ============================================================
+// Doc 86 §86.3.b shadow-verify smoke + synthetic-divergence tests.
+//
+// Cargo equivalent of the ERT `substrate-env-shim-shadow-test.el'
+// referenced in Doc 89 §4.2.2.  Cargo-side tests run inline because
+// the slim shim primitives (= `env_shim.rs') sit at the Rust layer
+// and exercising them through the elisp ERT path requires a fully-
+// bootstrapped bridge — over-engineering for a +0-LOC verify gate.
+// The shim-side cross-equivalence is covered by the existing
+// `env_shim::tests' module.
+// ============================================================
+
+#[cfg(all(test, feature = "env-shadow-verify"))]
+mod shadow_verify_tests {
+    use super::*;
+
+    /// Smoke: with the feature on, every Tier 3 env op flows through
+    /// the verify helpers without panicking — the canonical `Env'
+    /// path and the slim-shim view of `globals' agree by construction
+    /// (= they read the same HashMap).
+    #[test]
+    fn smoke_set_then_lookup_matches() {
+        let mut env = Env::empty();
+        let _ = env.set_value("doc-86-3b-smoke", Sexp::Int(42));
+        let v = env.lookup_value("doc-86-3b-smoke").unwrap();
+        // The verify helper at the bi_set / bi_symbol_value callsite
+        // would have panicked if the rust path and shim view diverged.
+        assert!(matches!(v, Sexp::Int(42)));
+        // Direct verify call to confirm the helper itself returns
+        // without panicking on a known-clean state.
+        verify_elisp_mirror_set_value(&env, "doc-86-3b-smoke", &Sexp::Int(42));
+        verify_elisp_mirror_lookup_value(
+            &env,
+            "doc-86-3b-smoke",
+            &Ok(Sexp::Int(42)),
+        );
+    }
+
+    /// Smoke: function cell round-trip.
+    #[test]
+    fn smoke_function_cell_matches() {
+        let mut env = Env::empty();
+        let func = Sexp::list_from(&[
+            Sexp::Symbol("builtin".into()),
+            Sexp::Symbol("doc-86-3b-bi".into()),
+        ]);
+        env.set_function("doc-86-3b-bi", func.clone());
+        let f = env.lookup_function("doc-86-3b-bi").unwrap();
+        assert!(matches!(&f, Sexp::Cons(_)));
+        verify_elisp_mirror_set_function(&env, "doc-86-3b-bi", &func);
+        verify_elisp_mirror_lookup_function(
+            &env,
+            "doc-86-3b-bi",
+            &Ok(func),
+        );
+    }
+
+    /// Smoke: clear ops verify correctly.
+    #[test]
+    fn smoke_clear_ops_match() {
+        let mut env = Env::empty();
+        let _ = env.set_value("doc-86-3b-clear", Sexp::Int(1));
+        env.clear_value("doc-86-3b-clear");
+        verify_elisp_mirror_clear_value(&env, "doc-86-3b-clear");
+        let func = Sexp::list_from(&[Sexp::Symbol("builtin".into())]);
+        env.set_function("doc-86-3b-clear-fn", func);
+        env.clear_function("doc-86-3b-clear-fn");
+        verify_elisp_mirror_clear_function(&env, "doc-86-3b-clear-fn");
+    }
+
+    /// Smoke: is_bound / is_fbound predicates.
+    #[test]
+    fn smoke_predicates_match() {
+        let mut env = Env::empty();
+        let _ = env.set_value("doc-86-3b-pred", Sexp::T);
+        verify_elisp_mirror_is_bound(&env, "doc-86-3b-pred", true);
+        verify_elisp_mirror_is_bound(&env, "doc-86-3b-pred-absent", false);
+        verify_elisp_mirror_is_fbound(&env, "doc-86-3b-pred-absent", false);
+    }
+
+    /// Synthetic divergence: when `is_bound' returns the wrong answer
+    /// (= simulated by passing the wrong rust_result) the verify helper
+    /// must panic.  Confirms the gate actually catches divergence.
+    #[test]
+    #[should_panic(expected = "Doc 86 §86.3.b shadow verify")]
+    fn synthetic_divergence_is_bound_caught() {
+        let mut env = Env::empty();
+        let _ = env.set_value("doc-86-3b-syn", Sexp::Int(1));
+        // Globals say "bound" → rust_result=false simulates a buggy
+        // canonical method that disagrees with the shim view.
+        verify_elisp_mirror_is_bound(&env, "doc-86-3b-syn", false);
+    }
+
+    /// Synthetic divergence: lookup_value rust_result Ok carrying a
+    /// different value than globals must trigger the verify panic.
+    #[test]
+    #[should_panic(expected = "Doc 86 §86.3.b shadow verify")]
+    fn synthetic_divergence_lookup_value_caught() {
+        let mut env = Env::empty();
+        let _ = env.set_value("doc-86-3b-div", Sexp::Int(1));
+        // shim view = Int(1), but pretend rust_result = Int(2).
+        verify_elisp_mirror_lookup_value(
+            &env,
+            "doc-86-3b-div",
+            &Ok(Sexp::Int(2)),
+        );
+    }
+
+    /// Frame-aware skip: with a non-empty frame stack, lookup_value
+    /// verify is a no-op — even synthetic divergence must NOT panic
+    /// (= shim is globals-only by design).
+    #[test]
+    fn frame_aware_skip_does_not_panic_under_divergence() {
+        let mut env = Env::empty();
+        let _ = env.set_value("doc-86-3b-frame", Sexp::Int(7));
+        env.push_frame();
+        // Globals say Int(7); rust_result claims Int(99) — the helper
+        // skips the comparison because frames are non-empty.
+        verify_elisp_mirror_lookup_value(
+            &env,
+            "doc-86-3b-frame",
+            &Ok(Sexp::Int(99)),
+        );
+        verify_elisp_mirror_is_bound(&env, "doc-86-3b-frame", false);
+        env.pop_frame();
+    }
+}
