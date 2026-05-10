@@ -540,7 +540,10 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // defalias of `string-equal'.
         // string-equal migrated to elisp (Rust-min 2026-05-06 batch 6n,
         // see lisp/nelisp-stdlib-plist-str.el; dead body removed in 6t).
-        "string-match-p" => bi_string_match_p(args),
+        // Doc 87 §86.1.f (2026-05-10): `string-match-p' migrated to
+        // elisp via `nl_jit_string_match_p' trampoline (jit/regex.rs);
+        // dispatch arm + `bi_string_match_p' helper deleted.  See
+        // `lisp/nelisp-stdlib-regex.el'.
         // Doc 76 Stage A.1 (2026-05-08) — UTF-8 byte count, used by
         // `nelisp-os-write' to size `nl-ffi-malloc' / `-write-bytes'
         // for binary-safe libc.write payloads.
@@ -694,17 +697,22 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-ffi-write-bytes-at" => super::ffi::nl_ffi_write_bytes_at(args),
         "nl-ffi-read-bytes-at" => super::ffi::nl_ffi_read_bytes_at(args),
         "nl-ffi-write-i64" => super::ffi::nl_ffi_write_i64(args),
-        "nl-current-unix-time" => bi_nl_current_unix_time(args),
-        "nl-secure-hash" => bi_nl_secure_hash(args),
-        "nl-format-unix-time" => bi_nl_format_unix_time(args),
-        "nl-downcase" => bi_nl_downcase(args),
-        "nl-upcase" => bi_nl_upcase(args),
-        "nl-split-by-non-alnum" => bi_nl_split_by_non_alnum(args),
+        // Doc 87 §86.1.f (2026-05-10): `nl-current-unix-time' /
+        // `nl-secure-hash' / `nl-format-unix-time' / `nl-downcase' /
+        // `nl-upcase' / `nl-split-by-non-alnum' migrated to elisp via
+        // the new `nl_jit_*' trampolines in `jit/{time,hash,strings}.rs'.
+        // dispatch arms + `bi_*' helpers deleted; the elisp wrappers
+        // in `lisp/nelisp-stdlib-{time,hash,plist-str}.el' install
+        // function-cell overrides at boot.
         // min / max / abs migrated to elisp (Rust-min batch 7g, see
         // lisp/nelisp-stdlib.el) — simple folds over `<' / `>'.
-        "float" => bi_float(args),
-        "exp" => bi_exp(args),
-        "log" => bi_log(args),
+        // Doc 87 §86.1.f (2026-05-10): `float' / `exp' / `log'
+        // migrated to elisp via the new `:trampoline-unary-float'
+        // ABI mode (= `nl-jit-call-float-unary' bridge + Rust
+        // trampolines in `jit/math.rs').  dispatch arms + `bi_*'
+        // helpers deleted; the elisp wrappers in
+        // `lisp/nelisp-stdlib-math.el' install the function-cell
+        // overrides at boot.
         // floor / ceiling / round migrated to elisp (Rust-min batch 7h,
         // 2026-05-07; see lisp/nelisp-stdlib.el).  The shared f64 div +
         // truncate-mode kernel stays in Rust as a single primitive.
@@ -842,9 +850,8 @@ pub(crate) fn as_int(name: &str, v: &Sexp) -> Result<i64, EvalError> {
 // directly on `Sexp' since they already have idiomatic
 // `Option<String>' handling.
 
-fn truthy(value: bool) -> Sexp {
-    if value { Sexp::T } else { Sexp::Nil }
-}
+// Doc 87 §86.1.f (2026-05-10): `truthy' helper deleted — last caller
+// was `bi_string_match_p' which moved to `jit/regex.rs'.
 
 // ---------- arithmetic implementations ----------
 //
@@ -1269,53 +1276,11 @@ fn string_value(v: &Sexp) -> Result<String, EvalError> {
 // bi_regexp_quote removed — see lisp/nelisp-stdlib-plist-str.el
 // (Rust-min 2026-05-06).
 
-fn bi_string_match_p(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("string-match-p", args, 2, Some(2))?;
-    let pat = string_value(&args[0])?;
-    let text = string_value(&args[1])?;
-    let matched = match pat.as_str() {
-        "\\`-?[0-9]+\\(\\.[0-9]+\\)?\\'" => {
-            let s = text.as_str();
-            let s = s.strip_prefix('-').unwrap_or(s);
-            let mut parts = s.split('.');
-            let first = parts.next().unwrap_or("");
-            let second = parts.next();
-            parts.next().is_none()
-                && !first.is_empty()
-                && first.chars().all(|c| c.is_ascii_digit())
-                && second.map_or(true, |tail| !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()))
-        }
-        "\\`{.*}\\'" => text.starts_with('{') && text.ends_with('}'),
-        "\\`[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+\\'" => {
-            let parts: Vec<&str> = text.split('.').collect();
-            parts.len() == 4 && parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
-        }
-        "^[[:space:]]*$" | "\\`[[:space:]]*\\'" => text.chars().all(|c| c.is_whitespace()),
-        "^[\u{00A0}]*$" => text.chars().all(|c| c == '\u{00A0}'),
-        "[\n\r]" => text.contains('\n') || text.contains('\r'),
-        _ => {
-            let anchored_start = pat.starts_with("\\`") || pat.starts_with('^');
-            let anchored_end = pat.ends_with("\\'") || pat.ends_with('$');
-            let literal = pat
-                .replace("\\`", "")
-                .replace("\\'", "")
-                .replace('^', "")
-                .replace('$', "")
-                .replace("\\.", ".")
-                .replace("\\\\", "\\");
-            if anchored_start && anchored_end {
-                text == literal
-            } else if anchored_start {
-                text.starts_with(&literal)
-            } else if anchored_end {
-                text.ends_with(&literal)
-            } else {
-                text.contains(&literal)
-            }
-        }
-    };
-    Ok(truthy(matched))
-}
+// bi_string_match_p removed — Doc 87 §86.1.f (2026-05-10).  Body
+// migrated to `build-tool/src/jit/regex.rs::nl_jit_string_match_p'
+// (= same literal-pattern fast-path list verbatim).  Elisp wrapper
+// in `lisp/nelisp-stdlib-regex.el' overrides the function-cell at
+// boot via `(fset 'string-match-p (lambda ...))`.
 
 fn normalize_path(path: &str, base: Option<&str>) -> PathBuf {
     let p = Path::new(path);
@@ -2315,124 +2280,14 @@ fn bi_truncate(args: &[Sexp]) -> Result<Sexp, EvalError> {
 /// Pathological stdin containing non-UTF-8 bytes passes through
 /// `from_utf8_lossy`, substituting U+FFFD; strict binary stdio is left
 /// to a later dedicated primitive.
-fn bi_nl_current_unix_time(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nl-current-unix-time", args, 0, Some(0))?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    Ok(Sexp::Int(now))
-}
-
-/// `(nl-secure-hash ALGO STRING)` — return the lowercase hex digest of
-/// STRING under ALGO (= 'sha1, 'sha256, 'md5, 'sha224, 'sha384,
-/// 'sha512).  Mirrors the host Emacs `secure-hash' API surface anvil-
-/// memory-add reaches for.  Implemented in pure Rust via the `sha1' /
-/// `sha2' / `md5' crates so build-tool stays self-contained.
-fn bi_nl_secure_hash(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nl-secure-hash", args, 2, Some(2))?;
-    let algo = match &args[0] {
-        Sexp::Symbol(s) => s.clone(),
-        Sexp::Str(s) => s.clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "symbol or string (algo)".into(),
-            got: other.clone(),
-        }),
-    };
-    let text = string_value(&args[1])?;
-    let bytes = text.as_bytes();
-    let hex = match algo.as_str() {
-        "sha1" => {
-            use sha1::{Digest, Sha1};
-            let mut h = Sha1::new();
-            h.update(bytes);
-            hex_lower(&h.finalize())
-        }
-        "sha256" => {
-            use sha2::{Digest, Sha256};
-            let mut h = Sha256::new();
-            h.update(bytes);
-            hex_lower(&h.finalize())
-        }
-        "sha224" => {
-            use sha2::{Digest, Sha224};
-            let mut h = Sha224::new();
-            h.update(bytes);
-            hex_lower(&h.finalize())
-        }
-        "sha384" => {
-            use sha2::{Digest, Sha384};
-            let mut h = Sha384::new();
-            h.update(bytes);
-            hex_lower(&h.finalize())
-        }
-        "sha512" => {
-            use sha2::{Digest, Sha512};
-            let mut h = Sha512::new();
-            h.update(bytes);
-            hex_lower(&h.finalize())
-        }
-        "md5" => {
-            let digest = md5::compute(bytes);
-            hex_lower(&digest.0)
-        }
-        other => return Err(EvalError::Internal(format!(
-            "nl-secure-hash: unsupported algo {:?}", other
-        ))),
-    };
-    Ok(Sexp::Str(hex))
-}
-
-/// `(nl-format-unix-time FORMAT EPOCH-INT)` → string formatted via
-/// chrono::DateTime<Utc>.format() with strftime-style FORMAT.
-/// EPOCH-INT is seconds since the Unix epoch.  Returns Sexp::Str.
-fn bi_nl_format_unix_time(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nl-format-unix-time", args, 2, Some(2))?;
-    let fmt = string_value(&args[0])?;
-    let epoch = match &args[1] {
-        Sexp::Int(i) => *i,
-        Sexp::Float(f) => *f as i64,
-        other => return Err(EvalError::WrongType {
-            expected: "integer (unix epoch)".into(),
-            got: other.clone(),
-        }),
-    };
-    use chrono::{TimeZone, Utc};
-    let dt = Utc.timestamp_opt(epoch, 0).single().ok_or_else(|| {
-        EvalError::Internal(format!("nl-format-unix-time: invalid epoch {}", epoch))
-    })?;
-    Ok(Sexp::Str(dt.format(&fmt).to_string()))
-}
-
-fn bi_nl_downcase(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nl-downcase", args, 1, Some(1))?;
-    let s = string_value(&args[0])?;
-    Ok(Sexp::Str(s.to_lowercase()))
-}
-
-fn bi_nl_upcase(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nl-upcase", args, 1, Some(1))?;
-    let s = string_value(&args[0])?;
-    Ok(Sexp::Str(s.to_uppercase()))
-}
-
-/// `(nl-split-by-non-alnum STRING &optional OMIT-EMPTY)` — split STRING
-/// on runs of non-alphanumeric characters.  When OMIT-EMPTY is non-nil
-/// (default behavior of Elisp `split-string ... t`), drops empty
-/// fragments.  This is the common-case shortcut for Elisp's
-/// `(split-string s "[^[:alnum:]]+" t)' idiom that anvil-memory's
-/// tokenizer reaches for.
-fn bi_nl_split_by_non_alnum(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nl-split-by-non-alnum", args, 1, Some(2))?;
-    let s = string_value(&args[0])?;
-    let omit_empty = args.get(1).map(|v| !matches!(v, Sexp::Nil)).unwrap_or(true);
-    let parts: Vec<Sexp> = s
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|p| if omit_empty { !p.is_empty() } else { true })
-        .map(|p| Sexp::Str(p.to_string()))
-        .collect();
-    Ok(Sexp::list_from(&parts))
-}
+// Doc 87 §86.1.f (2026-05-10): bi_nl_current_unix_time / bi_nl_secure_hash
+// / bi_nl_format_unix_time / bi_nl_downcase / bi_nl_upcase /
+// bi_nl_split_by_non_alnum removed — bodies migrated to
+// `build-tool/src/jit/{time,hash,strings}.rs' as `extern "C"'
+// trampolines.  Elisp wrappers in
+// `lisp/nelisp-stdlib-{time,hash,plist-str}.el' install function-cell
+// overrides at boot time so the original user-visible names continue
+// to resolve.
 
 /// Coerce arg to f64 for math ops.  Accepts int / float / nil (= 0.0).
 fn to_f64(arg: &Sexp) -> Result<f64, EvalError> {
@@ -2456,25 +2311,14 @@ fn to_f64(arg: &Sexp) -> Result<f64, EvalError> {
 // was a float; tree-internal callers were all-int so no behavioural
 // surprise.
 
-fn bi_float(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("float", args, 1, Some(1))?;
-    Ok(Sexp::Float(to_f64(&args[0])?))
-}
-
-fn bi_exp(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("exp", args, 1, Some(1))?;
-    Ok(Sexp::Float(to_f64(&args[0])?.exp()))
-}
-
-fn bi_log(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("log", args, 1, Some(2))?;
-    let x = to_f64(&args[0])?;
-    let base = match args.get(1) {
-        Some(b) => to_f64(b)?,
-        None => std::f64::consts::E,
-    };
-    Ok(Sexp::Float(x.log(base)))
-}
+// Doc 87 §86.1.f (2026-05-10): bi_float / bi_exp / bi_log removed —
+// migrated to `build-tool/src/jit/math.rs::nl_jit_float_{float,exp,
+// log}' under the new `:trampoline-unary-float' ABI mode.  Elisp
+// wrappers in `lisp/nelisp-stdlib-math.el' install function-cell
+// overrides at boot via `(fset 'float (lambda (x) (nl-jit-call-float-
+// unary "nl_jit_float_float" x)))' etc.  The 2-arg `(log X BASE)'
+// path lives in elisp via `(/ (log X) (log BASE))' so the Rust ABI
+// stays at exactly `fn(f64) -> f64'.
 
 // `bi_floor' / `bi_ceiling' / `bi_round' removed — Rust-min batch 7h
 // (2026-05-07): all three migrated to elisp wrappers (see
@@ -2528,13 +2372,9 @@ fn bi_nl_make_directory(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(Sexp::T)
 }
 
-fn hex_lower(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        out.push_str(&format!("{:02x}", b));
-    }
-    out
-}
+// Doc 87 §86.1.f (2026-05-10): `hex_lower' helper deleted — last
+// caller was `bi_nl_secure_hash' which moved to `jit/hash.rs' (the
+// equivalent helper there is local to that file).
 
 fn bi_read_stdin_bytes(args: &[Sexp]) -> Result<Sexp, EvalError> {
     use std::io::Read;

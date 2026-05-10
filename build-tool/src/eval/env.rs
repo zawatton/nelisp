@@ -207,6 +207,12 @@ impl Env {
             ("nelisp-stdlib-prn.el", include_bytes!("../../../lisp/nelisp-stdlib-prn.el.image")),
             ("nelisp-stdlib-reader.el", include_bytes!("../../../lisp/nelisp-stdlib-reader.el.image")),
             ("nelisp-stdlib-eval-core.el", include_bytes!("../../../lisp/nelisp-stdlib-eval-core.el.image")),
+            // Doc 87 §86.1.f (2026-05-10): Tier 2 wrappers — see
+            // `nelisp-baker.rs' STDLIB_FILES for the load-order
+            // rationale.
+            ("nelisp-stdlib-time.el", include_bytes!("../../../lisp/nelisp-stdlib-time.el.image")),
+            ("nelisp-stdlib-math.el", include_bytes!("../../../lisp/nelisp-stdlib-math.el.image")),
+            ("nelisp-stdlib-regex.el", include_bytes!("../../../lisp/nelisp-stdlib-regex.el.image")),
         ];
         let mut env = Env {
             globals: HashMap::new(),

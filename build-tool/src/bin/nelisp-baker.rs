@@ -92,6 +92,14 @@ const STDLIB_FILES: &[&str] = &[
     "nelisp-stdlib-prn.el",
     "nelisp-stdlib-reader.el",
     "nelisp-stdlib-eval-core.el",
+    // Doc 87 §86.1.f (2026-05-10): Tier 2 elisp wrappers for the 9
+    // Rust `bi_*' helpers retired in `eval/builtins.rs'.  Load LAST
+    // so the `nl-jit-call-*' bridge primitives + earlier stdlib are
+    // all live; each file installs `(fset 'NAME (lambda ...))'
+    // overrides directly without touching macros / cl-defun.
+    "nelisp-stdlib-time.el",
+    "nelisp-stdlib-math.el",
+    "nelisp-stdlib-regex.el",
 ];
 
 fn main() -> ExitCode {
