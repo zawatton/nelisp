@@ -387,19 +387,43 @@ current 32,599 - SHIPPED accounting 上の累積 ~13,317 + invest +1,000 余白
 
 ** §6.2 Phase 2 (= eval/ さらに refactor): ~5,000-8,000 LOC
 
-eval/ refactor で更に Rust shrink:
-- =eval/builtins.rs= dispatch arm を全 elisp 移管 (= -2,000〜-3,000 LOC)
-- =eval/error.rs= を nelisp-stdlib-error.el に移管 (= -500 LOC)
-- =eval/env.rs= scope chain を elisp 化 (= -1,500 LOC)
+#+begin_quote
+*Articulation note (2026-05-10、Doc 86 v2 reconcile 反映)*: 当初本節
+の "Phase 2 着地 ~6,000-8,000 LOC" は **Phase 2 単独削減 + Phase 3 連動
+削減の合算値** を指していた (= Doc 86 §9.4 / §13.5 follow-up #4 で
+flagged)。Phase 2 単独着地の reconciled 数値は *~18,753 LOC* (= -3,043
+net、Doc 86 §13.3 reconciled landing + §1.2 Phase 2 単独着地点定義 を
+canonical 参照)。本節下表の "Phase 2 + 3 合算" 列は Doc 83 統合 view を
+保ったまま、reader が Phase 2 単独 actual と区別できるよう column を
+articulate。各 sub-stage の detail は Doc 86 (Phase 2 master) / Doc 87
+(§86.1 builtins dispatch detail) / Doc 88 (§86.2 error.rs SHIPPED) /
+Doc 89 (§86.3 env.rs scope chain detail) に redirect。
+#+end_quote
 
-| 残る Rust 領域 (Phase 2 着地)                  | 推定 LOC |
-|-------------------------------------------------+----------|
-| =build-tool/src/bridge/=                        | ~1,500   |
-| =build-tool/src/reader/= (cfg-gate 下、source) | ~1,679   |
-| =build-tool/src/eval/= (= 最小 evaluator core) | ~1,500   |
-| =nelisp-runtime/=                              | ~1,000   |
-| 残 misc                                          | ~500     |
-| *合計*                                          | *~6,000-8,000* |
+eval/ refactor で更に Rust shrink (= Doc 86 v2 actual numbers):
+- =eval/builtins.rs= dispatch arm を全 elisp 移管 (= **-1,571 net**、
+  Doc 86 §86.1 / Doc 87 §11.3、v1 estimate -2,000〜-3,000 から下振れ)
+- =eval/error.rs= を nelisp-stdlib-error.el に移管 (= **-113 net SHIPPED**、
+  Doc 86 §86.2 / §12.2、残 full variant elision は §86.3 へ deferred)
+- =eval/env.rs= scope chain を elisp 化 (= **-1,214 net**、Doc 86 §86.3
+  / Doc 89 §10、ffi.rs 連動 -100→0 を Doc 89 grep で correct)
+- Phase 2 単独 net = **-2,898〜-3,043 LOC** (= Doc 86 §13.1 / §13.3)
+
+| 残る Rust 領域                                  | Phase 2 単独着地 | Phase 2 + 3 合算着地 |
+|-------------------------------------------------+------------------+---------------------|
+| =build-tool/src/bridge/=                        | ~884             | ~1,500 (含 trim 後余白) |
+| =build-tool/src/reader/= (cfg-gate 下、source) | ~1,370           | ~1,679              |
+| =build-tool/src/eval/= (= 最小 evaluator core) | ~6,500 (= -3,043 後の eval/ 残) | ~1,500 (= Phase 3 D-B 削減後) |
+| =build-tool/src/image/= 等 (= Phase 3 連動)    | ~2,500           | (= Phase 3 で吸収)   |
+| =nelisp-runtime/=                              | ~1,147           | ~1,000              |
+| 残 misc                                          | ~500             | ~500                |
+| *合計*                                          | ***~18,753 (Doc 86 §13.3)*** | *~6,000-8,000* (= Phase 3 連動後)  |
+
+*Cross-reference*: Phase 2 単独着地点と sub-stage 別 ROI は Doc 86
+§1.2 / §10.1 / §13.3 を canonical とする。本表 "Phase 2 + 3 合算"
+列は Phase 3 究極 D-B (= §6.3) 連動削減 ~10,000-12,000 LOC (= eval/
+sexp.rs / ffi.rs / mod.rs / special_forms.rs / image.rs / reader/ 等の
+Phase 3 で消失する領域、Doc 86 §1.1 articulated) を含む統合 view。
 
 ** §6.3 Phase 3 (= 究極 D-B 採用、追加設計必要): ~300-500 LOC
 
