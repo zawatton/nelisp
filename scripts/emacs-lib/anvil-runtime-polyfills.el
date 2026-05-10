@@ -20,14 +20,59 @@
 
 ;;; Code:
 
-;; --- subr-x feature stub --------------------------------------------
+;; --- pre-vendor substrate (= primitives vendor *.el reaches at load time) --
 
-;; emacs-stub-bulk already binds the subr-x bits anvil callers reach
-;; for (string-empty-p / string-trim / when-let / hash-table-keys ...).
-;; The package as such is missing, so `(require 'subr-x)' fails with
-;; "Cannot open load file".  Provide the feature so callers requiring
-;; the package see it satisfied without re-binding the helpers.
+;; Vendor `profiler.el' calls `(define-hash-table-test 'profiler-function-equal
+;; ...)' at top level — without the C primitive its load aborts.  anvil callers
+;; don't actually need the registered test to be wired into hash creation, so
+;; a no-op recorder is enough.
+(unless (fboundp 'define-hash-table-test)
+  (defvar anvil-runtime-polyfills--hash-table-tests (make-hash-table)
+    "Stub registry for `define-hash-table-test' polyfill.")
+  (defun define-hash-table-test (name test-fn hash-fn)
+    "Polyfill: record TEST-FN / HASH-FN under NAME (no wiring)."
+    (puthash name (list test-fn hash-fn)
+             anvil-runtime-polyfills--hash-table-tests)
+    name))
 
+
+;; --- vendor library bulk-load --------------------------------------
+
+;; Directive (2026-05-10 user, two messages): substrate libraries
+;; should come from `nelisp-emacs/vendor/emacs-lisp/` whenever possible
+;; — that's where upstream Emacs `subr-x.el' / `seq.el' / `cl-*.el'
+;; / `benchmark.el' / `profiler.el' / `url/' / `sqlite.el' / `json.el'
+;; / `auth-source.el' / `jsonrpc.el' all live.  Prepend the relevant
+;; vendor dirs to load-path and force-load the libraries anvil-* (and
+;; its transitive deps) reach for.  Each load is wrapped in
+;; condition-case so a failure on one library doesn't abort the rest;
+;; `unless (featurep ...)' / `unless (fboundp ...)' gates further down
+;; in this file remain as fallbacks for whichever vendor load fails.
+
+(let* ((nelisp-emacs-root
+        (or (and (boundp 'anvil-runtime-polyfills-nelisp-emacs-dir)
+                 anvil-runtime-polyfills-nelisp-emacs-dir)
+            "/home/madblack-21/Cowork/Notes/dev/nelisp-emacs"))
+       (vendor-base (concat nelisp-emacs-root "/vendor/emacs-lisp"))
+       (vendor-dirs (list vendor-base
+                          (concat vendor-base "/emacs-lisp")
+                          (concat vendor-base "/url"))))
+  (dolist (dir vendor-dirs)
+    (when (file-directory-p dir)
+      (add-to-list 'load-path dir))))
+
+(dolist (lib '("subr-x" "seq" "cl-extra" "cl-seq" "benchmark" "profiler"))
+  (condition-case anvil-runtime-polyfills--vendor-err
+      (load lib nil t)
+    (error
+     (when (fboundp 'nelisp--write-stderr-line)
+       (nelisp--write-stderr-line
+        (concat "[anvil-runtime-polyfills] vendor load `" lib "' failed: "
+                (format "%S" anvil-runtime-polyfills--vendor-err)))))))
+
+;; emacs-stub-bulk binds many subr-x bits unconditionally even when
+;; vendor subr-x didn't load — `provide' ensures `(require 'subr-x)'
+;; from anvil-* downstreams still satisfies regardless.
 (unless (featurep 'subr-x)
   (provide 'subr-x))
 
@@ -103,7 +148,9 @@ Used by anvil-bench's stddev (sqrt of variance)."
         guess)))))
 
 
-;; --- cl-lib gaps ----------------------------------------------------
+;; --- cl-lib gaps (hand-rolled fallback) ----------------------------
+;; Vendor cl-extra/cl-seq are loaded above; these `unless fboundp'
+;; gates only fire if vendor load failed for some reason.
 
 (unless (fboundp 'cl-copy-list)
   (defun cl-copy-list (list)
@@ -153,6 +200,59 @@ For lists, walks linearly.  For vectors, builds a fresh vector via
          ((stringp seq)
           (substring seq start e))
          (t (error "cl-subseq: unsupported sequence type")))))))
+
+(unless (fboundp 'cl-evenp)
+  (defun cl-evenp (n) "Polyfill: t when N is an even integer." (zerop (mod n 2))))
+
+(unless (fboundp 'cl-oddp)
+  (defun cl-oddp (n) "Polyfill: t when N is an odd integer." (= 1 (mod n 2))))
+
+(unless (fboundp 'cl-mapcar)
+  (defun cl-mapcar (function &rest sequences)
+    "Polyfill: like `mapcar' but accepts multiple SEQUENCES.
+Walks them in lock-step using `nth' lookup; minimal length wins."
+    (cond
+     ((null sequences) nil)
+     ((null (cdr sequences)) (mapcar function (car sequences)))
+     (t
+      (let* ((lens (mapcar #'length sequences))
+             (min-len (apply #'min lens))
+             (out nil)
+             (i 0))
+        (while (< i min-len)
+          (let ((args (mapcar (lambda (s) (nth i s)) sequences)))
+            (push (apply function args) out))
+          (setq i (1+ i)))
+        (nreverse out))))))
+
+(unless (fboundp 'cl-reduce)
+  (defun cl-reduce (function sequence &rest keys)
+    "Polyfill: simplified fold.
+Honors `:initial-value' and `:from-end' keyword args; ignores
+`:key' / `:start' / `:end' (= anvil callers don't use them)."
+    (let ((init-pair (member :initial-value keys))
+          (from-end (cadr (member :from-end keys))))
+      (let* ((lst (cond
+                   ((listp sequence) sequence)
+                   ((vectorp sequence)
+                    (let ((acc nil) (i (length sequence)))
+                      (while (> i 0) (setq i (1- i))
+                             (setq acc (cons (aref sequence i) acc)))
+                      acc))
+                   ((stringp sequence)
+                    (let ((acc nil) (i (length sequence)))
+                      (while (> i 0) (setq i (1- i))
+                             (setq acc (cons (aref sequence i) acc)))
+                      acc))
+                   (t (error "cl-reduce: unsupported sequence type"))))
+             (lst (if from-end (reverse lst) lst))
+             (acc (if init-pair (cadr init-pair)
+                    (prog1 (car lst) (setq lst (cdr lst))))))
+        (dolist (x lst)
+          (setq acc (if from-end
+                        (funcall function x acc)
+                      (funcall function acc x))))
+        acc))))
 
 
 ;; --- seq.el gaps ----------------------------------------------------
@@ -332,6 +432,62 @@ NeLisp doesn't expose `gcs-done' / `gc-elapsed' separately."
   (defun profiler-reset () nil)
   (defun profiler-cpu-log () (make-hash-table :test 'equal))
   (provide 'profiler))
+
+;; --- anvil-server cl-loop workaround --------------------------------
+
+;; `anvil-server-register-tools' / `-unregister-tools' use
+;;   (cl-loop for (k v) on (cdr spec) by #'cddr unless (eq k :server-id)
+;;            append (list k v))
+;; to filter the plist.  Standalone NeLisp's `cl-loop' destructures
+;; `(k v)' incorrectly under `by #'cddr' (= every key/value pair drops
+;; through the filter), so `(plist-get final :id)' is nil and the
+;; inner singular `register-tool' aborts with "requires :id".  Replace
+;; both functions with hand-rolled plist walks.  Done at polyfill load
+;; time (anvil-server is loaded before polyfills in the driver) so the
+;; override is in place before any tool module's `(enable)' iterates.
+
+(when (featurep 'anvil-server)
+  (defun anvil-server-register-tools (server-id specs)
+    "Polyfill override: hand-rolled plist walk replaces cl-loop."
+    (let (ids)
+      (dolist (spec specs)
+        (unless (and (consp spec) (functionp (car spec))
+                     (zerop (mod (length (cdr spec)) 2)))
+          (error "anvil-server-register-tools: malformed spec %S" spec))
+        (let* ((handler (car spec))
+               (raw     (cdr spec))
+               (props   nil))
+          (let ((tail raw))
+            (while tail
+              (let ((k (car tail))
+                    (v (cadr tail)))
+                (unless (eq k :server-id)
+                  (setq props (append props (list k v))))
+                (setq tail (cddr tail)))))
+          (let* ((final (append (list :server-id server-id) props))
+                 (id    (plist-get final :id)))
+            (apply #'anvil-server-register-tool handler final)
+            (push id ids))))
+      (nreverse ids)))
+
+  (defun anvil-server-unregister-tools (server-id specs)
+    "Polyfill override: hand-rolled plist walk replaces cl-loop."
+    (let (results)
+      (dolist (spec specs)
+        (when (and (consp spec) (functionp (car spec))
+                   (zerop (mod (length (cdr spec)) 2)))
+          (let* ((raw (cdr spec))
+                 (id  nil))
+            (let ((tail raw))
+              (while (and tail (null id))
+                (when (eq (car tail) :id)
+                  (setq id (cadr tail)))
+                (setq tail (cddr tail))))
+            (when id
+              (push (anvil-server-unregister-tool id server-id)
+                    results)))))
+      (nreverse results))))
+
 
 ;; --- post-load patches (anvil-* module compat) ---------------------
 

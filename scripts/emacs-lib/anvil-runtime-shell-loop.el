@@ -258,7 +258,7 @@ Uses CR-strip to recognise lines that are CRLF artefacts as blank."
   ;; default carries the actual list.
   (let* ((modules-env (anvil-runtime-shell--env
                        "ANVIL_TOOL_MODULES"
-                       "anvil-discovery,anvil-sqlite,anvil-bench")))
+                       "anvil-discovery,anvil-sqlite,anvil-bench,anvil-state,anvil-memory")))
     (when (fboundp 'nelisp--write-stderr-line)
       (nelisp--write-stderr-line
        (concat "[shell-loop] ANVIL_TOOL_MODULES="
