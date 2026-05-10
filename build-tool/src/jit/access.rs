@@ -1,69 +1,77 @@
-//! Phase 5 Stage 5.4 — AccessIR lower with inline NIL fast path.
+//! Phase 7.1.6.b (Doc 28 §3.6.b) — access trampolines, dlsym-exported.
 //!
-//! Stage 5.4 (2026-05-07, Doc 62, repr-pin commit 2fb64cd):
-//! - Initial scaffold (commit 5299e44) registered `length' and `aref'
-//!   via pure Rust trampolines that did the variant match + clone.
-//! - This commit adds an inline NIL fast path on top of `length' now
-//!   that `Sexp' has `#[repr(C, u8)]':
+//! Pre-7.1.6.b this module also hosted Cranelift IR builders that
+//! wrapped the trampolines with an inline NIL fast-path for `length'
+//! (= 8-block `cmp tag, TAG_NIL / je nil_path' shape) plus the
+//! `JitAccess' fn-ptr struct + the `register_symbols' / `declare_funcs'
+//! / `collect_funcs' plumbing that the unified JITModule used to bring
+//! those wrappers up at first-access (see commit history).
 //!
-//!   ```text
-//!   jit_length(arg_ptr, out_ptr):
-//!     a_tag = movzx u8 [arg_ptr + 0]
-//!     if a_tag == TAG_NIL:
-//!       store i8  SEXP_TAG_INT to [out_ptr + 0]
-//!       store i64 0            to [out_ptr + 8]
-//!       return OK
-//!     else:
-//!       call helper(arg_ptr, out_ptr)
-//!   ```
+//! Doc 81 Stage 81.4 + Phase 7.1.6.a.1 dlsym precursor (`6666e61')
+//! shipped the elisp-side replacement: `nelisp-cc-pipeline--recognize-
+//! primitives' rewrites `:call' sites against the `:fn' meta lookup
+//! into `:ssa-call-primitive :symbol nl_jit_access_*' instructions, and
+//! the x86_64 / arm64 backends emit a direct CALL fixup whose target
+//! address is resolved via `nelisp-cc--dlsym-resolve' against the
+//! binary's dynamic symbol table.  The inline-NIL fast path for
+//! `length' is now emitted by `nelisp-cc-x86_64.el' / `-arm64.el' as
+//! host machine code immediately before the CALL — same shape as the
+//! deleted `declare_length_with_inline_nil' Cranelift IR but produced
+//! from elisp via `unibyte-string'.
 //!
-//! `(length nil) = 0' fires every time elisp builds an alist scan
-//! that ends in Nil, so the inline path is a real hot-path skip.
-//! Vector / Str / etc still flow through the helper for `Rc' deref.
+//! Phase 7.1.6.b (this commit) deletes:
 //!
-//! `aref' has no NIL shortcut (= `(aref nil 0)' is a wrong-type
-//! error, the helper's ERR fallback already short-circuits before
-//! any heap access), so it keeps the v1 `declare_helper_call' shape.
+//!   - `JitAccess' / `AccessIds' fn-ptr structs.
+//!   - `declare_length_with_inline_nil' Cranelift IR builder.
+//!   - `register_symbols' / `declare_funcs' / `collect_funcs' wiring
+//!     (= `unified_jit()' no longer constructs an access cluster JIT
+//!     wrapper page).
 //!
-//! Trampoline coverage:
-//! - `length': handles `Sexp::Nil' / `Sexp::Vector' / `Sexp::Str';
-//!   `MutStr' / `BoolVector' / `Cons' (spine walk) / others fall
-//!   through to `bi_length'.
-//! - `aref': handles `Sexp::Vector' + `Sexp::BoolVector' (= Doc 77
-//!   Stage 1.B, 2026-05-09); `Str' / `MutStr' / `CharTable' fall
-//!   through to `aref_helper'.
+//! What stays (= the surface this module still owns post-7.1.6.b):
 //!
-//! Stage 5.6 (2026-05-07) — `aset' and `elt' added on the same
-//! `declare_helper_call' shape:
-//! - `aset': `Vector' + `BoolVector' fast path (= Doc 77 Stage 1.B,
-//!   2026-05-09).  `MutStr' (= codepoint mutation that rebuilds the
-//!   underlying String) stays in the dispatcher because the 4-arg
-//!   helper would not save anything.
-//! - `elt': `Vector' (= aref) + `Cons' (= list walk) fast path.  Other
-//!   sequence types fall through.
-
-use cranelift::prelude::*;
-use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{FuncId, Linkage, Module};
+//!   - The 4 `nl_jit_access_*' trampolines themselves, now `#[no_mangle]
+//!     pub unsafe extern "C"' so the dlsym bridge resolves them.  Body
+//!     unchanged from the pre-7.1.6.b version (= tag check on the
+//!     `#[repr(C, u8)]' Sexp byte → `*_box_ptr()' deref → field clone,
+//!     `OK = 0' / `ERR = 1' status return).
+//!   - `TRAMPOLINE_OK' / `_ERR' constants (= contract anchor).
+//!
+//! `nelisp-jit-substrate.el' / `nelisp-jit-strategy.el' still call
+//! `(nl-jit-call-out-N "nelisp_jit_*" …)' which goes through
+//! `bridge::unified_fn_ptr'.  Post-7.1.6.b those names resolve directly
+//! to the `nl_jit_access_*' trampolines — no Cranelift wrapper in
+//! between (= one fewer indirection; the inline NIL fast path for
+//! `length' is handled by the trampoline body's `tag == SEXP_TAG_NIL'
+//! arm, which returns `OK' immediately with `Sexp::Int(0)' written to
+//! `out'.  Mirrors the Phase 7.1.6.a.2 cons cluster takeover pattern).
+//!
+//! The `-rdynamic' link flag in `.cargo/config.toml' (= already added
+//! by Phase 7.1.6.a.2; access trampolines just inherit) pushes the 4
+//! `#[no_mangle]' symbols into the binary's dynamic symbol table so
+//! `dlsym(RTLD_DEFAULT, ...)' can locate them at runtime.
 
 use crate::eval::sexp::{
-    Sexp, SEXP_TAG_BOOL_VECTOR, SEXP_TAG_CONS, SEXP_TAG_INT, SEXP_TAG_NIL, SEXP_TAG_STR,
+    Sexp, SEXP_TAG_BOOL_VECTOR, SEXP_TAG_CONS, SEXP_TAG_NIL, SEXP_TAG_STR,
     SEXP_TAG_VECTOR,
 };
 
-use super::declare_helper_call;
-
-const TRAMPOLINE_OK: i64 = 0;
-const TRAMPOLINE_ERR: i64 = 1;
+pub(super) const TRAMPOLINE_OK: i64 = 0;
+pub(super) const TRAMPOLINE_ERR: i64 = 1;
 
 // Phase A.5 (Doc 77c §2.1.4): trampolines dispatch on `Sexp::tag()' and
 // read box pointers via `Sexp::*_box_ptr()' instead of `match'.  Each
-// arm collapses to "tag check → ptr deref → field op", which mirrors
-// the cranelift IR shape that the JIT entry will eventually inline.
+// arm collapses to "tag check → ptr deref → field op".
 
 /// `(length OBJ)' fast path: `Nil' / `Vector' / `Str'.  Other types
 /// return `TRAMPOLINE_ERR' so the caller falls through to `bi_length'.
-unsafe extern "C" fn nl_jit_access_length(arg: *const Sexp, out: *mut Sexp) -> i64 {
+///
+/// Phase 7.1.6.b (Doc 28 §3.6.b / Doc 81 §5.4): `#[no_mangle]' so the
+/// dlsym bridge (`bi_dlsym_resolve') can locate this symbol at runtime
+/// when the recognition pass emits `:ssa-call-primitive :symbol
+/// nl_jit_access_length'.  The dynamic symbol export requires
+/// `-rdynamic' (= `.cargo/config.toml' `[build] rustflags').
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_access_length(arg: *const Sexp, out: *mut Sexp) -> i64 {
     let tag = (*arg).tag();
     if tag == SEXP_TAG_NIL {
         *out = Sexp::Int(0);
@@ -90,7 +98,10 @@ unsafe extern "C" fn nl_jit_access_length(arg: *const Sexp, out: *mut Sexp) -> i
 /// negative index returns `TRAMPOLINE_ERR' for canonical-error fall-
 /// through (= the dispatcher's `aref_helper' surfaces the proper
 /// out-of-range / wrong-type message).
-unsafe extern "C" fn nl_jit_access_aref(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64 {
+///
+/// Phase 7.1.6.b dlsym-exported.
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_access_aref(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64 {
     if idx < 0 {
         return TRAMPOLINE_ERR;
     }
@@ -118,7 +129,10 @@ unsafe extern "C" fn nl_jit_access_aref(arg: *const Sexp, idx: i64, out: *mut Se
 /// `Sexp::BoolVector'.  Returns VALUE per Emacs' `aset' contract.
 /// `MutStr' aset (= codepoint mutation) is left to the dispatcher
 /// because the rebuild-String path is not worth a JIT helper.
-unsafe extern "C" fn nl_jit_access_aset(
+///
+/// Phase 7.1.6.b dlsym-exported.
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_access_aset(
     arg: *const Sexp,
     idx: i64,
     val: *const Sexp,
@@ -160,7 +174,10 @@ unsafe extern "C" fn nl_jit_access_aset(
 
 /// `(elt SEQUENCE INDEX)' fast path: `Sexp::Vector' (= aref) /
 /// `Sexp::Cons' (= list walk).  Other sequence types fall through.
-unsafe extern "C" fn nl_jit_access_elt(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64 {
+///
+/// Phase 7.1.6.b dlsym-exported.
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_access_elt(arg: *const Sexp, idx: i64, out: *mut Sexp) -> i64 {
     if idx < 0 {
         return TRAMPOLINE_ERR;
     }
@@ -194,161 +211,6 @@ unsafe extern "C" fn nl_jit_access_elt(arg: *const Sexp, idx: i64, out: *mut Sex
     TRAMPOLINE_ERR
 }
 
-pub(super) struct JitAccess {
-    pub(super) length: extern "C" fn(*const Sexp, *mut Sexp) -> i64,
-    pub(super) aref: extern "C" fn(*const Sexp, i64, *mut Sexp) -> i64,
-    pub(super) aset: extern "C" fn(*const Sexp, i64, *const Sexp, *mut Sexp) -> i64,
-    pub(super) elt: extern "C" fn(*const Sexp, i64, *mut Sexp) -> i64,
-}
-
-pub(super) struct AccessIds {
-    length: FuncId,
-    aref: FuncId,
-    aset: FuncId,
-    elt: FuncId,
-}
-
-/// Build the `length' JIT entry with an inline NIL → Int(0) fast path.
-/// Cranelift emits an `i8' store + `i64' store for the Nil case,
-/// avoiding the helper call entirely.
-fn declare_length_with_inline_nil(module: &mut JITModule) -> FuncId {
-    let mut helper_sig = module.make_signature();
-    helper_sig.params.push(AbiParam::new(types::I64));
-    helper_sig.params.push(AbiParam::new(types::I64));
-    helper_sig.returns.push(AbiParam::new(types::I64));
-    let helper_id = module
-        .declare_function("nl_jit_access_length", Linkage::Import, &helper_sig)
-        .expect("cranelift: declare_function nl_jit_access_length");
-
-    let mut entry_sig = module.make_signature();
-    entry_sig.params.push(AbiParam::new(types::I64));
-    entry_sig.params.push(AbiParam::new(types::I64));
-    entry_sig.returns.push(AbiParam::new(types::I64));
-    let entry_id = module
-        .declare_function("nelisp_jit_length", Linkage::Local, &entry_sig)
-        .expect("cranelift: declare_function nelisp_jit_length");
-
-    let mut ctx = module.make_context();
-    ctx.func.signature = entry_sig;
-
-    let mut fbcx = FunctionBuilderContext::new();
-    {
-        let mut fb = FunctionBuilder::new(&mut ctx.func, &mut fbcx);
-        let entry_b = fb.create_block();
-        let nil_b = fb.create_block();
-        let slow_b = fb.create_block();
-        fb.append_block_params_for_function_params(entry_b);
-
-        // Entry: load tag byte, branch on Nil vs other.
-        fb.switch_to_block(entry_b);
-        let arg_ptr = fb.block_params(entry_b)[0];
-        let out_ptr = fb.block_params(entry_b)[1];
-        let flags = MemFlags::trusted();
-        let tag_byte = fb.ins().load(types::I8, flags, arg_ptr, 0);
-        let tag = fb.ins().uextend(types::I64, tag_byte);
-        let is_nil = fb.ins().icmp_imm(IntCC::Equal, tag, SEXP_TAG_NIL as i64);
-        fb.ins().brif(is_nil, nil_b, &[], slow_b, &[]);
-        fb.seal_block(entry_b);
-
-        // Nil path: write Sexp::Int(0) inline.  Tag byte at offset 0,
-        // i64 payload at offset 8 (= `#[repr(C, u8)]' fixed offsets).
-        fb.switch_to_block(nil_b);
-        let int_tag_i8 = fb.ins().iconst(types::I8, SEXP_TAG_INT as i64);
-        let zero_i64 = fb.ins().iconst(types::I64, 0);
-        fb.ins().store(flags, int_tag_i8, out_ptr, 0);
-        fb.ins().store(flags, zero_i64, out_ptr, 8);
-        let ok = fb.ins().iconst(types::I64, 0);
-        fb.ins().return_(&[ok]);
-        fb.seal_block(nil_b);
-
-        // Slow path: helper handles Vector/Str/other via match arm.
-        fb.switch_to_block(slow_b);
-        let helper_local = module.declare_func_in_func(helper_id, fb.func);
-        let inst = fb.ins().call(helper_local, &[arg_ptr, out_ptr]);
-        let result = fb.inst_results(inst)[0];
-        fb.ins().return_(&[result]);
-        fb.seal_block(slow_b);
-
-        fb.finalize();
-    }
-
-    module
-        .define_function(entry_id, &mut ctx)
-        .expect("cranelift: define_function nelisp_jit_length");
-    module.clear_context(&mut ctx);
-    entry_id
-}
-
-/// Doc 77 Stage 2-prep (2026-05-09): submodule-level helper that
-/// registers all imported `nl_jit_access_*' symbols on the shared
-/// JITBuilder.
-pub(super) fn register_symbols(builder: &mut JITBuilder) {
-    builder.symbol("nl_jit_access_length", nl_jit_access_length as *const u8);
-    builder.symbol("nl_jit_access_aref", nl_jit_access_aref as *const u8);
-    builder.symbol("nl_jit_access_aset", nl_jit_access_aset as *const u8);
-    builder.symbol("nl_jit_access_elt", nl_jit_access_elt as *const u8);
-}
-
-/// Doc 77 Stage 2-prep: declare + define every JIT entry this module
-/// owns on the *shared* JITModule.
-pub(super) fn declare_funcs(module: &mut JITModule) -> AccessIds {
-    let length = declare_length_with_inline_nil(module);
-    let aref = declare_helper_call(module, "nelisp_jit_aref", "nl_jit_access_aref", 3);
-    let aset = declare_helper_call(module, "nelisp_jit_aset", "nl_jit_access_aset", 4);
-    let elt = declare_helper_call(module, "nelisp_jit_elt", "nl_jit_access_elt", 3);
-    AccessIds {
-        length,
-        aref,
-        aset,
-        elt,
-    }
-}
-
-/// Doc 77 Stage 2-prep: fetch finalized function pointers post-
-/// `finalize_definitions' and pack them into `JitAccess'.
-pub(super) fn collect_funcs(module: &JITModule, ids: AccessIds) -> JitAccess {
-    let length_ptr = module.get_finalized_function(ids.length);
-    let aref_ptr = module.get_finalized_function(ids.aref);
-    let aset_ptr = module.get_finalized_function(ids.aset);
-    let elt_ptr = module.get_finalized_function(ids.elt);
-    // SAFETY: declared signatures match the function-pointer types.
-    unsafe {
-        JitAccess {
-            length: std::mem::transmute::<_, extern "C" fn(*const Sexp, *mut Sexp) -> i64>(
-                length_ptr,
-            ),
-            aref: std::mem::transmute::<
-                _,
-                extern "C" fn(*const Sexp, i64, *mut Sexp) -> i64,
-            >(aref_ptr),
-            aset: std::mem::transmute::<
-                _,
-                extern "C" fn(*const Sexp, i64, *const Sexp, *mut Sexp) -> i64,
-            >(aset_ptr),
-            elt: std::mem::transmute::<
-                _,
-                extern "C" fn(*const Sexp, i64, *mut Sexp) -> i64,
-            >(elt_ptr),
-        }
-    }
-}
-
-// Doc 77b Stage b.4 (2026-05-09) — `lowered_X' Rust strategy fns
-// + `register(map)' + `aref_helper' deleted.  The 4 entries (=
-// length/aref/aset/elt) are now driven by elisp wrappers in
-// `lisp/nelisp-jit-strategy.el' that call the JIT trampolines
-// through the Stage b.2.5 `nl-jit-call-out-{1,1i,2i}' bridge
-// primitives + `jit/strategy.rs' multi-variant fall-through helpers
-// (`bi_length_impl' / `bi_aref_impl' / `bi_aset_impl' /
-// `bi_elt_impl').  The Rust trampolines (`nl_jit_access_*') stay in
-// this module, as do the IR builders + the `JitAccess' fn-ptr
-// struct reachable via `super::unified_jit()'.
-
-#[cfg(test)]
-fn jit() -> &'static JitAccess {
-    &super::unified_jit().access
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,21 +221,21 @@ mod tests {
 
         let nil = Sexp::Nil;
         assert_eq!(
-            (jit().length)(&nil as *const _, &mut out as *mut _),
+            unsafe { nl_jit_access_length(&nil as *const _, &mut out as *mut _) },
             TRAMPOLINE_OK
         );
         assert_eq!(out, Sexp::Int(0));
 
         let vec = Sexp::vector(vec![Sexp::Int(1), Sexp::Int(2), Sexp::Int(3)]);
         assert_eq!(
-            (jit().length)(&vec as *const _, &mut out as *mut _),
+            unsafe { nl_jit_access_length(&vec as *const _, &mut out as *mut _) },
             TRAMPOLINE_OK
         );
         assert_eq!(out, Sexp::Int(3));
 
         let s = Sexp::Str("hello".into());
         assert_eq!(
-            (jit().length)(&s as *const _, &mut out as *mut _),
+            unsafe { nl_jit_access_length(&s as *const _, &mut out as *mut _) },
             TRAMPOLINE_OK
         );
         assert_eq!(out, Sexp::Int(5));
@@ -384,7 +246,7 @@ mod tests {
         let mut out = Sexp::Nil;
         let i = Sexp::Int(42);
         assert_eq!(
-            (jit().length)(&i as *const _, &mut out as *mut _),
+            unsafe { nl_jit_access_length(&i as *const _, &mut out as *mut _) },
             TRAMPOLINE_ERR
         );
     }
@@ -398,7 +260,7 @@ mod tests {
             Sexp::Symbol("c".into()),
         ]);
         assert_eq!(
-            (jit().aref)(&vec as *const _, 1, &mut out as *mut _),
+            unsafe { nl_jit_access_aref(&vec as *const _, 1, &mut out as *mut _) },
             TRAMPOLINE_OK
         );
         assert_eq!(out, Sexp::Symbol("b".into()));
@@ -409,7 +271,7 @@ mod tests {
         let mut out = Sexp::Nil;
         let vec = Sexp::vector(vec![Sexp::Int(7)]);
         assert_eq!(
-            (jit().aref)(&vec as *const _, 5, &mut out as *mut _),
+            unsafe { nl_jit_access_aref(&vec as *const _, 5, &mut out as *mut _) },
             TRAMPOLINE_ERR
         );
     }
@@ -419,7 +281,7 @@ mod tests {
         let mut out = Sexp::Nil;
         let vec = Sexp::vector(vec![Sexp::Int(7)]);
         assert_eq!(
-            (jit().aref)(&vec as *const _, -1, &mut out as *mut _),
+            unsafe { nl_jit_access_aref(&vec as *const _, -1, &mut out as *mut _) },
             TRAMPOLINE_ERR
         );
     }
@@ -429,7 +291,7 @@ mod tests {
         let mut out = Sexp::Nil;
         let s = Sexp::Str("abc".into());
         assert_eq!(
-            (jit().aref)(&s as *const _, 0, &mut out as *mut _),
+            unsafe { nl_jit_access_aref(&s as *const _, 0, &mut out as *mut _) },
             TRAMPOLINE_ERR
         );
     }
@@ -449,13 +311,13 @@ mod tests {
             panic!("bool_vector did not produce BoolVector");
         }
         let mut out = Sexp::Nil;
-        let r = (jit().aref)(&bv as *const _, 0, &mut out as *mut _);
+        let r = unsafe { nl_jit_access_aref(&bv as *const _, 0, &mut out as *mut _) };
         assert_eq!(r, TRAMPOLINE_OK);
         assert_eq!(out, Sexp::Nil);
-        let r = (jit().aref)(&bv as *const _, 1, &mut out as *mut _);
+        let r = unsafe { nl_jit_access_aref(&bv as *const _, 1, &mut out as *mut _) };
         assert_eq!(r, TRAMPOLINE_OK);
         assert_eq!(out, Sexp::T);
-        let r = (jit().aref)(&bv as *const _, 2, &mut out as *mut _);
+        let r = unsafe { nl_jit_access_aref(&bv as *const _, 2, &mut out as *mut _) };
         assert_eq!(r, TRAMPOLINE_OK);
         assert_eq!(out, Sexp::Nil);
     }
@@ -464,7 +326,7 @@ mod tests {
     fn jit_aref_bool_vector_out_of_range() {
         let bv = Sexp::bool_vector(2, true);
         let mut out = Sexp::Nil;
-        let r = (jit().aref)(&bv as *const _, 5, &mut out as *mut _);
+        let r = unsafe { nl_jit_access_aref(&bv as *const _, 5, &mut out as *mut _) };
         assert_eq!(r, TRAMPOLINE_ERR);
     }
 
@@ -474,38 +336,42 @@ mod tests {
         let bv = Sexp::bool_vector(3, true);
         let val_nil = Sexp::Nil;
         let mut out = Sexp::T;
-        let r = (jit().aset)(
-            &bv as *const _,
-            1,
-            &val_nil as *const _,
-            &mut out as *mut _,
-        );
+        let r = unsafe {
+            nl_jit_access_aset(
+                &bv as *const _,
+                1,
+                &val_nil as *const _,
+                &mut out as *mut _,
+            )
+        };
         assert_eq!(r, TRAMPOLINE_OK);
         assert_eq!(out, Sexp::Nil);
         // Confirm the mutation: aref returns Nil at slot 1, T elsewhere.
         let mut probe = Sexp::Nil;
         assert_eq!(
-            (jit().aref)(&bv as *const _, 0, &mut probe as *mut _),
+            unsafe { nl_jit_access_aref(&bv as *const _, 0, &mut probe as *mut _) },
             TRAMPOLINE_OK
         );
         assert_eq!(probe, Sexp::T);
         assert_eq!(
-            (jit().aref)(&bv as *const _, 1, &mut probe as *mut _),
+            unsafe { nl_jit_access_aref(&bv as *const _, 1, &mut probe as *mut _) },
             TRAMPOLINE_OK
         );
         assert_eq!(probe, Sexp::Nil);
         // Truthy non-Nil value sets slot to true.
         let val_int = Sexp::Int(42);
-        let r = (jit().aset)(
-            &bv as *const _,
-            1,
-            &val_int as *const _,
-            &mut out as *mut _,
-        );
+        let r = unsafe {
+            nl_jit_access_aset(
+                &bv as *const _,
+                1,
+                &val_int as *const _,
+                &mut out as *mut _,
+            )
+        };
         assert_eq!(r, TRAMPOLINE_OK);
         assert_eq!(out, val_int);
         assert_eq!(
-            (jit().aref)(&bv as *const _, 1, &mut probe as *mut _),
+            unsafe { nl_jit_access_aref(&bv as *const _, 1, &mut probe as *mut _) },
             TRAMPOLINE_OK
         );
         assert_eq!(probe, Sexp::T);
@@ -516,12 +382,14 @@ mod tests {
         let bv = Sexp::bool_vector(2, false);
         let val = Sexp::T;
         let mut out = Sexp::Nil;
-        let r = (jit().aset)(
-            &bv as *const _,
-            5,
-            &val as *const _,
-            &mut out as *mut _,
-        );
+        let r = unsafe {
+            nl_jit_access_aset(
+                &bv as *const _,
+                5,
+                &val as *const _,
+                &mut out as *mut _,
+            )
+        };
         assert_eq!(r, TRAMPOLINE_ERR);
     }
 
@@ -532,17 +400,19 @@ mod tests {
         let mut out = Sexp::Nil;
         let v = Sexp::vector(vec![Sexp::Int(10), Sexp::Int(20), Sexp::Int(30)]);
         let val = Sexp::Symbol("replaced".into());
-        let r = (jit().aset)(
-            &v as *const _,
-            1,
-            &val as *const _,
-            &mut out as *mut _,
-        );
+        let r = unsafe {
+            nl_jit_access_aset(
+                &v as *const _,
+                1,
+                &val as *const _,
+                &mut out as *mut _,
+            )
+        };
         assert_eq!(r, TRAMPOLINE_OK);
         assert_eq!(out, val);
         // Confirm the mutation through aref.
         let mut got = Sexp::Nil;
-        let r = (jit().aref)(&v as *const _, 1, &mut got as *mut _);
+        let r = unsafe { nl_jit_access_aref(&v as *const _, 1, &mut got as *mut _) };
         assert_eq!(r, TRAMPOLINE_OK);
         assert_eq!(got, val);
     }
@@ -552,12 +422,14 @@ mod tests {
         let mut out = Sexp::Nil;
         let v = Sexp::vector(vec![Sexp::Int(10)]);
         let val = Sexp::Int(99);
-        let r = (jit().aset)(
-            &v as *const _,
-            5,
-            &val as *const _,
-            &mut out as *mut _,
-        );
+        let r = unsafe {
+            nl_jit_access_aset(
+                &v as *const _,
+                5,
+                &val as *const _,
+                &mut out as *mut _,
+            )
+        };
         assert_eq!(r, TRAMPOLINE_ERR);
     }
 
@@ -566,12 +438,14 @@ mod tests {
         let mut out = Sexp::Nil;
         let s = Sexp::Str("abc".into());
         let val = Sexp::Int(42);
-        let r = (jit().aset)(
-            &s as *const _,
-            0,
-            &val as *const _,
-            &mut out as *mut _,
-        );
+        let r = unsafe {
+            nl_jit_access_aset(
+                &s as *const _,
+                0,
+                &val as *const _,
+                &mut out as *mut _,
+            )
+        };
         assert_eq!(r, TRAMPOLINE_ERR);
     }
 
@@ -583,7 +457,7 @@ mod tests {
             Sexp::Symbol("y".into()),
             Sexp::Symbol("z".into()),
         ]);
-        let r = (jit().elt)(&v as *const _, 2, &mut out as *mut _);
+        let r = unsafe { nl_jit_access_elt(&v as *const _, 2, &mut out as *mut _) };
         assert_eq!(r, TRAMPOLINE_OK);
         assert_eq!(out, Sexp::Symbol("z".into()));
     }
@@ -597,7 +471,7 @@ mod tests {
             Sexp::Int(3),
             Sexp::Int(4),
         ]);
-        let r = (jit().elt)(&lst as *const _, 2, &mut out as *mut _);
+        let r = unsafe { nl_jit_access_elt(&lst as *const _, 2, &mut out as *mut _) };
         assert_eq!(r, TRAMPOLINE_OK);
         assert_eq!(out, Sexp::Int(3));
     }
@@ -606,7 +480,7 @@ mod tests {
     fn jit_elt_list_overrun_returns_err() {
         let mut out = Sexp::Nil;
         let lst = Sexp::list_from(&[Sexp::Int(1), Sexp::Int(2)]);
-        let r = (jit().elt)(&lst as *const _, 5, &mut out as *mut _);
+        let r = unsafe { nl_jit_access_elt(&lst as *const _, 5, &mut out as *mut _) };
         assert_eq!(r, TRAMPOLINE_ERR);
     }
 
@@ -614,7 +488,7 @@ mod tests {
     fn jit_elt_nil_returns_err() {
         let mut out = Sexp::Nil;
         let nil = Sexp::Nil;
-        let r = (jit().elt)(&nil as *const _, 0, &mut out as *mut _);
+        let r = unsafe { nl_jit_access_elt(&nil as *const _, 0, &mut out as *mut _) };
         assert_eq!(r, TRAMPOLINE_ERR);
     }
 
@@ -622,7 +496,7 @@ mod tests {
     fn jit_elt_negative_index_returns_err() {
         let mut out = Sexp::Nil;
         let v = Sexp::vector(vec![Sexp::Int(1)]);
-        let r = (jit().elt)(&v as *const _, -1, &mut out as *mut _);
+        let r = unsafe { nl_jit_access_elt(&v as *const _, -1, &mut out as *mut _) };
         assert_eq!(r, TRAMPOLINE_ERR);
     }
 }

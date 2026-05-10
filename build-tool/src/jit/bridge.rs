@@ -87,10 +87,20 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
         "nelisp_jit_setcar" => super::cons::nl_jit_cons_setcar as *const u8,
         "nelisp_jit_setcdr" => super::cons::nl_jit_cons_setcdr as *const u8,
         // ---- access (4) ----
-        "nelisp_jit_length" => u.access.length as *const u8,
-        "nelisp_jit_aref" => u.access.aref as *const u8,
-        "nelisp_jit_aset" => u.access.aset as *const u8,
-        "nelisp_jit_elt" => u.access.elt as *const u8,
+        // Phase 7.1.6.b (Doc 28 §3.6.b): resolve access names directly
+        // to the `#[no_mangle] extern "C"' trampolines now that the
+        // Cranelift `JitAccess' wrapper page has been deleted.  The
+        // inline-NIL fast path for `length' (= the deleted `declare_
+        // length_with_inline_nil' Cranelift IR shape) is no longer
+        // present here; the NIL case is handled by the trampoline's
+        // first arm (`tag == SEXP_TAG_NIL → write Sexp::Int(0) /
+        // return OK') without further work, so semantic behaviour is
+        // preserved.  nelisp-cc compiled hot paths skip this bridge
+        // entirely via dlsym + direct CALL.
+        "nelisp_jit_length" => super::access::nl_jit_access_length as *const u8,
+        "nelisp_jit_aref" => super::access::nl_jit_access_aref as *const u8,
+        "nelisp_jit_aset" => super::access::nl_jit_access_aset as *const u8,
+        "nelisp_jit_elt" => super::access::nl_jit_access_elt as *const u8,
         // ---- predicate (1) ----
         "nelisp_jit_eq_inline" => u.predicate.eq as *const u8,
         // ---- syscall (2) ----

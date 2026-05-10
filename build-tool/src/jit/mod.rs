@@ -147,7 +147,23 @@ mod syscall;
 /// (substrate.el bootstrap), bypassing `UnifiedJit' entirely.
 pub(super) struct UnifiedJit {
     pub(in crate::jit) arith: arith::JitArith,
-    pub(in crate::jit) access: access::JitAccess,
+    // Phase 7.1.6.a.2 (Doc 28 §3.6.a): cons cluster JIT wrappers
+    // deleted (= `JitCons' / `register_symbols' / `declare_funcs' /
+    // `collect_funcs' all gone).  The 5 `nl_jit_cons_*' trampolines
+    // stay in `jit::cons' as `#[no_mangle] extern "C"' symbols
+    // resolved by the dlsym bridge for nelisp-cc compiled hot paths,
+    // and by `bridge::unified_fn_ptr' for substrate.el bootstrap
+    // paths (= same trampoline body, no Cranelift wrapper).
+    //
+    // Phase 7.1.6.b (Doc 28 §3.6.b): access cluster JIT wrappers
+    // deleted on the same pattern (= `JitAccess' / `register_symbols'
+    // / `declare_funcs' / `collect_funcs' / `declare_length_with_
+    // inline_nil' all gone).  The 4 `nl_jit_access_*' trampolines
+    // stay in `jit::access' as `#[no_mangle] extern "C"' symbols
+    // resolved by the dlsym bridge for nelisp-cc compiled hot paths
+    // and by `bridge::unified_fn_ptr' for substrate.el bootstrap
+    // paths.  The `length' inline-NIL fast path is now handled by
+    // the trampoline body's `tag == SEXP_TAG_NIL' arm.
     pub(in crate::jit) predicate: predicate::JitPredicate,
     pub(in crate::jit) syscall: syscall::JitSyscall,
 }
@@ -163,7 +179,12 @@ pub(super) fn unified_jit() -> &'static UnifiedJit {
         let mut builder = JITBuilder::new(cranelift_module::default_libcall_names())
             .expect("cranelift_jit: host ISA must resolve");
         arith::register_symbols(&mut builder);
-        access::register_symbols(&mut builder);
+        // Phase 7.1.6.a.2: cons::register_symbols deleted (= no
+        // Cranelift wrapper page for cons; trampolines are reached
+        // either via dlsym from nelisp-cc compiled code or via
+        // `bridge::unified_fn_ptr' for substrate.el bootstrap).
+        // Phase 7.1.6.b: access::register_symbols deleted on the same
+        // pattern (= no Cranelift wrapper page for access cluster).
         predicate::register_symbols(&mut builder);
         syscall::register_symbols(&mut builder);
 
@@ -173,7 +194,8 @@ pub(super) fn unified_jit() -> &'static UnifiedJit {
         // Step 3: each submodule declares + defines its JIT entries
         // on the shared module.  FuncIds carry forward to step 5.
         let arith_ids = arith::declare_funcs(&mut module);
-        let access_ids = access::declare_funcs(&mut module);
+        // Phase 7.1.6.a.2: cons::declare_funcs deleted.
+        // Phase 7.1.6.b: access::declare_funcs deleted.
         let predicate_ids = predicate::declare_funcs(&mut module);
         let syscall_ids = syscall::declare_funcs(&mut module);
 
@@ -184,7 +206,8 @@ pub(super) fn unified_jit() -> &'static UnifiedJit {
 
         // Step 5: fetch function pointers per submodule.
         let arith = arith::collect_funcs(&module, arith_ids);
-        let access = access::collect_funcs(&module, access_ids);
+        // Phase 7.1.6.a.2: cons::collect_funcs deleted.
+        // Phase 7.1.6.b: access::collect_funcs deleted.
         let predicate = predicate::collect_funcs(&module, predicate_ids);
         let syscall = syscall::collect_funcs(&module, syscall_ids);
 
@@ -192,6 +215,8 @@ pub(super) fn unified_jit() -> &'static UnifiedJit {
         // lifetime by leaking the JITModule.
         Box::leak(Box::new(module));
 
-        UnifiedJit { arith, access, predicate, syscall }
+        // Phase 7.1.6.a.2: `cons' field deleted from UnifiedJit.
+        // Phase 7.1.6.b: `access' field deleted from UnifiedJit.
+        UnifiedJit { arith, predicate, syscall }
     })
 }
