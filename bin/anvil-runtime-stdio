@@ -1,31 +1,28 @@
 #!/usr/bin/env bash
-# anvil-runtime-stdio — MCP-stdio bridge for the persistent anvil-runtime
-# daemon.  Drop-in for `.mcp.json` `command:` field.
+# anvil-runtime-stdio — MCP-stdio ↔ UNIX-socket bridge for the
+# persistent anvil-runtime daemon.  K2 v2 (2026-05-11) — uses `socat'
+# to relay each MCP client session over the daemon's `~/.anvil-runtime/sock'.
+# Multi-client concurrent: N MCP clients can run at once, each getting
+# their own connection process inside the standalone NeLisp registry.
 #
-# Architecture:
-#   MCP client stdin  --(cat > IN_FIFO)-->  daemon stdin
-#   daemon stdout     --(cat < OUT_FIFO)--> MCP client stdout
-#
-# Single-bridge concurrency: do not connect two clients at once — frames
-# would interleave on shared FIFOs.  v1 supports one MCP session per
-# daemon; v2 will multiplex over a UNIX socket.
+# Drop-in for `.mcp.json':
+#   {"mcpServers":{"anvil-standalone":{"command":"<...>/anvil-runtime-stdio"}}}
 #
 # Setup:
-#   1. Start the daemon (cold-load ~5-7 min):
+#   1. Start the daemon (cold-load ~5-7 min, one-time):
 #        bin/anvil-runtime-daemon start
-#   2. Wait for `pre-loop registry keys=...' in `~/.anvil-runtime/daemon.log'.
-#   3. Add to `.mcp.json':
-#        {"mcpServers":{"anvil-standalone":{"command":"<...>/anvil-runtime-stdio"}}}
+#   2. Wait for `pre-loop registry keys=...' to appear in the log:
+#        bin/anvil-runtime-daemon logs
+#   3. Wire `.mcp.json' as above and start the MCP client.
 
 set -eu -o pipefail
 
 DIR="${ANVIL_RUNTIME_DAEMON_DIR:-$HOME/.anvil-runtime}"
-IN_FIFO="$DIR/in.fifo"
-OUT_FIFO="$DIR/out.fifo"
+SOCKET="$DIR/sock"
 PID_FILE="$DIR/daemon.pid"
 
-if [ ! -p "$IN_FIFO" ] || [ ! -p "$OUT_FIFO" ] ; then
-    echo "anvil-runtime-stdio: daemon FIFOs missing — start the daemon first:" >&2
+if [ ! -S "$SOCKET" ] ; then
+    echo "anvil-runtime-stdio: socket missing — start the daemon first:" >&2
     echo "    $(dirname "$0")/anvil-runtime-daemon start" >&2
     exit 1
 fi
@@ -36,36 +33,22 @@ if [ -f "$PID_FILE" ] && ! kill -0 "$(cat "$PID_FILE")" 2>/dev/null ; then
     exit 1
 fi
 
-# Forward MCP client stdin → daemon's IN_FIFO in the background.
-# Two non-obvious bits:
-#   - `dd bs=1' reads + writes 1 byte at a time, so each MCP frame byte
-#     arrives at the daemon immediately.  Without this, glibc
-#     full-buffers the small (~80 byte) initialize frame and the
-#     daemon waits forever.
-#   - Explicit `<&0' inherits the script's stdin into the backgrounded
-#     dd.  Bash's default for non-interactive scripts (= no job control)
-#     redirects bg-process stdin to /dev/null, so `dd ... &' reads 0
-#     bytes from stdin without this redirection.  PoC root-caused
-#     2026-05-11.
-dd bs=1 of="$IN_FIFO" <&0 2>/dev/null &
-WRITER_PID=$!
-
-cleanup() {
-    if [ -n "${WRITER_PID:-}" ] && kill -0 "$WRITER_PID" 2>/dev/null ; then
-        kill "$WRITER_PID" 2>/dev/null || true
+# Prefer socat if available (= more featureful, half-close handling),
+# fall back to OpenBSD `nc -U' (= ships with Debian / Ubuntu / most
+# distros by default and supports UNIX-domain sockets via `-U').
+if command -v socat >/dev/null 2>&1 ; then
+    exec socat -T 0 STDIO UNIX-CONNECT:"$SOCKET"
+elif command -v nc >/dev/null 2>&1 ; then
+    # `-N' = shutdown peer on stdin EOF (OpenBSD-nc only).  We try with
+    # it first since that matches the MCP client-closes-stdin lifecycle;
+    # if the local `nc' does not recognise `-N' (= traditional nc on
+    # Alpine etc.), fall back without it.
+    if nc -h 2>&1 | grep -q -- '-N' ; then
+        exec nc -U -N "$SOCKET"
+    else
+        exec nc -U "$SOCKET"
     fi
-    if [ -n "${READER_PID:-}" ] && kill -0 "$READER_PID" 2>/dev/null ; then
-        kill "$READER_PID" 2>/dev/null || true
-    fi
-}
-trap cleanup EXIT INT TERM
-
-# Forward daemon's OUT_FIFO → MCP client stdout in the foreground.
-# Same `dd bs=1' rationale: the read end never sees EOF (RDWR keep-alive
-# on daemon side), so `cat'-style buffered relay sits in user-space
-# stdio buffers and is lost on SIGTERM.  `dd bs=1' writes each byte
-# straight to stdout (unbuffered through to fd 1), so the MCP client
-# sees responses incrementally.
-dd bs=1 if="$OUT_FIFO" 2>/dev/null &
-READER_PID=$!
-wait "$READER_PID"
+else
+    echo "anvil-runtime-stdio: need \`socat' or OpenBSD \`nc' for UNIX-socket bridge" >&2
+    exit 1
+fi

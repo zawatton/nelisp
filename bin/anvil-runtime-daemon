@@ -1,23 +1,26 @@
 #!/usr/bin/env bash
-# anvil-runtime-daemon — persistent daemon controller for `bin/anvil-runtime`
+# anvil-runtime-daemon — persistent UNIX-socket daemon for `bin/anvil-runtime'.
+#
+# K2 (= 2026-05-11) rewrite: replaces the G v1 FIFO-based scheme
+# (mkfifo + Linux O_RDWR keep-alive + `dd bs=1' bridge hacks) with a
+# proper UNIX domain socket listener.  Powered by the
+# `make-network-process' polyfill in nelisp-emacs/src/emacs-*.el
+# (commit `b662671' on nelisp-emacs main).
 #
 # Lifecycle:
-#   start    — cold-load anvil-runtime once, leave it reading from a FIFO
-#              so subsequent MCP sessions reuse the warm process.
-#   stop     — kill the daemon + the keep-alive writer.
+#   start    — cold-load `anvil-runtime server' once, leave it listening
+#              on `~/.anvil-runtime/sock'.  Subsequent bridges (=
+#              `anvil-runtime-stdio') just `socat - UNIX-CONNECT:...'.
+#   stop     — kill the daemon process; the socket file is removed by
+#              the daemon's accept loop on next start.
 #   status   — report running / stopped.
 #   logs     — tail the daemon stderr log.
 #
-# Drop-in for `.mcp.json` is `anvil-runtime-stdio` (sibling script).
+# Drop-in for `.mcp.json' is `anvil-runtime-stdio' (sibling script).
 #
-# Why FIFO + keep-alive (= `sleep infinity > IN_FIFO`):
-#   The daemon reads MCP frames from `IN_FIFO`.  Without a permanent
-#   writer the read returns EOF as soon as a bridge process exits and
-#   the daemon would terminate.  The keep-alive holds the writer end
-#   open across the daemon's lifetime so individual bridge processes
-#   can come and go.  Single-bridge concurrency only — multiplexing N
-#   sessions onto one daemon would interleave Content-Length frames
-#   and is deferred to v2 (= per-session UNIX socket + dispatcher).
+# Multi-client concurrency: each connection becomes a separate
+# `network-connection' process in the standalone NeLisp registry, with
+# its own MCP parser state.  N bridges can run in parallel.
 
 set -euo pipefail
 
@@ -25,10 +28,8 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ANVIL_RUNTIME="$script_dir/anvil-runtime"
 
 DIR="${ANVIL_RUNTIME_DAEMON_DIR:-$HOME/.anvil-runtime}"
-IN_FIFO="$DIR/in.fifo"
-OUT_FIFO="$DIR/out.fifo"
+SOCKET="$DIR/sock"
 PID_FILE="$DIR/daemon.pid"
-KEEPALIVE_PID_FILE="$DIR/keepalive.pid"
 LOG_FILE="$DIR/daemon.log"
 
 cmd="${1:-status}"
@@ -47,40 +48,24 @@ start_daemon() {
         exit 1
     fi
     mkdir -p "$DIR"
-    rm -f "$IN_FIFO" "$OUT_FIFO"
-    mkfifo "$IN_FIFO" "$OUT_FIFO"
+    # Stale socket from previous run will be unlinked by the server-loop
+    # before it calls bind(2), but tidy up here as a courtesy so `ls'
+    # of the dir does not show a dangling file.
+    rm -f "$SOCKET"
 
-    # Spawn the daemon in a subshell that opens both FIFOs O_RDWR
-    # (Linux extension, also POSIX for FIFOs in practice — does not
-    # block on missing peer).  This:
-    #   1. Avoids the reader/writer deadlock of plain `< IN_FIFO` /
-    #      `> OUT_FIFO' redirections in the parent shell, which
-    #      would block before the daemon could even fork.
-    #   2. Keeps a permanent writer on IN_FIFO so daemon never sees
-    #      EOF when a bridge process exits.
-    #   3. Keeps a permanent reader on OUT_FIFO so daemon writes do
-    #      not SIGPIPE when no bridge is connected.
-    # The fds 3 and 4 are then re-aliased to stdin/stdout of the
-    # exec'd `anvil-runtime mcp serve' so the original framing logic
-    # is unchanged.
-    (
-        exec 3<>"$IN_FIFO"
-        exec 4<>"$OUT_FIFO"
-        exec "$ANVIL_RUNTIME" mcp serve <&3 >&4 2>"$LOG_FILE"
-    ) &
+    nohup "$ANVIL_RUNTIME" server "$SOCKET" </dev/null >>"$LOG_FILE" 2>&1 &
     local daemon_pid=$!
     disown "$daemon_pid" 2>/dev/null || true
     echo "$daemon_pid" > "$PID_FILE"
 
     echo "anvil-runtime daemon started" >&2
-    echo "  daemon pid:    $daemon_pid" >&2
-    echo "  log:           $LOG_FILE" >&2
-    echo "  in fifo:       $IN_FIFO" >&2
-    echo "  out fifo:      $OUT_FIFO" >&2
+    echo "  daemon pid: $daemon_pid" >&2
+    echo "  socket:     $SOCKET" >&2
+    echo "  log:        $LOG_FILE" >&2
     echo "" >&2
     echo "Cold-load: ~5-7 minutes — wait for the registry-keys log line" >&2
-    echo "before the first bridge connects:" >&2
-    echo "    tail -f $LOG_FILE   # look for 'pre-loop registry keys=...'" >&2
+    echo "(\`pre-loop registry keys=...') before pointing MCP clients at" >&2
+    echo "$SOCKET via \`bin/anvil-runtime-stdio'." >&2
 }
 
 stop_daemon() {
@@ -88,9 +73,6 @@ stop_daemon() {
     if [ -f "$PID_FILE" ] ; then
         local pid
         pid="$(cat "$PID_FILE")"
-        # Kill the wrapper subshell + every descendant (the FIFOs only
-        # close when the last fd holder exits, so we recursively walk
-        # `pgrep --parent' until the tree is gone).
         if kill -0 "$pid" 2>/dev/null ; then
             local descendants
             descendants="$(pgrep -P "$pid" 2>/dev/null || true)"
@@ -101,15 +83,7 @@ stop_daemon() {
         fi
         rm -f "$PID_FILE"
     fi
-    # Phase 1 keepalive scheme is gone (Linux RDWR open replaces it),
-    # but tolerate a stale pid file from earlier installs.
-    if [ -f "$KEEPALIVE_PID_FILE" ] ; then
-        local kpid
-        kpid="$(cat "$KEEPALIVE_PID_FILE")"
-        kill "$kpid" 2>/dev/null || true
-        rm -f "$KEEPALIVE_PID_FILE"
-    fi
-    rm -f "$IN_FIFO" "$OUT_FIFO"
+    rm -f "$SOCKET"
     if [ "$stopped" = 1 ] ; then
         echo "anvil-runtime daemon stopped" >&2
     else
@@ -119,7 +93,11 @@ stop_daemon() {
 
 status_daemon() {
     if is_running ; then
-        echo "running (pid $(cat "$PID_FILE"))"
+        if [ -S "$SOCKET" ] ; then
+            echo "running (pid $(cat "$PID_FILE"), socket $SOCKET ready)"
+        else
+            echo "running (pid $(cat "$PID_FILE"), socket not yet bound — still cold-loading)"
+        fi
         return 0
     else
         echo "stopped"
@@ -136,18 +114,18 @@ logs_daemon() {
 }
 
 case "$cmd" in
-    start)  start_daemon ;;
-    stop)   stop_daemon ;;
+    start)   start_daemon ;;
+    stop)    stop_daemon ;;
     restart) stop_daemon ; sleep 0.5 ; start_daemon ;;
-    status) status_daemon ;;
-    logs)   logs_daemon ;;
+    status)  status_daemon ;;
+    logs)    logs_daemon ;;
     *)
         cat >&2 <<EOF
 usage: anvil-runtime-daemon {start|stop|restart|status|logs}
 
 Environment:
   ANVIL_RUNTIME_DAEMON_DIR   (default: ~/.anvil-runtime)
-                             — where FIFOs / pid / log live.
+                             — where socket / pid / log live.
 EOF
         exit 2
         ;;
