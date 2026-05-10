@@ -55,8 +55,11 @@
 
 use crate::eval::sexp::{Sexp, SEXP_TAG_CONS, SEXP_TAG_NIL};
 
-pub(super) const TRAMPOLINE_OK: i64 = 0;
-pub(super) const TRAMPOLINE_ERR: i64 = 1;
+// Phase 7.1.7.a (2026-05-10): narrowed from `pub(super)' to private —
+// these constants are read only inside this module after the cluster
+// wrapper deletion (Phase 7.1.6.a.2 removed every cross-module caller).
+const TRAMPOLINE_OK: i64 = 0;
+const TRAMPOLINE_ERR: i64 = 1;
 
 // Phase A.5 (Doc 77c §2.1.4): trampolines dispatch on the
 // `#[repr(C, u8)]' tag byte directly via `Sexp::tag()' and read the
