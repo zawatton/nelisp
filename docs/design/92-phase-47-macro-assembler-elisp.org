@@ -1,0 +1,803 @@
+#+TITLE: Doc 92 — Phase 47 component: macro assembler in elisp
+#+AUTHOR: NeLisp design
+#+DATE: 2026-05-11
+
+* Status
+
+- *State*: DRAFT (= spike, implementation-ready 化のための design doc。
+  本 doc 自体はコード変更を伴わない。Doc 85 §3.2 / §5.1 で「Phase 47
+  着手なら macro assembler 拡張 ~800 elisp / Rust 削減なし (= 既存
+  Rust 側に encoder 自体は無い)」とした component の articulate)
+- *Parent*: Doc 85 (= phase-47-feasibility-spike.org §3.2 / §5.1 /
+  §6.1)
+- *Sibling*: Doc 91 (= ELF writer, DRAFT SHIPPED 2026-05-10), Doc 93
+  (= static linker + syscall inline, parallel DRAFT in flight),
+  Doc 94 (= crt0 + boot loader, parallel DRAFT in flight), Doc 95
+  (= Sexp DSL, DRAFT SHIPPED 2026-05-10)
+- *Pre-condition*: Phase 1-3 完遂 (= Doc 84 + Doc 86-89 SHIPPED)、本 doc
+  は実装着手 gate ではなく「着手時にすぐ dispatch 可能な形まで
+  articulate しておく」ための準備
+- *Unlocks*: Phase 47 critical path 上の M2 (= "elisp が x86_64 / arm64
+  機械語を full-coverage で emit できる")。Doc 91 ELF writer の =.text=
+  section 入力 producer、Doc 93 linker の relocation site の発生源、
+  Doc 95 Sexp DSL lower の output channel
+- *OOS for THIS doc*:
+  - 実装作業 (= elisp / Rust file 編集なし、grep + read + design 構築のみ)
+  - 全 x86_64 / aarch64 ISA カバレッジ (= NeLisp の JIT が実際に使う
+    ~30 mnemonic subset のみ articulate、SIMD / xmm / floating-point /
+    AVX-512 等は §6.2 risk として OOS)
+  - Win64 ABI (= Phase 7.1.5+ scope、Doc 28 §2.3 で別 Doc 候補)
+  - macOS Mach-O / Windows COFF object format (= Doc 91 ELF writer で
+    ELF64 のみ articulate 済、本 doc も同方針)
+  - register allocation / spill / scheduling (= Phase 7.1.2 既 ship、
+    本 doc は instruction encoder layer のみ)
+  - peephole optimization (= 別 layer)
+
+* §0 TL;DR
+
+** §0.1 macro assembler とは何か (= 1-line)
+
+elisp DSL = =(emit-mov rax 42)= → bytes =0x48 0xb8 0x2a 0x00 0x00 0x00=
+を返す pure-functional encoder。input = mnemonic + operand 群 (= elisp
+symbol / integer)、output = byte list / unibyte vector。副作用なし、
+syscall 呼ばず、libc にも libffi にも依存しない。
+
+** §0.2 既に elisp 側にあるもの (= Phase 7.x prior art)
+
+=src/nelisp-cc-x86_64.el= (2,861 LOC) と =src/nelisp-cc-arm64.el= (1,513
+LOC) は **Phase 7.1.2 / 7.1.3 で既に SHIP 済** = native code emit を行う
+JIT compiler の backend。本 doc が articulate するのは「**新規**
+assembler を起こす」のではなく、「**既存 encoder を full self-contained
+にする** = Rust helper 依存 (= 検査時点では実は **無い**) を確認した上で
+Phase 47 用に opcode coverage を広げ、Doc 93 linker と握る relocation
+marker API を追加し、Doc 91 writer に流せる format を整備する」こと。
+
+** §0.3 既に Rust 側にあるもの (= grep 結果)
+
+#+begin_src text
+$ grep -rnE "fn .*encode|fn .*emit|REX|ModR/M|opcode" build-tool/src/ \
+    --include='*.rs' | grep -vE "^.+:[0-9]+:\s*//"
+(no matches for instruction encoding helpers)
+#+end_src
+
+つまり **Rust 側に instruction encoder は存在しない**。x86_64 / arm64
+機械語 byte emit は **既に 100% elisp で実装済** (= Phase 7.1.6 で
+cranelift / cranelift-jit / cranelift-module crate を Doc 28 §3.7.c で
+削除した時点で Rust 側 encoder 0 行に到達)。
+
+残る Rust 依存は:
+1. =build-tool/src/eval/ffi.rs= (820 LOC) の =libffi= / =libloading= /
+   =CString= を経由した **任意 C 関数 invocation** (= JIT compile 結果の
+   byte vector を実機で実行するために =mmap= → =write bytes= →
+   =mprotect(PROT_EXEC)= → 関数 pointer 化 → 呼び出しの最終 stage で
+   libffi 経由で C ABI dispatch する箇所)
+2. =build-tool/src/jit/bridge.rs= (1,084 LOC) の =bi_nl_jit_call_*=
+   trampoline 群 = elisp が emit した byte vector を「Rust 側 fn ptr に
+   cast → C ABI で呼ぶ」boundary (= encoder 自体ではないが、encoder の
+   output を実機で動かすための最後の Rust 接点)
+
+本 doc が articulate する対象は **(2) の trampoline 経路を完全 elisp
+化するために必要な encoder 拡張** = 「現在 1.4 と 1.5 で出力された
+byte sequence を Rust 経由で実行している」依存を「elisp 自身が syscall
+mmap して実行する」path に切り替えるための encoder side 整備。
+
+** §0.4 なぜ Phase 47 が本 component を要するか
+
+Phase 47 = 0 Rust runtime 完遂時の依存 graph:
+
+#+begin_src text
+elisp source
+  ↓  reader/eval (= 既存)
+SSA IR
+  ↓  register allocation (= 既存 nelisp-cc)
+backend lowering
+  ↓  本 doc が articulate する encoder (= 既存拡張)
+byte vector
+  ↓  Doc 93 linker (= relocation resolution + syscall inline)
+linked byte vector + symbol table
+  ↓  Doc 91 ELF writer (= file format serialization)
+./nelisp ELF binary
+  ↓  Linux execve(2)
+running NeLisp
+#+end_src
+
+Doc 91 / 93 / 94 / 95 が unblock するのは「**elisp で書いた assembler が
+正しい bytes を出している前提**」。本 doc はその前提を "implementation-
+ready" 化する = 「現状 ~38 個の x86_64 emit helper / ~21 個の arm64
+encode helper が Phase 47 で必要な ~30 mnemonic subset を **全部** 持って
+いるか」を articulate し、欠けている分を §2 で埋める。
+
+** §0.5 ROI sketch
+
+投資 (elisp 新規) = x86_64 opcode 拡充 ~150 + arm64 opcode 拡充 ~150
++ relocation marker ~80 + buffer perf ~100 = ~480 elisp LOC。直接
+Rust 削減 = 0 (= encoder は既に Rust 0 LOC、§1 で grep 確定)。
+Doc 85 §0 が "削減 -300 LOC = 2:1" としたが、実際は Phase 47 完遂を
+unblock する = =ffi.rs= 820 + =bridge.rs= 1,084 = 1,904 LOC を
+**削除可能** にする前提条件としての質的価値。
+
+* §1 Current Rust assembler-helper inventory
+
+** §1.1 grep 走査結果
+
+*** §1.1.1 Rust 側 instruction encoder の探索
+
+#+begin_src text
+$ grep -rnE "fn .*(rex|modrm|encode|emit)" build-tool/src/ \
+    --include='*.rs' | grep -iE "rex|modrm|opcode|0xC3|0x48"
+(empty)
+
+$ grep -rnE "REX|ModR|0x48 |0xC3|opcode" build-tool/src/ \
+    --include='*.rs' | grep -v "^.*//"
+(empty for instruction-level matches)
+
+$ grep -rn "cranelift" build-tool/src/ --include='*.rs'
+(empty — Phase 7.1.7.b で削除済み)
+#+end_src
+
+*** §1.1.2 elisp 側 emit helper の inventory
+
+x86_64 (= =src/nelisp-cc-x86_64.el=, 2,861 LOC):
+
+| 関数名                                   | scope                       |
+|------------------------------------------+-----------------------------|
+| =--reg-low3=                             | reg encoding low 3 bits     |
+| =--reg-rex-ext-p=                        | reg needs REX.R / REX.B     |
+| =--rex-byte (W R X B)=                   | REX prefix composition      |
+| =--modrm-byte (mod reg rm)=              | ModR/M composition          |
+| =--imm32-bytes=                          | imm32 LE 4-byte serialize   |
+| =--emit-mov-reg-reg=                     | MOV r64, r64 (MR form 0x89) |
+| =--emit-mov-reg-imm32=                   | MOV r/m64, imm32 (0xC7 /0)  |
+| =--emit-binop-reg-reg=                   | ADD/SUB/CMP family helper   |
+| =--emit-add-reg-reg=                     | ADD r64, r64                |
+| =--emit-sub-reg-reg=                     | SUB r64, r64                |
+| =--emit-cmp-reg-reg=                     | CMP r64, r64                |
+| =--emit-imul-reg-reg=                    | IMUL r64, r/m64 (0x0F 0xAF) |
+| =--emit-ret=                             | RET (0xC3)                  |
+| =--emit-inc-reg= / =--emit-dec-reg=      | INC / DEC                   |
+| =--emit-xor-reg-reg= / =--emit-test-reg-reg= | XOR / TEST              |
+| =--emit-{add,sub,cmp,imul}-reg-mem-rbp=  | RM-form with [rbp-disp32]   |
+| =--emit-setcc-reg-low8=                  | SETcc / SETxx               |
+| =--emit-{sub,add}-rsp-imm32=             | prologue / epilogue helper  |
+| =--emit-mov-{rax-rip-rel,rip-rel-rax}=   | RIP-relative load / store   |
+| =--emit-lea-rax-rip-rel=                 | LEA rax, [rip+disp32]       |
+| =--emit-inc-mem-rip-rel=                 | INC [rip+disp32]            |
+| =--emit-call-rel32= / =--emit-call-indirect-reg= | CALL                |
+| =--emit-jmp-rel32= / =--emit-jcc-rel32=  | JMP / JCC                   |
+
+合計 38 個の =--emit-*= helper、register encoding table 完備、buffer +
+label + fixup substrate 配備済 (= =--buffer-*= 12 関数、§1.1.3 参照)。
+
+arm64 (= =src/nelisp-cc-arm64.el=, 1,513 LOC):
+
+| 関数名                                   | scope                       |
+|------------------------------------------+-----------------------------|
+| =--reg-encoding=                         | 5-bit AAPCS64 reg encoding  |
+| =--encode-mov-reg-reg=                   | MOV (= ORR Xd, XZR, Xm)     |
+| =--encode-movz-imm=                      | MOVZ Xd, #imm16             |
+| =--encode-add-reg-reg= / =--encode-sub-reg-reg= | ADD / SUB             |
+| =--encode-mul-reg-reg=                   | MUL (= MADD with XZR)       |
+| =--encode-cmp-reg-reg=                   | CMP (= SUBS XZR, Xn, Xm)    |
+| =--encode-ret=                           | RET (default x30)           |
+| =--encode-bl= / =--encode-blr=           | BL / BLR                    |
+| =--encode-b= / =--encode-cbz=            | B / CBZ                     |
+| =--encode-bcc=                           | B.cond                      |
+| =--encode-stp-fp-lr-pre-index=           | STP X29, X30, [SP, #imm]!   |
+| =--encode-ldp-fp-lr-post-index=          | LDP X29, X30, [SP], #imm    |
+| =--encode-{add,sub}-sp-imm=              | ADD / SUB SP, SP, #imm12    |
+| =--encode-{str,ldr}-reg-sp-imm=          | STR / LDR Xn, [SP, #disp]   |
+
+合計 21 個の =--encode-*= helper、5-bit reg encoding table 完備、
+=--cond-codes= alist で 16 condition code mapping。
+
+*** §1.1.3 elisp 側 buffer + label + fixup の inventory
+
+x86_64 buffer (= =cl-defstruct nelisp-cc-x86_64--buffer=、line 616 起点):
+
+- =--buffer-make=, =--buffer-emit-byte=, =--buffer-emit-bytes=
+- =--buffer-define-label= / =--buffer-emit-fixup=
+- =--buffer-resolve-fixups= / =--patch-rel32=
+- =--buffer-finalize=
+
+arm64 buffer (= line 535 起点): 同等の 8 関数。
+
+** §1.2 削減対象 Rust LOC (= file:line refs)
+
+§1.1.1 の grep が空 = **encoder 直接の Rust LOC 削減 = 0**。
+
+ただし encoder の output を「実機で動かす」boundary にある Rust が
+~1,900 LOC 残存:
+
+| Rust file                                  | LOC   | 役割                                        |
+|--------------------------------------------+-------+---------------------------------------------|
+| =build-tool/src/eval/ffi.rs:1-820=         | 820   | libffi 経由の C ABI dispatch                |
+| =build-tool/src/jit/bridge.rs:1-1084=      | 1,084 | =bi_nl_jit_call_*= 7 trampoline + name 解決 |
+| =build-tool/src/jit/{access,arith,...}.rs= | 2,053 | 既存 JIT 経路用 trampoline (Phase 7.1.6 で  |
+|                                            |       | Cranelift IR → Rust =extern "C" fn= に変換) |
+
+これらは「Rust 側 fn ptr に cast → C ABI で呼ぶ」 boundary。本 doc が
+articulate するのは「**この boundary を superceding する path** = elisp
+側で =mmap= + =write bytes= + =mprotect(PROT_EXEC)= + 任意 calling
+convention dispatcher を全部 elisp で持つ」ための encoder 整備。
+boundary 削除自体は Doc 93 (= linker + syscall inline) の責務、本 doc
+は encoder coverage 確保のみ。
+
+直接削減 LOC: **0** (= encoder 0 行)
+間接的に unblock する Rust 削除: ~1,900 LOC (= Doc 93 で eliminate)
+
+** §1.3 ABI mode dispatch (= =nelisp-cc-runtime.el= の platform branch)
+
+=src/nelisp-cc-runtime.el:294-318= に =--platform-detect= が定義され、
+=linux-x86_64= / =linux-arm64= / =macos-arm64= の 3 platform を識別。
+
+各 platform 固有の syscall sequence (= mmap / mprotect / clear_icache /
+mmap_jit / jit_write_protect) を =--alloc-exec-page= が記録 (line 325
+起点)。本 doc 対象は encoder side のみ、syscall side は Doc 93 scope。
+
+* §2 Macro assembler design
+
+** §2.1 設計方針
+
+§1 の inventory から **encoder 自体は概ね既存**。本 doc が追加する extension は:
+
+1. *opcode coverage 拡充*: Phase 47 の JIT trampoline path で必要な
+   ~30 mnemonic のうち、既存 38 helper (x86_64) / 21 helper (arm64)
+   でカバー済の subset を確認し、欠けている分を埋める (§2.2)
+2. *register encoding table の参照容易化*: 既に exhaustive (16 entry
+   x86_64 / 32 entry arm64)、このまま据え置き (§2.3)
+3. *REX prefix computer*: 既存 =--rex-byte= 据え置き、ただし elision
+   policy (= REX.WRXB 全 0 のとき省略可) を Doc 91 ELF writer 連携用に
+   helper 化する option を §2.4 で articulate
+4. *ModR/M + SIB byte encoder*: 既存 =--modrm-byte= 据え置き、SIB byte
+   encoder を新規 (§2.5)
+5. *Relocation marker API*: 新規 =nelisp-cc-asm-reloc= (§2.6) — 本 doc
+   の主成果物、Doc 93 linker との handshake protocol
+6. *binary buffer 化*: 既存 buffer は reverse list of bytes、Phase 47
+   で millions of byte 単位の build で performance critical になる可能
+   性、§2.7 で =unibyte-string= / =insert-byte= 切替の design
+
+** §2.2 必要 mnemonic subset (= Phase 47 JIT trampoline + crt0)
+
+x86_64 必要 mnemonic と既存 helper との対応:
+
+| mnemonic         | 既存 elisp helper                       | 状態        |
+|------------------+-----------------------------------------+-------------|
+| MOV r64, r64     | =--emit-mov-reg-reg=                    | 既存        |
+| MOV r64, imm32   | =--emit-mov-reg-imm32=                  | 既存        |
+| MOV r64, imm64   | (なし)                                  | *要追加*    |
+| ADD / SUB / CMP r64, r64 | =--emit-{add,sub,cmp}-reg-reg=  | 既存        |
+| ADD / SUB / CMP r64, imm | (なし; imm32 のみ rsp向け)      | *要追加*    |
+| IMUL r64, r64    | =--emit-imul-reg-reg=                   | 既存        |
+| RET              | =--emit-ret=                            | 既存        |
+| CALL rel32       | =--emit-call-rel32=                     | 既存        |
+| CALL r/m64       | =--emit-call-indirect-reg=              | 既存        |
+| JMP rel32        | =--emit-jmp-rel32=                      | 既存        |
+| JCC rel32        | =--emit-jcc-rel32=                      | 既存 (16cc) |
+| MOV mem, reg / reg, mem | =--emit-{mov,...}-reg-mem-rbp=   | 既存 (rbp)  |
+| MOV r64, [rip+disp] | =--emit-mov-rax-rip-rel=             | 既存 (rax)  |
+| MOV [rip+disp], r64 | =--emit-mov-rip-rel-rax=             | 既存 (rax)  |
+| LEA r64, [rip+disp] | =--emit-lea-rax-rip-rel=             | 既存 (rax)  |
+| PUSH r64 / POP r64 | (なし)                                | *要追加*    |
+| SYSCALL          | (なし)                                  | *要追加*    |
+| INT3 / NOP / HLT | INT3/HLT なし、NOP は constant のみ     | *要追加*    |
+
+x86_64 追加対象: =mov-reg-imm64= / =add-reg-imm32= / =sub-reg-imm32= /
+=cmp-reg-imm32= / =push-reg= / =pop-reg= / =syscall= / =nop= / =int3= /
+=hlt= = **10 mnemonic × ~15 LOC = ~150 elisp LOC** (= Phase 47 minimal)
+
+arm64 必要 mnemonic と既存 helper との対応:
+
+| mnemonic         | 既存 elisp helper                       | 状態        |
+|------------------+-----------------------------------------+-------------|
+| MOV (reg)        | =--encode-mov-reg-reg=                  | 既存        |
+| MOVZ #imm16      | =--encode-movz-imm=                     | 既存        |
+| MOVK / MOVN      | (なし)                                  | *要追加*    |
+| ADD / SUB / MUL  | =--encode-{add,sub,mul}-reg-reg=        | 既存        |
+| ADD / SUB #imm   | =--encode-{add,sub}-sp-imm= (sp-only)   | *要追加 (gen-purpose)* |
+| CMP              | =--encode-cmp-reg-reg=                  | 既存        |
+| RET              | =--encode-ret=                          | 既存        |
+| BL / BLR / B     | =--encode-{bl,blr,b}=                   | 既存        |
+| B.cond / CBZ     | =--encode-{bcc,cbz}=                    | 既存        |
+| STP / LDP        | fp-lr 専用                              | *要追加 (gen-purpose)* |
+| STR / LDR        | sp-only                                 | *要追加 (Xn-base)* |
+| SVC              | (なし)                                  | *要追加*    |
+| NOP / BRK        | (なし)                                  | *要追加*    |
+
+arm64 追加対象: =movk= / =movn= / =add-reg-imm12= / =sub-reg-imm12= /
+=stp-pair-pre= / =ldp-pair-post= (general pair) / =str-reg-base-imm= /
+=ldr-reg-base-imm= / =svc= / =nop= / =brk= = **11 mnemonic × ~14 LOC =
+~150 elisp LOC**
+
+** §2.3 Register encoding table (既存据え置き)
+
+x86_64 = =nelisp-cc-x86_64--reg-encoding= alist (line 170-184):
+=(rax . (0 . nil))= ... =(r15 . (7 . t))= = 16 entry.
+
+arm64 = =nelisp-cc-arm64--reg-encoding= 関数内の inline alist
+(line 168-193): =(x0 . 0)= ... =(x30 . 30) (xzr . 31) (sp . 31)= = 32
+entry。
+
+両者とも exhaustive、Phase 47 で表変更不要。SIMD / xmm / vN レジスタは
+本 doc OOS。
+
+** §2.4 REX prefix computer (既存 =--rex-byte= 強化)
+
+現状 =nelisp-cc-x86_64--rex-byte (W R X B)= は line 220-234 で定義、
+constant 0x40 + W<<3 | R<<2 | X<<1 | B を返す。常に valid byte を返し、
+**elision (= 全 0 のとき省略) は呼び出し側の責務**。Phase 47 拡張案:
+=--rex-byte-with-elision= helper を追加 = =(BYTE . NEEDED-P)= を返す
+~10 LOC。NEEDED-P が nil なら呼び出し側が prefix を drop。
+ROI: =.text= byte count 削減 (= REX 不要箇所の 1 byte/instr 節約)。
+
+** §2.5 ModR/M + SIB byte encoder
+
+ModR/M = 既存 =--modrm-byte (mod reg rm)= line 236-245 据え置き。
+SIB byte encoder (= =--sib-byte (scale index base)= = =(scale<<6) |
+(index<<3) | base= + invariant check 3 つ) を新設、~15 LOC。SIB は
+indexed addressing (= =[base + index*scale + disp]=) で必要。Phase
+47 minimal scope では (a) [rbp-disp] / (b) [rip+disp] / (c) [reg+
+disp] のみ使用、SIB 基本不要だが将来 array indexing 用に preemptive
+配備。
+
+** §2.6 Relocation marker API (= 本 doc の主成果物)
+
+新規 =nelisp-cc-asm-reloc= struct:
+- =TYPE= — =:r-x86_64-pc32= (= 4-byte rel32) / =:r-x86_64-64= (= abs64)
+  / =:r-x86_64-plt32= / =:r-aarch64-call26= (= 26-bit BL imm) /
+  =:r-aarch64-jump26= / =:r-aarch64-condbr19= (= B.cond) /
+  =:r-aarch64-adr-prel-pg-hi21= (= ADRP) / =:r-aarch64-add-abs-lo12-nc=
+- =SYM-NAME= — symbol naming the target (= Doc 93 linker resolves via
+  =.symtab=)
+- =OFFSET= — byte offset within current section (= first byte of the
+  imm field, NOT the instruction start)
+- =ADDEND= (optional, default 0) — matches ELF =Elf64_Rela.r_addend=
+- =SECTION= (optional, default =:text=) — Doc 91 ELF writer dispatches
+  into =.rela.text= / =.rela.data= per section
+
+LOC: ~30 (= struct 12 + constructor 6 + invariant check 12).
+
+buffer 拡張: 既存 =nelisp-cc-x86_64--buffer= に =relocs= slot を追加
+した v2 struct + =--buffer-emit-reloc (buf type sym-name &optional
+addend section)= helper を新設。emit-reloc は (a) reloc struct を
+=relocs= list に push、(b) placeholder zero bytes (= 4 or 8 byte) を
+byte stream に書き込み offset を進める。LABELS / FIXUPS は intra-
+section (= 同 =.text= 内 local fixup) を継続担当、RELOCS は inter-
+section (= =.rodata= constant、=.data= global、external symbol) を
+扱う 2 層分離が Doc 91 ELF writer の =.rela.*= 出力との clean
+boundary になる。
+
+LOC: ~50 (= buffer-v2 struct + emit-reloc + arm64 sibling)。
+合計 §2.6 LOC: **~80 elisp LOC**.
+
+** §2.7 binary buffer optimization (= performance path)
+
+現状 =--buffer-bytes= は **reversed list of integers**。Phase 47 で
+typical NeLisp build:
+- core elisp ~17,000 LOC × ~50 instr/LOC × ~5 bytes/instr ≒ 4 MB byte
+- list-of-integers 4M × cons cell 16 byte = ~64 MB Emacs heap
+- =--buffer-finalize= = =reverse= O(N) + =concat= O(N) → ~8M cons walk
+
+代替設計: =--buffer-v3= struct (= include v2) で =bytes= slot を **grow-
+only unibyte-string + fill pointer + capacity** に切り替え、容量
+exhaustion で =make-string (* cap 2) 0= → =aset= で複製 → 容量倍化
+(= amortized O(1) append)。=nelisp-cc-x86_64-fast-buffer= defcustom
+で v1 / v3 を切替、既存 ert golden が v1 比較で生きる backward-
+compat 維持。=finalize= は active variant を detect し dispatch。
+
+LOC: ~80 (= struct + emit-byte + emit-bytes + finalize 切替 + arm64 同等)。
+
+ROI: 4 MB build で list 経路 ~10s vs unibyte-string 経路 ~0.5s 見込み
+(= benchmark 未実施、Doc 91 §91.d performance discussion と同じ orders
+of magnitude を仮定)。
+
+* §3 byte-level invariants
+
+** §3.1 Endianness
+
+x86_64: little-endian。すべての imm32 / imm64 / disp32 は LSB 先頭。
+=--imm32-bytes= line 247-266 で =(low (>> 8) (>> 16) (>> 24))= の順。
+
+arm64: little-endian。32-bit instruction word を 4 byte LE で並べる。
+=--buffer-emit-instruction= line 551-564 で =(byte 0..3 of u32, LSB
+first)=。
+
+big-endian arm64 (= ARM legacy) は **OOS**、Linux / macOS は LE。
+
+** §3.2 Prefix order
+
+x86_64: =[Legacy prefix(es)] [REX] [Opcode] [ModR/M] [SIB] [Disp] [Imm]=
+
+- Legacy prefix (= 0x66 / 0x67 / lock 等): Phase 47 minimal で不要
+- REX: 0x40-0x4F、必ず opcode の **直前** (= legacy prefix と opcode の間)
+- Opcode: 1-3 byte (= 0x0F escape 含む)
+- ModR/M: opcode が要求するときのみ
+- SIB: ModR/M.rm = 100b (= rsp/r12 base or scaled-index) のときのみ
+- Disp: ModR/M.mod = 01 (= disp8) or 10 (= disp32) のときのみ
+- Imm: opcode が要求する size (= imm8 / imm16 / imm32 / imm64)
+
+既存 emitter 群はこの順序で list を構築 (= =(rex 0x89 modrm)=、
+=(rex 0xC7 modrm imm32-bytes)= 等)、§3.2 invariant **既に準拠**。
+
+arm64: 4-byte fixed-width、prefix 概念なし。命令毎に opcode field と
+operand field が 32-bit word 内で固定 bit position (= 既存 encode-*
+helper が直接 logior で組み立て)。
+
+** §3.3 Opcode disambiguation
+
+同じ mnemonic が operand type で異なる opcode に lower:
+
+x86_64 例:
+
+| mnemonic     | operand type   | opcode               |
+|--------------+----------------+----------------------|
+| MOV r64, r64 | reg, reg       | 0x89 (MR) または 0x8B (RM) |
+| MOV r64, imm32 | reg, imm32   | 0xC7 /0              |
+| MOV r64, imm64 | reg, imm64   | 0xB8+rd (10 byte)    |
+| MOV r64, mem | reg, mem       | 0x8B (RM)            |
+| MOV mem, r64 | mem, reg       | 0x89 (MR)            |
+
+elisp 側の現状は **mnemonic-shape pair で別関数名** =
+=--emit-mov-reg-reg= / =--emit-mov-reg-imm32= / =--emit-mov-rax-rip-rel=
+等。auto-dispatch は無い。Phase 47 で macro-style entry point
+=(emit-mov dst src)= を追加する場合、=src= の type で dispatch する
+elisp macro が必要 (= ~30 LOC、§7 で articulate)。
+
+arm64: addressing mode が固定 (= 命令ごとに operand encoding が一意)、
+disambiguation はほぼ不要。例外: =MOV (= ORR/ADD/MOVZ alias)= は alias
+chain をどの命令に解決するか implicit、現状 =--encode-mov-reg-reg= は
+=ORR Xd, XZR, Xm= に固定済 (line 203-214)。
+
+** §3.4 Instruction length restrictions
+
+x86_64: 最大 15 byte。Phase 47 で生成する命令は最長 10 byte (= MOV
+imm64) 以下、制約に触れない。
+
+arm64: 完全固定 4 byte、長さ制約なし。
+
+** §3.5 alignment
+
+x86_64: byte alignment、命令境界に制約なし (= self-modifying code 含めて
+任意 byte boundary 開始可)。
+
+arm64: 命令は 4 byte aligned **必須** (= ARM ARM B1.1.1)。
+=--encode-bl/b/cbz= 等の offset arg は =(zerop (logand offset #x3))=
+check で enforce 済 (line 301-307 等)。
+
+** §3.6 RIP-relative vs absolute
+
+x86_64: RIP-relative は ModR/M.rm = 101b (= mod=00) で disp32 が
+**次命令 から** の displacement。既存 =--emit-mov-rax-rip-rel= line
+505-515 が `48 8B 05 <rel32>` で実装、Doc 93 linker が rel32 を patch。
+
+arm64: pc-relative は LDR (= literal pool) / ADR / ADRP で実現。Phase 47
+minimal scope では LDR literal pool は使わず、MOVZ + MOVK chain で
+absolute address を materialize する path が単純 (= §2.2 MOVK 追加が
+ここで efficacy 発揮)。
+
+* §4 testing strategy
+
+** §4.1 round-trip oracle
+
+各 instruction encoder helper の検証は **disassemble-and-compare**
+方針: =(emit-X args)= で得た byte list を =unibyte-string= 化 → temp
+=.bin= file に =write-region= → =objdump -D -b binary -m i386:x86-64
+$tmp= の出力を regex で mnemonic / operand 一致確認。arm64 は
+=-m aarch64=。
+
+** §4.2 fixture matrix
+
+x86_64: MOV (reg-reg / reg-imm32 / reg-imm64 / mem-reg / reg-mem) ×
+(legacy 8 reg + REX 8 reg) × (rax/rsp/rbp/r-rN base) ≒ 100 fixture。
+ADD/SUB/CMP/IMUL ~30 each。制御転送 (CALL/JMP/JCC) ~20。
+
+arm64: MOV (reg-reg / MOVZ / MOVK / MOVN) × 32 reg ≒ 120 fixture。
+ADD/SUB/MUL ~50。BL/BLR/B/B.cond/CBZ ~30。
+
+合計 ~400 ert fixture、各 1 sec 以内、make test-all 影響 ~7 min。
+
+** §4.3 disassembler dependency
+
+=objdump= は host system に存在前提 (= GNU binutils)。Phase 47 完遂後
+(= 0 Rust + 0 GNU) では検証 path 喪失、§6.4 risk で articulate。
+
+** §4.4 negative test
+
+各 encoder の invariant check (= imm32 out-of-range、unknown register、
+misaligned arm64 offset 等) で ~50 negative fixture (=
+=should-error= type =nelisp-cc-x86_64-encoding-error=)。
+
+** §4.5 既存 test との関係
+
+=tests/= 配下の既存 ert (Phase 7.1.x で landed) は同 substrate を golden
+で確認済。Phase 47 拡張 helper のみ新規 fixture、既存は据え置き。
+
+* §5 ROI quantification
+
+** §5.1 Rust LOC 削減
+
+§1.2 で確定: **encoder 直接削減 = 0 LOC** (= Rust 側に encoder 自体が
+無い)。
+
+ただし Phase 47 全体での **間接 unblock**:
+- =build-tool/src/eval/ffi.rs= 820 LOC (= libffi/libloading boundary)
+- =build-tool/src/jit/bridge.rs= 1,084 LOC (= unified_fn_ptr + 7 shape
+  trampoline)
+- =build-tool/src/jit/{access,arith,box_accessor,cons,float,hash,math,
+  predicate,regex,strings,syscall,time}.rs= = 2,053 LOC
+- 合計 ~3,957 LOC
+
+これらは Doc 93 linker + syscall inline の実装で eliminate される。
+本 doc が encoder を整備しないと Doc 93 が unblockable なため、
+**間接 unblock 投資** として位置付ける。
+
+** §5.2 elisp LOC 必要
+
+| sub-stage                         | LOC   |
+|-----------------------------------+-------|
+| §92.a x86_64 minimal opcode 追加  | ~150  |
+| §92.b arm64 minimal opcode 追加   | ~150  |
+| §92.c relocation marker API       | ~80   |
+| §92.d performance optimization    | ~100  |
+| 計                                 | *~480* |
+
+Doc 85 §0 が "macro assembler 拡張 ~800 elisp" と articulate したが、
+実際は既存 38 + 21 = 59 helper が 60-70% カバーしており、追加
+~480 LOC で Phase 47 minimal coverage 達成見込み。
+
+** §5.3 net 投資 ratio
+
+直接削減: 0、間接 unblock: 3,957 LOC、投資: 480 elisp。
+
+直接 ROI 計算は不適 (= 0 で割れない)。Phase 47 全体 ROI として:
+- 投資: 480 (本 doc) + ~500 (Doc 91) + ~300 (Doc 93) + ~150 (Doc 94) +
+  ~150-300 (Doc 95) = ~1,580-1,730 elisp
+- 削減: ~3,957 Rust + ~150 boot loader 等 = ~4,107 LOC
+- ratio: 1:2.4 ≒ Phase 1-3 と同等 ROI (= Doc 85 §0 の "実は Phase 1-3
+  と同等 ROI" と整合)
+
+** §5.4 Phase 47 unblocking
+
+本 doc が ship した時点で:
+- ✅ macro assembler が full self-contained = elisp 内で完結する
+  byte emit pipeline
+- ✅ Doc 91 ELF writer に流せる byte vector + relocation marker が出る
+- ✅ Doc 93 linker が patch する relocation site が assembler 出力に
+  記録される
+- ✅ Doc 95 Sexp DSL が Sexp 値を =.rodata= に埋める時、本 doc の
+  buffer 経由で byte が並ぶ
+
+未解決 (= 別 Doc):
+- ❌ ELF binary serialization (= Doc 91)
+- ❌ syscall inline (= Doc 93)
+- ❌ crt0 (= Doc 94)
+- ❌ Sexp DSL (= Doc 95)
+
+** §5.5 戦略価値
+
+本 doc の elisp encoder が「assembler 自身を elisp で書けることを示す
+working DSL」になる = 副次的に NeLisp の **language-level capability
+demo**: elisp で systems programming が完結する事例として、
+Phase 7.x の native code emit 経路を Phase 47 self-host loop に lift
+する象徴的位置付け。
+
+* §6 Risk / unknowns
+
+** §6.1 性能 (= byte build hot path)
+
+§2.7 で articulate: x86_64 instruction emit は ~10-50 byte/instr ×
+1000s instr per JIT compile = millions of byte ops。elisp の
+=unibyte-string= grow vs =insert-byte= vs =push to list + reverse= の
+performance order:
+
+- =push to list + reverse + concat=: ~64 MB heap, O(N) finalize
+- =unibyte-string + grow-doubling=: ~4 MB heap, O(1) amortized append
+- =insert-byte to temp buffer= (= text buffer): O(1) append via
+  =insert-char=、Emacs buffer の specialized path
+
+Doc 91 §91.d performance discussion で "elisp byte emit は GiB/sec
+achievable" と articulate (= host Emacs の =unibyte-string= が C
+implemented)。本 doc も同 assumption を継承。
+
+懸念: byte-compile されない interpreted elisp で ~5x 遅くなる可能性
+あり。Phase 47 toolchain は byte-compile 必須 (= AOT pipeline で
+=.elc= 経由) として risk 軽減。
+
+** §6.2 opcode coverage
+
+Phase 47 minimal で必要な mnemonic は §2.2 で ~30 個と articulate。
+ただし NeLisp の elisp source が evolve すると追加要件発生:
+- string mutation primitive の inline = REP MOVS / REP STOS が要
+- bignum 演算の inline = ADC / SBB (= carry chain) が要
+- atomic op の inline = LOCK prefix + CMPXCHG が要
+
+これらは Phase 47.x post-ship で都度追加。本 doc minimal scope は
+**core integer + control flow** のみ。
+
+** §6.3 arm64 parity
+
+x86_64 38 helper / arm64 21 helper = arm64 が現状やや coverage 薄。
+Phase 47 で linux-x86_64 を first ship target にするなら arm64 拡充は
+deferred、ただし macos-arm64 を fall-behind させない方針を前提に
+**両 platform で同 coverage** が望ましい (= §92.a / §92.b を並列実装)。
+
+arm64 fixed-width 4-byte encoding は x86_64 variable-width より
+**simpler** = LOC は同程度に収束 (§5.2 で 150/150 評価)。
+
+** §6.4 disassembler dependency for testing
+
+§4.3 で articulate: =objdump= host 依存。Phase 47 完遂後 (= 0 GNU
+toolchain world) では検証 path が消える。代替案: (a) 各 fixture で
+objdump 出力を 1 度取得し以降は byte vector を constant として比較
+(= host-tool 依存ゼロ)、(b) 約 500 LOC の elisp 逆 disassembler を
+別 doc で起こす (= post-Phase 47 enhancement)、(c) zydis / iced-x86
+を bin として cargo workspace 削除前に oracle にする。Phase 47
+minimal で (a) を採用。
+
+** §6.5 既存 helper との backward-compat
+
+§2.7 binary buffer 切替が **既存 ert fixture を破壊しない** ことが
+gate 条件: =--buffer-bytes= が list-of-int → unibyte-string に変わる
+が、=finalize= 戻り値 type (= unibyte-string) は不変、API surface
+据え置き。risk: 既存 caller が accessor 直読みしている場合は破綻、
+ただし grep snapshot では accessor 直読みは無し (= =finalize= 経由
+のみ)。Phase 47 着手時に grep 再実行で確認。
+
+** §6.6 implicit register liveness
+
+macro-style auto-dispatch entry =(emit-mov dst src)= は operand type
+で opcode 選択 = elisp runtime function (= integer? symbol? cons-of-
+disp?) で十分、macro 不要。implicit flag clobber (= ADD は OF/SF/ZF
+触る、MOV は触らない) は user の責務、本 doc の encoder layer は
+flag 可視化を持たない (= register allocator との handshake で対処)。
+
+* §7 Implementation phases
+
+** §7.1 §92.a x86_64 minimal opcode set
+
+scope:
+- MOV r64, imm64 (= 10-byte form for full 64-bit immediate)
+- ADD / SUB / CMP r64, imm32 (= 0x81 /0 /5 /7)
+- PUSH r64 / POP r64 (= 0x50+rd / 0x58+rd, REX.B for r8-r15)
+- SYSCALL (= 0x0F 0x05)
+- NOP (= 0x90)
+- INT3 (= 0xCC)
+- HLT (= 0xF4)
+
+LOC 目安: ~150
+日数目安: 1 day (= encode 単純、既存 helper 群と同型)
+
+dependencies: なし (= Phase 7.x substrate のみ)
+
+testing: §4.1 round-trip × 各 mnemonic ~10 fixture = ~100 ert
+
+** §7.2 §92.b arm64 minimal opcode set
+
+scope:
+- MOVK / MOVN (= MOVZ family の他 2 variant)
+- ADD / SUB Xd, Xn, #imm12 (= general-purpose、SP only から拡張)
+- STP / LDP (general pair) Xt1, Xt2, [Xn, #imm]!
+- STR / LDR Xt, [Xn, #imm] (= base reg ≠ SP も可)
+- SVC #imm16 (= 0xD4000001 + (imm16 << 5))
+- NOP (= 0xD503201F)
+- BRK #imm16
+
+LOC 目安: ~150
+日数目安: 1 day (= arm64 encoding は仕様 simple、bit-field 計算のみ)
+
+dependencies: なし
+
+testing: §4.1 round-trip × 各 mnemonic ~10 fixture = ~110 ert
+
+** §7.3 §92.c relocation marker integration
+
+scope:
+- =nelisp-cc-asm-reloc= struct + constructor (§2.6)
+- buffer v2 (= relocs slot 追加) (§2.6)
+- =--buffer-emit-reloc= helper (§2.6)
+- arm64 sibling reloc API
+- Doc 93 linker handshake (= consume struct を describe する API contract)
+
+LOC 目安: ~80
+日数目安: 1.5 day (= struct + buffer 拡張 + arm64 sibling、API contract
+articulate に時間)
+
+dependencies: §92.a / §92.b (= 拡張済 buffer に増設)
+
+testing:
+- 各 reloc type で emit + 実 byte 確認 ~24 fixture
+- buffer v2 backward-compat (= legacy emit-* helper が v2 でも動く) ~10
+- Doc 93 linker handshake mock = ~6 fixture
+
+** §7.4 §92.d performance optimization
+
+scope:
+- buffer v3 (= unibyte-string + fill pointer) (§2.7)
+- =nelisp-cc-x86_64-fast-buffer= defcustom 切替
+- benchmark fixture: 1 MB byte build × 10 trial × 3 implementation 比較
+- arm64 sibling
+
+LOC 目安: ~100
+日数目安: 1 day (= buffer 切替 + benchmark)
+
+dependencies: §92.a / §92.b / §92.c (= 全 helper が新 buffer 経由)
+
+testing:
+- unit: v1/v2/v3 でも fixture が同一 byte 列 ~20 fixture
+- benchmark: 1 MB build × 3 variant の time / heap profile (= ert
+  ではなく =elp= で記録、Doc 91 §91.d と同 pattern)
+
+** §7.5 sub-stage 順序と並列性
+
+| stage | depends-on    | 並列実行可能      |
+|-------+---------------+-------------------|
+| §92.a | -             | §92.b (= arch 異)  |
+| §92.b | -             | §92.a              |
+| §92.c | §92.a + §92.b | -                 |
+| §92.d | §92.c         | -                 |
+
+§92.a / §92.b は別 backend file = sub-agent dispatch で平行実装可能
+(= 2026-04 orchestrator workflow で既 demonstrated)。§92.c / §92.d は
+直列。
+
+合計 工数: 1 + 1 + 1.5 + 1 = **4.5 day** (= 並列で 3.5 day)
+
+** §7.6 ship gate
+
+各 stage の SHIP 条件:
+- §92.a: x86_64 ert ~100 / 100 pass、make test-all 既存 fixture 全 pass
+- §92.b: arm64 ert ~110 / 110 pass、同上
+- §92.c: reloc fixture ~40 / 40 pass、Doc 93 linker handshake mock 通る
+- §92.d: benchmark で v3 が v1 比 5x 以上、既存 fixture 全 pass
+
+* §8 References
+
+** §8.1 内部 doc
+
+- Doc 85 = Phase 47 feasibility spike (= 親、§3.2 / §5.1 で本 component
+  を ~800 elisp と sized、本 doc が ~480 で再見積)
+- Doc 91 = ELF writer (= sister、本 doc output の =.text= consumer)
+- Doc 93 = static linker + syscall inline (= sister parallel DRAFT、
+  reloc marker の resolve 側)
+- Doc 94 = crt0 + boot loader (= sister parallel DRAFT、本 doc output
+  が起動コード first byte を生成)
+- Doc 95 = Sexp layout DSL (= sister DRAFT、=.rodata= emission の
+  producer)
+- Doc 81 = nelisp-cc-primitive-trampoline-extension (= JIT trampoline
+  ABI、本 doc output が trampoline =.text= になる)
+- Doc 28 = phase 7.1 native compiler (= 既存 nelisp-cc-x86_64.el /
+  nelisp-cc-arm64.el の出自、前提 substrate)
+- Doc 47 = rust-seed-image-abi、Doc 63 = phase7-self-host-roadmap、
+  Doc 83 §6.3 = "究極着地 ~300-500 LOC" articulation
+
+** §8.2 外部 spec
+
+- *Intel SDM Vol.2* (Instruction Set Reference, A-Z) — x86_64 opcode /
+  REX / ModR/M / SIB / immediate encoding の primary reference
+- *Intel SDM Vol.3* (System Programming Guide) — SYSCALL / SYSRET 仕様
+- *AMD64 ABI specification (System V)* — calling convention
+- *ARM Architecture Reference Manual (ARM ARM)* — A-profile 64-bit
+  instruction encoding chapter C3-C5
+- *AAPCS64* (Procedure Call Standard for AArch64) — arm64 ABI
+- *ELF-64 Object File Format spec v1.5* — R_X86_64_PC32 等 reloc type
+  名前の出典 (Doc 91 §1 でも参照)
+
+** §8.3 既存実装参考
+
+GNU binutils =gas/config/tc-{i386,aarch64}.c=, LLVM
+=lib/Target/X86/MCTargetDesc/=, xed (Intel Encoder/Decoder), zydis,
+iced-x86 (= §6.4 で代替 testing oracle 候補)
+
+** §8.4 既存 elisp asset の line ref
+
+- =src/nelisp-cc-x86_64.el:170-184= = =--reg-encoding= alist
+- =src/nelisp-cc-x86_64.el:220-234= = =--rex-byte=
+- =src/nelisp-cc-x86_64.el:236-245= = =--modrm-byte=
+- =src/nelisp-cc-x86_64.el:247-266= = =--imm32-bytes=
+- =src/nelisp-cc-x86_64.el:277-602= = 38 個の =--emit-*= helper
+- =src/nelisp-cc-x86_64.el:616-724= = =--buffer-*= 12 関数
+- =src/nelisp-cc-arm64.el:124-193= = AAPCS64 reg + =--reg-encoding=
+- =src/nelisp-cc-arm64.el:203-535= = 21 個の =--encode-*= helper
+- =src/nelisp-cc-arm64.el:535-660= = arm64 buffer + label/fixup
+- =src/nelisp-cc-runtime.el:294-318= = =--platform-detect=
+- =src/nelisp-cc-runtime.el:325-405= = =--alloc-exec-page= (= W^X
+  syscall trace simulator、Doc 93 で実 syscall に置換)
