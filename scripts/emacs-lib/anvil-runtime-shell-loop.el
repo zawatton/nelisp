@@ -288,6 +288,18 @@ Uses CR-strip to recognise lines that are CRLF artefacts as blank."
                (nelisp--write-stderr-line
                 (concat "[shell-loop] " trimmed
                         " load/enable ERR: " (format "%S" err))))))))))
+  ;; Post-load substrate patches (= anvil-sqlite regex compat etc).
+  ;; Must run AFTER the tool-module load+enable chain because the
+  ;; patches override functions that the modules define.
+  (when (fboundp 'anvil-runtime-polyfills-apply-post-load-patches)
+    (condition-case err
+        (anvil-runtime-polyfills-apply-post-load-patches)
+      (error
+       (when (fboundp 'nelisp--write-stderr-line)
+         (nelisp--write-stderr-line
+          (concat "[shell-loop] post-load patches ERR: "
+                  (format "%S" err)))))))
+
   (when (fboundp 'nelisp--write-stderr-line)
     (let ((bucket (and (boundp 'anvil-server--tools)
                        (gethash server-id anvil-server--tools))))
