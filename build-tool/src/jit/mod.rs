@@ -33,12 +33,6 @@ pub(crate) use bridge::{
     bi_nl_jit_call_syscall,
 };
 mod cons;
-// `dsl': Stage b.1 JIT IR DSL interpreter (Doc 77b).  No production
-// caller yet — Stage b.3 will switch `declare_X_inline' callers to
-// use `dsl::build_rule' on elisp-authored Sexp rules.  Test-only
-// coverage today, hence `#[allow(dead_code)]'.
-#[allow(dead_code)]
-mod dsl;
 mod predicate;
 // `strategy': Rust helper primitives (Stage b.4) backing the elisp
 // wrappers in `lisp/nelisp-jit-strategy.el' — arith Float helpers,
