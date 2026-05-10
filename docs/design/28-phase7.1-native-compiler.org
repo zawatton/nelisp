@@ -585,6 +585,78 @@ baseline ≧ 確認 = =gate=.
 - gate: existing nelisp-cc-test.el (T11 simulator) 全 PASS、3-軸 bench (=fib 30x= / =fact-iter 20x= / =alloc-heavy 5x=) で cons-heavy work load が Cranelift baseline と semantic equivalent + perf ≧ baseline
 - *Rust LOC delta target*: *-415* (cons.rs 全削除) + 微小調整 (mod.rs UnifiedJit field 1 行 / 配線 4 行) ≈ *net -425 Rust*
 
+**** 3.6.a.SHIPPED Phase 7.1.6.a.1 + a.2 actual delta (2026-05-10)
+
+Phase 7.1.6.a 二段構成で SHIPPED:
+
+- Phase 7.1.6.a.1 (commit =6666e61=, 2026-05-10): dlsym bridge precursor.
+  =build-tool/src/eval/dlsym_bridge.rs= 新設 (+96 Rust)、elisp 側
+  resolver wiring (+75 elisp).  Cluster deletion は a.2 へ deferral.
+- Phase 7.1.6.a.2 (本 commit, 2026-05-10): cons cluster Cranelift wrapper
+  deletion.
+
+7.1.6.a.2 actual changes:
+1. =build-tool/src/jit/cons.rs= の 5 trampoline (=nl_jit_cons_car/cdr/make/setcar/setcdr=)
+   に =#[no_mangle] pub unsafe extern "C"= attribution 追加 → dlsym 経由の
+   resolution 可能化.
+2. =.cargo/config.toml= 新設 (=[build] rustflags = ["-C", "link-arg=-rdynamic"]=)
+   → binary の dynamic symbol table に no_mangle symbols が export されるよう
+   linker flag 配線.
+3. =build-tool/src/jit/cons.rs= から =JitCons= / =ConsIds= struct +
+   =declare_unary_with_nil_inline= Cranelift IR builder + =register_symbols= /
+   =declare_funcs= / =collect_funcs= 配線 + =jit()= test helper を削除
+   (-244 LOC).  trampolines + tests 残存 (= +124 LOC、tests refactor で
+   =jit().car= → =unsafe { nl_jit_cons_car(...) }= 形式).
+4. =build-tool/src/jit/mod.rs= の =UnifiedJit::cons= field +
+   =cons::register_symbols= / =declare_funcs= / =collect_funcs= 呼出
+   削除 (= -5 LOC).
+5. =build-tool/src/jit/bridge.rs= =unified_fn_ptr= の cons name resolution
+   を =u.cons.car= 経由から =super::cons::nl_jit_cons_car as *const u8=
+   直接参照に置換 (substrate.el の bootstrap path =nl-jit-call-out-N
+   "nelisp_jit_*"= 維持のため必須).
+6. =test/nelisp-cc-stage81-poc-test.el= に 7.1.6.a.2 dlsym 統合 smoke
+   2 件追加 — 5 cons trampoline 全 =:resolved=、未知名 =:not-found=
+   passthru、standalone =target/debug/nelisp= bin 経由で =skip-unless=
+   guarded.
+
+actual Rust LOC delta:
+| 箇所                          | +    | -    | net  |
+|-------------------------------+------+------+------|
+| =build-tool/src/jit/cons.rs=  | +96  | -215 | -119 |
+| =build-tool/src/jit/mod.rs=   | +14  | -5   | +9   |
+| =build-tool/src/jit/bridge.rs= | +14  | -5   | +9   |
+| *小計*                        | +124 | -225 | *-101* |
+
+加えて =.cargo/config.toml= +27 LOC (Rust source ではない linker config) と
+=test/nelisp-cc-stage81-poc-test.el= +88 LOC elisp.
+
+*7.1.6.a.1 + a.2 bundle 合計 net Rust delta*: =+96 (a.1 dlsym shim) − 101 (a.2 cluster shrink) = -5 Rust=.
+
+*Design target との差*: 設計 §3.6.a v1 plan は cons.rs 全削除 (-415) を
+articulate していたが、=lisp/nelisp-jit-substrate.el= の bootstrap path
+(= =cons= / =car= / =cdr= / =setcar= / =setcdr= の =fset= 定義が
+=nl-jit-call-out-N "nelisp_jit_*"= 経由で =bridge::unified_fn_ptr=
+にぶら下がる) を維持するため、trampolines + bridge 配線は維持する
+減らしモデルに変更.  trampolines を完全削除するには substrate.el の
+bootstrap も dlsym path に migrate する必要があり、Phase 7.1.6.a.3 (=
+substrate dlsym migration) で残り =-200〜-300 Rust= を回収する追加 plan
+が articulate 可.  本 a.2 では Cranelift wrapper layer (= =JitCons=
+struct + IR builder + 配線) のみ削除、trampolines は dlsym + bridge
+両方からの resolution 対応化.
+
+gate 達成状況:
+- nelisp-cc-test.el (50/50 PASS) ✓
+- 全 ERT (2349 / 2349 PASS、328 skipped、0 unexpected) ✓
+- cargo test --lib jit (81/81 PASS) ✓
+- cargo test --lib image (25/25 PASS) ✓
+- cargo build (default + image-baker feature) clean ✓
+- dlsym 統合 smoke (2/2 PASS、binary 経由で実 resolve 確認) ✓
+- 3-軸 bench: baseline =make bench-actual= が pre-existing
+  =anvil-runtime= 配下 =Sexp::Cons(NlConsBoxRef)= 1-field/2-field pattern
+  mismatch で build 不可 (= 7.1.6.a.2 とは independent な runtime crate
+  の stale issue).  現状 baseline で exercise 不可、Phase 7.1.6.a.3
+  以降で recover or Phase 7.1.6.a.f bundle gate で集約予定.
+
 *** 3.6.b Phase 7.1.6.b — =access= takeover (= access.rs ~-628 Rust LOC)
 
 **** 3.6.b.1 Cranelift dispatch arms inventory (= access.rs 実測)

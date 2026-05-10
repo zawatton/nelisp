@@ -72,11 +72,20 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
         "nelisp_jit_logxor2" => u.arith.logxor as *const u8,
         "nelisp_jit_ash" => u.arith.ash as *const u8,
         // ---- cons (5) ----
-        "nelisp_jit_car" => u.cons.car as *const u8,
-        "nelisp_jit_cdr" => u.cons.cdr as *const u8,
-        "nelisp_jit_cons" => u.cons.cons_make as *const u8,
-        "nelisp_jit_setcar" => u.cons.setcar as *const u8,
-        "nelisp_jit_setcdr" => u.cons.setcdr as *const u8,
+        // Phase 7.1.6.a.2 (Doc 28 §3.6.a): resolve cons names directly
+        // to the `#[no_mangle] extern "C"' trampolines now that the
+        // Cranelift `JitCons' wrapper page has been deleted.  The
+        // inline-NIL fast path (= the deleted `declare_unary_with_nil_
+        // inline' Cranelift IR shape) is no longer present here; for
+        // car / cdr the NIL case is handled by the trampoline's first
+        // arm (`tag == SEXP_TAG_NIL → OK') without further work, so
+        // semantic behaviour is preserved.  nelisp-cc compiled hot
+        // paths skip this bridge entirely via dlsym + direct CALL.
+        "nelisp_jit_car" => super::cons::nl_jit_cons_car as *const u8,
+        "nelisp_jit_cdr" => super::cons::nl_jit_cons_cdr as *const u8,
+        "nelisp_jit_cons" => super::cons::nl_jit_cons_make as *const u8,
+        "nelisp_jit_setcar" => super::cons::nl_jit_cons_setcar as *const u8,
+        "nelisp_jit_setcdr" => super::cons::nl_jit_cons_setcdr as *const u8,
         // ---- access (4) ----
         "nelisp_jit_length" => u.access.length as *const u8,
         "nelisp_jit_aref" => u.access.aref as *const u8,

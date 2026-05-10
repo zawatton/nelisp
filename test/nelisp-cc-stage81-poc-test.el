@@ -1339,5 +1339,93 @@ runtime calls) — not just exercised in isolation by ERT 27〜30."
                           stats)))
             (should (eq 'call (nelisp-cc--ssa-instr-opcode instr)))))))))
 
+;;; Phase 7.1.6.a.2 dlsym integration smoke -------------------------
+;;
+;; Doc 28 §3.6.a ship gate (= the smoke deferred from Phase 7.1.6.a.1
+;; per `nelisp-cc-runtime.el' §1681).  Verifies the end-to-end path:
+;;
+;;   1. The `nelisp' binary's dynamic symbol table exposes the
+;;      `#[no_mangle]' cons trampolines (= `-rdynamic' is wired via
+;;      `.cargo/config.toml').
+;;   2. `nelisp-cc--dlsym-resolve' returns `:resolved' with a non-zero
+;;      addr for each cons cluster symbol when invoked in the standalone
+;;      binary.
+;;   3. Unknown symbol names still return `:not-found'.
+;;
+;; The host Emacs runner does not have the `nelisp-cc--dlsym-resolve'
+;; primitive, so we shell out to the locally-built `nelisp' binary if it
+;; exists — `make test' alone is run in host-Emacs context so the smoke
+;; auto-skips when the binary hasn't been built yet (= a bootstrap test
+;; would fail-loud about that, but Phase 7.1.6.a.2's whole point is to
+;; let the binary build with the new linker flag, so the smoke is
+;; advisory rather than gating).
+
+(defvar nelisp-cc-stage81-test--nelisp-bin
+  (let* ((this-file (or load-file-name buffer-file-name))
+         (test-dir (and this-file (file-name-directory this-file)))
+         (repo (and test-dir (expand-file-name "../" test-dir))))
+    (and repo (expand-file-name "target/debug/nelisp" repo)))
+  "Path to the locally-built `nelisp' binary, if present.
+
+Resolved relative to this test file at load time.  Used by the
+Phase 7.1.6.a.2 dlsym integration smoke to invoke the standalone
+binary (= the only context where `nelisp-cc--dlsym-resolve' is
+fbound).")
+
+(defun nelisp-cc-stage81-test--nelisp-eval (form)
+  "Evaluate FORM (an elisp sexp) under the locally-built `nelisp' binary.
+
+Returns the printed result as a string with trailing newline trimmed.
+Caller is responsible for `skip-unless'-gating on
+`file-executable-p' against `nelisp-cc-stage81-test--nelisp-bin'."
+  (let ((expr (let ((print-level nil)
+                    (print-length nil))
+                (prin1-to-string form))))
+    (with-temp-buffer
+      (let ((rc (call-process nelisp-cc-stage81-test--nelisp-bin
+                              nil t nil "eval" expr)))
+        (unless (zerop rc)
+          (error "nelisp eval %s failed (rc=%d): %s"
+                 expr rc (buffer-string)))
+        (string-trim-right (buffer-string))))))
+
+(ert-deftest nelisp-cc-stage81-poc-7.1.6.a.2-dlsym-resolves-cons-cluster ()
+  "Phase 7.1.6.a.2: dlsym resolves all 5 `nl_jit_cons_*' symbols.
+
+The cluster takeover (Doc 28 §3.6.a) deletes the Cranelift `JitCons'
+wrapper but keeps the trampolines as `#[no_mangle] extern \"C\"' so
+the dlsym bridge can locate them.  Smoke verifies that `(nelisp-cc--
+dlsym-resolve \"nl_jit_cons_car\")' returns `(:resolved . ADDR)' with
+ADDR > 0 (= the symbol exists in the binary's dynsym table thanks to
+`-rdynamic' in `.cargo/config.toml')."
+  (skip-unless (and nelisp-cc-stage81-test--nelisp-bin
+                    (file-executable-p nelisp-cc-stage81-test--nelisp-bin)))
+  (dolist (sym '("nl_jit_cons_car" "nl_jit_cons_cdr"
+                 "nl_jit_cons_make" "nl_jit_cons_setcar"
+                 "nl_jit_cons_setcdr"))
+    (let* ((out (nelisp-cc-stage81-test--nelisp-eval
+                 `(nelisp-cc--dlsym-resolve ,sym)))
+           ;; Output shape: "(:resolved . NNNNNNN)" or "(:not-found)".
+           (resolved-prefix "(:resolved . "))
+      (should (string-prefix-p resolved-prefix out))
+      ;; Parse the addr and assert it is non-zero.
+      (let* ((addr-str (substring out (length resolved-prefix)
+                                  (1- (length out))))
+             (addr (string-to-number addr-str)))
+        (should (> addr 0))))))
+
+(ert-deftest nelisp-cc-stage81-poc-7.1.6.a.2-dlsym-not-found-passthru ()
+  "Phase 7.1.6.a.2: unknown C symbols still return `:not-found'.
+
+The `-rdynamic' flag exposes ALL non-mangled symbols, but it does
+not invent new ones — a typo or unrelated name must still take the
+deferred-fallback branch (Doc 81 §6.3) rather than spuriously
+resolving."
+  (skip-unless (and nelisp-cc-stage81-test--nelisp-bin
+                    (file-executable-p nelisp-cc-stage81-test--nelisp-bin)))
+  (let ((out (nelisp-cc-stage81-test--nelisp-eval
+              '(nelisp-cc--dlsym-resolve "nl_jit_cons_nonexistent_typo"))))
+    (should (string-prefix-p "(:not-found" out))))
+
 (provide 'nelisp-cc-stage81-poc-test)
 ;;; nelisp-cc-stage81-poc-test.el ends here
