@@ -164,7 +164,7 @@ mod syscall;
 /// Net effect: 5x → 1x mmap, single FuncId namespace.  Submodule
 /// `jit() -> &'static JitX' now returns `&unified_jit().x'.
 pub(super) struct UnifiedJit {
-    pub(super) arith: arith::JitArith,
+    pub(in crate::jit) arith: arith::JitArith,
     // Phase 7.1.6.a.2 (Doc 28 §3.6.a): cons cluster JIT wrappers
     // deleted (= `JitCons' / `register_symbols' / `declare_funcs' /
     // `collect_funcs' all gone).  The 5 `nl_jit_cons_*' trampolines
@@ -172,9 +172,9 @@ pub(super) struct UnifiedJit {
     // resolved by the dlsym bridge for nelisp-cc compiled hot paths,
     // and by `bridge::unified_fn_ptr' for substrate.el bootstrap
     // paths (= same trampoline body, no Cranelift wrapper).
-    pub(super) access: access::JitAccess,
-    pub(super) predicate: predicate::JitPredicate,
-    pub(super) syscall: syscall::JitSyscall,
+    pub(in crate::jit) access: access::JitAccess,
+    pub(in crate::jit) predicate: predicate::JitPredicate,
+    pub(in crate::jit) syscall: syscall::JitSyscall,
 }
 
 static UNIFIED_JIT: OnceLock<UnifiedJit> = OnceLock::new();

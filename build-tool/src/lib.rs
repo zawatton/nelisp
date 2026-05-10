@@ -26,7 +26,13 @@ pub mod image;
 // `lisp/nelisp-jit-strategy.el' that call JIT entries via the
 // `nl-jit-call-*' bridge primitives; eval-loop dispatches builtins
 // directly to `eval::builtins::dispatch' (no `lower_entries' hook).
-pub mod jit;
+//
+// Phase 7.1.7.a (2026-05-10): narrowed to `pub(crate)' — the only
+// crate-external surface ever needed was the `bi_*' re-exports for
+// `eval::builtins::dispatch' which are siblings inside the crate.
+// Keeping this `pub(crate)' lets `UnifiedJit' field types stay
+// `pub(super)' without `private_interfaces' warnings.
+pub(crate) mod jit;
 // Phase 8 Stage 8.4 (Doc 73 §2.4, 2026-05-09) — reader feature gate.
 // Production callsites of `reader::read_*' have all been migrated:
 //   - `eval::eval_str' / `eval_str_all' route through the elisp reader
