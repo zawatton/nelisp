@@ -6,7 +6,7 @@
         bench-actual bench-actual-cargo bench-allocator bench-allocator-heavy \
         stage-d-v2-tarball stage-d-v2-tarball-verify \
         stage-d-v3-tarball stage-d-v3-tarball-verify \
-        bake-images bake-check
+        bake-images bake-check verify-elisp-fixtures
 
 EMACS ?= emacs
 
@@ -72,10 +72,31 @@ clean:
 bake-images:
 	cargo build --release --manifest-path build-tool/Cargo.toml --features image-baker --bin nelisp-baker
 	./target/release/nelisp-baker
+	@if [ "$$NELISP_VERIFY_ELISP" = "1" ]; then \
+	  $(MAKE) verify-elisp-fixtures; \
+	else \
+	  echo "(verify-elisp-fixtures skipped — set NELISP_VERIFY_ELISP=1 to enable)"; \
+	fi
 
 bake-check:
 	cargo build --release --manifest-path build-tool/Cargo.toml --features image-baker --bin nelisp-baker
 	./target/release/nelisp-baker --check
+
+# Doc 95 §95.e CI integration: emit the hand-picked NELIMG v3 envelope
+# fixture corpus via the elisp serializer (`nelisp-sexp-bake-dump-
+# fixture'), then run each through the Rust baker's `--verify-elisp-
+# fixtures' branch to confirm byte-identity.  Failure = drift between
+# the elisp encoder (`lisp/nelisp-sexp-dsl.el') and the Rust encoder
+# (`build-tool/src/image.rs::encode_v3_with_fallback').  Depends only
+# on the `nelisp-baker' binary plus an Emacs to run the dumper.
+verify-elisp-fixtures:
+	cargo build --release --manifest-path build-tool/Cargo.toml --features image-baker --bin nelisp-baker
+	@mkdir -p target/elisp-fixtures
+	$(EMACS) --batch -Q -L lisp \
+	  -l nelisp-bake-fixtures \
+	  --eval '(nelisp-bake-fixtures-emit-all "target/elisp-fixtures/")'
+	./target/release/nelisp-baker --verify-elisp-fixtures \
+	  $$(ls target/elisp-fixtures/*.image)
 
 # Phase 7+ replan-gate audit scanner (T14 nelisp-dev-audit).
 # Optional NELISP_AUDIT_WEEK env to inject current development week (e.g., 4 / 8 / 12).

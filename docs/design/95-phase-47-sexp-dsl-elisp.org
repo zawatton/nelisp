@@ -1347,6 +1347,45 @@ silently producing wrong fixtures.
   produced fixtures, exit 4 for corrupted inputs (= failure path
   exercised)
 
+*** CI integration SHIPPED (2026-05-11)
+
+Wired the §95.e byte-identity gate into `make' + GitHub Actions:
+
+- New =lisp/nelisp-bake-fixtures.el= (= 10 hand-picked NELIMG v3
+  envelope fixtures — empty / one-form / multibyte-UTF-8 /
+  two-forms / multi-multibyte / comment-only / defvar /
+  progn-multiline / mixed-ascii-utf8 / longer multi-line block).
+  Each emits via =nelisp-sexp-bake-dump-fixture'.  Scope =
+  envelope subset only (= N_NODES = 0 / N_GLOBALS = 0); node-pool
+  fixtures deferred to Doc 95.f.
+- New =make verify-elisp-fixtures= target: builds the release
+  =nelisp-baker= (= same incantation as =bake-images=), emits the
+  corpus into =target/elisp-fixtures/=, then runs
+  =nelisp-baker --verify-elisp-fixtures= over every fixture.
+  Exit non-zero = drift between elisp + Rust encoders.
+- =make bake-images= now opt-in chains the verify step when
+  =NELISP_VERIFY_ELISP=1= (= keeps default bake fast; CI sets the
+  env explicitly via the dedicated job step).
+- =.github/workflows/ci.yml= adds a *Verify elisp ↔ Rust fixture
+  byte-identity* step on the Linux matrix leg (= release baker
+  build is the cost driver; the byte contract is OS-independent
+  so Linux coverage is enough).
+- New =test/nelisp-bake-fixtures-test.el= = 8 ert cases (= corpus
+  shape, name uniqueness, emit-all writes-files, every-shape
+  self-round-trip, Rust verifies single fixture, Rust verifies
+  whole corpus, Rust rejects corrupted fixture, batch entry point
+  prints paths).  Tests that need the release binary
+  auto-=skip-unless= on its absence so a bare =make test= from a
+  fresh checkout stays green.
+
+LOC delta (= §95.e CI integration only, additive only):
+
+- =lisp/nelisp-bake-fixtures.el= NEW: ~85 LOC
+- =test/nelisp-bake-fixtures-test.el= NEW: ~165 LOC
+- =Makefile= delta: +17 LOC (= target + .PHONY +
+  =bake-images= opt-in)
+- =.github/workflows/ci.yml= delta: +13 LOC (= new step + comment)
+
 ----
 
 End of Doc 95 DRAFT.
