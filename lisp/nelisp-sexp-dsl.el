@@ -1,4 +1,4 @@
-;;; nelisp-sexp-dsl.el --- Phase 47 Sexp layout DSL (§95.a-d)  -*- lexical-binding: t; -*-
+;;; nelisp-sexp-dsl.el --- Phase 47 Sexp layout DSL (§95.a-e)  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -37,6 +37,9 @@
 ;; check, so swapping repr later is a local edit.
 
 ;;; Code:
+
+(eval-when-compile (require 'cl-lib))
+(require 'cl-lib)
 
 ;;; --- variant tag inventory ----------------------------------------
 
@@ -1444,6 +1447,180 @@ defined while structural identity is the layout contract."
 
 (define-error 'nelisp-sexp-jit-heap-miss
   "Sexp DSL JIT heap-fn returned nil for a boxed-variant pointer")
+
+;;; --- §95.e bake-images integration ================================
+;;
+;; §95.e couples the elisp serializer to the on-disk *.image artifact
+;; produced by `build-tool/src/bin/nelisp-baker.rs'.  Investigation
+;; (see Doc 95 §95.e SHIPPED block) found that the Rust baker emits a
+;; THIRD wire format — NELIMG v3 frozen-heap (see
+;; `build-tool/src/image.rs' §5.2) — distinct from both §95.c (=
+;; variable-length single-Sexp tags) and §95.d (= 32-byte JIT record).
+;; Because the current baker stashes the whole source string as a
+;; single fallback-form entry (= empty env, 0 nodes / 0 globals / 1
+;; fallback form), the v3 read/encode path is exercised only at the
+;; "envelope" level.  The 3 entry points below operate on that
+;; envelope so existing baker output round-trips byte-for-byte, and a
+;; future Doc 95.f / Phase 48 dive into multi-node images can extend
+;; the same helpers without touching §95.c/d.
+
+;;; --- §95.e v3 envelope constants ----------------------------------
+
+(defconst nelisp-sexp-bake-v3-magic
+  (unibyte-string ?N ?E ?L ?I ?M ?G #x00 #x03)
+  "NELIMG v3 magic header (= 8 bytes, matches `NELIMG_V3_MAGIC').")
+(defconst nelisp-sexp-bake-v3-version 3
+  "NELIMG v3 ABI version, u32 LE (= `NELIMG_V3_VERSION').")
+(defconst nelisp-sexp-bake-v3-kind-frozen-heap #x01
+  "NELIMG v3 KIND byte for frozen-heap container.")
+
+;;; --- §95.e v3 envelope reader -------------------------------------
+
+(defun nelisp-sexp-bake-read-image (file-path)
+  "Parse Rust baker NELIMG v3 image at FILE-PATH into a plist.
+Returns `(:magic-ok BOOL :version V :kind K :n-nodes N :n-globals G
+:n-fallback-forms F :fallback-forms LIST :raw BYTES)'.  The :raw key
+holds the full on-disk bytes for re-emit / byte diff."
+  (unless (stringp file-path)
+    (signal 'wrong-type-argument (list 'stringp file-path)))
+  (let ((bytes (with-temp-buffer
+                 (set-buffer-multibyte nil)
+                 (insert-file-contents-literally file-path)
+                 (buffer-substring-no-properties (point-min) (point-max)))))
+    (unless (>= (length bytes) 21)
+      (signal 'nelisp-sexp-bake-truncated
+              (list 'header (length bytes))))
+    (let ((magic (substring bytes 0 8)))
+      (unless (equal magic nelisp-sexp-bake-v3-magic)
+        (signal 'nelisp-sexp-bake-bad-magic
+                (list 'expected nelisp-sexp-bake-v3-magic 'got magic))))
+    (let* ((vp (nelisp-sexp--read-u32 bytes 8))
+           (version (car vp))
+           (after-version (cdr vp)))
+      (unless (= version nelisp-sexp-bake-v3-version)
+        (signal 'nelisp-sexp-bake-bad-version (list version)))
+      (let* ((kind (aref bytes after-version))
+             (after-kind (1+ after-version)))
+        (unless (= kind nelisp-sexp-bake-v3-kind-frozen-heap)
+          (signal 'nelisp-sexp-bake-bad-kind (list kind)))
+        (let* ((np (nelisp-sexp--read-u32 bytes after-kind))
+               (n-nodes (car np))
+               (p1 (cdr np)))
+          ;; Envelope-only path: bail out if N_NODES > 0 (= Doc 95.f
+          ;; will extend the reader once the baker switches to
+          ;; encoding actual nodes).  Today every baked image has
+          ;; N_NODES = 0 because `compile_elisp_to_image' uses the
+          ;; fallback-form envelope exclusively.
+          (when (> n-nodes 0)
+            (signal 'nelisp-sexp-bake-unsupported
+                    (list 'n-nodes n-nodes
+                          'note "extend reader for Doc 95.f")))
+          (let* ((gp (nelisp-sexp--read-u32 bytes p1))
+                 (n-globals (car gp))
+                 (p2 (cdr gp)))
+            (when (> n-globals 0)
+              (signal 'nelisp-sexp-bake-unsupported
+                      (list 'n-globals n-globals
+                            'note "extend reader for Doc 95.f")))
+            (let* ((fp (nelisp-sexp--read-u32 bytes p2))
+                   (n-fallback (car fp))
+                   (p3 (cdr fp))
+                   (forms nil))
+              (dotimes (_ n-fallback)
+                (let* ((sp (nelisp-sexp--read-utf8 bytes p3)))
+                  (push (car sp) forms)
+                  (setq p3 (cdr sp))))
+              (unless (= p3 (length bytes))
+                (signal 'nelisp-sexp-bake-trailing-bytes
+                        (list 'pos p3 'len (length bytes))))
+              (list :magic-ok t
+                    :version version
+                    :kind kind
+                    :n-nodes n-nodes
+                    :n-globals n-globals
+                    :n-fallback-forms n-fallback
+                    :fallback-forms (nreverse forms)
+                    :raw bytes))))))))
+
+;;; --- §95.e v3 envelope writer (= elisp side of byte-identity) -----
+
+(defun nelisp-sexp-bake--encode-envelope (fallback-forms)
+  "Encode an empty-env NELIMG v3 image holding FALLBACK-FORMS as bytes.
+Mirrors `encode_v3_with_fallback' in `build-tool/src/image.rs' for
+the envelope-only subset (= 0 nodes, 0 globals, N fallback forms).
+FALLBACK-FORMS is a list of strings."
+  (unless (listp fallback-forms)
+    (signal 'wrong-type-argument (list 'listp fallback-forms)))
+  (let ((buf nil))
+    (setq buf (cons nelisp-sexp-bake-v3-magic buf))
+    (setq buf (nelisp-sexp--write-u32 buf nelisp-sexp-bake-v3-version))
+    (setq buf (nelisp-sexp--emit-byte
+               buf nelisp-sexp-bake-v3-kind-frozen-heap))
+    (setq buf (nelisp-sexp--write-u32 buf 0))    ; N_NODES
+    (setq buf (nelisp-sexp--write-u32 buf 0))    ; N_GLOBALS
+    (setq buf (nelisp-sexp--write-u32 buf (length fallback-forms)))
+    (dolist (form fallback-forms)
+      (setq buf (nelisp-sexp--write-utf8 buf form)))
+    (apply #'concat (nreverse buf))))
+
+;;; --- §95.e verify helper (= the core acceptance test) -------------
+
+(defun nelisp-sexp-bake-verify-image (file-path)
+  "Round-trip FILE-PATH through the elisp reader + writer.
+Returns t when the re-encoded bytes are byte-identical to the on-
+disk file (= byte-identity proof for `make bake-images').  Signals
+`nelisp-sexp-bake-mismatch' with diagnostic plist when bytes diverge.
+Signals the reader's error symbols on parse failure."
+  (let* ((parsed (nelisp-sexp-bake-read-image file-path))
+         (forms (plist-get parsed :fallback-forms))
+         (raw (plist-get parsed :raw))
+         (reemit (nelisp-sexp-bake--encode-envelope forms)))
+    (cond
+     ((equal raw reemit) t)
+     (t (signal 'nelisp-sexp-bake-mismatch
+                (list :file file-path
+                      :on-disk-len (length raw)
+                      :reemit-len (length reemit)
+                      :first-diff
+                      (cl-loop for i from 0 below (min (length raw)
+                                                       (length reemit))
+                               when (/= (aref raw i) (aref reemit i))
+                               return i
+                               finally return nil)))))))
+
+;;; --- §95.e cross-impl fixture dump --------------------------------
+
+(defun nelisp-sexp-bake-dump-fixture (fallback-forms file-path)
+  "Write an elisp-encoded NELIMG v3 image of FALLBACK-FORMS to FILE-PATH.
+The Rust baker can compare its own output against the produced bytes
+to catch layout drift in either direction.  FALLBACK-FORMS is a list
+of strings (= same shape `compile_elisp_to_image' passes to its
+internal encoder)."
+  (unless (stringp file-path)
+    (signal 'wrong-type-argument (list 'stringp file-path)))
+  (let ((bytes (nelisp-sexp-bake--encode-envelope fallback-forms))
+        (coding-system-for-write 'no-conversion))
+    (with-temp-file file-path
+      (set-buffer-multibyte nil)
+      (insert bytes))
+    (length bytes)))
+
+;;; --- §95.e error symbols ------------------------------------------
+
+(define-error 'nelisp-sexp-bake-truncated
+  "NELIMG v3 image truncated before end of envelope")
+(define-error 'nelisp-sexp-bake-bad-magic
+  "NELIMG v3 image magic header did not match")
+(define-error 'nelisp-sexp-bake-bad-version
+  "NELIMG v3 image ABI version unsupported")
+(define-error 'nelisp-sexp-bake-bad-kind
+  "NELIMG v3 image KIND byte not frozen-heap")
+(define-error 'nelisp-sexp-bake-unsupported
+  "NELIMG v3 image carries nodes/globals (not yet supported by §95.e)")
+(define-error 'nelisp-sexp-bake-trailing-bytes
+  "NELIMG v3 image has trailing bytes after fallback section")
+(define-error 'nelisp-sexp-bake-mismatch
+  "NELIMG v3 round-trip produced non-identical bytes")
 
 (provide 'nelisp-sexp-dsl)
 

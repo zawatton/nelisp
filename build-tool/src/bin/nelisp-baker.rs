@@ -20,12 +20,22 @@
 //! CLI:
 //!
 //!     nelisp-baker [--lisp-dir DIR] [--check]
+//!     nelisp-baker --verify-elisp-fixtures FIXTURE [FIXTURE...]
 //!
 //! `--lisp-dir` defaults to the workspace's `lisp/` directory
 //! (resolved via `CARGO_MANIFEST_DIR/../lisp`).  `--check` runs the
 //! bake but compares against on-disk bytes instead of overwriting; non-
 //! zero exit means a `.el` was edited without rebaking.
+//!
+//! `--verify-elisp-fixtures FIXTURE [FIXTURE...]` (Doc 95 §95.e):
+//! each FIXTURE is a NELIMG v3 envelope produced by
+//! `nelisp-sexp-bake-dump-fixture' on the elisp side.  Decodes the
+//! fixture, re-encodes via `encode_v3_with_fallback', and exits non-
+//! zero on byte divergence.  This is the cross-implementation byte-
+//! identity gate for `make bake-images NELISP_BAKE_VIA_DSL=1' (= the
+//! elisp serializer and the Rust serializer agree on the wire).
 
+use nelisp_build_tool::eval::Env;
 use nelisp_build_tool::image;
 use std::env;
 use std::fs;
@@ -112,6 +122,8 @@ fn main() -> ExitCode {
     let mut args = env::args().skip(1);
     let mut lisp_dir: Option<PathBuf> = None;
     let mut check_only = false;
+    let mut verify_fixtures: Vec<PathBuf> = Vec::new();
+    let mut in_verify_mode = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--lisp-dir" => match args.next() {
@@ -122,8 +134,18 @@ fn main() -> ExitCode {
                 }
             },
             "--check" => check_only = true,
+            "--verify-elisp-fixtures" => {
+                in_verify_mode = true;
+                // Remaining args are fixture paths.
+                while let Some(path) = args.next() {
+                    verify_fixtures.push(PathBuf::from(path));
+                }
+            }
             "--help" | "-h" => {
-                println!("usage: nelisp-baker [--lisp-dir DIR] [--check]");
+                println!(
+                    "usage: nelisp-baker [--lisp-dir DIR] [--check]\n\
+                          nelisp-baker --verify-elisp-fixtures FIXTURE [FIXTURE...]"
+                );
                 return ExitCode::SUCCESS;
             }
             other => {
@@ -131,6 +153,34 @@ fn main() -> ExitCode {
                 return ExitCode::from(2);
             }
         }
+    }
+    // Doc 95 §95.e cross-impl byte-identity gate: decode each elisp-
+    // produced fixture and assert the Rust encoder yields identical
+    // bytes for the same fallback-form payload.
+    if in_verify_mode {
+        if verify_fixtures.is_empty() {
+            eprintln!(
+                "nelisp-baker: --verify-elisp-fixtures needs >=1 fixture path"
+            );
+            return ExitCode::from(2);
+        }
+        let mut mismatches = Vec::new();
+        for fixture in &verify_fixtures {
+            match verify_elisp_fixture(fixture) {
+                Ok(()) => {
+                    println!("verified {} (byte-identical)", fixture.display());
+                }
+                Err(msg) => {
+                    eprintln!("nelisp-baker: {} : {}", fixture.display(), msg);
+                    mismatches.push(fixture.clone());
+                }
+            }
+        }
+        return if mismatches.is_empty() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::from(4)
+        };
     }
     let lisp_dir = match lisp_dir {
         Some(p) => p,
@@ -190,4 +240,34 @@ fn default_lisp_dir() -> PathBuf {
     // CARGO_MANIFEST_DIR is build-tool/, sibling lisp/ is one up.
     let manifest = env!("CARGO_MANIFEST_DIR");
     PathBuf::from(manifest).join("..").join("lisp")
+}
+
+/// Doc 95 §95.e: decode an elisp-produced NELIMG v3 fixture, re-emit
+/// via the Rust encoder, and confirm byte-identity.  Returns Err with
+/// a diagnostic string on any mismatch / decode error.
+fn verify_elisp_fixture(path: &std::path::Path) -> Result<(), String> {
+    let bytes = fs::read(path).map_err(|e| format!("read failed: {}", e))?;
+    let mut env = Env::empty();
+    let fallback_forms = image::decode_v3_into(&mut env, &bytes)
+        .map_err(|e| format!("decode failed: {}", e))?;
+    // Re-emit via Rust encoder using the same fallback-form payload
+    // and an empty env (= matches the envelope-only subset produced
+    // by `compile_elisp_to_image').
+    let reemit = image::encode_v3_with_fallback(&Env::empty(), &fallback_forms)
+        .map_err(|e| format!("re-encode failed: {}", e))?;
+    if reemit == bytes {
+        Ok(())
+    } else {
+        // Find first diverging byte for a more actionable report.
+        let first_diff = bytes
+            .iter()
+            .zip(reemit.iter())
+            .position(|(a, b)| a != b);
+        Err(format!(
+            "byte-mismatch (on-disk-len={} reemit-len={} first-diff={:?})",
+            bytes.len(),
+            reemit.len(),
+            first_diff
+        ))
+    }
 }

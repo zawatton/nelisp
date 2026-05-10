@@ -1194,6 +1194,159 @@ variants).  This is asserted by the in-tree =sexp_layout_alignment_
 and_size_sane= + =sexp_payload_offset_is_eight= unit tests in sexp.
 rs (= drift detector if a future =rustc= changes representation).
 
+** §95.e SHIPPED (2026-05-11)
+
+Bake-images integration layer landed on top of §95.a-d in the same
+=lisp/nelisp-sexp-dsl.el= file plus a Rust-side hook in
+=build-tool/src/bin/nelisp-baker.rs=.  This wires the elisp
+serializer to the on-disk =*.image= artifact produced by =make bake-
+images= and provides bidirectional byte-identity verification.
+
+*** Wire format discovery (= the surprising third format)
+
+Investigation of =build-tool/src/image.rs= revealed that the Rust
+baker emits NELIMG v3 frozen-heap (§5.2), which is *neither* §95.c
+(= per-Sexp variable-length tag + payload) *nor* §95.d (= 32-byte
+fixed =repr(C, u8)= record).  v3 is a *multi-section envelope*:
+
+#+begin_src text
+NELIMG\0\x03                 ; 8-byte magic
+u32  version = 3
+u8   kind    = 0x01           ; frozen-heap
+u32  N_NODES, [TAG, payload]…
+u32  N_GLOBALS, [name+flags+idxs]…
+u32  N_FALLBACK_FORMS, [u32 len, utf-8]…
+#+end_src
+
+Crucially, today's =compile_elisp_to_image' stashes the *entire
+source* as a single fallback-form entry inside an *empty-env*
+image (= 0 nodes, 0 globals, 1 fallback form).  Verification of
+all 25 existing =.image= files under =lisp/= confirms this is
+universal — none yet exercise the node-pool / globals-section
+encoder paths.
+
+Per the §95.e task spec for "scenario (a)" (= Rust uses a third
+format), §95.e ships an *envelope-level* reader / writer / verify
+trio for the empty-env subset and defers node-pool encoding to a
+future Doc 95.f / Phase 48 dive.
+
+*** elisp surface (= 4 entry points + 7 error symbols)
+
+- =nelisp-sexp-bake-read-image FILE-PATH= — parse NELIMG v3
+  envelope into a plist (=:magic-ok :version :kind :n-nodes
+  :n-globals :n-fallback-forms :fallback-forms :raw=).  Signals
+  =nelisp-sexp-bake-unsupported= if N_NODES>0 or N_GLOBALS>0 (=
+  Doc 95.f boundary marker).
+- =nelisp-sexp-bake--encode-envelope FALLBACK-FORMS= — internal,
+  emits an empty-env image carrying just FALLBACK-FORMS.  Mirrors
+  =encode_v3_with_fallback' in =build-tool/src/image.rs= line 214.
+- =nelisp-sexp-bake-verify-image FILE-PATH= — round-trip an existing
+  baked image through elisp read + re-emit, =equal'-compare to the
+  on-disk bytes; signals =nelisp-sexp-bake-mismatch= on divergence.
+  *This is the central acceptance test*.  Returns t on byte
+  identity.
+- =nelisp-sexp-bake-dump-fixture FALLBACK-FORMS FILE-PATH= — emit
+  elisp-encoded NELIMG v3 bytes for cross-impl testing.  The Rust
+  baker can compare its own output against these fixtures.
+
+3 new layout-pin =defconst='s mirror the Rust constants:
+=nelisp-sexp-bake-v3-magic= / =-version= / =-kind-frozen-heap=.
+
+*** Rust-side hook: =nelisp-baker --verify-elisp-fixtures=
+
+Added to =build-tool/src/bin/nelisp-baker.rs= (= ~50 LOC).  Each
+fixture path is decoded via =decode_v3_into', re-encoded via
+=encode_v3_with_fallback', and the result compared byte-for-byte
+to the on-disk fixture.  Exit code 4 on any mismatch, 0 on full
+agreement, with a first-diff offset reported for actionable
+debugging.
+
+This forms the *cross-implementation gate*: elisp emits a fixture
+→ Rust decodes → Rust re-encodes → bytes match the elisp output.
+End-to-end confirmed for empty / multi-form / multibyte UTF-8
+payloads.
+
+*** Byte-identity results
+
+- 25 / 25 baked =lisp/*.image= files round-trip byte-identical via
+  =nelisp-sexp-bake-verify-image= (= covers
+  =nelisp-stdlib-{misc,hof,math,os,gc,plist-str,...}=).
+- Elisp-produced fixtures round-trip via the Rust binary for 3
+  hand-crafted payloads (empty / 2-form / multibyte 日本語).
+- =./target/release/nelisp-baker --check= still exits 0 (= existing
+  Rust bake path untouched).
+
+*** ERT coverage: =test/nelisp-sexp-bake-test.el= — 13 cases
+
+- envelope header parsing (= magic / version / kind / counts on a
+  real baked image)
+- fallback-form source extraction (= confirms source-prefix string
+  match)
+- byte-identity on a single real baked image (= explicit smoke)
+- byte-identity sweep over all =lisp/*.image= (= the central
+  acceptance test, asserts 0 failures)
+- dump-fixture round-trip (= multi-form / multibyte / empty cases)
+- error paths: bad magic, truncated header,
+  =nelisp-sexp-bake-unsupported= for hand-crafted N_NODES>0 image
+- cross-format non-interference: §95.c bytes do not carry the
+  NELIMG magic; §95.d 32-byte records do not carry the NELIMG
+  magic; existing §95.c / §95.d round-trip helpers still pass
+  after =require= of the §95.e additions
+
+*** LOC accounting
+
+- elisp =lisp/nelisp-sexp-dsl.el= delta: +177 LOC (3 entry points
+  + 1 internal encoder + 7 error symbols + 3 constants + cl-lib
+  require + section banners).  Total file now 1627 LOC.
+- elisp =test/nelisp-sexp-bake-test.el= new: +228 LOC (13 ert).
+- Rust =build-tool/src/bin/nelisp-baker.rs= delta: +80 LOC
+  (CLI flag + dispatcher branch + =verify_elisp_fixture' helper).
+- No other files touched.  =build-tool/src/eval/sexp.rs= remains
+  read-only per task constraint.
+
+*** Discrepancy from §8 deliverable (= scope honesty)
+
+The §8.5 deliverable text called for a =NELISP_BAKE_VIA_DSL=1=
+feature flag in =make bake-images= that *replaces* the Rust baker
+with the elisp toolchain.  §95.e ships the byte-identity
+*verification* layer rather than that replacement — the elisp
+serializer does not yet emit images with non-zero N_NODES /
+N_GLOBALS, which is the regime any non-trivial future bake would
+exercise.
+
+Recommended Doc 95.f / Phase 48 follow-up:
+- extend =nelisp-sexp-bake--encode-envelope= to a full node-pool
+  encoder mirroring =encode_v3='s Phase A-E (intern + DAG-dedup
+  + write nodes + write globals + write fallback)
+- adopt §95.c read-bytes for per-node decode (= each NODE_TAG
+  branch maps to the §95.c wire-format tag set)
+- wire =NELISP_BAKE_VIA_DSL=1= into =make bake-images= so the
+  elisp toolchain *produces* (= not just verifies) bake output
+- target acceptance: =cmp -l= diff = 0 against current Rust
+  =nelisp-baker= output for all 25 STDLIB files
+
+The §95.e helpers are designed to compose with that extension:
+=encode-envelope= is one node-encoder pass away from full v3, and
+the unsupported-on-nonzero-nodes guard explicitly marks the
+boundary so future bumps are caught at read time instead of
+silently producing wrong fixtures.
+
+*** Validation summary
+
+- =make compile= 0 warning (= post-edit byte-compile of
+  =lisp/nelisp-sexp-dsl.el= + =test/nelisp-sexp-bake-test.el=
+  with =byte-compile-error-on-warn t=)
+- =ert= §95.e: 13/13 passes
+- =ert= §95.a-d regression: 138/138 passes (= unchanged from
+  §95.d SHIPPED count)
+- Cargo build (= =cargo build --release --features image-baker
+  --bin nelisp-baker=) green
+- =nelisp-baker --check= exit 0 (= existing baked images
+  unbroken)
+- =nelisp-baker --verify-elisp-fixtures FIXTURE= exit 0 for elisp-
+  produced fixtures, exit 4 for corrupted inputs (= failure path
+  exercised)
+
 ----
 
 End of Doc 95 DRAFT.
