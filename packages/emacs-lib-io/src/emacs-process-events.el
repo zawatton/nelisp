@@ -355,12 +355,23 @@ Returns the process vector on success, signals `file-error' on failure."
       (unless service
         (signal 'wrong-type-argument
                 (list 'make-network-process "missing :service")))
-      (unless (or (null family) (eq family 'local))
+      (unless (or (null family) (eq family 'local) (eq family 'ipv4))
         (signal 'file-error
-                (list (format "make-network-process: only :family local supported in Phase 7, got %S"
+                (list (format "make-network-process: only :family local / ipv4 supported in Phase 7b, got %S"
                               family))))
+      ;; Pick the right ffi entry per family.  For `local' the
+      ;; `service' is the socket-file path; for `ipv4' it is the
+      ;; port number (= integer), plus the optional `:host' arg.
       (let* ((id (cl-incf emacs-process-events--id-counter))
+             (host-key (plist-get args :host))
              (fd (cond
+                  ((and server (eq family 'ipv4))
+                   (emacs-network-ffi-server-tcp
+                    (or host-key 'local) service
+                    (if (numberp server) server 16)))
+                  ((eq family 'ipv4)
+                   (emacs-network-ffi-client-tcp
+                    (or host-key 'local) service))
                   (server
                    (emacs-network-ffi-server-unix
                     service
