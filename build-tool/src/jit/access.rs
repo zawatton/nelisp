@@ -18,8 +18,8 @@ use crate::eval::sexp::{
     SEXP_TAG_VECTOR,
 };
 
-pub(super) const TRAMPOLINE_OK: i64 = 0;
-pub(super) const TRAMPOLINE_ERR: i64 = 1;
+const TRAMPOLINE_OK: i64 = 0;
+const TRAMPOLINE_ERR: i64 = 1;
 
 // Phase A.5 (Doc 77c §2.1.4): trampolines dispatch on `Sexp::tag()' and
 // read box pointers via `Sexp::*_box_ptr()' instead of `match'.  Each
