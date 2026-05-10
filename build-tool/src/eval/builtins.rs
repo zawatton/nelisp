@@ -27,7 +27,7 @@ use super::env::Env;
 use super::error::EvalError;
 use super::quit;
 use super::sexp::Sexp;
-use super::special_forms::{is_truthy, sexp_eq};
+use super::special_forms::is_truthy;
 use std::path::{Path, PathBuf};
 
 /// Install every built-in into the given environment.  Idempotent —
@@ -54,15 +54,14 @@ pub fn install_builtins(env: &mut Env) {
         // equality
         // Rust-min (2026-05-06 batch 6e): `eql' / `equal-including-properties'
         // moved to elisp defalias of `equal'.
-        // Doc 50 stage 5a: `nelisp--ref-eq' exposes `Rc::ptr_eq' identity
-        // on shared-heap Sexp variants, enabling a cycle-safe `equal'
-        // re-implementation in elisp via a visited hash-table.
-        // Doc 86 §86.1.b (2026-05-10): `equal' itself was already an
-        // elisp defun in `lisp/nelisp-stdlib-equal.el' (since Doc 50
-        // stage 5b) — the Rust dispatch arm `bi_equal' was dead
-        // because the function-cell override at load time displaces
-        // the dispatch path.  Both arm + helper deleted here.
-        "eq", "nelisp--ref-eq",
+        // Doc 86 §86.1.b (2026-05-10): `equal' migrated to elisp
+        // (already lived in `lisp/nelisp-stdlib-equal.el' since Doc
+        // 50 stage 5b — bootstrap shim added in `nelisp-jit-strategy.el'
+        // for early load order).  `nelisp--ref-eq' migrated to elisp
+        // on top of `nl_jit_ref_eq' trampoline (jit/predicate.rs) via
+        // `nl-jit-call-out-2' from `nelisp-jit-strategy.el'.  Both
+        // dispatch arms + bi_* helpers + `sexp_equal_safe' deleted.
+        "eq",
         // cons / list
         // Rust-min (2026-05-06 batch 6o): `append' migrated to elisp
         // (lisp/nelisp-stdlib-list.el).
@@ -473,7 +472,10 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // dead Rust dispatch arm `bi_equal' + `sexp_equal_safe'
         // helper deleted (= the elisp function-cell override
         // displaces the dispatch path before any caller reaches it).
-        "nelisp--ref-eq" => bi_ref_eq(args),
+        // `nelisp--ref-eq' migrated to elisp (Doc 86 §86.1.b) on top
+        // of the new `nl_jit_ref_eq' trampoline (= jit/predicate.rs);
+        // dispatch arm + `bi_ref_eq' helper deleted, retained
+        // `sexp_eq' helper because the trampoline body delegates to it.
         // ---- cons / list ----
         // car / cdr / cons / setcar / setcdr migrated to JIT
         // (Phase 5 Stage C-Phase1, Doc 62 2026-05-08).  See
@@ -1047,56 +1049,14 @@ fn sxhash_into<H: std::hash::Hasher>(v: &Sexp, h: &mut H) {
 // `lisp/nelisp-stdlib-equal.el' since Doc 50 stage 5b).  `sexp_eq'
 // helper stays — still used by `bi_ref_eq' / `nl_jit_pred_eq'.
 
-/// Doc 50 stage 5a: expose `Rc::ptr_eq' for shared-heap Sexp variants.
-/// Returns t when A and B refer to the *same* allocation (= identity,
-/// not value equality).  For non-heap variants (Int / Symbol / Nil / T /
-/// etc.) `eq' already does the right thing — `nelisp--ref-eq' is only
-/// useful as the "have-I-seen-this-cons" predicate when the elisp
-/// `equal' walks a graph with a visited hash-table.
-///
-/// Heap variants currently exposed:
-///   - Cons(Rc<RefCell<...>>, Rc<RefCell<...>>) → both head + tail
-///     cells must share allocations to count as identity.  Practically
-///     the cons value is the (head,tail) tuple; we treat two Cons as
-///     identical iff *both* halves are Rc::ptr_eq.
-///   - MutStr / Vector / CharTable / BoolVector / Record / HashTable
-///     are simple Rc-wrapped allocations — Rc::ptr_eq directly.
-///
-/// All other variant pairings fall through to value-equality via
-/// `sexp_eq', preserving the elisp `eq' invariant.
-fn bi_ref_eq(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--ref-eq", args, 2, Some(2))?;
-    let same = match (&args[0], &args[1]) {
-        // Doc 77c Phase A.2.1: cons identity is now box-pointer
-        // equality on the single `NlConsBoxRef' handle (= replaces
-        // the legacy two-Rc::ptr_eq AND, since the box owns car+cdr
-        // as a single allocation).
-        (Sexp::Cons(a), Sexp::Cons(b)) => {
-            crate::eval::nlconsbox::NlConsBoxRef::ptr_eq(a, b)
-        }
-        (Sexp::MutStr(a), Sexp::MutStr(b)) => crate::eval::nlstr::NlStrRef::ptr_eq(a, b),
-        (Sexp::Vector(a), Sexp::Vector(b)) => crate::eval::nlvector::NlVectorRef::ptr_eq(a, b),
-        (Sexp::CharTable(a), Sexp::CharTable(b)) => {
-            crate::eval::nlchartable::NlCharTableRef::ptr_eq(a, b)
-        }
-        (Sexp::BoolVector(a), Sexp::BoolVector(b)) => {
-            crate::eval::nlboolvector::NlBoolVectorRef::ptr_eq(a, b)
-        }
-        (Sexp::Record(a), Sexp::Record(b)) => {
-            // Phase A.4.5: identity is the single NlRecord allocation
-            // (= type_tag + slots packed in one box).  Two records are
-            // `eq' iff they share the same heap cell — strictly stronger
-            // than the legacy "same slots Rc + value-equal type_tag"
-            // rule, but consistent in practice since the only
-            // constructor (`Sexp::record') allocates fresh.
-            crate::eval::nlrecord::NlRecordRef::ptr_eq(a, b)
-        }
-        // Other variant combinations (incl. mismatched variants) fall
-        // through to value-equality via the existing `eq' rule.
-        (a, b) => sexp_eq(a, b),
-    };
-    Ok(if same { Sexp::T } else { Sexp::Nil })
-}
+// `bi_ref_eq' deleted — Doc 86 §86.1.b (2026-05-10).  The body was
+// equivalent to `sexp_eq' (= `sexp_eq' already uses `Rc::ptr_eq' for
+// every shared-heap variant; the explicit per-variant `match' arms
+// in `bi_ref_eq' just duplicated `sexp_eq's coverage and fell through
+// to it for the rest).  The new `nl_jit_ref_eq' trampoline in
+// `jit/predicate.rs' calls `sexp_eq' once and writes `Sexp::T'/`Nil'
+// directly, removing the conversion dance the elisp wrapper would
+// otherwise need (= cf. `eq' wrapper's `nelisp--int-eq-zero' guard).
 
 // `sexp_equal_safe' + `SEXP_EQUAL_DEPTH_LIMIT' deleted — Doc 86
 // §86.1.b (2026-05-10).  Their sole caller `bi_equal' was deleted in

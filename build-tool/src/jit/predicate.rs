@@ -72,6 +72,35 @@ pub unsafe extern "C" fn nl_jit_predicate_eq(
     }
 }
 
+/// Doc 86 §86.1.b (2026-05-10) — `(nelisp--ref-eq A B)' trampoline.
+/// Shape `(*const Sexp, *const Sexp, *mut Sexp) -> i64' (=
+/// `:trampoline-binary-ctor'), reachable via `(nl-jit-call-out-2
+/// "nelisp_jit_ref_eq" a b)'.  Writes `Sexp::T' / `Sexp::Nil' into
+/// `out' directly — distinct from `nl_jit_predicate_eq' which returns
+/// the result as a raw 0/1 i64 and so cannot bypass the `nelisp--int-
+/// eq-zero' bootstrap convert dance.  Always succeeds (= returns 0).
+///
+/// Doc 87 §10.2 judgment call: the body is identical to `sexp_eq'
+/// because `sexp_eq' already uses `Rc::ptr_eq' for every shared-heap
+/// variant.  The deleted `bi_ref_eq' had a multi-arm `match' that
+/// fell through to `sexp_eq' for mismatched / non-shared-heap pairs
+/// — the explicit cases were redundant given `sexp_eq''s coverage.
+/// Reusing `sexp_eq' verbatim preserves the public contract bit-for-
+/// bit while collapsing 30 LOC of repeated `match' arms.
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_ref_eq(
+    a: *const Sexp,
+    b: *const Sexp,
+    out: *mut Sexp,
+) -> i64 {
+    *out = if crate::eval::special_forms::sexp_eq(&*a, &*b) {
+        Sexp::T
+    } else {
+        Sexp::Nil
+    };
+    0
+}
+
 /// Doc 86 §86.1.a — `(type-of OBJECT)' trampoline.
 /// Shape `(*const Sexp, *mut Sexp) -> i64', reachable via
 /// `(nl-jit-call-out-1 "nelisp_jit_type_of" x)'.  Always succeeds

@@ -60,6 +60,34 @@
       (lambda (x)
         (nl-jit-call-out-1 "nelisp_jit_type_of" x)))
 
+;; ---------- nelisp--ref-eq (Doc 86 §86.1.b) -----------------------
+;;
+;; Doc 86 §86.1.b (2026-05-10) — `nelisp--ref-eq' migrated from Rust
+;; to elisp on top of the new `nl_jit_ref_eq' trampoline (= same-Rc
+;; identity for shared-heap variants + value-eq fall-through, which
+;; collapses to a single `sexp_eq' call inside the trampoline).
+;;
+;; Installed BEFORE `nelisp--int-eq-zero' / `eq' because those use
+;; `nelisp--ref-eq' as their primitive comparator (= breaks the
+;; chicken-and-egg from the deleted Rust `bi_ref_eq' which used to
+;; be the identity primitive that bootstrapped everything else).
+;;
+;; The trampoline shape is `:trampoline-binary-ctor' (= `(*const Sexp,
+;; *const Sexp, *mut Sexp) -> i64'), reachable via `nl-jit-call-out-2'.
+;; The trampoline writes `Sexp::T' / `Sexp::Nil' to the out-slot
+;; directly so this wrapper has no `nelisp--int-eq-zero' convert
+;; dance — that is what unblocked migrating it ahead of `eq'.
+;;
+;; Doc 87 §10.2 judgment call rationale: the Rust `bi_ref_eq's
+;; multi-arm `match' was equivalent to `sexp_eq' (which already uses
+;; `Rc::ptr_eq' for every shared-heap variant + structural eq for
+;; atoms / Symbol / Float).  Reusing `sexp_eq' verbatim keeps the
+;; semantic contract bit-for-bit; no behaviour change.
+
+(fset 'nelisp--ref-eq
+      (lambda (a b)
+        (nl-jit-call-out-2 "nelisp_jit_ref_eq" a b)))
+
 ;; ---------- intern / symbol-name / make-symbol --------------------
 ;;
 ;; Doc 86 §86.1.d (2026-05-10) — Tier 1 intern / symbol arms migrated
@@ -122,13 +150,15 @@
 ;; below (eq / arith cmp / syscall) can use it as a Rust-builtin
 ;; replacement.
 ;;
-;; CRITICAL: the body uses `nelisp--ref-eq' (= Rc::ptr_eq Rust builtin,
-;; never overridden) instead of `eq', because `eq' is fset to the
-;; bridge wrapper just below which itself calls `nelisp--int-eq-zero'.
-;; Using `eq' in this body would create infinite recursion.  Likewise
-;; we hand-build the `wrong-type-argument' signal data via raw `cons'
-;; (which IS overridden by the substrate file but to a Rust bridge
-;; primitive that doesn't recurse through eq).
+;; CRITICAL: the body uses `nelisp--ref-eq' (= itself an elisp wrapper
+;; over the `nl_jit_ref_eq' trampoline, which writes Sexp::T/Nil
+;; directly so it has no convert dance) instead of `eq', because `eq'
+;; is fset to the bridge wrapper just below which itself calls
+;; `nelisp--int-eq-zero'.  Using `eq' in this body would create
+;; infinite recursion.  Likewise we hand-build the
+;; `wrong-type-argument' signal data via raw `cons' (which IS
+;; overridden by the substrate file but to a Rust bridge primitive
+;; that doesn't recurse through eq).
 (fset 'nelisp--int-eq-zero
       (lambda (x)
         (if (nelisp--ref-eq (type-of x) 'integer)
