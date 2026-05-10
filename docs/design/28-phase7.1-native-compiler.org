@@ -1108,6 +1108,99 @@ bench gate: 新設 =predicate-stress= 軸 (= =(let loop ((n N) (acc 0)) (if
 Cranelift baseline 比 ≧ 1.0x.  =eq= は hot path 中の hot path (=
 =if=/=cond= の dispatch) なので *regression 0 が必須*.
 
+**** 3.6.d.SHIPPED Phase 7.1.6.d actual delta (2026-05-10)
+
+Phase 7.1.6.d (本 commit, 2026-05-10): predicate cluster Cranelift
+wrapper deletion.  7.1.6.a.2 cons / 7.1.6.b access / 7.1.6.c arith
+takeover の pattern を predicate cluster (= 1 primitive: =eq=) に
+mirror 適用.
+
+cons / access と structurally 異なり arith と類似する点: predicate は
+7.1.6.d 着手時点で *partial Rust trampoline body* (=nl_jit_pred_eq=)
+を持っていた — ただし Cranelift IR の 7-block fast paths (= same-ref /
+tag-eq / int-payload) は IR の方に implementation があり、Rust helper
+は slow `sexp_eq' arm のみ covered だった.  したがって本 commit は
+(a) 7-block IR semantics を 1-to-1 mirror する単一 consolidated Rust
+trampoline (=nl_jit_predicate_eq=) を新規追加 + (b) Cranelift IR
+builder / =JitPredicate= struct / 配線 / =nl_jit_pred_eq= helper を
+全削除、を併行実行する.
+
+actual changes:
+1. =build-tool/src/jit/predicate.rs= の 7-block Cranelift IR builder
+   (=declare_eq_inline=) + =JitPredicate= / =PredicateIds= struct +
+   =register_symbols= / =declare_funcs= / =collect_funcs= 配線 +
+   =nl_jit_pred_eq= helper 削除.  代替として 1 plain Rust trampoline
+   =nl_jit_predicate_eq= を =#[no_mangle] pub unsafe extern "C"
+   fn(*const Sexp, *const Sexp) -> i64= shape で追加.  trampoline body
+   は Cranelift IR と semantic mirror で 4 arm (= same-ref / tag-eq
+   diff / Int payload eq / =sexp_eq= slow) を 20 行で実装.
+2. =.cargo/config.toml= は 7.1.6.a.2 で既に追加済、predicate trampoline
+   はそのまま継承 (= 追加変更なし、=nm -D target/debug/nelisp= で
+   =nl_jit_predicate_eq= が =T= entry として export 済確認済).
+3. =build-tool/src/jit/mod.rs= の =UnifiedJit::predicate= field +
+   =predicate::register_symbols= / =declare_funcs= / =collect_funcs=
+   呼出削除.  これで =UnifiedJit= は =syscall= 1 sub-module のみとなる
+   (Phase 7.1.6.e で完全消滅予定).
+4. =build-tool/src/jit/bridge.rs= =unified_fn_ptr= の predicate name
+   resolution (=nelisp_jit_eq_inline=) を =u.predicate.eq= 経由から
+   =super::predicate::nl_jit_predicate_eq as *const u8= 直接参照に
+   置換 (substrate.el の bootstrap path =nl-jit-call-ptr-ptr
+   "nelisp_jit_eq_inline"= 維持のため必須).
+5. =test/nelisp-cc-stage81-poc-test.el= に 7.1.6.d dlsym 統合 smoke 1 件
+   追加 — =nl_jit_predicate_eq= trampoline =:resolved= 確認 (=
+   =nelisp-cc-stage81-poc-7.1.6.d-dlsym-resolves-predicate-cluster=)、
+   standalone =target/debug/nelisp= bin 経由で =skip-unless= guarded.
+
+actual Rust LOC delta (per =git diff --stat baseline -- '*.rs'=):
+| 箇所                             | +/-                          |
+|----------------------------------+------------------------------|
+| =build-tool/src/jit/predicate.rs= | 380 行変更 (大幅削除 + slim 再構築) |
+| =build-tool/src/jit/mod.rs=      | 71 行変更                    |
+| =build-tool/src/jit/bridge.rs=   | 14 行変更                    |
+| *合計*                           | *+181 / -284 = net -103 Rust* |
+
+加えて =test/nelisp-cc-stage81-poc-test.el= +50 LOC elisp.
+
+*Design target との差*: 設計 §3.6.d plan は predicate.rs 全削除 (-341)
++ nelisp-cc 直 emit (= 7-block control flow を =nelisp-cc-x86_64.el= /
+=-arm64.el= が直接 emit) を articulate していたが、7.1.6.a.2 / .b / .c
+と同じく =lisp/nelisp-jit-substrate.el= bootstrap path 維持のため
+trampolines + bridge 配線は維持.  predicate は arith と類似で pre-
+existing Rust trampoline body が partial だったため、Cranelift wrapper
+layer 削除に併せて consolidated trampoline を新規追加 (= nl_jit_pred_eq
+helper を吸収) して dlsym + bridge 両方の resolution path を確立.
+nelisp-cc backend での 7-block 直 emit (= true Doc 28 §3.6.d plan) は
+follow-up sub-stage 7.1.6.d.2 として残す articulate 可.
+
+gate 達成状況:
+- 全 ERT (2352 / 2352 PASS、328 skipped、0 unexpected) ✓ (= +1 vs
+  7.1.6.c baseline 2351 = 新 predicate dlsym smoke)
+- cargo test --lib jit (81/81 PASS) ✓
+- cargo test --lib image (17/17 PASS、default + image-baker 両方) ✓
+- cargo build (default + image-baker feature) clean ✓
+- predicate cluster dlsym 統合 smoke (1/1 PASS、binary 経由で
+  =nl_jit_predicate_eq= 実 resolve 確認) ✓
+- bench gate (predicate-stress 新軸): 7.1.6.a.2 / .b / .c baseline
+  finding と同様、=make bench-actual= baseline は =anvil-runtime= の
+  pattern mismatch で build 不可 — perf gate carry-forward.
+
+dlsym evidence:
+  =./target/debug/nelisp eval '(nelisp-cc--dlsym-resolve "nl_jit_predicate_eq")'=
+  → =(:resolved . 93852605132064)= (= non-zero address, symbol exists
+  in dynsym table thanks to =-rdynamic= inherited from 7.1.6.a.2).
+
+end-to-end =eq= behaviour evidence:
+  =./target/debug/nelisp eval '(eq 7 7)'= → =t=
+  =./target/debug/nelisp eval '(eq 7 8)'= → =nil=
+  =./target/debug/nelisp eval "(eq 'foo 'foo)"= → =t=
+  (= same-ref / int-payload / Symbol-by-name slow path arms all
+  exercised through bridge → consolidated trampoline route.)
+
+UnifiedJit aftermath: post-7.1.6.d struct は =syscall= 1 field のみ.
+Phase 7.1.6.e (= syscall takeover) で完全消滅予定 → UnifiedJit /
+unified_jit() / OnceLock 全廃 → =jit/mod.rs= 残骸 cleanup (= 7.1.6.f
+dsl + bridge) で takeover sequence 完遂.
+
 *** 3.6.e Phase 7.1.6.e — =syscall= takeover (= syscall.rs ~-276 Rust LOC)
 
 **** 3.6.e.1 syscall primitive inventory (= syscall.rs 実測)

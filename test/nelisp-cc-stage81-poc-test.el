@@ -1524,5 +1524,55 @@ already added by Phase 7.1.6.a.2; arith trampolines just inherit)."
              (addr (string-to-number addr-str)))
         (should (> addr 0))))))
 
+;;; Phase 7.1.6.d dlsym integration smoke -----------------------------
+;;
+;; Doc 28 §3.6.d ship gate (= the smoke for the predicate cluster
+;; takeover, mirror of Phase 7.1.6.a.2 cons / 7.1.6.b access / 7.1.6.c
+;; arith cluster smokes above).  Verifies the same end-to-end path for
+;; the consolidated `nl_jit_predicate_eq' trampoline.  Predicate had a
+;; partial Rust helper (`nl_jit_pred_eq') covering only the slow
+;; `sexp_eq' arm; the full 7-block fast-path semantics (= same-ref /
+;; tag-eq / int-payload) lived in Cranelift IR.  The takeover
+;; consolidates all 7 blocks into a single `nl_jit_predicate_eq'
+;; trampoline body that mirrors the deleted Cranelift IR semantics
+;; 1-to-1, then exposes it via `#[no_mangle]' so the dlsym bridge can
+;; locate it.
+;;
+;;   1. The `nelisp' binary's dynamic symbol table exposes the
+;;      `#[no_mangle]' predicate trampoline (= `-rdynamic' is wired
+;;      via `.cargo/config.toml', already present from Phase 7.1.6.a.2
+;;      — the predicate trampoline simply inherits it).
+;;   2. `nelisp-cc--dlsym-resolve' returns `:resolved' with a non-zero
+;;      addr for the predicate cluster symbol when invoked in the
+;;      standalone binary.
+;;
+;; Auto-skips when the binary hasn't been built yet (= same skip-unless
+;; gate as the cons / access / arith smoke).
+
+(ert-deftest nelisp-cc-stage81-poc-7.1.6.d-dlsym-resolves-predicate-cluster ()
+  "Phase 7.1.6.d: dlsym resolves the `nl_jit_predicate_eq' symbol.
+
+The cluster takeover (Doc 28 §3.6.d) deletes the Cranelift `JitPredicate'
+wrapper and consolidates the 7-block IR into a single plain Rust
+trampoline `nl_jit_predicate_eq' as `#[no_mangle] extern \"C\"' so
+the dlsym bridge can locate it.  Smoke verifies that
+`(nelisp-cc--dlsym-resolve \"nl_jit_predicate_eq\")' returns
+`(:resolved . ADDR)' with ADDR > 0 (= the symbol exists in the
+binary's dynsym table thanks to `-rdynamic' in `.cargo/config.toml',
+already added by Phase 7.1.6.a.2; predicate trampoline just inherits)."
+  (skip-unless (and nelisp-cc-stage81-test--nelisp-bin
+                    (file-executable-p nelisp-cc-stage81-test--nelisp-bin)))
+  (dolist (sym '("nl_jit_predicate_eq"))
+    (let* ((out (nelisp-cc-stage81-test--nelisp-eval
+                 `(nelisp-cc--dlsym-resolve ,sym)))
+           ;; Output shape: "(:resolved . NNNNNNN)" or "(:not-found)".
+           (resolved-prefix "(:resolved . "))
+      (should (string-prefix-p resolved-prefix out))
+      ;; Parse the addr and assert it is non-zero.
+      (let* ((addr-str (substring out (length resolved-prefix)
+                                  (1- (length out))))
+             (addr (string-to-number addr-str)))
+        (should (> addr 0))))))
+
 (provide 'nelisp-cc-stage81-poc-test)
 ;;; nelisp-cc-stage81-poc-test.el ends here
