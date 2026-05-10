@@ -413,11 +413,11 @@ pub fn install_builtins(env: &mut Env) {
         // Doc 77b Stage b.4 — helper primitives backing the elisp
         // JIT-strategy wrappers (lisp/nelisp-jit-strategy.el).  Phase
         // 7.1.7.a.1 (Doc 28 §3.7.a.1) removed `nelisp--int-eq-zero' +
-        // 3 bitwise -impl + ash-impl entries (= moved to elisp).
-        "nelisp--add2-float", "nelisp--sub2-float", "nelisp--mul2-float",
-        "nelisp--num-eq2-float", "nelisp--num-lt2-float",
-        "nelisp--num-gt2-float", "nelisp--num-le2-float",
-        "nelisp--num-ge2-float",
+        // 3 bitwise -impl + ash-impl entries (= moved to elisp).  Doc
+        // 84 §84.1 (2026-05-10) replaced the 8 `nelisp--*-float' arms
+        // with the 2 bridge primitives below.
+        "nl-jit-call-float-float",
+        "nl-jit-call-float-cmp",
         // Doc 80 Stage 80.3〜80.4 (2026-05-09) — slim primitives for
         // the elisp-side `length' / `aref' / `aset' / `elt' fall-
         // through dispatch.  Replaces the pre-Doc-80 `nelisp--{length,
@@ -764,15 +764,11 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-jit-call-out-2i" => crate::jit::bi_nl_jit_call_out_2i(args),
         // Doc 77b Stage b.4 — JIT strategy helpers.  Phase 7.1.7.a.1
         // (Doc 28 §3.7.a.1) deleted 5 arms (int-eq-zero + 3 bitwise +
-        // ash-impl) — moved to elisp on top of the bridge.
-        "nelisp--add2-float" => crate::jit::bi_add2_float(args),
-        "nelisp--sub2-float" => crate::jit::bi_sub2_float(args),
-        "nelisp--mul2-float" => crate::jit::bi_mul2_float(args),
-        "nelisp--num-eq2-float" => crate::jit::bi_num_eq2_float(args),
-        "nelisp--num-lt2-float" => crate::jit::bi_num_lt2_float(args),
-        "nelisp--num-gt2-float" => crate::jit::bi_num_gt2_float(args),
-        "nelisp--num-le2-float" => crate::jit::bi_num_le2_float(args),
-        "nelisp--num-ge2-float" => crate::jit::bi_num_ge2_float(args),
+        // ash-impl) — moved to elisp on top of the bridge.  Doc 84
+        // §84.1 (2026-05-10) deleted the 8 `nelisp--*-float' arms —
+        // the 2 bridge primitives below replace them.
+        "nl-jit-call-float-float" => crate::jit::bi_nl_jit_call_float_float(args),
+        "nl-jit-call-float-cmp" => crate::jit::bi_nl_jit_call_float_cmp(args),
         // Doc 80 Stage 80.3〜80.4 — slim primitives.
         "nelisp--mut-str-len" => crate::jit::bi_mut_str_len(args),
         "nelisp--bool-vector-len" => crate::jit::bi_bool_vector_len(args),

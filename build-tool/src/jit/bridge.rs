@@ -146,6 +146,15 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
         "nelisp_jit_syscall_supported_p" => {
             super::syscall::nl_jit_syscall_supported_p as *const u8
         }
+        // ---- float (8) ---- Doc 84 §84.1, xmm-marshalling Float trampolines.
+        "nl_jit_float_add" => super::float::nl_jit_float_add as *const u8,
+        "nl_jit_float_sub" => super::float::nl_jit_float_sub as *const u8,
+        "nl_jit_float_mul" => super::float::nl_jit_float_mul as *const u8,
+        "nl_jit_float_eq_eps" => super::float::nl_jit_float_eq_eps as *const u8,
+        "nl_jit_float_lt" => super::float::nl_jit_float_lt as *const u8,
+        "nl_jit_float_gt" => super::float::nl_jit_float_gt as *const u8,
+        "nl_jit_float_le" => super::float::nl_jit_float_le as *const u8,
+        "nl_jit_float_ge" => super::float::nl_jit_float_ge as *const u8,
         _ => return None,
     };
     Some(p)
@@ -223,6 +232,35 @@ pub fn bi_nl_jit_call_syscall(args: &[Sexp]) -> Result<Sexp, EvalError> {
         unsafe { std::mem::transmute(p) };
     let v = f(nr, a0, a1, a2, a3, a4, a5);
     Ok(Sexp::Int(v))
+}
+
+// Doc 84 §84.1 — Float-family bridge primitives (xmm marshalling).
+// 2 ABI modes (Doc 81 §6): `:trampoline-binary-float-{arith,cmp}'.
+// Resolve NAME via `unified_fn_ptr' → 8 `nl_jit_float_*' in `float.rs',
+// coerce Sexp args via `num_pair' (Float promotion + canonical WrongType),
+// transmute, call.  Arith → Sexp::Float; cmp → Sexp::Int 0/1.
+fn float_pair(args: &[Sexp], name: &str) -> Result<(*const u8, f64, f64), EvalError> {
+    require_arity(name, args, 3, Some(3))?;
+    let sym = as_name(name, &args[0])?;
+    let p = unified_fn_ptr(sym).ok_or_else(|| unknown_name_err(name, sym))?;
+    let (a, b, _) = crate::eval::builtins::num_pair(&args[1..], name)?;
+    Ok((p, a, b))
+}
+
+/// `(nl-jit-call-float-float NAME A B) -> Float'.
+pub fn bi_nl_jit_call_float_float(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let (p, a, b) = float_pair(args, "nl-jit-call-float-float")?;
+    // SAFETY: NAME resolves to `nl_jit_float_{add,sub,mul}' shape.
+    let f: extern "C" fn(f64, f64) -> f64 = unsafe { std::mem::transmute(p) };
+    Ok(Sexp::Float(f(a, b)))
+}
+
+/// `(nl-jit-call-float-cmp NAME A B) -> Int' (0 or 1).
+pub fn bi_nl_jit_call_float_cmp(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let (p, a, b) = float_pair(args, "nl-jit-call-float-cmp")?;
+    // SAFETY: NAME resolves to `nl_jit_float_{eq_eps,lt,gt,le,ge}' shape.
+    let f: extern "C" fn(f64, f64) -> i64 = unsafe { std::mem::transmute(p) };
+    Ok(Sexp::Int(f(a, b)))
 }
 
 // ---------------------------------------------------------------

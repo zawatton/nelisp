@@ -1,61 +1,12 @@
-//! Rust helper primitives backing the elisp JIT-strategy wrappers in
-//! `lisp/nelisp-jit-strategy.el'.  Post-Phase-7.1.7.a.1 (Doc 28
-//! §3.7.a.1, 2026-05-10) the surface is 2 permanent residual
-//! categories:
-//!
-//! 1. *Doc 80 §7 permanent out-of-scope*: `bi_{add,sub,mul}2_float',
-//!    `bi_num_{eq,lt,gt,le,ge}2_float', `bi_syscall_nr_resolve' —
-//!    Float epsilon arithmetic + host `libc::SYS_*' constants are
-//!    not expressible on the pre-stdlib elisp substrate.
-//! 2. *Doc 80.4 slim primitives*: `bi_mut_str_len' /
-//!    `bi_bool_vector_len' / `bi_str_codepoint_at' /
-//!    `bi_mut_str_set_codepoint' / `bi_char_table_{aref,aset}' —
-//!    reach into `Sexp' variant boxes the elisp surface cannot
-//!    expose.  Used by elisp `length' / `aref' / `aset' / `elt'
-//!    fall-through arms.
-//!
-//! Phase 7.1.7.a.1 deleted `bi_int_eq_zero' + 3 bitwise + `bi_ash_impl'
-//! (= 5 fns); their semantics now live in `nelisp-jit-strategy.el' on
-//! top of the `nl-jit-call-i64-i64' bridge.
+//! Rust helpers for elisp JIT-strategy wrappers in
+//! `lisp/nelisp-jit-strategy.el'.  Doc 84 §84.1 (2026-05-10) ported
+//! the 8 Float-family `bi_*_float' fns to the new `nl-jit-call-float-
+//! {float,cmp}' bridges (see `jit/float.rs').  Residual: Doc 80.4 slim
+//! length/aref/aset primitives (84.3 will port) + syscall-nr resolver
+//! (84.2 will codegen via `build.rs' libc::SYS_* table).
 
 use crate::eval::error::EvalError;
 use crate::eval::sexp::Sexp;
-
-// ---------- arith Float fallbacks ----------------------------------
-
-macro_rules! float_arith_helper {
-    ($fn_name:ident, $op:tt, $primitive:literal) => {
-        pub(crate) fn $fn_name(args: &[Sexp]) -> Result<Sexp, EvalError> {
-            let (a, b, _) = crate::eval::builtins::num_pair(args, $primitive)?;
-            Ok(Sexp::Float(a $op b))
-        }
-    };
-}
-
-float_arith_helper!(bi_add2_float, +, "nelisp--add2");
-float_arith_helper!(bi_sub2_float, -, "nelisp--sub2");
-float_arith_helper!(bi_mul2_float, *, "nelisp--mul2");
-
-// ---------- cmp Float fallbacks ------------------------------------
-
-pub(crate) fn bi_num_eq2_float(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let (a, b, _) = crate::eval::builtins::num_pair(args, "nelisp--num-eq2")?;
-    Ok(if (a - b).abs() < 1e-15 { Sexp::T } else { Sexp::Nil })
-}
-
-macro_rules! float_cmp_helper {
-    ($fn_name:ident, $op:tt, $primitive:literal) => {
-        pub(crate) fn $fn_name(args: &[Sexp]) -> Result<Sexp, EvalError> {
-            let (a, b, _) = crate::eval::builtins::num_pair(args, $primitive)?;
-            Ok(if a $op b { Sexp::T } else { Sexp::Nil })
-        }
-    };
-}
-
-float_cmp_helper!(bi_num_lt2_float, <, "nelisp--num-lt2");
-float_cmp_helper!(bi_num_gt2_float, >, "nelisp--num-gt2");
-float_cmp_helper!(bi_num_le2_float, <=, "nelisp--num-le2");
-float_cmp_helper!(bi_num_ge2_float, >=, "nelisp--num-ge2");
 
 // ---------- Doc 80 slim primitives (length / aref / aset fall-through) -------
 //

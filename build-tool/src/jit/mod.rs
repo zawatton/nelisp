@@ -27,22 +27,20 @@ mod arith;
 // 3 calling shapes (i64/i64, ptr/ptr, 7×i64).
 pub(super) mod bridge;
 pub(crate) use bridge::{
-    bi_nl_jit_call_i64_i64, bi_nl_jit_call_out_1, bi_nl_jit_call_out_1i,
-    bi_nl_jit_call_out_2, bi_nl_jit_call_out_2i, bi_nl_jit_call_ptr_ptr,
-    bi_nl_jit_call_syscall,
+    bi_nl_jit_call_float_cmp, bi_nl_jit_call_float_float, bi_nl_jit_call_i64_i64,
+    bi_nl_jit_call_out_1, bi_nl_jit_call_out_1i, bi_nl_jit_call_out_2,
+    bi_nl_jit_call_out_2i, bi_nl_jit_call_ptr_ptr, bi_nl_jit_call_syscall,
 };
 mod cons;
+mod float;
 mod predicate;
-// `strategy': Rust helper primitives backing the elisp wrappers in
-// `lisp/nelisp-jit-strategy.el' — arith Float helpers, slim length /
-// aref / aset fall-throughs, syscall-nr resolver.  Phase 7.1.7.a.1
-// (Doc 28 §3.7.a.1, 2026-05-10) ported `bi_int_eq_zero' / 3 bitwise /
-// `bi_ash_impl' to elisp; the residual is permanent Rust pin.
+// `strategy': Doc 84 §84.1 ported 8 Float-family fns to elisp via
+// `nl-jit-call-float-{float,cmp}' bridges; residual = slim length /
+// aref / aset fall-throughs + syscall-nr resolver.
 mod strategy;
 pub(crate) use strategy::{
-    bi_add2_float, bi_bool_vector_len, bi_char_table_aref,
-    bi_char_table_aset, bi_mul2_float, bi_mut_str_len, bi_mut_str_set_codepoint,
-    bi_num_eq2_float, bi_num_ge2_float, bi_num_gt2_float, bi_num_le2_float,
-    bi_num_lt2_float, bi_str_codepoint_at, bi_sub2_float, bi_syscall_nr_resolve,
+    bi_bool_vector_len, bi_char_table_aref, bi_char_table_aset,
+    bi_mut_str_len, bi_mut_str_set_codepoint, bi_str_codepoint_at,
+    bi_syscall_nr_resolve,
 };
 mod syscall;

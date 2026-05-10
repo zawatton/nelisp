@@ -806,8 +806,13 @@ vector ABI keywords (= `:trampoline-binary-aref' /
                 nelisp-cc-runtime--entry-abi-modes))
   (should (memq :trampoline-binary-mut
                 nelisp-cc-runtime--entry-abi-modes))
-  ;; 6 modes total (host-int + 5 trampoline shapes).
-  (should (= 6 (length nelisp-cc-runtime--entry-abi-modes))))
+  ;; Doc 84 §84.1 (2026-05-10) added 2 Float-family ABI modes.
+  ;; 8 modes total (host-int + 5 trampoline shapes + 2 Float).
+  (should (memq :trampoline-binary-float-arith
+                nelisp-cc-runtime--entry-abi-modes))
+  (should (memq :trampoline-binary-float-cmp
+                nelisp-cc-runtime--entry-abi-modes))
+  (should (= 8 (length nelisp-cc-runtime--entry-abi-modes))))
 
 ;;; (18) Stage 81.3 primitive-table-stage3 shape ---------------------
 

@@ -1380,7 +1380,9 @@ status before reading the buffer.")
     :trampoline-binary-ctor
     :trampoline-binary-mut
     :trampoline-binary-aref
-    :trampoline-ternary-aset)
+    :trampoline-ternary-aset
+    :trampoline-binary-float-arith
+    :trampoline-binary-float-cmp)
   "Allowed values for the `:entry-abi' keyword to
 `nelisp-cc-runtime-compile-and-allocate'.
 
@@ -1423,7 +1425,24 @@ array indexed writes (= aset).  arg0 = *const Sexp container, arg1
 = i64 raw index, arg2 = *const Sexp value to store, arg3 = *mut
 Sexp out-buffer; return = i64 status.  Per Emacs' `aset' contract
 the trampoline writes the value into the out-slot so the eval-time
-return value is (= V).  The shape mirrors `nl_jit_access_aset'.")
+return value is (= V).  The shape mirrors `nl_jit_access_aset'.
+
+`:trampoline-binary-float-arith' (Doc 84 §84.1, 2026-05-10) is
+`extern \"C\" fn(f64, f64) -> f64' for binary Float arithmetic
+(= add / sub / mul).  System V AMD64 passes the two f64 args in
+xmm0/xmm1 and returns the f64 result in xmm0; arm64 AAPCS uses
+d0/d1 → d0.  This is the first xmm-register-using ABI mode in the
+nelisp-cc trampoline family.  Backing trampolines live in
+`build-tool/src/jit/float.rs' (`nl_jit_float_{add,sub,mul}'),
+invoked through the `nl-jit-call-float-float' bridge primitive.
+
+`:trampoline-binary-float-cmp' (Doc 84 §84.1, 2026-05-10) is
+`extern \"C\" fn(f64, f64) -> i64' for binary Float comparisons
+(= = / < / > / <= / >=).  args in xmm0/xmm1, i64 result (0 or 1)
+in rax/x0.  The `=` arm uses an `1e-15' epsilon to mirror the
+deleted `bi_num_eq2_float'.  Backing trampolines live in
+`build-tool/src/jit/float.rs' (`nl_jit_float_{eq_eps,lt,gt,le,ge}'),
+invoked through the `nl-jit-call-float-cmp' bridge primitive.")
 
 (defun nelisp-cc-runtime--validate-entry-abi (mode)
   "Signal `nelisp-cc-runtime-error' if MODE is not a valid entry-ABI keyword."
@@ -1467,6 +1486,12 @@ entry-point's calling convention:
   :trampoline-ternary-aset extern \"C\" fn(*const Sexp, i64, *const Sexp,
                                             *mut Sexp) -> i64
                            vector indexed write (= aset), Stage 81.3.
+  :trampoline-binary-float-arith
+                           extern \"C\" fn(f64, f64) -> f64
+                           binary Float arith (= add/sub/mul), Doc 84 §84.1.
+  :trampoline-binary-float-cmp
+                           extern \"C\" fn(f64, f64) -> i64
+                           binary Float cmp (= eq-eps/lt/gt/le/ge), Doc 84 §84.1.
 
 Stage 81.1/81.2/81.3 records the mode in the result plist under
 `:entry-abi' but does NOT yet alter prologue/epilogue emit; the

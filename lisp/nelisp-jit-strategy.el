@@ -322,6 +322,58 @@
               (nelisp--num-ge2-float a b))
           (nelisp--num-ge2-float a b))))
 
+;; Doc 84 §84.1 (2026-05-10) — Float-family fall-through wrappers
+;; ported from Rust `bi_{add,sub,mul}2_float' / `bi_num_{eq,lt,gt,le,ge}2_float'
+;; (= 8 fns deleted from `build-tool/src/jit/strategy.rs').  Each
+;; wrapper calls the new `nl-jit-call-float-{float,cmp}' bridge
+;; primitives which resolve `nl_jit_float_*' xmm-register trampolines
+;; via `unified_fn_ptr' and perform the f64 promotion + canonical
+;; WrongType error via the existing `num_pair' helper.  Cmp wrappers
+;; convert the bridge's i64 (1 / 0) result to T/Nil via
+;; `nelisp--int-eq-zero'.
+
+(fset 'nelisp--add2-float
+      (lambda (a b)
+        (nl-jit-call-float-float "nl_jit_float_add" a b)))
+
+(fset 'nelisp--sub2-float
+      (lambda (a b)
+        (nl-jit-call-float-float "nl_jit_float_sub" a b)))
+
+(fset 'nelisp--mul2-float
+      (lambda (a b)
+        (nl-jit-call-float-float "nl_jit_float_mul" a b)))
+
+(fset 'nelisp--num-eq2-float
+      (lambda (a b)
+        (if (nelisp--int-eq-zero
+             (nl-jit-call-float-cmp "nl_jit_float_eq_eps" a b))
+            nil t)))
+
+(fset 'nelisp--num-lt2-float
+      (lambda (a b)
+        (if (nelisp--int-eq-zero
+             (nl-jit-call-float-cmp "nl_jit_float_lt" a b))
+            nil t)))
+
+(fset 'nelisp--num-gt2-float
+      (lambda (a b)
+        (if (nelisp--int-eq-zero
+             (nl-jit-call-float-cmp "nl_jit_float_gt" a b))
+            nil t)))
+
+(fset 'nelisp--num-le2-float
+      (lambda (a b)
+        (if (nelisp--int-eq-zero
+             (nl-jit-call-float-cmp "nl_jit_float_le" a b))
+            nil t)))
+
+(fset 'nelisp--num-ge2-float
+      (lambda (a b)
+        (if (nelisp--int-eq-zero
+             (nl-jit-call-float-cmp "nl_jit_float_ge" a b))
+            nil t)))
+
 ;; Phase 7.1.7.a.1 (Doc 28 §3.7.a.1, 2026-05-10) — bitwise + ash impls
 ;; ported from Rust `bi_logior2_impl' / `bi_logand2_impl' / `bi_logxor2_impl'
 ;; / `bi_ash_impl' (= strategy.rs).  Each wrapper calls the

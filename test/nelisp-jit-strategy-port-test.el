@@ -180,5 +180,57 @@
     (should (= 0 (car r)))
     (should (string-match-p "\\b4611686018427387904\\b" (cdr r)))))
 
+;; ---------- Doc 84 §84.1 — Float-family bridge round-trips ------------
+
+(ert-deftest jit-strategy-port-float-add-mixed ()
+  (nelisp-jit-strategy-port-test--skip-unless-built)
+  (let ((r (nelisp-jit-strategy-port-test--eval "(+ 1 2.5)")))
+    (should (= 0 (car r)))
+    (should (string-match-p "\\b3\\.5\\b" (cdr r)))))
+
+(ert-deftest jit-strategy-port-float-sub-mixed ()
+  (nelisp-jit-strategy-port-test--skip-unless-built)
+  (let ((r (nelisp-jit-strategy-port-test--eval "(- 5.0 1.5)")))
+    (should (= 0 (car r)))
+    (should (string-match-p "\\b3\\.5\\b" (cdr r)))))
+
+(ert-deftest jit-strategy-port-float-mul-mixed ()
+  (nelisp-jit-strategy-port-test--skip-unless-built)
+  (let ((r (nelisp-jit-strategy-port-test--eval "(* 2.5 4)")))
+    (should (= 0 (car r)))
+    (should (string-match-p "\\b10\\.0\\b" (cdr r)))))
+
+(ert-deftest jit-strategy-port-float-num-eq-eps ()
+  (nelisp-jit-strategy-port-test--skip-unless-built)
+  ;; Doc 84 §84.1 epsilon = 1e-15 — values within 1e-16 compare equal.
+  (let ((r (nelisp-jit-strategy-port-test--eval
+            "(= 1.0 1.0000000000000001)")))
+    (should (= 0 (car r)))
+    (should (string-match-p "\\bt\\b" (cdr r)))))
+
+(ert-deftest jit-strategy-port-float-num-lt ()
+  (nelisp-jit-strategy-port-test--skip-unless-built)
+  (let ((r (nelisp-jit-strategy-port-test--eval "(< 1.5 2.0)")))
+    (should (= 0 (car r)))
+    (should (string-match-p "\\bt\\b" (cdr r)))))
+
+(ert-deftest jit-strategy-port-float-num-gt ()
+  (nelisp-jit-strategy-port-test--skip-unless-built)
+  (let ((r (nelisp-jit-strategy-port-test--eval "(> 3.0 2.5)")))
+    (should (= 0 (car r)))
+    (should (string-match-p "\\bt\\b" (cdr r)))))
+
+(ert-deftest jit-strategy-port-float-num-le-equal ()
+  (nelisp-jit-strategy-port-test--skip-unless-built)
+  (let ((r (nelisp-jit-strategy-port-test--eval "(<= 2.5 2.5)")))
+    (should (= 0 (car r)))
+    (should (string-match-p "\\bt\\b" (cdr r)))))
+
+(ert-deftest jit-strategy-port-float-num-ge-equal ()
+  (nelisp-jit-strategy-port-test--skip-unless-built)
+  (let ((r (nelisp-jit-strategy-port-test--eval "(>= 2.5 2.5)")))
+    (should (= 0 (car r)))
+    (should (string-match-p "\\bt\\b" (cdr r)))))
+
 ;; (provide 'nelisp-jit-strategy-port-test) — omitted, not required for ERT batch.
 ;;; nelisp-jit-strategy-port-test.el ends here
