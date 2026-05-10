@@ -1,55 +1,19 @@
-//! Phase 7.1.6.d (Doc 28 §3.6.d) — predicate trampoline, dlsym-exported.
+//! Phase 7.1.6 cluster takeover (Doc 28 §3.6 COMPLETE) — predicate trampoline,
+//! dlsym-exported.
 //!
-//! Pre-7.1.6.d this module hosted a 7-block Cranelift IR builder that
-//! emitted the `eq' predicate's same-ref / tag-byte / int-payload fast
-//! paths inline plus a slow-path call to `nl_jit_pred_eq' (= a Rust
-//! wrapper around `eval::special_forms::sexp_eq').  The Cranelift IR
-//! was wrapped by a `JitPredicate' fn-ptr struct brought up at first-
-//! access by the unified JITModule — same architecture as the cons /
-//! access / arith clusters deleted in 7.1.6.a.2 / .b / .c.
+//! Single Rust trampoline `nl_jit_predicate_eq' that mirrors the
+//! pre-takeover 7-block Cranelift IR's control flow 1-to-1: (1) same-ref
+//! short-circuit, (2) tag-byte equality test (early-out when variants
+//! differ), (3) Int payload fast path (avoids any helper call for
+//! `Sexp::Int' pairs), (4) `sexp_eq' slow path for variant-specific
+//! equality (Symbol-by-name, Cons-by-Rc-ptr-eq, Str-by-content, etc.).
+//! `#[no_mangle] pub unsafe extern "C"' so the dlsym bridge resolves it
+//! at runtime.
 //!
-//! Doc 81 Stage 81.4 + Phase 7.1.6.a.1 dlsym precursor (`6666e61')
-//! shipped the elisp-side replacement infrastructure.  Per Doc 28
-//! §3.6.d, the predicate cluster mirrors the arith pattern: predicate
-//! had no pre-existing single-Rust-trampoline body that fully covered
-//! the Cranelift IR's fast paths — the IR `was' the implementation for
-//! the same-ref / tag-eq / int-payload arms, with `nl_jit_pred_eq' only
-//! handling the slow variant-specific arm.  This sub-stage collapses
-//! the 7-block IR into a single Rust trampoline body that mirrors the
-//! IR's control flow 1-to-1 (= same-ref check, tag-byte equality test,
-//! Int payload fast path, then `sexp_eq' fallback for other variants).
-//!
-//! Phase 7.1.6.d (this commit) deletes:
-//!
-//!   - `JitPredicate' / `PredicateIds' fn-ptr structs.
-//!   - `declare_eq_inline' Cranelift IR builder.
-//!   - `register_symbols' / `declare_funcs' / `collect_funcs' wiring
-//!     (= `unified_jit()' no longer constructs a predicate cluster JIT
-//!     wrapper page).
-//!   - `nl_jit_pred_eq' helper trampoline (= subsumed into the new
-//!     `nl_jit_predicate_eq' body's slow-path arm).
-//!
-//! What stays (= the surface this module owns post-7.1.6.d):
-//!
-//!   - 1 plain Rust trampoline `nl_jit_predicate_eq' that mirrors the
-//!     deleted Cranelift IR semantics 1-to-1: same-ref short-circuit,
-//!     tag-byte equality test (= early-out when variants differ), Int
-//!     payload fast path (= avoids any helper call for `eq' between
-//!     two Sexp::Int), and `sexp_eq' slow path for variant-specific
-//!     equality (= Symbol-by-name, Cons-by-Rc-ptr-eq, Str-by-content,
-//!     etc.).  `#[no_mangle] pub unsafe extern "C"' so the dlsym bridge
-//!     can resolve it at runtime.
-//!
-//! `nelisp-jit-strategy.el' still calls `(nl-jit-call-ptr-ptr
-//! "nelisp_jit_eq_inline" a b)' which goes through `bridge::
-//! unified_fn_ptr'.  Post-7.1.6.d that name resolves directly to
-//! `nl_jit_predicate_eq' — no Cranelift wrapper page in between (= one
-//! fewer indirection, same as cons / access / arith takeover).
-//!
-//! The `-rdynamic' link flag in `.cargo/config.toml' (= already added
-//! by Phase 7.1.6.a.2; predicate trampoline just inherits) pushes the
-//! `#[no_mangle]' symbol into the binary's dynamic symbol table so
-//! `dlsym(RTLD_DEFAULT, ...)' can locate it at runtime.
+//! `nelisp-jit-strategy.el' calls `(nl-jit-call-ptr-ptr
+//! "nelisp_jit_eq_inline" a b)' which goes through
+//! `bridge::unified_fn_ptr's name → fn-ptr table — no Cranelift wrapper
+//! page in between.
 
 use crate::eval::sexp::{Sexp, SEXP_TAG_INT};
 

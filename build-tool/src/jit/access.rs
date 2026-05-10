@@ -1,62 +1,25 @@
-//! Phase 7.1.6.b (Doc 28 §3.6.b) — access trampolines, dlsym-exported.
+//! Phase 7.1.6 cluster takeover (Doc 28 §3.6 COMPLETE) — access trampolines,
+//! dlsym-exported.
 //!
-//! Pre-7.1.6.b this module also hosted Cranelift IR builders that
-//! wrapped the trampolines with an inline NIL fast-path for `length'
-//! (= 8-block `cmp tag, TAG_NIL / je nil_path' shape) plus the
-//! `JitAccess' fn-ptr struct + the `register_symbols' / `declare_funcs'
-//! / `collect_funcs' plumbing that the unified JITModule used to bring
-//! those wrappers up at first-access (see commit history).
+//! The 4 `nl_jit_access_*' trampolines below are `#[no_mangle] pub unsafe
+//! extern "C"'.  Body shape: tag check on the `#[repr(C, u8)]' Sexp byte
+//! → `*_box_ptr()' deref → field clone, `OK = 0' / `ERR = 1' status.
+//! The inline-NIL fast path for `length' is the `tag == SEXP_TAG_NIL'
+//! arm (= returns `OK' with `Sexp::Int(0)' in `out').
 //!
-//! Doc 81 Stage 81.4 + Phase 7.1.6.a.1 dlsym precursor (`6666e61')
-//! shipped the elisp-side replacement: `nelisp-cc-pipeline--recognize-
-//! primitives' rewrites `:call' sites against the `:fn' meta lookup
-//! into `:ssa-call-primitive :symbol nl_jit_access_*' instructions, and
-//! the x86_64 / arm64 backends emit a direct CALL fixup whose target
-//! address is resolved via `nelisp-cc--dlsym-resolve' against the
-//! binary's dynamic symbol table.  The inline-NIL fast path for
-//! `length' is now emitted by `nelisp-cc-x86_64.el' / `-arm64.el' as
-//! host machine code immediately before the CALL — same shape as the
-//! deleted `declare_length_with_inline_nil' Cranelift IR but produced
-//! from elisp via `unibyte-string'.
-//!
-//! Phase 7.1.6.b (this commit) deletes:
-//!
-//!   - `JitAccess' / `AccessIds' fn-ptr structs.
-//!   - `declare_length_with_inline_nil' Cranelift IR builder.
-//!   - `register_symbols' / `declare_funcs' / `collect_funcs' wiring
-//!     (= `unified_jit()' no longer constructs an access cluster JIT
-//!     wrapper page).
-//!
-//! What stays (= the surface this module still owns post-7.1.6.b):
-//!
-//!   - The 4 `nl_jit_access_*' trampolines themselves, now `#[no_mangle]
-//!     pub unsafe extern "C"' so the dlsym bridge resolves them.  Body
-//!     unchanged from the pre-7.1.6.b version (= tag check on the
-//!     `#[repr(C, u8)]' Sexp byte → `*_box_ptr()' deref → field clone,
-//!     `OK = 0' / `ERR = 1' status return).
-//!   - `TRAMPOLINE_OK' / `_ERR' constants (= contract anchor).
-//!
-//! `nelisp-jit-substrate.el' / `nelisp-jit-strategy.el' still call
-//! `(nl-jit-call-out-N "nelisp_jit_*" …)' which goes through
-//! `bridge::unified_fn_ptr'.  Post-7.1.6.b those names resolve directly
-//! to the `nl_jit_access_*' trampolines — no Cranelift wrapper in
-//! between (= one fewer indirection; the inline NIL fast path for
-//! `length' is handled by the trampoline body's `tag == SEXP_TAG_NIL'
-//! arm, which returns `OK' immediately with `Sexp::Int(0)' written to
-//! `out'.  Mirrors the Phase 7.1.6.a.2 cons cluster takeover pattern).
-//!
-//! The `-rdynamic' link flag in `.cargo/config.toml' (= already added
-//! by Phase 7.1.6.a.2; access trampolines just inherit) pushes the 4
-//! `#[no_mangle]' symbols into the binary's dynamic symbol table so
-//! `dlsym(RTLD_DEFAULT, ...)' can locate them at runtime.
+//! Two callers reach the trampolines at runtime: (1) nelisp-cc compiled
+//! hot paths via `:ssa-call-primitive' + `nelisp-cc--dlsym-resolve'
+//! direct fixup (which can also emit the inline-NIL short-circuit as
+//! host machine code before the CALL), and (2) `nelisp-jit-substrate.el'
+//! / `-strategy.el' via `bridge::unified_fn_ptr's name → fn-ptr table.
 
 use crate::eval::sexp::{
     Sexp, SEXP_TAG_BOOL_VECTOR, SEXP_TAG_CONS, SEXP_TAG_NIL, SEXP_TAG_STR,
     SEXP_TAG_VECTOR,
 };
 
-pub(super) const TRAMPOLINE_OK: i64 = 0;
-pub(super) const TRAMPOLINE_ERR: i64 = 1;
+const TRAMPOLINE_OK: i64 = 0;
+const TRAMPOLINE_ERR: i64 = 1;
 
 // Phase A.5 (Doc 77c §2.1.4): trampolines dispatch on `Sexp::tag()' and
 // read box pointers via `Sexp::*_box_ptr()' instead of `match'.  Each

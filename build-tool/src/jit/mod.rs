@@ -1,54 +1,22 @@
-//! Phase 5 — Cranelift JIT lowering for hot-path primitives.
+//! Hot-path primitive trampolines for the nelisp-cc / JIT bridge.
 //!
-//! Doc 77b Stage b.5 (2026-05-09) — the original Stage 5.0
-//! `lower_entries' registry has been removed; the eval loop
-//! (`build-tool/src/eval/mod.rs::apply_builtin') now forwards every
-//! call directly to `eval::builtins::dispatch'.  Lowered primitives
-//! are reachable via two paths:
+//! Phase 7.1.6 cluster takeover (Doc 28 §3.6 COMPLETE) replaced every
+//! Cranelift IR builder with `#[no_mangle] extern "C"' Rust trampolines
+//! resolved via the binary's dynamic symbol table.  Phase 7.1.7.b
+//! (Doc 28 §3.7.c) then deleted `jit::dsl' and the `cranelift' /
+//! `cranelift-jit' / `cranelift-module' Cargo deps.
 //!
-//!   1. `nl-jit-call-*' bridge primitives (re-exported below from
-//!      [`bridge`]) that elisp wrappers in
-//!      `lisp/nelisp-jit-strategy.el' invoke by name; `unified_fn_ptr'
-//!      maps `nelisp_jit_*' names to the matching `#[no_mangle]
-//!      extern "C"' Rust trampoline (post-7.1.6.e: every cluster goes
-//!      through this direct mapping).
-//!   2. dlsym-resolved `nl_jit_*' trampolines (Phase 7.1.6.a.2+) that
-//!      nelisp-cc compiled code calls directly via the
-//!      `nelisp-cc--dlsym-resolve' link pass.
+//! Lowered primitives are reachable via two paths:
 //!
-//! Phase 7.1.6.a.2 deleted the cons cluster's Cranelift wrapper page
-//! entirely; cons trampolines are now reached via path (2) only.
-//! Phase 7.1.6.b deleted the access cluster on the same pattern.
-//! Phase 7.1.6.c deleted the arith cluster — but unlike cons / access,
-//! arith had no pre-existing Rust trampoline body, so the deletion was
-//! paired with the introduction of 12 plain Rust `nl_jit_arith_*'
-//! trampolines (see `jit::arith') that mirror the deleted Cranelift IR
-//! semantics 1-to-1.
-//!
-//! Phase 7.1.6.d deleted the predicate cluster on the arith pattern —
-//! the 7-block IR was consolidated into a single `nl_jit_predicate_eq'
-//! trampoline (see `jit::predicate').
-//!
-//! Phase 7.1.6.e (this commit) deletes the syscall cluster — the FINAL
-//! cluster.  syscall's Cranelift IR (= 2-instr `iconst + return' for
-//! `supported_p' + single-`call' trampoline forwarding to `libc::
-//! syscall') is replaced by two `#[no_mangle]' Rust trampolines
-//! (`nl_jit_syscall_call' = the existing libc wrapper now directly
-//! dlsym-exported; `nl_jit_syscall_supported_p' = 1-line const fn
-//! mirroring the IR).  As a result the [`UnifiedJit`] struct + the
-//! `unified_jit()' OnceLock + the 6-step orchestration are deleted
-//! entirely — every cluster goes through `bridge::unified_fn_ptr's
-//! direct match-arm name table.
-
-// Phase 7.1.6.a.2 / 7.1.6.b / 7.1.6.c.arith / 7.1.6.d / 7.1.6.e
-// (this commit) removed every caller of `declare_helper_call' (= the
-// shared `(i64 × N) -> i64' helper-call IR builder).  All clusters
-// now stand alone as `#[no_mangle] extern "C"' Rust functions
-// resolved via dlsym + the `bridge::unified_fn_ptr' name table; no
-// Cranelift wrapper page is constructed for any cluster anymore.
-// `cranelift_jit' / `cranelift_module' uses in this module are
-// therefore gone — the Cargo deps stay until Doc 28 §3.7 (Phase
-// 7.1.7) sweeps them.
+//!   1. `nl-jit-call-*' bridge primitives (re-exported from [`bridge`])
+//!      that elisp wrappers in `lisp/nelisp-jit-strategy.el' invoke by
+//!      name; `bridge::unified_fn_ptr' maps `nelisp_jit_*' names to the
+//!      matching trampoline.
+//!   2. dlsym-resolved `nl_jit_*' trampolines that nelisp-cc compiled
+//!      code calls directly via the `nelisp-cc--dlsym-resolve' link
+//!      pass (= the `-rdynamic' link flag in `.cargo/config.toml'
+//!      pushes the `#[no_mangle]' symbols into the dynamic symbol
+//!      table).
 
 mod access;
 mod arith;
@@ -64,12 +32,6 @@ pub(crate) use bridge::{
     bi_nl_jit_call_syscall,
 };
 mod cons;
-// `dsl': Stage b.1 JIT IR DSL interpreter (Doc 77b).  No production
-// caller yet — Stage b.3 will switch `declare_X_inline' callers to
-// use `dsl::build_rule' on elisp-authored Sexp rules.  Test-only
-// coverage today, hence `#[allow(dead_code)]'.
-#[allow(dead_code)]
-mod dsl;
 mod predicate;
 // `strategy': Rust helper primitives (Stage b.4) backing the elisp
 // wrappers in `lisp/nelisp-jit-strategy.el' — arith Float helpers,
@@ -84,15 +46,3 @@ pub(crate) use strategy::{
     bi_num_lt2_float, bi_str_codepoint_at, bi_sub2_float, bi_syscall_nr_resolve,
 };
 mod syscall;
-
-// Phase 7.1.6.e (Doc 28 §3.6.e): `UnifiedJit' struct + `unified_jit()'
-// OnceLock + the 6-step orchestration (= shared `JITBuilder' /
-// `JITModule' / `register_symbols' / `declare_funcs' /
-// `finalize_definitions' / `collect_funcs' / `Box::leak') deleted
-// entirely.  After 7.1.6.e no cluster constructs a Cranelift wrapper
-// page anymore — every `nelisp_jit_*' name in the bridge resolves
-// directly to a `#[no_mangle] extern "C"' Rust trampoline via
-// `bridge::unified_fn_ptr's match-arm table.  The dlsym path (used
-// by nelisp-cc compiled hot paths) goes through the same trampolines
-// from a different entry point (`-rdynamic' + `dlsym(RTLD_DEFAULT,
-// ...)' on the binary's dynamic symbol table).

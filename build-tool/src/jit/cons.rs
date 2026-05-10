@@ -1,30 +1,19 @@
-//! Phase 7.1.6.a.2 (Doc 28 §3.6.a) — cons trampolines, dlsym-exported.
+//! Phase 7.1.6 cluster takeover (Doc 28 §3.6 COMPLETE) — cons trampolines,
+//! dlsym-exported.
 //!
-//! The 5 `nl_jit_cons_*' trampolines below are `#[no_mangle] pub
-//! unsafe extern "C"' so the binary's dynamic symbol table exposes
-//! them (via the `-rdynamic' link flag in `.cargo/config.toml').
-//! Two callers reach them at runtime:
-//!
-//!   1. nelisp-cc compiled hot paths: `nelisp-cc-pipeline--recognize-
-//!      primitives' rewrites `:call' sites into `:ssa-call-primitive
-//!      :symbol nl_jit_cons_*', and the x86_64 / arm64 backends emit
-//!      a direct CALL fixup whose target is resolved via
-//!      `nelisp-cc--dlsym-resolve'.  The inline-NIL fast path that
-//!      the deleted `declare_unary_with_nil_inline' Cranelift IR used
-//!      to provide is now emitted by `nelisp-cc-{x86_64,arm64}.el'
-//!      as host machine code immediately before the CALL.
-//!
-//!   2. substrate.el bootstrap: `nelisp-jit-substrate.el' /
-//!      `nelisp-jit-strategy.el' invoke `(nl-jit-call-out-N
-//!      "nelisp_jit_*" …)' which goes through `bridge::
-//!      unified_fn_ptr', and Phase 7.1.6.a.2 wired those names
-//!      directly to the trampoline addresses (no Cranelift wrapper).
+//! The 5 `nl_jit_cons_*' trampolines below are `#[no_mangle] pub unsafe
+//! extern "C"' so the binary's dynamic symbol table exposes them (via the
+//! `-rdynamic' link flag in `.cargo/config.toml').  Two callers reach
+//! them at runtime: (1) nelisp-cc compiled hot paths via
+//! `:ssa-call-primitive' + `nelisp-cc--dlsym-resolve' direct fixup, and
+//! (2) `nelisp-jit-substrate.el' / `-strategy.el' via
+//! `bridge::unified_fn_ptr's name → fn-ptr table.
 //!
 //! Each trampoline body is a "tag check on the `#[repr(C, u8)]' Sexp
 //! byte → `cons_box_ptr()' deref → field clone" arm with `OK = 0' /
-//! `ERR = 1' status return.  The `TAG_NIL' arm in `car' / `cdr'
-//! handles the inline NIL fast path that nelisp-cc-emitted code can
-//! also short-circuit before the CALL.
+//! `ERR = 1' status return.  The `TAG_NIL' arm in `car' / `cdr' handles
+//! the inline NIL fast path that nelisp-cc-emitted code can also
+//! short-circuit before the CALL.
 
 use crate::eval::sexp::{Sexp, SEXP_TAG_CONS, SEXP_TAG_NIL};
 

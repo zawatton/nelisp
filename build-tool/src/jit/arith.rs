@@ -1,55 +1,19 @@
-//! Phase 7.1.6.c (Doc 28 §3.6.c) — arith trampolines, dlsym-exported.
+//! Phase 7.1.6 cluster takeover (Doc 28 §3.6 COMPLETE) — arith trampolines,
+//! dlsym-exported.
 //!
-//! Pre-7.1.6.c this module hosted Cranelift IR builders that emitted
-//! the 12 arith / cmp / bitwise primitives directly as Cranelift
-//! instructions (= `iadd' / `isub' / `imul' / `icmp' / `bor' / `band'
-//! / `bxor' / `ishl' / `sshr') wrapped by a `JitArith' fn-ptr struct
-//! brought up at first-access by the unified JITModule.  Unlike the
-//! cons (7.1.6.a.2) / access (7.1.6.b) clusters, arith had *no* Rust
-//! trampoline body — the Cranelift IR was the implementation.
+//! The 12 plain Rust trampolines `nl_jit_arith_*' mirror the
+//! pre-takeover Cranelift IR semantics 1-to-1 (= `wrapping_add' for
+//! `iadd', `wrapping_sub' for `isub', etc.).  Each is `#[no_mangle] pub
+//! unsafe extern "C"' so the dlsym bridge resolves them at runtime.
+//! Bodies match the IR's `wrapping' overflow contract and the `ash'
+//! bounds-check contract (= caller bounds-checks count ∈ [-62, +62];
+//! out-of-range is UB at the call site).
 //!
-//! Doc 81 Stage 81.4 + Phase 7.1.6.a.1 dlsym precursor (`6666e61')
-//! shipped the elisp-side replacement infrastructure.  Per Doc 28
-//! §3.6.c.2, the 12 arith primitives go through a *different* path
-//! than the trampoline-based cons/access primitives: the nelisp-cc
-//! backend (= `nelisp-cc-x86_64.el' / `-arm64.el') emits the host
-//! machine-code `iadd' / `isub' / etc. directly via existing
-//! `ssa-iadd' / `ssa-isub' / ... opcodes — no `:ssa-call-primitive'
-//! trampoline shape needed because the operations map 1-to-1 to host
-//! ISA instructions.
-//!
-//! Phase 7.1.6.c (this commit) deletes:
-//!
-//!   - `JitArith' / `ArithIds' fn-ptr structs.
-//!   - `declare_binop' / `declare_ash' Cranelift IR builders.
-//!   - `register_symbols' / `declare_funcs' / `collect_funcs' wiring
-//!     (= `unified_jit()' no longer constructs an arith cluster JIT
-//!     wrapper page).
-//!
-//! What stays (= the surface this module still owns post-7.1.6.c):
-//!
-//!   - 12 plain Rust trampolines `nl_jit_arith_*' that mirror the
-//!     deleted Cranelift IR semantics 1-to-1 (= `wrapping_add' for
-//!     `iadd', `wrapping_sub' for `isub', etc.).  Each is `#[no_mangle]
-//!     pub unsafe extern "C"' so the dlsym bridge can resolve them at
-//!     runtime.  Bodies match the Cranelift IR's `wrapping' contract
-//!     (= overflow wraps both ways) and the `ash' bounds-check
-//!     contract (= caller bounds-checks count ∈ [-62, +62] before
-//!     invoking; out-of-range is UB at the dlsym call site, same as
-//!     the Cranelift IR pre-7.1.6.c).
-//!
-//! `nelisp-jit-substrate.el' / `nelisp-jit-strategy.el' still call
-//! `(nl-jit-call-i64-i64 "nelisp_jit_*" …)' which goes through
-//! `bridge::unified_fn_ptr'.  Post-7.1.6.c those names resolve directly
-//! to the `nl_jit_arith_*' trampolines — no Cranelift wrapper in
-//! between (= one fewer indirection, same as cons / access takeover).
-//! Compiled hot paths (= nelisp-cc output) skip the bridge entirely
-//! and emit the host arithmetic instruction inline.
-//!
-//! The `-rdynamic' link flag in `.cargo/config.toml' (= already added
-//! by Phase 7.1.6.a.2; arith trampolines just inherit) pushes the 12
-//! `#[no_mangle]' symbols into the binary's dynamic symbol table so
-//! `dlsym(RTLD_DEFAULT, ...)' can locate them at runtime.
+//! Two callers reach the trampolines: (1) `nelisp-jit-substrate.el' /
+//! `-strategy.el' via `bridge::unified_fn_ptr's name → fn-ptr table
+//! (`(nl-jit-call-i64-i64 "nelisp_jit_*" …)'), and (2) compiled hot
+//! paths from nelisp-cc that emit the host arithmetic instruction
+//! inline via `ssa-iadd' / `ssa-isub' / etc., bypassing the bridge.
 
 // ---- 3 wrapping arithmetic ops --------------------------------------
 
