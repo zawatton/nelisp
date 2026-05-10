@@ -36,17 +36,34 @@ fi
 # Prefer socat if available (= more featureful, half-close handling),
 # fall back to OpenBSD `nc -U' (= ships with Debian / Ubuntu / most
 # distros by default and supports UNIX-domain sockets via `-U').
+#
+# Two non-obvious bits we learned during PoC validation (2026-05-11):
+#
+# 1. `nc -N' (= shutdown socket on stdin EOF) is required for one-shot
+#    smoke tests so nc exits cleanly and its stdio buffer flushes.  For
+#    long-lived MCP clients (Claude Code etc.) stdin stays open between
+#    frames, so `-N' is a no-op — but leaving it on is still useful
+#    because the daemon sees "connection broken" promptly when the MCP
+#    client tears down the bridge process.
+#
+# 2. `stdbuf -o0' on the OUTPUT side is critical when the bridge's
+#    stdout is a pipe to another process (= Claude Code's MCP frame
+#    parser) rather than a tty.  Without it nc full-buffers the
+#    response, the parser sees nothing, and "Failed to reconnect"
+#    surfaces because the initialize response never arrives within the
+#    MCP client's handshake timeout.  socat's `-T 0' avoids the same
+#    pitfall via its own scheduling.
 if command -v socat >/dev/null 2>&1 ; then
     exec socat -T 0 STDIO UNIX-CONNECT:"$SOCKET"
 elif command -v nc >/dev/null 2>&1 ; then
-    # `-N' = shutdown peer on stdin EOF (OpenBSD-nc only).  We try with
-    # it first since that matches the MCP client-closes-stdin lifecycle;
-    # if the local `nc' does not recognise `-N' (= traditional nc on
-    # Alpine etc.), fall back without it.
+    NC_FLAGS=(-U)
     if nc -h 2>&1 | grep -q -- '-N' ; then
-        exec nc -U -N "$SOCKET"
+        NC_FLAGS+=(-N)
+    fi
+    if command -v stdbuf >/dev/null 2>&1 ; then
+        exec stdbuf -i0 -o0 -e0 nc "${NC_FLAGS[@]}" "$SOCKET"
     else
-        exec nc -U "$SOCKET"
+        exec nc "${NC_FLAGS[@]}" "$SOCKET"
     fi
 else
     echo "anvil-runtime-stdio: need \`socat' or OpenBSD \`nc' for UNIX-socket bridge" >&2
