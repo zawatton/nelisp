@@ -1,4 +1,4 @@
-;;; nelisp-static-linker-test.el --- ERT tests for Doc 93 §93.a  -*- lexical-binding: t; -*-
+;;; nelisp-static-linker-test.el --- ERT tests for Doc 93 §93.a + §93.b  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -299,6 +299,463 @@
                    (nelisp-link-test--bytes 4)))
     (should (equal (plist-get asm :relocs) (list rel)))
     (should (equal (plist-get asm :symbols) (list sym)))))
+
+;; ============================================================
+;; §93.b — section combine + 2-pass symtab merge + WEAK
+;; ============================================================
+
+(defun nelisp-link-test--unit (name &rest kvs)
+  "Build a §93.b compile-unit from NAME + plist KVS.
+Recognised keys: `:text', `:rodata', `:data', `:bss', `:symbols',
+`:relocs'.  Missing byte sections default to the empty string and
+missing bss defaults to 0 so the unit-builder is concise in
+fixture code."
+  (nelisp-link-unit-make
+   name
+   (list (cons 'text   (or (plist-get kvs :text) ""))
+         (cons 'rodata (or (plist-get kvs :rodata) ""))
+         (cons 'data   (or (plist-get kvs :data) ""))
+         (cons 'bss    (or (plist-get kvs :bss) 0)))
+   (or (plist-get kvs :symbols) nil)
+   (or (plist-get kvs :relocs) nil)))
+
+;; ---- §93.b (1) compile-unit struct ----
+
+(ert-deftest nelisp-link-unit-make-shape ()
+  (let* ((u (nelisp-link-unit-make
+             "main.o"
+             (list (cons 'text (nelisp-link-test--ub 1 2 3))
+                   (cons 'rodata "")
+                   (cons 'data "")
+                   (cons 'bss 16))
+             nil nil)))
+    (should (equal (plist-get u :name) "main.o"))
+    (should (equal (cdr (assq 'text (plist-get u :sections)))
+                   (nelisp-link-test--ub 1 2 3)))
+    (should (= (cdr (assq 'bss (plist-get u :sections))) 16))
+    (should (null (plist-get u :symbols)))
+    (should (null (plist-get u :relocs)))))
+
+;; ---- §93.b (2) section combine ----
+
+(ert-deftest nelisp-link-combine-two-text-units ()
+  (let* ((ua (nelisp-link-test--unit
+              "a.o" :text (nelisp-link-test--ub #x90 #x90)))
+         (ub (nelisp-link-test--unit
+              "b.o" :text (nelisp-link-test--ub #xCC #xCC #xCC)))
+         (c (nelisp-link-combine-sections (list ua ub)))
+         (text (cdr (assq 'text c))))
+    (should (equal (plist-get text :bytes)
+                   (nelisp-link-test--ub #x90 #x90 #xCC #xCC #xCC)))
+    (should (equal (plist-get text :offsets)
+                   '(("a.o" . 0) ("b.o" . 2))))))
+
+(ert-deftest nelisp-link-combine-text-and-rodata-offsets ()
+  (let* ((ua (nelisp-link-test--unit
+              "a.o"
+              :text (nelisp-link-test--ub 1 2 3 4)
+              :rodata (nelisp-link-test--ub #xAA #xBB)))
+         (ub (nelisp-link-test--unit
+              "b.o"
+              :text (nelisp-link-test--ub 5 6)
+              :rodata (nelisp-link-test--ub #xCC)))
+         (c (nelisp-link-combine-sections (list ua ub))))
+    (should (equal (plist-get (cdr (assq 'rodata c)) :bytes)
+                   (nelisp-link-test--ub #xAA #xBB #xCC)))
+    (should (equal (plist-get (cdr (assq 'rodata c)) :offsets)
+                   '(("a.o" . 0) ("b.o" . 2))))
+    (should (equal (plist-get (cdr (assq 'text c)) :offsets)
+                   '(("a.o" . 0) ("b.o" . 4))))))
+
+(ert-deftest nelisp-link-combine-bss-sums-sizes ()
+  (let* ((ua (nelisp-link-test--unit "a.o" :bss 16))
+         (ub (nelisp-link-test--unit "b.o" :bss 32))
+         (uc (nelisp-link-test--unit "c.o" :bss 8))
+         (c (nelisp-link-combine-sections (list ua ub uc)))
+         (b (cdr (assq 'bss c))))
+    (should (= (plist-get b :bytes) 56))
+    (should (equal (plist-get b :offsets)
+                   '(("a.o" . 0) ("b.o" . 16) ("c.o" . 48))))))
+
+(ert-deftest nelisp-link-combine-empty-section-still-offsets-units ()
+  ;; Neither unit contributes rodata bytes; both should still appear
+  ;; in the offsets list at position 0 so cross-section relocs into
+  ;; an empty section can be diagnosed.
+  (let* ((ua (nelisp-link-test--unit
+              "a.o" :text (nelisp-link-test--ub 1)))
+         (ub (nelisp-link-test--unit
+              "b.o" :text (nelisp-link-test--ub 2)))
+         (c (nelisp-link-combine-sections (list ua ub))))
+    (should (equal (plist-get (cdr (assq 'rodata c)) :bytes) ""))
+    (should (equal (plist-get (cdr (assq 'rodata c)) :offsets)
+                   '(("a.o" . 0) ("b.o" . 0))))))
+
+(ert-deftest nelisp-link-combine-empty-units ()
+  (let ((c (nelisp-link-combine-sections nil)))
+    (should (equal (plist-get (cdr (assq 'text c)) :bytes) ""))
+    (should (equal (plist-get (cdr (assq 'text c)) :offsets) nil))
+    (should (= (plist-get (cdr (assq 'bss c)) :bytes) 0))))
+
+;; ---- §93.b (3) 2-pass symtab merge ----
+
+(ert-deftest nelisp-link-collect-single-defined ()
+  (let* ((u (nelisp-link-test--unit
+             "a.o"
+             :text (nelisp-link-test--bytes 16)
+             :symbols (list (nelisp-link-symbol "foo" 8))))
+         (combined (nelisp-link-combine-sections (list u)))
+         (tab (nelisp-link--collect-defined-symbols
+               (list u) combined '((text . #x400000)
+                                   (rodata . #x500000)
+                                   (data . #x600000))))
+         (entry (nelisp-link-symtab-lookup tab "foo")))
+    (should entry)
+    (should (= (plist-get entry :value) (+ #x400000 0 8)))
+    (should (eq (plist-get entry :bind) 'global))))
+
+(ert-deftest nelisp-link-collect-two-units-distinct-globals ()
+  (let* ((ua (nelisp-link-test--unit
+              "a.o"
+              :text (nelisp-link-test--bytes 4)
+              :symbols (list (nelisp-link-symbol "alpha" 0))))
+         (ub (nelisp-link-test--unit
+              "b.o"
+              :text (nelisp-link-test--bytes 8)
+              :symbols (list (nelisp-link-symbol "beta" 4))))
+         (combined (nelisp-link-combine-sections (list ua ub)))
+         (tab (nelisp-link--collect-defined-symbols
+               (list ua ub) combined '((text . #x400000)
+                                       (rodata . #x500000)
+                                       (data . #x600000)))))
+    ;; alpha @ text + 0 + 0 = 0x400000.
+    (should (= (plist-get (nelisp-link-symtab-lookup tab "alpha")
+                          :value)
+               #x400000))
+    ;; beta @ text + 4 (b.o offset) + 4 (sym offset) = 0x400008.
+    (should (= (plist-get (nelisp-link-symtab-lookup tab "beta")
+                          :value)
+               #x400008))))
+
+(ert-deftest nelisp-link-collect-cross-section-va ()
+  ;; Symbol declared as rodata gets the rodata section VA, not text.
+  (let* ((u (nelisp-link-test--unit
+             "a.o"
+             :rodata (nelisp-link-test--bytes 32)
+             :symbols (list (nelisp-link-symbol
+                             "konst" 16 :section 'rodata
+                             :type 'object))))
+         (combined (nelisp-link-combine-sections (list u)))
+         (tab (nelisp-link--collect-defined-symbols
+               (list u) combined '((text . #x400000)
+                                   (rodata . #x500000)
+                                   (data . #x600000))))
+         (e (nelisp-link-symtab-lookup tab "konst")))
+    (should (= (plist-get e :value) (+ #x500000 0 16)))
+    (should (eq (plist-get e :section) 'rodata))))
+
+(ert-deftest nelisp-link-collect-duplicate-strong-signals ()
+  (let* ((ua (nelisp-link-test--unit
+              "a.o"
+              :text (nelisp-link-test--bytes 4)
+              :symbols (list (nelisp-link-symbol "dup" 0))))
+         (ub (nelisp-link-test--unit
+              "b.o"
+              :text (nelisp-link-test--bytes 4)
+              :symbols (list (nelisp-link-symbol "dup" 0))))
+         (combined (nelisp-link-combine-sections (list ua ub))))
+    (should-error
+     (nelisp-link--collect-defined-symbols
+      (list ua ub) combined '((text . #x400000)
+                              (rodata . #x500000)
+                              (data . #x600000)))
+     :type 'nelisp-link--duplicate-symbol)))
+
+(ert-deftest nelisp-link-collect-strong-beats-weak ()
+  ;; Either order: STRONG must win.  Inserting STRONG first (a.o
+  ;; sorted first) then WEAK (b.o) should keep STRONG.  Inserting
+  ;; WEAK first (a-weak.o) then STRONG (b.o) should still keep
+  ;; STRONG.
+  (let* ((u-strong (nelisp-link-test--unit
+                    "a.o"
+                    :text (nelisp-link-test--bytes 4)
+                    :symbols (list (nelisp-link-symbol "x" 0))))
+         (u-weak (nelisp-link-test--unit
+                  "b.o"
+                  :text (nelisp-link-test--bytes 4)
+                  :symbols (list (nelisp-link-symbol
+                                  "x" 0 :bind 'weak))))
+         (combined (nelisp-link-combine-sections
+                    (list u-strong u-weak)))
+         (tab (nelisp-link--collect-defined-symbols
+               (list u-strong u-weak) combined
+               '((text . #x400000)
+                 (rodata . #x500000)
+                 (data . #x600000)))))
+    (should (eq (plist-get (nelisp-link-symtab-lookup tab "x")
+                           :bind)
+                'global))
+    (should (= (plist-get (nelisp-link-symtab-lookup tab "x")
+                          :value)
+               #x400000))))
+
+(ert-deftest nelisp-link-collect-weak-then-strong ()
+  ;; WEAK comes first by unit-sort (a-weak.o), STRONG second
+  ;; (z-strong.o).  STRONG must overwrite.
+  (let* ((u-weak (nelisp-link-test--unit
+                  "a-weak.o"
+                  :text (nelisp-link-test--bytes 4)
+                  :symbols (list (nelisp-link-symbol
+                                  "y" 0 :bind 'weak))))
+         (u-strong (nelisp-link-test--unit
+                    "z-strong.o"
+                    :text (nelisp-link-test--bytes 4)
+                    :symbols (list (nelisp-link-symbol "y" 0))))
+         (combined (nelisp-link-combine-sections
+                    (list u-weak u-strong)))
+         (tab (nelisp-link--collect-defined-symbols
+               (list u-weak u-strong) combined
+               '((text . #x400000)
+                 (rodata . #x500000)
+                 (data . #x600000)))))
+    ;; STRONG (z-strong.o) is unit-offset 4 → VA 0x400004.
+    (should (eq (plist-get (nelisp-link-symtab-lookup tab "y")
+                           :bind)
+                'global))
+    (should (= (plist-get (nelisp-link-symtab-lookup tab "y")
+                          :value)
+               #x400004))))
+
+(ert-deftest nelisp-link-collect-two-weak-deterministic ()
+  ;; Two WEAK definitions of the same symbol.  Tie-break = unit
+  ;; sort by :name.  Inputs in either order must yield same winner
+  ;; (= "a.o" before "b.o").
+  (let* ((ua (nelisp-link-test--unit
+              "a.o"
+              :text (nelisp-link-test--bytes 4)
+              :symbols (list (nelisp-link-symbol
+                              "w" 0 :bind 'weak))))
+         (ub (nelisp-link-test--unit
+              "b.o"
+              :text (nelisp-link-test--bytes 4)
+              :symbols (list (nelisp-link-symbol
+                              "w" 0 :bind 'weak))))
+         (layout '((text . #x400000)
+                   (rodata . #x500000)
+                   (data . #x600000)))
+         (c1 (nelisp-link-combine-sections (list ua ub)))
+         (t1 (nelisp-link--collect-defined-symbols
+              (list ua ub) c1 layout))
+         (c2 (nelisp-link-combine-sections (list ub ua)))
+         (t2 (nelisp-link--collect-defined-symbols
+              (list ub ua) c2 layout)))
+    ;; In c1, a.o is at text offset 0 -> winner VA = 0x400000.
+    (should (equal (plist-get (nelisp-link-symtab-lookup t1 "w")
+                              :unit)
+                   "a.o"))
+    ;; In c2, b.o is at text offset 0 first -- but unit-sort puts
+    ;; a.o first, so a.o wins; a.o's offset in c2 is 4.
+    (should (equal (plist-get (nelisp-link-symtab-lookup t2 "w")
+                              :unit)
+                   "a.o"))
+    (should (= (plist-get (nelisp-link-symtab-lookup t2 "w")
+                          :value)
+               #x400004))))
+
+;; ---- §93.b (3) resolve-relocs pass + cross-unit smoke ----
+
+(ert-deftest nelisp-link-resolve-unresolved-signals ()
+  (let* ((u (nelisp-link-test--unit
+             "a.o"
+             :text (nelisp-link-test--bytes 8)
+             :relocs (list (nelisp-link-reloc 0 'pc32 "missing"))))
+         (combined (nelisp-link-combine-sections (list u)))
+         (tab (nelisp-link--collect-defined-symbols
+               (list u) combined '((text . #x400000)
+                                   (rodata . #x500000)
+                                   (data . #x600000)))))
+    (should-error
+     (nelisp-link--resolve-relocs
+      (list u) combined '((text . #x400000)
+                          (rodata . #x500000)
+                          (data . #x600000))
+      tab)
+     :type 'nelisp-link--unresolved-symbol)))
+
+(ert-deftest nelisp-link-resolve-cross-unit-pc32 ()
+  ;; Unit A's .text has a pc32 reloc to symbol `target' defined in
+  ;; unit B's .text.  After link the call site must point at B's
+  ;; symbol's final VA.
+  ;;
+  ;; Layout: A.text = 8 bytes (offset 0), B.text = 8 bytes (offset 8).
+  ;; Combined text VA = 0x400000.
+  ;; B defines `target' at intra-unit offset 4 -> VA = 0x40000C.
+  ;; A's reloc at offset 1 (= CALL E8 + 4 imm placeholder), addend -4.
+  ;; Combined patch position = A.offset (0) + reloc offset (1) = 1.
+  ;; P = 0x400000 + 1 + 4 = 0x400005.
+  ;; d = (0x40000C + -4) - 0x400005 = 0x40000C - 4 - 0x400005 = 3.
+  (let* ((ua (nelisp-link-test--unit
+              "a.o"
+              :text (nelisp-link-test--ub #xE8 0 0 0 0 #xC3 #x90 #x90)
+              :relocs (list (nelisp-link-reloc
+                             1 'pc32 "target" -4))))
+         (ub (nelisp-link-test--unit
+              "b.o"
+              :text (nelisp-link-test--ub #x90 #x90 #x90 #x90
+                                          #xC3 0 0 0)
+              :symbols (list (nelisp-link-symbol "target" 4))))
+         (layout '((text . #x400000)
+                   (rodata . #x500000)
+                   (data . #x600000)))
+         (result (nelisp-link-units-2pass (list ua ub) layout))
+         (text (cdr (assq 'text (plist-get result :bytes)))))
+    (should (equal (substring text 0 6)
+                   (nelisp-link-test--ub #xE8 #x03 0 0 0 #xC3)))
+    (should (= (plist-get (nelisp-link-symtab-lookup
+                           (plist-get result :symtab) "target")
+                          :value)
+               #x40000C))))
+
+(ert-deftest nelisp-link-resolve-multi-section-reloc ()
+  ;; Unit A's .text has an abs64 reloc referencing a symbol in its
+  ;; own .rodata.  The rodata symbol's VA = rodata_va + 0 (only unit)
+  ;; + 8 (intra-unit offset).
+  ;;
+  ;; rodata_va = 0x500000 -> S = 0x500008.  abs64 (S + A) = 0x500010
+  ;; with addend 8.  Patched 8 LE bytes at text offset 0.
+  (let* ((u (nelisp-link-test--unit
+             "a.o"
+             :text (nelisp-link-test--bytes 8)
+             :rodata (nelisp-link-test--bytes 16)
+             :symbols (list (nelisp-link-symbol
+                             "kdata" 8 :section 'rodata
+                             :type 'object))
+             :relocs (list (nelisp-link-reloc
+                            0 'abs64 "kdata" 8))))
+         (layout '((text . #x400000)
+                   (rodata . #x500000)
+                   (data . #x600000)))
+         (result (nelisp-link-units-2pass (list u) layout))
+         (text (cdr (assq 'text (plist-get result :bytes)))))
+    (should (equal (substring text 0 8)
+                   (nelisp-link-test--ub #x10 #x00 #x50 #x00
+                                         #x00 #x00 #x00 #x00)))))
+
+(ert-deftest nelisp-link-resolve-reloc-into-rodata-section ()
+  ;; Reloc whose `:section' = rodata (= patch site lives in rodata,
+  ;; not text).  abs64 placeholder in rodata at offset 0 references
+  ;; a `func' symbol in text.
+  (let* ((u (nelisp-link-test--unit
+             "a.o"
+             :text (nelisp-link-test--bytes 16)
+             :rodata (nelisp-link-test--bytes 8)
+             :symbols (list (nelisp-link-symbol "fn" 8))
+             :relocs (list (append (nelisp-link-reloc
+                                    0 'abs64 "fn" 0)
+                                   (list :section 'rodata)))))
+         (layout '((text . #x400000)
+                   (rodata . #x500000)
+                   (data . #x600000)))
+         (result (nelisp-link-units-2pass (list u) layout))
+         (rodata (cdr (assq 'rodata (plist-get result :bytes)))))
+    ;; S = text_va + 0 + 8 = 0x400008.
+    (should (equal (substring rodata 0 8)
+                   (nelisp-link-test--ub #x08 #x00 #x40 #x00
+                                         #x00 #x00 #x00 #x00)))))
+
+;; ---- §93.b (4) end-to-end driver ----
+
+(ert-deftest nelisp-link-units-2pass-result-shape ()
+  (let* ((u (nelisp-link-test--unit
+             "a.o"
+             :text (nelisp-link-test--bytes 4)
+             :symbols (list (nelisp-link-symbol "f" 0))))
+         (result (nelisp-link-units-2pass
+                  (list u) '((text . #x400000)
+                             (rodata . #x500000)
+                             (data . #x600000)))))
+    (should (assq 'text (plist-get result :bytes)))
+    (should (assq 'rodata (plist-get result :bytes)))
+    (should (assq 'data (plist-get result :bytes)))
+    (should (assq 'bss (plist-get result :bytes)))
+    (should (hash-table-p (plist-get result :symtab)))
+    (should (assq 'text (plist-get result :section-offsets)))))
+
+(ert-deftest nelisp-link-units-2pass-two-unit-cross-reference ()
+  ;; A defines `entry', B defines `helper'; entry calls helper.
+  ;; All section VAs given; verify resolved bytes + final VAs in
+  ;; the merged symtab.
+  (let* ((ua (nelisp-link-test--unit
+              "a.o"
+              :text (nelisp-link-test--ub
+                     #xE8 0 0 0 0 #xC3 #x90 #x90)
+              :symbols (list (nelisp-link-symbol "entry" 0))
+              :relocs (list (nelisp-link-reloc
+                             1 'pc32 "helper" -4))))
+         (ub (nelisp-link-test--unit
+              "b.o"
+              :text (nelisp-link-test--ub #xC3 #x90 #x90 #x90)
+              :symbols (list (nelisp-link-symbol "helper" 0))))
+         (result (nelisp-link-units-2pass
+                  (list ua ub) '((text . #x400000)
+                                 (rodata . #x500000)
+                                 (data . #x600000))))
+         (tab (plist-get result :symtab)))
+    (should (= (plist-get (nelisp-link-symtab-lookup tab "entry")
+                          :value)
+               #x400000))
+    ;; helper @ b.o offset 8 -> VA 0x400008.
+    (should (= (plist-get (nelisp-link-symtab-lookup tab "helper")
+                          :value)
+               #x400008))
+    ;; rel32 = (0x400008 + -4) - (0x400000 + 1 + 4) = 0x400004 -
+    ;; 0x400005 = -1.  LE bytes: FF FF FF FF.
+    (let ((text (cdr (assq 'text (plist-get result :bytes)))))
+      (should (equal (substring text 0 6)
+                     (nelisp-link-test--ub #xE8 #xFF #xFF #xFF #xFF
+                                           #xC3))))))
+
+(ert-deftest nelisp-link-units-2pass-duplicate-strong-bubbles ()
+  (let* ((ua (nelisp-link-test--unit
+              "a.o"
+              :text (nelisp-link-test--bytes 4)
+              :symbols (list (nelisp-link-symbol "main" 0))))
+         (ub (nelisp-link-test--unit
+              "b.o"
+              :text (nelisp-link-test--bytes 4)
+              :symbols (list (nelisp-link-symbol "main" 0)))))
+    (should-error
+     (nelisp-link-units-2pass
+      (list ua ub) '((text . #x400000)
+                     (rodata . #x500000)
+                     (data . #x600000)))
+     :type 'nelisp-link--duplicate-symbol)))
+
+(ert-deftest nelisp-link-units-2pass-unresolved-bubbles ()
+  (let* ((ua (nelisp-link-test--unit
+              "a.o"
+              :text (nelisp-link-test--bytes 8)
+              :relocs (list (nelisp-link-reloc
+                             0 'pc32 "ghost")))))
+    (should-error
+     (nelisp-link-units-2pass
+      (list ua) '((text . #x400000)
+                  (rodata . #x500000)
+                  (data . #x600000)))
+     :type 'nelisp-link--unresolved-symbol)))
+
+(ert-deftest nelisp-link-units-2pass-bss-passthrough ()
+  ;; bss should be visible in the result without bytes, as an
+  ;; integer size summed across units.
+  (let* ((ua (nelisp-link-test--unit
+              "a.o" :text (nelisp-link-test--bytes 4) :bss 16))
+         (ub (nelisp-link-test--unit
+              "b.o" :text (nelisp-link-test--bytes 4) :bss 32))
+         (result (nelisp-link-units-2pass
+                  (list ua ub) '((text . #x400000)
+                                 (rodata . #x500000)
+                                 (data . #x600000)))))
+    (should (= (cdr (assq 'bss (plist-get result :bytes)))
+               48))))
 
 ;; ---- §93.a end-to-end smoke (not exec'd: awaits §93.c) ----
 

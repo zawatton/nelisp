@@ -1,4 +1,4 @@
-;;; nelisp-static-linker.el --- Doc 93 §93.a static linker core  -*- lexical-binding: t; -*-
+;;; nelisp-static-linker.el --- Doc 93 §93.a + §93.b static linker  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -24,11 +24,15 @@
 ;; For ET_EXEC + static link (= Phase 47 scope), `plt32' is
 ;; semantically identical to `pc32' (= no PLT trampoline needed).
 ;;
-;; This file ships the §93.a relocation-core slice only.  Section
-;; merge + symtab merge land in §93.b; the multi-unit driver
-;; (`nelisp-link-units') lands in §93.c.  None of those are wired
-;; here -- §93.a is callable standalone via `nelisp-link-apply-relocs'
-;; against an externally-built symbol table.
+;; §93.a ships the relocation-core slice (= byte-stream patch math +
+;; symbol-table struct).  §93.b layers section combine, 2-pass symtab
+;; merge, WEAK symbol handling, and the partial driver
+;; `nelisp-link-units-2pass' on top -- the multi-unit ELF-writer
+;; orchestrator (`nelisp-link-units') still lands in §93.c.  §93.b
+;; entry points: `nelisp-link-unit-make' (compile-unit struct),
+;; `nelisp-link-combine-sections', `nelisp-link--collect-defined-
+;; symbols', `nelisp-link--resolve-relocs', and the partial driver
+;; `nelisp-link-units-2pass'.
 ;;
 ;; Symbol table shape:
 ;;   (:name S :value VA :size N :section SEC :bind global|local|weak
@@ -53,6 +57,9 @@
   "nelisp static linker: unresolved symbol" 'nelisp-link-error)
 (define-error 'nelisp-link--rel32-overflow
   "nelisp static linker: rel32 displacement out of range"
+  'nelisp-link-error)
+(define-error 'nelisp-link--duplicate-symbol
+  "nelisp static linker: duplicate STRONG symbol definition"
   'nelisp-link-error)
 
 ;; ---- §93.a (1) symbol table ----
@@ -218,6 +225,251 @@ helper out for live assembler output without breaking callers."
                  (nelisp-link--vec->ubstring bytes))
         :relocs (or relocs nil)
         :symbols (or symbols nil)))
+
+;; ---- §93.b (1) compile-unit struct ----
+
+(defun nelisp-link-unit-make (name sections symbols relocs)
+  "Build a compile-unit plist for §93.b multi-unit linking.
+NAME is a short string label (= e.g. \"main.o\").  SECTIONS is an
+alist `((SECTION-NAME . BYTES) ...)' where SECTION-NAME is one of
+`text' / `rodata' / `data' / `bss'; BYTES is a unibyte-string (or
+vector) of section payload, except for `bss' where BYTES is an
+integer = zero-fill byte size.  SYMBOLS is a list of
+`nelisp-link-symbol' plists with `:value' interpreted as the
+symbol's byte offset within its section in this unit (NOT a final
+VA).  RELOCS is a list of `nelisp-link-reloc' plists with an
+extra `:section' key naming the section in which the patch lives
+(default `text').  Returns a plist consumable by
+`nelisp-link-combine-sections' and `nelisp-link-units-2pass'."
+  (list :name name :sections sections
+        :symbols (or symbols nil) :relocs (or relocs nil)))
+
+(defun nelisp-link--unit-section (unit section-name)
+  "Return UNIT's SECTION-NAME bytes/size from its `:sections' alist,
+or nil if the unit has no entry for that section."
+  (cdr (assq section-name (plist-get unit :sections))))
+
+(defun nelisp-link--section-length (sec section-name)
+  "Return the contributed byte length of SEC under SECTION-NAME.
+For `bss' SEC is an integer size; for the byte-bearing sections it
+is a string/vector whose `length' is returned.  Returns 0 if SEC
+is nil."
+  (cond ((null sec) 0)
+        ((eq section-name 'bss) sec)
+        (t (length sec))))
+
+;; ---- §93.b (2) section combine ----
+
+(defun nelisp-link--bytes-append (acc bytes)
+  "Return a fresh unibyte-string of ACC concatenated with BYTES.
+ACC and BYTES are unibyte-strings or vectors; BYTES may be nil."
+  (let* ((a (if (stringp acc) acc (nelisp-link--vec->ubstring acc)))
+         (b (cond ((null bytes) "")
+                  ((stringp bytes) bytes)
+                  (t (nelisp-link--vec->ubstring bytes)))))
+    (concat a b)))
+
+(defun nelisp-link-combine-sections (units)
+  "Concat all UNITS' same-named sections into one combined buffer.
+For `text' / `rodata' / `data', the returned bytes are the
+ordered concatenation of every unit's contribution (unit order =
+UNITS order).  For `bss', the result is the integer sum of sizes.
+Returns an alist `((SECTION-NAME . (:bytes BYTES :offsets ((UNIT-
+NAME . OFFSET) ...))) ...)' covering text/rodata/data/bss.  The
+`offsets' entry records each unit's starting position within the
+combined section.  A unit that contributes 0 bytes still receives
+an entry whose OFFSET equals the section's running length at the
+time the unit was visited."
+  (let ((result '())
+        (sections '(text rodata data bss)))
+    (dolist (sn sections)
+      (let ((acc (if (eq sn 'bss) 0 ""))
+            (offs '()))
+        (dolist (u units)
+          (let* ((uname (plist-get u :name))
+                 (sec (nelisp-link--unit-section u sn))
+                 (len (nelisp-link--section-length sec sn))
+                 (off (if (eq sn 'bss) acc (length acc))))
+            (push (cons uname off) offs)
+            (setq acc (if (eq sn 'bss) (+ acc len)
+                        (nelisp-link--bytes-append acc sec)))))
+        (push (cons sn (list :bytes acc :offsets (nreverse offs)))
+              result)))
+    (nreverse result)))
+
+(defun nelisp-link--combined-offset (combined section-name unit-name)
+  "Return the byte offset of UNIT-NAME within COMBINED SECTION-NAME.
+Signals `nelisp-link-error' if the (section, unit) pair is absent
+from COMBINED (= caller bug)."
+  (let* ((entry (cdr (assq section-name combined)))
+         (offs (and entry (plist-get entry :offsets)))
+         (cell (and offs (assoc unit-name offs))))
+    (unless cell
+      (signal 'nelisp-link-error
+              (list :missing-unit-offset section-name unit-name)))
+    (cdr cell)))
+
+;; ---- §93.b (3) 2-pass symtab merge with WEAK ----
+
+(defun nelisp-link--symbol-section (sym)
+  "Return the section-name for SYM (default `text')."
+  (or (plist-get sym :section) 'text))
+
+(defun nelisp-link--symbol-bind (sym)
+  "Return SYM's binding keyword (= `global', `local', or `weak').
+Defaults to `global' if the symbol omits `:bind'."
+  (or (plist-get sym :bind) 'global))
+
+(defun nelisp-link--sort-units-by-name (units)
+  "Return UNITS sorted by `:name' (= deterministic WEAK tie-break)."
+  (sort (copy-sequence units)
+        (lambda (a b)
+          (string< (plist-get a :name) (plist-get b :name)))))
+
+(defun nelisp-link--compute-symbol-va (sym unit combined section-layout)
+  "Compute the absolute VA of SYM defined in UNIT.
+Combines the section base VA from SECTION-LAYOUT (= alist
+`((SECTION-NAME . VA) ...)'), UNIT's offset within that section
+(from COMBINED), and SYM's intra-unit `:value' offset."
+  (let* ((sn (nelisp-link--symbol-section sym))
+         (sec-va (or (cdr (assq sn section-layout))
+                     (signal 'nelisp-link-error
+                             (list :unknown-section sn))))
+         (uoff (nelisp-link--combined-offset
+                combined sn (plist-get unit :name)))
+         (soff (plist-get sym :value)))
+    (+ sec-va uoff soff)))
+
+(defun nelisp-link--collect-defined-symbols (units combined section-layout)
+  "Pass 1: build a global symtab for DEFINED symbols of UNITS.
+For each unit's symbol, compute its absolute VA and insert into a
+fresh hash table.  Duplicate handling:
+  STRONG (= `global') + STRONG of same name  -> signals
+  `nelisp-link--duplicate-symbol' (data: NAME, first unit, second
+  unit);
+  STRONG + WEAK (any order)                  -> STRONG wins;
+  WEAK + WEAK                                -> first one wins,
+  where \"first\" is determined by sorting UNITS by `:name' so the
+  result is deterministic regardless of caller order.
+Returns the populated symtab (= a hash table)."
+  (let ((symtab (nelisp-link-symtab-make))
+        (sorted (nelisp-link--sort-units-by-name units)))
+    (dolist (unit sorted)
+      (dolist (sym (plist-get unit :symbols))
+        (let* ((bind (nelisp-link--symbol-bind sym))
+               (name (plist-get sym :name))
+               (existing (nelisp-link-symtab-lookup symtab name)))
+          (when (memq bind '(global weak))
+            (let* ((va (nelisp-link--compute-symbol-va
+                        sym unit combined section-layout))
+                   (entry (list :name name :value va
+                                :size (or (plist-get sym :size) 0)
+                                :section (nelisp-link--symbol-section sym)
+                                :bind bind
+                                :type (or (plist-get sym :type) 'func)
+                                :unit (plist-get unit :name))))
+              (cond
+               ((null existing)
+                (puthash name entry symtab))
+               ((and (eq bind 'global)
+                     (eq (plist-get existing :bind) 'global))
+                (signal 'nelisp-link--duplicate-symbol
+                        (list name
+                              (plist-get existing :unit)
+                              (plist-get unit :name))))
+               ((and (eq bind 'global)
+                     (eq (plist-get existing :bind) 'weak))
+                (puthash name entry symtab))
+               ;; WEAK incoming + STRONG existing  -> keep STRONG.
+               ;; WEAK + WEAK                       -> keep existing
+               ;; (= first by sorted UNITS order = deterministic).
+               (t nil)))))))
+    symtab))
+
+(defun nelisp-link--reloc-section (rel)
+  "Return the patch-target section name for RELoc, default `text'."
+  (or (plist-get rel :section) 'text))
+
+(defun nelisp-link--resolve-relocs (units combined section-layout symtab)
+  "Pass 2: patch every unit's relocs against the merged SYMTAB.
+For each RELOC, the target byte position within its combined
+section equals UNIT-OFFSET + RELOC-OFFSET.  Looks up the
+referenced symbol; if missing, signals
+`nelisp-link--unresolved-symbol' with `(SYM-NAME UNIT-NAME)'.
+Returns a fresh alist `((SECTION-NAME . BYTES) ...)' covering
+text/rodata/data + a `(bss . SIZE)' pass-through entry.  The
+COMBINED argument is the output of `nelisp-link-combine-sections';
+SECTION-LAYOUT is the same alist passed to pass 1."
+  (let ((sections '(text rodata data))
+        (out '()))
+    (dolist (sn sections)
+      (let* ((entry (cdr (assq sn combined)))
+             (bytes (plist-get entry :bytes))
+             (vec (nelisp-link--ensure-mutable
+                   (if (stringp bytes) bytes
+                     (or bytes "")))))
+        (push (cons sn vec) out)))
+    (let ((bss-entry (cdr (assq 'bss combined))))
+      (push (cons 'bss (plist-get bss-entry :bytes)) out))
+    (setq out (nreverse out))
+    (dolist (unit units)
+      (let ((uname (plist-get unit :name)))
+        (dolist (rel (plist-get unit :relocs))
+          (let* ((rsec (nelisp-link--reloc-section rel))
+                 (uoff (nelisp-link--combined-offset
+                        combined rsec uname))
+                 (roff (plist-get rel :offset))
+                 (sym-name (nelisp-link--reloc-symbol-name rel))
+                 (entry (nelisp-link-symtab-lookup symtab sym-name)))
+            (unless entry
+              (signal 'nelisp-link--unresolved-symbol
+                      (list sym-name uname)))
+            (let* ((vec (cdr (assq rsec out)))
+                   (sec-va (cdr (assq rsec section-layout)))
+                   (combined-off (+ uoff roff))
+                   (shifted (list :offset combined-off
+                                  :type (plist-get rel :type)
+                                  :symbol sym-name
+                                  :addend (or (plist-get rel :addend)
+                                              0))))
+              (unless vec
+                (signal 'nelisp-link-error
+                        (list :reloc-bad-section rsec)))
+              (setcdr (assq rsec out)
+                      (nelisp-link-apply-reloc
+                       vec shifted symtab sec-va)))))))
+    ;; Convert vectors back to unibyte-strings for downstream consumers.
+    (mapcar (lambda (cell)
+              (let ((sn (car cell)) (v (cdr cell)))
+                (cond
+                 ((eq sn 'bss) cell)
+                 ((stringp v) cell)
+                 ((null v) (cons sn ""))
+                 (t (cons sn (nelisp-link--vec->ubstring v))))))
+            out)))
+
+;; ---- §93.b (4) partial driver ----
+
+(defun nelisp-link-units-2pass (units section-layout)
+  "Run §93.b pass 1 + pass 2 over UNITS and return the link result.
+SECTION-LAYOUT is an alist `((SECTION-NAME . VIRTUAL-ADDRESS)
+...)' that pins each combined section's load address; the caller
+(= §93.c orchestrator) chooses these.  Returns a plist:
+  `:bytes'           = alist of `((SECTION-NAME . BYTES) ...)' with
+                       all relocs applied (= text/rodata/data +
+                       `(bss . SIZE)' pass-through)
+  `:symtab'          = the merged symbol table (= hash table)
+  `:section-offsets' = the unit-offset map from
+                       `nelisp-link-combine-sections' (verbatim)
+Signals `nelisp-link--duplicate-symbol' on STRONG collisions and
+`nelisp-link--unresolved-symbol' on missing externs."
+  (let* ((combined (nelisp-link-combine-sections units))
+         (symtab (nelisp-link--collect-defined-symbols
+                  units combined section-layout))
+         (bytes (nelisp-link--resolve-relocs
+                 units combined section-layout symtab)))
+    (list :bytes bytes :symtab symtab
+          :section-offsets combined)))
 
 (provide 'nelisp-static-linker)
 
