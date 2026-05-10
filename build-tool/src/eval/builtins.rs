@@ -410,17 +410,14 @@ pub fn install_builtins(env: &mut Env) {
         "nl-jit-call-out-2",
         "nl-jit-call-out-1i",
         "nl-jit-call-out-2i",
-        // Doc 77b Stage b.4 (2026-05-09) — helper primitives backing
-        // the elisp JIT-strategy wrappers (lisp/nelisp-jit-strategy.el).
-        // See `jit/strategy.rs'.
-        "nelisp--int-eq-zero",
+        // Doc 77b Stage b.4 — helper primitives backing the elisp
+        // JIT-strategy wrappers (lisp/nelisp-jit-strategy.el).  Phase
+        // 7.1.7.a.1 (Doc 28 §3.7.a.1) removed `nelisp--int-eq-zero' +
+        // 3 bitwise -impl + ash-impl entries (= moved to elisp).
         "nelisp--add2-float", "nelisp--sub2-float", "nelisp--mul2-float",
         "nelisp--num-eq2-float", "nelisp--num-lt2-float",
         "nelisp--num-gt2-float", "nelisp--num-le2-float",
         "nelisp--num-ge2-float",
-        "nelisp--logior2-impl", "nelisp--logand2-impl",
-        "nelisp--logxor2-impl",
-        "nelisp--ash-impl",
         // Doc 80 Stage 80.3〜80.4 (2026-05-09) — slim primitives for
         // the elisp-side `length' / `aref' / `aset' / `elt' fall-
         // through dispatch.  Replaces the pre-Doc-80 `nelisp--{length,
@@ -765,8 +762,9 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-jit-call-out-2" => crate::jit::bi_nl_jit_call_out_2(args),
         "nl-jit-call-out-1i" => crate::jit::bi_nl_jit_call_out_1i(args),
         "nl-jit-call-out-2i" => crate::jit::bi_nl_jit_call_out_2i(args),
-        // Doc 77b Stage b.4 (2026-05-09) — JIT strategy helpers.
-        "nelisp--int-eq-zero" => crate::jit::bi_int_eq_zero(args),
+        // Doc 77b Stage b.4 — JIT strategy helpers.  Phase 7.1.7.a.1
+        // (Doc 28 §3.7.a.1) deleted 5 arms (int-eq-zero + 3 bitwise +
+        // ash-impl) — moved to elisp on top of the bridge.
         "nelisp--add2-float" => crate::jit::bi_add2_float(args),
         "nelisp--sub2-float" => crate::jit::bi_sub2_float(args),
         "nelisp--mul2-float" => crate::jit::bi_mul2_float(args),
@@ -775,10 +773,6 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nelisp--num-gt2-float" => crate::jit::bi_num_gt2_float(args),
         "nelisp--num-le2-float" => crate::jit::bi_num_le2_float(args),
         "nelisp--num-ge2-float" => crate::jit::bi_num_ge2_float(args),
-        "nelisp--logior2-impl" => crate::jit::bi_logior2_impl(args),
-        "nelisp--logand2-impl" => crate::jit::bi_logand2_impl(args),
-        "nelisp--logxor2-impl" => crate::jit::bi_logxor2_impl(args),
-        "nelisp--ash-impl" => crate::jit::bi_ash_impl(args),
         // Doc 80 Stage 80.3〜80.4 — slim primitives.
         "nelisp--mut-str-len" => crate::jit::bi_mut_str_len(args),
         "nelisp--bool-vector-len" => crate::jit::bi_bool_vector_len(args),

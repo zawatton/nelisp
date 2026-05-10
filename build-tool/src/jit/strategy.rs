@@ -1,42 +1,25 @@
 //! Rust helper primitives backing the elisp JIT-strategy wrappers in
-//! `lisp/nelisp-jit-strategy.el' (= Doc 77b Stage b.4 + Doc 80
-//! substrate).  Per-fn docstrings cover the contract; the surface
-//! groups into 3 categories per Doc 80 §7 + §3.7.a audit:
+//! `lisp/nelisp-jit-strategy.el'.  Post-Phase-7.1.7.a.1 (Doc 28
+//! §3.7.a.1, 2026-05-10) the surface is 2 permanent residual
+//! categories:
 //!
-//! 1. *Doc 80 §7 permanent out-of-scope* (= cannot be expressed in
-//!    pre-stdlib elisp): `bi_int_eq_zero', `bi_{add,sub,mul}2_float',
-//!    `bi_num_{eq,lt,gt,le,ge}2_float', `bi_{logior,logand,logxor}2_impl',
-//!    `bi_ash_impl', `bi_syscall_nr_resolve'.  Float arith / cmp use
-//!    libm via Rust `f64' ops (1e-15 epsilon for `eq2'); bitwise uses
-//!    `as_int' cast (Float→Int truncation + WrongType for non-numeric);
-//!    `syscall_nr_resolve' wraps the `libc::SYS_*' symbol catalog.
-//!    Doc 28 §3.7.a.1 ports `bi_int_eq_zero' / bitwise 3 / `bi_ash_impl'
-//!    to elisp on top of nelisp-cc, leaving Float / syscall as
-//!    permanent Rust residual.
+//! 1. *Doc 80 §7 permanent out-of-scope*: `bi_{add,sub,mul}2_float',
+//!    `bi_num_{eq,lt,gt,le,ge}2_float', `bi_syscall_nr_resolve' —
+//!    Float epsilon arithmetic + host `libc::SYS_*' constants are
+//!    not expressible on the pre-stdlib elisp substrate.
+//! 2. *Doc 80.4 slim primitives*: `bi_mut_str_len' /
+//!    `bi_bool_vector_len' / `bi_str_codepoint_at' /
+//!    `bi_mut_str_set_codepoint' / `bi_char_table_{aref,aset}' —
+//!    reach into `Sexp' variant boxes the elisp surface cannot
+//!    expose.  Used by elisp `length' / `aref' / `aset' / `elt'
+//!    fall-through arms.
 //!
-//! 2. *Doc 80.4 ship slim primitives* (= reach into `Sexp' variant
-//!    boxes elisp cannot expose): `bi_mut_str_len',
-//!    `bi_bool_vector_len', `bi_str_codepoint_at',
-//!    `bi_mut_str_set_codepoint', `bi_char_table_{aref,aset}'.  Used
-//!    by elisp `length' / `aref' / `aset' / `elt' fall-through arms
-//!    after the JIT trampoline raises ERR.
+//! Phase 7.1.7.a.1 deleted `bi_int_eq_zero' + 3 bitwise + `bi_ash_impl'
+//! (= 5 fns); their semantics now live in `nelisp-jit-strategy.el' on
+//! top of the `nl-jit-call-i64-i64' bridge.
 
 use crate::eval::error::EvalError;
 use crate::eval::sexp::Sexp;
-
-// ---------- nelisp--int-eq-zero ------------------------------------
-
-pub(crate) fn bi_int_eq_zero(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    crate::eval::builtins::require_arity("nelisp--int-eq-zero", args, 1, Some(1))?;
-    match &args[0] {
-        Sexp::Int(0) => Ok(Sexp::T),
-        Sexp::Int(_) => Ok(Sexp::Nil),
-        other => Err(EvalError::WrongType {
-            expected: "integer".into(),
-            got: other.clone(),
-        }),
-    }
-}
 
 // ---------- arith Float fallbacks ----------------------------------
 
@@ -73,47 +56,6 @@ float_cmp_helper!(bi_num_lt2_float, <, "nelisp--num-lt2");
 float_cmp_helper!(bi_num_gt2_float, >, "nelisp--num-gt2");
 float_cmp_helper!(bi_num_le2_float, <=, "nelisp--num-le2");
 float_cmp_helper!(bi_num_ge2_float, >=, "nelisp--num-ge2");
-
-// ---------- bitwise Int-only impls --------------------------------
-
-macro_rules! bitwise_int_helper {
-    ($fn_name:ident, $op:tt, $primitive:literal) => {
-        pub(crate) fn $fn_name(args: &[Sexp]) -> Result<Sexp, EvalError> {
-            crate::eval::builtins::require_arity($primitive, args, 2, Some(2))?;
-            let a = crate::eval::builtins::as_int($primitive, &args[0])?;
-            let b = crate::eval::builtins::as_int($primitive, &args[1])?;
-            Ok(Sexp::Int(a $op b))
-        }
-    };
-}
-
-bitwise_int_helper!(bi_logior2_impl, |, "nelisp--logior2");
-bitwise_int_helper!(bi_logand2_impl, &, "nelisp--logand2");
-bitwise_int_helper!(bi_logxor2_impl, ^, "nelisp--logxor2");
-
-// ---------- ash impl (verbatim from pre-b.4 lowered_ash) ----------
-
-pub(crate) fn bi_ash_impl(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    crate::eval::builtins::require_arity("ash", args, 2, Some(2))?;
-    let n = crate::eval::builtins::as_int("ash", &args[0])?;
-    let count = crate::eval::builtins::as_int("ash", &args[1])?;
-    if (-62..=62).contains(&count) {
-        // Phase 7.1.6.c: call the `nl_jit_arith_ash' trampoline directly
-        // (= the deleted Cranelift `JitArith::ash' fn-ptr's replacement).
-        // Caller is contractually responsible for the `[-62, +62]'
-        // bounds-check, which the conditional above enforces.
-        return Ok(Sexp::Int(unsafe {
-            super::arith::nl_jit_arith_ash(n, count)
-        }));
-    }
-    let r = if count >= 0 {
-        if count >= 63 { 0 } else { n.wrapping_shl(count as u32) }
-    } else {
-        let abs = (-count) as u32;
-        if abs >= 63 { if n < 0 { -1 } else { 0 } } else { n >> abs }
-    };
-    Ok(Sexp::Int(r))
-}
 
 // ---------- Doc 80 slim primitives (length / aref / aset fall-through) -------
 //
