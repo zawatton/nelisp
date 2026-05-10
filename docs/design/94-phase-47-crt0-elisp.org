@@ -1,0 +1,696 @@
+#+TITLE: Doc 94 — Phase 47 component: crt0 in elisp
+#+AUTHOR: NeLisp design
+#+DATE: 2026-05-11
+
+* Status
+
+- *State*: DRAFT (= spike, implementation-ready 化のための design doc。
+  本 doc 自体はコード変更を伴わない。Doc 85 §3.4 / §5.1 で「crt0 elisp
+  ~150 LOC で =-150 Rust=、ROI 1:1」とした 5 component 中の 1 本)
+- *Parent*: Doc 85 (= phase-47-feasibility-spike.org §3.4 / §5.1 / §6.1)
+- *Sibling*: Doc 91 (ELF writer, DRAFT SHIPPED), Doc 92 (assembler), Doc
+  93 (static linker + syscall inline), Doc 95 (Sexp DSL, DRAFT SHIPPED)
+- *Pre-condition*: Doc 91 ELF writer + Doc 92 assembler + Doc 93 static
+  linker SHIPPED (= crt0 は 3 component 全ての output に依存 = 直列、
+  Doc 85 §6.1)
+- *Unlocks*: Phase 47 critical path 上の M4 (= "Rust runtime 不要、
+  =./nelisp= が elisp からのみ生成される"、Doc 85 §6.2)。Doc 91/92/93
+  output を統合する最後の 1 ピース、ここまで揃えば「elisp source →
+  実行可能 binary」 chain が完全に Rust 不要化する
+- *OOS for THIS doc*: Mach-O / Windows PE COFF (= 別 entry convention、
+  別 syscall 番号、§6.3 risk として defer)、dynamic loader 利用 (=
+  =/lib64/ld-linux-x86-64.so.2= に依存しない、static-PIE only =
+  §6.3)、libc 関数 (= =printf= / =malloc= / =write= wrapper 一切不使用、
+  raw =syscall= instruction 直接 emit)、signal handling / setjmp /
+  longjmp (= NeLisp model に exception なし、§6.2)、optimization (=
+  本 doc は LOC 見積と correctness のみ、性能 tuning は実装時)
+
+* §0 TL;DR
+
+** §0.1 crt0 とは
+
+crt0 (= "C runtime 0") = OS kernel が =execve(2)= で binary を load し
+た直後、user-space で **main() の前に走る最小の起動 stub**。
+
+通常の libc (glibc / musl) では =crt1.o= / =Scrt1.o= として ~20-50 行
+の assembly で実装されており、role は:
+
+1. =_start= label = ELF entry point (= Ehdr.e_entry が指す address) =
+   kernel が直接 jump する場所
+2. Stack pointer (=rsp= / =sp=) 上に kernel が積んだ argv / envp /
+   auxiliary vector を unpack
+3. =argc= と =argv= を System V ABI に従って register に load
+4. =main(argc, argv, envp)= を call
+5. main の戻り値 (= =rax= / =x0=) を引数に =exit(2)= syscall
+
+crt0 の特徴は **libc 非依存**: kernel は ELF を mmap してから =_start=
+に jump するだけで、=write= / =printf= / =malloc= 等は user 側で raw
+=syscall= instruction を emit するしかない (= dynamic loader を使わない
+static binary 前提)。
+
+** §0.2 elisp で書ける根拠
+
+crt0 は **pure-functional bytewise machine code emit** に分解できる:
+
+- input = main 関数の symbol name (= elisp string)
+- output = byte sequence (= unibyte string、x86_64 機械語 ~30-50 bytes)
+- 副作用 = なし (= caller が ELF =.text= section に concat するだけ)
+- syscall は =write(2)= / =exit(2)= の 2 個のみ、両方とも x86_64 SysV
+  ABI が規定する register 配置で =syscall= instruction を 1 個 emit
+  すれば済む
+
+elisp で =unibyte-string= / =vconcat= / 16進 literal が動けば実装可能。
+Doc 92 macro assembler の output (= byte vector) を Doc 91 ELF writer
+の =.text= section に流し込むだけで、binary が executable 化する。
+
+** §0.3 なぜ Phase 47 が crt0 を必要とするか
+
+Phase 47 = "0 Rust" 目標。現状の =./nelisp= binary は:
+
+- =bin/anvil-runtime= (= shell wrapper、62 LOC) → =NELISP_BIN= に
+  exec
+- =nelisp-runtime/src/main.rs= (= Rust binary entry、130 LOC) → Rust
+  std =fn main()= → libc =__libc_start_main= → =_start=
+- =build-tool/src/bin/nelisp.rs= (= production binary entry、243 LOC) →
+  同上
+
+これら 3 entry はすべて **Rust std + libc startup** を経由する。
+=fn main()= が呼ばれる時点で、libc は既に argv 整形 / TLS setup /
+exception handling table 登録 / atexit 連鎖を完了している。Phase 47 は
+この依存連鎖そのものを切り、=_start= から **直接 elisp evaluator entry
+を call する** ことを目標とする。
+
+crt0 elisp が SHIPPED すると:
+1. =_start= は 5-10 命令の elisp-emitted stub
+2. その stub が elisp-emitted argv unpacker を call
+3. unpacker が elisp-emitted main (= NeLisp eval entry) を call
+4. main が return すると elisp-emitted =exit(2)= で終了
+
+**この時点で binary 内に Rust も libc も存在しない**。
+
+* §1 Current Rust binary entry inventory
+
+** §1.1 三つの entry の実体
+
+Doc 85 §2.3 で articulated されている "boot loader" 群の現状:
+
+| file                                | LOC | 役割                              | Phase 47 後 |
+|-------------------------------------+-----+-----------------------------------+-------------|
+| =bin/anvil-runtime=                 |  62 | shell wrapper、=NELISP_BIN exec=  | 削除        |
+| =nelisp-runtime/src/main.rs=        | 130 | =--syscall-smoke= / =--seed-image= probe binary | 削除 |
+| =nelisp-runtime/src/lib.rs=         | 111 | cdylib re-export hub              | 削除 (内容 elisp 移管) |
+| =build-tool/src/bin/nelisp.rs=      | 243 | production CLI (=eval= / =-l= / =exec= / =eval-image=) | crt0 elisp 化 |
+| =build-tool/src/bin/nelisp-baker.rs=| 193 | dev tooling (=compile-image=)     | dev-only、Phase 47 OOS |
+| *合計 (Rust + shell)*               | *739* |                                 |             |
+
+crt0 視点での観察:
+
+- =anvil-runtime= は exec redirector、Phase 47 後は wrapper 不要 (=
+  =./nelisp= が直接 shell-loop 起動)
+- =nelisp.rs main()= = =parse_args= → =run_eval{,_all,_image}=
+  dispatcher。argv parse は elisp、=fs::read_to_string= は Doc 93
+  syscall inline、=eprintln!= は elisp =write(2,...)= emit
+- =nelisp-runtime main.rs= = Phase 7.0 smoke binary、Phase 47 完遂時は
+  NeLisp 自体が syscall を直接持つので不要
+
+** §1.2 crt0 elisp が survive させる surface
+
+| feature              | 現状 (Rust → libc)                | Phase 47 後 (elisp)              |
+|----------------------+-----------------------------------+----------------------------------|
+| =_start= entry       | libc =Scrt1.o=                    | =nelisp-crt0-emit-entry=         |
+| argv/envp/auxv unpack | libc =__libc_start_main=         | =nelisp-crt0--unpack-stack=      |
+| =main()= call        | libc → user =fn main()=           | elisp emit が NeLisp eval entry call |
+| =exit(2)= / =write(2)= | libc wrapper                    | elisp emit =syscall= 1 個        |
+
+** §1.3 削除/移管対象 LOC
+
+Doc 85 §5.1 と整合させた crt0 component 単独の LOC 見積:
+
+| 項目                                              | LOC  |
+|---------------------------------------------------+------|
+| =bin/anvil-runtime= (shell wrapper)               | 62   |
+| =nelisp-runtime/src/main.rs= の =fn main()= 部    | ~30  |
+| =build-tool/src/bin/nelisp.rs= の =fn main()= dispatcher | ~40 |
+| Rust std =std::process::ExitCode= / =eprintln!= = pure libc 経由部 | ~20 |
+| *crt0 が直接置換する Rust LOC*                    | *~150* |
+
+Doc 85 §5.1 表 "crt0 elisp 150 / Rust 削減 150 / partial 0 / net 150"
+と一致 (= net 150 elisp 投資で 150 Rust 削減、ROI 1:1)。
+
+* §2 crt0 design
+
+** §2.1 elisp file 構成
+
+#+begin_src text
+lisp/nelisp-crt0.el          ; ~150 LOC、Phase 47 component の最終層
+├── §2.2 nelisp-crt0-emit-entry FUNC-NAME    ; top-level、~30 LOC
+├── §2.3 nelisp-crt0--unpack-stack           ; argv/envp/auxv、~40 LOC
+├── §2.4 nelisp-crt0--syscall-write FD BUF LEN  ; ~15 LOC
+├── §2.5 nelisp-crt0--syscall-exit STATUS    ; ~15 LOC
+├── §2.6 nelisp-crt0--call-main FUNC         ; ~30 LOC
+└── §2.7 byte / utility helpers              ; ~20 LOC
+#+end_src
+
+依存関係:
+- =nelisp-asm= (= Doc 92) — instruction encoder
+- =nelisp-elf= (= Doc 91) — section emitter
+- =nelisp-link= (= Doc 93) — symbol resolution
+
+** §2.2 =nelisp-crt0-emit-entry FUNC-NAME=
+
+#+begin_src elisp
+(defun nelisp-crt0-emit-entry (func-name &optional opts)
+  "Emit a crt0 entry stub that ends in calling FUNC-NAME.
+
+Returns a `nelisp-asm-block' (= label + bytes + relocations) suitable
+for splicing into a `.text` section.
+
+OPTS plist:
+  :arch        x86_64-linux (default) | arm64-linux
+  :exit-policy 'main-return-as-exit-code (default) | 'always-zero
+
+The emitted block has label `_start' and is the ELF e_entry target."
+  ...)
+#+end_src
+
+emit する instruction sequence (x86_64 SysV、~30 LOC):
+
+#+begin_src text
+_start:
+    ;; Kernel hands us:
+    ;;   rsp        → argc
+    ;;   rsp+8      → argv[0..argc-1]
+    ;;   rsp+8*(argc+1) → envp[]
+    ;;   後ろに auxv (= ELF auxiliary vector)
+
+    xor   rbp, rbp                ; ABI: clear frame pointer at entry
+    mov   rdi, [rsp]              ; argc
+    lea   rsi, [rsp + 8]          ; argv
+    ;; envp is argv[argc+1] = [rsp + 8*(argc+1)]
+    lea   rdx, [rsi + rdi*8 + 8]  ; envp
+
+    and   rsp, -16                ; SysV: 16-byte align before call
+    sub   rsp, 8                  ; (call pushes 8B, lands aligned)
+
+    call  FUNC_NAME               ; relocation R_X86_64_PLT32
+
+    ;; main returned in rax — pass to _exit
+    mov   rdi, rax
+    mov   rax, 60                 ; SYS_exit
+    syscall
+    ;; unreachable
+    ud2
+#+end_src
+
+byte 数: ~30-40 bytes (= 命令長は ~3-7B 多くが平均 4B)。
+
+** §2.3 =nelisp-crt0--unpack-stack=
+
+System V AMD64 ABI が規定する process entry stack layout
+(= /usr/include/sys/auxv.h + execve(2) man):
+
+#+begin_src text
+high address
++------------------------+
+| environment strings    |  ← 実体 (envp[i] が指す)
++------------------------+
+| argument strings       |  ← 実体 (argv[i] が指す)
++------------------------+
+| AT_NULL                |
+| auxv[]                 |  ← Elf64_auxv_t の配列
++------------------------+
+| NULL                   |
+| envp[]                 |
++------------------------+
+| NULL                   |
+| argv[argc-1..0]        |
++------------------------+
+| argc                   |  ← rsp はここを指す
++------------------------+
+low address
+#+end_src
+
+§2.2 の entry 自体は argc/argv/envp を register に load するだけで auxv
+は触らない (= 第 4 引数 =rcx= に envp 末尾以降の pointer を渡せる
+=AT_*= consumer は §2.6 main caller の責任)。
+
+elisp 実装の outline (= ~40 LOC):
+
+#+begin_src elisp
+(defun nelisp-crt0--unpack-stack (arch)
+  "Return assembler instructions that unpack argc/argv/envp/auxv.
+
+Output is a list of `nelisp-asm-insn' for ARCH (x86_64-linux | arm64-linux).
+Caller splices these directly after `_start:' label."
+  (pcase arch
+    ('x86_64-linux
+     (list
+       (nelisp-asm-insn 'xor 'rbp 'rbp)
+       (nelisp-asm-insn 'mov 'rdi (nelisp-asm-mem 'rsp 0))     ; argc
+       (nelisp-asm-insn 'lea 'rsi (nelisp-asm-mem 'rsp 8))     ; argv
+       (nelisp-asm-insn 'lea 'rdx
+         (nelisp-asm-mem-scaled 'rsi 'rdi 8 8))                ; envp = rsi + rdi*8 + 8
+       (nelisp-asm-insn 'and 'rsp -16)                          ; align
+       (nelisp-asm-insn 'sub 'rsp 8)))
+    ('arm64-linux
+     (list
+       (nelisp-asm-insn 'mov 'fp 'xzr)
+       (nelisp-asm-insn 'ldr 'x0 (nelisp-asm-mem 'sp 0))       ; argc
+       (nelisp-asm-insn 'add 'x1 'sp 8)                        ; argv
+       (nelisp-asm-insn 'add 'x2 'x1 (nelisp-asm-mem-scaled 'x0 8 8)) ; envp
+       ;; arm64 SP must already be 16-aligned at entry per AAPCS — no
+       ;; explicit align needed
+       ))))
+#+end_src
+
+** §2.4 =nelisp-crt0--syscall-write FD BUF LEN=
+
+syscall calling convention (x86_64 Linux):
+- syscall number → =rax=
+- args 1..6 → =rdi rsi rdx r10 r8 r9= (= 第 4 が =rcx= ではなく =r10=
+  になる点が function call と違う)
+- =syscall= instruction
+- 戻り値 → =rax= (負の場合 =-errno=)
+
+write(2) = syscall number 1。
+
+#+begin_src elisp
+(defun nelisp-crt0--syscall-write (fd buf-label len)
+  "Emit `write(FD, BUF, LEN)' syscall.  BUF-LABEL is a relocation symbol
+into `.rodata'."
+  (list
+    (nelisp-asm-insn 'mov 'rdi fd)
+    (nelisp-asm-insn 'lea 'rsi (nelisp-asm-rip-rel buf-label))   ; PC-rel load
+    (nelisp-asm-insn 'mov 'rdx len)
+    (nelisp-asm-insn 'mov 'rax 1)                                ; SYS_write
+    (nelisp-asm-insn 'syscall)))
+#+end_src
+
+5 命令、~15 LOC。
+
+** §2.5 =nelisp-crt0--syscall-exit STATUS=
+
+exit(2) = syscall number 60 (x86_64 Linux)、=_exit= は 231 (=
+=exit_group=、Phase 47 ではどちらも acceptable、まずは 60)。
+
+#+begin_src elisp
+(defun nelisp-crt0--syscall-exit (status)
+  "Emit `_exit(STATUS)' syscall.  STATUS is integer or `:rax' (= pass
+through current rax)."
+  (let ((insns (list)))
+    (unless (eq status :rax)
+      (push (nelisp-asm-insn 'mov 'rdi status) insns))
+    ;; if :rax then caller already has the return value in rax → rdi
+    (when (eq status :rax)
+      (push (nelisp-asm-insn 'mov 'rdi 'rax) insns))
+    (push (nelisp-asm-insn 'mov 'rax 60) insns)                  ; SYS_exit
+    (push (nelisp-asm-insn 'syscall) insns)
+    (push (nelisp-asm-insn 'ud2) insns)                          ; unreachable
+    (nreverse insns)))
+#+end_src
+
+3-4 命令、~15 LOC。
+
+** §2.6 =nelisp-crt0--call-main FUNC=
+
+PLT-style relocation を使った関数 call。Doc 91 ELF writer が emit する
+=R_X86_64_PLT32= relocation entry を Doc 93 linker が解決する。
+
+#+begin_src elisp
+(defun nelisp-crt0--call-main (func-name)
+  "Emit a call to FUNC-NAME (= NeLisp eval entry).  Caller must have
+already set rdi/rsi/rdx (= argc/argv/envp).  Result lands in rax."
+  (list
+    (nelisp-asm-insn 'call (nelisp-asm-relocation
+                              :symbol func-name
+                              :type 'R_X86_64_PLT32))))
+#+end_src
+
+1 命令だが relocation entry が伴うため elisp 側 wiring ~30 LOC。
+
+** §2.7 byte / utility helpers
+
+- =nelisp-crt0--align-to N= = 4-byte / 8-byte boundary に padding
+- =nelisp-crt0--label-name SYM= = ELF symbol naming convention (=
+  =_start= は特殊、他は =nelisp_= prefix)
+- =nelisp-crt0-block-bytes BLOCK= = =nelisp-asm-assemble= の薄い wrapper
+
+~20 LOC。
+
+** §2.8 全体 LOC 見積
+
+| §   | name                          | 推定 LOC |
+|-----+-------------------------------+----------|
+| 2.2 | =nelisp-crt0-emit-entry=      |       30 |
+| 2.3 | =--unpack-stack=              |       40 |
+| 2.4 | =--syscall-write=             |       15 |
+| 2.5 | =--syscall-exit=              |       15 |
+| 2.6 | =--call-main=                 |       30 |
+| 2.7 | byte / util                   |       20 |
+|-----+-------------------------------+----------|
+|     | *合計*                        |    *150* |
+
+Doc 85 §5.1 の crt0 = 150 elisp と一致。
+
+* §3 platform-specific invariants
+
+** §3.1 x86_64 SysV ABI (Linux)
+
+Process entry state (= execve 直後): =rsp= → argc on stack、他汎用 reg
+は undefined、=rbp= は ABI 上 0 にすべき、DF clear。
+
+Syscall ABI (= function call ABI と異なる、特に第 4 引数が =r10=):
+
+| =rax= | syscall number |
+| =rdi=, =rsi=, =rdx=, =r10=, =r8=, =r9= | arg 1-6 |
+| =rcx=, =r11= | clobbered |
+
+主要 syscall number: =read=0, =write=1, =open=2, =close=3, =mmap=9,
+=exit=60, =exit_group=231.
+
+Call alignment: =call= 直前で =rsp= が 16-byte aligned (= =AND -16= →
+=SUB 8=)、関数 entry では =rsp+8= が 16-aligned (= return address 分)。
+
+** §3.2 arm64 (AArch64) ABI (Linux)
+
+Entry state: =sp= → argc、=x29= (fp) は ABI 上 0、=x0-x30= undefined。
+
+Syscall ABI (AAPCS64): =w8= = syscall number (32-bit)、=x0-x5= = arg
+1-6、=svc #0= で kernel 入。=x0= に戻り値。
+
+主要 syscall number: =read=63, =write=64, =openat=56 (=open= は arm64
+非存在), =close=57, =mmap=222, =exit=93, =exit_group=94.
+
+Call alignment: =sp= は常に 16-byte aligned (= 関数 entry / call とも
+に)、x86_64 のような pre-call adjust 不要。
+
+** §3.3 macOS / Windows is OOS
+
+macOS = Mach-O format + BSD/Mach syscall mixed numbering + =LC_MAIN=
+entry convention、PE = =mainCRTStartup= → =__scrt_common_main_seh= で
+MSVCRT 全依存 + Wow64 syscall 歴代非互換、共に Linux invariants と
+一切共有しない。本 doc §2 は Linux 専用、macOS は "Doc 96 — Phase 48
+candidate"、Windows は Phase 49+ candidate として defer。
+
+* §4 testing strategy
+
+** §4.1 minimum viable test
+
+最初の crt0 SHIPPED gate = 以下 5 行 elisp が動く:
+
+#+begin_src elisp
+;; minimal-write.el — emit a static binary that writes "hi" and exits 0
+(let ((asm  (nelisp-asm-section :name '.text))
+      (rod  (nelisp-asm-section :name '.rodata)))
+  (nelisp-asm-emit-data rod "hi_msg" "hi")
+  (nelisp-crt0-emit-entry "minimal_main"
+    :arch 'x86_64-linux)
+  (nelisp-asm-emit-fn asm "minimal_main"
+    (nelisp-crt0--syscall-write 1 "hi_msg" 2)
+    (nelisp-asm-insn 'mov 'rax 0)
+    (nelisp-asm-insn 'ret))
+  (nelisp-elf-write-binary "/tmp/hi"
+    :sections (list asm rod)
+    :entry "_start"))
+#+end_src
+
+期待 behavior:
+
+#+begin_src bash
+$ /tmp/hi
+hi$ echo $?
+0
+#+end_src
+
+= stdout に "hi" (改行なし) + exit code 0。
+
+** §4.2 ERT 配置
+
+新規 file: =test/nelisp-crt0-tests.el= (= 想定):
+
+| test                                  | 意図                                |
+|---------------------------------------+-------------------------------------|
+| =crt0-emit-entry-x86_64-bytes=        | byte sequence が手書き objdump と bit-identical |
+| =crt0-emit-entry-arm64-bytes=         | 同 arm64                            |
+| =crt0-syscall-write-emits-correct-rax= | =mov rax, 1= が emit される         |
+| =crt0-syscall-exit-emits-correct-rax= | =mov rax, 60= が emit される        |
+| =crt0-stack-alignment-after-entry=    | rsp が 16-byte aligned で main call |
+| =crt0-end-to-end-hi-binary=           | §4.1 シナリオ、=execve= して output 検証 |
+
+end-to-end test の sandbox: =make test-crt0= が =/tmp/hi-$(uuid)= に
+emit → child process exec → stdout capture → exit code check。
+Kernel-dependent 部分は =skip-unless= で (= e.g. =uname -m= に依らない
+test だけ default、kernel ABI test は CI matrix の中で gating)。
+
+** §4.3 tooling validation
+
+=readelf -h= で =Class: ELF64= / =Type: EXEC= / =Entry point address=
+を確認、=objdump -d= で =_start= の disassembly を §2.2 emit pattern
+と照合 (= cross-check that ELF writer + assembler が期待通り wire)。
+
+=strace /tmp/hi= は =execve= → =write(1,"hi",2)= → =exit(0)= の 3 行
+だけで完結すべし (= libc startup の =brk= / =arch_prctl= / =mmap= 等が
+出ないことが "0 libc" の証跡)。
+
+* §5 ROI quantification
+
+** §5.1 LOC 投資 vs 削減
+
+| component                         | LOC |
+|-----------------------------------+-----|
+| *Rust 削減 (= §1.3)*              |     |
+| =bin/anvil-runtime= shell wrapper |  62 |
+| =nelisp-runtime/main.rs= main     |  30 |
+| =nelisp.rs main()= dispatcher     |  40 |
+| Rust std exit / eprintln 経由部   |  20 |
+| *小計 Rust 削減*                  | *152* |
+|-----------------------------------+-----|
+| *elisp 投資 (= §2.8)*             |     |
+| nelisp-crt0-emit-entry            |  30 |
+| --unpack-stack                    |  40 |
+| --syscall-write                   |  15 |
+| --syscall-exit                    |  15 |
+| --call-main                       |  30 |
+| util / byte                       |  20 |
+| *小計 elisp 投資*                 | *150* |
+|-----------------------------------+-----|
+| *Net 投資 (= elisp - Rust)*       | *-2* |
+
+実質投資 ~150 elisp に対して Rust 削減 ~150 LOC、ROI ≈ 1:1 (= Doc 85
+§5.1 表と一致)。Phase 47 全体の中では最も "cleanly 1:1" で trade off
+が見える component。
+
+** §5.2 Phase 47 全体での位置付け
+
+| 着工順 | doc      | 単体 ROI       | 累積効果                                    |
+|--------+----------+----------------+---------------------------------------------|
+| 1      | Doc 91   | 500 elisp / 150 Rust | ELF binary が emit できる (= 実行はまだ) |
+| 2      | Doc 92   | 500 elisp / 0 Rust | x86_64/arm64 機械語が emit できる       |
+| 3      | Doc 93   | 100 elisp / 360 Rust | static link できる、syscall 直接           |
+| *4*    | *Doc 94* | *150 elisp / 150 Rust* | *=./nelisp= が elisp のみで生成される*  |
+| 5      | Doc 95   | 50 elisp / 200 Rust | sexp.rs 削除                                |
+
+Doc 94 完遂 = M4 milestone = "Rust runtime 不要 (= =./nelisp= が elisp
+からのみ生成される)" (Doc 85 §6.2 そのまま)。Doc 95 は cleanup でも
+Phase 47 自体の必須 gate ではない。
+
+** §5.3 Phase 47 closure
+
+Doc 91 + Doc 92 + Doc 93 + Doc 94 が SHIPPED した時点で:
+
+- input = =.el= source files (NeLisp source)
+- output = static-PIE ELF64 binary、kernel から直接 execve 可能
+
+の chain 全体が **Rust 0 LOC** に到達する (= JIT trampoline 自身は
+Phase 48+ で elisp 化、本 Phase の射程外)。
+
+具体的に消える Rust crate:
+- =nelisp-runtime/= 全体 (= 1,147 LOC、Doc 85 §2.4)
+- =build-tool/src/bin/nelisp.rs= (= 243 LOC)
+- =build-tool/src/bin/nelisp-baker.rs= (= 193 LOC、dev-only として
+  暫時残せる)
+- =bin/anvil-runtime= (= 62 LOC、shell)
+
+合計 ~1,645 LOC が elisp ~1,500 LOC に置き換わる (= Doc 85 §5.1 合計
+ratio)。
+
+* §6 risk / unknowns
+
+** §6.1 libc 不在の影響
+
+- =printf= 使えない → =write(2)= raw + 整数 → ASCII 変換を elisp で
+  emit (= Doc 91 / 92 / 93 が独立に解決するが、crt0 が最初に必要に
+  なる)
+- =malloc= / =free= 使えない → Phase 47 の static-PIE binary は
+  =mmap(2)= で heap 確保、free は省略 (= NeLisp は GC、free は GC が
+  =munmap= で行う)
+- =strerror= / =perror= 使えない → errno → string mapping を elisp
+  emit (= optional、stderr に raw errno 数字でも debug 可能)
+
+これらは crt0 の責務ではないが、§4.1 の minimum viable test を組む
+時点で write の代替を持っていないと debug 不可能。crt0 SHIPPED 前に
+=nelisp-crt0--syscall-write= だけは必須。
+
+** §6.2 signal / setjmp / longjmp
+
+- signal handler: NeLisp model に exception (= unwind) は無い、
+  =condition-case= は eval evaluator 内で完結する。signal handler は
+  Phase 47 では emit しない (= kernel default = SIGSEGV → coredump)
+- setjmp / longjmp: GCC throw で使われるが NeLisp は使わない。Phase
+  47 OOS
+
+** §6.3 dynamic loader (=ld-linux-x86-64.so.2=)
+
+static-PIE only (= Ehdr.e_type = ET_DYN, PT_INTERP なし)。Doc 91 ELF
+writer が PT_INTERP を emit しない default なので crt0 側で考慮不要。
+
+将来 dynamic linking が必要になった場合 (= =libc.so= / =libdl.so=
+linked):
+- =PT_INTERP= = =/lib64/ld-linux-x86-64.so.2= emit
+- =DT_NEEDED= entries
+- =.plt= / =.got.plt= section emit
+- crt0 entry が =__libc_start_main= に jump する form に書き換え
+
+= 別 Phase / 別 doc。
+
+** §6.4 kernel ABI version drift
+
+Linux kernel の execve stack layout は ABI として stable だが、稀に:
+- =AT_RANDOM= (= ASLR 用 16-byte) の auxv entry 挿入位置
+- =AT_PHDR= / =AT_PHENT= / =AT_PHNUM= 等の追加 (= LD_PRELOAD 系)
+- =VDSO= = =linux-vdso.so.1= の auxv entry =AT_SYSINFO_EHDR=
+
+がある。crt0 は **auxv を一切 read しない** ことで影響回避 (= Phase
+47 の射程では =__vdso_clock_gettime= 高速化等は不要)。
+
+CI matrix での test:
+- Linux 5.x, 6.x (= mainline)
+- musl-based distro (= alpine) で execve hand-off 確認
+- rootless container (= unprivileged user namespace) での挙動
+
+** §6.5 stack alignment + PIE invariants
+
+x86_64 SysV は "function entry で =rsp+8= が 16-aligned" を要求。kernel
+から =_start= 時点の =rsp= は 16-aligned とは限らないので §2.2 で
+=AND rsp, -16= → =SUB rsp, 8= で確実化。これを忘れると main 内 SSE/AVX
+命令 (=movaps= 等) が SIGSEGV する典型 trap。
+
+PIE 側: Phase 47 は static-PIE only (= ET_DYN + PT_INTERP なし)、命令内
+絶対 address 参照禁止、すべて RIP-relative。=call FUNC_NAME= は
+=R_X86_64_PLT32= relocation で Doc 93 linker が解決。
+
+** §6.6 top risk for future implementer
+
+最大 risk = **stack alignment + auxv layout の kernel-version-specific
+debug**。=AND -16= を忘れると SIGBUS / SIGSEGV が main 関数内で出て
+crt0 ではなく main 側のバグに見える (= debug 1 日浪費の典型)。strace
++ gdb で =_start= 直後の =rsp= が 16-byte boundary かを最初に確認。
+
+* §7 implementation phases
+
+Phase 47 の crt0 component を 3 sub-stage に分解:
+
+** §7.1 §94.a — x86_64 Linux entry + write + exit
+
+scope:
+- =nelisp-crt0-emit-entry= (= §2.2、x86_64 only)
+- =nelisp-crt0--syscall-write= (= §2.4)
+- =nelisp-crt0--syscall-exit= (= §2.5)
+- =nelisp-crt0--call-main= (= §2.6、 R_X86_64_PLT32 relocation)
+- §4.1 minimum viable test = =/tmp/hi=
+
+LOC: ~90 elisp
+工数: 2-3 day (= Doc 91 / 92 / 93 SHIPPED 前提)
+gate: =/tmp/hi= が "hi" を出力 + exit code 0、=strace= に libc 呼び出し
+0、=readelf= で =Type: DYN (Position-Independent Executable file)=
+
+** §7.2 §94.b — arm64 Linux entry
+
+scope:
+- =nelisp-crt0-emit-entry= の =:arch 'arm64-linux= 分岐 (= §2.2 + §2.3)
+- arm64 syscall number table (= §3.2)
+- AAPCS64 alignment 検証
+
+LOC: +30 elisp (= §94.a の data-driven 拡張、x86_64 と code path 共有)
+工数: 1-2 day
+gate: cross-compile / qemu-aarch64 で同じ /tmp/hi binary を arm64 用に
+emit、output / exit code 一致
+
+** §7.3 §94.c — argv / envp / auxv unpacking
+
+scope:
+- =nelisp-crt0--unpack-stack= の full impl (= §2.3、~40 LOC)
+- argv pointer table を main の =rsi= に load
+- envp 末尾の NULL terminator を超えて auxv pointer を =r10= or 第 4
+  arg slot に渡す option
+- auxv reader stub (= optional、=AT_PAGESZ= 等を NeLisp runtime に
+  渡したい場合のみ)
+
+LOC: ~30 elisp (auxv stub 込)
+工数: 1-2 day
+gate: =./nelisp eval '(message "%S" command-line-args)'= が argv を
+正しく引いてくる、=getenv= 等価 builtin が envp 経由で動く
+
+** §7.4 sub-stage 合計
+
+| stage  | LOC | day |
+|--------+-----+-----|
+| §94.a  |  90 | 2-3 |
+| §94.b  |  30 | 1-2 |
+| §94.c  |  30 | 1-2 |
+|--------+-----+-----|
+| *合計* | *150* | *4-7 day* |
+
+Doc 85 §3.4.2 "150 elisp + 50 行 inline asm、~5 day" と整合。
+
+** §7.5 SHIPPED 判定
+
+- M4 (= Doc 85 §6.2) 判定 = §94.a + §94.c で達成
+- §94.b は arm64 host (= Apple Silicon dev / ARM CI runner) を持つ
+  contributor にとっての unblocker、x86_64-only release では gate 外
+
+* §8 references
+
+** §8.1 sibling docs
+
+- Doc 85 = =docs/design/85-phase-47-feasibility-spike.org= (parent、
+  §3.4 / §5.1 / §6.1 で crt0 elisp ~150 LOC を articulate)
+- Doc 91 = =docs/design/91-phase-47-elf-writer-elisp.org= (DRAFT
+  SHIPPED、ELF binary serialization、crt0 output の consumer)
+- Doc 92 = =docs/design/92-phase-47-macro-assembler-elisp.org= (sibling
+  DRAFT、x86_64 / arm64 instruction encoder、crt0 が直接利用)
+- Doc 93 = =docs/design/93-phase-47-static-linker-elisp.org= (sibling
+  DRAFT、symbol resolution + relocation apply、=R_X86_64_PLT32=
+  解決を担当)
+- Doc 95 = =docs/design/95-phase-47-sexp-dsl-elisp.org= (DRAFT SHIPPED、
+  Sexp layout DSL、Phase 47 の最終 cleanup)
+
+** §8.2 external references
+
+- Linux execve(2) = stack layout / argv / envp / auxv の規定
+  =man 2 execve= → "Initial process stack" 節
+- man 7 elf = ELF64 file format
+- System V Application Binary Interface AMD64 Architecture Processor
+  Supplement (= "x86-64 psABI") = §3.4 calling convention、§3.4.4
+  process initialization
+- ARM Architecture Procedure Call Standard for the Arm 64-bit
+  Architecture (= AAPCS64) = arm64 register convention
+- musl =arch/x86_64/crt_arch.h= + =crt/crt1.c= = ~20 行 reference
+  implementation
+- glibc =sysdeps/x86_64/start.S= = 完全版 reference (libc 連携あり)
+
+** §8.3 prior art (Rust binary entry)
+
+- =bin/anvil-runtime= (62 LOC bash) — Phase 47 で削除
+- =nelisp-runtime/src/main.rs= (130 LOC Rust) — Phase 47 で削除
+- =build-tool/src/bin/nelisp.rs= (243 LOC Rust) — main() を crt0 elisp
+  emit に置換
+
+** §8.4 NeLisp internal
+
+- =nelisp-emacs/scripts/anvil-runtime-shell-loop.el= = Phase B5 で
+  shipped した shell-loop driver、Phase 47 後は crt0 elisp が直接
+  =scripts/anvil-runtime-shell-loop.el= を =eval-image= 経由で起動
+- Phase B6 (= 2026-05-09) = JSON hash-table encode + byte-precise
+  body reader = standalone NeLisp で MCP 3-frame round-trip 完走 (=
+  crt0 SHIPPED 後の最終 e2e wire)
