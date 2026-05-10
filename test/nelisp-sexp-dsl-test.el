@@ -1,4 +1,4 @@
-;;; nelisp-sexp-dsl-test.el --- ERT tests for Doc 95 §95.a Sexp DSL  -*- lexical-binding: t; -*-
+;;; nelisp-sexp-dsl-test.el --- ERT tests for Doc 95 §95.a-c Sexp DSL  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -565,6 +565,339 @@
     (should-error (nelisp-sexp-as-cons v) :type 'wrong-type-argument)
     (should-error (nelisp-sexp-as-vector r) :type 'wrong-type-argument)
     (should-error (nelisp-sexp-as-record c) :type 'wrong-type-argument)))
+
+;;; --- §95.c byte-layout serializer round-trip tests ===============
+;;
+;; Per Doc 95 §8 §95.c acceptance: round-trip for each of 13 variants,
+;; i64 corner cases (most-positive-fixnum etc.), NaN preservation, +/-
+;; zero, +/- inf, subnormal float, UTF-8 multibyte, deep cons (= 100
+;; elements), nested vector/cons/vector, truncated input → signal,
+;; unknown tag → signal.  Equality uses `nelisp-sexp-eq' because plist
+;; tail order is implementation-defined but structural identity is the
+;; wire-format contract.
+
+(defmacro nelisp-sexp-dsl-test--should-roundtrip (sexp)
+  "Assert that SEXP survives `nelisp-sexp-bytes-round-trip-p'."
+  `(should (nelisp-sexp-bytes-round-trip-p ,sexp)))
+
+(ert-deftest nelisp-sexp-dsl-bytes-nil-round-trip ()
+  (nelisp-sexp-dsl-test--should-roundtrip (nelisp-sexp-make-nil))
+  (let ((bytes (nelisp-sexp-write-bytes (nelisp-sexp-make-nil))))
+    (should (= 1 (length bytes)))
+    (should (= 0 (aref bytes 0)))))
+
+(ert-deftest nelisp-sexp-dsl-bytes-t-round-trip ()
+  (nelisp-sexp-dsl-test--should-roundtrip (nelisp-sexp-make-t))
+  (let ((bytes (nelisp-sexp-write-bytes (nelisp-sexp-make-t))))
+    (should (= 1 (length bytes)))
+    (should (= 1 (aref bytes 0)))))
+
+(ert-deftest nelisp-sexp-dsl-bytes-int-zero ()
+  (nelisp-sexp-dsl-test--should-roundtrip (nelisp-sexp-make-int 0))
+  (let ((bytes (nelisp-sexp-write-bytes (nelisp-sexp-make-int 0))))
+    (should (= 9 (length bytes)))
+    (should (= 2 (aref bytes 0)))
+    (dotimes (i 8) (should (= 0 (aref bytes (1+ i)))))))
+
+(ert-deftest nelisp-sexp-dsl-bytes-int-one-minus-one ()
+  (nelisp-sexp-dsl-test--should-roundtrip (nelisp-sexp-make-int 1))
+  (nelisp-sexp-dsl-test--should-roundtrip (nelisp-sexp-make-int -1))
+  (let ((b1 (nelisp-sexp-write-bytes (nelisp-sexp-make-int 1)))
+        (bm1 (nelisp-sexp-write-bytes (nelisp-sexp-make-int -1))))
+    (should (= 1 (aref b1 1)))
+    (dotimes (i 8) (should (= #xFF (aref bm1 (1+ i)))))))
+
+(ert-deftest nelisp-sexp-dsl-bytes-int-corners ()
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-int most-positive-fixnum))
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-int most-negative-fixnum))
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-int (1- (ash 1 63))))
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-int (- (ash 1 63)))))
+
+(ert-deftest nelisp-sexp-dsl-bytes-int-out-of-range ()
+  ;; i64 max + 1 = 2^63, just over range.
+  (should-error (nelisp-sexp-write-bytes
+                 (nelisp-sexp-make-int (ash 1 63)))
+                :type 'args-out-of-range)
+  ;; i64 min - 1.
+  (should-error (nelisp-sexp-write-bytes
+                 (nelisp-sexp-make-int (1- (- (ash 1 63)))))
+                :type 'args-out-of-range))
+
+(ert-deftest nelisp-sexp-dsl-bytes-float-zero ()
+  (nelisp-sexp-dsl-test--should-roundtrip (nelisp-sexp-make-float 0.0))
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-float -0.0))
+  (let* ((bz (nelisp-sexp-write-bytes (nelisp-sexp-make-float 0.0)))
+         (back (car (nelisp-sexp-read-bytes bz 0)))
+         (bnz (nelisp-sexp-write-bytes (nelisp-sexp-make-float -0.0)))
+         (back-neg (car (nelisp-sexp-read-bytes bnz 0))))
+    (should (= 0.0 (nelisp-sexp-float-value back)))
+    (should (< (copysign 1.0 (nelisp-sexp-float-value back-neg)) 0))))
+
+(ert-deftest nelisp-sexp-dsl-bytes-float-one ()
+  (nelisp-sexp-dsl-test--should-roundtrip (nelisp-sexp-make-float 1.0))
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-float -1.0))
+  (nelisp-sexp-dsl-test--should-roundtrip (nelisp-sexp-make-float 1.5))
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-float 3.141592653589793)))
+
+(ert-deftest nelisp-sexp-dsl-bytes-float-inf ()
+  (let ((inf (let ((x (expt 10.0 308))) (* x x))))
+    (nelisp-sexp-dsl-test--should-roundtrip
+     (nelisp-sexp-make-float inf))
+    (nelisp-sexp-dsl-test--should-roundtrip
+     (nelisp-sexp-make-float (- inf)))))
+
+(ert-deftest nelisp-sexp-dsl-bytes-float-nan-preserved ()
+  (let* ((nan (/ 0.0 0.0))
+         (sexp (nelisp-sexp-make-float nan))
+         (bytes (nelisp-sexp-write-bytes sexp))
+         (back (car (nelisp-sexp-read-bytes bytes 0))))
+    (should (isnan (nelisp-sexp-float-value back)))))
+
+(ert-deftest nelisp-sexp-dsl-bytes-float-subnormal ()
+  ;; Smallest positive subnormal = 5e-324 in IEEE 754.
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-float 5e-324)))
+
+(ert-deftest nelisp-sexp-dsl-bytes-float-large ()
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-float 1e100))
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-float 1.7976931348623157e308)))
+
+(ert-deftest nelisp-sexp-dsl-bytes-symbol-ascii ()
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-symbol "foo"))
+  (let ((bytes (nelisp-sexp-write-bytes
+                (nelisp-sexp-make-symbol "foo"))))
+    (should (= 4 (aref bytes 0)))
+    (should (= 3 (aref bytes 1)))))
+
+(ert-deftest nelisp-sexp-dsl-bytes-symbol-empty ()
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-symbol "")))
+
+(ert-deftest nelisp-sexp-dsl-bytes-symbol-multibyte ()
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-symbol "日本語"))
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-symbol "🎉")))
+
+(ert-deftest nelisp-sexp-dsl-bytes-str-ascii ()
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-str "hello, world"))
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-str "")))
+
+(ert-deftest nelisp-sexp-dsl-bytes-str-multibyte ()
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-str "日本語テスト 🎉 αβγ"))
+  ;; Verify the wire bytes themselves contain UTF-8 multibyte encoding.
+  (let* ((sexp (nelisp-sexp-make-str "あ"))
+         (bytes (nelisp-sexp-write-bytes sexp)))
+    (should (= 5 (aref bytes 0)))            ; tag = 0x05 = Str
+    (should (= 3 (aref bytes 1)))            ; UTF-8 "あ" = 3 bytes
+    (should (= #xE3 (aref bytes 5)))))
+
+(ert-deftest nelisp-sexp-dsl-bytes-mut-str-round-trip ()
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-mut-str "mutable text"))
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-mut-str "日本"))
+  ;; Tag byte must distinguish from Str.
+  (should (= 6 (aref (nelisp-sexp-write-bytes
+                      (nelisp-sexp-make-mut-str "x"))
+                     0))))
+
+(ert-deftest nelisp-sexp-dsl-bytes-cons-pair ()
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-cons (nelisp-sexp-make-int 1)
+                          (nelisp-sexp-make-int 2))))
+
+(ert-deftest nelisp-sexp-dsl-bytes-cons-improper ()
+  ;; Improper tail = non-Nil/non-Cons CDR; wire format does not care.
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-cons (nelisp-sexp-make-symbol "a")
+                          (nelisp-sexp-make-int 99))))
+
+(ert-deftest nelisp-sexp-dsl-bytes-cons-100-element-list ()
+  (let ((acc (nelisp-sexp-make-nil)))
+    (dotimes (i 100)
+      (setq acc (nelisp-sexp-make-cons (nelisp-sexp-make-int i) acc)))
+    (nelisp-sexp-dsl-test--should-roundtrip acc)
+    (should (= 100 (nelisp-sexp-cons-length acc)))))
+
+(ert-deftest nelisp-sexp-dsl-bytes-vector-empty ()
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-vector nil)))
+
+(ert-deftest nelisp-sexp-dsl-bytes-vector-mixed ()
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-vector
+    (list (nelisp-sexp-make-int 7)
+          (nelisp-sexp-make-str "x")
+          (nelisp-sexp-make-symbol "sym")
+          (nelisp-sexp-make-t)
+          (nelisp-sexp-make-nil)))))
+
+(ert-deftest nelisp-sexp-dsl-bytes-char-table-empty ()
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-char-table (nelisp-sexp-make-nil) nil)))
+
+(ert-deftest nelisp-sexp-dsl-bytes-char-table-with-extras ()
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-char-table
+    (nelisp-sexp-make-int 0)
+    (list (nelisp-sexp-make-symbol "a")
+          (nelisp-sexp-make-str "b")
+          (nelisp-sexp-make-int 42)))))
+
+(ert-deftest nelisp-sexp-dsl-bytes-bool-vector-zero-len ()
+  ;; Len=0 has no bit storage so :init is unrecoverable from wire —
+  ;; round-trip yields :init=nil regardless of input.  Documented
+  ;; limitation; semantic difference between (0 . nil) and (0 . t) is
+  ;; zero since there are no bits to inspect.
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-bool-vector 0 nil))
+  (let* ((bytes (nelisp-sexp-write-bytes
+                 (nelisp-sexp-make-bool-vector 0 t)))
+         (decoded (car (nelisp-sexp-read-bytes bytes 0))))
+    (should (nelisp-sexp-bool-vector-p decoded))
+    (should (= 0 (plist-get decoded :len)))))
+
+(ert-deftest nelisp-sexp-dsl-bytes-bool-vector-small ()
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-bool-vector 1 nil))
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-bool-vector 1 t))
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-bool-vector 8 t))
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-bool-vector 17 nil))
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-bool-vector 64 t)))
+
+(ert-deftest nelisp-sexp-dsl-bytes-cell-round-trip ()
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-cell (nelisp-sexp-make-int 13)))
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-cell
+    (nelisp-sexp-make-cons (nelisp-sexp-make-symbol "x")
+                           (nelisp-sexp-make-nil)))))
+
+(ert-deftest nelisp-sexp-dsl-bytes-record-round-trip ()
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-record 'point
+                            (list (nelisp-sexp-make-int 3)
+                                  (nelisp-sexp-make-int 5))))
+  (nelisp-sexp-dsl-test--should-roundtrip
+   (nelisp-sexp-make-record 'empty nil)))
+
+(ert-deftest nelisp-sexp-dsl-bytes-nested-vec-cons-vec ()
+  ;; Vector of Cons of Vector — exercises arity / length plumbing.
+  (let ((deep
+         (nelisp-sexp-make-vector
+          (list
+           (nelisp-sexp-make-cons
+            (nelisp-sexp-make-vector
+             (list (nelisp-sexp-make-int 1)
+                   (nelisp-sexp-make-int 2)))
+            (nelisp-sexp-make-vector
+             (list (nelisp-sexp-make-symbol "inner-cdr"))))
+           (nelisp-sexp-make-cell
+            (nelisp-sexp-make-str "nested"))))))
+    (nelisp-sexp-dsl-test--should-roundtrip deep)))
+
+(ert-deftest nelisp-sexp-dsl-bytes-truncated-tag ()
+  (should-error (nelisp-sexp-read-bytes "" 0)
+                :type 'nelisp-sexp-truncated))
+
+(ert-deftest nelisp-sexp-dsl-bytes-truncated-int ()
+  ;; tag=Int, but only 3 i64 bytes provided.
+  (should-error (nelisp-sexp-read-bytes (unibyte-string 2 0 0 0) 0)
+                :type 'nelisp-sexp-truncated))
+
+(ert-deftest nelisp-sexp-dsl-bytes-truncated-float ()
+  (should-error (nelisp-sexp-read-bytes (unibyte-string 3 0 0 0) 0)
+                :type 'nelisp-sexp-truncated))
+
+(ert-deftest nelisp-sexp-dsl-bytes-truncated-utf8-len ()
+  ;; tag=Symbol, 2 length bytes (incomplete u32).
+  (should-error (nelisp-sexp-read-bytes (unibyte-string 4 0 0) 0)
+                :type 'nelisp-sexp-truncated))
+
+(ert-deftest nelisp-sexp-dsl-bytes-truncated-utf8-content ()
+  ;; tag=Str, len=5, but only 1 byte content.
+  (should-error
+   (nelisp-sexp-read-bytes
+    (unibyte-string 5 5 0 0 0 #x61) 0)
+   :type 'nelisp-sexp-truncated))
+
+(ert-deftest nelisp-sexp-dsl-bytes-truncated-bool-vector ()
+  ;; tag=BoolVector, len=8 → needs 1 byte, none supplied.
+  (should-error
+   (nelisp-sexp-read-bytes (unibyte-string #x0A 8 0 0 0) 0)
+   :type 'nelisp-sexp-truncated))
+
+(ert-deftest nelisp-sexp-dsl-bytes-unknown-tag ()
+  (should-error (nelisp-sexp-read-bytes (unibyte-string #xFF) 0)
+                :type 'nelisp-sexp-unknown-tag)
+  (should-error (nelisp-sexp-read-bytes (unibyte-string #x0D) 0)
+                :type 'nelisp-sexp-unknown-tag))
+
+(ert-deftest nelisp-sexp-dsl-bytes-equal-p ()
+  (should (nelisp-sexp-bytes-equal-p
+           (nelisp-sexp-make-int 42)
+           (nelisp-sexp-make-int 42)))
+  (should-not (nelisp-sexp-bytes-equal-p
+               (nelisp-sexp-make-int 42)
+               (nelisp-sexp-make-int 43))))
+
+(ert-deftest nelisp-sexp-dsl-bytes-read-returns-new-pos ()
+  ;; Sequential decode via NEW-POS = continue reading from same buffer.
+  (let* ((b1 (nelisp-sexp-write-bytes (nelisp-sexp-make-int 7)))
+         (b2 (nelisp-sexp-write-bytes (nelisp-sexp-make-int 8)))
+         (cat (concat b1 b2))
+         (first (nelisp-sexp-read-bytes cat 0))
+         (second (nelisp-sexp-read-bytes cat (cdr first))))
+    (should (= 7 (nelisp-sexp-int-value (car first))))
+    (should (= 8 (nelisp-sexp-int-value (car second))))
+    (should (= (length cat) (cdr second)))))
+
+(ert-deftest nelisp-sexp-dsl-bytes-record-malformed-type-sym ()
+  ;; tag=Record + tag=Int (= not a Symbol) → malformed signal.
+  (let ((b (unibyte-string #x0C #x02 1 0 0 0 0 0 0 0 0 0 0 0)))
+    (should-error (nelisp-sexp-read-bytes b 0)
+                  :type 'nelisp-sexp-malformed-record)))
+
+(ert-deftest nelisp-sexp-dsl-bytes-13-variant-coverage ()
+  ;; Single test that exercises every variant via round-trip in one
+  ;; pass — coverage smoke test that nothing was forgotten.
+  (let ((cases
+         (list (nelisp-sexp-make-nil)
+               (nelisp-sexp-make-t)
+               (nelisp-sexp-make-int 0)
+               (nelisp-sexp-make-float 3.14)
+               (nelisp-sexp-make-symbol "sym")
+               (nelisp-sexp-make-str "str")
+               (nelisp-sexp-make-mut-str "mut")
+               (nelisp-sexp-make-cons (nelisp-sexp-make-int 1)
+                                      (nelisp-sexp-make-nil))
+               (nelisp-sexp-make-vector
+                (list (nelisp-sexp-make-int 2)))
+               (nelisp-sexp-make-char-table (nelisp-sexp-make-nil) nil)
+               (nelisp-sexp-make-bool-vector 3 t)
+               (nelisp-sexp-make-cell (nelisp-sexp-make-int 9))
+               (nelisp-sexp-make-record 'r nil))))
+    (should (= 13 (length cases)))
+    (dolist (c cases)
+      (should (nelisp-sexp-bytes-round-trip-p c)))))
 
 (provide 'nelisp-sexp-dsl-test)
 

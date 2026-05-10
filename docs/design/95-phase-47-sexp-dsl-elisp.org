@@ -1036,6 +1036,62 @@ landed on top of §95.a, same file:
 - §95.c byte-layout serializer remains intentionally deferred —
   that is the big one and is the next sub-stage per §8.6 plan.
 
+** §95.c SHIPPED (2026-05-11)
+
+Freestanding wire-format byte serializer landed on top of §95.a/b
+in the same =lisp/nelisp-sexp-dsl.el= file:
+
+- 13 tag-byte constants (= =nelisp-sexp-wire-tag-{nil,t,int,float,
+  symbol,str,mut-str,cons,vector,char-table,bool-vector,cell,record}=)
+- low-level codecs:
+  - =--write-u32= / =--read-u32= (= 4-byte LE)
+  - =--write-i64= / =--read-i64= (= 8-byte LE two's complement, signals
+    =args-out-of-range= for >2^63-1 or <-2^63)
+  - =--write-f64= / =--read-f64= (= IEEE 754 binary64 LE; hand-rolled
+    =--f64-to-bits= / =--f64-from-bits= covers normal / subnormal /
+    +/-zero / +/-Infinity / NaN with implicit-1 mantissa shift via
+    =frexp=)
+  - =--write-utf8= / =--read-utf8= (= u32 LE length + UTF-8 bytes
+    encoded with =utf-8-unix= for clean multibyte round-trip)
+- top-level entry points:
+  - =nelisp-sexp-write-bytes SEXP= → unibyte string
+  - =nelisp-sexp-read-bytes BYTES &optional POS= → =(SEXP . NEW-POS)=
+- validation:
+  - =nelisp-sexp-bytes-round-trip-p SEXP= via structural =nelisp-sexp-eq=
+  - =nelisp-sexp-bytes-equal-p A B= via raw byte equality
+- error symbols: =nelisp-sexp-truncated=, =nelisp-sexp-unknown-tag=,
+  =nelisp-sexp-malformed-record= (= =define-error= so =should-error=
+  can match by =:type=)
+
+Wire format is *not* the §3 Rust 32-byte fixed layout — that is the
+JIT bridge concern reserved for §95.d.  This §95.c serializer is the
+self-describing variable-length wire format that pairs with elisp
+buffers + ert; the §95.d bridge will translate this stream to the
+fixed Rust layout on the boundary.
+
+- =test/nelisp-sexp-dsl-test.el= — 41 new ert cases:
+  - round-trip per variant (= 13 explicit + 1 coverage smoke =
+    14 cases)
+  - i64 corners (= =most-positive/negative-fixnum=, =2^63-1=, =-2^63=,
+    =0=, =1=, =-1=) + i64 out-of-range signal
+  - float corners (= +/-zero with sign preservation, +/-1, +/-inf,
+    NaN preserved via =isnan=, smallest subnormal 5e-324, 1e+100,
+    DBL_MAX)
+  - UTF-8 multibyte (= "日本語", "🎉", "αβγ", explicit byte check for
+    "あ" = 3 bytes UTF-8)
+  - deep cons (= 100-element list) + nested vec-cons-vec
+  - truncated input (= tag / int / float / utf8-len / utf8-content /
+    bool-vector) → =nelisp-sexp-truncated= signal
+  - unknown tag (= 0xFF, 0x0D) → =nelisp-sexp-unknown-tag= signal
+  - malformed record (= type-sym slot is not a Symbol) signal
+  - sequential decode via =NEW-POS= continuation
+  - bool-vector len=0 documented limitation (= no bit storage so
+    =:init= unrecoverable from wire; symbolically zero info loss)
+- =make compile= 0 warning, =ert= 107/107 (= 66 §95.a/b carried +
+  41 new §95.c).
+- No Rust changes, no =nelisp-baker= STDLIB_FILES registration —
+  freestanding wire format per task spec, JIT bridge deferred to §95.d.
+
 ----
 
 End of Doc 95 DRAFT.

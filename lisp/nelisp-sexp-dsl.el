@@ -1,4 +1,4 @@
-;;; nelisp-sexp-dsl.el --- Phase 47 Sexp layout DSL (§95.a + §95.b)  -*- lexical-binding: t; -*-
+;;; nelisp-sexp-dsl.el --- Phase 47 Sexp layout DSL (§95.a-c)  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -690,6 +690,473 @@ so deep-eq and eq are operationally identical.")
   "Return SEXP itself when it is `Sexp::Record', else signal."
   (nelisp-sexp--check #'nelisp-sexp-record-p sexp 'nelisp-sexp-record-p)
   sexp)
+
+;;; --- §95.c byte-layout serializer =================================
+;;
+;; Freestanding wire format: serialize the 13 `Sexp' variants into a
+;; self-describing unibyte byte string with single-byte tag + payload,
+;; and read it back losslessly.  The format is *not* the §3 32-byte
+;; fixed Rust layout — that pins to the JIT trampoline ABI and is the
+;; concern of §95.d (= JIT bridge).  Wire format here is variable-
+;; length and minimises bytes per value so deep trees stay compact.
+;;
+;; Tag byte (low 8 bits, big-endian by inspection / little-endian by
+;; the i64/u32/f64 payloads that follow):
+;;
+;;   0x00  Nil       (no payload)
+;;   0x01  T         (no payload)
+;;   0x02  Int       i64 LE (8 bytes, two's complement)
+;;   0x03  Float     IEEE 754 binary64 LE (8 bytes)
+;;   0x04  Symbol    u32 LE len + UTF-8 name
+;;   0x05  Str       u32 LE len + UTF-8 content
+;;   0x06  MutStr    u32 LE len + UTF-8 content
+;;   0x07  Cons      <CAR> <CDR>
+;;   0x08  Vector    u32 LE len + <ELT> x len
+;;   0x09  CharTable <DEFAULT> u32 LE len + <EXTRA> x len
+;;   0x0A  BoolVector u32 LE len + ceil(len/8) bytes packed LSB-first
+;;   0x0B  Cell      <INNER>
+;;   0x0C  Record    <TYPE-SYM-as-Sexp::Symbol> u32 LE len + <SLOT> x len
+;;
+;; Round-trip: `(equal SEXP (car (read-bytes (write-bytes SEXP) 0)))'
+;; for every well-formed SEXP, modulo plist key order (= the §95.a
+;; `nelisp-sexp-eq' compares :value / children, not raw plist tails).
+;; All ert in §95.c additions check via `nelisp-sexp-eq', not `equal'.
+
+;;; --- §95.c tag byte constants -------------------------------------
+
+(defconst nelisp-sexp-wire-tag-nil         #x00)
+(defconst nelisp-sexp-wire-tag-t           #x01)
+(defconst nelisp-sexp-wire-tag-int         #x02)
+(defconst nelisp-sexp-wire-tag-float       #x03)
+(defconst nelisp-sexp-wire-tag-symbol      #x04)
+(defconst nelisp-sexp-wire-tag-str         #x05)
+(defconst nelisp-sexp-wire-tag-mut-str     #x06)
+(defconst nelisp-sexp-wire-tag-cons        #x07)
+(defconst nelisp-sexp-wire-tag-vector      #x08)
+(defconst nelisp-sexp-wire-tag-char-table  #x09)
+(defconst nelisp-sexp-wire-tag-bool-vector #x0A)
+(defconst nelisp-sexp-wire-tag-cell        #x0B)
+(defconst nelisp-sexp-wire-tag-record      #x0C)
+
+;;; --- §95.c primitive byte helpers ---------------------------------
+;;
+;; The byte buffer is grown by `nelisp-sexp--emit-bytes' which appends
+;; a unibyte string to BUF (a list of unibyte strings reversed at the
+;; end).  Readers consume from a position cursor; helpers return
+;; `(VALUE . NEW-POS)' so callers thread POS through dispatch.
+
+(defun nelisp-sexp--emit-byte (buf b)
+  "Append single byte B to BUF (= a list of unibyte strings, reversed).
+Returns the updated cons cell at the head of BUF; callers store the
+result back into BUF."
+  (cons (unibyte-string (logand b #xFF)) buf))
+
+(defun nelisp-sexp--write-u32 (buf val)
+  "Emit u32 LE encoding of VAL into BUF, returning updated BUF.
+VAL must be in [0, 2^32-1]; out-of-range signals `args-out-of-range'."
+  (unless (and (integerp val) (>= val 0) (< val (ash 1 32)))
+    (signal 'args-out-of-range (list 'u32 val)))
+  (cons (unibyte-string (logand val           #xFF)
+                        (logand (ash val  -8) #xFF)
+                        (logand (ash val -16) #xFF)
+                        (logand (ash val -24) #xFF))
+        buf))
+
+(defun nelisp-sexp--read-u32 (bytes pos)
+  "Read u32 LE from BYTES at POS, returning (VAL . NEW-POS).
+Signals `nelisp-sexp-truncated' when fewer than 4 bytes remain."
+  (when (> (+ pos 4) (length bytes))
+    (signal 'nelisp-sexp-truncated (list 'u32 pos (length bytes))))
+  (cons (logior (aref bytes pos)
+                (ash (aref bytes (+ pos 1))  8)
+                (ash (aref bytes (+ pos 2)) 16)
+                (ash (aref bytes (+ pos 3)) 24))
+        (+ pos 4)))
+
+(defun nelisp-sexp--write-i64 (buf val)
+  "Emit i64 LE two's-complement encoding of VAL into BUF.
+VAL must fit signed 64-bit; out-of-range signals `args-out-of-range'."
+  (unless (integerp val)
+    (signal 'wrong-type-argument (list 'integerp val)))
+  (when (or (> val (1- (ash 1 63))) (< val (- (ash 1 63))))
+    (signal 'args-out-of-range (list 'i64 val)))
+  (let ((u (if (< val 0) (+ val (ash 1 64)) val)))
+    (cons (unibyte-string (logand u           #xFF)
+                          (logand (ash u  -8) #xFF)
+                          (logand (ash u -16) #xFF)
+                          (logand (ash u -24) #xFF)
+                          (logand (ash u -32) #xFF)
+                          (logand (ash u -40) #xFF)
+                          (logand (ash u -48) #xFF)
+                          (logand (ash u -56) #xFF))
+          buf)))
+
+(defun nelisp-sexp--read-i64 (bytes pos)
+  "Read i64 LE two's-complement from BYTES at POS.
+Returns (VAL . NEW-POS).  Signals `nelisp-sexp-truncated' when fewer
+than 8 bytes remain."
+  (when (> (+ pos 8) (length bytes))
+    (signal 'nelisp-sexp-truncated (list 'i64 pos (length bytes))))
+  (let ((u (logior (aref bytes pos)
+                   (ash (aref bytes (+ pos 1))  8)
+                   (ash (aref bytes (+ pos 2)) 16)
+                   (ash (aref bytes (+ pos 3)) 24)
+                   (ash (aref bytes (+ pos 4)) 32)
+                   (ash (aref bytes (+ pos 5)) 40)
+                   (ash (aref bytes (+ pos 6)) 48)
+                   (ash (aref bytes (+ pos 7)) 56))))
+    (cons (if (>= u (ash 1 63)) (- u (ash 1 64)) u)
+          (+ pos 8))))
+
+(defun nelisp-sexp--f64-to-bits (f)
+  "Return u64 IEEE 754 binary64 bit pattern of float F.
+Hand-rolled because elisp has no `float-to-bits' built-in.  Handles
++/-zero, +/-inf, NaN (canonical quiet NaN with payload bit), normal,
+and subnormal values."
+  (cond
+   ;; NaN: emit canonical quiet NaN (sign 0, exp all-1, mantissa MSB 1).
+   ((isnan f) #x7FF8000000000000)
+   ;; +/- Infinity: sign bit + exp all-1, mantissa 0.
+   ((and (> f 0) (= f (* f 2.0))) #x7FF0000000000000)
+   ((and (< f 0) (= f (* f 2.0))) #xFFF0000000000000)
+   ;; +/- Zero: sign bit only.
+   ((= f 0.0)
+    (if (< (copysign 1.0 f) 0) #x8000000000000000 0))
+   (t
+    (let* ((sign-bit (if (< f 0) 1 0))
+           (af (abs f))
+           (fe (frexp af))
+           (m (car fe))               ; normalised mantissa in [0.5,1)
+           (e (cdr fe))               ; binary exponent (af = m * 2^e)
+           ;; IEEE has implicit-1 bit at exponent bias 1023, mantissa
+           ;; in [1.0, 2.0).  frexp gives [0.5, 1.0), so shift e by 1.
+           (unbiased-e (1- e))
+           (biased-e (+ unbiased-e 1023)))
+      (cond
+       ;; Overflow → infinity (treated above already, but guard).
+       ((>= biased-e #x7FF)
+        (logior (ash sign-bit 63) #x7FF0000000000000))
+       ;; Normal: 0 < biased-e < 2047.
+       ((> biased-e 0)
+        (let* ((mant-scaled (* m 2.0))    ; in [1.0, 2.0)
+               (frac (- mant-scaled 1.0)) ; in [0.0, 1.0)
+               (mantissa (truncate (* frac (expt 2.0 52)))))
+          (logior (ash sign-bit 63)
+                  (ash biased-e 52)
+                  (logand mantissa #xFFFFFFFFFFFFF))))
+       ;; Subnormal: biased-e <= 0; shift mantissa down accordingly.
+       (t
+        (let* ((shift (- 1 biased-e))    ; how many extra bits to drop
+               (mant-scaled (* m 2.0))   ; [1.0, 2.0)
+               (mantissa (truncate (* mant-scaled
+                                      (expt 2.0 (- 52 shift))))))
+          (logior (ash sign-bit 63)
+                  (logand mantissa #xFFFFFFFFFFFFF)))))))))
+
+(defun nelisp-sexp--f64-from-bits (u)
+  "Decode u64 IEEE 754 binary64 bit pattern U back to a float.
+Inverse of `nelisp-sexp--f64-to-bits' for finite + zero values; for
+NaN any non-zero mantissa with all-1 exponent decodes to (/ 0.0 0.0)."
+  (let* ((sign (ash u -63))
+         (biased-e (logand (ash u -52) #x7FF))
+         (mantissa (logand u #xFFFFFFFFFFFFF))
+         (sign-mul (if (zerop sign) 1.0 -1.0)))
+    (cond
+     ;; All-1 exponent: Infinity or NaN.
+     ((= biased-e #x7FF)
+      (if (zerop mantissa)
+          (* sign-mul (expt 10.0 400))      ; produces +/- inf
+        (/ 0.0 0.0)))                       ; NaN
+     ;; All-0 exponent: zero or subnormal.
+     ((zerop biased-e)
+      (if (zerop mantissa)
+          (if (zerop sign) 0.0 -0.0)
+        (* sign-mul
+           (* mantissa (expt 2.0 (- 1 1023 52))))))
+     ;; Normal: implicit leading 1 bit at position 52.
+     (t
+      (let* ((mant-frac (/ (float mantissa) (expt 2.0 52)))
+             (significand (+ 1.0 mant-frac))
+             (unbiased-e (- biased-e 1023)))
+        (* sign-mul (ldexp significand unbiased-e)))))))
+
+(defun nelisp-sexp--write-f64 (buf val)
+  "Emit IEEE 754 binary64 LE encoding of float VAL into BUF."
+  (unless (floatp val)
+    (signal 'wrong-type-argument (list 'floatp val)))
+  (let ((u (nelisp-sexp--f64-to-bits val)))
+    (cons (unibyte-string (logand u           #xFF)
+                          (logand (ash u  -8) #xFF)
+                          (logand (ash u -16) #xFF)
+                          (logand (ash u -24) #xFF)
+                          (logand (ash u -32) #xFF)
+                          (logand (ash u -40) #xFF)
+                          (logand (ash u -48) #xFF)
+                          (logand (ash u -56) #xFF))
+          buf)))
+
+(defun nelisp-sexp--read-f64 (bytes pos)
+  "Read IEEE 754 binary64 LE from BYTES at POS, returning (F . NEW-POS).
+Signals `nelisp-sexp-truncated' when fewer than 8 bytes remain."
+  (when (> (+ pos 8) (length bytes))
+    (signal 'nelisp-sexp-truncated (list 'f64 pos (length bytes))))
+  (let ((u (logior (aref bytes pos)
+                   (ash (aref bytes (+ pos 1))  8)
+                   (ash (aref bytes (+ pos 2)) 16)
+                   (ash (aref bytes (+ pos 3)) 24)
+                   (ash (aref bytes (+ pos 4)) 32)
+                   (ash (aref bytes (+ pos 5)) 40)
+                   (ash (aref bytes (+ pos 6)) 48)
+                   (ash (aref bytes (+ pos 7)) 56))))
+    (cons (nelisp-sexp--f64-from-bits u) (+ pos 8))))
+
+(defun nelisp-sexp--write-utf8 (buf str)
+  "Emit u32 LE length + UTF-8 bytes of STR into BUF.
+STR is encoded with `utf-8-unix' so multibyte content round-trips
+losslessly across read/write."
+  (unless (stringp str)
+    (signal 'wrong-type-argument (list 'stringp str)))
+  (let* ((encoded (encode-coding-string str 'utf-8-unix t))
+         (len (length encoded)))
+    (cons encoded (nelisp-sexp--write-u32 buf len))))
+
+(defun nelisp-sexp--read-utf8 (bytes pos)
+  "Read u32 LE length + UTF-8 bytes from BYTES at POS.
+Returns (STR . NEW-POS).  Signals `nelisp-sexp-truncated' on short
+input."
+  (let* ((lp (nelisp-sexp--read-u32 bytes pos))
+         (len (car lp))
+         (after-len (cdr lp)))
+    (when (> (+ after-len len) (length bytes))
+      (signal 'nelisp-sexp-truncated (list 'utf8 after-len len)))
+    (cons (decode-coding-string
+           (substring bytes after-len (+ after-len len))
+           'utf-8-unix t)
+          (+ after-len len))))
+
+;;; --- §95.c top-level write-bytes ----------------------------------
+
+(defun nelisp-sexp--write-into (buf sexp)
+  "Internal recursive emitter: append SEXP encoding into BUF.
+Returns the updated BUF (= list of unibyte strings, reversed)."
+  (unless (nelisp-sexp-p sexp)
+    (signal 'wrong-type-argument (list 'nelisp-sexp-p sexp)))
+  (let ((tag (plist-get sexp :tag)))
+    (cond
+     ((null tag)
+      (nelisp-sexp--emit-byte buf nelisp-sexp-wire-tag-nil))
+     ((eq tag t)
+      (nelisp-sexp--emit-byte buf nelisp-sexp-wire-tag-t))
+     ((eq tag 'int)
+      (nelisp-sexp--write-i64
+       (nelisp-sexp--emit-byte buf nelisp-sexp-wire-tag-int)
+       (plist-get sexp :value)))
+     ((eq tag 'float)
+      (nelisp-sexp--write-f64
+       (nelisp-sexp--emit-byte buf nelisp-sexp-wire-tag-float)
+       (plist-get sexp :value)))
+     ((eq tag 'symbol)
+      (nelisp-sexp--write-utf8
+       (nelisp-sexp--emit-byte buf nelisp-sexp-wire-tag-symbol)
+       (plist-get sexp :value)))
+     ((eq tag 'str)
+      (nelisp-sexp--write-utf8
+       (nelisp-sexp--emit-byte buf nelisp-sexp-wire-tag-str)
+       (plist-get sexp :value)))
+     ((eq tag 'mut-str)
+      (nelisp-sexp--write-utf8
+       (nelisp-sexp--emit-byte buf nelisp-sexp-wire-tag-mut-str)
+       (plist-get sexp :value)))
+     ((eq tag 'cons)
+      (let ((b (nelisp-sexp--emit-byte
+                buf nelisp-sexp-wire-tag-cons)))
+        (setq b (nelisp-sexp--write-into b (plist-get sexp :car)))
+        (nelisp-sexp--write-into b (plist-get sexp :cdr))))
+     ((eq tag 'vector)
+      (let* ((elts (plist-get sexp :elts))
+             (b (nelisp-sexp--emit-byte
+                 buf nelisp-sexp-wire-tag-vector))
+             (b2 (nelisp-sexp--write-u32 b (length elts))))
+        (dolist (e elts)
+          (setq b2 (nelisp-sexp--write-into b2 e)))
+        b2))
+     ((eq tag 'char-table)
+      (let* ((extras (plist-get sexp :extras))
+             (b (nelisp-sexp--emit-byte
+                 buf nelisp-sexp-wire-tag-char-table))
+             (b2 (nelisp-sexp--write-into
+                  b (plist-get sexp :default)))
+             (b3 (nelisp-sexp--write-u32 b2 (length extras))))
+        (dolist (e extras)
+          (setq b3 (nelisp-sexp--write-into b3 e)))
+        b3))
+     ((eq tag 'bool-vector)
+      (let* ((len (plist-get sexp :len))
+             (init (plist-get sexp :init))
+             (nbytes (/ (+ len 7) 8))
+             (fill (if init #xFF #x00))
+             ;; Final byte mask: clear bits past LEN.
+             (b (nelisp-sexp--emit-byte
+                 buf nelisp-sexp-wire-tag-bool-vector))
+             (b2 (nelisp-sexp--write-u32 b len)))
+        (when (> nbytes 0)
+          (let ((last-bits (mod len 8)))
+            (setq b2
+                  (cons (concat (make-string (1- nbytes) fill)
+                                (unibyte-string
+                                 (if (and init (> last-bits 0))
+                                     (1- (ash 1 last-bits))
+                                   (if init #xFF #x00))))
+                        b2))))
+        b2))
+     ((eq tag 'cell)
+      (nelisp-sexp--write-into
+       (nelisp-sexp--emit-byte buf nelisp-sexp-wire-tag-cell)
+       (plist-get sexp :inner)))
+     ((eq tag 'record)
+      (let* ((type-sym (plist-get sexp :type-sym))
+             (slots (plist-get sexp :slots))
+             (b (nelisp-sexp--emit-byte
+                 buf nelisp-sexp-wire-tag-record))
+             ;; Encode TYPE-SYM as a Sexp::Symbol so the reader does
+             ;; not need a parallel sub-format for the type tag.
+             (b2 (nelisp-sexp--write-into
+                  b (nelisp-sexp-make-symbol type-sym)))
+             (b3 (nelisp-sexp--write-u32 b2 (length slots))))
+        (dolist (e slots)
+          (setq b3 (nelisp-sexp--write-into b3 e)))
+        b3))
+     (t (signal 'nelisp-sexp-unknown-tag (list tag))))))
+
+(defun nelisp-sexp-write-bytes (sexp)
+  "Serialize SEXP to a unibyte byte string per the §95.c wire format.
+Round-trips with `nelisp-sexp-read-bytes' via `nelisp-sexp-eq'."
+  (let ((parts (nelisp-sexp--write-into nil sexp)))
+    (apply #'concat (nreverse parts))))
+
+;;; --- §95.c top-level read-bytes -----------------------------------
+
+(defun nelisp-sexp-read-bytes (bytes &optional pos)
+  "Deserialize one Sexp value from BYTES at POS (default 0).
+Returns `(SEXP . NEW-POS)'.  Signals `nelisp-sexp-truncated' on
+short input or `nelisp-sexp-unknown-tag' on unrecognised tag byte."
+  (unless (stringp bytes)
+    (signal 'wrong-type-argument (list 'stringp bytes)))
+  (let ((pos (or pos 0)))
+    (when (>= pos (length bytes))
+      (signal 'nelisp-sexp-truncated (list 'tag pos (length bytes))))
+    (let ((tag (aref bytes pos))
+          (after (1+ pos)))
+      (cond
+       ((= tag nelisp-sexp-wire-tag-nil)
+        (cons (nelisp-sexp-make-nil) after))
+       ((= tag nelisp-sexp-wire-tag-t)
+        (cons (nelisp-sexp-make-t) after))
+       ((= tag nelisp-sexp-wire-tag-int)
+        (let ((vp (nelisp-sexp--read-i64 bytes after)))
+          (cons (nelisp-sexp-make-int (car vp)) (cdr vp))))
+       ((= tag nelisp-sexp-wire-tag-float)
+        (let ((vp (nelisp-sexp--read-f64 bytes after)))
+          (cons (nelisp-sexp-make-float (car vp)) (cdr vp))))
+       ((= tag nelisp-sexp-wire-tag-symbol)
+        (let ((vp (nelisp-sexp--read-utf8 bytes after)))
+          (cons (nelisp-sexp-make-symbol (car vp)) (cdr vp))))
+       ((= tag nelisp-sexp-wire-tag-str)
+        (let ((vp (nelisp-sexp--read-utf8 bytes after)))
+          (cons (nelisp-sexp-make-str (car vp)) (cdr vp))))
+       ((= tag nelisp-sexp-wire-tag-mut-str)
+        (let ((vp (nelisp-sexp--read-utf8 bytes after)))
+          (cons (nelisp-sexp-make-mut-str (car vp)) (cdr vp))))
+       ((= tag nelisp-sexp-wire-tag-cons)
+        (let* ((car-pair (nelisp-sexp-read-bytes bytes after))
+               (cdr-pair (nelisp-sexp-read-bytes bytes (cdr car-pair))))
+          (cons (nelisp-sexp-make-cons (car car-pair) (car cdr-pair))
+                (cdr cdr-pair))))
+       ((= tag nelisp-sexp-wire-tag-vector)
+        (let* ((lp (nelisp-sexp--read-u32 bytes after))
+               (n (car lp))
+               (p (cdr lp))
+               (acc nil))
+          (dotimes (_ n)
+            (let ((ep (nelisp-sexp-read-bytes bytes p)))
+              (push (car ep) acc)
+              (setq p (cdr ep))))
+          (cons (nelisp-sexp-make-vector (nreverse acc)) p)))
+       ((= tag nelisp-sexp-wire-tag-char-table)
+        (let* ((dp (nelisp-sexp-read-bytes bytes after))
+               (lp (nelisp-sexp--read-u32 bytes (cdr dp)))
+               (n (car lp))
+               (p (cdr lp))
+               (acc nil))
+          (dotimes (_ n)
+            (let ((ep (nelisp-sexp-read-bytes bytes p)))
+              (push (car ep) acc)
+              (setq p (cdr ep))))
+          (cons (nelisp-sexp-make-char-table (car dp) (nreverse acc))
+                p)))
+       ((= tag nelisp-sexp-wire-tag-bool-vector)
+        (let* ((lp (nelisp-sexp--read-u32 bytes after))
+               (len (car lp))
+               (p (cdr lp))
+               (nbytes (/ (+ len 7) 8)))
+          (when (> (+ p nbytes) (length bytes))
+            (signal 'nelisp-sexp-truncated
+                    (list 'bool-vector p nbytes)))
+          ;; Round-trip uses :init alone (= §95.a layout has no per-bit
+          ;; storage).  Recover :init by sampling the first bit, or
+          ;; default to nil for len=0.
+          (let ((init (cond
+                       ((zerop len) nil)
+                       (t (not (zerop (logand (aref bytes p) 1)))))))
+            (cons (nelisp-sexp-make-bool-vector len init)
+                  (+ p nbytes)))))
+       ((= tag nelisp-sexp-wire-tag-cell)
+        (let ((ip (nelisp-sexp-read-bytes bytes after)))
+          (cons (nelisp-sexp-make-cell (car ip)) (cdr ip))))
+       ((= tag nelisp-sexp-wire-tag-record)
+        (let* ((tp (nelisp-sexp-read-bytes bytes after))
+               (type-sexp (car tp))
+               (_ (unless (nelisp-sexp-symbol-p type-sexp)
+                    (signal 'nelisp-sexp-malformed-record
+                            (list 'expected-symbol type-sexp))))
+               (type-sym (intern (nelisp-sexp-symbol-name type-sexp)))
+               (lp (nelisp-sexp--read-u32 bytes (cdr tp)))
+               (n (car lp))
+               (p (cdr lp))
+               (acc nil))
+          (dotimes (_ n)
+            (let ((ep (nelisp-sexp-read-bytes bytes p)))
+              (push (car ep) acc)
+              (setq p (cdr ep))))
+          (cons (nelisp-sexp-make-record type-sym (nreverse acc)) p)))
+       (t (signal 'nelisp-sexp-unknown-tag
+                  (list tag pos)))))))
+
+;;; --- §95.c validation helpers -------------------------------------
+
+(defun nelisp-sexp-bytes-round-trip-p (sexp)
+  "Return non-nil when SEXP survives write-then-read structurally.
+Uses `nelisp-sexp-eq' since plist tail order is implementation-
+defined while structural identity is the wire-format contract."
+  (let* ((bytes (nelisp-sexp-write-bytes sexp))
+         (decoded (car (nelisp-sexp-read-bytes bytes 0))))
+    (nelisp-sexp-eq sexp decoded)))
+
+(defun nelisp-sexp-bytes-equal-p (a b)
+  "Return non-nil iff `nelisp-sexp-write-bytes' of A and B agree byte
+for byte.  Useful as a stricter test than `nelisp-sexp-eq' when the
+serializer's determinism itself is under test."
+  (equal (nelisp-sexp-write-bytes a)
+         (nelisp-sexp-write-bytes b)))
+
+;;; --- §95.c error symbols ------------------------------------------
+
+(define-error 'nelisp-sexp-truncated
+  "Sexp DSL byte buffer truncated before end of payload")
+(define-error 'nelisp-sexp-unknown-tag
+  "Sexp DSL wire format encountered unknown tag byte")
+(define-error 'nelisp-sexp-malformed-record
+  "Sexp DSL Record wire payload had wrong shape")
 
 (provide 'nelisp-sexp-dsl)
 
