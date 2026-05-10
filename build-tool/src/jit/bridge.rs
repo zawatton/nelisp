@@ -59,18 +59,28 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
     let u = unified_jit();
     let p: *const u8 = match name {
         // ---- arith (12) ----
-        "nelisp_jit_add2" => u.arith.add as *const u8,
-        "nelisp_jit_sub2" => u.arith.sub as *const u8,
-        "nelisp_jit_mul2" => u.arith.mul as *const u8,
-        "nelisp_jit_eq2" => u.arith.eq as *const u8,
-        "nelisp_jit_lt2" => u.arith.lt as *const u8,
-        "nelisp_jit_gt2" => u.arith.gt as *const u8,
-        "nelisp_jit_le2" => u.arith.le as *const u8,
-        "nelisp_jit_ge2" => u.arith.ge as *const u8,
-        "nelisp_jit_logior2" => u.arith.logior as *const u8,
-        "nelisp_jit_logand2" => u.arith.logand as *const u8,
-        "nelisp_jit_logxor2" => u.arith.logxor as *const u8,
-        "nelisp_jit_ash" => u.arith.ash as *const u8,
+        // Phase 7.1.6.c (Doc 28 §3.6.c): resolve arith names directly
+        // to the `#[no_mangle] extern "C"' trampolines now that the
+        // Cranelift `JitArith' wrapper page has been deleted.  Unlike
+        // cons / access takeover, arith had no pre-existing Rust
+        // trampoline body — the Cranelift IR was the implementation —
+        // so 12 plain Rust trampolines (`nl_jit_arith_*') were added
+        // in this commit that mirror the Cranelift IR semantics 1-to-1.
+        // nelisp-cc compiled hot paths skip this bridge entirely and
+        // emit the host arithmetic instruction inline via existing
+        // SSA opcodes (no `:ssa-call-primitive' detour needed).
+        "nelisp_jit_add2" => super::arith::nl_jit_arith_add2 as *const u8,
+        "nelisp_jit_sub2" => super::arith::nl_jit_arith_sub2 as *const u8,
+        "nelisp_jit_mul2" => super::arith::nl_jit_arith_mul2 as *const u8,
+        "nelisp_jit_eq2" => super::arith::nl_jit_arith_eq2 as *const u8,
+        "nelisp_jit_lt2" => super::arith::nl_jit_arith_lt2 as *const u8,
+        "nelisp_jit_gt2" => super::arith::nl_jit_arith_gt2 as *const u8,
+        "nelisp_jit_le2" => super::arith::nl_jit_arith_le2 as *const u8,
+        "nelisp_jit_ge2" => super::arith::nl_jit_arith_ge2 as *const u8,
+        "nelisp_jit_logior2" => super::arith::nl_jit_arith_logior2 as *const u8,
+        "nelisp_jit_logand2" => super::arith::nl_jit_arith_logand2 as *const u8,
+        "nelisp_jit_logxor2" => super::arith::nl_jit_arith_logxor2 as *const u8,
+        "nelisp_jit_ash" => super::arith::nl_jit_arith_ash as *const u8,
         // ---- cons (5) ----
         // Phase 7.1.6.a.2 (Doc 28 §3.6.a): resolve cons names directly
         // to the `#[no_mangle] extern "C"' trampolines now that the

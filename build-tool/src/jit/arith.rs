@@ -1,278 +1,152 @@
-//! Phase 5 Stage 5.2 — ArithIR lower (= 11 binary arithmetic /
-//! comparison / bitwise primitives).
+//! Phase 7.1.6.c (Doc 28 §3.6.c) — arith trampolines, dlsym-exported.
 //!
-//! Stage 5.2 (2026-05-07, Doc 62): all 2-arg integer primitives that
-//! map cleanly to a single Cranelift binary instruction are JIT-
-//! compiled into one shared `JITModule` and registered in
-//! `lower_entries`.  Mixed-type / float / arity-error cases fall
-//! through to the existing dispatcher via `dispatch(...)`.
+//! Pre-7.1.6.c this module hosted Cranelift IR builders that emitted
+//! the 12 arith / cmp / bitwise primitives directly as Cranelift
+//! instructions (= `iadd' / `isub' / `imul' / `icmp' / `bor' / `band'
+//! / `bxor' / `ishl' / `sshr') wrapped by a `JitArith' fn-ptr struct
+//! brought up at first-access by the unified JITModule.  Unlike the
+//! cons (7.1.6.a.2) / access (7.1.6.b) clusters, arith had *no* Rust
+//! trampoline body — the Cranelift IR was the implementation.
 //!
-//! Lowered set (= every "fast path" `(Int, Int) → Int|bool`):
+//! Doc 81 Stage 81.4 + Phase 7.1.6.a.1 dlsym precursor (`6666e61')
+//! shipped the elisp-side replacement infrastructure.  Per Doc 28
+//! §3.6.c.2, the 12 arith primitives go through a *different* path
+//! than the trampoline-based cons/access primitives: the nelisp-cc
+//! backend (= `nelisp-cc-x86_64.el' / `-arm64.el') emits the host
+//! machine-code `iadd' / `isub' / etc. directly via existing
+//! `ssa-iadd' / `ssa-isub' / ... opcodes — no `:ssa-call-primitive'
+//! trampoline shape needed because the operations map 1-to-1 to host
+//! ISA instructions.
 //!
-//! | primitive             | Cranelift IR              | result kind |
-//! |-----------------------+---------------------------+-------------|
-//! | `nelisp--add2`        | `iadd`                    | Sexp::Int   |
-//! | `nelisp--sub2`        | `isub`                    | Sexp::Int   |
-//! | `nelisp--mul2`        | `imul`                    | Sexp::Int   |
-//! | `nelisp--num-eq2`     | `icmp Equal` + `uextend`  | Sexp::T/Nil |
-//! | `nelisp--num-lt2`     | `icmp SignedLessThan`     | Sexp::T/Nil |
-//! | `nelisp--num-gt2`     | `icmp SignedGreaterThan`  | Sexp::T/Nil |
-//! | `nelisp--num-le2`     | `icmp SignedLessThanOrEqual`        | Sexp::T/Nil |
-//! | `nelisp--num-ge2`     | `icmp SignedGreaterThanOrEqual`     | Sexp::T/Nil |
-//! | `nelisp--logior2`     | `bor`                     | Sexp::Int   |
-//! | `nelisp--logand2`     | `band`                    | Sexp::Int   |
-//! | `nelisp--logxor2`     | `bxor`                    | Sexp::Int   |
+//! Phase 7.1.6.c (this commit) deletes:
 //!
-//! `ash` (= variable shl/sshr) is added in this commit (Stage 5.2
-//! follow-up) using Cranelift's `brif' for the count-sign dispatch.
-//! All arithmetic op semantics are wrapping by Cranelift contract —
-//! matches the existing `wrapping_add` / etc. behaviour.
+//!   - `JitArith' / `ArithIds' fn-ptr structs.
+//!   - `declare_binop' / `declare_ash' Cranelift IR builders.
+//!   - `register_symbols' / `declare_funcs' / `collect_funcs' wiring
+//!     (= `unified_jit()' no longer constructs an arith cluster JIT
+//!     wrapper page).
 //!
-//! `ash` JIT path covers count ∈ [-62, +62] (= every typical bit-twiddling
-//! use); pathological counts fall through to the Rust dispatcher so the
-//! 32-bit-truncation / clamping semantics of `bi_ash' are preserved
-//! without re-emitting them in IR.
+//! What stays (= the surface this module still owns post-7.1.6.c):
+//!
+//!   - 12 plain Rust trampolines `nl_jit_arith_*' that mirror the
+//!     deleted Cranelift IR semantics 1-to-1 (= `wrapping_add' for
+//!     `iadd', `wrapping_sub' for `isub', etc.).  Each is `#[no_mangle]
+//!     pub unsafe extern "C"' so the dlsym bridge can resolve them at
+//!     runtime.  Bodies match the Cranelift IR's `wrapping' contract
+//!     (= overflow wraps both ways) and the `ash' bounds-check
+//!     contract (= caller bounds-checks count ∈ [-62, +62] before
+//!     invoking; out-of-range is UB at the dlsym call site, same as
+//!     the Cranelift IR pre-7.1.6.c).
+//!
+//! `nelisp-jit-substrate.el' / `nelisp-jit-strategy.el' still call
+//! `(nl-jit-call-i64-i64 "nelisp_jit_*" …)' which goes through
+//! `bridge::unified_fn_ptr'.  Post-7.1.6.c those names resolve directly
+//! to the `nl_jit_arith_*' trampolines — no Cranelift wrapper in
+//! between (= one fewer indirection, same as cons / access takeover).
+//! Compiled hot paths (= nelisp-cc output) skip the bridge entirely
+//! and emit the host arithmetic instruction inline.
+//!
+//! The `-rdynamic' link flag in `.cargo/config.toml' (= already added
+//! by Phase 7.1.6.a.2; arith trampolines just inherit) pushes the 12
+//! `#[no_mangle]' symbols into the binary's dynamic symbol table so
+//! `dlsym(RTLD_DEFAULT, ...)' can locate them at runtime.
 
-use cranelift::prelude::*;
-use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{FuncId, Linkage, Module};
+// ---- 3 wrapping arithmetic ops --------------------------------------
 
-/// All 11 JIT-compiled arithmetic / comparison / bitwise primitives.
-/// Built once at first access via `super::unified_jit'; the shared
-/// `JITModule' is leaked so each `extern "C" fn' pointer stays valid
-/// for the process lifetime.
-pub(super) struct JitArith {
-    pub(super) add: extern "C" fn(i64, i64) -> i64,
-    pub(super) sub: extern "C" fn(i64, i64) -> i64,
-    pub(super) mul: extern "C" fn(i64, i64) -> i64,
-    pub(super) eq: extern "C" fn(i64, i64) -> i64,
-    pub(super) lt: extern "C" fn(i64, i64) -> i64,
-    pub(super) gt: extern "C" fn(i64, i64) -> i64,
-    pub(super) le: extern "C" fn(i64, i64) -> i64,
-    pub(super) ge: extern "C" fn(i64, i64) -> i64,
-    pub(super) logior: extern "C" fn(i64, i64) -> i64,
-    pub(super) logand: extern "C" fn(i64, i64) -> i64,
-    pub(super) logxor: extern "C" fn(i64, i64) -> i64,
-    /// `ash(n, count)' for count ∈ [-62, +62]: positive count → ishl,
-    /// negative count → sshr by `-count'.  Outside this range the
-    /// caller falls through to the Rust dispatcher.
-    pub(super) ash: extern "C" fn(i64, i64) -> i64,
+/// `(- ADD2 A B) -> A + B' with wrapping i64 overflow semantics.
+/// Phase 7.1.6.c dlsym-exported.
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_arith_add2(a: i64, b: i64) -> i64 {
+    a.wrapping_add(b)
 }
 
-pub(super) struct ArithIds {
-    add: FuncId,
-    sub: FuncId,
-    mul: FuncId,
-    eq: FuncId,
-    lt: FuncId,
-    gt: FuncId,
-    le: FuncId,
-    ge: FuncId,
-    logior: FuncId,
-    logand: FuncId,
-    logxor: FuncId,
-    ash: FuncId,
+/// `(- SUB2 A B) -> A - B' with wrapping i64 overflow semantics.
+/// Phase 7.1.6.c dlsym-exported.
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_arith_sub2(a: i64, b: i64) -> i64 {
+    a.wrapping_sub(b)
 }
 
-/// Declare + define a 2-arg i64 → i64 function in MODULE; the EMIT
-/// closure is invoked with the argument values and must return a
-/// Cranelift `Value` of type i64 (= the function's return value).
-fn declare_binop<F>(module: &mut JITModule, name: &str, emit: F) -> FuncId
-where
-    F: FnOnce(&mut FunctionBuilder, Value, Value) -> Value,
-{
-    let mut sig = module.make_signature();
-    sig.params.push(AbiParam::new(types::I64));
-    sig.params.push(AbiParam::new(types::I64));
-    sig.returns.push(AbiParam::new(types::I64));
-    let func_id = module
-        .declare_function(name, Linkage::Local, &sig)
-        .unwrap_or_else(|e| panic!("cranelift: declare_function {}: {}", name, e));
+/// `(- MUL2 A B) -> A * B' with wrapping i64 overflow semantics.
+/// Phase 7.1.6.c dlsym-exported.
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_arith_mul2(a: i64, b: i64) -> i64 {
+    a.wrapping_mul(b)
+}
 
-    let mut ctx = module.make_context();
-    ctx.func.signature = sig;
+// ---- 5 signed integer comparisons → 0/1 i64 -------------------------
 
-    let mut fbcx = FunctionBuilderContext::new();
-    {
-        let mut fb = FunctionBuilder::new(&mut ctx.func, &mut fbcx);
-        let block = fb.create_block();
-        fb.append_block_params_for_function_params(block);
-        fb.switch_to_block(block);
-        fb.seal_block(block);
-        let a = fb.block_params(block)[0];
-        let b = fb.block_params(block)[1];
-        let r = emit(&mut fb, a, b);
-        fb.ins().return_(&[r]);
-        fb.finalize();
+/// `(- NUM-EQ2 A B) -> 1 if A == B else 0' (signed i64 compare).
+/// Phase 7.1.6.c dlsym-exported.
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_arith_eq2(a: i64, b: i64) -> i64 {
+    (a == b) as i64
+}
+
+/// `(- NUM-LT2 A B) -> 1 if A < B else 0' (signed i64 compare).
+/// Phase 7.1.6.c dlsym-exported.
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_arith_lt2(a: i64, b: i64) -> i64 {
+    (a < b) as i64
+}
+
+/// `(- NUM-GT2 A B) -> 1 if A > B else 0' (signed i64 compare).
+/// Phase 7.1.6.c dlsym-exported.
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_arith_gt2(a: i64, b: i64) -> i64 {
+    (a > b) as i64
+}
+
+/// `(- NUM-LE2 A B) -> 1 if A <= B else 0' (signed i64 compare).
+/// Phase 7.1.6.c dlsym-exported.
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_arith_le2(a: i64, b: i64) -> i64 {
+    (a <= b) as i64
+}
+
+/// `(- NUM-GE2 A B) -> 1 if A >= B else 0' (signed i64 compare).
+/// Phase 7.1.6.c dlsym-exported.
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_arith_ge2(a: i64, b: i64) -> i64 {
+    (a >= b) as i64
+}
+
+// ---- 3 bitwise ops --------------------------------------------------
+
+/// `(- LOGIOR2 A B) -> A | B'.  Phase 7.1.6.c dlsym-exported.
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_arith_logior2(a: i64, b: i64) -> i64 {
+    a | b
+}
+
+/// `(- LOGAND2 A B) -> A & B'.  Phase 7.1.6.c dlsym-exported.
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_arith_logand2(a: i64, b: i64) -> i64 {
+    a & b
+}
+
+/// `(- LOGXOR2 A B) -> A ^ B'.  Phase 7.1.6.c dlsym-exported.
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_arith_logxor2(a: i64, b: i64) -> i64 {
+    a ^ b
+}
+
+// ---- ash --------------------------------------------------------------
+
+/// `(ash N COUNT) -> N << COUNT' (positive count) or `N >> -COUNT'
+/// (negative count, sign-extending).  Caller is responsible for
+/// bounds-checking COUNT ∈ [-62, +62]; out-of-range counts produce
+/// undefined behaviour (same contract as the deleted Cranelift IR
+/// pre-7.1.6.c).  Phase 7.1.6.c dlsym-exported.
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_arith_ash(n: i64, count: i64) -> i64 {
+    if count < 0 {
+        // sshr by abs(count): sign-extend the upper bits.
+        n >> (-count)
+    } else {
+        // ishl by count: shift in zeros from the right.
+        n << count
     }
-
-    module
-        .define_function(func_id, &mut ctx)
-        .unwrap_or_else(|e| panic!("cranelift: define_function {}: {}", name, e));
-    module.clear_context(&mut ctx);
-    func_id
-}
-
-/// Build the `ash' lowering: `(n, count) -> i64' with two-block
-/// control flow (positive count → `ishl', negative → `ineg' + `sshr').
-/// Caller is responsible for clamping count ∈ [-62, +62] before
-/// invoking — outside that range the JIT path is bypassed.
-fn declare_ash(module: &mut JITModule) -> FuncId {
-    let mut sig = module.make_signature();
-    sig.params.push(AbiParam::new(types::I64));
-    sig.params.push(AbiParam::new(types::I64));
-    sig.returns.push(AbiParam::new(types::I64));
-    let func_id = module
-        .declare_function("nelisp_jit_ash", Linkage::Local, &sig)
-        .expect("cranelift: declare_function nelisp_jit_ash");
-
-    let mut ctx = module.make_context();
-    ctx.func.signature = sig;
-
-    let mut fbcx = FunctionBuilderContext::new();
-    {
-        let mut fb = FunctionBuilder::new(&mut ctx.func, &mut fbcx);
-        let entry_b = fb.create_block();
-        let pos_b = fb.create_block();
-        let neg_b = fb.create_block();
-        fb.append_block_params_for_function_params(entry_b);
-
-        // Entry: dispatch on sign of `count'.
-        fb.switch_to_block(entry_b);
-        let n = fb.block_params(entry_b)[0];
-        let count = fb.block_params(entry_b)[1];
-        let count_neg = fb.ins().icmp_imm(IntCC::SignedLessThan, count, 0);
-        fb.ins().brif(count_neg, neg_b, &[], pos_b, &[]);
-        fb.seal_block(entry_b);
-
-        // Positive count: `ishl(n, count)'.
-        fb.switch_to_block(pos_b);
-        let r_pos = fb.ins().ishl(n, count);
-        fb.ins().return_(&[r_pos]);
-        fb.seal_block(pos_b);
-
-        // Negative count: `sshr(n, -count)'.
-        fb.switch_to_block(neg_b);
-        let abs = fb.ins().ineg(count);
-        let r_neg = fb.ins().sshr(n, abs);
-        fb.ins().return_(&[r_neg]);
-        fb.seal_block(neg_b);
-
-        fb.finalize();
-    }
-
-    module
-        .define_function(func_id, &mut ctx)
-        .expect("cranelift: define_function nelisp_jit_ash");
-    module.clear_context(&mut ctx);
-    func_id
-}
-
-/// Doc 77 Stage 2-prep (2026-05-09): submodule-level helper that
-/// registers imported symbols on the shared JITBuilder.  ArithIR
-/// has *no* external helpers (= every binop is pure Cranelift IR),
-/// so this is a no-op kept for API symmetry with the other modules.
-pub(super) fn register_symbols(_builder: &mut JITBuilder) {
-    // Intentionally empty — see doc comment above.
-}
-
-/// Doc 77 Stage 2-prep: declare + define every JIT entry this module
-/// owns on the *shared* JITModule.
-pub(super) fn declare_funcs(module: &mut JITModule) -> ArithIds {
-    // 3 wrapping arithmetic ops.
-    let add = declare_binop(module, "nelisp_jit_add2", |fb, a, b| fb.ins().iadd(a, b));
-    let sub = declare_binop(module, "nelisp_jit_sub2", |fb, a, b| fb.ins().isub(a, b));
-    let mul = declare_binop(module, "nelisp_jit_mul2", |fb, a, b| fb.ins().imul(a, b));
-
-    // 5 signed integer comparisons → i8 (0/1) → uextend i64.
-    fn cmp_to_i64(fb: &mut FunctionBuilder, cc: IntCC, a: Value, b: Value) -> Value {
-        let bit = fb.ins().icmp(cc, a, b);
-        fb.ins().uextend(types::I64, bit)
-    }
-    let eq = declare_binop(module, "nelisp_jit_eq2", |fb, a, b| {
-        cmp_to_i64(fb, IntCC::Equal, a, b)
-    });
-    let lt = declare_binop(module, "nelisp_jit_lt2", |fb, a, b| {
-        cmp_to_i64(fb, IntCC::SignedLessThan, a, b)
-    });
-    let gt = declare_binop(module, "nelisp_jit_gt2", |fb, a, b| {
-        cmp_to_i64(fb, IntCC::SignedGreaterThan, a, b)
-    });
-    let le = declare_binop(module, "nelisp_jit_le2", |fb, a, b| {
-        cmp_to_i64(fb, IntCC::SignedLessThanOrEqual, a, b)
-    });
-    let ge = declare_binop(module, "nelisp_jit_ge2", |fb, a, b| {
-        cmp_to_i64(fb, IntCC::SignedGreaterThanOrEqual, a, b)
-    });
-
-    // 3 bitwise ops.
-    let logior = declare_binop(module, "nelisp_jit_logior2", |fb, a, b| {
-        fb.ins().bor(a, b)
-    });
-    let logand = declare_binop(module, "nelisp_jit_logand2", |fb, a, b| {
-        fb.ins().band(a, b)
-    });
-    let logxor = declare_binop(module, "nelisp_jit_logxor2", |fb, a, b| {
-        fb.ins().bxor(a, b)
-    });
-
-    // `ash' — signed-count shift with `brif' control flow.  Caller
-    // bounds-checks count ∈ [-62, +62] before invoking.
-    let ash = declare_ash(module);
-
-    ArithIds {
-        add,
-        sub,
-        mul,
-        eq,
-        lt,
-        gt,
-        le,
-        ge,
-        logior,
-        logand,
-        logxor,
-        ash,
-    }
-}
-
-/// Doc 77 Stage 2-prep: fetch finalized function pointers post-
-/// `finalize_definitions' and pack them into `JitArith'.
-pub(super) fn collect_funcs(module: &JITModule, ids: ArithIds) -> JitArith {
-    let get = |id: FuncId| -> extern "C" fn(i64, i64) -> i64 {
-        let ptr = module.get_finalized_function(id);
-        // SAFETY: declared signature is `(i64, i64) -> i64`.
-        unsafe { std::mem::transmute::<_, extern "C" fn(i64, i64) -> i64>(ptr) }
-    };
-    JitArith {
-        add: get(ids.add),
-        sub: get(ids.sub),
-        mul: get(ids.mul),
-        eq: get(ids.eq),
-        lt: get(ids.lt),
-        gt: get(ids.gt),
-        le: get(ids.le),
-        ge: get(ids.ge),
-        logior: get(ids.logior),
-        logand: get(ids.logand),
-        logxor: get(ids.logxor),
-        ash: get(ids.ash),
-    }
-}
-
-// Doc 77b Stage b.4 (2026-05-09) — `lowered_X' Rust strategy fns
-// + `register(map)' deleted.  The 12 entries (= add2/sub2/mul2/
-// num-{eq,lt,gt,le,ge}2/logior2/logand2/logxor2/ash) are now
-// driven by elisp wrappers in `lisp/nelisp-jit-strategy.el' that
-// call the JIT entries through the Stage b.2 `nl-jit-call-i64-i64'
-// bridge primitive (Int+Int fast path) + `jit/strategy.rs' helpers
-// (Float fallback / bitwise Int / ash bounds).  This module retains
-// only the Cranelift IR builders + the `JitArith' fn-ptr struct
-// reachable via `super::unified_jit()'.
-
-#[cfg(test)]
-fn jit() -> &'static JitArith {
-    &super::unified_jit().arith
 }
 
 #[cfg(test)]
@@ -281,64 +155,63 @@ mod tests {
 
     #[test]
     fn jit_add2_compiles_and_runs() {
-        let f = jit().add;
-        assert_eq!(f(1, 2), 3);
-        assert_eq!(f(0, 0), 0);
-        assert_eq!(f(-7, 10), 3);
+        assert_eq!(unsafe { nl_jit_arith_add2(1, 2) }, 3);
+        assert_eq!(unsafe { nl_jit_arith_add2(0, 0) }, 0);
+        assert_eq!(unsafe { nl_jit_arith_add2(-7, 10) }, 3);
         // Wrapping: i64::MAX + 1 = i64::MIN.
-        assert_eq!(f(i64::MAX, 1), i64::MIN);
+        assert_eq!(unsafe { nl_jit_arith_add2(i64::MAX, 1) }, i64::MIN);
     }
 
     #[test]
     fn jit_sub_mul() {
-        assert_eq!((jit().sub)(10, 3), 7);
-        assert_eq!((jit().sub)(0, 1), -1);
-        assert_eq!((jit().mul)(6, 7), 42);
-        assert_eq!((jit().mul)(-3, 4), -12);
+        assert_eq!(unsafe { nl_jit_arith_sub2(10, 3) }, 7);
+        assert_eq!(unsafe { nl_jit_arith_sub2(0, 1) }, -1);
+        assert_eq!(unsafe { nl_jit_arith_mul2(6, 7) }, 42);
+        assert_eq!(unsafe { nl_jit_arith_mul2(-3, 4) }, -12);
     }
 
     #[test]
     fn jit_cmp_signed() {
-        assert_eq!((jit().eq)(5, 5), 1);
-        assert_eq!((jit().eq)(5, 4), 0);
-        assert_eq!((jit().lt)(3, 4), 1);
-        assert_eq!((jit().lt)(4, 3), 0);
-        assert_eq!((jit().lt)(-1, 1), 1);
-        assert_eq!((jit().gt)(4, 3), 1);
-        assert_eq!((jit().le)(3, 3), 1);
-        assert_eq!((jit().le)(4, 3), 0);
-        assert_eq!((jit().ge)(3, 3), 1);
-        assert_eq!((jit().ge)(2, 3), 0);
+        assert_eq!(unsafe { nl_jit_arith_eq2(5, 5) }, 1);
+        assert_eq!(unsafe { nl_jit_arith_eq2(5, 4) }, 0);
+        assert_eq!(unsafe { nl_jit_arith_lt2(3, 4) }, 1);
+        assert_eq!(unsafe { nl_jit_arith_lt2(4, 3) }, 0);
+        assert_eq!(unsafe { nl_jit_arith_lt2(-1, 1) }, 1);
+        assert_eq!(unsafe { nl_jit_arith_gt2(4, 3) }, 1);
+        assert_eq!(unsafe { nl_jit_arith_le2(3, 3) }, 1);
+        assert_eq!(unsafe { nl_jit_arith_le2(4, 3) }, 0);
+        assert_eq!(unsafe { nl_jit_arith_ge2(3, 3) }, 1);
+        assert_eq!(unsafe { nl_jit_arith_ge2(2, 3) }, 0);
     }
 
     #[test]
     fn jit_bitwise() {
-        assert_eq!((jit().logior)(0b1100, 0b0011), 0b1111);
-        assert_eq!((jit().logand)(0b1110, 0b0111), 0b0110);
-        assert_eq!((jit().logxor)(0b1100, 0b1010), 0b0110);
+        assert_eq!(unsafe { nl_jit_arith_logior2(0b1100, 0b0011) }, 0b1111);
+        assert_eq!(unsafe { nl_jit_arith_logand2(0b1110, 0b0111) }, 0b0110);
+        assert_eq!(unsafe { nl_jit_arith_logxor2(0b1100, 0b1010) }, 0b0110);
     }
 
     #[test]
     fn jit_ash_left_shift() {
         // count > 0 → ishl
-        assert_eq!((jit().ash)(1, 3), 8);
-        assert_eq!((jit().ash)(0xFF, 4), 0xFF0);
+        assert_eq!(unsafe { nl_jit_arith_ash(1, 3) }, 8);
+        assert_eq!(unsafe { nl_jit_arith_ash(0xFF, 4) }, 0xFF0);
         // count = 0 → identity (ishl by 0)
-        assert_eq!((jit().ash)(42, 0), 42);
-        assert_eq!((jit().ash)(-42, 0), -42);
+        assert_eq!(unsafe { nl_jit_arith_ash(42, 0) }, 42);
+        assert_eq!(unsafe { nl_jit_arith_ash(-42, 0) }, -42);
         // negatives shift left preserves sign-extension at top bits
-        assert_eq!((jit().ash)(-1, 1), -2);
+        assert_eq!(unsafe { nl_jit_arith_ash(-1, 1) }, -2);
     }
 
     #[test]
     fn jit_ash_right_shift_signed() {
         // count < 0 → sshr by abs(count); sign bit is replicated.
-        assert_eq!((jit().ash)(8, -3), 1);
-        assert_eq!((jit().ash)(0xFF0, -4), 0xFF);
+        assert_eq!(unsafe { nl_jit_arith_ash(8, -3) }, 1);
+        assert_eq!(unsafe { nl_jit_arith_ash(0xFF0, -4) }, 0xFF);
         // -8 >> 3 = -1 (all sign bits shifted in)
-        assert_eq!((jit().ash)(-8, -3), -1);
-        assert_eq!((jit().ash)(-100, -1), -50);
+        assert_eq!(unsafe { nl_jit_arith_ash(-8, -3) }, -1);
+        assert_eq!(unsafe { nl_jit_arith_ash(-100, -1) }, -50);
         // -1 >> 1 = -1 (every bit set, sign-extends to all-ones)
-        assert_eq!((jit().ash)(-1, -1), -1);
+        assert_eq!(unsafe { nl_jit_arith_ash(-1, -1) }, -1);
     }
 }

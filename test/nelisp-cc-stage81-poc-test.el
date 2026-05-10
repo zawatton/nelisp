@@ -1471,5 +1471,58 @@ already added by Phase 7.1.6.a.2; access trampolines just inherit)."
              (addr (string-to-number addr-str)))
         (should (> addr 0))))))
 
+;;; Phase 7.1.6.c dlsym integration smoke -----------------------------
+;;
+;; Doc 28 §3.6.c ship gate (= the smoke for the arith cluster takeover,
+;; mirror of Phase 7.1.6.a.2 cons / 7.1.6.b access cluster smokes
+;; above).  Verifies the same end-to-end path for the 12
+;; `nl_jit_arith_*' trampolines (= 3 wrapping arith / 5 signed cmp /
+;; 3 bitwise / `ash').  Note: arith was structurally different from
+;; cons / access in that it had *no* pre-existing Rust trampoline
+;; body — the Cranelift IR was the implementation pre-7.1.6.c.  The
+;; takeover added 12 plain `nl_jit_arith_*' Rust trampolines that
+;; mirror the deleted Cranelift IR semantics 1-to-1, then exposed
+;; them via `#[no_mangle]' so the dlsym bridge can locate them.
+;;
+;;   1. The `nelisp' binary's dynamic symbol table exposes the 12
+;;      `#[no_mangle]' arith trampolines (= `-rdynamic' is wired via
+;;      `.cargo/config.toml', already present from Phase 7.1.6.a.2 —
+;;      the arith trampolines simply inherit it).
+;;   2. `nelisp-cc--dlsym-resolve' returns `:resolved' with a non-zero
+;;      addr for each arith cluster symbol when invoked in the
+;;      standalone binary.
+;;
+;; Auto-skips when the binary hasn't been built yet (= same skip-unless
+;; gate as the cons / access smoke).
+
+(ert-deftest nelisp-cc-stage81-poc-7.1.6.c-dlsym-resolves-arith-cluster ()
+  "Phase 7.1.6.c: dlsym resolves all 12 `nl_jit_arith_*' symbols.
+
+The cluster takeover (Doc 28 §3.6.c) deletes the Cranelift `JitArith'
+wrapper and introduces 12 plain Rust trampolines as `#[no_mangle]
+extern \"C\"' so the dlsym bridge can locate them.  Smoke verifies
+that `(nelisp-cc--dlsym-resolve \"nl_jit_arith_add2\")' returns
+`(:resolved . ADDR)' with ADDR > 0 (= the symbol exists in the
+binary's dynsym table thanks to `-rdynamic' in `.cargo/config.toml',
+already added by Phase 7.1.6.a.2; arith trampolines just inherit)."
+  (skip-unless (and nelisp-cc-stage81-test--nelisp-bin
+                    (file-executable-p nelisp-cc-stage81-test--nelisp-bin)))
+  (dolist (sym '("nl_jit_arith_add2" "nl_jit_arith_sub2"
+                 "nl_jit_arith_mul2" "nl_jit_arith_eq2"
+                 "nl_jit_arith_lt2" "nl_jit_arith_gt2"
+                 "nl_jit_arith_le2" "nl_jit_arith_ge2"
+                 "nl_jit_arith_logior2" "nl_jit_arith_logand2"
+                 "nl_jit_arith_logxor2" "nl_jit_arith_ash"))
+    (let* ((out (nelisp-cc-stage81-test--nelisp-eval
+                 `(nelisp-cc--dlsym-resolve ,sym)))
+           ;; Output shape: "(:resolved . NNNNNNN)" or "(:not-found)".
+           (resolved-prefix "(:resolved . "))
+      (should (string-prefix-p resolved-prefix out))
+      ;; Parse the addr and assert it is non-zero.
+      (let* ((addr-str (substring out (length resolved-prefix)
+                                  (1- (length out))))
+             (addr (string-to-number addr-str)))
+        (should (> addr 0))))))
+
 (provide 'nelisp-cc-stage81-poc-test)
 ;;; nelisp-cc-stage81-poc-test.el ends here
