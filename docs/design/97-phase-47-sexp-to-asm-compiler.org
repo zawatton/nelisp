@@ -477,15 +477,52 @@ demonstrably true.
 
 ** §6.2 Doc 97.b — function calls + return values
 
-Next slice.  Adds:
-- =(defun NAME ARGS BODY)= form.
-- =(call NAME ARG1 ARG2 ...)= form.
-- Stack frame establishment via =push rbp= / =mov rbp, rsp=.
+*Status*: SHIPPED 2026-05-11 on =agent-doc-97b-impl= branch.
+
+Adds:
+- =(defun NAME (PARAMS...) BODY)= form (= up to 6 positional int
+  params).
+- =(NAME ARG1 ARG2 ...)= function call by name (= no separate =call=
+  keyword; call sites use the function symbol directly, matching the
+  Lisp surface).
+- Stack frame establishment via =push rbp= / =mov rbp, rsp= prologue
+  + =pop rbp= / =ret= epilogue.
 - SysV AMD64 argument register convention (=rdi=, =rsi=, =rdx=,
   =rcx=, =r8=, =r9=).
 - Return value in =rax=.
-- A trivial register allocator that survives a call (= callee-saved
-  vs caller-saved partitioning).
+- Runtime arithmetic (= the v1 constant-folder still fires when all
+  operands are compile-time foldable, otherwise =(+ a b)= / =(- a b)=
+  / =(* a b)= lower to =add= / =sub= / =imul= on rax + r10 scratch).
+- Implicit return: every function body's value is the function's
+  return value (= no separate =return= form).
+
+Implementation:
+- =--collect-defuns= pre-pass pulls defun nodes from the IR and the
+  emitter places them after =_start= with =define-label= entries.
+- =call-rel32= records a fixup against the function's label;
+  =resolve-fixups= patches the rel32 displacement at finalize time.
+- Scratch register selected = =r10= (caller-saved, NOT in the
+  arg-regs list) so chained calls don't alias a parameter slot.
+- =imul= encoded inline via =emit-bytes= (= Doc 92 has no =imul=
+  helper; the encoding is fixed-width so pass-1/pass-2 byte invariant
+  holds).
+- Stack delta: each call site pushes evaluated args (= N pushes)
+  then pops them into the SysV arg-regs in reverse order before
+  =call-rel32= — net delta is 0 at the call boundary so the kernel-
+  provided 16-byte alignment is preserved (= modulo the return-addr
+  push which the callee's =push rbp= immediately re-aligns to 16).
+- Forward references: the seq pre-scan registers every defun in the
+  same seq before walking child statements, so call sites can refer
+  to functions defined later in source order (= a defun on line 5
+  can be called from a function defined on line 1, as long as both
+  share the same enclosing seq).
+
+Deferred to Doc 97.c / 97.d:
+- > 6 positional args (= stack spill).
+- Cross-seq forward references (= rarely useful when the program is
+  one top-level =seq=).
+- Tail call optimisation.
+- Mutual recursion across separate seqs.
 
 ** §6.3 Doc 97.c — control flow
 
