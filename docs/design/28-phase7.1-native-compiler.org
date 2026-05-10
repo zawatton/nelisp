@@ -1966,6 +1966,35 @@ ERT regression 0.  perf gate なし (= 純 cleanup、新 emit path 追加なし)
 
 *** 3.7.d Phase 7.1.7.d — =bin/nelisp.rs= adjustments
 
+*Status (2026-05-10)*: SHIPPED.  =bin/nelisp.rs= の Cranelift / jit
+直接参照 grep result は予測通り 0 hit、source 上の dead =use= clause /
+旧 CLI flag (=--no-jit= / =--jit-compile=) も 0 hit.  =bin/nelisp.rs=
+は最初から JIT を library detail として透明に通過する driver で、
+=lib.rs= の =pub mod jit;= 削除 (= 7.1.7.b) でも build green を維持.
+
+実適用 cleanup (= optional cleanup の中央値 ~-25 LOC range 内):
+- module-level doc comment を post Doc 28 §3.6 + §3.7.b state に書換
+  — Stage 9a-9g + Sweep 1-6 archaeology を「post §3.6 invariants」
+  block に再構成 (= eval/reader/bridge/image substrate + nelisp-cc が
+  唯一 hot path emitter + compile-image は image-baker bin gate)
+- =USAGE= banner 内の Stage 7.7.c.2 / 2026-04-30 Elisp-pivot rollback /
+  Sweep 6 archaeology note を 1 行 (= compile-image の baker bin pointer)
+  に圧縮
+- =rejects_compile_image_post_7_7_c2= test 名を =rejects_compile_image=
+  に rename し comment も 4 行 → 3 行に圧縮
+
+実測 Rust LOC delta: *-31 LOC* (= 30 ins / 61 del、=git diff --stat=
+実測).  §3.7.d.4 articulation の 0〜-50 range 中央値 -25 と整合.
+
+cargo build verify:
+- =cargo build --bin nelisp= = green (warn 0 / err 0)
+- =cargo build --bin nelisp-baker --features image-baker= = green
+- =cargo test --bin nelisp= = 8/8 pass (=parses_*= 6 + =rejects_*= 2)
+
+post-7.1.7.d state: =build-tool/= 全体から Cranelift / JIT 関連の Rust
+source / Cargo dep / dispatch arm / use clause / comment / archaeology
+note が *完全消滅*.  Doc 28 §3.7 の最終 sub-stage = COMPLETE.
+
 **** 3.7.d.1 bin/nelisp.rs Cranelift / jit 直接参照 grep result (実測 hit 0)
 
 7.1.7.b で =eval/mod.rs::apply_builtin= の jit-related hook + =lib.rs= の

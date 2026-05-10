@@ -1,53 +1,32 @@
 //! End-user `nelisp` CLI — plain Elisp launcher.
 //!
-//! Phase 8.x (post-v1.0 doc-driven): the standalone tarball needs a
-//! Lisp-y entry point that does not assume any of anvil's conventions
-//! so the README can document `nelisp ...` independently of any
-//! downstream consumer.  This binary is intentionally thin — it
-//! delegates everything to the existing `eval_str' / `eval_str_all'
-//! Rust API.
-//!
-//! Stage 9a-9g course correction (2026-04-30, Sweeps 1-4): the
-//! mint-* command handlers (`mint-int-as-code', `mint-int-via-
-//! emitted-load', `mint-int-plus-imm', `mint-chain', `mint-from-
-//! ast') were removed — their logic was Elisp-misplaced into Rust.
-//! Replacement: `lisp/doc47-mint.el' driven via `emacs --batch'.
-//!
-//! Sweep 5 (2026-04-30): the surviving Stage 6/7a/8 mint
-//! handlers (`mint-list-from-source', `mint-string-from-source',
-//! `mint-symbol-from-source', `mint-eval-result', `mint-eval-file')
-//! were also removed for the same reason — their lowering /
-//! orchestration is Elisp-portable.  The `lisp/doc47-mint.el'
-//! Stage-9a-style precompute path subsumes their use cases (= the
-//! Elisp side computes the boot-exit value at build time and emits
-//! a constant-return code segment).
+//! Thin driver over the `eval_str' / `eval_str_all' Rust API plus
+//! the walking-skeleton `image' module.  The binary intentionally
+//! holds no policy: every CLI subcommand below maps to one library
+//! call so the README can document `nelisp ...` independently of
+//! any downstream consumer (anvil-runtime, elisp-lsp, etc.).
 //!
 //! Surviving CLI surface — REPL-style only:
-//!   --version                   print version + exit
-//!   eval EXPR                   evaluate EXPR via the Doc 44 §3.2
-//!                               minimal evaluator + print the result
-//!   -l FILE                     load + eval FILE (every form, last
-//!                               value printed)
+//!   --version, -V               print version + exit
+//!   eval EXPR                   evaluate EXPR and print the result
+//!   -l, --load FILE             load + eval FILE, print the last value
+//!   exec FILE                   load + eval FILE silently (no final-
+//!                               value print — for stdio servers)
 //!   -                           read from stdin and eval
-//!   compile-image SRC IMG       Doc 47 §3.1 phase 4 walking skeleton
-//!                               — read SRC (Elisp source), encode as
-//!                               IMG (NELIMG\\0\\x01 sexp image)
-//!   eval-image IMG              decode IMG and evaluate, print the
-//!                               last value
+//!   eval-image IMG              decode IMG (NELIMG\\0\\x01 sexp
+//!                               image) and evaluate, print the last
+//!                               value
 //!
-//! The `eval/' + `reader/' + `bridge/' Rust modules are retained as
-//! the boot-interpreter substrate (= principle (d) of memory
-//! `feedback_rust_core_minimization_principle'); they are needed
-//! both by the REPL surfaces here AND by the `anvil-runtime'
-//! consumer crate that minted images depend on at boot.
-//!
-//! Sweep 6 (2026-04-30): the older `nelisp_runtime::image::*' native-
-//! code-in-image subsystem (~2,420 LOC of NlImage v1 + reloc + heap +
-//! boot) was deleted.  The new `image' module under this crate is a
-//! 314-LOC walking skeleton that operates on real `Sexp' values and
-//! reuses the existing `eval/' + `reader/' modules — no second object
-//! model, no native code emit — proving Doc 47 §3.1 phase 4 in pure
-//! interpreter terms.
+//! Architecture invariants (post Doc 28 §3.6 cluster takeover +
+//! §3.7.b Cranelift全削除):
+//! - The `eval/' + `reader/' + `bridge/' + `image/' Rust modules are
+//!   the boot-interpreter substrate.  All hot paths beyond the boot
+//!   interpreter are emitted by the elisp-side `nelisp-cc' native
+//!   compiler; this binary never references the JIT directly.
+//! - `compile-image' is feature-gated behind `image-baker' and lives
+//!   in the dev-tooling `nelisp-baker' binary (= `make bake-images'
+//!   / `cargo run --bin nelisp-baker --features image-baker').  The
+//!   production `nelisp' binary deliberately does not parse it.
 
 use std::fs;
 use std::io::{self, Read};
@@ -65,18 +44,9 @@ const USAGE: &str = "usage: nelisp --version
        nelisp -                         # read from stdin and print the last result
        nelisp eval-image IMG            # decode IMG and evaluate, print result
 
-Note: `compile-image SRC IMG' was retired from the production binary
-in Phase 7 Stage 7.7.c.2 (Doc 72) — the encoder is feature-gated
-behind `image-baker' and lives in the dev-tooling `nelisp-baker'
-binary (= `make bake-images' / `cargo run --bin nelisp-baker').
-
-Note: Doc 47 image mint commands (mint-list-from-source, mint-eval-*,
-mint-int-*, mint-chain, mint-from-ast) were removed in the 2026-04-30
-Elisp-pivot rollback.  The 2,420-LOC `nelisp_runtime::image' native-
-code subsystem was likewise retired in Sweep 6 (2026-04-30) in favour
-of the simpler walking-skeleton image format above (`eval-image'),
-which serializes real `Sexp' values and lets the existing `eval/'
-module evaluate them — no second object model.";
+Note: `compile-image SRC IMG' lives in the dev-tooling `nelisp-baker'
+binary behind the `image-baker' feature (= `make bake-images' /
+`cargo run --bin nelisp-baker --features image-baker').";
 
 #[derive(Debug)]
 enum Command {
@@ -256,11 +226,10 @@ mod tests {
     }
 
     #[test]
-    fn rejects_compile_image_post_7_7_c2() {
-        // Phase 7 Stage 7.7.c.2 (Doc 72): `compile-image' moved to the
-        // dev-tooling `nelisp-baker' bin under the `image-baker'
-        // feature, so the production `nelisp' binary no longer parses
-        // it.  See `make bake-images' / `cargo run --bin nelisp-baker'.
+    fn rejects_compile_image() {
+        // `compile-image' lives in the dev-tooling `nelisp-baker' bin
+        // under the `image-baker' feature; the production `nelisp'
+        // binary deliberately does not parse it.
         assert!(parse_args(["nelisp", "compile-image", "boot.el", "/tmp/img.bin"]).is_err());
     }
 
