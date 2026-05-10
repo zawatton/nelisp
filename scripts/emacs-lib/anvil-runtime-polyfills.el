@@ -32,6 +32,77 @@
   (provide 'subr-x))
 
 
+;; --- env info vars --------------------------------------------------
+
+;; anvil-bench reports `emacs-version' / `system-type' in tool result
+;; env info.  Standalone NeLisp does not declare them, so fill with
+;; sensible identifiers — runs on real Emacs are unaffected because the
+;; defvar gates on `boundp'.
+
+(unless (boundp 'emacs-version)
+  (defvar emacs-version "30.0 (nelisp-standalone)"
+    "Polyfill: identifier string used by anvil-bench env reporting."))
+
+(unless (boundp 'system-type)
+  (defvar system-type 'gnu/linux
+    "Polyfill: rough OS family for env reporting.  Real value comes
+from a NeLisp-side primitive when one is exposed."))
+
+(unless (boundp 'gc-cons-threshold)
+  (defvar gc-cons-threshold 800000
+    "Polyfill: Emacs GC threshold knob.  anvil-bench let-binds this to
+`most-positive-fixnum' to disable GC during measurement; the binding
+is harmless on standalone NeLisp because there's no GC interlock to
+disable, but the symbol must exist."))
+
+(unless (boundp 'most-positive-fixnum)
+  (defvar most-positive-fixnum (1- (lsh 1 61))
+    "Polyfill: large-fixnum sentinel used by anvil-bench's
+`gc-cons-threshold' override.  Approximation = 2^61-1 (= 64-bit fixnum
+ceiling on most platforms)."))
+
+
+;; --- math primitive gaps -------------------------------------------
+
+;; `expt' (= base ^ exp) is a C builtin in real Emacs but missing on
+;; standalone NeLisp.  anvil-bench's stddev calculation uses
+;; `(expt diff 2)' so we need at least integer-exponent semantics.
+(unless (fboundp 'expt)
+  (defun expt (base exponent)
+    "Polyfill: integer-exponent power.
+Negative exponents return 1/base^|exponent|.  Non-integer exponents
+are not yet supported (= signals an error rather than silently
+returning a wrong result)."
+    (cond
+     ((not (integerp exponent))
+      (error "expt polyfill: non-integer exponent %S unsupported"
+             exponent))
+     ((zerop exponent) 1)
+     ((< exponent 0)
+      (/ 1.0 (expt base (- exponent))))
+     (t
+      (let ((result 1) (i 0))
+        (while (< i exponent)
+          (setq result (* result base))
+          (setq i (1+ i)))
+        result)))))
+
+(unless (fboundp 'sqrt)
+  (defun sqrt (x)
+    "Polyfill: Newton-Raphson sqrt for non-negative numbers.
+Used by anvil-bench's stddev (sqrt of variance)."
+    (cond
+     ((zerop x) 0)
+     ((< x 0) (error "sqrt polyfill: negative input %S" x))
+     (t
+      (let ((guess (float x)) (epsilon 1e-12))
+        (let ((prev (1+ guess)))
+          (while (> (abs (- guess prev)) epsilon)
+            (setq prev guess)
+            (setq guess (/ (+ guess (/ x guess)) 2.0))))
+        guess)))))
+
+
 ;; --- cl-lib gaps ----------------------------------------------------
 
 (unless (fboundp 'cl-copy-list)
