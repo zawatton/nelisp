@@ -34,7 +34,10 @@ use crate::eval::builtins::{as_int, require_arity};
 use crate::eval::error::EvalError;
 use crate::eval::sexp::Sexp;
 
-use super::unified_jit;
+// Phase 7.1.6.e (Doc 28 §3.6.e): `super::unified_jit' import deleted —
+// `UnifiedJit' struct + `unified_jit()' OnceLock are gone now that
+// every cluster (cons / access / arith / predicate / syscall) goes
+// through `unified_fn_ptr's direct `#[no_mangle]' trampoline mapping.
 
 /// Extract the JIT-entry name argument: accepts `Symbol' or `Str'
 /// (= the 2 forms elisp wrappers will produce — `'nelisp_jit_add2'
@@ -56,7 +59,10 @@ fn as_name<'a>(name_arg: &'a str, v: &'a Sexp) -> Result<&'a str, EvalError> {
 /// Unknown names return `None' (= the bridge primitive raises
 /// `EvalError::Internal' wrapping the bad name).
 pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
-    let u = unified_jit();
+    // Phase 7.1.6.e (Doc 28 §3.6.e): `let u = unified_jit()' deleted
+    // — every name now resolves directly to a `#[no_mangle] extern
+    // "C"' Rust trampoline.  No Cranelift wrapper page is constructed
+    // anywhere in `jit::' anymore.
     let p: *const u8 = match name {
         // ---- arith (12) ----
         // Phase 7.1.6.c (Doc 28 §3.6.c): resolve arith names directly
@@ -126,8 +132,20 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
         // looked up on this match arm.
         "nelisp_jit_eq_inline" => super::predicate::nl_jit_predicate_eq as *const u8,
         // ---- syscall (2) ----
-        "nelisp_jit_syscall" => u.syscall.syscall as *const u8,
-        "nelisp_jit_syscall_supported_p" => u.syscall.supported_p as *const u8,
+        // Phase 7.1.6.e (Doc 28 §3.6.e): resolve syscall names directly
+        // to the `#[no_mangle] extern "C"' trampolines now that the
+        // Cranelift `JitSyscall' wrapper page has been deleted.  Like
+        // arith / predicate, syscall's Cranelift IR was an
+        // `iconst+return' (supported_p) + a single-`call' pass-through
+        // to the existing `nl_jit_syscall_call' Rust helper; the
+        // takeover re-exposes that helper as `#[no_mangle]' (no body
+        // change) and adds a sibling `#[no_mangle]' for the const
+        // predicate.  nelisp-cc compiled hot paths skip this bridge
+        // entirely via dlsym + direct CALL.
+        "nelisp_jit_syscall" => super::syscall::nl_jit_syscall_call as *const u8,
+        "nelisp_jit_syscall_supported_p" => {
+            super::syscall::nl_jit_syscall_supported_p as *const u8
+        }
         _ => return None,
     };
     Some(p)

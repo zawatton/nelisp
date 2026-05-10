@@ -1574,5 +1574,67 @@ already added by Phase 7.1.6.a.2; predicate trampoline just inherits)."
              (addr (string-to-number addr-str)))
         (should (> addr 0))))))
 
+;;; Phase 7.1.6.e dlsym integration smoke -----------------------------
+;;
+;; Doc 28 §3.6.e ship gate (= the smoke for the FINAL cluster takeover
+;; — syscall — mirror of Phase 7.1.6.a.2 cons / 7.1.6.b access /
+;; 7.1.6.c arith / 7.1.6.d predicate cluster smokes above).  After
+;; 7.1.6.e the `UnifiedJit' struct + `unified_jit()' OnceLock are
+;; deleted entirely (= no Cranelift wrapper page anywhere in `jit::')
+;; and every `nelisp_jit_*' name resolves through `bridge::
+;; unified_fn_ptr's direct match-arm table to a `#[no_mangle]
+;; extern "C"' Rust trampoline.
+;;
+;; Syscall had a peculiar pre-7.1.6.e shape: the Cranelift IR was a
+;; thin pass-through to an existing `nl_jit_syscall_call' Rust helper
+;; (= the actual libc::syscall wrapper) for the 7-ary trampoline + a
+;; 2-instruction `iconst+return' for the constant `supported_p'
+;; predicate.  The takeover re-exposes the existing helper as
+;; `#[no_mangle]' (no body change — semantics identical) and adds a
+;; sibling `#[no_mangle]' const fn for `supported_p'.
+;;
+;;   1. The `nelisp' binary's dynamic symbol table exposes the
+;;      `#[no_mangle]' syscall trampolines (= `-rdynamic' is wired
+;;      via `.cargo/config.toml', already present from Phase 7.1.6.a.2
+;;      — the syscall trampolines simply inherit it).
+;;   2. `nelisp-cc--dlsym-resolve' returns `:resolved' with a non-zero
+;;      addr for both syscall cluster symbols when invoked in the
+;;      standalone binary.
+;;
+;; Auto-skips when the binary hasn't been built yet (= same skip-unless
+;; gate as the cons / access / arith / predicate smoke).
+
+(ert-deftest nelisp-cc-stage81-poc-7.1.6.e-dlsym-resolves-syscall-cluster ()
+  "Phase 7.1.6.e: dlsym resolves both `nl_jit_syscall_*' symbols.
+
+The cluster takeover (Doc 28 §3.6.e) deletes the Cranelift `JitSyscall'
+wrapper and re-exposes `nl_jit_syscall_call' (= the existing libc
+wrapper) plus a new `nl_jit_syscall_supported_p' const fn as
+`#[no_mangle] extern \"C\"' so the dlsym bridge can locate them.
+Smoke verifies that
+`(nelisp-cc--dlsym-resolve \"nl_jit_syscall_call\")' and
+`(nelisp-cc--dlsym-resolve \"nl_jit_syscall_supported_p\")' each
+return `(:resolved . ADDR)' with ADDR > 0 (= the symbols exist in
+the binary's dynsym table thanks to `-rdynamic' in
+`.cargo/config.toml', already added by Phase 7.1.6.a.2; syscall
+trampolines just inherit).
+
+This is the FINAL cluster takeover — after this Doc 28 §3.6 is
+COMPLETE (a / b / c.arith / d / e all SHIPPED) and `UnifiedJit' is
+fully deleted."
+  (skip-unless (and nelisp-cc-stage81-test--nelisp-bin
+                    (file-executable-p nelisp-cc-stage81-test--nelisp-bin)))
+  (dolist (sym '("nl_jit_syscall_call" "nl_jit_syscall_supported_p"))
+    (let* ((out (nelisp-cc-stage81-test--nelisp-eval
+                 `(nelisp-cc--dlsym-resolve ,sym)))
+           ;; Output shape: "(:resolved . NNNNNNN)" or "(:not-found)".
+           (resolved-prefix "(:resolved . "))
+      (should (string-prefix-p resolved-prefix out))
+      ;; Parse the addr and assert it is non-zero.
+      (let* ((addr-str (substring out (length resolved-prefix)
+                                  (1- (length out))))
+             (addr (string-to-number addr-str)))
+        (should (> addr 0))))))
+
 (provide 'nelisp-cc-stage81-poc-test)
 ;;; nelisp-cc-stage81-poc-test.el ends here

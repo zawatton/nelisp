@@ -522,7 +522,14 @@ A3 を信頼して built される。
   self-bug など) → mitigation: stage2 reject で A2 fallback、不変条件
   (=fixed seed → fixed bytes=) を ERT で固定
 
-** 3.6 Phase 7.1.6 — eval-site primitive lowering takeover (= Cranelift 責任の nelisp-cc 移管)
+** 3.6 Phase 7.1.6 — eval-site primitive lowering takeover (= Cranelift 責任の nelisp-cc 移管) [STATE: COMPLETE 2026-05-10]
+
+:STATE: COMPLETE (a / b / c.arith / d / e all SHIPPED) — see
+§3.6.{a,b,c,d,e}.SHIPPED for per-stage actual deltas.  Aggregate
+Cluster Cranelift wrapper page deletion completed in Phase 7.1.6.e
+(= UnifiedJit struct + unified_jit() OnceLock + 6-step orchestration
+all gone).  §3.6.f = next sub-stage (= dsl + bridge cleanup, ~-2,015
+Rust LOC).
 
 :LATEST: 2026-05-09 — Track M audit で nelisp-cc native compiler =~12,263 LOC elisp= (13 modules) が SHIPPED 確認 (=src/nelisp-cc{.el,-pipeline.el,-x86_64.el,-arm64.el,-runtime.el,-bootstrap.el,-callees.el,-inline.el,-recursive-inline.el,-rewrite.el,-escape.el,-lambda-lift.el,-base-case-fold.el}=).  Phase 7.1.6 = Doc 62 Phase 5.0〜5.5 で =build-tool/src/jit/= に積んだ Cranelift dispatch 経路を nelisp-cc が直接 emit する経路 (= elisp が =mmap PROT_EXEC= page に host machine code を書込む経路、Doc 77c §2.4.2 Path D-B) に移管する.
 
@@ -1284,6 +1291,75 @@ n) nil (progn (nelisp--syscall SYS_getpid) (loop (1- n)))))=) で
 Cranelift baseline 比 ≧ 1.0x.  syscall NR resolve 時の overhead が
 nelisp-cc 側で増えると regression risk → recognition pass で NR const
 fold 推奨.
+
+**** 3.6.e.SHIPPED Phase 7.1.6.e actual delta (2026-05-10) — Doc 28 §3.6 COMPLETE
+
+STATE: SHIPPED (mirror of 7.1.6.d).  Final cluster takeover —
+=UnifiedJit= struct + =unified_jit()= OnceLock + the 6-step
+orchestration are deleted entirely in this commit.
+
+実測 delta (= net):
+- =build-tool/src/jit/syscall.rs= : -114 Rust LOC (= 276 → 162; the
+  deleted scope was the Cranelift IR + struct surface, not the
+  =nl_jit_syscall_call= helper body which is preserved verbatim
+  as =#[no_mangle] pub unsafe extern "C"=, plus a new 1-line
+  =nl_jit_syscall_supported_p= sibling const fn).
+- =build-tool/src/jit/mod.rs= : -75 Rust LOC (= the entire
+  =UnifiedJit= struct + =unified_jit()= OnceLock + 6-step
+  orchestration scaffolding deleted; only =mod = ;'= declarations
+  + =bridge= + =strategy= re-exports remain).
+- =build-tool/src/jit/bridge.rs= : -10 Rust LOC (= =super::unified_jit=
+  import + =let u = unified_jit()= deleted; syscall arms now resolve
+  directly to =super::syscall::nl_jit_syscall_*= trampolines).
+
+aggregate: -199 Rust net (= 162 insertions / 361 deletions).  vs
+design target -286 the actual delta is smaller because the bulk of
+=syscall.rs= was the =libc::syscall= wrapper body which the
+takeover *re-exports* rather than deletes — the struct + IR
+builder + wiring scaffolding (the actual deleted scope) is ~199
+LOC.  This matches the predecessor predicate cluster takeover
+scale (.d = -103 Rust net) and is the expected shrink for a
+"Cranelift wrapper page → already-existing helper exposed via
+=#[no_mangle]=" pattern.
+
+Tests:
+- =cargo test --lib jit::= 81/81 + =image::= 17/17 green (default +
+  =image-baker= feature).
+- ERT 2353/2681 pass, 0 unexpected, 328 skipped (= +1 vs 7.1.6.d
+  baseline 2352 = new syscall dlsym smoke).
+- syscall dlsym evidence:
+  =./target/debug/nelisp eval '(nelisp-cc--dlsym-resolve "nl_jit_syscall_call")'=
+  → =(:resolved . 94860704888896)= (= non-zero addr in dynsym table).
+  =./target/debug/nelisp eval '(nelisp-cc--dlsym-resolve "nl_jit_syscall_supported_p")'=
+  → =(:resolved . NNNNNNN)= (= non-zero addr).
+- bridge =unified_fn_ptr_resolves_all_24_entries= passes — the 24
+  entries (= 12 arith + 5 cons + 4 access + 1 predicate + 2
+  syscall) resolve to 24 distinct =#[no_mangle] extern "C"' Rust
+  trampoline addresses with no Cranelift wrapper page in the
+  resolution path.
+
+Structural notes:
+- =UnifiedJit= struct deleted *entirely* (vs kept-as-skeleton).
+  Decision rationale: after 7.1.6.e no submodule has any field —
+  =syscall= was the last remaining one, and keeping a zero-field
+  =pub(super) struct UnifiedJit;= would just be dead scaffolding
+  with zero callers (=unified_jit()= had been the sole construction
+  site, and its only call site was =bridge::unified_fn_ptr=
+  which now uses direct match-arm resolution).  The struct +
+  =OnceLock= + 6-step orchestration are gone in one shot.
+- =cranelift_jit::{JITBuilder, JITModule}= imports gone from
+  =mod.rs= (the only remaining =cranelift_jit= / =cranelift_module=
+  uses are inside =dsl.rs= which is =#[allow(dead_code)]= with no
+  production caller; Phase 7.1.6.f / Phase 7.1.7 will sweep both).
+- =bridge::unified_fn_ptr= is now the *single* name → fn-ptr table
+  in the entire =jit::= subtree.  All 24 names resolve directly to
+  =super::cluster::nl_jit_*' Rust trampolines via match arms, with
+  no =unified_jit()' indirection.
+
+Doc 28 §3.6 STATE: *COMPLETE* (a / b / c.arith / d / e all
+SHIPPED).  Phase 7.1.6.f (= dsl + bridge cleanup) is the next
+sub-stage; Phase 7.1.7 (= full =build-tool/src/jit/= deletion +
+Cranelift Cargo deps removal) is the final phase per §3.7.
 
 *** 3.6.f Phase 7.1.6.f — =dsl= + =bridge= cleanup (= ~-2,015 Rust LOC)
 
