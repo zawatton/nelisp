@@ -38,6 +38,22 @@
 ;;   (nelisp-asm-arm64-emit-reloc   BUF TYPE SYM &optional ADDEND)
 ;;     ; TYPE = 'b26-pc (= R_AARCH64_CALL26) / 'abs64 (= R_AARCH64_ABS64)
 ;;
+;; State shape (§92.d-arm64 chunk-build, mirroring §92.d x86_64):
+;;   `(:chunks (CHUNK_N ... CHUNK_2 CHUNK_1) :length N
+;;     :bytes "" :pos 0
+;;     :labels ((NAME . POS) ...)
+;;     :fixups ((SLOT LABEL TYPE) ...) :relocs (RELOC ...))'
+;; — a plist held in a single-element vector.  Each emitter
+;; conses a fresh unibyte-string onto =:chunks= (= reverse order,
+;; O(1) per write) and bumps =:length= (= O(1) read).  Finalize
+;; via =(apply #'concat (nreverse :chunks))= once at
+;; =buffer-bytes= call time — O(total-bytes) total.  Replaces
+;; §92.b's =(concat old new)= accumulator that was O(N²) for
+;; long buffers.  The =:bytes= / =:pos= keys are retained as
+;; vestigial init values for API compat; only =:chunks= /
+;; =:length= are touched on the hot path.  Public emitter
+;; signatures are unchanged.
+;;
 ;; Instruction emitters (= §92.b scope):
 ;;
 ;;   mov-imm-z (= MOVZ #imm16, LSL #0)
@@ -124,19 +140,32 @@ Returns a unibyte-string of length 4."
 (defun nelisp-asm-arm64-make-buffer ()
   "Return a fresh empty arm64 assembler buffer.
 The buffer is opaque; use the accessors below to inspect or
-extend it."
-  (vector (list :bytes "" :pos 0 :labels nil
-                :fixups nil :relocs nil)))
+extend it.  §92.d-arm64 chunk-build: =:chunks= holds the
+reverse-order list of unibyte-string chunks pushed by per-
+instruction emitters, =:length= tracks the running cumulative
+byte count (= O(1) read).  The legacy =:bytes= / =:pos= keys
+are kept as vestigial init values for API compat; they are not
+read on the hot path."
+  (vector (list :chunks nil :length 0
+                :bytes "" :pos 0
+                :labels nil :fixups nil :relocs nil)))
 
 (defun nelisp-asm-arm64-buffer-bytes (buf)
   "Return BUF's accumulated bytes as a unibyte-string.
-Not patched — call `nelisp-asm-arm64-resolve-fixups' first if any
-`emit-fixup' entries are pending."
-  (plist-get (nelisp-asm-arm64--unwrap buf) :bytes))
+Finalizes the §92.d-arm64 chunk-build accumulator via one
+`(apply #\\='concat (nreverse :chunks))' call (= O(total-bytes)
+not O(N²)).  Not patched — call `nelisp-asm-arm64-resolve-
+fixups' first if any `emit-fixup' entries are pending.
+Idempotent: uses `copy-sequence' on the chunk spine before
+`nreverse' so repeated reads stay safe."
+  (let ((plist (nelisp-asm-arm64--unwrap buf)))
+    (apply #'concat
+           (nreverse (copy-sequence (plist-get plist :chunks))))))
 
 (defun nelisp-asm-arm64-buffer-pos (buf)
-  "Return BUF's current byte offset (= number of bytes written)."
-  (plist-get (nelisp-asm-arm64--unwrap buf) :pos))
+  "Return BUF's current byte offset (= number of bytes written).
+§92.d-arm64: read from the cached `:length' field (= O(1))."
+  (plist-get (nelisp-asm-arm64--unwrap buf) :length))
 
 (defun nelisp-asm-arm64-buffer-labels (buf)
   "Return BUF's labels alist `((NAME . POS) ...)' (reverse-defn order)."
@@ -155,13 +184,15 @@ order matches emit order, suitable for Doc 93 linker handoff."
 
 (defun nelisp-asm-arm64--append-bytes (buf bs)
   "Append unibyte-string BS to BUF's byte stream and advance pos.
-Internal mutator — call sites are the per-instruction emitters."
+Internal mutator — call sites are the per-instruction emitters.
+§92.d-arm64 chunk-build: cons BS onto =:chunks= (= O(1) push)
+and bump =:length=, instead of =(concat old bs)= which was
+O(N²) for long buffers."
   (let* ((plist (nelisp-asm-arm64--unwrap buf))
-         (old (plist-get plist :bytes))
-         (pos (plist-get plist :pos))
-         (new (concat old bs)))
-    (setq plist (plist-put plist :bytes new))
-    (setq plist (plist-put plist :pos (+ pos (length bs))))
+         (chunks (plist-get plist :chunks))
+         (len (plist-get plist :length)))
+    (setq plist (plist-put plist :chunks (cons bs chunks)))
+    (setq plist (plist-put plist :length (+ len (length bs))))
     (nelisp-asm-arm64--rewrap buf plist)))
 
 (defun nelisp-asm-arm64--emit-word (buf word)
@@ -179,7 +210,7 @@ shadow would mask codegen bugs."
       (signal 'nelisp-asm-arm64-error
               (list :duplicate-label name)))
     (setq plist (plist-put plist :labels
-                           (cons (cons name (plist-get plist :pos))
+                           (cons (cons name (plist-get plist :length))
                                  labels)))
     (nelisp-asm-arm64--rewrap buf plist)))
 
@@ -216,7 +247,7 @@ r_addend)."
   (let* ((plist (nelisp-asm-arm64--unwrap buf))
          (relocs (plist-get plist :relocs))
          (entry (list :type type :sym sym
-                      :offset (plist-get plist :pos)
+                      :offset (plist-get plist :length)
                       :addend (or addend 0))))
     (setq plist (plist-put plist :relocs (append relocs (list entry))))
     (nelisp-asm-arm64--rewrap buf plist)))
@@ -245,9 +276,16 @@ same 26-bit field shape; the base opcode bits already in the slot
 distinguish B from BL).  Signals `nelisp-asm-arm64-error' on a
 fixup whose LABEL was never defined or whose displacement is not
 4-byte aligned or out of ±128 MiB range.  Returns the patched
-unibyte-string; BUF is mutated in place."
+unibyte-string; BUF is mutated in place.
+
+§92.d-arm64 chunk-build: finalize chunks once into a single
+materialized unibyte-string, patch via a mutable vector, then
+store back as a single chunk (= the cached chunk list collapses
+to length 1 so subsequent `buffer-bytes' calls remain
+O(total-bytes))."
   (let* ((plist  (nelisp-asm-arm64--unwrap buf))
-         (bytes  (plist-get plist :bytes))
+         (chunks (plist-get plist :chunks))
+         (bytes  (apply #'concat (nreverse (copy-sequence chunks))))
          (labels (plist-get plist :labels))
          (fixups (plist-get plist :fixups))
          (n (length bytes))
@@ -277,7 +315,9 @@ unibyte-string; BUF is mutated in place."
                                  (logand imm26 #x3FFFFFF))))
               (nelisp-asm-arm64--write-word-le vec slot new))))))
     (let ((patched (apply #'unibyte-string (append vec nil))))
-      (setq plist (plist-put plist :bytes patched))
+      ;; Collapse chunk list to a single materialized chunk so
+      ;; subsequent `buffer-bytes' calls return the patched form.
+      (setq plist (plist-put plist :chunks (list patched)))
       (nelisp-asm-arm64--rewrap buf plist)
       patched)))
 
@@ -455,6 +495,24 @@ then records a `b26' fixup at the placeholder offset."
   (let ((slot (nelisp-asm-arm64-buffer-pos buf)))
     (nelisp-asm-arm64--emit-word buf #x14000000)
     (nelisp-asm-arm64-emit-fixup buf slot label 'b26)))
+
+;; ---- §92.d-arm64 benchmark helper (= chunk-build perf gate) ----
+
+(defun nelisp-asm-arm64-benchmark-emit (buf nbytes)
+  "Emit ~NBYTES of synthetic NOP instructions into BUF.
+Used by §92.d-arm64 perf gate (= 1 MB synthetic emit must
+finish in < 5 sec on commodity hardware).  Each iteration calls
+`nelisp-asm-arm64-nop' which pushes a 4-byte chunk onto
+=:chunks=; the loop runs ceil(NBYTES/4) times so the total
+emitted byte count is the smallest multiple of 4 >= NBYTES
+(= AArch64 instructions are fixed-width 4 bytes).  Returns BUF
+(= chainable).  Mirrors §92.d's x86_64 benchmark pattern."
+  (let* ((words (/ (+ nbytes 3) 4))
+         (i 0))
+    (while (< i words)
+      (nelisp-asm-arm64-nop buf)
+      (setq i (1+ i))))
+  buf)
 
 (provide 'nelisp-asm-arm64)
 

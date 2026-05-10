@@ -6,7 +6,8 @@
 
 - *State*: DRAFT — §92.a SHIPPED (2026-05-11, see §7.1.S), §92.b
   SHIPPED (2026-05-11, see §7.2.S), §92.c SHIPPED (2026-05-11, see
-  §7.3.S), §92.d SHIPPED (2026-05-11, see §7.4.S).
+  §7.3.S), §92.d SHIPPED (2026-05-11, see §7.4.S), §92.d-arm64
+  SHIPPED (2026-05-11, see §7.4.S-arm64).
   Doc 85 §3.2 / §5.1 で「Phase 47 着手なら macro assembler 拡張
   ~800 elisp / Rust 削減なし (= 既存 Rust 側に encoder 自体は無い)」
   とした component の articulate)
@@ -918,7 +919,72 @@ Deferrals:
   AOT compile.
 - arm64 sibling (= mirror §92.d into =nelisp-asm-arm64.el=) not
   touched this slice — out of scope per task constraints
-  (=§92.d covers x86_64 only=).
+  (=§92.d covers x86_64 only=).  Now SHIPPED separately as
+  §92.d-arm64, see §7.4.S-arm64 below.
+
+*** §7.4.S-arm64 §92.d-arm64 SHIPPED (2026-05-11)
+
+State: SHIPPED on branch =agent-doc-92d-arm64-impl=.  Mirrors
+§92.d's chunk-build pattern (commit =fa5aaae8=) into
+=lisp/nelisp-asm-arm64.el=.  Replaces §92.b's =(concat old
+new)= per-emit accumulator (O(N²) for long buffers) with the
+same reverse-order chunk list + cached length field.
+Buffer struct moves to =(:chunks ... :length N :bytes "" :pos
+0 :labels ... :fixups ... :relocs ...)=; the legacy =:bytes=
+/ =:pos= keys are retained as vestigial init values for API
+compat but are not read on the hot path.  AArch64
+instructions are fixed-width 4 bytes, so per-emit chunks are
+all length 4 (= one unibyte-string of 4 bytes per emitter
+call).
+
+1. Buffer struct refactor as above.  =buffer-bytes=
+   finalizes via =(apply #'concat (nreverse (copy-sequence
+   :chunks)))= once at call time (= O(total-bytes)).
+   =buffer-pos= reads cached =:length= (= O(1)).
+2. =--append-bytes= conses onto =:chunks= and bumps
+   =:length= (= O(1) push).
+3. =define-label= reads =:length= for the resolved
+   position.  =emit-reloc= reads =:length= for the offset
+   slot.
+4. =resolve-fixups= rewritten to materialize chunks once via
+   =apply concat nreverse=, patch via mutable vector, then
+   store back as a single chunk (= chunk list collapses to
+   length 1).  Subsequent =buffer-bytes= calls return the
+   patched form.
+5. =buffer-bytes= idempotent (= =copy-sequence= on the chunk
+   spine before =nreverse=, so repeated reads stay safe).
+6. New public benchmark helper
+   =nelisp-asm-arm64-benchmark-emit BUF NBYTES= calls
+   =nelisp-asm-arm64-nop= ceil(NBYTES/4) times so the
+   emitted byte count is the smallest multiple of 4 ≥
+   NBYTES (= AArch64 fixed-width 4-byte instr).
+
+Public API surface (= 12 emitters + label/fixup/reloc
+helpers) unchanged.  All 42 §92.b ert pass without
+modification (= no signature regression).
+
+LOC delta (assembler only, =wc -l=):
+- =lisp/nelisp-asm-arm64.el=: +58 LOC (= 461 → 519).
+- =test/nelisp-asm-arm64-test.el=: +126 LOC (= 428 → 554),
+  7 new ert-deftest cases (= 1 invariant + 1 finalize
+  cross-check + 1 idempotent + 1 resolve-fixups collapse +
+  2 perf gate 100KB / 1MB + 1 buffer-pos O(1) cache).
+
+Verification:
+- =emacs --batch -Q -L lisp --eval '(setq
+  byte-compile-error-on-warn t)' -f batch-byte-compile
+  lisp/nelisp-asm-arm64.el= → 0 warnings.
+- =emacs --batch -L src -L lisp -l ert -l
+  test/nelisp-asm-arm64-test.el -f
+  ert-run-tests-batch-and-exit= → 49/50 pass + 1 skip (=
+  objdump aarch64 unsupported on x86_64 host = same as §92.b
+  baseline), 0 unexpected.
+- =make compile= → exit 0.
+- Benchmark: 1 MB synthetic NOP emit in 0.099 sec
+  interpreted (= 50× under the 5 sec budget).  100 KB ert
+  perf gate completes in ~0.008 sec, 1 MB ert perf gate in
+  ~0.110 sec (= measured under =ert-run-tests-batch-and-
+  exit=, non-byte-compiled overhead).
 
 ** §7.5 sub-stage 順序と並列性
 

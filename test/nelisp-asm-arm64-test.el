@@ -423,6 +423,132 @@ exec a probe and check exit status."
             (should (string-match-p "svc[[:space:]]+#0" out))))
       (when (file-exists-p tmp) (delete-file tmp)))))
 
+;; ---- §92.d-arm64 chunk-build invariants + perf gate ----
+
+(ert-deftest nelisp-asm-arm64-92d-chunks-field-exists-after-emit ()
+  ;; §92.d-arm64 invariant: emitter must push onto :chunks (=
+  ;; reverse-order list) and bump :length, instead of concatenating
+  ;; onto :bytes.  AArch64 instructions are fixed-width 4 bytes, so
+  ;; one nop + one ret = 2 chunks, each length 4 = total :length 8.
+  (let* ((b (nelisp-asm-arm64-make-buffer)))
+    (nelisp-asm-arm64-nop b)
+    (nelisp-asm-arm64-ret b)
+    (let* ((plist (aref b 0))
+           (chunks (plist-get plist :chunks))
+           (len (plist-get plist :length)))
+      (should (listp chunks))
+      (should (= (length chunks) 2))
+      ;; Most-recent push at head -> ret first, nop second.
+      ;; RET (X30) = 0xD65F03C0 -> LE bytes C0 03 5F D6.
+      (should (equal (car chunks)
+                     (nelisp-asm-arm64-test--ub #xC0 #x03 #x5F #xD6)))
+      ;; NOP = 0xD503201F -> LE bytes 1F 20 03 D5.
+      (should (equal (cadr chunks)
+                     (nelisp-asm-arm64-test--ub #x1F #x20 #x03 #xD5)))
+      (should (= len 8)))))
+
+(ert-deftest nelisp-asm-arm64-92d-buffer-bytes-finalize-matches ()
+  ;; §92.d-arm64 invariant: finalize via `apply concat nreverse'
+  ;; yields the same byte sequence as the pre-optimization
+  ;; concat-on-each-emit pattern.  Cross-check with `exit(0)' shape.
+  (let ((b (nelisp-asm-arm64-make-buffer)))
+    (nelisp-asm-arm64-mov-imm-z b 'x8 93)
+    (nelisp-asm-arm64-mov-imm-z b 'x0 0)
+    (nelisp-asm-arm64-svc b 0)
+    (should (equal (nelisp-asm-arm64-buffer-bytes b)
+                   (concat
+                    (nelisp-asm-arm64-test--ub #xA8 #x0B #x80 #xD2)
+                    (nelisp-asm-arm64-test--ub #x00 #x00 #x80 #xD2)
+                    (nelisp-asm-arm64-test--ub #x01 #x00 #x00 #xD4))))
+    (should (= (nelisp-asm-arm64-buffer-pos b) 12))))
+
+(ert-deftest nelisp-asm-arm64-92d-buffer-bytes-idempotent ()
+  ;; §92.d-arm64: `buffer-bytes' must be idempotent — repeated calls
+  ;; return the same string and do not destructively reverse :chunks.
+  (let ((b (nelisp-asm-arm64-make-buffer)))
+    (nelisp-asm-arm64-nop b)
+    (nelisp-asm-arm64-nop b)
+    (nelisp-asm-arm64-ret b)
+    (let ((first  (nelisp-asm-arm64-buffer-bytes b))
+          (second (nelisp-asm-arm64-buffer-bytes b))
+          (third  (nelisp-asm-arm64-buffer-bytes b)))
+      (should (equal first second))
+      (should (equal second third))
+      (should (= (length first) 12))
+      ;; First 4 bytes = NOP LE.
+      (should (= (aref first 0) #x1F))
+      (should (= (aref first 1) #x20))
+      (should (= (aref first 2) #x03))
+      (should (= (aref first 3) #xD5)))))
+
+(ert-deftest nelisp-asm-arm64-92d-resolve-fixups-collapses-chunks ()
+  ;; §92.d-arm64: `resolve-fixups' materializes + patches + stores
+  ;; back as a single chunk; subsequent `buffer-bytes' returns the
+  ;; patched form.  BL to immediately following label = imm26 = 1.
+  (let ((b (nelisp-asm-arm64-make-buffer)))
+    (nelisp-asm-arm64-bl b 'foo)
+    (nelisp-asm-arm64-define-label b 'foo)
+    (nelisp-asm-arm64-ret b)
+    (let ((patched (nelisp-asm-arm64-resolve-fixups b)))
+      ;; BL with imm26 = 1 -> 0x94000001 -> LE 01 00 00 94.
+      (should (equal patched
+                     (concat
+                      (nelisp-asm-arm64-test--ub #x01 #x00 #x00 #x94)
+                      (nelisp-asm-arm64-test--ub #xC0 #x03 #x5F #xD6))))
+      ;; After resolve, chunks list is collapsed to a single chunk.
+      (let* ((plist (aref b 0))
+             (chunks (plist-get plist :chunks)))
+        (should (= (length chunks) 1))
+        (should (equal (car chunks) patched)))
+      ;; And `buffer-bytes' returns the patched form.
+      (should (equal (nelisp-asm-arm64-buffer-bytes b) patched)))))
+
+(ert-deftest nelisp-asm-arm64-92d-benchmark-emit-100kb ()
+  ;; §92.d-arm64 perf gate: 100 KB of synthetic NOP emit completes
+  ;; well under 2 sec on commodity hardware via chunk-build (= O(N)
+  ;; total).  Pre-optimization `(concat old bs)` per byte was O(N²)
+  ;; and would take >30 sec for 100 KB.
+  (let* ((b (nelisp-asm-arm64-make-buffer))
+         (nbytes (* 100 1024))
+         (start (current-time)))
+    (nelisp-asm-arm64-benchmark-emit b nbytes)
+    (let* ((bytes (nelisp-asm-arm64-buffer-bytes b))
+           (elapsed (float-time (time-subtract (current-time) start))))
+      (should (= (length bytes) nbytes))
+      ;; First 4 bytes of every chunk are NOP LE (1F 20 03 D5).
+      (should (= (aref bytes 0) #x1F))
+      (should (= (aref bytes 3) #xD5))
+      (should (= (aref bytes (- nbytes 4)) #x1F))
+      (should (= (aref bytes (- nbytes 1)) #xD5))
+      (should (< elapsed 2.0)))))
+
+(ert-deftest nelisp-asm-arm64-92d-benchmark-emit-1mb ()
+  ;; §92.d-arm64 perf gate: 1 MB of synthetic NOP emit completes in
+  ;; < 5 sec.  Mirrors §92.d x86_64's 1 MB benchmark target.
+  (let* ((b (nelisp-asm-arm64-make-buffer))
+         (nbytes (* 1024 1024))
+         (start (current-time)))
+    (nelisp-asm-arm64-benchmark-emit b nbytes)
+    (let* ((bytes (nelisp-asm-arm64-buffer-bytes b))
+           (elapsed (float-time (time-subtract (current-time) start))))
+      (should (= (length bytes) nbytes))
+      (should (= (nelisp-asm-arm64-buffer-pos b) nbytes))
+      (should (< elapsed 5.0)))))
+
+(ert-deftest nelisp-asm-arm64-92d-buffer-pos-cached-o1 ()
+  ;; §92.d-arm64: `buffer-pos' must read from cached :length field
+  ;; (= O(1)) — never traverse :chunks to recompute total bytes.
+  ;; AArch64 instructions are 4 bytes each.
+  (let ((b (nelisp-asm-arm64-make-buffer)))
+    (should (= (nelisp-asm-arm64-buffer-pos b) 0))
+    (nelisp-asm-arm64-nop b)
+    (should (= (nelisp-asm-arm64-buffer-pos b) 4))
+    (dotimes (_ 100) (nelisp-asm-arm64-nop b))
+    (should (= (nelisp-asm-arm64-buffer-pos b) 404))
+    ;; mov-imm64 with #xDEADBEEFCAFEBABE = 4 slices = 16 bytes.
+    (nelisp-asm-arm64-mov-imm64 b 'x0 #xDEADBEEFCAFEBABE)
+    (should (= (nelisp-asm-arm64-buffer-pos b) 420))))
+
 (provide 'nelisp-asm-arm64-test)
 
 ;;; nelisp-asm-arm64-test.el ends here
