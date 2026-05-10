@@ -1050,6 +1050,105 @@ Commits (= 1 atomic on agent-doc-86-1e-impl branch):
 1. nelisp: Doc 86 §86.1.e SHIPPED — Tier 2 simple (= 3 arm,
    +132 Rust / +96 elisp / +175 jit/strings.rs net)
 
+** §12.7 §86.3.b — env shadow path (SHIPPED 2026-05-10)
+
+Per Doc 89 §4.2 §86.3.b 仕様の cfg-gated dual-update verification を
+全 currently-implemented Tier 3 dispatch arm + 連動 mod.rs /
+special_forms.rs callsite に配線完了.
+
+Cargo feature =env-shadow-verify= (= default off) を新設し、有効時に
+全対象 callsite で:
+  1. 既存 =Env::*= method で canonical answer 計算 (= 不変)
+  2. 同じ =Env::globals= を slim shim primitive (= §86.3.a precursor
+     の =env_shim.rs= が見ている view) でも読み出し
+  3. 比較 → 一致なら no-op、divergence なら test/debug build で
+     panic、production build で =eprintln!= warning
+
+Tier 3 dispatch arm (= 9 件、currently-implemented):
+- =bi_symbol_value= → =verify_elisp_mirror_lookup_value= (frame-aware skip)
+- =bi_symbol_function= → =verify_elisp_mirror_lookup_function=
+- =bi_fboundp= → =verify_elisp_mirror_is_fbound=
+- =bi_boundp= → =verify_elisp_mirror_is_bound= (frame-aware skip)
+- =bi_defalias= → =verify_elisp_mirror_set_function=
+- =bi_set= → =verify_elisp_mirror_set_value= (frame-aware skip)
+- =bi_fset= → =verify_elisp_mirror_set_function=
+- =bi_fmakunbound= → =verify_elisp_mirror_clear_function=
+- =bi_makunbound= → =verify_elisp_mirror_clear_value=
+
+連動 callsite (= 4 件):
+- =eval/mod.rs= =eval_str_all_at_path= の =env.set_value= 3 件
+  (default-directory / load-file-name / load-path init)
+- =eval/mod.rs= =eval_inner= の =env.lookup_value= (= symbol
+  evaluator hot path)
+- =eval/special_forms.rs= =sf_setq= の =env.set_value=
+
+Coverage gap (= 任せられた task spec の "12 arm 一覧" のうち):
+- =default-value= / =set-default= / =default-boundp= / =defvaralias=
+  は **現 builtins.rs に存在しない** 4 件 = NeLisp は dynamic
+  binding を defvar した変数も lexical 扱いする (Doc 89 §7.1) ため
+  =default-*= 系は未実装、=defvaralias= 同様未実装.  これらの arm が
+  追加された時点で §86.3.b' follow-up patch で wrap 拡張可能.
+
+LOC delta:
+- =build-tool/Cargo.toml= : +9 (= [features] section)
+- =build-tool/src/eval/env.rs= : +210 (= 7 verify helper + frame_stack
+  predicate + 共通 verify_report / shadow_sexp_eq、全て =cfg= gated)
+  + +128 cfg(test) 配下 shadow_verify_tests
+- =build-tool/src/eval/builtins.rs= : +49 (= 9 arm wrap、cfg-gated)
+- =build-tool/src/eval/mod.rs= : +33 / -18 net (= 4 callsite wrap、
+  set_value 3 件は let-binding refactor で +/- 相殺、cfg-gated)
+- =build-tool/src/eval/special_forms.rs= : +3 (= 1 callsite wrap、
+  cfg-gated)
+- =test/nelisp-substrate-env-shim-shadow-test.el= : +140 (= 9 ERT
+  smoke、released-binary subprocess pattern)
+
+*Production LOC delta: +0* (= 全 verify code path は =cfg(feature =
+"env-shadow-verify")= gated、default build では byte-identical).
+
+Verification gate (= 全 pass、Doc 89 §4.2.2 spec 通り):
+- =cargo build --workspace --release= : green / 0 warning
+- =cargo build --workspace --release --features env-shadow-verify= :
+  green / 0 warning
+- =cargo test --workspace --release --lib --test-threads=1= : 713
+  passed / 0 failed (= baseline + 0)
+- =cargo test --workspace --release --features env-shadow-verify
+  --lib --test-threads=1= : 720 passed / 0 failed (= baseline + 7
+  shadow verify tests)
+- =make compile= : exit 0 (= byte-compile-error-on-warn t clean)
+- =make test= : 2587 expected / 1 known flake (=
+  =nelisp-eval-core/apply-fn-dispatches-to-builtin= baseline pre-
+  existing) / 128 skipped / **0 new failures**
+- =make bake-check= : exit 0 (= images in sync)
+
+ERT shadow gate (= Doc 89 §4.2.2 acceptance criteria):
+- 既存 env 関連 ERT 1300+ test 全 green、shadow verify 経路で fail 0
+- =substrate-env-shim-shadow= synthetic divergence test:
+  =synthetic_divergence_is_bound_caught= +
+  =synthetic_divergence_lookup_value_caught= ともに =should_panic= 通過
+  = verify gate が defect を確実に catch する確認
+
+CI matrix 提案 (= Doc 89 §4.2.2 / Doc 86 §86.3.c switch-over gate):
+=.github/workflows/ci.yml= に 1 job 追加で実装可:
+
+#+begin_src yaml
+  cargo-test-env-shadow-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rs/toolchain@v1
+      - run: cargo test --workspace --release --features env-shadow-verify
+#+end_src
+
+Pre-§86.3.c switch-over の "1 week of CI green" gate (= Doc 89
+§4.2.1 末尾) は本 job が divergence-free で stable 通過することで充足.
+
+Commits (= 4 atomic):
+1. build-tool: Doc 86 §86.3.b — add env-shadow-verify Cargo feature
+2. build-tool: Doc 86 §86.3.b — verify_elisp_mirror_* helpers in env.rs
+3. build-tool: Doc 86 §86.3.b — wire shadow verify at 12 callsites
+4. test: Doc 86 §86.3.b — shadow verify smoke + synthetic-divergence
+   (この §12.7 SHIPPED status update を含めて 5 atomic commit)
+
 * §13 v2 reconcile appendix (= 2026-05-10)
 
 Doc 87 / Doc 88 / Doc 89 detail design 起こし時に判明した v1 estimate
