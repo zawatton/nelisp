@@ -46,14 +46,6 @@ impl ReadError {
     pub fn not_yet_implemented(feature: impl Into<String>, pos: SourcePos) -> Self {
         ReadError::NotYetImplemented { feature: feature.into(), pos }
     }
-    pub fn pos(&self) -> SourcePos {
-        match self {
-            ReadError::Lex { pos, .. }
-            | ReadError::Parse { pos, .. }
-            | ReadError::UnexpectedEof { pos, .. }
-            | ReadError::NotYetImplemented { pos, .. } => *pos,
-        }
-    }
 }
 
 impl fmt::Display for ReadError {
