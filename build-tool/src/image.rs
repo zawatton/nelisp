@@ -28,6 +28,7 @@
 
 use crate::eval::{self, Env, EvalError};
 use crate::eval::env::SymbolEntry;
+use crate::eval::error::ReadError;
 use crate::eval::nlboolvector::NlBoolVectorRef;
 use crate::eval::nlcell::NlCellRef;
 use crate::eval::nlchartable::NlCharTableRef;
@@ -35,8 +36,7 @@ use crate::eval::nlconsbox::NlConsBoxRef;
 use crate::eval::nlrecord::NlRecordRef;
 use crate::eval::nlstr::NlStrRef;
 use crate::eval::nlvector::NlVectorRef;
-use crate::eval::sexp::CharTableInner;
-use crate::reader::{ReadError, Sexp};
+use crate::eval::sexp::{CharTableInner, Sexp};
 #[cfg(any(test, feature = "image-baker"))]
 use crate::reader;
 #[cfg(any(test, feature = "image-baker"))]

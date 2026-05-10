@@ -27,4 +27,24 @@ pub mod image;
 // `nl-jit-call-*' bridge primitives; eval-loop dispatches builtins
 // directly to `eval::builtins::dispatch' (no `lower_entries' hook).
 pub mod jit;
+// Phase 8 Stage 8.4 (Doc 73 §2.4, 2026-05-09) — reader feature gate.
+// Production callsites of `reader::read_*' have all been migrated:
+//   - `eval::eval_str' / `eval_str_all' route through the elisp reader
+//     (Stage 7.7.c.1, Doc 72).
+//   - `bridge/loader.rs::bootstrap_self_host' uses `read_all_with_line_
+//     via_elisp' (Stage 8.3.b, Doc 73).
+//   - The boot path now reads pre-baked NELIMG v3 images via `image::
+//     decode_v3' (Stage 9.5, Doc 75).
+//   - `image::compile_elisp_to_image' is the lone remaining baker
+//     callsite, already gated behind the `image-baker' feature
+//     (Stage 7.7.c.2, Doc 72).
+//   - Cargo unit tests use `eval::read_one_via_elisp' fixtures
+//     (Stage 7.7.d, Doc 72), but a small set of reader-internal ERTs
+//     under `reader/{lexer,parser,mod}::tests' still need the module
+//     compiled in test config.
+// Default builds therefore drop the entire reader module (~1,679 LOC)
+// — `cargo build` (no features) no longer pulls in `reader/{lexer,
+// parser,mod}.rs'.  The `image-baker' feature and `cfg(test)' both
+// pull it back in for the baker bin and the reader's own unit tests.
+#[cfg(any(test, feature = "image-baker"))]
 pub mod reader;
