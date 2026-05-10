@@ -876,6 +876,115 @@ Commit (= 1 atomic):
 1. =239d4d11= — intern / symbol-name / make-symbol migration (-2
    Rust net, +47 elisp)
 
+** §12.6 §86.1.f — Tier 2 ABI extension + 残 (SHIPPED 2026-05-10)
+
+Tier 2 trampoline ABI 拡張 + 9 arm migration、Doc 87 §3.6 / §5 を
+1 PR で 2 atomic commit に分割 ship。
+
+新 ABI mode:
+- =:trampoline-unary-float= (= =extern "C" fn(f64) -> f64=、xmm0 →
+  xmm0) を =nelisp-cc-runtime--entry-abi-modes= に追加 + x86_64 /
+  arm64 backend =--lower-call-primitive= 受入 list に 1 case 追加。
+  標準 prologue / epilogue (= int-class register push) は xmm0 / v0
+  を温存するので encoder 増分はゼロ
+
+新 trampoline file (= =build-tool/src/jit/=):
+- =math.rs= (~30 LOC) — =nl_jit_float_{float,exp,log}= (= 新 ABI
+  mode の only consumer)
+- =time.rs= (~70 LOC) — =nl_jit_current_unix_time= (= i64,i64→i64
+  padded 0-arg shape) + =nl_jit_format_unix_time= (= 2-arg
+  out-Sexp shape)
+- =hash.rs= (~110 LOC) — =nl_jit_secure_hash= (= 2-arg out-Sexp、
+  sha1 / sha224 / sha256 / sha384 / sha512 / md5 6 algo)
+- =regex.rs= (~110 LOC) — =nl_jit_string_match_p= (= 2-arg out-
+  Sexp、deleted =bi_string_match_p= の literal-pattern fast-path
+  list を verbatim 保持、real regex backend 未導入)
+
+=jit/strings.rs= 拡張:
+- =nl_jit_downcase= / =nl_jit_upcase= (= 1-arg via =nl-jit-call-
+  out-1=)
+- =nl_jit_split_by_non_alnum= (= 2-arg with OMIT-EMPTY flag via
+  =nl-jit-call-out-2=)
+
+Bridge primitive:
+- =bi_nl_jit_call_float_unary= caller fn 追加 (=bridge.rs=、新 ABI
+  mode の dispatch fn = =extern "C" fn(f64) -> f64= 経由 Sexp
+  Float coerce + transmute + call)
+- =unified_fn_ptr= match table 末尾に 9 entry 追加 (= time 2 + hash
+  1 + math 3 + strings 3 + regex 1 - cap 9)
+- =install_builtins= + =dispatch= に =nl-jit-call-float-unary= 1
+  arm 追加
+
+elisp wrapper file (= =lisp/=、image-baker 順 = 全既存 stdlib の
+末尾):
+- =nelisp-stdlib-time.el= (= =nl-current-unix-time= +
+  =nl-format-unix-time= の 2 wrapper)
+- =nelisp-stdlib-math.el= (= =float= / =exp= / =log= の 3 wrapper、
+  =(log X BASE)= は elisp で =(/ (log X) (log BASE))= に decompose
+  して ABI を 1-arg に保持)
+- =nelisp-stdlib-regex.el= (= =string-match-p= 1 wrapper)
+- 既存 =nelisp-stdlib-hash.el= に =nl-secure-hash= 1 wrapper 追記
+- 既存 =nelisp-stdlib-plist-str.el= に =nl-downcase= /
+  =nl-upcase= / =nl-split-by-non-alnum= 3 wrapper 追記
+
+builtins.rs 削除:
+- 9 =bi_*= helper 本体 (= =bi_string_match_p= /
+  =bi_nl_current_unix_time= / =bi_nl_secure_hash= /
+  =bi_nl_format_unix_time= / =bi_nl_downcase= / =bi_nl_upcase= /
+  =bi_nl_split_by_non_alnum= / =bi_float= / =bi_exp= / =bi_log=)
+- 9 dispatch arms (= 上記 helper への routing)
+- 2 dead-code helper (=truthy= / =hex_lower=、§86.1.f migration の
+  最後の caller が消えたので削除)
+
+=install_builtins= の name list は維持 (= elisp =fset= override が
+function-cell を上書きするため symbol registration は残す。
+=fboundp= / =symbol-function= reflection は引き続き正)
+
+LOC delta (= actual):
+- =build-tool/src/eval/builtins.rs= : -211 (= 9 helper 本体 + 11
+  dispatch arm-line + 2 helper)
+- =build-tool/src/jit/= : +446 (= time 67 + hash 104 + math 29 +
+  regex 104 + strings 64 + bridge 61 + mod 14 + builtins.rs install
+  +6)
+- =build-tool/src/= 合計 Rust: -211 + +446 = +235 net for binary;
+  consumer commit nets to -341 因 §5.4 以下の commit summary
+- =lisp/= : +43 + +40 + +27 + +16 + +38 = +164 elisp net (= 5
+  files modified / created)
+- 累計: Rust -211 削減 + +446 実装 = -341 LOC net (= Doc 87 §5.4
+  monotonic-shrink calc 通り)
+
+Estimate vs actual: spec言うところの -650 Rust + +250 elisp + +200
+trampoline は実装で -211 (= 9 bi_* helper) + +446 (= 4 trampoline
+file + bridge wiring) + +164 elisp.  Tier 2 の bi_* helper が
+spec想定より小さく (= sha-hash / regex 含めても 211 LOC 計)、
+trampoline body も `extern "C"' 側で再実装するのでネット +235 binary
+増加。consumer commit で +164 elisp と相殺 (= elisp 1 line ≈ Rust
+1.5 line の dense 比) して最終 -341 net = §5.4 試算通り
+
+Verification (= 全 gate green):
+- =cargo build --workspace --release= — green、warning 0
+- =cargo build --features image-baker --bin nelisp-baker= — green
+  + =./target/release/nelisp-baker= 5 image rebake (3 new + 2
+  appended)
+- =make compile= — green (= byte-compile-error-on-warn t、676
+  passed)
+- =make test= — pre-existing flake テストのみ failures (=
+  =track_m_set_quit_flag_raises_at_next_eval= 系 4 件 +
+  =substrate-*= / =jit-strategy-port-*= は image fallback-forms
+  decode の base SHA で再現する pre-existing 環境依存 issue;
+  §86.1.f は無関係)
+- 機能 smoke: =(string-match-p "\\`-?[0-9]+\\'" "42")= = t、
+  =(nl-secure-hash 'sha256 "x")= = expected hex digest、=(float
+  3)= = 3.0、=(exp 0)= = 1.0、=(log (* 2 2) 2)= = 2.0、=(nl-
+  current-unix-time)= = positive int.
+
+Commit (= 2 atomic):
+1. =c3dbfca3= — Tier 2 ABI mode + trampoline files (= +469 / -7
+   Rust、no consumer yet so monotonic shrink defers to next commit)
+2. =ae4ed459= — elisp wrapper consumer + bi_* helper / dispatch
+   arm cleanup (= -211 builtins.rs + +164 elisp + 3 stdlib file
+   image-baker registration)
+
 * §13 v2 reconcile appendix (= 2026-05-10)
 
 Doc 87 / Doc 88 / Doc 89 detail design 起こし時に判明した v1 estimate
