@@ -2207,7 +2207,8 @@ written back to the def's allocated register if a def is present."
                         :trampoline-binary-ctor
                         :trampoline-binary-mut
                         :trampoline-binary-aref
-                        :trampoline-ternary-aset))
+                        :trampoline-ternary-aset
+                        :trampoline-unary-float))
       (signal 'nelisp-cc-x86_64-encoding-error
               (list :ssa-call-primitive-bad-abi abi)))
     (when (> n (length nelisp-cc-x86_64--int-arg-regs))

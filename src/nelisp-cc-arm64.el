@@ -1303,7 +1303,8 @@ return) is written back to the def's allocated register."
                         :trampoline-binary-ctor
                         :trampoline-binary-mut
                         :trampoline-binary-aref
-                        :trampoline-ternary-aset))
+                        :trampoline-ternary-aset
+                        :trampoline-unary-float))
       (signal 'nelisp-cc-arm64-encoding-error
               (list :ssa-call-primitive-bad-abi abi)))
     (when (> n (length nelisp-cc-arm64--int-arg-regs))

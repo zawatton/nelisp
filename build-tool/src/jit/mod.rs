@@ -28,13 +28,21 @@ mod box_accessor;
 // 3 calling shapes (i64/i64, ptr/ptr, 7×i64).
 pub(super) mod bridge;
 pub(crate) use bridge::{
-    bi_nl_jit_call_float_cmp, bi_nl_jit_call_float_float, bi_nl_jit_call_i64_i64,
-    bi_nl_jit_call_out_1, bi_nl_jit_call_out_1i, bi_nl_jit_call_out_2,
-    bi_nl_jit_call_out_2i, bi_nl_jit_call_ptr_ptr, bi_nl_jit_call_syscall,
+    bi_nl_jit_call_float_cmp, bi_nl_jit_call_float_float, bi_nl_jit_call_float_unary,
+    bi_nl_jit_call_i64_i64, bi_nl_jit_call_out_1, bi_nl_jit_call_out_1i,
+    bi_nl_jit_call_out_2, bi_nl_jit_call_out_2i, bi_nl_jit_call_ptr_ptr,
+    bi_nl_jit_call_syscall,
 };
 mod cons;
 mod float;
+// Doc 87 §86.1.f (2026-05-10): hash / math / regex / time trampolines.
+mod hash;
+mod math;
 mod predicate;
+mod regex;
 // Doc 86 §86.1.d (2026-05-10): intern / symbol-name / make-symbol.
+// Doc 87 §86.1.f (2026-05-10): downcase / upcase / split-by-non-alnum
+// trampolines appended.
 mod strings;
 mod syscall;
+mod time;

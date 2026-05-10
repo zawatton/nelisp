@@ -412,6 +412,10 @@ pub fn install_builtins(env: &mut Env) {
         // Doc 84 §84.3 lifted the 6 Box-accessor builtins to elisp.
         "nl-jit-call-float-float",
         "nl-jit-call-float-cmp",
+        // Doc 87 §86.1.f / §5 (2026-05-10): `:trampoline-unary-float'
+        // ABI bridge — `extern "C" fn(f64) -> f64'.  Used by
+        // `lisp/nelisp-stdlib-math.el' (= `float' / `exp' / `log').
+        "nl-jit-call-float-unary",
         // Doc 77c Phase A.3 (2026-05-09) — Layer 2 cons-cell
         // primitives.  Not previously registered here because Phase
         // A.3 only exercised them via Rust-side cargo tests; Doc 79
@@ -753,6 +757,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // `jit/box_accessor.rs' trampolines.
         "nl-jit-call-float-float" => crate::jit::bi_nl_jit_call_float_float(args),
         "nl-jit-call-float-cmp" => crate::jit::bi_nl_jit_call_float_cmp(args),
+        // Doc 87 §86.1.f / §5 (2026-05-10): unary float ABI bridge.
+        "nl-jit-call-float-unary" => crate::jit::bi_nl_jit_call_float_unary(args),
         // Doc 77c Phase A.3 (2026-05-09) — Layer 2 cons-cell primitives
         // operating directly on `NlConsBox' / `NlConsBoxRef' (Phase A.2).
         // 5 `nl-cons-*' (alloc / car / cdr / set-car / set-cdr) + 3

@@ -193,6 +193,29 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
         "nl_jit_record_ref" => super::box_accessor::nl_jit_record_ref as *const u8,
         "nl_jit_record_set" => super::box_accessor::nl_jit_record_set as *const u8,
         "nl_jit_record_alloc" => super::box_accessor::nl_jit_record_alloc as *const u8,
+        // ---- Doc 87 §86.1.f (2026-05-10): Tier 2 trampolines ----
+        // Time + hash (= 2-arg / 0-arg `bi_*' helpers retired in
+        // `eval/builtins.rs').  Reachable via `nl-jit-call-i64-i64'
+        // (= 0-arg current_unix_time padding) and `nl-jit-call-out-2'
+        // (= format_unix_time / secure_hash 2-arg out-Sexp shape).
+        "nl_jit_current_unix_time" => super::time::nl_jit_current_unix_time as *const u8,
+        "nl_jit_format_unix_time" => super::time::nl_jit_format_unix_time as *const u8,
+        "nl_jit_secure_hash" => super::hash::nl_jit_secure_hash as *const u8,
+        // String case + tokenize trampolines (= `nl-jit-call-out-1' /
+        // `nl-jit-call-out-2' bridges).
+        "nl_jit_downcase" => super::strings::nl_jit_downcase as *const u8,
+        "nl_jit_upcase" => super::strings::nl_jit_upcase as *const u8,
+        "nl_jit_split_by_non_alnum"
+            => super::strings::nl_jit_split_by_non_alnum as *const u8,
+        // Regex backend — single trampoline replacing
+        // `bi_string_match_p'.  Reachable via `nl-jit-call-out-2'.
+        "nl_jit_string_match_p" => super::regex::nl_jit_string_match_p as *const u8,
+        // Unary float math (= `:trampoline-unary-float' ABI mode,
+        // Doc 87 §5).  Reachable via `nl-jit-call-float-unary' (new
+        // bridge primitive shipped in this commit).
+        "nl_jit_float_float" => super::math::nl_jit_float_float as *const u8,
+        "nl_jit_float_exp" => super::math::nl_jit_float_exp as *const u8,
+        "nl_jit_float_log" => super::math::nl_jit_float_log as *const u8,
         _ => return None,
     };
     Some(p)
@@ -299,6 +322,44 @@ pub fn bi_nl_jit_call_float_cmp(args: &[Sexp]) -> Result<Sexp, EvalError> {
     // SAFETY: NAME resolves to `nl_jit_float_{eq_eps,lt,gt,le,ge}' shape.
     let f: extern "C" fn(f64, f64) -> i64 = unsafe { std::mem::transmute(p) };
     Ok(Sexp::Int(f(a, b)))
+}
+
+// Doc 87 §86.1.f / §5 (2026-05-10) — `:trampoline-unary-float' bridge.
+// `extern "C" fn(f64) -> f64' shape.  System V AMD64 passes the f64
+// arg in xmm0 and returns the f64 result in xmm0; arm64 AAPCS uses
+// d0 → d0.  Resolves NAME via `unified_fn_ptr', coerces the Sexp arg
+// to f64 via the same Int / Float / Nil → 0.0 path the binary float
+// bridge takes (= `to_f64'-equivalent inlined here to keep the helper
+// local-only), transmutes, calls.
+
+fn float_unary(args: &[Sexp], name: &str) -> Result<(*const u8, f64), EvalError> {
+    require_arity(name, args, 2, Some(2))?;
+    let sym = as_name(name, &args[0])?;
+    let p = unified_fn_ptr(sym).ok_or_else(|| unknown_name_err(name, sym))?;
+    let x = match &args[1] {
+        Sexp::Int(i) => *i as f64,
+        Sexp::Float(f) => *f,
+        Sexp::Nil => 0.0,
+        other => {
+            return Err(EvalError::WrongType {
+                expected: "number".into(),
+                got: other.clone(),
+            });
+        }
+    };
+    Ok((p, x))
+}
+
+/// `(nl-jit-call-float-unary NAME X) -> Float'.  Looks up NAME in the
+/// unified registry, casts the resolved fn ptr to
+/// `extern "C" fn(f64) -> f64', calls it with X, wraps result as
+/// `Sexp::Float'.  See `lisp/nelisp-stdlib-math.el' for the elisp
+/// wrappers (= `float' / `exp' / `log').
+pub fn bi_nl_jit_call_float_unary(args: &[Sexp]) -> Result<Sexp, EvalError> {
+    let (p, x) = float_unary(args, "nl-jit-call-float-unary")?;
+    // SAFETY: NAME resolves to `nl_jit_float_{float,exp,log}' shape.
+    let f: extern "C" fn(f64) -> f64 = unsafe { std::mem::transmute(p) };
+    Ok(Sexp::Float(f(x)))
 }
 
 // ---------------------------------------------------------------

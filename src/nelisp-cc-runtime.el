@@ -1387,6 +1387,7 @@ status before reading the buffer.")
     :trampoline-binary-aref
     :trampoline-ternary-aset
     :trampoline-binary-float-arith
+    :trampoline-unary-float
     :trampoline-binary-float-cmp)
   "Allowed values for the `:entry-abi' keyword to
 `nelisp-cc-runtime-compile-and-allocate'.
@@ -1441,6 +1442,17 @@ nelisp-cc trampoline family.  Backing trampolines live in
 `build-tool/src/jit/float.rs' (`nl_jit_float_{add,sub,mul}'),
 invoked through the `nl-jit-call-float-float' bridge primitive.
 
+`:trampoline-unary-float' (Doc 87 §5, 2026-05-10) is
+`extern \"C\" fn(f64) -> f64' for unary Float math primitives
+(= float / exp / log).  System V AMD64 passes the f64 arg in xmm0
+and returns the f64 result in xmm0; arm64 AAPCS uses d0 → d0.  The
+trampoline body is the only xmm-using ABI shape that survives the
+plain `--emit-prologue' / `--lower-return' frame layout untouched
+(= int-class register pushes don't disturb xmm0/v0).  Backing
+trampolines live in `build-tool/src/jit/math.rs'
+(`nl_jit_float_{float,exp,log}'), invoked through the
+`nl-jit-call-float-unary' bridge primitive (Doc 87 §5.3).
+
 `:trampoline-binary-float-cmp' (Doc 84 §84.1, 2026-05-10) is
 `extern \"C\" fn(f64, f64) -> i64' for binary Float comparisons
 (= = / < / > / <= / >=).  args in xmm0/xmm1, i64 result (0 or 1)
@@ -1494,6 +1506,8 @@ entry-point's calling convention:
   :trampoline-binary-float-arith
                            extern \"C\" fn(f64, f64) -> f64
                            binary Float arith (= add/sub/mul), Doc 84 §84.1.
+  :trampoline-unary-float  extern \"C\" fn(f64) -> f64
+                           unary Float math (= float/exp/log), Doc 87 §5.
   :trampoline-binary-float-cmp
                            extern \"C\" fn(f64, f64) -> i64
                            binary Float cmp (= eq-eps/lt/gt/le/ge),
