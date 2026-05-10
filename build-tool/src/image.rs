@@ -43,48 +43,25 @@ use crate::reader;
 use std::collections::HashMap;
 use std::fmt;
 
-pub const IMAGE_MAGIC: &[u8; 8] = b"NELIMG\0\x02";
-pub const IMAGE_ABI_VERSION: u32 = 2;
-
 // Doc 75 v3 Stage 9.1 (2026-05-09): NELIMG v3 magic / version / KIND
-// constants — declared here so Stage 9.3 (encoder) and Stage 9.4
-// (decoder) commits can reference a single source of truth.  The
-// constants are intentionally not yet wired into encode_image /
-// decode_image; they are referenced in cfg(test) only until the
-// atomic encoder/decoder land.  Per Doc 75 v3 §3.1.4, this is a
-// production net 0 LOC delta target — these declarations are the
-// minimum surface needed for the v3 path to gain a name.
-#[allow(dead_code)]
+// constants.  Doc 75 v3 Stage 9.5 (2026-05-10) deleted the legacy v2
+// magic / version / TAG_* constants once `compile_elisp_to_image' /
+// `decode_image' / `eval_image' moved over to the v3 frozen-heap
+// container — the only remaining producer of image bytes is
+// `encode_v3' / `encode_v3_with_fallback' under v3 magic.
 pub const NELIMG_V3_MAGIC: &[u8; 8] = b"NELIMG\0\x03";
-#[allow(dead_code)]
 pub const NELIMG_V3_VERSION: u8 = 3;
 /// NELIMG v3 KIND byte: frozen-heap variant (= Doc 75 v3 §5.2).
 /// 0x02 reserved for future compressed-frozen-heap, 0x03 for
 /// differential / overlay images.
-#[allow(dead_code)]
 pub const NELIMG_V3_KIND_FROZEN_HEAP: u8 = 0x01;
 
-const TAG_NIL: u8 = 0x00;
-const TAG_T: u8 = 0x01;
-const TAG_INT: u8 = 0x02;
-const TAG_FLOAT: u8 = 0x03;
-const TAG_SYMBOL: u8 = 0x04;
-const TAG_STRING: u8 = 0x05;
-const TAG_CONS: u8 = 0x06;
-const TAG_VECTOR: u8 = 0x07;
-// Doc 51 Track L (2026-05-04) — char-table + bool-vector tags.
-// ABI bumped to v2 to invalidate stale v1 images that lacked
-// these.  Old v1 images now fail with `UnsupportedVersion(1)`.
-const TAG_CHAR_TABLE: u8 = 0x08;
-const TAG_BOOL_VECTOR: u8 = 0x09;
-
-// Doc 75 v3 §5.3 — NELIMG v3 NODE_TAG one-byte discriminator.  TAGs
-// 0x00..0x09 share their numeric value with the v2 form-list tags so a
-// reader that already knew v2 can still pattern-match them, but the
-// payload semantics differ for the boxed variants (= TAG_CONS /
-// TAG_VECTOR / TAG_CHAR_TABLE / TAG_BOOL_VECTOR write u32 NODE_INDEX
-// references rather than inline payloads under v3).  TAGs 0x0A..0x0C
-// are new in v3 (= Cell / Record / MutStr identity preservation).
+// Doc 75 v3 §5.3 — NELIMG v3 NODE_TAG one-byte discriminator.  Stage
+// 9.5 (2026-05-10) keeps only the v3 tag set; the v2 TAG_* aliases
+// (= TAG_NIL / TAG_T / TAG_INT / ... / TAG_BOOL_VECTOR) shipped
+// pre-Stage-9.5 were inlined by `encode_value' / `decode_value' and
+// became dead the moment those routines were deleted alongside the
+// rest of the v2 encode chain.
 const TAG_V3_NIL: u8 = 0x00;
 const TAG_V3_T: u8 = 0x01;
 const TAG_V3_INT: u8 = 0x02;
@@ -156,27 +133,27 @@ impl From<EvalError> for ImageError {
 
 /// Phase 7 Stage 7.7.c.2 (Doc 72): the only non-test, non-bridge
 /// caller of `reader::read_all'.  Gated behind the `image-baker'
-/// feature so the production `nelisp' binary (= which only runs
-/// pre-baked images via `decode_image' / `eval_image') doesn't drag
-/// the encoder + its reader dependency into its build graph.
+/// feature so the production `nelisp' binary doesn't drag the
+/// encoder + its reader dependency into its build graph.
 /// `nelisp-baker' (= Stage 7.7.a baker bin) requires this feature
 /// via `Cargo.toml :: required-features'.
+///
+/// Doc 75 v3 Stage 9.5 (2026-05-10): re-implemented on top of the v3
+/// frozen-heap encoder.  The previous v2 implementation walked
+/// `reader::read_all' output through `encode_image' (= forms-list
+/// inline payload).  It now stashes the source text as a single
+/// fallback-form entry inside an empty-env v3 image — `eval_image'
+/// drives the strategy-C re-eval path on decode, exactly matching
+/// the v2 "encode forms / eval-on-load" semantics through a single
+/// container format.  The `reader::read_all' call survives only so
+/// callers see parse errors at bake time instead of at decode time.
 #[cfg(any(test, feature = "image-baker"))]
 pub fn compile_elisp_to_image(source: &str) -> Result<Vec<u8>, ImageError> {
-    let forms = reader::read_all(source)?;
-    encode_image(&forms)
-}
-
-#[cfg(any(test, feature = "image-baker"))]
-pub fn encode_image(forms: &[Sexp]) -> Result<Vec<u8>, ImageError> {
-    let mut out = Vec::new();
-    out.extend_from_slice(IMAGE_MAGIC);
-    out.extend_from_slice(&IMAGE_ABI_VERSION.to_le_bytes());
-    write_len(&mut out, forms.len())?;
-    for form in forms {
-        encode_value(&mut out, form)?;
-    }
-    Ok(out)
+    // Validate the source parses now so bake time reports parse
+    // errors (= same observable surface as the v2 path that walked
+    // the form list through `encode_image').
+    let _ = reader::read_all(source)?;
+    encode_v3_with_fallback(&Env::empty(), &[source.to_string()])
 }
 
 /// Doc 75 v3 Stage 9.3.b (2026-05-10): NELIMG v3 frozen-heap *encoder*
@@ -1053,23 +1030,25 @@ unsafe fn write_record_type_tag(handle: &NlRecordRef, val: Sexp) {
     std::ptr::write(tag_ptr, val);
 }
 
+/// Doc 75 v3 Stage 9.5 (2026-05-10): the v3-aware top-level decoder
+/// the `nelisp' binary's `eval-image' subcommand and Phase 4.6 ERTs
+/// reach for.  Reads the v3 image's fallback-form section (= the
+/// strategy-C re-eval list, written by `compile_elisp_to_image') and
+/// returns the parsed `Sexp` forms ready for evaluation.
+///
+/// Pre-Stage-9.5 callers got a `Vec<Sexp>` back from a *form-list*
+/// payload; Stage 9.5 keeps that observable shape but reaches it via
+/// the v3 fallback-forms surface (= reader::read_all on each stashed
+/// source string).  The function survives the v2 encode-chain delete
+/// because the `nelisp' binary still needs an entry point that maps
+/// "image bytes → parsed forms" without dragging an `Env` into
+/// scope.
 pub fn decode_image(bytes: &[u8]) -> Result<Vec<Sexp>, ImageError> {
-    let mut rd = Reader { bytes, pos: 0 };
-    let magic = rd.read_exact(IMAGE_MAGIC.len(), "magic")?;
-    if magic != IMAGE_MAGIC {
-        return Err(ImageError::BadMagic);
-    }
-    let version = rd.read_u32("version")?;
-    if version != IMAGE_ABI_VERSION {
-        return Err(ImageError::UnsupportedVersion(version));
-    }
-    let count = rd.read_u32("form count")? as usize;
-    let mut forms = Vec::with_capacity(count);
-    for _ in 0..count {
-        forms.push(decode_value(&mut rd)?);
-    }
-    if rd.pos != bytes.len() {
-        return Err(ImageError::TrailingBytes(bytes.len() - rd.pos));
+    let mut env = Env::empty();
+    let fallback = decode_v3_into(&mut env, bytes)?;
+    let mut forms = Vec::new();
+    for src in &fallback {
+        forms.extend(reader_read_all(src)?);
     }
     Ok(forms)
 }
@@ -1088,190 +1067,12 @@ pub fn eval_forms(forms: &[Sexp]) -> Result<Sexp, ImageError> {
     Ok(last)
 }
 
-#[cfg(any(test, feature = "image-baker"))]
-fn encode_value(out: &mut Vec<u8>, value: &Sexp) -> Result<(), ImageError> {
-    match value {
-        Sexp::Nil => out.push(TAG_NIL),
-        Sexp::T => out.push(TAG_T),
-        Sexp::Int(n) => {
-            out.push(TAG_INT);
-            out.extend_from_slice(&n.to_le_bytes());
-        }
-        Sexp::Float(x) => {
-            out.push(TAG_FLOAT);
-            out.extend_from_slice(&x.to_bits().to_le_bytes());
-        }
-        Sexp::Symbol(name) => {
-            out.push(TAG_SYMBOL);
-            write_string(out, name)?;
-        }
-        Sexp::Str(text) => {
-            out.push(TAG_STRING);
-            write_string(out, text)?;
-        }
-        Sexp::MutStr(rc) => {
-            // Image format flattens MutStr into the same TAG_STRING
-            // payload — round-trip drops the mutable identity but keeps
-            // the textual content.  Substrate use cases for
-            // `compile-image' / `eval-image' do not depend on
-            // post-load aset behavior.
-            out.push(TAG_STRING);
-            write_string(out, &rc.value)?;
-        }
-        Sexp::Cons(b) => {
-            out.push(TAG_CONS);
-            encode_value(out, &b.car)?;
-            encode_value(out, &b.cdr)?;
-        }
-        Sexp::Vector(items) => {
-            out.push(TAG_VECTOR);
-            write_len(out, items.value.len())?;
-            for item in items.value.iter() {
-                encode_value(out, item)?;
-            }
-        }
-        // Sexp::HashTable variant retired in Doc 50 stage 4f
-        // (2026-05-07).  Hash-tables are now records; they reach this
-        // arm via Sexp::Record below (= same NotImplemented surface
-        // as before).
-        Sexp::CharTable(rc) => {
-            out.push(TAG_CHAR_TABLE);
-            encode_char_table(out, &rc.inner)?;
-        }
-        Sexp::BoolVector(rc) => {
-            out.push(TAG_BOOL_VECTOR);
-            let bits = &rc.value;
-            write_len(out, bits.len())?;
-            // One byte per element (= 0 / 1).  Simpler than bit-packing
-            // and the image format is not space-critical.
-            for &b in bits.iter() {
-                out.push(if b { 1 } else { 0 });
-            }
-        }
-        // Image dump unwraps lexical-binding cells — the snapshot
-        // captures the value, not the slot identity.  Closures
-        // re-encoded from a re-loaded image start with fresh cells.
-        Sexp::Cell(c) => {
-            encode_value(out, &c.value)?;
-        }
-        Sexp::Record(_) => {
-            // Records (Doc 52 Stage 4) are not yet covered by the
-            // image format — same policy as `HashTable' above.
-            // Image-format support is a follow-up (extends the binary
-            // schema with TAG_RECORD); for now reject explicitly so
-            // callers see a clear failure.
-            return Err(ImageError::Eval(EvalError::NotImplemented(
-                "record values are not yet supported by image encoding".into(),
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn decode_value(rd: &mut Reader<'_>) -> Result<Sexp, ImageError> {
-    let tag = rd.read_u8("value tag")?;
-    match tag {
-        TAG_NIL => Ok(Sexp::Nil),
-        TAG_T => Ok(Sexp::T),
-        TAG_INT => Ok(Sexp::Int(rd.read_i64("integer")?)),
-        TAG_FLOAT => Ok(Sexp::Float(f64::from_bits(rd.read_u64("float")?))),
-        TAG_SYMBOL => Ok(Sexp::Symbol(rd.read_string("symbol")?)),
-        TAG_STRING => Ok(Sexp::Str(rd.read_string("string")?)),
-        TAG_CONS => {
-            let car = decode_value(rd)?;
-            let cdr = decode_value(rd)?;
-            Ok(Sexp::cons(car, cdr))
-        }
-        TAG_VECTOR => {
-            let len = rd.read_u32("vector length")? as usize;
-            let mut items = Vec::with_capacity(len);
-            for _ in 0..len {
-                items.push(decode_value(rd)?);
-            }
-            Ok(Sexp::vector(items))
-        }
-        TAG_CHAR_TABLE => {
-            let inner = decode_char_table(rd)?;
-            Ok(Sexp::CharTable(NlCharTableRef::new(inner)))
-        }
-        TAG_BOOL_VECTOR => {
-            let len = rd.read_u32("bool-vector length")? as usize;
-            let mut bits = Vec::with_capacity(len);
-            for _ in 0..len {
-                let byte = rd.read_u8("bool-vector bit")?;
-                bits.push(byte != 0);
-            }
-            Ok(Sexp::BoolVector(crate::eval::nlboolvector::NlBoolVectorRef::new(bits)))
-        }
-        other => Err(ImageError::UnknownTag(other)),
-    }
-}
-
-#[cfg(any(test, feature = "image-baker"))]
-fn encode_char_table(out: &mut Vec<u8>, ct: &CharTableInner) -> Result<(), ImageError> {
-    encode_value(out, &ct.subtype)?;
-    encode_value(out, &ct.default_val)?;
-    write_len(out, ct.entries.len())?;
-    for (k, v) in &ct.entries {
-        out.extend_from_slice(&k.to_le_bytes());
-        encode_value(out, v)?;
-    }
-    match &ct.parent {
-        Some(p) => {
-            out.push(1);
-            encode_char_table(out, &p.inner)?;
-        }
-        None => out.push(0),
-    }
-    write_len(out, ct.extra.len())?;
-    for x in &ct.extra {
-        encode_value(out, x)?;
-    }
-    Ok(())
-}
-
-fn decode_char_table(rd: &mut Reader<'_>) -> Result<CharTableInner, ImageError> {
-    let subtype = decode_value(rd)?;
-    let default_val = decode_value(rd)?;
-    let nentries = rd.read_u32("char-table entry count")? as usize;
-    let mut entries = Vec::with_capacity(nentries);
-    for _ in 0..nentries {
-        let k = rd.read_i64("char-table entry key")?;
-        let v = decode_value(rd)?;
-        entries.push((k, v));
-    }
-    let has_parent = rd.read_u8("char-table parent flag")? != 0;
-    let parent = if has_parent {
-        Some(NlCharTableRef::new(decode_char_table(rd)?))
-    } else {
-        None
-    };
-    let nextra = rd.read_u32("char-table extra slots")? as usize;
-    let mut extra = Vec::with_capacity(nextra);
-    for _ in 0..nextra {
-        extra.push(decode_value(rd)?);
-    }
-    Ok(CharTableInner {
-        subtype,
-        default_val,
-        entries,
-        parent,
-        extra,
-    })
-}
-
-#[cfg(any(test, feature = "image-baker"))]
-fn write_string(out: &mut Vec<u8>, value: &str) -> Result<(), ImageError> {
-    write_len(out, value.len())?;
-    out.extend_from_slice(value.as_bytes());
-    Ok(())
-}
-
-#[cfg(any(test, feature = "image-baker"))]
-fn write_len(out: &mut Vec<u8>, len: usize) -> Result<(), ImageError> {
-    let len = u32::try_from(len).map_err(|_| ImageError::LengthOverflow)?;
-    out.extend_from_slice(&len.to_le_bytes());
-    Ok(())
+/// Internal helper: parse every top-level form in `source` via the
+/// crate-local Rust reader.  Lives here so `decode_image' (= the
+/// production `nelisp eval-image' entrypoint) can call it without
+/// pulling `crate::reader' into the gated import set.
+fn reader_read_all(source: &str) -> Result<Vec<Sexp>, ImageError> {
+    Ok(crate::reader::read_all(source)?)
 }
 
 struct Reader<'a> {
@@ -1329,48 +1130,19 @@ mod tests {
 
     #[test]
     fn phase4_6a_header_and_version_are_checked() {
+        // Doc 75 v3 Stage 9.5 (2026-05-10): `decode_image' now reads
+        // the v3 frozen-heap container, so the bad-magic / unsupported-
+        // version checks fire on the v3 magic / version fields rather
+        // than the v2 layout the pre-Stage-9.5 test forged by hand.
         assert!(matches!(decode_image(b"not-image"), Err(ImageError::BadMagic)));
 
-        let mut image = encode_image(&[Sexp::Int(1)]).unwrap();
+        let mut image = compile_elisp_to_image("1").unwrap();
+        // u32 version sits immediately after the 8-byte v3 magic.
         image[8..12].copy_from_slice(&999u32.to_le_bytes());
         assert!(matches!(
             decode_image(&image),
             Err(ImageError::UnsupportedVersion(999))
         ));
-    }
-
-    #[test]
-    fn phase4_6b_atoms_round_trip_through_image_abi() {
-        let forms = vec![
-            Sexp::Nil,
-            Sexp::T,
-            Sexp::Int(-42),
-            Sexp::Float(3.5),
-            Sexp::Symbol("answer".into()),
-            Sexp::Str("hello\nimage".into()),
-        ];
-        let image = encode_image(&forms).unwrap();
-        assert_eq!(decode_image(&image).unwrap(), forms);
-    }
-
-    #[test]
-    fn phase4_6c_composite_values_reload_as_mutable_elisp_values() {
-        let forms = vec![
-            Sexp::list_from(&[Sexp::Symbol("a".into()), Sexp::Int(1)]),
-            Sexp::cons(Sexp::Int(7), Sexp::Symbol("tail".into())),
-            Sexp::vector(vec![Sexp::Str("slot".into()), Sexp::Int(2)]),
-        ];
-        let image = encode_image(&forms).unwrap();
-        let loaded = decode_image(&image).unwrap();
-        assert_eq!(loaded, forms);
-
-        match &loaded[0] {
-            Sexp::Cons(b) => unsafe {
-                b.set_car(Sexp::Symbol("changed".into()));
-            },
-            other => panic!("expected cons, got {:?}", other),
-        }
-        assert_eq!(fmt_sexp(&loaded[0]), "(changed 1)");
     }
 
     #[test]
@@ -1395,135 +1167,6 @@ mod tests {
         let forms = decode_image(&image).unwrap();
         assert_eq!(fmt_sexp(&forms[0]), "'(1 . [2 3])");
         assert_eq!(fmt_sexp(&eval_forms(&forms).unwrap()), "(1 . [2 3])");
-    }
-
-    // ---- Doc 51 Track L (2026-05-04) — char-table + bool-vector round-trip ----
-
-    #[test]
-    fn track_l_bool_vector_round_trips() {
-        let bits = vec![true, false, true, true, false];
-        let bv = Sexp::bool_vector(bits.len(), false);
-        if let Sexp::BoolVector(rc) = &bv {
-            // SAFETY: no other borrow live in this test setup.
-            unsafe { rc.set_value(bits.clone()) };
-        }
-        let image = encode_image(&[bv.clone()]).unwrap();
-        let loaded = decode_image(&image).unwrap();
-        assert_eq!(loaded.len(), 1);
-        match &loaded[0] {
-            Sexp::BoolVector(rc) => {
-                assert_eq!(rc.value, bits);
-            }
-            other => panic!("expected BoolVector, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn track_l_empty_bool_vector_round_trips() {
-        let bv = Sexp::bool_vector(0, false);
-        let image = encode_image(&[bv]).unwrap();
-        let loaded = decode_image(&image).unwrap();
-        match &loaded[0] {
-            Sexp::BoolVector(rc) => assert!(rc.value.is_empty()),
-            other => panic!("expected BoolVector, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn track_l_char_table_minimal_round_trips() {
-        let ct = Sexp::char_table(Sexp::Symbol("display".into()), Sexp::Nil);
-        if let Sexp::CharTable(rc) = &ct {
-            // SAFETY: no other borrow live on `rc.inner`.
-            unsafe {
-                rc.with_inner_mut(|i| {
-                    i.entries.push((65, Sexp::Int(1))); // 'A' -> 1
-                    i.entries.push((97, Sexp::Int(2))); // 'a' -> 2
-                });
-            }
-        }
-        let image = encode_image(&[ct]).unwrap();
-        let loaded = decode_image(&image).unwrap();
-        match &loaded[0] {
-            Sexp::CharTable(rc) => {
-                let inner = &rc.inner;
-                assert_eq!(inner.subtype, Sexp::Symbol("display".into()));
-                assert_eq!(inner.default_val, Sexp::Nil);
-                assert_eq!(inner.entries, vec![
-                    (65, Sexp::Int(1)),
-                    (97, Sexp::Int(2)),
-                ]);
-                assert!(inner.parent.is_none());
-                assert!(inner.extra.is_empty());
-            }
-            other => panic!("expected CharTable, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn track_l_char_table_with_parent_round_trips() {
-        // Parent chain: child -> parent.  After round-trip, the parent
-        // chain must be preserved with the same default fallback.
-        let parent = Sexp::char_table(Sexp::Symbol("syntax".into()), Sexp::Int(99));
-        let child = Sexp::char_table(Sexp::Symbol("syntax".into()), Sexp::Nil);
-        if let (Sexp::CharTable(prc), Sexp::CharTable(crc)) = (&parent, &child) {
-            // SAFETY: no other borrow live.
-            unsafe {
-                crc.with_inner_mut(|i| {
-                    i.parent = Some(prc.clone());
-                    i.entries.push((65, Sexp::Int(7)));
-                });
-            }
-        }
-        let image = encode_image(&[child]).unwrap();
-        let loaded = decode_image(&image).unwrap();
-        match &loaded[0] {
-            Sexp::CharTable(rc) => {
-                let inner = &rc.inner;
-                assert_eq!(inner.entries, vec![(65, Sexp::Int(7))]);
-                let pinner = &inner.parent.as_ref().expect("parent dropped").inner;
-                assert_eq!(pinner.default_val, Sexp::Int(99));
-            }
-            other => panic!("expected CharTable, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn track_l_char_table_with_extra_slots_round_trips() {
-        let ct = Sexp::char_table(Sexp::Symbol("case-table".into()), Sexp::Nil);
-        if let Sexp::CharTable(rc) = &ct {
-            // SAFETY: no other borrow live.
-            unsafe {
-                rc.with_inner_mut(|i| {
-                    i.extra = vec![Sexp::Str("up".into()), Sexp::Str("down".into())];
-                });
-            }
-        }
-        let image = encode_image(&[ct]).unwrap();
-        let loaded = decode_image(&image).unwrap();
-        match &loaded[0] {
-            Sexp::CharTable(rc) => {
-                let inner = &rc.inner;
-                assert_eq!(inner.extra.len(), 2);
-                assert_eq!(inner.extra[0], Sexp::Str("up".into()));
-                assert_eq!(inner.extra[1], Sexp::Str("down".into()));
-            }
-            other => panic!("expected CharTable, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn track_l_image_abi_v1_now_rejected() {
-        // The image format went from v1 (without char-table/bool-vector)
-        // to v2 (with).  An old-shaped header must be rejected so users
-        // do not silently ingest a stale image as if it were valid.
-        let mut bytes = encode_image(&[Sexp::Nil]).unwrap();
-        bytes[8..12].copy_from_slice(&1u32.to_le_bytes()); // forge version=1
-        // Patch the magic too so the version check is what fires.
-        bytes[..8].copy_from_slice(b"NELIMG\0\x01");
-        match decode_image(&bytes) {
-            Err(ImageError::BadMagic) | Err(ImageError::UnsupportedVersion(1)) => {}
-            other => panic!("expected v1 image to be rejected, got {:?}", other),
-        }
     }
 
     // ---- Doc 75 v3 Stage 9.3 (2026-05-10) — NELIMG v3 frozen-heap encoder ----
@@ -1552,16 +1195,15 @@ mod tests {
     }
 
     #[test]
-    fn doc75_stage9_3_encode_v3_magic_distinguishes_from_v2() {
-        // Per §5.1, v2 magic = "NELIMG\0\x02" and v3 magic =
-        // "NELIMG\0\x03".  A loader that dispatches on the trailing
-        // magic byte must see them as distinct.
+    fn doc75_stage9_3_encode_v3_magic_uses_dedicated_byte() {
+        // Doc 75 v3 Stage 9.5 (2026-05-10): the v2 encode path is gone,
+        // so this test is just the v3 magic surface check now —
+        // production images all carry the trailing 0x03 byte that
+        // distinguishes them from any pre-Stage-9.5 v2 artefact still
+        // sitting in caller storage.
         let v3_bytes = encode_v3(&Env::empty()).unwrap();
-        let v2_bytes = encode_image(&[Sexp::Nil]).unwrap();
-        assert_eq!(&v3_bytes[..7], &v2_bytes[..7]); // "NELIMG\0" prefix shared
-        assert_ne!(v3_bytes[7], v2_bytes[7]);       // last magic byte differs
+        assert_eq!(&v3_bytes[..7], b"NELIMG\0");
         assert_eq!(v3_bytes[7], 0x03);
-        assert_eq!(v2_bytes[7], 0x02);
     }
 
     #[test]
@@ -1717,10 +1359,13 @@ mod tests {
 
     #[test]
     fn doc75_stage9_4_decode_rejects_v2_magic() {
-        // A v2-format image must not deserialize as v3 — the magic
-        // byte differs (= 0x02 vs 0x03) and `decode_v3' fails fast
-        // on the magic check.
-        let v2_bytes = encode_image(&[Sexp::Nil]).unwrap();
+        // A v2-format image must not deserialize as v3.  Stage 9.5
+        // deleted the v2 encode chain, so we synthesize the legacy
+        // header by hand to cover the regression — any caller still
+        // sitting on pre-Stage-9.5 bytes must surface `BadMagic'.
+        let mut v2_bytes = Vec::new();
+        v2_bytes.extend_from_slice(b"NELIMG\0\x02"); // v2 magic
+        v2_bytes.extend_from_slice(&2u32.to_le_bytes()); // v2 version
         match decode_v3(&v2_bytes) {
             Err(ImageError::BadMagic) => {}
             Err(other) => panic!("expected BadMagic for v2 image, got {:?}", other),
