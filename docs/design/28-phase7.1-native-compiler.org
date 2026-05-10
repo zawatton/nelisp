@@ -1108,6 +1108,37 @@ dispatch 不可.  7.1.7.b〜.d は 7.1.7.a 完了後の cascading cleanup.
 
 *** 3.7.a Phase 7.1.7.a — =strategy.rs= ERR fall-through deletion (= Doc 80 substrate dependent)
 
+#+begin_quote
+*Status (2026-05-10)*: 主目標 (= strategy.rs 全削除 -425 Rust LOC) は
+*Doc 80 Stage 80.5 依存* で blocked.  本 sub-stage の "first cleanup
+pass" として post-7.1.6.a.2 deadwood / visibility tightening / stale
+comment collapse のみ先行 ship 済 (= -72 Rust LOC、=feat/phase-7.1.7.a-
+cleanup= branch、commit cluster 9392290 → 267f0650 → f87651a0).  内訳:
+
+- =build-tool/src/lib.rs= の =pub mod jit= → =pub(crate) mod jit= +
+  4 件の =private_interfaces= warning 解消 (UnifiedJit field 視認性
+  =pub(in crate::jit)= に narrow).
+- =build-tool/src/jit/cons.rs= の archaeological 70 LOC docstring +
+  per-fn =Phase 7.1.6.a.2 dlsym-exported= タグ + =Phase A.5= /
+  =Phase A.2.1= 過去参照を steady-state な module-level docstring に
+  collapse、=pub(super) const TRAMPOLINE_OK / _ERR= → private =const=.
+- =build-tool/src/jit/mod.rs= の Stage 5.0 =lower_entries= 由来の stale
+  module docstring + =UnifiedJit= struct doc + =unified_jit()= 6-step
+  body の per-cluster archaeological 注釈を圧縮、=pub use= → =pub(crate) use=.
+- =build-tool/src/jit/strategy.rs= の 19 件 =pub fn bi_*= → =pub(crate) fn=.
+- =build-tool/src/jit/dsl.rs= 内 =#[cfg(test)]= block の未使用 =Module=
+  trait import 削除.
+
+主目標 (strategy.rs file 全削除 + builtins.rs dispatch arm 削除 +
+Float / bitwise / ash の elisp port) は依然として Doc 80 Stage 80.5
+SHIPPED 後の作業.  以下の 3.7.a.1〜.5 は変更なし、Doc 80 完遂後に再
+着手するための inventory として保持.
+
+Tests at ship: =cargo build= clean (default + image-baker、jit/ scope
+で 0 warnings)、=cargo test --lib jit::= 81/81 green、=cargo test
+--lib image::= 17/17 green.
+#+end_quote
+
 **** 3.7.a.1 strategy.rs post-Phase-7.1.6 残存 fn inventory (実測 252 LOC)
 
 =build-tool/src/jit/strategy.rs= は Track W §3.6.b〜.f 完了後も生き残る
