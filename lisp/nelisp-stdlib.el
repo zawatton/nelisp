@@ -293,4 +293,12 @@
 ;; ~x = x XOR -1, so the elisp form needs no extra primitive.
 (defun lognot (x) (nelisp--logxor2 x -1))
 
+;; Doc 86 §86.1.b — `sxhash' migrated from Rust to elisp on top of
+;; the `nl_jit_sxhash' trampoline (jit/predicate.rs).  Recursive
+;; Sexp → hash fold stays in Rust for `DefaultHasher' bit-exactness
+;; (Doc 87 §3.2 risk note).  `sxhash-{equal,eq,eql}' defaliases
+;; live in `nelisp-stdlib-misc.el' and pick up this function-cell.
+(defun sxhash (object)
+  (nl-jit-call-out-1 "nelisp_jit_sxhash" object))
+
 ;; nelisp-stdlib.el ends here

@@ -146,6 +146,9 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
         // directly so the elisp wrapper can avoid the `nelisp--int-eq-
         // zero' convert dance that `eq' uses.
         "nelisp_jit_ref_eq" => super::predicate::nl_jit_ref_eq as *const u8,
+        // Doc 86 §86.1.b — `sxhash' trampoline (1:1 port, kept in
+        // Rust for `DefaultHasher' bit-exactness, Doc 87 §3.2).
+        "nelisp_jit_sxhash" => super::predicate::nl_jit_sxhash as *const u8,
         // ---- syscall (2) ----
         // Phase 7.1.6.e (Doc 28 §3.6.e): resolve syscall names directly
         // to the `#[no_mangle] extern "C"' trampolines now that the

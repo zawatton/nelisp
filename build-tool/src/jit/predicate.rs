@@ -101,6 +101,45 @@ pub unsafe extern "C" fn nl_jit_ref_eq(
     0
 }
 
+// Doc 86 §86.1.b — `(sxhash X)' (1:1 port of deleted `bi_sxhash',
+// kept in Rust for `DefaultHasher' bit-exactness, Doc 87 §3.2).
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_sxhash(arg: *const Sexp, out: *mut Sexp) -> i64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    fn fold<H: Hasher>(v: &Sexp, h: &mut H) {
+        match v {
+            Sexp::Nil => 0u8.hash(h),
+            Sexp::T => 1u8.hash(h),
+            Sexp::Int(n) => { 2u8.hash(h); n.hash(h); }
+            Sexp::Float(x) => { 3u8.hash(h); x.to_bits().hash(h); }
+            Sexp::Symbol(s) => { 4u8.hash(h); s.hash(h); }
+            Sexp::Str(s) => { 5u8.hash(h); s.hash(h); }
+            Sexp::MutStr(rc) => { 5u8.hash(h); rc.value.hash(h); }
+            Sexp::Cons(b) => { 6u8.hash(h); fold(&b.car, h); fold(&b.cdr, h); }
+            Sexp::Vector(rc) => {
+                7u8.hash(h);
+                for it in rc.value.iter() { fold(it, h); }
+            }
+            Sexp::CharTable(_) => 9u8.hash(h),
+            Sexp::BoolVector(rc) => {
+                10u8.hash(h);
+                for &b in rc.value.iter() { (b as u8).hash(h); }
+            }
+            Sexp::Cell(c) => fold(&c.value, h),
+            Sexp::Record(rec) => {
+                11u8.hash(h);
+                fold(&rec.type_tag, h);
+                for s in rec.slots.iter() { fold(s, h); }
+            }
+        }
+    }
+    let mut h = DefaultHasher::new();
+    fold(&*arg, &mut h);
+    *out = Sexp::Int((h.finish() & 0x3FFF_FFFF_FFFF_FFFFu64) as i64);
+    0
+}
+
 /// Doc 86 §86.1.a — `(type-of OBJECT)' trampoline.
 /// Shape `(*const Sexp, *mut Sexp) -> i64', reachable via
 /// `(nl-jit-call-out-1 "nelisp_jit_type_of" x)'.  Always succeeds

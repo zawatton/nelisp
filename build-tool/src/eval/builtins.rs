@@ -108,7 +108,9 @@ pub fn install_builtins(env: &mut Env) {
         // hashing — used by hash-table key derivation in user code
         // Rust-min (2026-05-06 batch 6e): `sxhash-{equal,eq,eql}'
         // moved to elisp defalias of `sxhash'.
-        "sxhash",
+        // Doc 86 §86.1.b (2026-05-10): `sxhash' migrated to elisp via
+        // `nl_jit_sxhash' trampoline (jit/predicate.rs); install
+        // entry + dispatch arm + bi_sxhash helper deleted.
         // string
         // Rust-min (2026-05-06 batch 6b): substring migrated to elisp
         // (lisp/nelisp-stdlib-plist-str.el).
@@ -518,7 +520,8 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // as `(logxor x -1)' (see lisp/nelisp-stdlib.el).
         // Rust-min (2026-05-06 batch 6e): `lsh' / `sxhash-{equal,eq,eql}'
         // moved to elisp defalias of `ash' / `sxhash'.
-        "sxhash" => bi_sxhash(args),
+        // Doc 86 §86.1.b (2026-05-10): `sxhash' migrated to elisp via
+        // `nl_jit_sxhash' trampoline; dispatch arm removed.
         // ---- string ----
         // concat migrated to elisp (Rust-min 2026-05-06 batch 6r,
         // see lisp/nelisp-stdlib-plist-str.el).
@@ -894,60 +897,10 @@ pub(crate) fn num_pair(args: &[Sexp], name: &str) -> Result<(f64, f64, bool), Ev
 // preserves the count-clamping semantics inline; the JIT fast path
 // covers count ∈ [-62, +62].
 
-/// `(sxhash OBJECT)' / `sxhash-{equal,eq,eql}' — fold OBJECT into
-/// an i64 hash.  All four flavours share the same impl here; that
-/// is fine for the substrate's use-cases (= deriving a stable
-/// integer key for hashing).  Real Emacs distinguishes the four
-/// based on equality predicate — we accept the imprecision since
-/// caller code that needs equality-class-stable hashing will go
-/// through the hash-table API directly.
-fn bi_sxhash(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("sxhash", args, 1, Some(1))?;
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::Hasher;
-    let mut h = DefaultHasher::new();
-    sxhash_into(&args[0], &mut h);
-    // Mask to a positive Emacs-fixnum-friendly range.
-    let raw = h.finish();
-    Ok(Sexp::Int((raw & 0x3FFF_FFFF_FFFF_FFFFu64) as i64))
-}
-
-fn sxhash_into<H: std::hash::Hasher>(v: &Sexp, h: &mut H) {
-    use std::hash::Hash;
-    match v {
-        Sexp::Nil => 0u8.hash(h),
-        Sexp::T => 1u8.hash(h),
-        Sexp::Int(n) => { 2u8.hash(h); n.hash(h); }
-        Sexp::Float(x) => { 3u8.hash(h); x.to_bits().hash(h); }
-        Sexp::Symbol(s) => { 4u8.hash(h); s.hash(h); }
-        Sexp::Str(s) => { 5u8.hash(h); s.hash(h); }
-        Sexp::MutStr(rc) => { 5u8.hash(h); rc.value.hash(h); }
-        Sexp::Cons(b) => {
-            6u8.hash(h);
-            sxhash_into(&b.car, h);
-            sxhash_into(&b.cdr, h);
-        }
-        Sexp::Vector(rc) => {
-            7u8.hash(h);
-            for it in rc.value.iter() { sxhash_into(it, h); }
-        }
-        Sexp::CharTable(_) => 9u8.hash(h),
-        Sexp::BoolVector(rc) => {
-            10u8.hash(h);
-            for &b in rc.value.iter() { (b as u8).hash(h); }
-        }
-        // Lexical-binding storage cell — hash through to inner value
-        // (= cells should be invisible to user-facing sxhash).
-        Sexp::Cell(c) => sxhash_into(&c.value, h),
-        Sexp::Record(rec) => {
-            11u8.hash(h);
-            sxhash_into(&rec.type_tag, h);
-            for s in rec.slots.iter() {
-                sxhash_into(s, h);
-            }
-        }
-    }
-}
+// `bi_sxhash' + `sxhash_into' moved to `jit/predicate.rs' as
+// `nl_jit_sxhash' trampoline (Doc 86 §86.1.b 2026-05-10).  Body
+// kept in Rust for `DefaultHasher' bit-exactness (Doc 87 §3.2).
+// Elisp wrapper in `lisp/nelisp-stdlib.el'.
 
 // bi_lt / bi_gt / bi_le / bi_ge / bi_eq_num / bi_neq_num removed —
 // see lisp/nelisp-stdlib.el (Rust-min 2026-05-06 batch 6w).
