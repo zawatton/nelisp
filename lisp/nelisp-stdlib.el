@@ -8,11 +8,12 @@
 ;; from Rust to elisp, folding over new 2-arg primitives
 ;; `nelisp--add2' / `nelisp--sub2' / `nelisp--mul2'.  Same pattern
 ;; as batch 6j (= bitwise variadic fold over `nelisp--logior2'
-;; etc.).  `/' kept in Rust because its variadic semantics promote
-;; ALL args to f64 upfront, then trunc only at end IF originally
-;; all-int — a step-wise fold would lose precision for mixed
-;; int/float input (e.g. (/ 10 3 2.0) = 1.666 upfront vs 1.5
-;; step-wise).
+;; etc.).  Doc 86 §86.1.b (2026-05-10): `/' migrated to elisp on
+;; top of the new `nl_jit_float_div' trampoline (jit/float.rs).
+;; The upfront-promote-then-trunc-on-all-int semantics (= which
+;; previously kept `bi_div' in Rust to avoid step-wise precision
+;; loss) are now elisp-native via a 2-pass fold: pass 1 detects
+;; any-float, pass 2 does the f64 division through the trampoline.
 ;;
 ;; Identity elements: (+) = 0, (-) = 0, (*) = 1.  Unary cases:
 ;; (- x) = (nelisp--sub2 0 x) = -x; (+ x) and (* x) return x.
@@ -41,6 +42,47 @@
       (setq acc (nelisp--mul2 acc (car cur)))
       (setq cur (cdr cur)))
     acc))
+
+;; Doc 86 §86.1.b — `/' (variadic).  Pass 1: detect any Float arg
+;; (= drives the int-trunc gate at the end).  Pass 2: f64 division
+;; through `nl_jit_float_div' trampoline; division-by-zero check
+;; uses `nelisp--num-eq2' (= the same numeric `=' the deleted
+;; `bi_div' tested via `vs[0] == 0.0').  1-arg case is reciprocal
+;; `(/ x)' = `(1.0 / x)' with int-trunc gating just like n-arg.
+;; All-int-trunc uses `(nl-jit-call-i64-i64 "nelisp_jit_add2" 0 X)'
+;; (= the as_int coerce idiom from `ash') so `truncate' (which
+;; lives in Rust as a separate primitive yet to migrate in §86.1.d)
+;; is not on the dependency path here.
+(defun / (&rest args)
+  (cond
+   ((null args) (signal 'wrong-number-of-arguments (list '/ 0)))
+   ((null (cdr args))
+    ;; 1-arg: reciprocal.
+    (let ((x (car args)))
+      (when (nelisp--num-eq2 x 0)
+        (signal 'arith-error (cons "/" args)))
+      (let ((res (nl-jit-call-float-float "nl_jit_float_div" 1.0 x)))
+        (if (eq (type-of x) 'float)
+            res
+          (nl-jit-call-i64-i64 "nelisp_jit_add2" 0 res)))))
+   (t
+    ;; n-arg: pass 1 detect any-float.
+    (let ((all-int t) (cur args))
+      (while cur
+        (when (eq (type-of (car cur)) 'float)
+          (setq all-int nil))
+        (setq cur (cdr cur)))
+      ;; Pass 2: float-fold (upfront promote = matches deleted bi_div).
+      (let ((acc (car args)) (rest (cdr args)))
+        (while rest
+          (let ((b (car rest)))
+            (when (nelisp--num-eq2 b 0)
+              (signal 'arith-error (cons "/" args)))
+            (setq acc (nl-jit-call-float-float "nl_jit_float_div" acc b))
+            (setq rest (cdr rest))))
+        (if all-int
+            (nl-jit-call-i64-i64 "nelisp_jit_add2" 0 acc)
+          acc))))))
 
 (defun 1+ (x) (nelisp--add2 x 1))
 (defun 1- (x) (nelisp--sub2 x 1))

@@ -7,6 +7,10 @@
 #[no_mangle] pub extern "C" fn nl_jit_float_add(a: f64, b: f64) -> f64 { a + b }
 #[no_mangle] pub extern "C" fn nl_jit_float_sub(a: f64, b: f64) -> f64 { a - b }
 #[no_mangle] pub extern "C" fn nl_jit_float_mul(a: f64, b: f64) -> f64 { a * b }
+// Doc 86 §86.1.b (2026-05-10) — `/' migrated to elisp via this binary
+// trampoline.  Division-by-zero check stays in elisp (= the bridge's
+// `num_pair' Float promotion is what enforces wrong-type already).
+#[no_mangle] pub extern "C" fn nl_jit_float_div(a: f64, b: f64) -> f64 { a / b }
 #[no_mangle] pub extern "C" fn nl_jit_float_eq_eps(a: f64, b: f64) -> i64 {
     if (a - b).abs() < 1e-15 { 1 } else { 0 }
 }

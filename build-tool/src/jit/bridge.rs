@@ -165,6 +165,11 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
         "nl_jit_float_add" => super::float::nl_jit_float_add as *const u8,
         "nl_jit_float_sub" => super::float::nl_jit_float_sub as *const u8,
         "nl_jit_float_mul" => super::float::nl_jit_float_mul as *const u8,
+        // Doc 86 §86.1.b (2026-05-10): `/' migrated to elisp via this
+        // binary trampoline (= same `:trampoline-binary-float-arith'
+        // ABI as add/sub/mul); division-by-zero check + integer-trunc
+        // gating live in `lisp/nelisp-stdlib.el' `(defun / ...)'.
+        "nl_jit_float_div" => super::float::nl_jit_float_div as *const u8,
         "nl_jit_float_eq_eps" => super::float::nl_jit_float_eq_eps as *const u8,
         "nl_jit_float_lt" => super::float::nl_jit_float_lt as *const u8,
         "nl_jit_float_gt" => super::float::nl_jit_float_gt as *const u8,

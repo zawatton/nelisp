@@ -39,11 +39,11 @@ pub fn install_builtins(env: &mut Env) {
         // (lisp/nelisp-stdlib.el).
         // Rust-min (2026-05-06 batch 6v): variadic + / - / *
         // migrated to elisp (lisp/nelisp-stdlib.el) on top of new
-        // 2-arg primitives.  / kept in Rust due to upfront-promote
-        // semantics (= step-wise fold would lose precision when
-        // later args are float, e.g. (/ 10 3 2.0) = 1.666 vs 1.5).
+        // 2-arg primitives.
+        // Doc 86 §86.1.b (2026-05-10): `/' migrated to elisp on top
+        // of `nl_jit_float_div' (jit/float.rs) — upfront f64 promote
+        // + trunc-on-all-int gating live in `lisp/nelisp-stdlib.el'.
         "nelisp--add2", "nelisp--sub2", "nelisp--mul2",
-        "/",
         // Rust-min (2026-05-06 batch 6w): chained-pairwise variadic
         // < / > / <= / >= / = / /= migrated to elisp
         // (lisp/nelisp-stdlib.el).  Float-tolerance epsilon moved
@@ -448,14 +448,11 @@ pub fn install_builtins(env: &mut Env) {
 pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     match name {
         // ---- arithmetic ----
-        // + / - / * migrated to elisp (Rust-min 2026-05-06 batch 6v,
-        // see lisp/nelisp-stdlib.el).
+        // + / - / * / mod migrated to elisp (batch 6v / 6l).
+        // / migrated to elisp via `nl_jit_float_div' (Doc 86 §86.1.b).
         // nelisp--add2/sub2/mul2 + nelisp--num-{eq,lt,gt,le,ge}2
-        // migrated to JIT-only path (Phase 5 Stage 5.7, Doc 62
-        // 2026-05-08).  See `jit/arith.rs::lowered_*'.
-        "/" => bi_div(args),
-        // mod migrated to elisp (Rust-min 2026-05-06 batch 6l, see
-        // lisp/nelisp-stdlib.el).
+        // migrated to JIT-only path (Phase 5 Stage 5.7, Doc 62).
+        // See `jit/arith.rs::lowered_*' / `jit/float.rs::nl_jit_float_*'.
         // < / > / <= / >= / = / /= migrated to elisp (Rust-min
         // 2026-05-06 batch 6w, see lisp/nelisp-stdlib.el).
         // ---- equality ----
@@ -840,85 +837,16 @@ fn truthy(value: bool) -> Sexp {
     if value { Sexp::T } else { Sexp::Nil }
 }
 
-/// Numeric promotion: if any input is float, output is float.
-pub(crate) fn numeric_promote(args: &[Sexp]) -> Result<(bool, Vec<f64>), EvalError> {
-    let mut any_float = false;
-    let mut out = Vec::with_capacity(args.len());
-    for a in args {
-        match a {
-            Sexp::Int(n) => out.push(*n as f64),
-            Sexp::Float(x) => {
-                any_float = true;
-                out.push(*x);
-            }
-            other => {
-                return Err(EvalError::WrongType {
-                    expected: "number".into(),
-                    got: other.clone(),
-                })
-            }
-        }
-    }
-    Ok((any_float, out))
-}
-
-fn pack_number(any_float: bool, x: f64) -> Sexp {
-    if any_float {
-        Sexp::Float(x)
-    } else {
-        Sexp::Int(x as i64)
-    }
-}
-
 // ---------- arithmetic implementations ----------
 //
-// `all_integer' fast-path helper removed in batch 6v — its sole
-// remaining callers (bi_add / bi_sub / bi_mul) are gone, and bi_div
-// always uses `numeric_promote'.  Doc 51's row-hash precision
-// concern (= sxhash-equal collision above 2^53) is handled at the
-// `nelisp--add2' / `nelisp--mul2' boundary: int+int stays int with
-// wrapping arithmetic, so no precision loss when both args are
-// integer (the only path that mattered for that bug).
-//
-// bi_add / bi_sub / bi_mul removed — see top of this section.
-
-fn bi_div(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("/", args, 1, None)?;
-    let (af, vs) = numeric_promote(args)?;
-    if vs.len() == 1 {
-        if vs[0] == 0.0 {
-            return Err(EvalError::ArithError("division by zero".into()));
-        }
-        return Ok(pack_number(af, 1.0 / vs[0]));
-    }
-    let mut acc = vs[0];
-    for v in vs.iter().skip(1) {
-        if *v == 0.0 {
-            return Err(EvalError::ArithError("division by zero".into()));
-        }
-        acc /= v;
-    }
-    if !af {
-        // Integer truncation for all-int inputs.
-        Ok(Sexp::Int(acc.trunc() as i64))
-    } else {
-        Ok(Sexp::Float(acc))
-    }
-}
-
-// bi_mod removed — see lisp/nelisp-stdlib.el (Rust-min 2026-05-06
-// batch 6l).  Built from `/' (int trunc-div) plus a sign-adjust
-// step that reproduces the previous `rem_euclid' + sign(b) result
-// shape exactly.
-//
-// bi_add / bi_sub / bi_mul removed — see lisp/nelisp-stdlib.el
-// (Rust-min 2026-05-06 batch 6v).  Variadic + / - / * collapse to
-// elisp folds over the new 2-arg primitives `nelisp--add2' /
-// `nelisp--sub2' / `nelisp--mul2' (just below).  bi_div retained
-// because its variadic semantics promote ALL args to f64 upfront
-// (= float division throughout, trunc only at end IF originally
-// all-int) — a step-wise fold would lose precision when later args
-// are float (e.g. `(/ 10 3 2.0)' = 1.666 upfront vs 1.5 step-wise).
+// bi_add / bi_sub / bi_mul / bi_mod / bi_div all migrated to elisp
+// (Rust-min 2026-05-06 batch 6v + 6l + Doc 86 §86.1.b 2026-05-10).
+// Variadic + / - / * fold over the 2-arg primitives `nelisp--add2' /
+// `nelisp--sub2' / `nelisp--mul2'; `mod' is `(- a (* b (/ a b)))'
+// with sign-adjust; `/' rides the new `nl_jit_float_div' trampoline
+// (jit/float.rs) for upfront f64 promotion + trunc-on-all-int gating.
+// `numeric_promote' / `pack_number' helpers deleted with `bi_div'
+// (= had no other callers).
 
 pub(crate) fn num_pair(args: &[Sexp], name: &str) -> Result<(f64, f64, bool), EvalError> {
     require_arity(name, args, 2, Some(2))?;
