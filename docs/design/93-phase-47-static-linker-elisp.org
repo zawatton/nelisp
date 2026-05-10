@@ -4,9 +4,23 @@
 
 * Status
 
-- *State*: DRAFT (= spike, implementation-ready 化のための design doc。
-  本 doc 自体はコード変更を伴わない。Doc 85 §X recommendation で「Phase
-  47 着手なら Doc 91-95 を起こす」とした 5 component の 3 本目)
+- *State*: §93.a SHIPPED (2026-05-11, branch =agent-doc-93a-impl=) +
+  DRAFT (= spike, implementation-ready 化のための design doc。
+  Doc 85 §X recommendation で「Phase 47 着手なら Doc 91-95 を起こす」
+  とした 5 component の 3 本目)
+- *§93.a SHIPPED*: =lisp/nelisp-static-linker.el= (~90 elisp LOC) +
+  =test/nelisp-static-linker-test.el= (21 ert) — relocation core =
+  R_X86_64_PC32 / R_X86_64_64 / R_X86_64_PLT32 patch math + byte-
+  stream mutate.  Symbol-table struct (= shape compatible with Doc 91
+  =:symbols= consumer), relocation entry struct (= accepts both
+  =:symbol= and Doc 92 =:sym= alias), apply-one + apply-many,
+  rel32 overflow guard, unresolved-symbol signal.  Test fixture
+  =nelisp-link--make-test-asm= unblocks §93.b development without
+  Doc 92 dependency.  21/21 ert green, byte-compile 0 warning.
+  End-to-end exec test awaits §93.c multi-unit driver
+- *§93.b DEFERRED*: section combine + symtab merge (= Doc 93 §7.2)
+- *§93.c DEFERRED*: multi-unit driver + Doc 91 writer delegation (=
+  Doc 93 §7.3)
 - *Parent*: Doc 85 (= phase-47-feasibility-spike.org §3.3 / §5.1 /
   §6.1)
 - *Sister docs*: Doc 91 (= elisp ELF writer, ~500 elisp), Doc 92 (=
