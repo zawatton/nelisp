@@ -268,6 +268,52 @@ Delegates to `cl-subseq', clamping N to (length SEQUENCE)."
     (cl-subseq sequence 0 (min n (length sequence)))))
 
 
+;; --- callproc / process polyfills ---------------------------------
+
+;; anvil-org-index has a defcustom `anvil-org-index-async-emacs-bin'
+;; whose default form evaluates `(or (executable-find "emacs") "emacs")'
+;; at load time.  Standalone NeLisp ships no `executable-find'; the load
+;; aborts on the bare `(void-function executable-find)'.  Stub it as a
+;; PATH-aware lookup that falls back to PROGRAM when env / fs primitives
+;; are not available.  The async-refresh codepath that actually consumes
+;; the value is not exercised under standalone (= no subprocess spawn),
+;; so a value good enough for the defcustom load is sufficient.
+(unless (fboundp 'executable-find)
+  (defun executable-find (program &optional _remote)
+    "Polyfill: PATH-aware executable lookup.
+Returns the first absolute path P in $PATH whose basename matches
+PROGRAM and `file-executable-p'; falls back to PROGRAM itself when
+$PATH is empty / `getenv' is stubbed (= NeLisp Phase 1.6) or no
+filesystem primitive is available."
+    (cond
+     ((not (stringp program)) nil)
+     ((and (> (length program) 0)
+           (eq (aref program 0) ?/))
+      (when (and (fboundp 'file-executable-p) (file-executable-p program))
+        program))
+     (t
+      (let* ((path (and (fboundp 'getenv) (getenv "PATH")))
+             (sep (if (and (boundp 'system-type) (eq system-type 'windows-nt))
+                      ";" ":"))
+             (dirs (and (stringp path) (> (length path) 0)
+                        (split-string path sep t)))
+             (hit nil))
+        (when dirs
+          (let ((tail dirs))
+            (while (and tail (not hit))
+              (let* ((d (car tail))
+                     (p (concat (if (and (> (length d) 0)
+                                         (eq (aref d (1- (length d))) ?/))
+                                    d
+                                  (concat d "/"))
+                                program)))
+                (when (and (fboundp 'file-executable-p)
+                           (file-executable-p p))
+                  (setq hit p)))
+              (setq tail (cdr tail)))))
+        hit)))))
+
+
 ;; --- sqlite FFI wire-up via emacs-sqlite-ffi + vendor sqlite.el ------
 
 ;; Standalone NeLisp ships:
