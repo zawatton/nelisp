@@ -75,19 +75,9 @@ pub fn install_builtins(env: &mut Env) {
         // Rust-min (2026-05-06 batch 6c): vconcat migrated to elisp
         // (lisp/nelisp-stdlib-plist-str.el).
         "vector", "make-vector",
-        // predicates
-        // Rust-min (2026-05-06 batch 6q): `atom' migrated to elisp
-        // (lisp/nelisp-stdlib.el) as `(not (consp x))'.
-        // Rust-min (2026-05-06 batch 6u + Doc 86 §86.1.a 2026-05-10):
-        // consp / listp / symbolp / stringp / numberp / integerp /
-        // floatp / vectorp / functionp / recordp migrated to elisp
-        // (see lisp/nelisp-stdlib.el).  Only `type-of' stays in Rust
-        // because it inspects `Sexp' variants directly.
-        "type-of",
-        // Rust-min (2026-05-06 batch 6d): `null' shadowed by elisp.
-        // Rust-min (2026-05-06 batch 6f): `booleanp' / `keywordp'
-        // expressible from `eq' / `symbolp' + `symbol-name' + `aref'
-        // — moved to elisp (lisp/nelisp-stdlib-misc.el).
+        // predicates: all 1-arg predicates + `type-of' migrated to
+        // elisp (Rust-min batch 6q/6u/6d/6f + Doc 86 §86.1.a) —
+        // `type-of' rides `nl_jit_type_of' (jit/predicate.rs).
         // list ops
         // Rust-min (2026-05-06 batch 6d): `reverse' / `nreverse'
         // shadowed by elisp (lisp/nelisp-stdlib-list.el).  The elisp
@@ -501,12 +491,10 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "vector" => Ok(Sexp::vector(args.to_vec())),
         "make-vector" => bi_make_vector(args),
         // ---- predicates ----
-        // Most predicates (consp / listp / symbolp / stringp /
-        // numberp / integerp / floatp / vectorp) are in elisp on top
-        // of `type-of' (Rust-min batch 6u + Doc 86 §86.1.a — see
-        // lisp/nelisp-stdlib.el).  `functionp' / `recordp' joined
-        // them in Doc 86 §86.1.a (2026-05-10).
-        "type-of" => bi_type_of(args),
+        // 1-arg predicates + `type-of' all live in elisp now (Rust-min
+        // batch 6u + Doc 86 §86.1.a).  `type-of' rides the new
+        // `nl_jit_type_of' trampoline (jit/predicate.rs) via
+        // `nl-jit-call-out-1' from lisp/nelisp-jit-strategy.el.
         // `null' is the alias for `nil-p' — `(null nil)' = t, anything
         // else = nil.  Distinct from `not' which has identical semantics
         // but is meant to be read as boolean negation in source.
@@ -1229,54 +1217,8 @@ fn list_to_vec(v: &Sexp) -> Result<Vec<Sexp>, EvalError> {
 }
 
 // ---------- predicates ----------
-
-// Doc 86 §86.1.a (2026-05-10): `bi_predicate' helper + `functionp' /
-// `recordp' migrated to elisp — see lisp/nelisp-stdlib.el.
-
-/// `(type-of OBJECT)' — return a symbol naming the runtime type of
-/// OBJECT.  Used by the Rust-min batch 6u predicate elisp ports
-/// (consp / listp / symbolp / stringp / numberp / integerp / floatp
-/// / vectorp) — each becomes a 1-line `(eq (type-of x) 'TAG)' on
-/// top of this primitive.  Tags follow host Emacs conventions where
-/// possible: `cons' / `symbol' / `string' / `integer' / `float' /
-/// `vector' / `hash-table' / `char-table' / `bool-vector'.  `nil'
-/// and `t' both report as `symbol' (= they ARE symbols in Lisp).
-fn bi_type_of(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("type-of", args, 1, Some(1))?;
-    // Unwrap closure write-through Cells so the user-visible type
-    // matches what was captured (= identity of the inner Sexp).
-    let mut v: Sexp = args[0].clone();
-    while let Sexp::Cell(c) = v {
-        let inner = c.value.clone();
-        v = inner;
-    }
-    // Doc 52 §2.2: `record' is the only variant whose `type-of'
-    // does NOT return a fixed builtin tag.  When the first slot
-    // (`type_tag') is a symbol, return that symbol verbatim — this
-    // is what `cl-defstruct' relies on so user-defined types behave
-    // like first-class types under `type-of' / `cl-typep' / dispatch.
-    if let Sexp::Record(rec) = v {
-        if let Sexp::Symbol(_) = rec.type_tag {
-            return Ok(rec.type_tag.clone());
-        }
-        // Defensive fallback: a record with a non-symbol type_tag
-        // shouldn't be constructible via `record', but if it sneaks
-        // in (e.g. through image decode), report `record' explicitly.
-        return Ok(Sexp::Symbol("record".into()));
-    }
-    let tag = match v {
-        Sexp::Cons(_) => "cons",
-        Sexp::Nil | Sexp::T | Sexp::Symbol(_) => "symbol",
-        Sexp::Int(_) => "integer",
-        Sexp::Float(_) => "float",
-        Sexp::Str(_) | Sexp::MutStr(_) => "string",
-        Sexp::Vector(_) => "vector",
-        Sexp::CharTable(_) => "char-table",
-        Sexp::BoolVector(_) => "bool-vector",
-        Sexp::Cell(_) | Sexp::Record(_) => unreachable!(),
-    };
-    Ok(Sexp::Symbol(tag.into()))
-}
+// (Doc 86 §86.1.a 2026-05-10) — `bi_predicate' / `bi_type_of' /
+// `bi_recordp' all migrated to elisp; only the trampoline survives.
 
 // ---------- string ----------
 

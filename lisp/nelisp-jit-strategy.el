@@ -42,6 +42,24 @@
 
 ;;; Code:
 
+;; ---------- type-of ------------------------------------------------
+;;
+;; Doc 86 §86.1.a (2026-05-10) — `type-of' migrated from Rust to elisp
+;; on top of the new `nl_jit_type_of' trampoline (= same Sexp variant
+;; → tag-symbol mapping that lived in `bi_type_of', plus the Record
+;; type_tag verbatim special case).  Installed FIRST so every
+;; subsequent wrapper below (= `nelisp--int-eq-zero', `length' /
+;; `aref' / `aset' / `elt' fall-through dispatch) sees the elisp
+;; version.  The result is `eq'-comparable to existing tag symbols
+;; (`integer' / `cons' / `string' / etc.) because the trampoline
+;; constructs each via `Sexp::Symbol("integer".into())' — same
+;; underlying interned representation as the literal quoted symbol on
+;; the elisp side.
+
+(fset 'type-of
+      (lambda (x)
+        (nl-jit-call-out-1 "nelisp_jit_type_of" x)))
+
 ;; ---------- predicate (eq) ----------------------------------------
 ;;
 ;; eq is installed FIRST so subsequent wrappers can use it for

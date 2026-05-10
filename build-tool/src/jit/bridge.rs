@@ -131,6 +131,10 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
         // binding is now unused since no field of `UnifiedJit' is
         // looked up on this match arm.
         "nelisp_jit_eq_inline" => super::predicate::nl_jit_predicate_eq as *const u8,
+        // Doc 86 §86.1.a (2026-05-10): `type-of' migrated to elisp on
+        // top of this trampoline (= reachable via `(nl-jit-call-out-1
+        // "nelisp_jit_type_of" x)' from `lisp/nelisp-stdlib.el').
+        "nelisp_jit_type_of" => super::predicate::nl_jit_type_of as *const u8,
         // ---- syscall (2) ----
         // Phase 7.1.6.e (Doc 28 §3.6.e): resolve syscall names directly
         // to the `#[no_mangle] extern "C"' trampolines now that the
@@ -439,6 +443,7 @@ mod tests {
             "nelisp_jit_aset",
             "nelisp_jit_elt",
             "nelisp_jit_eq_inline",
+            "nelisp_jit_type_of",
             "nelisp_jit_syscall",
             "nelisp_jit_syscall_supported_p",
         ];

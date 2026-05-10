@@ -72,6 +72,42 @@ pub unsafe extern "C" fn nl_jit_predicate_eq(
     }
 }
 
+/// Doc 86 §86.1.a — `(type-of OBJECT)' trampoline.
+/// Shape `(*const Sexp, *mut Sexp) -> i64', reachable via
+/// `(nl-jit-call-out-1 "nelisp_jit_type_of" x)'.  Always succeeds
+/// (= returns 0); the err arm is unreachable for 1-arg `type-of'.
+/// Records return their `type_tag' symbol verbatim so `cl-defstruct'
+/// types are first-class.  Closure write-through `Cell's are unwrapped
+/// to mirror the captured identity.
+#[no_mangle]
+pub unsafe extern "C" fn nl_jit_type_of(arg: *const Sexp, out: *mut Sexp) -> i64 {
+    let mut v: Sexp = (*arg).clone();
+    while let Sexp::Cell(c) = v {
+        v = c.value.clone();
+    }
+    if let Sexp::Record(rec) = &v {
+        if let Sexp::Symbol(_) = &rec.type_tag {
+            *out = rec.type_tag.clone();
+            return 0;
+        }
+        *out = Sexp::Symbol("record".into());
+        return 0;
+    }
+    let tag = match v {
+        Sexp::Cons(_) => "cons",
+        Sexp::Nil | Sexp::T | Sexp::Symbol(_) => "symbol",
+        Sexp::Int(_) => "integer",
+        Sexp::Float(_) => "float",
+        Sexp::Str(_) | Sexp::MutStr(_) => "string",
+        Sexp::Vector(_) => "vector",
+        Sexp::CharTable(_) => "char-table",
+        Sexp::BoolVector(_) => "bool-vector",
+        Sexp::Cell(_) | Sexp::Record(_) => unreachable!(),
+    };
+    *out = Sexp::Symbol(tag.into());
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
