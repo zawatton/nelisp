@@ -1,4 +1,4 @@
-;;; nelisp-sexp-dsl-test.el --- ERT tests for Doc 95 §95.a-c Sexp DSL  -*- lexical-binding: t; -*-
+;;; nelisp-sexp-dsl-test.el --- ERT tests for Doc 95 §95.a-d Sexp DSL  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -898,6 +898,312 @@
     (should (= 13 (length cases)))
     (dolist (c cases)
       (should (nelisp-sexp-bytes-round-trip-p c)))))
+
+;;; --- §95.d: Rust ABI fixed-layout JIT bridge ----------------------
+
+(ert-deftest nelisp-sexp-dsl-jit-record-size-nil ()
+  ;; Every variant emits a record of exactly 32 bytes.
+  (let ((r (nelisp-sexp-jit-write-bytes (nelisp-sexp-make-nil))))
+    (should (= 32 (length r)))))
+
+(ert-deftest nelisp-sexp-dsl-jit-record-size-t ()
+  (let ((r (nelisp-sexp-jit-write-bytes (nelisp-sexp-make-t))))
+    (should (= 32 (length r)))))
+
+(ert-deftest nelisp-sexp-dsl-jit-record-size-int ()
+  (let ((r (nelisp-sexp-jit-write-bytes (nelisp-sexp-make-int 42))))
+    (should (= 32 (length r)))))
+
+(ert-deftest nelisp-sexp-dsl-jit-record-size-float ()
+  (let ((r (nelisp-sexp-jit-write-bytes (nelisp-sexp-make-float 3.14))))
+    (should (= 32 (length r)))))
+
+(ert-deftest nelisp-sexp-dsl-jit-record-size-all-13-variants ()
+  ;; Layout invariant: every variant produces a 32-byte record.
+  (let* ((store (nelisp-sexp-jit-make-heap-store))
+         (cases (list (nelisp-sexp-make-nil)
+                      (nelisp-sexp-make-t)
+                      (nelisp-sexp-make-int 1)
+                      (nelisp-sexp-make-float 2.0)
+                      (nelisp-sexp-make-symbol "x")
+                      (nelisp-sexp-make-str "y")
+                      (nelisp-sexp-make-mut-str "z")
+                      (nelisp-sexp-make-cons (nelisp-sexp-make-int 1)
+                                             (nelisp-sexp-make-nil))
+                      (nelisp-sexp-make-vector
+                       (list (nelisp-sexp-make-int 2)))
+                      (nelisp-sexp-make-char-table
+                       (nelisp-sexp-make-nil) nil)
+                      (nelisp-sexp-make-bool-vector 8 t)
+                      (nelisp-sexp-make-cell (nelisp-sexp-make-int 7))
+                      (nelisp-sexp-make-record 'r nil))))
+    (should (= 13 (length cases)))
+    (dolist (c cases)
+      (let ((r (nelisp-sexp-jit-write-bytes c store)))
+        (should (= 32 (length r)))))))
+
+(ert-deftest nelisp-sexp-dsl-jit-tag-byte-position ()
+  ;; Tag byte is at offset 0 for every variant (mirrors Rust
+  ;; `variant_tag' which reads `*(self as *const u8)').
+  (let* ((store (nelisp-sexp-jit-make-heap-store)))
+    (should (= nelisp-sexp-jit-tag-nil
+               (aref (nelisp-sexp-jit-write-bytes
+                      (nelisp-sexp-make-nil)) 0)))
+    (should (= nelisp-sexp-jit-tag-t
+               (aref (nelisp-sexp-jit-write-bytes
+                      (nelisp-sexp-make-t)) 0)))
+    (should (= nelisp-sexp-jit-tag-int
+               (aref (nelisp-sexp-jit-write-bytes
+                      (nelisp-sexp-make-int 0)) 0)))
+    (should (= nelisp-sexp-jit-tag-float
+               (aref (nelisp-sexp-jit-write-bytes
+                      (nelisp-sexp-make-float 0.0)) 0)))
+    (should (= nelisp-sexp-jit-tag-symbol
+               (aref (nelisp-sexp-jit-write-bytes
+                      (nelisp-sexp-make-symbol "x") store) 0)))
+    (should (= nelisp-sexp-jit-tag-cons
+               (aref (nelisp-sexp-jit-write-bytes
+                      (nelisp-sexp-make-cons
+                       (nelisp-sexp-make-nil)
+                       (nelisp-sexp-make-nil)) store) 0)))))
+
+(ert-deftest nelisp-sexp-dsl-jit-tag-byte-rust-stable ()
+  ;; Pin tag byte numeric values to the SEXP_TAG_* constants in
+  ;; sexp.rs lines 217-229 so JIT decode stays stable.
+  (should (= 0 nelisp-sexp-jit-tag-nil))
+  (should (= 1 nelisp-sexp-jit-tag-t))
+  (should (= 2 nelisp-sexp-jit-tag-int))
+  (should (= 3 nelisp-sexp-jit-tag-float))
+  (should (= 4 nelisp-sexp-jit-tag-symbol))
+  (should (= 5 nelisp-sexp-jit-tag-str))
+  (should (= 6 nelisp-sexp-jit-tag-mut-str))
+  (should (= 7 nelisp-sexp-jit-tag-cons))
+  (should (= 8 nelisp-sexp-jit-tag-vector))
+  (should (= 9 nelisp-sexp-jit-tag-char-table))
+  (should (= 10 nelisp-sexp-jit-tag-bool-vector))
+  (should (= 11 nelisp-sexp-jit-tag-cell))
+  (should (= 12 nelisp-sexp-jit-tag-record)))
+
+(ert-deftest nelisp-sexp-dsl-jit-pad-bytes-are-zero ()
+  ;; Bytes 1-7 (= align padding) must be zero so the JIT trampoline's
+  ;; `mov al, [rdi+0]; movzx eax, al' reads only the tag bits.
+  (let ((r (nelisp-sexp-jit-write-bytes (nelisp-sexp-make-int 42))))
+    (dotimes (i 7)
+      (should (zerop (aref r (1+ i)))))))
+
+(ert-deftest nelisp-sexp-dsl-jit-trail-pad-bytes-zero ()
+  ;; Bytes 16-31 (= trailing pad) zero for inline variants — Rust
+  ;; `String' / `NonNull' payload-bytes-tail isn't meaningful in our
+  ;; placeholder layout, so we emit zeros for predictability.
+  (let ((r (nelisp-sexp-jit-write-bytes (nelisp-sexp-make-int 1))))
+    (dotimes (i 16)
+      (should (zerop (aref r (+ 16 i)))))))
+
+(ert-deftest nelisp-sexp-dsl-jit-int-payload-le-i64 ()
+  ;; Bytes 8-15 hold i64 LE payload for `Sexp::Int' — mirrors Rust
+  ;; `match self { Sexp::Int(n) => /* load *(self+8) as i64 */ }'.
+  (let ((r (nelisp-sexp-jit-write-bytes (nelisp-sexp-make-int 1))))
+    (should (= 1 (aref r 8)))
+    (dotimes (i 7) (should (zerop (aref r (+ 9 i))))))
+  (let ((r (nelisp-sexp-jit-write-bytes (nelisp-sexp-make-int #x102))))
+    (should (= #x02 (aref r 8)))
+    (should (= #x01 (aref r 9)))))
+
+(ert-deftest nelisp-sexp-dsl-jit-int-payload-negative ()
+  ;; Negative i64 → two's-complement LE.  -1 = 0xFF * 8.
+  (let ((r (nelisp-sexp-jit-write-bytes (nelisp-sexp-make-int -1))))
+    (dotimes (i 8)
+      (should (= #xFF (aref r (+ 8 i)))))))
+
+(ert-deftest nelisp-sexp-dsl-jit-int-payload-max-min ()
+  ;; i64 MAX / MIN round-trip.
+  (let ((maxv (1- (ash 1 63)))
+        (minv (- (ash 1 63))))
+    (let ((r (nelisp-sexp-jit-write-bytes (nelisp-sexp-make-int maxv))))
+      (should (= maxv (nelisp-sexp-int-value
+                       (nelisp-sexp-jit-read-bytes r 0 nil)))))
+    (let ((r (nelisp-sexp-jit-write-bytes (nelisp-sexp-make-int minv))))
+      (should (= minv (nelisp-sexp-int-value
+                       (nelisp-sexp-jit-read-bytes r 0 nil)))))))
+
+(ert-deftest nelisp-sexp-dsl-jit-float-payload-le-f64 ()
+  ;; Float 1.0 = 0x3FF0000000000000 LE → byte 15 = 0x3F, byte 14 = 0xF0.
+  (let ((r (nelisp-sexp-jit-write-bytes (nelisp-sexp-make-float 1.0))))
+    (should (= 32 (length r)))
+    (should (= #x3F (aref r 15)))
+    (should (= #xF0 (aref r 14)))))
+
+(ert-deftest nelisp-sexp-dsl-jit-inline-decode-no-heap ()
+  ;; Inline variants (= Nil / T / Int / Float) decode without HEAP-FN.
+  (let ((nil-rec (nelisp-sexp-jit-write-bytes (nelisp-sexp-make-nil)))
+        (t-rec (nelisp-sexp-jit-write-bytes (nelisp-sexp-make-t)))
+        (int-rec (nelisp-sexp-jit-write-bytes
+                  (nelisp-sexp-make-int 99)))
+        (float-rec (nelisp-sexp-jit-write-bytes
+                    (nelisp-sexp-make-float 1.5))))
+    (should (nelisp-sexp-nil-p (nelisp-sexp-jit-read-bytes nil-rec 0 nil)))
+    (should (nelisp-sexp-t-p (nelisp-sexp-jit-read-bytes t-rec 0 nil)))
+    (should (= 99 (nelisp-sexp-int-value
+                   (nelisp-sexp-jit-read-bytes int-rec 0 nil))))
+    (should (= 1.5 (nelisp-sexp-float-value
+                    (nelisp-sexp-jit-read-bytes float-rec 0 nil))))))
+
+(ert-deftest nelisp-sexp-dsl-jit-heap-store-str ()
+  ;; Str variant: heap store gets populated, decode round-trips.
+  (let* ((store (nelisp-sexp-jit-make-heap-store))
+         (s (nelisp-sexp-make-str "hello"))
+         (r (nelisp-sexp-jit-write-bytes s store)))
+    (should (= 32 (length r)))
+    (should (= nelisp-sexp-jit-tag-str (aref r 0)))
+    (let ((decoded (nelisp-sexp-jit-read-bytes
+                    r 0 (nelisp-sexp-jit-heap-store-fn store))))
+      (should (nelisp-sexp-eq s decoded)))))
+
+(ert-deftest nelisp-sexp-dsl-jit-heap-store-symbol-multibyte ()
+  ;; Multibyte symbol round-trip through fixed layout + heap-store.
+  (let* ((store (nelisp-sexp-jit-make-heap-store))
+         (s (nelisp-sexp-make-symbol "日本語"))
+         (r (nelisp-sexp-jit-write-bytes s store))
+         (decoded (nelisp-sexp-jit-read-bytes
+                   r 0 (nelisp-sexp-jit-heap-store-fn store))))
+    (should (nelisp-sexp-eq s decoded))))
+
+(ert-deftest nelisp-sexp-dsl-jit-heap-store-cons ()
+  ;; Cons round-trip via heap-store.
+  (let* ((store (nelisp-sexp-jit-make-heap-store))
+         (s (nelisp-sexp-make-cons (nelisp-sexp-make-int 1)
+                                   (nelisp-sexp-make-int 2)))
+         (r (nelisp-sexp-jit-write-bytes s store))
+         (decoded (nelisp-sexp-jit-read-bytes
+                   r 0 (nelisp-sexp-jit-heap-store-fn store))))
+    (should (nelisp-sexp-eq s decoded))))
+
+(ert-deftest nelisp-sexp-dsl-jit-heap-store-vector ()
+  (let* ((store (nelisp-sexp-jit-make-heap-store))
+         (s (nelisp-sexp-make-vector
+             (list (nelisp-sexp-make-int 1)
+                   (nelisp-sexp-make-int 2)
+                   (nelisp-sexp-make-int 3))))
+         (r (nelisp-sexp-jit-write-bytes s store))
+         (decoded (nelisp-sexp-jit-read-bytes
+                   r 0 (nelisp-sexp-jit-heap-store-fn store))))
+    (should (nelisp-sexp-eq s decoded))))
+
+(ert-deftest nelisp-sexp-dsl-jit-heap-store-record ()
+  (let* ((store (nelisp-sexp-jit-make-heap-store))
+         (s (nelisp-sexp-make-record 'pt
+                                     (list (nelisp-sexp-make-int 3)
+                                           (nelisp-sexp-make-int 4))))
+         (r (nelisp-sexp-jit-write-bytes s store))
+         (decoded (nelisp-sexp-jit-read-bytes
+                   r 0 (nelisp-sexp-jit-heap-store-fn store))))
+    (should (nelisp-sexp-eq s decoded))))
+
+(ert-deftest nelisp-sexp-dsl-jit-heap-store-cell ()
+  (let* ((store (nelisp-sexp-jit-make-heap-store))
+         (s (nelisp-sexp-make-cell (nelisp-sexp-make-int 7)))
+         (r (nelisp-sexp-jit-write-bytes s store))
+         (decoded (nelisp-sexp-jit-read-bytes
+                   r 0 (nelisp-sexp-jit-heap-store-fn store))))
+    (should (nelisp-sexp-eq s decoded))))
+
+(ert-deftest nelisp-sexp-dsl-jit-round-trip-all-13 ()
+  ;; Single round-trip helper covers every variant.
+  (let ((cases (list (nelisp-sexp-make-nil)
+                     (nelisp-sexp-make-t)
+                     (nelisp-sexp-make-int 0)
+                     (nelisp-sexp-make-int -42)
+                     (nelisp-sexp-make-float 3.14)
+                     (nelisp-sexp-make-symbol "x")
+                     (nelisp-sexp-make-str "y")
+                     (nelisp-sexp-make-mut-str "z")
+                     (nelisp-sexp-make-cons
+                      (nelisp-sexp-make-int 1)
+                      (nelisp-sexp-make-int 2))
+                     (nelisp-sexp-make-vector
+                      (list (nelisp-sexp-make-int 5)))
+                     (nelisp-sexp-make-char-table
+                      (nelisp-sexp-make-nil) nil)
+                     (nelisp-sexp-make-bool-vector 4 t)
+                     (nelisp-sexp-make-cell
+                      (nelisp-sexp-make-int 8))
+                     (nelisp-sexp-make-record 'tag nil))))
+    (dolist (c cases)
+      (should (nelisp-sexp-jit-round-trip-p c)))))
+
+(ert-deftest nelisp-sexp-dsl-jit-round-trip-nested ()
+  ;; Deeply nested Sexp survives through wire-format heap.
+  (let ((sexp (nelisp-sexp-make-cons
+               (nelisp-sexp-make-vector
+                (list (nelisp-sexp-make-int 1)
+                      (nelisp-sexp-make-cell
+                       (nelisp-sexp-make-str "deep"))))
+               (nelisp-sexp-make-record 'r
+                                        (list (nelisp-sexp-make-t))))))
+    (should (nelisp-sexp-jit-round-trip-p sexp))))
+
+(ert-deftest nelisp-sexp-dsl-jit-truncated-record ()
+  ;; Short input → truncated signal.
+  (should-error (nelisp-sexp-jit-read-bytes
+                 (make-string 16 0) 0 nil)
+                :type 'nelisp-sexp-truncated))
+
+(ert-deftest nelisp-sexp-dsl-jit-unknown-tag ()
+  ;; Unknown tag byte → unknown-tag signal.
+  (let ((bad (concat (unibyte-string #xFF) (make-string 31 0))))
+    (should-error (nelisp-sexp-jit-read-bytes bad 0 nil)
+                  :type 'nelisp-sexp-unknown-tag)))
+
+(ert-deftest nelisp-sexp-dsl-jit-boxed-without-heap-fn ()
+  ;; Boxed variants require a HEAP-FN; nil HEAP-FN signals.
+  (let* ((store (nelisp-sexp-jit-make-heap-store))
+         (r (nelisp-sexp-jit-write-bytes
+             (nelisp-sexp-make-str "abc") store)))
+    (should-error (nelisp-sexp-jit-read-bytes r 0 nil)
+                  :type 'wrong-type-argument)))
+
+(ert-deftest nelisp-sexp-dsl-jit-heap-miss ()
+  ;; HEAP-FN returning nil for a pointer signals heap-miss.
+  (let* ((store (nelisp-sexp-jit-make-heap-store))
+         (r (nelisp-sexp-jit-write-bytes
+             (nelisp-sexp-make-str "abc") store)))
+    (should-error (nelisp-sexp-jit-read-bytes r 0 (lambda (_p _l) nil))
+                  :type 'nelisp-sexp-jit-heap-miss)))
+
+(ert-deftest nelisp-sexp-dsl-jit-pos-cursor ()
+  ;; Read at non-zero POS advances correctly (records are 32 bytes).
+  (let* ((r1 (nelisp-sexp-jit-write-bytes (nelisp-sexp-make-int 1)))
+         (r2 (nelisp-sexp-jit-write-bytes (nelisp-sexp-make-int 2)))
+         (cat (concat r1 r2)))
+    (should (= 1 (nelisp-sexp-int-value
+                  (nelisp-sexp-jit-read-bytes cat 0 nil))))
+    (should (= 2 (nelisp-sexp-int-value
+                  (nelisp-sexp-jit-read-bytes cat 32 nil))))))
+
+(ert-deftest nelisp-sexp-dsl-jit-fresh-store-counter-grows ()
+  ;; Each boxed-variant write allocates a fresh ptr.
+  (let* ((store (nelisp-sexp-jit-make-heap-store))
+         (_a (nelisp-sexp-jit-write-bytes
+              (nelisp-sexp-make-str "a") store))
+         (_b (nelisp-sexp-jit-write-bytes
+              (nelisp-sexp-make-str "b") store)))
+    ;; Two distinct keys live in the store.
+    (should (= 2 (hash-table-count (cdr store))))))
+
+(ert-deftest nelisp-sexp-dsl-jit-rejects-non-sexp ()
+  ;; Writer requires a Sexp DSL plist.
+  (should-error (nelisp-sexp-jit-write-bytes 42)
+                :type 'wrong-type-argument)
+  (should-error (nelisp-sexp-jit-write-bytes "hi")
+                :type 'wrong-type-argument))
+
+(ert-deftest nelisp-sexp-dsl-jit-payload-offset-const ()
+  ;; Payload offset constant matches Rust SEXP_PAYLOAD_OFFSET = 8.
+  (should (= 8 nelisp-sexp-jit-payload-offset)))
+
+(ert-deftest nelisp-sexp-dsl-jit-record-size-const ()
+  ;; Record size matches size_of::<Sexp>() = 32.
+  (should (= 32 nelisp-sexp-jit-record-size)))
 
 (provide 'nelisp-sexp-dsl-test)
 

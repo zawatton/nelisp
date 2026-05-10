@@ -1092,6 +1092,108 @@ fixed Rust layout on the boundary.
 - No Rust changes, no =nelisp-baker= STDLIB_FILES registration —
   freestanding wire format per task spec, JIT bridge deferred to §95.d.
 
+** §95.d SHIPPED (2026-05-11)
+
+Rust ABI fixed-layout JIT bridge landed on top of §95.a/b/c in the
+same =lisp/nelisp-sexp-dsl.el= file.  Mirrors =build-tool/src/eval/
+sexp.rs= =#[repr(C, u8)]= layout so JIT trampolines can read elisp-
+emitted Sexp values via raw pointer deref.
+
+- 13 Rust-ABI tag-byte constants (= =nelisp-sexp-jit-tag-{nil,t,int,
+  float,symbol,str,mut-str,cons,vector,char-table,bool-vector,cell,
+  record}=) pinned to SEXP_TAG_* values in sexp.rs lines 217-229
+- 2 layout-pin constants:
+  - =nelisp-sexp-jit-record-size= = 32 (= =size_of::<Sexp>()=
+    asserted by =sexp_layout_alignment_and_size_sane= unit test)
+  - =nelisp-sexp-jit-payload-offset= = 8 (= =SEXP_PAYLOAD_OFFSET=
+    in sexp.rs line 270)
+- low-level layout codecs:
+  - =--jit-u64-bytes= / =--jit-u64-from-bytes= (= 8-byte LE u64
+    payload bridge — Rust =NonNull<NlXxx>= is =repr(transparent)=
+    bare =*const T= = u64 LE on x86_64/aarch64)
+  - =--jit-i64-bytes= / =--jit-i64-from-bytes= (= 8-byte LE i64,
+    delegated through u64 codecs)
+  - =--jit-f64-bytes= / =--jit-f64-from-bytes= (= delegates to
+    §95.c =--f64-to-bits= / =--f64-from-bits= so NaN preservation
+    + subnormal handling stay in one place)
+- 32-byte record assembly via =--jit-record TAG PAYLOAD-8= (= TAG @
+  0, 7-byte zero pad, PAYLOAD @ 8, 16-byte trail pad to 32 total)
+- heap-store for round-trip helpers:
+  - =nelisp-sexp-jit-make-heap-store= = =(NEXT-PTR . HASH)= cons
+  - =--jit-heap-put= allocates fresh integer ptr, returns key
+  - =nelisp-sexp-jit-heap-store-fn= returns =(lambda (PTR LEN) BYTES)=
+    closure suitable as HEAP-FN argument to read-bytes
+- top-level entry points:
+  - =nelisp-sexp-jit-write-bytes SEXP &optional STORE= → 32-byte
+    unibyte string.  Inline variants (= Nil / T / Int / Float)
+    embed payload bytes at offset 8.  Boxed variants (= 9 other
+    tags) write §95.c wire-format bytes to STORE keyed by fresh
+    integer ptr, embed ptr as 8-byte LE u64 at offset 8.
+  - =nelisp-sexp-jit-read-bytes BYTES &optional POS HEAP-FN= →
+    reconstructed Sexp plist.  Dispatches on tag byte at POS:
+    inline variants decode payload bytes 8-15 directly; boxed
+    variants invoke =(funcall HEAP-FN PTR nil)= and feed the
+    returned wire-format bytes through =nelisp-sexp-read-bytes=.
+- validation:
+  - =nelisp-sexp-jit-round-trip-p SEXP= via structural
+    =nelisp-sexp-eq= (= write + heap + read should reproduce SEXP)
+- new error symbol: =nelisp-sexp-jit-heap-miss= (= HEAP-FN returned
+  nil for a boxed-variant pointer — distinguishes "wire-format
+  truncation" from "heap lookup failure")
+
+Layout per §3.1 mirror:
+
+#+begin_src text
+offset  size  field
+  0       1   tag byte (= SEXP_TAG_*)
+  1       7   align padding (zero-filled)
+  8       8   payload (= i64 / f64 / u64-ptr LE)
+ 16      16   trailing pad to 32-byte total
+#+end_src
+
+- =test/nelisp-sexp-dsl-test.el= — 31 new ert cases:
+  - record-size invariants (= 32 bytes per variant, 4 inline +
+    1 sweep over all 13 = 5 cases)
+  - tag-byte position (= byte 0 holds discriminant, 6 variant
+    samples in one test) + Rust-stable numeric pinning (= 13
+    constants asserted against the SEXP_TAG_* canon)
+  - pad-bytes-are-zero (= 1-7 align, 16-31 trail)
+  - int payload LE i64 (= 1, 0x102, -1 all-FF, MAX/MIN round-trip)
+  - float payload LE f64 (= 1.0 = 0x3FF0000000000000 byte check)
+  - inline decode without HEAP-FN (= Nil/T/Int/Float)
+  - heap-store decode for Str / Symbol (multibyte 日本語) / Cons /
+    Vector / Record / Cell (= 6 boxed cases)
+  - 13-variant round-trip sweep + nested cons/vec/cell/record/str
+  - error paths: truncated record / unknown tag / boxed-without-
+    HEAP-FN / heap-miss / non-Sexp input
+  - POS cursor (= back-to-back records at offsets 0 and 32)
+  - heap-store counter monotonicity (= 2 writes → 2 distinct keys)
+  - layout-pin constants (= payload-offset = 8, record-size = 32)
+- =make compile= 0 warning, =ert= 138/138 (= 107 §95.a/b/c carried
+  + 31 new §95.d).
+- No Rust changes; sexp.rs read-only for layout verification per
+  task constraints.
+
+Deferred to §95.e (= bake-images integration):
+- Real ELF =.data= section emit via Doc 91 ELF writer (= replace
+  hash-table heap-store with byte buffer + R_X86_64_64 relocations)
+- =cmp -l= byte-identical check against existing Rust =make bake-
+  images= output
+- Doc 81 JIT trampoline e2e (= elisp emits Sexp tree, trampoline
+  evals via raw pointer, result verified)
+
+Cross-platform layout assumption (= x86_64 + aarch64 LE only) is
+documented in §3.6 and Doc 85 §7.1.  Big-endian arches (s390x,
+ppc64be) remain out of scope per Phase 47 master.
+
+Rust layout assumption verification: the =#[repr(C, u8)]= on enum
+=Sexp= (sexp.rs line 57) places the discriminant byte at offset 0
+per Rust =rustc-1.x= stable spec, then aligns the payload to the
+largest variant's alignment (= 8 for the =String/NonNull= boxed
+variants).  This is asserted by the in-tree =sexp_layout_alignment_
+and_size_sane= + =sexp_payload_offset_is_eight= unit tests in sexp.
+rs (= drift detector if a future =rustc= changes representation).
+
 ----
 
 End of Doc 95 DRAFT.

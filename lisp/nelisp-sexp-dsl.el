@@ -1,4 +1,4 @@
-;;; nelisp-sexp-dsl.el --- Phase 47 Sexp layout DSL (§95.a-c)  -*- lexical-binding: t; -*-
+;;; nelisp-sexp-dsl.el --- Phase 47 Sexp layout DSL (§95.a-d)  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -1157,6 +1157,293 @@ serializer's determinism itself is under test."
   "Sexp DSL wire format encountered unknown tag byte")
 (define-error 'nelisp-sexp-malformed-record
   "Sexp DSL Record wire payload had wrong shape")
+
+;;; --- §95.d JIT bridge / Rust ABI fixed-layout =====================
+;;
+;; Mirror the Rust `Sexp' `#[repr(C, u8)]' layout from
+;; `build-tool/src/eval/sexp.rs' so the JIT trampoline can read elisp-
+;; emitted Sexp values via pointer deref.  The fixed layout differs
+;; from the §95.c freestanding wire format in two key ways:
+;;
+;;   1. Every value is exactly 32 bytes (= `size_of::<Sexp>()' on
+;;      x86_64 + aarch64 LE, per `sexp_layout_alignment_and_size_sane'
+;;      unit test in sexp.rs).
+;;   2. Heap-backed variants (= Symbol / Str / MutStr / Cons / Vector
+;;      / CharTable / BoolVector / Cell / Record) store an 8-byte LE
+;;      pointer at offset 8, NOT the value content.  The caller (=
+;;      Doc 91 ELF writer + Doc 93 linker chain) owns the relocation
+;;      from placeholder pointer to actual heap address.
+;;
+;; Layout (§3.1 / §3.2 of Doc 95):
+;;
+;;   offset  size  field
+;;     0       1   tag byte (= SEXP_TAG_*, see jit-tag constants below)
+;;     1       7   align padding (= zero-filled)
+;;     8       8   payload @ offset 8 (= i64 / f64 / u64-ptr)
+;;    16      16   trailing pad to 32-byte total
+;;
+;; Tag byte values (= mirror `SEXP_TAG_*' in sexp.rs lines 217-229):
+;;   NIL=0 T=1 INT=2 FLOAT=3 SYMBOL=4 STR=5 MUT_STR=6 CONS=7 VECTOR=8
+;;   CHAR_TABLE=9 BOOL_VECTOR=10 CELL=11 RECORD=12
+;;
+;; Heap-fn deserialize protocol: caller supplies HEAP-FN with shape
+;;   `(lambda (PTR LEN) BYTES)' returning the §95.c wire-format bytes
+;; for the heap-backed payload at PTR.  Round-trip helpers below use
+;; a hash-map heap-store + closure that captures it.
+;;
+;; This module produces / consumes the byte representation; the
+;; actual JIT trampoline wiring + bake-images integration is §95.e.
+
+;;; --- §95.d Rust ABI tag byte constants ----------------------------
+
+(defconst nelisp-sexp-jit-tag-nil         #x00)
+(defconst nelisp-sexp-jit-tag-t           #x01)
+(defconst nelisp-sexp-jit-tag-int         #x02)
+(defconst nelisp-sexp-jit-tag-float       #x03)
+(defconst nelisp-sexp-jit-tag-symbol      #x04)
+(defconst nelisp-sexp-jit-tag-str         #x05)
+(defconst nelisp-sexp-jit-tag-mut-str     #x06)
+(defconst nelisp-sexp-jit-tag-cons        #x07)
+(defconst nelisp-sexp-jit-tag-vector      #x08)
+(defconst nelisp-sexp-jit-tag-char-table  #x09)
+(defconst nelisp-sexp-jit-tag-bool-vector #x0A)
+(defconst nelisp-sexp-jit-tag-cell        #x0B)
+(defconst nelisp-sexp-jit-tag-record      #x0C)
+
+(defconst nelisp-sexp-jit-record-size 32
+  "Fixed Sexp record byte size, mirroring `size_of::<Sexp>()'.")
+
+(defconst nelisp-sexp-jit-payload-offset 8
+  "Payload byte offset within a fixed-layout Sexp record.
+Mirrors `SEXP_PAYLOAD_OFFSET' in sexp.rs (= line 270).")
+
+;;; --- §95.d low-level bit helpers ----------------------------------
+
+(defun nelisp-sexp--jit-u64-bytes (u)
+  "Encode unsigned 64-bit U as 8-byte little-endian unibyte string."
+  (unibyte-string (logand u           #xFF)
+                  (logand (ash u  -8) #xFF)
+                  (logand (ash u -16) #xFF)
+                  (logand (ash u -24) #xFF)
+                  (logand (ash u -32) #xFF)
+                  (logand (ash u -40) #xFF)
+                  (logand (ash u -48) #xFF)
+                  (logand (ash u -56) #xFF)))
+
+(defun nelisp-sexp--jit-i64-bytes (val)
+  "Encode signed 64-bit VAL as 8-byte LE two's-complement string."
+  (let ((u (if (< val 0) (+ val (ash 1 64)) val)))
+    (nelisp-sexp--jit-u64-bytes u)))
+
+(defun nelisp-sexp--jit-u64-from-bytes (bytes pos)
+  "Decode 8-byte LE unsigned 64-bit from BYTES at POS."
+  (logior (aref bytes pos)
+          (ash (aref bytes (+ pos 1))  8)
+          (ash (aref bytes (+ pos 2)) 16)
+          (ash (aref bytes (+ pos 3)) 24)
+          (ash (aref bytes (+ pos 4)) 32)
+          (ash (aref bytes (+ pos 5)) 40)
+          (ash (aref bytes (+ pos 6)) 48)
+          (ash (aref bytes (+ pos 7)) 56)))
+
+(defun nelisp-sexp--jit-i64-from-bytes (bytes pos)
+  "Decode 8-byte LE signed 64-bit two's-complement from BYTES at POS."
+  (let ((u (nelisp-sexp--jit-u64-from-bytes bytes pos)))
+    (if (>= u (ash 1 63)) (- u (ash 1 64)) u)))
+
+(defun nelisp-sexp--jit-f64-bytes (val)
+  "Encode IEEE 754 binary64 VAL as 8-byte LE unibyte string.
+Delegates to `nelisp-sexp--f64-to-bits' (= §95.c helper)."
+  (nelisp-sexp--jit-u64-bytes (nelisp-sexp--f64-to-bits val)))
+
+(defun nelisp-sexp--jit-f64-from-bytes (bytes pos)
+  "Decode IEEE 754 binary64 LE from BYTES at POS via §95.c helper."
+  (nelisp-sexp--f64-from-bits
+   (nelisp-sexp--jit-u64-from-bytes bytes pos)))
+
+;;; --- §95.d 32-byte record assembly --------------------------------
+
+(defun nelisp-sexp--jit-record (tag payload-bytes)
+  "Assemble fixed 32-byte Sexp record from TAG + 8-byte PAYLOAD-BYTES.
+Layout: TAG @ 0, 7-byte zero pad, PAYLOAD-BYTES @ 8, 16-byte zero
+tail pad.  PAYLOAD-BYTES must be exactly 8 bytes (= LE u64 / i64 /
+f64 / ptr)."
+  (unless (and (stringp payload-bytes) (= (length payload-bytes) 8))
+    (signal 'wrong-type-argument
+            (list 'nelisp-sexp-jit-8-byte-payload payload-bytes)))
+  (concat (unibyte-string tag)
+          (make-string 7 0)
+          payload-bytes
+          (make-string 16 0)))
+
+;;; --- §95.d heap-store for round-trip helpers ----------------------
+;;
+;; A "heap store" is a hash-table mapping integer pointer keys to
+;; unibyte byte strings (= §95.c wire-format encoding of the value
+;; the pointer refers to).  Writers allocate fresh pointer keys via
+;; an integer counter; readers look up keys via HEAP-FN.  In the
+;; real Phase 47 bake chain, ptr values become ELF =.data= offsets
+;; that Doc 93 linker patches to actual addresses; for §95.d we
+;; only need the round-trip property, so any unique integer works.
+
+(defun nelisp-sexp-jit-make-heap-store ()
+  "Allocate a fresh heap-store hash-table used by write/read helpers.
+Keys are integer pseudo-pointers, values are unibyte byte strings
+(= §95.c wire-format encoding) representing the heap content for a
+boxed variant payload."
+  (cons 1 (make-hash-table :test 'eql)))
+
+(defun nelisp-sexp--jit-heap-put (store bytes)
+  "Allocate a fresh ptr in STORE, store BYTES at it, return the ptr.
+STORE is a (NEXT-PTR . HASH) cons from `nelisp-sexp-jit-make-heap-store'.
+Returned ptr is an integer used as the 8-byte u64 payload."
+  (let ((ptr (car store)))
+    (setcar store (1+ ptr))
+    (puthash ptr bytes (cdr store))
+    ptr))
+
+(defun nelisp-sexp-jit-heap-store-fn (store)
+  "Return a HEAP-FN closure that looks up STORE for `nelisp-sexp-jit-read-bytes'.
+The closure has shape (lambda (PTR LEN) BYTES) and returns the byte
+string previously emitted by `nelisp-sexp-jit-write-bytes' for PTR.
+LEN is advisory (= caller hint) and ignored here since each heap
+entry is self-describing via the §95.c wire format."
+  (lambda (ptr _len) (gethash ptr (cdr store))))
+
+;;; --- §95.d top-level layout serializer ----------------------------
+
+(defun nelisp-sexp-jit-write-bytes (sexp &optional heap-store)
+  "Emit the fixed-layout 32-byte Sexp record for SEXP.
+Returns a 32-byte unibyte string mirroring the Rust ABI layout.
+
+For boxed variants (= Symbol / Str / MutStr / Cons / Vector /
+CharTable / BoolVector / Cell / Record), the heap payload is
+written into HEAP-STORE (= cons-cell from
+`nelisp-sexp-jit-make-heap-store').  If HEAP-STORE is omitted a
+fresh store is allocated but discarded — caller must pass a store
+to access the heap content for decode.
+
+The heap entry for a boxed variant uses the §95.c wire format
+(= recursive self-describing) so a single decode helper can walk
+arbitrary nested structures without each variant carrying its own
+length / shape header."
+  (unless (nelisp-sexp-p sexp)
+    (signal 'wrong-type-argument (list 'nelisp-sexp-p sexp)))
+  (let* ((store (or heap-store (nelisp-sexp-jit-make-heap-store)))
+         (tag (plist-get sexp :tag)))
+    (cond
+     ((null tag)
+      (nelisp-sexp--jit-record nelisp-sexp-jit-tag-nil
+                               (make-string 8 0)))
+     ((eq tag t)
+      (nelisp-sexp--jit-record nelisp-sexp-jit-tag-t
+                               (make-string 8 0)))
+     ((eq tag 'int)
+      (nelisp-sexp--jit-record
+       nelisp-sexp-jit-tag-int
+       (nelisp-sexp--jit-i64-bytes (plist-get sexp :value))))
+     ((eq tag 'float)
+      (nelisp-sexp--jit-record
+       nelisp-sexp-jit-tag-float
+       (nelisp-sexp--jit-f64-bytes (plist-get sexp :value))))
+     (t
+      ;; Boxed variant: write payload to heap-store via §95.c wire
+      ;; format, embed the ptr at offset 8 as 8-byte LE u64.
+      (let* ((wire (nelisp-sexp-write-bytes sexp))
+             (ptr (nelisp-sexp--jit-heap-put store wire))
+             (jit-tag (nelisp-sexp--jit-tag-of tag)))
+        (nelisp-sexp--jit-record
+         jit-tag (nelisp-sexp--jit-u64-bytes ptr)))))))
+
+(defun nelisp-sexp--jit-tag-of (tag)
+  "Return Rust ABI tag byte for variant TAG symbol.
+Signals `nelisp-sexp-unknown-tag' when TAG is unrecognised."
+  (cond
+   ((null tag) nelisp-sexp-jit-tag-nil)
+   ((eq tag t) nelisp-sexp-jit-tag-t)
+   ((eq tag 'int) nelisp-sexp-jit-tag-int)
+   ((eq tag 'float) nelisp-sexp-jit-tag-float)
+   ((eq tag 'symbol) nelisp-sexp-jit-tag-symbol)
+   ((eq tag 'str) nelisp-sexp-jit-tag-str)
+   ((eq tag 'mut-str) nelisp-sexp-jit-tag-mut-str)
+   ((eq tag 'cons) nelisp-sexp-jit-tag-cons)
+   ((eq tag 'vector) nelisp-sexp-jit-tag-vector)
+   ((eq tag 'char-table) nelisp-sexp-jit-tag-char-table)
+   ((eq tag 'bool-vector) nelisp-sexp-jit-tag-bool-vector)
+   ((eq tag 'cell) nelisp-sexp-jit-tag-cell)
+   ((eq tag 'record) nelisp-sexp-jit-tag-record)
+   (t (signal 'nelisp-sexp-unknown-tag (list tag)))))
+
+;;; --- §95.d top-level layout deserializer --------------------------
+
+(defun nelisp-sexp-jit-read-bytes (bytes &optional pos heap-fn)
+  "Decode one fixed-layout 32-byte Sexp record from BYTES at POS.
+POS defaults to 0.  Returns the reconstructed Sexp plist.
+
+For boxed variants (= tag >= 4 except as below) the 8-byte payload
+@ offset 8 is interpreted as an integer ptr key, and HEAP-FN
+(= (lambda (PTR LEN) BYTES)) is invoked to retrieve the §95.c
+wire-format bytes that describe the value.  For inline variants
+(= Nil / T / Int / Float) HEAP-FN is unused and may be nil.
+
+Signals `nelisp-sexp-truncated' on short input or
+`nelisp-sexp-unknown-tag' on unrecognised tag byte."
+  (unless (stringp bytes)
+    (signal 'wrong-type-argument (list 'stringp bytes)))
+  (let ((pos (or pos 0)))
+    (when (> (+ pos nelisp-sexp-jit-record-size) (length bytes))
+      (signal 'nelisp-sexp-truncated
+              (list 'jit-record pos (length bytes))))
+    (let ((tag (aref bytes pos))
+          (payload-pos (+ pos nelisp-sexp-jit-payload-offset)))
+      (cond
+       ((= tag nelisp-sexp-jit-tag-nil)
+        (nelisp-sexp-make-nil))
+       ((= tag nelisp-sexp-jit-tag-t)
+        (nelisp-sexp-make-t))
+       ((= tag nelisp-sexp-jit-tag-int)
+        (nelisp-sexp-make-int
+         (nelisp-sexp--jit-i64-from-bytes bytes payload-pos)))
+       ((= tag nelisp-sexp-jit-tag-float)
+        (nelisp-sexp-make-float
+         (nelisp-sexp--jit-f64-from-bytes bytes payload-pos)))
+       ((or (= tag nelisp-sexp-jit-tag-symbol)
+            (= tag nelisp-sexp-jit-tag-str)
+            (= tag nelisp-sexp-jit-tag-mut-str)
+            (= tag nelisp-sexp-jit-tag-cons)
+            (= tag nelisp-sexp-jit-tag-vector)
+            (= tag nelisp-sexp-jit-tag-char-table)
+            (= tag nelisp-sexp-jit-tag-bool-vector)
+            (= tag nelisp-sexp-jit-tag-cell)
+            (= tag nelisp-sexp-jit-tag-record))
+        (unless (functionp heap-fn)
+          (signal 'wrong-type-argument
+                  (list 'nelisp-sexp-jit-heap-fn heap-fn)))
+        (let* ((ptr (nelisp-sexp--jit-u64-from-bytes
+                     bytes payload-pos))
+               (heap-bytes (funcall heap-fn ptr nil)))
+          (unless (stringp heap-bytes)
+            (signal 'nelisp-sexp-jit-heap-miss (list ptr)))
+          (car (nelisp-sexp-read-bytes heap-bytes 0))))
+       (t (signal 'nelisp-sexp-unknown-tag (list tag pos)))))))
+
+;;; --- §95.d round-trip helper --------------------------------------
+
+(defun nelisp-sexp-jit-round-trip-p (sexp)
+  "Return non-nil iff SEXP survives JIT layout write+heap+read.
+Uses `nelisp-sexp-eq' since plist tail order is implementation-
+defined while structural identity is the layout contract."
+  (let* ((store (nelisp-sexp-jit-make-heap-store))
+         (record (nelisp-sexp-jit-write-bytes sexp store))
+         (decoded (nelisp-sexp-jit-read-bytes
+                   record 0
+                   (nelisp-sexp-jit-heap-store-fn store))))
+    (nelisp-sexp-eq sexp decoded)))
+
+;;; --- §95.d error symbols ------------------------------------------
+
+(define-error 'nelisp-sexp-jit-heap-miss
+  "Sexp DSL JIT heap-fn returned nil for a boxed-variant pointer")
 
 (provide 'nelisp-sexp-dsl)
 
