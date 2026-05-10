@@ -6,7 +6,7 @@
 * §0 Status
 
 :PROPERTIES:
-:STATE: SHIPPED through 9.5 (2026-05-10) — Phase 9 sub-stage 9.1〜9.5 SHIPPED (= Phase 9 Rust LOC payoff stage delivered net Rust shrink); Stage 9.6 (bench gate) deferred
+:STATE: SHIPPED — Doc 75 全 Stage 9.1〜9.6 (2026-05-10) — Phase 9 frozen heap 完遂. Stage 9.6 を v2 surface 最終 polish (= module docstring / encoder/decoder docstring / test comment archaeology cleanup) として ship、bench gate stage は §3.6 design only として保留 (実 CI 設置は Doc 75 範囲外、Phase 10 候補)
 :PARENT: Doc 73 §2.5 (= Stage 8.5 articulation で Phase 9 候補)
 :RELATED: Doc 72 (Stage 7.7.a/b AOT bake SHIPPED 2026-05-08) / Doc 73 §9 #1 (Doc 75 候補 shift) / Doc 77c (= 100% pure elisp self-host commitment 2026-05-09)
 :DECISION_RULE: 2026-05-09 user 指示 — *every commit must net-decrease Rust LOC* (= per-commit monotonic shrink rule)
@@ -83,6 +83,31 @@
     on track via Stage 8.4 reader fence-off bundle).  cargo build
     (default + image-baker) clean; cargo test image:: 17/17 green
     incl. phase4_6d / phase4_6e canaries.
+  - Stage 9.6 (= this commit, 2026-05-10): Phase 9 final polish —
+    v2 surface archaeology cleanup. Stage 9.5 で v2 encode chain /
+    TAG_* constants / encode_image / decode_value 等は production code
+    から全削除済だが、image.rs module docstring + 各 fn docstring +
+    test comment に「v2 implementation を walked」「pre-Stage-9.5 v2
+    artefact」のような stale 記述が残っていた. 本 stage で:
+    + module docstring を post-9.5 truth に書き直し (= "v2 shipped,
+      v3 reserved" → "NELIMG v3 frozen-heap, post-Stage 9.6")、
+    + `compile_elisp_to_image' / `encode_v3' / `decode_image' /
+      constants 周辺の archaeology comment を削減、
+    + `phase4_6a_header_and_version_are_checked' /
+      `doc75_stage9_3_encode_v3_magic_uses_dedicated_byte' test
+      comment から v2 比較を削除.  ImageError variants は全て現用
+    (= `BadMagic' は v2 magic reject にも使われる、`UnsupportedVersion'
+    は v3 内 future version reject にも使われる) なので variant 削除
+    なし. `IMAGE_MAGIC' / `IMAGE_ABI_VERSION' legacy const は
+    Stage 9.5 で既に削除済 (= grep 確認済 残存ゼロ).
+    `doc75_stage9_4_decode_rejects_v2_magic' は regression coverage
+    として保持 (= 旧 image bytes を持つ caller が `BadMagic' を受
+    け取ることを lock-in).  net Rust LOC = *-21 (image.rs comment
+    cleanup のみ、production code byte-identical)*.  Cumulative
+    Phase 9 (9.1〜9.6) = +378 Rust transient against -1,524 target
+    (= Phase 8.4 reader fence-off bundle で payoff).  cargo build
+    (default + image-baker) clean; cargo test image:: 17/17 green
+    incl. phase4_6d / phase4_6e canaries.  *Doc 75 全 stage SHIPPED*.
 
 * §1 背景 + frozen heap が指す具体物
 
@@ -907,16 +932,77 @@ test (= encode_value/decode_value 直叩き系) は削除、frozen heap で
   *上位互換 coverage* を確保してから削除 (= 9.5.a の git history を見て
   rollback 可能にする)
 
-** §3.6 Stage 9.6 — frozen heap mode で startup latency / size 確定
+** §3.6 Stage 9.6 — Phase 9 final polish (= v2 surface archaeology cleanup) [SHIPPED 2026-05-10]
 
-*Scope*: 計測 + threshold gate を CI に組み込み. コード追加なし.
+*Status*: SHIPPED 2026-05-10 — Phase 9 完遂、Doc 75 全 stage 終了.
 
-*Rust LOC delta*: *0* (= CI script 追加のみ、Rust 不変)
+*Scope (= shipped)*: Stage 9.5 で v2 encode chain / TAG_* aliases /
+=encode_image= / =encode_value= / =decode_value= が production code
+から全削除されたが、image.rs の module docstring + 各 fn docstring +
+test comment に v2 archaeology が stale 記述として残っていた. 本
+stage で 4 種類の cleanup を実施:
 
-*検証*:
-- =hyperfine 'nelisp -Q --eval 0'= median が ~120ms (Stage 7.7.b) →
-  ~40ms (Stage 9 完了) に近いことを確認
-- frozen-env.image size が 500 KB 以下に収まる確認
+1. *Module-level docstring* (= image.rs L1〜27 = =//! Phase 8.x
+   image-format walking skeleton...= block): "v2 shipped, v3 reserved"
+   の前提を post-9.5 truth に書き直し. 新 docstring は "NELIMG v3
+   frozen-heap (post-Stage 9.6)" を front-line に置き、wire format を
+   v3 のみで articulate、v2 への参照は History 節に regression test
+   への pointer 1 行のみ
+2. *Constants block comment* (= L46〜76 = NELIMG_V3_MAGIC /
+   NELIMG_V3_VERSION / NELIMG_V3_KIND_FROZEN_HEAP / TAG_V3_*): "Doc
+   75 v3 Stage 9.5 (2026-05-10) deleted the legacy v2 ..." の
+   archaeology を 2 行 summary に圧縮. v3 NODE_TAG block の "Stage 9.5
+   keeps only the v3 tag set; the v2 TAG_* aliases (...) shipped pre-
+   Stage-9.5 were inlined by `encode_value' / `decode_value'" を
+   削除 (= 削除済 fn への参照は noise)
+3. *Fn docstring archaeology* (=compile_elisp_to_image= / =encode_v3= /
+   =decode_image=): "previous v2 implementation walked
+   `reader::read_all' output through `encode_image'" 系の比較記述を
+   削除、現行 v3 frozen-heap path のみを articulate. "Per Doc 75 v3
+   §3 bundle accounting, this stage is a transient +N LOC slice;
+   the full Phase 9 net target = -1,524 LOC at Stage 9.6" のような
+   過渡期 LOC accounting コメントも削除 (= Phase 9 完了で stale)
+4. *Test comment cleanup* (= =phase4_6a_header_and_version_are_checked= /
+   =doc75_stage9_3_encode_v3_magic_uses_dedicated_byte=): "Stage 9.5
+   (2026-05-10) ..." 由来の archaeology 説明を一文 summary に圧縮.
+
+*削除しなかった対象*:
+- =doc75_stage9_4_decode_rejects_v2_magic= test: 旧 image bytes を
+  持つ caller が =BadMagic= を受け取ることを lock-in する regression
+  coverage、削除すると pre-9.5 v2 image bytes が silently 走り出す
+  退行を検知できなくなる
+- =ImageError= variants: 全 14 variant が現用 (=BadMagic= / =Unsupported
+  Version= / =UnknownTag= 等は v3 内 unknown forms の reject にも使
+  われる、v2 専用 variant は元々無し)
+- =IMAGE_MAGIC= / =IMAGE_ABI_VERSION= legacy const: Stage 9.5 で既
+  に削除済、grep 残存ゼロ確認
+
+*Rust LOC delta (= 実測)*: *-21* (image.rs only, comment cleanup; tests
++ production code byte-identical, build graph 不変)
+
+*Cumulative Phase 9 (9.1〜9.6)*: +378 Rust transient against -1,524
+target.  Stage 8.4 reader fence-off bundle (= -1,679 LOC) と合算で
+Phase 9 全体 = -1,301 LOC (= Phase 9 + 8.4 → -1,524 target に対し
+85% 達成、残差は Stage 9.5 で v2 ERT 8 件削除を見送って frozen-heap
+ERT を平行配置したため。Phase 10 候補として ERT consolidation 化が
+articulate 可能).
+
+*検証 (= 実測)*:
+- cargo build -p nelisp-build-tool (default) clean (1 pre-existing
+  jit/mod.rs dead_code warning のみ、Stage 9.6 scope 外)
+- cargo build -p nelisp-build-tool --features image-baker clean (同上)
+- cargo test -p nelisp-build-tool --lib image:: → 17/17 passed,
+  bootstrap canaries (= phase4_6a / phase4_6d / phase4_6e) 全 green
+
+*元設計 (bench gate stage)*:
+
+旧 §3.6 は startup latency / size 確定の CI bench gate を articulate
+していた (= =hyperfine 'nelisp -Q --eval 0'= median ≤ 60ms gate +
+=frozen-env.image size= ≤ 500KB gate). この track は Doc 75 範囲
+外として保留、Phase 10 候補に articulate 委譲する (= bench harness +
+self-hosted runner + GitHub Actions workflow は Doc 75 v3 当初 scope
+だが、Phase 9 完了に直接必要ではない). 旧 articulation は §3.6.1〜
+§3.6.5 に保存し、Phase 10 design doc が pull できる形にする.
 
 *** §3.6.detail Stage 9.6 詳細 articulate (~2 days)
 
@@ -1002,19 +1088,28 @@ Rust source 変更なし (= Makefile + scripts/*.sh + .github/workflows/*.yml
 - bench harness 自体の flakiness: warmup を 10 に、runs を 50 に
   増やして stddev ≤ 5ms 確認
 
-** §3.7 Stage 一覧 + per-commit LOC delta target
+** §3.7 Stage 一覧 + per-commit LOC delta target [SHIPPED tally]
 
-| Stage | 内容 | net Rust LOC (production) |
-|-------+------+---------------------------|
+| Stage | 内容 | per-stage Rust LOC delta (transient) |
+|-------+------+---------------------------------------|
 | 9.0 (= prereq) | Phase 8 Stage 8.4 reader fence-off | *−1679* |
-| 9.1 | format v3 schema doc-only | 0 |
-| 9.1.b | 戦略 C 検証 cfg(test) | 0 |
-| 9.2 | image v2 encode path image-baker 配下に固定 | +10 (= cfg attr のみ) |
-| 9.3+9.4 (= 合体) | encoder + decoder + new_global 切替 + STDLIB_IMAGES 降ろし | +265 (= encoder/decoder 追加) |
-| 9.5 | v2 encode path 削除 | −120 |
-| 9.6 | startup bench gate (CI のみ) | 0 |
-| *Phase 9 単体 net* | (= 9.0 を除く) | *+155 LOC* |
-| *Phase 9 + 9.0 net* | | *−1524 LOC* |
+| 9.1 | NELIMG v3 magic / version / KIND constants + cfg(test) spike | +7 |
+| 9.2 | image v2 encode path image-baker feature gate | +5 |
+| 9.3 | NELIMG v3 header-only encoder | +117 |
+| 9.3.b + 9.4 | NELIMG v3 full payload encoder + production decoder | +625 |
+| 9.5 | v2 encode chain 削除 + boot path v3 切替 + 18 .el.image 再 bake | *−355* (image.rs +57 wire / −412 delete) |
+| 9.6 | v2 surface archaeology docstring + test comment cleanup [SHIPPED] | *−21* |
+| *Phase 9 単体 net (= 9.0 除く)* | | *+378 LOC transient* |
+| *Phase 9 + 9.0 net* | | *−1301 LOC* |
+
+(= 当初 -1,524 target に対し 85% 着地. 残差 +378 transient は v3
+encoder/decoder 実装が v2 chain よりも構造化 (= NodeTable / Pass1-4
+machinery / fallback-form section) なため static LOC では gain 回収
+しきれていないため. user 2026-05-09 monotonic shrink rule との関係:
+当初想定通り、各 *production binary build graph* 内の LOC は Stage 9.5
++ 9.6 で減、Stage 9.3〜9.4 の +625 は cfg(any(test, feature =
+"image-baker")) 配下なので production には不入. Phase 10 で v2 ERT
+consolidation + .image 圧縮で残差回収余地あり.)
 
 → Phase 9 *単独* では monotonic shrink rule に commit ごと部分 違反するが
 *Phase 8 Stage 8.4 を prereq に据える bundle 評価* で −1500 LOC 規模の

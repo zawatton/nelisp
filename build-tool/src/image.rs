@@ -1,30 +1,31 @@
-//! Phase 8.x image-format walking skeleton.
+//! NELIMG image format (Doc 75 v3 frozen-heap, post-Stage 9.6).
 //!
-//! This is intentionally small: an image is a header plus a vector of
-//! real evaluator [`Sexp`] values.  Loading an image returns the same
-//! value universe the Rust Elisp evaluator already executes, so the
-//! smoke path proves `bootstrap.el -> image -> eval` without inventing
-//! a second object model.
+//! An image is a header + frozen-heap payload describing every reachable
+//! Elisp value as a deduped node graph plus a side-channel of strategy-C
+//! fallback source forms.  Decoding it reconstitutes the same value
+//! universe the Rust Elisp evaluator executes, so `bootstrap.el → image
+//! → eval` proves out without a second object model.
 //!
-//! # NELIMG image format spec (v2 shipped, v3 reserved per Doc 75)
+//! # Wire format
 //!
 //! ```text
-//! magic   = b"NELIMG\0"  (7 bytes)
-//! version = 0x02 | 0x03  (1 byte)  ; v2 = form-list, v3 = frozen-heap
-//! kind    = 0x00 | 0x01  (1 byte, only when version=3)
-//!           0x00 = legacy (form-list, identical to v2 payload after KIND)
-//!           0x01 = frozen-heap (Doc 75 v3 §5.2 layout)
+//! magic   = b"NELIMG\0\x03"  (8 bytes)
+//! version = u32 little-endian = 3
+//! kind    = u8                = 0x01 (frozen-heap; 0x02/0x03 reserved)
+//! payload = §5.2 frozen-heap layout:
+//!   u32 N_NODES,    [NODE_TAG, payload...] × N
+//!   u32 N_GLOBALS,  [name, flags, idxs]    × N
+//!   u32 N_FALLBACK_FORMS, [u32 src_len, utf8] × N
 //! ```
 //!
-//! v3 KIND=0x01 payload follows Doc 75 v3 §5.2:
-//!   `u32 N_NODES, [NODE_TAG, payload...] × N,`
-//!   `u32 N_GLOBALS, [name, flags, idxs] × N,`
-//!   `u32 N_FALLBACK_FORMS, [u32 src_len, utf8] × N`
+//! ## History
 //!
-//! Stage 9.1 (Doc 75 v3 §3.1.detail, this commit) only declares the v3
-//! magic / version / KIND constants — encoder is Stage 9.3 and decoder
-//! is Stage 9.4.  The v2 path remains the only encode/decode pair until
-//! Stage 9.5 atomic-cutover.
+//! The pre-Stage-9.5 v2 form-list container (= `magic + 0x02`, payload
+//! = `[u32 len, [TAG_*, payload]] × len`) was deleted by Doc 75 Stage
+//! 9.5 once the v3 frozen-heap encoder + decoder shipped.  Stage 9.6
+//! polished the remaining v2 archaeology out of the docs.  The decoder
+//! still surfaces `BadMagic` for any caller still sitting on v2 bytes
+//! (regression-locked by `doc75_stage9_4_decode_rejects_v2_magic`).
 
 use crate::eval::{self, Env, EvalError};
 use crate::eval::env::SymbolEntry;
@@ -43,12 +44,11 @@ use crate::reader;
 use std::collections::HashMap;
 use std::fmt;
 
-// Doc 75 v3 Stage 9.1 (2026-05-09): NELIMG v3 magic / version / KIND
-// constants.  Doc 75 v3 Stage 9.5 (2026-05-10) deleted the legacy v2
-// magic / version / TAG_* constants once `compile_elisp_to_image' /
-// `decode_image' / `eval_image' moved over to the v3 frozen-heap
-// container — the only remaining producer of image bytes is
-// `encode_v3' / `encode_v3_with_fallback' under v3 magic.
+// NELIMG v3 magic / version / KIND constants (Doc 75 v3 §3.1, shipped
+// in Stage 9.1).  These are the only image format constants on the
+// production path; the legacy v2 magic / version / TAG_* aliases were
+// deleted by Stage 9.5 once `compile_elisp_to_image' / `decode_image'
+// / `eval_image' moved over to the v3 frozen-heap container.
 pub const NELIMG_V3_MAGIC: &[u8; 8] = b"NELIMG\0\x03";
 pub const NELIMG_V3_VERSION: u8 = 3;
 /// NELIMG v3 KIND byte: frozen-heap variant (= Doc 75 v3 §5.2).
@@ -56,12 +56,7 @@ pub const NELIMG_V3_VERSION: u8 = 3;
 /// differential / overlay images.
 pub const NELIMG_V3_KIND_FROZEN_HEAP: u8 = 0x01;
 
-// Doc 75 v3 §5.3 — NELIMG v3 NODE_TAG one-byte discriminator.  Stage
-// 9.5 (2026-05-10) keeps only the v3 tag set; the v2 TAG_* aliases
-// (= TAG_NIL / TAG_T / TAG_INT / ... / TAG_BOOL_VECTOR) shipped
-// pre-Stage-9.5 were inlined by `encode_value' / `decode_value' and
-// became dead the moment those routines were deleted alongside the
-// rest of the v2 encode chain.
+// NELIMG v3 NODE_TAG one-byte discriminator (Doc 75 v3 §5.3).
 const TAG_V3_NIL: u8 = 0x00;
 const TAG_V3_T: u8 = 0x01;
 const TAG_V3_INT: u8 = 0x02;
@@ -140,27 +135,23 @@ impl From<EvalError> for ImageError {
     }
 }
 
-/// Phase 7 Stage 7.7.c.2 (Doc 72): the only non-test, non-bridge
-/// caller of `reader::read_all'.  Gated behind the `image-baker'
-/// feature so the production `nelisp' binary doesn't drag the
-/// encoder + its reader dependency into its build graph.
-/// `nelisp-baker' (= Stage 7.7.a baker bin) requires this feature
-/// via `Cargo.toml :: required-features'.
+/// Compile an Elisp source string into a NELIMG v3 image.
 ///
-/// Doc 75 v3 Stage 9.5 (2026-05-10): re-implemented on top of the v3
-/// frozen-heap encoder.  The previous v2 implementation walked
-/// `reader::read_all' output through `encode_image' (= forms-list
-/// inline payload).  It now stashes the source text as a single
-/// fallback-form entry inside an empty-env v3 image — `eval_image'
-/// drives the strategy-C re-eval path on decode, exactly matching
-/// the v2 "encode forms / eval-on-load" semantics through a single
-/// container format.  The `reader::read_all' call survives only so
-/// callers see parse errors at bake time instead of at decode time.
+/// Gated behind the `image-baker` feature (= Doc 72 Stage 7.7.c.2)
+/// so the production `nelisp` binary doesn't drag the encoder + its
+/// reader dependency into its build graph.  `nelisp-baker' (= the
+/// Stage 7.7.a baker bin) requires this feature via Cargo.toml's
+/// `required-features`.
+///
+/// Implementation: stashes the source text as a single fallback-form
+/// entry inside an empty-env v3 image; `eval_image' drives the
+/// strategy-C re-eval path on decode (= Doc 75 §1.5).  The
+/// `reader::read_all' call up front exists so callers see parse
+/// errors at bake time instead of at decode time.
 #[cfg(any(test, feature = "image-baker"))]
 pub fn compile_elisp_to_image(source: &str) -> Result<Vec<u8>, ImageError> {
     // Validate the source parses now so bake time reports parse
-    // errors (= same observable surface as the v2 path that walked
-    // the form list through `encode_image').
+    // errors immediately rather than deferring them to decode.
     let _ = reader::read_all(source)?;
     encode_v3_with_fallback(&Env::empty(), &[source.to_string()])
 }
@@ -178,10 +169,9 @@ pub fn compile_elisp_to_image(source: &str) -> Result<Vec<u8>, ImageError> {
 /// Atomic values dedupe by structural value rather than pointer.
 ///
 /// The function is gated under `cfg(any(test, feature =
-/// "image-baker"))` like the v2 encoder it sits next to (= Stage 9.2
-/// SHIPPED).  The production runtime needs only the *decoder* path
-/// (= [`decode_v3`], unconditional); encoders live in the baker dev
-/// tool.
+/// "image-baker"))` — production runtime needs only the *decoder*
+/// path (= [`decode_v3`], unconditional); encoders live in the baker
+/// dev tool.
 ///
 /// Wire format (all little-endian) per §5.2:
 ///
@@ -211,9 +201,6 @@ pub fn compile_elisp_to_image(source: &str) -> Result<Vec<u8>, ImageError> {
 /// Globals are emitted in alpha-sorted order so the encoded image is
 /// deterministic across [`HashMap`] iteration variations (= Doc 75
 /// §3.3.1 Phase D requirement).
-///
-/// Per Doc 75 v3 §3 bundle accounting, this stage is a transient +N
-/// LOC slice; the full Phase 9 net target = -1,524 LOC at Stage 9.6.
 #[cfg(any(test, feature = "image-baker"))]
 pub fn encode_v3(env: &Env) -> Result<Vec<u8>, ImageError> {
     encode_v3_with_fallback(env, &[])
@@ -1039,19 +1026,14 @@ unsafe fn write_record_type_tag(handle: &NlRecordRef, val: Sexp) {
     std::ptr::write(tag_ptr, val);
 }
 
-/// Doc 75 v3 Stage 9.5 (2026-05-10): the v3-aware top-level decoder
-/// the `nelisp' binary's `eval-image' subcommand and Phase 4.6 ERTs
-/// reach for.  Reads the v3 image's fallback-form section (= the
-/// strategy-C re-eval list, written by `compile_elisp_to_image') and
-/// returns the parsed `Sexp` forms ready for evaluation.
+/// Top-level decoder for the `nelisp` binary's `eval-image` subcommand
+/// and the Phase 4.6 ERTs.  Reads the v3 image's fallback-form section
+/// (= the strategy-C re-eval list written by `compile_elisp_to_image`)
+/// and returns the parsed `Sexp` forms ready for evaluation.
 ///
-/// Pre-Stage-9.5 callers got a `Vec<Sexp>` back from a *form-list*
-/// payload; Stage 9.5 keeps that observable shape but reaches it via
-/// the v3 fallback-forms surface (= reader::read_all on each stashed
-/// source string).  The function survives the v2 encode-chain delete
-/// because the `nelisp' binary still needs an entry point that maps
-/// "image bytes → parsed forms" without dragging an `Env` into
-/// scope.
+/// Maps "image bytes → parsed forms" without dragging an [`Env`] into
+/// scope, complementing [`decode_v3_into`] (= "image bytes → populated
+/// env + fallback list") on the boot path.
 pub fn decode_image(bytes: &[u8]) -> Result<Vec<Sexp>, ImageError> {
     let mut env = Env::empty();
     let fallback = decode_v3_into(&mut env, bytes)?;
@@ -1159,10 +1141,9 @@ mod tests {
 
     #[test]
     fn phase4_6a_header_and_version_are_checked() {
-        // Doc 75 v3 Stage 9.5 (2026-05-10): `decode_image' now reads
-        // the v3 frozen-heap container, so the bad-magic / unsupported-
-        // version checks fire on the v3 magic / version fields rather
-        // than the v2 layout the pre-Stage-9.5 test forged by hand.
+        // Bad-magic / unsupported-version checks fire on the v3 magic
+        // / version fields read by `decode_image' (= the v3 frozen-
+        // heap container).
         assert!(matches!(decode_image(b"not-image"), Err(ImageError::BadMagic)));
 
         let mut image = compile_elisp_to_image("1").unwrap();
@@ -1225,9 +1206,7 @@ mod tests {
 
     #[test]
     fn doc75_stage9_3_encode_v3_magic_uses_dedicated_byte() {
-        // Doc 75 v3 Stage 9.5 (2026-05-10): the v2 encode path is gone,
-        // so this test is just the v3 magic surface check now —
-        // production images all carry the trailing 0x03 byte that
+        // Production images all carry the trailing 0x03 byte that
         // distinguishes them from any pre-Stage-9.5 v2 artefact still
         // sitting in caller storage.
         let v3_bytes = encode_v3(&Env::empty()).unwrap();
