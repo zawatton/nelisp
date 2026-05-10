@@ -58,12 +58,10 @@
 ;; §94.b drafts misquoted this — the on-disk binary uses the
 ;; correct 0xD2800BA8 encoding for syscall #93 (= exit).
 ;;
-;; The ELF writer (= Doc 91 `nelisp-elf-write-binary') hard-codes
-;; EM_X86_64 in its rich orchestrator; the §94.b emitter therefore
-;; produces the binary first and then patches the 2-byte `e_machine'
-;; field at file offset 0x12 to EM_AARCH64 (= 183, 0xB7) before
-;; restoring the +x file mode.  When the underlying writer grows a
-;; `:machine' plumbing key, this post-patch becomes redundant.
+;; Post-§91/94 cleanup (2026-05-11): the ELF writer now accepts
+;; `:machine aarch64' in its rich orchestrator, so the §94.b emitter
+;; passes that directly.  The earlier post-emit e_machine patch hack
+;; (= `nelisp-crt0-arm64--patch-e-machine') has been removed.
 ;;
 ;; Status (= Doc 94 §7 §94.b): SHIPPED 2026-05-11.  Binary correctness
 ;; verified via byte-pattern ert + `readelf -h' EM_AARCH64 check; live
@@ -296,44 +294,6 @@ the ±1 MiB range of AArch64 ADR."
   (unibyte-string ?h ?e ?l ?l ?o ?\n)
   "The `hello\\n' message bytes written by the arm64 hello-world binary.")
 
-(defconst nelisp-crt0-arm64--e-machine-offset 18
-  "Byte offset of Elf64_Ehdr e_machine in an ELF64 file (= 0x12).
-e_ident occupies offset 0..15, e_type is at 16..17, e_machine at
-18..19.  Used by `nelisp-crt0-arm64--patch-e-machine' to override
-the writer's hard-coded EM_X86_64.")
-
-(defun nelisp-crt0-arm64--patch-e-machine (file-path machine-code)
-  "Patch the 2-byte e_machine field of FILE-PATH to MACHINE-CODE.
-Implemented as a binary read-modify-write because the underlying
-ELF writer (= `nelisp-elf-write-binary') hard-codes EM_X86_64 in
-both the minimal and rich paths; the §94.b path therefore writes a
-valid x86_64 ELF first and overrides the 2 bytes in place.
-
-MACHINE-CODE is an unsigned 16-bit ELF EM_* constant
-(= e.g. `nelisp-elf--em-aarch64' = 183).  Returns FILE-PATH."
-  (let ((coding-system-for-read 'no-conversion)
-        (coding-system-for-write 'no-conversion))
-    (with-temp-buffer
-      (set-buffer-multibyte nil)
-      (insert-file-contents-literally file-path)
-      (let ((bytes (buffer-substring-no-properties (point-min) (point-max))))
-        (unless (>= (length bytes) (+ nelisp-crt0-arm64--e-machine-offset 2))
-          (error "nelisp-crt0-arm64: file too short to patch e_machine: %s"
-                 file-path))
-        (let* ((lo (logand machine-code #xFF))
-               (hi (logand (ash machine-code -8) #xFF))
-               (patched
-                (concat
-                 (substring bytes 0 nelisp-crt0-arm64--e-machine-offset)
-                 (unibyte-string lo hi)
-                 (substring bytes
-                            (+ nelisp-crt0-arm64--e-machine-offset 2)))))
-          (erase-buffer)
-          (insert patched)
-          (write-region (point-min) (point-max) file-path nil 'silent)))))
-  (set-file-modes file-path #o755)
-  file-path)
-
 ;;;###autoload
 (defun nelisp-crt0-arm64-emit-hello-world (file-path)
   "Emit a self-contained AArch64 ELF64 `hello-world' binary to FILE-PATH.
@@ -349,9 +309,9 @@ EM_AARCH64 ELF; execution is gated on the runtime architecture by
 the test suite.
 
 Returns FILE-PATH.  The file is created with mode #o755 (= +x bit
-set) by `nelisp-elf-write-binary', then the e_machine field is
-patched in place to EM_AARCH64 (= 183, 0xB7) because the underlying
-writer hard-codes EM_X86_64."
+set) by `nelisp-elf-write-binary' with `:machine aarch64'
+(= post-§91/94 cleanup; the earlier post-emit e_machine patch hack
+was removed once the writer learned to plumb :machine through)."
   (let* ((text-bytes (nelisp-crt0-arm64--hello-world-emit-text))
          (msg-len    (length nelisp-crt0-arm64--hello-world-msg)))
     (unless (= (length text-bytes)
@@ -363,6 +323,7 @@ writer hard-codes EM_X86_64."
      file-path
      (list :text   text-bytes
            :rodata nelisp-crt0-arm64--hello-world-msg
+           :machine 'aarch64
            :symbols
            (list (list :name "_start" :value 0
                        :size nelisp-crt0-arm64--hello-world-text-size
@@ -371,8 +332,7 @@ writer hard-codes EM_X86_64."
                        :size msg-len :section 'rodata
                        :bind 'local :type 'object))
            :entry-sym "_start"))
-    (nelisp-crt0-arm64--patch-e-machine
-     file-path nelisp-elf--em-aarch64)))
+    file-path))
 
 (provide 'nelisp-crt0-arm64)
 

@@ -726,6 +726,17 @@ Doc 91 §91.c."
          (relocs   (plist-get plist :relocs))
          (entry-sym (or (plist-get plist :entry-sym)
                         (error "nelisp-elf: :entry-sym is required")))
+         ;; §94.b cleanup: :machine arg (= 'x86_64 / 'aarch64 / int).
+         ;; Default x86_64.  Replaces §94.b post-emit patch hack.
+         (machine-arg (or (plist-get plist :machine) 'x86_64))
+         (machine-em
+          (cond
+           ((or (eq machine-arg 'x86_64) (eq machine-arg 'x86-64))
+            nelisp-elf--em-x86-64)
+           ((or (eq machine-arg 'aarch64) (eq machine-arg 'arm64))
+            nelisp-elf--em-aarch64)
+           ((integerp machine-arg) machine-arg)
+           (t (error "nelisp-elf: invalid :machine %S" machine-arg))))
          (have-rodata (and rodata (> (length rodata) 0)))
          (have-data   (and data (> (length data) 0)))
          (have-bss    (> bss-size 0))
@@ -852,7 +863,7 @@ Doc 91 §91.c."
     (nelisp-elf-write-ehdr
      cbuf
      (list :type      nelisp-elf--et-exec
-           :machine   nelisp-elf--em-x86-64
+           :machine   machine-em
            :entry     entry
            :phoff     phdr-off
            :shoff     shoff
@@ -1066,6 +1077,7 @@ or a plist that drives the §91.b/§91.c rich path:
   :relocs     list of plists with keys :section :offset :symbol :type
               :addend (= pc32 / abs64 / plt32 keyword).
   :entry-sym  symbol name resolved to e_entry (required for rich path).
+  :machine    arch tag, `x86_64' (default) / `aarch64' / integer EM_* code.
 
 When :data or :bss-size is present the loader image splits into two
 PT_LOAD segments — one RX (= .text + .rodata) and one RW page-aligned
