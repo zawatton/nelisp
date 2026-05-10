@@ -7,6 +7,13 @@
 - *State*: DRAFT (= spike, implementation-ready 化のための design doc。
   本 doc 自体はコード変更を伴わない。Doc 85 §X recommendation で「Phase
   47 着手なら Doc 91-95 を起こす」とした 5 component の最初の 1 本)
+- *§91.a*: SHIPPED 2026-05-11 (= ~brief~ pure-elisp spike). 添付:
+  =lisp/nelisp-elf-write.el= (~270 LOC) + =test/nelisp-elf-write-test.el=
+  (~210 LOC) — byte-int helpers + Ehdr + Phdr writers + minimal-exit-0
+  orchestrator。pure-elisp 12 ert pass、=readelf -h= で ELF64 / EXEC /
+  X86-64 確認、実 process =/tmp/nelisp-elf-test= が exit code 0 で終了。
+  freestanding library、nelisp-baker STDLIB_FILES への wire-in は §91.b
+  以降に deferred。Section header / symtab / strtab は §91.b/c で着地
 - *Parent*: Doc 85 (= phase-47-feasibility-spike.org §3.1 / §5.1 /
   §6.1)
 - *Sibling*: Doc 92 (assembler), Doc 93 (linker + syscall), Doc 94 (crt0),
