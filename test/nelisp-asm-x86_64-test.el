@@ -31,6 +31,17 @@
 
 (require 'nelisp-asm-x86_64)
 
+;; Doc 93 §93.a/b handshake helpers — declared (not required at load
+;; time) so this file byte-compiles cleanly even if the static linker
+;; module is reorganized later.  Tests `require' them lazily under
+;; `skip-unless'.
+(declare-function nelisp-link-symtab-make "nelisp-static-linker")
+(declare-function nelisp-link-symtab-add "nelisp-static-linker" (st sym))
+(declare-function nelisp-link-symbol
+                  "nelisp-static-linker" (name value &rest rest))
+(declare-function nelisp-link-apply-relocs
+                  "nelisp-static-linker" (bytes relocs symtab section-va))
+
 ;; ---- helpers ----
 
 (defun nelisp-asm-x86_64-test--emit (thunk)
@@ -346,6 +357,207 @@
   (let ((b (nelisp-asm-x86_64-make-buffer)))
     (should-error (nelisp-asm-x86_64-emit-reloc b 'absurd 'foo)
                   :type 'nelisp-asm-x86_64-error)))
+
+;; ---- §92.c reloc shape canonicalization ----
+
+(ert-deftest nelisp-asm-x86_64-emit-reloc-default-section-text ()
+  ;; §92.a back-compat: no :section keyword -> defaults to `text'
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (nelisp-asm-x86_64-emit-reloc b 'pc32 "printf" -4)
+    (let ((r (car (nelisp-asm-x86_64-buffer-relocs b))))
+      (should (eq (plist-get r :section) 'text))
+      (should (equal (plist-get r :symbol) "printf"))
+      (should (equal (plist-get r :sym) "printf"))
+      (should (eq (plist-get r :type) 'pc32))
+      (should (= (plist-get r :addend) -4)))))
+
+(ert-deftest nelisp-asm-x86_64-emit-reloc-section-rodata ()
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (nelisp-asm-x86_64-emit-reloc b 'abs64 "msg" 0 :section 'rodata)
+    (let ((r (car (nelisp-asm-x86_64-buffer-relocs b))))
+      (should (eq (plist-get r :section) 'rodata))
+      (should (eq (plist-get r :type) 'abs64)))))
+
+(ert-deftest nelisp-asm-x86_64-emit-reloc-section-data ()
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (nelisp-asm-x86_64-emit-reloc b 'pc32 "gv" 0 :section 'data)
+    (let ((r (car (nelisp-asm-x86_64-buffer-relocs b))))
+      (should (eq (plist-get r :section) 'data)))))
+
+(ert-deftest nelisp-asm-x86_64-extract-relocs-canonical-shape ()
+  ;; Verify §93.a-compatible shape: :offset / :type / :symbol /
+  ;; :addend / :section, without internal :sym alias.
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (nelisp-asm-x86_64-emit-reloc b 'pc32 "printf" -4)
+    (let* ((relocs (nelisp-asm-x86_64-extract-relocs b))
+           (r (car relocs)))
+      (should (= (length relocs) 1))
+      (should (= (plist-get r :offset) 0))
+      (should (eq (plist-get r :type) 'pc32))
+      (should (equal (plist-get r :symbol) "printf"))
+      (should (= (plist-get r :addend) -4))
+      (should (eq (plist-get r :section) 'text))
+      ;; :sym alias should be stripped from the extractor output.
+      (should-not (plist-member r :sym)))))
+
+(ert-deftest nelisp-asm-x86_64-extract-relocs-order-preserved ()
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (nelisp-asm-x86_64-emit-reloc b 'pc32 "a" 0)
+    (nelisp-asm-x86_64-emit-reloc b 'abs64 "b" 0)
+    (nelisp-asm-x86_64-emit-reloc b 'plt32 "c" 0)
+    (let ((relocs (nelisp-asm-x86_64-extract-relocs b)))
+      (should (= (length relocs) 3))
+      (should (equal (plist-get (nth 0 relocs) :symbol) "a"))
+      (should (equal (plist-get (nth 1 relocs) :symbol) "b"))
+      (should (equal (plist-get (nth 2 relocs) :symbol) "c")))))
+
+(ert-deftest nelisp-asm-x86_64-reloc-pc32-here-emits-zeros ()
+  (let* ((b (nelisp-asm-x86_64-make-buffer))
+         (off (nelisp-asm-x86_64-reloc-pc32-here b "callee" -4)))
+    (should (= off 0))
+    (should (equal (nelisp-asm-x86_64-buffer-bytes b)
+                   (nelisp-asm-x86_64-test--ub 0 0 0 0)))
+    (should (= (nelisp-asm-x86_64-buffer-pos b) 4))
+    (let ((r (car (nelisp-asm-x86_64-extract-relocs b))))
+      (should (= (plist-get r :offset) 0))
+      (should (eq (plist-get r :type) 'pc32))
+      (should (equal (plist-get r :symbol) "callee"))
+      (should (= (plist-get r :addend) -4)))))
+
+(ert-deftest nelisp-asm-x86_64-reloc-pc32-here-with-prefix ()
+  ;; CALL opcode + pc32 placeholder
+  (let* ((b (nelisp-asm-x86_64-make-buffer)))
+    (nelisp-asm-x86_64-emit-bytes b (unibyte-string #xE8))
+    (let ((off (nelisp-asm-x86_64-reloc-pc32-here b "main" -4)))
+      (should (= off 1))
+      (should (equal (nelisp-asm-x86_64-buffer-bytes b)
+                     (nelisp-asm-x86_64-test--ub #xE8 0 0 0 0)))
+      (let ((r (car (nelisp-asm-x86_64-extract-relocs b))))
+        (should (= (plist-get r :offset) 1))
+        (should (= (plist-get r :addend) -4))))))
+
+(ert-deftest nelisp-asm-x86_64-reloc-abs64-here-emits-zeros ()
+  (let* ((b (nelisp-asm-x86_64-make-buffer))
+         (off (nelisp-asm-x86_64-reloc-abs64-here b "gv" 0)))
+    (should (= off 0))
+    (should (= (length (nelisp-asm-x86_64-buffer-bytes b)) 8))
+    (should (equal (nelisp-asm-x86_64-buffer-bytes b)
+                   (nelisp-asm-x86_64-test--ub 0 0 0 0 0 0 0 0)))
+    (let ((r (car (nelisp-asm-x86_64-extract-relocs b))))
+      (should (eq (plist-get r :type) 'abs64))
+      (should (= (plist-get r :offset) 0)))))
+
+(ert-deftest nelisp-asm-x86_64-reloc-plt32-here-emits-zeros ()
+  (let* ((b (nelisp-asm-x86_64-make-buffer))
+         (off (nelisp-asm-x86_64-reloc-plt32-here b "puts" -4)))
+    (should (= off 0))
+    (should (= (length (nelisp-asm-x86_64-buffer-bytes b)) 4))
+    (let ((r (car (nelisp-asm-x86_64-extract-relocs b))))
+      (should (eq (plist-get r :type) 'plt32))
+      (should (= (plist-get r :addend) -4)))))
+
+(ert-deftest nelisp-asm-x86_64-reloc-helpers-respect-section-arg ()
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (nelisp-asm-x86_64-reloc-pc32-here b "ref" 0 'rodata)
+    (let ((r (car (nelisp-asm-x86_64-extract-relocs b))))
+      (should (eq (plist-get r :section) 'rodata)))))
+
+(ert-deftest nelisp-asm-x86_64-buffer-to-unit-shape ()
+  ;; Tiny snippet: mov rax, 60 ; ret  (no relocs, one label)
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (nelisp-asm-x86_64-define-label b '_start)
+    (nelisp-asm-x86_64-mov-imm32 b 'rax 60)
+    (nelisp-asm-x86_64-ret b)
+    (let* ((unit (nelisp-asm-x86_64-buffer-to-unit b "tiny.o"))
+           (sections (plist-get unit :sections))
+           (syms (plist-get unit :symbols)))
+      (should (equal (plist-get unit :name) "tiny.o"))
+      (should (= (length sections) 1))
+      (should (eq (car (car sections)) 'text))
+      (should (= (length (cdr (assq 'text sections))) 8))
+      (should (= (length syms) 1))
+      (let ((s (car syms)))
+        (should (equal (plist-get s :name) "_start"))
+        (should (= (plist-get s :value) 0))
+        (should (eq (plist-get s :section) 'text))
+        (should (eq (plist-get s :bind) 'global)))
+      (should (null (plist-get unit :relocs))))))
+
+(ert-deftest nelisp-asm-x86_64-buffer-to-unit-with-rodata ()
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (nelisp-asm-x86_64-ret b)
+    (let* ((unit (nelisp-asm-x86_64-buffer-to-unit
+                  b "u" :rodata (unibyte-string ?h ?i)))
+           (sections (plist-get unit :sections)))
+      (should (= (length sections) 2))
+      (should (equal (cdr (assq 'text sections))
+                     (unibyte-string #xC3)))
+      (should (equal (cdr (assq 'rodata sections))
+                     (unibyte-string ?h ?i))))))
+
+(ert-deftest nelisp-asm-x86_64-buffer-to-unit-with-reloc ()
+  ;; CALL placeholder + pc32 reloc — verify reloc is wired through.
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (nelisp-asm-x86_64-emit-bytes b (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-pc32-here b "callee" -4)
+    (let* ((unit (nelisp-asm-x86_64-buffer-to-unit b "caller.o"))
+           (relocs (plist-get unit :relocs)))
+      (should (= (length relocs) 1))
+      (let ((r (car relocs)))
+        (should (= (plist-get r :offset) 1))
+        (should (eq (plist-get r :type) 'pc32))
+        (should (equal (plist-get r :symbol) "callee"))
+        (should (= (plist-get r :addend) -4))
+        (should (eq (plist-get r :section) 'text))))))
+
+;; ---- §92.c ↔ §93.a/b handshake micro-integration ----
+
+(ert-deftest nelisp-asm-x86_64-93-handshake-pc32 ()
+  "End-to-end: emit pc32 reloc via §92.c, patch via §93.a apply-reloc."
+  (skip-unless (or (require 'nelisp-static-linker nil 'noerror)
+                   (locate-library "nelisp-static-linker")))
+  (require 'nelisp-static-linker)
+  ;; Caller buffer: CALL placeholder targeting `callee'.
+  (let* ((b (nelisp-asm-x86_64-make-buffer))
+         (_ (nelisp-asm-x86_64-emit-bytes b (unibyte-string #xE8)))
+         (_off (nelisp-asm-x86_64-reloc-pc32-here b "callee" -4))
+         (relocs (nelisp-asm-x86_64-extract-relocs b))
+         (bytes (nelisp-asm-x86_64-buffer-bytes b))
+         (symtab (nelisp-link-symtab-make)))
+    ;; Define `callee' at VA 0x1000 + 0x40 (= section-va + offset).
+    (nelisp-link-symtab-add
+     symtab (nelisp-link-symbol "callee" #x1040))
+    (let* ((patched (nelisp-link-apply-relocs
+                     bytes relocs symtab #x1000)))
+      ;; CALL + rel32(callee - (call-site + 5)).
+      ;; call site = 0x1000 (CALL opcode) + rel32 patches at 0x1001..0x1004
+      ;; P = section-va + offset + 4 = 0x1000 + 1 + 4 = 0x1005
+      ;; rel = (S + A) - P = (0x1040 + (-4)) - 0x1005 = 0x37
+      (should (= (length patched) 5))
+      (should (= (aref patched 0) #xE8))
+      (should (= (aref patched 1) #x37))
+      (should (= (aref patched 2) #x00))
+      (should (= (aref patched 3) #x00))
+      (should (= (aref patched 4) #x00)))))
+
+(ert-deftest nelisp-asm-x86_64-93-handshake-via-buffer-to-unit ()
+  "End-to-end: §92.c buffer-to-unit ↔ §93.a apply-relocs."
+  (skip-unless (or (require 'nelisp-static-linker nil 'noerror)
+                   (locate-library "nelisp-static-linker")))
+  (require 'nelisp-static-linker)
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (nelisp-asm-x86_64-emit-bytes b (unibyte-string #xE8))
+    (nelisp-asm-x86_64-reloc-pc32-here b "callee" -4)
+    (let* ((unit (nelisp-asm-x86_64-buffer-to-unit b "u.o"))
+           (text (cdr (assq 'text (plist-get unit :sections))))
+           (relocs (plist-get unit :relocs))
+           (symtab (nelisp-link-symtab-make)))
+      (nelisp-link-symtab-add
+       symtab (nelisp-link-symbol "callee" #x2040))
+      (let ((patched (nelisp-link-apply-relocs
+                      text relocs symtab #x2000)))
+        ;; rel = (0x2040 + -4) - (0x2000 + 1 + 4) = 0x37
+        (should (= (aref patched 1) #x37))))))
 
 ;; ---- composite: minimal exit(0) ----
 

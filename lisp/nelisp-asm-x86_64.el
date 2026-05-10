@@ -46,6 +46,32 @@
 ;; `:plt32' entries for Doc 93 linker handoff — placeholder bytes
 ;; (4 or 8 zero) are emitted at the recorded offset.
 ;;
+;; §92.c — formalized reloc shape + Doc 93 handshake helpers.  Each
+;; recorded entry is a plist of canonical shape
+;;
+;;   (:offset N :type TYPE :symbol NAME :addend A :section SECTION)
+;;
+;; matching `nelisp-link-apply-reloc' (= Doc 93 §93.a) consumer
+;; expectations.  The legacy §92.a `:sym' key is kept as an alias in
+;; the stored plist (= §93.a accepts both) so old callers do not
+;; break.  SECTION defaults to `text' but can be overridden via
+;; `nelisp-asm-x86_64-emit-reloc' `:section' keyword for §93.b's
+;; multi-section linking.  Three higher-level helpers stamp the
+;; placeholder + record the reloc in one call:
+;;
+;;   (nelisp-asm-x86_64-reloc-pc32-here  BUF SYM ADDEND)
+;;   (nelisp-asm-x86_64-reloc-abs64-here BUF SYM ADDEND)
+;;   (nelisp-asm-x86_64-reloc-plt32-here BUF SYM ADDEND)
+;;
+;; Buffer-to-linker bridge:
+;;
+;;   (nelisp-asm-x86_64-extract-relocs BUF)
+;;   (nelisp-asm-x86_64-buffer-to-unit BUF NAME &rest SECTION-EXTRAS)
+;;
+;; — `extract-relocs' returns the canonical §93-compatible plist
+;; list; `buffer-to-unit' assembles a `nelisp-link-unit-make' shape
+;; for direct hand-off to Doc 93 §93.b's combine/2pass pipeline.
+;;
 ;; Not wired into baker — freestanding spike per Doc 92 §0.2 + §8.1.
 
 ;;; Code:
@@ -211,7 +237,8 @@ write 4 zero bytes before recording the fixup)."
                            (cons (cons slot-offset label) fixups)))
     (nelisp-asm-x86_64--rewrap buf plist)))
 
-(defun nelisp-asm-x86_64-emit-reloc (buf type sym &optional addend)
+(defun nelisp-asm-x86_64-emit-reloc (buf type sym &optional addend
+                                         &rest keyword-args)
   "Record a pending relocation entry against external symbol SYM.
 TYPE is one of `'pc32' / `'abs64' / `'plt32' — names match
 R_X86_64_PC32 / R_X86_64_64 / R_X86_64_PLT32 from the ELF64
@@ -219,17 +246,167 @@ psABI.  This helper records only; the caller is responsible for
 emitting the placeholder bytes (4 zeros for pc32/plt32, 8 zeros
 for abs64) at the recorded offset.  ADDEND defaults to 0 (=
 matches ELF64 r_addend); negative addends are allowed (e.g. -4
-for PC-relative call sites)."
+for PC-relative call sites).
+
+KEYWORD-ARGS accepts `:section SECTION-SYM' (= one of `text' /
+`rodata' / `data', default `text') to tag which section the patch
+site lives in.  Section tagging is required by §93.b's multi-
+section reloc dispatch — the §92.a default of `text' covers the
+common path so existing callers keep working."
   (unless (memq type '(pc32 abs64 plt32))
     (signal 'nelisp-asm-x86_64-error
             (list :unknown-reloc-type type)))
-  (let* ((plist (nelisp-asm-x86_64--unwrap buf))
+  (let* ((section (or (plist-get keyword-args :section) 'text))
+         (plist (nelisp-asm-x86_64--unwrap buf))
+         (offset (plist-get plist :pos))
          (relocs (plist-get plist :relocs))
-         (entry (list :type type :sym sym
-                      :offset (plist-get plist :pos)
-                      :addend (or addend 0))))
+         (entry (list :offset offset
+                      :type type
+                      :symbol sym
+                      :sym sym
+                      :addend (or addend 0)
+                      :section section)))
     (setq plist (plist-put plist :relocs (append relocs (list entry))))
     (nelisp-asm-x86_64--rewrap buf plist)))
+
+(defun nelisp-asm-x86_64-extract-relocs (buf)
+  "Return BUF's relocs in Doc 93 §93.a-compatible plist form.
+Each entry is `(:offset N :type TYPE :symbol NAME :addend A
+:section SEC)' — the canonical shape consumed by
+`nelisp-link-apply-reloc'.  Emission order is preserved.  The
+returned list is a fresh shallow copy of each entry with internal-
+only fields elided (= currently the `:sym' alias is dropped, the
+public `:symbol' key is kept)."
+  (mapcar (lambda (r)
+            (list :offset (plist-get r :offset)
+                  :type (plist-get r :type)
+                  :symbol (or (plist-get r :symbol)
+                              (plist-get r :sym))
+                  :addend (or (plist-get r :addend) 0)
+                  :section (or (plist-get r :section) 'text)))
+          (plist-get (nelisp-asm-x86_64--unwrap buf) :relocs)))
+
+(defun nelisp-asm-x86_64-reloc-pc32-here (buf sym-name addend
+                                              &optional section)
+  "Emit 4 zero bytes + record a `pc32' reloc at the placeholder.
+BUF is mutated; SYM-NAME and ADDEND are forwarded to
+`nelisp-asm-x86_64-emit-reloc'.  SECTION defaults to `text'.
+Returns the offset where the placeholder begins (= caller
+bookkeeping for `(call sym)' / `(lea reg, [rip+sym])').  Typical
+usage:
+
+  (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+  (nelisp-asm-x86_64-reloc-pc32-here buf \"main\" -4)"
+  (let ((offset (nelisp-asm-x86_64-buffer-pos buf)))
+    (nelisp-asm-x86_64--append-bytes buf (unibyte-string 0 0 0 0))
+    (nelisp-asm-x86_64-emit-reloc buf 'pc32 sym-name addend
+                                  :section (or section 'text))
+    ;; The reloc was recorded at the *new* pos (= post-append) so
+    ;; rewrite the last entry's `:offset' to the placeholder start.
+    (let* ((plist (nelisp-asm-x86_64--unwrap buf))
+           (relocs (plist-get plist :relocs))
+           (last (car (last relocs))))
+      (setq last (plist-put last :offset offset))
+      (setq plist (plist-put plist :relocs
+                             (append (butlast relocs) (list last))))
+      (nelisp-asm-x86_64--rewrap buf plist))
+    offset))
+
+(defun nelisp-asm-x86_64-reloc-abs64-here (buf sym-name addend
+                                               &optional section)
+  "Emit 8 zero bytes + record an `abs64' reloc at the placeholder.
+BUF is mutated; SYM-NAME and ADDEND are forwarded to
+`nelisp-asm-x86_64-emit-reloc'.  SECTION defaults to `text'.
+Returns the offset where the placeholder begins."
+  (let ((offset (nelisp-asm-x86_64-buffer-pos buf)))
+    (nelisp-asm-x86_64--append-bytes
+     buf (unibyte-string 0 0 0 0 0 0 0 0))
+    (nelisp-asm-x86_64-emit-reloc buf 'abs64 sym-name addend
+                                  :section (or section 'text))
+    (let* ((plist (nelisp-asm-x86_64--unwrap buf))
+           (relocs (plist-get plist :relocs))
+           (last (car (last relocs))))
+      (setq last (plist-put last :offset offset))
+      (setq plist (plist-put plist :relocs
+                             (append (butlast relocs) (list last))))
+      (nelisp-asm-x86_64--rewrap buf plist))
+    offset))
+
+(defun nelisp-asm-x86_64-reloc-plt32-here (buf sym-name addend
+                                               &optional section)
+  "Emit 4 zero bytes + record a `plt32' reloc at the placeholder.
+Semantically identical to `nelisp-asm-x86_64-reloc-pc32-here' for
+ET_EXEC static linking (= no PLT trampoline needed) but emits
+R_X86_64_PLT32 so the linker can distinguish PIC-aware call
+sites.  SECTION defaults to `text'.  Returns the placeholder
+offset."
+  (let ((offset (nelisp-asm-x86_64-buffer-pos buf)))
+    (nelisp-asm-x86_64--append-bytes buf (unibyte-string 0 0 0 0))
+    (nelisp-asm-x86_64-emit-reloc buf 'plt32 sym-name addend
+                                  :section (or section 'text))
+    (let* ((plist (nelisp-asm-x86_64--unwrap buf))
+           (relocs (plist-get plist :relocs))
+           (last (car (last relocs))))
+      (setq last (plist-put last :offset offset))
+      (setq plist (plist-put plist :relocs
+                             (append (butlast relocs) (list last))))
+      (nelisp-asm-x86_64--rewrap buf plist))
+    offset))
+
+(defun nelisp-asm-x86_64-buffer-to-unit (buf name &rest section-extras)
+  "Bundle BUF as a Doc 93 §93.b compile-unit plist named NAME.
+The returned plist has shape
+`(:name NAME :sections ((text . BYTES) [...]) :symbols SYMS
+  :relocs RELOCS)' suitable for `nelisp-link-unit-make' / direct
+input into `nelisp-link-combine-sections'.
+
+The buffer's labels become global function symbols whose `:value'
+is the byte offset within `text' (= caller resolves to a VA via
+the linker's 2-pass).  RELOCS come from
+`nelisp-asm-x86_64-extract-relocs'.  SECTION-EXTRAS is an
+optional plist tail of extra section payloads, e.g.
+`(:rodata BYTES :data BYTES)' — each `(KEY . VALUE)' pair lands
+in the `:sections' alist with KEY's leading colon stripped (so
+`:rodata' becomes `rodata').  `:bss' may carry an integer size
+instead of a byte string (= matches §93.b's bss convention)."
+  (let* ((text-bytes (nelisp-asm-x86_64-buffer-bytes buf))
+         (sections (list (cons 'text text-bytes)))
+         (labels (nelisp-asm-x86_64-buffer-labels buf))
+         (symbols nil)
+         (relocs (nelisp-asm-x86_64-extract-relocs buf)))
+    ;; Walk SECTION-EXTRAS as a keyword plist and append to sections.
+    (let ((tail section-extras))
+      (while tail
+        (let* ((k (car tail))
+               (v (cadr tail))
+               (sym (intern (substring (symbol-name k) 1))))
+          (push (cons sym v) sections)
+          (setq tail (cddr tail)))))
+    ;; Each label -> a global func symbol; convert symbol-names to
+    ;; strings (= Doc 93 §93.b symbol-table keys are strings).
+    (dolist (cell labels)
+      (let ((label-name (car cell))
+            (label-pos  (cdr cell)))
+        (push (list :name (if (stringp label-name)
+                              label-name
+                            (symbol-name label-name))
+                    :value label-pos
+                    :size 0
+                    :section 'text
+                    :bind 'global
+                    :type 'func)
+              symbols)))
+    (list :name name
+          :sections (nreverse sections)
+          :symbols (nreverse symbols)
+          :relocs relocs)))
+
+(defun nelisp-asm-x86_64-emit-bytes (buf bs)
+  "Append unibyte-string BS verbatim to BUF.
+Public alias of the internal byte-appender — needed because the
+`reloc-*-here' helpers' docstring example uses an `emit-bytes'
+spelling.  Returns BUF for chaining."
+  (nelisp-asm-x86_64--append-bytes buf bs))
 
 (defun nelisp-asm-x86_64-resolve-fixups (buf)
   "Apply every pending fixup in BUF, returning the patched bytes.

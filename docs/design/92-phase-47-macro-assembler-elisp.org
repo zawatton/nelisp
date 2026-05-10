@@ -5,7 +5,8 @@
 * Status
 
 - *State*: DRAFT — §92.a SHIPPED (2026-05-11, see §7.1.S), §92.b
-  SHIPPED (2026-05-11, see §7.2.S).  §92.c / §92.d remain DRAFT.
+  SHIPPED (2026-05-11, see §7.2.S), §92.c SHIPPED (2026-05-11, see
+  §7.3.S).  §92.d remains DRAFT.
   Doc 85 §3.2 / §5.1 で「Phase 47 着手なら macro assembler 拡張
   ~800 elisp / Rust 削減なし (= 既存 Rust 側に encoder 自体は無い)」
   とした component の articulate)
@@ -773,6 +774,67 @@ testing:
 - 各 reloc type で emit + 実 byte 確認 ~24 fixture
 - buffer v2 backward-compat (= legacy emit-* helper が v2 でも動く) ~10
 - Doc 93 linker handshake mock = ~6 fixture
+
+*** §7.3.S §92.c shipped log (2026-05-11)
+
+State: SHIPPED on branch =agent-doc-92c-impl=.  Scope landed:
+
+1. Canonicalized reloc plist shape stored on the buffer:
+   =(:offset N :type TYPE :symbol NAME :sym NAME :addend A :section
+   SEC)= — `:symbol' is the Doc 93 §93.a canonical key, `:sym' is
+   kept as an alias so existing §92.a callers (= test fixtures that
+   read `:sym') keep working.
+2. =nelisp-asm-x86_64-emit-reloc= gained an optional `:section'
+   keyword (defaults to `text').  Old 3-arg / 4-arg signatures still
+   work — §92.a callers stay green.
+3. New public extractor =nelisp-asm-x86_64-extract-relocs BUF=
+   returns a fresh list of Doc 93-shape plists (= `:sym' alias
+   stripped, defaults filled).  Order is emission order.
+4. New higher-level helpers:
+   - =nelisp-asm-x86_64-reloc-pc32-here BUF SYM ADDEND &optional SECTION=
+     — emits 4 zero bytes + records `pc32' reloc at the placeholder
+     start.  Returns the placeholder offset.
+   - =nelisp-asm-x86_64-reloc-abs64-here BUF SYM ADDEND &optional
+     SECTION= — same but 8 zeros + `abs64' reloc.
+   - =nelisp-asm-x86_64-reloc-plt32-here BUF SYM ADDEND &optional
+     SECTION= — same but `plt32' reloc.  Semantically identical to
+     pc32 for ET_EXEC static linking, distinguishable for §93.b
+     bookkeeping.
+5. =nelisp-asm-x86_64-buffer-to-unit BUF NAME &rest SECTION-EXTRAS=
+   bundles the buffer as a Doc 93 §93.b compile-unit plist
+   =(:name :sections :symbols :relocs)=.  Labels become global
+   `func' symbols whose `:value' is the byte offset within `text';
+   the extras tail lets the caller attach `:rodata BYTES' /
+   `:data BYTES' / `:bss INTEGER' alongside.
+6. Trivial public alias =nelisp-asm-x86_64-emit-bytes BUF BS= for
+   raw placeholder/prefix emission (= matches the `reloc-*-here'
+   docstring usage examples).
+
+LOC delta (assembler only, =wc -l= on the final files):
+- =lisp/nelisp-asm-x86_64.el=: +177 LOC (= 409 → 586).
+- =test/nelisp-asm-x86_64-test.el=: +212 LOC (= 394 → 606), 15 new
+  ert-deftest cases (13 unit + 2 §93 handshake micro-integration,
+  last two `skip-unless' the static linker module).
+
+Verification:
+- =emacs --batch -Q -L lisp --eval '(setq byte-compile-error-on-warn
+  t)' -f batch-byte-compile lisp/nelisp-asm-x86_64.el= → 0 warnings.
+- =emacs --batch -L src -L lisp -l ert -l test/nelisp-asm-x86_64-
+  test.el -f ert-run-tests-batch-and-exit= → 61/61 pass (= 46 §92.a
+  baseline + 15 §92.c).  §93 handshake tests resolve
+  =nelisp-link-apply-relocs= against the in-tree
+  =lisp/nelisp-static-linker.el= (= §93.a/b live).
+- =make compile= → exit 0 (the top-level Makefile only byte-compiles
+  =src/= + =packages/=, so the assembler/test files are compiled
+  separately above; both pass with `byte-compile-error-on-warn t').
+
+Deferrals to §92.d:
+- buffer v3 unibyte-string + fill-pointer rewrite still pending — the
+  current append-with-concat path stays in place for now.
+- arm64 sibling reloc helpers (§92.b file) not touched this slice —
+  the §92.b reloc storage already matches §92.a's shape and §93.a
+  accepts the `:sym' alias unchanged.  Wiring §92.c parity into
+  arm64 is a separate slice.
 
 ** §7.4 §92.d performance optimization
 
