@@ -996,4 +996,21 @@ in-elisp behavior のみ).  §95.d 以降は Doc 91 ELF writer の skeleton
 
 ----
 
+* Status updates
+
+** §95.a SHIPPED (2026-05-11)
+
+Freestanding constructor / accessor / predicate spike landed:
+
+- =lisp/nelisp-sexp-dsl.el= — 13 ctors + tag accessor + 13
+  predicates + per-variant accessors + structural =nelisp-sexp-eq=
+  + debug printer.  Plist representation (= simpler than the §2.2
+  tagged-vec choice; serializer-ready repr is deferred to §95.c).
+- =test/nelisp-sexp-dsl-test.el= — 33 ert cases covering ctor +
+  predicate + accessor type-check + recursive structural equality.
+- No Rust changes, no =nelisp-baker= STDLIB_FILES registration —
+  freestanding spike per task spec.
+
+----
+
 End of Doc 95 DRAFT.
