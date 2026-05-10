@@ -78,6 +78,24 @@
   (when (fboundp 'emacs-stdio-install-stdin-shim)
     (emacs-stdio-install-stdin-shim))
 
+  ;; Substrate polyfills (cl-* gaps + sqlite cursor protocol +
+  ;; benchmark/profiler stubs) for anvil-* GREEN-bucket modules.
+  ;; Loaded BEFORE the tool-module chain so registrations and call
+  ;; handlers see a healthy substrate.  See
+  ;; scripts/anvil-runtime-polyfills.el for the surface audit.
+  (let ((polyfills-el (concat nelisp-emacs-dir
+                              "/scripts/anvil-runtime-polyfills.el")))
+    (when (fboundp 'nelisp--write-stderr-line)
+      (nelisp--write-stderr-line
+       (concat "[shell-loop] loading polyfills " polyfills-el)))
+    (condition-case err
+        (load polyfills-el nil t)
+      (error
+       (when (fboundp 'nelisp--write-stderr-line)
+         (nelisp--write-stderr-line
+          (concat "[shell-loop] polyfills load ERR: "
+                  (format "%S" err)))))))
+
   ;; `help-function-arglist' polyfill — emacs-stub-bulk.el ships a
   ;; nil-returning placeholder, but anvil-server.el's tool dispatcher
   ;; uses the arglist to validate provided params (= every supplied
@@ -240,7 +258,7 @@ Uses CR-strip to recognise lines that are CRLF artefacts as blank."
   ;; default carries the actual list.
   (let* ((modules-env (anvil-runtime-shell--env
                        "ANVIL_TOOL_MODULES"
-                       "anvil-discovery,anvil-sqlite")))
+                       "anvil-discovery,anvil-sqlite,anvil-bench")))
     (when (fboundp 'nelisp--write-stderr-line)
       (nelisp--write-stderr-line
        (concat "[shell-loop] ANVIL_TOOL_MODULES="
