@@ -4,9 +4,10 @@
 
 * Status
 
-- *State*: PARTIAL SHIPPED v2 (= §86.2 + §86.1.a + §86.1.d SHIPPED
-  2026-05-10、Doc 87 / 88 / 89 detail design DRAFT SHIPPED、v2
-  reconcile 2026-05-10 with Doc 87/88/89 actual findings — see §13)
+- *State*: PARTIAL SHIPPED v2 (= §86.2 + §86.1.a + §86.1.b + §86.1.c
+  + §86.1.d SHIPPED 2026-05-10、§86.3.a precursor SHIPPED 2026-05-10、
+  Doc 87 / 88 / 89 detail design DRAFT SHIPPED、v2 reconcile 2026-05-10
+  with Doc 87/88/89 actual findings — see §13)
 - *Parent*: Doc 83 §6.2 (= Phase 2 着地 ~6,000-8,000 LOC 試算)、Doc 84
   SHIPPED (= Phase 1 末端 closure、strategy.rs 全消滅)、Doc 80 SHIPPED
   (= pre-stdlib substrate)
@@ -78,9 +79,12 @@ Doc 83 §6.2 の "~6,000-8,000" は Phase 2 + Phase 3 の合算値と解釈す�
 | sub-stage | scope                          | v1 試算 | v2 reconciled (Doc 87/88/89) | 着地 (累積)  |
 |-----------+--------------------------------+---------+----------+--------------|
 | §86.1.a (SHIPPED 2026-05-10) | Tier 1 predicate / type-of (= 3 arm: type-of / functionp / recordp) | -300 (estimate, see §12.1) | **-34 net actual** (= 既存 batch 6u で 8 arm 先行移管済) | 21,762 |
-| §86.1.d (SHIPPED 2026-05-10) | Tier 1 intern / symbol (= 3 arm: intern / symbol-name / make-symbol) | -300 (estimate, see §12.3) | **-2 net actual** (= trampoline body は bi_* と同等、§86.3 obarray 化で残 ~-90 期待) | 21,647 (post §86.2 = 21,649 base) |
-| §86.1 残 (Doc 87 articulated) | §86.1.b/c (Tier 1 残 14 arm) + e/f (Tier 2 13 arm) + g (install_builtins / dispatch trim) | -2,000〜-3,000 | **-1,535 actual remaining** (= -1,571 total - 34 §86.1.a - 2 §86.1.d SHIPPED) | 20,112 (projected) |
-| §86.2 (SHIPPED 2026-05-10) | error.rs → nelisp-stdlib-error.el | -258〜-278 | **-113 net actual** (= elisp registry 確立 + compact、full variant elision を §86.3 へ deferred) | 21,683 → 21,649 (post §86.1.a) → 21,647 (post §86.1.d) |
+| §86.1.b (SHIPPED 2026-05-10) | Tier 1 算術 / equal / ref-eq / sxhash (= 4 arm: =equal= / =nelisp--ref-eq= / =/= / =sxhash=) | -500 (estimate, see §12.2) | **-108 net actual** (= equal は既に elisp 化済 dead code、ref-eq は sexp_eq 同等、sxhash は trampoline 移送で structural neutral) | 21,541 |
+| §86.1.c (SHIPPED 2026-05-10) | Tier 1 record family (= 5 arm: make-record / record-ref / record-set / record-length / record-type) | -400 (estimate, see §12.x) | **-10 net actual** (= 既存 box accessor bridge shape 再利用、新 ABI mode 不要) | 21,531 |
+| §86.1.d (SHIPPED 2026-05-10) | Tier 1 intern / symbol (= 3 arm: intern / symbol-name / make-symbol) | -300 (estimate, see §12.4) | **-2 net actual** (= trampoline body は bi_* と同等、§86.3 obarray 化で残 ~-90 期待) | 21,529 |
+| §86.1 残 (Doc 87 articulated) | §86.1.e/f (Tier 2 13 arm) + g (install_builtins / dispatch trim) | -1,329 (= Tier 2 + g) | **-1,417 actual remaining** (= -1,571 total - 154 §86.1.a-d SHIPPED) | 20,112 (projected) |
+| §86.2 (SHIPPED 2026-05-10) | error.rs → nelisp-stdlib-error.el | -258〜-278 | **-113 net actual** (= elisp registry 確立 + compact、full variant elision を §86.3 へ deferred) | 21,683 → 21,529 (post §86.1.a-d) |
+| §86.3.a precursor (SHIPPED 2026-05-10) | env shim skeleton (Tier 0 stub + 11 slim primitive + elisp shim) | +85 (estimate) | **+280 net additive** (= 例外、§86.3.b/c 消化予定) | 21,809 (post-precursor) |
 | §86.3 (Doc 89 articulated) | env.rs scope chain + 連動 (mod.rs / special_forms.rs / builtins.rs Tier 3、ffi.rs 0) | -1,500 | **-1,214 actual** (= ffi.rs 連動 -100 → 0 corrected by Doc 89 grep) | 18,435 (projected) |
 | *合計* | *Phase 2 着地* | *-3,605〜-4,605* | ***~-3,043*** *actual* | ***~18,753 (projected)*** |
 
@@ -642,7 +646,74 @@ Commits (= 2 atomic):
 1. =4192489d= — functionp / recordp migration (-17 Rust)
 2. =2d2f116f= — type-of migration via JIT trampoline (-17 Rust)
 
-** §12.2 §86.2 — error.rs migration (SHIPPED 2026-05-10)
+** §12.2 §86.1.b — Tier 1 算術 / equal / ref-eq / sxhash (SHIPPED 2026-05-10)
+
+- =equal= (= =bi_equal=) → already lived as elisp =(defun equal ...)= in
+  =lisp/nelisp-stdlib-equal.el= since Doc 50 stage 5b; =bi_equal= +
+  =sexp_equal_safe= + =SEXP_EQUAL_DEPTH_LIMIT= deleted as dead code.
+  Bootstrap shim added in =nelisp-jit-strategy.el= so earlier stdlib
+  files (=nelisp-stdlib-misc.el= defalias chain + =nelisp-stdlib-hash.el=
+  test dispatch) see =equal= as =fboundp= before =nelisp-stdlib-equal.el=
+  loads (= the cycle-safe full version is loaded much later because it
+  depends on =make-hash-table=).
+- =nelisp--ref-eq= (= =bi_ref_eq=) → JIT trampoline =nl_jit_ref_eq=
+  (=jit/predicate.rs=) reachable via =(nl-jit-call-out-2 "nelisp_jit_ref_eq"
+  a b)=.  Doc 87 §10.2 judgment call: =bi_ref_eq= 's body was equivalent
+  to =sexp_eq= (already uses =Rc::ptr_eq= for every shared-heap variant);
+  the multi-arm =match= just duplicated =sexp_eq= 's coverage.
+  Trampoline writes =Sexp::T= / =Sexp::Nil= directly so the elisp wrapper
+  bypasses the =nelisp--int-eq-zero= convert dance =eq= uses — that is
+  what unblocks installing =nelisp--ref-eq= ahead of =eq=.
+- =/= (= =bi_div=) → elisp =(defun / ...)= in =lisp/nelisp-stdlib.el=.
+  Two-pass impl: pass 1 detects any-Float (drives the int-trunc gate),
+  pass 2 folds through =nl_jit_float_div= trampoline (=jit/float.rs=).
+  Preserves the upfront-promote-then-trunc-on-all-int semantics that
+  blocked migration in batch 6v.  =numeric_promote= / =pack_number=
+  helpers deleted alongside =bi_div= (= had no other callers).
+- =sxhash= (= =bi_sxhash=) → JIT trampoline =nl_jit_sxhash=
+  (=jit/predicate.rs=).  Recursive Sexp → hash-state fold kept in Rust
+  for =DefaultHasher= bit-exactness (Doc 87 §3.2 risk note); elisp
+  wrapper is a 1-line =(nl-jit-call-out-1 "nelisp_jit_sxhash" object)=
+  in =lisp/nelisp-stdlib.el=.  =sxhash-{equal,eq,eql}= defaliases pick
+  up the elisp function-cell automatically.
+
+LOC delta (= actual):
+- =build-tool/src/= : **-108 net** (= 21,649 → 21,541) across 4 commits
+- =lisp/nelisp-jit-strategy.el= : +98 elisp LOC (bootstrap equal +
+  ref-eq wrapper)
+- =lisp/nelisp-stdlib.el= : +52 elisp LOC (=/= 2-pass impl + sxhash
+  one-liner + comment updates)
+
+Estimate vs actual: Doc 86 §5.2 said -350 net Rust for §86.1.b; Doc 87
+§3.2 (post-articulation) said -350.  Actual is -108 — the gap is
+because:
+1. =bi_equal= was already dead before this stage (= elisp =equal= in
+   =nelisp-stdlib-equal.el= overrode it at load time), so its 46 LOC
+   was bonus pure-deletion not credited in the spec
+2. =bi_ref_eq= 's body was =sexp_eq= -equivalent, so the trampoline's
+   =sexp_eq= delegation collapses to a 7-LOC body — but =sexp_eq=
+   itself stays in =special_forms.rs= (= still used by =nl_jit_pred_eq=)
+3. =sxhash= 's body is structurally required (= =DefaultHasher= state
+   machine) and just relocates from =builtins.rs= to =jit/predicate.rs=
+   = LOC-neutral on body, with only the dispatch-wrapper LOC won
+
+Cumulative §86.1: -34 (§86.1.a) + -108 (§86.1.b) = **-142 Rust LOC**.
+
+Verification:
+- =cargo build --workspace --release --features image-baker= — green
+- =cargo test --workspace --release --lib -- --test-threads=1= — 673
+  passed / 0 failed (= same as baseline)
+- =make compile= — green (rc=0, 0 byte-compile warnings)
+- =make test= — same 1 pre-existing flake as baseline
+  (=nelisp-eval-core/apply-fn-dispatches-to-builtin=)
+
+Commits (= 4 atomic):
+1. =ea05d0e0= — equal migration + bootstrap shim (-37 net Rust)
+2. =cffd24dc= — nelisp--ref-eq via =nl_jit_ref_eq= trampoline (-3 net Rust)
+3. =4b45a2d5= — =/= via =nl_jit_float_div= trampoline (-63 net Rust)
+4. =92729d3e= — sxhash via =nl_jit_sxhash= trampoline (-5 net Rust)
+
+** §12.3 §86.2 — error.rs migration (SHIPPED 2026-05-10)
 
 詳細 design metadata は §6 (= error.rs migration design SHIPPED status
 block) に記載。本節は §12 SHIPPED status の sibling normalization。
@@ -851,7 +922,10 @@ Phase 2 完遂時の build-tool/src/ Rust LOC:
 | Phase 1 完遂 (= Doc 84 SHIPPED) | 21,796 | (= base) |
 | §86.1.a SHIPPED (2026-05-10) | 21,762 | -34 |
 | §86.2 SHIPPED (2026-05-10) | 21,649 | -147 (= cumulative) |
-| §86.1.d SHIPPED (2026-05-10) | 21,647 | -149 (= cumulative) |
+| §86.1.b SHIPPED (2026-05-10) | 21,541 | -255 (= cumulative) |
+| §86.1.c SHIPPED (2026-05-10) | 21,531 | -265 (= cumulative) |
+| §86.1.d SHIPPED (2026-05-10) | 21,529 | -267 (= cumulative) |
+| §86.3.a precursor SHIPPED (2026-05-10) | 21,809 | +13 (= cumulative, +280 additive 例外) |
 | §86.1 残 完遂 (projected) | 20,112 | -1,684 |
 | §86.3 完遂 (projected) | **~18,898** | ***-2,898*** |
 
