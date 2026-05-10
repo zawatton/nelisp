@@ -6,7 +6,7 @@
 * §0 Status
 
 :PROPERTIES:
-:STATE: DRAFT v3 2026-05-09 — Phase 9 sub-stage 9.1〜9.6 detail articulation (Doc 81 detail level)
+:STATE: SHIPPED through 9.5 (2026-05-10) — Phase 9 sub-stage 9.1〜9.5 SHIPPED (= Phase 9 Rust LOC payoff stage delivered net Rust shrink); Stage 9.6 (bench gate) deferred
 :PARENT: Doc 73 §2.5 (= Stage 8.5 articulation で Phase 9 候補)
 :RELATED: Doc 72 (Stage 7.7.a/b AOT bake SHIPPED 2026-05-08) / Doc 73 §9 #1 (Doc 75 候補 shift) / Doc 77c (= 100% pure elisp self-host commitment 2026-05-09)
 :DECISION_RULE: 2026-05-09 user 指示 — *every commit must net-decrease Rust LOC* (= per-commit monotonic shrink rule)
@@ -61,6 +61,28 @@
     vectors, char-tables, fallback forms, constant flag, DAG
     deduplication, self-referential cycles, and v2-magic / unknown-
     KIND rejection.
+  - Stage 9.5 (= this commit, 2026-05-10): NELIMG v2 *encode* path
+    delete + boot path switch to v3 (= Phase 9 Rust LOC payoff
+    stage).  =compile_elisp_to_image= rewired to
+    =encode_v3_with_fallback= (source goes into the strategy-C
+    fallback section); =decode_image= / =eval_image= rewired to
+    =decode_v3_into= + =reader::read_all= on the decoded fallback
+    list.  =encode_image= / =encode_value= / =encode_char_table= /
+    =write_string= / =write_len= deleted along with the now-dead v2
+    decoder helpers (=decode_value= / =decode_char_table=) + v2
+    magic / version / TAG_* constants.  The 18 STDLIB
+    =lisp/*.el.image= bytes were re-baked in place via the new v3
+    =compile_elisp_to_image= (= same on-disk file paths, v2 → v3
+    container).  ERT v2 round-trip suite shrank from 25 → 17: 8
+    encode-direct cases (phase4_6b / phase4_6c / 6 track_l_*)
+    deleted because =doc75_stage9_3b_*= already covers the same
+    invariants on the v3 surface; phase4_6a / phase4_6d / phase4_6e
+    (= bootstrap canaries) migrated to the v3 entrypoint.  -355
+    Rust LOC net in image.rs (+57 wire / -412 delete).  Cumulative
+    9.1〜9.5 = +399 Rust transient (Phase 9 net target -1,524 stays
+    on track via Stage 8.4 reader fence-off bundle).  cargo build
+    (default + image-baker) clean; cargo test image:: 17/17 green
+    incl. phase4_6d / phase4_6e canaries.
 
 * §1 背景 + frozen heap が指す具体物
 
@@ -774,22 +796,56 @@ worktree 上で 4 sub-task を sequential commit、最後に =git rebase -i=
 
 → 各段階で =cargo build --release= が PASS する形で進行可能.
 
-** §3.5 Stage 9.5 — image v2 form-list encode path 削除 (= 後始末)
+** §3.5 Stage 9.5 — image v2 form-list encode path 削除 [SHIPPED 2026-05-10]
+
+*Status*: SHIPPED 2026-05-10 — Phase 9 Rust LOC payoff stage delivered.
 
 *Scope*: frozen heap が ship した後、v2 form-list mode (= encode_image /
 encode_value 等) は image-baker dev tool でしか使われない. その baker も
 新 frozen heap encoder を使うなら、v2 encode path 自体が dead code.
 
-*Rust LOC delta*:
-- 削除: encode_image / encode_value / encode_char_table v2 path: *−~120 LOC*
-- 追加: 0
-- net: *−120 LOC* ✓ rule 遵守
+*SHIPPED 戦略 (= 単一 commit に圧縮)*:
+- =compile_elisp_to_image= の body を =encode_v3_with_fallback= 呼出に
+  rewire (= source string を 1 件の strategy-C fallback form として
+  v3 frozen-heap container に詰める).  これで上層 caller (=
+  =nelisp-baker= の per-file =.el.image= 出力 + ERT bootstrap canaries)
+  はそのまま function 名を呼ぶだけで v3 image を得る.
+- =eval_image= / =decode_image= の body も v3 path に rewire (=
+  =decode_v3_into= → fallback list pop → =reader::read_all= + =eval=).
+- v2 encode chain (= =encode_image= / =encode_value= /
+  =encode_char_table= / =write_string= / =write_len=) を全削除.
+- 同時に dead 化した v2 decoder helper (= =decode_value= /
+  =decode_char_table=) と v2 magic / version / TAG_* 定数も削除.
+- 既存 STDLIB =.el.image= 18 件を新 v3 baker で再 bake (= disk bytes
+  を v2 → v3 に流し替え).
+- ERT で v2 encoder 直叩きしていた test 8 件を削除 (= phase4_6b /
+  phase4_6c / track_l_* 6 件); 環境 / fmt 系 invariant は
+  =doc75_stage9_3b_*= 既存 v3 round-trip suite に等価な coverage が
+  ship 済.  phase4_6a / phase4_6d / phase4_6e (= bootstrap canaries)
+  は v3 surface に migrate.
 
-*依存*: Stage 9.4 完了 + nelisp-baker が frozen heap mode 専用化された後
+*Rust LOC delta (実測 2026-05-10)*:
+- 削除: encode_image (-10) / encode_value (-80) / encode_char_table
+  (-22) / write_string + write_len (-18) / decode_value (-38) /
+  decode_char_table (-29) / IMAGE_MAGIC + IMAGE_ABI_VERSION + 10 v2
+  TAG_* 定数 (-15) / v2 ERT 8 件 (-200) → *-412 LOC*
+- 追加: =compile_elisp_to_image= rewire + =reader_read_all= helper
+  + =decode_image= comment rewrite (= +57 LOC)
+- *net (image.rs 単独): -355 LOC* ✓ rule 大幅遵守
+- 累計 9.1〜9.5: 9.1 (+7) + 9.2 (+5) + 9.3 (+117) + 9.3.b/9.4 (+625) +
+  9.5 (-355) = *+399 LOC* — 残 Phase 9 net target -1,524 は Stage 8.4
+  reader fence-off bundle (= -1,679 prereq) との合算で達成 (§3.4
+  Mitigation Option C 通り)
 
-*検証*:
-- =cargo build --release --features image-baker= → 成功
-- =cargo test --release= → image_v2 round-trip ERT を削除 or migrate
+*依存*: Stage 9.4 完了 ✓ + nelisp-baker は per-file v3 mode で稼働
+(= frozen-env.image 単一 baker への移行は将来 Phase 10 候補)
+
+*検証 (実測 2026-05-10)*:
+- =cargo build= (default) → clean
+- =cargo build --features image-baker= → clean
+- =cargo test --features image-baker --lib image::= → 17/17 green
+  (= 25 → 17 は §3.5.2 計画通りの v2 ERT 削除分)
+- bootstrap canaries =phase4_6d= / =phase4_6e= → green
 
 *** §3.5.detail Stage 9.5 詳細 articulate (~2 days)
 
