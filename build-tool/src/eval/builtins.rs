@@ -1696,7 +1696,13 @@ syscall_unsupported!(bi_syscall, "nelisp--syscall");
 fn bi_symbol_value(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("symbol-value", args, 1, Some(1))?;
     match &args[0] {
-        Sexp::Symbol(s) => env.lookup_value(s),
+        Sexp::Symbol(s) => {
+            // Doc 86 §86.3.b shadow-path verify (cfg-gated, +0 prod LOC).
+            let rust_result = env.lookup_value(s);
+            #[cfg(feature = "env-shadow-verify")]
+            super::env::verify_elisp_mirror_lookup_value(env, s, &rust_result);
+            rust_result
+        }
         other => Err(EvalError::WrongType {
             expected: "symbolp".into(),
             got: other.clone(),
@@ -1707,7 +1713,13 @@ fn bi_symbol_value(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
 fn bi_symbol_function(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("symbol-function", args, 1, Some(1))?;
     match &args[0] {
-        Sexp::Symbol(s) => env.lookup_function(s),
+        Sexp::Symbol(s) => {
+            // Doc 86 §86.3.b shadow-path verify (cfg-gated, +0 prod LOC).
+            let rust_result = env.lookup_function(s);
+            #[cfg(feature = "env-shadow-verify")]
+            super::env::verify_elisp_mirror_lookup_function(env, s, &rust_result);
+            rust_result
+        }
         other => Err(EvalError::WrongType {
             expected: "symbolp".into(),
             got: other.clone(),
@@ -1728,7 +1740,13 @@ fn feature_name_arg(name: &str, arg: &Sexp) -> Result<String, EvalError> {
 fn bi_fboundp(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("fboundp", args, 1, Some(1))?;
     match &args[0] {
-        Sexp::Symbol(s) => Ok(if env.is_fbound(s) { Sexp::T } else { Sexp::Nil }),
+        Sexp::Symbol(s) => {
+            // Doc 86 §86.3.b shadow-path verify (cfg-gated, +0 prod LOC).
+            let rust_result = env.is_fbound(s);
+            #[cfg(feature = "env-shadow-verify")]
+            super::env::verify_elisp_mirror_is_fbound(env, s, rust_result);
+            Ok(if rust_result { Sexp::T } else { Sexp::Nil })
+        }
         _ => Ok(Sexp::Nil),
     }
 }
@@ -1736,7 +1754,13 @@ fn bi_fboundp(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
 fn bi_boundp(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
     require_arity("boundp", args, 1, Some(1))?;
     match &args[0] {
-        Sexp::Symbol(s) => Ok(if env.is_bound(s) { Sexp::T } else { Sexp::Nil }),
+        Sexp::Symbol(s) => {
+            // Doc 86 §86.3.b shadow-path verify (cfg-gated, +0 prod LOC).
+            let rust_result = env.is_bound(s);
+            #[cfg(feature = "env-shadow-verify")]
+            super::env::verify_elisp_mirror_is_bound(env, s, rust_result);
+            Ok(if rust_result { Sexp::T } else { Sexp::Nil })
+        }
         _ => Ok(Sexp::Nil),
     }
 }
@@ -1761,7 +1785,10 @@ fn bi_defalias(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
         Sexp::Symbol(s) => env.lookup_function(s)?,
         other => other.clone(),
     };
-    env.set_function(&name, def);
+    env.set_function(&name, def.clone());
+    // Doc 86 §86.3.b shadow-path verify (cfg-gated, +0 prod LOC).
+    #[cfg(feature = "env-shadow-verify")]
+    super::env::verify_elisp_mirror_set_function(env, &name, &def);
     Ok(args[0].clone())
 }
 
@@ -1780,6 +1807,9 @@ fn bi_set(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
         }),
     };
     env.set_value(&name, args[1].clone())?;
+    // Doc 86 §86.3.b shadow-path verify (cfg-gated, +0 prod LOC).
+    #[cfg(feature = "env-shadow-verify")]
+    super::env::verify_elisp_mirror_set_value(env, &name, &args[1]);
     Ok(args[1].clone())
 }
 
@@ -1800,6 +1830,9 @@ fn bi_fset(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
         other => other.clone(),
     };
     env.set_function(&name, def.clone());
+    // Doc 86 §86.3.b shadow-path verify (cfg-gated, +0 prod LOC).
+    #[cfg(feature = "env-shadow-verify")]
+    super::env::verify_elisp_mirror_set_function(env, &name, &def);
     Ok(def)
 }
 
@@ -1814,6 +1847,9 @@ fn bi_fmakunbound(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
         }),
     };
     env.clear_function(&name);
+    // Doc 86 §86.3.b shadow-path verify (cfg-gated, +0 prod LOC).
+    #[cfg(feature = "env-shadow-verify")]
+    super::env::verify_elisp_mirror_clear_function(env, &name);
     Ok(args[0].clone())
 }
 
@@ -1986,6 +2022,9 @@ fn bi_makunbound(args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalError> {
         }),
     };
     env.clear_value(&name);
+    // Doc 86 §86.3.b shadow-path verify (cfg-gated, +0 prod LOC).
+    #[cfg(feature = "env-shadow-verify")]
+    super::env::verify_elisp_mirror_clear_value(env, &name);
     Ok(args[0].clone())
 }
 

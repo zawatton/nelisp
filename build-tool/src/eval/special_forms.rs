@@ -293,6 +293,9 @@ fn sf_setq(args: &Sexp, env: &mut Env) -> Result<Sexp, EvalError> {
         };
         let val = eval(&value_form, env)?;
         env.set_value(&name, val.clone())?;
+        // Doc 86 §86.3.b shadow-path verify (cfg-gated, +0 prod LOC).
+        #[cfg(feature = "env-shadow-verify")]
+        super::env::verify_elisp_mirror_set_value(env, &name, &val);
         last = val;
     }
     Ok(last)
