@@ -172,7 +172,17 @@ pub(super) struct UnifiedJit {
     // resolved by the dlsym bridge for nelisp-cc compiled hot paths,
     // and by `bridge::unified_fn_ptr' for substrate.el bootstrap
     // paths (= same trampoline body, no Cranelift wrapper).
-    pub(super) access: access::JitAccess,
+    //
+    // Phase 7.1.6.b (Doc 28 §3.6.b): access cluster JIT wrappers
+    // deleted on the same pattern (= `JitAccess' / `register_symbols'
+    // / `declare_funcs' / `collect_funcs' / `declare_length_with_
+    // inline_nil' all gone).  The 4 `nl_jit_access_*' trampolines
+    // stay in `jit::access' as `#[no_mangle] extern "C"' symbols
+    // resolved by the dlsym bridge for nelisp-cc compiled hot paths
+    // and by `bridge::unified_fn_ptr' for substrate.el bootstrap
+    // paths.  The `length' inline-NIL fast path is now handled by
+    // the trampoline body's `tag == SEXP_TAG_NIL' arm (= writes
+    // `Sexp::Int(0)' to `out' and returns `OK' without further work).
     pub(super) predicate: predicate::JitPredicate,
     pub(super) syscall: syscall::JitSyscall,
 }
@@ -192,7 +202,8 @@ pub(super) fn unified_jit() -> &'static UnifiedJit {
         // Cranelift wrapper page for cons; trampolines are reached
         // either via dlsym from nelisp-cc compiled code or via
         // `bridge::unified_fn_ptr' for substrate.el bootstrap).
-        access::register_symbols(&mut builder);
+        // Phase 7.1.6.b: access::register_symbols deleted on the same
+        // pattern (= no Cranelift wrapper page for access cluster).
         predicate::register_symbols(&mut builder);
         syscall::register_symbols(&mut builder);
 
@@ -203,7 +214,7 @@ pub(super) fn unified_jit() -> &'static UnifiedJit {
         // on the shared module.  FuncIds carry forward to step 5.
         let arith_ids = arith::declare_funcs(&mut module);
         // Phase 7.1.6.a.2: cons::declare_funcs deleted.
-        let access_ids = access::declare_funcs(&mut module);
+        // Phase 7.1.6.b: access::declare_funcs deleted.
         let predicate_ids = predicate::declare_funcs(&mut module);
         let syscall_ids = syscall::declare_funcs(&mut module);
 
@@ -215,7 +226,7 @@ pub(super) fn unified_jit() -> &'static UnifiedJit {
         // Step 5: fetch function pointers per submodule.
         let arith = arith::collect_funcs(&module, arith_ids);
         // Phase 7.1.6.a.2: cons::collect_funcs deleted.
-        let access = access::collect_funcs(&module, access_ids);
+        // Phase 7.1.6.b: access::collect_funcs deleted.
         let predicate = predicate::collect_funcs(&module, predicate_ids);
         let syscall = syscall::collect_funcs(&module, syscall_ids);
 
@@ -226,7 +237,7 @@ pub(super) fn unified_jit() -> &'static UnifiedJit {
         UnifiedJit {
             arith,
             // Phase 7.1.6.a.2: `cons' field deleted from UnifiedJit.
-            access,
+            // Phase 7.1.6.b: `access' field deleted from UnifiedJit.
             predicate,
             syscall,
         }

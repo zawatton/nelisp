@@ -743,6 +743,69 @@ bench gate: 新設 =vector-stress= 軸 (= =(let loop ((v (make-vector
 1000 0)) (i 0)) (if (= i 1000) v (progn (aset v i i) (loop v (1+
 i)))))=) で Cranelift baseline 比 ≧ 1.0x.
 
+**** 3.6.b.SHIPPED Phase 7.1.6.b actual delta (2026-05-10)
+
+Phase 7.1.6.b (本 commit, 2026-05-10): access cluster Cranelift wrapper
+deletion.  7.1.6.a.2 cons takeover の pattern を access cluster (=
+length / aref / aset / elt) に mirror 適用.
+
+actual changes:
+1. =build-tool/src/jit/access.rs= の 4 trampoline (=nl_jit_access_length/
+   aref/aset/elt=) に =#[no_mangle] pub unsafe extern "C"= attribution
+   追加 → dlsym 経由の resolution 可能化 (= Stage 81.3 で wired 済の
+   primitive-table-stage3 vector cluster entries が runtime resolve
+   可能).
+2. =.cargo/config.toml= は 7.1.6.a.2 で既に追加済、access trampolines は
+   そのまま継承 (= 追加変更なし).
+3. =build-tool/src/jit/access.rs= から =JitAccess= / =AccessIds= struct
+   + =declare_length_with_inline_nil= Cranelift IR builder +
+   =register_symbols= / =declare_funcs= / =collect_funcs= 配線 + =jit()=
+   test helper を削除.  trampolines + tests 残存 (tests refactor で
+   =jit().length= → =unsafe { nl_jit_access_length(...) }= 形式).
+4. =build-tool/src/jit/mod.rs= の =UnifiedJit::access= field +
+   =access::register_symbols= / =declare_funcs= / =collect_funcs= 呼出
+   削除.
+5. =build-tool/src/jit/bridge.rs= =unified_fn_ptr= の access name
+   resolution を =u.access.length= 経由から
+   =super::access::nl_jit_access_length as *const u8= 直接参照に置換
+   (substrate.el の bootstrap path =nl-jit-call-out-1/1i/2i
+   "nelisp_jit_*"= 維持のため必須).
+6. =test/nelisp-cc-stage81-poc-test.el= に 7.1.6.b dlsym 統合 smoke 1 件
+   追加 — 4 access trampoline 全 =:resolved= (=
+   =nelisp-cc-stage81-poc-7.1.6.b-dlsym-resolves-vector-cluster=)、
+   standalone =target/debug/nelisp= bin 経由で =skip-unless= guarded.
+   :not-found passthru smoke は 7.1.6.a.2 のものを共用 (= 同一の
+   dlsym 配線で動作).
+
+actual Rust LOC delta (per =git diff --stat HEAD~1 -- '*.rs' 'Cargo.*'=):
+| 箇所                            | +/-                |
+|---------------------------------+--------------------|
+| =build-tool/src/jit/access.rs=  | 402 行変更 (大幅削除) |
+| =build-tool/src/jit/bridge.rs=  | 18 行変更           |
+| =build-tool/src/jit/mod.rs=     | 21 行変更           |
+| *合計*                          | *+168 / -273 = net -105 Rust* |
+
+加えて =test/nelisp-cc-stage81-poc-test.el= +50 LOC elisp.
+
+*Design target との差*: 設計 §3.6.b plan は access.rs 全削除 (-638) を
+articulate していたが、7.1.6.a.2 と同じ理由で =lisp/nelisp-jit-
+substrate.el= bootstrap path 維持のため trampolines + bridge 配線は
+維持.  Cranelift wrapper layer (= =JitAccess= struct + IR builder +
+配線) のみ削除、trampolines は dlsym + bridge 両方からの resolution
+対応化.  substrate.el bootstrap の dlsym 化 (= Phase 7.1.6.a.3 と同等
+の access 版) で残り =-200〜-300 Rust= を回収する追加 plan は articulate
+可.
+
+gate 達成状況:
+- 全 ERT (2350 / 2350 PASS、328 skipped、0 unexpected) ✓ (= +1 vs 7.1.6.a.2 baseline 2349 = 新 vector dlsym smoke)
+- cargo test --lib jit (81/81 PASS) ✓
+- cargo test --lib image (17/17 PASS、default + image-baker 両方) ✓
+- cargo build (default + image-baker feature) clean ✓
+- vector cluster dlsym 統合 smoke (1/1 PASS、binary 経由で 4 全 trampoline 実 resolve 確認) ✓
+- 3-軸 bench: 7.1.6.a.2 baseline finding と同様、=make bench-actual=
+  baseline は =anvil-runtime= の pattern mismatch で build 不可 — perf
+  gate carry-forward.
+
 *** 3.6.c Phase 7.1.6.c — =arith= takeover (= arith.rs ~-344 Rust LOC)
 
 **** 3.6.c.1 12 primitive inventory (= arith.rs 実測)

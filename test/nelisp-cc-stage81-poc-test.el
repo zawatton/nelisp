@@ -1427,5 +1427,49 @@ resolving."
               '(nelisp-cc--dlsym-resolve "nl_jit_cons_nonexistent_typo"))))
     (should (string-prefix-p "(:not-found" out))))
 
+;;; Phase 7.1.6.b dlsym integration smoke -----------------------------
+;;
+;; Doc 28 §3.6.b ship gate (= the smoke for the access cluster
+;; takeover, mirror of the Phase 7.1.6.a.2 cons cluster smoke above).
+;; Verifies the same end-to-end path for the 4 `nl_jit_access_*'
+;; trampolines (length / aref / aset / elt — Stage 81.3 vector ABI):
+;;
+;;   1. The `nelisp' binary's dynamic symbol table exposes the
+;;      `#[no_mangle]' access trampolines (= `-rdynamic' is wired via
+;;      `.cargo/config.toml', already present from Phase 7.1.6.a.2 —
+;;      the access trampolines simply inherit it).
+;;   2. `nelisp-cc--dlsym-resolve' returns `:resolved' with a non-zero
+;;      addr for each access cluster symbol when invoked in the
+;;      standalone binary.
+;;
+;; Auto-skips when the binary hasn't been built yet (= same skip-unless
+;; gate as the cons smoke, since both rely on the locally-built nelisp
+;; binary at `target/debug/nelisp').
+
+(ert-deftest nelisp-cc-stage81-poc-7.1.6.b-dlsym-resolves-vector-cluster ()
+  "Phase 7.1.6.b: dlsym resolves all 4 `nl_jit_access_*' symbols.
+
+The cluster takeover (Doc 28 §3.6.b) deletes the Cranelift `JitAccess'
+wrapper but keeps the trampolines as `#[no_mangle] extern \"C\"' so
+the dlsym bridge can locate them.  Smoke verifies that
+`(nelisp-cc--dlsym-resolve \"nl_jit_access_length\")' returns
+`(:resolved . ADDR)' with ADDR > 0 (= the symbol exists in the
+binary's dynsym table thanks to `-rdynamic' in `.cargo/config.toml',
+already added by Phase 7.1.6.a.2; access trampolines just inherit)."
+  (skip-unless (and nelisp-cc-stage81-test--nelisp-bin
+                    (file-executable-p nelisp-cc-stage81-test--nelisp-bin)))
+  (dolist (sym '("nl_jit_access_length" "nl_jit_access_aref"
+                 "nl_jit_access_aset" "nl_jit_access_elt"))
+    (let* ((out (nelisp-cc-stage81-test--nelisp-eval
+                 `(nelisp-cc--dlsym-resolve ,sym)))
+           ;; Output shape: "(:resolved . NNNNNNN)" or "(:not-found)".
+           (resolved-prefix "(:resolved . "))
+      (should (string-prefix-p resolved-prefix out))
+      ;; Parse the addr and assert it is non-zero.
+      (let* ((addr-str (substring out (length resolved-prefix)
+                                  (1- (length out))))
+             (addr (string-to-number addr-str)))
+        (should (> addr 0))))))
+
 (provide 'nelisp-cc-stage81-poc-test)
 ;;; nelisp-cc-stage81-poc-test.el ends here
