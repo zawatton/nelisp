@@ -5,23 +5,51 @@
 //! At call time the evaluator pulls the name back out and routes to
 //! [`dispatch`].
 //!
-//! Categories (per prompt §6):
-//!   - Arithmetic  : + - * / mod < > <= >= = /=
-//!   - Equality    : eq equal
-//!   - Cons / list : car cdr cons length append
-//!   - Predicates  : consp listp atom symbolp stringp numberp
-//!                   integerp floatp
-//!   - String      : concat format substring intern symbol-name
-//!   - Symbol/func : symbol-value symbol-function fboundp boundp
-//!                   funcall apply eval signal error
+//! ## Phase 2 v3 landing state (Doc 86 §86.1.a-g, 2026-05-10)
 //!
-//! Sweep 9 migrated to Elisp (lisp/nelisp-stdlib*.el):
-//!   identity null not 1+ 1- nth nthcdr reverse nreverse
-//!   mapcar mapc memq member assq assoc
-//!   plist-get plist-put plist-member string-empty-p
+//! After Doc 86 Phase 2 Tier 1 + Tier 2 migrations + §86.1.g cleanup
+//! sub-stage, the surface here is now scoped to:
 //!
-//! Sweep 10 migrated to Elisp (lisp/nelisp-stdlib-misc.el):
-//!   list alist-get string-prefix-p number-to-string
+//! 1. **KEEP arms** — primitives that genuinely require Rust:
+//!    - low-level I/O: `read-stdin-bytes`, `nelisp--write-stdout-bytes`,
+//!      `nelisp--write-stderr-line`, `nl-write-file`, `nl-make-directory`
+//!    - filesystem syscalls: `nelisp--syscall-canonicalize`, `-stat`,
+//!      `-readdir`, `-read-file`
+//!    - process / signal / TTY plumbing: `terminal-raw-mode-*`,
+//!      `install-{sigint,winsize,jobctrl}-handler*`, quit-flag,
+//!      `set`/`fset`/`defalias`/`fmakunbound`/`makunbound`,
+//!      `symbol-value`/`-function`/`fboundp`/`boundp`
+//!    - generic syscall + supported-p (Linux nr-table dispatch)
+//!    - reader entry points (`read`, `read-from-string`, `signal`,
+//!      `eval`/`apply`/`funcall`/`macroexpand-1`)
+//!    - vector core (`vector`, `make-vector`, `string-bytes`)
+//!    - require / load orchestration (calls back into elisp `load')
+//!
+//! 2. **Tier 3 bridge plumbing** — primitives that elisp wrappers ride:
+//!    - `nl-jit-call-*` family (i64-i64, ptr-ptr, syscall, out-1/2/1i/2i,
+//!      float-float, float-cmp, float-unary, format-float)
+//!    - `nl-ffi-*` family (call, malloc, read/write-{i16,i32,i64,u8,
+//!      u16,u32}, errno, free, read-bytes, write-bytes, *-at)
+//!    - `nl-cons-*` / `nl-rc-*` / `nl-gc-*` Layer 2 primitives
+//!    - `nelisp--apply-{builtin-dispatch,lambda-inner}` +
+//!      `nelisp--{push,pop}-frame` / `-push-captured` / `-bind-local` +
+//!      `nelisp--{get,set}-use-elisp-apply`
+//!    - `nelisp--syscall-{socketpair,sendmsg-fds,recvmsg-fds,
+//!      getsockopt-peercred,bind-inet6-scoped,connect-inet6-scoped,
+//!      accept-inet6-scoped}` (= residual specialised socket helpers)
+//!    - `nelisp-cc--dlsym-resolve` (= elisp-side dlsym hook)
+//!
+//! Tier 1 (= 1-arg predicates / `type-of` / `recordp` / `eq` / `equal` /
+//! `null` / `not` / `1+` / `1-` / arithmetic variadics + comparisons /
+//! cXXr family / `mapcar` / `assq` / etc.) all live in `lisp/nelisp-
+//! stdlib*.el` now.  Tier 2 (= `float` / `exp` / `log` / `sxhash` /
+//! `string-match-p` / `nl-current-unix-time` / `nl-secure-hash` /
+//! `nl-format-unix-time` / `nl-{down,up}case` / `nl-split-by-non-alnum` /
+//! `intern` / `symbol-name` / `make-symbol` / `nelisp--make-mut-string` /
+//! `nelisp--concat-ints` / `nelisp--format-float-body`) ride matching
+//! `nl_jit_*` trampolines (= `build-tool/src/jit/{predicate,float,hash,
+//! time,strings,regex,math,box_accessor}.rs`) via the bridge
+//! primitives listed above.
 
 use super::env::Env;
 use super::error::EvalError;
