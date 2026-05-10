@@ -4,11 +4,13 @@
 
 * Status
 
-:STATE: DRAFT 2026-05-09
+:STATE: SHIPPED 2026-05-10 (Stage 80.1〜80.5 全 SHIPPED + §7 v2 fold-in 完遂)
 :PARENT: Doc 77c (= 100% 純 elisp commitment) / Doc 63 (= Phase 7 self-host roadmap)
 :UNLOCKS: =strategy.rs= ~255 LOC 削除 (= Track H 2026-05-09 audit identified future deletion path、=bi_length_impl= / =aref_helper= / =bi_aref_impl= / =bi_aset_impl= / =bi_elt_impl= の multi-variant fall-through body)
 :USER_DIRECTIVE: 2026-05-09 — "elisp 再表現可能とする為に、足らない表現があったらelispで実装しましょう"
 :RELATED: =project_nelisp_strategy_rs_pinned= memory (= future deletion path identified、本 Doc が main path に格上げ) / =feedback_nelisp_unlock_substrate_dont_accept_pin= (= 同 user 2026-05-09 directive の memo)
+:SHIP_COMMITS: =46d4ea55= (Stage 80.1〜80.5 atomic、-78 net Rust LOC) → =b7d3cd0c= (§7 v2 fold-in、-34 net Rust LOC) = aggregate **-112 net Rust LOC** (-251 strategy.rs body + +112 slim primitive + +27 net builtins/baker) / 累計 5 file fn 削除 (=bi_length_impl= / =aref_helper= / =bi_aref_impl= / =bi_aset_impl= / =bi_elt_impl=)
+:NEXT: Doc 28 §3.7.a (= =strategy.rs= 全削除 -425 Rust LOC) は 7.1.7.a.1 で =bi_int_eq_zero= / bitwise 3 / =bi_ash_impl= の elisp port を要する別 sub-stage.  Float arith / Float cmp / =bi_syscall_nr_resolve= は Doc 80 §7 で permanent out-of-scope.
 
 * §0 TL;DR
 
@@ -18,7 +20,7 @@ User 2026-05-09 directive (= "足らない表現があったらelispで実装し
 
 aggregate Rust shrink target: **~-260 LOC** (= 255 LOC 削除 + 残骸 cleanup).
 
-ただし本 Doc は **doc-only DRAFT** = Rust / elisp source への変更は行わない.  Stage 80.1 以降の実装は別 commit で進める.
+**SHIPPED 2026-05-10**: Stage 80.1〜80.5 atomic (=46d4ea55=) で **-78 net Rust LOC** + §7 v2 fold-in (=b7d3cd0c=) で更に **-34 net Rust LOC** = aggregate **-112 net Rust LOC**.  4 fn (=bi_length_impl= / =aref_helper= / =bi_aref_impl= / =bi_aset_impl= / =bi_elt_impl=) Rust 削除 + 6 slim primitive (=bi_mut_str_*= / =bi_bool_vector_len= / =bi_char_table_aref/aset= / =bi_str_codepoint_at=) 残置 + =nelisp-jit-substrate.el= (+156 LOC) / =nelisp-jit-strategy.el= (+115 net LOC) elisp 経路で =length= / =aref= / =aset= / =elt= の variant dispatch 完遂.  Stage 80.5 final cleanup の estimate -20 LOC は dead helper 不在 audit で 0 LOC に修正.
 
 * §1 動機
 
@@ -329,23 +331,29 @@ Net Rust delta: **-218 LOC** (= 4 fn 削除) **+ ~34 LOC** (= 5 slim primitive) 
 
 ** §4.5 Stage 80.5 — final cleanup + nelisp-jit-strategy.el note 修正
 
-- =nelisp-jit-strategy.el= 前文コメント 38-48 行 ("variant dispatching with proper error shapes ... not expressible cleanly in pre-stdlib elisp") を削除/書換 = "Doc 80 substrate により expressive 化済".
-- =strategy.rs= の use clause / dead helper の cleanup (= =char_table_get= / =char_table_set_one= は他 caller があれば残す、無ければ削除).  予想 -20 LOC.
-- memory =project_nelisp_strategy_rs_pinned= を **OBSOLETE** 化 + =project_nelisp_strategy_rs_unlocked= に置換.
+:STATE: SHIPPED 2026-05-10
 
-Net Rust delta: **~-20 LOC** (= dead helper).
+- =nelisp-jit-strategy.el= 前文コメント 38-48 行 ("variant dispatching with proper error shapes ... not expressible cleanly in pre-stdlib elisp") を削除/書換 = "Doc 80 substrate により expressive 化済". *✅ DONE* (= 46d4ea55 で =;; Constraints on wrapper bodies (Doc 80-relaxed):= header に書換、`length` / `aref` / `aset` / `elt` の `cond` + `condition-case` body も同 commit で投入済).
+- =strategy.rs= の use clause / dead helper の cleanup (= =char_table_get= / =char_table_set_one= は他 caller があれば残す、無ければ削除).  予想 -20 LOC.  *⚠️ N/A* — audit 結果: =char_table_get= / =char_table_set_one= は (a) =strategy.rs= の slim primitive (= =bi_char_table_aref= / =bi_char_table_aset=)、(b) =builtins.rs:1670= 内の self-recursion (=parent= chain walk) の 2 caller 経由で全 alive、削除可能な dead helper は無し.  =use crate::eval::error::EvalError;= / =use crate::eval::sexp::Sexp;= も両方 alive.  cleanup target が 0 = +0 LOC (planning estimate -20 LOC 不達、ただし live helper を消すのは設計を壊すので "ship clean" 判断).
+- memory =project_nelisp_strategy_rs_pinned= を **OBSOLETE** 化 + =project_nelisp_strategy_rs_unlocked= に置換.  *DEFERRED* (= Doc 28 §3.7.a の strategy.rs 全削除 SHIPPED 後に同時更新 = pin/unlock 状態が真に確定するタイミング).
 
-** §4.6 aggregate
+Net Rust delta: **0 LOC** (= 81.5 cleanup target が live caller 経由で全部生きていた、計画上 estimate -20 LOC は実 audit で 0 LOC に修正).  Doc 80 主要 ship は Stage 80.3 / 80.4 で完遂済 (-251 strategy.rs body fn 削除分は 46d4ea55 に集約).
 
-| stage | net Rust delta | 累計 |
-|-------+----------------+------|
-| 80.1 | +0 | +0 |
-| 80.2 | +0 | +0 |
-| 80.3 | -23 | -23 |
-| 80.4 | -184 | -207 |
-| 80.5 | ~-20 | **~-227** |
+** §4.6 aggregate (SHIPPED 実測 2026-05-10)
 
-Track H "future deletion path ~250 LOC" 見積に対し、slim primitive 追加分を引いた net で **~-227 LOC**.  slim primitive を absolutely minimal に切り詰めれば -250 LOC まで到達可能 (= helper を inline 化、char-table set を =sexp.rs= の既存 hot-path に折り込む等).
+| stage | net Rust delta (planned) | net Rust delta (shipped) | 累計 (shipped) |
+|-------+--------------------------+--------------------------+-----------------|
+| 80.1 | +0 | +0 | +0 |
+| 80.2 | +0 | +0 | +0 |
+| 80.3 | -23 | (atomic with 80.4 / 80.5 in =46d4ea55=) | — |
+| 80.4 | -184 | (atomic with 80.3 / 80.5 in =46d4ea55=) | — |
+| 80.5 | ~-20 | 0 (= dead helper 不在 audit 結果) | — |
+| 80.1〜80.5 atomic (=46d4ea55=) | -227 | **-78** | -78 |
+| §7 v2 fold-in (=b7d3cd0c=) | n/a | **-34** | **-112** |
+
+実測 ship は **-112 net Rust LOC** (= 計画 -227 LOC を slim primitive 6 件 +112 LOC で打ち消し、§7 v2 fold-in で更に -34 LOC 押し下げ).  Track H "future deletion path ~250 LOC" 見積の半分以下にとどまった理由は (a) slim primitive 6 件 (=bi_mut_str_*= / =bi_bool_vector_len= / =bi_char_table_aref= / =bi_char_table_aset= / =bi_str_codepoint_at=) が =Sexp::MutStr= / =BoolVector= / =CharTable= variant box の `private` 性により elisp 化不可 (= =CharTableInner= / =NlMutStrRef= 等の internal accessor が elisp 露出していない)、(b) Doc 80 §7 で out-of-scope と articulate された Float arith / Float cmp / =syscall_nr_resolve= が 11/20 ≈ 半分の helper を Rust に pin したまま、の 2 点.
+
+更なる -200 LOC 級の strategy.rs 削減は Doc 28 §3.7.a (= 7.1.7.a.1 で bitwise / ash の elisp port +180 elisp、7.1.7.a.2 で strategy.rs 全削除 -425 Rust) で扱う.  Float arith / cmp / syscall は permanent residual.
 
 Doc 77c §3.1 dependency graph に対しては:
 
@@ -405,14 +413,14 @@ Doc 62 Phase 5 / Doc 76 bench history を Stage 80.3 / 80.4 完了直後に re-r
 
 * §8 summary
 
-| 軸 | value |
-|----+-------|
-| missing expression power | =cond= / =when= / =unless= / =signal-wrong-type= / =signal-arith= |
-| pre-stdlib expressibility surface (= input) | 11 special form + ~60 Rust builtin |
-| substrate file | =lisp/nelisp-jit-substrate.el= (~80 LOC elisp) |
-| STDLIB_FILES position | index 0 (= =nelisp-jit-strategy.el= の前) |
-| stage count | 5 (= 80.1〜80.5) |
-| aggregate Rust shrink | **~-227 LOC** (= -255 削除 + ~+28 slim primitive) |
-| bootstrap circularity | 無し (= =if= special form + =defmacro= self-boot 既存実証 pattern) |
-| timeline | 1-2 週間 |
-| 並行可能 | Phase C / D-A / E と同時進行可 (= =strategy.rs= 修正は他 Doc と非衝突) |
+| 軸 | value (planned) | value (shipped 2026-05-10) |
+|----+-----------------+----------------------------|
+| missing expression power | =cond= / =when= / =unless= / =signal-wrong-type= / =signal-arith= | 同上 (= 全 SHIPPED) |
+| pre-stdlib expressibility surface (= input) | 11 special form + ~60 Rust builtin | 同上 |
+| substrate file | =lisp/nelisp-jit-substrate.el= (~80 LOC elisp) | =lisp/nelisp-jit-substrate.el= (156 LOC elisp、+76 over plan = =null= / =not= / =nelisp--ref-eq= / arith helper を追加) |
+| STDLIB_FILES position | index 0 (= =nelisp-jit-strategy.el= の前) | 同上 |
+| stage count | 5 (= 80.1〜80.5) | 5 + §7 v2 fold-in (= 6 commits) |
+| aggregate Rust shrink | **~-227 LOC** (= -255 削除 + ~+28 slim primitive) | **-112 net LOC** (= -251 strategy.rs body + +112 slim primitive (6 件) + +27 net builtins/baker、§7 v2 fold-in で更に -34) |
+| bootstrap circularity | 無し (= =if= special form + =defmacro= self-boot 既存実証 pattern) | 無し (= 実 ship でも circularity 発症せず) |
+| timeline | 1-2 週間 | 0.5 日 atomic (= 全 stage 1 commit に集約、user directive の同日 ship) |
+| 並行可能 | Phase C / D-A / E と同時進行可 (= =strategy.rs= 修正は他 Doc と非衝突) | 同上 |

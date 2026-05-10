@@ -1465,11 +1465,42 @@ dispatch 不可.  7.1.7.b〜.d は 7.1.7.a 完了後の cascading cleanup.
 *** 3.7.a Phase 7.1.7.a — =strategy.rs= ERR fall-through deletion (= Doc 80 substrate dependent)
 
 #+begin_quote
-*Status (2026-05-10)*: 主目標 (= strategy.rs 全削除 -425 Rust LOC) は
-*Doc 80 Stage 80.5 依存* で blocked.  本 sub-stage の "first cleanup
-pass" として post-7.1.6.a.2 deadwood / visibility tightening / stale
-comment collapse のみ先行 ship 済 (= -72 Rust LOC、=feat/phase-7.1.7.a-
-cleanup= branch、commit cluster 9392290 → 267f0650 → f87651a0).  内訳:
+*Status (2026-05-10 v2 — post Doc 80 SHIPPED)*: 前提だった Doc 80 Stage
+80.5 が SHIPPED (=46d4ea55= + =b7d3cd0c=) になり、本 sub-stage の主目標
+(= strategy.rs 全削除 -425 Rust LOC) の "blocking 条件" は解除.  ただし
+*依然 partially blocked*: Doc 80 §7 で permanent out-of-scope と
+articulate された Float arith / Float cmp / =syscall_nr_resolve= の 9 fn
+は elisp に下ろせない (= host =libc::SYS_*= constant + Float epsilon
+arithmetic が pre-stdlib substrate で表現不能).
+
+*post Doc 80 残存 strategy.rs audit (2026-05-10、本 commit)*: 257 LOC、
+11 =pub(crate) fn bi_*= 残存.  分類:
+
+| カテゴリ                                      | fn 数 | LOC | 削除可否                                            |
+|-----------------------------------------------+-------+-----+-----------------------------------------------------|
+| Doc 80 §7 permanent out-of-scope (Float / syscall) | 9 | ~85 | ❌ Doc 80 範囲外、本 sub-stage で扱わない          |
+| Doc 80.4 ship 後の slim primitive (variant box) | 6 | ~90 | ❌ =Sexp::MutStr= / =BoolVector= / =CharTable= 内部 box accessor、elisp 露出無し |
+| Doc 28 §3.7.a.1 elisp port 候補               | 5 | ~55 | ⚠️ =bi_int_eq_zero= / bitwise 3 / =bi_ash_impl=、elisp port すれば削除可 |
+
+(= 11 fn 中 5 fn は Doc 28 §3.7.a.1 で追加 elisp port すれば削除可、
+6 fn は variant box accessor で elisp 化不可、9 fn は Doc 80 §7 で
+out-of-scope.  ただし fn count 11 + 6 ≠ 11 になっているのは macro 展開
+カウントの差異 = =float_arith_helper!= / =float_cmp_helper!= /
+=bitwise_int_helper!= が macro 1 件で fn 3-4 件展開).
+
+*削除可能上限の articulation*:
+- *最良ケース* (= Doc 28 §3.7.a.1 完遂後): 5 fn elisp port + ~50 LOC 削除
+  可能.  残 6 + 9 = 15 fn (実 fn count は macro 後で 17) は permanent
+  Rust pinned.  strategy.rs 全削除は不可、~150 LOC 残存.
+- *§3.7.a.5 articulation (= -425 LOC) との乖離*: 本表は Doc 80 §7
+  out-of-scope を反映していなかった旧 plan.  Doc 80 SHIPPED 後の現実
+  delta は最良で **~-100 LOC** (= Float / cmp / syscall を残しつつ 5 fn
+  port).  -425 LOC plan は Doc 28 旧版の articulation 残骸.
+
+*"first cleanup pass" として post-7.1.6.a.2 deadwood / visibility tightening /
+stale comment collapse のみ先行 ship 済* (= -72 Rust LOC、=feat/phase-
+7.1.7.a-cleanup= branch、commit cluster 9392290 → 267f0650 → f87651a0).
+内訳:
 
 - =build-tool/src/lib.rs= の =pub mod jit= → =pub(crate) mod jit= +
   4 件の =private_interfaces= warning 解消 (UnifiedJit field 視認性
@@ -1485,14 +1516,17 @@ cleanup= branch、commit cluster 9392290 → 267f0650 → f87651a0).  内訳:
 - =build-tool/src/jit/dsl.rs= 内 =#[cfg(test)]= block の未使用 =Module=
   trait import 削除.
 
-主目標 (strategy.rs file 全削除 + builtins.rs dispatch arm 削除 +
-Float / bitwise / ash の elisp port) は依然として Doc 80 Stage 80.5
-SHIPPED 後の作業.  以下の 3.7.a.1〜.5 は変更なし、Doc 80 完遂後に再
-着手するための inventory として保持.
+*次 step (= 7.1.7.a.1.post-Doc-80)*: =bi_int_eq_zero= / =bi_logior2_impl= /
+=bi_logand2_impl= / =bi_logxor2_impl= / =bi_ash_impl= の elisp port
+(= +~50 elisp、-~55 Rust net = -5 net、ただし 11 fn → 6 fn pin で
+"strategy.rs slim 化" に進める).  Sub-stage 7.1.7.a.2 (= file 全削除)
+は Doc 80 §7 out-of-scope の Float / syscall が Rust に pinned のため
+permanent infeasible、§3.7.a.5 -425 LOC は到達不可と確定.
 
 Tests at ship: =cargo build= clean (default + image-baker、jit/ scope
-で 0 warnings)、=cargo test --lib jit::= 81/81 green、=cargo test
---lib image::= 17/17 green.
+で 0 warnings)、=cargo test --lib jit::= 75/75 green (= post-Cranelift-
+deletion で test count 81 → 75 に正規化)、=cargo test --lib image::=
+17/17 green.
 #+end_quote
 
 **** 3.7.a.1 strategy.rs post-Phase-7.1.6 残存 fn inventory (実測 252 LOC)
@@ -1595,6 +1629,14 @@ aggregate: ~2 営業日 / +170 elisp / -425 Rust.
 順序が "build green を維持" の観点で必須 (= 同時削除すると間 commit が
 build broken になる).
 
+*Status revision (2026-05-10 v2 — post Doc 80 SHIPPED)*: 上記 7.1.7.a.2 は
+**permanent infeasible** と確定 (= Doc 80 §7 で out-of-scope の Float arith
+/ Float cmp / =syscall_nr_resolve= は host =libc::SYS_*= constant + Float
+epsilon arithmetic を pre-stdlib substrate で表現できないため、これらが
+Rust に pin された状態で strategy.rs 全削除は不可).  実 ship 上限 =
+**7.1.7.a.1 のみ** (= -55 Rust net、+50 elisp net = -5 net、strategy.rs は
+~150 LOC まで slim 化、6 slim primitive + 9 Float/syscall fn pinned).
+
 **** 3.7.a.5 Aggregate -425 Rust LOC delta source articulation
 
 | 削除箇所                                                          | LOC    |
@@ -1606,6 +1648,35 @@ build broken になる).
 | nelisp-jit-strategy.el wrapper の Rust shim re-export 関連調整    | -8     |
 | 配線 overhead (use clause / comment header / Stage b.4 articulation removal) | -120 |
 | *小計*                                                            | *-425* |
+
+*Revision (2026-05-10 v2 — post Doc 80 SHIPPED)*: 上記 -425 LOC plan は
+Doc 80 §7 out-of-scope (= Float arith / Float cmp / =syscall_nr_resolve=
+permanent Rust pin) を反映していなかった旧 articulation.  実現可能上限
+は 7.1.7.a.1 (= 5 fn elisp port、~-55 Rust net) のみ:
+
+| 削除箇所 (revised)                                                       | LOC    |
+|--------------------------------------------------------------------------+--------|
+| =bi_int_eq_zero= elisp 化 (= bridge 1/0 → T/Nil 変換を =if (eq x 0))= に置換) | -10    |
+| =bi_logior2_impl= / =bi_logand2_impl= / =bi_logxor2_impl= elisp 化 (= 3 macro 展開) | -24    |
+| =bi_ash_impl= elisp 化 (= [-62, +62] bound + =nl_jit_arith_ash= 直 emit)  | -17    |
+| =mod.rs= re-export 5 entry 削除                                          | -3     |
+| =builtins.rs= dispatch arm 5 件削除                                      | -5     |
+| use clause cleanup (= =as_int= helper の re-import 不要化)               | -2     |
+| *小計 (revised)*                                                         | *-61*  |
+
+permanent residual (= Doc 80 §7 pinned + slim primitive):
+
+| 残存                                          | fn 数 | LOC | 理由                                                |
+|-----------------------------------------------+-------+-----+-----------------------------------------------------|
+| =bi_add2_float= / =bi_sub2_float= / =bi_mul2_float= | 3 | ~18 | float_arith_helper! macro 展開、Float 演算は libm 経由 |
+| =bi_num_eq2_float= + 4 cmp                    | 5 | ~30 | Float cmp、1e-15 epsilon は elisp に持たせられない |
+| =bi_syscall_nr_resolve= (Linux + non-Linux)   | 2 | ~16 | =libc::SYS_*= symbol catalog は Rust にしか無い   |
+| =bi_mut_str_*= / =bi_bool_vector_len= / =bi_str_codepoint_at= / =bi_char_table_aref/aset= | 6 | ~90 | =Sexp::MutStr= / =BoolVector= / =CharTable= 内部 box accessor |
+| comment header + use clause                   | -     | ~50 | macro / use / mod-doc                              |
+| *小計*                                        | *16*  | *~204* | post-7.1.7.a.1 の strategy.rs 残存 (= ~150-180 LOC range) |
+
+aggregate revised: 7.1.7.a.1 完遂で **strategy.rs 257 → ~196 LOC** (-61 Rust),
+**not** -425 LOC.  7.1.7.a.2 (= file 全削除) は permanent infeasible.
 
 bench gate: 既 =strategy-stress= 軸 (= Float arith / bitwise / ash hot
 loop) で Cranelift baseline 比 ≧ 1.0x.  §3.6.c arith takeover 完了後は
