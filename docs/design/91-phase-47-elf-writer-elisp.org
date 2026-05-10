@@ -1,0 +1,746 @@
+#+TITLE: Doc 91 — Phase 47 component: ELF writer in elisp
+#+AUTHOR: NeLisp design
+#+DATE: 2026-05-10
+
+* Status
+
+- *State*: DRAFT (= spike, implementation-ready 化のための design doc。
+  本 doc 自体はコード変更を伴わない。Doc 85 §X recommendation で「Phase
+  47 着手なら Doc 91-95 を起こす」とした 5 component の最初の 1 本)
+- *Parent*: Doc 85 (= phase-47-feasibility-spike.org §3.1 / §5.1 /
+  §6.1)
+- *Sibling*: Doc 92 (assembler), Doc 93 (linker + syscall), Doc 94 (crt0),
+  Doc 95 (Sexp DSL)
+- *Pre-condition*: Phase 1-3 完遂 (= Doc 84 + Doc 86-89 SHIPPED)、本 doc
+  は実装着手 gate ではなく「着手時にすぐ dispatch 可能な形まで articulate
+  しておく」ための準備
+- *Unlocks*: Phase 47 critical path 上の M1 (= "elisp が ELF binary を
+  生成できる")。Doc 92 assembler の output file format consumer、Doc 95
+  Sexp DSL の lower target になる
+- *OOS for THIS doc*: Mach-O / PE COFF (= macOS / Windows、本 doc は
+  ELF64 x86_64-linux のみ)、DWARF debug info emission (= §7.2 risk と
+  して別 follow-up)、dynamic linker support (= =.dynamic= /
+  =.dynsym= / =.rela.dyn= 一切 emit しない、static linked のみ)、
+  optimization (= LOC count まで articulate するが elisp 性能 tuning
+  は §7.1 risk としてのみ)
+
+* §0 TL;DR
+
+** §0.1 ELF writer とは
+
+ELF writer = source program の compile 結果 (= 機械語 + symbol +
+relocation) を **OS が exec() できる ELF64 binary file** として disk に
+書き出す component。input は assembler の output (= section 群 + symbol
+table + relocation entry の memory representation)、output は ELF64
+形式の単一 file (= =./nelisp= のような実行可能 binary)。
+
+責務:
+1. ELF64 header (Ehdr) emit = magic / arch / entry point address
+2. Program header (Phdr) emit = OS loader が =mmap= する segment 定義
+3. Section header (Shdr) emit = =readelf= / =objdump= が見る section
+   metadata
+4. Section bytes 書き込み = =.text= (機械語) / =.rodata= (定数) /
+   =.data= (初期化済 global) / =.bss= (zero-fill) / =.symtab= /
+   =.strtab=
+5. Relocation entry emit = =.rela.text= / =.rela.data=
+
+** §0.2 elisp で書ける根拠
+
+ELF writer は **pure-functional bytewise serialization**:
+- input = section 群 (= elisp data structure)
+- output = byte sequence (= unibyte string)
+- 副作用 = =write-region= で file へ flush 1 回のみ
+- syscall は =write(2)= と =chmod(2)= (= +x bit) のみ、他の OS surface
+  に依存しない
+
+elisp で =insert-byte= / =unibyte-string= / =write-region= が安定的に
+動けば実装可能。性能は §7.1 risk として articulate するが、
+correctness 上の障害なし。
+
+** §0.3 なぜ必要か
+
+現状: =cargo build --release= が =target/release/nelisp= ELF binary を
+生成している。これは Rust toolchain (= =rustc= + =ld= + =cargo=) を
+**毎回の build で必要** とする。
+
+Phase 47 = 0 Rust runtime 完遂時:
+- =./nelisp= は **elisp toolchain によって生成** される必要
+- 既存 =./nelisp= が source elisp を read → assembler が x86_64 機械語
+  emit → linker が symbol resolve → **ELF writer が disk 上の ELF
+  binary に書き出す** という self-host loop
+- このループの最終 stage が本 doc が articulate する component
+
+代替なし: ELF binary を出力する手段は (a) Rust ld、(b) GNU binutils ld、
+(c) 自前 emit の 3 択。(a)(b) を保留すると Phase 47 の "0 Rust" /
+"toolchain 不要" goal が崩壊する。よって (c) elisp 自前 emit が唯一の
+path。
+
+* §1 Current Rust ELF writer responsibility
+
+** §1.1 grep 結果 (= Rust source 内の ELF reference)
+
+#+begin_src text
+$ grep -rn "Elf64\|e_phoff\|e_shoff\|EM_X86_64\|ET_EXEC" \
+    --include="*.rs" build-tool/src/ nelisp-runtime/
+(no matches)
+#+end_src
+
+つまり **Rust 側に ELF writer は存在しない**。「ELF を書く」責務は
+=cargo build= が呼び出す =rustc= → =ld= (= GNU binutils またはplatform
+linker) に完全 delegate されている。
+
+** §1.2 では「Phase 47 で削減対象の Rust LOC」とは何か
+
+Doc 85 §3.1 が "ELF writer ~150 Rust LOC 削減" としたのは misleading。
+正確には:
+
+1. =bin/nelisp.rs= (243 LOC) のうち ELF binary 生成を **trigger** する
+   Rust runtime entry (= =fn main()= の前後の crt0 部分は ld 自動生成
+   ですが、=fn main()= 内で argv 解析 / image load / eval を組み立てる
+   wiring 部分が ~150 LOC)
+2. =bin/nelisp-baker.rs= (193 LOC) のうち ELF へ binary を baked する
+   stage (= image を ELF =.rodata= として埋める orchestration、~50 LOC)
+3. =nelisp-runtime/src/seed.rs= (417 LOC) のうち seed image binary
+   format encoder = ELF mock (= ELF と類似の "header + segment +
+   relocation" container を Rust が emit する部分、~150 LOC)
+4. =nelisp-runtime/src/main.rs= (130 LOC) と =lib.rs= (111 LOC) の
+   binary entry orchestration
+
+** §1.3 削減 LOC 集計 (= 本 doc が elisp ELF writer 着地で eliminate する Rust)
+
+| Rust 領域                          | total LOC | ELF/binary 寄与 LOC | 削減 path                    |
+|------------------------------------+-----------+----------------------+------------------------------|
+| =build-tool/src/bin/nelisp.rs=     | 243       | ~50 (= entry wiring) | crt0 elisp (= Doc 94) と統合 |
+| =build-tool/src/bin/nelisp-baker.rs= | 193     | ~80 (= baker output) | 本 doc の writer で代替      |
+| =nelisp-runtime/src/seed.rs= encoder | 417     | ~150 (= encoder, lines 263-359 推定) | 本 doc の writer で代替 |
+| =nelisp-runtime/src/main.rs=       | 130       | ~30 (= ELF entry)    | crt0 elisp (= Doc 94)        |
+| =nelisp-runtime/src/lib.rs=        | 111       | ~20 (= binary FFI)   | Doc 94 統合                  |
+| *合計 (= 本 doc 寄与)*             |           | *~150 LOC*           |                              |
+
+これは Doc 85 §0 の "ELF writer -150 Rust" と一致。残りの ~250 LOC は
+sibling doc (= Doc 94 crt0 / Doc 95 Sexp DSL) で eliminate される。
+
+** §1.4 「writer 不在」の現状を articulate
+
+注意: 本 doc が articulate するのは「**Rust に ELF writer が存在しない
+状態を変える**」のではなく、「**system linker (rustc / ld) に依存する
+状態から、自前 elisp writer に移行**」する。よって:
+
+- Doc 85 §3.1.1 scope の "ELF64 header / section header / program
+  header の binary serialization" = まったく新規の elisp 実装
+- 既存 Rust source からの port ではない (= 流用元なし)
+- 参考実装 = GNU binutils =gas/as= の =elf64-x86-64.c=、Plan 9 mk =8l=、
+  musl =ld-musl=
+
+* §2 ELF format primer
+
+** §2.1 ELF64 全体構成
+
+=./nelisp= (= 静的 link された executable) の典型的 layout:
+
+#+begin_src text
++--------------------------------------+ offset 0x0000
+|  Ehdr         (64 bytes)             |
++--------------------------------------+ offset 0x0040
+|  Phdr[0..n]   (56 bytes each)        | <-- OS loader が読む
++--------------------------------------+
+|  .text        (x86_64 machine code)  | <-- assembler emit
+|  .rodata      (constants, strings)   |
+|  .data        (initialized globals)  |
+|  .bss         (zero-init globals,    | <-- file 上は size 0、mem で zero
+|               file image 不在)        |
+|  .symtab      (symbol table)         |
+|  .strtab      (symbol name strings)  |
+|  .shstrtab    (section name strings) |
++--------------------------------------+
+|  Shdr[0..m]   (64 bytes each)        | <-- readelf / objdump が読む
++--------------------------------------+ EOF
+#+end_src
+
+** §2.2 ELF64 Ehdr (Elf64_Ehdr) byte-layout
+
+| offset | size | name        | value (= x86_64 ELF executable)        |
+|--------+------+-------------+----------------------------------------|
+|      0 |    4 | e_ident[0..4] | =0x7F 'E' 'L' 'F'= (= magic)         |
+|      4 |    1 | e_ident[4]    | =2= (= ELFCLASS64)                   |
+|      5 |    1 | e_ident[5]    | =1= (= ELFDATA2LSB = little-endian)  |
+|      6 |    1 | e_ident[6]    | =1= (= EV_CURRENT)                   |
+|      7 |    1 | e_ident[7]    | =0= (= ELFOSABI_NONE / SYSV)         |
+|      8 |    8 | e_ident[8..15] padding | zero                        |
+|     16 |    2 | e_type      | =2= (= ET_EXEC) または =3= (= ET_DYN) |
+|     18 |    2 | e_machine   | =0x3E= (= EM_X86_64)                   |
+|     20 |    4 | e_version   | =1=                                    |
+|     24 |    8 | e_entry     | entry point virtual address            |
+|     32 |    8 | e_phoff     | Phdr table offset (= typically 0x40)   |
+|     40 |    8 | e_shoff     | Shdr table offset                      |
+|     48 |    4 | e_flags     | =0=                                    |
+|     52 |    2 | e_ehsize    | =64= (= sizeof Ehdr)                   |
+|     54 |    2 | e_phentsize | =56= (= sizeof Phdr)                   |
+|     56 |    2 | e_phnum     | Phdr count                             |
+|     58 |    2 | e_shentsize | =64= (= sizeof Shdr)                   |
+|     60 |    2 | e_shnum     | Shdr count                             |
+|     62 |    2 | e_shstrndx  | =.shstrtab= section index              |
+
+** §2.3 Elf64_Phdr byte-layout
+
+| offset | size | name      | meaning                                  |
+|--------+------+-----------+------------------------------------------|
+|      0 |    4 | p_type    | =1= PT_LOAD / =6= PT_PHDR / =3= PT_INTERP |
+|      4 |    4 | p_flags   | =4= R / =2= W / =1= X (bit OR)          |
+|      8 |    8 | p_offset  | file offset (= section 開始位置)         |
+|     16 |    8 | p_vaddr   | mapped virtual address                   |
+|     24 |    8 | p_paddr   | physical address (= 0 でも OK)            |
+|     32 |    8 | p_filesz  | file image 上の size                      |
+|     40 |    8 | p_memsz   | memory image 上の size (= bss は filesz < memsz) |
+|     48 |    8 | p_align   | alignment (= 0x1000 typically)           |
+
+** §2.4 Elf64_Shdr byte-layout
+
+| offset | size | name         | meaning                              |
+|--------+------+--------------+--------------------------------------|
+|      0 |    4 | sh_name      | =.shstrtab= 内の name string offset  |
+|      4 |    4 | sh_type      | =1= PROGBITS / =8= NOBITS / =2= SYMTAB / =3= STRTAB / =4= RELA |
+|      8 |    8 | sh_flags     | =1= WRITE / =2= ALLOC / =4= EXECINSTR (bit OR) |
+|     16 |    8 | sh_addr      | mapped virtual address (= ALLOC のみ) |
+|     24 |    8 | sh_offset    | file offset                          |
+|     32 |    8 | sh_size      | section size in bytes                |
+|     40 |    4 | sh_link      | RELA → SYMTAB index, SYMTAB → STRTAB index |
+|     44 |    4 | sh_info      | RELA → target section index          |
+|     48 |    8 | sh_addralign | alignment                            |
+|     56 |    8 | sh_entsize   | entry size (= SYMTAB 24, RELA 24)    |
+
+** §2.5 Elf64_Sym byte-layout (= .symtab entry)
+
+| offset | size | name      | meaning                              |
+|--------+------+-----------+--------------------------------------|
+|      0 |    4 | st_name   | =.strtab= 内 name offset             |
+|      4 |    1 | st_info   | bind << 4 \vert type (= 1<<4\vert 2 = global func) |
+|      5 |    1 | st_other  | visibility (= 0 default)             |
+|      6 |    2 | st_shndx  | section index                        |
+|      8 |    8 | st_value  | symbol address (= section + offset)  |
+|     16 |    8 | st_size   | symbol size                          |
+
+** §2.6 Elf64_Rela byte-layout (= .rela.text entry)
+
+| offset | size | name        | meaning                            |
+|--------+------+-------------+------------------------------------|
+|      0 |    8 | r_offset    | relocation target offset           |
+|      8 |    8 | r_info      | (sym << 32) \vert type             |
+|     16 |    8 | r_addend    | signed addend                      |
+
+x86_64 で頻出する r_info type:
+- =1= R_X86_64_64    = 64-bit absolute
+- =2= R_X86_64_PC32  = 32-bit PC-relative
+- =4= R_X86_64_PLT32 = 32-bit PC-rel via PLT (= static link で R_X86_64_PC32 同等)
+
+** §2.7 magic / endian / alignment 不変条件
+
+- Magic = =0x7F 0x45 0x4C 0x46= (= =\x7FELF=) at offset 0
+- endian = ELFDATA2LSB = **all multi-byte fields little-endian**
+- alignment = 8-byte (= 64-bit struct 内 field は naturally aligned)
+- segment alignment = 0x1000 (= 4 KiB page) typically
+- bss = =sh_type = NOBITS=、=p_filesz < p_memsz= で zero-fill 表現
+
+* §3 elisp writer design
+
+** §3.1 module = =lisp/nelisp-elf-write.el=
+
+新規 elisp module、~500 LOC 想定。既存 nelisp-* package 命名規約に
+従う (= =lisp/nelisp-jit-substrate.el= / =nelisp-stdlib-prn.el= 同列)。
+
+依存:
+- elisp builtin: =unibyte-string= / =insert= / =write-region= /
+  =set-buffer-multibyte=
+- 既存 elisp helper: なし (= self-contained module)
+
+** §3.2 byte-int conversion helpers (= ~50 LOC)
+
+#+begin_src elisp
+;; 8-bit, 16-bit, 32-bit, 64-bit little-endian writers.
+;;   buf = unibyte string accumulator (= elisp string + insert)
+(defun nelisp--write-u8 (buf v)
+  (insert (unibyte-string (logand v #xff))))
+
+(defun nelisp--write-le16 (buf v)
+  (insert (unibyte-string (logand v #xff)
+                          (logand (ash v -8) #xff))))
+
+(defun nelisp--write-le32 (buf v)
+  (let ((b0 (logand v #xff))
+        (b1 (logand (ash v -8) #xff))
+        (b2 (logand (ash v -16) #xff))
+        (b3 (logand (ash v -24) #xff)))
+    (insert (unibyte-string b0 b1 b2 b3))))
+
+(defun nelisp--write-le64 (buf v)
+  ;; elisp 64-bit fixnum on 64-bit Emacs; bignum fallback on 32-bit.
+  ;; See §7.2 risk.
+  (dotimes (i 8)
+    (insert (unibyte-string (logand (ash v (- (* i 8))) #xff)))))
+
+(defun nelisp--write-bytes (buf bytes)
+  (insert bytes))
+
+(defun nelisp--write-zero-pad (buf n)
+  (insert (make-string n 0)))
+
+(defun nelisp--write-strz (buf s)
+  ;; Null-terminated string for .strtab.
+  (insert s)
+  (insert (unibyte-string 0)))
+#+end_src
+
+工数 = 50 elisp LOC。
+
+** §3.3 struct writers (= ~120 LOC)
+
+各 struct serializer は §2.x の table を直訳:
+
+#+begin_src elisp
+(defun nelisp-elf-write-ehdr (buf hdr)
+  "Write Ehdr (64 bytes). HDR is a plist with :entry :phoff :shoff
+   :phnum :shnum :shstrndx ..."
+  (nelisp--write-bytes buf "\x7FELF")
+  (nelisp--write-u8    buf 2)        ; ELFCLASS64
+  (nelisp--write-u8    buf 1)        ; ELFDATA2LSB
+  (nelisp--write-u8    buf 1)        ; EV_CURRENT
+  (nelisp--write-u8    buf 0)        ; ELFOSABI_NONE
+  (nelisp--write-zero-pad buf 8)     ; e_ident[8..15]
+  (nelisp--write-le16 buf (or (plist-get hdr :type) 2))   ; ET_EXEC
+  (nelisp--write-le16 buf #x3E)                            ; EM_X86_64
+  (nelisp--write-le32 buf 1)                               ; EV_CURRENT
+  (nelisp--write-le64 buf (plist-get hdr :entry))
+  (nelisp--write-le64 buf (plist-get hdr :phoff))
+  (nelisp--write-le64 buf (plist-get hdr :shoff))
+  (nelisp--write-le32 buf 0)                               ; e_flags
+  (nelisp--write-le16 buf 64)                              ; e_ehsize
+  (nelisp--write-le16 buf 56)                              ; e_phentsize
+  (nelisp--write-le16 buf (plist-get hdr :phnum))
+  (nelisp--write-le16 buf 64)                              ; e_shentsize
+  (nelisp--write-le16 buf (plist-get hdr :shnum))
+  (nelisp--write-le16 buf (plist-get hdr :shstrndx)))
+#+end_src
+
+同様の pattern で:
+- =nelisp-elf-write-phdr=  (~25 LOC)
+- =nelisp-elf-write-shdr=  (~30 LOC)
+- =nelisp-elf-write-symtab-entry= (~20 LOC)
+- =nelisp-elf-write-rela-entry=   (~15 LOC)
+
+合計 ~120 elisp LOC。
+
+** §3.4 top-level orchestration =nelisp-elf-write-binary= (~80 LOC)
+
+#+begin_src elisp
+(defun nelisp-elf-write-binary (file-path sections)
+  "Emit static-linked ELF64 executable to FILE-PATH.
+SECTIONS = plist:
+  :text       unibyte-string of x86_64 machine code
+  :rodata     unibyte-string
+  :data       unibyte-string
+  :bss-size   integer (= zero-init region size)
+  :symbols    list of (name section offset size binding type)
+  :relocs     list of (section target-offset sym-index type addend)
+  :entry-sym  symbol name (= e_entry resolution target)"
+  (let ((buf (generate-new-buffer "*nelisp-elf*")))
+    (with-current-buffer buf
+      (set-buffer-multibyte nil)
+      ;; Phase 1: layout calculation = decide Phdr / section offsets
+      (let* ((layout (nelisp-elf--compute-layout sections))
+             (ehdr   (nelisp-elf--ehdr-from-layout layout))
+             (phdrs  (nelisp-elf--phdrs-from-layout layout))
+             (shdrs  (nelisp-elf--shdrs-from-layout layout)))
+        ;; Phase 2: emit in order
+        (nelisp-elf-write-ehdr buf ehdr)
+        (dolist (p phdrs) (nelisp-elf-write-phdr buf p))
+        (nelisp-elf--emit-sections buf layout sections)
+        (dolist (s shdrs) (nelisp-elf-write-shdr buf s))
+        ;; Phase 3: flush
+        (write-region (point-min) (point-max) file-path nil 'silent)
+        (set-file-modes file-path #o755)))   ; +x bit
+    (kill-buffer buf)))
+#+end_src
+
+helper:
+- =nelisp-elf--compute-layout= = ~30 LOC = section offset / vaddr 計算
+- =nelisp-elf--emit-sections= = ~30 LOC = section bytes + symtab +
+  strtab + rela serialize 順序
+
+合計 ~80 LOC。
+
+** §3.5 API surface 全集
+
+| function                              | LOC |
+|---------------------------------------+-----|
+| =nelisp--write-u8/le16/le32/le64=     |  35 |
+| =nelisp--write-bytes/-zero-pad/-strz= |  15 |
+| =nelisp-elf-write-ehdr=               |  25 |
+| =nelisp-elf-write-phdr=               |  25 |
+| =nelisp-elf-write-shdr=               |  30 |
+| =nelisp-elf-write-symtab-entry=       |  20 |
+| =nelisp-elf-write-rela-entry=         |  15 |
+| =nelisp-elf--compute-layout=          |  40 |
+| =nelisp-elf--build-strtab=            |  25 |
+| =nelisp-elf--emit-sections=           |  35 |
+| =nelisp-elf-write-binary=             |  50 |
+| docstring + comments                  | 100 |
+| autoload cookie / module header       |  10 |
+| feature-test inline (= ert helpers)   |  50 |
+| *合計*                                | *475* |
+
+LOC budget = ~500 (= Doc 85 §3.1.2 試算と一致)。
+
+* §4 byte-level invariants
+
+** §4.1 endianness
+
+ELF64 x86_64 = **little-endian** (= ELFDATA2LSB / =e_ident[5] = 1=)。
+elisp 側で multi-byte int を書くとき必ず =le16/le32/le64= helper 経由。
+Big-endian は出ない (= aarch64 でも依然 LE が main configuration、
+本 doc は LE 前提)。
+
+** §4.2 alignment
+
+- struct field = 8-byte (= 64-bit struct は naturally aligned)
+- segment / section = 16-byte または 8-byte (= =sh_addralign= で個別
+  指定)
+- PT_LOAD segment = **0x1000 page-aligned** (= file offset と vaddr を
+  両方 page boundary に)
+- =.bss= = =sh_addralign 8= (= or 16)、=sh_size= は実 size、=p_memsz=
+  は roundup
+
+elisp 実装方針: =compute-layout= helper 内で =mod= / =roundup= を一手
+集約、各 writer は zero padding を =nelisp--write-zero-pad= 経由で挿入。
+
+** §4.3 padding (= zero-fill)
+
+- e_ident[8..15] = 9-byte zero pad (= ABIVER 1 byte + reserved 7)
+- segment 間 = file 上は連続でも OK (= =p_offset= で個別位置指定)
+- =.bss= = file image **不在** = =sh_type = NOBITS= かつ =sh_offset= は
+  次 section の開始 offset を指す convention
+- struct 末尾 padding なし (= ELF64 struct は exactly 64/56/24/24 byte)
+
+** §4.4 magic numbers
+
+| 用途                | byte sequence                          |
+|---------------------+----------------------------------------|
+| ELF magic           | =0x7F 0x45 0x4C 0x46= (= =\x7FELF=)    |
+| EM_X86_64           | =0x3E 0x00= (= LE 16-bit)              |
+| EI_CLASS = 64       | =0x02=                                 |
+| EI_DATA = LSB       | =0x01=                                 |
+| ET_EXEC             | =0x02 0x00=                            |
+| EV_CURRENT          | =0x01 0x00 0x00 0x00=                  |
+| PT_LOAD             | =0x01 0x00 0x00 0x00=                  |
+
+これらは `defconst` で集約 (= =nelisp-elf--magic-elf= /
+=nelisp-elf--em-x86-64= 等)、source 中に hard-coded literal を散らさ
+ない。
+
+** §4.5 elisp 上の保存方針
+
+elisp string は default で multibyte。ELF binary は **必ず unibyte**。
+=set-buffer-multibyte nil= で buffer を unibyte 化、=unibyte-string= で
+byte literal 構築。=write-region= は unibyte buffer なら raw bytes を
+そのまま file に書き出す。
+
+* §5 testing strategy
+
+** §5.1 round-trip test
+
+#+begin_src text
+(1) elisp が "hello world" 相当の最小 ELF を emit
+(2) `readelf -a /tmp/test.elf' の output を capture
+(3) 同じ section 内容を `gas + ld' で compile した baseline ELF と比較
+(4) bytewise diff で identical (= magic + struct field 全部一致)
+#+end_src
+
+elisp 側 ert test:
+
+#+begin_src elisp
+(ert-deftest nelisp-elf-write-minimal-roundtrip ()
+  (let ((path (make-temp-file "nelisp-elf-test-")))
+    (unwind-protect
+        (progn
+          (nelisp-elf-write-binary
+           path
+           '(:text "\x48\xc7\xc0\x3c\x00\x00\x00\x48\x31\xff\x0f\x05"
+             :rodata "" :data "" :bss-size 0
+             :symbols (("_start" .text 0 12 GLOBAL FUNC))
+             :relocs () :entry-sym "_start"))
+          ;; Verify magic + class + machine via direct bytes-read
+          (let ((bytes (with-temp-buffer
+                         (set-buffer-multibyte nil)
+                         (insert-file-contents-literally path)
+                         (buffer-string))))
+            (should (equal (substring bytes 0 4) "\x7FELF"))
+            (should (eq (aref bytes 4) 2))      ; ELFCLASS64
+            (should (eq (aref bytes 5) 1))      ; ELFDATA2LSB
+            (should (= (nelisp--read-le16 bytes 18) #x3E))) ; EM_X86_64
+          ;; Cross-check via system tool
+          (when (executable-find "readelf")
+            (let ((out (shell-command-to-string
+                        (format "readelf -h %s" (shell-quote-argument path)))))
+              (should (string-match-p "ELF64" out))
+              (should (string-match-p "X86-64" out)))))
+      (delete-file path))))
+#+end_src
+
+** §5.2 layered test
+
+| layer | 目的                                | tool                |
+|-------+-------------------------------------+---------------------|
+| L0    | byte-int helper unit                | ert (pure elisp)    |
+| L1    | struct serializer 個別               | ert + bytes literal |
+| L2    | full ELF round-trip                  | ert + =readelf=     |
+| L3    | exec test (= 実 process 起動)         | ert + =call-process= |
+| L4    | gas + ld output と bytewise diff     | shell + =cmp=       |
+
+L4 = "Rust path と output が一致する" 究極証明。最初の minimal ELF (=
+=exit(0)= プログラム) で baseline 取得 → elisp output と =cmp= で 0
+差分を assert。
+
+** §5.3 corpus
+
+minimal ~5 sample binary を test corpus として固定:
+1. =exit(0)= = 12-byte =.text=、symbol 1 個、reloc 0
+2. =write(1, "hello\n", 6); exit(0)= = =.rodata= 1 個、reloc 1
+3. =.data= 初期化済 global 触る pattern
+4. =.bss= zero-init 触る pattern
+5. function call 1 個 = =.rela.text= 1 entry
+
+各 sample で gas baseline を git に commit (= regression lock)。
+
+* §6 ROI quantification
+
+** §6.1 LOC 投資 / 削減
+
+| 項目                                      | LOC    |
+|-------------------------------------------+--------|
+| elisp 新規 (= =nelisp-elf-write.el=)      | +475   |
+| elisp test (= =nelisp-elf-write-test.el=) | +200   |
+| Rust 削減 (= §1.3)                        | -150   |
+| *net 投資*                                | *+525* |
+
+ROI = -150 / +475 = 0.32:1 (= elisp 1 LOC で 0.3 Rust 削減)。
+Doc 85 §0 試算 "0.5:1" より悪い。
+
+** §6.2 戦略価値で評価し直す
+
+Phase 47 critical path 上 = ELF writer 不在 → assembler / Sexp DSL
+全部 blocked。本 doc が Phase 47 の M1 milestone unlocker。
+
+ROI 計算には以下も計上すべき:
+- Phase 47 完遂時に Rust toolchain 全削除可能 (= =cargo build= 不要、
+  Rust ecosystem 依存 0)
+- 直接の Rust 削減 -150 だけでなく **間接削減** = =cargo workspace= +
+  =Cargo.lock= + =Cargo.toml= × 8 crate + 全 Rust dependency tree (=
+  =serde= / =libc= / =libffi= 等) の archaeology が許容される
+- 「self-host 達成」の戦略価値 = 数値化困難だが Doc 85 §5.3 が articulate
+
+** §6.3 Phase 47 unblocking
+
+本 doc shipped = M1 達成 = 以下が unlock される:
+
+1. *Doc 92 (assembler)*: 機械語 emit 結果を ELF =.text= に書き出せる →
+   "elisp が elisp source から ELF binary を生成できる" 最小 path 完成
+2. *Doc 95 (Sexp DSL)*: Sexp layout 定義を =.rodata= section に zero-copy
+   relocate できる (= bake)
+3. *Doc 94 (crt0)*: =_start= label の elisp emit 結果を ELF =.text= の
+   開始位置に置ける (= entry point 制御)
+
+すなわち本 doc = Phase 47 の **hub** であり、ROI 0.32:1 という単独 LOC
+換算は Phase 47 全体の ROI 評価 (= Doc 85 §5.1 の "1.5:1") 内に組み入れ
+て解釈すべき。
+
+* §7 Risk / unknowns
+
+** §7.1 elisp 性能 (= 1-2 MB ELF を bytewise で書く速度)
+
+1 MB ELF を 1 byte ずつ =insert-byte= で書くと:
+- =insert= は buffer position update を毎回 = O(n) 単位
+- ~1M calls × O(1) = 数秒〜十秒 オーダー
+- =unibyte-string= で N byte chunk を一度に作って =insert= = ~ms 単位
+
+*対策*:
+1. =unibyte-string= で 4-byte / 8-byte chunk を作って =insert= する形に
+   helper を統一 (= 既に §3.2 で採用方針)
+2. 全 ELF を 1 大 unibyte string に build → =write-region= 1 回 (=
+   buffer 経由しない方が速い場合あり、要 benchmark)
+3. =benchmark-run= で計測、5 sec 以上なら C primitive (= =write-bytes=
+   builtin 追加) で escape hatch
+
+Doc 85 §7.2 が articulate した "production debug tools 喪失" と並ぶ
+重要 risk。
+
+** §7.2 integer overflow on 32-bit Emacs
+
+elisp =most-positive-fixnum= = (32-bit Emacs では) 2^29 - 1 = 536M。
+ELF64 は 64-bit address / offset を要求 → fixnum 越えする entry が
+ある (= e_entry, p_offset 等)。
+
+*対策*:
+1. Emacs 27+ は automatic bignum、64-bit Emacs では fixnum 余裕あり
+2. elisp 側で =le64= helper を bignum 安全に書く (= bit-shift で 1 byte
+   ずつ取り出す pattern、§3.2 実装通り)
+3. 32-bit Emacs support は OOS = 64-bit Emacs を前提とする
+
+** §7.3 cross-platform (= aarch64 / Mach-O / PE COFF)
+
+本 doc は **x86_64-linux ELF only**。
+
+| platform        | ELF64 / format       | 工数 prediction     |
+|-----------------+----------------------+---------------------|
+| x86_64-linux    | ELF64 + EM_X86_64    | 本 doc 対象 (~500 LOC) |
+| aarch64-linux   | ELF64 + EM_AARCH64   | +50 LOC (= magic 違いのみ) |
+| x86_64-macos    | Mach-O               | 別 module ~600 LOC  |
+| x86_64-windows  | PE COFF              | 別 module ~700 LOC  |
+
+aarch64-linux は **本 doc の小幅拡張で対応可** (= EM 値 + reloc type
+table の差し替え)。Mach-O / PE は完全別実装、Doc 91-extension として
+Phase 47 完遂 *後* に着手。
+
+** §7.4 dynamic linking 不要前提の制約
+
+本 doc は **static linked binary のみ** emit:
+- =.dynamic= / =.dynsym= / =.dynstr= section emit せず
+- =PT_INTERP= (= =/lib64/ld-linux-x86-64.so.2=) emit せず
+- libc 動的 link は非対応
+
+対応方針: musl static or pure syscall binary (= libc 内蔵) のみ
+generate。Phase 47 全体の方向性 (= Doc 93 syscall inline) と整合。
+
+** §7.5 DWARF debug info
+
+Doc 85 §7.2 risk と同じ。本 doc では DWARF emit 非対応 = =gdb= 上で
+Rust source level debug 不可。production 運用前に follow-up doc (= Doc
+91-debug 候補) で DWARF section emit を articulate する必要。
+
+* §8 Implementation phases
+
+実装は 4 sub-stage に分割。各 sub-stage 独立 dispatch 可能、後続が前段に
+ハードに依存。
+
+** §8.1 §91.a — header skeleton
+
+scope:
+- Ehdr / Phdr / Shdr writer 3 関数のみ
+- byte-int helper (= =le16/le32/le64=) ship
+- =nelisp-elf-write-binary= は最小 stub (= =.text= 1 segment、symbol /
+  reloc なし、=exit(0)= 動く)
+
+LOC: ~150 elisp + ~80 ert
+工数: 3-5 day
+acceptance: =readelf -h= で valid ELF と認識される
+
+** §8.2 §91.b — symtab + reltab
+
+scope:
+- =nelisp-elf-write-symtab-entry= / =-rela-entry= 追加
+- =.symtab= / =.strtab= / =.shstrtab= section emit
+- relocation = R_X86_64_PC32 / R_X86_64_64 の 2 type のみ
+
+LOC: ~100 elisp + ~60 ert
+工数: 3 day
+acceptance: =readelf -s= で symbol 表示、=objdump -dr= で reloc 反映
+
+** §8.3 §91.c — section bytes (= .text, .rodata, .data, .bss)
+
+scope:
+- 4 section の byte emit + offset / vaddr / alignment 計算
+- =.bss= の NOBITS handling
+- multi-segment Phdr (= R / RW / RX 3 segment 構成)
+
+LOC: ~150 elisp + ~80 ert
+工数: 4-5 day
+acceptance: =./test-binary= が exec 可能、=write(2)= 出力一致
+
+** §8.4 §91.d — performance optimization
+
+scope:
+- §7.1 risk 対応 (= chunk-build pattern 確立)
+- =benchmark-run= で 1 MB ELF emit < 5 sec 化
+- 必要なら C builtin =write-bytes-fast= 追加 (= elisp side wrapper のみ)
+
+LOC: ~75 elisp (= refactoring 主体)
+工数: 2-3 day
+acceptance: 現実的 elisp source size (= ~2 MB AOT image) で実用速度
+
+** §8.5 sub-stage 依存
+
+#+begin_src text
+§91.a (header)  -> §91.b (symtab) -> §91.c (sections) -> §91.d (perf)
+                ^ optional parallel: §91.b と §91.c は header 上の概念で
+                  独立だが、test 上は §91.c の真贋判定に §91.b の
+                  symbol resolution が必要。直列推奨。
+#+end_src
+
+合計工数: 12-16 day (= 1 dev、SHIPPED まで ~3 週間)
+
+* §9 References
+
+** §9.1 internal NeLisp design docs
+
+- *Doc 85* (= phase-47-feasibility-spike.org) — 本 doc の親、§3.1 で ELF
+  writer scope ~500 LOC / §5.1 で ROI 試算 / §6.1 で critical path
+- *Doc 89 §6* (= phase-2-env-scope-chain-migration.org §6.1-§6.4) — Tier
+  0 minimal Rust env の bootstrap chain。本 doc の elisp ELF writer も
+  Tier 0 stage では Rust path に依存し、shipped 後に self-bootstrap path
+  に switch する **chicken-and-egg pattern が同型**。Phase 47 着手時、
+  本 doc の writer は最初は Rust =./nelisp= に動かされ、shipped 後は
+  自身が emit した binary を次世代の writer 動作の基盤にする (=
+  bootstrap loop closes)
+- *Doc 92* (= 想定 sibling、未起こし) — assembler。本 doc の writer の
+  =:text= input を生成する upstream
+- *Doc 93* (= 想定 sibling、未起こし) — static linker + syscall inline。
+  本 doc の writer の =:relocs= entry を最終解決する component
+- *Doc 94* (= 想定 sibling、未起こし) — crt0 + boot loader elisp。本 doc
+  の writer の =:entry-sym= が指す =_start= label を提供
+- *Doc 95* (= 想定 sibling、未起こし) — Sexp DSL。本 doc の writer の
+  =:rodata= に baked Sexp layout を流し込む
+
+** §9.2 NeLisp 既存資産
+
+- =build-tool/src/image.rs= — NELIMG v3 image format (= Phase 47 とは別
+  layer の "elisp が読める内部 binary 形式"、ELF とは独立)。但し
+  =to_le_bytes= / =from_le_bytes= 経由 byte serialization の **pattern
+  reference** として参照可
+- =nelisp-runtime/src/seed.rs= — NLSEED format (= Phase 47 で deprecate
+  対象)、本 doc shipped 後に消去する Rust LOC の主要部分。reference
+  for "header + segment + relocation" pattern
+- =lisp/nelisp-stdlib-prn.el= 等の既存 nelisp-* module — naming
+  convention / autoload cookie / package header の pattern reference
+
+** §9.3 ELF specification
+
+- *System V Application Binary Interface — DRAFT — 17 December 2003*,
+  Generic ABI (= =Elf64_Ehdr= / =Elf64_Phdr= / =Elf64_Shdr= / =Elf64_Sym=
+  / =Elf64_Rela= struct 規定)
+- *System V ABI AMD64 Architecture Processor Supplement* (= =EM_X86_64=
+  = 62 / R_X86_64_* relocation type 一覧)
+- *System V ABI AArch64 Processor Supplement* (= aarch64 拡張用、本 doc
+  scope 外だが §7.3 で参照)
+
+** §9.4 既存 prior art / implementation reference
+
+- *GNU binutils* =gas/config/tc-i386.c= + =bfd/elf64-x86-64.c= — gold
+  standard ELF emitter、size 上 elisp port には大きすぎるが byte layout
+  reference として優秀
+- *Plan 9 mk =8l= linker* — 簡素 ELF writer (= ~2,000 C LOC) — minimum
+  viable 実装の規模感 reference
+- *musl libc =/crt/crt1.s=* — ~20 行 asm の =_start= 実装、Doc 94 と
+  共有
+- *Cosmopolitan libc* — multi-format binary (= ELF + Mach-O + PE 同時
+  satisfy) の binary tricks reference
+- *byte-by-byte ELF tutorial* — "A Whirlwind Tutorial on Creating Really
+  Teensy ELF Executables for Linux" (Brian Raiter, 2003) — minimum ELF =
+  ~76 byte の existence proof
+
+** §9.5 関連 memory entry
+
+- =project_anvil_runtime_phase_b6_shipped= — NeLisp standalone binary 上
+  での MCP round-trip 完遂、本 doc の "elisp で binary を扱う" 性能根拠
+- =feedback_nelisp_announcement_standalone_gate= — public release は
+  standalone binary 配布可能まで保留 = ELF writer self-host が release
+  gate の一部
+- =feedback_nelisp_perf_not_elisp_interpreter= — NeLisp 性能特性は Emacs
+  Lisp interpreter とは別物、§7.1 elisp 性能 risk 評価で混同しない指針
