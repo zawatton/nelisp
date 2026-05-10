@@ -869,3 +869,73 @@ acceptance: 現実的 elisp source size (= ~2 MB AOT image) で実用速度
   =.rela.text= のみ)
 - =:segments= explicit-control API (= 現状は =:data= / =:bss-size= の
   存在で auto-derive、3+ segment の明示 layout は §91.d で検討)
+
+* §91.d SHIPPED (2026-05-11)
+
+** Scope delivered
+
+§91.d は §7.1 elisp 性能 risk を chunk-build pattern で解消:
+
+1. *Buffer abstraction* = 新 internal struct =(:chunks REVERSE-LIST
+   :length N)= を =nelisp-elf-make-buffer= / =nelisp-elf-buffer-bytes= /
+   =nelisp-elf-buffer-length= の 3 関数で expose。chunks list は
+   emit 順に =cons= で head に push、finalize で =nreverse= +
+   =apply #'concat= 1 回で fuse (= O(N²) → O(N))
+2. *Polymorphic writers* = =nelisp-elf-write-ehdr= / =-phdr= /
+   =-shdr= / =-sym= / =-rela= の signature は不変。第 1 arg は
+   chunk-buffer plist OR Emacs buffer のどちらでも accept (=
+   既存 ert helper =nelisp-elf-write-test--collect= は
+   =with-temp-buffer= + =(current-buffer)= で writer を叩いており、
+   bufferp dispatch で 1 行も改変せず維持)
+3. *Orchestrator migration* = =--build-minimal-exit-0= /
+   =--build-rich= / =--build-hello-world-write= 3 路全て
+   =with-temp-buffer= を =nelisp-elf-make-buffer= に差し替え、
+   =(point)= 経由の offset tracking を =nelisp-elf-buffer-length= に
+   置換。with-temp-buffer の gap-buffer overhead が消失
+4. *Multibyte → unibyte coercion* = =nelisp-elf--coerce-unibyte=
+   internal helper を追加 (= obsolete な =string-make-unibyte= を
+   避け、=with-temp-buffer= + =set-buffer-multibyte nil= の安全
+   経路で round-trip)。=make-string n #x90= 由来の multibyte
+   string が =write-region= で 2 倍に膨張する regression を
+   defense-in-depth で 3 層 gate (=--write-bytes= / =--write-pad= /
+   =buffer-bytes= 全てで coerce)
+5. *Benchmark gate* = =nelisp-elf-benchmark-write-binary FILE SIZE-KB=
+   を public API として追加 (= SIZE-KB × 1024 の =#x90= NOP filler
+   text section を持つ synthetic ELF を emit、symbol resolution
+   込みで rich-path 全行程を走破)
+
+** Verification
+
+| layer | tool                          | result                                                   |
+|-------+-------------------------------+----------------------------------------------------------|
+| L0    | =make compile= (= warn-as-err) | clean (= RC 0)                                           |
+| L0    | =batch-byte-compile= (lisp)   | clean、=nelisp-elf-write.el= 単独 byte-compile も RC 0  |
+| L1-2  | ert 61 / 61 pass              | 51 既存 + 10 §91.d new (= cbuf-make / push / chunks-order / ehdr-equals-buffer / finalize-unibyte / rich-byte-equal / large-correct / bench-helper / bench-100kb / bench-1mb) |
+| L3    | =readelf -h= 1 MB             | valid ELF Header (= EM_X86_64 / EXEC / EV_CURRENT)       |
+| L3    | =readelf -S= 1 MB             | 6 valid section headers (= NULL / .text / .rodata / .shstrtab / .strtab / .symtab) |
+| L4    | bench 1 MB                    | 0.013 sec (= 5.0 sec gate を 380× 下回る)                |
+| L4    | bench 100 KB                  | 0.003 sec (= 2.0 sec gate を 600× 下回る)                |
+| L4    | bench scaling                 | 100k = 3 ms / 1 MB = 13 ms / 5 MB = 50 ms (= linear)     |
+
+** Files
+
+- =lisp/nelisp-elf-write.el= = 1017 → 1140 LOC (+123)
+- =test/nelisp-elf-write-test.el= = 895 → 1045 LOC (+150)
+- 計 +273 LOC、Doc 91 §8 §91.d 試算 (+75 elisp + +50 ert = +125)
+  を 2× 超過。超過分の主因は (a) buffer abstraction の docstring
+  + polymorphic dispatch wrapper (= =--buf-emit= / =--buf-position=
+  + =--cbuf-push= 3 helper)、(b) multibyte → unibyte 罠の防御
+  (= =--coerce-unibyte= helper + 3 gate)、(c) ert 10 件 (= 8 件
+  最小要件を上回る invariant 検証 + 1 MB perf gate)。
+  どれも実運用安全性に直結するため削減困難と判定
+
+** Deferrals to future work
+
+- =:segments= explicit-control API (= §91.c で deferred、§91.d
+  でも未着手。多 PT_LOAD の手動配置が必要になった段階で別 phase)
+- aarch64 EM_AARCH64 corpus (= 同上)
+- =.rela.data= / =.rela.rodata= multi-section reloc routing (=
+  同上)
+- C primitive =write-bytes-fast= escape hatch (= §7.1 対策 3 で
+  articulate していたが、elisp chunk-build だけで 1 MB / 13 ms =
+  目標 5 sec の 380× 余裕、現状で C escape は不要)

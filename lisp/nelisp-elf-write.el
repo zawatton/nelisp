@@ -107,55 +107,154 @@
 (defconst nelisp-elf--shn-undef 0 "SHN_UNDEF (= unresolved symbol).")
 (defconst nelisp-elf--shn-abs   #xFFF1 "SHN_ABS (= absolute value, no relocation).")
 
+;; ---- §91.d chunk-build buffer abstraction (= §7.1 perf mitigation) ----
+
+;; A `cbuf' (= chunk-buffer) is a plist holding a reverse-order list of
+;; unibyte string chunks plus a running length.  Finalising via
+;; `nelisp-elf-buffer-bytes' joins them in one `apply' + `concat' call,
+;; converting the O(N) per-write `insert' + buffer-position update
+;; pattern into O(1) push + O(N) one-shot finalize (= O(N) total instead
+;; of the gap-buffer O(N) per write that dominates large-binary emits).
+;;
+;; The public writer signatures (= `nelisp-elf-write-ehdr' / `-phdr' /
+;; `-shdr' / `-sym' / `-rela') stay byte-for-byte identical: the first
+;; arg accepts either a `cbuf' plist OR a live Emacs buffer (= for
+;; backward compat with the ert helper `nelisp-elf-write-test--collect',
+;; which does `with-temp-buffer' + `(current-buffer)' + writer).
+
+(defun nelisp-elf-make-buffer ()
+  "Make a new chunk-buffer accumulator.
+Returns a plist (:chunks REVERSE-LIST :length N) — chunks are
+pushed in emit order with `cons' so the head holds the most recent
+write; `nelisp-elf-buffer-bytes' reverses and concatenates."
+  (list :chunks nil :length 0))
+
+(defun nelisp-elf--coerce-unibyte (str)
+  "Return a unibyte copy of STR.
+Idempotent for already-unibyte strings.  For multibyte strings that
+hold raw bytes (= chars in 0..255), each char is collapsed to its
+8-bit byte via a temporary unibyte buffer (= safe across emacs
+versions, unlike the obsolete `string-make-unibyte')."
+  (if (multibyte-string-p str)
+      (with-temp-buffer
+        (set-buffer-multibyte nil)
+        (insert str)
+        (buffer-substring-no-properties (point-min) (point-max)))
+    str))
+
+(defun nelisp-elf-buffer-bytes (cbuf)
+  "Finalize CBUF and return its accumulated unibyte string.
+Joins the reverse-order chunk list with one `apply' + `concat' after
+`nreverse', so the cost is O(total-bytes) — not O(N²) like
+incremental `concat'.  Coerced to unibyte via
+`nelisp-elf--coerce-unibyte' so callers can safely pass the result
+straight to `write-region' under
+`coding-system-for-write' = no-conversion."
+  (nelisp-elf--coerce-unibyte
+   (apply #'concat (nreverse (plist-get cbuf :chunks)))))
+
+(defsubst nelisp-elf-buffer-length (cbuf)
+  "Return current cumulative byte length of CBUF (= O(1))."
+  (plist-get cbuf :length))
+
+(defsubst nelisp-elf--cbuf-push (cbuf bytes)
+  "Push unibyte BYTES onto CBUF in place and update :length.  Returns CBUF.
+Uses `setcar' against the plist value cells so the original `cbuf'
+cons survives — callers that hold a reference (= every writer
+helper) see the new length without needing to rebind."
+  (let ((len (length bytes))
+        ;; cbuf = (:chunks CHUNKS :length LEN)
+        ;;        car=:chunks cdr=(CHUNKS :length LEN)
+        ;;                        car=CHUNKS cdr=(:length LEN)
+        ;;                                       car=:length cdr=(LEN)
+        ;;                                                       car=LEN
+        (chunks-cell (cdr cbuf))             ; (CHUNKS :length LEN)
+        (length-cell (cdr (cdr (cdr cbuf))))) ; (LEN)
+    (setcar chunks-cell (cons bytes (car chunks-cell)))
+    (setcar length-cell (+ (car length-cell) len))
+    cbuf))
+
+(defsubst nelisp-elf--buf-emit (buf bytes)
+  "Append unibyte BYTES to BUF (= either a chunk-buffer or an Emacs buffer)."
+  (if (bufferp buf)
+      (insert bytes)
+    (nelisp-elf--cbuf-push buf bytes)))
+
+(defsubst nelisp-elf--buf-position (buf)
+  "Return current byte-count position of BUF.
+For an Emacs buffer this is `(1- (point))' (= byte offset from start);
+for a chunk-buffer it is the cached `:length' field."
+  (if (bufferp buf)
+      (1- (point))
+    (plist-get buf :length)))
+
+(defsubst nelisp-elf--buf-mark (buf)
+  "Return a marker (= byte offset) suitable for delta math against BUF.
+Companion to `nelisp-elf--buf-position' — kept distinct for symmetry
+with the legacy `(point)' baseline."
+  (nelisp-elf--buf-position buf))
+
 ;; ---- byte / int conversion helpers (= §3.2) ----
 
 (defsubst nelisp-elf--write-u8 (buf v)
-  "Append byte V (0..255) to BUF (= unibyte buffer).  Ignored arg BUF
-is the current buffer; the parameter exists so callers self-document."
-  (ignore buf)
-  (insert (unibyte-string (logand v #xff))))
+  "Append byte V (0..255) to BUF (= chunk-buf or Emacs buffer)."
+  (nelisp-elf--buf-emit buf (unibyte-string (logand v #xff))))
 
 (defun nelisp-elf--write-le16 (buf v)
   "Append unsigned 16-bit V to BUF in little-endian order (= 2 bytes)."
-  (ignore buf)
-  (insert (unibyte-string (logand v #xff)
-                          (logand (ash v -8) #xff))))
+  (nelisp-elf--buf-emit
+   buf
+   (unibyte-string (logand v #xff)
+                   (logand (ash v -8) #xff))))
 
 (defun nelisp-elf--write-le32 (buf v)
   "Append unsigned 32-bit V to BUF in little-endian order (= 4 bytes)."
-  (ignore buf)
-  (insert (unibyte-string (logand v #xff)
-                          (logand (ash v -8) #xff)
-                          (logand (ash v -16) #xff)
-                          (logand (ash v -24) #xff))))
+  (nelisp-elf--buf-emit
+   buf
+   (unibyte-string (logand v #xff)
+                   (logand (ash v -8) #xff)
+                   (logand (ash v -16) #xff)
+                   (logand (ash v -24) #xff))))
 
 (defun nelisp-elf--write-le64 (buf v)
   "Append unsigned 64-bit V to BUF in little-endian order (= 8 bytes).
 Bignum-safe: shifts one byte at a time so values above 2^29 work on
 32-bit Emacs as well (= §7.2 mitigation)."
-  (ignore buf)
   (let ((bytes (make-vector 8 0))
         (i 0))
     (while (< i 8)
       (aset bytes i (logand (ash v (- (* i 8))) #xff))
       (setq i (1+ i)))
-    (insert (apply #'unibyte-string (append bytes nil)))))
+    (nelisp-elf--buf-emit buf (apply #'unibyte-string (append bytes nil)))))
 
 (defun nelisp-elf--write-bytes (buf bytes)
-  "Append unibyte string BYTES to BUF verbatim."
-  (ignore buf)
-  (insert bytes))
+  "Append unibyte string BYTES to BUF verbatim.
+Coerces BYTES to unibyte via `nelisp-elf--coerce-unibyte' (=
+round-trips multibyte → unibyte by collapsing each U+00XX char
+to one byte) so user-supplied `:text' / `:rodata' built via
+`make-string' do not poison the chunk-buffer with UTF-8-expanded
+chunks."
+  (nelisp-elf--buf-emit buf (nelisp-elf--coerce-unibyte bytes)))
 
 (defun nelisp-elf--write-strz (buf s)
-  "Append S to BUF followed by a NUL byte (= for .strtab entries)."
-  (ignore buf)
-  (insert s)
-  (insert (unibyte-string 0)))
+  "Append S to BUF followed by a NUL byte (= for .strtab entries).
+Encodes S as utf-8 (= already unibyte) + a single NUL byte."
+  (nelisp-elf--buf-emit
+   buf
+   (concat (encode-coding-string s 'utf-8 t) (unibyte-string 0))))
 
 (defun nelisp-elf--write-pad (buf nbytes &optional value)
-  "Append NBYTES copies of VALUE (default 0) to BUF."
-  (ignore buf)
-  (insert (make-string nbytes (or value 0))))
+  "Append NBYTES copies of VALUE (default 0) to BUF.
+Forced unibyte (= `make-string' returns a multibyte string for
+values >= #x80, which would poison the chunk-buffer).  VALUE = 0
+is the hot path (= section alignment fillers) and stays unibyte
+without conversion (= `make-string n 0' is unibyte by default)."
+  (let ((v (or value 0)))
+    (nelisp-elf--buf-emit
+     buf
+     (if (< v #x80)
+         (make-string nbytes v)
+       (nelisp-elf--coerce-unibyte (make-string nbytes v))))))
 
 ;; ---- Ehdr writer (= §3.3 §2.2) ----
 
@@ -174,7 +273,7 @@ FIELDS recognises:
   :shnum       Shdr count (default 0).
   :shstrndx    .shstrtab section index (default 0).
 Returns the number of bytes written (= 64)."
-  (let ((start (point))
+  (let ((start (nelisp-elf--buf-position buf))
         (type      (or (plist-get fields :type)      nelisp-elf--et-exec))
         (machine   (or (plist-get fields :machine)   nelisp-elf--em-x86-64))
         (entry     (or (plist-get fields :entry)     0))
@@ -210,7 +309,7 @@ Returns the number of bytes written (= 64)."
     (nelisp-elf--write-le16  buf shentsize)
     (nelisp-elf--write-le16  buf shnum)
     (nelisp-elf--write-le16  buf shstrndx)
-    (- (point) start)))
+    (- (nelisp-elf--buf-position buf) start)))
 
 ;; ---- Phdr writer (= §3.3 §2.3) ----
 
@@ -226,7 +325,7 @@ FIELDS recognises:
   :memsz    p_memsz (memory image size, default = :filesz).
   :align    p_align (default 0x1000).
 Returns the number of bytes written (= 56)."
-  (let* ((start (point))
+  (let* ((start (nelisp-elf--buf-position buf))
          (vaddr  (or (plist-get fields :vaddr)  0))
          (filesz (or (plist-get fields :filesz) 0))
          (type   (or (plist-get fields :type)   nelisp-elf--pt-load))
@@ -244,7 +343,7 @@ Returns the number of bytes written (= 56)."
     (nelisp-elf--write-le64 buf filesz)
     (nelisp-elf--write-le64 buf memsz)
     (nelisp-elf--write-le64 buf align)
-    (- (point) start)))
+    (- (nelisp-elf--buf-position buf) start)))
 
 ;; ---- §91.b Shdr writer (= §2.4) ----
 
@@ -263,7 +362,7 @@ FIELDS recognises every Elf64_Shdr field directly (all default 0):
   :addralign  sh_addralign (= section alignment, 0 or power-of-two).
   :entsize    sh_entsize   (= fixed entry size for table sections).
 Returns the number of bytes written (= 64)."
-  (let ((start     (point))
+  (let ((start     (nelisp-elf--buf-position buf))
         (name      (or (plist-get fields :name)      0))
         (type      (or (plist-get fields :type)      nelisp-elf--sht-null))
         (flags     (or (plist-get fields :flags)     0))
@@ -284,7 +383,7 @@ Returns the number of bytes written (= 64)."
     (nelisp-elf--write-le32 buf info)
     (nelisp-elf--write-le64 buf addralign)
     (nelisp-elf--write-le64 buf entsize)
-    (- (point) start)))
+    (- (nelisp-elf--buf-position buf) start)))
 
 ;; ---- §91.b string table (= .shstrtab / .strtab builder) ----
 
@@ -338,7 +437,7 @@ FIELDS recognises (all default 0 unless noted):
   :value  st_value (= symbol address / section offset).
   :size   st_size  (= symbol size in bytes).
 Returns the number of bytes written (= 24)."
-  (let ((start (point))
+  (let ((start (nelisp-elf--buf-position buf))
         (name  (or (plist-get fields :name)  0))
         (info  (or (plist-get fields :info)  0))
         (other (or (plist-get fields :other) 0))
@@ -351,7 +450,7 @@ Returns the number of bytes written (= 24)."
     (nelisp-elf--write-le16 buf shndx)
     (nelisp-elf--write-le64 buf value)
     (nelisp-elf--write-le64 buf size)
-    (- (point) start)))
+    (- (nelisp-elf--buf-position buf) start)))
 
 ;; ---- §91.b Rela writer (= §2.6 Elf64_Rela, 24 bytes) ----
 
@@ -374,14 +473,14 @@ FIELDS recognises (all default 0):
   :addend  r_addend (= signed addend; negative values are accepted and
                      encoded as two's-complement in 8 bytes).
 Returns the number of bytes written (= 24)."
-  (let ((start  (point))
+  (let ((start  (nelisp-elf--buf-position buf))
         (offset (or (plist-get fields :offset) 0))
         (info   (or (plist-get fields :info)   0))
         (addend (or (plist-get fields :addend) 0)))
     (nelisp-elf--write-le64        buf offset)
     (nelisp-elf--write-le64        buf info)
     (nelisp-elf--write-le64-signed buf addend)
-    (- (point) start)))
+    (- (nelisp-elf--buf-position buf) start)))
 
 ;; ---- §91.b reloc-type symbol → ELF constant mapping ----
 
@@ -437,31 +536,30 @@ includes both headers in the loaded image (= Teensy ELF pattern)."
          (text-off (+ nelisp-elf--ehdr-size nelisp-elf--phdr-size))
          (filesz (+ text-off text-size))
          (vaddr-base nelisp-elf--minimal-vaddr-base)
-         (entry (+ vaddr-base text-off)))
-    (with-temp-buffer
-      (set-buffer-multibyte nil)
-      (nelisp-elf-write-ehdr
-       (current-buffer)
-       (list :type      nelisp-elf--et-exec
-             :machine   nelisp-elf--em-x86-64
-             :entry     entry
-             :phoff     nelisp-elf--ehdr-size
-             :shoff     0
-             :phnum     1
-             :shnum     0
-             :shstrndx  0))
-      (nelisp-elf-write-phdr
-       (current-buffer)
-       (list :type   nelisp-elf--pt-load
-             :flags  (logior nelisp-elf--pf-r nelisp-elf--pf-x)
-             :offset 0
-             :vaddr  vaddr-base
-             :paddr  vaddr-base
-             :filesz filesz
-             :memsz  filesz
-             :align  #x1000))
-      (nelisp-elf--write-bytes (current-buffer) text)
-      (buffer-substring-no-properties (point-min) (point-max)))))
+         (entry (+ vaddr-base text-off))
+         (cbuf (nelisp-elf-make-buffer)))
+    (nelisp-elf-write-ehdr
+     cbuf
+     (list :type      nelisp-elf--et-exec
+           :machine   nelisp-elf--em-x86-64
+           :entry     entry
+           :phoff     nelisp-elf--ehdr-size
+           :shoff     0
+           :phnum     1
+           :shnum     0
+           :shstrndx  0))
+    (nelisp-elf-write-phdr
+     cbuf
+     (list :type   nelisp-elf--pt-load
+           :flags  (logior nelisp-elf--pf-r nelisp-elf--pf-x)
+           :offset 0
+           :vaddr  vaddr-base
+           :paddr  vaddr-base
+           :filesz filesz
+           :memsz  filesz
+           :align  #x1000))
+    (nelisp-elf--write-bytes cbuf text)
+    (nelisp-elf-buffer-bytes cbuf)))
 
 ;; ---- §91.c hello-world-write corpus #2 ----
 
@@ -745,208 +843,210 @@ Doc 91 §91.c."
                    entry-offset))
          ;; RX segment image covers everything up to end of rodata.
          (rx-segment-filesz rx-segment-end)
-         (rx-segment-memsz  rx-segment-end))
-    (with-temp-buffer
-      (set-buffer-multibyte nil)
-      ;; ---- Ehdr ----
-      (nelisp-elf-write-ehdr
-       (current-buffer)
-       (list :type      nelisp-elf--et-exec
-             :machine   nelisp-elf--em-x86-64
-             :entry     entry
-             :phoff     phdr-off
-             :shoff     shoff
-             :phnum     phnum
-             :shnum     shnum
-             :shstrndx  shstrtab-shndx))
-      ;; ---- Phdr[0]: PT_LOAD R+X covering Ehdr + Phdrs + .text + .rodata
+         (rx-segment-memsz  rx-segment-end)
+         ;; §91.d: chunk-build accumulator — `nelisp-elf-buffer-bytes'
+         ;; is called once at the end to fuse all chunks via
+         ;; `apply' + `concat' (= O(N), vs gap-buffer O(N) per write).
+         (cbuf (nelisp-elf-make-buffer)))
+    ;; ---- Ehdr ----
+    (nelisp-elf-write-ehdr
+     cbuf
+     (list :type      nelisp-elf--et-exec
+           :machine   nelisp-elf--em-x86-64
+           :entry     entry
+           :phoff     phdr-off
+           :shoff     shoff
+           :phnum     phnum
+           :shnum     shnum
+           :shstrndx  shstrtab-shndx))
+    ;; ---- Phdr[0]: PT_LOAD R+X covering Ehdr + Phdrs + .text + .rodata
+    (nelisp-elf-write-phdr
+     cbuf
+     (list :type   nelisp-elf--pt-load
+           :flags  (logior nelisp-elf--pf-r nelisp-elf--pf-x)
+           :offset 0
+           :vaddr  vaddr-base
+           :paddr  vaddr-base
+           :filesz rx-segment-filesz
+           :memsz  rx-segment-memsz
+           :align  page-size))
+    ;; ---- Phdr[1]: PT_LOAD R+W for .data + .bss (NOBITS) ----
+    (when have-rw
       (nelisp-elf-write-phdr
-       (current-buffer)
+       cbuf
        (list :type   nelisp-elf--pt-load
-             :flags  (logior nelisp-elf--pf-r nelisp-elf--pf-x)
-             :offset 0
-             :vaddr  vaddr-base
-             :paddr  vaddr-base
-             :filesz rx-segment-filesz
-             :memsz  rx-segment-memsz
-             :align  page-size))
-      ;; ---- Phdr[1]: PT_LOAD R+W for .data + .bss (NOBITS) ----
-      (when have-rw
-        (nelisp-elf-write-phdr
-         (current-buffer)
-         (list :type   nelisp-elf--pt-load
-               :flags  (logior nelisp-elf--pf-r nelisp-elf--pf-w)
-               :offset data-off
-               :vaddr  data-vaddr
-               :paddr  data-vaddr
-               :filesz rw-filesz
-               :memsz  rw-memsz
-               :align  page-size)))
-      ;; ---- .text ----
-      (unless (= (point) (1+ text-off))
-        (error "nelisp-elf: .text offset drift (point=%d expected=%d)"
-               (1- (point)) text-off))
-      (nelisp-elf--write-bytes (current-buffer) text)
-      ;; ---- .rodata ----
-      (when have-rodata
-        (nelisp-elf--write-bytes (current-buffer) rodata))
-      ;; ---- .data (= RW segment, on a fresh page) ----
-      (when have-data
-        (let ((pad (- data-off (1- (point)))))
-          (when (> pad 0) (nelisp-elf--write-pad (current-buffer) pad)))
-        (nelisp-elf--write-bytes (current-buffer) data))
-      ;; .bss contributes no file bytes — it is NOBITS.
-      ;; ---- .shstrtab ----
-      (let ((pad (- shstrtab-off (1- (point)))))
-        (when (> pad 0) (nelisp-elf--write-pad (current-buffer) pad)))
-      (nelisp-elf--write-bytes (current-buffer) shstrtab-bytes)
-      ;; ---- .strtab ----
-      (let ((pad (- strtab-off (1- (point)))))
-        (when (> pad 0) (nelisp-elf--write-pad (current-buffer) pad)))
-      (nelisp-elf--write-bytes (current-buffer) strtab-bytes)
-      ;; ---- .symtab ----
-      (let ((pad (- symtab-off (1- (point)))))
-        (when (> pad 0) (nelisp-elf--write-pad (current-buffer) pad)))
-      ;; symbol 0 = STN_UNDEF (all zeros).
-      (nelisp-elf-write-sym (current-buffer) '(:name 0 :info 0))
-      (dolist (sym ordered-symbols)
-        (let* ((nm    (plist-get sym :name))
-               (sect  (or (plist-get sym :section) 'text))
-               (bind  (or (plist-get sym :bind) 'local))
-               (type  (or (plist-get sym :type) 'notype))
-               (name-off (cdr (assoc nm sym-name-offsets)))
-               (shndx (nelisp-elf--section-shndx
-                       sect text-shndx rodata-shndx
-                       data-shndx bss-shndx))
-               (vaddr (nelisp-elf--section-vaddr
-                       sect text-vaddr rodata-vaddr
-                       data-vaddr bss-vaddr))
-               (value (+ vaddr (or (plist-get sym :value) 0))))
-          (nelisp-elf-write-sym
-           (current-buffer)
-           (list :name  name-off
-                 :info  (nelisp-elf-sym-info
-                         (nelisp-elf--sym-bind-code bind)
-                         (nelisp-elf--sym-type-code type))
-                 :other 0
-                 :shndx shndx
-                 :value value
-                 :size  (or (plist-get sym :size) 0)))))
-      ;; ---- .rela.text (optional) ----
-      (when have-rela
-        (let ((pad (- rela-off (1- (point)))))
-          (when (> pad 0) (nelisp-elf--write-pad (current-buffer) pad)))
-        (dolist (rel relocs)
-          (let* ((rsym (plist-get rel :symbol))
-                 (rtype (plist-get rel :type))
-                 (sym-idx
-                  (or (let ((i 1) found)
-                        (dolist (s ordered-symbols)
-                          (when (and (not found)
-                                     (equal (plist-get s :name) rsym))
-                            (setq found i))
-                          (setq i (1+ i)))
-                        found)
-                      (error "nelisp-elf: relocation references unknown symbol %S"
-                             rsym))))
-            (nelisp-elf-write-rela
-             (current-buffer)
-             (list :offset (or (plist-get rel :offset) 0)
-                   :info   (nelisp-elf-rela-info
-                            sym-idx
-                            (nelisp-elf--reloc-type-code rtype))
-                   :addend (or (plist-get rel :addend) 0))))))
-      ;; ---- Shdr table ----
-      (let ((pad (- shoff (1- (point)))))
-        (when (> pad 0) (nelisp-elf--write-pad (current-buffer) pad)))
-      ;; Shdr[0] = SHT_NULL.
-      (nelisp-elf-write-shdr (current-buffer) '(:type 0))
-      ;; Shdr[text].
+             :flags  (logior nelisp-elf--pf-r nelisp-elf--pf-w)
+             :offset data-off
+             :vaddr  data-vaddr
+             :paddr  data-vaddr
+             :filesz rw-filesz
+             :memsz  rw-memsz
+             :align  page-size)))
+    ;; ---- .text ----
+    (unless (= (nelisp-elf-buffer-length cbuf) text-off)
+      (error "nelisp-elf: .text offset drift (length=%d expected=%d)"
+             (nelisp-elf-buffer-length cbuf) text-off))
+    (nelisp-elf--write-bytes cbuf text)
+    ;; ---- .rodata ----
+    (when have-rodata
+      (nelisp-elf--write-bytes cbuf rodata))
+    ;; ---- .data (= RW segment, on a fresh page) ----
+    (when have-data
+      (let ((pad (- data-off (nelisp-elf-buffer-length cbuf))))
+        (when (> pad 0) (nelisp-elf--write-pad cbuf pad)))
+      (nelisp-elf--write-bytes cbuf data))
+    ;; .bss contributes no file bytes — it is NOBITS.
+    ;; ---- .shstrtab ----
+    (let ((pad (- shstrtab-off (nelisp-elf-buffer-length cbuf))))
+      (when (> pad 0) (nelisp-elf--write-pad cbuf pad)))
+    (nelisp-elf--write-bytes cbuf shstrtab-bytes)
+    ;; ---- .strtab ----
+    (let ((pad (- strtab-off (nelisp-elf-buffer-length cbuf))))
+      (when (> pad 0) (nelisp-elf--write-pad cbuf pad)))
+    (nelisp-elf--write-bytes cbuf strtab-bytes)
+    ;; ---- .symtab ----
+    (let ((pad (- symtab-off (nelisp-elf-buffer-length cbuf))))
+      (when (> pad 0) (nelisp-elf--write-pad cbuf pad)))
+    ;; symbol 0 = STN_UNDEF (all zeros).
+    (nelisp-elf-write-sym cbuf '(:name 0 :info 0))
+    (dolist (sym ordered-symbols)
+      (let* ((nm    (plist-get sym :name))
+             (sect  (or (plist-get sym :section) 'text))
+             (bind  (or (plist-get sym :bind) 'local))
+             (type  (or (plist-get sym :type) 'notype))
+             (name-off (cdr (assoc nm sym-name-offsets)))
+             (shndx (nelisp-elf--section-shndx
+                     sect text-shndx rodata-shndx
+                     data-shndx bss-shndx))
+             (vaddr (nelisp-elf--section-vaddr
+                     sect text-vaddr rodata-vaddr
+                     data-vaddr bss-vaddr))
+             (value (+ vaddr (or (plist-get sym :value) 0))))
+        (nelisp-elf-write-sym
+         cbuf
+         (list :name  name-off
+               :info  (nelisp-elf-sym-info
+                       (nelisp-elf--sym-bind-code bind)
+                       (nelisp-elf--sym-type-code type))
+               :other 0
+               :shndx shndx
+               :value value
+               :size  (or (plist-get sym :size) 0)))))
+    ;; ---- .rela.text (optional) ----
+    (when have-rela
+      (let ((pad (- rela-off (nelisp-elf-buffer-length cbuf))))
+        (when (> pad 0) (nelisp-elf--write-pad cbuf pad)))
+      (dolist (rel relocs)
+        (let* ((rsym (plist-get rel :symbol))
+               (rtype (plist-get rel :type))
+               (sym-idx
+                (or (let ((i 1) found)
+                      (dolist (s ordered-symbols)
+                        (when (and (not found)
+                                   (equal (plist-get s :name) rsym))
+                          (setq found i))
+                        (setq i (1+ i)))
+                      found)
+                    (error "nelisp-elf: relocation references unknown symbol %S"
+                           rsym))))
+          (nelisp-elf-write-rela
+           cbuf
+           (list :offset (or (plist-get rel :offset) 0)
+                 :info   (nelisp-elf-rela-info
+                          sym-idx
+                          (nelisp-elf--reloc-type-code rtype))
+                 :addend (or (plist-get rel :addend) 0))))))
+    ;; ---- Shdr table ----
+    (let ((pad (- shoff (nelisp-elf-buffer-length cbuf))))
+      (when (> pad 0) (nelisp-elf--write-pad cbuf pad)))
+    ;; Shdr[0] = SHT_NULL.
+    (nelisp-elf-write-shdr cbuf '(:type 0))
+    ;; Shdr[text].
+    (nelisp-elf-write-shdr
+     cbuf
+     (list :name      sh-name-text
+           :type      nelisp-elf--sht-progbits
+           :flags     (logior nelisp-elf--shf-alloc
+                              nelisp-elf--shf-execinstr)
+           :addr      text-vaddr
+           :offset    text-off
+           :size      text-size
+           :addralign 16))
+    ;; Shdr[rodata] (if present).
+    (when have-rodata
       (nelisp-elf-write-shdr
-       (current-buffer)
-       (list :name      sh-name-text
+       cbuf
+       (list :name      sh-name-rodata
              :type      nelisp-elf--sht-progbits
-             :flags     (logior nelisp-elf--shf-alloc
-                                nelisp-elf--shf-execinstr)
-             :addr      text-vaddr
-             :offset    text-off
-             :size      text-size
-             :addralign 16))
-      ;; Shdr[rodata] (if present).
-      (when have-rodata
-        (nelisp-elf-write-shdr
-         (current-buffer)
-         (list :name      sh-name-rodata
-               :type      nelisp-elf--sht-progbits
-               :flags     nelisp-elf--shf-alloc
-               :addr      rodata-vaddr
-               :offset    rodata-off
-               :size      rodata-size
-               :addralign 8)))
-      ;; Shdr[data] (if present).
-      (when have-data
-        (nelisp-elf-write-shdr
-         (current-buffer)
-         (list :name      sh-name-data
-               :type      nelisp-elf--sht-progbits
-               :flags     (logior nelisp-elf--shf-write
-                                  nelisp-elf--shf-alloc)
-               :addr      data-vaddr
-               :offset    data-off
-               :size      data-size
-               :addralign 8)))
-      ;; Shdr[bss] (if present) — SHT_NOBITS, no file footprint.
-      (when have-bss
-        (nelisp-elf-write-shdr
-         (current-buffer)
-         (list :name      sh-name-bss
-               :type      nelisp-elf--sht-nobits
-               :flags     (logior nelisp-elf--shf-write
-                                  nelisp-elf--shf-alloc)
-               :addr      bss-vaddr
-               :offset    bss-off
-               :size      bss-size
-               :addralign 8)))
-      ;; Shdr[shstrtab].
+             :flags     nelisp-elf--shf-alloc
+             :addr      rodata-vaddr
+             :offset    rodata-off
+             :size      rodata-size
+             :addralign 8)))
+    ;; Shdr[data] (if present).
+    (when have-data
       (nelisp-elf-write-shdr
-       (current-buffer)
-       (list :name      sh-name-shstrtab
-             :type      nelisp-elf--sht-strtab
-             :offset    shstrtab-off
-             :size      shstrtab-size
-             :addralign 1))
-      ;; Shdr[strtab].
+       cbuf
+       (list :name      sh-name-data
+             :type      nelisp-elf--sht-progbits
+             :flags     (logior nelisp-elf--shf-write
+                                nelisp-elf--shf-alloc)
+             :addr      data-vaddr
+             :offset    data-off
+             :size      data-size
+             :addralign 8)))
+    ;; Shdr[bss] (if present) — SHT_NOBITS, no file footprint.
+    (when have-bss
       (nelisp-elf-write-shdr
-       (current-buffer)
-       (list :name      sh-name-strtab
-             :type      nelisp-elf--sht-strtab
-             :offset    strtab-off
-             :size      strtab-size
-             :addralign 1))
-      ;; Shdr[symtab].
+       cbuf
+       (list :name      sh-name-bss
+             :type      nelisp-elf--sht-nobits
+             :flags     (logior nelisp-elf--shf-write
+                                nelisp-elf--shf-alloc)
+             :addr      bss-vaddr
+             :offset    bss-off
+             :size      bss-size
+             :addralign 8)))
+    ;; Shdr[shstrtab].
+    (nelisp-elf-write-shdr
+     cbuf
+     (list :name      sh-name-shstrtab
+           :type      nelisp-elf--sht-strtab
+           :offset    shstrtab-off
+           :size      shstrtab-size
+           :addralign 1))
+    ;; Shdr[strtab].
+    (nelisp-elf-write-shdr
+     cbuf
+     (list :name      sh-name-strtab
+           :type      nelisp-elf--sht-strtab
+           :offset    strtab-off
+           :size      strtab-size
+           :addralign 1))
+    ;; Shdr[symtab].
+    (nelisp-elf-write-shdr
+     cbuf
+     (list :name      sh-name-symtab
+           :type      nelisp-elf--sht-symtab
+           :offset    symtab-off
+           :size      symtab-size
+           :link      strtab-shndx
+           :info      local-count
+           :addralign 8
+           :entsize   nelisp-elf--sym-size))
+    ;; Shdr[rela.text] (if present).
+    (when have-rela
       (nelisp-elf-write-shdr
-       (current-buffer)
-       (list :name      sh-name-symtab
-             :type      nelisp-elf--sht-symtab
-             :offset    symtab-off
-             :size      symtab-size
-             :link      strtab-shndx
-             :info      local-count
+       cbuf
+       (list :name      sh-name-rela
+             :type      nelisp-elf--sht-rela
+             :offset    rela-off
+             :size      rela-size
+             :link      symtab-shndx
+             :info      text-shndx
              :addralign 8
-             :entsize   nelisp-elf--sym-size))
-      ;; Shdr[rela.text] (if present).
-      (when have-rela
-        (nelisp-elf-write-shdr
-         (current-buffer)
-         (list :name      sh-name-rela
-               :type      nelisp-elf--sht-rela
-               :offset    rela-off
-               :size      rela-size
-               :link      symtab-shndx
-               :info      text-shndx
-               :addralign 8
-               :entsize   nelisp-elf--rela-size)))
-      (buffer-substring-no-properties (point-min) (point-max)))))
+             :entsize   nelisp-elf--rela-size)))
+    (nelisp-elf-buffer-bytes cbuf)))
 
 ;;;###autoload
 (defun nelisp-elf-write-binary (file-path sections)
@@ -1011,6 +1111,29 @@ The file is written with mode #o755 (= +x bit set)."
       (setq acc (logior acc (ash (aref bytes (+ offset i)) (* i 8))))
       (setq i (1+ i)))
     acc))
+
+;; ---- §91.d benchmark helper (= chunk-build perf gate) ----
+
+(defun nelisp-elf-benchmark-write-binary (file-path size-kb)
+  "Emit a synthetic ELF executable of approximately SIZE-KB to FILE-PATH.
+Used by §91.d perf gate (= 1 MB / 1000 KB must emit in < 5 sec).
+Generates a filler `.text' buffer of SIZE-KB * 1024 bytes (= filler
+byte = #x90, the x86_64 NOP opcode; the resulting binary is not
+expected to execute meaningfully, only to exercise the chunk-build
+emit path against realistic payload sizes).  Returns FILE-PATH."
+  (let* ((nbytes (* size-kb 1024))
+         (filler (make-string nbytes #x90))
+         (msg-len 6)
+         (symbols
+          (list (list :name "_start" :value 0 :size nbytes
+                      :section 'text :bind 'global :type 'func)
+                (list :name "msg" :value 0 :size msg-len
+                      :section 'rodata :bind 'local :type 'object)))
+         (plist (list :text filler
+                      :rodata (unibyte-string ?h ?e ?l ?l ?o ?\n)
+                      :symbols symbols
+                      :entry-sym "_start")))
+    (nelisp-elf-write-binary file-path plist)))
 
 (provide 'nelisp-elf-write)
 

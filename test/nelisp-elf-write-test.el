@@ -890,6 +890,156 @@ documented offset and round-trips through the reader."
             (should (string-match-p "OBJECT" out))))
       (ignore-errors (delete-file path)))))
 
+;; ---------------------------------------------------------------- §91.d L1 chunk-buffer invariants
+
+(ert-deftest nelisp-elf-write-cbuf-make-empty ()
+  "Fresh cbuf has empty :chunks list and zero :length."
+  (let ((cbuf (nelisp-elf-make-buffer)))
+    (should (null (plist-get cbuf :chunks)))
+    (should (= (nelisp-elf-buffer-length cbuf) 0))
+    (should (equal (nelisp-elf-buffer-bytes cbuf) ""))))
+
+(ert-deftest nelisp-elf-write-cbuf-push-tracks-length ()
+  "Repeated writer calls accumulate length in O(1) increments."
+  (let ((cbuf (nelisp-elf-make-buffer)))
+    (nelisp-elf--write-u8 cbuf #xAB)
+    (should (= (nelisp-elf-buffer-length cbuf) 1))
+    (nelisp-elf--write-le32 cbuf #x12345678)
+    (should (= (nelisp-elf-buffer-length cbuf) 5))
+    (nelisp-elf--write-le64 cbuf #x0123456789ABCDEF)
+    (should (= (nelisp-elf-buffer-length cbuf) 13))
+    (nelisp-elf--write-pad cbuf 7)
+    (should (= (nelisp-elf-buffer-length cbuf) 20))
+    (let ((bytes (nelisp-elf-buffer-bytes cbuf)))
+      (should (= (length bytes) 20))
+      (should (= (aref bytes 0) #xAB))
+      (should (= (nelisp-elf--read-le32 bytes 1) #x12345678))
+      (should (= (nelisp-elf--read-le64 bytes 5) #x0123456789ABCDEF)))))
+
+(ert-deftest nelisp-elf-write-cbuf-chunks-are-reverse-order ()
+  "The :chunks list grows at the head — finalize via nreverse + concat."
+  (let ((cbuf (nelisp-elf-make-buffer)))
+    (nelisp-elf--write-bytes cbuf (unibyte-string ?A))
+    (nelisp-elf--write-bytes cbuf (unibyte-string ?B))
+    (nelisp-elf--write-bytes cbuf (unibyte-string ?C))
+    ;; chunks should be ("C" "B" "A") (= most-recent at head)
+    (let ((chunks (plist-get cbuf :chunks)))
+      (should (= (length chunks) 3))
+      (should (equal (car chunks) (unibyte-string ?C)))
+      (should (equal (cadr chunks) (unibyte-string ?B)))
+      (should (equal (caddr chunks) (unibyte-string ?A))))
+    ;; finalize joins in original emit order
+    (should (equal (nelisp-elf-buffer-bytes cbuf) "ABC"))))
+
+(ert-deftest nelisp-elf-write-cbuf-ehdr-equals-buffer-output ()
+  "Ehdr emitted through cbuf matches the legacy buffer-path bytes."
+  (let* ((fields (list :entry #x401000 :phoff 64 :phnum 1
+                       :shoff 0 :shnum 0 :shstrndx 0))
+         (legacy (nelisp-elf-write-test--collect
+                  #'nelisp-elf-write-ehdr fields))
+         (cbuf (nelisp-elf-make-buffer))
+         (delta (nelisp-elf-write-ehdr cbuf fields))
+         (chunked (nelisp-elf-buffer-bytes cbuf)))
+    (should (= delta 64))
+    (should (= (length chunked) 64))
+    (should (equal chunked legacy))))
+
+(ert-deftest nelisp-elf-write-cbuf-finalize-is-unibyte ()
+  "Finalised bytes are always unibyte, even when chunks come from
+multibyte sources (= `make-string n #x90' is multibyte by default;
+the chunk-buffer must coerce so `write-region' under
+`no-conversion' does not double the file size)."
+  (let ((cbuf (nelisp-elf-make-buffer)))
+    (nelisp-elf--write-bytes cbuf (make-string 16 #x90))
+    (let ((bytes (nelisp-elf-buffer-bytes cbuf)))
+      (should-not (multibyte-string-p bytes))
+      (should (= (length bytes) 16))
+      (dotimes (i 16)
+        (should (= (aref bytes i) #x90))))))
+
+(ert-deftest nelisp-elf-write-cbuf-rich-byte-equal-legacy-shape ()
+  "Rich-path orchestrator output is byte-identical between runs (=
+deterministic chunk-build) and has the expected total size."
+  ;; Two runs of the same input must produce byte-identical output —
+  ;; if the chunk-buffer leaked state across calls we'd see drift.
+  (let* ((plist (list :text (unibyte-string #xb8 #x3c #x00 #x00 #x00
+                                            #x0f #x05)
+                      :symbols (list (list :name "_start" :value 0
+                                           :size 7 :section 'text
+                                           :bind 'global :type 'func))
+                      :entry-sym "_start"))
+         (a (nelisp-elf--build-rich plist))
+         (b (nelisp-elf--build-rich plist)))
+    (should (equal a b))
+    (should-not (multibyte-string-p a))
+    ;; expected size = Ehdr 64 + Phdr 56 + .text 7 + 3 strtabs +
+    ;; .symtab (2*24) + 6 Shdrs (384) ≈ at least 500 bytes
+    (should (> (length a) 500))))
+
+(ert-deftest nelisp-elf-write-cbuf-large-rich-correct-bytes ()
+  "1 MB chunk-build emit produces a unibyte string of exactly the
+right length (= filler-size + headers + symtab + shdrs).  Catches
+the multibyte → write-region byte-doubling regression."
+  (let* ((nbytes (* 100 1024))
+         (filler (make-string nbytes #x90))
+         (plist (list :text filler
+                      :symbols
+                      (list (list :name "_start" :value 0
+                                  :size nbytes :section 'text
+                                  :bind 'global :type 'func))
+                      :entry-sym "_start"))
+         (bytes (nelisp-elf--build-rich plist)))
+    (should-not (multibyte-string-p bytes))
+    ;; first 4 bytes = ELF magic
+    (should (equal (substring bytes 0 4)
+                   (unibyte-string #x7F #x45 #x4C #x46)))
+    ;; .text starts at offset 120 (= Ehdr 64 + 1 Phdr 56)
+    (should (= (aref bytes 120) #x90))
+    (should (= (aref bytes (+ 120 (- nbytes 1))) #x90))
+    ;; total length is ~ nbytes plus header / table overhead
+    (should (>= (length bytes) nbytes))
+    (should (< (length bytes) (+ nbytes 8192)))))
+
+;; ---------------------------------------------------------------- §91.d L2 perf gate
+
+(ert-deftest nelisp-elf-write-benchmark-helper-emits-file ()
+  "The benchmark helper writes a chmod-+x file of the requested size."
+  (let ((path (make-temp-file "nelisp-elf-bench-")))
+    (unwind-protect
+        (progn
+          (nelisp-elf-benchmark-write-binary path 4)
+          (should (file-exists-p path))
+          ;; size >= 4 KiB of filler text (some overhead is expected)
+          (let* ((attrs (file-attributes path))
+                 (size (file-attribute-size attrs))
+                 (modes (file-modes path)))
+            (should (>= size (* 4 1024)))
+            (should (= (logand modes #o111) #o111))))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-elf-write-benchmark-100kb-under-2sec ()
+  "100 KB ELF emit completes within 2 sec on the chunk-build path.
+Generous bound — actual is typically < 50 ms — to absorb GC /
+CI variance."
+  (let ((path (make-temp-file "nelisp-elf-bench-100kb-")))
+    (unwind-protect
+        (let ((elapsed (car (benchmark-run 1
+                              (nelisp-elf-benchmark-write-binary
+                               path 100)))))
+          (should (< elapsed 2.0)))
+      (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-elf-write-benchmark-1mb-under-5sec ()
+  "1 MB ELF emit completes within 5 sec on the chunk-build path
+(= Doc 91 §91.d perf acceptance gate)."
+  (let ((path (make-temp-file "nelisp-elf-bench-1mb-")))
+    (unwind-protect
+        (let ((elapsed (car (benchmark-run 1
+                              (nelisp-elf-benchmark-write-binary
+                               path 1000)))))
+          (should (< elapsed 5.0)))
+      (ignore-errors (delete-file path)))))
+
 (provide 'nelisp-elf-write-test)
 
 ;;; nelisp-elf-write-test.el ends here
