@@ -71,3 +71,11 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # `read-stdin-byte-available' builtins.  Not pulled in for batch use.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# Doc 84 §84.2 (2026-05-10) — `build.rs' codegen for
+# `lisp/nelisp-syscall-table.el' (= elisp-side syscall name → number
+# resolver).  Only `libc::SYS_*' constants are read at build time; no
+# runtime libc dep is added through this entry (the runtime libc dep
+# stays the `[target.'cfg(unix)'.dependencies]' one above).
+[build-dependencies]
+libc = "0.2"

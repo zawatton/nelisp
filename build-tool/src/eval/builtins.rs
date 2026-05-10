@@ -427,7 +427,7 @@ pub fn install_builtins(env: &mut Env) {
         "nelisp--mut-str-len", "nelisp--bool-vector-len",
         "nelisp--str-codepoint-at", "nelisp--mut-str-set-codepoint",
         "nelisp--char-table-aref", "nelisp--char-table-aset",
-        "nelisp--syscall-nr-resolve",
+        // Doc 84 §84.2: `nelisp--syscall-nr-resolve' moved to elisp.
         // Doc 77c Phase A.3 (2026-05-09) — Layer 2 cons-cell
         // primitives.  Not previously registered here because Phase
         // A.3 only exercised them via Rust-side cargo tests; Doc 79
@@ -776,7 +776,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nelisp--mut-str-set-codepoint" => crate::jit::bi_mut_str_set_codepoint(args),
         "nelisp--char-table-aref" => crate::jit::bi_char_table_aref(args),
         "nelisp--char-table-aset" => crate::jit::bi_char_table_aset(args),
-        "nelisp--syscall-nr-resolve" => crate::jit::bi_syscall_nr_resolve(args),
+        // Doc 84 §84.2: `nelisp--syscall-nr-resolve' moved to elisp.
         // Doc 77c Phase A.3 (2026-05-09) — Layer 2 cons-cell primitives
         // operating directly on `NlConsBox' / `NlConsBoxRef' (Phase A.2).
         // 5 `nl-cons-*' (alloc / car / cdr / set-car / set-cdr) + 3

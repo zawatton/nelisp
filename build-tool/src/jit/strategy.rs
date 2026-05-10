@@ -1,9 +1,12 @@
 //! Rust helpers for elisp JIT-strategy wrappers in
 //! `lisp/nelisp-jit-strategy.el'.  Doc 84 §84.1 (2026-05-10) ported
 //! the 8 Float-family `bi_*_float' fns to the new `nl-jit-call-float-
-//! {float,cmp}' bridges (see `jit/float.rs').  Residual: Doc 80.4 slim
-//! length/aref/aset primitives (84.3 will port) + syscall-nr resolver
-//! (84.2 will codegen via `build.rs' libc::SYS_* table).
+//! {float,cmp}' bridges (see `jit/float.rs').  Doc 84 §84.2 (2026-05-10)
+//! ported `bi_syscall_nr_resolve' to the auto-generated
+//! `lisp/nelisp-syscall-table.el' (= `build-tool/build.rs' codegen
+//! from `libc::SYS_*'); the `syscall_nr' helper in `eval/builtins.rs'
+//! is the source-of-truth pair (= still consumed by `bi_syscall').
+//! Residual: Doc 80.4 slim length/aref/aset primitives (84.3 will port).
 
 use crate::eval::error::EvalError;
 use crate::eval::sexp::Sexp;
@@ -88,20 +91,4 @@ pub(crate) fn bi_char_table_aset(args: &[Sexp]) -> Result<Sexp, EvalError> {
     })
 }
 
-// ---------- syscall-nr-resolve ------------------------------------
-
-#[cfg(target_os = "linux")]
-pub(crate) fn bi_syscall_nr_resolve(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    crate::eval::builtins::require_arity("nelisp--syscall-nr-resolve", args, 1, Some(1))?;
-    let nr = crate::eval::builtins::syscall_nr(&args[0])?;
-    Ok(Sexp::Int(nr))
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn bi_syscall_nr_resolve(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    let _ = args;
-    Err(EvalError::Internal(
-        "nelisp--syscall-nr-resolve: unsupported platform".into(),
-    ))
-}
 
