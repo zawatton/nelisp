@@ -13,7 +13,14 @@
   orchestrator。pure-elisp 12 ert pass、=readelf -h= で ELF64 / EXEC /
   X86-64 確認、実 process =/tmp/nelisp-elf-test= が exit code 0 で終了。
   freestanding library、nelisp-baker STDLIB_FILES への wire-in は §91.b
-  以降に deferred。Section header / symtab / strtab は §91.b/c で着地
+  以降に deferred
+- *§91.b*: SHIPPED 2026-05-11 (= linkable ELF structure 着地)。
+  Shdr writer + .shstrtab / .strtab / .symtab / .rela.text + rich-plist
+  orchestrator。=lisp/nelisp-elf-write.el= 293 → 821 LOC (+528)、
+  =test/nelisp-elf-write-test.el= 255 → 589 LOC (+334)、22 new ert /
+  累計 34 全 pass、=readelf -s= で =_start= FUNC GLOBAL @ 0x400078、
+  =readelf -r= で =R_X86_64_PC32= 反映、=nm= で =T _start= / =r msg=。
+  詳細は本 doc 末尾 §91.b SHIPPED block 参照
 - *Parent*: Doc 85 (= phase-47-feasibility-spike.org §3.1 / §5.1 /
   §6.1)
 - *Sibling*: Doc 92 (assembler), Doc 93 (linker + syscall), Doc 94 (crt0),
@@ -751,3 +758,62 @@ acceptance: 現実的 elisp source size (= ~2 MB AOT image) で実用速度
   gate の一部
 - =feedback_nelisp_perf_not_elisp_interpreter= — NeLisp 性能特性は Emacs
   Lisp interpreter とは別物、§7.1 elisp 性能 risk 評価で混同しない指針
+
+* §91.b SHIPPED (2026-05-11)
+
+** Scope delivered
+
+§91.b は §91.a の header skeleton に対して、ELF binary の
+**linkable / inspectable** な structure 全てを elisp 側に積み増した:
+
+1. =nelisp-elf-write-shdr= = 64-byte Elf64_Shdr writer。10 field 全て
+   plist で受ける (= sh_name / sh_type / sh_flags / sh_addr /
+   sh_offset / sh_size / sh_link / sh_info / sh_addralign / sh_entsize)
+2. =nelisp-elf-strtab-make= / =nelisp-elf-strtab-add= /
+   =nelisp-elf-strtab-bytes= = string table builder。先頭 NUL の
+   reserved offset 0 を維持しつつ重複 string は dedup (= hash-table で
+   index 化)
+3. =nelisp-elf-write-sym= + =nelisp-elf-sym-info= = 24-byte Elf64_Sym
+   writer + ST_BIND<<4|ST_TYPE pack helper
+4. =nelisp-elf-write-rela= + =nelisp-elf-rela-info= + (内部)
+   =nelisp-elf--write-le64-signed= = 24-byte Elf64_Rela writer。負の
+   r_addend を two's-complement で安全に encode
+5. Reloc type constants: =R_X86_64_64= / =R_X86_64_PC32= /
+   =R_X86_64_PLT32= + section type constants (SHT_*) + section flag
+   constants (SHF_*) + bind/type constants (STB_*/STT_*)
+6. =nelisp-elf-write-binary= rich-plist path = =(:text :rodata
+   :symbols :relocs :entry-sym)= を渡すと ET_EXEC binary を build。
+   .text + (optional) .rodata + .shstrtab + .strtab + .symtab +
+   (optional) .rela.text + Shdr table を全部生成、entry symbol を
+   resolve して e_entry に書く。Symbol は STB_LOCAL を先頭に並べ替え、
+   .symtab の sh_info に first-non-local index を入れる (= gABI 必須)
+
+** Verification
+
+| layer | tool                          | result                       |
+|-------+-------------------------------+------------------------------|
+| L0    | =make compile= (= warn-as-err) | clean (= RC 0)               |
+| L1-2  | ert 34 / 34 pass              | 12 §91.a + 22 §91.b new      |
+| L3    | rich-path exec smoke          | =/tmp/nelisp-elf-test-b= EXIT=0 |
+| L4    | =readelf -h/-S/-s/-r=         | ELF64 EXEC X86-64、=_start= FUNC GLOBAL @ 0x400078、=R_X86_64_PC32 msg - 4= 反映 |
+| L4    | =nm=                          | =T _start= / =r msg=         |
+
+** Files
+
+- =lisp/nelisp-elf-write.el= = 293 → 821 LOC (+528)
+- =test/nelisp-elf-write-test.el= = 255 → 589 LOC (+334)
+- 計 +862 LOC、Doc 91 §6.1 試算 (+475 elisp + +200 ert = +675) を
+  上回るが、Doc 91 §3.5 の "+120 LOC strict budget" 想定外の helper
+  (= =--sym-bind-code= / =--sym-type-code= / =--reloc-type-code= の
+  symbol→constant lookup + =--build-rich= 内 layout 計算) を含めた
+  ぶん膨らんでいる。次 sub-stage 着手時の simplify 余地ありとして memo
+
+** Deferrals to §91.c
+
+- 多 PT_LOAD segment (= R / RW / RX 3-segment 構成、=.data= +
+  =.bss= 専用 segment)
+- =.bss= NOBITS handling (= filesz < memsz の zero-fill)
+- write(2) syscall を実行する 2 nd corpus sample (= Doc 91 §5.3
+  corpus #2)
+- Multi-section reloc routing (= =.rela.data= 等)
+- 性能 tuning (= §7.1 / §91.d 担当)
