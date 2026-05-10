@@ -146,8 +146,14 @@ impl Env {
         // produced by `make bake-images' (= `nelisp-baker' running
         // `image::compile_elisp_to_image' on the source).  At startup
         // we `image::decode_image' the embedded bytes and feed the
-        // resulting `Sexp` forms straight to `eval'; the Rust reader
-        // is no longer touched on the production startup path.
+        // resulting `Sexp` forms straight to `eval'.
+        //
+        // Doc 75 v3 Stage 9.5 (2026-05-10): the wire format under
+        // `decode_image' switched from v2 form-list to v3 frozen-heap
+        // (= `decode_v3_into' returns the strategy-C fallback source
+        // list, which is then read + eval'd here).  STDLIB_IMAGES
+        // entries themselves are bytes the baker wrote — env.rs is
+        // format-agnostic via `image::decode_image'.
         //
         // Order is identical to the pre-Stage-7.7.b STDLIB_SOURCES list
         // (= upstream history preserved in git).  Each comment kept
