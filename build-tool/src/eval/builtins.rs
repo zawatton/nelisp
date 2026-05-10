@@ -410,17 +410,10 @@ pub fn install_builtins(env: &mut Env) {
         "nl-jit-call-out-2",
         "nl-jit-call-out-1i",
         "nl-jit-call-out-2i",
-        // Doc 77b Stage b.4 (2026-05-09) — helper primitives backing
-        // the elisp JIT-strategy wrappers (lisp/nelisp-jit-strategy.el).
-        // See `jit/strategy.rs'.
-        // Phase 7.1.7.a.1 (Doc 28 §3.7.a.1, 2026-05-10): 5 names removed
-        // — `nelisp--int-eq-zero' / `nelisp--logior2-impl' /
-        // `nelisp--logand2-impl' / `nelisp--logxor2-impl' /
-        // `nelisp--ash-impl' moved to elisp.  The strategy.el wrappers
-        // for `nelisp--logior2' / `-logand2' / `-logxor2' / `ash' now
-        // call `nl-jit-call-i64-i64' directly with the matching
-        // `nelisp_jit_arith_*' trampoline name; `nelisp--int-eq-zero'
-        // is an elisp `fset' on top of `nelisp--ref-eq' + `signal'.
+        // Doc 77b Stage b.4 — helper primitives backing the elisp
+        // JIT-strategy wrappers (lisp/nelisp-jit-strategy.el).  Phase
+        // 7.1.7.a.1 (Doc 28 §3.7.a.1) removed `nelisp--int-eq-zero' +
+        // 3 bitwise -impl + ash-impl entries (= moved to elisp).
         "nelisp--add2-float", "nelisp--sub2-float", "nelisp--mul2-float",
         "nelisp--num-eq2-float", "nelisp--num-lt2-float",
         "nelisp--num-gt2-float", "nelisp--num-le2-float",
@@ -769,14 +762,9 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nl-jit-call-out-2" => crate::jit::bi_nl_jit_call_out_2(args),
         "nl-jit-call-out-1i" => crate::jit::bi_nl_jit_call_out_1i(args),
         "nl-jit-call-out-2i" => crate::jit::bi_nl_jit_call_out_2i(args),
-        // Doc 77b Stage b.4 (2026-05-09) — JIT strategy helpers.
-        // Phase 7.1.7.a.1 (Doc 28 §3.7.a.1, 2026-05-10): 5 arms deleted
-        // — `nelisp--int-eq-zero' / `nelisp--logior2-impl' /
-        // `nelisp--logand2-impl' / `nelisp--logxor2-impl' /
-        // `nelisp--ash-impl' moved to elisp on top of the
-        // `nl-jit-call-i64-i64' bridge primitive.  Their dispatch sites
-        // now resolve directly through fcell to elisp wrappers in
-        // `lisp/nelisp-jit-strategy.el'.
+        // Doc 77b Stage b.4 — JIT strategy helpers.  Phase 7.1.7.a.1
+        // (Doc 28 §3.7.a.1) deleted 5 arms (int-eq-zero + 3 bitwise +
+        // ash-impl) — moved to elisp on top of the bridge.
         "nelisp--add2-float" => crate::jit::bi_add2_float(args),
         "nelisp--sub2-float" => crate::jit::bi_sub2_float(args),
         "nelisp--mul2-float" => crate::jit::bi_mul2_float(args),

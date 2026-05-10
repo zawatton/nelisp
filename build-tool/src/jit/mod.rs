@@ -33,15 +33,12 @@ pub(crate) use bridge::{
 };
 mod cons;
 mod predicate;
-// `strategy': Rust helper primitives (Stage b.4) backing the elisp
-// wrappers in `lisp/nelisp-jit-strategy.el' — arith Float helpers,
-// bitwise Int helpers, slim length / aref / aset fall-throughs, and
-// the syscall-nr resolver.  See `strategy.rs' header for the surface.
+// `strategy': Rust helper primitives backing the elisp wrappers in
+// `lisp/nelisp-jit-strategy.el' — arith Float helpers, slim length /
+// aref / aset fall-throughs, syscall-nr resolver.  Phase 7.1.7.a.1
+// (Doc 28 §3.7.a.1, 2026-05-10) ported `bi_int_eq_zero' / 3 bitwise /
+// `bi_ash_impl' to elisp; the residual is permanent Rust pin.
 mod strategy;
-// Phase 7.1.7.a.1 (Doc 28 §3.7.a.1, 2026-05-10): 5 re-exports deleted —
-// `bi_int_eq_zero' / `bi_logior2_impl' / `bi_logand2_impl' /
-// `bi_logxor2_impl' / `bi_ash_impl' moved to elisp on top of the
-// `nl-jit-call-i64-i64' bridge.  See `lisp/nelisp-jit-strategy.el'.
 pub(crate) use strategy::{
     bi_add2_float, bi_bool_vector_len, bi_char_table_aref,
     bi_char_table_aset, bi_mul2_float, bi_mut_str_len, bi_mut_str_set_codepoint,

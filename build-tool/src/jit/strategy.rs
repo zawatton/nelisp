@@ -1,32 +1,22 @@
 //! Rust helper primitives backing the elisp JIT-strategy wrappers in
-//! `lisp/nelisp-jit-strategy.el' (= Doc 77b Stage b.4 + Doc 80
-//! substrate).  Per-fn docstrings cover the contract; the surface
-//! groups into 2 categories post-Phase-7.1.7.a.1 (Doc 28 §3.7.a.1):
+//! `lisp/nelisp-jit-strategy.el'.  Post-Phase-7.1.7.a.1 (Doc 28
+//! §3.7.a.1, 2026-05-10) the surface is 2 permanent residual
+//! categories:
 //!
-//! 1. *Doc 80 §7 permanent out-of-scope* (= cannot be expressed in
-//!    pre-stdlib elisp): `bi_{add,sub,mul}2_float',
-//!    `bi_num_{eq,lt,gt,le,ge}2_float', `bi_syscall_nr_resolve'.
-//!    Float arith / cmp use libm via Rust `f64' ops (1e-15 epsilon
-//!    for `eq2'); `syscall_nr_resolve' wraps the `libc::SYS_*' symbol
-//!    catalog.  These permanent residuals stay because Float epsilon
-//!    arithmetic + host syscall constants cannot be expressed on the
-//!    pre-stdlib elisp substrate.
+//! 1. *Doc 80 §7 permanent out-of-scope*: `bi_{add,sub,mul}2_float',
+//!    `bi_num_{eq,lt,gt,le,ge}2_float', `bi_syscall_nr_resolve' —
+//!    Float epsilon arithmetic + host `libc::SYS_*' constants are
+//!    not expressible on the pre-stdlib elisp substrate.
+//! 2. *Doc 80.4 slim primitives*: `bi_mut_str_len' /
+//!    `bi_bool_vector_len' / `bi_str_codepoint_at' /
+//!    `bi_mut_str_set_codepoint' / `bi_char_table_{aref,aset}' —
+//!    reach into `Sexp' variant boxes the elisp surface cannot
+//!    expose.  Used by elisp `length' / `aref' / `aset' / `elt'
+//!    fall-through arms.
 //!
-//! 2. *Doc 80.4 ship slim primitives* (= reach into `Sexp' variant
-//!    boxes elisp cannot expose): `bi_mut_str_len',
-//!    `bi_bool_vector_len', `bi_str_codepoint_at',
-//!    `bi_mut_str_set_codepoint', `bi_char_table_{aref,aset}'.  Used
-//!    by elisp `length' / `aref' / `aset' / `elt' fall-through arms
-//!    after the JIT trampoline raises ERR.
-//!
-//! Phase 7.1.7.a.1 (Doc 28 §3.7.a.1, 2026-05-10) — DELETED 5 elisp-
-//! port-candidate fns: `bi_int_eq_zero' / `bi_logior2_impl' /
-//! `bi_logand2_impl' / `bi_logxor2_impl' / `bi_ash_impl'.  Their
-//! semantics now live in `lisp/nelisp-jit-strategy.el' as elisp
-//! wrappers on top of `nl-jit-call-i64-i64' (= Float→i64 cast happens
-//! inside the bridge primitive; bitwise / ash trampolines emit raw
-//! i64 ops).  See Doc 28 §3.7.a.1 + the deletion commit message for
-//! the LOC delta accounting.
+//! Phase 7.1.7.a.1 deleted `bi_int_eq_zero' + 3 bitwise + `bi_ash_impl'
+//! (= 5 fns); their semantics now live in `nelisp-jit-strategy.el' on
+//! top of the `nl-jit-call-i64-i64' bridge.
 
 use crate::eval::error::EvalError;
 use crate::eval::sexp::Sexp;
