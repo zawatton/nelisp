@@ -1,0 +1,513 @@
+#+TITLE: Doc 86 — Phase 2: eval/ refactor master design
+#+AUTHOR: NeLisp design
+#+DATE: 2026-05-10
+
+* Status
+
+- *State*: DRAFT (= master design、3 sub-stage を articulate して個別
+  dispatch 可能な状態にする。実装は §86.1 / §86.2 / §86.3 を順次 ship)
+- *Parent*: Doc 83 §6.2 (= Phase 2 着地 ~6,000-8,000 LOC 試算)、Doc 84
+  SHIPPED (= Phase 1 末端 closure、strategy.rs 全消滅)、Doc 80 SHIPPED
+  (= pre-stdlib substrate)
+- *Unlocks*: Phase 2 全 stage SHIPPED 後、build-tool/src/ Rust LOC が
+  21,796 → ~6,000-8,000 (= -13,000〜-15,000 net 削減)、Phase 3 (= 究極
+  D-B 採用、Doc 77c 系列) へ進める
+- *OOS for THIS doc*: 実装作業 (= 各 sub-stage doc で個別 dispatch)、
+  Phase 3 究極 D-B (= Doc 77c master plan)、Phase 47 (= Doc 85 spike +
+  将来 Doc 91-95)
+
+* §0 TL;DR
+
+| 領域 | 現 LOC | 削減試算 | sub-stage doc |
+|---------------------------+--------+----------+---------------|
+| =eval/builtins.rs=        | 3,804  | -2,000〜-3,000 | §86.1     |
+| =eval/error.rs=           | 308    | -308 (= 全消滅) | §86.2  |
+| =eval/env.rs= + 連動      | 564 + ~1,000 | -1,500 (= 連動含む) | §86.3 |
+| *合計 (Phase 2 着地)*     | 21,796 → ~17,000-19,000 | *-3,000〜-5,000 net* | — |
+
+Doc 83 §6.2 が示した「Phase 2 着地 ~6,000-8,000 LOC」は **dispatch arm
+移管の最大効果 (= -3,000) + 連動削減 (= -1,500) + Phase 3 D-B 連動 (=
+-9,500)** を合算した値。本 Doc 86 は **Phase 2 単独で実現する範囲 (=
+-3,000〜-5,000)** に focus、残 -9,500 は Phase 3 (D-B) で別途 attack。
+
+実装順序: §86.1 (= 最大効果) → §86.2 (= 単純) → §86.3 (= 最 risky =
+self-reference 注意)。並列性は限定的 (= §86.1 と §86.3 が同 builtins/env
+の interaction を持つので半並列)。
+
+* §1 Phase 2 全体着地点
+
+** §1.1 Doc 83 §6.2 試算の再検証
+
+Doc 83 §6.2 (2026-05-09 執筆) が提示した値:
+
+- =builtins.rs= dispatch arm 全 elisp 移管 = -2,000〜-3,000 LOC
+- =error.rs= を =nelisp-stdlib-error.el= に移管 = -500 LOC
+- =env.rs= scope chain elisp 化 = -1,500 LOC
+
+実態 (2026-05-10 grep):
+
+| 領域           | Doc 83 試算 | 実測  | 差分                         |
+|----------------+-------------+-------+------------------------------|
+| =builtins.rs=  | (= 削減 -2,000〜-3,000) | 3,804 LOC 全体 | OK、削減上限は 3,804 |
+| =error.rs=     | -500        | 308   | -192 (= Doc 83 試算過大、実態は -308 が上限) |
+| =env.rs=       | (= 削減 -1,500、連動含む) | 564 LOC 単独 | env.rs 単独で -564、残 -936 は連動先 |
+
+*** Doc 83 §6.2 着地 ~6,000-8,000 LOC の内訳推定
+
+Doc 83 §6.2 表で「Phase 2 着地」が ~6,000-8,000 とされていたが、現 21,796
+からの削減試算合計 (-3,000+-308+-564 = -3,872) では ~17,924 にしか着地
+しない。差分 ~10,000-12,000 LOC は **Phase 3 (= 究極 D-B) で連動削減**
+される領域 (= =eval/sexp.rs= 979 + =eval/ffi.rs= 820 + =eval/mod.rs=
+848 + =eval/special_forms.rs= 572 + =eval/ffi.rs= 820 + =eval/nlconsbox.rs=
+654 + =eval/nlrc.rs= 566 + =eval/rc_primitives.rs= 464 + =image.rs= 1,503
++ =reader/= 1,370 + =bridge.rs= 884 + =jit/= 残 etc.)。
+
+つまり Doc 86 (Phase 2) 単独では ~17,000-19,000 LOC 着地が現実的。
+Doc 83 §6.2 の "~6,000-8,000" は Phase 2 + Phase 3 の合算値と解釈すべき。
+
+** §1.2 Phase 2 単独着地点定義
+
+| sub-stage | scope                          | 削減試算 | 着地 (累積)  |
+|-----------+--------------------------------+----------+--------------|
+| §86.1     | builtins.rs dispatch arm 移管  | -2,000〜-3,000 | 18,800-19,800 |
+| §86.2     | error.rs → nelisp-stdlib-error.el | -308 | 18,500-19,500 |
+| §86.3     | env.rs scope chain + 連動 (mod.rs / special_forms.rs / ffi.rs) | -1,500 | 17,000-18,000 |
+| *合計*    | *Phase 2 着地*                 | *-3,808〜-4,808* | *~17,000-19,000* |
+
+* §2 builtins.rs 解剖 (= 3,804 LOC, 17.5% of build-tool/src/)
+
+** §2.1 構造
+
+- =install_builtins(env: &mut Env)= line 35 - global env に builtin
+  symbol を install する 1 関数 (= 約 420 LOC)
+- =dispatch(name: &str, args: &[Sexp], env: &mut Env)= line 458 -
+  builtin call 時の large match expression (= ~390 LOC、67 dispatch
+  arm)
+- =bi_*= helper fns line 850-3,800 - 各 builtin の Rust 実装 (= ~25
+  個、各 ~50-200 LOC)
+
+** §2.2 dispatch arm 67 件の categorization
+
+source-grep で発見した 67 個 (= =^\s*"nelisp--= count) の dispatch
+arm を Tier 別に分類:
+
+*** §2.2.1 Tier 1: pure elisp 移管可 (= 推定 ~30 arm)
+
+新 ABI mode 不要、既存 =nl-jit-call-out-*= bridge で対応可能、または
+elisp で直接実装可能:
+
+- 算術系 (= div / sxhash / equal / ref-eq) ← Doc 84 §84.1 同 pattern
+- predicate (= integerp / floatp / stringp / consp / etc.)
+- type 系 (= type-of)
+- record 系 (= make-record / record-ref / record-set / record-length /
+  record-type / recordp)
+- intern / make-symbol / symbol-name
+- 単純な string 系 (= string-bytes)
+
+*** §2.2.2 Tier 2: 新 ABI mode + bridge primitive 必要 (= 推定 ~25 arm)
+
+Doc 81 trampoline ABI を拡張する必要、または特殊 calling convention:
+
+- =bi_make_mut_string= (= 可変長 byte array)
+- =bi_concat_ints= (= variadic byte stream)
+- =bi_string_match_p= (= regex match、外部 backend 必要)
+- =bi_syscall_canonicalize= (= path normalize、syscall 連携)
+- ffi 系 (= libc bridge 経由)
+
+*** §2.2.3 Tier 3: 環境への副作用が深い (= 推定 ~12 arm)
+
+=Env= 内部 state を直接読み書き、§86.3 (= env.rs elisp 化) と統合する
+必要:
+
+- special form 関連 (= setq / set / boundp / unbound)
+- scope chain manipulation
+- dynamic binding stack push/pop
+
+** §2.3 helper fns 削減先
+
+=bi_*= helper fn (= 25 個程度) のうち:
+- Tier 1 の bi_* = elisp 直接実装、Rust 関数本体ごと削除
+- Tier 2 の bi_* = trampoline 経由で elisp wrapper、Rust shim は ~10
+  LOC まで縮減
+- Tier 3 の bi_* = §86.3 完了まで残置
+
+平均削減: 1 helper あたり ~50-100 LOC、25 個 = -1,500〜-2,500 LOC。
+
+** §2.4 install_builtins 削減
+
+420 LOC の install_builtins は dispatch arm 数に比例。67 arm のうち:
+- Tier 1 移管時: -30 entries × 6 LOC/entry = -180
+- Tier 2 移管時: -25 entries × 4 LOC/entry = -100 (= bridge entries 残)
+- Tier 3 移管時: -12 entries × 6 LOC/entry = -72
+
+合計 install_builtins 削減: -350 LOC、残 ~70 LOC。
+
+** §2.5 dispatch 関数 削減
+
+390 LOC の dispatch match expression は arm 数 × 5-8 LOC。67 arm 全消滅
+で -390 LOC。残るのは関数 signature + comment ~30 LOC。
+
+* §3 error.rs 解剖 (= 308 LOC)
+
+** §3.1 構造
+
+- =SourcePos= struct (line 32-44)
+- =ReadError= enum (line 49-101) — 4 variants:
+  - =Lex { msg, pos }=
+  - =Parse { msg, pos }=
+  - =UnexpectedEof { msg, pos }=
+  - =NotYetImplemented { feature, pos }=
+- =EvalError= enum (推定 line 100-220) — variants:
+  - =Internal=, =WrongType=, =ArithError=, =UnboundSymbol=,
+    =UndefinedFunction=, =VoidVariable=, =ApplyToNonClosure=, etc.
+- =Display= / =From= / helper fn implementations
+
+** §3.2 elisp signal contract への移管
+
+elisp 側には既に =signal= / =error= / =wrong-type-argument= /
+=void-variable= 等の condition system が存在 (= Doc 80 pre-stdlib
+substrate で Stage 80.1〜80.5 で establish 済)。
+
+移管 surface:
+- Rust =EvalError::WrongType= → elisp =(signal 'wrong-type-argument
+  args)=
+- Rust =EvalError::ArithError= → elisp =(signal 'arith-error args)=
+- Rust =ReadError::Lex= → elisp =(signal 'invalid-read-syntax args)=
+- etc.
+
+eval loop 内部で =Result<Sexp, EvalError>= を扱う Rust 部分を、elisp の
+=condition-case= / =unwind-protect= に切り替える。
+
+** §3.3 nelisp-stdlib-error.el (= 新規作成)
+
+新 file =lisp/nelisp-stdlib-error.el= (= 推定 ~250 elisp LOC):
+- condition symbol の =put 'name 'error-conditions= form
+- signal data structure の elisp accessor
+- =error-message-string=, =define-error= macro
+
+Rust 側に残るのは =EvalError::Internal= 1 variant (= elisp で recover
+不能な panic 等価)。残 ~30-50 LOC。
+
+** §3.4 削減試算
+
+- =error.rs= 308 LOC → 30-50 LOC = **-258〜-278 削減**
+- 新規 elisp = +250 LOC
+
+net Rust = -258〜-278。
+
+* §4 env.rs 解剖 (= 564 LOC)
+
+** §4.1 構造
+
+- =SymbolEntry= struct (line 47, ~40 LOC) - per-symbol value + plist +
+  function slot
+- =Env= struct (line 92, ~60 LOC) - global symbol table + lexical
+  scope stack + special variable bindings
+- impl Env (= 推定 line 150-560) - lookup / set / push-scope /
+  pop-scope / bind-special / etc.
+
+** §4.2 elisp 化の工法
+
+Env / SymbolEntry を elisp 側で表現するには:
+
+*** §4.2.1 option A: alist + hash table
+
+- 全 global symbol = =nelisp--global-env= hash-table
+- lexical scope stack = elisp =let= form の native stack 利用
+- special binding = elisp =defvar= / =setq-default= 利用
+
+trade-off: elisp の native scoping を全活用 = elegant だが、Rust 側で
+保持していた C-level efficient lookup を失う
+
+*** §4.2.2 option B: payload pointer 経由 (= Doc 81 ABI mode 拡張)
+
+- Env / SymbolEntry の memory layout を pin
+- elisp が payload pointer 経由で直接アクセス
+- Tier 1/2 と互換性高い
+
+trade-off: Rust 側に layout pin が残る、純 elisp 度が落ちる
+
+*** §4.2.3 推奨
+
+option A を base、Tier 2 builtin が hot path として hit する symbol
+lookup のみ option B (= cache 構造)。
+
+** §4.3 連動削減
+
+env.rs を elisp 化すると、env.rs に依存する周辺 file も連動して縮減:
+
+| file                       | 現 LOC | 削減試算 | 理由                  |
+|----------------------------+--------+----------+-----------------------|
+| =eval/mod.rs=              | 848    | -200     | dispatch entry の elisp 化で連動 |
+| =eval/special_forms.rs=    | 572    | -300     | setq / let / lambda の env 操作が elisp 側に移る |
+| =eval/ffi.rs=              | 820    | -100     | env-aware ffi marshalling 縮減 |
+| =eval/builtins.rs= 残      | (+86.1 後) | -200 | Tier 3 dispatch arm の最終消滅 |
+| *連動小計*                 | 2,240+  | *-800*   | (= env.rs 単独 -564 + 連動 -800 = -1,364〜-1,500) |
+
+** §4.4 削減試算
+
+- =env.rs= 564 LOC → ~50 LOC stub = **-514**
+- 連動: 上記 4 file で -800
+- 新規 elisp = +700 LOC (= scope chain + lookup + bind helper)
+
+net Rust = -1,314。
+
+* §5 §86.1 builtins dispatch arm migration design
+
+** §5.1 scope
+
+builtins.rs 3,804 LOC のうち:
+- Tier 1 (= 30 arm) を全 elisp 移管 = -1,500〜-2,000
+- Tier 2 (= 25 arm) のうち trampoline 容易な arm (= 約 15) = -800
+- Tier 3 (= 12 arm) は §86.3 まで保留
+
+§86.1 単独 削減目標: **-2,000〜-2,800 Rust net** (= elisp 移管 + 新規
++700 elisp 投資)。
+
+** §5.2 sub-stage 分割
+
+| sub-stage | scope                         | 工数  | LOC delta |
+|-----------+-------------------------------+-------+-----------|
+| §86.1.a   | Tier 1 predicate / type-of 移管 | 2 day | -300      |
+| §86.1.b   | Tier 1 算術 / equal / ref-eq 移管 | 3 day | -500      |
+| §86.1.c   | Tier 1 record 系 移管         | 2 day | -400      |
+| §86.1.d   | Tier 1 intern / symbol 移管   | 2 day | -300      |
+| §86.1.e   | Tier 2 簡単な arm 移管 (= concat / string-bytes) | 3 day | -400 |
+| §86.1.f   | Tier 2 trampoline ABI 拡張 + 残 arm | 4 day | -800 |
+| §86.1.g   | install_builtins / dispatch 縮減 | 2 day | -300 |
+
+合計工数: ~18 day、削減 -3,000 LOC、新規 elisp +700。
+
+** §5.3 ERT
+
+- 各 arm の round-trip test (= elisp wrapper → trampoline → result)
+- 既存 builtin の callers (= test/ ディレクトリ全体) は無変更で動く
+  ことを verify
+- perf regression check (= Tier 1/2 移管後の hot path latency)
+
+** §5.4 sub-stage 並列性
+
+§86.1.a-d は独立 = 並列 dispatch 可能、§86.1.e-f は ABI 拡張共有 = 半
+並列、§86.1.g は最後に直列。
+
+* §6 §86.2 error.rs migration design
+
+** §6.1 scope
+
+- =EvalError= variants (= 8-12 個推定) を elisp condition に 1:1 mapping
+- =ReadError= variants (= 4 個) を elisp =invalid-read-syntax= 系に
+  mapping
+- error.rs ファイル自体を ~30-50 LOC まで縮減 (= =Internal= variant
+  のみ残置)
+- 新規 =lisp/nelisp-stdlib-error.el= 作成
+
+** §6.2 工数
+
+- 1 sub-stage で完結 = 2-3 day
+- 削減 -258〜-278、新規 elisp +250
+
+** §6.3 risk
+
+- elisp condition system (= signal / condition-case) が Doc 80
+  pre-stdlib substrate に既存、互換性確認のみ
+- backtrace info の loss possibility = 各 signal で SourcePos を
+  elisp data として運ぶ必要
+
+* §7 §86.3 env.rs scope chain elisp 化
+
+** §7.1 scope
+
+- =Env= struct を elisp =nelisp--global-env= hash-table に置換
+- =SymbolEntry= struct を elisp plist (= =(:value V :function F :plist
+  P)=) に置換
+- lexical scope stack を elisp native =let= で実現
+- special binding stack を elisp =defvar= で実現
+- Tier 3 dispatch arm (= 12 個) を §86.1 完了後に統合
+
+** §7.2 elisp implementation strategy
+
+3-step implementation:
+
+1. *§86.3.a precursor*: =nelisp--global-env= hash-table 作成、空 stub
+   (Rust の Env と coexist)
+2. *§86.3.b shadow path*: elisp 側で env-lookup を実装、Rust の Env と
+   同期 (= dual-path、performance 検証用)
+3. *§86.3.c switch-over*: Rust Env 削除、全 lookup を elisp に switch、
+   連動 file の env reference を elisp 化
+
+** §7.3 連動削減
+
+- =eval/mod.rs= で =Env= field reference を elisp 経由に書き換え =
+  -200 LOC
+- =eval/special_forms.rs= で setq / let / lambda の env 操作を elisp
+  に委譲 = -300 LOC
+- =eval/ffi.rs= で env-aware marshalling を elisp に移す = -100 LOC
+- =eval/builtins.rs= 残 Tier 3 arm 消滅 = -200 LOC
+
+** §7.4 工数
+
+- §86.3.a precursor: 3 day
+- §86.3.b shadow path: 5 day
+- §86.3.c switch-over: 5 day
+- 合計: ~13 day
+
+** §7.5 risk (= self-reference / infinite loop)
+
+elisp が自身の env を実装すると、=defvar= macro 自体の expand 中に env
+lookup が必要 = chicken-and-egg。
+
+解決策:
+- Tier 0 minimal env を Rust に残置 (= ~50 LOC)、defvar / setq-default
+  / let の最低限の dispatch のみ提供
+- elisp が自身を bootstrap してから extended env を起動
+
+これが最大の risk。precursor stage で実機検証必要。
+
+* §8 sub-stage 順序 / 並列性
+
+** §8.1 dependency graph
+
+#+begin_src text
+                 [Doc 84 SHIPPED]
+                       |
+                       v
+        +------[§86.2 error.rs]-------+
+        |                              |
+        v                              |
+   [§86.1 builtins (Tier 1+2)]         |
+        |                              |
+        v                              |
+        +-----[§86.1 builtins Tier 3]--+
+                       |
+                       v
+              [§86.3 env.rs]
+                       |
+                       v
+              [§86.3 連動削減]
+                       |
+                       v
+              [Phase 2 着地]
+#+end_src
+
+並列度: §86.2 と §86.1 (= Tier 1/2) は並列可能。§86.3 は §86.1 (=
+Tier 3) の後。最大 2 stream 同時。
+
+** §8.2 milestone
+
+- M1: §86.2 SHIPPED = error.rs 移管完了、elisp condition system 統合
+- M2: §86.1 Tier 1 SHIPPED = pure elisp 直接移管 30 arm = -1,500
+- M3: §86.1 Tier 2 SHIPPED = trampoline 経由 25 arm = -800
+- M4: §86.1.g SHIPPED = install_builtins / dispatch 縮減 = -300
+- M5: §86.3 SHIPPED = env.rs elisp 化 + 連動削減 = -1,500
+- *Phase 2 完遂*: build-tool/src/ ~17,000-19,000 LOC
+
+期間試算: ~2-3 ヶ月 (= 2 並列 stream で 2 ヶ月、1 並列で 3 ヶ月)
+
+* §9 Risk / unknowns
+
+** §9.1 perf regression
+
+builtin dispatch の hot path が elisp に移ると、interpreter overhead +
+ABI marshalling cost が積もる。Tier 1 移管前後で micro-bench 必要。
+
+対策:
+- nelisp-cc の AOT compile で Tier 1 elisp wrapper も native code 化
+- =:trampoline-*= ABI mode 経由で marshalling overhead を最小化
+- bench gate (= fib 30x perf) に Tier 1 wrapper を含む
+
+** §9.2 type marshalling overhead
+
+Sexp の box accessor を elisp 経由で叩くと、Rust 直接 access に対して
+~10x overhead の可能性。Doc 84 §84.3 で box accessor を elisp 化した
+pattern を流用。
+
+** §9.3 Tier 3 → §86.3 cycle
+
+builtins Tier 3 (= 12 arm、env 操作系) を §86.1 で elisp 化しようと
+すると env.rs の elisp 化が precondition だが、env.rs elisp 化には
+Tier 1 の minimal elisp infrastructure が precondition = chicken-and-egg。
+
+解決策:
+- §86.3.a precursor で minimal env を elisp 側に確立
+- §86.1 Tier 3 は §86.3.a 完了後に着手 (= 直列依存)
+
+** §9.4 Doc 83 §6.2 試算との乖離
+
+Doc 83 が示した「Phase 2 着地 ~6,000-8,000」は Phase 3 連動削減を含む
+値。本 Doc 86 は Phase 2 単独 = ~17,000-19,000 着地。差分 ~10,000 は
+Phase 3 (= 究極 D-B / Doc 77c) で別途削減する旨を Doc 83 §6.2 に追記
+する update が必要。
+
+** §9.5 ERT coverage
+
+builtins.rs 3,804 LOC の全 arm が elisp 化されると、現 test suite (=
+=test/= 配下 ~2,700 ERT) が引き続き green を保つこと、新 elisp wrapper
+の round-trip ERT を追加することの両方が必要。
+
+* §10 ROI 試算
+
+** §10.1 LOC 投資 vs 削減
+
+| sub-stage | elisp 投資 | Rust 削減  | 比率 (= elisp:Rust) |
+|-----------+------------+------------+---------------------|
+| §86.1     | ~700       | -2,000〜-3,000 | 0.27:1 (= 優) |
+| §86.2     | ~250       | -258〜-278 | 0.95:1 (= ほぼ 1:1)  |
+| §86.3     | ~700       | -1,314     | 0.53:1 (= 良)        |
+| *合計*    | *~1,650*   | *-3,572〜-4,592* | *0.36-0.46:1 (= 優)* |
+
+Phase 2 ROI は **1 elisp 投資で 2-3 Rust 削減** = Phase 1 (= 1.5:1) よ
+り optimal。
+
+** §10.2 Phase 1 / Phase 47 比較
+
+| Phase    | 投資 ratio | 期間試算  |
+|----------+------------+-----------|
+| Phase 1 (= Doc 73-84) | 1.5:1 | ~3 ヶ月 (= 完了) |
+| *Phase 2 (= Doc 86)*  | *0.36-0.46:1* | *~2-3 ヶ月* |
+| Phase 3 (= Doc 77c D-B) | (= 別 ROI 試算) | ~3 ヶ月 |
+| Phase 47 (= Doc 85 spike) | 0.5:1 | ~6-9 ヶ月 (= 保留) |
+
+Phase 2 は ROI 最高 = 並列 dispatch で短期に大削減。
+
+* §11 References
+
+** internal NeLisp design docs
+
+- Doc 73-84 (= Phase 1 全 SHIPPED)
+- Doc 80 (= elisp-pre-stdlib-substrate.org) — pre-stdlib elisp infra
+  (= signal / condition / cond / not / etc.)、本 Doc 86 §86.2 / §86.3
+  の precondition
+- Doc 81 (= nelisp-cc-primitive-trampoline-extension.org) — ABI mode
+  pattern (= §86.1 Tier 2 拡張で active 利用)
+- Doc 83 (= 100pct-pure-elisp-roadmap-consolidated.org) — 本 Doc 86 の
+  parent、§6.2 で Phase 2 試算を articulated
+- Doc 84 (= strategy-rs-final-elisp-ization.org SHIPPED) — Phase 1
+  末端、=strategy.rs= 全消滅 + Doc 80 §7 OOS unlock
+- Doc 85 (= phase-47-feasibility-spike.org) — 究極 0 Rust 路線 spike
+  (= Phase 2 後、Phase 3 後に再評価)
+
+** 派生候補 design doc (= 本 Doc 86 ship 中に起こす)
+
+- Doc 87 = §86.1 builtins dispatch arm migration detailed (= 約 18
+  day 工程の sub-stage articulation)
+- Doc 88 = §86.2 error.rs migration detailed (= 2-3 day)
+- Doc 89 = §86.3 env.rs scope chain elisp 化 detailed (= ~13 day)
+- Doc 90 = Phase 2 連動削減 audit (= mod.rs / special_forms.rs /
+  ffi.rs の env reference 削減 articulation)
+
+(注: Doc 85 §9 は元々 "Phase 47 候補 = Doc 86-90" を予約していたが、
+Phase 2 が時系列的に先に来るため Phase 47 候補を Doc 91-95 に renumber
+する。本 commit で Doc 85 §9 を update。)
+
+** 関連 memory
+
+- =project_anvil_runtime_phase_b6_shipped= (= NeLisp standalone MCP)
+- =feedback_nelisp_runtime_vs_elisp_language= (= NeLisp = runtime、
+  elisp = 構文)
+
+** external prior art
+
+- SBCL Common Lisp = builtin の多くが Common Lisp 自身で書かれた pattern
+- GHC = Haskell builtin の Haskell 移管 pattern
+- Emacs = many subr (Rust 側 builtin 等価) を elisp lib で wrap する
+  pattern

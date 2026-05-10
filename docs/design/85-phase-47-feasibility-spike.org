@@ -534,8 +534,12 @@ Phase 47 完遂後も:
 
 ** 派生候補 design doc (= 本 doc go の場合)
 
-- Doc 86 = elisp ELF writer (= ~500 elisp 投資)
-- Doc 87 = elisp macro assembler 拡張 (= ~800 elisp、nelisp-cc 流用)
-- Doc 88 = elisp static linker + syscall inline (= ~300 elisp)
-- Doc 89 = crt0 + boot loader elisp (= ~150 elisp)
-- Doc 90 = Sexp layout DSL + compiler lower (= ~150 elisp)
+(注: 当初 Doc 86-90 を予約していたが、Phase 2 が時系列的に先に来るため
+Doc 86 を Phase 2 master design に割り当て。Phase 47 候補は Doc 91-95
+に renumber 済 = 2026-05-10 update。)
+
+- Doc 91 = elisp ELF writer (= ~500 elisp 投資)
+- Doc 92 = elisp macro assembler 拡張 (= ~800 elisp、nelisp-cc 流用)
+- Doc 93 = elisp static linker + syscall inline (= ~300 elisp)
+- Doc 94 = crt0 + boot loader elisp (= ~150 elisp)
+- Doc 95 = Sexp layout DSL + compiler lower (= ~150 elisp)
