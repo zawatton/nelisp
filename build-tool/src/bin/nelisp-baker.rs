@@ -52,6 +52,12 @@ const STDLIB_FILES: &[&str] = &[
     // only Tier 1 special forms + Rust builtins + Doc 80 substrate.
     "nelisp-jit-strategy.el",
     "nelisp-stdlib-eval-special.el",
+    // Doc 86 §86.2 (2026-05-10): elisp condition system substrate
+    // (= `define-error', `error-message-string', condition registry).
+    // Loads AFTER eval-special so `defmacro' / `defun' / `cond' are
+    // live, BEFORE `nelisp-stdlib.el' so the basic stdlib can rely on
+    // declared conditions.  See `lisp/nelisp-stdlib-error.el'.
+    "nelisp-stdlib-error.el",
     "nelisp-stdlib.el",
     "nelisp-stdlib-list.el",
     "nelisp-stdlib-hof.el",

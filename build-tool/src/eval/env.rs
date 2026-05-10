@@ -176,6 +176,10 @@ impl Env {
             // the wrapped names.  See `lisp/nelisp-jit-strategy.el'.
             ("nelisp-jit-strategy.el", include_bytes!("../../../lisp/nelisp-jit-strategy.el.image")),
             ("nelisp-stdlib-eval-special.el", include_bytes!("../../../lisp/nelisp-stdlib-eval-special.el.image")),
+            // Doc 86 §86.2 (2026-05-10): elisp condition system
+            // substrate.  See `nelisp-baker.rs' for the load-order
+            // rationale.
+            ("nelisp-stdlib-error.el", include_bytes!("../../../lisp/nelisp-stdlib-error.el.image")),
             ("nelisp-stdlib.el", include_bytes!("../../../lisp/nelisp-stdlib.el.image")),
             ("nelisp-stdlib-list.el", include_bytes!("../../../lisp/nelisp-stdlib-list.el.image")),
             ("nelisp-stdlib-hof.el", include_bytes!("../../../lisp/nelisp-stdlib-hof.el.image")),

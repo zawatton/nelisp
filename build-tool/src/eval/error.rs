@@ -1,32 +1,13 @@
-//! Evaluator error type — Phase 8.0.2 (Doc 44 §3.3 LOCKED).
-//!
-//! Contract per Doc 44 §4.3:
-//!   - never panic on user-input error
-//!   - `condition-case` is implemented as a `Result` unwind through
-//!     a dedicated handler stack inside the evaluator (no Rust panic)
-//!   - the variant set is *closed enough* that `condition-case` can
-//!     pattern-match on the Elisp error symbol (= the [`error_tag`]
-//!     accessor returns the canonical symbol name a `condition-case`
-//!     clause would catch on)
-//!
-//! The variants are deliberately broad rather than fine-grained — the
-//! bootstrap interpreter only needs the handful of error tags that the
-//! NeLisp source actually `signal`s on the cold-init path; richer
-//! variants can be folded in once the takeover bridge (Phase 8.0.3)
-//! lands and the GNU Emacs error hierarchy needs to round-trip.
+//! Evaluator error type (Doc 44 §3.3, Doc 86 §86.2 elisp-side mirror
+//! in `lisp/nelisp-stdlib-error.el').  `condition-case' unwinds via
+//! `Result<_, EvalError>'; [`EvalError::error_tag`] returns the Elisp
+//! symbol a clause would catch on.  Read-side errors live here too
+//! since the reader is dev-tooling and the production runtime must
+//! reach `EvalError::Read'.
 
 use std::fmt;
 
 use super::sexp::Sexp;
-
-// ---------------------------------------------------------------------------
-// Read-side errors — *eval-owned* since Phase 8 Stage 8.1 (Doc 73,
-// 2026-05-08).  Originally lived in `reader/error.rs' but the reader
-// is feature-gated to dev tooling in Stage 8.4, so the error type
-// must live where production code (= `EvalError::Read' variant) can
-// always reach it.  History preserved via `git rm reader/error.rs'
-// + content merged here verbatim.
-// ---------------------------------------------------------------------------
 
 /// Source position, 1-indexed line + column.  Tracked at the byte
 /// level (= multibyte chars cost their UTF-8 byte width in `col`,
@@ -124,60 +105,42 @@ impl fmt::Display for ReadError {
 
 impl std::error::Error for ReadError {}
 
-/// All the ways the evaluator can fail.  `condition-case` clauses
-/// pattern-match on [`EvalError::error_tag`] which returns the Elisp
-/// symbol the clause would name (e.g. `"void-variable"`,
-/// `"wrong-type-argument"`, `"error"`).
+/// Evaluator failure modes.  `condition-case' pattern-matches via
+/// [`EvalError::error_tag`].  Conditions / parents / messages mirrored
+/// in `lisp/nelisp-stdlib-error.el' (Doc 86 §86.2).
 #[derive(Debug, Clone, PartialEq)]
 pub enum EvalError {
-    /// `(symbol-value 'foo)` for a never-bound symbol → `void-variable`.
+    /// `void-variable' — `(symbol-value 'foo)' on never-bound symbol.
     UnboundVariable(String),
-    /// `(funcall 'foo)` for a never-defun'd symbol → `void-function`.
+    /// `void-function' — `(funcall 'foo)' on never-defun'd symbol.
     UnboundFunction(String),
-    /// Argument did not match the operator's expected type
-    /// (e.g. `(+ 'a 1)`, `(car 1)`) → `wrong-type-argument`.
-    WrongType {
-        /// Human-readable predicate name (`"numberp"`, `"listp"`, …).
-        expected: String,
-        /// The offending value.
-        got: Sexp,
-    },
-    /// Argument count mismatch on a built-in or interpreted lambda
-    /// → `wrong-number-of-arguments`.
+    /// `wrong-type-argument' — `(+ 'a 1)', `(car 1)', etc.
+    WrongType { expected: String, got: Sexp },
+    /// `wrong-number-of-arguments' — arity mismatch.
     WrongNumberOfArguments {
         function: String,
         expected: String,
         got: usize,
     },
-    /// `(/ 1 0)` and friends → `arith-error`.
+    /// `arith-error' — `(/ 1 0)' and friends.
     ArithError(String),
-    /// `(signal 'my-tag DATA)` raised by user code.  The tag is
-    /// preserved as a symbol name; the data is the cdr of the signal.
-    /// `condition-case` matches against [`EvalError::error_tag`] which
-    /// returns `tag.clone()`.
-    UserError {
-        /// Symbol name the user passed to `signal`.
-        tag: String,
-        /// Data list (already as a Lisp list, not raw arguments).
-        data: Sexp,
-    },
-    /// `(throw TAG VALUE)` walked off the top of the catch stack.
-    /// Surfaced as `(no-catch TAG VALUE)` to match Emacs.
+    /// User `(signal 'TAG DATA)' for non-canonical tags.  `error_tag'
+    /// returns `tag', `signal_data' returns `data' verbatim.
+    UserError { tag: String, data: Sexp },
+    /// `no-catch' — `(throw TAG VALUE)' off the top of the catch stack.
     UncaughtThrow { tag: Sexp, value: Sexp },
-    /// `setq`/`set` of a constant symbol such as `nil` or `t`.
+    /// `setting-constant' — `(setq nil 1)' / `(set 't 1)' / etc.
     SettingConstant(String),
-    /// Attempted to read a `#'foo`-style or `#[...]`-style construct
-    /// that the bootstrap reader / evaluator does not yet understand.
+    /// `error' — bootstrap reader / evaluator hits a deferred construct.
     NotImplemented(String),
-    /// Underlying read error surfaced through [`From<ReadError>`].
+    /// `invalid-read-syntax' — read-side error surfaced via
+    /// `From<ReadError>'.
     Read(ReadError),
-    /// `C-g` / `(signal 'quit nil)` — control-flow interrupt that is
-    /// distinct from `error`.  Per the Elisp manual, the universal
-    /// `error` clause does **not** catch `quit`; only an explicit
-    /// `quit` clause (or `t`) does.  Doc 51 Track M (2026-05-04).
+    /// `quit' — `C-g' / `(signal 'quit nil)'.  Distinct from `error':
+    /// the universal `error' clause does NOT catch it (Doc 51 Track M).
     Quit,
-    /// Catch-all for evaluator bugs that should never fire on valid
-    /// user input (we still keep it as `Result::Err`, never `panic!`).
+    /// `error' (catch-all) — evaluator bug that should never fire on
+    /// valid user input.  Kept as `Result::Err`, never `panic!'.
     Internal(String),
 }
 
