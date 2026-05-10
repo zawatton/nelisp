@@ -532,7 +532,60 @@ NeLisp doesn't expose `gcs-done' / `gc-elapsed' separately."
             (when id
               (push (anvil-server-unregister-tool id server-id)
                     results)))))
-      (nreverse results))))
+      (nreverse results)))
+
+  ;; `anvil-server--to-json-value' converts plists to alists for JSON
+  ;; encoding via:
+  ;;   (cl-loop for (k v) on x by #'cddr
+  ;;            collect (cons (intern ...) (--to-json-value v)))
+  ;; The same NeLisp `cl-loop` destructuring bug drops every key/value
+  ;; pair, so the alist is nil → `json-encode' emits "null".  This
+  ;; manifests in tools/call as `text:"null"' for every plist-returning
+  ;; handler (= memory-list / memory-search / worklog-list / etc).
+  ;; Replace the plist branch with a hand-rolled walk; also replace
+  ;; `proper-list-p' detection with a hand-rolled cdr walk because
+  ;; NeLisp's `proper-list-p' has been observed misclassifying proper
+  ;; lists containing plists as improper (= ((:file ...)) was hitting
+  ;; the dotted-pair branch and emitting `[obj, null]' tail) — the
+  ;; resulting `[..., null]' surfaced as a phantom trailing entry on
+  ;; every list-of-plists response.
+  (when (and (featurep 'anvil-server)
+             (fboundp 'anvil-server--plist-p)
+             (fboundp 'anvil-server--list-to-json-array))
+    (defun anvil-server--to-json-value (x)
+      "Polyfill override: plist branch + proper/improper detection are
+hand-rolled to side-step NeLisp's `cl-loop' destructuring + brittle
+`proper-list-p' returning nil for proper plist-bearing lists."
+      (cond
+       ((or (null x) (eq x t) (numberp x)) x)
+       ((stringp x) x)
+       ((keywordp x) (substring (symbol-name x) 1))
+       ((symbolp x) (symbol-name x))
+       ((vectorp x)
+        (vconcat (mapcar #'anvil-server--to-json-value x)))
+       ((anvil-server--plist-p x)
+        (let ((tail x)
+              (alist nil))
+          (while tail
+            (let* ((k (car tail))
+                   (v (cadr tail))
+                   (kn (substring (symbol-name k) 1)))
+              (push (cons (intern kn)
+                          (anvil-server--to-json-value v))
+                    alist))
+            (setq tail (cddr tail)))
+          (nreverse alist)))
+       ((consp x)
+        ;; Walk the cdr-chain manually — when we exhaust to nil it's a
+        ;; proper list, otherwise it's a dotted pair.  Avoids NeLisp's
+        ;; misbehaving `proper-list-p'.
+        (let ((tail x))
+          (while (consp tail) (setq tail (cdr tail)))
+          (if (null tail)
+              (anvil-server--list-to-json-array x)
+            (vector (anvil-server--to-json-value (car x))
+                    (anvil-server--to-json-value (cdr x))))))
+       (t x)))))
 
 
 ;; --- post-load patches (anvil-* module compat) ---------------------
