@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# anvil-runtime-daemon — persistent daemon controller for `bin/anvil-runtime`
+#
+# Lifecycle:
+#   start    — cold-load anvil-runtime once, leave it reading from a FIFO
+#              so subsequent MCP sessions reuse the warm process.
+#   stop     — kill the daemon + the keep-alive writer.
+#   status   — report running / stopped.
+#   logs     — tail the daemon stderr log.
+#
+# Drop-in for `.mcp.json` is `anvil-runtime-stdio` (sibling script).
+#
+# Why FIFO + keep-alive (= `sleep infinity > IN_FIFO`):
+#   The daemon reads MCP frames from `IN_FIFO`.  Without a permanent
+#   writer the read returns EOF as soon as a bridge process exits and
+#   the daemon would terminate.  The keep-alive holds the writer end
+#   open across the daemon's lifetime so individual bridge processes
+#   can come and go.  Single-bridge concurrency only — multiplexing N
+#   sessions onto one daemon would interleave Content-Length frames
+#   and is deferred to v2 (= per-session UNIX socket + dispatcher).
+
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ANVIL_RUNTIME="$script_dir/anvil-runtime"
+
+DIR="${ANVIL_RUNTIME_DAEMON_DIR:-$HOME/.anvil-runtime}"
+IN_FIFO="$DIR/in.fifo"
+OUT_FIFO="$DIR/out.fifo"
+PID_FILE="$DIR/daemon.pid"
+KEEPALIVE_PID_FILE="$DIR/keepalive.pid"
+LOG_FILE="$DIR/daemon.log"
+
+cmd="${1:-status}"
+
+is_running() {
+    [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null
+}
+
+start_daemon() {
+    if is_running ; then
+        echo "anvil-runtime daemon already running (pid $(cat "$PID_FILE"))" >&2
+        return 0
+    fi
+    if [ ! -x "$ANVIL_RUNTIME" ] ; then
+        echo "anvil-runtime: launcher not found / not executable: $ANVIL_RUNTIME" >&2
+        exit 1
+    fi
+    mkdir -p "$DIR"
+    rm -f "$IN_FIFO" "$OUT_FIFO"
+    mkfifo "$IN_FIFO" "$OUT_FIFO"
+
+    # Spawn the daemon in a subshell that opens both FIFOs O_RDWR
+    # (Linux extension, also POSIX for FIFOs in practice — does not
+    # block on missing peer).  This:
+    #   1. Avoids the reader/writer deadlock of plain `< IN_FIFO` /
+    #      `> OUT_FIFO' redirections in the parent shell, which
+    #      would block before the daemon could even fork.
+    #   2. Keeps a permanent writer on IN_FIFO so daemon never sees
+    #      EOF when a bridge process exits.
+    #   3. Keeps a permanent reader on OUT_FIFO so daemon writes do
+    #      not SIGPIPE when no bridge is connected.
+    # The fds 3 and 4 are then re-aliased to stdin/stdout of the
+    # exec'd `anvil-runtime mcp serve' so the original framing logic
+    # is unchanged.
+    (
+        exec 3<>"$IN_FIFO"
+        exec 4<>"$OUT_FIFO"
+        exec "$ANVIL_RUNTIME" mcp serve <&3 >&4 2>"$LOG_FILE"
+    ) &
+    local daemon_pid=$!
+    disown "$daemon_pid" 2>/dev/null || true
+    echo "$daemon_pid" > "$PID_FILE"
+
+    echo "anvil-runtime daemon started" >&2
+    echo "  daemon pid:    $daemon_pid" >&2
+    echo "  log:           $LOG_FILE" >&2
+    echo "  in fifo:       $IN_FIFO" >&2
+    echo "  out fifo:      $OUT_FIFO" >&2
+    echo "" >&2
+    echo "Cold-load: ~5-7 minutes — wait for the registry-keys log line" >&2
+    echo "before the first bridge connects:" >&2
+    echo "    tail -f $LOG_FILE   # look for 'pre-loop registry keys=...'" >&2
+}
+
+stop_daemon() {
+    local stopped=0
+    if [ -f "$PID_FILE" ] ; then
+        local pid
+        pid="$(cat "$PID_FILE")"
+        # Kill the wrapper subshell + every descendant (the FIFOs only
+        # close when the last fd holder exits, so we recursively walk
+        # `pgrep --parent' until the tree is gone).
+        if kill -0 "$pid" 2>/dev/null ; then
+            local descendants
+            descendants="$(pgrep -P "$pid" 2>/dev/null || true)"
+            kill "$pid" $descendants 2>/dev/null || true
+            sleep 0.3
+            kill -9 "$pid" $descendants 2>/dev/null || true
+            stopped=1
+        fi
+        rm -f "$PID_FILE"
+    fi
+    # Phase 1 keepalive scheme is gone (Linux RDWR open replaces it),
+    # but tolerate a stale pid file from earlier installs.
+    if [ -f "$KEEPALIVE_PID_FILE" ] ; then
+        local kpid
+        kpid="$(cat "$KEEPALIVE_PID_FILE")"
+        kill "$kpid" 2>/dev/null || true
+        rm -f "$KEEPALIVE_PID_FILE"
+    fi
+    rm -f "$IN_FIFO" "$OUT_FIFO"
+    if [ "$stopped" = 1 ] ; then
+        echo "anvil-runtime daemon stopped" >&2
+    else
+        echo "anvil-runtime daemon was not running" >&2
+    fi
+}
+
+status_daemon() {
+    if is_running ; then
+        echo "running (pid $(cat "$PID_FILE"))"
+        return 0
+    else
+        echo "stopped"
+        return 1
+    fi
+}
+
+logs_daemon() {
+    if [ ! -f "$LOG_FILE" ] ; then
+        echo "anvil-runtime daemon log not found: $LOG_FILE" >&2
+        exit 1
+    fi
+    exec tail -n 100 -f "$LOG_FILE"
+}
+
+case "$cmd" in
+    start)  start_daemon ;;
+    stop)   stop_daemon ;;
+    restart) stop_daemon ; sleep 0.5 ; start_daemon ;;
+    status) status_daemon ;;
+    logs)   logs_daemon ;;
+    *)
+        cat >&2 <<EOF
+usage: anvil-runtime-daemon {start|stop|restart|status|logs}
+
+Environment:
+  ANVIL_RUNTIME_DAEMON_DIR   (default: ~/.anvil-runtime)
+                             — where FIFOs / pid / log live.
+EOF
+        exit 2
+        ;;
+esac
