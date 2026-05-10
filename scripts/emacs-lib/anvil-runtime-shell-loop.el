@@ -110,7 +110,7 @@ case-insensitively, returns the integer value or nil."
                      (n (length rest)))
                 (while (and (< i n)
                             (let ((c (aref rest i)))
-                              (or (eq c ?\s) (eq c ?\t))))
+                              (or (eq c 32) (eq c ?\t))))
                   (setq i (1+ i)))
                 (let* ((num-start i)
                        (num-end i))
