@@ -4,12 +4,19 @@
 
 * Status
 
-- *State*: **DRAFT (= 5 component design DRAFT 完備 2026-05-11)** —
-  Doc 91 ELF writer / Doc 92 macro assembler / Doc 93 static linker /
-  Doc 94 crt0 / Doc 95 Sexp DSL の 5 sub-spec が全て DRAFT として ship
-  済。Phase 47 master spike 自身は引き続き spike 段階、go/no-go 判定 +
-  Phase 3 D-B との順序判断は Doc 90 post-ship audit + 本 doc §8 で
-  articulate
+- *State*: **SPIKE VALIDATED — TECHNICAL FEASIBILITY CONFIRMED
+  (2026-05-11)**.  Phase 47 thesis (= "pure-elisp emit + link + ELF
+  + kernel exec works") **proven end-to-end** via Doc 93 §93.c e2e
+  exec gate: 2 hand-emitted compile units (= main.o calls helper.o
+  via R_X86_64_PC32, helper exits via syscall) → `nelisp-link-units`
+  → `nelisp-elf-write-binary` → `chmod +x` → kernel exec → EXIT=0.
+  Doc 96 build orchestrator demos 3 chain demos (= hello-world /
+  exit-with-status / argc-printer) all green.  All 5 component sub-
+  specs SHIPPED: §91.a/b/c/d (ELF) + §92.a/b/c (asm x86_64/arm64) +
+  §93.a/b/c (linker) + §94.a/b/c (crt0) + §95.a/b/c/d (Sexp DSL).
+  Cumulative ert: **447/447 pass + 2 skip** (= arm64 host gated).
+  Spike phase complete; deferral: Doc 97 Sexp→asm compiler + §95.e
+  baker integration + §92.d perf = production engagement candidates
 - *Parent*: Doc 83 §6.3 (= 究極着地 ~300-500 LOC + "Phase 47 phase 6
   C-runtime 自前化、別 Doc 必要" として保留された path)、Doc 47 (=
   rust-seed-image-abi)、Doc 63 (= phase7-self-host-roadmap)

@@ -10,6 +10,12 @@
   からの drift を articulation する。次 Phase の architect (= Doc 77c
   Phase 3 D-B、Doc 85 Phase 47 spike) に「どこまで削れて、どこから先は
   hot-path policy で構造的に locked か」を渡すための reference。
+- *Update 2026-05-11*: Phase 47 spike **VALIDATED** (= Doc 85 SPIKE
+  VALIDATED、Doc 93 §93.c e2e exec gate PASSED)。本 audit が flagged
+  した §86.3.c 4 deferral + Tier 2 trampoline isomorphism は Phase 47
+  production engagement (= Doc 97 Sexp→asm compiler + §95.e baker
+  integration 待ち) で消化 path 確保。"Phase 47 unlock" は hypothesis
+  から validated technical reality に移行
 - *Parent*: Doc 86 (= Phase 2 master、§13 v2 reconcile appendix が
   本 Doc の articulation 起点)
 - *Siblings*: Doc 87 (= §86.1 builtins detail)、Doc 88 (= §86.2 error

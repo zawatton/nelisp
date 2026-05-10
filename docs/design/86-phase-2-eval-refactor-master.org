@@ -18,6 +18,13 @@
 - *Unlocks*: Phase 2 全 stage SHIPPED 後、build-tool/src/ Rust LOC が
   21,796 → ~6,000-8,000 (= -13,000〜-15,000 net 削減)、Phase 3 (= 究極
   D-B 採用、Doc 77c 系列) へ進める
+- *Phase 47 spike VALIDATED 2026-05-11*: Doc 85 が articulated した
+  ultimate-0-Rust path は technical feasibility 確認済 (= Doc 93 §93.c
+  e2e gate PASSED + Doc 96 chain orchestrator demos 全 green、pure-
+  elisp が valid ELF を emit + kernel exec 成功)。Phase 2 §86.3.c の
+  4 deferral (= Doc 89 §10.1 hot-path policy) は Phase 47 production
+  engagement で消化可能と判明、本 Doc の "Phase 47 unlock" は ROI
+  audit articulated 通り closing path 確保
 - *OOS for THIS doc*: 実装作業 (= 各 sub-stage doc で個別 dispatch)、
   Phase 3 究極 D-B (= Doc 77c master plan)、Phase 47 (= Doc 85 spike +
   将来 Doc 91-95)
