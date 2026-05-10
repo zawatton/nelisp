@@ -95,6 +95,10 @@ pub enum ImageError {
     BadNodeIndex(u32),
     /// Doc 75 v3: KIND byte unknown (= not 0x01 frozen-heap).
     UnknownKind(u8),
+    /// Doc 73 Stage 8.4 + Doc 75 Stage 9.5: production decoder hit a
+    /// non-empty fallback-forms section but the reader module is gated
+    /// out (= default build without `image-baker` feature).
+    FallbackRequiresImageBaker,
     Read(ReadError),
     Eval(EvalError),
 }
@@ -111,6 +115,11 @@ impl fmt::Display for ImageError {
             ImageError::LengthOverflow => f.write_str("image length exceeds ABI u32 field"),
             ImageError::BadNodeIndex(i) => write!(f, "node index {} out of bounds", i),
             ImageError::UnknownKind(k) => write!(f, "unknown image kind byte 0x{k:02x}"),
+            ImageError::FallbackRequiresImageBaker => f.write_str(
+                "image fallback-forms section is non-empty but the reader \
+                 module is gated out (= rebuild with `--features image-baker' \
+                 or re-bake the image with the current toolchain)",
+            ),
             ImageError::Read(e) => write!(f, "reader error: {}", e),
             ImageError::Eval(e) => write!(f, "eval error: {}", e),
         }
@@ -1071,8 +1080,28 @@ pub fn eval_forms(forms: &[Sexp]) -> Result<Sexp, ImageError> {
 /// crate-local Rust reader.  Lives here so `decode_image' (= the
 /// production `nelisp eval-image' entrypoint) can call it without
 /// pulling `crate::reader' into the gated import set.
+///
+/// Doc 73 Stage 8.4 + Doc 75 Stage 9.5 reconciliation: the reader
+/// module is gated behind `image-baker` for default builds.  Production
+/// `.image' files should have empty fallback-forms sections (= all
+/// content represented in the frozen heap by Stage 9.5 re-bake), so an
+/// empty-source fast path returns Ok without invoking the reader.  Any
+/// non-empty fallback form in default builds means a `.image' was
+/// produced by an older toolchain or a non-stdlib path; we surface a
+/// clear error rather than silently parsing nothing.
 fn reader_read_all(source: &str) -> Result<Vec<Sexp>, ImageError> {
-    Ok(crate::reader::read_all(source)?)
+    #[cfg(any(test, feature = "image-baker"))]
+    {
+        Ok(crate::reader::read_all(source)?)
+    }
+    #[cfg(not(any(test, feature = "image-baker")))]
+    {
+        if source.is_empty() {
+            Ok(Vec::new())
+        } else {
+            Err(ImageError::FallbackRequiresImageBaker)
+        }
+    }
 }
 
 struct Reader<'a> {
