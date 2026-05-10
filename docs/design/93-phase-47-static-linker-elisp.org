@@ -1,0 +1,901 @@
+#+TITLE: Doc 93 — Phase 47 component: static linker in elisp
+#+AUTHOR: NeLisp design
+#+DATE: 2026-05-11
+
+* Status
+
+- *State*: DRAFT (= spike, implementation-ready 化のための design doc。
+  本 doc 自体はコード変更を伴わない。Doc 85 §X recommendation で「Phase
+  47 着手なら Doc 91-95 を起こす」とした 5 component の 3 本目)
+- *Parent*: Doc 85 (= phase-47-feasibility-spike.org §3.3 / §5.1 /
+  §6.1)
+- *Sister docs*: Doc 91 (= elisp ELF writer, ~500 elisp), Doc 92 (=
+  macro assembler 拡張, ~800 elisp), Doc 94 (= crt0 + boot loader
+  elisp, ~150 elisp), Doc 95 (= Sexp layout DSL, ~600 elisp)
+- *Pre-condition*: Phase 1-3 完遂 + Doc 91 ELF writer skeleton (= 本
+  doc の linker は Doc 91 の =nelisp-elf-write-binary= に link 結果を
+  emit する形を取る、ELF writer の API surface が pin されている前提)、
+  Doc 92 assembler の relocation entry 形式 fix が必要 (= macro
+  assembler が emit する =:relocs= field の shape が本 doc の input)
+- *Unlocks*: Phase 47 critical path 上の M3 (= "elisp が static link
+  済 ELF binary を生成できる、libc / system linker (= rustc + ld)
+  不要")。Doc 92 assembler の output (= 1 unit = 1 =.o= 相当) を **複数
+  結合** し、symbol resolution と relocation 適用を済ませた状態の
+  =.text= / =.rodata= / =.data= を Doc 91 writer に渡せるようにする
+  中間 layer
+- *OOS for THIS doc*:
+  - 実装作業 (= elisp / Rust file 編集なし、grep + read + design 構築のみ)
+  - PIE / PIC = position-independent code は §6.1 risk として articulate
+    のみ。Phase 47 scope は ET_EXEC + 固定 vaddr (= =0x400000= 起点)
+  - Dynamic library linking = =.dynamic= / =.dynsym= / PLT/GOT machinery
+    一切なし (= static link only、Doc 91 §7.4 と同 stance)
+  - DWARF debug info の linker-side merge = §6.3 risk のみ
+  - LTO / dead-code elimination = §6.4 risk
+  - aarch64 reloc table = §3.3 で軽く触れるが本 doc は **x86_64-linux**
+    集中
+  - syscall inline 部分 = Doc 85 §3.3 で "static linker + syscall inline"
+    と束ねていたが本 doc 起こし時に Doc 94 へ分離。Doc 85 §0 TL;DR table
+    の "~300 elisp / -360 Rust" は本 doc では linker only ~250 elisp、
+    Doc 94 syscall ~150 elisp + crt0 ~50 elisp に再配分
+
+* §0 TL;DR
+
+** §0.1 静的リンカ (static linker) とは何か
+
+static linker = 1 個以上の **compiled unit** (= Doc 92 macro assembler
+の output、各 unit は section 群 + symbol table + relocation entry を
+持つ memory representation) を入力に取り、
+
+1. 各 unit 内の =EXTERN= 参照 (= 未解決 symbol) を、同 unit または他
+   unit 内の =DEFINED= symbol に解決
+2. 全 unit の同種 section を結合 (= =.text= 同士、=.rodata= 同士、…)
+3. 各 relocation entry が指す byte 位置を、解決済 symbol address で
+   patch
+4. 結合後の section 群を Doc 91 ELF writer に渡し、最終 ELF binary を
+   出力
+
+= 「複数 =.o= を 1 個の実行可能 ELF にまとめる」古典的 link 工程の
+elisp 版。
+
+責務の core:
+1. *symbol table merge* = 各 unit の symbol を 1 つの global table に
+   統合、重複 (= 同名 GLOBAL DEFINED) を error / 同名 WEAK は preference
+   rule で resolve
+2. *section combiner* = =.text= / =.rodata= / =.data= / =.bss= を unit
+   順に concat、各 unit 内の符号には base offset を加算
+3. *relocation pass* = =R_X86_64_PC32= / =R_X86_64_64= / =R_X86_64_PLT32=
+   の 3 type を最低限 support、各 entry の =r_offset= 位置の bytes を
+   target address (= symbol value + addend) で patch
+4. *output emit* = Doc 91 =nelisp-elf-write-binary= に section bytes +
+   resolved symbol table + 残 relocation (= dynamic 用、本 doc は空) を
+   渡す
+
+** §0.2 elisp で書ける根拠
+
+linker は **pure-functional symbol arithmetic** の問題:
+
+- 入力 = unit list (= elisp data structure of section + symbol +
+  reloc plist)
+- 出力 = 結合後 section bytes (= byte vector) + resolved symbol table
+  (= alist) + entry symbol address
+- 副作用 = なし (= file I/O は Doc 91 writer 側のみ)
+- 算術 = 32-bit / 64-bit signed arithmetic、bit-mask、PC-relative
+  delta = elisp 整数で素直に表現可能 (Emacs 27+ で bignum 安全)
+
+elisp で =logand= / =logxor= / =ash= / =mod= / =unibyte-string= /
+=substring= / =aref= / =aset= が動けば実装可能。性能は §6.7 risk として
+articulate するが correctness 上の障害なし。
+
+** §0.3 なぜ必要か (= dlsym bridge との対比)
+
+現状: nelisp-cc が emit する trampoline call site (= =CALL nl_jit_cons_make=)
+は **runtime に dlsym で解決** されている。この path:
+
+#+begin_src text
+   compile time:                       runtime:
+   [nelisp-cc emit `CALL ?']    -->    [nelisp-cc-runtime resolve-symbol]
+   (= relocation 未適用)               (= dlsym(RTLD_DEFAULT, "nl_jit_..."))
+                                       --> CALL rel32 patch
+                                       (= elisp 側で page bytes を mutate)
+#+end_src
+
+これは **JIT** path = page を生成して即実行する pattern。
+=cargo build= が出力する =./nelisp= binary 自体の「Rust extern fn の
+解決」は **system linker (rustc → ld → -rdynamic flag)** が行う。
+
+Phase 47 = 0 Rust runtime 完遂時:
+
+- =./nelisp= は **elisp toolchain によって生成** される
+- system linker (= rustc + ld) は invoke できない (= Cargo workspace
+  自体を消す前提)
+- → elisp が **AOT で symbol を resolve、relocation を patch、最終 byte
+  stream を出力** する役目を担う = 本 doc の static linker
+
+代替なし: elisp が複数 unit を結合して 1 binary にする手段は (a) ld、
+(b) lld、(c) gold、(d) 自前 emit の 4 択。(a)-(c) は Phase 47 の "0
+Rust / toolchain 不要" goal を否定。よって (d) elisp 自前 emit が唯一
+の path。
+
+** §0.4 ROI sketch
+
+| 投資 (elisp 新規)        | 削減 (Rust + system 依存)            | 比率  |
+|--------------------------+--------------------------------------+-------|
+| ~250 elisp LOC + ~120 ert | -83 dlsym_bridge.rs + -207 cc-runtime resolve-symbol path (= elisp 側、削減ではなく簡素化) + -system linker dependency (= cargo / rustc / ld) | 0.36:1 LOC ratio + huge dep delta |
+
+Doc 85 §0 TL;DR table row 3 "static linker + syscall inline ~300 elisp /
+-360 Rust = 0.83:1" と整合。本 doc 起こし時に syscall inline 部分を Doc
+94 へ分離したので本 doc 単独 ROI = 0.36:1 (LOC 比悪化、ただし strategic
+= system linker dependency 削除が真の不可欠)。
+
+** §0.5 Phase 47 chain 上の位置
+
+#+begin_src text
+[Phase 1-3 完遂]
+       |
+       v
+[Doc 91 ELF writer]      [Doc 92 assembler]       [Doc 95 Sexp DSL]
+        \                       /                          /
+         \                     /                          /
+          \__________ ___ ____v_____ ________ ___________/
+                     |                |
+                     v                v
+            [本 Doc 93 static linker] (= 並列開発可能 with Doc 91/92、
+                                          Doc 91 の API surface + Doc 92
+                                          の relocation entry 形式 を
+                                          fixed point として依存)
+                     |
+                     v
+            [Doc 94 crt0 elisp + syscall inline]
+                     |
+                     v
+            [Phase 47 完遂 = 0 Rust]
+#+end_src
+
+並列度: Doc 91 / 92 / 93 は API contract 同期さえ取れれば 3 並列開発
+可能 (= Doc 85 §6.1 graph と整合)。
+
+* §1 Current Rust linker-equivalent inventory
+
+** §1.1 grep 結果 (= Rust source 内の link / reloc reference)
+
+#+begin_src text
+$ grep -rn "dlsym\|dlopen\|reloc\|R_X86_64\|libloading\|rdynamic" \
+    --include="*.rs" build-tool/src/ nelisp-runtime/ 2>/dev/null | head
+build-tool/src/eval/dlsym_bridge.rs:1:  //! Phase 7.1.6.a (Doc 28 ...
+build-tool/src/eval/dlsym_bridge.rs:46: pub fn bi_dlsym_resolve(...)
+build-tool/src/eval/dlsym_bridge.rs:63:     // searches the global symbol
+                                             // table built up by the
+                                             // dynamic linker
+build-tool/src/jit/access.rs:2:        //! dlsym-exported.
+build-tool/src/jit/cons.rs:6:          //! `-rdynamic' link flag in
+                                       //! `.cargo/config.toml'
+.cargo/config.toml:28:                 rustflags = ["-C", "link-arg=-rdynamic"]
+#+end_src
+
+** §1.2 既存「Rust linker-equivalent」の anchor 一覧
+
+Phase 47 時点で elisp linker が **置換** すべき Rust + system linker
+依存の anchor:
+
+| Rust 領域                              | total LOC | linker 寄与 LOC | 削減 path                   |
+|----------------------------------------+-----------+-----------------+-----------------------------|
+| =build-tool/src/eval/dlsym_bridge.rs= | 83        | ~83 (= 全部)    | 本 doc の linker で AOT 解決に shift |
+| =src/nelisp-cc-runtime.el= resolve-symbol path (Stage 81.4) | ~207 (lines 1596-1802) | ~207 | Phase 47 では runtime dlsym 不要、AOT 化で elisp 内 fixup table → relocation table へ |
+| =.cargo/config.toml= =-rdynamic= flag  | 1 line    | (= system linker config) | Phase 47 で rustc/ld 廃止 = 自動消滅 |
+| =build-tool/Cargo.toml= deps           | n/a       | 0               | rustc 廃止 = 全 deps tree 削除 |
+| =target/release/build/= (cargo 内部 link script) | n/a | (= cargo run-time) | rustc 廃止 = 自動消滅 |
+
+** §1.3 削減 LOC 集計
+
+| 領域                                       | LOC 削減 | 確証                |
+|--------------------------------------------+----------+---------------------|
+| =build-tool/src/eval/dlsym_bridge.rs=      | 83       | =wc -l= 確認済      |
+| =build-tool/src/eval/mod.rs= dlsym_bridge 登録 | ~5   | =pub mod dlsym_bridge;= 1 行 + entry |
+| =src/nelisp-cc-runtime.el= Stage 81.4 ブロック (line 1596-1802) | ~207 elisp | line 範囲確認済 (= 機能は新 linker に吸収、削減ではなく再構成) |
+| =.cargo/config.toml= =-rdynamic=           | 1        | line 28 確認済      |
+| *合計 Rust LOC 削減*                       | *~89*    | + Phase 47 全体で system linker (= rustc / ld / libc) 全消滅という *strategic* 削減 |
+| 別途 elisp 再構成                          | -207 + 250 = +43 elisp net | |
+
+注: Doc 85 §0 TL;DR table row 3 の "-360 Rust 削減" は syscall inline
+(= ffi.rs 内 ~280 LOC) を含む数字。本 doc は linker 責務に絞ったので
+Rust LOC 削減 ~89 と小さく見えるが、Phase 47 全体で =cargo workspace=
+全体 (~3,000+ LOC) を消すのが目的。
+
+** §1.4 「writer 不在」「linker 不在」の現状 articulate
+
+Doc 91 §1.4 で articulated 通り、Rust 側に独立した ELF writer は存在せず
+system linker (rustc / ld) に完全 delegate。Linker 側も同様に **Rust 側
+に独立した static linker は存在しない**:
+
+- =cargo build= → =rustc= → =ld= chain が relocation を解決
+- =dlsym_bridge.rs= は **runtime symbol resolution の 1 path (= JIT
+  page の CALL fixup)** であって AOT linker ではない
+- nelisp-cc-runtime の Stage 81.4 path も runtime fixup table の consumer
+  = AOT linker ではない
+
+よって本 doc が articulate する static linker は「**Rust source からの
+port ではなく完全新規実装**」。参考 = GNU binutils =ld= の =ldmain.c= +
+=bfd/elf64-x86-64.c= の =elf_x86_64_relocate_section=、LLVM lld の
+=ELF/Driver.cpp=、Plan 9 mk =8l= の linker stage、tcc の =tccelf.c=。
+
+* §2 Static linker design
+
+** §2.1 module = =lisp/nelisp-static-linker.el=
+
+新規 elisp module、~250 LOC 想定。既存 nelisp-* package 命名規約に
+従う。
+
+依存:
+- elisp builtin: =logand= / =logxor= / =ash= / =mod= / =unibyte-string= /
+  =aref= / =aset= / =plist-get= / =cl-loop= / =cl-incf=
+- 既存 elisp helper: なし (= self-contained module)
+- *sister*: Doc 91 =nelisp-elf-write-binary= を最終段で呼ぶ (= API
+  consumer)
+
+** §2.2 input data shape (= "compiled unit")
+
+Doc 92 macro assembler が emit する各 unit は以下 plist:
+
+#+begin_src elisp
+;; unit = output of Doc 92 assembler for one source compilation
+(:name        "callee.o"          ; debug-only label
+ :sections    (:text   <unibyte-string>     ; raw machine code
+               :rodata <unibyte-string>     ; constant data
+               :data   <unibyte-string>     ; initialized globals
+               :bss-size  <integer>)        ; zero-init region size
+ :symbols     ((SYM-NAME SECTION-KEY OFFSET SIZE BINDING TYPE)
+               ;; SECTION-KEY = :text / :rodata / :data / :bss
+               ;; BINDING     = :local / :global / :weak / :extern
+               ;; TYPE        = :func / :object / :notype
+               ;; EXTERN entries: SECTION-KEY = nil, OFFSET = 0
+               ...)
+ :relocs      ((SECTION-KEY R-OFFSET SYM-NAME R-TYPE R-ADDEND)
+               ;; SECTION-KEY = relocation の patch target section
+               ;; R-OFFSET    = section 内の patch byte 位置
+               ;; SYM-NAME    = 解決対象 symbol (= 同 unit / 別 unit)
+               ;; R-TYPE      = :pc32 / :abs64 / :plt32 / ...
+               ;; R-ADDEND    = signed addend
+               ...))
+#+end_src
+
+** §2.3 output data shape (= linker output)
+
+#+begin_src elisp
+;; linked-image = input to Doc 91 nelisp-elf-write-binary
+(:text         <byte-vector>         ; concat of all unit .text、reloc 適用済
+ :rodata       <byte-vector>
+ :data         <byte-vector>
+ :bss-size     <integer>
+ :symbols      <list of resolved symbols>   ; for ELF .symtab
+ :relocs       nil                          ; static link 完了 = empty
+ :entry-sym    "_start"                     ; e_entry resolution target
+ :base-addr    #x400000)                    ; ET_EXEC default load address
+#+end_src
+
+** §2.4 top-level orchestration =nelisp-link-units= (~50 LOC)
+
+#+begin_src elisp
+(defun nelisp-link-units (units output-path &optional opts)
+  "Statically link UNITS (= compiled-unit plists from Doc 92 assembler)
+and emit ELF executable to OUTPUT-PATH via Doc 91 writer.
+OPTS plist: :entry-sym (default \"_start\") :base-addr (default
+#x400000)."
+  (let* ((entry-sym (or (plist-get opts :entry-sym) "_start"))
+         (base-addr (or (plist-get opts :base-addr) #x400000))
+         (layout (nelisp-link--compute-layout units base-addr))
+         (combined (nelisp-link--combine-sections units layout))
+         (symtab (nelisp-link--merge-symtabs units layout))
+         (relocated (nelisp-link--apply-relocs units combined symtab layout))
+         (entry-addr (nelisp-link--lookup-entry symtab entry-sym)))
+    (nelisp-elf-write-binary
+     output-path
+     (append relocated
+             (list :symbols (nelisp-link--export-symtab symtab)
+                   :relocs nil
+                   :entry-sym entry-sym
+                   :entry-addr entry-addr)))))
+#+end_src
+
+** §2.5 symbol table merge =nelisp-link--merge-symtabs= (~40 LOC)
+
+責務:
+1. 全 unit の =DEFINED= (= GLOBAL / LOCAL / WEAK) symbol を 1 個の hash
+   table に集約、各 symbol の絶対 vaddr = =base-addr + section-base +
+   offset=
+2. =EXTERN= 参照を 2nd pass で解決、無ければ error
+3. 重複規則 = GLOBAL+GLOBAL → error、GLOBAL+WEAK → strong wins、
+   WEAK+WEAK → first wins
+4. LOCAL は unit-scoped、key = =UNIT-NAME.SYM-NAME= で mangling
+
+#+begin_src elisp
+(defun nelisp-link--merge-symtabs (units layout)
+  "Build global hash keyed on symbol-name (or mangled local), value =
+plist (:vaddr V :size SZ :section S :binding B :type T :unit U).  Two
+passes: insert DEFINED, verify EXTERN."
+  (let ((tab (make-hash-table :test 'equal)) (errors '()))
+    (dolist (unit units)
+      (let* ((uname (plist-get unit :name))
+             (sec-base (gethash (cons uname :sections) layout)))
+        (dolist (sym (plist-get unit :symbols))
+          (cl-destructuring-bind (sn sk off sz binding type) sym
+            (when (memq binding '(:local :global :weak))
+              (let* ((key (if (eq binding :local)
+                              (format "%s.%s" uname sn) sn))
+                     (vaddr (+ (plist-get layout :base-addr)
+                               (plist-get sec-base sk) off))
+                     (existing (gethash key tab))
+                     (entry (list :vaddr vaddr :size sz :section sk
+                                  :binding binding :type type :unit uname)))
+                (cond ((null existing) (puthash key entry tab))
+                      ((and (eq binding :global)
+                            (eq (plist-get existing :binding) :global))
+                       (push (list :multiply-defined key uname
+                                   (plist-get existing :unit)) errors))
+                      ((and (eq binding :global)
+                            (eq (plist-get existing :binding) :weak))
+                       (puthash key entry tab)))))))))
+    (dolist (unit units)
+      (dolist (sym (plist-get unit :symbols))
+        (cl-destructuring-bind (sn _sk _off _sz binding _type) sym
+          (when (and (eq binding :extern) (not (gethash sn tab)))
+            (push (list :unresolved-external sn (plist-get unit :name))
+                  errors)))))
+    (when errors (signal 'nelisp-link-error (list :symbol-merge errors)))
+    tab))
+#+end_src
+
+** §2.6 relocation pass =nelisp-link--apply-relocs= (~80 LOC)
+
+責務: 各 unit の =:relocs= entry を走査、patch target byte 位置を結合
+後 section 内 offset に翻訳、symbol vaddr で計算、target bytes を mutate。
+
+支援 R-TYPE 最小 set (= Phase 47 scope、=S= = symbol vaddr / =A= =
+addend / =P= = patch site の絶対 vaddr):
+
+| keyword  | ELF code (r_info)   | computes      | patch size |
+|----------+---------------------+---------------+------------|
+| =:pc32=  | =R_X86_64_PC32=  = 2 | =S + A - P=   | 4 byte LE  |
+| =:abs64= | =R_X86_64_64=    = 1 | =S + A=       | 8 byte LE  |
+| =:plt32= | =R_X86_64_PLT32= = 4 | =S + A - P=   | 4 byte LE (= static link で =:pc32= 同等) |
+
+#+begin_src elisp
+(defun nelisp-link--apply-relocs (units combined symtab layout)
+  "Walk each UNIT's :relocs and patch COMBINED section bytes."
+  (let ((bvs (list :text (plist-get combined :text)
+                   :rodata (plist-get combined :rodata)
+                   :data (plist-get combined :data)))
+        (base-addr (plist-get layout :base-addr)))
+    (dolist (unit units)
+      (let* ((uname (plist-get unit :name))
+             (sec-base (gethash (cons uname :sections) layout)))
+        (dolist (rel (plist-get unit :relocs))
+          (cl-destructuring-bind (sk r-off sym-name r-type r-addend) rel
+            (let* ((S (or (plist-get (gethash sym-name symtab) :vaddr)
+                          (signal 'nelisp-link-error
+                                  (list :reloc-unresolved sym-name uname))))
+                   (sec-off (plist-get sec-base sk))
+                   (P (+ base-addr sec-off r-off))
+                   (bv (or (plist-get bvs sk)
+                           (signal 'nelisp-link-error
+                                   (list :reloc-bad-section sk))))
+                   (patch-pos (+ sec-off r-off)))
+              (pcase r-type
+                ((or :pc32 :plt32)
+                 (let ((d (- (+ S r-addend) P)))
+                   (nelisp-link--check-rel32-range d sym-name)
+                   (nelisp-link--patch-le32 bv patch-pos d)))
+                (:abs64 (nelisp-link--patch-le64 bv patch-pos (+ S r-addend)))
+                (_ (signal 'nelisp-link-error
+                           (list :reloc-unsupported-type r-type)))))))))
+    (append bvs (list :bss-size (plist-get combined :bss-size)))))
+
+(defun nelisp-link--check-rel32-range (d sym)
+  (unless (and (>= d (- (ash 1 31))) (< d (ash 1 31)))
+    (signal 'nelisp-link-error (list :rel32-overflow sym d))))
+
+(defun nelisp-link--patch-le32 (bv pos v)
+  (dotimes (i 4) (aset bv (+ pos i) (logand (ash v (- (* i 8))) #xff))))
+
+(defun nelisp-link--patch-le64 (bv pos v)
+  (dotimes (i 8) (aset bv (+ pos i) (logand (ash v (- (* i 8))) #xff))))
+#+end_src
+
+** §2.7 section combiner =nelisp-link--combine-sections= (~30 LOC)
+
+責務: 全 unit の同種 section を unit 順に concat、unit 毎 base offset を
+=layout= に記録。
+
+#+begin_src elisp
+(defun nelisp-link--combine-sections (units layout)
+  "Concat .text/.rodata/.data per unit, sum .bss.  Stores per-unit base
+offset in LAYOUT.  Returns plist (:text BV :rodata BV :data BV :bss-size N)."
+  (let ((text (make-vector 0 0)) (rodata (make-vector 0 0))
+        (data (make-vector 0 0)) (bss 0))
+    (dolist (unit units)
+      (let* ((uname (plist-get unit :name))
+             (secs (plist-get unit :sections)))
+        (puthash (cons uname :sections)
+                 (list :text (length text) :rodata (length rodata)
+                       :data (length data) :bss bss) layout)
+        (setq text   (vconcat text   (plist-get secs :text)))
+        (setq rodata (vconcat rodata (plist-get secs :rodata)))
+        (setq data   (vconcat data   (plist-get secs :data)))
+        (cl-incf bss (or (plist-get secs :bss-size) 0))))
+    (list :text text :rodata rodata :data data :bss-size bss)))
+
+(defun nelisp-link--compute-layout (units base-addr)
+  (let ((h (make-hash-table :test 'equal)))
+    (puthash :base-addr base-addr h)
+    (puthash :units (mapcar (lambda (u) (plist-get u :name)) units) h)
+    h))
+#+end_src
+
+** §2.8 output emit (= Doc 91 writer delegate)
+
+§2.4 で示した通り =nelisp-link-units= 末尾で =nelisp-elf-write-binary=
+を呼ぶ。本 doc 自体は writer を実装しない (= Doc 91 sister)。
+
+** §2.9 API surface 全集
+
+| function                              | LOC |
+|---------------------------------------+-----|
+| =nelisp-link-units= (top-level)       |  50 |
+| =nelisp-link--compute-layout=         |  10 |
+| =nelisp-link--combine-sections=       |  30 |
+| =nelisp-link--merge-symtabs=          |  40 |
+| =nelisp-link--apply-relocs=           |  60 |
+| =nelisp-link--check-rel32-range=      |   8 |
+| =nelisp-link--patch-le32/-le64=       |  12 |
+| =nelisp-link--lookup-entry=           |   8 |
+| =nelisp-link--export-symtab=          |  15 |
+| docstring + comments                  |  80 |
+| autoload cookie / module header       |  10 |
+| feature-test inline (= ert helpers)   |  30 |
+| *合計*                                | *353* |
+
+但し test helper を除外、純粋実装のみで *~250 elisp LOC* (= Doc 85
+§3.3 試算と一致)。
+
+* §3 Relocation type coverage
+
+** §3.1 Phase 47 必須 set (= 本 doc scope)
+
+| ELF type            | code | computes      | size | use case              |
+|---------------------+------+---------------+------+-----------------------|
+| =R_X86_64_PC32=     |    2 | =S + A - P=   |    4 | =CALL rel32= / =JMP rel32= / =RIP-relative MOV= |
+| =R_X86_64_64=       |    1 | =S + A=       |    8 | =MOV imm64= / pointer in =.data= |
+| =R_X86_64_PLT32=    |    4 | =S + A - P=   |    4 | static link で =:pc32= 同等扱い、PLT 不要 |
+
+** §3.2 Phase 47 後続 (= scope 外)
+
+| ELF type            | code | use case               |
+|---------------------+------+------------------------|
+| =R_X86_64_GOTPCREL= |    9 | PIE, GOT 経由 indirect access |
+| =R_X86_64_GOTPC32=  |   26 | =_GLOBAL_OFFSET_TABLE_= ref |
+| =R_X86_64_TPOFF32=  |   18 | TLS                    |
+| =R_X86_64_DTPMOD64= |   16 | shared lib (= dynamic linker) |
+| =R_X86_64_COPY=     |    5 | shared lib (= dynamic linker) |
+
+これらは GOT/PLT/TLS/dynamic linking machinery が必要 = static link
+only の Phase 47 では発生しない。本 doc は **発生時に明示 error** を
+投げる方針 (= silent skip しない、§2.6 last clause)。
+
+** §3.3 aarch64 reloc table (= Phase 47 scope 外)
+
+| ELF type                     | code | computes      |
+|------------------------------+------+---------------|
+| =R_AARCH64_CALL26=           |  283 | =S + A - P=   |
+| =R_AARCH64_JUMP26=           |  282 | =S + A - P=   |
+| =R_AARCH64_ABS64=            |  257 | =S + A=       |
+| =R_AARCH64_ADR_PREL_PG_HI21= |  275 | (= page address) |
+| =R_AARCH64_ADD_ABS_LO12_NC=  |  277 | (= page offset) |
+
+Phase 47 scope 外 = Doc 92 assembler が aarch64 instruction を emit する
+時に reloc table も同時拡張する design (= 本 doc は x86_64 only、reloc
+type を keyword (=:pc32= 等) で抽象化済なので将来拡張時 dispatcher 追加
+だけで済む)。
+
+** §3.4 dispatch table
+
+#+begin_src elisp
+(defconst nelisp-link--reloc-dispatch
+  '((:pc32  . nelisp-link--reloc-pc32)
+    (:abs64 . nelisp-link--reloc-abs64)
+    (:plt32 . nelisp-link--reloc-plt32))
+  "Mapping from elisp keyword reloc type to handler function symbol.")
+#+end_src
+
+** §3.5 sign extension / overflow check
+
+=R_X86_64_PC32= は **signed 32-bit displacement** = =[-2^31, 2^31)= 範囲。
+範囲外は **error** (= ld の =relocation truncated to fit= に相当、§2.6
+=--check-rel32-range=)。Phase 47 scope の binary は ~10 MB 想定なので
+PC32 範囲は十分、巨大 =.bss= が PC32 範囲を越える pathology は monitor
+要 (= §6.5)。
+
+* §4 Testing strategy
+
+** §4.1 layered test
+
+| layer | 目的                                | tool                          |
+|-------+-------------------------------------+-------------------------------|
+| L0    | reloc handler unit (= patch math)   | ert (pure elisp, fixed bytes) |
+| L1    | symtab merge                         | ert (synthetic units)         |
+| L2    | section combine                      | ert (concat invariant)        |
+| L3    | full link round-trip (single unit)   | ert + Doc 91 writer + =readelf= |
+| L4    | multi-unit cross-reference link      | ert + =readelf -r= sanity     |
+| L5    | exec test (= 実 process 起動)        | ert + =call-process=          |
+| L6    | =gas + ld= baseline と bytewise diff | shell + =cmp -l=              |
+
+L6 = "system linker と elisp linker の output が **modulo timestamp /
+build-id** で一致する" 究極証明。
+
+** §4.2 round-trip test (= 単一 unit)
+
+最小 unit = =_start= が =B8 3C 00 00 00= (=MOV EAX, 60= = =SYS_exit=) +
+=48 31 FF= (=XOR RDI, RDI=) + =0F 05= (=SYSCALL=) の 10 byte =.text=、
+symbol = =((_start :text 0 10 :global :func))=、reloc 0。
+
+ert は: =nelisp-link-units= で binary 出力 → =readelf -h= で
+=ELF64 / X86-64 / Type:.*EXEC= を =string-match-p= で照合 → =call-process=
+で実行 → =should (= rc 0)=。=unwind-protect= で temp file 削除。
+
+** §4.3 multi-unit cross-reference test (= 真の linker test)
+
+本 doc の真価は **複数 unit 間 symbol 解決**。最小 reproduction =
+"caller.o" の =_start= が CALL で "callee.o" の =callee_fn= を呼び、
+callee は =XOR EAX, EAX; RET= で 0 を返し、caller が =SYS_exit(0)= で
+正常終了する pattern:
+
+- caller =.text= = =E8 00 00 00 00= (CALL placeholder) + =B8 3C 00 00 00=
+  (=MOV EAX,60=) + =48 31 FF= (=XOR RDI,RDI=) + =0F 05= (=SYSCALL=)
+- caller :symbols = ((_start :text 0 15 :global :func) (callee_fn nil 0 0
+  :extern :func))
+- caller :relocs = ((:text 1 "callee_fn" :pc32 -4))
+- callee =.text= = =31 C0 C3= (=XOR EAX,EAX; RET=)、:symbols =
+  ((callee_fn :text 0 3 :global :func))
+
+linker は =callee_fn= を解決、CALL の 4 byte placeholder を =callee_fn
+vaddr - (CALL site + 4)= で patch。exec → exit code 0 (= ert
+=call-process= で =should (= rc 0)=)。
+
+** §4.4 system-linker baseline diff (= L6)
+
+同 2 unit を =gas + ld -static -e _start= で link した baseline ELF を
+git に commit、elisp linker output と =cmp -l= で diff。timestamp /
+=.note.gnu.build-id= section を =objcopy --remove-section= で mask した
+上で **bytewise identical** を期待。
+
+実態としては section ordering / =.shstrtab= ordering / alignment 詳細で
+微差が出る可能性高 (= ld は決定論的だが convention は実装依存)。よって
+本 doc は「**modulo section ordering identical**」を目標とし、=readelf
+-S= の section 内容を sort してから diff する形に緩和する。
+
+** §4.5 corpus
+
+minimal ~5 sample 結合を test corpus として固定:
+
+1. 単一 unit、=exit(0)= (= §4.2)
+2. 2 unit cross-call、callee = =return 0= (= §4.3)
+3. 3 unit cross-call (= caller → middle → callee 鎖)
+4. =.rodata= absolute reference (= =MOV RAX, [rip+offset]= で string
+   literal pull)
+5. =.data= mutation (= initialized global incrementing)
+
+各 sample で gas + ld baseline を git に commit (= regression lock)、
+elisp linker output と periodic diff (= L6)。
+
+* §5 ROI quantification
+
+** §5.1 LOC 投資 / 削減
+
+| 項目                                          | LOC      |
+|-----------------------------------------------+----------|
+| elisp 新規 (= =nelisp-static-linker.el=)      | +250     |
+| elisp test (= =nelisp-static-linker-test.el=) | +120     |
+| Rust 削減 (= dlsym_bridge.rs)                  | -83      |
+| Rust 削減 (= eval/mod.rs 登録)                 | -5       |
+| Rust 削減 (= .cargo/config.toml -rdynamic)     | -1       |
+| elisp 再構成 (= cc-runtime resolve-symbol path) | -207 elisp + 0 (= 機能は新 linker に吸収) |
+| *net 投資 (LOC 比)*                           | *+74 elisp net (impl)、+194 with test* |
+
+ROI (= LOC 比のみ) = -89 / +250 = 0.36:1。Doc 85 §0 試算 "0.83:1" より
+悪化、但し本 doc は syscall inline を Doc 94 へ分離した結果。Doc 94 が
++150 elisp で -360 ffi.rs を削減すれば合算で Doc 85 試算と整合。
+
+** §5.2 戦略価値で評価し直す
+
+本 doc shipped = M3 (= Doc 85 §6.2 milestone) 達成 = "libffi /
+libloading 不要、system linker (rustc + ld) 廃止可能"。直接の Rust LOC
+削減 -89 だけでなく **間接削減**:
+
+- =cargo workspace= 全削除 = Cargo.toml × 8 crate + Cargo.lock 全消滅
+- =rustup= toolchain 不要 = =rustc= / =cargo= / =rustfmt= / =clippy=
+  binary 数百 MB 削減
+- =target/release/build/= の build script 自動消滅
+- =-rdynamic= flag 不要 = JIT page の dlsym fixup 経路自体が AOT で完結
+  (= 全 trampoline call site が compile-time に解決済 byte で生成される)
+- システム =ld= / GNU binutils dependency 削除
+- libc dynamic link 完全廃止 (= musl static or pure syscall binary、Doc
+  94 syscall inline と整合)
+
+** §5.3 Phase 47 unblocking
+
+本 doc shipped = 以下が unlock:
+
+1. *Doc 92 (assembler) の output consumer 確定*: assembler が emit する
+   relocation entry 形式が pin され、assembler 開発の最後 mile が
+   articulate される
+2. *Doc 91 (ELF writer) の linker-side input*: writer の =:relocs=
+   field が **常に nil (= static link 完了)** になる前提が成り立つ =
+   writer 側の dynamic reloc machinery が最終的に削除可能
+3. *Doc 94 (crt0 + syscall inline) の load address 前提*: =_start=
+   label の vaddr (= 本 doc が =:base-addr= で固定) が crt0 の stack
+   pointer setup と整合
+4. *Doc 95 (Sexp DSL) の =.rodata= bake*: Sexp 値を Doc 95 が emit
+   した buffer は本 doc の section combiner で =.rodata= 末尾に追加され、
+   その vaddr で trampoline 経由 deref 可能
+
+すなわち本 doc = Phase 47 chain の **convergence point** = Doc 91/92/95
+の output を統合して Doc 94 へ繋ぐ位置。
+
+* §6 Risk / unknowns
+
+** §6.1 PIE / PIC support
+
+問題: 本 doc は ET_EXEC + 固定 vaddr =0x400000= 前提。modern Linux
+distro は ASLR enabled = ET_DYN (PIE) + GOT/PLT machinery を要求する場合
+あり。PIE 化に必要 = =.got= / =.got.plt= section emit + =R_X86_64_GOTPCREL=
+真解決 + =R_X86_64_RELATIVE= dynamic reloc emit (= load 時に dynamic
+linker が patch、本 doc scope 外) + =PT_DYNAMIC= segment emit。
+
+緩和: Phase 47 = ET_EXEC 維持、modern distro でも ET_EXEC は exec 可能
+(= ASLR 無視されるが exec 自体は OK)。PIE 化は Phase 48+ 候補。判断:
+medium risk、将来 PIE 要件発生で linker LOC ~+200 増加可能性。
+
+** §6.2 Dynamic library linking
+
+libc / libm / libpthread を dynamic link する path は本 doc で **完全
+廃止**。Phase 47 方針 = pure syscall binary (Doc 94 inline syscall scope)。
+libm の =strtod= / =sin= / =cos= 等は elisp 実装で置換、=malloc= /
+=free= は elisp GC 経由、threading は elisp single-thread。判断: Phase
+47 全体で解決済前提、本 doc は static link only に絞れば risk なし。
+
+** §6.3 Debug info (DWARF)
+
+=gdb= / =addr2line= 等の tool は =.debug_info= / =.debug_line= section
+を読む。本 doc は **DWARF emit せず** = =gdb= で "no symbols"。但し
+=.symtab= / =.strtab= は emit する = =nm= で symbol 表示可能。Doc 91
+writer の DWARF 拡張 (Doc 91 §7.5 risk) で後続 doc 対応。判断: low-med
+risk、scope 外。
+
+** §6.4 LTO / dead-code elimination
+
+本 doc は section 全体保持 = unused function も全部 binary 内。LTO は
+inter-unit call graph + 到達性 + section GC が必要。Phase 47 完遂後の
+最適化 phase で対応、minimum viable は size 度外視で OK。判断: low risk、
+scope 明示で済。
+
+** §6.5 PC32 range overflow
+
+=R_X86_64_PC32= = signed 32-bit displacement (±2 GB)。=.bss= / =.rodata=
+肥大時 hit 可能性。§3.5 で range check + error throw articulated、越えた
+場合 =R_X86_64_64= fallback だが instruction encoding 変更要 (= Doc 92
+concern)。判断: monitor 要、Phase 47 binary < 10 MB 想定で当面 OK。
+
+** §6.6 Symbol mangling collision / weak symbol semantics
+
+LOCAL mangle key = =UNIT.SYM=、unit 名 duplicate で collision。caller
+契約で unique 保証、本 doc 内 duplicate 検出 → error。WEAK + GLOBAL は
+strong wins、WEAK + WEAK は first wins (§2.5)。GNU ld と LLVM lld の微差
+は ert edge case で固定。判断: low risk、契約 + ert で済。
+
+** §6.7 elisp 性能 (= ~1 MB binary link speed)
+
+100 unit × 各 100 reloc = 10,000 reloc walk + patch ≈ 10 sec オーダー
+(= ~1 ms / reloc)。緩和 = =gethash= 多用 + byte vector pre-alloc +
+=aset= mutate + 必要なら C =reloc-patch-many= escape hatch。Phase 47
+binary 数 (~50 unit 想定) では問題なし、肥大時 optimization 要。判断:
+medium risk。
+
+** §6.8 Risk summary 表
+
+| risk                              | severity | mitigation                                  |
+|-----------------------------------+----------+---------------------------------------------|
+| §6.1 PIE / PIC                    | medium   | Phase 47 ET_EXEC 維持、PIE は Phase 48+    |
+| §6.2 dynamic lib linking          | low      | Phase 47 全体方針で解決済                  |
+| §6.3 DWARF debug info             | low-med  | scope 外、後続 doc                          |
+| §6.4 LTO / DCE                    | low      | scope 外、後続 doc                          |
+| §6.5 PC32 range overflow          | medium   | range check + R_X86_64_64 fallback         |
+| §6.6 mangling / weak              | low      | 契約 + ert edge case                        |
+| §6.7 elisp 性能                   | medium   | hash + byte vector pre-alloc + escape C    |
+
+*top 2 risks for implementer*:
+
+1. *§6.1 PIE / PIC* = modern distro で hardened kernel 強制時に Phase 47
+   binary が exec 不能になる 1 アーキ越境問題、ET_EXEC 維持で当面 OK
+   だが distro 監視要
+2. *§6.7 elisp 性能* = 10,000 reloc で 10 sec オーダ、Phase 47 build
+   time 全体で許容範囲かは benchmark 要
+
+* §7 Implementation phases
+
+3 sub-stage に分割。各 sub-stage 独立 dispatch 可能、後続が前段に hard
+依存。
+
+** §7.1 §93.a — relocation core (~80 elisp + ~50 ert, ~3 day)
+
+scope:
+- =nelisp-link--apply-relocs= 本体 + 3 type handler (= =:pc32= /
+  =:abs64= / =:plt32=)
+- =nelisp-link--patch-le32= / =-le64= byte-mutate primitive
+- =nelisp-link--check-rel32-range= overflow guard
+- =nelisp-link--reloc-dispatch= table
+
+LOC: ~80 elisp + ~50 ert
+工数: 3 day
+acceptance:
+- handler 単体 ert (= 各 type の patch math が固定 byte 入力で正解 byte
+  を出す) green
+- range overflow throw が green
+- =:plt32= = =:pc32= の semantically identical 確認 (= static link path)
+
+** §7.2 §93.b — section merge + symtab (~80 elisp + ~40 ert, ~3 day)
+
+scope:
+- =nelisp-link--combine-sections= = byte vector concat + per-unit base
+  offset 記録
+- =nelisp-link--merge-symtabs= = 2-pass = DEFINED 集約 + EXTERN 解決
+- =nelisp-link--lookup-entry= = entry symbol resolution
+- =nelisp-link--export-symtab= = ELF .symtab format 変換
+
+LOC: ~80 elisp + ~40 ert
+工数: 3 day
+acceptance:
+- 単一 unit symtab の ert green
+- 2 unit cross-reference symtab の ert green
+- multiply-defined error / unresolved-external error の ert green
+
+** §7.3 §93.c — multi-unit driver (~90 elisp + ~30 ert, ~4 day)
+
+scope:
+- =nelisp-link-units= top-level
+- =nelisp-link--compute-layout= layout hash 構築
+- Doc 91 =nelisp-elf-write-binary= delegation
+- exec test (= L5 / L6) integration
+
+LOC: ~90 elisp + ~30 ert
+工数: 4 day
+acceptance:
+- §4.2 single-unit exit(0) test green
+- §4.3 cross-unit call test green
+- =readelf -h= / =readelf -s= / =readelf -r= 各 sane 表示
+- (option) §4.4 ld baseline と modulo section ordering で diff 0
+
+** §7.4 sub-stage 依存
+
+#+begin_src text
+§93.a (reloc core)  -> §93.b (section + symtab) -> §93.c (driver)
+                       ^ 並列性: §93.a と §93.b は data structure 独立、
+                         test も別個に書ける = 2 並列開発可能。§93.c は
+                         両方 ship 後の integration。
+#+end_src
+
+合計工数: 10 day (= 1 dev、SHIPPED まで ~2 週間)、2 並列なら ~7 day。
+
+** §7.5 期間 + 並列度 表
+
+| stage   | LOC | day | 並列                        |
+|---------+-----+-----+-----------------------------|
+| §93.a   |  80 |   3 |                             |
+| §93.b   |  80 |   3 | (parallel with §93.a)       |
+| §93.c   |  90 |   4 | (after both)                |
+| *合計*  | 250 |  10 | (or 7 with 2 parallel devs) |
+
+*7-10 work-day = 2 calendar week* (= 1-2 dev、weekend 抜き)。Phase 47
+chain 上 Doc 91 / Doc 92 と並列開発可能。§93.c は Doc 91 ELF writer の
+skeleton (= §91.a shipped) を要するので Doc 91 進捗に従属。
+
+* §8 References
+
+** §8.1 internal NeLisp design docs
+
+- *Doc 85* (= =docs/design/85-phase-47-feasibility-spike.org=) — 本 doc
+  の parent。§3.3 で linker scope ~300 LOC / §5.1 ROI 表 row 3 / §6.1
+  critical path の linker 位置を articulated。当時 syscall inline を
+  含めて 300 LOC 試算、本 doc で linker only ~250 + Doc 94 syscall
+  ~150 に再分割
+- *Doc 91* (= =docs/design/91-phase-47-elf-writer-elisp.org=, sister) —
+  本 doc の output consumer。本 doc は =nelisp-elf-write-binary= API を
+  caller として使う、Doc 91 の =:text= / =:rodata= / =:data= /
+  =:bss-size= / =:symbols= / =:relocs= / =:entry-sym= plist shape を
+  完全 fixed point として依存
+- *Doc 92* (= 想定 sister、parallel 起こし中) — macro assembler。本 doc
+  の input producer。Doc 92 が emit する compiled-unit plist (= §2.2)
+  shape を fixed point として依存。relocation entry の =:pc32= /
+  =:abs64= / =:plt32= keyword は本 doc と Doc 92 で同期定義
+- *Doc 94* (= 想定 sister、parallel 起こし中) — crt0 + boot loader
+  elisp + syscall inline。Doc 85 当時 1 doc だった "static linker +
+  syscall inline" のうち syscall inline を Doc 94 へ分離した結果、本 doc
+  は linker only に集中。crt0 が emit する =_start= label が本 doc の
+  entry symbol 解決対象
+- *Doc 95* (= =docs/design/95-phase-47-sexp-dsl-elisp.org=, sister) —
+  Sexp 値の =.rodata= bake。本 doc の section combiner が DSL output を
+  =.rodata= 末尾に追加する、相互 reference は Doc 95 §3.3 box pointer
+  relocation で articulated
+- *Doc 81* (= =docs/design/81-nelisp-cc-primitive-trampoline-extension.
+  org=) — Stage 81.4 で articulated された runtime dlsym bridge。本 doc
+  shipped 後は AOT 化で runtime path 不要、Doc 81 §0 STATUS が
+  archaeology に倒れる
+- *Doc 47* (= =docs/design/47-rust-seed-image-abi.org=) — seed image
+  format。本 doc の linker は seed image (= 旧 NLSEED) ではなく真の ELF
+  binary を出す = Doc 47 archaeology 化の最終段
+- *Doc 89 §6* (= =docs/design/89-phase-2-env-scope-chain-migration.org=)
+  — Tier 0 minimal Rust env の bootstrap chain articulated。本 doc も
+  bootstrap stage 0 で旧 Rust nelisp に動かされ、shipped 後に self-host
+  loop が閉じる pattern (= Doc 91 §9.1 と同型)
+
+** §8.2 Rust source anchors
+
+- =build-tool/src/eval/dlsym_bridge.rs= 83 LOC = 全 LOC 削減対象
+  - line 1-32: module doc + Phase 7.1.6.a articulated context
+  - line 33-46: =bi_dlsym_resolve= primitive entry
+  - line 46-83: =libc::dlsym(RTLD_DEFAULT, name)= 実装本体
+- =build-tool/src/eval/mod.rs= = =pub mod dlsym_bridge;= 登録 1-5 行
+- =src/nelisp-cc-runtime.el= line 1596-1802 = Stage 81.4 ブロック ~207
+  elisp = 本 doc の linker に責務移管で削除
+- =.cargo/config.toml= line 28 = =rustflags = ["-C",
+  "link-arg=-rdynamic"]= = Phase 47 完遂で消滅
+- =build-tool/Cargo.toml= = entire workspace = Phase 47 完遂で消滅
+
+** §8.3 関連 memory
+
+- =project_anvil_runtime_phase_b6_shipped= = NeLisp standalone MCP
+  current state、本 doc の elisp linker が動く前提の elisp interpreter
+  baseline
+- =feedback_nelisp_announcement_standalone_gate= = public release は
+  standalone binary 配布可能まで保留 = 本 doc shipped で gate clear へ
+  前進
+- =feedback_nelisp_perf_not_elisp_interpreter= = NeLisp 性能特性は
+  Emacs Lisp interpreter とは別物、§6.7 elisp 性能 risk 評価で混同
+  しない指針
+
+** §8.4 ELF / linker prior art
+
+- *System V ABI Generic + AMD64 Supplement* = =Elf64_Rela= / =Elf64_Sym=
+  struct + R_X86_64_* relocation type 一覧 = §3.1 / §3.2 source of truth
+- *System V ABI AArch64 Processor Supplement* = aarch64 reloc table =
+  §3.3 source of truth
+- *Linkers and Loaders* (John R. Levine, 1999) = 古典的 linker textbook、
+  symbol resolution / section merge / relocation の章が本 doc 設計の
+  foundation
+- *GNU binutils* =ld= source = =bfd/elf64-x86-64.c= の
+  =elf_x86_64_relocate_section= が relocation handler の reference
+  実装、~200 C LOC
+- *LLVM lld* =ELF/Driver.cpp= + =ELF/Relocations.cpp= = modern linker
+  実装、PIE / LTO 含む、Phase 48+ PIE 拡張時に参照
+- *tcc =tccelf.c=* = 簡素 ELF linker (= ~3,000 C LOC) = minimum viable
+  実装の規模感 reference、本 doc elisp 250 LOC は section combiner +
+  symtab + reloc 3 type に絞ったので tcc よりさらに小さい
+- *Plan 9 mk =8l= linker* = 簡素 ELF writer + linker (= ~2,000 C LOC) =
+  Doc 91 と共有 reference
+
+** §8.5 Phase 47 chain 上の dispatch order
+
+並列性:
+- §93.a (reloc core) と §93.b (section + symtab) は data structure
+  独立 = 2 並列開発可能
+- §93.c (driver) は Doc 91 §91.a (header skeleton) shipped を要する =
+  Doc 91 の最初 stage に従属
+- 本 doc 全体としては Doc 91 / Doc 92 / Doc 95 と完全並列開発可能 (=
+  API contract 同期さえ取れれば)
+- Doc 94 crt0 は本 doc shipped 後に開始 (= 本 doc の =:base-addr= +
+  entry symbol address pin が必要)
+
+最終 ROI は Doc 91-95 全体で -2,000 LOC Rust + 全 system linker
+dependency 削除、本 doc 単体は LOC 比 0.36:1 (§5.1) だが Phase 47
+strategic 価値は段違いに大きい (= rustc / cargo / ld 全廃)。
+
+----
+
+End of Doc 93 DRAFT.
