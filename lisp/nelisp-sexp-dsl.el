@@ -1,4 +1,4 @@
-;;; nelisp-sexp-dsl.el --- Phase 47 Sexp layout DSL (§95.a spike)  -*- lexical-binding: t; -*-
+;;; nelisp-sexp-dsl.el --- Phase 47 Sexp layout DSL (§95.a + §95.b)  -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 zawatton
 
@@ -351,6 +351,345 @@ serializer (= deferred to §95.c)."
                 (mapconcat #'nelisp-sexp-pp
                            (plist-get sexp :slots) " ")))
        (t (format "#<unknown-tag %S>" tag)))))))
+
+;;; --- §95.b extensions =============================================
+;;
+;; Mutators, length / arity, iteration, conversion, hash, deep copy,
+;; deep-eq, and type coercion (= unwrap + assert).  Per Doc 95 §8 §95.b
+;; the design ROI hinges on these being available before §95.c starts
+;; encoding bytes — serializer + baker need to walk and hash Sexp
+;; values without re-implementing structural recursion in each call
+;; site.  Plist repr from §95.a is retained; representation swap to a
+;; tagged-vec stays a local edit isolated to constructors / accessors.
+;;
+;; Relationship with §95.a `nelisp-sexp-eq': the existing predicate is
+;; already recursive, so structurally it is a deep-eq.  §95.b adds an
+;; explicit alias `nelisp-sexp-deep-eq' for callers that want the
+;; intent to read clearly; the two are operationally identical and a
+;; trivial alias keeps the API surface predictable.
+
+;;; --- mutators -----------------------------------------------------
+
+(defun nelisp-sexp-cons-set-car (sexp new-car)
+  "Destructively set the CAR of `Sexp::Cons' SEXP to NEW-CAR.
+Returns SEXP for chaining."
+  (nelisp-sexp--check #'nelisp-sexp-cons-p sexp 'nelisp-sexp-cons-p)
+  (plist-put sexp :car new-car)
+  sexp)
+
+(defun nelisp-sexp-cons-set-cdr (sexp new-cdr)
+  "Destructively set the CDR of `Sexp::Cons' SEXP to NEW-CDR.
+Returns SEXP for chaining."
+  (nelisp-sexp--check #'nelisp-sexp-cons-p sexp 'nelisp-sexp-cons-p)
+  (plist-put sexp :cdr new-cdr)
+  sexp)
+
+(defun nelisp-sexp-vector-aset (sexp idx new-elt)
+  "Destructively set element IDX of `Sexp::Vector' SEXP to NEW-ELT.
+Signals `args-out-of-range' on bounds violation."
+  (nelisp-sexp--check #'nelisp-sexp-vector-p sexp 'nelisp-sexp-vector-p)
+  (let* ((elts (plist-get sexp :elts))
+         (len (length elts)))
+    (unless (and (integerp idx) (>= idx 0) (< idx len))
+      (signal 'args-out-of-range (list sexp idx)))
+    (setf (nth idx elts) new-elt)
+    sexp))
+
+(defun nelisp-sexp-record-set-slot (sexp idx new-val)
+  "Destructively set slot IDX of `Sexp::Record' SEXP to NEW-VAL.
+Signals `args-out-of-range' on bounds violation."
+  (nelisp-sexp--check #'nelisp-sexp-record-p sexp 'nelisp-sexp-record-p)
+  (let* ((slots (plist-get sexp :slots))
+         (len (length slots)))
+    (unless (and (integerp idx) (>= idx 0) (< idx len))
+      (signal 'args-out-of-range (list sexp idx)))
+    (setf (nth idx slots) new-val)
+    sexp))
+
+;;; --- length / arity -----------------------------------------------
+
+(defun nelisp-sexp-cons-length (sexp)
+  "Return proper-list length of `Sexp::Cons' chain SEXP.
+The chain is terminated by `Sexp::Nil'.  Signals `wrong-type-
+argument' when the chain terminates in a non-nil non-cons value."
+  (let ((n 0)
+        (cur sexp))
+    (while (nelisp-sexp-cons-p cur)
+      (setq n (1+ n)
+            cur (plist-get cur :cdr)))
+    (unless (nelisp-sexp-nil-p cur)
+      (signal 'wrong-type-argument
+              (list 'nelisp-sexp-proper-list-p sexp)))
+    n))
+
+(defun nelisp-sexp-vector-length (sexp)
+  "Return length of the element list of `Sexp::Vector' SEXP."
+  (nelisp-sexp--check #'nelisp-sexp-vector-p sexp 'nelisp-sexp-vector-p)
+  (length (plist-get sexp :elts)))
+
+(defun nelisp-sexp-record-arity (sexp)
+  "Return slot count of `Sexp::Record' SEXP."
+  (nelisp-sexp--check #'nelisp-sexp-record-p sexp 'nelisp-sexp-record-p)
+  (length (plist-get sexp :slots)))
+
+;;; --- iteration ----------------------------------------------------
+
+(defun nelisp-sexp-walk (sexp fn)
+  "Pre-order traverse SEXP, calling FN on each Sexp sub-value.
+FN's return value is ignored; traversal is for side effect."
+  (when (nelisp-sexp-p sexp)
+    (funcall fn sexp)
+    (let ((tag (plist-get sexp :tag)))
+      (cond
+       ((eq tag 'cons)
+        (nelisp-sexp-walk (plist-get sexp :car) fn)
+        (nelisp-sexp-walk (plist-get sexp :cdr) fn))
+       ((eq tag 'vector)
+        (dolist (e (plist-get sexp :elts))
+          (nelisp-sexp-walk e fn)))
+       ((eq tag 'char-table)
+        (nelisp-sexp-walk (plist-get sexp :default) fn)
+        (dolist (e (plist-get sexp :extras))
+          (nelisp-sexp-walk e fn)))
+       ((eq tag 'cell)
+        (nelisp-sexp-walk (plist-get sexp :inner) fn))
+       ((eq tag 'record)
+        (dolist (e (plist-get sexp :slots))
+          (nelisp-sexp-walk e fn)))))))
+
+(defun nelisp-sexp-map-cons (fn sexp)
+  "Map FN over the proper Cons list SEXP, returning a new Cons list.
+SEXP must be a `Sexp::Cons' chain terminated by `Sexp::Nil'.  FN
+takes one Sexp argument and must return a Sexp."
+  (if (nelisp-sexp-nil-p sexp)
+      (nelisp-sexp-make-nil)
+    (nelisp-sexp--check #'nelisp-sexp-cons-p sexp 'nelisp-sexp-cons-p)
+    (nelisp-sexp-make-cons
+     (funcall fn (plist-get sexp :car))
+     (nelisp-sexp-map-cons fn (plist-get sexp :cdr)))))
+
+(defun nelisp-sexp-foldl (fn init sexp)
+  "Left-fold FN with seed INIT over Cons list SEXP.
+FN is called as (FN ACC ELT); SEXP must be a proper Cons list."
+  (let ((acc init)
+        (cur sexp))
+    (while (nelisp-sexp-cons-p cur)
+      (setq acc (funcall fn acc (plist-get cur :car))
+            cur (plist-get cur :cdr)))
+    (unless (nelisp-sexp-nil-p cur)
+      (signal 'wrong-type-argument
+              (list 'nelisp-sexp-proper-list-p sexp)))
+    acc))
+
+;;; --- conversion ---------------------------------------------------
+
+(defun nelisp-sexp-cons-from-list (elts-list)
+  "Build a `Sexp::Cons' chain from ELTS-LIST (= elisp list of Sexps).
+Empty list becomes `Sexp::Nil'.  No deep-copy of elements."
+  (unless (listp elts-list)
+    (signal 'wrong-type-argument (list 'listp elts-list)))
+  (let ((acc (nelisp-sexp-make-nil)))
+    (dolist (e (reverse elts-list))
+      (setq acc (nelisp-sexp-make-cons e acc)))
+    acc))
+
+(defun nelisp-sexp-list-from-cons (sexp)
+  "Flatten Cons chain SEXP into an elisp list of Sexp values.
+SEXP must be a proper Cons list.  Signals on improper terminator."
+  (let ((acc nil)
+        (cur sexp))
+    (while (nelisp-sexp-cons-p cur)
+      (push (plist-get cur :car) acc)
+      (setq cur (plist-get cur :cdr)))
+    (unless (nelisp-sexp-nil-p cur)
+      (signal 'wrong-type-argument
+              (list 'nelisp-sexp-proper-list-p sexp)))
+    (nreverse acc)))
+
+(defun nelisp-sexp-to-elisp (sexp)
+  "Lossy convert SEXP to a native elisp value.  Debug-only.
+The mapping discards the `Sexp::MutStr' / `Sexp::Str' distinction
+and collapses `Sexp::Cell' to its inner value.  Use the byte-
+layout serializer (= §95.c) for anything semantic."
+  (cond
+   ((not (nelisp-sexp-p sexp)) sexp)
+   (t
+    (let ((tag (plist-get sexp :tag)))
+      (cond
+       ((null tag) nil)
+       ((eq tag t) t)
+       ((memq tag '(int float str mut-str))
+        (plist-get sexp :value))
+       ((eq tag 'symbol) (intern (plist-get sexp :value)))
+       ((eq tag 'cons)
+        (cons (nelisp-sexp-to-elisp (plist-get sexp :car))
+              (nelisp-sexp-to-elisp (plist-get sexp :cdr))))
+       ((eq tag 'vector)
+        (apply #'vector
+               (mapcar #'nelisp-sexp-to-elisp
+                       (plist-get sexp :elts))))
+       ((eq tag 'cell) (nelisp-sexp-to-elisp (plist-get sexp :inner)))
+       ((eq tag 'record)
+        (cons (plist-get sexp :type-sym)
+              (mapcar #'nelisp-sexp-to-elisp
+                      (plist-get sexp :slots))))
+       (t sexp))))))
+
+(defun nelisp-sexp-from-elisp (obj)
+  "Sniff native elisp OBJ and wrap into a `Sexp::*' value.
+Type detection order: nil → Nil, t → T, integer → Int, float →
+Float, string → Str, symbol → Symbol, vector → Vector, cons →
+Cons chain.  Improper cons tails are preserved verbatim."
+  (cond
+   ((null obj) (nelisp-sexp-make-nil))
+   ((eq obj t) (nelisp-sexp-make-t))
+   ((integerp obj) (nelisp-sexp-make-int obj))
+   ((floatp obj) (nelisp-sexp-make-float obj))
+   ((stringp obj) (nelisp-sexp-make-str obj))
+   ((symbolp obj) (nelisp-sexp-make-symbol obj))
+   ((vectorp obj)
+    (nelisp-sexp-make-vector
+     (mapcar #'nelisp-sexp-from-elisp (append obj nil))))
+   ((consp obj)
+    (nelisp-sexp-make-cons
+     (nelisp-sexp-from-elisp (car obj))
+     (nelisp-sexp-from-elisp (cdr obj))))
+   (t (signal 'wrong-type-argument (list 'nelisp-sexp-from-elisp obj)))))
+
+;;; --- hash ---------------------------------------------------------
+
+(defun nelisp-sexp-hash (sexp)
+  "Return an `eql'-compatible structural hash of SEXP.
+Same SEXP shape ⇒ same hash; different shapes ⇒ different hash
+with high probability.  Recursive over all variant children."
+  (if (not (nelisp-sexp-p sexp))
+      (sxhash-equal sexp)
+    (let ((tag (plist-get sexp :tag)))
+      (cond
+       ((null tag) 1)
+       ((eq tag t) 2)
+       ((memq tag '(int float str mut-str symbol))
+        (logxor (sxhash-equal tag)
+                (sxhash-equal (plist-get sexp :value))))
+       ((eq tag 'cons)
+        (logxor (sxhash-equal tag)
+                (ash (nelisp-sexp-hash (plist-get sexp :car)) 1)
+                (nelisp-sexp-hash (plist-get sexp :cdr))))
+       ((eq tag 'vector)
+        (logxor (sxhash-equal tag)
+                (nelisp-sexp--hash-list (plist-get sexp :elts))))
+       ((eq tag 'char-table)
+        (logxor (sxhash-equal tag)
+                (nelisp-sexp-hash (plist-get sexp :default))
+                (nelisp-sexp--hash-list (plist-get sexp :extras))))
+       ((eq tag 'bool-vector)
+        (logxor (sxhash-equal tag)
+                (sxhash-equal (plist-get sexp :len))
+                (if (plist-get sexp :init) 7 11)))
+       ((eq tag 'cell)
+        (logxor (sxhash-equal tag)
+                (nelisp-sexp-hash (plist-get sexp :inner))))
+       ((eq tag 'record)
+        (logxor (sxhash-equal tag)
+                (sxhash-equal (plist-get sexp :type-sym))
+                (nelisp-sexp--hash-list (plist-get sexp :slots))))
+       (t (sxhash-equal sexp))))))
+
+(defun nelisp-sexp--hash-list (xs)
+  "Internal: combine `nelisp-sexp-hash' over list XS with index mix."
+  (let ((acc 0)
+        (i 0))
+    (dolist (x xs)
+      (setq acc (logxor acc (ash (nelisp-sexp-hash x) (mod i 16)))
+            i (1+ i)))
+    acc))
+
+;;; --- deep copy / deep-eq ------------------------------------------
+
+(defun nelisp-sexp-copy (sexp)
+  "Return a deep copy of SEXP.
+All cons / vector / char-table / cell / record children are
+recursively reconstructed; atomic variants reuse their immutable
+payload (= int / float / interned string)."
+  (if (not (nelisp-sexp-p sexp))
+      sexp
+    (let ((tag (plist-get sexp :tag)))
+      (cond
+       ((null tag) (nelisp-sexp-make-nil))
+       ((eq tag t) (nelisp-sexp-make-t))
+       ((eq tag 'int) (nelisp-sexp-make-int (plist-get sexp :value)))
+       ((eq tag 'float)
+        (nelisp-sexp-make-float (plist-get sexp :value)))
+       ((eq tag 'str) (nelisp-sexp-make-str (plist-get sexp :value)))
+       ((eq tag 'mut-str)
+        (nelisp-sexp-make-mut-str (copy-sequence (plist-get sexp :value))))
+       ((eq tag 'symbol)
+        (nelisp-sexp-make-symbol (plist-get sexp :value)))
+       ((eq tag 'cons)
+        (nelisp-sexp-make-cons
+         (nelisp-sexp-copy (plist-get sexp :car))
+         (nelisp-sexp-copy (plist-get sexp :cdr))))
+       ((eq tag 'vector)
+        (nelisp-sexp-make-vector
+         (mapcar #'nelisp-sexp-copy (plist-get sexp :elts))))
+       ((eq tag 'char-table)
+        (nelisp-sexp-make-char-table
+         (nelisp-sexp-copy (plist-get sexp :default))
+         (mapcar #'nelisp-sexp-copy (plist-get sexp :extras))))
+       ((eq tag 'bool-vector)
+        (nelisp-sexp-make-bool-vector
+         (plist-get sexp :len) (plist-get sexp :init)))
+       ((eq tag 'cell)
+        (nelisp-sexp-make-cell
+         (nelisp-sexp-copy (plist-get sexp :inner))))
+       ((eq tag 'record)
+        (nelisp-sexp-make-record
+         (plist-get sexp :type-sym)
+         (mapcar #'nelisp-sexp-copy (plist-get sexp :slots))))
+       (t sexp)))))
+
+(defalias 'nelisp-sexp-deep-eq #'nelisp-sexp-eq
+  "Alias for `nelisp-sexp-eq'; reads as deep-eq at call sites.
+The §95.a structural eq is already recursive over every variant,
+so deep-eq and eq are operationally identical.")
+
+;;; --- type coercion (= unwrap + assert) ----------------------------
+
+(defun nelisp-sexp-as-int (sexp)
+  "Return wrapped int of SEXP, signaling on tag mismatch."
+  (nelisp-sexp--check #'nelisp-sexp-int-p sexp 'nelisp-sexp-int-p)
+  (plist-get sexp :value))
+
+(defun nelisp-sexp-as-float (sexp)
+  "Return wrapped float of SEXP, signaling on tag mismatch."
+  (nelisp-sexp--check #'nelisp-sexp-float-p sexp 'nelisp-sexp-float-p)
+  (plist-get sexp :value))
+
+(defun nelisp-sexp-as-str (sexp)
+  "Return wrapped string of `Sexp::Str' or `Sexp::MutStr' SEXP."
+  (unless (or (nelisp-sexp-str-p sexp) (nelisp-sexp-mut-str-p sexp))
+    (signal 'wrong-type-argument (list 'nelisp-sexp-stringy-p sexp)))
+  (plist-get sexp :value))
+
+(defun nelisp-sexp-as-symbol (sexp)
+  "Return wrapped symbol-name string of SEXP, signaling on mismatch."
+  (nelisp-sexp--check #'nelisp-sexp-symbol-p sexp 'nelisp-sexp-symbol-p)
+  (plist-get sexp :value))
+
+(defun nelisp-sexp-as-cons (sexp)
+  "Return SEXP itself when it is `Sexp::Cons', else signal."
+  (nelisp-sexp--check #'nelisp-sexp-cons-p sexp 'nelisp-sexp-cons-p)
+  sexp)
+
+(defun nelisp-sexp-as-vector (sexp)
+  "Return SEXP itself when it is `Sexp::Vector', else signal."
+  (nelisp-sexp--check #'nelisp-sexp-vector-p sexp 'nelisp-sexp-vector-p)
+  sexp)
+
+(defun nelisp-sexp-as-record (sexp)
+  "Return SEXP itself when it is `Sexp::Record', else signal."
+  (nelisp-sexp--check #'nelisp-sexp-record-p sexp 'nelisp-sexp-record-p)
+  sexp)
 
 (provide 'nelisp-sexp-dsl)
 

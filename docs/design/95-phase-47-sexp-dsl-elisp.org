@@ -1011,6 +1011,31 @@ Freestanding constructor / accessor / predicate spike landed:
 - No Rust changes, no =nelisp-baker= STDLIB_FILES registration —
   freestanding spike per task spec.
 
+** §95.b SHIPPED (2026-05-11)
+
+Operational surface needed before §95.c serializer + §95.e baker
+landed on top of §95.a, same file:
+
+- =lisp/nelisp-sexp-dsl.el= — 24 new helpers across 7 sub-groups:
+  - mutators: =cons-set-car=, =cons-set-cdr=, =vector-aset=,
+    =record-set-slot= (= bounds + type-check, in-place)
+  - length / arity: =cons-length= (signals on improper),
+    =vector-length=, =record-arity=
+  - iteration: =walk= (pre-order), =map-cons=, =foldl=
+  - conversion: =cons-from-list=, =list-from-cons=, =to-elisp=
+    (lossy debug), =from-elisp= (cond-sniff)
+  - hash: =hash= (= sxhash-equal + tag mix; usable as =eql= key)
+  - deep copy / deep-eq: =copy= (recursive new cells), =deep-eq=
+    (alias for §95.a =eq= which is already recursive)
+  - type coercion: =as-int=, =as-float=, =as-str= (accepts both
+    str variants), =as-symbol=, =as-cons=, =as-vector=, =as-record=
+- =test/nelisp-sexp-dsl-test.el= — 30 new ert cases (mutator bounds
+  + improper-list signals + map/fold semantics + round-trip +
+  hash stability + copy independence + coercion mismatch errors).
+- No Rust changes, no =nelisp-baker= STDLIB_FILES registration.
+- §95.c byte-layout serializer remains intentionally deferred —
+  that is the big one and is the next sub-stage per §8.6 plan.
+
 ----
 
 End of Doc 95 DRAFT.

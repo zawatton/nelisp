@@ -275,6 +275,297 @@
   ;; Non-Sexp input shouldn't crash.
   (should (stringp (nelisp-sexp-pp 42))))
 
+;;; --- §95.b: mutators ----------------------------------------------
+
+(ert-deftest nelisp-sexp-dsl-cons-set-car ()
+  (let ((c (nelisp-sexp-make-cons (nelisp-sexp-make-int 1)
+                                  (nelisp-sexp-make-int 2))))
+    (nelisp-sexp-cons-set-car c (nelisp-sexp-make-int 99))
+    (should (nelisp-sexp-eq (nelisp-sexp-cons-car c)
+                            (nelisp-sexp-make-int 99))))
+  (should-error
+   (nelisp-sexp-cons-set-car (nelisp-sexp-make-int 1)
+                             (nelisp-sexp-make-int 2))
+   :type 'wrong-type-argument))
+
+(ert-deftest nelisp-sexp-dsl-cons-set-cdr ()
+  (let ((c (nelisp-sexp-make-cons (nelisp-sexp-make-int 1)
+                                  (nelisp-sexp-make-int 2))))
+    (nelisp-sexp-cons-set-cdr c (nelisp-sexp-make-nil))
+    (should (nelisp-sexp-eq (nelisp-sexp-cons-cdr c)
+                            (nelisp-sexp-make-nil)))))
+
+(ert-deftest nelisp-sexp-dsl-vector-aset ()
+  (let* ((elts (list (nelisp-sexp-make-int 10)
+                     (nelisp-sexp-make-int 20)
+                     (nelisp-sexp-make-int 30)))
+         (v (nelisp-sexp-make-vector elts)))
+    (nelisp-sexp-vector-aset v 1 (nelisp-sexp-make-int 99))
+    (should (nelisp-sexp-eq
+             (nth 1 (nelisp-sexp-vector-elts v))
+             (nelisp-sexp-make-int 99)))
+    (should-error (nelisp-sexp-vector-aset v 5 (nelisp-sexp-make-int 0))
+                  :type 'args-out-of-range)
+    (should-error (nelisp-sexp-vector-aset v -1 (nelisp-sexp-make-int 0))
+                  :type 'args-out-of-range)))
+
+(ert-deftest nelisp-sexp-dsl-record-set-slot ()
+  (let* ((slots (list (nelisp-sexp-make-int 1)
+                      (nelisp-sexp-make-int 2)))
+         (r (nelisp-sexp-make-record 'pt slots)))
+    (nelisp-sexp-record-set-slot r 0 (nelisp-sexp-make-int 7))
+    (should (nelisp-sexp-eq
+             (nth 0 (nelisp-sexp-record-slots r))
+             (nelisp-sexp-make-int 7)))
+    (should-error (nelisp-sexp-record-set-slot r 9 (nelisp-sexp-make-int 0))
+                  :type 'args-out-of-range)))
+
+;;; --- §95.b: length / arity ----------------------------------------
+
+(ert-deftest nelisp-sexp-dsl-cons-length-proper ()
+  (let ((lst (nelisp-sexp-cons-from-list
+              (list (nelisp-sexp-make-int 1)
+                    (nelisp-sexp-make-int 2)
+                    (nelisp-sexp-make-int 3)))))
+    (should (= 3 (nelisp-sexp-cons-length lst))))
+  (should (= 0 (nelisp-sexp-cons-length (nelisp-sexp-make-nil)))))
+
+(ert-deftest nelisp-sexp-dsl-cons-length-improper-signals ()
+  (let ((improper (nelisp-sexp-make-cons
+                   (nelisp-sexp-make-int 1)
+                   (nelisp-sexp-make-int 2))))
+    (should-error (nelisp-sexp-cons-length improper)
+                  :type 'wrong-type-argument)))
+
+(ert-deftest nelisp-sexp-dsl-vector-length ()
+  (let ((v (nelisp-sexp-make-vector
+            (list (nelisp-sexp-make-int 1)
+                  (nelisp-sexp-make-int 2)))))
+    (should (= 2 (nelisp-sexp-vector-length v))))
+  (should (= 0 (nelisp-sexp-vector-length (nelisp-sexp-make-vector nil)))))
+
+(ert-deftest nelisp-sexp-dsl-record-arity ()
+  (let ((r (nelisp-sexp-make-record
+            'pt (list (nelisp-sexp-make-int 1)
+                      (nelisp-sexp-make-int 2)
+                      (nelisp-sexp-make-int 3)))))
+    (should (= 3 (nelisp-sexp-record-arity r)))))
+
+;;; --- §95.b: iteration ---------------------------------------------
+
+(ert-deftest nelisp-sexp-dsl-walk-counts-subsexps ()
+  (let* ((tree (nelisp-sexp-make-cons
+                (nelisp-sexp-make-int 1)
+                (nelisp-sexp-make-cons
+                 (nelisp-sexp-make-vector
+                  (list (nelisp-sexp-make-int 2)
+                        (nelisp-sexp-make-int 3)))
+                 (nelisp-sexp-make-nil))))
+         (count 0))
+    (nelisp-sexp-walk tree (lambda (_) (setq count (1+ count))))
+    ;; tree (cons) + 1 (int) + cons2 + vector + 2 (int) + 3 (int) + nil = 7
+    (should (= count 7))))
+
+(ert-deftest nelisp-sexp-dsl-walk-non-sexp-noop ()
+  (let ((count 0))
+    (nelisp-sexp-walk 42 (lambda (_) (setq count (1+ count))))
+    (should (= count 0))))
+
+(ert-deftest nelisp-sexp-dsl-map-cons ()
+  (let* ((lst (nelisp-sexp-cons-from-list
+               (list (nelisp-sexp-make-int 1)
+                     (nelisp-sexp-make-int 2)
+                     (nelisp-sexp-make-int 3))))
+         (doubled (nelisp-sexp-map-cons
+                   (lambda (x)
+                     (nelisp-sexp-make-int
+                      (* 2 (nelisp-sexp-int-value x))))
+                   lst))
+         (expected (nelisp-sexp-cons-from-list
+                    (list (nelisp-sexp-make-int 2)
+                          (nelisp-sexp-make-int 4)
+                          (nelisp-sexp-make-int 6)))))
+    (should (nelisp-sexp-eq doubled expected))))
+
+(ert-deftest nelisp-sexp-dsl-map-cons-empty ()
+  (let ((result (nelisp-sexp-map-cons #'identity (nelisp-sexp-make-nil))))
+    (should (nelisp-sexp-nil-p result))))
+
+(ert-deftest nelisp-sexp-dsl-foldl-sum ()
+  (let ((lst (nelisp-sexp-cons-from-list
+              (list (nelisp-sexp-make-int 1)
+                    (nelisp-sexp-make-int 2)
+                    (nelisp-sexp-make-int 3)
+                    (nelisp-sexp-make-int 4)))))
+    (should (= 10 (nelisp-sexp-foldl
+                   (lambda (acc x) (+ acc (nelisp-sexp-int-value x)))
+                   0 lst)))))
+
+(ert-deftest nelisp-sexp-dsl-foldl-improper-signals ()
+  (let ((improper (nelisp-sexp-make-cons
+                   (nelisp-sexp-make-int 1)
+                   (nelisp-sexp-make-int 2))))
+    (should-error (nelisp-sexp-foldl #'+ 0 improper)
+                  :type 'wrong-type-argument)))
+
+;;; --- §95.b: conversion --------------------------------------------
+
+(ert-deftest nelisp-sexp-dsl-cons-from-list-round-trip ()
+  (let* ((elts (list (nelisp-sexp-make-int 1)
+                     (nelisp-sexp-make-symbol "foo")
+                     (nelisp-sexp-make-str "bar")))
+         (chain (nelisp-sexp-cons-from-list elts))
+         (back (nelisp-sexp-list-from-cons chain)))
+    (should (= (length back) 3))
+    (should (nelisp-sexp-eq (nth 0 back) (nth 0 elts)))
+    (should (nelisp-sexp-eq (nth 1 back) (nth 1 elts)))
+    (should (nelisp-sexp-eq (nth 2 back) (nth 2 elts)))))
+
+(ert-deftest nelisp-sexp-dsl-cons-from-empty-list ()
+  (should (nelisp-sexp-nil-p (nelisp-sexp-cons-from-list nil))))
+
+(ert-deftest nelisp-sexp-dsl-list-from-cons-improper-signals ()
+  (let ((improper (nelisp-sexp-make-cons
+                   (nelisp-sexp-make-int 1)
+                   (nelisp-sexp-make-int 2))))
+    (should-error (nelisp-sexp-list-from-cons improper)
+                  :type 'wrong-type-argument)))
+
+(ert-deftest nelisp-sexp-dsl-from-elisp-atomic ()
+  (should (nelisp-sexp-nil-p (nelisp-sexp-from-elisp nil)))
+  (should (nelisp-sexp-t-p (nelisp-sexp-from-elisp t)))
+  (should (= 7 (nelisp-sexp-int-value (nelisp-sexp-from-elisp 7))))
+  (should (= 3.5 (nelisp-sexp-float-value (nelisp-sexp-from-elisp 3.5))))
+  (should (equal "hi" (nelisp-sexp-str-value
+                       (nelisp-sexp-from-elisp "hi"))))
+  (should (equal "foo" (nelisp-sexp-symbol-name
+                        (nelisp-sexp-from-elisp 'foo)))))
+
+(ert-deftest nelisp-sexp-dsl-from-elisp-recursive ()
+  (let ((s (nelisp-sexp-from-elisp (cons 1 (cons 2 nil)))))
+    (should (nelisp-sexp-cons-p s))
+    (should (= 1 (nelisp-sexp-int-value (nelisp-sexp-cons-car s))))
+    (should (nelisp-sexp-cons-p (nelisp-sexp-cons-cdr s)))))
+
+(ert-deftest nelisp-sexp-dsl-to-from-elisp-round-trip ()
+  ;; int: lossless
+  (should (eql 42 (nelisp-sexp-to-elisp
+                   (nelisp-sexp-from-elisp 42))))
+  ;; nested cons: lossless
+  (should (equal '(1 2 3) (nelisp-sexp-to-elisp
+                           (nelisp-sexp-from-elisp '(1 2 3)))))
+  ;; vector: lossless
+  (should (equal [1 2 3] (nelisp-sexp-to-elisp
+                          (nelisp-sexp-from-elisp [1 2 3])))))
+
+;;; --- §95.b: hash --------------------------------------------------
+
+(ert-deftest nelisp-sexp-dsl-hash-stable-same-shape ()
+  (let ((a (nelisp-sexp-make-cons
+            (nelisp-sexp-make-int 1)
+            (nelisp-sexp-make-int 2)))
+        (b (nelisp-sexp-make-cons
+            (nelisp-sexp-make-int 1)
+            (nelisp-sexp-make-int 2))))
+    (should (= (nelisp-sexp-hash a) (nelisp-sexp-hash b)))))
+
+(ert-deftest nelisp-sexp-dsl-hash-different-shapes-differ ()
+  (let ((a (nelisp-sexp-make-int 1))
+        (b (nelisp-sexp-make-int 2))
+        (c (nelisp-sexp-make-float 1.0)))
+    ;; sxhash collisions on small ints are theoretically possible but
+    ;; tag mixing makes this triple safe in practice.
+    (should-not (= (nelisp-sexp-hash a) (nelisp-sexp-hash b)))
+    (should-not (= (nelisp-sexp-hash a) (nelisp-sexp-hash c)))))
+
+(ert-deftest nelisp-sexp-dsl-hash-usable-as-hash-key ()
+  (let ((tbl (make-hash-table :test 'eql))
+        (s1 (nelisp-sexp-make-symbol "alpha"))
+        (s2 (nelisp-sexp-make-symbol "alpha")))
+    (puthash (nelisp-sexp-hash s1) 'found tbl)
+    (should (eq 'found (gethash (nelisp-sexp-hash s2) tbl)))))
+
+;;; --- §95.b: deep copy / deep-eq -----------------------------------
+
+(ert-deftest nelisp-sexp-dsl-copy-deep-equal-not-eq ()
+  (let* ((orig (nelisp-sexp-make-cons
+                (nelisp-sexp-make-int 1)
+                (nelisp-sexp-make-cons
+                 (nelisp-sexp-make-vector
+                  (list (nelisp-sexp-make-int 2)))
+                 (nelisp-sexp-make-nil))))
+         (dup (nelisp-sexp-copy orig)))
+    (should (nelisp-sexp-deep-eq orig dup))
+    (should-not (eq orig dup))
+    ;; Mutation on dup must not bleed into orig.
+    (nelisp-sexp-cons-set-car dup (nelisp-sexp-make-int 99))
+    (should (= 1 (nelisp-sexp-int-value (nelisp-sexp-cons-car orig))))))
+
+(ert-deftest nelisp-sexp-dsl-copy-record ()
+  (let* ((orig (nelisp-sexp-make-record
+                'pt (list (nelisp-sexp-make-int 1)
+                          (nelisp-sexp-make-int 2))))
+         (dup (nelisp-sexp-copy orig)))
+    (should (nelisp-sexp-deep-eq orig dup))
+    (nelisp-sexp-record-set-slot dup 0 (nelisp-sexp-make-int 99))
+    (should (= 1 (nelisp-sexp-int-value
+                  (nth 0 (nelisp-sexp-record-slots orig)))))))
+
+(ert-deftest nelisp-sexp-dsl-deep-eq-alias ()
+  ;; `defalias' may produce different function objects under byte
+  ;; compilation; just verify operational equivalence on a deeply
+  ;; nested value.
+  (let ((a (nelisp-sexp-make-cons
+            (nelisp-sexp-make-vector
+             (list (nelisp-sexp-make-int 1)
+                   (nelisp-sexp-make-symbol "x")))
+            (nelisp-sexp-make-record
+             'pt (list (nelisp-sexp-make-int 2)))))
+        (b (nelisp-sexp-make-cons
+            (nelisp-sexp-make-vector
+             (list (nelisp-sexp-make-int 1)
+                   (nelisp-sexp-make-symbol "x")))
+            (nelisp-sexp-make-record
+             'pt (list (nelisp-sexp-make-int 2))))))
+    (should (nelisp-sexp-deep-eq a b))
+    (should (eq (nelisp-sexp-deep-eq a b) (nelisp-sexp-eq a b)))))
+
+;;; --- §95.b: type coercion -----------------------------------------
+
+(ert-deftest nelisp-sexp-dsl-as-int-positive ()
+  (should (= 7 (nelisp-sexp-as-int (nelisp-sexp-make-int 7))))
+  (should-error (nelisp-sexp-as-int (nelisp-sexp-make-float 7.0))
+                :type 'wrong-type-argument))
+
+(ert-deftest nelisp-sexp-dsl-as-float-positive ()
+  (should (= 3.14 (nelisp-sexp-as-float (nelisp-sexp-make-float 3.14))))
+  (should-error (nelisp-sexp-as-float (nelisp-sexp-make-int 3))
+                :type 'wrong-type-argument))
+
+(ert-deftest nelisp-sexp-dsl-as-str-accepts-both ()
+  (should (equal "a" (nelisp-sexp-as-str (nelisp-sexp-make-str "a"))))
+  (should (equal "b" (nelisp-sexp-as-str (nelisp-sexp-make-mut-str "b"))))
+  (should-error (nelisp-sexp-as-str (nelisp-sexp-make-int 1))
+                :type 'wrong-type-argument))
+
+(ert-deftest nelisp-sexp-dsl-as-symbol-positive ()
+  (should (equal "foo"
+                 (nelisp-sexp-as-symbol (nelisp-sexp-make-symbol "foo"))))
+  (should-error (nelisp-sexp-as-symbol (nelisp-sexp-make-str "foo"))
+                :type 'wrong-type-argument))
+
+(ert-deftest nelisp-sexp-dsl-as-cons-vector-record ()
+  (let ((c (nelisp-sexp-make-cons (nelisp-sexp-make-nil)
+                                  (nelisp-sexp-make-nil)))
+        (v (nelisp-sexp-make-vector nil))
+        (r (nelisp-sexp-make-record 'pt nil)))
+    (should (eq c (nelisp-sexp-as-cons c)))
+    (should (eq v (nelisp-sexp-as-vector v)))
+    (should (eq r (nelisp-sexp-as-record r)))
+    (should-error (nelisp-sexp-as-cons v) :type 'wrong-type-argument)
+    (should-error (nelisp-sexp-as-vector r) :type 'wrong-type-argument)
+    (should-error (nelisp-sexp-as-record c) :type 'wrong-type-argument)))
+
 (provide 'nelisp-sexp-dsl-test)
 
 ;;; nelisp-sexp-dsl-test.el ends here
