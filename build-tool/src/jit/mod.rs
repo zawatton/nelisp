@@ -35,8 +35,4 @@ pub(crate) use bridge::{
 mod cons;
 mod float;
 mod predicate;
-// `strategy': Doc 84 §§84.1 / 84.2 / 84.3 ported every Rust `bi_*'
-// helper to elisp (Float family + syscall-nr resolver + 6 Box
-// accessors).  Module is now empty; §84.4 deletes the file.
-mod strategy;
 mod syscall;
