@@ -60,6 +60,53 @@
       (lambda (x)
         (nl-jit-call-out-1 "nelisp_jit_type_of" x)))
 
+;; ---------- intern / symbol-name / make-symbol --------------------
+;;
+;; Doc 86 §86.1.d (2026-05-10) — Tier 1 intern / symbol arms migrated
+;; from Rust dispatch (`bi_intern' / `bi_symbol_name' / `bi_make_
+;; symbol') to elisp on top of the new `nl_jit_intern' / `nl_jit_
+;; symbol_name' / `nl_jit_make_symbol' trampolines (= shape `(*const
+;; Sexp, *mut Sexp) -> i64', reachable via `nl-jit-call-out-1').
+;;
+;; The Sexp::Str/MutStr → Sexp::Symbol type-tag flip + per-process
+;; counter for `make-symbol' uninterned-name shape stay Rust-resident
+;; as the slim sliver; arity + type dispatch move wholesale to elisp.
+;; The MVP has no obarray, so `intern' is the same as the §86.3
+;; deferred slim primitive's prospective shape — once §86.3 ships the
+;; elisp scope-chain refactor this can re-route through the new env
+;; primitive without touching the wrappers below.
+;;
+;; `intern' fast-paths Symbol passthrough in elisp (= matches the pre-
+;; §86.1.d MVP semantics; the Rust trampoline rejects symbol input so
+;; the wrapper handles it before calling).
+;;
+;; `make-symbol' coerces any Symbol-like input via the trampoline
+;; (which itself accepts Str / MutStr / Symbol); other inputs surface
+;; the trampoline's ERR as a `wrong-type-argument' on `stringp'.
+
+(fset 'intern
+      (lambda (name)
+        (if (eq (type-of name) 'symbol)
+            name
+          (condition-case _err
+              (nl-jit-call-out-1 "nelisp_jit_intern" name)
+            (error (signal 'wrong-type-argument
+                           (cons 'stringp (cons name nil))))))))
+
+(fset 'symbol-name
+      (lambda (sym)
+        (condition-case _err
+            (nl-jit-call-out-1 "nelisp_jit_symbol_name" sym)
+          (error (signal 'wrong-type-argument
+                         (cons 'symbolp (cons sym nil)))))))
+
+(fset 'make-symbol
+      (lambda (name)
+        (condition-case _err
+            (nl-jit-call-out-1 "nelisp_jit_make_symbol" name)
+          (error (signal 'wrong-type-argument
+                         (cons 'stringp (cons name nil)))))))
+
 ;; ---------- predicate (eq) ----------------------------------------
 ;;
 ;; eq is installed FIRST so subsequent wrappers can use it for

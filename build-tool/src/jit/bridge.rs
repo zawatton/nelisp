@@ -135,6 +135,10 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
         // top of this trampoline (= reachable via `(nl-jit-call-out-1
         // "nelisp_jit_type_of" x)' from `lisp/nelisp-stdlib.el').
         "nelisp_jit_type_of" => super::predicate::nl_jit_type_of as *const u8,
+        // ---- intern / symbol (3) ---- Doc 86 §86.1.d (2026-05-10).
+        "nelisp_jit_intern" => super::strings::nl_jit_intern as *const u8,
+        "nelisp_jit_symbol_name" => super::strings::nl_jit_symbol_name as *const u8,
+        "nelisp_jit_make_symbol" => super::strings::nl_jit_make_symbol as *const u8,
         // ---- syscall (2) ----
         // Phase 7.1.6.e (Doc 28 §3.6.e): resolve syscall names directly
         // to the `#[no_mangle] extern "C"' trampolines now that the
@@ -452,6 +456,9 @@ mod tests {
             "nelisp_jit_elt",
             "nelisp_jit_eq_inline",
             "nelisp_jit_type_of",
+            "nelisp_jit_intern",
+            "nelisp_jit_symbol_name",
+            "nelisp_jit_make_symbol",
             "nelisp_jit_syscall",
             "nelisp_jit_syscall_supported_p",
         ];

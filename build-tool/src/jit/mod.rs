@@ -35,4 +35,6 @@ pub(crate) use bridge::{
 mod cons;
 mod float;
 mod predicate;
+// Doc 86 §86.1.d (2026-05-10): intern / symbol-name / make-symbol.
+mod strings;
 mod syscall;

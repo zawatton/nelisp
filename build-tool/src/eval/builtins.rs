@@ -119,7 +119,7 @@ pub fn install_builtins(env: &mut Env) {
         // (lisp/nelisp-stdlib-plist-str.el).  Only the
         // "build-Sexp::Str-from-int-list" sliver remains as
         // `nelisp--concat-ints'.
-        "intern", "symbol-name",
+        // Doc 86 §86.1.d (2026-05-10): `intern' / `symbol-name' moved to elisp.
         "nelisp--format-float-body", "truncate",
         "nelisp--concat-ints",
         // Rust-min (2026-05-06 batch 6e): `string=' moved to elisp
@@ -151,9 +151,7 @@ pub fn install_builtins(env: &mut Env) {
         // Rust-min (2026-05-06 batch 3): mapconcat / string-search /
         // delete-dups migrated to elisp (lisp/nelisp-stdlib-plist-str.el).
         // symbols / sequences
-        // Rust-min (2026-05-06 batch 6a): gensym migrated to elisp
-        // (lisp/nelisp-stdlib-misc.el).
-        "make-symbol",
+        // gensym / make-symbol migrated to elisp (Rust-min batch 6a + Doc 86 §86.1.d).
         // hash-tables (Track O'')
         // Rust-min (2026-05-06 batch 6k): `hash-table-keys' /
         // `hash-table-values' migrated to elisp via `maphash' fold
@@ -522,8 +520,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // body sliver remains as `nelisp--format-float-body'.
         "nelisp--format-float-body" => bi_format_float_body(args),
         "truncate" => bi_truncate(args),
-        "intern" => bi_intern(args),
-        "symbol-name" => bi_symbol_name(args),
+        // Doc 86 §86.1.d: intern / symbol-name / make-symbol → jit/strings.rs.
         // Rust-min (2026-05-06 batch 6e): `string=' moved to elisp
         // defalias of `string-equal'.
         // string-equal migrated to elisp (Rust-min 2026-05-06 batch 6n,
@@ -607,7 +604,7 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nelisp--apply-lambda-inner" => bi_apply_lambda_inner(args, env),
         // intern-soft migrated to elisp (Rust-min 2026-05-06 batch 6f,
         // see lisp/nelisp-stdlib-misc.el).
-        "make-symbol" => bi_make_symbol(args),
+        // Doc 86 §86.1.d: `make-symbol' migrated — see block above.
         // make-string migrated to elisp (Rust-min 2026-05-06 batch 6s,
         // see lisp/nelisp-stdlib-plist-str.el).  Build sliver:
         "nelisp--make-mut-string" => bi_make_mut_string(args),
@@ -1287,52 +1284,8 @@ fn bi_concat_ints(args: &[Sexp]) -> Result<Sexp, EvalError> {
 // `normalise_index' was a private helper used only by `bi_substring',
 // so dropped along with it.
 
-fn bi_intern(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("intern", args, 1, Some(1))?;
-    match &args[0] {
-        Sexp::Str(s) => Ok(Sexp::Symbol(s.clone())),
-        Sexp::MutStr(rc) => Ok(Sexp::Symbol(rc.value.clone())),
-        other => Err(EvalError::WrongType {
-            expected: "stringp".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
-// bi_intern_soft removed — see lisp/nelisp-stdlib-misc.el (Rust-min
-// 2026-05-06 batch 6f).  Without an obarray the MVP could not
-// implement true soft-fail lookup; the elisp version preserves the
-// previous "always returns the symbol" semantics by routing through
-// `intern' for stringp input and identity for symbolp input.
-
-/// `(make-symbol NAME)` — return a *fresh* uninterned symbol whose
-/// print-name is NAME.  Our Sexp::Symbol is a wrapper around a String,
-/// so freshness is achieved by appending a per-process counter to the
-/// name (= matching the printable shape of host Emacs's
-/// `make-symbol' output for `prin1' purposes; full uninterned-vs-
-/// interned distinction is deferred until we have a proper obarray).
-fn bi_make_symbol(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    require_arity("make-symbol", args, 1, Some(1))?;
-    let name = match &args[0] {
-        Sexp::Str(s) => s.clone(),
-        Sexp::MutStr(rc) => rc.value.clone(),
-        Sexp::Symbol(s) => s.clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "stringp".into(),
-            got: other.clone(),
-        }),
-    };
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    Ok(Sexp::Symbol(format!("{}__nelisp-uninterned-{}", name, n)))
-}
-
-// bi_gensym removed — see lisp/nelisp-stdlib-misc.el
-// (Rust-min 2026-05-06 batch 6a).  `make-symbol' stays here because
-// it must construct a fresh `Sexp::Symbol' that bypasses any
-// obarray; once that primitive exists, `gensym' is a 4-line elisp
-// wrapper.
+// bi_intern/_make_symbol/_intern_soft/_gensym all removed (Doc 86
+// §86.1.d + Rust-min batch 6f/6a).
 
 // bi_copy_sequence removed — see lisp/nelisp-stdlib-misc.el
 // (Rust-min 2026-05-06 batch 6g).  cons / nil paths in elisp; other
@@ -1482,19 +1435,7 @@ pub(crate) fn char_table_get(
 // used by bi_delete_dups before its elisp migration; orphan after
 // batch 3.
 
-fn bi_symbol_name(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("symbol-name", args, 1, Some(1))?;
-    match &args[0] {
-        Sexp::Symbol(s) => Ok(Sexp::Str(s.clone())),
-        Sexp::Nil => Ok(Sexp::Str("nil".into())),
-        Sexp::T => Ok(Sexp::Str("t".into())),
-        other => Err(EvalError::WrongType {
-            expected: "symbolp".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
+// bi_symbol_name removed — Doc 86 §86.1.d (jit/strings.rs).
 // bi_string_eq removed (Rust-min batch 6n / re-cleanup batch 6t).
 // Same stash-merge artefact pattern as the dead `bi_split_string'
 // scrubbed in batch 6s — the user-facing dispatch was always shadowed
