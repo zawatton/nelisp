@@ -892,7 +892,6 @@ mod tests {
     use super::*;
 
     use cranelift_jit::JITBuilder;
-    use cranelift_module::Module;
 
     use crate::eval::sexp::Sexp;
 
