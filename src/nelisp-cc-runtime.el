@@ -88,6 +88,11 @@
 (require 'nelisp-cc-arm64)
 (require 'nelisp-cc-pipeline)
 
+;; Phase 7.1.6.a — Rust-side primitive available only when running under
+;; standalone NeLisp (= `nelisp' binary).  All callers gate via
+;; `(unless (fboundp 'nelisp-cc--dlsym-resolve) ...)' before invocation.
+(declare-function nelisp-cc--dlsym-resolve "ext:nelisp-runtime" (symbol-name))
+
 ;;; Constants -------------------------------------------------------
 
 (defconst nelisp-cc-runtime-gc-metadata-version 1
@@ -1491,7 +1496,8 @@ entry-point's calling convention:
                            binary Float arith (= add/sub/mul), Doc 84 §84.1.
   :trampoline-binary-float-cmp
                            extern \"C\" fn(f64, f64) -> i64
-                           binary Float cmp (= eq-eps/lt/gt/le/ge), Doc 84 §84.1.
+                           binary Float cmp (= eq-eps/lt/gt/le/ge),
+                           Doc 84 §84.1.
 
 Stage 81.1/81.2/81.3 records the mode in the result plist under
 `:entry-abi' but does NOT yet alter prologue/epilogue emit; the
