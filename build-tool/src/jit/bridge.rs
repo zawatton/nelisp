@@ -166,6 +166,14 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
         "nl_jit_mut_str_set_codepoint" => super::box_accessor::nl_jit_mut_str_set_codepoint as *const u8,
         "nl_jit_char_table_aref" => super::box_accessor::nl_jit_char_table_aref as *const u8,
         "nl_jit_char_table_aset" => super::box_accessor::nl_jit_char_table_aset as *const u8,
+        // ---- record family (5) ---- Doc 86 §86.1.c (2026-05-10).
+        // Same `nl-jit-call-out-{1,1i,2i,2}' bridge primitives as box
+        // accessor above; trampolines live in `box_accessor.rs'.
+        "nl_jit_record_type" => super::box_accessor::nl_jit_record_type as *const u8,
+        "nl_jit_record_len" => super::box_accessor::nl_jit_record_len as *const u8,
+        "nl_jit_record_ref" => super::box_accessor::nl_jit_record_ref as *const u8,
+        "nl_jit_record_set" => super::box_accessor::nl_jit_record_set as *const u8,
+        "nl_jit_record_alloc" => super::box_accessor::nl_jit_record_alloc as *const u8,
         _ => return None,
     };
     Some(p)

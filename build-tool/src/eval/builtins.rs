@@ -173,11 +173,11 @@ pub fn install_builtins(env: &mut Env) {
         // (Stage 4e) uses to build constructors / accessors /
         // predicates.  Doc 86 §86.1.a (2026-05-10): `recordp'
         // migrated to elisp — see lisp/nelisp-stdlib.el.
-        "nelisp--make-record",
-        "nelisp--record-ref",
-        "nelisp--record-set",
-        "nelisp--record-length",
-        "nelisp--record-type",
+        // Doc 86 §86.1.c (2026-05-10): `nelisp--make-record' /
+        // `-record-ref' / `-record-set' / `-record-length' /
+        // `-record-type' all migrated to elisp on top of the new
+        // `nl_jit_record_*' trampolines in `jit/box_accessor.rs'.
+        // See `lisp/nelisp-jit-strategy.el'.
         // Rust-min (2026-05-06 batch 5b): char-table family was
         // unused in NeLisp lisp/ + test/, so the user-facing
         // builtins (make-char-table, char-table-p, char-table-
@@ -630,12 +630,10 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // see lisp/nelisp-stdlib-hash.el.  `Sexp::HashTable' variant +
         // HashTableInner struct also retired in the same commit.
         // Records (Doc 50 stage 4c, 2026-05-07) — see Stage 4e
-        // cl-defstruct macro for the consumer side.
-        "nelisp--make-record" => bi_make_record(args),
-        "nelisp--record-ref" => bi_record_ref(args),
-        "nelisp--record-set" => bi_record_set(args),
-        "nelisp--record-length" => bi_record_length(args),
-        "nelisp--record-type" => bi_record_type(args),
+        // cl-defstruct macro for the consumer side.  Doc 86 §86.1.c
+        // (2026-05-10): five `bi_record_*' dispatch arms migrated to
+        // elisp via `nl_jit_record_*' trampolines — see
+        // `lisp/nelisp-jit-strategy.el'.
         // char-table / bool-vector dispatch retired (Rust-min
         // 2026-05-06 batch 5b).  See file-top commentary.
         "funcall" => bi_funcall(args, env),
@@ -1416,125 +1414,14 @@ fn bi_make_mut_string(args: &[Sexp]) -> Result<Sexp, EvalError> {
 
 // --- Doc 50 stage 4c: record primitives ---
 //
-// Six low-level entry points exposed to elisp under the privacy-marked
-// `nelisp--' prefix (plus the user-facing `recordp').  They are the
-// minimal substrate for the Stage 4e `cl-defstruct' macro: predicate,
-// constructor, indexed slot get/set, length introspection, type lookup.
-// All slot indexing is 0-based and bounded by `length' so callers see
-// `out-of-range-args' before any panic risk.
-
-/// `(nelisp--make-record TYPE-SYMBOL &rest SLOTS)` — construct a fresh
-/// record whose `type_tag' is TYPE-SYMBOL and whose slots are the
-/// remaining args (in order).  TYPE-SYMBOL must be a symbol; `nil' is
-/// accepted (yields a record with `nil' tag, not the literal nil).
-/// Returns the new record.
-fn bi_make_record(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--make-record", args, 1, None)?;
-    let tag = args[0].clone();
-    if !matches!(tag, Sexp::Symbol(_) | Sexp::Nil) {
-        return Err(EvalError::WrongType {
-            expected: "symbolp".into(),
-            got: tag,
-        });
-    }
-    let slots: Vec<Sexp> = args[1..].to_vec();
-    Ok(Sexp::record(tag, slots))
-}
-
-/// `(nelisp--record-ref RECORD INDEX)` — return slot INDEX.
-/// 0-based.  Out-of-range raises `out-of-range-args' (= elisp
-/// surface error name).
-fn bi_record_ref(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--record-ref", args, 2, Some(2))?;
-    let rec = match &args[0] {
-        Sexp::Record(r) => r.clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "recordp".into(),
-            got: other.clone(),
-        }),
-    };
-    let idx = match &args[1] {
-        Sexp::Int(n) => *n,
-        other => return Err(EvalError::WrongType {
-            expected: "integerp".into(),
-            got: other.clone(),
-        }),
-    };
-    if idx < 0 || (idx as usize) >= rec.slots.len() {
-        return Err(EvalError::Internal(format!(
-            "nelisp--record-ref: out-of-range-args index {} for length {}",
-            idx,
-            rec.slots.len()
-        )));
-    }
-    Ok(rec.slots[idx as usize].clone())
-}
-
-/// `(nelisp--record-set RECORD INDEX VALUE)` — overwrite slot INDEX
-/// with VALUE.  0-based.  Returns VALUE so it composes with chained
-/// `setq'-style use.
-fn bi_record_set(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--record-set", args, 3, Some(3))?;
-    let rec = match &args[0] {
-        Sexp::Record(r) => r.clone(),
-        other => return Err(EvalError::WrongType {
-            expected: "recordp".into(),
-            got: other.clone(),
-        }),
-    };
-    let idx = match &args[1] {
-        Sexp::Int(n) => *n,
-        other => return Err(EvalError::WrongType {
-            expected: "integerp".into(),
-            got: other.clone(),
-        }),
-    };
-    let value = args[2].clone();
-    let len = rec.slots.len();
-    if idx < 0 || (idx as usize) >= len {
-        return Err(EvalError::Internal(format!(
-            "nelisp--record-set: out-of-range-args index {} for length {}",
-            idx, len
-        )));
-    }
-    // SAFETY: Phase A.4.5 — `rec' is a fresh handle clone on this stack;
-    // no other borrow into `rec.slots' is live, and the closure mutates
-    // exactly the indexed slot.  Phase A.2.1 setcar discipline applies.
-    unsafe {
-        rec.with_slots_mut(|slots| {
-            slots[idx as usize] = value.clone();
-        });
-    }
-    Ok(value)
-}
-
-/// `(nelisp--record-length RECORD)` — number of user slots
-/// (= `slots' vector length, NOT including the type_tag).
-fn bi_record_length(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--record-length", args, 1, Some(1))?;
-    match &args[0] {
-        Sexp::Record(rec) => Ok(Sexp::Int(rec.slots.len() as i64)),
-        other => Err(EvalError::WrongType {
-            expected: "recordp".into(),
-            got: other.clone(),
-        }),
-    }
-}
-
-/// `(nelisp--record-type RECORD)` — return the record's type_tag.
-/// Equivalent to `(type-of RECORD)' for symbol-tagged records but
-/// kept distinct so macros don't accidentally grow a dependency on
-/// `type-of's special-case.
-fn bi_record_type(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("nelisp--record-type", args, 1, Some(1))?;
-    match &args[0] {
-        Sexp::Record(rec) => Ok(rec.type_tag.clone()),
-        other => Err(EvalError::WrongType {
-            expected: "recordp".into(),
-            got: other.clone(),
-        }),
-    }
-}
+// Doc 86 §86.1.c (2026-05-10): five `bi_record_*' helpers (= bi_make_
+// record / bi_record_ref / bi_record_set / bi_record_length / bi_record_
+// type) and `bi_recordp' all migrated to elisp.  The semantic core now
+// lives in `lisp/nelisp-jit-strategy.el' on top of five `nl_jit_record_*'
+// trampolines in `jit/box_accessor.rs' (Tier 1.5 per Doc 87 §1.2.3 —
+// reuses the existing `nl-jit-call-out-{1,1i,2i,2}' bridge primitives,
+// no new ABI mode).  See those files for the slot/0-based-index +
+// `out-of-range-args' / `wrong-type-argument' contract.
 
 // bi_hash_table_count / bi_maphash / bi_hash_table_keys /
 // bi_hash_table_values all retired in Rust-min batch 7a (Doc 50 stage

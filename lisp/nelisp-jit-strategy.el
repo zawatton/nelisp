@@ -186,6 +186,86 @@
             (nl-jit-call-out-2i "nl_jit_char_table_aset" table idx val)
           (error (nelisp--signal-wrong-type 'char-table table)))))
 
+;; ---------- record family (Doc 86 §86.1.c) -------------------------
+;;
+;; Five wrappers replacing the deleted Rust `bi_record_*' helpers:
+;;   `nelisp--record-type' / `-record-length' / `-record-ref' /
+;;   `-record-set' / `-make-record'.
+;;
+;; Each calls the matching `nl_jit_record_*' trampoline shipped in
+;; `build-tool/src/jit/box_accessor.rs' through the existing
+;; `nl-jit-call-out-{1,1i,2i,2}' bridge primitive — Tier 1.5 per Doc 87
+;; §1.2.3 (= no new ABI mode, same shape as Doc 84 §84.3 box accessor
+;; precedents above).  Installed BEFORE `nelisp-stdlib*.el' so all
+;; downstream consumers (= `cl-defstruct' macro, `nelisp-stdlib-hash.el'
+;; / `-equal.el' / `-prn.el') see the elisp version.
+;;
+;; Error-signal contract preserved bit-for-bit:
+;; - `make-record' non-symbol tag        → wrong-type-argument 'symbolp
+;; - `record-ref' / `record-set' non-rec → wrong-type-argument 'recordp
+;; - `record-ref' / `record-set' OOR     → arith-error "out-of-range..."
+;; - `record-length' / `record-type' non-rec → wrong-type-argument 'recordp
+;;
+;; Disambiguation of OOR vs non-Record for `record-ref' / `record-set'
+;; uses an inline `record-tag-check' via `nl_jit_record_type': success
+;; means the input IS a record so the primary ERR must be OOR.
+
+(fset 'nelisp--record-type
+      (lambda (rec)
+        (condition-case _err
+            (nl-jit-call-out-1 "nl_jit_record_type" rec)
+          (error (nelisp--signal-wrong-type 'recordp rec)))))
+
+(fset 'nelisp--record-length
+      (lambda (rec)
+        (condition-case _err
+            (nl-jit-call-out-1 "nl_jit_record_len" rec)
+          (error (nelisp--signal-wrong-type 'recordp rec)))))
+
+(fset 'nelisp--record-ref
+      (lambda (rec idx)
+        (condition-case _err
+            (nl-jit-call-out-1i "nl_jit_record_ref" rec idx)
+          (error
+           ;; ERR = non-Record OR out-of-range.  Probe via inner
+           ;; `condition-case' returning a boolean (= no nested signal
+           ;; in the protected form so the outer handler does not
+           ;; re-catch the dispatched signal below).
+           (let ((is-rec (condition-case _err2
+                             (progn (nl-jit-call-out-1
+                                     "nl_jit_record_type" rec)
+                                    t)
+                           (error nil))))
+             (if is-rec
+                 (nelisp--signal-arith
+                  (cons "out-of-range-args" nil))
+               (nelisp--signal-wrong-type 'recordp rec)))))))
+
+(fset 'nelisp--record-set
+      (lambda (rec idx val)
+        (condition-case _err
+            (nl-jit-call-out-2i "nl_jit_record_set" rec idx val)
+          (error
+           (let ((is-rec (condition-case _err2
+                             (progn (nl-jit-call-out-1
+                                     "nl_jit_record_type" rec)
+                                    t)
+                           (error nil))))
+             (if is-rec
+                 (nelisp--signal-arith
+                  (cons "out-of-range-args" nil))
+               (nelisp--signal-wrong-type 'recordp rec)))))))
+
+;; `nelisp--make-record' takes (TAG &rest SLOTS).  We build the slots
+;; into a Cons list and call the 2-arg trampoline through
+;; `nl-jit-call-out-2'.  ERR from the trampoline means non-symbol/non-nil
+;; tag (= only failure mode for proper-list slots).
+(fset 'nelisp--make-record
+      (lambda (tag &rest slots)
+        (condition-case _err
+            (nl-jit-call-out-2 "nl_jit_record_alloc" tag slots)
+          (error (nelisp--signal-wrong-type 'symbolp tag)))))
+
 ;; ---------- access (length / aref / aset / elt) — Doc 80 elisp dispatch ----
 ;;
 ;; Pure-elisp variant dispatch on top of the JIT trampoline (= JIT
