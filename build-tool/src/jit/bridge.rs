@@ -155,6 +155,13 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
         "nl_jit_float_gt" => super::float::nl_jit_float_gt as *const u8,
         "nl_jit_float_le" => super::float::nl_jit_float_le as *const u8,
         "nl_jit_float_ge" => super::float::nl_jit_float_ge as *const u8,
+        // ---- box accessor (6) ---- Doc 84 §84.3 (2026-05-10).
+        "nl_jit_mut_str_len" => super::box_accessor::nl_jit_mut_str_len as *const u8,
+        "nl_jit_bool_vector_len" => super::box_accessor::nl_jit_bool_vector_len as *const u8,
+        "nl_jit_str_codepoint_at" => super::box_accessor::nl_jit_str_codepoint_at as *const u8,
+        "nl_jit_mut_str_set_codepoint" => super::box_accessor::nl_jit_mut_str_set_codepoint as *const u8,
+        "nl_jit_char_table_aref" => super::box_accessor::nl_jit_char_table_aref as *const u8,
+        "nl_jit_char_table_aset" => super::box_accessor::nl_jit_char_table_aset as *const u8,
         _ => return None,
     };
     Some(p)

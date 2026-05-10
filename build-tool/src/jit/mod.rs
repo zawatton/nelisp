@@ -20,6 +20,7 @@
 
 mod access;
 mod arith;
+mod box_accessor;
 // `bridge': `nl-jit-call-*' primitives that elisp wrappers in
 // `lisp/nelisp-jit-strategy.el' call to invoke JIT entries by name
 // (= the 7 re-exports below, wired into `eval::builtins::dispatch'
@@ -34,13 +35,8 @@ pub(crate) use bridge::{
 mod cons;
 mod float;
 mod predicate;
-// `strategy': Doc 84 §84.1 ported 8 Float-family fns to elisp via
-// `nl-jit-call-float-{float,cmp}' bridges; Doc 84 §84.2 ported
-// `bi_syscall_nr_resolve' to `lisp/nelisp-syscall-table.el' (build.rs
-// codegen); residual = slim length / aref / aset fall-throughs.
+// `strategy': Doc 84 §§84.1 / 84.2 / 84.3 ported every Rust `bi_*'
+// helper to elisp (Float family + syscall-nr resolver + 6 Box
+// accessors).  Module is now empty; §84.4 deletes the file.
 mod strategy;
-pub(crate) use strategy::{
-    bi_bool_vector_len, bi_char_table_aref, bi_char_table_aset,
-    bi_mut_str_len, bi_mut_str_set_codepoint, bi_str_codepoint_at,
-};
 mod syscall;

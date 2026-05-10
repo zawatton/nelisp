@@ -415,19 +415,11 @@ pub fn install_builtins(env: &mut Env) {
         // 7.1.7.a.1 (Doc 28 §3.7.a.1) removed `nelisp--int-eq-zero' +
         // 3 bitwise -impl + ash-impl entries (= moved to elisp).  Doc
         // 84 §84.1 (2026-05-10) replaced the 8 `nelisp--*-float' arms
-        // with the 2 bridge primitives below.
+        // with the 2 bridge primitives below.  Doc 84 §84.2 ported
+        // `nelisp--syscall-nr-resolve' to `lisp/nelisp-syscall-table.el'.
+        // Doc 84 §84.3 lifted the 6 Box-accessor builtins to elisp.
         "nl-jit-call-float-float",
         "nl-jit-call-float-cmp",
-        // Doc 80 Stage 80.3〜80.4 (2026-05-09) — slim primitives for
-        // the elisp-side `length' / `aref' / `aset' / `elt' fall-
-        // through dispatch.  Replaces the pre-Doc-80 `nelisp--{length,
-        // aref,aset,elt}-impl' Rust helpers (= ~255 LOC).  See
-        // `lisp/nelisp-jit-strategy.el' for the elisp wrappers and
-        // `jit/strategy.rs' for the Rust bodies.
-        "nelisp--mut-str-len", "nelisp--bool-vector-len",
-        "nelisp--str-codepoint-at", "nelisp--mut-str-set-codepoint",
-        "nelisp--char-table-aref", "nelisp--char-table-aset",
-        // Doc 84 §84.2: `nelisp--syscall-nr-resolve' moved to elisp.
         // Doc 77c Phase A.3 (2026-05-09) — Layer 2 cons-cell
         // primitives.  Not previously registered here because Phase
         // A.3 only exercised them via Rust-side cargo tests; Doc 79
@@ -766,17 +758,12 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // (Doc 28 §3.7.a.1) deleted 5 arms (int-eq-zero + 3 bitwise +
         // ash-impl) — moved to elisp on top of the bridge.  Doc 84
         // §84.1 (2026-05-10) deleted the 8 `nelisp--*-float' arms —
-        // the 2 bridge primitives below replace them.
+        // the 2 bridge primitives below replace them.  Doc 84 §84.2
+        // ported `nelisp--syscall-nr-resolve' to elisp; §84.3 lifted
+        // the 6 Box-accessor arms to elisp on top of
+        // `jit/box_accessor.rs' trampolines.
         "nl-jit-call-float-float" => crate::jit::bi_nl_jit_call_float_float(args),
         "nl-jit-call-float-cmp" => crate::jit::bi_nl_jit_call_float_cmp(args),
-        // Doc 80 Stage 80.3〜80.4 — slim primitives.
-        "nelisp--mut-str-len" => crate::jit::bi_mut_str_len(args),
-        "nelisp--bool-vector-len" => crate::jit::bi_bool_vector_len(args),
-        "nelisp--str-codepoint-at" => crate::jit::bi_str_codepoint_at(args),
-        "nelisp--mut-str-set-codepoint" => crate::jit::bi_mut_str_set_codepoint(args),
-        "nelisp--char-table-aref" => crate::jit::bi_char_table_aref(args),
-        "nelisp--char-table-aset" => crate::jit::bi_char_table_aset(args),
-        // Doc 84 §84.2: `nelisp--syscall-nr-resolve' moved to elisp.
         // Doc 77c Phase A.3 (2026-05-09) — Layer 2 cons-cell primitives
         // operating directly on `NlConsBox' / `NlConsBoxRef' (Phase A.2).
         // 5 `nl-cons-*' (alloc / car / cdr / set-car / set-cdr) + 3

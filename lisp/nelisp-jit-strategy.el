@@ -104,6 +104,70 @@
       (lambda (cell val)
         (nl-jit-call-out-2 "nelisp_jit_setcdr" cell val)))
 
+;; ---------- box accessors (Doc 84 §84.3) --------------------------
+;;
+;; Six wrappers for the `length' / `aref' / `aset' fall-through arms
+;; over `MutStr' / `BoolVector' / `CharTable' Sexp variants.  Each
+;; calls the matching `nl_jit_*' trampoline shipped in
+;; `build-tool/src/jit/box_accessor.rs' through the existing
+;; `nl-jit-call-out-{1,1i,2i}' bridge primitives — no new ABI mode.
+;; ERR from the bridge surfaces as a generic `error' which we
+;; re-signal as `arith-error' (out-of-range) or `wrong-type-argument'
+;; (wrong tag / invalid codepoint) per the pre-Doc-84 contract.
+;;
+;; Replaces the deleted Rust `bi_*' fns in `jit/strategy.rs' (= 6
+;; entries removed from `eval::builtins::dispatch' in the same commit).
+
+(fset 'nelisp--mut-str-len
+      (lambda (s)
+        (condition-case _err
+            (nl-jit-call-out-1 "nl_jit_mut_str_len" s)
+          (error (nelisp--signal-wrong-type 'mut-string s)))))
+
+(fset 'nelisp--bool-vector-len
+      (lambda (v)
+        (condition-case _err
+            (nl-jit-call-out-1 "nl_jit_bool_vector_len" v)
+          (error (nelisp--signal-wrong-type 'bool-vector v)))))
+
+;; `nelisp--str-codepoint-at': handles both Str + MutStr in the
+;; trampoline.  ERR means out-of-range (elisp `aref' wrapper has
+;; already gated `idx < 0' / non-string tag).
+(fset 'nelisp--str-codepoint-at
+      (lambda (s idx)
+        (condition-case _err
+            (nl-jit-call-out-1i "nl_jit_str_codepoint_at" s idx)
+          (error
+           (nelisp--signal-arith
+            (cons "string index out of range" nil))))))
+
+;; `nelisp--mut-str-set-codepoint': in-place codepoint mutation.
+;; ERR collapses to either wrong tag (= immutable Str / non-string),
+;; non-Int codepoint, invalid codepoint, or OOR idx.  Pre-Doc-84
+;; `slim!' macro signalled `wrong-type-argument' for the immutable-Str
+;; case and `arith-error' for OOR; we cannot reliably distinguish in
+;; elisp (= no MutStr-specific predicate today) so we surface
+;; `wrong-type-argument' uniformly — matches the Str-arm fast path
+;; (= the dominant aset-on-string error in user code) and falls back
+;; to `arith-error'-like behaviour only via the slow `condition-case'.
+(fset 'nelisp--mut-str-set-codepoint
+      (lambda (s idx val)
+        (condition-case _err
+            (nl-jit-call-out-2i "nl_jit_mut_str_set_codepoint" s idx val)
+          (error (nelisp--signal-wrong-type 'mut-string s)))))
+
+(fset 'nelisp--char-table-aref
+      (lambda (table idx)
+        (condition-case _err
+            (nl-jit-call-out-1i "nl_jit_char_table_aref" table idx)
+          (error (nelisp--signal-wrong-type 'char-table table)))))
+
+(fset 'nelisp--char-table-aset
+      (lambda (table idx val)
+        (condition-case _err
+            (nl-jit-call-out-2i "nl_jit_char_table_aset" table idx val)
+          (error (nelisp--signal-wrong-type 'char-table table)))))
+
 ;; ---------- access (length / aref / aset / elt) — Doc 80 elisp dispatch ----
 ;;
 ;; Pure-elisp variant dispatch on top of the JIT trampoline (= JIT
