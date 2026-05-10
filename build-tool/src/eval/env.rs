@@ -546,6 +546,22 @@ impl Env {
         acc
     }
 
+    /// Doc 86 §86.3.b / Doc 89 §4.2 — shadow-path verify hook.
+    ///
+    /// Returns `true` IFF the lexical frame stack is empty.  When the
+    /// stack has any frame, `lookup_value' / `set_value' / `is_bound'
+    /// can return a frame-local result that the slim shim primitive
+    /// (= `nelisp--env-globals-*' from `env_shim.rs', which only
+    /// touches `Env::globals`) cannot see.  The shadow-verify helpers
+    /// at the bottom of this module skip the comparison in that case
+    /// so we never flag a known-divergent observation as a defect.
+    /// Callers outside this module shouldn't need this — it's exposed
+    /// here for the cfg-gated `verify_elisp_mirror_*' helpers below.
+    #[cfg(feature = "env-shadow-verify")]
+    pub fn frame_stack_is_empty(&self) -> bool {
+        self.frames.is_empty()
+    }
+
     /// Push a frame populated from a captured-env alist (the inverse
     /// of [`Env::capture_lexical`]).  When a captured value is wrapped
     /// in `Sexp::Cell`, the same `Rc` is reinstalled so mutation is
@@ -593,5 +609,199 @@ impl Env {
         }
         self.frames.push(frame);
         Ok(())
+    }
+}
+
+// ============================================================
+// Doc 86 §86.3.b / Doc 89 §4.2 — env shadow path verify helpers.
+//
+// All code below is gated behind the `env-shadow-verify' Cargo feature.
+// Default builds compile zero bytes from this block (= +0 LOC
+// production, per Doc 89 §4.2.3).
+//
+// Each helper:
+//   1. Re-derives the result via the slim shim primitive's logic
+//      (= the same `Env::globals' read the elisp shim's
+//      `nelisp--env-globals-*' wrappers from `env_shim.rs' would
+//      perform when called from elisp).
+//   2. Compares against `rust_result' — the canonical answer the
+//      caller already produced via `Env::*'.
+//   3. On divergence: panic in tests / debug builds, eprintln! in
+//      production builds.
+//
+// Frame-aware ops (`lookup_value' / `set_value' / `is_bound') skip
+// verification when the lexical frame stack is non-empty, because the
+// slim shim primitive (= `nelisp--env-globals-*') only consults
+// `Env::globals' and would legitimately diverge from the frame-local
+// answer.  See `Env::frame_stack_is_empty' above.
+// ============================================================
+
+/// Common divergence-report path used by every `verify_*` helper
+/// below.  Centralised so message format is consistent across ops.
+#[cfg(feature = "env-shadow-verify")]
+fn verify_report(op: &str, name: &str, detail: &str) {
+    let msg = format!(
+        "Doc 86 §86.3.b shadow verify: divergence in `{}' for `{}': {}",
+        op, name, detail,
+    );
+    #[cfg(any(test, debug_assertions))]
+    panic!("{}", msg);
+    #[cfg(not(any(test, debug_assertions)))]
+    eprintln!("warning: {}", msg);
+}
+
+/// Compare two `Sexp` for shadow-verify equality.  Walks structure
+/// manually so we don't re-enter the elisp dispatcher (= which would
+/// call back into the shadow-verify path and infinite-loop).
+#[cfg(feature = "env-shadow-verify")]
+fn shadow_sexp_eq(a: &Sexp, b: &Sexp) -> bool {
+    match (a, b) {
+        (Sexp::Nil, Sexp::Nil) => true,
+        (Sexp::T, Sexp::T) => true,
+        (Sexp::Int(x), Sexp::Int(y)) => x == y,
+        (Sexp::Float(x), Sexp::Float(y)) => x.to_bits() == y.to_bits(),
+        (Sexp::Str(x), Sexp::Str(y)) => x == y,
+        (Sexp::Symbol(x), Sexp::Symbol(y)) => x == y,
+        (Sexp::Cons(x), Sexp::Cons(y)) => {
+            shadow_sexp_eq(&x.car, &y.car) && shadow_sexp_eq(&x.cdr, &y.cdr)
+        }
+        // Vector / Record / CharTable / BoolVector / Cell / function
+        // sentinels: defer to PartialEq (= sufficient for the shadow
+        // check since both branches consume the same source `Sexp').
+        _ => a == b,
+    }
+}
+
+/// Doc 86 §86.3.b — verify `Env::lookup_value' against the shim.
+/// Skips when frames are non-empty (= shim is globals-only by design).
+#[cfg(feature = "env-shadow-verify")]
+pub(super) fn verify_elisp_mirror_lookup_value(
+    env: &Env,
+    name: &str,
+    rust_result: &Result<Sexp, EvalError>,
+) {
+    if !env.frame_stack_is_empty() {
+        return;
+    }
+    let shim_result: Result<Sexp, EvalError> = match env.globals.get(name) {
+        Some(SymbolEntry { value: Some(v), .. }) => Ok(v.clone()),
+        _ => Err(EvalError::UnboundVariable(name.to_string())),
+    };
+    match (rust_result, &shim_result) {
+        (Ok(rv), Ok(sv)) if shadow_sexp_eq(rv, sv) => {}
+        (Err(EvalError::UnboundVariable(_)), Err(EvalError::UnboundVariable(_))) => {}
+        _ => verify_report("lookup_value", name, "rust vs shim diverge"),
+    }
+}
+
+/// Doc 86 §86.3.b — verify `Env::set_value'.  When frames are empty
+/// the canonical write lands in `globals' and the shim's view should
+/// match.  Re-reads `globals[name]' AFTER the canonical write.
+#[cfg(feature = "env-shadow-verify")]
+pub(super) fn verify_elisp_mirror_set_value(env: &Env, name: &str, value: &Sexp) {
+    if !env.frame_stack_is_empty() {
+        return;
+    }
+    match env.globals.get(name) {
+        Some(SymbolEntry { value: Some(v), .. }) if shadow_sexp_eq(v, value) => {}
+        _ => verify_report(
+            "set_value",
+            name,
+            "globals slot does not reflect the canonical write",
+        ),
+    }
+}
+
+/// Doc 86 §86.3.b — verify `Env::lookup_function' against the shim.
+/// No frame-skip needed (= function cell is globals-only in NeLisp).
+#[cfg(feature = "env-shadow-verify")]
+pub(super) fn verify_elisp_mirror_lookup_function(
+    env: &Env,
+    name: &str,
+    rust_result: &Result<Sexp, EvalError>,
+) {
+    let shim_result: Result<Sexp, EvalError> = match env.globals.get(name) {
+        Some(SymbolEntry { function: Some(f), .. }) => Ok(f.clone()),
+        _ => Err(EvalError::UnboundFunction(name.to_string())),
+    };
+    match (rust_result, &shim_result) {
+        (Ok(rv), Ok(sv)) if shadow_sexp_eq(rv, sv) => {}
+        (Err(EvalError::UnboundFunction(_)), Err(EvalError::UnboundFunction(_))) => {}
+        _ => verify_report("lookup_function", name, "rust vs shim diverge"),
+    }
+}
+
+/// Doc 86 §86.3.b — verify `Env::set_function'.
+/// Re-reads `globals[name].function' AFTER the canonical write.
+#[cfg(feature = "env-shadow-verify")]
+pub(super) fn verify_elisp_mirror_set_function(env: &Env, name: &str, value: &Sexp) {
+    match env.globals.get(name) {
+        Some(SymbolEntry { function: Some(f), .. }) if shadow_sexp_eq(f, value) => {}
+        _ => verify_report(
+            "set_function",
+            name,
+            "globals function slot does not reflect the canonical write",
+        ),
+    }
+}
+
+/// Doc 86 §86.3.b — verify `Env::is_bound' against the shim.  Frame-
+/// aware skip (= shim is globals-only).
+#[cfg(feature = "env-shadow-verify")]
+pub(super) fn verify_elisp_mirror_is_bound(env: &Env, name: &str, rust_result: bool) {
+    if !env.frame_stack_is_empty() {
+        return;
+    }
+    let shim_result = matches!(
+        env.globals.get(name),
+        Some(SymbolEntry { value: Some(_), .. })
+    );
+    if rust_result != shim_result {
+        verify_report("is_bound", name, "rust vs shim diverge");
+    }
+}
+
+/// Doc 86 §86.3.b — verify `Env::is_fbound' against the shim.
+#[cfg(feature = "env-shadow-verify")]
+pub(super) fn verify_elisp_mirror_is_fbound(env: &Env, name: &str, rust_result: bool) {
+    let shim_result = matches!(
+        env.globals.get(name),
+        Some(SymbolEntry { function: Some(_), .. })
+    );
+    if rust_result != shim_result {
+        verify_report("is_fbound", name, "rust vs shim diverge");
+    }
+}
+
+/// Doc 86 §86.3.b — verify `Env::clear_value' (= `makunbound').
+/// Re-reads `globals[name].value' AFTER the canonical write.
+#[cfg(feature = "env-shadow-verify")]
+pub(super) fn verify_elisp_mirror_clear_value(env: &Env, name: &str) {
+    let shim_view = matches!(
+        env.globals.get(name),
+        Some(SymbolEntry { value: None, .. }) | None
+    );
+    if !shim_view {
+        verify_report(
+            "clear_value",
+            name,
+            "globals value slot still set after canonical clear",
+        );
+    }
+}
+
+/// Doc 86 §86.3.b — verify `Env::clear_function' (= `fmakunbound').
+#[cfg(feature = "env-shadow-verify")]
+pub(super) fn verify_elisp_mirror_clear_function(env: &Env, name: &str) {
+    let shim_view = matches!(
+        env.globals.get(name),
+        Some(SymbolEntry { function: None, .. }) | None
+    );
+    if !shim_view {
+        verify_report(
+            "clear_function",
+            name,
+            "globals function slot still set after canonical clear",
+        );
     }
 }
