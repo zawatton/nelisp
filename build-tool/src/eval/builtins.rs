@@ -78,17 +78,16 @@ pub fn install_builtins(env: &mut Env) {
         // predicates
         // Rust-min (2026-05-06 batch 6q): `atom' migrated to elisp
         // (lisp/nelisp-stdlib.el) as `(not (consp x))'.
-        // Rust-min (2026-05-06 batch 6u): consp / listp / symbolp /
-        // stringp / numberp / integerp / floatp / vectorp migrated to
-        // elisp (lisp/nelisp-stdlib.el) as `(eq (type-of x) 'TAG)' on
-        // top of the new `type-of' primitive.  `functionp' kept in
-        // Rust (HOF dispatch hot path).
-        "type-of", "functionp",
+        // Rust-min (2026-05-06 batch 6u + Doc 86 §86.1.a 2026-05-10):
+        // consp / listp / symbolp / stringp / numberp / integerp /
+        // floatp / vectorp / functionp / recordp migrated to elisp
+        // (see lisp/nelisp-stdlib.el).  Only `type-of' stays in Rust
+        // because it inspects `Sexp' variants directly.
+        "type-of",
         // Rust-min (2026-05-06 batch 6d): `null' shadowed by elisp.
         // Rust-min (2026-05-06 batch 6f): `booleanp' / `keywordp'
         // expressible from `eq' / `symbolp' + `symbol-name' + `aref'
         // — moved to elisp (lisp/nelisp-stdlib-misc.el).
-        "vectorp",
         // list ops
         // Rust-min (2026-05-06 batch 6d): `reverse' / `nreverse'
         // shadowed by elisp (lisp/nelisp-stdlib-list.el).  The elisp
@@ -182,14 +181,13 @@ pub fn install_builtins(env: &mut Env) {
         // Records (Doc 50 stage 4c, 2026-05-07).  Six low-level
         // primitives that the elisp-side `cl-defstruct' macro
         // (Stage 4e) uses to build constructors / accessors /
-        // predicates.  `recordp' is user-facing; the rest carry
-        // a `nelisp--' prefix to signal "macro-only" privacy.
+        // predicates.  Doc 86 §86.1.a (2026-05-10): `recordp'
+        // migrated to elisp — see lisp/nelisp-stdlib.el.
         "nelisp--make-record",
         "nelisp--record-ref",
         "nelisp--record-set",
         "nelisp--record-length",
         "nelisp--record-type",
-        "recordp",
         // Rust-min (2026-05-06 batch 5b): char-table family was
         // unused in NeLisp lisp/ + test/, so the user-facing
         // builtins (make-char-table, char-table-p, char-table-
@@ -503,14 +501,12 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "vector" => Ok(Sexp::vector(args.to_vec())),
         "make-vector" => bi_make_vector(args),
         // ---- predicates ----
-        // consp / listp / symbolp / stringp / numberp / integerp /
-        // floatp / vectorp migrated to elisp (Rust-min 2026-05-06
-        // batch 6u, see lisp/nelisp-stdlib.el) on top of the new
-        // `type-of' primitive.  atom migrated separately in batch 6q.
+        // Most predicates (consp / listp / symbolp / stringp /
+        // numberp / integerp / floatp / vectorp) are in elisp on top
+        // of `type-of' (Rust-min batch 6u + Doc 86 §86.1.a — see
+        // lisp/nelisp-stdlib.el).  `functionp' / `recordp' joined
+        // them in Doc 86 §86.1.a (2026-05-10).
         "type-of" => bi_type_of(args),
-        "functionp" => bi_predicate(args, |v| matches!(v,
-            Sexp::Cons(b) if matches!(&b.car,
-                Sexp::Symbol(s) if s == "lambda" || s == "closure" || s == "builtin"))),
         // `null' is the alias for `nil-p' — `(null nil)' = t, anything
         // else = nil.  Distinct from `not' which has identical semantics
         // but is meant to be read as boolean negation in source.
@@ -652,7 +648,6 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         "nelisp--record-set" => bi_record_set(args),
         "nelisp--record-length" => bi_record_length(args),
         "nelisp--record-type" => bi_record_type(args),
-        "recordp" => bi_recordp(args),
         // char-table / bool-vector dispatch retired (Rust-min
         // 2026-05-06 batch 5b).  See file-top commentary.
         "funcall" => bi_funcall(args, env),
@@ -1235,10 +1230,8 @@ fn list_to_vec(v: &Sexp) -> Result<Vec<Sexp>, EvalError> {
 
 // ---------- predicates ----------
 
-fn bi_predicate(args: &[Sexp], pred: fn(&Sexp) -> bool) -> Result<Sexp, EvalError> {
-    require_arity("predicate", args, 1, Some(1))?;
-    Ok(if pred(&args[0]) { Sexp::T } else { Sexp::Nil })
-}
+// Doc 86 §86.1.a (2026-05-10): `bi_predicate' helper + `functionp' /
+// `recordp' migrated to elisp — see lisp/nelisp-stdlib.el.
 
 /// `(type-of OBJECT)' — return a symbol naming the runtime type of
 /// OBJECT.  Used by the Rust-min batch 6u predicate elisp ports
@@ -1599,16 +1592,6 @@ fn bi_record_type(args: &[Sexp]) -> Result<Sexp, EvalError> {
             got: other.clone(),
         }),
     }
-}
-
-/// `(recordp OBJECT)` — predicate, returns t/nil.  User-facing.
-fn bi_recordp(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("recordp", args, 1, Some(1))?;
-    Ok(if matches!(&args[0], Sexp::Record(_)) {
-        Sexp::T
-    } else {
-        Sexp::Nil
-    })
 }
 
 // bi_hash_table_count / bi_maphash / bi_hash_table_keys /
