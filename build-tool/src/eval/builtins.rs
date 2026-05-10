@@ -449,6 +449,12 @@ pub fn install_builtins(env: &mut Env) {
         "nl-rc-inc-strong", "nl-rc-dec-strong", "nl-rc-strong-count",
         "nl-rc-kind", "nl-rc-payload-ptr",
         "nl-gc-walk-children", "nl-gc-buffered-decs", "nl-gc-finalize",
+        // Phase 7.1.6.a (Doc 28 §3.6.a / Doc 81 §5.4) — dlsym bridge.
+        // The elisp-side `nelisp-cc-runtime-resolve-symbol' contract
+        // delegates to this primitive when the override hook is wired
+        // (= standalone NeLisp installs the wiring at startup).  See
+        // `eval/dlsym_bridge.rs' for the body.
+        "nelisp-cc--dlsym-resolve",
     ];
     for n in names {
         let sentinel = Sexp::list_from(&[
@@ -683,6 +689,12 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // primitive is `nelisp--write-stderr-line'.
         "nelisp--write-stderr-line" => bi_write_stderr_line(args),
         "read-stdin-bytes" => bi_read_stdin_bytes(args),
+        // Phase 7.1.6.a (Doc 28 §3.6.a / Doc 81 §5.4) — dlsym bridge.
+        // Standalone NeLisp wires `nelisp-cc-runtime-resolve-symbol-function'
+        // to call this at startup; on host Emacs the elisp side keeps
+        // the `:host-stub' default unless a user has explicitly opted
+        // into routing through this primitive.
+        "nelisp-cc--dlsym-resolve" => super::dlsym_bridge::bi_dlsym_resolve(args),
         "nl-ffi-call" => super::ffi::nl_ffi_call(args),
         "nl-ffi-malloc" => super::ffi::nl_ffi_malloc(args),
         "nl-ffi-read-bytes" => super::ffi::nl_ffi_read_bytes(args),

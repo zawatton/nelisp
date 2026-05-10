@@ -1658,5 +1658,81 @@ key."
        (eq (cdr status-addr)
            nelisp-cc-runtime--resolve-symbol-stub-addr)))
 
+;;; Phase 7.1.6.a — dlsym bridge wiring -------------------------------
+;;
+;; The standalone NeLisp `nelisp' binary registers the Rust-side
+;; `nelisp-cc--dlsym-resolve' primitive (= libc::dlsym(RTLD_DEFAULT,
+;; ...)) as the resolver hook so the Doc 81 §5.4 link pass gets real
+;; addresses for primitive trampoline symbols (= `nl_jit_cons_*' etc.).
+;;
+;; The Rust shim's contract:
+;;
+;;   (nelisp-cc--dlsym-resolve SYMBOL-NAME) -> (STATUS . ADDR-OR-NIL)
+;;     STATUS = `:resolved' (ADDR is unsigned i64), or
+;;     STATUS = `:not-found' (ADDR is nil).
+;;
+;; Matches the override contract documented on
+;; `nelisp-cc-runtime-resolve-symbol' verbatim, so the wiring is a
+;; one-liner: just install the primitive as the hook function when
+;; available.
+;;
+;; On host Emacs the primitive is absent (= `fboundp' nil) — the
+;; resolve-symbol path stays on the `:host-stub' default per Doc 81
+;; §5.4.  Integration smoke ERT is deferred to Phase 7.1.6.a.2 (=
+;; cluster takeover commit) when the standalone NeLisp wiring activates
+;; with `#[no_mangle]' trampolines + `-rdynamic' link.
+;;
+;; Phase 7.1.6.a.2 (= cluster takeover) follows up by adding
+;; `#[no_mangle]' to the cons trampolines and `-rdynamic' link so the
+;; binary's dynamic symbol table actually exposes them.  Until then
+;; this resolver returns `:not-found' on host Emacs for cons cluster
+;; lookups, which the link pass treats as deferred fallback (Doc 81
+;; §6.3) rather than an error.
+
+(defun nelisp-cc-runtime-resolve-symbol-via-dlsym (symbol-name)
+  "Doc 81 §5.4 + Phase 7.1.6.a — dlsym-backed resolve-symbol implementation.
+
+Calls the Rust-side `nelisp-cc--dlsym-resolve' primitive (= a thin
+libc::dlsym(RTLD_DEFAULT, ...) shim shipped in
+`build-tool/src/eval/dlsym_bridge.rs').  Returns the
+`(STATUS . ADDR-OR-NIL)' pair verbatim per the contract documented on
+`nelisp-cc-runtime-resolve-symbol'.
+
+Caller is expected to install this as
+`nelisp-cc-runtime-resolve-symbol-function' on a host where the Rust
+primitive is available (= standalone NeLisp via
+`nelisp-cc-runtime-install-dlsym-resolver').  ERT may also bind it
+locally to exercise the resolved-path of the contract without
+mocking."
+  (unless (fboundp 'nelisp-cc--dlsym-resolve)
+    (signal 'nelisp-cc-runtime-error
+            (list :resolve-symbol-via-dlsym-primitive-absent
+                  symbol-name)))
+  (nelisp-cc--dlsym-resolve symbol-name))
+
+(defun nelisp-cc-runtime-install-dlsym-resolver ()
+  "Phase 7.1.6.a — install the dlsym-backed resolver as the override hook.
+
+Sets `nelisp-cc-runtime-resolve-symbol-function' to
+`nelisp-cc-runtime-resolve-symbol-via-dlsym' when the underlying Rust
+primitive `nelisp-cc--dlsym-resolve' is available (= we are running
+under standalone NeLisp's `nelisp' binary).
+
+Returns non-nil on success (= hook was installed), nil if the Rust
+primitive is absent (= host Emacs).  Idempotent — safe to call
+multiple times.  Callers (= standalone NeLisp startup) invoke this
+once at boot.  ERT may invoke it conditionally on a `fboundp'
+guard."
+  (when (fboundp 'nelisp-cc--dlsym-resolve)
+    (setq nelisp-cc-runtime-resolve-symbol-function
+          #'nelisp-cc-runtime-resolve-symbol-via-dlsym)
+    t))
+
+;; Auto-wire the dlsym resolver at load time when the Rust primitive is
+;; reachable.  Host Emacs (= no nelisp binary in the picture) keeps the
+;; default `:host-stub' path unchanged; standalone NeLisp installs the
+;; real lookup transparently.
+(nelisp-cc-runtime-install-dlsym-resolver)
+
 (provide 'nelisp-cc-runtime)
 ;;; nelisp-cc-runtime.el ends here

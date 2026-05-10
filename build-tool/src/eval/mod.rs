@@ -33,6 +33,7 @@
 
 pub mod builtins;
 pub mod cons_primitives;
+pub mod dlsym_bridge;
 pub mod env;
 pub mod error;
 pub mod ffi;
