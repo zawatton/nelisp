@@ -985,6 +985,71 @@ Commit (= 2 atomic):
    arm cleanup (= -211 builtins.rs + +164 elisp + 3 stdlib file
    image-baker registration)
 
+** §12.5 §86.1.e — Tier 2 simple (SHIPPED 2026-05-10)
+
+3 arm migration via JIT trampoline:
+- =nelisp--concat-ints= (= variadic list-of-int-chars → string) →
+  =nl_jit_concat_ints= (=build-tool/src/jit/strings.rs= append).
+  Elisp wrapper in =lisp/nelisp-stdlib-format.el= via existing
+  =nl-jit-call-out-1= bridge (= =:trampoline-unary= shape).
+- =nelisp--make-mut-string= (= LEN+CH → fresh =Sexp::MutStr=) →
+  =nl_jit_make_mut_str=.  Args packed as =(cons LEN CH)= so the
+  =:trampoline-unary= shape suffices; elisp wrapper builds the cons.
+- =nelisp--format-float-body= (= IEEE-754 %f/%F/%e/%E/%g/%G body
+  builder) → =nl_jit_format_float=.  Uses NEW
+  =:trampoline-format-float= ABI mode (= =fn(f64, char, i64, *mut
+  Sexp) -> i64=, registered in =src/nelisp-cc-runtime.el= +
+  documented in x86_64/arm64 backend block-comments).  Bridge is
+  =nl-jit-call-format-float= (= new caller in
+  =build-tool/src/jit/bridge.rs=).
+- =bi_concat_ints= / =bi_make_mut_string= / =bi_format_float_body=
+  helpers + 3 dispatch arms + 3 install_builtins entries deleted.
+
+LOC delta (= actual):
+- =build-tool/src/= : +132 net (= 21,911 → 22,043).
+  - =builtins.rs= -103 (= 3 helper bodies + dispatch + install
+    entries, partly offset by Doc 86 commentary additions).
+  - =jit/strings.rs= +175 (= 3 trampoline bodies + module header).
+  - =jit/bridge.rs= +58 (= 3 unified_fn_ptr arms + new caller fn
+    =bi_nl_jit_call_format_float=).
+  - =jit/mod.rs= / =eval/env.rs= / =bin/nelisp-baker.rs= +<10 each.
+- =lisp/nelisp-stdlib-format.el= NEW: +96 elisp LOC (= 3 wrappers).
+
+Estimate vs actual: spec said -350 Rust + +180 elisp + +120 jit;
+actual is +132 Rust net + +96 elisp + +175 jit/strings.rs.  The
+gap is structural, not regressive, and matches the §12.4 §86.1.d
+precedent: trampoline bodies for these 3 arms are nearly identical
+to the deleted =bi_*= bodies because the underlying primitive
+itself stays Rust-resident (= =Sexp::Str= construction, IEEE-754
+=format!= machinery, =char::from_u32=).  The conceptual win is
+elisp-side dispatch + arity + type validation + the new
+=:trampoline-format-float= ABI mode (= xmm0 + 3 int-class regs +
+out-Sexp, Doc 87 §5.1) which unblocks future float-wide-input
+trampolines without further encoder work.
+
+Verification (= 2026-05-10):
+- =cargo build --workspace --release= — green
+- =cargo test --workspace --release -- --test-threads=1= — 680/680
+  passed (= same as baseline; the parallel-thread default has
+  shared-tracker flake on track-K/M/H/Q apply-fn tests that affects
+  baseline equally)
+- =make compile= — clean (no byte-compile warning under
+  =byte-compile-error-on-warn t=)
+- =make test= — 2718 tests, 7 unexpected (= same 7 as baseline =
+  6 stage81-poc dlsym + 1 apply-fn-dispatches-to-builtin flake;
+  none new)
+- =make bake-images= rebakes =nelisp-stdlib-format.el.image= (= 3477
+  bytes new) + 22 other images
+- New ERT =test/nelisp-stdlib-plist-str-test.el= (= subprocess
+  pattern against =target/release/nelisp eval=): 11/11 pass.
+  Covers IEEE-754 round-half-to-even (= =?f 0 1.5= → "2"),
+  scientific notation (= =?e 2 12345.0= → "1.23e4"), int→f64
+  promotion, and =format= end-to-end dispatch.
+
+Commits (= 1 atomic on agent-doc-86-1e-impl branch):
+1. nelisp: Doc 86 §86.1.e SHIPPED — Tier 2 simple (= 3 arm,
+   +132 Rust / +96 elisp / +175 jit/strings.rs net)
+
 * §13 v2 reconcile appendix (= 2026-05-10)
 
 Doc 87 / Doc 88 / Doc 89 detail design 起こし時に判明した v1 estimate
