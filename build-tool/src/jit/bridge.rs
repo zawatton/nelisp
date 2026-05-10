@@ -112,7 +112,19 @@ pub(super) fn unified_fn_ptr(name: &str) -> Option<*const u8> {
         "nelisp_jit_aset" => super::access::nl_jit_access_aset as *const u8,
         "nelisp_jit_elt" => super::access::nl_jit_access_elt as *const u8,
         // ---- predicate (1) ----
-        "nelisp_jit_eq_inline" => u.predicate.eq as *const u8,
+        // Phase 7.1.6.d (Doc 28 §3.6.d): resolve predicate name directly
+        // to the `#[no_mangle] extern "C"' trampoline now that the
+        // Cranelift `JitPredicate' wrapper page has been deleted.  Like
+        // arith (7.1.6.c), predicate had only a partial Rust helper
+        // body (`nl_jit_pred_eq') covering the slow `sexp_eq' arm; the
+        // full 7-block fast-path semantics (= same-ref / tag-eq / int-
+        // payload) lived in Cranelift IR.  The takeover consolidates
+        // all 7 blocks into a single `nl_jit_predicate_eq' trampoline
+        // body (see `jit::predicate').  nelisp-cc compiled hot paths
+        // skip this bridge entirely via dlsym + direct CALL.  The `_u'
+        // binding is now unused since no field of `UnifiedJit' is
+        // looked up on this match arm.
+        "nelisp_jit_eq_inline" => super::predicate::nl_jit_predicate_eq as *const u8,
         // ---- syscall (2) ----
         "nelisp_jit_syscall" => u.syscall.syscall as *const u8,
         "nelisp_jit_syscall_supported_p" => u.syscall.supported_p as *const u8,
