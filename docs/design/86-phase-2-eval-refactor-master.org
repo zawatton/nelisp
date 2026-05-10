@@ -1153,6 +1153,88 @@ Commits (= 4 atomic):
 4. test: Doc 86 §86.3.b — shadow verify smoke + synthetic-divergence
    (この §12.7 SHIPPED status update を含めて 5 atomic commit)
 
+** §12.8 §86.1.g — install_builtins / dispatch trim (SHIPPED 2026-05-10)
+
+Status: SHIPPED 2026-05-10 (= Doc 87 §3.7 cleanup-only sub-stage,
+agent dispatch on `agent-doc-86-1g-impl' branch).
+
+Doc 87 §3.7 articulated §86.1.g as a pure-cleanup sub-stage following
+the Tier 1 + Tier 2 migrations of §86.1.a-f.  Estimate: -300 Rust LOC
+(comment + entry list 整理 only, no logic delta).  Actual realized
+delta: **-927 Rust LOC** in `build-tool/src/eval/builtins.rs`
+(= 3,143 → 2,216), **-927 net** workspace-wide (no other file
+touched), well exceeding the §3.7 estimate.
+
+Cleanup applied (4 atomic commits on `agent-doc-86-1g-impl'):
+
+1. *Module commentary refresh*: replace the pre-Phase-2 category list
+   ("arithmetic / equality / cons / list / predicates / string /
+   symbol-func / sweep 9 / sweep 10") with an articulation of the
+   post-Doc-86 landing state (= KEEP arms + Tier 3 bridge plumbing,
+   itemised into 1. native-only I/O / filesystem / signal-TTY / vector
+   core / reader / require, 2. `nl-jit-call-*' / `nl-ffi-*' /
+   `nl-cons-*' / `nl-rc-*' / `nl-gc-*' / `nelisp--apply-*' / residual
+   socket primitives / dlsym hook).
+
+2. *=install_builtins= consolidation*: collapse the per-batch
+   deletion comment markers (= "Rust-min batch 6X migrated to
+   elisp ...", "Doc 86 §86.1.X migrated ...", "Doc 76 Stage X
+   retired ...") into a single migration-history docstring at the
+   top of the function.  Per-arm commentary now consists only of
+   concise category headers (= 1-2 lines each above each cluster of
+   arms).  Entry list itself unchanged (= same arms, same order).
+
+3. *=dispatch= consolidation*: same shape for the dispatch match
+   block.  All arms still reach a real handler (verified via build
+   + test); the 7 Doc 76 Stage G residual specialised socket
+   primitives (`nelisp--syscall-{socketpair,sendmsg-fds,recvmsg-fds,
+   getsockopt-peercred,bind-inet6-scoped,connect-inet6-scoped,
+   accept-inet6-scoped}`) fall through to the externally-registered
+   builtin path (= unchanged from base).
+
+4. *Body comment purge*: remove the ~600 LOC of dense
+   `// bi_X removed — see lisp/...' / `// Doc Y Stage Z migrated
+   to ...' breadcrumbs scattered between live function definitions.
+   Compress the Doc 53/55/56/58/59 banner blocks (~80 LOC) to a
+   6-line synthesis at the syscall_supported_p header; compress the
+   Doc 54/55/57/59 in-fn comments inside `syscall_nr' to a single
+   combined header above the additions list.
+
+Helpers audited (= per Doc 87 §3.7 step 3 dead-code detection):
+- `require_arity` — KEPT (used in `eval/dlsym_bridge.rs`,
+  `eval/rc_primitives.rs`, `jit/bridge.rs`).
+- `as_int` — KEPT (used in `jit/bridge.rs`).
+- `num_pair` — KEPT (used in `jit/bridge.rs`).
+- `char_table_set_one` / `char_table_get` — KEPT (used in
+  `jit/box_accessor.rs`).
+- `syscall_arg_int` / `syscall_nr` — KEPT (used by `bi_syscall'
+  inside this file).
+- `numeric_promote` / `truthy` / `hex_lower` — already deleted
+  pre-§86.1.g (per the existing `// helper deleted' comments which
+  are now consolidated away).
+
+Verification gate (all green on `agent-doc-86-1g-impl'):
+- `cargo build --workspace --release` — green.
+- `cargo build --workspace --release --features image-baker` — green.
+- `cargo build --workspace --release --features env-shadow-verify`
+  — green.
+- `cargo clippy --workspace --release --lib` — pre-existing 67
+  warnings (= same set as base, with 5 doc-list-overindented warnings
+  removed by our comment purge).
+- `cargo test --workspace --release --lib -- --test-threads=1` —
+  680 + 4 + 5 + 9 + 0 + 15 + 0 = 713 passed, 0 failed.
+- `make compile` — green (byte-compile-error-on-warn t).
+- `make test` — 2,486 passed / 258 unexpected (= identical to base
+  branch baseline; pre-existing flakiness, not caused by §86.1.g).
+- `make bake-images` — no image diffs.
+
+Commits (= 4 atomic) on `agent-doc-86-1g-impl' branch:
+1. build-tool: Doc 86 §86.1.g — refresh module commentary for Phase 2 v3
+2. build-tool: Doc 86 §86.1.g — consolidate install_builtins comments
+3. build-tool: Doc 86 §86.1.g — consolidate dispatch comments
+4. build-tool: Doc 86 §86.1.g — purge stale removal/migration commentary
+   (この §12.8 SHIPPED status update を含めて 5 atomic commit)
+
 * §13 v2 reconcile appendix (= 2026-05-10)
 
 Doc 87 / Doc 88 / Doc 89 detail design 起こし時に判明した v1 estimate
