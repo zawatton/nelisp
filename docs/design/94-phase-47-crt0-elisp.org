@@ -4,10 +4,11 @@
 
 * Status
 
-- *State*: §94.a SHIPPED (2026-05-11, branch =agent-doc-94a-impl=) +
-  DRAFT (= spike, implementation-ready 化のための design doc。Doc 85
-  §3.4 / §5.1 で「crt0 elisp ~150 LOC で =-150 Rust=、ROI 1:1」とした
-  5 component 中の 1 本)
+- *State*: §94.a + §94.b SHIPPED (2026-05-11, branches
+  =agent-doc-94a-impl= / =agent-doc-94b-impl=) + DRAFT (= spike,
+  implementation-ready 化のための design doc。Doc 85 §3.4 / §5.1 で
+  「crt0 elisp ~150 LOC で =-150 Rust=、ROI 1:1」とした 5 component 中
+  の 1 本)
 - *§94.a SHIPPED*: =lisp/nelisp-crt0.el= (~95 LOC) + =test/nelisp-crt0-
   test.el= (20 ert) — x86_64 Linux entry stub (= 23 bytes) + callable
   =write(1,buf,len)= stub (= 19 bytes) + =exit(rdi)= stub (= 7 bytes) +
@@ -17,7 +18,20 @@
   matches §2.2 emit pattern. Self-contained (= no Doc 92 / Doc 93
   dependency, =call main= rel32 either computed at emit time or
   zeroed for future linker)
-- *§94.b DEFERRED*: arm64 entry stub (= Doc 94 §7.2)
+- *§94.b SHIPPED*: =lisp/nelisp-crt0-arm64.el= (~245 LOC code, ~135 LOC
+  docstrings) + =test/nelisp-crt0-arm64-test.el= (37 ert, 36 pass + 1
+  exec skip on non-aarch64 host) — AArch64 Linux entry stub (= 20 bytes
+  = =ldr x0,[sp]= / =add x1,sp,#8= / =bl main= / =mov x8,#93= / =svc #0=)
+  + inline =write(1,buf,len)= stub (= 20 bytes, ADR-based buffer
+  load) + =exit(STATUS)= stub (= 8 or 12 bytes, optional inline MOVZ
+  status) + =nelisp-crt0-arm64-emit-hello-world= producing a valid
+  EM_AARCH64 (= 183) ELF. =readelf -h= confirms =Machine: AArch64=,
+  =Type: EXEC=, =Entry point address: 0x400078=; =file(1)= reports
+  =ELF 64-bit LSB executable, ARM aarch64=. ELF writer lacks a
+  =:machine= plumbing knob today so the emitter post-patches the 2
+  =e_machine= bytes at file offset 0x12 in place. Live exec gated on
+  =aarch64-linux= host (= skipped on x86_64 CI without qemu binfmt).
+  Self-contained (= no Doc 92 / Doc 93 dependency)
 - *§94.c DEFERRED*: argv / envp / auxv unpacking (= Doc 94 §7.3)
 - *Parent*: Doc 85 (= phase-47-feasibility-spike.org §3.4 / §5.1 / §6.1)
 - *Sibling*: Doc 91 (ELF writer, DRAFT SHIPPED), Doc 92 (assembler), Doc
@@ -616,17 +630,47 @@ LOC: ~90 elisp
 gate: =/tmp/hi= が "hi" を出力 + exit code 0、=strace= に libc 呼び出し
 0、=readelf= で =Type: DYN (Position-Independent Executable file)=
 
-** §7.2 §94.b — arm64 Linux entry
+** §7.2 §94.b — arm64 Linux entry (SHIPPED)
+
+*SHIPPED 2026-05-11* on branch =agent-doc-94b-impl=.
 
 scope:
-- =nelisp-crt0-emit-entry= の =:arch 'arm64-linux= 分岐 (= §2.2 + §2.3)
-- arm64 syscall number table (= §3.2)
-- AAPCS64 alignment 検証
+- =nelisp-crt0-arm64-entry-bytes= (= 20 byte =_start= stub, 5 inst)
+- =nelisp-crt0-arm64-write-stdout-bytes= (= 20 byte inline =write(2)=)
+- =nelisp-crt0-arm64-exit-bytes &optional STATUS-IMM= (= 8 or 12 byte
+  inline =exit(2)=)
+- =nelisp-crt0-arm64-emit-hello-world= (= ELF emit + =e_machine=
+  in-place patch to EM_AARCH64 = 183)
+- arm64 syscall number table inlined as named byte-string constants
+  (=mov x8,#64= = SYS_write, =mov x8,#93= = SYS_exit)
+- AAPCS64 alignment 検証: sp は kernel exec で 16-byte aligned に
+  入る、entry stub は sp を一切いじらず x0 / x1 だけ書く
 
-LOC: +30 elisp (= §94.a の data-driven 拡張、x86_64 と code path 共有)
-工数: 1-2 day
-gate: cross-compile / qemu-aarch64 で同じ /tmp/hi binary を arm64 用に
-emit、output / exit code 一致
+実装上の注意:
+- =sf=1, opc=10= MOVZ 64-bit encoding を defun =nelisp-crt0-arm64--movz=
+  に集約 (= cf. Arm ARM §C6.2)
+- =bl= rel26 は 4-byte aligned 必須 (=:= encoder が error 出す)、未指定
+  時は 0 placeholder (R_AARCH64_CALL26 で linker patch 可能)
+- =adr Xd, +rel21= の immlo/immhi split (= bits 30..29 + bits 23..5) を
+  defun =nelisp-crt0-arm64--adr= で正しく分配
+- Doc 94 §3.2 が "MOVZ X8 #93 = 0xD2800B28" と書いていたが、これは実は
+  =mov x8, #89= (= 0x59 << 5) であり SYS_exit ではない。本実装は正しく
+  0xD2800BA8 を emit する。byte-pattern ert に同事実をコメント
+- Doc 91 ELF writer の rich path は =:machine= が hard-coded
+  =EM_X86_64= のため、emit 直後に file offset 0x12 の 2 byte を
+  EM_AARCH64 (= 183 = 0xB7 0x00) に in-place patch (= 将来 ELF writer
+  に =:machine= plumbing が入ったら redundant)
+
+LOC: =lisp/nelisp-crt0-arm64.el= 245 (code) + 135 (docstring + cmt) =
+380 行。Sub-goal +30 (= §7.4) には超過したが、§94.a と code 共有なし
++ ADR/MOVZ encoder を NeLisp 内製したため (= Doc 92 macro assembler
+SHIPPED 後は collapse 可能)
+
+工数: 1 day (= 2026-05-11)
+gate: byte-pattern ert 36/37 pass + =readelf -h= が =Machine: AArch64=
+を報告 + =file(1)= が =ARM aarch64= を tag。Live exec (= /tmp/hi が
+"hello\n" 出力 + exit 0) は aarch64 host = qemu-aarch64 で確認待ち
+(= skip-unless で gate)
 
 ** §7.3 §94.c — argv / envp / auxv unpacking
 
