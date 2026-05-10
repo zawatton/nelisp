@@ -38,10 +38,13 @@ mod predicate;
 // bitwise Int helpers, slim length / aref / aset fall-throughs, and
 // the syscall-nr resolver.  See `strategy.rs' header for the surface.
 mod strategy;
+// Phase 7.1.7.a.1 (Doc 28 §3.7.a.1, 2026-05-10): 5 re-exports deleted —
+// `bi_int_eq_zero' / `bi_logior2_impl' / `bi_logand2_impl' /
+// `bi_logxor2_impl' / `bi_ash_impl' moved to elisp on top of the
+// `nl-jit-call-i64-i64' bridge.  See `lisp/nelisp-jit-strategy.el'.
 pub(crate) use strategy::{
-    bi_add2_float, bi_ash_impl, bi_bool_vector_len, bi_char_table_aref,
-    bi_char_table_aset, bi_int_eq_zero, bi_logand2_impl, bi_logior2_impl,
-    bi_logxor2_impl, bi_mul2_float, bi_mut_str_len, bi_mut_str_set_codepoint,
+    bi_add2_float, bi_bool_vector_len, bi_char_table_aref,
+    bi_char_table_aset, bi_mul2_float, bi_mut_str_len, bi_mut_str_set_codepoint,
     bi_num_eq2_float, bi_num_ge2_float, bi_num_gt2_float, bi_num_le2_float,
     bi_num_lt2_float, bi_str_codepoint_at, bi_sub2_float, bi_syscall_nr_resolve,
 };

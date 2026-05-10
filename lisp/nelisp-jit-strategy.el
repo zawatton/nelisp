@@ -46,8 +46,29 @@
 ;;
 ;; eq is installed FIRST so subsequent wrappers can use it for
 ;; `(eq (type-of x) 'integer)' style checks.  The wrapper body uses
-;; `nelisp--int-eq-zero' (= Rust primitive returning T/Nil) to convert
-;; the bridge's i64 result (1 / 0) to the elisp boolean.
+;; `nelisp--int-eq-zero' (= elisp helper installed below per Phase
+;; 7.1.7.a.1) to convert the bridge's i64 result (1 / 0) to the elisp
+;; boolean.
+
+;; Phase 7.1.7.a.1 (Doc 28 §3.7.a.1, 2026-05-10) — `nelisp--int-eq-zero'
+;; ported from Rust `bi_int_eq_zero' (= strategy.rs).  Strict-integer
+;; predicate: returns T for Int(0), Nil for any other Int, signals
+;; `wrong-type-argument' for non-Int.  Installed FIRST so all wrappers
+;; below (eq / arith cmp / syscall) can use it as a Rust-builtin
+;; replacement.
+;;
+;; CRITICAL: the body uses `nelisp--ref-eq' (= Rc::ptr_eq Rust builtin,
+;; never overridden) instead of `eq', because `eq' is fset to the
+;; bridge wrapper just below which itself calls `nelisp--int-eq-zero'.
+;; Using `eq' in this body would create infinite recursion.  Likewise
+;; we hand-build the `wrong-type-argument' signal data via raw `cons'
+;; (which IS overridden by the substrate file but to a Rust bridge
+;; primitive that doesn't recurse through eq).
+(fset 'nelisp--int-eq-zero
+      (lambda (x)
+        (if (nelisp--ref-eq (type-of x) 'integer)
+            (if (nelisp--ref-eq x 0) t nil)
+          (signal 'wrong-type-argument (cons 'integer (cons x nil))))))
 
 (fset 'eq
       (lambda (a b)
@@ -301,17 +322,54 @@
               (nelisp--num-ge2-float a b))
           (nelisp--num-ge2-float a b))))
 
+;; Phase 7.1.7.a.1 (Doc 28 §3.7.a.1, 2026-05-10) — bitwise + ash impls
+;; ported from Rust `bi_logior2_impl' / `bi_logand2_impl' / `bi_logxor2_impl'
+;; / `bi_ash_impl' (= strategy.rs).  Each wrapper calls the
+;; `nl-jit-call-i64-i64' bridge directly which performs the `as_int' cast
+;; (Int passthrough / Float→i64 truncation / WrongType for non-numeric)
+;; before invoking the corresponding `nl_jit_arith_*' #[no_mangle]
+;; trampoline and wrapping the i64 result as Sexp::Int.  Eliminates the
+;; `nelisp--{logior2,logand2,logxor2,ash}-impl' Rust dispatch arms.
+
 (fset 'nelisp--logior2
-      (lambda (a b) (nelisp--logior2-impl a b)))
+      (lambda (a b)
+        (nl-jit-call-i64-i64 "nelisp_jit_logior2" a b)))
 
 (fset 'nelisp--logand2
-      (lambda (a b) (nelisp--logand2-impl a b)))
+      (lambda (a b)
+        (nl-jit-call-i64-i64 "nelisp_jit_logand2" a b)))
 
 (fset 'nelisp--logxor2
-      (lambda (a b) (nelisp--logxor2-impl a b)))
+      (lambda (a b)
+        (nl-jit-call-i64-i64 "nelisp_jit_logxor2" a b)))
 
+;; `ash' covers count ∈ [-62, +62] via the JIT trampoline; outside
+;; that range the elisp wrapper applies the same explicit clamping
+;; semantics as the deleted Rust `bi_ash_impl' (count >= 63 → 0;
+;; count <= -63 → 0 if n >= 0 else -1).
+;;
+;; The argument-coercion idiom `(nl-jit-call-i64-i64 "nelisp_jit_add2"
+;; 0 X)' coerces a Sexp::Int / Sexp::Float to i64 (= identical to the
+;; deleted Rust `as_int' helper) and signals `wrong-type-argument' for
+;; non-numeric, matching the canonical error shape bit-for-bit.
 (fset 'ash
-      (lambda (n count) (nelisp--ash-impl n count)))
+      (lambda (n count)
+        (let ((ni (nl-jit-call-i64-i64 "nelisp_jit_add2" 0 n))
+              (ci (nl-jit-call-i64-i64 "nelisp_jit_add2" 0 count)))
+          (if (nelisp--int-eq-zero
+               (nl-jit-call-i64-i64 "nelisp_jit_lt2" ci -62))
+              ;; ci >= -62
+              (if (nelisp--int-eq-zero
+                   (nl-jit-call-i64-i64 "nelisp_jit_gt2" ci 62))
+                  ;; -62 <= ci <= 62 → JIT fast path
+                  (nl-jit-call-i64-i64 "nelisp_jit_ash" ni ci)
+                ;; ci > 62 (= count >= 63) → 0
+                0)
+            ;; ci < -62 (= count <= -63) → if n < 0 then -1 else 0
+            (if (nelisp--int-eq-zero
+                 (nl-jit-call-i64-i64 "nelisp_jit_lt2" ni 0))
+                0
+              -1)))))
 
 ;; ---------- syscall (2) -------------------------------------------
 ;;
