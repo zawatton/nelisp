@@ -4,9 +4,12 @@
 
 * Status
 
-- *State*: DRAFT (= spike / feasibility 調査、コード変更を伴わない設計
-  doc。Phase 47 の規模を articulate し、Doc 86-90 候補 (= 5 実装 doc)
-  を起こすか保留にするか判断するための decision support 資料)
+- *State*: **DRAFT (= 5 component design DRAFT 完備 2026-05-11)** —
+  Doc 91 ELF writer / Doc 92 macro assembler / Doc 93 static linker /
+  Doc 94 crt0 / Doc 95 Sexp DSL の 5 sub-spec が全て DRAFT として ship
+  済。Phase 47 master spike 自身は引き続き spike 段階、go/no-go 判定 +
+  Phase 3 D-B との順序判断は Doc 90 post-ship audit + 本 doc §8 で
+  articulate
 - *Parent*: Doc 83 §6.3 (= 究極着地 ~300-500 LOC + "Phase 47 phase 6
   C-runtime 自前化、別 Doc 必要" として保留された path)、Doc 47 (=
   rust-seed-image-abi)、Doc 63 (= phase7-self-host-roadmap)
