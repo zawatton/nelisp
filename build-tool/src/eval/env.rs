@@ -175,6 +175,14 @@ impl Env {
             // wrappers install BEFORE any later stdlib form invokes
             // the wrapped names.  See `lisp/nelisp-jit-strategy.el'.
             ("nelisp-jit-strategy.el", include_bytes!("../../../lisp/nelisp-jit-strategy.el.image")),
+            // Doc 86 §86.3.a / Doc 89 Option C (2026-05-10): Tier 0 env
+            // shim SKELETON.  See `nelisp-baker.rs' STDLIB_FILES for the
+            // bootstrap-order rationale.  Slim primitives
+            // (`nelisp--env-globals-*') are installed by
+            // `env_shim::install_env_shim_primitives' BEFORE this loop
+            // runs, so the wrappers below can `funcall' them at load
+            // time.
+            ("nelisp-stdlib-env-shim.el", include_bytes!("../../../lisp/nelisp-stdlib-env-shim.el.image")),
             ("nelisp-stdlib-eval-special.el", include_bytes!("../../../lisp/nelisp-stdlib-eval-special.el.image")),
             // Doc 86 §86.2 (2026-05-10): elisp condition system
             // substrate.  See `nelisp-baker.rs' for the load-order
@@ -244,6 +252,14 @@ impl Env {
         env.intern_constant("nil", Sexp::Nil);
         env.intern_constant("t", Sexp::T);
         super::builtins::install_builtins(&mut env);
+        // Doc 86 §86.3.a / Doc 89 Option C — Tier 0 env shim primitives.
+        // Registered AFTER `install_builtins' (= so the function-cell
+        // sentinel install is the final write) and BEFORE the elisp
+        // shim file (`nelisp-stdlib-env-shim.el', loaded inside the
+        // STDLIB_IMAGES loop below) so the shim can `funcall' the 11
+        // `nelisp--env-globals-*' primitives at load time without a
+        // chicken-and-egg gap.  See `eval/env_shim.rs' for the bodies.
+        super::env_shim::install_env_shim_primitives(&mut env);
         for (name, image_bytes) in STDLIB_IMAGES {
             let forms = match image::decode_image(image_bytes) {
                 Ok(forms) => forms,

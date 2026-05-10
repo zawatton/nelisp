@@ -51,6 +51,18 @@ const STDLIB_FILES: &[&str] = &[
     // any later stdlib form invokes the wrapped names.  Wrappers use
     // only Tier 1 special forms + Rust builtins + Doc 80 substrate.
     "nelisp-jit-strategy.el",
+    // Doc 86 §86.3.a / Doc 89 Option C (2026-05-10): Tier 0 env shim
+    // SKELETON.  Allocates `nelisp--global-env' hash-table mirror
+    // placeholder and 11 thin wrappers around the Rust slim primitives
+    // (`nelisp--env-globals-*' from `eval/env_shim.rs').  Loads AFTER
+    // `nelisp-jit-strategy.el' (= so `defun' / `cond' / `let' macros
+    // are live via Doc 80 substrate) and BEFORE
+    // `nelisp-stdlib-eval-special.el' (= the §86.3.b shadow-path
+    // consumers will activate from this load order onward).  Precursor
+    // stage: wrappers are unused by interpreter callsites; only their
+    // names need to exist for §86.3.b to layer on top.  See
+    // `lisp/nelisp-stdlib-env-shim.el' for the body.
+    "nelisp-stdlib-env-shim.el",
     "nelisp-stdlib-eval-special.el",
     // Doc 86 §86.2 (2026-05-10): elisp condition system substrate
     // (= `define-error', `error-message-string', condition registry).
