@@ -141,6 +141,60 @@
              (nl-jit-call-ptr-ptr "nelisp_jit_eq_inline" a b))
             nil t)))
 
+;; ---------- equal (bootstrap) -------------------------------------
+;;
+;; Doc 86 §86.1.b (2026-05-10) — bootstrap `equal' installed FIRST so
+;; later stdlib files (= `nelisp-stdlib-misc.el' (defalias 'eql 'equal),
+;; `nelisp-stdlib-hash.el' nelisp--hash-test-equal, etc.) can resolve
+;; `equal' as `fboundp' before `nelisp-stdlib-equal.el' (= cycle-safe
+;; visited-hash-table impl, Doc 50 stage 5b) replaces the function-cell.
+;;
+;; This bootstrap version is *bounded recursive* — no cycle detection —
+;; because hash-tables are not yet available at this point in the load
+;; chain (`nelisp-stdlib-hash.el' loads after this file).  It is
+;; sufficient for the early bootstrap path (= no cyclic structures
+;; reach here) and is fully replaced once `nelisp-stdlib-equal.el'
+;; runs `(defun equal ...)' which overrides the function-cell.
+;;
+;; Replaces the deleted Rust `bi_equal' dispatch arm + `sexp_equal_safe'
+;; helper (= ~46 LOC trimmed from `build-tool/src/eval/builtins.rs').
+
+(fset 'equal
+      (lambda (a b)
+        ;; Identity short-circuit covers atoms (Int / Symbol / Nil / T)
+        ;; AND shared-heap allocations (= ptr_eq inside `eq').
+        (if (eq a b) t
+          (let ((ta (type-of a)) (tb (type-of b)))
+            (if (eq ta tb)
+                (cond
+                 ((eq ta 'cons)
+                  (if (equal (car a) (car b))
+                      (equal (cdr a) (cdr b))
+                    nil))
+                 ((eq ta 'vector)
+                  (let ((n (length a)))
+                    (if (eq n (length b))
+                        (let ((i 0) (ok t))
+                          (while (if ok (nelisp--num-lt2 i n) nil)
+                            (if (equal (aref a i) (aref b i))
+                                (setq i (nelisp--add2 i 1))
+                              (setq ok nil)))
+                          ok)
+                      nil)))
+                 ((eq ta 'string)
+                  ;; String content compare via length + per-char `eq'.
+                  (let ((n (length a)))
+                    (if (eq n (length b))
+                        (let ((i 0) (ok t))
+                          (while (if ok (nelisp--num-lt2 i n) nil)
+                            (if (eq (aref a i) (aref b i))
+                                (setq i (nelisp--add2 i 1))
+                              (setq ok nil)))
+                          ok)
+                      nil)))
+                 (t nil))
+              nil)))))
+
 ;; ---------- cons (car / cdr / cons / setcar / setcdr) -------------
 ;;
 ;; The bridge trampolines (`nl_jit_cons_*') handle the full Cons + Nil

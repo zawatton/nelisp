@@ -57,7 +57,12 @@ pub fn install_builtins(env: &mut Env) {
         // Doc 50 stage 5a: `nelisp--ref-eq' exposes `Rc::ptr_eq' identity
         // on shared-heap Sexp variants, enabling a cycle-safe `equal'
         // re-implementation in elisp via a visited hash-table.
-        "eq", "equal", "nelisp--ref-eq",
+        // Doc 86 §86.1.b (2026-05-10): `equal' itself was already an
+        // elisp defun in `lisp/nelisp-stdlib-equal.el' (since Doc 50
+        // stage 5b) — the Rust dispatch arm `bi_equal' was dead
+        // because the function-cell override at load time displaces
+        // the dispatch path.  Both arm + helper deleted here.
+        "eq", "nelisp--ref-eq",
         // cons / list
         // Rust-min (2026-05-06 batch 6o): `append' migrated to elisp
         // (lisp/nelisp-stdlib-list.el).
@@ -463,7 +468,11 @@ pub fn dispatch(name: &str, args: &[Sexp], env: &mut Env) -> Result<Sexp, EvalEr
         // `eq' migrated to JIT (Phase 5 Stage C-Phase1, Doc 62
         // 2026-05-08) — `lowered_eq' in `jit/predicate.rs' is the
         // single source of truth.
-        "equal" => bi_equal(args),
+        // `equal' migrated to elisp (Doc 50 stage 5b — see
+        // lisp/nelisp-stdlib-equal.el).  Doc 86 §86.1.b (2026-05-10):
+        // dead Rust dispatch arm `bi_equal' + `sexp_equal_safe'
+        // helper deleted (= the elisp function-cell override
+        // displaces the dispatch path before any caller reaches it).
         "nelisp--ref-eq" => bi_ref_eq(args),
         // ---- cons / list ----
         // car / cdr / cons / setcar / setcdr migrated to JIT
@@ -1031,17 +1040,12 @@ fn sxhash_into<H: std::hash::Hasher>(v: &Sexp, h: &mut H) {
 // Phase 5 Stage C-Phase1 (Doc 62, 2026-05-08): `bi_eq' deleted.
 // The JIT path (`jit/predicate.rs::lowered_eq') is the single source
 // of truth; arity / wrong-type errors are emitted from the lowered
-// wrapper, no `dispatch'/`bi_eq' fallback.  `sexp_eq' helper below
-// stays — it is still used by `bi_equal' / `bi_ref_eq' / `nl_jit_pred_eq'.
-
-fn bi_equal(args: &[Sexp]) -> Result<Sexp, EvalError> {
-    require_arity("equal", args, 2, Some(2))?;
-    Ok(if sexp_equal_safe(&args[0], &args[1], 0) {
-        Sexp::T
-    } else {
-        Sexp::Nil
-    })
-}
+// wrapper, no `dispatch'/`bi_eq' fallback.
+//
+// Doc 86 §86.1.b (2026-05-10): `bi_equal' + `sexp_equal_safe' helper
+// deleted (= dead code, displaced by the elisp `equal' defun in
+// `lisp/nelisp-stdlib-equal.el' since Doc 50 stage 5b).  `sexp_eq'
+// helper stays — still used by `bi_ref_eq' / `nl_jit_pred_eq'.
 
 /// Doc 50 stage 5a: expose `Rc::ptr_eq' for shared-heap Sexp variants.
 /// Returns t when A and B refer to the *same* allocation (= identity,
@@ -1094,53 +1098,12 @@ fn bi_ref_eq(args: &[Sexp]) -> Result<Sexp, EvalError> {
     Ok(if same { Sexp::T } else { Sexp::Nil })
 }
 
-/// Cycle-safe structural equality.  For heap-backed variants (Cons,
-/// Vector, MutStr, etc.) we first short-circuit via `Rc::ptr_eq': two
-/// references to the same allocation are trivially equal, AND this
-/// breaks the recursion when a cyclic graph reaches the same node
-/// from two paths (e.g. cl-defstruct parent <-> children).  A bounded
-/// recursion depth is a backstop against pathological non-shared
-/// graphs that we have not encountered in practice.
-const SEXP_EQUAL_DEPTH_LIMIT: u32 = 4096;
-
-fn sexp_equal_safe(a: &Sexp, b: &Sexp, depth: u32) -> bool {
-    if depth > SEXP_EQUAL_DEPTH_LIMIT {
-        return sexp_eq(a, b);
-    }
-    match (a, b) {
-        (Sexp::Cons(ab), Sexp::Cons(bb)) => {
-            if crate::eval::nlconsbox::NlConsBoxRef::ptr_eq(ab, bb) {
-                return true;
-            }
-            sexp_equal_safe(&ab.car, &bb.car, depth + 1)
-                && sexp_equal_safe(&ab.cdr, &bb.cdr, depth + 1)
-        }
-        (Sexp::Vector(a), Sexp::Vector(b)) => {
-            if crate::eval::nlvector::NlVectorRef::ptr_eq(a, b) {
-                return true;
-            }
-            let av = &a.value;
-            let bv = &b.value;
-            av.len() == bv.len()
-                && av
-                    .iter()
-                    .zip(bv.iter())
-                    .all(|(x, y)| sexp_equal_safe(x, y, depth + 1))
-        }
-        (Sexp::MutStr(a), Sexp::MutStr(b)) => {
-            crate::eval::nlstr::NlStrRef::ptr_eq(a, b) || a.value == b.value
-        }
-        (Sexp::CharTable(a), Sexp::CharTable(b)) => {
-            crate::eval::nlchartable::NlCharTableRef::ptr_eq(a, b) || a == b
-        }
-        (Sexp::BoolVector(a), Sexp::BoolVector(b)) => {
-            crate::eval::nlboolvector::NlBoolVectorRef::ptr_eq(a, b) || a == b
-        }
-        // For the trivial leaf variants the derived PartialEq has no
-        // cycles to chase; fall through to the existing impl.
-        _ => a == b,
-    }
-}
+// `sexp_equal_safe' + `SEXP_EQUAL_DEPTH_LIMIT' deleted — Doc 86
+// §86.1.b (2026-05-10).  Their sole caller `bi_equal' was deleted in
+// the same commit; the elisp `equal' (Doc 50 stage 5b — see
+// `lisp/nelisp-stdlib-equal.el') uses a visited hash-table for
+// cycle-safety instead of the bounded recursion strategy this Rust
+// helper used.
 
 // ---------- cons / list ----------
 //
