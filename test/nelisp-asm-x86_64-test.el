@@ -601,6 +601,115 @@
             (should (string-match-p "syscall" out))))
       (when (file-exists-p tmp) (delete-file tmp)))))
 
+;; ---- §92.d chunk-build invariants + perf gate ----
+
+(ert-deftest nelisp-asm-x86_64-92d-chunks-field-exists-after-emit ()
+  ;; §92.d invariant: emitter must push onto :chunks (= reverse-order
+  ;; list) and bump :length, instead of concatenating onto :bytes.
+  (let* ((b (nelisp-asm-x86_64-make-buffer)))
+    (nelisp-asm-x86_64-nop b)
+    (nelisp-asm-x86_64-ret b)
+    (let* ((plist (aref b 0))
+           (chunks (plist-get plist :chunks))
+           (len (plist-get plist :length)))
+      (should (listp chunks))
+      (should (= (length chunks) 2))
+      ;; Most-recent push at head -> ret (0xC3) first, nop (0x90) second.
+      (should (equal (car chunks) (unibyte-string #xC3)))
+      (should (equal (cadr chunks) (unibyte-string #x90)))
+      (should (= len 2)))))
+
+(ert-deftest nelisp-asm-x86_64-92d-buffer-bytes-finalize-matches ()
+  ;; §92.d invariant: finalize via `apply concat nreverse' yields the
+  ;; same byte sequence as the pre-optimization concat-on-each-emit
+  ;; pattern.  Cross-check with `exit(0)' shape (= existing fixture).
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (nelisp-asm-x86_64-mov-imm32 b 'rax 60)
+    (nelisp-asm-x86_64-mov-imm32 b 'rdi 0)
+    (nelisp-asm-x86_64-syscall b)
+    (should (equal (nelisp-asm-x86_64-buffer-bytes b)
+                   (nelisp-asm-x86_64-test--ub
+                    #x48 #xC7 #xC0 #x3C #x00 #x00 #x00
+                    #x48 #xC7 #xC7 #x00 #x00 #x00 #x00
+                    #x0F #x05)))))
+
+(ert-deftest nelisp-asm-x86_64-92d-buffer-bytes-idempotent ()
+  ;; §92.d: `buffer-bytes' must be idempotent — repeated calls return
+  ;; the same string and do not destructively reverse :chunks.
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (nelisp-asm-x86_64-nop b)
+    (nelisp-asm-x86_64-nop b)
+    (nelisp-asm-x86_64-ret b)
+    (let ((first  (nelisp-asm-x86_64-buffer-bytes b))
+          (second (nelisp-asm-x86_64-buffer-bytes b))
+          (third  (nelisp-asm-x86_64-buffer-bytes b)))
+      (should (equal first second))
+      (should (equal second third))
+      (should (equal first (nelisp-asm-x86_64-test--ub
+                            #x90 #x90 #xC3))))))
+
+(ert-deftest nelisp-asm-x86_64-92d-resolve-fixups-collapses-chunks ()
+  ;; §92.d: `resolve-fixups' materializes + patches + stores back as a
+  ;; single chunk; subsequent `buffer-bytes' returns the patched form.
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (nelisp-asm-x86_64-call-rel32 b 'foo)
+    (nelisp-asm-x86_64-define-label b 'foo)
+    (nelisp-asm-x86_64-ret b)
+    (let ((patched (nelisp-asm-x86_64-resolve-fixups b)))
+      (should (equal patched
+                     (nelisp-asm-x86_64-test--ub
+                      #xE8 #x00 #x00 #x00 #x00 #xC3)))
+      ;; After resolve, chunks list is collapsed to a single chunk.
+      (let* ((plist (aref b 0))
+             (chunks (plist-get plist :chunks)))
+        (should (= (length chunks) 1))
+        (should (equal (car chunks) patched)))
+      ;; And `buffer-bytes' returns the patched form.
+      (should (equal (nelisp-asm-x86_64-buffer-bytes b) patched)))))
+
+(ert-deftest nelisp-asm-x86_64-92d-benchmark-emit-100kb ()
+  ;; §92.d perf gate: 100 KB of synthetic NOP emit completes well
+  ;; under 2 sec on commodity hardware via chunk-build (= O(N) total).
+  ;; Pre-optimization `(concat old bs)` per byte was O(N²) and would
+  ;; take >30 sec for 100 KB.
+  (let* ((b (nelisp-asm-x86_64-make-buffer))
+         (nbytes (* 100 1024))
+         (start (current-time)))
+    (nelisp-asm-x86_64-benchmark-emit b nbytes)
+    (let* ((bytes (nelisp-asm-x86_64-buffer-bytes b))
+           (elapsed (float-time (time-subtract (current-time) start))))
+      (should (= (length bytes) nbytes))
+      ;; First byte should be NOP (0x90).
+      (should (= (aref bytes 0) #x90))
+      (should (= (aref bytes (1- nbytes)) #x90))
+      (should (< elapsed 2.0)))))
+
+(ert-deftest nelisp-asm-x86_64-92d-benchmark-emit-1mb ()
+  ;; §92.d perf gate: 1 MB of synthetic NOP emit completes in < 5 sec.
+  ;; Mirrors Doc 91 §91.d's 1 MB benchmark target.
+  (let* ((b (nelisp-asm-x86_64-make-buffer))
+         (nbytes (* 1024 1024))
+         (start (current-time)))
+    (nelisp-asm-x86_64-benchmark-emit b nbytes)
+    (let* ((bytes (nelisp-asm-x86_64-buffer-bytes b))
+           (elapsed (float-time (time-subtract (current-time) start))))
+      (should (= (length bytes) nbytes))
+      (should (= (nelisp-asm-x86_64-buffer-pos b) nbytes))
+      (should (< elapsed 5.0)))))
+
+(ert-deftest nelisp-asm-x86_64-92d-buffer-pos-cached-o1 ()
+  ;; §92.d: `buffer-pos' must read from cached :length field (= O(1))
+  ;; — never traverse :chunks to recompute total bytes.
+  (let ((b (nelisp-asm-x86_64-make-buffer)))
+    (should (= (nelisp-asm-x86_64-buffer-pos b) 0))
+    (nelisp-asm-x86_64-nop b)
+    (should (= (nelisp-asm-x86_64-buffer-pos b) 1))
+    (dotimes (_ 100) (nelisp-asm-x86_64-nop b))
+    (should (= (nelisp-asm-x86_64-buffer-pos b) 101))
+    (nelisp-asm-x86_64-mov-imm64 b 'rax #xDEADBEEF)
+    ;; mov-imm64 = REX.W + opcode + imm64 = 10 bytes.
+    (should (= (nelisp-asm-x86_64-buffer-pos b) 111))))
+
 (provide 'nelisp-asm-x86_64-test)
 
 ;;; nelisp-asm-x86_64-test.el ends here

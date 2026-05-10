@@ -6,7 +6,7 @@
 
 - *State*: DRAFT — §92.a SHIPPED (2026-05-11, see §7.1.S), §92.b
   SHIPPED (2026-05-11, see §7.2.S), §92.c SHIPPED (2026-05-11, see
-  §7.3.S).  §92.d remains DRAFT.
+  §7.3.S), §92.d SHIPPED (2026-05-11, see §7.4.S).
   Doc 85 §3.2 / §5.1 で「Phase 47 着手なら macro assembler 拡張
   ~800 elisp / Rust 削減なし (= 既存 Rust 側に encoder 自体は無い)」
   とした component の articulate)
@@ -853,6 +853,72 @@ testing:
 - unit: v1/v2/v3 でも fixture が同一 byte 列 ~20 fixture
 - benchmark: 1 MB build × 3 variant の time / heap profile (= ert
   ではなく =elp= で記録、Doc 91 §91.d と同 pattern)
+
+*** §7.4.S §92.d SHIPPED (2026-05-11)
+
+State: SHIPPED on branch =agent-doc-92d-impl=.  Approach mirrors
+Doc 91 §91.d's chunk-build pattern in =nelisp-elf-write.el=
+(commit =2c3cb5ee=) — proven O(N²) → O(N) win for long byte
+streams.  Buffer v3 (= unibyte-string + fill pointer) deferred;
+chunk-build hits the same perf target with less invariant churn
+and no defcustom toggle.  Scope landed:
+
+1. Buffer struct refactor (= the single hot-path change):
+   - §92.a: =(:bytes "..." :pos N ...)= where every emitter did
+     =(concat old new)= on the =:bytes= string (O(N²) for long
+     buffers).
+   - §92.d: =(:chunks (CHUNK_N ... CHUNK_2 CHUNK_1) :length N ...)=
+     where each emitter conses a fresh unibyte-string onto
+     =:chunks= (O(1) push) and bumps =:length= (O(1) read).
+     Finalize via =(apply #'concat (nreverse :chunks))= once at
+     =buffer-bytes= call time — O(total-bytes) total.
+2. Public API surface unchanged: =make-buffer= /
+   =buffer-bytes= / =buffer-pos= / 16 emit-* helpers / =define-
+   label= / =emit-fixup= / =resolve-fixups= / =emit-reloc= / 3
+   =reloc-*-here= helpers / =extract-relocs= / =buffer-to-unit=
+   all keep their §92.a + §92.c signatures.  All 61 baseline ert
+   pass without modification (= no signature regression).
+3. =resolve-fixups= rewritten to materialize chunks once,
+   patch via mutable vector, then store the patched bytes back
+   as a single chunk (= chunks list collapses to length 1).
+   Subsequent =buffer-bytes= calls return the patched form.
+4. =buffer-bytes= idempotent (= =copy-sequence= on the chunk
+   spine before =nreverse=, so repeated reads stay safe).
+5. New public benchmark helper =nelisp-asm-x86_64-benchmark-
+   emit BUF NBYTES= mirroring §91.d's =nelisp-elf-benchmark-
+   write-binary=.  Emits NBYTES NOPs (= exercises the chunk-
+   build hot path on realistic synthetic payload).
+
+LOC delta (assembler only, =wc -l=):
+- =lisp/nelisp-asm-x86_64.el=: +41 LOC (= 586 → 627).
+- =test/nelisp-asm-x86_64-test.el=: +109 LOC (= 606 → 715), 7
+  new ert-deftest cases (= 1 invariant + 1 finalize cross-check
+  + 1 idempotent + 1 resolve-fixups collapse + 2 perf gate
+  100KB / 1MB + 1 buffer-pos O(1) cache).
+
+Verification:
+- =emacs --batch -Q -L lisp --eval '(setq byte-compile-error-on-warn
+  t)' -f batch-byte-compile lisp/nelisp-asm-x86_64.el= → 0 warnings.
+- =emacs --batch -L src -L lisp -l ert -l test/nelisp-asm-x86_64-
+  test.el -f ert-run-tests-batch-and-exit= → 68/68 pass (= 61
+  baseline + 7 §92.d new), 0 unexpected.
+- =make compile= → exit 0 (= unaffected, top-level Makefile only
+  byte-compiles =src/= + =packages/=).
+- Benchmark: 1 MB synthetic NOP emit in 0.220 sec interpreted
+  (= 22× under the 5 sec budget).  100 KB ert perf gate completes
+  in ~0.12 sec, 1 MB ert perf gate in ~1.06 sec (= measured under
+  =ert-run-tests-batch-and-exit=, non-byte-compiled overhead).
+
+Deferrals:
+- buffer v3 (= unibyte-string + fill pointer) and =nelisp-cc-
+  x86_64-fast-buffer= defcustom toggle from §7.4 deferred —
+  chunk-build hits the perf budget without that complexity.
+  Revisit if/when a future profile shows that the per-chunk
+  cons + final =concat= still dominates an end-to-end Phase 47
+  AOT compile.
+- arm64 sibling (= mirror §92.d into =nelisp-asm-arm64.el=) not
+  touched this slice — out of scope per task constraints
+  (=§92.d covers x86_64 only=).
 
 ** §7.5 sub-stage 順序と並列性
 
