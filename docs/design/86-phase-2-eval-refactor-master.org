@@ -269,7 +269,7 @@ builtins.rs 3,804 LOC のうち:
 
 | sub-stage | scope                         | 工数  | LOC delta |
 |-----------+-------------------------------+-------+-----------|
-| §86.1.a   | Tier 1 predicate / type-of 移管 | 2 day | -300      |
+| §86.1.a   | Tier 1 predicate / type-of 移管 (= SHIPPED 2026-05-10、actual -34 net + ~30 elisp) | 2 day | -300 (est) / -34 (actual) |
 | §86.1.b   | Tier 1 算術 / equal / ref-eq 移管 | 3 day | -500      |
 | §86.1.c   | Tier 1 record 系 移管         | 2 day | -400      |
 | §86.1.d   | Tier 1 intern / symbol 移管   | 2 day | -300      |
@@ -549,3 +549,55 @@ Phase 2 が時系列的に先に来るため Phase 47 候補を Doc 91-95 に re
 - GHC = Haskell builtin の Haskell 移管 pattern
 - Emacs = many subr (Rust 側 builtin 等価) を elisp lib で wrap する
   pattern
+
+* §12 SHIPPED status
+
+** §12.1 §86.1.a — Tier 1 predicate / type-of (SHIPPED 2026-05-10)
+
+- =functionp= (= =bi_predicate= closure arm) → elisp =(and (consp x)
+  (memq (car x) '(lambda closure builtin)) t)= in
+  =lisp/nelisp-stdlib.el=
+- =recordp= (= =bi_recordp=) → elisp =condition-case= around the
+  existing =nelisp--record-type= primitive (signals
+  =wrong-type-argument= on non-records, returns the type_tag symbol
+  on records) in =lisp/nelisp-stdlib.el=
+- =type-of= (= =bi_type_of=) → JIT trampoline =nl_jit_type_of=
+  (=build-tool/src/jit/predicate.rs=) reachable via
+  =(nl-jit-call-out-1 "nelisp_jit_type_of" x)= from
+  =lisp/nelisp-jit-strategy.el= (installed FIRST so subsequent
+  strategy wrappers see the elisp version)
+- =bi_predicate= helper deleted (= sole caller was =functionp=)
+
+LOC delta (= actual):
+- =build-tool/src/= : -34 net (= 21,796 → 21,762).  =bi_type_of= /
+  =bi_predicate= / =bi_recordp= helpers (-70 LOC), dispatch arms +
+  install_builtins entries (-15 LOC), comments trimmed (-15 LOC).
+  Trampoline + bridge wiring (+45 LOC) + new comments (+21 LOC).
+- =lisp/nelisp-stdlib.el= : +24 elisp LOC (functionp + recordp).
+- =lisp/nelisp-jit-strategy.el= : +18 elisp LOC (type-of fset + comments).
+
+Estimate vs actual: spec said -300 net Rust; actual is -34.  The
+gap is because the pre-Doc-86 baseline had already migrated 8 of
+the 10 Tier 1 predicate arms (consp / listp / symbolp / stringp /
+numberp / integerp / floatp / vectorp) in batch 6u (2026-05-06) on
+top of the existing =bi_type_of= primitive.  §86.1.a as written in
+§5.2 predicted ~10 arms × 30 LOC = -300; in reality only 3 arms
+(=type-of / functionp / recordp=) remained for §86.1.a, and the
+=type-of= trampoline body is structurally identical to =bi_type_of=
+(= same Sexp variant → tag mapping logic), so no body-level savings.
+
+The conceptual win is full elisp dispatch for the predicate family —
+a downstream user can now =(advice-add 'type-of ...)= or shadow with
+=fset= the same way they would in host Emacs; the primitive surface
+is exactly =nl_jit_type_of=.
+
+Verification:
+- =cargo build --workspace --release --features image-baker= — green
+- =cargo test --workspace --release --lib -- --test-threads=1= —
+  706 passed / 0 failed (= same as baseline)
+- =make test= — 1 pre-existing flake (=apply-fn-dispatches-to-
+  builtin=) verified identical on baseline =feat/doc-77-stage2-prep=
+
+Commits (= 2 atomic):
+1. =4192489d= — functionp / recordp migration (-17 Rust)
+2. =2d2f116f= — type-of migration via JIT trampoline (-17 Rust)
