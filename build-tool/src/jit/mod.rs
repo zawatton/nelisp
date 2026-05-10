@@ -2,10 +2,9 @@
 //!
 //! Phase 7.1.6 cluster takeover (Doc 28 §3.6 COMPLETE) replaced every
 //! Cranelift IR builder with `#[no_mangle] extern "C"' Rust trampolines
-//! resolved via the binary's dynamic symbol table.  No Cranelift
-//! wrapper page is constructed for any cluster anymore; the
-//! `cranelift_jit' / `cranelift_module' deps stay only until Doc 28
-//! §3.7.c sweeps them from `Cargo.toml'.
+//! resolved via the binary's dynamic symbol table.  Phase 7.1.7.b
+//! (Doc 28 §3.7.c) then deleted `jit::dsl' and the `cranelift' /
+//! `cranelift-jit' / `cranelift-module' Cargo deps.
 //!
 //! Lowered primitives are reachable via two paths:
 //!
