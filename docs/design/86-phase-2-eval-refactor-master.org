@@ -4,8 +4,9 @@
 
 * Status
 
-- *State*: PARTIAL SHIPPED v2 (= §86.2 + §86.1.a + §86.1.b + §86.1.c
-  + §86.1.d SHIPPED 2026-05-10、§86.3.a precursor SHIPPED 2026-05-10、
+- *State*: PARTIAL SHIPPED v3 (= §86.2 + §86.1.a + §86.1.b + §86.1.c
+  + §86.1.d + §86.1.e + §86.1.f SHIPPED 2026-05-10、§86.3.a precursor
+  + §86.3.b shadow path SHIPPED 2026-05-10、残 §86.1.g + §86.3.c のみ。
   Doc 87 / 88 / 89 detail design DRAFT SHIPPED、v2 reconcile 2026-05-10
   with Doc 87/88/89 actual findings — see §13)
 - *Parent*: Doc 83 §6.2 (= Phase 2 着地 ~6,000-8,000 LOC 試算)、Doc 84
@@ -82,11 +83,14 @@ Doc 83 §6.2 の "~6,000-8,000" は Phase 2 + Phase 3 の合算値と解釈す�
 | §86.1.b (SHIPPED 2026-05-10) | Tier 1 算術 / equal / ref-eq / sxhash (= 4 arm: =equal= / =nelisp--ref-eq= / =/= / =sxhash=) | -500 (estimate, see §12.2) | **-108 net actual** (= equal は既に elisp 化済 dead code、ref-eq は sexp_eq 同等、sxhash は trampoline 移送で structural neutral) | 21,541 |
 | §86.1.c (SHIPPED 2026-05-10) | Tier 1 record family (= 5 arm: make-record / record-ref / record-set / record-length / record-type) | -400 (estimate, see §12.x) | **-10 net actual** (= 既存 box accessor bridge shape 再利用、新 ABI mode 不要) | 21,531 |
 | §86.1.d (SHIPPED 2026-05-10) | Tier 1 intern / symbol (= 3 arm: intern / symbol-name / make-symbol) | -300 (estimate, see §12.4) | **-2 net actual** (= trampoline body は bi_* と同等、§86.3 obarray 化で残 ~-90 期待) | 21,529 |
-| §86.1 残 (Doc 87 articulated) | §86.1.e/f (Tier 2 13 arm) + g (install_builtins / dispatch trim) | -1,329 (= Tier 2 + g) | **-1,417 actual remaining** (= -1,571 total - 154 §86.1.a-d SHIPPED) | 20,112 (projected) |
+| §86.1.e (SHIPPED 2026-05-10) | Tier 2 simple (= 3 arm: concat-ints / make-mut-string / format-float-body) + 新 ABI mode =:trampoline-format-float= | -350 (estimate, see §12.5) | **+132 net actual** (= trampoline body と deleted bi_* がほぼ isomorphic、構造的 +Rust。§86.1.g cleanup で吸収予定) | 22,043 (post §86.1.e) |
+| §86.1.f (SHIPPED 2026-05-10) | Tier 2 ABI extension + 8-10 arm (time / hash / math / regex / case / tokenize) + 新 ABI mode =:trampoline-unary-float= | -650 (estimate, see §12.6) | **+297 net actual** (= 同上、trampoline body 構造制約。§86.1.g cleanup 期待) | 22,340 (post §86.1.f) |
+| §86.1 残 §86.1.g (Doc 87 articulated) | install_builtins / dispatch trim + commentary cleanup | -300 | **-300 estimate remaining** | 22,040 (projected) |
 | §86.2 (SHIPPED 2026-05-10) | error.rs → nelisp-stdlib-error.el | -258〜-278 | **-113 net actual** (= elisp registry 確立 + compact、full variant elision を §86.3 へ deferred) | 21,683 → 21,529 (post §86.1.a-d) |
 | §86.3.a precursor (SHIPPED 2026-05-10) | env shim skeleton (Tier 0 stub + 11 slim primitive + elisp shim) | +85 (estimate) | **+280 net additive** (= 例外、§86.3.b/c 消化予定) | 21,809 (post-precursor) |
-| §86.3 (Doc 89 articulated) | env.rs scope chain + 連動 (mod.rs / special_forms.rs / builtins.rs Tier 3、ffi.rs 0) | -1,500 | **-1,214 actual** (= ffi.rs 連動 -100 → 0 corrected by Doc 89 grep) | 18,435 (projected) |
-| *合計* | *Phase 2 着地* | *-3,605〜-4,605* | ***~-3,043*** *actual* | ***~18,753 (projected)*** |
+| §86.3.b (SHIPPED 2026-05-10) | env shadow path (= cfg-gated dual-update verify、9/12 currently-implemented Tier 3 arm + 4 連動 callsite) | +0 production | **+0 production / +210 cfg-gated** (= =cfg(feature = "env-shadow-verify")=、default build byte-identical) | 22,340 (production same as post §86.1.f) |
+| §86.3.c (Doc 89 articulated) | env.rs scope chain + 連動 (mod.rs / special_forms.rs / builtins.rs Tier 3、ffi.rs 0) switch-over | -1,500 | **-1,214 actual** (= ffi.rs 連動 -100 → 0 corrected by Doc 89 grep) | 21,126 (projected) |
+| *合計 v3 reconciled* | *Phase 2 着地* | *-3,605〜-4,605* | ***-670 actual SHIPPED + ~-1,514 remaining = ~-2,184 projected*** | ***~19,612 (projected)*** |
 
 Phase 2 reconciled landing は **build-tool/src/ 18,753 LOC** (= 21,796
 基線から -3,043 net)、Phase 1 完遂時 21,796 → Phase 2 完遂時 ~18,753 →
@@ -1199,10 +1203,24 @@ Phase 2 完遂時の build-tool/src/ Rust LOC:
 | §86.1.c SHIPPED (2026-05-10) | 21,531 | -265 (= cumulative) |
 | §86.1.d SHIPPED (2026-05-10) | 21,529 | -267 (= cumulative) |
 | §86.3.a precursor SHIPPED (2026-05-10) | 21,809 | +13 (= cumulative, +280 additive 例外) |
-| §86.1 残 完遂 (projected) | 20,112 | -1,684 |
-| §86.3 完遂 (projected) | **~18,898** | ***-2,898*** |
+| §86.1.e SHIPPED (2026-05-10) | 21,941 | +145 (= cumulative, +132 additive Tier 2 例外) |
+| §86.1.f SHIPPED (2026-05-10) | 22,659 | +863 (= cumulative, +718 additive incl. ABI mode + 4 trampoline file) |
+| §86.3.b SHIPPED (2026-05-10) | 22,659 | +863 (= production same as post §86.1.f, +210 cfg-gated) |
+| §86.1.g 完遂 (projected) | 22,359 | +563 (= -300 cleanup) |
+| §86.3.c 完遂 (projected) | **~21,145** | ***-651*** (= -1,214 switch-over net) |
 
-Phase 2 reconciled landing = **~18,898 LOC** (= 21,796 - 2,898)。
+v3 reconciled landing (= 2026-05-10 Tier 2 SHIPPED 反映後): Phase 2
+完遂時 ~21,145 LOC = 21,796 - 651 net、v2 reconciled (-2,898) より
++2,247 LOC 上振れ。原因は Tier 2 §86.1.e/f の trampoline body /
+deleted bi_* helper isomorphism (= 構造的 +Rust、Tier 1 §86.1.b/c/d
+の precedent と同 pattern)、§86.1.g cleanup + §86.3.c switch-over で
+吸収予定 (= -300 + -1,214 = -1,514 残 reduction)。
+
+Phase 2 reconciled landing v2 = **~18,898 LOC** (= 21,796 - 2,898)。
+v3 actual SHIPPED progress = **22,659 LOC** (= 21,796 + 863)、残
+sub-stage 完遂で v2 試算に向けて closing。Phase 47 spike (Doc 85)
+で Sexp DSL + ELF writer 等を追加して Tier 2 trampoline body も elisp
+化すれば、本 Tier 2 上振れは pure-elisp landing path で消化可能。
 
 (註: §13.1 表の "-2,898" は §86.2 v1 estimate -258 と actual -113 の差
 -145 を §86.3 完遂時に消化する想定の合算。本表 §13.3 は SHIPPED 経路
