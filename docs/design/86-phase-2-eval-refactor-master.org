@@ -667,6 +667,74 @@ Commits (= 3 atomic):
 3. =76e10b27= — Doc 86 §86.2 SHIPPED metadata + dead =pos()= removal
    (-8 net Rust)
 
+** §12.3 §86.3.a — env shim skeleton precursor (SHIPPED 2026-05-10)
+
+Doc 89 Option C (Hybrid) precursor — 11 slim Rust primitives + elisp
+shim skeleton coexisting with the canonical Rust =Env::globals= HashMap.
+Per §4.1 the precursor is intentionally additive (= no deletion yet);
+shadow path activation + callsite rewire are §86.3.b / §86.3.c.
+
+Deliverables:
+- =build-tool/src/eval/env_shim.rs= NEW (= ~280 Rust LOC including
+  doc + #[cfg(test)] tests, ~140 LOC code).  11 primitives wrap
+  =Env::globals= read/write (=nelisp--env-globals-{get,set}-{value,
+  function}=, =-clear-{value,function}=, =-is-{bound,fbound,constant}=,
+  =-set-constant=, =-capture-lexical=).  Registered via
+  =Env::register_extern_builtin= (= avoids merge collision with
+  parallel §86.1.b agent's edits to =install_builtins= +
+  =dispatch=).
+- =lisp/nelisp-stdlib-env-shim.el= NEW (= 123 elisp LOC).
+  =nelisp--global-env= variable (= nil placeholder, hash-table
+  allocation deferred to §86.3.b because =make-hash-table= ships
+  in =nelisp-stdlib-hash.el= which loads much later) + 11 thin
+  elisp wrappers (=nelisp--global-env-*=).
+- =build-tool/src/bin/nelisp-baker.rs= STDLIB_FILES + =eval/env.rs=
+  STDLIB_IMAGES wiring at index 4 (= AFTER =nelisp-jit-strategy.el=,
+  BEFORE =nelisp-stdlib-eval-special.el=).
+- =build-tool/src/eval/env.rs= invokes
+  =env_shim::install_env_shim_primitives= AFTER =install_builtins=
+  + BEFORE STDLIB_IMAGES load → no chicken-and-egg gap when the
+  shim file's wrappers reference primitive names at load time.
+- 7 cargo unit tests in =env_shim.rs= cover round-trip behaviour
+  (set/get, is-bound flip, function-cell + clear, constant flag,
+  capture-lexical at top level, clear drops binding).
+
+LOC delta (= actual):
+- =build-tool/src/= : +280 net (= 21,683 → 21,963).  Per Doc 89
+  §4.1.2 budget +85 Rust LOC was production estimate; actual +280
+  includes ~110 LOC #[cfg(test)] unit tests + ~50 LOC doc-comment
+  expansion + 11 primitive wrappers ~120 LOC + wiring +29.
+- =lisp/nelisp-stdlib-env-shim.el= NEW : +123 elisp LOC + 5,549
+  bytes baked image.
+
+Estimate vs actual: spec said +85 Rust; actual +280 includes inline
+unit tests (= +110 LOC) and richer documentation than the spec
+envisioned.  Production code (= ex-test, ex-comment) is ~140 LOC,
+in line with the §3.2 +80 LOC primitive budget after counting the
+arity / sym-arg helpers.
+
+Verification:
+- =cargo build --workspace --release --features image-baker= — green
+- =cargo test --workspace --release --lib -- --test-threads=1= —
+  713 passed / 0 failed (= +7 new env_shim primitive tests, 0
+  regressions from 706 baseline)
+- =make compile= — green (byte-compile-error-on-warn t)
+- =make test= — 2578/2707 expected, 1 unexpected pre-existing
+  flake (=apply-fn-dispatches-to-builtin= reproduces on baseline
+  before this commit), 128 skipped
+- =make bake-check= — green
+
+Commits (= 1 atomic):
+1. =571244ab= — precursor: env_shim.rs + nelisp-stdlib-env-shim.el
+   + baker/env STDLIB wiring (+280 Rust additive, +123 elisp)
+
+precursor → consumer hand-off: §86.3.b shadow path will (1) allocate
+=nelisp--global-env= hash-table once =nelisp-stdlib-hash.el= has
+loaded, (2) layer dual-update on top of the wrappers, (3) verify
+divergence 0 across CI for ~1 week before §86.3.c switch-over
+deletes Tier 0 wide method implementations and rewires
+=eval/mod.rs= / =eval/special_forms.rs= / Tier 3 dispatch arms.
+
 * §13 v2 reconcile appendix (= 2026-05-10)
 
 Doc 87 / Doc 88 / Doc 89 detail design 起こし時に判明した v1 estimate
