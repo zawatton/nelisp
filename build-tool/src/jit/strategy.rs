@@ -1,68 +1,25 @@
-//! Doc 77b Stage b.4 — Rust helper primitives for elisp JIT-strategy
-//! wrappers (= `lisp/nelisp-jit-strategy.el').
+//! Rust helper primitives backing the elisp JIT-strategy wrappers in
+//! `lisp/nelisp-jit-strategy.el' (= Doc 77b Stage b.4 + Doc 80
+//! substrate).  Per-fn docstrings cover the contract; the surface
+//! groups into 3 categories per Doc 80 §7 + §3.7.a audit:
 //!
-//! Doc 80 Stage 80.3〜80.5 (2026-05-09) — `bi_length_impl' /
-//! `aref_helper' / `bi_aref_impl' / `bi_aset_impl' / `bi_elt_impl'
-//! deleted (= ~255 LOC).  The multi-variant fall-through dispatch is
-//! now expressed in elisp via the Doc 80 substrate (`cond' / `signal'
-//! / `nelisp--signal-{wrong-type,arith}'), with narrow per-variant
-//! slim primitives in this file (= `bi_mut_str_*' / `bi_bool_vector_*'
-//! / `bi_char_table_*') for the Sexp-internal mutations that elisp
-//! cannot reach without exposing the variant boxes wholesale.
+//! 1. *Doc 80 §7 permanent out-of-scope* (= cannot be expressed in
+//!    pre-stdlib elisp): `bi_int_eq_zero', `bi_{add,sub,mul}2_float',
+//!    `bi_num_{eq,lt,gt,le,ge}2_float', `bi_{logior,logand,logxor}2_impl',
+//!    `bi_ash_impl', `bi_syscall_nr_resolve'.  Float arith / cmp use
+//!    libm via Rust `f64' ops (1e-15 epsilon for `eq2'); bitwise uses
+//!    `as_int' cast (Float→Int truncation + WrongType for non-numeric);
+//!    `syscall_nr_resolve' wraps the `libc::SYS_*' symbol catalog.
+//!    Doc 28 §3.7.a.1 ports `bi_int_eq_zero' / bitwise 3 / `bi_ash_impl'
+//!    to elisp on top of nelisp-cc, leaving Float / syscall as
+//!    permanent Rust residual.
 //!
-//! The remaining helpers (`nelisp--int-eq-zero', arith Float, bitwise
-//! Int, `ash', `syscall-nr-resolve') stay as before — they are not in
-//! Doc 80's scope.
-//!
-//!   - `nelisp--int-eq-zero N'                — `if'-friendly bool
-//!     conversion of bridge `i64' results.  Used by the `eq' wrapper
-//!     (= the bridge returns 1/0; elisp wants T/Nil) and the cmp
-//!     arith wrappers (= same shape).
-//!
-//!   - `nelisp--{add2,sub2,mul2}-float A B'    — Float promotion
-//!     fallback for `+' / `-' / `*' when at least one arg is Float.
-//!     Cannot be expressed in elisp without recursing through the
-//!     stdlib `+' / `-' / `*' (which themselves call
-//!     `nelisp--{add,sub,mul}2' — the wrapper we are inside).
-//!
-//!   - `nelisp--num-{eq,lt,gt,le,ge}2-float A B' — Float-cmp fallback
-//!     same rationale, and the `eq2' Float case uses 1e-15 epsilon
-//!     per the pre-b.4 `lowered_num_eq2' contract.
-//!
-//!   - `nelisp--{logior2,logand2,logxor2}-impl A B' — Int-only
-//!     bitwise (= `as_int' cast handles `Float' implicit truncation
-//!     + canonical `WrongType' for non-numeric).  Distinct from the
-//!     arith Float fallbacks because elisp bitwise has no Float
-//!     output path (= host Emacs contract).
-//!
-//!   - `nelisp--ash-impl N COUNT'              — `ash' Int-only with
-//!     the [-62, +62] JIT bounds + clamping fallback for pathological
-//!     counts.  Body lifted verbatim from the pre-b.4 `lowered_ash'.
-//!
-//!   - `nelisp--mut-str-len S' / `nelisp--bool-vector-len V' — slim
-//!     fall-through primitives for `length' (= MutStr UTF-8 char count
-//!     / BoolVector bit count).  `Sexp::Str' / `Sexp::Vector' /
-//!     `Sexp::Nil' length stay JIT-trampoline-only.
-//!
-//!   - `nelisp--str-codepoint-at S IDX' — Str + MutStr char-indexed
-//!     codepoint read with `arith-error' on out-of-range.  Used by
-//!     elisp `aref' / `elt' fall-through for both immutable + mutable
-//!     strings.
-//!
-//!   - `nelisp--mut-str-set-codepoint S IDX CP' — MutStr in-place
-//!     codepoint mutation (= rebuilds the backing String).  Returns
-//!     CP per Emacs `aset' contract.
-//!
-//!   - `nelisp--char-table-aref T IDX' / `nelisp--char-table-aset T
-//!     IDX V' — CharTable get / set wrappers over `char_table_get' /
-//!     `char_table_set_one'.  Kept Rust because `CharTableInner' is
-//!     a private box; no general elisp accessor exists.
-//!
-//!   - `nelisp--syscall-nr-resolve NAME-OR-NR' — wraps
-//!     `syscall_nr' (= the symbol → `libc::SYS_*' Int map).  The
-//!     elisp `nelisp--syscall' wrapper then forwards the resolved Int
-//!     through `nl-jit-call-syscall'.  Keeps the libc symbol catalog
-//!     in Rust where the `libc::SYS_*' constants live.
+//! 2. *Doc 80.4 ship slim primitives* (= reach into `Sexp' variant
+//!    boxes elisp cannot expose): `bi_mut_str_len',
+//!    `bi_bool_vector_len', `bi_str_codepoint_at',
+//!    `bi_mut_str_set_codepoint', `bi_char_table_{aref,aset}'.  Used
+//!    by elisp `length' / `aref' / `aset' / `elt' fall-through arms
+//!    after the JIT trampoline raises ERR.
 
 use crate::eval::error::EvalError;
 use crate::eval::sexp::Sexp;
